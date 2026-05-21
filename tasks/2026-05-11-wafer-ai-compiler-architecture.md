@@ -7,9 +7,13 @@
 说明：本文使用 **Wafer** 作为目标硬件和软件栈名称。底层公开文档、依赖和已有后端中仍可能出现 TX8/TX81 等历史命名，本文只在引用事实时保留这些名称。
 
 更新：2026-05-14，按 `tasks/2026-05-13-wafer-design-docs-gap-review.md` 和后续讨论重构：
-本文以 MLIR 编译阶段和 Dialect ownership 为主线，明确每一层 IR 的边界，避免在上层语义
+本文以 MLIR 编译阶段和 Dialect / IR 边界为主线，明确每一层 IR 的边界，避免在上层语义
 IR 中过早引入 SPM 地址、physical layout、NCC/DTE resource、packet field 或 runtime
 completion 细节。
+
+更新：2026-05-21，按 MLIR 工程原则再次清理：本文只把当前仓库内的整理文档作为设计依据。
+旧 backend、旧 CRT、历史 PDF 或外部源码线索只能作为 reverse-engineering 证据来源，不直接
+进入当前 compiler 架构边界。
 
 本文的一级依据是：
 
@@ -24,7 +28,7 @@ completion 细节。
 
 目标是构建一套面向 Wafer 硬件的 AI compiler/runtime 栈，使 PyTorch 模型可以通过标准图编译路径运行到 Wafer 多 tile / 多卡系统上。
 
-主路径选择 OpenXLA/torch-xla 生态，而不是从旧 Triton backend 反推整套架构：
+主路径选择 OpenXLA/torch-xla 生态，而不是从历史 backend 反推整套架构：
 
 ```text
 PyTorch
@@ -238,7 +242,7 @@ tensor-level Linalg/SCF local shard program
 设计原则：
 
 - Linalg 是结构化计算表达，不是最终硬件计划。
-- OpLib/Triton 现有实现可作为参考，但新架构不被 Triton IR 绑定。
+- 历史 backend 观察只能作为实现证据或反例，不决定当前 IR 边界。
 - 计算和通信不要一开始混合优化，先分阶段验证。
 
 ### 3.5 Group Scheduling Stage
@@ -577,11 +581,11 @@ WaferRuntimeAdapter cluster launch
 
 ## 5. 测试和 Verifier 合同
 
-测试和 verifier 跟 IR 分层一样，也按 owning stage 增量建立。不是每个子设计进入实现前都要
+测试和 verifier 跟 IR 分层一样，也按 IR stage 增量建立。不是每个子设计进入实现前都要
 把 register-level spec、runtime shielding、PMU/cost-model 全部做完；只要求该子设计引入
 的新 IR 语义、lowering contract 或 runtime boundary 有对应验证。
 
-建议按 owning stage 和 milestone 取用：
+建议按 IR stage 和 milestone 取用：
 
 | 范围 | 阶段内验证 |
 | --- | --- |
@@ -609,7 +613,7 @@ microbench 不应成为 M0 前置条件。
 - 完整 vLLM/SGLang serving 集成。
 - 自定义 LLVM 后端或真正 ISA intrinsic lowering。
 - 依赖旧 Stream/Score data-plane 作为主通信路径。
-- 直接以现有 Triton 后端为唯一架构来源。
+- 直接以历史 backend 为唯一架构来源。
 - raw DTE broadcast/shuffle/scatter 作为 V0 collective 主路径。
 - KMD compute fence、旧 `DeviceSynchronize` 或 launch stub 作为 correctness completion。
 - Conv optional/fused 特性；V0 只保留基础规则和后续验证入口。
@@ -716,7 +720,7 @@ V0 先保持统一 `wafer` namespace，降低跨 dialect type/attr 演进成本�
 6. Wafer Compute Dialect and C ABI：compute/move op、issue/drain、Tsm wrapper family、local wait 和 group barrier。
 7. Wafer Communication Dialect：V0 unicast DTE protocol、FSM monitor、packet counter、ring/tree collective、raw non-unicast ABI 的 V1 验证边界。
 8. Wafer Runtime Adapter and Package Format：HPGR/KMD/legacy Tsm 分层、completion、BO pools、bootparam/TLV、weights、metadata、tile placement、profiling config 和 host launch path。
-9. Wafer Verification Plan by Stage：按 owning stage 定义 diagnostics、roundtrip、golden packet、runtime shielding 和 PMU/cost-model case 的进入条件；register-level spec 只约束已经 lower 到 `wafer.compute`、`wafer.comm` 或 runtime boundary 的路径。
+9. Wafer Verification Plan by Stage：按 IR stage 定义 diagnostics、roundtrip、golden packet、runtime shielding 和 PMU/cost-model case 的进入条件；register-level spec 只约束已经 lower 到 `wafer.compute`、`wafer.comm` 或 runtime boundary 的路径。
 10. Serving integration：vLLM/SGLang 的 graph capture、prefill/decode、KV cache 管理。
 
 每个子设计只需要回答自己边界内的问题，并明确不拥有哪些下游决策。建议按下面的
@@ -739,8 +743,9 @@ stage-specific checklist 取用，而不是所有问题一把套：
 
 ## 9. 参考材料
 
-本设计基于当前 workspace 中以下材料整理。优先级以整理后的 Wafer 主文档和
-reverse-engineering 合同为准，旧 PDF 和旧 CRT 路径只作为历史上下文和交叉证据：
+本设计基于当前仓库中的以下材料整理。优先级以整理后的 Wafer 主文档和
+reverse-engineering 合同为准，旧实现和历史材料只作为这些文档中的证据来源，不作为当前
+架构主线或 IR 命名来源：
 
 - `docs/wafer-hardware-instruction-set-and-programming-model.md`
 - `docs/wafer-register-level-instruction-spec.md`
@@ -748,10 +753,3 @@ reverse-engineering 合同为准，旧 PDF 和旧 CRT 路径只作为历史上�
 - `docs/tx8-deps-reverse-engineering/tx8-interface-contract.md`
 - `docs/tx8-deps-reverse-engineering/firmware-kuiper-runtime-hardware-analysis.md`
 - `docs/tx8-deps-reverse-engineering/txda-pytorch-runtime-wheel-analysis.md`
-- `/root/dlc_dev/tx8_deps/include/instr_adapter.h`
-- `/root/dlc_dev/tx8_deps/include/instr_def.h`
-- `/root/dlc_dev/tx8_deps/tx8-yoc-rt-thread-smp/interface/op_fw_sim_if/peripheral/include/direct_dte_and_fsm.h`
-- `/root/dlc_dev/tx8_deps/tx8-yoc-rt-thread-smp/interface/op_fw_sim_if/peripheral/include/tx81_spm.h`
-- `/root/dlc_dev/FlagTree/third_party/tsingmicro/backend/compiler.py`
-- `/root/dlc_dev/FlagTree/third_party/tsingmicro/lib/Conversion/Tx81ToLLVM`
-- `docs/official_docs/` 下旧 PDF 和历史材料

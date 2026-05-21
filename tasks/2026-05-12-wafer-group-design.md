@@ -7,12 +7,16 @@ pipeline，再用 two-output `matmul + bias + relu` 贯穿各阶段 IR，最后�
 planner、SPM、layout、sync 和初始范围。本文只描述 Wafer 自己的 group IR 设计，
 group 语义以本文的分层边界为准。
 
+更新：2026-05-21，按 MLIR IR 设计习惯重新收敛：架构边界以 IR 层、op contract、
+verifier 和 lowering 责任为准，不以 pass 名、示例 workload 或 planner 的中间状态为准。
+典型 case 只用于展示 IR 形态，不定义 `wafer.group` 的长期语义字段。
+
 本文是架构设计文档，不是实现计划。它回答三个问题：
 
 - `wafer.group` 在哪一层 IR 出现，表达什么，不表达什么。
 - 一个典型 fused compute 如何从 tensor IR 变成 scheduled group、SPM scope、硬件动作和
   C ABI 调用。
-- 每个阶段由哪个 pass 拥有，哪些信息只能作为下游约束，不能提前写进上游 IR。
+- 每个阶段的 IR 边界是什么，哪些信息只能作为下游约束，不能提前写进上游 IR。
 
 本文采用 case-driven 写法，但 case 只用于展示 IR 如何流经 pipeline。设计边界以每节的
 通用职责为准；`matmul`、`bias`、`relu`、reduction loop、accumulator 等名字都不是
@@ -53,19 +57,21 @@ wafer.group = SPM residency group + tile schedule boundary + fusion planning uni
 的容器。`wafer.group` 的职责是把 producer、anchor 和 consumer 拉到同一个外层 tile
 schedule 下，让中间值只在 group tile 内部存活。
 
-## 2. Pipeline 和 IR Ownership
+## 2. Pipeline 和 IR 边界
 
 `wafer.group` 位于 local tensor IR 之后、SPM bufferization 之前。硬件事实可以作为
-legality 和 cost input，但每层 IR 只携带自己能稳定解释的信息。
+legality 和 cost input，但每层 IR 只携带自己能稳定解释的信息。实现上可以用 pass
+建立或消解这些边界，但 pass 名不是架构合同；只要 IR contract 不变，pass 可以重命名、
+合并或拆分。
 
-| 阶段 | owning pass / module | 主要 IR | 可以表达 | 不提前表达 |
+| 阶段 | IR 边界 | 主要 IR | 可以表达 | 不提前表达 |
 | --- | --- | --- | --- | --- |
-| 0. Local tensor compute | frontend lowering / local shard lowering | `linalg` / `tensor` / `scf` | tensor compute、DPS、shape/indexing | group 边界、tile-local lifetime、SPM |
-| 1. Logical group | `WaferGroupFormation` | `wafer.group state=logical` | fusion candidate、root、boundary、body region | tile size、schedule effect、SPM offset、queue、packet |
-| 2. Scheduled group | `WaferGroupPlanner` | `wafer.group state=scheduled` + tiled tensor IR | root tiled loop、显式 schedule constraint/effect | physical SPM 地址、worker、DTE node、C ABI |
-| 3. SPM scope | `WaferSPMBufferize` | `wafer.spm_scope` / SPM memref-like values | `mem_layout`、liveness、allocation class、movement op | raw packet field、runtime package |
-| 4. Hardware action IR | Wafer hardware lowering | `wafer.dma` / `wafer.compute` / `wafer.comm` / `wafer.sync` | RDMA/WDMA/TDMA/compute/comm/sync 动作、issue/drain 语义 | host package layout、bootparam/TLV |
-| 5. Runtime boundary | LLVM lowering / runtime packaging | LLVM call / Wafer C ABI | stable C ABI call、runtime metadata、launch package | tensor-level fusion 语义 |
+| 0. Local tensor compute | 上游 local shard compute | `linalg` / `tensor` / `scf` | tensor compute、DPS、shape/indexing | group 边界、tile-local lifetime、SPM |
+| 1. Logical group | fusion 候选 region | `wafer.group state=logical` | candidate boundary、anchor、body region | tile size、schedule effect、SPM offset、queue、packet |
+| 2. Scheduled group | tiled tensor/control-flow region | `wafer.group state=scheduled` + tiled tensor IR | root traversal、tiled body、必要的显式 constraint/effect | physical SPM 地址、worker、DTE node、C ABI |
+| 3. SPM scope | tile-local memory region | `wafer.spm_scope` / SPM memref-like values | `mem_layout`、liveness、allocation class、movement op | raw packet field、runtime package |
+| 4. Hardware action IR | hardware action region | `wafer.dma` / `wafer.compute` / `wafer.comm` / `wafer.sync` | RDMA/WDMA/TDMA/compute/comm/sync 动作、issue/drain 语义 | host package layout、bootparam/TLV |
+| 5. Runtime boundary | host/device launch ABI | LLVM call / Wafer C ABI | stable C ABI call、runtime metadata、launch package | tensor-level fusion 语义 |
 
 这个分层是本文的主线。后面的 case 会在每个阶段给出对应 IR 草图。
 
@@ -86,8 +92,8 @@ R    : tensor<128xf16>
 
 为了展示 IR 形态，后文假设这个 case 采用如下调度结果：
 
-- group planner 选择 root domain 为 matmul output domain `(M, N)`。
-- group planner 选择 root tile 为 `64x64`。
+- 示例选择 result0 `%Y` 的 `(M, N)` domain 作为 primary traversal domain。
+- 示例选择 root tile 为 `64x64`。
 - op tiling interface 先基于 root tile 返回完整 operand demand 和 tile-local
   temporary/accumulator 需求；只有当完整 demand 在 SPM、layout、ISA 或 cost 上不可接受时，
   才由对应 op interface 提出内部维度切分候选。
@@ -169,17 +175,17 @@ func.func @case(%a: tensor<128x256xf16>,
 
 Stage 0 应尽量保持为复用的 tensor-level dialect，例如 `linalg` / `tensor` / `arith` /
 `math` / `scf`。如果未来需要规整不同上游 IR 形态，应优先实现 canonicalization /
-rewrite pass，把输入规整到这些已有 dialect 的稳定子集；本文不建议为普通 tensor compute
+rewrite/canonicalization，把输入规整到这些已有 dialect 的稳定子集；本文不建议为普通 tensor compute
 语义引入 Wafer 私有 tensor dialect。
 
 ## 5. Stage 1：Logical `wafer.group`
 
-`WaferGroupFormation` 以 producer-consumer 关系、single-use 情况、layout/shape
+group formation 以 producer-consumer 关系、single-use 情况、layout/shape
 legality 和 cost hint 为输入，形成 logical group。logical group 只回答：
 
 - 哪些 op 属于同一个 SPM residency 候选。
 - group 的外部输入和输出是什么。
-- 哪个 result domain 或哪组同 domain results 是 root。
+- 哪个 result 或 anchor value 作为后续 traversal 的候选锚点。
 - body 是否能被后续 tile-and-fuse。
 
 对应 IR：
@@ -192,9 +198,7 @@ legality 和 cost hint 为输入，形成 logical group。logical group 只回�
       attributes {
         state = #wafer.group_state<logical>,
         root = #wafer.group_root<
-          primary = 0,
-          domain = [M, N],
-          result_domains = [result0 = [M, N], result1 = [M]]
+          anchor = #wafer.result<0>
         >,
         boundary = #wafer.group_boundary<
           inputs = [external, external, external],
@@ -261,7 +265,7 @@ DMA、queue、worker、packet 或 runtime call。
 
 ## 6. Stage 2：Scheduled `wafer.group`
 
-`WaferGroupPlanner` 消费 logical group，输出 scheduled group。它做的事包括：
+group planner 消费 logical group，输出 scheduled group。它做的事包括：
 
 - 选择 root/anchor 和 root tile shape。
 - 调用每个 op 的 tiling interface 计算该 root tile 对应的完整 operand demand、
@@ -269,9 +273,9 @@ DMA、queue、worker、packet 或 runtime call。
 - 记录 per-op tiling interface 返回的可选 internal split、tile-local
   temporary/scratch/accumulator liveness 和 consumer placement。
 - 用显式 tiled IR、SSA use-def 和控制流表达普通 compute/data dependence。
-- 只有当 drain、wait、barrier、communication 这类约束必须跨 pass 保留时，才在 body 中
-  materialize 成明确的 op/effect；planner 的中间计划和 cost/resource estimate 不作为
-  `wafer.group` attribute 保存。
+- 只有当 drain、wait、barrier、communication 这类约束必须跨阶段保留时，才在能稳定解释
+  它的 IR 层 materialize 成明确的 op/effect；planner 的中间计划和 cost/resource
+  estimate 不作为 `wafer.group` attribute 保存。
 
 scheduled group 仍是 tensor-level 或接近 tensor-level 的 IR。它通过 IR 结构表达已经做出的
 tiling/scheduling 决策；仍不指定 SPM 物理地址、硬件 queue、packet 或 runtime call。
@@ -295,9 +299,7 @@ lowering 约束，同一 root tile 下会由对应 op interface 插入 op-local 
       attributes {
         state = #wafer.group_state<scheduled>,
         root = #wafer.group_root<
-          primary = 0,
-          domain = [M, N],
-          result_domains = [result0 = [M, N], result1 = [M]]
+          anchor = #wafer.result<0>
         >
       } {
 ^bb0(%ga: tensor<128x256xf16>,
@@ -400,16 +402,17 @@ lowering 约束，同一 root tile 下会由对应 op interface 插入 op-local 
 } : tensor<128x128xf16>, tensor<128xf16>
 ```
 
-这段 IR 的关键点是不同 shape 的 multi-output schedule：result0 `%y_result` 使用
-primary root domain `[M, N]`，每个 root tile 都能直接写回一个 `64x64` output tile；
-result1 `%r_result` 的 domain 是 `[M]`，它不是 `root` attribute 里强行声明的
-result-to-result 公式，而是由 body 内的 producer/consumer 和 reduction tiling 决定。
+这段 IR 的关键点是不同 shape 的 multi-output schedule：result0 `%y_result` 使用示例中的
+primary traversal domain `[M, N]`，每个 root tile 都能直接写回一个 `64x64` output tile；
+result1 `%r_result` 的 domain 是 `[M]`，它不是 `root` attribute 里保存的
+result-to-result 公式，而是由 body 内的 producer/consumer、reduction tiling、SSA
+use-def 和 loop-carried state 决定。
 在这个 case 中，`%r_tile` 需要在同一个 `M` tile 的多个 `N` tiles 之间累加，等该
 `M` tile 的所有 `N` tiles 都处理完后再写回 result1。
 
 ## 7. Stage 3：SPM Scope 和 Bufferization
 
-`WaferSPMBufferize` 消费 scheduled group，建立 tile-local SPM value、liveness、
+SPM bufferization 消费 scheduled group，建立 tile-local SPM value、liveness、
 allocation class 和 physical `mem_layout`。这是第一次可以表达 SPM memory space 和
 physical layout 的阶段。
 
@@ -643,7 +646,7 @@ C ABI 的设计应拆成明确族群，例如：
 outputs、一个 body region，以及描述 group state、root 和 boundary 的 attributes。
 root tile traversal 由 scheduled body 内的 loop/control-flow 结构表达。普通依赖关系由
 body 内的 SSA use-def、region/control flow 和显式 op/effect
-表达，不另用 attribute 保存一份 shadow schedule。
+表达，不另用 attribute 保存一份影子执行计划。
 
 建议的结构：
 
@@ -670,7 +673,7 @@ def Wafer_GroupOp : Wafer_Op<"group", [
 | Attribute | 所属状态 | 含义 | 明确不表示 |
 | --- | --- | --- | --- |
 | `state` | logical / scheduled | group 当前状态 | 硬件执行模式 |
-| `root` | logical / scheduled | output result domain、同 domain result 集合，或 anchor op/result | compute instruction id |
+| `root` | logical / scheduled | 最小 anchor marker，例如 anchor result | traversal loop nest、per-result 关系、compute instruction id |
 | `boundary` | logical / scheduled | 哪些 operand/result 是 group 外部边界 | DDR/BO/SPM 物理地址 |
 
 ### 10.3 Body 合法性
@@ -693,13 +696,14 @@ def Wafer_GroupOp : Wafer_Op<"group", [
 - body 不隐式引用 group 外部 SSA value；外部依赖必须显式列在 `ins` 或 `outs`。
 - `wafer.group_yield` 的 value 数量、类型、rank 和 shape 与 results 兼容。
 - multi-output group 中每个 yielded value 必须能映射到对应 result。shape/domain 不同的
-  results 不要求存在统一的 result-to-result 关系；若某个 result 能被证明是 root domain
+  results 不要求存在统一的 result-to-result 关系；若某个 result 能被证明是 traversal domain
   的投影、切片或规约，planner 可以在 scheduling analysis 中利用该关系，否则应依赖 body
-  use-def、per-op tiling interface 和 explicit liveness/writeback 结构来表达。共享 root traversal 不代表共享
-  writeback 时机，boundary/writeback/liveness 仍要逐 result 表达。
+  use-def、per-op tiling interface 和 explicit liveness/writeback 结构来表达。共享 traversal
+  不代表共享 writeback 时机，boundary/writeback/liveness 仍要逐 result 表达。
 - logical state 不携带 scheduled-only 字段。
-- scheduled state 必须携带 root domain，并通过已经 materialized 的 loop/control-flow
-  structure 表达 root tile traversal。不得用 attribute 保存与 body 重复的执行计划。
+- scheduled state 的 traversal 必须能从已经 materialized 的 loop/control-flow structure
+  中恢复。若保留 `root` attribute，它只作为 anchor marker，并且必须与 body 一致；不得用
+  attribute 保存与 body 重复的执行计划。
 - attribute 中不得出现 SPM address、SPM bank、physical storage、DTE node、worker、
   queue、packet field、CSR、BO/TLV 等低层对象。
 - body 中 layout-changing、shape-changing 或 aligned-layout-only op 必须能被 layout
@@ -707,7 +711,7 @@ def Wafer_GroupOp : Wafer_Op<"group", [
 
 ## 11. Group Formation
 
-`WaferGroupFormation` 只负责形成候选 group，不负责最终 tile size 或 SPM 分配。
+group formation 只负责形成候选 group，不负责最终 tile size 或 SPM 分配。
 
 下面是初始实现的启发式候选，不是 `wafer.group` 语义的一部分。长期应由 op interface、
 producer/consumer 图、layout/shape legality 和 cost model 共同决定是否入 group。
@@ -745,16 +749,16 @@ producer/consumer 图、layout/shape legality 和 cost model 共同决定是否�
 这些边界可以在后续 cost model 和 communication planner 更强之后逐步放开。
 
 对于 multi-output 候选，formation 只标记“可能共享 SPM residency”的候选，不保证最终
-一定保持一个 group。schedule 阶段如果无法找到一个合法且成本可接受的 primary root
+一定保持一个 group。schedule 阶段如果无法找到一个合法且成本可接受的 primary traversal
 domain，应把候选拆成多个 groups，再分别调度。
 
 ## 12. Group Schedule Planning
 
-`WaferGroupPlanner` 输入 logical group，输出 scheduled group。
+group planner 输入 logical group，输出 scheduled group。
 
 ### 12.1 Planner 和 Per-Op Tiling Interface 的边界
 
-`WaferGroupPlanner` 不替每个 op 实现 tiling，也不把 matmul、reduction、window op 的
+group planner 不替每个 op 实现 tiling，也不把 matmul、reduction、window op 的
 内部切分规则写死在 group 层。它负责 group 级调度：
 
 - 选择 root/anchor 和 root tile traversal。
@@ -762,7 +766,8 @@ domain，应把候选拆成多个 groups，再分别调度。
 - 向每个 op 的 tiling interface 查询：给定 result tile，先需要哪些完整 operand slice、
   temporary/scratch/accumulator，以及 tiled implementation；若资源或合法性不满足，再请求
   该 op interface 给出内部维度切分候选。
-- 汇总 per-op 返回的信息，生成 tiled IR，并在 pass 内部完成 liveness/resource/cost 分析。
+- 汇总 per-op 返回的信息，生成 tiled IR，并在当前 transformation 内部完成
+  liveness/resource/cost 分析。
 - 在 SPM/cost 约束下接受、拒绝或调整 tile shape。
 
 也就是说，group planner 是 orchestration 层；op tiling interface 是 implementation
@@ -771,19 +776,20 @@ domain，应把候选拆成多个 groups，再分别调度。
 
 ### 12.2 Root / Anchor
 
-下面是 root/anchor 选择的常见例子，不是 hardcoded op list：
+下面是 root/anchor 选择的常见例子，不是固定 op 列表：
 
 - 对 epilogue chain，选最终 consumer/root result domain。
 - 对多个同 shape/domain 的 outputs，可以共享同一个 root tile traversal，并选择一个
   primary result 作为 traversal anchor。
-- 对不同 shape/domain 的 outputs，选择一个 primary root domain；其它 results 只记录
-  result domain、producer dependence 和 writeback policy。只有在关系可
-  证明且对调度有用时，planner 才在 analysis 中利用 projection / slice / reduction 关系。
+- 对不同 shape/domain 的 outputs，选择一个 primary traversal domain；其它 results 的
+  domain、producer dependence 和 writeback policy 由 body 结构、op tiling interface 和
+  transformation-local analysis 得出。只有在关系可证明且对调度有用时，planner 才在 analysis 中
+  利用 projection / slice / reduction 关系。
 - 对 matmul + epilogue，选 matmul output domain `(M, N)`。
 - 对 reduction，选 reduction output domain，同时额外管理 reduction axis tiling。
 - 对 softmax，通常需要 multi-stage tiled schedule，而不是单个线性 root loop。
 
-如果没有一个 primary root domain 能合法且划算地覆盖所有 outputs，`WaferGroupPlanner`
+如果没有一个 primary traversal domain 能合法且划算地覆盖所有 outputs，group planner
 不应强行构造 multi-root `wafer.group`。第一版策略是 reject 这个 multi-output schedule，
 并把候选 group 拆开：
 
@@ -794,20 +800,20 @@ domain，应把候选拆成多个 groups，再分别调度。
 - 按 schedule cut 拆：需要跨很多 root tiles 累加状态、collective、remote communication 或
   host-visible boundary 的 output，单独形成后续 group 或 communication/runtime stage。
 
-拆分后，每个 group 重新选择自己的 root domain 和 tile shape。这样会多一次 boundary
+拆分后，每个 group 重新选择自己的 traversal domain 和 tile shape。这样会多一次 boundary
 materialization 或少量 recompute，但语义清楚，避免把一个不稳定的 multi-root schedule
 塞进 `wafer.group`。
 
 ### 12.3 Hidden / Internal Dimensions
 
 root tile shape 只描述 group 对外可见的 traversal domain 和 output tile。很多 op 还有
-root domain 上看不到、或无法直接从 group outputs 推出来的内部维度，例如 contraction /
+traversal domain 上看不到、或无法直接从 group outputs 推出来的内部维度，例如 contraction /
 reduction axis、window/kernel axis、被 collapse/expand 的 layout axis、padding/alignment
 引入的 physical axis，以及某些 op 私有的 scratch/accumulator 维度。
 
 通用流程应该是：
 
-- planner 先选择 root domain 和 root tile shape。
+- planner 先选择 traversal domain 和 root tile shape。
 - 对每个 op，tiling interface 基于这个 root tile 和 op 的 indexing/shape 语义，返回完整
   operand demand、result slice、temporary/scratch/accumulator 和默认 tile-local
   implementation。
@@ -861,7 +867,7 @@ scheduled group 不维护全局计划类 attribute。按 MLIR IR 的设计习惯
   collective 时才出现。
 - group barrier：只有调度语义或 runtime boundary 需要跨 tile 同步时才出现。
 
-这些都不是 `wafer.group` 上的字符串列表。它们要么留在 planner 的临时 plan object 中，
+这些都不是 `wafer.group` 上的字符串列表。它们要么留在 transformation-local analysis 中，
 要么在对应 lowering 阶段落成可验证的 IR op/effect。tensor-level planner 可以用硬件
 queue、bank/page/color、DDR range 和 sync cost 评估 overlap 潜力，但不能在每个 op 后
 默认插 wait，也不能只用 byte range 不重叠来判断 overlap。
@@ -905,7 +911,7 @@ propagation 和 verifier 责任：
 - passthrough 或普通 elementwise 可以复用通用传播规则。
 - 改变 rank/shape 或要求 aligned physical layout 的 op 必须有显式规则。
 - 输出 layout 不能只靠 opcode 推导，至少要结合输入 layout、shape、op 参数和目标硬件约束。
-- materialization pass 插入的 movement 必须进入 liveness、SPM allocation、latency 和
+- materialization transformation 插入的 movement 必须进入 liveness、SPM allocation、latency 和
   resource schedule。
 
 group 内 tensor 的目标不是“完整 tensor in SPM”，而是“tile-local values in SPM”。
@@ -918,7 +924,7 @@ planner 的替代品。
 短期推荐：
 
 ```text
-Wafer C++ planner is source of truth.
+Wafer C++ planner owns the canonical planning implementation.
 Planner optionally dumps equivalent Transform dialect schedule.
 Transform script can be replayed for debugging and tuning.
 ```

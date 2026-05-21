@@ -5,6 +5,10 @@
 更新：2026-05-14，基于整理后的最新 `docs/` 重新审了一轮。本文继续作为
 `tasks/` 设计文档的唯一 gap review，不再另落新的 review 文件。
 
+更新：2026-05-21，按新的文档原则补充边界：本文是 gap catalog，不是新的架构合同。
+涉及历史 backend、旧 CRT、runtime 兼容路径或底层 packet 的内容，只用于指出需要在哪个
+IR stage、verifier 或 runtime boundary 补设计，不能反向污染上层 IR 语义。
+
 本文评审对象：
 
 - `tasks/2026-05-11-wafer-ai-compiler-architecture.md`
@@ -21,15 +25,15 @@
 
 结论：两份 task 文档的主方向仍然成立，即 OpenXLA/torch-xla/StableHLO/Shardy
 作为图编译主线，Wafer 后端通过自有 C ABI 调 public Tsm wrapper/Kcore runtime，
-不围绕旧 Triton/CRT 或裸 LLVM intrinsic 建架构。问题不在方向，而在它们还是早期
+不围绕历史 backend/CRT 或裸 LLVM intrinsic 建架构。问题不在方向，而在它们还是早期
 架构草案，没有把最新逆向已经确认的 runtime、layout、SPM、并行、DTE、completion
-和测试合同固化成可执行设计约束。后续进入相关实现前，应按 IR 层级和 owning stage
+和测试合同固化成可执行设计约束。后续进入相关实现前，应按 IR 层级和 IR stage
 补齐对应缺口。
 
 ## 1. 信息来源和文档边界已经过期
 
 `2026-05-11` 架构文档的参考材料仍主要列官方 PDF、`instr_def.h`、
-`instr_adapter.h` 和旧 CRT 路径，没有把最新 Wafer 主文档和 reverse-engineering
+`instr_adapter.h` 和旧实现线索，没有把最新 Wafer 主文档和 reverse-engineering
 README 放在一级依据。
 
 需要补充的阅读顺序：
@@ -41,7 +45,7 @@ README 放在一级依据。
 - 查证据、API 合同、coverage 和剩余 HardwareVerify 时，看
   `docs/tx8-deps-reverse-engineering/README.md` 和该目录下的 contract/analysis。
 
-影响：如果继续只引用旧 PDF 和 CRT，容易把 Stream、SCALAR、runtime launch、
+影响：如果继续只引用旧 PDF 和旧实现线索，容易把 Stream、SCALAR、runtime launch、
 DMA stride、layout materialization、SPM allocator 等旧口径带进实现。
 
 ## 2. Host runtime 主目标需要升级为 HPGR/KMD 分层
@@ -191,7 +195,7 @@ golden packet tests。
 
 - 在 architecture 的 compute lowering 和 package metadata 中明确 `layout` 与
   `mem_layout` 两个字段。
-- 在 group doc 的 SPM bufferization 章节加入 layout materialization pass：只有进入
+- 在 group doc 的 SPM bufferization 章节加入 layout materialization transformation：只有进入
   aligned-only 指令前才 materialize 到 `Cx/NCx`，并把 `ChannelNorm/GatherScatter`
   当成真实 op 计入 SPM、liveness、latency。
 - 新增 `Wafer Layout Propagation and SPM Materialization` 子设计。
@@ -237,7 +241,7 @@ slot 列表和 layout size 公式来源。
 - 当前静态证据没有发现 SPM operand base 强制 64KB 对齐的 register wrapper/runtime
   reject。
 - SPM0 bank conflict、1024-bit RAM_ACC/Ram_acc_phy 对齐/移位和非 1024-bit 执行并行度
-  会影响 queue ready 和 stall，但不是单条指令 legality blocker。
+  会影响 queue ready 和 stall，但不是单条指令 legality 阻塞条件。
 
 风险：
 
@@ -246,7 +250,7 @@ slot 列表和 layout size 公式来源。
 
 建议修改：
 
-- `WaferSPMBufferize` 区分普通 allocation、aligned physical layout padding、
+- SPM bufferization 区分普通 allocation、aligned physical layout padding、
   parallel overlap-critical allocation。
 - group scheduler 维护 estimated in-flight SPM bank/page/color set 和 RDMA/WDMA DDR range。
 - M5 acceptance 增加 PMU case：比较 serial mode、parallel mode、64KB page coloring、
@@ -384,7 +388,7 @@ buffer 复用必须有 explicit local drain。
 ## 15. 测试体系缺失
 
 两份 task 文档都缺少面向接口合同的测试计划。下面是 test catalog，不是统一
-milestone gate；每个子设计只取自己 owning stage 内的 diagnostics、golden tests
+milestone gate；每个子设计只取自己 IR stage 内的 diagnostics、golden tests
 和 bring-up tests：
 
 - CT wrapper-generated packet vs raw builder：unary、binary、unit-vector、loop-vector。
@@ -435,7 +439,7 @@ milestone gate；每个子设计只取自己 owning stage 内的 diagnostics、g
    ring/tree collective，以及 raw non-unicast ABI 的 V1 验证边界。
 
 6. `Wafer Verification Plan by Stage`
-   按 owning stage 定义 diagnostics、roundtrip、golden packet、runtime shielding 和
+   按 IR stage 定义 diagnostics、roundtrip、golden packet、runtime shielding 和
    PMU/cost-model case 的进入条件。register-level spec 只约束已经 lower 到
    `wafer.compute`、`wafer.comm` 或 runtime boundary 的路径；PMU/cost-model
    microbench 只在进入 scheduler/overlap milestone 后成为 gate，不作为跨阶段统一
@@ -449,7 +453,7 @@ milestone gate；每个子设计只取自己 owning stage 内的 diagnostics、g
 
 下面这些判断和最新逆向结果一致，可以保留：
 
-- 不从旧 Triton backend 反推整体架构。
+- 不从历史 backend 反推整体架构。
 - OpenXLA/torch-xla/StableHLO/Shardy/SPMD 是合理主路径。
 - Wafer 后端应生成 Wafer C ABI call，再由 C ABI 调 public Tsm wrapper。
 - Direct DTE 是 compiler data-plane 主路径，Stream/Score 不作为主通信抽象。
@@ -459,11 +463,11 @@ milestone gate；每个子设计只取自己 owning stage 内的 diagnostics、g
 ## 18. 分层落地检查表
 
 下面是跨层问题目录，不是每个 task 设计文档的统一前置门槛。每个子设计只回答自己
-owning stage 内的问题，并明确哪些问题属于下游 dialect、runtime 或 verification plan：
+IR stage 内的问题，并明确哪些问题属于下游 dialect、runtime 或 verification plan：
 
 - Runtime/package：当前 host completion 来自 HPGR command/module/stream，还是
   Kcore/CSR/DTE/Stream 显式 wait？
-- Shape/layout owning stage：这个 op 或 tensor value 的 semantic layout、dtype、rank、
+- Shape/layout IR stage：这个 op 或 tensor value 的 semantic layout、dtype、rank、
   shape 是什么？进入 `wafer.spm` 后，physical `mem_layout` 是什么？
 - `wafer.spm`：是否需要 layout materialization？如果需要，它是否作为真实 data movement
   计入 SPM 和时间？
