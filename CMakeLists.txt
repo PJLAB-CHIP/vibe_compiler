@@ -56,6 +56,54 @@ if(WAFER_ENABLE_IMPORTER_DEPS)
       "StableHLO/Shardy sources are enabled but missing. "
       "Run tools/bootstrap_deps.py --importer-sources or set WAFER_STABLEHLO_SOURCE_DIR/WAFER_SHARDY_SOURCE_DIR.")
   endif()
+  set(STABLEHLO_BUILD_EMBEDDED ON CACHE BOOL "Build StableHLO embedded in Wafer" FORCE)
+  set(STABLEHLO_ENABLE_BINDINGS_PYTHON OFF CACHE BOOL "Disable StableHLO Python bindings" FORCE)
+  find_program(WAFER_STABLEHLO_LIT_EXECUTABLE
+    NAMES lit llvm-lit
+    HINTS "${WAFER_DEPS_ROOT}/python/bin" "${LLVM_TOOLS_BINARY_DIR}"
+    REQUIRED
+  )
+  set(LLVM_EXTERNAL_LIT "${WAFER_STABLEHLO_LIT_EXECUTABLE}" CACHE STRING
+      "Command used by embedded StableHLO lit targets" FORCE)
+
+  foreach(_wafer_filecheck_candidate
+          "${LLVM_TOOLS_BINARY_DIR}/FileCheck"
+          "/usr/lib/llvm-${LLVM_VERSION_MAJOR}/bin/FileCheck")
+    if(EXISTS "${_wafer_filecheck_candidate}" AND NOT IS_DIRECTORY "${_wafer_filecheck_candidate}")
+      execute_process(
+        COMMAND "${_wafer_filecheck_candidate}" --version
+        RESULT_VARIABLE _wafer_filecheck_candidate_result
+        OUTPUT_QUIET
+        ERROR_QUIET
+      )
+      if(_wafer_filecheck_candidate_result EQUAL 0)
+        set(WAFER_STABLEHLO_FILECHECK_EXECUTABLE "${_wafer_filecheck_candidate}")
+        break()
+      endif()
+    endif()
+  endforeach()
+  if(NOT WAFER_STABLEHLO_FILECHECK_EXECUTABLE)
+    find_program(WAFER_STABLEHLO_FILECHECK_EXECUTABLE NAMES FileCheck REQUIRED)
+  endif()
+
+  find_program(WAFER_STABLEHLO_NOT_EXECUTABLE
+    NAMES not
+    HINTS "${LLVM_TOOLS_BINARY_DIR}" "/usr/lib/llvm-${LLVM_VERSION_MAJOR}/bin"
+    REQUIRED
+  )
+
+  if(NOT TARGET FileCheck)
+    add_executable(FileCheck IMPORTED GLOBAL)
+    set_target_properties(FileCheck PROPERTIES
+      IMPORTED_LOCATION "${WAFER_STABLEHLO_FILECHECK_EXECUTABLE}")
+  endif()
+  if(NOT TARGET not)
+    add_executable(not IMPORTED GLOBAL)
+    set_target_properties(not PROPERTIES
+      IMPORTED_LOCATION "${WAFER_STABLEHLO_NOT_EXECUTABLE}")
+  endif()
+
+  add_subdirectory("${WAFER_STABLEHLO_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/stablehlo" EXCLUDE_FROM_ALL)
 endif()
 
 add_subdirectory(include/Wafer/Dialect/Wafer/IR)

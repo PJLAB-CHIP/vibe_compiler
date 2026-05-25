@@ -18,7 +18,9 @@ compute/movement 之后的 comm/token/wait 表示。`wafer.load_tile`、`wafer.s
 `wafer.comm.recv` / `wafer.comm.wait` 和 `wafer.sync.local_drain` 已落地，通信 token 使用
 `!async.token`，endpoint / byte count / SPM buffer 合同有 verifier。最小 `wafer.launch` boundary
 已落地，launch signature、package ref、resource summary 和 host tensor 边界有 verifier。P1
-parser/printer/verifier 正负例已补齐到当前 op/type/attr 覆盖口径。
+parser/printer/verifier 正负例已补齐到当前 op/type/attr 覆盖口径。P2/P3 输入 artifact 起点已落地：
+默认 backend gate 覆盖手写 Linalg GEMM 文本入口，importer-enabled gate 覆盖 pinned StableHLO
+`dot_general` 文本入口和 dialect registration。
 
 ## Active Task
 
@@ -98,7 +100,7 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 
 | ID | 状态 | 任务 | 验收 |
 | --- | --- | --- | --- |
-| P2.1 | pending | 建立 StableHLO / MLIR textual artifact 输入测试 | parse/roundtrip 保留 function signature、shape、dtype |
+| P2.1 | done | 建立 StableHLO / MLIR textual artifact 输入测试 | parse/roundtrip 保留 function signature、shape、dtype |
 | P2.2 | pending | 实现 constant normalization 骨架 | `stablehlo.constant` / sidecar 进入 `arith.constant` 或 `ConstantLike` tensor value |
 | P2.3 | pending | Lower `dot_general` / matmul 到 structured tensor IR | indexing map / iterator / DPS 关系可 FileCheck |
 | P2.4 | pending | Lower broadcast、reshape、transpose、slice | 只依赖 type、shape、indexing relation，不靠名字 |
@@ -115,7 +117,7 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 
 | ID | 状态 | 任务 | 验收 |
 | --- | --- | --- | --- |
-| P3.1 | pending | 准备手写 StableHLO / Linalg GEMM 输入 case | 输入不依赖模型 importer |
+| P3.1 | done | 准备手写 StableHLO / Linalg GEMM 输入 case | 输入不依赖模型 importer |
 | P3.2 | pending | 实现最小 group formation | 单 GEMM 能形成 `wafer.group`；非法 multi-output/domain 被拒绝或拆分 |
 | P3.3 | pending | 实现 root tile shape 候选和 feasibility 调用骨架 | tile shape 是 planner 候选，不写成 IR contract |
 | P3.4 | pending | materialize 单 tile `wafer.tile_region` | region 中有 load、compute、store 的 SSA 关系 |
@@ -197,5 +199,6 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 
 ## 下一步
 
-继续从 P2.1 / P3.1 开始建立手写 StableHLO / Linalg GEMM 输入入口。不要越过 frontend textual
-artifact 和最小 M0 输入 gate 直接实现 transformer block 逻辑。
+继续从 P2.2 开始实现 constant normalization 骨架，随后进入 P2.3 dot/matmul 到 structured tensor
+IR 的转换。不要越过 frontend textual artifact 和 local compute normalization gate 直接实现
+transformer block 逻辑。

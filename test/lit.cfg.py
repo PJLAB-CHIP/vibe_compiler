@@ -19,3 +19,6 @@ path = os.pathsep.join(
 config.environment["PATH"] = path
 config.substitutions.append(("%python", config.python_executable))
 config.substitutions.append(("%wafer_src_root", config.wafer_src_root))
+
+if config.wafer_enable_importer_deps == "ON":
+    config.available_features.add("stablehlo")
