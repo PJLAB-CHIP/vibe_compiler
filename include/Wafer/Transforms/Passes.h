@@ -19,6 +19,7 @@ std::unique_ptr<mlir::Pass> createNormalizeConstantsPass();
 std::unique_ptr<mlir::Pass> createFormGroupsPass();
 std::unique_ptr<mlir::Pass> createCheckRootTileCandidatesPass();
 std::unique_ptr<mlir::Pass> createCheckNormSchedulePass();
+std::unique_ptr<mlir::Pass> createCheckSoftmaxSchedulePass();
 std::unique_ptr<mlir::Pass> createMaterializeSingleTilePass();
 std::unique_ptr<mlir::Pass> createMaterializeMultiTileNoCommPass();
 std::unique_ptr<mlir::Pass> createCompactLayoutAssignmentPass();

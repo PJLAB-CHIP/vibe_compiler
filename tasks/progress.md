@@ -95,6 +95,10 @@ P5.1 的 norm schedule acceptance gate 已落地：`--wafer-check-norm-schedule`
 structured tensor IR 做 pass-local analysis，要求 hidden-dimension `linalg.reduce`、`rsqrt`
 elementwise stage 和 rank-2/rank-1 broadcast multiply stage 同时存在；它不引入 `wafer.norm` 或
 schedule attr，也不把 planner cost 写进 IR。
+P5.2 的 softmax schedule acceptance gate 已落地：`--wafer-check-softmax-schedule` 对 normalized
+structured tensor IR 做 pass-local analysis，要求 hidden-dimension reduce max、row max broadcast
+subtract、`exp`、hidden-dimension reduce sum 和 final broadcast divide 按 SSA use-def 串联；它不引入
+`wafer.softmax`、schedule attr 或 workspace/group split 决策。
 
 ## Active Task
 
@@ -104,8 +108,8 @@ schedule attr，也不把 planner cost 写进 IR。
 
 1. P0 到 P1：工程、依赖、工具、测试入口和最小 Wafer dialect skeleton。
 2. P2 到 P3：从手写 StableHLO / Linalg GEMM 输入跑通 M0 local compile gate。
-3. P4.1 到 P4.5：推进 M1 multi-tile no-communication 的 placement、per-tile outlining 和 launch
-   gate。
+3. P5.1 到 P5.8：推进 transformer block local vertical slice 的 staged schedule acceptance 和
+   local compile gate。
 
 ## 当前判断
 
@@ -223,7 +227,7 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 | ID | 状态 | 任务 | 验收 |
 | --- | --- | --- | --- |
 | P5.1 | done | Norm slice：RMSNorm 或 LayerNorm | reduce + elementwise group schedule accepted |
-| P5.2 | pending | Softmax slice | row max、exp、row sum、normalize 的 staged schedule accepted |
+| P5.2 | done | Softmax slice | row max、exp、row sum、normalize 的 staged schedule accepted |
 | P5.3 | pending | Attention score slice：QK^T | batch/head matmul relation 从 StableHLO dimension numbers / indexing map 推出 |
 | P5.4 | pending | Attention value slice：softmax + AV | softmax output 到 value accumulation 的状态和 buffer lifetime 可验证 |
 | P5.5 | pending | Output projection + residual slice | residual/add/bias 等 elementwise 与 GEMM 边界清晰 |
@@ -274,5 +278,5 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 
 ## 下一步
 
-继续 P5.2，进入 softmax staged schedule acceptance；batch/head dot 泛化在 attention slice 前补齐。
+继续 P5.3，进入 attention score slice 的 batch/head dot 泛化和 QK^T indexing relation 检查。
 不要越过当前 local compile gate 直接实现未验证的整块逻辑。

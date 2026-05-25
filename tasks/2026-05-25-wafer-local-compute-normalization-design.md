@@ -181,6 +181,19 @@ gate。该 pass 只从当前 structured tensor IR 重算以下事实：
 它不写入 group attr、side table、planner trace 或 cost 分数。失败时诊断指向缺失的 staged
 结构；真正 tile shape、SPM residency 和 group split 仍归后续 group/resource planner。
 
+当前 P5.2 实现用 `--wafer-check-softmax-schedule` 作为 softmax vertical slice 的 schedule
+acceptance gate。该 pass 只从当前 structured tensor IR 和 SSA use-def 重算以下事实：
+
+- 是否存在沿最后一维的 reduce max，作为 row/key 维最大值阶段。
+- 是否存在 `scores - row_max` 的 broadcast subtract。
+- 是否存在消费 subtract 结果的 `exp` elementwise stage。
+- 是否存在消费 exp 结果、沿同一最后一维的 reduce sum。
+- 是否存在 `exp_scores / row_sum` 的 broadcast divide normalize。
+
+它不引入 `wafer.softmax`，不写入 schedule attr，也不把 group split 或 workspace 选择固化成
+IR 合同。若后续需要 multi-stage softmax，row max、row sum、normalize/value 的分割应由
+group/resource planner 通过显式 IR 边界和 workspace demand materialize。
+
 ## 6. Pass 合同
 
 实现上可以拆成这些职责：

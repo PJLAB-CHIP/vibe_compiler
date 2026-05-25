@@ -1,6 +1,7 @@
 add_mlir_library(WaferTransforms
   CheckNormSchedule.cpp
   CheckRootTileCandidates.cpp
+  CheckSoftmaxSchedule.cpp
   CheckSPMAllocation.cpp
   CompactLayoutAssignment.cpp
   FormGroups.cpp
