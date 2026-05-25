@@ -136,6 +136,20 @@ static bool lowerSlice(mlir::stablehlo::SliceOp slice) {
   slice.erase();
   return true;
 }
+
+static bool lowerConcatenate(mlir::stablehlo::ConcatenateOp concat) {
+  mlir::RankedTensorType resultType = concat.getType();
+  if (!resultType.hasStaticShape())
+    return false;
+
+  mlir::OpBuilder builder(concat);
+  auto lowered = builder.create<mlir::tensor::ConcatOp>(
+      concat.getLoc(), resultType, concat.getDimension(), concat.getInputs());
+
+  concat.getResult().replaceAllUsesWith(lowered.getResult());
+  concat.erase();
+  return true;
+}
 #endif
 
 struct LowerStablehloShapePass
@@ -165,6 +179,7 @@ struct LowerStablehloShapePass
     llvm::SmallVector<mlir::stablehlo::ReshapeOp> reshapes;
     llvm::SmallVector<mlir::stablehlo::TransposeOp> transposes;
     llvm::SmallVector<mlir::stablehlo::SliceOp> slices;
+    llvm::SmallVector<mlir::stablehlo::ConcatenateOp> concats;
 
     getOperation().walk([&](mlir::Operation *op) {
       if (auto broadcast =
@@ -177,6 +192,9 @@ struct LowerStablehloShapePass
         transposes.push_back(transpose);
       else if (auto slice = mlir::dyn_cast<mlir::stablehlo::SliceOp>(op))
         slices.push_back(slice);
+      else if (auto concat =
+                   mlir::dyn_cast<mlir::stablehlo::ConcatenateOp>(op))
+        concats.push_back(concat);
     });
 
     for (mlir::stablehlo::BroadcastInDimOp broadcast : broadcasts)
@@ -187,6 +205,8 @@ struct LowerStablehloShapePass
       (void)lowerTranspose(transpose);
     for (mlir::stablehlo::SliceOp slice : slices)
       (void)lowerSlice(slice);
+    for (mlir::stablehlo::ConcatenateOp concat : concats)
+      (void)lowerConcatenate(concat);
 #endif
   }
 };

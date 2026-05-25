@@ -34,7 +34,9 @@ reciprocal kind，单 use `broadcast_in_dim` 输入通过 `indexing_maps` 表达
 RMSNorm / LayerNorm staged-form gate 已落地，复用 reduce、elementwise 和 broadcast indexing map
 lowering，不引入 `wafer.norm` / `wafer.layer_norm` 高层 op。P2.8 的 softmax staged-form gate 已
 落地，row max、shift、exp、row sum 和 normalize 都以 `linalg.reduce` / `linalg.elementwise`
-及 broadcast indexing map 表达。
+及 broadcast indexing map 表达。P2.9 的 RoPE / MLP activation staged-form gate 已落地：
+`stablehlo.concatenate` 降到 `tensor.concat`，`stablehlo.tanh` 降到 `linalg.elementwise`
+tanh，RoPE 和 GELU tanh 形态只使用 slice/concat/elementwise structured tensor IR。
 
 ## Active Task
 
@@ -122,7 +124,7 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 | P2.6 | done | Lower reduce max / reduce sum | 输出 staged reduce IR，可服务 softmax 和 norm |
 | P2.7 | done | 表达 RMSNorm / LayerNorm staged form | reduce + elementwise，不引入 `wafer.norm` 高层 op |
 | P2.8 | done | 表达 softmax staged form | row max、exp、row sum、normalize 状态由 SSA / loop-carried / workspace 表达 |
-| P2.9 | pending | 表达 RoPE 和 MLP activation staged form | 只使用 structured tensor IR 和 math/arith 语义 |
+| P2.9 | done | 表达 RoPE 和 MLP activation staged form | 只使用 structured tensor IR 和 math/arith 语义 |
 | P2.10 | pending | 加 importer smoke test | graph break、eager fallback、unbounded dynamic shape 会被诊断 |
 
 ## P3. M0 Single Tile Load-GEMM-Store
@@ -213,6 +215,5 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 
 ## 下一步
 
-继续从 P2.9 开始覆盖 RoPE 和 MLP activation staged form；batch/head
-dot 泛化在 attention slice 前补齐。不要越过 local compute normalization gate 直接实现 transformer
-block 逻辑。
+继续从 P2.10 开始补 importer smoke test 和 frontend diagnostics；batch/head dot 泛化在 attention
+slice 前补齐。不要越过 local compute normalization gate 直接实现 transformer block 逻辑。

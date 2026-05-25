@@ -181,7 +181,8 @@ struct LowerStablehloElementwisePass
                     mlir::stablehlo::MulOp, mlir::stablehlo::DivOp,
                     mlir::stablehlo::MaxOp, mlir::stablehlo::MinOp,
                     mlir::stablehlo::NegOp, mlir::stablehlo::SqrtOp,
-                    mlir::stablehlo::RsqrtOp, mlir::stablehlo::ExpOp>(op))
+                    mlir::stablehlo::RsqrtOp, mlir::stablehlo::ExpOp,
+                    mlir::stablehlo::TanhOp>(op))
         ops.push_back(op);
     });
 
@@ -226,6 +227,9 @@ struct LowerStablehloElementwisePass
       } else if (auto exp = mlir::dyn_cast<mlir::stablehlo::ExpOp>(op)) {
         (void)lowerUnary(op, exp.getOperand(),
                          mlir::linalg::ElementwiseKind::exp);
+      } else if (auto tanh = mlir::dyn_cast<mlir::stablehlo::TanhOp>(op)) {
+        (void)lowerUnary(op, tanh.getOperand(),
+                         mlir::linalg::ElementwiseKind::tanh);
       }
     }
 #endif
