@@ -16,6 +16,9 @@
 
 #include "Wafer/Dialect/Wafer/IR/WaferOpsDialect.h.inc"
 
+#define GET_TYPEDEF_CLASSES
+#include "Wafer/Dialect/Wafer/IR/WaferTypes.h.inc"
+
 #define GET_OP_CLASSES
 #include "Wafer/Dialect/Wafer/IR/WaferOps.h.inc"
 

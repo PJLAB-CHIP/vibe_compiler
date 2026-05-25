@@ -14,6 +14,12 @@ mlir_tablegen(WaferEnums.cpp.inc -gen-enum-defs)
 add_public_tablegen_target(WaferAttrsIncGen)
 add_dependencies(mlir-headers WaferAttrsIncGen)
 
+set(LLVM_TARGET_DEFINITIONS WaferTypes.td)
+mlir_tablegen(WaferTypes.h.inc -gen-typedef-decls -typedefs-dialect=wafer)
+mlir_tablegen(WaferTypes.cpp.inc -gen-typedef-defs -typedefs-dialect=wafer)
+add_public_tablegen_target(WaferTypesIncGen)
+add_dependencies(mlir-headers WaferTypesIncGen)
+
 set(LLVM_TARGET_DEFINITIONS WaferInterfaces.td)
 mlir_tablegen(WaferInterfaces.h.inc -gen-op-interface-decls)
 mlir_tablegen(WaferInterfaces.cpp.inc -gen-op-interface-defs)

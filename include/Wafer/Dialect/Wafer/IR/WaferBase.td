@@ -16,6 +16,7 @@ def Wafer_Dialect : Dialect {
     skeleton layer.
   }];
   let useDefaultAttributePrinterParser = 1;
+  let useDefaultTypePrinterParser = 1;
 }
 
 class Wafer_Op<string mnemonic, list<Trait> traits = []>

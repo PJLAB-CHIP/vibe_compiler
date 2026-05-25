@@ -15,3 +15,5 @@
   StableHLO/Shardy checkout HEAD（如果 `.deps/src` 已存在）。
 - ODS op 如果引入 `RecursiveMemoryEffects`、`ReturnLike` 等 interface trait，公开 dialect 头要
   include 对应 C++ interface header，`WaferIR` 也要显式 link 对应 MLIR interface target。
+- Dialect 增加 TypeDef 后，base dialect td 需要启用 `useDefaultTypePrinterParser = 1`，否则即使
+  `addTypes` 已注册，文本 IR 仍会报 “provides no type parsing hook”。
