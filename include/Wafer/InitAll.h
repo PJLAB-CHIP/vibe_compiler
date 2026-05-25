@@ -5,12 +5,13 @@
 
 #include "Wafer/Dialect/Wafer/IR/WaferDialect.h"
 
+#include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/IR/DialectRegistry.h"
 
 namespace wafer {
 
 inline void registerAllDialects(mlir::DialectRegistry &registry) {
-  registry.insert<wafer::WaferDialect>();
+  registry.insert<mlir::async::AsyncDialect, wafer::WaferDialect>();
 }
 
 } // namespace wafer

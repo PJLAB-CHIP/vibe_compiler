@@ -152,4 +152,42 @@ def Wafer_ComputeGemmOp : Wafer_Op<"compute.gemm", [
       "$lhs `,` $rhs attr-dict `:` functional-type(operands, results)";
 }
 
+class Wafer_CommP2POp<string mnemonic> : Wafer_Op<mnemonic, [
+    WaferResourceEffectInterface
+  ]> {
+  let arguments = (ins
+    AnyType:$buffer,
+    I64Attr:$peer,
+    I64Attr:$bytes
+  );
+  let results = (outs AnyType:$token);
+  let hasVerifier = 1;
+  let assemblyFormat =
+      "$buffer attr-dict `:` type($buffer) `->` type($token)";
+}
+
+def Wafer_CommSendOp : Wafer_CommP2POp<"comm.send"> {
+  let summary = "fixed-size unicast p2p send";
+}
+
+def Wafer_CommRecvOp : Wafer_CommP2POp<"comm.recv"> {
+  let summary = "fixed-size unicast p2p receive";
+}
+
+def Wafer_CommWaitOp : Wafer_Op<"comm.wait", [
+    WaferResourceEffectInterface
+  ]> {
+  let summary = "wait for communication completion tokens";
+  let arguments = (ins Variadic<AnyType>:$tokens);
+  let hasVerifier = 1;
+  let assemblyFormat = "$tokens attr-dict `:` type($tokens)";
+}
+
+def Wafer_SyncLocalDrainOp : Wafer_Op<"sync.local_drain", [
+    WaferResourceEffectInterface
+  ]> {
+  let summary = "local compute/movement visibility drain";
+  let assemblyFormat = "attr-dict";
+}
+
 #endif // WAFER_DIALECT_WAFER_IR_WAFEROPS_TD

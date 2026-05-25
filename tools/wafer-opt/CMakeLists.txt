@@ -3,6 +3,7 @@ target_link_libraries(wafer-opt
   PRIVATE
   WaferIR
   MLIRArithDialect
+  MLIRAsyncDialect
   MLIRFuncDialect
   MLIRLinalgDialect
   MLIRMathDialect

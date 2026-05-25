@@ -2,6 +2,7 @@
 
 #include "Wafer/Dialect/Wafer/IR/WaferDialect.h"
 
+#include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/DialectImplementation.h"
@@ -84,6 +85,25 @@ static bool hasStaticMismatch(int64_t lhs, int64_t rhs) {
          lhs != rhs;
 }
 
+static mlir::LogicalResult verifyCommP2P(mlir::Operation *op,
+                                         mlir::Value buffer,
+                                         mlir::IntegerAttr peer,
+                                         mlir::IntegerAttr bytes,
+                                         mlir::Type tokenType) {
+  auto tileBufferType = mlir::dyn_cast<TileBufferType>(buffer.getType());
+  if (!tileBufferType)
+    return op->emitOpError("comm p2p buffer must be a tile_buffer");
+  if (!hasTileBufferMemorySpace(tileBufferType, MemorySpace::SPM))
+    return op->emitOpError("comm p2p buffer must use SPM memory space");
+  if (!mlir::isa<mlir::async::TokenType>(tokenType))
+    return op->emitOpError("comm p2p result must be an async token");
+  if (peer.getInt() < 0)
+    return op->emitOpError("comm peer must be non-negative");
+  if (bytes.getInt() <= 0)
+    return op->emitOpError("comm byte count must be positive");
+  return mlir::success();
+}
+
 mlir::LogicalResult GroupOp::verify() {
   if (getNumResults() != getOuts().size())
     return emitOpError("expected result count to match outs count, got ")
@@ -160,6 +180,24 @@ mlir::LogicalResult GroupOp::verify() {
       return emitOpError("does not accept semantic attributes");
   }
 
+  return mlir::success();
+}
+
+mlir::LogicalResult CommRecvOp::verify() {
+  return verifyCommP2P(getOperation(), getBuffer(), getPeerAttr(),
+                       getBytesAttr(), getToken().getType());
+}
+
+mlir::LogicalResult CommSendOp::verify() {
+  return verifyCommP2P(getOperation(), getBuffer(), getPeerAttr(),
+                       getBytesAttr(), getToken().getType());
+}
+
+mlir::LogicalResult CommWaitOp::verify() {
+  for (mlir::Value token : getTokens()) {
+    if (!mlir::isa<mlir::async::TokenType>(token.getType()))
+      return emitOpError("comm wait operands must be async tokens");
+  }
   return mlir::success();
 }
 
