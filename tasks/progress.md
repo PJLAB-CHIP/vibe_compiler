@@ -47,7 +47,11 @@ body 只通过显式 block arguments 访问 ins/outs，不写 tile shape、layou
 root tile candidate / feasibility skeleton 已落地：`--wafer-check-root-tile-candidates` 在
 pass-local analysis 中为 M0 rank-2 static group result 建立候选并调用 feasibility checker；
 动态 result shape 会被诊断为缺少 bounded tile policy，候选 shape 和资源估计不写入
-`wafer.group` attr。
+`wafer.group` attr。P3.4 的 M0 single-tile materialization 已落地：`--wafer-materialize-single-tile`
+将单 GEMM logical group 改写为 `wafer.tile_region`，region 内显式建立 external tensor
+args 到 `wafer.load_tile`、`wafer.compute.gemm`、`wafer.store_tile` 和 `wafer.tile_yield` 的
+SSA 链；为满足当前 `compute.gemm` / `store_tile` verifier，暂时插入 tensor<->cx layout
+materialization，后续 P3.5 再做 compact layout assignment 和冗余 conversion 清理。
 
 ## Active Task
 
@@ -147,7 +151,7 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 | P3.1 | done | 准备手写 StableHLO / Linalg GEMM 输入 case | 输入不依赖模型 importer |
 | P3.2 | done | 实现最小 group formation | 单 GEMM 能形成 `wafer.group`；非法 multi-output/domain 被拒绝或拆分 |
 | P3.3 | done | 实现 root tile shape 候选和 feasibility 调用骨架 | tile shape 是 planner 候选，不写成 IR contract |
-| P3.4 | pending | materialize 单 tile `wafer.tile_region` | region 中有 load、compute、store 的 SSA 关系 |
+| P3.4 | done | materialize 单 tile `wafer.tile_region` | region 中有 load、compute、store 的 SSA 关系 |
 | P3.5 | pending | 实现 compact layout assignment | 不插不必要的 layout conversion |
 | P3.6 | pending | 实现 SPM allocation trial | range、alignment、lifetime、end-address 检查通过 |
 | P3.7 | pending | 实现 DDR external input/output binding demand | DDR demand 可被 launch/runtime 层消费 |
@@ -226,6 +230,6 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 
 ## 下一步
 
-继续从 P3.4 开始 materialize 单 tile `wafer.tile_region`，先服务 M0 single-tile load-GEMM-store
-闭环；batch/head dot 泛化在 attention slice 前补齐。不要越过 M0/M1 compile gate 直接实现
-transformer block 逻辑。
+继续从 P3.5 开始实现 compact layout assignment / materialization cleanup，先服务 M0 single-tile
+load-GEMM-store 闭环；batch/head dot 泛化在 attention slice 前补齐。不要越过 M0/M1 compile
+gate 直接实现 transformer block 逻辑。

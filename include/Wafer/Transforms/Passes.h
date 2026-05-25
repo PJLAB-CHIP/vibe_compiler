@@ -18,6 +18,7 @@ std::unique_ptr<mlir::Pass> createLowerStablehloShapePass();
 std::unique_ptr<mlir::Pass> createNormalizeConstantsPass();
 std::unique_ptr<mlir::Pass> createFormGroupsPass();
 std::unique_ptr<mlir::Pass> createCheckRootTileCandidatesPass();
+std::unique_ptr<mlir::Pass> createMaterializeSingleTilePass();
 void registerWaferPasses();
 
 } // namespace wafer
