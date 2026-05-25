@@ -81,6 +81,10 @@ def download_with_resume(url: str, destination: pathlib.Path) -> None:
             destination.unlink()
 
     existing_size = part.stat().st_size if part.exists() else 0
+    if expected_size is not None and existing_size == expected_size:
+        part.replace(destination)
+        return
+
     headers = {}
     if existing_size > 0:
         headers["Range"] = f"bytes={existing_size}-"
