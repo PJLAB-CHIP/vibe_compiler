@@ -272,6 +272,37 @@ def Wafer_AbiReduceOp : Wafer_Op<"abi.reduce", [
       "$wait_policy $kind $input attr-dict `:` functional-type(operands, results)";
 }
 
+class Wafer_AbiDteP2POp<string mnemonic> : Wafer_Op<mnemonic, [
+    WaferResourceEffectInterface
+  ]> {
+  let arguments = (ins
+    AnyType:$buffer,
+    I64Attr:$peer,
+    I64Attr:$bytes
+  );
+  let results = (outs AnyType:$token);
+  let hasVerifier = 1;
+  let assemblyFormat =
+      "$buffer attr-dict `:` type($buffer) `->` type($token)";
+}
+
+def Wafer_AbiDteSendOp : Wafer_AbiDteP2POp<"abi.dte_send"> {
+  let summary = "C ABI skeleton Direct DTE unicast send issue";
+}
+
+def Wafer_AbiDteRecvOp : Wafer_AbiDteP2POp<"abi.dte_recv"> {
+  let summary = "C ABI skeleton Direct DTE unicast receive issue";
+}
+
+def Wafer_AbiDteWaitOp : Wafer_Op<"abi.dte_wait", [
+    WaferResourceEffectInterface
+  ]> {
+  let summary = "C ABI skeleton Direct DTE completion wait";
+  let arguments = (ins Variadic<AnyType>:$tokens);
+  let hasVerifier = 1;
+  let assemblyFormat = "$tokens attr-dict `:` type($tokens)";
+}
+
 def Wafer_ComputeGemmOp : Wafer_Op<"compute.gemm", [
     WaferLayoutOpInterface,
     WaferResourceEffectInterface

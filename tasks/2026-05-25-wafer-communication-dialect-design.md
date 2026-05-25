@@ -196,6 +196,13 @@ V0 禁止：
 raw non-unicast DTE 可以作为 V1/HardwareVerify 主题：需要独立 ABI、resource model、board test 和
 错误语义后才能进入 compiler lowering。
 
+当前实现中，`wafer.comm.send` / `wafer.comm.recv` 的 p2p verifier 已在存在
+`wafer.placement.map` 时检查 peer 指向 active physical tile，`wafer.comm.wait` 要求至少一个
+async token。`--wafer-lower-to-c-abi-skeleton` 会把 fixed-size unicast p2p op lower 到
+`wafer.abi.dte_send`、`wafer.abi.dte_recv` 和 `wafer.abi.dte_wait` skeleton；这些 ABI op 仍只携带
+peer、byte count 和 token，不提前 materialize DTE id、FSM id、packet id、stream id 或 raw
+non-unicast register 字段。
+
 ## 6. Collective Lowering
 
 V0 collective 不依赖 raw DTE non-unicast，而是由 unicast p2p step 组合。

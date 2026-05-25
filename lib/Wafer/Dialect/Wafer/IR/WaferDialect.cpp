@@ -228,6 +228,17 @@ verifyCommP2P(mlir::Operation *op, mlir::Value buffer, mlir::IntegerAttr peer,
   return mlir::success();
 }
 
+static mlir::LogicalResult verifyCommWaitTokens(mlir::Operation *op,
+                                                mlir::OperandRange tokens) {
+  if (tokens.empty())
+    return op->emitOpError("comm wait must have at least one token");
+  for (mlir::Value token : tokens) {
+    if (!mlir::isa<mlir::async::TokenType>(token.getType()))
+      return op->emitOpError("comm wait operands must be async tokens");
+  }
+  return mlir::success();
+}
+
 mlir::LogicalResult DdrExternalBindingOp::verify() {
   auto tensorType =
       mlir::dyn_cast<mlir::RankedTensorType>(getValue().getType());
@@ -748,6 +759,20 @@ mlir::LogicalResult AbiReduceOp::verify() {
                                   getResult().getType());
 }
 
+mlir::LogicalResult AbiDteRecvOp::verify() {
+  return verifyCommP2P(getOperation(), getBuffer(), getPeerAttr(),
+                       getBytesAttr(), getToken().getType());
+}
+
+mlir::LogicalResult AbiDteSendOp::verify() {
+  return verifyCommP2P(getOperation(), getBuffer(), getPeerAttr(),
+                       getBytesAttr(), getToken().getType());
+}
+
+mlir::LogicalResult AbiDteWaitOp::verify() {
+  return verifyCommWaitTokens(getOperation(), getTokens());
+}
+
 mlir::LogicalResult GroupOp::verify() {
   if (getNumResults() != getOuts().size())
     return emitOpError("expected result count to match outs count, got ")
@@ -838,13 +863,7 @@ mlir::LogicalResult CommSendOp::verify() {
 }
 
 mlir::LogicalResult CommWaitOp::verify() {
-  if (getTokens().empty())
-    return emitOpError("comm wait must have at least one token");
-  for (mlir::Value token : getTokens()) {
-    if (!mlir::isa<mlir::async::TokenType>(token.getType()))
-      return emitOpError("comm wait operands must be async tokens");
-  }
-  return mlir::success();
+  return verifyCommWaitTokens(getOperation(), getTokens());
 }
 
 mlir::LogicalResult ComputeGemmOp::verify() {

@@ -163,6 +163,33 @@ static mlir::LogicalResult lowerComputeReduce(wafer::ComputeReduceOp reduce) {
   return mlir::success();
 }
 
+static mlir::LogicalResult lowerCommSend(wafer::CommSendOp send) {
+  mlir::OpBuilder builder(send);
+  auto abi = builder.create<wafer::AbiDteSendOp>(
+      send.getLoc(), send.getToken().getType(), send.getBuffer(),
+      send.getPeerAttr(), send.getBytesAttr());
+  send.getToken().replaceAllUsesWith(abi.getToken());
+  send.erase();
+  return mlir::success();
+}
+
+static mlir::LogicalResult lowerCommRecv(wafer::CommRecvOp recv) {
+  mlir::OpBuilder builder(recv);
+  auto abi = builder.create<wafer::AbiDteRecvOp>(
+      recv.getLoc(), recv.getToken().getType(), recv.getBuffer(),
+      recv.getPeerAttr(), recv.getBytesAttr());
+  recv.getToken().replaceAllUsesWith(abi.getToken());
+  recv.erase();
+  return mlir::success();
+}
+
+static mlir::LogicalResult lowerCommWait(wafer::CommWaitOp wait) {
+  mlir::OpBuilder builder(wait);
+  builder.create<wafer::AbiDteWaitOp>(wait.getLoc(), wait.getTokens());
+  wait.erase();
+  return mlir::success();
+}
+
 struct LowerToCAbiSkeletonPass
     : public mlir::PassWrapper<LowerToCAbiSkeletonPass,
                                mlir::OperationPass<mlir::ModuleOp>> {
@@ -185,7 +212,9 @@ struct LowerToCAbiSkeletonPass
     llvm::SmallVector<mlir::Operation *> ops;
     module.walk([&](mlir::Operation *op) {
       if (mlir::isa<wafer::LoadTileOp, wafer::StoreTileOp, wafer::ComputeGemmOp,
-                    wafer::ComputeElementwiseOp, wafer::ComputeReduceOp>(op))
+                    wafer::ComputeElementwiseOp, wafer::ComputeReduceOp,
+                    wafer::CommSendOp, wafer::CommRecvOp, wafer::CommWaitOp>(
+              op))
         ops.push_back(op);
     });
 
@@ -202,6 +231,12 @@ struct LowerToCAbiSkeletonPass
         result = lowerComputeElementwise(elementwise);
       else if (auto reduce = mlir::dyn_cast<wafer::ComputeReduceOp>(op))
         result = lowerComputeReduce(reduce);
+      else if (auto send = mlir::dyn_cast<wafer::CommSendOp>(op))
+        result = lowerCommSend(send);
+      else if (auto recv = mlir::dyn_cast<wafer::CommRecvOp>(op))
+        result = lowerCommRecv(recv);
+      else if (auto wait = mlir::dyn_cast<wafer::CommWaitOp>(op))
+        result = lowerCommWait(wait);
 
       if (mlir::failed(result)) {
         signalPassFailure();
