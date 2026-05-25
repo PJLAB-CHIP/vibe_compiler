@@ -183,6 +183,8 @@ static mlir::LogicalResult lowerCommSend(wafer::CommSendOp send,
       builder.getI64IntegerAttr(resourceIds.fsmId),
       builder.getI64IntegerAttr(resourceIds.packetId),
       builder.getI64IntegerAttr(resourceIds.streamId));
+  if (mlir::Attribute slot = send->getAttr(wafer::kWaferCommSlotAttrName))
+    abi->setAttr(wafer::kWaferCommSlotAttrName, slot);
   send.getToken().replaceAllUsesWith(abi.getToken());
   send.erase();
   return mlir::success();
@@ -197,6 +199,8 @@ static mlir::LogicalResult lowerCommRecv(wafer::CommRecvOp recv,
       builder.getI64IntegerAttr(resourceIds.fsmId),
       builder.getI64IntegerAttr(resourceIds.packetId),
       builder.getI64IntegerAttr(resourceIds.streamId));
+  if (mlir::Attribute slot = recv->getAttr(wafer::kWaferCommSlotAttrName))
+    abi->setAttr(wafer::kWaferCommSlotAttrName, slot);
   recv.getToken().replaceAllUsesWith(abi.getToken());
   recv.erase();
   return mlir::success();

@@ -24,4 +24,10 @@
 #define GET_OP_CLASSES
 #include "Wafer/Dialect/Wafer/IR/WaferOps.h.inc"
 
+namespace wafer {
+
+inline constexpr char kWaferCommSlotAttrName[] = "slot";
+
+} // namespace wafer
+
 #endif // WAFER_DIALECT_WAFER_IR_WAFERDIALECT_H

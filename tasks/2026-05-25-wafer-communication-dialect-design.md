@@ -205,6 +205,13 @@ Verifier 要求 resource id 非负，并拒绝同一 block 内尚未被 `wafer.a
 wait 后同一 tuple 可以复用。这一层仍不 materialize raw non-unicast register 字段，也不把 DTE id、
 runtime physical address 或 wrapper packet bitfield 暴露成上层 communication IR 语义。
 
+P6.4 起，collective-level `wafer.comm.all_gather` 已进入 IR。该 op 接收 local chunk、gather
+buffer、`local_rank`、`group_size` 和单 chunk `bytes`，verifier 检查 SPM tile buffer、rank 范围、
+单 chunk byte size 和 gather buffer 总 byte size。`--wafer-lower-ring-all-gather` 按 placement
+rank order 展开成 `group_size - 1` 个 unicast ring step；每个 step 都显式生成 send、recv 和 wait，
+并在 p2p op 上用 `slot` attr 标出发送或接收的 gather slot。后续 `--wafer-lower-to-c-abi-skeleton`
+保留该 `slot` attr 到 Direct DTE skeleton issue op，用于后续地址 offset / packet 参数 lowering。
+
 ## 6. Collective Lowering
 
 V0 collective 不依赖 raw DTE non-unicast，而是由 unicast p2p step 组合。
@@ -231,6 +238,10 @@ for step in 0..group_size-2:
 
 IR 中应能看到每个 step 的 send/recv/wait 和 destination slot。ring order 来自 placement/rank order；
 cost model 可以选择不同 order，但接受后要 rewrite 成 explicit body。
+
+当前实现使用 `wafer.comm.all_gather` 作为 collective-level input，并由
+`--wafer-lower-ring-all-gather` 直接 materialize p2p schedule。V0 只覆盖 fixed-size unicast ring；
+raw DTE non-unicast gather 不在 correctness path。
 
 ### 6.3 Reduce-Scatter and All-Reduce
 

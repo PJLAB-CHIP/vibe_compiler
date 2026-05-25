@@ -396,6 +396,31 @@ def Wafer_CommWaitOp : Wafer_Op<"comm.wait", [
   let assemblyFormat = "$tokens attr-dict `:` type($tokens)";
 }
 
+def Wafer_CommAllGatherOp : Wafer_Op<"comm.all_gather", [
+    WaferResourceEffectInterface
+  ]> {
+  let summary = "target-abstract fixed-size ring all-gather request";
+  let description = [{
+    `wafer.comm.all_gather` is the collective-level communication boundary
+    between logical StableHLO all-gather semantics and explicit p2p schedules.
+    It carries the local shard buffer, the complete gather buffer, rank/group
+    facts, and the fixed byte size of one shard. It does not choose raw DTE
+    register modes or hide a communication plan side table; lowering rewrites
+    it into explicit `wafer.comm.send` / `recv` / `wait` steps.
+  }];
+
+  let arguments = (ins
+    AnyType:$local_chunk,
+    AnyType:$gather_buffer,
+    I64Attr:$local_rank,
+    I64Attr:$group_size,
+    I64Attr:$bytes
+  );
+  let hasVerifier = 1;
+  let assemblyFormat =
+      "$local_chunk `into` $gather_buffer attr-dict `:` type($local_chunk) `->` type($gather_buffer)";
+}
+
 def Wafer_SyncLocalDrainOp : Wafer_Op<"sync.local_drain", [
     WaferResourceEffectInterface
   ]> {

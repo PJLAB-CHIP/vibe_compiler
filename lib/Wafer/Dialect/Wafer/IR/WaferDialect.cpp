@@ -196,6 +196,13 @@ verifyCommP2P(mlir::Operation *op, mlir::Value buffer, mlir::IntegerAttr peer,
     return op->emitOpError("comm peer must be non-negative");
   if (bytes.getInt() <= 0)
     return op->emitOpError("comm byte count must be positive");
+  if (op->hasAttr(kWaferCommSlotAttrName)) {
+    auto slot = op->getAttrOfType<mlir::IntegerAttr>(kWaferCommSlotAttrName);
+    if (!slot)
+      return op->emitOpError("comm slot must be an integer attr");
+    if (slot.getInt() < 0)
+      return op->emitOpError("comm slot must be non-negative");
+  }
 
   mlir::ModuleOp module = op->getParentOfType<mlir::ModuleOp>();
   if (!module)
@@ -971,6 +978,54 @@ mlir::LogicalResult CommSendOp::verify() {
 
 mlir::LogicalResult CommWaitOp::verify() {
   return verifyCommWaitTokens(getOperation(), getTokens());
+}
+
+mlir::LogicalResult CommAllGatherOp::verify() {
+  auto localType = mlir::dyn_cast<TileBufferType>(getLocalChunk().getType());
+  auto gatherType = mlir::dyn_cast<TileBufferType>(getGatherBuffer().getType());
+  if (!localType || !gatherType)
+    return emitOpError("all_gather expects tile_buffer operands");
+  if (!hasTileBufferMemorySpace(localType, MemorySpace::SPM) ||
+      !hasTileBufferMemorySpace(gatherType, MemorySpace::SPM))
+    return emitOpError("all_gather buffers must use SPM memory space");
+
+  mlir::RankedTensorType localTensor = getTileBufferTensorType(localType);
+  mlir::RankedTensorType gatherTensor = getTileBufferTensorType(gatherType);
+  if (localTensor.getElementType() != gatherTensor.getElementType())
+    return emitOpError("all_gather local and gather element types must match");
+
+  int64_t groupSize = getGroupSizeAttr().getInt();
+  if (groupSize <= 1)
+    return emitOpError("all_gather group_size must be greater than one");
+  int64_t localRank = getLocalRankAttr().getInt();
+  if (localRank < 0 || localRank >= groupSize)
+    return emitOpError(
+        "all_gather local_rank must be within the collective group");
+  int64_t bytes = getBytesAttr().getInt();
+  if (bytes <= 0)
+    return emitOpError("all_gather byte count must be positive");
+
+  std::optional<int64_t> localBytes = getCompactTensorByteSize(localTensor);
+  if (!localBytes)
+    return emitOpError(
+        "all_gather local compact byte size is not representable");
+  if (*localBytes != bytes)
+    return emitOpError(
+        "all_gather byte count must match local compact byte size");
+
+  int64_t expectedGatherBytes = 0;
+  if (!checkedMul(bytes, groupSize, expectedGatherBytes))
+    return emitOpError("all_gather total byte size is not representable");
+  std::optional<int64_t> gatherBytes = getCompactTensorByteSize(gatherTensor);
+  if (!gatherBytes)
+    return emitOpError(
+        "all_gather gather buffer compact byte size is not representable");
+  if (*gatherBytes != expectedGatherBytes)
+    return emitOpError(
+        "all_gather gather buffer compact byte size must equal bytes times "
+        "group_size");
+
+  return mlir::success();
 }
 
 mlir::LogicalResult ComputeGemmOp::verify() {
