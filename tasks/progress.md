@@ -99,6 +99,10 @@ P5.2 的 softmax schedule acceptance gate 已落地：`--wafer-check-softmax-sch
 structured tensor IR 做 pass-local analysis，要求 hidden-dimension reduce max、row max broadcast
 subtract、`exp`、hidden-dimension reduce sum 和 final broadcast divide 按 SSA use-def 串联；它不引入
 `wafer.softmax`、schedule attr 或 workspace/group split 决策。
+P5.3 的 attention score QK^T slice 已落地：`--wafer-lower-stablehlo-dot` 现在支持 rank-4
+`dot_general` 的 batch/head attention score 形态，从 StableHLO dimension numbers 验证 batch
+dimensions `[0,1]` 和 contracting dimensions `[3]x[3]`，lowering 到带显式 indexing maps 和
+parallel/reduction iterator types 的 `linalg.generic` contraction；不靠 query/key 名字恢复语义。
 
 ## Active Task
 
@@ -228,7 +232,7 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 | --- | --- | --- | --- |
 | P5.1 | done | Norm slice：RMSNorm 或 LayerNorm | reduce + elementwise group schedule accepted |
 | P5.2 | done | Softmax slice | row max、exp、row sum、normalize 的 staged schedule accepted |
-| P5.3 | pending | Attention score slice：QK^T | batch/head matmul relation 从 StableHLO dimension numbers / indexing map 推出 |
+| P5.3 | done | Attention score slice：QK^T | batch/head matmul relation 从 StableHLO dimension numbers / indexing map 推出 |
 | P5.4 | pending | Attention value slice：softmax + AV | softmax output 到 value accumulation 的状态和 buffer lifetime 可验证 |
 | P5.5 | pending | Output projection + residual slice | residual/add/bias 等 elementwise 与 GEMM 边界清晰 |
 | P5.6 | pending | MLP slice | GEMM + activation + elementwise multiply + GEMM 可分组或可诊断拆分 |
@@ -278,5 +282,6 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 
 ## 下一步
 
-继续 P5.3，进入 attention score slice 的 batch/head dot 泛化和 QK^T indexing relation 检查。
+继续 P5.4，进入 attention value slice，检查 softmax output 到 value accumulation 的 structured
+dataflow 和 buffer lifetime 边界。
 不要越过当前 local compile gate 直接实现未验证的整块逻辑。

@@ -97,6 +97,27 @@ StableHLO op semantics、types、indexing maps、SSA use-def 和 verifier 可证
 检查。QK^T 不应该靠 `rhs` 名字识别 transpose；transpose relation 来自 dot dimension numbers
 或显式 `transpose` / indexing map。
 
+当前 P5.3 实现扩展 `--wafer-lower-stablehlo-dot`，支持 attention score 的 QK^T 形态：
+
+```text
+query : tensor<BxHxQxD>
+key   : tensor<BxHxKxD>
+score : tensor<BxHxQxK>
+```
+
+该 lowering 只接受 StableHLO `dot_general` 中可验证的 dimension numbers：`lhs/rhs` batch
+dimensions 都是 `[0, 1]`，contracting dimension 都是最后一维 `[3]`，并检查静态 shape 和
+输出 shape 一致。输出使用 `linalg.generic` contraction：
+
+- `query` map: `(b, h, q, k, d) -> (b, h, q, d)`。
+- `key` map: `(b, h, q, k, d) -> (b, h, k, d)`。
+- `score` map: `(b, h, q, k, d) -> (b, h, q, k)`。
+- iterator types: `b/h/q/k` 是 parallel，`d` 是 reduction。
+
+这里的 transpose relation 完全来自 `dot_general` dimension numbers 和 indexing map，不依赖
+参数名、函数名或模型层名字。更宽泛的 batch matmul 形态应继续按同一原则扩展，不把某个
+head 数、sequence length 或隐藏维写成协议。
+
 ### 4.2 Elementwise and Broadcast
 
 elementwise lowering 使用 `linalg.generic` + `arith` / `math`。Broadcast 必须由 indexing map
