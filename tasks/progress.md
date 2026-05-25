@@ -91,6 +91,10 @@ BO handle、DDR address、SPM offset 或 DTE packet。P4.5 的 M1 local compile 
 two-tile no-comm integration test，从 textual Linalg GEMM 和 `wafer.placement.map` 跑到两个
 independent tile-region 的 C ABI skeleton，validate `--emit-m1-no-comm-smoke` manifest，生成 C
 stub 并由本地 C compiler 做 syntax compile。
+P5.1 的 norm schedule acceptance gate 已落地：`--wafer-check-norm-schedule` 对 normalized
+structured tensor IR 做 pass-local analysis，要求 hidden-dimension `linalg.reduce`、`rsqrt`
+elementwise stage 和 rank-2/rank-1 broadcast multiply stage 同时存在；它不引入 `wafer.norm` 或
+schedule attr，也不把 planner cost 写进 IR。
 
 ## Active Task
 
@@ -218,7 +222,7 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 
 | ID | 状态 | 任务 | 验收 |
 | --- | --- | --- | --- |
-| P5.1 | pending | Norm slice：RMSNorm 或 LayerNorm | reduce + elementwise group schedule accepted |
+| P5.1 | done | Norm slice：RMSNorm 或 LayerNorm | reduce + elementwise group schedule accepted |
 | P5.2 | pending | Softmax slice | row max、exp、row sum、normalize 的 staged schedule accepted |
 | P5.3 | pending | Attention score slice：QK^T | batch/head matmul relation 从 StableHLO dimension numbers / indexing map 推出 |
 | P5.4 | pending | Attention value slice：softmax + AV | softmax output 到 value accumulation 的状态和 buffer lifetime 可验证 |
@@ -270,5 +274,5 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 
 ## 下一步
 
-继续 P5.1，进入 transformer block local vertical slice 的 norm staged schedule；batch/head dot
-泛化在 attention slice 前补齐。不要越过当前 local compile gate 直接实现未验证的整块逻辑。
+继续 P5.2，进入 softmax staged schedule acceptance；batch/head dot 泛化在 attention slice 前补齐。
+不要越过当前 local compile gate 直接实现未验证的整块逻辑。

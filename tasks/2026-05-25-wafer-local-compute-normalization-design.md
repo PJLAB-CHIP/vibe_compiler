@@ -171,6 +171,16 @@ y = (x - mean) * rsqrt(var + eps) * weight + bias
 
 epsilon、scale、bias 都是普通 constant / input value。它们不通过名字或 layer type 特判。
 
+当前 P5.1 实现用 `--wafer-check-norm-schedule` 作为 norm vertical slice 的 schedule acceptance
+gate。该 pass 只从当前 structured tensor IR 重算以下事实：
+
+- 是否存在沿最后一维的 `linalg.reduce`。
+- 是否存在 `rsqrt` elementwise stage。
+- 是否存在 rank-2 / rank-1 broadcast multiply stage。
+
+它不写入 group attr、side table、planner trace 或 cost 分数。失败时诊断指向缺失的 staged
+结构；真正 tile shape、SPM residency 和 group split 仍归后续 group/resource planner。
+
 ## 6. Pass 合同
 
 实现上可以拆成这些职责：

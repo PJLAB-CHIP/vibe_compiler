@@ -1,4 +1,5 @@
 add_mlir_library(WaferTransforms
+  CheckNormSchedule.cpp
   CheckRootTileCandidates.cpp
   CheckSPMAllocation.cpp
   CompactLayoutAssignment.cpp
