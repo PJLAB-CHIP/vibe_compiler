@@ -107,6 +107,10 @@ P5.4 的 attention value AV slice 已落地：`--wafer-lower-stablehlo-dot` 支�
 probability 与 value 的 `dot_general`，从 dimension numbers 验证 `[B,H,Q,K] x [B,H,K,D] ->
 [B,H,Q,D]` 的 relation，并有 integration test 覆盖 softmax staged output 通过 SSA use-def 接入
 AV accumulation；physical buffer lifetime 仍留给后续 Wafer group/resource lowering 表达。
+P5.5 的 output projection + residual slice 已落地：新增
+`--wafer-check-projection-residual-schedule`，从 normalized structured tensor IR 验证 rank-2
+projection matmul、rank-2/rank-1 bias add 和 rank-2/rank-2 residual add 的 SSA 链；frontend
+integration test 覆盖 StableHLO projection dot、bias broadcast 和 residual add 的 lowering。
 
 ## Active Task
 
@@ -238,7 +242,7 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 | P5.2 | done | Softmax slice | row max、exp、row sum、normalize 的 staged schedule accepted |
 | P5.3 | done | Attention score slice：QK^T | batch/head matmul relation 从 StableHLO dimension numbers / indexing map 推出 |
 | P5.4 | done | Attention value slice：softmax + AV | softmax output 到 value accumulation 的状态和 buffer lifetime 可验证 |
-| P5.5 | pending | Output projection + residual slice | residual/add/bias 等 elementwise 与 GEMM 边界清晰 |
+| P5.5 | done | Output projection + residual slice | residual/add/bias 等 elementwise 与 GEMM 边界清晰 |
 | P5.6 | pending | MLP slice | GEMM + activation + elementwise multiply + GEMM 可分组或可诊断拆分 |
 | P5.7 | pending | Full local transformer block | norm、attention、MLP 串联；layout/SPM/DDR feasibility 全部通过 |
 | P5.8 | pending | M6 local compile gate | 单 shard / 单卡完整 block 的 normalization、group split、layout/SPM/DDR、C ABI、generated artifact compile、package 检查通过 |
@@ -286,6 +290,5 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 
 ## 下一步
 
-继续 P5.5，进入 output projection + residual slice，检查 GEMM 后 elementwise residual/add/bias
-边界。
+继续 P5.6，进入 MLP slice，检查 GEMM + activation + elementwise multiply + GEMM 的可接受结构。
 不要越过当前 local compile gate 直接实现未验证的整块逻辑。

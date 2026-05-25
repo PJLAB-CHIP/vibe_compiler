@@ -155,6 +155,17 @@ Transformer block 第一阶段需要的 elementwise kind 至少包括：
 这些 op 在 local tensor IR 中仍是普通 `arith` / `math` / `linalg` 语义；是否能 lower 到 CT
 wrapper、是否需要拆成多个 target op，由 `wafer.compute` 负责。
 
+当前 P5.5 实现用 `--wafer-check-projection-residual-schedule` 作为 output projection + residual
+vertical slice 的 acceptance gate。该 pass 只从当前 structured tensor IR 重算以下 SSA 链：
+
+- rank-2 `linalg.matmul` 作为 projection。
+- 消费 projection 结果的 rank-2 / rank-1 broadcast add 作为 bias add。
+- 消费 bias add 结果的 rank-2 / rank-2 add 作为 residual add。
+
+它不引入 `wafer.projection` 或 fused residual op，也不把 bias/residual tensor 名写成语义来源。
+frontend integration test 覆盖 StableHLO 2D projection dot、bias broadcast 和 residual add 到该
+acceptance gate 的完整 lowering。
+
 ### 4.3 Reduction
 
 reduction 必须保留：
