@@ -147,7 +147,9 @@ tile；`wafer.comm.wait` 必须显式等待至少一个 async token，避免空 
 的 fixed-size unicast Direct DTE helper lowering 已落地：`--wafer-lower-to-c-abi-skeleton` 将
 `wafer.comm.send`、`wafer.comm.recv` 和 `wafer.comm.wait` 改写为 `wafer.abi.dte_send`、
 `wafer.abi.dte_recv` 和 `wafer.abi.dte_wait` skeleton，保持 token use-def，不引入 raw non-unicast
-DTE register 字段。
+DTE register 字段。P6.3 的 Direct DTE resource gate 已落地：`wafer.abi.dte_send` /
+`wafer.abi.dte_recv` 显式携带非负的 `fsm_id`、`packet_id` 和 `stream_id` skeleton resource tuple，
+verifier 拒绝同一 block 内尚未被 `wafer.abi.dte_wait` 释放的 tuple 冲突，并允许 wait 后复用。
 
 ## Active Task
 
@@ -292,8 +294,8 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 | --- | --- | --- | --- |
 | P6.1 | done | 定义 `wafer.comm` endpoint / token / wait verifier | DTE wait 与 local compute drain 分离 |
 | P6.2 | done | Lower fixed-size unicast Direct DTE helper | raw non-unicast DTE 不作为 correctness path |
-| P6.3 | ready | 管理 FSM / packet / stream resource | resource 不冲突，有 negative tests |
-| P6.4 | pending | 实现 ring all-gather | 每步 send/recv/wait token 和 buffer lifetime 合法 |
+| P6.3 | done | 管理 FSM / packet / stream resource | resource 不冲突，有 negative tests |
+| P6.4 | ready | 实现 ring all-gather | 每步 send/recv/wait token 和 buffer lifetime 合法 |
 | P6.5 | pending | 实现 reduce-scatter / all-reduce | collective 可追溯到 unicast steps |
 | P6.6 | pending | Lower Shardy/SPMD logical collective 到 `wafer.comm` | placement 和 comm lowering 保留 collective semantics |
 | P6.7 | pending | M2/M3/M4 gate 汇总测试 | p2p、single-card collective、partitioned collective lowering 分别可验证 |
@@ -327,5 +329,5 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 
 ## 下一步
 
-P5.8 静态单 shard local compile gate 已收口，P6.1/P6.2 p2p comm gates 已落地。下一步进入 P6.3：
-管理 FSM / packet / stream resource，不要越过 p2p resource gate 直接实现未验证的 collective。
+P5.8 静态单 shard local compile gate 已收口，P6.1-P6.3 p2p comm gates 已落地。下一步进入 P6.4：
+实现 ring all-gather，每一步都必须保留 send/recv/wait token 和 buffer lifetime 的可验证边界。

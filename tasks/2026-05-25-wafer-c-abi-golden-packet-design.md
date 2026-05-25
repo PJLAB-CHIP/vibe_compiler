@@ -108,11 +108,12 @@ same-shape / limited-broadcast 子集的 `wafer.abi.elementwise`，以及 scalar
 `wafer.abi.reduce` 作为 wrapper-first C ABI issue 点；P6.2 起，fixed-size unicast
 `wafer.comm.send` / `recv` / `wait` 会 lower 到 `wafer.abi.dte_send`、`wafer.abi.dte_recv` 和
 `wafer.abi.dte_wait` skeleton。它们保留 SSA/type verifier，用 explicit byte count、M/K/N、
-elementwise/reduce kind、reduce dimensions、init value、peer tile id 和 async token wait 表达参数
-单位、address direction 和 wait 边界；它们不是 raw packet dialect，也不保存 runtime physical
-address、BO handle、DTE id、FSM id 或 raw non-unicast register field。后续 C/LLVM lowering 可以把
-这些 issue op 转成实际 `wafer_*` C shim 调用，golden packet 测试再验证 shim 到 wrapper/packet
-field 的映射。
+elementwise/reduce kind、reduce dimensions、init value、peer tile id、Direct DTE
+`fsm_id` / `packet_id` / `stream_id` resource tuple 和 async token wait 表达参数单位、address
+direction、有限资源占用和 wait 边界；它们不是 raw packet dialect，也不保存 runtime physical
+address、BO handle、DTE id 或 raw non-unicast register field。后续 C/LLVM lowering 可以把这些
+issue op 转成实际 `wafer_*` C shim 调用，golden packet 测试再验证 shim 到 wrapper/packet field
+的映射。
 
 ## 5. Instruction Facts to Preserve
 

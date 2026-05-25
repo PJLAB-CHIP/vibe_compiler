@@ -214,10 +214,9 @@ verifyCommP2P(mlir::Operation *op, mlir::Value buffer, mlir::IntegerAttr peer,
       return;
     for (int64_t rank = 0; rank < logicalRankCount; ++rank) {
       int64_t base = rank * 4;
-      std::optional<int64_t> tileId =
-          getPhysicalTileId(coords[base], coords[base + 1], coords[base + 2],
-                            coords[base + 3], cardXCount, tileYCount,
-                            tileXCount);
+      std::optional<int64_t> tileId = getPhysicalTileId(
+          coords[base], coords[base + 1], coords[base + 2], coords[base + 3],
+          cardXCount, tileYCount, tileXCount);
       if (tileId)
         activeTileIds.insert(*tileId);
     }
@@ -237,6 +236,110 @@ static mlir::LogicalResult verifyCommWaitTokens(mlir::Operation *op,
       return op->emitOpError("comm wait operands must be async tokens");
   }
   return mlir::success();
+}
+
+struct DirectDteResourceTuple {
+  int64_t fsmId = -1;
+  int64_t packetId = -1;
+  int64_t streamId = -1;
+
+  bool operator==(const DirectDteResourceTuple &rhs) const {
+    return fsmId == rhs.fsmId && packetId == rhs.packetId &&
+           streamId == rhs.streamId;
+  }
+};
+
+struct ActiveDirectDteResource {
+  mlir::Value token;
+  DirectDteResourceTuple resource;
+};
+
+static DirectDteResourceTuple
+getDirectDteResourceTuple(mlir::IntegerAttr fsmId, mlir::IntegerAttr packetId,
+                          mlir::IntegerAttr streamId) {
+  return {fsmId.getInt(), packetId.getInt(), streamId.getInt()};
+}
+
+static mlir::LogicalResult verifyNonNegativeDirectDteResourceAttr(
+    mlir::Operation *op, mlir::IntegerAttr attr, llvm::StringRef name) {
+  if (attr.getInt() < 0)
+    return op->emitOpError("Direct DTE ") << name << " must be non-negative";
+  return mlir::success();
+}
+
+static std::optional<ActiveDirectDteResource>
+getDirectDteResourceIssue(mlir::Operation *op) {
+  if (auto send = mlir::dyn_cast<AbiDteSendOp>(op))
+    return ActiveDirectDteResource{
+        send.getToken(),
+        getDirectDteResourceTuple(send.getFsmIdAttr(), send.getPacketIdAttr(),
+                                  send.getStreamIdAttr())};
+  if (auto recv = mlir::dyn_cast<AbiDteRecvOp>(op))
+    return ActiveDirectDteResource{
+        recv.getToken(),
+        getDirectDteResourceTuple(recv.getFsmIdAttr(), recv.getPacketIdAttr(),
+                                  recv.getStreamIdAttr())};
+  return std::nullopt;
+}
+
+static void releaseDirectDteResources(
+    mlir::ValueRange tokens,
+    llvm::SmallVectorImpl<ActiveDirectDteResource> &activeResources) {
+  for (mlir::Value token : tokens) {
+    for (auto it = activeResources.begin(); it != activeResources.end();) {
+      if (it->token == token)
+        it = activeResources.erase(it);
+      else
+        ++it;
+    }
+  }
+}
+
+static mlir::LogicalResult
+verifyDirectDteResourceAvailability(mlir::Operation *op,
+                                    DirectDteResourceTuple resource) {
+  mlir::Block *block = op->getBlock();
+  if (!block)
+    return mlir::success();
+
+  llvm::SmallVector<ActiveDirectDteResource, 8> activeResources;
+  for (mlir::Operation &previous : *block) {
+    if (&previous == op)
+      break;
+
+    if (auto wait = mlir::dyn_cast<AbiDteWaitOp>(&previous))
+      releaseDirectDteResources(wait.getTokens(), activeResources);
+
+    if (std::optional<ActiveDirectDteResource> issue =
+            getDirectDteResourceIssue(&previous))
+      activeResources.push_back(*issue);
+  }
+
+  for (const ActiveDirectDteResource &active : activeResources) {
+    if (active.resource == resource)
+      return op->emitOpError("Direct DTE resource tuple is already in use");
+  }
+  return mlir::success();
+}
+
+static mlir::LogicalResult
+verifyDirectDteP2P(mlir::Operation *op, mlir::Value buffer,
+                   mlir::IntegerAttr peer, mlir::IntegerAttr bytes,
+                   mlir::Type tokenType, mlir::IntegerAttr fsmId,
+                   mlir::IntegerAttr packetId, mlir::IntegerAttr streamId) {
+  if (mlir::failed(verifyCommP2P(op, buffer, peer, bytes, tokenType)))
+    return mlir::failure();
+  if (mlir::failed(verifyNonNegativeDirectDteResourceAttr(op, fsmId, "fsm_id")))
+    return mlir::failure();
+  if (mlir::failed(
+          verifyNonNegativeDirectDteResourceAttr(op, packetId, "packet_id")))
+    return mlir::failure();
+  if (mlir::failed(
+          verifyNonNegativeDirectDteResourceAttr(op, streamId, "stream_id")))
+    return mlir::failure();
+
+  return verifyDirectDteResourceAvailability(
+      op, getDirectDteResourceTuple(fsmId, packetId, streamId));
 }
 
 mlir::LogicalResult DdrExternalBindingOp::verify() {
@@ -760,13 +863,17 @@ mlir::LogicalResult AbiReduceOp::verify() {
 }
 
 mlir::LogicalResult AbiDteRecvOp::verify() {
-  return verifyCommP2P(getOperation(), getBuffer(), getPeerAttr(),
-                       getBytesAttr(), getToken().getType());
+  return verifyDirectDteP2P(getOperation(), getBuffer(), getPeerAttr(),
+                            getBytesAttr(), getToken().getType(),
+                            getFsmIdAttr(), getPacketIdAttr(),
+                            getStreamIdAttr());
 }
 
 mlir::LogicalResult AbiDteSendOp::verify() {
-  return verifyCommP2P(getOperation(), getBuffer(), getPeerAttr(),
-                       getBytesAttr(), getToken().getType());
+  return verifyDirectDteP2P(getOperation(), getBuffer(), getPeerAttr(),
+                            getBytesAttr(), getToken().getType(),
+                            getFsmIdAttr(), getPacketIdAttr(),
+                            getStreamIdAttr());
 }
 
 mlir::LogicalResult AbiDteWaitOp::verify() {

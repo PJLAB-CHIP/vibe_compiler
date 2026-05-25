@@ -28,10 +28,10 @@ module {
 
 // CHECK-LABEL: module
 // CHECK-NOT: wafer.comm.send
-// CHECK: wafer.abi.dte_send %{{.*}} {bytes = 16 : i64, peer = 1 : i64}
+// CHECK: wafer.abi.dte_send %{{.*}} {bytes = 16 : i64, fsm_id = 0 : i64, packet_id = 0 : i64, peer = 1 : i64, stream_id = 0 : i64}
 // CHECK-SAME: -> !async.token
 // CHECK-NOT: wafer.comm.recv
-// CHECK: wafer.abi.dte_recv %{{.*}} {bytes = 16 : i64, peer = 0 : i64}
+// CHECK: wafer.abi.dte_recv %{{.*}} {bytes = 16 : i64, fsm_id = 1 : i64, packet_id = 1 : i64, peer = 0 : i64, stream_id = 1 : i64}
 // CHECK-SAME: -> !async.token
 // CHECK-NOT: wafer.comm.wait
 // CHECK: wafer.abi.dte_wait %{{.*}}, %{{.*}} : !async.token, !async.token

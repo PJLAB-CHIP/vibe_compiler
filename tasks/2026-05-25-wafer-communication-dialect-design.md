@@ -199,9 +199,11 @@ raw non-unicast DTE 可以作为 V1/HardwareVerify 主题：需要独立 ABI、r
 当前实现中，`wafer.comm.send` / `wafer.comm.recv` 的 p2p verifier 已在存在
 `wafer.placement.map` 时检查 peer 指向 active physical tile，`wafer.comm.wait` 要求至少一个
 async token。`--wafer-lower-to-c-abi-skeleton` 会把 fixed-size unicast p2p op lower 到
-`wafer.abi.dte_send`、`wafer.abi.dte_recv` 和 `wafer.abi.dte_wait` skeleton；这些 ABI op 仍只携带
-peer、byte count 和 token，不提前 materialize DTE id、FSM id、packet id、stream id 或 raw
-non-unicast register 字段。
+`wafer.abi.dte_send`、`wafer.abi.dte_recv` 和 `wafer.abi.dte_wait` skeleton；这些 ABI op 携带
+peer、byte count、async token，以及 `fsm_id` / `packet_id` / `stream_id` skeleton resource tuple。
+Verifier 要求 resource id 非负，并拒绝同一 block 内尚未被 `wafer.abi.dte_wait` 释放的 tuple 冲突；
+wait 后同一 tuple 可以复用。这一层仍不 materialize raw non-unicast register 字段，也不把 DTE id、
+runtime physical address 或 wrapper packet bitfield 暴露成上层 communication IR 语义。
 
 ## 6. Collective Lowering
 

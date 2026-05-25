@@ -163,21 +163,40 @@ static mlir::LogicalResult lowerComputeReduce(wafer::ComputeReduceOp reduce) {
   return mlir::success();
 }
 
-static mlir::LogicalResult lowerCommSend(wafer::CommSendOp send) {
+struct DirectDteResourceIds {
+  int64_t fsmId = 0;
+  int64_t packetId = 0;
+  int64_t streamId = 0;
+};
+
+static DirectDteResourceIds getNextDirectDteResourceIds(int64_t &nextId) {
+  int64_t id = nextId++;
+  return {id, id, id};
+}
+
+static mlir::LogicalResult lowerCommSend(wafer::CommSendOp send,
+                                         DirectDteResourceIds resourceIds) {
   mlir::OpBuilder builder(send);
   auto abi = builder.create<wafer::AbiDteSendOp>(
       send.getLoc(), send.getToken().getType(), send.getBuffer(),
-      send.getPeerAttr(), send.getBytesAttr());
+      send.getPeerAttr(), send.getBytesAttr(),
+      builder.getI64IntegerAttr(resourceIds.fsmId),
+      builder.getI64IntegerAttr(resourceIds.packetId),
+      builder.getI64IntegerAttr(resourceIds.streamId));
   send.getToken().replaceAllUsesWith(abi.getToken());
   send.erase();
   return mlir::success();
 }
 
-static mlir::LogicalResult lowerCommRecv(wafer::CommRecvOp recv) {
+static mlir::LogicalResult lowerCommRecv(wafer::CommRecvOp recv,
+                                         DirectDteResourceIds resourceIds) {
   mlir::OpBuilder builder(recv);
   auto abi = builder.create<wafer::AbiDteRecvOp>(
       recv.getLoc(), recv.getToken().getType(), recv.getBuffer(),
-      recv.getPeerAttr(), recv.getBytesAttr());
+      recv.getPeerAttr(), recv.getBytesAttr(),
+      builder.getI64IntegerAttr(resourceIds.fsmId),
+      builder.getI64IntegerAttr(resourceIds.packetId),
+      builder.getI64IntegerAttr(resourceIds.streamId));
   recv.getToken().replaceAllUsesWith(abi.getToken());
   recv.erase();
   return mlir::success();
@@ -218,6 +237,7 @@ struct LowerToCAbiSkeletonPass
         ops.push_back(op);
     });
 
+    int64_t nextDirectDteResourceId = 0;
     for (mlir::Operation *op : ops) {
       mlir::LogicalResult result = mlir::success();
       if (auto load = mlir::dyn_cast<wafer::LoadTileOp>(op))
@@ -232,9 +252,11 @@ struct LowerToCAbiSkeletonPass
       else if (auto reduce = mlir::dyn_cast<wafer::ComputeReduceOp>(op))
         result = lowerComputeReduce(reduce);
       else if (auto send = mlir::dyn_cast<wafer::CommSendOp>(op))
-        result = lowerCommSend(send);
+        result = lowerCommSend(
+            send, getNextDirectDteResourceIds(nextDirectDteResourceId));
       else if (auto recv = mlir::dyn_cast<wafer::CommRecvOp>(op))
-        result = lowerCommRecv(recv);
+        result = lowerCommRecv(
+            recv, getNextDirectDteResourceIds(nextDirectDteResourceId));
       else if (auto wait = mlir::dyn_cast<wafer::CommWaitOp>(op))
         result = lowerCommWait(wait);
 

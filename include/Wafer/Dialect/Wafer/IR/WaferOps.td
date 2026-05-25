@@ -278,7 +278,10 @@ class Wafer_AbiDteP2POp<string mnemonic> : Wafer_Op<mnemonic, [
   let arguments = (ins
     AnyType:$buffer,
     I64Attr:$peer,
-    I64Attr:$bytes
+    I64Attr:$bytes,
+    I64Attr:$fsm_id,
+    I64Attr:$packet_id,
+    I64Attr:$stream_id
   );
   let results = (outs AnyType:$token);
   let hasVerifier = 1;
