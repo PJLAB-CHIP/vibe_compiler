@@ -11,6 +11,7 @@ void registerWaferPasses() {
   static bool registered = [] {
     mlir::registerPass(createLowerStablehloDotPass);
     mlir::registerPass(createLowerStablehloElementwisePass);
+    mlir::registerPass(createLowerStablehloReducePass);
     mlir::registerPass(createLowerStablehloShapePass);
     mlir::registerPass(createNormalizeConstantsPass);
     return true;

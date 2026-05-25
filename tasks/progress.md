@@ -28,7 +28,9 @@ sidecar manifest schema 仍归 P3.10 package manifest，不在本批次造临时
 `reshape`、`transpose`、`slice` 降到 `linalg` / `tensor` structured IR，使用 type、shape 和 indexing
 关系，不新增 Wafer 私有 op 或名字约定。P2.5 的 StableHLO elementwise normalization 已落地：
 add/sub/mul/div/max/min/neg/sqrt/rsqrt/exp 降到 `linalg.elementwise`，`1 / x` 常量形态归一化为
-reciprocal kind，单 use `broadcast_in_dim` 输入通过 `indexing_maps` 表达 limited broadcast。
+reciprocal kind，单 use `broadcast_in_dim` 输入通过 `indexing_maps` 表达 limited broadcast。P2.6 的
+单输入 StableHLO reduce sum/max normalization 已落地：rank-0 init 通过 `tensor.extract` 和
+`linalg.fill` materialize 成结果 tensor init，combiner 降到 `linalg.reduce` region。
 
 ## Active Task
 
@@ -113,7 +115,7 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 | P2.3 | done | Lower `dot_general` / matmul 到 structured tensor IR | indexing map / iterator / DPS 关系可 FileCheck |
 | P2.4 | done | Lower broadcast、reshape、transpose、slice | 只依赖 type、shape、indexing relation，不靠名字 |
 | P2.5 | done | Lower elementwise 和 limited broadcast | 覆盖 add/sub/mul/div/max/min/neg/recip/sqrt/rsqrt/exp 的基础形态 |
-| P2.6 | pending | Lower reduce max / reduce sum | 输出 staged reduce IR，可服务 softmax 和 norm |
+| P2.6 | done | Lower reduce max / reduce sum | 输出 staged reduce IR，可服务 softmax 和 norm |
 | P2.7 | pending | 表达 RMSNorm / LayerNorm staged form | reduce + elementwise，不引入 `wafer.norm` 高层 op |
 | P2.8 | pending | 表达 softmax staged form | row max、exp、row sum、normalize 状态由 SSA / loop-carried / workspace 表达 |
 | P2.9 | pending | 表达 RoPE 和 MLP activation staged form | 只使用 structured tensor IR 和 math/arith 语义 |
@@ -207,6 +209,6 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 
 ## 下一步
 
-继续从 P2.6 开始覆盖 reduce max / reduce sum 的 local compute normalization；batch/head
+继续从 P2.7 开始覆盖 RMSNorm / LayerNorm staged form；batch/head
 dot 泛化在 attention slice 前补齐。不要越过 local compute normalization gate 直接实现 transformer
 block 逻辑。
