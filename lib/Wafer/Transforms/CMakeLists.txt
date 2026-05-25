@@ -13,6 +13,7 @@ add_mlir_library(WaferTransforms
   MaterializeDDRExternalBindings.cpp
   LowerStablehloDot.cpp
   LowerStablehloElementwise.cpp
+  LowerStablehloCollectivesToComm.cpp
   LowerStablehloReduce.cpp
   LowerStablehloShape.cpp
   MaterializeMultiTileNoComm.cpp

@@ -15,6 +15,7 @@ std::unique_ptr<mlir::Pass> createLowerStablehloDotPass();
 std::unique_ptr<mlir::Pass> createLowerStablehloElementwisePass();
 std::unique_ptr<mlir::Pass> createLowerStablehloReducePass();
 std::unique_ptr<mlir::Pass> createLowerStablehloShapePass();
+std::unique_ptr<mlir::Pass> createLowerStablehloCollectivesToCommPass();
 std::unique_ptr<mlir::Pass> createNormalizeConstantsPass();
 std::unique_ptr<mlir::Pass> createFormGroupsPass();
 std::unique_ptr<mlir::Pass> createCheckRootTileCandidatesPass();

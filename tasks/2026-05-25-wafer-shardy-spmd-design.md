@@ -89,6 +89,14 @@ StableHLO logical collective
 
 Shardy / SPMD 只负责第一行之前的 logical collective 生成。
 
+当前实现新增 `--wafer-lower-stablehlo-collectives-to-comm` 作为第一步 normalization：
+single-result StableHLO `all_gather`、`all_reduce` 和 `reduce_scatter` 会降到 collective-level
+`wafer.comm` op。Pass 通过 `local-rank` option 表达当前 partition 在 replica group 中的 rank，
+从 `replica_groups` 推出 group size，并只接受 sum/max/min 这三类 reduction body。StableHLO
+`reduce_scatter` 的 V0 输出先显式进入 slot-level `wafer.comm.reduce_scatter`；从 full input 到
+local scatter slot 的临时物化由 visible `unrealized_conversion_cast` 表达，后续应由 buffer-slice
+IR 或 layout/materialization pass 收敛，不作为隐藏 side table。
+
 ## 5. 与 Placement 的接口
 
 SPMD 给 placement 的输入是：

@@ -211,6 +211,9 @@ buffer、`local_rank`、`group_size` 和单 chunk `bytes`，verifier 检查 SPM 
 rank order 展开成 `group_size - 1` 个 unicast ring step；每个 step 都显式生成 send、recv 和 wait，
 并在 p2p op 上用 `slot` attr 标出发送或接收的 gather slot。后续 `--wafer-lower-to-c-abi-skeleton`
 保留该 `slot` attr 到 Direct DTE skeleton issue op，用于后续地址 offset / packet 参数 lowering。
+P6.6 起，StableHLO logical `all_gather` 可以先由
+`--wafer-lower-stablehlo-collectives-to-comm` normalize 到该 op；该 pass 只负责 logical collective
+到 `wafer.comm` 的语义桥接，不选择 ring resource 或 Direct DTE id。
 
 ## 6. Collective Lowering
 
@@ -260,6 +263,8 @@ reduce-scatter 可以由多个 slot op 或后续 buffer-slice IR 组合。`--waf
 按 placement rank order 展开 p2p send/recv/wait，并在每个 wait 后用
 `wafer.compute.elementwise` 的 add/max/min 对 accumulator 和 recv staging buffer 做显式本地累计。
 这保证 reduction kind、dtype、use-def 和 wait 顺序都留在 IR 中，而不是变成 DTE side effect。
+P6.6 的 StableHLO normalization pass 会把 single-result StableHLO `all_reduce` /
+`reduce_scatter` 降到这些 collective-level op，并拒绝非 sum/max/min reduction body。
 
 ## 7. Interaction with Layout, SPM, and DDR
 
