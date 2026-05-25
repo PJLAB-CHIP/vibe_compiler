@@ -3,8 +3,11 @@
 #ifndef WAFER_DIALECT_WAFER_IR_WAFERDIALECT_H
 #define WAFER_DIALECT_WAFER_IR_WAFERDIALECT_H
 
+#include "mlir/Bytecode/BytecodeOpInterface.h"
 #include "mlir/IR/Dialect.h"
 #include "mlir/IR/OpDefinition.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 
 #include "Wafer/Dialect/Wafer/IR/WaferEnums.h.inc"
 

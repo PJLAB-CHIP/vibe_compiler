@@ -13,3 +13,5 @@
   `ctest --test-dir build/p0 --output-on-failure`。
 - 依赖一致性检查入口是 `tools/check_deps.py`；默认检查 version pin、importer registration hook、
   StableHLO/Shardy checkout HEAD（如果 `.deps/src` 已存在）。
+- ODS op 如果引入 `RecursiveMemoryEffects`、`ReturnLike` 等 interface trait，公开 dialect 头要
+  include 对应 C++ interface header，`WaferIR` 也要显式 link 对应 MLIR interface target。

@@ -8,6 +8,9 @@ add_mlir_dialect_library(WaferIR
   WaferOpsIncGen
 
   LINK_LIBS PUBLIC
+  MLIRBytecodeOpInterface
+  MLIRControlFlowInterfaces
   MLIRIR
+  MLIRSideEffectInterfaces
   MLIRSupport
 )

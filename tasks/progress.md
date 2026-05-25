@@ -9,7 +9,8 @@
 `WaferDialect` + 共享 enum attrs 的 parser/printer/verifier smoke tests。LLVM/MLIR 版本通过集中
 pin 和 bootstrap 脚本管理；当前本地验证使用 21.0.0git override，未把本机路径写成项目合同。
 `wafer-import-model` disabled stub、依赖一致性检查脚本和 Wafer tiling/layout/resource-effect
-interface skeleton 已落地；下一步进入最小 op/verifier。
+interface skeleton 已落地。最小 `wafer.group` / `wafer.group_yield`、region/result/yield verifier
+和 SPM memref 拒绝测试已落地；下一步进入 tile-local region/type。
 
 ## Active Task
 
@@ -75,7 +76,7 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 | P1.1 | done | 定义 `WaferDialect` 和基础 ODS 文件组织 | dialect 可注册；空 module roundtrip |
 | P1.2 | done | 定义共享 attrs/types：target、placement、memory space、mem layout | parser/printer roundtrip；非法 enum 被 verifier 拒绝 |
 | P1.3 | done | 定义 `WaferTilingInterface`、`WaferLayoutOpInterface`、resource/effect 相关接口骨架 | ODS / C++ 编译通过；接口不携带 planner side table |
-| P1.4 | pending | 定义最小 `wafer.group` op | region / operand / result contract 可验证；不接受 SPM memref |
+| P1.4 | done | 定义最小 `wafer.group` op | region / operand / result contract 可验证；不接受 SPM memref |
 | P1.5 | pending | 定义最小 `wafer.tile_region` op 和 tile buffer type | tile-local region boundary、buffer ownership、effect scope 可验证 |
 | P1.6 | pending | 定义 layout materialization op 的最小 IR 形态 | 表达真实 data movement；不作为 metadata cast |
 | P1.7 | pending | 定义 `wafer.compute` / movement 最小 op family：load tile、store tile、gemm | dtype、shape、layout contract 有 verifier |
@@ -188,5 +189,5 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 
 ## 下一步
 
-继续从 P1.4 开始实现最小 `wafer.group` op/verifier，然后推进 `wafer.tile_region` 和 tile buffer
-type。不要越过 P1 verifier 直接实现 transformer block 逻辑。
+继续从 P1.5 开始实现最小 `wafer.tile_region` op 和 tile buffer type。不要越过 P1 verifier
+直接实现 transformer block 逻辑。
