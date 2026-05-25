@@ -475,6 +475,197 @@ def m1_no_comm_smoke_manifest() -> dict[str, Any]:
     return manifest
 
 
+def m6_local_smoke_manifest() -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "package_name": "m6_local_block_partial",
+        "runtime": {
+            "mode": "hpgr",
+            "completion_source": "hpgr_stream_event",
+        },
+        "device_code": [
+            {
+                "name": "local_transformer_block_gemm_skeleton",
+                "kind": "c_abi_skeleton",
+                "artifact": "m6_local_block_partial.o",
+            }
+        ],
+        "launch_signature": {
+            "inputs": [
+                {"name": "x", "shape": [2, 3, 5, 8], "dtype": "f32", "layout": "tensor"},
+                {"name": "hidden_count", "shape": [2, 3, 5], "dtype": "f32", "layout": "tensor"},
+                {"name": "eps", "shape": [2, 3, 5], "dtype": "f32", "layout": "tensor"},
+                {"name": "norm_weight", "shape": [8], "dtype": "f32", "layout": "tensor"},
+                {"name": "key", "shape": [2, 3, 7, 8], "dtype": "f32", "layout": "tensor"},
+                {"name": "value", "shape": [2, 3, 7, 8], "dtype": "f32", "layout": "tensor"},
+                {"name": "proj_w", "shape": [8, 8], "dtype": "f32", "layout": "tensor"},
+                {"name": "proj_bias", "shape": [8], "dtype": "f32", "layout": "tensor"},
+                {"name": "gate_w", "shape": [8, 16], "dtype": "f32", "layout": "tensor"},
+                {"name": "up_w", "shape": [8, 16], "dtype": "f32", "layout": "tensor"},
+                {"name": "down_w", "shape": [16, 8], "dtype": "f32", "layout": "tensor"},
+            ],
+            "outputs": [
+                {"name": "out", "shape": [30, 8], "dtype": "f32", "layout": "tensor"},
+            ],
+        },
+        "placement": {
+            "logical_rank_count": 1,
+            "topology": {
+                "card_y_count": 1,
+                "card_x_count": 1,
+                "tile_y_count": 4,
+                "tile_x_count": 4,
+            },
+            "good_tile_ids": [0],
+            "bad_tile_ids": [],
+            "ranks": [
+                {
+                    "logical_rank": 0,
+                    "physical_coord": [0, 0, 0, 0],
+                    "block_id": 0,
+                    "local_shards": [
+                        {"name": "x", "offsets": [0, 0, 0, 0], "sizes": [2, 3, 5, 8]},
+                        {"name": "hidden_count", "offsets": [0, 0, 0], "sizes": [2, 3, 5]},
+                        {"name": "eps", "offsets": [0, 0, 0], "sizes": [2, 3, 5]},
+                        {"name": "norm_weight", "offsets": [0], "sizes": [8]},
+                        {"name": "key", "offsets": [0, 0, 0, 0], "sizes": [2, 3, 7, 8]},
+                        {"name": "value", "offsets": [0, 0, 0, 0], "sizes": [2, 3, 7, 8]},
+                        {"name": "proj_w", "offsets": [0, 0], "sizes": [8, 8]},
+                        {"name": "proj_bias", "offsets": [0], "sizes": [8]},
+                        {"name": "gate_w", "offsets": [0, 0], "sizes": [8, 16]},
+                        {"name": "up_w", "offsets": [0, 0], "sizes": [8, 16]},
+                        {"name": "down_w", "offsets": [0, 0], "sizes": [16, 8]},
+                        {"name": "out", "offsets": [0, 0], "sizes": [30, 8]},
+                    ],
+                }
+            ],
+        },
+        "ddr_bindings": [
+            {
+                "kind": "input",
+                "name": "x",
+                "bytes": 960,
+                "alignment": 256,
+                "read_only": True,
+                "host_visible": True,
+            },
+            {
+                "kind": "input",
+                "name": "hidden_count",
+                "bytes": 120,
+                "alignment": 256,
+                "read_only": True,
+                "host_visible": True,
+            },
+            {
+                "kind": "input",
+                "name": "eps",
+                "bytes": 120,
+                "alignment": 256,
+                "read_only": True,
+                "host_visible": True,
+            },
+            {
+                "kind": "input",
+                "name": "norm_weight",
+                "bytes": 32,
+                "alignment": 256,
+                "read_only": True,
+                "host_visible": True,
+            },
+            {
+                "kind": "input",
+                "name": "key",
+                "bytes": 1344,
+                "alignment": 256,
+                "read_only": True,
+                "host_visible": True,
+            },
+            {
+                "kind": "input",
+                "name": "value",
+                "bytes": 1344,
+                "alignment": 256,
+                "read_only": True,
+                "host_visible": True,
+            },
+            {
+                "kind": "input",
+                "name": "proj_w",
+                "bytes": 256,
+                "alignment": 256,
+                "read_only": True,
+                "host_visible": True,
+            },
+            {
+                "kind": "input",
+                "name": "proj_bias",
+                "bytes": 32,
+                "alignment": 256,
+                "read_only": True,
+                "host_visible": True,
+            },
+            {
+                "kind": "input",
+                "name": "gate_w",
+                "bytes": 512,
+                "alignment": 256,
+                "read_only": True,
+                "host_visible": True,
+            },
+            {
+                "kind": "input",
+                "name": "up_w",
+                "bytes": 512,
+                "alignment": 256,
+                "read_only": True,
+                "host_visible": True,
+            },
+            {
+                "kind": "input",
+                "name": "down_w",
+                "bytes": 512,
+                "alignment": 256,
+                "read_only": True,
+                "host_visible": True,
+            },
+            {
+                "kind": "output",
+                "name": "out",
+                "bytes": 960,
+                "alignment": 256,
+                "read_only": False,
+                "host_visible": True,
+            },
+        ],
+        "resources": {
+            "spm_bytes": 13056,
+            "ddr_external_input_bytes": 5744,
+            "ddr_external_output_bytes": 960,
+            "workspace_bytes": 0,
+            "resident_constant_bytes": 0,
+        },
+        "abi_ops": [
+            {"op": "wafer.abi.rdma_1d", "bytes": 960, "wait_policy": "issue_only"},
+            {"op": "wafer.abi.rdma_1d", "bytes": 256, "wait_policy": "issue_only"},
+            {"op": "wafer.abi.gemm", "m": 30, "k": 8, "n": 8, "wait_policy": "issue_only"},
+            {"op": "wafer.abi.wdma_1d", "bytes": 960, "wait_policy": "issue_only"},
+            {"op": "wafer.abi.rdma_1d", "bytes": 960, "wait_policy": "issue_only"},
+            {"op": "wafer.abi.rdma_1d", "bytes": 512, "wait_policy": "issue_only"},
+            {"op": "wafer.abi.gemm", "m": 30, "k": 8, "n": 16, "wait_policy": "issue_only"},
+            {"op": "wafer.abi.wdma_1d", "bytes": 1920, "wait_policy": "issue_only"},
+            {"op": "wafer.abi.rdma_1d", "bytes": 960, "wait_policy": "issue_only"},
+            {"op": "wafer.abi.rdma_1d", "bytes": 512, "wait_policy": "issue_only"},
+            {"op": "wafer.abi.gemm", "m": 30, "k": 8, "n": 16, "wait_policy": "issue_only"},
+            {"op": "wafer.abi.wdma_1d", "bytes": 1920, "wait_policy": "issue_only"},
+            {"op": "wafer.abi.rdma_1d", "bytes": 1920, "wait_policy": "issue_only"},
+            {"op": "wafer.abi.rdma_1d", "bytes": 512, "wait_policy": "issue_only"},
+            {"op": "wafer.abi.gemm", "m": 30, "k": 16, "n": 8, "wait_policy": "issue_only"},
+            {"op": "wafer.abi.wdma_1d", "bytes": 960, "wait_policy": "issue_only"},
+        ],
+    }
+
+
 def bad_placement_smoke_manifest() -> dict[str, Any]:
     manifest = copy.deepcopy(m0_smoke_manifest())
     manifest["placement"]["ranks"][0]["physical_coord"] = [0, 0, 0, 1]
@@ -492,6 +683,7 @@ def main() -> int:
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--emit-m0-smoke", action="store_true")
     mode.add_argument("--emit-m1-no-comm-smoke", action="store_true")
+    mode.add_argument("--emit-m6-local-smoke", action="store_true")
     mode.add_argument("--emit-stub-smoke", action="store_true")
     mode.add_argument("--emit-bad-placement-smoke", action="store_true")
     mode.add_argument("--emit-bad-local-shard-smoke", action="store_true")
@@ -504,6 +696,9 @@ def main() -> int:
         return 0
     if args.emit_m1_no_comm_smoke:
         sys.stdout.write(canonical_json(m1_no_comm_smoke_manifest()))
+        return 0
+    if args.emit_m6_local_smoke:
+        sys.stdout.write(canonical_json(m6_local_smoke_manifest()))
         return 0
     if args.emit_stub_smoke:
         sys.stdout.write(canonical_json(m0_smoke_manifest("TsmDeviceSynchronize")))

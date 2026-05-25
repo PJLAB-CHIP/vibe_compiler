@@ -120,6 +120,13 @@ P5.7 的 full local transformer block structured gate 已落地：一个 StableH
 projection/residual 和 MLP，并运行 norm、softmax、projection/residual、MLP acceptance passes；
 `--wafer-lower-stablehlo-shape` 同步支持静态连续维度 reassociation reshape。该批次不声称
 physical layout/SPM/DDR feasibility 已完成，后者归 P5.8 local compile gate。
+P5.8 的 M6 local compile gate 已开始落地：新增 `m6-local-compile-gate` partial integration，
+从 full local block StableHLO 经过 normalization、acceptance gates、rank-2 matmul group split、
+single-tile materialization、SPM allocation check、DDR binding demand 和 C ABI skeleton lowering；
+同时新增 `--emit-m6-local-smoke` manifest，覆盖原始 block launch signature、单 tile placement、
+GEMM 子图 ABI ops、manifest validate、C stub 生成和本地 C syntax compile。当前该 gate 只证明
+GEMM 子图 local compile path，不代表 reduce/elementwise/attention generic 的 physical lowering
+已经完成，因此 P5.8 仍保持 pending。
 
 ## Active Task
 
@@ -299,6 +306,6 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 
 ## 下一步
 
-继续 P5.8，进入 M6 local compile gate，把 full local block 接到 group split、layout/SPM/DDR、
-C ABI skeleton 和 package 检查。
+继续 P5.8，把 full local block 中的 reduce、elementwise、attention generic 从 structured tensor
+IR 纳入可验证 group schedule 和 physical lowering；当前 M6 partial gate 只覆盖 rank-2 GEMM 子图。
 不要越过当前 local compile gate 直接实现未验证的整块逻辑。

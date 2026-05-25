@@ -1,0 +1,151 @@
+// REQUIRES: stablehlo
+// RUN: wafer-opt --wafer-lower-stablehlo-reduce --wafer-normalize-constants --wafer-lower-stablehlo-dot --wafer-lower-stablehlo-elementwise --wafer-lower-stablehlo-shape --wafer-check-norm-schedule --wafer-check-softmax-schedule --wafer-check-projection-residual-schedule --wafer-check-mlp-schedule --wafer-form-groups --wafer-check-root-tile-candidates --wafer-materialize-single-tile --wafer-check-spm-allocation --wafer-materialize-ddr-external-bindings --wafer-lower-to-c-abi-skeleton %s | FileCheck %s --check-prefix=IR
+// RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-m6-local-smoke > %t.manifest.json
+// RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --validate %t.manifest.json
+// RUN: %python %wafer_src_root/tools/wafer_emit_c_abi_stub.py --manifest %t.manifest.json > %t.c
+// RUN: FileCheck %s --check-prefix=C < %t.c
+// RUN: cc -fsyntax-only %t.c
+
+module {
+  func.func @local_transformer_block(
+      %x: tensor<2x3x5x8xf32>,
+      %hidden_count: tensor<2x3x5xf32>,
+      %eps: tensor<2x3x5xf32>,
+      %norm_weight: tensor<8xf32>,
+      %key: tensor<2x3x7x8xf32>,
+      %value: tensor<2x3x7x8xf32>,
+      %proj_w: tensor<8x8xf32>,
+      %proj_bias: tensor<8xf32>,
+      %gate_w: tensor<8x16xf32>,
+      %up_w: tensor<8x16xf32>,
+      %down_w: tensor<16x8xf32>) -> tensor<30x8xf32> {
+    %zero = stablehlo.constant dense<0.000000e+00> : tensor<f32>
+    %neg_inf = stablehlo.constant dense<-3.40282347E+38> : tensor<f32>
+
+    %square = stablehlo.multiply %x, %x : tensor<2x3x5x8xf32>
+    %sum = "stablehlo.reduce"(%square, %zero) ({
+    ^bb0(%lhs: tensor<f32>, %rhs: tensor<f32>):
+      %add = stablehlo.add %lhs, %rhs : tensor<f32>
+      stablehlo.return %add : tensor<f32>
+    }) {
+      dimensions = array<i64: 3>
+    } : (tensor<2x3x5x8xf32>, tensor<f32>) -> tensor<2x3x5xf32>
+    %mean = stablehlo.divide %sum, %hidden_count : tensor<2x3x5xf32>
+    %mean_eps = stablehlo.add %mean, %eps : tensor<2x3x5xf32>
+    %rms = stablehlo.rsqrt %mean_eps : tensor<2x3x5xf32>
+    %rms_bcast = "stablehlo.broadcast_in_dim"(%rms) {
+      broadcast_dimensions = array<i64: 0, 1, 2>
+    } : (tensor<2x3x5xf32>) -> tensor<2x3x5x8xf32>
+    %normed0 = stablehlo.multiply %x, %rms_bcast : tensor<2x3x5x8xf32>
+    %weight_bcast = "stablehlo.broadcast_in_dim"(%norm_weight) {
+      broadcast_dimensions = array<i64: 3>
+    } : (tensor<8xf32>) -> tensor<2x3x5x8xf32>
+    %normed = stablehlo.multiply %normed0, %weight_bcast : tensor<2x3x5x8xf32>
+
+    %scores = "stablehlo.dot_general"(%normed, %key) {
+      dot_dimension_numbers = #stablehlo.dot<
+        lhs_batching_dimensions = [0, 1],
+        rhs_batching_dimensions = [0, 1],
+        lhs_contracting_dimensions = [3],
+        rhs_contracting_dimensions = [3]
+      >,
+      precision_config = [#stablehlo<precision DEFAULT>, #stablehlo<precision DEFAULT>]
+    } : (tensor<2x3x5x8xf32>, tensor<2x3x7x8xf32>) -> tensor<2x3x5x7xf32>
+    %row_max = "stablehlo.reduce"(%scores, %neg_inf) ({
+    ^bb0(%lhs: tensor<f32>, %rhs: tensor<f32>):
+      %max = stablehlo.maximum %lhs, %rhs : tensor<f32>
+      stablehlo.return %max : tensor<f32>
+    }) {
+      dimensions = array<i64: 3>
+    } : (tensor<2x3x5x7xf32>, tensor<f32>) -> tensor<2x3x5xf32>
+    %row_max_bcast = "stablehlo.broadcast_in_dim"(%row_max) {
+      broadcast_dimensions = array<i64: 0, 1, 2>
+    } : (tensor<2x3x5xf32>) -> tensor<2x3x5x7xf32>
+    %shifted = stablehlo.subtract %scores, %row_max_bcast : tensor<2x3x5x7xf32>
+    %exp_scores = stablehlo.exponential %shifted : tensor<2x3x5x7xf32>
+    %row_sum = "stablehlo.reduce"(%exp_scores, %zero) ({
+    ^bb0(%lhs: tensor<f32>, %rhs: tensor<f32>):
+      %add = stablehlo.add %lhs, %rhs : tensor<f32>
+      stablehlo.return %add : tensor<f32>
+    }) {
+      dimensions = array<i64: 3>
+    } : (tensor<2x3x5x7xf32>, tensor<f32>) -> tensor<2x3x5xf32>
+    %row_sum_bcast = "stablehlo.broadcast_in_dim"(%row_sum) {
+      broadcast_dimensions = array<i64: 0, 1, 2>
+    } : (tensor<2x3x5xf32>) -> tensor<2x3x5x7xf32>
+    %prob = stablehlo.divide %exp_scores, %row_sum_bcast : tensor<2x3x5x7xf32>
+    %attn = "stablehlo.dot_general"(%prob, %value) {
+      dot_dimension_numbers = #stablehlo.dot<
+        lhs_batching_dimensions = [0, 1],
+        rhs_batching_dimensions = [0, 1],
+        lhs_contracting_dimensions = [3],
+        rhs_contracting_dimensions = [2]
+      >,
+      precision_config = [#stablehlo<precision DEFAULT>, #stablehlo<precision DEFAULT>]
+    } : (tensor<2x3x5x7xf32>, tensor<2x3x7x8xf32>) -> tensor<2x3x5x8xf32>
+
+    %attn2d = "stablehlo.reshape"(%attn) : (tensor<2x3x5x8xf32>) -> tensor<30x8xf32>
+    %residual2d = "stablehlo.reshape"(%normed) : (tensor<2x3x5x8xf32>) -> tensor<30x8xf32>
+    %projected = "stablehlo.dot_general"(%attn2d, %proj_w) {
+      dot_dimension_numbers = #stablehlo.dot<
+        lhs_contracting_dimensions = [1],
+        rhs_contracting_dimensions = [0]
+      >,
+      precision_config = [#stablehlo<precision DEFAULT>, #stablehlo<precision DEFAULT>]
+    } : (tensor<30x8xf32>, tensor<8x8xf32>) -> tensor<30x8xf32>
+    %proj_bias_bcast = "stablehlo.broadcast_in_dim"(%proj_bias) {
+      broadcast_dimensions = array<i64: 1>
+    } : (tensor<8xf32>) -> tensor<30x8xf32>
+    %biased = stablehlo.add %projected, %proj_bias_bcast : tensor<30x8xf32>
+    %resid = stablehlo.add %biased, %residual2d : tensor<30x8xf32>
+
+    %gate = "stablehlo.dot_general"(%resid, %gate_w) {
+      dot_dimension_numbers = #stablehlo.dot<
+        lhs_contracting_dimensions = [1],
+        rhs_contracting_dimensions = [0]
+      >,
+      precision_config = [#stablehlo<precision DEFAULT>, #stablehlo<precision DEFAULT>]
+    } : (tensor<30x8xf32>, tensor<8x16xf32>) -> tensor<30x16xf32>
+    %up = "stablehlo.dot_general"(%resid, %up_w) {
+      dot_dimension_numbers = #stablehlo.dot<
+        lhs_contracting_dimensions = [1],
+        rhs_contracting_dimensions = [0]
+      >,
+      precision_config = [#stablehlo<precision DEFAULT>, #stablehlo<precision DEFAULT>]
+    } : (tensor<30x8xf32>, tensor<8x16xf32>) -> tensor<30x16xf32>
+    %activated = stablehlo.tanh %gate : tensor<30x16xf32>
+    %gated = stablehlo.multiply %activated, %up : tensor<30x16xf32>
+    %out = "stablehlo.dot_general"(%gated, %down_w) {
+      dot_dimension_numbers = #stablehlo.dot<
+        lhs_contracting_dimensions = [1],
+        rhs_contracting_dimensions = [0]
+      >,
+      precision_config = [#stablehlo<precision DEFAULT>, #stablehlo<precision DEFAULT>]
+    } : (tensor<30x16xf32>, tensor<16x8xf32>) -> tensor<30x8xf32>
+    return %out : tensor<30x8xf32>
+  }
+}
+
+// IR-LABEL: func.func @local_transformer_block
+// IR-NOT: stablehlo.
+// IR-NOT: wafer.group
+// IR: linalg.generic
+// IR: linalg.elementwise kind=#linalg.elementwise_kind<exp>
+// IR: wafer.ddr.external_binding <input>
+// IR: wafer.ddr.external_binding <output>
+// IR: wafer.tile_region
+// IR-NOT: wafer.load_tile
+// IR: wafer.abi.rdma_1d <issue_only>
+// IR: wafer.abi.gemm <issue_only>
+// IR-NOT: wafer.compute.gemm
+// IR: wafer.abi.wdma_1d <issue_only>
+// IR: wafer.tile_region
+// IR: wafer.tile_region
+// IR: wafer.tile_region
+// IR-NOT: wafer.comm
+
+// C: static const wafer_abi_issue_t k_m6_local_block_partial_issues[] = {
+// C: {WAFER_ABI_GEMM, 0u, 30, 8, 8, WAFER_WAIT_ISSUE_ONLY}
+// C: {WAFER_ABI_GEMM, 0u, 30, 8, 16, WAFER_WAIT_ISSUE_ONLY}
+// C: {WAFER_ABI_GEMM, 0u, 30, 16, 8, WAFER_WAIT_ISSUE_ONLY}
+// C: int m6_local_block_partial_issue_count(void)

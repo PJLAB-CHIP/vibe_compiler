@@ -130,6 +130,12 @@ M6 transformer block vertical slice：
 - 当前无卡开发环境要求 generated artifact compile，package/runtime metadata 覆盖所有 block
   input/output、resident constants 和 workspace；completion 和数值对比后续在有卡环境验证。
 
+当前实现中的 P5.8 partial gate 只覆盖 full local block 中 rank-2 GEMM 子图的 local compile
+path：normalization、acceptance gates、matmul group split、single-tile materialization、
+SPM allocation check、DDR binding demand、C ABI skeleton、manifest validate 和 C stub syntax
+compile。它是 M6 的前进步骤，不是 M6 完成证据；reduce、elementwise、attention generic 的
+accepted group schedule、physical lowering、workspace/resident constant coverage 仍必须补齐。
+
 ## 5. Failure Handling
 
 验证失败要回到拥有该事实的阶段：
