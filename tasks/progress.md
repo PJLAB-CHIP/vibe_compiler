@@ -78,7 +78,10 @@ completion fence。P3.11 的 M0 local compile gate 已落地：汇总 lit test �
 physical tile mapping 表示已落地：新增 `wafer.placement.map` accepted mapping op，按 logical
 rank 顺序保存 4D physical coordinate，并由 verifier 检查 rank 覆盖、topology bounds、bad tile
 过滤和重复 physical tile；该 op 不携带 planner trace、SPM/DDR allocation、DTE packet 或 runtime
-handle。
+handle。P4.2 的 placement package metadata 已落地：runtime manifest 现在记录 target topology、
+good/bad tile assumption、per-rank physical coord、block id 和 local shard slice metadata；validator
+检查 rank 覆盖、good/bad tile disjoint、mapped tile 必须 good、block/tile 不重复，以及 local shard
+不能越过 launch signature tensor shape。
 
 ## Active Task
 
@@ -195,7 +198,7 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 | ID | 状态 | 任务 | 验收 |
 | --- | --- | --- | --- |
 | P4.1 | done | 定义 logical rank 到 physical tile mapping 表示 | mapping 覆盖所有 rank，不使用 bad tile |
-| P4.2 | pending | 接入 good-tile / block id / local shard metadata | metadata 可进入 package，不修改 tensor semantics |
+| P4.2 | done | 接入 good-tile / block id / local shard metadata | metadata 可进入 package，不修改 tensor semantics |
 | P4.3 | pending | 支持多 tile 独立 tile-region outlining | 每 tile 独立 load-compute-store，无 tile 间 comm |
 | P4.4 | pending | 支持 per-tile launch args | runtime launch 能区分 tile-specific arguments |
 | P4.5 | pending | M1 local compile gate 汇总测试 | 多 tile no-comm pipeline、generated artifact compile 和 manifest 检查通过 |

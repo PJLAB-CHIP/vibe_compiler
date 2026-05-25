@@ -141,12 +141,24 @@ small-BAR visible address offset、largest contiguous range、pool capacity、al
 allocation failure 由 DDR 设计负责定义；launch 负责把这些失败报告到用户可理解的位置。
 
 当前 V0 skeleton 用 `tools/wafer_package_manifest.py` 固定最小 manifest schema 和 roundtrip：
-manifest 记录 launch signature、DDR external binding bytes、SPM/DDR resource summary、ABI skeleton
-ops、device-code artifact id 和 runtime completion source。validator 显式拒绝已知 stub completion
-fence，例如 `TsmDeviceSynchronize` / `TsmLaunch`，因此 package correctness 不能只依赖 legacy stub
-path 成功返回。M0 local compile gate 还用 `tools/wafer_emit_c_abi_stub.py` 从该 manifest 生成一个
-可被 C compiler 做 syntax compile 的 ABI issue table，用于验证 package metadata 可以产出本地
-toolchain 可消费的 artifact skeleton；它不代表真实 device code 已可执行。
+manifest 记录 launch signature、placement metadata、DDR external binding bytes、SPM/DDR resource
+summary、ABI skeleton ops、device-code artifact id 和 runtime completion source。validator 显式拒绝
+已知 stub completion fence，例如 `TsmDeviceSynchronize` / `TsmLaunch`，因此 package correctness
+不能只依赖 legacy stub path 成功返回。M0 local compile gate 还用
+`tools/wafer_emit_c_abi_stub.py` 从该 manifest 生成一个可被 C compiler 做 syntax compile 的 ABI
+issue table，用于验证 package metadata 可以产出本地 toolchain 可消费的 artifact skeleton；它
+不代表真实 device code 已可执行。
+
+placement metadata 当前包含：
+
+- `logical_rank_count`、target topology dimensions、`good_tile_ids` 和 `bad_tile_ids`。
+- per-rank `logical_rank`、`physical_coord`、`block_id`。
+- per-rank `local_shards`，每个 shard 只记录 launch signature tensor 的 `name`、`offsets` 和
+  `sizes`。
+
+这些字段是 package / launch metadata，不改变 tensor IR 语义。validator 检查 logical rank 覆盖、
+good/bad tile disjoint、mapped tile 必须 good 且不能 bad、physical tile 和 block id 不重复，以及
+local shard bounds 不越过 launch signature tensor shape。
 
 ## 6. Legacy Bootparam and Dyn TLV
 

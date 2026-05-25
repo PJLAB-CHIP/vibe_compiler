@@ -131,6 +131,11 @@ rank id 表。`bad_tile_ids` 是当前 capability / PG 过滤后的 flat physica
 P4.2 可以把 block id、local shard metadata 或 capability reference 接到 package/launch
 metadata，但不能改变 tensor semantics。
 
+P4.2 package manifest 已接入 launch-visible placement metadata：`good_tile_ids` / `bad_tile_ids`
+表达当前 target capability assumption，per-rank `block_id` 和 `local_shards` 进入 package
+metadata。`local_shards` 只引用 launch signature tensor 名称和静态 slice bounds；它不反向修改
+tensor IR shape、layout 或 sharding semantics。
+
 ## 5. Placement Algorithm
 
 V0 使用可解释的 deterministic placement，不追求全局最优：

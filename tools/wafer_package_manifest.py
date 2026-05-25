@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import pathlib
 import sys
@@ -52,23 +53,187 @@ def require_non_empty_string(value: Any, name: str) -> str:
 
 
 def require_positive_int(value: Any, name: str) -> int:
-    if not isinstance(value, int) or value <= 0:
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
         fail(f"{name} must be a positive integer")
     return value
 
 
-def validate_tensor(tensor: Any, name: str) -> str:
+def require_non_negative_int(value: Any, name: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        fail(f"{name} must be a non-negative integer")
+    return value
+
+
+def validate_tensor(tensor: Any, name: str) -> tuple[str, list[int]]:
     item = require_dict(tensor, name)
     tensor_name = require_non_empty_string(item.get("name"), f"{name}.name")
     shape = require_list(item.get("shape"), f"{name}.shape")
     if not shape:
         fail(f"{name}.shape must be non-empty")
+    checked_shape = []
     for index, dim in enumerate(shape):
-        require_positive_int(dim, f"{name}.shape[{index}]")
+        checked_shape.append(require_positive_int(dim, f"{name}.shape[{index}]"))
     require_non_empty_string(item.get("dtype"), f"{name}.dtype")
     if item.get("layout") != "tensor":
         fail(f"{name}.layout must be tensor")
-    return tensor_name
+    return tensor_name, checked_shape
+
+
+def physical_tile_id(coord: list[int], topology: dict[str, int]) -> int:
+    card_y, card_x, tile_y, tile_x = coord
+    card_index = card_y * topology["card_x_count"] + card_x
+    tile_row = card_index * topology["tile_y_count"] + tile_y
+    return tile_row * topology["tile_x_count"] + tile_x
+
+
+def validate_physical_coord(
+    coord_value: Any, name: str, topology: dict[str, int]
+) -> tuple[list[int], int]:
+    coord = require_list(coord_value, name)
+    if len(coord) != 4:
+        fail(f"{name} must contain card_y, card_x, tile_y, tile_x")
+
+    checked = [
+        require_non_negative_int(coord[0], f"{name}[0]"),
+        require_non_negative_int(coord[1], f"{name}[1]"),
+        require_non_negative_int(coord[2], f"{name}[2]"),
+        require_non_negative_int(coord[3], f"{name}[3]"),
+    ]
+    if (
+        checked[0] >= topology["card_y_count"]
+        or checked[1] >= topology["card_x_count"]
+        or checked[2] >= topology["tile_y_count"]
+        or checked[3] >= topology["tile_x_count"]
+    ):
+        fail(f"{name} is outside target topology")
+    return checked, physical_tile_id(checked, topology)
+
+
+def validate_tile_id_list(
+    value: Any, name: str, total_tile_count: int
+) -> set[int]:
+    tile_ids = set()
+    for index, tile_id in enumerate(require_list(value, name)):
+        checked = require_non_negative_int(tile_id, f"{name}[{index}]")
+        if checked >= total_tile_count:
+            fail(f"{name}[{index}] must be within physical topology")
+        tile_ids.add(checked)
+    return tile_ids
+
+
+def validate_local_shards(
+    value: Any, name: str, tensor_shapes: dict[str, list[int]]
+) -> None:
+    shards = require_list(value, name)
+    if not shards:
+        fail(f"{name} must be non-empty")
+
+    for index, shard in enumerate(shards):
+        item = require_dict(shard, f"{name}[{index}]")
+        tensor_name = require_non_empty_string(item.get("name"), f"{name}[{index}].name")
+        if tensor_name not in tensor_shapes:
+            fail(f"{name}[{index}].name is not in launch signature")
+        tensor_shape = tensor_shapes[tensor_name]
+
+        offsets = require_list(item.get("offsets"), f"{name}[{index}].offsets")
+        sizes = require_list(item.get("sizes"), f"{name}[{index}].sizes")
+        if len(offsets) != len(tensor_shape) or len(sizes) != len(tensor_shape):
+            fail(f"{name}[{index}] rank must match tensor shape")
+
+        for dim, (offset, size, tensor_dim) in enumerate(
+            zip(offsets, sizes, tensor_shape)
+        ):
+            checked_offset = require_non_negative_int(
+                offset, f"{name}[{index}].offsets[{dim}]"
+            )
+            checked_size = require_positive_int(size, f"{name}[{index}].sizes[{dim}]")
+            if checked_offset + checked_size > tensor_dim:
+                fail(f"{name}[{index}] exceeds tensor shape")
+
+
+def validate_placement(
+    placement_value: Any, tensor_shapes: dict[str, list[int]]
+) -> None:
+    placement = require_dict(placement_value, "placement")
+    logical_rank_count = require_positive_int(
+        placement.get("logical_rank_count"), "placement.logical_rank_count"
+    )
+
+    topology_value = require_dict(placement.get("topology"), "placement.topology")
+    topology = {
+        key: require_positive_int(topology_value.get(key), f"placement.topology.{key}")
+        for key in (
+            "card_y_count",
+            "card_x_count",
+            "tile_y_count",
+            "tile_x_count",
+        )
+    }
+    total_tile_count = (
+        topology["card_y_count"]
+        * topology["card_x_count"]
+        * topology["tile_y_count"]
+        * topology["tile_x_count"]
+    )
+
+    good_tile_ids = validate_tile_id_list(
+        placement.get("good_tile_ids"), "placement.good_tile_ids", total_tile_count
+    )
+    if not good_tile_ids:
+        fail("placement.good_tile_ids must be non-empty")
+    bad_tile_ids = validate_tile_id_list(
+        placement.get("bad_tile_ids"), "placement.bad_tile_ids", total_tile_count
+    )
+    if good_tile_ids & bad_tile_ids:
+        fail("placement good and bad tile sets must be disjoint")
+
+    ranks = require_list(placement.get("ranks"), "placement.ranks")
+    if len(ranks) != logical_rank_count:
+        fail("placement ranks must cover every logical rank")
+
+    seen_ranks = set()
+    seen_tiles = set()
+    seen_blocks = set()
+    for index, rank in enumerate(ranks):
+        item = require_dict(rank, f"placement.ranks[{index}]")
+        logical_rank = require_non_negative_int(
+            item.get("logical_rank"), f"placement.ranks[{index}].logical_rank"
+        )
+        if logical_rank >= logical_rank_count or logical_rank in seen_ranks:
+            fail("placement logical ranks must be dense and unique")
+        seen_ranks.add(logical_rank)
+
+        block_id = require_non_negative_int(
+            item.get("block_id"), f"placement.ranks[{index}].block_id"
+        )
+        if block_id in seen_blocks:
+            fail("placement block_id values must be unique")
+        seen_blocks.add(block_id)
+
+        _, tile_id = validate_physical_coord(
+            item.get("physical_coord"),
+            f"placement.ranks[{index}].physical_coord",
+            topology,
+        )
+        if tile_id not in good_tile_ids:
+            fail(
+                f"placement.ranks[{index}] maps to tile id {tile_id} "
+                "that is not marked good"
+            )
+        if tile_id in bad_tile_ids:
+            fail(f"placement.ranks[{index}] maps to bad tile id {tile_id}")
+        if tile_id in seen_tiles:
+            fail("placement physical tile ids must be unique")
+        seen_tiles.add(tile_id)
+
+        validate_local_shards(
+            item.get("local_shards"),
+            f"placement.ranks[{index}].local_shards",
+            tensor_shapes,
+        )
+
+    if seen_ranks != set(range(logical_rank_count)):
+        fail("placement ranks must cover every logical rank")
 
 
 def validate_manifest(manifest: dict[str, Any]) -> None:
@@ -86,14 +251,22 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         fail("completion source is not in the allowed runtime fence set")
 
     signature = require_dict(manifest.get("launch_signature"), "launch_signature")
-    input_names = {
+    input_tensors = [
         validate_tensor(item, f"launch_signature.inputs[{index}]")
-        for index, item in enumerate(require_list(signature.get("inputs"), "launch_signature.inputs"))
-    }
-    output_names = {
+        for index, item in enumerate(
+            require_list(signature.get("inputs"), "launch_signature.inputs")
+        )
+    ]
+    output_tensors = [
         validate_tensor(item, f"launch_signature.outputs[{index}]")
-        for index, item in enumerate(require_list(signature.get("outputs"), "launch_signature.outputs"))
-    }
+        for index, item in enumerate(
+            require_list(signature.get("outputs"), "launch_signature.outputs")
+        )
+    ]
+    input_names = {name for name, _ in input_tensors}
+    output_names = {name for name, _ in output_tensors}
+    tensor_shapes = {name: shape for name, shape in input_tensors + output_tensors}
+    validate_placement(manifest.get("placement"), tensor_shapes)
 
     resources = require_dict(manifest.get("resources"), "resources")
     spm_bytes = require_positive_int(resources.get("spm_bytes"), "resources.spm_bytes")
@@ -181,6 +354,29 @@ def m0_smoke_manifest(completion_source: str = "hpgr_stream_event") -> dict[str,
                 {"name": "out", "shape": [4, 16], "dtype": "f16", "layout": "tensor"},
             ],
         },
+        "placement": {
+            "logical_rank_count": 1,
+            "topology": {
+                "card_y_count": 1,
+                "card_x_count": 1,
+                "tile_y_count": 4,
+                "tile_x_count": 4,
+            },
+            "good_tile_ids": [0],
+            "bad_tile_ids": [],
+            "ranks": [
+                {
+                    "logical_rank": 0,
+                    "physical_coord": [0, 0, 0, 0],
+                    "block_id": 0,
+                    "local_shards": [
+                        {"name": "lhs", "offsets": [0, 0], "sizes": [4, 8]},
+                        {"name": "rhs", "offsets": [0, 0], "sizes": [8, 16]},
+                        {"name": "out", "offsets": [0, 0], "sizes": [4, 16]},
+                    ],
+                }
+            ],
+        },
         "ddr_bindings": [
             {
                 "kind": "input",
@@ -223,11 +419,25 @@ def m0_smoke_manifest(completion_source: str = "hpgr_stream_event") -> dict[str,
     }
 
 
+def bad_placement_smoke_manifest() -> dict[str, Any]:
+    manifest = copy.deepcopy(m0_smoke_manifest())
+    manifest["placement"]["ranks"][0]["physical_coord"] = [0, 0, 0, 1]
+    return manifest
+
+
+def bad_local_shard_smoke_manifest() -> dict[str, Any]:
+    manifest = copy.deepcopy(m0_smoke_manifest())
+    manifest["placement"]["ranks"][0]["local_shards"][0]["sizes"] = [5, 8]
+    return manifest
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--emit-m0-smoke", action="store_true")
     mode.add_argument("--emit-stub-smoke", action="store_true")
+    mode.add_argument("--emit-bad-placement-smoke", action="store_true")
+    mode.add_argument("--emit-bad-local-shard-smoke", action="store_true")
     mode.add_argument("--roundtrip")
     mode.add_argument("--validate")
     args = parser.parse_args()
@@ -237,6 +447,12 @@ def main() -> int:
         return 0
     if args.emit_stub_smoke:
         sys.stdout.write(canonical_json(m0_smoke_manifest("TsmDeviceSynchronize")))
+        return 0
+    if args.emit_bad_placement_smoke:
+        sys.stdout.write(canonical_json(bad_placement_smoke_manifest()))
+        return 0
+    if args.emit_bad_local_shard_smoke:
+        sys.stdout.write(canonical_json(bad_local_shard_smoke_manifest()))
         return 0
 
     manifest = load_manifest(args.roundtrip or args.validate)
