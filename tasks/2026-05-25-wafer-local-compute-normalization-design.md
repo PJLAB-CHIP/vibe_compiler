@@ -1,0 +1,219 @@
+# Wafer Local Compute Normalization Design
+
+日期：2026-05-25
+
+状态：设计草案；2026-05-25 独立边界收口
+
+本文定义 SPMD partition 之后、`wafer.group` 之前的 local tensor compute normalization
+边界。该阶段负责把 partitioned StableHLO 的本地 shard 程序规整到可 tile、可 fuse、可
+验证的 `linalg` / `tensor` / `scf` / `arith` / `math` IR 子集。它不引入 Wafer physical
+layout、SPM/DDR allocation、DTE、C ABI 或 runtime package。
+
+本文依赖：
+
+- `tasks/2026-05-25-wafer-frontend-stablehlo-artifact-design.md`
+- `tasks/2026-05-25-wafer-shardy-spmd-design.md`
+- `tasks/2026-05-12-wafer-group-design.md`
+- `tasks/2026-05-25-wafer-compute-dialect-design.md`
+- MLIR Linalg / Bufferization / Dialect Conversion 官方文档。
+
+## 1. 目标和非目标
+
+目标：
+
+- 把 StableHLO local shard compute lowering 到结构化 tensor IR。
+- 保留 op 的 indexing map、iterator type、DPS operand/result 关系、shape、dtype 和
+  broadcast / reduction 语义。
+- 把 transformer block 所需的 dot、batch matmul、elementwise、broadcast、reduce、reshape、
+  transpose、slice、concat、softmax、RMSNorm / LayerNorm、RoPE 和 MLP 激活表达成通用
+  IR 结构，而不是 Wafer 私有高层 op。
+- 为 `wafer.group` planner 和 per-op tiling interface 提供稳定输入。
+
+非目标：
+
+- 不决定 group boundary、traversal tile shape 或 internal split。
+- 不表达 physical `mem_layout`、SPM offset、DDR buffer object、DTE resource、packet field、
+  worker id 或 C ABI call。
+- 不引入 `wafer.softmax`、`wafer.layer_norm`、`wafer.rope` 这类普通 tensor 语义 op 作为长期
+  架构边界。需要 pattern 时使用 rewrite / canonicalization，把它们展开到结构化 IR。
+- 不把 transformer block 的某个 shape、head 数或隐藏维度写成协议。
+
+## 2. 输入和输出
+
+输入：
+
+```text
+partitioned StableHLO local shard
+  + ConstantLike tensor values
+  + logical collective boundary already kept as StableHLO collective or later wafer.comm source
+```
+
+输出：
+
+```text
+func + tensor + linalg + scf + arith + math
+  + explicit shape/indexing/broadcast/reduction structure
+  + ConstantLike tensor values
+```
+
+输出 IR 应该只包含上游 tensor dialect 能解释的数学语义。Wafer target facts 只能作为后续
+legality / cost input。
+
+## 3. Transformer Block Coverage
+
+跑通一个静态 transformer block 至少需要下面这些 local compute 形态。这里列的是
+normalization 输出应能表达的 IR 结构，不是 group 边界或硬件实现承诺。
+
+| 子结构 | Normalized IR | 后续主要 owner |
+| --- | --- | --- |
+| QKV / output projection / MLP GEMM | `linalg.matmul`、`linalg.batch_matmul` 或等价 structured generic | group + compute GEMM |
+| QK^T / attention value matmul | batch/head 维保留在 type/indexing map 中，transpose 是显式 indexing / shape-only 关系 | group + compute GEMM |
+| bias / residual / scale | `linalg.generic` + `arith`，带可证明 broadcast | group + compute elementwise |
+| RMSNorm | square、reduce sum/mean、rsqrt、mul、scale 的 staged tensor IR | group + compute reduce/elementwise |
+| LayerNorm | reduce mean、sub、square、variance、rsqrt、scale/bias 的 staged tensor IR | group + compute reduce/elementwise |
+| softmax | row max、subtract、exp、row sum、divide 的 staged tensor IR | group staged schedule + compute reduce/elementwise |
+| causal / padding mask | compare/select 或 mask add 的 explicit tensor IR；large negative constant 是 ordinary constant | compute elementwise / mask verifier |
+| RoPE | split/slice/concat/neg/mul/add，sin/cos table 作为 ConstantLike 或 explicit `math.sin/cos` source | tensor canonicalization + elementwise |
+| SiLU / GELU | decomposition using sigmoid/tanh/erf/exp 或 accepted approximation | compute elementwise subset |
+| shape views | `tensor.expand_shape`、`tensor.collapse_shape`、`tensor.extract_slice`、`tensor.insert_slice`、transpose-like indexing | group tiling + layout later |
+
+如果某个 frontend pattern 只能靠 op 名、参数名或模型层名字识别，不能进入长期 lowering。应通过
+StableHLO op semantics、types、indexing maps、SSA use-def 和 verifier 可证明的 relation 恢复。
+
+## 4. StableHLO 到 Structured IR 合同
+
+### 4.1 Dot and Batch Matmul
+
+`stablehlo.dot_general` lowering 必须显式保留：
+
+- contracting dimensions。
+- batch dimensions。
+- lhs/rhs transpose 或 permutation relation。
+- output shape and dtype。
+- accumulator / result dtype policy if it affects semantics。
+
+简单 2D dot 可以 lowering 到 `linalg.matmul`。带 batch/head 维的 dot 可以 lowering 到
+`linalg.batch_matmul` 或 `linalg.generic`，只要 indexing map 和 iterator type 可由 verifier
+检查。QK^T 不应该靠 `rhs` 名字识别 transpose；transpose relation 来自 dot dimension numbers
+或显式 `transpose` / indexing map。
+
+### 4.2 Elementwise and Broadcast
+
+elementwise lowering 使用 `linalg.generic` + `arith` / `math`。Broadcast 必须由 indexing map
+或 `tensor.expand_shape` / `stablehlo.broadcast_in_dim` 的 normalized relation 表达。
+
+Transformer block 第一阶段需要的 elementwise kind 至少包括：
+
+- add、sub、mul、div。
+- max、min、neg、recip、sqrt、rsqrt。
+- exp。
+- compare/select 或可验证 mask-add 形式。
+- sigmoid 或 tanh，如果 SiLU / GELU 选择该 decomposition。
+
+这些 op 在 local tensor IR 中仍是普通 `arith` / `math` / `linalg` 语义；是否能 lower 到 CT
+wrapper、是否需要拆成多个 target op，由 `wafer.compute` 负责。
+
+### 4.3 Reduction
+
+reduction 必须保留：
+
+- reduction dimensions。
+- init value。
+- reduction kind。
+- output dtype。
+- NaN / overflow / approximate math policy if frontend semantics requires it。
+
+RMSNorm、LayerNorm 和 softmax 都不能被 normalization 压成 opaque high-level op。它们应展开成
+reduce + elementwise 的 staged tensor IR，使 group planner 可以决定是否放在一个 group 中、
+是否拆成多个 groups、以及 reduction axis 是否需要 internal split。
+
+### 4.4 Shape-only Ops
+
+reshape、transpose、slice、concat、split、expand/collapse 这类 op 在本阶段优先保持为
+shape/indexing relation。只有当后续 layout / memory / hardware lowering 需要真实 movement 时，
+才在 `wafer.tile_region` / layout materialization 阶段生成 movement op。
+
+Normalization 不能因为目标硬件偏好提前插入 ChannelNorm、DechannelNorm、GatherScatter、
+RDMA/WDMA 或 TDMA。
+
+## 5. Softmax and Norm Staged Form
+
+Softmax 的 normalized form 至少是：
+
+```text
+scores = matmul(Q, K^T) * scale + mask
+row_max = reduce_max(scores, key_dim)
+shifted = scores - row_max
+exp_scores = exp(shifted)
+row_sum = reduce_sum(exp_scores, key_dim)
+prob = exp_scores / row_sum
+```
+
+这只是数学/dataflow 结构，不是要求一个 `wafer.group` 覆盖整条链。若 key dimension 无法在一个
+tile schedule 内合法覆盖，group planner 必须拆成多阶段 schedule，例如 row max stage、row sum
+stage、normalize/value stage，并通过 DDR workspace 或 tile-local loop-carried state 明确表达
+中间结果。
+
+RMSNorm / LayerNorm 类似：
+
+```text
+rms = rsqrt(mean(x * x, hidden_dim) + eps)
+y = x * rms * weight
+```
+
+或：
+
+```text
+mean = reduce_mean(x, hidden_dim)
+var = reduce_mean((x - mean) * (x - mean), hidden_dim)
+y = (x - mean) * rsqrt(var + eps) * weight + bias
+```
+
+epsilon、scale、bias 都是普通 constant / input value。它们不通过名字或 layer type 特判。
+
+## 6. Pass 合同
+
+实现上可以拆成这些职责：
+
+| 职责 | 输入 | 输出 |
+| --- | --- | --- |
+| StableHLO legalize to structured tensor | partitioned StableHLO | `linalg` / `tensor` / `arith` / `math` / `scf` |
+| dot_general normalization | StableHLO dot | matmul / batch_matmul / structured generic |
+| broadcast/reduction normalization | StableHLO broadcast/reduce | explicit indexing maps and reduce dims |
+| transformer pattern canonicalization | softmax/norm/RoPE/MLP activation patterns | staged structured tensor IR |
+| shape-view cleanup | reshape/transpose/slice chains | canonical shape/indexing relation |
+
+这些 pass 可以使用 pattern rewrite、canonicalization 和 dialect conversion，但 pass pipeline 不承载
+隐藏语义。若一个 op 不能被 normalized 到 verifier 可解释的结构，应保留在上游 dialect 并报
+明确 unsupported diagnostic，不能通过名字 fallback。
+
+## 7. Verifier
+
+Normalization 后必须能检查：
+
+- function boundary shape、rank、dtype 和 bounded dynamic shape。
+- dot / batch matmul 的 contracting、batch、transpose relation。
+- broadcast indexing relation。
+- reduction dimensions、init value 和 output dtype。
+- softmax/norm staged IR 中的 reduction axis 和 elementwise consumer 关系。
+- shape-only ops 没有提前变成 target movement。
+- IR 中没有 Wafer physical memory、layout materialization、DTE、packet 或 runtime launch 事实。
+
+## 8. 与其它文档的关系
+
+- Frontend 文档负责 artifact 和 constant normalization 的入口。
+- Shardy / SPMD 文档负责 global sharding 和 logical collective。
+- 本文负责 local shard 内的 structured tensor IR。
+- Group 文档负责 tile-local residency、traversal schedule 和 closed-loop resource search。
+- Compute 文档负责把 selected tensor op lower 到 target-abstract `wafer.compute`。
+- Layout / SPM / DDR 文档负责 physical layout、bufferization 和 resource legality。
+
+参考 MLIR 官方方向：Linalg structured ops 提供 tiling/fusion 所需的 indexing/interface 基础；
+Bufferization 负责从 tensor 语义到 memref 语义的转换；Dialect Conversion 提供合法性驱动的
+op conversion 框架。Wafer 复用这些机制，但目标硬件资源和 layout 约束由自己的下游 IR 表达。
+
+## 9. 参考材料
+
+- MLIR Linalg dialect: <https://mlir.llvm.org/docs/Dialects/Linalg/>
+- MLIR Bufferization: <https://mlir.llvm.org/docs/Bufferization/>
+- MLIR Dialect Conversion: <https://mlir.llvm.org/docs/DialectConversion/>

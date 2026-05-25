@@ -2,17 +2,30 @@
 
 日期：2026-05-13
 
-更新：2026-05-14，基于整理后的最新 `docs/` 重新审了一轮。本文继续作为
-`tasks/` 设计文档的唯一 gap review，不再另落新的 review 文件。
+状态：gap catalog；2026-05-25 后不再作为架构合同或子设计状态索引
 
-更新：2026-05-21，按新的文档原则补充边界：本文是 gap catalog，不是新的架构合同。
-涉及历史 backend、旧 CRT、runtime 兼容路径或底层 packet 的内容，只用于指出需要在哪个
-IR stage、verifier 或 runtime boundary 补设计，不能反向污染上层 IR 语义。
+本文是历史 gap catalog 和检查清单，不是新的架构合同。子设计状态的唯一索引见
+`tasks/2026-05-11-wafer-ai-compiler-architecture.md` 第 8 节。本文中涉及历史 backend、旧 CRT、
+runtime 兼容路径或底层 packet 的内容，只用于指出需要在哪个 IR stage、verifier 或 runtime
+boundary 补设计，不能反向污染上层 IR 语义。
 
 本文评审对象：
 
 - `tasks/2026-05-11-wafer-ai-compiler-architecture.md`
 - `tasks/2026-05-12-wafer-group-design.md`
+- `tasks/2026-05-21-wafer-layout-materialization-design.md`
+- `tasks/2026-05-21-wafer-spm-bufferization-design.md`
+- `tasks/2026-05-25-wafer-ddr-resource-allocation-design.md`
+- `tasks/2026-05-25-wafer-compute-dialect-design.md`
+- `tasks/2026-05-25-wafer-communication-dialect-design.md`
+- `tasks/2026-05-25-wafer-frontend-stablehlo-artifact-design.md`
+- `tasks/2026-05-25-wafer-shardy-spmd-design.md`
+- `tasks/2026-05-25-wafer-placement-design.md`
+- `tasks/2026-05-25-wafer-local-compute-normalization-design.md`
+- `tasks/2026-05-25-wafer-tile-region-design.md`
+- `tasks/2026-05-25-wafer-launch-runtime-package-design.md`
+- `tasks/2026-05-25-wafer-c-abi-golden-packet-design.md`
+- `tasks/2026-05-25-wafer-verification-plan-design.md`
 
 评审基准：
 
@@ -23,18 +36,21 @@ IR stage、verifier 或 runtime boundary 补设计，不能反向污染上层 IR
 - `docs/tx8-deps-reverse-engineering/firmware-kuiper-runtime-hardware-analysis.md`
 - `docs/tx8-deps-reverse-engineering/txda-pytorch-runtime-wheel-analysis.md`
 
-结论：两份 task 文档的主方向仍然成立，即 OpenXLA/torch-xla/StableHLO/Shardy
-作为图编译主线，Wafer 后端通过自有 C ABI 调 public Tsm wrapper/Kcore runtime，
-不围绕历史 backend/CRT 或裸 LLVM intrinsic 建架构。问题不在方向，而在它们还是早期
-架构草案，没有把最新逆向已经确认的 runtime、layout、SPM、并行、DTE、completion
-和测试合同固化成可执行设计约束。后续进入相关实现前，应按 IR 层级和 IR stage
-补齐对应缺口。
+结论：主方向仍然成立，即 verified StableHLO / MLIR artifact、Shardy/SPMD 和 Wafer
+自有 IR contract 作为图编译主线；torch-xla、torch-mlir、OpenXLA exporter 等只作为 model
+importer adapter，LLVM/MLIR/StableHLO/Shardy 等第三方工程依赖按层组织，不反向变成 Wafer IR
+语义。Wafer 后端通过 C ABI 调 public Tsm wrapper/Kcore runtime，不围绕历史
+backend/CRT 或裸 LLVM intrinsic 建架构。2026-05-25 后，frontend artifact、Shardy/SPMD、
+placement、local compute normalization、`wafer.group`、`wafer.tile_region`、layout materialization、
+SPM、DDR、target-abstract compute/movement、device-side communication、launch/runtime package、
+C ABI/golden packet 和 verification plan 都已有单独子设计承接。Serving integration 暂时延后，
+不作为当前跑通主线的文档缺口。
 
-## 1. 信息来源和文档边界已经过期
+## 1. 信息来源和文档边界
 
-`2026-05-11` 架构文档的参考材料仍主要列官方 PDF、`instr_def.h`、
-`instr_adapter.h` 和旧实现线索，没有把最新 Wafer 主文档和 reverse-engineering
-README 放在一级依据。
+当前边界：`2026-05-11` 架构文档已经把整理后的 Wafer 主文档和 reverse-engineering 合同放在
+一级依据。后续仍需要保持这个边界：硬件事实和 runtime 事实来自 `docs/`，task 文档只把它们放到
+正确 IR stage 的 verifier / lowering / runtime boundary 中。
 
 需要补充的阅读顺序：
 
@@ -45,7 +61,7 @@ README 放在一级依据。
 - 查证据、API 合同、coverage 和剩余 HardwareVerify 时，看
   `docs/tx8-deps-reverse-engineering/README.md` 和该目录下的 contract/analysis。
 
-影响：如果继续只引用旧 PDF 和旧实现线索，容易把 Stream、SCALAR、runtime launch、
+影响：如果后续新文档继续只引用旧 PDF 和旧实现线索，容易把 Stream、SCALAR、runtime launch、
 DMA stride、layout materialization、SPM allocator 等旧口径带进实现。
 
 ## 2. Host runtime 主目标需要升级为 HPGR/KMD 分层
@@ -60,7 +76,7 @@ host/runtime 的主分层，旧 `Tsm*` 只是兼容和证据层。
   device/memory/stream/event/module/kernel/model/graph/rank/tile/P2P。
 - HPGR model/module completion 由 command-slot completion、async receive thread、
   module `completeSignal` 和 stream wait 表达。
-- KMD/UAPI 负责 `/dev/accel/dev-N`、BO、jobs、NPU tile memory、C2C、log、device
+- KMD/UAPI 负责 `/dev/accel/dev-N`、BO（buffer object）、jobs、NPU tile memory、C2C、log、device
   info、driver topo、driver-level DTE ioctl、BAR/ATU 和 firmware loading。
 - KMD compute fence 在当前 driver snapshot 中 MHU doorbell 后直接 signal，不代表
   model/kernel 已完成。
@@ -73,18 +89,18 @@ host/runtime 的主分层，旧 `Tsm*` 只是兼容和证据层。
 - `TsmMemcpyD2D`、`TsmSend`、`TsmRecv` 是 host runtime dyn TLV + Kcore DTE path，
   不等价于 compiler inline Direct DTE。
 
-建议新增或更新 task：`WaferRuntimeAdapter`，明确 HPGR 主路径、KMD 底层服务、
-legacy `TsmRun` fallback、stub shielding、错误传播、completion source 和 bring-up
-fallback。所有 milestone 的通过标准都必须说明 completion 来自 HPGR command/module
-completion、Kcore CSR wait、DTE wait、stream/event wait 或显式 runtime sync，不能
-使用旧 `DeviceSynchronize` 或 KMD compute fence。
+承接状态：`tasks/2026-05-25-wafer-launch-runtime-package-design.md` 已把 HPGR 主路径、KMD
+底层服务、legacy `TsmRun` fallback、stub shielding、错误传播、completion source 和 bring-up
+fallback 写成 launch/runtime 边界合同。所有 milestone 的通过标准仍必须说明 completion 来自
+HPGR command/module completion、Kcore CSR wait、DTE wait、stream/event wait 或显式 runtime
+sync，不能使用旧 `DeviceSynchronize` 或 KMD compute fence。
 
-## 3. Package / bootparam / dyn TLV 仍没有成为架构约束
+## 3. Package / bootparam / dyn TLV 已由 launch 子设计承接
 
-架构文档说 compiled package 包含 kcore `.so`、weights、metadata、placement、
-SPM/layout 和 communication plan，但没有把 host runtime 实际交付路径写成格式约束。
+历史缺口是：compiled package 只抽象写了 kcore `.so`、weights、metadata、placement、
+SPM/layout 和 communication plan，没有把 host runtime 实际交付路径写成格式约束。
 
-需要补齐：
+`tasks/2026-05-25-wafer-launch-runtime-package-design.md` 已承接以下事实：
 
 - `D_BootParamHead`，size 56。
 - `D_BootParamDyninfo`，size 72，布局从 `head + 0x38` 开始，顺序是 inputs、
@@ -104,16 +120,16 @@ SPM/layout 和 communication plan，但没有把 host runtime 实际交付路径
 - Kcore 每 tile 固定 109MiB firmware slot，Score0/Score1 跟在 16 个 Kcore slot 后。
 - PG/bad-tile 需要进入 placement metadata；不能默认 16 tile 全好。
 
-影响：如果 package format 只停留在抽象 metadata，就无法可靠接 HPGR/KMD 或旧
-`TsmRun` bootparam 路径。
+后续实现如果 package format 只停留在抽象 metadata，就无法可靠接 HPGR/KMD 或旧
+`TsmRun` bootparam 路径；这应在 launch/runtime package verifier 中暴露。
 
-## 4. Wafer C ABI 仍太抽象
+## 4. Wafer C ABI 已由低层合同承接
 
-架构文档只写 LLVM calls to Wafer C runtime / instr adapter，group 文档只写最后
-lowering 到 LLVM/runtime calls。现在已经知道 C ABI 应该按 wrapper family 和
-issue/drain 语义拆开。
+当前边界：`wafer.compute` 和 `wafer.comm` 文档已经把 target-abstract op、issue/drain、
+Direct DTE V0 和 wrapper family 的上层边界写清楚。lower-level C ABI / instruction-form 的
+实现级合同已由 `tasks/2026-05-25-wafer-c-abi-golden-packet-design.md` 承接。
 
-需要把 ABI 设计拆成至少这些族：
+ABI 设计至少覆盖这些族：
 
 - `wafer_rdma_1d` / `wafer_wdma_1d` / `wafer_dma_strided`
 - `wafer_gather_scatter` / `wafer_memcpy_spm`
@@ -139,12 +155,14 @@ issue/drain 语义拆开。
 核心原则：Wafer C ABI 内部可以调用 public Tsm wrapper，但不能继承 Tx81 CRT 的
 函数命名、参数列表、默认 wait 策略、allocator 策略或 DTE runtime。
 
-## 5. 指令和 verifier 约束没有落到 task 设计
+## 5. 指令和 verifier 约束的承接状态
 
-最新逆向确认了很多必须进入 verifier 的硬约束，但两份 task 文档仍只笼统写了
-SPM/layout/bank/alignment。
+当前边界：架构、compute、comm、layout、SPM 文档已经承接了主要 verifier 事实的 IR stage
+归属：layout/SPM 负责 physical layout、range、liveness；compute 负责 CT/NE/RDMA/WDMA/TDMA
+legality；comm 负责 Direct DTE / FSM / token/wait；runtime/package、C ABI 和 verification plan
+分别由对应子设计承接。
 
-必须补齐的 verifier 事实：
+必须在实现中落地的 verifier 事实：
 
 - `TsmExecute` 只分派 `inter_type=0..4`：CT、NE、RDMA、WDMA、TDMA。
 - SCALAR 当前 `__execute_sc` 是 reserved/stub。
@@ -160,15 +178,18 @@ SPM/layout/bank/alignment。
   option 有明确范围或 V0 禁用策略。
 - raw packet/debug verifier 需要验证 `*_end` 字段，不能只看 base。
 
-建议新增 task：`WaferHardwareVerifier and Golden Packet Tests`，输入 Wafer dialect /
-C ABI call / memref metadata，输出 legality diagnostics，并为每类 ABI 建 wrapper
-golden packet tests。
+`tasks/2026-05-25-wafer-c-abi-golden-packet-design.md` 和
+`tasks/2026-05-25-wafer-verification-plan-design.md` 已把 lower-level Wafer instruction/runtime op、
+C ABI call、storage-realized memref/descriptor、legality diagnostics 和 wrapper golden packet
+tests 拆到对应层级。
 
-## 6. Layout 设计必须升级为 semantic layout + physical layout 双层模型
+## 6. Layout 设计已由 layout 子设计承接
 
-这是 2026-05-14 最新 docs 整理后最需要同步到 tasks 的变化之一。
+当前边界：`tasks/2026-05-21-wafer-layout-materialization-design.md` 已经定义 semantic layout /
+physical `mem_layout` / constant storage encoding / external layout contract，并把
+`WaferMemLayoutAttr` 收敛为 `Tensor/NTensor/Cx/NCx` family，不保存 C0/storage bytes 等可推导字段。
 
-当前缺口：
+原始缺口（已由 layout 子设计修正）：
 
 - `2026-05-11` 只写 `SPM/layout metadata` 和 `SPM/layout planner`。
 - `2026-05-12` 只写 tile buffer、alignment/bank padding，没有定义 tensor semantic
@@ -191,20 +212,19 @@ golden packet tests。
 - `ChannelNorm/DechannelNorm` 是 `Tensor/NTensor <-> Cx/NCx` 的真实 data movement，
   不是 metadata reshape。
 
-建议修改：
+剩余实现要求：
 
-- 在 architecture 的 compute lowering 和 package metadata 中明确 `layout` 与
-  `mem_layout` 两个字段。
-- 在 group doc 的 SPM bufferization 章节加入 layout materialization transformation：只有进入
-  aligned-only 指令前才 materialize 到 `Cx/NCx`，并把 `ChannelNorm/GatherScatter`
-  当成真实 op 计入 SPM、liveness、latency。
-- 新增 `Wafer Layout Propagation and SPM Materialization` 子设计。
+- layout-aware verifier、canonicalization 和 cleanup pattern 必须按该文档实现。
+- compute/movement op 必须实现或提供等价 `WaferLayoutOpInterface`。
+- communication p2p op 需要提供 byte-preserving layout relation 和 staging/effect 信息。
 
-## 7. SPM planner 缺少地址、reserved slot 和 layout size 公式
+## 7. SPM planner 已由 SPM 子设计承接
 
-`wafer.group` 文档强调 SPM residency，但还没有把最新地址边界写成可实现规格。
+当前边界：`tasks/2026-05-21-wafer-spm-bufferization-design.md` 已经把 SPM range、reserved range、
+layout storage size、bool bitpack、liveness、allocation trial、failure feedback 和 tile buffer
+storage realization 写成独立设计。`wafer.group` 只消费 feasibility 结果，不保存 offset。
 
-需要补齐：
+实现时仍需要落地：
 
 - SPM 总大小 `0x000000..0x2fffff`。
 - 普通 tensor 默认可用半开区间 `[0x10000, 0x2F0000)`。
@@ -216,14 +236,15 @@ golden packet tests。
 - `Cx/NCx` size 需要计入 C0 tail/fold 和 256B bank padding。
 - bool bitpack、communication buffer、double buffer、psum/scratch 都必须进入容量估算。
 
-当前 `wafer.group` 只说 reserved SPM 区域避让，没有定义 allocator 可用区间、reserved
-slot 列表和 layout size 公式来源。
+这些检查属于 SPM / tile-region verifier，不回写到 `wafer.group` attr。
 
-## 8. Parallel/SPM bank 约束还没有进入 allocator 和 scheduler
+## 8. Parallel/SPM bank 约束的实现状态
 
-这是最新 docs 明确补强的另一个重点。
+当前边界：SPM 文档已经区分普通 allocation、256B layout padding 和 overlap-critical 64KB
+page/color 策略；compute/comm 文档也保留了 issue/drain 和 overlap 的 IR 边界。剩余问题主要是
+scheduler/PMU 的实现和验证，不应反向变成 `wafer.group` attr。
 
-当前缺口：
+原始缺口：
 
 - `2026-05-12` 只写 `physical SPM offsets / banks`、`bank/alignment padding`。
 - `2026-05-11` M5 只写 `DTE 与 NE/CT 并发`、`collective 和 compute 的 overlap`。
@@ -241,7 +262,7 @@ slot 列表和 layout size 公式来源。
 - 当前静态证据没有发现 SPM operand base 强制 64KB 对齐的 register wrapper/runtime
   reject。
 - SPM0 bank conflict、1024-bit RAM_ACC/Ram_acc_phy 对齐/移位和非 1024-bit 执行并行度
-  会影响 queue ready 和 stall，但不是单条指令 legality 阻塞条件。
+  会影响 queue ready 和 stall，但不是单条指令 legality 硬条件。
 
 风险：
 
@@ -256,12 +277,13 @@ slot 列表和 layout size 公式来源。
 - M5 acceptance 增加 PMU case：比较 serial mode、parallel mode、64KB page coloring、
   256B compact layout 下的 blocking/exe time。
 
-## 9. DTE 设计仍偏乐观
+## 9. DTE 设计已收敛到 V0 unicast
 
-两份 task 文档都把 Direct DTE 放在通信主线，这个方向成立，但需要明确 helper unicast
-和 raw non-unicast 的边界。
+当前边界：`tasks/2026-05-25-wafer-communication-dialect-design.md` 已经明确 V0 只使用
+fixed-size unicast Direct DTE，并把 raw non-unicast 放到 V1/HardwareVerify。这里的清单继续作为
+实现和测试时的事实检查。
 
-必须补齐：
+实现时必须验证：
 
 - V0 只能把 fixed-size unicast Direct DTE helper 当作已验证路径。
 - `DirectDTESendInfo` 只有单个 `dst_addr`、`dst_tile`、`remote_fsm_id`，没有
@@ -276,19 +298,19 @@ slot 列表和 layout size 公式来源。
 - DTE resource allocator 需要管理 high-performance node、normal node、FSM id、
   packet id、stream id、switch DDR/remote tile。
 
-建议修改：
+仍需实现 / 验证：
 
 - M2 明确只验证 fixed-size unicast Direct DTE helper。
 - M3 的 ring all-gather/reduce-scatter/all-reduce 默认用 unicast ring/tree，不使用 raw
   broadcast/shuffle。
-- 单独新增 `Wafer Raw DTE Collective ABI`，只有在板端验证后才能进入 V1。
+- 如果要启用 raw non-unicast，单独新增 `Wafer Raw DTE Collective ABI`，只有在板端验证后才能进入 V1。
 
 ## 10. Stream/mailbox 不能只作为“旧路径”处理
 
 架构文档说 legacy Stream 不作为 data-plane 主路径，这个判断成立。但最新逆向显示
 stream/mailbox 仍然是 runtime 兼容路径和某些 control/payload 的实际机制。
 
-需要补齐：
+后续 runtime / communication 实现必须保留这些事实：
 
 - Stream FSM base `0x620000`，packet count 最大 32，packet size 最大 `0x800000`。
 - Mailbox TX/RX base `0x640000/0x660000`。
@@ -296,16 +318,17 @@ stream/mailbox 仍然是 runtime 兼容路径和某些 control/payload 的实际
   payload register count 是 8。
 - stream wrapper 返回 `0`，不向上暴露 mailbox send failure。
 
-建议：architecture 中保留 “Direct DTE 为 compiler data-plane 主路径”，但 runtime
-设计必须显式说明 Stream/mailbox 是兼容/control plane，错误传播需要单独处理。
+承接状态：architecture 保留 “Direct DTE 为 compiler data-plane 主路径”；launch/runtime 和
+communication 文档把 Stream/mailbox 放在兼容/control plane，不能作为主通信抽象或 correctness
+fence。
 
-## 11. `wafer.group` 缺少硬件 issue/drain、同步域和 phase/resource schedule
+## 11. issue/drain 和同步域已拆到下游 IR
 
-`wafer.group` 文档已经把 logical group 和 scheduled group 区分开，这是正确方向。
-但它现在的 scheduled group 还是纯计算 loop，没有表达硬件可见性、NCC issue/drain
-和多同步域。
+当前边界：`wafer.group` 不再保存 phase plan 或 resource schedule attr。硬件可见性、NCC
+issue/drain、communication wait 和 group barrier 应在 `wafer.tile_region` 及更低层通过
+`wafer.compute` / `wafer.comm` / `wafer.sync` op、effect 和 token 表达。
 
-需要补齐的 phase：
+下游 IR 需要显式表达的 phase：
 
 - prefetch/load：RDMA 或 DTE 将输入 tile 放入 SPM。
 - issue：发 CT/NE/RDMA/WDMA/TDMA packet，不默认 wait。
@@ -315,25 +338,28 @@ stream/mailbox 仍然是 runtime 兼容路径和某些 control/payload 的实际
 - group barrier：多 tile 同步，不用 `TsmWaitfinish` 表达。
 - writeback：WDMA 或 host/runtime dyn TLV path。
 
-建议：
+实现建议：
 
-- scheduled group 不只是 loop nest，还应显式带 phase / memory effect /
-  resource effect。
-- `wafer_local_wait(worker?)` 和 `wafer_group_barrier(group_id, phase, rank, size, ...)`
-  是不同 ABI。
-- MemoryEffect/ResourceEffect 不只标记 DMA/collective，还要区分 NCC queue、
-  DTE resource、Kcore SPM sync slot、host-visible completion。
+- scheduled group 可以把这些作为 legality/cost input，但不能把 issue 顺序或 phase plan 写成 attr。
+- `wafer.sync.local_wait`、communication wait 和 group barrier 是不同 IR / ABI 语义。
+- MemoryEffect/ResourceEffect 应区分 NCC queue、DTE resource、Kcore SPM sync slot 和
+  host-visible completion。
 
-## 12. `wafer.group` 缺少可实现的硬件资源模型
+## 12. 硬件资源模型已分层承接
 
-group planner 当前列了 tile shape 放得下、bank/alignment、DTE buffer 等，但缺少可以
-直接实现的资源分类。
+当前边界：group planner 只保留 abstract resource demand；SPM 文档承接 tile-local
+buffer/lifetime/range，DDR 文档承接 external binding、workspace BO、constant residency、
+pool/domain、capacity 和 bandwidth，compute 文档承接 CT/NE/RDMA/WDMA/TDMA queue family，
+comm 文档承接 DTE/FSM/packet/stream resource class。剩余工作是把这些 interface 做成 verifier
+可消费的实现。
 
-建议资源模型至少包含：
+实现时资源模型至少包含：
 
 - SPM tensor buffer：input/output/intermediate/psum/scratch。
 - SPM communication buffer：DTE send/recv staging。
 - reserved SPM slots：barrier/sync/debug/message ring。
+- DDR external binding、compiler workspace、resident constant、visible/control BO、pool/domain、
+  largest contiguous range 和 bandwidth/range conflict。
 - NCC queues：CT、NE、RDMA、WDMA、TDMA。
 - NCC worker：`worker_id`、per-worker queue、per-worker local drain。
 - DTE nodes：normal/high-performance、FSM id、packet id、stream id。
@@ -385,11 +411,11 @@ buffer 复用必须有 explicit local drain。
 - M5：compute/comm overlap 必须基于 issue/drain、DTE wait、group barrier、SPM
   bank/page coloring 和 PMU/profiling，不是简单把 op 放进同一个 kcore function。
 
-## 15. 测试体系缺失
+## 15. 测试体系承接状态
 
-两份 task 文档都缺少面向接口合同的测试计划。下面是 test catalog，不是统一
-milestone gate；每个子设计只取自己 IR stage 内的 diagnostics、golden tests
-和 bring-up tests：
+`tasks/2026-05-25-wafer-verification-plan-design.md` 已经定义独立 verification plan。下面保留
+历史 test catalog，作为后续实现时的检查材料；每个子设计只取自己 IR stage 内的 diagnostics、
+golden tests 和 bring-up tests：
 
 - CT wrapper-generated packet vs raw builder：unary、binary、unit-vector、loop-vector。
 - NE GEMM/Conv packet field offset 和 V0 optional 禁用规则。
@@ -412,55 +438,97 @@ milestone gate；每个子设计只取自己 IR stage 内的 diagnostics、golde
   SPM bank/page-color conflict、DDR overlap conflict。
 - PMU tests：NCC_CT/NE/RDMA/WDMA/TDMA `exe_time` / `blocking_time` 记录能与 case 对上。
 
-## 16. 建议的后续文档拆分
+## 16. 后续文档状态
 
-建议在当前两份 task 文档后面新增这些更落地的设计：
+当前子设计状态不在本文维护，统一见架构文档第 8 节。2026-05-25 之后，本文只保留还会影响
+后续实现的 gap：
 
-1. `Wafer Runtime Adapter and Package Format`
-   定义 HPGR/KMD/legacy Tsm 分层、completion 语义、BO pools、bootparam/TLV、weights、
-   metadata、tile placement、profiling config 和 host launch path。
+- Serving integration 暂不支持，延后到 core compiler pipeline 能跑通后再设计。
+- 现有子设计仍需要对应 ODS、verifier、conversion、resource planner、runtime adapter 和 tests
+  落地。
+- 若后续新增子设计，仍以架构文档第 8 节作为唯一状态索引。
 
-2. `Wafer C ABI Issue/Drain Contract`
-   定义 compiler lowering 调用的稳定 C ABI、Tsm wrapper family、参数单位、issue/drain
-   语义、local wait 和 group barrier。
+## 17. Transformer Block 跑通评估
 
-3. `Wafer Layout Propagation and SPM Materialization`
-   定义 semantic layout、下游 physical `mem_layout` 边界、shape/layout propagation
-   rules 和 materialization points。非平凡或改变 layout 的 op 需要显式规则；
-   passthrough/elementwise op 可以使用通用 verifier/propagation 规则，不要求每个 op
-   都硬实现 `inferlayout` / `infershape` 接口。`Tensor_Fmt` 不作为 compiler layout 模型。
+本节是从“能否支撑静态 transformer block vertical slice”视角做的设计审查。目标不是 serving
+集成，也不是完整 LLM runtime；KV cache、paged attention、prefill/decode 调度和全模型 pipeline
+暂时延后。
 
-4. `Wafer SPM Allocator and Parallel Scheduler`
-   定义 SPM 可用区间、reserved offsets、Cx/NCx size、bitpack、256B padding、64KB
-   page coloring、liveness、buffer reuse、NCC queue 和 `serial_mode=0`。
+### 17.1 文档关系
 
-5. `Wafer DTE Communication Runtime`
-   定义 V0 unicast DTE protocol、FSM monitor、packet counter、resource allocator、
-   ring/tree collective，以及 raw non-unicast ABI 的 V1 验证边界。
+Transformer block 的主链路应按下面的设计边界阅读和落地：
 
-6. `Wafer Verification Plan by Stage`
-   按 IR stage 定义 diagnostics、roundtrip、golden packet、runtime shielding 和
-   PMU/cost-model case 的进入条件。register-level spec 只约束已经 lower 到
-   `wafer.compute`、`wafer.comm` 或 runtime boundary 的路径；PMU/cost-model
-   microbench 只在进入 scheduler/overlap milestone 后成为 gate，不作为跨阶段统一
-   实现前置条件。
+```text
+Frontend artifact
+  -> Shardy / SPMD
+  -> Placement
+  -> Local compute normalization
+  -> wafer.group
+  -> wafer.tile_region
+  -> Layout / SPM / DDR
+  -> Compute / Communication
+  -> C ABI / Launch runtime package
+  -> Verification plan
+```
 
-7. `Wafer Group Scheduled IR`
-   在现有 `wafer.group` 基础上定义 scheduled group / spm scope / phase /
-   memory effect / resource effect。
+这里最容易混乱的是 local compute normalization、group 和 compute dialect 的分工：
 
-## 17. 当前文档可以保留的判断
+- local compute normalization 只把 StableHLO local shard 展开成 structured tensor IR。
+- `wafer.group` 只做 tile-local residency 和 staged schedule，不发明 softmax/RMSNorm/RoPE 高层 op。
+- `wafer.compute` 只表达 target-abstract compute/movement op 和 lower-level legality。
+
+### 17.2 当前设计已经覆盖的部分
+
+- QKV、attention score、attention value、output projection 和 MLP GEMM 可以走
+  dot/batch-matmul normalization、group tiling、`wafer.compute.gemm`、layout/SPM/DDR 和 C ABI。
+- Residual、bias、scale、RoPE 的 elementwise 部分可以走 structured tensor IR 到
+  `wafer.compute.elementwise`。
+- RMSNorm / LayerNorm 和 softmax 的数学结构可以表达成 reduction + elementwise 的 staged tensor IR。
+- Weight / scale / bias / RoPE table 可以作为 `ConstantLike`，通过 `wafer.load_tile`、constant
+  storage transform 和 DDR resident/streaming policy 进入 device storage。
+- Layout materialization、SPM trial、DDR demand、launch/runtime 和 C ABI 都有独立边界，不需要把
+  transformer case 的某个调度结果写成架构字段。
+
+### 17.3 Transformer Block 落地前置实现项
+
+下面这些不是当前文档工作卡住的原因，也不都属于抓图层面。它们是为了能严肃地宣称
+“compiler 支撑静态 transformer block vertical slice”而必须在对应层级实现并验证的前置项。
+
+| 层级 | 前置项 | 验收口径 |
+| --- | --- | --- |
+| Frontend artifact | 导出语义完整的 StableHLO / MLIR artifact，保留 shape、dtype、constant、weight、sharding 和 bounded dynamic shape；LLVM/MLIR/StableHLO/Shardy/importer 依赖由 adapter 和 build 配置隔离 | 没有 eager fallback、名字约定、不可界定 dynamic shape，后端 textual tests 不依赖 importer-only framework 包 |
+| Local compute normalization | 实现 dot_general、batch/head matmul、broadcast、reduction、reshape/transpose/slice、softmax、RMSNorm / LayerNorm、RoPE 和 MLP activation 的 structured IR 输出 | 输出只依赖 StableHLO semantics、type、indexing map 和 SSA use-def，不靠 layer 名或 tensor 名 |
+| Group planning | softmax staged schedule 有可测试 pattern：row max、exp、row sum、normalize 和 value accumulation 跨 key dimension 的状态明确表达 | 状态由 SSA、loop-carried value、explicit workspace 或 group split 表达，不写入 planner side table |
+| Compute coverage | elementwise 覆盖 add/sub/mul/div/max/min/neg/recip/sqrt/rsqrt/exp、limited broadcast、mask-add 或 compare/select；reduction 至少覆盖 max 和 sum | 能服务 softmax 与 norm；只有一个 demo reduce 或一个 GEMM smoke test 不算覆盖 |
+| Shape / indexing | Batch/head transpose relation 从 StableHLO dot dimension numbers 或 indexing map 推出 | 不能靠 Q/K/V 名字、参数顺序或示例 shape 恢复语义 |
+| Verification | M6 transformer block vertical slice gate 覆盖完整 block 的 normalization、group split、layout/SPM/DDR、C ABI 和 runtime completion | 单 op、单 group 或 single-tile smoke test 只能证明局部链路，不能证明 block 支撑完成 |
+
+### 17.4 建议落地顺序
+
+建议按以下顺序推进实现和验证：
+
+1. M0/M1：single tile / multi-tile no communication 的 load-GEMM-store 闭环。
+2. Structured tensor normalization：先让一个静态 transformer block local shard 输出可 tile 的
+   Linalg/Tensor/SCF/Arith/Math IR。
+3. Norm vertical slice：RMSNorm 或 LayerNorm 的 reduce + elementwise group。
+4. Attention softmax vertical slice：固定 shape、单 head 或少量 heads，先不接 value matmul。
+5. Attention full slice：QK^T + softmax + AV，必要时拆多个 groups。
+6. MLP slice：GEMM + activation + elementwise multiply + GEMM。
+7. M6：完整 transformer block，本地单 shard 先跑通；需要 tensor parallel 时再接 M2/M3/M4。
+
+## 18. 当前文档可以保留的判断
 
 下面这些判断和最新逆向结果一致，可以保留：
 
 - 不从历史 backend 反推整体架构。
-- OpenXLA/torch-xla/StableHLO/Shardy/SPMD 是合理主路径。
+- verified StableHLO / MLIR artifact、Shardy/SPMD 和 Wafer IR contract 是合理主路径；具体
+  exporter/importer 是可替换适配层。
 - Wafer 后端应生成 Wafer C ABI call，再由 C ABI 调 public Tsm wrapper。
 - Direct DTE 是 compiler data-plane 主路径，Stream/Score 不作为主通信抽象。
-- `wafer.group` 应以 SPM residency 和 scheduled tile loop 为核心，而不是普通 greedy fusion。
+- `wafer.group` 应以 tile-local residency 和 scheduled tile loop 为核心，而不是普通 greedy fusion。
 - Transform dialect 适合作为 schedule dump/replay/tuning 机制，不应替代 Wafer planner。
 
-## 18. 分层落地检查表
+## 19. 分层落地检查表
 
 下面是跨层问题目录，不是每个 task 设计文档的统一前置门槛。每个子设计只回答自己
 IR stage 内的问题，并明确哪些问题属于下游 dialect、runtime 或 verification plan：
@@ -468,10 +536,10 @@ IR stage 内的问题，并明确哪些问题属于下游 dialect、runtime 或 
 - Runtime/package：当前 host completion 来自 HPGR command/module/stream，还是
   Kcore/CSR/DTE/Stream 显式 wait？
 - Shape/layout IR stage：这个 op 或 tensor value 的 semantic layout、dtype、rank、
-  shape 是什么？进入 `wafer.spm` 后，physical `mem_layout` 是什么？
-- `wafer.spm`：是否需要 layout materialization？如果需要，它是否作为真实 data movement
+  shape 是什么？进入 `wafer.tile_region` / SPM bufferization 后，physical `mem_layout` 是什么？
+- Layout/SPM：是否需要 layout materialization？如果需要，它是否作为真实 data movement
   计入 SPM 和时间？
-- `wafer.spm`：SPM allocation 落在哪个区间？是否越过 `[0x10000, 0x2F0000)`？是否占用了
+- SPM：SPM allocation 落在哪个区间？是否越过 `[0x10000, 0x2F0000)`？是否占用了
   Kcore/runtime reserved slot？
 - Scheduler/PMU：该 buffer 是否 overlap-critical？如果是，是否使用 64KB page/color 策略？如果不是，
   是否只做 256B layout padding？
