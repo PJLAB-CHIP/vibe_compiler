@@ -1,5 +1,6 @@
 add_mlir_library(WaferTransforms
   LowerStablehloDot.cpp
+  LowerStablehloElementwise.cpp
   LowerStablehloShape.cpp
   NormalizeConstants.cpp
   Passes.cpp
