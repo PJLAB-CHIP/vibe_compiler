@@ -14,7 +14,7 @@ module {
     return %0 : tensor<4x8xf16>
   }
 
-  func.func @broadcast_elementwise_stays_ungrouped(
+  func.func @row_broadcast_elementwise(
       %lhs: tensor<4x8xf16>,
       %rhs: tensor<4xf16>,
       %out: tensor<4x8xf16>) -> tensor<4x8xf16> {
@@ -33,8 +33,9 @@ module {
 // CHECK: wafer.group_yield
 // CHECK: return %[[GROUP]] : tensor<4x8xf16>
 
-// CHECK-LABEL: func.func @broadcast_elementwise_stays_ungrouped(
-// CHECK-NOT: wafer.group
+// CHECK-LABEL: func.func @row_broadcast_elementwise(
+// CHECK: %[[BGROUP:.+]] = wafer.group
 // CHECK: linalg.elementwise
 // CHECK-SAME: indexing_maps
-// CHECK: return
+// CHECK: wafer.group_yield
+// CHECK: return %[[BGROUP]] : tensor<4x8xf16>

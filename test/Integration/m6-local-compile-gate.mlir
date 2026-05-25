@@ -130,15 +130,20 @@ module {
 // IR-NOT: stablehlo.
 // IR-NOT: wafer.group
 // IR: linalg.generic
-// IR: linalg.elementwise kind=#linalg.elementwise_kind<sub>
+// IR: wafer.abi.elementwise <issue_only> <sub>
 // IR-SAME: indexing_maps
+// IR: wafer.abi.elementwise <issue_only> <exp>
+// IR-SAME: indexing_maps
+// IR: wafer.abi.elementwise <issue_only> <div>
+// IR-SAME: indexing_maps
+// IR: linalg.generic
 // IR: wafer.ddr.external_binding <input>
 // IR: wafer.ddr.external_binding <output>
 // IR: wafer.tile_region
 // IR-NOT: wafer.load_tile
 // IR: wafer.abi.rdma_1d <issue_only>
-// IR: wafer.abi.elementwise <issue_only> <exp>
 // IR: wafer.abi.gemm <issue_only>
+// IR-NOT: linalg.elementwise
 // IR-NOT: wafer.compute.elementwise
 // IR-NOT: wafer.compute.gemm
 // IR: wafer.abi.wdma_1d <issue_only>

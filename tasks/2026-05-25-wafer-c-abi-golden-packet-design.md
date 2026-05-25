@@ -104,8 +104,8 @@ V0 family：
 调用 public Tsm wrapper、Kcore runtime helper 或未来 native helper。
 
 当前 V0 compiler skeleton 用 `wafer.abi.rdma_1d`、`wafer.abi.wdma_1d`、`wafer.abi.gemm` 和
-same-shape 子集的 `wafer.abi.elementwise` 作为 wrapper-first C ABI issue 点。它们保留
-SSA/type verifier，用 explicit byte count、M/K/N、elementwise kind 和 `issue_only` wait policy
+same-shape / limited-broadcast 子集的 `wafer.abi.elementwise` 作为 wrapper-first C ABI issue 点。
+它们保留 SSA/type verifier，用 explicit byte count、M/K/N、elementwise kind 和 `issue_only` wait policy
 表达参数单位、address direction 和 wait 边界；它们不是 raw packet dialect，也不保存 runtime
 physical address 或 BO handle。后续 C/LLVM lowering 可以把这些 issue op 转成实际 `wafer_*`
 C shim 调用，golden packet 测试再验证 shim 到 wrapper/packet field 的映射。

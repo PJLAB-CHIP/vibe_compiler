@@ -25,6 +25,11 @@ static wafer::TileBufferType getSPMTileBuffer(mlir::MLIRContext *context,
       wafer::MemorySpaceAttr::get(context, wafer::MemorySpace::SPM));
 }
 
+static bool hasStaticMismatch(int64_t lhs, int64_t rhs) {
+  return lhs != mlir::ShapedType::kDynamic && rhs != mlir::ShapedType::kDynamic &&
+         lhs != rhs;
+}
+
 static mlir::linalg::MatmulOp getSingleMatmulBody(wafer::GroupOp group) {
   mlir::linalg::MatmulOp matmul;
   mlir::Block &block = group.getBody().front();
@@ -173,17 +178,6 @@ materializeElementwiseGroup(wafer::GroupOp group,
     return elementwise.emitOpError(
         "cannot materialize single tile: expected tensor elementwise with one "
         "out and one result");
-  for (mlir::AffineMap map : elementwise.getIndexingMapsArray()) {
-    if (!map.isIdentity())
-      return elementwise.emitOpError(
-          "cannot materialize single tile: elementwise indexing maps require "
-          "explicit broadcast/layout materialization");
-  }
-  if (elementwise.getIndexingMapsArray().size() !=
-      elementwise.getInputs().size() + elementwise.getOutputs().size())
-    return elementwise.emitOpError(
-        "cannot materialize single tile: elementwise indexing map count must "
-        "match inputs plus outputs");
 
   std::optional<wafer::ComputeElementwiseKind> kind =
       mapElementwiseKind(elementwise.getKind());
@@ -197,11 +191,43 @@ materializeElementwiseGroup(wafer::GroupOp group,
     return elementwise.emitOpError(
         "cannot materialize single tile: elementwise result must be ranked");
 
-  for (mlir::Value input : elementwise.getInputs()) {
-    if (input.getType() != resultType)
+  llvm::SmallVector<mlir::AffineMap> maps = elementwise.getIndexingMapsArray();
+  if (maps.size() != elementwise.getInputs().size() + elementwise.getOutputs().size())
+    return elementwise.emitOpError(
+        "cannot materialize single tile: elementwise indexing map count must "
+        "match inputs plus outputs");
+  mlir::AffineMap resultMap = maps.back();
+  if (resultMap.getNumDims() != resultType.getRank() ||
+      resultMap.getNumSymbols() != 0 || !resultMap.isIdentity())
+    return elementwise.emitOpError(
+        "cannot materialize single tile: result indexing map must be identity");
+
+  for (auto [index, input] : llvm::enumerate(elementwise.getInputs())) {
+    auto inputType = mlir::dyn_cast<mlir::RankedTensorType>(input.getType());
+    if (!inputType ||
+        inputType.getElementType() != resultType.getElementType())
       return elementwise.emitOpError(
-          "cannot materialize single tile: elementwise input tensor types must "
-          "match result type");
+          "cannot materialize single tile: elementwise input tensor element "
+          "types must match result type");
+
+    mlir::AffineMap inputMap = maps[index];
+    if (inputMap.getNumDims() != resultType.getRank() ||
+        inputMap.getNumSymbols() != 0 ||
+        inputMap.getNumResults() != inputType.getRank() ||
+        !inputMap.isProjectedPermutation())
+      return elementwise.emitOpError(
+          "cannot materialize single tile: input indexing maps must be "
+          "projected permutations");
+
+    for (auto [dim, expr] : llvm::enumerate(inputMap.getResults())) {
+      auto dimExpr = mlir::dyn_cast<mlir::AffineDimExpr>(expr);
+      if (!dimExpr || dimExpr.getPosition() >= resultType.getRank() ||
+          hasStaticMismatch(inputType.getDimSize(dim),
+                            resultType.getDimSize(dimExpr.getPosition())))
+        return elementwise.emitOpError(
+            "cannot materialize single tile: elementwise indexing map "
+            "dimension must match tensor shape");
+    }
   }
   if (elementwise.getOutputs()[0].getType() != resultType)
     return elementwise.emitOpError(
@@ -237,13 +263,19 @@ materializeElementwiseGroup(wafer::GroupOp group,
   llvm::SmallVector<mlir::Value> inputTiles;
   for (mlir::Value input : elementwise.getInputs()) {
     mlir::Value mappedInput = mapping.lookup(input);
-    auto tile = bodyBuilder.create<wafer::LoadTileOp>(loc, tileType, mappedInput);
+    auto inputType =
+        mlir::cast<mlir::RankedTensorType>(mappedInput.getType());
+    auto inputTileType =
+        getSPMTileBuffer(context, inputType, wafer::MemLayout::Tensor);
+    auto tile =
+        bodyBuilder.create<wafer::LoadTileOp>(loc, inputTileType, mappedInput);
     inputTiles.push_back(tile.getResult());
   }
 
   auto compute = bodyBuilder.create<wafer::ComputeElementwiseOp>(
       loc, tileType, wafer::ComputeElementwiseKindAttr::get(context, *kind),
       inputTiles);
+  compute->setAttr("indexing_maps", elementwise.getIndexingMaps());
   bodyBuilder.create<wafer::StoreTileOp>(loc, compute.getResult(), out);
   bodyBuilder.create<wafer::TileYieldOp>(loc, out);
 

@@ -118,11 +118,14 @@ transcendental 子集。它应满足：
   SiLU / GELU 可以先作为 staged decomposition，使用 sigmoid/tanh/erf/exp 中已经被 verifier
   支持的子集；没有被支持的 transcendental 不能靠名字 fallback。
 
-当前落地的 V0 子集先约束在 accepted-layout `!wafer.tile_buffer` 形式：operands/result 必须是
-SPM + tensor layout、逻辑 tensor type 完全一致，并由 `#wafer.elementwise_kind<...>` 记录
-add/sub/mul/div/max/min/neg/recip/sqrt/rsqrt/exp/tanh。`linalg.elementwise` 只有在 indexing maps
-都是 identity、且 input/output/result shape 完全一致时才形成 group；broadcast/scalar form 仍留在
-structured tensor IR，直到 broadcast 表示和 verifier 合同补齐。
+当前落地的 V0 子集约束在 accepted-layout `!wafer.tile_buffer` 形式：operands/result 必须是
+SPM + tensor layout、element type 一致，并由 `#wafer.elementwise_kind<...>` 记录
+add/sub/mul/div/max/min/neg/recip/sqrt/rsqrt/exp/tanh。`wafer.compute.elementwise` 可以不带
+`indexing_maps`，此时要求所有 operand/result 逻辑 tensor type 完全一致；也可以携带和
+`linalg.elementwise` 对齐的 projected-permutation `indexing_maps`，此时 result map 必须是 identity，
+input map 的每个维度必须映射到 result 的一个维度，静态维度必须一致。这个合同覆盖当前
+same-shape、row/head/vector broadcast 子集；更复杂 broadcast、scalar immediate、dynamic shape、
+relation/logic 和 convert 仍按后续 gate 推进。
 
 ### 3.3 Reduce
 
@@ -282,9 +285,9 @@ V0 推荐实现顺序：
 5. `wafer.layout.materialize` 到 GatherScatter / TDMA 的最小闭环。
 
 当前实现顺序已经先覆盖了 accepted-layout `wafer.compute.gemm`、load/store、layout materialize，
-并补入 same-shape identity elementwise 到 `wafer.compute.elementwise` /
-`wafer.abi.elementwise` 的 local skeleton。它不是完整 elementwise coverage；limited broadcast、
-relation/logic、convert 和 reduce 仍按后续 gate 推进。
+并补入 same-shape identity 与 projected-permutation limited broadcast elementwise 到
+`wafer.compute.elementwise` / `wafer.abi.elementwise` 的 local skeleton。它不是完整 elementwise
+coverage；更复杂 broadcast、relation/logic、convert 和 reduce 仍按后续 gate 推进。
 
 V1 或后续扩展：
 

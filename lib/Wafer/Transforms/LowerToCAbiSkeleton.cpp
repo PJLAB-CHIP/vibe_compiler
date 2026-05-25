@@ -124,6 +124,9 @@ lowerComputeElementwise(wafer::ComputeElementwiseOp elementwise) {
       elementwise.getLoc(), elementwise.getResult().getType(),
       getIssueOnlyPolicy(elementwise.getContext()), elementwise.getKindAttr(),
       elementwise.getInputs());
+  if (mlir::Attribute indexingMaps =
+          elementwise->getAttr("indexing_maps"))
+    abi->setAttr("indexing_maps", indexingMaps);
   elementwise.getResult().replaceAllUsesWith(abi.getResult());
   elementwise.erase();
   return mlir::success();

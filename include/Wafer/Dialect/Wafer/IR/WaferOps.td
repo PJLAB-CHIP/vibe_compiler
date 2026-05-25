@@ -271,8 +271,11 @@ def Wafer_ComputeElementwiseOp : Wafer_Op<"compute.elementwise", [
   let description = [{
     `wafer.compute.elementwise` represents tile-local scalar elementwise
     compute over already materialized SPM tile buffers. The V0 operation keeps
-    broadcast planning outside the IR contract: all operands and the result
-    must have the same logical tensor type, memory space, and physical layout.
+    its operand/result relation explicit: without `indexing_maps`, all operands
+    and the result must have the same logical tensor type; with
+    `indexing_maps`, operands may use verifier-proven projected-permutation
+    broadcast from result dimensions. All operands and the result must use SPM
+    tensor tile buffers with matching element types.
   }];
 
   let arguments = (ins

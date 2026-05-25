@@ -21,6 +21,11 @@ static bool isTensorValue(mlir::Value value) {
   return mlir::isa<mlir::TensorType>(value.getType());
 }
 
+static bool hasStaticMismatch(int64_t lhs, int64_t rhs) {
+  return lhs != mlir::ShapedType::kDynamic && rhs != mlir::ShapedType::kDynamic &&
+         lhs != rhs;
+}
+
 static bool canFormSingleMatmulGroup(mlir::linalg::MatmulOp matmul) {
   if (matmul->getParentOfType<wafer::GroupOp>())
     return false;
@@ -73,24 +78,52 @@ static bool canFormSingleElementwiseGroup(
     return false;
   if (elementwise->getNumResults() != 1 || elementwise.getOutputs().size() != 1)
     return false;
-  for (mlir::AffineMap map : elementwise.getIndexingMapsArray()) {
-    if (!map.isIdentity())
-      return false;
-  }
-  if (elementwise.getIndexingMapsArray().size() !=
-      elementwise.getInputs().size() + elementwise.getOutputs().size())
-    return false;
   if (!llvm::all_of(elementwise.getInputs(), isTensorValue))
     return false;
   if (!llvm::all_of(elementwise.getOutputs(), isTensorValue))
     return false;
 
-  mlir::Type resultType = elementwise->getResult(0).getType();
+  auto resultType =
+      mlir::dyn_cast<mlir::RankedTensorType>(elementwise->getResult(0).getType());
+  if (!resultType || elementwise.getOutputs()[0].getType() != resultType)
+    return false;
+
+  llvm::SmallVector<mlir::AffineMap> maps = elementwise.getIndexingMapsArray();
+  if (maps.size() != elementwise.getInputs().size() + elementwise.getOutputs().size())
+    return false;
+  mlir::AffineMap resultMap = maps.back();
+  if (resultMap.getNumDims() != resultType.getRank() ||
+      resultMap.getNumSymbols() != 0 || !resultMap.isIdentity())
+    return false;
+
+  for (auto [index, input] : llvm::enumerate(elementwise.getInputs())) {
+    auto inputType = mlir::dyn_cast<mlir::RankedTensorType>(input.getType());
+    if (!inputType ||
+        inputType.getElementType() != resultType.getElementType())
+      return false;
+
+    mlir::AffineMap inputMap = maps[index];
+    if (inputMap.getNumDims() != resultType.getRank() ||
+        inputMap.getNumSymbols() != 0 ||
+        inputMap.getNumResults() != inputType.getRank() ||
+        !inputMap.isProjectedPermutation())
+      return false;
+
+    for (auto [dim, expr] : llvm::enumerate(inputMap.getResults())) {
+      auto dimExpr = mlir::dyn_cast<mlir::AffineDimExpr>(expr);
+      if (!dimExpr || dimExpr.getPosition() >= resultType.getRank())
+        return false;
+      if (hasStaticMismatch(inputType.getDimSize(dim),
+                            resultType.getDimSize(dimExpr.getPosition())))
+        return false;
+    }
+  }
+
   for (mlir::Value input : elementwise.getInputs()) {
-    if (input.getType() != resultType)
+    if (!mlir::isa<mlir::RankedTensorType>(input.getType()))
       return false;
   }
-  return elementwise.getOutputs()[0].getType() == resultType;
+  return true;
 }
 
 static void addMappedBlockArguments(mlir::Block *block, mlir::ValueRange values,

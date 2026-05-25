@@ -64,7 +64,8 @@ plan attr。P3.7 的 DDR external binding demand 已落地：新增 `wafer.ddr.e
 `--wafer-materialize-ddr-external-bindings` 从 tile-region 内 `load_tile` / `store_tile` 的 boundary
 use-def 推导 demand；它不携带 BO handle、physical address、pool/domain placement 或 allocation
 trace。P3.8 的 C ABI skeleton lowering 已落地：新增 `wafer.abi.rdma_1d` /
-`wafer.abi.wdma_1d` / `wafer.abi.gemm` issue ops，后续 same-shape elementwise slice 扩展了
+`wafer.abi.wdma_1d` / `wafer.abi.gemm` issue ops，后续 same-shape / limited-broadcast elementwise
+slice 扩展了
 `wafer.abi.elementwise`；`--wafer-lower-to-c-abi-skeleton` 将 `wafer.load_tile`、`wafer.store_tile`、
 `wafer.compute.gemm` 和已支持的 `wafer.compute.elementwise` 替换为显式 bytes、M/K/N、kind 和
 `issue_only` wait policy 的 ABI skeleton，不生成 raw packet 或 runtime handle。P3.9 的 M0 ABI
@@ -127,11 +128,11 @@ P5.8 的 M6 local compile gate 已开始落地：新增 `m6-local-compile-gate` 
 single-tile materialization、SPM allocation check、DDR binding demand 和 C ABI skeleton lowering；
 同时新增 `--emit-m6-local-smoke` manifest，覆盖原始 block launch signature、单 tile placement、
 GEMM 子图 ABI ops、manifest validate、C stub 生成和本地 C syntax compile。当前该 gate 只证明
-GEMM 子图 local compile path，不代表 reduce/elementwise/attention generic 的 physical lowering
-已经完成，因此 P5.8 仍保持 pending。P5.8 的 elementwise physical slice 已开始落地：
+GEMM 子图 local compile path，不代表 reduce/attention generic 的 physical lowering
+已经完成，因此 P5.8 仍保持 pending。P5.8 的 elementwise physical slice 已继续推进：
 `wafer.compute.elementwise` / `wafer.abi.elementwise` 的 enum attr、parser/printer/verifier、
-same-shape identity indexing-map `linalg.elementwise` group formation、single-tile materialization、
-SPM/DDR/C ABI skeleton path 均已有 lit gate；broadcast elementwise、reduce 和 attention generic
+same-shape identity 与 projected-permutation limited broadcast `linalg.elementwise` group formation、
+single-tile materialization、SPM/DDR/C ABI skeleton path 均已有 lit gate；reduce 和 attention generic
 仍未纳入完整 M6 local compile gate。
 
 ## Active Task
@@ -312,7 +313,7 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 
 ## 下一步
 
-继续 P5.8，把 full local block 中的 broadcast elementwise、reduce、attention generic 从 structured
-tensor IR 纳入可验证 group schedule 和 physical lowering；当前 M6 partial gate 覆盖 rank-2 GEMM
-子图和 same-shape identity elementwise 子路径，但还不是完整 block local compile。
+继续 P5.8，把 full local block 中的 reduce、attention generic 从 structured tensor IR 纳入可验证
+group schedule 和 physical lowering；当前 M6 partial gate 覆盖 rank-2 GEMM 子图和 same-shape /
+limited-broadcast elementwise 子路径，但还不是完整 block local compile。
 不要越过当前 local compile gate 直接实现未验证的整块逻辑。

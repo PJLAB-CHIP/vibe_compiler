@@ -43,6 +43,11 @@ static mlir::Operation *getSingleBodyOp(wafer::GroupOp group) {
   return root;
 }
 
+static bool hasStaticMismatch(int64_t lhs, int64_t rhs) {
+  return lhs != mlir::ShapedType::kDynamic && rhs != mlir::ShapedType::kDynamic &&
+         lhs != rhs;
+}
+
 static bool isSupportedElementwiseKind(mlir::linalg::ElementwiseKind kind) {
   switch (kind) {
   case mlir::linalg::ElementwiseKind::add:
@@ -63,25 +68,49 @@ static bool isSupportedElementwiseKind(mlir::linalg::ElementwiseKind kind) {
   }
 }
 
-static bool isSameShapeElementwiseRoot(
+static bool isLimitedBroadcastElementwiseRoot(
     mlir::linalg::ElementwiseOp elementwise) {
   if (!isSupportedElementwiseKind(elementwise.getKind()))
     return false;
   if (elementwise->getNumResults() != 1 || elementwise.getOutputs().size() != 1)
     return false;
-  for (mlir::AffineMap map : elementwise.getIndexingMapsArray()) {
-    if (!map.isIdentity())
-      return false;
-  }
-  if (elementwise.getIndexingMapsArray().size() !=
-      elementwise.getInputs().size() + elementwise.getOutputs().size())
+
+  auto resultType =
+      mlir::dyn_cast<mlir::RankedTensorType>(elementwise->getResult(0).getType());
+  if (!resultType || elementwise.getOutputs()[0].getType() != resultType)
     return false;
-  mlir::Type resultType = elementwise->getResult(0).getType();
-  for (mlir::Value input : elementwise.getInputs()) {
-    if (input.getType() != resultType)
+
+  llvm::SmallVector<mlir::AffineMap> maps = elementwise.getIndexingMapsArray();
+  if (maps.size() != elementwise.getInputs().size() + elementwise.getOutputs().size())
+    return false;
+  mlir::AffineMap resultMap = maps.back();
+  if (resultMap.getNumDims() != resultType.getRank() ||
+      resultMap.getNumSymbols() != 0 || !resultMap.isIdentity())
+    return false;
+
+  for (auto [index, input] : llvm::enumerate(elementwise.getInputs())) {
+    auto inputType = mlir::dyn_cast<mlir::RankedTensorType>(input.getType());
+    if (!inputType ||
+        inputType.getElementType() != resultType.getElementType())
       return false;
+
+    mlir::AffineMap inputMap = maps[index];
+    if (inputMap.getNumDims() != resultType.getRank() ||
+        inputMap.getNumSymbols() != 0 ||
+        inputMap.getNumResults() != inputType.getRank() ||
+        !inputMap.isProjectedPermutation())
+      return false;
+
+    for (auto [dim, expr] : llvm::enumerate(inputMap.getResults())) {
+      auto dimExpr = mlir::dyn_cast<mlir::AffineDimExpr>(expr);
+      if (!dimExpr || dimExpr.getPosition() >= resultType.getRank())
+        return false;
+      if (hasStaticMismatch(inputType.getDimSize(dim),
+                            resultType.getDimSize(dimExpr.getPosition())))
+        return false;
+    }
   }
-  return elementwise.getOutputs()[0].getType() == resultType;
+  return true;
 }
 
 static std::optional<RootTileCandidate>
@@ -156,11 +185,11 @@ checkM0CandidateFeasibility(wafer::GroupOp group,
   }
 
   auto elementwise = mlir::dyn_cast<mlir::linalg::ElementwiseOp>(root);
-  if (elementwise && isSameShapeElementwiseRoot(elementwise))
+  if (elementwise && isLimitedBroadcastElementwiseRoot(elementwise))
     return FeasibilityResult::success();
 
   return FeasibilityResult::failure(
-      "M0 feasibility requires a linalg.matmul or same-shape "
+      "M0 feasibility requires a linalg.matmul or limited-broadcast "
       "linalg.elementwise root");
 }
 

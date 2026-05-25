@@ -3,6 +3,8 @@
 #include "Wafer/Dialect/Wafer/IR/WaferDialect.h"
 
 #include "mlir/Dialect/Async/IR/Async.h"
+#include "mlir/IR/AffineExpr.h"
+#include "mlir/IR/AffineMap.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -385,7 +387,28 @@ verifyElementwiseTileContract(mlir::Operation *op, ComputeElementwiseKind kind,
 
   mlir::RankedTensorType resultTensor =
       getTileBufferTensorType(resultTileType);
-  for (mlir::Value input : inputs) {
+  mlir::ArrayAttr indexingMaps =
+      op->getAttrOfType<mlir::ArrayAttr>("indexing_maps");
+
+  if (indexingMaps) {
+    if (indexingMaps.size() != inputs.size() + 1)
+      return op->emitOpError(
+          "elementwise indexing map count must match operands plus result");
+
+    auto resultMapAttr =
+        mlir::dyn_cast<mlir::AffineMapAttr>(
+            indexingMaps[indexingMaps.size() - 1]);
+    if (!resultMapAttr)
+      return op->emitOpError(
+          "elementwise indexing_maps entries must be affine maps");
+    mlir::AffineMap resultMap = resultMapAttr.getValue();
+    if (resultMap.getNumDims() != resultTensor.getRank() ||
+        resultMap.getNumSymbols() != 0 || !resultMap.isIdentity())
+      return op->emitOpError(
+          "elementwise result indexing map must be identity");
+  }
+
+  for (auto [index, input] : llvm::enumerate(inputs)) {
     auto inputTileType = mlir::dyn_cast<TileBufferType>(input.getType());
     if (!inputTileType)
       return op->emitOpError("expects tile_buffer operands");
@@ -394,9 +417,40 @@ verifyElementwiseTileContract(mlir::Operation *op, ComputeElementwiseKind kind,
           "elementwise operands must use SPM memory space");
     if (!hasTileBufferLayout(inputTileType, MemLayout::Tensor))
       return op->emitOpError("elementwise operands must use tensor mem_layout");
-    if (getTileBufferTensorType(inputTileType) != resultTensor)
+    mlir::RankedTensorType inputTensor =
+        getTileBufferTensorType(inputTileType);
+    if (inputTensor.getElementType() != resultTensor.getElementType())
+      return op->emitOpError(
+          "elementwise operand element types must match result element type");
+    if (!indexingMaps && inputTensor != resultTensor)
       return op->emitOpError(
           "elementwise operand tensor types must match result tensor type");
+    if (!indexingMaps)
+      continue;
+
+    auto inputMapAttr =
+        mlir::dyn_cast<mlir::AffineMapAttr>(indexingMaps[index]);
+    if (!inputMapAttr)
+      return op->emitOpError(
+          "elementwise indexing_maps entries must be affine maps");
+    mlir::AffineMap inputMap = inputMapAttr.getValue();
+    if (inputMap.getNumDims() != resultTensor.getRank() ||
+        inputMap.getNumSymbols() != 0 ||
+        inputMap.getNumResults() != inputTensor.getRank() ||
+        !inputMap.isProjectedPermutation())
+      return op->emitOpError(
+          "elementwise input indexing maps must be projected permutations");
+
+    for (auto [dim, expr] : llvm::enumerate(inputMap.getResults())) {
+      auto dimExpr = mlir::dyn_cast<mlir::AffineDimExpr>(expr);
+      if (!dimExpr || dimExpr.getPosition() >= resultTensor.getRank())
+        return op->emitOpError(
+            "elementwise input indexing maps must use result dimensions");
+      if (hasStaticMismatch(inputTensor.getDimSize(dim),
+                            resultTensor.getDimSize(dimExpr.getPosition())))
+        return op->emitOpError(
+            "elementwise indexing map dimension must match tensor shape");
+    }
   }
 
   return mlir::success();
