@@ -99,4 +99,23 @@ def Wafer_TileYieldOp : Wafer_Op<"tile_yield", [
   let assemblyFormat = [{ attr-dict ($values^ `:` type($values))? }];
 }
 
+def Wafer_LayoutMaterializeOp : Wafer_Op<"layout.materialize", [
+    WaferLayoutOpInterface
+  ]> {
+  let summary = "explicit tile-buffer layout materialization";
+  let description = [{
+    `wafer.layout.materialize` represents real device-side data movement from
+    one Wafer physical layout family to another. It preserves the logical
+    tensor type and memory space; only the tile-buffer `mem_layout` changes.
+    Same-layout materialization is not a semantic no-op to keep around and
+    must be removed by canonicalization instead.
+  }];
+
+  let arguments = (ins AnyType:$source);
+  let results = (outs AnyType:$result);
+
+  let hasVerifier = 1;
+  let assemblyFormat = "$source attr-dict `:` type($source) `->` type($result)";
+}
+
 #endif // WAFER_DIALECT_WAFER_IR_WAFEROPS_TD

@@ -11,8 +11,9 @@ pin 和 bootstrap 脚本管理；当前本地验证使用 21.0.0git override，�
 `wafer-import-model` disabled stub、依赖一致性检查脚本和 Wafer tiling/layout/resource-effect
 interface skeleton 已落地。最小 `wafer.group` / `wafer.group_yield`、region/result/yield verifier
 和 SPM memref 拒绝测试已落地。最小 `!wafer.tile_buffer`、`wafer.tile_region` /
-`wafer.tile_yield`、边界类型 verifier 和 SPM tile buffer escape 拒绝测试已落地；下一步进入
-layout materialization op。
+`wafer.tile_yield`、边界类型 verifier 和 SPM tile buffer escape 拒绝测试已落地。最小
+`wafer.layout.materialize` 及 layout/tensor/memory-space verifier 已落地；下一步进入
+compute/movement op family。
 
 ## Active Task
 
@@ -80,7 +81,7 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 | P1.3 | done | 定义 `WaferTilingInterface`、`WaferLayoutOpInterface`、resource/effect 相关接口骨架 | ODS / C++ 编译通过；接口不携带 planner side table |
 | P1.4 | done | 定义最小 `wafer.group` op | region / operand / result contract 可验证；不接受 SPM memref |
 | P1.5 | done | 定义最小 `wafer.tile_region` op 和 tile buffer type | tile-local region boundary、buffer ownership、effect scope 可验证 |
-| P1.6 | pending | 定义 layout materialization op 的最小 IR 形态 | 表达真实 data movement；不作为 metadata cast |
+| P1.6 | done | 定义 layout materialization op 的最小 IR 形态 | 表达真实 data movement；不作为 metadata cast |
 | P1.7 | pending | 定义 `wafer.compute` / movement 最小 op family：load tile、store tile、gemm | dtype、shape、layout contract 有 verifier |
 | P1.8 | pending | 定义 `wafer.comm` p2p、sync token、local wait 的最小表示 | endpoint、token、wait policy 可验证 |
 | P1.9 | pending | 定义 `wafer.launch` 最小 boundary | launch signature、resource summary、package ref 不反向污染 tensor IR |
@@ -191,5 +192,5 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 
 ## 下一步
 
-继续从 P1.6 开始实现最小 layout materialization op。不要越过 P1 verifier 直接实现
-transformer block 逻辑。
+继续从 P1.7 开始实现最小 `wafer.compute` / movement op family。不要越过 P1 verifier
+直接实现 transformer block 逻辑。

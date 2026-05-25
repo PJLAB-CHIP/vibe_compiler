@@ -55,6 +55,15 @@ static bool isSPMTileBuffer(mlir::Type type) {
          wafer::MemorySpace::SPM;
 }
 
+static wafer::MemLayoutAttr getTileBufferLayout(wafer::TileBufferType type) {
+  return mlir::cast<wafer::MemLayoutAttr>(type.getLayout());
+}
+
+static wafer::MemorySpaceAttr
+getTileBufferMemorySpace(wafer::TileBufferType type) {
+  return mlir::cast<wafer::MemorySpaceAttr>(type.getMemorySpace());
+}
+
 mlir::LogicalResult GroupOp::verify() {
   if (getNumResults() != getOuts().size())
     return emitOpError("expected result count to match outs count, got ")
@@ -130,6 +139,26 @@ mlir::LogicalResult GroupOp::verify() {
     if (attr.getName() != getOperandSegmentSizesAttrName())
       return emitOpError("does not accept semantic attributes");
   }
+
+  return mlir::success();
+}
+
+mlir::LogicalResult LayoutMaterializeOp::verify() {
+  auto sourceType = mlir::dyn_cast<TileBufferType>(getSource().getType());
+  auto resultType = mlir::dyn_cast<TileBufferType>(getResult().getType());
+  if (!sourceType || !resultType)
+    return emitOpError("expects tile_buffer source and result types");
+
+  if (sourceType.getTensorType() != resultType.getTensorType())
+    return emitOpError("layout materialize must preserve logical tensor type");
+
+  if (getTileBufferMemorySpace(sourceType).getValue() !=
+      getTileBufferMemorySpace(resultType).getValue())
+    return emitOpError("layout materialize must preserve memory space");
+
+  if (getTileBufferLayout(sourceType).getValue() ==
+      getTileBufferLayout(resultType).getValue())
+    return emitOpError("layout materialize must change mem_layout");
 
   return mlir::success();
 }
