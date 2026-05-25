@@ -6,6 +6,8 @@
   `.deps/python`。
 - 用 `python3 tools/bootstrap_deps.py --importer-sources` shallow fetch pinned StableHLO / Shardy
   源码到 `.deps/src`；不要 full clone 上游历史作为默认 bootstrap。
+- 用 `python3 tools/bootstrap_deps.py --llvm` 下载 pinned LLVM/MLIR 预编译包；脚本会检查远端
+  Content-Length，并把未完成下载保存在 `.part` 后续续传，避免把半包当成可解包 archive。
 - 在 pinned LLVM/MLIR 预编译包下载完成前，本地 bring-up 可以显式 override：
   `cmake -S . -B build/p0 -GNinja -DMLIR_DIR=<mlir-cmake-dir> -DLLVM_DIR=<llvm-cmake-dir>
   -DPython3_EXECUTABLE=$PWD/.deps/python/bin/python -DWAFER_ALLOW_UNPINNED_LLVM=ON`。

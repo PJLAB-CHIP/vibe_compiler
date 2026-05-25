@@ -49,6 +49,58 @@ def clone_or_update(repo: str, commit: str, destination: pathlib.Path) -> None:
     run(["git", "checkout", "--detach", commit], cwd=destination)
 
 
+def get_remote_content_length(url: str) -> int | None:
+    request = urllib.request.Request(url, method="HEAD")
+    with urllib.request.urlopen(request) as response:
+        content_length = response.headers.get("Content-Length")
+    if content_length is None:
+        return None
+    return int(content_length)
+
+
+def is_complete_file(path: pathlib.Path, expected_size: int | None) -> bool:
+    if not path.exists():
+        return False
+    if expected_size is None:
+        return True
+    return path.stat().st_size == expected_size
+
+
+def download_with_resume(url: str, destination: pathlib.Path) -> None:
+    expected_size = get_remote_content_length(url)
+    if is_complete_file(destination, expected_size):
+        return
+
+    part = destination.with_name(destination.name + ".part")
+    if destination.exists():
+        if expected_size is not None and destination.stat().st_size > expected_size:
+            destination.unlink()
+        elif not part.exists() or destination.stat().st_size > part.stat().st_size:
+            destination.replace(part)
+        else:
+            destination.unlink()
+
+    existing_size = part.stat().st_size if part.exists() else 0
+    headers = {}
+    if existing_size > 0:
+        headers["Range"] = f"bytes={existing_size}-"
+
+    print(f"Downloading {url}", flush=True)
+    request = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(request) as response:
+        append = existing_size > 0 and response.status == 206
+        mode = "ab" if append else "wb"
+        with part.open(mode) as output:
+            shutil.copyfileobj(response, output)
+
+    if not is_complete_file(part, expected_size):
+        actual = part.stat().st_size if part.exists() else 0
+        raise RuntimeError(
+            f"incomplete download for {destination.name}: got {actual} bytes"
+        )
+    part.replace(destination)
+
+
 def fetch_llvm_prebuilt(versions: dict[str, str], prefix: pathlib.Path) -> pathlib.Path:
     version = versions["WAFER_LLVM_VERSION"]
     url = versions["WAFER_LLVM_LINUX_X64_URL"]
@@ -60,10 +112,7 @@ def fetch_llvm_prebuilt(versions: dict[str, str], prefix: pathlib.Path) -> pathl
     downloads = prefix / "downloads"
     downloads.mkdir(parents=True, exist_ok=True)
     archive = downloads / pathlib.Path(url).name
-    if not archive.exists():
-        print(f"Downloading {url}", flush=True)
-        with urllib.request.urlopen(url) as response, archive.open("wb") as output:
-            shutil.copyfileobj(response, output)
+    download_with_resume(url, archive)
 
     extract_dir = prefix / "llvm" / f"extract-{version}"
     if extract_dir.exists():

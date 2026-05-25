@@ -1,0 +1,4 @@
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: printf abc > %t/archive.tar.xz
+# RUN: %python -c "import pathlib, sys; sys.path.insert(0, '%wafer_src_root/tools'); import bootstrap_deps; assert not bootstrap_deps.is_complete_file(pathlib.Path('%t/archive.tar.xz'), 4)"
+# RUN: %python -c "import pathlib, sys; sys.path.insert(0, '%wafer_src_root/tools'); import bootstrap_deps; assert bootstrap_deps.is_complete_file(pathlib.Path('%t/archive.tar.xz'), 3)"

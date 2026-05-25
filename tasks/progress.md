@@ -8,7 +8,8 @@
 最新实现批次：已落地最小 CMake / MLIR 工程骨架、`wafer-opt`、lit/FileCheck、gtest 入口和
 `WaferDialect` + 共享 enum attrs 的 parser/printer/verifier smoke tests。LLVM/MLIR 版本通过集中
 pin 和 bootstrap 脚本管理；当前本地验证使用 21.0.0git override，未把本机路径写成项目合同。
-`wafer-import-model` disabled stub、依赖一致性检查脚本和 Wafer tiling/layout/resource-effect
+bootstrap LLVM 下载入口已补上 Content-Length 完整性检查和 `.part` 续传，避免半包被当成完整
+archive 解包。`wafer-import-model` disabled stub、依赖一致性检查脚本和 Wafer tiling/layout/resource-effect
 interface skeleton 已落地。最小 `wafer.group` / `wafer.group_yield`、region/result/yield verifier
 和 SPM memref 拒绝测试已落地。最小 `!wafer.tile_buffer`、`wafer.tile_region` /
 `wafer.tile_yield`、边界类型 verifier 和 SPM tile buffer escape 拒绝测试已落地。最小
