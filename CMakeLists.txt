@@ -61,6 +61,7 @@ endif()
 add_subdirectory(include/Wafer/Dialect/Wafer/IR)
 add_subdirectory(lib/Wafer)
 add_subdirectory(tools/wafer-opt)
+add_subdirectory(tools/wafer-import-model)
 
 enable_testing()
 add_subdirectory(test)

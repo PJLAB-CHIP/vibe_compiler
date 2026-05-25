@@ -16,6 +16,7 @@ endif()
 
 add_executable(WaferUnitTests
   Dialect/Wafer/WaferDialectTest.cpp
+  Dialect/Wafer/WaferInterfacesTest.cpp
 )
 target_link_libraries(WaferUnitTests
   PRIVATE

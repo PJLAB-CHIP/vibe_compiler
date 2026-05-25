@@ -11,3 +11,5 @@
   -DPython3_EXECUTABLE=$PWD/.deps/python/bin/python -DWAFER_ALLOW_UNPINNED_LLVM=ON`。
 - 当前 smoke gate 是 `cmake --build build/p0 --target check-wafer-lit` 和
   `ctest --test-dir build/p0 --output-on-failure`。
+- 依赖一致性检查入口是 `tools/check_deps.py`；默认检查 version pin、importer registration hook、
+  StableHLO/Shardy checkout HEAD（如果 `.deps/src` 已存在）。

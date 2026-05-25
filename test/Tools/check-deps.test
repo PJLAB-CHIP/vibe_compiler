@@ -1,0 +1,7 @@
+# RUN: %python %wafer_src_root/tools/check_deps.py --versions-only | FileCheck %s
+
+# CHECK: LLVM/MLIR 21.1.8
+# CHECK: StableHLO v1.9.7
+# CHECK: Shardy f688d8a695cea82b48e047cabfd905787ad20177
+# CHECK: googletest v1.15.2
+# CHECK: lit 18.1.8

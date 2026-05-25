@@ -59,7 +59,7 @@ separate_arguments(WAFER_LIT_ARGS)
 
 add_custom_target(check-wafer-lit
   COMMAND ${WAFER_LIT_EXECUTABLE} ${WAFER_LIT_ARGS} ${CMAKE_CURRENT_BINARY_DIR}
-  DEPENDS wafer-opt
+  DEPENDS wafer-import-model wafer-opt
   USES_TERMINAL
 )
 
