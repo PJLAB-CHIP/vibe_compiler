@@ -9,6 +9,7 @@ add_mlir_library(WaferTransforms
   LowerStablehloElementwise.cpp
   LowerStablehloReduce.cpp
   LowerStablehloShape.cpp
+  MaterializeMultiTileNoComm.cpp
   MaterializeSingleTile.cpp
   NormalizeConstants.cpp
   Passes.cpp

@@ -81,7 +81,10 @@ rank 顺序保存 4D physical coordinate，并由 verifier 检查 rank 覆盖、
 handle。P4.2 的 placement package metadata 已落地：runtime manifest 现在记录 target topology、
 good/bad tile assumption、per-rank physical coord、block id 和 local shard slice metadata；validator
 检查 rank 覆盖、good/bad tile disjoint、mapped tile 必须 good、block/tile 不重复，以及 local shard
-不能越过 launch signature tensor shape。
+不能越过 launch signature tensor shape。P4.3 的 multi-tile no-comm outlining 已落地：
+`--wafer-materialize-multi-tile-no-comm` 从唯一 `wafer.placement.map` 读取 `logical_rank_count`，
+将单 GEMM group materialize 成多个独立 load-GEMM-store `wafer.tile_region` skeleton，并保持
+`wafer.comm` 不进入该路径；per-tile identity / launch args 仍留给 P4.4。
 
 ## Active Task
 
@@ -199,7 +202,7 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 | --- | --- | --- | --- |
 | P4.1 | done | 定义 logical rank 到 physical tile mapping 表示 | mapping 覆盖所有 rank，不使用 bad tile |
 | P4.2 | done | 接入 good-tile / block id / local shard metadata | metadata 可进入 package，不修改 tensor semantics |
-| P4.3 | pending | 支持多 tile 独立 tile-region outlining | 每 tile 独立 load-compute-store，无 tile 间 comm |
+| P4.3 | done | 支持多 tile 独立 tile-region outlining | 每 tile 独立 load-compute-store，无 tile 间 comm |
 | P4.4 | pending | 支持 per-tile launch args | runtime launch 能区分 tile-specific arguments |
 | P4.5 | pending | M1 local compile gate 汇总测试 | 多 tile no-comm pipeline、generated artifact compile 和 manifest 检查通过 |
 
@@ -261,6 +264,5 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 
 ## 下一步
 
-继续从 P4.1 开始定义 logical rank 到 physical tile mapping 表示，先进入 M1 multi-tile no-comm
-路径；batch/head dot 泛化在 attention slice 前补齐。不要越过 M0/M1 compile gate 直接实现
-transformer block 逻辑。
+继续 P4.4，给 M1 multi-tile no-comm 路径补 per-tile launch args / identity metadata；batch/head
+dot 泛化在 attention slice 前补齐。不要越过 M0/M1 compile gate 直接实现 transformer block 逻辑。

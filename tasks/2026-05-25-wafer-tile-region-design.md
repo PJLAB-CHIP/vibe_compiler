@@ -136,6 +136,19 @@ V0 需要以下 op family：
 未接受的候选 plan 不能落入 IR 后等待下游修复。合法性失败应反馈给 group/layout/resource
 planner 重新选择 tile shape、internal split、layout 或 group boundary。
 
+当前实现状态：
+
+- `--wafer-materialize-single-tile` 覆盖 M0：一个 GEMM group materialize 成一个
+  `wafer.tile_region`。
+- `--wafer-materialize-multi-tile-no-comm` 覆盖 P4.3/M1 起点：该 pass 要求当前 module 中存在唯一
+  `wafer.placement.map`，按 `logical_rank_count` 生成多个独立 `wafer.tile_region`，每个 region
+  都是 load-GEMM-store skeleton，且不插入 `wafer.comm`。
+
+P4.3 还不把 per-tile logical rank、block id 或 physical coordinate 传入 region body；这些属于
+P4.4 per-tile launch args / identity lowering。当前 multi-tile outlining 只证明多个 tile-local
+execution scopes 可以从 accepted placement map 派生出来，不能被理解成完整 runtime launch
+contract。
+
 ## 7. Verifier
 
 `wafer.tile_region` verifier 至少检查：
