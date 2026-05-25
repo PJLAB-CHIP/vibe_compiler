@@ -64,6 +64,26 @@ getTileBufferMemorySpace(wafer::TileBufferType type) {
   return mlir::cast<wafer::MemorySpaceAttr>(type.getMemorySpace());
 }
 
+static mlir::RankedTensorType
+getTileBufferTensorType(wafer::TileBufferType type) {
+  return mlir::cast<mlir::RankedTensorType>(type.getTensorType());
+}
+
+static bool hasTileBufferLayout(wafer::TileBufferType type,
+                                wafer::MemLayout layout) {
+  return getTileBufferLayout(type).getValue() == layout;
+}
+
+static bool hasTileBufferMemorySpace(wafer::TileBufferType type,
+                                     wafer::MemorySpace memorySpace) {
+  return getTileBufferMemorySpace(type).getValue() == memorySpace;
+}
+
+static bool hasStaticMismatch(int64_t lhs, int64_t rhs) {
+  return lhs != mlir::ShapedType::kDynamic && rhs != mlir::ShapedType::kDynamic &&
+         lhs != rhs;
+}
+
 mlir::LogicalResult GroupOp::verify() {
   if (getNumResults() != getOuts().size())
     return emitOpError("expected result count to match outs count, got ")
@@ -143,6 +163,40 @@ mlir::LogicalResult GroupOp::verify() {
   return mlir::success();
 }
 
+mlir::LogicalResult ComputeGemmOp::verify() {
+  auto lhsType = mlir::dyn_cast<TileBufferType>(getLhs().getType());
+  auto rhsType = mlir::dyn_cast<TileBufferType>(getRhs().getType());
+  auto resultType = mlir::dyn_cast<TileBufferType>(getResult().getType());
+  if (!lhsType || !rhsType || !resultType)
+    return emitOpError("expects tile_buffer operands and result");
+
+  for (TileBufferType type : {lhsType, rhsType, resultType}) {
+    if (!hasTileBufferMemorySpace(type, MemorySpace::SPM))
+      return emitOpError("gemm tile buffers must use SPM memory space");
+    if (!hasTileBufferLayout(type, MemLayout::Cx))
+      return emitOpError("gemm tile buffers must use cx mem_layout");
+  }
+
+  mlir::RankedTensorType lhsTensor = getTileBufferTensorType(lhsType);
+  mlir::RankedTensorType rhsTensor = getTileBufferTensorType(rhsType);
+  mlir::RankedTensorType resultTensor = getTileBufferTensorType(resultType);
+  if (lhsTensor.getRank() != 2 || rhsTensor.getRank() != 2 ||
+      resultTensor.getRank() != 2)
+    return emitOpError("gemm expects rank-2 tile buffer tensor types");
+
+  if (lhsTensor.getElementType() != rhsTensor.getElementType() ||
+      lhsTensor.getElementType() != resultTensor.getElementType())
+    return emitOpError("gemm operand and result element types must match");
+
+  if (hasStaticMismatch(lhsTensor.getDimSize(1), rhsTensor.getDimSize(0)))
+    return emitOpError("gemm lhs K dimension must match rhs K dimension");
+  if (hasStaticMismatch(lhsTensor.getDimSize(0), resultTensor.getDimSize(0)) ||
+      hasStaticMismatch(rhsTensor.getDimSize(1), resultTensor.getDimSize(1)))
+    return emitOpError("gemm result shape must be lhs M by rhs N");
+
+  return mlir::success();
+}
+
 mlir::LogicalResult LayoutMaterializeOp::verify() {
   auto sourceType = mlir::dyn_cast<TileBufferType>(getSource().getType());
   auto resultType = mlir::dyn_cast<TileBufferType>(getResult().getType());
@@ -159,6 +213,39 @@ mlir::LogicalResult LayoutMaterializeOp::verify() {
   if (getTileBufferLayout(sourceType).getValue() ==
       getTileBufferLayout(resultType).getValue())
     return emitOpError("layout materialize must change mem_layout");
+
+  return mlir::success();
+}
+
+mlir::LogicalResult LoadTileOp::verify() {
+  auto sourceType = mlir::dyn_cast<mlir::RankedTensorType>(getSource().getType());
+  auto resultType = mlir::dyn_cast<TileBufferType>(getResult().getType());
+  if (!sourceType || !resultType)
+    return emitOpError("expects ranked tensor source and tile_buffer result");
+
+  if (resultType.getTensorType() != sourceType)
+    return emitOpError("load_tile result tensor type must match source tensor type");
+  if (!hasTileBufferMemorySpace(resultType, MemorySpace::SPM))
+    return emitOpError("load_tile result must use SPM memory space");
+  if (!hasTileBufferLayout(resultType, MemLayout::Tensor))
+    return emitOpError("load_tile result must use tensor mem_layout");
+
+  return mlir::success();
+}
+
+mlir::LogicalResult StoreTileOp::verify() {
+  auto sourceType = mlir::dyn_cast<TileBufferType>(getSource().getType());
+  auto destType = mlir::dyn_cast<mlir::RankedTensorType>(getDest().getType());
+  if (!sourceType || !destType)
+    return emitOpError("expects tile_buffer source and ranked tensor dest");
+
+  if (sourceType.getTensorType() != destType)
+    return emitOpError("store_tile source tensor type must match dest tensor type");
+  if (!hasTileBufferMemorySpace(sourceType, MemorySpace::SPM))
+    return emitOpError("store_tile source must use SPM memory space");
+  if (!hasTileBufferLayout(sourceType, MemLayout::Tensor))
+    return emitOpError(
+        "store_tile source must use tensor mem_layout for external writeback");
 
   return mlir::success();
 }

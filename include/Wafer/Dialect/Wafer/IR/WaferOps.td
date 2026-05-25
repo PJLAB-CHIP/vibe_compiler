@@ -118,4 +118,38 @@ def Wafer_LayoutMaterializeOp : Wafer_Op<"layout.materialize", [
   let assemblyFormat = "$source attr-dict `:` type($source) `->` type($result)";
 }
 
+def Wafer_LoadTileOp : Wafer_Op<"load_tile", [
+    WaferLayoutOpInterface,
+    WaferResourceEffectInterface
+  ]> {
+  let summary = "load an external tensor tile into a tile buffer";
+  let arguments = (ins AnyType:$source);
+  let results = (outs AnyType:$result);
+  let hasVerifier = 1;
+  let assemblyFormat = "$source attr-dict `:` type($source) `->` type($result)";
+}
+
+def Wafer_StoreTileOp : Wafer_Op<"store_tile", [
+    WaferLayoutOpInterface,
+    WaferResourceEffectInterface
+  ]> {
+  let summary = "store a tile buffer to an external tensor boundary";
+  let arguments = (ins AnyType:$source, AnyType:$dest);
+  let hasVerifier = 1;
+  let assemblyFormat =
+      "$source `,` $dest attr-dict `:` type($source) `->` type($dest)";
+}
+
+def Wafer_ComputeGemmOp : Wafer_Op<"compute.gemm", [
+    WaferLayoutOpInterface,
+    WaferResourceEffectInterface
+  ]> {
+  let summary = "target-abstract tile GEMM";
+  let arguments = (ins AnyType:$lhs, AnyType:$rhs);
+  let results = (outs AnyType:$result);
+  let hasVerifier = 1;
+  let assemblyFormat =
+      "$lhs `,` $rhs attr-dict `:` functional-type(operands, results)";
+}
+
 #endif // WAFER_DIALECT_WAFER_IR_WAFEROPS_TD
