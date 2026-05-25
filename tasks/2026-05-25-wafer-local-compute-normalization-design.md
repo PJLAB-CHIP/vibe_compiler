@@ -118,6 +118,27 @@ dimensions 都是 `[0, 1]`，contracting dimension 都是最后一维 `[3]`，�
 参数名、函数名或模型层名字。更宽泛的 batch matmul 形态应继续按同一原则扩展，不把某个
 head 数、sequence length 或隐藏维写成协议。
 
+当前 P5.4 实现继续扩展 `--wafer-lower-stablehlo-dot`，支持 attention value 的 AV 形态：
+
+```text
+prob  : tensor<BxHxQxK>
+value : tensor<BxHxKxD>
+out   : tensor<BxHxQxD>
+```
+
+该 lowering 接受 `lhs/rhs` batch dimensions `[0, 1]`、`lhs` contracting dimension `[3]` 和
+`rhs` contracting dimension `[2]`，并检查输出 shape 与 `B/H/Q/D` 对齐。输出使用
+`linalg.generic` contraction：
+
+- `prob` map: `(b, h, q, d, k) -> (b, h, q, k)`。
+- `value` map: `(b, h, q, d, k) -> (b, h, k, d)`。
+- `out` map: `(b, h, q, d, k) -> (b, h, q, d)`。
+- iterator types: `b/h/q/d` 是 parallel，`k` 是 reduction。
+
+配套测试覆盖 softmax staged output 作为 AV lhs operand 的 SSA use-def 链。这里验证的是
+local structured tensor IR 中的 dataflow 和结果 lifetime 边界；SPM residency、workspace
+materialization 和 physical buffer lifetime 仍由后续 group/resource planner 在 Wafer IR 层表达。
+
 ### 4.2 Elementwise and Broadcast
 
 elementwise lowering 使用 `linalg.generic` + `arith` / `math`。Broadcast 必须由 indexing map
