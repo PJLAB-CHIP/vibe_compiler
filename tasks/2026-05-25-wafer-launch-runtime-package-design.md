@@ -144,7 +144,9 @@ allocation failure 由 DDR 设计负责定义；launch 负责把这些失败报�
 manifest 记录 launch signature、DDR external binding bytes、SPM/DDR resource summary、ABI skeleton
 ops、device-code artifact id 和 runtime completion source。validator 显式拒绝已知 stub completion
 fence，例如 `TsmDeviceSynchronize` / `TsmLaunch`，因此 package correctness 不能只依赖 legacy stub
-path 成功返回。
+path 成功返回。M0 local compile gate 还用 `tools/wafer_emit_c_abi_stub.py` 从该 manifest 生成一个
+可被 C compiler 做 syntax compile 的 ABI issue table，用于验证 package metadata 可以产出本地
+toolchain 可消费的 artifact skeleton；它不代表真实 device code 已可执行。
 
 ## 6. Legacy Bootparam and Dyn TLV
 

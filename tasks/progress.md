@@ -72,7 +72,9 @@ direction、byte range、exclusive end、SPM usable cap、DDR lower bound，以�
 P3.10 的最小 package manifest 已落地：`tools/wafer_package_manifest.py` 支持 M0 smoke manifest
 emit、validate 和 canonical roundtrip，schema 覆盖 launch signature、DDR external bindings、
 resource summary、ABI ops、device-code artifact id 和 runtime completion source，并拒绝已知 stub
-completion fence。
+completion fence。P3.11 的 M0 local compile gate 已落地：汇总 lit test 从同一个 M0 Linalg GEMM
+输入跑完整 textual pipeline 到 DDR binding / SPM allocation / C ABI skeleton，validate manifest，
+再从 manifest 生成 C ABI stub 并用本地 C compiler 做 syntax compile。
 
 ## Active Task
 
@@ -179,7 +181,7 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 | P3.8 | done | Lower `wafer.compute.gemm` / load / store 到 C ABI skeleton | 参数单位、address domain、wait policy 有 verifier |
 | P3.9 | done | 建立 golden packet / ABI unit test | 至少覆盖 M0 用到的 compute/movement family |
 | P3.10 | done | 建立最小 launch/runtime package manifest | manifest roundtrip，package 不依赖已知 stub path 作为 correctness fence |
-| P3.11 | pending | M0 local compile gate 汇总测试 | textual pipeline、SPM、DDR、C ABI、generated artifact compile、manifest 检查全部通过 |
+| P3.11 | done | M0 local compile gate 汇总测试 | textual pipeline、SPM、DDR、C ABI、generated artifact compile、manifest 检查全部通过 |
 
 ## P4. M1 Multi-Tile No Communication
 
@@ -251,6 +253,6 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 
 ## 下一步
 
-继续从 P3.11 开始做 M0 local compile gate 汇总测试，先服务 M0 single-tile load-GEMM-store
-闭环；batch/head dot 泛化在 attention slice 前补齐。不要越过 M0/M1 compile gate 直接实现
+继续从 P4.1 开始定义 logical rank 到 physical tile mapping 表示，先进入 M1 multi-tile no-comm
+路径；batch/head dot 泛化在 attention slice 前补齐。不要越过 M0/M1 compile gate 直接实现
 transformer block 逻辑。
