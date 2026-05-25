@@ -129,11 +129,17 @@ module {
 // IR-LABEL: func.func @local_transformer_block
 // IR-NOT: stablehlo.
 // IR-NOT: wafer.group
+// IR: wafer.abi.reduce <issue_only> <sum>
+// IR-SAME: dimensions = array<i64: 3>
 // IR: linalg.generic
+// IR: wafer.abi.reduce <issue_only> <max>
+// IR-SAME: dimensions = array<i64: 3>
 // IR: wafer.abi.elementwise <issue_only> <sub>
 // IR-SAME: indexing_maps
 // IR: wafer.abi.elementwise <issue_only> <exp>
 // IR-SAME: indexing_maps
+// IR: wafer.abi.reduce <issue_only> <sum>
+// IR-SAME: dimensions = array<i64: 3>
 // IR: wafer.abi.elementwise <issue_only> <div>
 // IR-SAME: indexing_maps
 // IR: linalg.generic

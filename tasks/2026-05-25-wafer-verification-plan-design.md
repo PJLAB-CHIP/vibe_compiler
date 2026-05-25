@@ -130,18 +130,20 @@ M6 transformer block vertical slice：
 - 当前无卡开发环境要求 generated artifact compile，package/runtime metadata 覆盖所有 block
   input/output、resident constants 和 workspace；completion 和数值对比后续在有卡环境验证。
 
-当前实现中的 P5.8 partial gate 覆盖 full local block 中 rank-2 GEMM 子图，以及 same-shape /
-projected-permutation limited broadcast elementwise 子图的 local compile path：normalization、
-acceptance gates、group split、single-tile materialization、SPM allocation check、DDR binding
-demand、C ABI skeleton、manifest validate 和 C stub syntax compile。它是 M6 的前进步骤，不是
-M6 完成证据；reduce max/sum、attention generic contraction、package workspace/resident constant
-coverage 仍必须补齐。
+当前实现中的 P5.8 partial gate 覆盖 full local block 中 rank-2 GEMM 子图、same-shape /
+projected-permutation limited broadcast elementwise 子图，以及 scalar-constant-init reduce max/sum
+子图的 local compile path：normalization、acceptance gates、group split、single-tile
+materialization、SPM allocation check、DDR binding demand、C ABI skeleton、manifest validate 和
+C stub syntax compile。它是 M6 的前进步骤，不是 M6 完成证据；attention generic contraction、
+package workspace/resident constant coverage 仍必须补齐。
 
 2026-05-25 后续实现补入了 `linalg.elementwise` 的局部 physical slice：same-shape identity 和
 可由 projected-permutation `indexing_maps` 验证的 row/head/vector broadcast 可以形成
 `wafer.group`，materialize 为 `wafer.compute.elementwise`，并 lower 到带 `indexing_maps` 的
-`wafer.abi.elementwise` skeleton。这个 slice 不覆盖 reduce、attention generic、mask/select、
-dynamic shape 或完整 package workspace/resident-constant 覆盖。
+`wafer.abi.elementwise` skeleton。后续 reduce slice 让 scalar-constant-init `linalg.reduce`
+materialize 为 `wafer.compute.reduce` 并 lower 到带 `dimensions` / `init_value` 的
+`wafer.abi.reduce` skeleton。当前仍不覆盖 attention generic、mask/select、dynamic shape、非
+constant-init reduce 或完整 package workspace/resident-constant 覆盖。
 
 ## 5. Failure Handling
 

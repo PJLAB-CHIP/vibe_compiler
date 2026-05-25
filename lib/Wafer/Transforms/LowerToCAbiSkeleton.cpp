@@ -124,11 +124,23 @@ lowerComputeElementwise(wafer::ComputeElementwiseOp elementwise) {
       elementwise.getLoc(), elementwise.getResult().getType(),
       getIssueOnlyPolicy(elementwise.getContext()), elementwise.getKindAttr(),
       elementwise.getInputs());
-  if (mlir::Attribute indexingMaps =
-          elementwise->getAttr("indexing_maps"))
+  if (mlir::Attribute indexingMaps = elementwise->getAttr("indexing_maps"))
     abi->setAttr("indexing_maps", indexingMaps);
   elementwise.getResult().replaceAllUsesWith(abi.getResult());
   elementwise.erase();
+  return mlir::success();
+}
+
+static mlir::LogicalResult lowerComputeReduce(wafer::ComputeReduceOp reduce) {
+  mlir::OpBuilder builder(reduce);
+  auto abi = builder.create<wafer::AbiReduceOp>(
+      reduce.getLoc(), reduce.getResult().getType(),
+      getIssueOnlyPolicy(reduce.getContext()), reduce.getKindAttr(),
+      reduce.getInput());
+  abi->setAttr("dimensions", reduce->getAttr("dimensions"));
+  abi->setAttr("init_value", reduce->getAttr("init_value"));
+  reduce.getResult().replaceAllUsesWith(abi.getResult());
+  reduce.erase();
   return mlir::success();
 }
 
@@ -153,8 +165,8 @@ struct LowerToCAbiSkeletonPass
     mlir::ModuleOp module = getOperation();
     llvm::SmallVector<mlir::Operation *> ops;
     module.walk([&](mlir::Operation *op) {
-      if (mlir::isa<wafer::LoadTileOp, wafer::StoreTileOp,
-                    wafer::ComputeGemmOp, wafer::ComputeElementwiseOp>(op))
+      if (mlir::isa<wafer::LoadTileOp, wafer::StoreTileOp, wafer::ComputeGemmOp,
+                    wafer::ComputeElementwiseOp, wafer::ComputeReduceOp>(op))
         ops.push_back(op);
     });
 
@@ -169,6 +181,8 @@ struct LowerToCAbiSkeletonPass
       else if (auto elementwise =
                    mlir::dyn_cast<wafer::ComputeElementwiseOp>(op))
         result = lowerComputeElementwise(elementwise);
+      else if (auto reduce = mlir::dyn_cast<wafer::ComputeReduceOp>(op))
+        result = lowerComputeReduce(reduce);
 
       if (mlir::failed(result)) {
         signalPassFailure();

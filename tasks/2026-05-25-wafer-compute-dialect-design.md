@@ -140,7 +140,8 @@ reduce-scatter / all-reduce 由 `wafer.comm` 组合 local compute 和 communicat
   loop，或 lower 成多个 supported compute op。
 - native reduce 属于 aligned-only op，layout planner 必须看到 input/output hard constraint。
 - output dtype、init value 和 NaN/overflow 等细节如果会影响语义，应保留在 op contract 中，而不是
-  留给 wrapper 默认值。
+  留给 wrapper 默认值。当前 local skeleton 从 scalar-constant `linalg.fill` out 恢复
+  `init_value`，并把 `dimensions` / `init_value` 一起带到 `wafer.abi.reduce`。
 
 ### 3.4 Movement Ops
 
@@ -286,8 +287,10 @@ V0 推荐实现顺序：
 
 当前实现顺序已经先覆盖了 accepted-layout `wafer.compute.gemm`、load/store、layout materialize，
 并补入 same-shape identity 与 projected-permutation limited broadcast elementwise 到
-`wafer.compute.elementwise` / `wafer.abi.elementwise` 的 local skeleton。它不是完整 elementwise
-coverage；更复杂 broadcast、relation/logic、convert 和 reduce 仍按后续 gate 推进。
+`wafer.compute.elementwise` / `wafer.abi.elementwise` 的 local skeleton；随后补入 sum/max/min
+local reduce 到 `wafer.compute.reduce` / `wafer.abi.reduce` 的 skeleton，保留 reduce dimensions
+和 scalar init value。它不是完整 elementwise/reduce coverage；更复杂 broadcast、relation/logic、
+convert、多输入/非 constant-init reduce 和 attention generic 仍按后续 gate 推进。
 
 V1 或后续扩展：
 
@@ -338,7 +341,8 @@ Target-abstract tile-region：
     : (tensor<64x256xf16>, tensor<256x64xf16>) -> tensor<64x64xf16>
 %act = wafer.compute.elementwise %mm {kind = #wafer.compute_kind<relu>}
     : tensor<64x64xf16> -> tensor<64x64xf16>
-%row_sum = wafer.compute.reduce %act {kind = #wafer.reduce_kind<sum>, dimensions = [1]}
+%row_sum = wafer.compute.reduce #wafer.reduce_kind<sum> %act
+    {dimensions = array<i64: 1>, init_value = 0.000000e+00 : f16}
     : tensor<64x64xf16> -> tensor<64xf32>
 ```
 
@@ -366,7 +370,8 @@ Accepted layout 后：
     : !wafer.tile_buffer<64x64xf16, #cx, #spm>
    -> !wafer.tile_buffer<64x64xf16, #cx, #spm>
 
-%row_sum = wafer.compute.reduce %act {kind = #wafer.reduce_kind<sum>, dimensions = [1]}
+%row_sum = wafer.compute.reduce #wafer.reduce_kind<sum> %act
+    {dimensions = array<i64: 1>, init_value = 0.000000e+00 : f16}
     : !wafer.tile_buffer<64x64xf16, #cx, #spm>
    -> !wafer.tile_buffer<64xf32, #tensor, #spm>
 ```

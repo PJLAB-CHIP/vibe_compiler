@@ -251,6 +251,27 @@ def Wafer_AbiElementwiseOp : Wafer_Op<"abi.elementwise", [
       "$wait_policy $kind $inputs attr-dict `:` functional-type(operands, results)";
 }
 
+def Wafer_AbiReduceOp : Wafer_Op<"abi.reduce", [
+    WaferResourceEffectInterface
+  ]> {
+  let summary = "C ABI skeleton local reduce issue";
+  let description = [{
+    `wafer.abi.reduce` is the wrapper-facing local reduce issue point. It
+    keeps reduce dimensions and the scalar init value explicit so the C ABI
+    layer can validate units and preserve reduction semantics.
+  }];
+
+  let arguments = (ins
+    Wafer_AbiWaitPolicyAttr:$wait_policy,
+    Wafer_ComputeReduceKindAttr:$kind,
+    AnyType:$input
+  );
+  let results = (outs AnyType:$result);
+  let hasVerifier = 1;
+  let assemblyFormat =
+      "$wait_policy $kind $input attr-dict `:` functional-type(operands, results)";
+}
+
 def Wafer_ComputeGemmOp : Wafer_Op<"compute.gemm", [
     WaferLayoutOpInterface,
     WaferResourceEffectInterface
@@ -286,6 +307,28 @@ def Wafer_ComputeElementwiseOp : Wafer_Op<"compute.elementwise", [
   let hasVerifier = 1;
   let assemblyFormat =
       "$kind $inputs attr-dict `:` functional-type(operands, results)";
+}
+
+def Wafer_ComputeReduceOp : Wafer_Op<"compute.reduce", [
+    WaferLayoutOpInterface,
+    WaferResourceEffectInterface
+  ]> {
+  let summary = "target-abstract tile-local reduction compute";
+  let description = [{
+    `wafer.compute.reduce` represents a tile-local reduction over an SPM tensor
+    tile. The result shape is the input shape with `dimensions` removed, and
+    `init_value` records the scalar initialization value recovered from the
+    structured `linalg.reduce` output.
+  }];
+
+  let arguments = (ins
+    Wafer_ComputeReduceKindAttr:$kind,
+    AnyType:$input
+  );
+  let results = (outs AnyType:$result);
+  let hasVerifier = 1;
+  let assemblyFormat =
+      "$kind $input attr-dict `:` functional-type(operands, results)";
 }
 
 class Wafer_CommP2POp<string mnemonic> : Wafer_Op<mnemonic, [

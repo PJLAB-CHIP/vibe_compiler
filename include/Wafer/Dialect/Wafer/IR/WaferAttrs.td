@@ -138,4 +138,23 @@ def Wafer_ComputeElementwiseKindAttr
   let assemblyFormat = "`<` $value `>`";
 }
 
+def Wafer_ComputeReduceKindSum : I32EnumAttrCase<"Sum", 0, "sum">;
+def Wafer_ComputeReduceKindMax : I32EnumAttrCase<"Max", 1, "max">;
+def Wafer_ComputeReduceKindMin : I32EnumAttrCase<"Min", 2, "min">;
+def Wafer_ComputeReduceKind
+    : I32EnumAttr<"ComputeReduceKind",
+                  "Wafer target-abstract local reduce kind", [
+  Wafer_ComputeReduceKindSum,
+  Wafer_ComputeReduceKindMax,
+  Wafer_ComputeReduceKindMin
+]> {
+  let cppNamespace = "::wafer";
+  let genSpecializedAttr = 0;
+}
+
+def Wafer_ComputeReduceKindAttr
+    : EnumAttr<Wafer_Dialect, Wafer_ComputeReduceKind, "reduce_kind"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
 #endif // WAFER_DIALECT_WAFER_IR_WAFERATTRS_TD
