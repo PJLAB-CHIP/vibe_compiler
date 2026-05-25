@@ -17,7 +17,8 @@ compute/movement 之后的 comm/token/wait 表示。`wafer.load_tile`、`wafer.s
 `wafer.compute.gemm` 的最小 shape/layout/memory-space verifier 已落地。最小 `wafer.comm.send` /
 `wafer.comm.recv` / `wafer.comm.wait` 和 `wafer.sync.local_drain` 已落地，通信 token 使用
 `!async.token`，endpoint / byte count / SPM buffer 合同有 verifier。最小 `wafer.launch` boundary
-已落地，launch signature、package ref、resource summary 和 host tensor 边界有 verifier。
+已落地，launch signature、package ref、resource summary 和 host tensor 边界有 verifier。P1
+parser/printer/verifier 正负例已补齐到当前 op/type/attr 覆盖口径。
 
 ## Active Task
 
@@ -26,7 +27,7 @@ compute/movement 之后的 comm/token/wait 表示。`wafer.load_tile`、`wafer.s
 当前执行焦点：
 
 1. P0.1 到 P0.6：工程、依赖、工具和测试入口。
-2. P1.1 到 P1.9：最小 Wafer dialect skeleton、parser/printer/verifier。
+2. P1.1 到 P1.10：最小 Wafer dialect skeleton、parser/printer/verifier。
 3. P3.1 到 P3.10：从手写 StableHLO / Linalg GEMM 输入跑通 M0。
 
 ## 当前判断
@@ -89,7 +90,7 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 | P1.7 | done | 定义 `wafer.compute` / movement 最小 op family：load tile、store tile、gemm | dtype、shape、layout contract 有 verifier |
 | P1.8 | done | 定义 `wafer.comm` p2p、sync token、local wait 的最小表示 | endpoint、token、wait policy 可验证 |
 | P1.9 | done | 定义 `wafer.launch` 最小 boundary | launch signature、resource summary、package ref 不反向污染 tensor IR |
-| P1.10 | pending | 写 parser/printer/verifier 正负例 | 每类 op/type/attr 至少一个 roundtrip 和一个 negative test |
+| P1.10 | done | 写 parser/printer/verifier 正负例 | 每类 op/type/attr 至少一个 roundtrip 和一个 negative test |
 
 ## P2. Frontend Artifact 和 Local Compute Normalization
 
@@ -196,5 +197,5 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 
 ## 下一步
 
-继续从 P1.10 开始收口 parser/printer/verifier 正负例覆盖。不要越过 P1 verifier 直接实现
-transformer block 逻辑。
+继续从 P2.1 / P3.1 开始建立手写 StableHLO / Linalg GEMM 输入入口。不要越过 frontend textual
+artifact 和最小 M0 输入 gate 直接实现 transformer block 逻辑。
