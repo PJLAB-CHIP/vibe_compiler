@@ -144,10 +144,10 @@ allocation failure 由 DDR 设计负责定义；launch 负责把这些失败报�
 manifest 记录 launch signature、placement metadata、DDR external binding bytes、SPM/DDR resource
 summary、ABI skeleton ops、device-code artifact id 和 runtime completion source。validator 显式拒绝
 已知 stub completion fence，例如 `TsmDeviceSynchronize` / `TsmLaunch`，因此 package correctness
-不能只依赖 legacy stub path 成功返回。M0 local compile gate 还用
-`tools/wafer_emit_c_abi_stub.py` 从该 manifest 生成一个可被 C compiler 做 syntax compile 的 ABI
-issue table，用于验证 package metadata 可以产出本地 toolchain 可消费的 artifact skeleton；它
-不代表真实 device code 已可执行。
+不能只依赖 legacy stub path 成功返回。M0/M1 local compile gate 还用
+`tools/wafer_emit_c_abi_stub.py` 从 manifest 生成可被 C compiler 做 syntax compile 的 ABI issue
+table 和 tile launch-arg table，用于验证 package metadata 可以产出本地 toolchain 可消费的
+artifact skeleton；它不代表真实 device code 已可执行。
 
 P4.4 起，C ABI stub 还从 placement metadata 生成 per-tile launch arg table：
 
@@ -165,6 +165,12 @@ typedef struct {
 该表只把已验证的 package placement metadata materialize 成 runtime 可消费的 tile-specific
 arguments；它不反向定义 tensor semantics，也不包含 BO handle、physical DDR address、SPM offset
 或 DTE packet。
+
+当前工具提供两个 smoke manifest：
+
+- `--emit-m0-smoke`：single tile load-GEMM-store。
+- `--emit-m1-no-comm-smoke`：two-tile no-communication load-GEMM-store，包含两个 logical rank、
+  两个 block id、两个 physical tile coordinate 和 per-rank local shard slice metadata。
 
 placement metadata 当前包含：
 

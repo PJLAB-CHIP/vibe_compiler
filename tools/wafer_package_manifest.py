@@ -419,6 +419,62 @@ def m0_smoke_manifest(completion_source: str = "hpgr_stream_event") -> dict[str,
     }
 
 
+def m1_no_comm_smoke_manifest() -> dict[str, Any]:
+    manifest = copy.deepcopy(m0_smoke_manifest())
+    manifest["package_name"] = "m1_two_tile_no_comm"
+    manifest["device_code"] = [
+        {
+            "name": "two_tile_matmul",
+            "kind": "c_abi_skeleton",
+            "artifact": "m1_two_tile_no_comm.o",
+        }
+    ]
+    manifest["placement"] = {
+        "logical_rank_count": 2,
+        "topology": {
+            "card_y_count": 1,
+            "card_x_count": 1,
+            "tile_y_count": 4,
+            "tile_x_count": 4,
+        },
+        "good_tile_ids": [0, 1],
+        "bad_tile_ids": [],
+        "ranks": [
+            {
+                "logical_rank": 0,
+                "physical_coord": [0, 0, 0, 0],
+                "block_id": 0,
+                "local_shards": [
+                    {"name": "lhs", "offsets": [0, 0], "sizes": [2, 8]},
+                    {"name": "rhs", "offsets": [0, 0], "sizes": [8, 16]},
+                    {"name": "out", "offsets": [0, 0], "sizes": [2, 16]},
+                ],
+            },
+            {
+                "logical_rank": 1,
+                "physical_coord": [0, 0, 0, 1],
+                "block_id": 1,
+                "local_shards": [
+                    {"name": "lhs", "offsets": [2, 0], "sizes": [2, 8]},
+                    {"name": "rhs", "offsets": [0, 0], "sizes": [8, 16]},
+                    {"name": "out", "offsets": [2, 0], "sizes": [2, 16]},
+                ],
+            },
+        ],
+    }
+    manifest["abi_ops"] = [
+        {"op": "wafer.abi.rdma_1d", "bytes": 32, "wait_policy": "issue_only"},
+        {"op": "wafer.abi.rdma_1d", "bytes": 256, "wait_policy": "issue_only"},
+        {"op": "wafer.abi.gemm", "m": 2, "k": 8, "n": 16, "wait_policy": "issue_only"},
+        {"op": "wafer.abi.wdma_1d", "bytes": 64, "wait_policy": "issue_only"},
+        {"op": "wafer.abi.rdma_1d", "bytes": 32, "wait_policy": "issue_only"},
+        {"op": "wafer.abi.rdma_1d", "bytes": 256, "wait_policy": "issue_only"},
+        {"op": "wafer.abi.gemm", "m": 2, "k": 8, "n": 16, "wait_policy": "issue_only"},
+        {"op": "wafer.abi.wdma_1d", "bytes": 64, "wait_policy": "issue_only"},
+    ]
+    return manifest
+
+
 def bad_placement_smoke_manifest() -> dict[str, Any]:
     manifest = copy.deepcopy(m0_smoke_manifest())
     manifest["placement"]["ranks"][0]["physical_coord"] = [0, 0, 0, 1]
@@ -435,6 +491,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--emit-m0-smoke", action="store_true")
+    mode.add_argument("--emit-m1-no-comm-smoke", action="store_true")
     mode.add_argument("--emit-stub-smoke", action="store_true")
     mode.add_argument("--emit-bad-placement-smoke", action="store_true")
     mode.add_argument("--emit-bad-local-shard-smoke", action="store_true")
@@ -444,6 +501,9 @@ def main() -> int:
 
     if args.emit_m0_smoke:
         sys.stdout.write(canonical_json(m0_smoke_manifest()))
+        return 0
+    if args.emit_m1_no_comm_smoke:
+        sys.stdout.write(canonical_json(m1_no_comm_smoke_manifest()))
         return 0
     if args.emit_stub_smoke:
         sys.stdout.write(canonical_json(m0_smoke_manifest("TsmDeviceSynchronize")))
