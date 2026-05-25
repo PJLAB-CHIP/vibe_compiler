@@ -36,7 +36,11 @@ lowering，不引入 `wafer.norm` / `wafer.layer_norm` 高层 op。P2.8 的 soft
 落地，row max、shift、exp、row sum 和 normalize 都以 `linalg.reduce` / `linalg.elementwise`
 及 broadcast indexing map 表达。P2.9 的 RoPE / MLP activation staged-form gate 已落地：
 `stablehlo.concatenate` 降到 `tensor.concat`，`stablehlo.tanh` 降到 `linalg.elementwise`
-tanh，RoPE 和 GELU tanh 形态只使用 slice/concat/elementwise structured tensor IR。
+tanh，RoPE 和 GELU tanh 形态只使用 slice/concat/elementwise structured tensor IR。P2.10 的
+importer smoke gate 已落地：importer-enabled `wafer-import-model` 能发出并验证一个静态
+StableHLO/MLIR artifact，graph break / eager fallback 通过 importer metadata 硬诊断，
+unbounded dynamic shape 通过函数签名类型诊断；backend-only 构建仍保留 disabled importer shell，
+不把 StableHLO/Python importer 依赖扩散到后端 textual tests。
 
 ## Active Task
 
@@ -125,7 +129,7 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 | P2.7 | done | 表达 RMSNorm / LayerNorm staged form | reduce + elementwise，不引入 `wafer.norm` 高层 op |
 | P2.8 | done | 表达 softmax staged form | row max、exp、row sum、normalize 状态由 SSA / loop-carried / workspace 表达 |
 | P2.9 | done | 表达 RoPE 和 MLP activation staged form | 只使用 structured tensor IR 和 math/arith 语义 |
-| P2.10 | pending | 加 importer smoke test | graph break、eager fallback、unbounded dynamic shape 会被诊断 |
+| P2.10 | done | 加 importer smoke test | graph break、eager fallback、unbounded dynamic shape 会被诊断 |
 
 ## P3. M0 Single Tile Load-GEMM-Store
 
@@ -215,5 +219,5 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 
 ## 下一步
 
-继续从 P2.10 开始补 importer smoke test 和 frontend diagnostics；batch/head dot 泛化在 attention
-slice 前补齐。不要越过 local compute normalization gate 直接实现 transformer block 逻辑。
+继续从 P3.2 开始实现最小 group formation，先服务 M0 single-tile load-GEMM-store 闭环；batch/head
+dot 泛化在 attention slice 前补齐。不要越过 M0/M1 compile gate 直接实现 transformer block 逻辑。

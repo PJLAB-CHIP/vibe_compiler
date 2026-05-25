@@ -1,3 +1,4 @@
+# UNSUPPORTED: stablehlo
 # RUN: wafer-import-model --help | FileCheck %s
 
 # CHECK: wafer-import-model

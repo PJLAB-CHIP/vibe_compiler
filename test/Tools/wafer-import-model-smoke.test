@@ -1,0 +1,30 @@
+# REQUIRES: stablehlo
+
+# RUN: wafer-import-model --emit-static-smoke-artifact | FileCheck %s --check-prefix=EMIT
+# RUN: wafer-import-model --emit-static-smoke-artifact > %t.static.mlir
+# RUN: wafer-import-model --verify-import-result %t.static.mlir | FileCheck %s --check-prefix=VERIFY
+
+# RUN: printf '%b' 'module attributes {"wafer.import.graph_break" = "python control flow escaped capture"} {}\n' > %t.graph-break.mlir
+# RUN: not wafer-import-model --verify-import-result %t.graph-break.mlir 2>&1 | FileCheck %s --check-prefix=GRAPH
+
+# RUN: printf '%b' 'module attributes {"wafer.import.eager_fallback" = "aten fallback remained in capture"} {}\n' > %t.eager-fallback.mlir
+# RUN: not wafer-import-model --verify-import-result %t.eager-fallback.mlir 2>&1 | FileCheck %s --check-prefix=EAGER
+
+# RUN: printf '%b' 'module {\n  func.func @unbounded_dynamic(%%arg0: tensor<?x4xf32>) -> tensor<?x4xf32> {\n    return %%arg0 : tensor<?x4xf32>\n  }\n}\n' > %t.dynamic.mlir
+# RUN: not wafer-import-model --verify-import-result %t.dynamic.mlir 2>&1 | FileCheck %s --check-prefix=DYNAMIC
+
+# EMIT: module
+# EMIT: func.func @wafer_import_static_smoke
+# EMIT: tensor<2x4xf32>
+# EMIT: stablehlo.add
+
+# VERIFY: wafer-import-model: verified frontend artifact
+
+# GRAPH: wafer-import-model: graph break rejected
+# GRAPH: python control flow escaped capture
+
+# EAGER: wafer-import-model: eager fallback rejected
+# EAGER: aten fallback remained in capture
+
+# DYNAMIC: wafer-import-model: unbounded dynamic shape rejected
+# DYNAMIC: func.func @unbounded_dynamic
