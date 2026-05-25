@@ -108,6 +108,29 @@ PlacementMap {
 如果后续实现发现 attribute 无法表达 verifier 需要的结构，可以拆成专门 placement op /
 region；但不能退化成名字约定或 side table。
 
+当前 V0 采用专门 op 表达最小 accepted mapping：
+
+```mlir
+wafer.placement.map {
+  logical_rank_count = 4 : i64,
+  physical_tile_coords = array<i64: 0, 0, 0, 0,
+                                  0, 0, 0, 1,
+                                  0, 0, 0, 2,
+                                  0, 0, 0, 3>,
+  card_y_count = 1 : i64,
+  card_x_count = 1 : i64,
+  tile_y_count = 4 : i64,
+  tile_x_count = 4 : i64,
+  bad_tile_ids = array<i64>
+}
+```
+
+`physical_tile_coords` 按 logical rank 顺序展开，每 4 个整数为
+`card_y, card_x, tile_y, tile_x`。logical rank 本身由数组顺序表达，避免再维护一份重复的
+rank id 表。`bad_tile_ids` 是当前 capability / PG 过滤后的 flat physical tile id 集合；后续
+P4.2 可以把 block id、local shard metadata 或 capability reference 接到 package/launch
+metadata，但不能改变 tensor semantics。
+
 ## 5. Placement Algorithm
 
 V0 使用可解释的 deterministic placement，不追求全局最优：

@@ -74,7 +74,11 @@ emit、validate 和 canonical roundtrip，schema 覆盖 launch signature、DDR e
 resource summary、ABI ops、device-code artifact id 和 runtime completion source，并拒绝已知 stub
 completion fence。P3.11 的 M0 local compile gate 已落地：汇总 lit test 从同一个 M0 Linalg GEMM
 输入跑完整 textual pipeline 到 DDR binding / SPM allocation / C ABI skeleton，validate manifest，
-再从 manifest 生成 C ABI stub 并用本地 C compiler 做 syntax compile。
+再从 manifest 生成 C ABI stub 并用本地 C compiler 做 syntax compile。P4.1 的 logical rank 到
+physical tile mapping 表示已落地：新增 `wafer.placement.map` accepted mapping op，按 logical
+rank 顺序保存 4D physical coordinate，并由 verifier 检查 rank 覆盖、topology bounds、bad tile
+过滤和重复 physical tile；该 op 不携带 planner trace、SPM/DDR allocation、DTE packet 或 runtime
+handle。
 
 ## Active Task
 
@@ -82,9 +86,10 @@ completion fence。P3.11 的 M0 local compile gate 已落地：汇总 lit test �
 
 当前执行焦点：
 
-1. P0.1 到 P0.6：工程、依赖、工具和测试入口。
-2. P1.1 到 P1.10：最小 Wafer dialect skeleton、parser/printer/verifier。
-3. P3.1 到 P3.10：从手写 StableHLO / Linalg GEMM 输入跑通 M0。
+1. P0 到 P1：工程、依赖、工具、测试入口和最小 Wafer dialect skeleton。
+2. P2 到 P3：从手写 StableHLO / Linalg GEMM 输入跑通 M0 local compile gate。
+3. P4.1 到 P4.5：推进 M1 multi-tile no-communication 的 placement、per-tile outlining 和 launch
+   gate。
 
 ## 当前判断
 
@@ -189,7 +194,7 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 
 | ID | 状态 | 任务 | 验收 |
 | --- | --- | --- | --- |
-| P4.1 | pending | 定义 logical rank 到 physical tile mapping 表示 | mapping 覆盖所有 rank，不使用 bad tile |
+| P4.1 | done | 定义 logical rank 到 physical tile mapping 表示 | mapping 覆盖所有 rank，不使用 bad tile |
 | P4.2 | pending | 接入 good-tile / block id / local shard metadata | metadata 可进入 package，不修改 tensor semantics |
 | P4.3 | pending | 支持多 tile 独立 tile-region outlining | 每 tile 独立 load-compute-store，无 tile 间 comm |
 | P4.4 | pending | 支持 per-tile launch args | runtime launch 能区分 tile-specific arguments |
