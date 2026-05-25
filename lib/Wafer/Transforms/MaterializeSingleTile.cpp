@@ -2,6 +2,7 @@
 
 #include "Wafer/Transforms/Passes.h"
 
+#include "AttentionGemmUtils.h"
 #include "Wafer/Dialect/Wafer/IR/WaferDialect.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -73,6 +74,23 @@ static mlir::linalg::MatmulOp getSingleMatmulBody(wafer::GroupOp group) {
     matmul = candidate;
   }
   return matmul;
+}
+
+static mlir::linalg::GenericOp
+getSingleAttentionGemmBody(wafer::GroupOp group) {
+  mlir::linalg::GenericOp generic;
+  mlir::Block &block = group.getBody().front();
+  for (mlir::Operation &op : block) {
+    if (&op == block.getTerminator())
+      continue;
+    auto candidate = mlir::dyn_cast<mlir::linalg::GenericOp>(op);
+    if (!candidate || generic)
+      return {};
+    if (!matchAttentionGemm(candidate))
+      return {};
+    generic = candidate;
+  }
+  return generic;
 }
 
 static mlir::linalg::ElementwiseOp
@@ -180,6 +198,93 @@ mapReduceKind(mlir::linalg::ReduceOp reduce) {
       return wafer::ComputeReduceKind::Min;
 
   return std::nullopt;
+}
+
+static mlir::LogicalResult
+materializeAttentionGemmGroup(wafer::GroupOp group,
+                              mlir::linalg::GenericOp generic) {
+  if (group.getNumResults() != 1 || group.getOuts().size() != 1)
+    return group.emitOpError(
+        "cannot materialize single tile: expected one group result and out");
+
+  std::optional<AttentionGemmDims> dims = matchAttentionGemm(generic);
+  if (!dims)
+    return generic.emitOpError(
+        "cannot materialize single tile: unsupported attention contraction");
+
+  llvm::SmallVector<mlir::Value> genericInputs = generic.getDpsInputs();
+  mlir::OperandRange genericOuts = generic.getDpsInits();
+  if (genericInputs.size() != 2 || genericOuts.size() != 1 ||
+      generic->getNumResults() != 1)
+    return generic.emitOpError(
+        "cannot materialize single tile: expected attention contraction with "
+        "two inputs, one out, and one result");
+
+  auto lhsType =
+      mlir::dyn_cast<mlir::RankedTensorType>(genericInputs[0].getType());
+  auto rhsType =
+      mlir::dyn_cast<mlir::RankedTensorType>(genericInputs[1].getType());
+  auto resultType =
+      mlir::dyn_cast<mlir::RankedTensorType>(generic->getResult(0).getType());
+  if (!lhsType || !rhsType || !resultType)
+    return generic.emitOpError(
+        "cannot materialize single tile: attention tensors must be ranked");
+
+  llvm::SmallVector<mlir::Value> tileRegionInputs(group.getInputs().begin(),
+                                                  group.getInputs().end());
+  tileRegionInputs.append(group.getOuts().begin(), group.getOuts().end());
+
+  mlir::OpBuilder builder(group);
+  auto tileRegion = builder.create<wafer::TileRegionOp>(
+      group.getLoc(), group->getResultTypes(), tileRegionInputs);
+
+  mlir::Block *body = new mlir::Block();
+  tileRegion.getBody().push_back(body);
+
+  mlir::IRMapping mapping;
+  mlir::Block &groupBlock = group.getBody().front();
+  for (auto [oldArg, input] :
+       llvm::zip(groupBlock.getArguments(), tileRegionInputs)) {
+    mlir::BlockArgument newArg =
+        body->addArgument(input.getType(), input.getLoc());
+    mapping.map(oldArg, newArg);
+  }
+
+  mlir::Value lhs = mapping.lookup(genericInputs[0]);
+  mlir::Value rhs = mapping.lookup(genericInputs[1]);
+  mlir::Value out = mapping.lookup(genericOuts[0]);
+  mlir::MLIRContext *context = group.getContext();
+  mlir::Location loc = group.getLoc();
+  mlir::OpBuilder bodyBuilder = mlir::OpBuilder::atBlockEnd(body);
+
+  auto lhsTensorType =
+      getSPMTileBuffer(context, lhsType, wafer::MemLayout::Tensor);
+  auto rhsTensorType =
+      getSPMTileBuffer(context, rhsType, wafer::MemLayout::Tensor);
+  auto lhsCxType = getSPMTileBuffer(context, lhsType, wafer::MemLayout::Cx);
+  auto rhsCxType = getSPMTileBuffer(context, rhsType, wafer::MemLayout::Cx);
+  auto resultCxType =
+      getSPMTileBuffer(context, resultType, wafer::MemLayout::Cx);
+  auto resultTensorType =
+      getSPMTileBuffer(context, resultType, wafer::MemLayout::Tensor);
+
+  auto lhsTile = bodyBuilder.create<wafer::LoadTileOp>(loc, lhsTensorType, lhs);
+  auto rhsTile = bodyBuilder.create<wafer::LoadTileOp>(loc, rhsTensorType, rhs);
+  auto lhsCx = bodyBuilder.create<wafer::LayoutMaterializeOp>(
+      loc, lhsCxType, lhsTile.getResult());
+  auto rhsCx = bodyBuilder.create<wafer::LayoutMaterializeOp>(
+      loc, rhsCxType, rhsTile.getResult());
+  auto gemm = bodyBuilder.create<wafer::ComputeGemmOp>(
+      loc, resultCxType, lhsCx.getResult(), rhsCx.getResult());
+  setAttentionGemmAttrs(gemm.getOperation(), bodyBuilder, resultType, *dims);
+  auto resultTensor = bodyBuilder.create<wafer::LayoutMaterializeOp>(
+      loc, resultTensorType, gemm.getResult());
+  bodyBuilder.create<wafer::StoreTileOp>(loc, resultTensor.getResult(), out);
+  bodyBuilder.create<wafer::TileYieldOp>(loc, out);
+
+  group->replaceAllUsesWith(tileRegion->getResults());
+  group.erase();
+  return mlir::success();
 }
 
 static mlir::LogicalResult
@@ -489,13 +594,16 @@ materializeElementwiseGroup(wafer::GroupOp group,
 static mlir::LogicalResult materializeGroup(wafer::GroupOp group) {
   if (mlir::linalg::MatmulOp matmul = getSingleMatmulBody(group))
     return materializeMatmulGroup(group, matmul);
+  if (mlir::linalg::GenericOp generic = getSingleAttentionGemmBody(group))
+    return materializeAttentionGemmGroup(group, generic);
   if (mlir::linalg::ReduceOp reduce = getSingleReduceBody(group))
     return materializeReduceGroup(group, reduce);
   if (mlir::linalg::ElementwiseOp elementwise = getSingleElementwiseBody(group))
     return materializeElementwiseGroup(group, elementwise);
   return group.emitOpError(
       "cannot materialize single tile: expected one linalg.matmul, "
-      "linalg.reduce, or linalg.elementwise body op");
+      "supported attention linalg.generic contraction, linalg.reduce, or "
+      "linalg.elementwise body op");
 }
 
 struct MaterializeSingleTilePass

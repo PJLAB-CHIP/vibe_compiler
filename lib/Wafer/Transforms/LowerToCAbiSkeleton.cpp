@@ -105,13 +105,32 @@ static mlir::LogicalResult lowerComputeGemm(wafer::ComputeGemmOp gemm) {
   auto lhsTensor = mlir::cast<mlir::RankedTensorType>(lhsType.getTensorType());
   auto rhsTensor = mlir::cast<mlir::RankedTensorType>(rhsType.getTensorType());
 
+  int64_t m = lhsTensor.getDimSize(0);
+  int64_t k = lhsTensor.getDimSize(1);
+  int64_t n = rhsTensor.getDimSize(1);
+  if (lhsTensor.getRank() != 2) {
+    auto lhsMDim = gemm->getAttrOfType<mlir::IntegerAttr>("lhs_m_dim").getInt();
+    auto lhsKDim =
+        gemm->getAttrOfType<mlir::IntegerAttr>("lhs_contracting_dim").getInt();
+    auto rhsNDim = gemm->getAttrOfType<mlir::IntegerAttr>("rhs_n_dim").getInt();
+    m = lhsTensor.getDimSize(lhsMDim);
+    k = lhsTensor.getDimSize(lhsKDim);
+    n = rhsTensor.getDimSize(rhsNDim);
+  }
+
   mlir::OpBuilder builder(gemm);
   auto abi = builder.create<wafer::AbiGemmOp>(
       gemm.getLoc(), gemm.getResult().getType(),
       getIssueOnlyPolicy(gemm.getContext()), gemm.getLhs(), gemm.getRhs(),
-      builder.getI64IntegerAttr(lhsTensor.getDimSize(0)),
-      builder.getI64IntegerAttr(lhsTensor.getDimSize(1)),
-      builder.getI64IntegerAttr(rhsTensor.getDimSize(1)));
+      builder.getI64IntegerAttr(m), builder.getI64IntegerAttr(k),
+      builder.getI64IntegerAttr(n));
+  for (llvm::StringRef attrName :
+       {"batch_count", "lhs_batch_dims", "rhs_batch_dims", "result_batch_dims",
+        "lhs_m_dim", "lhs_contracting_dim", "rhs_contracting_dim", "rhs_n_dim",
+        "result_m_dim", "result_n_dim"}) {
+    if (mlir::Attribute attr = gemm->getAttr(attrName))
+      abi->setAttr(attrName, attr);
+  }
   gemm.getResult().replaceAllUsesWith(abi.getResult());
   gemm.erase();
   return mlir::success();

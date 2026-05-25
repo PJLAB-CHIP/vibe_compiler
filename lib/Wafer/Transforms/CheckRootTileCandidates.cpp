@@ -2,6 +2,7 @@
 
 #include "Wafer/Transforms/Passes.h"
 
+#include "AttentionGemmUtils.h"
 #include "Wafer/Dialect/Wafer/IR/WaferDialect.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -299,6 +300,10 @@ checkM0CandidateFeasibility(wafer::GroupOp group,
     return FeasibilityResult::success();
   }
 
+  auto generic = mlir::dyn_cast<mlir::linalg::GenericOp>(root);
+  if (generic && matchAttentionGemm(generic))
+    return FeasibilityResult::success();
+
   auto elementwise = mlir::dyn_cast<mlir::linalg::ElementwiseOp>(root);
   if (elementwise && isLimitedBroadcastElementwiseRoot(elementwise))
     return FeasibilityResult::success();
@@ -308,8 +313,9 @@ checkM0CandidateFeasibility(wafer::GroupOp group,
     return FeasibilityResult::success();
 
   return FeasibilityResult::failure(
-      "M0 feasibility requires a linalg.matmul, limited-broadcast "
-      "linalg.elementwise, or supported linalg.reduce root");
+      "M0 feasibility requires a linalg.matmul, supported attention "
+      "linalg.generic contraction, limited-broadcast linalg.elementwise, or "
+      "supported linalg.reduce root");
 }
 
 struct CheckRootTileCandidatesPass

@@ -2,6 +2,7 @@
 
 #include "Wafer/Transforms/Passes.h"
 
+#include "AttentionGemmUtils.h"
 #include "Wafer/Dialect/Wafer/IR/WaferDialect.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -65,6 +66,18 @@ static bool canFormSingleMatmulGroup(mlir::linalg::MatmulOp matmul) {
   if (!llvm::all_of(matmul.getInputs(), isTensorValue))
     return false;
   if (!llvm::all_of(matmul.getOutputs(), isTensorValue))
+    return false;
+  return true;
+}
+
+static bool canFormSingleAttentionGemmGroup(mlir::linalg::GenericOp generic) {
+  if (generic->getParentOfType<wafer::GroupOp>())
+    return false;
+  if (!matchAttentionGemm(generic))
+    return false;
+  if (!llvm::all_of(generic.getDpsInputs(), isTensorValue))
+    return false;
+  if (!llvm::all_of(generic.getDpsInits(), isTensorValue))
     return false;
   return true;
 }
@@ -310,6 +323,11 @@ struct FormGroupsPass
           roots.push_back(op);
         return;
       }
+      if (auto generic = mlir::dyn_cast<mlir::linalg::GenericOp>(op)) {
+        if (canFormSingleAttentionGemmGroup(generic))
+          roots.push_back(op);
+        return;
+      }
       if (auto elementwise = mlir::dyn_cast<mlir::linalg::ElementwiseOp>(op)) {
         if (canFormSingleElementwiseGroup(elementwise))
           roots.push_back(op);
@@ -321,8 +339,11 @@ struct FormGroupsPass
         formGroup(root, matmul.getInputs(), matmul.getOutputs());
       else if (auto reduce = mlir::dyn_cast<mlir::linalg::ReduceOp>(root))
         formGroup(root, reduce.getInputs(), reduce.getInits());
-      else if (auto elementwise =
-                   mlir::dyn_cast<mlir::linalg::ElementwiseOp>(root))
+      else if (auto generic = mlir::dyn_cast<mlir::linalg::GenericOp>(root)) {
+        llvm::SmallVector<mlir::Value> inputs = generic.getDpsInputs();
+        formGroup(root, inputs, generic.getDpsInits());
+      } else if (auto elementwise =
+                     mlir::dyn_cast<mlir::linalg::ElementwiseOp>(root))
         formGroup(root, elementwise.getInputs(), elementwise.getOutputs());
     }
   }

@@ -10,6 +10,8 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/DialectImplementation.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
 
 #include <cstdint>
@@ -238,6 +240,175 @@ verifyIssueOnlyWaitPolicy(mlir::Operation *op,
   return mlir::success();
 }
 
+struct BatchedGemmDimAttrs {
+  llvm::SmallVector<int64_t, 2> lhsBatchDims;
+  llvm::SmallVector<int64_t, 2> rhsBatchDims;
+  llvm::SmallVector<int64_t, 2> resultBatchDims;
+  int64_t batchCount = 0;
+  int64_t lhsMDim = -1;
+  int64_t lhsContractingDim = -1;
+  int64_t rhsContractingDim = -1;
+  int64_t rhsNDim = -1;
+  int64_t resultMDim = -1;
+  int64_t resultNDim = -1;
+};
+
+static bool hasAnyBatchedGemmAttrs(mlir::Operation *op) {
+  return op->hasAttr("batch_count") || op->hasAttr("lhs_batch_dims") ||
+         op->hasAttr("rhs_batch_dims") || op->hasAttr("result_batch_dims") ||
+         op->hasAttr("lhs_m_dim") || op->hasAttr("lhs_contracting_dim") ||
+         op->hasAttr("rhs_contracting_dim") || op->hasAttr("rhs_n_dim") ||
+         op->hasAttr("result_m_dim") || op->hasAttr("result_n_dim");
+}
+
+static mlir::LogicalResult
+readRequiredI64Attr(mlir::Operation *op, llvm::StringRef name, int64_t &value) {
+  auto attr = op->getAttrOfType<mlir::IntegerAttr>(name);
+  if (!attr)
+    return op->emitOpError("GEMM batched form requires ") << name << " attr";
+  value = attr.getInt();
+  return mlir::success();
+}
+
+static mlir::LogicalResult
+readRequiredDenseI64Attr(mlir::Operation *op, llvm::StringRef name,
+                         llvm::SmallVectorImpl<int64_t> &values) {
+  auto attr = op->getAttrOfType<mlir::DenseI64ArrayAttr>(name);
+  if (!attr)
+    return op->emitOpError("GEMM batched form requires ") << name << " attr";
+  values.assign(attr.asArrayRef().begin(), attr.asArrayRef().end());
+  return mlir::success();
+}
+
+static mlir::LogicalResult getBatchedGemmDimAttrs(mlir::Operation *op,
+                                                  BatchedGemmDimAttrs &attrs) {
+  if (mlir::failed(readRequiredI64Attr(op, "batch_count", attrs.batchCount)) ||
+      mlir::failed(
+          readRequiredDenseI64Attr(op, "lhs_batch_dims", attrs.lhsBatchDims)) ||
+      mlir::failed(
+          readRequiredDenseI64Attr(op, "rhs_batch_dims", attrs.rhsBatchDims)) ||
+      mlir::failed(readRequiredDenseI64Attr(op, "result_batch_dims",
+                                            attrs.resultBatchDims)) ||
+      mlir::failed(readRequiredI64Attr(op, "lhs_m_dim", attrs.lhsMDim)) ||
+      mlir::failed(readRequiredI64Attr(op, "lhs_contracting_dim",
+                                       attrs.lhsContractingDim)) ||
+      mlir::failed(readRequiredI64Attr(op, "rhs_contracting_dim",
+                                       attrs.rhsContractingDim)) ||
+      mlir::failed(readRequiredI64Attr(op, "rhs_n_dim", attrs.rhsNDim)) ||
+      mlir::failed(readRequiredI64Attr(op, "result_m_dim", attrs.resultMDim)) ||
+      mlir::failed(readRequiredI64Attr(op, "result_n_dim", attrs.resultNDim)))
+    return mlir::failure();
+  return mlir::success();
+}
+
+static mlir::LogicalResult
+verifyDimsInRangeAndUnique(mlir::Operation *op, llvm::StringRef name,
+                           llvm::ArrayRef<int64_t> dims, int64_t rank) {
+  if (dims.empty())
+    return op->emitOpError("GEMM ") << name << " must be non-empty";
+
+  llvm::DenseSet<int64_t> seen;
+  for (int64_t dim : dims) {
+    if (dim < 0 || dim >= rank)
+      return op->emitOpError("GEMM ")
+             << name << " entries must be within tensor rank";
+    if (!seen.insert(dim).second)
+      return op->emitOpError("GEMM ") << name << " entries must be unique";
+  }
+  return mlir::success();
+}
+
+static mlir::LogicalResult
+verifyDimsCoverRank(mlir::Operation *op, llvm::StringRef name,
+                    llvm::ArrayRef<int64_t> batchDims, int64_t dim0,
+                    int64_t dim1, int64_t rank) {
+  llvm::DenseSet<int64_t> seen;
+  for (int64_t dim : batchDims)
+    seen.insert(dim);
+  if (dim0 < 0 || dim0 >= rank || dim1 < 0 || dim1 >= rank)
+    return op->emitOpError("GEMM ")
+           << name << " dimension attrs must be within tensor rank";
+  if (!seen.insert(dim0).second || !seen.insert(dim1).second)
+    return op->emitOpError("GEMM ")
+           << name << " dimension attrs must be unique";
+  if (static_cast<int64_t>(seen.size()) != rank)
+    return op->emitOpError("GEMM ")
+           << name << " dimension attrs must cover tensor rank";
+  return mlir::success();
+}
+
+static mlir::LogicalResult verifyBatchedGemmTileContract(
+    mlir::Operation *op, mlir::RankedTensorType lhsTensor,
+    mlir::RankedTensorType rhsTensor, mlir::RankedTensorType resultTensor,
+    BatchedGemmDimAttrs &attrs) {
+  if (mlir::failed(getBatchedGemmDimAttrs(op, attrs)))
+    return mlir::failure();
+
+  int64_t rank = lhsTensor.getRank();
+  if (rank < 3 || rhsTensor.getRank() != rank || resultTensor.getRank() != rank)
+    return op->emitOpError(
+        "GEMM batched form expects operands and result to have the same rank "
+        "of at least 3");
+  if (!lhsTensor.hasStaticShape() || !rhsTensor.hasStaticShape() ||
+      !resultTensor.hasStaticShape())
+    return op->emitOpError("GEMM batched form requires static tensor shapes");
+
+  if (attrs.batchCount <= 0)
+    return op->emitOpError("GEMM batch_count attr must be positive");
+  if (attrs.lhsBatchDims.size() != attrs.rhsBatchDims.size() ||
+      attrs.lhsBatchDims.size() != attrs.resultBatchDims.size())
+    return op->emitOpError(
+        "GEMM batch dimension attrs must have matching lengths");
+
+  if (mlir::failed(verifyDimsInRangeAndUnique(op, "lhs_batch_dims",
+                                              attrs.lhsBatchDims, rank)) ||
+      mlir::failed(verifyDimsInRangeAndUnique(op, "rhs_batch_dims",
+                                              attrs.rhsBatchDims, rank)) ||
+      mlir::failed(verifyDimsInRangeAndUnique(op, "result_batch_dims",
+                                              attrs.resultBatchDims, rank)) ||
+      mlir::failed(verifyDimsCoverRank(op, "lhs", attrs.lhsBatchDims,
+                                       attrs.lhsMDim, attrs.lhsContractingDim,
+                                       rank)) ||
+      mlir::failed(verifyDimsCoverRank(op, "rhs", attrs.rhsBatchDims,
+                                       attrs.rhsContractingDim, attrs.rhsNDim,
+                                       rank)) ||
+      mlir::failed(verifyDimsCoverRank(op, "result", attrs.resultBatchDims,
+                                       attrs.resultMDim, attrs.resultNDim,
+                                       rank)))
+    return mlir::failure();
+
+  int64_t inferredBatchCount = 1;
+  for (auto [lhsBatchDim, rhsBatchDim, resultBatchDim] : llvm::zip(
+           attrs.lhsBatchDims, attrs.rhsBatchDims, attrs.resultBatchDims)) {
+    if (hasStaticMismatch(lhsTensor.getDimSize(lhsBatchDim),
+                          rhsTensor.getDimSize(rhsBatchDim)) ||
+        hasStaticMismatch(lhsTensor.getDimSize(lhsBatchDim),
+                          resultTensor.getDimSize(resultBatchDim)))
+      return op->emitOpError("GEMM batch dimensions must have matching shapes");
+    if (!checkedMul(inferredBatchCount, resultTensor.getDimSize(resultBatchDim),
+                    inferredBatchCount))
+      return op->emitOpError("GEMM batch_count is too large to verify");
+  }
+
+  if (attrs.batchCount != inferredBatchCount)
+    return op->emitOpError(
+        "GEMM batch_count attr must match product of result batch dimensions");
+
+  if (hasStaticMismatch(lhsTensor.getDimSize(attrs.lhsMDim),
+                        resultTensor.getDimSize(attrs.resultMDim)))
+    return op->emitOpError(
+        "GEMM lhs M dimension must match result M dimension");
+  if (hasStaticMismatch(rhsTensor.getDimSize(attrs.rhsNDim),
+                        resultTensor.getDimSize(attrs.resultNDim)))
+    return op->emitOpError(
+        "GEMM rhs N dimension must match result N dimension");
+  if (hasStaticMismatch(lhsTensor.getDimSize(attrs.lhsContractingDim),
+                        rhsTensor.getDimSize(attrs.rhsContractingDim)))
+    return op->emitOpError("GEMM lhs K dimension must match rhs K dimension");
+
+  return mlir::success();
+}
+
 mlir::LogicalResult AbiRdma1DOp::verify() {
   if (mlir::failed(
           verifyIssueOnlyWaitPolicy(getOperation(), getWaitPolicyAttr())))
@@ -320,13 +491,28 @@ mlir::LogicalResult AbiGemmOp::verify() {
   mlir::RankedTensorType lhsTensor = getTileBufferTensorType(lhsType);
   mlir::RankedTensorType rhsTensor = getTileBufferTensorType(rhsType);
   mlir::RankedTensorType resultTensor = getTileBufferTensorType(resultType);
-  if (lhsTensor.getRank() != 2 || rhsTensor.getRank() != 2 ||
-      resultTensor.getRank() != 2)
-    return emitOpError("ABI GEMM expects rank-2 tile buffer tensor types");
 
   if (lhsTensor.getElementType() != rhsTensor.getElementType() ||
       lhsTensor.getElementType() != resultTensor.getElementType())
     return emitOpError("ABI GEMM operand and result element types must match");
+
+  if (lhsTensor.getRank() != 2 || rhsTensor.getRank() != 2 ||
+      resultTensor.getRank() != 2) {
+    BatchedGemmDimAttrs attrs;
+    if (mlir::failed(verifyBatchedGemmTileContract(
+            getOperation(), lhsTensor, rhsTensor, resultTensor, attrs)))
+      return mlir::failure();
+
+    if (getMAttr().getInt() != lhsTensor.getDimSize(attrs.lhsMDim) ||
+        getKAttr().getInt() != lhsTensor.getDimSize(attrs.lhsContractingDim) ||
+        getNAttr().getInt() != rhsTensor.getDimSize(attrs.rhsNDim))
+      return emitOpError("ABI GEMM m/k/n attrs must match batched GEMM dims");
+    return mlir::success();
+  }
+
+  if (hasAnyBatchedGemmAttrs(getOperation()))
+    return emitOpError(
+        "ABI GEMM rank-2 form must not carry batched GEMM attrs");
 
   if (hasStaticMismatch(lhsTensor.getDimSize(1), rhsTensor.getDimSize(0)))
     return emitOpError("ABI GEMM lhs K dimension must match rhs K dimension");
@@ -646,13 +832,20 @@ mlir::LogicalResult ComputeGemmOp::verify() {
   mlir::RankedTensorType lhsTensor = getTileBufferTensorType(lhsType);
   mlir::RankedTensorType rhsTensor = getTileBufferTensorType(rhsType);
   mlir::RankedTensorType resultTensor = getTileBufferTensorType(resultType);
-  if (lhsTensor.getRank() != 2 || rhsTensor.getRank() != 2 ||
-      resultTensor.getRank() != 2)
-    return emitOpError("gemm expects rank-2 tile buffer tensor types");
 
   if (lhsTensor.getElementType() != rhsTensor.getElementType() ||
       lhsTensor.getElementType() != resultTensor.getElementType())
     return emitOpError("gemm operand and result element types must match");
+
+  if (lhsTensor.getRank() != 2 || rhsTensor.getRank() != 2 ||
+      resultTensor.getRank() != 2) {
+    BatchedGemmDimAttrs attrs;
+    return verifyBatchedGemmTileContract(getOperation(), lhsTensor, rhsTensor,
+                                         resultTensor, attrs);
+  }
+
+  if (hasAnyBatchedGemmAttrs(getOperation()))
+    return emitOpError("gemm rank-2 form must not carry batched GEMM attrs");
 
   if (hasStaticMismatch(lhsTensor.getDimSize(1), rhsTensor.getDimSize(0)))
     return emitOpError("gemm lhs K dimension must match rhs K dimension");

@@ -157,13 +157,25 @@ getTileBufferStorageBytes(wafer::TileBufferType tileBufferType,
   if (layout != wafer::MemLayout::Cx && layout != wafer::MemLayout::NCx)
     return StorageResult::failure("unsupported tile_buffer layout");
 
-  if (tensorType.getRank() != 2)
+  if (tensorType.getRank() < 2)
     return StorageResult::failure(
-        "cx/ncx storage trial currently requires rank-2 tensors");
+        "cx/ncx storage trial currently requires rank-2 or higher tensors");
 
-  int64_t rows = tensorType.getDimSize(0);
-  int64_t cols = tensorType.getDimSize(1);
-  if (rows < 0 || cols < 0)
+  uint64_t rows = 1;
+  for (int64_t dim = 0; dim + 1 < tensorType.getRank(); ++dim) {
+    int64_t size = tensorType.getDimSize(dim);
+    if (size < 0)
+      return StorageResult::failure(
+          "dynamic cx/ncx tile_buffer shape has no bounded SPM size");
+    uint64_t nextRows = 0;
+    if (!checkedMul(rows, static_cast<uint64_t>(size), nextRows))
+      return StorageResult::failure(
+          "range_end_overflow while computing cx/ncx rows");
+    rows = nextRows;
+  }
+
+  int64_t cols = tensorType.getDimSize(tensorType.getRank() - 1);
+  if (cols < 0)
     return StorageResult::failure(
         "dynamic cx/ncx tile_buffer shape has no bounded SPM size");
 
@@ -175,7 +187,7 @@ getTileBufferStorageBytes(wafer::TileBufferType tileBufferType,
         "range_end_overflow while aligning cx/ncx columns");
 
   uint64_t elementCount = 0;
-  if (!checkedMul(static_cast<uint64_t>(rows), *alignedCols, elementCount))
+  if (!checkedMul(rows, *alignedCols, elementCount))
     return StorageResult::failure(
         "range_end_overflow while computing cx/ncx elements");
   return getByteCountForElements(elementCount, *elementBits, alignment);
