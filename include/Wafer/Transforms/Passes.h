@@ -21,6 +21,7 @@ std::unique_ptr<mlir::Pass> createCheckRootTileCandidatesPass();
 std::unique_ptr<mlir::Pass> createMaterializeSingleTilePass();
 std::unique_ptr<mlir::Pass> createCompactLayoutAssignmentPass();
 std::unique_ptr<mlir::Pass> createCheckSPMAllocationPass();
+std::unique_ptr<mlir::Pass> createMaterializeDDRExternalBindingsPass();
 void registerWaferPasses();
 
 } // namespace wafer

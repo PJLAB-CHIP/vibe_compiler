@@ -58,7 +58,11 @@ inverse-pair `wafer.layout.materialize(A -> B -> A)`，直接把最终 consumer 
 allocation trial 已落地：`--wafer-check-spm-allocation` 在 `wafer.tile_region` 内用 pass-local
 sequential trial 分配检查 SPM tile buffer storage size、alignment、lifetime range、end address 和
 usable capacity；默认 usable cap 按 `0x2f0000` 建模，trial 不向 IR 写入 offset、range 或 allocation
-plan attr。
+plan attr。P3.7 的 DDR external binding demand 已落地：新增 `wafer.ddr.external_binding` op
+表达 input/output 外部 tensor 的 compact byte size、alignment、read-only 和 host-visible contract，
+`--wafer-materialize-ddr-external-bindings` 从 tile-region 内 `load_tile` / `store_tile` 的 boundary
+use-def 推导 demand；它不携带 BO handle、physical address、pool/domain placement 或 allocation
+trace。
 
 ## Active Task
 
@@ -161,7 +165,7 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 | P3.4 | done | materialize 单 tile `wafer.tile_region` | region 中有 load、compute、store 的 SSA 关系 |
 | P3.5 | done | 实现 compact layout assignment | 不插不必要的 layout conversion |
 | P3.6 | done | 实现 SPM allocation trial | range、alignment、lifetime、end-address 检查通过 |
-| P3.7 | pending | 实现 DDR external input/output binding demand | DDR demand 可被 launch/runtime 层消费 |
+| P3.7 | done | 实现 DDR external input/output binding demand | DDR demand 可被 launch/runtime 层消费 |
 | P3.8 | pending | Lower `wafer.compute.gemm` / load / store 到 C ABI skeleton | 参数单位、address domain、wait policy 有 verifier |
 | P3.9 | pending | 建立 golden packet / ABI unit test | 至少覆盖 M0 用到的 compute/movement family |
 | P3.10 | pending | 建立最小 launch/runtime package manifest | manifest roundtrip，package 不依赖已知 stub path 作为 correctness fence |
@@ -237,6 +241,6 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 
 ## 下一步
 
-继续从 P3.7 开始实现 DDR external input/output binding demand，先服务 M0 single-tile
-load-GEMM-store 闭环；batch/head dot 泛化在 attention slice 前补齐。不要越过 M0/M1 compile gate 直接实现 transformer
-block 逻辑。
+继续从 P3.8 开始把 `wafer.compute.gemm` / `wafer.load_tile` / `wafer.store_tile` lower 到 C ABI
+skeleton，先服务 M0 single-tile load-GEMM-store 闭环；batch/head dot 泛化在 attention slice 前补齐。
+不要越过 M0/M1 compile gate 直接实现 transformer block 逻辑。

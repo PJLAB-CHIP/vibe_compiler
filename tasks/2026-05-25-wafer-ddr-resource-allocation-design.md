@@ -260,6 +260,13 @@ Runtime 在 launch 时负责：
 Verifier / runtime check 失败必须暴露为 launch-time diagnostic，不能 silent fallback 到错误 layout
 或错误 pool。
 
+当前 V0 compiler skeleton 用 `wafer.ddr.external_binding` 作为最小 external binding demand
+materialization。该 op 由 `wafer.tile_region` 内的 `wafer.load_tile` / `wafer.store_tile` boundary
+use-def 推导，记录 input/output kind、compact tensor byte size、required alignment、read-only 和
+host-visible policy，供后续 launch/runtime package 层消费。它不记录 DDR physical address、BO
+handle、pool/domain 选择、workspace offset 或 allocation/search trace；这些事实仍属于 runtime
+binding、storage-realized descriptor 或 package metadata。
+
 ### 6.2 Constant Residency
 
 Frontend 常量先统一到 `arith.constant` 或其它 `ConstantLike` tensor op。Constant storage transform /

@@ -140,6 +140,29 @@ def Wafer_StoreTileOp : Wafer_Op<"store_tile", [
       "$source `,` $dest attr-dict `:` type($source) `->` type($dest)";
 }
 
+def Wafer_DdrExternalBindingOp : Wafer_Op<"ddr.external_binding"> {
+  let summary = "launch-visible external DDR binding demand";
+  let description = [{
+    `wafer.ddr.external_binding` records the compact external tensor binding
+    contract that the launch/runtime layer must satisfy for user-visible input
+    and output tensors. It carries byte size, alignment and visibility policy,
+    but not a physical DDR address, BO handle, pool placement, or allocation
+    trace.
+  }];
+
+  let arguments = (ins
+    Wafer_DdrBindingKindAttr:$kind,
+    AnyTensor:$value,
+    I64Attr:$bytes,
+    I64Attr:$alignment,
+    BoolAttr:$read_only,
+    BoolAttr:$host_visible
+  );
+
+  let hasVerifier = 1;
+  let assemblyFormat = "$kind $value attr-dict `:` type($value)";
+}
+
 def Wafer_ComputeGemmOp : Wafer_Op<"compute.gemm", [
     WaferLayoutOpInterface,
     WaferResourceEffectInterface

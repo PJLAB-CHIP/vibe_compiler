@@ -8,6 +8,10 @@
 #include "mlir/IR/DialectImplementation.h"
 #include "llvm/ADT/TypeSwitch.h"
 
+#include <cstdint>
+#include <limits>
+#include <optional>
+
 using namespace wafer;
 
 #include "Wafer/Dialect/Wafer/IR/WaferEnums.cpp.inc"
@@ -85,6 +89,59 @@ static bool hasStaticMismatch(int64_t lhs, int64_t rhs) {
          lhs != rhs;
 }
 
+static bool checkedMul(int64_t lhs, int64_t rhs, int64_t &result) {
+  if (lhs < 0 || rhs < 0)
+    return false;
+  if (lhs != 0 && rhs > std::numeric_limits<int64_t>::max() / lhs)
+    return false;
+  result = lhs * rhs;
+  return true;
+}
+
+static std::optional<int64_t> getElementBitWidth(mlir::Type elementType) {
+  if (auto floatType = mlir::dyn_cast<mlir::FloatType>(elementType))
+    return floatType.getWidth();
+  if (auto integerType = mlir::dyn_cast<mlir::IntegerType>(elementType))
+    return integerType.getWidth();
+  if (mlir::isa<mlir::IndexType>(elementType))
+    return 64;
+  if (auto complexType = mlir::dyn_cast<mlir::ComplexType>(elementType)) {
+    std::optional<int64_t> elementBits =
+        getElementBitWidth(complexType.getElementType());
+    if (!elementBits)
+      return std::nullopt;
+    int64_t complexBits = 0;
+    if (!checkedMul(*elementBits, 2, complexBits))
+      return std::nullopt;
+    return complexBits;
+  }
+  return std::nullopt;
+}
+
+static std::optional<int64_t>
+getCompactTensorByteSize(mlir::RankedTensorType tensorType) {
+  if (!tensorType.hasStaticShape())
+    return std::nullopt;
+
+  int64_t elements = 1;
+  for (int64_t dim : tensorType.getShape()) {
+    int64_t next = 0;
+    if (!checkedMul(elements, dim, next))
+      return std::nullopt;
+    elements = next;
+  }
+
+  std::optional<int64_t> elementBits =
+      getElementBitWidth(tensorType.getElementType());
+  if (!elementBits || *elementBits <= 0)
+    return std::nullopt;
+
+  int64_t totalBits = 0;
+  if (!checkedMul(elements, *elementBits, totalBits))
+    return std::nullopt;
+  return totalBits / 8 + (totalBits % 8 == 0 ? 0 : 1);
+}
+
 static mlir::LogicalResult verifyCommP2P(mlir::Operation *op,
                                          mlir::Value buffer,
                                          mlir::IntegerAttr peer,
@@ -101,6 +158,39 @@ static mlir::LogicalResult verifyCommP2P(mlir::Operation *op,
     return op->emitOpError("comm peer must be non-negative");
   if (bytes.getInt() <= 0)
     return op->emitOpError("comm byte count must be positive");
+  return mlir::success();
+}
+
+mlir::LogicalResult DdrExternalBindingOp::verify() {
+  auto tensorType =
+      mlir::dyn_cast<mlir::RankedTensorType>(getValue().getType());
+  if (!tensorType || !tensorType.hasStaticShape())
+    return emitOpError(
+        "DDR external binding value must be a static ranked tensor");
+
+  int64_t bytes = getBytesAttr().getInt();
+  if (bytes <= 0)
+    return emitOpError("DDR external binding bytes must be positive");
+
+  std::optional<int64_t> expectedBytes = getCompactTensorByteSize(tensorType);
+  if (!expectedBytes)
+    return emitOpError("DDR external binding compact tensor storage size is "
+                       "not representable");
+  if (bytes != *expectedBytes)
+    return emitOpError(
+               "DDR external binding bytes must match compact tensor storage "
+               "size, got ")
+           << bytes << " and expected " << *expectedBytes;
+
+  if (getAlignmentAttr().getInt() <= 0)
+    return emitOpError("DDR external binding alignment must be positive");
+
+  bool readOnly = getReadOnlyAttr().getValue();
+  if (getKindAttr().getValue() == DdrBindingKind::Input && !readOnly)
+    return emitOpError("DDR external input binding must be read-only");
+  if (getKindAttr().getValue() == DdrBindingKind::Output && readOnly)
+    return emitOpError("DDR external output binding must be writable");
+
   return mlir::success();
 }
 

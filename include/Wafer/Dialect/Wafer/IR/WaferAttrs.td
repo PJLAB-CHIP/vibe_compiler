@@ -69,4 +69,20 @@ def Wafer_PlacementAttr
   let assemblyFormat = "`<` $value `>`";
 }
 
+def Wafer_DdrBindingKindInput : I32EnumAttrCase<"Input", 0, "input">;
+def Wafer_DdrBindingKindOutput : I32EnumAttrCase<"Output", 1, "output">;
+def Wafer_DdrBindingKind
+    : I32EnumAttr<"DdrBindingKind", "Wafer DDR external binding kind", [
+  Wafer_DdrBindingKindInput,
+  Wafer_DdrBindingKindOutput
+]> {
+  let cppNamespace = "::wafer";
+  let genSpecializedAttr = 0;
+}
+
+def Wafer_DdrBindingKindAttr
+    : EnumAttr<Wafer_Dialect, Wafer_DdrBindingKind, "ddr_binding_kind"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
 #endif // WAFER_DIALECT_WAFER_IR_WAFERATTRS_TD
