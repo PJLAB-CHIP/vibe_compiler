@@ -6,7 +6,6 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
-#include "mlir/Pass/PassRegistry.h"
 #include "llvm/ADT/SmallVector.h"
 
 #ifdef WAFER_ENABLE_STABLEHLO
@@ -58,12 +57,6 @@ struct NormalizeConstantsPass
 
 std::unique_ptr<mlir::Pass> createNormalizeConstantsPass() {
   return std::make_unique<NormalizeConstantsPass>();
-}
-
-void registerWaferPasses() {
-  static mlir::PassRegistration<NormalizeConstantsPass>
-      normalizeConstantsPass;
-  (void)normalizeConstantsPass;
 }
 
 } // namespace wafer

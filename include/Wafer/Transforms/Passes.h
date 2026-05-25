@@ -11,6 +11,7 @@ class Pass;
 
 namespace wafer {
 
+std::unique_ptr<mlir::Pass> createLowerStablehloDotPass();
 std::unique_ptr<mlir::Pass> createNormalizeConstantsPass();
 void registerWaferPasses();
 

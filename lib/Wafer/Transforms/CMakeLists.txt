@@ -1,11 +1,15 @@
 add_mlir_library(WaferTransforms
+  LowerStablehloDot.cpp
   NormalizeConstants.cpp
+  Passes.cpp
 
   LINK_LIBS PUBLIC
   MLIRArithDialect
   MLIRIR
+  MLIRLinalgDialect
   MLIRPass
   MLIRSupport
+  MLIRTensorDialect
 )
 
 if(WAFER_ENABLE_IMPORTER_DEPS)

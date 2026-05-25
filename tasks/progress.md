@@ -22,7 +22,9 @@ parser/printer/verifier 正负例已补齐到当前 op/type/attr 覆盖口径。
 默认 backend gate 覆盖手写 Linalg GEMM 文本入口，importer-enabled gate 覆盖 pinned StableHLO
 `dot_general` 文本入口和 dialect registration。最小 constant normalization pass 已落地，importer
 build 中把 `stablehlo.constant` 重写为 `arith.constant`，不引入 Wafer 私有 constant op；独立
-sidecar manifest schema 仍归 P3.10 package manifest，不在本批次造临时格式。
+sidecar manifest schema 仍归 P3.10 package manifest，不在本批次造临时格式。P2.3 的 M0 范围
+2D `stablehlo.dot_general` 到 structured tensor IR lowering 已落地，输出 zero fill + DPS
+`linalg.matmul`。
 
 ## Active Task
 
@@ -104,7 +106,7 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 | --- | --- | --- | --- |
 | P2.1 | done | 建立 StableHLO / MLIR textual artifact 输入测试 | parse/roundtrip 保留 function signature、shape、dtype |
 | P2.2 | done | 实现 constant normalization 骨架 | `stablehlo.constant` / sidecar 进入 `arith.constant` 或 `ConstantLike` tensor value |
-| P2.3 | pending | Lower `dot_general` / matmul 到 structured tensor IR | indexing map / iterator / DPS 关系可 FileCheck |
+| P2.3 | done | Lower `dot_general` / matmul 到 structured tensor IR | indexing map / iterator / DPS 关系可 FileCheck |
 | P2.4 | pending | Lower broadcast、reshape、transpose、slice | 只依赖 type、shape、indexing relation，不靠名字 |
 | P2.5 | pending | Lower elementwise 和 limited broadcast | 覆盖 add/sub/mul/div/max/min/neg/recip/sqrt/rsqrt/exp 的基础形态 |
 | P2.6 | pending | Lower reduce max / reduce sum | 输出 staged reduce IR，可服务 softmax 和 norm |
@@ -201,5 +203,6 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 
 ## 下一步
 
-继续从 P2.3 开始实现 `dot_general` / matmul 到 structured tensor IR 的转换。不要越过 frontend
-textual artifact 和 local compute normalization gate 直接实现 transformer block 逻辑。
+继续从 P2.4 开始覆盖 broadcast、reshape、transpose、slice 的 local compute normalization；batch/head
+dot 泛化在 attention slice 前补齐。不要越过 local compute normalization gate 直接实现 transformer
+block 逻辑。
