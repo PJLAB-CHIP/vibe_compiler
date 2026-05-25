@@ -95,18 +95,25 @@ M2 Direct DTE p2p：
 - fixed-size unicast DTE helper lowering 合法。
 - DTE wait 与 local compute drain 分离。
 - FSM / packet / stream resource 不冲突。
+- 当前 integration gate：`test/Integration/m2-p2p-comm-gate.mlir` 覆盖 placement-verified p2p
+  send/recv/wait 到 `wafer.abi.dte_*` skeleton。
 
 M3 single-card collective：
 
 - ring all-gather / reduce-scatter / all-reduce 可追溯到 unicast steps。
 - 每步 send/recv/wait token 和 buffer lifetime 合法。
 - raw non-unicast DTE 不作为 correctness path。
+- 当前 integration gate：`test/Integration/m3-single-card-collective-gate.mlir` 覆盖 `wafer.comm`
+  all-gather/all-reduce 到 ring p2p、Direct DTE ABI 和 elementwise ABI。
 
 M4 partitioned StableHLO collective lowering：
 
 - Shardy / SPMD 输出的 logical collective lowered 到 `wafer.comm`。
 - placement 和 comm lowering 保留 collective semantics。
 - layout/SPM/DDR resource gates 都通过。
+- 当前 integration gate：`test/Integration/m4-partitioned-collective-gate.mlir` 覆盖 StableHLO
+  all-gather/all-reduce/reduce-scatter 经 `wafer.comm`、ring lowering 到 C ABI skeleton。SPM/DDR
+  resource gate 在该 communication skeleton 中仍由后续完整 package gate 组合验证。
 
 M5 overlap and cost model：
 

@@ -162,6 +162,10 @@ P6.6 的 StableHLO logical collective normalization gate 已落地：新增
 `--wafer-lower-stablehlo-collectives-to-comm`，支持 single-result StableHLO `all_gather`、
 `all_reduce` 和 `reduce_scatter` 降到 collective-level `wafer.comm` op；pass 通过 `local-rank`
 option 固定当前 partition 的 replica-group rank，并只接受 sum/max/min reduction body。
+P6.7 的 M2/M3/M4 communication 汇总 gate 已落地：M2 覆盖 p2p comm 到 Direct DTE ABI skeleton；
+M3 覆盖 single-card `wafer.comm` all-gather/all-reduce 到 ring p2p、DTE ABI 和 elementwise ABI；
+M4 覆盖 StableHLO logical all-gather/all-reduce/reduce-scatter 经 `wafer.comm`、ring lowering 到
+C ABI skeleton。
 
 ## Active Task
 
@@ -310,7 +314,7 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 | P6.4 | done | 实现 ring all-gather | 每步 send/recv/wait token 和 buffer lifetime 合法 |
 | P6.5 | done | 实现 reduce-scatter / all-reduce | collective 可追溯到 unicast steps |
 | P6.6 | done | Lower Shardy/SPMD logical collective 到 `wafer.comm` | placement 和 comm lowering 保留 collective semantics |
-| P6.7 | ready | M2/M3/M4 gate 汇总测试 | p2p、single-card collective、partitioned collective lowering 分别可验证 |
+| P6.7 | done | M2/M3/M4 gate 汇总测试 | p2p、single-card collective、partitioned collective lowering 分别可验证 |
 
 ## P7. Overlap、Cost Model 和 Profiling Calibration
 
@@ -341,6 +345,5 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 
 ## 下一步
 
-P5.8 静态单 shard local compile gate 已收口，P6.1-P6.6 comm gates 已落地。下一步进入 P6.7：
-建立 M2/M3/M4 汇总 gate，分别覆盖 p2p、single-card collective 和 partitioned StableHLO
-collective lowering 到 ring/C ABI skeleton 的闭环。
+P0-P6 当前表内主线任务均已收口；下一步进入 P7 之前，应先按收尾要求检查是否还有需要沉淀到
+`memory/` 的稳定构建/依赖经验，并确认是否要把当前批次推送或开 PR。
