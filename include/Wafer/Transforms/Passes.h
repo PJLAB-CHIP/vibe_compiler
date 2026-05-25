@@ -16,6 +16,7 @@ std::unique_ptr<mlir::Pass> createLowerStablehloElementwisePass();
 std::unique_ptr<mlir::Pass> createLowerStablehloReducePass();
 std::unique_ptr<mlir::Pass> createLowerStablehloShapePass();
 std::unique_ptr<mlir::Pass> createNormalizeConstantsPass();
+std::unique_ptr<mlir::Pass> createFormGroupsPass();
 void registerWaferPasses();
 
 } // namespace wafer

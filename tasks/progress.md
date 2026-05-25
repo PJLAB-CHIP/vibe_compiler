@@ -40,7 +40,10 @@ tanh，RoPE 和 GELU tanh 形态只使用 slice/concat/elementwise structured te
 importer smoke gate 已落地：importer-enabled `wafer-import-model` 能发出并验证一个静态
 StableHLO/MLIR artifact，graph break / eager fallback 通过 importer metadata 硬诊断，
 unbounded dynamic shape 通过函数签名类型诊断；backend-only 构建仍保留 disabled importer shell，
-不把 StableHLO/Python importer 依赖扩散到后端 textual tests。
+不把 StableHLO/Python importer 依赖扩散到后端 textual tests。P3.2 的最小 group formation
+已落地：`--wafer-form-groups` 将单结果 tensor `linalg.matmul` 包装成 logical `wafer.group`，
+body 只通过显式 block arguments 访问 ins/outs，不写 tile shape、layout 或 resource plan；
+多输出 `linalg.generic` 暂不形成 group，留给后续 planner 证明 traversal/domain 后再处理。
 
 ## Active Task
 
@@ -138,7 +141,7 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 | ID | 状态 | 任务 | 验收 |
 | --- | --- | --- | --- |
 | P3.1 | done | 准备手写 StableHLO / Linalg GEMM 输入 case | 输入不依赖模型 importer |
-| P3.2 | pending | 实现最小 group formation | 单 GEMM 能形成 `wafer.group`；非法 multi-output/domain 被拒绝或拆分 |
+| P3.2 | done | 实现最小 group formation | 单 GEMM 能形成 `wafer.group`；非法 multi-output/domain 被拒绝或拆分 |
 | P3.3 | pending | 实现 root tile shape 候选和 feasibility 调用骨架 | tile shape 是 planner 候选，不写成 IR contract |
 | P3.4 | pending | materialize 单 tile `wafer.tile_region` | region 中有 load、compute、store 的 SSA 关系 |
 | P3.5 | pending | 实现 compact layout assignment | 不插不必要的 layout conversion |
@@ -219,5 +222,6 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 
 ## 下一步
 
-继续从 P3.2 开始实现最小 group formation，先服务 M0 single-tile load-GEMM-store 闭环；batch/head
-dot 泛化在 attention slice 前补齐。不要越过 M0/M1 compile gate 直接实现 transformer block 逻辑。
+继续从 P3.3 开始实现 root tile shape 候选和 feasibility 调用骨架，先服务 M0 single-tile
+load-GEMM-store 闭环；batch/head dot 泛化在 attention slice 前补齐。不要越过 M0/M1 compile
+gate 直接实现 transformer block 逻辑。

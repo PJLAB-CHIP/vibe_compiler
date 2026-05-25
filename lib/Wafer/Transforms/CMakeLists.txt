@@ -1,4 +1,5 @@
 add_mlir_library(WaferTransforms
+  FormGroups.cpp
   LowerStablehloDot.cpp
   LowerStablehloElementwise.cpp
   LowerStablehloReduce.cpp
@@ -7,6 +8,7 @@ add_mlir_library(WaferTransforms
   Passes.cpp
 
   LINK_LIBS PUBLIC
+  WaferIR
   MLIRArithDialect
   MLIRIR
   MLIRLinalgDialect

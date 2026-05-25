@@ -14,6 +14,7 @@ void registerWaferPasses() {
     mlir::registerPass(createLowerStablehloReducePass);
     mlir::registerPass(createLowerStablehloShapePass);
     mlir::registerPass(createNormalizeConstantsPass);
+    mlir::registerPass(createFormGroupsPass);
     return true;
   }();
   (void)registered;
