@@ -52,6 +52,9 @@ pass-local analysis 中为 M0 rank-2 static group result 建立候选并调用 f
 args 到 `wafer.load_tile`、`wafer.compute.gemm`、`wafer.store_tile` 和 `wafer.tile_yield` 的
 SSA 链；为满足当前 `compute.gemm` / `store_tile` verifier，暂时插入 tensor<->cx layout
 materialization，后续 P3.5 再做 compact layout assignment 和冗余 conversion 清理。
+P3.5 的 compact layout cleanup 已落地：`--wafer-compact-layout-assignment` 删除无其它 use 的
+inverse-pair `wafer.layout.materialize(A -> B -> A)`，直接把最终 consumer 改回原始 tile buffer；
+该 pass 只做当前 IR 的 layout-aware rewrite，不保存或读取 planner 搜索状态。
 
 ## Active Task
 
@@ -152,7 +155,7 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 | P3.2 | done | 实现最小 group formation | 单 GEMM 能形成 `wafer.group`；非法 multi-output/domain 被拒绝或拆分 |
 | P3.3 | done | 实现 root tile shape 候选和 feasibility 调用骨架 | tile shape 是 planner 候选，不写成 IR contract |
 | P3.4 | done | materialize 单 tile `wafer.tile_region` | region 中有 load、compute、store 的 SSA 关系 |
-| P3.5 | pending | 实现 compact layout assignment | 不插不必要的 layout conversion |
+| P3.5 | done | 实现 compact layout assignment | 不插不必要的 layout conversion |
 | P3.6 | pending | 实现 SPM allocation trial | range、alignment、lifetime、end-address 检查通过 |
 | P3.7 | pending | 实现 DDR external input/output binding demand | DDR demand 可被 launch/runtime 层消费 |
 | P3.8 | pending | Lower `wafer.compute.gemm` / load / store 到 C ABI skeleton | 参数单位、address domain、wait policy 有 verifier |
@@ -230,6 +233,6 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 
 ## 下一步
 
-继续从 P3.5 开始实现 compact layout assignment / materialization cleanup，先服务 M0 single-tile
-load-GEMM-store 闭环；batch/head dot 泛化在 attention slice 前补齐。不要越过 M0/M1 compile
-gate 直接实现 transformer block 逻辑。
+继续从 P3.6 开始实现 SPM allocation trial，先服务 M0 single-tile load-GEMM-store 闭环；
+batch/head dot 泛化在 attention slice 前补齐。不要越过 M0/M1 compile gate 直接实现 transformer
+block 逻辑。

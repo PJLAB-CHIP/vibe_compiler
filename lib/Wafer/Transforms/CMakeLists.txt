@@ -1,5 +1,6 @@
 add_mlir_library(WaferTransforms
   CheckRootTileCandidates.cpp
+  CompactLayoutAssignment.cpp
   FormGroups.cpp
   LowerStablehloDot.cpp
   LowerStablehloElementwise.cpp

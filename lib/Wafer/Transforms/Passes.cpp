@@ -17,6 +17,7 @@ void registerWaferPasses() {
     mlir::registerPass(createFormGroupsPass);
     mlir::registerPass(createCheckRootTileCandidatesPass);
     mlir::registerPass(createMaterializeSingleTilePass);
+    mlir::registerPass(createCompactLayoutAssignmentPass);
     return true;
   }();
   (void)registered;
