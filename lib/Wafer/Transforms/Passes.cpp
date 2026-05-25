@@ -19,6 +19,7 @@ void registerWaferPasses() {
     mlir::registerPass(createCheckNormSchedulePass);
     mlir::registerPass(createCheckSoftmaxSchedulePass);
     mlir::registerPass(createCheckProjectionResidualSchedulePass);
+    mlir::registerPass(createCheckMlpSchedulePass);
     mlir::registerPass(createMaterializeSingleTilePass);
     mlir::registerPass(createMaterializeMultiTileNoCommPass);
     mlir::registerPass(createCompactLayoutAssignmentPass);

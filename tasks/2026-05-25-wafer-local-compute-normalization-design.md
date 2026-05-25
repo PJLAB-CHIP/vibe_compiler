@@ -166,6 +166,17 @@ vertical slice 的 acceptance gate。该 pass 只从当前 structured tensor IR 
 frontend integration test 覆盖 StableHLO 2D projection dot、bias broadcast 和 residual add 到该
 acceptance gate 的完整 lowering。
 
+当前 P5.6 实现用 `--wafer-check-mlp-schedule` 作为 MLP vertical slice 的 acceptance gate。
+该 pass 只从当前 structured tensor IR 重算以下 SSA 链：
+
+- rank-2 projection `linalg.matmul` 的结果进入 `linalg.elementwise<tanh>` activation。
+- activation 结果与另一个 rank-2 projection matmul 结果进入 `linalg.elementwise<mul>` gate。
+- gated activation 结果进入 rank-2 down projection `linalg.matmul`。
+
+当前实现覆盖已有 frontend 支持的 tanh activation 子集；GELU/SwiGLU 的其它 decomposition 可在
+同一 use-def 检查上扩展。该 gate 不引入 `wafer.mlp`、fused activation op 或名字约定，也不把
+中间 tile/group split 写成 IR attr。
+
 ### 4.3 Reduction
 
 reduction 必须保留：

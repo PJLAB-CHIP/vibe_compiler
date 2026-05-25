@@ -21,6 +21,7 @@ std::unique_ptr<mlir::Pass> createCheckRootTileCandidatesPass();
 std::unique_ptr<mlir::Pass> createCheckNormSchedulePass();
 std::unique_ptr<mlir::Pass> createCheckSoftmaxSchedulePass();
 std::unique_ptr<mlir::Pass> createCheckProjectionResidualSchedulePass();
+std::unique_ptr<mlir::Pass> createCheckMlpSchedulePass();
 std::unique_ptr<mlir::Pass> createMaterializeSingleTilePass();
 std::unique_ptr<mlir::Pass> createMaterializeMultiTileNoCommPass();
 std::unique_ptr<mlir::Pass> createCompactLayoutAssignmentPass();
