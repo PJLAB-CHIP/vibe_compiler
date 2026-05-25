@@ -85,4 +85,20 @@ def Wafer_DdrBindingKindAttr
   let assemblyFormat = "`<` $value `>`";
 }
 
+def Wafer_AbiWaitPolicyIssueOnly : I32EnumAttrCase<"IssueOnly", 0, "issue_only">;
+def Wafer_AbiWaitPolicySynchronous : I32EnumAttrCase<"Synchronous", 1, "synchronous">;
+def Wafer_AbiWaitPolicy
+    : I32EnumAttr<"AbiWaitPolicy", "Wafer C ABI wait policy", [
+  Wafer_AbiWaitPolicyIssueOnly,
+  Wafer_AbiWaitPolicySynchronous
+]> {
+  let cppNamespace = "::wafer";
+  let genSpecializedAttr = 0;
+}
+
+def Wafer_AbiWaitPolicyAttr
+    : EnumAttr<Wafer_Dialect, Wafer_AbiWaitPolicy, "abi_wait_policy"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
 #endif // WAFER_DIALECT_WAFER_IR_WAFERATTRS_TD

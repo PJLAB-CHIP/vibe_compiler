@@ -3,6 +3,7 @@ add_mlir_library(WaferTransforms
   CheckSPMAllocation.cpp
   CompactLayoutAssignment.cpp
   FormGroups.cpp
+  LowerToCAbiSkeleton.cpp
   MaterializeDDRExternalBindings.cpp
   LowerStablehloDot.cpp
   LowerStablehloElementwise.cpp

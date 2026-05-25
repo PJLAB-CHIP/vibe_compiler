@@ -194,6 +194,119 @@ mlir::LogicalResult DdrExternalBindingOp::verify() {
   return mlir::success();
 }
 
+static mlir::LogicalResult
+verifyIssueOnlyWaitPolicy(mlir::Operation *op,
+                          wafer::AbiWaitPolicyAttr policy) {
+  if (policy.getValue() != wafer::AbiWaitPolicy::IssueOnly)
+    return op->emitOpError(
+        "C ABI skeleton ops must use issue_only wait policy");
+  return mlir::success();
+}
+
+mlir::LogicalResult AbiRdma1DOp::verify() {
+  if (mlir::failed(
+          verifyIssueOnlyWaitPolicy(getOperation(), getWaitPolicyAttr())))
+    return mlir::failure();
+
+  auto sourceType =
+      mlir::dyn_cast<mlir::RankedTensorType>(getSource().getType());
+  auto resultType = mlir::dyn_cast<TileBufferType>(getResult().getType());
+  if (!sourceType || !resultType)
+    return emitOpError(
+        "ABI RDMA expects ranked tensor source and tile_buffer result");
+
+  if (resultType.getTensorType() != sourceType)
+    return emitOpError(
+        "ABI RDMA result tensor type must match source tensor type");
+  if (!hasTileBufferMemorySpace(resultType, MemorySpace::SPM))
+    return emitOpError("ABI RDMA result must use SPM memory space");
+  if (!hasTileBufferLayout(resultType, MemLayout::Tensor))
+    return emitOpError("ABI RDMA result must use tensor mem_layout");
+
+  std::optional<int64_t> expectedBytes = getCompactTensorByteSize(sourceType);
+  if (!expectedBytes)
+    return emitOpError(
+        "ABI RDMA compact tensor transfer size is not representable");
+  if (getBytesAttr().getInt() != *expectedBytes)
+    return emitOpError(
+        "ABI RDMA byte count must match compact tensor transfer size");
+
+  return mlir::success();
+}
+
+mlir::LogicalResult AbiWdma1DOp::verify() {
+  if (mlir::failed(
+          verifyIssueOnlyWaitPolicy(getOperation(), getWaitPolicyAttr())))
+    return mlir::failure();
+
+  auto sourceType = mlir::dyn_cast<TileBufferType>(getSource().getType());
+  auto destType = mlir::dyn_cast<mlir::RankedTensorType>(getDest().getType());
+  if (!sourceType || !destType)
+    return emitOpError(
+        "ABI WDMA expects tile_buffer source and ranked tensor dest");
+
+  if (sourceType.getTensorType() != destType)
+    return emitOpError(
+        "ABI WDMA source tensor type must match dest tensor type");
+  if (!hasTileBufferMemorySpace(sourceType, MemorySpace::SPM))
+    return emitOpError("ABI WDMA source must use SPM memory space");
+  if (!hasTileBufferLayout(sourceType, MemLayout::Tensor))
+    return emitOpError("ABI WDMA source must use tensor mem_layout");
+
+  std::optional<int64_t> expectedBytes = getCompactTensorByteSize(destType);
+  if (!expectedBytes)
+    return emitOpError(
+        "ABI WDMA compact tensor transfer size is not representable");
+  if (getBytesAttr().getInt() != *expectedBytes)
+    return emitOpError(
+        "ABI WDMA byte count must match compact tensor transfer size");
+
+  return mlir::success();
+}
+
+mlir::LogicalResult AbiGemmOp::verify() {
+  if (mlir::failed(
+          verifyIssueOnlyWaitPolicy(getOperation(), getWaitPolicyAttr())))
+    return mlir::failure();
+
+  auto lhsType = mlir::dyn_cast<TileBufferType>(getLhs().getType());
+  auto rhsType = mlir::dyn_cast<TileBufferType>(getRhs().getType());
+  auto resultType = mlir::dyn_cast<TileBufferType>(getResult().getType());
+  if (!lhsType || !rhsType || !resultType)
+    return emitOpError("ABI GEMM expects tile_buffer operands and result");
+
+  for (TileBufferType type : {lhsType, rhsType, resultType}) {
+    if (!hasTileBufferMemorySpace(type, MemorySpace::SPM))
+      return emitOpError("ABI GEMM tile buffers must use SPM memory space");
+    if (!hasTileBufferLayout(type, MemLayout::Cx))
+      return emitOpError("ABI GEMM tile buffers must use cx mem_layout");
+  }
+
+  mlir::RankedTensorType lhsTensor = getTileBufferTensorType(lhsType);
+  mlir::RankedTensorType rhsTensor = getTileBufferTensorType(rhsType);
+  mlir::RankedTensorType resultTensor = getTileBufferTensorType(resultType);
+  if (lhsTensor.getRank() != 2 || rhsTensor.getRank() != 2 ||
+      resultTensor.getRank() != 2)
+    return emitOpError("ABI GEMM expects rank-2 tile buffer tensor types");
+
+  if (lhsTensor.getElementType() != rhsTensor.getElementType() ||
+      lhsTensor.getElementType() != resultTensor.getElementType())
+    return emitOpError("ABI GEMM operand and result element types must match");
+
+  if (hasStaticMismatch(lhsTensor.getDimSize(1), rhsTensor.getDimSize(0)))
+    return emitOpError("ABI GEMM lhs K dimension must match rhs K dimension");
+  if (hasStaticMismatch(lhsTensor.getDimSize(0), resultTensor.getDimSize(0)) ||
+      hasStaticMismatch(rhsTensor.getDimSize(1), resultTensor.getDimSize(1)))
+    return emitOpError("ABI GEMM result shape must be lhs M by rhs N");
+
+  if (getMAttr().getInt() != lhsTensor.getDimSize(0) ||
+      getKAttr().getInt() != lhsTensor.getDimSize(1) ||
+      getNAttr().getInt() != rhsTensor.getDimSize(1))
+    return emitOpError("ABI GEMM m/k/n attrs must match tile buffer shapes");
+
+  return mlir::success();
+}
+
 mlir::LogicalResult GroupOp::verify() {
   if (getNumResults() != getOuts().size())
     return emitOpError("expected result count to match outs count, got ")

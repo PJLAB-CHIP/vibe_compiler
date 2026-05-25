@@ -163,6 +163,54 @@ def Wafer_DdrExternalBindingOp : Wafer_Op<"ddr.external_binding"> {
   let assemblyFormat = "$kind $value attr-dict `:` type($value)";
 }
 
+def Wafer_AbiRdma1DOp : Wafer_Op<"abi.rdma_1d", [
+    WaferResourceEffectInterface
+  ]> {
+  let summary = "C ABI skeleton DDR-to-SPM 1D DMA issue";
+  let arguments = (ins
+    Wafer_AbiWaitPolicyAttr:$wait_policy,
+    AnyType:$source,
+    I64Attr:$bytes
+  );
+  let results = (outs AnyType:$result);
+  let hasVerifier = 1;
+  let assemblyFormat =
+      "$wait_policy $source attr-dict `:` type($source) `->` type($result)";
+}
+
+def Wafer_AbiWdma1DOp : Wafer_Op<"abi.wdma_1d", [
+    WaferResourceEffectInterface
+  ]> {
+  let summary = "C ABI skeleton SPM-to-DDR 1D DMA issue";
+  let arguments = (ins
+    Wafer_AbiWaitPolicyAttr:$wait_policy,
+    AnyType:$source,
+    AnyType:$dest,
+    I64Attr:$bytes
+  );
+  let hasVerifier = 1;
+  let assemblyFormat =
+      "$wait_policy $source `,` $dest attr-dict `:` type($source) `->` type($dest)";
+}
+
+def Wafer_AbiGemmOp : Wafer_Op<"abi.gemm", [
+    WaferResourceEffectInterface
+  ]> {
+  let summary = "C ABI skeleton GEMM issue";
+  let arguments = (ins
+    Wafer_AbiWaitPolicyAttr:$wait_policy,
+    AnyType:$lhs,
+    AnyType:$rhs,
+    I64Attr:$m,
+    I64Attr:$k,
+    I64Attr:$n
+  );
+  let results = (outs AnyType:$result);
+  let hasVerifier = 1;
+  let assemblyFormat =
+      "$wait_policy $lhs `,` $rhs attr-dict `:` functional-type(operands, results)";
+}
+
 def Wafer_ComputeGemmOp : Wafer_Op<"compute.gemm", [
     WaferLayoutOpInterface,
     WaferResourceEffectInterface
