@@ -1,9 +1,12 @@
 # RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-m0-smoke | %python %wafer_src_root/tools/wafer_package_manifest.py --roundtrip - | FileCheck %s
 # RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-m0-smoke | %python %wafer_src_root/tools/wafer_package_manifest.py --validate -
 # RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-elementwise-smoke | %python %wafer_src_root/tools/wafer_package_manifest.py --validate -
+# RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-m6-local-smoke | %python %wafer_src_root/tools/wafer_package_manifest.py --roundtrip - | FileCheck %s --check-prefix=M6
 # RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-stub-smoke | not %python %wafer_src_root/tools/wafer_package_manifest.py --validate - 2>&1 | FileCheck %s --check-prefix=ERR
 # RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-bad-placement-smoke | not %python %wafer_src_root/tools/wafer_package_manifest.py --validate - 2>&1 | FileCheck %s --check-prefix=PLACEMENT-ERR
 # RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-bad-local-shard-smoke | not %python %wafer_src_root/tools/wafer_package_manifest.py --validate - 2>&1 | FileCheck %s --check-prefix=SHARD-ERR
+# RUN: not %python %wafer_src_root/tools/wafer_package_manifest.py --validate %S/invalid-workspace-manifest.json 2>&1 | FileCheck %s --check-prefix=WORKSPACE-ERR
+# RUN: not %python %wafer_src_root/tools/wafer_package_manifest.py --validate %S/invalid-resident-constant-manifest.json 2>&1 | FileCheck %s --check-prefix=CONST-ERR
 
 # CHECK: "schema_version": 1
 # CHECK: "package_name": "m0_single_tile"
@@ -23,3 +26,16 @@
 # ERR: completion source is a known stub fence
 # PLACEMENT-ERR: maps to tile id 1 that is not marked good
 # SHARD-ERR: local_shards[0] exceeds tensor shape
+# WORKSPACE-ERR: resources.workspace_bytes does not match workspace buffers
+# CONST-ERR: resources.resident_constant_bytes does not match resident constants
+
+# M6-DAG: "package_name": "m6_local_block"
+# M6-DAG: "workspace_buffers": [
+# M6-DAG: "name": "scores"
+# M6-DAG: "producer": "attention_score"
+# M6-DAG: "last_consumer": "softmax_shift"
+# M6-DAG: "resident_constants": [
+# M6-DAG: "name": "proj_w"
+# M6-DAG: "source": "launch_input"
+# M6-DAG: "workspace_bytes": 18480
+# M6-DAG: "resident_constant_bytes": 1856

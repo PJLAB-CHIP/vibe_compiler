@@ -86,6 +86,26 @@ def require_non_negative_int(value: Any, name: str) -> int:
     return value
 
 
+DTYPE_BYTES = {
+    "f16": 2,
+    "bf16": 2,
+    "f32": 4,
+    "i8": 1,
+    "i16": 2,
+    "i32": 4,
+    "i64": 8,
+}
+
+
+def compact_tensor_bytes(shape: list[int], dtype: str, name: str) -> int:
+    if dtype not in DTYPE_BYTES:
+        fail(f"{name}.dtype is not supported for byte validation")
+    elements = 1
+    for dim in shape:
+        elements *= dim
+    return elements * DTYPE_BYTES[dtype]
+
+
 def validate_tensor(tensor: Any, name: str) -> tuple[str, list[int]]:
     item = require_dict(tensor, name)
     tensor_name = require_non_empty_string(item.get("name"), f"{name}.name")
@@ -99,6 +119,68 @@ def validate_tensor(tensor: Any, name: str) -> tuple[str, list[int]]:
     if item.get("layout") != "tensor":
         fail(f"{name}.layout must be tensor")
     return tensor_name, checked_shape
+
+
+def validate_tensor_storage_demand(item: Any, name: str) -> tuple[str, int]:
+    demand = require_dict(item, name)
+    demand_name = require_non_empty_string(demand.get("name"), f"{name}.name")
+    shape = require_list(demand.get("shape"), f"{name}.shape")
+    if not shape:
+        fail(f"{name}.shape must be non-empty")
+    checked_shape = [
+        require_positive_int(dim, f"{name}.shape[{index}]")
+        for index, dim in enumerate(shape)
+    ]
+    dtype = require_non_empty_string(demand.get("dtype"), f"{name}.dtype")
+    if demand.get("layout") != "tensor":
+        fail(f"{name}.layout must be tensor")
+    bytes_value = require_positive_int(demand.get("bytes"), f"{name}.bytes")
+    expected_bytes = compact_tensor_bytes(checked_shape, dtype, name)
+    if bytes_value != expected_bytes:
+        fail(f"{name}.bytes must match compact tensor storage size")
+    require_positive_int(demand.get("alignment"), f"{name}.alignment")
+    return demand_name, bytes_value
+
+
+def validate_workspace_buffers(value: Any) -> int:
+    total = 0
+    seen_names = set()
+    for index, workspace in enumerate(require_list(value, "workspace_buffers")):
+        name = f"workspace_buffers[{index}]"
+        item = require_dict(workspace, name)
+        buffer_name, bytes_value = validate_tensor_storage_demand(item, name)
+        if buffer_name in seen_names:
+            fail("workspace buffer names must be unique")
+        seen_names.add(buffer_name)
+        require_non_empty_string(item.get("producer"), f"{name}.producer")
+        require_non_empty_string(item.get("last_consumer"), f"{name}.last_consumer")
+        total += bytes_value
+    return total
+
+
+def validate_resident_constants(
+    value: Any, input_names: set[str], output_names: set[str]
+) -> int:
+    total = 0
+    seen_names = set()
+    for index, constant in enumerate(require_list(value, "resident_constants")):
+        name = f"resident_constants[{index}]"
+        item = require_dict(constant, name)
+        constant_name, bytes_value = validate_tensor_storage_demand(item, name)
+        if constant_name in seen_names:
+            fail("resident constant names must be unique")
+        seen_names.add(constant_name)
+
+        source = require_non_empty_string(item.get("source"), f"{name}.source")
+        if source == "launch_input":
+            if constant_name not in input_names:
+                fail(f"{name}.name must refer to a launch input")
+        elif source != "embedded_constant":
+            fail(f"{name}.source must be launch_input or embedded_constant")
+        if constant_name in output_names:
+            fail(f"{name}.name must not refer to a launch output")
+        total += bytes_value
+    return total
 
 
 def physical_tile_id(coord: list[int], topology: dict[str, int]) -> int:
@@ -294,6 +376,23 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
     spm_bytes = require_positive_int(resources.get("spm_bytes"), "resources.spm_bytes")
     if spm_bytes > 0x2F0000:
         fail("resources.spm_bytes exceeds usable SPM capacity")
+    workspace_bytes = require_non_negative_int(
+        resources.get("workspace_bytes"), "resources.workspace_bytes"
+    )
+    resident_constant_bytes = require_non_negative_int(
+        resources.get("resident_constant_bytes"),
+        "resources.resident_constant_bytes",
+    )
+    workspace_buffer_bytes = validate_workspace_buffers(
+        manifest.get("workspace_buffers")
+    )
+    if workspace_bytes != workspace_buffer_bytes:
+        fail("resources.workspace_bytes does not match workspace buffers")
+    resident_bytes = validate_resident_constants(
+        manifest.get("resident_constants"), input_names, output_names
+    )
+    if resident_constant_bytes != resident_bytes:
+        fail("resources.resident_constant_bytes does not match resident constants")
 
     abi_ops = require_list(manifest.get("abi_ops"), "abi_ops")
     for index, op in enumerate(abi_ops):
@@ -434,6 +533,8 @@ def m0_smoke_manifest(completion_source: str = "hpgr_stream_event") -> dict[str,
             "workspace_bytes": 0,
             "resident_constant_bytes": 0,
         },
+        "workspace_buffers": [],
+        "resident_constants": [],
         "abi_ops": [
             {"op": "wafer.abi.rdma_1d", "bytes": 64, "wait_policy": "issue_only"},
             {"op": "wafer.abi.rdma_1d", "bytes": 256, "wait_policy": "issue_only"},
@@ -569,10 +670,41 @@ def elementwise_smoke_manifest() -> dict[str, Any]:
     return manifest
 
 
+def workspace_buffer(
+    name: str,
+    shape: list[int],
+    bytes_value: int,
+    producer: str,
+    last_consumer: str,
+) -> dict[str, Any]:
+    return {
+        "name": name,
+        "shape": shape,
+        "dtype": "f32",
+        "layout": "tensor",
+        "bytes": bytes_value,
+        "alignment": 256,
+        "producer": producer,
+        "last_consumer": last_consumer,
+    }
+
+
+def resident_constant(name: str, shape: list[int], bytes_value: int) -> dict[str, Any]:
+    return {
+        "name": name,
+        "source": "launch_input",
+        "shape": shape,
+        "dtype": "f32",
+        "layout": "tensor",
+        "bytes": bytes_value,
+        "alignment": 256,
+    }
+
+
 def m6_local_smoke_manifest() -> dict[str, Any]:
     return {
         "schema_version": 1,
-        "package_name": "m6_local_block_partial",
+        "package_name": "m6_local_block",
         "runtime": {
             "mode": "hpgr",
             "completion_source": "hpgr_stream_event",
@@ -581,7 +713,7 @@ def m6_local_smoke_manifest() -> dict[str, Any]:
             {
                 "name": "local_transformer_block_gemm_skeleton",
                 "kind": "c_abi_skeleton",
-                "artifact": "m6_local_block_partial.o",
+                "artifact": "m6_local_block.o",
             }
         ],
         "launch_signature": {
@@ -736,9 +868,108 @@ def m6_local_smoke_manifest() -> dict[str, Any]:
             "spm_bytes": 13056,
             "ddr_external_input_bytes": 5744,
             "ddr_external_output_bytes": 960,
-            "workspace_bytes": 0,
-            "resident_constant_bytes": 0,
+            "workspace_bytes": 18480,
+            "resident_constant_bytes": 1856,
         },
+        "workspace_buffers": [
+            workspace_buffer(
+                "square", [2, 3, 5, 8], 960, "norm_square", "norm_reduce_sum"
+            ),
+            workspace_buffer("sum", [2, 3, 5], 120, "norm_reduce_sum", "norm_mean"),
+            workspace_buffer("mean", [2, 3, 5], 120, "norm_mean", "norm_eps_add"),
+            workspace_buffer(
+                "mean_eps", [2, 3, 5], 120, "norm_eps_add", "norm_rsqrt"
+            ),
+            workspace_buffer("rms", [2, 3, 5], 120, "norm_rsqrt", "norm_scale_x"),
+            workspace_buffer(
+                "normed0", [2, 3, 5, 8], 960, "norm_scale_x", "norm_weight_mul"
+            ),
+            workspace_buffer(
+                "normed",
+                [2, 3, 5, 8],
+                960,
+                "norm_weight_mul",
+                "residual_reshape",
+            ),
+            workspace_buffer(
+                "scores", [2, 3, 5, 7], 840, "attention_score", "softmax_shift"
+            ),
+            workspace_buffer(
+                "row_max", [2, 3, 5], 120, "softmax_row_max", "softmax_shift"
+            ),
+            workspace_buffer(
+                "shifted", [2, 3, 5, 7], 840, "softmax_shift", "softmax_exp"
+            ),
+            workspace_buffer(
+                "exp_scores",
+                [2, 3, 5, 7],
+                840,
+                "softmax_exp",
+                "softmax_normalize",
+            ),
+            workspace_buffer(
+                "row_sum",
+                [2, 3, 5],
+                120,
+                "softmax_row_sum",
+                "softmax_normalize",
+            ),
+            workspace_buffer(
+                "prob",
+                [2, 3, 5, 7],
+                840,
+                "softmax_normalize",
+                "attention_value",
+            ),
+            workspace_buffer(
+                "attn",
+                [2, 3, 5, 8],
+                960,
+                "attention_value",
+                "output_projection",
+            ),
+            workspace_buffer(
+                "projected",
+                [30, 8],
+                960,
+                "output_projection",
+                "projection_bias_add",
+            ),
+            workspace_buffer(
+                "biased", [30, 8], 960, "projection_bias_add", "residual_add"
+            ),
+            workspace_buffer(
+                "resid", [30, 8], 960, "residual_add", "mlp_down_projection"
+            ),
+            workspace_buffer(
+                "gate", [30, 16], 1920, "mlp_gate_projection", "mlp_activation"
+            ),
+            workspace_buffer(
+                "up", [30, 16], 1920, "mlp_up_projection", "mlp_gate_multiply"
+            ),
+            workspace_buffer(
+                "activated",
+                [30, 16],
+                1920,
+                "mlp_activation",
+                "mlp_gate_multiply",
+            ),
+            workspace_buffer(
+                "gated",
+                [30, 16],
+                1920,
+                "mlp_gate_multiply",
+                "mlp_down_projection",
+            ),
+        ],
+        "resident_constants": [
+            resident_constant("norm_weight", [8], 32),
+            resident_constant("proj_w", [8, 8], 256),
+            resident_constant("proj_bias", [8], 32),
+            resident_constant("gate_w", [8, 16], 512),
+            resident_constant("up_w", [8, 16], 512),
+            resident_constant("down_w", [16, 8], 512),
+        ],
         "abi_ops": [
             {"op": "wafer.abi.rdma_1d", "bytes": 960, "wait_policy": "issue_only"},
             {"op": "wafer.abi.rdma_1d", "bytes": 256, "wait_policy": "issue_only"},

@@ -49,6 +49,8 @@ def emit_c(manifest: dict) -> str:
     validate_manifest(manifest)
     package_ident = c_ident(manifest["package_name"])
     abi_ops = manifest["abi_ops"]
+    workspace_buffers = manifest["workspace_buffers"]
+    resident_constants = manifest["resident_constants"]
     placement_ranks = sorted(
         manifest["placement"]["ranks"], key=lambda item: int(item["logical_rank"])
     )
@@ -103,6 +105,16 @@ def emit_c(manifest: dict) -> str:
         "  uint32_t tile_x;",
         "} wafer_tile_launch_arg_t;",
         "",
+        "typedef struct {",
+        "  uint64_t bytes;",
+        "  uint64_t alignment;",
+        "} wafer_workspace_buffer_t;",
+        "",
+        "typedef struct {",
+        "  uint64_t bytes;",
+        "  uint64_t alignment;",
+        "} wafer_resident_constant_t;",
+        "",
         f"static const wafer_abi_issue_t k_{package_ident}_issues[] = {{",
     ]
 
@@ -147,6 +159,41 @@ def emit_c(manifest: dict) -> str:
             f"int {package_ident}_tile_arg_count(void) {{",
             f"  return (int)(sizeof(k_{package_ident}_tile_args) / "
             f"sizeof(k_{package_ident}_tile_args[0]));",
+            "}",
+            "",
+        ]
+    )
+
+    lines.append(
+        f"static const wafer_workspace_buffer_t "
+        f"k_{package_ident}_workspace_buffers[] = {{"
+    )
+    for buffer in workspace_buffers:
+        lines.append(f"  {{{int(buffer['bytes'])}u, {int(buffer['alignment'])}u}},")
+    lines.extend(
+        [
+            "};",
+            "",
+            f"int {package_ident}_workspace_buffer_count(void) {{",
+            f"  return (int)(sizeof(k_{package_ident}_workspace_buffers) / "
+            f"sizeof(k_{package_ident}_workspace_buffers[0]));",
+            "}",
+            "",
+            f"static const wafer_resident_constant_t "
+            f"k_{package_ident}_resident_constants[] = {{",
+        ]
+    )
+    for constant in resident_constants:
+        lines.append(
+            f"  {{{int(constant['bytes'])}u, {int(constant['alignment'])}u}},"
+        )
+    lines.extend(
+        [
+            "};",
+            "",
+            f"int {package_ident}_resident_constant_count(void) {{",
+            f"  return (int)(sizeof(k_{package_ident}_resident_constants) / "
+            f"sizeof(k_{package_ident}_resident_constants[0]));",
             "}",
             "",
         ]

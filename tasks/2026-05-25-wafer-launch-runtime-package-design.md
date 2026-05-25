@@ -142,12 +142,16 @@ allocation failure 由 DDR 设计负责定义；launch 负责把这些失败报�
 
 当前 V0 skeleton 用 `tools/wafer_package_manifest.py` 固定最小 manifest schema 和 roundtrip：
 manifest 记录 launch signature、placement metadata、DDR external binding bytes、SPM/DDR resource
-summary、ABI skeleton ops、device-code artifact id 和 runtime completion source。validator 显式拒绝
-已知 stub completion fence，例如 `TsmDeviceSynchronize` / `TsmLaunch`，因此 package correctness
-不能只依赖 legacy stub path 成功返回。M0/M1 local compile gate 还用
+summary、workspace buffer demand、resident constant demand、ABI skeleton ops、device-code artifact
+id 和 runtime completion source。validator 要求 `resources.workspace_bytes` 与
+`workspace_buffers` 的 compact tensor storage bytes 求和一致，要求
+`resources.resident_constant_bytes` 与 `resident_constants` 求和一致；`launch_input` resident
+constant 必须引用 launch signature input，且不能引用 output。validator 显式拒绝已知 stub
+completion fence，例如 `TsmDeviceSynchronize` / `TsmLaunch`，因此 package correctness 不能只依赖
+legacy stub path 成功返回。M0/M1/M6 local compile gate 还用
 `tools/wafer_emit_c_abi_stub.py` 从 manifest 生成可被 C compiler 做 syntax compile 的 ABI issue
-table 和 tile launch-arg table，用于验证 package metadata 可以产出本地 toolchain 可消费的
-artifact skeleton；它不代表真实 device code 已可执行。
+table、tile launch-arg table、workspace buffer table 和 resident constant table，用于验证 package
+metadata 可以产出本地 toolchain 可消费的 artifact skeleton；它不代表真实 device code 已可执行。
 
 P4.4 起，C ABI stub 还从 placement metadata 生成 per-tile launch arg table：
 
@@ -166,11 +170,15 @@ typedef struct {
 arguments；它不反向定义 tensor semantics，也不包含 BO handle、physical DDR address、SPM offset
 或 DTE packet。
 
-当前工具提供两个 smoke manifest：
+当前工具提供四类 smoke manifest：
 
 - `--emit-m0-smoke`：single tile load-GEMM-store。
 - `--emit-m1-no-comm-smoke`：two-tile no-communication load-GEMM-store，包含两个 logical rank、
   两个 block id、两个 physical tile coordinate 和 per-rank local shard slice metadata。
+- `--emit-elementwise-smoke`：single tile elementwise ABI skeleton，用于覆盖 non-GEMM issue family。
+- `--emit-m6-local-smoke`：single shard local transformer block package skeleton，记录 full block
+  launch signature、单 tile placement、DDR binding、workspace buffers、resident constants 和当前已
+  纳入 package 的 ABI issue skeleton。
 
 placement metadata 当前包含：
 

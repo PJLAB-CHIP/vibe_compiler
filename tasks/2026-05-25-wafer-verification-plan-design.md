@@ -134,8 +134,11 @@ M6 transformer block vertical slice：
 rank-4 batched GEMM 子图、same-shape / projected-permutation limited broadcast elementwise 子图，
 以及 scalar-constant-init reduce max/sum 子图的 local compile path：normalization、acceptance
 gates、group split、single-tile materialization、SPM allocation check、DDR binding demand、C ABI
-skeleton、manifest validate 和 C stub syntax compile。它是 M6 的前进步骤，不是 M6 完成证据；
-package workspace/resident constant coverage 仍必须补齐。
+skeleton、manifest validate 和 C stub syntax compile。package gate 也已经要求 M6 smoke manifest
+记录 workspace buffers 和 resident constants，并验证它们的 compact tensor storage bytes 与 resource
+summary 一致；C stub 会 materialize 对应 table，证明 metadata 能进入本地 toolchain 可消费的
+artifact skeleton。它仍是 M6 的前进步骤，不是 M6 完成证据；完整 block 的 package ABI issue
+coverage 和所有 accepted groups 的统一 resource/lowering 仍必须补齐。
 
 2026-05-25 后续实现补入了 `linalg.elementwise` 的局部 physical slice：same-shape identity 和
 可由 projected-permutation `indexing_maps` 验证的 row/head/vector broadcast 可以形成
@@ -145,7 +148,7 @@ materialize 为 `wafer.compute.reduce` 并 lower 到带 `dimensions` / `init_val
 `wafer.abi.reduce` skeleton。attention slice 让 QK^T / AV 的 rank-4 `linalg.generic`
 contraction materialize 为 batched `wafer.compute.gemm`，并 lower 到带 `batch_count`、M/K/N 和
 batch/head dimension attrs 的 `wafer.abi.gemm` skeleton。当前仍不覆盖 mask/select、dynamic
-shape、非 constant-init reduce 或完整 package workspace/resident-constant 覆盖。
+shape、非 constant-init reduce 或完整 package ABI issue coverage。
 
 ## 5. Failure Handling
 

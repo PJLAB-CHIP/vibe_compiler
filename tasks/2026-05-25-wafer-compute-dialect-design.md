@@ -293,9 +293,10 @@ local reduce 到 `wafer.compute.reduce` / `wafer.abi.reduce` 的 skeleton，保�
 slice：只接受可由 `linalg.generic` indexing maps、parallel/reduction iterator types、mul-add
 body 和静态 shape relation 验证的 batch/head 形态，materialize 为带显式 batch/head/m/k/n 维度
 attrs 的 `wafer.compute.gemm`，并 lower 到带 `batch_count` 和 M/K/N 的 `wafer.abi.gemm`
-skeleton。它不是完整 elementwise/reduce/GEMM coverage；更复杂 broadcast、relation/logic、
-convert、多输入/非 constant-init reduce、mask/select 和完整 package workspace/resident constant
-coverage 仍按后续 gate 推进。
+skeleton。M6 package gate 随后补入 workspace/resident constant metadata 和 resource summary
+一致性验证。它仍不是完整 elementwise/reduce/GEMM coverage；更复杂 broadcast、relation/logic、
+convert、多输入/非 constant-init reduce、mask/select 和完整 package ABI issue coverage 仍按后续
+gate 推进。
 
 V1 或后续扩展：
 

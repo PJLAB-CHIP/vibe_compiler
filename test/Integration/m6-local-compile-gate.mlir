@@ -171,8 +171,12 @@ module {
 // IR: wafer.tile_region
 // IR-NOT: wafer.comm
 
-// C: static const wafer_abi_issue_t k_m6_local_block_partial_issues[] = {
+// C: static const wafer_abi_issue_t k_m6_local_block_issues[] = {
 // C: {WAFER_ABI_GEMM, 0u, 30, 8, 8, WAFER_ELEMENTWISE_NONE, WAFER_WAIT_ISSUE_ONLY}
 // C: {WAFER_ABI_GEMM, 0u, 30, 8, 16, WAFER_ELEMENTWISE_NONE, WAFER_WAIT_ISSUE_ONLY}
 // C: {WAFER_ABI_GEMM, 0u, 30, 16, 8, WAFER_ELEMENTWISE_NONE, WAFER_WAIT_ISSUE_ONLY}
-// C: int m6_local_block_partial_issue_count(void)
+// C: int m6_local_block_issue_count(void)
+// C: static const wafer_workspace_buffer_t k_m6_local_block_workspace_buffers[] = {
+// C: int m6_local_block_workspace_buffer_count(void)
+// C: static const wafer_resident_constant_t k_m6_local_block_resident_constants[] = {
+// C: int m6_local_block_resident_constant_count(void)

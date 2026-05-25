@@ -128,7 +128,9 @@ P5.8 的 M6 local compile gate 已开始落地：新增 `m6-local-compile-gate` 
 从 full local block StableHLO 经过 normalization、acceptance gates、rank-2 matmul group split、
 single-tile materialization、SPM allocation check、DDR binding demand 和 C ABI skeleton lowering；
 同时新增 `--emit-m6-local-smoke` manifest，覆盖原始 block launch signature、单 tile placement、
-GEMM 子图 ABI ops、manifest validate、C stub 生成和本地 C syntax compile。P5.8 的
+GEMM 子图 ABI ops、manifest validate、C stub 生成和本地 C syntax compile。M6 package manifest
+现在记录 workspace buffers 和 resident constants，validator 检查它们的 compact tensor storage
+bytes 与 resource summary 一致，C stub 也会生成对应 table。P5.8 的
 attention generic physical slice 已继续推进：QK^T 和 AV 的 rank-4 `linalg.generic`
 contraction 通过 indexing map、iterator type、SSA body 和 shape relation 验证后形成 group，
 materialize 为带 batch/head 维度 attrs 的 `wafer.compute.gemm`，并 lower 到带 batch_count 与
@@ -137,13 +139,13 @@ M/K/N 的 `wafer.abi.gemm` skeleton。P5.8 的 elementwise physical slice 已继
 same-shape identity 与 projected-permutation limited broadcast `linalg.elementwise` group formation、
 single-tile materialization、SPM/DDR/C ABI skeleton path 均已有 lit gate。P5.8 的 reduce physical
 slice 已落地：scalar-constant-init `linalg.reduce` 的 sum/max/min kind、dimensions、init value、
-single-tile materialization、SPM/DDR/C ABI skeleton path 均已有 lit gate；完整 package
-workspace/resident constant coverage 仍未纳入完整 M6 local compile gate，因此 P5.8 仍保持
+single-tile materialization、SPM/DDR/C ABI skeleton path 均已有 lit gate；完整 block 的 package
+ABI issue coverage 和所有 accepted groups 的统一 resource/lowering 仍未收口，因此 P5.8 仍保持
 pending。
 
 ## Active Task
 
-把文档中的 IR 分层落成最小可运行 compiler skeleton，并先跑通 M0/M1 load-GEMM-store 闭环。
+把文档中的 IR 分层落成最小可运行 compiler skeleton，并推进 local compile/package gate。
 
 当前执行焦点：
 
@@ -319,7 +321,8 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 
 ## 下一步
 
-继续 P5.8，把 full local block 的 package/workspace/resident-constant 覆盖补齐；当前 M6 partial
-gate 已覆盖 rank-2 GEMM、attention rank-4 batched GEMM、same-shape / limited-broadcast
-elementwise 和 scalar-constant-init reduce 子路径，但还不是完整 block local compile。
+继续 P5.8，把 full local block 的 package ABI issue coverage 和所有 accepted groups 的统一
+resource/lowering 补齐；当前 M6 partial gate 已覆盖 rank-2 GEMM、attention rank-4 batched
+GEMM、same-shape / limited-broadcast elementwise、scalar-constant-init reduce 子路径，以及
+workspace/resident constant package metadata，但还不是完整 block local compile。
 不要越过当前 local compile gate 直接实现未验证的整块逻辑。

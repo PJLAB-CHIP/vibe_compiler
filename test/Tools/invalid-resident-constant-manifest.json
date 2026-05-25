@@ -1,0 +1,98 @@
+{
+  "schema_version": 1,
+  "package_name": "bad_resident_constant",
+  "runtime": {
+    "mode": "hpgr",
+    "completion_source": "hpgr_stream_event"
+  },
+  "device_code": [
+    {
+      "name": "single_matmul",
+      "kind": "c_abi_skeleton",
+      "artifact": "bad_resident_constant.o"
+    }
+  ],
+  "launch_signature": {
+    "inputs": [
+      {"name": "lhs", "shape": [4, 8], "dtype": "f16", "layout": "tensor"},
+      {"name": "rhs", "shape": [8, 16], "dtype": "f16", "layout": "tensor"}
+    ],
+    "outputs": [
+      {"name": "out", "shape": [4, 16], "dtype": "f16", "layout": "tensor"}
+    ]
+  },
+  "placement": {
+    "logical_rank_count": 1,
+    "topology": {
+      "card_y_count": 1,
+      "card_x_count": 1,
+      "tile_y_count": 4,
+      "tile_x_count": 4
+    },
+    "good_tile_ids": [0],
+    "bad_tile_ids": [],
+    "ranks": [
+      {
+        "logical_rank": 0,
+        "physical_coord": [0, 0, 0, 0],
+        "block_id": 0,
+        "local_shards": [
+          {"name": "lhs", "offsets": [0, 0], "sizes": [4, 8]},
+          {"name": "rhs", "offsets": [0, 0], "sizes": [8, 16]},
+          {"name": "out", "offsets": [0, 0], "sizes": [4, 16]}
+        ]
+      }
+    ]
+  },
+  "ddr_bindings": [
+    {
+      "kind": "input",
+      "name": "lhs",
+      "bytes": 64,
+      "alignment": 256,
+      "read_only": true,
+      "host_visible": true
+    },
+    {
+      "kind": "input",
+      "name": "rhs",
+      "bytes": 256,
+      "alignment": 256,
+      "read_only": true,
+      "host_visible": true
+    },
+    {
+      "kind": "output",
+      "name": "out",
+      "bytes": 128,
+      "alignment": 256,
+      "read_only": false,
+      "host_visible": true
+    }
+  ],
+  "workspace_buffers": [],
+  "resident_constants": [
+    {
+      "name": "rhs",
+      "source": "launch_input",
+      "shape": [8, 16],
+      "dtype": "f16",
+      "layout": "tensor",
+      "bytes": 256,
+      "alignment": 256
+    }
+  ],
+  "resources": {
+    "spm_bytes": 2816,
+    "ddr_external_input_bytes": 320,
+    "ddr_external_output_bytes": 128,
+    "workspace_bytes": 0,
+    "resident_constant_bytes": 128
+  },
+  "abi_ops": [
+    {"op": "wafer.abi.rdma_1d", "bytes": 64, "wait_policy": "issue_only"},
+    {"op": "wafer.abi.rdma_1d", "bytes": 256, "wait_policy": "issue_only"},
+    {"op": "wafer.abi.gemm", "m": 4, "k": 8, "n": 16, "wait_policy": "issue_only"},
+    {"op": "wafer.abi.wdma_1d", "bytes": 128, "wait_policy": "issue_only"}
+  ]
+}
