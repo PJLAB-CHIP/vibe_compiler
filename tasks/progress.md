@@ -141,7 +141,9 @@ single-tile materialization、SPM/DDR/C ABI skeleton path 均已有 lit gate。P
 slice 已落地：scalar-constant-init `linalg.reduce` 的 sum/max/min kind、dimensions、init value、
 single-tile materialization、SPM/DDR/C ABI skeleton path 均已有 lit gate；M6 manifest 现在覆盖
 当前 accepted groups 的完整 ABI issue 序列，包括 38 个 RDMA、22 个 WDMA、13 个 elementwise、
-6 个 GEMM 和 3 个 reduce issue。
+6 个 GEMM 和 3 个 reduce issue。P6.1 的 communication verifier gate 已落地：当 module 中存在
+`wafer.placement.map` 时，`wafer.comm.send` / `wafer.comm.recv` 的 `peer` 必须指向 active physical
+tile；`wafer.comm.wait` 必须显式等待至少一个 async token，避免空 wait 被误当作同步边界。
 
 ## Active Task
 
@@ -284,8 +286,8 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 
 | ID | 状态 | 任务 | 验收 |
 | --- | --- | --- | --- |
-| P6.1 | ready | 定义 `wafer.comm` endpoint / token / wait verifier | DTE wait 与 local compute drain 分离 |
-| P6.2 | pending | Lower fixed-size unicast Direct DTE helper | raw non-unicast DTE 不作为 correctness path |
+| P6.1 | done | 定义 `wafer.comm` endpoint / token / wait verifier | DTE wait 与 local compute drain 分离 |
+| P6.2 | ready | Lower fixed-size unicast Direct DTE helper | raw non-unicast DTE 不作为 correctness path |
 | P6.3 | pending | 管理 FSM / packet / stream resource | resource 不冲突，有 negative tests |
 | P6.4 | pending | 实现 ring all-gather | 每步 send/recv/wait token 和 buffer lifetime 合法 |
 | P6.5 | pending | 实现 reduce-scatter / all-reduce | collective 可追溯到 unicast steps |
@@ -321,6 +323,5 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 
 ## 下一步
 
-P5.8 静态单 shard local compile gate 已收口。下一步进入 P6 communication / tensor parallel path：
-先从 `wafer.comm` endpoint / token / wait verifier 和 fixed-size unicast Direct DTE helper 开始，
-不要越过 p2p gate 直接实现未验证的 collective。
+P5.8 静态单 shard local compile gate 已收口，P6.1 comm verifier gate 已落地。下一步进入 P6.2：
+lower fixed-size unicast Direct DTE helper，不要越过 p2p gate 直接实现未验证的 collective。
