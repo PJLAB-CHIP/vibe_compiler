@@ -149,6 +149,23 @@ summary、ABI skeleton ops、device-code artifact id 和 runtime completion sour
 issue table，用于验证 package metadata 可以产出本地 toolchain 可消费的 artifact skeleton；它
 不代表真实 device code 已可执行。
 
+P4.4 起，C ABI stub 还从 placement metadata 生成 per-tile launch arg table：
+
+```c
+typedef struct {
+  uint32_t logical_rank;
+  uint32_t block_id;
+  uint32_t card_y;
+  uint32_t card_x;
+  uint32_t tile_y;
+  uint32_t tile_x;
+} wafer_tile_launch_arg_t;
+```
+
+该表只把已验证的 package placement metadata materialize 成 runtime 可消费的 tile-specific
+arguments；它不反向定义 tensor semantics，也不包含 BO handle、physical DDR address、SPM offset
+或 DTE packet。
+
 placement metadata 当前包含：
 
 - `logical_rank_count`、target topology dimensions、`good_tile_ids` 和 `bad_tile_ids`。

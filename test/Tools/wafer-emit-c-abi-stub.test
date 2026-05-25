@@ -1,0 +1,14 @@
+# RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-m0-smoke > %t.manifest.json
+# RUN: %python %wafer_src_root/tools/wafer_emit_c_abi_stub.py --manifest %t.manifest.json | FileCheck %s
+
+# CHECK: typedef struct {
+# CHECK: uint32_t logical_rank;
+# CHECK: uint32_t block_id;
+# CHECK: uint32_t card_y;
+# CHECK: uint32_t card_x;
+# CHECK: uint32_t tile_y;
+# CHECK: uint32_t tile_x;
+# CHECK: } wafer_tile_launch_arg_t;
+# CHECK: static const wafer_tile_launch_arg_t k_m0_single_tile_tile_args[] = {
+# CHECK: {0u, 0u, 0u, 0u, 0u, 0u},
+# CHECK: int m0_single_tile_tile_arg_count(void)
