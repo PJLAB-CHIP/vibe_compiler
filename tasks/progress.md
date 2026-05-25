@@ -65,7 +65,10 @@ use-def 推导 demand；它不携带 BO handle、physical address、pool/domain 
 trace。P3.8 的 C ABI skeleton lowering 已落地：新增 `wafer.abi.rdma_1d` /
 `wafer.abi.wdma_1d` / `wafer.abi.gemm` issue ops，`--wafer-lower-to-c-abi-skeleton` 将
 `wafer.load_tile`、`wafer.store_tile` 和 `wafer.compute.gemm` 替换为显式 bytes、M/K/N 和
-`issue_only` wait policy 的 ABI skeleton，不生成 raw packet 或 runtime handle。
+`issue_only` wait policy 的 ABI skeleton，不生成 raw packet 或 runtime handle。P3.9 的 M0 ABI
+unit gate 已落地：`Wafer/ABI/M0Abi.h` descriptor builder 和 gtest 覆盖 RDMA/WDMA 的 DDR/SPM
+direction、byte range、exclusive end、SPM usable cap、DDR lower bound，以及 GEMM M/K/N 和
+`issue_only` policy；当前固定 ABI argument contract，不声称已经完成真实 wrapper packet bitfield。
 
 ## Active Task
 
@@ -170,7 +173,7 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 | P3.6 | done | 实现 SPM allocation trial | range、alignment、lifetime、end-address 检查通过 |
 | P3.7 | done | 实现 DDR external input/output binding demand | DDR demand 可被 launch/runtime 层消费 |
 | P3.8 | done | Lower `wafer.compute.gemm` / load / store 到 C ABI skeleton | 参数单位、address domain、wait policy 有 verifier |
-| P3.9 | pending | 建立 golden packet / ABI unit test | 至少覆盖 M0 用到的 compute/movement family |
+| P3.9 | done | 建立 golden packet / ABI unit test | 至少覆盖 M0 用到的 compute/movement family |
 | P3.10 | pending | 建立最小 launch/runtime package manifest | manifest roundtrip，package 不依赖已知 stub path 作为 correctness fence |
 | P3.11 | pending | M0 local compile gate 汇总测试 | textual pipeline、SPM、DDR、C ABI、generated artifact compile、manifest 检查全部通过 |
 
@@ -244,6 +247,6 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 
 ## 下一步
 
-继续从 P3.9 开始建立 golden packet / ABI unit test，先服务 M0 single-tile load-GEMM-store
-闭环；batch/head dot 泛化在 attention slice 前补齐。不要越过 M0/M1 compile gate 直接实现
-transformer block 逻辑。
+继续从 P3.10 开始建立最小 launch/runtime package manifest，先服务 M0 single-tile
+load-GEMM-store 闭环；batch/head dot 泛化在 attention slice 前补齐。不要越过 M0/M1 compile gate
+直接实现 transformer block 逻辑。

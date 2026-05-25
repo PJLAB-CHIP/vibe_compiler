@@ -165,6 +165,12 @@ Golden data 必须来自 register-level spec 和 wrapper behavior，不能来自
 行为和 spec 冲突，测试应标记为 implementation discrepancy，并回到 docs/source 里确认，而不是
 悄悄更新 expected。
 
+当前 V0 unit gate 先用 `Wafer/ABI/M0Abi.h` 的 descriptor builder 固定 M0 ABI argument contract：
+RDMA / WDMA 的 DDR lower bound、SPM usable range、byte count、exclusive end range 和
+`issue_only` policy，以及 GEMM 的 M/K/N 参数。这个 gate 覆盖 P3.8 skeleton op 的下游参数单位和
+address direction，但还不是最终 wrapper-to-register bitfield golden；真实 packet field 对照在
+接入 public wrapper 或 C shim 后继续扩展。
+
 ## 8. Verifier
 
 C ABI verifier 检查：

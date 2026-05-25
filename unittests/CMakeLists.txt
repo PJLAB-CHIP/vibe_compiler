@@ -15,11 +15,13 @@ if(NOT GTest_FOUND)
 endif()
 
 add_executable(WaferUnitTests
+  ABI/M0AbiTest.cpp
   Dialect/Wafer/WaferDialectTest.cpp
   Dialect/Wafer/WaferInterfacesTest.cpp
 )
 target_link_libraries(WaferUnitTests
   PRIVATE
+  WaferABI
   WaferIR
   MLIRIR
   MLIRParser
