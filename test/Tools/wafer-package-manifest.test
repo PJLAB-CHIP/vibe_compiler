@@ -1,0 +1,15 @@
+# RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-m0-smoke | %python %wafer_src_root/tools/wafer_package_manifest.py --roundtrip - | FileCheck %s
+# RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-m0-smoke | %python %wafer_src_root/tools/wafer_package_manifest.py --validate -
+# RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-stub-smoke | not %python %wafer_src_root/tools/wafer_package_manifest.py --validate - 2>&1 | FileCheck %s --check-prefix=ERR
+
+# CHECK: "schema_version": 1
+# CHECK: "package_name": "m0_single_tile"
+# CHECK: "completion_source": "hpgr_stream_event"
+# CHECK-NOT: TsmDeviceSynchronize
+# CHECK: "ddr_external_input_bytes": 320
+# CHECK: "ddr_external_output_bytes": 128
+# CHECK: "wafer.abi.rdma_1d"
+# CHECK: "wafer.abi.gemm"
+# CHECK: "wafer.abi.wdma_1d"
+
+# ERR: completion source is a known stub fence

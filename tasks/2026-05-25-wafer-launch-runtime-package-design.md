@@ -140,6 +140,12 @@ Runtime package 必须区分：
 small-BAR visible address offset、largest contiguous range、pool capacity、alignment、runtime
 allocation failure 由 DDR 设计负责定义；launch 负责把这些失败报告到用户可理解的位置。
 
+当前 V0 skeleton 用 `tools/wafer_package_manifest.py` 固定最小 manifest schema 和 roundtrip：
+manifest 记录 launch signature、DDR external binding bytes、SPM/DDR resource summary、ABI skeleton
+ops、device-code artifact id 和 runtime completion source。validator 显式拒绝已知 stub completion
+fence，例如 `TsmDeviceSynchronize` / `TsmLaunch`，因此 package correctness 不能只依赖 legacy stub
+path 成功返回。
+
 ## 6. Legacy Bootparam and Dyn TLV
 
 如果选择 legacy fallback，package 需要能序列化 legacy bootparam / dyn TLV：
