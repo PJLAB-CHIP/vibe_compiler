@@ -93,7 +93,7 @@ independent tile-region 的 C ABI skeleton，validate `--emit-m1-no-comm-smoke` 
 stub 并由本地 C compiler 做 syntax compile。
 P5.1 的 norm schedule acceptance gate 已落地：`--wafer-check-norm-schedule` 对 normalized
 structured tensor IR 做 pass-local analysis，要求 hidden-dimension `linalg.reduce`、`rsqrt`
-elementwise stage 和 rank-2/rank-1 broadcast multiply stage 同时存在；它不引入 `wafer.norm` 或
+elementwise stage 和 rank-N/rank-(N-1) broadcast multiply stage 同时存在；它不引入 `wafer.norm` 或
 schedule attr，也不把 planner cost 写进 IR。
 P5.2 的 softmax schedule acceptance gate 已落地：`--wafer-check-softmax-schedule` 对 normalized
 structured tensor IR 做 pass-local analysis，要求 hidden-dimension reduce max、row max broadcast
@@ -115,6 +115,11 @@ P5.6 的 MLP slice 已落地：新增 `--wafer-check-mlp-schedule`，验证 rank
 matmul、`tanh` activation、up projection matmul、elementwise gated multiply 和 down projection
 matmul 的 SSA 链；frontend integration test 覆盖 StableHLO dot/tanh/multiply 到该 gate 的
 lowering。
+P5.7 的 full local transformer block structured gate 已落地：一个 StableHLO integration test 在
+单函数中串联 rank-4 RMSNorm、QK^T、softmax、AV、rank-4 到 rank-2 collapse、output
+projection/residual 和 MLP，并运行 norm、softmax、projection/residual、MLP acceptance passes；
+`--wafer-lower-stablehlo-shape` 同步支持静态连续维度 reassociation reshape。该批次不声称
+physical layout/SPM/DDR feasibility 已完成，后者归 P5.8 local compile gate。
 
 ## Active Task
 
@@ -248,7 +253,7 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 | P5.4 | done | Attention value slice：softmax + AV | softmax output 到 value accumulation 的状态和 buffer lifetime 可验证 |
 | P5.5 | done | Output projection + residual slice | residual/add/bias 等 elementwise 与 GEMM 边界清晰 |
 | P5.6 | done | MLP slice | GEMM + activation + elementwise multiply + GEMM 可分组或可诊断拆分 |
-| P5.7 | pending | Full local transformer block | norm、attention、MLP 串联；layout/SPM/DDR feasibility 全部通过 |
+| P5.7 | done | Full local transformer block | norm、attention、MLP 串联的 structured IR gate 通过 |
 | P5.8 | pending | M6 local compile gate | 单 shard / 单卡完整 block 的 normalization、group split、layout/SPM/DDR、C ABI、generated artifact compile、package 检查通过 |
 
 ## P6. Communication / Tensor Parallel Path
@@ -294,6 +299,6 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 
 ## 下一步
 
-继续 P5.7，进入 full local transformer block，串联 norm、attention 和 MLP 的本地 structured IR
-gate。
+继续 P5.8，进入 M6 local compile gate，把 full local block 接到 group split、layout/SPM/DDR、
+C ABI skeleton 和 package 检查。
 不要越过当前 local compile gate 直接实现未验证的整块逻辑。

@@ -34,19 +34,19 @@ static bool isBroadcastMul(mlir::linalg::ElementwiseOp elementwise) {
     return false;
   std::optional<int64_t> outputRank =
       getRankedTensorRank(elementwise.getOutputs()[0]);
-  if (!outputRank || *outputRank != 2)
+  if (!outputRank || *outputRank < 2)
     return false;
 
-  bool hasRank2Input = false;
-  bool hasRank1Input = false;
+  bool hasFullRankInput = false;
+  bool hasReducedRankInput = false;
   for (mlir::Value input : elementwise.getInputs()) {
     std::optional<int64_t> inputRank = getRankedTensorRank(input);
     if (!inputRank)
       continue;
-    hasRank2Input |= *inputRank == 2;
-    hasRank1Input |= *inputRank == 1;
+    hasFullRankInput |= *inputRank == *outputRank;
+    hasReducedRankInput |= *inputRank == *outputRank - 1;
   }
-  return hasRank2Input && hasRank1Input;
+  return hasFullRankInput && hasReducedRankInput;
 }
 
 struct CheckNormSchedulePass
@@ -114,7 +114,8 @@ struct CheckNormSchedulePass
     }
     if (!sawBroadcastMul) {
       module.emitError(
-          "norm schedule requires a rank-2/rank-1 broadcast multiply stage");
+          "norm schedule requires a rank-N/rank-(N-1) broadcast multiply "
+          "stage");
       signalPassFailure();
       return;
     }

@@ -177,6 +177,22 @@ acceptance gate 的完整 lowering。
 同一 use-def 检查上扩展。该 gate 不引入 `wafer.mlp`、fused activation op 或名字约定，也不把
 中间 tile/group split 写成 IR attr。
 
+当前 P5.7 增加 full local transformer block structured IR gate。该 integration test 在单个函数中
+串联：
+
+- rank-4 RMSNorm staged form。
+- QK^T attention score、softmax 和 AV attention value。
+- rank-4 到 rank-2 的 shape-only collapse，用于 output projection 和 MLP。
+- output projection + bias + residual。
+- MLP gate/up/down projection。
+
+该 gate 运行 norm、softmax、projection/residual 和 MLP acceptance passes，验证 local tensor
+IR 的 dataflow 可以串成一个 transformer block。为支持该 gate，`--wafer-lower-stablehlo-shape`
+现在支持静态连续维度 reassociation 的 expand/collapse reshape，例如
+`tensor<BxHxQxD> -> tensor<(BHQ)xD>`。该批次仍不声称 physical layout、SPM residency、
+workspace 或 DDR binding 已完成；这些事实必须在后续 Wafer group/resource lowering 和 M6
+local compile gate 中 materialize。
+
 ### 4.3 Reduction
 
 reduction 必须保留：
@@ -240,7 +256,7 @@ gate。该 pass 只从当前 structured tensor IR 重算以下事实：
 
 - 是否存在沿最后一维的 `linalg.reduce`。
 - 是否存在 `rsqrt` elementwise stage。
-- 是否存在 rank-2 / rank-1 broadcast multiply stage。
+- 是否存在 rank-N / rank-(N-1) broadcast multiply stage。
 
 它不写入 group attr、side table、planner trace 或 cost 分数。失败时诊断指向缺失的 staged
 结构；真正 tile shape、SPM residency 和 group split 仍归后续 group/resource planner。

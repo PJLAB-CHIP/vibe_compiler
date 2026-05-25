@@ -47,6 +47,54 @@ getSingleGroupReassociation(int64_t rank) {
   return reassociation;
 }
 
+static std::optional<llvm::SmallVector<mlir::ReassociationIndices>>
+getCollapseReassociation(llvm::ArrayRef<int64_t> sourceShape,
+                         llvm::ArrayRef<int64_t> resultShape) {
+  llvm::SmallVector<mlir::ReassociationIndices> reassociation;
+  int64_t sourceDim = 0;
+  for (int64_t resultDim = 0;
+       resultDim < static_cast<int64_t>(resultShape.size()); ++resultDim) {
+    int64_t product = 1;
+    mlir::ReassociationIndices group;
+    while (sourceDim < static_cast<int64_t>(sourceShape.size()) &&
+           (group.empty() || product < resultShape[resultDim])) {
+      product *= sourceShape[sourceDim];
+      group.push_back(sourceDim);
+      ++sourceDim;
+    }
+    if (group.empty() || product != resultShape[resultDim])
+      return std::nullopt;
+    reassociation.push_back(group);
+  }
+  if (sourceDim != static_cast<int64_t>(sourceShape.size()))
+    return std::nullopt;
+  return reassociation;
+}
+
+static std::optional<llvm::SmallVector<mlir::ReassociationIndices>>
+getExpandReassociation(llvm::ArrayRef<int64_t> sourceShape,
+                       llvm::ArrayRef<int64_t> resultShape) {
+  llvm::SmallVector<mlir::ReassociationIndices> reassociation;
+  int64_t resultDim = 0;
+  for (int64_t sourceDim = 0;
+       sourceDim < static_cast<int64_t>(sourceShape.size()); ++sourceDim) {
+    int64_t product = 1;
+    mlir::ReassociationIndices group;
+    while (resultDim < static_cast<int64_t>(resultShape.size()) &&
+           (group.empty() || product < sourceShape[sourceDim])) {
+      product *= resultShape[resultDim];
+      group.push_back(resultDim);
+      ++resultDim;
+    }
+    if (group.empty() || product != sourceShape[sourceDim])
+      return std::nullopt;
+    reassociation.push_back(group);
+  }
+  if (resultDim != static_cast<int64_t>(resultShape.size()))
+    return std::nullopt;
+  return reassociation;
+}
+
 static llvm::SmallVector<mlir::OpFoldResult>
 getIndexAttrs(mlir::OpBuilder &builder, llvm::ArrayRef<int64_t> values) {
   llvm::SmallVector<mlir::OpFoldResult> attrs;
@@ -76,6 +124,9 @@ static bool lowerBroadcastInDim(mlir::stablehlo::BroadcastInDimOp broadcast) {
 static bool lowerReshape(mlir::stablehlo::ReshapeOp reshape) {
   mlir::RankedTensorType sourceType = reshape.getOperand().getType();
   mlir::RankedTensorType resultType = reshape.getType();
+  if (!sourceType.hasStaticShape() || !resultType.hasStaticShape())
+    return false;
+
   mlir::OpBuilder builder(reshape);
 
   if (sourceType.getRank() == 1 && resultType.getRank() > 1) {
@@ -87,10 +138,36 @@ static bool lowerReshape(mlir::stablehlo::ReshapeOp reshape) {
     return true;
   }
 
+  if (sourceType.getRank() < resultType.getRank()) {
+    std::optional<llvm::SmallVector<mlir::ReassociationIndices>>
+        reassociation =
+            getExpandReassociation(sourceType.getShape(), resultType.getShape());
+    if (!reassociation)
+      return false;
+    auto lowered = builder.create<mlir::tensor::ExpandShapeOp>(
+        reshape.getLoc(), resultType, reshape.getOperand(), *reassociation);
+    reshape.getResult().replaceAllUsesWith(lowered.getResult());
+    reshape.erase();
+    return true;
+  }
+
   if (sourceType.getRank() > 1 && resultType.getRank() == 1) {
     auto lowered = builder.create<mlir::tensor::CollapseShapeOp>(
         reshape.getLoc(), resultType, reshape.getOperand(),
         getSingleGroupReassociation(sourceType.getRank()));
+    reshape.getResult().replaceAllUsesWith(lowered.getResult());
+    reshape.erase();
+    return true;
+  }
+
+  if (sourceType.getRank() > resultType.getRank()) {
+    std::optional<llvm::SmallVector<mlir::ReassociationIndices>>
+        reassociation = getCollapseReassociation(sourceType.getShape(),
+                                                 resultType.getShape());
+    if (!reassociation)
+      return false;
+    auto lowered = builder.create<mlir::tensor::CollapseShapeOp>(
+        reshape.getLoc(), resultType, reshape.getOperand(), *reassociation);
     reshape.getResult().replaceAllUsesWith(lowered.getResult());
     reshape.erase();
     return true;
