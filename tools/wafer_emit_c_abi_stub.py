@@ -19,6 +19,22 @@ OP_ENUMS = {
     "wafer.abi.rdma_1d": "WAFER_ABI_RDMA_1D",
     "wafer.abi.wdma_1d": "WAFER_ABI_WDMA_1D",
     "wafer.abi.gemm": "WAFER_ABI_GEMM",
+    "wafer.abi.elementwise": "WAFER_ABI_ELEMENTWISE",
+}
+
+ELEMENTWISE_ENUMS = {
+    "add": "WAFER_ELEMENTWISE_ADD",
+    "sub": "WAFER_ELEMENTWISE_SUB",
+    "mul": "WAFER_ELEMENTWISE_MUL",
+    "div": "WAFER_ELEMENTWISE_DIV",
+    "max": "WAFER_ELEMENTWISE_MAX",
+    "min": "WAFER_ELEMENTWISE_MIN",
+    "neg": "WAFER_ELEMENTWISE_NEG",
+    "recip": "WAFER_ELEMENTWISE_RECIP",
+    "sqrt": "WAFER_ELEMENTWISE_SQRT",
+    "rsqrt": "WAFER_ELEMENTWISE_RSQRT",
+    "exp": "WAFER_ELEMENTWISE_EXP",
+    "tanh": "WAFER_ELEMENTWISE_TANH",
 }
 
 
@@ -49,7 +65,24 @@ def emit_c(manifest: dict) -> str:
         "  WAFER_ABI_RDMA_1D = 1,",
         "  WAFER_ABI_WDMA_1D = 2,",
         "  WAFER_ABI_GEMM = 3,",
+        "  WAFER_ABI_ELEMENTWISE = 4,",
         "} wafer_abi_op_t;",
+        "",
+        "typedef enum {",
+        "  WAFER_ELEMENTWISE_NONE = 0,",
+        "  WAFER_ELEMENTWISE_ADD = 1,",
+        "  WAFER_ELEMENTWISE_SUB = 2,",
+        "  WAFER_ELEMENTWISE_MUL = 3,",
+        "  WAFER_ELEMENTWISE_DIV = 4,",
+        "  WAFER_ELEMENTWISE_MAX = 5,",
+        "  WAFER_ELEMENTWISE_MIN = 6,",
+        "  WAFER_ELEMENTWISE_NEG = 7,",
+        "  WAFER_ELEMENTWISE_RECIP = 8,",
+        "  WAFER_ELEMENTWISE_SQRT = 9,",
+        "  WAFER_ELEMENTWISE_RSQRT = 10,",
+        "  WAFER_ELEMENTWISE_EXP = 11,",
+        "  WAFER_ELEMENTWISE_TANH = 12,",
+        "} wafer_elementwise_kind_t;",
         "",
         "typedef struct {",
         "  wafer_abi_op_t op;",
@@ -57,6 +90,7 @@ def emit_c(manifest: dict) -> str:
         "  int64_t m;",
         "  int64_t k;",
         "  int64_t n;",
+        "  wafer_elementwise_kind_t elementwise_kind;",
         "  wafer_wait_policy_t wait_policy;",
         "} wafer_abi_issue_t;",
         "",
@@ -79,8 +113,9 @@ def emit_c(manifest: dict) -> str:
         m = int(op.get("m", 0))
         k = int(op.get("k", 0))
         n = int(op.get("n", 0))
+        elementwise_kind = ELEMENTWISE_ENUMS.get(op.get("kind", ""), "WAFER_ELEMENTWISE_NONE")
         lines.append(
-            f"  {{{enum_name}, {bytes_value}u, {m}, {k}, {n}, "
+            f"  {{{enum_name}, {bytes_value}u, {m}, {k}, {n}, {elementwise_kind}, "
             "WAFER_WAIT_ISSUE_ONLY},"
         )
 

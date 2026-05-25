@@ -118,6 +118,12 @@ transcendental 子集。它应满足：
   SiLU / GELU 可以先作为 staged decomposition，使用 sigmoid/tanh/erf/exp 中已经被 verifier
   支持的子集；没有被支持的 transcendental 不能靠名字 fallback。
 
+当前落地的 V0 子集先约束在 accepted-layout `!wafer.tile_buffer` 形式：operands/result 必须是
+SPM + tensor layout、逻辑 tensor type 完全一致，并由 `#wafer.elementwise_kind<...>` 记录
+add/sub/mul/div/max/min/neg/recip/sqrt/rsqrt/exp/tanh。`linalg.elementwise` 只有在 indexing maps
+都是 identity、且 input/output/result shape 完全一致时才形成 group；broadcast/scalar form 仍留在
+structured tensor IR，直到 broadcast 表示和 verifier 合同补齐。
+
 ### 3.3 Reduce
 
 `wafer.compute.reduce` 表达本 tile 内的 local reduce，不表达跨 tile collective reduce。跨 tile
@@ -274,6 +280,11 @@ V0 推荐实现顺序：
 3. `wafer.compute.gemm`：覆盖基础 NE GEMM，不带 fused bias/activation/quant。
 4. `wafer.compute.reduce`：覆盖 `sum/max/min/avg` 中至少一个。
 5. `wafer.layout.materialize` 到 GatherScatter / TDMA 的最小闭环。
+
+当前实现顺序已经先覆盖了 accepted-layout `wafer.compute.gemm`、load/store、layout materialize，
+并补入 same-shape identity elementwise 到 `wafer.compute.elementwise` /
+`wafer.abi.elementwise` 的 local skeleton。它不是完整 elementwise coverage；limited broadcast、
+relation/logic、convert 和 reduce 仍按后续 gate 推进。
 
 V1 或后续扩展：
 

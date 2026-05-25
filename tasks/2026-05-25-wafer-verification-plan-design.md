@@ -136,6 +136,12 @@ SPM allocation check、DDR binding demand、C ABI skeleton、manifest validate �
 compile。它是 M6 的前进步骤，不是 M6 完成证据；reduce、elementwise、attention generic 的
 accepted group schedule、physical lowering、workspace/resident constant coverage 仍必须补齐。
 
+2026-05-25 后续实现又补入了 same-shape identity indexing-map `linalg.elementwise` 的局部
+physical slice：该子集可以形成 `wafer.group`，materialize 为 `wafer.compute.elementwise`，并
+lower 到 `wafer.abi.elementwise` skeleton。这个 slice 只覆盖无 broadcast 的 unary/binary
+elementwise；softmax/norm 中依赖 row/head/vector broadcast 的 elementwise、reduce max/sum、
+attention generic contraction 和 package workspace/resident-constant 覆盖仍不属于完成证据。
+
 ## 5. Failure Handling
 
 验证失败要回到拥有该事实的阶段：

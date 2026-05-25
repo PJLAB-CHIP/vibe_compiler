@@ -236,6 +236,21 @@ def Wafer_AbiGemmOp : Wafer_Op<"abi.gemm", [
       "$wait_policy $lhs `,` $rhs attr-dict `:` functional-type(operands, results)";
 }
 
+def Wafer_AbiElementwiseOp : Wafer_Op<"abi.elementwise", [
+    WaferResourceEffectInterface
+  ]> {
+  let summary = "C ABI skeleton elementwise issue";
+  let arguments = (ins
+    Wafer_AbiWaitPolicyAttr:$wait_policy,
+    Wafer_ComputeElementwiseKindAttr:$kind,
+    Variadic<AnyType>:$inputs
+  );
+  let results = (outs AnyType:$result);
+  let hasVerifier = 1;
+  let assemblyFormat =
+      "$wait_policy $kind $inputs attr-dict `:` functional-type(operands, results)";
+}
+
 def Wafer_ComputeGemmOp : Wafer_Op<"compute.gemm", [
     WaferLayoutOpInterface,
     WaferResourceEffectInterface
@@ -246,6 +261,28 @@ def Wafer_ComputeGemmOp : Wafer_Op<"compute.gemm", [
   let hasVerifier = 1;
   let assemblyFormat =
       "$lhs `,` $rhs attr-dict `:` functional-type(operands, results)";
+}
+
+def Wafer_ComputeElementwiseOp : Wafer_Op<"compute.elementwise", [
+    WaferLayoutOpInterface,
+    WaferResourceEffectInterface
+  ]> {
+  let summary = "target-abstract tile elementwise compute";
+  let description = [{
+    `wafer.compute.elementwise` represents tile-local scalar elementwise
+    compute over already materialized SPM tile buffers. The V0 operation keeps
+    broadcast planning outside the IR contract: all operands and the result
+    must have the same logical tensor type, memory space, and physical layout.
+  }];
+
+  let arguments = (ins
+    Wafer_ComputeElementwiseKindAttr:$kind,
+    Variadic<AnyType>:$inputs
+  );
+  let results = (outs AnyType:$result);
+  let hasVerifier = 1;
+  let assemblyFormat =
+      "$kind $inputs attr-dict `:` functional-type(operands, results)";
 }
 
 class Wafer_CommP2POp<string mnemonic> : Wafer_Op<mnemonic, [

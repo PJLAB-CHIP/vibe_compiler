@@ -12,6 +12,8 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 
+#include <optional>
+
 namespace wafer {
 namespace {
 
@@ -31,6 +33,66 @@ static bool canFormSingleMatmulGroup(mlir::linalg::MatmulOp matmul) {
   return true;
 }
 
+static std::optional<wafer::ComputeElementwiseKind>
+mapElementwiseKind(mlir::linalg::ElementwiseKind kind) {
+  switch (kind) {
+  case mlir::linalg::ElementwiseKind::add:
+    return wafer::ComputeElementwiseKind::Add;
+  case mlir::linalg::ElementwiseKind::sub:
+    return wafer::ComputeElementwiseKind::Sub;
+  case mlir::linalg::ElementwiseKind::mul:
+    return wafer::ComputeElementwiseKind::Mul;
+  case mlir::linalg::ElementwiseKind::div:
+    return wafer::ComputeElementwiseKind::Div;
+  case mlir::linalg::ElementwiseKind::max_signed:
+    return wafer::ComputeElementwiseKind::Max;
+  case mlir::linalg::ElementwiseKind::min_signed:
+    return wafer::ComputeElementwiseKind::Min;
+  case mlir::linalg::ElementwiseKind::negf:
+    return wafer::ComputeElementwiseKind::Neg;
+  case mlir::linalg::ElementwiseKind::reciprocal:
+    return wafer::ComputeElementwiseKind::Recip;
+  case mlir::linalg::ElementwiseKind::sqrt:
+    return wafer::ComputeElementwiseKind::Sqrt;
+  case mlir::linalg::ElementwiseKind::rsqrt:
+    return wafer::ComputeElementwiseKind::Rsqrt;
+  case mlir::linalg::ElementwiseKind::exp:
+    return wafer::ComputeElementwiseKind::Exp;
+  case mlir::linalg::ElementwiseKind::tanh:
+    return wafer::ComputeElementwiseKind::Tanh;
+  default:
+    return std::nullopt;
+  }
+}
+
+static bool canFormSingleElementwiseGroup(
+    mlir::linalg::ElementwiseOp elementwise) {
+  if (elementwise->getParentOfType<wafer::GroupOp>())
+    return false;
+  if (!mapElementwiseKind(elementwise.getKind()))
+    return false;
+  if (elementwise->getNumResults() != 1 || elementwise.getOutputs().size() != 1)
+    return false;
+  for (mlir::AffineMap map : elementwise.getIndexingMapsArray()) {
+    if (!map.isIdentity())
+      return false;
+  }
+  if (elementwise.getIndexingMapsArray().size() !=
+      elementwise.getInputs().size() + elementwise.getOutputs().size())
+    return false;
+  if (!llvm::all_of(elementwise.getInputs(), isTensorValue))
+    return false;
+  if (!llvm::all_of(elementwise.getOutputs(), isTensorValue))
+    return false;
+
+  mlir::Type resultType = elementwise->getResult(0).getType();
+  for (mlir::Value input : elementwise.getInputs()) {
+    if (input.getType() != resultType)
+      return false;
+  }
+  return elementwise.getOutputs()[0].getType() == resultType;
+}
+
 static void addMappedBlockArguments(mlir::Block *block, mlir::ValueRange values,
                                     mlir::IRMapping &mapping) {
   for (mlir::Value value : values) {
@@ -40,15 +102,14 @@ static void addMappedBlockArguments(mlir::Block *block, mlir::ValueRange values,
   }
 }
 
-static void formGroup(mlir::linalg::MatmulOp matmul) {
-  llvm::SmallVector<mlir::Value> inputs(matmul.getInputs().begin(),
-                                        matmul.getInputs().end());
-  llvm::SmallVector<mlir::Value> outs(matmul.getOutputs().begin(),
-                                      matmul.getOutputs().end());
+static void formGroup(mlir::Operation *root, mlir::ValueRange rootInputs,
+                      mlir::ValueRange rootOuts) {
+  llvm::SmallVector<mlir::Value> inputs(rootInputs.begin(), rootInputs.end());
+  llvm::SmallVector<mlir::Value> outs(rootOuts.begin(), rootOuts.end());
 
-  mlir::OpBuilder builder(matmul);
+  mlir::OpBuilder builder(root);
   auto group = builder.create<wafer::GroupOp>(
-      matmul.getLoc(), matmul->getResultTypes(), inputs, outs);
+      root->getLoc(), root->getResultTypes(), inputs, outs);
 
   mlir::Block *body = new mlir::Block();
   group.getBody().push_back(body);
@@ -58,12 +119,12 @@ static void formGroup(mlir::linalg::MatmulOp matmul) {
   addMappedBlockArguments(body, outs, mapping);
 
   mlir::OpBuilder bodyBuilder = mlir::OpBuilder::atBlockEnd(body);
-  mlir::Operation *cloned = bodyBuilder.clone(*matmul.getOperation(), mapping);
-  bodyBuilder.create<wafer::GroupYieldOp>(matmul.getLoc(),
+  mlir::Operation *cloned = bodyBuilder.clone(*root, mapping);
+  bodyBuilder.create<wafer::GroupYieldOp>(root->getLoc(),
                                           cloned->getResults());
 
-  matmul->replaceAllUsesWith(group->getResults());
-  matmul.erase();
+  root->replaceAllUsesWith(group->getResults());
+  root->erase();
 }
 
 struct FormGroupsPass
@@ -82,14 +143,27 @@ struct FormGroupsPass
   }
 
   void runOnOperation() final {
-    llvm::SmallVector<mlir::linalg::MatmulOp> matmuls;
-    getOperation().walk([&](mlir::linalg::MatmulOp matmul) {
-      if (canFormSingleMatmulGroup(matmul))
-        matmuls.push_back(matmul);
+    llvm::SmallVector<mlir::Operation *> roots;
+    getOperation().walk([&](mlir::Operation *op) {
+      if (auto matmul = mlir::dyn_cast<mlir::linalg::MatmulOp>(op)) {
+        if (canFormSingleMatmulGroup(matmul))
+          roots.push_back(op);
+        return;
+      }
+      if (auto elementwise =
+              mlir::dyn_cast<mlir::linalg::ElementwiseOp>(op)) {
+        if (canFormSingleElementwiseGroup(elementwise))
+          roots.push_back(op);
+      }
     });
 
-    for (mlir::linalg::MatmulOp matmul : matmuls)
-      formGroup(matmul);
+    for (mlir::Operation *root : roots) {
+      if (auto matmul = mlir::dyn_cast<mlir::linalg::MatmulOp>(root))
+        formGroup(root, matmul.getInputs(), matmul.getOutputs());
+      else if (auto elementwise =
+                   mlir::dyn_cast<mlir::linalg::ElementwiseOp>(root))
+        formGroup(root, elementwise.getInputs(), elementwise.getOutputs());
+    }
   }
 };
 

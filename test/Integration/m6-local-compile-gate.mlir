@@ -130,13 +130,16 @@ module {
 // IR-NOT: stablehlo.
 // IR-NOT: wafer.group
 // IR: linalg.generic
-// IR: linalg.elementwise kind=#linalg.elementwise_kind<exp>
+// IR: linalg.elementwise kind=#linalg.elementwise_kind<sub>
+// IR-SAME: indexing_maps
 // IR: wafer.ddr.external_binding <input>
 // IR: wafer.ddr.external_binding <output>
 // IR: wafer.tile_region
 // IR-NOT: wafer.load_tile
 // IR: wafer.abi.rdma_1d <issue_only>
+// IR: wafer.abi.elementwise <issue_only> <exp>
 // IR: wafer.abi.gemm <issue_only>
+// IR-NOT: wafer.compute.elementwise
 // IR-NOT: wafer.compute.gemm
 // IR: wafer.abi.wdma_1d <issue_only>
 // IR: wafer.tile_region
@@ -145,7 +148,7 @@ module {
 // IR-NOT: wafer.comm
 
 // C: static const wafer_abi_issue_t k_m6_local_block_partial_issues[] = {
-// C: {WAFER_ABI_GEMM, 0u, 30, 8, 8, WAFER_WAIT_ISSUE_ONLY}
-// C: {WAFER_ABI_GEMM, 0u, 30, 8, 16, WAFER_WAIT_ISSUE_ONLY}
-// C: {WAFER_ABI_GEMM, 0u, 30, 16, 8, WAFER_WAIT_ISSUE_ONLY}
+// C: {WAFER_ABI_GEMM, 0u, 30, 8, 8, WAFER_ELEMENTWISE_NONE, WAFER_WAIT_ISSUE_ONLY}
+// C: {WAFER_ABI_GEMM, 0u, 30, 8, 16, WAFER_ELEMENTWISE_NONE, WAFER_WAIT_ISSUE_ONLY}
+// C: {WAFER_ABI_GEMM, 0u, 30, 16, 8, WAFER_ELEMENTWISE_NONE, WAFER_WAIT_ISSUE_ONLY}
 // C: int m6_local_block_partial_issue_count(void)

@@ -117,6 +117,18 @@ static mlir::LogicalResult lowerComputeGemm(wafer::ComputeGemmOp gemm) {
   return mlir::success();
 }
 
+static mlir::LogicalResult
+lowerComputeElementwise(wafer::ComputeElementwiseOp elementwise) {
+  mlir::OpBuilder builder(elementwise);
+  auto abi = builder.create<wafer::AbiElementwiseOp>(
+      elementwise.getLoc(), elementwise.getResult().getType(),
+      getIssueOnlyPolicy(elementwise.getContext()), elementwise.getKindAttr(),
+      elementwise.getInputs());
+  elementwise.getResult().replaceAllUsesWith(abi.getResult());
+  elementwise.erase();
+  return mlir::success();
+}
+
 struct LowerToCAbiSkeletonPass
     : public mlir::PassWrapper<LowerToCAbiSkeletonPass,
                                mlir::OperationPass<mlir::ModuleOp>> {
@@ -127,7 +139,7 @@ struct LowerToCAbiSkeletonPass
   }
 
   llvm::StringRef getDescription() const final {
-    return "lower Wafer movement and GEMM ops to C ABI skeleton issue ops";
+    return "lower Wafer movement and compute ops to C ABI skeleton issue ops";
   }
 
   void getDependentDialects(mlir::DialectRegistry &registry) const final {
@@ -139,7 +151,7 @@ struct LowerToCAbiSkeletonPass
     llvm::SmallVector<mlir::Operation *> ops;
     module.walk([&](mlir::Operation *op) {
       if (mlir::isa<wafer::LoadTileOp, wafer::StoreTileOp,
-                    wafer::ComputeGemmOp>(op))
+                    wafer::ComputeGemmOp, wafer::ComputeElementwiseOp>(op))
         ops.push_back(op);
     });
 
@@ -151,6 +163,9 @@ struct LowerToCAbiSkeletonPass
         result = lowerStoreTile(module, store);
       else if (auto gemm = mlir::dyn_cast<wafer::ComputeGemmOp>(op))
         result = lowerComputeGemm(gemm);
+      else if (auto elementwise =
+                   mlir::dyn_cast<wafer::ComputeElementwiseOp>(op))
+        result = lowerComputeElementwise(elementwise);
 
       if (mlir::failed(result)) {
         signalPassFailure();

@@ -345,6 +345,73 @@ mlir::LogicalResult AbiGemmOp::verify() {
   return mlir::success();
 }
 
+static unsigned getElementwiseArity(ComputeElementwiseKind kind) {
+  switch (kind) {
+  case ComputeElementwiseKind::Add:
+  case ComputeElementwiseKind::Sub:
+  case ComputeElementwiseKind::Mul:
+  case ComputeElementwiseKind::Div:
+  case ComputeElementwiseKind::Max:
+  case ComputeElementwiseKind::Min:
+    return 2;
+  case ComputeElementwiseKind::Neg:
+  case ComputeElementwiseKind::Recip:
+  case ComputeElementwiseKind::Sqrt:
+  case ComputeElementwiseKind::Rsqrt:
+  case ComputeElementwiseKind::Exp:
+  case ComputeElementwiseKind::Tanh:
+    return 1;
+  }
+  llvm_unreachable("unknown compute elementwise kind");
+}
+
+static mlir::LogicalResult
+verifyElementwiseTileContract(mlir::Operation *op, ComputeElementwiseKind kind,
+                              mlir::ValueRange inputs,
+                              mlir::Type resultType) {
+  auto resultTileType = mlir::dyn_cast<TileBufferType>(resultType);
+  if (!resultTileType)
+    return op->emitOpError("expects tile_buffer result");
+
+  unsigned expectedArity = getElementwiseArity(kind);
+  if (inputs.size() != expectedArity)
+    return op->emitOpError("elementwise kind expects ")
+           << expectedArity << " operand(s), got " << inputs.size();
+
+  if (!hasTileBufferMemorySpace(resultTileType, MemorySpace::SPM))
+    return op->emitOpError("elementwise result must use SPM memory space");
+  if (!hasTileBufferLayout(resultTileType, MemLayout::Tensor))
+    return op->emitOpError("elementwise result must use tensor mem_layout");
+
+  mlir::RankedTensorType resultTensor =
+      getTileBufferTensorType(resultTileType);
+  for (mlir::Value input : inputs) {
+    auto inputTileType = mlir::dyn_cast<TileBufferType>(input.getType());
+    if (!inputTileType)
+      return op->emitOpError("expects tile_buffer operands");
+    if (!hasTileBufferMemorySpace(inputTileType, MemorySpace::SPM))
+      return op->emitOpError(
+          "elementwise operands must use SPM memory space");
+    if (!hasTileBufferLayout(inputTileType, MemLayout::Tensor))
+      return op->emitOpError("elementwise operands must use tensor mem_layout");
+    if (getTileBufferTensorType(inputTileType) != resultTensor)
+      return op->emitOpError(
+          "elementwise operand tensor types must match result tensor type");
+  }
+
+  return mlir::success();
+}
+
+mlir::LogicalResult AbiElementwiseOp::verify() {
+  if (mlir::failed(
+          verifyIssueOnlyWaitPolicy(getOperation(), getWaitPolicyAttr())))
+    return mlir::failure();
+
+  return verifyElementwiseTileContract(
+      getOperation(), getKindAttr().getValue(), getInputs(),
+      getResult().getType());
+}
+
 mlir::LogicalResult GroupOp::verify() {
   if (getNumResults() != getOuts().size())
     return emitOpError("expected result count to match outs count, got ")
@@ -474,6 +541,12 @@ mlir::LogicalResult ComputeGemmOp::verify() {
     return emitOpError("gemm result shape must be lhs M by rhs N");
 
   return mlir::success();
+}
+
+mlir::LogicalResult ComputeElementwiseOp::verify() {
+  return verifyElementwiseTileContract(
+      getOperation(), getKindAttr().getValue(), getInputs(),
+      getResult().getType());
 }
 
 mlir::LogicalResult LayoutMaterializeOp::verify() {

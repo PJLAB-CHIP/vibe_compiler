@@ -25,6 +25,28 @@ KNOWN_STUB_FENCES = {
     "KmdDoorbellOnly",
 }
 
+SUPPORTED_ABI_OPS = {
+    "wafer.abi.rdma_1d",
+    "wafer.abi.wdma_1d",
+    "wafer.abi.gemm",
+    "wafer.abi.elementwise",
+}
+
+SUPPORTED_ELEMENTWISE_KINDS = {
+    "add",
+    "sub",
+    "mul",
+    "div",
+    "max",
+    "min",
+    "neg",
+    "recip",
+    "sqrt",
+    "rsqrt",
+    "exp",
+    "tanh",
+}
+
 
 def canonical_json(manifest: dict[str, Any]) -> str:
     return json.dumps(manifest, indent=2) + "\n"
@@ -277,14 +299,16 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
     for index, op in enumerate(abi_ops):
         item = require_dict(op, f"abi_ops[{index}]")
         mnemonic = require_non_empty_string(item.get("op"), f"abi_ops[{index}].op")
-        if mnemonic not in {
-            "wafer.abi.rdma_1d",
-            "wafer.abi.wdma_1d",
-            "wafer.abi.gemm",
-        }:
+        if mnemonic not in SUPPORTED_ABI_OPS:
             fail(f"abi_ops[{index}].op is not supported by the M0 manifest")
         if item.get("wait_policy") != "issue_only":
             fail(f"abi_ops[{index}].wait_policy must be issue_only")
+        if mnemonic == "wafer.abi.elementwise":
+            kind = require_non_empty_string(item.get("kind"), f"abi_ops[{index}].kind")
+            if kind not in SUPPORTED_ELEMENTWISE_KINDS:
+                fail(f"abi_ops[{index}].kind is not supported")
+        elif "kind" in item:
+            fail(f"abi_ops[{index}].kind is only valid for elementwise ops")
 
     input_bytes = 0
     output_bytes = 0
@@ -470,6 +494,76 @@ def m1_no_comm_smoke_manifest() -> dict[str, Any]:
         {"op": "wafer.abi.rdma_1d", "bytes": 32, "wait_policy": "issue_only"},
         {"op": "wafer.abi.rdma_1d", "bytes": 256, "wait_policy": "issue_only"},
         {"op": "wafer.abi.gemm", "m": 2, "k": 8, "n": 16, "wait_policy": "issue_only"},
+        {"op": "wafer.abi.wdma_1d", "bytes": 64, "wait_policy": "issue_only"},
+    ]
+    return manifest
+
+
+def elementwise_smoke_manifest() -> dict[str, Any]:
+    manifest = m0_smoke_manifest()
+    manifest["package_name"] = "m0_elementwise"
+    manifest["device_code"] = [
+        {
+            "name": "same_shape_add",
+            "kind": "c_abi_skeleton",
+            "artifact": "m0_elementwise.o",
+        }
+    ]
+    manifest["launch_signature"] = {
+        "inputs": [
+            {"name": "lhs", "shape": [4, 8], "dtype": "f16", "layout": "tensor"},
+            {"name": "rhs", "shape": [4, 8], "dtype": "f16", "layout": "tensor"},
+        ],
+        "outputs": [
+            {"name": "out", "shape": [4, 8], "dtype": "f16", "layout": "tensor"},
+        ],
+    }
+    manifest["placement"]["ranks"][0]["local_shards"] = [
+        {"name": "lhs", "offsets": [0, 0], "sizes": [4, 8]},
+        {"name": "rhs", "offsets": [0, 0], "sizes": [4, 8]},
+        {"name": "out", "offsets": [0, 0], "sizes": [4, 8]},
+    ]
+    manifest["ddr_bindings"] = [
+        {
+            "kind": "input",
+            "name": "lhs",
+            "bytes": 64,
+            "alignment": 256,
+            "read_only": True,
+            "host_visible": True,
+        },
+        {
+            "kind": "input",
+            "name": "rhs",
+            "bytes": 64,
+            "alignment": 256,
+            "read_only": True,
+            "host_visible": True,
+        },
+        {
+            "kind": "output",
+            "name": "out",
+            "bytes": 64,
+            "alignment": 256,
+            "read_only": False,
+            "host_visible": True,
+        },
+    ]
+    manifest["resources"] = {
+        "spm_bytes": 768,
+        "ddr_external_input_bytes": 128,
+        "ddr_external_output_bytes": 64,
+        "workspace_bytes": 0,
+        "resident_constant_bytes": 0,
+    }
+    manifest["abi_ops"] = [
+        {"op": "wafer.abi.rdma_1d", "bytes": 64, "wait_policy": "issue_only"},
+        {"op": "wafer.abi.rdma_1d", "bytes": 64, "wait_policy": "issue_only"},
+        {
+            "op": "wafer.abi.elementwise",
+            "kind": "add",
+            "wait_policy": "issue_only",
+        },
         {"op": "wafer.abi.wdma_1d", "bytes": 64, "wait_policy": "issue_only"},
     ]
     return manifest
@@ -683,6 +777,7 @@ def main() -> int:
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--emit-m0-smoke", action="store_true")
     mode.add_argument("--emit-m1-no-comm-smoke", action="store_true")
+    mode.add_argument("--emit-elementwise-smoke", action="store_true")
     mode.add_argument("--emit-m6-local-smoke", action="store_true")
     mode.add_argument("--emit-stub-smoke", action="store_true")
     mode.add_argument("--emit-bad-placement-smoke", action="store_true")
@@ -696,6 +791,9 @@ def main() -> int:
         return 0
     if args.emit_m1_no_comm_smoke:
         sys.stdout.write(canonical_json(m1_no_comm_smoke_manifest()))
+        return 0
+    if args.emit_elementwise_smoke:
+        sys.stdout.write(canonical_json(elementwise_smoke_manifest()))
         return 0
     if args.emit_m6_local_smoke:
         sys.stdout.write(canonical_json(m6_local_smoke_manifest()))

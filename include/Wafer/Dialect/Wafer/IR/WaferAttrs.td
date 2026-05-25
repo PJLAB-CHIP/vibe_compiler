@@ -101,4 +101,41 @@ def Wafer_AbiWaitPolicyAttr
   let assemblyFormat = "`<` $value `>`";
 }
 
+def Wafer_ComputeElementwiseKindAdd : I32EnumAttrCase<"Add", 0, "add">;
+def Wafer_ComputeElementwiseKindSub : I32EnumAttrCase<"Sub", 1, "sub">;
+def Wafer_ComputeElementwiseKindMul : I32EnumAttrCase<"Mul", 2, "mul">;
+def Wafer_ComputeElementwiseKindDiv : I32EnumAttrCase<"Div", 3, "div">;
+def Wafer_ComputeElementwiseKindMax : I32EnumAttrCase<"Max", 4, "max">;
+def Wafer_ComputeElementwiseKindMin : I32EnumAttrCase<"Min", 5, "min">;
+def Wafer_ComputeElementwiseKindNeg : I32EnumAttrCase<"Neg", 6, "neg">;
+def Wafer_ComputeElementwiseKindRecip : I32EnumAttrCase<"Recip", 7, "recip">;
+def Wafer_ComputeElementwiseKindSqrt : I32EnumAttrCase<"Sqrt", 8, "sqrt">;
+def Wafer_ComputeElementwiseKindRsqrt : I32EnumAttrCase<"Rsqrt", 9, "rsqrt">;
+def Wafer_ComputeElementwiseKindExp : I32EnumAttrCase<"Exp", 10, "exp">;
+def Wafer_ComputeElementwiseKindTanh : I32EnumAttrCase<"Tanh", 11, "tanh">;
+def Wafer_ComputeElementwiseKind
+    : I32EnumAttr<"ComputeElementwiseKind",
+                  "Wafer target-abstract elementwise compute kind", [
+  Wafer_ComputeElementwiseKindAdd,
+  Wafer_ComputeElementwiseKindSub,
+  Wafer_ComputeElementwiseKindMul,
+  Wafer_ComputeElementwiseKindDiv,
+  Wafer_ComputeElementwiseKindMax,
+  Wafer_ComputeElementwiseKindMin,
+  Wafer_ComputeElementwiseKindNeg,
+  Wafer_ComputeElementwiseKindRecip,
+  Wafer_ComputeElementwiseKindSqrt,
+  Wafer_ComputeElementwiseKindRsqrt,
+  Wafer_ComputeElementwiseKindExp,
+  Wafer_ComputeElementwiseKindTanh
+]> {
+  let cppNamespace = "::wafer";
+  let genSpecializedAttr = 0;
+}
+
+def Wafer_ComputeElementwiseKindAttr
+    : EnumAttr<Wafer_Dialect, Wafer_ComputeElementwiseKind, "elementwise_kind"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
 #endif // WAFER_DIALECT_WAFER_IR_WAFERATTRS_TD

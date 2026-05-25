@@ -1,5 +1,10 @@
 # RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-m0-smoke > %t.manifest.json
 # RUN: %python %wafer_src_root/tools/wafer_emit_c_abi_stub.py --manifest %t.manifest.json | FileCheck %s
+# RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-elementwise-smoke > %t.elementwise.json
+# RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --validate %t.elementwise.json
+# RUN: %python %wafer_src_root/tools/wafer_emit_c_abi_stub.py --manifest %t.elementwise.json > %t.elementwise.c
+# RUN: cc -fsyntax-only %t.elementwise.c
+# RUN: FileCheck %s --check-prefix=ELT < %t.elementwise.c
 
 # CHECK: typedef struct {
 # CHECK: uint32_t logical_rank;
@@ -12,3 +17,8 @@
 # CHECK: static const wafer_tile_launch_arg_t k_m0_single_tile_tile_args[] = {
 # CHECK: {0u, 0u, 0u, 0u, 0u, 0u},
 # CHECK: int m0_single_tile_tile_arg_count(void)
+
+# ELT: WAFER_ABI_ELEMENTWISE
+# ELT: WAFER_ELEMENTWISE_ADD
+# ELT: static const wafer_abi_issue_t k_m0_elementwise_issues[] = {
+# ELT: {WAFER_ABI_ELEMENTWISE, 0u, 0, 0, 0, WAFER_ELEMENTWISE_ADD, WAFER_WAIT_ISSUE_ONLY}
