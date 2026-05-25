@@ -26,6 +26,7 @@ void registerWaferPasses() {
     mlir::registerPass(createCheckSPMAllocationPass);
     mlir::registerPass(createMaterializeDDRExternalBindingsPass);
     mlir::registerPass(createLowerRingAllGatherPass);
+    mlir::registerPass(createLowerRingReduceCollectivesPass);
     mlir::registerPass(createLowerToCAbiSkeletonPass);
     return true;
   }();

@@ -154,6 +154,10 @@ P6.4 的 ring all-gather gate 已落地：新增 collective-level `wafer.comm.al
 `--wafer-lower-ring-all-gather` 会按 placement rank order 展开成每步 `send` / `recv` / `wait` 的
 unicast ring schedule，p2p `slot` attr 表达当前发送或接收的 gather slot，并在 C ABI skeleton
 lowering 中继续传到 Direct DTE issue op。
+P6.5 的 ring reduce collective gate 已落地：新增 `wafer.comm.reduce_scatter` 和
+`wafer.comm.all_reduce`，`--wafer-lower-ring-reduce-collectives` 将每步展开成 unicast send/recv/wait，
+并在 wait 后用 `wafer.compute.elementwise` 的 add/max/min 显式累计；C ABI skeleton path 会继续
+lower 成 Direct DTE issue 和 elementwise ABI issue，reduction 不进入 DTE 协议。
 
 ## Active Task
 
@@ -300,8 +304,8 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 | P6.2 | done | Lower fixed-size unicast Direct DTE helper | raw non-unicast DTE 不作为 correctness path |
 | P6.3 | done | 管理 FSM / packet / stream resource | resource 不冲突，有 negative tests |
 | P6.4 | done | 实现 ring all-gather | 每步 send/recv/wait token 和 buffer lifetime 合法 |
-| P6.5 | ready | 实现 reduce-scatter / all-reduce | collective 可追溯到 unicast steps |
-| P6.6 | pending | Lower Shardy/SPMD logical collective 到 `wafer.comm` | placement 和 comm lowering 保留 collective semantics |
+| P6.5 | done | 实现 reduce-scatter / all-reduce | collective 可追溯到 unicast steps |
+| P6.6 | ready | Lower Shardy/SPMD logical collective 到 `wafer.comm` | placement 和 comm lowering 保留 collective semantics |
 | P6.7 | pending | M2/M3/M4 gate 汇总测试 | p2p、single-card collective、partitioned collective lowering 分别可验证 |
 
 ## P7. Overlap、Cost Model 和 Profiling Calibration
@@ -333,5 +337,6 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 
 ## 下一步
 
-P5.8 静态单 shard local compile gate 已收口，P6.1-P6.4 comm gates 已落地。下一步进入 P6.5：
-实现 reduce-scatter / all-reduce，但 reduction 必须由明确 compute op 表达，不能藏进 DTE protocol。
+P5.8 静态单 shard local compile gate 已收口，P6.1-P6.5 comm gates 已落地。下一步进入 P6.6：
+Lower Shardy/SPMD logical collective 到 `wafer.comm`，保留 logical collective semantics、placement
+rank order 和后续 ring lowering 的可追溯性。

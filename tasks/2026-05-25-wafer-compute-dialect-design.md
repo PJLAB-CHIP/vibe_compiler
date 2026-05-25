@@ -132,6 +132,10 @@ relation/logic 和 convert 仍按后续 gate 推进。
 `wafer.compute.reduce` 表达本 tile 内的 local reduce，不表达跨 tile collective reduce。跨 tile
 reduce-scatter / all-reduce 由 `wafer.comm` 组合 local compute 和 communication。
 
+当前 ring reduce collective lowering 使用 `wafer.compute.elementwise` 的 add/max/min 作为同形状
+recv chunk 与 accumulator 的本地累计步骤；`wafer.compute.reduce` 仍只表示 tile 内按维度 reduce，
+不被复用来伪装跨 tile collective reduction。
+
 最小合同：
 
 - reduce dimensions 是 op 语义的一部分。若从 `linalg.reduce` lowering 而来，维度来自 structured

@@ -1028,6 +1028,62 @@ mlir::LogicalResult CommAllGatherOp::verify() {
   return mlir::success();
 }
 
+static mlir::LogicalResult verifyCommReduceCollective(
+    mlir::Operation *op, llvm::StringRef collectiveName, mlir::Value input,
+    mlir::Value recvBuffer, mlir::Type resultType,
+    mlir::IntegerAttr localRankAttr, mlir::IntegerAttr groupSizeAttr,
+    mlir::IntegerAttr bytesAttr) {
+  auto inputType = mlir::dyn_cast<TileBufferType>(input.getType());
+  auto recvType = mlir::dyn_cast<TileBufferType>(recvBuffer.getType());
+  auto resultTileType = mlir::dyn_cast<TileBufferType>(resultType);
+  if (!inputType || !recvType || !resultTileType)
+    return op->emitOpError(collectiveName)
+           << " expects tile_buffer operands and result";
+  if (inputType != recvType || inputType != resultTileType)
+    return op->emitOpError(collectiveName)
+           << " input, recv buffer, and result types must match";
+  if (!hasTileBufferMemorySpace(inputType, MemorySpace::SPM))
+    return op->emitOpError(collectiveName)
+           << " buffers must use SPM memory space";
+
+  int64_t groupSize = groupSizeAttr.getInt();
+  if (groupSize <= 1)
+    return op->emitOpError(collectiveName)
+           << " group_size must be greater than one";
+  int64_t localRank = localRankAttr.getInt();
+  if (localRank < 0 || localRank >= groupSize)
+    return op->emitOpError(collectiveName)
+           << " local_rank must be within the collective group";
+  int64_t bytes = bytesAttr.getInt();
+  if (bytes <= 0)
+    return op->emitOpError(collectiveName) << " byte count must be positive";
+
+  std::optional<int64_t> compactBytes =
+      getCompactTensorByteSize(getTileBufferTensorType(inputType));
+  if (!compactBytes)
+    return op->emitOpError(collectiveName)
+           << " compact byte size is not representable";
+  if (*compactBytes != bytes)
+    return op->emitOpError(collectiveName)
+           << " byte count must match compact byte size";
+
+  return mlir::success();
+}
+
+mlir::LogicalResult CommReduceScatterOp::verify() {
+  return verifyCommReduceCollective(getOperation(), "reduce_scatter",
+                                    getInput(), getRecvBuffer(),
+                                    getResult().getType(), getLocalRankAttr(),
+                                    getGroupSizeAttr(), getBytesAttr());
+}
+
+mlir::LogicalResult CommAllReduceOp::verify() {
+  return verifyCommReduceCollective(getOperation(), "all_reduce", getInput(),
+                                    getRecvBuffer(), getResult().getType(),
+                                    getLocalRankAttr(), getGroupSizeAttr(),
+                                    getBytesAttr());
+}
+
 mlir::LogicalResult ComputeGemmOp::verify() {
   auto lhsType = mlir::dyn_cast<TileBufferType>(getLhs().getType());
   auto rhsType = mlir::dyn_cast<TileBufferType>(getRhs().getType());

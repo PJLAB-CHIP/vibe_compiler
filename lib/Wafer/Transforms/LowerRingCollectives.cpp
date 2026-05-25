@@ -1,4 +1,4 @@
-//===- LowerRingAllGather.cpp - Expand all-gather to p2p ring ------------===//
+//===- LowerRingCollectives.cpp - Expand collectives to p2p rings --------===//
 
 #include "Wafer/Transforms/Passes.h"
 
@@ -9,6 +9,7 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/ErrorHandling.h"
 
 #include <cstdint>
 #include <limits>
@@ -149,6 +150,66 @@ static mlir::LogicalResult lowerAllGather(mlir::ModuleOp module,
   return mlir::success();
 }
 
+static wafer::ComputeElementwiseKind
+getElementwiseReduceKind(wafer::ComputeReduceKind kind) {
+  switch (kind) {
+  case wafer::ComputeReduceKind::Sum:
+    return wafer::ComputeElementwiseKind::Add;
+  case wafer::ComputeReduceKind::Max:
+    return wafer::ComputeElementwiseKind::Max;
+  case wafer::ComputeReduceKind::Min:
+    return wafer::ComputeElementwiseKind::Min;
+  }
+  llvm_unreachable("unknown reduce kind");
+}
+
+static mlir::LogicalResult lowerReduceCollective(
+    mlir::ModuleOp module, mlir::Operation *op, mlir::Value input,
+    mlir::Value recvBuffer, mlir::Value result, wafer::ComputeReduceKind kind,
+    mlir::IntegerAttr localRankAttr, mlir::IntegerAttr groupSizeAttr,
+    mlir::IntegerAttr bytesAttr) {
+  int64_t groupSize = groupSizeAttr.getInt();
+  int64_t localRank = localRankAttr.getInt();
+
+  llvm::SmallVector<int64_t, 8> physicalTileIds;
+  if (mlir::failed(
+          collectPhysicalTileIds(module, op, groupSize, physicalTileIds)))
+    return mlir::failure();
+
+  int64_t nextPeer = physicalTileIds[wrapRank(localRank + 1, groupSize)];
+  int64_t previousPeer = physicalTileIds[wrapRank(localRank - 1, groupSize)];
+
+  mlir::OpBuilder builder(op);
+  mlir::Type tokenType = mlir::async::TokenType::get(op->getContext());
+  auto elementwiseKind = wafer::ComputeElementwiseKindAttr::get(
+      op->getContext(), getElementwiseReduceKind(kind));
+  mlir::Value accumulator = input;
+
+  for (int64_t step = 0; step < groupSize - 1; ++step) {
+    auto send = builder.create<wafer::CommSendOp>(
+        op->getLoc(), tokenType, accumulator,
+        builder.getI64IntegerAttr(nextPeer), bytesAttr);
+    send->setAttr(wafer::kWaferCommSlotAttrName, localRankAttr);
+
+    auto recv = builder.create<wafer::CommRecvOp>(
+        op->getLoc(), tokenType, recvBuffer,
+        builder.getI64IntegerAttr(previousPeer), bytesAttr);
+    recv->setAttr(wafer::kWaferCommSlotAttrName, localRankAttr);
+
+    llvm::SmallVector<mlir::Value, 2> tokens{send.getToken(), recv.getToken()};
+    builder.create<wafer::CommWaitOp>(op->getLoc(), tokens);
+
+    llvm::SmallVector<mlir::Value, 2> inputs{accumulator, recvBuffer};
+    auto reduce = builder.create<wafer::ComputeElementwiseOp>(
+        op->getLoc(), result.getType(), elementwiseKind, inputs);
+    accumulator = reduce.getResult();
+  }
+
+  result.replaceAllUsesWith(accumulator);
+  op->erase();
+  return mlir::success();
+}
+
 struct LowerRingAllGatherPass
     : public mlir::PassWrapper<LowerRingAllGatherPass,
                                mlir::OperationPass<mlir::ModuleOp>> {
@@ -182,10 +243,63 @@ struct LowerRingAllGatherPass
   }
 };
 
+struct LowerRingReduceCollectivesPass
+    : public mlir::PassWrapper<LowerRingReduceCollectivesPass,
+                               mlir::OperationPass<mlir::ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(LowerRingReduceCollectivesPass)
+
+  llvm::StringRef getArgument() const final {
+    return "wafer-lower-ring-reduce-collectives";
+  }
+
+  llvm::StringRef getDescription() const final {
+    return "lower wafer.comm reduce collectives to explicit unicast ring steps";
+  }
+
+  void getDependentDialects(mlir::DialectRegistry &registry) const final {
+    registry.insert<mlir::async::AsyncDialect, wafer::WaferDialect>();
+  }
+
+  void runOnOperation() final {
+    mlir::ModuleOp module = getOperation();
+    llvm::SmallVector<mlir::Operation *, 4> collectives;
+    module.walk([&](mlir::Operation *op) {
+      if (mlir::isa<wafer::CommReduceScatterOp, wafer::CommAllReduceOp>(op))
+        collectives.push_back(op);
+    });
+
+    for (mlir::Operation *op : collectives) {
+      mlir::LogicalResult result = mlir::success();
+      if (auto reduceScatter = mlir::dyn_cast<wafer::CommReduceScatterOp>(op)) {
+        result = lowerReduceCollective(
+            module, op, reduceScatter.getInput(), reduceScatter.getRecvBuffer(),
+            reduceScatter.getResult(), reduceScatter.getKindAttr().getValue(),
+            reduceScatter.getLocalRankAttr(), reduceScatter.getGroupSizeAttr(),
+            reduceScatter.getBytesAttr());
+      } else if (auto allReduce = mlir::dyn_cast<wafer::CommAllReduceOp>(op)) {
+        result = lowerReduceCollective(
+            module, op, allReduce.getInput(), allReduce.getRecvBuffer(),
+            allReduce.getResult(), allReduce.getKindAttr().getValue(),
+            allReduce.getLocalRankAttr(), allReduce.getGroupSizeAttr(),
+            allReduce.getBytesAttr());
+      }
+
+      if (mlir::failed(result)) {
+        signalPassFailure();
+        return;
+      }
+    }
+  }
+};
+
 } // namespace
 
 std::unique_ptr<mlir::Pass> createLowerRingAllGatherPass() {
   return std::make_unique<LowerRingAllGatherPass>();
+}
+
+std::unique_ptr<mlir::Pass> createLowerRingReduceCollectivesPass() {
+  return std::make_unique<LowerRingReduceCollectivesPass>();
 }
 
 } // namespace wafer

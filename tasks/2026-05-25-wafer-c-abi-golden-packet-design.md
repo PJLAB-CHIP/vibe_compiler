@@ -115,6 +115,10 @@ elementwise/reduce kind、reduce dimensions、init value、peer tile id、Direct
 C/LLVM lowering 可以把这些 issue op 转成实际 `wafer_*` C shim 调用，golden packet 测试再验证
 shim 到 wrapper/packet field 的映射。
 
+Ring reduce collectives 在进入 C ABI skeleton 前已展开为 p2p Direct DTE issue 和
+`wafer.compute.elementwise` accumulator step；`--wafer-lower-to-c-abi-skeleton` 会分别生成
+`wafer.abi.dte_*` 和 `wafer.abi.elementwise`。C ABI 层不引入“带 reduction 的 DTE issue”。
+
 ## 5. Instruction Facts to Preserve
 
 从 register-level spec 和 interface contract 得到的 V0 hard facts：

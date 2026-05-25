@@ -9,7 +9,7 @@ add_mlir_library(WaferTransforms
   CompactLayoutAssignment.cpp
   FormGroups.cpp
   LowerToCAbiSkeleton.cpp
-  LowerRingAllGather.cpp
+  LowerRingCollectives.cpp
   MaterializeDDRExternalBindings.cpp
   LowerStablehloDot.cpp
   LowerStablehloElementwise.cpp

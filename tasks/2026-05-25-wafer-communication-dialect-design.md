@@ -254,6 +254,13 @@ raw DTE non-unicast gather 不在 correctness path。
 - 每个 communication step 是 unicast p2p。
 - local reduce 与 recv buffer 的 use-def / wait 顺序明确。
 
+当前实现新增 `wafer.comm.reduce_scatter` 和 `wafer.comm.all_reduce` 作为 fixed-size ring reduce
+collective input。`reduce_scatter` 的 V0 gate 表达单个 local scatter slot；完整多 slot
+reduce-scatter 可以由多个 slot op 或后续 buffer-slice IR 组合。`--wafer-lower-ring-reduce-collectives`
+按 placement rank order 展开 p2p send/recv/wait，并在每个 wait 后用
+`wafer.compute.elementwise` 的 add/max/min 对 accumulator 和 recv staging buffer 做显式本地累计。
+这保证 reduction kind、dtype、use-def 和 wait 顺序都留在 IR 中，而不是变成 DTE side effect。
+
 ## 7. Interaction with Layout, SPM, and DDR
 
 通信本身通常是 byte-preserving movement，不做 semantic layout conversion。

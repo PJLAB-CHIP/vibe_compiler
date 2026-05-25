@@ -421,6 +421,43 @@ def Wafer_CommAllGatherOp : Wafer_Op<"comm.all_gather", [
       "$local_chunk `into` $gather_buffer attr-dict `:` type($local_chunk) `->` type($gather_buffer)";
 }
 
+class Wafer_CommReduceCollectiveOp<string mnemonic> : Wafer_Op<mnemonic, [
+    WaferResourceEffectInterface
+  ]> {
+  let arguments = (ins
+    Wafer_ComputeReduceKindAttr:$kind,
+    AnyType:$input,
+    AnyType:$recv_buffer,
+    I64Attr:$local_rank,
+    I64Attr:$group_size,
+    I64Attr:$bytes
+  );
+  let results = (outs AnyType:$result);
+  let hasVerifier = 1;
+  let assemblyFormat =
+      "$kind $input `using` $recv_buffer attr-dict `:` functional-type(operands, results)";
+}
+
+def Wafer_CommReduceScatterOp : Wafer_CommReduceCollectiveOp<"comm.reduce_scatter"> {
+  let summary = "target-abstract fixed-size ring reduce-scatter slot request";
+  let description = [{
+    `wafer.comm.reduce_scatter` represents one local scatter slot of a
+    collective reduction. Lowering must express communication as p2p ring
+    steps and express local accumulation with compute ops; reduction semantics
+    are not hidden in DTE protocol.
+  }];
+}
+
+def Wafer_CommAllReduceOp : Wafer_CommReduceCollectiveOp<"comm.all_reduce"> {
+  let summary = "target-abstract fixed-size ring all-reduce request";
+  let description = [{
+    `wafer.comm.all_reduce` represents a same-shaped collective reduction.
+    V0 lowering uses unicast ring communication plus explicit local
+    elementwise accumulation instead of raw DTE non-unicast or packet-side
+    reduction.
+  }];
+}
+
 def Wafer_SyncLocalDrainOp : Wafer_Op<"sync.local_drain", [
     WaferResourceEffectInterface
   ]> {
