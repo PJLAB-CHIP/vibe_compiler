@@ -25,8 +25,10 @@
 # ELT: WAFER_ABI_ELEMENTWISE
 # ELT: WAFER_ELEMENTWISE_ADD
 # ELT: static const wafer_abi_issue_t k_m0_elementwise_issues[] = {
-# ELT: {WAFER_ABI_ELEMENTWISE, 0u, 0, 0, 0, WAFER_ELEMENTWISE_ADD, WAFER_WAIT_ISSUE_ONLY}
+# ELT: {WAFER_ABI_ELEMENTWISE, 0u, 0, 0, 0, 0, WAFER_ELEMENTWISE_ADD, WAFER_REDUCE_NONE, 0u, {0, 0, 0, 0}, 0, WAFER_WAIT_ISSUE_ONLY}
 
+# M6: WAFER_ABI_REDUCE
+# M6: WAFER_REDUCE_MAX
 # M6: typedef struct {
 # M6: uint64_t bytes;
 # M6: uint64_t alignment;
@@ -35,6 +37,10 @@
 # M6: uint64_t bytes;
 # M6: uint64_t alignment;
 # M6: } wafer_resident_constant_t;
+# M6: static const wafer_abi_issue_t k_m6_local_block_issues[] = {
+# M6: {WAFER_ABI_GEMM, 0u, 5, 8, 7, 6, WAFER_ELEMENTWISE_NONE, WAFER_REDUCE_NONE, 0u, {0, 0, 0, 0}, 0, WAFER_WAIT_ISSUE_ONLY}
+# M6: {WAFER_ABI_REDUCE, 0u, 0, 0, 0, 0, WAFER_ELEMENTWISE_NONE, WAFER_REDUCE_MAX, 1u, {3, 0, 0, 0}, -3.40282347e+38, WAFER_WAIT_ISSUE_ONLY}
+# M6: {WAFER_ABI_ELEMENTWISE, 0u, 0, 0, 0, 0, WAFER_ELEMENTWISE_TANH, WAFER_REDUCE_NONE, 0u, {0, 0, 0, 0}, 0, WAFER_WAIT_ISSUE_ONLY}
 # M6: static const wafer_workspace_buffer_t k_m6_local_block_workspace_buffers[] = {
 # M6: {960u, 256u},
 # M6: int m6_local_block_workspace_buffer_count(void)

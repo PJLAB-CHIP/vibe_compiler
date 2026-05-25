@@ -20,6 +20,7 @@ OP_ENUMS = {
     "wafer.abi.wdma_1d": "WAFER_ABI_WDMA_1D",
     "wafer.abi.gemm": "WAFER_ABI_GEMM",
     "wafer.abi.elementwise": "WAFER_ABI_ELEMENTWISE",
+    "wafer.abi.reduce": "WAFER_ABI_REDUCE",
 }
 
 ELEMENTWISE_ENUMS = {
@@ -37,12 +38,22 @@ ELEMENTWISE_ENUMS = {
     "tanh": "WAFER_ELEMENTWISE_TANH",
 }
 
+REDUCE_ENUMS = {
+    "sum": "WAFER_REDUCE_SUM",
+    "max": "WAFER_REDUCE_MAX",
+    "min": "WAFER_REDUCE_MIN",
+}
+
 
 def c_ident(name: str) -> str:
     ident = re.sub(r"[^A-Za-z0-9_]", "_", name)
     if not ident or ident[0].isdigit():
         ident = f"_{ident}"
     return ident
+
+
+def format_c_float(value: int | float) -> str:
+    return format(float(value), ".9g")
 
 
 def emit_c(manifest: dict) -> str:
@@ -68,6 +79,7 @@ def emit_c(manifest: dict) -> str:
         "  WAFER_ABI_WDMA_1D = 2,",
         "  WAFER_ABI_GEMM = 3,",
         "  WAFER_ABI_ELEMENTWISE = 4,",
+        "  WAFER_ABI_REDUCE = 5,",
         "} wafer_abi_op_t;",
         "",
         "typedef enum {",
@@ -86,13 +98,25 @@ def emit_c(manifest: dict) -> str:
         "  WAFER_ELEMENTWISE_TANH = 12,",
         "} wafer_elementwise_kind_t;",
         "",
+        "typedef enum {",
+        "  WAFER_REDUCE_NONE = 0,",
+        "  WAFER_REDUCE_SUM = 1,",
+        "  WAFER_REDUCE_MAX = 2,",
+        "  WAFER_REDUCE_MIN = 3,",
+        "} wafer_reduce_kind_t;",
+        "",
         "typedef struct {",
         "  wafer_abi_op_t op;",
         "  uint64_t bytes;",
         "  int64_t m;",
         "  int64_t k;",
         "  int64_t n;",
+        "  int64_t batch_count;",
         "  wafer_elementwise_kind_t elementwise_kind;",
+        "  wafer_reduce_kind_t reduce_kind;",
+        "  uint32_t reduce_dimension_count;",
+        "  int64_t reduce_dimensions[4];",
+        "  double reduce_init_value;",
         "  wafer_wait_policy_t wait_policy;",
         "} wafer_abi_issue_t;",
         "",
@@ -125,9 +149,24 @@ def emit_c(manifest: dict) -> str:
         m = int(op.get("m", 0))
         k = int(op.get("k", 0))
         n = int(op.get("n", 0))
-        elementwise_kind = ELEMENTWISE_ENUMS.get(op.get("kind", ""), "WAFER_ELEMENTWISE_NONE")
+        default_batch_count = 1 if mnemonic == "wafer.abi.gemm" else 0
+        batch_count = int(op.get("batch_count", default_batch_count))
+        elementwise_kind = "WAFER_ELEMENTWISE_NONE"
+        if mnemonic == "wafer.abi.elementwise":
+            elementwise_kind = ELEMENTWISE_ENUMS[op["kind"]]
+        reduce_kind = "WAFER_REDUCE_NONE"
+        if mnemonic == "wafer.abi.reduce":
+            reduce_kind = REDUCE_ENUMS[op["kind"]]
+        reduce_dimensions = [int(dim) for dim in op.get("dimensions", [])]
+        padded_reduce_dimensions = (reduce_dimensions + [0, 0, 0, 0])[:4]
+        reduce_dimensions_text = ", ".join(
+            str(dim) for dim in padded_reduce_dimensions
+        )
+        reduce_init_value = format_c_float(op.get("init_value", 0))
         lines.append(
-            f"  {{{enum_name}, {bytes_value}u, {m}, {k}, {n}, {elementwise_kind}, "
+            f"  {{{enum_name}, {bytes_value}u, {m}, {k}, {n}, {batch_count}, "
+            f"{elementwise_kind}, {reduce_kind}, {len(reduce_dimensions)}u, "
+            f"{{{reduce_dimensions_text}}}, {reduce_init_value}, "
             "WAFER_WAIT_ISSUE_ONLY},"
         )
 

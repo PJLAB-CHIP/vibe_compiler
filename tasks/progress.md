@@ -124,13 +124,13 @@ P5.7 的 full local transformer block structured gate 已落地：一个 StableH
 projection/residual 和 MLP，并运行 norm、softmax、projection/residual、MLP acceptance passes；
 `--wafer-lower-stablehlo-shape` 同步支持静态连续维度 reassociation reshape。该批次不声称
 physical layout/SPM/DDR feasibility 已完成，后者归 P5.8 local compile gate。
-P5.8 的 M6 local compile gate 已开始落地：新增 `m6-local-compile-gate` partial integration，
+P5.8 的 M6 local compile gate 已落地：新增 `m6-local-compile-gate` integration，
 从 full local block StableHLO 经过 normalization、acceptance gates、rank-2 matmul group split、
 single-tile materialization、SPM allocation check、DDR binding demand 和 C ABI skeleton lowering；
 同时新增 `--emit-m6-local-smoke` manifest，覆盖原始 block launch signature、单 tile placement、
-GEMM 子图 ABI ops、manifest validate、C stub 生成和本地 C syntax compile。M6 package manifest
-现在记录 workspace buffers 和 resident constants，validator 检查它们的 compact tensor storage
-bytes 与 resource summary 一致，C stub 也会生成对应 table。P5.8 的
+当前 full block lowering 输出的 82 个 ABI issue、manifest validate、C stub 生成和本地 C syntax
+compile。M6 package manifest 记录 workspace buffers 和 resident constants，validator 检查它们的
+compact tensor storage bytes 与 resource summary 一致，C stub 也会生成对应 table。P5.8 的
 attention generic physical slice 已继续推进：QK^T 和 AV 的 rank-4 `linalg.generic`
 contraction 通过 indexing map、iterator type、SSA body 和 shape relation 验证后形成 group，
 materialize 为带 batch/head 维度 attrs 的 `wafer.compute.gemm`，并 lower 到带 batch_count 与
@@ -139,9 +139,9 @@ M/K/N 的 `wafer.abi.gemm` skeleton。P5.8 的 elementwise physical slice 已继
 same-shape identity 与 projected-permutation limited broadcast `linalg.elementwise` group formation、
 single-tile materialization、SPM/DDR/C ABI skeleton path 均已有 lit gate。P5.8 的 reduce physical
 slice 已落地：scalar-constant-init `linalg.reduce` 的 sum/max/min kind、dimensions、init value、
-single-tile materialization、SPM/DDR/C ABI skeleton path 均已有 lit gate；完整 block 的 package
-ABI issue coverage 和所有 accepted groups 的统一 resource/lowering 仍未收口，因此 P5.8 仍保持
-pending。
+single-tile materialization、SPM/DDR/C ABI skeleton path 均已有 lit gate；M6 manifest 现在覆盖
+当前 accepted groups 的完整 ABI issue 序列，包括 38 个 RDMA、22 个 WDMA、13 个 elementwise、
+6 个 GEMM 和 3 个 reduce issue。
 
 ## Active Task
 
@@ -276,7 +276,7 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 | P5.5 | done | Output projection + residual slice | residual/add/bias 等 elementwise 与 GEMM 边界清晰 |
 | P5.6 | done | MLP slice | GEMM + activation + elementwise multiply + GEMM 可分组或可诊断拆分 |
 | P5.7 | done | Full local transformer block | norm、attention、MLP 串联的 structured IR gate 通过 |
-| P5.8 | pending | M6 local compile gate | 单 shard / 单卡完整 block 的 normalization、group split、layout/SPM/DDR、C ABI、generated artifact compile、package 检查通过 |
+| P5.8 | done | M6 local compile gate | 单 shard / 单卡完整 block 的 normalization、group split、layout/SPM/DDR、C ABI、generated artifact compile、package 检查通过 |
 
 ## P6. Communication / Tensor Parallel Path
 
@@ -284,13 +284,13 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 
 | ID | 状态 | 任务 | 验收 |
 | --- | --- | --- | --- |
-| P6.1 | later | 定义 `wafer.comm` endpoint / token / wait verifier | DTE wait 与 local compute drain 分离 |
-| P6.2 | later | Lower fixed-size unicast Direct DTE helper | raw non-unicast DTE 不作为 correctness path |
-| P6.3 | later | 管理 FSM / packet / stream resource | resource 不冲突，有 negative tests |
-| P6.4 | later | 实现 ring all-gather | 每步 send/recv/wait token 和 buffer lifetime 合法 |
-| P6.5 | later | 实现 reduce-scatter / all-reduce | collective 可追溯到 unicast steps |
-| P6.6 | later | Lower Shardy/SPMD logical collective 到 `wafer.comm` | placement 和 comm lowering 保留 collective semantics |
-| P6.7 | later | M2/M3/M4 gate 汇总测试 | p2p、single-card collective、partitioned collective lowering 分别可验证 |
+| P6.1 | ready | 定义 `wafer.comm` endpoint / token / wait verifier | DTE wait 与 local compute drain 分离 |
+| P6.2 | pending | Lower fixed-size unicast Direct DTE helper | raw non-unicast DTE 不作为 correctness path |
+| P6.3 | pending | 管理 FSM / packet / stream resource | resource 不冲突，有 negative tests |
+| P6.4 | pending | 实现 ring all-gather | 每步 send/recv/wait token 和 buffer lifetime 合法 |
+| P6.5 | pending | 实现 reduce-scatter / all-reduce | collective 可追溯到 unicast steps |
+| P6.6 | pending | Lower Shardy/SPMD logical collective 到 `wafer.comm` | placement 和 comm lowering 保留 collective semantics |
+| P6.7 | pending | M2/M3/M4 gate 汇总测试 | p2p、single-card collective、partitioned collective lowering 分别可验证 |
 
 ## P7. Overlap、Cost Model 和 Profiling Calibration
 
@@ -321,8 +321,6 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 
 ## 下一步
 
-继续 P5.8，把 full local block 的 package ABI issue coverage 和所有 accepted groups 的统一
-resource/lowering 补齐；当前 M6 partial gate 已覆盖 rank-2 GEMM、attention rank-4 batched
-GEMM、same-shape / limited-broadcast elementwise、scalar-constant-init reduce 子路径，以及
-workspace/resident constant package metadata，但还不是完整 block local compile。
-不要越过当前 local compile gate 直接实现未验证的整块逻辑。
+P5.8 静态单 shard local compile gate 已收口。下一步进入 P6 communication / tensor parallel path：
+先从 `wafer.comm` endpoint / token / wait verifier 和 fixed-size unicast Direct DTE helper 开始，
+不要越过 p2p gate 直接实现未验证的 collective。

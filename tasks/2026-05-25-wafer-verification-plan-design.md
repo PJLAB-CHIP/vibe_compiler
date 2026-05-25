@@ -130,15 +130,16 @@ M6 transformer block vertical slice：
 - 当前无卡开发环境要求 generated artifact compile，package/runtime metadata 覆盖所有 block
   input/output、resident constants 和 workspace；completion 和数值对比后续在有卡环境验证。
 
-当前实现中的 P5.8 partial gate 覆盖 full local block 中 rank-2 GEMM 子图、attention QK^T / AV
+当前实现中的 P5.8 static gate 覆盖 full local block 中 rank-2 GEMM 子图、attention QK^T / AV
 rank-4 batched GEMM 子图、same-shape / projected-permutation limited broadcast elementwise 子图，
 以及 scalar-constant-init reduce max/sum 子图的 local compile path：normalization、acceptance
 gates、group split、single-tile materialization、SPM allocation check、DDR binding demand、C ABI
-skeleton、manifest validate 和 C stub syntax compile。package gate 也已经要求 M6 smoke manifest
-记录 workspace buffers 和 resident constants，并验证它们的 compact tensor storage bytes 与 resource
-summary 一致；C stub 会 materialize 对应 table，证明 metadata 能进入本地 toolchain 可消费的
-artifact skeleton。它仍是 M6 的前进步骤，不是 M6 完成证据；完整 block 的 package ABI issue
-coverage 和所有 accepted groups 的统一 resource/lowering 仍必须补齐。
+skeleton、manifest validate 和 C stub syntax compile。package gate 要求 M6 smoke manifest 记录
+workspace buffers 和 resident constants，并验证它们的 compact tensor storage bytes 与 resource
+summary 一致；manifest 中的 82 个 ABI issue 覆盖当前 full block lowering 输出的 RDMA、WDMA、
+elementwise、GEMM 和 reduce issue，C stub 会 materialize 对应 issue/resource table，证明 metadata
+能进入本地 toolchain 可消费的 artifact skeleton。它是当前无卡环境的 M6 完成证据；completion、
+数值对比和 profiling 仍等有卡环境补 gate。
 
 2026-05-25 后续实现补入了 `linalg.elementwise` 的局部 physical slice：same-shape identity 和
 可由 projected-permutation `indexing_maps` 验证的 row/head/vector broadcast 可以形成
@@ -147,8 +148,9 @@ coverage 和所有 accepted groups 的统一 resource/lowering 仍必须补齐�
 materialize 为 `wafer.compute.reduce` 并 lower 到带 `dimensions` / `init_value` 的
 `wafer.abi.reduce` skeleton。attention slice 让 QK^T / AV 的 rank-4 `linalg.generic`
 contraction materialize 为 batched `wafer.compute.gemm`，并 lower 到带 `batch_count`、M/K/N 和
-batch/head dimension attrs 的 `wafer.abi.gemm` skeleton。当前仍不覆盖 mask/select、dynamic
-shape、非 constant-init reduce 或完整 package ABI issue coverage。
+batch/head dimension attrs 的 `wafer.abi.gemm` skeleton。M6 package manifest 已覆盖当前 static
+block 的完整 ABI issue 序列。当前仍不覆盖 mask/select、dynamic shape 或非 constant-init reduce；
+这些属于后续泛化，不是本轮 M6 static gate 的通过条件。
 
 ## 5. Failure Handling
 

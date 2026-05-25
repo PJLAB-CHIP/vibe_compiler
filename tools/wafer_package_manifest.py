@@ -30,6 +30,7 @@ SUPPORTED_ABI_OPS = {
     "wafer.abi.wdma_1d",
     "wafer.abi.gemm",
     "wafer.abi.elementwise",
+    "wafer.abi.reduce",
 }
 
 SUPPORTED_ELEMENTWISE_KINDS = {
@@ -45,6 +46,12 @@ SUPPORTED_ELEMENTWISE_KINDS = {
     "rsqrt",
     "exp",
     "tanh",
+}
+
+SUPPORTED_REDUCE_KINDS = {
+    "sum",
+    "max",
+    "min",
 }
 
 
@@ -83,6 +90,12 @@ def require_positive_int(value: Any, name: str) -> int:
 def require_non_negative_int(value: Any, name: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
         fail(f"{name} must be a non-negative integer")
+    return value
+
+
+def require_number(value: Any, name: str) -> int | float:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        fail(f"{name} must be a number")
     return value
 
 
@@ -399,15 +412,41 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         item = require_dict(op, f"abi_ops[{index}]")
         mnemonic = require_non_empty_string(item.get("op"), f"abi_ops[{index}].op")
         if mnemonic not in SUPPORTED_ABI_OPS:
-            fail(f"abi_ops[{index}].op is not supported by the M0 manifest")
+            fail(f"abi_ops[{index}].op is not supported by the package manifest")
         if item.get("wait_policy") != "issue_only":
             fail(f"abi_ops[{index}].wait_policy must be issue_only")
-        if mnemonic == "wafer.abi.elementwise":
+        if mnemonic in {"wafer.abi.rdma_1d", "wafer.abi.wdma_1d"}:
+            require_positive_int(item.get("bytes"), f"abi_ops[{index}].bytes")
+        elif mnemonic == "wafer.abi.gemm":
+            require_positive_int(item.get("m"), f"abi_ops[{index}].m")
+            require_positive_int(item.get("k"), f"abi_ops[{index}].k")
+            require_positive_int(item.get("n"), f"abi_ops[{index}].n")
+            if "batch_count" in item:
+                require_positive_int(
+                    item.get("batch_count"), f"abi_ops[{index}].batch_count"
+                )
+        elif mnemonic == "wafer.abi.elementwise":
             kind = require_non_empty_string(item.get("kind"), f"abi_ops[{index}].kind")
             if kind not in SUPPORTED_ELEMENTWISE_KINDS:
                 fail(f"abi_ops[{index}].kind is not supported")
+        elif mnemonic == "wafer.abi.reduce":
+            kind = require_non_empty_string(item.get("kind"), f"abi_ops[{index}].kind")
+            if kind not in SUPPORTED_REDUCE_KINDS:
+                fail(f"abi_ops[{index}].kind is not supported")
+            dimensions = require_list(
+                item.get("dimensions"), f"abi_ops[{index}].dimensions"
+            )
+            if not dimensions:
+                fail(f"abi_ops[{index}].dimensions must be non-empty")
+            if len(dimensions) > 4:
+                fail(f"abi_ops[{index}].dimensions supports at most four dimensions")
+            for dim_index, dim in enumerate(dimensions):
+                require_non_negative_int(
+                    dim, f"abi_ops[{index}].dimensions[{dim_index}]"
+                )
+            require_number(item.get("init_value"), f"abi_ops[{index}].init_value")
         elif "kind" in item:
-            fail(f"abi_ops[{index}].kind is only valid for elementwise ops")
+            fail(f"abi_ops[{index}].kind is only valid for elementwise or reduce ops")
 
     input_bytes = 0
     output_bytes = 0
@@ -701,6 +740,62 @@ def resident_constant(name: str, shape: list[int], bytes_value: int) -> dict[str
     }
 
 
+def abi_rdma(bytes_value: int) -> dict[str, Any]:
+    return {
+        "op": "wafer.abi.rdma_1d",
+        "bytes": bytes_value,
+        "wait_policy": "issue_only",
+    }
+
+
+def abi_wdma(bytes_value: int) -> dict[str, Any]:
+    return {
+        "op": "wafer.abi.wdma_1d",
+        "bytes": bytes_value,
+        "wait_policy": "issue_only",
+    }
+
+
+def abi_gemm(
+    m: int,
+    k: int,
+    n: int,
+    batch_count: int = 1,
+) -> dict[str, Any]:
+    op = {
+        "op": "wafer.abi.gemm",
+        "m": m,
+        "k": k,
+        "n": n,
+        "wait_policy": "issue_only",
+    }
+    if batch_count != 1:
+        op["batch_count"] = batch_count
+    return op
+
+
+def abi_elementwise(kind: str) -> dict[str, Any]:
+    return {
+        "op": "wafer.abi.elementwise",
+        "kind": kind,
+        "wait_policy": "issue_only",
+    }
+
+
+def abi_reduce(
+    kind: str,
+    dimensions: list[int],
+    init_value: int | float,
+) -> dict[str, Any]:
+    return {
+        "op": "wafer.abi.reduce",
+        "kind": kind,
+        "dimensions": dimensions,
+        "init_value": init_value,
+        "wait_policy": "issue_only",
+    }
+
+
 def m6_local_smoke_manifest() -> dict[str, Any]:
     return {
         "schema_version": 1,
@@ -971,22 +1066,88 @@ def m6_local_smoke_manifest() -> dict[str, Any]:
             resident_constant("down_w", [16, 8], 512),
         ],
         "abi_ops": [
-            {"op": "wafer.abi.rdma_1d", "bytes": 960, "wait_policy": "issue_only"},
-            {"op": "wafer.abi.rdma_1d", "bytes": 256, "wait_policy": "issue_only"},
-            {"op": "wafer.abi.gemm", "m": 30, "k": 8, "n": 8, "wait_policy": "issue_only"},
-            {"op": "wafer.abi.wdma_1d", "bytes": 960, "wait_policy": "issue_only"},
-            {"op": "wafer.abi.rdma_1d", "bytes": 960, "wait_policy": "issue_only"},
-            {"op": "wafer.abi.rdma_1d", "bytes": 512, "wait_policy": "issue_only"},
-            {"op": "wafer.abi.gemm", "m": 30, "k": 8, "n": 16, "wait_policy": "issue_only"},
-            {"op": "wafer.abi.wdma_1d", "bytes": 1920, "wait_policy": "issue_only"},
-            {"op": "wafer.abi.rdma_1d", "bytes": 960, "wait_policy": "issue_only"},
-            {"op": "wafer.abi.rdma_1d", "bytes": 512, "wait_policy": "issue_only"},
-            {"op": "wafer.abi.gemm", "m": 30, "k": 8, "n": 16, "wait_policy": "issue_only"},
-            {"op": "wafer.abi.wdma_1d", "bytes": 1920, "wait_policy": "issue_only"},
-            {"op": "wafer.abi.rdma_1d", "bytes": 1920, "wait_policy": "issue_only"},
-            {"op": "wafer.abi.rdma_1d", "bytes": 512, "wait_policy": "issue_only"},
-            {"op": "wafer.abi.gemm", "m": 30, "k": 16, "n": 8, "wait_policy": "issue_only"},
-            {"op": "wafer.abi.wdma_1d", "bytes": 960, "wait_policy": "issue_only"},
+            abi_rdma(960),
+            abi_rdma(960),
+            abi_elementwise("mul"),
+            abi_wdma(960),
+            abi_rdma(960),
+            abi_reduce("sum", [3], 0.0),
+            abi_wdma(120),
+            abi_rdma(120),
+            abi_rdma(120),
+            abi_elementwise("div"),
+            abi_wdma(120),
+            abi_rdma(120),
+            abi_rdma(120),
+            abi_elementwise("add"),
+            abi_wdma(120),
+            abi_rdma(120),
+            abi_elementwise("rsqrt"),
+            abi_wdma(120),
+            abi_rdma(960),
+            abi_rdma(120),
+            abi_elementwise("mul"),
+            abi_wdma(960),
+            abi_rdma(960),
+            abi_rdma(32),
+            abi_elementwise("mul"),
+            abi_wdma(960),
+            abi_rdma(960),
+            abi_rdma(1344),
+            abi_gemm(5, 8, 7, batch_count=6),
+            abi_wdma(840),
+            abi_rdma(840),
+            abi_reduce("max", [3], -3.40282347e38),
+            abi_wdma(120),
+            abi_rdma(840),
+            abi_rdma(120),
+            abi_elementwise("sub"),
+            abi_wdma(840),
+            abi_rdma(840),
+            abi_elementwise("exp"),
+            abi_wdma(840),
+            abi_rdma(840),
+            abi_reduce("sum", [3], 0.0),
+            abi_wdma(120),
+            abi_rdma(840),
+            abi_rdma(120),
+            abi_elementwise("div"),
+            abi_wdma(840),
+            abi_rdma(840),
+            abi_rdma(1344),
+            abi_gemm(5, 7, 8, batch_count=6),
+            abi_wdma(960),
+            abi_rdma(960),
+            abi_rdma(256),
+            abi_gemm(30, 8, 8),
+            abi_wdma(960),
+            abi_rdma(960),
+            abi_rdma(32),
+            abi_elementwise("add"),
+            abi_wdma(960),
+            abi_rdma(960),
+            abi_rdma(960),
+            abi_elementwise("add"),
+            abi_wdma(960),
+            abi_rdma(960),
+            abi_rdma(512),
+            abi_gemm(30, 8, 16),
+            abi_wdma(1920),
+            abi_rdma(960),
+            abi_rdma(512),
+            abi_gemm(30, 8, 16),
+            abi_wdma(1920),
+            abi_rdma(1920),
+            abi_elementwise("tanh"),
+            abi_wdma(1920),
+            abi_rdma(1920),
+            abi_rdma(1920),
+            abi_elementwise("mul"),
+            abi_wdma(1920),
+            abi_rdma(1920),
+            abi_rdma(512),
+            abi_gemm(30, 16, 8),
+            abi_wdma(960),
         ],
     }
 

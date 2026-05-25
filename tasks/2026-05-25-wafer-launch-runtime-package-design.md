@@ -178,7 +178,7 @@ arguments；它不反向定义 tensor semantics，也不包含 BO handle、physi
 - `--emit-elementwise-smoke`：single tile elementwise ABI skeleton，用于覆盖 non-GEMM issue family。
 - `--emit-m6-local-smoke`：single shard local transformer block package skeleton，记录 full block
   launch signature、单 tile placement、DDR binding、workspace buffers、resident constants 和当前已
-  纳入 package 的 ABI issue skeleton。
+  纳入 package 的 82 个 ABI issue skeleton。
 
 placement metadata 当前包含：
 

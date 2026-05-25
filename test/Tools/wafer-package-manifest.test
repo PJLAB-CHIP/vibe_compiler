@@ -39,3 +39,11 @@
 # M6-DAG: "source": "launch_input"
 # M6-DAG: "workspace_bytes": 18480
 # M6-DAG: "resident_constant_bytes": 1856
+# M6-DAG: "op": "wafer.abi.reduce"
+# M6-DAG: "kind": "max"
+# M6-DAG: "dimensions": [
+# M6-DAG: 3
+# M6-DAG: "init_value": -3.40282347e+38
+# M6-DAG: "op": "wafer.abi.elementwise"
+# M6-DAG: "kind": "tanh"
+# M6-DAG: "batch_count": 6

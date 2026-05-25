@@ -172,9 +172,11 @@ module {
 // IR-NOT: wafer.comm
 
 // C: static const wafer_abi_issue_t k_m6_local_block_issues[] = {
-// C: {WAFER_ABI_GEMM, 0u, 30, 8, 8, WAFER_ELEMENTWISE_NONE, WAFER_WAIT_ISSUE_ONLY}
-// C: {WAFER_ABI_GEMM, 0u, 30, 8, 16, WAFER_ELEMENTWISE_NONE, WAFER_WAIT_ISSUE_ONLY}
-// C: {WAFER_ABI_GEMM, 0u, 30, 16, 8, WAFER_ELEMENTWISE_NONE, WAFER_WAIT_ISSUE_ONLY}
+// C: {WAFER_ABI_REDUCE, 0u, 0, 0, 0, 0, WAFER_ELEMENTWISE_NONE, WAFER_REDUCE_SUM, 1u, {3, 0, 0, 0}, 0, WAFER_WAIT_ISSUE_ONLY}
+// C: {WAFER_ABI_GEMM, 0u, 5, 8, 7, 6, WAFER_ELEMENTWISE_NONE, WAFER_REDUCE_NONE, 0u, {0, 0, 0, 0}, 0, WAFER_WAIT_ISSUE_ONLY}
+// C: {WAFER_ABI_REDUCE, 0u, 0, 0, 0, 0, WAFER_ELEMENTWISE_NONE, WAFER_REDUCE_MAX, 1u, {3, 0, 0, 0}, -3.40282347e+38, WAFER_WAIT_ISSUE_ONLY}
+// C: {WAFER_ABI_ELEMENTWISE, 0u, 0, 0, 0, 0, WAFER_ELEMENTWISE_TANH, WAFER_REDUCE_NONE, 0u, {0, 0, 0, 0}, 0, WAFER_WAIT_ISSUE_ONLY}
+// C: {WAFER_ABI_GEMM, 0u, 30, 16, 8, 1, WAFER_ELEMENTWISE_NONE, WAFER_REDUCE_NONE, 0u, {0, 0, 0, 0}, 0, WAFER_WAIT_ISSUE_ONLY}
 // C: int m6_local_block_issue_count(void)
 // C: static const wafer_workspace_buffer_t k_m6_local_block_workspace_buffers[] = {
 // C: int m6_local_block_workspace_buffer_count(void)
