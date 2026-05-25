@@ -24,7 +24,9 @@ parser/printer/verifier 正负例已补齐到当前 op/type/attr 覆盖口径。
 build 中把 `stablehlo.constant` 重写为 `arith.constant`，不引入 Wafer 私有 constant op；独立
 sidecar manifest schema 仍归 P3.10 package manifest，不在本批次造临时格式。P2.3 的 M0 范围
 2D `stablehlo.dot_general` 到 structured tensor IR lowering 已落地，输出 zero fill + DPS
-`linalg.matmul`。
+`linalg.matmul`。P2.4 的 StableHLO shape normalization 已落地：`broadcast_in_dim`、rank-changing
+`reshape`、`transpose`、`slice` 降到 `linalg` / `tensor` structured IR，使用 type、shape 和 indexing
+关系，不新增 Wafer 私有 op 或名字约定。
 
 ## Active Task
 
@@ -107,7 +109,7 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 | P2.1 | done | 建立 StableHLO / MLIR textual artifact 输入测试 | parse/roundtrip 保留 function signature、shape、dtype |
 | P2.2 | done | 实现 constant normalization 骨架 | `stablehlo.constant` / sidecar 进入 `arith.constant` 或 `ConstantLike` tensor value |
 | P2.3 | done | Lower `dot_general` / matmul 到 structured tensor IR | indexing map / iterator / DPS 关系可 FileCheck |
-| P2.4 | pending | Lower broadcast、reshape、transpose、slice | 只依赖 type、shape、indexing relation，不靠名字 |
+| P2.4 | done | Lower broadcast、reshape、transpose、slice | 只依赖 type、shape、indexing relation，不靠名字 |
 | P2.5 | pending | Lower elementwise 和 limited broadcast | 覆盖 add/sub/mul/div/max/min/neg/recip/sqrt/rsqrt/exp 的基础形态 |
 | P2.6 | pending | Lower reduce max / reduce sum | 输出 staged reduce IR，可服务 softmax 和 norm |
 | P2.7 | pending | 表达 RMSNorm / LayerNorm staged form | reduce + elementwise，不引入 `wafer.norm` 高层 op |
@@ -203,6 +205,6 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 
 ## 下一步
 
-继续从 P2.4 开始覆盖 broadcast、reshape、transpose、slice 的 local compute normalization；batch/head
+继续从 P2.5 开始覆盖 elementwise 和 limited broadcast 的 local compute normalization；batch/head
 dot 泛化在 attention slice 前补齐。不要越过 local compute normalization gate 直接实现 transformer
 block 逻辑。

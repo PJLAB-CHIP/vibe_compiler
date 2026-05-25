@@ -10,6 +10,7 @@ namespace wafer {
 void registerWaferPasses() {
   static bool registered = [] {
     mlir::registerPass(createLowerStablehloDotPass);
+    mlir::registerPass(createLowerStablehloShapePass);
     mlir::registerPass(createNormalizeConstantsPass);
     return true;
   }();
