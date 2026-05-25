@@ -5,6 +5,10 @@
 状态：设计文档已经覆盖 compiler core 跑通静态 transformer block vertical slice 所需的主要边界。
 下一阶段应转入实现和验证，不继续无边界扩写设计。
 
+最新实现批次：已落地最小 CMake / MLIR 工程骨架、`wafer-opt`、lit/FileCheck、gtest 入口和
+`WaferDialect` + 共享 enum attrs 的 parser/printer/verifier smoke tests。LLVM/MLIR 版本通过集中
+pin 和 bootstrap 脚本管理；当前本地验证使用 21.0.0git override，未把本机路径写成项目合同。
+
 ## Active Task
 
 把文档中的 IR 分层落成最小可运行 compiler skeleton，并先跑通 M0/M1 load-GEMM-store 闭环。
@@ -51,12 +55,12 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 
 | ID | 状态 | 任务 | 验收 |
 | --- | --- | --- | --- |
-| P0.1 | ready | 建立最小 CMake / build 入口 | 可以配置空项目；不要求已有完整 Wafer IR |
-| P0.2 | ready | 建立 LLVM / MLIR 依赖发现和版本 pin 机制 | 依赖由集中配置声明，不在源码里散落 include/library path |
-| P0.3 | ready | 加入 StableHLO / Shardy 依赖开关和 dialect registration 入口 | 可关闭 importer-only 依赖并运行 backend textual tests |
-| P0.4 | ready | 创建 `include/Wafer/`、`lib/Wafer/`、`tools/wafer-opt` 最小骨架 | `wafer-opt --help` 或等价 smoke test 可运行 |
-| P0.5 | ready | 建立 lit / FileCheck 测试目录和最小 test target | 一个空 dialect smoke test 能被 test runner 收集 |
-| P0.6 | ready | 建立 gtest 或等价 C++ unit test 入口 | 后续 allocator / storage calculator 有测试落点 |
+| P0.1 | done | 建立最小 CMake / build 入口 | 可以配置空项目；不要求已有完整 Wafer IR |
+| P0.2 | done | 建立 LLVM / MLIR 依赖发现和版本 pin 机制 | 依赖由集中配置声明，不在源码里散落 include/library path |
+| P0.3 | done | 加入 StableHLO / Shardy 依赖开关和 dialect registration 入口 | 可关闭 importer-only 依赖并运行 backend textual tests |
+| P0.4 | done | 创建 `include/Wafer/`、`lib/Wafer/`、`tools/wafer-opt` 最小骨架 | `wafer-opt --help` 或等价 smoke test 可运行 |
+| P0.5 | done | 建立 lit / FileCheck 测试目录和最小 test target | 一个空 dialect smoke test 能被 test runner 收集 |
+| P0.6 | done | 建立 gtest 或等价 C++ unit test 入口 | 后续 allocator / storage calculator 有测试落点 |
 | P0.7 | pending | 创建 `tools/wafer-import-model` shell | importer-only 依赖缺失时后端仍可构建 |
 | P0.8 | pending | 增加依赖一致性检查脚本 | 能检查版本 pin、dialect registration 和 importer/backend 隔离 |
 
@@ -66,8 +70,8 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 
 | ID | 状态 | 任务 | 验收 |
 | --- | --- | --- | --- |
-| P1.1 | pending | 定义 `WaferDialect` 和基础 ODS 文件组织 | dialect 可注册；空 module roundtrip |
-| P1.2 | pending | 定义共享 attrs/types：target、placement、memory space、mem layout | parser/printer roundtrip；非法 enum 被 verifier 拒绝 |
+| P1.1 | done | 定义 `WaferDialect` 和基础 ODS 文件组织 | dialect 可注册；空 module roundtrip |
+| P1.2 | done | 定义共享 attrs/types：target、placement、memory space、mem layout | parser/printer roundtrip；非法 enum 被 verifier 拒绝 |
 | P1.3 | pending | 定义 `WaferTilingInterface`、`WaferLayoutOpInterface`、resource/effect 相关接口骨架 | ODS / C++ 编译通过；接口不携带 planner side table |
 | P1.4 | pending | 定义最小 `wafer.group` op | region / operand / result contract 可验证；不接受 SPM memref |
 | P1.5 | pending | 定义最小 `wafer.tile_region` op 和 tile buffer type | tile-local region boundary、buffer ownership、effect scope 可验证 |
@@ -182,5 +186,5 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 
 ## 下一步
 
-从 P0.1 开始落地工程骨架。第一批代码提交应只覆盖 build/dependency/test harness 和最小 Wafer
-dialect skeleton，不同时实现 transformer block 逻辑。
+继续从 P1.3 开始补接口骨架，然后进入 `wafer.group` / `wafer.tile_region` 最小 op。P0.7/P0.8
+仍需补 importer shell 和依赖一致性检查脚本；不要越过 P1 verifier 直接实现 transformer block 逻辑。

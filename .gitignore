@@ -4,6 +4,7 @@ __pycache__/
 .pytest_cache/
 
 # Local virtual environments
+.deps/
 .venv/
 venv/
 

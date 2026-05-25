@@ -1,0 +1,7 @@
+config.wafer_src_root = r"@CMAKE_SOURCE_DIR@"
+config.wafer_obj_root = r"@CMAKE_BINARY_DIR@"
+config.wafer_tools_dir = r"@CMAKE_BINARY_DIR@/bin"
+config.llvm_tools_dir = r"@LLVM_TOOLS_BINARY_DIR@"
+config.filecheck_dir = r"@WAFER_FILECHECK_DIR@"
+
+lit_config.load_config(config, r"@CMAKE_CURRENT_SOURCE_DIR@/lit.cfg.py")
