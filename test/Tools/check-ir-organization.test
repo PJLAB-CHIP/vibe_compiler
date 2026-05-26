@@ -1,0 +1,1 @@
+# RUN: %python %wafer_src_root/tools/check_ir_organization.py --root %wafer_src_root

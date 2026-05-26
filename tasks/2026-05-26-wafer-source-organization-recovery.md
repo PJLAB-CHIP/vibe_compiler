@@ -14,8 +14,8 @@ C ABI conversion 混在旧的聚合目录里。
 
 ## 非目标
 
-- 不把 `WaferOps.td` / `WaferDialect.cpp` 按 group、tile_region、layout、SPM、compute、comm、
-  sync、launch 拆开；这是 R1.1。
+- R0.2 当时不把 `WaferOps.td` / `WaferDialect.cpp` 按 group、tile_region、layout、SPM、compute、
+  comm、sync、launch 拆开；该后续项已由 R1.1 完成。
 - 不把 interface/effect/resource skeleton 扩成 planner 可查询合同；这是 R1.2。
 - 不实现真实 importer adapter、sidecar artifact verifier 或 Shardy bridge；这是 R2.1/R2.2。
 - 不把 `wafer.abi.*` lower 到 LLVM dialect、LLVM IR、object 或真实 runtime call。
@@ -26,7 +26,7 @@ C ABI conversion 混在旧的聚合目录里。
 | 边界 | 当前目录 / target | 说明 |
 | --- | --- | --- |
 | Frontend hook | `include/Wafer/Frontend/InitImporterDialects.h` | 可选 StableHLO dialect 注册入口归到 frontend；真实 model import adapter 仍未实现 |
-| Wafer IR | `include/Wafer/IR`、`lib/Wafer/IR`、`WaferIR` | 保持一个 `wafer` dialect namespace；ODS/verifier 仍是 skeleton 聚合文件，后续由 R1.1 拆 op prefix |
+| Wafer IR | `include/Wafer/IR`、`lib/Wafer/IR`、`WaferIR` | 保持一个 `wafer` dialect namespace；R1.1 后 ODS/verifier/tests 已按 op family 拆分 |
 | Transform pipeline | `include/Wafer/Transforms`、`lib/Wafer/Transforms`、`WaferTransforms` | 只注册 tensor/group/tile/resource/comm 等 transform pass，不再拥有 C ABI conversion pass |
 | Conversion pipeline | `include/Wafer/Conversion`、`lib/Wafer/Conversion`、`WaferConversion` | 目前只承载 `WaferToCABI/LowerToCAbiSkeleton.cpp`；后续 WaferToLLVM / real C ABI lowering 在这里扩展 |
 | ABI helpers | `include/Wafer/ABI`、`lib/Wafer/ABI`、`WaferABI` | 继续承载 M0 descriptor/helper，不混入 transform pass |
@@ -57,7 +57,7 @@ C ABI conversion 混在旧的聚合目录里。
 
 - R0.3：补 core compiler、frontend/importer、runtime/driver、test tooling 的 dependency target
   可见范围。
-- R1.1：按 op prefix 拆 ODS、C++ verifier 和 tests。
+- R1.1：已完成，按 op family 拆 ODS、C++ verifier 和 tests。
 - R2.1/R2.2：恢复 frontend artifact / importer / Shardy bridge。
 - R3.1/R3.2：恢复 M0 主链路和 IR-derived package gate。
 

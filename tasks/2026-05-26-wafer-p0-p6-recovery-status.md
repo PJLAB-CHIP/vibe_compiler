@@ -46,8 +46,9 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
 但没有满足架构文档按 IR stage 闭环的完成口径：
 
 - R0.2 已把源码 ownership 拆到 `Frontend`、`IR`、stage-specific `Transforms`、`Conversion` 和 `ABI`
-  边界；但 `wafer` dialect 内部仍未按 op prefix 拆 ODS / verifier。
-- `WaferOps.td` 和 `WaferDialect.cpp` 承载了多数 op/verifier；与第 7 节建议的分层文件组织不符。
+  边界；R1.1 已把 `wafer` dialect 内部 ODS、op verifier 和 dialect tests 按 op family 拆开。
+- `WaferOps.td` 现在只作为 TableGen 聚合入口，具体 op 定义在 `include/Wafer/IR/Ops/*Ops.td`；
+  `WaferDialect.cpp` 只保留 dialect/attr/type/op 注册和 `TileBufferType` verifier。
 - M0/M1/M6 integration gate 把 `wafer-opt` IR FileCheck 和 fixed manifest/C stub fixture 放在同一
   测试文件里，但 package 不是从该次 IR lowering 自动导出。
 - 当前 local compile 只到 `wafer.abi.*` skeleton、manifest fixture 和 generated C stub syntax compile；
@@ -60,7 +61,7 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
 - 建立可配置、可测试的 MLIR 工程入口，包含 `wafer-opt`、lit/FileCheck、gtest 和固定依赖版本。
 - StableHLO/Shardy/importer/runtime 依赖按层隔离；importer-only 依赖不能成为后端 textual tests 的硬依赖。
 - 源码按架构文档第 7 节组织：`Frontend`、`IR`、`Transforms`、`Conversion`、`ABI`、launch/runtime
-  ownership 清晰；一个 `wafer` dialect namespace 内仍要按 op prefix 拆文件。
+  ownership 清晰；一个 `wafer` dialect namespace 内按 op family 拆 ODS、verifier 和测试。
 - 不把本机路径、checkout path、第三方 C++ API 名或临时 build override 写成 IR contract。
 
 当前实现：
@@ -77,13 +78,16 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
 - Shardy/SDY 公共 dialect 与 import/export/propagation passes 已通过 Wafer 顶层 CMake shim 复用
   同一套固定版本 LLVM/MLIR/StableHLO 编译到 `shardy-sdy-opt`；不再以 Shardy standalone Bazel
   workspace 作为 Wafer dependency 编译验证。
+- R1.1 后 `include/Wafer/IR/Ops` 承载 group、tile_region、layout、SPM、DDR、placement、ABI、
+  compute、comm、sync 和 launch op family 的 ODS；`lib/Wafer/IR/Ops` 承载对应 verifier；
+  `test/Dialect/Wafer` 按相同 family 分目录。
 
 缺口：
 
 - 工程能跑不等于 P0-P6 主路径完成；frontend importer artifact、runtime adapter 和 package 主链路
   仍需后续 R2/R3/P8 恢复。
-- IR 内部 ODS / verifier / tests 仍未按 group、tile_region、layout、SPM、compute、comm、sync、
-  launch op prefix 拆分；这是 R1.1。
+- R1.1 只恢复文件 ownership；interface/effect/resource 仍是 skeleton，还不能支撑 planner/resource
+  oracle 的真实闭环。
 - StableHLO/Shardy dependency 当前主要服务 textual lowering smoke 和 future SPMD bridge dependency
   boundary；R0.3 依赖栈用 PyTorch/XLA 2.5 的 `WORKSPACE` `xla_hash` 选择 OpenXLA/XLA，再由 XLA
   workspace 选择 LLVM/StableHLO/Shardy base。PyTorch/XLA source 现在只用于确定版本和准备后续
@@ -99,6 +103,7 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
   `tasks/2026-05-26-wafer-source-organization-recovery.md`。
 - R0.3：已完成依赖层级清单、检查和统一 Shardy CMake 编译验证目标；记录见
   `tasks/2026-05-26-wafer-dependency-layering-recovery.md`。
+- R1.1：已完成 Wafer IR op-family 文件边界拆分，并由 `tools/check_ir_organization.py` 检查。
 
 ## P1 Wafer IR Skeleton 和 Verifier
 
@@ -121,7 +126,8 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
 
 缺口：
 
-- ODS 和 verifier 没有按 group、tile_region、layout、SPM、compute、comm、sync、launch 拆文件。
+- ODS、op verifier 和 dialect tests 已按 op family 拆文件；共享 verifier helper 集中在
+  `lib/Wafer/IR/Ops/OpVerifierUtils.*`。
 - interface/resource/effect 多数仍是 marker/skeleton，不足以支撑 group planner、layout planner、
   SPM/DDR oracle、compute/comm demand 的真实闭环。
 - 测试大量用 `builtin.unrealized_conversion_cast` 构造边界值，只能证明 verifier 形态，不能证明
@@ -130,7 +136,7 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
 
 恢复任务：
 
-- R1.1：按 op prefix 拆 ODS、C++ verifier 和测试目录，并保持一个 `wafer` dialect namespace。
+- R1.1：已完成；按 op family 拆 ODS、C++ verifier 和测试目录，并保持一个 `wafer` dialect namespace。
 - R1.2：把 interface/effect/resource 从 skeleton 扩成 planner/resource/verifier 可调用的合同。
 - R1.3：补 stage-connection tests，减少只靠 `unrealized_conversion_cast` 的孤立 verifier 用例。
 
