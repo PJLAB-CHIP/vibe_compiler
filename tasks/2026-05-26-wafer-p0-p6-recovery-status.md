@@ -86,6 +86,10 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
   group、layout/materialize、SPM、DDR、compute、comm、sync 和 ABI op 可通过接口查询边界值、
   layout requirement 和 resource effect。关键 movement/compute/comm op 也接入 MLIR
   `MemoryEffectOpInterface` 的 Wafer resource。
+- R1.3 后 `test/StageConnections/local-compute-pipeline.mlir` 从 public linalg matmul、elementwise
+  和 reduce source 分别验证 source-to-group、group-to-tile、tile-to-ABI skeleton 连接；对应
+  `tools/check_stage_connection_tests.py` 防止这些 gate 退回到 `unrealized_conversion_cast`
+  cast-only 形态。
 
 缺口：
 
@@ -130,6 +134,9 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
 - 有 `WaferTilingInterface`、`WaferLayoutOpInterface`、
   `WaferLayoutMaterializationOpInterface`、`WaferResourceEffectInterface` 和 Wafer resource-backed
   MLIR memory effects；接口查询覆盖 group 边界、layout/SPM/DDR、compute/comm/sync/ABI 的局部需求。
+- 有 local compute stage-connection lit gate，覆盖 public linalg source 到 `wafer.group`、
+  `wafer.tile_region` 和 `wafer.abi.*` skeleton 的连接，且 gate 本身禁止使用
+  `unrealized_conversion_cast` 作为边界值来源。
 
 缺口：
 
@@ -137,15 +144,17 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
   `lib/Wafer/IR/Ops/OpVerifierUtils.*`。
 - interface/resource/effect 已能作为 planner/verifier 的结构化查询入口，但还没有被 R3 的
   closed-loop group planner、SPM/DDR oracle 和 storage-realized lowering 全量消费。
-- 测试大量用 `builtin.unrealized_conversion_cast` 构造边界值，只能证明 verifier 形态，不能证明
-  上下游 IR 连接。
+- Wafer dialect verifier 的孤立负例仍会使用 `builtin.unrealized_conversion_cast` 构造非法边界值；
+  这些用例只能证明 verifier 形态。R1.3 已补 local compute stage-connection gate，但 communication
+  bridge 的 visible cast 仍归 R6.2 清理。
 - 没有 storage-realized memref/descriptor 层，因此 `!wafer.tile_buffer` 还没有按设计消失。
 
 恢复任务：
 
 - R1.1：已完成；按 op family 拆 ODS、C++ verifier 和测试目录，并保持一个 `wafer` dialect namespace。
 - R1.2：已完成；interface/effect/resource 已从 skeleton 扩成 planner/resource/verifier 可调用的合同。
-- R1.3：补 stage-connection tests，减少只靠 `unrealized_conversion_cast` 的孤立 verifier 用例。
+- R1.3：已完成；补 local compute stage-connection tests，减少只靠 `unrealized_conversion_cast`
+  的孤立 verifier 用例。
 
 ## P2 Frontend Artifact 和 Local Compute Normalization
 
@@ -331,12 +340,13 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
 
 | ID | 状态 | 理由 |
 | --- | --- | --- |
-| P0 | skeleton | 工程入口存在，源码 ownership 和依赖层级边界已由 R0.2/R0.3 恢复；IR op-prefix 文件边界仍未完成 |
-| P1 | skeleton | 核心 op/type/verifier skeleton 存在，但 interface/effect/resource 和文件边界未完成 |
+| P0 | skeleton | 工程入口存在，源码 ownership、依赖层级边界和 IR op-family 文件边界已由 R0.2/R0.3/R1.1 恢复；仍不代表 frontend/runtime/package 主路径完成 |
+| P1 | skeleton | 核心 op/type/verifier skeleton 存在，interface/effect/resource 和 local compute stage-connection gate 已恢复；storage-realized 主链路和 communication cast bridge 仍未闭环 |
 | P2 | skeleton | StableHLO textual lowering 有覆盖，但真实 importer artifact/sidecar/Shardy pipeline 未闭环 |
 | P3 | skeleton | M0 local skeleton 可跑，但 group/resource/C ABI/package 主链路未闭环 |
 | P4 | skeleton | placement/map 和 multi-tile skeleton 可跑，但真实 shard/merge/launch binding 未闭环 |
 | P5 | skeleton | transformer staged acceptance 和 M6 smoke 可跑，但 full schedule/resource/package/device artifact 未闭环 |
 | P6 | skeleton | comm/DTE skeleton 可跑，但 resource allocator、buffer slice/address、package/runtime metadata 未闭环 |
 
-R0.3 之后的下一步是 R1.1：先拆分 Wafer IR 文件边界，再进入 P1/P2/P3 的具体实现恢复。
+R1.3 之后的下一步是 R2.1：先恢复 frontend artifact / importer contract，再进入 Shardy/SPMD bridge
+和 M0 主链路恢复。

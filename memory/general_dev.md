@@ -27,6 +27,9 @@
   tool dependency layering。
 - Wafer IR 文件组织检查入口是 `tools/check_ir_organization.py --root .`；它检查 `WaferOps.td` 只作为
   TableGen 聚合入口、op family ODS/verifier 文件存在，以及 `test/Dialect/Wafer` 按 family 分目录。
+- Stage-connection 测试放在 `test/StageConnections`；入口是
+  `tools/check_stage_connection_tests.py --root .`，用于防止这类 gate 退回到
+  `unrealized_conversion_cast` cast-only 用例。
 - ODS op 如果引入 `RecursiveMemoryEffects`、`ReturnLike` 等 interface trait，公开 dialect 头要
   include 对应 C++ interface header，`WaferIR` 也要显式 link 对应 MLIR interface target。
 - Dialect 增加 TypeDef 后，base dialect td 需要启用 `useDefaultTypePrinterParser = 1`，否则即使
