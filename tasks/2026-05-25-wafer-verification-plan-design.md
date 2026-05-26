@@ -219,3 +219,10 @@ block 的完整 ABI issue 序列。当前仍不覆盖 mask/select、dynamic shap
 当前 local compile / package gate 可以证明 compiler 产物生成和 C stub 语法可编译性，但不能替代
 LLVM IR lowering、object code emission、真实 runtime call emission、板端运行、数值正确性、
 completion 或 profiling 证明。
+
+当前 M0/M1/M6 integration gate 还存在一个 skeleton 阶段的闭环缺口：`wafer-opt` pipeline 的
+IR FileCheck 和 package manifest / C stub 检查在同一测试文件内执行，但 manifest 由
+`tools/wafer_package_manifest.py` 的 fixed smoke emitter 生成，不是从该次 `wafer-opt` 输出的
+`wafer.abi.*` IR 自动导出。因此这些 gate 只能证明 IR lowering 和 package schema/stub 生成分别
+可用；不能作为 “package 由当前 lowering 结果生成” 的证据。进入 P7 时必须先把
+IR-derived manifest emission 作为 gate，之后再推进 LLVM IR / object / runtime call。

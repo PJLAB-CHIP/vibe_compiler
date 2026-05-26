@@ -196,6 +196,11 @@ C ABI skeleton。
 - 当前已实现的本地可编译出口是 Wafer C ABI skeleton issue ops、package manifest 和由
   `tools/wafer_emit_c_abi_stub.py` 生成的 C stub；验证只要求该 C stub 能被当前 C toolchain 做
   syntax compile。
+- 当前 M0/M1/M6 integration gate 中，`wafer-opt` lowering 的 IR 检查和 package manifest / C stub
+  检查仍是同一测试文件内的两个 smoke 子路径；manifest 由 `tools/wafer_package_manifest.py` 的
+  fixed smoke emitter 生成，尚未从 `wafer-opt` 输出的 `wafer.abi.*` IR 自动导出。因此这些 gate
+  只能证明 skeleton IR lowering 与 manifest schema/stub 生成分别可用，不能证明 package 是由该次
+  lowering 结果生成。
 - LLVM dialect / LLVM IR lowering、object emission 和真实 runtime call lowering 尚未实现，不能把
   当前 C stub gate 解释成 LLVM 后端已完成。
 - runtime package manifest、constant bytes metadata、DDR/SPM/resource summary 能序列化和 roundtrip。
@@ -326,11 +331,12 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 
 | ID | 状态 | 任务 | 验收 |
 | --- | --- | --- | --- |
-| P7.1 | later | 固定 `wafer.abi.*` 到 `wafer_*` C ABI call contract | 每类 ABI issue op 都有函数名、参数单位、wait/completion 责任和 stub header；unsupported op 有硬诊断 |
-| P7.2 | later | 实现 `wafer.abi.*` 到 LLVM dialect call lowering | lowering 后不残留 `wafer.abi.*`；生成 `llvm.call` / symbol declaration；FileCheck 覆盖参数顺序和类型 |
-| P7.3 | later | 建立 LLVM IR emission gate | `mlir-translate` 或等价路径能生成 LLVM IR；IR 文本检查入口函数、runtime call 和常量/metadata 引用 |
-| P7.4 | later | 建立 object / link syntax gate | 当前 toolchain 能把 LLVM IR 或 generated source 编译成 object，并与 stub runtime ABI shim 做 syntax/link smoke |
-| P7.5 | later | 将实物 artifact 接入 package manifest | manifest 记录 LLVM/object artifact id、entrypoint 和 ABI version；C stub-only artifact 不再作为该阶段 correctness fence |
+| P7.1 | ready | 建立 `wafer.abi.*` IR 到 package manifest 的导出路径 | M0/M1/M6 package manifest 的 ABI issue sequence、launch signature 和 placement metadata 来自当前 lowering 输出；fixed smoke emitter 只保留为 unit fixture |
+| P7.2 | later | 固定 `wafer.abi.*` 到 `wafer_*` C ABI call contract | 每类 ABI issue op 都有函数名、参数单位、wait/completion 责任和 stub header；unsupported op 有硬诊断 |
+| P7.3 | later | 实现 `wafer.abi.*` 到 LLVM dialect call lowering | lowering 后不残留 `wafer.abi.*`；生成 `llvm.call` / symbol declaration；FileCheck 覆盖参数顺序和类型 |
+| P7.4 | later | 建立 LLVM IR emission gate | `mlir-translate` 或等价路径能生成 LLVM IR；IR 文本检查入口函数、runtime call 和常量/metadata 引用 |
+| P7.5 | later | 建立 object / link syntax gate | 当前 toolchain 能把 LLVM IR 或 generated source 编译成 object，并与 stub runtime ABI shim 做 syntax/link smoke |
+| P7.6 | later | 将实物 artifact 接入 package manifest | manifest 记录 LLVM/object artifact id、entrypoint 和 ABI version；C stub-only artifact 不再作为该阶段 correctness fence |
 
 ## P8. Runtime / Board Correctness Gate
 
