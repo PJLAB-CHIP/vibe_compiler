@@ -81,13 +81,18 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
 - R1.1 后 `include/Wafer/IR/Ops` 承载 group、tile_region、layout、SPM、DDR、placement、ABI、
   compute、comm、sync 和 launch op family 的 ODS；`lib/Wafer/IR/Ops` 承载对应 verifier；
   `test/Dialect/Wafer` 按相同 family 分目录。
+- R1.2 后 `WaferTilingInterface`、`WaferLayoutOpInterface`、
+  `WaferLayoutMaterializationOpInterface` 和 `WaferResourceEffectInterface` 不再只是 marker；
+  group、layout/materialize、SPM、DDR、compute、comm、sync 和 ABI op 可通过接口查询边界值、
+  layout requirement 和 resource effect。关键 movement/compute/comm op 也接入 MLIR
+  `MemoryEffectOpInterface` 的 Wafer resource。
 
 缺口：
 
 - 工程能跑不等于 P0-P6 主路径完成；frontend importer artifact、runtime adapter 和 package 主链路
   仍需后续 R2/R3/P8 恢复。
-- R1.1 只恢复文件 ownership；interface/effect/resource 仍是 skeleton，还不能支撑 planner/resource
-  oracle 的真实闭环。
+- R1.2 恢复的是可查询合同和局部 legality；它还不是完整 planner/resource oracle。closed-loop group
+  search、SPM/DDR trial、storage realization、runtime/package 主链路仍归 R3 之后恢复。
 - StableHLO/Shardy dependency 当前主要服务 textual lowering smoke 和 future SPMD bridge dependency
   boundary；R0.3 依赖栈用 PyTorch/XLA 2.5 的 `WORKSPACE` `xla_hash` 选择 OpenXLA/XLA，再由 XLA
   workspace 选择 LLVM/StableHLO/Shardy base。PyTorch/XLA source 现在只用于确定版本和准备后续
@@ -122,14 +127,16 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
   memory space、mem layout、placement、wait policy、elementwise/reduce kind、`!wafer.tile_buffer`
   以及 group/tile/layout/load/store/placement/ABI/compute/comm/sync/launch skeleton ops。
 - 有 parser/printer/verifier 正负例；`WaferDialect.cpp` 实现多数 verifier。
-- 有 `WaferTilingInterface`、`WaferLayoutOpInterface`、`WaferResourceEffectInterface` skeleton。
+- 有 `WaferTilingInterface`、`WaferLayoutOpInterface`、
+  `WaferLayoutMaterializationOpInterface`、`WaferResourceEffectInterface` 和 Wafer resource-backed
+  MLIR memory effects；接口查询覆盖 group 边界、layout/SPM/DDR、compute/comm/sync/ABI 的局部需求。
 
 缺口：
 
 - ODS、op verifier 和 dialect tests 已按 op family 拆文件；共享 verifier helper 集中在
   `lib/Wafer/IR/Ops/OpVerifierUtils.*`。
-- interface/resource/effect 多数仍是 marker/skeleton，不足以支撑 group planner、layout planner、
-  SPM/DDR oracle、compute/comm demand 的真实闭环。
+- interface/resource/effect 已能作为 planner/verifier 的结构化查询入口，但还没有被 R3 的
+  closed-loop group planner、SPM/DDR oracle 和 storage-realized lowering 全量消费。
 - 测试大量用 `builtin.unrealized_conversion_cast` 构造边界值，只能证明 verifier 形态，不能证明
   上下游 IR 连接。
 - 没有 storage-realized memref/descriptor 层，因此 `!wafer.tile_buffer` 还没有按设计消失。
@@ -137,7 +144,7 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
 恢复任务：
 
 - R1.1：已完成；按 op family 拆 ODS、C++ verifier 和测试目录，并保持一个 `wafer` dialect namespace。
-- R1.2：把 interface/effect/resource 从 skeleton 扩成 planner/resource/verifier 可调用的合同。
+- R1.2：已完成；interface/effect/resource 已从 skeleton 扩成 planner/resource/verifier 可调用的合同。
 - R1.3：补 stage-connection tests，减少只靠 `unrealized_conversion_cast` 的孤立 verifier 用例。
 
 ## P2 Frontend Artifact 和 Local Compute Normalization

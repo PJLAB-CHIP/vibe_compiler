@@ -8,6 +8,7 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/Value.h"
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include <cstdint>
@@ -32,6 +33,21 @@ std::optional<int64_t> getPhysicalTileId(int64_t cardY, int64_t cardX,
                                          int64_t tileXCount);
 std::optional<int64_t>
 getCompactTensorByteSize(mlir::RankedTensorType tensorType);
+std::optional<int64_t> getCompactByteSize(mlir::Type type);
+int64_t getCompactByteSizeOrUnknown(mlir::Type type);
+void appendLayoutRequirement(
+    llvm::SmallVectorImpl<wafer::WaferLayoutRequirement> &requirements,
+    wafer::WaferValueRole role, unsigned index, wafer::TileBufferType type);
+void appendResourceEffect(
+    llvm::SmallVectorImpl<wafer::WaferResourceEffect> &effects,
+    wafer::WaferResourceKind resource, wafer::WaferResourceAccess access,
+    wafer::WaferValueRole role, unsigned index, int64_t bytes);
+mlir::LogicalResult verifyLayoutRequirements(
+    mlir::Operation *op,
+    llvm::ArrayRef<wafer::WaferLayoutRequirement> requirements);
+mlir::LogicalResult
+verifyResourceEffects(mlir::Operation *op,
+                      llvm::ArrayRef<wafer::WaferResourceEffect> effects);
 
 mlir::LogicalResult verifyCommP2P(mlir::Operation *op, mlir::Value buffer,
                                   mlir::IntegerAttr peer,

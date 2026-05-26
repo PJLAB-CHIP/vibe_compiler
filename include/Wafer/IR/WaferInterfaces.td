@@ -4,6 +4,15 @@
 #define WAFER_IR_WAFERINTERFACES_TD
 
 include "Wafer/IR/WaferBase.td"
+include "mlir/Interfaces/SideEffectInterfaces.td"
+
+def Wafer_SPMResource : Resource<"::wafer::WaferSPMResource">;
+def Wafer_DDRResource : Resource<"::wafer::WaferDDRResource">;
+def Wafer_MovementResource : Resource<"::wafer::WaferMovementResource">;
+def Wafer_ComputeResource : Resource<"::wafer::WaferComputeResource">;
+def Wafer_CommunicationResource
+    : Resource<"::wafer::WaferCommunicationResource">;
+def Wafer_SyncResource : Resource<"::wafer::WaferSyncResource">;
 
 def WaferTilingInterface : OpInterface<"WaferTilingInterface"> {
   let cppNamespace = "::wafer";
@@ -14,10 +23,12 @@ def WaferTilingInterface : OpInterface<"WaferTilingInterface"> {
   }];
   let methods = [
     InterfaceMethod<
+      "Collect the tensor values that participate in Wafer tiling.",
+      "void", "collectWaferTilingDemand",
+      (ins "::llvm::SmallVectorImpl<::wafer::WaferTilingDemand> &":$demands)>,
+    InterfaceMethod<
       "Verify that the operation's tiling contract is represented in IR.",
-      "::mlir::LogicalResult", "verifyWaferTilingContract", (ins),
-      /*methodBody=*/"",
-      /*defaultImplementation=*/"return ::mlir::success();">
+      "::mlir::LogicalResult", "verifyWaferTilingContract", (ins)>
   ];
 }
 
@@ -30,10 +41,32 @@ def WaferLayoutOpInterface : OpInterface<"WaferLayoutOpInterface"> {
   }];
   let methods = [
     InterfaceMethod<
+      "Collect exact layout requirements represented by this operation.",
+      "void", "collectWaferLayoutRequirements",
+      (ins "::llvm::SmallVectorImpl<::wafer::WaferLayoutRequirement> &":$requirements)>,
+    InterfaceMethod<
       "Verify the operation's layout relation using only the operation IR.",
-      "::mlir::LogicalResult", "verifyWaferLayoutContract", (ins),
-      /*methodBody=*/"",
-      /*defaultImplementation=*/"return ::mlir::success();">
+      "::mlir::LogicalResult", "verifyWaferLayoutContract", (ins)>
+  ];
+}
+
+def WaferLayoutMaterializationOpInterface
+    : OpInterface<"WaferLayoutMaterializationOpInterface"> {
+  let cppNamespace = "::wafer";
+  let description = [{
+    Interface for explicit layout conversion edges. These operations represent
+    real movement between physical layout families and are queried separately
+    from layout-sensitive compute or boundary ops.
+  }];
+  let methods = [
+    InterfaceMethod<
+      "Collect source/result layouts participating in this materialization.",
+      "void", "collectWaferMaterializationLayouts",
+      (ins "::llvm::SmallVectorImpl<::wafer::WaferLayoutRequirement> &":$requirements)>,
+    InterfaceMethod<
+      "Verify the materialization layout relation using only operation IR.",
+      "::mlir::LogicalResult", "verifyWaferLayoutMaterializationContract",
+      (ins)>
   ];
 }
 
@@ -46,10 +79,12 @@ def WaferResourceEffectInterface : OpInterface<"WaferResourceEffectInterface"> {
   }];
   let methods = [
     InterfaceMethod<
+      "Collect Wafer-specific resource effects represented by this operation.",
+      "void", "collectWaferResourceEffects",
+      (ins "::llvm::SmallVectorImpl<::wafer::WaferResourceEffect> &":$effects)>,
+    InterfaceMethod<
       "Verify resource/effect constraints represented by this operation.",
-      "::mlir::LogicalResult", "verifyWaferResourceEffectContract", (ins),
-      /*methodBody=*/"",
-      /*defaultImplementation=*/"return ::mlir::success();">
+      "::mlir::LogicalResult", "verifyWaferResourceEffectContract", (ins)>
   ];
 }
 

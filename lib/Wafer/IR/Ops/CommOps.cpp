@@ -14,13 +14,89 @@ mlir::LogicalResult CommRecvOp::verify() {
                        getBytesAttr(), getToken().getType());
 }
 
+void CommRecvOp::collectWaferLayoutRequirements(
+    llvm::SmallVectorImpl<WaferLayoutRequirement> &requirements) {
+  if (auto bufferType = mlir::dyn_cast<TileBufferType>(getBuffer().getType()))
+    appendLayoutRequirement(requirements, WaferValueRole::Operand, 0,
+                            bufferType);
+}
+
+mlir::LogicalResult CommRecvOp::verifyWaferLayoutContract() {
+  llvm::SmallVector<WaferLayoutRequirement, 4> requirements;
+  collectWaferLayoutRequirements(requirements);
+  return verifyLayoutRequirements(getOperation(), requirements);
+}
+
+void CommRecvOp::collectWaferResourceEffects(
+    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
+  int64_t bytes = getBytesAttr().getInt();
+  appendResourceEffect(effects, WaferResourceKind::SPM,
+                       WaferResourceAccess::Write, WaferValueRole::Operand, 0,
+                       bytes);
+  appendResourceEffect(effects, WaferResourceKind::Communication,
+                       WaferResourceAccess::Issue, WaferValueRole::None, 0,
+                       bytes);
+}
+
+mlir::LogicalResult CommRecvOp::verifyWaferResourceEffectContract() {
+  llvm::SmallVector<WaferResourceEffect, 4> effects;
+  collectWaferResourceEffects(effects);
+  return verifyResourceEffects(getOperation(), effects);
+}
+
 mlir::LogicalResult CommSendOp::verify() {
   return verifyCommP2P(getOperation(), getBuffer(), getPeerAttr(),
                        getBytesAttr(), getToken().getType());
 }
 
+void CommSendOp::collectWaferLayoutRequirements(
+    llvm::SmallVectorImpl<WaferLayoutRequirement> &requirements) {
+  if (auto bufferType = mlir::dyn_cast<TileBufferType>(getBuffer().getType()))
+    appendLayoutRequirement(requirements, WaferValueRole::Operand, 0,
+                            bufferType);
+}
+
+mlir::LogicalResult CommSendOp::verifyWaferLayoutContract() {
+  llvm::SmallVector<WaferLayoutRequirement, 4> requirements;
+  collectWaferLayoutRequirements(requirements);
+  return verifyLayoutRequirements(getOperation(), requirements);
+}
+
+void CommSendOp::collectWaferResourceEffects(
+    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
+  int64_t bytes = getBytesAttr().getInt();
+  appendResourceEffect(effects, WaferResourceKind::SPM,
+                       WaferResourceAccess::Read, WaferValueRole::Operand, 0,
+                       bytes);
+  appendResourceEffect(effects, WaferResourceKind::Communication,
+                       WaferResourceAccess::Issue, WaferValueRole::None, 0,
+                       bytes);
+}
+
+mlir::LogicalResult CommSendOp::verifyWaferResourceEffectContract() {
+  llvm::SmallVector<WaferResourceEffect, 4> effects;
+  collectWaferResourceEffects(effects);
+  return verifyResourceEffects(getOperation(), effects);
+}
+
 mlir::LogicalResult CommWaitOp::verify() {
   return verifyCommWaitTokens(getOperation(), getTokens());
+}
+
+void CommWaitOp::collectWaferResourceEffects(
+    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
+  for (auto [index, token] : llvm::enumerate(getTokens())) {
+    (void)token;
+    appendResourceEffect(effects, WaferResourceKind::Communication,
+                         WaferResourceAccess::Wait, WaferValueRole::Operand,
+                         index, -1);
+  }
+}
+
+mlir::LogicalResult CommWaitOp::verifyWaferResourceEffectContract() {
+  llvm::SmallVector<WaferResourceEffect, 4> effects;
+  collectWaferResourceEffects(effects);
+  return verifyResourceEffects(getOperation(), effects);
 }
 
 mlir::LogicalResult CommAllGatherOp::verify() {
@@ -69,6 +145,45 @@ mlir::LogicalResult CommAllGatherOp::verify() {
         "group_size");
 
   return mlir::success();
+}
+
+void CommAllGatherOp::collectWaferLayoutRequirements(
+    llvm::SmallVectorImpl<WaferLayoutRequirement> &requirements) {
+  if (auto localType =
+          mlir::dyn_cast<TileBufferType>(getLocalChunk().getType()))
+    appendLayoutRequirement(requirements, WaferValueRole::Operand, 0,
+                            localType);
+  if (auto gatherType =
+          mlir::dyn_cast<TileBufferType>(getGatherBuffer().getType()))
+    appendLayoutRequirement(requirements, WaferValueRole::Operand, 1,
+                            gatherType);
+}
+
+mlir::LogicalResult CommAllGatherOp::verifyWaferLayoutContract() {
+  llvm::SmallVector<WaferLayoutRequirement, 4> requirements;
+  collectWaferLayoutRequirements(requirements);
+  return verifyLayoutRequirements(getOperation(), requirements);
+}
+
+void CommAllGatherOp::collectWaferResourceEffects(
+    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
+  int64_t bytes = getBytesAttr().getInt();
+  appendResourceEffect(effects, WaferResourceKind::SPM,
+                       WaferResourceAccess::Read, WaferValueRole::Operand, 0,
+                       bytes);
+  appendResourceEffect(
+      effects, WaferResourceKind::SPM, WaferResourceAccess::Write,
+      WaferValueRole::Operand, 1,
+      getCompactByteSizeOrUnknown(getGatherBuffer().getType()));
+  appendResourceEffect(effects, WaferResourceKind::Communication,
+                       WaferResourceAccess::Issue, WaferValueRole::None, 0,
+                       bytes);
+}
+
+mlir::LogicalResult CommAllGatherOp::verifyWaferResourceEffectContract() {
+  llvm::SmallVector<WaferResourceEffect, 4> effects;
+  collectWaferResourceEffects(effects);
+  return verifyResourceEffects(getOperation(), effects);
 }
 
 static mlir::LogicalResult verifyCommReduceCollective(
@@ -120,9 +235,92 @@ mlir::LogicalResult CommReduceScatterOp::verify() {
                                     getGroupSizeAttr(), getBytesAttr());
 }
 
+static void collectCommReduceCollectiveLayoutRequirements(
+    mlir::Value input, mlir::Value recvBuffer, mlir::Value result,
+    llvm::SmallVectorImpl<WaferLayoutRequirement> &requirements) {
+  if (auto inputType = mlir::dyn_cast<TileBufferType>(input.getType()))
+    appendLayoutRequirement(requirements, WaferValueRole::Operand, 0,
+                            inputType);
+  if (auto recvType = mlir::dyn_cast<TileBufferType>(recvBuffer.getType()))
+    appendLayoutRequirement(requirements, WaferValueRole::Operand, 1, recvType);
+  if (auto resultType = mlir::dyn_cast<TileBufferType>(result.getType()))
+    appendLayoutRequirement(requirements, WaferValueRole::Result, 0,
+                            resultType);
+}
+
+void CommReduceScatterOp::collectWaferLayoutRequirements(
+    llvm::SmallVectorImpl<WaferLayoutRequirement> &requirements) {
+  collectCommReduceCollectiveLayoutRequirements(getInput(), getRecvBuffer(),
+                                                getResult(), requirements);
+}
+
+mlir::LogicalResult CommReduceScatterOp::verifyWaferLayoutContract() {
+  llvm::SmallVector<WaferLayoutRequirement, 4> requirements;
+  collectWaferLayoutRequirements(requirements);
+  return verifyLayoutRequirements(getOperation(), requirements);
+}
+
+static void collectCommReduceCollectiveResourceEffects(
+    mlir::Value input, mlir::Value recvBuffer, mlir::Value result,
+    int64_t bytes, llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
+  appendResourceEffect(effects, WaferResourceKind::SPM,
+                       WaferResourceAccess::Read, WaferValueRole::Operand, 0,
+                       bytes);
+  appendResourceEffect(effects, WaferResourceKind::SPM,
+                       WaferResourceAccess::Read, WaferValueRole::Operand, 1,
+                       bytes);
+  appendResourceEffect(effects, WaferResourceKind::SPM,
+                       WaferResourceAccess::Write, WaferValueRole::Result, 0,
+                       getCompactByteSizeOrUnknown(result.getType()));
+  appendResourceEffect(effects, WaferResourceKind::Communication,
+                       WaferResourceAccess::Issue, WaferValueRole::None, 0,
+                       bytes);
+  appendResourceEffect(effects, WaferResourceKind::Compute,
+                       WaferResourceAccess::Issue, WaferValueRole::None, 0,
+                       getCompactByteSizeOrUnknown(result.getType()));
+}
+
+void CommReduceScatterOp::collectWaferResourceEffects(
+    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
+  collectCommReduceCollectiveResourceEffects(getInput(), getRecvBuffer(),
+                                             getResult(),
+                                             getBytesAttr().getInt(), effects);
+}
+
+mlir::LogicalResult CommReduceScatterOp::verifyWaferResourceEffectContract() {
+  llvm::SmallVector<WaferResourceEffect, 8> effects;
+  collectWaferResourceEffects(effects);
+  return verifyResourceEffects(getOperation(), effects);
+}
+
 mlir::LogicalResult CommAllReduceOp::verify() {
   return verifyCommReduceCollective(getOperation(), "all_reduce", getInput(),
                                     getRecvBuffer(), getResult().getType(),
                                     getLocalRankAttr(), getGroupSizeAttr(),
                                     getBytesAttr());
+}
+
+void CommAllReduceOp::collectWaferLayoutRequirements(
+    llvm::SmallVectorImpl<WaferLayoutRequirement> &requirements) {
+  collectCommReduceCollectiveLayoutRequirements(getInput(), getRecvBuffer(),
+                                                getResult(), requirements);
+}
+
+mlir::LogicalResult CommAllReduceOp::verifyWaferLayoutContract() {
+  llvm::SmallVector<WaferLayoutRequirement, 4> requirements;
+  collectWaferLayoutRequirements(requirements);
+  return verifyLayoutRequirements(getOperation(), requirements);
+}
+
+void CommAllReduceOp::collectWaferResourceEffects(
+    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
+  collectCommReduceCollectiveResourceEffects(getInput(), getRecvBuffer(),
+                                             getResult(),
+                                             getBytesAttr().getInt(), effects);
+}
+
+mlir::LogicalResult CommAllReduceOp::verifyWaferResourceEffectContract() {
+  llvm::SmallVector<WaferResourceEffect, 8> effects;
+  collectWaferResourceEffects(effects);
+  return verifyResourceEffects(getOperation(), effects);
 }

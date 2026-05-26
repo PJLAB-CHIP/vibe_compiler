@@ -276,3 +276,155 @@ mlir::LogicalResult AbiDteSendOp::verify() {
 mlir::LogicalResult AbiDteWaitOp::verify() {
   return verifyCommWaitTokens(getOperation(), getTokens());
 }
+
+void AbiRdma1DOp::collectWaferResourceEffects(
+    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
+  int64_t bytes = getBytesAttr().getInt();
+  appendResourceEffect(effects, WaferResourceKind::DDR,
+                       WaferResourceAccess::Read, WaferValueRole::Operand, 0,
+                       bytes);
+  appendResourceEffect(effects, WaferResourceKind::SPM,
+                       WaferResourceAccess::Write, WaferValueRole::Result, 0,
+                       bytes);
+  appendResourceEffect(effects, WaferResourceKind::Movement,
+                       WaferResourceAccess::Issue, WaferValueRole::None, 0,
+                       bytes);
+}
+
+mlir::LogicalResult AbiRdma1DOp::verifyWaferResourceEffectContract() {
+  llvm::SmallVector<WaferResourceEffect, 4> effects;
+  collectWaferResourceEffects(effects);
+  return verifyResourceEffects(getOperation(), effects);
+}
+
+void AbiWdma1DOp::collectWaferResourceEffects(
+    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
+  int64_t bytes = getBytesAttr().getInt();
+  appendResourceEffect(effects, WaferResourceKind::SPM,
+                       WaferResourceAccess::Read, WaferValueRole::Operand, 0,
+                       bytes);
+  appendResourceEffect(effects, WaferResourceKind::DDR,
+                       WaferResourceAccess::Write, WaferValueRole::Operand, 1,
+                       bytes);
+  appendResourceEffect(effects, WaferResourceKind::Movement,
+                       WaferResourceAccess::Issue, WaferValueRole::None, 0,
+                       bytes);
+}
+
+mlir::LogicalResult AbiWdma1DOp::verifyWaferResourceEffectContract() {
+  llvm::SmallVector<WaferResourceEffect, 4> effects;
+  collectWaferResourceEffects(effects);
+  return verifyResourceEffects(getOperation(), effects);
+}
+
+void AbiGemmOp::collectWaferResourceEffects(
+    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
+  appendResourceEffect(effects, WaferResourceKind::SPM,
+                       WaferResourceAccess::Read, WaferValueRole::Operand, 0,
+                       getCompactByteSizeOrUnknown(getLhs().getType()));
+  appendResourceEffect(effects, WaferResourceKind::SPM,
+                       WaferResourceAccess::Read, WaferValueRole::Operand, 1,
+                       getCompactByteSizeOrUnknown(getRhs().getType()));
+  appendResourceEffect(effects, WaferResourceKind::SPM,
+                       WaferResourceAccess::Write, WaferValueRole::Result, 0,
+                       getCompactByteSizeOrUnknown(getResult().getType()));
+  appendResourceEffect(effects, WaferResourceKind::Compute,
+                       WaferResourceAccess::Issue, WaferValueRole::None, 0,
+                       getCompactByteSizeOrUnknown(getResult().getType()));
+}
+
+mlir::LogicalResult AbiGemmOp::verifyWaferResourceEffectContract() {
+  llvm::SmallVector<WaferResourceEffect, 8> effects;
+  collectWaferResourceEffects(effects);
+  return verifyResourceEffects(getOperation(), effects);
+}
+
+void AbiElementwiseOp::collectWaferResourceEffects(
+    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
+  for (auto [index, value] : llvm::enumerate(getInputs())) {
+    appendResourceEffect(effects, WaferResourceKind::SPM,
+                         WaferResourceAccess::Read, WaferValueRole::Operand,
+                         index, getCompactByteSizeOrUnknown(value.getType()));
+  }
+  appendResourceEffect(effects, WaferResourceKind::SPM,
+                       WaferResourceAccess::Write, WaferValueRole::Result, 0,
+                       getCompactByteSizeOrUnknown(getResult().getType()));
+  appendResourceEffect(effects, WaferResourceKind::Compute,
+                       WaferResourceAccess::Issue, WaferValueRole::None, 0,
+                       getCompactByteSizeOrUnknown(getResult().getType()));
+}
+
+mlir::LogicalResult AbiElementwiseOp::verifyWaferResourceEffectContract() {
+  llvm::SmallVector<WaferResourceEffect, 8> effects;
+  collectWaferResourceEffects(effects);
+  return verifyResourceEffects(getOperation(), effects);
+}
+
+void AbiReduceOp::collectWaferResourceEffects(
+    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
+  appendResourceEffect(effects, WaferResourceKind::SPM,
+                       WaferResourceAccess::Read, WaferValueRole::Operand, 0,
+                       getCompactByteSizeOrUnknown(getInput().getType()));
+  appendResourceEffect(effects, WaferResourceKind::SPM,
+                       WaferResourceAccess::Write, WaferValueRole::Result, 0,
+                       getCompactByteSizeOrUnknown(getResult().getType()));
+  appendResourceEffect(effects, WaferResourceKind::Compute,
+                       WaferResourceAccess::Issue, WaferValueRole::None, 0,
+                       getCompactByteSizeOrUnknown(getResult().getType()));
+}
+
+mlir::LogicalResult AbiReduceOp::verifyWaferResourceEffectContract() {
+  llvm::SmallVector<WaferResourceEffect, 8> effects;
+  collectWaferResourceEffects(effects);
+  return verifyResourceEffects(getOperation(), effects);
+}
+
+void AbiDteRecvOp::collectWaferResourceEffects(
+    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
+  int64_t bytes = getBytesAttr().getInt();
+  appendResourceEffect(effects, WaferResourceKind::SPM,
+                       WaferResourceAccess::Write, WaferValueRole::Operand, 0,
+                       bytes);
+  appendResourceEffect(effects, WaferResourceKind::Communication,
+                       WaferResourceAccess::Issue, WaferValueRole::None, 0,
+                       bytes);
+}
+
+mlir::LogicalResult AbiDteRecvOp::verifyWaferResourceEffectContract() {
+  llvm::SmallVector<WaferResourceEffect, 4> effects;
+  collectWaferResourceEffects(effects);
+  return verifyResourceEffects(getOperation(), effects);
+}
+
+void AbiDteSendOp::collectWaferResourceEffects(
+    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
+  int64_t bytes = getBytesAttr().getInt();
+  appendResourceEffect(effects, WaferResourceKind::SPM,
+                       WaferResourceAccess::Read, WaferValueRole::Operand, 0,
+                       bytes);
+  appendResourceEffect(effects, WaferResourceKind::Communication,
+                       WaferResourceAccess::Issue, WaferValueRole::None, 0,
+                       bytes);
+}
+
+mlir::LogicalResult AbiDteSendOp::verifyWaferResourceEffectContract() {
+  llvm::SmallVector<WaferResourceEffect, 4> effects;
+  collectWaferResourceEffects(effects);
+  return verifyResourceEffects(getOperation(), effects);
+}
+
+void AbiDteWaitOp::collectWaferResourceEffects(
+    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
+  for (auto [index, token] : llvm::enumerate(getTokens())) {
+    (void)token;
+    appendResourceEffect(effects, WaferResourceKind::Communication,
+                         WaferResourceAccess::Wait, WaferValueRole::Operand,
+                         index, -1);
+  }
+}
+
+mlir::LogicalResult AbiDteWaitOp::verifyWaferResourceEffectContract() {
+  llvm::SmallVector<WaferResourceEffect, 4> effects;
+  collectWaferResourceEffects(effects);
+  return verifyResourceEffects(getOperation(), effects);
+}

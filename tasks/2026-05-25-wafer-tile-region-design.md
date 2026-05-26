@@ -136,6 +136,10 @@ V0 需要以下 op family：
 未接受的候选 plan 不能落入 IR 后等待下游修复。合法性失败应反馈给 group/layout/resource
 planner 重新选择 tile shape、internal split、layout 或 group boundary。
 
+R1.2 已完成第 4 步所需的局部查询入口：accepted `wafer.tile_region` 内的 movement、layout、
+compute、comm 和 sync op 能通过 layout/materialization/resource interface 暴露需求。第 5-6 步的
+完整 SPM/DDR feasibility 和 storage realization 仍未完成。
+
 当前实现状态：
 
 - `--wafer-materialize-single-tile` 覆盖 M0：一个 GEMM group materialize 成一个

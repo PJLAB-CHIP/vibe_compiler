@@ -4,8 +4,11 @@
 #define WAFER_IR_OPS_COMPUTEOPS_TD
 
 def Wafer_ComputeGemmOp : Wafer_Op<"compute.gemm", [
-    WaferLayoutOpInterface,
-    WaferResourceEffectInterface
+    DeclareOpInterfaceMethods<WaferLayoutOpInterface>,
+    DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
+    MemoryEffects<[MemRead<Wafer_SPMResource>,
+                   MemWrite<Wafer_SPMResource>,
+                   MemWrite<Wafer_ComputeResource>]>
   ]> {
   let summary = "target-abstract tile GEMM";
   let arguments = (ins AnyType:$lhs, AnyType:$rhs);
@@ -16,8 +19,11 @@ def Wafer_ComputeGemmOp : Wafer_Op<"compute.gemm", [
 }
 
 def Wafer_ComputeElementwiseOp : Wafer_Op<"compute.elementwise", [
-    WaferLayoutOpInterface,
-    WaferResourceEffectInterface
+    DeclareOpInterfaceMethods<WaferLayoutOpInterface>,
+    DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
+    MemoryEffects<[MemRead<Wafer_SPMResource>,
+                   MemWrite<Wafer_SPMResource>,
+                   MemWrite<Wafer_ComputeResource>]>
   ]> {
   let summary = "target-abstract tile elementwise compute";
   let description = [{
@@ -41,8 +47,11 @@ def Wafer_ComputeElementwiseOp : Wafer_Op<"compute.elementwise", [
 }
 
 def Wafer_ComputeReduceOp : Wafer_Op<"compute.reduce", [
-    WaferLayoutOpInterface,
-    WaferResourceEffectInterface
+    DeclareOpInterfaceMethods<WaferLayoutOpInterface>,
+    DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
+    MemoryEffects<[MemRead<Wafer_SPMResource>,
+                   MemWrite<Wafer_SPMResource>,
+                   MemWrite<Wafer_ComputeResource>]>
   ]> {
   let summary = "target-abstract tile-local reduction compute";
   let description = [{
@@ -63,7 +72,11 @@ def Wafer_ComputeReduceOp : Wafer_Op<"compute.reduce", [
 }
 
 class Wafer_CommP2POp<string mnemonic> : Wafer_Op<mnemonic, [
-    WaferResourceEffectInterface
+    DeclareOpInterfaceMethods<WaferLayoutOpInterface>,
+    DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
+    MemoryEffects<[MemRead<Wafer_SPMResource>,
+                   MemWrite<Wafer_SPMResource>,
+                   MemWrite<Wafer_CommunicationResource>]>
   ]> {
   let arguments = (ins
     AnyType:$buffer,

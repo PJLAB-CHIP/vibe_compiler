@@ -4,8 +4,11 @@
 #define WAFER_IR_OPS_SPMOPS_TD
 
 def Wafer_LoadTileOp : Wafer_Op<"load_tile", [
-    WaferLayoutOpInterface,
-    WaferResourceEffectInterface
+    DeclareOpInterfaceMethods<WaferLayoutOpInterface>,
+    DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
+    MemoryEffects<[MemRead<Wafer_DDRResource>,
+                   MemWrite<Wafer_SPMResource>,
+                   MemWrite<Wafer_MovementResource>]>
   ]> {
   let summary = "load an external tensor tile into a tile buffer";
   let arguments = (ins AnyType:$source);
@@ -15,8 +18,11 @@ def Wafer_LoadTileOp : Wafer_Op<"load_tile", [
 }
 
 def Wafer_StoreTileOp : Wafer_Op<"store_tile", [
-    WaferLayoutOpInterface,
-    WaferResourceEffectInterface
+    DeclareOpInterfaceMethods<WaferLayoutOpInterface>,
+    DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
+    MemoryEffects<[MemRead<Wafer_SPMResource>,
+                   MemWrite<Wafer_DDRResource>,
+                   MemWrite<Wafer_MovementResource>]>
   ]> {
   let summary = "store a tile buffer to an external tensor boundary";
   let arguments = (ins AnyType:$source, AnyType:$dest);

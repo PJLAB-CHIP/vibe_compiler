@@ -41,3 +41,18 @@ mlir::LogicalResult DdrExternalBindingOp::verify() {
 
   return mlir::success();
 }
+
+void DdrExternalBindingOp::collectWaferResourceEffects(
+    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
+  WaferResourceAccess access = getKindAttr().getValue() == DdrBindingKind::Input
+                                   ? WaferResourceAccess::Read
+                                   : WaferResourceAccess::Write;
+  appendResourceEffect(effects, WaferResourceKind::DDR, access,
+                       WaferValueRole::Operand, 0, getBytesAttr().getInt());
+}
+
+mlir::LogicalResult DdrExternalBindingOp::verifyWaferResourceEffectContract() {
+  llvm::SmallVector<WaferResourceEffect, 4> effects;
+  collectWaferResourceEffects(effects);
+  return verifyResourceEffects(getOperation(), effects);
+}

@@ -725,7 +725,7 @@ cmake/
 - `WaferPlacementAttr`
 - `WaferTileMappingAttr`
 - common op interfaces，例如 `WaferTilingInterface`、`WaferLayoutOpInterface`、
-  `WaferResourceEffectInterface`
+  `WaferLayoutMaterializationOpInterface`、`WaferResourceEffectInterface`
 
 Pass pipeline 建议：
 

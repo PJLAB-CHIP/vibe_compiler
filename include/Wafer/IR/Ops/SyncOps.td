@@ -4,7 +4,8 @@
 #define WAFER_IR_OPS_SYNCOPS_TD
 
 def Wafer_SyncLocalDrainOp : Wafer_Op<"sync.local_drain", [
-    WaferResourceEffectInterface
+    DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
+    MemoryEffects<[MemWrite<Wafer_SyncResource>]>
   ]> {
   let summary = "local compute/movement visibility drain";
   let assemblyFormat = "attr-dict";

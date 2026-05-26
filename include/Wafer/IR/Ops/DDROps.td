@@ -3,7 +3,10 @@
 #ifndef WAFER_IR_OPS_DDROPS_TD
 #define WAFER_IR_OPS_DDROPS_TD
 
-def Wafer_DdrExternalBindingOp : Wafer_Op<"ddr.external_binding"> {
+def Wafer_DdrExternalBindingOp : Wafer_Op<"ddr.external_binding", [
+    DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
+    MemoryEffects<[MemRead<Wafer_DDRResource>, MemWrite<Wafer_DDRResource>]>
+  ]> {
   let summary = "launch-visible external DDR binding demand";
   let description = [{
     `wafer.ddr.external_binding` records the compact external tensor binding

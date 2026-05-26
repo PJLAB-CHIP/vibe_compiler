@@ -235,6 +235,11 @@ DdrBufferDemand {
 如果一个 demand 只能通过 name 或示例 case 恢复，说明 IR contract 不够，应该扩 op/type/interface，
 不能让 DDR planner 猜。
 
+R1.2 当前实现已给 `wafer.load_tile`、`wafer.store_tile`、`wafer.ddr.external_binding`、
+`wafer.comm.*` 和 `wafer.abi.*` 接入 `WaferResourceEffectInterface`，可查询 DDR read/write、
+SPM 对端、byte count 和 movement/communication issue。完整的 `DdrBufferDemand`、pool/domain、
+lifetime、range 和 bandwidth summary 仍属于后续 DDR resource planner。
+
 ## 6. Allocation / Binding Model
 
 DDR allocation 分成 binding、workspace planning 和 runtime realization 三个动作。

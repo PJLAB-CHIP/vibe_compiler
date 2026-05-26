@@ -12,7 +12,8 @@ def Wafer_CommRecvOp : Wafer_CommP2POp<"comm.recv"> {
 }
 
 def Wafer_CommWaitOp : Wafer_Op<"comm.wait", [
-    WaferResourceEffectInterface
+    DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
+    MemoryEffects<[MemRead<Wafer_CommunicationResource>]>
   ]> {
   let summary = "wait for communication completion tokens";
   let arguments = (ins Variadic<AnyType>:$tokens);
@@ -21,7 +22,11 @@ def Wafer_CommWaitOp : Wafer_Op<"comm.wait", [
 }
 
 def Wafer_CommAllGatherOp : Wafer_Op<"comm.all_gather", [
-    WaferResourceEffectInterface
+    DeclareOpInterfaceMethods<WaferLayoutOpInterface>,
+    DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
+    MemoryEffects<[MemRead<Wafer_SPMResource>,
+                   MemWrite<Wafer_SPMResource>,
+                   MemWrite<Wafer_CommunicationResource>]>
   ]> {
   let summary = "target-abstract fixed-size ring all-gather request";
   let description = [{
@@ -46,7 +51,12 @@ def Wafer_CommAllGatherOp : Wafer_Op<"comm.all_gather", [
 }
 
 class Wafer_CommReduceCollectiveOp<string mnemonic> : Wafer_Op<mnemonic, [
-    WaferResourceEffectInterface
+    DeclareOpInterfaceMethods<WaferLayoutOpInterface>,
+    DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
+    MemoryEffects<[MemRead<Wafer_SPMResource>,
+                   MemWrite<Wafer_SPMResource>,
+                   MemWrite<Wafer_ComputeResource>,
+                   MemWrite<Wafer_CommunicationResource>]>
   ]> {
   let arguments = (ins
     Wafer_ComputeReduceKindAttr:$kind,

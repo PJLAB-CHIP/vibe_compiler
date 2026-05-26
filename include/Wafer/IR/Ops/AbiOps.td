@@ -4,7 +4,10 @@
 #define WAFER_IR_OPS_ABIOPS_TD
 
 def Wafer_AbiRdma1DOp : Wafer_Op<"abi.rdma_1d", [
-    WaferResourceEffectInterface
+    DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
+    MemoryEffects<[MemRead<Wafer_DDRResource>,
+                   MemWrite<Wafer_SPMResource>,
+                   MemWrite<Wafer_MovementResource>]>
   ]> {
   let summary = "C ABI skeleton DDR-to-SPM 1D DMA issue";
   let arguments = (ins
@@ -19,7 +22,10 @@ def Wafer_AbiRdma1DOp : Wafer_Op<"abi.rdma_1d", [
 }
 
 def Wafer_AbiWdma1DOp : Wafer_Op<"abi.wdma_1d", [
-    WaferResourceEffectInterface
+    DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
+    MemoryEffects<[MemRead<Wafer_SPMResource>,
+                   MemWrite<Wafer_DDRResource>,
+                   MemWrite<Wafer_MovementResource>]>
   ]> {
   let summary = "C ABI skeleton SPM-to-DDR 1D DMA issue";
   let arguments = (ins
@@ -34,7 +40,10 @@ def Wafer_AbiWdma1DOp : Wafer_Op<"abi.wdma_1d", [
 }
 
 def Wafer_AbiGemmOp : Wafer_Op<"abi.gemm", [
-    WaferResourceEffectInterface
+    DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
+    MemoryEffects<[MemRead<Wafer_SPMResource>,
+                   MemWrite<Wafer_SPMResource>,
+                   MemWrite<Wafer_ComputeResource>]>
   ]> {
   let summary = "C ABI skeleton GEMM issue";
   let arguments = (ins
@@ -52,7 +61,10 @@ def Wafer_AbiGemmOp : Wafer_Op<"abi.gemm", [
 }
 
 def Wafer_AbiElementwiseOp : Wafer_Op<"abi.elementwise", [
-    WaferResourceEffectInterface
+    DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
+    MemoryEffects<[MemRead<Wafer_SPMResource>,
+                   MemWrite<Wafer_SPMResource>,
+                   MemWrite<Wafer_ComputeResource>]>
   ]> {
   let summary = "C ABI skeleton elementwise issue";
   let arguments = (ins
@@ -67,7 +79,10 @@ def Wafer_AbiElementwiseOp : Wafer_Op<"abi.elementwise", [
 }
 
 def Wafer_AbiReduceOp : Wafer_Op<"abi.reduce", [
-    WaferResourceEffectInterface
+    DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
+    MemoryEffects<[MemRead<Wafer_SPMResource>,
+                   MemWrite<Wafer_SPMResource>,
+                   MemWrite<Wafer_ComputeResource>]>
   ]> {
   let summary = "C ABI skeleton local reduce issue";
   let description = [{
@@ -88,7 +103,10 @@ def Wafer_AbiReduceOp : Wafer_Op<"abi.reduce", [
 }
 
 class Wafer_AbiDteP2POp<string mnemonic> : Wafer_Op<mnemonic, [
-    WaferResourceEffectInterface
+    DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
+    MemoryEffects<[MemRead<Wafer_SPMResource>,
+                   MemWrite<Wafer_SPMResource>,
+                   MemWrite<Wafer_CommunicationResource>]>
   ]> {
   let arguments = (ins
     AnyType:$buffer,
@@ -113,7 +131,8 @@ def Wafer_AbiDteRecvOp : Wafer_AbiDteP2POp<"abi.dte_recv"> {
 }
 
 def Wafer_AbiDteWaitOp : Wafer_Op<"abi.dte_wait", [
-    WaferResourceEffectInterface
+    DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
+    MemoryEffects<[MemRead<Wafer_CommunicationResource>]>
   ]> {
   let summary = "C ABI skeleton Direct DTE completion wait";
   let arguments = (ins Variadic<AnyType>:$tokens);

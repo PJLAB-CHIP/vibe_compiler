@@ -350,8 +350,9 @@ issue/drain、communication wait 和 group barrier 应在 `wafer.tile_region` �
 当前边界：group planner 只保留 abstract resource demand；SPM 文档承接 tile-local
 buffer/lifetime/range，DDR 文档承接 external binding、workspace BO、constant residency、
 pool/domain、capacity 和 bandwidth，compute 文档承接 CT/NE/RDMA/WDMA/TDMA queue family，
-comm 文档承接 DTE/FSM/packet/stream resource class。剩余工作是把这些 interface 做成 verifier
-可消费的实现。
+comm 文档承接 DTE/FSM/packet/stream resource class。R1.2 已把局部 tiling/layout/materialization/
+resource interface 做成 verifier 和单测可查询的实现；剩余工作是让 group planner、SPM/DDR oracle
+和 lower-level resource allocator 全量消费这些合同。
 
 实现时资源模型至少包含：
 

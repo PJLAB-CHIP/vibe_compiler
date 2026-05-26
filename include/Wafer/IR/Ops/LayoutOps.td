@@ -4,7 +4,11 @@
 #define WAFER_IR_OPS_LAYOUTOPS_TD
 
 def Wafer_LayoutMaterializeOp : Wafer_Op<"layout.materialize", [
-    WaferLayoutOpInterface
+    DeclareOpInterfaceMethods<WaferLayoutMaterializationOpInterface>,
+    DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
+    MemoryEffects<[MemRead<Wafer_SPMResource>,
+                   MemWrite<Wafer_SPMResource>,
+                   MemWrite<Wafer_MovementResource>]>
   ]> {
   let summary = "explicit tile-buffer layout materialization";
   let description = [{

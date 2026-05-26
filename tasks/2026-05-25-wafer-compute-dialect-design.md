@@ -191,7 +191,10 @@ getAsyncLoweringPolicy(target)
 
 ### 4.2 `WaferLayoutOpInterface`
 
-所有 layout-sensitive compute/movement op 实现：
+R1.2 当前实现先覆盖 accepted-layout 层：所有 layout-sensitive compute/movement op 通过
+`collectWaferLayoutRequirements` 暴露当前 IR 中 operand/result `!wafer.tile_buffer` 已经承诺的
+`mem_layout` 和 `memory_space`，并通过 `verifyWaferLayoutContract` 做 verifier 可调用检查。
+pre-assignment planner 需要的 allowed/preferred layout domain 仍是同一接口边界上的后续扩展：
 
 ```text
 getAllowedLayouts(operand_or_result, tileShape, dtype, target)
@@ -213,6 +216,11 @@ compute/movement op 应实现或组合 MLIR memory effect / resource effect：
 - async policy：op 是否可 lower 成 issue-only，以及哪些 buffer lifetime 必须延伸到 drain/wait。
 
 这些 effect 用于 liveness、SPM reuse、scheduler 和 verifier。它们不等于保存一份全局 issue plan。
+
+R1.2 的具体接口是 `collectWaferResourceEffects` / `verifyWaferResourceEffectContract`。它返回结构化
+`WaferResourceEffect`，区分 SPM、DDR、movement、compute、communication 和 sync，以及 read/write/
+issue/wait/drain。关键 movement/compute/comm op 同时接入 MLIR `MemoryEffectOpInterface` 的
+Wafer resource，供通用 effect 分析查询。
 
 ## 5. Verifier and Legality
 

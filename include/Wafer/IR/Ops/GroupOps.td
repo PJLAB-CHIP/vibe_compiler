@@ -5,6 +5,7 @@
 
 def Wafer_GroupOp : Wafer_Op<"group", [
     AttrSizedOperandSegments,
+    DeclareOpInterfaceMethods<WaferTilingInterface>,
     IsolatedFromAbove,
     RecursiveMemoryEffects,
     SingleBlockImplicitTerminator<"GroupYieldOp">

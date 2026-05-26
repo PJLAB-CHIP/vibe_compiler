@@ -172,6 +172,11 @@ collectCommunicationBufferDemand(target)
 - layout relation：p2p byte movement preserve physical layout；collective result layout 由 input
   layout、consumer constraint 和 layout materialization/co-planning 决定，不由 DTE 协议隐式改变。
 
+R1.2 当前实现中，`wafer.comm.*` 通过 `WaferResourceEffectInterface` 暴露 SPM read/write、
+communication issue/wait 和 byte count；p2p/collective op 同时有 Wafer communication resource 的
+MLIR memory effect。具体 DTE/FSM/packet/stream id 仍只在 lower-level ABI skeleton/resource allocator
+层出现，不回写到 collective-level op。
+
 通信 staging buffer 是 SPM oracle 的 `BufferDemand(kind = communication_staging)`，不是
 `wafer.comm` 的私有内存计划。
 

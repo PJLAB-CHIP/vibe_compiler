@@ -50,12 +50,125 @@ mlir::LogicalResult ComputeGemmOp::verify() {
   return mlir::success();
 }
 
+void ComputeGemmOp::collectWaferLayoutRequirements(
+    llvm::SmallVectorImpl<WaferLayoutRequirement> &requirements) {
+  if (auto lhsType = mlir::dyn_cast<TileBufferType>(getLhs().getType()))
+    appendLayoutRequirement(requirements, WaferValueRole::Operand, 0, lhsType);
+  if (auto rhsType = mlir::dyn_cast<TileBufferType>(getRhs().getType()))
+    appendLayoutRequirement(requirements, WaferValueRole::Operand, 1, rhsType);
+  if (auto resultType = mlir::dyn_cast<TileBufferType>(getResult().getType()))
+    appendLayoutRequirement(requirements, WaferValueRole::Result, 0,
+                            resultType);
+}
+
+mlir::LogicalResult ComputeGemmOp::verifyWaferLayoutContract() {
+  llvm::SmallVector<WaferLayoutRequirement, 4> requirements;
+  collectWaferLayoutRequirements(requirements);
+  return verifyLayoutRequirements(getOperation(), requirements);
+}
+
+void ComputeGemmOp::collectWaferResourceEffects(
+    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
+  appendResourceEffect(effects, WaferResourceKind::SPM,
+                       WaferResourceAccess::Read, WaferValueRole::Operand, 0,
+                       getCompactByteSizeOrUnknown(getLhs().getType()));
+  appendResourceEffect(effects, WaferResourceKind::SPM,
+                       WaferResourceAccess::Read, WaferValueRole::Operand, 1,
+                       getCompactByteSizeOrUnknown(getRhs().getType()));
+  appendResourceEffect(effects, WaferResourceKind::SPM,
+                       WaferResourceAccess::Write, WaferValueRole::Result, 0,
+                       getCompactByteSizeOrUnknown(getResult().getType()));
+  appendResourceEffect(effects, WaferResourceKind::Compute,
+                       WaferResourceAccess::Issue, WaferValueRole::None, 0,
+                       getCompactByteSizeOrUnknown(getResult().getType()));
+}
+
+mlir::LogicalResult ComputeGemmOp::verifyWaferResourceEffectContract() {
+  llvm::SmallVector<WaferResourceEffect, 8> effects;
+  collectWaferResourceEffects(effects);
+  return verifyResourceEffects(getOperation(), effects);
+}
+
 mlir::LogicalResult ComputeElementwiseOp::verify() {
   return verifyElementwiseTileContract(getOperation(), getKindAttr().getValue(),
                                        getInputs(), getResult().getType());
 }
 
+void ComputeElementwiseOp::collectWaferLayoutRequirements(
+    llvm::SmallVectorImpl<WaferLayoutRequirement> &requirements) {
+  for (auto [index, value] : llvm::enumerate(getInputs())) {
+    if (auto inputType = mlir::dyn_cast<TileBufferType>(value.getType()))
+      appendLayoutRequirement(requirements, WaferValueRole::Operand, index,
+                              inputType);
+  }
+  if (auto resultType = mlir::dyn_cast<TileBufferType>(getResult().getType()))
+    appendLayoutRequirement(requirements, WaferValueRole::Result, 0,
+                            resultType);
+}
+
+mlir::LogicalResult ComputeElementwiseOp::verifyWaferLayoutContract() {
+  llvm::SmallVector<WaferLayoutRequirement, 4> requirements;
+  collectWaferLayoutRequirements(requirements);
+  return verifyLayoutRequirements(getOperation(), requirements);
+}
+
+void ComputeElementwiseOp::collectWaferResourceEffects(
+    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
+  for (auto [index, value] : llvm::enumerate(getInputs())) {
+    appendResourceEffect(effects, WaferResourceKind::SPM,
+                         WaferResourceAccess::Read, WaferValueRole::Operand,
+                         index, getCompactByteSizeOrUnknown(value.getType()));
+  }
+  appendResourceEffect(effects, WaferResourceKind::SPM,
+                       WaferResourceAccess::Write, WaferValueRole::Result, 0,
+                       getCompactByteSizeOrUnknown(getResult().getType()));
+  appendResourceEffect(effects, WaferResourceKind::Compute,
+                       WaferResourceAccess::Issue, WaferValueRole::None, 0,
+                       getCompactByteSizeOrUnknown(getResult().getType()));
+}
+
+mlir::LogicalResult ComputeElementwiseOp::verifyWaferResourceEffectContract() {
+  llvm::SmallVector<WaferResourceEffect, 8> effects;
+  collectWaferResourceEffects(effects);
+  return verifyResourceEffects(getOperation(), effects);
+}
+
 mlir::LogicalResult ComputeReduceOp::verify() {
   return verifyReduceTileContract(getOperation(), getInput(),
                                   getResult().getType());
+}
+
+void ComputeReduceOp::collectWaferLayoutRequirements(
+    llvm::SmallVectorImpl<WaferLayoutRequirement> &requirements) {
+  if (auto inputType = mlir::dyn_cast<TileBufferType>(getInput().getType()))
+    appendLayoutRequirement(requirements, WaferValueRole::Operand, 0,
+                            inputType);
+  if (auto resultType = mlir::dyn_cast<TileBufferType>(getResult().getType()))
+    appendLayoutRequirement(requirements, WaferValueRole::Result, 0,
+                            resultType);
+}
+
+mlir::LogicalResult ComputeReduceOp::verifyWaferLayoutContract() {
+  llvm::SmallVector<WaferLayoutRequirement, 4> requirements;
+  collectWaferLayoutRequirements(requirements);
+  return verifyLayoutRequirements(getOperation(), requirements);
+}
+
+void ComputeReduceOp::collectWaferResourceEffects(
+    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
+  appendResourceEffect(effects, WaferResourceKind::SPM,
+                       WaferResourceAccess::Read, WaferValueRole::Operand, 0,
+                       getCompactByteSizeOrUnknown(getInput().getType()));
+  appendResourceEffect(effects, WaferResourceKind::SPM,
+                       WaferResourceAccess::Write, WaferValueRole::Result, 0,
+                       getCompactByteSizeOrUnknown(getResult().getType()));
+  appendResourceEffect(effects, WaferResourceKind::Compute,
+                       WaferResourceAccess::Issue, WaferValueRole::None, 0,
+                       getCompactByteSizeOrUnknown(getResult().getType()));
+}
+
+mlir::LogicalResult ComputeReduceOp::verifyWaferResourceEffectContract() {
+  llvm::SmallVector<WaferResourceEffect, 8> effects;
+  collectWaferResourceEffects(effects);
+  return verifyResourceEffects(getOperation(), effects);
 }

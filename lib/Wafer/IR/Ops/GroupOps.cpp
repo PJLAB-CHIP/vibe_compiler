@@ -87,3 +87,31 @@ mlir::LogicalResult GroupOp::verify() {
 
   return mlir::success();
 }
+
+void GroupOp::collectWaferTilingDemand(
+    llvm::SmallVectorImpl<WaferTilingDemand> &demands) {
+  for (auto [index, input] : llvm::enumerate(getInputs()))
+    demands.push_back({WaferTilingDemandKind::Input,
+                       static_cast<unsigned>(index), input.getType()});
+  for (auto [index, out] : llvm::enumerate(getOuts()))
+    demands.push_back({WaferTilingDemandKind::Output,
+                       static_cast<unsigned>(index), out.getType()});
+  for (auto [index, result] : llvm::enumerate(getResults()))
+    demands.push_back({WaferTilingDemandKind::Result,
+                       static_cast<unsigned>(index), result.getType()});
+}
+
+mlir::LogicalResult GroupOp::verifyWaferTilingContract() {
+  llvm::SmallVector<WaferTilingDemand, 8> demands;
+  collectWaferTilingDemand(demands);
+  if (demands.empty())
+    return emitOpError("tiling interface must expose group boundary values");
+  for (const WaferTilingDemand &demand : demands) {
+    if (!demand.type)
+      return emitOpError("tiling interface returned a demand without type");
+    if (isSPMMemRef(demand.type))
+      return emitOpError(
+          "tiling interface must not expose SPM memref at group level");
+  }
+  return mlir::success();
+}

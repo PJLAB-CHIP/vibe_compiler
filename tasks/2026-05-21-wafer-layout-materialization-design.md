@@ -508,7 +508,26 @@ result type、storage-level type 或等价 verifier contract 约束之后；否�
 V0 需要一个 op layout 接口；constant storage transform 是 pass 行为，不单独定义 Wafer op
 interface。
 
-`WaferLayoutOpInterface` 由 layout-sensitive compute/movement op 实现：
+R1.2 先落地 accepted-layout 层的可查询合同：`WaferLayoutOpInterface` 由 layout-sensitive
+compute/movement op 实现，返回当前 IR 类型已经表达的 exact operand/result layout requirement，
+并提供 verifier 可调用的组合检查。`wafer.layout.materialize` 不实现该接口，它实现单独的
+`WaferLayoutMaterializationOpInterface`，因为它是 explicit conversion edge，不是普通
+layout-sensitive compute op。
+
+```c++
+void collectWaferLayoutRequirements(
+    SmallVectorImpl<WaferLayoutRequirement> &requirements);
+
+LogicalResult verifyWaferLayoutContract();
+
+void collectWaferMaterializationLayouts(
+    SmallVectorImpl<WaferLayoutRequirement> &requirements);
+
+LogicalResult verifyWaferLayoutMaterializationContract();
+```
+
+后续 layout assignment planner 仍需要在 target-abstract / pre-assignment 阶段扩展更丰富的
+domain/cost 查询。该扩展应保持同一接口边界，不能退回 pass side table：
 
 ```c++
 LayoutDomain getAllowedMemLayouts(Value operandOrResult,
@@ -534,6 +553,7 @@ getMaterializationOptions(MemLayoutAttr src,
 
 - allowed layout 是 hard legality。
 - preferred layout 只参与 cost/tie-break。
+- accepted-layout requirement 是当前 IR 已经承诺的事实；它不能反向伪装成 planner 的搜索空间。
 - op 如果不关心 physical layout，可以不实现该接口，由通用 passthrough/flexible 规则处理。
 - shape-changing、rank-changing、aligned-only、layout-sensitive movement op 必须实现接口或提供
   verifier 可调用的规则。

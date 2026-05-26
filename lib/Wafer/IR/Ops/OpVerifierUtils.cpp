@@ -146,6 +146,100 @@ getCompactTensorByteSize(mlir::RankedTensorType tensorType) {
   return totalBits / 8 + (totalBits % 8 == 0 ? 0 : 1);
 }
 
+std::optional<int64_t> getCompactByteSize(mlir::Type type) {
+  if (auto tileBufferType = mlir::dyn_cast<TileBufferType>(type))
+    return getCompactTensorByteSize(getTileBufferTensorType(tileBufferType));
+  if (auto tensorType = mlir::dyn_cast<mlir::RankedTensorType>(type))
+    return getCompactTensorByteSize(tensorType);
+  return std::nullopt;
+}
+
+int64_t getCompactByteSizeOrUnknown(mlir::Type type) {
+  std::optional<int64_t> bytes = getCompactByteSize(type);
+  return bytes ? *bytes : -1;
+}
+
+void appendLayoutRequirement(
+    llvm::SmallVectorImpl<wafer::WaferLayoutRequirement> &requirements,
+    wafer::WaferValueRole role, unsigned index, wafer::TileBufferType type) {
+  requirements.push_back({role, index, getTileBufferLayout(type).getValue(),
+                          getTileBufferMemorySpace(type).getValue()});
+}
+
+void appendResourceEffect(
+    llvm::SmallVectorImpl<wafer::WaferResourceEffect> &effects,
+    wafer::WaferResourceKind resource, wafer::WaferResourceAccess access,
+    wafer::WaferValueRole role, unsigned index, int64_t bytes) {
+  effects.push_back({resource, access, role, index, bytes});
+}
+
+static mlir::Type getRequirementValueType(mlir::Operation *op,
+                                          wafer::WaferValueRole role,
+                                          unsigned index) {
+  switch (role) {
+  case wafer::WaferValueRole::Operand:
+    if (index < op->getNumOperands())
+      return op->getOperand(index).getType();
+    return {};
+  case wafer::WaferValueRole::Result:
+    if (index < op->getNumResults())
+      return op->getResult(index).getType();
+    return {};
+  case wafer::WaferValueRole::None:
+    return {};
+  }
+  llvm_unreachable("unknown Wafer value role");
+}
+
+mlir::LogicalResult verifyLayoutRequirements(
+    mlir::Operation *op,
+    llvm::ArrayRef<wafer::WaferLayoutRequirement> requirements) {
+  if (requirements.empty())
+    return op->emitOpError("layout interface must expose at least one "
+                           "operand/result layout requirement");
+
+  for (const wafer::WaferLayoutRequirement &requirement : requirements) {
+    mlir::Type valueType =
+        getRequirementValueType(op, requirement.role, requirement.index);
+    if (!valueType)
+      return op->emitOpError("layout interface returned an invalid value "
+                             "reference");
+
+    auto tileBufferType = mlir::dyn_cast<TileBufferType>(valueType);
+    if (!tileBufferType)
+      return op->emitOpError("layout interface requirements must refer to "
+                             "tile_buffer values");
+
+    if (!hasTileBufferLayout(tileBufferType, requirement.layout))
+      return op->emitOpError(
+          "layout interface requirement does not match value mem_layout");
+    if (!hasTileBufferMemorySpace(tileBufferType, requirement.memorySpace))
+      return op->emitOpError(
+          "layout interface requirement does not match value memory_space");
+  }
+  return mlir::success();
+}
+
+mlir::LogicalResult
+verifyResourceEffects(mlir::Operation *op,
+                      llvm::ArrayRef<wafer::WaferResourceEffect> effects) {
+  if (effects.empty())
+    return op->emitOpError(
+        "resource interface must expose at least one effect");
+
+  for (const wafer::WaferResourceEffect &effect : effects) {
+    if (effect.bytes == 0 || effect.bytes < -1)
+      return op->emitOpError("resource interface effect byte count must be "
+                             "positive or unknown");
+    if (effect.role == wafer::WaferValueRole::None)
+      continue;
+    if (!getRequirementValueType(op, effect.role, effect.index))
+      return op->emitOpError("resource interface returned an invalid value "
+                             "reference");
+  }
+  return mlir::success();
+}
+
 mlir::LogicalResult verifyCommP2P(mlir::Operation *op, mlir::Value buffer,
                                   mlir::IntegerAttr peer,
                                   mlir::IntegerAttr bytes,
