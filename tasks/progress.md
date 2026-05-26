@@ -72,11 +72,19 @@
 | R2.1 | ready | 恢复 frontend artifact / importer contract | importer adapter、sidecar/ConstantLike、graph break/eager/dynamic shape 诊断按 frontend 设计闭环 |
 | R2.2 | pending | 恢复 Shardy/SPMD artifact bridge | logical mesh、rank group、partitioned StableHLO collective 和 shard-local program 成为 placement/comm 输入 |
 | R2.3 | pending | 重写 local compute normalization 覆盖状态 | 按 structured tensor IR contract 记录 dot/broadcast/reduce/softmax/norm/RoPE/MLP 覆盖；acceptance pass 不冒充 schedule completion |
-| R3.1 | pending | 恢复 M0 group/tile/layout/SPM/DDR/C ABI 主链路 | group planner、root tile feasibility、SPM/DDR demand、C ABI skeleton 均来自同一 IR pipeline 且满足对应设计合同 |
-| R3.2 | pending | 恢复 M0 package gate | package manifest 和 C stub 从当前 `wafer-opt` 输出导出；fixed smoke emitter 只作为 tool fixture |
-| R3.3 | pending | 恢复 storage realization / C ABI / golden packet 边界 | M0 RDMA/WDMA/GEMM 有 storage-realized input、真实 wrapper-facing call contract 和 golden packet 对照 |
-| R4.1 | pending | 恢复 M1 placement / shard / launch metadata gate | multi-tile no-comm 使用真实 shard slicing、per-rank result/metadata 和 package launch args，不用 whole-tensor clone 代替 |
-| R4.2 | pending | 恢复 M1 shard slicing / merge | per-rank writeback、host-side readback 或 output merge contract 明确，并由 IR / package metadata 驱动 |
+| R3.1 | pending | 恢复 M0 group boundary / candidate contract | `wafer.group` 只表达 local tensor grouping 和 candidate boundary；root op、operands/results、tile candidate shape 和拒绝原因由 IR/interface/verifier 可解释，不靠 pass side table 或名字 |
+| R3.2 | pending | 恢复 M0 root tile feasibility oracle | root tile candidate 检查必须接入 op tiling contract、layout requirement、SPM demand、DDR demand 和 compute/movement legality；静态 result shape check 只能是其中一个输入 |
+| R3.3 | pending | 恢复 M0 tile_region materialization contract | accepted group materialize 成 `wafer.tile_region`，load/store、layout materialize、`wafer.compute.*` 和 tile_yield 全部来自同一 accepted candidate；不得把未接受 plan 落进 IR |
+| R3.4 | pending | 恢复 M0 layout/SPM feasibility gate | layout materialization 是显式 movement；SPM trial 使用 resource effects、liveness/range 和 tile buffer lifetime，失败能诊断到具体 op/value |
+| R3.5 | pending | 恢复 M0 DDR/resource demand gate | `wafer.load_tile` / `store_tile` 驱动 external binding、workspace、resident constant、pool/domain、capacity/bandwidth demand；compact bytes fixture 不能作为完整 DDR 合同 |
+| R3.6 | pending | 恢复 M0 ABI skeleton issue gate | `wafer.abi.rdma` / `wdma` / `gemm` / elementwise / reduce issue sequence 从当前 storage/movement/compute IR 派生；ABI issue 保留参数单位和 wait policy，不回写上层 group/tile 语义 |
+| R3.7 | pending | 恢复 M0 package manifest gate | package manifest、C stub 和 launch signature 从当前 `wafer-opt` 输出导出；fixed smoke emitter 只作为 tool fixture |
+| R3.8 | pending | 恢复 M0 storage-realized / C ABI / golden packet 边界 | RDMA/WDMA/GEMM 有 storage-realized input、真实 `wafer_*` wrapper-facing call contract 和 golden packet 对照；不以 `wafer.abi.*` skeleton 冒充最终 lower |
+| R4.1 | pending | 恢复 M1 placement map / capability gate | accepted placement 来自 logical rank、good-tile/PG/capability 和 physical card/tile coordinate verifier；placement 不携带 SPM offset、DDR address、DTE packet 或 runtime handle |
+| R4.2 | pending | 恢复 M1 per-rank identity / launch metadata gate | logical rank、block id、physical coord 和 local shard metadata 进入 tile_region/launch/package 边界，per-rank launch args 来自 IR，不来自 fixed manifest fixture |
+| R4.3 | pending | 恢复 M1 shard slicing materialization | multi-tile no-comm 为每个 rank materialize 自己的 input/output slice，不再 clone whole-tensor tile_region |
+| R4.4 | pending | 恢复 M1 per-rank writeback / merge contract | 每个 rank 写回对应 output slice；host-side readback、output merge 或 sharded output contract 明确，并由 IR/package metadata 驱动 |
+| R4.5 | pending | 恢复 M1 package / generated artifact gate | placement metadata、local shards、per-rank launch args 和 issue sequence 从当前 lowering 输出导出；package fixture 只能保留为 unit fixture |
 | R5.1 | pending | 恢复 M6 transformer local 编译验证 | workspace/resident constants/ABI issue sequence 来自 full-block IR dataflow 和 lowering 输出 |
 | R5.2 | pending | 补 transformer compute/package gaps | mask/select、dynamic-bound policy、non-constant-init reduce、constant/weight slice 和 package consistency 按设计补齐 |
 | R6.1 | pending | 恢复 communication design-conformance gate | DTE resource allocation、collective buffer slice/address offset、communication metadata 与 package/runtime 边界按设计落地 |

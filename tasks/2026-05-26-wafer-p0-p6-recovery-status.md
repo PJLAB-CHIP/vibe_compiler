@@ -228,9 +228,21 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
 
 恢复任务：
 
-- R3.1：恢复 M0 group/tile/layout/SPM/DDR/C ABI 主链路，要求同一 IR pipeline 的候选和资源检查闭环。
-- R3.2：恢复 M0 package gate，manifest 和 C stub 从当前 `wafer.abi.*` IR 导出。
-- R3.3：恢复 storage realization / C ABI / golden packet 边界，至少让 M0 的 RDMA/WDMA/GEMM 有真实
+- R3.1：恢复 M0 group boundary / candidate contract，保证 `wafer.group` 只表达 local tensor grouping
+  和 candidate boundary。
+- R3.2：恢复 M0 root tile feasibility oracle，把 op tiling、layout、SPM、DDR 和 compute/movement
+  legality 接到同一 candidate 检查。
+- R3.3：恢复 M0 tile_region materialization contract，只把 accepted group materialize 成
+  `wafer.tile_region`。
+- R3.4：恢复 M0 layout/SPM feasibility gate，让 layout materialization 和 SPM trial 由 effect、
+  liveness/range 和 tile buffer lifetime 驱动。
+- R3.5：恢复 M0 DDR/resource demand gate，覆盖 external binding、workspace、resident constant、
+  pool/domain、capacity/bandwidth demand。
+- R3.6：恢复 M0 ABI skeleton issue gate，让 `wafer.abi.*` issue sequence 从当前 storage/movement/
+  compute IR 派生，并只表达 ABI 参数单位和 wait policy。
+- R3.7：恢复 M0 package manifest gate，manifest、C stub 和 launch signature 从当前 `wafer-opt`
+  输出导出。
+- R3.8：恢复 M0 storage-realized / C ABI / golden packet 边界，至少让 RDMA/WDMA/GEMM 有真实
   wrapper-facing call contract 和 golden packet 对照。
 
 ## P4 M1 Multi-Tile No Communication
@@ -260,8 +272,16 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
 
 恢复任务：
 
-- R4.1：恢复 M1 placement / shard / launch metadata gate，per-rank result 和 package launch args 必须来自 IR。
-- R4.2：实现真实 shard slicing、per-rank writeback/merge contract 和 no-comm runtime/package binding。
+- R4.1：恢复 M1 placement map / capability gate，accepted placement 来自 logical rank、good-tile/PG
+  capability 和 physical coordinate verifier。
+- R4.2：恢复 M1 per-rank identity / launch metadata gate，把 logical rank、block id、physical coord
+  和 local shard metadata 接到 tile_region/launch/package 边界。
+- R4.3：恢复 M1 shard slicing materialization，multi-tile no-comm 为每个 rank materialize 自己的
+  input/output slice，不再 clone whole tensor。
+- R4.4：恢复 M1 per-rank writeback / merge contract，明确 sharded output、host-side readback 或
+  output merge 的 IR/package 责任。
+- R4.5：恢复 M1 package / generated artifact gate，让 placement metadata、local shards、per-rank
+  launch args 和 issue sequence 从当前 lowering 输出导出。
 
 ## P5 Transformer Local Vertical Slice
 
