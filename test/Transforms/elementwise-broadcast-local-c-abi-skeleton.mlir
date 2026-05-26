@@ -8,16 +8,21 @@ module {
       %lhs: tensor<4x8xf16>,
       %rhs: tensor<4xf16>,
       %out: tensor<4x8xf16>) -> tensor<4x8xf16> {
-    %0 = linalg.elementwise kind=#linalg.elementwise_kind<add>
-        indexing_maps = [#map, #row, #map]
+    %0 = linalg.generic {
+        indexing_maps = [#map, #row, #map],
+        iterator_types = ["parallel", "parallel"]}
         ins(%lhs, %rhs : tensor<4x8xf16>, tensor<4xf16>)
-        outs(%out : tensor<4x8xf16>) -> tensor<4x8xf16>
+        outs(%out : tensor<4x8xf16>) {
+      ^bb0(%lhs_s: f16, %rhs_s: f16, %out_s: f16):
+        %sum = arith.addf %lhs_s, %rhs_s : f16
+        linalg.yield %sum : f16
+    } -> tensor<4x8xf16>
     return %0 : tensor<4x8xf16>
   }
 }
 
 // CHECK-LABEL: func.func @row_broadcast_elementwise(
-// CHECK-NOT: linalg.elementwise
+// CHECK-NOT: linalg.generic
 // CHECK-NOT: wafer.compute.elementwise
 // CHECK: wafer.abi.rdma_1d <issue_only> %{{.*}} {bytes = 64 : i64}
 // CHECK: wafer.abi.rdma_1d <issue_only> %{{.*}} {bytes = 8 : i64}

@@ -51,11 +51,12 @@ module {
 // CHECK-NOT: stablehlo.
 // CHECK: linalg.reduce
 // CHECK-SAME: arith.maximumf
-// CHECK: linalg.elementwise kind=#linalg.elementwise_kind<exp>
+// CHECK: linalg.generic
+// CHECK: math.exp
 // CHECK: linalg.reduce
 // CHECK-SAME: arith.addf
-// CHECK: %[[PROB:.+]] = linalg.elementwise
-// CHECK-SAME: kind=#linalg.elementwise_kind<div>
+// CHECK: %[[PROB:.+]] = linalg.generic
+// CHECK: arith.divf
 // CHECK: linalg.generic
 // CHECK-SAME: indexing_maps = [#[[AV_LHS]], #[[AV_RHS]], #[[AV_OUT]]]
 // CHECK-SAME: iterator_types = ["parallel", "parallel", "parallel", "parallel", "reduction"]

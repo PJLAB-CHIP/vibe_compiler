@@ -33,3 +33,7 @@ if(TARGET WaferUnitTests)
 else()
   add_custom_target(check-wafer DEPENDS check-wafer-lit)
 endif()
+
+if(TARGET wafer-shardy-cmake-gate)
+  add_dependencies(check-wafer wafer-shardy-cmake-gate)
+endif()

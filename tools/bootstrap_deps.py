@@ -155,7 +155,7 @@ def main() -> int:
     parser.add_argument(
         "--importer-sources",
         action="store_true",
-        help="sync StableHLO, Shardy, and OpenXLA/XLA source submodules",
+        help="sync PyTorch/XLA baseline, StableHLO, Shardy, and OpenXLA/XLA source submodules",
     )
     parser.add_argument(
         "--importer-python",
@@ -188,6 +188,7 @@ def main() -> int:
         print(f"LLVM/MLIR source installed under: {REPO_ROOT / 'third_party' / 'llvm-project'}")
 
     if args.all or args.importer_sources:
+        sync_submodule(prefix / "pytorch-xla", versions["WAFER_PYTORCH_XLA_COMMIT"])
         sync_submodule(prefix / "stablehlo", versions["WAFER_STABLEHLO_COMMIT"])
         sync_submodule(prefix / "shardy", versions["WAFER_SHARDY_COMMIT"])
         sync_submodule(prefix / "xla", versions["WAFER_OPENXLA_XLA_COMMIT"])

@@ -1,5 +1,6 @@
 add_mlir_library(WaferTransforms
   Support/AttentionGemmUtils.cpp
+  Support/ElementwiseUtils.cpp
   StableHLOToLinalg/NormalizeConstants.cpp
   StableHLOToLinalg/LowerStablehloDot.cpp
   StableHLOToLinalg/LowerStablehloElementwise.cpp
@@ -25,6 +26,7 @@ add_mlir_library(WaferTransforms
   MLIRArithDialect
   MLIRIR
   MLIRLinalgDialect
+  MLIRMathDialect
   MLIRPass
   MLIRSupport
   MLIRTensorDialect

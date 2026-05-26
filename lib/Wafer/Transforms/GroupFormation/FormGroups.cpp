@@ -3,6 +3,7 @@
 #include "Wafer/Transforms/Passes.h"
 
 #include "Support/AttentionGemmUtils.h"
+#include "Support/ElementwiseUtils.h"
 #include "Wafer/IR/WaferDialect.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -80,38 +81,6 @@ static bool canFormSingleAttentionGemmGroup(mlir::linalg::GenericOp generic) {
   if (!llvm::all_of(generic.getDpsInits(), isTensorValue))
     return false;
   return true;
-}
-
-static std::optional<wafer::ComputeElementwiseKind>
-mapElementwiseKind(mlir::linalg::ElementwiseKind kind) {
-  switch (kind) {
-  case mlir::linalg::ElementwiseKind::add:
-    return wafer::ComputeElementwiseKind::Add;
-  case mlir::linalg::ElementwiseKind::sub:
-    return wafer::ComputeElementwiseKind::Sub;
-  case mlir::linalg::ElementwiseKind::mul:
-    return wafer::ComputeElementwiseKind::Mul;
-  case mlir::linalg::ElementwiseKind::div:
-    return wafer::ComputeElementwiseKind::Div;
-  case mlir::linalg::ElementwiseKind::max_signed:
-    return wafer::ComputeElementwiseKind::Max;
-  case mlir::linalg::ElementwiseKind::min_signed:
-    return wafer::ComputeElementwiseKind::Min;
-  case mlir::linalg::ElementwiseKind::negf:
-    return wafer::ComputeElementwiseKind::Neg;
-  case mlir::linalg::ElementwiseKind::reciprocal:
-    return wafer::ComputeElementwiseKind::Recip;
-  case mlir::linalg::ElementwiseKind::sqrt:
-    return wafer::ComputeElementwiseKind::Sqrt;
-  case mlir::linalg::ElementwiseKind::rsqrt:
-    return wafer::ComputeElementwiseKind::Rsqrt;
-  case mlir::linalg::ElementwiseKind::exp:
-    return wafer::ComputeElementwiseKind::Exp;
-  case mlir::linalg::ElementwiseKind::tanh:
-    return wafer::ComputeElementwiseKind::Tanh;
-  default:
-    return std::nullopt;
-  }
 }
 
 static bool areBlockArguments(mlir::Value lhs, mlir::Value rhs,
@@ -206,61 +175,18 @@ static bool canFormSingleReduceGroup(mlir::linalg::ReduceOp reduce) {
   return true;
 }
 
-static bool
-canFormSingleElementwiseGroup(mlir::linalg::ElementwiseOp elementwise) {
-  if (elementwise->getParentOfType<wafer::GroupOp>())
+static bool canFormSingleElementwiseGroup(mlir::linalg::GenericOp generic) {
+  if (generic->getParentOfType<wafer::GroupOp>())
     return false;
-  if (!mapElementwiseKind(elementwise.getKind()))
+  if (!isLimitedBroadcastElementwiseGeneric(generic))
     return false;
-  if (elementwise->getNumResults() != 1 || elementwise.getOutputs().size() != 1)
+  if (!llvm::all_of(generic.getDpsInputs(), isTensorValue))
     return false;
-  if (!llvm::all_of(elementwise.getInputs(), isTensorValue))
+  if (!llvm::all_of(generic.getDpsInits(), isTensorValue))
     return false;
-  if (!llvm::all_of(elementwise.getOutputs(), isTensorValue))
-    return false;
-
-  auto resultType = mlir::dyn_cast<mlir::RankedTensorType>(
-      elementwise->getResult(0).getType());
-  if (!resultType || elementwise.getOutputs()[0].getType() != resultType)
-    return false;
-
-  llvm::SmallVector<mlir::AffineMap> maps = elementwise.getIndexingMapsArray();
-  if (maps.size() !=
-      elementwise.getInputs().size() + elementwise.getOutputs().size())
-    return false;
-  mlir::AffineMap resultMap = maps.back();
-  if (resultMap.getNumDims() != resultType.getRank() ||
-      resultMap.getNumSymbols() != 0 || !resultMap.isIdentity())
-    return false;
-
-  for (auto [index, input] : llvm::enumerate(elementwise.getInputs())) {
-    auto inputType = mlir::dyn_cast<mlir::RankedTensorType>(input.getType());
-    if (!inputType || inputType.getElementType() != resultType.getElementType())
-      return false;
-
-    mlir::AffineMap inputMap = maps[index];
-    if (inputMap.getNumDims() != resultType.getRank() ||
-        inputMap.getNumSymbols() != 0 ||
-        inputMap.getNumResults() != inputType.getRank() ||
-        !inputMap.isProjectedPermutation())
-      return false;
-
-    for (auto [dim, expr] : llvm::enumerate(inputMap.getResults())) {
-      auto dimExpr = mlir::dyn_cast<mlir::AffineDimExpr>(expr);
-      if (!dimExpr || dimExpr.getPosition() >= resultType.getRank())
-        return false;
-      if (hasStaticMismatch(inputType.getDimSize(dim),
-                            resultType.getDimSize(dimExpr.getPosition())))
-        return false;
-    }
-  }
-
-  for (mlir::Value input : elementwise.getInputs()) {
-    if (!mlir::isa<mlir::RankedTensorType>(input.getType()))
-      return false;
-  }
   return true;
 }
+
 
 static void addMappedBlockArguments(mlir::Block *block, mlir::ValueRange values,
                                     mlir::IRMapping &mapping) {
@@ -326,11 +252,9 @@ struct FormGroupsPass
       if (auto generic = mlir::dyn_cast<mlir::linalg::GenericOp>(op)) {
         if (canFormSingleAttentionGemmGroup(generic))
           roots.push_back(op);
-        return;
-      }
-      if (auto elementwise = mlir::dyn_cast<mlir::linalg::ElementwiseOp>(op)) {
-        if (canFormSingleElementwiseGroup(elementwise))
+        else if (canFormSingleElementwiseGroup(generic))
           roots.push_back(op);
+        return;
       }
     });
 
@@ -342,9 +266,7 @@ struct FormGroupsPass
       else if (auto generic = mlir::dyn_cast<mlir::linalg::GenericOp>(root)) {
         llvm::SmallVector<mlir::Value> inputs = generic.getDpsInputs();
         formGroup(root, inputs, generic.getDpsInits());
-      } else if (auto elementwise =
-                     mlir::dyn_cast<mlir::linalg::ElementwiseOp>(root))
-        formGroup(root, elementwise.getInputs(), elementwise.getOutputs());
+      }
     }
   }
 };

@@ -30,6 +30,7 @@ REQUIRED_KEYS = [
     "WAFER_PYTORCH_VERSION",
     "WAFER_TORCHVISION_VERSION",
     "WAFER_TORCH_XLA_PYTHON_VERSION",
+    "WAFER_PYTORCH_XLA_COMMIT",
     "WAFER_PYTHON_LIT_VERSION",
 ]
 
@@ -172,6 +173,7 @@ def check_cmake_target_visibility() -> None:
         '${WAFER_DEPS_ROOT}/stablehlo',
         '${WAFER_DEPS_ROOT}/shardy',
         '${WAFER_DEPS_ROOT}/xla',
+        '${WAFER_DEPS_ROOT}/pytorch-xla',
         "WAFER_IMPORTER_PYTHON_VENV",
         '${WAFER_DEPS_ROOT}/googletest',
         "WAFER_ENABLE_RUNTIME_DEPS",
@@ -189,6 +191,25 @@ def check_cmake_target_visibility() -> None:
     )
     check_text_contains(
         REPO_ROOT / "cmake" / "third_party" / "WaferThirdParty.cmake",
+        "WaferShardyCMake.cmake",
+    )
+    check_text_contains(
+        REPO_ROOT / "CMakeLists.txt",
+        "add_dependencies(check-wafer wafer-shardy-cmake-gate)",
+    )
+    shardy_cmake_path = REPO_ROOT / "cmake" / "third_party" / "WaferShardyCMake.cmake"
+    for needle in [
+        "llvm_update_compile_flags(${target})",
+        "add_library(ShardySdyDialect STATIC",
+        "add_library(ShardySdyImportPasses STATIC",
+        "add_library(ShardySdyExportPasses STATIC",
+        "add_library(ShardySdyPropagationPasses STATIC",
+        "add_executable(shardy-sdy-opt",
+        "add_custom_target(wafer-shardy-cmake-gate",
+    ]:
+        check_text_contains(shardy_cmake_path, needle)
+    check_text_contains(
+        REPO_ROOT / "cmake" / "third_party" / "WaferThirdParty.cmake",
         "function(wafer_require_gtest)",
     )
     for submodule_path in [
@@ -197,6 +218,7 @@ def check_cmake_target_visibility() -> None:
         "third_party/shardy",
         "third_party/xla",
         "third_party/googletest",
+        "third_party/pytorch-xla",
     ]:
         check_text_contains(REPO_ROOT / ".gitmodules", submodule_path)
     for requirement in [
@@ -379,6 +401,7 @@ def print_versions(versions: dict[str, str]) -> None:
         f"torchvision {versions['WAFER_TORCHVISION_VERSION']} "
         f"torch_xla {versions['WAFER_TORCH_XLA_PYTHON_VERSION']}"
     )
+    print(f"PyTorch/XLA source {versions['WAFER_PYTORCH_XLA_COMMIT']}")
     print(f"googletest {versions['WAFER_GOOGLETEST_TAG']} {versions['WAFER_GOOGLETEST_COMMIT']}")
     print(f"lit {versions['WAFER_PYTHON_LIT_VERSION']}")
 
@@ -437,6 +460,11 @@ def main() -> int:
         label="OpenXLA/XLA",
         relative=pathlib.Path("xla"),
         expected_commit=versions["WAFER_OPENXLA_XLA_COMMIT"],
+    )
+    check_checkout_pin(
+        label="PyTorch/XLA",
+        relative=pathlib.Path("pytorch-xla"),
+        expected_commit=versions["WAFER_PYTORCH_XLA_COMMIT"],
     )
     check_checkout_pin(
         label="googletest",

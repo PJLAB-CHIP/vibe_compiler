@@ -43,26 +43,27 @@ module {
 
 // CHECK-LABEL: func.func @lower_binary
 // CHECK-NOT: stablehlo.
-// CHECK: linalg.elementwise kind=#linalg.elementwise_kind<add>
-// CHECK: linalg.elementwise kind=#linalg.elementwise_kind<sub>
-// CHECK: linalg.elementwise kind=#linalg.elementwise_kind<mul>
-// CHECK: linalg.elementwise kind=#linalg.elementwise_kind<div>
-// CHECK: linalg.elementwise kind=#linalg.elementwise_kind<max_signed>
-// CHECK: linalg.elementwise kind=#linalg.elementwise_kind<min_signed>
+// CHECK: linalg.generic
+// CHECK: arith.addf
+// CHECK: arith.subf
+// CHECK: arith.mulf
+// CHECK: arith.divf
+// CHECK: arith.maximumf
+// CHECK: arith.minimumf
 
 // CHECK-LABEL: func.func @lower_unary
 // CHECK-NOT: stablehlo.
-// CHECK: linalg.elementwise kind=#linalg.elementwise_kind<negf>
-// CHECK: linalg.elementwise kind=#linalg.elementwise_kind<sqrt>
-// CHECK: linalg.elementwise kind=#linalg.elementwise_kind<rsqrt>
-// CHECK: linalg.elementwise kind=#linalg.elementwise_kind<exp>
+// CHECK: arith.negf
+// CHECK: math.sqrt
+// CHECK: math.rsqrt
+// CHECK: math.exp
 
 // CHECK-LABEL: func.func @lower_reciprocal
 // CHECK-NOT: stablehlo.
-// CHECK: linalg.elementwise kind=#linalg.elementwise_kind<reciprocal>
+// CHECK: arith.divf
 
 // CHECK-LABEL: func.func @lower_broadcasted_add
 // CHECK-NOT: stablehlo.
-// CHECK: linalg.elementwise
-// CHECK-SAME: kind=#linalg.elementwise_kind<add>
+// CHECK: linalg.generic
 // CHECK-SAME: indexing_maps = [#[[BCAST_MAP]], #[[IDENTITY_MAP]], #[[IDENTITY_MAP]]]
+// CHECK: arith.addf

@@ -50,14 +50,14 @@ module {
 // CHECK-SAME: [0, 0] [2, 2] [1, 1]
 // CHECK: tensor.extract_slice
 // CHECK-SAME: [0, 2] [2, 2] [1, 1]
-// CHECK: linalg.elementwise kind=#linalg.elementwise_kind<mul>
-// CHECK: linalg.elementwise kind=#linalg.elementwise_kind<sub>
-// CHECK: linalg.elementwise kind=#linalg.elementwise_kind<add>
+// CHECK: arith.mulf
+// CHECK: arith.subf
+// CHECK: arith.addf
 // CHECK: tensor.concat dim(1)
 
 // CHECK-LABEL: func.func @gelu_tanh_staged
 // CHECK-NOT: stablehlo.
-// CHECK: linalg.elementwise kind=#linalg.elementwise_kind<mul>
-// CHECK: linalg.elementwise kind=#linalg.elementwise_kind<add>
-// CHECK: linalg.elementwise kind=#linalg.elementwise_kind<tanh>
-// CHECK: linalg.elementwise kind=#linalg.elementwise_kind<mul>
+// CHECK: arith.mulf
+// CHECK: arith.addf
+// CHECK: math.tanh
+// CHECK: arith.mulf

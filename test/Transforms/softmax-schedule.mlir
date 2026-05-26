@@ -15,14 +15,25 @@ module {
         outs(%max_init : tensor<2xf32>)
         dimensions = [1]
     %shifted_init = tensor.empty() : tensor<2x4xf32>
-    %shifted = linalg.elementwise kind=#linalg.elementwise_kind<sub>
-        indexing_maps = [#map, #row, #map]
+    %shifted = linalg.generic {
+        indexing_maps = [#map, #row, #map],
+        iterator_types = ["parallel", "parallel"]}
         ins(%scores, %row_max : tensor<2x4xf32>, tensor<2xf32>)
-        outs(%shifted_init : tensor<2x4xf32>) -> tensor<2x4xf32>
+        outs(%shifted_init : tensor<2x4xf32>) {
+      ^bb0(%score_s: f32, %max_s: f32, %out_s: f32):
+        %sub = arith.subf %score_s, %max_s : f32
+        linalg.yield %sub : f32
+    } -> tensor<2x4xf32>
     %exp_init = tensor.empty() : tensor<2x4xf32>
-    %exp_scores = linalg.elementwise kind=#linalg.elementwise_kind<exp>
+    %exp_scores = linalg.generic {
+        indexing_maps = [#map, #map],
+        iterator_types = ["parallel", "parallel"]}
         ins(%shifted : tensor<2x4xf32>)
-        outs(%exp_init : tensor<2x4xf32>) -> tensor<2x4xf32>
+        outs(%exp_init : tensor<2x4xf32>) {
+      ^bb0(%shifted_s: f32, %out_s: f32):
+        %exp = math.exp %shifted_s : f32
+        linalg.yield %exp : f32
+    } -> tensor<2x4xf32>
     %sum_init_empty = tensor.empty() : tensor<2xf32>
     %sum_init = linalg.fill ins(%zero : f32)
         outs(%sum_init_empty : tensor<2xf32>) -> tensor<2xf32>
@@ -31,10 +42,15 @@ module {
         outs(%sum_init : tensor<2xf32>)
         dimensions = [1]
     %prob_init = tensor.empty() : tensor<2x4xf32>
-    %prob = linalg.elementwise kind=#linalg.elementwise_kind<div>
-        indexing_maps = [#map, #row, #map]
+    %prob = linalg.generic {
+        indexing_maps = [#map, #row, #map],
+        iterator_types = ["parallel", "parallel"]}
         ins(%exp_scores, %row_sum : tensor<2x4xf32>, tensor<2xf32>)
-        outs(%prob_init : tensor<2x4xf32>) -> tensor<2x4xf32>
+        outs(%prob_init : tensor<2x4xf32>) {
+      ^bb0(%exp_s: f32, %sum_s: f32, %out_s: f32):
+        %div = arith.divf %exp_s, %sum_s : f32
+        linalg.yield %div : f32
+    } -> tensor<2x4xf32>
     return %prob : tensor<2x4xf32>
   }
 }
@@ -43,13 +59,15 @@ module {
 // CHECK: linalg.reduce
 // CHECK-SAME: arith.maximumf
 // CHECK-SAME: dimensions = [1]
-// CHECK: linalg.elementwise
-// CHECK-SAME: kind=#linalg.elementwise_kind<sub>
-// CHECK: linalg.elementwise kind=#linalg.elementwise_kind<exp>
+// CHECK: linalg.generic
+// CHECK-SAME: indexing_maps = [#map, #map{{[0-9]+}}, #map]
+// CHECK: arith.subf
+// CHECK: linalg.generic
+// CHECK: math.exp
 // CHECK: linalg.reduce
 // CHECK-SAME: arith.addf
 // CHECK-SAME: dimensions = [1]
-// CHECK: linalg.elementwise
-// CHECK-SAME: kind=#linalg.elementwise_kind<div>
+// CHECK: linalg.generic
 // CHECK-SAME: indexing_maps = [#map, #map{{[0-9]+}}, #map]
+// CHECK: arith.divf
 // CHECK-NOT: wafer.softmax

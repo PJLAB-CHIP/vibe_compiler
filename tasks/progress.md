@@ -9,7 +9,8 @@
 
 - P0-P6 的历史实现只能视为骨架进度（`skeleton`）：有局部 IR、pass、verifier、fixture 和 smoke tests，
   但没有按各设计文档完成主路径闭环。
-- R0.2/R0.3 已恢复源码 ownership 和依赖层级边界；ODS/verifier 按 op prefix 拆分仍在 R1.1。
+- R0.2/R0.3 已恢复源码 ownership、依赖层级边界和统一 Shardy CMake compile gate；ODS/verifier
+  按 op prefix 拆分仍在 R1.1。
 - 设计一致性缺口见
   `tasks/2026-05-26-wafer-p0-p6-design-conformance-audit.md` 和
   `tasks/2026-05-26-wafer-p0-p6-recovery-status.md`。
@@ -61,7 +62,7 @@
 | --- | --- | --- | --- |
 | R0.1 | done | 逐项重读 P0-P6 对应设计文档并重写任务状态 | 记录见 `tasks/2026-05-26-wafer-p0-p6-recovery-status.md`；每个历史 skeleton 项都有“设计合同 / 当前实现 / 缺口 / 恢复任务” |
 | R0.2 | done | 恢复源码组织边界 | 记录见 `tasks/2026-05-26-wafer-source-organization-recovery.md`；IR / Frontend / Transforms / Conversion / ABI ownership 已拆开，C ABI skeleton 不再归属 `WaferTransforms` |
-| R0.3 | done | 补依赖层级清单 | 记录见 `tasks/2026-05-26-wafer-dependency-layering-recovery.md`；core compiler public source deps 已收敛为 OpenXLA/XLA 版本栈（LLVM/MLIR、StableHLO、Shardy、XLA、GTest）并按 `third_party/<name>` submodule 组织；PyTorch/XLA、torch-mlir source checkout 只能作为 optional frontend/importer tooling 依赖，不能穿透到 core public deps；若 `third_party/pytorch-xla` 存在，`tools/check_deps.py` 会要求其 `WORKSPACE` `xla_hash` 与 `WAFER_OPENXLA_XLA_COMMIT` 一致；target 可见范围、XLA stack pin 和 XLA/Shardy StableHLO patch 一致性由 `tools/check_deps.py` 检查；统一栈已通过 Wafer lit/CTest、LLVM install、Shardy build 和 XLA CPU build |
+| R0.3 | done | 补依赖层级清单 | 记录见 `tasks/2026-05-26-wafer-dependency-layering-recovery.md`；依赖栈已改为以 PyTorch/XLA 2.5 source baseline 为根：`third_party/pytorch-xla` 的 `WORKSPACE` `xla_hash` 决定 `third_party/xla`，再由 XLA workspace 决定 LLVM/MLIR、StableHLO 和 Shardy base；Shardy/SDY 公共 dialect 与 import/export/propagation passes 已通过 Wafer 顶层 CMake shim 编译到 `shardy-sdy-opt`，不再用 Shardy 自己的 Bazel workspace 作为 Wafer gate；仓库 public source deps 统一为 MLIR/StableHLO/Shardy/XLA/GTest/PyTorch-XLA，core compiler target 不 public link Shardy/XLA/PyTorch-XLA；PyTorch/XLA 只能在 frontend/importer tooling 层使用；target 可见范围、整栈 pin 一致性和 Shardy CMake gate 存在性由 `tools/check_deps.py` 检查 |
 | R1.1 | ready | 拆分 Wafer IR 文件边界 | ODS、C++ verifier 和 tests 按 group/tile_region/layout/SPM/compute/comm/sync/launch op prefix 组织 |
 | R1.2 | pending | 恢复 interface/effect/resource 合同 | planner、layout、SPM/DDR、compute/comm 能通过 op interface / effect 查询需求和合法性 |
 | R1.3 | pending | 补 stage-connection tests | 减少只靠 `unrealized_conversion_cast` 的孤立 verifier case，增加上下游连接验证 |

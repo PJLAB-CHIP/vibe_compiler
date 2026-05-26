@@ -3,6 +3,7 @@
 #include "Wafer/Transforms/Passes.h"
 
 #include "Support/AttentionGemmUtils.h"
+#include "Support/ElementwiseUtils.h"
 #include "Wafer/IR/WaferDialect.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -93,15 +94,17 @@ getSingleAttentionGemmBody(wafer::GroupOp group) {
   return generic;
 }
 
-static mlir::linalg::ElementwiseOp
+static mlir::linalg::GenericOp
 getSingleElementwiseBody(wafer::GroupOp group) {
-  mlir::linalg::ElementwiseOp elementwise;
+  mlir::linalg::GenericOp elementwise;
   mlir::Block &block = group.getBody().front();
   for (mlir::Operation &op : block) {
     if (&op == block.getTerminator())
       continue;
-    auto candidate = mlir::dyn_cast<mlir::linalg::ElementwiseOp>(op);
+    auto candidate = mlir::dyn_cast<mlir::linalg::GenericOp>(op);
     if (!candidate || elementwise)
+      return {};
+    if (!isLimitedBroadcastElementwiseGeneric(candidate))
       return {};
     elementwise = candidate;
   }
@@ -120,38 +123,6 @@ static mlir::linalg::ReduceOp getSingleReduceBody(wafer::GroupOp group) {
     reduce = candidate;
   }
   return reduce;
-}
-
-static std::optional<wafer::ComputeElementwiseKind>
-mapElementwiseKind(mlir::linalg::ElementwiseKind kind) {
-  switch (kind) {
-  case mlir::linalg::ElementwiseKind::add:
-    return wafer::ComputeElementwiseKind::Add;
-  case mlir::linalg::ElementwiseKind::sub:
-    return wafer::ComputeElementwiseKind::Sub;
-  case mlir::linalg::ElementwiseKind::mul:
-    return wafer::ComputeElementwiseKind::Mul;
-  case mlir::linalg::ElementwiseKind::div:
-    return wafer::ComputeElementwiseKind::Div;
-  case mlir::linalg::ElementwiseKind::max_signed:
-    return wafer::ComputeElementwiseKind::Max;
-  case mlir::linalg::ElementwiseKind::min_signed:
-    return wafer::ComputeElementwiseKind::Min;
-  case mlir::linalg::ElementwiseKind::negf:
-    return wafer::ComputeElementwiseKind::Neg;
-  case mlir::linalg::ElementwiseKind::reciprocal:
-    return wafer::ComputeElementwiseKind::Recip;
-  case mlir::linalg::ElementwiseKind::sqrt:
-    return wafer::ComputeElementwiseKind::Sqrt;
-  case mlir::linalg::ElementwiseKind::rsqrt:
-    return wafer::ComputeElementwiseKind::Rsqrt;
-  case mlir::linalg::ElementwiseKind::exp:
-    return wafer::ComputeElementwiseKind::Exp;
-  case mlir::linalg::ElementwiseKind::tanh:
-    return wafer::ComputeElementwiseKind::Tanh;
-  default:
-    return std::nullopt;
-  }
 }
 
 static bool areBlockArguments(mlir::Value lhs, mlir::Value rhs,
@@ -477,17 +448,18 @@ materializeReduceGroup(wafer::GroupOp group, mlir::linalg::ReduceOp reduce) {
 
 static mlir::LogicalResult
 materializeElementwiseGroup(wafer::GroupOp group,
-                            mlir::linalg::ElementwiseOp elementwise) {
+                            mlir::linalg::GenericOp elementwise) {
   if (group.getNumResults() != 1 || group.getOuts().size() != 1)
     return group.emitOpError(
         "cannot materialize single tile: expected one group result and out");
-  if (elementwise->getNumResults() != 1 || elementwise.getOutputs().size() != 1)
+  if (elementwise->getNumResults() != 1 ||
+      elementwise.getDpsInits().size() != 1)
     return elementwise.emitOpError(
         "cannot materialize single tile: expected tensor elementwise with one "
         "out and one result");
 
   std::optional<wafer::ComputeElementwiseKind> kind =
-      mapElementwiseKind(elementwise.getKind());
+      matchElementwiseGeneric(elementwise);
   if (!kind)
     return elementwise.emitOpError(
         "cannot materialize single tile: unsupported elementwise kind");
@@ -500,7 +472,7 @@ materializeElementwiseGroup(wafer::GroupOp group,
 
   llvm::SmallVector<mlir::AffineMap> maps = elementwise.getIndexingMapsArray();
   if (maps.size() !=
-      elementwise.getInputs().size() + elementwise.getOutputs().size())
+      elementwise.getDpsInputs().size() + elementwise.getDpsInits().size())
     return elementwise.emitOpError(
         "cannot materialize single tile: elementwise indexing map count must "
         "match inputs plus outputs");
@@ -510,7 +482,7 @@ materializeElementwiseGroup(wafer::GroupOp group,
     return elementwise.emitOpError(
         "cannot materialize single tile: result indexing map must be identity");
 
-  for (auto [index, input] : llvm::enumerate(elementwise.getInputs())) {
+  for (auto [index, input] : llvm::enumerate(elementwise.getDpsInputs())) {
     auto inputType = mlir::dyn_cast<mlir::RankedTensorType>(input.getType());
     if (!inputType || inputType.getElementType() != resultType.getElementType())
       return elementwise.emitOpError(
@@ -536,7 +508,7 @@ materializeElementwiseGroup(wafer::GroupOp group,
             "dimension must match tensor shape");
     }
   }
-  if (elementwise.getOutputs()[0].getType() != resultType)
+  if (elementwise.getDpsInits()[0].getType() != resultType)
     return elementwise.emitOpError(
         "cannot materialize single tile: elementwise out tensor type must "
         "match result type");
@@ -561,7 +533,7 @@ materializeElementwiseGroup(wafer::GroupOp group,
     mapping.map(oldArg, newArg);
   }
 
-  mlir::Value out = mapping.lookup(elementwise.getOutputs()[0]);
+  mlir::Value out = mapping.lookup(elementwise.getDpsInits()[0]);
   mlir::MLIRContext *context = group.getContext();
   mlir::Location loc = group.getLoc();
   mlir::OpBuilder bodyBuilder = mlir::OpBuilder::atBlockEnd(body);
@@ -569,7 +541,7 @@ materializeElementwiseGroup(wafer::GroupOp group,
       getSPMTileBuffer(context, resultType, wafer::MemLayout::Tensor);
 
   llvm::SmallVector<mlir::Value> inputTiles;
-  for (mlir::Value input : elementwise.getInputs()) {
+  for (mlir::Value input : elementwise.getDpsInputs()) {
     mlir::Value mappedInput = mapping.lookup(input);
     auto inputType = mlir::cast<mlir::RankedTensorType>(mappedInput.getType());
     auto inputTileType =
@@ -598,12 +570,12 @@ static mlir::LogicalResult materializeGroup(wafer::GroupOp group) {
     return materializeAttentionGemmGroup(group, generic);
   if (mlir::linalg::ReduceOp reduce = getSingleReduceBody(group))
     return materializeReduceGroup(group, reduce);
-  if (mlir::linalg::ElementwiseOp elementwise = getSingleElementwiseBody(group))
+  if (mlir::linalg::GenericOp elementwise = getSingleElementwiseBody(group))
     return materializeElementwiseGroup(group, elementwise);
   return group.emitOpError(
       "cannot materialize single tile: expected one linalg.matmul, "
       "supported attention linalg.generic contraction, linalg.reduce, or "
-      "linalg.elementwise body op");
+      "elementwise linalg.generic body op");
 }
 
 struct MaterializeSingleTilePass

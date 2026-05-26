@@ -29,11 +29,11 @@ module {
 // CHECK-LABEL: func.func @projection_residual
 // CHECK-NOT: stablehlo.
 // CHECK: linalg.matmul
-// CHECK: linalg.elementwise
-// CHECK-SAME: kind=#linalg.elementwise_kind<add>
+// CHECK: linalg.generic
 // CHECK-SAME: indexing_maps = [#[[IDENTITY]], #[[COL]], #[[IDENTITY]]]
-// CHECK: linalg.elementwise
-// CHECK-SAME: kind=#linalg.elementwise_kind<add>
+// CHECK: arith.addf
+// CHECK: linalg.generic
 // CHECK-SAME: tensor<4x16xf32>, tensor<4x16xf32>
+// CHECK: arith.addf
 // CHECK-NOT: wafer.projection
 // CHECK: return %{{.+}} : tensor<4x16xf32>

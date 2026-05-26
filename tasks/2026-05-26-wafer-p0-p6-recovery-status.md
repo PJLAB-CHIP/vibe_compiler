@@ -74,6 +74,9 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
 - `WaferTransforms` 只注册 transform pass；C ABI skeleton lowering 归入 `WaferConversion`。
 - R0.3 后 core compiler、frontend/importer、runtime/driver 和 test tooling 的 target 可见范围记录在
   `tasks/2026-05-26-wafer-dependency-layering-recovery.md`，并由 `tools/check_deps.py` 检查。
+- Shardy/SDY 公共 dialect 与 import/export/propagation passes 已通过 Wafer 顶层 CMake shim 复用
+  同一套 pinned LLVM/MLIR/StableHLO 编译到 `shardy-sdy-opt`；不再以 Shardy standalone Bazel
+  workspace 作为 Wafer dependency gate。
 
 缺口：
 
@@ -82,11 +85,11 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
 - IR 内部 ODS / verifier / tests 仍未按 group、tile_region、layout、SPM、compute、comm、sync、
   launch op prefix 拆分；这是 R1.1。
 - StableHLO/Shardy dependency 当前主要服务 textual lowering smoke 和 future SPMD bridge dependency
-  boundary；OpenXLA/XLA 已作为 future GSPMD partitioner source pin 接入，并作为 LLVM/StableHLO/Shardy
-  stack pin 的事实源；PyTorch/XLA、torch-mlir source checkout 若进入仓库，只能作为 optional
-  frontend/importer tooling 依赖，不能成为 core compiler public dependency。PyTorch/XLA source
-  必须与同一 `third_party/xla` commit 对齐，或通过受检查的 `--override_repository` wrapper 使用
-  同一份 XLA。
+  boundary；R0.3 依赖栈以 PyTorch/XLA 2.5 source baseline 为根，PyTorch/XLA 的 `WORKSPACE`
+  `xla_hash` 选择 OpenXLA/XLA，XLA workspace 再选择 LLVM/StableHLO/Shardy base。PyTorch/XLA
+  source 只能进入 frontend/importer tooling 层，不能成为 core compiler public dependency 或第二套
+  XLA/LLVM/StableHLO 事实源；Shardy compile gate 只证明公共 SPMD 依赖可用，不代表 R2.2 bridge
+  已完成。
   真实 importer adapter 和 artifact verifier 还没成为独立 frontend 层。
 - runtime/driver 头文件和真实 runtime adapter 尚未进入 launch/C ABI 层。
 
@@ -94,7 +97,7 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
 
 - R0.2：已完成源码组织边界恢复；记录见
   `tasks/2026-05-26-wafer-source-organization-recovery.md`。
-- R0.3：已完成依赖层级清单和检查；记录见
+- R0.3：已完成依赖层级清单、检查和统一 Shardy CMake compile gate；记录见
   `tasks/2026-05-26-wafer-dependency-layering-recovery.md`。
 
 ## P1 Wafer IR Skeleton 和 Verifier

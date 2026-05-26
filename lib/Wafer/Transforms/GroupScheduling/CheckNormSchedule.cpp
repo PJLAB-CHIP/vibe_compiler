@@ -2,6 +2,8 @@
 
 #include "Wafer/Transforms/Passes.h"
 
+#include "Support/ElementwiseUtils.h"
+
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -27,19 +29,21 @@ static bool isHiddenDimReduce(mlir::linalg::ReduceOp reduce) {
   return dims.size() == 1 && dims.front() == *inputRank - 1;
 }
 
-static bool isBroadcastMul(mlir::linalg::ElementwiseOp elementwise) {
-  if (elementwise.getKind() != mlir::linalg::ElementwiseKind::mul)
+static bool isBroadcastMul(mlir::linalg::GenericOp elementwise) {
+  std::optional<wafer::ComputeElementwiseKind> kind =
+      matchElementwiseGeneric(elementwise);
+  if (kind != wafer::ComputeElementwiseKind::Mul)
     return false;
-  if (elementwise.getOutputs().empty())
+  if (elementwise.getDpsInits().empty())
     return false;
   std::optional<int64_t> outputRank =
-      getRankedTensorRank(elementwise.getOutputs()[0]);
+      getRankedTensorRank(elementwise.getDpsInits()[0]);
   if (!outputRank || *outputRank < 2)
     return false;
 
   bool hasFullRankInput = false;
   bool hasReducedRankInput = false;
-  for (mlir::Value input : elementwise.getInputs()) {
+  for (mlir::Value input : elementwise.getDpsInputs()) {
     std::optional<int64_t> inputRank = getRankedTensorRank(input);
     if (!inputRank)
       continue;
@@ -85,8 +89,10 @@ struct CheckNormSchedulePass
         firstNonHiddenReduce = reduce;
     });
 
-    module.walk([&](mlir::linalg::ElementwiseOp elementwise) {
-      if (elementwise.getKind() == mlir::linalg::ElementwiseKind::rsqrt)
+    module.walk([&](mlir::linalg::GenericOp elementwise) {
+      std::optional<wafer::ComputeElementwiseKind> kind =
+          matchElementwiseGeneric(elementwise);
+      if (kind == wafer::ComputeElementwiseKind::Rsqrt)
         sawRsqrt = true;
       if (isBroadcastMul(elementwise))
         sawBroadcastMul = true;

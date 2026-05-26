@@ -40,13 +40,14 @@ module {
 // CHECK: linalg.reduce
 // CHECK-SAME: arith.maximumf
 // CHECK-SAME: dimensions = [1]
-// CHECK: linalg.elementwise
-// CHECK-SAME: kind=#linalg.elementwise_kind<sub>
+// CHECK: linalg.generic
 // CHECK-SAME: indexing_maps = [#[[IDENTITY_MAP]], #[[ROW_MAP]], #[[IDENTITY_MAP]]]
-// CHECK: linalg.elementwise kind=#linalg.elementwise_kind<exp>
+// CHECK: arith.subf
+// CHECK: linalg.generic
+// CHECK: math.exp
 // CHECK: linalg.reduce
 // CHECK-SAME: arith.addf
 // CHECK-SAME: dimensions = [1]
-// CHECK: linalg.elementwise
-// CHECK-SAME: kind=#linalg.elementwise_kind<div>
+// CHECK: linalg.generic
 // CHECK-SAME: indexing_maps = [#[[IDENTITY_MAP]], #[[ROW_MAP]], #[[IDENTITY_MAP]]]
+// CHECK: arith.divf

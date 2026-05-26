@@ -16,7 +16,7 @@ option(WAFER_ENABLE_IMPORTER_DEPS
 option(WAFER_ENABLE_FRAMEWORK_IMPORTER_DEPS
   "Enable future framework importer adapter dependency checks" OFF)
 option(WAFER_ENABLE_SPMD_PARTITIONER_DEPS
-  "Enable future Shardy/GSPMD partitioner dependency roots" OFF)
+  "Enable Shardy/GSPMD partitioner dependency roots and unified Shardy CMake gate" OFF)
 option(WAFER_ENABLE_RUNTIME_DEPS
   "Enable future runtime/driver SDK dependency roots" OFF)
 option(WAFER_FETCH_GTEST
@@ -29,7 +29,9 @@ set(WAFER_STABLEHLO_SOURCE_DIR "${WAFER_DEPS_ROOT}/stablehlo" CACHE PATH
 set(WAFER_SHARDY_SOURCE_DIR "${WAFER_DEPS_ROOT}/shardy" CACHE PATH
   "Pinned Shardy checkout")
 set(WAFER_OPENXLA_XLA_SOURCE_DIR "${WAFER_DEPS_ROOT}/xla" CACHE PATH
-  "Pinned OpenXLA/XLA checkout for future GSPMD partitioner integration")
+  "Pinned OpenXLA/XLA checkout selected by the PyTorch/XLA importer baseline")
+set(WAFER_PYTORCH_XLA_SOURCE_DIR "${WAFER_DEPS_ROOT}/pytorch-xla" CACHE PATH
+  "Pinned PyTorch/XLA checkout used as the framework importer dependency baseline")
 
 set(WAFER_HPGR_SDK_ROOT "" CACHE PATH
   "Optional HPGR runtime SDK root containing tx_runtime headers/libs")
@@ -39,13 +41,16 @@ set(WAFER_LEGACY_TSM_SDK_ROOT "" CACHE PATH
   "Optional legacy Tsm/VS runtime SDK root for fallback adapter work")
 
 if(WAFER_ENABLE_FRAMEWORK_IMPORTER_DEPS)
-  message(STATUS
-    "Framework importer source trees are not vendored as Wafer C++ dependencies; "
-    "use requirements-importer.txt / WAFER_IMPORTER_PYTHON_VENV for importer tooling.")
+  if(NOT EXISTS "${WAFER_PYTORCH_XLA_SOURCE_DIR}/WORKSPACE")
+    message(FATAL_ERROR
+      "PyTorch/XLA source checkout is enabled but missing. "
+      "Run tools/bootstrap_deps.py --importer-sources or set WAFER_PYTORCH_XLA_SOURCE_DIR.")
+  endif()
 endif()
 
 if(WAFER_ENABLE_SPMD_PARTITIONER_DEPS)
   foreach(_wafer_spmd_root
+          WAFER_STABLEHLO_SOURCE_DIR
           WAFER_SHARDY_SOURCE_DIR
           WAFER_OPENXLA_XLA_SOURCE_DIR)
     if(NOT EXISTS "${${_wafer_spmd_root}}")
@@ -78,9 +83,10 @@ find_package(MLIR REQUIRED CONFIG)
 find_package(LLVM REQUIRED CONFIG)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+string(REGEX MATCH "^[0-9]+" WAFER_LLVM_PACKAGE_VERSION_MAJOR "${WAFER_LLVM_PACKAGE_VERSION}")
 if(NOT LLVM_PACKAGE_VERSION STREQUAL WAFER_LLVM_PACKAGE_VERSION)
   if(WAFER_ALLOW_UNPINNED_LLVM
-      AND LLVM_VERSION_MAJOR EQUAL 23)
+      AND LLVM_VERSION_MAJOR EQUAL WAFER_LLVM_PACKAGE_VERSION_MAJOR)
     message(WARNING "Using LLVM ${LLVM_PACKAGE_VERSION} instead of pinned ${WAFER_LLVM_PACKAGE_VERSION}")
   else()
     message(FATAL_ERROR
@@ -101,7 +107,7 @@ include_directories(${CMAKE_SOURCE_DIR}/include)
 include_directories(${CMAKE_BINARY_DIR}/include)
 add_definitions(${LLVM_DEFINITIONS})
 
-if(WAFER_ENABLE_IMPORTER_DEPS)
+if(WAFER_ENABLE_IMPORTER_DEPS OR WAFER_ENABLE_SPMD_PARTITIONER_DEPS)
   if(NOT EXISTS "${WAFER_STABLEHLO_SOURCE_DIR}" OR NOT EXISTS "${WAFER_SHARDY_SOURCE_DIR}")
     message(FATAL_ERROR
       "StableHLO/Shardy sources are enabled but missing. "
@@ -166,6 +172,11 @@ if(WAFER_ENABLE_IMPORTER_DEPS)
   endif()
 
   add_subdirectory("${WAFER_STABLEHLO_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/stablehlo" EXCLUDE_FROM_ALL)
+endif()
+
+if(WAFER_ENABLE_SPMD_PARTITIONER_DEPS)
+  include("${CMAKE_CURRENT_LIST_DIR}/WaferShardyCMake.cmake")
+  wafer_add_shardy_targets()
 endif()
 
 function(wafer_require_gtest)

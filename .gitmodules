@@ -13,3 +13,6 @@
 [submodule "third_party/llvm-project"]
 	path = third_party/llvm-project
 	url = https://github.com/llvm/llvm-project.git
+[submodule "third_party/pytorch-xla"]
+	path = third_party/pytorch-xla
+	url = https://github.com/pytorch/xla.git

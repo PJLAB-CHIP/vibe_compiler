@@ -2,6 +2,8 @@
 
 #include "Wafer/Transforms/Passes.h"
 
+#include "Support/ElementwiseUtils.h"
+
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -27,29 +29,33 @@ static bool hasSingleResult(mlir::Operation *op) {
   return op && op->getNumResults() == 1;
 }
 
-static bool isAdd(mlir::linalg::ElementwiseOp elementwise) {
+static bool isAdd(mlir::linalg::GenericOp elementwise) {
+  std::optional<wafer::ComputeElementwiseKind> kind =
+      matchElementwiseGeneric(elementwise);
   return hasSingleResult(elementwise) &&
-         elementwise.getKind() == mlir::linalg::ElementwiseKind::add &&
-         elementwise.getInputs().size() == 2 &&
+         kind == wafer::ComputeElementwiseKind::Add &&
+         elementwise.getDpsInputs().size() == 2 &&
          hasRank(elementwise->getResult(0), 2);
 }
 
-static bool isBiasAdd(mlir::linalg::ElementwiseOp elementwise,
+static bool isBiasAdd(mlir::linalg::GenericOp elementwise,
                       mlir::Value projected) {
   if (!isAdd(elementwise))
     return false;
-  mlir::Value lhs = elementwise.getInputs()[0];
-  mlir::Value rhs = elementwise.getInputs()[1];
+  llvm::SmallVector<mlir::Value> inputs = elementwise.getDpsInputs();
+  mlir::Value lhs = inputs[0];
+  mlir::Value rhs = inputs[1];
   return (lhs == projected && hasRank(rhs, 1)) ||
          (rhs == projected && hasRank(lhs, 1));
 }
 
-static bool isResidualAdd(mlir::linalg::ElementwiseOp elementwise,
+static bool isResidualAdd(mlir::linalg::GenericOp elementwise,
                           mlir::Value biased) {
   if (!isAdd(elementwise))
     return false;
-  mlir::Value lhs = elementwise.getInputs()[0];
-  mlir::Value rhs = elementwise.getInputs()[1];
+  llvm::SmallVector<mlir::Value> inputs = elementwise.getDpsInputs();
+  mlir::Value lhs = inputs[0];
+  mlir::Value rhs = inputs[1];
   return (lhs == biased && hasRank(rhs, 2)) ||
          (rhs == biased && hasRank(lhs, 2));
 }
@@ -62,7 +68,7 @@ struct ProjectionResidualStagePresence {
 
 static ProjectionResidualStagePresence findProjectionResidualStages(
     llvm::ArrayRef<mlir::linalg::MatmulOp> matmuls,
-    llvm::ArrayRef<mlir::linalg::ElementwiseOp> elementwiseOps) {
+    llvm::ArrayRef<mlir::linalg::GenericOp> elementwiseOps) {
   ProjectionResidualStagePresence stages;
 
   for (mlir::linalg::MatmulOp matmul : matmuls) {
@@ -71,13 +77,13 @@ static ProjectionResidualStagePresence findProjectionResidualStages(
     stages.sawMatmul = true;
     mlir::Value projected = matmul->getResult(0);
 
-    for (mlir::linalg::ElementwiseOp biasAdd : elementwiseOps) {
+    for (mlir::linalg::GenericOp biasAdd : elementwiseOps) {
       if (!isBiasAdd(biasAdd, projected))
         continue;
       stages.sawBiasAdd = true;
       mlir::Value biased = biasAdd->getResult(0);
 
-      for (mlir::linalg::ElementwiseOp residualAdd : elementwiseOps) {
+      for (mlir::linalg::GenericOp residualAdd : elementwiseOps) {
         if (!isResidualAdd(residualAdd, biased))
           continue;
         stages.sawResidualAdd = true;
@@ -111,11 +117,12 @@ struct CheckProjectionResidualSchedulePass
     mlir::ModuleOp module = getOperation();
 
     llvm::SmallVector<mlir::linalg::MatmulOp> matmuls;
-    llvm::SmallVector<mlir::linalg::ElementwiseOp> elementwiseOps;
+    llvm::SmallVector<mlir::linalg::GenericOp> elementwiseOps;
     module.walk(
         [&](mlir::linalg::MatmulOp matmul) { matmuls.push_back(matmul); });
-    module.walk([&](mlir::linalg::ElementwiseOp elementwise) {
-      elementwiseOps.push_back(elementwise);
+    module.walk([&](mlir::linalg::GenericOp elementwise) {
+      if (matchElementwiseGeneric(elementwise))
+        elementwiseOps.push_back(elementwise);
     });
 
     ProjectionResidualStagePresence stages =

@@ -123,12 +123,12 @@ module {
 
 // CHECK-LABEL: func.func @local_transformer_block
 // CHECK-NOT: stablehlo.
-// CHECK: linalg.elementwise kind=#linalg.elementwise_kind<rsqrt>
+// CHECK: math.rsqrt
 // CHECK: linalg.generic
-// CHECK: linalg.elementwise kind=#linalg.elementwise_kind<exp>
+// CHECK: math.exp
 // CHECK: linalg.generic
 // CHECK: tensor.collapse_shape
 // CHECK: linalg.matmul
-// CHECK: linalg.elementwise kind=#linalg.elementwise_kind<tanh>
+// CHECK: math.tanh
 // CHECK: linalg.matmul
 // CHECK: return %{{.+}} : tensor<30x8xf32>

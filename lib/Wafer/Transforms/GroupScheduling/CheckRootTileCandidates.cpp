@@ -3,6 +3,7 @@
 #include "Wafer/Transforms/Passes.h"
 
 #include "Support/AttentionGemmUtils.h"
+#include "Support/ElementwiseUtils.h"
 #include "Wafer/IR/WaferDialect.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -80,69 +81,9 @@ getReduceInitValueAttr(mlir::Value output) {
   return getScalarConstantAttr(fill.getInputs()[0]);
 }
 
-static bool isSupportedElementwiseKind(mlir::linalg::ElementwiseKind kind) {
-  switch (kind) {
-  case mlir::linalg::ElementwiseKind::add:
-  case mlir::linalg::ElementwiseKind::sub:
-  case mlir::linalg::ElementwiseKind::mul:
-  case mlir::linalg::ElementwiseKind::div:
-  case mlir::linalg::ElementwiseKind::max_signed:
-  case mlir::linalg::ElementwiseKind::min_signed:
-  case mlir::linalg::ElementwiseKind::negf:
-  case mlir::linalg::ElementwiseKind::reciprocal:
-  case mlir::linalg::ElementwiseKind::sqrt:
-  case mlir::linalg::ElementwiseKind::rsqrt:
-  case mlir::linalg::ElementwiseKind::exp:
-  case mlir::linalg::ElementwiseKind::tanh:
-    return true;
-  default:
-    return false;
-  }
-}
-
 static bool
-isLimitedBroadcastElementwiseRoot(mlir::linalg::ElementwiseOp elementwise) {
-  if (!isSupportedElementwiseKind(elementwise.getKind()))
-    return false;
-  if (elementwise->getNumResults() != 1 || elementwise.getOutputs().size() != 1)
-    return false;
-
-  auto resultType = mlir::dyn_cast<mlir::RankedTensorType>(
-      elementwise->getResult(0).getType());
-  if (!resultType || elementwise.getOutputs()[0].getType() != resultType)
-    return false;
-
-  llvm::SmallVector<mlir::AffineMap> maps = elementwise.getIndexingMapsArray();
-  if (maps.size() !=
-      elementwise.getInputs().size() + elementwise.getOutputs().size())
-    return false;
-  mlir::AffineMap resultMap = maps.back();
-  if (resultMap.getNumDims() != resultType.getRank() ||
-      resultMap.getNumSymbols() != 0 || !resultMap.isIdentity())
-    return false;
-
-  for (auto [index, input] : llvm::enumerate(elementwise.getInputs())) {
-    auto inputType = mlir::dyn_cast<mlir::RankedTensorType>(input.getType());
-    if (!inputType || inputType.getElementType() != resultType.getElementType())
-      return false;
-
-    mlir::AffineMap inputMap = maps[index];
-    if (inputMap.getNumDims() != resultType.getRank() ||
-        inputMap.getNumSymbols() != 0 ||
-        inputMap.getNumResults() != inputType.getRank() ||
-        !inputMap.isProjectedPermutation())
-      return false;
-
-    for (auto [dim, expr] : llvm::enumerate(inputMap.getResults())) {
-      auto dimExpr = mlir::dyn_cast<mlir::AffineDimExpr>(expr);
-      if (!dimExpr || dimExpr.getPosition() >= resultType.getRank())
-        return false;
-      if (hasStaticMismatch(inputType.getDimSize(dim),
-                            resultType.getDimSize(dimExpr.getPosition())))
-        return false;
-    }
-  }
-  return true;
+isLimitedBroadcastElementwiseRoot(mlir::linalg::GenericOp generic) {
+  return isLimitedBroadcastElementwiseGeneric(generic);
 }
 
 static bool areBlockArguments(mlir::Value lhs, mlir::Value rhs,
@@ -303,9 +244,7 @@ checkM0CandidateFeasibility(wafer::GroupOp group,
   auto generic = mlir::dyn_cast<mlir::linalg::GenericOp>(root);
   if (generic && matchAttentionGemm(generic))
     return FeasibilityResult::success();
-
-  auto elementwise = mlir::dyn_cast<mlir::linalg::ElementwiseOp>(root);
-  if (elementwise && isLimitedBroadcastElementwiseRoot(elementwise))
+  if (generic && isLimitedBroadcastElementwiseRoot(generic))
     return FeasibilityResult::success();
 
   auto reduce = mlir::dyn_cast<mlir::linalg::ReduceOp>(root);
@@ -314,7 +253,8 @@ checkM0CandidateFeasibility(wafer::GroupOp group,
 
   return FeasibilityResult::failure(
       "M0 feasibility requires a linalg.matmul, supported attention "
-      "linalg.generic contraction, limited-broadcast linalg.elementwise, or "
+      "linalg.generic contraction, limited-broadcast elementwise "
+      "linalg.generic, or "
       "supported linalg.reduce root");
 }
 

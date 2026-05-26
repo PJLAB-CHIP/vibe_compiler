@@ -83,23 +83,23 @@ module {
 // CHECK: linalg.reduce
 // CHECK-SAME: arith.addf
 // CHECK-SAME: dimensions = [1]
-// CHECK: linalg.elementwise kind=#linalg.elementwise_kind<div>
-// CHECK: linalg.elementwise kind=#linalg.elementwise_kind<add>
-// CHECK: linalg.elementwise kind=#linalg.elementwise_kind<rsqrt>
-// CHECK: linalg.elementwise
-// CHECK-SAME: kind=#linalg.elementwise_kind<mul>
+// CHECK: arith.divf
+// CHECK: arith.addf
+// CHECK: math.rsqrt
+// CHECK: linalg.generic
 // CHECK-SAME: indexing_maps = [#[[IDENTITY_MAP]], #[[ROW_MAP]], #[[IDENTITY_MAP]]]
-// CHECK: linalg.elementwise
-// CHECK-SAME: kind=#linalg.elementwise_kind<mul>
+// CHECK: arith.mulf
+// CHECK: linalg.generic
 // CHECK-SAME: indexing_maps = [#[[IDENTITY_MAP]], #[[COL_MAP]], #[[IDENTITY_MAP]]]
+// CHECK: arith.mulf
 
 // CHECK-LABEL: func.func @layernorm_staged
 // CHECK-NOT: stablehlo.
 // CHECK: linalg.reduce
 // CHECK-SAME: dimensions = [1]
-// CHECK: linalg.elementwise kind=#linalg.elementwise_kind<sub>
+// CHECK: arith.subf
 // CHECK: linalg.reduce
 // CHECK-SAME: dimensions = [1]
-// CHECK: linalg.elementwise kind=#linalg.elementwise_kind<rsqrt>
-// CHECK: linalg.elementwise kind=#linalg.elementwise_kind<add>
-// CHECK-SAME: indexing_maps = [#[[IDENTITY_MAP]], #[[COL_MAP]], #[[IDENTITY_MAP]]]
+// CHECK: math.rsqrt
+// CHECK: linalg.generic
+// CHECK: arith.addf

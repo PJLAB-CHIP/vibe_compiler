@@ -2,6 +2,8 @@
 
 #include "Wafer/Transforms/Passes.h"
 
+#include "Support/ElementwiseUtils.h"
+
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -38,11 +40,13 @@ static bool consumesValue(mlir::linalg::MatmulOp matmul, mlir::Value value) {
   return false;
 }
 
-static bool isTanhActivation(mlir::linalg::ElementwiseOp elementwise) {
+static bool isTanhActivation(mlir::linalg::GenericOp elementwise) {
+  std::optional<wafer::ComputeElementwiseKind> kind =
+      matchElementwiseGeneric(elementwise);
+  llvm::SmallVector<mlir::Value> inputs = elementwise.getDpsInputs();
   return hasSingleResult(elementwise) &&
-         elementwise.getKind() == mlir::linalg::ElementwiseKind::tanh &&
-         elementwise.getInputs().size() == 1 &&
-         hasRank(elementwise.getInputs()[0], 2) &&
+         kind == wafer::ComputeElementwiseKind::Tanh &&
+         inputs.size() == 1 && hasRank(inputs[0], 2) &&
          hasRank(elementwise->getResult(0), 2);
 }
 
@@ -53,16 +57,18 @@ static mlir::linalg::MatmulOp getDefiningRank2Matmul(mlir::Value value) {
   return matmul;
 }
 
-static bool isGatedMultiply(mlir::linalg::ElementwiseOp elementwise,
+static bool isGatedMultiply(mlir::linalg::GenericOp elementwise,
                             mlir::Value activated) {
-  if (!hasSingleResult(elementwise) ||
-      elementwise.getKind() != mlir::linalg::ElementwiseKind::mul ||
-      elementwise.getInputs().size() != 2 ||
+  std::optional<wafer::ComputeElementwiseKind> kind =
+      matchElementwiseGeneric(elementwise);
+  llvm::SmallVector<mlir::Value> inputs = elementwise.getDpsInputs();
+  if (!hasSingleResult(elementwise) || kind != wafer::ComputeElementwiseKind::Mul ||
+      inputs.size() != 2 ||
       !hasRank(elementwise->getResult(0), 2))
     return false;
 
-  mlir::Value lhs = elementwise.getInputs()[0];
-  mlir::Value rhs = elementwise.getInputs()[1];
+  mlir::Value lhs = inputs[0];
+  mlir::Value rhs = inputs[1];
   if (lhs == activated)
     return static_cast<bool>(getDefiningRank2Matmul(rhs));
   if (rhs == activated)
@@ -78,18 +84,20 @@ struct MlpStagePresence {
 
 static MlpStagePresence findMlpStages(
     llvm::ArrayRef<mlir::linalg::MatmulOp> matmuls,
-    llvm::ArrayRef<mlir::linalg::ElementwiseOp> elementwiseOps) {
+    llvm::ArrayRef<mlir::linalg::GenericOp> elementwiseOps) {
   MlpStagePresence stages;
 
-  for (mlir::linalg::ElementwiseOp activation : elementwiseOps) {
+  for (mlir::linalg::GenericOp activation : elementwiseOps) {
     if (!isTanhActivation(activation))
       continue;
-    if (!getDefiningRank2Matmul(activation.getInputs()[0]))
+    llvm::SmallVector<mlir::Value> activationInputs =
+        activation.getDpsInputs();
+    if (!getDefiningRank2Matmul(activationInputs[0]))
       continue;
     stages.sawActivatedProjection = true;
     mlir::Value activated = activation->getResult(0);
 
-    for (mlir::linalg::ElementwiseOp multiply : elementwiseOps) {
+    for (mlir::linalg::GenericOp multiply : elementwiseOps) {
       if (!isGatedMultiply(multiply, activated))
         continue;
       stages.sawGatedMultiply = true;
@@ -129,11 +137,12 @@ struct CheckMlpSchedulePass
     mlir::ModuleOp module = getOperation();
 
     llvm::SmallVector<mlir::linalg::MatmulOp> matmuls;
-    llvm::SmallVector<mlir::linalg::ElementwiseOp> elementwiseOps;
+    llvm::SmallVector<mlir::linalg::GenericOp> elementwiseOps;
     module.walk(
         [&](mlir::linalg::MatmulOp matmul) { matmuls.push_back(matmul); });
-    module.walk([&](mlir::linalg::ElementwiseOp elementwise) {
-      elementwiseOps.push_back(elementwise);
+    module.walk([&](mlir::linalg::GenericOp elementwise) {
+      if (matchElementwiseGeneric(elementwise))
+        elementwiseOps.push_back(elementwise);
     });
 
     MlpStagePresence stages = findMlpStages(matmuls, elementwiseOps);

@@ -38,7 +38,9 @@ module {
 // CHECK-NOT: stablehlo.
 // CHECK: linalg.matmul
 // CHECK: linalg.matmul
-// CHECK: linalg.elementwise kind=#linalg.elementwise_kind<tanh>
-// CHECK: linalg.elementwise kind=#linalg.elementwise_kind<mul>
+// CHECK: linalg.generic
+// CHECK: math.tanh
+// CHECK: linalg.generic
+// CHECK: arith.mulf
 // CHECK: linalg.matmul
 // CHECK: return %{{.+}} : tensor<4x8xf32>

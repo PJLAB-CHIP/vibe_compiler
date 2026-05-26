@@ -10,7 +10,8 @@ third_party/
   llvm-project/          # LLVM/MLIR git submodule pinned to the OpenXLA/XLA workspace stack
   stablehlo/             # StableHLO git submodule pinned to the OpenXLA/XLA workspace stack
   shardy/                # Shardy/SPMD git submodule pinned to the OpenXLA/XLA workspace stack
-  xla/                   # OpenXLA/XLA git submodule; source of truth for the C++/MLIR dependency stack
+  xla/                   # OpenXLA/XLA git submodule selected by the PyTorch/XLA baseline
+  pytorch-xla/           # PyTorch/XLA git submodule; source of truth for the frontend XLA baseline
   googletest/            # googletest git submodule for unit-test fallback
   python/                # pinned Python tooling venv
   python-importer/       # pinned torch/torchvision/torch_xla importer venv
@@ -26,8 +27,8 @@ Dependency classes:
 | class | dependency | management |
 | --- | --- | --- |
 | core compiler | LLVM/MLIR | git submodule under `third_party/llvm-project`; build/install it and pass `MLIR_DIR`/`LLVM_DIR` or use `WAFER_LLVM_INSTALL_DIR` |
-| input dialect / SPMD | StableHLO, Shardy, OpenXLA/XLA | git submodules under `third_party/stablehlo`, `third_party/shardy`, and `third_party/xla`; LLVM/StableHLO pins match XLA, and Shardy must contain XLA's Shardy base pin while using the same lower stack |
-| frontend importer | torch/torchvision/torch_xla wheels | Python tooling pinned by `requirements-importer.txt`; PyTorch/XLA and torch-mlir source trees are not Wafer C++ dependencies because they vendor separate XLA/LLVM stacks |
+| input dialect / SPMD | StableHLO, Shardy, OpenXLA/XLA | git submodules under `third_party/stablehlo`, `third_party/shardy`, and `third_party/xla`; XLA is selected by the PyTorch/XLA `WORKSPACE` `xla_hash`; LLVM/StableHLO pins match XLA, and Shardy must contain XLA's Shardy base pin while using the same lower stack |
+| frontend importer | PyTorch/XLA source, torch/torchvision/torch_xla wheels | `third_party/pytorch-xla` pins the framework importer source baseline; Python tooling is pinned by `requirements-importer.txt`; PyTorch/XLA cannot introduce a second XLA/LLVM/StableHLO stack |
 | future runtime / driver | HPGR SDK, KMD/UAPI headers, legacy Tsm/VS SDK | not vendored yet; CMake exposes explicit opt-in roots |
 | test tooling | lit, FileCheck, GTest | Python venv / LLVM tools / `third_party/googletest` |
 
@@ -36,3 +37,8 @@ inside their Bazel workspaces. Those patch files are treated as upstream
 workspace inputs, not as additional Wafer StableHLO source trees. Wafer keeps one
 top-level StableHLO checkout and checks that the XLA/Shardy StableHLO patch
 inputs remain identical.
+
+Wafer's dependency gate does not run Shardy's standalone Bazel workspace. Shardy
+is compiled through `cmake/third_party/WaferShardyCMake.cmake`, which reuses the
+top-level pinned LLVM/MLIR and embedded StableHLO targets and builds
+`wafer-shardy-cmake-gate` / `shardy-sdy-opt` from the single source stack.

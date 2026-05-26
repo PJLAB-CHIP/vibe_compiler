@@ -2,6 +2,8 @@
 
 #include "Wafer/Transforms/Passes.h"
 
+#include "Support/ElementwiseUtils.h"
+
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -77,21 +79,24 @@ static bool hasKind(mlir::linalg::ReduceOp reduce, ReduceKind kind) {
   return isLastDimReduce(reduce) && getReduceKind(reduce) == kind;
 }
 
-static bool isBinaryElementwise(mlir::linalg::ElementwiseOp elementwise,
-                                mlir::linalg::ElementwiseKind kind,
+static bool isBinaryElementwise(mlir::linalg::GenericOp elementwise,
+                                wafer::ComputeElementwiseKind expectedKind,
                                 mlir::Value lhs, mlir::Value rhs) {
-  return hasSingleResult(elementwise) && elementwise.getKind() == kind &&
-         elementwise.getInputs().size() == 2 &&
-         elementwise.getInputs()[0] == lhs &&
-         elementwise.getInputs()[1] == rhs;
+  std::optional<wafer::ComputeElementwiseKind> kind =
+      matchElementwiseGeneric(elementwise);
+  llvm::SmallVector<mlir::Value> inputs = elementwise.getDpsInputs();
+  return hasSingleResult(elementwise) && kind == expectedKind &&
+         inputs.size() == 2 && inputs[0] == lhs && inputs[1] == rhs;
 }
 
-static bool isUnaryElementwise(mlir::linalg::ElementwiseOp elementwise,
-                               mlir::linalg::ElementwiseKind kind,
+static bool isUnaryElementwise(mlir::linalg::GenericOp elementwise,
+                               wafer::ComputeElementwiseKind expectedKind,
                                mlir::Value input) {
-  return hasSingleResult(elementwise) && elementwise.getKind() == kind &&
-         elementwise.getInputs().size() == 1 &&
-         elementwise.getInputs()[0] == input;
+  std::optional<wafer::ComputeElementwiseKind> kind =
+      matchElementwiseGeneric(elementwise);
+  llvm::SmallVector<mlir::Value> inputs = elementwise.getDpsInputs();
+  return hasSingleResult(elementwise) && kind == expectedKind &&
+         inputs.size() == 1 && inputs[0] == input;
 }
 
 struct SoftmaxStagePresence {
@@ -104,7 +109,7 @@ struct SoftmaxStagePresence {
 
 static SoftmaxStagePresence
 findSoftmaxStages(llvm::ArrayRef<mlir::linalg::ReduceOp> reduces,
-                  llvm::ArrayRef<mlir::linalg::ElementwiseOp> elementwiseOps) {
+                  llvm::ArrayRef<mlir::linalg::GenericOp> elementwiseOps) {
   SoftmaxStagePresence stages;
 
   for (mlir::linalg::ReduceOp maxReduce : reduces) {
@@ -114,15 +119,15 @@ findSoftmaxStages(llvm::ArrayRef<mlir::linalg::ReduceOp> reduces,
     mlir::Value scores = maxReduce.getInputs()[0];
     mlir::Value rowMax = maxReduce->getResult(0);
 
-    for (mlir::linalg::ElementwiseOp subtract : elementwiseOps) {
-      if (!isBinaryElementwise(subtract, mlir::linalg::ElementwiseKind::sub,
+    for (mlir::linalg::GenericOp subtract : elementwiseOps) {
+      if (!isBinaryElementwise(subtract, wafer::ComputeElementwiseKind::Sub,
                                scores, rowMax))
         continue;
       stages.sawSubtract = true;
       mlir::Value shifted = subtract->getResult(0);
 
-      for (mlir::linalg::ElementwiseOp exp : elementwiseOps) {
-        if (!isUnaryElementwise(exp, mlir::linalg::ElementwiseKind::exp,
+      for (mlir::linalg::GenericOp exp : elementwiseOps) {
+        if (!isUnaryElementwise(exp, wafer::ComputeElementwiseKind::Exp,
                                 shifted))
           continue;
         stages.sawExp = true;
@@ -135,8 +140,8 @@ findSoftmaxStages(llvm::ArrayRef<mlir::linalg::ReduceOp> reduces,
           stages.sawSumReduce = true;
           mlir::Value rowSum = sumReduce->getResult(0);
 
-          for (mlir::linalg::ElementwiseOp div : elementwiseOps) {
-            if (!isBinaryElementwise(div, mlir::linalg::ElementwiseKind::div,
+          for (mlir::linalg::GenericOp div : elementwiseOps) {
+            if (!isBinaryElementwise(div, wafer::ComputeElementwiseKind::Div,
                                      expScores, rowSum))
               continue;
             stages.sawNormalizeDiv = true;
@@ -171,11 +176,12 @@ struct CheckSoftmaxSchedulePass
     mlir::ModuleOp module = getOperation();
 
     llvm::SmallVector<mlir::linalg::ReduceOp> reduces;
-    llvm::SmallVector<mlir::linalg::ElementwiseOp> elementwiseOps;
+    llvm::SmallVector<mlir::linalg::GenericOp> elementwiseOps;
     module.walk(
         [&](mlir::linalg::ReduceOp reduce) { reduces.push_back(reduce); });
-    module.walk([&](mlir::linalg::ElementwiseOp elementwise) {
-      elementwiseOps.push_back(elementwise);
+    module.walk([&](mlir::linalg::GenericOp elementwise) {
+      if (matchElementwiseGeneric(elementwise))
+        elementwiseOps.push_back(elementwise);
     });
 
     SoftmaxStagePresence stages = findSoftmaxStages(reduces, elementwiseOps);
