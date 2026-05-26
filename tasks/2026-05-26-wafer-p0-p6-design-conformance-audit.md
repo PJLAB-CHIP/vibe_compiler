@@ -44,17 +44,17 @@
 ## 纠正原则
 
 - P0-P6 的历史 `done` 只保留为 skeleton-progress 记录，不再作为设计一致性完成声明。
-- 后续不继续扩展 P9 cost/profiling，也不把 P8 board gate 前移；先补 P7.1：从 `wafer.abi.*` IR
-  自动导出 package manifest，并让 M0/M1/M6 gate 使用该 manifest。
+- 后续不继续扩展 P7/P8/P9；先重开 P0-P6 设计一致性恢复队列。`wafer.abi.*` IR 自动导出 package
+  manifest 是恢复 P3/P4/P5 local compile gate 的一个子任务，不能被当作 P7 已经可以开始的前提。
 - 每个被恢复为 `done` 的任务必须满足对应设计文档的合同，或在任务名/验收里明确收窄为 skeleton。
 - fixed smoke manifest 只能作为 tool unit fixture，不能作为 compile pipeline correctness fence。
 
 ## 优先修复顺序
 
-1. IR-derived package manifest emission：从 `wafer-opt` 输出中的 launch signature、placement、
-   DDR binding 和 `wafer.abi.*` ops 生成 manifest。
-2. 重写 M0/M1/M6 integration gates：manifest 和 C stub 必须来自当前 pipeline 输出。
-3. C ABI contract：为 `wafer.abi.*` 固定 `wafer_*` function surface、参数单位和 completion contract。
-4. LLVM dialect / LLVM IR emission gate：不残留 `wafer.abi.*`，生成可审计 runtime call IR。
-5. object/link smoke：与 stub runtime ABI shim 做本地 link/syntax gate。
-6. runtime adapter / board smoke：进入 BO binding、launch、completion、数值对比。
+1. 逐项重读 P0-P6 对应设计文档，把每个历史 `done` 拆成“设计合同 / 当前 skeleton / 缺口 / 恢复任务”。
+2. 修正 `tasks/progress.md` 中 P0-P6 的状态，不再让 skeleton gate 占用设计完成语义。
+3. 从 P2/P3 开始恢复主链路：frontend artifact、group planner、tile/layout/SPM/DDR/C ABI/package 的
+   每一步都必须按设计合同闭环。
+4. 在恢复 M0/M1/M6 local compile gate 时，补 IR-derived package manifest emission：manifest 和
+   C stub 必须来自当前 `wafer-opt` pipeline 输出。
+5. P0-P6 设计闭环恢复后，再进入后续真实 C ABI / LLVM / runtime / board gate。

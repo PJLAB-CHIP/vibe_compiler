@@ -7,8 +7,8 @@
 
 2026-05-26 审计修正：P0-P6 历史 `done` 只代表 skeleton-progress gate 曾经通过，不再代表已经按
 各设计文档完成主路径闭环。当前实现与设计主线的缺口见
-`tasks/2026-05-26-wafer-p0-p6-design-conformance-audit.md`；后续必须先关闭 P7.1 的
-IR-derived package manifest，再恢复 M0/M1/M6 local compile gate 的设计一致性。
+`tasks/2026-05-26-wafer-p0-p6-design-conformance-audit.md`；后续必须先重开 P0-P6 设计一致性恢复，
+不能跳到 P7/P8/P9。
 
 最新实现批次：已落地最小 CMake / MLIR 工程骨架、`wafer-opt`、lit/FileCheck、gtest 入口和
 `WaferDialect` + 共享 enum attrs 的 parser/printer/verifier smoke tests。LLVM/MLIR 版本通过集中
@@ -330,13 +330,27 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 | P6.6 | done | Lower Shardy/SPMD logical collective 到 `wafer.comm` | placement 和 comm lowering 保留 collective semantics |
 | P6.7 | done | M2/M3/M4 gate 汇总测试 | p2p、single-card collective、partitioned collective lowering 分别可验证 |
 
+## P0-P6. 设计一致性恢复队列
+
+目标：把历史 skeleton-progress 重新对齐到各设计文档的主路径合同；在这些任务完成前，不进入 P7。
+
+| ID | 状态 | 任务 | 验收 |
+| --- | --- | --- | --- |
+| R0.1 | ready | 逐项重读 P0-P6 对应设计文档并重写任务状态 | 每个历史 `done` 都有“设计合同 / 当前实现 / 缺口 / 恢复任务”记录；不再用 skeleton gate 冒充完成 |
+| R2.1 | pending | 恢复 frontend artifact / importer contract | importer adapter、sidecar/ConstantLike、graph break/eager/dynamic shape 诊断按 frontend 设计闭环 |
+| R3.1 | pending | 恢复 M0 group/tile/layout/SPM/DDR/C ABI 主链路 | group planner、root tile feasibility、SPM/DDR demand、C ABI skeleton 均来自同一 IR pipeline 且满足对应设计合同 |
+| R3.2 | pending | 恢复 M0 package gate | package manifest 和 C stub 从当前 `wafer-opt` 输出导出；fixed smoke emitter 只作为 tool fixture |
+| R4.1 | pending | 恢复 M1 placement / shard / launch metadata gate | multi-tile no-comm 使用真实 shard slicing、per-rank result/metadata 和 package launch args，不用 whole-tensor clone 代替 |
+| R5.1 | pending | 恢复 M6 transformer local compile gate | workspace/resident constants/ABI issue sequence 来自 full-block IR dataflow 和 lowering 输出 |
+| R6.1 | pending | 恢复 communication design-conformance gate | DTE resource allocation、collective buffer slice/address offset、communication metadata 与 package/runtime 边界按设计落地 |
+
 ## P7. ABI 到 LLVM / Runtime Artifact 出口
 
 目标：把当前 Wafer C ABI skeleton 出口收敛成真实可编译、可链接、可被 package 引用的后端产物。
 
 | ID | 状态 | 任务 | 验收 |
 | --- | --- | --- | --- |
-| P7.1 | ready | 建立 `wafer.abi.*` IR 到 package manifest 的导出路径 | M0/M1/M6 package manifest 的 ABI issue sequence、launch signature 和 placement metadata 来自当前 lowering 输出；fixed smoke emitter 只保留为 unit fixture |
+| P7.1 | pending | 建立 `wafer.abi.*` IR 到 package manifest 的导出路径 | M0/M1/M6 package manifest 的 ABI issue sequence、launch signature 和 placement metadata 来自当前 lowering 输出；fixed smoke emitter 只保留为 unit fixture |
 | P7.2 | later | 固定 `wafer.abi.*` 到 `wafer_*` C ABI call contract | 每类 ABI issue op 都有函数名、参数单位、wait/completion 责任和 stub header；unsupported op 有硬诊断 |
 | P7.3 | later | 实现 `wafer.abi.*` 到 LLVM dialect call lowering | lowering 后不残留 `wafer.abi.*`；生成 `llvm.call` / symbol declaration；FileCheck 覆盖参数顺序和类型 |
 | P7.4 | later | 建立 LLVM IR emission gate | `mlir-translate` 或等价路径能生成 LLVM IR；IR 文本检查入口函数、runtime call 和常量/metadata 引用 |
@@ -385,6 +399,5 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 
 ## 下一步
 
-P0-P6 当前表内主线任务均已收口；下一步进入 P7/P8 之前，应先按收尾要求检查是否还有需要沉淀到
-`memory/` 的稳定构建/依赖经验，并确认是否要把当前批次推送或开 PR。P9 overlap/cost/profiling
-应在 P7/P8 的真实 artifact 和 board correctness gate 至少建立 smoke path 后再作为优化主线推进。
+P0-P6 当前表内主线任务未按设计文档闭环；下一步从 R0.1 开始，先完成 P0-P6 设计一致性恢复队列。
+P7/P8/P9 均依赖恢复后的 P0-P6 主链路，不应提前推进。
