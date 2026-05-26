@@ -5,6 +5,11 @@
 状态：设计文档已经覆盖 compiler core 跑通静态 transformer block vertical slice 所需的主要边界。
 下一阶段应转入实现和验证，不继续无边界扩写设计。
 
+2026-05-26 审计修正：P0-P6 历史 `done` 只代表 skeleton-progress gate 曾经通过，不再代表已经按
+各设计文档完成主路径闭环。当前实现与设计主线的缺口见
+`tasks/2026-05-26-wafer-p0-p6-design-conformance-audit.md`；后续必须先关闭 P7.1 的
+IR-derived package manifest，再恢复 M0/M1/M6 local compile gate 的设计一致性。
+
 最新实现批次：已落地最小 CMake / MLIR 工程骨架、`wafer-opt`、lit/FileCheck、gtest 入口和
 `WaferDialect` + 共享 enum attrs 的 parser/printer/verifier smoke tests。LLVM/MLIR 版本通过集中
 pin 和 bootstrap 脚本管理；当前本地验证使用 21.0.0git override，未把本机路径写成项目合同。
