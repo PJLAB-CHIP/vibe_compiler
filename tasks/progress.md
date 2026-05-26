@@ -11,9 +11,10 @@
   但没有按各设计文档完成主路径闭环。
 - 当前源码组织仍是 prototype 聚合形态；未按架构文档第 7 节的 IR stage / op prefix 边界收敛。
 - 设计一致性缺口见
-  `tasks/2026-05-26-wafer-p0-p6-design-conformance-audit.md`。
+  `tasks/2026-05-26-wafer-p0-p6-design-conformance-audit.md` 和
+  `tasks/2026-05-26-wafer-p0-p6-recovery-status.md`。
 - 当前不得推进 P7/P8/P9；必须先恢复 P0-P6 的设计一致性。
-- 当前唯一 ready 项是 R0.1。
+- 当前唯一 ready 项是 R0.2。
 
 ## 状态标记
 
@@ -58,14 +59,24 @@
 
 | ID | 状态 | 任务 | 验收 |
 | --- | --- | --- | --- |
-| R0.1 | ready | 逐项重读 P0-P6 对应设计文档并重写任务状态 | 每个历史 skeleton 项都有“设计合同 / 当前实现 / 缺口 / 恢复任务”记录；不再用 skeleton gate 冒充完成 |
-| R0.2 | pending | 恢复源码组织边界 | 按架构文档第 7 节拆清 Frontend / IR / Transforms / Conversion / ABI / Launch-runtime ownership；不再把跨阶段实现堆在单一 Transforms 聚合目录 |
+| R0.1 | done | 逐项重读 P0-P6 对应设计文档并重写任务状态 | 记录见 `tasks/2026-05-26-wafer-p0-p6-recovery-status.md`；每个历史 skeleton 项都有“设计合同 / 当前实现 / 缺口 / 恢复任务” |
+| R0.2 | ready | 恢复源码组织边界 | 按架构文档第 7 节拆清 Frontend / IR / Transforms / Conversion / ABI / Launch-runtime ownership；不再把跨阶段实现堆在单一 Transforms 聚合目录 |
+| R0.3 | pending | 补依赖层级清单 | core compiler、frontend/importer、runtime/driver、test tooling 的 CMake target 和可见范围明确 |
+| R1.1 | pending | 拆分 Wafer IR 文件边界 | ODS、C++ verifier 和 tests 按 group/tile_region/layout/SPM/compute/comm/sync/launch op prefix 组织 |
+| R1.2 | pending | 恢复 interface/effect/resource 合同 | planner、layout、SPM/DDR、compute/comm 能通过 op interface / effect 查询需求和合法性 |
+| R1.3 | pending | 补 stage-connection tests | 减少只靠 `unrealized_conversion_cast` 的孤立 verifier case，增加上下游连接验证 |
 | R2.1 | pending | 恢复 frontend artifact / importer contract | importer adapter、sidecar/ConstantLike、graph break/eager/dynamic shape 诊断按 frontend 设计闭环 |
+| R2.2 | pending | 恢复 Shardy/SPMD artifact bridge | logical mesh、rank group、partitioned StableHLO collective 和 shard-local program 成为 placement/comm 输入 |
+| R2.3 | pending | 重写 local compute normalization 覆盖状态 | 按 structured tensor IR contract 记录 dot/broadcast/reduce/softmax/norm/RoPE/MLP 覆盖；acceptance pass 不冒充 schedule completion |
 | R3.1 | pending | 恢复 M0 group/tile/layout/SPM/DDR/C ABI 主链路 | group planner、root tile feasibility、SPM/DDR demand、C ABI skeleton 均来自同一 IR pipeline 且满足对应设计合同 |
 | R3.2 | pending | 恢复 M0 package gate | package manifest 和 C stub 从当前 `wafer-opt` 输出导出；fixed smoke emitter 只作为 tool fixture |
+| R3.3 | pending | 恢复 storage realization / C ABI / golden packet 边界 | M0 RDMA/WDMA/GEMM 有 storage-realized input、真实 wrapper-facing call contract 和 golden packet 对照 |
 | R4.1 | pending | 恢复 M1 placement / shard / launch metadata gate | multi-tile no-comm 使用真实 shard slicing、per-rank result/metadata 和 package launch args，不用 whole-tensor clone 代替 |
+| R4.2 | pending | 恢复 M1 shard slicing / merge | per-rank writeback、host-side readback 或 output merge contract 明确，并由 IR / package metadata 驱动 |
 | R5.1 | pending | 恢复 M6 transformer local compile gate | workspace/resident constants/ABI issue sequence 来自 full-block IR dataflow 和 lowering 输出 |
+| R5.2 | pending | 补 transformer compute/package gaps | mask/select、dynamic-bound policy、non-constant-init reduce、constant/weight slice 和 package consistency 按设计补齐 |
 | R6.1 | pending | 恢复 communication design-conformance gate | DTE resource allocation、collective buffer slice/address offset、communication metadata 与 package/runtime 边界按设计落地 |
+| R6.2 | pending | 清理 StableHLO collective bridge 临时 cast | 用可验证 buffer-slice / layout/materialization 路径替代 visible `unrealized_conversion_cast` |
 
 ## 后续队列
 
@@ -101,5 +112,5 @@ P7/P8/P9 只有在 P0-P6 恢复队列完成后才能推进。
 
 ## 下一步
 
-从 R0.1 开始：逐项重读 P0-P6 对应设计文档，重写任务状态和恢复计划。P7/P8/P9 依赖恢复后的
-P0-P6 主链路，不提前推进。
+从 R0.2 开始：先恢复源码组织边界，再按 R1/R2/R3 顺序恢复 IR、frontend 和 M0 主链路。P7/P8/P9
+依赖恢复后的 P0-P6 主链路，不提前推进。

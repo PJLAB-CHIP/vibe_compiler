@@ -60,7 +60,8 @@
 
 ## 优先修复顺序
 
-1. 逐项重读 P0-P6 对应设计文档，把每个历史 `done` 拆成“设计合同 / 当前 skeleton / 缺口 / 恢复任务”。
+1. 逐项重读 P0-P6 对应设计文档，把每个历史 `done` 拆成“设计合同 / 当前 skeleton / 缺口 / 恢复任务”；
+   R0.1 结果见 `tasks/2026-05-26-wafer-p0-p6-recovery-status.md`。
 2. 修正 `tasks/progress.md` 中 P0-P6 的状态，不再让 skeleton gate 占用设计完成语义。
 3. 按架构文档第 7 节恢复工程组织边界：先拆清 IR / Frontend / Transforms / Conversion / ABI /
    Launch-runtime ownership，再做对应代码移动。
