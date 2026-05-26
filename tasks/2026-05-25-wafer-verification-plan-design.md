@@ -117,7 +117,7 @@ M4 partitioned StableHLO collective lowering：
   all-gather/all-reduce/reduce-scatter 经 `wafer.comm`、ring lowering 到 C ABI skeleton。SPM/DDR
   resource gate 在该 communication skeleton 中仍由后续完整 package gate 组合验证。
 
-M5 overlap and cost model：
+M5 overlap and cost model（优化类，当前执行看板后移为 P9）：
 
 - issue/drain placement 由 effect/token verifier 证明。
 - SPM busy range、DDR range/bandwidth 和 DTE resource pressure 进入 cost model。
@@ -149,6 +149,33 @@ summary 一致；manifest 中的 82 个 ABI issue 覆盖当前 full block loweri
 elementwise、GEMM 和 reduce issue，C stub 会 materialize 对应 issue/resource table，证明 metadata
 能进入本地 toolchain 可消费的 artifact skeleton。它是当前无卡环境的 M6 完成证据；completion、
 数值对比和 profiling 仍等有卡环境补 gate。
+
+M7 ABI / LLVM artifact gate：
+
+- `wafer.abi.*` 到 `wafer_*` C ABI call contract 必须固定函数名、参数单位、wait/completion
+  责任和 ABI version，不允许把 C stub issue table 当作真实 runtime call。
+- lowering 后应生成 LLVM dialect call 或等价可审计 call IR；该 IR 不残留 `wafer.abi.*`，并能
+  通过 `mlir-translate` 或等价路径生成 LLVM IR。
+- 本地 gate 至少检查 LLVM IR 文本中的 entrypoint、runtime symbol declaration、参数顺序和
+  metadata/artifact 引用；随后用当前 toolchain 做 object 或 link smoke。
+- package manifest 必须记录真实 LLVM/object artifact id、entrypoint 和 ABI version；C stub-only
+  artifact 只允许作为 P0-P6 skeleton gate 的验证物。
+
+M8 runtime / board correctness gate：
+
+- runtime adapter 必须区分真实 device completion 和已知 stub path；stub completion 不能作为
+  correctness fence。
+- package 中的 tensor、workspace、constant、placement 和 per-tile launch args 必须能绑定到真实
+  BO / DDR / launch argument。
+- M0/M1/M2/M3/M4/M6 的板端 gate 分别覆盖 single-tile compute、多 tile no-comm、p2p、ring
+  collective、partitioned collective 和 full local block 的 launch、completion、错误传播和数值对比。
+- profiling 只作为后续 P9 cost model calibration 的输入，不作为 M8 correctness 通过条件。
+
+M9 overlap / cost model / profiling calibration gate：
+
+- issue/drain placement、SPM busy range、DDR range/bandwidth 和 DTE resource pressure 只从当前 IR、
+  resource model 和 PMU calibration 派生，不写入不可验证的 planner trace。
+- PMU/profiling 用于校准 latency、blocking time 和 conflict cost；不反向改变 IR 语义合同。
 
 2026-05-25 后续实现补入了 `linalg.elementwise` 的局部 physical slice：same-shape identity 和
 可由 projected-permutation `indexing_maps` 验证的 row/head/vector broadcast 可以形成

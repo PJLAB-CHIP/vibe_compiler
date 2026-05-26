@@ -320,17 +320,41 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 | P6.6 | done | Lower Shardy/SPMD logical collective 到 `wafer.comm` | placement 和 comm lowering 保留 collective semantics |
 | P6.7 | done | M2/M3/M4 gate 汇总测试 | p2p、single-card collective、partitioned collective lowering 分别可验证 |
 
-## P7. Overlap、Cost Model 和 Profiling Calibration
+## P7. ABI 到 LLVM / Runtime Artifact 出口
+
+目标：把当前 Wafer C ABI skeleton 出口收敛成真实可编译、可链接、可被 package 引用的后端产物。
+
+| ID | 状态 | 任务 | 验收 |
+| --- | --- | --- | --- |
+| P7.1 | later | 固定 `wafer.abi.*` 到 `wafer_*` C ABI call contract | 每类 ABI issue op 都有函数名、参数单位、wait/completion 责任和 stub header；unsupported op 有硬诊断 |
+| P7.2 | later | 实现 `wafer.abi.*` 到 LLVM dialect call lowering | lowering 后不残留 `wafer.abi.*`；生成 `llvm.call` / symbol declaration；FileCheck 覆盖参数顺序和类型 |
+| P7.3 | later | 建立 LLVM IR emission gate | `mlir-translate` 或等价路径能生成 LLVM IR；IR 文本检查入口函数、runtime call 和常量/metadata 引用 |
+| P7.4 | later | 建立 object / link syntax gate | 当前 toolchain 能把 LLVM IR 或 generated source 编译成 object，并与 stub runtime ABI shim 做 syntax/link smoke |
+| P7.5 | later | 将实物 artifact 接入 package manifest | manifest 记录 LLVM/object artifact id、entrypoint 和 ABI version；C stub-only artifact 不再作为该阶段 correctness fence |
+
+## P8. Runtime / Board Correctness Gate
+
+目标：在有实际计算卡环境后，把 package 走到真实 runtime launch、completion 和数值验证。
+
+| ID | 状态 | 任务 | 验收 |
+| --- | --- | --- | --- |
+| P8.1 | later | 建立 runtime adapter contract 和 stub shielding | runtime path 明确区分真实 device completion 与已知 stub；stub 不能作为 correctness fence |
+| P8.2 | later | 接 BO / DDR / launch argument binding | package 中的 tensor、workspace、constant 和 per-tile launch args 能绑定到真实 runtime 资源 |
+| P8.3 | later | M0 single-tile board smoke | 实际 launch 成功，completion 可信，最小 GEMM 输出可做数值对比 |
+| P8.4 | later | M1/M2/M3/M4 board smoke | 多 tile no-comm、p2p 和 ring collective 有最小板端 completion / error propagation gate |
+| P8.5 | later | M6 transformer block board smoke | full local block 产物能 launch；输出数值与参考实现按约定 tolerance 对比 |
+
+## P9. Overlap、Cost Model 和 Profiling Calibration
 
 目标：功能链路稳定后再优化。
 
 | ID | 状态 | 任务 | 验收 |
 | --- | --- | --- | --- |
-| P7.1 | later | 建立 issue/drain placement verifier | overlap 决策由 effect/token 支撑 |
-| P7.2 | later | 建立 SPM busy range pressure model | allocator failure 反馈 planner，不写入 IR |
-| P7.3 | later | 建立 DDR range/bandwidth pressure model | range conflict / bandwidth cost 可诊断 |
-| P7.4 | later | 建立 DTE resource pressure model | FSM / packet / stream pressure 进入 cost model |
-| P7.5 | later | 接 PMU/profiling calibration | profiling 只校准 cost model，不作为 IR 语义事实 |
+| P9.1 | later | 建立 issue/drain placement verifier | overlap 决策由 effect/token 支撑 |
+| P9.2 | later | 建立 SPM busy range pressure model | allocator failure 反馈 planner，不写入 IR |
+| P9.3 | later | 建立 DDR range/bandwidth pressure model | range conflict / bandwidth cost 可诊断 |
+| P9.4 | later | 建立 DTE resource pressure model | FSM / packet / stream pressure 进入 cost model |
+| P9.5 | later | 接 PMU/profiling calibration | profiling 只校准 cost model，不作为 IR 语义事实 |
 
 ## 当前前置实现项
 
@@ -339,7 +363,7 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 - 定义最小 Wafer dialect ODS 文件和 shared attrs/types/interfaces。
 - 建立至少一条 textual MLIR pipeline，从手写输入开始，不等待完整 model importer。
 
-## 本轮不做
+## P0-P6 本轮不做
 
 - Serving integration。
 - KV cache / paged attention / prefill-decode 调度。
@@ -350,5 +374,6 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 
 ## 下一步
 
-P0-P6 当前表内主线任务均已收口；下一步进入 P7 之前，应先按收尾要求检查是否还有需要沉淀到
-`memory/` 的稳定构建/依赖经验，并确认是否要把当前批次推送或开 PR。
+P0-P6 当前表内主线任务均已收口；下一步进入 P7/P8 之前，应先按收尾要求检查是否还有需要沉淀到
+`memory/` 的稳定构建/依赖经验，并确认是否要把当前批次推送或开 PR。P9 overlap/cost/profiling
+应在 P7/P8 的真实 artifact 和 board correctness gate 至少建立 smoke path 后再作为优化主线推进。
