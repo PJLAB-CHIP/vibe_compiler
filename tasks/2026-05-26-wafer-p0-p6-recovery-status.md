@@ -57,7 +57,7 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
 
 设计合同：
 
-- 建立可配置、可测试的 MLIR 工程入口，包含 `wafer-opt`、lit/FileCheck、gtest 和依赖版本 pin。
+- 建立可配置、可测试的 MLIR 工程入口，包含 `wafer-opt`、lit/FileCheck、gtest 和固定依赖版本。
 - StableHLO/Shardy/importer/runtime 依赖按层隔离；importer-only 依赖不能成为后端 textual tests 的硬依赖。
 - 源码按架构文档第 7 节组织：`Frontend`、`IR`、`Transforms`、`Conversion`、`ABI`、launch/runtime
   ownership 清晰；一个 `wafer` dialect namespace 内仍要按 op prefix 拆文件。
@@ -68,15 +68,15 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
 - 有 `CMakeLists.txt`、`cmake/third_party/WaferDependencyVersions.cmake`、`wafer-opt`、lit、gtest、
   `tools/check_deps.py` 和 bootstrap 脚本。
 - 有 `WAFER_ENABLE_IMPORTER_DEPS` 开关、disabled importer smoke，以及 LLVM/MLIR、StableHLO、
-  Shardy、OpenXLA/XLA、googletest public submodule checkout 和 OpenXLA stack pin 检查。
+  Shardy、OpenXLA/XLA、googletest public submodule checkout 和 OpenXLA stack 固定版本检查。
 - R0.2 后源码已使用 `include/Wafer/Frontend`、`include/Wafer/IR`、`include/Wafer/Conversion`、
   `lib/Wafer/IR`、stage-specific `lib/Wafer/Transforms/*` 和 `lib/Wafer/Conversion`。
 - `WaferTransforms` 只注册 transform pass；C ABI skeleton lowering 归入 `WaferConversion`。
-- R0.3 后 core compiler、frontend/importer、runtime/driver 和 test tooling 的 target 可见范围记录在
+- R0.3 后 core compiler、frontend/importer、runtime/driver 和 test tools 的 target 可见范围记录在
   `tasks/2026-05-26-wafer-dependency-layering-recovery.md`，并由 `tools/check_deps.py` 检查。
 - Shardy/SDY 公共 dialect 与 import/export/propagation passes 已通过 Wafer 顶层 CMake shim 复用
-  同一套 pinned LLVM/MLIR/StableHLO 编译到 `shardy-sdy-opt`；不再以 Shardy standalone Bazel
-  workspace 作为 Wafer dependency gate。
+  同一套固定版本 LLVM/MLIR/StableHLO 编译到 `shardy-sdy-opt`；不再以 Shardy standalone Bazel
+  workspace 作为 Wafer dependency 编译验证。
 
 缺口：
 
@@ -85,11 +85,11 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
 - IR 内部 ODS / verifier / tests 仍未按 group、tile_region、layout、SPM、compute、comm、sync、
   launch op prefix 拆分；这是 R1.1。
 - StableHLO/Shardy dependency 当前主要服务 textual lowering smoke 和 future SPMD bridge dependency
-  boundary；R0.3 依赖栈以 PyTorch/XLA 2.5 source baseline 为根，PyTorch/XLA 的 `WORKSPACE`
-  `xla_hash` 选择 OpenXLA/XLA，XLA workspace 再选择 LLVM/StableHLO/Shardy base。PyTorch/XLA
-  source 只能进入 frontend/importer tooling 层，不能成为 core compiler public dependency 或第二套
-  XLA/LLVM/StableHLO 事实源；Shardy compile gate 只证明公共 SPMD 依赖可用，不代表 R2.2 bridge
-  已完成。
+  boundary；R0.3 依赖栈用 PyTorch/XLA 2.5 的 `WORKSPACE` `xla_hash` 选择 OpenXLA/XLA，再由 XLA
+  workspace 选择 LLVM/StableHLO/Shardy base。PyTorch/XLA source 现在只用于确定版本和准备后续
+  frontend/importer 环境；Wafer 代码还没有调用 `torch_xla`，它不能成为 core compiler public
+  dependency 或第二套 XLA/LLVM/StableHLO 事实源；Shardy 编译验证目标只证明公共 SPMD 依赖可用，
+  不代表 R2.2 bridge 已完成。
   真实 importer adapter 和 artifact verifier 还没成为独立 frontend 层。
 - runtime/driver 头文件和真实 runtime adapter 尚未进入 launch/C ABI 层。
 
@@ -97,7 +97,7 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
 
 - R0.2：已完成源码组织边界恢复；记录见
   `tasks/2026-05-26-wafer-source-organization-recovery.md`。
-- R0.3：已完成依赖层级清单、检查和统一 Shardy CMake compile gate；记录见
+- R0.3：已完成依赖层级清单、检查和统一 Shardy CMake 编译验证目标；记录见
   `tasks/2026-05-26-wafer-dependency-layering-recovery.md`。
 
 ## P1 Wafer IR Skeleton 和 Verifier
@@ -275,7 +275,7 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
 
 恢复任务：
 
-- R5.1：恢复 M6 transformer local compile gate，让 workspace/resident constants/ABI issue sequence
+- R5.1：恢复 M6 transformer local 编译验证，让 workspace/resident constants/ABI issue sequence
   来自 full-block IR dataflow 和 lowering 输出。
 - R5.2：补 transformer compute coverage gaps：mask/select、dynamic-bound policy、non-constant-init reduce、
   constant/weight slice 和 package consistency。
@@ -297,15 +297,15 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
 - 有 `wafer.abi.dte_send` / `recv` / `wait` skeleton 和 block-local resource tuple conflict check。
 - 有 ring all-gather、reduce-scatter、all-reduce lowering 到 p2p + local elementwise accumulation。
 - 有 StableHLO all_gather/all_reduce/reduce_scatter 到 `wafer.comm` collective-level op 的 normalization。
-- 有 M2/M3/M4 integration skeleton gates。
+- 有 M2/M3/M4 integration skeleton 验证。
 
 缺口：
 
 - DTE resource id 是单调 skeleton 分配，不是目标 DTE/FSM allocator。
 - collective buffer slice / slot / address offset lowering 没有真实 descriptor 或 storage-realized buffer。
 - StableHLO collective bridge 仍用 visible `unrealized_conversion_cast` 衔接 tensor/tile_buffer。
-- SPM/DDR resource gates 没有和 communication staging / buffer lifetime 完整组合。
-- communication plan metadata 没进入真实 package/runtime path；没有 Direct DTE board completion/error gate。
+- SPM/DDR resource 验证没有和 communication staging / buffer lifetime 完整组合。
+- communication plan metadata 没进入真实 package/runtime path；没有 Direct DTE board completion/error 验证。
 
 恢复任务：
 

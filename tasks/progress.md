@@ -9,7 +9,7 @@
 
 - P0-P6 的历史实现只能视为骨架进度（`skeleton`）：有局部 IR、pass、verifier、fixture 和 smoke tests，
   但没有按各设计文档完成主路径闭环。
-- R0.2/R0.3 已恢复源码 ownership、依赖层级边界和统一 Shardy CMake compile gate；ODS/verifier
+- R0.2/R0.3 已恢复源码 ownership、依赖层级边界和统一 Shardy CMake 编译验证目标；ODS/verifier
   按 op prefix 拆分仍在 R1.1。
 - 设计一致性缺口见
   `tasks/2026-05-26-wafer-p0-p6-design-conformance-audit.md` 和
@@ -31,14 +31,14 @@
 
 - CMake / `wafer-opt` / lit / gtest 构建入口。
 - MLIR textual tests、FileCheck、verifier negative tests。
-- 依赖 pin / importer backend 隔离检查。
+- 固定依赖版本 / importer backend 隔离检查。
 - C ABI skeleton ops、package manifest fixture 和 C stub syntax compile。
 
 当前不能作为完成证明：
 
 - fixed smoke manifest 不能证明 package 来自当前 `wafer-opt` lowering 输出。
 - C stub syntax compile 不能证明 LLVM IR、object、真实 runtime call 或 wrapper/packet lowering。
-- 本地 gate 不能替代板端 launch、device completion、数值对比或 PMU/profiling。
+- 本地验证不能替代板端 launch、device completion、数值对比或 PMU/profiling。
 
 ## 历史骨架状态
 
@@ -62,7 +62,7 @@
 | --- | --- | --- | --- |
 | R0.1 | done | 逐项重读 P0-P6 对应设计文档并重写任务状态 | 记录见 `tasks/2026-05-26-wafer-p0-p6-recovery-status.md`；每个历史 skeleton 项都有“设计合同 / 当前实现 / 缺口 / 恢复任务” |
 | R0.2 | done | 恢复源码组织边界 | 记录见 `tasks/2026-05-26-wafer-source-organization-recovery.md`；IR / Frontend / Transforms / Conversion / ABI ownership 已拆开，C ABI skeleton 不再归属 `WaferTransforms` |
-| R0.3 | done | 补依赖层级清单 | 记录见 `tasks/2026-05-26-wafer-dependency-layering-recovery.md`；依赖栈已改为以 PyTorch/XLA 2.5 source baseline 为根：`third_party/pytorch-xla` 的 `WORKSPACE` `xla_hash` 决定 `third_party/xla`，再由 XLA workspace 决定 LLVM/MLIR、StableHLO 和 Shardy base；Shardy/SDY 公共 dialect 与 import/export/propagation passes 已通过 Wafer 顶层 CMake shim 编译到 `shardy-sdy-opt`，不再用 Shardy 自己的 Bazel workspace 作为 Wafer gate；仓库 public source deps 统一为 MLIR/StableHLO/Shardy/XLA/GTest/PyTorch-XLA，core compiler target 不 public link Shardy/XLA/PyTorch-XLA；PyTorch/XLA 只能在 frontend/importer tooling 层使用；target 可见范围、整栈 pin 一致性和 Shardy CMake gate 存在性由 `tools/check_deps.py` 检查 |
+| R0.3 | done | 补依赖层级清单 | 记录见 `tasks/2026-05-26-wafer-dependency-layering-recovery.md`；R0.3 只完成依赖源码拉取、版本固定、层级隔离和编译验证，不表示这些依赖都已经被 Wafer 代码实际调用；`third_party/pytorch-xla` 只用于确定 XLA 版本，当前没有 `torch_xla` frontend importer；`third_party/xla` 只作为后续 GSPMD 集成的源码和版本来源，当前不编译 XLA/GSPMD 目标；已通过 Wafer CMake 实际编译验证的是同一套 LLVM/MLIR、StableHLO 和 Shardy/SDY 公共 dialect/pass，输出 `shardy-sdy-opt`；core compiler target 不 public link Shardy/XLA/PyTorch-XLA；target 可见范围、固定版本一致性和 Shardy 编译验证目标由 `tools/check_deps.py` 检查 |
 | R1.1 | ready | 拆分 Wafer IR 文件边界 | ODS、C++ verifier 和 tests 按 group/tile_region/layout/SPM/compute/comm/sync/launch op prefix 组织 |
 | R1.2 | pending | 恢复 interface/effect/resource 合同 | planner、layout、SPM/DDR、compute/comm 能通过 op interface / effect 查询需求和合法性 |
 | R1.3 | pending | 补 stage-connection tests | 减少只靠 `unrealized_conversion_cast` 的孤立 verifier case，增加上下游连接验证 |
@@ -74,7 +74,7 @@
 | R3.3 | pending | 恢复 storage realization / C ABI / golden packet 边界 | M0 RDMA/WDMA/GEMM 有 storage-realized input、真实 wrapper-facing call contract 和 golden packet 对照 |
 | R4.1 | pending | 恢复 M1 placement / shard / launch metadata gate | multi-tile no-comm 使用真实 shard slicing、per-rank result/metadata 和 package launch args，不用 whole-tensor clone 代替 |
 | R4.2 | pending | 恢复 M1 shard slicing / merge | per-rank writeback、host-side readback 或 output merge contract 明确，并由 IR / package metadata 驱动 |
-| R5.1 | pending | 恢复 M6 transformer local compile gate | workspace/resident constants/ABI issue sequence 来自 full-block IR dataflow 和 lowering 输出 |
+| R5.1 | pending | 恢复 M6 transformer local 编译验证 | workspace/resident constants/ABI issue sequence 来自 full-block IR dataflow 和 lowering 输出 |
 | R5.2 | pending | 补 transformer compute/package gaps | mask/select、dynamic-bound policy、non-constant-init reduce、constant/weight slice 和 package consistency 按设计补齐 |
 | R6.1 | pending | 恢复 communication design-conformance gate | DTE resource allocation、collective buffer slice/address offset、communication metadata 与 package/runtime 边界按设计落地 |
 | R6.2 | pending | 清理 StableHLO collective bridge 临时 cast | 用可验证 buffer-slice / layout/materialization 路径替代 visible `unrealized_conversion_cast` |
