@@ -2,7 +2,7 @@
 
 日期：2026-05-26
 
-状态：R0.3 完成记录；2026-05-26 修正为统一 OpenXLA/XLA dependency stack
+状态：R0.3 完成记录；2026-05-26 修正为统一 OpenXLA/XLA dependency stack 和 frontend source alignment policy
 
 ## 目标
 
@@ -41,7 +41,7 @@ core compiler target。
 - `cmake/third_party/WaferThirdParty.cmake` 负责 MLIR/LLVM/Python discovery、pinned LLVM fallback、
   optional StableHLO/Shardy embedded source、StableHLO test tool import target、framework importer
   Python tooling boundary、future runtime/driver SDK roots 和 GTest fallback。
-- `third_party/` 是默认 dependency root；public source dependencies 作为一级 git submodule 维护：
+- `third_party/` 是默认 dependency root；core compiler public source dependencies 作为一级 git submodule 维护：
   `third_party/llvm-project`、`third_party/stablehlo`、`third_party/shardy`、`third_party/xla`、
   `third_party/googletest`。Python tooling 和 downloads 也放在该目录；`.deps/` 仅作为旧 build
   cache 的兼容输入。
@@ -58,8 +58,12 @@ core compiler target。
   library 的 public dependency。
 - `requirements-importer.txt` 固定 frontend importer Python wheels：`torch==2.5.0`、
   `torchvision==0.20.0`、`torch_xla==2.5.0`。该层只用于 importer tooling / artifact 生成测试；
-  PyTorch/XLA 和 torch-mlir 源码树会自带独立 XLA/LLVM pin，不能作为 Wafer public C++ source
-  dependency 或 submodule compile gate。
+  PyTorch/XLA 和 torch-mlir 源码树可以作为 optional frontend/importer tooling checkout 放在
+  `third_party/<name>`，但不能穿透到 core compiler public dependency。若引入 PyTorch/XLA
+  source checkout，必须先保证它的 `WORKSPACE` `xla_hash` 与 `WAFER_OPENXLA_XLA_COMMIT`
+  相同；否则只能通过受检查的 wrapper 用
+  `--override_repository=xla=$PWD/third_party/xla` 构建，并把该 override gate 作为 importer
+  tooling 验证。不能把未对齐的 PyTorch/XLA workspace 作为第二套 XLA/LLVM/StableHLO 事实源。
 - 顶层 `CMakeLists.txt` 只 include third-party 配置，不直接拼 StableHLO/Shardy/GTest 发现逻辑。
 
 ## CMake 可见范围
@@ -86,6 +90,8 @@ core compiler target。
   patched StableHLO 语义。
 - 第三方依赖声明是否仍集中在 `cmake/third_party/`。
 - public source dependency 是否记录为 `third_party/<name>` submodule。
+- 如果 `third_party/pytorch-xla` 存在，其 `WORKSPACE` `xla_hash` 是否与
+  `WAFER_OPENXLA_XLA_COMMIT` 一致；不一致时不能通过默认 dependency gate。
 - frontend importer Python wheel pins 是否存在于 `requirements-importer.txt`。
 - future frontend importer 和 runtime/driver SDK roots 是否有显式 opt-in CMake 边界。
 - StableHLO C++ API 只出现在 frontend hook、StableHLO lowering implementation 和 importer tool。
@@ -98,9 +104,10 @@ core compiler target。
 - R1.1：按 op prefix 拆 ODS、C++ verifier 和 tests。
 - R2.1/R2.2：真实 frontend importer artifact、sidecar、Shardy bridge 和 GSPMD-compatible
   partitioner integration 语义；当前只完成 public dependency pin、拉取和隔离检查。
-- PyTorch/XLA、torch-mlir source-tree adapter 如果后续确实需要，应先找到与当前 OpenXLA/XLA
-  stack 兼容的版本，或作为单独 sandbox/tooling checkout 处理；不能重新放回 Wafer public source
-  dependency。
+- PyTorch/XLA、torch-mlir source-tree adapter 的精确 commit 仍属于 R2.1 frontend importer
+  恢复任务；R0.3 只建立依赖 ownership 和“不得维护第二套 XLA stack”的检查。当前已确认旧
+  PyTorch/XLA v2.5.0 source pin 的 `xla_hash=32ebd694...`，PyTorch/XLA upstream master
+  的 `xla_hash=9a9aa0e...`，都不等于当前 Wafer `WAFER_OPENXLA_XLA_COMMIT=0ef91e244...`。
 - R3.2：从当前 `wafer.abi.*` IR 自动导出 package manifest。
 - P8：runtime adapter、BO binding 和 completion source 仍未实现。
 

@@ -102,7 +102,7 @@ def read_text(path: pathlib.Path) -> str:
 
 def parse_bzl_string_constant(path: pathlib.Path, name: str) -> str:
     text = read_text(path)
-    match = re.search(rf'{re.escape(name)}\s*=\s*"([^"]+)"', text)
+    match = re.search(rf'{re.escape(name)}\s*=\s*["\']([^"\']+)["\']', text)
     if not match:
         raise RuntimeError(f"{path} does not define {name}")
     return match.group(1)
@@ -199,16 +199,6 @@ def check_cmake_target_visibility() -> None:
         "third_party/googletest",
     ]:
         check_text_contains(REPO_ROOT / ".gitmodules", submodule_path)
-    for removed_submodule_path in [
-        "third_party/pytorch-xla",
-        "third_party/torch-mlir",
-    ]:
-        if removed_submodule_path in read_text(REPO_ROOT / ".gitmodules"):
-            raise RuntimeError(
-                f"{removed_submodule_path} must not be a Wafer source submodule; "
-                "framework importers are Python/tooling dependencies"
-            )
-
     for requirement in [
         "torch==2.5.0",
         "torchvision==0.20.0",
@@ -354,6 +344,27 @@ def check_openxla_stack_pins(versions: dict[str, str]) -> None:
                 )
 
 
+def check_framework_source_alignment(versions: dict[str, str]) -> None:
+    pytorch_xla_root = DEPS_ROOT / "pytorch-xla"
+    if not (pytorch_xla_root / ".git").exists():
+        return
+
+    workspace_path = pytorch_xla_root / "WORKSPACE"
+    if not workspace_path.exists():
+        raise RuntimeError("third_party/pytorch-xla exists but has no WORKSPACE")
+
+    pytorch_xla_xla = parse_bzl_string_constant(workspace_path, "xla_hash")
+    expected_xla = versions["WAFER_OPENXLA_XLA_COMMIT"]
+    if pytorch_xla_xla != expected_xla:
+        raise RuntimeError(
+            "PyTorch/XLA source checkout is not aligned with the Wafer OpenXLA stack: "
+            f"WORKSPACE xla_hash={pytorch_xla_xla}, "
+            f"WAFER_OPENXLA_XLA_COMMIT={expected_xla}. "
+            "Pin PyTorch/XLA to a commit with the same xla_hash, or build it only "
+            "through a checked wrapper that passes --override_repository=xla=third_party/xla."
+        )
+
+
 def print_versions(versions: dict[str, str]) -> None:
     print(f"LLVM/MLIR {versions['WAFER_LLVM_PACKAGE_VERSION']} {versions['WAFER_LLVM_COMMIT']}")
     print(f"StableHLO {versions['WAFER_STABLEHLO_TAG']} {versions['WAFER_STABLEHLO_COMMIT']}")
@@ -405,6 +416,7 @@ def main() -> int:
                         "registerImporterDialects")
     check_dependency_layering()
     check_openxla_stack_pins(versions)
+    check_framework_source_alignment(versions)
 
     check_checkout_pin(
         label="LLVM/MLIR",

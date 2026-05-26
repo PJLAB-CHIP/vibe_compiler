@@ -4,9 +4,10 @@
   Shardy、OpenXLA/XLA、PyTorch/XLA、torch-mlir、lit 或 gtest 版本散落到源码里。
 - 用 `python3 tools/bootstrap_deps.py --python` 把 pinned Python 测试工具安装到
   `third_party/python`。
-- 用 `python3 tools/bootstrap_deps.py --importer-sources` shallow fetch pinned StableHLO、Shardy、
-  OpenXLA/XLA、PyTorch/XLA 和 torch-mlir source submodules 到 `third_party/<name>`；不要 full clone
-  上游历史作为默认 bootstrap。
+- 用 `python3 tools/bootstrap_deps.py --importer-sources` shallow fetch pinned StableHLO、Shardy 和
+  OpenXLA/XLA source submodules 到 `third_party/<name>`；PyTorch/XLA 和 torch-mlir source checkout
+  属于 optional frontend/importer tooling 依赖，必须与同一 `third_party/xla` commit 对齐或通过受
+  检查的 Bazel override wrapper 使用同一份 XLA；不要 full clone 上游历史作为默认 bootstrap。
 - 用 `python3 tools/bootstrap_deps.py --importer-python` 把 pinned
   `torch` / `torchvision` / `torch_xla` importer wheels 安装到 `third_party/python-importer`。
 - 用 `python3 tools/bootstrap_deps.py --llvm` 下载 pinned LLVM/MLIR 预编译包；脚本会检查远端

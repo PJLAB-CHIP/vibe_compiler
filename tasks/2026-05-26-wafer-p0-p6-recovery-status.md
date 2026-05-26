@@ -83,8 +83,10 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
   launch op prefix 拆分；这是 R1.1。
 - StableHLO/Shardy dependency 当前主要服务 textual lowering smoke 和 future SPMD bridge dependency
   boundary；OpenXLA/XLA 已作为 future GSPMD partitioner source pin 接入，并作为 LLVM/StableHLO/Shardy
-  stack pin 的事实源；PyTorch/XLA、torch-mlir 源码树不再作为 public source dependency，frontend
-  importer 只保留 Python wheel/tooling pin。
+  stack pin 的事实源；PyTorch/XLA、torch-mlir source checkout 若进入仓库，只能作为 optional
+  frontend/importer tooling 依赖，不能成为 core compiler public dependency。PyTorch/XLA source
+  必须与同一 `third_party/xla` commit 对齐，或通过受检查的 `--override_repository` wrapper 使用
+  同一份 XLA。
   真实 importer adapter 和 artifact verifier 还没成为独立 frontend 层。
 - runtime/driver 头文件和真实 runtime adapter 尚未进入 launch/C ABI 层。
 
