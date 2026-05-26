@@ -36,12 +36,12 @@ module {
 
 // CHECK-LABEL: func.func @all_gather
 // CHECK-NOT: stablehlo.all_gather
-// CHECK: wafer.comm.all_gather %{{.*}} into %{{.*}} {bytes = 16 : i64, group_size = 2 : i64, local_rank = 1 : i64}
+// CHECK: wafer.comm.all_gather %{{.*}} into %{{.*}} {bytes = 16 : i64, group_size = 2 : i64, local_rank = 1 : i64, rank_group = array<i64: 0, 1>}
 
 // CHECK-LABEL: func.func @all_reduce
 // CHECK-NOT: stablehlo.all_reduce
-// CHECK: wafer.comm.all_reduce <sum> %{{.*}} using %{{.*}} {bytes = 16 : i64, group_size = 2 : i64, local_rank = 1 : i64}
+// CHECK: wafer.comm.all_reduce <sum> %{{.*}} using %{{.*}} {bytes = 16 : i64, group_size = 2 : i64, local_rank = 1 : i64, rank_group = array<i64: 0, 1>}
 
 // CHECK-LABEL: func.func @reduce_scatter
 // CHECK-NOT: stablehlo.reduce_scatter
-// CHECK: wafer.comm.reduce_scatter <max> %{{.*}} using %{{.*}} {bytes = 16 : i64, group_size = 2 : i64, local_rank = 1 : i64}
+// CHECK: wafer.comm.reduce_scatter <max> %{{.*}} using %{{.*}} {bytes = 16 : i64, group_size = 2 : i64, local_rank = 1 : i64, rank_group = array<i64: 0, 1>}

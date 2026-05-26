@@ -8,6 +8,9 @@
 #ifdef WAFER_ENABLE_STABLEHLO
 #include "stablehlo/dialect/Register.h"
 #endif
+#ifdef WAFER_ENABLE_SHARDY
+#include "shardy/dialect/sdy/ir/register.h"
+#endif
 
 namespace wafer {
 
@@ -16,6 +19,9 @@ inline void registerImporterDialects(mlir::DialectRegistry &registry) {
   mlir::stablehlo::registerAllDialects(registry);
 #else
   (void)registry;
+#endif
+#ifdef WAFER_ENABLE_SHARDY
+  mlir::sdy::registerAllDialects(registry);
 #endif
 }
 

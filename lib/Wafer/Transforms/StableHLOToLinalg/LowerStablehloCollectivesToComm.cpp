@@ -71,8 +71,14 @@ getCompactTensorByteSize(mlir::RankedTensorType tensorType) {
 }
 
 #ifdef WAFER_ENABLE_STABLEHLO
-static mlir::FailureOr<int64_t>
-getReplicaGroupSize(mlir::Operation *op, mlir::Attribute replicaGroupsAttr) {
+struct ReplicaGroup {
+  llvm::SmallVector<int64_t, 8> ranks;
+
+  int64_t size() const { return static_cast<int64_t>(ranks.size()); }
+};
+
+static mlir::FailureOr<ReplicaGroup>
+getReplicaGroup(mlir::Operation *op, mlir::Attribute replicaGroupsAttr) {
   auto replicaGroups =
       mlir::dyn_cast_or_null<mlir::DenseIntElementsAttr>(replicaGroupsAttr);
   if (!replicaGroups)
@@ -84,16 +90,29 @@ getReplicaGroupSize(mlir::Operation *op, mlir::Attribute replicaGroupsAttr) {
   if (!groupsType || groupsType.getRank() != 2)
     return op->emitOpError(
         "requires rank-2 StableHLO replica_groups for Wafer comm lowering");
+  if (groupsType.getDimSize(0) != 1)
+    return op->emitOpError(
+        "requires exactly one StableHLO replica group for Wafer comm lowering");
   int64_t groupSize = groupsType.getDimSize(1);
   if (groupSize <= 1)
     return op->emitOpError(
         "requires StableHLO replica group size greater than one");
-  return groupSize;
+
+  ReplicaGroup group;
+  group.ranks.reserve(groupSize);
+  for (int64_t rank : replicaGroups.getValues<int64_t>()) {
+    if (rank < 0)
+      return op->emitOpError(
+          "requires non-negative StableHLO replica group rank ids");
+    group.ranks.push_back(rank);
+  }
+  return group;
 }
 
 static mlir::LogicalResult
-verifyLocalRank(mlir::Operation *op, int64_t localRank, int64_t groupSize) {
-  if (localRank < 0 || localRank >= groupSize)
+verifyLocalRank(mlir::Operation *op, int64_t localRank,
+                const ReplicaGroup &group) {
+  if (localRank < 0 || localRank >= group.size())
     return op->emitOpError("local-rank pass option must be within "
                            "StableHLO replica group size");
   return mlir::success();
@@ -165,17 +184,17 @@ static mlir::LogicalResult lowerAllGather(mlir::stablehlo::AllGatherOp op,
     return op->emitOpError(
         "requires static ranked tensor types for Wafer comm lowering");
 
-  mlir::FailureOr<int64_t> groupSize =
-      getReplicaGroupSize(op.getOperation(), op.getReplicaGroups());
-  if (mlir::failed(groupSize) ||
-      mlir::failed(verifyLocalRank(op.getOperation(), localRank, *groupSize)))
+  mlir::FailureOr<ReplicaGroup> group =
+      getReplicaGroup(op.getOperation(), op.getReplicaGroups());
+  if (mlir::failed(group) ||
+      mlir::failed(verifyLocalRank(op.getOperation(), localRank, *group)))
     return mlir::failure();
 
   std::optional<int64_t> bytes = getCompactTensorByteSize(inputType);
   std::optional<int64_t> resultBytes = getCompactTensorByteSize(resultType);
   int64_t expectedResultBytes = 0;
   if (!bytes || !resultBytes ||
-      !checkedMul(*bytes, *groupSize, expectedResultBytes) ||
+      !checkedMul(*bytes, group->size(), expectedResultBytes) ||
       *resultBytes != expectedResultBytes)
     return op->emitOpError(
         "StableHLO all_gather result bytes must equal operand bytes times "
@@ -188,7 +207,9 @@ static mlir::LogicalResult lowerAllGather(mlir::stablehlo::AllGatherOp op,
       createEmptyTileCast(builder, op.getLoc(), resultType);
   builder.create<wafer::CommAllGatherOp>(
       op.getLoc(), localTile, gatherTile, builder.getI64IntegerAttr(localRank),
-      builder.getI64IntegerAttr(*groupSize), builder.getI64IntegerAttr(*bytes));
+      builder.getI64IntegerAttr(group->size()),
+      builder.getDenseI64ArrayAttr(group->ranks),
+      builder.getI64IntegerAttr(*bytes));
   mlir::Value result =
       createTileToTensorCast(builder, op.getLoc(), gatherTile, resultType);
   op->getResult(0).replaceAllUsesWith(result);
@@ -215,10 +236,10 @@ static mlir::LogicalResult lowerAllReduce(mlir::stablehlo::AllReduceOp op,
     return op->emitOpError(
         "requires same static ranked operand/result tensor type");
 
-  mlir::FailureOr<int64_t> groupSize =
-      getReplicaGroupSize(op.getOperation(), op.getReplicaGroups());
-  if (mlir::failed(groupSize) ||
-      mlir::failed(verifyLocalRank(op.getOperation(), localRank, *groupSize)))
+  mlir::FailureOr<ReplicaGroup> group =
+      getReplicaGroup(op.getOperation(), op.getReplicaGroups());
+  if (mlir::failed(group) ||
+      mlir::failed(verifyLocalRank(op.getOperation(), localRank, *group)))
     return mlir::failure();
 
   std::optional<int64_t> bytes = getCompactTensorByteSize(tensorType);
@@ -235,7 +256,9 @@ static mlir::LogicalResult lowerAllReduce(mlir::stablehlo::AllReduceOp op,
       getSPMTileBuffer(op.getContext(), tensorType, wafer::MemLayout::Tensor),
       wafer::ComputeReduceKindAttr::get(op.getContext(), *kind), inputTile,
       recvTile, builder.getI64IntegerAttr(localRank),
-      builder.getI64IntegerAttr(*groupSize), builder.getI64IntegerAttr(*bytes));
+      builder.getI64IntegerAttr(group->size()),
+      builder.getDenseI64ArrayAttr(group->ranks),
+      builder.getI64IntegerAttr(*bytes));
   mlir::Value result = createTileToTensorCast(builder, op.getLoc(),
                                               comm.getResult(), tensorType);
   op->getResult(0).replaceAllUsesWith(result);
@@ -260,17 +283,17 @@ lowerReduceScatter(mlir::stablehlo::ReduceScatterOp op, int64_t localRank) {
     return op->emitOpError(
         "requires static ranked tensor types for Wafer comm lowering");
 
-  mlir::FailureOr<int64_t> groupSize =
-      getReplicaGroupSize(op.getOperation(), op.getReplicaGroups());
-  if (mlir::failed(groupSize) ||
-      mlir::failed(verifyLocalRank(op.getOperation(), localRank, *groupSize)))
+  mlir::FailureOr<ReplicaGroup> group =
+      getReplicaGroup(op.getOperation(), op.getReplicaGroups());
+  if (mlir::failed(group) ||
+      mlir::failed(verifyLocalRank(op.getOperation(), localRank, *group)))
     return mlir::failure();
 
   std::optional<int64_t> inputBytes = getCompactTensorByteSize(inputType);
   std::optional<int64_t> resultBytes = getCompactTensorByteSize(resultType);
   int64_t expectedInputBytes = 0;
   if (!inputBytes || !resultBytes ||
-      !checkedMul(*resultBytes, *groupSize, expectedInputBytes) ||
+      !checkedMul(*resultBytes, group->size(), expectedInputBytes) ||
       *inputBytes != expectedInputBytes)
     return op->emitOpError(
         "StableHLO reduce_scatter input bytes must equal result bytes times "
@@ -285,7 +308,8 @@ lowerReduceScatter(mlir::stablehlo::ReduceScatterOp op, int64_t localRank) {
       getSPMTileBuffer(op.getContext(), resultType, wafer::MemLayout::Tensor),
       wafer::ComputeReduceKindAttr::get(op.getContext(), *kind), inputSlot,
       recvTile, builder.getI64IntegerAttr(localRank),
-      builder.getI64IntegerAttr(*groupSize),
+      builder.getI64IntegerAttr(group->size()),
+      builder.getDenseI64ArrayAttr(group->ranks),
       builder.getI64IntegerAttr(*resultBytes));
   mlir::Value result = createTileToTensorCast(builder, op.getLoc(),
                                               comm.getResult(), resultType);

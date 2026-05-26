@@ -70,7 +70,7 @@ static int64_t wrapRank(int64_t rank, int64_t groupSize) {
 
 static mlir::LogicalResult
 collectPhysicalTileIds(mlir::ModuleOp module, mlir::Operation *anchor,
-                       int64_t groupSize,
+                       llvm::ArrayRef<int64_t> rankGroup,
                        llvm::SmallVectorImpl<int64_t> &physicalTileIds) {
   llvm::SmallVector<wafer::PlacementMapOp, 1> placements;
   module.walk([&](wafer::PlacementMapOp placement) {
@@ -82,9 +82,6 @@ collectPhysicalTileIds(mlir::ModuleOp module, mlir::Operation *anchor,
 
   wafer::PlacementMapOp placement = placements.front();
   int64_t logicalRankCount = placement.getLogicalRankCountAttr().getInt();
-  if (logicalRankCount < groupSize)
-    return anchor->emitOpError(
-        "ring all-gather group_size exceeds placement logical rank count");
 
   llvm::ArrayRef<int64_t> coords =
       placement.getPhysicalTileCoordsAttr().asArrayRef();
@@ -93,9 +90,14 @@ collectPhysicalTileIds(mlir::ModuleOp module, mlir::Operation *anchor,
   int64_t tileXCount = placement.getTileXCountAttr().getInt();
 
   physicalTileIds.clear();
-  physicalTileIds.reserve(groupSize);
-  for (int64_t rank = 0; rank < groupSize; ++rank) {
-    int64_t base = rank * 4;
+  physicalTileIds.reserve(rankGroup.size());
+  for (int64_t logicalRank : rankGroup) {
+    if (logicalRank < 0 || logicalRank >= logicalRankCount)
+      return anchor->emitOpError(
+          "ring collective rank_group entry is outside placement logical rank "
+          "count");
+
+    int64_t base = logicalRank * 4;
     std::optional<int64_t> tileId =
         getPhysicalTileId(coords[base], coords[base + 1], coords[base + 2],
                           coords[base + 3], cardXCount, tileYCount, tileXCount);
@@ -111,10 +113,11 @@ static mlir::LogicalResult lowerAllGather(mlir::ModuleOp module,
                                           wafer::CommAllGatherOp allGather) {
   int64_t groupSize = allGather.getGroupSizeAttr().getInt();
   int64_t localRank = allGather.getLocalRankAttr().getInt();
+  llvm::ArrayRef<int64_t> rankGroup = allGather.getRankGroupAttr().asArrayRef();
 
   llvm::SmallVector<int64_t, 8> physicalTileIds;
   if (mlir::failed(collectPhysicalTileIds(module, allGather.getOperation(),
-                                          groupSize, physicalTileIds)))
+                                          rankGroup, physicalTileIds)))
     return mlir::failure();
 
   int64_t nextPeer = physicalTileIds[wrapRank(localRank + 1, groupSize)];
@@ -167,13 +170,14 @@ static mlir::LogicalResult lowerReduceCollective(
     mlir::ModuleOp module, mlir::Operation *op, mlir::Value input,
     mlir::Value recvBuffer, mlir::Value result, wafer::ComputeReduceKind kind,
     mlir::IntegerAttr localRankAttr, mlir::IntegerAttr groupSizeAttr,
-    mlir::IntegerAttr bytesAttr) {
+    mlir::DenseI64ArrayAttr rankGroupAttr, mlir::IntegerAttr bytesAttr) {
   int64_t groupSize = groupSizeAttr.getInt();
   int64_t localRank = localRankAttr.getInt();
+  llvm::ArrayRef<int64_t> rankGroup = rankGroupAttr.asArrayRef();
 
   llvm::SmallVector<int64_t, 8> physicalTileIds;
   if (mlir::failed(
-          collectPhysicalTileIds(module, op, groupSize, physicalTileIds)))
+          collectPhysicalTileIds(module, op, rankGroup, physicalTileIds)))
     return mlir::failure();
 
   int64_t nextPeer = physicalTileIds[wrapRank(localRank + 1, groupSize)];
@@ -275,12 +279,14 @@ struct LowerRingReduceCollectivesPass
             module, op, reduceScatter.getInput(), reduceScatter.getRecvBuffer(),
             reduceScatter.getResult(), reduceScatter.getKindAttr().getValue(),
             reduceScatter.getLocalRankAttr(), reduceScatter.getGroupSizeAttr(),
+            reduceScatter.getRankGroupAttr(),
             reduceScatter.getBytesAttr());
       } else if (auto allReduce = mlir::dyn_cast<wafer::CommAllReduceOp>(op)) {
         result = lowerReduceCollective(
             module, op, allReduce.getInput(), allReduce.getRecvBuffer(),
             allReduce.getResult(), allReduce.getKindAttr().getValue(),
             allReduce.getLocalRankAttr(), allReduce.getGroupSizeAttr(),
+            allReduce.getRankGroupAttr(),
             allReduce.getBytesAttr());
       }
 

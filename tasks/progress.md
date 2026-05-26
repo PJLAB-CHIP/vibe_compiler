@@ -9,14 +9,15 @@
 
 - P0-P6 的历史实现只能视为骨架进度（`skeleton`）：有局部 IR、pass、verifier、fixture 和 smoke tests，
   但没有按各设计文档完成主路径闭环。
-- R0.2/R0.3/R1.1/R1.2/R1.3 已恢复源码 ownership、依赖层级边界、统一 Shardy CMake 编译验证目标、
-  Wafer IR op-family 文件边界、Wafer interface/effect/resource 查询合同，以及 local compute
-  stage-connection gate。
+- R0.2/R0.3/R1.1/R1.2/R1.3/R2.1/R2.2/R2.3 已恢复源码 ownership、依赖层级边界、统一 Shardy
+  CMake 编译验证目标、Wafer IR op-family 文件边界、Wafer interface/effect/resource 查询合同、
+  local compute stage-connection gate、frontend artifact/sidecar verifier、SDY artifact bridge、
+  StableHLO replica rank group 到 `wafer.comm` 的显式表示，以及 local compute normalization 覆盖状态。
 - 设计一致性缺口见
   `tasks/2026-05-26-wafer-p0-p6-design-conformance-audit.md` 和
   `tasks/2026-05-26-wafer-p0-p6-recovery-status.md`。
 - 当前不得推进 P7/P8/P9；必须先恢复 P0-P6 的设计一致性。
-- 当前唯一 ready 项是 R2.1。
+- 当前唯一 ready 项是 R3.1。
 
 ## 状态标记
 
@@ -35,6 +36,9 @@
 - 固定依赖版本 / importer backend 隔离检查。
 - Wafer tiling/layout/materialization/resource op interface 查询和 MLIR memory effect resource 查询。
 - 从 public linalg source 到 group、tile_region、`wafer.abi.*` skeleton 的 stage-connection lit gate。
+- frontend artifact verifier 的 graph-break/eager fallback/bounded dynamic shape/sidecar constant gate。
+- SDY `sdy.mesh` / `sdy.sharding` artifact parse/verify gate，以及 StableHLO replica `rank_group`
+  到 `wafer.comm` / ring lowering 的 lit gate。
 - C ABI skeleton ops、package manifest fixture 和 C stub syntax compile。
 
 当前不能作为完成证明：
@@ -51,7 +55,7 @@
 | --- | --- | --- | --- |
 | P0 | skeleton | 工程、依赖、工具、测试入口 | 最小工程入口可用；源码 ownership 和依赖层级边界已恢复；P0 仍只是历史 skeleton 记录，不代表 frontend/runtime 主路径完成 |
 | P1 | skeleton | Wafer IR skeleton 和 verifier | 核心 op/type/attr skeleton 有测试；ODS/verifier/tests 已按 op family 拆开；interface/effect/resource 已恢复为可查询合同；local compute stage-connection gate 已补，但 storage-realized 主链路仍未闭环 |
-| P2 | skeleton | Frontend artifact 和 local compute normalization | StableHLO textual lowering 有覆盖；真实 importer adapter、sidecar/ConstantLike/storage contract 未闭环 |
+| P2 | skeleton | Frontend artifact 和 local compute normalization | StableHLO textual lowering、frontend artifact verifier、sidecar/resource-backed constant metadata、SDY artifact bridge 和 local compute coverage 口径已恢复；P2 仍不代表 framework importer、完整 SPMD partitioner、dynamic/mask/constant-storage 或 physical schedule 闭环 |
 | P3 | skeleton | M0 single-tile load-GEMM-store | 有 group/tile/SPM/DDR/C ABI skeleton；planner、package、golden packet 和 C ABI 主路径未闭环 |
 | P4 | skeleton | M1 multi-tile no-comm | 有 placement/map 和 clone-style tile_region skeleton；真实 shard slicing、merge、runtime launch metadata 未闭环 |
 | P5 | skeleton | Transformer local vertical slices | 有 staged pattern acceptance 和 M6 skeleton gate；full-block package/device artifact 未从 IR 闭环 |
@@ -69,10 +73,10 @@
 | R1.1 | done | 拆分 Wafer IR 文件边界 | `WaferOps.td` 只聚合 `include/Wafer/IR/Ops/*Ops.td`；op verifier 已拆到 `lib/Wafer/IR/Ops/*Ops.cpp`；`test/Dialect/Wafer` 已按 ABI/Attrs/Comm/Compute/DDR/Group/Launch/Layout/Placement/SPM/Sync/TileRegion/Types 分目录；`tools/check_ir_organization.py` 和 lit test 固定结构检查 |
 | R1.2 | done | 恢复 interface/effect/resource 合同 | `WaferTilingInterface`、`WaferLayoutOpInterface`、`WaferLayoutMaterializationOpInterface` 和 `WaferResourceEffectInterface` 都提供结构化查询；layout/materialize/SPM/DDR/compute/comm/sync/ABI op 接入 Wafer resource effects，关键 movement/compute/comm op 接入 MLIR memory resource effects；gtest 覆盖 planner-style 查询 |
 | R1.3 | done | 补 stage-connection tests | `test/StageConnections/local-compute-pipeline.mlir` 覆盖 linalg matmul/elementwise/reduce 到 group、tile_region、`wafer.abi.*` skeleton 的连接；`tools/check_stage_connection_tests.py` 固定禁止 stage-connection gate 退回 cast-only 用例 |
-| R2.1 | ready | 恢复 frontend artifact / importer contract | importer adapter、sidecar/ConstantLike、graph break/eager/dynamic shape 诊断按 frontend 设计闭环 |
-| R2.2 | pending | 恢复 Shardy/SPMD artifact bridge | logical mesh、rank group、partitioned StableHLO collective 和 shard-local program 成为 placement/comm 输入 |
-| R2.3 | pending | 重写 local compute normalization 覆盖状态 | 按 structured tensor IR contract 记录 dot/broadcast/reduce/softmax/norm/RoPE/MLP 覆盖；acceptance pass 不冒充 schedule completion |
-| R3.1 | pending | 恢复 M0 group boundary / candidate contract | `wafer.group` 只表达 local tensor grouping 和 candidate boundary；root op、operands/results、tile candidate shape 和拒绝原因由 IR/interface/verifier 可解释，不靠 pass side table 或名字 |
+| R2.1 | done | 恢复 frontend artifact / importer contract | 记录见 `tasks/2026-05-26-wafer-r2-recovery.md`；`WaferFrontend` verifier、`wafer-import-model --verify-import-result [--sidecar]`、`wafer.frontend.dynamic_bounds`、`wafer.frontend.constant` sidecar 对齐、graph break/eager fallback/dynamic shape 诊断已闭环 |
+| R2.2 | done | 恢复 Shardy/SPMD artifact bridge | 记录见 `tasks/2026-05-26-wafer-r2-recovery.md`；SDY dialect/pass 注册按 `WAFER_ENABLE_SPMD_PARTITIONER_DEPS` 隔离，`sdy.mesh`/`sdy.sharding` artifact 可进入工具链，StableHLO `replica_groups` materialize 为 `wafer.comm` `rank_group`，ring lowering 按 logical rank group 查询 placement |
+| R2.3 | done | 重写 local compute normalization 覆盖状态 | 记录见 `tasks/2026-05-26-wafer-r2-recovery.md` 和 `tasks/2026-05-25-wafer-local-compute-normalization-design.md`；dot/broadcast/reduce/softmax/norm/RoPE/MLP 覆盖按 structured tensor IR evidence 记录，acceptance pass 不作为 schedule completion |
+| R3.1 | ready | 恢复 M0 group boundary / candidate contract | `wafer.group` 只表达 local tensor grouping 和 candidate boundary；root op、operands/results、tile candidate shape 和拒绝原因由 IR/interface/verifier 可解释，不靠 pass side table 或名字 |
 | R3.2 | pending | 恢复 M0 root tile feasibility oracle | root tile candidate 检查必须接入 op tiling contract、layout requirement、SPM demand、DDR demand 和 compute/movement legality；静态 result shape check 只能是其中一个输入 |
 | R3.3 | pending | 恢复 M0 tile_region materialization contract | accepted group materialize 成 `wafer.tile_region`，load/store、layout materialize、`wafer.compute.*` 和 tile_yield 全部来自同一 accepted candidate；不得把未接受 plan 落进 IR |
 | R3.4 | pending | 恢复 M0 layout/SPM feasibility gate | layout materialization 是显式 movement；SPM trial 使用 resource effects、liveness/range 和 tile buffer lifetime，失败能诊断到具体 op/value |
@@ -124,5 +128,5 @@ P7/P8/P9 只有在 P0-P6 恢复队列完成后才能推进。
 
 ## 下一步
 
-从 R2.1 开始：恢复 frontend artifact / importer contract，再按 R2/R3 顺序恢复 frontend 和 M0 主链路。
+从 R3.1 开始：恢复 M0 group boundary / candidate contract，再按 R3 顺序恢复 M0 主链路。
 P7/P8/P9 依赖恢复后的 P0-P6 主链路，不提前推进。

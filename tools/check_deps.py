@@ -47,6 +47,17 @@ STABLEHLO_API_ALLOWED_PREFIXES = [
     "tools/wafer-import-model",
 ]
 
+SHARDY_API_NEEDLES = [
+    "shardy/",
+    "mlir::sdy",
+]
+
+SHARDY_API_ALLOWED_PREFIXES = [
+    "include/Wafer/Frontend",
+    "tools/wafer-import-model",
+    "tools/wafer-opt",
+]
+
 RUNTIME_DRIVER_NEEDLES = [
     "tx_runtime",
     "libhpgr",
@@ -262,9 +273,35 @@ def check_cmake_target_visibility() -> None:
         REPO_ROOT / "tools" / "wafer-opt" / "CMakeLists.txt",
         "target_link_libraries(wafer-opt PRIVATE StablehloRegister)",
     )
+    for needle in [
+        "WAFER_ENABLE_SPMD_PARTITIONER_DEPS",
+        "WAFER_ENABLE_SHARDY=1",
+        "target_link_libraries(wafer-opt PRIVATE ShardySdyRegister ShardySdyTransforms)",
+    ]:
+        check_text_contains(REPO_ROOT / "tools" / "wafer-opt" / "CMakeLists.txt", needle)
     check_text_contains(
         REPO_ROOT / "tools" / "wafer-import-model" / "CMakeLists.txt",
         "StablehloRegister",
+    )
+    for needle in [
+        "WAFER_ENABLE_SHARDY=1",
+        "target_link_libraries(wafer-import-model PRIVATE ShardySdyRegister)",
+    ]:
+        check_text_contains(
+            REPO_ROOT / "tools" / "wafer-import-model" / "CMakeLists.txt", needle
+        )
+    for needle in [
+        "shardy/dialect/sdy/ir/register.h",
+        "mlir::sdy::registerAllDialects(registry)",
+    ]:
+        check_text_contains(
+            REPO_ROOT / "include" / "Wafer" / "Frontend" / "InitImporterDialects.h",
+            needle,
+        )
+    check_text_contains(REPO_ROOT / "test" / "lit.cfg.py", 'add("shardy")')
+    check_text_contains(
+        REPO_ROOT / "test" / "lit.site.cfg.py.in",
+        "config.wafer_enable_spmd_partitioner_deps",
     )
 
 
@@ -280,10 +317,16 @@ def check_dependency_layering() -> None:
         REPO_ROOT / "lib" / "Wafer",
     ]
     check_forbidden_needles(
-        label="StableHLO/Shardy",
+        label="StableHLO",
         roots=production_roots,
         needles=STABLEHLO_API_NEEDLES,
         allowed_prefixes=STABLEHLO_API_ALLOWED_PREFIXES,
+    )
+    check_forbidden_needles(
+        label="Shardy",
+        roots=production_roots,
+        needles=SHARDY_API_NEEDLES,
+        allowed_prefixes=SHARDY_API_ALLOWED_PREFIXES,
     )
     check_forbidden_needles(
         label="runtime/driver",

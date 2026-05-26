@@ -97,6 +97,19 @@ single-result StableHLO `all_gather`、`all_reduce` 和 `reduce_scatter` 会降�
 local scatter slot 的临时物化由 visible `unrealized_conversion_cast` 表达，后续应由 buffer-slice
 IR 或 layout/materialization pass 收敛，不作为隐藏 side table。
 
+2026-05-26 R2.2 恢复了 SDY artifact bridge 的工程入口：`WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON`
+时，`wafer-opt` 和 frontend verifier tool 显式注册 Shardy / SDY dialect，`wafer-opt` 也注册
+SDY passes/pipelines。带 `sdy.mesh` / `sdy.sharding` 的 partitioned StableHLO artifact 可以作为
+Wafer 输入被 parse/verify。
+
+同一批次把 StableHLO `replica_groups` 的 logical rank group materialize 到
+`wafer.comm.all_gather`、`wafer.comm.all_reduce` 和 `wafer.comm.reduce_scatter` 的
+`rank_group = array<i64: ...>` attr。`group_size` 只表示 group cardinality，`local_rank` 是当前
+partition 在该 rank group 中的 index；ring lowering 通过 `rank_group` 查询 `wafer.placement.map`
+的 logical-rank 映射，不再假设 logical rank 总是连续 `0..group_size-1`。V0 仍只接受单个
+StableHLO replica group；多 replica-group artifact 需要后续增加全局 rank / group selection
+policy。
+
 ## 5. 与 Placement 的接口
 
 SPMD 给 placement 的输入是：

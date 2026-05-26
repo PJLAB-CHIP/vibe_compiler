@@ -5,5 +5,6 @@ config.llvm_tools_dir = r"@LLVM_TOOLS_BINARY_DIR@"
 config.filecheck_dir = r"@WAFER_FILECHECK_DIR@"
 config.python_executable = r"@Python3_EXECUTABLE@"
 config.wafer_enable_importer_deps = "@WAFER_ENABLE_IMPORTER_DEPS@"
+config.wafer_enable_spmd_partitioner_deps = "@WAFER_ENABLE_SPMD_PARTITIONER_DEPS@"
 
 lit_config.load_config(config, r"@CMAKE_CURRENT_SOURCE_DIR@/lit.cfg.py")

@@ -1,12 +1,11 @@
 //===- wafer-import-model.cpp - Wafer importer smoke tool ----------------===//
 
 #ifdef WAFER_ENABLE_STABLEHLO
+#include "Wafer/Frontend/Artifact.h"
 #include "Wafer/Frontend/InitImporterDialects.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinOps.h"
-#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
@@ -23,7 +22,8 @@ void printHelp() {
   llvm::outs() << "wafer-import-model\n";
 #ifdef WAFER_ENABLE_STABLEHLO
   llvm::outs() << "  --emit-static-smoke-artifact\n"
-               << "  --verify-import-result <mlir-file>\n";
+               << "  --verify-import-result <mlir-file> [--sidecar "
+                  "<sidecar-json>]\n";
 #else
   llvm::outs() << "  importer dependencies are disabled in this build\n";
 #endif
@@ -41,57 +41,7 @@ void emitStaticSmokeArtifact() {
       << "}\n";
 }
 
-bool rejectImportMarker(mlir::ModuleOp module, llvm::StringRef attrName,
-                        llvm::StringRef message) {
-  mlir::Attribute marker = module->getAttr(attrName);
-  if (!marker)
-    return false;
-
-  if (auto boolMarker = mlir::dyn_cast<mlir::BoolAttr>(marker);
-      boolMarker && !boolMarker.getValue())
-    return false;
-
-  llvm::errs() << "wafer-import-model: " << message << " rejected";
-  if (auto stringMarker = mlir::dyn_cast<mlir::StringAttr>(marker))
-    llvm::errs() << ": " << stringMarker.getValue();
-  else
-    llvm::errs() << ": " << marker;
-  llvm::errs() << "\n";
-  return true;
-}
-
-bool hasUnboundedDynamicShape(mlir::Type type) {
-  auto shapedType = mlir::dyn_cast<mlir::ShapedType>(type);
-  return shapedType && !shapedType.hasStaticShape();
-}
-
-bool rejectUnboundedDynamicShapes(mlir::ModuleOp module) {
-  bool rejected = false;
-  module.walk([&](mlir::func::FuncOp func) {
-    auto rejectType = [&](mlir::Type type) {
-      if (!hasUnboundedDynamicShape(type))
-        return false;
-      llvm::errs() << "wafer-import-model: unbounded dynamic shape rejected "
-                      "in func.func @"
-                   << func.getSymName() << ": " << type << "\n";
-      rejected = true;
-      return true;
-    };
-
-    for (mlir::Type input : func.getFunctionType().getInputs()) {
-      if (rejectType(input))
-        return mlir::WalkResult::interrupt();
-    }
-    for (mlir::Type result : func.getFunctionType().getResults()) {
-      if (rejectType(result))
-        return mlir::WalkResult::interrupt();
-    }
-    return mlir::WalkResult::advance();
-  });
-  return rejected;
-}
-
-int verifyImportResult(llvm::StringRef filename) {
+int verifyImportResult(llvm::StringRef filename, llvm::StringRef sidecarPath) {
   mlir::DialectRegistry registry;
   registry.insert<mlir::func::FuncDialect>();
   wafer::registerImporterDialects(registry);
@@ -106,15 +56,15 @@ int verifyImportResult(llvm::StringRef filename) {
   if (mlir::failed(mlir::verify(*module)))
     return 1;
 
-  bool rejected = false;
-  rejected |=
-      rejectImportMarker(*module, "wafer.import.graph_break", "graph break");
-  rejected |= rejectImportMarker(*module, "wafer.import.eager_fallback",
-                                 "eager fallback");
-  rejected |= rejectUnboundedDynamicShapes(*module);
-  if (rejected)
+  wafer::frontend::ArtifactVerificationResult result;
+  if (mlir::failed(wafer::frontend::verifyFrontendArtifact(
+          *module, sidecarPath, llvm::errs(), &result)))
     return 1;
 
+  if (result.sidecarConstantCount != 0) {
+    llvm::outs() << "wafer-import-model: verified frontend sidecar constants: "
+                 << result.sidecarConstantCount << "\n";
+  }
   llvm::outs() << "wafer-import-model: verified frontend artifact\n";
   return 0;
 }
@@ -138,15 +88,48 @@ int main(int argc, char **argv) {
     return 0;
   }
 
-  if (argc == 3 && std::string(argv[1]) == "--verify-import-result")
-    return verifyImportResult(argv[2]);
+  std::string verifyFilename;
+  std::string sidecarPath;
+  for (int i = 1; i < argc; ++i) {
+    llvm::StringRef arg(argv[i]);
+    if (arg == "--verify-import-result") {
+      if (i + 1 >= argc) {
+        llvm::errs() << "wafer-import-model: missing --verify-import-result "
+                        "filename\n";
+        return 1;
+      }
+      verifyFilename = argv[++i];
+      continue;
+    }
 
-  constexpr llvm::StringRef verifyPrefix = "--verify-import-result=";
-  if (argc == 2) {
-    llvm::StringRef arg(argv[1]);
-    if (arg.starts_with(verifyPrefix))
-      return verifyImportResult(arg.drop_front(verifyPrefix.size()));
+    constexpr llvm::StringRef verifyPrefix = "--verify-import-result=";
+    if (arg.starts_with(verifyPrefix)) {
+      verifyFilename = arg.drop_front(verifyPrefix.size()).str();
+      continue;
+    }
+
+    if (arg == "--sidecar") {
+      if (i + 1 >= argc) {
+        llvm::errs() << "wafer-import-model: missing --sidecar filename\n";
+        return 1;
+      }
+      sidecarPath = argv[++i];
+      continue;
+    }
+
+    constexpr llvm::StringRef sidecarPrefix = "--sidecar=";
+    if (arg.starts_with(sidecarPrefix)) {
+      sidecarPath = arg.drop_front(sidecarPrefix.size()).str();
+      continue;
+    }
+
+    llvm::errs() << "wafer-import-model: unknown argument: " << arg << "\n";
+    printHelp();
+    return 1;
   }
+
+  if (!verifyFilename.empty())
+    return verifyImportResult(verifyFilename, sidecarPath);
 
   llvm::errs() << "wafer-import-model: unknown or incomplete arguments\n";
   printHelp();

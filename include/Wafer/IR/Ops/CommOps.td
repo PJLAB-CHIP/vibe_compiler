@@ -43,6 +43,7 @@ def Wafer_CommAllGatherOp : Wafer_Op<"comm.all_gather", [
     AnyType:$gather_buffer,
     I64Attr:$local_rank,
     I64Attr:$group_size,
+    DenseI64ArrayAttr:$rank_group,
     I64Attr:$bytes
   );
   let hasVerifier = 1;
@@ -64,6 +65,7 @@ class Wafer_CommReduceCollectiveOp<string mnemonic> : Wafer_Op<mnemonic, [
     AnyType:$recv_buffer,
     I64Attr:$local_rank,
     I64Attr:$group_size,
+    DenseI64ArrayAttr:$rank_group,
     I64Attr:$bytes
   );
   let results = (outs AnyType:$result);

@@ -19,24 +19,17 @@ module {
     %local = "builtin.unrealized_conversion_cast"()
         : () -> !wafer.tile_buffer<tensor<4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
     %gather = "builtin.unrealized_conversion_cast"()
-        : () -> !wafer.tile_buffer<tensor<16xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
+        : () -> !wafer.tile_buffer<tensor<8xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
     wafer.comm.all_gather %local into %gather
-        {bytes = 16 : i64, group_size = 4 : i64, local_rank = 0 : i64,
-         rank_group = array<i64: 0, 1, 2, 3>}
+        {bytes = 16 : i64, group_size = 2 : i64, local_rank = 0 : i64,
+         rank_group = array<i64: 1, 3>}
         : !wafer.tile_buffer<tensor<4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
-        -> !wafer.tile_buffer<tensor<16xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
+        -> !wafer.tile_buffer<tensor<8xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
     wafer.tile_yield %arg0 : tensor<4xf32>
   }
 }
 
 // CHECK-LABEL: module
 // CHECK-NOT: wafer.comm.all_gather
-// CHECK: wafer.comm.send %{{.*}} {bytes = 16 : i64, peer = 1 : i64, slot = 0 : i64}
-// CHECK: wafer.comm.recv %{{.*}} {bytes = 16 : i64, peer = 3 : i64, slot = 3 : i64}
-// CHECK: wafer.comm.wait %{{.*}}, %{{.*}} : !async.token, !async.token
-// CHECK: wafer.comm.send %{{.*}} {bytes = 16 : i64, peer = 1 : i64, slot = 3 : i64}
-// CHECK: wafer.comm.recv %{{.*}} {bytes = 16 : i64, peer = 3 : i64, slot = 2 : i64}
-// CHECK: wafer.comm.wait %{{.*}}, %{{.*}} : !async.token, !async.token
-// CHECK: wafer.comm.send %{{.*}} {bytes = 16 : i64, peer = 1 : i64, slot = 2 : i64}
+// CHECK: wafer.comm.send %{{.*}} {bytes = 16 : i64, peer = 3 : i64, slot = 0 : i64}
 // CHECK: wafer.comm.recv %{{.*}} {bytes = 16 : i64, peer = 3 : i64, slot = 1 : i64}
-// CHECK: wafer.comm.wait %{{.*}}, %{{.*}} : !async.token, !async.token

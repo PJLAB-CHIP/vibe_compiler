@@ -22,6 +22,12 @@
 - Shardy 不用 standalone Bazel workspace 作为 Wafer dependency 编译验证；`WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON`
   会通过 `cmake/third_party/WaferShardyCMake.cmake` 编译 `wafer-shardy-cmake-gate` / `shardy-sdy-opt`，
   复用同一套固定版本 LLVM/MLIR 和 embedded StableHLO。
+- `WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON` 时，`wafer-opt` / `wafer-import-model` 会注册 SDY dialect；
+  新增 SDY artifact gate 要用 `REQUIRES: shardy`，避免关闭 Shardy 时让后端 textual tests 硬依赖
+  `sdy`。
+- frontend artifact verifier 入口是
+  `wafer-import-model --verify-import-result <mlir> [--sidecar <json>]`；sidecar V0 用
+  `function` + `arg` ordinal 对齐带 `wafer.frontend.constant` attr 的 function argument。
 - 依赖一致性检查入口是 `tools/check_deps.py`；默认检查固定版本、importer registration hook、
   public source submodule checkout HEAD、frontend importer wheel 固定版本和 core/frontend/runtime/test
   tool dependency layering。

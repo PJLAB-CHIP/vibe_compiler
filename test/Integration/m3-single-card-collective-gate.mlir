@@ -19,12 +19,14 @@ module {
       : () -> !wafer.tile_buffer<tensor<4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
 
   wafer.comm.all_gather %local into %gather
-      {bytes = 16 : i64, group_size = 2 : i64, local_rank = 0 : i64}
+      {bytes = 16 : i64, group_size = 2 : i64, local_rank = 0 : i64,
+       rank_group = array<i64: 0, 1>}
       : !wafer.tile_buffer<tensor<4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
       -> !wafer.tile_buffer<tensor<8xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
 
   %reduced = wafer.comm.all_reduce #wafer.reduce_kind<sum> %local using %recv
-      {bytes = 16 : i64, group_size = 2 : i64, local_rank = 0 : i64}
+      {bytes = 16 : i64, group_size = 2 : i64, local_rank = 0 : i64,
+       rank_group = array<i64: 0, 1>}
       : (!wafer.tile_buffer<tensor<4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>,
          !wafer.tile_buffer<tensor<4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>)
      -> !wafer.tile_buffer<tensor<4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>

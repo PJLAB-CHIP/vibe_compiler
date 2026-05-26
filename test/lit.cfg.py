@@ -22,3 +22,6 @@ config.substitutions.append(("%wafer_src_root", config.wafer_src_root))
 
 if config.wafer_enable_importer_deps == "ON":
     config.available_features.add("stablehlo")
+
+if config.wafer_enable_spmd_partitioner_deps == "ON":
+    config.available_features.add("shardy")

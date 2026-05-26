@@ -5,6 +5,7 @@
 #include "OpVerifierUtils.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallSet.h"
 
 using namespace wafer;
 using namespace wafer::detail;
@@ -120,6 +121,16 @@ mlir::LogicalResult CommAllGatherOp::verify() {
   if (localRank < 0 || localRank >= groupSize)
     return emitOpError(
         "all_gather local_rank must be within the collective group");
+  auto rankGroup = getRankGroupAttr().asArrayRef();
+  if (static_cast<int64_t>(rankGroup.size()) != groupSize)
+    return emitOpError("all_gather rank_group size must equal group_size");
+  llvm::SmallSet<int64_t, 8> seenRanks;
+  for (int64_t rank : rankGroup) {
+    if (rank < 0)
+      return emitOpError("all_gather rank_group entries must be non-negative");
+    if (!seenRanks.insert(rank).second)
+      return emitOpError("all_gather rank_group entries must be unique");
+  }
   int64_t bytes = getBytesAttr().getInt();
   if (bytes <= 0)
     return emitOpError("all_gather byte count must be positive");
@@ -190,7 +201,7 @@ static mlir::LogicalResult verifyCommReduceCollective(
     mlir::Operation *op, llvm::StringRef collectiveName, mlir::Value input,
     mlir::Value recvBuffer, mlir::Type resultType,
     mlir::IntegerAttr localRankAttr, mlir::IntegerAttr groupSizeAttr,
-    mlir::IntegerAttr bytesAttr) {
+    mlir::DenseI64ArrayAttr rankGroupAttr, mlir::IntegerAttr bytesAttr) {
   auto inputType = mlir::dyn_cast<TileBufferType>(input.getType());
   auto recvType = mlir::dyn_cast<TileBufferType>(recvBuffer.getType());
   auto resultTileType = mlir::dyn_cast<TileBufferType>(resultType);
@@ -212,6 +223,19 @@ static mlir::LogicalResult verifyCommReduceCollective(
   if (localRank < 0 || localRank >= groupSize)
     return op->emitOpError(collectiveName)
            << " local_rank must be within the collective group";
+  auto rankGroup = rankGroupAttr.asArrayRef();
+  if (static_cast<int64_t>(rankGroup.size()) != groupSize)
+    return op->emitOpError(collectiveName)
+           << " rank_group size must equal group_size";
+  llvm::SmallSet<int64_t, 8> seenRanks;
+  for (int64_t rank : rankGroup) {
+    if (rank < 0)
+      return op->emitOpError(collectiveName)
+             << " rank_group entries must be non-negative";
+    if (!seenRanks.insert(rank).second)
+      return op->emitOpError(collectiveName)
+             << " rank_group entries must be unique";
+  }
   int64_t bytes = bytesAttr.getInt();
   if (bytes <= 0)
     return op->emitOpError(collectiveName) << " byte count must be positive";
@@ -232,7 +256,8 @@ mlir::LogicalResult CommReduceScatterOp::verify() {
   return verifyCommReduceCollective(getOperation(), "reduce_scatter",
                                     getInput(), getRecvBuffer(),
                                     getResult().getType(), getLocalRankAttr(),
-                                    getGroupSizeAttr(), getBytesAttr());
+                                    getGroupSizeAttr(), getRankGroupAttr(),
+                                    getBytesAttr());
 }
 
 static void collectCommReduceCollectiveLayoutRequirements(
@@ -297,6 +322,7 @@ mlir::LogicalResult CommAllReduceOp::verify() {
   return verifyCommReduceCollective(getOperation(), "all_reduce", getInput(),
                                     getRecvBuffer(), getResult().getType(),
                                     getLocalRankAttr(), getGroupSizeAttr(),
+                                    getRankGroupAttr(),
                                     getBytesAttr());
 }
 

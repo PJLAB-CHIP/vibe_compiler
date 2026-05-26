@@ -72,6 +72,13 @@ Frontend artifact 包含三类信息：
 weight sidecar manifest 只描述 source value 的 identity、shape、dtype、byte size、checksum 或
 resource key。它不描述 Wafer physical layout、buffer object pool、DDR address 或 package path。
 
+2026-05-26 R2.1 实现把 V0 sidecar manifest 固定为 JSON `version: 0` 加 `constants` 列表。
+每个 constant entry 通过 `function` + `arg` ordinal 指向 `func.func` argument，并要求该 argument
+带 `wafer.frontend.constant = "<resource_key>"`。verifier 检查 shape、dtype、byte size 和
+resource key 一致；checksum 作为 artifact identity 字段保留，但当前不读取 backing data 做内容
+hash。这个 attr 属于 frontend artifact metadata，不是 Wafer 私有 tensor constant op，也不表达
+DDR pool、physical layout、BO handle 或 package path。
+
 ### 2.1 模型导入合同
 
 Wafer 后端的稳定入口是 verified StableHLO / MLIR artifact，不是某个前端框架 API。Model import
@@ -145,6 +152,11 @@ Frontend function signature 是用户可见语义边界：
 - dynamic shape 必须有后续阶段可验证的 bounded policy；V0 可以拒绝无法静态界定容量的
   dynamic program。
 - input/output alias 只有在 frontend artifact 明确表达时才进入后续 IR；不能通过名字推断。
+
+R2.1 V0 用 function argument/result attr
+`wafer.frontend.dynamic_bounds = [d0, d1, ...]` 表达 bounded dynamic shape。attr rank 必须匹配
+tensor rank，dynamic dimension 的 bound 必须为正，static dimension 的 bound 必须等于 type 中
+的静态维度。缺失 bound 或非法 bound 在 frontend verifier 中报错，不进入后端 lowering。
 
 ### 3.2 Constant and Weight
 

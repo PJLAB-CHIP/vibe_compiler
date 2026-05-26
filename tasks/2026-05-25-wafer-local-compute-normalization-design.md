@@ -302,6 +302,23 @@ Normalization 后必须能检查：
 - shape-only ops 没有提前变成 target movement。
 - IR 中没有 Wafer physical memory、layout materialization、DTE、packet 或 runtime launch 事实。
 
+### 7.1 R2.3 覆盖状态口径
+
+2026-05-26 R2.3 已把当前 local compute normalization 覆盖状态改写为 structured tensor IR 证据，
+不再把 acceptance pass 视为 schedule completion。当前可引用的 evidence 如下：
+
+| 子结构 | 当前证据 | 结论边界 |
+| --- | --- | --- |
+| dot / 2D GEMM | `test/Frontend/lower-stablehlo-dot-to-linalg.mlir`、`stablehlo-dot-artifact.mlir`、`linalg-gemm-artifact.mlir` | 证明 2D dot 可进入 structured matmul，不证明 tile shape / GEMM packet |
+| attention QK^T / AV | `lower-stablehlo-attention-score.mlir`、`lower-stablehlo-attention-value.mlir`、`lower-stablehlo-attention-softmax-value.mlir` | rank-4 transpose / contraction relation 来自 `dot_general` dimension numbers 和 indexing map |
+| elementwise / broadcast | `lower-stablehlo-elementwise.mlir`、projection residual gate | 证明当前 add/sub/mul/div/tanh/exp/broadcast 子集的 SSA dataflow；mask/select 和 complex broadcast 未闭环 |
+| reduce | `lower-stablehlo-reduce.mlir`、norm/softmax staged tests | 证明 constant-init reduce 子集；non-constant-init reduce 和 numeric policy 未闭环 |
+| softmax | `lower-stablehlo-softmax-staged.mlir`、`softmax-schedule.mlir` | 证明 staged dataflow；不证明 multi-stage workspace 或 group schedule |
+| norm | `lower-stablehlo-norm-staged.mlir`、`norm-schedule.mlir` | 证明 last-dim reduce / rsqrt / broadcast multiply gate；不证明完整 LayerNorm/RMSNorm family |
+| RoPE | `lower-stablehlo-rope-mlp-staged.mlir` | 证明当前 RoPE slice/shape/elementwise staged pattern；sin/cos table storage slicing 未闭环 |
+| MLP | `lower-stablehlo-mlp-schedule.mlir`、`lower-stablehlo-local-transformer-block.mlir` | 证明 tanh-gated MLP vertical slice 和 full local transformer structured gate；GELU/SwiGLU/package consistency 未闭环 |
+| shape views | `lower-stablehlo-shape.mlir`、local transformer block gate | 证明 static expand/collapse shape-only relation；dynamic shape view 和 layout materialization 未闭环 |
+
 ## 8. 与其它文档的关系
 
 - Frontend 文档负责 artifact 和 constant normalization 的入口。

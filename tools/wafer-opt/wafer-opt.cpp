@@ -13,6 +13,10 @@
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
 
+#ifdef WAFER_ENABLE_SHARDY
+#include "shardy/dialect/sdy/transforms/passes.h"
+#endif
+
 int main(int argc, char **argv) {
   mlir::DialectRegistry registry;
   registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
@@ -22,6 +26,9 @@ int main(int argc, char **argv) {
   wafer::registerImporterDialects(registry);
   wafer::registerWaferTransformPasses();
   wafer::registerWaferConversionPasses();
+#ifdef WAFER_ENABLE_SHARDY
+  mlir::sdy::registerAllSdyPassesAndPipelines();
+#endif
 
   return mlir::asMainReturnCode(
       mlir::MlirOptMain(argc, argv, "Wafer optimizer driver\n", registry));

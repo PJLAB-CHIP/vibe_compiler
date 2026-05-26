@@ -93,17 +93,17 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
 
 缺口：
 
-- 工程能跑不等于 P0-P6 主路径完成；frontend importer artifact、runtime adapter 和 package 主链路
-  仍需后续 R2/R3/P8 恢复。
+- 工程能跑不等于 P0-P6 主路径完成；R2 已恢复 frontend artifact verifier 和 SDY artifact bridge，
+  但 group/resource/package/runtime 主链路仍需后续 R3/P8 恢复。
 - R1.2 恢复的是可查询合同和局部 legality；它还不是完整 planner/resource oracle。closed-loop group
   search、SPM/DDR trial、storage realization、runtime/package 主链路仍归 R3 之后恢复。
-- StableHLO/Shardy dependency 当前主要服务 textual lowering smoke 和 future SPMD bridge dependency
-  boundary；R0.3 依赖栈用 PyTorch/XLA 2.5 的 `WORKSPACE` `xla_hash` 选择 OpenXLA/XLA，再由 XLA
+- StableHLO/Shardy dependency 当前主要服务 textual lowering smoke 和 SDY artifact bridge
+  dependency boundary；R0.3 依赖栈用 PyTorch/XLA 2.5 的 `WORKSPACE` `xla_hash` 选择 OpenXLA/XLA，再由 XLA
   workspace 选择 LLVM/StableHLO/Shardy base。PyTorch/XLA source 现在只用于确定版本和准备后续
   frontend/importer 环境；Wafer 代码还没有调用 `torch_xla`，它不能成为 core compiler public
   dependency 或第二套 XLA/LLVM/StableHLO 事实源；Shardy 编译验证目标只证明公共 SPMD 依赖可用，
-  不代表 R2.2 bridge 已完成。
-  真实 importer adapter 和 artifact verifier 还没成为独立 frontend 层。
+  R2.2 只额外证明 Wafer 工具能接收 SDY artifact 并把 StableHLO replica group 显式传入
+  `wafer.comm`。
 - runtime/driver 头文件和真实 runtime adapter 尚未进入 launch/C ABI 层。
 
 恢复任务：
@@ -172,13 +172,18 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
 - 有 StableHLO textual artifact tests、`wafer-normalize-constants`、dot/shape/elementwise/reduce
   lowering pass，以及 norm/softmax/projection/MLP acceptance passes。
 - 有 attention QK^T / AV rank-4 `dot_general` lowering 和 full local transformer block structured gate。
-- `wafer-import-model` 是可诊断 graph break / eager fallback / dynamic shape marker 的 smoke tool。
+- `wafer-import-model` 已通过 `WaferFrontend` verifier 接收 pre-exported StableHLO / MLIR artifact，
+  并覆盖 graph break、eager fallback、bounded dynamic shape、sidecar/resource-backed constant
+  metadata 诊断。
+- `WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON` 时，`wafer-opt` / `wafer-import-model` 能注册 SDY dialect；
+  `sdy.mesh` / `sdy.sharding` artifact 可被 parse/verify，StableHLO `replica_groups` 会进入
+  `wafer.comm` `rank_group`。
 
 缺口：
 
-- `wafer-import-model` 不是真实 importer adapter；没有真正的 sidecar manifest、resource-backed
-  constant、artifact verifier 和 sharding import source 闭环。
-- StableHLO/Shardy logical mesh / SPMD partition 没有形成完整 frontend-to-local-shard pipeline。
+- R2.1/R2.2 已恢复 pre-exported artifact adapter/verifier、sidecar manifest、resource-backed constant
+  metadata 和 SDY artifact bridge；仍没有 framework-specific PyTorch/JAX capture adapter 或完整
+  Shardy propagation/SPMD partitioner pipeline。
 - acceptance passes 只识别当前 structured IR pattern，不等于 group schedule planner 或 full
   transformer local compile 已完成。
 - mask/select、dynamic shape、非 constant-init reduce、复杂 broadcast、常量 slicing/storage transform
@@ -186,12 +191,14 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
 
 恢复任务：
 
-- R2.1：恢复 frontend artifact / importer contract，包含 importer adapter、sidecar、ConstantLike、
-  dynamic bound 和 diagnostics。
-- R2.2：补 Shardy/SPMD artifact bridge，保证 logical collective 和 shard-local StableHLO 是 P2/P6 的
-  共同输入，而不是 isolated smoke。
-- R2.3：把 local compute normalization 的覆盖状态按 op/dataflow contract 重写，不把 acceptance pass
-  当 schedule completion。
+- R2.1：已完成；记录见 `tasks/2026-05-26-wafer-r2-recovery.md`，包含 frontend artifact verifier、
+  sidecar/ConstantLike metadata、dynamic bound 和 diagnostics。
+- R2.2：已完成；记录见 `tasks/2026-05-26-wafer-r2-recovery.md`，logical mesh/sharding artifact
+  可进入工具链，StableHLO replica group materialize 为 `wafer.comm` `rank_group` 并成为 placement /
+  comm lowering 输入。
+- R2.3：已完成；记录见 `tasks/2026-05-26-wafer-r2-recovery.md` 和
+  `tasks/2026-05-25-wafer-local-compute-normalization-design.md`，local compute coverage 按
+  op/dataflow contract 重写，不把 acceptance pass 当 schedule completion。
 
 ## P3 M0 Single-Tile Load-GEMM-Store
 
@@ -362,11 +369,11 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
 | --- | --- | --- |
 | P0 | skeleton | 工程入口存在，源码 ownership、依赖层级边界和 IR op-family 文件边界已由 R0.2/R0.3/R1.1 恢复；仍不代表 frontend/runtime/package 主路径完成 |
 | P1 | skeleton | 核心 op/type/verifier skeleton 存在，interface/effect/resource 和 local compute stage-connection gate 已恢复；storage-realized 主链路和 communication cast bridge 仍未闭环 |
-| P2 | skeleton | StableHLO textual lowering 有覆盖，但真实 importer artifact/sidecar/Shardy pipeline 未闭环 |
+| P2 | skeleton | StableHLO textual lowering、frontend artifact/sidecar verifier、SDY artifact bridge 和 local compute coverage 口径已恢复；framework importer、完整 SPMD partitioner、dynamic/mask/constant-storage 和 physical schedule 仍未闭环 |
 | P3 | skeleton | M0 local skeleton 可跑，但 group/resource/C ABI/package 主链路未闭环 |
 | P4 | skeleton | placement/map 和 multi-tile skeleton 可跑，但真实 shard/merge/launch binding 未闭环 |
 | P5 | skeleton | transformer staged acceptance 和 M6 smoke 可跑，但 full schedule/resource/package/device artifact 未闭环 |
 | P6 | skeleton | comm/DTE skeleton 可跑，但 resource allocator、buffer slice/address、package/runtime metadata 未闭环 |
 
-R1.3 之后的下一步是 R2.1：先恢复 frontend artifact / importer contract，再进入 Shardy/SPMD bridge
-和 M0 主链路恢复。
+R2 之后的下一步是 R3.1：恢复 M0 group boundary / candidate contract，再进入 root tile feasibility
+oracle 和 tile_region materialization 主链路。
