@@ -18,8 +18,8 @@ module {
 // CHECK-LABEL: func.func @row_sum_reduce(
 // CHECK-NOT: linalg.reduce
 // CHECK-NOT: wafer.compute.reduce
-// CHECK: wafer.abi.rdma_1d <issue_only> %{{.*}} {bytes = 64 : i64}
+// CHECK: wafer.abi.rdma <issue_only> %{{.*}} {bytes = 64 : i64}
 // CHECK: wafer.abi.reduce <issue_only> <sum>
 // CHECK-SAME: dimensions = array<i64: 1>
 // CHECK-SAME: init_value = 0.000000e+00 : f16
-// CHECK: wafer.abi.wdma_1d <issue_only> %{{.*}} {bytes = 8 : i64}
+// CHECK: wafer.abi.wdma <issue_only> %{{.*}} {bytes = 8 : i64}

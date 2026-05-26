@@ -16,8 +16,8 @@ from wafer_package_manifest import load_manifest, validate_manifest  # noqa: E40
 
 
 OP_ENUMS = {
-    "wafer.abi.rdma_1d": "WAFER_ABI_RDMA_1D",
-    "wafer.abi.wdma_1d": "WAFER_ABI_WDMA_1D",
+    "wafer.abi.rdma": "WAFER_ABI_RDMA",
+    "wafer.abi.wdma": "WAFER_ABI_WDMA",
     "wafer.abi.gemm": "WAFER_ABI_GEMM",
     "wafer.abi.elementwise": "WAFER_ABI_ELEMENTWISE",
     "wafer.abi.reduce": "WAFER_ABI_REDUCE",
@@ -75,8 +75,8 @@ def emit_c(manifest: dict) -> str:
         "} wafer_wait_policy_t;",
         "",
         "typedef enum {",
-        "  WAFER_ABI_RDMA_1D = 1,",
-        "  WAFER_ABI_WDMA_1D = 2,",
+        "  WAFER_ABI_RDMA = 1,",
+        "  WAFER_ABI_WDMA = 2,",
         "  WAFER_ABI_GEMM = 3,",
         "  WAFER_ABI_ELEMENTWISE = 4,",
         "  WAFER_ABI_REDUCE = 5,",

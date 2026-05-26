@@ -50,8 +50,8 @@ OP_FAMILIES = {
         "td": "AbiOps.td",
         "cpp": "AbiOps.cpp",
         "mnemonics": [
-            "abi.rdma_1d",
-            "abi.wdma_1d",
+            "abi.rdma",
+            "abi.wdma",
             "abi.gemm",
             "abi.elementwise",
             "abi.reduce",
@@ -95,6 +95,12 @@ OP_FAMILIES = {
 }
 
 SUPPORT_TEST_DIRS = {"Attrs", "Types"}
+FORBIDDEN_IR_STRINGS = (
+    "abi.rdma_" + "1d",
+    "abi.wdma_" + "1d",
+    "AbiRdma" + "1DOp",
+    "AbiWdma" + "1DOp",
+)
 
 
 def fail(errors: list[str], message: str) -> None:
@@ -168,6 +174,30 @@ def check_tests(root: Path, errors: list[str]) -> None:
             fail(errors, f"unexpected Wafer dialect test directory: {path}")
 
 
+def check_forbidden_ir_specializations(root: Path, errors: list[str]) -> None:
+    scan_roots = [
+        root / "include/Wafer/IR",
+        root / "lib/Wafer/IR",
+        root / "lib/Wafer/Conversion",
+        root / "test",
+        root / "tools",
+    ]
+    for scan_root in scan_roots:
+        if not scan_root.exists():
+            continue
+        for path in scan_root.rglob("*"):
+            if not path.is_file():
+                continue
+            if "__pycache__" in path.parts:
+                continue
+            if path.name == "check_ir_organization.py":
+                continue
+            text = path.read_text(errors="ignore")
+            for forbidden in FORBIDDEN_IR_STRINGS:
+                if forbidden in text:
+                    fail(errors, f"{path} contains forbidden IR specialization {forbidden}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, default=Path.cwd())
@@ -178,6 +208,7 @@ def main() -> int:
     check_main_ops_td(root, errors)
     check_op_family_files(root, errors)
     check_tests(root, errors)
+    check_forbidden_ir_specializations(root, errors)
 
     if errors:
         for error in errors:

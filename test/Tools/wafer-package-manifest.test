@@ -19,9 +19,9 @@
 # CHECK-NOT: TsmDeviceSynchronize
 # CHECK: "ddr_external_input_bytes": 320
 # CHECK: "ddr_external_output_bytes": 128
-# CHECK: "wafer.abi.rdma_1d"
+# CHECK: "wafer.abi.rdma"
 # CHECK: "wafer.abi.gemm"
-# CHECK: "wafer.abi.wdma_1d"
+# CHECK: "wafer.abi.wdma"
 
 # ERR: completion source is a known stub fence
 # PLACEMENT-ERR: maps to tile id 1 that is not marked good

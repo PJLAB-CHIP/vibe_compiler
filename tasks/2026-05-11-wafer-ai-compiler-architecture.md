@@ -617,7 +617,7 @@ WaferRuntimeAdapter cluster launch
 | Layout materialization | physical layout propagation、aligned-only op legality、`#ddr` compact external boundary、materialization placement diagnostics |
 | DDR resource | external binding、workspace buffer object、resident constant、pool/domain、capacity、bandwidth/range diagnostics |
 | `wafer.spm` | memory space、`mem_layout`、liveness、Cx/NCx C0 tail/fold、256B padding、bool bitpack、SPM range/reserved-slot diagnostics |
-| `wafer.compute` | 对已支持 op 建 wrapper golden packet，例如 CT unary/binary、NE GEMM、RDMA/WDMA 1D end-address、DMA stride byte-unit 和 `iteration - 1` |
+| `wafer.compute` | 对已支持 op 建 wrapper golden packet，例如 CT unary/binary、NE GEMM、RDMA/WDMA contiguous end-address、DMA stride byte-unit 和 `iteration - 1` |
 | `wafer.comm` | Direct DTE unicast send/recv/wait、packet counter update word、FSM resource allocation、raw non-unicast V1 禁用诊断 |
 | `wafer.launch` / Runtime/package | launch verifier、bootparam head/dyninfo layout、dyn TLV serialization roundtrip、HPGR/legacy completion source、stub shielding |
 | Scheduler / PMU | 只在进入 overlap/cost-model milestone 后添加：serial/parallel mode、SPM bank/page-color conflict、DDR overlap、PMU `exe_time` / `blocking_time` case |

@@ -88,7 +88,7 @@ V0 family：
 
 | family | 典型函数 | backend path | 主要 verifier |
 | --- | --- | --- | --- |
-| DDR load/store | `wafer_rdma_1d`, `wafer_wdma_1d`, `wafer_dma_strided` | RDMA / WDMA / TDMA wrapper | DDR/SPM address domain、byte stride、range-end、iteration |
+| DDR load/store | `wafer_rdma`, `wafer_wdma`, `wafer_dma` | RDMA / WDMA / TDMA wrapper | DDR/SPM address domain、byte stride、range-end、iteration |
 | SPM local move | `wafer_memcpy_spm` | TDMA or local helper | SPM range、overlap、alignment |
 | layout conversion | `wafer_channel_norm`, `wafer_dechannel_norm` | ChannelNorm / DechannelNorm wrapper | source/result layout relation、storage bytes |
 | gather/scatter | `wafer_gather_scatter` | target movement helper | index dtype、bounds、byte addressing |
@@ -103,7 +103,7 @@ V0 family：
 这些函数名是 compiler-facing ABI family，不要求一一等同底层 public symbol。实现可以在 C shim 内
 调用 public Tsm wrapper、Kcore runtime helper 或未来 native helper。
 
-当前 V0 compiler skeleton 用 `wafer.abi.rdma_1d`、`wafer.abi.wdma_1d`、`wafer.abi.gemm`、
+当前 V0 compiler skeleton 用 `wafer.abi.rdma`、`wafer.abi.wdma`、`wafer.abi.gemm`、
 same-shape / limited-broadcast 子集的 `wafer.abi.elementwise`，以及 scalar-constant-init 子集的
 `wafer.abi.reduce` 作为 wrapper-first C ABI issue 点；P6.2 起，fixed-size unicast
 `wafer.comm.send` / `recv` / `wait` 会 lower 到 `wafer.abi.dte_send`、`wafer.abi.dte_recv` 和

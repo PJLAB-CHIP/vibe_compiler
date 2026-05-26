@@ -440,7 +440,7 @@ wrapper API 支持：
 
 - `AddSrcDst`
 - `ConfigStrideIteration`
-- `Rdma1d` / `Wdma1d`
+- contiguous helper API
 
 `__execute_rdma` / `__execute_wdma` 反汇编确认：
 
@@ -534,7 +534,7 @@ CSR 是所有异步指令的最低完成接口：
 | `TsmConv` | input/weight/bias/output、op type、scale、sparse、psum、pad/unpad、kernel stride、dilation、relu/leakyrelu、quant |
 | `TsmDepthwiseConv` | depthwise conv 对应字段 |
 | `TsmGemm` | input/output、M/K/N、batch、transpose、psum、quant、bias、scale、activation |
-| `TsmRdma` / `TsmWdma` | src/dst、stride iteration、1D DMA |
+| `TsmRdma` / `TsmWdma` | src/dst、stride iteration、contiguous DMA |
 | `TsmArith` | unary/binary arithmetic，VV/VS/VuV/VuVLoop |
 | `TsmRelation` | compare 和 bool compare |
 | `TsmLogic` | bitwise/logical op |
@@ -1157,10 +1157,10 @@ compiler IR、verifier、lowering、runtime 子系统、ABI 边界、bring-up �
 |---|---|---|
 | `TsmRdma::AddSrcDst` | `__set_rdma_src_dst` | `inter_type=I_RDMA`，保存 src/dst/format；execute 使用 packet offset `16` 写 `GR_RD_SRC_ADDR`、offset `8` 写 `GR_RD_DST_ADDR` |
 | `TsmRdma::ConfigStrideIteration` | `__set_rdma_config` | 写 `elem_count` 和三层 stride/iteration；反汇编函数体较大，会计算/维护 `src_end/dst_end` |
-| `TsmRdma::Rdma1d` | `__exe_rdma_1d` | 组合 AddSrcDst + Config，单层搬运，`iteration0=1`、高层 iteration/stride 清零 |
+| `TsmRdma` contiguous helper | contiguous internal helper | 组合 AddSrcDst + Config，单层搬运，`iteration0=1`、高层 iteration/stride 清零 |
 | `TsmWdma::AddSrcDst` | `__set_wdma_src_dst` | `inter_type=I_WDMA`，保存 src/dst/format；execute 写 `GR_WD_SRC_ADDR/GR_WD_DST_ADDR` |
 | `TsmWdma::ConfigStrideIteration` | `__set_wdma_config` | 同 RDMA，但寄存器窗口换到 WDMA |
-| `TsmWdma::Wdma1d` | `__exe_wdma_1d` | 单层搬运便捷函数 |
+| `TsmWdma` contiguous helper | contiguous internal helper | 单层搬运便捷函数 |
 | `TsmDataMove::Mirror` | `__datamove_mirror` | `inter_type=I_TDMA`，opcode `DataMoveOp_T_T_mirror=124`，写 src/dst shape 与 end |
 | `Transpose` | `__datamove_transpose` | opcode 125，函数体包含维度重排/end address 计算 |
 | `Rotate90/180/270` | `__datamove_rotate90/180/270` | opcode 126/127/128，写 shape、format、end |

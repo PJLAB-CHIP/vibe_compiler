@@ -92,34 +92,34 @@ module {
 // ABI-LABEL: func.func @single_matmul(
 // ABI-NOT: linalg.matmul
 // ABI-NOT: wafer.load_tile
-// ABI: wafer.abi.rdma_1d
-// ABI: wafer.abi.rdma_1d
+// ABI: wafer.abi.rdma <issue_only>
+// ABI: wafer.abi.rdma <issue_only>
 // ABI-NOT: wafer.compute.gemm
 // ABI: wafer.abi.gemm
 // ABI-SAME: k = 8 : i64
 // ABI-SAME: m = 4 : i64
 // ABI-SAME: n = 16 : i64
 // ABI-NOT: wafer.store_tile
-// ABI: wafer.abi.wdma_1d
+// ABI: wafer.abi.wdma <issue_only>
 
 // ABI-LABEL: func.func @same_shape_elementwise(
 // ABI-NOT: linalg.generic
 // ABI-NOT: wafer.load_tile
-// ABI: wafer.abi.rdma_1d
-// ABI: wafer.abi.rdma_1d
+// ABI: wafer.abi.rdma <issue_only>
+// ABI: wafer.abi.rdma <issue_only>
 // ABI-NOT: wafer.compute.elementwise
 // ABI: wafer.abi.elementwise
 // ABI-SAME: <add>
 // ABI-NOT: wafer.store_tile
-// ABI: wafer.abi.wdma_1d
+// ABI: wafer.abi.wdma <issue_only>
 
 // ABI-LABEL: func.func @row_sum_reduce(
 // ABI-NOT: linalg.reduce
 // ABI-NOT: wafer.load_tile
-// ABI: wafer.abi.rdma_1d
+// ABI: wafer.abi.rdma <issue_only>
 // ABI-NOT: wafer.compute.reduce
 // ABI: wafer.abi.reduce
 // ABI-SAME: <sum>
 // ABI-SAME: dimensions = array<i64: 1>
 // ABI-NOT: wafer.store_tile
-// ABI: wafer.abi.wdma_1d
+// ABI: wafer.abi.wdma <issue_only>

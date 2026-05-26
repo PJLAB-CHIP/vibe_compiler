@@ -26,8 +26,8 @@ KNOWN_STUB_FENCES = {
 }
 
 SUPPORTED_ABI_OPS = {
-    "wafer.abi.rdma_1d",
-    "wafer.abi.wdma_1d",
+    "wafer.abi.rdma",
+    "wafer.abi.wdma",
     "wafer.abi.gemm",
     "wafer.abi.elementwise",
     "wafer.abi.reduce",
@@ -415,7 +415,7 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
             fail(f"abi_ops[{index}].op is not supported by the package manifest")
         if item.get("wait_policy") != "issue_only":
             fail(f"abi_ops[{index}].wait_policy must be issue_only")
-        if mnemonic in {"wafer.abi.rdma_1d", "wafer.abi.wdma_1d"}:
+        if mnemonic in {"wafer.abi.rdma", "wafer.abi.wdma"}:
             require_positive_int(item.get("bytes"), f"abi_ops[{index}].bytes")
         elif mnemonic == "wafer.abi.gemm":
             require_positive_int(item.get("m"), f"abi_ops[{index}].m")
@@ -575,10 +575,10 @@ def m0_smoke_manifest(completion_source: str = "hpgr_stream_event") -> dict[str,
         "workspace_buffers": [],
         "resident_constants": [],
         "abi_ops": [
-            {"op": "wafer.abi.rdma_1d", "bytes": 64, "wait_policy": "issue_only"},
-            {"op": "wafer.abi.rdma_1d", "bytes": 256, "wait_policy": "issue_only"},
+            {"op": "wafer.abi.rdma", "bytes": 64, "wait_policy": "issue_only"},
+            {"op": "wafer.abi.rdma", "bytes": 256, "wait_policy": "issue_only"},
             {"op": "wafer.abi.gemm", "m": 4, "k": 8, "n": 16, "wait_policy": "issue_only"},
-            {"op": "wafer.abi.wdma_1d", "bytes": 128, "wait_policy": "issue_only"},
+            {"op": "wafer.abi.wdma", "bytes": 128, "wait_policy": "issue_only"},
         ],
     }
 
@@ -627,14 +627,14 @@ def m1_no_comm_smoke_manifest() -> dict[str, Any]:
         ],
     }
     manifest["abi_ops"] = [
-        {"op": "wafer.abi.rdma_1d", "bytes": 32, "wait_policy": "issue_only"},
-        {"op": "wafer.abi.rdma_1d", "bytes": 256, "wait_policy": "issue_only"},
+        {"op": "wafer.abi.rdma", "bytes": 32, "wait_policy": "issue_only"},
+        {"op": "wafer.abi.rdma", "bytes": 256, "wait_policy": "issue_only"},
         {"op": "wafer.abi.gemm", "m": 2, "k": 8, "n": 16, "wait_policy": "issue_only"},
-        {"op": "wafer.abi.wdma_1d", "bytes": 64, "wait_policy": "issue_only"},
-        {"op": "wafer.abi.rdma_1d", "bytes": 32, "wait_policy": "issue_only"},
-        {"op": "wafer.abi.rdma_1d", "bytes": 256, "wait_policy": "issue_only"},
+        {"op": "wafer.abi.wdma", "bytes": 64, "wait_policy": "issue_only"},
+        {"op": "wafer.abi.rdma", "bytes": 32, "wait_policy": "issue_only"},
+        {"op": "wafer.abi.rdma", "bytes": 256, "wait_policy": "issue_only"},
         {"op": "wafer.abi.gemm", "m": 2, "k": 8, "n": 16, "wait_policy": "issue_only"},
-        {"op": "wafer.abi.wdma_1d", "bytes": 64, "wait_policy": "issue_only"},
+        {"op": "wafer.abi.wdma", "bytes": 64, "wait_policy": "issue_only"},
     ]
     return manifest
 
@@ -697,14 +697,14 @@ def elementwise_smoke_manifest() -> dict[str, Any]:
         "resident_constant_bytes": 0,
     }
     manifest["abi_ops"] = [
-        {"op": "wafer.abi.rdma_1d", "bytes": 64, "wait_policy": "issue_only"},
-        {"op": "wafer.abi.rdma_1d", "bytes": 64, "wait_policy": "issue_only"},
+        {"op": "wafer.abi.rdma", "bytes": 64, "wait_policy": "issue_only"},
+        {"op": "wafer.abi.rdma", "bytes": 64, "wait_policy": "issue_only"},
         {
             "op": "wafer.abi.elementwise",
             "kind": "add",
             "wait_policy": "issue_only",
         },
-        {"op": "wafer.abi.wdma_1d", "bytes": 64, "wait_policy": "issue_only"},
+        {"op": "wafer.abi.wdma", "bytes": 64, "wait_policy": "issue_only"},
     ]
     return manifest
 
@@ -742,7 +742,7 @@ def resident_constant(name: str, shape: list[int], bytes_value: int) -> dict[str
 
 def abi_rdma(bytes_value: int) -> dict[str, Any]:
     return {
-        "op": "wafer.abi.rdma_1d",
+        "op": "wafer.abi.rdma",
         "bytes": bytes_value,
         "wait_policy": "issue_only",
     }
@@ -750,7 +750,7 @@ def abi_rdma(bytes_value: int) -> dict[str, Any]:
 
 def abi_wdma(bytes_value: int) -> dict[str, Any]:
     return {
-        "op": "wafer.abi.wdma_1d",
+        "op": "wafer.abi.wdma",
         "bytes": bytes_value,
         "wait_policy": "issue_only",
     }

@@ -107,7 +107,7 @@ tx81 dialect op
 
 | 类别 | 建议 ABI | 公开实现线索（非 ABI 依据） | 内部调用的 Tsm wrapper |
 | --- | --- | --- | --- |
-| DMA | `wafer_rdma_1d/wafer_wdma_1d/wafer_dma_strided` | `__Rdma1d/__Wdma1d/__Rdma/__Wdma` | `TsmRdma/TsmWdma` |
+| DMA | `wafer_rdma/wafer_wdma/wafer_dma` | contiguous / strided public wrapper helpers | `TsmRdma/TsmWdma` |
 | SPM 内搬运 | `wafer_gather_scatter`、`wafer_memcpy_spm` | `__GatherScatter/__Memcpy` | `TsmDataMove::GatherScatter` |
 | layout 转换 | `wafer_channel_norm/wafer_dechannel_norm` | `__ChannelNorm/__DechannelNorm` | `TsmDataMove::GatherScatter` |
 | elementwise | `wafer_add_vv/wafer_mul_vv/wafer_relu/...` | `__AddVV/__MulVV/__Relu/...` | `TsmArith/TsmActivation/TsmTranscendental` |
@@ -121,10 +121,10 @@ tx81 dialect op
 
 | 指令族 | 样例中的 CRT call | 样例中调用的 Tsm wrapper | 可观察到的参数语义 |
 | --- | --- | --- | --- |
-| RDMA 1D | `__Rdma1d(dest, src, elem_count, fmt)` | `TsmRdma::Rdma1d(&inst, src, dest, elem_count, fmt)` | `elem_count` 是元素数；`fmt` 是 `Data_Format`；函数末尾直接 `TsmWaitfinish()` |
-| WDMA 1D | `__Wdma1d(dest, src, elem_count, fmt)` | `TsmWdma::Wdma1d(&inst, src, dest, elem_count, fmt)` | 同 RDMA，方向由 `I_WDMA` 和 src/dest 传参决定 |
+| contiguous RDMA helper | public CRT contiguous helper | `TsmRdma` contiguous configuration | `elem_count` 是元素数；`fmt` 是 `Data_Format`；函数末尾直接 `TsmWaitfinish()` |
+| contiguous WDMA helper | public CRT contiguous helper | `TsmWdma` contiguous configuration | 同 RDMA，方向由 `I_WDMA` 和 src/dest 传参决定 |
 | RDMA/WDMA 三层 strided helper | `__Rdma4d/__Wdma4d(dest, src, elem_count, stride0, iter0, stride1, iter1, stride2, iter2, fmt)` | `AddSrcDst` + `ConfigStrideIteration` | `4d` 是 CRT helper 旧命名；实际配置是内层 `elem_count` 连续搬运 + 外层 3 重 stride/iteration |
-| 泛化 RDMA/WDMA | `__Rdma/__Wdma(src, dst, src_shape, src_stride, dst_shape, dst_stride, rank, elem_bytes, fmt)` | 能映射到单个三层 descriptor 时走 `__Rdma4d/__Wdma4d`；否则逐行 `Rdma1d/Wdma1d` | 源 IR stride 是 element stride；CRT 内部用 `elem_bytes` 转 byte offset；不支持负 stride |
+| 泛化 RDMA/WDMA | `__Rdma/__Wdma(src, dst, src_shape, src_stride, dst_shape, dst_stride, rank, elem_bytes, fmt)` | 能映射到单个三层 descriptor 时走 `__Rdma4d/__Wdma4d`；否则拆成多个 contiguous helper 调用 | 源 IR stride 是 element stride；CRT 内部用 `elem_bytes` 转 byte offset；不支持负 stride |
 | SPM memcpy | `__Memcpy(src, dst, elem_count, fmt)` | `TsmDataMove::GatherScatter` | `GatherScatter` 的 `size` 参数传的是 byte 数；bool 会按 bitpack 转成 INT8 byte copy |
 | GatherScatter | `__GatherScatter(src, dst, bytes, src_stride*, src_iter*, dst_stride*, dst_iter*)` | `TsmDataMove::GatherScatter(&inst, src, dst, bytes, &src_si, &dst_si)` | `bytes` 是内层 byte count；`St_StrideIteration` 字段单位按 byte 使用 |
 | ChannelNorm/DechannelNorm | `__ChannelNorm/__DechannelNorm(src, dst, n,h,w,c,c0_align,dtype_size)` | 多次 `TsmDataMove::GatherScatter` | 不走 `TensorNom` 主路径；按 `bit_width` 选择通道块：8-bit 为 128，其他为 64 |
@@ -762,8 +762,8 @@ RDMA 和 WDMA 共用 `DMA_Param`。读写方向不靠 opcode，而靠 `inter_typ
 | `TsmRdma::AddSrcDst(instr, src, dst, fmt)` | `inter_type=I_RDMA`, `src`, `dst`, `format` |
 | `TsmWdma::AddSrcDst(instr, src, dst, fmt)` | `inter_type=I_WDMA`, `src`, `dst`, `format` |
 | `ConfigStrideIteration(instr, elem_count, stride0, iteration0, stride1, iteration1, stride2, iteration2)` | `elem_count` 和 3 层 byte stride/logical iteration；这就是 CRT 中 `Rdma4d/Wdma4d` helper 的核心配置 |
-| `TsmRdma::Rdma1d(instr, src, dst, elem_count, format)` | contiguous RDMA |
-| `TsmWdma::Wdma1d(instr, src, dst, elem_count, format)` | contiguous WDMA |
+| `TsmRdma` contiguous helper | contiguous RDMA |
+| `TsmWdma` contiguous helper | contiguous WDMA |
 
 ### lowering 模板
 
@@ -774,7 +774,7 @@ for i2 in 0..iteration2:
       copy elem_count elements
 ```
 
-CRT 中出现的 `Rdma4d/Wdma4d` 一类名字是 backend helper 命名，不是硬件 opcode。硬件 packet 暴露的是三层 stride/iteration 加最内层连续搬运。当前 CRT 的泛化 `__Rdma/__Wdma` 只有在可映射到这个单 descriptor 时才走 `Rdma4d/Wdma4d` fast path；更复杂的两端非连续 logical memref 会退化成多次 1D copy。这是 CRT helper 的 lowering 策略，不是 DMA 指令本身多了一个 4D 模式。
+CRT 中出现的 `Rdma4d/Wdma4d` 一类名字是 backend helper 命名，不是硬件 opcode。硬件 packet 暴露的是三层 stride/iteration 加最内层连续搬运。当前 CRT 的泛化 `__Rdma/__Wdma` 只有在可映射到这个单 descriptor 时才走 `Rdma4d/Wdma4d` fast path；更复杂的两端非连续 logical memref 会退化成多次 contiguous copy。这是 CRT helper 的 lowering 策略，不是 DMA 指令本身多了一个 4D 模式。
 
 ## TDMA / DataMove 发射规范
 
@@ -1273,7 +1273,7 @@ typedef struct D_DynTLV {
 
 | 阶段 | 纳入范围 | 暂不纳入原因 |
 | --- | --- | --- |
-| V0 | RDMA/WDMA 1D 和 strided；CT elementwise/relation/logic/activation/convert 子集；native `TsmReduce` `sum/avg/max/min`；NE GEMM 基础子集；Conv 仅保留基础规则；GatherScatter；Direct DTE unicast。LLM 主线优先 GEMM/attention/reduce/layout materialization，Conv V0 不含 bias/scale/sparse/INT8/fused activation，psum 与 input feature 同 dtype/layout | packet 和 wrapper 路径相对清楚；Conv 不作为近期验证重点 |
+| V0 | RDMA/WDMA contiguous 和 strided descriptor；CT elementwise/relation/logic/activation/convert 子集；native `TsmReduce` `sum/avg/max/min`；NE GEMM 基础子集；Conv 仅保留基础规则；GatherScatter；Direct DTE unicast。LLM 主线优先 GEMM/attention/reduce/layout materialization，Conv V0 不含 bias/scale/sparse/INT8/fused activation，psum 与 input feature 同 dtype/layout | packet 和 wrapper 路径相对清楚；Conv 不作为近期验证重点 |
 | V1 | reduce_mul composite/helper；pool/unpool；更多 DataMove；Peripheral count/arg/lut；Raw DTE non-unicast collective ABI（broadcast/scatter/shuffle，gather 需要单独确认真实编码） | 语义、参数约束、性能收益以及自定义 Wafer communication ABI 都需要板端验证 |
 | V2 | SCALAR；native TensorNom/channelnorm opcode 133；sparse conv；UINT 系列；高级 stream | 公开资料不足或优先级低 |
 
@@ -1284,7 +1284,7 @@ typedef struct D_DynTLV {
 | 等级 | wrapper/helper | 公开样例状态 | 对 Wafer backend 的处理 |
 | --- | --- | --- | --- |
 | Tsm 发射入口 | `TsmExecute`、`TsmWaitfinish` | Tx81 CRT 中大量出现 | Wafer C ABI 内部可调用 `TsmExecute`；V0 不继承 CRT 的 per-op hard wait，主路径保留 issue/drain 分离 |
-| wrapper 调用样例 | `TsmRdma::{AddSrcDst, ConfigStrideIteration, Rdma1d}`、`TsmWdma::{AddSrcDst, ConfigStrideIteration, Wdma1d}` | Tx81 CRT 通过 `__Rdma/__Wdma/__Rdma1d/__Wdma1d/__Rdma4d/__Wdma4d` 展示了调用方式 | 设计 `wafer_rdma/wafer_wdma`；单位和 descriptor 规则以 public wrapper/register 为准，`legalizeMemoryOpAttribute` 只作样例，不直接暴露 Tx81 CRT 名字 |
+| wrapper 调用样例 | `TsmRdma/TsmWdma` 的地址、stride/iteration 和 contiguous helper | Tx81 CRT 展示了 contiguous helper 与 strided helper 的调用方式 | 设计 `wafer_rdma/wafer_wdma`；单位和 descriptor 规则以 public wrapper/register 为准，`legalizeMemoryOpAttribute` 只作样例，不直接暴露 Tx81 CRT 名字 |
 | wrapper 调用样例 | `TsmArith`、`TsmRelation`、`TsmLogic`、`TsmTranscendental`、`TsmActivation` | Tx81 CRT 有大量 VV/VS/unary/bool 调用样例 | 设计 `wafer_*` elementwise ABI，内部调用同类 Tsm wrapper；不继承 CRT 的同步策略 |
 | wrapper 调用样例 | `TsmConvert` | Tx81 CRT 有 INT8/INT16/INT32/BF16/FP16/FP32/TF32 普通转换样例 | 设计 `wafer_convert_*`；MXFP 另做 helper，不当作单条 convert 指令 |
 | wrapper 调用样例 | `TsmDataMove::GatherScatter` | Tx81 CRT 的 `__Memcpy`、`__GatherScatter`、`__ChannelNorm` 都出现过这条路径 | V0 可作为 layout conversion 和 SPM 内搬运主路径；单位按 byte，但具体 Wafer ABI 不继承 CRT 函数形态 |

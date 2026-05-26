@@ -292,7 +292,7 @@ compute op 语义。
 V0 推荐实现顺序：
 
 1. `wafer.compute.elementwise`：覆盖一个 unary、一个 binary、一个 convert 或 relation。
-2. target-abstract load/store 和 RDMA/WDMA 1D movement。
+2. target-abstract load/store 和 RDMA/WDMA contiguous movement。
 3. `wafer.compute.gemm`：覆盖基础 NE GEMM，不带 fused bias/activation/quant。
 4. `wafer.compute.reduce`：覆盖 `sum/max/min/avg` 中至少一个。
 5. `wafer.layout.materialize` 到 GatherScatter / TDMA 的最小闭环。

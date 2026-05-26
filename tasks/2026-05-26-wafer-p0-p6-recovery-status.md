@@ -211,7 +211,7 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
 - 有 `wafer-form-groups`、`wafer-check-root-tile-candidates`、`wafer-materialize-single-tile`、
   `wafer-compact-layout-assignment`、`wafer-check-spm-allocation`、`wafer-materialize-ddr-external-bindings`
   和 `wafer-lower-to-c-abi-skeleton`。
-- 有 `wafer.abi.rdma_1d`、`wafer.abi.wdma_1d`、`wafer.abi.gemm`、elementwise/reduce skeleton ops。
+- 有 `wafer.abi.rdma`、`wafer.abi.wdma`、`wafer.abi.gemm`、elementwise/reduce skeleton ops。
 - 有 `Wafer/ABI/M0Abi.h` descriptor unit tests、M0 integration test、manifest validator 和 generated C
   stub syntax compile。
 

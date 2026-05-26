@@ -21,8 +21,8 @@ module {
 // IR: wafer.ddr.external_binding <output>
 // IR: wafer.tile_region
 // IR-NOT: wafer.load_tile
-// IR: wafer.abi.rdma_1d <issue_only>
+// IR: wafer.abi.rdma <issue_only>
 // IR-NOT: wafer.compute.gemm
 // IR: wafer.abi.gemm <issue_only>
 // IR-NOT: wafer.store_tile
-// IR: wafer.abi.wdma_1d <issue_only>
+// IR: wafer.abi.wdma <issue_only>

@@ -124,7 +124,7 @@ verifyIssueOnlyWaitPolicy(mlir::Operation *op,
   return mlir::success();
 }
 
-mlir::LogicalResult AbiRdma1DOp::verify() {
+mlir::LogicalResult AbiRdmaOp::verify() {
   if (mlir::failed(
           verifyIssueOnlyWaitPolicy(getOperation(), getWaitPolicyAttr())))
     return mlir::failure();
@@ -155,7 +155,7 @@ mlir::LogicalResult AbiRdma1DOp::verify() {
   return mlir::success();
 }
 
-mlir::LogicalResult AbiWdma1DOp::verify() {
+mlir::LogicalResult AbiWdmaOp::verify() {
   if (mlir::failed(
           verifyIssueOnlyWaitPolicy(getOperation(), getWaitPolicyAttr())))
     return mlir::failure();
@@ -277,7 +277,7 @@ mlir::LogicalResult AbiDteWaitOp::verify() {
   return verifyCommWaitTokens(getOperation(), getTokens());
 }
 
-void AbiRdma1DOp::collectWaferResourceEffects(
+void AbiRdmaOp::collectWaferResourceEffects(
     llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
   int64_t bytes = getBytesAttr().getInt();
   appendResourceEffect(effects, WaferResourceKind::DDR,
@@ -291,13 +291,13 @@ void AbiRdma1DOp::collectWaferResourceEffects(
                        bytes);
 }
 
-mlir::LogicalResult AbiRdma1DOp::verifyWaferResourceEffectContract() {
+mlir::LogicalResult AbiRdmaOp::verifyWaferResourceEffectContract() {
   llvm::SmallVector<WaferResourceEffect, 4> effects;
   collectWaferResourceEffects(effects);
   return verifyResourceEffects(getOperation(), effects);
 }
 
-void AbiWdma1DOp::collectWaferResourceEffects(
+void AbiWdmaOp::collectWaferResourceEffects(
     llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
   int64_t bytes = getBytesAttr().getInt();
   appendResourceEffect(effects, WaferResourceKind::SPM,
@@ -311,7 +311,7 @@ void AbiWdma1DOp::collectWaferResourceEffects(
                        bytes);
 }
 
-mlir::LogicalResult AbiWdma1DOp::verifyWaferResourceEffectContract() {
+mlir::LogicalResult AbiWdmaOp::verifyWaferResourceEffectContract() {
   llvm::SmallVector<WaferResourceEffect, 4> effects;
   collectWaferResourceEffects(effects);
   return verifyResourceEffects(getOperation(), effects);

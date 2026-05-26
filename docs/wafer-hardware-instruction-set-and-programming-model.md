@@ -566,7 +566,7 @@ Stream、mailbox 和 CSR 的具体 wrapper/API 表放在 register-level spec。�
 | SPM layout/alignment | NE/Reduce/Pool/UnPool 的输入输出默认必须 `Cx`/`NCx`；Conv feature/weight/output 都要 aligned，V0 psum 也按 input feature 的 aligned layout；Cx/NCx 的 C0 tail 和 256B bank padding 按 `common_tensor_info_generate_i64` 计算；base address 没有额外硬性对齐要求 |
 | layout/memory layout | Wafer 后端需要区分语义 layout 和 SPM physical layout；semantic layout 说明维度含义，physical layout 说明 SPM 组织/访问形式；`Tensor/NTensor/Cx/NCx` 是当前已知 physical layout 状态，不直接规定最终 IR 命名 |
 | dtype legality | CT 非 convert 指令默认支持同 dtype 输入输出；convert 的 dtype pair 由 opcode 139..174 明确给出；NE/Reduce/Pool 等按各自指令规则检查 |
-| DMA legality | 优先生成 1D DMA 或三层 stride/iteration DMA descriptor；DMA/TDMA/DTE stride 字段按 byte 建模，iteration 是 logical count、wrapper 写入 `iteration - 1`。CRT 里 `Rdma4d/Wdma4d` 只是这个 descriptor 的 helper 名称。不能用单个 descriptor 表达时显式拆 micro-DMA，并给高 cost |
+| DMA legality | 优先生成 contiguous DMA 或三层 stride/iteration DMA descriptor；DMA/TDMA/DTE stride 字段按 byte 建模，iteration 是 logical count、wrapper 写入 `iteration - 1`。CRT 里 `Rdma4d/Wdma4d` 只是这个 descriptor 的 helper 名称。不能用单个 descriptor 表达时显式拆 micro-DMA，并给高 cost |
 | overlap legality | RDMA、WDMA、TDMA 是 LSU 内的三个独立组件，CT 和 NE 是独立执行部件；`serial_mode=0` 时同 worker 的 CT/NE/RDMA/WDMA/TDMA 按最终 `inter_type` 进入独立 queue，并由硬件按 packet 地址范围、SPM busytable bank 信息和 DMA busytable DDR overlap 信息检测依赖、乱序发射；在地址和 bank 依赖允许且 runtime 不立即 wait/drain 的情况下可以 overlap。runtime 初始化必须对使用的 worker 显式设置或确认 `serial_mode=0` |
 | GatherScatter legality | 只能 3-level stride/iteration，内层 size/stride 必须 byte-aligned |
 | DTE legality | V0 只把 fixed-size unicast Direct DTE helper 作为已验证路径；raw DTE broadcast/shuffle/gather/scatter 需要自定义 ABI 和板端验证 |

@@ -23,7 +23,7 @@ module {
 // CHECK-LABEL: func.func @same_shape_elementwise(
 // CHECK-NOT: linalg.generic
 // CHECK-NOT: wafer.compute.elementwise
-// CHECK: wafer.abi.rdma_1d <issue_only> %{{.*}} {bytes = 64 : i64}
-// CHECK: wafer.abi.rdma_1d <issue_only> %{{.*}} {bytes = 64 : i64}
+// CHECK: wafer.abi.rdma <issue_only> %{{.*}} {bytes = 64 : i64}
+// CHECK: wafer.abi.rdma <issue_only> %{{.*}} {bytes = 64 : i64}
 // CHECK: wafer.abi.elementwise <issue_only> <add>
-// CHECK: wafer.abi.wdma_1d <issue_only> %{{.*}} {bytes = 64 : i64}
+// CHECK: wafer.abi.wdma <issue_only> %{{.*}} {bytes = 64 : i64}

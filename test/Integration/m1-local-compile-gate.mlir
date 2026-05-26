@@ -33,17 +33,17 @@ module {
 // IR-NOT: wafer.group
 // IR: wafer.tile_region
 // IR-NOT: wafer.load_tile
-// IR: wafer.abi.rdma_1d <issue_only>
-// IR: wafer.abi.rdma_1d <issue_only>
+// IR: wafer.abi.rdma <issue_only>
+// IR: wafer.abi.rdma <issue_only>
 // IR-NOT: wafer.compute.gemm
 // IR: wafer.abi.gemm <issue_only>
 // IR-NOT: wafer.store_tile
-// IR: wafer.abi.wdma_1d <issue_only>
+// IR: wafer.abi.wdma <issue_only>
 // IR: wafer.tile_region
-// IR: wafer.abi.rdma_1d <issue_only>
-// IR: wafer.abi.rdma_1d <issue_only>
+// IR: wafer.abi.rdma <issue_only>
+// IR: wafer.abi.rdma <issue_only>
 // IR: wafer.abi.gemm <issue_only>
-// IR: wafer.abi.wdma_1d <issue_only>
+// IR: wafer.abi.wdma <issue_only>
 // IR-NOT: wafer.comm
 
 // C: static const wafer_tile_launch_arg_t k_m1_two_tile_no_comm_tile_args[] = {

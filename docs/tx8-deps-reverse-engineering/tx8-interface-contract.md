@@ -495,7 +495,7 @@ Packet type: `DMA_Param`.
 | `Rdma::AddSrcDst(src,dst,fmt)` | Sets `inter_type=I_RDMA`, `cmd_valid=1`, `src=src` DDR, `dst=dst` SPM, `format=fmt`. |
 | `Wdma::AddSrcDst(src,dst,fmt)` | Sets `inter_type=I_WDMA`, `cmd_valid=1`, `src=src` SPM, `dst=dst` DDR, `format=fmt`. |
 | `ConfigStrideIteration(elem_count, stride0, iteration0, stride1, iteration1, stride2, iteration2)` | Stores byte strides and stores each logical iteration as `iteration - 1`; zero logical iteration is invalid. |
-| `Rdma1d` / `Wdma1d` | Build a single contiguous movement, infer stride and end fields from format and element count. |
+| contiguous helper API | Build a single contiguous movement, infer stride and end fields from format and element count. |
 
 RDMA register offsets:
 
@@ -641,19 +641,19 @@ TsmWaitfinish();
 TsmDeleteGemm(gemm);
 ```
 
-RDMA/WDMA:
+RDMA/WDMA pseudo sequence:
 
-```c
+```text
 TsmRdma *rdma = TsmNewRdma();
 TsmRdmaInstr rdma_instr = {0};
-rdma->Rdma1d(&rdma_instr, ddr_src, spm_dst, elem_count, Fmt_FP16);
+rdma_configure_contiguous(rdma, &rdma_instr, ddr_src, spm_dst, elem_count, Fmt_FP16);
 TsmExecute(&rdma_instr);
 TsmWaitfinish();
 TsmDeleteRdma(rdma);
 
 TsmWdma *wdma = TsmNewWdma();
 TsmWdmaInstr wdma_instr = {0};
-wdma->Wdma1d(&wdma_instr, spm_src, ddr_dst, elem_count, Fmt_FP16);
+wdma_configure_contiguous(wdma, &wdma_instr, spm_src, ddr_dst, elem_count, Fmt_FP16);
 TsmExecute(&wdma_instr);
 TsmWaitfinish();
 TsmDeleteWdma(wdma);
@@ -1177,7 +1177,7 @@ Minimum golden tests:
 - wrapper-generated CT packet versus raw builder for one unary, one binary, one
   unit-vector, and one loop-vector op.
 - wrapper-generated NE conv and GEMM packet field offsets.
-- RDMA/WDMA 1D end-address calculation.
+- RDMA/WDMA contiguous end-address calculation.
 - TDMA transpose, pad, and gatherscatter packet fields.
 - bootparam head and dyninfo layout.
 - TLV serialization parse/roundtrip.

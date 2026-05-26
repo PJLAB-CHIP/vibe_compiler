@@ -14,12 +14,12 @@ module {
 
 // CHECK-LABEL: func.func @single_matmul(
 // CHECK-NOT: wafer.load_tile
-// CHECK: wafer.abi.rdma_1d <issue_only> %{{.*}} {bytes = 64 : i64}
-// CHECK: wafer.abi.rdma_1d <issue_only> %{{.*}} {bytes = 256 : i64}
+// CHECK: wafer.abi.rdma <issue_only> %{{.*}} {bytes = 64 : i64}
+// CHECK: wafer.abi.rdma <issue_only> %{{.*}} {bytes = 256 : i64}
 // CHECK-NOT: wafer.compute.gemm
 // CHECK: wafer.abi.gemm <issue_only>
 // CHECK-SAME: k = 8 : i64
 // CHECK-SAME: m = 4 : i64
 // CHECK-SAME: n = 16 : i64
 // CHECK-NOT: wafer.store_tile
-// CHECK: wafer.abi.wdma_1d <issue_only> %{{.*}} {bytes = 128 : i64}
+// CHECK: wafer.abi.wdma <issue_only> %{{.*}} {bytes = 128 : i64}

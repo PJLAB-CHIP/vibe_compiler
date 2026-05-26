@@ -64,7 +64,7 @@ static mlir::LogicalResult lowerLoadTile(mlir::ModuleOp module,
     return load.emitOpError("requires DDR external input binding demand");
 
   mlir::OpBuilder builder(load);
-  auto abi = builder.create<wafer::AbiRdma1DOp>(
+  auto abi = builder.create<wafer::AbiRdmaOp>(
       load.getLoc(), load.getResult().getType(),
       getIssueOnlyPolicy(load.getContext()), load.getSource(),
       builder.getI64IntegerAttr(*bytes));
@@ -92,7 +92,7 @@ static mlir::LogicalResult lowerStoreTile(mlir::ModuleOp module,
     return store.emitOpError("requires DDR external output binding demand");
 
   mlir::OpBuilder builder(store);
-  builder.create<wafer::AbiWdma1DOp>(
+  builder.create<wafer::AbiWdmaOp>(
       store.getLoc(), getIssueOnlyPolicy(store.getContext()), store.getSource(),
       store.getDest(), builder.getI64IntegerAttr(*bytes));
   store.erase();

@@ -131,7 +131,7 @@ Direct DTE V0 和 wrapper family 的上层边界写清楚。lower-level C ABI / 
 
 ABI 设计至少覆盖这些族：
 
-- `wafer_rdma_1d` / `wafer_wdma_1d` / `wafer_dma_strided`
+- `wafer_rdma` / `wafer_wdma` / `wafer_dma`
 - `wafer_gather_scatter` / `wafer_memcpy_spm`
 - `wafer_channel_norm` / `wafer_dechannel_norm`
 - `wafer_gemm`
@@ -420,7 +420,7 @@ golden tests 和 bring-up tests：
 
 - CT wrapper-generated packet vs raw builder：unary、binary、unit-vector、loop-vector。
 - NE GEMM/Conv packet field offset 和 V0 optional 禁用规则。
-- RDMA/WDMA 1D end-address calculation。
+- RDMA/WDMA contiguous transfer end-address calculation。
 - DMA stride byte-unit 和 `iteration - 1` 编码。
 - TDMA transpose/pad/gatherscatter packet fields。
 - bool bitpack byte count。

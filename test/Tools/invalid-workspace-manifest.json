@@ -91,9 +91,9 @@
     "resident_constant_bytes": 0
   },
   "abi_ops": [
-    {"op": "wafer.abi.rdma_1d", "bytes": 64, "wait_policy": "issue_only"},
-    {"op": "wafer.abi.rdma_1d", "bytes": 256, "wait_policy": "issue_only"},
+    {"op": "wafer.abi.rdma", "bytes": 64, "wait_policy": "issue_only"},
+    {"op": "wafer.abi.rdma", "bytes": 256, "wait_policy": "issue_only"},
     {"op": "wafer.abi.gemm", "m": 4, "k": 8, "n": 16, "wait_policy": "issue_only"},
-    {"op": "wafer.abi.wdma_1d", "bytes": 128, "wait_policy": "issue_only"}
+    {"op": "wafer.abi.wdma", "bytes": 128, "wait_policy": "issue_only"}
   ]
 }

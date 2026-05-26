@@ -3,13 +3,13 @@
 #ifndef WAFER_IR_OPS_ABIOPS_TD
 #define WAFER_IR_OPS_ABIOPS_TD
 
-def Wafer_AbiRdma1DOp : Wafer_Op<"abi.rdma_1d", [
+def Wafer_AbiRdmaOp : Wafer_Op<"abi.rdma", [
     DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
     MemoryEffects<[MemRead<Wafer_DDRResource>,
                    MemWrite<Wafer_SPMResource>,
                    MemWrite<Wafer_MovementResource>]>
   ]> {
-  let summary = "C ABI skeleton DDR-to-SPM 1D DMA issue";
+  let summary = "C ABI skeleton DDR-to-SPM DMA issue";
   let arguments = (ins
     Wafer_AbiWaitPolicyAttr:$wait_policy,
     AnyType:$source,
@@ -21,13 +21,13 @@ def Wafer_AbiRdma1DOp : Wafer_Op<"abi.rdma_1d", [
       "$wait_policy $source attr-dict `:` type($source) `->` type($result)";
 }
 
-def Wafer_AbiWdma1DOp : Wafer_Op<"abi.wdma_1d", [
+def Wafer_AbiWdmaOp : Wafer_Op<"abi.wdma", [
     DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
     MemoryEffects<[MemRead<Wafer_SPMResource>,
                    MemWrite<Wafer_DDRResource>,
                    MemWrite<Wafer_MovementResource>]>
   ]> {
-  let summary = "C ABI skeleton SPM-to-DDR 1D DMA issue";
+  let summary = "C ABI skeleton SPM-to-DDR DMA issue";
   let arguments = (ins
     Wafer_AbiWaitPolicyAttr:$wait_policy,
     AnyType:$source,
