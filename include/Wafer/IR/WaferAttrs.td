@@ -1,0 +1,160 @@
+//===- WaferAttrs.td - Wafer shared attributes ------------*- tablegen -*-===//
+
+#ifndef WAFER_IR_WAFERATTRS_TD
+#define WAFER_IR_WAFERATTRS_TD
+
+include "Wafer/IR/WaferBase.td"
+include "mlir/IR/EnumAttr.td"
+
+def Wafer_TargetV0 : I32EnumAttrCase<"WaferV0", 0, "wafer_v0">;
+def Wafer_Target : I32EnumAttr<"Target", "Wafer target profile", [
+  Wafer_TargetV0
+]> {
+  let cppNamespace = "::wafer";
+  let genSpecializedAttr = 0;
+}
+
+def Wafer_TargetAttr : EnumAttr<Wafer_Dialect, Wafer_Target, "target"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
+def Wafer_MemorySpaceSPM : I32EnumAttrCase<"SPM", 0, "spm">;
+def Wafer_MemorySpaceDDR : I32EnumAttrCase<"DDR", 1, "ddr">;
+def Wafer_MemorySpace : I32EnumAttr<"MemorySpace", "Wafer addressable storage space", [
+  Wafer_MemorySpaceSPM,
+  Wafer_MemorySpaceDDR
+]> {
+  let cppNamespace = "::wafer";
+  let genSpecializedAttr = 0;
+}
+
+def Wafer_MemorySpaceAttr
+    : EnumAttr<Wafer_Dialect, Wafer_MemorySpace, "memory_space"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
+def Wafer_MemLayoutTensor : I32EnumAttrCase<"Tensor", 0, "tensor">;
+def Wafer_MemLayoutNTensor : I32EnumAttrCase<"NTensor", 1, "ntensor">;
+def Wafer_MemLayoutCx : I32EnumAttrCase<"Cx", 2, "cx">;
+def Wafer_MemLayoutNCx : I32EnumAttrCase<"NCx", 3, "ncx">;
+def Wafer_MemLayout : I32EnumAttr<"MemLayout", "Wafer physical memory layout family", [
+  Wafer_MemLayoutTensor,
+  Wafer_MemLayoutNTensor,
+  Wafer_MemLayoutCx,
+  Wafer_MemLayoutNCx
+]> {
+  let cppNamespace = "::wafer";
+  let genSpecializedAttr = 0;
+}
+
+def Wafer_MemLayoutAttr
+    : EnumAttr<Wafer_Dialect, Wafer_MemLayout, "mem_layout"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
+def Wafer_PlacementSingleTile : I32EnumAttrCase<"SingleTile", 0, "single_tile">;
+def Wafer_PlacementTileMesh : I32EnumAttrCase<"TileMesh", 1, "tile_mesh">;
+def Wafer_PlacementCardMesh : I32EnumAttrCase<"CardMesh", 2, "card_mesh">;
+def Wafer_Placement : I32EnumAttr<"Placement", "Wafer physical placement scope", [
+  Wafer_PlacementSingleTile,
+  Wafer_PlacementTileMesh,
+  Wafer_PlacementCardMesh
+]> {
+  let cppNamespace = "::wafer";
+  let genSpecializedAttr = 0;
+}
+
+def Wafer_PlacementAttr
+    : EnumAttr<Wafer_Dialect, Wafer_Placement, "placement"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
+def Wafer_DdrBindingKindInput : I32EnumAttrCase<"Input", 0, "input">;
+def Wafer_DdrBindingKindOutput : I32EnumAttrCase<"Output", 1, "output">;
+def Wafer_DdrBindingKind
+    : I32EnumAttr<"DdrBindingKind", "Wafer DDR external binding kind", [
+  Wafer_DdrBindingKindInput,
+  Wafer_DdrBindingKindOutput
+]> {
+  let cppNamespace = "::wafer";
+  let genSpecializedAttr = 0;
+}
+
+def Wafer_DdrBindingKindAttr
+    : EnumAttr<Wafer_Dialect, Wafer_DdrBindingKind, "ddr_binding_kind"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
+def Wafer_AbiWaitPolicyIssueOnly : I32EnumAttrCase<"IssueOnly", 0, "issue_only">;
+def Wafer_AbiWaitPolicySynchronous : I32EnumAttrCase<"Synchronous", 1, "synchronous">;
+def Wafer_AbiWaitPolicy
+    : I32EnumAttr<"AbiWaitPolicy", "Wafer C ABI wait policy", [
+  Wafer_AbiWaitPolicyIssueOnly,
+  Wafer_AbiWaitPolicySynchronous
+]> {
+  let cppNamespace = "::wafer";
+  let genSpecializedAttr = 0;
+}
+
+def Wafer_AbiWaitPolicyAttr
+    : EnumAttr<Wafer_Dialect, Wafer_AbiWaitPolicy, "abi_wait_policy"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
+def Wafer_ComputeElementwiseKindAdd : I32EnumAttrCase<"Add", 0, "add">;
+def Wafer_ComputeElementwiseKindSub : I32EnumAttrCase<"Sub", 1, "sub">;
+def Wafer_ComputeElementwiseKindMul : I32EnumAttrCase<"Mul", 2, "mul">;
+def Wafer_ComputeElementwiseKindDiv : I32EnumAttrCase<"Div", 3, "div">;
+def Wafer_ComputeElementwiseKindMax : I32EnumAttrCase<"Max", 4, "max">;
+def Wafer_ComputeElementwiseKindMin : I32EnumAttrCase<"Min", 5, "min">;
+def Wafer_ComputeElementwiseKindNeg : I32EnumAttrCase<"Neg", 6, "neg">;
+def Wafer_ComputeElementwiseKindRecip : I32EnumAttrCase<"Recip", 7, "recip">;
+def Wafer_ComputeElementwiseKindSqrt : I32EnumAttrCase<"Sqrt", 8, "sqrt">;
+def Wafer_ComputeElementwiseKindRsqrt : I32EnumAttrCase<"Rsqrt", 9, "rsqrt">;
+def Wafer_ComputeElementwiseKindExp : I32EnumAttrCase<"Exp", 10, "exp">;
+def Wafer_ComputeElementwiseKindTanh : I32EnumAttrCase<"Tanh", 11, "tanh">;
+def Wafer_ComputeElementwiseKind
+    : I32EnumAttr<"ComputeElementwiseKind",
+                  "Wafer target-abstract elementwise compute kind", [
+  Wafer_ComputeElementwiseKindAdd,
+  Wafer_ComputeElementwiseKindSub,
+  Wafer_ComputeElementwiseKindMul,
+  Wafer_ComputeElementwiseKindDiv,
+  Wafer_ComputeElementwiseKindMax,
+  Wafer_ComputeElementwiseKindMin,
+  Wafer_ComputeElementwiseKindNeg,
+  Wafer_ComputeElementwiseKindRecip,
+  Wafer_ComputeElementwiseKindSqrt,
+  Wafer_ComputeElementwiseKindRsqrt,
+  Wafer_ComputeElementwiseKindExp,
+  Wafer_ComputeElementwiseKindTanh
+]> {
+  let cppNamespace = "::wafer";
+  let genSpecializedAttr = 0;
+}
+
+def Wafer_ComputeElementwiseKindAttr
+    : EnumAttr<Wafer_Dialect, Wafer_ComputeElementwiseKind, "elementwise_kind"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
+def Wafer_ComputeReduceKindSum : I32EnumAttrCase<"Sum", 0, "sum">;
+def Wafer_ComputeReduceKindMax : I32EnumAttrCase<"Max", 1, "max">;
+def Wafer_ComputeReduceKindMin : I32EnumAttrCase<"Min", 2, "min">;
+def Wafer_ComputeReduceKind
+    : I32EnumAttr<"ComputeReduceKind",
+                  "Wafer target-abstract local reduce kind", [
+  Wafer_ComputeReduceKindSum,
+  Wafer_ComputeReduceKindMax,
+  Wafer_ComputeReduceKindMin
+]> {
+  let cppNamespace = "::wafer";
+  let genSpecializedAttr = 0;
+}
+
+def Wafer_ComputeReduceKindAttr
+    : EnumAttr<Wafer_Dialect, Wafer_ComputeReduceKind, "reduce_kind"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
+#endif // WAFER_IR_WAFERATTRS_TD

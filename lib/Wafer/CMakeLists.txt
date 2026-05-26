@@ -1,3 +1,4 @@
 add_subdirectory(ABI)
-add_subdirectory(Dialect/Wafer/IR)
+add_subdirectory(IR)
 add_subdirectory(Transforms)
+add_subdirectory(Conversion)

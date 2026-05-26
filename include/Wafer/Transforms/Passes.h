@@ -30,8 +30,7 @@ std::unique_ptr<mlir::Pass> createCheckSPMAllocationPass();
 std::unique_ptr<mlir::Pass> createMaterializeDDRExternalBindingsPass();
 std::unique_ptr<mlir::Pass> createLowerRingAllGatherPass();
 std::unique_ptr<mlir::Pass> createLowerRingReduceCollectivesPass();
-std::unique_ptr<mlir::Pass> createLowerToCAbiSkeletonPass();
-void registerWaferPasses();
+void registerWaferTransformPasses();
 
 } // namespace wafer
 

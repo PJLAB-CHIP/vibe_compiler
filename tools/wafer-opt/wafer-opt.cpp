@@ -1,7 +1,8 @@
 //===- wafer-opt.cpp - Wafer optimizer driver ----------------------------===//
 
 #include "Wafer/InitAll.h"
-#include "Wafer/InitImporterDialects.h"
+#include "Wafer/Frontend/InitImporterDialects.h"
+#include "Wafer/Conversion/Passes.h"
 #include "Wafer/Transforms/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -19,7 +20,8 @@ int main(int argc, char **argv) {
                   mlir::scf::SCFDialect, mlir::tensor::TensorDialect>();
   wafer::registerAllDialects(registry);
   wafer::registerImporterDialects(registry);
-  wafer::registerWaferPasses();
+  wafer::registerWaferTransformPasses();
+  wafer::registerWaferConversionPasses();
 
   return mlir::asMainReturnCode(
       mlir::MlirOptMain(argc, argv, "Wafer optimizer driver\n", registry));

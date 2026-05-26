@@ -106,7 +106,7 @@ if(WAFER_ENABLE_IMPORTER_DEPS)
   add_subdirectory("${WAFER_STABLEHLO_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/stablehlo" EXCLUDE_FROM_ALL)
 endif()
 
-add_subdirectory(include/Wafer/Dialect/Wafer/IR)
+add_subdirectory(include/Wafer/IR)
 add_subdirectory(lib/Wafer)
 add_subdirectory(tools/wafer-opt)
 add_subdirectory(tools/wafer-import-model)

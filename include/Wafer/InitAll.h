@@ -3,7 +3,7 @@
 #ifndef WAFER_INITALL_H
 #define WAFER_INITALL_H
 
-#include "Wafer/Dialect/Wafer/IR/WaferDialect.h"
+#include "Wafer/IR/WaferDialect.h"
 
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/IR/DialectRegistry.h"

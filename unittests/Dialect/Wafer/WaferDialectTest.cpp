@@ -1,4 +1,4 @@
-#include "Wafer/Dialect/Wafer/IR/WaferDialect.h"
+#include "Wafer/IR/WaferDialect.h"
 #include "Wafer/InitAll.h"
 
 #include "mlir/IR/AsmState.h"

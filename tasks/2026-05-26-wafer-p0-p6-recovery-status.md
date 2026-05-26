@@ -45,9 +45,8 @@ pass/op/test 覆盖。
 P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR、verifier、pass 和 smoke tests 能跑，
 但没有满足架构文档按 IR stage 闭环的完成口径：
 
-- `wafer` dialect 可以继续统一 namespace，但源码未按 op prefix / IR stage 拆分。
-- `lib/Wafer/Transforms` 聚合了 frontend lowering、group/materialization、resource check、
-  communication 和 ABI skeleton；ownership 边界不清。
+- R0.2 已把源码 ownership 拆到 `Frontend`、`IR`、stage-specific `Transforms`、`Conversion` 和 `ABI`
+  边界；但 `wafer` dialect 内部仍未按 op prefix 拆 ODS / verifier。
 - `WaferOps.td` 和 `WaferDialect.cpp` 承载了多数 op/verifier；与第 7 节建议的分层文件组织不符。
 - M0/M1/M6 integration gate 把 `wafer-opt` IR FileCheck 和 fixed manifest/C stub fixture 放在同一
   测试文件里，但 package 不是从该次 IR lowering 自动导出。
@@ -69,21 +68,24 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
 - 有 `CMakeLists.txt`、`cmake/WaferDependencyVersions.cmake`、`wafer-opt`、lit、gtest、
   `tools/check_deps.py` 和 bootstrap 脚本。
 - 有 `WAFER_ENABLE_IMPORTER_DEPS` 开关、disabled importer smoke 和 StableHLO/Shardy checkout 检查。
-- 当前源码组织仍以 `include/Wafer/Dialect/Wafer/IR`、`lib/Wafer/Dialect/Wafer/IR` 和
-  `lib/Wafer/Transforms` 为主，缺少设计文档中的 `Frontend`、stage-specific `Transforms` 和
-  `Conversion` 边界。
+- R0.2 后源码已使用 `include/Wafer/Frontend`、`include/Wafer/IR`、`include/Wafer/Conversion`、
+  `lib/Wafer/IR`、stage-specific `lib/Wafer/Transforms/*` 和 `lib/Wafer/Conversion`。
+- `WaferTransforms` 只注册 transform pass；C ABI skeleton lowering 归入 `WaferConversion`。
 
 缺口：
 
-- 工程能跑不等于按设计组织完成；当前目录和库边界会继续掩盖 frontend、planner、resource、
-  ABI、launch/runtime 的 ownership。
+- 工程能跑不等于 P0 完成；依赖 target 可见范围、importer/runtime 隔离和 tool/test dependency
+  ownership 仍需 R0.3 收敛。
+- IR 内部 ODS / verifier / tests 仍未按 group、tile_region、layout、SPM、compute、comm、sync、
+  launch op prefix 拆分；这是 R1.1。
 - StableHLO/Shardy dependency 当前主要服务 textual lowering smoke；真实 importer adapter 和 artifact
   verifier 还没成为独立 frontend 层。
 - runtime/driver 头文件和真实 runtime adapter 尚未进入 launch/C ABI 层。
 
 恢复任务：
 
-- R0.2：按架构文档第 7 节恢复源码组织边界，先拆清 ownership，再移动代码。
+- R0.2：已完成源码组织边界恢复；记录见
+  `tasks/2026-05-26-wafer-source-organization-recovery.md`。
 - R0.3：补依赖层级清单，明确 core compiler、frontend/importer、runtime/driver、test tooling 的
   可见范围和 CMake target 边界。
 
@@ -305,7 +307,7 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
 
 | ID | 状态 | 理由 |
 | --- | --- | --- |
-| P0 | skeleton | 工程入口存在，但源码组织和依赖 ownership 未按设计收敛 |
+| P0 | skeleton | 工程入口存在，源码 ownership 已由 R0.2 恢复；依赖 ownership 和 IR op-prefix 文件边界仍未完成 |
 | P1 | skeleton | 核心 op/type/verifier skeleton 存在，但 interface/effect/resource 和文件边界未完成 |
 | P2 | skeleton | StableHLO textual lowering 有覆盖，但真实 importer artifact/sidecar/Shardy pipeline 未闭环 |
 | P3 | skeleton | M0 local skeleton 可跑，但 group/resource/C ABI/package 主链路未闭环 |
@@ -313,4 +315,4 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
 | P5 | skeleton | transformer staged acceptance 和 M6 smoke 可跑，但 full schedule/resource/package/device artifact 未闭环 |
 | P6 | skeleton | comm/DTE skeleton 可跑，但 resource allocator、buffer slice/address、package/runtime metadata 未闭环 |
 
-R0.1 之后的下一步是 R0.2：先恢复源码组织边界，再进入 P1/P2/P3 的具体实现恢复。
+R0.2 之后的下一步是 R0.3：先补依赖层级清单，再进入 P1/P2/P3 的具体实现恢复。

@@ -1,7 +1,7 @@
 //===- wafer-import-model.cpp - Wafer importer smoke tool ----------------===//
 
 #ifdef WAFER_ENABLE_STABLEHLO
-#include "Wafer/InitImporterDialects.h"
+#include "Wafer/Frontend/InitImporterDialects.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Attributes.h"

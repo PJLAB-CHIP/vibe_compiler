@@ -7,7 +7,7 @@
 
 namespace wafer {
 
-void registerWaferPasses() {
+void registerWaferTransformPasses() {
   static bool registered = [] {
     mlir::registerPass(createLowerStablehloDotPass);
     mlir::registerPass(createLowerStablehloElementwisePass);
@@ -28,7 +28,6 @@ void registerWaferPasses() {
     mlir::registerPass(createMaterializeDDRExternalBindingsPass);
     mlir::registerPass(createLowerRingAllGatherPass);
     mlir::registerPass(createLowerRingReduceCollectivesPass);
-    mlir::registerPass(createLowerToCAbiSkeletonPass);
     return true;
   }();
   (void)registered;

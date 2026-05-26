@@ -10,11 +10,11 @@
 最小 IR skeleton；P2-P6 形成了一批 textual lowering、verifier 和 fixture/smoke gate，但大量 gate
 只证明了局部 skeleton 可以运行，尚未证明设计文档要求的主路径闭环。
 
-工程组织也没有按 `tasks/2026-05-11-wafer-ai-compiler-architecture.md` 第 7 节收敛。当前源码
-把 frontend lowering、group/tile materialization、layout/SPM/DDR、communication 和 ABI skeleton
-基本都堆在 `lib/Wafer/Transforms`，ODS 也集中在 `WaferOps.td`，verifier 集中在
-`WaferDialect.cpp`。这仍是 prototype skeleton 形态，不是设计文档要求的按 IR stage / op prefix
-分层组织。
+R0.1 审计时，工程组织也没有按
+`tasks/2026-05-11-wafer-ai-compiler-architecture.md` 第 7 节收敛：frontend lowering、
+group/tile materialization、layout/SPM/DDR、communication 和 ABI skeleton 基本都堆在
+`lib/Wafer/Transforms`。R0.2 已恢复源码 ownership 边界，但 ODS 仍集中在 `WaferOps.td`，verifier
+仍集中在 `WaferDialect.cpp`；按 op prefix 拆 IR 文件边界仍是 R1.1。
 
 历史 `tasks/progress.md` 中 P0-P6 的 `done` 应理解为“该 skeleton 批次有对应测试”，不能理解为：
 
@@ -29,7 +29,7 @@
 
 | 范围 | 当前实现 | 与设计文档的偏差 |
 | --- | --- | --- |
-| P0 工程/依赖/组织 | CMake、`wafer-opt`、lit/gtest、dependency pin/checker 已有；源码目录仍以少数 IR/Transforms 聚合目录承载多数阶段 | 最小工程入口可用，但没有按第 7 节的 Frontend / IR / Transforms / Conversion 和 IR stage 组织收敛；不代表后端链路完成 |
+| P0 工程/依赖/组织 | CMake、`wafer-opt`、lit/gtest、dependency pin/checker 已有；R0.2 已把源码 ownership 拆到 Frontend / IR / stage-specific Transforms / Conversion / ABI | 最小工程入口可用，但依赖 ownership、runtime/importer 可见范围和 IR op-prefix 文件边界仍未按设计完成；不代表后端链路完成 |
 | P1 Wafer IR skeleton | ODS/type/attr/op/verifier 正负例覆盖了核心 skeleton；多数 op 仍在同一 `WaferOps.td`，多数 verifier 在同一 `WaferDialect.cpp` | 多个 interface/resource/effect 仍是骨架；IR 文件没有按 group/tile_region/layout/SPM/compute/comm/sync/launch 拆开；测试大量使用 `builtin.unrealized_conversion_cast` 构造边界值，只证明 verifier 形态，不证明真实上游/下游连接 |
 | P2 frontend / local compute | StableHLO textual lowering 到 linalg/tensor/arith/math 子集已有，部分 transformer staged form 有 FileCheck | `wafer-import-model` 是 synthetic smoke tool，不是真实 importer adapter；sidecar/ConstantLike/storage contract 仍未闭环；部分 slice 是 acceptance pattern，不是完整 frontend artifact pipeline |
 | P3 M0 | group formation、root tile check、single-tile materialization、SPM trial、DDR external binding、C ABI skeleton、manifest fixture 均有测试 | group planner 只处理有限 single-op pattern；root tile candidate 基本等于完整静态 result shape，不是候选搜索+下游 oracle；SPM 是顺序 trial；DDR 只有 external compact bytes demand；C ABI 是 skeleton op，不是 `wafer_*` call；golden packet 只是 descriptor builder，不是 wrapper-to-register golden；M0 manifest 由 fixed smoke emitter 生成，不来自当前 IR |
@@ -46,9 +46,9 @@
    gate 的措辞覆盖掉了。
 4. P3-P6 继续叠加功能时，没有先关闭 P3 的真实 artifact/package 闭环，导致后续 M1/M6/M2-M4 都继承
    skeleton 出口。
-5. 源码组织没有跟随设计文档的 IR stage / op prefix 边界演进，导致 frontend、planner、
+5. R0.1 时源码组织没有跟随设计文档的 IR stage / op prefix 边界演进，导致 frontend、planner、
    materialization、resource check、communication 和 ABI lowering 的 ownership 被同一个
-   `Transforms` 聚合目录掩盖。
+   `Transforms` 聚合目录掩盖。R0.2 已修正源码 ownership；op-prefix IR 文件拆分仍在 R1.1。
 
 ## 纠正原则
 
@@ -63,8 +63,8 @@
 1. 逐项重读 P0-P6 对应设计文档，把每个历史 `done` 拆成“设计合同 / 当前 skeleton / 缺口 / 恢复任务”；
    R0.1 结果见 `tasks/2026-05-26-wafer-p0-p6-recovery-status.md`。
 2. 修正 `tasks/progress.md` 中 P0-P6 的状态，不再让 skeleton gate 占用设计完成语义。
-3. 按架构文档第 7 节恢复工程组织边界：先拆清 IR / Frontend / Transforms / Conversion / ABI /
-   Launch-runtime ownership，再做对应代码移动。
+3. R0.2 已按架构文档第 7 节恢复源码 ownership 边界：IR / Frontend / Transforms / Conversion / ABI
+   已分开；Launch/runtime 仍只有 skeleton boundary，真实 adapter 后续恢复。
 4. 从 P2/P3 开始恢复主链路：frontend artifact、group planner、tile/layout/SPM/DDR/C ABI/package 的
    每一步都必须按设计合同闭环。
 5. 在恢复 M0/M1/M6 local compile gate 时，补 IR-derived package manifest emission：manifest 和

@@ -1,4 +1,4 @@
-#include "Wafer/Dialect/Wafer/IR/WaferInterfaces.h"
+#include "Wafer/IR/WaferInterfaces.h"
 
 #include "gtest/gtest.h"
 
