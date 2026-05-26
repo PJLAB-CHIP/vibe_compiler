@@ -9,6 +9,7 @@
 
 - P0-P6 的历史实现只能视为骨架进度（`skeleton`）：有局部 IR、pass、verifier、fixture 和 smoke tests，
   但没有按各设计文档完成主路径闭环。
+- 当前源码组织仍是 prototype 聚合形态；未按架构文档第 7 节的 IR stage / op prefix 边界收敛。
 - 设计一致性缺口见
   `tasks/2026-05-26-wafer-p0-p6-design-conformance-audit.md`。
 - 当前不得推进 P7/P8/P9；必须先恢复 P0-P6 的设计一致性。
@@ -43,8 +44,8 @@
 
 | ID | 状态 | 范围 | 当前结论 |
 | --- | --- | --- | --- |
-| P0 | skeleton | 工程、依赖、工具、测试入口 | 最小工程入口可用；仍需在恢复队列中重新核对依赖和 importer 边界 |
-| P1 | skeleton | Wafer IR skeleton 和 verifier | 核心 op/type/attr skeleton 有测试；interface/effect/resource 仍需按设计合同复核 |
+| P0 | skeleton | 工程、依赖、工具、测试入口 | 最小工程入口可用；源码组织仍需按 Frontend / IR / Transforms / Conversion / ABI 边界恢复 |
+| P1 | skeleton | Wafer IR skeleton 和 verifier | 核心 op/type/attr skeleton 有测试；ODS/verifier/interface/effect/resource 仍需按 op prefix 和设计合同复核 |
 | P2 | skeleton | Frontend artifact 和 local compute normalization | StableHLO textual lowering 有覆盖；真实 importer adapter、sidecar/ConstantLike/storage contract 未闭环 |
 | P3 | skeleton | M0 single-tile load-GEMM-store | 有 group/tile/SPM/DDR/C ABI skeleton；planner、package、golden packet 和 C ABI 主路径未闭环 |
 | P4 | skeleton | M1 multi-tile no-comm | 有 placement/map 和 clone-style tile_region skeleton；真实 shard slicing、merge、runtime launch metadata 未闭环 |
@@ -58,6 +59,7 @@
 | ID | 状态 | 任务 | 验收 |
 | --- | --- | --- | --- |
 | R0.1 | ready | 逐项重读 P0-P6 对应设计文档并重写任务状态 | 每个历史 skeleton 项都有“设计合同 / 当前实现 / 缺口 / 恢复任务”记录；不再用 skeleton gate 冒充完成 |
+| R0.2 | pending | 恢复源码组织边界 | 按架构文档第 7 节拆清 Frontend / IR / Transforms / Conversion / ABI / Launch-runtime ownership；不再把跨阶段实现堆在单一 Transforms 聚合目录 |
 | R2.1 | pending | 恢复 frontend artifact / importer contract | importer adapter、sidecar/ConstantLike、graph break/eager/dynamic shape 诊断按 frontend 设计闭环 |
 | R3.1 | pending | 恢复 M0 group/tile/layout/SPM/DDR/C ABI 主链路 | group planner、root tile feasibility、SPM/DDR demand、C ABI skeleton 均来自同一 IR pipeline 且满足对应设计合同 |
 | R3.2 | pending | 恢复 M0 package gate | package manifest 和 C stub 从当前 `wafer-opt` 输出导出；fixed smoke emitter 只作为 tool fixture |
