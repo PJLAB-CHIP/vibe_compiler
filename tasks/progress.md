@@ -9,12 +9,12 @@
 
 - P0-P6 的历史实现只能视为骨架进度（`skeleton`）：有局部 IR、pass、verifier、fixture 和 smoke tests，
   但没有按各设计文档完成主路径闭环。
-- R0.2 已恢复源码 ownership 边界；ODS/verifier 按 op prefix 拆分仍在 R1.1。
+- R0.2/R0.3 已恢复源码 ownership 和依赖层级边界；ODS/verifier 按 op prefix 拆分仍在 R1.1。
 - 设计一致性缺口见
   `tasks/2026-05-26-wafer-p0-p6-design-conformance-audit.md` 和
   `tasks/2026-05-26-wafer-p0-p6-recovery-status.md`。
 - 当前不得推进 P7/P8/P9；必须先恢复 P0-P6 的设计一致性。
-- 当前唯一 ready 项是 R0.3。
+- 当前唯一 ready 项是 R1.1。
 
 ## 状态标记
 
@@ -45,7 +45,7 @@
 
 | ID | 状态 | 范围 | 当前结论 |
 | --- | --- | --- | --- |
-| P0 | skeleton | 工程、依赖、工具、测试入口 | 最小工程入口可用；源码 ownership 已按 Frontend / IR / Transforms / Conversion / ABI 边界恢复，依赖边界仍待 R0.3 |
+| P0 | skeleton | 工程、依赖、工具、测试入口 | 最小工程入口可用；源码 ownership 和依赖层级边界已恢复；P0 仍只是历史 skeleton 记录，不代表 frontend/runtime 主路径完成 |
 | P1 | skeleton | Wafer IR skeleton 和 verifier | 核心 op/type/attr skeleton 有测试；ODS/verifier/interface/effect/resource 仍需按 op prefix 和设计合同复核 |
 | P2 | skeleton | Frontend artifact 和 local compute normalization | StableHLO textual lowering 有覆盖；真实 importer adapter、sidecar/ConstantLike/storage contract 未闭环 |
 | P3 | skeleton | M0 single-tile load-GEMM-store | 有 group/tile/SPM/DDR/C ABI skeleton；planner、package、golden packet 和 C ABI 主路径未闭环 |
@@ -61,8 +61,8 @@
 | --- | --- | --- | --- |
 | R0.1 | done | 逐项重读 P0-P6 对应设计文档并重写任务状态 | 记录见 `tasks/2026-05-26-wafer-p0-p6-recovery-status.md`；每个历史 skeleton 项都有“设计合同 / 当前实现 / 缺口 / 恢复任务” |
 | R0.2 | done | 恢复源码组织边界 | 记录见 `tasks/2026-05-26-wafer-source-organization-recovery.md`；IR / Frontend / Transforms / Conversion / ABI ownership 已拆开，C ABI skeleton 不再归属 `WaferTransforms` |
-| R0.3 | ready | 补依赖层级清单 | core compiler、frontend/importer、runtime/driver、test tooling 的 CMake target 和可见范围明确 |
-| R1.1 | pending | 拆分 Wafer IR 文件边界 | ODS、C++ verifier 和 tests 按 group/tile_region/layout/SPM/compute/comm/sync/launch op prefix 组织 |
+| R0.3 | done | 补依赖层级清单 | 记录见 `tasks/2026-05-26-wafer-dependency-layering-recovery.md`；core compiler、frontend/importer、runtime/driver、test tooling 的 CMake target 可见范围已记录并由 `tools/check_deps.py` 检查 |
+| R1.1 | ready | 拆分 Wafer IR 文件边界 | ODS、C++ verifier 和 tests 按 group/tile_region/layout/SPM/compute/comm/sync/launch op prefix 组织 |
 | R1.2 | pending | 恢复 interface/effect/resource 合同 | planner、layout、SPM/DDR、compute/comm 能通过 op interface / effect 查询需求和合法性 |
 | R1.3 | pending | 补 stage-connection tests | 减少只靠 `unrealized_conversion_cast` 的孤立 verifier case，增加上下游连接验证 |
 | R2.1 | pending | 恢复 frontend artifact / importer contract | importer adapter、sidecar/ConstantLike、graph break/eager/dynamic shape 诊断按 frontend 设计闭环 |
@@ -112,5 +112,5 @@ P7/P8/P9 只有在 P0-P6 恢复队列完成后才能推进。
 
 ## 下一步
 
-从 R0.3 开始：先补依赖 target 可见范围，再按 R1/R2/R3 顺序恢复 IR、frontend 和 M0 主链路。P7/P8/P9
+从 R1.1 开始：先拆 Wafer IR 文件边界，再按 R1/R2/R3 顺序恢复 IR、frontend 和 M0 主链路。P7/P8/P9
 依赖恢复后的 P0-P6 主链路，不提前推进。

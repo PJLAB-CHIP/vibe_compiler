@@ -71,11 +71,13 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
 - R0.2 后源码已使用 `include/Wafer/Frontend`、`include/Wafer/IR`、`include/Wafer/Conversion`、
   `lib/Wafer/IR`、stage-specific `lib/Wafer/Transforms/*` 和 `lib/Wafer/Conversion`。
 - `WaferTransforms` 只注册 transform pass；C ABI skeleton lowering 归入 `WaferConversion`。
+- R0.3 后 core compiler、frontend/importer、runtime/driver 和 test tooling 的 target 可见范围记录在
+  `tasks/2026-05-26-wafer-dependency-layering-recovery.md`，并由 `tools/check_deps.py` 检查。
 
 缺口：
 
-- 工程能跑不等于 P0 完成；依赖 target 可见范围、importer/runtime 隔离和 tool/test dependency
-  ownership 仍需 R0.3 收敛。
+- 工程能跑不等于 P0-P6 主路径完成；frontend importer artifact、runtime adapter 和 package 主链路
+  仍需后续 R2/R3/P8 恢复。
 - IR 内部 ODS / verifier / tests 仍未按 group、tile_region、layout、SPM、compute、comm、sync、
   launch op prefix 拆分；这是 R1.1。
 - StableHLO/Shardy dependency 当前主要服务 textual lowering smoke；真实 importer adapter 和 artifact
@@ -86,8 +88,8 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
 
 - R0.2：已完成源码组织边界恢复；记录见
   `tasks/2026-05-26-wafer-source-organization-recovery.md`。
-- R0.3：补依赖层级清单，明确 core compiler、frontend/importer、runtime/driver、test tooling 的
-  可见范围和 CMake target 边界。
+- R0.3：已完成依赖层级清单和检查；记录见
+  `tasks/2026-05-26-wafer-dependency-layering-recovery.md`。
 
 ## P1 Wafer IR Skeleton 和 Verifier
 
@@ -307,7 +309,7 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
 
 | ID | 状态 | 理由 |
 | --- | --- | --- |
-| P0 | skeleton | 工程入口存在，源码 ownership 已由 R0.2 恢复；依赖 ownership 和 IR op-prefix 文件边界仍未完成 |
+| P0 | skeleton | 工程入口存在，源码 ownership 和依赖层级边界已由 R0.2/R0.3 恢复；IR op-prefix 文件边界仍未完成 |
 | P1 | skeleton | 核心 op/type/verifier skeleton 存在，但 interface/effect/resource 和文件边界未完成 |
 | P2 | skeleton | StableHLO textual lowering 有覆盖，但真实 importer artifact/sidecar/Shardy pipeline 未闭环 |
 | P3 | skeleton | M0 local skeleton 可跑，但 group/resource/C ABI/package 主链路未闭环 |
@@ -315,4 +317,4 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
 | P5 | skeleton | transformer staged acceptance 和 M6 smoke 可跑，但 full schedule/resource/package/device artifact 未闭环 |
 | P6 | skeleton | comm/DTE skeleton 可跑，但 resource allocator、buffer slice/address、package/runtime metadata 未闭环 |
 
-R0.2 之后的下一步是 R0.3：先补依赖层级清单，再进入 P1/P2/P3 的具体实现恢复。
+R0.3 之后的下一步是 R1.1：先拆分 Wafer IR 文件边界，再进入 P1/P2/P3 的具体实现恢复。

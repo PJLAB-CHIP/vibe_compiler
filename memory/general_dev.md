@@ -14,7 +14,8 @@
 - 当前 smoke gate 是 `cmake --build build/p0 --target check-wafer-lit` 和
   `ctest --test-dir build/p0 --output-on-failure`。
 - 依赖一致性检查入口是 `tools/check_deps.py`；默认检查 version pin、importer registration hook、
-  StableHLO/Shardy checkout HEAD（如果 `.deps/src` 已存在）。
+  StableHLO/Shardy checkout HEAD（如果 `.deps/src` 已存在）和 core/frontend/runtime/test tooling
+  dependency layering。
 - ODS op 如果引入 `RecursiveMemoryEffects`、`ReturnLike` 等 interface trait，公开 dialect 头要
   include 对应 C++ interface header，`WaferIR` 也要显式 link 对应 MLIR interface target。
 - Dialect 增加 TypeDef 后，base dialect td 需要启用 `useDefaultTypePrinterParser = 1`，否则即使

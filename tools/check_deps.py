@@ -8,6 +8,7 @@ import pathlib
 import re
 import subprocess
 import sys
+from collections.abc import Iterable
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -21,6 +22,31 @@ REQUIRED_KEYS = [
     "WAFER_SHARDY_COMMIT",
     "WAFER_GOOGLETEST_TAG",
     "WAFER_PYTHON_LIT_VERSION",
+]
+
+SOURCE_SUFFIXES = {".cpp", ".h", ".td"}
+
+STABLEHLO_API_NEEDLES = [
+    "stablehlo/",
+    "mlir::stablehlo",
+]
+
+STABLEHLO_API_ALLOWED_PREFIXES = [
+    "include/Wafer/Frontend",
+    "lib/Wafer/Transforms/StableHLOToLinalg",
+    "tools/wafer-import-model",
+]
+
+RUNTIME_DRIVER_NEEDLES = [
+    "tx_runtime",
+    "libhpgr",
+    "Tsm",
+]
+
+TEST_TOOLING_NEEDLES = [
+    "GTest",
+    "gtest",
+    "FileCheck",
 ]
 
 
@@ -44,6 +70,118 @@ def rev_parse(path: pathlib.Path) -> str | None:
 def check_text_contains(path: pathlib.Path, needle: str) -> None:
     if needle not in path.read_text(encoding="utf-8"):
         raise RuntimeError(f"{path} does not contain required text: {needle}")
+
+
+def rel(path: pathlib.Path) -> str:
+    return path.relative_to(REPO_ROOT).as_posix()
+
+
+def is_under(path: pathlib.Path, prefix: str) -> bool:
+    relative = rel(path)
+    return relative == prefix or relative.startswith(prefix + "/")
+
+
+def iter_source_files(roots: Iterable[pathlib.Path]) -> Iterable[pathlib.Path]:
+    for root in roots:
+        if root.is_file():
+            if root.suffix in SOURCE_SUFFIXES:
+                yield root
+            continue
+        for path in root.rglob("*"):
+            if path.is_file() and path.suffix in SOURCE_SUFFIXES:
+                yield path
+
+
+def check_forbidden_needles(
+    *,
+    label: str,
+    roots: Iterable[pathlib.Path],
+    needles: Iterable[str],
+    allowed_prefixes: Iterable[str] = (),
+) -> None:
+    violations: list[str] = []
+    for path in iter_source_files(roots):
+        if any(is_under(path, prefix) for prefix in allowed_prefixes):
+            continue
+        text = path.read_text(encoding="utf-8")
+        for needle in needles:
+            if needle in text:
+                violations.append(f"{rel(path)} contains {needle!r}")
+    if violations:
+        raise RuntimeError(
+            f"{label} dependency boundary violation(s): " + "; ".join(violations)
+        )
+
+
+def check_cmake_target_visibility() -> None:
+    transforms_cmake_path = REPO_ROOT / "lib" / "Wafer" / "Transforms" / "CMakeLists.txt"
+    transforms_cmake = transforms_cmake_path.read_text(encoding="utf-8")
+    if re.search(
+        r"target_link_libraries\(\s*WaferTransforms\s+PUBLIC\s+StablehloOps",
+        transforms_cmake,
+    ):
+        raise RuntimeError(
+            "WaferTransforms must not expose StablehloOps as a PUBLIC dependency"
+        )
+    if "target_link_libraries(WaferTransforms PRIVATE StablehloOps)" not in transforms_cmake:
+        raise RuntimeError("WaferTransforms must keep StablehloOps as a PRIVATE dependency")
+
+    for cmake_path in [
+        REPO_ROOT / "lib" / "Wafer" / "IR" / "CMakeLists.txt",
+        REPO_ROOT / "lib" / "Wafer" / "Conversion" / "CMakeLists.txt",
+        REPO_ROOT / "lib" / "Wafer" / "ABI" / "CMakeLists.txt",
+    ]:
+        text = cmake_path.read_text(encoding="utf-8")
+        for needle in [
+            "Stablehlo",
+            "Shardy",
+            "GTest",
+            "FileCheck",
+            "tx_runtime",
+            "libhpgr",
+            "Tsm",
+        ]:
+            if needle in text:
+                raise RuntimeError(f"{rel(cmake_path)} leaks {needle!r}")
+
+    check_text_contains(
+        REPO_ROOT / "tools" / "wafer-opt" / "CMakeLists.txt",
+        "target_link_libraries(wafer-opt PRIVATE StablehloRegister)",
+    )
+    check_text_contains(
+        REPO_ROOT / "tools" / "wafer-import-model" / "CMakeLists.txt",
+        "StablehloRegister",
+    )
+
+
+def check_dependency_layering() -> None:
+    production_roots = [
+        REPO_ROOT / "include" / "Wafer",
+        REPO_ROOT / "lib" / "Wafer",
+        REPO_ROOT / "tools" / "wafer-opt",
+        REPO_ROOT / "tools" / "wafer-import-model",
+    ]
+    compiler_library_roots = [
+        REPO_ROOT / "include" / "Wafer",
+        REPO_ROOT / "lib" / "Wafer",
+    ]
+    check_forbidden_needles(
+        label="StableHLO/Shardy",
+        roots=production_roots,
+        needles=STABLEHLO_API_NEEDLES,
+        allowed_prefixes=STABLEHLO_API_ALLOWED_PREFIXES,
+    )
+    check_forbidden_needles(
+        label="runtime/driver",
+        roots=compiler_library_roots,
+        needles=RUNTIME_DRIVER_NEEDLES,
+    )
+    check_forbidden_needles(
+        label="test tooling",
+        roots=compiler_library_roots,
+        needles=TEST_TOOLING_NEEDLES,
+    )
+    check_cmake_target_visibility()
 
 
 def print_versions(versions: dict[str, str]) -> None:
@@ -71,6 +209,7 @@ def main() -> int:
     check_text_contains(REPO_ROOT / "CMakeLists.txt", "WAFER_ENABLE_IMPORTER_DEPS")
     check_text_contains(REPO_ROOT / "tools" / "wafer-opt" / "wafer-opt.cpp",
                         "registerImporterDialects")
+    check_dependency_layering()
 
     stablehlo_head = rev_parse(REPO_ROOT / ".deps" / "src" / "stablehlo")
     if stablehlo_head and stablehlo_head != versions["WAFER_STABLEHLO_COMMIT"]:
@@ -80,6 +219,7 @@ def main() -> int:
     if shardy_head and shardy_head != versions["WAFER_SHARDY_COMMIT"]:
         raise RuntimeError(f"Shardy checkout mismatch: {shardy_head}")
 
+    print("dependency layering checks passed")
     print("dependency consistency checks passed")
     return 0
 
