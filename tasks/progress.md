@@ -1,342 +1,63 @@
 # Wafer Compiler Progress
 
-更新时间：2026-05-25
+更新时间：2026-05-26
 
-状态：设计文档已经覆盖 compiler core 跑通静态 transformer block vertical slice 所需的主要边界。
-下一阶段应转入实现和验证，不继续无边界扩写设计。
+本文件只记录当前看板、状态和下一步；不再承载实现流水账。历史实现细节以 git commit、设计文档
+和审计文档为准。
 
-2026-05-26 审计修正：P0-P6 历史 `done` 只代表 skeleton-progress gate 曾经通过，不再代表已经按
-各设计文档完成主路径闭环。当前实现与设计主线的缺口见
-`tasks/2026-05-26-wafer-p0-p6-design-conformance-audit.md`；后续必须先重开 P0-P6 设计一致性恢复，
-不能跳到 P7/P8/P9。
+## 当前状态
 
-最新实现批次：已落地最小 CMake / MLIR 工程骨架、`wafer-opt`、lit/FileCheck、gtest 入口和
-`WaferDialect` + 共享 enum attrs 的 parser/printer/verifier smoke tests。LLVM/MLIR 版本通过集中
-pin 和 bootstrap 脚本管理；当前本地验证使用 21.0.0git override，未把本机路径写成项目合同。
-bootstrap LLVM 下载入口已补上 Content-Length 完整性检查和 `.part` 续传，避免半包被当成完整
-archive 解包。`wafer-import-model` disabled stub、依赖一致性检查脚本和 Wafer tiling/layout/resource-effect
-interface skeleton 已落地。最小 `wafer.group` / `wafer.group_yield`、region/result/yield verifier
-和 SPM memref 拒绝测试已落地。最小 `!wafer.tile_buffer`、`wafer.tile_region` /
-`wafer.tile_yield`、边界类型 verifier 和 SPM tile buffer escape 拒绝测试已落地。最小
-`wafer.layout.materialize` 及 layout/tensor/memory-space verifier 已落地；下一步进入
-compute/movement 之后的 comm/token/wait 表示。`wafer.load_tile`、`wafer.store_tile` 和
-`wafer.compute.gemm` 的最小 shape/layout/memory-space verifier 已落地。最小 `wafer.comm.send` /
-`wafer.comm.recv` / `wafer.comm.wait` 和 `wafer.sync.local_drain` 已落地，通信 token 使用
-`!async.token`，endpoint / byte count / SPM buffer 合同有 verifier。最小 `wafer.launch` boundary
-已落地，launch signature、package ref、resource summary 和 host tensor 边界有 verifier。P1
-parser/printer/verifier 正负例已补齐到当前 op/type/attr 覆盖口径。P2/P3 输入 artifact 起点已落地：
-默认 backend gate 覆盖手写 Linalg GEMM 文本入口，importer-enabled gate 覆盖 pinned StableHLO
-`dot_general` 文本入口和 dialect registration。最小 constant normalization pass 已落地，importer
-build 中把 `stablehlo.constant` 重写为 `arith.constant`，不引入 Wafer 私有 constant op；独立
-sidecar manifest schema 仍归 P3.10 package manifest，不在本批次造临时格式。P2.3 的 M0 范围
-2D `stablehlo.dot_general` 到 structured tensor IR lowering 已落地，输出 zero fill + DPS
-`linalg.matmul`。P2.4 的 StableHLO shape normalization 已落地：`broadcast_in_dim`、rank-changing
-`reshape`、`transpose`、`slice` 降到 `linalg` / `tensor` structured IR，使用 type、shape 和 indexing
-关系，不新增 Wafer 私有 op 或名字约定。P2.5 的 StableHLO elementwise normalization 已落地：
-add/sub/mul/div/max/min/neg/sqrt/rsqrt/exp 降到 `linalg.elementwise`，`1 / x` 常量形态归一化为
-reciprocal kind，单 use `broadcast_in_dim` 输入通过 `indexing_maps` 表达 limited broadcast。P2.6 的
-单输入 StableHLO reduce sum/max normalization 已落地：rank-0 init 通过 `tensor.extract` 和
-`linalg.fill` materialize 成结果 tensor init，combiner 降到 `linalg.reduce` region。P2.7 的
-RMSNorm / LayerNorm staged-form gate 已落地，复用 reduce、elementwise 和 broadcast indexing map
-lowering，不引入 `wafer.norm` / `wafer.layer_norm` 高层 op。P2.8 的 softmax staged-form gate 已
-落地，row max、shift、exp、row sum 和 normalize 都以 `linalg.reduce` / `linalg.elementwise`
-及 broadcast indexing map 表达。P2.9 的 RoPE / MLP activation staged-form gate 已落地：
-`stablehlo.concatenate` 降到 `tensor.concat`，`stablehlo.tanh` 降到 `linalg.elementwise`
-tanh，RoPE 和 GELU tanh 形态只使用 slice/concat/elementwise structured tensor IR。P2.10 的
-importer smoke gate 已落地：importer-enabled `wafer-import-model` 能发出并验证一个静态
-StableHLO/MLIR artifact，graph break / eager fallback 通过 importer metadata 硬诊断，
-unbounded dynamic shape 通过函数签名类型诊断；backend-only 构建仍保留 disabled importer shell，
-不把 StableHLO/Python importer 依赖扩散到后端 textual tests。P3.2 的最小 group formation
-已落地：`--wafer-form-groups` 将单结果 tensor `linalg.matmul` 包装成 logical `wafer.group`，
-body 只通过显式 block arguments 访问 ins/outs，不写 tile shape、layout 或 resource plan；
-多输出 `linalg.generic` 暂不形成 group，留给后续 planner 证明 traversal/domain 后再处理。P3.3 的
-root tile candidate / feasibility skeleton 已落地：`--wafer-check-root-tile-candidates` 在
-pass-local analysis 中为 M0 rank-2 static group result 建立候选并调用 feasibility checker；
-动态 result shape 会被诊断为缺少 bounded tile policy，候选 shape 和资源估计不写入
-`wafer.group` attr。P3.4 的 M0 single-tile materialization 已落地：`--wafer-materialize-single-tile`
-将单 GEMM logical group 改写为 `wafer.tile_region`，region 内显式建立 external tensor
-args 到 `wafer.load_tile`、`wafer.compute.gemm`、`wafer.store_tile` 和 `wafer.tile_yield` 的
-SSA 链；为满足当前 `compute.gemm` / `store_tile` verifier，暂时插入 tensor<->cx layout
-materialization，后续 P3.5 再做 compact layout assignment 和冗余 conversion 清理。
-P3.5 的 compact layout cleanup 已落地：`--wafer-compact-layout-assignment` 删除无其它 use 的
-inverse-pair `wafer.layout.materialize(A -> B -> A)`，直接把最终 consumer 改回原始 tile buffer；
-该 pass 只做当前 IR 的 layout-aware rewrite，不保存或读取 planner 搜索状态。P3.6 的 SPM
-allocation trial 已落地：`--wafer-check-spm-allocation` 在 `wafer.tile_region` 内用 pass-local
-sequential trial 分配检查 SPM tile buffer storage size、alignment、lifetime range、end address 和
-usable capacity；默认 usable cap 按 `0x2f0000` 建模，trial 不向 IR 写入 offset、range 或 allocation
-plan attr。P3.7 的 DDR external binding demand 已落地：新增 `wafer.ddr.external_binding` op
-表达 input/output 外部 tensor 的 compact byte size、alignment、read-only 和 host-visible contract，
-`--wafer-materialize-ddr-external-bindings` 从 tile-region 内 `load_tile` / `store_tile` 的 boundary
-use-def 推导 demand；它不携带 BO handle、physical address、pool/domain placement 或 allocation
-trace。P3.8 的 C ABI skeleton lowering 已落地：新增 `wafer.abi.rdma_1d` /
-`wafer.abi.wdma_1d` / `wafer.abi.gemm` issue ops，后续 same-shape / limited-broadcast elementwise
-slice 扩展了 `wafer.abi.elementwise`，reduce slice 扩展了 `wafer.abi.reduce`；
-`--wafer-lower-to-c-abi-skeleton` 将 `wafer.load_tile`、`wafer.store_tile`、`wafer.compute.gemm`
-和已支持的 `wafer.compute.elementwise` / `wafer.compute.reduce` 替换为显式 bytes、M/K/N、kind、
-reduce dimensions、init value 和 `issue_only` wait policy 的 ABI skeleton，不生成 raw packet 或
-runtime handle。P3.9 的 M0 ABI
-unit gate 已落地：`Wafer/ABI/M0Abi.h` descriptor builder 和 gtest 覆盖 RDMA/WDMA 的 DDR/SPM
-direction、byte range、exclusive end、SPM usable cap、DDR lower bound，以及 GEMM M/K/N 和
-`issue_only` policy；当前固定 ABI argument contract，不声称已经完成真实 wrapper packet bitfield。
-P3.10 的最小 package manifest 已落地：`tools/wafer_package_manifest.py` 支持 M0 smoke manifest
-emit、validate 和 canonical roundtrip，schema 覆盖 launch signature、DDR external bindings、
-resource summary、ABI ops、device-code artifact id 和 runtime completion source，并拒绝已知 stub
-completion fence。P3.11 的 M0 local compile gate 已落地：汇总 lit test 从同一个 M0 Linalg GEMM
-输入跑完整 textual pipeline 到 DDR binding / SPM allocation / C ABI skeleton，validate manifest，
-再从 manifest 生成 C ABI stub 并用本地 C compiler 做 syntax compile。P4.1 的 logical rank 到
-physical tile mapping 表示已落地：新增 `wafer.placement.map` accepted mapping op，按 logical
-rank 顺序保存 4D physical coordinate，并由 verifier 检查 rank 覆盖、topology bounds、bad tile
-过滤和重复 physical tile；该 op 不携带 planner trace、SPM/DDR allocation、DTE packet 或 runtime
-handle。P4.2 的 placement package metadata 已落地：runtime manifest 现在记录 target topology、
-good/bad tile assumption、per-rank physical coord、block id 和 local shard slice metadata；validator
-检查 rank 覆盖、good/bad tile disjoint、mapped tile 必须 good、block/tile 不重复，以及 local shard
-不能越过 launch signature tensor shape。P4.3 的 multi-tile no-comm outlining 已落地：
-`--wafer-materialize-multi-tile-no-comm` 从唯一 `wafer.placement.map` 读取 `logical_rank_count`，
-将单 GEMM group materialize 成多个独立 load-GEMM-store `wafer.tile_region` skeleton，并保持
-`wafer.comm` 不进入该路径。P4.4 的 per-tile launch args 已落地：`wafer_emit_c_abi_stub.py`
-从 package placement ranks 生成 `wafer_tile_launch_arg_t` C table，包含 logical rank、block id
-和 physical coordinate，使 runtime launch artifact 能区分 tile-specific arguments；该表不携带
-BO handle、DDR address、SPM offset 或 DTE packet。P4.5 的 M1 local compile gate 已落地：新增
-two-tile no-comm integration test，从 textual Linalg GEMM 和 `wafer.placement.map` 跑到两个
-independent tile-region 的 C ABI skeleton，validate `--emit-m1-no-comm-smoke` manifest，生成 C
-stub 并由本地 C compiler 做 syntax compile。
-P5.1 的 norm schedule acceptance gate 已落地：`--wafer-check-norm-schedule` 对 normalized
-structured tensor IR 做 pass-local analysis，要求 hidden-dimension `linalg.reduce`、`rsqrt`
-elementwise stage 和 rank-N/rank-(N-1) broadcast multiply stage 同时存在；它不引入 `wafer.norm` 或
-schedule attr，也不把 planner cost 写进 IR。
-P5.2 的 softmax schedule acceptance gate 已落地：`--wafer-check-softmax-schedule` 对 normalized
-structured tensor IR 做 pass-local analysis，要求 hidden-dimension reduce max、row max broadcast
-subtract、`exp`、hidden-dimension reduce sum 和 final broadcast divide 按 SSA use-def 串联；它不引入
-`wafer.softmax`、schedule attr 或 workspace/group split 决策。
-P5.3 的 attention score QK^T slice 已落地：`--wafer-lower-stablehlo-dot` 现在支持 rank-4
-`dot_general` 的 batch/head attention score 形态，从 StableHLO dimension numbers 验证 batch
-dimensions `[0,1]` 和 contracting dimensions `[3]x[3]`，lowering 到带显式 indexing maps 和
-parallel/reduction iterator types 的 `linalg.generic` contraction；不靠 query/key 名字恢复语义。
-P5.4 的 attention value AV slice 已落地：`--wafer-lower-stablehlo-dot` 支持 rank-4 softmax
-probability 与 value 的 `dot_general`，从 dimension numbers 验证 `[B,H,Q,K] x [B,H,K,D] ->
-[B,H,Q,D]` 的 relation，并有 integration test 覆盖 softmax staged output 通过 SSA use-def 接入
-AV accumulation；physical buffer lifetime 仍留给后续 Wafer group/resource lowering 表达。
-P5.5 的 output projection + residual slice 已落地：新增
-`--wafer-check-projection-residual-schedule`，从 normalized structured tensor IR 验证 rank-2
-projection matmul、rank-2/rank-1 bias add 和 rank-2/rank-2 residual add 的 SSA 链；frontend
-integration test 覆盖 StableHLO projection dot、bias broadcast 和 residual add 的 lowering。
-P5.6 的 MLP slice 已落地：新增 `--wafer-check-mlp-schedule`，验证 rank-2 gate projection
-matmul、`tanh` activation、up projection matmul、elementwise gated multiply 和 down projection
-matmul 的 SSA 链；frontend integration test 覆盖 StableHLO dot/tanh/multiply 到该 gate 的
-lowering。
-P5.7 的 full local transformer block structured gate 已落地：一个 StableHLO integration test 在
-单函数中串联 rank-4 RMSNorm、QK^T、softmax、AV、rank-4 到 rank-2 collapse、output
-projection/residual 和 MLP，并运行 norm、softmax、projection/residual、MLP acceptance passes；
-`--wafer-lower-stablehlo-shape` 同步支持静态连续维度 reassociation reshape。该批次不声称
-physical layout/SPM/DDR feasibility 已完成，后者归 P5.8 local compile gate。
-P5.8 的 M6 local compile gate 已落地：新增 `m6-local-compile-gate` integration，
-从 full local block StableHLO 经过 normalization、acceptance gates、rank-2 matmul group split、
-single-tile materialization、SPM allocation check、DDR binding demand 和 C ABI skeleton lowering；
-同时新增 `--emit-m6-local-smoke` manifest，覆盖原始 block launch signature、单 tile placement、
-当前 full block lowering 输出的 82 个 ABI issue、manifest validate、C stub 生成和本地 C syntax
-compile。M6 package manifest 记录 workspace buffers 和 resident constants，validator 检查它们的
-compact tensor storage bytes 与 resource summary 一致，C stub 也会生成对应 table。P5.8 的
-attention generic physical slice 已继续推进：QK^T 和 AV 的 rank-4 `linalg.generic`
-contraction 通过 indexing map、iterator type、SSA body 和 shape relation 验证后形成 group，
-materialize 为带 batch/head 维度 attrs 的 `wafer.compute.gemm`，并 lower 到带 batch_count 与
-M/K/N 的 `wafer.abi.gemm` skeleton。P5.8 的 elementwise physical slice 已继续推进：
-`wafer.compute.elementwise` / `wafer.abi.elementwise` 的 enum attr、parser/printer/verifier、
-same-shape identity 与 projected-permutation limited broadcast `linalg.elementwise` group formation、
-single-tile materialization、SPM/DDR/C ABI skeleton path 均已有 lit gate。P5.8 的 reduce physical
-slice 已落地：scalar-constant-init `linalg.reduce` 的 sum/max/min kind、dimensions、init value、
-single-tile materialization、SPM/DDR/C ABI skeleton path 均已有 lit gate；M6 manifest 现在覆盖
-当前 accepted groups 的完整 ABI issue 序列，包括 38 个 RDMA、22 个 WDMA、13 个 elementwise、
-6 个 GEMM 和 3 个 reduce issue。P6.1 的 communication verifier gate 已落地：当 module 中存在
-`wafer.placement.map` 时，`wafer.comm.send` / `wafer.comm.recv` 的 `peer` 必须指向 active physical
-tile；`wafer.comm.wait` 必须显式等待至少一个 async token，避免空 wait 被误当作同步边界。P6.2
-的 fixed-size unicast Direct DTE helper lowering 已落地：`--wafer-lower-to-c-abi-skeleton` 将
-`wafer.comm.send`、`wafer.comm.recv` 和 `wafer.comm.wait` 改写为 `wafer.abi.dte_send`、
-`wafer.abi.dte_recv` 和 `wafer.abi.dte_wait` skeleton，保持 token use-def，不引入 raw non-unicast
-DTE register 字段。P6.3 的 Direct DTE resource gate 已落地：`wafer.abi.dte_send` /
-`wafer.abi.dte_recv` 显式携带非负的 `fsm_id`、`packet_id` 和 `stream_id` skeleton resource tuple，
-verifier 拒绝同一 block 内尚未被 `wafer.abi.dte_wait` 释放的 tuple 冲突，并允许 wait 后复用。
-P6.4 的 ring all-gather gate 已落地：新增 collective-level `wafer.comm.all_gather` verifier，
-`--wafer-lower-ring-all-gather` 会按 placement rank order 展开成每步 `send` / `recv` / `wait` 的
-unicast ring schedule，p2p `slot` attr 表达当前发送或接收的 gather slot，并在 C ABI skeleton
-lowering 中继续传到 Direct DTE issue op。
-P6.5 的 ring reduce collective gate 已落地：新增 `wafer.comm.reduce_scatter` 和
-`wafer.comm.all_reduce`，`--wafer-lower-ring-reduce-collectives` 将每步展开成 unicast send/recv/wait，
-并在 wait 后用 `wafer.compute.elementwise` 的 add/max/min 显式累计；C ABI skeleton path 会继续
-lower 成 Direct DTE issue 和 elementwise ABI issue，reduction 不进入 DTE 协议。
-P6.6 的 StableHLO logical collective normalization gate 已落地：新增
-`--wafer-lower-stablehlo-collectives-to-comm`，支持 single-result StableHLO `all_gather`、
-`all_reduce` 和 `reduce_scatter` 降到 collective-level `wafer.comm` op；pass 通过 `local-rank`
-option 固定当前 partition 的 replica-group rank，并只接受 sum/max/min reduction body。
-P6.7 的 M2/M3/M4 communication 汇总 gate 已落地：M2 覆盖 p2p comm 到 Direct DTE ABI skeleton；
-M3 覆盖 single-card `wafer.comm` all-gather/all-reduce 到 ring p2p、DTE ABI 和 elementwise ABI；
-M4 覆盖 StableHLO logical all-gather/all-reduce/reduce-scatter 经 `wafer.comm`、ring lowering 到
-C ABI skeleton。
-
-## Active Task
-
-把文档中的 IR 分层落成最小可运行 compiler skeleton，并推进 local compile/package gate。
-
-当前执行焦点：
-
-1. P0 到 P1：工程、依赖、工具、测试入口和最小 Wafer dialect skeleton。
-2. P2 到 P3：从手写 StableHLO / Linalg GEMM 输入跑通 M0 local compile gate。
-3. P5.1 到 P5.8：推进 transformer block local vertical slice 的 staged schedule acceptance 和
-   local compile gate。
-
-## 当前判断
-
-- 设计层面已经足够支撑开工：frontend artifact、SPMD、placement、local compute normalization、
-  `wafer.group`、`wafer.tile_region`、layout、SPM、DDR、compute、communication、C ABI、
-  launch/runtime 和 verification plan 都已有独立边界。
-- Serving、KV cache、paged attention、prefill/decode 和全模型 runtime integration 暂不进入
-  compiler core 跑通主线。
-- 如果实现时发现文档和 IR 合同冲突，先修改对应设计文档，再改代码；不要把临时 workaround
-  写成长期协议。
-
-## 当前验证口径
-
-在开发环境切到带实际计算卡的服务器之前，当前 gate 以 local compile / package 验证为准：
-
-- compiler pipeline 能从手写 StableHLO / Linalg 或 verified artifact 走到当前阶段的本地编译产物。
-- 当前已实现的本地可编译出口是 Wafer C ABI skeleton issue ops、package manifest 和由
-  `tools/wafer_emit_c_abi_stub.py` 生成的 C stub；验证只要求该 C stub 能被当前 C toolchain 做
-  syntax compile。
-- 当前 M0/M1/M6 integration gate 中，`wafer-opt` lowering 的 IR 检查和 package manifest / C stub
-  检查仍是同一测试文件内的两个 smoke 子路径；manifest 由 `tools/wafer_package_manifest.py` 的
-  fixed smoke emitter 生成，尚未从 `wafer-opt` 输出的 `wafer.abi.*` IR 自动导出。因此这些 gate
-  只能证明 skeleton IR lowering 与 manifest schema/stub 生成分别可用，不能证明 package 是由该次
-  lowering 结果生成。
-- LLVM dialect / LLVM IR lowering、object emission 和真实 runtime call lowering 尚未实现，不能把
-  当前 C stub gate 解释成 LLVM 后端已完成。
-- runtime package manifest、constant bytes metadata、DDR/SPM/resource summary 能序列化和 roundtrip。
-- golden packet / ABI unit tests、FileCheck、verifier negative tests、resource planner tests 通过。
-- 不要求当前环境完成板端 launch、device completion、数值对比或 PMU/profiling。
-
-后续迁移到带实际计算卡服务器后，再把 board run 作为对应 milestone 的新增 gate：实际 runtime
-launch、可信 completion、输出数值检查、错误传播和 profiling calibration。
+- P0-P6 的历史实现只能视为骨架进度（`skeleton`）：有局部 IR、pass、verifier、fixture 和 smoke tests，
+  但没有按各设计文档完成主路径闭环。
+- 设计一致性缺口见
+  `tasks/2026-05-26-wafer-p0-p6-design-conformance-audit.md`。
+- 当前不得推进 P7/P8/P9；必须先恢复 P0-P6 的设计一致性。
+- 当前唯一 ready 项是 R0.1。
 
 ## 状态标记
 
 - `ready`：可以直接开始实现。
 - `pending`：依赖前序任务完成。
 - `later`：当前主线之后再做。
-- `done`：实现和对应验证已经完成。
+- `skeleton`：历史 skeleton gate 通过，但不代表设计文档主路径完成。
+- `done`：实现和对应验证已经按设计合同完成。
 
-## P0. 工程和依赖骨架
+## 当前验证口径
 
-目标：让后续 IR / pass / tests 有稳定工程入口。
+当前本地可验证范围：
+
+- CMake / `wafer-opt` / lit / gtest 构建入口。
+- MLIR textual tests、FileCheck、verifier negative tests。
+- 依赖 pin / importer backend 隔离检查。
+- C ABI skeleton ops、package manifest fixture 和 C stub syntax compile。
+
+当前不能作为完成证明：
+
+- fixed smoke manifest 不能证明 package 来自当前 `wafer-opt` lowering 输出。
+- C stub syntax compile 不能证明 LLVM IR、object、真实 runtime call 或 wrapper/packet lowering。
+- 本地 gate 不能替代板端 launch、device completion、数值对比或 PMU/profiling。
+
+## 历史骨架状态
+
+这些条目保留为历史骨架进度索引，不作为设计完成声明。
+
+| ID | 状态 | 范围 | 当前结论 |
+| --- | --- | --- | --- |
+| P0 | skeleton | 工程、依赖、工具、测试入口 | 最小工程入口可用；仍需在恢复队列中重新核对依赖和 importer 边界 |
+| P1 | skeleton | Wafer IR skeleton 和 verifier | 核心 op/type/attr skeleton 有测试；interface/effect/resource 仍需按设计合同复核 |
+| P2 | skeleton | Frontend artifact 和 local compute normalization | StableHLO textual lowering 有覆盖；真实 importer adapter、sidecar/ConstantLike/storage contract 未闭环 |
+| P3 | skeleton | M0 single-tile load-GEMM-store | 有 group/tile/SPM/DDR/C ABI skeleton；planner、package、golden packet 和 C ABI 主路径未闭环 |
+| P4 | skeleton | M1 multi-tile no-comm | 有 placement/map 和 clone-style tile_region skeleton；真实 shard slicing、merge、runtime launch metadata 未闭环 |
+| P5 | skeleton | Transformer local vertical slices | 有 staged pattern acceptance 和 M6 skeleton gate；full-block package/device artifact 未从 IR 闭环 |
+| P6 | skeleton | Communication / tensor parallel path | 有 p2p/ring/DTE skeleton；buffer slicing、address lowering、resource allocator、package/runtime metadata 未闭环 |
+
+## P0-P6 设计一致性恢复队列
+
+目标：把历史骨架进度重新对齐到各设计文档的主路径合同；在这些任务完成前，不进入 P7。
 
 | ID | 状态 | 任务 | 验收 |
 | --- | --- | --- | --- |
-| P0.1 | done | 建立最小 CMake / build 入口 | 可以配置空项目；不要求已有完整 Wafer IR |
-| P0.2 | done | 建立 LLVM / MLIR 依赖发现和版本 pin 机制 | 依赖由集中配置声明，不在源码里散落 include/library path |
-| P0.3 | done | 加入 StableHLO / Shardy 依赖开关和 dialect registration 入口 | 可关闭 importer-only 依赖并运行 backend textual tests |
-| P0.4 | done | 创建 `include/Wafer/`、`lib/Wafer/`、`tools/wafer-opt` 最小骨架 | `wafer-opt --help` 或等价 smoke test 可运行 |
-| P0.5 | done | 建立 lit / FileCheck 测试目录和最小 test target | 一个空 dialect smoke test 能被 test runner 收集 |
-| P0.6 | done | 建立 gtest 或等价 C++ unit test 入口 | 后续 allocator / storage calculator 有测试落点 |
-| P0.7 | done | 创建 `tools/wafer-import-model` shell | importer-only 依赖缺失时后端仍可构建 |
-| P0.8 | done | 增加依赖一致性检查脚本 | 能检查版本 pin、dialect registration 和 importer/backend 隔离 |
-
-## P1. Wafer IR Skeleton 和 Verifier
-
-目标：核心 IR 对象可以 parse / print / verify，先固定结构边界，不实现复杂 lowering。
-
-| ID | 状态 | 任务 | 验收 |
-| --- | --- | --- | --- |
-| P1.1 | done | 定义 `WaferDialect` 和基础 ODS 文件组织 | dialect 可注册；空 module roundtrip |
-| P1.2 | done | 定义共享 attrs/types：target、placement、memory space、mem layout | parser/printer roundtrip；非法 enum 被 verifier 拒绝 |
-| P1.3 | done | 定义 `WaferTilingInterface`、`WaferLayoutOpInterface`、resource/effect 相关接口骨架 | ODS / C++ 编译通过；接口不携带 planner side table |
-| P1.4 | done | 定义最小 `wafer.group` op | region / operand / result contract 可验证；不接受 SPM memref |
-| P1.5 | done | 定义最小 `wafer.tile_region` op 和 tile buffer type | tile-local region boundary、buffer ownership、effect scope 可验证 |
-| P1.6 | done | 定义 layout materialization op 的最小 IR 形态 | 表达真实 data movement；不作为 metadata cast |
-| P1.7 | done | 定义 `wafer.compute` / movement 最小 op family：load tile、store tile、gemm | dtype、shape、layout contract 有 verifier |
-| P1.8 | done | 定义 `wafer.comm` p2p、sync token、local wait 的最小表示 | endpoint、token、wait policy 可验证 |
-| P1.9 | done | 定义 `wafer.launch` 最小 boundary | launch signature、resource summary、package ref 不反向污染 tensor IR |
-| P1.10 | done | 写 parser/printer/verifier 正负例 | 每类 op/type/attr 至少一个 roundtrip 和一个 negative test |
-
-## P2. Frontend Artifact 和 Local Compute Normalization
-
-目标：先从手写 StableHLO / MLIR 输入建立稳定 backend 入口，再接真实 importer。
-
-| ID | 状态 | 任务 | 验收 |
-| --- | --- | --- | --- |
-| P2.1 | done | 建立 StableHLO / MLIR textual artifact 输入测试 | parse/roundtrip 保留 function signature、shape、dtype |
-| P2.2 | done | 实现 constant normalization 骨架 | `stablehlo.constant` / sidecar 进入 `arith.constant` 或 `ConstantLike` tensor value |
-| P2.3 | done | Lower `dot_general` / matmul 到 structured tensor IR | indexing map / iterator / DPS 关系可 FileCheck |
-| P2.4 | done | Lower broadcast、reshape、transpose、slice | 只依赖 type、shape、indexing relation，不靠名字 |
-| P2.5 | done | Lower elementwise 和 limited broadcast | 覆盖 add/sub/mul/div/max/min/neg/recip/sqrt/rsqrt/exp 的基础形态 |
-| P2.6 | done | Lower reduce max / reduce sum | 输出 staged reduce IR，可服务 softmax 和 norm |
-| P2.7 | done | 表达 RMSNorm / LayerNorm staged form | reduce + elementwise，不引入 `wafer.norm` 高层 op |
-| P2.8 | done | 表达 softmax staged form | row max、exp、row sum、normalize 状态由 SSA / loop-carried / workspace 表达 |
-| P2.9 | done | 表达 RoPE 和 MLP activation staged form | 只使用 structured tensor IR 和 math/arith 语义 |
-| P2.10 | done | 加 importer smoke test | graph break、eager fallback、unbounded dynamic shape 会被诊断 |
-
-## P3. M0 Single Tile Load-GEMM-Store
-
-目标：跑通最小 device program 链路。
-
-| ID | 状态 | 任务 | 验收 |
-| --- | --- | --- | --- |
-| P3.1 | done | 准备手写 StableHLO / Linalg GEMM 输入 case | 输入不依赖模型 importer |
-| P3.2 | done | 实现最小 group formation | 单 GEMM 能形成 `wafer.group`；非法 multi-output/domain 被拒绝或拆分 |
-| P3.3 | done | 实现 root tile shape 候选和 feasibility 调用骨架 | tile shape 是 planner 候选，不写成 IR contract |
-| P3.4 | done | materialize 单 tile `wafer.tile_region` | region 中有 load、compute、store 的 SSA 关系 |
-| P3.5 | done | 实现 compact layout assignment | 不插不必要的 layout conversion |
-| P3.6 | done | 实现 SPM allocation trial | range、alignment、lifetime、end-address 检查通过 |
-| P3.7 | done | 实现 DDR external input/output binding demand | DDR demand 可被 launch/runtime 层消费 |
-| P3.8 | done | Lower `wafer.compute.gemm` / load / store 到 C ABI skeleton | 参数单位、address domain、wait policy 有 verifier |
-| P3.9 | done | 建立 golden packet / ABI unit test | 至少覆盖 M0 用到的 compute/movement family |
-| P3.10 | done | 建立最小 launch/runtime package manifest | manifest roundtrip，package 不依赖已知 stub path 作为 correctness fence |
-| P3.11 | done | M0 local compile gate 汇总测试 | textual pipeline、SPM、DDR、C ABI、generated artifact compile、manifest 检查全部通过 |
-
-## P4. M1 Multi-Tile No Communication
-
-目标：验证 placement、per-tile args 和多 tile launch，不引入 DTE。
-
-| ID | 状态 | 任务 | 验收 |
-| --- | --- | --- | --- |
-| P4.1 | done | 定义 logical rank 到 physical tile mapping 表示 | mapping 覆盖所有 rank，不使用 bad tile |
-| P4.2 | done | 接入 good-tile / block id / local shard metadata | metadata 可进入 package，不修改 tensor semantics |
-| P4.3 | done | 支持多 tile 独立 tile-region outlining | 每 tile 独立 load-compute-store，无 tile 间 comm |
-| P4.4 | done | 支持 per-tile launch args | runtime launch 能区分 tile-specific arguments |
-| P4.5 | done | M1 local compile gate 汇总测试 | 多 tile no-comm pipeline、generated artifact compile 和 manifest 检查通过 |
-
-## P5. Transformer Block Local Vertical Slices
-
-目标：在单 shard / 单卡本地路径上逐步覆盖 transformer block。
-
-| ID | 状态 | 任务 | 验收 |
-| --- | --- | --- | --- |
-| P5.1 | done | Norm slice：RMSNorm 或 LayerNorm | reduce + elementwise group schedule accepted |
-| P5.2 | done | Softmax slice | row max、exp、row sum、normalize 的 staged schedule accepted |
-| P5.3 | done | Attention score slice：QK^T | batch/head matmul relation 从 StableHLO dimension numbers / indexing map 推出 |
-| P5.4 | done | Attention value slice：softmax + AV | softmax output 到 value accumulation 的状态和 buffer lifetime 可验证 |
-| P5.5 | done | Output projection + residual slice | residual/add/bias 等 elementwise 与 GEMM 边界清晰 |
-| P5.6 | done | MLP slice | GEMM + activation + elementwise multiply + GEMM 可分组或可诊断拆分 |
-| P5.7 | done | Full local transformer block | norm、attention、MLP 串联的 structured IR gate 通过 |
-| P5.8 | done | M6 local compile gate | 单 shard / 单卡完整 block 的 normalization、group split、layout/SPM/DDR、C ABI、generated artifact compile、package 检查通过 |
-
-## P6. Communication / Tensor Parallel Path
-
-目标：只有在 transformer block 需要 tensor parallel 时推进。
-
-| ID | 状态 | 任务 | 验收 |
-| --- | --- | --- | --- |
-| P6.1 | done | 定义 `wafer.comm` endpoint / token / wait verifier | DTE wait 与 local compute drain 分离 |
-| P6.2 | done | Lower fixed-size unicast Direct DTE helper | raw non-unicast DTE 不作为 correctness path |
-| P6.3 | done | 管理 FSM / packet / stream resource | resource 不冲突，有 negative tests |
-| P6.4 | done | 实现 ring all-gather | 每步 send/recv/wait token 和 buffer lifetime 合法 |
-| P6.5 | done | 实现 reduce-scatter / all-reduce | collective 可追溯到 unicast steps |
-| P6.6 | done | Lower Shardy/SPMD logical collective 到 `wafer.comm` | placement 和 comm lowering 保留 collective semantics |
-| P6.7 | done | M2/M3/M4 gate 汇总测试 | p2p、single-card collective、partitioned collective lowering 分别可验证 |
-
-## P0-P6. 设计一致性恢复队列
-
-目标：把历史 skeleton-progress 重新对齐到各设计文档的主路径合同；在这些任务完成前，不进入 P7。
-
-| ID | 状态 | 任务 | 验收 |
-| --- | --- | --- | --- |
-| R0.1 | ready | 逐项重读 P0-P6 对应设计文档并重写任务状态 | 每个历史 `done` 都有“设计合同 / 当前实现 / 缺口 / 恢复任务”记录；不再用 skeleton gate 冒充完成 |
+| R0.1 | ready | 逐项重读 P0-P6 对应设计文档并重写任务状态 | 每个历史 skeleton 项都有“设计合同 / 当前实现 / 缺口 / 恢复任务”记录；不再用 skeleton gate 冒充完成 |
 | R2.1 | pending | 恢复 frontend artifact / importer contract | importer adapter、sidecar/ConstantLike、graph break/eager/dynamic shape 诊断按 frontend 设计闭环 |
 | R3.1 | pending | 恢复 M0 group/tile/layout/SPM/DDR/C ABI 主链路 | group planner、root tile feasibility、SPM/DDR demand、C ABI skeleton 均来自同一 IR pipeline 且满足对应设计合同 |
 | R3.2 | pending | 恢复 M0 package gate | package manifest 和 C stub 从当前 `wafer-opt` 输出导出；fixed smoke emitter 只作为 tool fixture |
@@ -344,51 +65,30 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 | R5.1 | pending | 恢复 M6 transformer local compile gate | workspace/resident constants/ABI issue sequence 来自 full-block IR dataflow 和 lowering 输出 |
 | R6.1 | pending | 恢复 communication design-conformance gate | DTE resource allocation、collective buffer slice/address offset、communication metadata 与 package/runtime 边界按设计落地 |
 
-## P7. ABI 到 LLVM / Runtime Artifact 出口
+## 后续队列
 
-目标：把当前 Wafer C ABI skeleton 出口收敛成真实可编译、可链接、可被 package 引用的后端产物。
+P7/P8/P9 只有在 P0-P6 恢复队列完成后才能推进。
 
 | ID | 状态 | 任务 | 验收 |
 | --- | --- | --- | --- |
 | P7.1 | pending | 建立 `wafer.abi.*` IR 到 package manifest 的导出路径 | M0/M1/M6 package manifest 的 ABI issue sequence、launch signature 和 placement metadata 来自当前 lowering 输出；fixed smoke emitter 只保留为 unit fixture |
 | P7.2 | later | 固定 `wafer.abi.*` 到 `wafer_*` C ABI call contract | 每类 ABI issue op 都有函数名、参数单位、wait/completion 责任和 stub header；unsupported op 有硬诊断 |
 | P7.3 | later | 实现 `wafer.abi.*` 到 LLVM dialect call lowering | lowering 后不残留 `wafer.abi.*`；生成 `llvm.call` / symbol declaration；FileCheck 覆盖参数顺序和类型 |
-| P7.4 | later | 建立 LLVM IR emission gate | `mlir-translate` 或等价路径能生成 LLVM IR；IR 文本检查入口函数、runtime call 和常量/metadata 引用 |
+| P7.4 | later | 建立 LLVM IR emission gate | `mlir-translate` 或等价路径能生成 LLVM IR；IR 文本检查 entrypoint、runtime call 和 metadata 引用 |
 | P7.5 | later | 建立 object / link syntax gate | 当前 toolchain 能把 LLVM IR 或 generated source 编译成 object，并与 stub runtime ABI shim 做 syntax/link smoke |
-| P7.6 | later | 将实物 artifact 接入 package manifest | manifest 记录 LLVM/object artifact id、entrypoint 和 ABI version；C stub-only artifact 不再作为该阶段 correctness fence |
-
-## P8. Runtime / Board Correctness Gate
-
-目标：在有实际计算卡环境后，把 package 走到真实 runtime launch、completion 和数值验证。
-
-| ID | 状态 | 任务 | 验收 |
-| --- | --- | --- | --- |
+| P7.6 | later | 将实物 artifact 接入 package manifest | manifest 记录 LLVM/object artifact id、entrypoint 和 ABI version；C stub-only artifact 不再作为 correctness fence |
 | P8.1 | later | 建立 runtime adapter contract 和 stub shielding | runtime path 明确区分真实 device completion 与已知 stub；stub 不能作为 correctness fence |
 | P8.2 | later | 接 BO / DDR / launch argument binding | package 中的 tensor、workspace、constant 和 per-tile launch args 能绑定到真实 runtime 资源 |
 | P8.3 | later | M0 single-tile board smoke | 实际 launch 成功，completion 可信，最小 GEMM 输出可做数值对比 |
 | P8.4 | later | M1/M2/M3/M4 board smoke | 多 tile no-comm、p2p 和 ring collective 有最小板端 completion / error propagation gate |
 | P8.5 | later | M6 transformer block board smoke | full local block 产物能 launch；输出数值与参考实现按约定 tolerance 对比 |
-
-## P9. Overlap、Cost Model 和 Profiling Calibration
-
-目标：功能链路稳定后再优化。
-
-| ID | 状态 | 任务 | 验收 |
-| --- | --- | --- | --- |
 | P9.1 | later | 建立 issue/drain placement verifier | overlap 决策由 effect/token 支撑 |
 | P9.2 | later | 建立 SPM busy range pressure model | allocator failure 反馈 planner，不写入 IR |
 | P9.3 | later | 建立 DDR range/bandwidth pressure model | range conflict / bandwidth cost 可诊断 |
 | P9.4 | later | 建立 DTE resource pressure model | FSM / packet / stream pressure 进入 cost model |
 | P9.5 | later | 接 PMU/profiling calibration | profiling 只校准 cost model，不作为 IR 语义事实 |
 
-## 当前前置实现项
-
-- 选择并 pin LLVM / MLIR / StableHLO / Shardy 依赖版本。
-- 建立 build/test harness；没有 harness 时只能做文档和文本一致性验证，不能宣称执行链路通过。
-- 定义最小 Wafer dialect ODS 文件和 shared attrs/types/interfaces。
-- 建立至少一条 textual MLIR pipeline，从手写输入开始，不等待完整 model importer。
-
-## P0-P6 本轮不做
+## 当前不做
 
 - Serving integration。
 - KV cache / paged attention / prefill-decode 调度。
@@ -399,5 +99,5 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 
 ## 下一步
 
-P0-P6 当前表内主线任务未按设计文档闭环；下一步从 R0.1 开始，先完成 P0-P6 设计一致性恢复队列。
-P7/P8/P9 均依赖恢复后的 P0-P6 主链路，不应提前推进。
+从 R0.1 开始：逐项重读 P0-P6 对应设计文档，重写任务状态和恢复计划。P7/P8/P9 依赖恢复后的
+P0-P6 主链路，不提前推进。
