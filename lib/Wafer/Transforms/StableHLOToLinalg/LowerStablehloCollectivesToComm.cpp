@@ -72,8 +72,13 @@ getCompactTensorByteSize(mlir::RankedTensorType tensorType) {
 
 #ifdef WAFER_ENABLE_STABLEHLO
 static mlir::FailureOr<int64_t>
-getReplicaGroupSize(mlir::Operation *op,
-                    mlir::DenseIntElementsAttr replicaGroups) {
+getReplicaGroupSize(mlir::Operation *op, mlir::Attribute replicaGroupsAttr) {
+  auto replicaGroups =
+      mlir::dyn_cast_or_null<mlir::DenseIntElementsAttr>(replicaGroupsAttr);
+  if (!replicaGroups)
+    return op->emitOpError(
+        "requires dense StableHLO replica_groups for Wafer comm lowering");
+
   auto groupsType =
       mlir::dyn_cast<mlir::RankedTensorType>(replicaGroups.getType());
   if (!groupsType || groupsType.getRank() != 2)

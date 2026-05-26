@@ -114,6 +114,11 @@ def download_with_resume(url: str, destination: pathlib.Path) -> None:
 def fetch_llvm_prebuilt(versions: dict[str, str], prefix: pathlib.Path) -> pathlib.Path:
     version = versions["WAFER_LLVM_VERSION"]
     url = versions["WAFER_LLVM_LINUX_X64_URL"]
+    if not url:
+        raise RuntimeError(
+            "this dependency stack does not provide a pinned LLVM prebuilt; "
+            "use --llvm-source and build/install llvm-project at the pinned commit"
+        )
     llvm_root = prefix / "llvm" / version
     mlir_config = llvm_root / "lib" / "cmake" / "mlir" / "MLIRConfig.cmake"
     if mlir_config.exists():
@@ -145,11 +150,12 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--prefix", default=str(REPO_ROOT / "third_party"))
     parser.add_argument("--python", action="store_true", help="install pinned Python dev tools")
-    parser.add_argument("--llvm", action="store_true", help="download pinned LLVM/MLIR prebuilt")
+    parser.add_argument("--llvm", action="store_true", help="download pinned LLVM/MLIR prebuilt when available")
+    parser.add_argument("--llvm-source", action="store_true", help="sync pinned llvm-project source submodule")
     parser.add_argument(
         "--importer-sources",
         action="store_true",
-        help="sync StableHLO, Shardy, OpenXLA/XLA, PyTorch/XLA, and torch-mlir submodules",
+        help="sync StableHLO, Shardy, and OpenXLA/XLA source submodules",
     )
     parser.add_argument(
         "--importer-python",
@@ -172,18 +178,20 @@ def main() -> int:
         importer_python = ensure_venv(prefix, "python-importer", REPO_ROOT / "requirements-importer.txt")
         print(f"Importer Python tools installed: {importer_python}")
 
-    if args.all or args.llvm:
+    if args.llvm:
         llvm_root = fetch_llvm_prebuilt(versions, prefix)
         print(f"LLVM/MLIR installed: {llvm_root}")
         print(f"Configure with: -DMLIR_DIR={llvm_root / 'lib/cmake/mlir'}")
+
+    if args.all or args.llvm_source:
+        sync_submodule(REPO_ROOT / "third_party" / "llvm-project", versions["WAFER_LLVM_COMMIT"])
+        print(f"LLVM/MLIR source installed under: {REPO_ROOT / 'third_party' / 'llvm-project'}")
 
     if args.all or args.importer_sources:
         sync_submodule(prefix / "stablehlo", versions["WAFER_STABLEHLO_COMMIT"])
         sync_submodule(prefix / "shardy", versions["WAFER_SHARDY_COMMIT"])
         sync_submodule(prefix / "xla", versions["WAFER_OPENXLA_XLA_COMMIT"])
-        sync_submodule(prefix / "pytorch-xla", versions["WAFER_PYTORCH_XLA_COMMIT"])
-        sync_submodule(prefix / "torch-mlir", versions["WAFER_TORCH_MLIR_COMMIT"])
-        print(f"Importer sources installed under: {prefix}")
+        print(f"Compiler source dependencies installed under: {prefix}")
 
     if args.all or args.test_sources:
         sync_submodule(prefix / "googletest", versions["WAFER_GOOGLETEST_COMMIT"])
@@ -193,6 +201,7 @@ def main() -> int:
         args.all
         or args.python
         or args.llvm
+        or args.llvm_source
         or args.importer_sources
         or args.importer_python
         or args.test_sources

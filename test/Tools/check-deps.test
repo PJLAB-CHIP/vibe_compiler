@@ -1,12 +1,10 @@
 # RUN: %python %wafer_src_root/tools/check_deps.py --versions-only | FileCheck %s --check-prefix=VERSIONS
 # RUN: %python %wafer_src_root/tools/check_deps.py | FileCheck %s --check-prefix=LAYERS
 
-# VERSIONS: LLVM/MLIR 21.1.8
-# VERSIONS: StableHLO v1.9.7
-# VERSIONS: Shardy f688d8a695cea82b48e047cabfd905787ad20177
+# VERSIONS: LLVM/MLIR 23.0.0git 2377f82514e12895ea56dcb3c53e305e029a72e8
+# VERSIONS: StableHLO v1.16.3 e6f81ebd06b3509f2c7fa6175430aadbd4d724ca
+# VERSIONS: Shardy f688d8a695cea82b48e047cabfd905787ad20177 (OpenXLA/XLA base 4c2a7a07a93025a325083cc049518ed2e49d3f55)
 # VERSIONS: OpenXLA/XLA 0ef91e2443e93d9d4649c1a73bdd71f95319b12c
-# VERSIONS: PyTorch/XLA v2.5.0 396608c7105b3763874fe3800dfabdfa2b38a28a
-# VERSIONS: torch-mlir 1dd9952ff28cc4221aed745755f58b4cf4c779fc
 # VERSIONS: PyTorch wheels torch 2.5.0 torchvision 0.20.0 torch_xla 2.5.0
 # VERSIONS: googletest v1.15.2 b514bdc898e2951020cbdca1304b75f5950d1f59
 # VERSIONS: lit 18.1.8

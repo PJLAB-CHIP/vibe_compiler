@@ -14,18 +14,17 @@ from collections.abc import Iterable
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 VERSIONS_FILE = REPO_ROOT / "cmake" / "third_party" / "WaferDependencyVersions.cmake"
 DEPS_ROOT = REPO_ROOT / "third_party"
-LEGACY_DEPS_ROOT = REPO_ROOT / ".deps"
 
 
 REQUIRED_KEYS = [
     "WAFER_LLVM_VERSION",
+    "WAFER_LLVM_PACKAGE_VERSION",
+    "WAFER_LLVM_COMMIT",
     "WAFER_STABLEHLO_TAG",
     "WAFER_STABLEHLO_COMMIT",
     "WAFER_SHARDY_COMMIT",
+    "WAFER_OPENXLA_XLA_SHARDY_BASE_COMMIT",
     "WAFER_OPENXLA_XLA_COMMIT",
-    "WAFER_PYTORCH_XLA_TAG",
-    "WAFER_PYTORCH_XLA_COMMIT",
-    "WAFER_TORCH_MLIR_COMMIT",
     "WAFER_GOOGLETEST_TAG",
     "WAFER_GOOGLETEST_COMMIT",
     "WAFER_PYTORCH_VERSION",
@@ -77,18 +76,36 @@ def rev_parse(path: pathlib.Path) -> str | None:
     return result.stdout.strip()
 
 
+def git_is_ancestor(path: pathlib.Path, ancestor: str, descendant: str) -> bool:
+    result = subprocess.run(
+        ["git", "-C", str(path), "merge-base", "--is-ancestor", ancestor, descendant],
+        text=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return result.returncode == 0
+
+
 def existing_checkout(relative: pathlib.Path) -> list[pathlib.Path]:
-    candidates = [
-        DEPS_ROOT / relative,
-        LEGACY_DEPS_ROOT / relative,
-        LEGACY_DEPS_ROOT / "src" / relative,
-    ]
+    candidates = [DEPS_ROOT / relative]
     return [path for path in candidates if (path / ".git").exists()]
 
 
 def check_text_contains(path: pathlib.Path, needle: str) -> None:
     if needle not in path.read_text(encoding="utf-8"):
         raise RuntimeError(f"{path} does not contain required text: {needle}")
+
+
+def read_text(path: pathlib.Path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
+def parse_bzl_string_constant(path: pathlib.Path, name: str) -> str:
+    text = read_text(path)
+    match = re.search(rf'{re.escape(name)}\s*=\s*"([^"]+)"', text)
+    if not match:
+        raise RuntimeError(f"{path} does not define {name}")
+    return match.group(1)
 
 
 def rel(path: pathlib.Path) -> str:
@@ -146,13 +163,15 @@ def check_cmake_target_visibility() -> None:
         "WAFER_ENABLE_IMPORTER_DEPS",
     )
     for needle in [
+        "WAFER_LLVM_SOURCE_DIR",
+        "WAFER_LLVM_INSTALL_DIR",
+        "WAFER_LLVM_BUILD_DIR",
         "WAFER_ENABLE_FRAMEWORK_IMPORTER_DEPS",
         "WAFER_ENABLE_SPMD_PARTITIONER_DEPS",
+        '${WAFER_DEPS_ROOT}/llvm-project',
         '${WAFER_DEPS_ROOT}/stablehlo',
         '${WAFER_DEPS_ROOT}/shardy',
         '${WAFER_DEPS_ROOT}/xla',
-        "WAFER_TORCH_MLIR_SOURCE_DIR",
-        "WAFER_PYTORCH_XLA_SOURCE_DIR",
         "WAFER_IMPORTER_PYTHON_VENV",
         '${WAFER_DEPS_ROOT}/googletest',
         "WAFER_ENABLE_RUNTIME_DEPS",
@@ -173,14 +192,22 @@ def check_cmake_target_visibility() -> None:
         "function(wafer_require_gtest)",
     )
     for submodule_path in [
+        "third_party/llvm-project",
         "third_party/stablehlo",
         "third_party/shardy",
         "third_party/xla",
-        "third_party/pytorch-xla",
-        "third_party/torch-mlir",
         "third_party/googletest",
     ]:
         check_text_contains(REPO_ROOT / ".gitmodules", submodule_path)
+    for removed_submodule_path in [
+        "third_party/pytorch-xla",
+        "third_party/torch-mlir",
+    ]:
+        if removed_submodule_path in read_text(REPO_ROOT / ".gitmodules"):
+            raise RuntimeError(
+                f"{removed_submodule_path} must not be a Wafer source submodule; "
+                "framework importers are Python/tooling dependencies"
+            )
 
     for requirement in [
         "torch==2.5.0",
@@ -259,13 +286,82 @@ def check_dependency_layering() -> None:
     check_cmake_target_visibility()
 
 
+def check_openxla_stack_pins(versions: dict[str, str]) -> None:
+    xla_root = DEPS_ROOT / "xla"
+    shardy_root = DEPS_ROOT / "shardy"
+    if not (xla_root / ".git").exists():
+        return
+
+    xla_llvm = parse_bzl_string_constant(
+        xla_root / "third_party" / "llvm" / "workspace.bzl", "LLVM_COMMIT"
+    )
+    xla_stablehlo = parse_bzl_string_constant(
+        xla_root / "third_party" / "stablehlo" / "workspace.bzl", "STABLEHLO_COMMIT"
+    )
+    xla_shardy = parse_bzl_string_constant(
+        xla_root / "third_party" / "shardy" / "workspace.bzl", "SHARDY_COMMIT"
+    )
+
+    expected = {
+        "WAFER_LLVM_COMMIT": xla_llvm,
+        "WAFER_STABLEHLO_COMMIT": xla_stablehlo,
+        "WAFER_OPENXLA_XLA_SHARDY_BASE_COMMIT": xla_shardy,
+    }
+    mismatches = [
+        f"{key}={versions[key]} but OpenXLA/XLA pins {actual}"
+        for key, actual in expected.items()
+        if versions[key] != actual
+    ]
+    if mismatches:
+        raise RuntimeError("OpenXLA stack pin mismatch: " + "; ".join(mismatches))
+
+    if (shardy_root / ".git").exists():
+        shardy_llvm = parse_bzl_string_constant(
+            shardy_root / "third_party" / "llvm" / "workspace.bzl", "LLVM_COMMIT"
+        )
+        shardy_stablehlo = parse_bzl_string_constant(
+            shardy_root / "third_party" / "stablehlo" / "workspace.bzl",
+            "STABLEHLO_COMMIT",
+        )
+        if shardy_llvm != versions["WAFER_LLVM_COMMIT"]:
+            raise RuntimeError(
+                f"Shardy LLVM pin mismatch: {shardy_llvm} != {versions['WAFER_LLVM_COMMIT']}"
+            )
+        if shardy_stablehlo != versions["WAFER_STABLEHLO_COMMIT"]:
+            raise RuntimeError(
+                "Shardy StableHLO pin mismatch: "
+                f"{shardy_stablehlo} != {versions['WAFER_STABLEHLO_COMMIT']}"
+            )
+        if not git_is_ancestor(
+            shardy_root,
+            versions["WAFER_OPENXLA_XLA_SHARDY_BASE_COMMIT"],
+            versions["WAFER_SHARDY_COMMIT"],
+        ):
+            raise RuntimeError(
+                "Shardy pin must contain the OpenXLA/XLA Shardy base pin: "
+                f"{versions['WAFER_OPENXLA_XLA_SHARDY_BASE_COMMIT']} is not an ancestor "
+                f"of {versions['WAFER_SHARDY_COMMIT']}"
+            )
+
+        xla_stablehlo_patch = xla_root / "third_party" / "stablehlo" / "temporary.patch"
+        shardy_stablehlo_patch = (
+            shardy_root / "third_party" / "stablehlo" / "temporary.patch"
+        )
+        if xla_stablehlo_patch.exists() and shardy_stablehlo_patch.exists():
+            if xla_stablehlo_patch.read_bytes() != shardy_stablehlo_patch.read_bytes():
+                raise RuntimeError(
+                    "OpenXLA/XLA and Shardy must use the same StableHLO temporary.patch"
+                )
+
+
 def print_versions(versions: dict[str, str]) -> None:
-    print(f"LLVM/MLIR {versions['WAFER_LLVM_VERSION']}")
+    print(f"LLVM/MLIR {versions['WAFER_LLVM_PACKAGE_VERSION']} {versions['WAFER_LLVM_COMMIT']}")
     print(f"StableHLO {versions['WAFER_STABLEHLO_TAG']} {versions['WAFER_STABLEHLO_COMMIT']}")
-    print(f"Shardy {versions['WAFER_SHARDY_COMMIT']}")
+    print(
+        f"Shardy {versions['WAFER_SHARDY_COMMIT']} "
+        f"(OpenXLA/XLA base {versions['WAFER_OPENXLA_XLA_SHARDY_BASE_COMMIT']})"
+    )
     print(f"OpenXLA/XLA {versions['WAFER_OPENXLA_XLA_COMMIT']}")
-    print(f"PyTorch/XLA {versions['WAFER_PYTORCH_XLA_TAG']} {versions['WAFER_PYTORCH_XLA_COMMIT']}")
-    print(f"torch-mlir {versions['WAFER_TORCH_MLIR_COMMIT']}")
     print(
         "PyTorch wheels "
         f"torch {versions['WAFER_PYTORCH_VERSION']} "
@@ -308,7 +404,13 @@ def main() -> int:
     check_text_contains(REPO_ROOT / "tools" / "wafer-opt" / "wafer-opt.cpp",
                         "registerImporterDialects")
     check_dependency_layering()
+    check_openxla_stack_pins(versions)
 
+    check_checkout_pin(
+        label="LLVM/MLIR",
+        relative=pathlib.Path("llvm-project"),
+        expected_commit=versions["WAFER_LLVM_COMMIT"],
+    )
     check_checkout_pin(
         label="StableHLO",
         relative=pathlib.Path("stablehlo"),
@@ -323,16 +425,6 @@ def main() -> int:
         label="OpenXLA/XLA",
         relative=pathlib.Path("xla"),
         expected_commit=versions["WAFER_OPENXLA_XLA_COMMIT"],
-    )
-    check_checkout_pin(
-        label="PyTorch/XLA",
-        relative=pathlib.Path("pytorch-xla"),
-        expected_commit=versions["WAFER_PYTORCH_XLA_COMMIT"],
-    )
-    check_checkout_pin(
-        label="torch-mlir",
-        relative=pathlib.Path("torch-mlir"),
-        expected_commit=versions["WAFER_TORCH_MLIR_COMMIT"],
     )
     check_checkout_pin(
         label="googletest",

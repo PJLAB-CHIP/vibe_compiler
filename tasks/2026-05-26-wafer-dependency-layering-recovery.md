@@ -2,7 +2,7 @@
 
 日期：2026-05-26
 
-状态：R0.3 完成记录
+状态：R0.3 完成记录；2026-05-26 修正为统一 OpenXLA/XLA dependency stack
 
 ## 目标
 
@@ -28,7 +28,7 @@ core compiler target。
 | ABI helper | `WaferABI`、`include/Wafer/ABI`、`lib/Wafer/ABI` | C++ standard library 和项目 ABI headers | MLIR dialect API、StableHLO/Shardy、runtime/driver headers、test tooling |
 | Core transforms | `WaferTransforms`、`lib/Wafer/Transforms` | `WaferIR`、MLIR arith/linalg/tensor/pass/support；`StableHLOToLinalg` 源文件可在 importer enabled 时使用 StableHLO op C++ API | importer framework headers、runtime/driver headers、test tooling、C ABI conversion ownership |
 | Conversion | `WaferConversion`、`include/Wafer/Conversion`、`lib/Wafer/Conversion` | `WaferIR`、MLIR pass/IR/support；后续 WaferToLLVM 可在本层引入 LLVM dialect | StableHLO/Shardy importer API、test tooling；runtime/driver headers 只能在 future launch/runtime adapter 层进入 |
-| Frontend/importer | `include/Wafer/Frontend`、`tools/wafer-import-model` | optional StableHLO dialect registration、artifact parsing/verification 依赖；framework importer roots (`torch-mlir`、PyTorch/XLA) 和 pinned torch exporter wheels | SPM/layout/runtime/driver target details |
+| Frontend/importer | `include/Wafer/Frontend`、`tools/wafer-import-model` | optional StableHLO dialect registration、artifact parsing/verification 依赖；pinned torch exporter wheels / Python tooling | SPM/layout/runtime/driver target details |
 | SPMD bridge | future Shardy/SPMD pass target | Shardy/SDY source dependency and MLIR dialect registration | physical tile id、DTE algorithm、runtime package |
 | Driver tool | `wafer-opt` | `WaferIR`、`WaferTransforms`、`WaferConversion`、MLIR tool main；optional StableHLO registration | importer framework implementation details、runtime/driver headers |
 | Runtime/driver | future `WaferRuntimeAdapter` / launch package layer | HPGR/KMD/legacy runtime headers and libraries, isolated behind adapter | Frontend tensor/group planning dependencies |
@@ -37,20 +37,29 @@ core compiler target。
 ## 第三方声明目录
 
 - `cmake/third_party/WaferDependencyVersions.cmake` 是 LLVM/MLIR、StableHLO、Shardy、OpenXLA/XLA、
-  PyTorch/XLA、torch-mlir、GTest、lit 和 importer Python wheel pin 的唯一事实源。
+  GTest、lit 和 importer Python wheel pin 的唯一事实源。
 - `cmake/third_party/WaferThirdParty.cmake` 负责 MLIR/LLVM/Python discovery、pinned LLVM fallback、
   optional StableHLO/Shardy embedded source、StableHLO test tool import target、framework importer
-  source roots、future runtime/driver SDK roots 和 GTest fallback。
+  Python tooling boundary、future runtime/driver SDK roots 和 GTest fallback。
 - `third_party/` 是默认 dependency root；public source dependencies 作为一级 git submodule 维护：
-  `third_party/stablehlo`、`third_party/shardy`、`third_party/xla`、
-  `third_party/pytorch-xla`、`third_party/torch-mlir`、`third_party/googletest`。LLVM/MLIR prebuilt、Python tooling 和
-  downloads 也放在该目录；`.deps/` 仅作为旧 build cache 的兼容输入。
+  `third_party/llvm-project`、`third_party/stablehlo`、`third_party/shardy`、`third_party/xla`、
+  `third_party/googletest`。Python tooling 和 downloads 也放在该目录；`.deps/` 仅作为旧 build
+  cache 的兼容输入。
+- OpenXLA/XLA source pin 是 C++/MLIR dependency stack 的事实源；`third_party/llvm-project` 和
+  `third_party/stablehlo` 必须对齐到 `third_party/xla` workspace 中声明的 LLVM / StableHLO commit。
+  `third_party/shardy` 必须使用同一 LLVM / StableHLO stack，并包含 XLA workspace 声明的 Shardy base
+  commit；当前使用 `f688d8a6...`，它是 XLA base `4c2a7a07...` 的后代并修正了 standalone
+  workspace 依赖。不能在同一 Wafer source tree 中同时维护另一套 LLVM/XLA source stack。
+- XLA 和 Shardy workspace 都会在其 Bazel external 中对 StableHLO `e6f81...` 应用同一份
+  `third_party/stablehlo/temporary.patch`。Wafer 不把 patched copy 作为第二个源码 submodule；
+  patch 作为对应上游 workspace 的输入存在，并由依赖检查确认 XLA/Shardy patch 内容一致。
 - OpenXLA/XLA source pin 是为了 future GSPMD SPMD partitioner integration。当前主线仍以 Shardy 的
   MLIR sharding representation 作为 R2.2 bridge 边界；XLA/GSPMD 不能成为 core IR 或 backend
   library 的 public dependency。
 - `requirements-importer.txt` 固定 frontend importer Python wheels：`torch==2.5.0`、
-  `torchvision==0.20.0`、`torch_xla==2.5.0`。该版本组合来自 OpenXLA 的 PyTorch StableHLO
-  export 教程，并与 `third_party/pytorch-xla` 的 `v2.5.0` source pin 对齐。
+  `torchvision==0.20.0`、`torch_xla==2.5.0`。该层只用于 importer tooling / artifact 生成测试；
+  PyTorch/XLA 和 torch-mlir 源码树会自带独立 XLA/LLVM pin，不能作为 Wafer public C++ source
+  dependency 或 submodule compile gate。
 - 顶层 `CMakeLists.txt` 只 include third-party 配置，不直接拼 StableHLO/Shardy/GTest 发现逻辑。
 
 ## CMake 可见范围
@@ -69,8 +78,12 @@ core compiler target。
 
 - dependency pin 是否存在。
 - optional importer registration hook 是否仍由工具入口调用。
-- StableHLO、Shardy、OpenXLA/XLA、PyTorch/XLA、torch-mlir 和 googletest checkout HEAD 是否匹配 pin（仅当
-  `third_party/*`、legacy `.deps/*` 或 legacy `.deps/src/*` checkout 存在）。
+- LLVM/MLIR、StableHLO、Shardy、OpenXLA/XLA 和 googletest checkout HEAD 是否匹配 pin（只认
+  `third_party/*` submodule；legacy `.deps/*` / `.deps/src/*` 只是本地 build cache，不作为版本事实源）。
+- LLVM/MLIR、StableHLO 和 Shardy pin 是否与 `third_party/xla` workspace 声明的 dependency stack
+  一致；Shardy 允许使用包含 XLA base pin 且下层 LLVM/StableHLO 完全一致的 standalone 修正版本。
+- XLA 和 Shardy 的 StableHLO `temporary.patch` 是否一致，避免同一 lower stack 上出现两套
+  patched StableHLO 语义。
 - 第三方依赖声明是否仍集中在 `cmake/third_party/`。
 - public source dependency 是否记录为 `third_party/<name>` submodule。
 - frontend importer Python wheel pins 是否存在于 `requirements-importer.txt`。
@@ -85,6 +98,9 @@ core compiler target。
 - R1.1：按 op prefix 拆 ODS、C++ verifier 和 tests。
 - R2.1/R2.2：真实 frontend importer artifact、sidecar、Shardy bridge 和 GSPMD-compatible
   partitioner integration 语义；当前只完成 public dependency pin、拉取和隔离检查。
+- PyTorch/XLA、torch-mlir source-tree adapter 如果后续确实需要，应先找到与当前 OpenXLA/XLA
+  stack 兼容的版本，或作为单独 sandbox/tooling checkout 处理；不能重新放回 Wafer public source
+  dependency。
 - R3.2：从当前 `wafer.abi.*` IR 自动导出 package manifest。
 - P8：runtime adapter、BO binding 和 completion source 仍未实现。
 
@@ -94,12 +110,30 @@ core compiler target。
 
 - `python3 -m py_compile tools/check_deps.py tools/bootstrap_deps.py`
 - `python3 tools/check_deps.py`
-- `git submodule status`
-- fresh dependency build configure:
-  `cmake -S . -B build/r0-deps -GNinja -DWAFER_ENABLE_IMPORTER_DEPS=ON -DWAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON -DWAFER_ENABLE_FRAMEWORK_IMPORTER_DEPS=ON ...`
-- `cmake --build build/r0-deps --target check-wafer-lit`
-- `ctest --test-dir build/r0-deps --output-on-failure`
-- `cmake --build build/p0 --target check-wafer-lit`
-- `ctest --test-dir build/p0 --output-on-failure`
-- `cmake --build build/p2-importer --target check-wafer-lit`
-- `ctest --test-dir build/p2-importer --output-on-failure`
+- `cmake --build build/third_party/llvm-project-2377 --target install -- -j128`
+  - install prefix:
+    `build/third_party/llvm-install/2377f82514e12895ea56dcb3c53e305e029a72e8`
+  - `mlir-opt --version`: `LLVM version 23.0.0git`
+- `cmake --build build/third_party/stablehlo-unified -- -j128`
+- `cmake --build build/third_party/stablehlo-xla-patched-test-build -- -j128`
+- `cmake --build build/r0-deps-unified --target check-wafer-lit -- -j128`
+  - `119` lit tests discovered；`118` passed；`1` unsupported。
+- `cmake --build build/r0-deps-unified --target WaferUnitTests -- -j128`
+- `ctest --test-dir build/r0-deps-unified --output-on-failure`
+  - `wafer-lit` passed。
+  - `WaferUnitTests` passed。
+- `cd third_party/shardy && /root/.cache/wafer-tools/bin/bazelisk build -c opt --jobs=128 --lockfile_mode=error shardy/...`
+  - `503` targets analyzed；build completed successfully。
+- `cd third_party/xla && ./configure.py --backend=CPU`
+- `cd third_party/xla && /root/.cache/wafer-tools/bin/bazelisk build -c opt --spawn_strategy=sandboxed --test_output=all --lockfile_mode=error //xla/...`
+  - `7804` targets analyzed；build completed successfully。
+- `git diff --check`
+
+额外事实：
+
+- `cmake --build build/third_party/stablehlo-unified --target check-stablehlo-quick -- -j128`
+  编译完成，但 upstream StableHLO quick lit 有 `1` 个 `chlo_legalize_to_stablehlo.mlir` FileCheck
+  mismatch；因此不能宣称 StableHLO upstream quick gate 通过。
+- 应用 XLA/Shardy StableHLO `temporary.patch` 到 build 目录中的临时 copy 后，StableHLO 纯 build 通过；
+  `check-stablehlo-quick` 仍有 upstream test expectation / patch 相关失败。该 patched copy 未作为
+  Wafer submodule 或长期源码维护。

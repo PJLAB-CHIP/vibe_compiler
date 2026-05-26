@@ -2,12 +2,19 @@
 
 set(WAFER_DEPS_ROOT "${CMAKE_SOURCE_DIR}/third_party" CACHE PATH
   "Root for pinned third-party dependencies fetched by tools/bootstrap_deps.py")
+set(WAFER_LLVM_SOURCE_DIR "${WAFER_DEPS_ROOT}/llvm-project" CACHE PATH
+  "Pinned llvm-project checkout matching the OpenXLA/XLA workspace")
+set(WAFER_LLVM_INSTALL_DIR "${CMAKE_BINARY_DIR}/third_party/llvm-install/${WAFER_LLVM_COMMIT}" CACHE PATH
+  "Install prefix for a source-built pinned LLVM/MLIR package")
+string(SUBSTRING "${WAFER_LLVM_COMMIT}" 0 4 _wafer_llvm_commit_short)
+set(WAFER_LLVM_BUILD_DIR "${CMAKE_SOURCE_DIR}/build/third_party/llvm-project-${_wafer_llvm_commit_short}" CACHE PATH
+  "Build directory for the pinned LLVM/MLIR source tree, used for tools not installed by LLVM")
 option(WAFER_ALLOW_UNPINNED_LLVM
-  "Allow an LLVM/MLIR package with the right major version but not the exact pinned release" OFF)
+  "Allow an LLVM/MLIR package with the right major version but not the exact pinned package version" OFF)
 option(WAFER_ENABLE_IMPORTER_DEPS
   "Enable StableHLO/Shardy frontend and SPMD dependency discovery" OFF)
 option(WAFER_ENABLE_FRAMEWORK_IMPORTER_DEPS
-  "Enable future framework importer adapter dependency roots" OFF)
+  "Enable future framework importer adapter dependency checks" OFF)
 option(WAFER_ENABLE_SPMD_PARTITIONER_DEPS
   "Enable future Shardy/GSPMD partitioner dependency roots" OFF)
 option(WAFER_ENABLE_RUNTIME_DEPS
@@ -15,10 +22,6 @@ option(WAFER_ENABLE_RUNTIME_DEPS
 option(WAFER_FETCH_GTEST
   "Fetch googletest when a system package is not available" ON)
 
-set(WAFER_TORCH_MLIR_SOURCE_DIR "${WAFER_DEPS_ROOT}/torch-mlir" CACHE PATH
-  "Pinned torch-mlir checkout for future frontend importer adapters")
-set(WAFER_PYTORCH_XLA_SOURCE_DIR "${WAFER_DEPS_ROOT}/pytorch-xla" CACHE PATH
-  "Pinned PyTorch/XLA checkout for future torch.export to StableHLO importers")
 set(WAFER_IMPORTER_PYTHON_VENV "${WAFER_DEPS_ROOT}/python-importer" CACHE PATH
   "Python venv containing pinned torch/torchvision/torch_xla importer wheels")
 set(WAFER_STABLEHLO_SOURCE_DIR "${WAFER_DEPS_ROOT}/stablehlo" CACHE PATH
@@ -36,15 +39,9 @@ set(WAFER_LEGACY_TSM_SDK_ROOT "" CACHE PATH
   "Optional legacy Tsm/VS runtime SDK root for fallback adapter work")
 
 if(WAFER_ENABLE_FRAMEWORK_IMPORTER_DEPS)
-  foreach(_wafer_importer_root
-          WAFER_TORCH_MLIR_SOURCE_DIR
-          WAFER_PYTORCH_XLA_SOURCE_DIR)
-    if(NOT EXISTS "${${_wafer_importer_root}}")
-      message(FATAL_ERROR
-        "${_wafer_importer_root} must point at an existing checkout when "
-        "WAFER_ENABLE_FRAMEWORK_IMPORTER_DEPS=ON")
-    endif()
-  endforeach()
+  message(STATUS
+    "Framework importer source trees are not vendored as Wafer C++ dependencies; "
+    "use requirements-importer.txt / WAFER_IMPORTER_PYTHON_VENV for importer tooling.")
 endif()
 
 if(WAFER_ENABLE_SPMD_PARTITIONER_DEPS)
@@ -72,8 +69,8 @@ if(WAFER_ENABLE_RUNTIME_DEPS)
   endforeach()
 endif()
 
-if(NOT MLIR_DIR AND EXISTS "${WAFER_DEPS_ROOT}/llvm/${WAFER_LLVM_VERSION}/lib/cmake/mlir/MLIRConfig.cmake")
-  set(MLIR_DIR "${WAFER_DEPS_ROOT}/llvm/${WAFER_LLVM_VERSION}/lib/cmake/mlir"
+if(NOT MLIR_DIR AND EXISTS "${WAFER_LLVM_INSTALL_DIR}/lib/cmake/mlir/MLIRConfig.cmake")
+  set(MLIR_DIR "${WAFER_LLVM_INSTALL_DIR}/lib/cmake/mlir"
     CACHE PATH "Path to MLIRConfig.cmake" FORCE)
 endif()
 
@@ -81,15 +78,15 @@ find_package(MLIR REQUIRED CONFIG)
 find_package(LLVM REQUIRED CONFIG)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
-if(NOT LLVM_PACKAGE_VERSION VERSION_EQUAL WAFER_LLVM_VERSION)
+if(NOT LLVM_PACKAGE_VERSION STREQUAL WAFER_LLVM_PACKAGE_VERSION)
   if(WAFER_ALLOW_UNPINNED_LLVM
-      AND LLVM_PACKAGE_VERSION VERSION_GREATER_EQUAL "21"
-      AND LLVM_PACKAGE_VERSION VERSION_LESS "22")
-    message(WARNING "Using LLVM ${LLVM_PACKAGE_VERSION} instead of pinned ${WAFER_LLVM_VERSION}")
+      AND LLVM_VERSION_MAJOR EQUAL 23)
+    message(WARNING "Using LLVM ${LLVM_PACKAGE_VERSION} instead of pinned ${WAFER_LLVM_PACKAGE_VERSION}")
   else()
     message(FATAL_ERROR
-      "Wafer pins LLVM/MLIR ${WAFER_LLVM_VERSION}, but CMake found ${LLVM_PACKAGE_VERSION}. "
-      "Run tools/bootstrap_deps.py --llvm or configure with -DWAFER_ALLOW_UNPINNED_LLVM=ON for a local override.")
+      "Wafer pins LLVM/MLIR ${WAFER_LLVM_PACKAGE_VERSION} at ${WAFER_LLVM_COMMIT}, "
+      "but CMake found ${LLVM_PACKAGE_VERSION}. Build/install the pinned llvm-project source "
+      "or configure MLIR_DIR/LLVM_DIR explicitly; use -DWAFER_ALLOW_UNPINNED_LLVM=ON only for a local override.")
   endif()
 endif()
 
@@ -114,11 +111,20 @@ if(WAFER_ENABLE_IMPORTER_DEPS)
   set(STABLEHLO_BUILD_EMBEDDED ON CACHE BOOL "Build StableHLO embedded in Wafer" FORCE)
   set(STABLEHLO_ENABLE_BINDINGS_PYTHON OFF CACHE BOOL "Disable StableHLO Python bindings" FORCE)
   get_filename_component(_wafer_python_bin_dir "${Python3_EXECUTABLE}" DIRECTORY)
-  find_program(WAFER_STABLEHLO_LIT_EXECUTABLE
-    NAMES lit llvm-lit
-    HINTS "${WAFER_DEPS_ROOT}/python/bin" "${_wafer_python_bin_dir}" "${LLVM_TOOLS_BINARY_DIR}"
-    REQUIRED
-  )
+  if(LLVM_EXTERNAL_LIT AND EXISTS "${LLVM_EXTERNAL_LIT}")
+    set(WAFER_STABLEHLO_LIT_EXECUTABLE "${LLVM_EXTERNAL_LIT}" CACHE FILEPATH
+      "Command used by embedded StableHLO lit targets" FORCE)
+  else()
+    find_program(WAFER_STABLEHLO_LIT_EXECUTABLE
+      NAMES lit llvm-lit
+      HINTS
+        "${WAFER_DEPS_ROOT}/python/bin"
+        "${_wafer_python_bin_dir}"
+        "${LLVM_TOOLS_BINARY_DIR}"
+        "${WAFER_LLVM_BUILD_DIR}/bin"
+      REQUIRED
+    )
+  endif()
   set(LLVM_EXTERNAL_LIT "${WAFER_STABLEHLO_LIT_EXECUTABLE}" CACHE STRING
       "Command used by embedded StableHLO lit targets" FORCE)
 

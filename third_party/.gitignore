@@ -1,10 +1,10 @@
 /*
 !.gitignore
 !README.md
+!llvm-project
+!llvm-project/
 !stablehlo/
 !shardy/
-!pytorch-xla/
-!torch-mlir/
 !xla
 !xla/
 !googletest/
