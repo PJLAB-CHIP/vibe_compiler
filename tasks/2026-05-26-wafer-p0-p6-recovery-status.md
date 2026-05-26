@@ -65,9 +65,10 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
 
 当前实现：
 
-- 有 `CMakeLists.txt`、`cmake/WaferDependencyVersions.cmake`、`wafer-opt`、lit、gtest、
+- 有 `CMakeLists.txt`、`cmake/third_party/WaferDependencyVersions.cmake`、`wafer-opt`、lit、gtest、
   `tools/check_deps.py` 和 bootstrap 脚本。
-- 有 `WAFER_ENABLE_IMPORTER_DEPS` 开关、disabled importer smoke 和 StableHLO/Shardy checkout 检查。
+- 有 `WAFER_ENABLE_IMPORTER_DEPS` 开关、disabled importer smoke，以及 StableHLO、Shardy、
+  OpenXLA/XLA、PyTorch/XLA、torch-mlir、googletest public submodule checkout 检查。
 - R0.2 后源码已使用 `include/Wafer/Frontend`、`include/Wafer/IR`、`include/Wafer/Conversion`、
   `lib/Wafer/IR`、stage-specific `lib/Wafer/Transforms/*` 和 `lib/Wafer/Conversion`。
 - `WaferTransforms` 只注册 transform pass；C ABI skeleton lowering 归入 `WaferConversion`。
@@ -80,8 +81,10 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
   仍需后续 R2/R3/P8 恢复。
 - IR 内部 ODS / verifier / tests 仍未按 group、tile_region、layout、SPM、compute、comm、sync、
   launch op prefix 拆分；这是 R1.1。
-- StableHLO/Shardy dependency 当前主要服务 textual lowering smoke；真实 importer adapter 和 artifact
-  verifier 还没成为独立 frontend 层。
+- StableHLO/Shardy dependency 当前主要服务 textual lowering smoke 和 future SPMD bridge dependency
+  boundary；OpenXLA/XLA 已作为 future GSPMD partitioner source pin 接入；PyTorch/XLA、torch-mlir
+  和 importer Python wheels 已作为 public frontend dependency pin 接入，但真实 importer adapter 和
+  artifact verifier 还没成为独立 frontend 层。
 - runtime/driver 头文件和真实 runtime adapter 尚未进入 launch/C ABI 层。
 
 恢复任务：

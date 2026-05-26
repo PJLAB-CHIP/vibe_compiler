@@ -1,0 +1,18 @@
+[submodule "third_party/stablehlo"]
+	path = third_party/stablehlo
+	url = https://github.com/openxla/stablehlo.git
+[submodule "third_party/shardy"]
+	path = third_party/shardy
+	url = https://github.com/openxla/shardy.git
+[submodule "third_party/pytorch-xla"]
+	path = third_party/pytorch-xla
+	url = https://github.com/pytorch/xla.git
+[submodule "third_party/torch-mlir"]
+	path = third_party/torch-mlir
+	url = https://github.com/llvm/torch-mlir.git
+[submodule "third_party/googletest"]
+	path = third_party/googletest
+	url = https://github.com/google/googletest.git
+[submodule "third_party/xla"]
+	path = third_party/xla
+	url = https://github.com/openxla/xla.git

@@ -12,7 +12,9 @@ from collections.abc import Iterable
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
-VERSIONS_FILE = REPO_ROOT / "cmake" / "WaferDependencyVersions.cmake"
+VERSIONS_FILE = REPO_ROOT / "cmake" / "third_party" / "WaferDependencyVersions.cmake"
+DEPS_ROOT = REPO_ROOT / "third_party"
+LEGACY_DEPS_ROOT = REPO_ROOT / ".deps"
 
 
 REQUIRED_KEYS = [
@@ -20,7 +22,15 @@ REQUIRED_KEYS = [
     "WAFER_STABLEHLO_TAG",
     "WAFER_STABLEHLO_COMMIT",
     "WAFER_SHARDY_COMMIT",
+    "WAFER_OPENXLA_XLA_COMMIT",
+    "WAFER_PYTORCH_XLA_TAG",
+    "WAFER_PYTORCH_XLA_COMMIT",
+    "WAFER_TORCH_MLIR_COMMIT",
     "WAFER_GOOGLETEST_TAG",
+    "WAFER_GOOGLETEST_COMMIT",
+    "WAFER_PYTORCH_VERSION",
+    "WAFER_TORCHVISION_VERSION",
+    "WAFER_TORCH_XLA_PYTHON_VERSION",
     "WAFER_PYTHON_LIT_VERSION",
 ]
 
@@ -65,6 +75,15 @@ def rev_parse(path: pathlib.Path) -> str | None:
         stdout=subprocess.PIPE,
     )
     return result.stdout.strip()
+
+
+def existing_checkout(relative: pathlib.Path) -> list[pathlib.Path]:
+    candidates = [
+        DEPS_ROOT / relative,
+        LEGACY_DEPS_ROOT / relative,
+        LEGACY_DEPS_ROOT / "src" / relative,
+    ]
+    return [path for path in candidates if (path / ".git").exists()]
 
 
 def check_text_contains(path: pathlib.Path, needle: str) -> None:
@@ -114,6 +133,62 @@ def check_forbidden_needles(
 
 
 def check_cmake_target_visibility() -> None:
+    check_text_contains(
+        REPO_ROOT / "CMakeLists.txt",
+        "include(cmake/third_party/WaferThirdParty.cmake)",
+    )
+    check_text_contains(
+        REPO_ROOT / "cmake" / "third_party" / "WaferThirdParty.cmake",
+        'set(WAFER_DEPS_ROOT "${CMAKE_SOURCE_DIR}/third_party"',
+    )
+    check_text_contains(
+        REPO_ROOT / "cmake" / "third_party" / "WaferThirdParty.cmake",
+        "WAFER_ENABLE_IMPORTER_DEPS",
+    )
+    for needle in [
+        "WAFER_ENABLE_FRAMEWORK_IMPORTER_DEPS",
+        "WAFER_ENABLE_SPMD_PARTITIONER_DEPS",
+        '${WAFER_DEPS_ROOT}/stablehlo',
+        '${WAFER_DEPS_ROOT}/shardy',
+        '${WAFER_DEPS_ROOT}/xla',
+        "WAFER_TORCH_MLIR_SOURCE_DIR",
+        "WAFER_PYTORCH_XLA_SOURCE_DIR",
+        "WAFER_IMPORTER_PYTHON_VENV",
+        '${WAFER_DEPS_ROOT}/googletest',
+        "WAFER_ENABLE_RUNTIME_DEPS",
+        "WAFER_HPGR_SDK_ROOT",
+        "WAFER_KMD_UAPI_ROOT",
+        "WAFER_LEGACY_TSM_SDK_ROOT",
+    ]:
+        check_text_contains(
+            REPO_ROOT / "cmake" / "third_party" / "WaferThirdParty.cmake",
+            needle,
+        )
+    check_text_contains(
+        REPO_ROOT / "cmake" / "third_party" / "WaferThirdParty.cmake",
+        "add_subdirectory(\"${WAFER_STABLEHLO_SOURCE_DIR}\"",
+    )
+    check_text_contains(
+        REPO_ROOT / "cmake" / "third_party" / "WaferThirdParty.cmake",
+        "function(wafer_require_gtest)",
+    )
+    for submodule_path in [
+        "third_party/stablehlo",
+        "third_party/shardy",
+        "third_party/xla",
+        "third_party/pytorch-xla",
+        "third_party/torch-mlir",
+        "third_party/googletest",
+    ]:
+        check_text_contains(REPO_ROOT / ".gitmodules", submodule_path)
+
+    for requirement in [
+        "torch==2.5.0",
+        "torchvision==0.20.0",
+        "torch_xla==2.5.0",
+    ]:
+        check_text_contains(REPO_ROOT / "requirements-importer.txt", requirement)
+
     transforms_cmake_path = REPO_ROOT / "lib" / "Wafer" / "Transforms" / "CMakeLists.txt"
     transforms_cmake = transforms_cmake_path.read_text(encoding="utf-8")
     if re.search(
@@ -188,8 +263,28 @@ def print_versions(versions: dict[str, str]) -> None:
     print(f"LLVM/MLIR {versions['WAFER_LLVM_VERSION']}")
     print(f"StableHLO {versions['WAFER_STABLEHLO_TAG']} {versions['WAFER_STABLEHLO_COMMIT']}")
     print(f"Shardy {versions['WAFER_SHARDY_COMMIT']}")
-    print(f"googletest {versions['WAFER_GOOGLETEST_TAG']}")
+    print(f"OpenXLA/XLA {versions['WAFER_OPENXLA_XLA_COMMIT']}")
+    print(f"PyTorch/XLA {versions['WAFER_PYTORCH_XLA_TAG']} {versions['WAFER_PYTORCH_XLA_COMMIT']}")
+    print(f"torch-mlir {versions['WAFER_TORCH_MLIR_COMMIT']}")
+    print(
+        "PyTorch wheels "
+        f"torch {versions['WAFER_PYTORCH_VERSION']} "
+        f"torchvision {versions['WAFER_TORCHVISION_VERSION']} "
+        f"torch_xla {versions['WAFER_TORCH_XLA_PYTHON_VERSION']}"
+    )
+    print(f"googletest {versions['WAFER_GOOGLETEST_TAG']} {versions['WAFER_GOOGLETEST_COMMIT']}")
     print(f"lit {versions['WAFER_PYTHON_LIT_VERSION']}")
+
+
+def check_checkout_pin(
+    *, label: str, relative: pathlib.Path, expected_commit: str
+) -> None:
+    for checkout in existing_checkout(relative):
+        actual_commit = rev_parse(checkout)
+        if actual_commit and actual_commit != expected_commit:
+            raise RuntimeError(
+                f"{label} checkout mismatch in {rel(checkout)}: {actual_commit}"
+            )
 
 
 def main() -> int:
@@ -200,24 +295,50 @@ def main() -> int:
     versions = load_versions()
     missing = [key for key in REQUIRED_KEYS if key not in versions]
     if missing:
-      raise RuntimeError(f"missing dependency pin(s): {', '.join(missing)}")
+        raise RuntimeError(f"missing dependency pin(s): {', '.join(missing)}")
 
     print_versions(versions)
     if args.versions_only:
         return 0
 
-    check_text_contains(REPO_ROOT / "CMakeLists.txt", "WAFER_ENABLE_IMPORTER_DEPS")
+    check_text_contains(
+        REPO_ROOT / "cmake" / "third_party" / "WaferThirdParty.cmake",
+        "WAFER_ENABLE_IMPORTER_DEPS",
+    )
     check_text_contains(REPO_ROOT / "tools" / "wafer-opt" / "wafer-opt.cpp",
                         "registerImporterDialects")
     check_dependency_layering()
 
-    stablehlo_head = rev_parse(REPO_ROOT / ".deps" / "src" / "stablehlo")
-    if stablehlo_head and stablehlo_head != versions["WAFER_STABLEHLO_COMMIT"]:
-        raise RuntimeError(f"StableHLO checkout mismatch: {stablehlo_head}")
-
-    shardy_head = rev_parse(REPO_ROOT / ".deps" / "src" / "shardy")
-    if shardy_head and shardy_head != versions["WAFER_SHARDY_COMMIT"]:
-        raise RuntimeError(f"Shardy checkout mismatch: {shardy_head}")
+    check_checkout_pin(
+        label="StableHLO",
+        relative=pathlib.Path("stablehlo"),
+        expected_commit=versions["WAFER_STABLEHLO_COMMIT"],
+    )
+    check_checkout_pin(
+        label="Shardy",
+        relative=pathlib.Path("shardy"),
+        expected_commit=versions["WAFER_SHARDY_COMMIT"],
+    )
+    check_checkout_pin(
+        label="OpenXLA/XLA",
+        relative=pathlib.Path("xla"),
+        expected_commit=versions["WAFER_OPENXLA_XLA_COMMIT"],
+    )
+    check_checkout_pin(
+        label="PyTorch/XLA",
+        relative=pathlib.Path("pytorch-xla"),
+        expected_commit=versions["WAFER_PYTORCH_XLA_COMMIT"],
+    )
+    check_checkout_pin(
+        label="torch-mlir",
+        relative=pathlib.Path("torch-mlir"),
+        expected_commit=versions["WAFER_TORCH_MLIR_COMMIT"],
+    )
+    check_checkout_pin(
+        label="googletest",
+        relative=pathlib.Path("googletest"),
+        expected_commit=versions["WAFER_GOOGLETEST_COMMIT"],
+    )
 
     print("dependency layering checks passed")
     print("dependency consistency checks passed")

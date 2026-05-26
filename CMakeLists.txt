@@ -2,109 +2,19 @@ cmake_minimum_required(VERSION 3.24)
 
 project(WaferCompiler LANGUAGES CXX C)
 
-include(cmake/WaferDependencyVersions.cmake)
+include(cmake/third_party/WaferDependencyVersions.cmake)
+include(cmake/third_party/WaferThirdParty.cmake)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED YES)
 set(CMAKE_CXX_EXTENSIONS NO)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-set(WAFER_DEPS_ROOT "${CMAKE_SOURCE_DIR}/.deps" CACHE PATH "Root for pinned third-party dependencies fetched by tools/bootstrap_deps.py")
-option(WAFER_ALLOW_UNPINNED_LLVM "Allow an LLVM/MLIR package with the right major version but not the exact pinned release" OFF)
-option(WAFER_ENABLE_IMPORTER_DEPS "Enable StableHLO/Shardy importer dependency discovery" OFF)
 option(WAFER_ENABLE_UNIT_TESTS "Build Wafer C++ unit tests" ON)
-option(WAFER_FETCH_GTEST "Fetch googletest when a system package is not available" ON)
-
-if(NOT MLIR_DIR AND EXISTS "${WAFER_DEPS_ROOT}/llvm/${WAFER_LLVM_VERSION}/lib/cmake/mlir/MLIRConfig.cmake")
-  set(MLIR_DIR "${WAFER_DEPS_ROOT}/llvm/${WAFER_LLVM_VERSION}/lib/cmake/mlir" CACHE PATH "Path to MLIRConfig.cmake" FORCE)
-endif()
-
-find_package(MLIR REQUIRED CONFIG)
-find_package(LLVM REQUIRED CONFIG)
-find_package(Python3 REQUIRED COMPONENTS Interpreter)
-
-if(NOT LLVM_PACKAGE_VERSION VERSION_EQUAL WAFER_LLVM_VERSION)
-  if(WAFER_ALLOW_UNPINNED_LLVM AND LLVM_PACKAGE_VERSION VERSION_GREATER_EQUAL "21" AND LLVM_PACKAGE_VERSION VERSION_LESS "22")
-    message(WARNING "Using LLVM ${LLVM_PACKAGE_VERSION} instead of pinned ${WAFER_LLVM_VERSION}")
-  else()
-    message(FATAL_ERROR
-      "Wafer pins LLVM/MLIR ${WAFER_LLVM_VERSION}, but CMake found ${LLVM_PACKAGE_VERSION}. "
-      "Run tools/bootstrap_deps.py --llvm or configure with -DWAFER_ALLOW_UNPINNED_LLVM=ON for a local override.")
-  endif()
-endif()
-
-list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}" "${MLIR_CMAKE_DIR}")
-include(AddLLVM)
-include(AddMLIR)
-include(TableGen)
-
-include_directories(${LLVM_INCLUDE_DIRS})
-include_directories(${MLIR_INCLUDE_DIRS})
-include_directories(${CMAKE_SOURCE_DIR}/include)
-include_directories(${CMAKE_BINARY_DIR}/include)
-add_definitions(${LLVM_DEFINITIONS})
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
-
-if(WAFER_ENABLE_IMPORTER_DEPS)
-  set(WAFER_STABLEHLO_SOURCE_DIR "${WAFER_DEPS_ROOT}/src/stablehlo" CACHE PATH "Pinned StableHLO checkout")
-  set(WAFER_SHARDY_SOURCE_DIR "${WAFER_DEPS_ROOT}/src/shardy" CACHE PATH "Pinned Shardy checkout")
-  if(NOT EXISTS "${WAFER_STABLEHLO_SOURCE_DIR}" OR NOT EXISTS "${WAFER_SHARDY_SOURCE_DIR}")
-    message(FATAL_ERROR
-      "StableHLO/Shardy sources are enabled but missing. "
-      "Run tools/bootstrap_deps.py --importer-sources or set WAFER_STABLEHLO_SOURCE_DIR/WAFER_SHARDY_SOURCE_DIR.")
-  endif()
-  set(STABLEHLO_BUILD_EMBEDDED ON CACHE BOOL "Build StableHLO embedded in Wafer" FORCE)
-  set(STABLEHLO_ENABLE_BINDINGS_PYTHON OFF CACHE BOOL "Disable StableHLO Python bindings" FORCE)
-  find_program(WAFER_STABLEHLO_LIT_EXECUTABLE
-    NAMES lit llvm-lit
-    HINTS "${WAFER_DEPS_ROOT}/python/bin" "${LLVM_TOOLS_BINARY_DIR}"
-    REQUIRED
-  )
-  set(LLVM_EXTERNAL_LIT "${WAFER_STABLEHLO_LIT_EXECUTABLE}" CACHE STRING
-      "Command used by embedded StableHLO lit targets" FORCE)
-
-  foreach(_wafer_filecheck_candidate
-          "${LLVM_TOOLS_BINARY_DIR}/FileCheck"
-          "/usr/lib/llvm-${LLVM_VERSION_MAJOR}/bin/FileCheck")
-    if(EXISTS "${_wafer_filecheck_candidate}" AND NOT IS_DIRECTORY "${_wafer_filecheck_candidate}")
-      execute_process(
-        COMMAND "${_wafer_filecheck_candidate}" --version
-        RESULT_VARIABLE _wafer_filecheck_candidate_result
-        OUTPUT_QUIET
-        ERROR_QUIET
-      )
-      if(_wafer_filecheck_candidate_result EQUAL 0)
-        set(WAFER_STABLEHLO_FILECHECK_EXECUTABLE "${_wafer_filecheck_candidate}")
-        break()
-      endif()
-    endif()
-  endforeach()
-  if(NOT WAFER_STABLEHLO_FILECHECK_EXECUTABLE)
-    find_program(WAFER_STABLEHLO_FILECHECK_EXECUTABLE NAMES FileCheck REQUIRED)
-  endif()
-
-  find_program(WAFER_STABLEHLO_NOT_EXECUTABLE
-    NAMES not
-    HINTS "${LLVM_TOOLS_BINARY_DIR}" "/usr/lib/llvm-${LLVM_VERSION_MAJOR}/bin"
-    REQUIRED
-  )
-
-  if(NOT TARGET FileCheck)
-    add_executable(FileCheck IMPORTED GLOBAL)
-    set_target_properties(FileCheck PROPERTIES
-      IMPORTED_LOCATION "${WAFER_STABLEHLO_FILECHECK_EXECUTABLE}")
-  endif()
-  if(NOT TARGET not)
-    add_executable(not IMPORTED GLOBAL)
-    set_target_properties(not PROPERTIES
-      IMPORTED_LOCATION "${WAFER_STABLEHLO_NOT_EXECUTABLE}")
-  endif()
-
-  add_subdirectory("${WAFER_STABLEHLO_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/stablehlo" EXCLUDE_FROM_ALL)
-endif()
 
 add_subdirectory(include/Wafer/IR)
 add_subdirectory(lib/Wafer)

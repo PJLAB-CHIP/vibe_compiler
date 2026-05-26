@@ -14,7 +14,7 @@ import urllib.request
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
-VERSIONS_FILE = REPO_ROOT / "cmake" / "WaferDependencyVersions.cmake"
+VERSIONS_FILE = REPO_ROOT / "cmake" / "third_party" / "WaferDependencyVersions.cmake"
 
 
 def load_versions() -> dict[str, str]:
@@ -30,13 +30,13 @@ def run(command: list[str], cwd: pathlib.Path | None = None) -> None:
     subprocess.run(command, cwd=cwd, check=True)
 
 
-def ensure_venv(prefix: pathlib.Path) -> pathlib.Path:
-    venv = prefix / "python"
+def ensure_venv(prefix: pathlib.Path, name: str, requirements: pathlib.Path) -> pathlib.Path:
+    venv = prefix / name
     python = venv / "bin" / "python"
     if not python.exists():
         run([sys.executable, "-m", "venv", str(venv)])
     run([str(python), "-m", "pip", "install", "--upgrade", "pip"])
-    run([str(python), "-m", "pip", "install", "-r", str(REPO_ROOT / "requirements-dev.txt")])
+    run([str(python), "-m", "pip", "install", "-r", str(requirements)])
     return python
 
 
@@ -47,6 +47,12 @@ def clone_or_update(repo: str, commit: str, destination: pathlib.Path) -> None:
         run(["git", "remote", "add", "origin", repo], cwd=destination)
     run(["git", "fetch", "--depth", "1", "origin", commit], cwd=destination)
     run(["git", "checkout", "--detach", commit], cwd=destination)
+
+
+def sync_submodule(path: pathlib.Path, commit: str) -> None:
+    relative = path.relative_to(REPO_ROOT)
+    run(["git", "submodule", "update", "--init", "--depth", "1", str(relative)], cwd=REPO_ROOT)
+    run(["git", "checkout", "--detach", commit], cwd=path)
 
 
 def get_remote_content_length(url: str) -> int | None:
@@ -137,10 +143,20 @@ def fetch_llvm_prebuilt(versions: dict[str, str], prefix: pathlib.Path) -> pathl
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--prefix", default=str(REPO_ROOT / ".deps"))
+    parser.add_argument("--prefix", default=str(REPO_ROOT / "third_party"))
     parser.add_argument("--python", action="store_true", help="install pinned Python dev tools")
     parser.add_argument("--llvm", action="store_true", help="download pinned LLVM/MLIR prebuilt")
-    parser.add_argument("--importer-sources", action="store_true", help="clone StableHLO and Shardy pins")
+    parser.add_argument(
+        "--importer-sources",
+        action="store_true",
+        help="sync StableHLO, Shardy, OpenXLA/XLA, PyTorch/XLA, and torch-mlir submodules",
+    )
+    parser.add_argument(
+        "--importer-python",
+        action="store_true",
+        help="install pinned torch/torchvision/torch_xla importer wheels",
+    )
+    parser.add_argument("--test-sources", action="store_true", help="sync pinned googletest submodule")
     parser.add_argument("--all", action="store_true", help="fetch every pinned dependency")
     args = parser.parse_args()
 
@@ -149,8 +165,12 @@ def main() -> int:
     versions = load_versions()
 
     if args.all or args.python:
-        python = ensure_venv(prefix)
+        python = ensure_venv(prefix, "python", REPO_ROOT / "requirements-dev.txt")
         print(f"Python tools installed: {python}")
+
+    if args.all or args.importer_python:
+        importer_python = ensure_venv(prefix, "python-importer", REPO_ROOT / "requirements-importer.txt")
+        print(f"Importer Python tools installed: {importer_python}")
 
     if args.all or args.llvm:
         llvm_root = fetch_llvm_prebuilt(versions, prefix)
@@ -158,20 +178,25 @@ def main() -> int:
         print(f"Configure with: -DMLIR_DIR={llvm_root / 'lib/cmake/mlir'}")
 
     if args.all or args.importer_sources:
-        src = prefix / "src"
-        clone_or_update(
-            versions["WAFER_STABLEHLO_REPOSITORY"],
-            versions["WAFER_STABLEHLO_COMMIT"],
-            src / "stablehlo",
-        )
-        clone_or_update(
-            versions["WAFER_SHARDY_REPOSITORY"],
-            versions["WAFER_SHARDY_COMMIT"],
-            src / "shardy",
-        )
-        print(f"Importer sources installed under: {src}")
+        sync_submodule(prefix / "stablehlo", versions["WAFER_STABLEHLO_COMMIT"])
+        sync_submodule(prefix / "shardy", versions["WAFER_SHARDY_COMMIT"])
+        sync_submodule(prefix / "xla", versions["WAFER_OPENXLA_XLA_COMMIT"])
+        sync_submodule(prefix / "pytorch-xla", versions["WAFER_PYTORCH_XLA_COMMIT"])
+        sync_submodule(prefix / "torch-mlir", versions["WAFER_TORCH_MLIR_COMMIT"])
+        print(f"Importer sources installed under: {prefix}")
 
-    if not (args.all or args.python or args.llvm or args.importer_sources):
+    if args.all or args.test_sources:
+        sync_submodule(prefix / "googletest", versions["WAFER_GOOGLETEST_COMMIT"])
+        print(f"Test sources installed under: {prefix}")
+
+    if not (
+        args.all
+        or args.python
+        or args.llvm
+        or args.importer_sources
+        or args.importer_python
+        or args.test_sources
+    ):
         parser.print_help()
     return 0
 

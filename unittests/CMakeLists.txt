@@ -1,18 +1,4 @@
-find_package(GTest QUIET)
-
-if(NOT GTest_FOUND)
-  if(NOT WAFER_FETCH_GTEST)
-    message(FATAL_ERROR "GTest not found and WAFER_FETCH_GTEST=OFF")
-  endif()
-  include(FetchContent)
-  FetchContent_Declare(
-    googletest
-    GIT_REPOSITORY ${WAFER_GOOGLETEST_REPOSITORY}
-    GIT_TAG ${WAFER_GOOGLETEST_COMMIT}
-  )
-  set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-  FetchContent_MakeAvailable(googletest)
-endif()
+wafer_require_gtest()
 
 add_executable(WaferUnitTests
   ABI/M0AbiTest.cpp
