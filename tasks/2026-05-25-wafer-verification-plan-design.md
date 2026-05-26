@@ -23,8 +23,10 @@ Serving integration 暂不纳入本文通过标准。
 
 - IR parse / print / verifier / conversion / FileCheck 通过。
 - resource planner、golden packet、package serialization 和 dependency/config tests 通过。
-- pipeline 能生成最终编译产物；生成的 C ABI / LLVM / device-code source 或 object 能被当前可用
-  toolchain 编译。
+- pipeline 能生成当前阶段的本地编译产物：Wafer C ABI skeleton issue ops、package manifest 和
+  由 manifest 生成的 C stub；该 C stub 能被当前 C toolchain 做 syntax compile。
+- LLVM dialect / LLVM IR lowering、object emission 和真实 `wafer_*` runtime call emission 不属于当前
+  local compile / package gate 的通过条件，后续实现时必须作为单独 milestone gate 记录。
 - runtime package manifest、constant bytes metadata、SPM/DDR/resource summary 能 roundtrip。
 
 当前阶段不把板端 launch、device completion、数值对比或 PMU/profiling 作为通过条件。迁移到带实际
@@ -187,5 +189,6 @@ block 的完整 ABI issue 序列。当前仍不覆盖 mask/select、dynamic shap
 - golden packet tests：至少覆盖 M0 用到的 wrapper family。
 
 如果某个 milestone 暂时只能做文档验证，必须明确说明还缺 build/test harness 或板端 runtime。
-当前 local compile / package gate 可以证明 compiler 产物生成和可编译性，但不能替代板端运行、
-数值正确性、completion 或 profiling 证明。
+当前 local compile / package gate 可以证明 compiler 产物生成和 C stub 语法可编译性，但不能替代
+LLVM IR lowering、object code emission、真实 runtime call emission、板端运行、数值正确性、
+completion 或 profiling 证明。

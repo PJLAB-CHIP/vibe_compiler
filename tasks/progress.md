@@ -192,8 +192,12 @@ C ABI skeleton。
 
 在开发环境切到带实际计算卡的服务器之前，当前 gate 以 local compile / package 验证为准：
 
-- compiler pipeline 能从手写 StableHLO / Linalg 或 verified artifact 走到最终编译产物。
-- 生成的 C ABI / LLVM / device-code source 或 object 能被当前可用 toolchain 编译。
+- compiler pipeline 能从手写 StableHLO / Linalg 或 verified artifact 走到当前阶段的本地编译产物。
+- 当前已实现的本地可编译出口是 Wafer C ABI skeleton issue ops、package manifest 和由
+  `tools/wafer_emit_c_abi_stub.py` 生成的 C stub；验证只要求该 C stub 能被当前 C toolchain 做
+  syntax compile。
+- LLVM dialect / LLVM IR lowering、object emission 和真实 runtime call lowering 尚未实现，不能把
+  当前 C stub gate 解释成 LLVM 后端已完成。
 - runtime package manifest、constant bytes metadata、DDR/SPM/resource summary 能序列化和 roundtrip。
 - golden packet / ABI unit tests、FileCheck、verifier negative tests、resource planner tests 通过。
 - 不要求当前环境完成板端 launch、device completion、数值对比或 PMU/profiling。
@@ -340,6 +344,7 @@ launch、可信 completion、输出数值检查、错误传播和 profiling cali
 - Serving integration。
 - KV cache / paged attention / prefill-decode 调度。
 - raw DTE non-unicast collective ABI。
+- LLVM dialect / LLVM IR lowering、object emission 或真实 `wafer_*` runtime call emission。
 - 自定义 LLVM backend 或 ISA intrinsic lowering。
 - 以某个 importer、runtime path、workload shape 或 parameter 名称作为 IR 合同。
 
