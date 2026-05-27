@@ -15,8 +15,8 @@ core compiler target。
 
 ## 术语口径
 
-- 固定版本：git 源码依赖固定到一个具体 commit，Python wheel 固定到一个具体版本号。固定版本只说明
-  后续检查会验证“是不是这一个版本”，不说明 Wafer 已经调用了这个依赖。
+- 固定版本：git 源码依赖固定到一个具体 commit，Python package / wheel 路线固定到一个具体版本号。
+  固定版本只说明后续检查会验证“是不是这一个版本”，不说明 Wafer 已经调用了这个依赖。
 - 实际使用：Wafer 的 C++ target、pass、tool 或 Python importer 直接 link/import/call 了对应依赖。
   按这个口径，R0.3 中实际进入编译验证的是 LLVM/MLIR、StableHLO 和 Shardy/SDY；PyTorch/XLA 与
   XLA/GSPMD 还没有进入 Wafer 主线代码路径。
@@ -39,7 +39,7 @@ core compiler target。
 | ABI helper | `WaferABI`、`include/Wafer/ABI`、`lib/Wafer/ABI` | C++ standard library 和项目 ABI headers | MLIR dialect API、StableHLO/Shardy、runtime/driver headers、test tools |
 | Core transforms | `WaferTransforms`、`lib/Wafer/Transforms` | `WaferIR`、MLIR arith/linalg/tensor/pass/support；`StableHLOToLinalg` 源文件可在 importer enabled 时使用 StableHLO op C++ API | importer framework headers、runtime/driver headers、test tools、C ABI conversion ownership |
 | Conversion | `WaferConversion`、`include/Wafer/Conversion`、`lib/Wafer/Conversion` | `WaferIR`、MLIR pass/IR/support；后续 WaferToLLVM 可在本层引入 LLVM dialect | StableHLO/Shardy importer API、test tools；runtime/driver headers 只能在 future launch/runtime adapter 层进入 |
-| Frontend/importer | `include/Wafer/Frontend`、`tools/wafer-import-model` | optional StableHLO dialect registration、artifact parsing/verification 依赖；固定版本的 torch exporter Python wheel，后续只允许在 importer 工具中使用 | SPM/layout/runtime/driver target details |
+| Frontend/importer | `include/Wafer/Frontend`、`tools/wafer-import-model` | optional StableHLO dialect registration、artifact parsing/verification 依赖；固定版本的 torch / PyTorch/XLA importer Python runtime，后续只允许在 importer 工具中使用 | SPM/layout/runtime/driver target details |
 | SPMD bridge | `ShardySdy*` CMake shim target、future Shardy/SPMD pass target | Shardy/SDY source dependency、MLIR dialect registration、import/export/propagation pass 编译验证 | physical tile id、DTE algorithm、runtime package |
 | Driver tool | `wafer-opt` | `WaferIR`、`WaferTransforms`、`WaferConversion`、MLIR tool main；optional StableHLO registration | importer framework implementation details、runtime/driver headers |
 | Runtime/driver | future `WaferRuntimeAdapter` / launch package layer | HPGR/KMD/legacy runtime headers and libraries, isolated behind adapter | Frontend tensor/group planning dependencies |
@@ -48,7 +48,7 @@ core compiler target。
 ## 第三方声明目录
 
 - `cmake/third_party/WaferDependencyVersions.cmake` 是 PyTorch/XLA、LLVM/MLIR、StableHLO、Shardy、
-  OpenXLA/XLA、GTest、lit 和 importer Python wheel 固定版本的唯一事实源。
+  OpenXLA/XLA、GTest、lit 和 importer Python package pin 的唯一事实源。
 - `cmake/third_party/WaferThirdParty.cmake` 负责 MLIR/LLVM/Python discovery、固定版本 LLVM fallback、
   optional StableHLO embedded source、统一 Shardy CMake shim、StableHLO test tool import target、framework
   importer Python 环境边界、future runtime/driver SDK roots 和 GTest fallback。
@@ -56,9 +56,10 @@ core compiler target。
   `third_party/pytorch-xla`、`third_party/llvm-project`、`third_party/stablehlo`、
   `third_party/shardy`、`third_party/xla`、`third_party/googletest`。Python tools 和 downloads
   也放在该目录；`.deps/` 仅作为旧 build cache 的兼容输入。
-- PyTorch/XLA 源码固定版本用于确定后续 frontend importer 要匹配的 XLA 版本；它的 `WORKSPACE`
-  `xla_hash` 必须等于 `WAFER_OPENXLA_XLA_COMMIT`。当前 PyTorch/XLA `396608c7...` 选择
-  OpenXLA/XLA `32ebd694...`。这不表示 Wafer 已经调用 `torch_xla` API。
+- PyTorch/XLA 源码固定版本用于确定后续 frontend importer 要匹配的 XLA 版本，也是在本地构建
+  `torch_xla` Python package 和 `_XLAC` extension 的源码事实源；它的 `WORKSPACE` `xla_hash`
+  必须等于 `WAFER_OPENXLA_XLA_COMMIT`。当前 PyTorch/XLA `396608c7...` 选择
+  OpenXLA/XLA `32ebd694...`。这不表示 Wafer core compiler target 已经调用 `torch_xla` API。
 - OpenXLA/XLA 源码固定版本是 C++/MLIR dependency stack 的事实源；`third_party/llvm-project` 和
   `third_party/stablehlo` 必须对齐到 `third_party/xla` workspace 中声明的 LLVM / StableHLO commit。
   `third_party/shardy` 必须使用同一 LLVM / StableHLO stack，并包含 XLA workspace 声明的 Shardy base
@@ -70,10 +71,11 @@ core compiler target。
 - OpenXLA/XLA 源码固定版本是为了后续 GSPMD SPMD partitioner integration。当前主线仍以 Shardy 的
   MLIR sharding representation 作为 R2.2 bridge 边界；XLA/GSPMD 现在没有编进 Wafer target，
   也不能成为 core IR 或 backend library 的 public dependency。
-- `requirements-importer.txt` 固定 frontend importer Python wheels：`torch==2.5.0`、
-  `torchvision==0.20.0`、`torch_xla==2.5.0`。该层只用于 importer 工具 / artifact 生成测试；
-  PyTorch/XLA source checkout 只能穿透到 frontend/importer 工具，不能穿透到 core compiler
-  public dependency。
+- `requirements-importer.txt` 固定 prebuilt-wheel 路线的 frontend importer Python packages：
+  `torch==2.5.0`、`torchvision==0.20.0`、`torch_xla==2.5.0`。这不是唯一获取
+  `torch_xla` runtime 的方式；当 wheel 与本机 Python ABI 不兼容时，应从
+  `third_party/pytorch-xla` 源码构建/安装出同版本 `torch_xla` package。无论来自 wheel 还是源码构建，
+  该 runtime 只用于 importer 工具 / artifact 生成测试，不能穿透到 core compiler public dependency。
 - 顶层 `CMakeLists.txt` 只 include third-party 配置，不直接拼 StableHLO/Shardy/GTest 发现逻辑。
 
 ## CMake 可见范围
@@ -110,7 +112,7 @@ core compiler target。
 - 第三方依赖声明是否仍集中在 `cmake/third_party/`。
 - public source dependency 是否记录为 `third_party/<name>` submodule。
 - `third_party/pytorch-xla` 的 `WORKSPACE` `xla_hash` 是否与 `WAFER_OPENXLA_XLA_COMMIT` 一致。
-- frontend importer Python wheel 固定版本是否存在于 `requirements-importer.txt`。
+- prebuilt frontend importer Python package 固定版本是否存在于 `requirements-importer.txt`。
 - future frontend importer 和 runtime/driver SDK roots 是否有显式 opt-in CMake 边界。
 - StableHLO C++ API 只出现在 frontend hook、StableHLO lowering implementation 和 importer tool。
 - runtime/driver header 词项不出现在 production compiler include/lib 源码中。

@@ -23,7 +23,7 @@ option(WAFER_FETCH_GTEST
   "Fetch googletest when a system package is not available" ON)
 
 set(WAFER_IMPORTER_PYTHON_VENV "${WAFER_DEPS_ROOT}/python-importer" CACHE PATH
-  "Python venv containing pinned torch/torchvision/torch_xla importer wheels")
+  "Python env containing torch and an importable torch_xla runtime for importer tools")
 set(WAFER_STABLEHLO_SOURCE_DIR "${WAFER_DEPS_ROOT}/stablehlo" CACHE PATH
   "Pinned StableHLO checkout")
 set(WAFER_SHARDY_SOURCE_DIR "${WAFER_DEPS_ROOT}/shardy" CACHE PATH

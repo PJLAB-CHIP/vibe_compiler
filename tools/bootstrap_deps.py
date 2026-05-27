@@ -160,7 +160,7 @@ def main() -> int:
     parser.add_argument(
         "--importer-python",
         action="store_true",
-        help="install pinned torch/torchvision/torch_xla importer wheels",
+        help="install pinned prebuilt torch/torchvision/torch_xla importer packages when compatible wheels exist",
     )
     parser.add_argument("--test-sources", action="store_true", help="sync pinned googletest submodule")
     parser.add_argument("--all", action="store_true", help="fetch every pinned dependency")

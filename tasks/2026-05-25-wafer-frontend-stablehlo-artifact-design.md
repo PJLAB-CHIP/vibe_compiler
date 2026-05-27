@@ -124,6 +124,12 @@ framework model / exported program
   -> WaferFrontend verifier
 ```
 
+PyTorch 路线的 framework-specific capture adapter 必须使用 PyTorch/XLA 导出的 StableHLO runtime
+接口，例如 `torch.export.export` 后调用 `torch_xla.stablehlo.exported_program_to_stablehlo`。本仓库
+中的 `third_party/pytorch-xla` 是该 runtime 的源码事实源；可运行的 `torch_xla` 可以由该 checkout
+编译/安装得到，也可以在 ABI 匹配时来自 pinned prebuilt wheel。无论安装来源如何，P2.F1
+不能用手写 ATen graph matcher 或手写 StableHLO 文本 emitter 冒充 PyTorch/XLA capture。
+
 每个 framework-specific adapter 必须满足：
 
 - 只把框架 API、Python path、module name、parameter name、version workaround 留在 adapter 日志、

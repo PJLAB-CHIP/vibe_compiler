@@ -8,8 +8,13 @@
   Shardy 和 OpenXLA/XLA source submodules 到 `third_party/<name>`；PyTorch/XLA 的 `WORKSPACE`
   `xla_hash` 决定 frontend 要匹配的 XLA 版本，顶层 `third_party/xla` 必须与它一致；不要 full clone
   上游历史作为默认 bootstrap。
-- 用 `python3 tools/bootstrap_deps.py --importer-python` 把固定版本
-  `torch` / `torchvision` / `torch_xla` importer wheels 安装到 `third_party/python-importer`。
+- `third_party/pytorch-xla` 是 PyTorch/XLA 源码事实源；可运行的 `torch_xla` 需要由该 checkout
+  编译/安装得到，或在 wheel 与本机 Python ABI 兼容时用 prebuilt wheel 安装得到。两条路线最后都必须让
+  importer Python 环境能通过 `import torch_xla` 和 `import torch_xla._XLAC`。
+- `python3 tools/bootstrap_deps.py --importer-python` 只覆盖 prebuilt-wheel 路线：把固定版本
+  `torch` / `torchvision` / `torch_xla` 安装到 `third_party/python-importer`。PyTorch/XLA 2.5 的
+  prebuilt wheel 不应被假定支持任意 Python 版本；若当前 Python ABI 不匹配，应从
+  `third_party/pytorch-xla` 构建安装或切换到兼容的 importer Python。
 - 用 `python3 tools/bootstrap_deps.py --llvm` 下载固定版本 LLVM/MLIR 预编译包；脚本会检查远端
   Content-Length，并把未完成下载保存在 `.part` 后续续传，避免把半包当成可解包 archive。
 - 在固定版本 LLVM/MLIR 预编译包下载完成前，本地 bring-up 可以显式 override：
@@ -29,7 +34,7 @@
   `wafer-import-model --verify-import-result <mlir> [--sidecar <json>]`；sidecar V0 用
   `function` + `arg` ordinal 对齐带 `wafer.frontend.constant` attr 的 function argument。
 - 依赖一致性检查入口是 `tools/check_deps.py`；默认检查固定版本、importer registration hook、
-  public source submodule checkout HEAD、frontend importer wheel 固定版本和 core/frontend/runtime/test
+  public source submodule checkout HEAD、prebuilt importer package pin 和 core/frontend/runtime/test
   tool dependency layering。
 - Wafer IR 文件组织检查入口是 `tools/check_ir_organization.py --root .`；它检查 `WaferOps.td` 只作为
   TableGen 聚合入口、op family ODS/verifier 文件存在，以及 `test/Dialect/Wafer` 按 family 分目录。

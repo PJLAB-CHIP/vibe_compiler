@@ -15,7 +15,7 @@ third_party/
   pytorch-xla/           # PyTorch/XLA git submodule; source of truth for the frontend XLA version
   googletest/            # googletest git submodule for unit-test fallback
   python/                # fixed-version Python test-tool venv
-  python-importer/       # fixed-version torch/torchvision/torch_xla importer venv
+  python-importer/       # importer Python env with torch and a usable torch_xla runtime
   downloads/             # resumable downloaded archives
 ```
 
@@ -25,8 +25,10 @@ by git. Exact versions and CMake discovery live in `cmake/third_party/`.
 
 “Fixed version” here means an exact git commit or Python package version. It
 does not mean the dependency is already used by Wafer compiler code. In the
-current tree, PyTorch/XLA selects the XLA version and prepares the future
-frontend importer environment; Wafer does not yet call `torch_xla` APIs.
+current tree, PyTorch/XLA selects the XLA version and is also the source tree
+from which a local `torch_xla` Python runtime can be built and installed for
+frontend capture. Wafer does not yet call `torch_xla` APIs from core compiler
+targets.
 
 Dependency classes:
 
@@ -34,7 +36,7 @@ Dependency classes:
 | --- | --- | --- |
 | core compiler | LLVM/MLIR | git submodule under `third_party/llvm-project`; build/install it and pass `MLIR_DIR`/`LLVM_DIR` or use `WAFER_LLVM_INSTALL_DIR` |
 | input dialect / SPMD | StableHLO, Shardy, OpenXLA/XLA | git submodules under `third_party/stablehlo`, `third_party/shardy`, and `third_party/xla`; XLA is selected by the PyTorch/XLA `WORKSPACE` `xla_hash`; LLVM/StableHLO versions match XLA, and Shardy must contain XLA's Shardy base commit while using the same lower stack |
-| frontend importer | PyTorch/XLA source, torch/torchvision/torch_xla wheels | `third_party/pytorch-xla` fixes the framework importer source version; Python package versions are fixed by `requirements-importer.txt`; current Wafer code does not call `torch_xla` yet |
+| frontend importer | PyTorch/XLA source, torch/torchvision, `torch_xla` runtime | `third_party/pytorch-xla` fixes the framework importer source version and may be built/installed to produce the importable `torch_xla` package plus `_XLAC` extension; `requirements-importer.txt` fixes the prebuilt-wheel route when compatible wheels exist; current Wafer core code does not call `torch_xla` |
 | future runtime / driver | HPGR SDK, KMD/UAPI headers, legacy Tsm/VS SDK | not vendored yet; CMake exposes explicit opt-in roots |
 | test tools | lit, FileCheck, GTest | Python venv / LLVM tools / `third_party/googletest` |
 

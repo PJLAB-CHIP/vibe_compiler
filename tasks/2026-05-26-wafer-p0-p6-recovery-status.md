@@ -99,9 +99,10 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
   search、SPM/DDR trial、storage realization、runtime/package 主链路仍归 R3 之后恢复。
 - StableHLO/Shardy dependency 当前主要服务 textual lowering smoke 和 SDY artifact bridge
   dependency boundary；R0.3 依赖栈用 PyTorch/XLA 2.5 的 `WORKSPACE` `xla_hash` 选择 OpenXLA/XLA，再由 XLA
-  workspace 选择 LLVM/StableHLO/Shardy base。PyTorch/XLA source 现在只用于确定版本和准备后续
-  frontend/importer 环境；Wafer 代码还没有调用 `torch_xla`，它不能成为 core compiler public
-  dependency 或第二套 XLA/LLVM/StableHLO 事实源；Shardy 编译验证目标只证明公共 SPMD 依赖可用，
+  workspace 选择 LLVM/StableHLO/Shardy base。PyTorch/XLA source 也是后续构建/安装 `torch_xla`
+  frontend importer runtime 的源码事实源；Wafer core compiler 代码还没有调用 `torch_xla`，它不能成为
+  core compiler public dependency 或第二套 XLA/LLVM/StableHLO 事实源；Shardy 编译验证目标只证明公共
+  SPMD 依赖可用，
   R2.2 只额外证明 Wafer 工具能接收 SDY artifact 并把 StableHLO replica group 显式传入
   `wafer.comm`。
 - runtime/driver 头文件和真实 runtime adapter 尚未进入 launch/C ABI 层。

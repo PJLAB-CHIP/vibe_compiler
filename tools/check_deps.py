@@ -439,7 +439,7 @@ def print_versions(versions: dict[str, str]) -> None:
     )
     print(f"OpenXLA/XLA {versions['WAFER_OPENXLA_XLA_COMMIT']}")
     print(
-        "PyTorch wheels "
+        "PyTorch importer packages "
         f"torch {versions['WAFER_PYTORCH_VERSION']} "
         f"torchvision {versions['WAFER_TORCHVISION_VERSION']} "
         f"torch_xla {versions['WAFER_TORCH_XLA_PYTHON_VERSION']}"
