@@ -191,14 +191,8 @@ artifact 中补了一份临时描述，既没有证明 XLA SPMD partitioner 产�
 这两类测试都不能标记 P2.S1 完成。P2.S1 完成证明必须消费真实 mark 后的 artifact，并得到
 partitioned StableHLO 或等价 per-rank StableHLO body。
 
-partitioned artifact verifier 可以保留一个工具入口，例如：
-
-```text
-wafer-import-model --verify-spmd-bundle <strategy-bundle>
-```
-
-但该 verifier 的责任必须改为检查 StableHLO / SDY / exporter-native facts，而不是检查
-`wafer.spmd.*`：
+partitioned artifact verifier 后续可以重新建立工具入口，但它的责任必须是检查 StableHLO / SDY /
+exporter-native facts，而不是检查 `wafer.spmd.*`：
 
 - module 中的 Shardy / SDY / StableHLO sharding metadata 必须可由注册 dialect 解释。
 - partitioned function boundary 的 tensor argument/result shape、dtype 和 exporter metadata 必须一致。
@@ -264,23 +258,19 @@ Shardy / SPMD 只负责第一行之前的 logical collective 生成。StableHLO 
 tiling 前直接 lower 成 `wafer.comm`，因为 `wafer.comm` 当前属于 tile-local buffer / communication
 IR；它需要 SPM buffer、byte count、placement 和 token/effect 语义。
 
-`--wafer-lower-stablehlo-collectives-to-comm` 当前只是后段 communication skeleton 的早期 bridge：
-它把 single-result StableHLO `all_gather`、`all_reduce` 和 `reduce_scatter` 直接降到
-`wafer.comm.*`，并用 visible `unrealized_conversion_cast` 在 tensor 和 SPM tile buffer 之间桥接。
-这个插入点不能作为主线 P2.S1/R3 输入；后续应把它后移到 `wafer.tile_region` / SPM materialization
-之后，或拆成“StableHLO -> tensor collective”和“tiled tensor collective -> wafer.comm”两层。
+旧的 StableHLO collective 直降 `wafer.comm.*` pass 已移除。后续不得恢复 group/tiling 前的
+StableHLO -> `wafer.comm` 插入点；需要分别实现“StableHLO -> tensor collective”和
+“tiled tensor collective -> wafer.comm”两层。
 
 2026-05-26 R2.2 恢复了 SDY artifact bridge 的工程入口：`WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON`
 时，`wafer-opt` 和 frontend verifier tool 显式注册 Shardy / SDY dialect，`wafer-opt` 也注册
 SDY passes/pipelines。带 `sdy.mesh` / `sdy.sharding` 的 partitioned StableHLO artifact 可以作为
 Wafer 输入被 parse/verify。
 
-同一批次把 StableHLO `replica_groups` 的 logical rank group materialize 到 `wafer.comm.*`
-`rank_group = array<i64: ...>` attr 的实现，保留为 communication skeleton evidence：它证明后段
-ring lowering 可以按 logical rank group 查询 placement。它不证明 SPMD partitioned artifact
-完成，也不证明 collective 已经能和 local compute 一起参与 group/tiling。当前 bridge 对多
-StableHLO replica group 的覆盖仍不完整；P2.S1 的任务是通过真实 partitioner 输出和 artifact
-verifier 保留这些事实，R2.4/R6 再分别恢复 tensor collective handoff 和 tile-local comm lowering。
+同一批次曾把 StableHLO `replica_groups` 的 logical rank group materialize 到 `wafer.comm.*`
+`rank_group = array<i64: ...>` attr；该 StableHLO -> `wafer.comm` bridge 已移除，避免后续误把它当成
+group/tiling 输入。P2.S1 的任务是通过真实 partitioner 输出和 artifact verifier 保留这些事实，
+R2.4/R6 再分别恢复 tensor collective handoff 和 tile-local comm lowering。
 
 ## 5. 与 Placement 的接口
 

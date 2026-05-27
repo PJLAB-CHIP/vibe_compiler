@@ -226,11 +226,8 @@ buffer、`local_rank`、`group_size` 和单 chunk `bytes`，verifier 检查 SPM 
 rank order 展开成 `group_size - 1` 个 unicast ring step；每个 step 都显式生成 send、recv 和 wait，
 并在 p2p op 上用 `slot` attr 标出发送或接收的 gather slot。后续 `--wafer-lower-to-c-abi-skeleton`
 保留该 `slot` attr 到 Direct DTE skeleton issue op，用于后续地址 offset / packet 参数 lowering。
-P6.6 的早期实现允许 StableHLO logical `all_gather` 直接由
-`--wafer-lower-stablehlo-collectives-to-comm` normalize 到该 op。2026-05-27 复查后，这个 pass 只能
-视为后段 communication bridge skeleton，不能作为 group/tiling 前的主线输入：它过早要求
-`tile_buffer`，并通过 visible `unrealized_conversion_cast` 从 tensor 桥接到 SPM buffer。后续应把
-它拆成或改成：
+P6.6 的早期实现允许 StableHLO logical `all_gather` 直接 normalize 到该 op。2026-05-27 复查后，
+这条 pass/test 路线已移除；不能作为 group/tiling 前的主线输入，也不应恢复。后续应实现两层：
 
 ```text
 StableHLO collective -> Wafer LinalgExt-style tensor collective

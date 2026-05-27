@@ -120,7 +120,7 @@
 | R5.1 | pending | 恢复 M6 transformer local 编译验证 | workspace/resident constants/ABI issue sequence 来自 full-block IR dataflow 和 lowering 输出 |
 | R5.2 | pending | 补 transformer compute/package gaps | mask/select、dynamic-bound policy、non-constant-init reduce、constant/weight slice 和 package consistency 按设计补齐 |
 | R6.1 | pending | 恢复 communication design-conformance gate | DTE resource allocation、collective buffer slice/address offset、communication metadata 与 package/runtime 边界按设计落地 |
-| R6.2 | pending | 后移并清理 StableHLO/collective-to-comm bridge 临时 cast | `LowerStablehloCollectivesToComm` 不能作为 group/tiling 前的主线 pass；R6.2 需让 tiled tensor collective 在 `wafer.tile_region` / SPM materialization 后转成 `wafer.comm.*`，并用可验证 buffer-slice / layout/materialization 路径替代 visible `unrealized_conversion_cast` |
+| R6.2 | pending | 建立 tiled tensor collective 到 comm 的 materialization | 旧 StableHLO -> `wafer.comm` bridge 已删除；R6.2 需让 tiled tensor collective 在 `wafer.tile_region` / SPM materialization 后转成 `wafer.comm.*`，并用可验证 buffer-slice / layout/materialization 路径表达 |
 
 ## 后续队列
 

@@ -25,8 +25,7 @@ void printHelp() {
 #ifdef WAFER_ENABLE_STABLEHLO
   llvm::outs() << "  --emit-static-smoke-artifact\n"
                << "  --verify-import-result <mlir-file>\n"
-               << "  --verify-stablehlo-bundle <bundle-dir>\n"
-               << "  --verify-spmd-bundle <bundle-dir>\n";
+               << "  --verify-stablehlo-bundle <bundle-dir>\n";
 #else
   llvm::outs() << "  importer dependencies are disabled in this build\n";
 #endif
@@ -99,35 +98,6 @@ int verifyStableHLOBundle(llvm::StringRef bundlePath) {
   return 0;
 }
 
-int verifySpmdBundle(llvm::StringRef bundlePath) {
-  mlir::DialectRegistry registry;
-  registry.insert<mlir::func::FuncDialect>();
-  wafer::registerImporterDialects(registry);
-
-  llvm::SmallString<256> mlirPath(bundlePath);
-  llvm::sys::path::append(mlirPath, "functions", "forward.mlir");
-
-  mlir::MLIRContext context(registry);
-  context.loadAllAvailableDialects();
-  mlir::OwningOpRef<mlir::ModuleOp> module = parseModule(mlirPath, context);
-  if (!module)
-    return 1;
-  if (mlir::failed(mlir::verify(*module)))
-    return 1;
-
-  wafer::frontend::ArtifactVerificationResult result;
-  if (mlir::failed(wafer::frontend::verifySpmdBundle(
-          *module, bundlePath, llvm::errs(), &result)))
-    return 1;
-
-  llvm::outs() << "wafer-import-model: verified SPMD per-rank artifact "
-                  "local_rank: "
-               << result.spmdLocalRank << "\n";
-  llvm::outs() << "wafer-import-model: verified StableHLO bundle parameters: "
-               << result.bundleParameterCount << "\n";
-  llvm::outs() << "wafer-import-model: verified frontend artifact\n";
-  return 0;
-}
 #endif
 
 } // namespace
@@ -150,7 +120,6 @@ int main(int argc, char **argv) {
 
   std::string verifyFilename;
   std::string bundlePath;
-  std::string spmdBundlePath;
   for (int i = 1; i < argc; ++i) {
     llvm::StringRef arg(argv[i]);
     if (arg == "--verify-import-result") {
@@ -185,22 +154,6 @@ int main(int argc, char **argv) {
       continue;
     }
 
-    if (arg == "--verify-spmd-bundle") {
-      if (i + 1 >= argc) {
-        llvm::errs() << "wafer-import-model: missing "
-                        "--verify-spmd-bundle directory\n";
-        return 1;
-      }
-      spmdBundlePath = argv[++i];
-      continue;
-    }
-
-    constexpr llvm::StringRef spmdBundlePrefix = "--verify-spmd-bundle=";
-    if (arg.starts_with(spmdBundlePrefix)) {
-      spmdBundlePath = arg.drop_front(spmdBundlePrefix.size()).str();
-      continue;
-    }
-
     llvm::errs() << "wafer-import-model: unknown argument: " << arg << "\n";
     printHelp();
     return 1;
@@ -210,8 +163,6 @@ int main(int argc, char **argv) {
     return verifyImportResult(verifyFilename);
   if (!bundlePath.empty())
     return verifyStableHLOBundle(bundlePath);
-  if (!spmdBundlePath.empty())
-    return verifySpmdBundle(spmdBundlePath);
 
   llvm::errs() << "wafer-import-model: unknown or incomplete arguments\n";
   printHelp();

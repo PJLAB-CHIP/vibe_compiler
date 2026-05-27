@@ -1,5 +1,6 @@
 # REQUIRES: stablehlo
 
+# RUN: wafer-import-model --help | FileCheck %s --check-prefix=HELP
 # RUN: wafer-import-model --emit-static-smoke-artifact | FileCheck %s --check-prefix=EMIT
 # RUN: wafer-import-model --emit-static-smoke-artifact > %t.static.mlir
 # RUN: wafer-import-model --verify-import-result %t.static.mlir | FileCheck %s --check-prefix=VERIFY
@@ -32,6 +33,8 @@
 # RUN: rm -rf %t.missing-data.bundle && mkdir -p %t.missing-data.bundle && cp -R %t.bundle/. %t.missing-data.bundle
 # RUN: rm %t.missing-data.bundle/data/weight
 # RUN: not wafer-import-model --verify-stablehlo-bundle %t.missing-data.bundle 2>&1 | FileCheck %s --check-prefix=BUNDLE-DATA
+
+# HELP-NOT: --verify-spmd-bundle
 
 # EMIT: module
 # EMIT: func.func @wafer_import_static_smoke

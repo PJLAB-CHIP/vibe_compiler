@@ -97,9 +97,11 @@ boundary、tile shape、multi-stage schedule、SPM residency 或 C ABI issue seq
 
 - `test/Tools/wafer-import-model-smoke.test`
 - `test/Spmd/shardy-artifact-bridge.mlir`
-- `test/Transforms/stablehlo-collectives-to-comm.mlir`
 - `test/Dialect/Wafer/Comm/invalid-comm-rank-group-size.mlir`
 - `test/Transforms/ring-all-gather-rank-group.mlir`
+
+2026-05-27 后续清理删除了旧的 `--verify-spmd-bundle`、P2.S1 私有 attr emitter 和 StableHLO
+直降 `wafer.comm` pass/tests；上述 R2 记录只保留历史背景，不再表示这些旧入口仍存在。
 
 这些验证证明 R2 artifact/bridge/coverage 状态收敛，不证明 R3 之后的 group planner、resource
 planner、package、runtime 或 board execution。

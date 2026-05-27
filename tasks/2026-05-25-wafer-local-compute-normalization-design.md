@@ -392,7 +392,7 @@ Normalization 后必须能检查：
 | RoPE | `lower-stablehlo-rope-mlp-staged.mlir` | 证明当前 RoPE slice/shape/elementwise staged pattern；sin/cos table storage slicing 未闭环 |
 | MLP | `lower-stablehlo-mlp-schedule.mlir`、`lower-stablehlo-local-transformer-block.mlir` | 证明 tanh-gated MLP vertical slice 和 full local transformer structured gate；GELU/SwiGLU/package consistency 未闭环 |
 | shape views | `lower-stablehlo-shape.mlir`、local transformer block gate | 证明 static expand/collapse shape-only relation；dynamic shape view 和 layout materialization 未闭环 |
-| tensor collective handoff | 设计已收口，代码未恢复 | StableHLO collective 需要先进入 Wafer LinalgExt-style tensor collective 层；当前直接 StableHLO -> `wafer.comm` 的 bridge 只能作为后段 skeleton，不是 group/tiling 输入 |
+| tensor collective handoff | 设计已收口，代码未恢复 | StableHLO collective 需要先进入 Wafer LinalgExt-style tensor collective 层；旧的 StableHLO -> `wafer.comm` bridge 已移除，不能作为 group/tiling 输入 |
 
 ## 8. 与其它文档的关系
 

@@ -366,16 +366,16 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
 - 有 `wafer.comm.send` / `recv` / `wait` verifier、placement peer check、non-empty wait check。
 - 有 `wafer.abi.dte_send` / `recv` / `wait` skeleton 和 block-local resource tuple conflict check。
 - 有 ring all-gather、reduce-scatter、all-reduce lowering 到 p2p + local elementwise accumulation。
-- 有 StableHLO all_gather/all_reduce/reduce_scatter 到 `wafer.comm` collective-level op 的后段
-  skeleton normalization；主线仍需补 StableHLO -> Wafer LinalgExt-style tensor collective handoff。
-- 有 M2/M3/M4 integration skeleton 验证。
+- 旧的 StableHLO all_gather/all_reduce/reduce_scatter 到 `wafer.comm` collective-level op 的 skeleton
+  normalization 已移除；主线仍需补 StableHLO -> Wafer LinalgExt-style tensor collective handoff。
+- 有 M2/M3 communication skeleton 验证；M4 需按新的 tensor collective handoff 重新建立。
 
 缺口：
 
 - DTE resource id 是单调 skeleton 分配，不是目标 DTE/FSM allocator。
 - collective buffer slice / slot / address offset lowering 没有真实 descriptor 或 storage-realized buffer。
-- StableHLO collective bridge 仍用 visible `unrealized_conversion_cast` 衔接 tensor/tile_buffer，且
-  插入点早于 group/tiling；R6.2 需要后移到 tile_region / SPM materialization 之后。
+- tiled tensor collective -> `wafer.comm` materialization 尚未实现；R6.2 需要在 tile_region / SPM
+  materialization 之后补可验证 buffer-slice / layout/materialization 路径。
 - SPM/DDR resource 验证没有和 communication staging / buffer lifetime 完整组合。
 - communication plan metadata 没进入真实 package/runtime path；没有 Direct DTE board completion/error 验证。
 

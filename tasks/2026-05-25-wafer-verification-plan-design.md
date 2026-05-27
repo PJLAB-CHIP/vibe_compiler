@@ -131,9 +131,7 @@ M4 partitioned StableHLO collective handoff：
   伪装成已经 materialize 的 `wafer.comm`。
 - layout/SPM/DDR resource gates 只对本 milestone 已经 materialize 的 movement / buffer demand
   负责；尚未 materialize 的 logical collective 不能被伪装成已通过 resource gate。
-- 当前 integration gate：`test/Integration/m4-partitioned-collective-gate.mlir` 覆盖 StableHLO
-  all-gather/all-reduce/reduce-scatter 经 `wafer.comm`、ring lowering 到 C ABI skeleton。这个 gate
-  是后段 communication skeleton，不是主线 handoff 完成证明；R2.4 需要补 StableHLO -> tensor
+- 旧的 StableHLO -> `wafer.comm` integration skeleton 已移除。R2.4 需要补 StableHLO -> tensor
   collective 的 gate，R6 再验证 tiled tensor collective -> `wafer.comm` 的 materialization。
 
 M5 overlap and cost model（优化类，当前执行看板后移为 P9）：

@@ -40,13 +40,14 @@
   artifact。正确链路是同一套 source-built PyTorch/XLA 环境中通过
   `torch_xla.distributed.spmd.mark_sharding` 或 `torch.ops.xla.dynamo_mark_sharding` 标记 4096
   matmul 图，导出 StableHLO / SDY 可解释 artifact，接 Shardy propagation 和 XLA SPMD partitioner，
-  产出 partitioned StableHLO 或等价 per-rank StableHLO body。`tools/wafer_pytorch_xla_capture.py`
-  中任何只生成 `wafer.spmd.*`/sidecar 或只跑 SDY propagation 的入口都只能作为待清理的临时 smoke，
-  不能作为 P2.S1 完成依据。
+  产出 partitioned StableHLO 或等价 per-rank StableHLO body。旧的
+  `tools/wafer_pytorch_xla_capture.py --emit-p2s1-sharded-matmul` 和
+  `wafer-import-model --verify-spmd-bundle` 路线已移除；不要恢复只生成私有 attrs/sidecar 或只跑
+  SDY propagation 的入口。
 - P2.S1 后的 collective 先进入 Wafer LinalgExt-style tensor collective handoff，和 `linalg` 一起进入
   group/tiling；`wafer.comm` 只能在 `wafer.tile_region` / SPM tile buffers / placement 明确后
   materialize。StableHLO collective 直降 `wafer.comm` 且靠 `unrealized_conversion_cast` 桥 tensor
-  和 tile_buffer 的测试只是后段 communication skeleton，不是 group 输入。
+  和 tile_buffer 的 pass/test 已移除；不要在 group 输入侧恢复这种入口。
 - 依赖一致性检查入口是 `tools/check_deps.py`；默认检查固定版本、importer registration hook、
   public source submodule checkout HEAD、importer Python package pin 和 core/frontend/runtime/test
   tool dependency layering。
