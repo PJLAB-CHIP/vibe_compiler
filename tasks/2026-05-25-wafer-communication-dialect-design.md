@@ -13,8 +13,10 @@ resource 和 completion 边界都必须能从 IR、type、effect 或 verifier �
 communication plan attr，也不把 raw DTE register 字段提前写进上层 collective op。
 
 本文只负责 device-side communication IR：collective-level op、explicit p2p steps、token/effect、
-Direct DTE V0 和 sync boundary。它不定义 compute op legality、layout assignment、SPM allocation、
-DDR BO allocation、host runtime D2D/P2P ABI 或 raw non-unicast DTE packet。
+Direct DTE 和 sync boundary。它不定义 compute op legality、layout assignment、SPM allocation、
+DDR BO allocation、host runtime D2D/P2P ABI 或 raw non-unicast DTE packet。当前已验证 data plane
+可以先使用 fixed-size unicast Direct DTE，但 logical collective IR 的支持范围不能由当前某个 ring
+lowering pass 的覆盖范围反向决定；只要硬件通信能力可组合表达，IR 就应保留对应语义事实。
 
 ## 1. 设计目标
 
@@ -22,7 +24,8 @@ DDR BO allocation、host runtime D2D/P2P ABI 或 raw non-unicast DTE packet。
 
 - 保留 partitioned StableHLO collective 的语义，并在 placement 后把 logical rank group 映射到
   physical tile group。
-- 在 V0 使用 fixed-size unicast Direct DTE 作为主 data plane，组合 ring/tree collective。
+- 使用 fixed-size unicast Direct DTE 作为已验证主 data plane，组合 ring/tree/transpose 等
+  collective schedule；若后续启用 raw non-unicast DTE，必须先有独立 ABI、resource model 和板端验证。
 - 用 SSA token / effect 表达 outstanding communication 和 wait，服务 SPM liveness、buffer reuse 和
   compute/communication overlap。
 - 把 local NCC drain、DTE/FSM wait、group barrier 分成不同 sync 边界，避免用一个 wait 语义覆盖所有事。
@@ -72,6 +75,7 @@ semantic。
 - `wafer.comm.all_gather`
 - `wafer.comm.reduce_scatter`
 - `wafer.comm.all_reduce`
+- `wafer.comm.all_to_all`
 
 这些 op 处在 StableHLO collective 与 explicit p2p schedule 之间。它们应携带：
 
@@ -180,9 +184,9 @@ MLIR memory effect。具体 DTE/FSM/packet/stream id 仍只在 lower-level ABI s
 通信 staging buffer 是 SPM oracle 的 `BufferDemand(kind = communication_staging)`，不是
 `wafer.comm` 的私有内存计划。
 
-## 5. Direct DTE V0 Contract
+## 5. Direct DTE Contract
 
-当前 V0 只把 fixed-size unicast Direct DTE 作为 compiler inline data plane：
+当前已验证的 compiler inline data plane 是 fixed-size unicast Direct DTE：
 
 - `DirectDTESendInfo` 风格 helper 只有一个 `dst_addr`、`dst_tile`、`remote_fsm_id`。
 - receiver readiness、FSM monitor init/receive、DTE attach、send async/sync、wait done/status/error、
@@ -191,15 +195,16 @@ MLIR memory effect。具体 DTE/FSM/packet/stream id 仍只在 lower-level ABI s
 - DTE resource 是有限资源；DTE id、FSM id、packet id、stream id 必须由 resource allocator 管理。
 - DTE completion 需要显式 wait/status 检查，不能被 host launch completion 或 local NCC drain 代替。
 
-V0 禁止：
+当前 compiler-facing Direct DTE contract 禁止：
 
 - raw DTE broadcast / shuffle / scatter / gather 作为 collective 主路径。
 - 使用 raw `dst[32]` / `dest_num` 字段伪装成 public helper 支持的多目的地发送。
 - 使用 Stream/mailbox 作为 default high-performance data plane。
 - 未经 route/verifier 的跨卡 Direct DTE。
 
-raw non-unicast DTE 可以作为 V1/HardwareVerify 主题：需要独立 ABI、resource model、board test 和
-错误语义后才能进入 compiler lowering。
+raw non-unicast DTE 可以作为 HardwareVerify 主题：需要独立 ABI、resource model、board test 和
+错误语义后才能进入 compiler lowering。在这些证据补齐前，all-gather、all-reduce、all-to-all 等
+collective 仍应由 unicast p2p schedule 组合表达，而不是在 logical IR 层被拒绝。
 
 当前实现中，`wafer.comm.send` / `wafer.comm.recv` 的 p2p verifier 已在存在
 `wafer.placement.map` 时检查 peer 指向 active physical tile，`wafer.comm.wait` 要求至少一个
@@ -222,7 +227,8 @@ P6.6 起，StableHLO logical `all_gather` 可以先由
 
 ## 6. Collective Lowering
 
-V0 collective 不依赖 raw DTE non-unicast，而是由 unicast p2p step 组合。
+当前 collective correctness path 不依赖 raw DTE non-unicast，而是由 unicast p2p step 组合。算法
+覆盖不足是 lowering 恢复任务，不是上游 SPMD / collective IR 的不支持理由。
 
 ### 6.1 Collective Permute
 
@@ -256,7 +262,7 @@ raw DTE non-unicast gather 不在 correctness path。
 `reduce_scatter` 由 communication step 和 local reduce step 组合。local reduce 使用
 `wafer.compute.reduce` 或其它明确 compute op，不能把 reduction 藏在 DTE protocol 中。
 
-`all_reduce` 可以 lower 成 reduce-scatter + all-gather，也可以在后续引入其它算法。V0 只要求：
+`all_reduce` 可以 lower 成 reduce-scatter + all-gather，也可以在后续引入其它算法。IR 只要求：
 
 - reduction kind、dtype、init/accumulate 语义可验证。
 - 每个 communication step 是 unicast p2p。
@@ -269,7 +275,24 @@ reduce-scatter 可以由多个 slot op 或后续 buffer-slice IR 组合。`--waf
 `wafer.compute.elementwise` 的 add/max/min 对 accumulator 和 recv staging buffer 做显式本地累计。
 这保证 reduction kind、dtype、use-def 和 wait 顺序都留在 IR 中，而不是变成 DTE side effect。
 P6.6 的 StableHLO normalization pass 会把 single-result StableHLO `all_reduce` /
-`reduce_scatter` 降到这些 collective-level op，并拒绝非 sum/max/min reduction body。
+`reduce_scatter` 降到这些 collective-level op。当前实现只覆盖 sum/max/min reduction body；如果
+SPMD 产出其它硬件可表达 reduction kind，应补充 `wafer.comm` / `wafer.compute` 表示和 verifier，
+而不是把当前 lowering 子集当成 communication 语义边界。
+
+### 6.4 All-to-All
+
+`all_to_all` 是 split / exchange / concatenate 的 logical collective。即使没有专用 raw DTE
+non-unicast helper，它也可以由 placement 后的一组 unicast send/recv/wait 和明确 buffer slice
+组合表达。IR 必须能看到：
+
+- 每个 rank 发送和接收的 slice shape、dtype、byte count。
+- source/destination logical rank group 和 placement 后 physical peer。
+- concat / layout relation，或交给 layout/materialization 层解释的 explicit slice result。
+- token/wait 和 buffer lifetime。
+
+如果当前实现还没有 `wafer.comm.all_to_all` op 或 lowering pass，P2.S1 应保留 StableHLO/SDY
+collective metadata 或补 collective-level op；R6 再恢复 explicit p2p schedule、resource allocation
+和 package/runtime metadata。
 
 ## 7. Interaction with Layout, SPM, and DDR
 
@@ -318,11 +341,13 @@ Collective-level verifier：
 
 - collective semantic、rank group、shape、slice、dtype 与输入输出一致。
 - physical placement 覆盖 logical group，且 good-tile/PG 条件满足。
-- V0 target policy 下 unsupported collective 或 cross-card route 给出明确 diagnostic。
+- 对目标硬件 / ABI 证据明确无法表达的 route 或 protocol 给出 diagnostic。当前某个 lowering pass
+  未实现的 collective、multi replica group 或 cross-card schedule 不应在 collective-level verifier
+  中被当成语义不支持；应保留 IR fact，并由对应 lowering / placement / runtime 恢复任务补齐。
 
 P2P-level verifier：
 
-- peer 是单个 active physical tile；V0 只允许 fixed-size unicast。
+- peer 是单个 active physical tile；当前 Direct DTE compiler path 只允许 fixed-size unicast。
 - send source 和 recv destination 是 SPM tile-local buffer 或 lowerable descriptor。
 - 若 selected protocol 使用 `#ddr` endpoint，descriptor 必须满足 DDR resource plan 的 pool/domain、
   range、alignment 和 ownership contract。
@@ -364,9 +389,9 @@ wafer.comm.wait %send1, %recv1
 和 storage realization 推导或显式 SSA value 表达。ring order 只是 V0 候选算法；如果 planner
 接受 tree 或其它算法，IR 也应展开为对应 p2p body，而不是保留一个不可验证的 plan attr。
 
-## 11. V0 and Future Work
+## 11. Current Implementation and Future Work
 
-V0：
+当前实现：
 
 - single-card fixed-size unicast Direct DTE。
 - `collective_permute` 和 ring `all_gather`。
@@ -376,8 +401,10 @@ V0：
 
 后续进入条件：
 
-- raw DTE broadcast/shuffle/scatter/gather：需要独立 ABI、resource model 和板端验证。
-- cross-card collective：需要 C2C route、runtime/driver completion 和 placement policy 稳定。
+- raw DTE broadcast/shuffle/scatter/gather：需要独立 ABI、resource model 和板端验证；未验证前使用
+  unicast p2p schedule 组合 collective。
+- cross-card collective：需要 C2C route、runtime/driver completion 和 placement policy 稳定；logical
+  mesh / rank group 仍可先在 SPMD / placement IR 中表达。
 - Stream/mailbox fallback：只作为 control/compatibility plane，必须有显式 runtime boundary。
 - compute/comm overlap cost model：需要 PMU case 和 resource conflict verifier 支撑。
 

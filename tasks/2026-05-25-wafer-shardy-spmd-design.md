@@ -65,7 +65,7 @@ verified StableHLO / SDY artifact
   -> Shardy SPMD partition
   -> per-rank artifact selection
   -> per-rank artifact verifier
-  -> Wafer collective / placement input normalization
+  -> logical handoff artifact for placement / communication
 ```
 
 P2.S1 输出仍然是 logical per-rank artifact bundle：
@@ -79,9 +79,15 @@ P2.S1 输出仍然是 logical per-rank artifact bundle：
 exporter metadata。
 不能靠 pass side table、function name、parameter name 或 dump 文件名恢复。
 
-V0 可继续限制 unsupported strategy，但限制必须以 legality diagnostic 形式暴露。例如 multi
-replica group、rank selection policy 或 shard slicing 若尚未支持，必须在 P2.S1 verifier /
-pipeline legality 中拒绝，不能静默退回到 single group fixture。
+P2.S1 不能以下游当前 lowering、placement 或 runtime 尚未实现为“不支持”依据。若 Shardy/SPMD
+产出的合法语义能由 Wafer 硬件通信、存储或同步能力表达，但当前 Wafer IR 还没有清楚表示，P2.S1
+必须先补 op / attr / type / verifier contract，或在任务队列中明确把对应下游 lowering 作为恢复项。
+multi replica group、rank selection policy、shard slicing 和 collective metadata 都属于这类事实：
+它们应进入 per-rank artifact 或后续 handoff IR，而不是被静默退回 single group fixture，也不能
+因为某个 ring / placement pass 暂时未覆盖就被当成 SPMD 不支持。
+
+P2.S1 只应拒绝两类输入：exporter / Shardy 产物本身非法或自相矛盾；或者目标硬件 / ABI 证据明确
+无法表达该语义，且无法由已有硬件能力组合实现。诊断必须定位到当前拥有该事实的层级。
 
 ## 3. Logical Mesh Contract
 
@@ -105,9 +111,12 @@ V0 关注以下 StableHLO collective 语义：
 | `all_gather` | shard concat / replication | `wafer.comm` collective lowering |
 | `reduce_scatter` | reduce + shard distribution | `wafer.comm` collective lowering |
 | `all_reduce` | all-rank reduction | `wafer.comm` collective lowering |
+| `all_to_all` | split / exchange / concatenate across logical ranks | `wafer.comm` collective lowering or explicit p2p schedule |
 
-`all_to_all` 不作为 V0 主线。它可以保留为后续扩展，但不能让 V0 communication 设计被它的
-复杂 schedule 牵引。
+`all_to_all` 的高性能算法可以后于 ring all-gather / all-reduce 实现，但 P2.S1 不应因为当前
+communication lowering 未实现该算法而丢失或拒绝它的 logical collective 语义。若硬件 data plane
+只能通过 unicast Direct DTE 组合实现，per-rank artifact 仍要保留 split / exchange / concat 的
+rank group、slice 和 dtype 事实，后续 communication lowering 再选择 p2p schedule。
 
 Collective lowering 分两步：
 
@@ -119,13 +128,15 @@ StableHLO logical collective
 
 Shardy / SPMD 只负责第一行之前的 logical collective 生成。
 
-当前实现新增 `--wafer-lower-stablehlo-collectives-to-comm` 作为第一步 normalization：
+当前实现已有 `--wafer-lower-stablehlo-collectives-to-comm` 作为第一步 normalization：
 single-result StableHLO `all_gather`、`all_reduce` 和 `reduce_scatter` 会降到 collective-level
 `wafer.comm` op。Pass 通过 `local-rank` option 表达当前 partition 在 replica group 中的 rank，
 从 `replica_groups` 推出 group size，并只接受 sum/max/min 这三类 reduction body。StableHLO
 `reduce_scatter` 的 V0 输出先显式进入 slot-level `wafer.comm.reduce_scatter`；从 full input 到
 local scatter slot 的临时物化由 visible `unrealized_conversion_cast` 表达，后续应由 buffer-slice
-IR 或 layout/materialization pass 收敛，不作为隐藏 side table。
+IR 或 layout/materialization pass 收敛，不作为隐藏 side table。这些是当前 bridge 的覆盖状态，
+不是 P2.S1 的语义上限；P2.S1 若遇到硬件可表达但当前 bridge 未覆盖的 collective，应扩展
+collective-level IR 或保留 StableHLO / SDY metadata，而不是把 lowering 缺口写成 SPMD reject。
 
 2026-05-26 R2.2 恢复了 SDY artifact bridge 的工程入口：`WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON`
 时，`wafer-opt` 和 frontend verifier tool 显式注册 Shardy / SDY dialect，`wafer-opt` 也注册
@@ -136,9 +147,9 @@ Wafer 输入被 parse/verify。
 `wafer.comm.all_gather`、`wafer.comm.all_reduce` 和 `wafer.comm.reduce_scatter` 的
 `rank_group = array<i64: ...>` attr。`group_size` 只表示 group cardinality，`local_rank` 是当前
 partition 在该 rank group 中的 index；ring lowering 通过 `rank_group` 查询 `wafer.placement.map`
-的 logical-rank 映射，不再假设 logical rank 总是连续 `0..group_size-1`。V0 仍只接受单个
-StableHLO replica group；多 replica-group artifact 需要后续增加全局 rank / group selection
-policy。
+的 logical-rank 映射，不再假设 logical rank 总是连续 `0..group_size-1`。当前 bridge 对多
+StableHLO replica group 的覆盖仍不完整；P2.S1 的任务是补全全局 rank / group selection policy
+和 per-rank artifact 表示，不能把单 replica group 当成长期 SPMD contract。
 
 ## 5. 与 Placement 的接口
 
@@ -183,7 +194,7 @@ runtime package metadata。
 
 诊断要把问题定位到 logical sharding，不要提前报告为 Wafer SPM/DDR/packet 错误。
 
-## 8. 验证和下游消费
+## 8. 验证和导出
 
 P2.S1 的完成证明必须至少覆盖：
 
@@ -191,8 +202,11 @@ P2.S1 的完成证明必须至少覆盖：
 - Shardy propagation / partitioning 后能得到指定 local rank 的 per-rank artifact。
 - per-rank artifact 仍通过 frontend boundary verifier 或等价 verifier，不丢 function boundary、
   dynamic bound、bundle-derived constant facts 和 sharding facts。
-- StableHLO collective metadata 能继续 lower 到 `wafer.comm` `rank_group`，并被 placement /
-  ring lowering 测试消费。
+- per-rank artifact 完整保留 logical collective、replica group / rank group、local rank、local shard
+  shape、dtype 和 user-visible input/output shard relation。
+- 对当前已有 `wafer.comm` 表示的 collective，可以增加 handoff smoke 证明 metadata 能进入
+  `wafer.comm` `rank_group`；但下游 ring / placement / resource lowering 的当前覆盖范围不能作为
+  P2.S1 的支持边界。
 
 后续 R3/R4/R6 测试应优先复用 P2.S1 的 per-rank artifact 作为输入，逐步验证：
 
@@ -205,10 +219,10 @@ per-rank artifact
 ```
 
 手写 `sdy.mesh` / StableHLO collective fixture 只保留为 dialect/verifier/unit 级测试。它不能替代
-“verified frontend artifact -> Shardy pipeline -> per-rank artifact -> Wafer lowering”的主链路
-证明。
+“verified frontend artifact -> Shardy pipeline -> per-rank artifact”的主链路证明。
 
 因此，P2.S1 之后每个消费 sharding / per-rank artifact 的任务完成时，都必须继续使用真实图导出的
 artifact chain 做端到端 gate。测试不能只构造一个新的手写 per-rank fixture，也不能只检查当前层
-dump；必须证明前序 sharding facts 在本任务的 verifier、lowering、placement、communication 或
-resource 逻辑中被实际使用。
+dump；必须证明前序 sharding facts 在本任务边界的 verifier、lowering、placement、communication
+或 resource 逻辑中被实际使用。若直接下游尚未支持某个硬件可表达语义，应把缺口落成下游恢复任务
+或补充 IR 表示，而不是修改上游 artifact 让其避开该语义。

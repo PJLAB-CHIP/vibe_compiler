@@ -308,7 +308,9 @@ attrs 的 `wafer.compute.gemm`，并 lower 到带 `batch_count` 和 M/K/N 的 `w
 skeleton。M6 package gate 随后补入 workspace/resident constant metadata、resource summary
 一致性验证和当前 full block lowering 输出的完整 ABI issue 序列。它仍不是通用
 elementwise/reduce/GEMM coverage；更复杂 broadcast、relation/logic、convert、多输入/非
-constant-init reduce 和 mask/select 仍按后续泛化 gate 推进。
+constant-init reduce 和 mask/select 仍按后续泛化 gate 推进。当前 coverage 不能被解释成
+Wafer compute 语义上不支持这些结构；只要硬件 wrapper / structured lowering 能表达，就应补
+compute op、verifier、ABI 或 resource gate。
 
 V1 或后续扩展：
 

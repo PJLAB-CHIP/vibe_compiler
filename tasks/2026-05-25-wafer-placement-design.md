@@ -77,8 +77,9 @@ card_y, card_x, tile_y, tile_x
   capability。
 
 Placement 不要求所有程序都用完整 16 tile。cluster 可以是单 tile、单卡子集、单卡全 tile 或
-多卡 mesh。V0 优先支持单卡和小规模 multi-tile；跨卡只作为 topology 可表达对象，不作为
-默认必须跑通的路径。
+多卡 mesh。当前实现优先恢复单卡和小规模 multi-tile；跨卡 topology 仍应保持可表达。跨卡 route、
+C2C cost 或 runtime completion 尚未完善时，应形成 placement/runtime 恢复任务，不能反向要求
+SPMD 不产生跨卡 logical mesh 或 rank group。
 
 ## 4. IR Representation
 
@@ -190,8 +191,12 @@ V0 支持：
 - logical DP / TP axis 到卡内 tile mesh 的简单映射。
 - good-tile bitmap 过滤。
 
-暂不作为 V0 通过标准：
+当前不作为 placement 基线通过标准：
 
 - 跨卡 collective 最优 placement。
 - runtime 迁移、动态 bad-tile 重映射。
 - serving-level request placement。
+
+这些不是 logical mesh / rank group 的语义不支持。若上游产出硬件 topology 可表达的跨卡 mesh，
+placement IR 应保留必要 mapping / capability fact；缺少最优策略或 runtime route 时，失败应定位到
+placement/runtime 恢复项，而不是让上游 sharding artifact 改写语义。

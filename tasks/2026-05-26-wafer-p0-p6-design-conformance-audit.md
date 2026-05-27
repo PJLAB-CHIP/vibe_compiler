@@ -50,6 +50,9 @@ stage-connection gate。
 5. R0.1 时源码组织没有跟随设计文档的 IR stage / op prefix 边界演进，导致 frontend、planner、
    materialization、resource check、communication 和 ABI lowering 的 ownership 被同一个
    `Transforms` 聚合目录掩盖。R0.2 已修正源码 ownership；R1.1 已修正 op-family IR 文件拆分。
+6. 个别任务口径把“当前下游 lowering/resource/runtime 没实现”混成了“上游语义不支持”。后续恢复
+   必须按硬件能力和 IR contract 判断支持范围；当前实现缺口应落成下游恢复任务或 IR 扩展，不能
+   反向污染 frontend、SPMD、group 或 placement 语义。
 
 ## 纠正原则
 
@@ -58,6 +61,8 @@ stage-connection gate。
   manifest 是恢复 P3/P4/P5 local compile gate 的一个子任务，不能被当作 P7 已经可以开始的前提。
 - 每个被恢复为 `done` 的任务必须满足对应设计文档的合同，或在任务名/验收里明确收窄为 skeleton。
 - fixed smoke manifest 只能作为 tool unit fixture，不能作为 compile pipeline correctness fence。
+- 当前下游实现缺口不能作为上游 artifact / IR 的语义边界。若合法上游语义能由 Wafer 硬件/ABI
+  能力组合表达，恢复任务应补 IR contract、verifier、lowering 或 runtime/package gate。
 
 ## 优先修复顺序
 

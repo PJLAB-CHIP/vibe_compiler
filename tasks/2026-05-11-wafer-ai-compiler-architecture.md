@@ -149,6 +149,9 @@ V0 策略：
 - 具体 importer API 不是 Wafer 后端合同；后端只消费 verified artifact 和已 materialize 到 IR 的
   importer facts。
 - v0 先接受静态或有限动态 shape；任意 PyTorch eager 动态行为不是 V0 目标。
+- 支持范围由 exporter artifact 的合法语义、Wafer 硬件能力和当前 IR contract 决定；当前某个后续
+  lowering / placement / runtime pass 尚未实现，不能反向成为 frontend、SPMD 或 planner 的不支持
+  理由。若硬件可表达但 IR/lowering 未覆盖，必须补 IR contract 或下游恢复任务。
 
 Frontend artifact 的模型导入、第三方依赖组织、constant/weight、sharding annotation 和验证合同见
 `tasks/2026-05-25-wafer-frontend-stablehlo-artifact-design.md`。
@@ -201,7 +204,9 @@ V0 collective 语义：
 - `reduce_scatter`
 - `all_reduce`
 
-`all_to_all` 不作为 V0 核心目标。
+`all_to_all` 的高性能 lowering 不作为 V0 核心目标；如果 Shardy/SPMD 产出合法 `all_to_all`
+语义，SPMD/per-rank artifact 仍必须保留 split / exchange / concat、rank group 和 shard relation。
+后续 communication lowering 可先用 unicast p2p schedule 组合实现。
 
 Shardy / SPMD 的 logical mesh、partition 和 collective 合同见
 `tasks/2026-05-25-wafer-shardy-spmd-design.md`。
@@ -400,6 +405,8 @@ V0 主路径：
 - single-card cluster。
 - ring all-gather。
 - ring reduce-scatter/all-reduce。
+- all-to-all 或其它 collective 若由上游合法产出，先保留 logical collective / shard metadata，后续
+  `wafer.comm` 可用 unicast p2p schedule 组合实现；缺少专用 lowering 不是上游不支持理由。
 
 Direct DTE/FSM 相关 API：
 
@@ -636,7 +643,7 @@ microbench 不应成为 M0 前置条件。
 
 - 任意 PyTorch 模型无约束 seamless 运行。
 - 复杂 dynamic shape 全覆盖。
-- `all_to_all` 高性能实现。
+- `all_to_all` 高性能实现；logical artifact 和 p2p 组合实现路径仍应保留。
 - 完整 vLLM/SGLang serving 集成。
 - 自定义 LLVM 后端或真正 ISA intrinsic lowering。
 - 依赖旧 Stream/Score data-plane 作为主通信路径。

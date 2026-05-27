@@ -348,10 +348,11 @@ framework capture artifact
   -> tile_region / resource / ABI / package gate
 ```
 
-每层可以保留手写 MLIR 做 verifier negative test，但完成证明必须说明下游消费了上游产物中的哪些
-事实。若某个测试只 dump 或 FileCheck 当前层输出，而下游没有消费这些字段，它只能证明局部工具可用，
-不能证明主链路完成。
+每层可以保留手写 MLIR 做 verifier negative test，但完成证明必须说明当前任务边界消费、验证或
+导出了上游产物中的哪些事实。若某个测试只 dump 或 FileCheck 当前层输出，而当前层 verifier /
+lowering / artifact writer 没有使用这些字段，它只能证明局部工具可用，不能证明主链路完成。
 
 P2.F1 之后的每个相关任务都要把这条 chain 继续向下延伸：任务完成时必须有一条从真实图 artifact
-出发的端到端 gate，重放已完成上游阶段，并证明本任务新增语义被下一层 verifier、planner、lowering
-或 package/runtime 边界消费。手写 artifact、局部 pattern test 和 fixed manifest 只能作为补充覆盖。
+出发的端到端 gate，重放已完成上游阶段，并证明本任务新增语义在本任务边界可验证、可导出或被
+直接消费。手写 artifact、局部 pattern test 和 fixed manifest 只能作为补充覆盖。后续 stage 当前
+未实现时，应记录为恢复任务或补 IR contract，不能反向要求 frontend/SPMD artifact 避开该语义。

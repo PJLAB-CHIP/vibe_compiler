@@ -288,7 +288,9 @@ group/resource planner 通过显式 IR 边界和 workspace demand materialize。
 
 这些 pass 可以使用 pattern rewrite、canonicalization 和 dialect conversion，但 pass pipeline 不承载
 隐藏语义。若一个 op 不能被 normalized 到 verifier 可解释的结构，应保留在上游 dialect 并报
-明确 unsupported diagnostic，不能通过名字 fallback。
+明确 diagnostic，不能通过名字 fallback。这里的 diagnostic 只说明当前 normalization 边界还没有
+可验证表示；如果该语义能由 StableHLO / structured tensor IR 和 Wafer 硬件能力表达，后续任务应
+扩展 normalized IR、verifier 或 lowering，而不是把当前 pattern 覆盖范围写成长期不支持。
 
 ## 7. Verifier
 

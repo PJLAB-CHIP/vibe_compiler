@@ -16,6 +16,9 @@ Serving integration 暂不纳入本文通过标准。
 - analysis 可以失败并反馈 planner，但失败候选不写进 IR。
 - 影响 codegen 的 accepted fact 必须能从 IR / type / op / attr / region / effect 中验证。
 - pass pipeline 只定义 transformation 顺序，不承载隐藏语义。
+- 支持范围由目标硬件能力、runtime/ABI 证据和当前 IR contract 决定，不由某个下游 lowering pass
+  的当前覆盖范围反向决定。如果上游产出的是合法语义，且硬件/通信/存储模型可表达，而下游还没
+  实现，就补 IR contract、verifier 或对应下游恢复任务；不能把实现缺口写成上游不支持。
 - 当前无卡开发环境先以 local compile / package gate 为准；板端 runtime success 必须等实际计算卡
   环境中验证，并且必须有可信 completion source，不能用已知 stub API 当 correctness fence。
 
@@ -70,10 +73,12 @@ Gate 通过只说明进入下一层的输入合法，不说明整个 compiler �
   后端 textual MLIR tests 不依赖 importer-only Python / framework 包，但不能作为主链路完成证明。
 - board smoke tests：只在 runtime path 和 hardware availability 明确时作为新增 milestone gate。
 
-P2.F1 之后的任务完成验证还需要一条端到端消费 gate：输入必须来自真实 framework/exporter 图导出的
-artifact，测试应重放已完成的上游链路，并检查本任务新增的 IR fact、verifier fact、resource fact
-或 package fact 被下游实际消费。局部 verifier negative、pattern FileCheck、手写 StableHLO/Linalg
-fixture 和 fixed manifest 可以保留，但只能补覆盖，不能单独作为任务完成证明。
+P2.F1 之后的任务完成验证还需要一条真实 artifact chain gate：输入必须来自真实 framework/exporter
+图导出的 artifact，测试应重放已完成的上游链路，并检查本任务新增的 IR fact、verifier fact、
+resource fact 或 package fact 能在该任务边界正确导出并被直接消费。局部 verifier negative、
+pattern FileCheck、手写 StableHLO/Linalg fixture 和 fixed manifest 可以保留，但只能补覆盖，不能
+单独作为任务完成证明。若直接下游还没有实现某个硬件可表达语义，完成证明应把缺口记录为下游恢复
+任务，而不是修改上游 artifact 或 verifier 让该语义消失。
 
 ## 4. Milestone Gates
 
@@ -117,9 +122,12 @@ M3 single-card collective：
 
 M4 partitioned StableHLO collective lowering：
 
-- Shardy / SPMD 输出的 logical collective lowered 到 `wafer.comm`。
-- placement 和 comm lowering 保留 collective semantics。
-- layout/SPM/DDR resource gates 都通过。
+- Shardy / SPMD 输出的 logical collective 能保留为 per-rank artifact 中的 StableHLO / SDY metadata，
+  或 lowered 到 collective-level `wafer.comm`。
+- placement 和 comm lowering 在其实现范围内保留 collective semantics；未实现的硬件可表达
+  collective 形成 R6/R4 恢复任务，不能反向限制 P2.S1 artifact export。
+- layout/SPM/DDR resource gates 只对本 milestone 已经 materialize 的 movement / buffer demand
+  负责；尚未 materialize 的 logical collective 不能被伪装成已通过 resource gate。
 - 当前 integration gate：`test/Integration/m4-partitioned-collective-gate.mlir` 覆盖 StableHLO
   all-gather/all-reduce/reduce-scatter 经 `wafer.comm`、ring lowering 到 C ABI skeleton。SPM/DDR
   resource gate 在该 communication skeleton 中仍由后续完整 package gate 组合验证。
@@ -193,7 +201,8 @@ materialize 为 `wafer.compute.reduce` 并 lower 到带 `dimensions` / `init_val
 contraction materialize 为 batched `wafer.compute.gemm`，并 lower 到带 `batch_count`、M/K/N 和
 batch/head dimension attrs 的 `wafer.abi.gemm` skeleton。M6 package manifest 已覆盖当前 static
 block 的完整 ABI issue 序列。当前仍不覆盖 mask/select、dynamic shape 或非 constant-init reduce；
-这些属于后续泛化，不是本轮 M6 static gate 的通过条件。
+这些是后续 compute/group/resource 恢复项。只要对应语义能由 StableHLO / structured tensor IR 和
+Wafer 硬件能力表达，就不能把当前 static gate 的覆盖范围写成长期不支持。
 
 ## 5. Failure Handling
 
@@ -210,6 +219,8 @@ block 的完整 ABI issue 序列。当前仍不覆盖 mask/select、dynamic shap
 - completion source 错误回 launch/runtime adapter。
 
 不要让下游 pass 猜测并修复上游语义错误。
+也不要让下游实现缺口反向变成上游语义拒绝；实现缺口应回到拥有该 lowering / resource / runtime
+责任的任务队列。
 
 ## 6. V0 Minimal CI
 

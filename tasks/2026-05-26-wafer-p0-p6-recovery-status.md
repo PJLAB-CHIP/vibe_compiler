@@ -212,9 +212,10 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
   MLIR 或手写 emitter 仍不能作为后续完成证明。
 - P2.S1：ready；集成完整 Shardy propagation / SPMD partitioner pipeline，per-rank artifact、
   multi replica group、rank selection、shard slicing、collective legality 和 placement input 必须由
-  IR/attr/verifier 明确表示。完成证明必须消费 P2.F1 artifact，产出 per-rank artifact，并继续被
-  collective normalization / `wafer.comm` `rank_group` / placement gate 消费。R3.1 依赖
-  P2.F1/P2.S1 提供真实 frontend/SPMD artifact 来源。
+  IR/attr/verifier 明确表示。完成证明必须消费 P2.F1 artifact，产出可校验的 per-rank artifact；
+  当前 collective normalization、`wafer.comm`、placement 或 ring/resource lowering 的覆盖范围不能
+  反向限制 P2.S1 支持范围。硬件可表达但下游尚未实现的语义必须形成对应恢复任务或补 IR contract。
+  R3.1 依赖 P2.F1/P2.S1 提供真实 frontend/SPMD artifact 来源。
 
 ## P3 M0 Single-Tile Load-GEMM-Store
 
@@ -351,7 +352,9 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
 
 - Shardy/SPMD 保留 logical collective；placement 提供 physical peer；`wafer.comm` 保留 collective /
   p2p semantics；p2p schedule 用 send/recv/wait/token/effect 显式表达。
-- V0 只使用 fixed-size unicast Direct DTE；raw non-unicast DTE 需要单独 ABI 和板端验证。
+- 当前已验证 compiler data plane 只使用 fixed-size unicast Direct DTE；raw non-unicast DTE 需要单独
+  ABI 和板端验证。未验证 raw non-unicast 不能成为 logical collective 不支持的理由，collective 可
+  先由 unicast p2p schedule 组合表达。
 - DTE resource allocator 要管理 DTE/FSM/packet/stream，comm buffer/staging 要进入 SPM/DDR demand，
   local drain、comm wait、group barrier 要分开。
 - communication metadata 最终要进入 C ABI / runtime package，不能停在 isolated IR smoke。
