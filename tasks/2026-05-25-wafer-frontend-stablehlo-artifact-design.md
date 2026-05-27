@@ -266,6 +266,11 @@ Frontend 只保存上游 sharding 事实：
 - Shardy / SDY 是 propagation 和 SPMD partition 的 owner。
 - logical mesh name、axis 和 annotation 必须能被 Shardy verifier 解释。
 
+P2.S1 的真实图 sharding 测试必须通过 framework frontend mark 接口生成这些事实，例如
+PyTorch/XLA 的 `mark_sharding` 或 export 可追踪的等价前端 op。Frontend adapter 不为 sharding
+额外生成 Wafer 私有 JSON、sidecar 或名字约定；如果 mark 无法进入 StableHLO / SDY 可解释 artifact，
+应诊断为 frontend export / sharding import 问题，而不是在后端补第二套描述。
+
 Frontend 不把 sharding annotation 转成 physical card/tile id，也不提前选择 DTE route。
 
 ### 3.4 External Tensor Layout

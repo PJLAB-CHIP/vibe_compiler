@@ -89,6 +89,50 @@ multi replica group、rank selection policy、shard slicing 和 collective metad
 P2.S1 只应拒绝两类输入：exporter / Shardy 产物本身非法或自相矛盾；或者目标硬件 / ABI 证据明确
 无法表达该语义，且无法由已有硬件能力组合实现。诊断必须定位到当前拥有该事实的层级。
 
+#### 2.1.1 P2.S1 真实图和 sharding 覆盖矩阵
+
+P2.S1 的主 gate 继续使用 P2.F1 的真实 4096 matmul 图，不换成小 toy model：
+
+```text
+x: tensor<4096x4096xf32>
+weight: tensor<4096x4096xf32>
+bias: tensor<4096xf32>
+
+y = tanh(x @ weight + bias) + residual
+```
+
+Sharding 必须从 framework frontend 提供的 mark 接口进入 artifact，例如 PyTorch/XLA 的
+`mark_sharding` 或 export 可追踪的等价前端 op。测试和实现不得手写 `sdy.sharding` 作为主链路
+输入，也不得用 Wafer 私有 JSON / sidecar 描述 sharding。每种策略都应导出同一格式的
+PyTorch/XLA StableHLO bundle，并由 Shardy / SPMD pipeline 消费：
+
+```text
+<strategy>/
+  functions/forward.mlir
+  functions/forward.meta
+  functions/forward.bytecode
+  data/weight
+  data/bias
+```
+
+P2.S1 至少覆盖以下常见 sharding 策略。表中的 `dp` / `tp` 是 logical mesh axis；`None` 表示该
+tensor 维度在对应策略中 replicated，不表示缺少 metadata。
+
+| 策略 | 典型 mark | 期望 SPMD 语义 |
+| --- | --- | --- |
+| data / batch sharding | `x: (dp, None)`；`weight`、`bias` replicated | 输出按 batch 维切分；matmul 本身不需要 collective |
+| column parallel / output-feature sharding | `weight: (None, tp)`；`bias: (tp,)`；`x` replicated | 输出按 `N` 维切分；后续若要求 full output 才需要 gather |
+| row parallel / contracting-dim sharding | `x: (None, tp)`；`weight: (tp, None)` | `K` 维 partial sum；per-rank artifact 必须保留 reduction collective 语义 |
+| 2D output sharding | mesh `dp x tp`；`x: (dp, None)`；`weight: (None, tp)`；`bias: (tp,)` | 输出同时按 `B` / `N` 维切分；保留 2D logical mesh 和 rank group |
+| 2D contracting + output sharding | mesh `dp x tp`；`x` 覆盖 `B` 和 `K` 分片；`weight` 覆盖 `K` 和 `N` 分片 | 输出按 `B` / `N` 分布，同时 `K` 维需要跨 group reduction |
+| partial replication | 某些 tensor 在一个 mesh axis 上 sharded、在另一 axis 上 replicated，例如 `bias` 在 `dp` 上 replicated、在 `tp` 上 sharded | verifier 必须能解释 subgroup replication，不把 replicated axis 丢成默认全复制 |
+
+这些 case 是 P2.S1 的覆盖矩阵，不是新的长期协议对象。长期合同仍是 IR 中的 logical mesh、sharding
+annotation、rank group、local shard relation 和 collective metadata。pipeline parallel、MoE /
+expert sharding、真实 sequence parallel 和非整除 uneven slicing 不进入第一批 P2.S1 主 gate；它们
+需要对应图结构、routing/stage 语义或单独 legality/verifier 覆盖，不能通过在当前 matmul case 上
+硬塞名字来冒充支持。
+
 ## 3. Logical Mesh Contract
 
 Logical mesh 是 model-level parallelism 的语义对象：
@@ -199,6 +243,9 @@ runtime package metadata。
 P2.S1 的完成证明必须至少覆盖：
 
 - P2.F1 verified artifact 可以作为 Shardy pipeline 输入。
+- P2.F1 4096 matmul 图在 data / batch、column parallel、row / contracting、2D output、2D
+  contracting + output 和 partial replication 策略下都能通过 frontend mark 导出 sharding
+  artifact；主 gate 不以手写 `sdy.sharding` fixture 代替真实导出。
 - Shardy propagation / partitioning 后能得到指定 local rank 的 per-rank artifact。
 - per-rank artifact 仍通过 frontend boundary verifier 或等价 verifier，不丢 function boundary、
   dynamic bound、bundle-derived constant facts 和 sharding facts。
