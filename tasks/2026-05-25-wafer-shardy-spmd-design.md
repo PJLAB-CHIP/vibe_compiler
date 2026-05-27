@@ -2,7 +2,7 @@
 
 日期：2026-05-25
 
-状态：设计草案；2026-05-25 独立边界收口
+状态：设计草案；2026-05-25 独立边界收口；2026-05-27 明确 P2.S1 主 pipeline 和消费链
 
 本文定义 Wafer compiler 中 Shardy / SPMD 阶段的边界。该阶段负责 global tensor 的逻辑切分、
 sharding propagation、SPMD partition 和 logical collective 语义；不负责 physical tile
@@ -52,6 +52,35 @@ partitioned StableHLO module
 
 SPMD 输出仍然是逻辑程序。它只说明“哪些 logical rank 之间需要通信”，不说明“哪两个 physical
 tile 通过哪个 DTE resource 通信”。
+
+### 2.1 P2.S1 Shardy Propagation / SPMD Pipeline Contract
+
+P2.S1 在 R3 之前完成。它必须消费 P2.F1 产出的 verified frontend artifact，而不是只 parse
+手写 `sdy.mesh` fixture。主 pipeline 边界是：
+
+```text
+verified StableHLO / SDY artifact
+  -> sharding import / normalization
+  -> Shardy propagation
+  -> Shardy SPMD partition
+  -> per-rank artifact selection
+  -> per-rank artifact verifier
+  -> Wafer collective / placement input normalization
+```
+
+P2.S1 输出仍然是 logical per-rank artifact bundle：
+
+- per-rank StableHLO / func module。
+- local rank、global rank、replica group、rank group 和 mesh axis metadata。
+- local shard shape、dtype、user-visible input/output shard relation。
+- logical collective ops 或能被 collective normalization 解释的 StableHLO / SDY metadata。
+
+这些字段必须来自 IR、SDY attr、StableHLO collective metadata 或 verifier 可检查的 sidecar/config。
+不能靠 pass side table、function name、parameter name 或 dump 文件名恢复。
+
+V0 可继续限制 unsupported strategy，但限制必须以 legality diagnostic 形式暴露。例如 multi
+replica group、rank selection policy 或 shard slicing 若尚未支持，必须在 P2.S1 verifier /
+pipeline legality 中拒绝，不能静默退回到 single group fixture。
 
 ## 3. Logical Mesh Contract
 
@@ -135,6 +164,7 @@ SPMD 不应该为了特定 Wafer mesh 重新解释 StableHLO semantics。physica
 | sharding import | StableHLO + old attrs | Shardy/SDY annotations |
 | propagation | partially annotated module | fully propagated or diagnosed module |
 | SPMD partition | annotated global module | partitioned StableHLO |
+| per-rank artifact selection | partitioned StableHLO + rank selection policy | verified local-rank StableHLO artifact |
 | collective normalization | partitioned collective ops | downstream-friendly collective IR |
 
 这些 pass 的合法输出不包含 Wafer physical memory space、tile coordinates、DTE resource 或
@@ -151,3 +181,28 @@ runtime package metadata。
 - SPMD 输出中没有 physical tile id、SPM offset、DTE resource 或 packet field。
 
 诊断要把问题定位到 logical sharding，不要提前报告为 Wafer SPM/DDR/packet 错误。
+
+## 8. 验证和下游消费
+
+P2.S1 的完成证明必须至少覆盖：
+
+- P2.F1 verified artifact 可以作为 Shardy pipeline 输入。
+- Shardy propagation / partitioning 后能得到指定 local rank 的 per-rank artifact。
+- per-rank artifact 仍通过 frontend boundary verifier 或等价 verifier，不丢 function boundary、
+  dynamic bound、constant sidecar 和 sharding facts。
+- StableHLO collective metadata 能继续 lower 到 `wafer.comm` `rank_group`，并被 placement /
+  ring lowering 测试消费。
+
+后续 R3/R4/R6 测试应优先复用 P2.S1 的 per-rank artifact 作为输入，逐步验证：
+
+```text
+per-rank artifact
+  -> local compute normalization
+  -> group candidate
+  -> tile_region materialization
+  -> placement / communication / resource gate
+```
+
+手写 `sdy.mesh` / StableHLO collective fixture 只保留为 dialect/verifier/unit 级测试。它不能替代
+“verified frontend artifact -> Shardy pipeline -> per-rank artifact -> Wafer lowering”的主链路
+证明。

@@ -2,7 +2,7 @@
 
 日期：2026-05-25
 
-状态：设计草案；2026-05-25 独立边界收口
+状态：设计草案；2026-05-25 独立边界收口；2026-05-27 明确 P2.F1 capture 和跨阶段消费链
 
 本文定义 Wafer compiler 的 model import 和 frontend artifact 边界。它只负责把上游模型表达成
 可验证的 StableHLO / MLIR 输入，并把 shape、dtype、constant、weight sidecar、sharding
@@ -109,6 +109,41 @@ Model import 必须拒绝或显式诊断：
 - 无法界定容量的 dynamic shape。
 - 只能靠 Python 对象名、parameter 名或文件路径恢复的语义关系。
 - importer 依赖的第三方 dialect / attr 没有注册或没有 verifier。
+
+#### 2.1.1 P2.F1 Framework Capture Adapter Contract
+
+P2.F1 在 R3 之前完成，原因是后续 group / tile / resource 链路必须消费真实 frontend artifact
+来源，而不是继续围绕手写 MLIR fixture 自洽。P2.F1 的产物是工具层三件套，不是新的 Wafer IR：
+
+```text
+framework model / exported program
+  -> framework-specific capture adapter
+  -> StableHLO / MLIR artifact
+  -> sidecar manifest
+  -> compile config
+  -> WaferFrontend verifier
+```
+
+每个 framework-specific adapter 必须满足：
+
+- 只把框架 API、Python path、module name、parameter name、version workaround 留在 adapter 日志、
+  source map 或诊断中；这些信息不能成为后端 IR、sidecar resource identity 或 lowering 分支条件。
+- graph break、eager fallback、host callback、mutable state、training-only state 和不可验证 alias
+  必须变成 frontend verifier 可拒绝的诊断，不能 silent fallback 到 host/runtime path。
+- dynamic shape 必须产出可验证 bounded policy。V0 可以继续使用
+  `wafer.frontend.dynamic_bounds`，也可以由 sidecar/compile config 提供等价字段，但进入后端前
+  必须 materialize 成 verifier 能检查的 function boundary fact。
+- weight / constant 必须通过 sidecar resource key 绑定到 function argument 或明确的
+  `ConstantLike` value；参数名只能辅助诊断，不能参与语义匹配。
+- sharding annotation 必须保留为 StableHLO / SDY 可解释结构。adapter 不能把 sharding 提前改写成
+  physical card/tile id。
+- compile config 只能表达目标无关约束，例如 dynamic-bound policy、sharding import policy 和
+  capture capability。它不能携带 SPM offset、DDR pool、runtime handle、package path 或 DTE 参数。
+
+验证时，framework adapter smoke 必须把真实 adapter 产物继续交给
+`wafer-import-model --verify-import-result [--sidecar]`。手写 MLIR 仍可作为 verifier unit test，但
+不能单独作为 P2.F1 完成证明。对于本地没有安装的可选 framework dependency，测试可以标记 feature
+guard；一旦 dependency enabled，必须跑真实 adapter -> artifact -> verifier 链。
 
 ### 2.2 第三方工程依赖组织
 
@@ -248,3 +283,21 @@ V0 验证项：
 
 Frontend 验证只证明 artifact 可进入 compiler pipeline，不证明 tile planning、layout、SPM、
 runtime package 或板端执行正确。
+
+### 6.1 跨阶段消费链
+
+P2.F1 之后的验证不能停在 artifact dump。后续主线 gate 必须逐步消费同一条 artifact chain：
+
+```text
+framework capture artifact
+  -> frontend verifier
+  -> Shardy propagation / SPMD partitioner
+  -> per-rank artifact verifier
+  -> StableHLO / local compute normalization
+  -> wafer.group candidate
+  -> tile_region / resource / ABI / package gate
+```
+
+每层可以保留手写 MLIR 做 verifier negative test，但完成证明必须说明下游消费了上游产物中的哪些
+事实。若某个测试只 dump 或 FileCheck 当前层输出，而下游没有消费这些字段，它只能证明局部工具可用，
+不能证明主链路完成。

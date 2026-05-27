@@ -14,6 +14,11 @@ normalization 的覆盖状态按 structured tensor IR 合同记录。
 pipeline、mask/select/dynamic-shape 全覆盖、storage-realized constant slicing、group schedule
 completion、SPM/DDR/resource planning 或 runtime/package 闭环完成。
 
+2026-05-27 调度结论：framework-specific capture 和完整 Shardy propagation / SPMD partitioner
+pipeline 不是放弃项，也不应排在 R3 之后。它们作为 `P2.F1` / `P2.S1` 在 R3.1 之前完成，使后续
+group / tile / resource gate 消费真实 frontend/SPMD artifact 来源，而不是继续围绕手写 fixture
+自洽。
+
 ## R2.1 Frontend Artifact / Importer Contract
 
 实现边界：
@@ -103,3 +108,21 @@ boundary、tile shape、multi-stage schedule、SPM residency 或 C ABI issue seq
 
 这些验证证明 R2 artifact/bridge/coverage 状态收敛，不证明 R3 之后的 group planner、resource
 planner、package、runtime 或 board execution。
+
+## R2 之后的消费链要求
+
+R2 之后的完成证明必须从单点 fixture 转为跨阶段消费：
+
+```text
+P2.F1 framework capture artifact
+  -> frontend verifier
+  -> P2.S1 Shardy propagation / SPMD partitioner
+  -> per-rank artifact verifier
+  -> StableHLO / local compute normalization
+  -> R3 group candidate
+  -> R3 tile_region / resource / ABI / package gates
+```
+
+每个阶段可以保留手写 MLIR 做 negative verifier 测试，但主线完成证明必须说明下游实际消费了
+上游产物中的哪些语义事实。只生成、dump 或 FileCheck 某层输出，而下游没有使用这些字段，不再
+作为主线完成依据。

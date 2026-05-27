@@ -202,10 +202,13 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
   op/dataflow contract 重写，不把 acceptance pass 当 schedule completion。
 - P2.F1：ready；建立 framework-specific capture adapter contract，框架 capture 入口只能产出
   verified frontend artifact、sidecar 和 compile config，不能把框架 API/version/path/parameter
-  name 写进后端 IR 合同。
+  name 写进后端 IR 合同。完成证明必须跑真实 adapter -> artifact -> verifier 链；手写 MLIR 只算
+  verifier unit test。
 - P2.S1：pending；集成完整 Shardy propagation / SPMD partitioner pipeline，per-rank artifact、
   multi replica group、rank selection、shard slicing、collective legality 和 placement input 必须由
-  IR/attr/verifier 明确表示。R3.1 依赖 P2.F1/P2.S1 提供真实 frontend/SPMD artifact 来源。
+  IR/attr/verifier 明确表示。完成证明必须消费 P2.F1 artifact，产出 per-rank artifact，并继续被
+  collective normalization / `wafer.comm` `rank_group` / placement gate 消费。R3.1 依赖
+  P2.F1/P2.S1 提供真实 frontend/SPMD artifact 来源。
 
 ## P3 M0 Single-Tile Load-GEMM-Store
 
