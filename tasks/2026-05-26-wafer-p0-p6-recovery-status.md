@@ -213,11 +213,14 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
   MLIR 或手写 emitter 仍不能作为后续完成证明。
 - P2.S1：ready；集成完整 Shardy propagation / XLA SPMD partitioner pipeline，partitioned StableHLO、
   multi replica group、rank selection、shard slicing、collective legality 和 placement input 必须由
-  IR/attr/verifier 明确表示。完成证明必须消费 P2.F1 artifact，产出可校验的 partitioned StableHLO
-  或等价 per-rank artifact；不得生成 `wafer.spmd.*`、私有 JSON 或名字约定作为协议。当前
-  collective normalization、`wafer.comm`、placement 或 ring/resource lowering 的覆盖范围不能
-  反向限制 P2.S1 支持范围。硬件可表达但下游尚未实现的语义必须形成对应恢复任务或补 IR contract。
-  R3.1 依赖 P2.F1/P2.S1/R2.4 提供真实 frontend/SPMD artifact 来源和 tensor collective handoff。
+  IR/attr/verifier 明确表示。完成证明必须消费 P2.F1 artifact：有用户 sharding seed 时保留并传播
+  用户 seed；完全没有用户 seed 时在 SPMD 层补默认 single-card function-input sharding seed
+  （默认 16 tile，调试 1 tile，找不到合适切分维度时 replicated），再产出可校验的 partitioned
+  StableHLO 或等价 per-rank / replicated-local artifact；不得生成 `wafer.spmd.*`、私有 JSON 或
+  名字约定作为协议。当前 collective normalization、`wafer.comm`、placement 或 ring/resource
+  lowering 的覆盖范围不能反向限制 P2.S1 支持范围。硬件可表达但下游尚未实现的语义必须形成对应
+  恢复任务或补 IR contract。R3.1 依赖 P2.F1/P2.S1/R2.4 提供真实 frontend/SPMD artifact 来源和
+  tensor collective handoff。
 
 ## P3 M0 Single-Tile Load-GEMM-Store
 

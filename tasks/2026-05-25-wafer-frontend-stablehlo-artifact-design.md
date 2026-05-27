@@ -267,9 +267,9 @@ Frontend 只保存上游显式 sharding 事实：
 - logical mesh name、axis 和 annotation 必须能被 Shardy verifier 解释。
 
 如果 source model / exported artifact 没有 `mark_sharding` 或其它可解释 sharding annotation，
-语义就是未切分的普通 StableHLO 图。Frontend verifier 不应因此报错，也不应合成一套默认
-`sdy.sharding` / `wafer.spmd.*` 描述；后续 pipeline 应把它当作 single-program / unpartitioned
-输入，直接进入 local compute normalization、group、tiling 和后端 lowering。
+frontend 语义上仍是普通 StableHLO 图。Frontend verifier 不应因此报错，也不应在 frontend
+边界合成一套默认 `sdy.sharding` / `wafer.spmd.*` 描述；是否为了单卡 16 tile 利用率补默认
+sharding seed，属于 P2.S1 SPMD 阶段的默认策略。
 
 P2.S1 的真实图 sharding 测试必须通过 framework frontend mark 接口生成这些事实，例如
 PyTorch/XLA 的 `mark_sharding` 或 export 可追踪的等价前端 op。Frontend adapter 不为 sharding
@@ -352,11 +352,13 @@ P2.F1 之后的验证不能停在 artifact dump。后续主线 gate 必须逐步
 ```text
 framework capture artifact
   -> frontend verifier
-  -> if explicit sharding exists:
+  -> if user sharding seed exists:
        Shardy propagation / SPMD partitioner
        -> partitioned StableHLO / per-rank artifact verifier
      else:
-       unpartitioned StableHLO local program
+       P2.S1 default input sharding seed
+       -> Shardy propagation / SPMD partitioner
+       -> partitioned or replicated-local StableHLO / per-rank artifact verifier
   -> StableHLO / local compute normalization
   -> tensor collective normalization if collectives exist
   -> wafer.group candidate

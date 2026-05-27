@@ -36,9 +36,11 @@
   `wafer-import-model --verify-import-result <mlir>`；PyTorch/XLA capture 主链路用
   `wafer-import-model --verify-stablehlo-bundle <bundle-dir>` 校验 `functions/forward.mlir`、
   `functions/forward.meta` 和 `data/<parameter>`，不要再为同一关系生成 Wafer 私有伴随 JSON。
-- P2.S1 只适用于存在显式 sharding 标记的分支。没有 `mark_sharding` 或其它可解释 sharding
-  annotation 时，artifact 语义是未切分 StableHLO local program，应直接进入 local compute /
-  group / tiling / codegen；不能因为缺少 SPMD metadata 被拒绝，也不要合成默认私有 sharding。
+- P2.S1 负责所有 sharding 相关策略。graph 中存在任意用户 sharding seed 时（函数边界或中间
+  `sdy.sharding` / `sdy.sharding_constraint` / `sdy.reshard` / manual sharding），默认 policy
+  必须跳过，让 Shardy propagation 推完整图。完全没有用户 seed 时，P2.S1 在 SPMD 层补默认
+  single-card function-input sharding seed：默认 `tile-count=16`，调试 `tile-count=1`；找不到合适
+  输入切分维度时生成 16-tile replicated seed。不要把这个默认策略放到 placement/group 后段实现。
 - P2.S1 不能用手写 `sdy.sharding`、`wafer.spmd.*` attr、私有 JSON 或名字约定冒充 partitioned
   artifact。正确链路是同一套 source-built PyTorch/XLA 环境中通过
   `torch_xla.distributed.spmd.mark_sharding` 或 `torch.ops.xla.dynamo_mark_sharding` 标记 4096

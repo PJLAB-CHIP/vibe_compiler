@@ -5,12 +5,15 @@
 状态：设计草案；2026-05-25 独立边界收口；2026-05-27 纠正 P2.S1 主 pipeline、禁止
 `wafer.spmd.*` 私有 sharding 协议，并引入 post-SPMD tensor collective handoff
 
-本文定义 Wafer compiler 中 Shardy / SPMD 阶段的边界。该阶段只在 frontend artifact 带有
-`mark_sharding` 或其它可解释 sharding annotation 时参与，负责 global tensor 的逻辑切分、
+本文定义 Wafer compiler 中 Shardy / SPMD 阶段的边界。该阶段负责 global tensor 的逻辑切分、
 sharding propagation、SPMD partition 和 logical collective 语义；不负责 physical tile
-placement、DTE protocol、SPM buffer、layout materialization 或 runtime launch。没有 sharding
-annotation 的 artifact 不是 SPMD 错误，语义是未切分的普通 StableHLO local program，应绕过
-SPMD partition 分支继续进入 local compute / group / tiling / codegen 主线。
+placement、DTE protocol、SPM buffer、layout materialization 或 runtime launch。
+
+没有用户 `mark_sharding` 或其它可解释 sharding seed 的 artifact 不是 frontend 错误，但也不应
+直接绕过 SPMD 去后段补切分。P2.S1 应在 SPMD 层应用 Wafer 默认单卡 sharding policy：默认面向
+16 个 tile 生成 Shardy / SDY 可解释的 function-input sharding seed，找不到合适切分维度时生成
+16-tile replicated seed；调试时可配置为 1 tile replicated 模式。后续切图、local body 和通信算子
+插入仍交给 Shardy / XLA SPMD partitioner。
 
 本文依赖：
 
@@ -42,8 +45,8 @@ SPMD partition 分支继续进入 local compute / group / tiling / codegen 主�
 
 ```text
 StableHLO module
-  + explicit Shardy/SDY annotations or importable sharding attrs
-  + logical mesh config when sharding is requested
+  + optional user Shardy/SDY annotations or importable sharding attrs
+  + default Wafer single-card mesh policy when user sharding is absent
 ```
 
 输出：
@@ -56,21 +59,22 @@ partitioned StableHLO module
 ```
 
 SPMD 输出仍然是逻辑程序。它只说明“哪些 logical rank 之间需要通信”，不说明“哪两个 physical
-tile 通过哪个 DTE resource 通信”。
-
-缺少 sharding annotation 时，本阶段的正确行为是 identity / bypass：不生成 partitioned
-StableHLO、不生成 logical collective，也不要求存在 mesh metadata。该输入继续作为 unpartitioned
-StableHLO local program 被后续 local compute normalization 消费。
+tile 通过哪个 DTE resource 通信”。当默认 policy 退化为 1 tile 或 replicated local body 时，
+partitioner 可以产生等价的 single-program / replicated-local StableHLO；这仍是 SPMD 层的输出，
+不是后段 placement/group 私自补 sharding。
 
 ### 2.1 P2.S1 Shardy Propagation / SPMD Artifact Contract
 
-P2.S1 在 R3 之前完成。它覆盖“存在显式 sharding 标记”的 artifact 分支，必须消费 P2.F1 产出的
-verified frontend artifact，而不是只 parse 手写 `sdy.mesh` fixture。带 sharding 的主 pipeline
-边界是：
+P2.S1 在 R3 之前完成。它覆盖两类 artifact：用户显式标记 sharding 的图，以及完全没有用户
+sharding seed、需要 Wafer 默认单卡 policy 的图。P2.S1 必须消费 P2.F1 产出的 verified frontend
+artifact，而不是只 parse 手写 `sdy.mesh` fixture。主 pipeline 边界是：
 
 ```text
-verified StableHLO / SDY artifact
-  -> sharding import / normalization
+verified StableHLO / optional SDY artifact
+  -> if user sharding seed exists:
+       sharding import / normalization
+     else:
+       default Wafer single-card input sharding seed
   -> Shardy propagation
   -> XLA SPMD partitioner / equivalent local-body partitioning service
   -> partitioned StableHLO artifact
@@ -86,9 +90,9 @@ P2.S1 输出仍然是 logical partitioned artifact bundle：
 - StableHLO logical collective ops，例如 `all_gather`、`all_reduce`、`reduce_scatter`、
   `all_to_all` 和 `collective_permute`。
 
-没有 sharding 标记的 P2.F1 artifact 不进入这个 partitioned artifact 合同；它的合同是普通
-StableHLO local program 可继续 lower。不能把“没有 sharding metadata”诊断成 P2.S1 verifier
-失败，也不能为了让它经过 P2.S1 而补默认私有 sharding。
+没有用户 sharding seed 的 P2.F1 artifact 也进入 P2.S1，但只允许由默认 policy 补 Shardy / SDY
+可解释的 function-input sharding seed。不能把“没有用户 sharding metadata”诊断成 P2.S1 verifier
+失败，也不能补 `wafer.spmd.*`、私有 JSON、名字约定或后段 placement fallback。
 
 这些字段必须来自 IR、SDY attr、StableHLO collective metadata 或 importer 已 materialize 的
 exporter metadata。
@@ -157,10 +161,10 @@ expert sharding、真实 sequence parallel 和非整除 uneven slicing 不进入
 需要对应图结构、routing/stage 语义或单独 legality/verifier 覆盖，不能通过在当前 matmul case 上
 硬塞名字来冒充支持。
 
-同一个 4096 matmul 还应保留 no-sharding 覆盖：不调用 `mark_sharding` 时，导出的 artifact
-没有 sharding metadata，pipeline 不进入 P2.S1 partitioner 分支，而是作为未切分 StableHLO 图
-继续验证 local compute normalization 和后续 lowering。这个 no-sharding case 不计入上表的
-sharding 策略数量，也不应被写成 replicated sharding 的另一种私有表示。
+同一个 4096 matmul 还应保留 no-user-sharding 覆盖：不调用 `mark_sharding` 时，导出的 artifact
+没有用户 sharding seed，P2.S1 默认 policy 应补 function-input sharding seed，并继续进入
+Shardy propagation / XLA SPMD partitioner。这个 case 不计入上表的用户 sharding 策略数量，也
+不能被写成 Wafer 私有 sharding；它是 SPMD 层的默认 seed policy。
 
 #### 2.1.2 P2.S1 执行方法
 
@@ -168,8 +172,9 @@ P2.S1 的 artifact 生成入口应保持使用同一 4096 matmul source graph，
 
 ```text
 PyTorch module
-  -> torch_xla.distributed.spmd.mark_sharding / torch.ops.xla.dynamo_mark_sharding
+  -> optional torch_xla.distributed.spmd.mark_sharding / torch.ops.xla.dynamo_mark_sharding
   -> PyTorch/XLA StableHLO / SDY artifact
+  -> if no user sharding seed exists, apply Wafer default function-input seed
   -> Shardy propagation
   -> XLA SPMD partitioner
   -> partitioned StableHLO artifact
@@ -186,8 +191,8 @@ partitioned StableHLO collective 的 `replica_groups` / `source_target_pairs` / 
 如果某个 rank selection policy 不能从这些事实重建，先补明确 artifact/export contract 或 placement
 IR，而不是发明 SPMD-side Wafer attr。
 
-每个 strategy 的前端模型仍然是同一个 4096 matmul smoke module。forward 中只在 framework
-边界做三类 mark：
+每个用户 sharding strategy 的前端模型仍然是同一个 4096 matmul smoke module。forward 中只在
+framework 边界做三类 mark：
 
 ```text
 x      -> input_spec
@@ -205,8 +210,42 @@ artifact 中补了一份临时描述，既没有证明 XLA SPMD partitioner 产�
 - frontend mark smoke：证明 PyTorch/XLA `mark_sharding` 可被当前 capture 路径观察或追踪。
 - SDY / StableHLO dialect unit fixture：证明工具链能 parse / verify / run Shardy propagation。
 
-这两类测试都不能标记 P2.S1 完成。P2.S1 完成证明必须消费真实 mark 后的 artifact，并得到
-partitioned StableHLO 或等价 per-rank StableHLO body。
+这两类测试都不能标记 P2.S1 完成。P2.S1 完成证明必须消费真实 P2.F1 artifact：用户策略消费
+真实 mark 后的 artifact；no-user-sharding 策略消费同图未标记 artifact 并由默认 policy 生成
+function-input seed。两类策略都必须得到 partitioned StableHLO、等价 per-rank StableHLO body，
+或明确的 replicated-local body。
+
+#### 2.1.3 默认 no-user-sharding policy
+
+当一个 graph 中已经存在任何用户 sharding seed 时，默认 policy 必须完全跳过该 graph。这里的
+seed 包括 function argument/result 上的 `sdy.sharding`、中间 value 的 `sdy.sharding` /
+`sdy.sharding_constraint` / `sdy.reshard`、manual computation sharding，或 frontend mark 导出的
+等价 SDY / StableHLO sharding 表示。用户可能只标记少数关键 op / value，再依赖 Shardy
+propagation 推到整图；默认 policy 不能覆盖、补齐或重解释这些用户 seed。
+
+当 graph 完全没有用户 sharding seed 时，P2.S1 默认 policy 创建一个 Wafer 单卡 logical mesh：
+
+```text
+@wafer_default_tile_mesh = <["tile" = N]>
+```
+
+`N` 默认是 16，用于单卡 4x4 tile；调试和对照验证可以设置 `N = 1`。这个 mesh 是 SPMD logical
+mesh，不是 physical placement map，也不包含 tile coordinate、bad-tile、SPM、DTE 或 runtime fact。
+
+默认 policy 主要标记 function inputs / parameters 的 sharding seed，不主动给中间 op 或 function
+results 下约束。Shardy propagation 负责把 seed 推到内部 value 和结果，XLA SPMD partitioner
+负责产生 local body 和必要 collective / permute。第一版可采用保守 deterministic heuristic：
+
+- 对每个 ranked tensor function input，选择第一个静态且能被 `N` 整除的维度绑定 `tile` axis。
+- 如果没有这样的维度，或 `N = 1`，该 input 在 `tile` axis 上 replicated。
+- 不依赖 input / parameter 名字；若需要区分 user input、parameter、constant 或 state，必须来自
+  frontend 已 materialize 到 IR 的可验证 metadata。
+- 默认 policy 只生成 SDY / StableHLO 可解释的 sharding seed，不生成 `wafer.spmd.*`、placement op、
+  package manifest 或其它后段协议。
+
+这个 policy 的目标是让未显式标记的单卡图默认利用 16 tile，同时仍把通信插入和 per-rank local body
+生成留在 SPMD partitioner 内。找不到合适切分维度时的 16-tile replicated 不是放弃 SPMD；它是
+明确的 replicated sharding seed，后续仍可通过同一 SPMD pipeline 产出等价 local program。
 
 partitioned artifact verifier 后续可以重新建立工具入口，但它的责任必须是检查 StableHLO / SDY /
 exporter-native facts，而不是检查 `wafer.spmd.*`：
@@ -350,13 +389,13 @@ P2.S1 的完成证明必须至少覆盖：
 - StableHLO collective 能先进入 Wafer LinalgExt-style tensor collective handoff；对当前已有
   `wafer.comm` 表示的 collective，可以保留后段 smoke 证明 metadata 能进入 `wafer.comm`
   `rank_group`，但该 smoke 不能作为 P2.S1 或 group/tiling 完成证明。
+- no-user-sharding P2.F1 artifact 必须通过默认 policy 生成 function-input sharding seed：默认
+  `tile-count=16`，并覆盖找不到合适切分维度时的 16-tile replicated fallback；`tile-count=1`
+  作为调试模式产生 replicated/single-tile seed。
+- 默认 policy 遇到 graph 内任意用户 sharding seed 时必须跳过，不覆盖用户只标了关键 op 后由
+  Shardy propagation 推导整图的用法。
 
-另外，no-sharding P2.F1 artifact 必须保持可 lower：没有 `mark_sharding` 时不能要求 Shardy /
-SPMD metadata，也不能因为没有 partitioned StableHLO 或 logical collective 而阻塞 local compute
-normalization、group/tiling 和后端 lowering。这个 gate 属于普通 local compile 主线，不属于
-P2.S1 sharding 覆盖矩阵。
-
-对 sharded 分支，后续 R3/R4/R6 测试应优先复用 P2.S1 的 per-rank artifact 作为输入，逐步验证：
+对 P2.S1 输出，后续 R3/R4/R6 测试应优先复用 per-rank / replicated-local artifact 作为输入，逐步验证：
 
 ```text
 per-rank artifact

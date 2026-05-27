@@ -5,11 +5,11 @@
 状态：R2 完成记录
 
 2026-05-27 复查更新：R2.2 中 StableHLO collective 直接 bridge 到 `wafer.comm` 的实现只保留为
-后段 communication skeleton，不再作为 P2.S1、group 或 tiling 的主线完成证明。存在 sharding 标记时，
-真实 P2.S1 必须走 `mark_sharding -> StableHLO/SDY -> Shardy/XLA SPMD partitioner -> partitioned
-StableHLO`，post-SPMD collective 先进入 Wafer LinalgExt-style tensor collective handoff，再进入
-group/tiling。没有 sharding 标记时，artifact 表示未切分 StableHLO local program，应直接进入
-local compute normalization 和后续 lowering，不能因为缺少 SPMD metadata 被拒绝。
+后段 communication skeleton，不再作为 P2.S1、group 或 tiling 的主线完成证明。真实 P2.S1 必须走
+`mark_sharding/default-input-seed -> StableHLO/SDY -> Shardy/XLA SPMD partitioner -> partitioned
+or replicated-local StableHLO`，post-SPMD collective 先进入 Wafer LinalgExt-style tensor collective
+handoff，再进入 group/tiling。没有用户 sharding 标记时，P2.S1 在 SPMD 层补默认 single-card
+function-input sharding seed；不能绕到 placement/group 后再补切分和通信。
 
 ## 目标和非目标
 
@@ -115,11 +115,13 @@ R2 之后的完成证明必须从单点 fixture 转为跨阶段消费：
 ```text
 P2.F1 framework capture artifact
   -> frontend verifier
-  -> if explicit sharding exists:
+  -> if user sharding seed exists:
        P2.S1 Shardy propagation / SPMD partitioner
        -> partitioned StableHLO / per-rank artifact verifier
      else:
-       unpartitioned StableHLO local program
+       P2.S1 default single-card input sharding seed
+       -> Shardy propagation / SPMD partitioner
+       -> partitioned or replicated-local StableHLO / per-rank artifact verifier
   -> StableHLO / local compute normalization
   -> tensor collective normalization if collectives exist
   -> R3 group candidate

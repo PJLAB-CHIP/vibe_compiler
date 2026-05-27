@@ -5,12 +5,13 @@
 状态：设计草案；2026-05-25 独立边界收口；2026-05-27 补 post-SPMD Wafer LinalgExt-style
 tensor collective handoff
 
-本文定义 StableHLO local program 到 `wafer.group` 之前的 local tensor normalization 边界。输入
-可以是没有 sharding annotation 的未切分 StableHLO 图，也可以是 SPMD partition 后的本地 shard
-程序。该阶段负责把本地 compute 规整到可 tile、可 fuse、可验证的 `linalg` / `tensor` / `scf` /
-`arith` / `math` IR 子集；如果输入包含 post-SPMD StableHLO collective，则同时把它规整成
-Wafer LinalgExt-style tensor collective ops，使 collective 能和 local compute 一起进入 group/tiling。
-它不引入 Wafer physical layout、SPM/DDR allocation、DTE、C ABI 或 runtime package。
+本文定义 SPMD 产出的 StableHLO local program 到 `wafer.group` 之前的 local tensor normalization
+边界。输入可以是用户 sharding 经过 partitioner 后的本地 shard 程序，也可以是 no-user-sharding
+默认 policy 产生的 replicated / single-tile local body。该阶段负责把本地 compute 规整到可 tile、
+可 fuse、可验证的 `linalg` / `tensor` / `scf` / `arith` / `math` IR 子集；如果输入包含 post-SPMD
+StableHLO collective，则同时把它规整成 Wafer LinalgExt-style tensor collective ops，使 collective
+能和 local compute 一起进入 group/tiling。它不引入 Wafer physical layout、SPM/DDR allocation、
+DTE、C ABI 或 runtime package。
 
 本文依赖：
 
@@ -50,8 +51,8 @@ Wafer LinalgExt-style tensor collective ops，使 collective 能和 local comput
 
 ```text
 StableHLO local program
-  = unpartitioned StableHLO module
-    or partitioned StableHLO local shard
+  = partitioned StableHLO local shard
+    or replicated / single-tile local body from default SPMD policy
   + ConstantLike tensor values
   + optional StableHLO logical collective ops produced by SPMD partitioning
 ```
@@ -68,9 +69,9 @@ func + tensor + linalg + scf + arith + math
 输出 IR 应该只包含 tensor-level 数学语义、structured compute 语义和 logical collective 语义。
 Wafer target facts 只能作为后续 legality / cost input。
 
-没有 sharding 标记时，输入就是 single-program / unpartitioned local program；本阶段不要求
-`sdy.mesh`、`sdy.sharding`、per-rank metadata 或 StableHLO collective。缺少这些 SPMD facts
-不能作为拒绝 local compute lowering 的理由。
+no-user-sharding 的默认 seed policy 属于 SPMD 阶段，不属于本阶段。本阶段只消费 SPMD 之后的
+local body；如果默认 policy 选择 `tile-count=1` 或 replicated fallback，本阶段看到的可能是
+whole-shape local body 且没有 collective。缺少 collective 不能作为拒绝 local compute lowering 的理由。
 
 ## 3. Transformer Block Coverage
 
@@ -356,7 +357,7 @@ group/resource planner 通过显式 IR 边界和 workspace demand materialize。
 
 | 职责 | 输入 | 输出 |
 | --- | --- | --- |
-| StableHLO legalize to structured tensor | unpartitioned StableHLO or partitioned StableHLO local shard | `linalg` / `tensor` / `arith` / `math` / `scf` |
+| StableHLO legalize to structured tensor | partitioned local shard or replicated/single-tile local body | `linalg` / `tensor` / `arith` / `math` / `scf` |
 | StableHLO collective normalization | optional partitioned StableHLO collectives | Wafer LinalgExt-style tensor collective ops |
 | dot_general normalization | StableHLO dot | matmul / batch_matmul / structured generic |
 | broadcast/reduction normalization | StableHLO broadcast/reduce | explicit indexing maps and reduce dims |
@@ -404,9 +405,9 @@ Normalization 后必须能检查：
 ## 8. 与其它文档的关系
 
 - Frontend 文档负责 artifact 和 constant normalization 的入口。
-- Shardy / SPMD 文档负责显式 sharding 分支里的 global sharding、partitioned StableHLO 和
-  StableHLO logical collective；没有 sharding 标记时该分支不参与。
-- 本文负责 unpartitioned StableHLO 或 local shard 内的 structured tensor IR，以及 StableHLO collective 到 Wafer
+- Shardy / SPMD 文档负责用户 sharding 和 no-user-sharding 默认 policy 生成的 SDY seed、
+  partitioned / replicated-local StableHLO 和 StableHLO logical collective。
+- 本文负责 SPMD 后 local body 内的 structured tensor IR，以及 StableHLO collective 到 Wafer
   LinalgExt-style tensor collective IR 的 handoff。
 - Group 文档负责 tile-local residency、traversal schedule 和 closed-loop resource search。
 - Compute 文档负责把 selected tensor op lower 到 target-abstract `wafer.compute`。
