@@ -17,10 +17,10 @@
   `tasks/2026-05-26-wafer-p0-p6-design-conformance-audit.md` 和
   `tasks/2026-05-26-wafer-p0-p6-recovery-status.md`。
 - framework-specific capture 和完整 Shardy SPMD pipeline 不是放弃项；它们已经从 R2 的
-  “未覆盖范围”提升为下面的 P2 显式后续项。它们不阻塞当前 R3.1 的 local M0 主链路恢复，但属于
-  frontend/SPMD 端到端完成标准。
+  “未覆盖范围”提升为 R3 之前的 P2 显式后续项。真实前端/SPMD artifact 来源必须先于 group /
+  tile / resource 主链路恢复，否则 R3 只能继续围绕手写 artifact fixture 前进。
 - 当前不得推进 P7/P8/P9；必须先恢复 P0-P6 的设计一致性。
-- 当前唯一 ready 项是 R3.1。
+- 当前唯一 ready 项是 P2.F1。
 
 ## 状态标记
 
@@ -79,7 +79,9 @@
 | R2.1 | done | 恢复 frontend artifact / importer contract | 记录见 `tasks/2026-05-26-wafer-r2-recovery.md`；`WaferFrontend` verifier、`wafer-import-model --verify-import-result [--sidecar]`、`wafer.frontend.dynamic_bounds`、`wafer.frontend.constant` sidecar 对齐、graph break/eager fallback/dynamic shape 诊断已闭环 |
 | R2.2 | done | 恢复 Shardy/SPMD artifact bridge | 记录见 `tasks/2026-05-26-wafer-r2-recovery.md`；SDY dialect/pass 注册按 `WAFER_ENABLE_SPMD_PARTITIONER_DEPS` 隔离，`sdy.mesh`/`sdy.sharding` artifact 可进入工具链，StableHLO `replica_groups` materialize 为 `wafer.comm` `rank_group`，ring lowering 按 logical rank group 查询 placement |
 | R2.3 | done | 重写 local compute normalization 覆盖状态 | 记录见 `tasks/2026-05-26-wafer-r2-recovery.md` 和 `tasks/2026-05-25-wafer-local-compute-normalization-design.md`；dot/broadcast/reduce/softmax/norm/RoPE/MLP 覆盖按 structured tensor IR evidence 记录，acceptance pass 不作为 schedule completion |
-| R3.1 | ready | 恢复 M0 group boundary / candidate contract | `wafer.group` 只表达 local tensor grouping 和 candidate boundary；root op、operands/results、tile candidate shape 和拒绝原因由 IR/interface/verifier 可解释，不靠 pass side table 或名字 |
+| P2.F1 | ready | 建立 framework-specific capture adapter contract | PyTorch/JAX 等框架 capture 入口只能产出 verified StableHLO/MLIR artifact、sidecar 和 compile config；graph break、eager fallback、dynamic bound、constant/weight、sharding annotation 的诊断进入 frontend verifier；框架 API、版本路径或参数名不进入后端 IR 合同 |
+| P2.S1 | pending | 集成完整 Shardy propagation / SPMD partitioner pipeline | 从未分片或只带 sharding annotation 的 StableHLO/SDY artifact 出发，运行 Shardy propagation/partitioning 并产出 per-rank artifact；multi replica group、rank selection、shard slicing、collective legality 和 placement input 由 IR/attr/verifier 明确表示，不靠 pass side table 或名字 |
+| R3.1 | pending | 恢复 M0 group boundary / candidate contract | `wafer.group` 只表达 local tensor grouping 和 candidate boundary；root op、operands/results、tile candidate shape 和拒绝原因由 IR/interface/verifier 可解释，不靠 pass side table 或名字；依赖 P2.F1/P2.S1 提供真实 frontend/SPMD artifact 来源 |
 | R3.2 | pending | 恢复 M0 root tile feasibility oracle | root tile candidate 检查必须接入 op tiling contract、layout requirement、SPM demand、DDR demand 和 compute/movement legality；静态 result shape check 只能是其中一个输入 |
 | R3.3 | pending | 恢复 M0 tile_region materialization contract | accepted group materialize 成 `wafer.tile_region`，load/store、layout materialize、`wafer.compute.*` 和 tile_yield 全部来自同一 accepted candidate；不得把未接受 plan 落进 IR |
 | R3.4 | pending | 恢复 M0 layout/SPM feasibility gate | layout materialization 是显式 movement；SPM trial 使用 resource effects、liveness/range 和 tile buffer lifetime，失败能诊断到具体 op/value |
@@ -96,16 +98,6 @@
 | R5.2 | pending | 补 transformer compute/package gaps | mask/select、dynamic-bound policy、non-constant-init reduce、constant/weight slice 和 package consistency 按设计补齐 |
 | R6.1 | pending | 恢复 communication design-conformance gate | DTE resource allocation、collective buffer slice/address offset、communication metadata 与 package/runtime 边界按设计落地 |
 | R6.2 | pending | 清理 StableHLO collective bridge 临时 cast | 用可验证 buffer-slice / layout/materialization 路径替代 visible `unrealized_conversion_cast` |
-
-## P2 显式后续项
-
-这些项不是 R2.1-R2.3 的完成条件，但也不能被解释成“不做”。它们需要在端到端 frontend/SPMD
-闭环前落地；当前先作为显式队列项保留，不改变 R3.1 是当前 ready 项的事实。
-
-| ID | 状态 | 任务 | 验收 |
-| --- | --- | --- | --- |
-| P2.F1 | pending | 建立 framework-specific capture adapter contract | PyTorch/JAX 等框架 capture 入口只能产出 verified StableHLO/MLIR artifact、sidecar 和 compile config；graph break、eager fallback、dynamic bound、constant/weight、sharding annotation 的诊断进入 frontend verifier；框架 API、版本路径或参数名不进入后端 IR 合同 |
-| P2.S1 | pending | 集成完整 Shardy propagation / SPMD partitioner pipeline | 从未分片或只带 sharding annotation 的 StableHLO/SDY artifact 出发，运行 Shardy propagation/partitioning 并产出 per-rank artifact；multi replica group、rank selection、shard slicing、collective legality 和 placement input 由 IR/attr/verifier 明确表示，不靠 pass side table 或名字 |
 
 ## 后续队列
 
@@ -141,5 +133,7 @@ P7/P8/P9 只有在 P0-P6 恢复队列完成后才能推进。
 
 ## 下一步
 
-从 R3.1 开始：恢复 M0 group boundary / candidate contract，再按 R3 顺序恢复 M0 主链路。
+从 P2.F1 开始：先建立 framework-specific capture adapter contract，再完成 P2.S1 Shardy
+propagation / SPMD partitioner 主 pipeline；之后进入 R3.1，恢复 M0 group boundary /
+candidate contract，并按 R3 顺序恢复 M0 主链路。
 P7/P8/P9 依赖恢复后的 P0-P6 主链路，不提前推进。
