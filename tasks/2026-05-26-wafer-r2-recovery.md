@@ -127,6 +127,10 @@ P2.F1 framework capture artifact
 上游产物中的哪些语义事实。只生成、dump 或 FileCheck 某层输出，而下游没有使用这些字段，不再
 作为主线完成依据。
 
+从 P2.F1 开始，后续每个相关任务的完成证明都必须把这条真实图 artifact chain 至少推进到该任务
+新增边界，并检查新增事实被下一层实际消费。手写 artifact、单层 FileCheck 和 fixed manifest
+只能作为补充覆盖，不能替代端到端可验证性。
+
 P2.F1 主链路 artifact 采用 `4096x4096 @ 4096x4096` f32 matmul + bias + tanh + residual smoke。
 该规模用于给后续 tiling、SPM/DDR resource、resident constant 和 package gate 提供非 trivial
 shape/byte facts；大 weight 只能通过 sidecar/resource-backed metadata 绑定，不提交 64 MiB

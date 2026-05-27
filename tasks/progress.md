@@ -28,7 +28,8 @@
 - `pending`：依赖前序任务完成。
 - `later`：当前主线之后再做。
 - `skeleton`：历史 skeleton gate 通过，但不代表设计文档主路径完成。
-- `done`：实现和对应验证已经按设计合同完成。
+- `done`：实现和对应验证已经按设计合同完成；P2.F1 之后的相关任务还必须有真实图 artifact chain 的
+  端到端消费证明。
 
 ## 当前验证口径
 
@@ -46,6 +47,9 @@
 - P2.F1 之后的主线验证必须从 framework capture adapter 产物开始；P2.S1 / R3 / R4 / R5 / R6
   要逐步消费同一条 artifact chain。手写 MLIR fixture 只作为 verifier / unit 测试，不能单独作为
   主链路完成证明。
+- P2.F1 之后每个相关任务标记 `done` 前，都必须新增或更新一条端到端 gate：从真实 framework/exporter
+  图 artifact 进入，重放已有上游链路，并验证本任务新增语义被下游实际消费。单层 FileCheck、
+  手写 fixture 或静态 manifest 只能作为补充测试。
 
 当前不能作为完成证明：
 
@@ -83,8 +87,8 @@
 | R2.2 | done | 恢复 Shardy/SPMD artifact bridge | 记录见 `tasks/2026-05-26-wafer-r2-recovery.md`；SDY dialect/pass 注册按 `WAFER_ENABLE_SPMD_PARTITIONER_DEPS` 隔离，`sdy.mesh`/`sdy.sharding` artifact 可进入工具链，StableHLO `replica_groups` materialize 为 `wafer.comm` `rank_group`，ring lowering 按 logical rank group 查询 placement |
 | R2.3 | done | 重写 local compute normalization 覆盖状态 | 记录见 `tasks/2026-05-26-wafer-r2-recovery.md` 和 `tasks/2026-05-25-wafer-local-compute-normalization-design.md`；dot/broadcast/reduce/softmax/norm/RoPE/MLP 覆盖按 structured tensor IR evidence 记录，acceptance pass 不作为 schedule completion |
 | P2.F1 | ready | 建立 framework-specific capture adapter contract | PyTorch/JAX 等框架 capture 入口只能产出 verified StableHLO/MLIR artifact、sidecar 和 compile config；PyTorch adapter 必须走 PyTorch/XLA 的 StableHLO export runtime（例如 `torch_xla.stablehlo.exported_program_to_stablehlo`），不能用手写 ATen-to-StableHLO 文本转换替代；主链路 smoke 使用 `4096x4096 @ 4096x4096` f32 matmul + bias + tanh + residual，weight/bias 通过 sidecar/resource-backed metadata 绑定，不把 64 MiB weight 提交进 git test file；graph break、eager fallback、dynamic bound、constant/weight、sharding annotation 的诊断进入 frontend verifier；框架 API、版本路径或参数名不进入后端 IR 合同；完成证明必须跑真实 adapter -> artifact -> verifier 链 |
-| P2.S1 | pending | 集成完整 Shardy propagation / SPMD partitioner pipeline | 从 P2.F1 verified artifact 出发，运行 Shardy propagation/partitioning 并产出 per-rank artifact；multi replica group、rank selection、shard slicing、collective legality 和 placement input 由 IR/attr/verifier 明确表示；输出继续被 collective normalization、`wafer.comm` `rank_group` 和 placement gate 消费 |
-| R3.1 | pending | 恢复 M0 group boundary / candidate contract | `wafer.group` 只表达 local tensor grouping 和 candidate boundary；root op、operands/results、tile candidate shape 和拒绝原因由 IR/interface/verifier 可解释，不靠 pass side table 或名字；依赖 P2.F1/P2.S1 提供真实 frontend/SPMD artifact 来源 |
+| P2.S1 | pending | 集成完整 Shardy propagation / SPMD partitioner pipeline | 从 P2.F1 verified artifact 出发，运行 Shardy propagation/partitioning 并产出 per-rank artifact；multi replica group、rank selection、shard slicing、collective legality 和 placement input 由 IR/attr/verifier 明确表示；输出继续被 collective normalization、`wafer.comm` `rank_group` 和 placement gate 消费；完成证明必须从真实图 artifact 跑到 per-rank artifact 下游消费 |
+| R3.1 | pending | 恢复 M0 group boundary / candidate contract | `wafer.group` 只表达 local tensor grouping 和 candidate boundary；root op、operands/results、tile candidate shape 和拒绝原因由 IR/interface/verifier 可解释，不靠 pass side table 或名字；依赖 P2.F1/P2.S1 提供真实 frontend/SPMD artifact 来源；完成证明必须让真实图 artifact 进入 group candidate gate |
 | R3.2 | pending | 恢复 M0 root tile feasibility oracle | root tile candidate 检查必须接入 op tiling contract、layout requirement、SPM demand、DDR demand 和 compute/movement legality；静态 result shape check 只能是其中一个输入 |
 | R3.3 | pending | 恢复 M0 tile_region materialization contract | accepted group materialize 成 `wafer.tile_region`，load/store、layout materialize、`wafer.compute.*` 和 tile_yield 全部来自同一 accepted candidate；不得把未接受 plan 落进 IR |
 | R3.4 | pending | 恢复 M0 layout/SPM feasibility gate | layout materialization 是显式 movement；SPM trial 使用 resource effects、liveness/range 和 tile buffer lifetime，失败能诊断到具体 op/value |

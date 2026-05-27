@@ -82,7 +82,10 @@ DDR pool、physical layout、BO handle 或 package path。
 ### 2.1 模型导入合同
 
 Wafer 后端的稳定入口是 verified StableHLO / MLIR artifact，不是某个前端框架 API。Model import
-层可以支持 PyTorch、JAX、手写 StableHLO 或其它 exporter，但这些路径都必须收敛成同一类 artifact：
+层可以支持 PyTorch、JAX、pre-exported StableHLO 或其它 exporter，但这些路径都必须收敛成同一类
+artifact。P2.F1 之后，主链路完成证明应来自真实 framework/exporter 产生的实际图 artifact；手写
+StableHLO 只作为 pre-exported fixture、verifier negative test 或局部 lowering 测试，不证明
+framework-specific capture 已完成：
 
 ```text
 model source
@@ -316,8 +319,8 @@ PrivateUse1 eager path 可以作为生态事实，但不能作为 compiler artif
 
 V0 验证项：
 
-- model import smoke test：至少一个静态模型能导出到 StableHLO / MLIR artifact，并且 graph break /
-  fallback 会被诊断。
+- model import smoke test：至少一个真实 framework/exporter 静态图能导出到 StableHLO / MLIR artifact，
+  并且 graph break / fallback 会被诊断。
 - StableHLO parse / printer roundtrip。
 - function signature 的 shape、rank、dtype、dynamic bound 检查。
 - `stablehlo.constant` / sidecar 到 `arith.constant` / `ConstantLike` 的 normalization 检查。
@@ -347,3 +350,7 @@ framework capture artifact
 每层可以保留手写 MLIR 做 verifier negative test，但完成证明必须说明下游消费了上游产物中的哪些
 事实。若某个测试只 dump 或 FileCheck 当前层输出，而下游没有消费这些字段，它只能证明局部工具可用，
 不能证明主链路完成。
+
+P2.F1 之后的每个相关任务都要把这条 chain 继续向下延伸：任务完成时必须有一条从真实图 artifact
+出发的端到端 gate，重放已完成上游阶段，并证明本任务新增语义被下一层 verifier、planner、lowering
+或 package/runtime 边界消费。手写 artifact、局部 pattern test 和 fixed manifest 只能作为补充覆盖。

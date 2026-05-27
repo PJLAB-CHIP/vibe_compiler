@@ -206,3 +206,8 @@ per-rank artifact
 手写 `sdy.mesh` / StableHLO collective fixture 只保留为 dialect/verifier/unit 级测试。它不能替代
 “verified frontend artifact -> Shardy pipeline -> per-rank artifact -> Wafer lowering”的主链路
 证明。
+
+因此，P2.S1 之后每个消费 sharding / per-rank artifact 的任务完成时，都必须继续使用真实图导出的
+artifact chain 做端到端 gate。测试不能只构造一个新的手写 per-rank fixture，也不能只检查当前层
+dump；必须证明前序 sharding facts 在本任务的 verifier、lowering、placement、communication 或
+resource 逻辑中被实际使用。

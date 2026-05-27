@@ -143,8 +143,10 @@ source model / exported program / pre-exported StableHLO
 V0 策略：
 
 - 稳定 compiler 入口是 verified StableHLO / MLIR artifact。
-- PyTorch、JAX、手写 StableHLO 或其它 exporter 都通过 importer adapter 进入同一 artifact contract；
-  具体 importer 不是 Wafer 后端合同。
+- 主链路完成证明优先来自真实 framework/exporter 产生的实际图 artifact，例如 PyTorch/XLA、
+  JAX 或其它 exporter 导出的 StableHLO / MLIR。手写 StableHLO 只保留为 pre-exported artifact
+  fixture、verifier negative test 或局部 lowering bring-up，不能证明 framework-specific capture 已完成。
+- 具体 importer API 不是 Wafer 后端合同；后端只消费 verified artifact、sidecar 和 compile config。
 - v0 先接受静态或有限动态 shape；任意 PyTorch eager 动态行为不是 V0 目标。
 
 Frontend artifact 的模型导入、第三方依赖组织、constant/weight、sharding annotation 和验证合同见
@@ -551,8 +553,9 @@ WaferRuntimeAdapter cluster launch
 
 范围：
 
-- 从手写 partitioned StableHLO 开始。
-- 后续再接 importer/Shardy 自动导出的 artifact。
+- 主路径从 P2.F1/P2.S1 产生的 verified frontend / per-rank artifact 开始。
+- 手写 partitioned StableHLO 只作为 collective lowering 的局部 verifier / pattern fixture；它不能替代
+  importer/Shardy 自动导出的 artifact chain。
 
 验收标准：
 

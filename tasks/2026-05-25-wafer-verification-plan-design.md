@@ -67,15 +67,21 @@ Gate 通过只说明进入下一层的输入合法，不说明整个 compiler �
 - package serialization tests：manifest、bootparam/TLV fallback、constant bytes metadata。
 - runtime shielding tests：已知 stub path 不能被选为 correctness fence。
 - importer/dependency smoke tests：至少一个 importer path 能产出 verified StableHLO / MLIR artifact；
-  后端 textual MLIR tests 不依赖 importer-only Python / framework 包。
+  后端 textual MLIR tests 不依赖 importer-only Python / framework 包，但不能作为主链路完成证明。
 - board smoke tests：只在 runtime path 和 hardware availability 明确时作为新增 milestone gate。
+
+P2.F1 之后的任务完成验证还需要一条端到端消费 gate：输入必须来自真实 framework/exporter 图导出的
+artifact，测试应重放已完成的上游链路，并检查本任务新增的 IR fact、verifier fact、resource fact
+或 package fact 被下游实际消费。局部 verifier negative、pattern FileCheck、手写 StableHLO/Linalg
+fixture 和 fixed manifest 可以保留，但只能补覆盖，不能单独作为任务完成证明。
 
 ## 4. Milestone Gates
 
 M0 single tile compute：
 
-- Frontend importer 或手写 StableHLO/Linalg 输入可通过 frontend/local compute gate；graph break /
-  fallback 不被当成合法 artifact。
+- 主链路 gate 应消费 P2.F1/P2.S1 产出的真实图 artifact，并继续通过 frontend/local compute gate；
+  graph break / fallback 不被当成合法 artifact。手写 StableHLO/Linalg 输入只保留为局部 verifier、
+  lowering pattern 或 bring-up fixture。
 - `wafer.group` 到 `wafer.tile_region` 可生成单 tile load/compute/store。
 - SPM allocation trial 成功。
 - DDR external input/output 或 constant read-only demand 可绑定。
@@ -86,6 +92,7 @@ M0 single tile compute：
 
 M1 multi-tile no communication：
 
+- 主链路 gate 继续消费同一条真实图 artifact chain，不重新退回手写 tile_region 或 fixed manifest。
 - placement 覆盖多个 tile，并使用 good-tile metadata。
 - 每个 tile 有 block id / local shard metadata。
 - 无 tile 间 DTE 依赖。
