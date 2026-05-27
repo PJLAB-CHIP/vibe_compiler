@@ -183,7 +183,8 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
 
 - R2.1/R2.2 已恢复 pre-exported artifact adapter/verifier、sidecar manifest、resource-backed constant
   metadata 和 SDY artifact bridge；仍没有 framework-specific PyTorch/JAX capture adapter 或完整
-  Shardy propagation/SPMD partitioner pipeline。
+  Shardy propagation/SPMD partitioner pipeline。这两项不是放弃项，已在 `tasks/progress.md`
+  作为 P2 显式后续项 `P2.F1` / `P2.S1` 跟踪。
 - acceptance passes 只识别当前 structured IR pattern，不等于 group schedule planner 或 full
   transformer local compile 已完成。
 - mask/select、dynamic shape、非 constant-init reduce、复杂 broadcast、常量 slicing/storage transform
@@ -199,6 +200,12 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
 - R2.3：已完成；记录见 `tasks/2026-05-26-wafer-r2-recovery.md` 和
   `tasks/2026-05-25-wafer-local-compute-normalization-design.md`，local compute coverage 按
   op/dataflow contract 重写，不把 acceptance pass 当 schedule completion。
+- P2.F1：pending；建立 framework-specific capture adapter contract，框架 capture 入口只能产出
+  verified frontend artifact、sidecar 和 compile config，不能把框架 API/version/path/parameter
+  name 写进后端 IR 合同。
+- P2.S1：pending；集成完整 Shardy propagation / SPMD partitioner pipeline，per-rank artifact、
+  multi replica group、rank selection、shard slicing、collective legality 和 placement input 必须由
+  IR/attr/verifier 明确表示。
 
 ## P3 M0 Single-Tile Load-GEMM-Store
 

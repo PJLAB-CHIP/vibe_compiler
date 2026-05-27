@@ -1,6 +1,6 @@
 # Wafer Compiler Progress
 
-更新时间：2026-05-26
+更新时间：2026-05-27
 
 本文件只记录当前看板、状态和下一步；不再承载实现流水账。历史实现细节以 git commit、设计文档
 和审计文档为准。
@@ -16,6 +16,9 @@
 - 设计一致性缺口见
   `tasks/2026-05-26-wafer-p0-p6-design-conformance-audit.md` 和
   `tasks/2026-05-26-wafer-p0-p6-recovery-status.md`。
+- framework-specific capture 和完整 Shardy SPMD pipeline 不是放弃项；它们已经从 R2 的
+  “未覆盖范围”提升为下面的 P2 显式后续项。它们不阻塞当前 R3.1 的 local M0 主链路恢复，但属于
+  frontend/SPMD 端到端完成标准。
 - 当前不得推进 P7/P8/P9；必须先恢复 P0-P6 的设计一致性。
 - 当前唯一 ready 项是 R3.1。
 
@@ -93,6 +96,16 @@
 | R5.2 | pending | 补 transformer compute/package gaps | mask/select、dynamic-bound policy、non-constant-init reduce、constant/weight slice 和 package consistency 按设计补齐 |
 | R6.1 | pending | 恢复 communication design-conformance gate | DTE resource allocation、collective buffer slice/address offset、communication metadata 与 package/runtime 边界按设计落地 |
 | R6.2 | pending | 清理 StableHLO collective bridge 临时 cast | 用可验证 buffer-slice / layout/materialization 路径替代 visible `unrealized_conversion_cast` |
+
+## P2 显式后续项
+
+这些项不是 R2.1-R2.3 的完成条件，但也不能被解释成“不做”。它们需要在端到端 frontend/SPMD
+闭环前落地；当前先作为显式队列项保留，不改变 R3.1 是当前 ready 项的事实。
+
+| ID | 状态 | 任务 | 验收 |
+| --- | --- | --- | --- |
+| P2.F1 | pending | 建立 framework-specific capture adapter contract | PyTorch/JAX 等框架 capture 入口只能产出 verified StableHLO/MLIR artifact、sidecar 和 compile config；graph break、eager fallback、dynamic bound、constant/weight、sharding annotation 的诊断进入 frontend verifier；框架 API、版本路径或参数名不进入后端 IR 合同 |
+| P2.S1 | pending | 集成完整 Shardy propagation / SPMD partitioner pipeline | 从未分片或只带 sharding annotation 的 StableHLO/SDY artifact 出发，运行 Shardy propagation/partitioning 并产出 per-rank artifact；multi replica group、rank selection、shard slicing、collective legality 和 placement input 由 IR/attr/verifier 明确表示，不靠 pass side table 或名字 |
 
 ## 后续队列
 
