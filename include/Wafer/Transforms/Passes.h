@@ -29,6 +29,9 @@ std::unique_ptr<mlir::Pass> createCheckSPMAllocationPass();
 std::unique_ptr<mlir::Pass> createMaterializeDDRExternalBindingsPass();
 std::unique_ptr<mlir::Pass> createLowerRingAllGatherPass();
 std::unique_ptr<mlir::Pass> createLowerRingReduceCollectivesPass();
+#ifdef WAFER_ENABLE_SHARDY
+std::unique_ptr<mlir::Pass> createApplyDefaultSpmdShardingPass();
+#endif
 void registerWaferTransformPasses();
 
 } // namespace wafer

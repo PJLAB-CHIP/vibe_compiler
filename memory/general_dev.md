@@ -43,12 +43,21 @@
   输入切分维度时生成 16-tile replicated seed。不要把这个默认策略放到 placement/group 后段实现。
 - P2.S1 不能用手写 `sdy.sharding`、`wafer.spmd.*` attr、私有 JSON 或名字约定冒充 partitioned
   artifact。正确链路是同一套 source-built PyTorch/XLA 环境中通过
-  `torch_xla.distributed.spmd.mark_sharding` 或 `torch.ops.xla.dynamo_mark_sharding` 标记 4096
-  matmul 图，导出 StableHLO / SDY 可解释 artifact，接 Shardy propagation 和 XLA SPMD partitioner，
-  产出 partitioned StableHLO 或等价 per-rank StableHLO body。旧的
+  `torch_xla.distributed.spmd.mark_sharding` 标记 4096 matmul 图，导出带 `mhlo.sharding` 的
+  PyTorch/XLA StableHLO bundle，并通过 `XLA_DUMP_POST_OPTIMIZATIONS=1` 的 post-opt export 取得 XLA
+  SPMD partitioner 后的 partitioned StableHLO local body。当前 post-opt StableHLO export 需要在
+  `XLA_FLAGS` 中禁用 `fusion`，否则 PyTorch/XLA 的 HLO-to-StableHLO helper 会在 `mhlo.fusion` 上失败；
+  这个 flag 是 capture 约束，不是 IR 协议。旧的
   `tools/wafer_pytorch_xla_capture.py --emit-p2s1-sharded-matmul` 和
   `wafer-import-model --verify-spmd-bundle` 路线已移除；不要恢复只生成私有 attrs/sidecar 或只跑
   SDY propagation 的入口。
+- P2.S1 当前工具入口：
+  `tools/wafer_pytorch_xla_capture.py --emit-p2s1-sharded-smoke --sharding-strategy=<name>` 生成
+  pre-partition mark artifact；
+  `--emit-p2s1-partitioned-smoke --sharding-strategy=<name>` 生成 post-XLA-SPMD local artifact；
+  `--emit-p2s1-partitioned-smoke --default-input-sharding --default-tile-count=<1..16>` 覆盖 no-user 默认
+  input seed。partitioned bundle 的 `functions/forward.meta` 要匹配 local function boundary；
+  post-SPMD module 可能含 private helper `func.func`，frontend verifier 应选择唯一 public entry。
 - P2.S1 后的 collective 先进入 Wafer LinalgExt-style tensor collective handoff，和 `linalg` 一起进入
   group/tiling；`wafer.comm` 只能在 `wafer.tile_region` / SPM tile buffers / placement 明确后
   materialize。StableHLO collective 直降 `wafer.comm` 且靠 `unrealized_conversion_cast` 桥 tensor

@@ -54,6 +54,7 @@ SHARDY_API_NEEDLES = [
 
 SHARDY_API_ALLOWED_PREFIXES = [
     "include/Wafer/Frontend",
+    "lib/Wafer/Transforms/SPMD",
     "tools/wafer-import-model",
     "tools/wafer-opt",
 ]
@@ -257,6 +258,11 @@ def check_cmake_target_visibility() -> None:
         )
     if "target_link_libraries(WaferTransforms PRIVATE StablehloOps)" not in transforms_cmake:
         raise RuntimeError("WaferTransforms must keep StablehloOps as a PRIVATE dependency")
+    for needle in [
+        "target_compile_definitions(WaferTransforms PRIVATE WAFER_ENABLE_SHARDY=1)",
+        "target_link_libraries(WaferTransforms PRIVATE ShardySdyDialect)",
+    ]:
+        check_text_contains(transforms_cmake_path, needle)
 
     for cmake_path in [
         REPO_ROOT / "lib" / "Wafer" / "IR" / "CMakeLists.txt",

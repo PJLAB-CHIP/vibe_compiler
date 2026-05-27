@@ -390,13 +390,22 @@ bool verifySignature(Type type, const BundleSignature &signature,
 FailureOr<func::FuncOp> findSingleFunction(ModuleOp module,
                                            llvm::raw_ostream &diagnostics) {
   SmallVector<func::FuncOp> functions;
+  SmallVector<func::FuncOp> publicFunctions;
   module.walk([&](func::FuncOp func) { functions.push_back(func); });
-  if (functions.size() != 1) {
-    rejectBundle("expected exactly one func.func in StableHLO bundle MLIR",
-                 diagnostics);
-    return failure();
+  for (func::FuncOp func : functions) {
+    if (!func.isPrivate())
+      publicFunctions.push_back(func);
   }
-  return functions.front();
+
+  if (publicFunctions.size() == 1)
+    return publicFunctions.front();
+  if (publicFunctions.empty() && functions.size() == 1)
+    return functions.front();
+
+  rejectBundle("expected exactly one public entry func.func in StableHLO "
+               "bundle MLIR",
+               diagnostics);
+  return failure();
 }
 
 std::string bundlePath(llvm::StringRef bundleDir,

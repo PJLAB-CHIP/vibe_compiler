@@ -149,6 +149,29 @@ class FakeStableHLOProgram:
         (data / "bias").write_bytes(b"0" * 16)
 
 
+class FakeMesh:
+    def __init__(self, device_ids, mesh_shape, axis_names):
+        self.device_ids = tuple(device_ids)
+        self.mesh_shape = tuple(mesh_shape)
+        self.axis_names = tuple(axis_names)
+
+
+class FakeSpmd(types.ModuleType):
+    def __init__(self):
+        super().__init__("torch_xla.distributed.spmd")
+        self.meshes = []
+        self.mark_calls = []
+
+    def Mesh(self, device_ids, mesh_shape, axis_names):
+        mesh = FakeMesh(device_ids, mesh_shape, axis_names)
+        self.meshes.append(mesh)
+        return mesh
+
+    def mark_sharding(self, tensor, mesh, partition_spec):
+        self.mark_calls.append((tensor, mesh, partition_spec))
+        return tensor
+
+
 class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
     def setUp(self):
         self.saved_modules = dict(sys.modules)
@@ -190,6 +213,64 @@ class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
 
             with self.assertRaisesRegex(RuntimeError, "missing StableHLO bundle file"):
                 self.tool._verify_bundle_layout(bundle_path)
+
+    def test_p2s1_strategy_matrix_names_are_fixed(self):
+        self.assertEqual(
+            self.tool.P2S1_SHARDING_STRATEGY_NAMES,
+            (
+                "data",
+                "column",
+                "row",
+                "2d-output",
+                "2d-contracting-output",
+                "partial-replication",
+            ),
+        )
+
+    def test_p2s1_strategy_applies_framework_marks_to_inputs_only(self):
+        fake_spmd = FakeSpmd()
+        strategy = self.tool.get_p2s1_sharding_strategy("row")
+        mesh = self.tool.create_p2s1_mesh(fake_spmd, strategy)
+        module = types.SimpleNamespace(weight=object(), bias=object())
+        input_tensor = object()
+
+        self.tool.apply_p2s1_strategy_marks(
+            spmd_module=fake_spmd,
+            strategy=strategy,
+            mesh=mesh,
+            input_tensor=input_tensor,
+            smoke_module=module,
+        )
+
+        self.assertEqual(fake_spmd.meshes[0].mesh_shape, (16,))
+        self.assertEqual(fake_spmd.meshes[0].axis_names, ("tp",))
+        self.assertEqual(
+            fake_spmd.mark_calls,
+            [
+                (input_tensor, mesh, (None, "tp")),
+                (module.weight, mesh, ("tp", None)),
+                (module.bias, mesh, (None,)),
+            ],
+        )
+
+    def test_p2s1_default_input_strategy_uses_replicated_fallback(self):
+        strategy = self.tool.create_p2s1_default_input_strategy(
+            tile_count=16, size=31
+        )
+
+        self.assertEqual(strategy.mesh_shape, (16,))
+        self.assertEqual(strategy.axis_names, ("tile",))
+        self.assertEqual(strategy.input_spec, (None, None))
+        self.assertEqual(strategy.weight_spec, (None, None))
+        self.assertEqual(strategy.bias_spec, (None,))
+
+    def test_p2s1_partitioned_export_disables_hlo_fusion(self):
+        flags = self.tool._with_disabled_hlo_pass(
+            "--xla_dump_to=/tmp/xla --xla_disable_hlo_passes=cse", "fusion"
+        )
+
+        self.assertIn("--xla_dump_to=/tmp/xla", flags)
+        self.assertIn("--xla_disable_hlo_passes=cse,fusion", flags)
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,45 @@
+# REQUIRES: stablehlo, pytorch-xla-importer
+
+# RUN: rm -rf %t.partitioned
+# RUN: bash -c 'for strategy in data column row 2d-output 2d-contracting-output partial-replication; do \
+# RUN:   env CPU_NUM_DEVICES=16 PJRT_DEVICE=CPU %importer_python %wafer_src_root/tools/wafer_pytorch_xla_capture.py --emit-p2s1-partitioned-smoke --sharding-strategy ${strategy} --output-bundle %t.partitioned/${strategy} || exit 1; \
+# RUN:   test -s %t.partitioned/${strategy}/functions/forward.mlir || exit 1; \
+# RUN:   test -s %t.partitioned/${strategy}/functions/forward.bytecode || exit 1; \
+# RUN:   FileCheck %s --input-file=%t.partitioned/${strategy}/functions/forward.mlir --check-prefix=PARTITIONED || exit 1; \
+# RUN:   wafer-import-model --verify-stablehlo-bundle %t.partitioned/${strategy} | FileCheck %s --check-prefix=VERIFY || exit 1; \
+# RUN: done'
+
+# RUN: FileCheck %s --input-file=%t.partitioned/row/functions/forward.mlir --check-prefix=ROW
+# RUN: FileCheck %s --input-file=%t.partitioned/partial-replication/functions/forward.mlir --check-prefix=PARTIAL
+
+# RUN: env CPU_NUM_DEVICES=16 PJRT_DEVICE=CPU %importer_python %wafer_src_root/tools/wafer_pytorch_xla_capture.py --emit-p2s1-partitioned-smoke --default-input-sharding --default-tile-count=16 --output-bundle %t.partitioned/default
+# RUN: FileCheck %s --input-file=%t.partitioned/default/functions/forward.mlir --check-prefix=DEFAULT
+# RUN: wafer-import-model --verify-stablehlo-bundle %t.partitioned/default | FileCheck %s --check-prefix=VERIFY
+
+# RUN: env CPU_NUM_DEVICES=1 PJRT_DEVICE=CPU %importer_python %wafer_src_root/tools/wafer_pytorch_xla_capture.py --emit-p2s1-partitioned-smoke --default-input-sharding --default-tile-count=1 --output-bundle %t.partitioned/default-tile1
+# RUN: FileCheck %s --input-file=%t.partitioned/default-tile1/functions/forward.mlir --check-prefix=TILE1
+# RUN: wafer-import-model --verify-stablehlo-bundle %t.partitioned/default-tile1 | FileCheck %s --check-prefix=VERIFY
+
+# PARTITIONED: mhlo.spmd_parameters_shardings
+# PARTITIONED: func.func @main
+# PARTITIONED: stablehlo.dot_general
+# PARTITIONED: tensor<{{[0-9x]*(256|1024|2048)[0-9x]*}}xf32>
+
+# ROW: stablehlo.all_reduce
+# ROW: replica_groups = dense<{{.*}}> : tensor<1x16xi64>
+
+# PARTIAL: last_tile_dim_replicate
+# PARTIAL: stablehlo.all_reduce
+# PARTIAL: replica_groups = dense<{{.*}}> : tensor<4x4xi64>
+
+# DEFAULT: mhlo.spmd_parameters_shardings
+# DEFAULT: stablehlo.all_gather
+# DEFAULT: replica_groups = dense<{{.*}}> : tensor<1x16xi64>
+# DEFAULT: tensor<256x4096xf32>
+
+# TILE1: func.func @main
+# TILE1: stablehlo.dot_general
+# TILE1: tensor<4096x4096xf32>
+
+# VERIFY: wafer-import-model: verified StableHLO bundle parameters: 2
+# VERIFY: wafer-import-model: verified frontend artifact

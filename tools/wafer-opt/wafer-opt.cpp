@@ -6,6 +6,7 @@
 #include "Wafer/Transforms/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/Extensions/InlinerExtension.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Math/IR/Math.h"
@@ -26,6 +27,7 @@ int main(int argc, char **argv) {
   wafer::registerImporterDialects(registry);
   wafer::registerWaferTransformPasses();
   wafer::registerWaferConversionPasses();
+  mlir::func::registerInlinerExtension(registry);
 #ifdef WAFER_ENABLE_SHARDY
   mlir::sdy::registerAllSdyPassesAndPipelines();
 #endif

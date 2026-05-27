@@ -18,6 +18,7 @@ add_mlir_library(WaferTransforms
   LayoutMaterialization/CompactLayoutAssignment.cpp
   LaunchOutlining/MaterializeDDRExternalBindings.cpp
   Communication/LowerRingCollectives.cpp
+  SPMD/ApplyDefaultSpmdSharding.cpp
   Passes.cpp
 
   LINK_LIBS PUBLIC
@@ -39,4 +40,11 @@ if(WAFER_ENABLE_IMPORTER_DEPS)
   target_compile_definitions(WaferTransforms PRIVATE WAFER_ENABLE_STABLEHLO=1)
   target_link_libraries(obj.WaferTransforms PRIVATE StablehloOps)
   target_link_libraries(WaferTransforms PRIVATE StablehloOps)
+endif()
+
+if(WAFER_ENABLE_SPMD_PARTITIONER_DEPS)
+  target_compile_definitions(obj.WaferTransforms PRIVATE WAFER_ENABLE_SHARDY=1)
+  target_compile_definitions(WaferTransforms PRIVATE WAFER_ENABLE_SHARDY=1)
+  target_link_libraries(obj.WaferTransforms PRIVATE ShardySdyDialect)
+  target_link_libraries(WaferTransforms PRIVATE ShardySdyDialect)
 endif()

@@ -185,9 +185,9 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
 缺口：
 
 - R2.1/R2.2 已恢复 pre-exported artifact adapter/verifier 和 SDY artifact bridge；P2.F1 已补
-  source-built PyTorch/XLA bundle capture；仍没有完整
-  Shardy propagation/SPMD partitioner pipeline。这两项不是放弃项，已在 `tasks/progress.md`
-  作为 R3 之前的 P2 显式后续项 `P2.S1` 跟踪。
+  source-built PyTorch/XLA bundle capture；P2.S1 已补真实 framework `mark_sharding`、default input
+  seed policy 和 XLA SPMD partitioned StableHLO artifact gate。R2.4 仍需把 post-SPMD collective
+  handoff 成 Wafer LinalgExt-style tensor collective IR。
 - acceptance passes 只识别当前 structured IR pattern，不等于 group schedule planner 或 full
   transformer local compile 已完成。
 - mask/select、dynamic shape、非 constant-init reduce、复杂 broadcast、常量 slicing/storage transform
@@ -211,12 +211,14 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
   `functions/forward.meta`、`functions/forward.bytecode` 和 `data/weight` / `data/bias`；完成证明已跑通真实
   source-built PyTorch/XLA adapter -> bundle -> verifier 链。prebuilt `torch_xla` wheel、手写
   MLIR 或手写 emitter 仍不能作为后续完成证明。
-- P2.S1：ready；集成完整 Shardy propagation / XLA SPMD partitioner pipeline，partitioned StableHLO、
-  multi replica group、rank selection、shard slicing、collective legality 和 placement input 必须由
-  IR/attr/verifier 明确表示。完成证明必须消费 P2.F1 artifact：有用户 sharding seed 时保留并传播
-  用户 seed；完全没有用户 seed 时在 SPMD 层补默认 single-card function-input sharding seed
-  （默认 16 tile，调试 1 tile，找不到合适切分维度时 replicated），再产出可校验的 partitioned
-  StableHLO 或等价 per-rank / replicated-local artifact；不得生成 `wafer.spmd.*`、私有 JSON 或
+- P2.S1：已完成；`tools/wafer_pytorch_xla_capture.py` 用 source-built PyTorch/XLA lazy SPMD runtime
+  的 `mark_sharding` 生成六种用户 sharding 策略的真实 PyTorch/XLA StableHLO bundle，bundle 继续由
+  frontend verifier 和 standalone SDY propagation parse gate 消费；partitioned gate 通过同一
+  PyTorch/XLA/XLA 版本的 post-optimization export 取得 XLA SPMD partitioner 后的 StableHLO local
+  body，并覆盖 row/partial/default 分支的 collective、replica group、local shard shape 和
+  partial-replication metadata。完全没有用户 seed 时，P2.S1 在 SPMD 层补默认 single-card
+  function-input sharding seed（默认 16 tile，调试 1 tile，找不到合适切分维度时 replicated），再产出
+  可校验的 partitioned StableHLO 或 replicated-local artifact；不生成 `wafer.spmd.*`、私有 JSON 或
   名字约定作为协议。当前 collective normalization、`wafer.comm`、placement 或 ring/resource
   lowering 的覆盖范围不能反向限制 P2.S1 支持范围。硬件可表达但下游尚未实现的语义必须形成对应
   恢复任务或补 IR contract。R3.1 依赖 P2.F1/P2.S1/R2.4 提供真实 frontend/SPMD artifact 来源和
@@ -395,11 +397,12 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
 | --- | --- | --- |
 | P0 | skeleton | 工程入口存在，源码 ownership、依赖层级边界和 IR op-family 文件边界已由 R0.2/R0.3/R1.1 恢复；仍不代表 frontend/runtime/package 主路径完成 |
 | P1 | skeleton | 核心 op/type/verifier skeleton 存在，interface/effect/resource 和 local compute stage-connection gate 已恢复；storage-realized 主链路和 communication cast bridge 仍未闭环 |
-| P2 | skeleton | StableHLO textual lowering、frontend artifact verifier、PyTorch/XLA bundle capture、SDY artifact bridge 和 local compute coverage 口径已恢复；完整 SPMD partitioner、dynamic/mask/constant-storage 和 physical schedule 仍未闭环 |
+| P2 | skeleton | StableHLO textual lowering、frontend artifact verifier、PyTorch/XLA bundle capture、SDY artifact bridge、P2.S1 partitioned StableHLO gate 和 local compute coverage 口径已恢复；dynamic/mask/constant-storage、tensor collective handoff 和 physical schedule 仍未闭环 |
 | P3 | skeleton | M0 local skeleton 可跑，但 group/resource/C ABI/package 主链路未闭环 |
 | P4 | skeleton | placement/map 和 multi-tile skeleton 可跑，但真实 shard/merge/launch binding 未闭环 |
 | P5 | skeleton | transformer staged acceptance 和 M6 smoke 可跑，但 full schedule/resource/package/device artifact 未闭环 |
 | P6 | skeleton | comm/DTE skeleton 可跑，但 resource allocator、buffer slice/address、package/runtime metadata 未闭环 |
 
-R2 之后的下一步是 R3.1：恢复 M0 group boundary / candidate contract，再进入 root tile feasibility
-oracle 和 tile_region materialization 主链路。
+R2 之后的下一步是 R2.4：建立 Wafer LinalgExt-style tensor collective handoff；随后进入 R3.1，
+恢复 M0 group boundary / candidate contract，再进入 root tile feasibility oracle 和 tile_region
+materialization 主链路。

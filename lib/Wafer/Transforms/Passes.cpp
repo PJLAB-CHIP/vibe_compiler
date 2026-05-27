@@ -27,6 +27,9 @@ void registerWaferTransformPasses() {
     mlir::registerPass(createMaterializeDDRExternalBindingsPass);
     mlir::registerPass(createLowerRingAllGatherPass);
     mlir::registerPass(createLowerRingReduceCollectivesPass);
+#ifdef WAFER_ENABLE_SHARDY
+    mlir::registerPass(createApplyDefaultSpmdShardingPass);
+#endif
     return true;
   }();
   (void)registered;

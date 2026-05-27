@@ -277,6 +277,11 @@ PyTorch/XLA 的 `mark_sharding` 或 export 可追踪的等价前端 op。Fronten
 StableHLO / SDY 可解释 artifact，应诊断为 frontend export / sharding import 问题，而不是在后端
 补第二套描述。
 
+2026-05-27 P2.S1 当前实现使用 source-built PyTorch/XLA lazy SPMD runtime 的 `mark_sharding`
+生成带 `mhlo.sharding` 的 PyTorch/XLA StableHLO bundle；partitioned local body 由同一 runtime 的
+XLA SPMD post-optimization export 取得。Frontend verifier 只校验 bundle metadata / data /
+function boundary，不把 sharding 转成 Wafer 私有协议。
+
 Frontend 不把 sharding annotation 转成 physical card/tile id，也不提前选择 DTE route。
 
 ### 3.4 External Tensor Layout

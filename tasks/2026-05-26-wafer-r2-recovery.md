@@ -17,14 +17,18 @@ R2 的目标是恢复 P2 阶段的主路径边界：frontend artifact 可验证�
 Wafer 工具链接收并保留 logical rank facts，local compute normalization 的覆盖状态按 structured
 tensor IR 合同记录。
 
-本记录不声明 framework-specific PyTorch/JAX capture、完整 Shardy propagation/SPMD partitioner
+本记录本身不声明 framework-specific PyTorch/JAX capture、完整 Shardy propagation/SPMD partitioner
 pipeline、mask/select/dynamic-shape 全覆盖、storage-realized constant slicing、group schedule
-completion、SPM/DDR/resource planning 或 runtime/package 闭环完成。
+completion、SPM/DDR/resource planning 或 runtime/package 闭环完成。2026-05-27 后续 P2.F1/P2.S1
+已经分别补上 source-built PyTorch/XLA capture adapter 和 XLA SPMD partitioned artifact gate；这些
+完成证据记录在 `tasks/progress.md` 和
+`tasks/2026-05-25-wafer-shardy-spmd-design.md`。
 
 2026-05-27 调度结论：framework-specific capture 和完整 Shardy propagation / SPMD partitioner
 pipeline 不是放弃项，也不应排在 R3 之后。`P2.F1` 已完成 source-built PyTorch/XLA capture
-adapter；`P2.S1` 是 R3.1 之前的 ready 项。后续 group / tile / resource gate 必须消费真实
-frontend/SPMD artifact 来源，而不是继续围绕手写 fixture 自洽。
+adapter；`P2.S1` 已完成真实 `mark_sharding` / default-input-seed 到 XLA SPMD partitioned StableHLO
+artifact gate。后续 group / tile / resource gate 必须消费真实 frontend/SPMD artifact 来源，而不是
+继续围绕手写 fixture 自洽。
 
 ## R2.1 Frontend Artifact / Importer Contract
 
@@ -72,8 +76,10 @@ collective + SPM tile buffers -> `wafer.comm` 两层。
 - 当前 bridge 只覆盖单个 StableHLO replica group；多 replica-group artifact 需要 P2.S1 引入明确的
   global/local rank selection policy 和 partitioned artifact 表示。这是 bridge 覆盖缺口，不是
   Wafer SPMD 语义不支持。
-- 当前仍没有把 Shardy propagation/SPMD partitioner 作为 Wafer pass pipeline 主路径跑完；R2.2
-  只恢复 artifact dialect/metadata bridge 和后段 communication skeleton 的 rank group 输入。
+- R2.2 本身没有把 Shardy propagation/SPMD partitioner 作为 Wafer pass pipeline 主路径跑完；后续
+  P2.S1 已用真实 PyTorch/XLA mark artifact、standalone SDY propagation parse gate 和 XLA SPMD
+  post-optimization export 补齐 partitioned artifact gate。R2.2 只恢复 artifact dialect/metadata
+  bridge 和后段 communication skeleton 的 rank group 输入。
 - StableHLO collective 到 tile buffer 的 visible `unrealized_conversion_cast` 仍属于 R6.2 缺口。
 
 ## R2.3 Local Compute Normalization Coverage Status
@@ -104,6 +110,16 @@ boundary、tile shape、multi-stage schedule、SPM residency 或 C ABI issue seq
 
 2026-05-27 后续清理删除了旧的 `--verify-spmd-bundle`、P2.S1 私有 attr emitter 和 StableHLO
 直降 `wafer.comm` pass/tests；上述 R2 记录只保留历史背景，不再表示这些旧入口仍存在。
+
+2026-05-27 后续 P2.S1 新增或扩大了这些 gate：
+
+- `test/Tools/wafer-pytorch-xla-capture-p2s1-sharding.test`
+- `test/Tools/wafer-pytorch-xla-capture-p2s1-partitioned.test`
+- `test/Spmd/default-spmd-input-seed.mlir`
+
+这些 gate 证明真实 source-built PyTorch/XLA `mark_sharding` artifact、default input seed policy 和
+XLA SPMD partitioned StableHLO bundle 可被当前工具链验证；它们仍不证明 R2.4 tensor collective
+handoff、R3 group planner、resource planner、package、runtime 或 board execution。
 
 这些验证证明 R2 artifact/bridge/coverage 状态收敛，不证明 R3 之后的 group planner、resource
 planner、package、runtime 或 board execution。

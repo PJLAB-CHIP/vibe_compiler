@@ -7,6 +7,7 @@ target_link_libraries(wafer-opt
   MLIRArithDialect
   MLIRAsyncDialect
   MLIRFuncDialect
+  MLIRFuncInlinerExtension
   MLIRLinalgDialect
   MLIRMathDialect
   MLIRMlirOptMain
