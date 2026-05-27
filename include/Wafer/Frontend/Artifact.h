@@ -17,6 +17,7 @@ namespace wafer::frontend {
 struct ArtifactVerificationResult {
   unsigned bundleParameterCount = 0;
   unsigned bundleUserInputCount = 0;
+  int64_t spmdLocalRank = -1;
 };
 
 mlir::LogicalResult
@@ -27,6 +28,11 @@ mlir::LogicalResult
 verifyStableHLOBundle(mlir::ModuleOp module, llvm::StringRef bundlePath,
                       llvm::raw_ostream &diagnostics,
                        ArtifactVerificationResult *result = nullptr);
+
+mlir::LogicalResult
+verifySpmdBundle(mlir::ModuleOp module, llvm::StringRef bundlePath,
+                 llvm::raw_ostream &diagnostics,
+                 ArtifactVerificationResult *result = nullptr);
 
 } // namespace wafer::frontend
 

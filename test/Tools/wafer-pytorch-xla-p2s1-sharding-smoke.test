@@ -1,0 +1,74 @@
+# REQUIRES: stablehlo, shardy, pytorch-xla-importer
+
+# RUN: rm -rf %t.p2s1
+# RUN: %importer_python %wafer_src_root/tools/wafer_pytorch_xla_capture.py --emit-p2s1-sharded-matmul --output-root %t.p2s1 --global-rank 1
+
+# RUN: test -f %t.p2s1/data_batch/functions/forward.mlir
+# RUN: test -f %t.p2s1/column_parallel/functions/forward.mlir
+# RUN: test -f %t.p2s1/row_contracting/functions/forward.mlir
+# RUN: test -f %t.p2s1/two_d_output/functions/forward.mlir
+# RUN: test -f %t.p2s1/two_d_contracting_output/functions/forward.mlir
+# RUN: test -f %t.p2s1/partial_replication/functions/forward.mlir
+
+# RUN: FileCheck %s --input-file=%t.p2s1/data_batch/functions/forward.mlir --check-prefix=DATA
+# RUN: FileCheck %s --input-file=%t.p2s1/column_parallel/functions/forward.mlir --check-prefix=COLUMN
+# RUN: FileCheck %s --input-file=%t.p2s1/row_contracting/functions/forward.mlir --check-prefix=ROW
+# RUN: FileCheck %s --input-file=%t.p2s1/two_d_output/functions/forward.mlir --check-prefix=TWO-D
+# RUN: FileCheck %s --input-file=%t.p2s1/two_d_contracting_output/functions/forward.mlir --check-prefix=TWO-D-CONTRACT
+# RUN: FileCheck %s --input-file=%t.p2s1/partial_replication/functions/forward.mlir --check-prefix=PARTIAL
+
+# RUN: wafer-import-model --verify-spmd-bundle %t.p2s1/data_batch | FileCheck %s --check-prefix=VERIFY
+# RUN: wafer-import-model --verify-spmd-bundle %t.p2s1/column_parallel | FileCheck %s --check-prefix=VERIFY
+# RUN: wafer-import-model --verify-spmd-bundle %t.p2s1/row_contracting | FileCheck %s --check-prefix=VERIFY
+# RUN: wafer-import-model --verify-spmd-bundle %t.p2s1/two_d_output | FileCheck %s --check-prefix=VERIFY
+# RUN: wafer-import-model --verify-spmd-bundle %t.p2s1/two_d_contracting_output | FileCheck %s --check-prefix=VERIFY
+# RUN: wafer-import-model --verify-spmd-bundle %t.p2s1/partial_replication | FileCheck %s --check-prefix=VERIFY
+
+# RUN: %wafer_obj_root/shardy-sdy-opt %t.p2s1/data_batch/functions/forward.mlir --sdy-propagation-pipeline | FileCheck %s --check-prefix=PROP
+# RUN: %wafer_obj_root/shardy-sdy-opt %t.p2s1/column_parallel/functions/forward.mlir --sdy-propagation-pipeline | FileCheck %s --check-prefix=PROP
+# RUN: %wafer_obj_root/shardy-sdy-opt %t.p2s1/row_contracting/functions/forward.mlir --sdy-propagation-pipeline | FileCheck %s --check-prefix=PROP-CONTRACT
+# RUN: %wafer_obj_root/shardy-sdy-opt %t.p2s1/two_d_output/functions/forward.mlir --sdy-propagation-pipeline | FileCheck %s --check-prefix=PROP
+# RUN: %wafer_obj_root/shardy-sdy-opt %t.p2s1/two_d_contracting_output/functions/forward.mlir --sdy-propagation-pipeline | FileCheck %s --check-prefix=PROP-CONTRACT
+# RUN: %wafer_obj_root/shardy-sdy-opt %t.p2s1/partial_replication/functions/forward.mlir --sdy-propagation-pipeline | FileCheck %s --check-prefix=PROP
+
+# DATA: wafer.spmd.strategy = "data_batch"
+# DATA: sdy.mesh @mesh = <["dp"=4]>
+# DATA: sdy.sharding<@mesh, [{"dp"}, {}]>
+# DATA: wafer.spmd.local_shape = array<i64: 1024, 4096>
+# DATA: wafer.spmd.shard_offsets = array<i64: 1024, 0>
+
+# COLUMN: wafer.spmd.strategy = "column_parallel"
+# COLUMN: sdy.mesh @mesh = <["tp"=4]>
+# COLUMN: sdy.sharding<@mesh, [{}, {"tp"}]>
+# COLUMN: wafer.spmd.local_shape = array<i64: 4096, 1024>
+
+# ROW: wafer.spmd.strategy = "row_contracting"
+# ROW: wafer.spmd.rank_group = array<i64: 0, 1, 2, 3>
+# ROW: wafer.spmd.collective_kind = "all_reduce"
+# ROW-DAG: sdy.sharding<@mesh, [{}, {"tp"}]>
+# ROW-DAG: sdy.sharding<@mesh, [{"tp"}, {}]>
+
+# TWO-D: wafer.spmd.strategy = "two_d_output"
+# TWO-D: sdy.mesh @mesh = <["dp"=2, "tp"=2]>
+# TWO-D: sdy.sharding<@mesh, [{"dp"}, {"tp"}]>
+# TWO-D: wafer.spmd.local_shape = array<i64: 2048, 2048>
+
+# TWO-D-CONTRACT: wafer.spmd.strategy = "two_d_contracting_output"
+# TWO-D-CONTRACT: wafer.spmd.rank_group = array<i64: 0, 1>
+# TWO-D-CONTRACT: wafer.spmd.collective_axis = "mp"
+# TWO-D-CONTRACT: sdy.mesh @mesh = <["dp"=2, "tp"=2, "mp"=2]>
+# TWO-D-CONTRACT: sdy.sharding<@mesh, [{"dp"}, {"tp"}], replicated={"mp"}>
+
+# PARTIAL: wafer.spmd.strategy = "partial_replication"
+# PARTIAL: sdy.mesh @mesh = <["dp"=2, "tp"=2]>
+# PARTIAL: sdy.sharding<@mesh, [{"tp"}], replicated={"dp"}>
+# PARTIAL: sdy.sharding<@mesh, [{}, {}], replicated={"dp", "tp"}>
+
+# VERIFY: wafer-import-model: verified SPMD per-rank artifact local_rank: 1
+# VERIFY: wafer-import-model: verified StableHLO bundle parameters: 2
+# VERIFY: wafer-import-model: verified frontend artifact
+
+# PROP: sdy.sharding_per_value
+
+# PROP-CONTRACT: wafer.spmd.collective_kind = "all_reduce"
+# PROP-CONTRACT: sdy.sharding

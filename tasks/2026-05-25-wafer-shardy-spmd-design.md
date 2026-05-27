@@ -2,7 +2,7 @@
 
 日期：2026-05-25
 
-状态：设计草案；2026-05-25 独立边界收口；2026-05-27 明确 P2.S1 主 pipeline 和消费链
+状态：设计草案；2026-05-25 独立边界收口；2026-05-27 明确 P2.S1 主 pipeline、执行方法和消费链
 
 本文定义 Wafer compiler 中 Shardy / SPMD 阶段的边界。该阶段负责 global tensor 的逻辑切分、
 sharding propagation、SPMD partition 和 logical collective 语义；不负责 physical tile
@@ -53,7 +53,7 @@ partitioned StableHLO module
 SPMD 输出仍然是逻辑程序。它只说明“哪些 logical rank 之间需要通信”，不说明“哪两个 physical
 tile 通过哪个 DTE resource 通信”。
 
-### 2.1 P2.S1 Shardy Propagation / SPMD Pipeline Contract
+### 2.1 P2.S1 Shardy Propagation / SPMD Artifact Contract
 
 P2.S1 在 R3 之前完成。它必须消费 P2.F1 产出的 verified frontend artifact，而不是只 parse
 手写 `sdy.mesh` fixture。主 pipeline 边界是：
@@ -62,7 +62,6 @@ P2.S1 在 R3 之前完成。它必须消费 P2.F1 产出的 verified frontend ar
 verified StableHLO / SDY artifact
   -> sharding import / normalization
   -> Shardy propagation
-  -> Shardy SPMD partition
   -> per-rank artifact selection
   -> per-rank artifact verifier
   -> logical handoff artifact for placement / communication
@@ -88,6 +87,12 @@ multi replica group、rank selection policy、shard slicing 和 collective metad
 
 P2.S1 只应拒绝两类输入：exporter / Shardy 产物本身非法或自相矛盾；或者目标硬件 / ABI 证据明确
 无法表达该语义，且无法由已有硬件能力组合实现。诊断必须定位到当前拥有该事实的层级。
+
+P2.S1 当前工程 gate 不把 MLIR Mesh dialect 的 `mesh-spmdization` 或 XLA/GSPMD local-body
+partitioner 作为完成前置。当前主线 artifact 是 StableHLO / SDY attr 表示的 logical per-rank
+handoff：它必须能由 Shardy propagation 消费，并由 Wafer verifier 检查 rank、shard 和 collective
+事实。后续若接入真正的 local-body partitioner，必须消费同一份 `sdy.*` / `wafer.spmd.*` facts，
+不能另起 sidecar 或把当前下游缺口反向写成 P2.S1 不支持。
 
 #### 2.1.1 P2.S1 真实图和 sharding 覆盖矩阵
 
@@ -124,7 +129,7 @@ tensor 维度在对应策略中 replicated，不表示缺少 metadata。
 | column parallel / output-feature sharding | `weight: (None, tp)`；`bias: (tp,)`；`x` replicated | 输出按 `N` 维切分；后续若要求 full output 才需要 gather |
 | row parallel / contracting-dim sharding | `x: (None, tp)`；`weight: (tp, None)` | `K` 维 partial sum；per-rank artifact 必须保留 reduction collective 语义 |
 | 2D output sharding | mesh `dp x tp`；`x: (dp, None)`；`weight: (None, tp)`；`bias: (tp,)` | 输出同时按 `B` / `N` 维切分；保留 2D logical mesh 和 rank group |
-| 2D contracting + output sharding | mesh `dp x tp`；`x` 覆盖 `B` 和 `K` 分片；`weight` 覆盖 `K` 和 `N` 分片 | 输出按 `B` / `N` 分布，同时 `K` 维需要跨 group reduction |
+| 2D contracting + output sharding | mesh `dp x tp x mp`；`x: (dp, mp)`；`weight: (mp, tp)`；`bias: (tp,)` | 输出按 `B` / `N` 分布，同时 `K` 维沿 `mp` group reduction；`mp` 是 logical reduction axis，不是 physical pipeline/MoE axis |
 | partial replication | 某些 tensor 在一个 mesh axis 上 sharded、在另一 axis 上 replicated，例如 `bias` 在 `dp` 上 replicated、在 `tp` 上 sharded | verifier 必须能解释 subgroup replication，不把 replicated axis 丢成默认全复制 |
 
 这些 case 是 P2.S1 的覆盖矩阵，不是新的长期协议对象。长期合同仍是 IR 中的 logical mesh、sharding
@@ -132,6 +137,81 @@ annotation、rank group、local shard relation 和 collective metadata。pipelin
 expert sharding、真实 sequence parallel 和非整除 uneven slicing 不进入第一批 P2.S1 主 gate；它们
 需要对应图结构、routing/stage 语义或单独 legality/verifier 覆盖，不能通过在当前 matmul case 上
 硬塞名字来冒充支持。
+
+#### 2.1.2 P2.S1 执行方法
+
+P2.S1 的 artifact 生成入口是：
+
+```text
+tools/wafer_pytorch_xla_capture.py \
+  --emit-p2s1-sharded-matmul \
+  --output-root <artifact-root> \
+  --global-rank <logical-rank>
+```
+
+该命令必须运行在 P2.F1 同一套 importer Python / source-built `torch_xla` 环境里。`--global-rank`
+选择 mesh 中要导出的 logical rank；artifact module 中的 `wafer.spmd.global_rank` 保存该 rank，
+`wafer.spmd.local_rank` 保存它在当前 `rank_group` 内的 index。对于没有 collective 的策略，
+`rank_group` 是完整 logical mesh；对于 row / contracting 或 2D contracting + output，`rank_group`
+由 `collective_axis` 推出。
+
+每个 strategy 的前端模型仍然是同一个 4096 matmul smoke module。forward 中只在 framework
+边界做三类 mark：
+
+```text
+x      -> input_spec
+weight -> weight_spec
+bias   -> bias_spec
+```
+
+当前 PyTorch/XLA 的 `dynamo_mark_sharding` 能被 `torch.export.export` 追踪；本地源码栈中，
+直接让 PyTorch/XLA StableHLO bundle exporter 输出带 mark 的文本/bytecode 还不能稳定作为主链路
+artifact。因此 adapter 的做法是：
+
+1. 对带 mark 的 module 先跑 `torch.export.export`，证明 sharding 来自 frontend mark，而不是测试
+   手写 `sdy.sharding`。
+2. 复用 P2.F1 的 PyTorch/XLA StableHLO bundle exporter 生成同一 4096 matmul 的
+   `functions/forward.mlir`、`functions/forward.meta`、`functions/forward.bytecode` 和
+   `data/weight` / `data/bias`。
+3. 在同一个 `forward.mlir` 内 normalize frontend mark：插入 `sdy.mesh`，并给 function
+   arguments/results 写入 `sdy.sharding`、`wafer.spmd.global_shape`、`wafer.spmd.local_shape` 和
+   `wafer.spmd.shard_offsets`。
+4. 在 module attr 写入 `wafer.spmd.strategy`、`wafer.spmd.global_rank`、
+   `wafer.spmd.local_rank`、`wafer.spmd.mesh_shape`、`wafer.spmd.rank_group`；需要 reduction 的策略
+   额外写入 `wafer.spmd.collective_kind = "all_reduce"` 和 `wafer.spmd.collective_axis`。
+
+这一步不是第二套 sidecar 协议：没有 `wafer_sharding.json`，后续 pass 和 verifier 只消费
+StableHLO / SDY / `wafer.spmd.*` IR facts。等 PyTorch/XLA exporter 能直接稳定导出 SDY 或
+等价 sharding metadata 时，可以替换掉 normalization 实现，但同一份 per-rank artifact contract
+不变。
+
+per-rank verifier 入口是：
+
+```text
+wafer-import-model --verify-spmd-bundle <strategy-bundle>
+```
+
+该 verifier 先复用 StableHLO bundle metadata / weight file 检查，再检查 SPMD 事实：
+
+- module 必须有 `sdy.mesh`、strategy、global/local rank、mesh shape 和 rank group。
+- `wafer.spmd.local_rank` 必须是 `rank_group` 内 index，并且 `rank_group[local_rank]` 必须等于
+  `wafer.spmd.global_rank`。
+- function boundary 的每个 tensor argument/result 必须有 `sdy.sharding`、global shape、local
+  shape 和 shard offset，且 local shard 必须落在 global tensor shape 内。
+- collective metadata 目前明确接受 logical `all_reduce`，并要求 rank group 至少两个 rank。
+- artifact 中不得出现 physical tile、DTE packet、SPM offset 或 runtime handle 这类下游 lowering
+  metadata。
+
+Shardy propagation gate 直接消费每个 `functions/forward.mlir`：
+
+```text
+shardy-sdy-opt <strategy>/functions/forward.mlir --sdy-propagation-pipeline
+```
+
+这个 gate 用于证明 SDY dialect / propagation pipeline 能读取真实 artifact 中的 sharding facts。
+row / contracting 类 case 需要保留 reduction collective metadata；如果后续 local-body partitioner、
+collective lowering、placement 或 ring/resource path 还没有完整消费这些事实，应补对应下游任务，
+不回头把该策略从 P2.S1 artifact gate 中删掉。
 
 ## 3. Logical Mesh Contract
 
@@ -246,7 +326,8 @@ P2.S1 的完成证明必须至少覆盖：
 - P2.F1 4096 matmul 图在 data / batch、column parallel、row / contracting、2D output、2D
   contracting + output 和 partial replication 策略下都能通过 frontend mark 导出 sharding
   artifact；主 gate 不以手写 `sdy.sharding` fixture 代替真实导出。
-- Shardy propagation / partitioning 后能得到指定 local rank 的 per-rank artifact。
+- Shardy propagation 能直接消费每个 strategy 的 `functions/forward.mlir`；指定 global rank 的
+  logical per-rank artifact 由同一 bundle 中的 `sdy.*` / `wafer.spmd.*` facts 表示并通过 verifier。
 - per-rank artifact 仍通过 frontend boundary verifier 或等价 verifier，不丢 function boundary、
   dynamic bound、bundle-derived constant facts 和 sharding facts。
 - per-rank artifact 完整保留 logical collective、replica group / rank group、local rank、local shard

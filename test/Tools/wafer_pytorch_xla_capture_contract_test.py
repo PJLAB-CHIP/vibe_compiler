@@ -25,15 +25,28 @@ class FakeTensor:
         self.shape = tuple(shape)
         self.dtype = dtype
 
+    def __matmul__(self, other):
+        return FakeTensor((self.shape[0], other.shape[1]), self.dtype)
+
+    def __add__(self, other):
+        return FakeTensor(self.shape, self.dtype)
+
 
 class FakeParameter(FakeTensor):
-    pass
+    def __init__(self, value, dtype="float32"):
+        if isinstance(value, FakeTensor):
+            super().__init__(value.shape, value.dtype)
+        else:
+            super().__init__(value, dtype)
 
 
 class FakeModule:
     def eval(self):
         self.was_eval = True
         return self
+
+    def __call__(self, *args, **kwargs):
+        return self.forward(*args, **kwargs)
 
 
 class FakeSmokeModule(FakeModule):
@@ -48,11 +61,15 @@ class FakeTorch(types.ModuleType):
         self.exported_program = object()
         self.export_calls = []
         self.empty_calls = []
+        self.mark_calls = []
         self.no_grad_entered = False
         self.float32 = "float32"
 
         self.nn = types.SimpleNamespace(Module=FakeModule, Parameter=FakeParameter)
         self.export = types.SimpleNamespace(export=self.export_model)
+        self.ops = types.SimpleNamespace(
+            xla=types.SimpleNamespace(dynamo_mark_sharding=self.mark_sharding)
+        )
 
     def empty(self, *shape, dtype=None):
         self.empty_calls.append((shape, dtype))
@@ -60,7 +77,24 @@ class FakeTorch(types.ModuleType):
 
     def export_model(self, model, args):
         self.export_calls.append((model, args))
+        if hasattr(model, "forward"):
+            model(*args)
         return self.exported_program
+
+    def mark_sharding(self, tensor, device_ids, mesh_shape, axis_names, partition_spec):
+        self.mark_calls.append(
+            {
+                "shape": tensor.shape,
+                "device_ids": tuple(device_ids),
+                "mesh_shape": tuple(mesh_shape),
+                "axis_names": axis_names,
+                "partition_spec": partition_spec,
+            }
+        )
+        return tensor
+
+    def tanh(self, tensor):
+        return FakeTensor(tensor.shape, tensor.dtype)
 
     def no_grad(self):
         fake_torch = self
@@ -106,12 +140,29 @@ class FakeStableHLOProgram:
         data = self.saved_path / "data"
         functions.mkdir(parents=True)
         data.mkdir()
-        (functions / "forward.mlir").write_text("module {}\n")
+        (functions / "forward.mlir").write_text(
+            "module @IrToHlo.16 {\n"
+            "  func.func @main(%arg0: tensor<4096xf32>, "
+            "%arg1: tensor<4096x4096xf32>, "
+            "%arg2: tensor<4096x4096xf32>) -> tensor<4096x4096xf32> {\n"
+            "    return %arg2 : tensor<4096x4096xf32>\n"
+            "  }\n"
+            "}\n"
+        )
         (functions / "forward.meta").write_text(
-            '{"input_locations":[{"type_":"parameter","name":"weight"}]}\n'
+            '{"name":"forward","input_signature":['
+            '{"shape":[4096],"dtype":"float32","dynamic_dims":[]},'
+            '{"shape":[4096,4096],"dtype":"float32","dynamic_dims":[]},'
+            '{"shape":[4096,4096],"dtype":"float32","dynamic_dims":[]}],'
+            '"output_signature":[{"shape":[4096,4096],"dtype":"float32",'
+            '"dynamic_dims":[]}],"input_locations":['
+            '{"type_":"parameter","position":-1,"name":"bias"},'
+            '{"type_":"parameter","position":-1,"name":"weight"},'
+            '{"type_":"input_arg","position":0,"name":""}]}\n'
         )
         (functions / "forward.bytecode").write_bytes(b"bytecode")
         (data / "weight").write_bytes(b"0" * 16)
+        (data / "bias").write_bytes(b"0" * 16)
 
 
 class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
@@ -155,6 +206,42 @@ class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
 
             with self.assertRaisesRegex(RuntimeError, "missing StableHLO bundle file"):
                 self.tool._verify_bundle_layout(bundle_path)
+
+    def test_p2s1_emit_uses_frontend_marks_for_all_required_strategies(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_root = pathlib.Path(tmp) / "p2s1"
+
+            bundles = self.tool.emit_p2s1_sharded_matmul_bundles(
+                output_root=output_root,
+                torch_module=self.fake_torch,
+                stablehlo_module=self.fake_stablehlo,
+                global_rank=3,
+            )
+
+            self.assertEqual(
+                [bundle.strategy for bundle in bundles],
+                [
+                    "data_batch",
+                    "column_parallel",
+                    "row_contracting",
+                    "two_d_output",
+                    "two_d_contracting_output",
+                    "partial_replication",
+                ],
+            )
+            self.assertGreaterEqual(len(self.fake_torch.mark_calls), 18)
+            for bundle in bundles:
+                mlir = (bundle.path / "functions" / "forward.mlir").read_text()
+                self.assertIn("sdy.mesh @mesh", mlir)
+                self.assertIn("sdy.sharding", mlir)
+                self.assertIn("wafer.spmd.strategy", mlir)
+                self.assertFalse((bundle.path / "wafer_sharding.json").exists())
+                if bundle.strategy == "two_d_contracting_output":
+                    self.assertEqual(bundle.global_rank, 3)
+                    self.assertEqual(bundle.local_rank, 1)
+                    self.assertIn("wafer.spmd.global_rank = 3 : i64", mlir)
+                    self.assertIn("wafer.spmd.local_rank = 1 : i64", mlir)
+                    self.assertIn("wafer.spmd.rank_group = array<i64: 2, 3>", mlir)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,33 @@
+# REQUIRES: stablehlo, shardy
+
+# RUN: rm -rf %t.spmd.bundle && mkdir -p %t.spmd.bundle/functions %t.spmd.bundle/data
+# RUN: printf '%b' 'module @spmd attributes {wafer.spmd.strategy = "data_batch", wafer.spmd.local_rank = 1 : i64, wafer.spmd.global_rank = 1 : i64, wafer.spmd.mesh_shape = array<i64: 4>, wafer.spmd.rank_group = array<i64: 0, 1, 2, 3>} {\n  sdy.mesh @mesh = <["dp"=4]>\n  func.func @main(%%arg0: tensor<4096xf32> {sdy.sharding = #sdy.sharding<@mesh, [{}], replicated={"dp"}>, wafer.spmd.global_shape = array<i64: 4096>, wafer.spmd.local_shape = array<i64: 4096>, wafer.spmd.shard_offsets = array<i64: 0>}, %%arg1: tensor<4096x4096xf32> {sdy.sharding = #sdy.sharding<@mesh, [{}, {}], replicated={"dp"}>, wafer.spmd.global_shape = array<i64: 4096, 4096>, wafer.spmd.local_shape = array<i64: 4096, 4096>, wafer.spmd.shard_offsets = array<i64: 0, 0>}, %%arg2: tensor<4096x4096xf32> {sdy.sharding = #sdy.sharding<@mesh, [{"dp"}, {}]>, wafer.spmd.global_shape = array<i64: 4096, 4096>, wafer.spmd.local_shape = array<i64: 1024, 4096>, wafer.spmd.shard_offsets = array<i64: 1024, 0>}) -> (tensor<4096x4096xf32> {sdy.sharding = #sdy.sharding<@mesh, [{"dp"}, {}]>, wafer.spmd.global_shape = array<i64: 4096, 4096>, wafer.spmd.local_shape = array<i64: 1024, 4096>, wafer.spmd.shard_offsets = array<i64: 1024, 0>}) {\n    return %%arg2 : tensor<4096x4096xf32>\n  }\n}\n' > %t.spmd.bundle/functions/forward.mlir
+# RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[4096],"dtype":"float32","dynamic_dims":[]},{"shape":[4096,4096],"dtype":"float32","dynamic_dims":[]},{"shape":[4096,4096],"dtype":"float32","dynamic_dims":[]}],"output_signature":[{"shape":[4096,4096],"dtype":"float32","dynamic_dims":[]}],"input_locations":[{"type_":"parameter","position":-1,"name":"bias"},{"type_":"parameter","position":-1,"name":"weight"},{"type_":"input_arg","position":0,"name":""}],"unused_inputs":[]}\n' > %t.spmd.bundle/functions/forward.meta
+# RUN: %python -c 'from pathlib import Path; open(Path("%t.spmd.bundle/data/bias"), "wb").truncate(4096 * 4); open(Path("%t.spmd.bundle/data/weight"), "wb").truncate(4096 * 4096 * 4)'
+# RUN: printf 'bytecode' > %t.spmd.bundle/functions/forward.bytecode
+# RUN: wafer-import-model --verify-spmd-bundle %t.spmd.bundle | FileCheck %s --check-prefix=SPMD
+
+# RUN: rm -rf %t.bad-spmd.bundle && mkdir -p %t.bad-spmd.bundle && cp -R %t.spmd.bundle/. %t.bad-spmd.bundle
+# RUN: %python -c 'from pathlib import Path; p=Path("%t.bad-spmd.bundle/functions/forward.mlir"); p.write_text(p.read_text().replace(", wafer.spmd.local_shape = array<i64: 4096>", ""))'
+# RUN: not wafer-import-model --verify-spmd-bundle %t.bad-spmd.bundle 2>&1 | FileCheck %s --check-prefix=BAD-SPMD
+
+# RUN: rm -rf %t.bad-rank-spmd.bundle && mkdir -p %t.bad-rank-spmd.bundle && cp -R %t.spmd.bundle/. %t.bad-rank-spmd.bundle
+# RUN: %python -c 'from pathlib import Path; p=Path("%t.bad-rank-spmd.bundle/functions/forward.mlir"); p.write_text(p.read_text().replace("wafer.spmd.local_rank = 1 : i64", "wafer.spmd.local_rank = 0 : i64"))'
+# RUN: not wafer-import-model --verify-spmd-bundle %t.bad-rank-spmd.bundle 2>&1 | FileCheck %s --check-prefix=BAD-RANK-SPMD
+
+# RUN: rm -rf %t.physical-spmd.bundle && mkdir -p %t.physical-spmd.bundle && cp -R %t.spmd.bundle/. %t.physical-spmd.bundle
+# RUN: %python -c "from pathlib import Path; p=Path(r'%t.physical-spmd.bundle/functions/forward.mlir'); text=p.read_text(); p.write_text(text.replace('wafer.spmd.strategy = \"data_batch\"', 'wafer.spmd.strategy = \"data_batch\", wafer.spmd.dte_packet = 7 : i64'))"
+# RUN: not wafer-import-model --verify-spmd-bundle %t.physical-spmd.bundle 2>&1 | FileCheck %s --check-prefix=PHYSICAL-SPMD
+
+# SPMD: wafer-import-model: verified SPMD per-rank artifact local_rank: 1
+# SPMD: wafer-import-model: verified StableHLO bundle parameters: 2
+# SPMD: wafer-import-model: verified frontend artifact
+
+# BAD-SPMD: wafer-import-model: SPMD artifact rejected
+# BAD-SPMD: missing wafer.spmd.local_shape
+
+# BAD-RANK-SPMD: wafer-import-model: SPMD artifact rejected
+# BAD-RANK-SPMD: wafer.spmd.local_rank must identify global_rank in rank_group
+
+# PHYSICAL-SPMD: wafer-import-model: SPMD artifact rejected
+# PHYSICAL-SPMD: physical lowering metadata

@@ -18,6 +18,7 @@ path = os.pathsep.join(
 )
 config.environment["PATH"] = path
 config.substitutions.append(("%python", config.python_executable))
+config.substitutions.append(("%wafer_obj_root", config.wafer_obj_root))
 config.importer_python_executable = getattr(
     config, "importer_python_executable", config.python_executable
 )

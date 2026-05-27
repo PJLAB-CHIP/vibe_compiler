@@ -9,6 +9,7 @@
 #include "mlir/Interfaces/FunctionInterfaces.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Error.h"
@@ -28,6 +29,16 @@ namespace {
 
 constexpr llvm::StringLiteral kDynamicBoundsAttr =
     "wafer.frontend.dynamic_bounds";
+constexpr llvm::StringLiteral kSpmdStrategyAttr = "wafer.spmd.strategy";
+constexpr llvm::StringLiteral kSpmdLocalRankAttr = "wafer.spmd.local_rank";
+constexpr llvm::StringLiteral kSpmdGlobalRankAttr = "wafer.spmd.global_rank";
+constexpr llvm::StringLiteral kSpmdMeshShapeAttr = "wafer.spmd.mesh_shape";
+constexpr llvm::StringLiteral kSpmdRankGroupAttr = "wafer.spmd.rank_group";
+constexpr llvm::StringLiteral kSpmdGlobalShapeAttr = "wafer.spmd.global_shape";
+constexpr llvm::StringLiteral kSpmdLocalShapeAttr = "wafer.spmd.local_shape";
+constexpr llvm::StringLiteral kSpmdShardOffsetsAttr =
+    "wafer.spmd.shard_offsets";
+constexpr llvm::StringLiteral kSdyShardingAttr = "sdy.sharding";
 
 struct BundleSignature {
   std::vector<int64_t> shape;
@@ -55,6 +66,12 @@ bool reject(llvm::raw_ostream &diagnostics, llvm::StringRef message) {
 bool rejectBundle(llvm::StringRef reason, llvm::raw_ostream &diagnostics) {
   diagnostics << "wafer-import-model: StableHLO bundle metadata rejected: "
               << reason << "\n";
+  return true;
+}
+
+bool rejectSpmd(llvm::StringRef reason, llvm::raw_ostream &diagnostics) {
+  diagnostics << "wafer-import-model: SPMD artifact rejected: " << reason
+              << "\n";
   return true;
 }
 
@@ -497,6 +514,260 @@ bool verifyBundleMeta(ModuleOp module, llvm::StringRef bundleDir,
   return rejected;
 }
 
+DenseI64ArrayAttr getDenseI64ArrayAttr(DictionaryAttr attrs,
+                                       llvm::StringRef name) {
+  if (!attrs)
+    return {};
+  return dyn_cast_or_null<DenseI64ArrayAttr>(attrs.get(name));
+}
+
+bool equalShape(ArrayRef<int64_t> lhs, DenseI64ArrayAttr rhs) {
+  return rhs && llvm::equal(lhs, rhs.asArrayRef());
+}
+
+bool verifySpmdShapeMetadata(llvm::StringRef kind, unsigned index,
+                             RankedTensorType tensorType,
+                             DictionaryAttr attrs,
+                             llvm::raw_ostream &diagnostics) {
+  if (!attrs || !attrs.get(kSdyShardingAttr))
+    return rejectSpmd((kind + " " + Twine(index) + " missing sdy.sharding")
+                          .str(),
+                      diagnostics);
+
+  DenseI64ArrayAttr globalShape =
+      getDenseI64ArrayAttr(attrs, kSpmdGlobalShapeAttr);
+  if (!globalShape)
+    return rejectSpmd(
+        (kind + " " + Twine(index) + " missing wafer.spmd.global_shape").str(),
+        diagnostics);
+  if (!equalShape(tensorType.getShape(), globalShape))
+    return rejectSpmd(
+        (kind + " " + Twine(index) +
+         " wafer.spmd.global_shape does not match tensor type")
+            .str(),
+        diagnostics);
+
+  DenseI64ArrayAttr localShape =
+      getDenseI64ArrayAttr(attrs, kSpmdLocalShapeAttr);
+  if (!localShape)
+    return rejectSpmd(
+        (kind + " " + Twine(index) + " missing wafer.spmd.local_shape").str(),
+        diagnostics);
+
+  DenseI64ArrayAttr shardOffsets =
+      getDenseI64ArrayAttr(attrs, kSpmdShardOffsetsAttr);
+  if (!shardOffsets)
+    return rejectSpmd(
+        (kind + " " + Twine(index) + " missing wafer.spmd.shard_offsets")
+            .str(),
+        diagnostics);
+
+  ArrayRef<int64_t> global = tensorType.getShape();
+  ArrayRef<int64_t> local = localShape.asArrayRef();
+  ArrayRef<int64_t> offsets = shardOffsets.asArrayRef();
+  if (local.size() != global.size())
+    return rejectSpmd((kind + " " + Twine(index) +
+                       " local shape rank does not match tensor rank")
+                          .str(),
+                      diagnostics);
+  if (offsets.size() != global.size())
+    return rejectSpmd((kind + " " + Twine(index) +
+                       " shard offset rank does not match tensor rank")
+                          .str(),
+                      diagnostics);
+
+  for (auto [dim, globalDim] : llvm::enumerate(global)) {
+    int64_t localDim = local[dim];
+    int64_t offset = offsets[dim];
+    if (localDim <= 0)
+      return rejectSpmd((kind + " " + Twine(index) +
+                         " local shape dimensions must be positive")
+                            .str(),
+                        diagnostics);
+    if (offset < 0)
+      return rejectSpmd((kind + " " + Twine(index) +
+                         " shard offsets must be non-negative")
+                            .str(),
+                        diagnostics);
+    if (offset + localDim > globalDim)
+      return rejectSpmd((kind + " " + Twine(index) +
+                         " local shard extends past global tensor shape")
+                            .str(),
+                        diagnostics);
+  }
+  return false;
+}
+
+bool hasSdyMesh(ModuleOp module) {
+  bool found = false;
+  module.walk([&](Operation *op) {
+    if (op->getName().getStringRef() == "sdy.mesh")
+      found = true;
+  });
+  return found;
+}
+
+bool verifyNoPhysicalSpmdMetadata(ModuleOp module,
+                                  llvm::raw_ostream &diagnostics) {
+  bool rejected = false;
+  auto checkName = [&](llvm::StringRef name) {
+    if (!name.starts_with("wafer.spmd."))
+      return;
+    if (name.contains_insensitive("physical") ||
+        name.contains_insensitive("dte") ||
+        name.contains_insensitive("packet") ||
+        name.contains_insensitive("runtime_handle") ||
+        name.contains_insensitive("spm_offset"))
+      rejected |= rejectSpmd("physical lowering metadata is not allowed in "
+                             "SPMD per-rank artifacts",
+                             diagnostics);
+  };
+
+  module.walk([&](Operation *op) {
+    for (NamedAttribute attr : op->getAttrs())
+      checkName(attr.getName().strref());
+  });
+  return rejected;
+}
+
+bool verifySpmdCollectiveMetadata(ModuleOp module,
+                                  llvm::raw_ostream &diagnostics) {
+  auto collectiveKind =
+      module->getAttrOfType<StringAttr>("wafer.spmd.collective_kind");
+  if (!collectiveKind)
+    return false;
+
+  if (collectiveKind.getValue() != "all_reduce")
+    return rejectSpmd("unsupported wafer.spmd.collective_kind", diagnostics);
+  if (!module->getAttrOfType<StringAttr>("wafer.spmd.collective_axis"))
+    return rejectSpmd("missing wafer.spmd.collective_axis", diagnostics);
+  DenseI64ArrayAttr rankGroup =
+      module->getAttrOfType<DenseI64ArrayAttr>(kSpmdRankGroupAttr);
+  if (!rankGroup || rankGroup.size() < 2)
+    return rejectSpmd("collective rank_group must contain at least two ranks",
+                      diagnostics);
+  return false;
+}
+
+bool verifySpmdModuleMetadata(ModuleOp module, llvm::raw_ostream &diagnostics,
+                              int64_t &localRank) {
+  localRank = -1;
+  if (!module->getAttrOfType<StringAttr>(kSpmdStrategyAttr))
+    return rejectSpmd("missing wafer.spmd.strategy", diagnostics);
+
+  auto localRankAttr = module->getAttrOfType<IntegerAttr>(kSpmdLocalRankAttr);
+  if (!localRankAttr)
+    return rejectSpmd("missing wafer.spmd.local_rank", diagnostics);
+  localRank = localRankAttr.getInt();
+  if (localRank < 0)
+    return rejectSpmd("wafer.spmd.local_rank must be non-negative",
+                      diagnostics);
+
+  auto globalRankAttr = module->getAttrOfType<IntegerAttr>(kSpmdGlobalRankAttr);
+  if (!globalRankAttr)
+    return rejectSpmd("missing wafer.spmd.global_rank", diagnostics);
+  int64_t globalRank = globalRankAttr.getInt();
+  if (globalRank < 0)
+    return rejectSpmd("wafer.spmd.global_rank must be non-negative",
+                      diagnostics);
+
+  DenseI64ArrayAttr meshShape =
+      module->getAttrOfType<DenseI64ArrayAttr>(kSpmdMeshShapeAttr);
+  if (!meshShape || meshShape.empty())
+    return rejectSpmd("missing wafer.spmd.mesh_shape", diagnostics);
+  int64_t meshSize = 1;
+  for (int64_t dim : meshShape.asArrayRef()) {
+    if (dim <= 0)
+      return rejectSpmd("wafer.spmd.mesh_shape entries must be positive",
+                        diagnostics);
+    meshSize *= dim;
+  }
+  if (globalRank >= meshSize)
+    return rejectSpmd("wafer.spmd.global_rank is outside mesh size",
+                      diagnostics);
+
+  DenseI64ArrayAttr rankGroup =
+      module->getAttrOfType<DenseI64ArrayAttr>(kSpmdRankGroupAttr);
+  if (!rankGroup || rankGroup.empty())
+    return rejectSpmd("missing wafer.spmd.rank_group", diagnostics);
+  if (localRank >= static_cast<int64_t>(rankGroup.size()))
+    return rejectSpmd("wafer.spmd.local_rank is outside rank_group",
+                      diagnostics);
+
+  llvm::SmallSet<int64_t, 8> seen;
+  bool containsGlobalRank = false;
+  for (int64_t rank : rankGroup.asArrayRef()) {
+    if (rank < 0)
+      return rejectSpmd("wafer.spmd.rank_group entries must be non-negative",
+                        diagnostics);
+    if (rank >= meshSize)
+      return rejectSpmd("wafer.spmd.rank_group entry is outside mesh size",
+                        diagnostics);
+    if (!seen.insert(rank).second)
+      return rejectSpmd("wafer.spmd.rank_group entries must be unique",
+                        diagnostics);
+    containsGlobalRank |= rank == globalRank;
+  }
+  if (!containsGlobalRank)
+    return rejectSpmd("wafer.spmd.rank_group must contain global_rank",
+                      diagnostics);
+  if (rankGroup.asArrayRef()[localRank] != globalRank)
+    return rejectSpmd(
+        "wafer.spmd.local_rank must identify global_rank in rank_group",
+        diagnostics);
+
+  if (!hasSdyMesh(module))
+    return rejectSpmd("missing sdy.mesh", diagnostics);
+
+  if (verifyNoPhysicalSpmdMetadata(module, diagnostics))
+    return true;
+  if (verifySpmdCollectiveMetadata(module, diagnostics))
+    return true;
+
+  return false;
+}
+
+bool verifySpmdFunctionBoundary(ModuleOp module,
+                                llvm::raw_ostream &diagnostics) {
+  FailureOr<func::FuncOp> func = findSingleFunction(module, diagnostics);
+  if (failed(func))
+    return true;
+
+  bool rejected = false;
+  FunctionType functionType = func->getFunctionType();
+  for (auto [index, type] : llvm::enumerate(functionType.getInputs())) {
+    auto tensorType = dyn_cast<RankedTensorType>(type);
+    if (!tensorType || !tensorType.hasStaticShape()) {
+      rejected |= rejectSpmd(
+          ("function argument " + Twine(index) +
+           " must be a statically shaped ranked tensor")
+              .str(),
+          diagnostics);
+      continue;
+    }
+    rejected |= verifySpmdShapeMetadata(
+        "function argument", index, tensorType,
+        getFunctionArgAttrs(*func, index), diagnostics);
+  }
+
+  for (auto [index, type] : llvm::enumerate(functionType.getResults())) {
+    auto tensorType = dyn_cast<RankedTensorType>(type);
+    if (!tensorType || !tensorType.hasStaticShape()) {
+      rejected |= rejectSpmd(
+          ("function result " + Twine(index) +
+           " must be a statically shaped ranked tensor")
+              .str(),
+          diagnostics);
+      continue;
+    }
+    rejected |= verifySpmdShapeMetadata(
+        "function result", index, tensorType,
+        getFunctionResultAttrs(*func, index), diagnostics);
+  }
+
+  return rejected;
+}
+
 } // namespace
 
 namespace wafer::frontend {
@@ -533,6 +804,25 @@ LogicalResult verifyStableHLOBundle(ModuleOp module, llvm::StringRef bundlePath,
     return failure();
 
   bool rejected = verifyBundleMeta(module, bundlePath, *meta, diagnostics, result);
+  return rejected ? failure() : success();
+}
+
+LogicalResult verifySpmdBundle(ModuleOp module, llvm::StringRef bundlePath,
+                               llvm::raw_ostream &diagnostics,
+                               ArtifactVerificationResult *result) {
+  if (result)
+    *result = ArtifactVerificationResult{};
+
+  if (failed(verifyStableHLOBundle(module, bundlePath, diagnostics, result)))
+    return failure();
+
+  int64_t localRank = -1;
+  bool rejected = false;
+  rejected |= verifySpmdModuleMetadata(module, diagnostics, localRank);
+  rejected |= verifySpmdFunctionBoundary(module, diagnostics);
+
+  if (!rejected && result)
+    result->spmdLocalRank = localRank;
   return rejected ? failure() : success();
 }
 

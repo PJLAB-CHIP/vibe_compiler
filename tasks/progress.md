@@ -16,11 +16,11 @@
 - 设计一致性缺口见
   `tasks/2026-05-26-wafer-p0-p6-design-conformance-audit.md` 和
   `tasks/2026-05-26-wafer-p0-p6-recovery-status.md`。
-- framework-specific capture 和完整 Shardy SPMD pipeline 不是放弃项；它们已经从 R2 的
+- framework-specific capture 和 Shardy/SPMD artifact pipeline 不是放弃项；它们已经从 R2 的
   “未覆盖范围”提升为 R3 之前的 P2 显式后续项。真实前端/SPMD artifact 来源必须先于 group /
   tile / resource 主链路恢复，否则 R3 只能继续围绕手写 artifact fixture 前进。
 - 当前不得推进 P7/P8/P9；必须先恢复 P0-P6 的设计一致性。
-- 当前唯一 ready 项是 P2.S1。
+- P2.S1 已完成；当前唯一 ready 项是 R3.1。
 
 ## 状态标记
 
@@ -46,9 +46,11 @@
   到 `wafer.comm` / ring lowering 的 lit gate。
 - C ABI skeleton ops、package manifest fixture 和 C stub syntax compile。
 - P2.F1 主链路已能从 source-built PyTorch/XLA capture adapter 产出 PyTorch/XLA StableHLO bundle，
-  并通过 bundle metadata / data verifier；P2.S1 / R3 / R4 / R5 / R6
-  要逐步消费同一条 artifact chain。手写 MLIR fixture 只作为 verifier / unit 测试，不能单独作为
-  主链路完成证明。
+  并通过 bundle metadata / data verifier。P2.S1 主链路已能从同一 4096 matmul 图经 frontend
+  sharding mark 产出 data/batch、column parallel、row/contracting、2D output、2D contracting+output
+  和 partial replication 六类 per-rank artifact，并通过 `--verify-spmd-bundle` 和 Shardy propagation
+  gate；R3 / R4 / R5 / R6 要逐步消费同一条 artifact chain。手写 MLIR fixture 只作为 verifier /
+  unit 测试，不能单独作为主链路完成证明。
 - P2.F1 之后每个相关任务标记 `done` 前，都必须新增或更新一条真实 artifact chain gate：从真实
   framework/exporter 图 artifact 进入，重放已有上游链路，并验证本任务边界新增的 IR fact /
   verifier fact / artifact fact 可正确导出和被直接消费。单层 FileCheck、手写 fixture 或静态
@@ -94,8 +96,8 @@
 | R2.2 | done | 恢复 Shardy/SPMD artifact bridge | 记录见 `tasks/2026-05-26-wafer-r2-recovery.md`；SDY dialect/pass 注册按 `WAFER_ENABLE_SPMD_PARTITIONER_DEPS` 隔离，`sdy.mesh`/`sdy.sharding` artifact 可进入工具链，StableHLO `replica_groups` materialize 为 `wafer.comm` `rank_group`，ring lowering 按 logical rank group 查询 placement |
 | R2.3 | done | 重写 local compute normalization 覆盖状态 | 记录见 `tasks/2026-05-26-wafer-r2-recovery.md` 和 `tasks/2026-05-25-wafer-local-compute-normalization-design.md`；dot/broadcast/reduce/softmax/norm/RoPE/MLP 覆盖按 structured tensor IR evidence 记录，acceptance pass 不作为 schedule completion |
 | P2.F1 | done | 建立 framework-specific capture adapter contract | `tools/build_pytorch_xla_runtime.py` 从 `third_party/pytorch-xla` 源码构建/安装 `torch_xla` 2.5.0，并通过 Bazel override 复用本仓库 `third_party/xla` / `third_party/llvm-project`；`tools/wafer_pytorch_xla_capture.py` 使用 `torch.export.export` + `torch_xla.stablehlo.exported_program_to_stablehlo` 生成 `4096x4096 @ 4096x4096` f32 matmul + bias + tanh + residual PyTorch/XLA StableHLO bundle；bundle 保留 `functions/forward.mlir`、`functions/forward.meta`、`functions/forward.bytecode` 和 `data/weight` / `data/bias`，不提交 64 MiB weight；`wafer-import-model --verify-stablehlo-bundle` 和 lit smoke 已验证真实 source-built PyTorch/XLA adapter -> bundle -> verifier 链；框架 API、版本路径或自定义 JSON 不进入后端 IR 合同 |
-| P2.S1 | ready | 集成完整 Shardy propagation / SPMD partitioner pipeline | 从 P2.F1 4096 matmul verified artifact 出发，通过 framework frontend mark 覆盖 data/batch、column parallel、row/contracting、2D output、2D contracting+output 和 partial replication sharding，不以手写 `sdy.sharding` fixture 或 sidecar 作为主 gate；运行 Shardy propagation/partitioning 并产出 per-rank artifact；multi replica group、rank selection、shard slicing、collective legality 和 placement input 由 IR/attr/verifier 明确表示；完成证明必须从真实图 artifact 跑到 per-rank artifact 正确导出和自校验。若后续 collective normalization、placement 或 ring/resource lowering 尚未覆盖某个硬件可表达语义，应记录为对应下游恢复任务或补 IR 表示，不能作为 P2.S1 拒绝理由 |
-| R3.1 | pending | 恢复 M0 group boundary / candidate contract | `wafer.group` 只表达 local tensor grouping 和 candidate boundary；root op、operands/results、tile candidate shape 和拒绝原因由 IR/interface/verifier 可解释，不靠 pass side table 或名字；依赖 P2.F1/P2.S1 提供真实 frontend/SPMD artifact 来源；完成证明必须让真实图 artifact 进入 group candidate gate |
+| P2.S1 | done | 建立 Shardy propagation / SPMD per-rank artifact gate | `tools/wafer_pytorch_xla_capture.py --emit-p2s1-sharded-matmul` 从 P2.F1 4096 matmul 图出发，经 framework frontend mark 产出 data/batch、column parallel、row/contracting、2D output、2D contracting+output 和 partial replication 六类 PyTorch/XLA bundle；sharding facts 写入同一 `forward.mlir` 的 `sdy.mesh` / `sdy.sharding` / `wafer.spmd.*`，不生成 sidecar；`wafer-import-model --verify-spmd-bundle` 校验 rank、rank_group、local shard、collective metadata 和禁止 physical lowering metadata；真实 artifact gate 同时跑 Shardy `--sdy-propagation-pipeline`。真正 local-body partitioner、collective lowering、placement 和 ring/resource 消费同一 artifact，作为后续恢复任务推进，不能反向缩小 P2.S1 支持范围 |
+| R3.1 | ready | 恢复 M0 group boundary / candidate contract | `wafer.group` 只表达 local tensor grouping 和 candidate boundary；root op、operands/results、tile candidate shape 和拒绝原因由 IR/interface/verifier 可解释，不靠 pass side table 或名字；依赖 P2.F1/P2.S1 提供真实 frontend/SPMD artifact 来源；完成证明必须让真实图 artifact 进入 group candidate gate |
 | R3.2 | pending | 恢复 M0 root tile feasibility oracle | root tile candidate 检查必须接入 op tiling contract、layout requirement、SPM demand、DDR demand 和 compute/movement legality；静态 result shape check 只能是其中一个输入 |
 | R3.3 | pending | 恢复 M0 tile_region materialization contract | accepted group materialize 成 `wafer.tile_region`，load/store、layout materialize、`wafer.compute.*` 和 tile_yield 全部来自同一 accepted candidate；不得把未接受 plan 落进 IR |
 | R3.4 | pending | 恢复 M0 layout/SPM feasibility gate | layout materialization 是显式 movement；SPM trial 使用 resource effects、liveness/range 和 tile buffer lifetime，失败能诊断到具体 op/value |
@@ -147,7 +149,6 @@ P7/P8/P9 只有在 P0-P6 恢复队列完成后才能推进。
 
 ## 下一步
 
-从 P2.F1 开始：先建立 framework-specific capture adapter contract，再完成 P2.S1 Shardy
-propagation / SPMD partitioner 主 pipeline；之后进入 R3.1，恢复 M0 group boundary /
-candidate contract，并按 R3 顺序恢复 M0 主链路。
+进入 R3.1：恢复 M0 group boundary / candidate contract，让 P2.F1/P2.S1 的真实 frontend/SPMD
+artifact 进入 group candidate gate；之后按 R3 顺序恢复 M0 主链路。
 P7/P8/P9 依赖恢复后的 P0-P6 主链路，不提前推进。
