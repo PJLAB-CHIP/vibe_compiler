@@ -145,6 +145,46 @@ framework model / exported program
 不能单独作为 P2.F1 完成证明。对于本地没有安装的可选 framework dependency，测试可以标记 feature
 guard；一旦 dependency enabled，必须跑真实 adapter -> artifact -> verifier 链。
 
+#### 2.1.2 P2.F1 主链路 Capture Model
+
+P2.F1 的主链路 artifact 使用 4096 规模的静态 matmul + bias + tanh + residual 模型，避免后续
+R3/R5 的 tiling、SPM/DDR demand、resident constant 和 package gate 退化成 trivial case：
+
+```python
+class WaferCaptureSmoke4096(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.randn(4096, 4096))
+        self.bias = torch.nn.Parameter(torch.randn(4096))
+
+    def forward(self, x):
+        y = x @ self.weight
+        y = y + self.bias
+        z = torch.tanh(y)
+        return z + y
+```
+
+主链路 shape：
+
+| value | shape | dtype | compact size |
+| --- | --- | --- | --- |
+| input `x` | `4096x4096` | `f32` | 64 MiB |
+| parameter `weight` | `4096x4096` | `f32` | 64 MiB |
+| parameter `bias` | `4096` | `f32` | 16 KiB |
+| output | `4096x4096` | `f32` | 64 MiB |
+
+这个模型的算子数量仍然很少，便于隔离 capture contract；但 tensor/weight 尺寸足以让后续
+group、tiling、SPM/DDR resource 和 package manifest 消费真实规模的 shape/byte facts。
+
+约束：
+
+- 4096 主链路 artifact 可以由测试脚本或 adapter 生成，但不能把 64 MiB weight 直接提交进 git
+  test file。
+- 大 weight 必须走 sidecar / resource-backed constant metadata；测试验证 function argument /
+  resource key / shape / dtype / byte size 的绑定关系。
+- 小 shape MLIR 仍可用于 graph break、eager fallback、dynamic bound、sidecar mismatch 等快速负例；
+  这些测试不能替代 4096 主链路 artifact 的完成证明。
+
 ### 2.2 第三方工程依赖组织
 
 第三方工程依赖分层管理，避免把某个外部项目的 API、路径或版本细节泄漏成 Wafer IR 合同：
