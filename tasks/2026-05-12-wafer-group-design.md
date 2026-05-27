@@ -2,7 +2,7 @@
 
 日期：2026-05-12
 
-状态：设计草案；2026-05-25 边界收口
+状态：设计草案；2026-05-25 边界收口；2026-05-27 补 post-SPMD tensor collective 边界
 
 本文只定义 `wafer.group` 的 tensor-level grouping 和 scheduling contract。它回答：
 
@@ -62,7 +62,7 @@ schedule 下，让中间值只在 group tile 内部存活。
 
 | 阶段 | IR 边界 | 主要 IR | 可以表达 | 不提前表达 |
 | --- | --- | --- | --- | --- |
-| 0. Local tensor compute | 上游 local shard compute | `linalg` / `tensor` / `scf` | tensor compute、DPS、shape/indexing | group 边界、tile-local lifetime、physical storage |
+| 0. Local tensor compute / collective | 上游 local shard compute 和 post-SPMD tensor collective | `linalg` / `tensor` / `scf` + Wafer LinalgExt-style tensor collective ops | tensor compute、DPS、shape/indexing、tensor-level collective tiling contract | group 边界、tile-local lifetime、physical storage、`wafer.comm` / DTE protocol |
 | 1. Logical group | fusion 候选 region | logical-form `wafer.group` | candidate boundary、body region | tile size、schedule effect、physical allocation、queue、packet |
 | 2. Scheduled group | tiled tensor/control-flow region | scheduled-form `wafer.group` + tiled tensor IR | traversal loop、tiled body、必要的显式 constraint/effect | physical address、worker、DTE node、C ABI |
 | 3+. Downstream | bufferization / hardware / runtime | `wafer.tile_region`、layout/SPM、`wafer.compute`、`wafer.comm`、`wafer.launch` | 消费 scheduled group 的 tiled body、resource demand 和 boundary movement | 不回写 tensor-level fusion 语义 |
@@ -103,9 +103,14 @@ R    : tensor<128xf16>
 
 ## 4. Stage 0：Local Tensor IR
 
-Stage 0 接收上游 lowering 传下来的 local tensor IR。这里仍是普通 tensor-level
-compute，可以用 `linalg` / `tensor` / `arith` / `math` / `scf` 表达 shape 和计算，
-但不引入 Wafer dialect op，也没有 group 边界或 tile-local lifetime。
+Stage 0 接收上游 lowering 传下来的 local tensor IR。普通 compute 仍用 `linalg` / `tensor` /
+`arith` / `math` / `scf` 表达 shape 和计算。SPMD partition 后产生的 StableHLO collective
+应先规整成 Wafer LinalgExt-style tensor collective op：这类 op 是 tensor-level handoff，
+实现 DPS / tiling interface 和 collective verifier，不是 `wafer.comm`，也不拥有 SPM buffer、
+DTE token 或 physical placement。
+
+Stage 0 仍没有 group 边界或 tile-local lifetime，也不引入 lower-level Wafer memory /
+compute / communication op。
 
 ```mlir
 func.func @case(%a: tensor<128x256xf16>,
@@ -176,7 +181,8 @@ func.func @case(%a: tensor<128x256xf16>,
 Stage 0 应尽量保持为复用的 tensor-level dialect，例如 `linalg` / `tensor` / `arith` /
 `math` / `scf`。如果未来需要规整不同上游 IR 形态，应优先实现 canonicalization /
 rewrite/canonicalization，把输入规整到这些已有 dialect 的稳定子集；本文不建议为普通 tensor compute
-语义引入 Wafer 私有 tensor dialect。
+语义引入 Wafer 私有 tensor dialect。Wafer LinalgExt-style tensor collective 是 collective
+handoff 层，不是普通 compute 的替代 dialect，也不是 sharding 表示。
 
 ## 5. Stage 1：Logical `wafer.group`
 
@@ -469,11 +475,14 @@ logical / scheduled tensor-level `wafer.group` body 第一版应保持保守。�
 和 sync op。
 
 - 允许 `linalg.*`、`tensor.*`、`arith.*`、`math.*`、shape/index op，以及必要的 `scf`。
+- 允许已规整的 Wafer LinalgExt-style tensor collective op，前提是该 op 实现 tiling /
+  destination-style contract，且 verifier 能检查 rank group、combiner 或 slice relation。
 - 默认不允许 `memref.*` allocation/load/store。
 - 默认不允许 `llvm.*`、runtime call、C ABI call。
 - 默认不允许 lower-level Wafer memory / compute / communication / sync dialect op。
-- collective、remote load/store、explicit DMA/communication 默认是 group boundary；未来若允许进入 group，
-  也必须表达成明确的 IR op/effect，而不是 group attribute。
+- raw StableHLO collective、remote load/store、explicit DMA/communication 默认是 group boundary。
+  未来若允许更多通信进入 group，也必须先表达成明确的 tensor-level op/effect，而不是 group
+  attribute 或 `wafer.comm` 直插。
 
 ### 8.4 Verifier 合同
 
@@ -528,7 +537,7 @@ producer/consumer 图、layout/shape legality 和 cost model 共同决定是否�
 
 默认不跨越：
 
-- collective。
+- raw StableHLO collective。
 - remote load/store。
 - explicit DMA/communication。
 - side-effect op。
@@ -536,7 +545,9 @@ producer/consumer 图、layout/shape legality 和 cost model 共同决定是否�
 - 会导致大量 recomputation 的 producer。
 - shape 或 indexing 关系无法精确推导的 op。
 
-这些边界可以在后续 cost model 和 communication planner 更强之后逐步放开。
+这些边界可以在后续 cost model 和 communication planner 更强之后逐步放开。已经规整成
+Wafer LinalgExt-style tensor collective、且实现 tiling interface 的 post-SPMD collective 可以作为
+受控 group candidate；是否纳入由 verifier、op interface、resource trial 和 cost model 决定。
 
 对于 multi-output 候选，formation 只标记“可能共享 tile-local residency”的候选，不保证最终
 一定保持一个 group。schedule 阶段如果无法找到一个合法且成本可接受的 selected traversal
@@ -557,7 +568,7 @@ scheduled group 必须来自一个已经通过下游合法性检查的 plan。
 2. 调用每个 op 的 tiling interface，得到 operand slice、result slice、temporary/scratch/
    accumulator 需求，以及可能的 internal split 候选。
 3. 构造 provisional tile-local execution model：包含预计的 `wafer.tile_region` 边界、
-   tile-local buffer、layout materialization、movement、compute 和 sync/effect 需求。
+   tile-local buffer、layout materialization、movement、compute、tensor collective 和 sync/effect 需求。
 4. 调用下游 legality / resource oracle 做实际检查。这里不能只看抽象 size estimate；
    必须跑与下游一致的 layout materialization、SPM allocation trial 和 DDR demand /
    bandwidth feasibility。layout 规则见
@@ -565,7 +576,8 @@ scheduled group 必须来自一个已经通过下游合法性检查的 plan。
    `tasks/2026-05-21-wafer-spm-bufferization-design.md`，DDR resource 规则见
    `tasks/2026-05-25-wafer-ddr-resource-allocation-design.md`；target-abstract compute/movement
    的 layout/resource/effect contract 见
-   `tasks/2026-05-25-wafer-compute-dialect-design.md`，跨 tile communication 的 token、
+   `tasks/2026-05-25-wafer-compute-dialect-design.md`，tensor collective handoff 规则见
+   `tasks/2026-05-25-wafer-local-compute-normalization-design.md`，跨 tile communication 的 token、
    staging buffer 和 wait contract 见
    `tasks/2026-05-25-wafer-communication-dialect-design.md`。
 5. 对合法 plan 计算 cost；如果不合法，回到 tile shape、internal split、output coverage 或
@@ -701,7 +713,8 @@ tile shape 需要同时满足：
 - intermediate tile buffers 放得下。
 - per-op temporary/scratch/accumulator 放得下。
 - 如果启用额外 buffering，对应 tile-local resource 放得下。
-- tile shape 能匹配下游 bufferization、layout、compute 或 communication lowering 的约束。
+- tile shape 能匹配下游 bufferization、layout、compute、tensor collective 或 communication
+  lowering 的约束。
 - 必要的 materialization 路径合法。
 
 具体 op 的合法 tile shape、internal split、scratch/accumulator 需求由该 op 的 tiling
@@ -859,14 +872,15 @@ tensor spatial split。之后 `wafer.group` 在 partitioned local graph 上工�
 - attention 相关 simple reduction 和 layout materialization 作为 LLM 主线优先目标。
 - reduction 先支持简单 single-axis case。
 - convolution 只保留基础规则和 verifier，完整 lowering 作为后续目标。
-- collective 和 remote op 作为 group boundary。
+- raw StableHLO collective、remote op 和 explicit communication 作为 group boundary；已规整且实现
+  tiling interface 的 Wafer tensor collective 可以在受控条件下进入 candidate。
 - Transform dialect 先做 dump/replay，不作为主链路的唯一驱动。
 
 不在初始范围：
 
 - 任意 DAG 全自动最优 fusion。
 - 复杂 multi-output recomputation。
-- 任意 collective 内联进 group。
+- 任意 raw collective 或 physical communication 内联进 group。
 - 自动 compute/communication overlap。
 - 全模型级 global schedule optimality。
 - convolution optional/fused 特性，例如 bias、scale、sparse、INT8 quant、fused activation。

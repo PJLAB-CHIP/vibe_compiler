@@ -178,8 +178,9 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
   并覆盖 graph break、eager fallback、bounded dynamic shape 诊断；P2.F1 进一步验证 PyTorch/XLA
   bundle `forward.meta` / `data/<parameter>` 与 MLIR function signature 一致。
 - `WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON` 时，`wafer-opt` / `wafer-import-model` 能注册 SDY dialect；
-  `sdy.mesh` / `sdy.sharding` artifact 可被 parse/verify，StableHLO `replica_groups` 会进入
-  `wafer.comm` `rank_group`。
+  `sdy.mesh` / `sdy.sharding` artifact 可被 parse/verify，StableHLO `replica_groups` 当前可进入
+  `wafer.comm` `rank_group` skeleton。这个 bridge 只证明后段 communication metadata 能被表达，
+  不再作为 group/tiling 前的主线 collective handoff。
 
 缺口：
 
@@ -197,8 +198,8 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
 - R2.1：已完成；记录见 `tasks/2026-05-26-wafer-r2-recovery.md`，包含 frontend artifact verifier、
   dynamic bound 和 diagnostics。
 - R2.2：已完成；记录见 `tasks/2026-05-26-wafer-r2-recovery.md`，logical mesh/sharding artifact
-  可进入工具链，StableHLO replica group materialize 为 `wafer.comm` `rank_group` 并成为 placement /
-  comm lowering 输入。
+  可进入工具链，StableHLO replica group materialize 为 `wafer.comm` `rank_group` 的实现只作为
+  后段 communication skeleton 和 placement/ring smoke 输入。
 - R2.3：已完成；记录见 `tasks/2026-05-26-wafer-r2-recovery.md` 和
   `tasks/2026-05-25-wafer-local-compute-normalization-design.md`，local compute coverage 按
   op/dataflow contract 重写，不把 acceptance pass 当 schedule completion。
@@ -210,12 +211,13 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
   `functions/forward.meta`、`functions/forward.bytecode` 和 `data/weight` / `data/bias`；完成证明已跑通真实
   source-built PyTorch/XLA adapter -> bundle -> verifier 链。prebuilt `torch_xla` wheel、手写
   MLIR 或手写 emitter 仍不能作为后续完成证明。
-- P2.S1：ready；集成完整 Shardy propagation / SPMD partitioner pipeline，per-rank artifact、
+- P2.S1：ready；集成完整 Shardy propagation / XLA SPMD partitioner pipeline，partitioned StableHLO、
   multi replica group、rank selection、shard slicing、collective legality 和 placement input 必须由
-  IR/attr/verifier 明确表示。完成证明必须消费 P2.F1 artifact，产出可校验的 per-rank artifact；
-  当前 collective normalization、`wafer.comm`、placement 或 ring/resource lowering 的覆盖范围不能
+  IR/attr/verifier 明确表示。完成证明必须消费 P2.F1 artifact，产出可校验的 partitioned StableHLO
+  或等价 per-rank artifact；不得生成 `wafer.spmd.*`、私有 JSON 或名字约定作为协议。当前
+  collective normalization、`wafer.comm`、placement 或 ring/resource lowering 的覆盖范围不能
   反向限制 P2.S1 支持范围。硬件可表达但下游尚未实现的语义必须形成对应恢复任务或补 IR contract。
-  R3.1 依赖 P2.F1/P2.S1 提供真实 frontend/SPMD artifact 来源。
+  R3.1 依赖 P2.F1/P2.S1/R2.4 提供真实 frontend/SPMD artifact 来源和 tensor collective handoff。
 
 ## P3 M0 Single-Tile Load-GEMM-Store
 
@@ -364,14 +366,16 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
 - 有 `wafer.comm.send` / `recv` / `wait` verifier、placement peer check、non-empty wait check。
 - 有 `wafer.abi.dte_send` / `recv` / `wait` skeleton 和 block-local resource tuple conflict check。
 - 有 ring all-gather、reduce-scatter、all-reduce lowering 到 p2p + local elementwise accumulation。
-- 有 StableHLO all_gather/all_reduce/reduce_scatter 到 `wafer.comm` collective-level op 的 normalization。
+- 有 StableHLO all_gather/all_reduce/reduce_scatter 到 `wafer.comm` collective-level op 的后段
+  skeleton normalization；主线仍需补 StableHLO -> Wafer LinalgExt-style tensor collective handoff。
 - 有 M2/M3/M4 integration skeleton 验证。
 
 缺口：
 
 - DTE resource id 是单调 skeleton 分配，不是目标 DTE/FSM allocator。
 - collective buffer slice / slot / address offset lowering 没有真实 descriptor 或 storage-realized buffer。
-- StableHLO collective bridge 仍用 visible `unrealized_conversion_cast` 衔接 tensor/tile_buffer。
+- StableHLO collective bridge 仍用 visible `unrealized_conversion_cast` 衔接 tensor/tile_buffer，且
+  插入点早于 group/tiling；R6.2 需要后移到 tile_region / SPM materialization 之后。
 - SPM/DDR resource 验证没有和 communication staging / buffer lifetime 完整组合。
 - communication plan metadata 没进入真实 package/runtime path；没有 Direct DTE board completion/error 验证。
 

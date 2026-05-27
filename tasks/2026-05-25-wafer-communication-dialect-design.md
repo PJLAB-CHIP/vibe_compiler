@@ -2,28 +2,30 @@
 
 日期：2026-05-25
 
-状态：设计草案；2026-05-25 边界收口
+状态：设计草案；2026-05-25 边界收口；2026-05-27 明确 `wafer.comm` 后移到
+`wafer.tile_region` / SPM materialization 之后
 
-本文定义 Wafer 后端的 device-side communication IR。它连接 StableHLO/Shardy partition 后的
-collective 语义、placement 产生的 physical tile mapping、`wafer.tile_region` 中的 SPM buffer，
-以及后续 Direct DTE / sync / runtime lowering。
+本文定义 Wafer 后端的 device-side communication IR。它连接 post-SPMD tensor collective 语义、
+placement 产生的 physical tile mapping、`wafer.tile_region` 中的 SPM buffer，以及后续
+Direct DTE / sync / runtime lowering。
 
 `wafer.comm` 的核心任务是把跨 tile 数据交换表达成可验证的 IR：peer、buffer、byte size、token、
 resource 和 completion 边界都必须能从 IR、type、effect 或 verifier 中看到。它不保存一份隐藏的
 communication plan attr，也不把 raw DTE register 字段提前写进上层 collective op。
 
-本文只负责 device-side communication IR：collective-level op、explicit p2p steps、token/effect、
-Direct DTE 和 sync boundary。它不定义 compute op legality、layout assignment、SPM allocation、
-DDR BO allocation、host runtime D2D/P2P ABI 或 raw non-unicast DTE packet。当前已验证 data plane
-可以先使用 fixed-size unicast Direct DTE，但 logical collective IR 的支持范围不能由当前某个 ring
-lowering pass 的覆盖范围反向决定；只要硬件通信能力可组合表达，IR 就应保留对应语义事实。
+本文只负责 device-side communication IR：tile-local collective-level op、explicit p2p steps、
+token/effect、Direct DTE 和 sync boundary。它不定义 Shardy/SPMD partition、Wafer LinalgExt-style
+tensor collective handoff、compute op legality、layout assignment、SPM allocation、DDR BO allocation、
+host runtime D2D/P2P ABI 或 raw non-unicast DTE packet。当前已验证 data plane 可以先使用
+fixed-size unicast Direct DTE，但 logical collective IR 的支持范围不能由当前某个 ring lowering pass
+的覆盖范围反向决定；只要硬件通信能力可组合表达，IR 就应保留对应语义事实。
 
 ## 1. 设计目标
 
 目标：
 
-- 保留 partitioned StableHLO collective 的语义，并在 placement 后把 logical rank group 映射到
-  physical tile group。
+- 保留 tiled tensor collective 的通信语义，并在 placement 后把 logical rank group 映射到 physical
+  tile group。
 - 使用 fixed-size unicast Direct DTE 作为已验证主 data plane，组合 ring/tree/transpose 等
   collective schedule；若后续启用 raw non-unicast DTE，必须先有独立 ABI、resource model 和板端验证。
 - 用 SSA token / effect 表达 outstanding communication 和 wait，服务 SPM liveness、buffer reuse 和
@@ -42,10 +44,11 @@ lowering pass 的覆盖范围反向决定；只要硬件通信能力可组合表
 
 ```text
 partitioned StableHLO + collectives
-  -> placement with physical tile mapping
+  -> Wafer LinalgExt-style tensor collective normalization
+  -> wafer.group tiling / scheduled tensor collective
+  -> wafer.tile_region + SPM tile buffers + placement
   -> target-abstract wafer.comm collective or permute op
   -> explicit wafer.comm point-to-point steps
-  -> layout/SPM-aware tile_region with communication buffers
   -> Direct DTE/FSM/sync lowering
   -> Wafer C ABI / runtime package metadata
 ```
@@ -55,8 +58,10 @@ partitioned StableHLO + collectives
 | 层次 | 表示 | 责任 |
 | --- | --- | --- |
 | StableHLO / Shardy | `all_gather`、`reduce_scatter`、`all_reduce`、`collective_permute` | global tensor 和 logical mesh 语义 |
+| Tensor collective handoff | Wafer LinalgExt-style tensor collective ops | DPS/tensor-level collective、tiling/fusion、rank group/axis/combiner verifier |
+| Scheduled group / tile_region | tiled tensor collective + tile buffers | tile slice、SPM buffer、layout/materialization、communication staging demand |
 | Placement | logical rank 到 card/tile 的 mapping | good-tile/PG、cluster、rank order、physical peer |
-| target-abstract comm | `wafer.comm.*` collective / permute op | 保留 collective semantic 和 physical group，不选择 raw DTE register |
+| target-abstract comm | `wafer.comm.*` collective / permute op | 保留 tile-local communication semantic 和 physical group，不选择 raw DTE register |
 | p2p schedule | `wafer.comm.send`、`recv`、`wait`、local compute step | 显式 ring/tree step、buffer slice、byte count、token/effect |
 | lower-level comm | Direct DTE / FSM / sync op | receiver ready、DTE attach/send/wait/release、packet counter、error status |
 | launch/package | `wafer.launch` / runtime metadata | communication plan metadata、resource init、completion source |
@@ -77,10 +82,10 @@ semantic。
 - `wafer.comm.all_reduce`
 - `wafer.comm.all_to_all`
 
-这些 op 处在 StableHLO collective 与 explicit p2p schedule 之间。它们应携带：
+这些 op 处在 tiled tensor collective / SPM tile buffer 与 explicit p2p schedule 之间。它们应携带：
 
-- source/result tensor or tile-buffer values。
-- logical group / rank order，来自 Shardy/SPMD。
+- source/result tile-buffer values。
+- logical group / rank order，来自 upstream tensor collective 和 placement。
 - physical placement reference，来自 placement stage。
 - reduction kind 和 dtype 语义，如果 collective 包含 reduce。
 - shape、slice 和 element type。
@@ -221,14 +226,21 @@ buffer、`local_rank`、`group_size` 和单 chunk `bytes`，verifier 检查 SPM 
 rank order 展开成 `group_size - 1` 个 unicast ring step；每个 step 都显式生成 send、recv 和 wait，
 并在 p2p op 上用 `slot` attr 标出发送或接收的 gather slot。后续 `--wafer-lower-to-c-abi-skeleton`
 保留该 `slot` attr 到 Direct DTE skeleton issue op，用于后续地址 offset / packet 参数 lowering。
-P6.6 起，StableHLO logical `all_gather` 可以先由
-`--wafer-lower-stablehlo-collectives-to-comm` normalize 到该 op；该 pass 只负责 logical collective
-到 `wafer.comm` 的语义桥接，不选择 ring resource 或 Direct DTE id。
+P6.6 的早期实现允许 StableHLO logical `all_gather` 直接由
+`--wafer-lower-stablehlo-collectives-to-comm` normalize 到该 op。2026-05-27 复查后，这个 pass 只能
+视为后段 communication bridge skeleton，不能作为 group/tiling 前的主线输入：它过早要求
+`tile_buffer`，并通过 visible `unrealized_conversion_cast` 从 tensor 桥接到 SPM buffer。后续应把
+它拆成或改成：
+
+```text
+StableHLO collective -> Wafer LinalgExt-style tensor collective
+tiled tensor collective + SPM tile buffers -> wafer.comm.*
+```
 
 ## 6. Collective Lowering
 
 当前 collective correctness path 不依赖 raw DTE non-unicast，而是由 unicast p2p step 组合。算法
-覆盖不足是 lowering 恢复任务，不是上游 SPMD / collective IR 的不支持理由。
+覆盖不足是 lowering 恢复任务，不是上游 SPMD / tensor collective IR 的不支持理由。
 
 ### 6.1 Collective Permute
 
@@ -274,10 +286,14 @@ reduce-scatter 可以由多个 slot op 或后续 buffer-slice IR 组合。`--waf
 按 placement rank order 展开 p2p send/recv/wait，并在每个 wait 后用
 `wafer.compute.elementwise` 的 add/max/min 对 accumulator 和 recv staging buffer 做显式本地累计。
 这保证 reduction kind、dtype、use-def 和 wait 顺序都留在 IR 中，而不是变成 DTE side effect。
-P6.6 的 StableHLO normalization pass 会把 single-result StableHLO `all_reduce` /
-`reduce_scatter` 降到这些 collective-level op。当前实现只覆盖 sum/max/min reduction body；如果
-SPMD 产出其它硬件可表达 reduction kind，应补充 `wafer.comm` / `wafer.compute` 表示和 verifier，
-而不是把当前 lowering 子集当成 communication 语义边界。
+P6.6 的早期 StableHLO normalization pass 会把 single-result StableHLO `all_reduce` /
+`reduce_scatter` 直接降到这些 collective-level op；该路径和 all-gather 一样只能作为后段
+communication skeleton，不应作为 tensor group/tiling 输入。主线恢复后，应先由 Wafer
+LinalgExt-style tensor collective 保留 combiner region 和 tile 语义，再在 tile_region / SPM
+materialization 之后生成 `wafer.comm.reduce_scatter` / `wafer.comm.all_reduce`。当前实现只覆盖
+sum/max/min reduction body；如果 SPMD 产出其它硬件可表达 reduction kind，应补充 tensor collective、
+`wafer.comm` / `wafer.compute` 表示和 verifier，而不是把当前 lowering 子集当成 communication
+语义边界。
 
 ### 6.4 All-to-All
 
@@ -290,9 +306,9 @@ non-unicast helper，它也可以由 placement 后的一组 unicast send/recv/wa
 - concat / layout relation，或交给 layout/materialization 层解释的 explicit slice result。
 - token/wait 和 buffer lifetime。
 
-如果当前实现还没有 `wafer.comm.all_to_all` op 或 lowering pass，P2.S1 应保留 StableHLO/SDY
-collective metadata 或补 collective-level op；R6 再恢复 explicit p2p schedule、resource allocation
-和 package/runtime metadata。
+如果当前实现还没有 `wafer.comm.all_to_all` op 或 lowering pass，P2.S1 应保留 StableHLO collective，
+R2.4 应补 Wafer LinalgExt-style tensor collective op；R6 再恢复 tile-local `wafer.comm` p2p
+schedule、resource allocation 和 package/runtime metadata。
 
 ## 7. Interaction with Layout, SPM, and DDR
 
@@ -337,9 +353,13 @@ runtime boundary 上显式选择，不能把它混入 compiler inline Direct DTE
 
 ## 9. Verifier and Diagnostics
 
-Collective-level verifier：
+Tensor-collective verifier 属于 local compute normalization / group handoff 层；它检查 tensor
+shape、axis、rank group、slot mapping 和 combiner legality。本文的 communication verifier 从
+tile-local `wafer.comm` 开始。
 
-- collective semantic、rank group、shape、slice、dtype 与输入输出一致。
+Collective-level `wafer.comm` verifier：
+
+- collective semantic、rank group、tile-buffer shape、slice、dtype 与输入输出一致。
 - physical placement 覆盖 logical group，且 good-tile/PG 条件满足。
 - 对目标硬件 / ABI 证据明确无法表达的 route 或 protocol 给出 diagnostic。当前某个 lowering pass
   未实现的 collective、multi replica group 或 cross-card schedule 不应在 collective-level verifier

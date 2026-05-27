@@ -2,7 +2,7 @@
 
 日期：2026-05-13
 
-状态：gap catalog；2026-05-25 后不再作为架构合同或子设计状态索引
+状态：gap catalog；2026-05-25 后不再作为架构合同或子设计状态索引；2026-05-27 同步 post-SPMD collective handoff
 
 本文是历史 gap catalog 和检查清单，不是新的架构合同。子设计状态的唯一索引见
 `tasks/2026-05-11-wafer-ai-compiler-architecture.md` 第 8 节。本文中涉及历史 backend、旧 CRT、
@@ -389,6 +389,8 @@ buffer 复用必须有 explicit local drain。
 
 - GEMM/matmul + elementwise epilogue。
 - simple reduction。
+- 已规整的 Wafer LinalgExt-style tensor collective handoff；raw StableHLO collective 和 physical
+  communication 仍作为 group boundary。
 - layout materialization。
 - Conv 作为受限 V0/V1 目标保留，但不作为 M0/M1 主线。
 
@@ -463,7 +465,7 @@ Transformer block 的主链路应按下面的设计边界阅读和落地：
 Frontend artifact
   -> Shardy / SPMD
   -> Placement
-  -> Local compute normalization
+  -> Local compute normalization + tensor collective handoff
   -> wafer.group
   -> wafer.tile_region
   -> Layout / SPM / DDR
@@ -475,6 +477,8 @@ Frontend artifact
 这里最容易混乱的是 local compute normalization、group 和 compute dialect 的分工：
 
 - local compute normalization 只把 StableHLO local shard 展开成 structured tensor IR。
+- SPMD 后的 StableHLO collective 先进入 Wafer LinalgExt-style tensor collective handoff，不在
+  group/tiling 前直接 lower 成 `wafer.comm`。
 - `wafer.group` 只做 tile-local residency 和 staged schedule，不发明 softmax/RMSNorm/RoPE 高层 op。
 - `wafer.compute` 只表达 target-abstract compute/movement op 和 lower-level legality。
 
@@ -498,7 +502,7 @@ Frontend artifact
 | 层级 | 前置项 | 验收口径 |
 | --- | --- | --- |
 | Frontend artifact | 从真实 framework/exporter 图导出语义完整的 StableHLO / MLIR artifact，保留 shape、dtype、constant、weight、sharding 和 bounded dynamic shape；LLVM/MLIR/StableHLO/Shardy/importer 依赖由 adapter 和 build 配置隔离 | 没有 eager fallback、名字约定、不可界定 dynamic shape；主链路完成证明消费真实图 artifact，后端 textual tests 只作为局部 verifier / lowering 覆盖且不依赖 importer-only framework 包 |
-| Local compute normalization | 实现 dot_general、batch/head matmul、broadcast、reduction、reshape/transpose/slice、softmax、RMSNorm / LayerNorm、RoPE 和 MLP activation 的 structured IR 输出 | 输出只依赖 StableHLO semantics、type、indexing map 和 SSA use-def，不靠 layer 名或 tensor 名 |
+| Local compute normalization / tensor collective | 实现 dot_general、batch/head matmul、broadcast、reduction、reshape/transpose/slice、softmax、RMSNorm / LayerNorm、RoPE 和 MLP activation 的 structured IR 输出；SPMD collective 规整成 Wafer LinalgExt-style tensor collective | 输出只依赖 StableHLO semantics、type、indexing map、collective metadata 和 SSA use-def，不靠 layer 名或 tensor 名；tensor collective 不携带 `wafer.comm`、SPM buffer 或 DTE token |
 | Group planning | softmax staged schedule 有可测试 pattern：row max、exp、row sum、normalize 和 value accumulation 跨 key dimension 的状态明确表达 | 状态由 SSA、loop-carried value、explicit workspace 或 group split 表达，不写入 planner side table |
 | Compute coverage | elementwise 覆盖 add/sub/mul/div/max/min/neg/recip/sqrt/rsqrt/exp、limited broadcast、mask-add 或 compare/select；reduction 至少覆盖 max 和 sum | 能服务 softmax 与 norm；只有一个 demo reduce 或一个 GEMM smoke test 不算覆盖 |
 | Shape / indexing | Batch/head transpose relation 从 StableHLO dot dimension numbers 或 indexing map 推出 | 不能靠 Q/K/V 名字、参数顺序或示例 shape 恢复语义 |

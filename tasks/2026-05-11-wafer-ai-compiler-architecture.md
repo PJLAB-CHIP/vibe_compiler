@@ -1,6 +1,6 @@
 # Wafer AI Compiler Architecture Design
 
-状态：架构设计草案；2026-05-25 边界收口
+状态：架构设计草案；2026-05-25 边界收口；2026-05-27 修正 post-SPMD collective handoff
 
 日期：2026-05-11
 
@@ -34,7 +34,7 @@ source model / exported program / pre-exported StableHLO
   -> Shardy/SDY import and propagation
   -> SPMD partition
   -> partitioned StableHLO + collectives
-  -> Linalg/Tensor/SCF local compute IR
+  -> Linalg/Tensor/SCF local compute IR + Wafer LinalgExt-style tensor collectives
   -> constant normalization to arith/ConstantLike tensor values
   -> wafer.group scheduling IR
   -> wafer.tile_region bufferized tile-local execution IR
@@ -48,7 +48,9 @@ source model / exported program / pre-exported StableHLO
 核心判断：
 
 - Shardy/GSPMD 负责全局张量的逻辑切分和 collective 插入。
-- Wafer compiler 负责把逻辑 device mesh 映射到物理 card/tile mesh，并在后端阶段把 collective lowering 到 Direct DTE/FSM/SPM-sync 协议。
+- Wafer compiler 负责把逻辑 device mesh 映射到物理 card/tile mesh。SPMD 后的 StableHLO collective
+  先规整成 tensor-level collective，和 local compute 一起进入 group/tiling；到 `wafer.tile_region`
+  / SPM buffer materialize 之后，再 lowering 到 `wafer.comm`、Direct DTE/FSM/SPM-sync 协议。
 - Wafer 后端不以 LLVM target intrinsic 为核心抽象；V0/V1 通过 Wafer C ABI 调用 public Tsm wrapper / Kcore runtime，下发 NE/CT/LSU/DTE 等硬件任务。
 - 硬件事实可以作为 pass 的 legality/cost input，但必须在合适 IR 层级 materialize，不能污染上层语义 IR。
 
@@ -60,7 +62,7 @@ Wafer 是基于 MLIR 的编译器。每一层 IR 只携带自己能稳定解释�
 | --- | --- | --- | --- |
 | Frontend | StableHLO, func, tensor, arith | 模型语义、shape、dtype、constant/weight artifact | tile id、SPM、layout materialization、runtime launch |
 | Sharding | StableHLO + Shardy/SDY | global sharding、logical mesh、collective 语义 | physical tile placement、DTE protocol、SPM buffer |
-| Local compute normalization | Linalg, Tensor, SCF, Arith, Math | structured loop、indexing map、tile slice、producer/consumer、DPS/in-place、transformer block composite pattern | SPM address、`Cx/NCx` storage、worker id、packet field |
+| Local compute normalization | Linalg, Tensor, SCF, Arith, Math, Wafer LinalgExt-style tensor collective ops | structured loop、indexing map、tile slice、producer/consumer、DPS/in-place、transformer block composite pattern、post-SPMD tensor collective semantics | SPM address、`Cx/NCx` storage、worker id、packet field、`wafer.comm` / DTE protocol |
 | Group scheduling | `wafer.group` | fusion boundary、traversal schedule、tiled tensor IR、abstract resource demand | raw register field、DTE node id、physical SPM slot、C ABI call |
 | Tile execution | `wafer.tile_region`, `!wafer.tile_buffer`, target-abstract `wafer.compute` / data movement ops, memref / descriptor | bufferized tile-local execution scope、memory/liveness、movement/compute/sync ordering、layout contract | tensor fusion decision、host launch/package ABI |
 | Hardware/runtime lowering | lower-level Wafer ops, `wafer.comm`, `wafer.sync` | RDMA/WDMA/TDMA/CT/NE/DTE instruction/runtime form、issue/drain abstraction、wait/barrier abstraction | raw packet bitfield unless in debug/raw dialect |
@@ -263,22 +265,27 @@ Placement 的 accepted mapping、good-tile/PG metadata、verifier 和与 launch/
 - `scf`
 - `arith`
 - `math`
+- Wafer LinalgExt-style tensor collective ops
 
 输入：
 
 ```text
-partitioned StableHLO compute ops
+partitioned StableHLO compute ops + logical collective ops
 ```
 
 输出：
 
 ```text
 tensor-level Linalg/Tensor/SCF/Arith/Math local shard program
+  + tensor-level collective ops
 ```
 
 职责：
 
 - 把 StableHLO compute lowering 到 structured compute。
+- 把 StableHLO logical collective 规整成 Wafer LinalgExt-style tensor collective op，使 collective
+  仍保持 tensor semantics、DPS / tiling interface 和 combiner region，而不是提前进入 tile-local
+  communication IR。
 - 把 `stablehlo.constant` 统一成后续 pipeline 可处理的 `arith.constant` 或其它 `ConstantLike`
   tensor op；大 tensor / weight 可以使用 resource-backed elements attr，但不引入 Wafer 私有
   tensor constant op。
@@ -290,6 +297,7 @@ tensor-level Linalg/Tensor/SCF/Arith/Math local shard program
 
 - 不表达 NE/CT/LSU/DTE。
 - 不表达 SPM offset、bank/color、worker、queue、packet field。
+- 不生成 `wafer.comm`、SPM communication buffer 或 Direct DTE token。
 - 不生成 Wafer C ABI call。
 - 不生成 transformed constant storage；constant storage transform 是后续 layout/load lowering 阶段职责。
 
@@ -297,7 +305,9 @@ tensor-level Linalg/Tensor/SCF/Arith/Math local shard program
 
 - Linalg 是结构化计算表达，不是最终硬件计划。
 - 历史 backend 观察只能作为实现证据或反例，不决定当前 IR 边界。
-- 计算和通信不要一开始混合优化，先分阶段验证。
+- StableHLO collective 不在本阶段直接 lower 成 `wafer.comm`。需要跨 tile 的通信语义先作为
+  tensor collective 进入 group/tiling；physical communication 在 tile buffer 和 placement 明确后
+  materialize。
 
 Local compute normalization 的 StableHLO-to-structured-IR 合同、transformer block 所需
 dot/broadcast/reduce/softmax/norm/RoPE 表达和 verifier 见
@@ -395,7 +405,8 @@ storage-realized Wafer op 到 C ABI、wrapper 和 golden packet 的合同见
 
 职责：
 
-- 把 partitioned StableHLO collective lowering 到 `wafer.comm` 的 collective-level op 或 explicit p2p schedule。
+- 把 tile_region / SPM materialization 之后的 tiled tensor collective lowering 到 `wafer.comm` 的
+  collective-level op 或 explicit p2p schedule。
 - 在后端阶段选择 Direct DTE unicast protocol、ring/tree collective、FSM monitor、SPM sync/counter。
 - 区分 compiler inline Direct DTE path 与 host runtime dyn TLV D2D/P2P path。
 
@@ -551,13 +562,13 @@ WaferRuntimeAdapter cluster launch
 - DTE buffer、FSM id、packet id、stream id 和 SPM sync slot 没有跨 step 冲突。
 - raw DTE non-unicast ABI 只作为 V1/HardwareVerify 入口记录，不进入 M3 correctness path。
 
-### M4: Partitioned StableHLO Collective Lowering
+### M4: Partitioned StableHLO Collective Handoff
 
 目标：
 
-- 把 SPMD partition 后的 StableHLO collective lowering 到 `wafer.comm` collective-level op 或
-  explicit p2p schedule。
-- 对接 placement 和 comm planner。
+- 把 SPMD partition 后的 StableHLO collective 规整成 Wafer LinalgExt-style tensor collective，并在
+  group/tiling、tile_region/SPM materialization 后 lowering 到 `wafer.comm` 或 explicit p2p schedule。
+- 对接 group、placement 和 comm planner。
 
 范围：
 
@@ -567,8 +578,10 @@ WaferRuntimeAdapter cluster launch
 
 验收标准：
 
-- StableHLO collective lowering 后保留 logical mesh、physical placement、tile rank 和 good-tile 约束。
-- collective IR 明确区分 compiler inline Direct DTE protocol 与 host runtime dyn TLV D2D/P2P path。
+- StableHLO collective handoff 后保留 logical mesh、rank group、combiner / slice relation 和 local
+  shard shape；tensor collective op 不携带 SPM buffer、DTE token 或 runtime handle。
+- 在 tile_region / SPM materialization 后生成的 collective IR 明确区分 compiler inline Direct DTE
+  protocol 与 host runtime dyn TLV D2D/P2P path。
 - package metadata 能表达每个 collective 的 communication plan、SPM communication buffer 和 completion source。
 
 ### M5: Compute And Communication Mixed Scheduling
@@ -814,13 +827,13 @@ V0 先保持统一 `wafer` namespace，降低跨 dialect type/attr 演进成本�
 | Frontend / StableHLO artifact | `tasks/2026-05-25-wafer-frontend-stablehlo-artifact-design.md` | 草案 | model import adapter、输入 artifact、shape/dtype/dynamic shape、exporter bundle weight metadata、sharding 标记、第三方依赖隔离 | SPM、DTE、runtime completion |
 | Shardy / SPMD | `tasks/2026-05-25-wafer-shardy-spmd-design.md` | 草案 | logical mesh、sharding propagation、partition 后 collective 语义 | physical tile id、DTE algorithm、SPM buffer |
 | Placement | `tasks/2026-05-25-wafer-placement-design.md` | 草案 | logical mesh 到 card/tile cluster、good-tile/PG metadata、slice metadata | Cx/NCx、packet queue、C ABI |
-| Local compute normalization | `tasks/2026-05-25-wafer-local-compute-normalization-design.md` | 草案 | partitioned StableHLO 到 structured tensor IR、dot/broadcast/reduce/softmax/norm/RoPE staged form | group scheduling、physical layout、SPM/DDR、C ABI |
+| Local compute normalization | `tasks/2026-05-25-wafer-local-compute-normalization-design.md` | 草案 | partitioned StableHLO 到 structured tensor IR、dot/broadcast/reduce/softmax/norm/RoPE staged form、StableHLO collective 到 Wafer LinalgExt-style tensor collective handoff | group scheduling、physical layout、SPM/DDR、`wafer.comm`、C ABI |
 | `wafer.group` | `tasks/2026-05-12-wafer-group-design.md` | 草案 | group boundary、traversal schedule、tiled tensor IR、tile-local resource demand | SPM offset、`mem_layout`、DTE resource、runtime package |
 | `wafer.tile_region` | `tasks/2026-05-25-wafer-tile-region-design.md` | 草案 | bufferized tile-local execution scope、memory/effect ownership、movement/compute/sync ordering | tensor fusion、traversal selection、host launch/package ABI |
 | Layout materialization | `tasks/2026-05-21-wafer-layout-materialization-design.md` | 草案 | physical layout domain、op layout constraint、constant storage transform、materialization placement/cost | SPM address、packet field、group fusion |
 | SPM bufferization | `tasks/2026-05-21-wafer-spm-bufferization-design.md` | 草案 | `#spm` demand、liveness、range/alignment、allocation trial、storage realization input | DDR buffer object allocation、collective algorithm、host launch |
 | Compute / movement | `tasks/2026-05-25-wafer-compute-dialect-design.md` | 草案 | target-abstract compute/move op、layout/resource interface、issue/drain、lowering legality | tensor fusion、global sharding、host package format |
-| Communication | `tasks/2026-05-25-wafer-communication-dialect-design.md` | 草案 | collective-level op、p2p schedule、Direct DTE V0、token/effect、sync boundary | compute op legality、SPM allocator internals |
+| Communication | `tasks/2026-05-25-wafer-communication-dialect-design.md` | 草案 | tile_region / SPM materialization 之后的 collective-level op、p2p schedule、Direct DTE V0、token/effect、sync boundary | compute op legality、SPM allocator internals、SPMD tensor collective handoff |
 | DDR resource | `tasks/2026-05-25-wafer-ddr-resource-allocation-design.md` | 草案 | `#ddr` demand、external binding、workspace buffer object、constant residency、buffer object pool/domain、capacity/bandwidth | tensor fusion、SPM offset、packet bitfield |
 | Launch / runtime package | `tasks/2026-05-25-wafer-launch-runtime-package-design.md` | 草案 | `wafer.launch`、HPGR/KMD/legacy Tsm 分层、completion、buffer object pools、bootparam/TLV、package metadata | Linalg tiling、group formation、tile-local ordering |
 | C ABI / golden packet | `tasks/2026-05-25-wafer-c-abi-golden-packet-design.md` | 草案 | storage-realized Wafer op 到 C ABI 的参数单位、wait policy、golden packet | 上层 IR formation 和 layout search |
@@ -836,7 +849,7 @@ Transformer block 落地时的文档阅读顺序是：
 Frontend artifact
   -> Shardy / SPMD
   -> Placement
-  -> Local compute normalization
+  -> Local compute normalization + tensor collective handoff
   -> wafer.group
   -> wafer.tile_region
   -> Layout / SPM / DDR

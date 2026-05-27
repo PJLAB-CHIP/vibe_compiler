@@ -36,14 +36,17 @@
   `wafer-import-model --verify-import-result <mlir>`；PyTorch/XLA capture 主链路用
   `wafer-import-model --verify-stablehlo-bundle <bundle-dir>` 校验 `functions/forward.mlir`、
   `functions/forward.meta` 和 `data/<parameter>`，不要再为同一关系生成 Wafer 私有伴随 JSON。
-- P2.S1 sharded 4096 matmul artifact 入口是
-  `third_party/python-importer-py311/bin/python tools/wafer_pytorch_xla_capture.py --emit-p2s1-sharded-matmul --output-root <dir> --global-rank <rank>`。
-  该入口在 frontend 模型中用 `torch.ops.xla.dynamo_mark_sharding` 覆盖 data/batch、column
-  parallel、row/contracting、2D output、2D contracting+output 和 partial replication；输出仍是
-  PyTorch/XLA bundle，不生成 `wafer_sharding.json`。每个 strategy 用
-  `wafer-import-model --verify-spmd-bundle <dir>/<strategy>` 校验，再用
-  `build/r0-deps-pytorch-xla/shardy-sdy-opt <dir>/<strategy>/functions/forward.mlir --sdy-propagation-pipeline`
-  检查 SDY propagation 可消费这些 sharding facts。
+- P2.S1 不能用手写 `sdy.sharding`、`wafer.spmd.*` attr、私有 JSON 或名字约定冒充 partitioned
+  artifact。正确链路是同一套 source-built PyTorch/XLA 环境中通过
+  `torch_xla.distributed.spmd.mark_sharding` 或 `torch.ops.xla.dynamo_mark_sharding` 标记 4096
+  matmul 图，导出 StableHLO / SDY 可解释 artifact，接 Shardy propagation 和 XLA SPMD partitioner，
+  产出 partitioned StableHLO 或等价 per-rank StableHLO body。`tools/wafer_pytorch_xla_capture.py`
+  中任何只生成 `wafer.spmd.*`/sidecar 或只跑 SDY propagation 的入口都只能作为待清理的临时 smoke，
+  不能作为 P2.S1 完成依据。
+- P2.S1 后的 collective 先进入 Wafer LinalgExt-style tensor collective handoff，和 `linalg` 一起进入
+  group/tiling；`wafer.comm` 只能在 `wafer.tile_region` / SPM tile buffers / placement 明确后
+  materialize。StableHLO collective 直降 `wafer.comm` 且靠 `unrealized_conversion_cast` 桥 tensor
+  和 tile_buffer 的测试只是后段 communication skeleton，不是 group 输入。
 - 依赖一致性检查入口是 `tools/check_deps.py`；默认检查固定版本、importer registration hook、
   public source submodule checkout HEAD、importer Python package pin 和 core/frontend/runtime/test
   tool dependency layering。

@@ -4,11 +4,16 @@
 
 状态：R2 完成记录
 
+2026-05-27 复查更新：R2.2 中 StableHLO collective 直接 bridge 到 `wafer.comm` 的实现只保留为
+后段 communication skeleton，不再作为 P2.S1、group 或 tiling 的主线完成证明。真实 P2.S1 必须走
+`mark_sharding -> StableHLO/SDY -> Shardy/XLA SPMD partitioner -> partitioned StableHLO`，post-SPMD
+collective 先进入 Wafer LinalgExt-style tensor collective handoff，再进入 group/tiling。
+
 ## 目标和非目标
 
 R2 的目标是恢复 P2 阶段的主路径边界：frontend artifact 可验证，Shardy / SPMD artifact 能被
-Wafer 工具链接收并向 communication/placement 传递 logical rank facts，local compute
-normalization 的覆盖状态按 structured tensor IR 合同记录。
+Wafer 工具链接收并保留 logical rank facts，local compute normalization 的覆盖状态按 structured
+tensor IR 合同记录。
 
 本记录不声明 framework-specific PyTorch/JAX capture、完整 Shardy propagation/SPMD partitioner
 pipeline、mask/select/dynamic-shape 全覆盖、storage-realized constant slicing、group schedule
@@ -56,13 +61,17 @@ bundle 自己保存的数据文件，不能成为后端 lowering 分支条件。
   `wafer.placement.map` 的 logical-rank 到 physical tile 映射，不再假设 logical rank 连续等于
   `0..group_size-1`。
 
+上述 bridge 的位置是临时的。主线不能在 group/tiling 前把 StableHLO collective 直接降到
+`wafer.comm`；后续应拆成 StableHLO -> Wafer LinalgExt-style tensor collective，以及 tiled tensor
+collective + SPM tile buffers -> `wafer.comm` 两层。
+
 当前 bridge 覆盖状态：
 
 - 当前 bridge 只覆盖单个 StableHLO replica group；多 replica-group artifact 需要 P2.S1 引入明确的
-  global/local rank selection policy 和 per-rank artifact 表示。这是 bridge 覆盖缺口，不是 Wafer
-  SPMD 语义不支持。
+  global/local rank selection policy 和 partitioned artifact 表示。这是 bridge 覆盖缺口，不是
+  Wafer SPMD 语义不支持。
 - 当前仍没有把 Shardy propagation/SPMD partitioner 作为 Wafer pass pipeline 主路径跑完；R2.2
-  只恢复 artifact dialect/metadata bridge 和 logical collective 到 Wafer comm 输入。
+  只恢复 artifact dialect/metadata bridge 和后段 communication skeleton 的 rank group 输入。
 - StableHLO collective 到 tile buffer 的 visible `unrealized_conversion_cast` 仍属于 R6.2 缺口。
 
 ## R2.3 Local Compute Normalization Coverage Status
@@ -103,8 +112,9 @@ R2 之后的完成证明必须从单点 fixture 转为跨阶段消费：
 P2.F1 framework capture artifact
   -> frontend verifier
   -> P2.S1 Shardy propagation / SPMD partitioner
-  -> per-rank artifact verifier
+  -> partitioned StableHLO / per-rank artifact verifier
   -> StableHLO / local compute normalization
+  -> tensor collective normalization
   -> R3 group candidate
   -> R3 tile_region / resource / ABI / package gates
 ```

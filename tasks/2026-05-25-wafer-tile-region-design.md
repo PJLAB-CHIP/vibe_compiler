@@ -2,12 +2,17 @@
 
 日期：2026-05-25
 
-状态：设计草案；2026-05-25 独立边界收口
+状态：设计草案；2026-05-25 独立边界收口；2026-05-27 对齐 tensor collective 到 `wafer.comm` materialization
 
 本文定义 `wafer.tile_region` 作为 `wafer.group` lowering 之后的 tile-local execution boundary。
 它组织 tile-local buffer、movement、layout materialization、target-abstract compute、communication
 和 sync/effect op。它不重新做 group formation、traversal selection、root tile search 或 runtime
 launch/package 组织。
+
+SPMD 后的 StableHLO collective 在进入本文之前应已经规整成 Wafer LinalgExt-style tensor collective
+并参与 group/tiling。`wafer.tile_region` 是这些 tiled tensor collective 第一次拥有 SPM tile buffer、
+placement-derived endpoint 和 communication staging demand 的层级；`wafer.comm.*` 不应在这之前
+作为 group 输入出现。
 
 本文依赖：
 
@@ -45,7 +50,7 @@ wafer.group
   -> layout assignment / materialization
   -> SPM + DDR demand planning
   -> storage-realized memref / descriptor
-  -> wafer.compute / wafer.comm / wafer.sync lower-level ops
+  -> wafer.compute / tiled tensor collective materialization / wafer.comm / wafer.sync lower-level ops
   -> C ABI / launch
 ```
 
@@ -114,7 +119,7 @@ V0 需要以下 op family：
 | `wafer.store_tile` | 写回 external output / inter-group DDR value | destination range、layout、visibility、effect |
 | `wafer.layout.materialize` | 显式 layout conversion | source/result layout relation、可消除冗余转换 |
 | `wafer.compute.*` | target-abstract compute | operand/result layout、scratch/psum demand、queue family |
-| `wafer.comm.*` | tile 间或 collective movement | endpoint、token、fixed byte count、buffer lifetime |
+| `wafer.comm.*` | tile 间或 collective movement；由 tiled tensor collective + SPM buffer + placement materialize | endpoint、token、fixed byte count、buffer lifetime |
 | `wafer.sync.*` | local drain、comm wait、barrier | async op completion、effect ordering |
 
 这些 op 的具体算法分别归 layout、SPM、DDR、compute、communication 文档。`tile_region` 只负责
@@ -126,7 +131,8 @@ V0 需要以下 op family：
 
 1. `wafer.group` lowering：把 accepted tiled value graph 转成 `wafer.tile_region`。
 2. target-abstract op selection：把 tile-level linalg/tensor compute 绑定到 `wafer.compute` /
-   movement / comm op。
+   movement op；把 tiled tensor collective 在 placement 和 SPM buffer 明确后 materialize 为
+   `wafer.comm` 或 explicit p2p schedule。
 3. layout assignment：为 op 约束选择 `mem_layout`，在 cut edge 插入 materialization。
 4. demand collection：从 op interface 收集 SPM/DDR/layout/comm demand。
 5. resource feasibility：运行 SPM allocation trial、DDR capacity/bandwidth check 和 layout cleanup。

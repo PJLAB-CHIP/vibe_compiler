@@ -268,8 +268,9 @@ Frontend 只保存上游 sharding 事实：
 
 P2.S1 的真实图 sharding 测试必须通过 framework frontend mark 接口生成这些事实，例如
 PyTorch/XLA 的 `mark_sharding` 或 export 可追踪的等价前端 op。Frontend adapter 不为 sharding
-额外生成 Wafer 私有 JSON、sidecar 或名字约定；如果 mark 无法进入 StableHLO / SDY 可解释 artifact，
-应诊断为 frontend export / sharding import 问题，而不是在后端补第二套描述。
+额外生成 Wafer 私有 JSON、sidecar、`wafer.spmd.*` attr 或名字约定；如果 mark 无法进入
+StableHLO / SDY 可解释 artifact，应诊断为 frontend export / sharding import 问题，而不是在后端
+补第二套描述。
 
 Frontend 不把 sharding annotation 转成 physical card/tile id，也不提前选择 DTE route。
 
@@ -347,8 +348,9 @@ P2.F1 之后的验证不能停在 artifact dump。后续主线 gate 必须逐步
 framework capture artifact
   -> frontend verifier
   -> Shardy propagation / SPMD partitioner
-  -> per-rank artifact verifier
+  -> partitioned StableHLO / per-rank artifact verifier
   -> StableHLO / local compute normalization
+  -> tensor collective normalization
   -> wafer.group candidate
   -> tile_region / resource / ABI / package gate
 ```

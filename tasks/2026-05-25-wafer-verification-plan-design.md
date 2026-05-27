@@ -2,11 +2,12 @@
 
 日期：2026-05-25
 
-状态：设计草案；2026-05-25 独立边界收口
+状态：设计草案；2026-05-25 独立边界收口；2026-05-27 补 tensor collective handoff gate
 
 本文定义 Wafer compiler 的分阶段验证策略。它不是替代各 dialect 设计的总 verifier，而是把
-frontend、SPMD、placement、local compute normalization、group、tile_region、layout、SPM、DDR、
-compute、communication、C ABI、launch/runtime 的验证责任串成可执行的 gate。
+frontend、SPMD、placement、local compute normalization、tensor collective handoff、group、
+tile_region、layout、SPM、DDR、compute、communication、C ABI、launch/runtime 的验证责任串成
+可执行的 gate。
 
 Serving integration 暂不纳入本文通过标准。
 
@@ -43,13 +44,14 @@ Serving integration 暂不纳入本文通过标准。
 | Shardy / SPMD | StableHLO + sharding | logical mesh、partitioned shard shape、collective group 合法 |
 | Placement | logical ranks + topology | physical mapping 覆盖所有 rank，过滤 bad tile，cluster capability 合法 |
 | Local compute normalization | partitioned StableHLO | Linalg/Tensor/SCF/Arith/Math structured semantics、DPS/indexing relation、softmax/norm/RoPE staged form 合法 |
-| `wafer.group` | local compute IR | group boundary、tiled SSA、multi-output/domain、resource feedback loop 合法 |
+| Tensor collective handoff | partitioned StableHLO collective | Wafer LinalgExt-style tensor collective op 合法；rank group、combiner/slice relation、DPS/tiling interface 可验证，且不含 `wafer.comm`、tile_buffer 或 DTE token |
+| `wafer.group` | local compute IR + tensor collective IR | group boundary、tiled SSA、multi-output/domain、resource feedback loop 合法 |
 | `wafer.tile_region` | scheduled group | region boundary、effect、load/store、async wait/drain、buffer ownership 合法 |
 | Layout | tile region | layout assignment、materialization cut、冗余 conversion cleanup 合法 |
 | SPM | tile region + demands | allocation trial、range/end-address、lifetime、reserved range 合法 |
 | DDR | tile region + launch boundary | external binding、workspace/constant demand、pool/domain/capacity 合法 |
 | Compute / Movement | storage-realized IR | wrapper family、layout、dtype、shape、issue/drain 合法 |
-| Communication | collective/p2p IR | endpoint、token、DTE/FSM resource、wait policy 合法 |
+| Communication | tile_region / SPM materialization 后的 collective/p2p IR | endpoint、token、DTE/FSM resource、wait policy 合法 |
 | C ABI / golden packet | lower-level Wafer ops | ABI unit/address/wait verified，golden packet 覆盖 wrapper mapping |
 | Launch/runtime | package + adapter | manifest roundtrip、buffer object binding contract、local compile/package、stub shielding 合法；板端 completion 后续有卡环境验证 |
 
@@ -84,9 +86,9 @@ pattern FileCheck、手写 StableHLO/Linalg fixture 和 fixed manifest 可以保
 
 M0 single tile compute：
 
-- 主链路 gate 应消费 P2.F1/P2.S1 产出的真实图 artifact，并继续通过 frontend/local compute gate；
-  graph break / fallback 不被当成合法 artifact。手写 StableHLO/Linalg 输入只保留为局部 verifier、
-  lowering pattern 或 bring-up fixture。
+- 主链路 gate 应消费 P2.F1/P2.S1/R2.4 产出的真实图 artifact，并继续通过 frontend/local compute /
+  tensor collective handoff gate；graph break / fallback 不被当成合法 artifact。手写 StableHLO/Linalg
+  输入只保留为局部 verifier、lowering pattern 或 bring-up fixture。
 - `wafer.group` 到 `wafer.tile_region` 可生成单 tile load/compute/store。
 - SPM allocation trial 成功。
 - DDR external input/output 或 constant read-only demand 可绑定。
@@ -120,17 +122,19 @@ M3 single-card collective：
 - 当前 integration gate：`test/Integration/m3-single-card-collective-gate.mlir` 覆盖 `wafer.comm`
   all-gather/all-reduce 到 ring p2p、Direct DTE ABI 和 elementwise ABI。
 
-M4 partitioned StableHLO collective lowering：
+M4 partitioned StableHLO collective handoff：
 
-- Shardy / SPMD 输出的 logical collective 能保留为 per-rank artifact 中的 StableHLO / SDY metadata，
-  或 lowered 到 collective-level `wafer.comm`。
+- Shardy / XLA SPMD 输出的 logical collective 能保留为 partitioned StableHLO / SDY metadata，并先
+  normalize 成 Wafer LinalgExt-style tensor collective op；该 op 可被 group/tiling 直接消费。
 - placement 和 comm lowering 在其实现范围内保留 collective semantics；未实现的硬件可表达
-  collective 形成 R6/R4 恢复任务，不能反向限制 P2.S1 artifact export。
+  collective 形成 R6/R4 恢复任务，不能反向限制 P2.S1 artifact export，也不能把 tensor collective
+  伪装成已经 materialize 的 `wafer.comm`。
 - layout/SPM/DDR resource gates 只对本 milestone 已经 materialize 的 movement / buffer demand
   负责；尚未 materialize 的 logical collective 不能被伪装成已通过 resource gate。
 - 当前 integration gate：`test/Integration/m4-partitioned-collective-gate.mlir` 覆盖 StableHLO
-  all-gather/all-reduce/reduce-scatter 经 `wafer.comm`、ring lowering 到 C ABI skeleton。SPM/DDR
-  resource gate 在该 communication skeleton 中仍由后续完整 package gate 组合验证。
+  all-gather/all-reduce/reduce-scatter 经 `wafer.comm`、ring lowering 到 C ABI skeleton。这个 gate
+  是后段 communication skeleton，不是主线 handoff 完成证明；R2.4 需要补 StableHLO -> tensor
+  collective 的 gate，R6 再验证 tiled tensor collective -> `wafer.comm` 的 materialization。
 
 M5 overlap and cost model（优化类，当前执行看板后移为 P9）：
 
@@ -149,8 +153,8 @@ M6 transformer block vertical slice：
   sqrt/rsqrt/exp、limited broadcast、mask-add 或 compare/select。
 - layout/SPM/DDR feasibility 对所有 accepted groups 通过；constant/weight slices 可追溯到
   `ConstantLike` value 和 `wafer.load_tile`。
-- 若启用 tensor parallel collective，M2/M3/M4 gate 已通过；否则 M6 只验证单卡/单 shard local
-  transformer block。
+- 若启用 tensor parallel collective，R2.4 tensor collective handoff 以及 M2/M3/M4 gate 已通过；
+  否则 M6 只验证单卡/单 shard local transformer block。
 - 当前无卡开发环境要求 generated artifact compile，package/runtime metadata 覆盖所有 block
   input/output、resident constants 和 workspace；completion 和数值对比后续在有卡环境验证。
 

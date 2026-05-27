@@ -2,7 +2,7 @@
 
 日期：2026-05-26
 
-状态：审计记录；用于纠正 P0-P6 历史 `done` 状态的含义
+状态：审计记录；用于纠正 P0-P6 历史 `done` 状态的含义；2026-05-27 补 collective handoff 复查结论
 
 ## 结论
 
@@ -16,6 +16,12 @@ group/tile materialization、layout/SPM/DDR、communication 和 ABI skeleton 基
 `lib/Wafer/Transforms`。R0.2 已恢复源码 ownership 边界；R1.1 已把 ODS、op verifier 和 dialect
 tests 按 op family 拆开；R1.2/R1.3 已补 interface/resource 查询合同和 local compute
 stage-connection gate。
+
+2026-05-27 复查进一步确认：历史 P2.S1 路线若把 sharding facts 写成 `wafer.spmd.*` 或私有
+sidecar，不是主线 SPMD artifact contract；历史 StableHLO collective 直降 `wafer.comm` 的 pass
+只能算后段 communication skeleton，不能作为 group/tiling 输入。正确主线需要
+`mark_sharding -> StableHLO/SDY -> Shardy/XLA SPMD partitioner -> partitioned StableHLO`，再经
+Wafer LinalgExt-style tensor collective handoff 进入 group/tiling。
 
 历史 `tasks/progress.md` 中 P0-P6 的 `done` 应理解为“该 skeleton 批次有对应测试”，不能理解为：
 
@@ -36,7 +42,7 @@ stage-connection gate。
 | P3 M0 | group formation、root tile check、single-tile materialization、SPM trial、DDR external binding、C ABI skeleton、manifest fixture 均有测试 | group planner 只处理有限 single-op pattern；root tile candidate 基本等于完整静态 result shape，不是候选搜索+下游 oracle；SPM 是顺序 trial；DDR 只有 external compact bytes demand；C ABI 是 skeleton op，不是 `wafer_*` call；golden packet 只是 descriptor builder，不是 wrapper-to-register golden；M0 manifest 由 fixed smoke emitter 生成，不来自当前 IR |
 | P4 M1 | placement map verifier、multi-tile no-comm outlining、per-tile launch arg fixture 已有 | multi-tile materialization 克隆同一 whole-tensor tile_region，最后用最后一个 tile_region result 替换 group result；没有真实 local shard slicing、per-rank output merge 或 runtime launch binding；manifest placement metadata 是 fixed smoke fixture |
 | P5 transformer block | norm/softmax/projection/MLP acceptance passes、attention QK/AV lowering、M6 textual pipeline 已有 | 多数 pass 是 pattern acceptance，不是 full schedule planner；M6 package manifest 是 fixed fixture，不由 M6 IR 导出；workspace/resident constant metadata 与 IR dataflow 没有自动一致性来源；没有真实 full-block device artifact |
-| P6 communication | p2p verifier、ring all-gather/reduce collectives、StableHLO collective bridge、DTE skeleton resource verifier 已有 | Direct DTE resource id 是单调 skeleton 分配，不是目标资源 allocator；collective lowering 没有真实 buffer slice/address offset lowering；StableHLO collective bridge 用 visible cast 衔接 tensor/tile_buffer；communication metadata 没进入真实 package/runtime path |
+| P6 communication | p2p verifier、ring all-gather/reduce collectives、StableHLO collective bridge、DTE skeleton resource verifier 已有 | Direct DTE resource id 是单调 skeleton 分配，不是目标资源 allocator；collective lowering 没有真实 buffer slice/address offset lowering；StableHLO collective bridge 用 visible cast 衔接 tensor/tile_buffer，且插入点早于 group/tiling；communication metadata 没进入真实 package/runtime path |
 
 ## 主要根因
 

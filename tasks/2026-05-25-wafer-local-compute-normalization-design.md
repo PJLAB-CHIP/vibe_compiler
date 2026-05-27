@@ -2,12 +2,14 @@
 
 日期：2026-05-25
 
-状态：设计草案；2026-05-25 独立边界收口
+状态：设计草案；2026-05-25 独立边界收口；2026-05-27 补 post-SPMD Wafer LinalgExt-style
+tensor collective handoff
 
-本文定义 SPMD partition 之后、`wafer.group` 之前的 local tensor compute normalization
-边界。该阶段负责把 partitioned StableHLO 的本地 shard 程序规整到可 tile、可 fuse、可
-验证的 `linalg` / `tensor` / `scf` / `arith` / `math` IR 子集。它不引入 Wafer physical
-layout、SPM/DDR allocation、DTE、C ABI 或 runtime package。
+本文定义 SPMD partition 之后、`wafer.group` 之前的 local tensor normalization 边界。该阶段
+负责把 partitioned StableHLO 的本地 shard 程序规整到可 tile、可 fuse、可验证的
+`linalg` / `tensor` / `scf` / `arith` / `math` IR 子集；同时把 post-SPMD StableHLO collective
+规整成 Wafer LinalgExt-style tensor collective ops，使 collective 能和 local compute 一起进入
+group/tiling。它不引入 Wafer physical layout、SPM/DDR allocation、DTE、C ABI 或 runtime package。
 
 本文依赖：
 
@@ -22,6 +24,7 @@ layout、SPM/DDR allocation、DTE、C ABI 或 runtime package。
 目标：
 
 - 把 StableHLO local shard compute lowering 到结构化 tensor IR。
+- 把 StableHLO local shard collective lowering 到 Wafer LinalgExt-style tensor collective IR。
 - 保留 op 的 indexing map、iterator type、DPS operand/result 关系、shape、dtype 和
   broadcast / reduction 语义。
 - 把 transformer block 所需的 dot、batch matmul、elementwise、broadcast、reduce、reshape、
@@ -37,6 +40,8 @@ layout、SPM/DDR allocation、DTE、C ABI 或 runtime package。
 - 不引入 `wafer.softmax`、`wafer.layer_norm`、`wafer.rope` 这类普通 tensor 语义 op 作为长期
   架构边界。需要 pattern 时使用 rewrite / canonicalization，把它们展开到结构化 IR。
 - 不把 transformer block 的某个 shape、head 数或隐藏维度写成协议。
+- 不把 sharding 表示成 `wafer.spmd.*`，也不把 tensor-level collective 提前 lower 成
+  `wafer.comm` / `tile_buffer` / DTE op。
 
 ## 2. 输入和输出
 
@@ -45,19 +50,20 @@ layout、SPM/DDR allocation、DTE、C ABI 或 runtime package。
 ```text
 partitioned StableHLO local shard
   + ConstantLike tensor values
-  + logical collective boundary already kept as StableHLO collective or later wafer.comm source
+  + StableHLO logical collective ops produced by SPMD partitioning
 ```
 
 输出：
 
 ```text
 func + tensor + linalg + scf + arith + math
+  + Wafer LinalgExt-style tensor collective ops
   + explicit shape/indexing/broadcast/reduction structure
   + ConstantLike tensor values
 ```
 
-输出 IR 应该只包含上游 tensor dialect 能解释的数学语义。Wafer target facts 只能作为后续
-legality / cost input。
+输出 IR 应该只包含 tensor-level 数学语义、structured compute 语义和 logical collective 语义。
+Wafer target facts 只能作为后续 legality / cost input。
 
 ## 3. Transformer Block Coverage
 
@@ -216,6 +222,69 @@ shape/indexing relation。只有当后续 layout / memory / hardware lowering �
 Normalization 不能因为目标硬件偏好提前插入 ChannelNorm、DechannelNorm、GatherScatter、
 RDMA/WDMA 或 TDMA。
 
+### 4.5 Tensor Collective Normalization
+
+StableHLO collective 不适合直接混在 Linalg tiling 主链路中，也不应在本阶段直接 lower 到
+`wafer.comm`。本阶段新增一层 Wafer LinalgExt-style tensor collective IR：它不是 sharding
+表示，不是 `wafer.spmd`，也不是 tile-local communication op；它是 post-SPMD partitioned
+StableHLO collective 的 tensor-level handoff。
+
+该层采用类似 IREE `LinalgExt` 的工程模式：定义 Wafer 自己的 tensor collective ops，并实现
+MLIR tiling / fusion 相关接口：
+
+- `DestinationStyleOpInterface`：使用 `ins(...) outs(...)` 表达输入和 destination-style 输出，
+  结果 tensor 与 outs 一一对应。
+- `TilingInterface`：给定 result tile，能生成 tiled collective op，并返回该 tile 对应的 result
+  offset / size。
+- Wafer collective interface：暴露 collective kind、rank group、axis/slot、reduction combiner、
+  communication effect 和 byte/shape facts。
+- verifier：检查 shape、rank、dtype、axis、rank group、slot mapping、reduction body 和禁止
+  physical tile / SPM / DTE / runtime metadata。
+
+概念层面的 ops 包括：
+
+- `wafer.linalg_ext.all_reduce`
+- `wafer.linalg_ext.all_gather`
+- `wafer.linalg_ext.reduce_scatter`
+- `wafer.linalg_ext.all_to_all`
+- `wafer.linalg_ext.collective_permute`
+
+具体命名可以在 ODS 落地时调整；长期合同是 LinalgExt-style tensor collective 层，而不是这些
+示例名字。
+
+各 collective 的 tile 关系：
+
+- `all_reduce`：input tile 和 result tile 同 shape、同 offset；combiner region 保留在 tensor
+  collective 层，后续 lowering 再判断可否映射到 `wafer.compute`。
+- `all_gather`：沿 gather dimension 按 rank slot concat。result tile 不能隐式跨 slot；若 tile
+  覆盖多个 rank slot，tiling 必须拆成多个 slot-aligned tiled collective 或由 planner 选择
+  slot-aligned tile。
+- `reduce_scatter`：result tile 对应当前 logical rank 的 scatter slot；input demand 由 scatter
+  dimension、rank group 和 result tile 反推。
+- `all_to_all`：同时表达 split dimension 和 concat dimension 的 slot 映射；每个 slot 的
+  source/destination slice 必须可验证。
+- `collective_permute`：tensor slice shape 不变；source-target pair 是 communication effect 和
+  placement input，不在本层选择 physical peer。
+
+该层输出仍是 tensor IR，可以和 `linalg.matmul`、`linalg.generic`、`linalg.reduce` 等一起进入
+`wafer.group`。例如：
+
+```mlir
+%mm = linalg.matmul ins(%a, %b : tensor<...>, tensor<...>)
+      outs(%init : tensor<...>) -> tensor<...>
+%red = wafer.linalg_ext.all_reduce ins(%mm : tensor<...>)
+       outs(%init : tensor<...>) {
+  ^bb0(%lhs: f32, %rhs: f32):
+    %sum = arith.addf %lhs, %rhs : f32
+    wafer.linalg_ext.yield %sum : f32
+} -> tensor<...>
+%y = linalg.generic ... ins(%red : tensor<...>) ...
+```
+
+这里的 `wafer.linalg_ext.*` 不拥有 physical placement、SPM buffer 或 DTE resource。到
+`wafer.tile_region` / SPM materialization 之后，tiled tensor collective 才会变成 `wafer.comm.*`
+或 explicit p2p schedule。
+
 ## 5. Softmax and Norm Staged Form
 
 Softmax 的 normalized form 至少是：
@@ -281,6 +350,7 @@ group/resource planner 通过显式 IR 边界和 workspace demand materialize。
 | 职责 | 输入 | 输出 |
 | --- | --- | --- |
 | StableHLO legalize to structured tensor | partitioned StableHLO | `linalg` / `tensor` / `arith` / `math` / `scf` |
+| StableHLO collective normalization | partitioned StableHLO collectives | Wafer LinalgExt-style tensor collective ops |
 | dot_general normalization | StableHLO dot | matmul / batch_matmul / structured generic |
 | broadcast/reduction normalization | StableHLO broadcast/reduce | explicit indexing maps and reduce dims |
 | transformer pattern canonicalization | softmax/norm/RoPE/MLP activation patterns | staged structured tensor IR |
@@ -302,6 +372,8 @@ Normalization 后必须能检查：
 - reduction dimensions、init value 和 output dtype。
 - softmax/norm staged IR 中的 reduction axis 和 elementwise consumer 关系。
 - shape-only ops 没有提前变成 target movement。
+- StableHLO collectives 已经规整成 tensor-level collective ops，且这些 ops 不含 `wafer.spmd.*`、
+  `wafer.comm`、`tile_buffer`、DTE 或 runtime metadata。
 - IR 中没有 Wafer physical memory、layout materialization、DTE、packet 或 runtime launch 事实。
 
 ### 7.1 R2.3 覆盖状态口径
@@ -320,12 +392,14 @@ Normalization 后必须能检查：
 | RoPE | `lower-stablehlo-rope-mlp-staged.mlir` | 证明当前 RoPE slice/shape/elementwise staged pattern；sin/cos table storage slicing 未闭环 |
 | MLP | `lower-stablehlo-mlp-schedule.mlir`、`lower-stablehlo-local-transformer-block.mlir` | 证明 tanh-gated MLP vertical slice 和 full local transformer structured gate；GELU/SwiGLU/package consistency 未闭环 |
 | shape views | `lower-stablehlo-shape.mlir`、local transformer block gate | 证明 static expand/collapse shape-only relation；dynamic shape view 和 layout materialization 未闭环 |
+| tensor collective handoff | 设计已收口，代码未恢复 | StableHLO collective 需要先进入 Wafer LinalgExt-style tensor collective 层；当前直接 StableHLO -> `wafer.comm` 的 bridge 只能作为后段 skeleton，不是 group/tiling 输入 |
 
 ## 8. 与其它文档的关系
 
 - Frontend 文档负责 artifact 和 constant normalization 的入口。
-- Shardy / SPMD 文档负责 global sharding 和 logical collective。
-- 本文负责 local shard 内的 structured tensor IR。
+- Shardy / SPMD 文档负责 global sharding、partitioned StableHLO 和 StableHLO logical collective。
+- 本文负责 local shard 内的 structured tensor IR，以及 StableHLO collective 到 Wafer
+  LinalgExt-style tensor collective IR 的 handoff。
 - Group 文档负责 tile-local residency、traversal schedule 和 closed-loop resource search。
 - Compute 文档负责把 selected tensor op lower 到 target-abstract `wafer.compute`。
 - Layout / SPM / DDR 文档负责 physical layout、bufferization 和 resource legality。
@@ -337,5 +411,8 @@ op conversion 框架。Wafer 复用这些机制，但目标硬件资源和 layou
 ## 9. 参考材料
 
 - MLIR Linalg dialect: <https://mlir.llvm.org/docs/Dialects/Linalg/>
+- MLIR TilingInterface: <https://llvm.googlesource.com/llvm-project/mlir/+/main/include/mlir/Interfaces/TilingInterface.td>
+- MLIR DestinationStyleOpInterface: <https://llvm.googlesource.com/llvm-project/mlir/+/main/include/mlir/Interfaces/DestinationStyleOpInterface.td>
+- IREE LinalgExt reference: <https://iree.dev/reference/mlir-dialects/LinalgExt/>
 - MLIR Bufferization: <https://mlir.llvm.org/docs/Bufferization/>
 - MLIR Dialect Conversion: <https://mlir.llvm.org/docs/DialectConversion/>
