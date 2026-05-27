@@ -1,0 +1,2 @@
+# RUN: %python %wafer_src_root/test/Tools/wafer_pytorch_xla_capture_contract_test.py
+

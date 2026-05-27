@@ -129,9 +129,10 @@ framework model / exported program
 
 PyTorch 路线的 framework-specific capture adapter 必须使用 PyTorch/XLA 导出的 StableHLO runtime
 接口，例如 `torch.export.export` 后调用 `torch_xla.stablehlo.exported_program_to_stablehlo`。本仓库
-中的 `third_party/pytorch-xla` 是该 runtime 的源码事实源；可运行的 `torch_xla` 可以由该 checkout
-编译/安装得到，也可以在 ABI 匹配时来自 pinned prebuilt wheel。无论安装来源如何，P2.F1
-不能用手写 ATen graph matcher 或手写 StableHLO 文本 emitter 冒充 PyTorch/XLA capture。
+中的 `third_party/pytorch-xla` 是该 runtime 的源码事实源。P2.F1 主路径必须从这个 checkout
+编译/安装出可 import 的 `torch_xla` package 和 `_XLAC` extension；prebuilt `torch_xla` wheel
+不能作为 P2.F1 完成证明，也不能替代源码 build/install gate。P2.F1 不能用手写 ATen graph
+matcher、手写 StableHLO 文本 emitter 或 pre-exported fixture 冒充 PyTorch/XLA capture。
 
 每个 framework-specific adapter 必须满足：
 
@@ -151,8 +152,16 @@ PyTorch 路线的 framework-specific capture adapter 必须使用 PyTorch/XLA �
 
 验证时，framework adapter smoke 必须把真实 adapter 产物继续交给
 `wafer-import-model --verify-import-result [--sidecar]`。手写 MLIR 仍可作为 verifier unit test，但
-不能单独作为 P2.F1 完成证明。对于本地没有安装的可选 framework dependency，测试可以标记 feature
-guard；一旦 dependency enabled，必须跑真实 adapter -> artifact -> verifier 链。
+不能单独作为 P2.F1 完成证明。若 `third_party/pytorch-xla` 源码编译/安装出的 runtime 不可
+import，P2.F1 不得标记为完成；测试可以保留依赖隔离或 contract 级覆盖，但主线验收仍必须跑通真实
+PyTorch/XLA adapter -> artifact -> sidecar/config -> WaferFrontend verifier 链。
+
+2026-05-27 实现记录：P2.F1 已完成。`tools/build_pytorch_xla_runtime.py` 从
+`third_party/pytorch-xla` 源码安装 `torch_xla` 2.5.0，并通过 Bazel override 复用本仓库
+`third_party/xla`、`third_party/llvm-project` 和 importer Python 的 `torch` headers/libs；
+没有使用 prebuilt `torch_xla` wheel。`tools/wafer_pytorch_xla_capture.py` 产出 StableHLO MLIR、
+sidecar 和 compile config；lit smoke 将该 artifact 继续交给
+`wafer-import-model --verify-import-result --sidecar`。
 
 #### 2.1.2 P2.F1 主链路 Capture Model
 

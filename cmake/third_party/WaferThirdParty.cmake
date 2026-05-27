@@ -14,7 +14,7 @@ option(WAFER_ALLOW_UNPINNED_LLVM
 option(WAFER_ENABLE_IMPORTER_DEPS
   "Enable StableHLO/Shardy frontend and SPMD dependency discovery" OFF)
 option(WAFER_ENABLE_FRAMEWORK_IMPORTER_DEPS
-  "Enable future framework importer adapter dependency checks" OFF)
+  "Enable framework importer adapter dependency checks" OFF)
 option(WAFER_ENABLE_SPMD_PARTITIONER_DEPS
   "Enable Shardy/GSPMD partitioner dependency roots and unified Shardy CMake gate" OFF)
 option(WAFER_ENABLE_RUNTIME_DEPS
@@ -23,7 +23,9 @@ option(WAFER_FETCH_GTEST
   "Fetch googletest when a system package is not available" ON)
 
 set(WAFER_IMPORTER_PYTHON_VENV "${WAFER_DEPS_ROOT}/python-importer" CACHE PATH
-  "Python env containing torch and an importable torch_xla runtime for importer tools")
+  "Python env containing torch and source-built torch_xla runtime for importer tools")
+set(WAFER_IMPORTER_PYTHON_EXECUTABLE "${WAFER_IMPORTER_PYTHON_VENV}/bin/python" CACHE FILEPATH
+  "Python executable used for framework importer adapter tests")
 set(WAFER_STABLEHLO_SOURCE_DIR "${WAFER_DEPS_ROOT}/stablehlo" CACHE PATH
   "Pinned StableHLO checkout")
 set(WAFER_SHARDY_SOURCE_DIR "${WAFER_DEPS_ROOT}/shardy" CACHE PATH
@@ -39,12 +41,37 @@ set(WAFER_KMD_UAPI_ROOT "" CACHE PATH
   "Optional KMD/UAPI headers root for future runtime adapter work")
 set(WAFER_LEGACY_TSM_SDK_ROOT "" CACHE PATH
   "Optional legacy Tsm/VS runtime SDK root for fallback adapter work")
+set(WAFER_ENABLE_PYTORCH_XLA_IMPORTER OFF CACHE BOOL
+  "Pinned source-built PyTorch/XLA importer runtime is importable" FORCE)
 
 if(WAFER_ENABLE_FRAMEWORK_IMPORTER_DEPS)
   if(NOT EXISTS "${WAFER_PYTORCH_XLA_SOURCE_DIR}/WORKSPACE")
     message(FATAL_ERROR
       "PyTorch/XLA source checkout is enabled but missing. "
       "Run tools/bootstrap_deps.py --importer-sources or set WAFER_PYTORCH_XLA_SOURCE_DIR.")
+  endif()
+  if(EXISTS "${WAFER_IMPORTER_PYTHON_EXECUTABLE}")
+    execute_process(
+      COMMAND "${WAFER_IMPORTER_PYTHON_EXECUTABLE}" -c
+              "import torch; import torch_xla; from torch_xla.stablehlo import exported_program_to_stablehlo"
+      RESULT_VARIABLE WAFER_PYTORCH_XLA_IMPORTER_RESULT
+      OUTPUT_QUIET
+      ERROR_QUIET
+    )
+    if(WAFER_PYTORCH_XLA_IMPORTER_RESULT EQUAL 0)
+      set(WAFER_ENABLE_PYTORCH_XLA_IMPORTER ON CACHE BOOL
+        "Pinned source-built PyTorch/XLA importer runtime is importable" FORCE)
+    else()
+      message(FATAL_ERROR
+        "WAFER_ENABLE_FRAMEWORK_IMPORTER_DEPS=ON requires an importer Python "
+        "that can import source-built torch_xla. Run tools/build_pytorch_xla_runtime.py "
+        "with WAFER_IMPORTER_PYTHON_EXECUTABLE pointing at that environment.")
+    endif()
+  else()
+    message(FATAL_ERROR
+      "WAFER_ENABLE_FRAMEWORK_IMPORTER_DEPS=ON but WAFER_IMPORTER_PYTHON_EXECUTABLE "
+      "does not exist. Build/install torch_xla from third_party/pytorch-xla source "
+      "into the importer Python environment.")
   endif()
 endif()
 

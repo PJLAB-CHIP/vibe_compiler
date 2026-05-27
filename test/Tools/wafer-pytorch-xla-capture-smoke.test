@@ -1,0 +1,33 @@
+# REQUIRES: stablehlo, pytorch-xla-importer
+
+# RUN: %importer_python %wafer_src_root/tools/wafer_pytorch_xla_capture.py --emit-p2f1-smoke --output-mlir %t.p2f1.mlir --output-sidecar %t.p2f1.json --output-config %t.p2f1.config.json
+# RUN: FileCheck %s --input-file=%t.p2f1.mlir --check-prefix=MLIR
+# RUN: FileCheck %s --input-file=%t.p2f1.json --check-prefix=SIDECAR
+# RUN: FileCheck %s --input-file=%t.p2f1.config.json --check-prefix=CONFIG
+# RUN: wafer-import-model --verify-import-result %t.p2f1.mlir --sidecar %t.p2f1.json | FileCheck %s --check-prefix=VERIFY
+
+# MLIR: func.func
+# MLIR: tensor<4096xf32> {wafer.frontend.constant = "const_arg_
+# MLIR: tensor<4096x4096xf32> {wafer.frontend.constant = "const_arg_
+# MLIR: stablehlo
+
+# SIDECAR: "version": 0
+# SIDECAR: "constants":
+# SIDECAR: "shape": [
+# SIDECAR: 4096
+# SIDECAR: "byte_size": 16384
+# SIDECAR: "shape": [
+# SIDECAR: 4096,
+# SIDECAR: 4096
+# SIDECAR: "byte_size": 67108864
+
+# CONFIG: "version": 0
+# CONFIG: "artifact_kind": "p2f1_framework_capture_smoke"
+# CONFIG: "input_shape":
+# CONFIG: 4096
+# CONFIG: 4096
+# CONFIG: "constant_binding": "function_arg_sidecar"
+# CONFIG: "sharding_import_policy": "preserve_stablehlo_sdy_annotations"
+
+# VERIFY: wafer-import-model: verified frontend sidecar constants: 2
+# VERIFY: wafer-import-model: verified frontend artifact

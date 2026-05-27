@@ -235,9 +235,16 @@ def check_cmake_target_visibility() -> None:
     for requirement in [
         "torch==2.5.0",
         "torchvision==0.20.0",
-        "torch_xla==2.5.0",
+        "absl-py==2.1.0",
+        "pyyaml==6.0.1",
+        "requests==2.32.3",
     ]:
         check_text_contains(REPO_ROOT / "requirements-importer.txt", requirement)
+    if "torch_xla" in (REPO_ROOT / "requirements-importer.txt").read_text(encoding="utf-8"):
+        raise RuntimeError(
+            "requirements-importer.txt must not install torch_xla from a wheel; "
+            "build/install third_party/pytorch-xla from source"
+        )
 
     transforms_cmake_path = REPO_ROOT / "lib" / "Wafer" / "Transforms" / "CMakeLists.txt"
     transforms_cmake = transforms_cmake_path.read_text(encoding="utf-8")
@@ -439,12 +446,15 @@ def print_versions(versions: dict[str, str]) -> None:
     )
     print(f"OpenXLA/XLA {versions['WAFER_OPENXLA_XLA_COMMIT']}")
     print(
-        "PyTorch importer packages "
+        "PyTorch importer source-build Python packages "
         f"torch {versions['WAFER_PYTORCH_VERSION']} "
         f"torchvision {versions['WAFER_TORCHVISION_VERSION']} "
-        f"torch_xla {versions['WAFER_TORCH_XLA_PYTHON_VERSION']}"
+        "absl-py 2.1.0 pyyaml 6.0.1 requests 2.32.3"
     )
-    print(f"PyTorch/XLA source {versions['WAFER_PYTORCH_XLA_COMMIT']}")
+    print(
+        f"PyTorch/XLA source runtime {versions['WAFER_TORCH_XLA_PYTHON_VERSION']} "
+        f"{versions['WAFER_PYTORCH_XLA_COMMIT']}"
+    )
     print(f"googletest {versions['WAFER_GOOGLETEST_TAG']} {versions['WAFER_GOOGLETEST_COMMIT']}")
     print(f"lit {versions['WAFER_PYTHON_LIT_VERSION']}")
 

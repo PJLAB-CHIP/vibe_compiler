@@ -15,9 +15,9 @@ pipeline、mask/select/dynamic-shape 全覆盖、storage-realized constant slici
 completion、SPM/DDR/resource planning 或 runtime/package 闭环完成。
 
 2026-05-27 调度结论：framework-specific capture 和完整 Shardy propagation / SPMD partitioner
-pipeline 不是放弃项，也不应排在 R3 之后。它们作为 `P2.F1` / `P2.S1` 在 R3.1 之前完成，使后续
-group / tile / resource gate 消费真实 frontend/SPMD artifact 来源，而不是继续围绕手写 fixture
-自洽。
+pipeline 不是放弃项，也不应排在 R3 之后。`P2.F1` 已完成 source-built PyTorch/XLA capture
+adapter；`P2.S1` 是 R3.1 之前的 ready 项。后续 group / tile / resource gate 必须消费真实
+frontend/SPMD artifact 来源，而不是继续围绕手写 fixture 自洽。
 
 ## R2.1 Frontend Artifact / Importer Contract
 
@@ -135,3 +135,7 @@ P2.F1 主链路 artifact 采用 `4096x4096 @ 4096x4096` f32 matmul + bias + tanh
 该规模用于给后续 tiling、SPM/DDR resource、resident constant 和 package gate 提供非 trivial
 shape/byte facts；大 weight 只能通过 sidecar/resource-backed metadata 绑定，不提交 64 MiB
 weight 到 git 测试文件。
+
+PyTorch/XLA adapter 的完成证明必须使用从 `third_party/pytorch-xla` 源码编译/安装出的
+`torch_xla` runtime。prebuilt `torch_xla` wheel、手写 StableHLO artifact 或没有实际运行
+source-built runtime 的 smoke 不能作为 P2.F1 done 依据。

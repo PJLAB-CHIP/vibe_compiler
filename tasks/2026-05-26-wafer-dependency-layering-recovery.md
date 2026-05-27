@@ -15,7 +15,7 @@ core compiler target。
 
 ## 术语口径
 
-- 固定版本：git 源码依赖固定到一个具体 commit，Python package / wheel 路线固定到一个具体版本号。
+- 固定版本：git 源码依赖固定到一个具体 commit，Python package 路线固定到一个具体版本号。
   固定版本只说明后续检查会验证“是不是这一个版本”，不说明 Wafer 已经调用了这个依赖。
 - 实际使用：Wafer 的 C++ target、pass、tool 或 Python importer 直接 link/import/call 了对应依赖。
   按这个口径，R0.3 中实际进入编译验证的是 LLVM/MLIR、StableHLO 和 Shardy/SDY；PyTorch/XLA 与
@@ -71,11 +71,14 @@ core compiler target。
 - OpenXLA/XLA 源码固定版本是为了后续 GSPMD SPMD partitioner integration。当前主线仍以 Shardy 的
   MLIR sharding representation 作为 R2.2 bridge 边界；XLA/GSPMD 现在没有编进 Wafer target，
   也不能成为 core IR 或 backend library 的 public dependency。
-- `requirements-importer.txt` 固定 prebuilt-wheel 路线的 frontend importer Python packages：
-  `torch==2.5.0`、`torchvision==0.20.0`、`torch_xla==2.5.0`。这不是唯一获取
-  `torch_xla` runtime 的方式；当 wheel 与本机 Python ABI 不兼容时，应从
-  `third_party/pytorch-xla` 源码构建/安装出同版本 `torch_xla` package。无论来自 wheel 还是源码构建，
-  该 runtime 只用于 importer 工具 / artifact 生成测试，不能穿透到 core compiler public dependency。
+- `requirements-importer.txt` 只固定 frontend importer 和 PyTorch/XLA 源码构建所需的 Python
+  packages：`torch==2.5.0`、`torchvision==0.20.0`、`absl-py==2.1.0`、`pyyaml==6.0.1`、
+  `requests==2.32.3`。P2.F1 的 `torch_xla` runtime 必须从 `third_party/pytorch-xla`
+  源码构建/安装出同版本 package；prebuilt `torch_xla` wheel 不能作为 P2.F1 完成证明。该 runtime
+  只用于 importer 工具 / artifact 生成测试，不能穿透到 core compiler public dependency。
+- `tools/build_pytorch_xla_runtime.py` 是当前源码构建入口；它为 PyTorch/XLA Bazel build 提供本地
+  `@xla`、`@llvm-raw` 和 `@torch` override，使源码构建复用同一套 `third_party/xla`、
+  `third_party/llvm-project` 和 importer Python 环境，而不是下载或引入另一套 XLA/LLVM stack。
 - 顶层 `CMakeLists.txt` 只 include third-party 配置，不直接拼 StableHLO/Shardy/GTest 发现逻辑。
 
 ## CMake 可见范围
@@ -112,7 +115,8 @@ core compiler target。
 - 第三方依赖声明是否仍集中在 `cmake/third_party/`。
 - public source dependency 是否记录为 `third_party/<name>` submodule。
 - `third_party/pytorch-xla` 的 `WORKSPACE` `xla_hash` 是否与 `WAFER_OPENXLA_XLA_COMMIT` 一致。
-- prebuilt frontend importer Python package 固定版本是否存在于 `requirements-importer.txt`。
+- frontend importer Python package 固定版本是否存在于 `requirements-importer.txt`，且其中不包含
+  prebuilt `torch_xla` wheel。
 - future frontend importer 和 runtime/driver SDK roots 是否有显式 opt-in CMake 边界。
 - StableHLO C++ API 只出现在 frontend hook、StableHLO lowering implementation 和 importer tool。
 - runtime/driver header 词项不出现在 production compiler include/lib 源码中。

@@ -18,6 +18,13 @@ path = os.pathsep.join(
 )
 config.environment["PATH"] = path
 config.substitutions.append(("%python", config.python_executable))
+config.importer_python_executable = getattr(
+    config, "importer_python_executable", config.python_executable
+)
+config.wafer_enable_pytorch_xla_importer = getattr(
+    config, "wafer_enable_pytorch_xla_importer", "OFF"
+)
+config.substitutions.append(("%importer_python", config.importer_python_executable))
 config.substitutions.append(("%wafer_src_root", config.wafer_src_root))
 
 if config.wafer_enable_importer_deps == "ON":
@@ -25,3 +32,6 @@ if config.wafer_enable_importer_deps == "ON":
 
 if config.wafer_enable_spmd_partitioner_deps == "ON":
     config.available_features.add("shardy")
+
+if config.wafer_enable_pytorch_xla_importer == "ON":
+    config.available_features.add("pytorch-xla-importer")
