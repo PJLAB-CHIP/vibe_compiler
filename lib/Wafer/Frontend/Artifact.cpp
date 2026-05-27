@@ -8,11 +8,14 @@
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdint>
@@ -25,20 +28,33 @@ namespace {
 
 constexpr llvm::StringLiteral kDynamicBoundsAttr =
     "wafer.frontend.dynamic_bounds";
-constexpr llvm::StringLiteral kConstantAttr = "wafer.frontend.constant";
 
-struct SidecarConstant {
-  std::string function;
-  int64_t arg = -1;
-  std::string resourceKey;
+struct BundleSignature {
   std::vector<int64_t> shape;
   std::string dtype;
-  uint64_t byteSize = 0;
-  std::string checksum;
+};
+
+struct BundleInputLocation {
+  std::string type;
+  int64_t position = -1;
+  std::string name;
+};
+
+struct BundleMeta {
+  std::string name;
+  std::vector<BundleSignature> inputSignatures;
+  std::vector<BundleSignature> outputSignatures;
+  std::vector<BundleInputLocation> inputLocations;
 };
 
 bool reject(llvm::raw_ostream &diagnostics, llvm::StringRef message) {
   diagnostics << "wafer-import-model: " << message << "\n";
+  return true;
+}
+
+bool rejectBundle(llvm::StringRef reason, llvm::raw_ostream &diagnostics) {
+  diagnostics << "wafer-import-model: StableHLO bundle metadata rejected: "
+              << reason << "\n";
   return true;
 }
 
@@ -167,8 +183,8 @@ bool readStringField(const llvm::json::Object &object, llvm::StringRef field,
                      std::string &out, llvm::raw_ostream &diagnostics) {
   std::optional<llvm::StringRef> value = object.getString(field);
   if (!value)
-    return reject(diagnostics, "sidecar rejected: expected string field '" +
-                                   field.str() + "'");
+    return rejectBundle("expected string field '" + field.str() + "'",
+                        diagnostics);
   out = value->str();
   return false;
 }
@@ -177,21 +193,9 @@ bool readIntegerField(const llvm::json::Object &object, llvm::StringRef field,
                       int64_t &out, llvm::raw_ostream &diagnostics) {
   std::optional<int64_t> value = object.getInteger(field);
   if (!value)
-    return reject(diagnostics, "sidecar rejected: expected integer field '" +
-                                   field.str() + "'");
+    return rejectBundle("expected integer field '" + field.str() + "'",
+                        diagnostics);
   out = *value;
-  return false;
-}
-
-bool readUInt64Field(const llvm::json::Object &object, llvm::StringRef field,
-                     uint64_t &out, llvm::raw_ostream &diagnostics) {
-  int64_t value = 0;
-  if (readIntegerField(object, field, value, diagnostics))
-    return true;
-  if (value < 0)
-    return reject(diagnostics, "sidecar rejected: expected non-negative field '" +
-                                   field.str() + "'");
-  out = static_cast<uint64_t>(value);
   return false;
 }
 
@@ -200,26 +204,87 @@ bool readShapeField(const llvm::json::Object &object,
                     llvm::raw_ostream &diagnostics) {
   const llvm::json::Array *array = object.getArray("shape");
   if (!array)
-    return reject(diagnostics,
-                  "sidecar rejected: expected array field 'shape'");
+    return rejectBundle("expected array field 'shape'", diagnostics);
 
   for (const llvm::json::Value &value : *array) {
     std::optional<int64_t> dim = value.getAsInteger();
     if (!dim || *dim < 0)
-      return reject(diagnostics,
-                    "sidecar rejected: expected non-negative shape dimension");
+      return rejectBundle("expected non-negative shape dimension", diagnostics);
     shape.push_back(*dim);
   }
   return false;
 }
 
-FailureOr<std::vector<SidecarConstant>>
-parseSidecarConstants(llvm::StringRef sidecarPath,
-                      llvm::raw_ostream &diagnostics) {
-  auto bufferOrError = llvm::MemoryBuffer::getFile(sidecarPath);
+FailureOr<BundleSignature>
+parseSignature(const llvm::json::Value &value,
+               llvm::raw_ostream &diagnostics) {
+  const llvm::json::Object *object = value.getAsObject();
+  if (!object) {
+    rejectBundle("signature entries must be objects", diagnostics);
+    return failure();
+  }
+
+  BundleSignature signature;
+  if (readShapeField(*object, signature.shape, diagnostics) ||
+      readStringField(*object, "dtype", signature.dtype, diagnostics))
+    return failure();
+  return signature;
+}
+
+FailureOr<std::vector<BundleSignature>>
+parseSignatures(const llvm::json::Object &root, llvm::StringRef field,
+                llvm::raw_ostream &diagnostics) {
+  const llvm::json::Array *array = root.getArray(field);
+  if (!array) {
+    rejectBundle("expected array field '" + field.str() + "'", diagnostics);
+    return failure();
+  }
+
+  std::vector<BundleSignature> signatures;
+  signatures.reserve(array->size());
+  for (const llvm::json::Value &value : *array) {
+    FailureOr<BundleSignature> signature = parseSignature(value, diagnostics);
+    if (failed(signature))
+      return failure();
+    signatures.push_back(std::move(*signature));
+  }
+  return signatures;
+}
+
+FailureOr<std::vector<BundleInputLocation>>
+parseInputLocations(const llvm::json::Object &root,
+                    llvm::raw_ostream &diagnostics) {
+  const llvm::json::Array *array = root.getArray("input_locations");
+  if (!array) {
+    rejectBundle("expected array field 'input_locations'", diagnostics);
+    return failure();
+  }
+
+  std::vector<BundleInputLocation> locations;
+  locations.reserve(array->size());
+  for (const llvm::json::Value &value : *array) {
+    const llvm::json::Object *object = value.getAsObject();
+    if (!object) {
+      rejectBundle("input_locations entries must be objects", diagnostics);
+      return failure();
+    }
+
+    BundleInputLocation location;
+    if (readStringField(*object, "type_", location.type, diagnostics) ||
+        readIntegerField(*object, "position", location.position,
+                         diagnostics) ||
+        readStringField(*object, "name", location.name, diagnostics))
+      return failure();
+    locations.push_back(std::move(location));
+  }
+  return locations;
+}
+
+FailureOr<BundleMeta> parseBundleMeta(llvm::StringRef metaPath,
+                                      llvm::raw_ostream &diagnostics) {
+  auto bufferOrError = llvm::MemoryBuffer::getFile(metaPath);
   if (!bufferOrError) {
-    reject(diagnostics, "sidecar rejected: failed to read '" + sidecarPath.str() +
-                            "'");
+    rejectBundle("failed to read '" + metaPath.str() + "'", diagnostics);
     return failure();
   }
 
@@ -227,69 +292,33 @@ parseSidecarConstants(llvm::StringRef sidecarPath,
       llvm::json::parse((*bufferOrError)->getBuffer());
   if (!parsed) {
     std::string message = llvm::toString(parsed.takeError());
-    reject(diagnostics, "sidecar rejected: invalid JSON: " + message);
+    rejectBundle("invalid JSON: " + message, diagnostics);
     return failure();
   }
 
   const llvm::json::Object *root = parsed->getAsObject();
   if (!root) {
-    reject(diagnostics, "sidecar rejected: root must be an object");
+    rejectBundle("root must be an object", diagnostics);
     return failure();
   }
 
-  std::optional<int64_t> version = root->getInteger("version");
-  if (!version || *version != 0) {
-    reject(diagnostics, "sidecar rejected: expected version 0");
+  BundleMeta meta;
+  if (readStringField(*root, "name", meta.name, diagnostics))
     return failure();
-  }
 
-  const llvm::json::Array *constants = root->getArray("constants");
-  if (!constants) {
-    reject(diagnostics,
-           "sidecar rejected: expected array field 'constants'");
+  FailureOr<std::vector<BundleSignature>> inputs =
+      parseSignatures(*root, "input_signature", diagnostics);
+  FailureOr<std::vector<BundleSignature>> outputs =
+      parseSignatures(*root, "output_signature", diagnostics);
+  FailureOr<std::vector<BundleInputLocation>> locations =
+      parseInputLocations(*root, diagnostics);
+  if (failed(inputs) || failed(outputs) || failed(locations))
     return failure();
-  }
 
-  std::vector<SidecarConstant> result;
-  result.reserve(constants->size());
-  for (const llvm::json::Value &value : *constants) {
-    const llvm::json::Object *object = value.getAsObject();
-    if (!object) {
-      reject(diagnostics,
-             "sidecar rejected: constants entries must be objects");
-      return failure();
-    }
-
-    SidecarConstant constant;
-    if (readStringField(*object, "function", constant.function, diagnostics) ||
-        readIntegerField(*object, "arg", constant.arg, diagnostics) ||
-        readStringField(*object, "resource_key", constant.resourceKey,
-                        diagnostics) ||
-        readShapeField(*object, constant.shape, diagnostics) ||
-        readStringField(*object, "dtype", constant.dtype, diagnostics) ||
-        readUInt64Field(*object, "byte_size", constant.byteSize,
-                        diagnostics))
-      return failure();
-
-    if (std::optional<llvm::StringRef> checksum =
-            object->getString("checksum"))
-      constant.checksum = checksum->str();
-
-    if (constant.arg < 0) {
-      reject(diagnostics,
-             "sidecar rejected: constant argument index must be non-negative");
-      return failure();
-    }
-    if (constant.resourceKey.empty()) {
-      reject(diagnostics,
-             "sidecar rejected: constant resource_key must be non-empty");
-      return failure();
-    }
-
-    result.push_back(std::move(constant));
-  }
-
-  return result;
+  meta.inputSignatures = std::move(*inputs);
+  meta.outputSignatures = std::move(*outputs);
+  meta.inputLocations = std::move(*locations);
+  return meta;
 }
 
 std::string dtypeString(Type elementType) {
@@ -306,121 +335,165 @@ std::string dtypeString(Type elementType) {
   return "";
 }
 
-bool rejectSidecarConstant(const SidecarConstant &constant,
-                           llvm::StringRef reason,
-                           llvm::raw_ostream &diagnostics) {
-  diagnostics << "wafer-import-model: sidecar constant rejected: " << reason
-              << "\n";
-  return true;
+std::string normalizeBundleDtype(llvm::StringRef dtype) {
+  if (dtype == "float32")
+    return "f32";
+  if (dtype == "float16")
+    return "f16";
+  if (dtype == "bfloat16")
+    return "bf16";
+  if (dtype == "float64")
+    return "f64";
+  if (dtype == "int8")
+    return "i8";
+  if (dtype == "int16")
+    return "i16";
+  if (dtype == "int32")
+    return "i32";
+  if (dtype == "int64")
+    return "i64";
+  return dtype.str();
 }
 
-bool verifySidecarConstant(ModuleOp module, const SidecarConstant &constant,
-                           llvm::raw_ostream &diagnostics) {
-  auto func = module.lookupSymbol<func::FuncOp>(constant.function);
-  if (!func)
-    return rejectSidecarConstant(
-        constant, "missing func.func @" + constant.function, diagnostics);
+uint64_t rawByteSize(RankedTensorType type) {
+  unsigned bitWidth = type.getElementTypeBitWidth();
+  if (bitWidth % 8 != 0)
+    return 0;
+  return static_cast<uint64_t>(type.getNumElements()) * (bitWidth / 8);
+}
 
-  if (static_cast<uint64_t>(constant.arg) >=
-      func.getFunctionType().getNumInputs()) {
-    return rejectSidecarConstant(
-        constant,
-        ("func.func @" + constant.function + " argument " +
-         Twine(constant.arg) + " is out of range")
-            .str(),
-        diagnostics);
-  }
+bool verifySignature(Type type, const BundleSignature &signature,
+                     llvm::StringRef kind, unsigned index,
+                     llvm::raw_ostream &diagnostics) {
+  auto tensorType = dyn_cast<RankedTensorType>(type);
+  if (!tensorType || !tensorType.hasStaticShape())
+    return rejectBundle((kind + " " + Twine(index) +
+                         " must be a statically shaped ranked tensor")
+                            .str(),
+                        diagnostics);
 
-  Type argType = func.getFunctionType().getInput(constant.arg);
-  auto tensorType = dyn_cast<RankedTensorType>(argType);
-  if (!tensorType || !tensorType.hasStaticShape()) {
-    return rejectSidecarConstant(
-        constant,
-        ("func.func @" + constant.function + " argument " +
-         Twine(constant.arg) + " must be a statically shaped ranked tensor")
-            .str(),
-        diagnostics);
-  }
-
-  DictionaryAttr attrs = getFunctionArgAttrs(func, constant.arg);
-  Attribute constantAttr = attrs ? attrs.get(kConstantAttr) : Attribute();
-  auto resourceKey = dyn_cast_or_null<StringAttr>(constantAttr);
-  if (!resourceKey) {
-    return rejectSidecarConstant(
-        constant,
-        ("func.func @" + constant.function + " argument " +
-         Twine(constant.arg) + " is missing wafer.frontend.constant")
-            .str(),
-        diagnostics);
-  }
-  if (resourceKey.getValue() != constant.resourceKey) {
-    return rejectSidecarConstant(
-        constant,
-        ("func.func @" + constant.function + " argument " +
-         Twine(constant.arg) + " resource key mismatch")
-            .str(),
-        diagnostics);
-  }
-
-  if (!llvm::equal(tensorType.getShape(), constant.shape)) {
-    return rejectSidecarConstant(
-        constant,
-        ("shape mismatch for func.func @" + constant.function + " argument " +
-         Twine(constant.arg))
-            .str(),
-        diagnostics);
-  }
+  if (!llvm::equal(tensorType.getShape(), signature.shape))
+    return rejectBundle(("shape mismatch for " + kind + " " + Twine(index))
+                            .str(),
+                        diagnostics);
 
   std::string expectedDtype = dtypeString(tensorType.getElementType());
-  if (expectedDtype.empty() || expectedDtype != constant.dtype) {
-    return rejectSidecarConstant(
-        constant,
-        ("dtype mismatch for func.func @" + constant.function + " argument " +
-         Twine(constant.arg))
-            .str(),
-        diagnostics);
-  }
-
-  unsigned bitWidth = tensorType.getElementTypeBitWidth();
-  if (bitWidth % 8 != 0)
-    return rejectSidecarConstant(
-        constant,
-        ("byte size is not representable for func.func @" +
-         constant.function + " argument " + Twine(constant.arg))
-            .str(),
-        diagnostics);
-
-  uint64_t expectedByteSize =
-      static_cast<uint64_t>(tensorType.getNumElements()) * (bitWidth / 8);
-  if (expectedByteSize != constant.byteSize) {
-    return rejectSidecarConstant(
-        constant,
-        ("byte size mismatch for func.func @" + constant.function +
-         " argument " + Twine(constant.arg))
-            .str(),
-        diagnostics);
-  }
+  std::string actualDtype = normalizeBundleDtype(signature.dtype);
+  if (expectedDtype.empty() || expectedDtype != actualDtype)
+    return rejectBundle(("dtype mismatch for " + kind + " " + Twine(index))
+                            .str(),
+                        diagnostics);
 
   return false;
 }
 
-bool verifySidecar(ModuleOp module, llvm::StringRef sidecarPath,
-                   llvm::raw_ostream &diagnostics,
-                   wafer::frontend::ArtifactVerificationResult *result) {
-  if (sidecarPath.empty())
-    return false;
+FailureOr<func::FuncOp> findSingleFunction(ModuleOp module,
+                                           llvm::raw_ostream &diagnostics) {
+  SmallVector<func::FuncOp> functions;
+  module.walk([&](func::FuncOp func) { functions.push_back(func); });
+  if (functions.size() != 1) {
+    rejectBundle("expected exactly one func.func in StableHLO bundle MLIR",
+                 diagnostics);
+    return failure();
+  }
+  return functions.front();
+}
 
-  FailureOr<std::vector<SidecarConstant>> constants =
-      parseSidecarConstants(sidecarPath, diagnostics);
-  if (failed(constants))
+std::string bundlePath(llvm::StringRef bundleDir,
+                       llvm::ArrayRef<llvm::StringRef> components) {
+  llvm::SmallString<256> path(bundleDir);
+  for (llvm::StringRef component : components)
+    llvm::sys::path::append(path, component);
+  return path.str().str();
+}
+
+bool verifyParameterDataFile(llvm::StringRef bundleDir,
+                             const BundleInputLocation &location,
+                             RankedTensorType tensorType,
+                             llvm::raw_ostream &diagnostics) {
+  if (location.name.empty())
+    return rejectBundle("parameter location name must be non-empty",
+                        diagnostics);
+
+  std::string path = bundlePath(bundleDir, {"data", location.name});
+  llvm::sys::fs::file_status status;
+  if (std::error_code error = llvm::sys::fs::status(path, status))
+    return rejectBundle("parameter data file is missing: " + location.name,
+                        diagnostics);
+  if (!llvm::sys::fs::is_regular_file(status))
+    return rejectBundle("parameter data path is not a regular file: " +
+                            location.name,
+                        diagnostics);
+
+  uint64_t expectedRawBytes = rawByteSize(tensorType);
+  if (expectedRawBytes == 0)
+    return rejectBundle("parameter tensor byte size is not representable: " +
+                            location.name,
+                        diagnostics);
+  if (status.getSize() < expectedRawBytes)
+    return rejectBundle("parameter data file is smaller than tensor payload: " +
+                            location.name,
+                        diagnostics);
+  return false;
+}
+
+bool verifyBundleMeta(ModuleOp module, llvm::StringRef bundleDir,
+                      const BundleMeta &meta, llvm::raw_ostream &diagnostics,
+                      wafer::frontend::ArtifactVerificationResult *result) {
+  FailureOr<func::FuncOp> func = findSingleFunction(module, diagnostics);
+  if (failed(func))
     return true;
 
-  bool rejected = false;
-  for (const SidecarConstant &constant : *constants)
-    rejected |= verifySidecarConstant(module, constant, diagnostics);
+  FunctionType functionType = func->getFunctionType();
+  if (meta.inputSignatures.size() != functionType.getNumInputs())
+    return rejectBundle("input_signature length does not match func.func inputs",
+                        diagnostics);
+  if (meta.inputLocations.size() != functionType.getNumInputs())
+    return rejectBundle("input_locations length does not match func.func inputs",
+                        diagnostics);
+  if (meta.outputSignatures.size() != functionType.getNumResults())
+    return rejectBundle(
+        "output_signature length does not match func.func results", diagnostics);
 
-  if (!rejected && result)
-    result->sidecarConstantCount = constants->size();
+  unsigned parameterCount = 0;
+  unsigned userInputCount = 0;
+  bool rejected = false;
+  for (auto [index, signature] : llvm::enumerate(meta.inputSignatures)) {
+    Type inputType = functionType.getInput(index);
+    rejected |= verifySignature(inputType, signature, "function argument",
+                                index, diagnostics);
+
+    const BundleInputLocation &location = meta.inputLocations[index];
+    if (location.type == "parameter") {
+      ++parameterCount;
+      if (auto tensorType = dyn_cast<RankedTensorType>(inputType))
+        rejected |=
+            verifyParameterDataFile(bundleDir, location, tensorType, diagnostics);
+    } else if (location.type == "input_arg") {
+      ++userInputCount;
+      if (location.position < 0)
+        rejected |= rejectBundle(
+            ("input_arg location has negative position at function argument " +
+             Twine(index))
+                .str(),
+            diagnostics);
+    } else {
+      rejected |= rejectBundle(
+          ("unsupported input location type '" + location.type +
+           "' at function argument " + Twine(index))
+              .str(),
+          diagnostics);
+    }
+  }
+
+  for (auto [index, signature] : llvm::enumerate(meta.outputSignatures))
+    rejected |= verifySignature(functionType.getResult(index), signature,
+                                "function result", index, diagnostics);
+
+  if (!rejected && result) {
+    result->bundleParameterCount = parameterCount;
+    result->bundleUserInputCount = userInputCount;
+  }
   return rejected;
 }
 
@@ -428,7 +501,7 @@ bool verifySidecar(ModuleOp module, llvm::StringRef sidecarPath,
 
 namespace wafer::frontend {
 
-LogicalResult verifyFrontendArtifact(ModuleOp module, llvm::StringRef sidecarPath,
+LogicalResult verifyFrontendArtifact(ModuleOp module,
                                      llvm::raw_ostream &diagnostics,
                                      ArtifactVerificationResult *result) {
   if (result)
@@ -440,8 +513,26 @@ LogicalResult verifyFrontendArtifact(ModuleOp module, llvm::StringRef sidecarPat
   rejected |= rejectImportMarker(module, "wafer.import.eager_fallback",
                                  "eager fallback", diagnostics);
   rejected |= verifyFunctionBoundary(module, diagnostics);
-  rejected |= verifySidecar(module, sidecarPath, diagnostics, result);
 
+  return rejected ? failure() : success();
+}
+
+LogicalResult verifyStableHLOBundle(ModuleOp module, llvm::StringRef bundlePath,
+                                    llvm::raw_ostream &diagnostics,
+                                    ArtifactVerificationResult *result) {
+  if (result)
+    *result = ArtifactVerificationResult{};
+
+  if (failed(verifyFrontendArtifact(module, diagnostics, result)))
+    return failure();
+
+  std::string metaPath =
+      ::bundlePath(bundlePath, {"functions", "forward.meta"});
+  FailureOr<BundleMeta> meta = parseBundleMeta(metaPath, diagnostics);
+  if (failed(meta))
+    return failure();
+
+  bool rejected = verifyBundleMeta(module, bundlePath, *meta, diagnostics, result);
   return rejected ? failure() : success();
 }
 

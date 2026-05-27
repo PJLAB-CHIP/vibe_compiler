@@ -24,36 +24,21 @@ frontend/SPMD artifact 来源，而不是继续围绕手写 fixture 自洽。
 实现边界：
 
 - 新增 `WaferFrontend` target，`tools/wafer-import-model` 不再内联 artifact verifier 逻辑。
-- `wafer-import-model --verify-import-result <mlir> [--sidecar <json>]` 作为 pre-exported
+- `wafer-import-model --verify-import-result <mlir>` 作为 pre-exported
   StableHLO / MLIR artifact adapter 和 verifier。
 - module 级 `wafer.import.graph_break`、`wafer.import.eager_fallback` 继续作为 importer 诊断 marker；
   true 值或 string marker 会被拒绝。
 - bounded dynamic shape 通过 function argument/result attr
   `wafer.frontend.dynamic_bounds = [d0, d1, ...]` 表达；rank 必须匹配 tensor rank，dynamic dim
   的 bound 必须为正，static dim 的 bound 必须等于静态维度。没有 bound 的 dynamic shape 仍被拒绝。
-- sidecar manifest V0 是 JSON object：
+- 真实 framework capture 的 artifact metadata 必须来自 exporter-native bundle。PyTorch/XLA 路线使用
+  `functions/forward.mlir`、`functions/forward.meta`、`functions/forward.bytecode` 和
+  `data/<parameter>`；不再为同一关系生成 Wafer 私有伴随 JSON。
 
-```json
-{
-  "version": 0,
-  "constants": [
-    {
-      "function": "weight_artifact",
-      "arg": 0,
-      "resource_key": "w0",
-      "shape": [2, 4],
-      "dtype": "f32",
-      "byte_size": 32,
-      "checksum": "sha256:..."
-    }
-  ]
-}
-```
-
-sidecar constant 必须指向 `func.func` argument ordinal；该 argument 必须带
-`wafer.frontend.constant = "<resource_key>"`，并且 shape、dtype、byte size 与 argument tensor type
-一致。这里的 attr 是 frontend artifact metadata，不是 Wafer low-level constant op，也不表达 DDR
-pool、physical layout、BO handle 或 package path。
+PyTorch/XLA bundle metadata 的 `input_locations` / `input_signature` 必须与 bundle MLIR 中唯一
+`func.func` 的 argument ordinal、shape 和 dtype 一致；`parameter` location 对应的 `data/<name>`
+文件必须存在且 payload size 不小于 tensor raw byte size。parameter name 只用于定位 PyTorch/XLA
+bundle 自己保存的数据文件，不能成为后端 lowering 分支条件。
 
 ## R2.2 Shardy / SPMD Artifact Bridge
 
@@ -92,7 +77,7 @@ boundary、tile shape、multi-stage schedule、SPM residency 或 C ABI issue seq
 | reduce | `lower-stablehlo-reduce.mlir`、norm/softmax staged tests | constant-init reduce 子集保留 reduction dimension 和 kind | non-constant-init reduce、NaN/overflow/approx policy 仍未闭环 |
 | softmax | `lower-stablehlo-softmax-staged.mlir`、`softmax-schedule.mlir` | row max、subtract、exp、row sum、divide 的 SSA dataflow gate 已记录 | acceptance pass 不是 schedule completion；multi-stage workspace/materialization 属 R3/R5/R6 后续 |
 | norm | `lower-stablehlo-norm-staged.mlir`、`norm-schedule.mlir` | last-dim reduce、rsqrt、broadcast mul staged gate 已记录 | LayerNorm/RMSNorm 更宽 decomposition、epsilon policy 和 storage/resource 闭环未完成 |
-| RoPE | `lower-stablehlo-rope-mlp-staged.mlir` | RoPE 当前作为 slice/shape/elementwise staged dataflow 覆盖 | sin/cos table 的 sidecar/storage slicing 和更宽 shape family 未完成 |
+| RoPE | `lower-stablehlo-rope-mlp-staged.mlir` | RoPE 当前作为 slice/shape/elementwise staged dataflow 覆盖 | sin/cos table 的 bundle/storage slicing 和更宽 shape family 未完成 |
 | MLP | `lower-stablehlo-mlp-schedule.mlir`、`lower-stablehlo-local-transformer-block.mlir` | tanh-gated MLP vertical slice 和 full local transformer structured gate 已记录 | GELU/SwiGLU 其它 decomposition、constant slicing 和 package consistency 未完成 |
 | shape views | `lower-stablehlo-shape.mlir`、local transformer block gate | static reshape expand/collapse 的 shape-only relation 可进入 local tensor IR | dynamic shape view、layout materialization 和 real movement 属后续层 |
 
@@ -133,8 +118,8 @@ P2.F1 framework capture artifact
 
 P2.F1 主链路 artifact 采用 `4096x4096 @ 4096x4096` f32 matmul + bias + tanh + residual smoke。
 该规模用于给后续 tiling、SPM/DDR resource、resident constant 和 package gate 提供非 trivial
-shape/byte facts；大 weight 只能通过 sidecar/resource-backed metadata 绑定，不提交 64 MiB
-weight 到 git 测试文件。
+shape/byte facts；大 weight 只能通过 PyTorch/XLA bundle `forward.meta` / `data/<parameter>` 绑定，
+不提交 64 MiB weight 到 git 测试文件。
 
 PyTorch/XLA adapter 的完成证明必须使用从 `third_party/pytorch-xla` 源码编译/安装出的
 `torch_xla` runtime。prebuilt `torch_xla` wheel、手写 StableHLO artifact 或没有实际运行

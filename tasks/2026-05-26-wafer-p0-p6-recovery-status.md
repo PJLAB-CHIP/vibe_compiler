@@ -161,7 +161,8 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
 
 设计合同：
 
-- 稳定入口是 verified StableHLO / MLIR artifact 加 optional sidecar 和 compile config，不是某个框架 API。
+- 稳定入口是 verified exporter-native StableHLO bundle / MLIR artifact，不是某个框架 API 或 Wafer
+  私有伴随 JSON。
 - frontend 保留 function signature、shape、dtype、dynamic bound、constant/weight 和 sharding annotation；
   不引入 Wafer SPM、DDR、layout materialization、runtime launch 或 private tensor constant op。
 - local compute normalization 输出 `linalg` / `tensor` / `scf` / `arith` / `math` structured IR，保留
@@ -174,18 +175,18 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
   lowering pass，以及 norm/softmax/projection/MLP acceptance passes。
 - 有 attention QK^T / AV rank-4 `dot_general` lowering 和 full local transformer block structured gate。
 - `wafer-import-model` 已通过 `WaferFrontend` verifier 接收 pre-exported StableHLO / MLIR artifact，
-  并覆盖 graph break、eager fallback、bounded dynamic shape、sidecar/resource-backed constant
-  metadata 诊断。
+  并覆盖 graph break、eager fallback、bounded dynamic shape 诊断；P2.F1 进一步验证 PyTorch/XLA
+  bundle `forward.meta` / `data/<parameter>` 与 MLIR function signature 一致。
 - `WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON` 时，`wafer-opt` / `wafer-import-model` 能注册 SDY dialect；
   `sdy.mesh` / `sdy.sharding` artifact 可被 parse/verify，StableHLO `replica_groups` 会进入
   `wafer.comm` `rank_group`。
 
 缺口：
 
-- R2.1/R2.2 已恢复 pre-exported artifact adapter/verifier、sidecar manifest、resource-backed constant
-  metadata 和 SDY artifact bridge；仍没有 framework-specific PyTorch/JAX capture adapter 或完整
+- R2.1/R2.2 已恢复 pre-exported artifact adapter/verifier 和 SDY artifact bridge；P2.F1 已补
+  source-built PyTorch/XLA bundle capture；仍没有完整
   Shardy propagation/SPMD partitioner pipeline。这两项不是放弃项，已在 `tasks/progress.md`
-  作为 R3 之前的 P2 显式后续项 `P2.F1` / `P2.S1` 跟踪。
+  作为 R3 之前的 P2 显式后续项 `P2.S1` 跟踪。
 - acceptance passes 只识别当前 structured IR pattern，不等于 group schedule planner 或 full
   transformer local compile 已完成。
 - mask/select、dynamic shape、非 constant-init reduce、复杂 broadcast、常量 slicing/storage transform
@@ -194,7 +195,7 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
 恢复任务：
 
 - R2.1：已完成；记录见 `tasks/2026-05-26-wafer-r2-recovery.md`，包含 frontend artifact verifier、
-  sidecar/ConstantLike metadata、dynamic bound 和 diagnostics。
+  dynamic bound 和 diagnostics。
 - R2.2：已完成；记录见 `tasks/2026-05-26-wafer-r2-recovery.md`，logical mesh/sharding artifact
   可进入工具链，StableHLO replica group materialize 为 `wafer.comm` `rank_group` 并成为 placement /
   comm lowering 输入。
@@ -205,8 +206,9 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
   `torch_xla` 2.5.0，并通过 Bazel override 使用本仓库 `third_party/xla` / `third_party/llvm-project`；
   `tools/wafer_pytorch_xla_capture.py` 调用 `torch.export.export` 和
   `torch_xla.stablehlo.exported_program_to_stablehlo`，为 `4096x4096 @ 4096x4096` f32 matmul +
-  bias + tanh + residual 生成 StableHLO artifact、sidecar 和 compile config；完成证明已跑通真实
-  source-built PyTorch/XLA adapter -> artifact -> verifier 链。prebuilt `torch_xla` wheel、手写
+  bias + tanh + residual 生成 PyTorch/XLA StableHLO bundle，包含 `functions/forward.mlir`、
+  `functions/forward.meta`、`functions/forward.bytecode` 和 `data/weight` / `data/bias`；完成证明已跑通真实
+  source-built PyTorch/XLA adapter -> bundle -> verifier 链。prebuilt `torch_xla` wheel、手写
   MLIR 或手写 emitter 仍不能作为后续完成证明。
 - P2.S1：ready；集成完整 Shardy propagation / SPMD partitioner pipeline，per-rank artifact、
   multi replica group、rank selection、shard slicing、collective legality 和 placement input 必须由
@@ -383,7 +385,7 @@ P0-P6 只能保持 `skeleton` 状态。当前代码已经证明一些局部 IR�
 | --- | --- | --- |
 | P0 | skeleton | 工程入口存在，源码 ownership、依赖层级边界和 IR op-family 文件边界已由 R0.2/R0.3/R1.1 恢复；仍不代表 frontend/runtime/package 主路径完成 |
 | P1 | skeleton | 核心 op/type/verifier skeleton 存在，interface/effect/resource 和 local compute stage-connection gate 已恢复；storage-realized 主链路和 communication cast bridge 仍未闭环 |
-| P2 | skeleton | StableHLO textual lowering、frontend artifact/sidecar verifier、SDY artifact bridge 和 local compute coverage 口径已恢复；framework importer、完整 SPMD partitioner、dynamic/mask/constant-storage 和 physical schedule 仍未闭环 |
+| P2 | skeleton | StableHLO textual lowering、frontend artifact verifier、PyTorch/XLA bundle capture、SDY artifact bridge 和 local compute coverage 口径已恢复；完整 SPMD partitioner、dynamic/mask/constant-storage 和 physical schedule 仍未闭环 |
 | P3 | skeleton | M0 local skeleton 可跑，但 group/resource/C ABI/package 主链路未闭环 |
 | P4 | skeleton | placement/map 和 multi-tile skeleton 可跑，但真实 shard/merge/launch binding 未闭环 |
 | P5 | skeleton | transformer staged acceptance 和 M6 smoke 可跑，但 full schedule/resource/package/device artifact 未闭环 |

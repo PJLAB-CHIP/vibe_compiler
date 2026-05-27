@@ -26,7 +26,7 @@ core compiler target。
 
 ## 非目标
 
-- 不实现真实 model importer adapter、sidecar manifest 或 Shardy SPMD bridge。
+- 不实现真实 model importer adapter、exporter bundle metadata verifier 或 Shardy SPMD bridge。
 - 不引入 HPGR / KMD / legacy `Tsm*` runtime adapter target。
 - 不把 `wafer.abi.*` lower 到 LLVM dialect、object 或真实 runtime call。
 - 不拆分 Wafer ODS / verifier op-prefix 文件；这是 R1.1。
@@ -128,7 +128,7 @@ core compiler target。
 ## 未完成项
 
 - R1.1：按 op prefix 拆 ODS、C++ verifier 和 tests。
-- R2.1/R2.2：真实 frontend importer artifact、sidecar、Shardy bridge 和 GSPMD-compatible
+- R2.1/R2.2：真实 frontend importer artifact、exporter bundle metadata、Shardy bridge 和 GSPMD-compatible
   partitioner integration 语义；当前只完成 public dependency 固定版本、拉取、隔离检查和统一 Shardy
   CMake compile 验证目标。
 - torch-mlir source-tree adapter 的精确 commit 仍属于 R2.1 frontend importer 恢复任务；R0.3

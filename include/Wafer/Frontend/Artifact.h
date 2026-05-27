@@ -15,12 +15,17 @@ class raw_ostream;
 namespace wafer::frontend {
 
 struct ArtifactVerificationResult {
-  unsigned sidecarConstantCount = 0;
+  unsigned bundleParameterCount = 0;
+  unsigned bundleUserInputCount = 0;
 };
 
 mlir::LogicalResult
-verifyFrontendArtifact(mlir::ModuleOp module, llvm::StringRef sidecarPath,
-                       llvm::raw_ostream &diagnostics,
+verifyFrontendArtifact(mlir::ModuleOp module, llvm::raw_ostream &diagnostics,
+                       ArtifactVerificationResult *result = nullptr);
+
+mlir::LogicalResult
+verifyStableHLOBundle(mlir::ModuleOp module, llvm::StringRef bundlePath,
+                      llvm::raw_ostream &diagnostics,
                        ArtifactVerificationResult *result = nullptr);
 
 } // namespace wafer::frontend

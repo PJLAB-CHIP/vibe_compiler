@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 import importlib.util
-import json
 import pathlib
 import sys
 import tempfile
@@ -94,33 +93,25 @@ class FakeStableHLO(types.ModuleType):
     def exported_program_to_stablehlo(self, exported, options=None):
         self.calls.append(exported)
         self.last_options = options
-        return fake_stablehlo_program()
+        return FakeStableHLOProgram()
 
 
-def fake_stablehlo_program():
-    meta = types.SimpleNamespace(
-        input_locations=[
-            types.SimpleNamespace(type_="input_arg", position=0, name=""),
-            types.SimpleNamespace(type_="parameter", position=-1, name="weight"),
-            types.SimpleNamespace(type_="parameter", position=-1, name="bias"),
-        ],
-        input_signature=[
-            types.SimpleNamespace(shape=[4096, 4096], dtype="float32"),
-            types.SimpleNamespace(shape=[4096, 4096], dtype="float32"),
-            types.SimpleNamespace(shape=[4096], dtype="float32"),
-        ],
-    )
-    func = types.SimpleNamespace(meta=meta)
-    bundle = types.SimpleNamespace(stablehlo_funcs=[func])
-    text = """module {
-  func.func public @forward(%arg0: tensor<4096x4096xf32>, %arg1: tensor<4096x4096xf32>, %arg2: tensor<4096xf32>) -> tensor<4096x4096xf32> {
-    %0 = "stablehlo.dot_general"(%arg0, %arg1) : (tensor<4096x4096xf32>, tensor<4096x4096xf32>) -> tensor<4096x4096xf32>
-    %1 = stablehlo.tanh %0 : tensor<4096x4096xf32>
-    return %1 : tensor<4096x4096xf32>
-  }
-}
-"""
-    return types.SimpleNamespace(_bundle=bundle, get_stablehlo_text=lambda: text)
+class FakeStableHLOProgram:
+    def __init__(self):
+        self.saved_path = None
+
+    def save(self, path):
+        self.saved_path = pathlib.Path(path)
+        functions = self.saved_path / "functions"
+        data = self.saved_path / "data"
+        functions.mkdir(parents=True)
+        data.mkdir()
+        (functions / "forward.mlir").write_text("module {}\n")
+        (functions / "forward.meta").write_text(
+            '{"input_locations":[{"type_":"parameter","name":"weight"}]}\n'
+        )
+        (functions / "forward.bytecode").write_bytes(b"bytecode")
+        (data / "weight").write_bytes(b"0" * 16)
 
 
 class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
@@ -137,82 +128,33 @@ class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
         sys.modules.clear()
         sys.modules.update(self.saved_modules)
 
-    def test_capture_uses_torch_xla_runtime_and_disables_weight_export(self):
+    def test_capture_uses_torch_xla_runtime_and_saves_bundle(self):
         with tempfile.TemporaryDirectory() as tmp:
-            mlir_path = pathlib.Path(tmp) / "artifact.mlir"
-            sidecar_path = pathlib.Path(tmp) / "artifact.json"
-            config_path = pathlib.Path(tmp) / "compile_config.json"
+            bundle_path = pathlib.Path(tmp) / "bundle"
 
-            self.tool.emit_p2f1_smoke_artifact(
-                mlir_path=mlir_path,
-                sidecar_path=sidecar_path,
-                config_path=config_path,
+            self.tool.emit_p2f1_smoke_bundle(
+                bundle_path=bundle_path,
                 torch_module=self.fake_torch,
                 stablehlo_module=self.fake_stablehlo,
                 smoke_module_factory=FakeSmokeModule,
             )
 
             self.assertEqual(self.fake_stablehlo.calls, [self.fake_torch.exported_program])
-            self.assertFalse(self.fake_stablehlo.last_options.export_weights)
-            self.assertFalse(self.fake_stablehlo.last_options.inline_all_constant)
+            self.assertTrue(self.fake_stablehlo.last_options.export_weights)
+            self.assertTrue(self.fake_stablehlo.last_options.save_weights)
             self.assertTrue(self.fake_stablehlo.last_options.include_human_readable_text)
             self.assertTrue(self.fake_torch.no_grad_entered)
+            self.assertTrue((bundle_path / "functions" / "forward.mlir").is_file())
+            self.assertTrue((bundle_path / "functions" / "forward.meta").is_file())
+            self.assertTrue((bundle_path / "data" / "weight").is_file())
 
-    def test_emit_adds_constant_arg_metadata_and_sidecar_without_parameter_names(self):
+    def test_emit_rejects_missing_bundle_files(self):
         with tempfile.TemporaryDirectory() as tmp:
-            mlir_path = pathlib.Path(tmp) / "artifact.mlir"
-            sidecar_path = pathlib.Path(tmp) / "artifact.json"
-            config_path = pathlib.Path(tmp) / "compile_config.json"
+            bundle_path = pathlib.Path(tmp) / "bundle"
+            bundle_path.mkdir()
 
-            self.tool.emit_p2f1_smoke_artifact(
-                mlir_path=mlir_path,
-                sidecar_path=sidecar_path,
-                config_path=config_path,
-                torch_module=self.fake_torch,
-                stablehlo_module=self.fake_stablehlo,
-                smoke_module_factory=FakeSmokeModule,
-            )
-
-            mlir_text = mlir_path.read_text()
-            self.assertIn('tensor<4096x4096xf32> {wafer.frontend.constant = "const_arg_1"}', mlir_text)
-            self.assertIn('tensor<4096xf32> {wafer.frontend.constant = "const_arg_2"}', mlir_text)
-            self.assertNotIn("weight", mlir_text)
-            self.assertNotIn("bias", mlir_text)
-
-            sidecar = json.loads(sidecar_path.read_text())
-            self.assertEqual(sidecar["version"], 0)
-            self.assertEqual(
-                sidecar["constants"],
-                [
-                    {
-                        "function": "forward",
-                        "arg": 1,
-                        "resource_key": "const_arg_1",
-                        "shape": [4096, 4096],
-                        "dtype": "f32",
-                        "byte_size": 67108864,
-                    },
-                    {
-                        "function": "forward",
-                        "arg": 2,
-                        "resource_key": "const_arg_2",
-                        "shape": [4096],
-                        "dtype": "f32",
-                        "byte_size": 16384,
-                    },
-                ],
-            )
-
-            config = json.loads(config_path.read_text())
-            self.assertEqual(config["version"], 0)
-            self.assertEqual(config["artifact_kind"], "p2f1_framework_capture_smoke")
-            self.assertEqual(config["input_shape"], [4096, 4096])
-            self.assertEqual(config["input_dtype"], "f32")
-            self.assertEqual(config["constant_binding"], "function_arg_sidecar")
-            self.assertEqual(
-                config["sharding_import_policy"],
-                "preserve_stablehlo_sdy_annotations",
-            )
+            with self.assertRaisesRegex(RuntimeError, "missing StableHLO bundle file"):
+                self.tool._verify_bundle_layout(bundle_path)
 
 
 if __name__ == "__main__":

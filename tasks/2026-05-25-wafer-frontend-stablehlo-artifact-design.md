@@ -5,9 +5,9 @@
 状态：设计草案；2026-05-25 独立边界收口；2026-05-27 明确 P2.F1 capture 和跨阶段消费链
 
 本文定义 Wafer compiler 的 model import 和 frontend artifact 边界。它只负责把上游模型表达成
-可验证的 StableHLO / MLIR 输入，并把 shape、dtype、constant、weight sidecar、sharding
-annotation 和有限的 compile config 交给后续阶段。它不表达 Wafer tile、SPM、DDR allocation、
-layout materialization、DTE、runtime package 或 launch completion。
+可验证的 StableHLO bundle / MLIR 输入，并保留 exporter 自带的 graph、meta 和 weight data
+关系。它不表达 Wafer tile、SPM、DDR allocation、layout materialization、DTE、runtime package
+或 launch completion。
 
 本文依赖：
 
@@ -47,37 +47,30 @@ layout materialization、DTE、runtime package 或 launch completion。
 ```text
 source model / exported program / pre-exported StableHLO
   -> frontend importer adapter
-  -> StableHLO / MLIR module
-  -> optional weight sidecar
-  -> optional compile config
+  -> exporter-native StableHLO bundle or MLIR module
 ```
 
 输出：
 
 ```text
 StableHLO + func + tensor + arith module
-  + verified artifact metadata
+  + verified exporter metadata
   + normalized sharding annotations
   + ConstantLike tensor values or resource-backed constant values
 ```
 
-Frontend artifact 包含三类信息：
+PyTorch/XLA 路线的 frontend artifact 只保留一套 exporter-native 事实源：
 
-| 信息 | 归属 | 下游消费者 |
+| 信息 | 归属 | import 边界责任 |
 | --- | --- | --- |
-| StableHLO module | IR 主体 | Shardy、StableHLO-to-Linalg lowering |
-| weight sidecar manifest | artifact 边界事实 | constant normalization、DDR/resource planning |
-| compile config | 目标无关约束 | dynamic-shape policy、sharding import policy |
+| `functions/forward.mlir` | StableHLO IR 主体 | parse / verify 后进入 compiler pipeline |
+| `functions/forward.meta` | PyTorch/XLA 导出的 metadata | 校验 function arg/result 与 parameter / user input / shape / dtype 的关系 |
+| `functions/forward.bytecode` | StableHLO bytecode | 与 bundle 一起保留，当前不作为 Wafer IR 合同 |
+| `data/<parameter>` | PyTorch/XLA 导出的 weight data | import 边界检查存在性和 payload size，不提交进 git fixture |
 
-weight sidecar manifest 只描述 source value 的 identity、shape、dtype、byte size、checksum 或
-resource key。它不描述 Wafer physical layout、buffer object pool、DDR address 或 package path。
-
-2026-05-26 R2.1 实现把 V0 sidecar manifest 固定为 JSON `version: 0` 加 `constants` 列表。
-每个 constant entry 通过 `function` + `arg` ordinal 指向 `func.func` argument，并要求该 argument
-带 `wafer.frontend.constant = "<resource_key>"`。verifier 检查 shape、dtype、byte size 和
-resource key 一致；checksum 作为 artifact identity 字段保留，但当前不读取 backing data 做内容
-hash。这个 attr 属于 frontend artifact metadata，不是 Wafer 私有 tensor constant op，也不表达
-DDR pool、physical layout、BO handle 或 package path。
+不要为同一件事再生成 Wafer 私有伴随 JSON / compile JSON。`forward.meta` 是 artifact 边界事实源；
+后续 compiler pass 不能直接读取 bundle metadata，而应消费 importer materialize 到 MLIR IR 的显式
+事实。metadata 也不描述 Wafer physical layout、buffer object pool、DDR address 或 package path。
 
 ### 2.1 模型导入合同
 
@@ -97,13 +90,14 @@ model source
 importer 可以返回工程层面的 import result，例如：
 
 - MLIR module。
-- weight sidecar manifest。
+- exporter-native metadata / weight data directory。
 - input/output signature 和 bounded dynamic shape policy。
 - sharding import source。
 - diagnostics。
 
-这个 import result 是工具接口，不是新的 IR 语义对象。进入 compiler pipeline 后，下游只读取
-MLIR IR、manifest 和 compile config 中可验证的字段。
+这个 import result 是工具接口，不是新的 IR 语义对象。进入 compiler pipeline 前，必须把需要跨
+阶段保留的事实 materialize 成 MLIR IR 中的显式 op/type/attr/interface；下游 pass 不直接读取
+PyTorch/XLA `forward.meta` 或任何自定义 JSON 旁路。
 
 Model import 必须拒绝或显式诊断：
 
@@ -121,9 +115,8 @@ P2.F1 在 R3 之前完成，原因是后续 group / tile / resource 链路必须
 ```text
 framework model / exported program
   -> framework-specific capture adapter
-  -> StableHLO / MLIR artifact
-  -> sidecar manifest
-  -> compile config
+  -> PyTorch/XLA StableHLO bundle
+  -> bundle MLIR + meta verifier
   -> WaferFrontend verifier
 ```
 
@@ -137,31 +130,30 @@ matcher、手写 StableHLO 文本 emitter 或 pre-exported fixture 冒充 PyTorc
 每个 framework-specific adapter 必须满足：
 
 - 只把框架 API、Python path、module name、parameter name、version workaround 留在 adapter 日志、
-  source map 或诊断中；这些信息不能成为后端 IR、sidecar resource identity 或 lowering 分支条件。
+  source map 或诊断中；这些信息不能成为后端 IR 或 lowering 分支条件。
 - graph break、eager fallback、host callback、mutable state、training-only state 和不可验证 alias
   必须变成 frontend verifier 可拒绝的诊断，不能 silent fallback 到 host/runtime path。
 - dynamic shape 必须产出可验证 bounded policy。V0 可以继续使用
-  `wafer.frontend.dynamic_bounds`，也可以由 sidecar/compile config 提供等价字段，但进入后端前
-  必须 materialize 成 verifier 能检查的 function boundary fact。
-- weight / constant 必须通过 sidecar resource key 绑定到 function argument 或明确的
-  `ConstantLike` value；参数名只能辅助诊断，不能参与语义匹配。
+  `wafer.frontend.dynamic_bounds`，也可以来自 exporter metadata；进入后端前必须 materialize 成
+  verifier 能检查的 function boundary fact。
+- weight / constant 必须来自 exporter bundle metadata / data，并在进入后端前 materialize 成明确的
+  IR 事实或 `ConstantLike` value。PyTorch/XLA parameter 名只用于在 bundle data 目录中定位 exporter
+  自己保存的文件，不能成为后端 lowering 分支条件。
 - sharding annotation 必须保留为 StableHLO / SDY 可解释结构。adapter 不能把 sharding 提前改写成
   physical card/tile id。
-- compile config 只能表达目标无关约束，例如 dynamic-bound policy、sharding import policy 和
-  capture capability。它不能携带 SPM offset、DDR pool、runtime handle、package path 或 DTE 参数。
 
 验证时，framework adapter smoke 必须把真实 adapter 产物继续交给
-`wafer-import-model --verify-import-result [--sidecar]`。手写 MLIR 仍可作为 verifier unit test，但
+`wafer-import-model --verify-stablehlo-bundle`。手写 MLIR 仍可作为 verifier unit test，但
 不能单独作为 P2.F1 完成证明。若 `third_party/pytorch-xla` 源码编译/安装出的 runtime 不可
 import，P2.F1 不得标记为完成；测试可以保留依赖隔离或 contract 级覆盖，但主线验收仍必须跑通真实
-PyTorch/XLA adapter -> artifact -> sidecar/config -> WaferFrontend verifier 链。
+PyTorch/XLA adapter -> StableHLO bundle -> bundle metadata verifier -> WaferFrontend verifier 链。
 
-2026-05-27 实现记录：P2.F1 已完成。`tools/build_pytorch_xla_runtime.py` 从
+2026-05-27 修正实现记录：P2.F1 已完成。`tools/build_pytorch_xla_runtime.py` 从
 `third_party/pytorch-xla` 源码安装 `torch_xla` 2.5.0，并通过 Bazel override 复用本仓库
 `third_party/xla`、`third_party/llvm-project` 和 importer Python 的 `torch` headers/libs；
-没有使用 prebuilt `torch_xla` wheel。`tools/wafer_pytorch_xla_capture.py` 产出 StableHLO MLIR、
-sidecar 和 compile config；lit smoke 将该 artifact 继续交给
-`wafer-import-model --verify-import-result --sidecar`。
+没有使用 prebuilt `torch_xla` wheel。`tools/wafer_pytorch_xla_capture.py` 产出 PyTorch/XLA
+StableHLO bundle；lit smoke 将该 bundle 继续交给
+`wafer-import-model --verify-stablehlo-bundle`。
 
 #### 2.1.2 P2.F1 主链路 Capture Model
 
@@ -198,9 +190,9 @@ group、tiling、SPM/DDR resource 和 package manifest 消费真实规模的 sha
 
 - 4096 主链路 artifact 可以由测试脚本或 adapter 生成，但不能把 64 MiB weight 直接提交进 git
   test file。
-- 大 weight 必须走 sidecar / resource-backed constant metadata；测试验证 function argument /
-  resource key / shape / dtype / byte size 的绑定关系。
-- 小 shape MLIR 仍可用于 graph break、eager fallback、dynamic bound、sidecar mismatch 等快速负例；
+- 大 weight 必须使用 PyTorch/XLA bundle 的 `forward.meta` 和 `data/<parameter>`；测试验证 function
+  argument / parameter location / shape / dtype / data payload size 的绑定关系。
+- 小 shape MLIR 仍可用于 graph break、eager fallback、dynamic bound 等快速负例；
   这些测试不能替代 4096 主链路 artifact 的完成证明。
 
 ### 2.2 第三方工程依赖组织
@@ -256,7 +248,7 @@ tensor rank，dynamic dimension 的 bound 必须为正，static dimension 的 bo
 常量策略：
 
 - Frontend 可以接收 `stablehlo.constant`。
-- 大 weight 可以作为 StableHLO resource-backed constant 或 sidecar manifest。
+- 大 weight 可以作为 StableHLO resource-backed parameter 保留在 exporter bundle 中。
 - 进入 Linalg / Wafer planning 前，常量统一成 `arith.constant` 或其它 MLIR `ConstantLike`
   tensor op。
 - Wafer 不定义 `wafer.constant` 或 `constant_ref` 作为普通 tensor 常量的替代。
@@ -294,10 +286,10 @@ tool / pass 名字不是架构边界，但实现上至少需要以下职责：
 | 职责 | 输入 | 输出 |
 | --- | --- | --- |
 | dependency/config validate | build manifest + dialect registry | importer/backend capability diagnostics |
-| artifact import | exported model / StableHLO | MLIR module + sidecar manifest |
-| artifact verify | MLIR module + manifest | diagnostics |
+| artifact import | exported model / StableHLO | MLIR module + exporter metadata |
+| artifact verify | MLIR module + exporter metadata | diagnostics |
 | sharding import normalization | old sharding attrs | Shardy-consumable annotations |
-| constant normalization | StableHLO constants / sidecar | `arith.constant` / `ConstantLike` |
+| constant normalization | StableHLO constants / bundle metadata | `arith.constant` / `ConstantLike` |
 | frontend cleanup | frontend-only metadata | 后端可消费的 StableHLO module |
 
 这些 pass 不能创建 Wafer low-level op，也不能把 runtime path、buffer object pool、SPM address 或
@@ -312,7 +304,7 @@ physical layout 写进 frontend IR。
 Frontend 应在这些场景直接报错：
 
 - model import 出现 graph break、host fallback 或无法导出的 op。
-- sidecar 中的 shape、dtype、byte size 或 checksum 与 IR value 不一致。
+- exporter metadata 中的 shape、dtype 或 parameter data payload size 与 IR value 不一致。
 - dynamic shape 没有 V0 可接受的 bound。
 - sharding annotation 无法被 Shardy import。
 - artifact 依赖 TXDA eager CPU fallback 才能运行。
@@ -332,7 +324,7 @@ V0 验证项：
   并且 graph break / fallback 会被诊断。
 - StableHLO parse / printer roundtrip。
 - function signature 的 shape、rank、dtype、dynamic bound 检查。
-- `stablehlo.constant` / sidecar 到 `arith.constant` / `ConstantLike` 的 normalization 检查。
+- `stablehlo.constant` / exporter bundle metadata 到 `arith.constant` / `ConstantLike` 的 normalization 检查。
 - sharding annotation import 后仍能被 Shardy verifier 接受。
 - dependency configuration test：LLVM / MLIR / StableHLO / Shardy dialect 能显式注册；可选 importer
   关闭时后端 textual tests 仍能运行。

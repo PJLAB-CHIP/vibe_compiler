@@ -19,16 +19,19 @@
 # RUN: printf '%b' 'module {\n  func.func @bad_dynamic_bound(%%arg0: tensor<?x4xf32> {wafer.frontend.dynamic_bounds = [0, 4]}) -> tensor<?x4xf32> {\n    return %%arg0 : tensor<?x4xf32>\n  }\n}\n' > %t.bad-dynamic-bound.mlir
 # RUN: not wafer-import-model --verify-import-result %t.bad-dynamic-bound.mlir 2>&1 | FileCheck %s --check-prefix=BAD-BOUND
 
-# RUN: printf '%b' 'module {\n  func.func @weight_artifact(%%arg0: tensor<2x4xf32> {wafer.frontend.constant = "w0"}) -> tensor<2x4xf32> {\n    return %%arg0 : tensor<2x4xf32>\n  }\n}\n' > %t.sidecar.mlir
-# RUN: printf '%b' '{"version":0,"constants":[{"function":"weight_artifact","arg":0,"resource_key":"w0","shape":[2,4],"dtype":"f32","byte_size":32,"checksum":"sha256:abc"}]}\n' > %t.sidecar.json
-# RUN: wafer-import-model --verify-import-result %t.sidecar.mlir --sidecar %t.sidecar.json | FileCheck %s --check-prefix=SIDECAR
+# RUN: rm -rf %t.bundle && mkdir -p %t.bundle/functions %t.bundle/data
+# RUN: printf '%b' 'module {\n  func.func @main(%%arg0: tensor<2x4xf32>) -> tensor<2x4xf32> {\n    return %%arg0 : tensor<2x4xf32>\n  }\n}\n' > %t.bundle/functions/forward.mlir
+# RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[2,4],"dtype":"float32","dynamic_dims":[]}],"output_signature":[{"shape":[2,4],"dtype":"float32","dynamic_dims":[]}],"input_locations":[{"type_":"parameter","position":-1,"name":"weight"}],"unused_inputs":[]}\n' > %t.bundle/functions/forward.meta
+# RUN: %python -c 'from pathlib import Path; Path("%t.bundle/data/weight").write_bytes(b"0" * 32)'
+# RUN: wafer-import-model --verify-stablehlo-bundle %t.bundle | FileCheck %s --check-prefix=BUNDLE
 
-# RUN: printf '%b' '{"version":0,"constants":[{"function":"weight_artifact","arg":0,"resource_key":"w0","shape":[4,2],"dtype":"f32","byte_size":32,"checksum":"sha256:abc"}]}\n' > %t.bad-sidecar-shape.json
-# RUN: not wafer-import-model --verify-import-result %t.sidecar.mlir --sidecar %t.bad-sidecar-shape.json 2>&1 | FileCheck %s --check-prefix=SIDECAR-SHAPE
+# RUN: rm -rf %t.bad-shape.bundle && mkdir -p %t.bad-shape.bundle && cp -R %t.bundle/. %t.bad-shape.bundle
+# RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[4,2],"dtype":"float32","dynamic_dims":[]}],"output_signature":[{"shape":[2,4],"dtype":"float32","dynamic_dims":[]}],"input_locations":[{"type_":"parameter","position":-1,"name":"weight"}],"unused_inputs":[]}\n' > %t.bad-shape.bundle/functions/forward.meta
+# RUN: not wafer-import-model --verify-stablehlo-bundle %t.bad-shape.bundle 2>&1 | FileCheck %s --check-prefix=BUNDLE-SHAPE
 
-# RUN: printf '%b' 'module {\n  func.func @missing_constant_attr(%%arg0: tensor<2x4xf32>) -> tensor<2x4xf32> {\n    return %%arg0 : tensor<2x4xf32>\n  }\n}\n' > %t.missing-constant-attr.mlir
-# RUN: printf '%b' '{"version":0,"constants":[{"function":"missing_constant_attr","arg":0,"resource_key":"w0","shape":[2,4],"dtype":"f32","byte_size":32}]}\n' > %t.missing-constant-attr.json
-# RUN: not wafer-import-model --verify-import-result %t.missing-constant-attr.mlir --sidecar %t.missing-constant-attr.json 2>&1 | FileCheck %s --check-prefix=SIDECAR-ATTR
+# RUN: rm -rf %t.missing-data.bundle && mkdir -p %t.missing-data.bundle && cp -R %t.bundle/. %t.missing-data.bundle
+# RUN: rm %t.missing-data.bundle/data/weight
+# RUN: not wafer-import-model --verify-stablehlo-bundle %t.missing-data.bundle 2>&1 | FileCheck %s --check-prefix=BUNDLE-DATA
 
 # EMIT: module
 # EMIT: func.func @wafer_import_static_smoke
@@ -49,11 +52,11 @@
 # BAD-BOUND: wafer-import-model: invalid dynamic bound rejected
 # BAD-BOUND: func.func @bad_dynamic_bound argument 0
 
-# SIDECAR: wafer-import-model: verified frontend sidecar constants: 1
-# SIDECAR: wafer-import-model: verified frontend artifact
+# BUNDLE: wafer-import-model: verified StableHLO bundle parameters: 1
+# BUNDLE: wafer-import-model: verified frontend artifact
 
-# SIDECAR-SHAPE: wafer-import-model: sidecar constant rejected
-# SIDECAR-SHAPE: shape mismatch for func.func @weight_artifact argument 0
+# BUNDLE-SHAPE: wafer-import-model: StableHLO bundle metadata rejected
+# BUNDLE-SHAPE: shape mismatch for function argument 0
 
-# SIDECAR-ATTR: wafer-import-model: sidecar constant rejected
-# SIDECAR-ATTR: func.func @missing_constant_attr argument 0 is missing wafer.frontend.constant
+# BUNDLE-DATA: wafer-import-model: StableHLO bundle metadata rejected
+# BUNDLE-DATA: parameter data file is missing: weight

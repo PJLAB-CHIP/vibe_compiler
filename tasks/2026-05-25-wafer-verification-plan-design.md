@@ -36,7 +36,7 @@ Serving integration 暂不纳入本文通过标准。
 
 | gate | 输入 | 通过条件 |
 | --- | --- | --- |
-| Frontend artifact | imported StableHLO + sidecar | importer adapter diagnostics、parse/roundtrip、shape/dtype、constant normalization、sharding import source、third-party dialect registration 合法 |
+| Frontend artifact | imported StableHLO bundle / MLIR | importer adapter diagnostics、parse/roundtrip、shape/dtype、constant normalization、sharding import source、third-party dialect registration 合法 |
 | Shardy / SPMD | StableHLO + sharding | logical mesh、partitioned shard shape、collective group 合法 |
 | Placement | logical ranks + topology | physical mapping 覆盖所有 rank，过滤 bad tile，cluster capability 合法 |
 | Local compute normalization | partitioned StableHLO | Linalg/Tensor/SCF/Arith/Math structured semantics、DPS/indexing relation、softmax/norm/RoPE staged form 合法 |

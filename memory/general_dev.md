@@ -33,8 +33,9 @@
   新增 SDY artifact gate 要用 `REQUIRES: shardy`，避免关闭 Shardy 时让后端 textual tests 硬依赖
   `sdy`。
 - frontend artifact verifier 入口是
-  `wafer-import-model --verify-import-result <mlir> [--sidecar <json>]`；sidecar V0 用
-  `function` + `arg` ordinal 对齐带 `wafer.frontend.constant` attr 的 function argument。
+  `wafer-import-model --verify-import-result <mlir>`；PyTorch/XLA capture 主链路用
+  `wafer-import-model --verify-stablehlo-bundle <bundle-dir>` 校验 `functions/forward.mlir`、
+  `functions/forward.meta` 和 `data/<parameter>`，不要再为同一关系生成 Wafer 私有伴随 JSON。
 - 依赖一致性检查入口是 `tools/check_deps.py`；默认检查固定版本、importer registration hook、
   public source submodule checkout HEAD、importer Python package pin 和 core/frontend/runtime/test
   tool dependency layering。

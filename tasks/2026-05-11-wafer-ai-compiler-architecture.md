@@ -94,7 +94,7 @@ lowering 选择 `ChannelNorm`、`DechannelNorm`、`GatherScatter`、TDMA 或 wra
 
 constant 语义同样分层：
 
-- Frontend / StableHLO 阶段允许 `stablehlo.constant` 或 weight sidecar。
+- Frontend / StableHLO 阶段允许 `stablehlo.constant` 或 exporter-native bundle 中的 weight data。
 - 进入 Linalg / Wafer planning 前，常量统一成 `arith.constant` 或其它 `ConstantLike` tensor op；
   大 tensor 可以使用 resource-backed elements attr。
 - Wafer 不定义私有 tensor constant op。constant 不是 group external input，但 tile execution 中仍要
@@ -117,7 +117,7 @@ constant 语义同样分层：
 - `func`
 - `tensor`
 - `arith`
-- optional weight sidecar metadata
+- optional exporter-native weight metadata
 
 输入：
 
@@ -131,7 +131,7 @@ source model / exported program / pre-exported StableHLO
 
 - 保留模型语义、dtype、rank、shape 和有限动态 shape 信息。
 - 保留或导入用户/框架侧 sharding 标记。
-- 决定 weight 表达方式：StableHLO constant 或 StableHLO + weights sidecar。
+- 决定 weight 表达方式：StableHLO constant 或 exporter-native StableHLO bundle metadata/data。
 - freeze weights 的逻辑保持硬件无关，命名和实现不绑定 Wafer。
 
 不负责：
@@ -146,7 +146,8 @@ V0 策略：
 - 主链路完成证明优先来自真实 framework/exporter 产生的实际图 artifact，例如 PyTorch/XLA、
   JAX 或其它 exporter 导出的 StableHLO / MLIR。手写 StableHLO 只保留为 pre-exported artifact
   fixture、verifier negative test 或局部 lowering bring-up，不能证明 framework-specific capture 已完成。
-- 具体 importer API 不是 Wafer 后端合同；后端只消费 verified artifact、sidecar 和 compile config。
+- 具体 importer API 不是 Wafer 后端合同；后端只消费 verified artifact 和已 materialize 到 IR 的
+  importer facts。
 - v0 先接受静态或有限动态 shape；任意 PyTorch eager 动态行为不是 V0 目标。
 
 Frontend artifact 的模型导入、第三方依赖组织、constant/weight、sharding annotation 和验证合同见
@@ -611,7 +612,7 @@ WaferRuntimeAdapter cluster launch
 
 | 范围 | 阶段内验证 |
 | --- | --- |
-| Frontend / StableHLO artifact | artifact parse/roundtrip、shape/dtype/sharding 保留、weight sidecar 一致性 |
+| Frontend / StableHLO artifact | artifact parse/roundtrip、shape/dtype/sharding 保留、exporter bundle weight metadata 一致性 |
 | Shardy / SPMD | sharding import/propagation、partition 后 collective 语义、logical mesh roundtrip |
 | Placement | logical-to-physical tile mapping、good-tile/PG metadata、slice metadata verifier |
 | Local compute normalization | StableHLO dot/broadcast/reduce/shape op 到 structured tensor IR，softmax/norm/RoPE staged form |
@@ -803,7 +804,7 @@ V0 先保持统一 `wafer` namespace，降低跨 dialect type/attr 演进成本�
 
 | 范围 | 主文档 | 状态 | 只负责 | 不负责 |
 | --- | --- | --- | --- | --- |
-| Frontend / StableHLO artifact | `tasks/2026-05-25-wafer-frontend-stablehlo-artifact-design.md` | 草案 | model import adapter、输入 artifact、shape/dtype/dynamic shape、weight sidecar、sharding 标记、第三方依赖隔离 | SPM、DTE、runtime completion |
+| Frontend / StableHLO artifact | `tasks/2026-05-25-wafer-frontend-stablehlo-artifact-design.md` | 草案 | model import adapter、输入 artifact、shape/dtype/dynamic shape、exporter bundle weight metadata、sharding 标记、第三方依赖隔离 | SPM、DTE、runtime completion |
 | Shardy / SPMD | `tasks/2026-05-25-wafer-shardy-spmd-design.md` | 草案 | logical mesh、sharding propagation、partition 后 collective 语义 | physical tile id、DTE algorithm、SPM buffer |
 | Placement | `tasks/2026-05-25-wafer-placement-design.md` | 草案 | logical mesh 到 card/tile cluster、good-tile/PG metadata、slice metadata | Cx/NCx、packet queue、C ABI |
 | Local compute normalization | `tasks/2026-05-25-wafer-local-compute-normalization-design.md` | 草案 | partitioned StableHLO 到 structured tensor IR、dot/broadcast/reduce/softmax/norm/RoPE staged form | group scheduling、physical layout、SPM/DDR、C ABI |

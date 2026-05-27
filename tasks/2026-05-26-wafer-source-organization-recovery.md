@@ -17,7 +17,7 @@ C ABI conversion 混在旧的聚合目录里。
 - R0.2 当时不把 `WaferOps.td` / `WaferDialect.cpp` 按 group、tile_region、layout、SPM、compute、
   comm、sync、launch 拆开；该后续项已由 R1.1 完成。
 - 不把 interface/effect/resource skeleton 扩成 planner 可查询合同；这是 R1.2。
-- 不实现真实 importer adapter、sidecar artifact verifier 或 Shardy bridge；这是 R2.1/R2.2。
+- 不实现真实 importer adapter、exporter bundle metadata verifier 或 Shardy bridge；这是 R2.1/R2.2。
 - 不把 `wafer.abi.*` lower 到 LLVM dialect、LLVM IR、object 或真实 runtime call。
 - 不实现 launch/runtime adapter、BO binding 或板端 completion。
 

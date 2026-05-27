@@ -75,7 +75,8 @@ P2.S1 输出仍然是 logical per-rank artifact bundle：
 - local shard shape、dtype、user-visible input/output shard relation。
 - logical collective ops 或能被 collective normalization 解释的 StableHLO / SDY metadata。
 
-这些字段必须来自 IR、SDY attr、StableHLO collective metadata 或 verifier 可检查的 sidecar/config。
+这些字段必须来自 IR、SDY attr、StableHLO collective metadata 或 importer 已 materialize 的
+exporter metadata。
 不能靠 pass side table、function name、parameter name 或 dump 文件名恢复。
 
 V0 可继续限制 unsupported strategy，但限制必须以 legality diagnostic 形式暴露。例如 multi
@@ -189,7 +190,7 @@ P2.S1 的完成证明必须至少覆盖：
 - P2.F1 verified artifact 可以作为 Shardy pipeline 输入。
 - Shardy propagation / partitioning 后能得到指定 local rank 的 per-rank artifact。
 - per-rank artifact 仍通过 frontend boundary verifier 或等价 verifier，不丢 function boundary、
-  dynamic bound、constant sidecar 和 sharding facts。
+  dynamic bound、bundle-derived constant facts 和 sharding facts。
 - StableHLO collective metadata 能继续 lower 到 `wafer.comm` `rank_group`，并被 placement /
   ring lowering 测试消费。
 
