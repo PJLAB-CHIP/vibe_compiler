@@ -55,7 +55,7 @@ source model / exported program / pre-exported StableHLO
 ```text
 StableHLO + func + tensor + arith module
   + verified exporter metadata
-  + normalized sharding annotations
+  + optional normalized sharding annotations
   + ConstantLike tensor values or resource-backed constant values
 ```
 
@@ -260,11 +260,16 @@ packed backing data，它由 constant storage transform 直接改写 backing dat
 
 ### 3.3 Sharding Annotation
 
-Frontend 只保存上游 sharding 事实：
+Frontend 只保存上游显式 sharding 事实：
 
 - old `mhlo.sharding` / OpSharding 可以作为 import source。
 - Shardy / SDY 是 propagation 和 SPMD partition 的 owner。
 - logical mesh name、axis 和 annotation 必须能被 Shardy verifier 解释。
+
+如果 source model / exported artifact 没有 `mark_sharding` 或其它可解释 sharding annotation，
+语义就是未切分的普通 StableHLO 图。Frontend verifier 不应因此报错，也不应合成一套默认
+`sdy.sharding` / `wafer.spmd.*` 描述；后续 pipeline 应把它当作 single-program / unpartitioned
+输入，直接进入 local compute normalization、group、tiling 和后端 lowering。
 
 P2.S1 的真实图 sharding 测试必须通过 framework frontend mark 接口生成这些事实，例如
 PyTorch/XLA 的 `mark_sharding` 或 export 可追踪的等价前端 op。Frontend adapter 不为 sharding
@@ -347,10 +352,13 @@ P2.F1 之后的验证不能停在 artifact dump。后续主线 gate 必须逐步
 ```text
 framework capture artifact
   -> frontend verifier
-  -> Shardy propagation / SPMD partitioner
-  -> partitioned StableHLO / per-rank artifact verifier
+  -> if explicit sharding exists:
+       Shardy propagation / SPMD partitioner
+       -> partitioned StableHLO / per-rank artifact verifier
+     else:
+       unpartitioned StableHLO local program
   -> StableHLO / local compute normalization
-  -> tensor collective normalization
+  -> tensor collective normalization if collectives exist
   -> wafer.group candidate
   -> tile_region / resource / ABI / package gate
 ```

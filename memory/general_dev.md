@@ -36,6 +36,9 @@
   `wafer-import-model --verify-import-result <mlir>`；PyTorch/XLA capture 主链路用
   `wafer-import-model --verify-stablehlo-bundle <bundle-dir>` 校验 `functions/forward.mlir`、
   `functions/forward.meta` 和 `data/<parameter>`，不要再为同一关系生成 Wafer 私有伴随 JSON。
+- P2.S1 只适用于存在显式 sharding 标记的分支。没有 `mark_sharding` 或其它可解释 sharding
+  annotation 时，artifact 语义是未切分 StableHLO local program，应直接进入 local compute /
+  group / tiling / codegen；不能因为缺少 SPMD metadata 被拒绝，也不要合成默认私有 sharding。
 - P2.S1 不能用手写 `sdy.sharding`、`wafer.spmd.*` attr、私有 JSON 或名字约定冒充 partitioned
   artifact。正确链路是同一套 source-built PyTorch/XLA 环境中通过
   `torch_xla.distributed.spmd.mark_sharding` 或 `torch.ops.xla.dynamo_mark_sharding` 标记 4096
