@@ -43,13 +43,16 @@ artifact gate。后续 group / tile / resource gate 必须消费真实 frontend/
   `wafer.frontend.dynamic_bounds = [d0, d1, ...]` 表达；rank 必须匹配 tensor rank，dynamic dim
   的 bound 必须为正，static dim 的 bound 必须等于静态维度。没有 bound 的 dynamic shape 仍被拒绝。
 - 真实 framework capture 的 artifact metadata 必须来自 exporter-native bundle。PyTorch/XLA 路线使用
-  `functions/forward.mlir`、`functions/forward.meta`、`functions/forward.bytecode` 和
-  `data/<parameter>`；不再为同一关系生成 Wafer 私有伴随 JSON。
+  `functions/forward.mlir`、`functions/forward.meta`、`functions/forward.bytecode` 和 pre-SPMD
+  `data/<parameter>`；post-SPMD partitioned artifact 额外使用
+  `functions/forward.parameter_shards.json` 和 `parameter_shards/<parameter>/rank_XXXXX.npy` 表达
+  rank-local parameter payload。
 
 PyTorch/XLA bundle metadata 的 `input_locations` / `input_signature` 必须与 bundle MLIR 中唯一
-`func.func` 的 argument ordinal、shape 和 dtype 一致；`parameter` location 对应的 `data/<name>`
-文件必须存在且 payload size 不小于 tensor raw byte size。parameter name 只用于定位 PyTorch/XLA
-bundle 自己保存的数据文件，不能成为后端 lowering 分支条件。
+`func.func` 的 argument ordinal、shape 和 dtype 一致；非 partitioned bundle 中 `parameter`
+location 对应的 `data/<name>` 文件必须存在且 payload size 不小于 tensor raw byte size。partitioned
+bundle 中 `parameter` location 必须由 post-SPMD shard manifest 和 rank-local payload 校验。
+parameter name 只用于定位 exporter artifact 中的 parameter payload，不能成为后端 lowering 分支条件。
 
 ## R2.2 Shardy / SPMD Artifact Bridge
 
@@ -115,10 +118,11 @@ boundary、tile shape、multi-stage schedule、SPM residency 或 C ABI issue seq
 
 这些 gate 证明真实 source-built PyTorch/XLA `mark_sharding` artifact、default input seed policy 和
 XLA SPMD partitioned StableHLO bundle 可被当前工具链验证；partitioned bundle 同时导出
-`functions/forward.parameter_shards.json`，把 local parameter argument 显式绑定到
-`data/<parameter>` 的 per-logical-rank offsets/sizes/strides 和 replica id，且由
-`wafer-import-model --verify-stablehlo-bundle` 校验。它们仍不证明 R2.4 tensor collective handoff、
-R3 group planner、resource planner、package、runtime 或 board execution。
+`functions/forward.parameter_shards.json` 和 `parameter_shards/<parameter>/rank_XXXXX.npy`，把 local
+parameter argument 显式绑定到 PyTorch/XLA runtime-derived rank-local payload、per-logical-rank
+offsets/sizes/strides 和 replica id，且由 `wafer-import-model --verify-stablehlo-bundle` 校验。
+它们仍不证明 R2.4 tensor collective handoff、R3 group planner、resource planner、package、runtime
+或 board execution。
 
 这些验证证明 R2 artifact/bridge/coverage 状态收敛，不证明 R3 之后的 group planner、resource
 planner、package、runtime 或 board execution。
@@ -154,8 +158,9 @@ fixed manifest 只能作为补充覆盖，不能替代端到端可验证性。�
 
 P2.F1 主链路 artifact 采用 `4096x4096 @ 4096x4096` f32 matmul + bias + tanh + residual 最小验证。
 该规模用于给后续 tiling、SPM/DDR resource、resident constant 和 package gate 提供非 trivial
-shape/byte facts；大 weight 只能通过 PyTorch/XLA bundle `forward.meta` / `data/<parameter>` 绑定，
-不提交 64 MiB weight 到 git 测试文件。
+shape/byte facts；pre-SPMD 大 weight 只能通过 PyTorch/XLA bundle `forward.meta` /
+`data/<parameter>` 绑定，post-SPMD 大 weight 通过 `forward.parameter_shards.json` 和 rank-local
+shard payload 绑定；不提交 64 MiB weight 到 git 测试文件。
 
 PyTorch/XLA adapter 的完成证明必须使用从 `third_party/pytorch-xla` 源码编译/安装出的
 `torch_xla` runtime。prebuilt `torch_xla` wheel、手写 StableHLO artifact 或没有实际运行

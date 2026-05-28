@@ -6,6 +6,10 @@
 # RUN:   test -s %t.partitioned/${strategy}/functions/forward.mlir || exit 1; \
 # RUN:   test -s %t.partitioned/${strategy}/functions/forward.bytecode || exit 1; \
 # RUN:   test -s %t.partitioned/${strategy}/functions/forward.parameter_shards.json || exit 1; \
+# RUN:   test -s %t.partitioned/${strategy}/parameter_shards/weight/rank_00000.npy || exit 1; \
+# RUN:   test -s %t.partitioned/${strategy}/parameter_shards/bias/rank_00000.npy || exit 1; \
+# RUN:   test ! -e %t.partitioned/${strategy}/data/weight || exit 1; \
+# RUN:   test ! -e %t.partitioned/${strategy}/data/bias || exit 1; \
 # RUN:   FileCheck %s --input-file=%t.partitioned/${strategy}/functions/forward.mlir --check-prefix=PARTITIONED || exit 1; \
 # RUN:   FileCheck %s --input-file=%t.partitioned/${strategy}/functions/forward.parameter_shards.json --check-prefix=SHARDS || exit 1; \
 # RUN:   wafer-import-model --verify-stablehlo-bundle %t.partitioned/${strategy} | FileCheck %s --check-prefix=VERIFY || exit 1; \
@@ -17,11 +21,15 @@
 # RUN: env CPU_NUM_DEVICES=16 PJRT_DEVICE=CPU %importer_python %wafer_src_root/tools/wafer_pytorch_xla_capture.py --emit-partitioned-bundle --default-input-sharding --default-tile-count=16 --output-bundle %t.partitioned/default
 # RUN: FileCheck %s --input-file=%t.partitioned/default/functions/forward.mlir --check-prefix=DEFAULT
 # RUN: FileCheck %s --input-file=%t.partitioned/default/functions/forward.parameter_shards.json --check-prefix=SHARDS
+# RUN: test -s %t.partitioned/default/parameter_shards/weight/rank_00000.npy
+# RUN: test ! -e %t.partitioned/default/data/weight
 # RUN: wafer-import-model --verify-stablehlo-bundle %t.partitioned/default | FileCheck %s --check-prefix=VERIFY
 
 # RUN: env CPU_NUM_DEVICES=1 PJRT_DEVICE=CPU %importer_python %wafer_src_root/tools/wafer_pytorch_xla_capture.py --emit-partitioned-bundle --default-input-sharding --default-tile-count=1 --output-bundle %t.partitioned/default-tile1
 # RUN: FileCheck %s --input-file=%t.partitioned/default-tile1/functions/forward.mlir --check-prefix=TILE1
 # RUN: FileCheck %s --input-file=%t.partitioned/default-tile1/functions/forward.parameter_shards.json --check-prefix=SHARDS
+# RUN: test -s %t.partitioned/default-tile1/parameter_shards/weight/rank_00000.npy
+# RUN: test ! -e %t.partitioned/default-tile1/data/weight
 # RUN: wafer-import-model --verify-stablehlo-bundle %t.partitioned/default-tile1 | FileCheck %s --check-prefix=VERIFY
 
 # PARTITIONED: mhlo.spmd_parameters_shardings
@@ -45,15 +53,15 @@
 # TILE1: stablehlo.dot_general
 # TILE1: tensor<4096x4096xf32>
 
-# SHARDS: "parameter_shards_version": 1
+# SHARDS: "parameter_shards_version": 2
 # SHARDS: "function": "forward"
 # SHARDS: "parameters": [
 # SHARDS: "name": "weight"
-# SHARDS: "source": "data/weight"
 # SHARDS: "global_shape": [
 # SHARDS: 4096
 # SHARDS: "local_shape": [
 # SHARDS: "shards": [
+# SHARDS: "file": "parameter_shards/weight/rank_00000.npy"
 # SHARDS: "offsets": [
 # SHARDS: "sizes": [
 # SHARDS: "strides": [

@@ -65,15 +65,19 @@ PyTorch/XLA 路线的 frontend artifact 只保留一套 exporter-native 事实�
 | --- | --- | --- |
 | `functions/forward.mlir` | StableHLO IR 主体 | parse / verify 后进入 compiler pipeline |
 | `functions/forward.meta` | PyTorch/XLA 导出的 metadata | 校验 function arg/result 与 parameter / user input / shape / dtype 的关系 |
-| `functions/forward.parameter_shards.json` | post-SPMD parameter shard binding | 仅在 partitioned bundle 中存在；校验 local function parameter 与 `data/<parameter>` 的 global slice 关系 |
+| `functions/forward.parameter_shards.json` | post-SPMD parameter shard binding | 仅在 partitioned bundle 中存在；校验 local function parameter 与 rank-local shard payload 的关系 |
 | `functions/forward.bytecode` | StableHLO bytecode | 与 bundle 一起保留，当前不作为 Wafer IR 合同 |
-| `data/<parameter>` | PyTorch/XLA 导出的 weight data | import 边界检查存在性和 payload size，不提交进 git fixture |
+| `data/<parameter>` | PyTorch/XLA 导出的 pre-SPMD weight data | 非 partitioned bundle 的 import 边界检查存在性和 payload size，不提交进 git fixture |
+| `parameter_shards/<parameter>/rank_XXXXX.npy` | post-SPMD rank-local weight shard payload | partitioned bundle 的参数 payload；由 PyTorch/XLA runtime shard facts 生成，不从 strategy 名或文件名推断 |
 
-不要为同一件事再生成 Wafer 私有伴随 JSON / compile JSON。`forward.meta` 是 function boundary
-事实源；`forward.parameter_shards.json` 只承接 post-SPMD 后 external parameter backing data 到
-local parameter shard 的绑定关系。后续 compiler pass 不能直接读取 bundle metadata，而应消费
-importer materialize 到 MLIR IR 的显式事实。metadata 也不描述 Wafer physical layout、buffer object
-pool、DDR address 或 package path。
+除本节定义的 post-SPMD parameter shard manifest 外，不要为同一件事再生成 Wafer 私有伴随 JSON /
+compile JSON。`forward.meta` 是 function boundary
+事实源；`forward.parameter_shards.json` 只承接 post-SPMD 后 local parameter argument 到
+rank-local shard payload 的绑定关系。offsets、sizes、strides、replica id 和 payload 文件必须来自
+PyTorch/XLA `XLAShardedTensor.local_shards` / XLA sharding spec 暴露的 runtime facts，不能由 Wafer 从
+`partition_spec` 手算。后续 compiler pass 不能直接读取 bundle metadata，而应消费 importer
+materialize 到 MLIR IR 的显式事实。metadata 也不描述 Wafer physical layout、buffer object pool、
+DDR address 或 package path。
 
 ### 2.1 模型导入合同
 
@@ -193,8 +197,10 @@ group、tiling、SPM/DDR resource 和 package manifest 消费真实规模的 sha
 
 - 4096 主链路 artifact 可以由测试脚本或 adapter 生成，但不能把 64 MiB weight 直接提交进 git
   test file。
-- 大 weight 必须使用 PyTorch/XLA bundle 的 `forward.meta` 和 `data/<parameter>`；测试验证 function
-  argument / parameter location / shape / dtype / data payload size 的绑定关系。
+- pre-SPMD 大 weight 必须使用 PyTorch/XLA bundle 的 `forward.meta` 和 `data/<parameter>`；partitioned
+  artifact 必须使用 `forward.parameter_shards.json` 和 `parameter_shards/<parameter>/rank_XXXXX.npy`
+  表达 rank-local payload。测试验证 function argument / parameter location / shape / dtype /
+  data payload size 或 shard payload size 的绑定关系。
 - 小 shape MLIR 仍可用于 graph break、eager fallback、dynamic bound 等快速负例；
   这些测试不能替代 4096 主链路 artifact 的完成证明。
 

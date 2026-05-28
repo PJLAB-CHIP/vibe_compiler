@@ -139,8 +139,9 @@ P2.S1 当前工程 gate 必须把 XLA SPMD partitioner 或等价 local-body part
 - partitioned bundle 仍保存为 PyTorch/XLA StableHLO bundle。`functions/forward.mlir` 是 local
   body；`functions/forward.meta` 的 input/output signature 必须匹配 local function boundary。
   `functions/forward.parameter_shards.json` 记录 post-SPMD 后 parameter local argument 到
-  `data/<parameter>` global backing 的 explicit slice binding，供后续 storage/package materialization
-  消费。
+  `parameter_shards/<parameter>/rank_XXXXX.npy` rank-local payload 的 explicit binding，供后续
+  storage/package materialization 消费。binding 的 offsets、sizes、strides 和 replica id 来自
+  PyTorch/XLA runtime shard facts，不由 Wafer 从 `partition_spec` 或 strategy 名手算。
   post-SPMD module 可以包含 private helper `func.func`，frontend verifier 应选择唯一 public entry
   function，而不是要求整个 module 恰好一个函数。
 
@@ -167,8 +168,9 @@ PyTorch/XLA StableHLO bundle，并由 Shardy / SPMD pipeline 消费：
   functions/forward.meta
   functions/forward.parameter_shards.json
   functions/forward.bytecode
-  data/weight
-  data/bias
+  parameter_shards/weight/rank_00000.npy
+  parameter_shards/bias/rank_00000.npy
+  ...
 ```
 
 P2.S1 至少覆盖以下常见 sharding 策略。表中的 `dp` / `tp` 是 logical mesh axis；`None` 表示该
@@ -296,9 +298,9 @@ exporter-native facts，而不是检查 `wafer.spmd.*`：
 - local shard relation 必须能从 partitioned StableHLO shape、SDY metadata 或 exporter-native metadata
   解释；不能依赖 parameter/function 名字。
 - 对 resource-backed parameter，post-SPMD artifact 必须显式 materialize `logical rank ->
-  data/<parameter> slice` 绑定：parameter 名只定位 exporter backing file；offsets、sizes、strides、
-  replica id 和 local shape 必须来自 sharding metadata、global shape 和 logical rank。R3/R4/package
-  不能重新从文件名或 strategy 名推断这件事。
+  rank-local shard payload` 绑定：每个 shard entry 必须有 `file`、offsets、sizes、strides、replica
+  id 和 local shape。offsets/sizes/strides 必须来自 PyTorch/XLA runtime / XLA sharding spec 暴露的
+  shard indices，不能由 Wafer 根据 `partition_spec`、parameter 名、strategy 名或文件名重新推断。
 - collective metadata 必须来自 StableHLO op，例如 `replica_groups`、`source_target_pairs`、
   `all_gather_dim`、`scatter_dimension`、`split_dimension` / `concat_dimension` 和 reduction body。
 - artifact 中不得出现 physical tile、DTE packet、SPM offset 或 runtime handle 这类下游 lowering

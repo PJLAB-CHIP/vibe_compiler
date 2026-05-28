@@ -7,6 +7,7 @@ import argparse
 import dataclasses
 import functools
 import json
+import numpy as np
 import operator
 import os
 import pathlib
@@ -144,143 +145,6 @@ def apply_strategy_marks(
     spmd_module.mark_sharding(reference_module.bias, mesh, strategy.bias_spec)
 
 
-def _json_partition_spec(partition_spec: tuple[Any, ...]) -> list[Any]:
-    def convert(value: Any) -> Any:
-        if isinstance(value, tuple):
-            return [convert(entry) for entry in value]
-        return value
-
-    return [convert(entry) for entry in partition_spec]
-
-
-def _axis_index(strategy: ShardingStrategy, axis: Any) -> int:
-    if isinstance(axis, int):
-        if axis < 0 or axis >= len(strategy.mesh_shape):
-            raise RuntimeError(f"mesh axis index {axis} is out of range")
-        return axis
-    if isinstance(axis, str):
-        try:
-            return strategy.axis_names.index(axis)
-        except ValueError as error:
-            raise RuntimeError(f"unknown mesh axis '{axis}'") from error
-    raise RuntimeError(f"unsupported partition spec axis: {axis!r}")
-
-
-def _flatten_spec_axes(strategy: ShardingStrategy, spec_entry: Any) -> list[int]:
-    if spec_entry is None:
-        return []
-    if isinstance(spec_entry, tuple):
-        axes: list[int] = []
-        for nested in spec_entry:
-            axes.extend(_flatten_spec_axes(strategy, nested))
-        return axes
-    return [_axis_index(strategy, spec_entry)]
-
-
-def _logical_rank_coordinates(rank: int, mesh_shape: tuple[int, ...]) -> list[int]:
-    coords = [0 for _ in mesh_shape]
-    remaining = rank
-    for index in range(len(mesh_shape) - 1, -1, -1):
-        size = mesh_shape[index]
-        coords[index] = remaining % size
-        remaining //= size
-    return coords
-
-
-def _flatten_coordinates(coords: list[int], sizes: list[int]) -> int:
-    flattened = 0
-    for coord, size in zip(coords, sizes):
-        flattened = flattened * size + coord
-    return flattened
-
-
-def _ceil_div(value: int, divisor: int) -> int:
-    return (value + divisor - 1) // divisor
-
-
-def build_parameter_shard_binding(
-    *,
-    argument_index: int,
-    name: str,
-    global_shape: tuple[int, ...] | list[int],
-    local_shape: tuple[int, ...] | list[int],
-    dtype: str,
-    strategy: ShardingStrategy,
-    partition_spec: tuple[Any, ...],
-) -> dict[str, Any]:
-    global_shape = list(global_shape)
-    local_shape = list(local_shape)
-    if len(global_shape) != len(partition_spec):
-        raise RuntimeError(
-            f"parameter '{name}' rank does not match partition spec rank"
-        )
-
-    dim_axes = [_flatten_spec_axes(strategy, entry) for entry in partition_spec]
-    used_axes = {axis for axes in dim_axes for axis in axes}
-    if len(used_axes) != sum(len(axes) for axes in dim_axes):
-        raise RuntimeError(f"partition spec for parameter '{name}' reuses a mesh axis")
-
-    replicated_axes = [
-        axis for axis in range(len(strategy.mesh_shape)) if axis not in used_axes
-    ]
-    dim_partitions = [
-        functools.reduce(operator.mul, (strategy.mesh_shape[axis] for axis in axes), 1)
-        for axes in dim_axes
-    ]
-
-    shards = []
-    for rank in range(strategy.device_count):
-        mesh_coords = _logical_rank_coordinates(rank, strategy.mesh_shape)
-        offsets = []
-        sizes = []
-        for dim, (global_dim, axes, partitions) in enumerate(
-            zip(global_shape, dim_axes, dim_partitions)
-        ):
-            if axes:
-                axis_coord = _flatten_coordinates(
-                    [mesh_coords[axis] for axis in axes],
-                    [strategy.mesh_shape[axis] for axis in axes],
-                )
-            else:
-                axis_coord = 0
-            shard_extent = _ceil_div(global_dim, partitions)
-            start = min(axis_coord * shard_extent, global_dim)
-            end = min((axis_coord + 1) * shard_extent, global_dim)
-            offsets.append(start)
-            sizes.append(end - start)
-
-        replica_id = 0
-        if replicated_axes:
-            replica_id = _flatten_coordinates(
-                [mesh_coords[axis] for axis in replicated_axes],
-                [strategy.mesh_shape[axis] for axis in replicated_axes],
-            )
-
-        shards.append(
-            {
-                "rank": rank,
-                "replica_id": replica_id,
-                "offsets": offsets,
-                "sizes": sizes,
-                "strides": [1 for _ in global_shape],
-            }
-        )
-
-    return {
-        "argument_index": argument_index,
-        "name": name,
-        "source": f"data/{name}",
-        "global_shape": global_shape,
-        "local_shape": local_shape,
-        "dtype": str(dtype),
-        "mesh_shape": list(strategy.mesh_shape),
-        "axis_names": list(strategy.axis_names),
-        "partition_spec": _json_partition_spec(partition_spec),
-        "replicated_axes": [strategy.axis_names[axis] for axis in replicated_axes],
-        "shards": shards,
-    }
-
-
 def _location_kind(location: Any) -> str:
     kind = getattr(location, "type_", "")
     return getattr(kind, "value", kind)
@@ -294,55 +158,189 @@ def _signature_dtype(signature: Any) -> str:
     return str(getattr(signature, "dtype"))
 
 
-def _parameter_partition_spec(strategy: ShardingStrategy, name: str) -> tuple[Any, ...]:
-    if name == "weight":
-        return strategy.weight_spec
-    if name == "bias":
-        return strategy.bias_spec
-    raise RuntimeError(f"no partition spec recorded for parameter '{name}'")
+def _parameter_names(bundle: Any) -> list[str]:
+    if len(bundle.stablehlo_funcs) != 1:
+        raise RuntimeError("parameter shard binding expects one StableHLO function")
+    names = []
+    for location in bundle.stablehlo_funcs[0].meta.input_locations:
+        if _location_kind(location) == "parameter":
+            names.append(getattr(location, "name"))
+    return names
+
+
+def collect_parameter_shards_from_runtime(
+    *,
+    spmd_module: Any,
+    xla_model_module: Any,
+    reference_module: Any,
+    parameter_names: list[str],
+) -> dict[str, list[Any]]:
+    if hasattr(xla_model_module, "mark_step"):
+        xla_model_module.mark_step()
+    if hasattr(xla_model_module, "wait_device_ops"):
+        xla_model_module.wait_device_ops()
+
+    parameter_shards = {}
+    for name in parameter_names:
+        tensor = getattr(reference_module, name)
+        sharded_tensor = spmd_module.wrap_if_sharded(tensor)
+        if not hasattr(sharded_tensor, "local_shards"):
+            raise RuntimeError(
+                f"parameter '{name}' is not backed by an XLA sharded tensor"
+            )
+        shards = list(sharded_tensor.local_shards)
+        if not shards:
+            raise RuntimeError(f"parameter '{name}' has no runtime local shards")
+        parameter_shards[name] = shards
+    return parameter_shards
+
+
+def _rank_from_shard_device(shard_device: Any, fallback_rank: int) -> int:
+    match = re.search(r":(\d+)$", str(shard_device))
+    if match:
+        return int(match.group(1))
+    return fallback_rank
+
+
+def _indices_to_slice_metadata(
+    indices: Any, global_shape: list[int]
+) -> tuple[list[int], list[int], list[int]]:
+    if indices is Ellipsis or indices == Ellipsis:
+        return (
+            [0 for _ in global_shape],
+            list(global_shape),
+            [1 for _ in global_shape],
+        )
+    if len(indices) != len(global_shape):
+        raise RuntimeError("runtime shard indices rank does not match global shape")
+
+    offsets = []
+    sizes = []
+    strides = []
+    for dim, index in enumerate(indices):
+        start = 0 if index.start is None else int(index.start)
+        stop = global_shape[dim] if index.stop is None else int(index.stop)
+        step = 1 if index.step is None else int(index.step)
+        if start < 0 or stop < start or stop > global_shape[dim] or step <= 0:
+            raise RuntimeError("runtime shard indices are outside the global tensor")
+        offsets.append(start)
+        sizes.append(stop - start)
+        strides.append(step)
+    return offsets, sizes, strides
+
+
+def _shard_payload_array(shard: Any) -> Any:
+    payload = shard.unpadded_data
+    if hasattr(payload, "detach"):
+        payload = payload.detach()
+    if hasattr(payload, "cpu"):
+        payload = payload.cpu()
+    if hasattr(payload, "numpy"):
+        payload = payload.numpy()
+    return np.asarray(payload)
+
+
+def _write_shard_payload(path: pathlib.Path, shard: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("wb") as output:
+        np.save(output, _shard_payload_array(shard))
+
+
+def build_parameter_shard_binding_from_runtime(
+    *,
+    bundle_path: pathlib.Path,
+    argument_index: int,
+    name: str,
+    global_shape: tuple[int, ...] | list[int],
+    local_shape: tuple[int, ...] | list[int],
+    dtype: str,
+    runtime_shards: list[Any],
+) -> dict[str, Any]:
+    global_shape = list(global_shape)
+    local_shape = list(local_shape)
+    shards = []
+    for fallback_rank, shard in enumerate(runtime_shards):
+        rank = _rank_from_shard_device(getattr(shard, "shard_device", ""), fallback_rank)
+        offsets, sizes, strides = _indices_to_slice_metadata(
+            getattr(shard, "indices"), global_shape
+        )
+        relative_file = f"parameter_shards/{name}/rank_{rank:05d}.npy"
+        _write_shard_payload(bundle_path / relative_file, shard)
+        shards.append(
+            {
+                "rank": rank,
+                "replica_id": int(getattr(shard, "replica_id")),
+                "file": relative_file,
+                "offsets": offsets,
+                "sizes": sizes,
+                "strides": strides,
+            }
+        )
+
+    return {
+        "argument_index": argument_index,
+        "name": name,
+        "global_shape": global_shape,
+        "local_shape": local_shape,
+        "dtype": str(dtype),
+        "shards": sorted(shards, key=lambda entry: entry["rank"]),
+    }
 
 
 def write_parameter_shard_bindings(
-    bundle_path: pathlib.Path, bundle: Any, strategy: ShardingStrategy
+    *,
+    bundle_path: pathlib.Path,
+    bundle: Any,
+    global_state_dict: dict[str, Any],
+    parameter_shards: dict[str, list[Any]],
 ) -> None:
     if len(bundle.stablehlo_funcs) != 1:
         raise RuntimeError("parameter shard binding expects one StableHLO function")
 
     func = bundle.stablehlo_funcs[0]
     parameters = []
+    logical_rank_count = None
     for index, (signature, location) in enumerate(
         zip(func.meta.input_signature, func.meta.input_locations)
     ):
         if _location_kind(location) != "parameter":
             continue
         name = getattr(location, "name")
-        if name not in bundle.state_dict:
+        if name not in global_state_dict:
             raise RuntimeError(f"parameter '{name}' is missing from state_dict")
-        global_value = bundle.state_dict[name]
-        parameters.append(
-            build_parameter_shard_binding(
-                argument_index=index,
-                name=name,
-                global_shape=tuple(global_value.shape),
-                local_shape=_signature_shape(signature),
-                dtype=_signature_dtype(signature),
-                strategy=strategy,
-                partition_spec=_parameter_partition_spec(strategy, name),
-            )
+        if name not in parameter_shards:
+            raise RuntimeError(f"parameter '{name}' has no runtime shards")
+        if logical_rank_count is None:
+            logical_rank_count = len(parameter_shards[name])
+        elif logical_rank_count != len(parameter_shards[name]):
+            raise RuntimeError("parameter runtime shard counts do not match")
+
+        global_value = global_state_dict[name]
+        binding = build_parameter_shard_binding_from_runtime(
+            bundle_path=bundle_path,
+            argument_index=index,
+            name=name,
+            global_shape=tuple(global_value.shape),
+            local_shape=_signature_shape(signature),
+            dtype=_signature_dtype(signature),
+            runtime_shards=parameter_shards[name],
         )
+        parameters.append(binding)
+
+        global_data_path = bundle_path / "data" / name
+        if global_data_path.exists():
+            global_data_path.unlink()
+
+    if logical_rank_count is None:
+        logical_rank_count = 0
 
     path = bundle_path / "functions" / f"{func.meta.name}.parameter_shards.json"
     path.write_text(
         json.dumps(
             {
-                "parameter_shards_version": 1,
+                "parameter_shards_version": 2,
                 "function": func.meta.name,
-                "logical_rank_count": strategy.device_count,
-                "mesh": {
-                    "shape": list(strategy.mesh_shape),
-                    "axis_names": list(strategy.axis_names),
-                    "device_ids": list(range(strategy.device_count)),
-                },
+                "logical_rank_count": logical_rank_count,
                 "parameters": parameters,
             },
             indent=2,
@@ -727,12 +725,26 @@ def emit_sharded_stablehlo_bundle(
             use_exported_function_signatures=partitioned,
         )
 
+    parameter_shards = None
+    if partitioned:
+        parameter_shards = collect_parameter_shards_from_runtime(
+            spmd_module=spmd_module,
+            xla_model_module=xla_model_module,
+            reference_module=reference_module,
+            parameter_names=_parameter_names(bundle),
+        )
+
     if bundle_path.exists():
         shutil.rmtree(bundle_path)
     bundle_path.parent.mkdir(parents=True, exist_ok=True)
     stablehlo_module.StableHLOGraphModule(bundle).save(str(bundle_path), options)
     if partitioned:
-        write_parameter_shard_bindings(bundle_path, bundle, strategy)
+        write_parameter_shard_bindings(
+            bundle_path=bundle_path,
+            bundle=bundle,
+            global_state_dict=state_dict,
+            parameter_shards=parameter_shards,
+        )
     _verify_bundle_layout(bundle_path)
 
 
@@ -832,12 +844,26 @@ def _emit_stablehlo_bundle_with_strategy(
             use_exported_function_signatures=partitioned,
         )
 
+    parameter_shards = None
+    if partitioned:
+        parameter_shards = collect_parameter_shards_from_runtime(
+            spmd_module=spmd_module,
+            xla_model_module=xla_model_module,
+            reference_module=reference_module,
+            parameter_names=_parameter_names(bundle),
+        )
+
     if bundle_path.exists():
         shutil.rmtree(bundle_path)
     bundle_path.parent.mkdir(parents=True, exist_ok=True)
     stablehlo_module.StableHLOGraphModule(bundle).save(str(bundle_path), options)
     if partitioned:
-        write_parameter_shard_bindings(bundle_path, bundle, strategy)
+        write_parameter_shard_bindings(
+            bundle_path=bundle_path,
+            bundle=bundle,
+            global_state_dict=state_dict,
+            parameter_shards=parameter_shards,
+        )
     _verify_bundle_layout(bundle_path)
 
 
