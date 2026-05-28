@@ -114,8 +114,11 @@ boundary、tile shape、multi-stage schedule、SPM residency 或 C ABI issue seq
 - `test/Spmd/default-spmd-input-seed.mlir`
 
 这些 gate 证明真实 source-built PyTorch/XLA `mark_sharding` artifact、default input seed policy 和
-XLA SPMD partitioned StableHLO bundle 可被当前工具链验证；它们仍不证明 R2.4 tensor collective
-handoff、R3 group planner、resource planner、package、runtime 或 board execution。
+XLA SPMD partitioned StableHLO bundle 可被当前工具链验证；partitioned bundle 同时导出
+`functions/forward.parameter_shards.json`，把 local parameter argument 显式绑定到
+`data/<parameter>` 的 per-logical-rank offsets/sizes/strides 和 replica id，且由
+`wafer-import-model --verify-stablehlo-bundle` 校验。它们仍不证明 R2.4 tensor collective handoff、
+R3 group planner、resource planner、package、runtime 或 board execution。
 
 这些验证证明 R2 artifact/bridge/coverage 状态收敛，不证明 R3 之后的 group planner、resource
 planner、package、runtime 或 board execution。

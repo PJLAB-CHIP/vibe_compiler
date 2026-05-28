@@ -94,6 +94,10 @@ int verifyStableHLOBundle(llvm::StringRef bundlePath) {
 
   llvm::outs() << "wafer-import-model: verified StableHLO bundle parameters: "
                << result.bundleParameterCount << "\n";
+  if (result.bundleParameterShardBindingCount)
+    llvm::outs() << "wafer-import-model: verified StableHLO bundle "
+                    "parameter shard bindings: "
+                 << result.bundleParameterShardBindingCount << "\n";
   llvm::outs() << "wafer-import-model: verified frontend artifact\n";
   return 0;
 }

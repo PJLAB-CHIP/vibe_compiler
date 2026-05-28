@@ -19,6 +19,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -215,6 +216,25 @@ bool readShapeField(const llvm::json::Object &object,
   return false;
 }
 
+bool readIntegerArrayField(const llvm::json::Object &object,
+                           llvm::StringRef field, std::vector<int64_t> &values,
+                           llvm::raw_ostream &diagnostics,
+                           bool requirePositive = false) {
+  const llvm::json::Array *array = object.getArray(field);
+  if (!array)
+    return rejectBundle("expected array field '" + field.str() + "'",
+                        diagnostics);
+
+  for (const llvm::json::Value &value : *array) {
+    std::optional<int64_t> entry = value.getAsInteger();
+    if (!entry || *entry < 0 || (requirePositive && *entry == 0))
+      return rejectBundle("invalid integer array field '" + field.str() + "'",
+                          diagnostics);
+    values.push_back(*entry);
+  }
+  return false;
+}
+
 FailureOr<BundleSignature>
 parseSignature(const llvm::json::Value &value,
                llvm::raw_ostream &diagnostics) {
@@ -362,6 +382,19 @@ uint64_t rawByteSize(RankedTensorType type) {
   return static_cast<uint64_t>(type.getNumElements()) * (bitWidth / 8);
 }
 
+uint64_t rawByteSize(llvm::ArrayRef<int64_t> shape, Type elementType) {
+  unsigned bitWidth = mlir::getElementTypeOrSelf(elementType).getIntOrFloatBitWidth();
+  if (bitWidth % 8 != 0)
+    return 0;
+  uint64_t elements = 1;
+  for (int64_t dim : shape) {
+    if (dim < 0)
+      return 0;
+    elements *= static_cast<uint64_t>(dim);
+  }
+  return elements * (bitWidth / 8);
+}
+
 bool verifySignature(Type type, const BundleSignature &signature,
                      llvm::StringRef kind, unsigned index,
                      llvm::raw_ostream &diagnostics) {
@@ -506,6 +539,261 @@ bool verifyBundleMeta(ModuleOp module, llvm::StringRef bundleDir,
   return rejected;
 }
 
+bool hasSpmdParameterShardings(ModuleOp module) {
+  if (module->getAttr("mhlo.spmd_parameters_shardings"))
+    return true;
+
+  bool found = false;
+  module.walk([&](Operation *op) {
+    if (op->getAttr("mhlo.spmd_parameters_shardings")) {
+      found = true;
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  return found;
+}
+
+bool fileExists(llvm::StringRef path) {
+  llvm::sys::fs::file_status status;
+  if (std::error_code error = llvm::sys::fs::status(path, status))
+    return false;
+  return llvm::sys::fs::is_regular_file(status);
+}
+
+FailureOr<llvm::json::Value> parseJsonFile(llvm::StringRef path,
+                                           llvm::raw_ostream &diagnostics) {
+  auto bufferOrError = llvm::MemoryBuffer::getFile(path);
+  if (!bufferOrError) {
+    rejectBundle("failed to read '" + path.str() + "'", diagnostics);
+    return failure();
+  }
+
+  llvm::Expected<llvm::json::Value> parsed =
+      llvm::json::parse((*bufferOrError)->getBuffer());
+  if (!parsed) {
+    std::string message = llvm::toString(parsed.takeError());
+    rejectBundle("invalid JSON: " + message, diagnostics);
+    return failure();
+  }
+  return std::move(*parsed);
+}
+
+bool verifyShardEntry(const llvm::json::Object &object, int64_t logicalRankCount,
+                      llvm::ArrayRef<int64_t> globalShape,
+                      llvm::ArrayRef<int64_t> localShape,
+                      std::vector<bool> &seenRanks,
+                      llvm::raw_ostream &diagnostics) {
+  int64_t rank = -1;
+  int64_t replicaId = -1;
+  std::vector<int64_t> offsets;
+  std::vector<int64_t> sizes;
+  std::vector<int64_t> strides;
+  if (readIntegerField(object, "rank", rank, diagnostics) ||
+      readIntegerField(object, "replica_id", replicaId, diagnostics) ||
+      readIntegerArrayField(object, "offsets", offsets, diagnostics) ||
+      readIntegerArrayField(object, "sizes", sizes, diagnostics) ||
+      readIntegerArrayField(object, "strides", strides, diagnostics,
+                            /*requirePositive=*/true))
+    return true;
+
+  if (rank < 0 || rank >= logicalRankCount)
+    return rejectBundle("parameter shard rank is out of range", diagnostics);
+  if (seenRanks[rank])
+    return rejectBundle("duplicate parameter shard rank", diagnostics);
+  seenRanks[rank] = true;
+
+  if (replicaId < 0)
+    return rejectBundle("parameter shard replica_id must be non-negative",
+                        diagnostics);
+
+  size_t rankSize = globalShape.size();
+  if (offsets.size() != rankSize || sizes.size() != rankSize ||
+      strides.size() != rankSize)
+    return rejectBundle("parameter shard rank does not match global shape",
+                        diagnostics);
+
+  for (auto [dim, offset] : llvm::enumerate(offsets)) {
+    int64_t size = sizes[dim];
+    if (offset > globalShape[dim] || size > globalShape[dim] - offset)
+      return rejectBundle("parameter shard slice exceeds global shape",
+                          diagnostics);
+    if (dim < localShape.size() && size > localShape[dim])
+      return rejectBundle("parameter shard size exceeds local tensor shape",
+                          diagnostics);
+  }
+
+  return false;
+}
+
+bool verifyParameterShardBinding(const llvm::json::Object &object,
+                                 const BundleMeta &meta,
+                                 FunctionType functionType,
+                                 int64_t logicalRankCount,
+                                 std::vector<bool> &seenParameterArgs,
+                                 llvm::StringRef bundleDir,
+                                 llvm::raw_ostream &diagnostics) {
+  int64_t argumentIndex = -1;
+  std::string name;
+  std::string source;
+  std::string dtype;
+  std::vector<int64_t> globalShape;
+  std::vector<int64_t> localShape;
+
+  if (readIntegerField(object, "argument_index", argumentIndex, diagnostics) ||
+      readStringField(object, "name", name, diagnostics) ||
+      readStringField(object, "source", source, diagnostics) ||
+      readStringField(object, "dtype", dtype, diagnostics) ||
+      readIntegerArrayField(object, "global_shape", globalShape, diagnostics) ||
+      readIntegerArrayField(object, "local_shape", localShape, diagnostics))
+    return true;
+
+  if (argumentIndex < 0 ||
+      argumentIndex >= static_cast<int64_t>(functionType.getNumInputs()))
+    return rejectBundle("parameter shard argument_index is out of range",
+                        diagnostics);
+
+  const BundleInputLocation &location = meta.inputLocations[argumentIndex];
+  if (location.type != "parameter")
+    return rejectBundle("parameter shard argument_index does not refer to a "
+                        "parameter input",
+                        diagnostics);
+  if (name != location.name)
+    return rejectBundle("parameter shard name does not match input location",
+                        diagnostics);
+  if (source != ("data/" + name))
+    return rejectBundle("parameter shard source must match data/<parameter>",
+                        diagnostics);
+
+  Type inputType = functionType.getInput(argumentIndex);
+  auto tensorType = dyn_cast<RankedTensorType>(inputType);
+  if (!tensorType || !tensorType.hasStaticShape())
+    return rejectBundle("parameter shard argument must be a static ranked tensor",
+                        diagnostics);
+  if (!llvm::equal(tensorType.getShape(), localShape))
+    return rejectBundle("parameter shard local_shape does not match func.func "
+                        "argument type",
+                        diagnostics);
+  if (globalShape.size() != static_cast<size_t>(tensorType.getRank()))
+    return rejectBundle("parameter shard global_shape rank does not match "
+                        "func.func argument type",
+                        diagnostics);
+  if (dtypeString(tensorType.getElementType()) != normalizeBundleDtype(dtype))
+    return rejectBundle("parameter shard dtype does not match func.func "
+                        "argument type",
+                        diagnostics);
+
+  uint64_t expectedGlobalBytes =
+      rawByteSize(globalShape, tensorType.getElementType());
+  if (expectedGlobalBytes == 0)
+    return rejectBundle("parameter shard global tensor byte size is not "
+                        "representable",
+                        diagnostics);
+  std::string dataPath = bundlePath(bundleDir, {"data", name});
+  llvm::sys::fs::file_status status;
+  if (std::error_code error = llvm::sys::fs::status(dataPath, status))
+    return rejectBundle("parameter shard data file is missing: " + name,
+                        diagnostics);
+  if (status.getSize() < expectedGlobalBytes)
+    return rejectBundle("parameter shard data file is smaller than global "
+                        "tensor payload: " +
+                            name,
+                        diagnostics);
+
+  const llvm::json::Array *shards = object.getArray("shards");
+  if (!shards)
+    return rejectBundle("expected array field 'shards'", diagnostics);
+  if (shards->size() != static_cast<size_t>(logicalRankCount))
+    return rejectBundle("parameter shard count does not match "
+                        "logical_rank_count",
+                        diagnostics);
+
+  std::vector<bool> seenRanks(logicalRankCount, false);
+  for (const llvm::json::Value &value : *shards) {
+    const llvm::json::Object *shardObject = value.getAsObject();
+    if (!shardObject)
+      return rejectBundle("parameter shard entries must be objects",
+                          diagnostics);
+    if (verifyShardEntry(*shardObject, logicalRankCount, globalShape,
+                         localShape, seenRanks, diagnostics))
+      return true;
+  }
+
+  seenParameterArgs[argumentIndex] = true;
+  return false;
+}
+
+bool verifyParameterShardBindings(
+    ModuleOp module, llvm::StringRef bundleDir, const BundleMeta &meta,
+    FunctionType functionType, llvm::raw_ostream &diagnostics,
+    wafer::frontend::ArtifactVerificationResult *result) {
+  std::string path =
+      bundlePath(bundleDir, {"functions", "forward.parameter_shards.json"});
+  if (!fileExists(path)) {
+    if (hasSpmdParameterShardings(module))
+      return rejectBundle("partitioned StableHLO bundle is missing parameter "
+                          "shard bindings",
+                          diagnostics);
+    return false;
+  }
+
+  FailureOr<llvm::json::Value> parsed = parseJsonFile(path, diagnostics);
+  if (failed(parsed))
+    return true;
+
+  const llvm::json::Object *root = parsed->getAsObject();
+  if (!root)
+    return rejectBundle("parameter shard binding root must be an object",
+                        diagnostics);
+
+  int64_t version = 0;
+  std::string function;
+  int64_t logicalRankCount = 0;
+  if (readIntegerField(*root, "parameter_shards_version", version,
+                       diagnostics) ||
+      readStringField(*root, "function", function, diagnostics) ||
+      readIntegerField(*root, "logical_rank_count", logicalRankCount,
+                       diagnostics))
+    return true;
+  if (version != 1)
+    return rejectBundle("unsupported parameter shard binding version",
+                        diagnostics);
+  if (function != meta.name)
+    return rejectBundle("parameter shard function does not match bundle meta",
+                        diagnostics);
+  if (logicalRankCount <= 0)
+    return rejectBundle("logical_rank_count must be positive", diagnostics);
+
+  const llvm::json::Array *parameters = root->getArray("parameters");
+  if (!parameters)
+    return rejectBundle("expected array field 'parameters'", diagnostics);
+
+  std::vector<bool> seenParameterArgs(functionType.getNumInputs(), false);
+  unsigned bindingCount = 0;
+  for (const llvm::json::Value &value : *parameters) {
+    const llvm::json::Object *object = value.getAsObject();
+    if (!object)
+      return rejectBundle("parameter shard binding entries must be objects",
+                          diagnostics);
+    if (verifyParameterShardBinding(*object, meta, functionType,
+                                    logicalRankCount, seenParameterArgs,
+                                    bundleDir, diagnostics))
+      return true;
+    ++bindingCount;
+  }
+
+  for (auto [index, location] : llvm::enumerate(meta.inputLocations)) {
+    if (location.type == "parameter" && !seenParameterArgs[index])
+      return rejectBundle("parameter input is missing shard binding: " +
+                              location.name,
+                          diagnostics);
+  }
+
+  if (result)
+    result->bundleParameterShardBindingCount = bindingCount;
+  return false;
+}
+
 } // namespace
 
 namespace wafer::frontend {
@@ -542,6 +830,14 @@ LogicalResult verifyStableHLOBundle(ModuleOp module, llvm::StringRef bundlePath,
     return failure();
 
   bool rejected = verifyBundleMeta(module, bundlePath, *meta, diagnostics, result);
+  if (!rejected) {
+    FailureOr<func::FuncOp> func = findSingleFunction(module, diagnostics);
+    if (failed(func))
+      return failure();
+    rejected |= verifyParameterShardBindings(module, bundlePath, *meta,
+                                             func->getFunctionType(),
+                                             diagnostics, result);
+  }
   return rejected ? failure() : success();
 }
 

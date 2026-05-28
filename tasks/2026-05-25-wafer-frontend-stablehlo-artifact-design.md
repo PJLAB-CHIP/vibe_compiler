@@ -65,12 +65,15 @@ PyTorch/XLA 路线的 frontend artifact 只保留一套 exporter-native 事实�
 | --- | --- | --- |
 | `functions/forward.mlir` | StableHLO IR 主体 | parse / verify 后进入 compiler pipeline |
 | `functions/forward.meta` | PyTorch/XLA 导出的 metadata | 校验 function arg/result 与 parameter / user input / shape / dtype 的关系 |
+| `functions/forward.parameter_shards.json` | post-SPMD parameter shard binding | 仅在 partitioned bundle 中存在；校验 local function parameter 与 `data/<parameter>` 的 global slice 关系 |
 | `functions/forward.bytecode` | StableHLO bytecode | 与 bundle 一起保留，当前不作为 Wafer IR 合同 |
 | `data/<parameter>` | PyTorch/XLA 导出的 weight data | import 边界检查存在性和 payload size，不提交进 git fixture |
 
-不要为同一件事再生成 Wafer 私有伴随 JSON / compile JSON。`forward.meta` 是 artifact 边界事实源；
-后续 compiler pass 不能直接读取 bundle metadata，而应消费 importer materialize 到 MLIR IR 的显式
-事实。metadata 也不描述 Wafer physical layout、buffer object pool、DDR address 或 package path。
+不要为同一件事再生成 Wafer 私有伴随 JSON / compile JSON。`forward.meta` 是 function boundary
+事实源；`forward.parameter_shards.json` 只承接 post-SPMD 后 external parameter backing data 到
+local parameter shard 的绑定关系。后续 compiler pass 不能直接读取 bundle metadata，而应消费
+importer materialize 到 MLIR IR 的显式事实。metadata 也不描述 Wafer physical layout、buffer object
+pool、DDR address 或 package path。
 
 ### 2.1 模型导入合同
 

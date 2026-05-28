@@ -17,6 +17,7 @@ namespace wafer::frontend {
 struct ArtifactVerificationResult {
   unsigned bundleParameterCount = 0;
   unsigned bundleUserInputCount = 0;
+  unsigned bundleParameterShardBindingCount = 0;
 };
 
 mlir::LogicalResult

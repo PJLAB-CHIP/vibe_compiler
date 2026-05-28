@@ -216,7 +216,10 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   frontend verifier 和 standalone SDY propagation parse gate 消费；partitioned gate 通过同一
   PyTorch/XLA/XLA 版本的 post-optimization export 取得 XLA SPMD partitioner 后的 StableHLO local
   body，并覆盖 row/partial/default 分支的 collective、replica group、local shard shape 和
-  partial-replication metadata。完全没有用户 seed 时，P2.S1 在 SPMD 层补默认 single-card
+  partial-replication metadata。partitioned bundle 同步生成 `functions/forward.parameter_shards.json`，
+  显式记录 parameter argument 到 `data/<parameter>` global backing 的 per-logical-rank
+  offsets/sizes/strides、local shape 和 replica id，bundle verifier 会校验这份绑定。完全没有用户
+  seed 时，P2.S1 在 SPMD 层补默认 single-card
   function-input sharding seed（默认 16 tile，调试 1 tile，找不到合适切分维度时 replicated），再产出
   可校验的 partitioned StableHLO 或 replicated-local artifact；不生成 `wafer.spmd.*`、私有 JSON 或
   名字约定作为协议。当前 collective normalization、`wafer.comm`、placement 或 ring/resource
