@@ -300,9 +300,9 @@ fixed-size unicast Direct DTE，并把 raw non-unicast 放到 V1/HardwareVerify�
 
 仍需实现 / 验证：
 
-- M2 明确只验证 fixed-size unicast Direct DTE helper。
-- M3 的 ring all-gather/reduce-scatter/all-reduce 默认用 unicast ring/tree，不使用 raw
-  broadcast/shuffle。
+- Direct DTE p2p 阶段明确只验证 fixed-size unicast Direct DTE helper。
+- single-card collective 阶段的 ring all-gather/reduce-scatter/all-reduce 默认用 unicast
+  ring/tree，不使用 raw broadcast/shuffle。
 - 如果要启用 raw non-unicast，单独新增 `Wafer Raw DTE Collective ABI`，只有在板端验证后才能进入 V1。
 
 ## 10. Stream/mailbox 不能只作为“旧路径”处理
@@ -392,26 +392,26 @@ buffer 复用必须有 explicit local drain。
 - 已规整的 Wafer LinalgExt-style tensor collective handoff；raw StableHLO collective 和 physical
   communication 仍作为 group boundary。
 - layout materialization。
-- Conv 作为受限 V0/V1 目标保留，但不作为 M0/M1 主线。
+- Conv 作为受限 V0/V1 目标保留，但不作为 single-tile / multi-tile local compute 主线。
 
 ## 14. Milestone 需要按逆向结果加验收标准
 
-当前 M0..M5 路线合理，但每个 milestone 缺少硬件合同级验收标准。
+当前按能力分层推进的路线合理，但每个阶段缺少硬件合同级验收标准。
 
 建议补充：
 
-- M0：验证 `TsmExecute` 0..4 分派、`TsmWaitfinish` local drain、RDMA/WDMA/CT/NE/TDMA
-  至少一个 wrapper-golden packet。
-- M0：验证 HPGR 或 legacy `TsmRun` bootparam path；不能用 `TsmLaunch` /
+- single-tile compute：验证 `TsmExecute` 0..4 分派、`TsmWaitfinish` local drain、
+  RDMA/WDMA/CT/NE/TDMA 至少一个 wrapper-golden packet。
+- single-tile compute：验证 HPGR 或 legacy `TsmRun` bootparam path；不能用 `TsmLaunch` /
   `DeviceSynchronize` 当通过标准。
-- M0：验证 `serial_mode` 初始化写 0 或读回确认。
-- M1：验证 tile id / block id / good-tile bitmap 与 placement metadata，不依赖 runtime
-  discovery stubs。
-- M2：验证 DTE unicast helper、FSM monitor、status/error/packet counter update 和
+- single-tile compute：验证 `serial_mode` 初始化写 0 或读回确认。
+- multi-tile no-communication：验证 tile id / block id / good-tile bitmap 与 placement metadata，
+  不依赖 runtime discovery stubs。
+- Direct DTE p2p：验证 DTE unicast helper、FSM monitor、status/error/packet counter update 和
   resource release。
-- M3：V0 collective 只用 unicast ring/tree；raw DTE broadcast/shuffle 进入
+- single-card collective：V0 collective 只用 unicast ring/tree；raw DTE broadcast/shuffle 进入
   V1/HardwareVerify。
-- M5：compute/comm overlap 必须基于 issue/drain、DTE wait、group barrier、SPM
+- compute/comm overlap：必须基于 issue/drain、DTE wait、group barrier、SPM
   bank/page coloring 和 PMU/profiling，不是简单把 op 放进同一个 kcore function。
 
 ## 15. 测试体系承接状态
@@ -506,20 +506,21 @@ Frontend artifact
 | Group planning | softmax staged schedule 有可测试 pattern：row max、exp、row sum、normalize 和 value accumulation 跨 key dimension 的状态明确表达 | 状态由 SSA、loop-carried value、explicit workspace 或 group split 表达，不写入 planner side table |
 | Compute coverage | elementwise 覆盖 add/sub/mul/div/max/min/neg/recip/sqrt/rsqrt/exp、limited broadcast、mask-add 或 compare/select；reduction 至少覆盖 max 和 sum | 能服务 softmax 与 norm；只有一个 demo reduce 或一个 GEMM 最小验证 不算覆盖 |
 | Shape / indexing | Batch/head transpose relation 从 StableHLO dot dimension numbers 或 indexing map 推出 | 不能靠 Q/K/V 名字、参数顺序或示例 shape 恢复语义 |
-| Verification | M6 transformer block vertical slice gate 覆盖完整 block 的 normalization、group split、layout/SPM/DDR、C ABI 和 runtime completion | 单 op、单 group 或 single-tile 最小验证 只能证明局部链路，不能证明 block 支撑完成 |
+| Verification | transformer block vertical slice gate 覆盖完整 block 的 normalization、group split、layout/SPM/DDR、C ABI 和 runtime completion | 单 op、单 group 或 single-tile 最小验证 只能证明局部链路，不能证明 block 支撑完成 |
 
 ### 17.4 建议落地顺序
 
 建议按以下顺序推进实现和验证：
 
-1. M0/M1：single tile / multi-tile no communication 的 load-GEMM-store 闭环。
+1. Single-tile / multi-tile no-communication：load-GEMM-store 闭环。
 2. Structured tensor normalization：先让一个静态 transformer block local shard 输出可 tile 的
    Linalg/Tensor/SCF/Arith/Math IR。
 3. Norm vertical slice：RMSNorm 或 LayerNorm 的 reduce + elementwise group。
 4. Attention softmax vertical slice：固定 shape、单 head 或少量 heads，先不接 value matmul。
 5. Attention full slice：QK^T + softmax + AV，必要时拆多个 groups。
 6. MLP slice：GEMM + activation + elementwise multiply + GEMM。
-7. M6：完整 transformer block，本地单 shard 先跑通；需要 tensor parallel 时再接 M2/M3/M4。
+7. Transformer block vertical slice：完整 transformer block，本地单 shard 先跑通；需要 tensor
+   parallel 时再接 p2p、single-card collective 和 partitioned collective handoff。
 
 ## 18. 当前文档可以保留的判断
 

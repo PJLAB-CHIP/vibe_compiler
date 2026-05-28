@@ -5,7 +5,7 @@
 状态：R2 完成记录
 
 2026-05-27 复查更新：R2.2 中 StableHLO collective 直接 bridge 到 `wafer.comm` 的实现只保留为
-后段 communication 骨架，不再作为 P2.S1、group 或 tiling 的主线完成证明。真实 P2.S1 必须走
+已删除路线的后段 communication coverage，不再作为 P2.S1、group 或 tiling 的主线完成证明。真实 P2.S1 必须走
 `mark_sharding/default-input-seed -> StableHLO/SDY -> Shardy/XLA SPMD partitioner -> partitioned
 or replicated-local StableHLO`，post-SPMD collective 先进入 Wafer LinalgExt-style tensor collective
 handoff，再进入 group/tiling。没有用户 sharding 标记时，P2.S1 在 SPMD 层补默认 single-card
@@ -60,26 +60,22 @@ bundle 自己保存的数据文件，不能成为后端 lowering 分支条件。
   Shardy。
 - `test/Spmd/shardy-artifact-bridge.mlir` 覆盖 `sdy.mesh`、`sdy.sharding`、partitioned StableHLO
   `all_gather` 和 frontend verifier 的同一 artifact 入口。
-- StableHLO collective bridge 不再只保留 `group_size/local_rank`。`wafer.comm.all_gather`、
-  `wafer.comm.all_reduce` 和 `wafer.comm.reduce_scatter` 现在显式携带
-  `rank_group = array<i64: ...>`，该值来自 StableHLO `replica_groups`。
-- comm verifier 检查 `rank_group` size、非负和唯一性；ring lowering 用 `rank_group` 查询
-  `wafer.placement.map` 的 logical-rank 到 physical tile 映射，不再假设 logical rank 连续等于
-  `0..group_size-1`。
+- 历史 StableHLO collective bridge 曾把 `replica_groups` materialize 到后段 `wafer.comm`
+  `rank_group`，用于证明 rank-group metadata 可被 communication verifier 和 ring lowering 消费。
+  该入口已经从主线路径删除，不能作为 group/tiling 前的 collective 表示恢复。
+- 主线必须拆成 StableHLO -> Wafer LinalgExt-style tensor collective，以及 tiled tensor collective
+  + SPM tile buffers -> `wafer.comm` 两层。`wafer.comm` 只能在 tile_region / SPM materialization /
+  placement 明确后 materialize。
 
-上述 bridge 的位置是临时的。主线不能在 group/tiling 前把 StableHLO collective 直接降到
-`wafer.comm`；后续应拆成 StableHLO -> Wafer LinalgExt-style tensor collective，以及 tiled tensor
-collective + SPM tile buffers -> `wafer.comm` 两层。
+历史 bridge 覆盖状态：
 
-当前 bridge 覆盖状态：
-
-- 当前 bridge 只覆盖单个 StableHLO replica group；多 replica-group artifact 需要 P2.S1 引入明确的
-  global/local rank selection policy 和 partitioned artifact 表示。这是 bridge 覆盖缺口，不是
-  Wafer SPMD 语义不支持。
+- 历史 bridge 只覆盖单个 StableHLO replica group；多 replica-group artifact 需要由 SPMD artifact
+  和 tensor collective handoff 保留 global/local rank selection policy。这是旧 bridge 覆盖缺口，
+  不是 Wafer SPMD 语义不支持。
 - R2.2 本身没有把 Shardy propagation/SPMD partitioner 作为 Wafer pass pipeline 主路径跑完；后续
   P2.S1 已用真实 PyTorch/XLA mark artifact、standalone SDY propagation parse gate 和 XLA SPMD
-  post-optimization export 补齐 partitioned artifact gate。R2.2 只恢复 artifact dialect/metadata
-  bridge 和后段 communication 骨架 rank group 输入。
+  post-optimization export 补齐 partitioned artifact gate。R2.2 只留下 artifact dialect/metadata
+  bridge 的历史证据和后段 communication fixture，不定义后续主线入口。
 - StableHLO collective 到 tile buffer 的 visible `unrealized_conversion_cast` 仍属于 R6.2 缺口。
 
 ## R2.3 Local Compute Normalization Coverage Status

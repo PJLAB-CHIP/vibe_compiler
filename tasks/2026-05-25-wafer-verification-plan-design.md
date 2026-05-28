@@ -84,7 +84,7 @@ pattern FileCheck、手写 StableHLO/Linalg fixture 和 fixed manifest 可以保
 
 ## 4. Milestone Gates
 
-M0 single tile compute：
+Single-tile local compute：
 
 - 主链路 gate 应消费 P2.F1/P2.S1/R2.4 产出的真实图 artifact，并继续通过 frontend/local compute /
   tensor collective handoff gate；graph break / fallback 不被当成合法 artifact。手写 StableHLO/Linalg
@@ -97,7 +97,7 @@ M0 single tile compute：
   在带实际计算卡服务器上再验证，届时 completion 必须来自 HPGR model/module/stream completion、
   legacy `TsmRun` synchronous path，或 device-side drain + 可信 host completion。
 
-M1 multi-tile no communication：
+Multi-tile no communication：
 
 - 主链路 gate 继续消费同一条真实图 artifact chain，不重新退回手写 tile_region 或 fixed manifest。
 - placement 覆盖多个 tile，并使用 good-tile metadata。
@@ -105,16 +105,16 @@ M1 multi-tile no communication：
 - 无 tile 间 DTE 依赖。
 - local package / generated artifact 能区分 per-tile args；runtime launch 和 completion 后续在有卡环境验证。
 
-M2 Direct DTE p2p：
+Direct DTE p2p：
 
 - `wafer.comm` p2p op 的 endpoint 来自 placement。
 - fixed-size unicast DTE helper lowering 合法。
 - DTE wait 与 local compute drain 分离。
 - FSM / packet / stream resource 不冲突。
 - 当前 integration gate：`test/Integration/p2p-comm-gate.mlir` 覆盖 placement-verified p2p
-  send/recv/wait 到 `wafer.abi.dte_*` 骨架。
+  send/recv/wait 到 `wafer.abi.dte_*` issue op。
 
-M3 single-card collective：
+Single-card collective：
 
 - ring all-gather / reduce-scatter / all-reduce 可追溯到 unicast steps。
 - 每步 send/recv/wait token 和 buffer lifetime 合法。
@@ -122,7 +122,7 @@ M3 single-card collective：
 - 当前 integration gate：`test/Integration/single-card-collective-gate.mlir` 覆盖 `wafer.comm`
   all-gather/all-reduce 到 ring p2p、Direct DTE ABI 和 elementwise ABI。
 
-M4 partitioned StableHLO collective handoff：
+Partitioned StableHLO collective handoff：
 
 - Shardy / XLA SPMD 输出的 logical collective 能保留为 partitioned StableHLO / SDY metadata，并先
   normalize 成 Wafer LinalgExt-style tensor collective op；该 op 可被 group/tiling 直接消费。
@@ -131,16 +131,16 @@ M4 partitioned StableHLO collective handoff：
   伪装成已经 materialize 的 `wafer.comm`。
 - layout/SPM/DDR resource gates 只对本 milestone 已经 materialize 的 movement / buffer demand
   负责；尚未 materialize 的 logical collective 不能被伪装成已通过 resource gate。
-- 旧的 StableHLO -> `wafer.comm` integration 骨架 已移除。R2.4 需要补 StableHLO -> tensor
+- 旧的 StableHLO -> `wafer.comm` integration 已移除。R2.4 需要补 StableHLO -> tensor
   collective 的 gate，R6 再验证 tiled tensor collective -> `wafer.comm` 的 materialization。
 
-M5 overlap and cost model（优化类，当前执行看板后移为 P9）：
+Overlap and cost model（优化类，当前执行看板后移为 P9）：
 
 - issue/drain placement 由 effect/token verifier 证明。
 - SPM busy range、DDR range/bandwidth 和 DTE resource pressure 进入 cost model。
 - PMU/profiling 只作为 calibration，不作为 IR 语义事实。
 
-M6 transformer block vertical slice：
+Transformer block vertical slice：
 
 - StableHLO local shard 能 normalized 到 structured tensor IR，覆盖 dot_general、batch/head
   matmul、broadcast、reduction、reshape/transpose/slice、softmax、RMSNorm / LayerNorm、RoPE
@@ -151,8 +151,8 @@ M6 transformer block vertical slice：
   sqrt/rsqrt/exp、limited broadcast、mask-add 或 compare/select。
 - layout/SPM/DDR feasibility 对所有 accepted groups 通过；constant/weight slices 可追溯到
   `ConstantLike` value 和 `wafer.load_tile`。
-- 若启用 tensor parallel collective，R2.4 tensor collective handoff 以及 M2/M3/M4 gate 已通过；
-  否则 M6 只验证单卡/单 shard local transformer block。
+- 若启用 tensor parallel collective，R2.4 tensor collective handoff 以及 p2p/ring/multi-replica
+  collective gate 已通过；否则只验证单卡/单 shard local transformer block。
 - 当前无卡开发环境要求 generated artifact compile，package/runtime metadata 覆盖所有 block
   input/output、resident constants 和 workspace；completion 和数值对比后续在有卡环境验证。
 
@@ -160,11 +160,11 @@ M6 transformer block vertical slice：
 rank-4 batched GEMM 子图、same-shape / projected-permutation limited broadcast elementwise 子图，
 以及 scalar-constant-init reduce max/sum 子图的 local compile path：normalization、acceptance
 gates、group split、single-tile materialization、SPM allocation check、DDR binding demand、C ABI
-骨架、manifest validate 和 C stub syntax compile。package gate 要求 M6 fixture manifest 记录
+issue、manifest validate 和 C stub syntax compile。package gate 要求 transformer fixture manifest 记录
 workspace buffers 和 resident constants，并验证它们的 compact tensor storage bytes 与 resource
 summary 一致；manifest 中的 82 个 ABI issue 覆盖当前 full block lowering 输出的 RDMA、WDMA、
 elementwise、GEMM 和 reduce issue，C stub 会 materialize 对应 issue/resource table，证明 metadata
-能进入本地 toolchain 可消费的 artifact 骨架。它是当前无卡环境的 M6 完成证据；completion、
+能进入本地 toolchain 可消费的 C source fixture。它是当前无卡环境的 transformer fixture 覆盖；completion、
 数值对比和 profiling 仍等有卡环境补 gate。
 
 M7 ABI / LLVM artifact gate：
@@ -176,7 +176,7 @@ M7 ABI / LLVM artifact gate：
 - 本地 gate 至少检查 LLVM IR 文本中的 entrypoint、runtime symbol declaration、参数顺序和
   metadata/artifact 引用；随后用当前 toolchain 做 object 或 link 最小验证。
 - package manifest 必须记录真实 LLVM/object artifact id、entrypoint 和 ABI version；C stub-only
-  artifact 只允许作为 P0-P6 骨架 gate 的验证物。
+  artifact 只允许作为 P0-P6 历史局部 fixture 的验证物。
 
 M8 runtime / board correctness gate：
 
@@ -184,8 +184,8 @@ M8 runtime / board correctness gate：
   correctness fence。
 - package 中的 tensor、workspace、constant、placement 和 per-tile launch args 必须能绑定到真实
   BO / DDR / launch argument。
-- M0/M1/M2/M3/M4/M6 的板端 gate 分别覆盖 single-tile compute、多 tile no-comm、p2p、ring
-  collective、partitioned collective 和 full local block 的 launch、completion、错误传播和数值对比。
+- 板端 gate 分别覆盖 single-tile compute、多 tile no-comm、p2p、ring collective、partitioned
+  collective 和 full local block 的 launch、completion、错误传播和数值对比。
 - profiling 只作为后续 P9 cost model calibration 的输入，不作为 M8 correctness 通过条件。
 
 M9 overlap / cost model / profiling calibration gate：
@@ -197,11 +197,11 @@ M9 overlap / cost model / profiling calibration gate：
 2026-05-25 后续实现补入了 `linalg.elementwise` 的局部 physical slice：same-shape identity 和
 可由 projected-permutation `indexing_maps` 验证的 row/head/vector broadcast 可以形成
 `wafer.group`，materialize 为 `wafer.compute.elementwise`，并 lower 到带 `indexing_maps` 的
-`wafer.abi.elementwise` 骨架。后续 reduce slice 让 scalar-constant-init `linalg.reduce`
+`wafer.abi.elementwise` issue op。后续 reduce slice 让 scalar-constant-init `linalg.reduce`
 materialize 为 `wafer.compute.reduce` 并 lower 到带 `dimensions` / `init_value` 的
-`wafer.abi.reduce` 骨架。attention slice 让 QK^T / AV 的 rank-4 `linalg.generic`
+`wafer.abi.reduce` issue op。attention slice 让 QK^T / AV 的 rank-4 `linalg.generic`
 contraction materialize 为 batched `wafer.compute.gemm`，并 lower 到带 `batch_count`、M/K/N 和
-batch/head dimension attrs 的 `wafer.abi.gemm` 骨架。M6 package manifest 已覆盖当前 static
+batch/head dimension attrs 的 `wafer.abi.gemm` issue op。Transformer package fixture 已覆盖当前 static
 block 的完整 ABI issue 序列。当前仍不覆盖 mask/select、dynamic shape 或非 constant-init reduce；
 这些是后续 compute/group/resource 恢复项。只要对应语义能由 StableHLO / structured tensor IR 和
 Wafer 硬件能力表达，就不能把当前 static gate 的覆盖范围写成长期不支持。
@@ -233,14 +233,14 @@ Wafer 硬件能力表达，就不能把当前 static gate 的覆盖范围写成�
 - MLIR textual tests：每个 dialect op/type/attr 的 verifier 正负例。
 - conversion FileCheck：每个 stage 的最小 IR 变化。
 - C/C++ unit tests：storage size calculator、SPM allocator、DDR demand calculator、placement mapping。
-- golden packet tests：至少覆盖 M0 用到的 wrapper family。
+- golden packet tests：至少覆盖 single-tile local compute 用到的 wrapper family。
 
 如果某个 milestone 暂时只能做文档验证，必须明确说明还缺 build/test harness 或板端 runtime。
 当前 local compile / package gate 可以证明 compiler 产物生成和 C stub 语法可编译性，但不能替代
 LLVM IR lowering、object code emission、真实 runtime call emission、板端运行、数值正确性、
 completion 或 profiling 证明。
 
-当前 M0/M1/M6 integration gate 还存在一个 骨架 阶段的闭环缺口：`wafer-opt` pipeline 的
+当前 local integration gate 还存在一个 fixture 阶段的闭环缺口：`wafer-opt` pipeline 的
 IR FileCheck 和 package manifest / C stub 检查在同一测试文件内执行，但 manifest 由
 `tools/wafer_package_manifest.py` 的 fixed fixture emitter 生成，不是从该次 `wafer-opt` 输出的
 `wafer.abi.*` IR 自动导出。因此这些 gate 只能证明 IR lowering 和 package schema/stub 生成分别

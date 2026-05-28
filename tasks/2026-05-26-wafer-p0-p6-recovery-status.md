@@ -2,7 +2,7 @@
 
 日期：2026-05-26
 
-状态：R0.1 完成记录；用于重写 P0-P6 历史 骨架项状态。
+状态：R0.1 完成记录；用于重写 P0-P6 历史未闭环项状态。
 
 本文只记录 P0-P6 的设计合同、当前实现、缺口和恢复任务。它不声明 P0-P6 已完成，也不替代各
 设计文档的语义边界。
@@ -49,9 +49,9 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   边界；R1.1 已把 `wafer` dialect 内部 ODS、op verifier 和 dialect tests 按 op family 拆开。
 - `WaferOps.td` 现在只作为 TableGen 聚合入口，具体 op 定义在 `include/Wafer/IR/Ops/*Ops.td`；
   `WaferDialect.cpp` 只保留 dialect/attr/type/op 注册和 `TileBufferType` verifier。
-- M0/M1/M6 integration gate 把 `wafer-opt` IR FileCheck 和 fixed manifest/C stub fixture 放在同一
+- Local integration gate 把 `wafer-opt` IR FileCheck 和 fixed manifest/C stub fixture 放在同一
   测试文件里，但 package 不是从该次 IR lowering 自动导出。
-- 当前 local compile 只到 `wafer.abi.*` 骨架、manifest fixture 和 generated C stub syntax compile；
+- 当前 local compile 只到 `wafer.abi.*` issue ops、manifest fixture 和 generated C stub syntax compile；
   没有 LLVM dialect、LLVM IR、object、真实 `wafer_*` call、runtime adapter 或板端 completion。
 
 ## P0 工程、依赖、组织
@@ -130,13 +130,13 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 
 - 有 `WaferAttrs.td`、`WaferTypes.td`、`WaferInterfaces.td` 和 `WaferOps.td`，覆盖 target、
   memory space、mem layout、placement、wait policy、elementwise/reduce kind、`!wafer.tile_buffer`
-  以及 group/tile/layout/load/store/placement/ABI/compute/comm/sync/launch 骨架 ops。
+  以及 group/tile/layout/load/store/placement/ABI/compute/comm/sync/launch provisional ops。
 - 有 parser/printer/verifier 正负例；`WaferDialect.cpp` 实现多数 verifier。
 - 有 `WaferTilingInterface`、`WaferLayoutOpInterface`、
   `WaferLayoutMaterializationOpInterface`、`WaferResourceEffectInterface` 和 Wafer resource-backed
   MLIR memory effects；接口查询覆盖 group 边界、layout/SPM/DDR、compute/comm/sync/ABI 的局部需求。
 - 有 local compute stage-connection lit gate，覆盖 public linalg source 到 `wafer.group`、
-  `wafer.tile_region` 和 `wafer.abi.*` 骨架连接，且 gate 本身禁止使用
+  `wafer.tile_region` 和 `wafer.abi.*` issue 层连接，且 gate 本身禁止使用
   `unrealized_conversion_cast` 作为边界值来源。
 
 缺口：
@@ -153,7 +153,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 恢复任务：
 
 - R1.1：已完成；按 op family 拆 ODS、C++ verifier 和测试目录，并保持一个 `wafer` dialect namespace。
-- R1.2：已完成；interface/effect/resource 已从 骨架扩成 planner/resource/verifier 可调用的合同。
+- R1.2：已完成；interface/effect/resource 已从占位定义扩成 planner/resource/verifier 可调用的合同。
 - R1.3：已完成；补 local compute stage-connection tests，减少只靠 `unrealized_conversion_cast`
   的孤立 verifier 用例。
 
@@ -178,9 +178,9 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   并覆盖 graph break、eager fallback、bounded dynamic shape 诊断；P2.F1 进一步验证 PyTorch/XLA
   bundle `forward.meta` / `data/<parameter>` 与 MLIR function signature 一致。
 - `WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON` 时，`wafer-opt` / `wafer-import-model` 能注册 SDY dialect；
-  `sdy.mesh` / `sdy.sharding` artifact 可被 parse/verify，StableHLO `replica_groups` 当前可进入
-  `wafer.comm` `rank_group` 骨架。这个 bridge 只证明后段 communication metadata 能被表达，
-  不再作为 group/tiling 前的主线 collective handoff。
+  `sdy.mesh` / `sdy.sharding` artifact 可被 parse/verify。历史上曾有 StableHLO `replica_groups`
+  到 `wafer.comm` `rank_group` 的 bridge；该路线已退出主线，只作为已删除路径的覆盖记录，
+  不再作为 group/tiling 前的 collective handoff。
 
 缺口：
 
@@ -198,8 +198,8 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - R2.1：已完成；记录见 `tasks/2026-05-26-wafer-r2-recovery.md`，包含 frontend artifact verifier、
   dynamic bound 和 diagnostics。
 - R2.2：已完成；记录见 `tasks/2026-05-26-wafer-r2-recovery.md`，logical mesh/sharding artifact
-  可进入工具链，StableHLO replica group materialize 为 `wafer.comm` `rank_group` 的实现只作为
-  后段 communication 骨架 和 placement/ring 最小验证 输入。
+  可进入工具链。StableHLO replica group materialize 为 `wafer.comm` `rank_group` 的历史实现只作为
+  已删除路线覆盖记录，不作为后段 placement/ring 或 group/tiling 输入。
 - R2.3：已完成；记录见 `tasks/2026-05-26-wafer-r2-recovery.md` 和
   `tasks/2026-05-25-wafer-local-compute-normalization-design.md`，local compute coverage 按
   op/dataflow contract 重写，不把 acceptance pass 当 schedule completion。
@@ -224,11 +224,11 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   恢复任务或补 IR contract。R3.1 依赖 P2.F1/P2.S1/R2.4 提供真实 frontend/SPMD artifact 来源和
   tensor collective handoff。
 
-## P3 M0 Single-Tile Load-GEMM-Store
+## P3 Single-Tile Local Compute
 
 设计合同：
 
-- M0 必须验证 StableHLO/Linalg -> `wafer.group` -> `wafer.tile_region` -> layout/SPM/DDR ->
+- Single-tile local compute 必须验证 StableHLO/Linalg -> `wafer.group` -> `wafer.tile_region` -> layout/SPM/DDR ->
   `wafer.compute`/movement -> C ABI/package 的单 tile 闭环。
 - `wafer.group` planner 需要 closed-loop search：tile shape、op tiling interface、layout materialization、
   SPM allocation trial、DDR demand/bandwidth、compute/movement legality 都要作为同一候选的检查。
@@ -242,8 +242,8 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - 有 `wafer-form-groups`、`wafer-check-root-tile-candidates`、`wafer-materialize-single-tile`、
   `wafer-compact-layout-assignment`、`wafer-check-spm-allocation`、`wafer-materialize-ddr-external-bindings`
   和 `wafer-lower-tile-region-to-c-abi`。
-- 有 `wafer.abi.rdma`、`wafer.abi.wdma`、`wafer.abi.gemm`、elementwise/reduce 骨架 ops。
-- 有 `Wafer/ABI/TileAbi.h` descriptor unit tests、M0 integration test、manifest validator 和 generated C
+- 有 `wafer.abi.rdma`、`wafer.abi.wdma`、`wafer.abi.gemm`、elementwise/reduce ABI issue ops。
+- 有 `Wafer/ABI/TileAbi.h` descriptor unit tests、single-tile integration test、manifest validator 和 generated C
   stub syntax compile。
 
 缺口：
@@ -253,36 +253,36 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - SPM 是顺序 trial，未基于完整 interface demand、async lifetime、storage-realized memref/descriptor。
 - DDR 只有 external compact bytes demand；没有 workspace、resident constants、pool/domain、bandwidth
   或 runtime binding。
-- C ABI 还是 `wafer.abi.*` 骨架 op 和 descriptor builder，不是真实 `wafer_*` call、LLVM lowering
+- C ABI 还是 `wafer.abi.*` issue op 和 descriptor builder，不是真实 `wafer_*` call、LLVM lowering
   或 wrapper-to-register golden packet。
-- M0 manifest 是 fixed fixture emitter，不由当前 `wafer-opt` output 自动导出。
+- single-tile manifest 是 fixed fixture emitter，不由当前 `wafer-opt` output 自动导出。
 
 恢复任务：
 
-- R3.1：恢复 M0 group boundary / candidate contract，保证 `wafer.group` 只表达 local tensor grouping
+- R3.1：恢复 group boundary / candidate contract，保证 `wafer.group` 只表达 local tensor grouping
   和 candidate boundary。
-- R3.2：恢复 M0 root tile feasibility oracle，把 op tiling、layout、SPM、DDR 和 compute/movement
+- R3.2：恢复 root tile feasibility oracle，把 op tiling、layout、SPM、DDR 和 compute/movement
   legality 接到同一 candidate 检查。
-- R3.3：恢复 M0 tile_region materialization contract，只把 accepted group materialize 成
+- R3.3：恢复 tile_region materialization contract，只把 accepted group materialize 成
   `wafer.tile_region`。
-- R3.4：恢复 M0 layout/SPM feasibility gate，让 layout materialization 和 SPM trial 由 effect、
+- R3.4：恢复 layout/SPM feasibility gate，让 layout materialization 和 SPM trial 由 effect、
   liveness/range 和 tile buffer lifetime 驱动。
-- R3.5：恢复 M0 DDR/resource demand gate，覆盖 external binding、workspace、resident constant、
+- R3.5：恢复 DDR/resource demand gate，覆盖 external binding、workspace、resident constant、
   pool/domain、capacity/bandwidth demand。
-- R3.6：恢复 M0 ABI issue gate，让 `wafer.abi.*` issue sequence 从当前 storage/movement/
+- R3.6：恢复 ABI issue gate，让 `wafer.abi.*` issue sequence 从当前 storage/movement/
   compute IR 派生，并只表达 ABI 参数单位和 wait policy。
-- R3.7：恢复 M0 package manifest gate，manifest、C stub 和 launch signature 从当前 `wafer-opt`
+- R3.7：恢复 package manifest gate，manifest、C stub 和 launch signature 从当前 `wafer-opt`
   输出导出。
-- R3.8：恢复 M0 storage-realized / C ABI / golden packet 边界，至少让 RDMA/WDMA/GEMM 有真实
+- R3.8：恢复 storage-realized / C ABI / golden packet 边界，至少让 RDMA/WDMA/GEMM 有真实
   wrapper-facing call contract 和 golden packet 对照。
 
-## P4 M1 Multi-Tile No Communication
+## P4 Multi-Tile No Communication
 
 设计合同：
 
 - Placement 负责 logical rank 到 physical card/tile coordinate、good-tile/PG、block id、local shard
   metadata；不负责 SPM offset、DTE schedule 或 runtime API 细节。
-- M1 multi-tile no-comm 需要每个 tile 处理自己的 local shard、写回对应 output slice，并由 package /
+- Multi-tile no-comm 需要每个 tile 处理自己的 local shard、写回对应 output slice，并由 package /
   generated artifact 区分 per-tile args。
 - `wafer.tile_region` / launch metadata 必须表达 per-tile identity 和 shard slice；不能用 whole-tensor
   clone 代替 shard。
@@ -303,22 +303,22 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 
 恢复任务：
 
-- R4.1：恢复 M1 placement map / capability gate，accepted placement 来自 logical rank、good-tile/PG
+- R4.1：恢复 placement map / capability gate，accepted placement 来自 logical rank、good-tile/PG
   capability 和 physical coordinate verifier。
-- R4.2：恢复 M1 per-rank identity / launch metadata gate，把 logical rank、block id、physical coord
+- R4.2：恢复 per-rank identity / launch metadata gate，把 logical rank、block id、physical coord
   和 local shard metadata 接到 tile_region/launch/package 边界。
-- R4.3：恢复 M1 shard slicing materialization，multi-tile no-comm 为每个 rank materialize 自己的
+- R4.3：恢复 shard slicing materialization，multi-tile no-comm 为每个 rank materialize 自己的
   input/output slice，不再 clone whole tensor。
-- R4.4：恢复 M1 per-rank writeback / merge contract，明确 sharded output、host-side readback 或
+- R4.4：恢复 per-rank writeback / merge contract，明确 sharded output、host-side readback 或
   output merge 的 IR/package 责任。
-- R4.5：恢复 M1 package / generated artifact gate，让 placement metadata、local shards、per-rank
+- R4.5：恢复 package / generated artifact gate，让 placement metadata、local shards、per-rank
   launch args 和 issue sequence 从当前 lowering 输出导出。
 
 ## P5 Transformer Local Vertical Slice
 
 设计合同：
 
-- M6 要让 static transformer local shard normalized 到 structured tensor IR，并让 group planner 对
+- Transformer local compile 要让 static transformer local shard normalized 到 structured tensor IR，并让 group planner 对
   norm、softmax、attention、MLP 给出 accepted schedule 或明确拒绝原因。
 - compute 覆盖至少包括 batch/head GEMM、reduce max/sum、elementwise add/sub/mul/div/max/min/neg/
   recip/sqrt/rsqrt/exp、limited broadcast、mask-add 或 compare/select。
@@ -332,23 +332,23 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - 有 norm、softmax、projection/residual、MLP acceptance passes 和 full local transformer block
   structured gate。
 - 有 rank-4 QK^T / AV contraction lowering、same-shape/projected-permutation elementwise、local reduce
-  和 batched GEMM 骨架 lowering。
-- M6 fixed fixture manifest 覆盖 workspace buffers、resident constants 和 82 个 ABI issue，
+  和 batched GEMM issue lowering。
+- local-transformer fixture manifest 覆盖 workspace buffers、resident constants 和 82 个 ABI issue，
   C stub syntax compile 可过。
 
 缺口：
 
 - 多数 transformer pass 是 pattern acceptance，不是 full schedule planner。
-- M6 package manifest 是 fixed fixture，不由 M6 IR 自动导出；workspace/resident constant metadata
+- transformer package manifest 是 fixed fixture，不由 transformer IR 自动导出；workspace/resident constant metadata
   与 IR dataflow 无统一事实源。
 - mask/select、dynamic shape、非 constant-init reduce、复杂 broadcast 和 true constant slicing/storage
   transform 未闭环。
-- layout/SPM/DDR feasibility 未覆盖 full block 所有 accepted groups，只覆盖当前 骨架 子图。
+- layout/SPM/DDR feasibility 未覆盖 full block 所有 accepted groups，只覆盖当前局部子图。
 - 没有真实 full-block device artifact、runtime completion 或数值对比。
 
 恢复任务：
 
-- R5.1：恢复 M6 transformer local 编译验证，让 workspace/resident constants/ABI issue sequence
+- R5.1：恢复 transformer local 编译验证，让 workspace/resident constants/ABI issue sequence
   来自 full-block IR dataflow 和 lowering 输出。
 - R5.2：补 transformer compute coverage gaps：mask/select、dynamic-bound policy、non-constant-init reduce、
   constant/weight slice 和 package consistency。
@@ -369,15 +369,16 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 当前实现：
 
 - 有 `wafer.comm.send` / `recv` / `wait` verifier、placement peer check、non-empty wait check。
-- 有 `wafer.abi.dte_send` / `recv` / `wait` 骨架 和 block-local resource tuple conflict check。
+- 有 `wafer.abi.dte_send` / `recv` / `wait` issue op 和 block-local resource tuple conflict check。
 - 有 ring all-gather、reduce-scatter、all-reduce lowering 到 p2p + local elementwise accumulation。
-- 旧的 StableHLO all_gather/all_reduce/reduce_scatter 到 `wafer.comm` collective-level op 的 骨架
+- 旧的 StableHLO all_gather/all_reduce/reduce_scatter 到 `wafer.comm` collective-level op 的
   normalization 已移除；主线仍需补 StableHLO -> Wafer LinalgExt-style tensor collective handoff。
-- 有 M2/M3 communication 骨架 验证；M4 需按新的 tensor collective handoff 重新建立。
+- 有 p2p/ring communication fixture 验证；multi-replica collective 需按新的 tensor collective
+  handoff 重新建立。
 
 缺口：
 
-- DTE resource id 是单调 骨架 分配，不是目标 DTE/FSM allocator。
+- DTE resource id 是单调 provisional 分配，不是目标 DTE/FSM allocator。
 - collective buffer slice / slot / address offset lowering 没有真实 descriptor 或 storage-realized buffer。
 - tiled tensor collective -> `wafer.comm` materialization 尚未实现；R6.2 需要在 tile_region / SPM
   materialization 之后补可验证 buffer-slice / layout/materialization 路径。
@@ -396,13 +397,13 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 | ID | 状态 | 理由 |
 | --- | --- | --- |
 | P0 | 骨架 | 工程入口存在，源码 ownership、依赖层级边界和 IR op-family 文件边界已由 R0.2/R0.3/R1.1 恢复；仍不代表 frontend/runtime/package 主路径完成 |
-| P1 | 骨架 | 核心 op/type/verifier 骨架 存在，interface/effect/resource 和 local compute stage-connection gate 已恢复；storage-realized 主链路和 communication cast bridge 仍未闭环 |
+| P1 | 骨架 | 核心 op/type/verifier 基础实现存在，interface/effect/resource 和 local compute stage-connection gate 已恢复；storage-realized 主链路和 communication cast bridge 仍未闭环 |
 | P2 | 骨架 | StableHLO textual lowering、frontend artifact verifier、PyTorch/XLA bundle capture、SDY artifact bridge、P2.S1 partitioned StableHLO gate 和 local compute coverage 口径已恢复；dynamic/mask/constant-storage、tensor collective handoff 和 physical schedule 仍未闭环 |
-| P3 | 骨架 | M0 local 骨架可跑，但 group/resource/C ABI/package 主链路未闭环 |
-| P4 | 骨架 | placement/map 和 multi-tile 骨架 可跑，但真实 shard/merge/launch binding 未闭环 |
-| P5 | 骨架 | transformer staged acceptance 和 M6 最小验证 可跑，但 full schedule/resource/package/device artifact 未闭环 |
-| P6 | 骨架 | comm/DTE 骨架 可跑，但 resource allocator、buffer slice/address、package/runtime metadata 未闭环 |
+| P3 | 骨架 | single-tile local path 可跑，但 group/resource/C ABI/package 主链路未闭环 |
+| P4 | 骨架 | placement/map 和 multi-tile fixture 可跑，但真实 shard/merge/launch binding 未闭环 |
+| P5 | 骨架 | transformer staged acceptance 和 local fixture 可跑，但 full schedule/resource/package/device artifact 未闭环 |
+| P6 | 骨架 | comm/DTE fixture 可跑，但 resource allocator、buffer slice/address、package/runtime metadata 未闭环 |
 
 R2 之后的下一步是 R2.4：建立 Wafer LinalgExt-style tensor collective handoff；随后进入 R3.1，
-恢复 M0 group boundary / candidate contract，再进入 root tile feasibility oracle 和 tile_region
+恢复 group boundary / candidate contract，再进入 root tile feasibility oracle 和 tile_region
 materialization 主链路。

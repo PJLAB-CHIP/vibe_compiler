@@ -204,8 +204,8 @@ acceptance gate 的完整 lowering。
 IR 的 dataflow 可以串成一个 transformer block。为支持该 gate，`--wafer-lower-stablehlo-shape`
 现在支持静态连续维度 reassociation 的 expand/collapse reshape，例如
 `tensor<BxHxQxD> -> tensor<(BHQ)xD>`。该批次仍不声称 physical layout、SPM residency、
-workspace 或 DDR binding 已完成；这些事实必须在后续 Wafer group/resource lowering 和 M6
-local compile gate 中 materialize。
+workspace 或 DDR binding 已完成；这些事实必须在后续 Wafer group/resource lowering 和
+transformer local compile gate 中 materialize。
 
 ### 4.3 Reduction
 

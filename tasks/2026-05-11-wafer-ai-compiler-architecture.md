@@ -432,7 +432,7 @@ Direct DTE/FSM 相关 API：
 边界：
 
 - `DirectDTESendInfo` 只有单个 `dst_addr`、`dst_tile`、`remote_fsm_id`。不能把 raw DTE register 层的 broadcast/shuffle/scatter 字段直接当作当前 helper 的多目的地发射能力。
-- M3 collective 默认用 unicast ring/tree，不使用 raw broadcast/shuffle。
+- single-card collective 默认用 unicast ring/tree，不使用 raw broadcast/shuffle。
 - raw DTE non-unicast ABI 需要独立子设计和板端验证后才能进入 V1。
 
 Stream/mailbox 不是 compiler data-plane 主路径。如果 runtime adapter 保留或调用 legacy
@@ -475,7 +475,10 @@ legacy bootparam/TLV 和 completion/stub shielding 合同见
 
 ## 4. Milestone 路线
 
-### M0: Single Tile Compute
+本节按语义能力描述路线。历史 milestone 代号只作为外部记录索引，不能进入代码、pass、IR、
+测试或任务命名；后续实现应按 IR 层、通信能力和验证合同推进。
+
+### Single-Tile Compute
 
 目标：
 
@@ -496,7 +499,7 @@ legacy bootparam/TLV 和 completion/stub shielding 合同见
 - 验证 HPGR model/module path 或 legacy `TsmRun` bootparam path；不能用 `TsmLaunch` / `DeviceSynchronize` 当通过标准。
 - Runtime 初始化显式写 `serial_mode=0` 或读回确认。
 
-### M1: Multi-Tile Data Parallel, No Communication
+### Multi-Tile Data Parallel, No Communication
 
 目标：
 
@@ -523,7 +526,7 @@ WaferRuntimeAdapter cluster launch
 - 不依赖 `TsmGetDeviceNum/List/Properties` 这类 discovery stub 得到 capability。
 - completion 来自 HPGR command/module/stream completion、legacy `TsmRun` synchronous completion，或 kcore 内显式 CSR local drain 加 host runtime completion。
 
-### M2: Direct DTE Point-To-Point
+### Direct DTE Point-To-Point
 
 目标：
 
@@ -543,7 +546,7 @@ WaferRuntimeAdapter cluster launch
 - DTE resource allocator 管理 high-performance node、normal node、FSM id、packet id、stream id、remote tile 和 release。
 - `wafer_dte_wait` 与 `wafer_local_wait` 明确分离。
 
-### M3: Direct DTE Collective Library
+### Direct DTE Collective Library
 
 目标：
 
@@ -560,9 +563,10 @@ WaferRuntimeAdapter cluster launch
 
 - `all_gather`、`reduce_scatter`、`all_reduce` 的每个 step 都能追溯到 unicast send/recv/wait。
 - DTE buffer、FSM id、packet id、stream id 和 SPM sync slot 没有跨 step 冲突。
-- raw DTE non-unicast ABI 只作为 V1/HardwareVerify 入口记录，不进入 M3 correctness path。
+- raw DTE non-unicast ABI 只作为 V1/HardwareVerify 入口记录，不进入 single-card collective
+  correctness path。
 
-### M4: Partitioned StableHLO Collective Handoff
+### Partitioned StableHLO Collective Handoff
 
 目标：
 
@@ -584,7 +588,7 @@ WaferRuntimeAdapter cluster launch
   protocol 与 host runtime dyn TLV D2D/P2P path。
 - package metadata 能表达每个 collective 的 communication plan、SPM communication buffer 和 completion source。
 
-### M5: Compute And Communication Mixed Scheduling
+### Compute And Communication Mixed Scheduling
 
 目标：
 
@@ -597,7 +601,7 @@ WaferRuntimeAdapter cluster launch
 - Scheduler 维护 estimated in-flight SPM bank/page/color set、RDMA/WDMA DDR range、DTE resource set 和 NCC queue state。
 - PMU case 覆盖 serial mode、parallel mode、64KB page coloring、256B compact layout 的 blocking/exe time 对比。
 
-### M6: Transformer Block Vertical Slice
+### Transformer Block Vertical Slice
 
 目标：
 
@@ -610,7 +614,8 @@ WaferRuntimeAdapter cluster launch
 
 - 第一版可以先从单 batch、固定 sequence/head/hidden shape 开始。
 - 可以先不做跨卡 placement、paged KV cache、prefill/decode serving 调度和全模型 pipeline。
-- 如果 tensor parallel 需要 collective，必须先满足 M2/M3/M4 的 communication gate。
+- 如果 tensor parallel 需要 collective，必须先满足 p2p、single-card collective 和 partitioned
+  StableHLO collective handoff 的 communication gate。
 
 验收标准：
 
@@ -628,7 +633,7 @@ WaferRuntimeAdapter cluster launch
 把 register-level spec、runtime shielding、PMU/cost-model 全部做完；只要求该子设计引入
 的新 IR 语义、lowering contract 或 runtime boundary 有对应验证。
 
-建议按 IR stage 和 milestone 取用：
+建议按 IR stage 和语义能力取用：
 
 | 范围 | 阶段内验证 |
 | --- | --- |
@@ -646,9 +651,9 @@ WaferRuntimeAdapter cluster launch
 | `wafer.launch` / Runtime/package | launch verifier、bootparam head/dyninfo layout、dyn TLV serialization roundtrip、HPGR/legacy completion source、stub shielding |
 | Scheduler / PMU | 只在进入 overlap/cost-model milestone 后添加：serial/parallel mode、SPM bank/page-color conflict、DDR overlap、PMU `exe_time` / `blocking_time` case |
 
-每个 milestone 的测试面只覆盖该 milestone 实际启用的 dialect op 和 lowering path。例如 M0
-只需要单 tile compute 闭环和涉及 op 的 verifier/golden packet；DTE、runtime TLV 和 PMU
-microbench 不应成为 M0 前置条件。
+每个能力阶段的测试面只覆盖该阶段实际启用的 dialect op 和 lowering path。例如 single-tile
+compute 只需要单 tile compute 闭环和涉及 op 的 verifier/golden packet；DTE、runtime TLV 和
+PMU microbench 不应成为 single-tile compute 前置条件。
 
 ## 6. 当前非目标
 

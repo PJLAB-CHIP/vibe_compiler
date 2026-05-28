@@ -89,7 +89,7 @@ core compiler target。
 ## CMake 可见范围
 
 - `StablehloOps` 是 `WaferTransforms` 的 private implementation dependency，只服务
-  `lib/Wafer/Transforms/StableHLOToLinalg/*` 的 textual frontend lowering 骨架。
+  `lib/Wafer/Transforms/StableHLOToLinalg/*` 的 textual frontend lowering 实现。
 - `ShardySdyDialect` 是 `WaferTransforms` 的 private implementation dependency，只在
   `WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON` 时服务 `lib/Wafer/Transforms/SPMD/*` 的 SPMD/default seed
   passes；不能从 `WaferIR`、`WaferConversion` 或 `WaferABI` public 暴露。

@@ -214,8 +214,8 @@ collective 仍应由 unicast p2p schedule 组合表达，而不是在 logical IR
 当前实现中，`wafer.comm.send` / `wafer.comm.recv` 的 p2p verifier 已在存在
 `wafer.placement.map` 时检查 peer 指向 active physical tile，`wafer.comm.wait` 要求至少一个
 async token。`--wafer-lower-tile-region-to-c-abi` 会把 fixed-size unicast p2p op lower 到
-`wafer.abi.dte_send`、`wafer.abi.dte_recv` 和 `wafer.abi.dte_wait` 骨架；这些 ABI op 携带
-peer、byte count、async token，以及 `fsm_id` / `packet_id` / `stream_id` 骨架 resource tuple。
+`wafer.abi.dte_send`、`wafer.abi.dte_recv` 和 `wafer.abi.dte_wait` issue op；这些 ABI op 携带
+peer、byte count、async token，以及 `fsm_id` / `packet_id` / `stream_id` provisional resource tuple。
 Verifier 要求 resource id 非负，并拒绝同一 block 内尚未被 `wafer.abi.dte_wait` 释放的 tuple 冲突；
 wait 后同一 tuple 可以复用。这一层仍不 materialize raw non-unicast register 字段，也不把 DTE id、
 runtime physical address 或 wrapper packet bitfield 暴露成上层 communication IR 语义。
@@ -225,7 +225,7 @@ buffer、`local_rank`、`group_size` 和单 chunk `bytes`，verifier 检查 SPM 
 单 chunk byte size 和 gather buffer 总 byte size。`--wafer-lower-ring-all-gather` 按 placement
 rank order 展开成 `group_size - 1` 个 unicast ring step；每个 step 都显式生成 send、recv 和 wait，
 并在 p2p op 上用 `slot` attr 标出发送或接收的 gather slot。后续 `--wafer-lower-tile-region-to-c-abi`
-保留该 `slot` attr 到 Direct DTE 骨架 issue op，用于后续地址 offset / packet 参数 lowering。
+保留该 `slot` attr 到 Direct DTE ABI issue op，用于后续地址 offset / packet 参数 lowering。
 P6.6 的早期实现允许 StableHLO logical `all_gather` 直接 normalize 到该 op。2026-05-27 复查后，
 这条 pass/test 路线已移除；不能作为 group/tiling 前的主线输入，也不应恢复。后续应实现两层：
 
@@ -284,8 +284,8 @@ reduce-scatter 可以由多个 slot op 或后续 buffer-slice IR 组合。`--waf
 `wafer.compute.elementwise` 的 add/max/min 对 accumulator 和 recv staging buffer 做显式本地累计。
 这保证 reduction kind、dtype、use-def 和 wait 顺序都留在 IR 中，而不是变成 DTE side effect。
 P6.6 的早期 StableHLO normalization pass 会把 single-result StableHLO `all_reduce` /
-`reduce_scatter` 直接降到这些 collective-level op；该路径和 all-gather 一样只能作为后段
-communication 骨架，不应作为 tensor group/tiling 输入。主线恢复后，应先由 Wafer
+`reduce_scatter` 直接降到这些 collective-level op；该路径和 all-gather 一样已经退出主线，
+不应作为 tensor group/tiling 输入。主线恢复后，应先由 Wafer
 LinalgExt-style tensor collective 保留 combiner region 和 tile 语义，再在 tile_region / SPM
 materialization 之后生成 `wafer.comm.reduce_scatter` / `wafer.comm.all_reduce`。当前实现只覆盖
 sum/max/min reduction body；如果 SPMD 产出其它硬件可表达 reduction kind，应补充 tensor collective、
