@@ -1,14 +1,14 @@
-# RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-m0-smoke > %t.manifest.json
+# RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-single-tile-matmul > %t.manifest.json
 # RUN: %python %wafer_src_root/tools/wafer_emit_c_abi_stub.py --manifest %t.manifest.json | FileCheck %s
-# RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-elementwise-smoke > %t.elementwise.json
+# RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-single-tile-elementwise > %t.elementwise.json
 # RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --validate %t.elementwise.json
 # RUN: %python %wafer_src_root/tools/wafer_emit_c_abi_stub.py --manifest %t.elementwise.json > %t.elementwise.c
 # RUN: cc -fsyntax-only %t.elementwise.c
 # RUN: FileCheck %s --check-prefix=ELT < %t.elementwise.c
-# RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-m6-local-smoke > %t.m6.json
-# RUN: %python %wafer_src_root/tools/wafer_emit_c_abi_stub.py --manifest %t.m6.json > %t.m6.c
-# RUN: cc -fsyntax-only %t.m6.c
-# RUN: FileCheck %s --check-prefix=M6 < %t.m6.c
+# RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-local-transformer-block > %t.block.json
+# RUN: %python %wafer_src_root/tools/wafer_emit_c_abi_stub.py --manifest %t.block.json > %t.block.c
+# RUN: cc -fsyntax-only %t.block.c
+# RUN: FileCheck %s --check-prefix=BLOCK < %t.block.c
 
 # CHECK: typedef struct {
 # CHECK: uint32_t logical_rank;
@@ -18,32 +18,32 @@
 # CHECK: uint32_t tile_y;
 # CHECK: uint32_t tile_x;
 # CHECK: } wafer_tile_launch_arg_t;
-# CHECK: static const wafer_tile_launch_arg_t k_m0_single_tile_tile_args[] = {
+# CHECK: static const wafer_tile_launch_arg_t k_single_tile_matmul_tile_args[] = {
 # CHECK: {0u, 0u, 0u, 0u, 0u, 0u},
-# CHECK: int m0_single_tile_tile_arg_count(void)
+# CHECK: int single_tile_matmul_tile_arg_count(void)
 
 # ELT: WAFER_ABI_ELEMENTWISE
 # ELT: WAFER_ELEMENTWISE_ADD
-# ELT: static const wafer_abi_issue_t k_m0_elementwise_issues[] = {
+# ELT: static const wafer_abi_issue_t k_single_tile_elementwise_issues[] = {
 # ELT: {WAFER_ABI_ELEMENTWISE, 0u, 0, 0, 0, 0, WAFER_ELEMENTWISE_ADD, WAFER_REDUCE_NONE, 0u, {0, 0, 0, 0}, 0, WAFER_WAIT_ISSUE_ONLY}
 
-# M6: WAFER_ABI_REDUCE
-# M6: WAFER_REDUCE_MAX
-# M6: typedef struct {
-# M6: uint64_t bytes;
-# M6: uint64_t alignment;
-# M6: } wafer_workspace_buffer_t;
-# M6: typedef struct {
-# M6: uint64_t bytes;
-# M6: uint64_t alignment;
-# M6: } wafer_resident_constant_t;
-# M6: static const wafer_abi_issue_t k_m6_local_block_issues[] = {
-# M6: {WAFER_ABI_GEMM, 0u, 5, 8, 7, 6, WAFER_ELEMENTWISE_NONE, WAFER_REDUCE_NONE, 0u, {0, 0, 0, 0}, 0, WAFER_WAIT_ISSUE_ONLY}
-# M6: {WAFER_ABI_REDUCE, 0u, 0, 0, 0, 0, WAFER_ELEMENTWISE_NONE, WAFER_REDUCE_MAX, 1u, {3, 0, 0, 0}, -3.40282347e+38, WAFER_WAIT_ISSUE_ONLY}
-# M6: {WAFER_ABI_ELEMENTWISE, 0u, 0, 0, 0, 0, WAFER_ELEMENTWISE_TANH, WAFER_REDUCE_NONE, 0u, {0, 0, 0, 0}, 0, WAFER_WAIT_ISSUE_ONLY}
-# M6: static const wafer_workspace_buffer_t k_m6_local_block_workspace_buffers[] = {
-# M6: {960u, 256u},
-# M6: int m6_local_block_workspace_buffer_count(void)
-# M6: static const wafer_resident_constant_t k_m6_local_block_resident_constants[] = {
-# M6: {256u, 256u},
-# M6: int m6_local_block_resident_constant_count(void)
+# BLOCK: WAFER_ABI_REDUCE
+# BLOCK: WAFER_REDUCE_MAX
+# BLOCK: typedef struct {
+# BLOCK: uint64_t bytes;
+# BLOCK: uint64_t alignment;
+# BLOCK: } wafer_workspace_buffer_t;
+# BLOCK: typedef struct {
+# BLOCK: uint64_t bytes;
+# BLOCK: uint64_t alignment;
+# BLOCK: } wafer_resident_constant_t;
+# BLOCK: static const wafer_abi_issue_t k_local_transformer_block_issues[] = {
+# BLOCK: {WAFER_ABI_GEMM, 0u, 5, 8, 7, 6, WAFER_ELEMENTWISE_NONE, WAFER_REDUCE_NONE, 0u, {0, 0, 0, 0}, 0, WAFER_WAIT_ISSUE_ONLY}
+# BLOCK: {WAFER_ABI_REDUCE, 0u, 0, 0, 0, 0, WAFER_ELEMENTWISE_NONE, WAFER_REDUCE_MAX, 1u, {3, 0, 0, 0}, -3.40282347e+38, WAFER_WAIT_ISSUE_ONLY}
+# BLOCK: {WAFER_ABI_ELEMENTWISE, 0u, 0, 0, 0, 0, WAFER_ELEMENTWISE_TANH, WAFER_REDUCE_NONE, 0u, {0, 0, 0, 0}, 0, WAFER_WAIT_ISSUE_ONLY}
+# BLOCK: static const wafer_workspace_buffer_t k_local_transformer_block_workspace_buffers[] = {
+# BLOCK: {960u, 256u},
+# BLOCK: int local_transformer_block_workspace_buffer_count(void)
+# BLOCK: static const wafer_resident_constant_t k_local_transformer_block_resident_constants[] = {
+# BLOCK: {256u, 256u},
+# BLOCK: int local_transformer_block_resident_constant_count(void)

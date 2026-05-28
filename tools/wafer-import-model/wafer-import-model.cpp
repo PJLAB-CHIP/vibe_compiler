@@ -1,4 +1,4 @@
-//===- wafer-import-model.cpp - Wafer importer smoke tool ----------------===//
+//===- wafer-import-model.cpp - Wafer importer reference artifact tool ----------------===//
 
 #ifdef WAFER_ENABLE_STABLEHLO
 #include "Wafer/Frontend/Artifact.h"
@@ -23,7 +23,7 @@ namespace {
 void printHelp() {
   llvm::outs() << "wafer-import-model\n";
 #ifdef WAFER_ENABLE_STABLEHLO
-  llvm::outs() << "  --emit-static-smoke-artifact\n"
+  llvm::outs() << "  --emit-static-reference-artifact\n"
                << "  --verify-import-result <mlir-file>\n"
                << "  --verify-stablehlo-bundle <bundle-dir>\n";
 #else
@@ -32,10 +32,10 @@ void printHelp() {
 }
 
 #ifdef WAFER_ENABLE_STABLEHLO
-void emitStaticSmokeArtifact() {
+void emitStaticReferenceArtifact() {
   llvm::outs()
       << "module {\n"
-      << "  func.func @wafer_import_static_smoke(%arg0: tensor<2x4xf32>, "
+      << "  func.func @wafer_import_static_reference(%arg0: tensor<2x4xf32>, "
          "%arg1: tensor<2x4xf32>) -> tensor<2x4xf32> {\n"
       << "    %0 = stablehlo.add %arg0, %arg1 : tensor<2x4xf32>\n"
       << "    return %0 : tensor<2x4xf32>\n"
@@ -113,8 +113,8 @@ int main(int argc, char **argv) {
                   "this build\n";
   return 1;
 #else
-  if (argc == 2 && std::string(argv[1]) == "--emit-static-smoke-artifact") {
-    emitStaticSmokeArtifact();
+  if (argc == 2 && std::string(argv[1]) == "--emit-static-reference-artifact") {
+    emitStaticReferenceArtifact();
     return 0;
   }
 

@@ -152,7 +152,7 @@ compute、comm 和 sync op 能通过 layout/materialization/resource interface �
   `wafer.tile_region`。
 - `--wafer-materialize-multi-tile-no-comm` 覆盖 P4.3/M1 起点：该 pass 要求当前 module 中存在唯一
   `wafer.placement.map`，按 `logical_rank_count` 生成多个独立 `wafer.tile_region`，每个 region
-  都是 load-GEMM-store skeleton，且不插入 `wafer.comm`。
+  都是 load-GEMM-store 骨架，且不插入 `wafer.comm`。
 
 P4.3 还不把 per-tile logical rank、block id 或 physical coordinate 传入 region body；这些属于
 P4.4 per-tile launch args / identity lowering。当前 multi-tile outlining 只证明多个 tile-local

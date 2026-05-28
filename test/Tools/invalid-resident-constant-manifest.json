@@ -8,7 +8,7 @@
   "device_code": [
     {
       "name": "single_matmul",
-      "kind": "c_abi_skeleton",
+      "kind": "c_abi_issue_sequence",
       "artifact": "bad_resident_constant.o"
     }
   ],

@@ -1,5 +1,5 @@
 add_library(WaferABI
-  M0Abi.cpp
+  TileAbi.cpp
 )
 
 target_include_directories(WaferABI

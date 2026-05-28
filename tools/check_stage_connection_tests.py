@@ -53,19 +53,19 @@ def check_file(path: Path, errors: list[str]) -> None:
     has_group_gate = any(
         "--wafer-form-groups" in line
         and "--wafer-materialize-single-tile" not in line
-        and "--wafer-lower-to-c-abi-skeleton" not in line
+        and "--wafer-lower-tile-region-to-c-abi" not in line
         for line in run_lines
     )
     has_tile_gate = any(
         "--wafer-form-groups" in line
         and "--wafer-materialize-single-tile" in line
-        and "--wafer-lower-to-c-abi-skeleton" not in line
+        and "--wafer-lower-tile-region-to-c-abi" not in line
         for line in run_lines
     )
     has_abi_gate = any(
         "--wafer-form-groups" in line
         and "--wafer-materialize-single-tile" in line
-        and "--wafer-lower-to-c-abi-skeleton" in line
+        and "--wafer-lower-tile-region-to-c-abi" in line
         for line in run_lines
     )
 

@@ -1,7 +1,7 @@
 wafer_require_gtest()
 
 add_executable(WaferUnitTests
-  ABI/M0AbiTest.cpp
+  ABI/TileAbiTest.cpp
   Dialect/Wafer/WaferDialectTest.cpp
   Dialect/Wafer/WaferInterfacesTest.cpp
 )

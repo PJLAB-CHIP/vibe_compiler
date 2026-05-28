@@ -1,4 +1,4 @@
-//===- MaterializeMultiTileNoComm.cpp - Lower M1 groups to tile regions ---===//
+//===- MaterializeMultiTileNoComm.cpp - Materialize no-communication groups as tile regions ---===//
 
 #include "Wafer/Transforms/Passes.h"
 
@@ -145,7 +145,7 @@ struct MaterializeMultiTileNoCommPass
   }
 
   llvm::StringRef getDescription() const final {
-    return "materialize M1 Wafer groups into independent tile_region skeletons";
+    return "materialize Wafer groups into per-rank no-communication tile_region ops";
   }
 
   void getDependentDialects(mlir::DialectRegistry &registry) const final {

@@ -49,7 +49,7 @@ class FakeModule:
         return self.forward(*args, **kwargs)
 
 
-class FakeSmokeModule(FakeModule):
+class FakeReferenceModule(FakeModule):
     def __init__(self):
         self.weight = FakeParameter((4096, 4096))
         self.bias = FakeParameter((4096,))
@@ -190,11 +190,11 @@ class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             bundle_path = pathlib.Path(tmp) / "bundle"
 
-            self.tool.emit_p2f1_smoke_bundle(
+            self.tool.emit_reference_stablehlo_bundle(
                 bundle_path=bundle_path,
                 torch_module=self.fake_torch,
                 stablehlo_module=self.fake_stablehlo,
-                smoke_module_factory=FakeSmokeModule,
+                reference_module_factory=FakeReferenceModule,
             )
 
             self.assertEqual(self.fake_stablehlo.calls, [self.fake_torch.exported_program])
@@ -214,9 +214,9 @@ class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "missing StableHLO bundle file"):
                 self.tool._verify_bundle_layout(bundle_path)
 
-    def test_p2s1_strategy_matrix_names_are_fixed(self):
+    def test_sharding_strategy_matrix_names_are_fixed(self):
         self.assertEqual(
-            self.tool.P2S1_SHARDING_STRATEGY_NAMES,
+            self.tool.SHARDING_STRATEGY_NAMES,
             (
                 "data",
                 "column",
@@ -227,19 +227,19 @@ class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
             ),
         )
 
-    def test_p2s1_strategy_applies_framework_marks_to_inputs_only(self):
+    def test_sharding_strategy_applies_framework_marks_to_inputs_only(self):
         fake_spmd = FakeSpmd()
-        strategy = self.tool.get_p2s1_sharding_strategy("row")
-        mesh = self.tool.create_p2s1_mesh(fake_spmd, strategy)
+        strategy = self.tool.get_sharding_strategy("row")
+        mesh = self.tool.create_spmd_mesh(fake_spmd, strategy)
         module = types.SimpleNamespace(weight=object(), bias=object())
         input_tensor = object()
 
-        self.tool.apply_p2s1_strategy_marks(
+        self.tool.apply_strategy_marks(
             spmd_module=fake_spmd,
             strategy=strategy,
             mesh=mesh,
             input_tensor=input_tensor,
-            smoke_module=module,
+            reference_module=module,
         )
 
         self.assertEqual(fake_spmd.meshes[0].mesh_shape, (16,))
@@ -253,8 +253,8 @@ class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
             ],
         )
 
-    def test_p2s1_default_input_strategy_uses_replicated_fallback(self):
-        strategy = self.tool.create_p2s1_default_input_strategy(
+    def test_default_input_strategy_uses_replicated_fallback(self):
+        strategy = self.tool.create_default_input_sharding_strategy(
             tile_count=16, size=31
         )
 
@@ -264,7 +264,7 @@ class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
         self.assertEqual(strategy.weight_spec, (None, None))
         self.assertEqual(strategy.bias_spec, (None,))
 
-    def test_p2s1_partitioned_export_disables_hlo_fusion(self):
+    def test_partitioned_export_disables_hlo_fusion(self):
         flags = self.tool._with_disabled_hlo_pass(
             "--xla_dump_to=/tmp/xla --xla_disable_hlo_passes=cse", "fusion"
         )

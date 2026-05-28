@@ -10,4 +10,4 @@ module {
   }
 }
 
-// CHECK: C ABI skeleton ops must use issue_only wait policy
+// CHECK: C ABI issue ops must use issue_only wait policy

@@ -492,10 +492,10 @@ def load_manifest(path: str) -> dict[str, Any]:
     return require_dict(json.loads(text), "manifest")
 
 
-def m0_smoke_manifest(completion_source: str = "hpgr_stream_event") -> dict[str, Any]:
+def single_tile_matmul_manifest(completion_source: str = "hpgr_stream_event") -> dict[str, Any]:
     return {
         "schema_version": 1,
-        "package_name": "m0_single_tile",
+        "package_name": "single_tile_matmul",
         "runtime": {
             "mode": "hpgr",
             "completion_source": completion_source,
@@ -503,8 +503,8 @@ def m0_smoke_manifest(completion_source: str = "hpgr_stream_event") -> dict[str,
         "device_code": [
             {
                 "name": "single_matmul",
-                "kind": "c_abi_skeleton",
-                "artifact": "m0_single_tile.o",
+                "kind": "c_abi_issue_sequence",
+                "artifact": "single_tile_matmul.o",
             }
         ],
         "launch_signature": {
@@ -583,14 +583,14 @@ def m0_smoke_manifest(completion_source: str = "hpgr_stream_event") -> dict[str,
     }
 
 
-def m1_no_comm_smoke_manifest() -> dict[str, Any]:
-    manifest = copy.deepcopy(m0_smoke_manifest())
-    manifest["package_name"] = "m1_two_tile_no_comm"
+def multi_tile_no_comm_matmul_manifest() -> dict[str, Any]:
+    manifest = copy.deepcopy(single_tile_matmul_manifest())
+    manifest["package_name"] = "multi_tile_no_comm_matmul"
     manifest["device_code"] = [
         {
             "name": "two_tile_matmul",
-            "kind": "c_abi_skeleton",
-            "artifact": "m1_two_tile_no_comm.o",
+            "kind": "c_abi_issue_sequence",
+            "artifact": "multi_tile_no_comm_matmul.o",
         }
     ]
     manifest["placement"] = {
@@ -639,14 +639,14 @@ def m1_no_comm_smoke_manifest() -> dict[str, Any]:
     return manifest
 
 
-def elementwise_smoke_manifest() -> dict[str, Any]:
-    manifest = m0_smoke_manifest()
-    manifest["package_name"] = "m0_elementwise"
+def single_tile_elementwise_manifest() -> dict[str, Any]:
+    manifest = single_tile_matmul_manifest()
+    manifest["package_name"] = "single_tile_elementwise"
     manifest["device_code"] = [
         {
             "name": "same_shape_add",
-            "kind": "c_abi_skeleton",
-            "artifact": "m0_elementwise.o",
+            "kind": "c_abi_issue_sequence",
+            "artifact": "single_tile_elementwise.o",
         }
     ]
     manifest["launch_signature"] = {
@@ -796,19 +796,19 @@ def abi_reduce(
     }
 
 
-def m6_local_smoke_manifest() -> dict[str, Any]:
+def local_transformer_block_manifest() -> dict[str, Any]:
     return {
         "schema_version": 1,
-        "package_name": "m6_local_block",
+        "package_name": "local_transformer_block",
         "runtime": {
             "mode": "hpgr",
             "completion_source": "hpgr_stream_event",
         },
         "device_code": [
             {
-                "name": "local_transformer_block_gemm_skeleton",
-                "kind": "c_abi_skeleton",
-                "artifact": "m6_local_block.o",
+                "name": "local_transformer_block_gemm",
+                "kind": "c_abi_issue_sequence",
+                "artifact": "local_transformer_block.o",
             }
         ],
         "launch_signature": {
@@ -1152,14 +1152,14 @@ def m6_local_smoke_manifest() -> dict[str, Any]:
     }
 
 
-def bad_placement_smoke_manifest() -> dict[str, Any]:
-    manifest = copy.deepcopy(m0_smoke_manifest())
+def invalid_placement_manifest() -> dict[str, Any]:
+    manifest = copy.deepcopy(single_tile_matmul_manifest())
     manifest["placement"]["ranks"][0]["physical_coord"] = [0, 0, 0, 1]
     return manifest
 
 
-def bad_local_shard_smoke_manifest() -> dict[str, Any]:
-    manifest = copy.deepcopy(m0_smoke_manifest())
+def invalid_local_shard_manifest() -> dict[str, Any]:
+    manifest = copy.deepcopy(single_tile_matmul_manifest())
     manifest["placement"]["ranks"][0]["local_shards"][0]["sizes"] = [5, 8]
     return manifest
 
@@ -1167,37 +1167,37 @@ def bad_local_shard_smoke_manifest() -> dict[str, Any]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--emit-m0-smoke", action="store_true")
-    mode.add_argument("--emit-m1-no-comm-smoke", action="store_true")
-    mode.add_argument("--emit-elementwise-smoke", action="store_true")
-    mode.add_argument("--emit-m6-local-smoke", action="store_true")
-    mode.add_argument("--emit-stub-smoke", action="store_true")
-    mode.add_argument("--emit-bad-placement-smoke", action="store_true")
-    mode.add_argument("--emit-bad-local-shard-smoke", action="store_true")
+    mode.add_argument("--emit-single-tile-matmul", action="store_true")
+    mode.add_argument("--emit-multi-tile-no-comm-matmul", action="store_true")
+    mode.add_argument("--emit-single-tile-elementwise", action="store_true")
+    mode.add_argument("--emit-local-transformer-block", action="store_true")
+    mode.add_argument("--emit-synchronous-completion", action="store_true")
+    mode.add_argument("--emit-invalid-placement", action="store_true")
+    mode.add_argument("--emit-invalid-local-shard", action="store_true")
     mode.add_argument("--roundtrip")
     mode.add_argument("--validate")
     args = parser.parse_args()
 
-    if args.emit_m0_smoke:
-        sys.stdout.write(canonical_json(m0_smoke_manifest()))
+    if args.emit_single_tile_matmul:
+        sys.stdout.write(canonical_json(single_tile_matmul_manifest()))
         return 0
-    if args.emit_m1_no_comm_smoke:
-        sys.stdout.write(canonical_json(m1_no_comm_smoke_manifest()))
+    if args.emit_multi_tile_no_comm_matmul:
+        sys.stdout.write(canonical_json(multi_tile_no_comm_matmul_manifest()))
         return 0
-    if args.emit_elementwise_smoke:
-        sys.stdout.write(canonical_json(elementwise_smoke_manifest()))
+    if args.emit_single_tile_elementwise:
+        sys.stdout.write(canonical_json(single_tile_elementwise_manifest()))
         return 0
-    if args.emit_m6_local_smoke:
-        sys.stdout.write(canonical_json(m6_local_smoke_manifest()))
+    if args.emit_local_transformer_block:
+        sys.stdout.write(canonical_json(local_transformer_block_manifest()))
         return 0
-    if args.emit_stub_smoke:
-        sys.stdout.write(canonical_json(m0_smoke_manifest("TsmDeviceSynchronize")))
+    if args.emit_synchronous_completion:
+        sys.stdout.write(canonical_json(single_tile_matmul_manifest("TsmDeviceSynchronize")))
         return 0
-    if args.emit_bad_placement_smoke:
-        sys.stdout.write(canonical_json(bad_placement_smoke_manifest()))
+    if args.emit_invalid_placement:
+        sys.stdout.write(canonical_json(invalid_placement_manifest()))
         return 0
-    if args.emit_bad_local_shard_smoke:
-        sys.stdout.write(canonical_json(bad_local_shard_smoke_manifest()))
+    if args.emit_invalid_local_shard:
+        sys.stdout.write(canonical_json(invalid_local_shard_manifest()))
         return 0
 
     manifest = load_manifest(args.roundtrip or args.validate)

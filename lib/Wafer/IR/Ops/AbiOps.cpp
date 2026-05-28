@@ -120,7 +120,7 @@ verifyIssueOnlyWaitPolicy(mlir::Operation *op,
                           wafer::AbiWaitPolicyAttr policy) {
   if (policy.getValue() != wafer::AbiWaitPolicy::IssueOnly)
     return op->emitOpError(
-        "C ABI skeleton ops must use issue_only wait policy");
+        "C ABI issue ops must use issue_only wait policy");
   return mlir::success();
 }
 

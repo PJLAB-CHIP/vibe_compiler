@@ -1,4 +1,4 @@
-//===- MaterializeSingleTile.cpp - Lower M0 group to tile_region ----------===//
+//===- MaterializeSingleTile.cpp - Materialize single-tile groups as tile_region ----------===//
 
 #include "Wafer/Transforms/Passes.h"
 
@@ -588,7 +588,7 @@ struct MaterializeSingleTilePass
   }
 
   llvm::StringRef getDescription() const final {
-    return "materialize M0 Wafer groups into single tile_region skeletons";
+    return "materialize Wafer groups into single-tile tile_region ops";
   }
 
   void getDependentDialects(mlir::DialectRegistry &registry) const final {

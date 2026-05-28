@@ -6,7 +6,7 @@ module {
   %0 = wafer.launch @compiled_kernel
       inputs(%input : tensor<4xf32>)
       outputs(%output : tensor<4xf32>)
-      {package_ref = "m0.pkg", spm_bytes = -1 : i64, ddr_bytes = 8192 : i64}
+      {package_ref = "single_tile.pkg", spm_bytes = -1 : i64, ddr_bytes = 8192 : i64}
       : tensor<4xf32>
 }
 

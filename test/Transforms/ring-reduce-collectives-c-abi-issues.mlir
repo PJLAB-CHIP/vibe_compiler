@@ -1,4 +1,4 @@
-// RUN: wafer-opt --wafer-lower-ring-reduce-collectives --wafer-lower-to-c-abi-skeleton %s | FileCheck %s
+// RUN: wafer-opt --wafer-lower-ring-reduce-collectives --wafer-lower-tile-region-to-c-abi %s | FileCheck %s
 
 module {
   wafer.placement.map

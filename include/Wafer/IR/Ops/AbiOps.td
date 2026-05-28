@@ -9,7 +9,7 @@ def Wafer_AbiRdmaOp : Wafer_Op<"abi.rdma", [
                    MemWrite<Wafer_SPMResource>,
                    MemWrite<Wafer_MovementResource>]>
   ]> {
-  let summary = "C ABI skeleton DDR-to-SPM DMA issue";
+  let summary = "C ABI DDR-to-SPM DMA issue";
   let arguments = (ins
     Wafer_AbiWaitPolicyAttr:$wait_policy,
     AnyType:$source,
@@ -27,7 +27,7 @@ def Wafer_AbiWdmaOp : Wafer_Op<"abi.wdma", [
                    MemWrite<Wafer_DDRResource>,
                    MemWrite<Wafer_MovementResource>]>
   ]> {
-  let summary = "C ABI skeleton SPM-to-DDR DMA issue";
+  let summary = "C ABI SPM-to-DDR DMA issue";
   let arguments = (ins
     Wafer_AbiWaitPolicyAttr:$wait_policy,
     AnyType:$source,
@@ -45,7 +45,7 @@ def Wafer_AbiGemmOp : Wafer_Op<"abi.gemm", [
                    MemWrite<Wafer_SPMResource>,
                    MemWrite<Wafer_ComputeResource>]>
   ]> {
-  let summary = "C ABI skeleton GEMM issue";
+  let summary = "C ABI GEMM issue";
   let arguments = (ins
     Wafer_AbiWaitPolicyAttr:$wait_policy,
     AnyType:$lhs,
@@ -66,7 +66,7 @@ def Wafer_AbiElementwiseOp : Wafer_Op<"abi.elementwise", [
                    MemWrite<Wafer_SPMResource>,
                    MemWrite<Wafer_ComputeResource>]>
   ]> {
-  let summary = "C ABI skeleton elementwise issue";
+  let summary = "C ABI elementwise issue";
   let arguments = (ins
     Wafer_AbiWaitPolicyAttr:$wait_policy,
     Wafer_ComputeElementwiseKindAttr:$kind,
@@ -84,7 +84,7 @@ def Wafer_AbiReduceOp : Wafer_Op<"abi.reduce", [
                    MemWrite<Wafer_SPMResource>,
                    MemWrite<Wafer_ComputeResource>]>
   ]> {
-  let summary = "C ABI skeleton local reduce issue";
+  let summary = "C ABI local reduce issue";
   let description = [{
     `wafer.abi.reduce` is the wrapper-facing local reduce issue point. It
     keeps reduce dimensions and the scalar init value explicit so the C ABI
@@ -123,18 +123,18 @@ class Wafer_AbiDteP2POp<string mnemonic> : Wafer_Op<mnemonic, [
 }
 
 def Wafer_AbiDteSendOp : Wafer_AbiDteP2POp<"abi.dte_send"> {
-  let summary = "C ABI skeleton Direct DTE unicast send issue";
+  let summary = "C ABI Direct DTE unicast send issue";
 }
 
 def Wafer_AbiDteRecvOp : Wafer_AbiDteP2POp<"abi.dte_recv"> {
-  let summary = "C ABI skeleton Direct DTE unicast receive issue";
+  let summary = "C ABI Direct DTE unicast receive issue";
 }
 
 def Wafer_AbiDteWaitOp : Wafer_Op<"abi.dte_wait", [
     DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
     MemoryEffects<[MemRead<Wafer_CommunicationResource>]>
   ]> {
-  let summary = "C ABI skeleton Direct DTE completion wait";
+  let summary = "C ABI Direct DTE completion wait";
   let arguments = (ins Variadic<AnyType>:$tokens);
   let hasVerifier = 1;
   let assemblyFormat = "$tokens attr-dict `:` type($tokens)";

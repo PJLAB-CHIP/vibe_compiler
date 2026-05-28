@@ -5,7 +5,7 @@
 状态：R2 完成记录
 
 2026-05-27 复查更新：R2.2 中 StableHLO collective 直接 bridge 到 `wafer.comm` 的实现只保留为
-后段 communication skeleton，不再作为 P2.S1、group 或 tiling 的主线完成证明。真实 P2.S1 必须走
+后段 communication 骨架，不再作为 P2.S1、group 或 tiling 的主线完成证明。真实 P2.S1 必须走
 `mark_sharding/default-input-seed -> StableHLO/SDY -> Shardy/XLA SPMD partitioner -> partitioned
 or replicated-local StableHLO`，post-SPMD collective 先进入 Wafer LinalgExt-style tensor collective
 handoff，再进入 group/tiling。没有用户 sharding 标记时，P2.S1 在 SPMD 层补默认 single-card
@@ -79,7 +79,7 @@ collective + SPM tile buffers -> `wafer.comm` 两层。
 - R2.2 本身没有把 Shardy propagation/SPMD partitioner 作为 Wafer pass pipeline 主路径跑完；后续
   P2.S1 已用真实 PyTorch/XLA mark artifact、standalone SDY propagation parse gate 和 XLA SPMD
   post-optimization export 补齐 partitioned artifact gate。R2.2 只恢复 artifact dialect/metadata
-  bridge 和后段 communication skeleton 的 rank group 输入。
+  bridge 和后段 communication 骨架 rank group 输入。
 - StableHLO collective 到 tile buffer 的 visible `unrealized_conversion_cast` 仍属于 R6.2 缺口。
 
 ## R2.3 Local Compute Normalization Coverage Status
@@ -91,7 +91,7 @@ boundary、tile shape、multi-stage schedule、SPM residency 或 C ABI issue seq
 | --- | --- | --- | --- |
 | dot / 2D GEMM | `test/Frontend/lower-stablehlo-dot-to-linalg.mlir`、`stablehlo-dot-artifact.mlir`、`linalg-gemm-artifact.mlir` | StableHLO 2D dot 可降到 structured linalg matmul 输入 | accumulator dtype policy 和更宽 batch matmul family 仍需扩展 |
 | attention QK^T / AV | `lower-stablehlo-attention-score.mlir`、`lower-stablehlo-attention-value.mlir`、`lower-stablehlo-attention-softmax-value.mlir` | rank-4 attention score/value 的 transpose relation 来自 dot dimension numbers 和 indexing map | 不代表 attention schedule、SPM residency 或 workspace 已完成 |
-| elementwise / broadcast | `lower-stablehlo-elementwise.mlir`、`elementwise-broadcast-local-c-abi-skeleton.mlir`、projection residual gate | add/sub/mul/div/tanh/exp 等当前子集进入 `linalg.generic` / `arith` / `math` dataflow | complex broadcast、compare/select、mask add policy 仍未闭环 |
+| elementwise / broadcast | `lower-stablehlo-elementwise.mlir`、`elementwise-broadcast-local-c-abi-issues.mlir`、projection residual gate | add/sub/mul/div/tanh/exp 等当前子集进入 `linalg.generic` / `arith` / `math` dataflow | complex broadcast、compare/select、mask add policy 仍未闭环 |
 | reduce | `lower-stablehlo-reduce.mlir`、norm/softmax staged tests | constant-init reduce 子集保留 reduction dimension 和 kind | non-constant-init reduce、NaN/overflow/approx policy 仍未闭环 |
 | softmax | `lower-stablehlo-softmax-staged.mlir`、`softmax-schedule.mlir` | row max、subtract、exp、row sum、divide 的 SSA dataflow gate 已记录 | acceptance pass 不是 schedule completion；multi-stage workspace/materialization 属 R3/R5/R6 后续 |
 | norm | `lower-stablehlo-norm-staged.mlir`、`norm-schedule.mlir` | last-dim reduce、rsqrt、broadcast mul staged gate 已记录 | LayerNorm/RMSNorm 更宽 decomposition、epsilon policy 和 storage/resource 闭环未完成 |
@@ -103,7 +103,7 @@ boundary、tile shape、multi-stage schedule、SPM residency 或 C ABI issue seq
 
 本批次新增或扩大了这些 gate：
 
-- `test/Tools/wafer-import-model-smoke.test`
+- `test/Tools/wafer-import-model-reference.test`
 - `test/Spmd/shardy-artifact-bridge.mlir`
 - `test/Dialect/Wafer/Comm/invalid-comm-rank-group-size.mlir`
 - `test/Transforms/ring-all-gather-rank-group.mlir`
@@ -113,8 +113,8 @@ boundary、tile shape、multi-stage schedule、SPM residency 或 C ABI issue seq
 
 2026-05-27 后续 P2.S1 新增或扩大了这些 gate：
 
-- `test/Tools/wafer-pytorch-xla-capture-p2s1-sharding.test`
-- `test/Tools/wafer-pytorch-xla-capture-p2s1-partitioned.test`
+- `test/Tools/wafer-pytorch-xla-capture-sharded-bundle.test`
+- `test/Tools/wafer-pytorch-xla-capture-partitioned-bundle.test`
 - `test/Spmd/default-spmd-input-seed.mlir`
 
 这些 gate 证明真实 source-built PyTorch/XLA `mark_sharding` artifact、default input seed policy 和
@@ -153,11 +153,11 @@ lowering / artifact writer 没有使用这些字段，不再作为主线完成�
 fixed manifest 只能作为补充覆盖，不能替代端到端可验证性。若下一层尚未实现某个硬件可表达语义，
 应产生下游恢复任务或补充 IR contract，不能反向削弱当前层 artifact。
 
-P2.F1 主链路 artifact 采用 `4096x4096 @ 4096x4096` f32 matmul + bias + tanh + residual smoke。
+P2.F1 主链路 artifact 采用 `4096x4096 @ 4096x4096` f32 matmul + bias + tanh + residual 最小验证。
 该规模用于给后续 tiling、SPM/DDR resource、resident constant 和 package gate 提供非 trivial
 shape/byte facts；大 weight 只能通过 PyTorch/XLA bundle `forward.meta` / `data/<parameter>` 绑定，
 不提交 64 MiB weight 到 git 测试文件。
 
 PyTorch/XLA adapter 的完成证明必须使用从 `third_party/pytorch-xla` 源码编译/安装出的
 `torch_xla` runtime。prebuilt `torch_xla` wheel、手写 StableHLO artifact 或没有实际运行
-source-built runtime 的 smoke 不能作为 P2.F1 done 依据。
+source-built runtime 的最小验证不能作为 P2.F1 done 依据。

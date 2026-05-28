@@ -1,7 +1,7 @@
 // RUN: wafer-opt %s | FileCheck %s
 
 module {
-  func.func @abi_skeleton(
+  func.func @abi_issues(
       %lhs: tensor<4x8xf16>,
       %rhs: tensor<8x16xf16>,
       %out: tensor<4x16xf16>) {
@@ -35,7 +35,7 @@ module {
   }
 }
 
-// CHECK-LABEL: func.func @abi_skeleton(
+// CHECK-LABEL: func.func @abi_issues(
 // CHECK: wafer.abi.rdma <issue_only>
 // CHECK-SAME: bytes = 64 : i64
 // CHECK: wafer.abi.gemm <issue_only>

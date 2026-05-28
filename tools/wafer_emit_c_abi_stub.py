@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Emit a compilable C ABI skeleton from a Wafer package manifest."""
+"""Emit a compilable C ABI issue sequence from a Wafer package manifest."""
 
 from __future__ import annotations
 

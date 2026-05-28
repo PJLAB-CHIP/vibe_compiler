@@ -1,5 +1,5 @@
-// RUN: wafer-opt --wafer-form-groups --wafer-check-root-tile-candidates --wafer-materialize-multi-tile-no-comm --wafer-check-spm-allocation --wafer-materialize-ddr-external-bindings --wafer-lower-to-c-abi-skeleton %s | FileCheck %s --check-prefix=IR
-// RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-m1-no-comm-smoke > %t.manifest.json
+// RUN: wafer-opt --wafer-form-groups --wafer-check-root-tile-candidates --wafer-materialize-multi-tile-no-comm --wafer-check-spm-allocation --wafer-materialize-ddr-external-bindings --wafer-lower-tile-region-to-c-abi %s | FileCheck %s --check-prefix=IR
+// RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-multi-tile-no-comm-matmul > %t.manifest.json
 // RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --validate %t.manifest.json
 // RUN: %python %wafer_src_root/tools/wafer_emit_c_abi_stub.py --manifest %t.manifest.json > %t.c
 // RUN: FileCheck %s --check-prefix=C < %t.c
@@ -46,7 +46,7 @@ module {
 // IR: wafer.abi.wdma <issue_only>
 // IR-NOT: wafer.comm
 
-// C: static const wafer_tile_launch_arg_t k_m1_two_tile_no_comm_tile_args[] = {
+// C: static const wafer_tile_launch_arg_t k_multi_tile_no_comm_matmul_tile_args[] = {
 // C: {0u, 0u, 0u, 0u, 0u, 0u},
 // C: {1u, 1u, 0u, 0u, 0u, 1u},
-// C: int m1_two_tile_no_comm_tile_arg_count(void)
+// C: int multi_tile_no_comm_matmul_tile_arg_count(void)

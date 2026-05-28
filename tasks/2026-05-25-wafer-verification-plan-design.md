@@ -27,7 +27,7 @@ Serving integration 暂不纳入本文通过标准。
 
 - IR parse / print / verifier / conversion / FileCheck 通过。
 - resource planner、golden packet、package serialization 和 dependency/config tests 通过。
-- pipeline 能生成当前阶段的本地编译产物：Wafer C ABI skeleton issue ops、package manifest 和
+- pipeline 能生成当前阶段的本地编译产物：Wafer C ABI issue ops、package manifest 和
   由 manifest 生成的 C stub；该 C stub 能被当前 C toolchain 做 syntax compile。
 - LLVM dialect / LLVM IR lowering、object emission 和真实 `wafer_*` runtime call emission 不属于当前
   local compile / package gate 的通过条件，后续实现时必须作为单独 milestone gate 记录。
@@ -71,9 +71,9 @@ Gate 通过只说明进入下一层的输入合法，不说明整个 compiler �
 - golden packet tests：C ABI 参数到 wrapper/packet field。
 - package serialization tests：manifest、bootparam/TLV fallback、constant bytes metadata。
 - runtime shielding tests：已知 stub path 不能被选为 correctness fence。
-- importer/dependency smoke tests：至少一个 importer path 能产出 verified StableHLO / MLIR artifact；
+- importer/dependency 最小验证：至少一个 importer path 能产出 verified StableHLO / MLIR artifact；
   后端 textual MLIR tests 不依赖 importer-only Python / framework 包，但不能作为主链路完成证明。
-- board smoke tests：只在 runtime path 和 hardware availability 明确时作为新增 milestone gate。
+- board 最小验证：只在 runtime path 和 hardware availability 明确时作为新增 milestone gate。
 
 P2.F1 之后的任务完成验证还需要一条真实 artifact chain gate：输入必须来自真实 framework/exporter
 图导出的 artifact，测试应重放已完成的上游链路，并检查本任务新增的 IR fact、verifier fact、
@@ -111,15 +111,15 @@ M2 Direct DTE p2p：
 - fixed-size unicast DTE helper lowering 合法。
 - DTE wait 与 local compute drain 分离。
 - FSM / packet / stream resource 不冲突。
-- 当前 integration gate：`test/Integration/m2-p2p-comm-gate.mlir` 覆盖 placement-verified p2p
-  send/recv/wait 到 `wafer.abi.dte_*` skeleton。
+- 当前 integration gate：`test/Integration/p2p-comm-gate.mlir` 覆盖 placement-verified p2p
+  send/recv/wait 到 `wafer.abi.dte_*` 骨架。
 
 M3 single-card collective：
 
 - ring all-gather / reduce-scatter / all-reduce 可追溯到 unicast steps。
 - 每步 send/recv/wait token 和 buffer lifetime 合法。
 - raw non-unicast DTE 不作为 correctness path。
-- 当前 integration gate：`test/Integration/m3-single-card-collective-gate.mlir` 覆盖 `wafer.comm`
+- 当前 integration gate：`test/Integration/single-card-collective-gate.mlir` 覆盖 `wafer.comm`
   all-gather/all-reduce 到 ring p2p、Direct DTE ABI 和 elementwise ABI。
 
 M4 partitioned StableHLO collective handoff：
@@ -131,7 +131,7 @@ M4 partitioned StableHLO collective handoff：
   伪装成已经 materialize 的 `wafer.comm`。
 - layout/SPM/DDR resource gates 只对本 milestone 已经 materialize 的 movement / buffer demand
   负责；尚未 materialize 的 logical collective 不能被伪装成已通过 resource gate。
-- 旧的 StableHLO -> `wafer.comm` integration skeleton 已移除。R2.4 需要补 StableHLO -> tensor
+- 旧的 StableHLO -> `wafer.comm` integration 骨架 已移除。R2.4 需要补 StableHLO -> tensor
   collective 的 gate，R6 再验证 tiled tensor collective -> `wafer.comm` 的 materialization。
 
 M5 overlap and cost model（优化类，当前执行看板后移为 P9）：
@@ -160,11 +160,11 @@ M6 transformer block vertical slice：
 rank-4 batched GEMM 子图、same-shape / projected-permutation limited broadcast elementwise 子图，
 以及 scalar-constant-init reduce max/sum 子图的 local compile path：normalization、acceptance
 gates、group split、single-tile materialization、SPM allocation check、DDR binding demand、C ABI
-skeleton、manifest validate 和 C stub syntax compile。package gate 要求 M6 smoke manifest 记录
+骨架、manifest validate 和 C stub syntax compile。package gate 要求 M6 fixture manifest 记录
 workspace buffers 和 resident constants，并验证它们的 compact tensor storage bytes 与 resource
 summary 一致；manifest 中的 82 个 ABI issue 覆盖当前 full block lowering 输出的 RDMA、WDMA、
 elementwise、GEMM 和 reduce issue，C stub 会 materialize 对应 issue/resource table，证明 metadata
-能进入本地 toolchain 可消费的 artifact skeleton。它是当前无卡环境的 M6 完成证据；completion、
+能进入本地 toolchain 可消费的 artifact 骨架。它是当前无卡环境的 M6 完成证据；completion、
 数值对比和 profiling 仍等有卡环境补 gate。
 
 M7 ABI / LLVM artifact gate：
@@ -174,9 +174,9 @@ M7 ABI / LLVM artifact gate：
 - lowering 后应生成 LLVM dialect call 或等价可审计 call IR；该 IR 不残留 `wafer.abi.*`，并能
   通过 `mlir-translate` 或等价路径生成 LLVM IR。
 - 本地 gate 至少检查 LLVM IR 文本中的 entrypoint、runtime symbol declaration、参数顺序和
-  metadata/artifact 引用；随后用当前 toolchain 做 object 或 link smoke。
+  metadata/artifact 引用；随后用当前 toolchain 做 object 或 link 最小验证。
 - package manifest 必须记录真实 LLVM/object artifact id、entrypoint 和 ABI version；C stub-only
-  artifact 只允许作为 P0-P6 skeleton gate 的验证物。
+  artifact 只允许作为 P0-P6 骨架 gate 的验证物。
 
 M8 runtime / board correctness gate：
 
@@ -197,11 +197,11 @@ M9 overlap / cost model / profiling calibration gate：
 2026-05-25 后续实现补入了 `linalg.elementwise` 的局部 physical slice：same-shape identity 和
 可由 projected-permutation `indexing_maps` 验证的 row/head/vector broadcast 可以形成
 `wafer.group`，materialize 为 `wafer.compute.elementwise`，并 lower 到带 `indexing_maps` 的
-`wafer.abi.elementwise` skeleton。后续 reduce slice 让 scalar-constant-init `linalg.reduce`
+`wafer.abi.elementwise` 骨架。后续 reduce slice 让 scalar-constant-init `linalg.reduce`
 materialize 为 `wafer.compute.reduce` 并 lower 到带 `dimensions` / `init_value` 的
-`wafer.abi.reduce` skeleton。attention slice 让 QK^T / AV 的 rank-4 `linalg.generic`
+`wafer.abi.reduce` 骨架。attention slice 让 QK^T / AV 的 rank-4 `linalg.generic`
 contraction materialize 为 batched `wafer.compute.gemm`，并 lower 到带 `batch_count`、M/K/N 和
-batch/head dimension attrs 的 `wafer.abi.gemm` skeleton。M6 package manifest 已覆盖当前 static
+batch/head dimension attrs 的 `wafer.abi.gemm` 骨架。M6 package manifest 已覆盖当前 static
 block 的完整 ABI issue 序列。当前仍不覆盖 mask/select、dynamic shape 或非 constant-init reduce；
 这些是后续 compute/group/resource 恢复项。只要对应语义能由 StableHLO / structured tensor IR 和
 Wafer 硬件能力表达，就不能把当前 static gate 的覆盖范围写成长期不支持。
@@ -240,9 +240,9 @@ Wafer 硬件能力表达，就不能把当前 static gate 的覆盖范围写成�
 LLVM IR lowering、object code emission、真实 runtime call emission、板端运行、数值正确性、
 completion 或 profiling 证明。
 
-当前 M0/M1/M6 integration gate 还存在一个 skeleton 阶段的闭环缺口：`wafer-opt` pipeline 的
+当前 M0/M1/M6 integration gate 还存在一个 骨架 阶段的闭环缺口：`wafer-opt` pipeline 的
 IR FileCheck 和 package manifest / C stub 检查在同一测试文件内执行，但 manifest 由
-`tools/wafer_package_manifest.py` 的 fixed smoke emitter 生成，不是从该次 `wafer-opt` 输出的
+`tools/wafer_package_manifest.py` 的 fixed fixture emitter 生成，不是从该次 `wafer-opt` 输出的
 `wafer.abi.*` IR 自动导出。因此这些 gate 只能证明 IR lowering 和 package schema/stub 生成分别
 可用；不能作为 “package 由当前 lowering 结果生成” 的证据。进入 P7 时必须先把
 IR-derived manifest emission 作为 gate，之后再推进 LLVM IR / object / runtime call。

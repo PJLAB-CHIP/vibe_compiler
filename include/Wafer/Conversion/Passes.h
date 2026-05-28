@@ -11,7 +11,7 @@ class Pass;
 
 namespace wafer {
 
-std::unique_ptr<mlir::Pass> createLowerToCAbiSkeletonPass();
+std::unique_ptr<mlir::Pass> createLowerTileRegionToCAbiPass();
 void registerWaferConversionPasses();
 
 } // namespace wafer

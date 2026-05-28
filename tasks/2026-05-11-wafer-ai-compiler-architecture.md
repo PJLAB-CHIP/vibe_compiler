@@ -783,7 +783,7 @@ ModelImport/FrontendArtifact
 | --- | --- | --- |
 | LLVM / MLIR | core compiler build + IR/pass implementation | 全编译器工程，但不作为 Wafer 语义名词 |
 | StableHLO / Shardy / SDY | frontend、SPMD、conversion pipeline | frontend 到 local compute normalization |
-| model importer dependencies | frontend adapter、import tools | importer tool 和 import smoke tests |
+| model importer dependencies | frontend adapter、import tools | importer tool 和 import 最小验证 |
 | runtime / driver headers | launch/runtime adapter、C ABI layer | launch/package、runtime binding、board bring-up |
 | test tooling | test harness / CI | tests、golden packet、lit/FileCheck、unit tests |
 

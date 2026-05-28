@@ -1,6 +1,6 @@
-//===- M0Abi.cpp - M0 C ABI descriptor builders --------------------------===//
+//===- TileAbi.cpp - Tile C ABI descriptor builders --------------------------===//
 
-#include "Wafer/ABI/M0Abi.h"
+#include "Wafer/ABI/TileAbi.h"
 
 #include <limits>
 

@@ -1,6 +1,6 @@
 // REQUIRES: stablehlo
-// RUN: wafer-opt --wafer-lower-stablehlo-reduce --wafer-normalize-constants --wafer-lower-stablehlo-dot --wafer-lower-stablehlo-elementwise --wafer-lower-stablehlo-shape --wafer-check-norm-schedule --wafer-check-softmax-schedule --wafer-check-projection-residual-schedule --wafer-check-mlp-schedule --wafer-form-groups --wafer-check-root-tile-candidates --wafer-materialize-single-tile --wafer-check-spm-allocation --wafer-materialize-ddr-external-bindings --wafer-lower-to-c-abi-skeleton %s | FileCheck %s --check-prefix=IR
-// RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-m6-local-smoke > %t.manifest.json
+// RUN: wafer-opt --wafer-lower-stablehlo-reduce --wafer-normalize-constants --wafer-lower-stablehlo-dot --wafer-lower-stablehlo-elementwise --wafer-lower-stablehlo-shape --wafer-check-norm-schedule --wafer-check-softmax-schedule --wafer-check-projection-residual-schedule --wafer-check-mlp-schedule --wafer-form-groups --wafer-check-root-tile-candidates --wafer-materialize-single-tile --wafer-check-spm-allocation --wafer-materialize-ddr-external-bindings --wafer-lower-tile-region-to-c-abi %s | FileCheck %s --check-prefix=IR
+// RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-local-transformer-block > %t.manifest.json
 // RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --validate %t.manifest.json
 // RUN: %python %wafer_src_root/tools/wafer_emit_c_abi_stub.py --manifest %t.manifest.json > %t.c
 // RUN: FileCheck %s --check-prefix=C < %t.c
@@ -171,14 +171,14 @@ module {
 // IR: wafer.tile_region
 // IR-NOT: wafer.comm
 
-// C: static const wafer_abi_issue_t k_m6_local_block_issues[] = {
+// C: static const wafer_abi_issue_t k_local_transformer_block_issues[] = {
 // C: {WAFER_ABI_REDUCE, 0u, 0, 0, 0, 0, WAFER_ELEMENTWISE_NONE, WAFER_REDUCE_SUM, 1u, {3, 0, 0, 0}, 0, WAFER_WAIT_ISSUE_ONLY}
 // C: {WAFER_ABI_GEMM, 0u, 5, 8, 7, 6, WAFER_ELEMENTWISE_NONE, WAFER_REDUCE_NONE, 0u, {0, 0, 0, 0}, 0, WAFER_WAIT_ISSUE_ONLY}
 // C: {WAFER_ABI_REDUCE, 0u, 0, 0, 0, 0, WAFER_ELEMENTWISE_NONE, WAFER_REDUCE_MAX, 1u, {3, 0, 0, 0}, -3.40282347e+38, WAFER_WAIT_ISSUE_ONLY}
 // C: {WAFER_ABI_ELEMENTWISE, 0u, 0, 0, 0, 0, WAFER_ELEMENTWISE_TANH, WAFER_REDUCE_NONE, 0u, {0, 0, 0, 0}, 0, WAFER_WAIT_ISSUE_ONLY}
 // C: {WAFER_ABI_GEMM, 0u, 30, 16, 8, 1, WAFER_ELEMENTWISE_NONE, WAFER_REDUCE_NONE, 0u, {0, 0, 0, 0}, 0, WAFER_WAIT_ISSUE_ONLY}
-// C: int m6_local_block_issue_count(void)
-// C: static const wafer_workspace_buffer_t k_m6_local_block_workspace_buffers[] = {
-// C: int m6_local_block_workspace_buffer_count(void)
-// C: static const wafer_resident_constant_t k_m6_local_block_resident_constants[] = {
-// C: int m6_local_block_resident_constant_count(void)
+// C: int local_transformer_block_issue_count(void)
+// C: static const wafer_workspace_buffer_t k_local_transformer_block_workspace_buffers[] = {
+// C: int local_transformer_block_workspace_buffer_count(void)
+// C: static const wafer_resident_constant_t k_local_transformer_block_resident_constants[] = {
+// C: int local_transformer_block_resident_constant_count(void)

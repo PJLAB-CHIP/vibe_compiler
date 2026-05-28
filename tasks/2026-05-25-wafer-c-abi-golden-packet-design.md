@@ -103,11 +103,11 @@ V0 family：
 这些函数名是 compiler-facing ABI family，不要求一一等同底层 public symbol。实现可以在 C shim 内
 调用 public Tsm wrapper、Kcore runtime helper 或未来 native helper。
 
-当前 V0 compiler skeleton 用 `wafer.abi.rdma`、`wafer.abi.wdma`、`wafer.abi.gemm`、
+当前 V0 compiler 骨架用 `wafer.abi.rdma`、`wafer.abi.wdma`、`wafer.abi.gemm`、
 same-shape / limited-broadcast 子集的 `wafer.abi.elementwise`，以及 scalar-constant-init 子集的
 `wafer.abi.reduce` 作为 wrapper-first C ABI issue 点；P6.2 起，fixed-size unicast
 `wafer.comm.send` / `recv` / `wait` 会 lower 到 `wafer.abi.dte_send`、`wafer.abi.dte_recv` 和
-`wafer.abi.dte_wait` skeleton。它们保留 SSA/type verifier，用 explicit byte count、M/K/N、
+`wafer.abi.dte_wait` 骨架。它们保留 SSA/type verifier，用 explicit byte count、M/K/N、
 elementwise/reduce kind、reduce dimensions、init value、peer tile id、Direct DTE
 `fsm_id` / `packet_id` / `stream_id` resource tuple、可选 p2p `slot` 和 async token wait 表达参数
 单位、address direction、有限资源占用、gather slot 和 wait 边界；它们不是 raw packet dialect，
@@ -115,8 +115,8 @@ elementwise/reduce kind、reduce dimensions、init value、peer tile id、Direct
 C/LLVM lowering 可以把这些 issue op 转成实际 `wafer_*` C shim 调用，golden packet 测试再验证
 shim 到 wrapper/packet field 的映射。
 
-Ring reduce collectives 在进入 C ABI skeleton 前已展开为 p2p Direct DTE issue 和
-`wafer.compute.elementwise` accumulator step；`--wafer-lower-to-c-abi-skeleton` 会分别生成
+Ring reduce collectives 在进入 C ABI issue 前已展开为 p2p Direct DTE issue 和
+`wafer.compute.elementwise` accumulator step；`--wafer-lower-tile-region-to-c-abi` 会分别生成
 `wafer.abi.dte_*` 和 `wafer.abi.elementwise`。C ABI 层不引入“带 reduction 的 DTE issue”。
 
 ## 5. Instruction Facts to Preserve
@@ -175,9 +175,9 @@ Golden data 必须来自 register-level spec 和 wrapper behavior，不能来自
 行为和 spec 冲突，测试应标记为 implementation discrepancy，并回到 docs/source 里确认，而不是
 悄悄更新 expected。
 
-当前 V0 unit gate 先用 `Wafer/ABI/M0Abi.h` 的 descriptor builder 固定 M0 ABI argument contract：
+当前 V0 unit gate 先用 `Wafer/ABI/TileAbi.h` 的 descriptor builder 固定 M0 ABI argument contract：
 RDMA / WDMA 的 DDR lower bound、SPM usable range、byte count、exclusive end range 和
-`issue_only` policy，以及 GEMM 的 M/K/N 参数。这个 gate 覆盖 P3.8 skeleton op 的下游参数单位和
+`issue_only` policy，以及 GEMM 的 M/K/N 参数。这个 gate 覆盖 P3.8 骨架 op 的下游参数单位和
 address direction，但还不是最终 wrapper-to-register bitfield golden；真实 packet field 对照在
 接入 public wrapper 或 C shim 后继续扩展。
 

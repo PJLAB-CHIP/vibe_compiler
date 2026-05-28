@@ -1,4 +1,4 @@
-//===- LowerToCAbiSkeleton.cpp - Lower tile ops to C ABI skeleton --------===//
+//===- LowerTileRegionToCAbi.cpp - Lower tile ops to C ABI issue --------===//
 
 #include "Wafer/Conversion/Passes.h"
 
@@ -50,13 +50,13 @@ static mlir::LogicalResult lowerLoadTile(mlir::ModuleOp module,
   auto tileRegion = load->getParentOfType<wafer::TileRegionOp>();
   if (!tileRegion)
     return load.emitOpError(
-        "cannot lower to C ABI skeleton outside tile_region");
+        "cannot lower to C ABI issue outside tile_region");
 
   std::optional<mlir::Value> boundary =
       resolveTileRegionBoundaryValue(tileRegion, load.getSource());
   if (!boundary)
     return load.emitOpError(
-        "cannot lower to C ABI skeleton without DDR external input binding");
+        "cannot lower to C ABI issue without DDR external input binding");
 
   std::optional<int64_t> bytes =
       getExternalBindingBytes(module, *boundary, wafer::DdrBindingKind::Input);
@@ -78,13 +78,13 @@ static mlir::LogicalResult lowerStoreTile(mlir::ModuleOp module,
   auto tileRegion = store->getParentOfType<wafer::TileRegionOp>();
   if (!tileRegion)
     return store.emitOpError(
-        "cannot lower to C ABI skeleton outside tile_region");
+        "cannot lower to C ABI issue outside tile_region");
 
   std::optional<mlir::Value> boundary =
       resolveTileRegionBoundaryValue(tileRegion, store.getDest());
   if (!boundary)
     return store.emitOpError(
-        "cannot lower to C ABI skeleton without DDR external output binding");
+        "cannot lower to C ABI issue without DDR external output binding");
 
   std::optional<int64_t> bytes =
       getExternalBindingBytes(module, *boundary, wafer::DdrBindingKind::Output);
@@ -213,17 +213,17 @@ static mlir::LogicalResult lowerCommWait(wafer::CommWaitOp wait) {
   return mlir::success();
 }
 
-struct LowerToCAbiSkeletonPass
-    : public mlir::PassWrapper<LowerToCAbiSkeletonPass,
+struct LowerTileRegionToCAbiPass
+    : public mlir::PassWrapper<LowerTileRegionToCAbiPass,
                                mlir::OperationPass<mlir::ModuleOp>> {
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(LowerToCAbiSkeletonPass)
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(LowerTileRegionToCAbiPass)
 
   llvm::StringRef getArgument() const final {
-    return "wafer-lower-to-c-abi-skeleton";
+    return "wafer-lower-tile-region-to-c-abi";
   }
 
   llvm::StringRef getDescription() const final {
-    return "lower Wafer movement and compute ops to C ABI skeleton issue ops";
+    return "lower tile_region movement, compute, and comm ops to C ABI issue ops";
   }
 
   void getDependentDialects(mlir::DialectRegistry &registry) const final {
@@ -274,8 +274,8 @@ struct LowerToCAbiSkeletonPass
 
 } // namespace
 
-std::unique_ptr<mlir::Pass> createLowerToCAbiSkeletonPass() {
-  return std::make_unique<LowerToCAbiSkeletonPass>();
+std::unique_ptr<mlir::Pass> createLowerTileRegionToCAbiPass() {
+  return std::make_unique<LowerTileRegionToCAbiPass>();
 }
 
 } // namespace wafer

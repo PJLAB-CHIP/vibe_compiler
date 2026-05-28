@@ -144,7 +144,7 @@ recv chunk 与 accumulator 的本地累计步骤；`wafer.compute.reduce` 仍只
   loop，或 lower 成多个 supported compute op。
 - native reduce 属于 aligned-only op，layout planner 必须看到 input/output hard constraint。
 - output dtype、init value 和 NaN/overflow 等细节如果会影响语义，应保留在 op contract 中，而不是
-  留给 wrapper 默认值。当前 local skeleton 从 scalar-constant `linalg.fill` out 恢复
+  留给 wrapper 默认值。当前 local 骨架从 scalar-constant `linalg.fill` out 恢复
   `init_value`，并把 `dimensions` / `init_value` 一起带到 `wafer.abi.reduce`。
 
 ### 3.4 Movement Ops
@@ -299,13 +299,13 @@ V0 推荐实现顺序：
 
 当前实现顺序已经先覆盖了 accepted-layout `wafer.compute.gemm`、load/store、layout materialize，
 并补入 same-shape identity 与 projected-permutation limited broadcast elementwise 到
-`wafer.compute.elementwise` / `wafer.abi.elementwise` 的 local skeleton；随后补入 sum/max/min
-local reduce 到 `wafer.compute.reduce` / `wafer.abi.reduce` 的 skeleton，保留 reduce dimensions
+`wafer.compute.elementwise` / `wafer.abi.elementwise` 的 local 骨架；随后补入 sum/max/min
+local reduce 到 `wafer.compute.reduce` / `wafer.abi.reduce` 的 骨架，保留 reduce dimensions
 和 scalar init value。P5.8 后续又补入 attention QK^T / AV 的 rank-4 contraction physical
 slice：只接受可由 `linalg.generic` indexing maps、parallel/reduction iterator types、mul-add
 body 和静态 shape relation 验证的 batch/head 形态，materialize 为带显式 batch/head/m/k/n 维度
 attrs 的 `wafer.compute.gemm`，并 lower 到带 `batch_count` 和 M/K/N 的 `wafer.abi.gemm`
-skeleton。M6 package gate 随后补入 workspace/resident constant metadata、resource summary
+骨架。M6 package gate 随后补入 workspace/resident constant metadata、resource summary
 一致性验证和当前 full block lowering 输出的完整 ABI issue 序列。它仍不是通用
 elementwise/reduce/GEMM coverage；更复杂 broadcast、relation/logic、convert、多输入/非
 constant-init reduce 和 mask/select 仍按后续泛化 gate 推进。当前 coverage 不能被解释成

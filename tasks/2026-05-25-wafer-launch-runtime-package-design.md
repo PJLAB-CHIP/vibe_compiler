@@ -140,9 +140,9 @@ Runtime package 必须区分：
 small-BAR visible address offset、largest contiguous range、pool capacity、alignment、runtime
 allocation failure 由 DDR 设计负责定义；launch 负责把这些失败报告到用户可理解的位置。
 
-当前 V0 skeleton 用 `tools/wafer_package_manifest.py` 固定最小 manifest schema 和 roundtrip：
+当前 V0 骨架用 `tools/wafer_package_manifest.py` 固定最小 manifest schema 和 roundtrip：
 manifest 记录 launch signature、placement metadata、DDR external binding bytes、SPM/DDR resource
-summary、workspace buffer demand、resident constant demand、ABI skeleton ops、device-code artifact
+summary、workspace buffer demand、resident constant demand、ABI issue ops、device-code artifact
 id 和 runtime completion source。validator 要求 `resources.workspace_bytes` 与
 `workspace_buffers` 的 compact tensor storage bytes 求和一致，要求
 `resources.resident_constant_bytes` 与 `resident_constants` 求和一致；`launch_input` resident
@@ -151,7 +151,7 @@ completion fence，例如 `TsmDeviceSynchronize` / `TsmLaunch`，因此 package 
 legacy stub path 成功返回。M0/M1/M6 local compile gate 还用
 `tools/wafer_emit_c_abi_stub.py` 从 manifest 生成可被 C compiler 做 syntax compile 的 ABI issue
 table、tile launch-arg table、workspace buffer table 和 resident constant table，用于验证 package
-metadata 可以产出本地 toolchain 可消费的 artifact skeleton；它不代表真实 device code 已可执行。
+metadata 可以产出本地 toolchain 可消费的 artifact 骨架；它不代表真实 device code 已可执行。
 
 P4.4 起，C ABI stub 还从 placement metadata 生成 per-tile launch arg table：
 
@@ -170,15 +170,15 @@ typedef struct {
 arguments；它不反向定义 tensor semantics，也不包含 BO handle、physical DDR address、SPM offset
 或 DTE packet。
 
-当前工具提供四类 smoke manifest：
+当前工具提供四类 fixture manifest：
 
-- `--emit-m0-smoke`：single tile load-GEMM-store。
-- `--emit-m1-no-comm-smoke`：two-tile no-communication load-GEMM-store，包含两个 logical rank、
+- `--emit-single-tile-matmul`：single tile load-GEMM-store。
+- `--emit-multi-tile-no-comm-matmul`：two-tile no-communication load-GEMM-store，包含两个 logical rank、
   两个 block id、两个 physical tile coordinate 和 per-rank local shard slice metadata。
-- `--emit-elementwise-smoke`：single tile elementwise ABI skeleton，用于覆盖 non-GEMM issue family。
-- `--emit-m6-local-smoke`：single shard local transformer block package skeleton，记录 full block
+- `--emit-single-tile-elementwise`：single tile elementwise ABI issue，用于覆盖 non-GEMM issue family。
+- `--emit-local-transformer-block`：single shard local transformer block package 骨架，记录 full block
   launch signature、单 tile placement、DDR binding、workspace buffers、resident constants 和当前已
-  纳入 package 的 82 个 ABI issue skeleton。
+  纳入 package 的 82 个 ABI issue。
 
 placement metadata 当前包含：
 
@@ -240,5 +240,5 @@ V0 验证：
 - legacy bootparam / dyn TLV serialization 的 size、offset、TLV header 检查。
 - completion source 被显式选择，且不能选已知 stub。
 
-板端 smoke test 需要同时报告 host runtime completion 和 device-side drain/wait evidence；只看到
+板端最小验证 需要同时报告 host runtime completion 和 device-side drain/wait evidence；只看到
 host API success 不足以证明 kernel 正确完成。

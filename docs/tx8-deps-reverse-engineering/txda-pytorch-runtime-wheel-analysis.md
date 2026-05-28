@@ -346,7 +346,7 @@ Observed limitations from strings/error paths:
 - `topk`, `sort`, `split`, `count_nonzero`, and stride copy report `txdnn`
   failures directly through PyTorch checks
 
-This operator set is useful for eager smoke tests and compatibility, but it is
+This operator set is useful for eager compatibility checks, but it is
 too small and too opaque to be the Wafer compiler's operator lowering contract.
 
 ## 10. Fallback Environment Variables

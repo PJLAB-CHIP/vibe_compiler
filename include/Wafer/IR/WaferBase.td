@@ -13,7 +13,7 @@ def Wafer_Dialect : Dialect {
     The Wafer dialect owns target-specific compiler IR objects that are stable
     enough to verify and lower. Planner-local search state, host runtime
     packaging details, and raw packet fields are intentionally outside this
-    skeleton layer.
+    IR layer.
   }];
   let useDefaultAttributePrinterParser = 1;
   let useDefaultTypePrinterParser = 1;

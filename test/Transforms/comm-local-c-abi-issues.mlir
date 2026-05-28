@@ -1,4 +1,4 @@
-// RUN: wafer-opt --wafer-lower-to-c-abi-skeleton %s | FileCheck %s
+// RUN: wafer-opt --wafer-lower-tile-region-to-c-abi %s | FileCheck %s
 
 module {
   wafer.placement.map
@@ -16,9 +16,10 @@ module {
   ^bb0(%arg0: tensor<4xf32>):
     %buf = "builtin.unrealized_conversion_cast"()
         : () -> !wafer.tile_buffer<tensor<4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
-    %send = wafer.comm.send %buf {bytes = 16 : i64, peer = 1 : i64}
+    wafer.sync.local_drain
+    %send = wafer.comm.send %buf {peer = 1 : i64, bytes = 16 : i64}
         : !wafer.tile_buffer<tensor<4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>> -> !async.token
-    %recv = wafer.comm.recv %buf {bytes = 16 : i64, peer = 0 : i64}
+    %recv = wafer.comm.recv %buf {peer = 0 : i64, bytes = 16 : i64}
         : !wafer.tile_buffer<tensor<4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>> -> !async.token
     wafer.comm.wait %send, %recv : !async.token, !async.token
     wafer.tile_yield %arg0 : tensor<4xf32>
@@ -26,7 +27,11 @@ module {
 }
 
 // CHECK-LABEL: module
-// CHECK-NOT: wafer.comm.
+// CHECK-NOT: wafer.comm.send
 // CHECK: wafer.abi.dte_send %{{.*}} {bytes = 16 : i64, fsm_id = 0 : i64, packet_id = 0 : i64, peer = 1 : i64, stream_id = 0 : i64}
+// CHECK-SAME: -> !async.token
+// CHECK-NOT: wafer.comm.recv
 // CHECK: wafer.abi.dte_recv %{{.*}} {bytes = 16 : i64, fsm_id = 1 : i64, packet_id = 1 : i64, peer = 0 : i64, stream_id = 1 : i64}
+// CHECK-SAME: -> !async.token
+// CHECK-NOT: wafer.comm.wait
 // CHECK: wafer.abi.dte_wait %{{.*}}, %{{.*}} : !async.token, !async.token

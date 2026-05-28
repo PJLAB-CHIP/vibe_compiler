@@ -22,7 +22,7 @@
 - 在固定版本 LLVM/MLIR 预编译包下载完成前，本地 bring-up 可以显式 override：
   `cmake -S . -B build/p0 -GNinja -DMLIR_DIR=<mlir-cmake-dir> -DLLVM_DIR=<llvm-cmake-dir>
   -DPython3_EXECUTABLE=$PWD/third_party/python/bin/python -DWAFER_ALLOW_UNPINNED_LLVM=ON`。
-- 当前统一依赖 smoke 验证使用固定版本 LLVM/MLIR install 配置：
+- 当前统一依赖验证使用固定版本 LLVM/MLIR install 配置：
   `cmake -S . -B build/r0-deps-pytorch-xla -GNinja -DMLIR_DIR=$PWD/build/third_party/llvm-install/f0b3287297aeeddcf030e3c1b08d05a69ad465aa/lib/cmake/mlir -DLLVM_DIR=$PWD/build/third_party/llvm-install/f0b3287297aeeddcf030e3c1b08d05a69ad465aa/lib/cmake/llvm -DWAFER_ENABLE_IMPORTER_DEPS=ON -DWAFER_ENABLE_FRAMEWORK_IMPORTER_DEPS=ON -DWAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON -DWAFER_IMPORTER_PYTHON_EXECUTABLE=$PWD/third_party/python-importer-py311/bin/python`，
   然后跑 `cmake --build build/r0-deps-pytorch-xla --target check-wafer -- -j128` 和
   `ctest --test-dir build/r0-deps-pytorch-xla --output-on-failure`。
@@ -47,15 +47,13 @@
   PyTorch/XLA StableHLO bundle，并通过 `XLA_DUMP_POST_OPTIMIZATIONS=1` 的 post-opt export 取得 XLA
   SPMD partitioner 后的 partitioned StableHLO local body。当前 post-opt StableHLO export 需要在
   `XLA_FLAGS` 中禁用 `fusion`，否则 PyTorch/XLA 的 HLO-to-StableHLO helper 会在 `mhlo.fusion` 上失败；
-  这个 flag 是 capture 约束，不是 IR 协议。旧的
-  `tools/wafer_pytorch_xla_capture.py --emit-p2s1-sharded-matmul` 和
-  `wafer-import-model --verify-spmd-bundle` 路线已移除；不要恢复只生成私有 attrs/sidecar 或只跑
+  这个 flag 是 capture 约束，不是 IR 协议。旧的私有 sharding attr emitter、sidecar JSON、单独 `wafer-import-model --verify-spmd-bundle` 路线已移除；不要恢复只生成私有 attrs/sidecar 或只跑
   SDY propagation 的入口。
 - P2.S1 当前工具入口：
-  `tools/wafer_pytorch_xla_capture.py --emit-p2s1-sharded-smoke --sharding-strategy=<name>` 生成
+  `tools/wafer_pytorch_xla_capture.py --emit-sharded-bundle --sharding-strategy=<name>` 生成
   pre-partition mark artifact；
-  `--emit-p2s1-partitioned-smoke --sharding-strategy=<name>` 生成 post-XLA-SPMD local artifact；
-  `--emit-p2s1-partitioned-smoke --default-input-sharding --default-tile-count=<1..16>` 覆盖 no-user 默认
+  `--emit-partitioned-bundle --sharding-strategy=<name>` 生成 post-XLA-SPMD local artifact；
+  `--emit-partitioned-bundle --default-input-sharding --default-tile-count=<1..16>` 覆盖 no-user 默认
   input seed。partitioned bundle 的 `functions/forward.meta` 要匹配 local function boundary；
   post-SPMD module 可能含 private helper `func.func`，frontend verifier 应选择唯一 public entry。
 - P2.S1 后的 collective 先进入 Wafer LinalgExt-style tensor collective handoff，和 `linalg` 一起进入

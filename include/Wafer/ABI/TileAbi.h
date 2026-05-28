@@ -1,7 +1,7 @@
-//===- M0Abi.h - M0 C ABI descriptor builders -----------------*- C++ -*-===//
+//===- TileAbi.h - Tile C ABI descriptor builders -----------------*- C++ -*-===//
 
-#ifndef WAFER_ABI_M0ABI_H
-#define WAFER_ABI_M0ABI_H
+#ifndef WAFER_ABI_TILEABI_H
+#define WAFER_ABI_TILEABI_H
 
 #include <cstdint>
 #include <string>
@@ -44,4 +44,4 @@ bool buildGemm(int64_t m, int64_t k, int64_t n, GemmDescriptor &descriptor,
 } // namespace abi
 } // namespace wafer
 
-#endif // WAFER_ABI_M0ABI_H
+#endif // WAFER_ABI_TILEABI_H

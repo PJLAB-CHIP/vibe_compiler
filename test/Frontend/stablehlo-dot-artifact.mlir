@@ -2,7 +2,7 @@
 // RUN: wafer-opt %s | FileCheck %s
 
 module {
-  func.func @m0_stablehlo_dot(
+  func.func @single_tile_stablehlo_dot(
       %lhs: tensor<4x8xf16>,
       %rhs: tensor<8x16xf16>) -> tensor<4x16xf16> {
     %0 = "stablehlo.dot_general"(%lhs, %rhs) {
@@ -16,7 +16,7 @@ module {
   }
 }
 
-// CHECK-LABEL: func.func @m0_stablehlo_dot(
+// CHECK-LABEL: func.func @single_tile_stablehlo_dot(
 // CHECK-SAME: %{{[^:]+}}: tensor<4x8xf16>
 // CHECK-SAME: %{{[^:]+}}: tensor<8x16xf16>
 // CHECK-SAME: ) -> tensor<4x16xf16>

@@ -9,7 +9,7 @@ namespace wafer {
 
 void registerWaferConversionPasses() {
   static bool registered = [] {
-    mlir::registerPass(createLowerToCAbiSkeletonPass);
+    mlir::registerPass(createLowerTileRegionToCAbiPass);
     return true;
   }();
   (void)registered;

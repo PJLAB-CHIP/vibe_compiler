@@ -142,7 +142,7 @@ matcher、手写 StableHLO 文本 emitter 或 pre-exported fixture 冒充 PyTorc
 - sharding annotation 必须保留为 StableHLO / SDY 可解释结构。adapter 不能把 sharding 提前改写成
   physical card/tile id。
 
-验证时，framework adapter smoke 必须把真实 adapter 产物继续交给
+验证时，framework adapter 最小验证 必须把真实 adapter 产物继续交给
 `wafer-import-model --verify-stablehlo-bundle`。手写 MLIR 仍可作为 verifier unit test，但
 不能单独作为 P2.F1 完成证明。若 `third_party/pytorch-xla` 源码编译/安装出的 runtime 不可
 import，P2.F1 不得标记为完成；测试可以保留依赖隔离或 contract 级覆盖，但主线验收仍必须跑通真实
@@ -152,7 +152,7 @@ PyTorch/XLA adapter -> StableHLO bundle -> bundle metadata verifier -> WaferFron
 `third_party/pytorch-xla` 源码安装 `torch_xla` 2.5.0，并通过 Bazel override 复用本仓库
 `third_party/xla`、`third_party/llvm-project` 和 importer Python 的 `torch` headers/libs；
 没有使用 prebuilt `torch_xla` wheel。`tools/wafer_pytorch_xla_capture.py` 产出 PyTorch/XLA
-StableHLO bundle；lit smoke 将该 bundle 继续交给
+StableHLO bundle；lit 最小验证 将该 bundle 继续交给
 `wafer-import-model --verify-stablehlo-bundle`。
 
 #### 2.1.2 P2.F1 主链路 Capture Model
@@ -336,7 +336,7 @@ PrivateUse1 eager path 可以作为生态事实，但不能作为 compiler artif
 
 V0 验证项：
 
-- model import smoke test：至少一个真实 framework/exporter 静态图能导出到 StableHLO / MLIR artifact，
+- model import 最小验证：至少一个真实 framework/exporter 静态图能导出到 StableHLO / MLIR artifact，
   并且 graph break / fallback 会被诊断。
 - StableHLO parse / printer roundtrip。
 - function signature 的 shape、rank、dtype、dynamic bound 检查。

@@ -1,10 +1,10 @@
-#include "Wafer/ABI/M0Abi.h"
+#include "Wafer/ABI/TileAbi.h"
 
 #include "gtest/gtest.h"
 
 namespace {
 
-TEST(M0AbiTest, BuildsRdmaDescriptorWithByteRanges) {
+TEST(TileAbiTest, BuildsRdmaDescriptorWithByteRanges) {
   wafer::abi::Dma1DDescriptor descriptor;
   std::string error;
 
@@ -21,7 +21,7 @@ TEST(M0AbiTest, BuildsRdmaDescriptorWithByteRanges) {
   EXPECT_EQ(descriptor.waitPolicy, wafer::abi::WaitPolicy::IssueOnly);
 }
 
-TEST(M0AbiTest, BuildsWdmaDescriptorWithByteRanges) {
+TEST(TileAbiTest, BuildsWdmaDescriptorWithByteRanges) {
   wafer::abi::Dma1DDescriptor descriptor;
   std::string error;
 
@@ -38,7 +38,7 @@ TEST(M0AbiTest, BuildsWdmaDescriptorWithByteRanges) {
   EXPECT_EQ(descriptor.waitPolicy, wafer::abi::WaitPolicy::IssueOnly);
 }
 
-TEST(M0AbiTest, BuildsGemmDescriptor) {
+TEST(TileAbiTest, BuildsGemmDescriptor) {
   wafer::abi::GemmDescriptor descriptor;
   std::string error;
 
@@ -52,7 +52,7 @@ TEST(M0AbiTest, BuildsGemmDescriptor) {
   EXPECT_EQ(descriptor.waitPolicy, wafer::abi::WaitPolicy::IssueOnly);
 }
 
-TEST(M0AbiTest, RejectsInvalidDmaRanges) {
+TEST(TileAbiTest, RejectsInvalidDmaRanges) {
   wafer::abi::Dma1DDescriptor descriptor;
   std::string error;
 

@@ -504,9 +504,9 @@ Frontend artifact
 | Frontend artifact | 从真实 framework/exporter 图导出语义完整的 StableHLO / MLIR artifact，保留 shape、dtype、constant、weight、sharding 和 bounded dynamic shape；LLVM/MLIR/StableHLO/Shardy/importer 依赖由 adapter 和 build 配置隔离 | 没有 eager fallback、名字约定、不可界定 dynamic shape；主链路完成证明消费真实图 artifact，后端 textual tests 只作为局部 verifier / lowering 覆盖且不依赖 importer-only framework 包 |
 | Local compute normalization / tensor collective | 实现 dot_general、batch/head matmul、broadcast、reduction、reshape/transpose/slice、softmax、RMSNorm / LayerNorm、RoPE 和 MLP activation 的 structured IR 输出；SPMD collective 规整成 Wafer LinalgExt-style tensor collective | 输出只依赖 StableHLO semantics、type、indexing map、collective metadata 和 SSA use-def，不靠 layer 名或 tensor 名；tensor collective 不携带 `wafer.comm`、SPM buffer 或 DTE token |
 | Group planning | softmax staged schedule 有可测试 pattern：row max、exp、row sum、normalize 和 value accumulation 跨 key dimension 的状态明确表达 | 状态由 SSA、loop-carried value、explicit workspace 或 group split 表达，不写入 planner side table |
-| Compute coverage | elementwise 覆盖 add/sub/mul/div/max/min/neg/recip/sqrt/rsqrt/exp、limited broadcast、mask-add 或 compare/select；reduction 至少覆盖 max 和 sum | 能服务 softmax 与 norm；只有一个 demo reduce 或一个 GEMM smoke test 不算覆盖 |
+| Compute coverage | elementwise 覆盖 add/sub/mul/div/max/min/neg/recip/sqrt/rsqrt/exp、limited broadcast、mask-add 或 compare/select；reduction 至少覆盖 max 和 sum | 能服务 softmax 与 norm；只有一个 demo reduce 或一个 GEMM 最小验证 不算覆盖 |
 | Shape / indexing | Batch/head transpose relation 从 StableHLO dot dimension numbers 或 indexing map 推出 | 不能靠 Q/K/V 名字、参数顺序或示例 shape 恢复语义 |
-| Verification | M6 transformer block vertical slice gate 覆盖完整 block 的 normalization、group split、layout/SPM/DDR、C ABI 和 runtime completion | 单 op、单 group 或 single-tile smoke test 只能证明局部链路，不能证明 block 支撑完成 |
+| Verification | M6 transformer block vertical slice gate 覆盖完整 block 的 normalization、group split、layout/SPM/DDR、C ABI 和 runtime completion | 单 op、单 group 或 single-tile 最小验证 只能证明局部链路，不能证明 block 支撑完成 |
 
 ### 17.4 建议落地顺序
 

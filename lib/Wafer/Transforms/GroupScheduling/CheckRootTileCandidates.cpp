@@ -1,4 +1,4 @@
-//===- CheckRootTileCandidates.cpp - Root tile feasibility skeleton -------===//
+//===- CheckRootTileCandidates.cpp - Root tile feasibility -------===//
 
 #include "Wafer/Transforms/Passes.h"
 
@@ -171,7 +171,7 @@ static bool isSupportedReduceRoot(wafer::GroupOp group,
 }
 
 static std::optional<RootTileCandidate>
-buildM0RootTileCandidate(wafer::GroupOp group, std::string &reason) {
+buildRootTileCandidate(wafer::GroupOp group, std::string &reason) {
   if (group.getNumResults() != 1) {
     reason = "multi-result group requires traversal-domain split";
     return std::nullopt;
@@ -212,19 +212,19 @@ static FeasibilityResult checkBoundaryTensors(wafer::GroupOp group) {
   for (mlir::Value input : group.getInputs()) {
     if (!isStaticRankedTensor(input.getType()))
       return FeasibilityResult::failure(
-          "group inputs must be static ranked tensors for M0 feasibility");
+          "group inputs must be static ranked tensors for root tile feasibility");
   }
   for (mlir::Value out : group.getOuts()) {
     if (!isStaticRankedTensor(out.getType()))
       return FeasibilityResult::failure(
-          "group outs must be static ranked tensors for M0 feasibility");
+          "group outs must be static ranked tensors for root tile feasibility");
   }
   return FeasibilityResult::success();
 }
 
 static FeasibilityResult
-checkM0CandidateFeasibility(wafer::GroupOp group,
-                            const RootTileCandidate &candidate) {
+checkRootTileFeasibility(wafer::GroupOp group,
+                         const RootTileCandidate &candidate) {
   if (FeasibilityResult boundary = checkBoundaryTensors(group);
       !boundary.feasible)
     return boundary;
@@ -232,12 +232,12 @@ checkM0CandidateFeasibility(wafer::GroupOp group,
   mlir::Operation *root = getSingleBodyOp(group);
   if (!root)
     return FeasibilityResult::failure(
-        "M0 feasibility requires exactly one root operation");
+        "root tile feasibility requires exactly one root operation");
 
   if (mlir::isa<mlir::linalg::MatmulOp>(root)) {
     if (candidate.shape.size() != 2)
       return FeasibilityResult::failure(
-          "M0 matmul feasibility requires a rank-2 root tile candidate");
+          "root tile matmul feasibility requires a rank-2 root tile candidate");
     return FeasibilityResult::success();
   }
 
@@ -252,7 +252,7 @@ checkM0CandidateFeasibility(wafer::GroupOp group,
     return FeasibilityResult::success();
 
   return FeasibilityResult::failure(
-      "M0 feasibility requires a linalg.matmul, supported attention "
+      "root tile feasibility requires a linalg.matmul, supported attention "
       "linalg.generic contraction, limited-broadcast elementwise "
       "linalg.generic, or "
       "supported linalg.reduce root");
@@ -280,7 +280,7 @@ struct CheckRootTileCandidatesPass
     getOperation().walk([&](wafer::GroupOp group) {
       std::string reason;
       std::optional<RootTileCandidate> candidate =
-          buildM0RootTileCandidate(group, reason);
+          buildRootTileCandidate(group, reason);
       if (!candidate) {
         group.emitOpError("has no feasible root tile candidate: ") << reason;
         failed = true;
@@ -288,7 +288,7 @@ struct CheckRootTileCandidatesPass
       }
 
       FeasibilityResult feasibility =
-          checkM0CandidateFeasibility(group, *candidate);
+          checkRootTileFeasibility(group, *candidate);
       if (!feasibility.feasible) {
         group.emitOpError("has no feasible root tile candidate: ")
             << feasibility.reason;

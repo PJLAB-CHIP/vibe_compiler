@@ -1,15 +1,15 @@
-# RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-m0-smoke | %python %wafer_src_root/tools/wafer_package_manifest.py --roundtrip - | FileCheck %s
-# RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-m0-smoke | %python %wafer_src_root/tools/wafer_package_manifest.py --validate -
-# RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-elementwise-smoke | %python %wafer_src_root/tools/wafer_package_manifest.py --validate -
-# RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-m6-local-smoke | %python %wafer_src_root/tools/wafer_package_manifest.py --roundtrip - | FileCheck %s --check-prefix=M6
-# RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-stub-smoke | not %python %wafer_src_root/tools/wafer_package_manifest.py --validate - 2>&1 | FileCheck %s --check-prefix=ERR
-# RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-bad-placement-smoke | not %python %wafer_src_root/tools/wafer_package_manifest.py --validate - 2>&1 | FileCheck %s --check-prefix=PLACEMENT-ERR
-# RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-bad-local-shard-smoke | not %python %wafer_src_root/tools/wafer_package_manifest.py --validate - 2>&1 | FileCheck %s --check-prefix=SHARD-ERR
+# RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-single-tile-matmul | %python %wafer_src_root/tools/wafer_package_manifest.py --roundtrip - | FileCheck %s
+# RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-single-tile-matmul | %python %wafer_src_root/tools/wafer_package_manifest.py --validate -
+# RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-single-tile-elementwise | %python %wafer_src_root/tools/wafer_package_manifest.py --validate -
+# RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-local-transformer-block | %python %wafer_src_root/tools/wafer_package_manifest.py --roundtrip - | FileCheck %s --check-prefix=BLOCK
+# RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-synchronous-completion | not %python %wafer_src_root/tools/wafer_package_manifest.py --validate - 2>&1 | FileCheck %s --check-prefix=ERR
+# RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-invalid-placement | not %python %wafer_src_root/tools/wafer_package_manifest.py --validate - 2>&1 | FileCheck %s --check-prefix=PLACEMENT-ERR
+# RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-invalid-local-shard | not %python %wafer_src_root/tools/wafer_package_manifest.py --validate - 2>&1 | FileCheck %s --check-prefix=SHARD-ERR
 # RUN: not %python %wafer_src_root/tools/wafer_package_manifest.py --validate %S/invalid-workspace-manifest.json 2>&1 | FileCheck %s --check-prefix=WORKSPACE-ERR
 # RUN: not %python %wafer_src_root/tools/wafer_package_manifest.py --validate %S/invalid-resident-constant-manifest.json 2>&1 | FileCheck %s --check-prefix=CONST-ERR
 
 # CHECK: "schema_version": 1
-# CHECK: "package_name": "m0_single_tile"
+# CHECK: "package_name": "single_tile_matmul"
 # CHECK: "completion_source": "hpgr_stream_event"
 # CHECK: "placement": {
 # CHECK: "logical_rank_count": 1
@@ -29,21 +29,21 @@
 # WORKSPACE-ERR: resources.workspace_bytes does not match workspace buffers
 # CONST-ERR: resources.resident_constant_bytes does not match resident constants
 
-# M6-DAG: "package_name": "m6_local_block"
-# M6-DAG: "workspace_buffers": [
-# M6-DAG: "name": "scores"
-# M6-DAG: "producer": "attention_score"
-# M6-DAG: "last_consumer": "softmax_shift"
-# M6-DAG: "resident_constants": [
-# M6-DAG: "name": "proj_w"
-# M6-DAG: "source": "launch_input"
-# M6-DAG: "workspace_bytes": 18480
-# M6-DAG: "resident_constant_bytes": 1856
-# M6-DAG: "op": "wafer.abi.reduce"
-# M6-DAG: "kind": "max"
-# M6-DAG: "dimensions": [
-# M6-DAG: 3
-# M6-DAG: "init_value": -3.40282347e+38
-# M6-DAG: "op": "wafer.abi.elementwise"
-# M6-DAG: "kind": "tanh"
-# M6-DAG: "batch_count": 6
+# BLOCK-DAG: "package_name": "local_transformer_block"
+# BLOCK-DAG: "workspace_buffers": [
+# BLOCK-DAG: "name": "scores"
+# BLOCK-DAG: "producer": "attention_score"
+# BLOCK-DAG: "last_consumer": "softmax_shift"
+# BLOCK-DAG: "resident_constants": [
+# BLOCK-DAG: "name": "proj_w"
+# BLOCK-DAG: "source": "launch_input"
+# BLOCK-DAG: "workspace_bytes": 18480
+# BLOCK-DAG: "resident_constant_bytes": 1856
+# BLOCK-DAG: "op": "wafer.abi.reduce"
+# BLOCK-DAG: "kind": "max"
+# BLOCK-DAG: "dimensions": [
+# BLOCK-DAG: 3
+# BLOCK-DAG: "init_value": -3.40282347e+38
+# BLOCK-DAG: "op": "wafer.abi.elementwise"
+# BLOCK-DAG: "kind": "tanh"
+# BLOCK-DAG: "batch_count": 6

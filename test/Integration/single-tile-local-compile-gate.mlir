@@ -1,5 +1,5 @@
-// RUN: wafer-opt --wafer-form-groups --wafer-check-root-tile-candidates --wafer-materialize-single-tile --wafer-check-spm-allocation --wafer-materialize-ddr-external-bindings --wafer-lower-to-c-abi-skeleton %s | FileCheck %s --check-prefix=IR
-// RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-m0-smoke > %t.manifest.json
+// RUN: wafer-opt --wafer-form-groups --wafer-check-root-tile-candidates --wafer-materialize-single-tile --wafer-check-spm-allocation --wafer-materialize-ddr-external-bindings --wafer-lower-tile-region-to-c-abi %s | FileCheck %s --check-prefix=IR
+// RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-single-tile-matmul > %t.manifest.json
 // RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --validate %t.manifest.json
 // RUN: %python %wafer_src_root/tools/wafer_emit_c_abi_stub.py --manifest %t.manifest.json > %t.c
 // RUN: cc -fsyntax-only %t.c

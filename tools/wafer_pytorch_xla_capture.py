@@ -15,11 +15,11 @@ import sys
 from typing import Any, Callable
 
 
-P2F1_SMOKE_SIZE = 4096
+DEFAULT_REFERENCE_MATMUL_SIZE = 4096
 
 
 @dataclasses.dataclass(frozen=True)
-class P2S1ShardingStrategy:
+class ShardingStrategy:
     name: str
     mesh_shape: tuple[int, ...]
     axis_names: tuple[str, ...]
@@ -32,8 +32,8 @@ class P2S1ShardingStrategy:
         return functools.reduce(operator.mul, self.mesh_shape, 1)
 
 
-P2S1_SHARDING_STRATEGIES: tuple[P2S1ShardingStrategy, ...] = (
-    P2S1ShardingStrategy(
+SHARDING_STRATEGIES: tuple[ShardingStrategy, ...] = (
+    ShardingStrategy(
         name="data",
         mesh_shape=(16,),
         axis_names=("dp",),
@@ -41,7 +41,7 @@ P2S1_SHARDING_STRATEGIES: tuple[P2S1ShardingStrategy, ...] = (
         weight_spec=(None, None),
         bias_spec=(None,),
     ),
-    P2S1ShardingStrategy(
+    ShardingStrategy(
         name="column",
         mesh_shape=(16,),
         axis_names=("tp",),
@@ -49,7 +49,7 @@ P2S1_SHARDING_STRATEGIES: tuple[P2S1ShardingStrategy, ...] = (
         weight_spec=(None, "tp"),
         bias_spec=("tp",),
     ),
-    P2S1ShardingStrategy(
+    ShardingStrategy(
         name="row",
         mesh_shape=(16,),
         axis_names=("tp",),
@@ -57,7 +57,7 @@ P2S1_SHARDING_STRATEGIES: tuple[P2S1ShardingStrategy, ...] = (
         weight_spec=("tp", None),
         bias_spec=(None,),
     ),
-    P2S1ShardingStrategy(
+    ShardingStrategy(
         name="2d-output",
         mesh_shape=(4, 4),
         axis_names=("dp", "tp"),
@@ -65,7 +65,7 @@ P2S1_SHARDING_STRATEGIES: tuple[P2S1ShardingStrategy, ...] = (
         weight_spec=(None, "tp"),
         bias_spec=("tp",),
     ),
-    P2S1ShardingStrategy(
+    ShardingStrategy(
         name="2d-contracting-output",
         mesh_shape=(2, 4, 2),
         axis_names=("dp", "tp", "mp"),
@@ -73,7 +73,7 @@ P2S1_SHARDING_STRATEGIES: tuple[P2S1ShardingStrategy, ...] = (
         weight_spec=("mp", "tp"),
         bias_spec=("tp",),
     ),
-    P2S1ShardingStrategy(
+    ShardingStrategy(
         name="partial-replication",
         mesh_shape=(4, 4),
         axis_names=("dp", "tp"),
@@ -83,16 +83,16 @@ P2S1_SHARDING_STRATEGIES: tuple[P2S1ShardingStrategy, ...] = (
     ),
 )
 
-P2S1_SHARDING_STRATEGY_NAMES: tuple[str, ...] = tuple(
-    strategy.name for strategy in P2S1_SHARDING_STRATEGIES
+SHARDING_STRATEGY_NAMES: tuple[str, ...] = tuple(
+    strategy.name for strategy in SHARDING_STRATEGIES
 )
 
 
-def create_p2s1_default_input_strategy(
-    *, tile_count: int, size: int = P2F1_SMOKE_SIZE
-) -> P2S1ShardingStrategy:
+def create_default_input_sharding_strategy(
+    *, tile_count: int, size: int = DEFAULT_REFERENCE_MATMUL_SIZE
+) -> ShardingStrategy:
     if tile_count < 1 or tile_count > 16:
-        raise RuntimeError("P2.S1 default tile count must be in [1, 16]")
+        raise RuntimeError("default input sharding tile count must be in [1, 16]")
 
     def default_spec(shape: tuple[int, ...]) -> tuple[Any, ...]:
         if tile_count == 1:
@@ -104,7 +104,7 @@ def create_p2s1_default_input_strategy(
                 return tuple(spec)
         return tuple(None for _ in shape)
 
-    return P2S1ShardingStrategy(
+    return ShardingStrategy(
         name=f"default-input-seed-{tile_count}",
         mesh_shape=(tile_count,),
         axis_names=("tile",),
@@ -114,15 +114,15 @@ def create_p2s1_default_input_strategy(
     )
 
 
-def get_p2s1_sharding_strategy(name: str) -> P2S1ShardingStrategy:
-    for strategy in P2S1_SHARDING_STRATEGIES:
+def get_sharding_strategy(name: str) -> ShardingStrategy:
+    for strategy in SHARDING_STRATEGIES:
         if strategy.name == name:
             return strategy
-    valid = ", ".join(P2S1_SHARDING_STRATEGY_NAMES)
-    raise RuntimeError(f"unknown P2.S1 sharding strategy '{name}'; valid: {valid}")
+    valid = ", ".join(SHARDING_STRATEGY_NAMES)
+    raise RuntimeError(f"unknown sharding strategy '{name}'; valid: {valid}")
 
 
-def create_p2s1_mesh(spmd_module: Any, strategy: P2S1ShardingStrategy) -> Any:
+def create_spmd_mesh(spmd_module: Any, strategy: ShardingStrategy) -> Any:
     return spmd_module.Mesh(
         list(range(strategy.device_count)),
         strategy.mesh_shape,
@@ -130,17 +130,17 @@ def create_p2s1_mesh(spmd_module: Any, strategy: P2S1ShardingStrategy) -> Any:
     )
 
 
-def apply_p2s1_strategy_marks(
+def apply_strategy_marks(
     *,
     spmd_module: Any,
-    strategy: P2S1ShardingStrategy,
+    strategy: ShardingStrategy,
     mesh: Any,
     input_tensor: Any,
-    smoke_module: Any,
+    reference_module: Any,
 ) -> None:
     spmd_module.mark_sharding(input_tensor, mesh, strategy.input_spec)
-    spmd_module.mark_sharding(smoke_module.weight, mesh, strategy.weight_spec)
-    spmd_module.mark_sharding(smoke_module.bias, mesh, strategy.bias_spec)
+    spmd_module.mark_sharding(reference_module.weight, mesh, strategy.weight_spec)
+    spmd_module.mark_sharding(reference_module.bias, mesh, strategy.bias_spec)
 
 
 def _with_disabled_hlo_pass(flags: str, pass_name: str) -> str:
@@ -158,7 +158,7 @@ def _with_disabled_hlo_pass(flags: str, pass_name: str) -> str:
     return " ".join(tokens)
 
 
-def configure_p2s1_partitioned_export_environment() -> None:
+def configure_partitioned_export_environment() -> None:
     os.environ["XLA_DUMP_POST_OPTIMIZATIONS"] = "1"
     os.environ["XLA_FLAGS"] = _with_disabled_hlo_pass(
         os.environ.get("XLA_FLAGS", ""), "fusion"
@@ -250,8 +250,8 @@ def _verify_bundle_layout(bundle_path: pathlib.Path) -> None:
         raise RuntimeError("missing StableHLO bundle directory: data")
 
 
-def _make_smoke_module(torch_module: Any, size: int) -> Any:
-    class WaferCaptureSmoke4096(torch_module.nn.Module):
+def _make_reference_matmul_module(torch_module: Any, size: int) -> Any:
+    class WaferReferenceMatmul4096(torch_module.nn.Module):
         def __init__(self):
             super().__init__()
             self.weight = torch_module.nn.Parameter(
@@ -267,7 +267,7 @@ def _make_smoke_module(torch_module: Any, size: int) -> Any:
             z = torch_module.tanh(y)
             return z + y
 
-    return WaferCaptureSmoke4096()
+    return WaferReferenceMatmul4096()
 
 
 def _import_runtime_modules() -> tuple[Any, Any]:
@@ -309,10 +309,10 @@ def _tensor_signature(stablehlo_module: Any, tensor: Any) -> Any:
     )
 
 
-def _state_dict_numpy(smoke_module: Any) -> dict[str, Any]:
+def _state_dict_numpy(reference_module: Any) -> dict[str, Any]:
     return {
-        "weight": smoke_module.weight.detach().cpu().numpy(),
-        "bias": smoke_module.bias.detach().cpu().numpy(),
+        "weight": reference_module.weight.detach().cpu().numpy(),
+        "bias": reference_module.bias.detach().cpu().numpy(),
     }
 
 
@@ -329,7 +329,7 @@ def _build_lazy_stablehlo_bundle(
     xlac_module: Any,
     output_tensor: Any,
     input_tensor: Any,
-    smoke_module: Any,
+    reference_module: Any,
     state_dict: dict[str, Any],
     use_exported_function_signatures: bool = False,
 ) -> Any:
@@ -339,9 +339,9 @@ def _build_lazy_stablehlo_bundle(
     id_to_location = {
         xlac_module._xla_get_tensor_id(input_tensor):
             stablehlo_module.InputLocation.input_arg(position=0),
-        xlac_module._xla_get_tensor_id(smoke_module.weight):
+        xlac_module._xla_get_tensor_id(reference_module.weight):
             stablehlo_module.InputLocation.parameter(name="weight"),
-        xlac_module._xla_get_tensor_id(smoke_module.bias):
+        xlac_module._xla_get_tensor_id(reference_module.bias):
             stablehlo_module.InputLocation.parameter(name="bias"),
     }
 
@@ -399,21 +399,21 @@ def _build_lazy_stablehlo_bundle(
     )
 
 
-def emit_p2f1_smoke_bundle(
+def emit_reference_stablehlo_bundle(
     bundle_path: pathlib.Path,
     torch_module: Any | None = None,
     stablehlo_module: Any | None = None,
-    smoke_module_factory: Callable[[], Any] | None = None,
-    size: int = P2F1_SMOKE_SIZE,
+    reference_module_factory: Callable[[], Any] | None = None,
+    size: int = DEFAULT_REFERENCE_MATMUL_SIZE,
 ) -> None:
     if torch_module is None or stablehlo_module is None:
         torch_module, stablehlo_module = _import_runtime_modules()
 
-    if smoke_module_factory is None:
-        smoke_module = _make_smoke_module(torch_module, size)
+    if reference_module_factory is None:
+        reference_module = _make_reference_matmul_module(torch_module, size)
     else:
-        smoke_module = smoke_module_factory()
-    smoke_module.eval()
+        reference_module = reference_module_factory()
+    reference_module.eval()
     input_tensor = torch_module.empty(size, size, dtype=torch_module.float32)
 
     options = stablehlo_module.StableHLOExportOptions()
@@ -423,7 +423,7 @@ def emit_p2f1_smoke_bundle(
     options.include_human_readable_text = True
 
     with torch_module.no_grad():
-        exported = torch_module.export.export(smoke_module, (input_tensor,))
+        exported = torch_module.export.export(reference_module, (input_tensor,))
         stablehlo_program = stablehlo_module.exported_program_to_stablehlo(
             exported, options=options
         )
@@ -435,7 +435,7 @@ def emit_p2f1_smoke_bundle(
     _verify_bundle_layout(bundle_path)
 
 
-def emit_p2s1_sharded_smoke_bundle(
+def emit_sharded_stablehlo_bundle(
     bundle_path: pathlib.Path,
     strategy_name: str,
     torch_module: Any | None = None,
@@ -444,11 +444,11 @@ def emit_p2s1_sharded_smoke_bundle(
     xla_model_module: Any | None = None,
     spmd_module: Any | None = None,
     xlac_module: Any | None = None,
-    smoke_module_factory: Callable[[], Any] | None = None,
-    size: int = P2F1_SMOKE_SIZE,
+    reference_module_factory: Callable[[], Any] | None = None,
+    size: int = DEFAULT_REFERENCE_MATMUL_SIZE,
     partitioned: bool = False,
 ) -> None:
-    strategy = get_p2s1_sharding_strategy(strategy_name)
+    strategy = get_sharding_strategy(strategy_name)
     if (
         torch_module is None
         or stablehlo_module is None
@@ -458,7 +458,7 @@ def emit_p2s1_sharded_smoke_bundle(
         or xlac_module is None
     ):
         if partitioned:
-            configure_p2s1_partitioned_export_environment()
+            configure_partitioned_export_environment()
         (
             torch_module,
             stablehlo_module,
@@ -472,32 +472,32 @@ def emit_p2s1_sharded_smoke_bundle(
     device_count = runtime_module.global_runtime_device_count()
     if device_count != strategy.device_count:
         raise RuntimeError(
-            f"P2.S1 strategy '{strategy.name}' requires "
+            f"sharding strategy '{strategy.name}' requires "
             f"{strategy.device_count} XLA devices, got {device_count}; "
-            "for CPU smoke tests set CPU_NUM_DEVICES=16 before importing "
+            "for CPU artifact tests set CPU_NUM_DEVICES=16 before importing "
             "torch_xla"
         )
 
-    if smoke_module_factory is None:
-        smoke_module = _make_smoke_module(torch_module, size)
+    if reference_module_factory is None:
+        reference_module = _make_reference_matmul_module(torch_module, size)
     else:
-        smoke_module = smoke_module_factory()
-    smoke_module.eval()
-    state_dict = _state_dict_numpy(smoke_module)
+        reference_module = reference_module_factory()
+    reference_module.eval()
+    state_dict = _state_dict_numpy(reference_module)
 
     device = xla_model_module.xla_device()
-    smoke_module = _move_to_device(smoke_module, device)
+    reference_module = _move_to_device(reference_module, device)
     input_tensor = _move_to_device(
         torch_module.empty(size, size, dtype=torch_module.float32), device
     )
 
-    mesh = create_p2s1_mesh(spmd_module, strategy)
-    apply_p2s1_strategy_marks(
+    mesh = create_spmd_mesh(spmd_module, strategy)
+    apply_strategy_marks(
         spmd_module=spmd_module,
         strategy=strategy,
         mesh=mesh,
         input_tensor=input_tensor,
-        smoke_module=smoke_module,
+        reference_module=reference_module,
     )
 
     options = stablehlo_module.StableHLOExportOptions()
@@ -507,14 +507,14 @@ def emit_p2s1_sharded_smoke_bundle(
     options.include_human_readable_text = True
 
     with torch_module.no_grad():
-        output_tensor = smoke_module(input_tensor)
+        output_tensor = reference_module(input_tensor)
         bundle = _build_lazy_stablehlo_bundle(
             stablehlo_module=stablehlo_module,
             xla_model_module=xla_model_module,
             xlac_module=xlac_module,
             output_tensor=output_tensor,
             input_tensor=input_tensor,
-            smoke_module=smoke_module,
+            reference_module=reference_module,
             state_dict=state_dict,
             use_exported_function_signatures=partitioned,
         )
@@ -526,29 +526,29 @@ def emit_p2s1_sharded_smoke_bundle(
     _verify_bundle_layout(bundle_path)
 
 
-def emit_p2s1_partitioned_smoke_bundle(
+def emit_partitioned_stablehlo_bundle(
     bundle_path: pathlib.Path,
     *,
     strategy_name: str | None = None,
     default_input_sharding: bool = False,
     default_tile_count: int = 16,
-    size: int = P2F1_SMOKE_SIZE,
+    size: int = DEFAULT_REFERENCE_MATMUL_SIZE,
 ) -> None:
     if (strategy_name is None) == (not default_input_sharding):
         raise RuntimeError(
-            "--emit-p2s1-partitioned-smoke requires exactly one of "
+            "--emit-partitioned-bundle requires exactly one of "
             "--sharding-strategy or --default-input-sharding"
         )
 
     if default_input_sharding:
-        strategy = create_p2s1_default_input_strategy(
+        strategy = create_default_input_sharding_strategy(
             tile_count=default_tile_count, size=size
         )
         strategy_name = strategy.name
     else:
-        strategy = get_p2s1_sharding_strategy(strategy_name or "")
+        strategy = get_sharding_strategy(strategy_name or "")
 
-    _emit_p2s1_smoke_bundle_with_strategy(
+    _emit_stablehlo_bundle_with_strategy(
         bundle_path=bundle_path,
         strategy=strategy,
         size=size,
@@ -556,15 +556,15 @@ def emit_p2s1_partitioned_smoke_bundle(
     )
 
 
-def _emit_p2s1_smoke_bundle_with_strategy(
+def _emit_stablehlo_bundle_with_strategy(
     *,
     bundle_path: pathlib.Path,
-    strategy: P2S1ShardingStrategy,
+    strategy: ShardingStrategy,
     size: int,
     partitioned: bool,
 ) -> None:
     if partitioned:
-        configure_p2s1_partitioned_export_environment()
+        configure_partitioned_export_environment()
     (
         torch_module,
         stablehlo_module,
@@ -578,29 +578,29 @@ def _emit_p2s1_smoke_bundle_with_strategy(
     device_count = runtime_module.global_runtime_device_count()
     if device_count != strategy.device_count:
         raise RuntimeError(
-            f"P2.S1 strategy '{strategy.name}' requires "
+            f"sharding strategy '{strategy.name}' requires "
             f"{strategy.device_count} XLA devices, got {device_count}; "
-            "for CPU smoke tests set CPU_NUM_DEVICES to the strategy device "
+            "for CPU artifact tests set CPU_NUM_DEVICES to the strategy device "
             "count before importing torch_xla"
         )
 
-    smoke_module = _make_smoke_module(torch_module, size)
-    smoke_module.eval()
-    state_dict = _state_dict_numpy(smoke_module)
+    reference_module = _make_reference_matmul_module(torch_module, size)
+    reference_module.eval()
+    state_dict = _state_dict_numpy(reference_module)
 
     device = xla_model_module.xla_device()
-    smoke_module = _move_to_device(smoke_module, device)
+    reference_module = _move_to_device(reference_module, device)
     input_tensor = _move_to_device(
         torch_module.empty(size, size, dtype=torch_module.float32), device
     )
 
-    mesh = create_p2s1_mesh(spmd_module, strategy)
-    apply_p2s1_strategy_marks(
+    mesh = create_spmd_mesh(spmd_module, strategy)
+    apply_strategy_marks(
         spmd_module=spmd_module,
         strategy=strategy,
         mesh=mesh,
         input_tensor=input_tensor,
-        smoke_module=smoke_module,
+        reference_module=reference_module,
     )
 
     options = stablehlo_module.StableHLOExportOptions()
@@ -610,14 +610,14 @@ def _emit_p2s1_smoke_bundle_with_strategy(
     options.include_human_readable_text = True
 
     with torch_module.no_grad():
-        output_tensor = smoke_module(input_tensor)
+        output_tensor = reference_module(input_tensor)
         bundle = _build_lazy_stablehlo_bundle(
             stablehlo_module=stablehlo_module,
             xla_model_module=xla_model_module,
             xlac_module=xlac_module,
             output_tensor=output_tensor,
             input_tensor=input_tensor,
-            smoke_module=smoke_module,
+            reference_module=reference_module,
             state_dict=state_dict,
             use_exported_function_signatures=partitioned,
         )
@@ -632,29 +632,29 @@ def _emit_p2s1_smoke_bundle_with_strategy(
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--emit-p2f1-smoke",
+        "--emit-reference-bundle",
         action="store_true",
-        help="emit the P2.F1 4096x4096 matmul+bias+tanh+residual artifact",
+        help="emit the reference 4096x4096 matmul+bias+tanh+residual StableHLO artifact",
     )
     parser.add_argument(
-        "--emit-p2s1-sharded-smoke",
+        "--emit-sharded-bundle",
         action="store_true",
-        help="emit the P2.S1 4096x4096 sharded matmul artifact",
+        help="emit the 4096x4096 sharded StableHLO artifact",
     )
     parser.add_argument(
-        "--emit-p2s1-partitioned-smoke",
+        "--emit-partitioned-bundle",
         action="store_true",
-        help="emit the P2.S1 4096x4096 post-XLA-SPMD partitioned artifact",
+        help="emit the 4096x4096 post-XLA-SPMD partitioned StableHLO artifact",
     )
     parser.add_argument(
         "--sharding-strategy",
-        choices=P2S1_SHARDING_STRATEGY_NAMES,
-        help="P2.S1 user sharding strategy",
+        choices=SHARDING_STRATEGY_NAMES,
+        help="user sharding strategy",
     )
     parser.add_argument(
         "--default-input-sharding",
         action="store_true",
-        help="apply the P2.S1 no-user-sharding default input seed policy",
+        help="apply the no-user-sharding default input seed policy",
     )
     parser.add_argument(
         "--default-tile-count",
@@ -668,29 +668,29 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main(argv: list[str]) -> int:
     args = _parse_args(argv)
-    if args.emit_p2f1_smoke:
+    if args.emit_reference_bundle:
         if args.output_bundle is None:
             raise RuntimeError("missing --output-bundle")
 
-        emit_p2f1_smoke_bundle(args.output_bundle)
+        emit_reference_stablehlo_bundle(args.output_bundle)
         return 0
 
-    if args.emit_p2s1_sharded_smoke:
+    if args.emit_sharded_bundle:
         if args.output_bundle is None:
             raise RuntimeError("missing --output-bundle")
         if args.sharding_strategy is None:
             raise RuntimeError("missing --sharding-strategy")
 
-        emit_p2s1_sharded_smoke_bundle(
+        emit_sharded_stablehlo_bundle(
             args.output_bundle, strategy_name=args.sharding_strategy
         )
         return 0
 
-    if args.emit_p2s1_partitioned_smoke:
+    if args.emit_partitioned_bundle:
         if args.output_bundle is None:
             raise RuntimeError("missing --output-bundle")
 
-        emit_p2s1_partitioned_smoke_bundle(
+        emit_partitioned_stablehlo_bundle(
             args.output_bundle,
             strategy_name=args.sharding_strategy,
             default_input_sharding=args.default_input_sharding,
@@ -699,8 +699,8 @@ def main(argv: list[str]) -> int:
         return 0
 
     raise RuntimeError(
-        "missing --emit-p2f1-smoke, --emit-p2s1-sharded-smoke, or "
-        "--emit-p2s1-partitioned-smoke"
+        "missing --emit-reference-bundle, --emit-sharded-bundle, or "
+        "--emit-partitioned-bundle"
     )
 
 

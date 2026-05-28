@@ -1,7 +1,7 @@
 // RUN: wafer-opt %s | FileCheck %s
 
 module {
-  func.func @m0_linalg_gemm(
+  func.func @single_tile_linalg_gemm(
       %lhs: tensor<4x8xf16>,
       %rhs: tensor<8x16xf16>,
       %out: tensor<4x16xf16>) -> tensor<4x16xf16> {
@@ -12,7 +12,7 @@ module {
   }
 }
 
-// CHECK-LABEL: func.func @m0_linalg_gemm(
+// CHECK-LABEL: func.func @single_tile_linalg_gemm(
 // CHECK-SAME: %{{[^:]+}}: tensor<4x8xf16>
 // CHECK-SAME: %{{[^:]+}}: tensor<8x16xf16>
 // CHECK-SAME: %{{[^:]+}}: tensor<4x16xf16>
