@@ -64,6 +64,11 @@
   `cmake -S . -B build/r0-deps-pytorch-xla -DWAFER_XLA_SPMD_PARTITIONER_HELPER=$PWD/build/xla-spmd-helper/wafer_xla_spmd_partitioner`。
   之后 `cmake --build build/r0-deps-pytorch-xla --target check-wafer-lit` 会运行真实 P2.S2 partition
   artifact gate；没有配置 helper 时该 gate 通过 `REQUIRES: xla-spmd-helper` 自动 unsupported。
+- Wafer-owned Shardy / SPMD 源码放在 `lib/Wafer/Transforms/SPMD/`。只依赖 MLIR / StableHLO /
+  Shardy CMake target 的 pass 编进 `WaferTransforms`；需要直接依赖 XLA HLO service /
+  `spmd_partitioner` / generated proto / TSL 的入口也放在同一 Wafer 源码目录，但通过
+  `tools/build_xla_spmd_partitioner_helper.py` symlink 到 pinned XLA Bazel overlay 编译。不要把这类
+  pipeline stage 源码放进 `tools/` 或 `third_party/xla`。
 - `test/Spmd` 目前只覆盖 P2.S1 default input seed 和 SDY/Shardy artifact parse/verify，不覆盖
   XLA SPMD partitioner，也不输出 rank-local StableHLO。`test/Frontend` 覆盖 StableHLO/Linalg local
   compute normalization；softmax、RMSNorm、LayerNorm 输入是 fine-grained StableHLO staged graph

@@ -161,6 +161,11 @@ P2.S2 工程 gate 必须把 XLA SPMD partitioner 或等价 local-body partitioni
   service、TSL、Abseil 或 generated XLA proto targets。为避免把任务拖进 XLA CMake shim，P2.S2
   采用 `tools/build_xla_spmd_partitioner_helper.py` 生成 pinned `third_party/xla` Bazel overlay 并构建
   helper；helper 只是当前工程接入方式，不是新的 IR 层、bundle 名称或长期协议对象。
+- Wafer-owned Shardy / SPMD 实现源码归属 `lib/Wafer/Transforms/SPMD/`。只依赖 MLIR / StableHLO /
+  Shardy CMake target 的 pass 应编进 `WaferTransforms`；必须直接使用 XLA HLO service / SPMD
+  partitioner / generated proto / TSL 的入口可以从同一 Wafer 源码树映射进 pinned XLA Bazel overlay
+  编译。当前 `lib/Wafer/Transforms/SPMD/XlaSpmdPartitionerMain.cpp` 就是这种 Wafer-owned stage
+  adapter，`tools/build_xla_spmd_partitioner_helper.py` 只是构建桥。
 - 旧 Python post-SPMD helper 和相关 tests 已删除。P2.S2 的 partitioned StableHLO 主链产物只能由
   Wafer-owned artifact stage 保存；不允许用 Python helper、手写 sidecar 或 fixture 冒充这个缺口。
 - no-user-sharding 分支当前只在文本 StableHLO/SDY artifact 中用
