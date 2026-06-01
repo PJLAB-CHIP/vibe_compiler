@@ -179,7 +179,8 @@ debug/unit 入口，但这些 flag 不能被写成用户级 compile 流程。
 
 - `wafer-lower-local-stablehlo-to-cabi`：local StableHLO tensor compute -> linalg/tensor ->
   group/tile/SPM/DDR -> C ABI issue IR。该 pipeline 不包含 norm/softmax/MLP 这类 case-specific
-  schedule acceptance pass；这些 checker 只作为局部 pattern/unit 覆盖。
+  schedule acceptance pass；这些 checker 只作为局部 pattern/unit 覆盖。实现上它先做
+  StableHLO-to-linalg/tensor normalization，再复用 local linalg -> C ABI 的后半段。
 - `wafer-lower-local-linalg-to-cabi`：已是 structured tensor/linalg 的 local compute -> C ABI issue IR；
   `tile-mapping=single` 是默认 local materialization，`tile-mapping=multi-tile-no-comm` 只覆盖已有
   no-communication tile materialization 路线。

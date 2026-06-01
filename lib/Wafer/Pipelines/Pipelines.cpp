@@ -125,7 +125,7 @@ static void addCompileTargetContract(mlir::OpPassManager &pm,
   pm.addPass(std::make_unique<MaterializeCompileTargetPass>(target));
 }
 
-static void addLocalTensorToCAbiBody(mlir::OpPassManager &pm,
+static void addLocalLinalgToCAbiBody(mlir::OpPassManager &pm,
                                      llvm::StringRef tileMapping) {
   pm.addPass(createFormGroupsPass());
   pm.addPass(createCheckRootTileCandidatesPass());
@@ -158,7 +158,7 @@ void buildLocalLinalgToCAbiPipeline(mlir::OpPassManager &pm,
                                     llvm::StringRef target,
                                     llvm::StringRef tileMapping) {
   addCompileTargetContract(pm, target);
-  addLocalTensorToCAbiBody(pm, tileMapping);
+  addLocalLinalgToCAbiBody(pm, tileMapping);
 }
 
 void buildLocalStablehloToCAbiPipeline(mlir::OpPassManager &pm,
@@ -166,7 +166,7 @@ void buildLocalStablehloToCAbiPipeline(mlir::OpPassManager &pm,
                                        llvm::StringRef tileMapping) {
   addCompileTargetContract(pm, target);
   addStablehloLocalTensorNormalization(pm);
-  addLocalTensorToCAbiBody(pm, tileMapping);
+  addLocalLinalgToCAbiBody(pm, tileMapping);
 }
 
 void buildTileCommunicationToCAbiPipeline(mlir::OpPassManager &pm,
