@@ -758,6 +758,12 @@ cmake/
 
 Pass pipeline 建议：
 
+当前用户级 / Integration 主链路不直接暴露下面这些单 pass。R2.4-pre 后由 `WaferPipelines`
+注册按 IR 边界命名的 pipeline：`wafer-lower-local-stablehlo-to-cabi`、`wafer-lower-local-linalg-to-cabi`
+和 `wafer-lower-tile-communication-to-cabi`。这些 pipeline 通过 option `target=wafer`
+materialize/校验 `#wafer.target<wafer>`；`tx8` 只保留为底层硬件/依赖事实名，不作为 compiler
+driver target。下面列表描述长期阶段边界，不是要求用户手动串 pass。
+
 ```text
 ModelImport/FrontendArtifact
   -> StableHLO/Shardy

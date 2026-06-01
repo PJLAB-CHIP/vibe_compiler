@@ -37,6 +37,13 @@ artifact gate。后续 group / tile / resource gate 必须消费真实 frontend/
 bin 只负责注册和调用，单 pass flag 只保留为 unit/debug 入口。用户级 compile target 名称统一为
 `wafer`；`tx8` 只保留为硬件/依赖逆向资料中的事实名，不作为 compiler driver target 字符串。
 
+2026-06-01 实现结论：R2.4-pre 已新增 `WaferPipelines` 库并由 `wafer-opt` 注册。当前已收口的
+named pipeline 是 `wafer-lower-local-linalg-to-cabi`、`wafer-lower-local-stablehlo-to-cabi` 和
+`wafer-lower-tile-communication-to-cabi`。这些名字按 IR 输入/输出和职责命名，不按任务号、case
+或 workload 命名。pipeline option `target=wafer` 会 materialize/校验 module 的
+`#wafer.target<wafer>`；非 `wafer` target 会诊断。Integration 主链路 gate 已改为 named pipeline；
+单 pass flags 继续只作为 Transforms/StageConnections 的局部 unit/debug 覆盖。
+
 ## R2.1 Frontend Artifact / Importer Contract
 
 实现边界：
@@ -167,6 +174,18 @@ R2.4-pre 完成后，上述消费链不能再依赖用户或 lit 手动串联多
 必须通过 named pipeline 或用户级 driver mode 重放上游链路；pipeline 名称按 IR 边界和职责命名，
 不能按 P2/R3 任务号、单个 workload 或 case 命名。`wafer-opt` 可以继续暴露单 pass 作为局部
 debug/unit 入口，但这些 flag 不能被写成用户级 compile 流程。
+
+当前 R2.4-pre 落地的 Wafer pipeline 边界：
+
+- `wafer-lower-local-stablehlo-to-cabi`：local StableHLO tensor compute -> linalg/tensor ->
+  group/tile/SPM/DDR -> C ABI issue IR。该 pipeline 不包含 norm/softmax/MLP 这类 case-specific
+  schedule acceptance pass；这些 checker 只作为局部 pattern/unit 覆盖。
+- `wafer-lower-local-linalg-to-cabi`：已是 structured tensor/linalg 的 local compute -> C ABI issue IR；
+  `tile-mapping=single` 是默认 local materialization，`tile-mapping=multi-tile-no-comm` 只覆盖已有
+  no-communication tile materialization 路线。
+- `wafer-lower-tile-communication-to-cabi`：已经处在 tile-level `wafer.comm` / p2p IR 的通信 -> C ABI
+  issue IR。它不是 R2.4 tensor collective handoff；R2.4 仍要从 partitioned StableHLO collective
+  normalizes 到 LinalgExt-style tensor collective，再进入 group/tiling。
 
 P2.F1 主链路 artifact 采用 `4096x4096 @ 4096x4096` f32 matmul + bias + tanh + residual 最小验证。
 该规模用于给后续 tiling、SPM/DDR resource、resident constant 和 package gate 提供非 trivial

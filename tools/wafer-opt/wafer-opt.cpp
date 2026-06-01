@@ -1,8 +1,9 @@
 //===- wafer-opt.cpp - Wafer optimizer driver ----------------------------===//
 
-#include "Wafer/InitAll.h"
-#include "Wafer/Frontend/InitImporterDialects.h"
 #include "Wafer/Conversion/Passes.h"
+#include "Wafer/Frontend/InitImporterDialects.h"
+#include "Wafer/InitAll.h"
+#include "Wafer/Pipelines/Pipelines.h"
 #include "Wafer/Transforms/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -27,6 +28,7 @@ int main(int argc, char **argv) {
   wafer::registerImporterDialects(registry);
   wafer::registerWaferTransformPasses();
   wafer::registerWaferConversionPasses();
+  wafer::registerWaferPipelines();
   mlir::func::registerInlinerExtension(registry);
 #ifdef WAFER_ENABLE_SHARDY
   mlir::sdy::registerAllSdyPassesAndPipelines();

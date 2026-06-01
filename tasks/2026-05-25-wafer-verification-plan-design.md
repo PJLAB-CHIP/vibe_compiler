@@ -91,7 +91,9 @@ Single-tile local compute：
   输入只保留为局部 verifier、lowering pattern 或 bring-up fixture。
 - R2.4-pre 之后，主链路 gate 必须通过 Wafer named pipeline 或用户级 driver mode 重放上述链路；
   单独拼 `wafer-opt` pass、`shardy-sdy-opt`、PyTorch/XLA runtime 环境变量和 verifier tool 只能作为
-  unit/debug 覆盖。用户级 target 名称统一为 `wafer`。
+  unit/debug 覆盖。当前 named pipeline 入口是 `wafer-lower-local-stablehlo-to-cabi`、
+  `wafer-lower-local-linalg-to-cabi` 和 `wafer-lower-tile-communication-to-cabi`；用户级 target
+  名称统一为 `wafer`，并由 pipeline option materialize/校验。
 - `wafer.group` 到 `wafer.tile_region` 可生成单 tile load/compute/store。
 - SPM allocation trial 成功。
 - DDR external input/output 或 constant read-only demand 可绑定。

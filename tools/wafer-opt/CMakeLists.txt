@@ -3,6 +3,7 @@ target_link_libraries(wafer-opt
   PRIVATE
   WaferConversion
   WaferIR
+  WaferPipelines
   WaferTransforms
   MLIRArithDialect
   MLIRAsyncDialect

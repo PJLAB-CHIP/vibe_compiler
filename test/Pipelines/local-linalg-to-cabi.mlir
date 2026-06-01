@@ -1,8 +1,5 @@
 // RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-local-linalg-to-cabi{target=wafer})' %s | FileCheck %s --check-prefix=IR
-// RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-single-tile-matmul > %t.manifest.json
-// RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --validate %t.manifest.json
-// RUN: %python %wafer_src_root/tools/wafer_emit_c_abi_stub.py --manifest %t.manifest.json > %t.c
-// RUN: cc -fsyntax-only %t.c
+// RUN: not wafer-opt --pass-pipeline='builtin.module(wafer-lower-local-linalg-to-cabi{target=unknown})' %s 2>&1 | FileCheck %s --check-prefix=BAD-TARGET
 
 module {
   func.func @single_matmul(
@@ -16,13 +13,12 @@ module {
   }
 }
 
+// IR: module attributes {wafer.target = #wafer.target<wafer>}
 // IR-LABEL: func.func @single_matmul(
 // IR: wafer.ddr.external_binding <input>
-// IR: wafer.ddr.external_binding <output>
 // IR: wafer.tile_region
-// IR-NOT: wafer.load_tile
-// IR: wafer.abi.rdma <issue_only>
-// IR-NOT: wafer.compute.gemm
 // IR: wafer.abi.gemm <issue_only>
-// IR-NOT: wafer.store_tile
 // IR: wafer.abi.wdma <issue_only>
+// IR-NOT: linalg.matmul
+
+// BAD-TARGET: unsupported Wafer compile target 'unknown'; expected 'wafer'

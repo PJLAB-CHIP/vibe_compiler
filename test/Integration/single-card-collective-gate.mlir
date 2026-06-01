@@ -1,4 +1,4 @@
-// RUN: wafer-opt --wafer-lower-ring-all-gather --wafer-lower-ring-reduce-collectives --wafer-lower-tile-region-to-c-abi %s | FileCheck %s
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-tile-communication-to-cabi{target=wafer})' %s | FileCheck %s
 
 module {
   wafer.placement.map
