@@ -14,18 +14,22 @@
   local compute stage-connection gate、frontend artifact verifier、SDY artifact bridge，以及 local
   compute normalization 覆盖状态。历史 StableHLO replica rank group 到后段 `wafer.comm` 的 bridge
   只作为已删除路线的覆盖记录，不作为当前主线入口。
-  P2.F1/P2.S1 已补 source-built PyTorch/XLA capture adapter、framework `mark_sharding` artifact、
-  no-user 默认 input seed policy，以及 XLA SPMD partitioner 后的 partitioned StableHLO bundle gate。
+  P2.F1 已补 source-built PyTorch/XLA capture adapter；P2.S1 已补 framework `mark_sharding`
+  pre-partition artifact、no-user 默认 input seed policy 和 Wafer Shardy propagation stage gate。
+  过去用 PyTorch/XLA post-SPMD export 生成的 partitioned StableHLO 只能作为临时测试 oracle，
+  不能算 Wafer-owned SPMD 主链完成。
 - 设计一致性缺口见
   `tasks/2026-05-26-wafer-p0-p6-design-conformance-audit.md` 和
   `tasks/2026-05-26-wafer-p0-p6-recovery-status.md`。
 - framework-specific capture 和 Shardy/SPMD artifact pipeline 不是放弃项；真实前端 artifact 来源
   必须先于 group / tile / resource 主链路恢复。P2.S1 已把 sharded 分支从手写 artifact fixture
-  收回到真实 framework mark 和 XLA SPMD partitioned artifact gate。
-- 2026-05-27 复查结论：P2.S1 之前把 sharding facts normalize 成 `wafer.spmd.*` 的路线不是主线
-  合同。P2.S1 已重做为真实 `mark_sharding/default-input-seed -> StableHLO/SDY ->
-  Shardy/XLA SPMD partitioner -> partitioned or replicated-local StableHLO` artifact gate；
-  post-SPMD collective 先进入 Wafer LinalgExt-style tensor collective 层，再参与 group/tiling，
+  收回到真实 framework mark 和 Wafer Shardy propagation stage，但还没有完成 Wafer-owned
+  XLA SPMD partition artifact stage。
+- 2026-06-01 复查结论：P2.S1 之前把 sharding facts normalize 成 `wafer.spmd.*` 的路线不是主线
+  合同；把 PyTorch/XLA test helper 直接导出 post-SPMD local body 当成 Wafer 主链也不正确。
+  正确主链必须是 `frontend export -> StableHLO/SDY bundle -> Wafer Shardy propagation ->
+  Wafer-owned XLA SPMD partition artifact stage -> partitioned or replicated-local StableHLO`。
+  post-SPMD collective 后续先进入 Wafer LinalgExt-style tensor collective 层，再参与 group/tiling，
   `wafer.comm` 后移到 `wafer.tile_region` / SPM materialization 之后。没有用户 sharding seed 时，
   默认 16 tile / 1 tile 调试策略也属于 SPMD 层，不能放到 placement/group 后段。
 - 当前不得推进 P7/P8/P9；必须先恢复 P0-P6 的设计一致性。
@@ -39,13 +43,13 @@
   从 bundle verifier 进入同一条 Shardy propagation pipeline；用户级 compile 入口
   `wafer-import-model --compile-stablehlo-bundle-to-cabi` 从 verified local/partitioned StableHLO
   bundle 进入 StableHLO->C ABI pipeline，并拒绝带 pre-SPMD sharding
-  seed 但没有 post-SPMD marker 的 bundle，防止绕过 Shardy/XLA SPMD。XLA SPMD partitioner 当前仍由
-  source-built PyTorch/XLA runtime/exporter gate 产出 partitioned bundle，不伪装成 Wafer MLIR pass。
+  seed 但没有 post-SPMD marker 的 bundle，防止绕过 Shardy/XLA SPMD。XLA SPMD partitioner 当前
+  只有 test-only PyTorch/XLA oracle，可用于 verifier / lowering 对照，不能作为 Wafer 主链完成证明。
   用户级 compile target 名称统一为 `wafer`；`tx8` 只保留为硬件/依赖逆向资料中的事实名，不作为
   compiler driver target 字符串。
-- 当前 ready 项是 R2.4：基于 P2.S1/R2.4-pre 重新收口后的真实 artifact 和 tensor collective
-  handoff 建立下一层表示。用户没有标记 sharding 的图也要先经过 P2.S1 默认 input seed policy，
-  再进入 group candidate gate。
+- 当前 ready 项是 P2.S2：建立 Wafer-owned SPMD partition artifact stage，消费 Wafer Shardy
+  propagation 输出并调用 XLA SPMD partitioner 产出 partitioned StableHLO bundle。R2.4 tensor
+  collective handoff 依赖这条 artifact stage 接上后再推进。
 
 ## 状态标记
 
@@ -72,9 +76,11 @@
   到后段 `wafer.comm` / ring lowering 的 lit gate 只保留为非主线覆盖记录。
 - C ABI issue ops、package manifest fixture 和 C stub syntax compile。
 - P2.F1 主链路已能从 source-built PyTorch/XLA capture adapter 产出 PyTorch/XLA StableHLO bundle，
-  并通过 bundle metadata / data verifier。P2.S1 进一步覆盖真实 framework `mark_sharding`
-  artifact、Shardy/SDY propagation pipeline parse gate、XLA SPMD partitioner 后的 partitioned
-  StableHLO local body、no-user 默认 `tile-count=16` input seed policy 和 `tile-count=1` 调试模式；
+  并通过 bundle metadata / data verifier。P2.S1 当前覆盖真实 framework `mark_sharding`
+  pre-partition artifact、Wafer Shardy/SDY propagation pipeline gate、no-user 默认 `tile-count=16`
+  input seed policy 和 `tile-count=1` 调试模式；test-only PyTorch/XLA SPMD oracle 还能生成
+  partitioned StableHLO local body用于对照 verifier / lowering，但它不等于 Wafer-owned SPMD
+  partition artifact stage；
   不生成 `wafer.spmd.*`、私有 JSON、名字约定或临时 module attrs 作为长期 sharding / per-rank
   协议。R3 / R4 / R5 / R6 要逐步消费同一条修正后的 artifact chain。手写 MLIR fixture 只作为
   verifier / unit 测试，不能单独作为主链路完成证明。
@@ -84,8 +90,9 @@
   manifest 只能作为补充测试。
 - R2.4-pre 已固定主链路 gate 的 named pipeline / driver 入口：pre-SPMD bundle 可通过
   `wafer-import-model --propagate-stablehlo-sharding` 运行 default input seed + Shardy propagation；
-  post-XLA-SPMD partitioned bundle 或明确 replicated-local StableHLO bundle 通过唯一用户级 compile
-  入口 `wafer-import-model --compile-stablehlo-bundle-to-cabi` 进入编译。`wafer-opt` 层的
+  post-XLA-SPMD partitioned bundle 或明确 replicated-local StableHLO bundle 通过用户级 compile
+  入口 `wafer-import-model --compile-stablehlo-bundle-to-cabi` 进入编译，但当前 post-SPMD bundle
+  仍来自 test-only oracle。`wafer-opt` 层的
   Shardy propagation、StableHLO->Linalg、Linalg->C ABI、StableHLO->C ABI 和 tile-level
   communication->C ABI gate 都通过库中注册的 Wafer pipeline 重放。pipeline option
   `target=wafer` 会 materialize/校验 `#wafer.target<wafer>`，非 `wafer` target 会硬诊断。单 pass
@@ -114,7 +121,7 @@
 | --- | --- | --- | --- |
 | P0 | 骨架 | 工程、依赖、工具、测试入口 | 最小工程入口可用；源码 ownership 和依赖层级边界已恢复；P0 仍只是历史局部记录，不代表 frontend/runtime 主路径完成 |
 | P1 | 骨架 | Wafer IR verifier | 核心 op/type/attr 基础实现有测试；ODS/verifier/tests 已按 op family 拆开；interface/effect/resource 已恢复为可查询合同；local compute stage-connection gate 已补，但 storage-realized 主链路仍未闭环 |
-| P2 | 骨架 | Frontend artifact 和 local compute normalization | StableHLO textual lowering、frontend artifact verifier、PyTorch/XLA bundle metadata/resource-backed parameter gate、source-built PyTorch/XLA capture adapter、SDY artifact bridge、P2.S1 partitioned StableHLO gate 和 local compute coverage 口径已恢复；P2 仍不代表 R2.4 tensor collective handoff、dynamic/mask/constant-storage 或 physical schedule 闭环 |
+| P2 | 骨架 | Frontend artifact 和 local compute normalization | StableHLO textual lowering、frontend artifact verifier、PyTorch/XLA bundle metadata/resource-backed parameter gate、source-built PyTorch/XLA capture adapter、SDY artifact bridge、P2.S1 Shardy propagation stage gate / 临时 post-SPMD oracle 覆盖和 local compute coverage 口径已恢复；P2 仍不代表 Wafer-owned SPMD partition、R2.4 tensor collective handoff、dynamic/mask/constant-storage 或 physical schedule 闭环 |
 | P3 | 骨架 | single-tile local compute | 有 group/tile/SPM/DDR/C ABI issue；planner、package、golden packet 和 C ABI 主路径未闭环 |
 | P4 | 骨架 | multi-tile no-communication local compute | 有 placement/map 和 clone-style tile_region fixture；真实 shard slicing、merge、runtime launch metadata 未闭环 |
 | P5 | 骨架 | transformer local vertical slices | 有 staged pattern acceptance gate；full-block package/device artifact 未从 IR 闭环 |
@@ -136,10 +143,11 @@
 | R2.2 | done | 恢复 Shardy/SPMD artifact bridge | 记录见 `tasks/2026-05-26-wafer-r2-recovery.md`；SDY dialect/pass 注册按 `WAFER_ENABLE_SPMD_PARTITIONER_DEPS` 隔离，`sdy.mesh`/`sdy.sharding` artifact 可进入工具链；历史 StableHLO `replica_groups` 到 `wafer.comm` `rank_group` 的 bridge 仅作为已删除路线的覆盖记录，不能作为 group/tiling 前的主线 collective 表示 |
 | R2.3 | done | 重写 local compute normalization 覆盖状态 | 记录见 `tasks/2026-05-26-wafer-r2-recovery.md` 和 `tasks/2026-05-25-wafer-local-compute-normalization-design.md`；dot/broadcast/reduce/softmax/norm/RoPE/MLP 覆盖按 structured tensor IR evidence 记录，acceptance pass 不作为 schedule completion |
 | P2.F1 | done | 建立 framework-specific capture adapter contract | `tools/build_pytorch_xla_runtime.py` 从 `third_party/pytorch-xla` 源码构建/安装 `torch_xla` 2.5.0，并通过 Bazel override 复用本仓库 `third_party/xla` / `third_party/llvm-project`；`test/Tools/Inputs/wafer_pytorch_xla_capture.py` 作为 test artifact generator 使用 `torch.export.export` + `torch_xla.stablehlo.exported_program_to_stablehlo` 默认生成 `4096x4096 @ 4096x4096` f32 matmul + bias + tanh + residual PyTorch/XLA StableHLO bundle，并支持 `--size` 生成同构小尺寸 compile smoke bundle；bundle 保留 `functions/forward.mlir`、`functions/forward.meta`、`functions/forward.bytecode` 和 `data/weight` / `data/bias`，不提交 64 MiB weight；`wafer-import-model --verify-stablehlo-bundle` 和 lit 最小验证已验证真实 source-built PyTorch/XLA adapter -> bundle -> verifier 链；框架 API、版本路径或自定义 JSON 不进入后端 IR 合同 |
-| P2.S1 | done | 重做 Shardy/XLA SPMD partitioned artifact gate | 从 P2.F1 4096 matmul图出发：`test/Tools/Inputs/wafer_pytorch_xla_capture.py` 作为 test artifact generator 通过 source-built PyTorch/XLA lazy SPMD runtime 的 `mark_sharding` 覆盖 data/batch、column parallel、row/contracting、2D output、2D contracting+output 和 partial replication；pre-partition bundle 保留 `mhlo.sharding` 并由 `wafer-import-model --verify-stablehlo-bundle` 和 `wafer-import-model --propagate-stablehlo-sharding` / `wafer-propagate-stablehlo-sharding` 消费。partitioned gate 使用同一 PyTorch/XLA/XLA 版本的 post-optimization export，设置 `XLA_DUMP_POST_OPTIMIZATIONS=1` 且禁用 HLO `fusion`，取得 XLA SPMD partitioner 后的 StableHLO local body；row/partial/default 分支验证 `all_reduce` / `all_gather`、replica group、local shard shape 和 `last_tile_dim_replicate`。partitioned bundle 现在额外生成 `functions/forward.parameter_shards.json` 和 `parameter_shards/<parameter>/rank_XXXXX.npy`，由 PyTorch/XLA `XLAShardedTensor.local_shards` / XLA sharding spec 暴露的 runtime shard facts 写出 rank-local payload，并显式记录每个 parameter argument 的 local shape、logical rank file、offsets/sizes/strides 和 replica id，bundle verifier 会校验 manifest 与 shard payload。no-user 分支由 `--wafer-apply-default-spmd-sharding`、`wafer-propagate-stablehlo-sharding` 和 capture 测试入口的 `--default-input-sharding` 覆盖默认 `tile-count=16`、调试 `tile-count=1`、无合适切分维度 replicated fallback；不生成 `wafer.spmd.*`、私有 sharding JSON 或名字约定作为 sharding / per-rank routing 协议。下游未实现的硬件可表达 collective / shard slicing / multi-replica 策略进入 R2.4/R3/R4/R6 恢复项，不能反向缩小 P2.S1 |
+| P2.S1 | 骨架 | Shardy propagation stage gate 和临时 post-SPMD oracle | 从 P2.F1 4096 matmul图出发：`test/Tools/Inputs/wafer_pytorch_xla_capture.py` 只作为 frontend export test artifact generator，通过 source-built PyTorch/XLA lazy SPMD runtime 的 `mark_sharding` 覆盖 data/batch、column parallel、row/contracting、2D output、2D contracting+output 和 partial replication；pre-partition bundle 保留 `mhlo.sharding` 并由 `wafer-import-model --verify-stablehlo-bundle` 和 `wafer-import-model --propagate-stablehlo-sharding` / `wafer-propagate-stablehlo-sharding` 消费。`test/Tools/Inputs/wafer_pytorch_xla_spmd_oracle.py` 只作为临时 test oracle 使用同一 PyTorch/XLA/XLA 版本的 post-optimization export 取得 partitioned StableHLO local body，并生成 `functions/forward.parameter_shards.json` 和 `parameter_shards/<parameter>/rank_XXXXX.npy` 供 verifier / lowering 对照；它不消费 Wafer Shardy propagation 的输出，不能作为 P2.S1 主链完成证明。no-user 分支当前由 Wafer propagation gate 覆盖默认 `tile-count=16` / `tile-count=1` seed policy，由 oracle 覆盖 post-SPMD 对照；不生成 `wafer.spmd.*`、私有 sharding JSON 或名字约定作为 sharding / per-rank routing 协议 |
+| P2.S2 | ready | 建立 Wafer-owned XLA SPMD partition artifact stage | 新增 `wafer-spmd-partition` 或等价 driver/library stage：输入是 `wafer-import-model --propagate-stablehlo-sharding` 产出的 propagated StableHLO/SDY artifact，内部显式完成 StableHLO/SDY -> XLA HLO、XLA Shardy/SPMD partitioner、partitioned HLO -> StableHLO round trip，并输出带 post-SPMD marker、collective、rank-local function signature、`functions/forward.parameter_shards.json` 和 `parameter_shards/<parameter>/rank_XXXXX.npy` 的 Wafer bundle；前端 Python 不再负责主链 partition，只保留 test oracle 到该 stage 落地前 |
 | R2.4-pre | done | 收敛 Wafer named pipeline / driver contract | 新增 `WaferPipelines` 库并在 `wafer-opt` 注册 `wafer-propagate-stablehlo-sharding`、`wafer-lower-stablehlo-to-linalg`、`wafer-lower-linalg-to-cabi`、`wafer-lower-stablehlo-to-cabi` 和 `wafer-lower-tile-communication-to-cabi`；`wafer-propagate-stablehlo-sharding` 组合 Wafer default input seed 与 Shardy propagation，不冒充 XLA SPMD partitioner；`wafer-lower-stablehlo-to-cabi` 组合 StableHLO->Linalg 与 Linalg->C ABI body；`wafer-import-model --propagate-stablehlo-sharding` 从 StableHLO bundle verifier 进入 Shardy propagation，`--compile-stablehlo-bundle-to-cabi` 从 verified local/partitioned bundle 进入 compile pipeline，并拒绝 pre-SPMD sharding seed 绕过 SPMD；lit 覆盖手写最小 bundle、真实 source-built PyTorch/XLA 小尺寸 export bundle、Shardy propagation driver、真实 PyTorch/XLA/XLA SPMD partitioned column-sharding bundle 进入 compile；pipeline option `target=wafer` materialize/校验 `#wafer.target<wafer>`，非 `wafer` target 诊断；单 pass flag 保留给 unit/debug，StageConnections 仍用于逐层连接覆盖 |
-| R2.4 | ready | 建立 Wafer LinalgExt-style tensor collective handoff | 将 partitioned StableHLO collective normalize 成 tensor-level Wafer collective ops；这些 op 实现 `DestinationStyleOpInterface` / `TilingInterface` 和 Wafer collective verifier，和 `linalg` 一起进入 group/tiling；不生成 `tile_buffer`、`wafer.comm` 或 `unrealized_conversion_cast` |
-| R3.1 | pending | 恢复 group boundary / candidate contract | `wafer.group` 只表达 local tensor grouping 和 candidate boundary；root op、operands/results、tile candidate shape 和拒绝原因由 IR/interface/verifier 可解释，不靠 pass side table 或名字；依赖 P2.F1/P2.S1/R2.4 的真实 frontend/SPMD artifact 来源和 tensor collective handoff；完成证明必须让真实图 artifact 的用户-sharding 和默认 no-user-sharding 分支都能进入 group candidate gate |
+| R2.4 | pending | 建立 Wafer LinalgExt-style tensor collective handoff | 依赖 P2.S2。将 partitioned StableHLO collective normalize 成 tensor-level Wafer collective ops；这些 op 实现 `DestinationStyleOpInterface` / `TilingInterface` 和 Wafer collective verifier，和 `linalg` 一起进入 group/tiling；不生成 `tile_buffer`、`wafer.comm` 或 `unrealized_conversion_cast` |
+| R3.1 | pending | 恢复 group boundary / candidate contract | `wafer.group` 只表达 local tensor grouping 和 candidate boundary；root op、operands/results、tile candidate shape 和拒绝原因由 IR/interface/verifier 可解释，不靠 pass side table 或名字；依赖 P2.F1/P2.S1/P2.S2/R2.4 的真实 frontend/SPMD artifact 来源和 tensor collective handoff；完成证明必须让真实图 artifact 的用户-sharding 和默认 no-user-sharding 分支都能进入 group candidate gate |
 | R3.2 | pending | 恢复 root tile feasibility oracle | root tile candidate 检查必须接入 op tiling contract、layout requirement、SPM demand、DDR demand 和 compute/movement legality；静态 result shape check 只能是其中一个输入 |
 | R3.3 | pending | 恢复 tile_region materialization contract | accepted group materialize 成 `wafer.tile_region`，load/store、layout materialize、`wafer.compute.*` 和 tile_yield 全部来自同一 accepted candidate；不得把未接受 plan 落进 IR |
 | R3.4 | pending | 恢复 layout/SPM feasibility gate | layout materialization 是显式 movement；SPM trial 使用 resource effects、liveness/range 和 tile buffer lifetime，失败能诊断到具体 op/value |
@@ -191,7 +199,8 @@ P7/P8/P9 只有在 P0-P6 恢复队列完成后才能推进。
 
 ## 下一步
 
-进入 R2.4：基于 P2.S1 真实 partitioned StableHLO / replicated-local artifact，建立 Wafer
-LinalgExt-style tensor collective handoff。之后再进入 R3.1，让修正后的真实 frontend artifact
-两个分支都能通过主线 pipeline / driver 进入 group candidate gate。
+进入 P2.S2：建立 Wafer-owned XLA SPMD partition artifact stage，让 Wafer Shardy propagation
+输出接到 partitioned StableHLO bundle。之后再进入 R2.4，建立 Wafer LinalgExt-style tensor
+collective handoff；再进入 R3.1，让修正后的真实 frontend artifact 两个分支都能通过主线
+pipeline / driver 进入 group candidate gate。
 P7/P8/P9 依赖恢复后的 P0-P6 主链路，不提前推进。

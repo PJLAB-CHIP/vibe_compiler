@@ -17,11 +17,13 @@ group/tile materialization、layout/SPM/DDR、communication 和 ABI issue 基本
 tests 按 op family 拆开；R1.2/R1.3 已补 interface/resource 查询合同和 local compute
 stage-connection gate。
 
-2026-05-27 复查进一步确认：历史 P2.S1 路线若把 sharding facts 写成 `wafer.spmd.*` 或私有
+2026-06-01 复查进一步确认：历史 P2.S1 路线若把 sharding facts 写成 `wafer.spmd.*` 或私有
 sidecar，不是主线 SPMD artifact contract；历史 StableHLO collective 直降 `wafer.comm` 的 pass
 只能算已删除的后段 communication coverage，不能作为 group/tiling 输入。正确主线需要
-`mark_sharding -> StableHLO/SDY -> Shardy/XLA SPMD partitioner -> partitioned StableHLO`，再经
-Wafer LinalgExt-style tensor collective handoff 进入 group/tiling。
+`frontend export -> StableHLO/SDY -> Wafer Shardy propagation -> Wafer-owned XLA SPMD partitioner
+artifact stage -> partitioned StableHLO`，再经 Wafer LinalgExt-style tensor collective handoff 进入
+group/tiling。PyTorch/XLA post-SPMD export 只能作为临时 test oracle；它不消费 Wafer propagation
+输出，不能作为 P2.S1 主链完成证明。
 
 历史 `tasks/progress.md` 中 P0-P6 的 `done` 应理解为“该局部批次有对应测试”，不能理解为：
 

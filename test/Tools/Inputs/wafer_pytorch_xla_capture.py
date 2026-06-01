@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PyTorch/XLA test artifact generator for Wafer frontend gates."""
+"""PyTorch/XLA test artifact generator for Wafer frontend export gates."""
 
 from __future__ import annotations
 
@@ -756,9 +756,12 @@ def emit_partitioned_stablehlo_bundle(
     default_tile_count: int = 16,
     size: int = DEFAULT_REFERENCE_MATMUL_SIZE,
 ) -> None:
+    # Test-only oracle until Wafer owns StableHLO/SDY -> XLA SPMD ->
+    # partitioned StableHLO as an artifact stage. Do not expose this through
+    # the frontend capture CLI.
     if (strategy_name is None) == (not default_input_sharding):
         raise RuntimeError(
-            "--emit-partitioned-bundle requires exactly one of "
+            "SPMD oracle export requires exactly one of "
             "--sharding-strategy or --default-input-sharding"
         )
 
@@ -880,25 +883,9 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help="emit the 4096x4096 sharded StableHLO artifact",
     )
     parser.add_argument(
-        "--emit-partitioned-bundle",
-        action="store_true",
-        help="emit the 4096x4096 post-XLA-SPMD partitioned StableHLO artifact",
-    )
-    parser.add_argument(
         "--sharding-strategy",
         choices=SHARDING_STRATEGY_NAMES,
         help="user sharding strategy",
-    )
-    parser.add_argument(
-        "--default-input-sharding",
-        action="store_true",
-        help="apply the no-user-sharding default input seed policy",
-    )
-    parser.add_argument(
-        "--default-tile-count",
-        type=int,
-        default=16,
-        help="tile count for --default-input-sharding",
     )
     parser.add_argument(
         "--size",
@@ -932,22 +919,8 @@ def main(argv: list[str]) -> int:
         )
         return 0
 
-    if args.emit_partitioned_bundle:
-        if args.output_bundle is None:
-            raise RuntimeError("missing --output-bundle")
-
-        emit_partitioned_stablehlo_bundle(
-            args.output_bundle,
-            strategy_name=args.sharding_strategy,
-            default_input_sharding=args.default_input_sharding,
-            default_tile_count=args.default_tile_count,
-            size=args.size,
-        )
-        return 0
-
     raise RuntimeError(
-        "missing --emit-reference-bundle, --emit-sharded-bundle, or "
-        "--emit-partitioned-bundle"
+        "missing --emit-reference-bundle or --emit-sharded-bundle"
     )
 
 

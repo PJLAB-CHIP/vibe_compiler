@@ -187,8 +187,9 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 
 - R2.1/R2.2 已恢复 pre-exported artifact adapter/verifier 和 SDY artifact bridge；P2.F1 已补
   source-built PyTorch/XLA bundle capture；P2.S1 已补真实 framework `mark_sharding`、default input
-  seed policy 和 XLA SPMD partitioned StableHLO artifact gate。R2.4 仍需把 post-SPMD collective
-  handoff 成 Wafer LinalgExt-style tensor collective IR。
+  seed policy 和 Wafer Shardy propagation stage gate。当前 PyTorch/XLA post-SPMD export 只是
+  test oracle；仍需 P2.S2 建立 Wafer-owned XLA SPMD partition artifact stage，之后 R2.4 再把
+  post-SPMD collective handoff 成 Wafer LinalgExt-style tensor collective IR。
 - acceptance passes 只识别当前 structured IR pattern，不等于 group schedule planner 或 full
   transformer local compile 已完成。
 - mask/select、dynamic shape、非 constant-init reduce、复杂 broadcast、常量 slicing/storage transform
@@ -412,7 +413,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 | --- | --- | --- |
 | P0 | 骨架 | 工程入口存在，源码 ownership、依赖层级边界和 IR op-family 文件边界已由 R0.2/R0.3/R1.1 恢复；仍不代表 frontend/runtime/package 主路径完成 |
 | P1 | 骨架 | 核心 op/type/verifier 基础实现存在，interface/effect/resource 和 local compute stage-connection gate 已恢复；storage-realized 主链路和 communication cast bridge 仍未闭环 |
-| P2 | 骨架 | StableHLO textual lowering、frontend artifact verifier、PyTorch/XLA bundle capture、SDY artifact bridge、P2.S1 partitioned StableHLO gate 和 local compute coverage 口径已恢复；dynamic/mask/constant-storage、tensor collective handoff 和 physical schedule 仍未闭环 |
+| P2 | 骨架 | StableHLO textual lowering、frontend artifact verifier、PyTorch/XLA bundle capture、SDY artifact bridge、P2.S1 Shardy propagation stage gate / 临时 post-SPMD oracle 覆盖和 local compute coverage 口径已恢复；Wafer-owned SPMD partition、dynamic/mask/constant-storage、tensor collective handoff 和 physical schedule 仍未闭环 |
 | P3 | 骨架 | single-tile local path 可跑，但 group/resource/C ABI/package 主链路未闭环 |
 | P4 | 骨架 | placement/map 和 multi-tile fixture 可跑，但真实 shard/merge/launch binding 未闭环 |
 | P5 | 骨架 | transformer staged acceptance 和 local fixture 可跑，但 full schedule/resource/package/device artifact 未闭环 |

@@ -2,7 +2,7 @@
 
 # RUN: rm -rf %t.partitioned
 # RUN: bash -c 'for strategy in data column row 2d-output 2d-contracting-output partial-replication; do \
-# RUN:   env CPU_NUM_DEVICES=16 PJRT_DEVICE=CPU %importer_python %wafer_src_root/test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-partitioned-bundle --sharding-strategy ${strategy} --output-bundle %t.partitioned/${strategy} || exit 1; \
+# RUN:   env CPU_NUM_DEVICES=16 PJRT_DEVICE=CPU %importer_python %wafer_src_root/test/Tools/Inputs/wafer_pytorch_xla_spmd_oracle.py --sharding-strategy ${strategy} --output-bundle %t.partitioned/${strategy} || exit 1; \
 # RUN:   test -s %t.partitioned/${strategy}/functions/forward.mlir || exit 1; \
 # RUN:   test -s %t.partitioned/${strategy}/functions/forward.bytecode || exit 1; \
 # RUN:   test -s %t.partitioned/${strategy}/functions/forward.parameter_shards.json || exit 1; \
@@ -18,14 +18,14 @@
 # RUN: FileCheck %s --input-file=%t.partitioned/row/functions/forward.mlir --check-prefix=ROW
 # RUN: FileCheck %s --input-file=%t.partitioned/partial-replication/functions/forward.mlir --check-prefix=PARTIAL
 
-# RUN: env CPU_NUM_DEVICES=16 PJRT_DEVICE=CPU %importer_python %wafer_src_root/test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-partitioned-bundle --default-input-sharding --default-tile-count=16 --output-bundle %t.partitioned/default
+# RUN: env CPU_NUM_DEVICES=16 PJRT_DEVICE=CPU %importer_python %wafer_src_root/test/Tools/Inputs/wafer_pytorch_xla_spmd_oracle.py --default-input-sharding --default-tile-count=16 --output-bundle %t.partitioned/default
 # RUN: FileCheck %s --input-file=%t.partitioned/default/functions/forward.mlir --check-prefix=DEFAULT
 # RUN: FileCheck %s --input-file=%t.partitioned/default/functions/forward.parameter_shards.json --check-prefix=SHARDS
 # RUN: test -s %t.partitioned/default/parameter_shards/weight/rank_00000.npy
 # RUN: test ! -e %t.partitioned/default/data/weight
 # RUN: wafer-import-model --verify-stablehlo-bundle %t.partitioned/default | FileCheck %s --check-prefix=VERIFY
 
-# RUN: env CPU_NUM_DEVICES=1 PJRT_DEVICE=CPU %importer_python %wafer_src_root/test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-partitioned-bundle --default-input-sharding --default-tile-count=1 --output-bundle %t.partitioned/default-tile1
+# RUN: env CPU_NUM_DEVICES=1 PJRT_DEVICE=CPU %importer_python %wafer_src_root/test/Tools/Inputs/wafer_pytorch_xla_spmd_oracle.py --default-input-sharding --default-tile-count=1 --output-bundle %t.partitioned/default-tile1
 # RUN: FileCheck %s --input-file=%t.partitioned/default-tile1/functions/forward.mlir --check-prefix=TILE1
 # RUN: FileCheck %s --input-file=%t.partitioned/default-tile1/functions/forward.parameter_shards.json --check-prefix=SHARDS
 # RUN: test -s %t.partitioned/default-tile1/parameter_shards/weight/rank_00000.npy
