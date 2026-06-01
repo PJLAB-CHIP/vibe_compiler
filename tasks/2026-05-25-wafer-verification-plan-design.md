@@ -83,6 +83,19 @@ pattern FileCheck、手写 StableHLO/Linalg fixture 和 fixed manifest 可以保
 单独作为任务完成证明。若直接下游还没有实现某个硬件可表达语义，完成证明应把缺口记录为下游恢复
 任务，而不是修改上游 artifact 或 verifier 让该语义消失。
 
+每个主线 gate 在新增或标记完成前，必须先给出 pipeline contract，并在验证记录中逐项对应：
+
+- upstream artifact / IR：该 gate 消费哪个已完成阶段的产物。
+- current stage responsibility：当前 gate 只验证或 materialize 哪一层语义。
+- output artifact / IR：通过后产生或确认的 artifact / IR contract。
+- downstream consumer：哪个后续 stage 会直接消费该输出。
+- user-level driver / named pipeline：主链路如何由 Wafer driver 或 named pipeline 重放。
+- explicit non-goals：哪些 pass、tool、fixture 或下游缺口不能被算进当前完成证明。
+- completion gate：哪条命令或测试证明当前 stage 的输出沿真实 artifact chain 可被消费。
+
+如果验证只能证明某个单 pass、手写 fixture、dump 文件或局部 FileCheck 成立，而不能对应上述
+contract，它只能作为 unit/debug 覆盖，不能把任务状态推进到主线 `done`。
+
 ## 4. Milestone Gates
 
 Single-tile local compute：

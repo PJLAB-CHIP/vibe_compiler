@@ -759,6 +759,22 @@ cmake/
 
 Pass pipeline 建议：
 
+任何新增主线 stage 或重写现有 stage 前，任务文档必须先写清楚 pipeline contract，而不是只描述
+某个 pass / tool 的局部功能：
+
+- upstream artifact / IR。
+- current stage responsibility。
+- output artifact / IR。
+- downstream consumer。
+- user-level driver / named pipeline。
+- explicit non-goals。
+- completion gate。
+
+pass 名、tool flag、test 名和任务号只作为实现索引；架构边界仍由 IR / artifact contract 和
+verifier/lowering 责任定义。主线 gate 必须通过 Wafer named pipeline 或用户级 driver mode
+重放已完成上游链路，不能依赖 integration test 手动拼 pass、Python helper 或手写 fixture 来表示
+长期 compile flow。
+
 当前用户级 / Integration 主链路不直接暴露下面这些单 pass。R2.4-pre 后由 `WaferPipelines`
 注册按 IR 边界命名的 pipeline：`wafer-propagate-stablehlo-sharding`、
 `wafer-lower-stablehlo-to-linalg`、`wafer-lower-linalg-to-cabi`、

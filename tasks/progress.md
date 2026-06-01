@@ -8,11 +8,27 @@
 ## 状态标记
 
 - `active`：当前优先推进。
-- `ready`：前置边界已明确，可以开始。
+- `ready`：前置边界已明确，并且任务已有 pipeline contract，可以开始。
 - `pending`：依赖前序任务完成。
 - `later`：当前主线之后再做。
 - `骨架`：有局部 IR / pass / verifier / fixture，但不代表主路径完成。
-- `done`：实现和验证已按当前设计合同完成；P2.F1 之后的相关任务还必须有真实图 artifact chain 证明。
+- `done`：实现和验证已按当前设计合同完成；P2.F1 之后的相关任务还必须有真实图 artifact chain 证明，
+  且不能只用单 pass、手写 fixture、工具脚本或局部 FileCheck 作为主线完成证明。
+
+## 看板约束
+
+主线任务进入 `active` 前必须能在对应设计文档或本看板中找到明确的 pipeline contract：
+
+- upstream artifact / IR。
+- current stage responsibility。
+- output artifact / IR。
+- downstream consumer。
+- user-level driver / named pipeline。
+- explicit non-goals。
+- completion gate。
+
+如果只能说明某个 pass / tool / test 要做什么，而不能说明它在整条 compiler pipeline 中消费什么、
+产出什么、由谁继续消费，就不能把该任务推进为 `active` 或 `done`。
 
 ## 当前主线
 
@@ -21,6 +37,24 @@
 | ID | 状态 | 任务 | 完成标准 |
 | --- | --- | --- | --- |
 | P2.S2 | ready | 建立 Wafer-owned XLA SPMD partition artifact stage | 消费 P2.S1 propagated StableHLO/SDY artifact，调用 XLA SPMD partitioner 或等价 stage，输出 partitioned / replicated-local StableHLO bundle、post-SPMD marker、rank-local function signature、collective metadata、`forward.parameter_shards.json` 和 rank-local parameter payload |
+
+P2.S2 pipeline contract：
+
+- upstream artifact / IR：P2.F1 verified PyTorch/XLA StableHLO bundle，经过 P2.S1
+  `wafer-propagate-stablehlo-sharding` 后的 propagated StableHLO/SDY artifact。
+- current stage responsibility：在 Wafer-owned driver / library stage 中调用 XLA SPMD partitioner
+  或等价 local-body partitioning service，并导出 partitioned / replicated-local artifact。
+- output artifact / IR：partitioned / replicated-local StableHLO bundle、post-SPMD marker、
+  rank-local function signature、collective metadata、`forward.parameter_shards.json` 和 rank-local
+  parameter payload。
+- downstream consumer：R2.4 tensor collective handoff、`wafer-lower-stablehlo-to-linalg` local
+  compute normalization、R3 group pipeline 和后续 placement / package stages。
+- user-level driver / named pipeline：应由 Wafer driver / named pipeline 消费 P2.S1 artifact；不能
+  由 Python capture helper 或 integration test 手动拼外部流程替代。
+- explicit non-goals：不发明 `wafer.spmd.*` 私有协议，不在 frontend Python 中做 partition，不把
+  下游 group/placement/comm 未完成当作当前不支持。
+- completion gate：真实 P2.F1/P2.S1 artifact chain 能被 P2.S2 消费并产出下游可直接验证的
+  partitioned / replicated-local bundle；fixture 只做补充覆盖。
 
 P2.S2 之后的直接顺序：
 

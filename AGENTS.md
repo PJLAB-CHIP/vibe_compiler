@@ -110,11 +110,43 @@
 
 ## 编码和设计规则
 
+### 0. 先定位 compiler pipeline，再设计单个 pass
+
+非小修复、非纯文本错别字的任务，在设计或实现前必须先写清楚当前任务在整个 compiler pipeline
+中的位置。不能只回答“这个 pass / 模块要做什么”，还必须回答它如何消费上游 artifact、产出下游
+可验证的 IR / artifact，以及用户级入口如何重放这条链路。
+
+任务文档、设计小节或实现说明必须包含下面的 pipeline contract；如果已有文档缺失，先补文档再
+实现：
+
+```text
+Pipeline position:
+- Upstream artifact / IR:
+- Current stage responsibility:
+- Output artifact / IR:
+- Downstream consumer:
+- User-level driver / named pipeline:
+- Explicit non-goals:
+- Completion gate:
+```
+
+约束：
+
+- `pass`、tool、test、文件名和任务号只是实现索引，不能替代 IR 层、artifact 合同或长期架构对象。
+- 单个 pass 可以作为局部实现单元，但主线设计必须说明它在 named pipeline / driver mode 中的
+  位置；不能让用户或 integration test 手动拼一串 pass 当作长期 compile flow。
+- 局部 FileCheck、fixture、negative verifier 或 shape-only dump 只能补覆盖，不能作为主线完成
+  证明；主线完成证明必须重放已完成上游链路，并让当前 stage 的输出被下游边界直接消费。
+- 如果直接下游尚未实现但硬件 / ABI 能表达该语义，应记录为下游恢复任务或扩 IR；不能把下游缺口
+  反向写成当前上游不支持，也不能绕到 Python helper、sidecar 或名字约定中补协议。
+
 ### 先设计后编码
 
 非小修复时，先建立或更新设计文档。设计文档至少说明：
 
 - 目标和非目标。
+- pipeline contract：上游 artifact / IR、当前 stage、输出 artifact / IR、下游 consumer、用户级
+  driver / named pipeline、显式非目标和完成 gate。
 - 所在 IR 层和边界。
 - 新增或修改的 op / type / attr / interface / pass 合同。
 - verifier / legality / lowering 责任。
@@ -235,6 +267,8 @@ legality、planning、lowering、diagnostic，或删除旧 matcher / fallback / 
 - 当前文档默认中文。
 - 先讲边界和通用方法，再给 case。
 - case 后必须说明哪些只是示例，不是协议。
+- 主线任务文档必须先讲 compiler pipeline 位置，再讲单个 pass / tool 的实现入口；不要用 pass 名、
+  测试名、任务号或脚本名代替 artifact / IR 合同。
 - 不要把其它项目的路径、环境变量、测试入口、动态任务状态或 runtime 路线写成当前项目主线。
 - 不要把尚未收敛的设计选择写进本文件当作长期规范；这类内容应留在设计文档里讨论和演进。
 - 不要把 `TODO` / `TBD` 当作结论。没确定就写成“待讨论问题”，并说明为什么未定。
@@ -256,6 +290,10 @@ legality、planning、lowering、diagnostic，或删除旧 matcher / fallback / 
 
 写设计或改设计时，至少过一遍：
 
+- 这个任务的 pipeline contract 是否完整：上游 artifact / IR、当前 stage 输出、下游 consumer、
+  用户级 driver / named pipeline、显式非目标和完成 gate 是否都写清楚？
+- 当前实现是否只是让某个 pass 能跑，还是确实推进了整条 compile pipeline 的一个边界？
+- 完成证明是否重放了已完成上游链路，并证明当前输出会被下游边界直接消费？
 - 这个信息是否已经能从当前 IR 推出？
 - 如果不能推出，它是真的需要跨 pass 保留，还是只是 planner 的临时 analysis？
 - 如果要保留，应该是 op / region / type / attr / effect 中的哪一种？
@@ -278,6 +316,7 @@ legality、planning、lowering、diagnostic，或删除旧 matcher / fallback / 
 一次任务完成至少满足：
 
 - 用户要求的文件已经实际修改或明确说明无法修改的原因。
+- 非小修任务已有明确 pipeline contract，并且实现、测试和文档没有把单个 pass / fixture 当成主线。
 - 设计边界与当前 MLIR/compiler 工程方向一致。
 - 没有把其它项目的路径、环境、动态任务状态或测试入口带进来。
 - 相关文档内部没有明显冲突、旧字段残留或重复事实源。

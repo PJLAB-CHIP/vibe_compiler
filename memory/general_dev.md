@@ -81,6 +81,10 @@
 - 用户级 compiler target 名称统一为 `wafer`，Wafer IR target attr 的唯一主线 spelling 是
   `#wafer.target<wafer>`。`tx8` / `tx81` 只保留在硬件、依赖逆向和外部历史命名事实里，不能作为
   compiler driver target、pipeline 名称或测试 fixture 的主线命名。
+- 非小修主线任务动实现前必须先写清楚 pipeline contract：upstream artifact / IR、current stage
+  responsibility、output artifact / IR、downstream consumer、user-level driver / named pipeline、
+  explicit non-goals 和 completion gate。只说明某个 pass / tool / test 的局部功能不够；完成证明
+  必须重放已完成上游 artifact chain，并证明当前 stage 输出会被下游边界直接消费。
 - 主链路 compile gate 用 `WaferPipelines` 中注册的 named pipeline，不在 Integration 里手动拼 pass
   串。当前用户级 compile 入口是 `wafer-import-model --compile-stablehlo-bundle-to-cabi`；
   sharding propagation 阶段检查入口是 `wafer-import-model --propagate-stablehlo-sharding`。
