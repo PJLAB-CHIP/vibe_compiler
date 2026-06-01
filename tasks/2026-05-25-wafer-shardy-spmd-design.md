@@ -156,9 +156,9 @@ P2.S2 工程 gate 必须把 XLA SPMD partitioner 或等价 local-body partitioni
 - 2026-06-01 直接 CMake link 评估结论：当前 build 虽启用 `WAFER_ENABLE_SPMD_PARTITIONER_DEPS`，
   但 CMake target graph 只包含 Wafer / StableHLO / Shardy，没有 XLA `spmd_partitioner`、HLO
   service、TSL、Abseil 或 generated XLA proto targets。P2.S2 第一切片采用 Wafer driver mode
-  加 pinned-XLA helper/service 协议；helper 只负责运行 XLA partitioner 或等价 local-body
+  加 pinned-XLA helper/service 接入点；helper 只负责运行 XLA partitioner 或等价 local-body
   service，Wafer driver 仍拥有 bundle 验证、stage 调用、输出校验和 artifact contract。
-  fake helper / protocol lit 只能验证 driver I/O，不是 P2.S2 完成证明。
+  protocol-only lit 已删除；P2.S2 完成证明必须来自真实 pinned XLA helper/service。
 - 旧 Python post-SPMD helper 和相关 tests 已删除。P2.S2 之前没有 partitioned StableHLO 主链产物；
   不允许用 Python helper、手写 sidecar 或 fixture 冒充这个缺口。
 - no-user-sharding 分支当前只在文本 StableHLO/SDY artifact 中用
