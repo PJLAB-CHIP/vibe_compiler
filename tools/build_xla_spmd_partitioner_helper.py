@@ -121,7 +121,7 @@ def _populate_workspace(
     helper_pkg = xla_dst / "wafer_tools"
     helper_pkg.mkdir()
     _symlink(
-        repo / "tools" / "xla-spmd-partitioner" / "wafer-xla-spmd-partitioner.cc",
+        repo / "lib" / "Wafer" / "Transforms" / "SPMD" / "XlaSpmdPartitionerMain.cpp",
         helper_pkg / "wafer_xla_spmd_partitioner.cc",
     )
     (helper_pkg / "BUILD.bazel").write_text(BUILD_FILE)

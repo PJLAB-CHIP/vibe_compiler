@@ -1,4 +1,4 @@
-//===- wafer-xla-spmd-partitioner.cc - Wafer XLA SPMD helper -------------===//
+//===- XlaSpmdPartitionerMain.cpp - Wafer XLA SPMD stage helper ----------===//
 
 #include <algorithm>
 #include <cstdint>
