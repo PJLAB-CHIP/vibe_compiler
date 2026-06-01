@@ -6,8 +6,9 @@
 # RUN: wafer-import-model --verify-stablehlo-bundle %t.partitioned.bundle | FileCheck %s --check-prefix=VERIFY
 # RUN: FileCheck %s --input-file=%t.partitioned.bundle/functions/forward.mlir --check-prefix=MLIR
 # RUN: FileCheck %s --input-file=%t.partitioned.bundle/functions/forward.parameter_shards.json --check-prefix=SHARDS
-# RUN: test -f %t.partitioned.bundle/parameter_shards/weight/rank_00000.npy
-# RUN: test -f %t.partitioned.bundle/parameter_shards/bias/rank_00000.npy
+# RUN: test -f %t.partitioned.bundle/parameter_shards/weight/rank_00000.bin
+# RUN: test -f %t.partitioned.bundle/parameter_shards/bias/rank_00000.bin
+# RUN: %python -c 'from pathlib import Path; assert not Path("%t.partitioned.bundle/parameter_shards/weight/rank_00000.bin").read_bytes().startswith(b"\x93NUMPY")'
 # RUN: rm -rf %t.matrix
 # RUN: bash -c 'for strategy in data column row 2d-output 2d-contracting-output partial-replication; do \
 # RUN:   env CPU_NUM_DEVICES=16 PJRT_DEVICE=CPU %importer_python %wafer_src_root/test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-sharded-bundle --sharding-strategy ${strategy} --size 32 --output-bundle %t.matrix/${strategy}.input || exit 1; \

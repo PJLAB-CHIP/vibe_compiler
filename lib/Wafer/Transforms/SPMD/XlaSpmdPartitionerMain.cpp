@@ -16,7 +16,6 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
-#include "absl/strings/str_join.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -88,10 +87,9 @@ struct ParameterBinding {
   std::vector<ParameterShard> shards;
 };
 
-struct NpyPayload {
+struct TensorPayload {
   std::vector<uint8_t> bytes;
   size_t dataOffset = 0;
-  std::string descr;
 };
 
 void printUsage() {
@@ -378,20 +376,6 @@ int64_t elementSize(std::string_view dtype) {
   return 0;
 }
 
-std::string npyDescr(std::string_view dtype) {
-  if (dtype == "float32")
-    return "<f4";
-  if (dtype == "float16")
-    return "<f2";
-  if (dtype == "int32")
-    return "<i4";
-  if (dtype == "int64")
-    return "<i8";
-  if (dtype == "bool")
-    return "|b1";
-  return "<f4";
-}
-
 int64_t elementCount(llvm::ArrayRef<int64_t> shape) {
   int64_t count = 1;
   for (int64_t dim : shape)
@@ -399,12 +383,12 @@ int64_t elementCount(llvm::ArrayRef<int64_t> shape) {
   return count;
 }
 
-absl::StatusOr<NpyPayload> readTensorPayload(const fs::path &path) {
+absl::StatusOr<TensorPayload> readTensorPayload(const fs::path &path) {
   std::ifstream input(path, std::ios::binary);
   if (!input)
     return absl::NotFoundError(
         absl::StrCat("missing parameter data file: ", path.string()));
-  NpyPayload payload;
+  TensorPayload payload;
   payload.bytes.assign(std::istreambuf_iterator<char>(input),
                        std::istreambuf_iterator<char>());
   if (payload.bytes.size() >= 10 &&
@@ -435,13 +419,6 @@ absl::StatusOr<NpyPayload> readTensorPayload(const fs::path &path) {
       return absl::InvalidArgumentError(
           "only row-major npy payloads are supported");
     payload.dataOffset = headerLenOffset + headerLen;
-    size_t descr = header.find("'descr': '");
-    if (descr != std::string::npos) {
-      size_t start = descr + 10;
-      size_t end = header.find("'", start);
-      if (end != std::string::npos)
-        payload.descr = header.substr(start, end - start);
-    }
   }
   return payload;
 }
@@ -473,7 +450,7 @@ void copySliceRecursive(const uint8_t *input, llvm::ArrayRef<int64_t> strides,
 }
 
 absl::StatusOr<std::vector<uint8_t>>
-sliceRowMajorPayload(const NpyPayload &payload,
+sliceRowMajorPayload(const TensorPayload &payload,
                      llvm::ArrayRef<int64_t> globalShape,
                      llvm::ArrayRef<int64_t> offsets,
                      llvm::ArrayRef<int64_t> sizes, int64_t elementBytes) {
@@ -495,36 +472,6 @@ sliceRowMajorPayload(const NpyPayload &payload,
   std::vector<int64_t> strides = rowMajorStrides(globalShape);
   copySliceRecursive(payload.bytes.data() + payload.dataOffset, strides,
                      offsets, sizes, 0, 0, elementBytes, output);
-  return output;
-}
-
-std::vector<uint8_t> withNpyHeader(std::vector<uint8_t> payload,
-                                   llvm::ArrayRef<int64_t> shape,
-                                   std::string descr) {
-  std::string shapeText = "(" + absl::StrJoin(shape, ", ");
-  if (shape.size() == 1)
-    shapeText += ",";
-  shapeText += ")";
-  std::string header = "{'descr': '" + descr +
-                       "', 'fortran_order': False, 'shape': " + shapeText +
-                       ", }";
-  size_t prefix = 10;
-  size_t padding = 16 - ((prefix + header.size() + 1) % 16);
-  if (padding == 16)
-    padding = 0;
-  uint16_t headerLen = static_cast<uint16_t>(header.size() + padding + 1);
-
-  std::vector<uint8_t> output;
-  const char magic[] = "\x93NUMPY";
-  output.insert(output.end(), magic, magic + 6);
-  output.push_back(1);
-  output.push_back(0);
-  output.push_back(static_cast<uint8_t>(headerLen & 0xff));
-  output.push_back(static_cast<uint8_t>((headerLen >> 8) & 0xff));
-  output.insert(output.end(), header.begin(), header.end());
-  output.insert(output.end(), padding, ' ');
-  output.push_back('\n');
-  output.insert(output.end(), payload.begin(), payload.end());
   return output;
 }
 
@@ -632,29 +579,24 @@ materializeParameterShards(const Options &options, const BundleMeta &meta,
     const xla::HloSharding *sharding =
         preParam->has_sharding() ? &preParam->sharding() : nullptr;
     TF_ASSIGN_OR_RETURN(
-        NpyPayload payload,
+        TensorPayload payload,
         readTensorPayload(options.inputBundle / "data" / location.name));
     int64_t bytesPerElement = elementSize(binding.dtype);
     if (bytesPerElement <= 0)
       return absl::InvalidArgumentError(
           absl::StrCat("unsupported parameter dtype: ", binding.dtype));
 
-    std::string descr =
-        payload.descr.empty() ? npyDescr(binding.dtype) : payload.descr;
     for (int64_t rank = 0; rank < options.logicalRankCount; ++rank) {
       std::string relative =
           absl::StrCat("parameter_shards/", binding.name, "/rank_",
-                       llvm::formatv("{0:05}", rank).str(), ".npy");
+                       llvm::formatv("{0:05}", rank).str(), ".bin");
       ParameterShard shard =
           shardForRank(preParam->shape(), sharding, rank, relative);
       TF_ASSIGN_OR_RETURN(std::vector<uint8_t> rawShard,
                           sliceRowMajorPayload(payload, binding.globalShape,
                                                shard.offsets, shard.sizes,
                                                bytesPerElement));
-      std::vector<uint8_t> fileBytes =
-          withNpyHeader(std::move(rawShard), shard.sizes, descr);
-      TF_RETURN_IF_ERROR(
-          writeBytes(options.outputBundle / relative, fileBytes));
+      TF_RETURN_IF_ERROR(writeBytes(options.outputBundle / relative, rawShard));
       binding.shards.push_back(std::move(shard));
     }
 

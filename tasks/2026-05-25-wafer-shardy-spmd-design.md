@@ -175,13 +175,14 @@ P2.S2 工程 gate 必须把 XLA SPMD partitioner 或等价 local-body partitioni
 - P2.S2 输出的 partitioned bundle 必须由 Wafer-owned artifact stage 保存。`functions/forward.mlir`
   是 local body；`functions/forward.meta` 的 input/output signature 必须匹配 local function boundary；
   `functions/forward.parameter_shards.json` 记录 post-SPMD 后 parameter local argument 到
-  `parameter_shards/<parameter>/rank_XXXXX.npy` rank-local payload 的 explicit binding，供后续
+  `parameter_shards/<parameter>/rank_XXXXX.bin` rank-local raw payload 的 explicit binding，供后续
   storage/package materialization 消费。binding 的 offsets、sizes、strides 和 replica id 必须来自
   XLA sharding / runtime shard facts，不由 Wafer 从 `partition_spec`、strategy 名或 parameter 名手算。
 - 当前 helper 对参数 payload 支持 row-major raw tensor 和 NumPy `.npy` v1/v2 输入，按 XLA
   `HloSharding::TileOffsetForDevice` / `TileLimitForDevice` 为每个 logical rank materialize local
-  `.npy` payload；local function signature 从 post-SPMD StableHLO `func.func @main` 的 ranked tensor
-  边界回写到 `forward.meta`。
+  raw payload；local function signature 从 post-SPMD StableHLO `func.func @main` 的 ranked tensor 边界
+  回写到 `forward.meta`。`.npy` 只作为 PyTorch/XLA frontend bundle 的输入序列化格式被解析，不作为
+  P2.S2 输出或后续 runtime/package ABI。
 
 #### 2.1.1 P2.S1 真实图和 sharding 覆盖矩阵
 
@@ -299,7 +300,7 @@ stage 得到 partitioned StableHLO、等价 per-rank StableHLO body，或明确�
   StableHLO bundle。该 gate 用同一个 matmul 图的 `--size 32` 形态覆盖 data、column、row、
   2d-output、2d-contracting-output 和 partial-replication 六种 strategy；这是为了让本地 helper /
   lit gate 可重放，不改变 P2.F1 4096 export 主图的语义形态。column case 额外检查 rank-local
-  signature、StableHLO collective、`forward.parameter_shards.json` 和 rank-local `.npy` payload。
+  signature、StableHLO collective、`forward.parameter_shards.json` 和 rank-local raw payload。
 - 旧 Python post-SPMD helper tests 已删除。P2.S2 partitioned StableHLO 主链 gate 不能退回 Python
   helper、`wafer.spmd.*` 私有协议或手写 sidecar。
 

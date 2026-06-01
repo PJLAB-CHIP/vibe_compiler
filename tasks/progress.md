@@ -83,7 +83,7 @@ P7/P8/P9 依赖 P0-P6 主链路恢复，不提前推进。
   bundle verifier。helper 执行 StableHLO/SDY -> XLA HLO、`SpmdPrepare` / `SpmdPartitioner` /
   `HloVerifier`、partitioned HLO -> StableHLO round trip，并写回 rank-local function signature、
   StableHLO collective metadata、`forward.parameter_shards.json` 和
-  `parameter_shards/<parameter>/rank_XXXXX.npy` payload。
+  `parameter_shards/<parameter>/rank_XXXXX.bin` raw payload。
 - `test/Spmd` 当前只覆盖 default input seed 和 SDY/Shardy artifact parse/verify，不覆盖 XLA SPMD
   partitioner，也不输出 rank-local StableHLO。
 - `test/Frontend` 当前覆盖 StableHLO/Linalg local compute normalization；softmax、RMSNorm、LayerNorm 是
