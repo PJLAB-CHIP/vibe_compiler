@@ -23,14 +23,14 @@
 # RUN: rm -rf %t.bundle && mkdir -p %t.bundle/functions %t.bundle/data
 # RUN: printf '%b' 'module {\n  func.func @main(%%arg0: tensor<2x4xf32>) -> tensor<2x4xf32> {\n    return %%arg0 : tensor<2x4xf32>\n  }\n}\n' > %t.bundle/functions/forward.mlir
 # RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[2,4],"dtype":"float32","dynamic_dims":[]}],"output_signature":[{"shape":[2,4],"dtype":"float32","dynamic_dims":[]}],"input_locations":[{"type_":"parameter","position":-1,"name":"weight"}],"unused_inputs":[]}\n' > %t.bundle/functions/forward.meta
-# RUN: %python -c 'from pathlib import Path; Path("%t.bundle/data/weight").write_bytes(b"0" * 32)'
+# RUN: %python -c 'import numpy as np; from pathlib import Path; p = Path("%t.bundle/data/weight"); f = p.open("wb"); np.save(f, np.zeros((2, 4), dtype=np.float32)); f.close()'
 # RUN: wafer-import-model --verify-stablehlo-bundle %t.bundle | FileCheck %s --check-prefix=BUNDLE
 
 # RUN: rm -rf %t.shards.bundle && mkdir -p %t.shards.bundle/functions %t.shards.bundle/parameter_shards/weight
 # RUN: printf '%b' 'module attributes {"mhlo.spmd_parameters_shardings" = ""} {\n  func.func @main(%%arg0: tensor<1x4xf32>) -> tensor<1x4xf32> {\n    return %%arg0 : tensor<1x4xf32>\n  }\n}\n' > %t.shards.bundle/functions/forward.mlir
 # RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[1,4],"dtype":"float32","dynamic_dims":[]}],"output_signature":[{"shape":[1,4],"dtype":"float32","dynamic_dims":[]}],"input_locations":[{"type_":"parameter","position":-1,"name":"weight"}],"unused_inputs":[]}\n' > %t.shards.bundle/functions/forward.meta
-# RUN: printf '%b' '{"parameter_shards_version":2,"function":"forward","logical_rank_count":2,"parameters":[{"argument_index":0,"name":"weight","global_shape":[2,4],"local_shape":[1,4],"dtype":"float32","shards":[{"rank":0,"replica_id":0,"file":"parameter_shards/weight/rank_00000.bin","offsets":[0,0],"sizes":[1,4],"strides":[1,1]},{"rank":1,"replica_id":0,"file":"parameter_shards/weight/rank_00001.bin","offsets":[1,0],"sizes":[1,4],"strides":[1,1]}]}]}\n' > %t.shards.bundle/functions/forward.parameter_shards.json
-# RUN: %python -c 'from pathlib import Path; Path("%t.shards.bundle/parameter_shards/weight/rank_00000.bin").write_bytes(b"0" * 16); Path("%t.shards.bundle/parameter_shards/weight/rank_00001.bin").write_bytes(b"0" * 16)'
+# RUN: printf '%b' '{"parameter_shards_version":2,"function":"forward","logical_rank_count":2,"parameters":[{"argument_index":0,"name":"weight","global_shape":[2,4],"local_shape":[1,4],"dtype":"float32","shards":[{"rank":0,"replica_id":0,"file":"parameter_shards/weight/rank_00000.npy","offsets":[0,0],"sizes":[1,4],"strides":[1,1]},{"rank":1,"replica_id":0,"file":"parameter_shards/weight/rank_00001.npy","offsets":[1,0],"sizes":[1,4],"strides":[1,1]}]}]}\n' > %t.shards.bundle/functions/forward.parameter_shards.json
+# RUN: %python -c 'import numpy as np; from pathlib import Path; np.save(Path("%t.shards.bundle/parameter_shards/weight/rank_00000.npy"), np.zeros((1, 4), dtype=np.float32)); np.save(Path("%t.shards.bundle/parameter_shards/weight/rank_00001.npy"), np.zeros((1, 4), dtype=np.float32))'
 # RUN: wafer-import-model --verify-stablehlo-bundle %t.shards.bundle | FileCheck %s --check-prefix=SHARD-BUNDLE
 
 # RUN: rm -rf %t.missing-shards.bundle && mkdir -p %t.missing-shards.bundle && cp -R %t.shards.bundle/. %t.missing-shards.bundle
@@ -38,7 +38,7 @@
 # RUN: not wafer-import-model --verify-stablehlo-bundle %t.missing-shards.bundle 2>&1 | FileCheck %s --check-prefix=MISSING-SHARDS
 
 # RUN: rm -rf %t.missing-shard-file.bundle && mkdir -p %t.missing-shard-file.bundle && cp -R %t.shards.bundle/. %t.missing-shard-file.bundle
-# RUN: rm %t.missing-shard-file.bundle/parameter_shards/weight/rank_00001.bin
+# RUN: rm %t.missing-shard-file.bundle/parameter_shards/weight/rank_00001.npy
 # RUN: not wafer-import-model --verify-stablehlo-bundle %t.missing-shard-file.bundle 2>&1 | FileCheck %s --check-prefix=MISSING-SHARD-FILE
 
 # RUN: rm -rf %t.bad-shape.bundle && mkdir -p %t.bad-shape.bundle && cp -R %t.bundle/. %t.bad-shape.bundle

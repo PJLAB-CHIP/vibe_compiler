@@ -65,9 +65,9 @@
   之后 `cmake --build build/r0-deps-pytorch-xla --target check-wafer-lit` 会运行真实 P2.S2 partition
   artifact gate；没有配置 helper 时该 gate 通过 `REQUIRES: xla-spmd-helper` 自动 unsupported。
 - PyTorch/XLA StableHLO bundle 的 `data/<parameter>` 由 upstream exporter 用 `np.save` 写入，因此
-  P2.S2 helper 需要解析 `.npy` header 才能切片输入参数；P2.S2 输出的 rank-local shard payload 不使用
-  `.npy`，而是 `parameter_shards/<parameter>/rank_XXXXX.bin` raw bytes，形状和 dtype 由
-  `forward.parameter_shards.json` 承载。不要把 NumPy 文件格式升级成 Wafer package/runtime ABI。
+  P2.S2 helper 需要解析 `.npy` header 才能切片输入参数；P2.S2 输出的 rank-local shard payload 沿用
+  NPY stream，路径为 `parameter_shards/<parameter>/rank_XXXXX.npy`。形状和 dtype 由 NPY header 与
+  `forward.parameter_shards.json` 共同校验；不要把 NumPy 文件格式升级成 Wafer package/runtime ABI。
 - Wafer-owned Shardy / SPMD 源码放在 `lib/Wafer/Transforms/SPMD/`。只依赖 MLIR / StableHLO /
   Shardy CMake target 的 pass 编进 `WaferTransforms`；需要直接依赖 XLA HLO service /
   `spmd_partitioner` / generated proto / TSL 的入口也放在同一 Wafer 源码目录，但通过

@@ -67,7 +67,7 @@ PyTorch/XLA 路线的 frontend artifact 只保留一套 exporter-native 事实�
 | `functions/forward.meta` | PyTorch/XLA 导出的 metadata | 校验 function arg/result 与 parameter / user input / shape / dtype 的关系 |
 | `functions/forward.parameter_shards.json` | post-SPMD parameter shard binding | 仅在 partitioned bundle 中存在；校验 local function parameter 与 rank-local shard payload 的关系 |
 | `functions/forward.bytecode` | StableHLO bytecode | 与 bundle 一起保留，当前不作为 Wafer IR 合同 |
-| `data/<parameter>` | PyTorch/XLA 导出的 pre-SPMD weight data | 非 partitioned bundle 的 import 边界检查存在性和 payload size，不提交进 git fixture |
+| `data/<parameter>` | PyTorch/XLA 导出的 pre-SPMD weight data | 非 partitioned bundle 的 import 边界检查 NPY stream、shape 和 dtype，不提交进 git fixture |
 | `parameter_shards/<parameter>/rank_XXXXX.npy` | post-SPMD rank-local weight shard payload | partitioned bundle 的参数 payload；由 P2.S2 SPMD partition artifact stage 生成，不从 strategy 名或文件名推断 |
 
 除本节定义的 post-SPMD parameter shard manifest 外，不要为同一件事再生成 Wafer 私有伴随 JSON /
@@ -200,7 +200,7 @@ group、tiling、SPM/DDR resource 和 package manifest 消费真实规模的 sha
 - pre-SPMD 大 weight 必须使用 PyTorch/XLA bundle 的 `forward.meta` 和 `data/<parameter>`；partitioned
   artifact 必须使用 `forward.parameter_shards.json` 和 `parameter_shards/<parameter>/rank_XXXXX.npy`
   表达 rank-local payload。测试验证 function argument / parameter location / shape / dtype /
-  data payload size 或 shard payload size 的绑定关系。
+  data payload 或 shard payload 的 NPY stream header 与 tensor 边界绑定关系。
 - 小 shape MLIR 仍可用于 graph break、eager fallback、dynamic bound 等快速负例；
   这些测试不能替代 4096 主链路 artifact 的完成证明。
 

@@ -48,6 +48,14 @@ struct BundleMeta {
   std::vector<BundleInputLocation> inputLocations;
 };
 
+struct NpyPayloadMetadata {
+  uint64_t fileSize = 0;
+  uint64_t dataOffset = 0;
+  std::string descr;
+  bool fortranOrder = false;
+  std::vector<int64_t> shape;
+};
+
 bool reject(llvm::raw_ostream &diagnostics, llvm::StringRef message) {
   diagnostics << "wafer-import-model: " << message << "\n";
   return true;
@@ -392,6 +400,205 @@ uint64_t rawByteSize(llvm::ArrayRef<int64_t> shape, Type elementType) {
   return elements * (bitWidth / 8);
 }
 
+std::optional<llvm::StringRef> findNpyFieldValue(llvm::StringRef header,
+                                                 llvm::StringRef field) {
+  std::string singleQuoted = (Twine("'") + field + "'").str();
+  std::string doubleQuoted = (Twine("\"") + field + "\"").str();
+  size_t key = header.find(singleQuoted);
+  if (key == llvm::StringRef::npos)
+    key = header.find(doubleQuoted);
+  if (key == llvm::StringRef::npos)
+    return std::nullopt;
+
+  size_t colon = header.find(':', key);
+  if (colon == llvm::StringRef::npos)
+    return std::nullopt;
+  return header.drop_front(colon + 1).ltrim();
+}
+
+std::optional<std::string> parseNpyStringField(llvm::StringRef header,
+                                               llvm::StringRef field) {
+  std::optional<llvm::StringRef> value = findNpyFieldValue(header, field);
+  if (!value || value->empty())
+    return std::nullopt;
+  char quote = value->front();
+  if (quote != '\'' && quote != '"')
+    return std::nullopt;
+  llvm::StringRef rest = value->drop_front();
+  size_t end = rest.find(quote);
+  if (end == llvm::StringRef::npos)
+    return std::nullopt;
+  return rest.take_front(end).str();
+}
+
+std::optional<bool> parseNpyBoolField(llvm::StringRef header,
+                                      llvm::StringRef field) {
+  std::optional<llvm::StringRef> value = findNpyFieldValue(header, field);
+  if (!value)
+    return std::nullopt;
+  if (value->starts_with("False") || value->starts_with("false"))
+    return false;
+  if (value->starts_with("True") || value->starts_with("true"))
+    return true;
+  return std::nullopt;
+}
+
+std::optional<std::vector<int64_t>> parseNpyShapeField(llvm::StringRef header) {
+  std::optional<llvm::StringRef> value = findNpyFieldValue(header, "shape");
+  if (!value)
+    return std::nullopt;
+
+  size_t open = value->find('(');
+  size_t close = value->find(')');
+  if (open == llvm::StringRef::npos || close == llvm::StringRef::npos ||
+      close < open)
+    return std::nullopt;
+
+  std::vector<int64_t> shape;
+  llvm::StringRef body = value->slice(open + 1, close);
+  while (!body.empty()) {
+    auto split = body.split(',');
+    llvm::StringRef token = split.first.trim();
+    if (!token.empty()) {
+      int64_t dim = 0;
+      if (token.getAsInteger(10, dim) || dim < 0)
+        return std::nullopt;
+      shape.push_back(dim);
+    }
+    body = split.second;
+  }
+  return shape;
+}
+
+FailureOr<NpyPayloadMetadata>
+readNpyPayloadMetadata(llvm::StringRef path, llvm::StringRef displayName,
+                       llvm::raw_ostream &diagnostics) {
+  auto bufferOrError = llvm::MemoryBuffer::getFile(path);
+  if (!bufferOrError) {
+    rejectBundle(("failed to read npy payload file: " + displayName).str(),
+                 diagnostics);
+    return failure();
+  }
+
+  llvm::StringRef bytes = (*bufferOrError)->getBuffer();
+  if (bytes.size() < 10 ||
+      bytes.take_front(6) != llvm::StringRef("\x93NUMPY", 6)) {
+    rejectBundle(("npy payload is missing magic: " + displayName).str(),
+                 diagnostics);
+    return failure();
+  }
+
+  auto byte = [&](size_t index) -> uint64_t {
+    return static_cast<unsigned char>(bytes[index]);
+  };
+
+  uint64_t major = byte(6);
+  uint64_t headerLen = 0;
+  uint64_t headerOffset = 0;
+  if (major == 1) {
+    headerOffset = 10;
+    headerLen = byte(8) | (byte(9) << 8);
+  } else if (major == 2) {
+    if (bytes.size() < 12) {
+      rejectBundle(("truncated npy v2 header: " + displayName).str(),
+                   diagnostics);
+      return failure();
+    }
+    headerOffset = 12;
+    headerLen = byte(8) | (byte(9) << 8) | (byte(10) << 16) |
+                (byte(11) << 24);
+  } else {
+    rejectBundle(("unsupported npy payload version: " + displayName).str(),
+                 diagnostics);
+    return failure();
+  }
+
+  if (bytes.size() < headerOffset + headerLen) {
+    rejectBundle(("truncated npy payload header: " + displayName).str(),
+                 diagnostics);
+    return failure();
+  }
+
+  llvm::StringRef header = bytes.slice(headerOffset, headerOffset + headerLen);
+  std::optional<std::string> descr = parseNpyStringField(header, "descr");
+  std::optional<bool> fortranOrder =
+      parseNpyBoolField(header, "fortran_order");
+  std::optional<std::vector<int64_t>> shape = parseNpyShapeField(header);
+  if (!descr || !fortranOrder || !shape) {
+    rejectBundle(("invalid npy payload header: " + displayName).str(),
+                 diagnostics);
+    return failure();
+  }
+
+  NpyPayloadMetadata metadata;
+  metadata.fileSize = bytes.size();
+  metadata.dataOffset = headerOffset + headerLen;
+  metadata.descr = std::move(*descr);
+  metadata.fortranOrder = *fortranOrder;
+  metadata.shape = std::move(*shape);
+  return metadata;
+}
+
+bool npyDescrMatchesDtype(llvm::StringRef descr, Type elementType) {
+  std::string dtype = dtypeString(elementType);
+  if (dtype == "f32")
+    return descr == "<f4" || descr == "=f4";
+  if (dtype == "f64")
+    return descr == "<f8" || descr == "=f8";
+  if (dtype == "f16")
+    return descr == "<f2" || descr == "=f2";
+  if (dtype == "bf16")
+    return descr == "|V2";
+  if (dtype == "i1")
+    return descr == "|b1" || descr == "|i1";
+  if (dtype == "i8")
+    return descr == "|i1";
+  if (dtype == "i16")
+    return descr == "<i2" || descr == "=i2";
+  if (dtype == "i32")
+    return descr == "<i4" || descr == "=i4";
+  if (dtype == "i64")
+    return descr == "<i8" || descr == "=i8";
+  return false;
+}
+
+bool verifyNpyTensorPayloadFile(llvm::StringRef path,
+                                llvm::StringRef displayName,
+                                llvm::ArrayRef<int64_t> expectedShape,
+                                Type elementType,
+                                llvm::raw_ostream &diagnostics) {
+  FailureOr<NpyPayloadMetadata> metadata =
+      readNpyPayloadMetadata(path, displayName, diagnostics);
+  if (failed(metadata))
+    return true;
+
+  if (metadata->fortranOrder)
+    return rejectBundle(("npy payload must be row-major: " + displayName).str(),
+                        diagnostics);
+  if (!llvm::equal(metadata->shape, expectedShape))
+    return rejectBundle(
+        ("npy payload shape does not match tensor: " + displayName).str(),
+        diagnostics);
+  if (!npyDescrMatchesDtype(metadata->descr, elementType))
+    return rejectBundle(
+        ("npy payload dtype does not match tensor: " + displayName).str(),
+        diagnostics);
+
+  uint64_t expectedRawBytes = rawByteSize(expectedShape, elementType);
+  if (expectedRawBytes == 0)
+    return rejectBundle(
+        ("npy tensor byte size is not representable: " + displayName).str(),
+        diagnostics);
+  if (metadata->dataOffset > metadata->fileSize ||
+      expectedRawBytes > metadata->fileSize - metadata->dataOffset)
+    return rejectBundle(
+        ("npy payload file is smaller than tensor payload: " + displayName)
+            .str(),
+        diagnostics);
+
+  return false;
+}
+
 bool verifySignature(Type type, const BundleSignature &signature,
                      llvm::StringRef kind, unsigned index,
                      llvm::raw_ostream &diagnostics) {
@@ -462,16 +669,9 @@ bool verifyParameterDataFile(llvm::StringRef bundleDir,
                             location.name,
                         diagnostics);
 
-  uint64_t expectedRawBytes = rawByteSize(tensorType);
-  if (expectedRawBytes == 0)
-    return rejectBundle("parameter tensor byte size is not representable: " +
-                            location.name,
-                        diagnostics);
-  if (status.getSize() < expectedRawBytes)
-    return rejectBundle("parameter data file is smaller than tensor payload: " +
-                            location.name,
-                        diagnostics);
-  return false;
+  return verifyNpyTensorPayloadFile(
+      path, ("data/" + Twine(location.name)).str(), tensorType.getShape(),
+      tensorType.getElementType(), diagnostics);
 }
 
 bool hasSpmdParameterShardings(ModuleOp module);
@@ -655,16 +855,7 @@ bool verifyShardEntry(const llvm::json::Object &object,
     return rejectBundle("parameter shard path is not a regular file: " + file,
                         diagnostics);
 
-  uint64_t expectedBytes = rawByteSize(sizes, elementType);
-  if (expectedBytes == 0)
-    return rejectBundle("parameter shard byte size is not representable",
-                        diagnostics);
-  if (status.getSize() < expectedBytes)
-    return rejectBundle("parameter shard file is smaller than shard payload: " +
-                            file,
-                        diagnostics);
-
-  return false;
+  return verifyNpyTensorPayloadFile(path, file, sizes, elementType, diagnostics);
 }
 
 bool verifyParameterShardBinding(const llvm::json::Object &object,
