@@ -68,14 +68,14 @@ PyTorch/XLA 路线的 frontend artifact 只保留一套 exporter-native 事实�
 | `functions/forward.parameter_shards.json` | post-SPMD parameter shard binding | 仅在 partitioned bundle 中存在；校验 local function parameter 与 rank-local shard payload 的关系 |
 | `functions/forward.bytecode` | StableHLO bytecode | 与 bundle 一起保留，当前不作为 Wafer IR 合同 |
 | `data/<parameter>` | PyTorch/XLA 导出的 pre-SPMD weight data | 非 partitioned bundle 的 import 边界检查存在性和 payload size，不提交进 git fixture |
-| `parameter_shards/<parameter>/rank_XXXXX.npy` | post-SPMD rank-local weight shard payload | partitioned bundle 的参数 payload；由 PyTorch/XLA runtime shard facts 生成，不从 strategy 名或文件名推断 |
+| `parameter_shards/<parameter>/rank_XXXXX.npy` | post-SPMD rank-local weight shard payload | partitioned bundle 的参数 payload；由 P2.S2 SPMD partition artifact stage 生成，不从 strategy 名或文件名推断 |
 
 除本节定义的 post-SPMD parameter shard manifest 外，不要为同一件事再生成 Wafer 私有伴随 JSON /
 compile JSON。`forward.meta` 是 function boundary
 事实源；`forward.parameter_shards.json` 只承接 post-SPMD 后 local parameter argument 到
 rank-local shard payload 的绑定关系。offsets、sizes、strides、replica id 和 payload 文件必须来自
-PyTorch/XLA `XLAShardedTensor.local_shards` / XLA sharding spec 暴露的 runtime facts，不能由 Wafer 从
-`partition_spec` 手算。后续 compiler pass 不能直接读取 bundle metadata，而应消费 importer
+XLA sharding / partitioner 暴露的 shard facts，不能由 Wafer 从 `partition_spec`、strategy 名或
+parameter 名手算。后续 compiler pass 不能直接读取 bundle metadata，而应消费 importer
 materialize 到 MLIR IR 的显式事实。metadata 也不描述 Wafer physical layout、buffer object pool、
 DDR address 或 package path。
 
@@ -286,10 +286,10 @@ PyTorch/XLA 的 `mark_sharding` 或 export 可追踪的等价前端 op。Fronten
 StableHLO / SDY 可解释 artifact，应诊断为 frontend export / sharding import 问题，而不是在后端
 补第二套描述。
 
-2026-05-27 P2.S1 当前实现使用 source-built PyTorch/XLA lazy SPMD runtime 的 `mark_sharding`
-生成带 `mhlo.sharding` 的 PyTorch/XLA StableHLO bundle；partitioned local body 由同一 runtime 的
-XLA SPMD post-optimization export 取得。Frontend verifier 只校验 bundle metadata / data /
-function boundary，不把 sharding 转成 Wafer 私有协议。
+2026-06-01 P2.S1 当前实现使用 source-built PyTorch/XLA lazy SPMD runtime 的 `mark_sharding`
+生成带 `mhlo.sharding` 的 PyTorch/XLA StableHLO bundle，并交给 Wafer Shardy propagation stage。
+partitioned local body 必须由 P2.S2 的 Wafer-owned SPMD partition artifact stage 取得。Frontend
+verifier 只校验 bundle metadata / data / function boundary，不把 sharding 转成 Wafer 私有协议。
 
 Frontend 不把 sharding annotation 转成 physical card/tile id，也不提前选择 DTE route。
 

@@ -303,7 +303,7 @@ non-unicast helper，它也可以由 placement 后的一组 unicast send/recv/wa
 - concat / layout relation，或交给 layout/materialization 层解释的 explicit slice result。
 - token/wait 和 buffer lifetime。
 
-如果当前实现还没有 `wafer.comm.all_to_all` op 或 lowering pass，P2.S1 应保留 StableHLO collective，
+如果当前实现还没有 `wafer.comm.all_to_all` op 或 lowering pass，P2.S2 应保留 StableHLO collective，
 R2.4 应补 Wafer LinalgExt-style tensor collective op；R6 再恢复 tile-local `wafer.comm` p2p
 schedule、resource allocation 和 package/runtime metadata。
 

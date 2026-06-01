@@ -86,7 +86,7 @@ pattern FileCheck、手写 StableHLO/Linalg fixture 和 fixed manifest 可以保
 
 Single-tile local compute：
 
-- 主链路 gate 应消费 P2.F1/P2.S1/R2.4 产出的真实图 artifact，并继续通过 frontend/local compute /
+- 主链路 gate 应消费 P2.F1/P2.S1/P2.S2/R2.4 产出的真实图 artifact，并继续通过 frontend/local compute /
   tensor collective handoff gate；graph break / fallback 不被当成合法 artifact。手写 StableHLO/Linalg
   输入只保留为局部 verifier、lowering pattern 或 bring-up fixture。
 - R2.4-pre 之后，主链路 gate 必须通过 Wafer named pipeline 或用户级 driver mode 重放上述链路；

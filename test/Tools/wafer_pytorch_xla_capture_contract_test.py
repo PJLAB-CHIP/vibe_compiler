@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 
 import importlib.util
-import json
-import numpy as np
 import pathlib
 import sys
 import tempfile
@@ -176,32 +174,6 @@ class FakeSpmd(types.ModuleType):
         return tensor
 
 
-class FakeShardData:
-    def __init__(self, array):
-        self.array = array
-
-    def detach(self):
-        return self
-
-    def cpu(self):
-        return self
-
-    def numpy(self):
-        return self.array
-
-
-class FakeShard:
-    def __init__(self, array, indices, shard_device, replica_id):
-        self.data = FakeShardData(array)
-        self.indices = indices
-        self.shard_device = shard_device
-        self.replica_id = replica_id
-
-    @property
-    def unpadded_data(self):
-        return self.data
-
-
 class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
     def setUp(self):
         self.saved_modules = dict(sys.modules)
@@ -282,91 +254,6 @@ class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
                 (module.bias, mesh, (None,)),
             ],
         )
-
-    def test_default_input_strategy_uses_replicated_fallback(self):
-        strategy = self.tool.create_default_input_sharding_strategy(
-            tile_count=16, size=31
-        )
-
-        self.assertEqual(strategy.mesh_shape, (16,))
-        self.assertEqual(strategy.axis_names, ("tile",))
-        self.assertEqual(strategy.input_spec, (None, None))
-        self.assertEqual(strategy.weight_spec, (None, None))
-        self.assertEqual(strategy.bias_spec, (None,))
-
-    def test_partitioned_export_disables_hlo_fusion(self):
-        flags = self.tool._with_disabled_hlo_pass(
-            "--xla_dump_to=/tmp/xla --xla_disable_hlo_passes=cse", "fusion"
-        )
-
-        self.assertIn("--xla_dump_to=/tmp/xla", flags)
-        self.assertIn("--xla_disable_hlo_passes=cse,fusion", flags)
-
-    def test_runtime_shard_binding_writes_rank_payload_files(self):
-        signature = types.SimpleNamespace(shape=[2, 4], dtype="float32")
-        location = types.SimpleNamespace(type_="parameter", name="weight")
-        func = types.SimpleNamespace(
-            meta=types.SimpleNamespace(
-                name="forward",
-                input_signature=[signature],
-                input_locations=[location],
-            )
-        )
-        bundle = types.SimpleNamespace(stablehlo_funcs=[func])
-        global_state = {"weight": np.zeros((4, 4), dtype=np.float32)}
-        runtime_shards = {
-            "weight": [
-                FakeShard(
-                    np.ones((2, 4), dtype=np.float32),
-                    [slice(0, 2, 1), slice(0, 4, 1)],
-                    "CPU:0",
-                    0,
-                ),
-                FakeShard(
-                    np.full((2, 4), 2, dtype=np.float32),
-                    [slice(2, 4, 1), slice(0, 4, 1)],
-                    "CPU:1",
-                    0,
-                ),
-            ]
-        }
-
-        with tempfile.TemporaryDirectory() as tmp:
-            bundle_path = pathlib.Path(tmp) / "bundle"
-            (bundle_path / "functions").mkdir(parents=True)
-            (bundle_path / "data").mkdir()
-            (bundle_path / "data" / "weight").write_bytes(b"global")
-
-            self.tool.write_parameter_shard_bindings(
-                bundle_path=bundle_path,
-                bundle=bundle,
-                global_state_dict=global_state,
-                parameter_shards=runtime_shards,
-            )
-
-            manifest = json.loads(
-                (bundle_path / "functions" / "forward.parameter_shards.json")
-                .read_text()
-            )
-
-            self.assertEqual(manifest["parameter_shards_version"], 2)
-            self.assertEqual(manifest["logical_rank_count"], 2)
-            parameter = manifest["parameters"][0]
-            self.assertNotIn("source", parameter)
-            self.assertEqual(parameter["global_shape"], [4, 4])
-            self.assertEqual(parameter["local_shape"], [2, 4])
-            self.assertEqual(parameter["shards"][0]["file"],
-                             "parameter_shards/weight/rank_00000.npy")
-            self.assertEqual(parameter["shards"][1]["offsets"], [2, 0])
-            self.assertTrue(
-                (bundle_path / "parameter_shards" / "weight" / "rank_00000.npy")
-                .is_file()
-            )
-            self.assertFalse((bundle_path / "data" / "weight").exists())
-            np.testing.assert_array_equal(
-                np.load(bundle_path / parameter["shards"][1]["file"]),
-                np.full((2, 4), 2, dtype=np.float32),
-            )
 
 if __name__ == "__main__":
     unittest.main()

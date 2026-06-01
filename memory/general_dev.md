@@ -46,24 +46,17 @@
   标记 4096 matmul 图并导出带 `mhlo.sharding` 的 PyTorch/XLA StableHLO bundle；随后由
   `wafer-import-model --propagate-stablehlo-sharding` / `wafer-propagate-stablehlo-sharding`
   接管 default input seed + Shardy propagation；再由后续 Wafer-owned SPMD partition artifact
-  stage 调 XLA SPMD partitioner 并导出 partitioned StableHLO bundle。当前
-  `test/Tools/Inputs/wafer_pytorch_xla_spmd_oracle.py` 的 post-opt export 只是 test oracle，需要
-  `XLA_DUMP_POST_OPTIMIZATIONS=1` 并在 `XLA_FLAGS` 中禁用 `fusion`；这个 flag 是 oracle 导出约束，
-  不是 IR 协议。旧的私有 sharding attr emitter、sidecar JSON、单独
-  `wafer-import-model --verify-spmd-bundle` 路线已移除；不要恢复只生成私有 attrs/sidecar 或把
-  test oracle 写成 frontend / 用户编译入口。
-- P2.S1 当前测试 artifact / oracle 入口：
+  stage 调 XLA SPMD partitioner 并导出 partitioned StableHLO bundle。旧的私有 sharding attr
+  emitter、sidecar JSON、单独 `wafer-import-model --verify-spmd-bundle` 和 Python post-SPMD
+  路线已移除；不要恢复只生成私有 attrs/sidecar、只跑 SDY propagation 冒充完成，或把 Python
+  test helper 写成 SPMD / 用户编译入口。
+- P2.S1 当前测试 artifact 入口：
   `test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-reference-bundle` 默认生成 4096 reference
   bundle；需要把真实 PyTorch/XLA export artifact 接到本地 compile gate 时，可以用 `--size <n>` 生成
   小尺寸同构图，避免让 single-tile bring-up 被 4096 工作集容量卡住。
   `test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-sharded-bundle --sharding-strategy=<name>` 生成
-  pre-partition mark artifact。临时
-  `test/Tools/Inputs/wafer_pytorch_xla_spmd_oracle.py --sharding-strategy=<name>` 生成
-  post-XLA-SPMD local artifact；
-  `wafer_pytorch_xla_spmd_oracle.py --default-input-sharding --default-tile-count=<1..16>` 覆盖 no-user
-  默认 input seed 的 oracle 对照。partitioned bundle 的 `functions/forward.meta` 要匹配 local
-  function boundary；
-  post-SPMD module 可能含 private helper `func.func`，frontend verifier 应选择唯一 public entry。
+  pre-partition mark artifact。post-SPMD partitioned artifact 只能由 P2.S2 的 Wafer-owned SPMD
+  partition stage 产生。
 - post-SPMD collective 先进入 Wafer LinalgExt-style tensor collective handoff，和 `linalg` 一起进入
   group/tiling；`wafer.comm` 只能在 `wafer.tile_region` / SPM tile buffers / placement 明确后
   materialize。StableHLO collective 直降 `wafer.comm` 且靠 `unrealized_conversion_cast` 桥 tensor
@@ -89,8 +82,8 @@
   `wafer-propagate-stablehlo-sharding`、`wafer-lower-stablehlo-to-linalg`、
   `wafer-lower-linalg-to-cabi`、`wafer-lower-stablehlo-to-cabi` 和
   `wafer-lower-tile-communication-to-cabi`。`wafer-propagate-stablehlo-sharding` 只做 default input
-  seed + Shardy propagation，不冒充 XLA SPMD partitioner；XLA SPMD partitioned bundle 当前只来自
-  test-only PyTorch/XLA oracle，不能作为主链完成证明。`wafer-lower-stablehlo-to-cabi` 必须组合
+  seed + Shardy propagation，不冒充 XLA SPMD partitioner；当前没有 Python post-SPMD 路线或
+  等价替代主链。`wafer-lower-stablehlo-to-cabi` 必须组合
   StableHLO->Linalg 与 Linalg->C ABI body，不能另起一套 parallel lowering。`target=wafer` 会
   materialize/校验 `#wafer.target<wafer>`，非 `wafer` target 必须诊断。compile driver 必须拒绝带
   pre-SPMD sharding seed 但没有 post-SPMD marker 的 bundle。单 pass flags 只用于

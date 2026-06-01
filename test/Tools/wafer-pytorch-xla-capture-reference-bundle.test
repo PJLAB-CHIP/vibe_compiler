@@ -1,7 +1,6 @@
 # REQUIRES: stablehlo, pytorch-xla-importer
 
 # RUN: %importer_python %wafer_src_root/test/Tools/Inputs/wafer_pytorch_xla_capture.py --help | FileCheck %s --check-prefix=CAPTURE-HELP
-# RUN: %importer_python %wafer_src_root/test/Tools/Inputs/wafer_pytorch_xla_spmd_oracle.py --help | FileCheck %s --check-prefix=ORACLE-HELP
 
 # RUN: rm -rf %t.bundle
 # RUN: %importer_python %wafer_src_root/test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-reference-bundle --output-bundle %t.bundle
@@ -38,9 +37,3 @@
 
 # CAPTURE-HELP: --emit-reference-bundle
 # CAPTURE-HELP: --emit-sharded-bundle
-# CAPTURE-HELP-NOT: --emit-partitioned-bundle
-# CAPTURE-HELP-NOT: --default-input-sharding
-
-# ORACLE-HELP: Temporary PyTorch/XLA SPMD oracle
-# ORACLE-HELP: --sharding-strategy
-# ORACLE-HELP: --default-input-sharding

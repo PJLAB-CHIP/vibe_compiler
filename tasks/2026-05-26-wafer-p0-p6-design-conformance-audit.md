@@ -22,8 +22,8 @@ sidecar，不是主线 SPMD artifact contract；历史 StableHLO collective 直�
 只能算已删除的后段 communication coverage，不能作为 group/tiling 输入。正确主线需要
 `frontend export -> StableHLO/SDY -> Wafer Shardy propagation -> Wafer-owned XLA SPMD partitioner
 artifact stage -> partitioned StableHLO`，再经 Wafer LinalgExt-style tensor collective handoff 进入
-group/tiling。PyTorch/XLA post-SPMD export 只能作为临时 test oracle；它不消费 Wafer propagation
-输出，不能作为 P2.S1 主链完成证明。
+group/tiling。旧 PyTorch/XLA post-SPMD export 测试入口已删除；它不消费 Wafer propagation 输出，
+不能作为 P2.S1 主链完成证明。
 
 历史 `tasks/progress.md` 中 P0-P6 的 `done` 应理解为“该局部批次有对应测试”，不能理解为：
 

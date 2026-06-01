@@ -6,12 +6,8 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import functools
-import json
-import numpy as np
 import operator
-import os
 import pathlib
-import re
 import shutil
 import sys
 from typing import Any, Callable
@@ -90,32 +86,6 @@ SHARDING_STRATEGY_NAMES: tuple[str, ...] = tuple(
 )
 
 
-def create_default_input_sharding_strategy(
-    *, tile_count: int, size: int = DEFAULT_REFERENCE_MATMUL_SIZE
-) -> ShardingStrategy:
-    if tile_count < 1 or tile_count > 16:
-        raise RuntimeError("default input sharding tile count must be in [1, 16]")
-
-    def default_spec(shape: tuple[int, ...]) -> tuple[Any, ...]:
-        if tile_count == 1:
-            return tuple(None for _ in shape)
-        for index, dim in enumerate(shape):
-            if dim % tile_count == 0:
-                spec = [None for _ in shape]
-                spec[index] = "tile"
-                return tuple(spec)
-        return tuple(None for _ in shape)
-
-    return ShardingStrategy(
-        name=f"default-input-seed-{tile_count}",
-        mesh_shape=(tile_count,),
-        axis_names=("tile",),
-        input_spec=default_spec((size, size)),
-        weight_spec=default_spec((size, size)),
-        bias_spec=default_spec((size,)),
-    )
-
-
 def get_sharding_strategy(name: str) -> ShardingStrategy:
     for strategy in SHARDING_STRATEGIES:
         if strategy.name == name:
@@ -143,304 +113,6 @@ def apply_strategy_marks(
     spmd_module.mark_sharding(input_tensor, mesh, strategy.input_spec)
     spmd_module.mark_sharding(reference_module.weight, mesh, strategy.weight_spec)
     spmd_module.mark_sharding(reference_module.bias, mesh, strategy.bias_spec)
-
-
-def _location_kind(location: Any) -> str:
-    kind = getattr(location, "type_", "")
-    return getattr(kind, "value", kind)
-
-
-def _signature_shape(signature: Any) -> tuple[int, ...]:
-    return tuple(getattr(signature, "shape"))
-
-
-def _signature_dtype(signature: Any) -> str:
-    return str(getattr(signature, "dtype"))
-
-
-def _parameter_names(bundle: Any) -> list[str]:
-    if len(bundle.stablehlo_funcs) != 1:
-        raise RuntimeError("parameter shard binding expects one StableHLO function")
-    names = []
-    for location in bundle.stablehlo_funcs[0].meta.input_locations:
-        if _location_kind(location) == "parameter":
-            names.append(getattr(location, "name"))
-    return names
-
-
-def collect_parameter_shards_from_runtime(
-    *,
-    spmd_module: Any,
-    xla_model_module: Any,
-    reference_module: Any,
-    parameter_names: list[str],
-) -> dict[str, list[Any]]:
-    if hasattr(xla_model_module, "mark_step"):
-        xla_model_module.mark_step()
-    if hasattr(xla_model_module, "wait_device_ops"):
-        xla_model_module.wait_device_ops()
-
-    parameter_shards = {}
-    for name in parameter_names:
-        tensor = getattr(reference_module, name)
-        sharded_tensor = spmd_module.wrap_if_sharded(tensor)
-        if not hasattr(sharded_tensor, "local_shards"):
-            raise RuntimeError(
-                f"parameter '{name}' is not backed by an XLA sharded tensor"
-            )
-        shards = list(sharded_tensor.local_shards)
-        if not shards:
-            raise RuntimeError(f"parameter '{name}' has no runtime local shards")
-        parameter_shards[name] = shards
-    return parameter_shards
-
-
-def _rank_from_shard_device(shard_device: Any, fallback_rank: int) -> int:
-    match = re.search(r":(\d+)$", str(shard_device))
-    if match:
-        return int(match.group(1))
-    return fallback_rank
-
-
-def _indices_to_slice_metadata(
-    indices: Any, global_shape: list[int]
-) -> tuple[list[int], list[int], list[int]]:
-    if indices is Ellipsis or indices == Ellipsis:
-        return (
-            [0 for _ in global_shape],
-            list(global_shape),
-            [1 for _ in global_shape],
-        )
-    if len(indices) != len(global_shape):
-        raise RuntimeError("runtime shard indices rank does not match global shape")
-
-    offsets = []
-    sizes = []
-    strides = []
-    for dim, index in enumerate(indices):
-        start = 0 if index.start is None else int(index.start)
-        stop = global_shape[dim] if index.stop is None else int(index.stop)
-        step = 1 if index.step is None else int(index.step)
-        if start < 0 or stop < start or stop > global_shape[dim] or step <= 0:
-            raise RuntimeError("runtime shard indices are outside the global tensor")
-        offsets.append(start)
-        sizes.append(stop - start)
-        strides.append(step)
-    return offsets, sizes, strides
-
-
-def _shard_payload_array(shard: Any) -> Any:
-    payload = shard.unpadded_data
-    if hasattr(payload, "detach"):
-        payload = payload.detach()
-    if hasattr(payload, "cpu"):
-        payload = payload.cpu()
-    if hasattr(payload, "numpy"):
-        payload = payload.numpy()
-    return np.asarray(payload)
-
-
-def _write_shard_payload(path: pathlib.Path, shard: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("wb") as output:
-        np.save(output, _shard_payload_array(shard))
-
-
-def build_parameter_shard_binding_from_runtime(
-    *,
-    bundle_path: pathlib.Path,
-    argument_index: int,
-    name: str,
-    global_shape: tuple[int, ...] | list[int],
-    local_shape: tuple[int, ...] | list[int],
-    dtype: str,
-    runtime_shards: list[Any],
-) -> dict[str, Any]:
-    global_shape = list(global_shape)
-    local_shape = list(local_shape)
-    shards = []
-    for fallback_rank, shard in enumerate(runtime_shards):
-        rank = _rank_from_shard_device(getattr(shard, "shard_device", ""), fallback_rank)
-        offsets, sizes, strides = _indices_to_slice_metadata(
-            getattr(shard, "indices"), global_shape
-        )
-        relative_file = f"parameter_shards/{name}/rank_{rank:05d}.npy"
-        _write_shard_payload(bundle_path / relative_file, shard)
-        shards.append(
-            {
-                "rank": rank,
-                "replica_id": int(getattr(shard, "replica_id")),
-                "file": relative_file,
-                "offsets": offsets,
-                "sizes": sizes,
-                "strides": strides,
-            }
-        )
-
-    return {
-        "argument_index": argument_index,
-        "name": name,
-        "global_shape": global_shape,
-        "local_shape": local_shape,
-        "dtype": str(dtype),
-        "shards": sorted(shards, key=lambda entry: entry["rank"]),
-    }
-
-
-def write_parameter_shard_bindings(
-    *,
-    bundle_path: pathlib.Path,
-    bundle: Any,
-    global_state_dict: dict[str, Any],
-    parameter_shards: dict[str, list[Any]],
-) -> None:
-    if len(bundle.stablehlo_funcs) != 1:
-        raise RuntimeError("parameter shard binding expects one StableHLO function")
-
-    func = bundle.stablehlo_funcs[0]
-    parameters = []
-    logical_rank_count = None
-    for index, (signature, location) in enumerate(
-        zip(func.meta.input_signature, func.meta.input_locations)
-    ):
-        if _location_kind(location) != "parameter":
-            continue
-        name = getattr(location, "name")
-        if name not in global_state_dict:
-            raise RuntimeError(f"parameter '{name}' is missing from state_dict")
-        if name not in parameter_shards:
-            raise RuntimeError(f"parameter '{name}' has no runtime shards")
-        if logical_rank_count is None:
-            logical_rank_count = len(parameter_shards[name])
-        elif logical_rank_count != len(parameter_shards[name]):
-            raise RuntimeError("parameter runtime shard counts do not match")
-
-        global_value = global_state_dict[name]
-        binding = build_parameter_shard_binding_from_runtime(
-            bundle_path=bundle_path,
-            argument_index=index,
-            name=name,
-            global_shape=tuple(global_value.shape),
-            local_shape=_signature_shape(signature),
-            dtype=_signature_dtype(signature),
-            runtime_shards=parameter_shards[name],
-        )
-        parameters.append(binding)
-
-        global_data_path = bundle_path / "data" / name
-        if global_data_path.exists():
-            global_data_path.unlink()
-
-    if logical_rank_count is None:
-        logical_rank_count = 0
-
-    path = bundle_path / "functions" / f"{func.meta.name}.parameter_shards.json"
-    path.write_text(
-        json.dumps(
-            {
-                "parameter_shards_version": 2,
-                "function": func.meta.name,
-                "logical_rank_count": logical_rank_count,
-                "parameters": parameters,
-            },
-            indent=2,
-        )
-        + "\n"
-    )
-
-
-def _with_disabled_hlo_pass(flags: str, pass_name: str) -> str:
-    tokens = flags.split()
-    prefixes = ("--xla_disable_hlo_passes=", "xla_disable_hlo_passes=")
-    for index, token in enumerate(tokens):
-        for prefix in prefixes:
-            if token.startswith(prefix):
-                passes = [value for value in token[len(prefix):].split(",") if value]
-                if pass_name not in passes:
-                    passes.append(pass_name)
-                    tokens[index] = prefix + ",".join(passes)
-                return " ".join(tokens)
-    tokens.append(f"--xla_disable_hlo_passes={pass_name}")
-    return " ".join(tokens)
-
-
-def configure_partitioned_export_environment() -> None:
-    os.environ["XLA_DUMP_POST_OPTIMIZATIONS"] = "1"
-    os.environ["XLA_FLAGS"] = _with_disabled_hlo_pass(
-        os.environ.get("XLA_FLAGS", ""), "fusion"
-    )
-
-
-def _parse_stablehlo_tensor_type(type_text: str) -> tuple[list[int], str]:
-    match = re.fullmatch(r"tensor<(.+)>", type_text.strip())
-    if not match:
-        raise RuntimeError(f"unsupported StableHLO function type: {type_text}")
-
-    body = match.group(1)
-    parts = body.split("x")
-    dtype = parts[-1]
-    shape = []
-    for dim in parts[:-1]:
-        if dim == "?":
-            raise RuntimeError("dynamic partitioned StableHLO signatures are unsupported")
-        shape.append(int(dim))
-
-    dtype_map = {
-        "f16": "float16",
-        "bf16": "bfloat16",
-        "f32": "float32",
-        "f64": "float64",
-        "i1": "bool",
-        "i8": "int8",
-        "i16": "int16",
-        "i32": "int32",
-        "i64": "int64",
-        "ui8": "uint8",
-        "ui16": "uint16",
-        "ui32": "uint32",
-        "ui64": "uint64",
-    }
-    if dtype not in dtype_map:
-        raise RuntimeError(f"unsupported StableHLO function dtype: {dtype}")
-    return shape, dtype_map[dtype]
-
-
-def _split_result_types(result_text: str) -> list[str]:
-    result_text = result_text.strip()
-    if result_text.startswith("(") and result_text.endswith(")"):
-        result_text = result_text[1:-1].strip()
-    if not result_text:
-        return []
-    return re.findall(r"tensor<[^>]+>", result_text)
-
-
-def _parse_stablehlo_main_signatures(
-    stablehlo_module: Any, stablehlo_text: str
-) -> tuple[list[Any], list[Any]]:
-    match = re.search(
-        r"func\.func\s+@main\s*\((?P<args>.*?)\)\s*->\s*"
-        r"(?P<results>.*?)\s*\{",
-        stablehlo_text,
-        re.DOTALL,
-    )
-    if not match:
-        raise RuntimeError("partitioned StableHLO text is missing func.func @main")
-
-    arg_types = re.findall(r"%arg\d+:\s*(tensor<[^>]+>)", match.group("args"))
-    result_types = _split_result_types(match.group("results"))
-    if not result_types:
-        raise RuntimeError("partitioned StableHLO function must have a result")
-
-    def make_signature(type_text: str) -> Any:
-        shape, dtype = _parse_stablehlo_tensor_type(type_text)
-        return stablehlo_module.VariableSignature(
-            shape=shape, dtype=dtype, dynamic_dims=[]
-        )
-
-    return (
-        [make_signature(type_text) for type_text in arg_types],
-        [make_signature(type_text) for type_text in result_types],
-    )
 
 
 def _verify_bundle_layout(bundle_path: pathlib.Path) -> None:
@@ -537,7 +209,6 @@ def _build_lazy_stablehlo_bundle(
     input_tensor: Any,
     reference_module: Any,
     state_dict: dict[str, Any],
-    use_exported_function_signatures: bool = False,
 ) -> Any:
     graph_input_tensor_ids, graph_input_xla_values = (
         xlac_module._get_tensors_xla_device_data_node([output_tensor])
@@ -570,24 +241,11 @@ def _build_lazy_stablehlo_bundle(
             _tensor_signature(stablehlo_module, tensor_value)
         )
 
-    if use_exported_function_signatures:
-        input_signatures, output_signatures = _parse_stablehlo_main_signatures(
-            stablehlo_module, stablehlo_text
-        )
-        if len(input_signatures) != len(input_locations):
-            raise RuntimeError(
-                "partitioned StableHLO function input count does not match "
-                "PyTorch/XLA graph inputs"
-            )
-    else:
-        input_signatures = runtime_input_signatures
-        output_signatures = [_tensor_signature(stablehlo_module, output_tensor)]
-
     meta = stablehlo_module.StableHLOFunctionMeta(
         name="forward",
         stablehlo_version="0.0.0",
-        input_signature=input_signatures,
-        output_signature=output_signatures,
+        input_signature=runtime_input_signatures,
+        output_signature=[_tensor_signature(stablehlo_module, output_tensor)],
         input_locations=input_locations,
         unused_inputs=[],
         input_pytree_spec=None,
@@ -652,7 +310,6 @@ def emit_sharded_stablehlo_bundle(
     xlac_module: Any | None = None,
     reference_module_factory: Callable[[], Any] | None = None,
     size: int = DEFAULT_REFERENCE_MATMUL_SIZE,
-    partitioned: bool = False,
 ) -> None:
     strategy = get_sharding_strategy(strategy_name)
     if (
@@ -663,8 +320,6 @@ def emit_sharded_stablehlo_bundle(
         or spmd_module is None
         or xlac_module is None
     ):
-        if partitioned:
-            configure_partitioned_export_environment()
         (
             torch_module,
             stablehlo_module,
@@ -722,151 +377,12 @@ def emit_sharded_stablehlo_bundle(
             input_tensor=input_tensor,
             reference_module=reference_module,
             state_dict=state_dict,
-            use_exported_function_signatures=partitioned,
-        )
-
-    parameter_shards = None
-    if partitioned:
-        parameter_shards = collect_parameter_shards_from_runtime(
-            spmd_module=spmd_module,
-            xla_model_module=xla_model_module,
-            reference_module=reference_module,
-            parameter_names=_parameter_names(bundle),
         )
 
     if bundle_path.exists():
         shutil.rmtree(bundle_path)
     bundle_path.parent.mkdir(parents=True, exist_ok=True)
     stablehlo_module.StableHLOGraphModule(bundle).save(str(bundle_path), options)
-    if partitioned:
-        write_parameter_shard_bindings(
-            bundle_path=bundle_path,
-            bundle=bundle,
-            global_state_dict=state_dict,
-            parameter_shards=parameter_shards,
-        )
-    _verify_bundle_layout(bundle_path)
-
-
-def emit_partitioned_stablehlo_bundle(
-    bundle_path: pathlib.Path,
-    *,
-    strategy_name: str | None = None,
-    default_input_sharding: bool = False,
-    default_tile_count: int = 16,
-    size: int = DEFAULT_REFERENCE_MATMUL_SIZE,
-) -> None:
-    # Test-only oracle until Wafer owns StableHLO/SDY -> XLA SPMD ->
-    # partitioned StableHLO as an artifact stage. Do not expose this through
-    # the frontend capture CLI.
-    if (strategy_name is None) == (not default_input_sharding):
-        raise RuntimeError(
-            "SPMD oracle export requires exactly one of "
-            "--sharding-strategy or --default-input-sharding"
-        )
-
-    if default_input_sharding:
-        strategy = create_default_input_sharding_strategy(
-            tile_count=default_tile_count, size=size
-        )
-        strategy_name = strategy.name
-    else:
-        strategy = get_sharding_strategy(strategy_name or "")
-
-    _emit_stablehlo_bundle_with_strategy(
-        bundle_path=bundle_path,
-        strategy=strategy,
-        size=size,
-        partitioned=True,
-    )
-
-
-def _emit_stablehlo_bundle_with_strategy(
-    *,
-    bundle_path: pathlib.Path,
-    strategy: ShardingStrategy,
-    size: int,
-    partitioned: bool,
-) -> None:
-    if partitioned:
-        configure_partitioned_export_environment()
-    (
-        torch_module,
-        stablehlo_module,
-        runtime_module,
-        xla_model_module,
-        spmd_module,
-        xlac_module,
-    ) = _import_spmd_runtime_modules()
-
-    runtime_module.use_spmd()
-    device_count = runtime_module.global_runtime_device_count()
-    if device_count != strategy.device_count:
-        raise RuntimeError(
-            f"sharding strategy '{strategy.name}' requires "
-            f"{strategy.device_count} XLA devices, got {device_count}; "
-            "for CPU artifact tests set CPU_NUM_DEVICES to the strategy device "
-            "count before importing torch_xla"
-        )
-
-    reference_module = _make_reference_matmul_module(torch_module, size)
-    reference_module.eval()
-    state_dict = _state_dict_numpy(reference_module)
-
-    device = xla_model_module.xla_device()
-    reference_module = _move_to_device(reference_module, device)
-    input_tensor = _move_to_device(
-        torch_module.empty(size, size, dtype=torch_module.float32), device
-    )
-
-    mesh = create_spmd_mesh(spmd_module, strategy)
-    apply_strategy_marks(
-        spmd_module=spmd_module,
-        strategy=strategy,
-        mesh=mesh,
-        input_tensor=input_tensor,
-        reference_module=reference_module,
-    )
-
-    options = stablehlo_module.StableHLOExportOptions()
-    options.export_weights = True
-    options.save_weights = True
-    options.inline_all_constant = True
-    options.include_human_readable_text = True
-
-    with torch_module.no_grad():
-        output_tensor = reference_module(input_tensor)
-        bundle = _build_lazy_stablehlo_bundle(
-            stablehlo_module=stablehlo_module,
-            xla_model_module=xla_model_module,
-            xlac_module=xlac_module,
-            output_tensor=output_tensor,
-            input_tensor=input_tensor,
-            reference_module=reference_module,
-            state_dict=state_dict,
-            use_exported_function_signatures=partitioned,
-        )
-
-    parameter_shards = None
-    if partitioned:
-        parameter_shards = collect_parameter_shards_from_runtime(
-            spmd_module=spmd_module,
-            xla_model_module=xla_model_module,
-            reference_module=reference_module,
-            parameter_names=_parameter_names(bundle),
-        )
-
-    if bundle_path.exists():
-        shutil.rmtree(bundle_path)
-    bundle_path.parent.mkdir(parents=True, exist_ok=True)
-    stablehlo_module.StableHLOGraphModule(bundle).save(str(bundle_path), options)
-    if partitioned:
-        write_parameter_shard_bindings(
-            bundle_path=bundle_path,
-            bundle=bundle,
-            global_state_dict=state_dict,
-            parameter_shards=parameter_shards,
-        )
     _verify_bundle_layout(bundle_path)
 
 

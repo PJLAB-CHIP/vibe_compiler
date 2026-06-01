@@ -576,7 +576,7 @@ WaferRuntimeAdapter cluster launch
 
 范围：
 
-- 主路径从 P2.F1/P2.S1 产生的 verified frontend / per-rank artifact 开始。
+- 主路径从 P2.F1/P2.S1/P2.S2 产生的 verified frontend / per-rank artifact 开始。
 - 手写 partitioned StableHLO 只作为 collective lowering 的局部 verifier / pattern fixture；它不能替代
   importer/Shardy 自动导出的 artifact chain。
 

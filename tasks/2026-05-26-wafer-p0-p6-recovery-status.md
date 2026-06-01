@@ -176,8 +176,9 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - 有 attention QK^T / AV rank-4 `dot_general` lowering 和 full local transformer block structured gate。
 - `wafer-import-model` 已通过 `WaferFrontend` verifier 接收 pre-exported StableHLO / MLIR artifact，
   并覆盖 graph break、eager fallback、bounded dynamic shape 诊断；P2.F1 进一步验证 PyTorch/XLA
-  bundle `forward.meta` / pre-SPMD `data/<parameter>` 与 MLIR function signature 一致，P2.S1 验证
-  post-SPMD `forward.parameter_shards.json` 与 rank-local shard payload 一致。
+  bundle `forward.meta` / pre-SPMD `data/<parameter>` 与 MLIR function signature 一致；post-SPMD
+  `forward.parameter_shards.json` 与 rank-local shard payload 只有 verifier fixture 覆盖，真实产物
+  等 P2.S2 生成。
 - `WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON` 时，`wafer-opt` / `wafer-import-model` 能注册 SDY dialect；
   `sdy.mesh` / `sdy.sharding` artifact 可被 parse/verify。历史上曾有 StableHLO `replica_groups`
   到 `wafer.comm` `rank_group` 的 bridge；该路线已退出主线，只作为已删除路径的覆盖记录，
@@ -187,9 +188,9 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 
 - R2.1/R2.2 已恢复 pre-exported artifact adapter/verifier 和 SDY artifact bridge；P2.F1 已补
   source-built PyTorch/XLA bundle capture；P2.S1 已补真实 framework `mark_sharding`、default input
-  seed policy 和 Wafer Shardy propagation stage gate。当前 PyTorch/XLA post-SPMD export 只是
-  test oracle；仍需 P2.S2 建立 Wafer-owned XLA SPMD partition artifact stage，之后 R2.4 再把
-  post-SPMD collective handoff 成 Wafer LinalgExt-style tensor collective IR。
+  seed policy 和 Wafer Shardy propagation stage gate。旧 Python post-SPMD export 入口已删除；仍需
+  P2.S2 建立 Wafer-owned XLA SPMD partition artifact stage，之后 R2.4 再把 post-SPMD collective
+  handoff 成 Wafer LinalgExt-style tensor collective IR。
 - acceptance passes 只识别当前 structured IR pattern，不等于 group schedule planner 或 full
   transformer local compile 已完成。
 - mask/select、dynamic shape、非 constant-init reduce、复杂 broadcast、常量 slicing/storage transform
@@ -213,23 +214,14 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   `functions/forward.meta`、`functions/forward.bytecode` 和 `data/weight` / `data/bias`；完成证明已跑通真实
   source-built PyTorch/XLA adapter -> bundle -> verifier 链。prebuilt `torch_xla` wheel、手写
   MLIR 或手写 emitter 仍不能作为后续完成证明。
-- P2.S1：已完成；`test/Tools/Inputs/wafer_pytorch_xla_capture.py` 用 source-built PyTorch/XLA lazy SPMD runtime
+- P2.S1：骨架；`test/Tools/Inputs/wafer_pytorch_xla_capture.py` 用 source-built PyTorch/XLA lazy SPMD runtime
   的 `mark_sharding` 生成六种用户 sharding 策略的真实 PyTorch/XLA StableHLO bundle，bundle 继续由
-  frontend verifier 和 standalone SDY propagation parse gate 消费；partitioned gate 通过同一
-  PyTorch/XLA/XLA 版本的 post-optimization export 取得 XLA SPMD partitioner 后的 StableHLO local
-  body，并覆盖 row/partial/default 分支的 collective、replica group、local shard shape 和
-  partial-replication metadata。partitioned bundle 同步生成 `functions/forward.parameter_shards.json`
-  和 `parameter_shards/<parameter>/rank_XXXXX.npy`，由 PyTorch/XLA runtime shard facts 写出
-  rank-local payload，并显式记录 parameter argument 到 shard file 的 per-logical-rank
-  offsets/sizes/strides、local shape 和 replica id，bundle verifier 会校验这份绑定。完全没有用户
-  seed 时，P2.S1 在 SPMD 层补默认 single-card
-  function-input sharding seed（默认 16 tile，调试 1 tile，找不到合适切分维度时 replicated），再产出
-  可校验的 partitioned StableHLO 或 replicated-local artifact；不生成 `wafer.spmd.*`、私有 sharding
-  JSON 或名字约定作为 sharding / per-rank routing 协议。当前 collective normalization、`wafer.comm`、
-  placement 或 ring/resource
-  lowering 的覆盖范围不能反向限制 P2.S1 支持范围。硬件可表达但下游尚未实现的语义必须形成对应
-  恢复任务或补 IR contract。R3.1 依赖 P2.F1/P2.S1/R2.4 提供真实 frontend/SPMD artifact 来源和
-  tensor collective handoff。
+  frontend verifier 和 Wafer Shardy propagation gate 消费。完全没有用户 seed 时，P2.S1 在 SPMD
+  层补默认 single-card function-input sharding seed（默认 16 tile，调试 1 tile，找不到合适切分
+  维度时 replicated）。P2.S1 不生成 partitioned StableHLO、rank-local shard payload、
+  `wafer.spmd.*`、私有 sharding JSON 或名字约定。P2.S2 必须接上 XLA SPMD partitioner 并产出
+  partitioned / replicated-local artifact；R3.1 依赖 P2.F1/P2.S1/P2.S2/R2.4 提供真实
+  frontend/SPMD artifact 来源和 tensor collective handoff。
 
 ## P3 Single-Tile Local Compute
 
@@ -413,7 +405,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 | --- | --- | --- |
 | P0 | 骨架 | 工程入口存在，源码 ownership、依赖层级边界和 IR op-family 文件边界已由 R0.2/R0.3/R1.1 恢复；仍不代表 frontend/runtime/package 主路径完成 |
 | P1 | 骨架 | 核心 op/type/verifier 基础实现存在，interface/effect/resource 和 local compute stage-connection gate 已恢复；storage-realized 主链路和 communication cast bridge 仍未闭环 |
-| P2 | 骨架 | StableHLO textual lowering、frontend artifact verifier、PyTorch/XLA bundle capture、SDY artifact bridge、P2.S1 Shardy propagation stage gate / 临时 post-SPMD oracle 覆盖和 local compute coverage 口径已恢复；Wafer-owned SPMD partition、dynamic/mask/constant-storage、tensor collective handoff 和 physical schedule 仍未闭环 |
+| P2 | 骨架 | StableHLO textual lowering、frontend artifact verifier、PyTorch/XLA bundle capture、SDY artifact bridge、P2.S1 Shardy propagation stage gate 和 local compute coverage 口径已恢复；Wafer-owned SPMD partition、dynamic/mask/constant-storage、tensor collective handoff 和 physical schedule 仍未闭环 |
 | P3 | 骨架 | single-tile local path 可跑，但 group/resource/C ABI/package 主链路未闭环 |
 | P4 | 骨架 | placement/map 和 multi-tile fixture 可跑，但真实 shard/merge/launch binding 未闭环 |
 | P5 | 骨架 | transformer staged acceptance 和 local fixture 可跑，但 full schedule/resource/package/device artifact 未闭环 |

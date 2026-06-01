@@ -21,10 +21,8 @@ core compiler target。
   按这个口径，R0.3 中实际进入编译验证的是 LLVM/MLIR、StableHLO 和 Shardy/SDY；PyTorch/XLA 与
   XLA/GSPMD 当时还没有进入 Wafer 主线代码路径。P2.F1 之后，PyTorch/XLA 通过 importer Python
   runtime 进入 frontend artifact 生成路径；P2.S1 之后，Wafer C++ pipeline 消费 pre-SPMD bundle
-  并运行 Shardy propagation。同一 source-built PyTorch/XLA runtime 目前还保留一个 test-only
-  XLA SPMD post-optimization export oracle，用于生成 partitioned StableHLO local body 对照；它
-  不能变成 `WaferIR` 或 core backend library 的 public dependency，也不能算 Wafer-owned SPMD
-  partition stage。
+  并运行 Shardy propagation。旧 Python post-SPMD export 入口已删除；它不能变成 `WaferIR` 或
+  core backend library 的 public dependency，也不能算 Wafer-owned SPMD partition stage。
 - 编译验证目标：一个明确的 build target，用来证明某部分源码能在当前工程里编译和链接。它不是
   feature 完成证明。例如 `wafer-shardy-cmake-gate` 只证明 Shardy/SDY 公共 dialect/pass 能编译，
   不证明 R2.2 的 Shardy/SPMD artifact bridge 已完成。
@@ -75,10 +73,10 @@ core compiler target。
   patch 作为对应上游 workspace 的输入存在，并由依赖检查确认 XLA/Shardy patch 内容一致。
 - OpenXLA/XLA 源码固定版本是为了后续 P2.S2 的 Wafer-owned XLA SPMD partitioner /
   local-body partitioning integration。R2.2 以 Shardy 的 MLIR sharding representation 作为 artifact
-  bridge 边界；P2.S1 已在 Wafer C++ pipeline 中接入 Shardy propagation。当前 test-only oracle
-  通过 source-built PyTorch/XLA runtime 复用同一 `third_party/xla`、`third_party/llvm-project` 和
-  `third_party/stablehlo`，导出 XLA SPMD partitioner 后的 StableHLO local body作为对照。不能下载
-  或引入第二套 XLA/LLVM stack，也不能让 XLA/GSPMD 成为 core IR 或 backend library 的 public dependency。
+  bridge 边界；P2.S1 已在 Wafer C++ pipeline 中接入 Shardy propagation。旧 Python post-SPMD
+  export 入口已删除；P2.S2 必须复用同一 `third_party/xla`、`third_party/llvm-project` 和
+  `third_party/stablehlo`。不能下载或引入第二套 XLA/LLVM stack，也不能让 XLA/GSPMD 成为 core IR
+  或 backend library 的 public dependency。
 - `requirements-importer.txt` 只固定 frontend importer 和 PyTorch/XLA 源码构建所需的 Python
   packages：`torch==2.5.0`、`torchvision==0.20.0`、`absl-py==2.1.0`、`pyyaml==6.0.1`、
   `requests==2.32.3`。P2.F1 的 `torch_xla` runtime 必须从 `third_party/pytorch-xla`
