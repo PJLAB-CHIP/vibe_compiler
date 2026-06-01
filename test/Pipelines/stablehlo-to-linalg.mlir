@@ -1,5 +1,5 @@
 // REQUIRES: stablehlo
-// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-local-stablehlo-to-cabi{target=wafer})' %s | FileCheck %s --check-prefix=IR
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-stablehlo-to-linalg)' %s | FileCheck %s --check-prefix=IR
 
 module {
   func.func @stablehlo_matmul(
@@ -16,10 +16,8 @@ module {
   }
 }
 
-// IR: module attributes {wafer.target = #wafer.target<wafer>}
 // IR-LABEL: func.func @stablehlo_matmul(
 // IR-NOT: stablehlo.
-// IR: wafer.ddr.external_binding <input>
-// IR: wafer.tile_region
-// IR: wafer.abi.gemm <issue_only>
-// IR-NOT: linalg.matmul
+// IR: linalg.matmul
+// IR-NOT: wafer.tile_region
+// IR-NOT: wafer.abi.

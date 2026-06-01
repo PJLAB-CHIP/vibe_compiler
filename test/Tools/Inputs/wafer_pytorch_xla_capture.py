@@ -457,7 +457,7 @@ def _verify_bundle_layout(bundle_path: pathlib.Path) -> None:
 
 
 def _make_reference_matmul_module(torch_module: Any, size: int) -> Any:
-    class WaferReferenceMatmul4096(torch_module.nn.Module):
+    class WaferReferenceMatmul(torch_module.nn.Module):
         def __init__(self):
             super().__init__()
             self.weight = torch_module.nn.Parameter(
@@ -473,7 +473,7 @@ def _make_reference_matmul_module(torch_module: Any, size: int) -> Any:
             z = torch_module.tanh(y)
             return z + y
 
-    return WaferReferenceMatmul4096()
+    return WaferReferenceMatmul()
 
 
 def _import_runtime_modules() -> tuple[Any, Any]:
@@ -900,6 +900,12 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         default=16,
         help="tile count for --default-input-sharding",
     )
+    parser.add_argument(
+        "--size",
+        type=int,
+        default=DEFAULT_REFERENCE_MATMUL_SIZE,
+        help="square matmul size for generated reference artifacts",
+    )
     parser.add_argument("--output-bundle", type=pathlib.Path)
     return parser.parse_args(argv)
 
@@ -910,7 +916,7 @@ def main(argv: list[str]) -> int:
         if args.output_bundle is None:
             raise RuntimeError("missing --output-bundle")
 
-        emit_reference_stablehlo_bundle(args.output_bundle)
+        emit_reference_stablehlo_bundle(args.output_bundle, size=args.size)
         return 0
 
     if args.emit_sharded_bundle:
@@ -920,7 +926,9 @@ def main(argv: list[str]) -> int:
             raise RuntimeError("missing --sharding-strategy")
 
         emit_sharded_stablehlo_bundle(
-            args.output_bundle, strategy_name=args.sharding_strategy
+            args.output_bundle,
+            strategy_name=args.sharding_strategy,
+            size=args.size,
         )
         return 0
 
@@ -933,6 +941,7 @@ def main(argv: list[str]) -> int:
             strategy_name=args.sharding_strategy,
             default_input_sharding=args.default_input_sharding,
             default_tile_count=args.default_tile_count,
+            size=args.size,
         )
         return 0
 

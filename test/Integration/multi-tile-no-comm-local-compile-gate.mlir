@@ -1,4 +1,4 @@
-// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-local-linalg-to-cabi{target=wafer tile-mapping=multi-tile-no-comm})' %s | FileCheck %s --check-prefix=IR
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-linalg-to-cabi{target=wafer tile-mapping=multi-tile-no-comm})' %s | FileCheck %s --check-prefix=IR
 // RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-multi-tile-no-comm-matmul > %t.manifest.json
 // RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --validate %t.manifest.json
 // RUN: %python %wafer_src_root/tools/wafer_emit_c_abi_stub.py --manifest %t.manifest.json > %t.c

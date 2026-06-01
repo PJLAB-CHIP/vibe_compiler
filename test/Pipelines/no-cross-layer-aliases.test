@@ -1,0 +1,8 @@
+# RUN: printf 'module {}\n' > %t.empty.mlir
+# RUN: not wafer-opt --pass-pipeline='builtin.module(wafer-lower-stablehlo-to-cabi{target=wafer})' %t.empty.mlir 2>&1 | FileCheck %s --check-prefix=NO-STABLEHLO-CABI
+# RUN: not wafer-opt --pass-pipeline='builtin.module(wafer-lower-local-stablehlo-to-cabi{target=wafer})' %t.empty.mlir 2>&1 | FileCheck %s --check-prefix=NO-LOCAL-STABLEHLO-CABI
+# RUN: not wafer-opt --pass-pipeline='builtin.module(wafer-lower-local-linalg-to-cabi{target=wafer})' %t.empty.mlir 2>&1 | FileCheck %s --check-prefix=NO-LOCAL-LINALG-CABI
+
+# NO-STABLEHLO-CABI: 'wafer-lower-stablehlo-to-cabi' does not refer to a registered pass or pass pipeline
+# NO-LOCAL-STABLEHLO-CABI: 'wafer-lower-local-stablehlo-to-cabi' does not refer to a registered pass or pass pipeline
+# NO-LOCAL-LINALG-CABI: 'wafer-lower-local-linalg-to-cabi' does not refer to a registered pass or pass pipeline

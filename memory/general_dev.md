@@ -50,6 +50,9 @@
   这个 flag 是 capture 约束，不是 IR 协议。旧的私有 sharding attr emitter、sidecar JSON、单独 `wafer-import-model --verify-spmd-bundle` 路线已移除；不要恢复只生成私有 attrs/sidecar 或只跑
   SDY propagation 的入口。
 - P2.S1 当前测试 artifact generator 入口：
+  `test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-reference-bundle` 默认生成 4096 reference
+  bundle；需要把真实 PyTorch/XLA export artifact 接到本地 compile gate 时，可以用 `--size <n>` 生成
+  小尺寸同构图，避免让 single-tile bring-up 被 4096 工作集容量卡住。
   `test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-sharded-bundle --sharding-strategy=<name>` 生成
   pre-partition mark artifact；
   `--emit-partitioned-bundle --sharding-strategy=<name>` 生成 post-XLA-SPMD local artifact；
@@ -74,9 +77,12 @@
 - 用户级 compiler target 名称统一为 `wafer`，Wafer IR target attr 的唯一主线 spelling 是
   `#wafer.target<wafer>`。`tx8` / `tx81` 只保留在硬件、依赖逆向和外部历史命名事实里，不能作为
   compiler driver target、pipeline 名称或测试 fixture 的主线命名。
-- 主链路 compile gate 用 `WaferPipelines` 中注册的 named pipeline，不在 Integration 里手动拼 pass
-  串。当前入口是 `wafer-lower-local-stablehlo-to-cabi`、`wafer-lower-local-linalg-to-cabi` 和
-  `wafer-lower-tile-communication-to-cabi`；`target=wafer` 会 materialize/校验
+- 主链路用户入口通过 driver 表达，不把跨层 convenience alias 注册成 Wafer named pipeline。
+  当前用户级 artifact 入口是 `wafer-import-model --compile-stablehlo-bundle`；它先校验 bundle，
+  再在 driver 内部编排 StableHLO->Linalg 和当前 Linalg 后段 pipeline。`wafer-opt` 层只注册按 IR
+  层边界命名的入口：`wafer-lower-stablehlo-to-linalg`、`wafer-lower-linalg-to-cabi` 和
+  `wafer-lower-tile-communication-to-cabi`；不得恢复 `wafer-lower-stablehlo-to-cabi` 或旧
+  `wafer-lower-local-stablehlo-to-cabi`。`target=wafer` 会 materialize/校验
   `#wafer.target<wafer>`，非 `wafer` target 必须诊断。单 pass flags 只用于 `test/Transforms`、
   `test/StageConnections` 等 unit/debug 覆盖。
 - ODS op 如果引入 `RecursiveMemoryEffects`、`ReturnLike` 等 interface trait，公开 dialect 头要

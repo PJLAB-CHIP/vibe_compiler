@@ -24,8 +24,8 @@ constexpr llvm::StringRef kWaferTarget = "wafer";
 constexpr llvm::StringRef kSingleTileMapping = "single";
 constexpr llvm::StringRef kMultiTileNoCommMapping = "multi-tile-no-comm";
 
-struct LocalPipelineOptions
-    : public mlir::PassPipelineOptions<LocalPipelineOptions> {
+struct TensorToCAbiPipelineOptions
+    : public mlir::PassPipelineOptions<TensorToCAbiPipelineOptions> {
   Option<std::string> target{
       *this, "target",
       llvm::cl::desc("User-level compile target. The supported target is "
@@ -33,7 +33,7 @@ struct LocalPipelineOptions
       llvm::cl::init(kWaferTarget.str())};
   Option<std::string> tileMapping{
       *this, "tile-mapping",
-      llvm::cl::desc("Local tile materialization mode: 'single' or "
+      llvm::cl::desc("Tile materialization mode: 'single' or "
                      "'multi-tile-no-comm'."),
       llvm::cl::init(kSingleTileMapping.str())};
 };
@@ -125,8 +125,8 @@ static void addCompileTargetContract(mlir::OpPassManager &pm,
   pm.addPass(std::make_unique<MaterializeCompileTargetPass>(target));
 }
 
-static void addLocalLinalgToCAbiBody(mlir::OpPassManager &pm,
-                                     llvm::StringRef tileMapping) {
+static void addLinalgToCAbiBody(mlir::OpPassManager &pm,
+                                llvm::StringRef tileMapping) {
   pm.addPass(createFormGroupsPass());
   pm.addPass(createCheckRootTileCandidatesPass());
   if (tileMapping == kSingleTileMapping) {
@@ -135,7 +135,7 @@ static void addLocalLinalgToCAbiBody(mlir::OpPassManager &pm,
     pm.addPass(createMaterializeMultiTileNoCommPass());
   } else {
     pm.addPass(std::make_unique<RejectPipelineConfigurationPass>(
-        (llvm::Twine("unsupported local tile mapping '") + tileMapping +
+        (llvm::Twine("unsupported tile mapping '") + tileMapping +
          "'; expected 'single' or 'multi-tile-no-comm'")
             .str()));
   }
@@ -144,7 +144,7 @@ static void addLocalLinalgToCAbiBody(mlir::OpPassManager &pm,
   pm.addPass(createLowerTileRegionToCAbiPass());
 }
 
-static void addStablehloLocalTensorNormalization(mlir::OpPassManager &pm) {
+static void addStablehloToLinalgBody(mlir::OpPassManager &pm) {
   pm.addPass(createLowerStablehloReducePass());
   pm.addPass(createNormalizeConstantsPass());
   pm.addPass(createLowerStablehloDotPass());
@@ -154,19 +154,14 @@ static void addStablehloLocalTensorNormalization(mlir::OpPassManager &pm) {
 
 } // namespace
 
-void buildLocalLinalgToCAbiPipeline(mlir::OpPassManager &pm,
-                                    llvm::StringRef target,
-                                    llvm::StringRef tileMapping) {
-  addCompileTargetContract(pm, target);
-  addLocalLinalgToCAbiBody(pm, tileMapping);
+void buildStablehloToLinalgPipeline(mlir::OpPassManager &pm) {
+  addStablehloToLinalgBody(pm);
 }
 
-void buildLocalStablehloToCAbiPipeline(mlir::OpPassManager &pm,
-                                       llvm::StringRef target,
-                                       llvm::StringRef tileMapping) {
+void buildLinalgToCAbiPipeline(mlir::OpPassManager &pm, llvm::StringRef target,
+                               llvm::StringRef tileMapping) {
   addCompileTargetContract(pm, target);
-  addStablehloLocalTensorNormalization(pm);
-  addLocalLinalgToCAbiBody(pm, tileMapping);
+  addLinalgToCAbiBody(pm, tileMapping);
 }
 
 void buildTileCommunicationToCAbiPipeline(mlir::OpPassManager &pm,
@@ -179,19 +174,16 @@ void buildTileCommunicationToCAbiPipeline(mlir::OpPassManager &pm,
 
 void registerWaferPipelines() {
   static bool registered = [] {
-    mlir::PassPipelineRegistration<LocalPipelineOptions>(
-        "wafer-lower-local-linalg-to-cabi",
-        "Lower local structured tensor compute to the Wafer C ABI",
-        [](mlir::OpPassManager &pm, const LocalPipelineOptions &options) {
-          buildLocalLinalgToCAbiPipeline(pm, options.target,
-                                         options.tileMapping);
-        });
-    mlir::PassPipelineRegistration<LocalPipelineOptions>(
-        "wafer-lower-local-stablehlo-to-cabi",
-        "Lower local StableHLO tensor compute to the Wafer C ABI",
-        [](mlir::OpPassManager &pm, const LocalPipelineOptions &options) {
-          buildLocalStablehloToCAbiPipeline(pm, options.target,
-                                            options.tileMapping);
+    mlir::PassPipelineRegistration<>(
+        "wafer-lower-stablehlo-to-linalg",
+        "Lower StableHLO tensor IR to structured Linalg/Tensor IR",
+        [](mlir::OpPassManager &pm) { buildStablehloToLinalgPipeline(pm); });
+    mlir::PassPipelineRegistration<TensorToCAbiPipelineOptions>(
+        "wafer-lower-linalg-to-cabi",
+        "Lower structured Linalg/Tensor IR to the Wafer C ABI",
+        [](mlir::OpPassManager &pm,
+           const TensorToCAbiPipelineOptions &options) {
+          buildLinalgToCAbiPipeline(pm, options.target, options.tileMapping);
         });
     mlir::PassPipelineRegistration<TargetPipelineOptions>(
         "wafer-lower-tile-communication-to-cabi",

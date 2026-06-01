@@ -1,5 +1,5 @@
-// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-local-linalg-to-cabi{target=wafer})' %s | FileCheck %s --check-prefix=IR
-// RUN: not wafer-opt --pass-pipeline='builtin.module(wafer-lower-local-linalg-to-cabi{target=unknown})' %s 2>&1 | FileCheck %s --check-prefix=BAD-TARGET
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-linalg-to-cabi{target=wafer})' %s | FileCheck %s --check-prefix=IR
+// RUN: not wafer-opt --pass-pipeline='builtin.module(wafer-lower-linalg-to-cabi{target=unknown})' %s 2>&1 | FileCheck %s --check-prefix=BAD-TARGET
 
 module {
   func.func @single_matmul(

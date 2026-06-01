@@ -11,13 +11,11 @@ class OpPassManager;
 
 namespace wafer {
 
-void buildLocalLinalgToCAbiPipeline(mlir::OpPassManager &pm,
-                                    llvm::StringRef target = "wafer",
-                                    llvm::StringRef tileMapping = "single");
+void buildStablehloToLinalgPipeline(mlir::OpPassManager &pm);
 
-void buildLocalStablehloToCAbiPipeline(mlir::OpPassManager &pm,
-                                       llvm::StringRef target = "wafer",
-                                       llvm::StringRef tileMapping = "single");
+void buildLinalgToCAbiPipeline(mlir::OpPassManager &pm,
+                               llvm::StringRef target = "wafer",
+                               llvm::StringRef tileMapping = "single");
 
 void buildTileCommunicationToCAbiPipeline(mlir::OpPassManager &pm,
                                           llvm::StringRef target = "wafer");

@@ -1,0 +1,17 @@
+# REQUIRES: stablehlo
+
+# RUN: rm -rf %t.compile.bundle && mkdir -p %t.compile.bundle/functions
+# RUN: printf '%b' 'module {\n  func.func @main(%%lhs: tensor<4x8xf16>, %%rhs: tensor<8x16xf16>) -> tensor<4x16xf16> {\n    %%0 = "stablehlo.dot_general"(%%lhs, %%rhs) {\n      dot_dimension_numbers = #stablehlo.dot<lhs_contracting_dimensions = [1], rhs_contracting_dimensions = [0]>,\n      precision_config = [#stablehlo<precision DEFAULT>, #stablehlo<precision DEFAULT>]\n    } : (tensor<4x8xf16>, tensor<8x16xf16>) -> tensor<4x16xf16>\n    return %%0 : tensor<4x16xf16>\n  }\n}\n' > %t.compile.bundle/functions/forward.mlir
+# RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[4,8],"dtype":"float16","dynamic_dims":[]},{"shape":[8,16],"dtype":"float16","dynamic_dims":[]}],"output_signature":[{"shape":[4,16],"dtype":"float16","dynamic_dims":[]}],"input_locations":[{"type_":"input_arg","position":0,"name":"lhs"},{"type_":"input_arg","position":1,"name":"rhs"}],"unused_inputs":[]}\n' > %t.compile.bundle/functions/forward.meta
+# RUN: wafer-import-model --compile-stablehlo-bundle %t.compile.bundle --target=wafer | FileCheck %s --check-prefix=COMPILE
+# RUN: not wafer-import-model --compile-stablehlo-bundle %t.compile.bundle --target=unknown 2>&1 | FileCheck %s --check-prefix=BAD-TARGET
+
+# COMPILE: module attributes {wafer.target = #wafer.target<wafer>}
+# COMPILE-LABEL: func.func @main(
+# COMPILE-NOT: stablehlo.
+# COMPILE: wafer.ddr.external_binding <input>
+# COMPILE: wafer.tile_region
+# COMPILE: wafer.abi.gemm <issue_only>
+# COMPILE-NOT: linalg.matmul
+
+# BAD-TARGET: unsupported Wafer compile target 'unknown'; expected 'wafer'
