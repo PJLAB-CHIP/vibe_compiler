@@ -3,7 +3,8 @@
 日期：2026-05-25
 
 状态：设计草案；2026-05-25 独立边界收口；2026-05-27 补 post-SPMD Wafer LinalgExt-style
-tensor collective handoff
+tensor collective handoff；2026-06-01 明确 softmax/norm 是 fine-grained StableHLO staged graph，
+本层不承载 SPMD partition
 
 本文定义 SPMD 产出的 StableHLO local program 到 `wafer.group` 之前的 local tensor normalization
 边界。输入可以是用户 sharding 经过 partitioner 后的本地 shard 程序，也可以是 no-user-sharding
@@ -32,6 +33,9 @@ DTE、C ABI 或 runtime package。
 - 把 transformer block 所需的 dot、batch matmul、elementwise、broadcast、reduce、reshape、
   transpose、slice、concat、softmax、RMSNorm / LayerNorm、RoPE 和 MLP 激活表达成通用
   IR 结构，而不是 Wafer 私有高层 op。
+- 明确 softmax、RMSNorm、LayerNorm 在本层输入里通常已经由 frontend / StableHLO 表示为
+  `stablehlo.reduce`、`stablehlo.broadcast_in_dim`、elementwise、shape op 等细粒度 staged graph；
+  本层不寻找 `stablehlo.softmax`、`stablehlo.norm` 或 `wafer.softmax` / `wafer.norm` 这种高层 op。
 - 为 `wafer.group` planner 和 per-op tiling interface 提供稳定输入。
 
 非目标：
@@ -72,6 +76,12 @@ Wafer target facts 只能作为后续 legality / cost input。
 no-user-sharding 的默认 seed policy 属于 SPMD 阶段，不属于本阶段。本阶段只消费 SPMD 之后的
 local body；如果默认 policy 选择 `tile-count=1` 或 replicated fallback，本阶段看到的可能是
 whole-shape local body 且没有 collective。缺少 collective 不能作为拒绝 local compute lowering 的理由。
+
+本阶段的主 pipeline 是 `wafer-lower-stablehlo-to-linalg`。它只负责 local compute normalization：
+`stablehlo.reduce` -> `linalg.reduce`，StableHLO elementwise -> `linalg.generic` + `arith` /
+`math`，shape-only ops -> `tensor` / `linalg` shape ops，`stablehlo.constant` -> `arith.constant`。
+它不执行 Shardy propagation，不调用 XLA SPMD partitioner，不写 per-rank parameter shard binding，
+也不决定 group / tile / SPM / DDR / C ABI。
 
 ## 3. Transformer Block Coverage
 
@@ -220,6 +230,9 @@ reduction 必须保留：
 RMSNorm、LayerNorm 和 softmax 都不能被 normalization 压成 opaque high-level op。它们应展开成
 reduce + elementwise 的 staged tensor IR，使 group planner 可以决定是否放在一个 group 中、
 是否拆成多个 groups、以及 reduction axis 是否需要 internal split。
+这里的“展开”指输入 StableHLO graph 已经是细粒度 op 链，或由 frontend canonicalization 变成
+细粒度 op 链；Wafer 当前 lowering 只是把这些细粒度 StableHLO op 转成结构化 tensor IR，不新增
+`wafer.softmax`、`wafer.norm` 或模型层级语义。
 
 ### 4.4 Shape-only Ops
 
@@ -294,6 +307,12 @@ MLIR tiling / fusion 相关接口：
 或 explicit p2p schedule。
 
 ## 5. Softmax and Norm Staged Form
+
+本节描述的是 structured tensor dataflow，不是 StableHLO dialect 中存在一个高层 softmax/norm op。
+当前测试里的输入 StableHLO 已经是 `stablehlo.reduce`、`stablehlo.subtract`、`stablehlo.exponential`、
+`stablehlo.divide`、`stablehlo.rsqrt`、`stablehlo.broadcast_in_dim` 等细粒度算子。Wafer lowering
+把这些 op 分别转成 `linalg.reduce`、`linalg.generic`、`arith`、`math` 和 `tensor`/`linalg` shape
+ops；后续 softmax/norm schedule acceptance 只从这些结构化 IR 和 SSA use-def 关系重算 pattern。
 
 Softmax 的 normalized form 至少是：
 
@@ -394,9 +413,9 @@ Normalization 后必须能检查：
 | dot / 2D GEMM | `test/Frontend/lower-stablehlo-dot-to-linalg.mlir`、`stablehlo-dot-artifact.mlir`、`linalg-gemm-artifact.mlir` | 证明 2D dot 可进入 structured matmul，不证明 tile shape / GEMM packet |
 | attention QK^T / AV | `lower-stablehlo-attention-score.mlir`、`lower-stablehlo-attention-value.mlir`、`lower-stablehlo-attention-softmax-value.mlir` | rank-4 transpose / contraction relation 来自 `dot_general` dimension numbers 和 indexing map |
 | elementwise / broadcast | `lower-stablehlo-elementwise.mlir`、projection residual gate | 证明当前 add/sub/mul/div/tanh/exp/broadcast 子集的 SSA dataflow；mask/select 和 complex broadcast 未闭环 |
-| reduce | `lower-stablehlo-reduce.mlir`、norm/softmax staged tests | 证明 constant-init reduce 子集；non-constant-init reduce 和 numeric policy 未闭环 |
-| softmax | `lower-stablehlo-softmax-staged.mlir`、`softmax-schedule.mlir` | 证明 staged dataflow；不证明 multi-stage workspace 或 group schedule |
-| norm | `lower-stablehlo-norm-staged.mlir`、`norm-schedule.mlir` | 证明 last-dim reduce / rsqrt / broadcast multiply gate；不证明完整 LayerNorm/RMSNorm family |
+| reduce | `lower-stablehlo-reduce.mlir`、norm/softmax staged tests | 证明细粒度 StableHLO reduce 到 `linalg.reduce` 的 constant-init 子集；non-constant-init reduce 和 numeric policy 未闭环 |
+| softmax | `lower-stablehlo-softmax-staged.mlir`、`softmax-schedule.mlir` | 证明 fine-grained StableHLO softmax dataflow 可变成 `linalg.reduce` / `linalg.generic` staged IR；不证明 multi-stage workspace 或 group schedule |
+| norm | `lower-stablehlo-norm-staged.mlir`、`norm-schedule.mlir` | 证明 fine-grained RMSNorm/LayerNorm dataflow 中 last-dim reduce / rsqrt / broadcast multiply gate；不证明完整 LayerNorm/RMSNorm family |
 | RoPE | `lower-stablehlo-rope-mlp-staged.mlir` | 证明当前 RoPE slice/shape/elementwise staged pattern；sin/cos table storage slicing 未闭环 |
 | MLP | `lower-stablehlo-mlp-schedule.mlir`、`lower-stablehlo-local-transformer-block.mlir` | 证明 tanh-gated MLP vertical slice 和 full local transformer structured gate；GELU/SwiGLU/package consistency 未闭环 |
 | shape views | `lower-stablehlo-shape.mlir`、local transformer block gate | 证明 static expand/collapse shape-only relation；dynamic shape view 和 layout materialization 未闭环 |

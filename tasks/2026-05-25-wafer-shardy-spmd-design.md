@@ -4,7 +4,7 @@
 
 状态：设计草案；2026-05-25 独立边界收口；2026-05-27 纠正 P2.S1 主 pipeline、禁止
 `wafer.spmd.*` 私有 sharding 协议，并引入 post-SPMD tensor collective handoff；2026-06-01
-删除误导性的 Python post-SPMD helper，明确 P2.S2 才拥有 XLA SPMD partition stage
+删除误导性的 Python post-SPMD helper，明确 P2.S1/P2.S2/R2.4/local compute 的 pass 接入边界
 
 本文定义 Wafer compiler 中 Shardy / SPMD 阶段的边界。该阶段负责 global tensor 的逻辑切分、
 sharding propagation、SPMD partition 和 logical collective 语义；不负责 physical tile
@@ -118,6 +118,27 @@ P2.S2 工程 gate 必须把 XLA SPMD partitioner 或等价 local-body partitioni
 `sdy.sharding`，都不能证明 per-rank / partitioned body 已产生。若当前第三方版本或 API 暂时无法
 稳定导出 partitioned StableHLO，应把它记录为 P2.S2 blocker / recovery task；不得用
 `wafer.spmd.*` 临时 attrs 冒充 partitioner 输出。
+
+当前 pass / driver 接入边界如下，pass 名只作为实现入口，不能被提升成 IR 层名词：
+
+- frontend Python capture 只负责导出 exporter-native StableHLO bundle。它可以调用
+  PyTorch/XLA `mark_sharding` 产生 pre-SPMD sharding seed，但不能执行 Wafer Shardy propagation、
+  XLA SPMD partition 或写 per-rank artifact。
+- `wafer-import-model --propagate-stablehlo-sharding` 是 driver 阶段检查入口：先验证
+  `functions/forward.mlir` / `forward.meta` / parameter payload，再调用同一套
+  `wafer-propagate-stablehlo-sharding` pipeline。
+- `wafer-propagate-stablehlo-sharding` 只包含 no-user default input seed 和 Shardy propagation。
+  它输出 propagated StableHLO/SDY artifact，不输出 partitioned local body、不写
+  `forward.parameter_shards.json`、也不插入 post-SPMD collective。
+- P2.S2 必须是 Wafer-owned artifact stage 或等价 library/driver：消费 P2.S1 propagated artifact，
+  显式完成 StableHLO/SDY -> XLA HLO、XLA SPMD partitioner、partitioned HLO -> StableHLO round trip，
+  再写 partitioned / replicated-local bundle 和 rank-local parameter shard binding。
+- R2.4 消费 P2.S2 的 partitioned StableHLO collective，并 normalize 到 Wafer LinalgExt-style
+  tensor collective。它不是 XLA SPMD partitioner，也不能从 P2.S1 的 propagated global module
+  直接补 `wafer.comm`。
+- `wafer-lower-stablehlo-to-linalg` 消费 post-SPMD local body 或 no-sharding replicated local body，
+  只做 StableHLO local compute -> Linalg/Tensor/Arith/Math；它不做 sharding propagation、SPMD
+  partition、placement、group、SPM/DDR 或 communication materialization。
 
 2026-06-01 当前实现口径：
 

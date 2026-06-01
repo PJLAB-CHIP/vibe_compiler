@@ -41,9 +41,10 @@ Serving integration 暂不纳入本文通过标准。
 | gate | 输入 | 通过条件 |
 | --- | --- | --- |
 | Frontend artifact | imported StableHLO bundle / MLIR | importer adapter diagnostics、parse/roundtrip、shape/dtype、constant normalization、sharding import source、third-party dialect registration 合法 |
-| Shardy / SPMD | StableHLO + user sharding seed or default no-user input seed | logical mesh、partitioned/replicated-local shard shape、collective group 合法 |
+| Shardy propagation | StableHLO + user sharding seed or default no-user input seed | logical mesh、SDY sharding seed、propagation 结果合法；不要求 partitioned local body |
+| SPMD partition artifact | propagated StableHLO/SDY artifact | XLA SPMD partitioner 或等价 stage 产出 partitioned/replicated-local StableHLO、rank-local shape、collective group 和 parameter shard binding 合法 |
 | Placement | logical ranks + topology | physical mapping 覆盖所有 rank，过滤 bad tile，cluster capability 合法 |
-| Local compute normalization | partitioned or replicated-local StableHLO | Linalg/Tensor/SCF/Arith/Math structured semantics、DPS/indexing relation、softmax/norm/RoPE staged form 合法 |
+| Local compute normalization | partitioned or replicated-local StableHLO | Linalg/Tensor/SCF/Arith/Math structured semantics、DPS/indexing relation、fine-grained softmax/norm/RoPE staged form 合法；不执行 SPMD partition |
 | Tensor collective handoff | partitioned StableHLO collective | Wafer LinalgExt-style tensor collective op 合法；rank group、combiner/slice relation、DPS/tiling interface 可验证，且不含 `wafer.comm`、tile_buffer 或 DTE token |
 | `wafer.group` | local compute IR + tensor collective IR | group boundary、tiled SSA、multi-output/domain、resource feedback loop 合法 |
 | `wafer.tile_region` | scheduled group | region boundary、effect、load/store、async wait/drain、buffer ownership 合法 |
@@ -153,8 +154,9 @@ Overlap and cost model（优化类，当前执行看板后移为 P9）：
 Transformer block vertical slice：
 
 - StableHLO local shard 能 normalized 到 structured tensor IR，覆盖 dot_general、batch/head
-  matmul、broadcast、reduction、reshape/transpose/slice、softmax、RMSNorm / LayerNorm、RoPE
-  和 MLP activation。
+  matmul、broadcast、reduction、reshape/transpose/slice，以及由 fine-grained StableHLO op 链表达的
+  softmax、RMSNorm / LayerNorm、RoPE 和 MLP activation；这里没有 `stablehlo.softmax`、
+  `stablehlo.norm`、`wafer.softmax` 或 `wafer.norm` 高层 op 合同。
 - `wafer.group` 对 norm、softmax、attention value 和 MLP 给出 accepted group schedule，或给出
   verifier 可定位的拆分原因。
 - compute coverage 包含 GEMM、reduce max/sum、elementwise add/sub/mul/div/max/min/neg/recip/

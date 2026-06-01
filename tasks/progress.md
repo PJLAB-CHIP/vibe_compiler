@@ -74,6 +74,10 @@
   `forward.parameter_shards.json` + `parameter_shards/<parameter>/rank_XXXXX.npy` verifier 负例/最小 fixture。
 - SDY `sdy.mesh` / `sdy.sharding` artifact parse/verify gate。历史 StableHLO replica `rank_group`
   到后段 `wafer.comm` / ring lowering 的 lit gate 只保留为非主线覆盖记录。
+- `test/Spmd` 当前只覆盖 default input seed 和 SDY/Shardy artifact parse/verify，不覆盖 XLA SPMD
+  partitioner，也不输出 rank-local StableHLO。`test/Frontend` 当前覆盖 StableHLO/Linalg local
+  compute normalization；softmax、RMSNorm、LayerNorm 是 fine-grained StableHLO staged graph 到
+  `linalg.reduce` / `linalg.generic` 的 lowering，不是 high-level softmax/norm op 或 SPMD artifact gate。
 - C ABI issue ops、package manifest fixture 和 C stub syntax compile。
 - P2.F1 主链路已能从 source-built PyTorch/XLA capture adapter 产出 PyTorch/XLA StableHLO bundle，
   并通过 bundle metadata / data verifier。P2.S1 当前覆盖真实 framework `mark_sharding`
@@ -96,6 +100,11 @@
   `target=wafer` 会 materialize/校验 `#wafer.target<wafer>`，非 `wafer` target 会硬诊断。单 pass
   flag 只作为 unit/debug 入口；pipeline 名称按 IR 边界和职责命名，不能按 P2/R3 任务号、单个 case
   或 workload 命名。
+- Pass / driver 分层边界：frontend Python 只导出 reference 或 pre-SPMD sharded bundle；
+  `wafer-propagate-stablehlo-sharding` 只做 default seed + Shardy propagation；P2.S2 才调用 XLA
+  SPMD partitioner 并写 partitioned bundle / parameter shard binding；R2.4 才把 partitioned
+  StableHLO collective 转成 tensor-level collective；`wafer-lower-stablehlo-to-linalg` 只做 local
+  compute normalization，不承载 sharding propagation 或 partition。
 - 真实 artifact chain 有两个 SPMD 输入分支：有用户 sharding seed 时保留用户 seed 并进入
   Wafer Shardy propagation；完全没有用户 seed 时由 P2.S1 默认 policy 补 function-input
   sharding seed 后进入同一 propagation pipeline。P2.S2 再消费 propagation 输出并调用 XLA SPMD

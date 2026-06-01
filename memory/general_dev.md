@@ -57,6 +57,12 @@
   `test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-sharded-bundle --sharding-strategy=<name>` 生成
   pre-partition mark artifact。post-SPMD partitioned artifact 只能由 P2.S2 的 Wafer-owned SPMD
   partition stage 产生。
+- `test/Spmd` 目前只覆盖 P2.S1 default input seed 和 SDY/Shardy artifact parse/verify，不覆盖
+  XLA SPMD partitioner，也不输出 rank-local StableHLO。`test/Frontend` 覆盖 StableHLO/Linalg local
+  compute normalization；softmax、RMSNorm、LayerNorm 输入是 fine-grained StableHLO staged graph
+  （reduce、broadcast、elementwise、shape ops），不是 `stablehlo.softmax` / `stablehlo.norm`
+  或 Wafer 私有 high-level op。`check-wafer` 的大量 lit case 主要来自 Dialect/Transforms/Frontend/
+  Pipelines/Integration/Tools，不代表旧 Python post-SPMD oracle 仍存在。
 - post-SPMD collective 先进入 Wafer LinalgExt-style tensor collective handoff，和 `linalg` 一起进入
   group/tiling；`wafer.comm` 只能在 `wafer.tile_region` / SPM tile buffers / placement 明确后
   materialize。StableHLO collective 直降 `wafer.comm` 且靠 `unrealized_conversion_cast` 桥 tensor
@@ -83,7 +89,8 @@
   `wafer-lower-linalg-to-cabi`、`wafer-lower-stablehlo-to-cabi` 和
   `wafer-lower-tile-communication-to-cabi`。`wafer-propagate-stablehlo-sharding` 只做 default input
   seed + Shardy propagation，不冒充 XLA SPMD partitioner；当前没有 Python post-SPMD 路线或
-  等价替代主链。`wafer-lower-stablehlo-to-cabi` 必须组合
+  等价替代主链。P2.S2 应新增 Wafer-owned partition artifact stage 消费 propagated StableHLO/SDY，
+  不能塞进 frontend Python 或 `wafer-lower-stablehlo-to-linalg`。`wafer-lower-stablehlo-to-cabi` 必须组合
   StableHLO->Linalg 与 Linalg->C ABI body，不能另起一套 parallel lowering。`target=wafer` 会
   materialize/校验 `#wafer.target<wafer>`，非 `wafer` target 必须诊断。compile driver 必须拒绝带
   pre-SPMD sharding seed 但没有 post-SPMD marker 的 bundle。单 pass flags 只用于

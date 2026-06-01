@@ -58,6 +58,14 @@ pipeline 或 driver mode；lit 同时覆盖手写最小 bundle、真实 source-b
 export bundle 和 Shardy propagation driver。单 pass flags 继续只作为 Transforms/StageConnections
 的局部 unit/debug 覆盖。
 
+2026-06-01 pass 边界复查结论：当前 `test/Spmd` 两个 case 只覆盖 default input seed 和
+SDY/Shardy artifact parse/verify，不覆盖 XLA SPMD partitioner，也不输出 rank-local StableHLO。
+当前 `test/Frontend` 16 个 case 覆盖 StableHLO / Linalg local compute normalization，其中
+softmax、RMSNorm 和 LayerNorm 的输入都是 fine-grained StableHLO staged graph，而不是
+`stablehlo.softmax`、`stablehlo.norm` 或 Wafer 私有 high-level op。剩余 lit case 数量主要来自
+Dialect verifier、Transforms、Frontend lowering、Pipelines、Integration 和 Tools，不是旧
+Python post-SPMD oracle 残留。
+
 ## R2.1 Frontend Artifact / Importer Contract
 
 实现边界：
@@ -89,8 +97,9 @@ parameter name 只用于定位 exporter artifact 中的 parameter payload，不�
 - `WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON` 时，`wafer-opt` 和 `wafer-import-model` 显式注册 SDY
   dialect；`wafer-opt` 同时注册 SDY passes/pipelines。关闭该选项时 core textual tests 不硬依赖
   Shardy。
-- `test/Spmd/shardy-artifact-bridge.mlir` 覆盖 `sdy.mesh`、`sdy.sharding`、partitioned StableHLO
-  `all_gather` 和 frontend verifier 的同一 artifact 入口。
+- `test/Spmd/shardy-artifact-bridge.mlir` 覆盖 `sdy.mesh`、`sdy.sharding`、StableHLO
+  `all_gather` textual artifact 和 frontend verifier 的同一 artifact 入口；它只证明 SDY dialect /
+  StableHLO collective 可以进入工具链，不证明 XLA SPMD partition 或 rank-local body 已产生。
 - 历史 StableHLO collective bridge 曾把 `replica_groups` materialize 到后段 `wafer.comm`
   `rank_group`，用于证明 rank-group metadata 可被 communication verifier 和 ring lowering 消费。
   该入口已经从主线路径删除，不能作为 group/tiling 前的 collective 表示恢复。
@@ -119,9 +128,9 @@ boundary、tile shape、multi-stage schedule、SPM residency 或 C ABI issue seq
 | dot / 2D GEMM | `test/Frontend/lower-stablehlo-dot-to-linalg.mlir`、`stablehlo-dot-artifact.mlir`、`linalg-gemm-artifact.mlir` | StableHLO 2D dot 可降到 structured linalg matmul 输入 | accumulator dtype policy 和更宽 batch matmul family 仍需扩展 |
 | attention QK^T / AV | `lower-stablehlo-attention-score.mlir`、`lower-stablehlo-attention-value.mlir`、`lower-stablehlo-attention-softmax-value.mlir` | rank-4 attention score/value 的 transpose relation 来自 dot dimension numbers 和 indexing map | 不代表 attention schedule、SPM residency 或 workspace 已完成 |
 | elementwise / broadcast | `lower-stablehlo-elementwise.mlir`、`elementwise-broadcast-local-c-abi-issues.mlir`、projection residual gate | add/sub/mul/div/tanh/exp 等当前子集进入 `linalg.generic` / `arith` / `math` dataflow | complex broadcast、compare/select、mask add policy 仍未闭环 |
-| reduce | `lower-stablehlo-reduce.mlir`、norm/softmax staged tests | constant-init reduce 子集保留 reduction dimension 和 kind | non-constant-init reduce、NaN/overflow/approx policy 仍未闭环 |
-| softmax | `lower-stablehlo-softmax-staged.mlir`、`softmax-schedule.mlir` | row max、subtract、exp、row sum、divide 的 SSA dataflow gate 已记录 | acceptance pass 不是 schedule completion；multi-stage workspace/materialization 属 R3/R5/R6 后续 |
-| norm | `lower-stablehlo-norm-staged.mlir`、`norm-schedule.mlir` | last-dim reduce、rsqrt、broadcast mul staged gate 已记录 | LayerNorm/RMSNorm 更宽 decomposition、epsilon policy 和 storage/resource 闭环未完成 |
+| reduce | `lower-stablehlo-reduce.mlir`、norm/softmax staged tests | fine-grained StableHLO reduce 到 `linalg.reduce` 的 constant-init 子集保留 reduction dimension 和 kind | non-constant-init reduce、NaN/overflow/approx policy 仍未闭环 |
+| softmax | `lower-stablehlo-softmax-staged.mlir`、`softmax-schedule.mlir` | row max、subtract、exp、row sum、divide 的 fine-grained StableHLO SSA dataflow 可 lower 到 `linalg.reduce` / `linalg.generic` staged IR | acceptance pass 不是 schedule completion；multi-stage workspace/materialization 属 R3/R5/R6 后续 |
+| norm | `lower-stablehlo-norm-staged.mlir`、`norm-schedule.mlir` | RMSNorm / LayerNorm staged graph 中 last-dim reduce、rsqrt、broadcast mul gate 已记录；没有 `wafer.norm` 或 high-level norm op | LayerNorm/RMSNorm 更宽 decomposition、epsilon policy 和 storage/resource 闭环未完成 |
 | RoPE | `lower-stablehlo-rope-mlp-staged.mlir` | RoPE 当前作为 slice/shape/elementwise staged dataflow 覆盖 | sin/cos table 的 bundle/storage slicing 和更宽 shape family 未完成 |
 | MLP | `lower-stablehlo-mlp-schedule.mlir`、`lower-stablehlo-local-transformer-block.mlir` | tanh-gated MLP vertical slice 和 full local transformer structured gate 已记录 | GELU/SwiGLU 其它 decomposition、constant slicing 和 package consistency 未完成 |
 | shape views | `lower-stablehlo-shape.mlir`、local transformer block gate | static reshape expand/collapse 的 shape-only relation 可进入 local tensor IR | dynamic shape view、layout materialization 和 real movement 属后续层 |
@@ -147,6 +156,13 @@ boundary、tile shape、multi-stage schedule、SPM residency 或 C ABI issue seq
 Wafer Shardy propagation stage 可被当前工具链验证。它们仍不证明 Wafer-owned propagation ->
 XLA SPMD partition 接力、R2.4 tensor collective handoff、R3 group planner、resource planner、
 package、runtime 或 board execution。
+
+`test/Spmd/default-spmd-input-seed.mlir` 的输入是手写 StableHLO/SDY module，用来固定 no-user
+default seed policy：默认 `tile-count=16`、调试 `tile-count=1`、已有用户 seed 时不覆盖、非法
+tile count 诊断。它是 P2.S1 default-seed unit gate，不是 P2.S2 partitioner gate。P2.S2 完成前，
+任何 `test/Spmd` 或 `test/Frontend` 的 FileCheck 都不能替代
+`frontend artifact -> Wafer Shardy propagation -> Wafer-owned XLA SPMD partition -> per-rank artifact`
+的主链路证明。
 
 这些验证证明 R2 artifact/bridge/coverage 状态收敛，不证明 R3 之后的 group planner、resource
 planner、package、runtime 或 board execution。
