@@ -30,6 +30,13 @@ adapter；`P2.S1` 已完成真实 `mark_sharding` / default-input-seed 到 XLA S
 artifact gate。后续 group / tile / resource gate 必须消费真实 frontend/SPMD artifact 来源，而不是
 继续围绕手写 fixture 自洽。
 
+2026-06-01 调度结论：R2.4 之前先补 R2.4-pre pipeline / driver contract。当前 P2.F1/P2.S1
+已经证明真实 artifact chain 能跑通，但入口仍由 lit 手动拼接 test artifact generator、
+`shardy-sdy-opt`、PyTorch/XLA runtime export 环境和 `wafer-import-model` verifier；这不能作为
+未来用户使用形态。后续主链路必须通过库中注册的 named pipeline 或用户级 driver mode 表达，
+bin 只负责注册和调用，单 pass flag 只保留为 unit/debug 入口。用户级 compile target 名称统一为
+`wafer`；`tx8` 只保留为硬件/依赖逆向资料中的事实名，不作为 compiler driver target 字符串。
+
 ## R2.1 Frontend Artifact / Importer Contract
 
 实现边界：
@@ -155,6 +162,11 @@ lowering / artifact writer 没有使用这些字段，不再作为主线完成�
 新增边界，并检查新增事实在该边界可验证、可导出或被直接消费。手写 artifact、单层 FileCheck 和
 fixed manifest 只能作为补充覆盖，不能替代端到端可验证性。若下一层尚未实现某个硬件可表达语义，
 应产生下游恢复任务或补充 IR contract，不能反向削弱当前层 artifact。
+
+R2.4-pre 完成后，上述消费链不能再依赖用户或 lit 手动串联多个 tool / pass / env。主线 gate
+必须通过 named pipeline 或用户级 driver mode 重放上游链路；pipeline 名称按 IR 边界和职责命名，
+不能按 P2/R3 任务号、单个 workload 或 case 命名。`wafer-opt` 可以继续暴露单 pass 作为局部
+debug/unit 入口，但这些 flag 不能被写成用户级 compile 流程。
 
 P2.F1 主链路 artifact 采用 `4096x4096 @ 4096x4096` f32 matmul + bias + tanh + residual 最小验证。
 该规模用于给后续 tiling、SPM/DDR resource、resident constant 和 package gate 提供非 trivial
