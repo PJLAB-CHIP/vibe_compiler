@@ -36,12 +36,12 @@
 
 | ID | 状态 | 任务 | 完成标准 |
 | --- | --- | --- | --- |
-| P2.S2 | ready | 建立 Wafer-owned XLA SPMD partition artifact stage | 消费 P2.S1 propagated StableHLO/SDY artifact，调用 XLA SPMD partitioner 或等价 stage，输出 partitioned / replicated-local StableHLO bundle、post-SPMD marker、rank-local function signature、collective metadata、`forward.parameter_shards.json` 和 rank-local parameter payload |
+| P2.S2 | active | 建立 Wafer-owned XLA SPMD partition artifact stage | 消费经过 Wafer sharding propagation stage 的 StableHLO bundle，调用 XLA SPMD partitioner 或等价 stage，输出 post-SPMD local / replicated-local StableHLO bundle、post-SPMD marker、rank-local function signature、collective metadata、`forward.parameter_shards.json` 和 rank-local parameter payload |
 
 P2.S2 pipeline contract：
 
-- upstream artifact / IR：P2.F1 verified PyTorch/XLA StableHLO bundle，经过 P2.S1
-  `wafer-propagate-stablehlo-sharding` 后的 propagated StableHLO/SDY artifact。
+- upstream artifact / IR：P2.F1 verified PyTorch/XLA StableHLO bundle，经过 Wafer
+  sharding propagation stage 处理后的 StableHLO/SDY IR。
 - current stage responsibility：在 Wafer-owned driver / library stage 中调用 XLA SPMD partitioner
   或等价 local-body partitioning service，并导出 partitioned / replicated-local artifact。
 - output artifact / IR：partitioned / replicated-local StableHLO bundle、post-SPMD marker、
@@ -49,11 +49,12 @@ P2.S2 pipeline contract：
   parameter payload。
 - downstream consumer：R2.4 tensor collective handoff、`wafer-lower-stablehlo-to-linalg` local
   compute normalization、R3 group pipeline 和后续 placement / package stages。
-- user-level driver / named pipeline：应由 Wafer driver / named pipeline 消费 P2.S1 artifact；不能
+- user-level driver / named pipeline：应由 Wafer driver / named pipeline 消费 sharding propagation
+  stage 的输出 artifact；不能
   由 Python capture helper 或 integration test 手动拼外部流程替代。
 - explicit non-goals：不发明 `wafer.spmd.*` 私有协议，不在 frontend Python 中做 partition，不把
   下游 group/placement/comm 未完成当作当前不支持。
-- completion gate：真实 P2.F1/P2.S1 artifact chain 能被 P2.S2 消费并产出下游可直接验证的
+- completion gate：真实 frontend export -> Wafer sharding propagation artifact chain 能被 P2.S2 消费并产出下游可直接验证的
   partitioned / replicated-local bundle；fixture 只做补充覆盖。
 
 P2.S2 之后的直接顺序：
@@ -76,6 +77,11 @@ P7/P8/P9 依赖 P0-P6 主链路恢复，不提前推进。
   tile_region / SPM materialization / placement 明确后 materialize。
 - `wafer-lower-stablehlo-to-linalg` 只做 local compute normalization；不承载 sharding propagation、
   SPMD partition、group、placement、SPM/DDR 或 C ABI。
+- P2.S2 当前已有第一切片：`wafer-import-model --partition-stablehlo-bundle` 建立 Wafer driver /
+  pinned-XLA helper 协议，driver 负责 bundle verify、in-memory Wafer sharding propagation、helper
+  调用和输出 bundle verifier。该切片只用 fake helper 覆盖 driver I/O，不能作为 P2.S2 完成证明；
+  真实 pinned XLA SPMD helper/service、StableHLO/HLO round trip 和 rank-local parameter shard
+  payload 仍未接上。
 - `test/Spmd` 当前只覆盖 default input seed 和 SDY/Shardy artifact parse/verify，不覆盖 XLA SPMD
   partitioner，也不输出 rank-local StableHLO。
 - `test/Frontend` 当前覆盖 StableHLO/Linalg local compute normalization；softmax、RMSNorm、LayerNorm 是
@@ -123,7 +129,7 @@ P7/P8/P9 依赖 P0-P6 主链路恢复，不提前推进。
 
 | ID | 状态 | 任务 | 依赖 / 说明 |
 | --- | --- | --- | --- |
-| P2.S2 | ready | Wafer-owned XLA SPMD partition artifact stage | 当前下一步 |
+| P2.S2 | active | Wafer-owned XLA SPMD partition artifact stage | 当前推进；driver/helper 协议已建立，真实 pinned XLA helper/service 未完成 |
 | R2.4 | pending | Wafer LinalgExt-style tensor collective handoff | 依赖 P2.S2 |
 | R3.1 | pending | group boundary / candidate contract | 依赖 P2.S2、R2.4 和真实 frontend/SPMD artifact |
 | R3.2 | pending | root tile feasibility oracle | 依赖 R3.1 |
@@ -149,6 +155,8 @@ P7/P8/P9 依赖 P0-P6 主链路恢复，不提前推进。
 
 ## 下一步
 
-进入 P2.S2。实现时必须从 P2.S1 propagated artifact 接入 XLA SPMD partitioner，并产出可被后续
-R2.4 / local compute / group pipeline 直接消费的 partitioned StableHLO bundle；不能恢复 Python
-post-SPMD helper、`wafer.spmd.*` 私有协议或手写 fixture 作为主链证明。
+继续 P2.S2。下一步必须把 `--partition-stablehlo-bundle` 接到真实 pinned XLA SPMD helper/service：
+从经过 Wafer sharding propagation stage 的 StableHLO bundle 进入 XLA SPMD partitioner，并产出可被
+后续 R2.4 / local compute / group pipeline 直接消费的 post-SPMD StableHLO bundle。不能恢复 Python
+post-SPMD helper、`wafer.spmd.*` 私有协议或手写 fixture 作为主链证明；当前 fake helper lit 只覆盖
+driver 协议。

@@ -128,11 +128,13 @@ P2.S2 工程 gate 必须把 XLA SPMD partitioner 或等价 local-body partitioni
   `functions/forward.mlir` / `forward.meta` / parameter payload，再调用同一套
   `wafer-propagate-stablehlo-sharding` pipeline。
 - `wafer-propagate-stablehlo-sharding` 只包含 no-user default input seed 和 Shardy propagation。
-  它输出 propagated StableHLO/SDY artifact，不输出 partitioned local body、不写
+  它输出经过 sharding propagation stage 处理后的 StableHLO/SDY IR，不输出 partitioned local body、不写
   `forward.parameter_shards.json`、也不插入 post-SPMD collective。
-- P2.S2 必须是 Wafer-owned artifact stage 或等价 library/driver：消费 P2.S1 propagated artifact，
-  显式完成 StableHLO/SDY -> XLA HLO、XLA SPMD partitioner、partitioned HLO -> StableHLO round trip，
-  再写 partitioned / replicated-local bundle 和 rank-local parameter shard binding。
+- P2.S2 必须是 Wafer-owned artifact stage 或等价 library/driver：消费经过 Wafer sharding
+  propagation stage 的 StableHLO bundle，显式完成 StableHLO/SDY -> XLA HLO、XLA SPMD
+  partitioner、partitioned HLO -> StableHLO round trip，再写 post-SPMD local / replicated-local
+  StableHLO bundle 和 rank-local parameter shard binding。`P2.S1` / `P2.S2` 只能作为任务索引，
+  不能成为 bundle 目录名、artifact 类型名或长期协议字段。
 - R2.4 消费 P2.S2 的 partitioned StableHLO collective，并 normalize 到 Wafer LinalgExt-style
   tensor collective。它不是 XLA SPMD partitioner，也不能从 P2.S1 的 propagated global module
   直接补 `wafer.comm`。
@@ -151,11 +153,17 @@ P2.S2 工程 gate 必须把 XLA SPMD partitioner 或等价 local-body partitioni
 - 缺失的主链 stage 是 Wafer-owned SPMD partition artifact stage：消费 Wafer propagation 后的
   StableHLO/SDY artifact，显式进入 XLA HLO / XLA SPMD partitioner，再导回 partitioned StableHLO
   bundle。
+- 2026-06-01 直接 CMake link 评估结论：当前 build 虽启用 `WAFER_ENABLE_SPMD_PARTITIONER_DEPS`，
+  但 CMake target graph 只包含 Wafer / StableHLO / Shardy，没有 XLA `spmd_partitioner`、HLO
+  service、TSL、Abseil 或 generated XLA proto targets。P2.S2 第一切片采用 Wafer driver mode
+  加 pinned-XLA helper/service 协议；helper 只负责运行 XLA partitioner 或等价 local-body
+  service，Wafer driver 仍拥有 bundle 验证、stage 调用、输出校验和 artifact contract。
+  fake helper / protocol lit 只能验证 driver I/O，不是 P2.S2 完成证明。
 - 旧 Python post-SPMD helper 和相关 tests 已删除。P2.S2 之前没有 partitioned StableHLO 主链产物；
   不允许用 Python helper、手写 sidecar 或 fixture 冒充这个缺口。
 - no-user-sharding 分支当前只在文本 StableHLO/SDY artifact 中用
   `--wafer-apply-default-spmd-sharding` / `wafer-propagate-stablehlo-sharding` 补 function-input seed；
-  P2.S2 再消费该 propagated artifact。默认 policy 只标记输入/参数，不给中间 op 或 function
+  P2.S2 再消费该 stage 输出 artifact。默认 policy 只标记输入/参数，不给中间 op 或 function
   result 造约束。
 - P2.S2 输出的 partitioned bundle 必须由 Wafer-owned artifact stage 保存。`functions/forward.mlir`
   是 local body；`functions/forward.meta` 的 input/output signature 必须匹配 local function boundary；

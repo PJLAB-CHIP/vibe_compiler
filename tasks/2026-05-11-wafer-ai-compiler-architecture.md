@@ -781,7 +781,7 @@ verifier/lowering 责任定义。主线 gate 必须通过 Wafer named pipeline �
 `wafer-lower-stablehlo-to-cabi` 和 `wafer-lower-tile-communication-to-cabi`。
 `wafer-propagate-stablehlo-sharding` 组合 Wafer default input seed 和 Shardy propagation，但不冒充
 XLA SPMD partitioner；partitioned / replicated-local StableHLO bundle 必须由 P2.S2 的 Wafer-owned
-SPMD partition artifact stage 消费 propagated StableHLO/SDY artifact 后产出。
+SPMD partition artifact stage 消费 sharding propagation stage 输出的 StableHLO/SDY IR 后产出。
 `wafer-lower-stablehlo-to-cabi` 组合 StableHLO->Linalg 与
 Linalg->C ABI 两层。`wafer-import-model --propagate-stablehlo-sharding` 是 sharding propagation
 阶段检查入口，对 pre-SPMD bundle 运行 Shardy propagation；用户级 compile 入口是

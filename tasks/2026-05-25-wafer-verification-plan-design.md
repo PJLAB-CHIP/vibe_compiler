@@ -42,7 +42,7 @@ Serving integration 暂不纳入本文通过标准。
 | --- | --- | --- |
 | Frontend artifact | imported StableHLO bundle / MLIR | importer adapter diagnostics、parse/roundtrip、shape/dtype、constant normalization、sharding import source、third-party dialect registration 合法 |
 | Shardy propagation | StableHLO + user sharding seed or default no-user input seed | logical mesh、SDY sharding seed、propagation 结果合法；不要求 partitioned local body |
-| SPMD partition artifact | propagated StableHLO/SDY artifact | XLA SPMD partitioner 或等价 stage 产出 partitioned/replicated-local StableHLO、rank-local shape、collective group 和 parameter shard binding 合法 |
+| SPMD partition artifact | sharding propagation stage 输出的 StableHLO/SDY IR | XLA SPMD partitioner 或等价 stage 产出 partitioned/replicated-local StableHLO、rank-local shape、collective group 和 parameter shard binding 合法 |
 | Placement | logical ranks + topology | physical mapping 覆盖所有 rank，过滤 bad tile，cluster capability 合法 |
 | Local compute normalization | partitioned or replicated-local StableHLO | Linalg/Tensor/SCF/Arith/Math structured semantics、DPS/indexing relation、fine-grained softmax/norm/RoPE staged form 合法；不执行 SPMD partition |
 | Tensor collective handoff | partitioned StableHLO collective | Wafer LinalgExt-style tensor collective op 合法；rank group、combiner/slice relation、DPS/tiling interface 可验证，且不含 `wafer.comm`、tile_buffer 或 DTE token |
@@ -151,7 +151,7 @@ Partitioned StableHLO collective handoff：
 - Shardy / XLA SPMD 输出的 logical collective 能保留为 partitioned StableHLO / SDY metadata，并先
   normalize 成 Wafer LinalgExt-style tensor collective op；该 op 可被 group/tiling 直接消费。
 - placement 和 comm lowering 在其实现范围内保留 collective semantics；未实现的硬件可表达
-  collective 形成 R6/R4 恢复任务，不能反向限制 P2.S1 artifact export，也不能把 tensor collective
+  collective 形成 R6/R4 恢复任务，不能反向限制 sharding propagation artifact export，也不能把 tensor collective
   伪装成已经 materialize 的 `wafer.comm`。
 - layout/SPM/DDR resource gates 只对本 milestone 已经 materialize 的 movement / buffer demand
   负责；尚未 materialize 的 logical collective 不能被伪装成已通过 resource gate。

@@ -217,7 +217,7 @@ debug/unit 入口，但这些 flag 不能被写成用户级 compile 流程。Pyt
   Shardy/XLA SPMD 直接下沉。
 - `wafer-propagate-stablehlo-sharding`：StableHLO/SDY sharding seed -> propagated StableHLO/SDY。
   该 pipeline 只负责 no-user default seed 和 Shardy propagation，不产生 partitioned local body；
-  P2.S2 必须让 Wafer 自己消费该 propagated artifact 并产出 partitioned bundle。
+  P2.S2 必须让 Wafer 自己消费 sharding propagation stage 的输出 artifact 并产出 partitioned bundle。
 - `wafer-lower-stablehlo-to-linalg`：StableHLO tensor IR -> Linalg/Tensor/Arith/Math/SCF 结构化
   tensor IR。它不做 group/tile/SPM/DDR/C ABI，也不承载 target 或 tile mapping。
 - `wafer-lower-linalg-to-cabi`：已是 structured tensor/linalg 的 tensor compute -> group/tile/SPM/DDR

@@ -23,7 +23,9 @@
 
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/Program.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdint>
@@ -39,6 +41,10 @@ void printHelp() {
                << "  --verify-stablehlo-bundle <bundle-dir>\n";
 #ifdef WAFER_ENABLE_SHARDY
   llvm::outs() << "  --propagate-stablehlo-sharding <bundle-dir>\n"
+               << "    [--default-tile-count=16]\n"
+               << "  --partition-stablehlo-bundle <bundle-dir>\n"
+               << "    --output-bundle <bundle-dir>\n"
+               << "    --xla-spmd-partitioner-helper <path>\n"
                << "    [--default-tile-count=16]\n";
 #endif
   llvm::outs() << "  --compile-stablehlo-bundle-to-cabi <bundle-dir>\n"
@@ -204,6 +210,123 @@ int verifyStableHLOBundle(llvm::StringRef bundlePath) {
 }
 
 #ifdef WAFER_ENABLE_SHARDY
+std::string bundleFile(llvm::StringRef bundlePath,
+                       llvm::ArrayRef<llvm::StringRef> components) {
+  llvm::SmallString<256> path(bundlePath);
+  for (llvm::StringRef component : components)
+    llvm::sys::path::append(path, component);
+  return path.str().str();
+}
+
+bool createDirectory(llvm::StringRef path) {
+  if (std::error_code error = llvm::sys::fs::create_directories(path)) {
+    llvm::errs() << "wafer-import-model: failed to create directory '" << path
+                 << "': " << error.message() << "\n";
+    return true;
+  }
+  return false;
+}
+
+bool copyFile(llvm::StringRef from, llvm::StringRef to) {
+  if (std::error_code error = llvm::sys::fs::copy_file(from, to)) {
+    llvm::errs() << "wafer-import-model: failed to copy '" << from << "' to '"
+                 << to << "': " << error.message() << "\n";
+    return true;
+  }
+  return false;
+}
+
+bool copyDirectoryIfPresent(llvm::StringRef from, llvm::StringRef to) {
+  if (!llvm::sys::fs::is_directory(from))
+    return false;
+
+  if (createDirectory(to))
+    return true;
+
+  std::error_code error;
+  for (llvm::sys::fs::recursive_directory_iterator it(from, error), end;
+       it != end; it.increment(error)) {
+    if (error) {
+      llvm::errs() << "wafer-import-model: failed to walk directory '" << from
+                   << "': " << error.message() << "\n";
+      return true;
+    }
+
+    llvm::StringRef source = it->path();
+    llvm::StringRef relative = source;
+    relative.consume_front(from);
+    if (relative.starts_with(llvm::sys::path::get_separator()))
+      relative = relative.drop_front();
+
+    llvm::SmallString<256> destination(to);
+    llvm::sys::path::append(destination, relative);
+
+    llvm::sys::fs::file_status status;
+    if (std::error_code statusError = llvm::sys::fs::status(source, status)) {
+      llvm::errs() << "wafer-import-model: failed to stat '" << source
+                   << "': " << statusError.message() << "\n";
+      return true;
+    }
+    if (llvm::sys::fs::is_directory(status)) {
+      if (createDirectory(destination))
+        return true;
+      continue;
+    }
+    if (llvm::sys::fs::is_regular_file(status)) {
+      llvm::SmallString<256> parent(destination);
+      llvm::sys::path::remove_filename(parent);
+      if (createDirectory(parent))
+        return true;
+      if (copyFile(source, destination))
+        return true;
+    }
+  }
+
+  if (error) {
+    llvm::errs() << "wafer-import-model: failed to walk directory '" << from
+                 << "': " << error.message() << "\n";
+    return true;
+  }
+  return false;
+}
+
+bool writePropagatedBundle(mlir::ModuleOp module, llvm::StringRef inputBundle,
+                           llvm::StringRef stagedBundle) {
+  std::string stagedFunctions =
+      bundleFile(stagedBundle, {llvm::StringRef("functions")});
+  if (createDirectory(stagedFunctions))
+    return true;
+
+  std::string stagedMlir =
+      bundleFile(stagedBundle, {llvm::StringRef("functions"),
+                                llvm::StringRef("forward.mlir")});
+  std::error_code error;
+  llvm::raw_fd_ostream os(stagedMlir, error, llvm::sys::fs::OF_Text);
+  if (error) {
+    llvm::errs() << "wafer-import-model: failed to write '" << stagedMlir
+                 << "': " << error.message() << "\n";
+    return true;
+  }
+  module->print(os);
+  os << "\n";
+  os.close();
+  if (os.has_error()) {
+    llvm::errs() << "wafer-import-model: failed to close '" << stagedMlir
+                 << "'\n";
+    return true;
+  }
+
+  if (copyFile(bundleFile(inputBundle, {llvm::StringRef("functions"),
+                                        llvm::StringRef("forward.meta")}),
+               bundleFile(stagedBundle, {llvm::StringRef("functions"),
+                                         llvm::StringRef("forward.meta")})))
+    return true;
+
+  return copyDirectoryIfPresent(
+      bundleFile(inputBundle, {llvm::StringRef("data")}),
+      bundleFile(stagedBundle, {llvm::StringRef("data")}));
+}
+
 int propagateStableHLOSharding(llvm::StringRef bundlePath,
                                int64_t defaultTileCount) {
   mlir::DialectRegistry registry;
@@ -224,6 +347,87 @@ int propagateStableHLOSharding(llvm::StringRef bundlePath,
 
   module->print(llvm::outs());
   llvm::outs() << "\n";
+  return 0;
+}
+
+int partitionStableHLOBundle(llvm::StringRef bundlePath,
+                             llvm::StringRef outputBundlePath,
+                             llvm::StringRef helperPath,
+                             int64_t defaultTileCount) {
+  if (outputBundlePath.empty()) {
+    llvm::errs() << "wafer-import-model: --partition-stablehlo-bundle "
+                    "requires --output-bundle\n";
+    return 1;
+  }
+  if (helperPath.empty()) {
+    llvm::errs() << "wafer-import-model: --partition-stablehlo-bundle "
+                    "requires --xla-spmd-partitioner-helper\n";
+    return 1;
+  }
+
+  mlir::DialectRegistry registry;
+  registerToolDialects(registry);
+
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      parseAndVerifyStableHLOBundle(bundlePath, context);
+  if (!module)
+    return 1;
+
+  mlir::PassManager pm(&context);
+  wafer::buildStablehloShardingPropagationPipeline(pm, defaultTileCount);
+  if (mlir::failed(pm.run(*module)))
+    return 1;
+
+  llvm::SmallString<256> tempPrefix(outputBundlePath);
+  llvm::sys::path::remove_filename(tempPrefix);
+  if (tempPrefix.empty())
+    tempPrefix = ".";
+  llvm::sys::path::append(tempPrefix, "wafer-spmd-propagated");
+
+  llvm::SmallString<256> stagedBundle;
+  if (std::error_code error =
+          llvm::sys::fs::createUniqueDirectory(tempPrefix, stagedBundle)) {
+    llvm::errs() << "wafer-import-model: failed to create temporary "
+                    "propagated bundle: "
+                 << error.message() << "\n";
+    return 1;
+  }
+
+  if (writePropagatedBundle(*module, bundlePath, stagedBundle)) {
+    llvm::sys::fs::remove_directories(stagedBundle);
+    return 1;
+  }
+
+  std::string helper = helperPath.str();
+  std::string staged = stagedBundle.str().str();
+  std::string output = outputBundlePath.str();
+  std::string logicalRankCount = std::to_string(defaultTileCount);
+  llvm::SmallVector<llvm::StringRef, 8> args = {
+      helper,           "--input-bundle",   staged,    "--output-bundle",
+      output,           "--entry-function", "forward", "--logical-rank-count",
+      logicalRankCount,
+  };
+  int exitCode = llvm::sys::ExecuteAndWait(helper, args);
+  llvm::sys::fs::remove_directories(stagedBundle);
+  if (exitCode != 0) {
+    llvm::errs() << "wafer-import-model: XLA SPMD partition helper failed";
+    if (exitCode > 0)
+      llvm::errs() << " with exit code " << exitCode;
+    llvm::errs() << "\n";
+    return 1;
+  }
+
+  wafer::frontend::ArtifactVerificationResult result;
+  mlir::OwningOpRef<mlir::ModuleOp> outputModule =
+      parseAndVerifyStableHLOBundle(outputBundlePath, context, &result);
+  if (!outputModule)
+    return 1;
+
+  llvm::outs() << "wafer-import-model: partitioned StableHLO bundle written: "
+               << outputBundlePath << "\n";
   return 0;
 }
 #endif
@@ -282,6 +486,9 @@ int main(int argc, char **argv) {
   std::string verifyFilename;
   std::string bundlePath;
   std::string shardingPropagationBundlePath;
+  std::string partitionBundlePath;
+  std::string partitionOutputBundlePath;
+  std::string spmdPartitionerHelperPath;
   std::string compileBundlePath;
   std::string target = "wafer";
   std::string tileMapping = "single";
@@ -338,6 +545,23 @@ int main(int argc, char **argv) {
           arg.drop_front(propagateShardingPrefix.size()).str();
       continue;
     }
+
+    if (arg == "--partition-stablehlo-bundle") {
+      if (i + 1 >= argc) {
+        llvm::errs() << "wafer-import-model: missing "
+                        "--partition-stablehlo-bundle directory\n";
+        return 1;
+      }
+      partitionBundlePath = argv[++i];
+      continue;
+    }
+
+    constexpr llvm::StringRef partitionBundlePrefix =
+        "--partition-stablehlo-bundle=";
+    if (arg.starts_with(partitionBundlePrefix)) {
+      partitionBundlePath = arg.drop_front(partitionBundlePrefix.size()).str();
+      continue;
+    }
 #endif
 
     if (arg == "--compile-stablehlo-bundle-to-cabi") {
@@ -347,6 +571,39 @@ int main(int argc, char **argv) {
         return 1;
       }
       compileBundlePath = argv[++i];
+      continue;
+    }
+
+    if (arg == "--output-bundle") {
+      if (i + 1 >= argc) {
+        llvm::errs() << "wafer-import-model: missing --output-bundle value\n";
+        return 1;
+      }
+      partitionOutputBundlePath = argv[++i];
+      continue;
+    }
+
+    constexpr llvm::StringRef outputBundlePrefix = "--output-bundle=";
+    if (arg.starts_with(outputBundlePrefix)) {
+      partitionOutputBundlePath =
+          arg.drop_front(outputBundlePrefix.size()).str();
+      continue;
+    }
+
+    if (arg == "--xla-spmd-partitioner-helper") {
+      if (i + 1 >= argc) {
+        llvm::errs() << "wafer-import-model: missing "
+                        "--xla-spmd-partitioner-helper value\n";
+        return 1;
+      }
+      spmdPartitionerHelperPath = argv[++i];
+      continue;
+    }
+
+    constexpr llvm::StringRef spmdHelperPrefix =
+        "--xla-spmd-partitioner-helper=";
+    if (arg.starts_with(spmdHelperPrefix)) {
+      spmdPartitionerHelperPath = arg.drop_front(spmdHelperPrefix.size()).str();
       continue;
     }
 
@@ -427,6 +684,8 @@ int main(int argc, char **argv) {
     ++actionCount;
   if (!shardingPropagationBundlePath.empty())
     ++actionCount;
+  if (!partitionBundlePath.empty())
+    ++actionCount;
   if (!compileBundlePath.empty())
     ++actionCount;
   if (actionCount > 1) {
@@ -443,6 +702,10 @@ int main(int argc, char **argv) {
   if (!shardingPropagationBundlePath.empty())
     return propagateStableHLOSharding(shardingPropagationBundlePath,
                                       defaultTileCount);
+  if (!partitionBundlePath.empty())
+    return partitionStableHLOBundle(
+        partitionBundlePath, partitionOutputBundlePath,
+        spmdPartitionerHelperPath, defaultTileCount);
 #endif
   if (!compileBundlePath.empty())
     return compileStableHLOBundleToCAbi(compileBundlePath, target, tileMapping);
