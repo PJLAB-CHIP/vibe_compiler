@@ -11,7 +11,9 @@ import unittest
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
-TOOL_PATH = REPO_ROOT / "tools" / "wafer_pytorch_xla_capture.py"
+TOOL_PATH = (
+    REPO_ROOT / "test" / "Tools" / "Inputs" / "wafer_pytorch_xla_capture.py"
+)
 
 
 def load_tool_module():

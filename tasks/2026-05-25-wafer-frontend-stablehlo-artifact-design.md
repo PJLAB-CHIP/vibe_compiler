@@ -158,8 +158,8 @@ PyTorch/XLA adapter -> StableHLO bundle -> bundle metadata verifier -> WaferFron
 2026-05-27 修正实现记录：P2.F1 已完成。`tools/build_pytorch_xla_runtime.py` 从
 `third_party/pytorch-xla` 源码安装 `torch_xla` 2.5.0，并通过 Bazel override 复用本仓库
 `third_party/xla`、`third_party/llvm-project` 和 importer Python 的 `torch` headers/libs；
-没有使用 prebuilt `torch_xla` wheel。`tools/wafer_pytorch_xla_capture.py` 产出 PyTorch/XLA
-StableHLO bundle；lit 最小验证 将该 bundle 继续交给
+没有使用 prebuilt `torch_xla` wheel。`test/Tools/Inputs/wafer_pytorch_xla_capture.py` 是 test
+artifact generator，用于产出 PyTorch/XLA StableHLO bundle；lit 最小验证 将该 bundle 继续交给
 `wafer-import-model --verify-stablehlo-bundle`。
 
 #### 2.1.2 P2.F1 主链路 Capture Model

@@ -1,7 +1,7 @@
 # REQUIRES: stablehlo, pytorch-xla-importer
 
 # RUN: rm -rf %t.bundle
-# RUN: %importer_python %wafer_src_root/tools/wafer_pytorch_xla_capture.py --emit-reference-bundle --output-bundle %t.bundle
+# RUN: %importer_python %wafer_src_root/test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-reference-bundle --output-bundle %t.bundle
 # RUN: test -f %t.bundle/functions/forward.mlir
 # RUN: test -f %t.bundle/functions/forward.meta
 # RUN: test -f %t.bundle/data/weight

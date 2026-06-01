@@ -2,7 +2,7 @@
 
 # RUN: rm -rf %t.matrix
 # RUN: bash -c 'for strategy in data column row 2d-output 2d-contracting-output partial-replication; do \
-# RUN:   env CPU_NUM_DEVICES=16 PJRT_DEVICE=CPU %importer_python %wafer_src_root/tools/wafer_pytorch_xla_capture.py --emit-sharded-bundle --sharding-strategy ${strategy} --output-bundle %t.matrix/${strategy} || exit 1; \
+# RUN:   env CPU_NUM_DEVICES=16 PJRT_DEVICE=CPU %importer_python %wafer_src_root/test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-sharded-bundle --sharding-strategy ${strategy} --output-bundle %t.matrix/${strategy} || exit 1; \
 # RUN:   test -s %t.matrix/${strategy}/functions/forward.mlir || exit 1; \
 # RUN:   test -s %t.matrix/${strategy}/functions/forward.bytecode || exit 1; \
 # RUN:   test -f %t.matrix/${strategy}/data/weight || exit 1; \

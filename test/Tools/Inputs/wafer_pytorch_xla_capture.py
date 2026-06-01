@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PyTorch/XLA capture adapter for Wafer frontend artifacts."""
+"""PyTorch/XLA test artifact generator for Wafer frontend gates."""
 
 from __future__ import annotations
 

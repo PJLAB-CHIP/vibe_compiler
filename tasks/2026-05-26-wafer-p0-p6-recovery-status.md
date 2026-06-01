@@ -206,13 +206,13 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   op/dataflow contract 重写，不把 acceptance pass 当 schedule completion。
 - P2.F1：已完成；`tools/build_pytorch_xla_runtime.py` 从 `third_party/pytorch-xla` 源码构建/安装
   `torch_xla` 2.5.0，并通过 Bazel override 使用本仓库 `third_party/xla` / `third_party/llvm-project`；
-  `tools/wafer_pytorch_xla_capture.py` 调用 `torch.export.export` 和
+  `test/Tools/Inputs/wafer_pytorch_xla_capture.py` 作为 test artifact generator 调用 `torch.export.export` 和
   `torch_xla.stablehlo.exported_program_to_stablehlo`，为 `4096x4096 @ 4096x4096` f32 matmul +
   bias + tanh + residual 生成 PyTorch/XLA StableHLO bundle，包含 `functions/forward.mlir`、
   `functions/forward.meta`、`functions/forward.bytecode` 和 `data/weight` / `data/bias`；完成证明已跑通真实
   source-built PyTorch/XLA adapter -> bundle -> verifier 链。prebuilt `torch_xla` wheel、手写
   MLIR 或手写 emitter 仍不能作为后续完成证明。
-- P2.S1：已完成；`tools/wafer_pytorch_xla_capture.py` 用 source-built PyTorch/XLA lazy SPMD runtime
+- P2.S1：已完成；`test/Tools/Inputs/wafer_pytorch_xla_capture.py` 用 source-built PyTorch/XLA lazy SPMD runtime
   的 `mark_sharding` 生成六种用户 sharding 策略的真实 PyTorch/XLA StableHLO bundle，bundle 继续由
   frontend verifier 和 standalone SDY propagation parse gate 消费；partitioned gate 通过同一
   PyTorch/XLA/XLA 版本的 post-optimization export 取得 XLA SPMD partitioner 后的 StableHLO local

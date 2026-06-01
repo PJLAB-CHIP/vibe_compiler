@@ -49,8 +49,8 @@
   `XLA_FLAGS` 中禁用 `fusion`，否则 PyTorch/XLA 的 HLO-to-StableHLO helper 会在 `mhlo.fusion` 上失败；
   这个 flag 是 capture 约束，不是 IR 协议。旧的私有 sharding attr emitter、sidecar JSON、单独 `wafer-import-model --verify-spmd-bundle` 路线已移除；不要恢复只生成私有 attrs/sidecar 或只跑
   SDY propagation 的入口。
-- P2.S1 当前工具入口：
-  `tools/wafer_pytorch_xla_capture.py --emit-sharded-bundle --sharding-strategy=<name>` 生成
+- P2.S1 当前测试 artifact generator 入口：
+  `test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-sharded-bundle --sharding-strategy=<name>` 生成
   pre-partition mark artifact；
   `--emit-partitioned-bundle --sharding-strategy=<name>` 生成 post-XLA-SPMD local artifact；
   `--emit-partitioned-bundle --default-input-sharding --default-tile-count=<1..16>` 覆盖 no-user 默认

@@ -133,7 +133,7 @@ P2.S1 当前工程 gate 必须把 XLA SPMD partitioner 或等价 local-body part
   工具的导出约束，不是 Wafer IR 或长期 sharding 协议。
 - no-user-sharding 分支有两个入口：文本 StableHLO/SDY artifact 用
   `--wafer-apply-default-spmd-sharding` 补 function-input seed；真实 partitioner gate 用
-  `tools/wafer_pytorch_xla_capture.py --emit-partitioned-bundle --default-input-sharding`
+  `test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-partitioned-bundle --default-input-sharding`
   在 SPMD 层应用同一默认 heuristic 后调用 XLA SPMD partitioner。两者都只标记输入/参数，不给
   中间 op 或 function result 造约束。
 - partitioned bundle 仍保存为 PyTorch/XLA StableHLO bundle。`functions/forward.mlir` 是 local
