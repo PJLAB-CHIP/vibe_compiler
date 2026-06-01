@@ -34,7 +34,7 @@ void printHelp() {
   llvm::outs() << "  --emit-static-reference-artifact\n"
                << "  --verify-import-result <mlir-file>\n"
                << "  --verify-stablehlo-bundle <bundle-dir>\n"
-               << "  --compile-stablehlo-bundle <bundle-dir>\n"
+               << "  --compile-stablehlo-bundle-to-cabi <bundle-dir>\n"
                << "    [--target=wafer] [--tile-mapping=single]\n";
 #else
   llvm::outs() << "  importer dependencies are disabled in this build\n";
@@ -130,8 +130,9 @@ int verifyStableHLOBundle(llvm::StringRef bundlePath) {
   return 0;
 }
 
-int compileStableHLOBundle(llvm::StringRef bundlePath, llvm::StringRef target,
-                           llvm::StringRef tileMapping) {
+int compileStableHLOBundleToCAbi(llvm::StringRef bundlePath,
+                                 llvm::StringRef target,
+                                 llvm::StringRef tileMapping) {
   mlir::DialectRegistry registry;
   registerToolDialects(registry);
 
@@ -144,8 +145,7 @@ int compileStableHLOBundle(llvm::StringRef bundlePath, llvm::StringRef target,
     return 1;
 
   mlir::PassManager pm(&context);
-  wafer::buildStablehloToLinalgPipeline(pm);
-  wafer::buildLinalgToCAbiPipeline(pm, target, tileMapping);
+  wafer::buildStablehloToCAbiPipeline(pm, target, tileMapping);
   if (mlir::failed(pm.run(*module)))
     return 1;
 
@@ -213,10 +213,10 @@ int main(int argc, char **argv) {
       continue;
     }
 
-    if (arg == "--compile-stablehlo-bundle") {
+    if (arg == "--compile-stablehlo-bundle-to-cabi") {
       if (i + 1 >= argc) {
         llvm::errs() << "wafer-import-model: missing "
-                        "--compile-stablehlo-bundle directory\n";
+                        "--compile-stablehlo-bundle-to-cabi directory\n";
         return 1;
       }
       compileBundlePath = argv[++i];
@@ -224,7 +224,7 @@ int main(int argc, char **argv) {
     }
 
     constexpr llvm::StringRef compileBundlePrefix =
-        "--compile-stablehlo-bundle=";
+        "--compile-stablehlo-bundle-to-cabi=";
     if (arg.starts_with(compileBundlePrefix)) {
       compileBundlePath = arg.drop_front(compileBundlePrefix.size()).str();
       continue;
@@ -283,7 +283,7 @@ int main(int argc, char **argv) {
   if (!bundlePath.empty())
     return verifyStableHLOBundle(bundlePath);
   if (!compileBundlePath.empty())
-    return compileStableHLOBundle(compileBundlePath, target, tileMapping);
+    return compileStableHLOBundleToCAbi(compileBundlePath, target, tileMapping);
 
   llvm::errs() << "wafer-import-model: unknown or incomplete arguments\n";
   printHelp();

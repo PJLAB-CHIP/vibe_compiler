@@ -12,7 +12,7 @@
 
 # RUN: rm -rf %t.compile.bundle
 # RUN: %importer_python %wafer_src_root/test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-reference-bundle --size 8 --output-bundle %t.compile.bundle
-# RUN: wafer-import-model --compile-stablehlo-bundle %t.compile.bundle --target=wafer | FileCheck %s --check-prefix=COMPILE
+# RUN: wafer-import-model --compile-stablehlo-bundle-to-cabi %t.compile.bundle --target=wafer | FileCheck %s --check-prefix=COMPILE
 
 # MLIR: func.func
 # MLIR: tensor<4096xf32>

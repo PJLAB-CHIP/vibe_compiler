@@ -77,14 +77,14 @@
 - 用户级 compiler target 名称统一为 `wafer`，Wafer IR target attr 的唯一主线 spelling 是
   `#wafer.target<wafer>`。`tx8` / `tx81` 只保留在硬件、依赖逆向和外部历史命名事实里，不能作为
   compiler driver target、pipeline 名称或测试 fixture 的主线命名。
-- 主链路用户入口通过 driver 表达，不把跨层 convenience alias 注册成 Wafer named pipeline。
-  当前用户级 artifact 入口是 `wafer-import-model --compile-stablehlo-bundle`；它先校验 bundle，
-  再在 driver 内部编排 StableHLO->Linalg 和当前 Linalg 后段 pipeline。`wafer-opt` 层只注册按 IR
-  层边界命名的入口：`wafer-lower-stablehlo-to-linalg`、`wafer-lower-linalg-to-cabi` 和
-  `wafer-lower-tile-communication-to-cabi`；不得恢复 `wafer-lower-stablehlo-to-cabi` 或旧
-  `wafer-lower-local-stablehlo-to-cabi`。`target=wafer` 会 materialize/校验
-  `#wafer.target<wafer>`，非 `wafer` target 必须诊断。单 pass flags 只用于 `test/Transforms`、
-  `test/StageConnections` 等 unit/debug 覆盖。
+- 主链路 compile gate 用 `WaferPipelines` 中注册的 named pipeline，不在 Integration 里手动拼 pass
+  串。当前用户级 artifact 入口是 `wafer-import-model --compile-stablehlo-bundle-to-cabi`；`wafer-opt`
+  named pipeline 是 `wafer-lower-stablehlo-to-linalg`、`wafer-lower-linalg-to-cabi`、
+  `wafer-lower-stablehlo-to-cabi` 和 `wafer-lower-tile-communication-to-cabi`。
+  `wafer-lower-stablehlo-to-cabi` 必须组合 StableHLO->Linalg 与 Linalg->C ABI body，不能另起一套
+  parallel lowering。`target=wafer` 会 materialize/校验 `#wafer.target<wafer>`，非 `wafer`
+  target 必须诊断。单 pass flags 只用于 `test/Transforms`、`test/StageConnections` 等 unit/debug
+  覆盖。
 - ODS op 如果引入 `RecursiveMemoryEffects`、`ReturnLike` 等 interface trait，公开 dialect 头要
   include 对应 C++ interface header，`WaferIR` 也要显式 link 对应 MLIR interface target。
 - Dialect 增加 TypeDef 后，base dialect td 需要启用 `useDefaultTypePrinterParser = 1`，否则即使

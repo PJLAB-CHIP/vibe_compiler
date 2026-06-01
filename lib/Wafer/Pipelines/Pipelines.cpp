@@ -164,6 +164,14 @@ void buildLinalgToCAbiPipeline(mlir::OpPassManager &pm, llvm::StringRef target,
   addLinalgToCAbiBody(pm, tileMapping);
 }
 
+void buildStablehloToCAbiPipeline(mlir::OpPassManager &pm,
+                                  llvm::StringRef target,
+                                  llvm::StringRef tileMapping) {
+  addCompileTargetContract(pm, target);
+  buildStablehloToLinalgPipeline(pm);
+  addLinalgToCAbiBody(pm, tileMapping);
+}
+
 void buildTileCommunicationToCAbiPipeline(mlir::OpPassManager &pm,
                                           llvm::StringRef target) {
   addCompileTargetContract(pm, target);
@@ -184,6 +192,13 @@ void registerWaferPipelines() {
         [](mlir::OpPassManager &pm,
            const TensorToCAbiPipelineOptions &options) {
           buildLinalgToCAbiPipeline(pm, options.target, options.tileMapping);
+        });
+    mlir::PassPipelineRegistration<TensorToCAbiPipelineOptions>(
+        "wafer-lower-stablehlo-to-cabi",
+        "Lower StableHLO tensor IR through Linalg/Tensor IR to the Wafer C ABI",
+        [](mlir::OpPassManager &pm,
+           const TensorToCAbiPipelineOptions &options) {
+          buildStablehloToCAbiPipeline(pm, options.target, options.tileMapping);
         });
     mlir::PassPipelineRegistration<TargetPipelineOptions>(
         "wafer-lower-tile-communication-to-cabi",

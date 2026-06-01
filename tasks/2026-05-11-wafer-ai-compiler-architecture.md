@@ -759,11 +759,11 @@ cmake/
 Pass pipeline 建议：
 
 当前用户级 / Integration 主链路不直接暴露下面这些单 pass。R2.4-pre 后由 `WaferPipelines`
-注册按 IR 边界命名的 pipeline：`wafer-lower-stablehlo-to-linalg`、`wafer-lower-linalg-to-cabi`
-和 `wafer-lower-tile-communication-to-cabi`。不注册 `wafer-lower-stablehlo-to-cabi` 这类跨层
-convenience alias；用户级 artifact 入口是 `wafer-import-model --compile-stablehlo-bundle`，由
-driver 编排 model export / SPMD 产物校验和 Wafer 分层 pipeline，不要求用户手动拼 pass 串。
-这些 pipeline 通过 option `target=wafer`
+注册按 IR 边界命名的 pipeline：`wafer-lower-stablehlo-to-linalg`、`wafer-lower-linalg-to-cabi`、
+`wafer-lower-stablehlo-to-cabi` 和 `wafer-lower-tile-communication-to-cabi`。
+`wafer-lower-stablehlo-to-cabi` 组合 StableHLO->Linalg 与 Linalg->C ABI 两层；用户级 artifact
+入口是 `wafer-import-model --compile-stablehlo-bundle-to-cabi`，不要求用户手动拼 model export /
+SPMD / StableHLO / Linalg 的 pass 串。这些 pipeline 通过 option `target=wafer`
 materialize/校验 `#wafer.target<wafer>`；`tx8` 只保留为底层硬件/依赖事实名，不作为 compiler
 driver target。下面列表描述长期阶段边界，不是要求用户手动串 pass。
 

@@ -17,6 +17,10 @@ void buildLinalgToCAbiPipeline(mlir::OpPassManager &pm,
                                llvm::StringRef target = "wafer",
                                llvm::StringRef tileMapping = "single");
 
+void buildStablehloToCAbiPipeline(mlir::OpPassManager &pm,
+                                  llvm::StringRef target = "wafer",
+                                  llvm::StringRef tileMapping = "single");
+
 void buildTileCommunicationToCAbiPipeline(mlir::OpPassManager &pm,
                                           llvm::StringRef target = "wafer");
 

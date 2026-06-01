@@ -250,10 +250,9 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   和 `wafer-lower-tile-region-to-c-abi`。
 - R2.4-pre 后，Integration 主链路通过 `WaferPipelines` 的
   `wafer-lower-stablehlo-to-linalg` / `wafer-lower-linalg-to-cabi` /
-  `wafer-lower-tile-communication-to-cabi` 分层重放；用户级 artifact 入口通过
-  `wafer-import-model --compile-stablehlo-bundle` 先校验 bundle，再由 driver 编排分层 pipeline。
-  `wafer-lower-stablehlo-to-cabi` 这类跨层 alias 不注册。单 pass flags 只保留为局部 unit/debug
-  入口。
+  `wafer-lower-stablehlo-to-cabi` / `wafer-lower-tile-communication-to-cabi` 重放；用户级 artifact
+  入口通过 `wafer-import-model --compile-stablehlo-bundle-to-cabi` 先校验 bundle 再调用同一条
+  StableHLO->C ABI builder。单 pass flags 只保留为局部 unit/debug 入口。
 - 有 `wafer.abi.rdma`、`wafer.abi.wdma`、`wafer.abi.gemm`、elementwise/reduce ABI issue ops。
 - 有 `Wafer/ABI/TileAbi.h` descriptor unit tests、single-tile integration test、manifest validator 和 generated C
   stub syntax compile。

@@ -38,12 +38,13 @@ bin 只负责注册和调用，单 pass flag 只保留为 unit/debug 入口。�
 `wafer`；`tx8` 只保留为硬件/依赖逆向资料中的事实名，不作为 compiler driver target 字符串。
 
 2026-06-01 实现结论：R2.4-pre 已新增 `WaferPipelines` 库并由 `wafer-opt` 注册。当前已收口的
-named pipeline 是 `wafer-lower-stablehlo-to-linalg`、`wafer-lower-linalg-to-cabi` 和
-`wafer-lower-tile-communication-to-cabi`。这些名字按 IR 输入/输出和职责命名，不按任务号、case
-或 workload 命名；不注册 `wafer-lower-stablehlo-to-cabi` 这类跨层 convenience alias。
-`wafer-import-model --compile-stablehlo-bundle` 是用户级 artifact driver：它先用 StableHLO bundle
-verifier 校验 PyTorch/XLA / SPMD 产物，再在 driver 内部顺序调用 StableHLO->Linalg 和当前 Linalg
-后段 pipeline 输出 Wafer IR。pipeline option `target=wafer` 会 materialize/校验 module 的
+named pipeline 是 `wafer-lower-stablehlo-to-linalg`、`wafer-lower-linalg-to-cabi`、
+`wafer-lower-stablehlo-to-cabi` 和 `wafer-lower-tile-communication-to-cabi`。这些名字按 IR
+输入/输出和职责命名，不按任务号、case 或 workload 命名；`wafer-lower-stablehlo-to-cabi`
+明确组合 StableHLO->Linalg 与 Linalg->C ABI 两层。`wafer-import-model
+--compile-stablehlo-bundle-to-cabi` 是用户级 artifact driver：它先用 StableHLO bundle verifier
+校验 PyTorch/XLA / SPMD 产物，再调用同一条 StableHLO->C ABI pipeline 输出 Wafer IR。pipeline
+option `target=wafer` 会 materialize/校验 module 的
 `#wafer.target<wafer>`；非 `wafer` target 会诊断。Integration 主链路 gate 已改为分层 named
 pipeline 或 driver mode；lit 同时覆盖手写最小 bundle 和真实 source-built PyTorch/XLA 小尺寸
 export bundle 进入该 driver。单 pass flags 继续只作为 Transforms/StageConnections 的局部
@@ -182,14 +183,16 @@ debug/unit 入口，但这些 flag 不能被写成用户级 compile 流程。
 
 当前 R2.4-pre 落地的 Wafer pipeline / driver 边界：
 
-- `wafer-import-model --compile-stablehlo-bundle`：用户级 artifact 入口。输入是
+- `wafer-import-model --compile-stablehlo-bundle-to-cabi`：用户级 artifact 入口。输入是
   `functions/forward.mlir`、`functions/forward.meta` 和可选 weight/shard payload 组成的 StableHLO
-  bundle；driver 先执行 bundle verifier，再显式编排 StableHLO->Linalg 和当前 Linalg 后段 pipeline。
+  bundle；driver 先执行 bundle verifier，再调用 `wafer-lower-stablehlo-to-cabi` 的 C++ builder。
 - `wafer-lower-stablehlo-to-linalg`：StableHLO tensor IR -> Linalg/Tensor/Arith/Math/SCF 结构化
   tensor IR。它不做 group/tile/SPM/DDR/C ABI，也不承载 target 或 tile mapping。
 - `wafer-lower-linalg-to-cabi`：已是 structured tensor/linalg 的 tensor compute -> group/tile/SPM/DDR
   -> C ABI issue IR；`tile-mapping=single` 是默认 materialization，
   `tile-mapping=multi-tile-no-comm` 只覆盖已有 no-communication tile materialization 路线。
+- `wafer-lower-stablehlo-to-cabi`：StableHLO tensor IR -> Linalg/Tensor IR -> group/tile/SPM/DDR ->
+  C ABI issue IR。它组合前两层的 body，不是单独一套隐藏转换。
 - `wafer-lower-tile-communication-to-cabi`：已经处在 tile-level `wafer.comm` / p2p IR 的通信 -> C ABI
   issue IR。它不是 R2.4 tensor collective handoff；R2.4 仍要从 partitioned StableHLO collective
   normalizes 到 LinalgExt-style tensor collective，再进入 group/tiling。

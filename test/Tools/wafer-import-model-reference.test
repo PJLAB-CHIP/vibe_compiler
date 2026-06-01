@@ -50,7 +50,7 @@
 # RUN: not wafer-import-model --verify-stablehlo-bundle %t.missing-data.bundle 2>&1 | FileCheck %s --check-prefix=BUNDLE-DATA
 
 # HELP-NOT: --verify-spmd-bundle
-# HELP: --compile-stablehlo-bundle
+# HELP: --compile-stablehlo-bundle-to-cabi
 
 # EMIT: module
 # EMIT: func.func @wafer_import_static_reference
