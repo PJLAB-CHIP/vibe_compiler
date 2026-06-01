@@ -38,7 +38,7 @@ void printHelp() {
                << "  --verify-import-result <mlir-file>\n"
                << "  --verify-stablehlo-bundle <bundle-dir>\n";
 #ifdef WAFER_ENABLE_SHARDY
-  llvm::outs() << "  --prepare-stablehlo-spmd-bundle <bundle-dir>\n"
+  llvm::outs() << "  --propagate-stablehlo-sharding <bundle-dir>\n"
                << "    [--default-tile-count=16]\n";
 #endif
   llvm::outs() << "  --compile-stablehlo-bundle-to-cabi <bundle-dir>\n"
@@ -204,7 +204,7 @@ int verifyStableHLOBundle(llvm::StringRef bundlePath) {
 }
 
 #ifdef WAFER_ENABLE_SHARDY
-int prepareStableHLOSpmdBundle(llvm::StringRef bundlePath,
+int propagateStableHLOSharding(llvm::StringRef bundlePath,
                                int64_t defaultTileCount) {
   mlir::DialectRegistry registry;
   registerToolDialects(registry);
@@ -281,7 +281,7 @@ int main(int argc, char **argv) {
 
   std::string verifyFilename;
   std::string bundlePath;
-  std::string prepareSpmdBundlePath;
+  std::string shardingPropagationBundlePath;
   std::string compileBundlePath;
   std::string target = "wafer";
   std::string tileMapping = "single";
@@ -321,20 +321,21 @@ int main(int argc, char **argv) {
     }
 
 #ifdef WAFER_ENABLE_SHARDY
-    if (arg == "--prepare-stablehlo-spmd-bundle") {
+    if (arg == "--propagate-stablehlo-sharding") {
       if (i + 1 >= argc) {
         llvm::errs() << "wafer-import-model: missing "
-                        "--prepare-stablehlo-spmd-bundle directory\n";
+                        "--propagate-stablehlo-sharding directory\n";
         return 1;
       }
-      prepareSpmdBundlePath = argv[++i];
+      shardingPropagationBundlePath = argv[++i];
       continue;
     }
 
-    constexpr llvm::StringRef prepareSpmdPrefix =
-        "--prepare-stablehlo-spmd-bundle=";
-    if (arg.starts_with(prepareSpmdPrefix)) {
-      prepareSpmdBundlePath = arg.drop_front(prepareSpmdPrefix.size()).str();
+    constexpr llvm::StringRef propagateShardingPrefix =
+        "--propagate-stablehlo-sharding=";
+    if (arg.starts_with(propagateShardingPrefix)) {
+      shardingPropagationBundlePath =
+          arg.drop_front(propagateShardingPrefix.size()).str();
       continue;
     }
 #endif
@@ -424,7 +425,7 @@ int main(int argc, char **argv) {
     ++actionCount;
   if (!bundlePath.empty())
     ++actionCount;
-  if (!prepareSpmdBundlePath.empty())
+  if (!shardingPropagationBundlePath.empty())
     ++actionCount;
   if (!compileBundlePath.empty())
     ++actionCount;
@@ -439,8 +440,9 @@ int main(int argc, char **argv) {
   if (!bundlePath.empty())
     return verifyStableHLOBundle(bundlePath);
 #ifdef WAFER_ENABLE_SHARDY
-  if (!prepareSpmdBundlePath.empty())
-    return prepareStableHLOSpmdBundle(prepareSpmdBundlePath, defaultTileCount);
+  if (!shardingPropagationBundlePath.empty())
+    return propagateStableHLOSharding(shardingPropagationBundlePath,
+                                      defaultTileCount);
 #endif
   if (!compileBundlePath.empty())
     return compileStableHLOBundleToCAbi(compileBundlePath, target, tileMapping);

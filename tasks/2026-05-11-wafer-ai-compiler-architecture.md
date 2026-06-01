@@ -765,10 +765,10 @@ Pass pipeline 建议：
 `wafer-propagate-stablehlo-sharding` 组合 Wafer default input seed 和 Shardy propagation，但不冒充
 XLA SPMD partitioner；XLA SPMD local-body 生成当前仍由 source-built PyTorch/XLA runtime/exporter
 产出 partitioned StableHLO bundle。`wafer-lower-stablehlo-to-cabi` 组合 StableHLO->Linalg 与
-Linalg->C ABI 两层。用户级 artifact 入口是
-`wafer-import-model --prepare-stablehlo-spmd-bundle` 和
-`wafer-import-model --compile-stablehlo-bundle-to-cabi`：前者对 pre-SPMD bundle 运行 Shardy
-propagation，后者只从 verified local / post-SPMD partitioned bundle 进入 C ABI lowering，并拒绝带
+Linalg->C ABI 两层。`wafer-import-model --propagate-stablehlo-sharding` 是 sharding propagation
+阶段检查入口，对 pre-SPMD bundle 运行 Shardy propagation；用户级 compile 入口是
+`wafer-import-model --compile-stablehlo-bundle-to-cabi`，只从 verified local / post-SPMD partitioned
+bundle 进入 C ABI lowering，并拒绝带
 pre-SPMD sharding seed 但没有 post-SPMD marker 的 bundle。这些 pipeline 通过 option
 `target=wafer` materialize/校验 `#wafer.target<wafer>`；`tx8` 只保留为底层硬件/依赖事实名，不作为
 compiler driver target。下面列表描述长期阶段边界，不是要求用户手动串 pass。

@@ -123,11 +123,10 @@ P2.S1 当前工程 gate 必须把 XLA SPMD partitioner 或等价 local-body part
   4096 matmul 图的 `x`、`weight`、`bias`，先导出带 `mhlo.sharding` 的 PyTorch/XLA StableHLO
   bundle，再通过同一 PyTorch/XLA / XLA 版本的 post-optimization export 取得 XLA SPMD partitioner
   之后的 StableHLO local body。
-- `wafer-propagate-stablehlo-sharding` / `wafer-import-model --prepare-stablehlo-spmd-bundle`
-  作为 Wafer 侧的 Shardy propagation 入口；standalone `shardy-sdy-opt --sdy-propagation-pipeline`
-  只保留为第三方工具链 parse / pipeline-consumption 对照 gate。当前 partitioned local body 的完成证明
-  来自 PyTorch/XLA runtime 调用的 XLA SPMD partitioner，而不是 Wafer core target 直接链接 XLA
-  ShardyXLA C++ service。
+- `wafer-propagate-stablehlo-sharding` / `wafer-import-model --propagate-stablehlo-sharding`
+  作为 Wafer 侧的 Shardy propagation 入口。当前 partitioned local body 的完成证明来自 PyTorch/XLA
+  runtime 调用的 XLA SPMD partitioner，而不是 Wafer core target 直接链接 XLA ShardyXLA C++
+  service。
 - post-partitioned StableHLO export 需要设置 `XLA_DUMP_POST_OPTIMIZATIONS=1`，并用
   `--xla_disable_hlo_passes=fusion` 禁用 XLA HLO fusion。原因是当前 PyTorch/XLA
   `hloToStablehlo` helper 能把 post-SPMD HLO 中的 collective、local shard shape 和 helper call
@@ -249,14 +248,15 @@ function-input seed。两类策略都必须得到 partitioned StableHLO、等价
 
 当前验证 gate：
 
-- `test/Pipelines/stablehlo-spmd-preparation.mlir` 和
-  `test/Tools/wafer-import-model-spmd-entry.test` 覆盖 Wafer named pipeline / driver 入口：
+- `test/Pipelines/stablehlo-sharding-propagation.mlir` 和
+  `test/Tools/wafer-import-model-sharding-propagation.test` 覆盖 Wafer named pipeline / driver 入口：
   pre-SPMD bundle 先通过 bundle verifier，再执行 default input seed + Shardy propagation；带
   pre-SPMD sharding seed 的 bundle 不能直接进入 C ABI lowering。
 - `test/Tools/wafer-pytorch-xla-capture-sharded-bundle.test` 覆盖六种用户策略的真实
   `mark_sharding` -> pre-partition StableHLO bundle，并通过 `wafer-import-model
   --verify-stablehlo-bundle` 校验 bundle metadata / data；同一测试用
-  `shardy-sdy-opt --sdy-propagation-pipeline` 证明 standalone SDY pipeline 能读取这些真实 artifact。
+  `wafer-import-model --propagate-stablehlo-sharding` 证明 Wafer named pipeline / driver 能读取这些
+  真实 artifact。
 - `test/Tools/wafer-pytorch-xla-capture-partitioned-bundle.test` 覆盖同六种用户策略进入 XLA SPMD
   partitioner 后的 partitioned StableHLO local body；row / contracting 分支检查
   `stablehlo.all_reduce` 和 `replica_groups`，2D/partial-replication 分支检查 local shard shape
@@ -320,7 +320,7 @@ exporter-native facts，而不是检查 `wafer.spmd.*`：
 Shardy propagation gate 通过 Wafer named pipeline / driver 直接消费 `functions/forward.mlir`：
 
 ```text
-wafer-import-model --prepare-stablehlo-spmd-bundle <strategy>
+wafer-import-model --propagate-stablehlo-sharding <strategy>
 wafer-opt --pass-pipeline='builtin.module(wafer-propagate-stablehlo-sharding)' <strategy>/functions/forward.mlir
 ```
 

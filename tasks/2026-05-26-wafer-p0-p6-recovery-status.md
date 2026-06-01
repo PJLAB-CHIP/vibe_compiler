@@ -252,7 +252,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   `wafer-propagate-stablehlo-sharding` / `wafer-lower-stablehlo-to-linalg` /
   `wafer-lower-linalg-to-cabi` / `wafer-lower-stablehlo-to-cabi` /
   `wafer-lower-tile-communication-to-cabi` 重放；用户级 artifact 入口通过
-  `wafer-import-model --prepare-stablehlo-spmd-bundle` 先校验 pre-SPMD bundle 再调用 Shardy
+  `wafer-import-model --propagate-stablehlo-sharding` 先校验 pre-SPMD bundle 再调用 Shardy
   propagation，通过 `wafer-import-model --compile-stablehlo-bundle-to-cabi` 先校验 local/partitioned
   bundle 再调用 StableHLO->C ABI builder。compile driver 会拒绝 pre-SPMD sharding seed 绕过
   Shardy/XLA SPMD。单 pass flags 只保留为局部 unit/debug 入口。

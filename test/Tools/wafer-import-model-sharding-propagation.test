@@ -1,0 +1,20 @@
+# REQUIRES: stablehlo, shardy
+
+# RUN: wafer-import-model --help | FileCheck %s --check-prefix=HELP
+
+# RUN: rm -rf %t.sharding.bundle && mkdir -p %t.sharding.bundle/functions
+# RUN: printf '%b' 'module {\n  func.func @main(%%lhs: tensor<32x16xf32> {mhlo.sharding = "{devices=[16,1]0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15}"}, %%rhs: tensor<16x8xf32>) -> tensor<32x8xf32> {\n    %%0 = "stablehlo.dot_general"(%%lhs, %%rhs) {\n      dot_dimension_numbers = #stablehlo.dot<lhs_contracting_dimensions = [1], rhs_contracting_dimensions = [0]>,\n      precision_config = [#stablehlo<precision DEFAULT>, #stablehlo<precision DEFAULT>]\n    } : (tensor<32x16xf32>, tensor<16x8xf32>) -> tensor<32x8xf32>\n    return %%0 : tensor<32x8xf32>\n  }\n}\n' > %t.sharding.bundle/functions/forward.mlir
+# RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[32,16],"dtype":"float32","dynamic_dims":[]},{"shape":[16,8],"dtype":"float32","dynamic_dims":[]}],"output_signature":[{"shape":[32,8],"dtype":"float32","dynamic_dims":[]}],"input_locations":[{"type_":"input_arg","position":0,"name":"lhs"},{"type_":"input_arg","position":1,"name":"rhs"}],"unused_inputs":[]}\n' > %t.sharding.bundle/functions/forward.meta
+
+# RUN: wafer-import-model --propagate-stablehlo-sharding %t.sharding.bundle --default-tile-count=16 | FileCheck %s --check-prefix=PROPAGATE
+# RUN: not wafer-import-model --compile-stablehlo-bundle-to-cabi %t.sharding.bundle --target=wafer 2>&1 | FileCheck %s --check-prefix=PRE-SPMD-ERROR
+
+# PROPAGATE: mhlo.sharding
+# PROPAGATE: stablehlo.dot_general
+
+# PRE-SPMD-ERROR: StableHLO bundle contains pre-SPMD sharding seeds
+# PRE-SPMD-ERROR: run Shardy/XLA SPMD partitioning before Wafer C ABI lowering
+
+# HELP-NOT: --prepare-stablehlo-spmd-bundle
+# HELP: --propagate-stablehlo-sharding
+# HELP: --default-tile-count=16
