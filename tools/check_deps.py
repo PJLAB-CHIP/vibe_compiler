@@ -54,6 +54,8 @@ SHARDY_API_NEEDLES = [
 
 SHARDY_API_ALLOWED_PREFIXES = [
     "include/Wafer/Frontend",
+    "include/Wafer/Pipelines",
+    "lib/Wafer/Pipelines",
     "lib/Wafer/Transforms/SPMD",
     "tools/wafer-import-model",
     "tools/wafer-opt",
@@ -303,6 +305,12 @@ def check_cmake_target_visibility() -> None:
         check_text_contains(
             REPO_ROOT / "tools" / "wafer-import-model" / "CMakeLists.txt", needle
         )
+    pipelines_cmake_path = REPO_ROOT / "lib" / "Wafer" / "Pipelines" / "CMakeLists.txt"
+    for needle in [
+        "target_compile_definitions(obj.WaferPipelines PRIVATE WAFER_ENABLE_SHARDY=1)",
+        "target_link_libraries(WaferPipelines PUBLIC ShardySdyTransforms)",
+    ]:
+        check_text_contains(pipelines_cmake_path, needle)
     for needle in [
         "shardy/dialect/sdy/ir/register.h",
         "mlir::sdy::registerAllDialects(registry)",

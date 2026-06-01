@@ -7,6 +7,7 @@
 #include "Wafer/Pipelines/Pipelines.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/Extensions/InlinerExtension.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Math/IR/Math.h"
@@ -15,6 +16,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Verifier.h"
+#include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassManager.h"
 #endif
@@ -24,6 +26,7 @@
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <cstdint>
 #include <string>
 
 namespace {
@@ -33,8 +36,12 @@ void printHelp() {
 #ifdef WAFER_ENABLE_STABLEHLO
   llvm::outs() << "  --emit-static-reference-artifact\n"
                << "  --verify-import-result <mlir-file>\n"
-               << "  --verify-stablehlo-bundle <bundle-dir>\n"
-               << "  --compile-stablehlo-bundle-to-cabi <bundle-dir>\n"
+               << "  --verify-stablehlo-bundle <bundle-dir>\n";
+#ifdef WAFER_ENABLE_SHARDY
+  llvm::outs() << "  --prepare-stablehlo-spmd-bundle <bundle-dir>\n"
+               << "    [--default-tile-count=16]\n";
+#endif
+  llvm::outs() << "  --compile-stablehlo-bundle-to-cabi <bundle-dir>\n"
                << "    [--target=wafer] [--tile-mapping=single]\n";
 #else
   llvm::outs() << "  importer dependencies are disabled in this build\n";
@@ -65,6 +72,72 @@ void registerToolDialects(mlir::DialectRegistry &registry) {
                   mlir::scf::SCFDialect, mlir::tensor::TensorDialect>();
   wafer::registerAllDialects(registry);
   wafer::registerImporterDialects(registry);
+  mlir::func::registerInlinerExtension(registry);
+}
+
+bool isPostSpmdMarker(llvm::StringRef name) {
+  return name == "mhlo.spmd_parameters_shardings";
+}
+
+bool isPreSpmdShardingAttr(mlir::NamedAttribute attr) {
+  llvm::StringRef name = attr.getName().getValue();
+  if (name == "mhlo.sharding")
+    return true;
+  if (name == "mhlo.spmd_parameters_sharding")
+    return true;
+  return name == "sdy.sharding";
+}
+
+bool hasPostSpmdMarker(mlir::ModuleOp module) {
+  if (module->getAttr("mhlo.spmd_parameters_shardings"))
+    return true;
+
+  bool found = false;
+  module.walk([&](mlir::Operation *op) {
+    if (op->getAttr("mhlo.spmd_parameters_shardings")) {
+      found = true;
+      return mlir::WalkResult::interrupt();
+    }
+    return mlir::WalkResult::advance();
+  });
+  return found;
+}
+
+bool hasPreSpmdShardingSeed(mlir::ModuleOp module) {
+  bool found = false;
+  module.walk([&](mlir::Operation *op) {
+    if (op->getName().getStringRef().starts_with("sdy.")) {
+      found = true;
+      return mlir::WalkResult::interrupt();
+    }
+
+    for (mlir::NamedAttribute attr : op->getAttrs()) {
+      if (isPostSpmdMarker(attr.getName().getValue()))
+        continue;
+      if (isPreSpmdShardingAttr(attr)) {
+        found = true;
+        return mlir::WalkResult::interrupt();
+      }
+    }
+
+    if (auto func = mlir::dyn_cast<mlir::FunctionOpInterface>(op)) {
+      for (unsigned i = 0, e = func.getNumArguments(); i != e; ++i)
+        for (mlir::NamedAttribute attr : func.getArgAttrs(i))
+          if (isPreSpmdShardingAttr(attr)) {
+            found = true;
+            return mlir::WalkResult::interrupt();
+          }
+      for (unsigned i = 0, e = func.getNumResults(); i != e; ++i)
+        for (mlir::NamedAttribute attr : func.getResultAttrs(i))
+          if (isPreSpmdShardingAttr(attr)) {
+            found = true;
+            return mlir::WalkResult::interrupt();
+          }
+    }
+
+    return mlir::WalkResult::advance();
+  });
+  return found;
 }
 
 int verifyImportResult(llvm::StringRef filename) {
@@ -130,6 +203,31 @@ int verifyStableHLOBundle(llvm::StringRef bundlePath) {
   return 0;
 }
 
+#ifdef WAFER_ENABLE_SHARDY
+int prepareStableHLOSpmdBundle(llvm::StringRef bundlePath,
+                               int64_t defaultTileCount) {
+  mlir::DialectRegistry registry;
+  registerToolDialects(registry);
+
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      parseAndVerifyStableHLOBundle(bundlePath, context);
+  if (!module)
+    return 1;
+
+  mlir::PassManager pm(&context);
+  wafer::buildStablehloShardingPropagationPipeline(pm, defaultTileCount);
+  if (mlir::failed(pm.run(*module)))
+    return 1;
+
+  module->print(llvm::outs());
+  llvm::outs() << "\n";
+  return 0;
+}
+#endif
+
 int compileStableHLOBundleToCAbi(llvm::StringRef bundlePath,
                                  llvm::StringRef target,
                                  llvm::StringRef tileMapping) {
@@ -143,6 +241,13 @@ int compileStableHLOBundleToCAbi(llvm::StringRef bundlePath,
       parseAndVerifyStableHLOBundle(bundlePath, context);
   if (!module)
     return 1;
+
+  if (hasPreSpmdShardingSeed(*module) && !hasPostSpmdMarker(*module)) {
+    llvm::errs() << "wafer-import-model: StableHLO bundle contains pre-SPMD "
+                    "sharding seeds; run Shardy/XLA SPMD partitioning before "
+                    "Wafer C ABI lowering\n";
+    return 1;
+  }
 
   mlir::PassManager pm(&context);
   wafer::buildStablehloToCAbiPipeline(pm, target, tileMapping);
@@ -176,9 +281,11 @@ int main(int argc, char **argv) {
 
   std::string verifyFilename;
   std::string bundlePath;
+  std::string prepareSpmdBundlePath;
   std::string compileBundlePath;
   std::string target = "wafer";
   std::string tileMapping = "single";
+  int64_t defaultTileCount = 16;
   for (int i = 1; i < argc; ++i) {
     llvm::StringRef arg(argv[i]);
     if (arg == "--verify-import-result") {
@@ -213,6 +320,25 @@ int main(int argc, char **argv) {
       continue;
     }
 
+#ifdef WAFER_ENABLE_SHARDY
+    if (arg == "--prepare-stablehlo-spmd-bundle") {
+      if (i + 1 >= argc) {
+        llvm::errs() << "wafer-import-model: missing "
+                        "--prepare-stablehlo-spmd-bundle directory\n";
+        return 1;
+      }
+      prepareSpmdBundlePath = argv[++i];
+      continue;
+    }
+
+    constexpr llvm::StringRef prepareSpmdPrefix =
+        "--prepare-stablehlo-spmd-bundle=";
+    if (arg.starts_with(prepareSpmdPrefix)) {
+      prepareSpmdBundlePath = arg.drop_front(prepareSpmdPrefix.size()).str();
+      continue;
+    }
+#endif
+
     if (arg == "--compile-stablehlo-bundle-to-cabi") {
       if (i + 1 >= argc) {
         llvm::errs() << "wafer-import-model: missing "
@@ -227,6 +353,34 @@ int main(int argc, char **argv) {
         "--compile-stablehlo-bundle-to-cabi=";
     if (arg.starts_with(compileBundlePrefix)) {
       compileBundlePath = arg.drop_front(compileBundlePrefix.size()).str();
+      continue;
+    }
+
+    if (arg == "--default-tile-count") {
+      if (i + 1 >= argc) {
+        llvm::errs() << "wafer-import-model: missing --default-tile-count "
+                        "value\n";
+        return 1;
+      }
+      llvm::StringRef value(argv[++i]);
+      if (value.getAsInteger(10, defaultTileCount)) {
+        llvm::errs() << "wafer-import-model: invalid --default-tile-count "
+                        "value: "
+                     << value << "\n";
+        return 1;
+      }
+      continue;
+    }
+
+    constexpr llvm::StringRef defaultTileCountPrefix = "--default-tile-count=";
+    if (arg.starts_with(defaultTileCountPrefix)) {
+      llvm::StringRef value = arg.drop_front(defaultTileCountPrefix.size());
+      if (value.getAsInteger(10, defaultTileCount)) {
+        llvm::errs() << "wafer-import-model: invalid --default-tile-count "
+                        "value: "
+                     << value << "\n";
+        return 1;
+      }
       continue;
     }
 
@@ -270,6 +424,8 @@ int main(int argc, char **argv) {
     ++actionCount;
   if (!bundlePath.empty())
     ++actionCount;
+  if (!prepareSpmdBundlePath.empty())
+    ++actionCount;
   if (!compileBundlePath.empty())
     ++actionCount;
   if (actionCount > 1) {
@@ -282,6 +438,10 @@ int main(int argc, char **argv) {
     return verifyImportResult(verifyFilename);
   if (!bundlePath.empty())
     return verifyStableHLOBundle(bundlePath);
+#ifdef WAFER_ENABLE_SHARDY
+  if (!prepareSpmdBundlePath.empty())
+    return prepareStableHLOSpmdBundle(prepareSpmdBundlePath, defaultTileCount);
+#endif
   if (!compileBundlePath.empty())
     return compileStableHLOBundleToCAbi(compileBundlePath, target, tileMapping);
 

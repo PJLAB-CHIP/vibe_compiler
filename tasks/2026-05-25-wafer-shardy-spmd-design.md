@@ -123,9 +123,11 @@ P2.S1 当前工程 gate 必须把 XLA SPMD partitioner 或等价 local-body part
   4096 matmul 图的 `x`、`weight`、`bias`，先导出带 `mhlo.sharding` 的 PyTorch/XLA StableHLO
   bundle，再通过同一 PyTorch/XLA / XLA 版本的 post-optimization export 取得 XLA SPMD partitioner
   之后的 StableHLO local body。
-- standalone `shardy-sdy-opt --sdy-propagation-pipeline` 作为真实 frontend mark artifact 的 parse /
-  pipeline-consumption gate；当前 partitioned local body 的完成证明来自 PyTorch/XLA runtime 调用的
-  XLA SPMD partitioner，而不是 Wafer core target 直接链接 XLA ShardyXLA C++ service。
+- `wafer-propagate-stablehlo-sharding` / `wafer-import-model --prepare-stablehlo-spmd-bundle`
+  作为 Wafer 侧的 Shardy propagation 入口；standalone `shardy-sdy-opt --sdy-propagation-pipeline`
+  只保留为第三方工具链 parse / pipeline-consumption 对照 gate。当前 partitioned local body 的完成证明
+  来自 PyTorch/XLA runtime 调用的 XLA SPMD partitioner，而不是 Wafer core target 直接链接 XLA
+  ShardyXLA C++ service。
 - post-partitioned StableHLO export 需要设置 `XLA_DUMP_POST_OPTIMIZATIONS=1`，并用
   `--xla_disable_hlo_passes=fusion` 禁用 XLA HLO fusion。原因是当前 PyTorch/XLA
   `hloToStablehlo` helper 能把 post-SPMD HLO 中的 collective、local shard shape 和 helper call
@@ -247,6 +249,10 @@ function-input seed。两类策略都必须得到 partitioned StableHLO、等价
 
 当前验证 gate：
 
+- `test/Pipelines/stablehlo-spmd-preparation.mlir` 和
+  `test/Tools/wafer-import-model-spmd-entry.test` 覆盖 Wafer named pipeline / driver 入口：
+  pre-SPMD bundle 先通过 bundle verifier，再执行 default input seed + Shardy propagation；带
+  pre-SPMD sharding seed 的 bundle 不能直接进入 C ABI lowering。
 - `test/Tools/wafer-pytorch-xla-capture-sharded-bundle.test` 覆盖六种用户策略的真实
   `mark_sharding` -> pre-partition StableHLO bundle，并通过 `wafer-import-model
   --verify-stablehlo-bundle` 校验 bundle metadata / data；同一测试用
@@ -257,6 +263,11 @@ function-input seed。两类策略都必须得到 partitioned StableHLO、等价
   和 `last_tile_dim_replicate` metadata 可被 bundle verifier 消费。
 - 同一 partitioned gate 覆盖 no-user default `tile-count=16` 和调试 `tile-count=1`。`tile-count=16`
   产生 local shard shape 和必要 `stablehlo.all_gather`；`tile-count=1` 产生 replicated-local body。
+- `test/Tools/wafer-pytorch-xla-spmd-compile-chain.test` 覆盖真实 PyTorch/XLA/XLA SPMD partitioned
+  column-sharding bundle 进入 `wafer-import-model --compile-stablehlo-bundle-to-cabi`，证明 post-SPMD
+  local compute bundle 不再只停在 verifier gate。包含 `all_reduce` / `all_gather` 等 collective 的
+  post-SPMD bundle 进入 R2.4 tensor collective handoff，不因当前 StableHLO->C ABI local compute
+  lowering 尚未覆盖 collective 而从 P2.S1 删除。
 
 #### 2.1.3 默认 no-user-sharding policy
 
@@ -306,17 +317,19 @@ exporter-native facts，而不是检查 `wafer.spmd.*`：
 - artifact 中不得出现 physical tile、DTE packet、SPM offset 或 runtime handle 这类下游 lowering
   metadata。
 
-Shardy propagation gate 直接消费每个 `functions/forward.mlir`：
+Shardy propagation gate 通过 Wafer named pipeline / driver 直接消费 `functions/forward.mlir`：
 
 ```text
-shardy-sdy-opt <strategy>/functions/forward.mlir --sdy-propagation-pipeline
+wafer-import-model --prepare-stablehlo-spmd-bundle <strategy>
+wafer-opt --pass-pipeline='builtin.module(wafer-propagate-stablehlo-sharding)' <strategy>/functions/forward.mlir
 ```
 
-这个 gate 只证明 SDY dialect / propagation pipeline 能读取真实 artifact 中的 sharding facts。
-它必须和 XLA SPMD partitioner / partitioned StableHLO export gate 配套使用，不能单独作为 P2.S1
-完成证明。row / contracting 类 case 需要保留 reduction collective op；如果后续 tensor collective
-normalization、placement 或 ring/resource path 还没有完整消费这些事实，应补对应下游任务，不回头
-把该策略从 P2.S1 artifact gate 中删掉。
+standalone `shardy-sdy-opt` 可以作为第三方 pipeline 对照，但不应是 Wafer 用户级流程的唯一入口。
+这个 gate 只证明 SDY dialect / propagation pipeline 能读取真实 artifact 中的 sharding facts；它必须和
+XLA SPMD partitioner / partitioned StableHLO export gate 配套使用，不能单独作为 P2.S1 完成证明。
+row / contracting 类 case 需要保留 reduction collective op；如果后续 tensor collective
+normalization、placement 或 ring/resource path 还没有完整消费这些事实，应补对应下游任务，不回头把
+该策略从 P2.S1 artifact gate 中删掉。
 
 ## 3. Logical Mesh Contract
 

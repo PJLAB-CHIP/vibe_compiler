@@ -759,17 +759,25 @@ cmake/
 Pass pipeline 建议：
 
 当前用户级 / Integration 主链路不直接暴露下面这些单 pass。R2.4-pre 后由 `WaferPipelines`
-注册按 IR 边界命名的 pipeline：`wafer-lower-stablehlo-to-linalg`、`wafer-lower-linalg-to-cabi`、
+注册按 IR 边界命名的 pipeline：`wafer-propagate-stablehlo-sharding`、
+`wafer-lower-stablehlo-to-linalg`、`wafer-lower-linalg-to-cabi`、
 `wafer-lower-stablehlo-to-cabi` 和 `wafer-lower-tile-communication-to-cabi`。
-`wafer-lower-stablehlo-to-cabi` 组合 StableHLO->Linalg 与 Linalg->C ABI 两层；用户级 artifact
-入口是 `wafer-import-model --compile-stablehlo-bundle-to-cabi`，不要求用户手动拼 model export /
-SPMD / StableHLO / Linalg 的 pass 串。这些 pipeline 通过 option `target=wafer`
-materialize/校验 `#wafer.target<wafer>`；`tx8` 只保留为底层硬件/依赖事实名，不作为 compiler
-driver target。下面列表描述长期阶段边界，不是要求用户手动串 pass。
+`wafer-propagate-stablehlo-sharding` 组合 Wafer default input seed 和 Shardy propagation，但不冒充
+XLA SPMD partitioner；XLA SPMD local-body 生成当前仍由 source-built PyTorch/XLA runtime/exporter
+产出 partitioned StableHLO bundle。`wafer-lower-stablehlo-to-cabi` 组合 StableHLO->Linalg 与
+Linalg->C ABI 两层。用户级 artifact 入口是
+`wafer-import-model --prepare-stablehlo-spmd-bundle` 和
+`wafer-import-model --compile-stablehlo-bundle-to-cabi`：前者对 pre-SPMD bundle 运行 Shardy
+propagation，后者只从 verified local / post-SPMD partitioned bundle 进入 C ABI lowering，并拒绝带
+pre-SPMD sharding seed 但没有 post-SPMD marker 的 bundle。这些 pipeline 通过 option
+`target=wafer` materialize/校验 `#wafer.target<wafer>`；`tx8` 只保留为底层硬件/依赖事实名，不作为
+compiler driver target。下面列表描述长期阶段边界，不是要求用户手动串 pass。
 
 ```text
 ModelImport/FrontendArtifact
   -> StableHLO/Shardy
+  -> Shardy propagation / XLA SPMD partitioner
+  -> partitioned or replicated-local StableHLO
   -> canonicalize StableHLO
   -> StableHLOToLinalg
   -> normalize-constant-like-tensors

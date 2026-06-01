@@ -38,17 +38,22 @@ bin 只负责注册和调用，单 pass flag 只保留为 unit/debug 入口。�
 `wafer`；`tx8` 只保留为硬件/依赖逆向资料中的事实名，不作为 compiler driver target 字符串。
 
 2026-06-01 实现结论：R2.4-pre 已新增 `WaferPipelines` 库并由 `wafer-opt` 注册。当前已收口的
-named pipeline 是 `wafer-lower-stablehlo-to-linalg`、`wafer-lower-linalg-to-cabi`、
-`wafer-lower-stablehlo-to-cabi` 和 `wafer-lower-tile-communication-to-cabi`。这些名字按 IR
-输入/输出和职责命名，不按任务号、case 或 workload 命名；`wafer-lower-stablehlo-to-cabi`
+named pipeline 是 `wafer-propagate-stablehlo-sharding`、`wafer-lower-stablehlo-to-linalg`、
+`wafer-lower-linalg-to-cabi`、`wafer-lower-stablehlo-to-cabi` 和
+`wafer-lower-tile-communication-to-cabi`。这些名字按 IR 输入/输出和职责命名，不按任务号、case
+或 workload 命名；`wafer-propagate-stablehlo-sharding` 组合 Wafer default input seed 与
+Shardy propagation，不冒充 XLA SPMD partitioner。`wafer-lower-stablehlo-to-cabi`
 明确组合 StableHLO->Linalg 与 Linalg->C ABI 两层。`wafer-import-model
---compile-stablehlo-bundle-to-cabi` 是用户级 artifact driver：它先用 StableHLO bundle verifier
-校验 PyTorch/XLA / SPMD 产物，再调用同一条 StableHLO->C ABI pipeline 输出 Wafer IR。pipeline
-option `target=wafer` 会 materialize/校验 module 的
+--prepare-stablehlo-spmd-bundle` 是 pre-SPMD bundle 到 Shardy propagation 的用户级 artifact
+driver；`wafer-import-model --compile-stablehlo-bundle-to-cabi` 从 verified local / post-SPMD
+partitioned StableHLO bundle 进入 StableHLO->C ABI pipeline，并拒绝带 pre-SPMD sharding seed 但
+没有 post-SPMD marker 的 bundle，防止绕过 Shardy/XLA SPMD。XLA SPMD partitioner 当前仍由
+source-built PyTorch/XLA runtime/exporter gate 产出 partitioned bundle，不伪装成 Wafer MLIR pass。
+pipeline option `target=wafer` 会 materialize/校验 module 的
 `#wafer.target<wafer>`；非 `wafer` target 会诊断。Integration 主链路 gate 已改为分层 named
 pipeline 或 driver mode；lit 同时覆盖手写最小 bundle 和真实 source-built PyTorch/XLA 小尺寸
-export bundle 进入该 driver。单 pass flags 继续只作为 Transforms/StageConnections 的局部
-unit/debug 覆盖。
+export bundle、Shardy propagation driver 和真实 PyTorch/XLA/XLA post-SPMD column-sharding bundle 进入
+该 driver。单 pass flags 继续只作为 Transforms/StageConnections 的局部 unit/debug 覆盖。
 
 ## R2.1 Frontend Artifact / Importer Contract
 
@@ -183,9 +188,18 @@ debug/unit 入口，但这些 flag 不能被写成用户级 compile 流程。
 
 当前 R2.4-pre 落地的 Wafer pipeline / driver 边界：
 
-- `wafer-import-model --compile-stablehlo-bundle-to-cabi`：用户级 artifact 入口。输入是
-  `functions/forward.mlir`、`functions/forward.meta` 和可选 weight/shard payload 组成的 StableHLO
-  bundle；driver 先执行 bundle verifier，再调用 `wafer-lower-stablehlo-to-cabi` 的 C++ builder。
+- `wafer-import-model --prepare-stablehlo-spmd-bundle`：pre-SPMD artifact 入口。输入是
+  `functions/forward.mlir`、`functions/forward.meta` 和可选 weight payload 组成的 StableHLO bundle；
+  driver 先执行 bundle verifier，再调用 `wafer-propagate-stablehlo-sharding` 的 C++ builder，输出
+  default input seed + Shardy propagation 后的 StableHLO/SDY module。
+- `wafer-import-model --compile-stablehlo-bundle-to-cabi`：local / partitioned StableHLO artifact
+  入口。输入是 `functions/forward.mlir`、`functions/forward.meta` 和可选 weight/shard payload 组成的
+  StableHLO bundle；driver 先执行 bundle verifier，再调用 `wafer-lower-stablehlo-to-cabi` 的 C++
+  builder。带 pre-SPMD sharding seed 但没有 post-SPMD marker 的 bundle 会诊断，不能绕过
+  Shardy/XLA SPMD 直接下沉。
+- `wafer-propagate-stablehlo-sharding`：StableHLO/SDY sharding seed -> propagated StableHLO/SDY。
+  该 pipeline 只负责 no-user default seed 和 Shardy propagation，不产生 partitioned local body；
+  XLA SPMD partitioned StableHLO 仍来自 PyTorch/XLA/XLA SPMD partitioner gate。
 - `wafer-lower-stablehlo-to-linalg`：StableHLO tensor IR -> Linalg/Tensor/Arith/Math/SCF 结构化
   tensor IR。它不做 group/tile/SPM/DDR/C ABI，也不承载 target 或 tile mapping。
 - `wafer-lower-linalg-to-cabi`：已是 structured tensor/linalg 的 tensor compute -> group/tile/SPM/DDR

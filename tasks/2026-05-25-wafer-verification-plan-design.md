@@ -91,11 +91,13 @@ Single-tile local compute：
   输入只保留为局部 verifier、lowering pattern 或 bring-up fixture。
 - R2.4-pre 之后，主链路 gate 必须通过 Wafer named pipeline 或用户级 driver mode 重放上述链路；
   单独拼 `wafer-opt` pass、`shardy-sdy-opt`、PyTorch/XLA runtime 环境变量和 verifier tool 只能作为
-  unit/debug 覆盖。当前用户级入口是 `wafer-import-model --compile-stablehlo-bundle-to-cabi`；
-  `wafer-opt` named pipeline 入口是 `wafer-lower-stablehlo-to-linalg`、
+  unit/debug 覆盖。当前用户级入口是 `wafer-import-model --prepare-stablehlo-spmd-bundle` 和
+  `wafer-import-model --compile-stablehlo-bundle-to-cabi`；`wafer-opt` named pipeline 入口是
+  `wafer-propagate-stablehlo-sharding`、`wafer-lower-stablehlo-to-linalg`、
   `wafer-lower-linalg-to-cabi`、`wafer-lower-stablehlo-to-cabi` 和
-  `wafer-lower-tile-communication-to-cabi`。用户级 target 名称统一为 `wafer`，并由 pipeline
-  option materialize/校验。
+  `wafer-lower-tile-communication-to-cabi`。compile driver 必须拒绝带 pre-SPMD sharding seed 但没有
+  post-SPMD marker 的 bundle，避免绕过 Shardy/XLA SPMD。用户级 target 名称统一为 `wafer`，并由
+  pipeline option materialize/校验。
 - `wafer.group` 到 `wafer.tile_region` 可生成单 tile load/compute/store。
 - SPM allocation trial 成功。
 - DDR external input/output 或 constant read-only demand 可绑定。

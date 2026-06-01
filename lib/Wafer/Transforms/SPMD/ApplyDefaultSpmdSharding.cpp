@@ -41,8 +41,7 @@ static bool isFrontendShardingAttr(mlir::NamedAttribute attr) {
 }
 
 static bool hasShardingSeed(mlir::func::FuncOp funcOp) {
-  auto funcIface =
-      mlir::cast<mlir::FunctionOpInterface>(funcOp.getOperation());
+  auto funcIface = mlir::cast<mlir::FunctionOpInterface>(funcOp.getOperation());
 
   for (unsigned i = 0, e = funcOp.getNumArguments(); i != e; ++i) {
     if (funcIface.getArgAttr(i, mlir::sdy::kShardingAttr))
@@ -94,8 +93,7 @@ static std::optional<int64_t> findDefaultSplitDim(mlir::RankedTensorType type,
     return std::nullopt;
 
   for (auto [index, dim] : llvm::enumerate(type.getShape())) {
-    if (dim > 0 && !mlir::ShapedType::isDynamic(dim) &&
-        dim % tileCount == 0)
+    if (dim > 0 && !mlir::ShapedType::isDynamic(dim) && dim % tileCount == 0)
       return static_cast<int64_t>(index);
   }
   return std::nullopt;
@@ -120,8 +118,8 @@ buildDefaultInputSharding(mlir::MLIRContext *context,
     replicatedAxes.push_back(tileAxis);
   }
 
-  return mlir::sdy::TensorShardingAttr::get(
-      context, kDefaultMeshName, dimShardings, replicatedAxes);
+  return mlir::sdy::TensorShardingAttr::get(context, kDefaultMeshName,
+                                            dimShardings, replicatedAxes);
 }
 
 static bool isCompatibleDefaultMesh(mlir::sdy::MeshOp meshOp,
@@ -141,27 +139,25 @@ static mlir::sdy::MeshOp getOrCreateDefaultMesh(mlir::ModuleOp moduleOp,
   builder.setInsertionPointToStart(moduleOp.getBody());
   return builder.create<mlir::sdy::MeshOp>(
       moduleOp.getLoc(), kDefaultMeshName,
-      mlir::sdy::MeshAttr::get(moduleOp.getContext(),
-                               {mlir::sdy::MeshAxisAttr::get(
-                                   moduleOp.getContext(), kTileAxisName,
-                                   tileCount)}));
+      mlir::sdy::MeshAttr::get(
+          moduleOp.getContext(),
+          {mlir::sdy::MeshAxisAttr::get(moduleOp.getContext(), kTileAxisName,
+                                        tileCount)}));
 }
 
 static bool needsDefaultSeed(mlir::func::FuncOp funcOp) {
   if (hasShardingSeed(funcOp))
     return false;
 
-  return llvm::any_of(funcOp.getFunctionType().getInputs(),
-                      [](mlir::Type type) {
-                        return mlir::isa<mlir::RankedTensorType>(type);
-                      });
+  return llvm::any_of(
+      funcOp.getFunctionType().getInputs(),
+      [](mlir::Type type) { return mlir::isa<mlir::RankedTensorType>(type); });
 }
 
 static void applyDefaultInputSeeds(mlir::func::FuncOp funcOp,
                                    int64_t tileCount) {
   mlir::MLIRContext *context = funcOp.getContext();
-  auto funcIface =
-      mlir::cast<mlir::FunctionOpInterface>(funcOp.getOperation());
+  auto funcIface = mlir::cast<mlir::FunctionOpInterface>(funcOp.getOperation());
   for (auto [index, type] :
        llvm::enumerate(funcOp.getFunctionType().getInputs())) {
     auto rankedType = mlir::dyn_cast<mlir::RankedTensorType>(type);
@@ -182,6 +178,9 @@ struct ApplyDefaultSpmdShardingPass
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ApplyDefaultSpmdShardingPass)
 
   ApplyDefaultSpmdShardingPass() = default;
+  explicit ApplyDefaultSpmdShardingPass(int64_t tileCount) {
+    this->tileCount = tileCount;
+  }
   ApplyDefaultSpmdShardingPass(const ApplyDefaultSpmdShardingPass &pass)
       : Base(pass) {
     tileCount = pass.tileCount;
@@ -241,6 +240,11 @@ struct ApplyDefaultSpmdShardingPass
 
 std::unique_ptr<mlir::Pass> createApplyDefaultSpmdShardingPass() {
   return std::make_unique<ApplyDefaultSpmdShardingPass>();
+}
+
+std::unique_ptr<mlir::Pass>
+createApplyDefaultSpmdShardingPass(int64_t tileCount) {
+  return std::make_unique<ApplyDefaultSpmdShardingPass>(tileCount);
 }
 
 #endif // WAFER_ENABLE_SHARDY

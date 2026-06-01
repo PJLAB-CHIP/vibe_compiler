@@ -13,6 +13,10 @@
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/CommandLine.h"
 
+#ifdef WAFER_ENABLE_SHARDY
+#include "shardy/dialect/sdy/transforms/propagation/passes.h"
+#endif
+
 #include <memory>
 #include <string>
 #include <utility>
@@ -46,6 +50,18 @@ struct TargetPipelineOptions
                      "'wafer'."),
       llvm::cl::init(kWaferTarget.str())};
 };
+
+#ifdef WAFER_ENABLE_SHARDY
+struct StablehloShardingPropagationPipelineOptions
+    : public mlir::PassPipelineOptions<
+          StablehloShardingPropagationPipelineOptions> {
+  Option<int64_t> defaultTileCount{
+      *this, "default-tile-count",
+      llvm::cl::desc("logical Wafer tile mesh size for default SPMD input "
+                     "sharding seeds"),
+      llvm::cl::init(16)};
+};
+#endif
 
 struct MaterializeCompileTargetPass
     : public mlir::PassWrapper<MaterializeCompileTargetPass,
@@ -158,6 +174,14 @@ void buildStablehloToLinalgPipeline(mlir::OpPassManager &pm) {
   addStablehloToLinalgBody(pm);
 }
 
+#ifdef WAFER_ENABLE_SHARDY
+void buildStablehloShardingPropagationPipeline(mlir::OpPassManager &pm,
+                                               int64_t defaultTileCount) {
+  pm.addPass(createApplyDefaultSpmdShardingPass(defaultTileCount));
+  mlir::sdy::addPropagationPipeline(pm);
+}
+#endif
+
 void buildLinalgToCAbiPipeline(mlir::OpPassManager &pm, llvm::StringRef target,
                                llvm::StringRef tileMapping) {
   addCompileTargetContract(pm, target);
@@ -186,6 +210,17 @@ void registerWaferPipelines() {
         "wafer-lower-stablehlo-to-linalg",
         "Lower StableHLO tensor IR to structured Linalg/Tensor IR",
         [](mlir::OpPassManager &pm) { buildStablehloToLinalgPipeline(pm); });
+#ifdef WAFER_ENABLE_SHARDY
+    mlir::PassPipelineRegistration<StablehloShardingPropagationPipelineOptions>(
+        "wafer-propagate-stablehlo-sharding",
+        "Apply Wafer default StableHLO/SDY sharding seeds when needed and run "
+        "Shardy propagation",
+        [](mlir::OpPassManager &pm,
+           const StablehloShardingPropagationPipelineOptions &options) {
+          buildStablehloShardingPropagationPipeline(pm,
+                                                    options.defaultTileCount);
+        });
+#endif
     mlir::PassPipelineRegistration<TensorToCAbiPipelineOptions>(
         "wafer-lower-linalg-to-cabi",
         "Lower structured Linalg/Tensor IR to the Wafer C ABI",

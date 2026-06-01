@@ -9,6 +9,7 @@ if(WAFER_ENABLE_IMPORTER_DEPS)
     WaferPipelines
     MLIRArithDialect
     MLIRFuncDialect
+    MLIRFuncInlinerExtension
     MLIRIR
     MLIRLinalgDialect
     MLIRMathDialect
