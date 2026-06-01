@@ -1,0 +1,39 @@
+# REQUIRES: stablehlo, shardy, pytorch-xla-importer, xla-spmd-helper
+
+# RUN: rm -rf %t.input.bundle %t.partitioned.bundle
+# RUN: env CPU_NUM_DEVICES=16 PJRT_DEVICE=CPU %importer_python %wafer_src_root/test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-sharded-bundle --sharding-strategy column --size 32 --output-bundle %t.input.bundle
+# RUN: wafer-import-model --partition-stablehlo-bundle %t.input.bundle --output-bundle %t.partitioned.bundle --xla-spmd-partitioner-helper %xla_spmd_partitioner_helper --default-tile-count=16 | FileCheck %s --check-prefix=PARTITION
+# RUN: wafer-import-model --verify-stablehlo-bundle %t.partitioned.bundle | FileCheck %s --check-prefix=VERIFY
+# RUN: FileCheck %s --input-file=%t.partitioned.bundle/functions/forward.mlir --check-prefix=MLIR
+# RUN: FileCheck %s --input-file=%t.partitioned.bundle/functions/forward.parameter_shards.json --check-prefix=SHARDS
+# RUN: test -f %t.partitioned.bundle/parameter_shards/weight/rank_00000.npy
+# RUN: test -f %t.partitioned.bundle/parameter_shards/bias/rank_00000.npy
+# RUN: rm -rf %t.matrix
+# RUN: bash -c 'for strategy in data column row 2d-output 2d-contracting-output partial-replication; do \
+# RUN:   env CPU_NUM_DEVICES=16 PJRT_DEVICE=CPU %importer_python %wafer_src_root/test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-sharded-bundle --sharding-strategy ${strategy} --size 32 --output-bundle %t.matrix/${strategy}.input || exit 1; \
+# RUN:   wafer-import-model --partition-stablehlo-bundle %t.matrix/${strategy}.input --output-bundle %t.matrix/${strategy}.partitioned --xla-spmd-partitioner-helper %xla_spmd_partitioner_helper --default-tile-count=16 > /dev/null || exit 1; \
+# RUN:   wafer-import-model --verify-stablehlo-bundle %t.matrix/${strategy}.partitioned | FileCheck %s --check-prefix=VERIFY || exit 1; \
+# RUN:   FileCheck %s --input-file=%t.matrix/${strategy}.partitioned/functions/forward.mlir --check-prefix=MATRIX-MLIR || exit 1; \
+# RUN:   test -s %t.matrix/${strategy}.partitioned/functions/forward.parameter_shards.json || exit 1; \
+# RUN: done'
+
+# PARTITION: wafer-import-model: partitioned StableHLO bundle written:
+
+# VERIFY: wafer-import-model: verified StableHLO bundle parameters: 2
+# VERIFY: wafer-import-model: verified StableHLO bundle parameter shard bindings: 2
+# VERIFY: wafer-import-model: verified frontend artifact
+
+# MLIR: mhlo.spmd_parameters_shardings
+# MLIR: func.func @main
+# MLIR: tensor<2xf32>
+# MLIR: tensor<32x2xf32>
+# MLIR: stablehlo.all_gather
+# MLIR: stablehlo.dot
+
+# SHARDS: "logical_rank_count": 16
+# SHARDS: "parameter_shards_version": 2
+# SHARDS: "name": "bias"
+# SHARDS: "name": "weight"
+
+# MATRIX-MLIR: mhlo.spmd_parameters_shardings
+# MATRIX-MLIR: func.func @main

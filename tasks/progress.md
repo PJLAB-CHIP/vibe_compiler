@@ -32,11 +32,12 @@
 
 ## 当前主线
 
-当前 active / ready 项：
+当前 active / ready / done 项：
 
 | ID | 状态 | 任务 | 完成标准 |
 | --- | --- | --- | --- |
-| P2.S2 | active | 建立 Wafer-owned XLA SPMD partition artifact stage | 消费经过 Wafer sharding propagation stage 的 StableHLO bundle，调用 XLA SPMD partitioner 或等价 stage，输出 post-SPMD local / replicated-local StableHLO bundle、post-SPMD marker、rank-local function signature、collective metadata、`forward.parameter_shards.json` 和 rank-local parameter payload |
+| P2.S2 | done | 建立 Wafer-owned XLA SPMD partition artifact stage | 消费经过 Wafer sharding propagation stage 的 StableHLO bundle，调用 XLA SPMD partitioner 或等价 stage，输出 post-SPMD local / replicated-local StableHLO bundle、post-SPMD marker、rank-local function signature、collective metadata、`forward.parameter_shards.json` 和 rank-local parameter payload |
+| R2.4 | ready | Wafer LinalgExt-style tensor collective handoff | 消费 P2.S2 partitioned StableHLO bundle 中的 logical collective 和 rank-local signature，normalize 成后续 local compute / group pipeline 可消费的 tensor collective IR |
 
 P2.S2 pipeline contract：
 
@@ -77,10 +78,12 @@ P7/P8/P9 依赖 P0-P6 主链路恢复，不提前推进。
   tile_region / SPM materialization / placement 明确后 materialize。
 - `wafer-lower-stablehlo-to-linalg` 只做 local compute normalization；不承载 sharding propagation、
   SPMD partition、group、placement、SPM/DDR 或 C ABI。
-- P2.S2 当前已有第一切片：`wafer-import-model --partition-stablehlo-bundle` 建立 Wafer driver /
-  pinned-XLA helper 接入点，driver 负责 bundle verify、in-memory Wafer sharding propagation、helper
-  调用和输出 bundle verifier。protocol-only lit 已删除；P2.S2 只能由真实 pinned XLA
-  SPMD helper/service、StableHLO/HLO round trip 和 rank-local parameter shard payload 接上后证明。
+- P2.S2 已完成当前 artifact gate：`wafer-import-model --partition-stablehlo-bundle` 负责 bundle
+  verify、in-memory Wafer sharding propagation、临时 propagated bundle、pinned-XLA helper 调用和输出
+  bundle verifier。helper 执行 StableHLO/SDY -> XLA HLO、`SpmdPrepare` / `SpmdPartitioner` /
+  `HloVerifier`、partitioned HLO -> StableHLO round trip，并写回 rank-local function signature、
+  StableHLO collective metadata、`forward.parameter_shards.json` 和
+  `parameter_shards/<parameter>/rank_XXXXX.npy` payload。
 - `test/Spmd` 当前只覆盖 default input seed 和 SDY/Shardy artifact parse/verify，不覆盖 XLA SPMD
   partitioner，也不输出 rank-local StableHLO。
 - `test/Frontend` 当前覆盖 StableHLO/Linalg local compute normalization；softmax、RMSNorm、LayerNorm 是
@@ -97,6 +100,8 @@ P7/P8/P9 依赖 P0-P6 主链路恢复，不提前推进。
 - Wafer IR op-family 文件组织、interface/effect/resource 查询合同。
 - frontend artifact verifier、PyTorch/XLA bundle metadata / pre-SPMD parameter payload 校验。
 - SDY `sdy.mesh` / `sdy.sharding` parse/verify、default input seed、Shardy propagation driver gate。
+- P2.S2 pinned-XLA SPMD helper build、six-strategy frontend artifact -> Wafer propagation -> XLA SPMD
+  partition -> post-SPMD bundle verification gate。
 - StableHLO/Linalg local compute normalization、stage-connection gate、C ABI issue fixture、package manifest fixture。
 
 不能作为主线完成证明：
@@ -128,8 +133,8 @@ P7/P8/P9 依赖 P0-P6 主链路恢复，不提前推进。
 
 | ID | 状态 | 任务 | 依赖 / 说明 |
 | --- | --- | --- | --- |
-| P2.S2 | active | Wafer-owned XLA SPMD partition artifact stage | 当前推进；driver helper 接入点已建立，真实 pinned XLA helper/service 未完成 |
-| R2.4 | pending | Wafer LinalgExt-style tensor collective handoff | 依赖 P2.S2 |
+| P2.S2 | done | Wafer-owned XLA SPMD partition artifact stage | `wafer-import-model --partition-stablehlo-bundle` 已接真实 pinned XLA helper/service，并通过六种 sharding strategy 的真实 artifact gate |
+| R2.4 | ready | Wafer LinalgExt-style tensor collective handoff | 依赖 P2.S2 |
 | R3.1 | pending | group boundary / candidate contract | 依赖 P2.S2、R2.4 和真实 frontend/SPMD artifact |
 | R3.2 | pending | root tile feasibility oracle | 依赖 R3.1 |
 | R3.3 | pending | tile_region materialization contract | 依赖 R3.1/R3.2 |
@@ -154,7 +159,7 @@ P7/P8/P9 依赖 P0-P6 主链路恢复，不提前推进。
 
 ## 下一步
 
-继续 P2.S2。下一步必须把 `--partition-stablehlo-bundle` 接到真实 pinned XLA SPMD helper/service：
-从经过 Wafer sharding propagation stage 的 StableHLO bundle 进入 XLA SPMD partitioner，并产出可被
-后续 R2.4 / local compute / group pipeline 直接消费的 post-SPMD StableHLO bundle。不能恢复 Python
-post-SPMD helper、`wafer.spmd.*` 私有协议、协议占位测试或手写 fixture 作为主链证明。
+推进 R2.4。下一步消费 P2.S2 的 partitioned StableHLO bundle，把 `stablehlo.all_gather` /
+`all_reduce` / `reduce_scatter` / `all_to_all` / `collective_permute` 这类 logical collective 和
+`replica_groups` / channel metadata normalize 到 Wafer LinalgExt-style tensor collective handoff。
+不能绕回 Python post-SPMD helper、`wafer.spmd.*` 私有协议、协议占位测试或手写 fixture 作为主链证明。

@@ -4,7 +4,8 @@
 
 状态：设计草案；2026-05-25 独立边界收口；2026-05-27 纠正 P2.S1 主 pipeline、禁止
 `wafer.spmd.*` 私有 sharding 协议，并引入 post-SPMD tensor collective handoff；2026-06-01
-删除误导性的 Python post-SPMD helper，明确 P2.S1/P2.S2/R2.4/local compute 的 pass 接入边界
+删除误导性的 Python post-SPMD helper，明确 P2.S1/P2.S2/R2.4/local compute 的 pass 接入边界；
+2026-06-01 接通真实 pinned-XLA helper 的 P2.S2 artifact gate
 
 本文定义 Wafer compiler 中 Shardy / SPMD 阶段的边界。该阶段负责 global tensor 的逻辑切分、
 sharding propagation、SPMD partition 和 logical collective 语义；不负责 physical tile
@@ -150,17 +151,18 @@ P2.S2 工程 gate 必须把 XLA SPMD partitioner 或等价 local-body partitioni
 - `wafer-propagate-stablehlo-sharding` / `wafer-import-model --propagate-stablehlo-sharding`
   作为 Wafer 侧的 Shardy propagation 入口。它消费 pre-SPMD bundle，补 no-user default input
   seed，并调用 Shardy propagation；它不产生 partitioned local body。
-- 缺失的主链 stage 是 Wafer-owned SPMD partition artifact stage：消费 Wafer propagation 后的
-  StableHLO/SDY artifact，显式进入 XLA HLO / XLA SPMD partitioner，再导回 partitioned StableHLO
-  bundle。
+- P2.S2 当前由 Wafer driver mode 加 pinned-XLA helper/service 实现。`wafer-import-model
+  --partition-stablehlo-bundle` 先验证输入 bundle，再在 Wafer 侧执行 default input seed + Shardy
+  propagation，随后把 propagated bundle 交给 helper。helper 显式执行 StableHLO/SDY -> XLA HLO、
+  `SpmdPrepare` / `SpmdPartitioner` / `HloVerifier`、partitioned HLO -> StableHLO round trip，并
+  写回 partitioned StableHLO bundle。
 - 2026-06-01 直接 CMake link 评估结论：当前 build 虽启用 `WAFER_ENABLE_SPMD_PARTITIONER_DEPS`，
   但 CMake target graph 只包含 Wafer / StableHLO / Shardy，没有 XLA `spmd_partitioner`、HLO
-  service、TSL、Abseil 或 generated XLA proto targets。P2.S2 第一切片采用 Wafer driver mode
-  加 pinned-XLA helper/service 接入点；helper 只负责运行 XLA partitioner 或等价 local-body
-  service，Wafer driver 仍拥有 bundle 验证、stage 调用、输出校验和 artifact contract。
-  protocol-only lit 已删除；P2.S2 完成证明必须来自真实 pinned XLA helper/service。
-- 旧 Python post-SPMD helper 和相关 tests 已删除。P2.S2 之前没有 partitioned StableHLO 主链产物；
-  不允许用 Python helper、手写 sidecar 或 fixture 冒充这个缺口。
+  service、TSL、Abseil 或 generated XLA proto targets。为避免把任务拖进 XLA CMake shim，P2.S2
+  采用 `tools/build_xla_spmd_partitioner_helper.py` 生成 pinned `third_party/xla` Bazel overlay 并构建
+  helper；helper 只是当前工程接入方式，不是新的 IR 层、bundle 名称或长期协议对象。
+- 旧 Python post-SPMD helper 和相关 tests 已删除。P2.S2 的 partitioned StableHLO 主链产物只能由
+  Wafer-owned artifact stage 保存；不允许用 Python helper、手写 sidecar 或 fixture 冒充这个缺口。
 - no-user-sharding 分支当前只在文本 StableHLO/SDY artifact 中用
   `--wafer-apply-default-spmd-sharding` / `wafer-propagate-stablehlo-sharding` 补 function-input seed；
   P2.S2 再消费该 stage 输出 artifact。默认 policy 只标记输入/参数，不给中间 op 或 function
@@ -171,6 +173,10 @@ P2.S2 工程 gate 必须把 XLA SPMD partitioner 或等价 local-body partitioni
   `parameter_shards/<parameter>/rank_XXXXX.npy` rank-local payload 的 explicit binding，供后续
   storage/package materialization 消费。binding 的 offsets、sizes、strides 和 replica id 必须来自
   XLA sharding / runtime shard facts，不由 Wafer 从 `partition_spec`、strategy 名或 parameter 名手算。
+- 当前 helper 对参数 payload 支持 row-major raw tensor 和 NumPy `.npy` v1/v2 输入，按 XLA
+  `HloSharding::TileOffsetForDevice` / `TileLimitForDevice` 为每个 logical rank materialize local
+  `.npy` payload；local function signature 从 post-SPMD StableHLO `func.func @main` 的 ranked tensor
+  边界回写到 `forward.meta`。
 
 #### 2.1.1 P2.S1 真实图和 sharding 覆盖矩阵
 
@@ -282,9 +288,15 @@ stage 得到 partitioned StableHLO、等价 per-rank StableHLO body，或明确�
   --verify-stablehlo-bundle` 校验 bundle metadata / data；同一测试用
   `wafer-import-model --propagate-stablehlo-sharding` 证明 Wafer named pipeline / driver 能读取这些
   真实 artifact。
-- 旧 Python post-SPMD helper tests 已删除。当前没有 partitioned StableHLO 主链 gate；P2.S2
-  必须补上 `Wafer propagation output -> XLA SPMD partitioner -> partitioned StableHLO bundle`
-  的真实 gate。
+- `test/Tools/wafer-import-model-xla-spmd-partition-bundle.test` 覆盖 P2.S2 真实 gate：从
+  PyTorch/XLA `mark_sharding` bundle 进入 `wafer-import-model --partition-stablehlo-bundle`，由
+  Wafer driver 执行 bundle verify + Shardy propagation，再调用 pinned-XLA helper 产出 partitioned
+  StableHLO bundle。该 gate 用同一个 matmul 图的 `--size 32` 形态覆盖 data、column、row、
+  2d-output、2d-contracting-output 和 partial-replication 六种 strategy；这是为了让本地 helper /
+  lit gate 可重放，不改变 P2.F1 4096 export 主图的语义形态。column case 额外检查 rank-local
+  signature、StableHLO collective、`forward.parameter_shards.json` 和 rank-local `.npy` payload。
+- 旧 Python post-SPMD helper tests 已删除。P2.S2 partitioned StableHLO 主链 gate 不能退回 Python
+  helper、`wafer.spmd.*` 私有协议或手写 sidecar。
 
 #### 2.1.3 默认 no-user-sharding policy
 
@@ -454,9 +466,10 @@ runtime package metadata。
 P2.S2 的完成证明必须至少覆盖：
 
 - P2.F1 verified artifact 可以作为 Shardy pipeline 输入。
-- P2.F1 4096 matmul 图在 data / batch、column parallel、row / contracting、2D output、2D
-  contracting + output 和 partial replication 策略下都能通过 frontend mark 导出 sharding
-  artifact；主 gate 不以手写 `sdy.sharding` fixture 代替真实导出。
+- P2.F1 matmul 图在 data / batch、column parallel、row / contracting、2D output、2D contracting +
+  output 和 partial replication 策略下都能通过 frontend mark 导出 sharding artifact；frontend
+  export 主图保持 4096 形态，P2.S2 helper / lit gate 可使用同构小尺寸图重放 partition artifact
+  chain，避免把验证变成 4096 工作集容量测试。主 gate 不以手写 `sdy.sharding` fixture 代替真实导出。
 - Shardy propagation 能直接消费每个 strategy 的 `functions/forward.mlir`，并且 XLA SPMD
   partitioner / equivalent service 能产出 partitioned StableHLO 或等价 per-rank StableHLO body。
 - per-rank artifact 仍通过 frontend boundary verifier 或等价 verifier，不丢 function boundary、

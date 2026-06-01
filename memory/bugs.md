@@ -11,3 +11,12 @@
   `VHLO_IntegerAttrV1` 的 raw `APInt` parameter 上报错。现有可通过的
   importer build 仍使用本地 LLVM 21.0.0git override 加
   `WAFER_ALLOW_UNPINNED_LLVM=ON`。
+
+## 2026-06-01 P2.S2 helper MLIRContext lifetime crash
+
+- 现象：`wafer_xla_spmd_partitioner` 构建成功，但写 partitioned bundle 时空 stderr 段错误。
+  `gdb -batch -ex run -ex bt --args ...` 显示崩在 `mlir::Attribute::getContext()`。
+- 根因：helper 在 `hloModuleToStablehlo()` 的局部 `mlir::MLIRContext` 上创建
+  `OwningOpRef<mlir::ModuleOp>` 并返回；调用方继续检查返回的 module 时 context 已销毁。
+- 修复模式：`MLIRContext` 生命周期必须覆盖返回 `ModuleOp` 的完整使用期；不要返回依赖 callee
+  栈上 context 的 MLIR IR 对象。

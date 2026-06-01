@@ -8,5 +8,6 @@ config.importer_python_executable = r"@WAFER_IMPORTER_PYTHON_EXECUTABLE@"
 config.wafer_enable_importer_deps = "@WAFER_ENABLE_IMPORTER_DEPS@"
 config.wafer_enable_spmd_partitioner_deps = "@WAFER_ENABLE_SPMD_PARTITIONER_DEPS@"
 config.wafer_enable_pytorch_xla_importer = "@WAFER_ENABLE_PYTORCH_XLA_IMPORTER@"
+config.xla_spmd_partitioner_helper = "@WAFER_XLA_SPMD_PARTITIONER_HELPER@"
 
 lit_config.load_config(config, r"@CMAKE_CURRENT_SOURCE_DIR@/lit.cfg.py")

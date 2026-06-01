@@ -57,6 +57,13 @@
   `test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-sharded-bundle --sharding-strategy=<name>` 生成
   pre-partition mark artifact。post-SPMD partitioned artifact 只能由 P2.S2 的 Wafer-owned SPMD
   partition stage 产生。
+- P2.S2 pinned-XLA helper 构建入口是 `tools/build_xla_spmd_partitioner_helper.py`；它在
+  `build/xla-spmd-helper/workspace` 生成围绕 `third_party/xla` 的 Bazel overlay，默认用 clang 构建
+  `//xla/wafer_tools:wafer_xla_spmd_partitioner`，产物复制到
+  `build/xla-spmd-helper/wafer_xla_spmd_partitioner`。本地把 helper 接进 lit：
+  `cmake -S . -B build/r0-deps-pytorch-xla -DWAFER_XLA_SPMD_PARTITIONER_HELPER=$PWD/build/xla-spmd-helper/wafer_xla_spmd_partitioner`。
+  之后 `cmake --build build/r0-deps-pytorch-xla --target check-wafer-lit` 会运行真实 P2.S2 partition
+  artifact gate；没有配置 helper 时该 gate 通过 `REQUIRES: xla-spmd-helper` 自动 unsupported。
 - `test/Spmd` 目前只覆盖 P2.S1 default input seed 和 SDY/Shardy artifact parse/verify，不覆盖
   XLA SPMD partitioner，也不输出 rank-local StableHLO。`test/Frontend` 覆盖 StableHLO/Linalg local
   compute normalization；softmax、RMSNorm、LayerNorm 输入是 fine-grained StableHLO staged graph
@@ -92,9 +99,10 @@
   `wafer-propagate-stablehlo-sharding`、`wafer-lower-stablehlo-to-linalg`、
   `wafer-lower-linalg-to-cabi`、`wafer-lower-stablehlo-to-cabi` 和
   `wafer-lower-tile-communication-to-cabi`。`wafer-propagate-stablehlo-sharding` 只做 default input
-  seed + Shardy propagation，不冒充 XLA SPMD partitioner；当前没有 Python post-SPMD 路线或
-  等价替代主链。P2.S2 应新增 Wafer-owned partition artifact stage 消费 propagated StableHLO/SDY，
-  不能塞进 frontend Python 或 `wafer-lower-stablehlo-to-linalg`。`wafer-lower-stablehlo-to-cabi` 必须组合
+  seed + Shardy propagation，不冒充 XLA SPMD partitioner；当前没有 Python post-SPMD 路线。
+  P2.S2 的 Wafer-owned partition artifact stage 由 `wafer-import-model --partition-stablehlo-bundle`
+  消费 propagated StableHLO/SDY 并调用 pinned-XLA helper，不能塞进 frontend Python 或
+  `wafer-lower-stablehlo-to-linalg`。`wafer-lower-stablehlo-to-cabi` 必须组合
   StableHLO->Linalg 与 Linalg->C ABI body，不能另起一套 parallel lowering。`target=wafer` 会
   materialize/校验 `#wafer.target<wafer>`，非 `wafer` target 必须诊断。compile driver 必须拒绝带
   pre-SPMD sharding seed 但没有 post-SPMD marker 的 bundle。单 pass flags 只用于

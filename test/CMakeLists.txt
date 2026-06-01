@@ -57,6 +57,9 @@ configure_file(
 set(WAFER_LIT_ARGS "-sv" CACHE STRING "Arguments passed to lit")
 separate_arguments(WAFER_LIT_ARGS)
 
+set(WAFER_XLA_SPMD_PARTITIONER_HELPER "" CACHE FILEPATH
+  "Path to the optional pinned-XLA SPMD partitioner helper used by P2.S2 lit tests")
+
 add_custom_target(check-wafer-lit
   COMMAND ${WAFER_LIT_EXECUTABLE} ${WAFER_LIT_ARGS} ${CMAKE_CURRENT_BINARY_DIR}
   DEPENDS wafer-import-model wafer-opt

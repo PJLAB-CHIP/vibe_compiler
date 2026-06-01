@@ -25,8 +25,15 @@ config.importer_python_executable = getattr(
 config.wafer_enable_pytorch_xla_importer = getattr(
     config, "wafer_enable_pytorch_xla_importer", "OFF"
 )
+config.xla_spmd_partitioner_helper = lit_config.params.get(
+    "xla_spmd_partitioner_helper",
+    getattr(config, "xla_spmd_partitioner_helper", ""),
+)
 config.substitutions.append(("%importer_python", config.importer_python_executable))
 config.substitutions.append(("%wafer_src_root", config.wafer_src_root))
+config.substitutions.append(
+    ("%xla_spmd_partitioner_helper", config.xla_spmd_partitioner_helper)
+)
 
 if config.wafer_enable_importer_deps == "ON":
     config.available_features.add("stablehlo")
@@ -36,3 +43,6 @@ if config.wafer_enable_spmd_partitioner_deps == "ON":
 
 if config.wafer_enable_pytorch_xla_importer == "ON":
     config.available_features.add("pytorch-xla-importer")
+
+if config.xla_spmd_partitioner_helper:
+    config.available_features.add("xla-spmd-helper")
