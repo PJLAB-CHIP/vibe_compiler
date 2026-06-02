@@ -102,11 +102,12 @@ P7/P8/P9 依赖 P0-P6 主链路恢复，不提前推进。
 - SDY `sdy.mesh` / `sdy.sharding` parse/verify、default input seed、Shardy propagation driver gate。
 - P2.S2 pinned-XLA SPMD helper build、six-strategy frontend artifact -> Wafer propagation -> XLA SPMD
   partition -> post-SPMD bundle verification gate。
-- StableHLO/Linalg local compute normalization、stage-connection gate、C ABI issue fixture、package manifest fixture。
+- StableHLO/Linalg local compute normalization、stage-connection gate、C ABI issue fixture、package manifest
+  validator/stub tool-unit fixture。
 
 不能作为主线完成证明：
 
-- 手写 MLIR fixture、单层 FileCheck 或 fixed manifest 单独成立。
+- 手写 MLIR fixture、单层 FileCheck 或显式 manifest tool-unit fixture 单独成立。
 - Python capture、`test/Spmd` 或 `test/Frontend` 替代 P2.S2 partition artifact stage。
 - C stub syntax compile 替代 LLVM IR、object、真实 runtime call 或 wrapper/packet lowering。
 - 本地 lit/gtest 替代板端 launch、device completion、数值对比或 PMU/profiling。

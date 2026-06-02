@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "package_name": "bad_local_shard",
+  "runtime": {
+    "mode": "hpgr",
+    "completion_source": "hpgr_stream_event"
+  },
+  "device_code": [
+    {
+      "name": "schema_fixture_issue_sequence",
+      "kind": "c_abi_issue_sequence",
+      "artifact": "bad_local_shard.o"
+    }
+  ],
+  "launch_signature": {
+    "inputs": [
+      {"name": "lhs", "shape": [2, 4], "dtype": "f16", "layout": "tensor"}
+    ],
+    "outputs": [
+      {"name": "out", "shape": [2, 4], "dtype": "f16", "layout": "tensor"}
+    ]
+  },
+  "placement": {
+    "logical_rank_count": 1,
+    "topology": {
+      "card_y_count": 1,
+      "card_x_count": 1,
+      "tile_y_count": 4,
+      "tile_x_count": 4
+    },
+    "good_tile_ids": [0],
+    "bad_tile_ids": [],
+    "ranks": [
+      {
+        "logical_rank": 0,
+        "physical_coord": [0, 0, 0, 0],
+        "block_id": 0,
+        "local_shards": [
+          {"name": "lhs", "offsets": [0, 0], "sizes": [3, 4]},
+          {"name": "out", "offsets": [0, 0], "sizes": [2, 4]}
+        ]
+      }
+    ]
+  },
+  "ddr_bindings": [
+    {
+      "kind": "input",
+      "name": "lhs",
+      "bytes": 16,
+      "alignment": 256,
+      "read_only": true,
+      "host_visible": true
+    },
+    {
+      "kind": "output",
+      "name": "out",
+      "bytes": 16,
+      "alignment": 256,
+      "read_only": false,
+      "host_visible": true
+    }
+  ],
+  "workspace_buffers": [],
+  "resident_constants": [],
+  "resources": {
+    "spm_bytes": 128,
+    "ddr_external_input_bytes": 16,
+    "ddr_external_output_bytes": 16,
+    "workspace_bytes": 0,
+    "resident_constant_bytes": 0
+  },
+  "abi_ops": [
+    {"op": "wafer.abi.rdma", "bytes": 16, "wait_policy": "issue_only"},
+    {"op": "wafer.abi.wdma", "bytes": 16, "wait_policy": "issue_only"}
+  ]
+}

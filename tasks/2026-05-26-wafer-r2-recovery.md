@@ -195,7 +195,7 @@ lowering / artifact writer 没有使用这些字段，不再作为主线完成�
 
 从 P2.F1 开始，后续每个相关任务的完成证明都必须把这条真实图 artifact chain 至少推进到该任务
 新增边界，并检查新增事实在该边界可验证、可导出或被直接消费。手写 artifact、单层 FileCheck 和
-fixed manifest 只能作为补充覆盖，不能替代端到端可验证性。若下一层尚未实现某个硬件可表达语义，
+显式 manifest tool-unit fixture 只能作为补充覆盖，不能替代端到端可验证性。若下一层尚未实现某个硬件可表达语义，
 应产生下游恢复任务或补充 IR contract，不能反向削弱当前层 artifact。
 
 R2.4-pre 完成后，上述消费链不能再依赖用户或 lit 手动串联多个 tool / pass / env。主线 gate

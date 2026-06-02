@@ -385,5 +385,5 @@ lowering / artifact writer 没有使用这些字段，它只能证明局部工�
 
 P2.F1 之后的每个相关任务都要把这条 chain 继续向下延伸：任务完成时必须有一条从真实图 artifact
 出发的端到端 gate，重放已完成上游阶段，并证明本任务新增语义在本任务边界可验证、可导出或被
-直接消费。手写 artifact、局部 pattern test 和 fixed manifest 只能作为补充覆盖。后续 stage 当前
+直接消费。手写 artifact、局部 pattern test 和显式 manifest tool-unit fixture 只能作为补充覆盖。后续 stage 当前
 未实现时，应记录为恢复任务或补 IR contract，不能反向要求 frontend/SPMD artifact 避开该语义。

@@ -79,7 +79,7 @@ Gate 通过只说明进入下一层的输入合法，不说明整个 compiler �
 P2.F1 之后的任务完成验证还需要一条真实 artifact chain gate：输入必须来自真实 framework/exporter
 图导出的 artifact，测试应重放已完成的上游链路，并检查本任务新增的 IR fact、verifier fact、
 resource fact 或 package fact 能在该任务边界正确导出并被直接消费。局部 verifier negative、
-pattern FileCheck、手写 StableHLO/Linalg fixture 和 fixed manifest 可以保留，但只能补覆盖，不能
+pattern FileCheck、手写 StableHLO/Linalg fixture 和显式 manifest tool-unit fixture 可以保留，但只能补覆盖，不能
 单独作为任务完成证明。若直接下游还没有实现某个硬件可表达语义，完成证明应把缺口记录为下游恢复
 任务，而不是修改上游 artifact 或 verifier 让该语义消失。
 
@@ -117,13 +117,14 @@ Single-tile local compute：
 - SPM allocation trial 成功。
 - DDR external input/output 或 constant read-only demand 可绑定。
 - 至少一个 compute/movement ABI family 有 golden packet。
-- 当前无卡开发环境要求 generated artifact compile 和 package manifest roundtrip；runtime completion
-  在带实际计算卡服务器上再验证，届时 completion 必须来自 HPGR model/module/stream completion、
-  legacy `TsmRun` synchronous path，或 device-side drain + 可信 host completion。
+- 当前无卡开发环境要求 generated artifact compile；package manifest roundtrip 只能作为 tool-unit
+  schema 覆盖，不能替代 IR-derived package emission。runtime completion 在带实际计算卡服务器上再
+  验证，届时 completion 必须来自 HPGR model/module/stream completion、legacy `TsmRun` synchronous
+  path，或 device-side drain + 可信 host completion。
 
 Multi-tile no communication：
 
-- 主链路 gate 继续消费同一条真实图 artifact chain，不重新退回手写 tile_region 或 fixed manifest。
+- 主链路 gate 继续消费同一条真实图 artifact chain，不重新退回手写 tile_region 或显式 manifest fixture。
 - placement 覆盖多个 tile，并使用 good-tile metadata。
 - 每个 tile 有 block id / local shard metadata。
 - 无 tile 间 DTE 依赖。
@@ -181,15 +182,12 @@ Transformer block vertical slice：
 - 当前无卡开发环境要求 generated artifact compile，package/runtime metadata 覆盖所有 block
   input/output、resident constants 和 workspace；completion 和数值对比后续在有卡环境验证。
 
-当前实现中的 P5.8 static gate 覆盖 full local block 中 rank-2 GEMM 子图、attention QK^T / AV
-rank-4 batched GEMM 子图、same-shape / projected-permutation limited broadcast elementwise 子图，
-以及 scalar-constant-init reduce max/sum 子图的 local compile path：normalization、acceptance
-gates、group split、single-tile materialization、SPM allocation check、DDR binding demand、C ABI
-issue、manifest validate 和 C stub syntax compile。package gate 要求 transformer fixture manifest 记录
-workspace buffers 和 resident constants，并验证它们的 compact tensor storage bytes 与 resource
-summary 一致；manifest 中的 82 个 ABI issue 覆盖当前 full block lowering 输出的 RDMA、WDMA、
-elementwise、GEMM 和 reduce issue，C stub 会 materialize 对应 issue/resource table，证明 metadata
-能进入本地 toolchain 可消费的 C source fixture。它是当前无卡环境的 transformer fixture 覆盖；completion、
+当前实现中的 transformer static fixture 覆盖 full local block 中 rank-2 GEMM 子图、attention QK^T /
+AV rank-4 batched GEMM 子图、same-shape / projected-permutation limited broadcast elementwise 子图，
+以及 scalar-constant-init reduce max/sum 子图的 local IR path：normalization、group split、
+single-tile materialization、SPM allocation check、DDR binding demand 和 C ABI issue。历史 fixed
+manifest / C stub gate 已删除；workspace buffers、resident constants、package metadata 和 IR-derived
+manifest emission 仍属后续恢复任务。它是当前无卡环境的 transformer IR fixture 覆盖；completion、
 数值对比和 profiling 仍等有卡环境补 gate。
 
 M7 ABI / LLVM artifact gate：
@@ -226,8 +224,8 @@ M9 overlap / cost model / profiling calibration gate：
 materialize 为 `wafer.compute.reduce` 并 lower 到带 `dimensions` / `init_value` 的
 `wafer.abi.reduce` issue op。attention slice 让 QK^T / AV 的 rank-4 `linalg.generic`
 contraction materialize 为 batched `wafer.compute.gemm`，并 lower 到带 `batch_count`、M/K/N 和
-batch/head dimension attrs 的 `wafer.abi.gemm` issue op。Transformer package fixture 已覆盖当前 static
-block 的完整 ABI issue 序列。当前仍不覆盖 mask/select、dynamic shape 或非 constant-init reduce；
+batch/head dimension attrs 的 `wafer.abi.gemm` issue op。当前 transformer static fixture 覆盖的是
+ABI issue IR 序列，不覆盖 IR-derived package manifest。当前仍不覆盖 mask/select、dynamic shape 或非 constant-init reduce；
 这些是后续 compute/group/resource 恢复项。只要对应语义能由 StableHLO / structured tensor IR 和
 Wafer 硬件能力表达，就不能把当前 static gate 的覆盖范围写成长期不支持。
 
@@ -261,13 +259,13 @@ Wafer 硬件能力表达，就不能把当前 static gate 的覆盖范围写成�
 - golden packet tests：至少覆盖 single-tile local compute 用到的 wrapper family。
 
 如果某个 milestone 暂时只能做文档验证，必须明确说明还缺 build/test harness 或板端 runtime。
-当前 local compile / package gate 可以证明 compiler 产物生成和 C stub 语法可编译性，但不能替代
-LLVM IR lowering、object code emission、真实 runtime call emission、板端运行、数值正确性、
-completion 或 profiling 证明。
+当前 local compile gate 只能证明 IR pipeline 到 C ABI issue；显式 manifest / C stub tool-unit
+coverage 不能替代 IR-derived package emission、LLVM IR lowering、object code emission、真实
+runtime call emission、板端运行、数值正确性、completion 或 profiling 证明。
 
-当前 local integration gate 还存在一个 fixture 阶段的闭环缺口：`wafer-opt` pipeline 的
-IR FileCheck 和 package manifest / C stub 检查在同一测试文件内执行，但 manifest 由
-`tools/wafer_package_manifest.py` 的 fixed fixture emitter 生成，不是从该次 `wafer-opt` 输出的
-`wafer.abi.*` IR 自动导出。因此这些 gate 只能证明 IR lowering 和 package schema/stub 生成分别
-可用；不能作为 “package 由当前 lowering 结果生成” 的证据。进入 P7 时必须先把
-IR-derived manifest emission 作为 gate，之后再推进 LLVM IR / object / runtime call。
+历史 local integration gate 曾把 `wafer-opt` pipeline 的 IR FileCheck 和 package manifest / C stub
+检查放在同一测试文件内，但 manifest 由 fixed fixture emitter 生成，不是从该次 `wafer-opt` 输出的
+`wafer.abi.*` IR 自动导出。该拼接和 fixed emitter 已删除；当前只能证明 IR lowering 和
+package schema/stub tool-unit 分别可用，不能作为 “package 由当前 lowering 结果生成” 的证据。
+进入 P7 时必须先把 IR-derived manifest emission 作为 gate，之后再推进 LLVM IR / object /
+runtime call。

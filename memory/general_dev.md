@@ -128,3 +128,7 @@
   `wafer-check-projection-residual-schedule` 或 `wafer-check-mlp-schedule` 这类 case-specific
   transformer acceptance pass。StableHLO->Linalg 只证明 structured tensor lowering；softmax/norm/MLP
   的真实完成证明应来自通用 group formation、tile/materialization、resource verifier 和下游消费。
+- 不要恢复 `tools/wafer_package_manifest.py --emit-*` 这类 fixed package emitter，也不要把
+  `wafer-import-model --emit-static-reference-artifact` 这类 synthetic artifact emitter 作为 importer
+  或 package 主线。Manifest validator / C stub generator 只能消费显式 manifest fixture 做 tool-unit
+  覆盖；主线 package manifest 必须由当前 IR / named pipeline 自动导出。

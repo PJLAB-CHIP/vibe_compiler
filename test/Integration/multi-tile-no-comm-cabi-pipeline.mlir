@@ -1,9 +1,4 @@
 // RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-linalg-to-cabi{target=wafer tile-mapping=multi-tile-no-comm})' %s | FileCheck %s --check-prefix=IR
-// RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-multi-tile-no-comm-matmul > %t.manifest.json
-// RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --validate %t.manifest.json
-// RUN: %python %wafer_src_root/tools/wafer_emit_c_abi_stub.py --manifest %t.manifest.json > %t.c
-// RUN: FileCheck %s --check-prefix=C < %t.c
-// RUN: cc -fsyntax-only %t.c
 
 module {
   wafer.placement.map
@@ -45,8 +40,3 @@ module {
 // IR: wafer.abi.gemm <issue_only>
 // IR: wafer.abi.wdma <issue_only>
 // IR-NOT: wafer.comm
-
-// C: static const wafer_tile_launch_arg_t k_multi_tile_no_comm_matmul_tile_args[] = {
-// C: {0u, 0u, 0u, 0u, 0u, 0u},
-// C: {1u, 1u, 0u, 0u, 0u, 1u},
-// C: int multi_tile_no_comm_matmul_tile_arg_count(void)

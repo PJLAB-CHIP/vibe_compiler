@@ -305,9 +305,9 @@ local reduce 到 `wafer.compute.reduce` / `wafer.abi.reduce` 的 issue path，�
 slice：只接受可由 `linalg.generic` indexing maps、parallel/reduction iterator types、mul-add
 body 和静态 shape relation 验证的 batch/head 形态，materialize 为带显式 batch/head/m/k/n 维度
 attrs 的 `wafer.compute.gemm`，并 lower 到带 `batch_count` 和 M/K/N 的 `wafer.abi.gemm`
-issue op。Transformer package fixture 随后补入 workspace/resident constant metadata、resource summary
-一致性验证和当前 full block lowering 输出的完整 ABI issue 序列。它仍不是通用
-elementwise/reduce/GEMM coverage；更复杂 broadcast、relation/logic、convert、多输入/非
+issue op。历史 transformer fixed package fixture 已删除；workspace/resident constant metadata、
+resource summary 一致性验证和 full block package manifest 必须由后续 IR-derived package gate
+恢复。当前覆盖仍不是通用 elementwise/reduce/GEMM coverage；更复杂 broadcast、relation/logic、convert、多输入/非
 constant-init reduce 和 mask/select 仍按后续泛化 gate 推进。当前 coverage 不能被解释成
 Wafer compute 语义上不支持这些结构；只要硬件 wrapper / structured lowering 能表达，就应补
 compute op、verifier、ABI 或 resource gate。

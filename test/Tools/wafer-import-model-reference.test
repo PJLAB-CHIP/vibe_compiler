@@ -1,9 +1,8 @@
 # REQUIRES: stablehlo
 
 # RUN: wafer-import-model --help | FileCheck %s --check-prefix=HELP
-# RUN: wafer-import-model --emit-static-reference-artifact | FileCheck %s --check-prefix=EMIT
-# RUN: wafer-import-model --emit-static-reference-artifact > %t.static.mlir
-# RUN: wafer-import-model --verify-import-result %t.static.mlir | FileCheck %s --check-prefix=VERIFY
+# RUN: printf '%b' 'module {\n  func.func @frontend_verifier_smoke(%%arg0: tensor<2x4xf32>, %%arg1: tensor<2x4xf32>) -> tensor<2x4xf32> {\n    %%0 = stablehlo.add %%arg0, %%arg1 : tensor<2x4xf32>\n    return %%0 : tensor<2x4xf32>\n  }\n}\n' > %t.verify.mlir
+# RUN: wafer-import-model --verify-import-result %t.verify.mlir | FileCheck %s --check-prefix=VERIFY
 
 # RUN: printf '%b' 'module attributes {"wafer.import.graph_break" = "python control flow escaped capture"} {}\n' > %t.graph-break.mlir
 # RUN: not wafer-import-model --verify-import-result %t.graph-break.mlir 2>&1 | FileCheck %s --check-prefix=GRAPH
@@ -49,13 +48,9 @@
 # RUN: rm %t.missing-data.bundle/data/weight
 # RUN: not wafer-import-model --verify-stablehlo-bundle %t.missing-data.bundle 2>&1 | FileCheck %s --check-prefix=BUNDLE-DATA
 
+# HELP-NOT: --emit-static-reference-artifact
 # HELP-NOT: --verify-spmd-bundle
 # HELP: --compile-stablehlo-bundle-to-cabi
-
-# EMIT: module
-# EMIT: func.func @wafer_import_static_reference
-# EMIT: tensor<2x4xf32>
-# EMIT: stablehlo.add
 
 # VERIFY: wafer-import-model: verified frontend artifact
 

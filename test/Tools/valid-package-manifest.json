@@ -1,0 +1,110 @@
+{
+  "schema_version": 1,
+  "package_name": "manifest_schema_fixture",
+  "runtime": {
+    "mode": "hpgr",
+    "completion_source": "hpgr_stream_event"
+  },
+  "device_code": [
+    {
+      "name": "schema_fixture_issue_sequence",
+      "kind": "c_abi_issue_sequence",
+      "artifact": "schema_fixture.o"
+    }
+  ],
+  "launch_signature": {
+    "inputs": [
+      {"name": "lhs", "shape": [2, 4], "dtype": "f16", "layout": "tensor"},
+      {"name": "rhs", "shape": [2, 4], "dtype": "f16", "layout": "tensor"}
+    ],
+    "outputs": [
+      {"name": "out", "shape": [2, 4], "dtype": "f16", "layout": "tensor"}
+    ]
+  },
+  "placement": {
+    "logical_rank_count": 1,
+    "topology": {
+      "card_y_count": 1,
+      "card_x_count": 1,
+      "tile_y_count": 4,
+      "tile_x_count": 4
+    },
+    "good_tile_ids": [0],
+    "bad_tile_ids": [],
+    "ranks": [
+      {
+        "logical_rank": 0,
+        "physical_coord": [0, 0, 0, 0],
+        "block_id": 0,
+        "local_shards": [
+          {"name": "lhs", "offsets": [0, 0], "sizes": [2, 4]},
+          {"name": "rhs", "offsets": [0, 0], "sizes": [2, 4]},
+          {"name": "out", "offsets": [0, 0], "sizes": [2, 4]}
+        ]
+      }
+    ]
+  },
+  "ddr_bindings": [
+    {
+      "kind": "input",
+      "name": "lhs",
+      "bytes": 16,
+      "alignment": 256,
+      "read_only": true,
+      "host_visible": true
+    },
+    {
+      "kind": "input",
+      "name": "rhs",
+      "bytes": 16,
+      "alignment": 256,
+      "read_only": true,
+      "host_visible": true
+    },
+    {
+      "kind": "output",
+      "name": "out",
+      "bytes": 16,
+      "alignment": 256,
+      "read_only": false,
+      "host_visible": true
+    }
+  ],
+  "workspace_buffers": [
+    {
+      "name": "tmp",
+      "shape": [2, 4],
+      "dtype": "f16",
+      "layout": "tensor",
+      "bytes": 16,
+      "alignment": 256,
+      "producer": "elementwise_add",
+      "last_consumer": "store"
+    }
+  ],
+  "resident_constants": [
+    {
+      "name": "rhs",
+      "source": "launch_input",
+      "shape": [2, 4],
+      "dtype": "f16",
+      "layout": "tensor",
+      "bytes": 16,
+      "alignment": 256
+    }
+  ],
+  "resources": {
+    "spm_bytes": 192,
+    "ddr_external_input_bytes": 32,
+    "ddr_external_output_bytes": 16,
+    "workspace_bytes": 16,
+    "resident_constant_bytes": 16
+  },
+  "abi_ops": [
+    {"op": "wafer.abi.rdma", "bytes": 16, "wait_policy": "issue_only"},
+    {"op": "wafer.abi.rdma", "bytes": 16, "wait_policy": "issue_only"},
+    {"op": "wafer.abi.elementwise", "kind": "add", "wait_policy": "issue_only"},
+    {"op": "wafer.abi.reduce", "kind": "max", "dimensions": [1], "init_value": -1.0, "wait_policy": "issue_only"},
+    {"op": "wafer.abi.wdma", "bytes": 16, "wait_policy": "issue_only"}
+  ]
+}

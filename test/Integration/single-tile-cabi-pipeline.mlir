@@ -1,8 +1,4 @@
 // RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-linalg-to-cabi{target=wafer})' %s | FileCheck %s --check-prefix=IR
-// RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-single-tile-matmul > %t.manifest.json
-// RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --validate %t.manifest.json
-// RUN: %python %wafer_src_root/tools/wafer_emit_c_abi_stub.py --manifest %t.manifest.json > %t.c
-// RUN: cc -fsyntax-only %t.c
 
 module {
   func.func @single_matmul(

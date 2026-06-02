@@ -36,8 +36,7 @@ namespace {
 void printHelp() {
   llvm::outs() << "wafer-import-model\n";
 #ifdef WAFER_ENABLE_STABLEHLO
-  llvm::outs() << "  --emit-static-reference-artifact\n"
-               << "  --verify-import-result <mlir-file>\n"
+  llvm::outs() << "  --verify-import-result <mlir-file>\n"
                << "  --verify-stablehlo-bundle <bundle-dir>\n";
 #ifdef WAFER_ENABLE_SHARDY
   llvm::outs() << "  --propagate-stablehlo-sharding <bundle-dir>\n"
@@ -55,17 +54,6 @@ void printHelp() {
 }
 
 #ifdef WAFER_ENABLE_STABLEHLO
-void emitStaticReferenceArtifact() {
-  llvm::outs()
-      << "module {\n"
-      << "  func.func @wafer_import_static_reference(%arg0: tensor<2x4xf32>, "
-         "%arg1: tensor<2x4xf32>) -> tensor<2x4xf32> {\n"
-      << "    %0 = stablehlo.add %arg0, %arg1 : tensor<2x4xf32>\n"
-      << "    return %0 : tensor<2x4xf32>\n"
-      << "  }\n"
-      << "}\n";
-}
-
 mlir::OwningOpRef<mlir::ModuleOp> parseModule(llvm::StringRef filename,
                                               mlir::MLIRContext &context) {
   mlir::ParserConfig config(&context);
@@ -478,11 +466,6 @@ int main(int argc, char **argv) {
                   "this build\n";
   return 1;
 #else
-  if (argc == 2 && std::string(argv[1]) == "--emit-static-reference-artifact") {
-    emitStaticReferenceArtifact();
-    return 0;
-  }
-
   std::string verifyFilename;
   std::string bundlePath;
   std::string shardingPropagationBundlePath;

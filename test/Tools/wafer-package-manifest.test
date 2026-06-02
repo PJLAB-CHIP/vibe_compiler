@@ -1,15 +1,13 @@
-# RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-single-tile-matmul | %python %wafer_src_root/tools/wafer_package_manifest.py --roundtrip - | FileCheck %s
-# RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-single-tile-matmul | %python %wafer_src_root/tools/wafer_package_manifest.py --validate -
-# RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-single-tile-elementwise | %python %wafer_src_root/tools/wafer_package_manifest.py --validate -
-# RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-local-transformer-block | %python %wafer_src_root/tools/wafer_package_manifest.py --roundtrip - | FileCheck %s --check-prefix=BLOCK
-# RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-synchronous-completion | not %python %wafer_src_root/tools/wafer_package_manifest.py --validate - 2>&1 | FileCheck %s --check-prefix=ERR
-# RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-invalid-placement | not %python %wafer_src_root/tools/wafer_package_manifest.py --validate - 2>&1 | FileCheck %s --check-prefix=PLACEMENT-ERR
-# RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --emit-invalid-local-shard | not %python %wafer_src_root/tools/wafer_package_manifest.py --validate - 2>&1 | FileCheck %s --check-prefix=SHARD-ERR
+# RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --roundtrip %S/valid-package-manifest.json | FileCheck %s
+# RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --validate %S/valid-package-manifest.json
+# RUN: not %python %wafer_src_root/tools/wafer_package_manifest.py --validate %S/invalid-completion-manifest.json 2>&1 | FileCheck %s --check-prefix=ERR
+# RUN: not %python %wafer_src_root/tools/wafer_package_manifest.py --validate %S/invalid-placement-manifest.json 2>&1 | FileCheck %s --check-prefix=PLACEMENT-ERR
+# RUN: not %python %wafer_src_root/tools/wafer_package_manifest.py --validate %S/invalid-local-shard-manifest.json 2>&1 | FileCheck %s --check-prefix=SHARD-ERR
 # RUN: not %python %wafer_src_root/tools/wafer_package_manifest.py --validate %S/invalid-workspace-manifest.json 2>&1 | FileCheck %s --check-prefix=WORKSPACE-ERR
 # RUN: not %python %wafer_src_root/tools/wafer_package_manifest.py --validate %S/invalid-resident-constant-manifest.json 2>&1 | FileCheck %s --check-prefix=CONST-ERR
 
 # CHECK: "schema_version": 1
-# CHECK: "package_name": "single_tile_matmul"
+# CHECK: "package_name": "manifest_schema_fixture"
 # CHECK: "completion_source": "hpgr_stream_event"
 # CHECK: "placement": {
 # CHECK: "logical_rank_count": 1
@@ -17,10 +15,13 @@
 # CHECK: "block_id": 0
 # CHECK: "local_shards": [
 # CHECK-NOT: TsmDeviceSynchronize
-# CHECK: "ddr_external_input_bytes": 320
-# CHECK: "ddr_external_output_bytes": 128
+# CHECK: "ddr_external_input_bytes": 32
+# CHECK: "ddr_external_output_bytes": 16
+# CHECK: "workspace_bytes": 16
+# CHECK: "resident_constant_bytes": 16
 # CHECK: "wafer.abi.rdma"
-# CHECK: "wafer.abi.gemm"
+# CHECK: "wafer.abi.elementwise"
+# CHECK: "wafer.abi.reduce"
 # CHECK: "wafer.abi.wdma"
 
 # ERR: completion source is a known stub fence
@@ -28,22 +29,3 @@
 # SHARD-ERR: local_shards[0] exceeds tensor shape
 # WORKSPACE-ERR: resources.workspace_bytes does not match workspace buffers
 # CONST-ERR: resources.resident_constant_bytes does not match resident constants
-
-# BLOCK-DAG: "package_name": "local_transformer_block"
-# BLOCK-DAG: "workspace_buffers": [
-# BLOCK-DAG: "name": "scores"
-# BLOCK-DAG: "producer": "attention_score"
-# BLOCK-DAG: "last_consumer": "softmax_shift"
-# BLOCK-DAG: "resident_constants": [
-# BLOCK-DAG: "name": "proj_w"
-# BLOCK-DAG: "source": "launch_input"
-# BLOCK-DAG: "workspace_bytes": 18480
-# BLOCK-DAG: "resident_constant_bytes": 1856
-# BLOCK-DAG: "op": "wafer.abi.reduce"
-# BLOCK-DAG: "kind": "max"
-# BLOCK-DAG: "dimensions": [
-# BLOCK-DAG: 3
-# BLOCK-DAG: "init_value": -3.40282347e+38
-# BLOCK-DAG: "op": "wafer.abi.elementwise"
-# BLOCK-DAG: "kind": "tanh"
-# BLOCK-DAG: "batch_count": 6

@@ -49,10 +49,10 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   边界；R1.1 已把 `wafer` dialect 内部 ODS、op verifier 和 dialect tests 按 op family 拆开。
 - `WaferOps.td` 现在只作为 TableGen 聚合入口，具体 op 定义在 `include/Wafer/IR/Ops/*Ops.td`；
   `WaferDialect.cpp` 只保留 dialect/attr/type/op 注册和 `TileBufferType` verifier。
-- Local integration gate 把 `wafer-opt` IR FileCheck 和 fixed manifest/C stub fixture 放在同一
-  测试文件里，但 package 不是从该次 IR lowering 自动导出。
-- 当前 local compile 只到 `wafer.abi.*` issue ops、manifest fixture 和 generated C stub syntax compile；
-  没有 LLVM dialect、LLVM IR、object、真实 `wafer_*` call、runtime adapter 或板端 completion。
+- 历史 local integration gate 曾把 `wafer-opt` IR FileCheck 和 fixed manifest/C stub fixture 放在同一
+  测试文件里；这些 fixed emitter 和测试拼接已删除，当前 integration 只保留 IR pipeline coverage。
+- 当前 local compile 只到 `wafer.abi.*` issue ops；没有 IR-derived package manifest、LLVM dialect、
+  LLVM IR、object、真实 `wafer_*` call、runtime adapter 或板端 completion。
 
 ## P0 工程、依赖、组织
 
@@ -264,7 +264,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   或 runtime binding。
 - C ABI 还是 `wafer.abi.*` issue op 和 descriptor builder，不是真实 `wafer_*` call、LLVM lowering
   或 wrapper-to-register golden packet。
-- single-tile manifest 是 fixed fixture emitter，不由当前 `wafer-opt` output 自动导出。
+- fixed manifest emitter 已删除；IR-derived package manifest 仍未由当前 `wafer-opt` output 自动导出。
 
 恢复任务：
 
@@ -342,14 +342,14 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   block structured fixture；旧 transformer-specific acceptance passes 已删除。
 - 有 rank-4 QK^T / AV contraction lowering、same-shape/projected-permutation elementwise、local reduce
   和 batched GEMM issue lowering。
-- local-transformer fixture manifest 覆盖 workspace buffers、resident constants 和 82 个 ABI issue，
-  C stub syntax compile 可过。
+- 旧 local-transformer fixed manifest / C stub gate 已删除；当前 transformer integration 只覆盖
+  StableHLO -> C ABI issue IR pipeline。
 
 缺口：
 
 - transformer frontend fixtures 只证明 structured tensor dataflow 覆盖，不是 full schedule planner。
-- transformer package manifest 是 fixed fixture，不由 transformer IR 自动导出；workspace/resident constant metadata
-  与 IR dataflow 无统一事实源。
+- transformer package manifest 尚未由 transformer IR 自动导出；workspace/resident constant metadata
+  与 IR dataflow 仍无统一事实源。
 - mask/select、dynamic shape、非 constant-init reduce、复杂 broadcast 和 true constant slicing/storage
   transform 未闭环。
 - layout/SPM/DDR feasibility 未覆盖 full block 所有 accepted groups，只覆盖当前局部子图。
