@@ -36,7 +36,7 @@ boundary 补设计，不能反向污染上层 IR 语义。
 - `docs/tx8-deps-reverse-engineering/firmware-kuiper-runtime-hardware-analysis.md`
 - `docs/tx8-deps-reverse-engineering/txda-pytorch-runtime-wheel-analysis.md`
 
-结论：主方向仍然成立，即 verified StableHLO / MLIR program、Shardy/SPMD 和 Wafer
+结论：主方向仍然成立，即 verified Wafer program、Shardy/SPMD 和 Wafer
 自有 IR contract 作为图编译主线；torch-xla、torch-mlir、OpenXLA exporter 等只作为 model
 importer adapter，LLVM/MLIR/StableHLO/Shardy 等第三方工程依赖按层组织，不反向变成 Wafer IR
 语义。Wafer 后端通过 C ABI 调 public Tsm wrapper/Kcore runtime，不围绕历史
@@ -501,7 +501,7 @@ Frontend program
 
 | 层级 | 前置项 | 验收口径 |
 | --- | --- | --- |
-| Frontend program | 从真实 framework/exporter 图导出语义完整的 StableHLO / MLIR program，保留 shape、dtype、constant、weight、sharding 和 bounded dynamic shape；LLVM/MLIR/StableHLO/Shardy/importer 依赖由 adapter 和 build 配置隔离 | 没有 eager fallback、名字约定、不可界定 dynamic shape；主链路完成证明消费真实图 program，后端 textual tests 只作为局部 verifier / lowering 覆盖且不依赖 importer-only framework 包 |
+| Frontend program | 从真实 framework/exporter 图导出语义完整的 Wafer program，保留 StableHLO/MLIR IR、shape、dtype、constant、weight payload、sharding 和 bounded dynamic shape；LLVM/MLIR/StableHLO/Shardy/importer 依赖由 adapter 和 build 配置隔离 | 没有 eager fallback、名字约定、不可界定 dynamic shape；主链路完成证明消费真实图 program，后端 textual tests 只作为局部 verifier / lowering 覆盖且不依赖 importer-only framework 包 |
 | Local compute normalization / tensor collective | 实现 dot_general、batch/head matmul、broadcast、reduction、reshape/transpose/slice、softmax、RMSNorm / LayerNorm、RoPE 和 MLP activation 的 structured IR 输出；SPMD collective 规整成 Wafer LinalgExt-style tensor collective | 输出只依赖 StableHLO semantics、type、indexing map、collective metadata 和 SSA use-def，不靠 layer 名或 tensor 名；tensor collective 不携带 `wafer.comm`、SPM buffer 或 DTE token |
 | Group planning | softmax staged schedule 有可测试 pattern：row max、exp、row sum、normalize 和 value accumulation 跨 key dimension 的状态明确表达 | 状态由 SSA、loop-carried value、explicit workspace 或 group split 表达，不写入 planner side table |
 | Compute coverage | elementwise 覆盖 add/sub/mul/div/max/min/neg/recip/sqrt/rsqrt/exp、limited broadcast、mask-add 或 compare/select；reduction 至少覆盖 max 和 sum | 能服务 softmax 与 norm；只有一个 demo reduce 或一个 GEMM 最小验证 不算覆盖 |
@@ -527,7 +527,7 @@ Frontend program
 下面这些判断和最新逆向结果一致，可以保留：
 
 - 不从历史 backend 反推整体架构。
-- verified StableHLO / MLIR program、Shardy/SPMD 和 Wafer IR contract 是合理主路径；具体
+- verified Wafer program、Shardy/SPMD 和 Wafer IR contract 是合理主路径；具体
   exporter/importer 是可替换适配层。P2.F1 之后的主链路完成证明应优先消费真实图导出的 program，
   手写 textual fixture 只保留为局部测试输入。
 - Wafer 后端应生成 Wafer C ABI call，再由 C ABI 调 public Tsm wrapper。

@@ -1,0 +1,15 @@
+# REQUIRES: stablehlo, shardy
+
+# RUN: rm -rf %t.input.program %t.partitioned.program %t.fake-helper
+# RUN: mkdir -p %t.input.program/functions %t.input.program/data
+# RUN: printf '%b' 'module {\n  func.func @main(%%lhs: tensor<32x16xf32> {mhlo.sharding = "{devices=[16,1]0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15}"}, %%rhs: tensor<16x8xf32>) -> tensor<32x8xf32> {\n    %%0 = "stablehlo.dot_general"(%%lhs, %%rhs) {\n      dot_dimension_numbers = #stablehlo.dot<lhs_contracting_dimensions = [1], rhs_contracting_dimensions = [0]>,\n      precision_config = [#stablehlo<precision DEFAULT>, #stablehlo<precision DEFAULT>]\n    } : (tensor<32x16xf32>, tensor<16x8xf32>) -> tensor<32x8xf32>\n    return %%0 : tensor<32x8xf32>\n  }\n}\n' > %t.input.program/functions/forward.mlir
+# RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[32,16],"dtype":"float32","dynamic_dims":[]},{"shape":[16,8],"dtype":"float32","dynamic_dims":[]}],"output_signature":[{"shape":[32,8],"dtype":"float32","dynamic_dims":[]}],"input_locations":[{"type_":"input_arg","position":0,"name":"lhs"},{"type_":"input_arg","position":1,"name":"rhs"}],"unused_inputs":[]}\n' > %t.input.program/functions/forward.meta
+# RUN: printf 'bytecode member must be preserved\n' > %t.input.program/functions/forward.bytecode
+# RUN: printf 'payload member must be preserved\n' > %t.input.program/data/aux.payload
+# RUN: printf '%b' '#!/usr/bin/env bash\nset -euo pipefail\ninput=""\noutput=""\nwhile [[ $# -gt 0 ]]; do\n  case "$1" in\n    --input-program-dir) input="$2"; shift 2 ;;\n    --output-program-dir) output="$2"; shift 2 ;;\n    --entry-function|--logical-rank-count) shift 2 ;;\n    *) shift ;;\n  esac\ndone\ntest -f "$input/functions/forward.bytecode"\ntest -f "$input/data/aux.payload"\nrm -rf "$output"\nmkdir -p "$output"\ncp -R "$input/." "$output/"\n' > %t.fake-helper
+# RUN: chmod +x %t.fake-helper
+# RUN: wafer-opt --partition-stablehlo-program %t.input.program --output-program-dir %t.partitioned.program --xla-spmd-partitioner-helper %t.fake-helper --default-tile-count=16 | FileCheck %s
+# RUN: test -f %t.partitioned.program/functions/forward.bytecode
+# RUN: test -f %t.partitioned.program/data/aux.payload
+
+# CHECK: wafer-opt: partitioned StableHLO program directory written:

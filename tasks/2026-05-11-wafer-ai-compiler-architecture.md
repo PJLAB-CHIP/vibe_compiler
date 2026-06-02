@@ -25,7 +25,7 @@
 目标是构建一套面向 Wafer 硬件的 AI compiler/runtime 栈，使上游模型可以通过标准图编译路径运行到
 Wafer 多 tile / 多卡系统上。PyTorch 是重要入口之一，但不是 Wafer 后端的唯一或长期 IR 边界。
 
-主路径选择 verified StableHLO / MLIR program、Shardy/SPMD 和 Wafer IR contract，而不是从历史
+主路径选择 verified Wafer program、Shardy/SPMD 和 Wafer IR contract，而不是从历史
 backend、某个 importer 或 runtime wrapper 反推整套架构：
 
 ```text
@@ -134,7 +134,7 @@ source model / exported program / pre-exported StableHLO
 
 - 保留模型语义、dtype、rank、shape 和有限动态 shape 信息。
 - 保留或导入用户/框架侧 sharding 标记。
-- 决定 weight 表达方式：StableHLO constant 或 exporter-native StableHLO program directory metadata/data。
+- 决定 weight 表达方式：StableHLO constant 或 exporter-native Wafer program metadata/payload。
 - freeze weights 的逻辑保持硬件无关，命名和实现不绑定 Wafer。
 
 不负责：
@@ -145,7 +145,7 @@ source model / exported program / pre-exported StableHLO
 
 V0 策略：
 
-- 稳定 compiler 入口是 verified StableHLO / MLIR program。
+- 稳定 compiler 入口是 verified Wafer program。
 - 主链路完成证明优先来自真实 framework/exporter 产生的实际图 program，例如 PyTorch/XLA、
   JAX 或其它 exporter 导出的 StableHLO / MLIR。手写 StableHLO 只保留为 pre-exported program
   fixture、verifier negative test 或局部 lowering bring-up，不能证明 framework-specific capture 已完成。
@@ -772,7 +772,7 @@ Pass pipeline 建议：
 - completion gate。
 
 pass 名、tool flag、test 名和任务号只作为实现索引；架构边界仍由 IR / program contract 和
-verifier/lowering 责任定义。主线 gate 必须通过 Wafer named pipeline 或 `wafer-opt` program mode
+verifier/lowering 责任定义。主线 gate 必须通过 Wafer named pipeline 或 `wafer-opt` program pipeline
 重放已完成上游链路，不能依赖 integration test 手动拼 pass、Python helper 或手写 fixture 来表示
 长期 compile flow。
 
@@ -782,7 +782,7 @@ verifier/lowering 责任定义。主线 gate 必须通过 Wafer named pipeline �
 `wafer-propagate-stablehlo-sharding` 组合 Wafer default input seed 和 Shardy propagation，但不冒充
 XLA SPMD partitioner；partitioned / replicated-local StableHLO program directory 必须由 P2.S2 的 Wafer-owned
 SPMD partition compiler stage 消费 sharding propagation stage 输出的 StableHLO/SDY IR 后产出。
-`wafer-compile-stablehlo` 只保留 frontend / StableHLO program directory verifier；program-level
+`wafer-compile-stablehlo` 只保留 frontend / StableHLO program verifier；program-level
 P2.S2 partition 入口是 `wafer-opt --partition-stablehlo-program`。`wafer-lower-linalg-to-cabi`、`wafer-lower-stablehlo-to-cabi`、
 `wafer-lower-tile-communication-to-cabi` 和 `wafer-compile-stablehlo --compile-stablehlo-program-to-cabi`
 已删除；旧 single-tile/C ABI/ring/SPM/DDR unit/debug pass 链也已删除。`tx8` 只保留为底层硬件/

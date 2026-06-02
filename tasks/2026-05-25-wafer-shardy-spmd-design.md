@@ -6,7 +6,7 @@
 `wafer.spmd.*` 私有 sharding 协议，并引入 post-SPMD tensor collective handoff；2026-06-01
 删除误导性的 Python post-SPMD helper，明确 P2.S1/P2.S2/R2.4/local compute 的 pass 接入边界；
 2026-06-02 纠正 frontend / compiler ownership：StableHLO export / verifier tool 不再承载
-Shardy propagation 或 XLA SPMD partition，P2.S2 由 `wafer-opt` program mode 承载
+Shardy propagation 或 XLA SPMD partition，P2.S2 由 `wafer-opt` program pipeline 承载
 
 本文定义 Wafer compiler 中 Shardy / SPMD 阶段的边界。该阶段负责 global tensor 的逻辑切分、
 sharding propagation、SPMD partition 和 logical collective 语义；不负责 physical tile
@@ -70,8 +70,9 @@ partitioner 可以产生等价的 single-program / replicated-local StableHLO；
 
 本节描述 P2 SPMD program 的终态合同；当前实现拆成 P2.S1 Shardy propagation stage 和
 P2.S2 Wafer-owned XLA SPMD partition stage。P2.S2 的用户级入口是
-`wafer-opt --partition-stablehlo-program` program mode；它消费 frontend program
-directory，在 Wafer compiler 侧执行 sharding propagation 并调用 pinned-XLA SPMD helper。终态覆盖两类 program：用户显式标记 sharding 的图，
+`wafer-opt --partition-stablehlo-program` program pipeline；它消费 frontend Wafer program，
+在 Wafer compiler 侧执行 sharding propagation 并调用 pinned-XLA SPMD helper。StableHLO program
+directory 是该 program 当前的序列化形式，不是与 MLIR 分离的第二条编译路径。终态覆盖两类 program：用户显式标记 sharding 的图，
 以及完全没有用户 sharding seed、需要 Wafer 默认单卡 policy 的图。SPMD pipeline 必须消费 P2.F1
 产出的 verified frontend program，而不是只 parse 手写 `sdy.mesh` fixture。主 pipeline 边界是：
 
@@ -135,7 +136,7 @@ P2.S2 工程 gate 必须把 XLA SPMD partitioner 或等价 local-body partitioni
   它由 `wafer-opt` / `WaferPipelines` 注册，输出经过 sharding propagation stage 处理后的
   StableHLO/SDY IR，不输出 partitioned local body、不写 `forward.parameter_shards.json`、也不插入
   post-SPMD collective。
-- P2.S2 必须是 Wafer compiler-owned stage、`wafer-opt` program mode 或等价 library entry：消费经过 Wafer
+- P2.S2 必须是 Wafer compiler-owned stage、`wafer-opt` program pipeline 或等价 library entry：消费经过 Wafer
   sharding propagation stage 的 StableHLO/SDY IR 或 program directory，显式完成 StableHLO/SDY ->
   XLA HLO、XLA SPMD partitioner、partitioned HLO -> StableHLO round trip，再写 post-SPMD local /
   replicated-local StableHLO program directory 和 rank-local parameter shard binding。该入口不能挂在
@@ -160,11 +161,14 @@ P2.S2 工程 gate 必须把 XLA SPMD partitioner 或等价 local-body partitioni
 - `wafer-propagate-stablehlo-sharding` 是 Wafer compiler 侧 Shardy propagation named pipeline。它消费
   StableHLO/SDY IR，补 no-user default input seed，并调用 Shardy propagation；它不产生 partitioned
   local body。
-- P2.S2 当前由 `wafer-opt --partition-stablehlo-program` program mode 加
+- P2.S2 当前由 `wafer-opt --partition-stablehlo-program` program pipeline 加
   pinned-XLA helper/service 实现。`wafer-opt` 先验证输入 program directory，再在 Wafer compiler 侧执行
   default input seed + Shardy propagation，随后把 propagated program directory 交给 helper。helper
   显式执行 StableHLO/SDY -> XLA HLO、`SpmdPrepare` / `SpmdPartitioner` / `HloVerifier`、
   partitioned HLO -> StableHLO round trip，并写回 partitioned StableHLO program directory。
+  `wafer-opt` staging 必须保留未被 propagation 改写的 program members，只重写 propagated IR；
+  helper / writer 在产生 partitioned program 时负责同步更新 local function signature、rank-local
+  parameter payload 和 shard binding metadata。
 - 2026-06-01 直接 CMake link 评估结论：当前 build 虽启用 `WAFER_ENABLE_SPMD_PARTITIONER_DEPS`，
   但 CMake target graph 只包含 Wafer / StableHLO / Shardy，没有 XLA `spmd_partitioner`、HLO
   service、TSL、Abseil 或 generated XLA proto targets。为避免把任务拖进 XLA CMake shim，P2.S2
@@ -301,11 +305,11 @@ stage 得到 partitioned StableHLO、等价 per-rank StableHLO body，或明确�
   propagation / partition flags。
 - `test/Tools/wafer-pytorch-xla-capture-sharded-program.test` 覆盖六种用户策略的真实
   `mark_sharding` -> pre-partition StableHLO program directory，并通过 `wafer-compile-stablehlo
-  --verify-stablehlo-program` 校验 program directory metadata / data。该测试不执行 Shardy propagation
+  --verify-stablehlo-program` 校验 program metadata / payload。该测试不执行 Shardy propagation
   或 XLA SPMD partition；它证明 frontend export / verifier 边界，不证明 P2.S2。
 - `test/Tools/wafer-opt-spmd-partition.test` 覆盖 P2.S2 真实 gate：从 PyTorch/XLA
   `mark_sharding` program directory 进入 `wafer-opt --partition-stablehlo-program`，由 Wafer
-  compiler 的 `wafer-opt` program mode 执行 program directory verify + Shardy propagation，再调用 pinned-XLA helper 产出
+  compiler 的 `wafer-opt` program pipeline 执行 program directory verify + Shardy propagation，再调用 pinned-XLA helper 产出
   partitioned StableHLO program directory。该 gate 用同一个 matmul 图的 `--size 32` 形态覆盖 data、
   column、row、2d-output、2d-contracting-output 和 partial-replication 六种 strategy；这是为了让本地
   helper / lit gate 可重放，不改变 P2.F1 4096 export 主图的语义形态。column case 额外检查

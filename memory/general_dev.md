@@ -111,9 +111,9 @@
   responsibility、output program / IR、downstream consumer、user-level driver / named pipeline、
   explicit non-goals 和 completion gate。只说明某个 pass / tool / test 的局部功能不够；完成证明
   必须重放已完成上游 program chain，并证明当前 stage 输出会被下游边界直接消费。
-- 主链路 gate 用 `WaferPipelines` 中注册的 named pipeline 或 `wafer-opt` program mode，不在 Integration
+- 主链路 gate 用 `WaferPipelines` 中注册的 named pipeline 或 `wafer-opt` program pipeline，不在 Integration
   里手动拼 pass 串。当前 frontend verifier 入口是
-  `wafer-compile-stablehlo --verify-stablehlo-program`；P2.S2 `wafer-opt` program 入口是
+  `wafer-compile-stablehlo --verify-stablehlo-program`；P2.S2 `wafer-opt` program pipeline 入口是
   `wafer-opt --partition-stablehlo-program`；`wafer-compile-stablehlo --propagate-stablehlo-sharding`、
   `wafer-compile-stablehlo --partition-stablehlo-program` 已删除，因为 Shardy/SPMD 不属于 frontend
   verifier tool；`wafer-compile-stablehlo --compile-stablehlo-program-to-cabi` 也已删除，因为 R3/R6/R7

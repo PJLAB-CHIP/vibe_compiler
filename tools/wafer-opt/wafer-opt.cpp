@@ -45,7 +45,7 @@ void registerWaferOptDialects(mlir::DialectRegistry &registry) {
   mlir::func::registerInlinerExtension(registry);
 }
 
-bool hasStableHLOProgramPartitionMode(int argc, char **argv) {
+bool hasStableHLOProgramPartitionRequest(int argc, char **argv) {
   for (int i = 1; i < argc; ++i) {
     llvm::StringRef arg(argv[i]);
     if (arg == "--partition-stablehlo-program" ||
@@ -161,9 +161,12 @@ bool copyDirectoryIfPresent(llvm::StringRef from, llvm::StringRef to) {
   return false;
 }
 
-bool writePropagatedProgramDir(mlir::ModuleOp module,
-                               llvm::StringRef inputProgramDir,
-                               llvm::StringRef stagedProgramDir) {
+bool stageProgramWithPropagatedModule(mlir::ModuleOp module,
+                                      llvm::StringRef inputProgramDir,
+                                      llvm::StringRef stagedProgramDir) {
+  if (copyDirectoryIfPresent(inputProgramDir, stagedProgramDir))
+    return true;
+
   std::string stagedFunctions =
       programFile(stagedProgramDir, {llvm::StringRef("functions")});
   if (createDirectory(stagedFunctions))
@@ -187,16 +190,7 @@ bool writePropagatedProgramDir(mlir::ModuleOp module,
     return true;
   }
 
-  if (copyFile(
-          programFile(inputProgramDir, {llvm::StringRef("functions"),
-                                        llvm::StringRef("forward.meta")}),
-          programFile(stagedProgramDir, {llvm::StringRef("functions"),
-                                         llvm::StringRef("forward.meta")})))
-    return true;
-
-  return copyDirectoryIfPresent(
-      programFile(inputProgramDir, {llvm::StringRef("data")}),
-      programFile(stagedProgramDir, {llvm::StringRef("data")}));
+  return false;
 }
 
 int partitionStableHLOProgram(llvm::StringRef programPath,
@@ -250,7 +244,8 @@ int partitionStableHLOProgram(llvm::StringRef programPath,
     return 1;
   }
 
-  if (writePropagatedProgramDir(*module, programPath, stagedProgramDir)) {
+  if (stageProgramWithPropagatedModule(*module, programPath,
+                                       stagedProgramDir)) {
     llvm::sys::fs::remove_directories(stagedProgramDir);
     return 1;
   }
@@ -288,7 +283,7 @@ int partitionStableHLOProgram(llvm::StringRef programPath,
 }
 #endif
 
-int runStableHLOProgramPartitionMode(int argc, char **argv) {
+int runStableHLOProgramPartition(int argc, char **argv) {
 #ifndef WAFER_ENABLE_STABLEHLO
   llvm::errs()
       << "wafer-opt: StableHLO frontend dependencies are disabled in this "
@@ -394,8 +389,8 @@ int runStableHLOProgramPartitionMode(int argc, char **argv) {
 } // namespace
 
 int main(int argc, char **argv) {
-  if (hasStableHLOProgramPartitionMode(argc, argv))
-    return runStableHLOProgramPartitionMode(argc, argv);
+  if (hasStableHLOProgramPartitionRequest(argc, argv))
+    return runStableHLOProgramPartition(argc, argv);
 
   mlir::DialectRegistry registry;
   registerWaferOptDialects(registry);

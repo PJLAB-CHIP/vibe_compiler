@@ -40,7 +40,7 @@ Serving integration 暂不纳入本文通过标准。
 
 | gate | 输入 | 通过条件 |
 | --- | --- | --- |
-| Frontend program | imported StableHLO program directory / MLIR | importer adapter diagnostics、parse/roundtrip、shape/dtype、constant normalization、sharding import source、third-party dialect registration 合法 |
+| Frontend program | imported Wafer program: StableHLO/MLIR IR + metadata + parameter/resource payload | importer adapter diagnostics、parse/roundtrip、shape/dtype、constant normalization、sharding import source、payload binding、third-party dialect registration 合法 |
 | Shardy propagation | StableHLO + user sharding seed or default no-user input seed | logical mesh、SDY sharding seed、propagation 结果合法；不要求 partitioned local body |
 | SPMD partition program | sharding propagation stage 输出的 StableHLO/SDY IR | XLA SPMD partitioner 或等价 stage 产出 partitioned/replicated-local StableHLO、rank-local shape、collective group 和 parameter shard binding 合法 |
 | Placement | logical ranks + topology | physical mapping 覆盖所有 rank，过滤 bad tile，cluster capability 合法 |
@@ -72,7 +72,7 @@ Gate 通过只说明进入下一层的输入合法，不说明整个 compiler �
 - golden packet tests：C ABI 参数到 wrapper/packet field。
 - package serialization tests：manifest、bootparam/TLV fallback、constant bytes metadata。
 - runtime shielding tests：已知 stub path 不能被选为 correctness fence。
-- importer/dependency 最小验证：至少一个 importer path 能产出 verified StableHLO / MLIR program；
+- importer/dependency 最小验证：至少一个 importer path 能产出 verified Wafer program；
   后端 textual MLIR tests 不依赖 importer-only Python / framework 包，但不能作为主链路完成证明。
 - board 最小验证：只在 runtime path 和 hardware availability 明确时作为新增 milestone gate。
 
@@ -89,7 +89,7 @@ pattern FileCheck、手写 StableHLO/Linalg fixture 和显式 manifest tool-unit
 - current stage responsibility：当前 gate 只验证或 materialize 哪一层语义。
 - output program / IR：通过后产生或确认的 program / IR contract。
 - downstream consumer：哪个后续 stage 会直接消费该输出。
-- user-level driver / named pipeline：主链路如何由 `wafer-opt` program mode 或 named pipeline 重放。
+- user-level driver / named pipeline：主链路如何由 `wafer-opt` program pipeline 或 named pipeline 重放。
 - explicit non-goals：哪些 pass、tool、fixture 或下游缺口不能被算进当前完成证明。
 - completion gate：哪条命令或测试证明当前 stage 的输出沿真实 program chain 可被消费。
 
@@ -103,10 +103,10 @@ Single-tile local compute：
 - 主链路 gate 应消费 P2.F1/P2.S1/P2.S2/R2.4 产出的真实图 program，并继续通过 frontend/local compute /
   tensor collective handoff gate；graph break / fallback 不被当成合法 program。手写 StableHLO/Linalg
   输入只保留为局部 verifier、lowering pattern 或 bring-up fixture。
-- R2.4-pre 之后，主链路 gate 必须通过 Wafer named pipeline 或 `wafer-opt` program mode 重放上述链路；
+- R2.4-pre 之后，主链路 gate 必须通过 Wafer named pipeline 或 `wafer-opt` program pipeline 重放上述链路；
   单独拼 `wafer-opt` pass、`shardy-sdy-opt`、PyTorch/XLA runtime 环境变量和 verifier tool 只能作为
   unit/debug 覆盖。2026-06-02 后，frontend program verifier 入口是
-  `wafer-compile-stablehlo --verify-stablehlo-program`；P2.S2 program-level `wafer-opt` mode 入口是
+  `wafer-compile-stablehlo --verify-stablehlo-program`；P2.S2 `wafer-opt` program pipeline 入口是
   `wafer-opt --partition-stablehlo-program`；`--compile-stablehlo-program-to-cabi` 已删除。
   `wafer-opt` named pipeline 入口保留 `wafer-propagate-stablehlo-sharding` 和
   `wafer-lower-stablehlo-to-linalg`。

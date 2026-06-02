@@ -160,7 +160,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 
 设计合同：
 
-- 稳定入口是 verified exporter-native StableHLO program directory / MLIR program，不是某个框架 API 或 Wafer
+- 稳定入口是 verified Wafer program，不是某个框架 API 或 Wafer
   私有伴随 JSON。
 - frontend 保留 function signature、shape、dtype、dynamic bound、constant/weight 和 sharding annotation；
   不引入 Wafer SPM、DDR、layout materialization、runtime launch 或 private tensor constant op。
@@ -176,7 +176,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - attention QK^T / AV rank-4 `dot_general` 不再由 `wafer-lower-stablehlo-dot` 特判 lowering；full
   local transformer fixture 只证明前段 reduce/elementwise/shape 和 rank-2 GEMM 子图的 structured
   tensor dataflow。
-- `wafer-compile-stablehlo` 已通过 `WaferFrontend` verifier 接收 pre-exported StableHLO / MLIR program，
+- `wafer-compile-stablehlo` 已通过 `WaferFrontend` verifier 接收 pre-exported Wafer program，
   并覆盖 graph break、eager fallback、bounded dynamic shape 诊断；P2.F1 进一步验证 PyTorch/XLA
   program directory `forward.meta` / pre-SPMD `data/<parameter>` 与 MLIR function signature 一致；post-SPMD
   `forward.parameter_shards.json` 与 rank-local shard payload 只有 verifier fixture 覆盖，真实产物

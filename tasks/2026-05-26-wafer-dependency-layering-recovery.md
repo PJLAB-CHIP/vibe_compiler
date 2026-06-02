@@ -29,7 +29,7 @@ core compiler target。
 
 ## 非目标
 
-- 不实现真实 model importer adapter、exporter program directory metadata verifier 或 Shardy SPMD bridge。
+- 不实现真实 model importer adapter、Wafer program verifier 或 Shardy SPMD bridge。
 - 不引入 HPGR / KMD / legacy `Tsm*` runtime adapter target。
 - 不把 `wafer.abi.*` lower 到 LLVM dialect、object 或真实 runtime call。
 - 不拆分 Wafer ODS / verifier op-prefix 文件；这是 R1.1。

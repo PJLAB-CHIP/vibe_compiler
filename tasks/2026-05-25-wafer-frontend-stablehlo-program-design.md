@@ -4,10 +4,13 @@
 
 状态：设计草案；2026-05-25 独立边界收口；2026-05-27 明确 P2.F1 capture 和跨阶段消费链
 
-本文定义 Wafer compiler 的 model import 和 frontend program 边界。它只负责把上游模型表达成
-可验证的 StableHLO program directory / MLIR 输入，并保留 exporter 自带的 graph、meta 和 weight data
-关系。它不表达 Wafer tile、SPM、DDR allocation、layout materialization、DTE、runtime package
-或 launch completion。
+本文定义 Wafer compiler 的 model import 和 frontend program 边界。Wafer program 是长期编译对象：
+它包含 MLIR IR、function/signature metadata、parameter/resource payload 和后续 stage materialize
+出来的 storage/package facts。StableHLO program directory 只是当前 importer/exporter 的序列化形式，
+`functions/forward.mlir` 是 program 的 IR 成员，`forward.meta`、`data/<parameter>` 和
+post-SPMD shard payload 是同一个 program 的数据成员。Frontend 负责把上游模型表达成可验证的
+Wafer program，并保留 exporter 自带的 graph、meta 和 weight data 关系；它不表达 Wafer tile、
+SPM、DDR allocation、layout materialization、DTE、runtime package 或 launch completion。
 
 本文依赖：
 
@@ -47,16 +50,17 @@
 ```text
 source model / exported program / pre-exported StableHLO
   -> frontend importer adapter
-  -> exporter-native StableHLO program directory or MLIR module
+  -> Wafer program serialized as exporter-native StableHLO program directory
+     or pre-exported MLIR module with explicit parameter/resource facts
 ```
 
 输出：
 
 ```text
-StableHLO + func + tensor + arith module
-  + verified exporter metadata
-  + optional normalized sharding annotations
-  + ConstantLike tensor values or resource-backed constant values
+Wafer program:
+  IR: StableHLO + func + tensor + arith module
+  metadata: verified exporter signature / input locations / optional sharding facts
+  payload: ConstantLike tensor values or resource-backed parameter/constant payload
 ```
 
 PyTorch/XLA 路线的 frontend program 只保留一套 exporter-native 事实源：
@@ -67,7 +71,7 @@ PyTorch/XLA 路线的 frontend program 只保留一套 exporter-native 事实源
 | `functions/forward.meta` | PyTorch/XLA 导出的 metadata | 校验 function arg/result 与 parameter / user input / shape / dtype 的关系 |
 | `functions/forward.parameter_shards.json` | post-SPMD parameter shard binding | 仅在 partitioned program directory 中存在；校验 local function parameter 与 rank-local shard payload 的关系 |
 | `functions/forward.bytecode` | StableHLO bytecode | 与 program directory 一起保留，当前不作为 Wafer IR 合同 |
-| `data/<parameter>` | PyTorch/XLA 导出的 pre-SPMD weight data | 非 partitioned program directory 的 import 边界检查 NPY stream、shape 和 dtype，不提交进 git fixture |
+| `data/<parameter>` | PyTorch/XLA 导出的 pre-SPMD weight data | program payload；verifier 检查 NPY stream、shape 和 dtype，后续 SPMD/storage/package stage 继续消费或改写 |
 | `parameter_shards/<parameter>/rank_XXXXX.npy` | post-SPMD rank-local weight shard payload | partitioned program directory 的参数 payload；由 P2.S2 SPMD partition compiler stage 生成，不从 strategy 名或文件名推断 |
 
 除本节定义的 post-SPMD parameter shard manifest 外，不要为同一件事再生成 Wafer 私有伴随 JSON /
@@ -75,13 +79,15 @@ compile JSON。`forward.meta` 是 function boundary
 事实源；`forward.parameter_shards.json` 只承接 post-SPMD 后 local parameter argument 到
 rank-local shard payload 的绑定关系。offsets、sizes、strides、replica id 和 payload 文件必须来自
 XLA sharding / partitioner 暴露的 shard facts，不能由 Wafer 从 `partition_spec`、strategy 名或
-parameter 名手算。后续 compiler pass 不能直接读取 program directory metadata，而应消费 importer
-materialize 到 MLIR IR 的显式事实。metadata 也不描述 Wafer physical layout、buffer object pool、
-DDR address 或 package path。
+parameter 名手算。后续 compiler stage 不能通过文件名、parameter 名或 side JSON 猜语义；它们应消费
+IR 中 materialize 的 parameter/resource/ConstantLike/shard-binding 事实。若某个 stage 改变 function
+boundary、parameter shard、constant storage、layout 或 package binding，它必须同步更新同一个 Wafer
+program 的 metadata / payload，并由 verifier 检查一致性。metadata 也不描述 Wafer physical layout、
+buffer object pool、DDR address 或 package path，除非后续相应 IR 层已经 materialize 这些事实。
 
 ### 2.1 模型导入合同
 
-Wafer 后端的稳定入口是 verified StableHLO / MLIR program，不是某个前端框架 API。Model import
+Wafer 后端的稳定入口是 verified Wafer program，不是某个前端框架 API。Model import
 层可以支持 PyTorch、JAX、pre-exported StableHLO 或其它 exporter，但这些路径都必须收敛成同一类
 program。P2.F1 之后，主链路完成证明应来自真实 framework/exporter 产生的实际图 program；手写
 StableHLO 只作为 pre-exported fixture、verifier negative test 或局部 lowering 测试，不证明
@@ -90,7 +96,7 @@ framework-specific capture 已完成：
 ```text
 model source
   -> importer-specific capture/export
-  -> StableHLO / MLIR program
+  -> Wafer program with StableHLO/MLIR IR and parameter/resource payload
   -> Wafer frontend program verifier
 ```
 
@@ -102,9 +108,11 @@ importer 可以返回工程层面的 import result，例如：
 - sharding import source。
 - diagnostics。
 
-这个 import result 是工具接口，不是新的 IR 语义对象。进入 compiler pipeline 前，必须把需要跨
-阶段保留的事实 materialize 成 MLIR IR 中的显式 op/type/attr/interface；下游 pass 不直接读取
-PyTorch/XLA `forward.meta` 或任何自定义 JSON 旁路。
+这个 import result 是工具接口，不是新的 IR 语义对象。进入 compiler pipeline 前，需要跨阶段保留、
+参与 legality/lowering 的事实必须 materialize 成 MLIR IR 中的显式 op/type/attr/interface，或者成为
+Wafer program 中有 verifier 合同的 parameter/resource payload 与 metadata 绑定。下游 pass 不能靠
+PyTorch/XLA `forward.meta`、文件名或任何自定义 JSON 旁路恢复语义；当它们确实修改参数、storage 或
+package binding 时，必须通过 Wafer program writer 同步更新 payload/metadata。
 
 Model import 必须拒绝或显式诊断：
 
@@ -143,9 +151,9 @@ matcher、手写 StableHLO 文本 emitter 或 pre-exported fixture 冒充 PyTorc
 - dynamic shape 必须产出可验证 bounded policy。V0 可以继续使用
   `wafer.frontend.dynamic_bounds`，也可以来自 exporter metadata；进入后端前必须 materialize 成
   verifier 能检查的 function boundary fact。
-- weight / constant 必须来自 exporter program directory metadata / data，并在进入后端前 materialize 成明确的
-  IR 事实或 `ConstantLike` value。PyTorch/XLA parameter 名只用于在 program directory data 目录中定位 exporter
-  自己保存的文件，不能成为后端 lowering 分支条件。
+- weight / constant 必须来自 exporter program metadata / payload，并在进入后端前 materialize 成明确的
+  IR 事实、resource binding 或 `ConstantLike` value。PyTorch/XLA parameter 名只用于在 program directory
+  data 目录中定位 exporter 自己保存的文件，不能成为后端 lowering 分支条件。
 - sharding annotation 必须保留为 StableHLO / SDY 可解释结构。adapter 不能把 sharding 提前改写成
   physical card/tile id。
 
@@ -153,7 +161,7 @@ matcher、手写 StableHLO 文本 emitter 或 pre-exported fixture 冒充 PyTorc
 `wafer-compile-stablehlo --verify-stablehlo-program`。手写 MLIR 仍可作为 verifier unit test，但
 不能单独作为 P2.F1 完成证明。若 `third_party/pytorch-xla` 源码编译/安装出的 runtime 不可
 import，P2.F1 不得标记为完成；测试可以保留依赖隔离或 contract 级覆盖，但主线验收仍必须跑通真实
-PyTorch/XLA adapter -> StableHLO program directory -> program directory metadata verifier -> WaferFrontend verifier 链。
+PyTorch/XLA adapter -> StableHLO program directory serialization -> Wafer program verifier 链。
 
 2026-05-27 修正实现记录：P2.F1 已完成。`tools/build_pytorch_xla_runtime.py` 从
 `third_party/pytorch-xla` 源码安装 `torch_xla` 2.5.0，并通过 Bazel override 复用本仓库
@@ -288,8 +296,9 @@ StableHLO / SDY 可解释 program，应诊断为 frontend export / sharding impo
 
 2026-06-02 P2.S1 当前实现使用 source-built PyTorch/XLA lazy SPMD runtime 的 `mark_sharding`
 生成带 `mhlo.sharding` 的 PyTorch/XLA StableHLO program directory，并交给 Wafer Shardy propagation stage。
-partitioned local body 由 P2.S2 的 `wafer-opt --partition-stablehlo-program` program mode 取得。
-`wafer-compile-stablehlo` frontend verifier 只校验 program directory metadata / data /
+partitioned local body 和 rank-local payload 由 P2.S2 的 `wafer-opt --partition-stablehlo-program`
+program pipeline 取得。
+`wafer-compile-stablehlo` frontend verifier 只校验 program metadata / payload /
 function boundary，不执行 Shardy propagation、XLA SPMD partition，也不把 sharding 转成 Wafer 私有协议。
 
 Frontend 不把 sharding annotation 转成 physical card/tile id，也不提前选择 DTE route。
@@ -312,10 +321,10 @@ tool / pass 名字不是架构边界，但实现上至少需要以下职责：
 | 职责 | 输入 | 输出 |
 | --- | --- | --- |
 | dependency/config validate | build manifest + dialect registry | importer/backend capability diagnostics |
-| program import | exported model / StableHLO | MLIR module + exporter metadata |
-| program verify | MLIR module + exporter metadata | diagnostics |
+| program import | exported model / StableHLO | Wafer program: MLIR module + exporter metadata + parameter/resource payload |
+| program verify | Wafer program | diagnostics |
 | sharding import normalization | old sharding attrs | Shardy-consumable annotations |
-| constant normalization | StableHLO constants / program directory metadata | `arith.constant` / `ConstantLike` |
+| constant normalization | StableHLO constants / program parameter/resource payload | `arith.constant` / `ConstantLike` / resource binding |
 | frontend cleanup | frontend-only metadata | 后端可消费的 StableHLO module |
 
 这些 pass 不能创建 Wafer low-level op，也不能把 runtime path、buffer object pool、SPM address 或
@@ -346,11 +355,11 @@ PrivateUse1 eager path 可以作为生态事实，但不能作为 compiler progr
 
 V0 验证项：
 
-- model import 最小验证：至少一个真实 framework/exporter 静态图能导出到 StableHLO / MLIR program，
+- model import 最小验证：至少一个真实 framework/exporter 静态图能导出到 verified Wafer program，
   并且 graph break / fallback 会被诊断。
 - StableHLO parse / printer roundtrip。
 - function signature 的 shape、rank、dtype、dynamic bound 检查。
-- `stablehlo.constant` / exporter program directory metadata 到 `arith.constant` / `ConstantLike` 的 normalization 检查。
+- `stablehlo.constant` / exporter program payload 到 `arith.constant` / `ConstantLike` 的 normalization 检查。
 - sharding annotation import 后仍能被 Shardy verifier 接受。
 - dependency configuration test：LLVM / MLIR / StableHLO / Shardy dialect 能显式注册；可选 importer
   关闭时后端 textual tests 仍能运行。
