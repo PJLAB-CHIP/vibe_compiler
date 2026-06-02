@@ -5,7 +5,8 @@
 状态：设计草案；2026-05-25 独立边界收口；2026-05-27 纠正 P2.S1 主 pipeline、禁止
 `wafer.spmd.*` 私有 sharding 协议，并引入 post-SPMD tensor collective handoff；2026-06-01
 删除误导性的 Python post-SPMD helper，明确 P2.S1/P2.S2/R2.4/local compute 的 pass 接入边界；
-2026-06-01 接通真实 pinned-XLA helper 的 P2.S2 program gate
+2026-06-02 纠正 frontend / compiler ownership：StableHLO export / verifier tool 不再承载
+Shardy propagation 或 XLA SPMD partition，P2.S2 由 `wafer-compile` compiler driver mode 承载
 
 本文定义 Wafer compiler 中 Shardy / SPMD 阶段的边界。该阶段负责 global tensor 的逻辑切分、
 sharding propagation、SPMD partition 和 logical collective 语义；不负责 physical tile
@@ -67,8 +68,10 @@ partitioner 可以产生等价的 single-program / replicated-local StableHLO；
 
 ### 2.1 P2 Shardy Propagation / SPMD Program Contract
 
-本节描述 P2 SPMD program 的终态合同；当前实现拆成 P2.S1 Shardy propagation stage 和待做的
-P2.S2 Wafer-owned XLA SPMD partition stage。终态覆盖两类 program：用户显式标记 sharding 的图，
+本节描述 P2 SPMD program 的终态合同；当前实现拆成 P2.S1 Shardy propagation stage 和
+P2.S2 Wafer-owned XLA SPMD partition stage。P2.S2 的用户级入口是
+`wafer-compile --partition-stablehlo-program` compiler driver mode；它消费 frontend program
+directory，在 Wafer compiler 侧执行 sharding propagation 并调用 pinned-XLA SPMD helper。终态覆盖两类 program：用户显式标记 sharding 的图，
 以及完全没有用户 sharding seed、需要 Wafer 默认单卡 policy 的图。SPMD pipeline 必须消费 P2.F1
 产出的 verified frontend program，而不是只 parse 手写 `sdy.mesh` fixture。主 pipeline 边界是：
 
@@ -125,17 +128,19 @@ P2.S2 工程 gate 必须把 XLA SPMD partitioner 或等价 local-body partitioni
 - frontend Python capture 只负责导出 exporter-native StableHLO program directory。它可以调用
   PyTorch/XLA `mark_sharding` 产生 pre-SPMD sharding seed，但不能执行 Wafer Shardy propagation、
   XLA SPMD partition 或写 per-rank program。
-- `wafer-compile-stablehlo --propagate-stablehlo-sharding` 是 driver 阶段检查入口：先验证
-  `functions/forward.mlir` / `forward.meta` / parameter payload，再调用同一套
-  `wafer-propagate-stablehlo-sharding` pipeline。
+- `wafer-compile-stablehlo` 是 frontend / StableHLO program directory verifier。它可以注册
+  importer/input dialect 来 parse exporter-native annotations，但不拥有 Shardy propagation、XLA
+  SPMD partition、rank-local program export 或 parameter shard materialization。
 - `wafer-propagate-stablehlo-sharding` 只包含 no-user default input seed 和 Shardy propagation。
-  它输出经过 sharding propagation stage 处理后的 StableHLO/SDY IR，不输出 partitioned local body、不写
-  `forward.parameter_shards.json`、也不插入 post-SPMD collective。
-- P2.S2 必须是 Wafer-owned compiler stage 或等价 library/driver：消费经过 Wafer sharding
-  propagation stage 的 StableHLO program directory，显式完成 StableHLO/SDY -> XLA HLO、XLA SPMD
-  partitioner、partitioned HLO -> StableHLO round trip，再写 post-SPMD local / replicated-local
-  StableHLO program directory 和 rank-local parameter shard binding。`P2.S1` / `P2.S2` 只能作为任务索引，
-  不能成为 program directory 目录名、program 类型名或长期协议字段。
+  它由 `wafer-opt` / `WaferPipelines` 注册，输出经过 sharding propagation stage 处理后的
+  StableHLO/SDY IR，不输出 partitioned local body、不写 `forward.parameter_shards.json`、也不插入
+  post-SPMD collective。
+- P2.S2 必须是 Wafer compiler-owned stage、driver mode 或等价 library entry：消费经过 Wafer
+  sharding propagation stage 的 StableHLO/SDY IR 或 program directory，显式完成 StableHLO/SDY ->
+  XLA HLO、XLA SPMD partitioner、partitioned HLO -> StableHLO round trip，再写 post-SPMD local /
+  replicated-local StableHLO program directory 和 rank-local parameter shard binding。该入口不能挂在
+  `wafer-compile-stablehlo` frontend verifier 下。`P2.S1` / `P2.S2` 只能作为任务索引，不能成为
+  program directory 目录名、program 类型名或长期协议字段。
 - R2.4 消费 P2.S2 的 partitioned StableHLO collective，并 normalize 到 Wafer LinalgExt-style
   tensor collective。它不是 XLA SPMD partitioner，也不能从 P2.S1 的 propagated global module
   直接补 `wafer.comm`。
@@ -143,19 +148,23 @@ P2.S2 工程 gate 必须把 XLA SPMD partitioner 或等价 local-body partitioni
   只做 StableHLO local compute -> Linalg/Tensor/Arith/Math；它不做 sharding propagation、SPMD
   partition、placement、group、SPM/DDR 或 communication materialization。
 
-2026-06-01 当前实现口径：
+2026-06-02 当前实现口径：
 
 - frontend Python test generator 的职责只到 PyTorch/XLA StableHLO export：未标记图导出 reference
   program directory；用户 sharding 分支用 `mark_sharding` 标记同一个 4096 matmul 图的 `x`、`weight`、`bias`，
   导出带 `mhlo.sharding` 的 pre-SPMD PyTorch/XLA StableHLO program directory。
-- `wafer-propagate-stablehlo-sharding` / `wafer-compile-stablehlo --propagate-stablehlo-sharding`
-  作为 Wafer 侧的 Shardy propagation 入口。它消费 pre-SPMD program directory，补 no-user default input
-  seed，并调用 Shardy propagation；它不产生 partitioned local body。
-- P2.S2 当前由 Wafer driver mode 加 pinned-XLA helper/service 实现。`wafer-compile-stablehlo
-  --partition-stablehlo-program` 先验证输入 program directory，再在 Wafer 侧执行 default input seed + Shardy
-  propagation，随后把 propagated program directory 交给 helper。helper 显式执行 StableHLO/SDY -> XLA HLO、
-  `SpmdPrepare` / `SpmdPartitioner` / `HloVerifier`、partitioned HLO -> StableHLO round trip，并
-  写回 partitioned StableHLO program directory。
+- `wafer-compile-stablehlo` 只保留 `--verify-frontend-program` 和
+  `--verify-stablehlo-program`。旧 `--propagate-stablehlo-sharding` 和
+  `--partition-stablehlo-program` 入口已删除，因为它们把 compiler SPMD ownership 错挂到了
+  frontend verifier tool。
+- `wafer-propagate-stablehlo-sharding` 是 Wafer compiler 侧 Shardy propagation named pipeline。它消费
+  StableHLO/SDY IR，补 no-user default input seed，并调用 Shardy propagation；它不产生 partitioned
+  local body。
+- P2.S2 当前由 `wafer-compile --partition-stablehlo-program` compiler driver mode 加
+  pinned-XLA helper/service 实现。driver 先验证输入 program directory，再在 Wafer compiler 侧执行
+  default input seed + Shardy propagation，随后把 propagated program directory 交给 helper。helper
+  显式执行 StableHLO/SDY -> XLA HLO、`SpmdPrepare` / `SpmdPartitioner` / `HloVerifier`、
+  partitioned HLO -> StableHLO round trip，并写回 partitioned StableHLO program directory。
 - 2026-06-01 直接 CMake link 评估结论：当前 build 虽启用 `WAFER_ENABLE_SPMD_PARTITIONER_DEPS`，
   但 CMake target graph 只包含 Wafer / StableHLO / Shardy，没有 XLA `spmd_partitioner`、HLO
   service、TSL、Abseil 或 generated XLA proto targets。为避免把任务拖进 XLA CMake shim，P2.S2
@@ -286,23 +295,23 @@ stage 得到 partitioned StableHLO、等价 per-rank StableHLO body，或明确�
 当前验证 gate：
 
 - `test/Pipelines/stablehlo-sharding-propagation.mlir` 和
-  `test/Tools/wafer-compile-stablehlo-sharding-propagation.test` 覆盖 Wafer named pipeline / driver 入口：
-  pre-SPMD program directory 先通过 program directory verifier，再执行 default input seed + Shardy propagation；带
-  pre-SPMD sharding seed 的 program directory 不能直接进入 C ABI lowering。
+  `test/Tools/wafer-compile-stablehlo-sharding-propagation.test` 覆盖当前合法边界：pre-SPMD program
+  directory 先通过 frontend program directory verifier；Shardy propagation 由 `wafer-opt` named
+  pipeline 对 `functions/forward.mlir` 执行。该测试同时确认 `wafer-compile-stablehlo` 不再暴露
+  propagation / partition flags。
 - `test/Tools/wafer-pytorch-xla-capture-sharded-program.test` 覆盖六种用户策略的真实
   `mark_sharding` -> pre-partition StableHLO program directory，并通过 `wafer-compile-stablehlo
-  --verify-stablehlo-program` 校验 program directory metadata / data；同一测试用
-  `wafer-compile-stablehlo --propagate-stablehlo-sharding` 证明 Wafer named pipeline / driver 能读取这些
-  真实 program。
-- `test/Tools/wafer-compile-stablehlo-spmd-partition.test` 覆盖 P2.S2 真实 gate：从
-  PyTorch/XLA `mark_sharding` program directory 进入 `wafer-compile-stablehlo --partition-stablehlo-program`，由
-  Wafer driver 执行 program directory verify + Shardy propagation，再调用 pinned-XLA helper 产出 partitioned
-  StableHLO program directory。该 gate 用同一个 matmul 图的 `--size 32` 形态覆盖 data、column、row、
-  2d-output、2d-contracting-output 和 partial-replication 六种 strategy；这是为了让本地 helper /
-  lit gate 可重放，不改变 P2.F1 4096 export 主图的语义形态。column case 额外检查 rank-local
-  signature、StableHLO collective、`forward.parameter_shards.json` 和 rank-local NPY stream payload。
-- 旧 Python post-SPMD helper tests 已删除。P2.S2 partitioned StableHLO 主链 gate 不能退回 Python
-  helper、`wafer.spmd.*` 私有协议或手写 sidecar。
+  --verify-stablehlo-program` 校验 program directory metadata / data。该测试不执行 Shardy propagation
+  或 XLA SPMD partition；它证明 frontend export / verifier 边界，不证明 P2.S2。
+- `test/Tools/wafer-compile-spmd-partition.test` 覆盖 P2.S2 真实 gate：从 PyTorch/XLA
+  `mark_sharding` program directory 进入 `wafer-compile --partition-stablehlo-program`，由 Wafer
+  compiler driver 执行 program directory verify + Shardy propagation，再调用 pinned-XLA helper 产出
+  partitioned StableHLO program directory。该 gate 用同一个 matmul 图的 `--size 32` 形态覆盖 data、
+  column、row、2d-output、2d-contracting-output 和 partial-replication 六种 strategy；这是为了让本地
+  helper / lit gate 可重放，不改变 P2.F1 4096 export 主图的语义形态。column case 额外检查
+  rank-local signature、StableHLO collective、`forward.parameter_shards.json` 和 rank-local NPY stream
+  payload。旧 `test/Tools/wafer-compile-stablehlo-spmd-partition.test` 已删除，因为它把 P2.S2 主入口
+  错误地挂在 frontend verifier tool 下。
 
 #### 2.1.3 默认 no-user-sharding policy
 
@@ -355,13 +364,13 @@ exporter-native facts，而不是检查 `wafer.spmd.*`：
 Shardy propagation gate 通过 Wafer named pipeline / driver 直接消费 `functions/forward.mlir`：
 
 ```text
-wafer-compile-stablehlo --propagate-stablehlo-sharding <strategy>
 wafer-opt --pass-pipeline='builtin.module(wafer-propagate-stablehlo-sharding)' <strategy>/functions/forward.mlir
 ```
 
 standalone `shardy-sdy-opt` 可以作为第三方 pipeline 对照，但不应是 Wafer 用户级流程的唯一入口。
 这个 gate 只证明 SDY dialect / propagation pipeline 能读取真实 program 中的 sharding facts；它必须和
-XLA SPMD partitioner / partitioned StableHLO export gate 配套使用，不能单独作为 P2.S2 完成证明。
+Wafer compiler-owned XLA SPMD partitioner / partitioned StableHLO export gate 配套使用，不能单独作为
+P2.S2 完成证明。
 row / contracting 类 case 需要保留 reduction collective op；如果后续 tensor collective
 normalization、placement 或 ring/resource path 还没有完整消费这些事实，应补对应下游任务，不回头把
 该策略从 P2 SPMD program gate 中删掉。

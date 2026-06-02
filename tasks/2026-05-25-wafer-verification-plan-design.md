@@ -105,10 +105,11 @@ Single-tile local compute：
   输入只保留为局部 verifier、lowering pattern 或 bring-up fixture。
 - R2.4-pre 之后，主链路 gate 必须通过 Wafer named pipeline 或用户级 driver mode 重放上述链路；
   单独拼 `wafer-opt` pass、`shardy-sdy-opt`、PyTorch/XLA runtime 环境变量和 verifier tool 只能作为
-  unit/debug 覆盖。2026-06-02 后，当前用户级 program 入口是
-  `wafer-compile-stablehlo --verify-stablehlo-program`、`--propagate-stablehlo-sharding` 和
-  `--partition-stablehlo-program`；`--compile-stablehlo-program-to-cabi` 已删除。`wafer-opt` named
-  pipeline 入口只保留 `wafer-propagate-stablehlo-sharding` 和 `wafer-lower-stablehlo-to-linalg`。
+  unit/debug 覆盖。2026-06-02 后，frontend program verifier 入口是
+  `wafer-compile-stablehlo --verify-stablehlo-program`；P2.S2 program-level compiler driver 入口是
+  `wafer-compile --partition-stablehlo-program`；`--compile-stablehlo-program-to-cabi` 已删除。
+  `wafer-opt` named pipeline 入口保留 `wafer-propagate-stablehlo-sharding` 和
+  `wafer-lower-stablehlo-to-linalg`。
   旧 C ABI issue、single-tile materialization、SPM/DDR trial 和 ring lowering unit/debug pass 链已删除，
   当前没有 group/tile/storage/C ABI 主链路 compile gate。
 - 后续 R3/R6/R7 gate 必须证明 `wafer.group` 到 `wafer.tile_region` 的 load/compute/store、

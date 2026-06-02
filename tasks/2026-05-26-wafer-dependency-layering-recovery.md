@@ -42,9 +42,9 @@ core compiler target。
 | ABI helper | `WaferABI`、`include/Wafer/ABI`、`lib/Wafer/ABI` | C++ standard library 和项目 ABI headers | MLIR dialect API、StableHLO/Shardy、runtime/driver headers、test tools |
 | Core transforms | `WaferTransforms`、`lib/Wafer/Transforms` | `WaferIR`、MLIR arith/linalg/tensor/pass/support；`StableHLOToLinalg` 源文件可在 importer enabled 时使用 StableHLO op C++ API；`SPMD/` 源文件可在 `WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON` 时 private 使用 Shardy/SDY C++ API | importer framework headers、runtime/driver headers、test tools、C ABI conversion ownership；StableHLO/Shardy 不能成为 public dependency |
 | Conversion | 后续重建 | 旧 `WaferConversion` / `include/Wafer/Conversion` / `lib/Wafer/Conversion` 已删除；后续 WaferToLLVM / real C ABI lowering 可在本层按 storage-realized contract 重建 | StableHLO/Shardy importer API、test tools；runtime/driver headers 只能在 future launch/runtime adapter 层进入 |
-| Frontend/importer | `include/Wafer/Frontend`、`tools/wafer-compile-stablehlo` | optional StableHLO dialect registration、program parsing/verification 依赖；固定版本的 torch / PyTorch/XLA importer Python runtime，后续只允许在 importer 工具中使用 | SPM/layout/runtime/driver target details |
+| Frontend/importer | `include/Wafer/Frontend`、`tools/wafer-compile-stablehlo` | optional StableHLO / SDY dialect registration、program parsing/verification 依赖；固定版本的 torch / PyTorch/XLA importer Python runtime，后续只允许在 importer 工具中使用 | SPMD partition、SPM/layout/runtime/driver target details |
 | SPMD bridge | `ShardySdy*` CMake shim target、future Shardy/SPMD pass target | Shardy/SDY source dependency、MLIR dialect registration、import/export/propagation pass 编译验证 | physical tile id、DTE algorithm、runtime package |
-| Driver tool | `wafer-opt` | `WaferIR`、`WaferTransforms`、MLIR tool main；optional StableHLO registration | importer framework implementation details、runtime/driver headers |
+| Driver tool | `wafer-opt`、`tools/wafer-compile` | `WaferIR`、`WaferTransforms` / `WaferPipelines`、MLIR tool main；optional StableHLO / SDY registration；P2.S2 可调用 Wafer-owned pinned-XLA helper | importer framework implementation details、runtime/driver headers、frontend-only exporter behavior |
 | Runtime/driver | future `WaferRuntimeAdapter` / launch package layer | HPGR/KMD/legacy runtime headers and libraries, isolated behind adapter | Frontend tensor/group planning dependencies |
 | Test tools | `check-wafer-lit`、`WaferUnitTests`、tool tests | lit/FileCheck、GTest、Python test scripts | production library public interfaces |
 
@@ -94,7 +94,7 @@ core compiler target。
 - `ShardySdyDialect` 是 `WaferTransforms` 的 private implementation dependency，只在
   `WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON` 时服务 `lib/Wafer/Transforms/SPMD/*` 的 SPMD/default seed
   passes；不能从 `WaferIR`、future `WaferConversion` 或 `WaferABI` public 暴露。
-- `StablehloRegister` 只由 `wafer-opt` 和 `wafer-compile-stablehlo` 私有链接，用于工具进程注册 dialect。
+- `StablehloRegister` 只由 `wafer-opt`、`wafer-compile` 和 `wafer-compile-stablehlo` 私有链接，用于工具进程注册 dialect。
 - `cmake/third_party/WaferShardyCMake.cmake` 在 `WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON` 时从
   `third_party/shardy` 生成 SDY ODS TableGen 产物，并编译 `ShardySdyDialect`、
   `ShardySdyRegister`、`ShardySdyImportPasses`、`ShardySdyExportPasses`、

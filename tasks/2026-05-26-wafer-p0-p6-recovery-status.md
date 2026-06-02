@@ -181,7 +181,8 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   program directory `forward.meta` / pre-SPMD `data/<parameter>` 与 MLIR function signature 一致；post-SPMD
   `forward.parameter_shards.json` 与 rank-local shard payload 只有 verifier fixture 覆盖，真实产物
   等 P2.S2 生成。
-- `WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON` 时，`wafer-opt` / `wafer-compile-stablehlo` 能注册 SDY dialect；
+- `WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON` 时，`wafer-opt` / `wafer-compile` /
+  `wafer-compile-stablehlo` 能注册 SDY dialect；
   `sdy.mesh` / `sdy.sharding` program 可被 parse/verify。历史上曾有 StableHLO `replica_groups`
   到 `wafer.comm` `rank_group` 的 bridge；该路线已退出主线，只作为已删除路径的覆盖记录，
   不再作为 group/tiling 前的 collective handoff。

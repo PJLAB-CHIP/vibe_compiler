@@ -1,8 +1,9 @@
 # REQUIRES: stablehlo, shardy, pytorch-xla-importer, xla-spmd-helper
 
+# RUN: wafer-compile --help | FileCheck %s --check-prefix=HELP
 # RUN: rm -rf %t.input.program %t.partitioned.program
 # RUN: env CPU_NUM_DEVICES=16 PJRT_DEVICE=CPU %importer_python %wafer_src_root/test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-sharded-program --sharding-strategy column --size 32 --output-program-dir %t.input.program
-# RUN: wafer-compile-stablehlo --partition-stablehlo-program %t.input.program --output-program-dir %t.partitioned.program --xla-spmd-partitioner-helper %xla_spmd_partitioner_helper --default-tile-count=16 | FileCheck %s --check-prefix=PARTITION
+# RUN: wafer-compile --partition-stablehlo-program %t.input.program --output-program-dir %t.partitioned.program --xla-spmd-partitioner-helper %xla_spmd_partitioner_helper --default-tile-count=16 | FileCheck %s --check-prefix=PARTITION
 # RUN: wafer-compile-stablehlo --verify-stablehlo-program %t.partitioned.program | FileCheck %s --check-prefix=VERIFY
 # RUN: FileCheck %s --input-file=%t.partitioned.program/functions/forward.mlir --check-prefix=MLIR
 # RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-stablehlo-to-linalg)' %t.partitioned.program/functions/forward.mlir | FileCheck %s --check-prefix=HANDOFF
@@ -13,13 +14,18 @@
 # RUN: rm -rf %t.matrix
 # RUN: bash -c 'for strategy in data column row 2d-output 2d-contracting-output partial-replication; do \
 # RUN:   env CPU_NUM_DEVICES=16 PJRT_DEVICE=CPU %importer_python %wafer_src_root/test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-sharded-program --sharding-strategy ${strategy} --size 32 --output-program-dir %t.matrix/${strategy}.input || exit 1; \
-# RUN:   wafer-compile-stablehlo --partition-stablehlo-program %t.matrix/${strategy}.input --output-program-dir %t.matrix/${strategy}.partitioned --xla-spmd-partitioner-helper %xla_spmd_partitioner_helper --default-tile-count=16 > /dev/null || exit 1; \
+# RUN:   wafer-compile --partition-stablehlo-program %t.matrix/${strategy}.input --output-program-dir %t.matrix/${strategy}.partitioned --xla-spmd-partitioner-helper %xla_spmd_partitioner_helper --default-tile-count=16 > /dev/null || exit 1; \
 # RUN:   wafer-compile-stablehlo --verify-stablehlo-program %t.matrix/${strategy}.partitioned | FileCheck %s --check-prefix=VERIFY || exit 1; \
 # RUN:   FileCheck %s --input-file=%t.matrix/${strategy}.partitioned/functions/forward.mlir --check-prefix=MATRIX-MLIR || exit 1; \
 # RUN:   test -s %t.matrix/${strategy}.partitioned/functions/forward.parameter_shards.json || exit 1; \
 # RUN: done'
 
-# PARTITION: wafer-compile-stablehlo: partitioned StableHLO program directory written:
+# HELP: wafer-compile
+# HELP: --partition-stablehlo-program
+# HELP: --output-program-dir
+# HELP: --xla-spmd-partitioner-helper
+
+# PARTITION: wafer-compile: partitioned StableHLO program directory written:
 
 # VERIFY: wafer-compile-stablehlo: verified StableHLO program directory parameters: 2
 # VERIFY: wafer-compile-stablehlo: verified StableHLO program directory parameter shard bindings: 2

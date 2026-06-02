@@ -8,7 +8,6 @@
 # RUN:   test -f %t.matrix/${strategy}/data/weight || exit 1; \
 # RUN:   test -f %t.matrix/${strategy}/data/bias || exit 1; \
 # RUN:   FileCheck %s --input-file=%t.matrix/${strategy}/functions/forward.mlir --check-prefix=MLIR || exit 1; \
-# RUN:   wafer-compile-stablehlo --propagate-stablehlo-sharding %t.matrix/${strategy} > /dev/null || exit 1; \
 # RUN:   wafer-compile-stablehlo --verify-stablehlo-program %t.matrix/${strategy} | FileCheck %s --check-prefix=VERIFY || exit 1; \
 # RUN: done'
 

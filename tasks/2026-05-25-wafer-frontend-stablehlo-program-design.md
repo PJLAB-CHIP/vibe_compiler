@@ -286,10 +286,11 @@ PyTorch/XLA 的 `mark_sharding` 或 export 可追踪的等价前端 op。Fronten
 StableHLO / SDY 可解释 program，应诊断为 frontend export / sharding import 问题，而不是在后端
 补第二套描述。
 
-2026-06-01 P2.S1 当前实现使用 source-built PyTorch/XLA lazy SPMD runtime 的 `mark_sharding`
+2026-06-02 P2.S1 当前实现使用 source-built PyTorch/XLA lazy SPMD runtime 的 `mark_sharding`
 生成带 `mhlo.sharding` 的 PyTorch/XLA StableHLO program directory，并交给 Wafer Shardy propagation stage。
-partitioned local body 必须由 P2.S2 的 Wafer-owned SPMD partition compiler stage 取得。Frontend
-verifier 只校验 program directory metadata / data / function boundary，不把 sharding 转成 Wafer 私有协议。
+partitioned local body 由 P2.S2 的 `wafer-compile --partition-stablehlo-program` Wafer compiler driver
+取得。`wafer-compile-stablehlo` frontend verifier 只校验 program directory metadata / data /
+function boundary，不执行 Shardy propagation、XLA SPMD partition，也不把 sharding 转成 Wafer 私有协议。
 
 Frontend 不把 sharding annotation 转成 physical card/tile id，也不提前选择 DTE route。
 

@@ -6,14 +6,19 @@
 # RUN: printf '%b' 'module {\n  func.func @main(%%lhs: tensor<32x16xf32> {mhlo.sharding = "{devices=[16,1]0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15}"}, %%rhs: tensor<16x8xf32>) -> tensor<32x8xf32> {\n    %%0 = "stablehlo.dot_general"(%%lhs, %%rhs) {\n      dot_dimension_numbers = #stablehlo.dot<lhs_contracting_dimensions = [1], rhs_contracting_dimensions = [0]>,\n      precision_config = [#stablehlo<precision DEFAULT>, #stablehlo<precision DEFAULT>]\n    } : (tensor<32x16xf32>, tensor<16x8xf32>) -> tensor<32x8xf32>\n    return %%0 : tensor<32x8xf32>\n  }\n}\n' > %t.sharding.program/functions/forward.mlir
 # RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[32,16],"dtype":"float32","dynamic_dims":[]},{"shape":[16,8],"dtype":"float32","dynamic_dims":[]}],"output_signature":[{"shape":[32,8],"dtype":"float32","dynamic_dims":[]}],"input_locations":[{"type_":"input_arg","position":0,"name":"lhs"},{"type_":"input_arg","position":1,"name":"rhs"}],"unused_inputs":[]}\n' > %t.sharding.program/functions/forward.meta
 
-# RUN: wafer-compile-stablehlo --propagate-stablehlo-sharding %t.sharding.program --default-tile-count=16 | FileCheck %s --check-prefix=PROPAGATE
+# RUN: wafer-compile-stablehlo --verify-stablehlo-program %t.sharding.program | FileCheck %s --check-prefix=VERIFY
+# RUN: wafer-opt --pass-pipeline='builtin.module(wafer-propagate-stablehlo-sharding{default-tile-count=16})' %t.sharding.program/functions/forward.mlir | FileCheck %s --check-prefix=PROPAGATE
+# RUN: not wafer-compile-stablehlo --propagate-stablehlo-sharding %t.sharding.program 2>&1 | FileCheck %s --check-prefix=NO-PROPAGATE
 # RUN: not wafer-compile-stablehlo --compile-stablehlo-program-to-cabi %t.sharding.program --target=wafer 2>&1 | FileCheck %s --check-prefix=NO-COMPILE
 
+# VERIFY: wafer-compile-stablehlo: verified StableHLO program
 # PROPAGATE: mhlo.sharding
 # PROPAGATE: stablehlo.dot_general
 
+# NO-PROPAGATE: wafer-compile-stablehlo: unknown argument: --propagate-stablehlo-sharding
 # NO-COMPILE: wafer-compile-stablehlo: unknown argument: --compile-stablehlo-program-to-cabi
 
 # HELP-NOT: --prepare-stablehlo-spmd-program
-# HELP: --propagate-stablehlo-sharding
-# HELP: --default-tile-count=16
+# HELP-NOT: --propagate-stablehlo-sharding
+# HELP-NOT: --partition-stablehlo-program
+# HELP-NOT: --default-tile-count=16

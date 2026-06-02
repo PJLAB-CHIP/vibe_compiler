@@ -6,7 +6,6 @@ if(WAFER_ENABLE_IMPORTER_DEPS)
   target_link_libraries(wafer-compile-stablehlo
     PRIVATE
     WaferFrontend
-    WaferPipelines
     MLIRArithDialect
     MLIRFuncDialect
     MLIRFuncInlinerExtension
@@ -14,7 +13,6 @@ if(WAFER_ENABLE_IMPORTER_DEPS)
     MLIRLinalgDialect
     MLIRMathDialect
     MLIRParser
-    MLIRPass
     MLIRSCFDialect
     MLIRSupport
     MLIRTensorDialect
