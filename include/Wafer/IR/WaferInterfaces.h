@@ -6,6 +6,7 @@
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/IR/Types.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 
 #include <cstdint>
@@ -31,6 +32,33 @@ struct WaferTilingDemand {
   WaferTilingDemandKind kind;
   unsigned index;
   mlir::Type type;
+};
+
+enum class WaferTensorCollectiveKind {
+  AllGather,
+  ReduceScatter,
+  AllReduce,
+  AllToAll,
+  CollectivePermute,
+};
+
+struct WaferTensorCollectiveInfo {
+  WaferTensorCollectiveKind kind;
+  llvm::SmallVector<int64_t, 8> rankGroup;
+  llvm::SmallVector<int64_t, 8> sourceTargetPairs;
+  int64_t axis = -1;
+  int64_t splitAxis = -1;
+  int64_t concatAxis = -1;
+  int64_t splitCount = -1;
+  int64_t channelId = -1;
+  bool hasAxis = false;
+  bool hasSplitAxis = false;
+  bool hasConcatAxis = false;
+  bool hasSplitCount = false;
+  bool hasChannelId = false;
+  bool useGlobalDeviceIds = false;
+  bool hasCombiner = false;
+  bool hasCommunicationEffect = false;
 };
 
 struct WaferLayoutRequirement {

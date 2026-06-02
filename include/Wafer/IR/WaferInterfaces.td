@@ -32,6 +32,26 @@ def WaferTilingInterface : OpInterface<"WaferTilingInterface"> {
   ];
 }
 
+def WaferTensorCollectiveOpInterface
+    : OpInterface<"WaferTensorCollectiveOpInterface"> {
+  let cppNamespace = "::wafer";
+  let description = [{
+    Interface for tensor-level collective operations. The returned facts must
+    be derived from operands, results, regions, and attributes already present
+    in IR; planner choices and runtime schedules do not belong here.
+  }];
+  let methods = [
+    InterfaceMethod<
+      "Collect the tensor collective facts represented by this operation.",
+      "void", "collectWaferTensorCollectiveInfo",
+      (ins "::wafer::WaferTensorCollectiveInfo &":$info)>,
+    InterfaceMethod<
+      "Verify the tensor collective contract represented by this operation.",
+      "::mlir::LogicalResult", "verifyWaferTensorCollectiveContract",
+      (ins)>
+  ];
+}
+
 def WaferLayoutOpInterface : OpInterface<"WaferLayoutOpInterface"> {
   let cppNamespace = "::wafer";
   let description = [{

@@ -150,7 +150,9 @@ Partitioned StableHLO collective handoff：
 - Shardy / XLA SPMD 输出的 logical collective 能保留为 partitioned StableHLO / SDY metadata，并先
   经 `wafer-lower-stablehlo-to-linalg` normalize 成 Wafer LinalgExt-style
   `wafer.tensor_collective.*` op；该 op 实现 destination-style tensor operand/result contract 和
-  Wafer tiling demand interface，可被 group/tiling 边界直接消费。
+  MLIR `TilingInterface`、Wafer tiling demand interface、Wafer tensor collective info interface，
+  可被 group/tiling 边界直接消费。slot-crossing 或当前 IR 不可证明的 collective-axis tile 必须显式
+  failure，不能被伪装成已 materialize 的 `wafer.comm` 或 hidden schedule。
 - placement 和 comm lowering 在其实现范围内保留 collective semantics；未实现的硬件可表达
   collective 形成 R6/R4 恢复任务，不能反向限制 sharding propagation artifact export，也不能把 tensor collective
   伪装成已经 materialize 的 `wafer.comm`。

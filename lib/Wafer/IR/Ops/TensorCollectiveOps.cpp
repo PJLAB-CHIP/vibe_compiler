@@ -4,8 +4,15 @@
 
 #include "OpVerifierUtils.h"
 
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
+#include "mlir/IR/IRMapping.h"
+#include "mlir/Interfaces/TilingInterface.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallSet.h"
+#include "llvm/Support/ErrorHandling.h"
+
+#include <optional>
 
 using namespace wafer;
 using namespace wafer::detail;
@@ -76,14 +83,14 @@ mlir::LogicalResult verifySingleDestinationStyleShape(
     return op->emitOpError(
         "tensor collective must have matching input, out, and result counts");
 
-  for (auto [index, values] : llvm::enumerate(llvm::zip(inputs, outs, results))) {
+  for (auto [index, values] :
+       llvm::enumerate(llvm::zip(inputs, outs, results))) {
     mlir::Value input = std::get<0>(values);
     mlir::Value out = std::get<1>(values);
     mlir::OpResult result = std::get<2>(values);
     auto inputType = mlir::dyn_cast<mlir::RankedTensorType>(input.getType());
     auto outType = mlir::dyn_cast<mlir::RankedTensorType>(out.getType());
-    auto resultType =
-        mlir::dyn_cast<mlir::RankedTensorType>(result.getType());
+    auto resultType = mlir::dyn_cast<mlir::RankedTensorType>(result.getType());
     if (!inputType || !outType || !resultType)
       return op->emitOpError(
           "tensor collective operands and results must be ranked tensors");
@@ -91,8 +98,7 @@ mlir::LogicalResult verifySingleDestinationStyleShape(
       return op->emitOpError("out type must match tied result type at index ")
              << index;
     if (inputType.getElementType() != outType.getElementType())
-      return op->emitOpError(
-                 "input and out element types must match at index ")
+      return op->emitOpError("input and out element types must match at index ")
              << index;
   }
 
@@ -110,9 +116,10 @@ mlir::FailureOr<int64_t> verifyAxis(mlir::Operation *op,
 
 bool isStaticDim(int64_t dim) { return dim != mlir::ShapedType::kDynamic; }
 
-mlir::LogicalResult verifySameRankAndNonAxisDims(
-    mlir::Operation *op, mlir::RankedTensorType inputType,
-    mlir::RankedTensorType outputType, int64_t axis) {
+mlir::LogicalResult
+verifySameRankAndNonAxisDims(mlir::Operation *op,
+                             mlir::RankedTensorType inputType,
+                             mlir::RankedTensorType outputType, int64_t axis) {
   if (inputType.getRank() != outputType.getRank())
     return op->emitOpError("collective input and result ranks must match");
 
@@ -201,12 +208,10 @@ mlir::LogicalResult verifyAllReduceLikeShape(mlir::Operation *op,
   return mlir::success();
 }
 
-mlir::LogicalResult verifyAllToAllShape(mlir::Operation *op,
-                                        mlir::OperandRange inputs,
-                                        mlir::ResultRange results,
-                                        mlir::IntegerAttr splitAxisAttr,
-                                        mlir::IntegerAttr concatAxisAttr,
-                                        int64_t groupSize) {
+mlir::LogicalResult
+verifyAllToAllShape(mlir::Operation *op, mlir::OperandRange inputs,
+                    mlir::ResultRange results, mlir::IntegerAttr splitAxisAttr,
+                    mlir::IntegerAttr concatAxisAttr, int64_t groupSize) {
   for (auto [input, result] : llvm::zip(inputs, results)) {
     auto inputType = mlir::cast<mlir::RankedTensorType>(input.getType());
     auto resultType = mlir::cast<mlir::RankedTensorType>(result.getType());
@@ -324,6 +329,322 @@ mlir::LogicalResult verifyTensorCollectiveTilingContract(
   return mlir::success();
 }
 
+void assignDenseI64Array(mlir::DenseI64ArrayAttr attr,
+                         llvm::SmallVectorImpl<int64_t> &values) {
+  values.clear();
+  values.append(attr.asArrayRef().begin(), attr.asArrayRef().end());
+}
+
+void collectChannelInfo(mlir::IntegerAttr channelIdAttr,
+                        std::optional<bool> useGlobalDeviceIds,
+                        WaferTensorCollectiveInfo &info) {
+  if (channelIdAttr) {
+    info.hasChannelId = true;
+    info.channelId = channelIdAttr.getInt();
+  }
+  info.useGlobalDeviceIds = useGlobalDeviceIds.value_or(false);
+}
+
+void collectRankGroupInfo(mlir::DenseI64ArrayAttr rankGroupAttr,
+                          mlir::IntegerAttr channelIdAttr,
+                          std::optional<bool> useGlobalDeviceIds,
+                          WaferTensorCollectiveInfo &info) {
+  assignDenseI64Array(rankGroupAttr, info.rankGroup);
+  collectChannelInfo(channelIdAttr, useGlobalDeviceIds, info);
+  info.hasCommunicationEffect = true;
+}
+
+mlir::LogicalResult
+verifyTensorCollectiveInfoContract(mlir::Operation *op,
+                                   const WaferTensorCollectiveInfo &info) {
+  if (!info.hasCommunicationEffect)
+    return op->emitOpError(
+        "tensor collective interface must expose communication effect");
+  if (info.hasChannelId && info.channelId < 0)
+    return op->emitOpError(
+        "tensor collective interface exposed negative channel_id");
+  if (info.useGlobalDeviceIds && (!info.hasChannelId || info.channelId <= 0))
+    return op->emitOpError(
+        "global device ids require a positive channel_id in collective info");
+
+  switch (info.kind) {
+  case WaferTensorCollectiveKind::AllGather:
+  case WaferTensorCollectiveKind::ReduceScatter:
+    if (!info.hasAxis || info.axis < 0)
+      return op->emitOpError(
+          "rank-group collective interface must expose a non-negative axis");
+    [[fallthrough]];
+  case WaferTensorCollectiveKind::AllReduce:
+    if (info.rankGroup.empty())
+      return op->emitOpError(
+          "rank-group collective interface must expose rank_group");
+    if ((info.kind == WaferTensorCollectiveKind::AllReduce ||
+         info.kind == WaferTensorCollectiveKind::ReduceScatter) &&
+        !info.hasCombiner)
+      return op->emitOpError(
+          "reduction collective interface must expose combiner presence");
+    return mlir::success();
+  case WaferTensorCollectiveKind::AllToAll:
+    if (info.rankGroup.empty() || !info.hasSplitAxis || !info.hasConcatAxis ||
+        !info.hasSplitCount || info.splitAxis < 0 || info.concatAxis < 0 ||
+        info.splitCount <= 0)
+      return op->emitOpError(
+          "all_to_all interface must expose rank_group and split/concat axes");
+    return mlir::success();
+  case WaferTensorCollectiveKind::CollectivePermute:
+    if (info.sourceTargetPairs.empty())
+      return op->emitOpError(
+          "collective_permute interface must expose source_target_pairs");
+    return mlir::success();
+  }
+
+  llvm_unreachable("unknown Wafer tensor collective kind");
+}
+
+mlir::OpFoldResult getTensorDim(mlir::OpBuilder &builder, mlir::Location loc,
+                                mlir::Value tensor, int64_t dim) {
+  auto tensorType = mlir::cast<mlir::RankedTensorType>(tensor.getType());
+  int64_t staticDim = tensorType.getDimSize(dim);
+  if (!mlir::ShapedType::isDynamic(staticDim))
+    return builder.getIndexAttr(staticDim);
+  return builder.create<mlir::tensor::DimOp>(loc, tensor, dim).getResult();
+}
+
+llvm::SmallVector<mlir::Range>
+getTensorCollectiveIterationDomain(mlir::Operation *op,
+                                   mlir::OpBuilder &builder) {
+  llvm::SmallVector<mlir::Range> domain;
+  if (op->getNumResults() == 0)
+    return domain;
+
+  mlir::Value result = op->getResult(0);
+  auto resultType = mlir::dyn_cast<mlir::RankedTensorType>(result.getType());
+  if (!resultType)
+    return domain;
+
+  mlir::Location loc = op->getLoc();
+  for (int64_t dim = 0; dim < resultType.getRank(); ++dim) {
+    domain.push_back({builder.getIndexAttr(0),
+                      getTensorDim(builder, loc, result, dim),
+                      builder.getIndexAttr(1)});
+  }
+  return domain;
+}
+
+llvm::SmallVector<mlir::utils::IteratorType>
+getTensorCollectiveLoopIteratorTypes(mlir::Operation *op) {
+  if (op->getNumResults() == 0)
+    return {};
+  auto resultType =
+      mlir::dyn_cast<mlir::RankedTensorType>(op->getResult(0).getType());
+  if (!resultType)
+    return {};
+  return llvm::SmallVector<mlir::utils::IteratorType>(
+      resultType.getRank(), mlir::utils::IteratorType::parallel);
+}
+
+bool containsAxis(llvm::ArrayRef<int64_t> axes, int64_t axis) {
+  return llvm::is_contained(axes, axis);
+}
+
+void appendUniqueAxis(llvm::SmallVectorImpl<int64_t> &axes, int64_t axis) {
+  if (!containsAxis(axes, axis))
+    axes.push_back(axis);
+}
+
+bool isStaticFullDimTile(mlir::RankedTensorType tensorType, int64_t dim,
+                         mlir::OpFoldResult offset, mlir::OpFoldResult size) {
+  std::optional<int64_t> staticOffset = mlir::getConstantIntValue(offset);
+  std::optional<int64_t> staticSize = mlir::getConstantIntValue(size);
+  int64_t dimSize = tensorType.getDimSize(dim);
+  return staticOffset && *staticOffset == 0 && staticSize &&
+         !mlir::ShapedType::isDynamic(dimSize) && *staticSize == dimSize;
+}
+
+mlir::LogicalResult requireFullStaticResultAxes(
+    mlir::Operation *op, llvm::ArrayRef<mlir::OpFoldResult> offsets,
+    llvm::ArrayRef<mlir::OpFoldResult> sizes, llvm::ArrayRef<int64_t> axes) {
+  if (op->getNumResults() == 0)
+    return mlir::failure();
+  auto resultType =
+      mlir::dyn_cast<mlir::RankedTensorType>(op->getResult(0).getType());
+  if (!resultType ||
+      offsets.size() != static_cast<size_t>(resultType.getRank()) ||
+      sizes.size() != static_cast<size_t>(resultType.getRank()))
+    return mlir::failure();
+
+  for (int64_t axis : axes) {
+    if (axis < 0 || axis >= resultType.getRank())
+      return mlir::failure();
+    if (!isStaticFullDimTile(resultType, axis, offsets[axis], sizes[axis]))
+      return mlir::failure();
+  }
+  return mlir::success();
+}
+
+void mapTileWithFullAxes(
+    mlir::OpBuilder &builder, mlir::Location loc, mlir::Value value,
+    llvm::ArrayRef<mlir::OpFoldResult> offsets,
+    llvm::ArrayRef<mlir::OpFoldResult> sizes, llvm::ArrayRef<int64_t> fullAxes,
+    llvm::SmallVectorImpl<mlir::OpFoldResult> &mappedOffsets,
+    llvm::SmallVectorImpl<mlir::OpFoldResult> &mappedSizes) {
+  auto tensorType = mlir::cast<mlir::RankedTensorType>(value.getType());
+  mappedOffsets.clear();
+  mappedSizes.clear();
+  for (int64_t dim = 0; dim < tensorType.getRank(); ++dim) {
+    if (containsAxis(fullAxes, dim)) {
+      mappedOffsets.push_back(builder.getIndexAttr(0));
+      mappedSizes.push_back(getTensorDim(builder, loc, value, dim));
+      continue;
+    }
+    mappedOffsets.push_back(offsets[dim]);
+    mappedSizes.push_back(sizes[dim]);
+  }
+}
+
+using TensorTileMappingFn = llvm::function_ref<mlir::LogicalResult(
+    mlir::Value value, unsigned valueIndex, bool isOut,
+    llvm::SmallVectorImpl<mlir::OpFoldResult> &mappedOffsets,
+    llvm::SmallVectorImpl<mlir::OpFoldResult> &mappedSizes)>;
+
+mlir::FailureOr<mlir::TilingResult>
+buildTiledCollectiveClone(mlir::Operation *op, mlir::OpBuilder &builder,
+                          mlir::OperandRange inputs, mlir::OperandRange outs,
+                          TensorTileMappingFn mapTile) {
+  mlir::Location loc = op->getLoc();
+  llvm::SmallVector<mlir::Value> tiledOperands;
+  llvm::SmallVector<mlir::Type> tiledResultTypes;
+  llvm::SmallVector<mlir::Operation *> generatedSlices;
+
+  auto addSlicedOperand = [&](mlir::Value value, unsigned index,
+                              bool isOut) -> mlir::LogicalResult {
+    auto tensorType = mlir::dyn_cast<mlir::RankedTensorType>(value.getType());
+    if (!tensorType)
+      return mlir::failure();
+
+    llvm::SmallVector<mlir::OpFoldResult> mappedOffsets;
+    llvm::SmallVector<mlir::OpFoldResult> mappedSizes;
+    if (mlir::failed(mapTile(value, index, isOut, mappedOffsets, mappedSizes)))
+      return mlir::failure();
+    if (mappedOffsets.size() != static_cast<size_t>(tensorType.getRank()) ||
+        mappedSizes.size() != static_cast<size_t>(tensorType.getRank()))
+      return mlir::failure();
+
+    llvm::SmallVector<mlir::OpFoldResult> strides(tensorType.getRank(),
+                                                  builder.getIndexAttr(1));
+    auto slice = builder.create<mlir::tensor::ExtractSliceOp>(
+        loc, value, mappedOffsets, mappedSizes, strides);
+    tiledOperands.push_back(slice.getResult());
+    generatedSlices.push_back(slice.getOperation());
+    if (isOut)
+      tiledResultTypes.push_back(slice.getResult().getType());
+    return mlir::success();
+  };
+
+  for (auto [index, input] : llvm::enumerate(inputs)) {
+    if (mlir::failed(
+            addSlicedOperand(input, static_cast<unsigned>(index), false)))
+      return mlir::failure();
+  }
+  for (auto [index, out] : llvm::enumerate(outs)) {
+    if (mlir::failed(addSlicedOperand(out, static_cast<unsigned>(index), true)))
+      return mlir::failure();
+  }
+
+  mlir::OperationState state(loc, op->getName().getStringRef());
+  state.addOperands(tiledOperands);
+  state.addTypes(tiledResultTypes);
+  state.addAttributes(op->getAttrs());
+  mlir::IRMapping mapper;
+  for (mlir::Region &region : op->getRegions()) {
+    mlir::Region *clonedRegion = state.addRegion();
+    region.cloneInto(clonedRegion, mapper);
+  }
+
+  mlir::Operation *tiledOp = builder.create(state);
+  return mlir::TilingResult{
+      {tiledOp},
+      llvm::SmallVector<mlir::Value>(tiledOp->getResults()),
+      generatedSlices};
+}
+
+mlir::FailureOr<mlir::TilingResult>
+buildIdentityTiledCollective(mlir::Operation *op, mlir::OpBuilder &builder,
+                             mlir::OperandRange inputs, mlir::OperandRange outs,
+                             llvm::ArrayRef<mlir::OpFoldResult> offsets,
+                             llvm::ArrayRef<mlir::OpFoldResult> sizes) {
+  return buildTiledCollectiveClone(
+      op, builder, inputs, outs,
+      [&](mlir::Value value, unsigned, bool,
+          llvm::SmallVectorImpl<mlir::OpFoldResult> &mappedOffsets,
+          llvm::SmallVectorImpl<mlir::OpFoldResult> &mappedSizes)
+          -> mlir::LogicalResult {
+        auto tensorType = mlir::cast<mlir::RankedTensorType>(value.getType());
+        if (offsets.size() != static_cast<size_t>(tensorType.getRank()) ||
+            sizes.size() != static_cast<size_t>(tensorType.getRank()))
+          return mlir::failure();
+        mappedOffsets.assign(offsets.begin(), offsets.end());
+        mappedSizes.assign(sizes.begin(), sizes.end());
+        return mlir::success();
+      });
+}
+
+mlir::FailureOr<mlir::TilingResult> buildAxisConservativeTiledCollective(
+    mlir::Operation *op, mlir::OpBuilder &builder, mlir::OperandRange inputs,
+    mlir::OperandRange outs, llvm::ArrayRef<mlir::OpFoldResult> offsets,
+    llvm::ArrayRef<mlir::OpFoldResult> sizes,
+    llvm::ArrayRef<int64_t> fullAxes) {
+  if (mlir::failed(requireFullStaticResultAxes(op, offsets, sizes, fullAxes)))
+    return mlir::failure();
+
+  return buildTiledCollectiveClone(
+      op, builder, inputs, outs,
+      [&](mlir::Value value, unsigned, bool isOut,
+          llvm::SmallVectorImpl<mlir::OpFoldResult> &mappedOffsets,
+          llvm::SmallVectorImpl<mlir::OpFoldResult> &mappedSizes)
+          -> mlir::LogicalResult {
+        if (isOut) {
+          mappedOffsets.assign(offsets.begin(), offsets.end());
+          mappedSizes.assign(sizes.begin(), sizes.end());
+          return mlir::success();
+        }
+        mapTileWithFullAxes(builder, op->getLoc(), value, offsets, sizes,
+                            fullAxes, mappedOffsets, mappedSizes);
+        return mlir::success();
+      });
+}
+
+mlir::LogicalResult getIdentityResultTilePosition(
+    mlir::Operation *op, unsigned resultNumber,
+    llvm::ArrayRef<mlir::OpFoldResult> offsets,
+    llvm::ArrayRef<mlir::OpFoldResult> sizes,
+    llvm::SmallVector<mlir::OpFoldResult> &resultOffsets,
+    llvm::SmallVector<mlir::OpFoldResult> &resultSizes) {
+  if (resultNumber >= op->getNumResults())
+    return mlir::failure();
+  auto resultType = mlir::dyn_cast<mlir::RankedTensorType>(
+      op->getResult(resultNumber).getType());
+  if (!resultType ||
+      offsets.size() != static_cast<size_t>(resultType.getRank()) ||
+      sizes.size() != static_cast<size_t>(resultType.getRank()))
+    return mlir::failure();
+  resultOffsets.assign(offsets.begin(), offsets.end());
+  resultSizes.assign(sizes.begin(), sizes.end());
+  return mlir::success();
+}
+
+mlir::LogicalResult getAxisConservativeResultTilePosition(
+    mlir::Operation *op, unsigned resultNumber,
+    llvm::ArrayRef<mlir::OpFoldResult> offsets,
+    llvm::ArrayRef<mlir::OpFoldResult> sizes, llvm::ArrayRef<int64_t> fullAxes,
+    llvm::SmallVector<mlir::OpFoldResult> &resultOffsets,
+    llvm::SmallVector<mlir::OpFoldResult> &resultSizes) {
+  if (mlir::failed(requireFullStaticResultAxes(op, offsets, sizes, fullAxes)))
+    return mlir::failure();
+  return getIdentityResultTilePosition(op, resultNumber, offsets, sizes,
+                                       resultOffsets, resultSizes);
+}
+
 mlir::LogicalResult verifyCombinerRegion(mlir::Operation *op,
                                          mlir::Region &combiner,
                                          mlir::OperandRange inputs,
@@ -352,8 +673,7 @@ mlir::LogicalResult verifyCombinerRegion(mlir::Operation *op,
 
   if (yield.getValues().size() != results.size()) {
     if (results.size() == 1)
-      return op->emitOpError(
-          "combiner must yield exactly one scalar value");
+      return op->emitOpError("combiner must yield exactly one scalar value");
     return op->emitOpError(
         "combiner must yield one scalar value per collective result");
   }
@@ -361,13 +681,12 @@ mlir::LogicalResult verifyCombinerRegion(mlir::Operation *op,
   for (auto [index, yieldedAndResult] :
        llvm::enumerate(llvm::zip(yield.getValues(), results))) {
     mlir::Value yielded = std::get<0>(yieldedAndResult);
-    auto resultType =
-        mlir::cast<mlir::RankedTensorType>(std::get<1>(yieldedAndResult)
-                                               .getType());
+    auto resultType = mlir::cast<mlir::RankedTensorType>(
+        std::get<1>(yieldedAndResult).getType());
     if (yielded.getType() != resultType.getElementType())
       return op->emitOpError("combiner yield type ")
-             << yielded.getType()
-             << " must match result element type at index " << index;
+             << yielded.getType() << " must match result element type at index "
+             << index;
   }
 
   return mlir::success();
@@ -377,8 +696,8 @@ mlir::LogicalResult verifyCombinerRegion(mlir::Operation *op,
 
 mlir::LogicalResult TensorCollectiveAllGatherOp::verify() {
   if (mlir::failed(verifyAllowedAttrs(
-          getOperation(), {"axis", "rank_group", "channel_id",
-                           "use_global_device_ids"})))
+          getOperation(),
+          {"axis", "rank_group", "channel_id", "use_global_device_ids"})))
     return mlir::failure();
   if (mlir::failed(verifySingleDestinationStyleShape(
           getOperation(), getInputs(), getOuts(), getResults())))
@@ -399,16 +718,65 @@ void TensorCollectiveAllGatherOp::collectWaferTilingDemand(
                                       demands);
 }
 
-mlir::LogicalResult
-TensorCollectiveAllGatherOp::verifyWaferTilingContract() {
+mlir::LogicalResult TensorCollectiveAllGatherOp::verifyWaferTilingContract() {
   return verifyTensorCollectiveTilingContract(getOperation(), getInputs(),
-                                             getOuts(), getResults());
+                                              getOuts(), getResults());
+}
+
+void TensorCollectiveAllGatherOp::collectWaferTensorCollectiveInfo(
+    WaferTensorCollectiveInfo &info) {
+  info = {};
+  info.kind = WaferTensorCollectiveKind::AllGather;
+  info.hasAxis = true;
+  info.axis = static_cast<int64_t>(getAxis());
+  collectRankGroupInfo(getRankGroupAttr(), getChannelIdAttr(),
+                       getUseGlobalDeviceIds(), info);
+}
+
+mlir::LogicalResult
+TensorCollectiveAllGatherOp::verifyWaferTensorCollectiveContract() {
+  WaferTensorCollectiveInfo info;
+  collectWaferTensorCollectiveInfo(info);
+  return verifyTensorCollectiveInfoContract(getOperation(), info);
+}
+
+llvm::SmallVector<mlir::utils::IteratorType>
+TensorCollectiveAllGatherOp::getLoopIteratorTypes() {
+  return getTensorCollectiveLoopIteratorTypes(getOperation());
+}
+
+llvm::SmallVector<mlir::Range>
+TensorCollectiveAllGatherOp::getIterationDomain(mlir::OpBuilder &builder) {
+  return getTensorCollectiveIterationDomain(getOperation(), builder);
+}
+
+mlir::FailureOr<mlir::TilingResult>
+TensorCollectiveAllGatherOp::getTiledImplementation(
+    mlir::OpBuilder &builder, mlir::ArrayRef<mlir::OpFoldResult> offsets,
+    mlir::ArrayRef<mlir::OpFoldResult> sizes) {
+  llvm::SmallVector<int64_t, 1> fullAxes{static_cast<int64_t>(getAxis())};
+  return buildAxisConservativeTiledCollective(getOperation(), builder,
+                                              getInputs(), getOuts(), offsets,
+                                              sizes, fullAxes);
+}
+
+mlir::LogicalResult TensorCollectiveAllGatherOp::getResultTilePosition(
+    mlir::OpBuilder &builder, unsigned resultNumber,
+    mlir::ArrayRef<mlir::OpFoldResult> offsets,
+    mlir::ArrayRef<mlir::OpFoldResult> sizes,
+    llvm::SmallVector<mlir::OpFoldResult> &resultOffsets,
+    llvm::SmallVector<mlir::OpFoldResult> &resultSizes) {
+  (void)builder;
+  llvm::SmallVector<int64_t, 1> fullAxes{static_cast<int64_t>(getAxis())};
+  return getAxisConservativeResultTilePosition(getOperation(), resultNumber,
+                                               offsets, sizes, fullAxes,
+                                               resultOffsets, resultSizes);
 }
 
 mlir::LogicalResult TensorCollectiveReduceScatterOp::verify() {
   if (mlir::failed(verifyAllowedAttrs(
-          getOperation(), {"axis", "rank_group", "channel_id",
-                           "use_global_device_ids"})))
+          getOperation(),
+          {"axis", "rank_group", "channel_id", "use_global_device_ids"})))
     return mlir::failure();
   if (mlir::failed(verifySingleDestinationStyleShape(
           getOperation(), getInputs(), getOuts(), getResults())))
@@ -437,13 +805,64 @@ void TensorCollectiveReduceScatterOp::collectWaferTilingDemand(
 mlir::LogicalResult
 TensorCollectiveReduceScatterOp::verifyWaferTilingContract() {
   return verifyTensorCollectiveTilingContract(getOperation(), getInputs(),
-                                             getOuts(), getResults());
+                                              getOuts(), getResults());
+}
+
+void TensorCollectiveReduceScatterOp::collectWaferTensorCollectiveInfo(
+    WaferTensorCollectiveInfo &info) {
+  info = {};
+  info.kind = WaferTensorCollectiveKind::ReduceScatter;
+  info.hasAxis = true;
+  info.axis = static_cast<int64_t>(getAxis());
+  info.hasCombiner = true;
+  collectRankGroupInfo(getRankGroupAttr(), getChannelIdAttr(),
+                       getUseGlobalDeviceIds(), info);
+}
+
+mlir::LogicalResult
+TensorCollectiveReduceScatterOp::verifyWaferTensorCollectiveContract() {
+  WaferTensorCollectiveInfo info;
+  collectWaferTensorCollectiveInfo(info);
+  return verifyTensorCollectiveInfoContract(getOperation(), info);
+}
+
+llvm::SmallVector<mlir::utils::IteratorType>
+TensorCollectiveReduceScatterOp::getLoopIteratorTypes() {
+  return getTensorCollectiveLoopIteratorTypes(getOperation());
+}
+
+llvm::SmallVector<mlir::Range>
+TensorCollectiveReduceScatterOp::getIterationDomain(mlir::OpBuilder &builder) {
+  return getTensorCollectiveIterationDomain(getOperation(), builder);
+}
+
+mlir::FailureOr<mlir::TilingResult>
+TensorCollectiveReduceScatterOp::getTiledImplementation(
+    mlir::OpBuilder &builder, mlir::ArrayRef<mlir::OpFoldResult> offsets,
+    mlir::ArrayRef<mlir::OpFoldResult> sizes) {
+  llvm::SmallVector<int64_t, 1> fullAxes{static_cast<int64_t>(getAxis())};
+  return buildAxisConservativeTiledCollective(getOperation(), builder,
+                                              getInputs(), getOuts(), offsets,
+                                              sizes, fullAxes);
+}
+
+mlir::LogicalResult TensorCollectiveReduceScatterOp::getResultTilePosition(
+    mlir::OpBuilder &builder, unsigned resultNumber,
+    mlir::ArrayRef<mlir::OpFoldResult> offsets,
+    mlir::ArrayRef<mlir::OpFoldResult> sizes,
+    llvm::SmallVector<mlir::OpFoldResult> &resultOffsets,
+    llvm::SmallVector<mlir::OpFoldResult> &resultSizes) {
+  (void)builder;
+  llvm::SmallVector<int64_t, 1> fullAxes{static_cast<int64_t>(getAxis())};
+  return getAxisConservativeResultTilePosition(getOperation(), resultNumber,
+                                               offsets, sizes, fullAxes,
+                                               resultOffsets, resultSizes);
 }
 
 mlir::LogicalResult TensorCollectiveAllReduceOp::verify() {
-  if (mlir::failed(verifyAllowedAttrs(
-          getOperation(),
-          {"rank_group", "channel_id", "use_global_device_ids"})))
+  if (mlir::failed(
+          verifyAllowedAttrs(getOperation(), {"rank_group", "channel_id",
+                                              "use_global_device_ids"})))
     return mlir::failure();
   if (mlir::failed(verifySingleDestinationStyleShape(
           getOperation(), getInputs(), getOuts(), getResults())))
@@ -469,13 +888,59 @@ void TensorCollectiveAllReduceOp::collectWaferTilingDemand(
 
 mlir::LogicalResult TensorCollectiveAllReduceOp::verifyWaferTilingContract() {
   return verifyTensorCollectiveTilingContract(getOperation(), getInputs(),
-                                             getOuts(), getResults());
+                                              getOuts(), getResults());
+}
+
+void TensorCollectiveAllReduceOp::collectWaferTensorCollectiveInfo(
+    WaferTensorCollectiveInfo &info) {
+  info = {};
+  info.kind = WaferTensorCollectiveKind::AllReduce;
+  info.hasCombiner = true;
+  collectRankGroupInfo(getRankGroupAttr(), getChannelIdAttr(),
+                       getUseGlobalDeviceIds(), info);
+}
+
+mlir::LogicalResult
+TensorCollectiveAllReduceOp::verifyWaferTensorCollectiveContract() {
+  WaferTensorCollectiveInfo info;
+  collectWaferTensorCollectiveInfo(info);
+  return verifyTensorCollectiveInfoContract(getOperation(), info);
+}
+
+llvm::SmallVector<mlir::utils::IteratorType>
+TensorCollectiveAllReduceOp::getLoopIteratorTypes() {
+  return getTensorCollectiveLoopIteratorTypes(getOperation());
+}
+
+llvm::SmallVector<mlir::Range>
+TensorCollectiveAllReduceOp::getIterationDomain(mlir::OpBuilder &builder) {
+  return getTensorCollectiveIterationDomain(getOperation(), builder);
+}
+
+mlir::FailureOr<mlir::TilingResult>
+TensorCollectiveAllReduceOp::getTiledImplementation(
+    mlir::OpBuilder &builder, mlir::ArrayRef<mlir::OpFoldResult> offsets,
+    mlir::ArrayRef<mlir::OpFoldResult> sizes) {
+  return buildIdentityTiledCollective(getOperation(), builder, getInputs(),
+                                      getOuts(), offsets, sizes);
+}
+
+mlir::LogicalResult TensorCollectiveAllReduceOp::getResultTilePosition(
+    mlir::OpBuilder &builder, unsigned resultNumber,
+    mlir::ArrayRef<mlir::OpFoldResult> offsets,
+    mlir::ArrayRef<mlir::OpFoldResult> sizes,
+    llvm::SmallVector<mlir::OpFoldResult> &resultOffsets,
+    llvm::SmallVector<mlir::OpFoldResult> &resultSizes) {
+  (void)builder;
+  return getIdentityResultTilePosition(getOperation(), resultNumber, offsets,
+                                       sizes, resultOffsets, resultSizes);
 }
 
 mlir::LogicalResult TensorCollectiveAllToAllOp::verify() {
-  if (mlir::failed(verifyAllowedAttrs(
-          getOperation(), {"split_axis", "concat_axis", "split_count", "rank_group",
-                           "channel_id", "use_global_device_ids"})))
+  if (mlir::failed(verifyAllowedAttrs(getOperation(),
+                                      {"split_axis", "concat_axis",
+                                       "split_count", "rank_group",
+                                       "channel_id", "use_global_device_ids"})))
     return mlir::failure();
   if (mlir::failed(verifySingleDestinationStyleShape(
           getOperation(), getInputs(), getOuts(), getResults())))
@@ -500,7 +965,65 @@ void TensorCollectiveAllToAllOp::collectWaferTilingDemand(
 
 mlir::LogicalResult TensorCollectiveAllToAllOp::verifyWaferTilingContract() {
   return verifyTensorCollectiveTilingContract(getOperation(), getInputs(),
-                                             getOuts(), getResults());
+                                              getOuts(), getResults());
+}
+
+void TensorCollectiveAllToAllOp::collectWaferTensorCollectiveInfo(
+    WaferTensorCollectiveInfo &info) {
+  info = {};
+  info.kind = WaferTensorCollectiveKind::AllToAll;
+  info.hasSplitAxis = true;
+  info.splitAxis = static_cast<int64_t>(getSplitAxis());
+  info.hasConcatAxis = true;
+  info.concatAxis = static_cast<int64_t>(getConcatAxis());
+  info.hasSplitCount = true;
+  info.splitCount = static_cast<int64_t>(getSplitCount());
+  collectRankGroupInfo(getRankGroupAttr(), getChannelIdAttr(),
+                       getUseGlobalDeviceIds(), info);
+}
+
+mlir::LogicalResult
+TensorCollectiveAllToAllOp::verifyWaferTensorCollectiveContract() {
+  WaferTensorCollectiveInfo info;
+  collectWaferTensorCollectiveInfo(info);
+  return verifyTensorCollectiveInfoContract(getOperation(), info);
+}
+
+llvm::SmallVector<mlir::utils::IteratorType>
+TensorCollectiveAllToAllOp::getLoopIteratorTypes() {
+  return getTensorCollectiveLoopIteratorTypes(getOperation());
+}
+
+llvm::SmallVector<mlir::Range>
+TensorCollectiveAllToAllOp::getIterationDomain(mlir::OpBuilder &builder) {
+  return getTensorCollectiveIterationDomain(getOperation(), builder);
+}
+
+mlir::FailureOr<mlir::TilingResult>
+TensorCollectiveAllToAllOp::getTiledImplementation(
+    mlir::OpBuilder &builder, mlir::ArrayRef<mlir::OpFoldResult> offsets,
+    mlir::ArrayRef<mlir::OpFoldResult> sizes) {
+  llvm::SmallVector<int64_t, 2> fullAxes;
+  appendUniqueAxis(fullAxes, static_cast<int64_t>(getSplitAxis()));
+  appendUniqueAxis(fullAxes, static_cast<int64_t>(getConcatAxis()));
+  return buildAxisConservativeTiledCollective(getOperation(), builder,
+                                              getInputs(), getOuts(), offsets,
+                                              sizes, fullAxes);
+}
+
+mlir::LogicalResult TensorCollectiveAllToAllOp::getResultTilePosition(
+    mlir::OpBuilder &builder, unsigned resultNumber,
+    mlir::ArrayRef<mlir::OpFoldResult> offsets,
+    mlir::ArrayRef<mlir::OpFoldResult> sizes,
+    llvm::SmallVector<mlir::OpFoldResult> &resultOffsets,
+    llvm::SmallVector<mlir::OpFoldResult> &resultSizes) {
+  (void)builder;
+  llvm::SmallVector<int64_t, 2> fullAxes;
+  appendUniqueAxis(fullAxes, static_cast<int64_t>(getSplitAxis()));
+  appendUniqueAxis(fullAxes, static_cast<int64_t>(getConcatAxis()));
+  return getAxisConservativeResultTilePosition(getOperation(), resultNumber,
+                                               offsets, sizes, fullAxes,
+                                               resultOffsets, resultSizes);
 }
 
 mlir::LogicalResult TensorCollectiveCollectivePermuteOp::verify() {
@@ -529,5 +1052,51 @@ void TensorCollectiveCollectivePermuteOp::collectWaferTilingDemand(
 mlir::LogicalResult
 TensorCollectiveCollectivePermuteOp::verifyWaferTilingContract() {
   return verifyTensorCollectiveTilingContract(getOperation(), getInputs(),
-                                             getOuts(), getResults());
+                                              getOuts(), getResults());
+}
+
+void TensorCollectiveCollectivePermuteOp::collectWaferTensorCollectiveInfo(
+    WaferTensorCollectiveInfo &info) {
+  info = {};
+  info.kind = WaferTensorCollectiveKind::CollectivePermute;
+  assignDenseI64Array(getSourceTargetPairsAttr(), info.sourceTargetPairs);
+  collectChannelInfo(getChannelIdAttr(), std::nullopt, info);
+  info.hasCommunicationEffect = true;
+}
+
+mlir::LogicalResult
+TensorCollectiveCollectivePermuteOp::verifyWaferTensorCollectiveContract() {
+  WaferTensorCollectiveInfo info;
+  collectWaferTensorCollectiveInfo(info);
+  return verifyTensorCollectiveInfoContract(getOperation(), info);
+}
+
+llvm::SmallVector<mlir::utils::IteratorType>
+TensorCollectiveCollectivePermuteOp::getLoopIteratorTypes() {
+  return getTensorCollectiveLoopIteratorTypes(getOperation());
+}
+
+llvm::SmallVector<mlir::Range>
+TensorCollectiveCollectivePermuteOp::getIterationDomain(
+    mlir::OpBuilder &builder) {
+  return getTensorCollectiveIterationDomain(getOperation(), builder);
+}
+
+mlir::FailureOr<mlir::TilingResult>
+TensorCollectiveCollectivePermuteOp::getTiledImplementation(
+    mlir::OpBuilder &builder, mlir::ArrayRef<mlir::OpFoldResult> offsets,
+    mlir::ArrayRef<mlir::OpFoldResult> sizes) {
+  return buildIdentityTiledCollective(getOperation(), builder, getInputs(),
+                                      getOuts(), offsets, sizes);
+}
+
+mlir::LogicalResult TensorCollectiveCollectivePermuteOp::getResultTilePosition(
+    mlir::OpBuilder &builder, unsigned resultNumber,
+    mlir::ArrayRef<mlir::OpFoldResult> offsets,
+    mlir::ArrayRef<mlir::OpFoldResult> sizes,
+    llvm::SmallVector<mlir::OpFoldResult> &resultOffsets,
+    llvm::SmallVector<mlir::OpFoldResult> &resultSizes) {
+  (void)builder;
+  return getIdentityResultTilePosition(getOperation(), resultNumber, offsets,
+                                       sizes, resultOffsets, resultSizes);
 }

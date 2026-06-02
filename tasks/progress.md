@@ -37,7 +37,7 @@
 | ID | 状态 | 任务 | 完成标准 |
 | --- | --- | --- | --- |
 | P2.S2 | done | 建立 Wafer-owned XLA SPMD partition artifact stage | 消费经过 Wafer sharding propagation stage 的 StableHLO bundle，调用 XLA SPMD partitioner 或等价 stage，输出 post-SPMD local / replicated-local StableHLO bundle、post-SPMD marker、rank-local function signature、collective metadata、`forward.parameter_shards.json` 和 rank-local parameter payload |
-| R2.4 | done | Wafer LinalgExt-style tensor collective handoff | 消费 P2.S2 partitioned StableHLO bundle 中的 logical collective 和 rank-local signature，normalize 成后续 local compute / group pipeline 可消费的 `wafer.tensor_collective.*` tensor IR |
+| R2.4 | done | Wafer LinalgExt-style tensor collective handoff | 消费 P2.S2 partitioned StableHLO bundle 中的 logical collective 和 rank-local signature，normalize 成实现 destination-style、MLIR `TilingInterface`、Wafer tiling demand 和 Wafer collective info contract 的 `wafer.tensor_collective.*` tensor IR |
 | R3.1 | ready | group boundary / candidate contract | 消费 P2.S2/R2.4 真实 frontend/SPMD artifact chain 的 local compute IR 和 tensor collective IR，建立 group candidate 的 IR 边界和完成 gate |
 
 P2.S2 pipeline contract：
@@ -97,8 +97,10 @@ P7/P8/P9 依赖 P0-P6 主链路恢复，不提前推进。
   tile_region / SPM materialization / placement 明确后 materialize。
 - R2.4 已建立 `wafer.tensor_collective.*` op family 和
   `wafer-normalize-stablehlo-collectives` pass，并接入 `wafer-lower-stablehlo-to-linalg` named
-  pipeline。该层使用 destination-style tensor operand/result 和 Wafer tiling demand interface，
-  不拥有 physical placement、SPM tile buffer、DTE token、byte schedule 或 runtime handle。
+  pipeline。该层使用 destination-style tensor operand/result、MLIR `TilingInterface`、
+  `WaferTilingInterface` 和 `WaferTensorCollectiveOpInterface`；slot-crossing 或当前 IR 不可证明的
+  collective-axis tile 由 tiling interface 返回 failure，留给 R3/R6 planner/materialization 处理。
+  该层不拥有 physical placement、SPM tile buffer、DTE token、byte schedule 或 runtime handle。
 - `wafer-lower-stablehlo-to-linalg` 只做 local compute normalization；不承载 sharding propagation、
   SPMD partition、group、placement、SPM/DDR 或 C ABI。
 - `wafer-lower-linalg-to-cabi`、`wafer-lower-stablehlo-to-cabi`、
@@ -134,7 +136,8 @@ P7/P8/P9 依赖 P0-P6 主链路恢复，不提前推进。
 - R2.4 StableHLO collective handoff：`all_gather` / `all_reduce` / `reduce_scatter` /
   `all_to_all` / `collective_permute` fixture 能 normalize 成 `wafer.tensor_collective.*`；P2.S2
   真实 partitioned bundle 的 `forward.mlir` 能经 `wafer-lower-stablehlo-to-linalg` 产出
-  `wafer.tensor_collective.all_gather`，且不绕到 `wafer.comm`。
+  `wafer.tensor_collective.all_gather`，且不绕到 `wafer.comm`；gtest 覆盖五类 tensor collective 的
+  `WaferTensorCollectiveOpInterface` 和 MLIR `TilingInterface` 查询合同。
 
 不能作为主线完成证明：
 
@@ -167,7 +170,7 @@ P7/P8/P9 依赖 P0-P6 主链路恢复，不提前推进。
 | ID | 状态 | 任务 | 依赖 / 说明 |
 | --- | --- | --- | --- |
 | P2.S2 | done | Wafer-owned XLA SPMD partition artifact stage | `wafer-import-model --partition-stablehlo-bundle` 已接真实 pinned XLA helper/service，并通过六种 sharding strategy 的真实 artifact gate |
-| R2.4 | done | Wafer LinalgExt-style tensor collective handoff | `wafer.tensor_collective.*` op / verifier / StableHLO normalization pass 已接入 named pipeline，并通过 P2.S2 真实 artifact handoff gate |
+| R2.4 | done | Wafer LinalgExt-style tensor collective handoff | `wafer.tensor_collective.*` op / verifier / StableHLO normalization pass 已接入 named pipeline，并实现 destination-style、MLIR `TilingInterface`、Wafer tiling demand 和 Wafer collective info contract；通过 P2.S2 真实 artifact handoff gate |
 | R3.1 | ready | group boundary / candidate contract | 依赖 P2.S2、R2.4 和真实 frontend/SPMD artifact |
 | R3.2 | pending | root tile feasibility oracle | 依赖 R3.1 |
 | R3.3 | pending | tile_region materialization contract | 依赖 R3.1/R3.2 |

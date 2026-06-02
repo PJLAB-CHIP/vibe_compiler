@@ -253,11 +253,13 @@ StableHLO collective 不适合直接混在 Linalg tiling 主链路中，也不�
 表示，不是 `wafer.spmd`，也不是 tile-local communication op；它是 post-SPMD partitioned
 StableHLO collective 的 tensor-level handoff。
 
-该层采用类似 IREE `LinalgExt` 的工程模式：定义 Wafer 自己的 tensor collective ops。R2.4 的
-V0 落地边界是 destination-style tensor op + Wafer tiling demand interface；它必须让 group /
-tiling 边界能直接发现 collective 的 tensor operand、destination 和 result，但不在 handoff 层
-实现完整 tile generation algorithm。后续 R3/R6 在 tile shape、SPM buffer 和 placement 明确后，
-再把 tiled tensor collective materialize 到 `wafer.comm` 或 explicit p2p schedule。
+该层采用类似 IREE `LinalgExt` 的工程模式：定义 Wafer 自己的 tensor collective ops，并由 op
+interface 暴露统一的 collective facts 和 tiling contract。R2.4 的落地边界是
+destination-style tensor op + MLIR `TilingInterface` + `WaferTilingInterface` +
+`WaferTensorCollectiveOpInterface`；它必须让 group / tiling 边界能直接发现 collective 的 tensor
+operand、destination、result、rank group、axis/slot、combiner 和 communication effect。后续
+R3/R6 在 tile shape、SPM buffer 和 placement 明确后，再把 tiled tensor collective materialize
+到 `wafer.comm` 或 explicit p2p schedule。
 
 R2.4 V0 interface contract：
 
@@ -265,10 +267,13 @@ R2.4 V0 interface contract：
   结果 tensor 与 outs 一一对应。
 - `WaferTilingInterface`：暴露 input / output / result tiling demand，供 `wafer.group` 和后续 group
   planner 统一消费；不得返回 planner-local side table。
-- MLIR `TilingInterface`：后续 R3/R6 在有 tile policy 和 slot-aligned collective tile 规则后实现。
-  R2.4 不把未实现的 tiled algorithm 写成当前 IR 合同。
-- Wafer collective interface：暴露 collective kind、rank group、axis/slot、reduction combiner、
-  communication effect 和 byte/shape facts。
+- MLIR `TilingInterface`：暴露 result-space iteration domain、parallel iterator 类型、tiled
+  implementation 和 result tile position。`all_reduce` / `collective_permute` 支持 shape-preserving
+  tile clone；`all_gather` / `reduce_scatter` / `all_to_all` 只在当前 IR 能证明 collective 轴完整覆盖时
+  生成 tiled op，slot-crossing 或动态不可证明的 tile 返回 failure，要求 planner 拆成 slot-aligned
+  tile 或延后到 R3/R6。
+- `WaferTensorCollectiveOpInterface`：暴露 collective kind、rank group、source-target pairs、
+  axis/split/concat/split_count、channel、reduction combiner 和 communication effect。
 - verifier：检查 shape、rank、dtype、axis、rank group、slot mapping、reduction body 和禁止
   physical tile / SPM / DTE / runtime metadata。
 
@@ -327,7 +332,7 @@ Pipeline position:
 - Downstream consumer: R3 group candidate / tiling，以及 R6 tiled tensor collective -> `wafer.comm` materialization。
 - User-level driver / named pipeline: `wafer-lower-stablehlo-to-linalg` 消费 P2.S2 输出的 rank-local StableHLO module；collective normalization 是该 named pipeline 的一部分，不要求用户手动拼 pass。
 - Explicit non-goals: 不恢复 `wafer.spmd.*` 私有协议，不把 StableHLO collective 直接 lower 到 `wafer.comm`，不在 R2.4 选择 physical peer、ring schedule、SPM/DDR buffer 或 packet/runtime ABI。
-- Completion gate: 真实 P2.S2 artifact 中的 StableHLO collective 经 named pipeline 变成 verifier-legal `wafer.tensor_collective.*` op，输出可被 group 边界作为 tensor-level IR 消费；fixture/FileCheck 只做补充覆盖。
+- Completion gate: 真实 P2.S2 artifact 中的 StableHLO collective 经 named pipeline 变成 verifier-legal `wafer.tensor_collective.*` op；这些 op 实现 `DestinationStyleOpInterface`、MLIR `TilingInterface`、`WaferTilingInterface` 和 `WaferTensorCollectiveOpInterface`，输出可被 group 边界作为 tensor-level IR 消费；fixture/FileCheck/gtest 只做补充覆盖。
 ```
 
 ## 5. Softmax and Norm Staged Form

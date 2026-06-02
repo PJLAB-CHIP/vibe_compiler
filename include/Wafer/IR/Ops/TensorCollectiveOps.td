@@ -4,12 +4,15 @@
 #define WAFER_IR_OPS_TENSORCOLLECTIVEOPS_TD
 
 include "mlir/Interfaces/DestinationStyleOpInterface.td"
+include "mlir/Interfaces/TilingInterface.td"
 
 class Wafer_TensorCollectiveOp<string mnemonic, list<Trait> traits = []>
     : Wafer_Op<mnemonic, !listconcat([
         AttrSizedOperandSegments,
         DestinationStyleOpInterface,
-        DeclareOpInterfaceMethods<WaferTilingInterface>
+        TilingInterface,
+        DeclareOpInterfaceMethods<WaferTilingInterface>,
+        DeclareOpInterfaceMethods<WaferTensorCollectiveOpInterface>
       ], traits)> {
   let arguments = (ins
     Variadic<AnyType>:$inputs,
@@ -22,6 +25,20 @@ class Wafer_TensorCollectiveOp<string mnemonic, list<Trait> traits = []>
     ::mlir::MutableOperandRange getDpsInitsMutable() {
       return getOutsMutable();
     }
+    ::llvm::SmallVector<::mlir::utils::IteratorType>
+    getLoopIteratorTypes();
+    ::llvm::SmallVector<::mlir::Range>
+    getIterationDomain(::mlir::OpBuilder &builder);
+    ::mlir::FailureOr<::mlir::TilingResult>
+    getTiledImplementation(::mlir::OpBuilder &builder,
+                           ::llvm::ArrayRef<::mlir::OpFoldResult> offsets,
+                           ::llvm::ArrayRef<::mlir::OpFoldResult> sizes);
+    ::mlir::LogicalResult
+    getResultTilePosition(::mlir::OpBuilder &builder, unsigned resultNumber,
+                          ::llvm::ArrayRef<::mlir::OpFoldResult> offsets,
+                          ::llvm::ArrayRef<::mlir::OpFoldResult> sizes,
+                          ::llvm::SmallVector<::mlir::OpFoldResult> &resultOffsets,
+                          ::llvm::SmallVector<::mlir::OpFoldResult> &resultSizes);
   }];
 }
 

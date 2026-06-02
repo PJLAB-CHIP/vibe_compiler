@@ -29,4 +29,6 @@ add_mlir_dialect_library(WaferIR
   MLIRIR
   MLIRSideEffectInterfaces
   MLIRSupport
+  MLIRTensorDialect
+  MLIRTilingInterface
 )

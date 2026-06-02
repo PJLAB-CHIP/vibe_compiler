@@ -90,6 +90,10 @@
   生成 `wafer.tensor_collective.*`。局部 `test/Frontend` fixture 可以覆盖
   `all_reduce` / `reduce_scatter` / `all_to_all` / `collective_permute`，但不能替代这个 artifact
   handoff gate。
+- R2.4 `wafer.tensor_collective.*` 不是只靠 op 名字或 pass switch 的 skeleton；五类 collective
+  必须实现 `DestinationStyleOpInterface`、MLIR `TilingInterface`、`WaferTilingInterface` 和
+  `WaferTensorCollectiveOpInterface`。slot-crossing 或动态不可证明的 collective-axis tile 应由
+  `TilingInterface` 返回 failure，等待 group planner 拆 slot-aligned tile 或 R6 materialization。
 - 依赖一致性检查入口是 `tools/check_deps.py`；默认检查固定版本、importer registration hook、
   public source submodule checkout HEAD、importer Python package pin 和 core/frontend/runtime/test
   tool dependency layering。
@@ -116,6 +120,9 @@
   C ABI issue、ring collective、SPM/DDR trial 和 single-tile materialization pass 链已删除；不要恢复成用户级 compile flow。
 - ODS op 如果引入 `RecursiveMemoryEffects`、`ReturnLike` 等 interface trait，公开 dialect 头要
   include 对应 C++ interface header，`WaferIR` 也要显式 link 对应 MLIR interface target。
+- ODS op 如果直接使用 MLIR `TilingInterface` 这类 upstream op interface，避免让 TableGen 在
+  Wafer namespace 下生成未限定的 `SmallVector` / `OpBuilder` / `ArrayRef` 方法声明；可用 interface
+  trait 加 `extraClassDeclaration` 写全限定 C++ 签名，或确保公开 dialect 头有明确且局部的别名。
 - Dialect 增加 TypeDef 后，base dialect td 需要启用 `useDefaultTypePrinterParser = 1`，否则即使
   `addTypes` 已注册，文本 IR 仍会报 “provides no type parsing hook”。
 - `add_mlir_library` 会生成静态库 target 和 `obj.<target>` object target；源文件需要的 compile
