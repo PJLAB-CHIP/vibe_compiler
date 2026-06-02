@@ -32,6 +32,7 @@ static void addStablehloToLinalgBody(mlir::OpPassManager &pm) {
   pm.addPass(createLowerStablehloReducePass());
   pm.addPass(createNormalizeConstantsPass());
   pm.addPass(createLowerStablehloDotPass());
+  pm.addPass(createNormalizeStablehloCollectivesPass());
   pm.addPass(createLowerStablehloElementwisePass());
   pm.addPass(createLowerStablehloShapePass());
 }

@@ -12,6 +12,7 @@ add_mlir_dialect_library(WaferIR
   Ops/PlacementOps.cpp
   Ops/SPMOps.cpp
   Ops/SyncOps.cpp
+  Ops/TensorCollectiveOps.cpp
   Ops/TileRegionOps.cpp
 
   DEPENDS
@@ -24,6 +25,7 @@ add_mlir_dialect_library(WaferIR
   MLIRAsyncDialect
   MLIRBytecodeOpInterface
   MLIRControlFlowInterfaces
+  MLIRDestinationStyleOpInterface
   MLIRIR
   MLIRSideEffectInterfaces
   MLIRSupport

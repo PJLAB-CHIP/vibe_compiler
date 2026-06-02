@@ -80,6 +80,19 @@ OP_FAMILIES = {
         ],
         "tests": "Comm",
     },
+    "TensorCollective": {
+        "td": "TensorCollectiveOps.td",
+        "cpp": "TensorCollectiveOps.cpp",
+        "mnemonics": [
+            "tensor_collective.all_gather",
+            "tensor_collective.all_reduce",
+            "tensor_collective.reduce_scatter",
+            "tensor_collective.all_to_all",
+            "tensor_collective.collective_permute",
+            "tensor_collective.yield",
+        ],
+        "tests": "TensorCollective",
+    },
     "Sync": {
         "td": "SyncOps.td",
         "cpp": "SyncOps.cpp",

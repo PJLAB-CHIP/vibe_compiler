@@ -5,6 +5,7 @@
 # RUN: wafer-import-model --partition-stablehlo-bundle %t.input.bundle --output-bundle %t.partitioned.bundle --xla-spmd-partitioner-helper %xla_spmd_partitioner_helper --default-tile-count=16 | FileCheck %s --check-prefix=PARTITION
 # RUN: wafer-import-model --verify-stablehlo-bundle %t.partitioned.bundle | FileCheck %s --check-prefix=VERIFY
 # RUN: FileCheck %s --input-file=%t.partitioned.bundle/functions/forward.mlir --check-prefix=MLIR
+# RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-stablehlo-to-linalg)' %t.partitioned.bundle/functions/forward.mlir | FileCheck %s --check-prefix=HANDOFF
 # RUN: FileCheck %s --input-file=%t.partitioned.bundle/functions/forward.parameter_shards.json --check-prefix=SHARDS
 # RUN: test -f %t.partitioned.bundle/parameter_shards/weight/rank_00000.npy
 # RUN: test -f %t.partitioned.bundle/parameter_shards/bias/rank_00000.npy
@@ -30,6 +31,11 @@
 # MLIR: tensor<32x2xf32>
 # MLIR: stablehlo.all_gather
 # MLIR: stablehlo.dot
+
+# HANDOFF-NOT: stablehlo.all_gather
+# HANDOFF: wafer.tensor_collective.all_gather
+# HANDOFF-SAME: rank_group = array<i64:
+# HANDOFF-NOT: wafer.comm
 
 # SHARDS: "logical_rank_count": 16
 # SHARDS: "parameter_shards_version": 2

@@ -13,6 +13,7 @@ void registerWaferTransformPasses() {
     mlir::registerPass(createLowerStablehloElementwisePass);
     mlir::registerPass(createLowerStablehloReducePass);
     mlir::registerPass(createLowerStablehloShapePass);
+    mlir::registerPass(createNormalizeStablehloCollectivesPass);
     mlir::registerPass(createNormalizeConstantsPass);
 #ifdef WAFER_ENABLE_SHARDY
     mlir::registerPass([] { return createApplyDefaultSpmdShardingPass(); });

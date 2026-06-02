@@ -83,6 +83,13 @@
   group/tiling；`wafer.comm` 只能在 `wafer.tile_region` / SPM tile buffers / placement 明确后
   materialize。StableHLO collective 直降 `wafer.comm` 且靠 `unrealized_conversion_cast` 桥 tensor
   和 tile_buffer 的 pass/test 已移除；不要在 group 输入侧恢复这种入口。
+- R2.4 tensor collective handoff 的主线验证入口接在 P2.S2 真实 artifact 后：
+  `wafer-import-model --partition-stablehlo-bundle ...` 产出的
+  `functions/forward.mlir` 必须能通过
+  `wafer-opt --pass-pipeline='builtin.module(wafer-lower-stablehlo-to-linalg)'`
+  生成 `wafer.tensor_collective.*`。局部 `test/Frontend` fixture 可以覆盖
+  `all_reduce` / `reduce_scatter` / `all_to_all` / `collective_permute`，但不能替代这个 artifact
+  handoff gate。
 - 依赖一致性检查入口是 `tools/check_deps.py`；默认检查固定版本、importer registration hook、
   public source submodule checkout HEAD、importer Python package pin 和 core/frontend/runtime/test
   tool dependency layering。

@@ -37,7 +37,8 @@
 | ID | 状态 | 任务 | 完成标准 |
 | --- | --- | --- | --- |
 | P2.S2 | done | 建立 Wafer-owned XLA SPMD partition artifact stage | 消费经过 Wafer sharding propagation stage 的 StableHLO bundle，调用 XLA SPMD partitioner 或等价 stage，输出 post-SPMD local / replicated-local StableHLO bundle、post-SPMD marker、rank-local function signature、collective metadata、`forward.parameter_shards.json` 和 rank-local parameter payload |
-| R2.4 | ready | Wafer LinalgExt-style tensor collective handoff | 消费 P2.S2 partitioned StableHLO bundle 中的 logical collective 和 rank-local signature，normalize 成后续 local compute / group pipeline 可消费的 tensor collective IR |
+| R2.4 | done | Wafer LinalgExt-style tensor collective handoff | 消费 P2.S2 partitioned StableHLO bundle 中的 logical collective 和 rank-local signature，normalize 成后续 local compute / group pipeline 可消费的 `wafer.tensor_collective.*` tensor IR |
+| R3.1 | ready | group boundary / candidate contract | 消费 P2.S2/R2.4 真实 frontend/SPMD artifact chain 的 local compute IR 和 tensor collective IR，建立 group candidate 的 IR 边界和完成 gate |
 
 P2.S2 pipeline contract：
 
@@ -58,11 +59,29 @@ P2.S2 pipeline contract：
 - completion gate：真实 frontend export -> Wafer sharding propagation artifact chain 能被 P2.S2 消费并产出下游可直接验证的
   partitioned / replicated-local bundle；fixture 只做补充覆盖。
 
-P2.S2 之后的直接顺序：
+R3.1 pipeline contract：
 
-1. R2.4：partitioned StableHLO collective -> Wafer LinalgExt-style tensor collective handoff。
-2. R3.1：真实 frontend/SPMD artifact 两个分支进入 group candidate gate。
-3. R3.2-R3.8：恢复 tile/resource/storage/C ABI/package 主链路。
+- upstream artifact / IR：P2.F1/P2.S1/P2.S2/R2.4 真实链路产出的 rank-local `linalg` / `tensor` /
+  `scf` local compute IR 和 `wafer.tensor_collective.*` tensor collective IR。
+- current stage responsibility：建立 `wafer.group` candidate 边界，说明哪些 tensor SSA value、outs、
+  producer/consumer 和 tensor collective 能进入 group 候选，并由 verifier 拒绝 raw StableHLO、
+  physical buffer、placement、SPM/DTE 或 runtime metadata。
+- output artifact / IR：可验证的 tensor-level `wafer.group` candidate IR；不含 tile buffer、layout
+  materialization、`wafer.comm`、C ABI issue 或 package manifest。
+- downstream consumer：R3.2 root tile feasibility、R3.3 tile_region materialization、R3.4/R3.5
+  layout/SPM/DDR feasibility 和后续 ABI/package stages。
+- user-level driver / named pipeline：应由 Wafer named pipeline 或 driver mode 重放 frontend/SPMD/R2.4
+  chain 后进入 group candidate gate；不能让 integration test 手动拼 raw StableHLO、tensor collective
+  fixture 和 group fixture 作为长期主线。
+- explicit non-goals：不做 physical placement、tile shape search、SPM allocation、DTE schedule、
+  `wafer.comm` materialization、C ABI 或 package emission。
+- completion gate：真实 P2.S2/R2.4 artifact chain 的 local compute + tensor collective 输出能进入
+  group candidate gate，且 verifier 证明 group 边界只包含 tensor-level IR；fixture 只做负例和局部覆盖。
+
+P2.S2/R2.4 之后的直接顺序：
+
+1. R3.1：真实 frontend/SPMD artifact 两个分支进入 group candidate gate。
+2. R3.2-R3.8：恢复 tile/resource/storage/C ABI/package 主链路。
 
 P7/P8/P9 依赖 P0-P6 主链路恢复，不提前推进。
 
@@ -76,6 +95,10 @@ P7/P8/P9 依赖 P0-P6 主链路恢复，不提前推进。
 - P2.S2 才拥有 XLA SPMD partition artifact stage。旧 Python post-SPMD helper 和 oracle tests 已删除。
 - R2.4 才把 partitioned StableHLO collective normalize 成 tensor-level collective；`wafer.comm` 只能在
   tile_region / SPM materialization / placement 明确后 materialize。
+- R2.4 已建立 `wafer.tensor_collective.*` op family 和
+  `wafer-normalize-stablehlo-collectives` pass，并接入 `wafer-lower-stablehlo-to-linalg` named
+  pipeline。该层使用 destination-style tensor operand/result 和 Wafer tiling demand interface，
+  不拥有 physical placement、SPM tile buffer、DTE token、byte schedule 或 runtime handle。
 - `wafer-lower-stablehlo-to-linalg` 只做 local compute normalization；不承载 sharding propagation、
   SPMD partition、group、placement、SPM/DDR 或 C ABI。
 - `wafer-lower-linalg-to-cabi`、`wafer-lower-stablehlo-to-cabi`、
@@ -108,6 +131,10 @@ P7/P8/P9 依赖 P0-P6 主链路恢复，不提前推进。
 - P2.S2 pinned-XLA SPMD helper build、six-strategy frontend artifact -> Wafer propagation -> XLA SPMD
   partition -> post-SPMD bundle verification gate。
 - StableHLO/Linalg local compute normalization、package manifest validator/stub tool-unit fixture。
+- R2.4 StableHLO collective handoff：`all_gather` / `all_reduce` / `reduce_scatter` /
+  `all_to_all` / `collective_permute` fixture 能 normalize 成 `wafer.tensor_collective.*`；P2.S2
+  真实 partitioned bundle 的 `forward.mlir` 能经 `wafer-lower-stablehlo-to-linalg` 产出
+  `wafer.tensor_collective.all_gather`，且不绕到 `wafer.comm`。
 
 不能作为主线完成证明：
 
@@ -140,8 +167,8 @@ P7/P8/P9 依赖 P0-P6 主链路恢复，不提前推进。
 | ID | 状态 | 任务 | 依赖 / 说明 |
 | --- | --- | --- | --- |
 | P2.S2 | done | Wafer-owned XLA SPMD partition artifact stage | `wafer-import-model --partition-stablehlo-bundle` 已接真实 pinned XLA helper/service，并通过六种 sharding strategy 的真实 artifact gate |
-| R2.4 | ready | Wafer LinalgExt-style tensor collective handoff | 依赖 P2.S2 |
-| R3.1 | pending | group boundary / candidate contract | 依赖 P2.S2、R2.4 和真实 frontend/SPMD artifact |
+| R2.4 | done | Wafer LinalgExt-style tensor collective handoff | `wafer.tensor_collective.*` op / verifier / StableHLO normalization pass 已接入 named pipeline，并通过 P2.S2 真实 artifact handoff gate |
+| R3.1 | ready | group boundary / candidate contract | 依赖 P2.S2、R2.4 和真实 frontend/SPMD artifact |
 | R3.2 | pending | root tile feasibility oracle | 依赖 R3.1 |
 | R3.3 | pending | tile_region materialization contract | 依赖 R3.1/R3.2 |
 | R3.4 | pending | layout / SPM feasibility gate | 依赖 R3.3 |
@@ -165,7 +192,7 @@ P7/P8/P9 依赖 P0-P6 主链路恢复，不提前推进。
 
 ## 下一步
 
-推进 R2.4。下一步消费 P2.S2 的 partitioned StableHLO bundle，把 `stablehlo.all_gather` /
-`all_reduce` / `reduce_scatter` / `all_to_all` / `collective_permute` 这类 logical collective 和
-`replica_groups` / channel metadata normalize 到 Wafer LinalgExt-style tensor collective handoff。
-不能绕回 Python post-SPMD helper、`wafer.spmd.*` 私有协议、协议占位测试或手写 fixture 作为主链证明。
+推进 R3.1。下一步消费 `wafer-lower-stablehlo-to-linalg` 输出的 `linalg` / `tensor` / `scf`
+local compute IR 和 `wafer.tensor_collective.*` tensor collective IR，建立 group boundary /
+candidate contract。不能把 raw StableHLO collective、`wafer.comm`、SPM tile buffer、DTE token、
+Python helper 或手写 fixture 当作 group 主线输入。

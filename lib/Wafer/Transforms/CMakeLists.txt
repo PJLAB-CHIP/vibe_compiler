@@ -2,6 +2,7 @@ add_mlir_library(WaferTransforms
   StableHLOToLinalg/NormalizeConstants.cpp
   StableHLOToLinalg/LowerStablehloDot.cpp
   StableHLOToLinalg/LowerStablehloElementwise.cpp
+  StableHLOToLinalg/NormalizeStablehloCollectives.cpp
   StableHLOToLinalg/LowerStablehloReduce.cpp
   StableHLOToLinalg/LowerStablehloShape.cpp
   SPMD/ApplyDefaultSpmdSharding.cpp

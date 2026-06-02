@@ -399,7 +399,7 @@ Collective handoff 分三步：
 
 ```text
 StableHLO logical collective
-  -> Wafer LinalgExt-style tensor collective op
+  -> Wafer LinalgExt-style `wafer.tensor_collective.*` op
   -> tiled tensor collective inside scheduled group / tile_region materialization
   -> wafer.comm collective-level op or explicit p2p schedule
   -> Direct DTE / sync / wait lower-level op
@@ -408,6 +408,12 @@ StableHLO logical collective
 Shardy / SPMD 只负责第一行之前的 logical collective 生成。StableHLO collective 不应在 group /
 tiling 前直接 lower 成 `wafer.comm`，因为 `wafer.comm` 当前属于 tile-local buffer / communication
 IR；它需要 SPM buffer、byte count、placement 和 token/effect 语义。
+
+R2.4 的 named pipeline gate 是 `wafer-lower-stablehlo-to-linalg`：该 pipeline 消费 P2.S2
+partitioned / replicated-local StableHLO module，在 local compute normalization 的同时把
+StableHLO collective normalizes 成 `wafer.tensor_collective.*`。该 gate 只证明 tensor-level
+handoff；slot-aligned tile generation、physical rank placement、ring/p2p schedule 和 DTE token
+仍属于 R3/R6。
 
 旧的 StableHLO collective 直降 `wafer.comm.*` pass 已移除。后续不得恢复 group/tiling 前的
 StableHLO -> `wafer.comm` 插入点；需要分别实现“StableHLO -> tensor collective”和
