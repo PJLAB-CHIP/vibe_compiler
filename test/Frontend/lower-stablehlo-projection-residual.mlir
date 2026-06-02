@@ -1,5 +1,5 @@
 // REQUIRES: stablehlo
-// RUN: wafer-opt --wafer-lower-stablehlo-dot --wafer-lower-stablehlo-elementwise --wafer-lower-stablehlo-shape --wafer-check-projection-residual-schedule %s | FileCheck %s
+// RUN: wafer-opt --wafer-lower-stablehlo-dot --wafer-lower-stablehlo-elementwise --wafer-lower-stablehlo-shape %s | FileCheck %s
 
 module {
   func.func @projection_residual(

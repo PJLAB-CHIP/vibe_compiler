@@ -1,5 +1,5 @@
 // REQUIRES: stablehlo
-// RUN: wafer-opt --wafer-lower-stablehlo-dot --wafer-lower-stablehlo-elementwise --wafer-check-mlp-schedule %s | FileCheck %s
+// RUN: wafer-opt --wafer-lower-stablehlo-dot --wafer-lower-stablehlo-elementwise %s | FileCheck %s
 
 module {
   func.func @mlp_tanh_gate(

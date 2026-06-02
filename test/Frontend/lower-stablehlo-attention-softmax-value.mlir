@@ -1,5 +1,5 @@
 // REQUIRES: stablehlo
-// RUN: wafer-opt --wafer-lower-stablehlo-reduce --wafer-normalize-constants --wafer-lower-stablehlo-elementwise --wafer-lower-stablehlo-shape --wafer-lower-stablehlo-dot --wafer-check-softmax-schedule %s | FileCheck %s
+// RUN: wafer-opt --wafer-lower-stablehlo-reduce --wafer-normalize-constants --wafer-lower-stablehlo-elementwise --wafer-lower-stablehlo-shape --wafer-lower-stablehlo-dot %s | FileCheck %s
 
 module {
   func.func @attention_softmax_value(

@@ -124,3 +124,7 @@
   definition 要加到 `obj.<target>`，只加到静态库 target 不会影响实际编译命令。
 - MLIR pass 如果会创建其它 dialect 的 op，必须在 `getDependentDialects` 中显式声明对应 dialect；
   只在 driver registry 里注册还不保证 pass 运行时 context 已加载该 dialect。
+- 不要恢复 `wafer-check-softmax-schedule`、`wafer-check-norm-schedule`、
+  `wafer-check-projection-residual-schedule` 或 `wafer-check-mlp-schedule` 这类 case-specific
+  transformer acceptance pass。StableHLO->Linalg 只证明 structured tensor lowering；softmax/norm/MLP
+  的真实完成证明应来自通用 group formation、tile/materialization、resource verifier 和下游消费。

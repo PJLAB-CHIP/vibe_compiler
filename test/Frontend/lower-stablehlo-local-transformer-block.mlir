@@ -1,5 +1,5 @@
 // REQUIRES: stablehlo
-// RUN: wafer-opt --wafer-lower-stablehlo-reduce --wafer-normalize-constants --wafer-lower-stablehlo-dot --wafer-lower-stablehlo-elementwise --wafer-lower-stablehlo-shape --wafer-check-norm-schedule --wafer-check-softmax-schedule --wafer-check-projection-residual-schedule --wafer-check-mlp-schedule %s | FileCheck %s
+// RUN: wafer-opt --wafer-lower-stablehlo-reduce --wafer-normalize-constants --wafer-lower-stablehlo-dot --wafer-lower-stablehlo-elementwise --wafer-lower-stablehlo-shape %s | FileCheck %s
 
 module {
   func.func @local_transformer_block(

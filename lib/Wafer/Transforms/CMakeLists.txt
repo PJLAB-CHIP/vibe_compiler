@@ -7,11 +7,7 @@ add_mlir_library(WaferTransforms
   StableHLOToLinalg/LowerStablehloReduce.cpp
   StableHLOToLinalg/LowerStablehloShape.cpp
   GroupFormation/FormGroups.cpp
-  GroupScheduling/CheckMlpSchedule.cpp
-  GroupScheduling/CheckNormSchedule.cpp
-  GroupScheduling/CheckProjectionResidualSchedule.cpp
   GroupScheduling/CheckRootTileCandidates.cpp
-  GroupScheduling/CheckSoftmaxSchedule.cpp
   TileRegionMaterialization/MaterializeMultiTileNoComm.cpp
   TileRegionMaterialization/MaterializeSingleTile.cpp
   SPMBufferize/CheckSPMAllocation.cpp

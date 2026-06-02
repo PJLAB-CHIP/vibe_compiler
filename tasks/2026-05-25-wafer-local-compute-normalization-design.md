@@ -179,27 +179,28 @@ Transformer block 第一阶段需要的 elementwise kind 至少包括：
 这些 op 在 local tensor IR 中仍是普通 `arith` / `math` / `linalg` 语义；是否能 lower 到 CT
 wrapper、是否需要拆成多个 target op，由 `wafer.compute` 负责。
 
-当前 P5.5 实现用 `--wafer-check-projection-residual-schedule` 作为 output projection + residual
-vertical slice 的 acceptance gate。该 pass 只从当前 structured tensor IR 重算以下 SSA 链：
+历史 P5.5 曾用 output projection + residual vertical slice 的 acceptance checker 证明以下 SSA 链
+可由 structured tensor IR 表达：
 
 - rank-2 `linalg.matmul` 作为 projection。
 - 消费 projection 结果的 rank-2 / rank-1 broadcast add 作为 bias add。
 - 消费 bias add 结果的 rank-2 / rank-2 add 作为 residual add。
 
-它不引入 `wafer.projection` 或 fused residual op，也不把 bias/residual tensor 名写成语义来源。
-frontend integration test 覆盖 StableHLO 2D projection dot、bias broadcast 和 residual add 到该
-acceptance gate 的完整 lowering。
+该 checker 已删除；当前只保留 frontend lowering fixture 覆盖 StableHLO 2D projection dot、bias
+broadcast 和 residual add 进入 `linalg.matmul` / `linalg.generic`。不引入 `wafer.projection`
+或 fused residual op，也不把 bias/residual tensor 名写成语义来源。
 
-当前 P5.6 实现用 `--wafer-check-mlp-schedule` 作为 MLP vertical slice 的 acceptance gate。
-该 pass 只从当前 structured tensor IR 重算以下 SSA 链：
+历史 P5.6 曾用 MLP vertical slice 的 acceptance checker 证明以下 SSA 链可由 structured tensor
+IR 表达：
 
 - rank-2 projection `linalg.matmul` 的结果进入 `linalg.elementwise<tanh>` activation。
 - activation 结果与另一个 rank-2 projection matmul 结果进入 `linalg.elementwise<mul>` gate。
 - gated activation 结果进入 rank-2 down projection `linalg.matmul`。
 
-当前实现覆盖已有 frontend 支持的 tanh activation 子集；GELU/SwiGLU 的其它 decomposition 可在
-同一 use-def 检查上扩展。该 gate 不引入 `wafer.mlp`、fused activation op 或名字约定，也不把
-中间 tile/group split 写成 IR attr。
+该 checker 已删除；当前只保留 frontend lowering fixture 覆盖已有 tanh activation 子集。GELU /
+SwiGLU 的其它 decomposition 需要通过通用 structured tensor lowering 和后续 group/materialization
+验证扩展，不能再新增 case-specific schedule checker。当前不引入 `wafer.mlp`、fused activation op
+或名字约定，也不把中间 tile/group split 写成 IR attr。
 
 当前 P5.7 增加 full local transformer block structured IR gate。该 integration test 在单个函数中
 串联：
@@ -347,18 +348,19 @@ y = (x - mean) * rsqrt(var + eps) * weight + bias
 
 epsilon、scale、bias 都是普通 constant / input value。它们不通过名字或 layer type 特判。
 
-当前 P5.1 实现用 `--wafer-check-norm-schedule` 作为 norm vertical slice 的 schedule acceptance
-gate。该 pass 只从当前 structured tensor IR 重算以下事实：
+历史 P5.1 曾用 norm vertical slice 的 schedule acceptance checker 从 structured tensor IR 重算
+以下事实：
 
 - 是否存在沿最后一维的 `linalg.reduce`。
 - 是否存在 `rsqrt` elementwise stage。
 - 是否存在 rank-N / rank-(N-1) broadcast multiply stage。
 
-它不写入 group attr、side table、planner trace 或 cost 分数。失败时诊断指向缺失的 staged
-结构；真正 tile shape、SPM residency 和 group split 仍归后续 group/resource planner。
+该 checker 已删除；当前 coverage 只来自 StableHLO -> Linalg lowering fixture。真正 tile shape、
+SPM residency 和 group split 仍归后续 group/resource planner，不能再靠 case-specific checker
+冒充 schedule 完成。
 
-当前 P5.2 实现用 `--wafer-check-softmax-schedule` 作为 softmax vertical slice 的 schedule
-acceptance gate。该 pass 只从当前 structured tensor IR 和 SSA use-def 重算以下事实：
+历史 P5.2 曾用 softmax vertical slice 的 schedule acceptance checker 从 structured tensor IR 和
+SSA use-def 重算以下事实：
 
 - 是否存在沿最后一维的 reduce max，作为 row/key 维最大值阶段。
 - 是否存在 `scores - row_max` 的 broadcast subtract。
@@ -366,9 +368,9 @@ acceptance gate。该 pass 只从当前 structured tensor IR 和 SSA use-def 重
 - 是否存在消费 exp 结果、沿同一最后一维的 reduce sum。
 - 是否存在 `exp_scores / row_sum` 的 broadcast divide normalize。
 
-它不引入 `wafer.softmax`，不写入 schedule attr，也不把 group split 或 workspace 选择固化成
-IR 合同。若后续需要 multi-stage softmax，row max、row sum、normalize/value 的分割应由
-group/resource planner 通过显式 IR 边界和 workspace demand materialize。
+该 checker 已删除。当前不引入 `wafer.softmax`，不写入 schedule attr，也不把 group split 或
+workspace 选择固化成 IR 合同。若后续需要 multi-stage softmax，row max、row sum、normalize/value
+的分割应由 group/resource planner 通过显式 IR 边界和 workspace demand materialize。
 
 ## 6. Pass 合同
 
@@ -414,10 +416,10 @@ Normalization 后必须能检查：
 | attention QK^T / AV | `lower-stablehlo-attention-score.mlir`、`lower-stablehlo-attention-value.mlir`、`lower-stablehlo-attention-softmax-value.mlir` | rank-4 transpose / contraction relation 来自 `dot_general` dimension numbers 和 indexing map |
 | elementwise / broadcast | `lower-stablehlo-elementwise.mlir`、projection residual gate | 证明当前 add/sub/mul/div/tanh/exp/broadcast 子集的 SSA dataflow；mask/select 和 complex broadcast 未闭环 |
 | reduce | `lower-stablehlo-reduce.mlir`、norm/softmax staged tests | 证明细粒度 StableHLO reduce 到 `linalg.reduce` 的 constant-init 子集；non-constant-init reduce 和 numeric policy 未闭环 |
-| softmax | `lower-stablehlo-softmax-staged.mlir`、`softmax-schedule.mlir` | 证明 fine-grained StableHLO softmax dataflow 可变成 `linalg.reduce` / `linalg.generic` staged IR；不证明 multi-stage workspace 或 group schedule |
-| norm | `lower-stablehlo-norm-staged.mlir`、`norm-schedule.mlir` | 证明 fine-grained RMSNorm/LayerNorm dataflow 中 last-dim reduce / rsqrt / broadcast multiply gate；不证明完整 LayerNorm/RMSNorm family |
+| softmax | `lower-stablehlo-softmax-staged.mlir` | 证明 fine-grained StableHLO softmax dataflow 可变成 `linalg.reduce` / `linalg.generic` staged IR；不证明 multi-stage workspace 或 group schedule |
+| norm | `lower-stablehlo-norm-staged.mlir` | 证明 fine-grained RMSNorm/LayerNorm dataflow 中 last-dim reduce / rsqrt / broadcast multiply gate；不证明完整 LayerNorm/RMSNorm family |
 | RoPE | `lower-stablehlo-rope-mlp-staged.mlir` | 证明当前 RoPE slice/shape/elementwise staged pattern；sin/cos table storage slicing 未闭环 |
-| MLP | `lower-stablehlo-mlp-schedule.mlir`、`lower-stablehlo-local-transformer-block.mlir` | 证明 tanh-gated MLP vertical slice 和 full local transformer structured gate；GELU/SwiGLU/package consistency 未闭环 |
+| MLP | `lower-stablehlo-mlp.mlir`、`lower-stablehlo-local-transformer-block.mlir` | 证明 tanh-gated MLP vertical slice 和 full local transformer structured gate；GELU/SwiGLU/package consistency 未闭环 |
 | shape views | `lower-stablehlo-shape.mlir`、local transformer block gate | 证明 static expand/collapse shape-only relation；dynamic shape view 和 layout materialization 未闭环 |
 | tensor collective handoff | 设计已收口，代码未恢复 | StableHLO collective 需要先进入 Wafer LinalgExt-style tensor collective 层；旧的 StableHLO -> `wafer.comm` bridge 已移除，不能作为 group/tiling 输入 |
 
