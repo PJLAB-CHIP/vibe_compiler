@@ -1,6 +1,8 @@
 add_executable(wafer-opt wafer-opt.cpp)
 target_link_libraries(wafer-opt
   PRIVATE
+  LLVMSupport
+  WaferFrontend
   WaferIR
   WaferPipelines
   WaferTransforms
@@ -11,6 +13,8 @@ target_link_libraries(wafer-opt
   MLIRLinalgDialect
   MLIRMathDialect
   MLIRMlirOptMain
+  MLIRParser
+  MLIRPass
   MLIRSCFDialect
   MLIRTensorDialect
 )

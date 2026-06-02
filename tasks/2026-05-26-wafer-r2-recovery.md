@@ -33,12 +33,12 @@ adapter；`P2.S1` 骨架已接上真实 `mark_sharding` / default-input-seed 到
 不能继续把 Python post-SPMD helper 当成主链。后续 group / tile / resource gate 必须消费真实
 frontend/SPMD program 来源，而不是继续围绕手写 fixture 自洽。
 
-2026-06-01 调度结论：R2.4 之前先补 R2.4-pre pipeline / driver contract。当前 P2.F1/P2.S1
+2026-06-01 调度结论：R2.4 之前先补 R2.4-pre pipeline contract。当前 P2.F1/P2.S1
 已经证明 frontend export 和 Wafer Shardy propagation stage 能跑通；post-SPMD partitioned local
 body 必须由 P2.S2 的 Wafer-owned stage 生成。后续主链路
-必须通过库中注册的 named pipeline 或用户级 driver mode 表达，
+必须通过库中注册的 named pipeline 或 `wafer-opt` program mode 表达，
 bin 只负责注册和调用，单 pass flag 不能替代主线 compile flow。用户级 compile target 名称统一为
-`wafer`；`tx8` 只保留为硬件/依赖逆向资料中的事实名，不作为 compiler driver target 字符串。
+`wafer`；`tx8` 只保留为硬件/依赖逆向资料中的事实名，不作为 compiler target 字符串。
 
 2026-06-02 清理结论：R2.4-pre 只保留当前真实成立的 named pipeline：
 `wafer-propagate-stablehlo-sharding` 和 `wafer-lower-stablehlo-to-linalg`。
@@ -46,8 +46,8 @@ bin 只负责注册和调用，单 pass flag 不能替代主线 compile flow。�
 `wafer-lower-tile-communication-to-cabi` 以及 `wafer-compile-stablehlo
 --compile-stablehlo-program-to-cabi` 已删除，因为它们把 R3/R6/R7 尚未完成的 group/tile/resource/C ABI
 链路包装成用户级 compile flow。`wafer-compile-stablehlo` 只保留 frontend / StableHLO program
-directory verifier；P2.S2 的用户级入口是 `wafer-compile --partition-stablehlo-program`，负责消费
-pre-SPMD program directory，在 Wafer compiler driver 内执行 sharding propagation 并调用 Wafer-owned
+directory verifier；P2.S2 的用户级入口是 `wafer-opt --partition-stablehlo-program`，负责消费
+pre-SPMD program directory，在 `wafer-opt` program mode 内执行 sharding propagation 并调用 Wafer-owned
 XLA SPMD partition helper。旧显式 C ABI issue、ring collective、SPM/DDR trial 和
 single-tile materialization unit/debug pass 链已删除；R3/R6/R7 后续必须按真实 program chain 和
 新的 IR contract 恢复。
@@ -88,8 +88,8 @@ parameter name 只用于定位 exporter program 中的 parameter payload，不�
 
 实现边界：
 
-- `WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON` 时，`wafer-opt`、`wafer-compile` 和
-  `wafer-compile-stablehlo` 显式注册 SDY dialect；`wafer-opt` 同时注册 SDY passes/pipelines。
+- `WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON` 时，`wafer-opt` 和 `wafer-compile-stablehlo`
+  显式注册 SDY dialect；`wafer-opt` 同时注册 SDY passes/pipelines。
   关闭该选项时 core textual tests 不硬依赖 Shardy。
 - `test/Spmd/shardy-program-bridge.mlir` 覆盖 `sdy.mesh`、`sdy.sharding`、StableHLO
   `all_gather` textual program 和 frontend verifier 的同一 program 入口；它只证明 SDY dialect /
@@ -193,7 +193,7 @@ lowering / program writer 没有使用这些字段，不再作为主线完成依
 应产生下游恢复任务或补充 IR contract，不能反向削弱当前层 program。
 
 R2.4-pre 完成后，上述消费链不能再依赖用户或 lit 手动串联多个 tool / pass / env。主线 gate
-必须通过 named pipeline 或用户级 driver mode 重放上游链路；pipeline 名称按 IR 边界和职责命名，
+必须通过 named pipeline 或 `wafer-opt` program mode 重放上游链路；pipeline 名称按 IR 边界和职责命名，
 不能按 P2/R3 任务号、单个 workload 或 case 命名。`wafer-opt` 可以继续暴露单 pass 作为局部
 debug/unit 入口，但这些 flag 不能被写成用户级 compile 流程。Python post-SPMD helper 已删除；
 不得把 frontend capture 写成 SPMD partition 或用户编译入口。
@@ -203,7 +203,7 @@ debug/unit 入口，但这些 flag 不能被写成用户级 compile 流程。Pyt
 - `wafer-propagate-stablehlo-sharding`：StableHLO/SDY sharding seed -> propagated StableHLO/SDY。
   该 pipeline 只负责 no-user default seed 和 Shardy propagation，不产生 partitioned local body；
   P2.S2 必须让 Wafer 自己消费 sharding propagation stage 的输出 program 并产出 partitioned program directory。
-- `wafer-compile --partition-stablehlo-program`：P2.S2 program-level compiler driver。输入是
+- `wafer-opt --partition-stablehlo-program`：P2.S2 program-level `wafer-opt` mode。输入是
   `functions/forward.mlir`、`functions/forward.meta` 和可选 weight payload 组成的 StableHLO program
   directory；driver 先执行 program directory verifier，再调用同一套
   `wafer-propagate-stablehlo-sharding` C++ pipeline builder，随后调用 Wafer-owned pinned-XLA SPMD helper

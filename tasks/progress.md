@@ -36,7 +36,7 @@
 
 | ID | 状态 | 任务 | 完成标准 |
 | --- | --- | --- | --- |
-| P2.S2 | done | 建立 Wafer compiler-owned XLA SPMD partition stage | `wafer-compile --partition-stablehlo-program` 消费经过 Wafer sharding propagation stage 的 StableHLO / SDY program，调用 pinned-XLA SPMD helper，输出 post-SPMD local / replicated-local StableHLO program directory、post-SPMD marker、rank-local function signature、collective metadata、`forward.parameter_shards.json` 和 rank-local parameter payload；该入口不挂在 frontend StableHLO export / verifier tool 下 |
+| P2.S2 | done | 建立 Wafer compiler-owned XLA SPMD partition stage | `wafer-opt --partition-stablehlo-program` 消费经过 Wafer sharding propagation stage 的 StableHLO / SDY program，调用 pinned-XLA SPMD helper，输出 post-SPMD local / replicated-local StableHLO program directory、post-SPMD marker、rank-local function signature、collective metadata、`forward.parameter_shards.json` 和 rank-local parameter payload；该入口不挂在 frontend StableHLO export / verifier tool 下 |
 | R2.4 | done | Wafer LinalgExt-style tensor collective handoff | 消费 P2.S2 partitioned StableHLO program directory 中的 logical collective 和 rank-local signature，normalize 成实现 destination-style、MLIR `TilingInterface`、Wafer tiling demand 和 Wafer collective info contract 的 `wafer.tensor_collective.*` tensor IR |
 | R3.1 | ready | group boundary / candidate contract | 消费 P2.S2/R2.4 真实 frontend/SPMD program chain 的 local compute IR 和 tensor collective IR，建立 group candidate 的 IR 边界和完成 gate |
 
@@ -51,8 +51,8 @@ P2.S2 pipeline contract：
   parameter payload。
 - downstream consumer：R2.4 tensor collective handoff、`wafer-lower-stablehlo-to-linalg` local
   compute normalization、R3 group pipeline 和后续 placement / package stages。
-- user-level driver / named pipeline：`wafer-compile --partition-stablehlo-program` 消费 frontend
-  program directory，并在 Wafer compiler driver 内执行 sharding propagation + XLA SPMD partition；不能挂在
+- user-level driver / named pipeline：`wafer-opt --partition-stablehlo-program` 消费 frontend
+  program directory，并在 `wafer-opt` program mode 内执行 sharding propagation + XLA SPMD partition；不能挂在
   `wafer-compile-stablehlo` frontend verifier 下，也不能由 Python capture helper 或 integration test
   手动拼外部流程替代。
 - explicit non-goals：不发明 `wafer.spmd.*` 私有协议，不在 frontend Python 中做 partition，不把
@@ -71,7 +71,7 @@ R3.1 pipeline contract：
   materialization、`wafer.comm`、C ABI issue 或 package manifest。
 - downstream consumer：R3.2 root tile feasibility、R3.3 tile_region materialization、R3.4/R3.5
   layout/SPM/DDR feasibility 和后续 ABI/package stages。
-- user-level driver / named pipeline：应由 Wafer named pipeline 或 driver mode 重放 frontend/SPMD/R2.4
+- user-level driver / named pipeline：应由 Wafer named pipeline 或 `wafer-opt` program mode 重放 frontend/SPMD/R2.4
   chain 后进入 group candidate gate；不能让 integration test 手动拼 raw StableHLO、tensor collective
   fixture 和 group fixture 作为长期主线。
 - explicit non-goals：不做 physical placement、tile shape search、SPM allocation、DTE schedule、
@@ -95,7 +95,7 @@ P7/P8/P9 依赖 P0-P6 主链路恢复，不提前推进。
 - `wafer-propagate-stablehlo-sharding` 只做 default seed + Shardy propagation；不是 XLA SPMD partitioner。
 - P2.S2 才拥有 XLA SPMD partition compiler stage。旧 Python post-SPMD helper 和 oracle tests 已删除；
   2026-06-02 已撤销把 P2.S2 挂在 `wafer-compile-stablehlo` frontend verifier 下的错误入口，并恢复为
-  `wafer-compile --partition-stablehlo-program` compiler driver mode。
+  `wafer-opt --partition-stablehlo-program` program mode。
 - R2.4 才把 partitioned StableHLO collective normalize 成 tensor-level collective；`wafer.comm` 只能在
   tile_region / SPM materialization / placement 明确后 materialize。
 - R2.4 已建立 `wafer.tensor_collective.*` op family 和
@@ -114,7 +114,7 @@ P7/P8/P9 依赖 P0-P6 主链路恢复，不提前推进。
 - `wafer-compile-stablehlo` 当前只保留 `--verify-frontend-program` 和
   `--verify-stablehlo-program`，用于 frontend / StableHLO program directory 验证。Shardy propagation
   的 IR named pipeline 是 `wafer-propagate-stablehlo-sharding`；P2.S2 program driver 是
-  `wafer-compile --partition-stablehlo-program`，它负责 program directory verify、in-memory Wafer
+  `wafer-opt --partition-stablehlo-program`，它负责 program directory verify、in-memory Wafer
   sharding propagation、临时 propagated program directory、pinned-XLA helper 调用和输出 program
   directory verifier。helper 执行 StableHLO/SDY -> XLA HLO、`SpmdPrepare` / `SpmdPartitioner` /
   `HloVerifier`、partitioned HLO -> StableHLO round trip，并写回 rank-local function signature、
@@ -136,7 +136,7 @@ P7/P8/P9 依赖 P0-P6 主链路恢复，不提前推进。
 - Wafer IR op-family 文件组织、interface/effect/resource 查询合同。
 - frontend program verifier、PyTorch/XLA program directory metadata / pre-SPMD parameter payload 校验。
 - SDY `sdy.mesh` / `sdy.sharding` parse/verify、default input seed、Shardy propagation driver gate。
-- P2.S2 pinned-XLA SPMD helper build、six-strategy frontend program -> Wafer compiler driver
+- P2.S2 pinned-XLA SPMD helper build、six-strategy frontend program -> `wafer-opt` program mode
   propagation -> XLA SPMD partition -> post-SPMD program directory verification gate。
 - StableHLO/Linalg local compute normalization、package manifest validator/stub tool-unit fixture。
 - R2.4 StableHLO collective handoff：`all_gather` / `all_reduce` / `reduce_scatter` /
@@ -177,7 +177,7 @@ P7/P8/P9 依赖 P0-P6 主链路恢复，不提前推进。
 
 | ID | 状态 | 任务 | 依赖 / 说明 |
 | --- | --- | --- | --- |
-| P2.S2 | done | Wafer-owned XLA SPMD partition compiler stage | `wafer-compile --partition-stablehlo-program` 已接真实 pinned XLA helper/service，并通过六种 sharding strategy 的真实 program gate；不得挂在 `wafer-compile-stablehlo` frontend verifier 下 |
+| P2.S2 | done | Wafer-owned XLA SPMD partition compiler stage | `wafer-opt --partition-stablehlo-program` 已接真实 pinned XLA helper/service，并通过六种 sharding strategy 的真实 program gate；不得挂在 `wafer-compile-stablehlo` frontend verifier 下 |
 | R2.4 | done | Wafer LinalgExt-style tensor collective handoff | `wafer.tensor_collective.*` op / verifier / StableHLO normalization pass 已接入 named pipeline，并实现 destination-style、MLIR `TilingInterface`、Wafer tiling demand 和 Wafer collective info contract；通过 P2.S2 真实 program handoff gate |
 | R3.1 | ready | group boundary / candidate contract | 依赖 P2.S2、R2.4 和真实 frontend/SPMD program |
 | R3.2 | pending | root tile feasibility oracle | 依赖 R3.1 |

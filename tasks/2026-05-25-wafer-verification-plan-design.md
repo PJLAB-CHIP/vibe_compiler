@@ -89,7 +89,7 @@ pattern FileCheck、手写 StableHLO/Linalg fixture 和显式 manifest tool-unit
 - current stage responsibility：当前 gate 只验证或 materialize 哪一层语义。
 - output program / IR：通过后产生或确认的 program / IR contract。
 - downstream consumer：哪个后续 stage 会直接消费该输出。
-- user-level driver / named pipeline：主链路如何由 Wafer driver 或 named pipeline 重放。
+- user-level driver / named pipeline：主链路如何由 `wafer-opt` program mode 或 named pipeline 重放。
 - explicit non-goals：哪些 pass、tool、fixture 或下游缺口不能被算进当前完成证明。
 - completion gate：哪条命令或测试证明当前 stage 的输出沿真实 program chain 可被消费。
 
@@ -103,11 +103,11 @@ Single-tile local compute：
 - 主链路 gate 应消费 P2.F1/P2.S1/P2.S2/R2.4 产出的真实图 program，并继续通过 frontend/local compute /
   tensor collective handoff gate；graph break / fallback 不被当成合法 program。手写 StableHLO/Linalg
   输入只保留为局部 verifier、lowering pattern 或 bring-up fixture。
-- R2.4-pre 之后，主链路 gate 必须通过 Wafer named pipeline 或用户级 driver mode 重放上述链路；
+- R2.4-pre 之后，主链路 gate 必须通过 Wafer named pipeline 或 `wafer-opt` program mode 重放上述链路；
   单独拼 `wafer-opt` pass、`shardy-sdy-opt`、PyTorch/XLA runtime 环境变量和 verifier tool 只能作为
   unit/debug 覆盖。2026-06-02 后，frontend program verifier 入口是
-  `wafer-compile-stablehlo --verify-stablehlo-program`；P2.S2 program-level compiler driver 入口是
-  `wafer-compile --partition-stablehlo-program`；`--compile-stablehlo-program-to-cabi` 已删除。
+  `wafer-compile-stablehlo --verify-stablehlo-program`；P2.S2 program-level `wafer-opt` mode 入口是
+  `wafer-opt --partition-stablehlo-program`；`--compile-stablehlo-program-to-cabi` 已删除。
   `wafer-opt` named pipeline 入口保留 `wafer-propagate-stablehlo-sharding` 和
   `wafer-lower-stablehlo-to-linalg`。
   旧 C ABI issue、single-tile materialization、SPM/DDR trial 和 ring lowering unit/debug pass 链已删除，

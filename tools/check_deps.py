@@ -44,7 +44,7 @@ STABLEHLO_API_NEEDLES = [
 STABLEHLO_API_ALLOWED_PREFIXES = [
     "include/Wafer/Frontend",
     "lib/Wafer/Transforms/StableHLOToLinalg",
-    "tools/wafer-compile",
+    "tools/wafer-opt",
     "tools/wafer-compile-stablehlo",
 ]
 
@@ -58,9 +58,8 @@ SHARDY_API_ALLOWED_PREFIXES = [
     "include/Wafer/Pipelines",
     "lib/Wafer/Pipelines",
     "lib/Wafer/Transforms/SPMD",
-    "tools/wafer-compile",
-    "tools/wafer-compile-stablehlo",
     "tools/wafer-opt",
+    "tools/wafer-compile-stablehlo",
 ]
 
 RUNTIME_DRIVER_NEEDLES = [
@@ -304,6 +303,9 @@ def check_cmake_target_visibility() -> None:
         "target_link_libraries(wafer-opt PRIVATE StablehloRegister)",
     )
     for needle in [
+        "WaferFrontend",
+        "MLIRParser",
+        "MLIRPass",
         "WAFER_ENABLE_SPMD_PARTITIONER_DEPS",
         "WAFER_ENABLE_SHARDY=1",
         "target_link_libraries(wafer-opt PRIVATE ShardySdyRegister ShardySdyTransforms)",
@@ -328,14 +330,6 @@ def check_cmake_target_visibility() -> None:
         check_text_contains(
             REPO_ROOT / "tools" / "wafer-compile-stablehlo" / "CMakeLists.txt", needle
         )
-    wafer_compile_cmake_path = REPO_ROOT / "tools" / "wafer-compile" / "CMakeLists.txt"
-    for needle in [
-        "WaferPipelines",
-        "StablehloRegister",
-        "WAFER_ENABLE_SHARDY=1",
-        "target_link_libraries(wafer-compile PRIVATE ShardySdyRegister)",
-    ]:
-        check_text_contains(wafer_compile_cmake_path, needle)
     pipelines_cmake_path = REPO_ROOT / "lib" / "Wafer" / "Pipelines" / "CMakeLists.txt"
     for needle in [
         "target_compile_definitions(obj.WaferPipelines PRIVATE WAFER_ENABLE_SHARDY=1)",
@@ -361,7 +355,6 @@ def check_dependency_layering() -> None:
     production_roots = [
         REPO_ROOT / "include" / "Wafer",
         REPO_ROOT / "lib" / "Wafer",
-        REPO_ROOT / "tools" / "wafer-compile",
         REPO_ROOT / "tools" / "wafer-opt",
         REPO_ROOT / "tools" / "wafer-compile-stablehlo",
     ]
