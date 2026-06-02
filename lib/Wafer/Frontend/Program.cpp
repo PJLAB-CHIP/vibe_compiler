@@ -1,6 +1,6 @@
-//===- Artifact.cpp - Wafer frontend artifact verifier -------------------===//
+//===- Program.cpp - Wafer frontend program verifier ---------------------===//
 
-#include "Wafer/Frontend/Artifact.h"
+#include "Wafer/Frontend/Program.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Attributes.h"
@@ -30,22 +30,22 @@ namespace {
 constexpr llvm::StringLiteral kDynamicBoundsAttr =
     "wafer.frontend.dynamic_bounds";
 
-struct BundleSignature {
+struct ProgramSignature {
   std::vector<int64_t> shape;
   std::string dtype;
 };
 
-struct BundleInputLocation {
+struct ProgramInputLocation {
   std::string type;
   int64_t position = -1;
   std::string name;
 };
 
-struct BundleMeta {
+struct ProgramMetadata {
   std::string name;
-  std::vector<BundleSignature> inputSignatures;
-  std::vector<BundleSignature> outputSignatures;
-  std::vector<BundleInputLocation> inputLocations;
+  std::vector<ProgramSignature> inputSignatures;
+  std::vector<ProgramSignature> outputSignatures;
+  std::vector<ProgramInputLocation> inputLocations;
 };
 
 struct NpyPayloadMetadata {
@@ -57,12 +57,14 @@ struct NpyPayloadMetadata {
 };
 
 bool reject(llvm::raw_ostream &diagnostics, llvm::StringRef message) {
-  diagnostics << "wafer-import-model: " << message << "\n";
+  diagnostics << "wafer-compile-stablehlo: " << message << "\n";
   return true;
 }
 
-bool rejectBundle(llvm::StringRef reason, llvm::raw_ostream &diagnostics) {
-  diagnostics << "wafer-import-model: StableHLO bundle metadata rejected: "
+bool rejectProgramDirectory(llvm::StringRef reason,
+                            llvm::raw_ostream &diagnostics) {
+  diagnostics << "wafer-compile-stablehlo: StableHLO program directory "
+                 "metadata rejected: "
               << reason << "\n";
   return true;
 }
@@ -78,7 +80,7 @@ bool rejectImportMarker(ModuleOp module, llvm::StringRef attrName,
       boolMarker && !boolMarker.getValue())
     return false;
 
-  diagnostics << "wafer-import-model: " << message << " rejected";
+  diagnostics << "wafer-compile-stablehlo: " << message << " rejected";
   if (auto stringMarker = dyn_cast<StringAttr>(marker))
     diagnostics << ": " << stringMarker.getValue();
   else
@@ -100,7 +102,7 @@ DictionaryAttr getFunctionResultAttrs(func::FuncOp func, unsigned index) {
 bool rejectUnboundedDynamicShape(func::FuncOp func, llvm::StringRef kind,
                                  unsigned index, Type type,
                                  llvm::raw_ostream &diagnostics) {
-  diagnostics << "wafer-import-model: unbounded dynamic shape rejected "
+  diagnostics << "wafer-compile-stablehlo: unbounded dynamic shape rejected "
               << "in func.func @" << func.getSymName();
   if (!kind.empty())
     diagnostics << " " << kind << " " << index;
@@ -111,7 +113,7 @@ bool rejectUnboundedDynamicShape(func::FuncOp func, llvm::StringRef kind,
 bool rejectInvalidDynamicBound(func::FuncOp func, llvm::StringRef kind,
                                unsigned index, llvm::StringRef reason,
                                llvm::raw_ostream &diagnostics) {
-  diagnostics << "wafer-import-model: invalid dynamic bound rejected "
+  diagnostics << "wafer-compile-stablehlo: invalid dynamic bound rejected "
               << "in func.func @" << func.getSymName() << " " << kind << " "
               << index << ": " << reason << "\n";
   return true;
@@ -190,8 +192,8 @@ bool readStringField(const llvm::json::Object &object, llvm::StringRef field,
                      std::string &out, llvm::raw_ostream &diagnostics) {
   std::optional<llvm::StringRef> value = object.getString(field);
   if (!value)
-    return rejectBundle("expected string field '" + field.str() + "'",
-                        diagnostics);
+    return rejectProgramDirectory("expected string field '" + field.str() + "'",
+                                  diagnostics);
   out = value->str();
   return false;
 }
@@ -200,8 +202,8 @@ bool readIntegerField(const llvm::json::Object &object, llvm::StringRef field,
                       int64_t &out, llvm::raw_ostream &diagnostics) {
   std::optional<int64_t> value = object.getInteger(field);
   if (!value)
-    return rejectBundle("expected integer field '" + field.str() + "'",
-                        diagnostics);
+    return rejectProgramDirectory(
+        "expected integer field '" + field.str() + "'", diagnostics);
   out = *value;
   return false;
 }
@@ -211,12 +213,13 @@ bool readShapeField(const llvm::json::Object &object,
                     llvm::raw_ostream &diagnostics) {
   const llvm::json::Array *array = object.getArray("shape");
   if (!array)
-    return rejectBundle("expected array field 'shape'", diagnostics);
+    return rejectProgramDirectory("expected array field 'shape'", diagnostics);
 
   for (const llvm::json::Value &value : *array) {
     std::optional<int64_t> dim = value.getAsInteger();
     if (!dim || *dim < 0)
-      return rejectBundle("expected non-negative shape dimension", diagnostics);
+      return rejectProgramDirectory("expected non-negative shape dimension",
+                                    diagnostics);
     shape.push_back(*dim);
   }
   return false;
@@ -228,47 +231,48 @@ bool readIntegerArrayField(const llvm::json::Object &object,
                            bool requirePositive = false) {
   const llvm::json::Array *array = object.getArray(field);
   if (!array)
-    return rejectBundle("expected array field '" + field.str() + "'",
-                        diagnostics);
+    return rejectProgramDirectory("expected array field '" + field.str() + "'",
+                                  diagnostics);
 
   for (const llvm::json::Value &value : *array) {
     std::optional<int64_t> entry = value.getAsInteger();
     if (!entry || *entry < 0 || (requirePositive && *entry == 0))
-      return rejectBundle("invalid integer array field '" + field.str() + "'",
-                          diagnostics);
+      return rejectProgramDirectory(
+          "invalid integer array field '" + field.str() + "'", diagnostics);
     values.push_back(*entry);
   }
   return false;
 }
 
-FailureOr<BundleSignature> parseSignature(const llvm::json::Value &value,
-                                          llvm::raw_ostream &diagnostics) {
+FailureOr<ProgramSignature> parseSignature(const llvm::json::Value &value,
+                                           llvm::raw_ostream &diagnostics) {
   const llvm::json::Object *object = value.getAsObject();
   if (!object) {
-    rejectBundle("signature entries must be objects", diagnostics);
+    rejectProgramDirectory("signature entries must be objects", diagnostics);
     return failure();
   }
 
-  BundleSignature signature;
+  ProgramSignature signature;
   if (readShapeField(*object, signature.shape, diagnostics) ||
       readStringField(*object, "dtype", signature.dtype, diagnostics))
     return failure();
   return signature;
 }
 
-FailureOr<std::vector<BundleSignature>>
+FailureOr<std::vector<ProgramSignature>>
 parseSignatures(const llvm::json::Object &root, llvm::StringRef field,
                 llvm::raw_ostream &diagnostics) {
   const llvm::json::Array *array = root.getArray(field);
   if (!array) {
-    rejectBundle("expected array field '" + field.str() + "'", diagnostics);
+    rejectProgramDirectory("expected array field '" + field.str() + "'",
+                           diagnostics);
     return failure();
   }
 
-  std::vector<BundleSignature> signatures;
+  std::vector<ProgramSignature> signatures;
   signatures.reserve(array->size());
   for (const llvm::json::Value &value : *array) {
-    FailureOr<BundleSignature> signature = parseSignature(value, diagnostics);
+    FailureOr<ProgramSignature> signature = parseSignature(value, diagnostics);
     if (failed(signature))
       return failure();
     signatures.push_back(std::move(*signature));
@@ -276,25 +280,27 @@ parseSignatures(const llvm::json::Object &root, llvm::StringRef field,
   return signatures;
 }
 
-FailureOr<std::vector<BundleInputLocation>>
+FailureOr<std::vector<ProgramInputLocation>>
 parseInputLocations(const llvm::json::Object &root,
                     llvm::raw_ostream &diagnostics) {
   const llvm::json::Array *array = root.getArray("input_locations");
   if (!array) {
-    rejectBundle("expected array field 'input_locations'", diagnostics);
+    rejectProgramDirectory("expected array field 'input_locations'",
+                           diagnostics);
     return failure();
   }
 
-  std::vector<BundleInputLocation> locations;
+  std::vector<ProgramInputLocation> locations;
   locations.reserve(array->size());
   for (const llvm::json::Value &value : *array) {
     const llvm::json::Object *object = value.getAsObject();
     if (!object) {
-      rejectBundle("input_locations entries must be objects", diagnostics);
+      rejectProgramDirectory("input_locations entries must be objects",
+                             diagnostics);
       return failure();
     }
 
-    BundleInputLocation location;
+    ProgramInputLocation location;
     if (readStringField(*object, "type_", location.type, diagnostics) ||
         readIntegerField(*object, "position", location.position, diagnostics) ||
         readStringField(*object, "name", location.name, diagnostics))
@@ -304,11 +310,12 @@ parseInputLocations(const llvm::json::Object &root,
   return locations;
 }
 
-FailureOr<BundleMeta> parseBundleMeta(llvm::StringRef metaPath,
-                                      llvm::raw_ostream &diagnostics) {
+FailureOr<ProgramMetadata>
+parseProgramMetadata(llvm::StringRef metaPath, llvm::raw_ostream &diagnostics) {
   auto bufferOrError = llvm::MemoryBuffer::getFile(metaPath);
   if (!bufferOrError) {
-    rejectBundle("failed to read '" + metaPath.str() + "'", diagnostics);
+    rejectProgramDirectory("failed to read '" + metaPath.str() + "'",
+                           diagnostics);
     return failure();
   }
 
@@ -316,25 +323,25 @@ FailureOr<BundleMeta> parseBundleMeta(llvm::StringRef metaPath,
       llvm::json::parse((*bufferOrError)->getBuffer());
   if (!parsed) {
     std::string message = llvm::toString(parsed.takeError());
-    rejectBundle("invalid JSON: " + message, diagnostics);
+    rejectProgramDirectory("invalid JSON: " + message, diagnostics);
     return failure();
   }
 
   const llvm::json::Object *root = parsed->getAsObject();
   if (!root) {
-    rejectBundle("root must be an object", diagnostics);
+    rejectProgramDirectory("root must be an object", diagnostics);
     return failure();
   }
 
-  BundleMeta meta;
+  ProgramMetadata meta;
   if (readStringField(*root, "name", meta.name, diagnostics))
     return failure();
 
-  FailureOr<std::vector<BundleSignature>> inputs =
+  FailureOr<std::vector<ProgramSignature>> inputs =
       parseSignatures(*root, "input_signature", diagnostics);
-  FailureOr<std::vector<BundleSignature>> outputs =
+  FailureOr<std::vector<ProgramSignature>> outputs =
       parseSignatures(*root, "output_signature", diagnostics);
-  FailureOr<std::vector<BundleInputLocation>> locations =
+  FailureOr<std::vector<ProgramInputLocation>> locations =
       parseInputLocations(*root, diagnostics);
   if (failed(inputs) || failed(outputs) || failed(locations))
     return failure();
@@ -359,7 +366,7 @@ std::string dtypeString(Type elementType) {
   return "";
 }
 
-std::string normalizeBundleDtype(llvm::StringRef dtype) {
+std::string normalizeProgramDtype(llvm::StringRef dtype) {
   if (dtype == "float32")
     return "f32";
   if (dtype == "float16")
@@ -475,16 +482,16 @@ readNpyPayloadMetadata(llvm::StringRef path, llvm::StringRef displayName,
                        llvm::raw_ostream &diagnostics) {
   auto bufferOrError = llvm::MemoryBuffer::getFile(path);
   if (!bufferOrError) {
-    rejectBundle(("failed to read npy payload file: " + displayName).str(),
-                 diagnostics);
+    rejectProgramDirectory(
+        ("failed to read npy payload file: " + displayName).str(), diagnostics);
     return failure();
   }
 
   llvm::StringRef bytes = (*bufferOrError)->getBuffer();
   if (bytes.size() < 10 ||
       bytes.take_front(6) != llvm::StringRef("\x93NUMPY", 6)) {
-    rejectBundle(("npy payload is missing magic: " + displayName).str(),
-                 diagnostics);
+    rejectProgramDirectory(
+        ("npy payload is missing magic: " + displayName).str(), diagnostics);
     return failure();
   }
 
@@ -500,33 +507,31 @@ readNpyPayloadMetadata(llvm::StringRef path, llvm::StringRef displayName,
     headerLen = byte(8) | (byte(9) << 8);
   } else if (major == 2) {
     if (bytes.size() < 12) {
-      rejectBundle(("truncated npy v2 header: " + displayName).str(),
-                   diagnostics);
+      rejectProgramDirectory(("truncated npy v2 header: " + displayName).str(),
+                             diagnostics);
       return failure();
     }
     headerOffset = 12;
-    headerLen = byte(8) | (byte(9) << 8) | (byte(10) << 16) |
-                (byte(11) << 24);
+    headerLen = byte(8) | (byte(9) << 8) | (byte(10) << 16) | (byte(11) << 24);
   } else {
-    rejectBundle(("unsupported npy payload version: " + displayName).str(),
-                 diagnostics);
+    rejectProgramDirectory(
+        ("unsupported npy payload version: " + displayName).str(), diagnostics);
     return failure();
   }
 
   if (bytes.size() < headerOffset + headerLen) {
-    rejectBundle(("truncated npy payload header: " + displayName).str(),
-                 diagnostics);
+    rejectProgramDirectory(
+        ("truncated npy payload header: " + displayName).str(), diagnostics);
     return failure();
   }
 
   llvm::StringRef header = bytes.slice(headerOffset, headerOffset + headerLen);
   std::optional<std::string> descr = parseNpyStringField(header, "descr");
-  std::optional<bool> fortranOrder =
-      parseNpyBoolField(header, "fortran_order");
+  std::optional<bool> fortranOrder = parseNpyBoolField(header, "fortran_order");
   std::optional<std::vector<int64_t>> shape = parseNpyShapeField(header);
   if (!descr || !fortranOrder || !shape) {
-    rejectBundle(("invalid npy payload header: " + displayName).str(),
-                 diagnostics);
+    rejectProgramDirectory(("invalid npy payload header: " + displayName).str(),
+                           diagnostics);
     return failure();
   }
 
@@ -573,25 +578,25 @@ bool verifyNpyTensorPayloadFile(llvm::StringRef path,
     return true;
 
   if (metadata->fortranOrder)
-    return rejectBundle(("npy payload must be row-major: " + displayName).str(),
-                        diagnostics);
+    return rejectProgramDirectory(
+        ("npy payload must be row-major: " + displayName).str(), diagnostics);
   if (!llvm::equal(metadata->shape, expectedShape))
-    return rejectBundle(
+    return rejectProgramDirectory(
         ("npy payload shape does not match tensor: " + displayName).str(),
         diagnostics);
   if (!npyDescrMatchesDtype(metadata->descr, elementType))
-    return rejectBundle(
+    return rejectProgramDirectory(
         ("npy payload dtype does not match tensor: " + displayName).str(),
         diagnostics);
 
   uint64_t expectedRawBytes = rawByteSize(expectedShape, elementType);
   if (expectedRawBytes == 0)
-    return rejectBundle(
+    return rejectProgramDirectory(
         ("npy tensor byte size is not representable: " + displayName).str(),
         diagnostics);
   if (metadata->dataOffset > metadata->fileSize ||
       expectedRawBytes > metadata->fileSize - metadata->dataOffset)
-    return rejectBundle(
+    return rejectProgramDirectory(
         ("npy payload file is smaller than tensor payload: " + displayName)
             .str(),
         diagnostics);
@@ -599,24 +604,24 @@ bool verifyNpyTensorPayloadFile(llvm::StringRef path,
   return false;
 }
 
-bool verifySignature(Type type, const BundleSignature &signature,
+bool verifySignature(Type type, const ProgramSignature &signature,
                      llvm::StringRef kind, unsigned index,
                      llvm::raw_ostream &diagnostics) {
   auto tensorType = dyn_cast<RankedTensorType>(type);
   if (!tensorType || !tensorType.hasStaticShape())
-    return rejectBundle((kind + " " + Twine(index) +
-                         " must be a statically shaped ranked tensor")
-                            .str(),
-                        diagnostics);
+    return rejectProgramDirectory((kind + " " + Twine(index) +
+                                   " must be a statically shaped ranked tensor")
+                                      .str(),
+                                  diagnostics);
 
   if (!llvm::equal(tensorType.getShape(), signature.shape))
-    return rejectBundle(
+    return rejectProgramDirectory(
         ("shape mismatch for " + kind + " " + Twine(index)).str(), diagnostics);
 
   std::string expectedDtype = dtypeString(tensorType.getElementType());
-  std::string actualDtype = normalizeBundleDtype(signature.dtype);
+  std::string actualDtype = normalizeProgramDtype(signature.dtype);
   if (expectedDtype.empty() || expectedDtype != actualDtype)
-    return rejectBundle(
+    return rejectProgramDirectory(
         ("dtype mismatch for " + kind + " " + Twine(index)).str(), diagnostics);
 
   return false;
@@ -637,37 +642,38 @@ FailureOr<func::FuncOp> findSingleFunction(ModuleOp module,
   if (publicFunctions.empty() && functions.size() == 1)
     return functions.front();
 
-  rejectBundle("expected exactly one public entry func.func in StableHLO "
-               "bundle MLIR",
-               diagnostics);
+  rejectProgramDirectory(
+      "expected exactly one public entry func.func in StableHLO "
+      "program directory MLIR",
+      diagnostics);
   return failure();
 }
 
-std::string bundlePath(llvm::StringRef bundleDir,
-                       llvm::ArrayRef<llvm::StringRef> components) {
-  llvm::SmallString<256> path(bundleDir);
+std::string programPath(llvm::StringRef programDir,
+                        llvm::ArrayRef<llvm::StringRef> components) {
+  llvm::SmallString<256> path(programDir);
   for (llvm::StringRef component : components)
     llvm::sys::path::append(path, component);
   return path.str().str();
 }
 
-bool verifyParameterDataFile(llvm::StringRef bundleDir,
-                             const BundleInputLocation &location,
+bool verifyParameterDataFile(llvm::StringRef programDir,
+                             const ProgramInputLocation &location,
                              RankedTensorType tensorType,
                              llvm::raw_ostream &diagnostics) {
   if (location.name.empty())
-    return rejectBundle("parameter location name must be non-empty",
-                        diagnostics);
+    return rejectProgramDirectory("parameter location name must be non-empty",
+                                  diagnostics);
 
-  std::string path = bundlePath(bundleDir, {"data", location.name});
+  std::string path = programPath(programDir, {"data", location.name});
   llvm::sys::fs::file_status status;
   if (std::error_code error = llvm::sys::fs::status(path, status))
-    return rejectBundle("parameter data file is missing: " + location.name,
-                        diagnostics);
+    return rejectProgramDirectory(
+        "parameter data file is missing: " + location.name, diagnostics);
   if (!llvm::sys::fs::is_regular_file(status))
-    return rejectBundle("parameter data path is not a regular file: " +
-                            location.name,
-                        diagnostics);
+    return rejectProgramDirectory(
+        "parameter data path is not a regular file: " + location.name,
+        diagnostics);
 
   return verifyNpyTensorPayloadFile(
       path, ("data/" + Twine(location.name)).str(), tensorType.getShape(),
@@ -677,22 +683,23 @@ bool verifyParameterDataFile(llvm::StringRef bundleDir,
 bool hasSpmdParameterShardings(ModuleOp module);
 bool fileExists(llvm::StringRef path);
 
-bool verifyBundleMeta(ModuleOp module, llvm::StringRef bundleDir,
-                      const BundleMeta &meta, llvm::raw_ostream &diagnostics,
-                      wafer::frontend::ArtifactVerificationResult *result) {
+bool verifyProgramMetadata(
+    ModuleOp module, llvm::StringRef programDir, const ProgramMetadata &meta,
+    llvm::raw_ostream &diagnostics,
+    wafer::frontend::FrontendProgramVerificationResult *result) {
   FailureOr<func::FuncOp> func = findSingleFunction(module, diagnostics);
   if (failed(func))
     return true;
 
   FunctionType functionType = func->getFunctionType();
   if (meta.inputSignatures.size() != functionType.getNumInputs())
-    return rejectBundle(
+    return rejectProgramDirectory(
         "input_signature length does not match func.func inputs", diagnostics);
   if (meta.inputLocations.size() != functionType.getNumInputs())
-    return rejectBundle(
+    return rejectProgramDirectory(
         "input_locations length does not match func.func inputs", diagnostics);
   if (meta.outputSignatures.size() != functionType.getNumResults())
-    return rejectBundle(
+    return rejectProgramDirectory(
         "output_signature length does not match func.func results",
         diagnostics);
 
@@ -701,35 +708,35 @@ bool verifyBundleMeta(ModuleOp module, llvm::StringRef bundleDir,
   bool rejected = false;
   bool partitioned =
       hasSpmdParameterShardings(module) ||
-      fileExists(bundlePath(bundleDir,
-                            {"functions", "forward.parameter_shards.json"}));
+      fileExists(programPath(programDir,
+                             {"functions", "forward.parameter_shards.json"}));
   for (auto [index, signature] : llvm::enumerate(meta.inputSignatures)) {
     Type inputType = functionType.getInput(index);
     rejected |= verifySignature(inputType, signature, "function argument",
                                 index, diagnostics);
 
-    const BundleInputLocation &location = meta.inputLocations[index];
+    const ProgramInputLocation &location = meta.inputLocations[index];
     if (location.type == "parameter") {
       ++parameterCount;
       if (!partitioned) {
         if (auto tensorType = dyn_cast<RankedTensorType>(inputType))
-          rejected |= verifyParameterDataFile(bundleDir, location, tensorType,
+          rejected |= verifyParameterDataFile(programDir, location, tensorType,
                                               diagnostics);
       }
     } else if (location.type == "input_arg") {
       ++userInputCount;
       if (location.position < 0)
-        rejected |= rejectBundle(
+        rejected |= rejectProgramDirectory(
             ("input_arg location has negative position at function argument " +
              Twine(index))
                 .str(),
             diagnostics);
     } else {
-      rejected |=
-          rejectBundle(("unsupported input location type '" + location.type +
-                        "' at function argument " + Twine(index))
-                           .str(),
-                       diagnostics);
+      rejected |= rejectProgramDirectory(
+          ("unsupported input location type '" + location.type +
+           "' at function argument " + Twine(index))
+              .str(),
+          diagnostics);
     }
   }
 
@@ -738,8 +745,8 @@ bool verifyBundleMeta(ModuleOp module, llvm::StringRef bundleDir,
                                 "function result", index, diagnostics);
 
   if (!rejected && result) {
-    result->bundleParameterCount = parameterCount;
-    result->bundleUserInputCount = userInputCount;
+    result->programParameterCount = parameterCount;
+    result->programUserInputCount = userInputCount;
   }
   return rejected;
 }
@@ -770,7 +777,7 @@ FailureOr<llvm::json::Value> parseJsonFile(llvm::StringRef path,
                                            llvm::raw_ostream &diagnostics) {
   auto bufferOrError = llvm::MemoryBuffer::getFile(path);
   if (!bufferOrError) {
-    rejectBundle("failed to read '" + path.str() + "'", diagnostics);
+    rejectProgramDirectory("failed to read '" + path.str() + "'", diagnostics);
     return failure();
   }
 
@@ -778,7 +785,7 @@ FailureOr<llvm::json::Value> parseJsonFile(llvm::StringRef path,
       llvm::json::parse((*bufferOrError)->getBuffer());
   if (!parsed) {
     std::string message = llvm::toString(parsed.takeError());
-    rejectBundle("invalid JSON: " + message, diagnostics);
+    rejectProgramDirectory("invalid JSON: " + message, diagnostics);
     return failure();
   }
   return std::move(*parsed);
@@ -793,7 +800,7 @@ bool verifyShardEntry(const llvm::json::Object &object,
                       int64_t logicalRankCount,
                       llvm::ArrayRef<int64_t> globalShape,
                       llvm::ArrayRef<int64_t> localShape, Type elementType,
-                      llvm::StringRef parameterName, llvm::StringRef bundleDir,
+                      llvm::StringRef parameterName, llvm::StringRef programDir,
                       std::vector<bool> &seenRanks,
                       llvm::raw_ostream &diagnostics) {
   int64_t rank = -1;
@@ -812,58 +819,61 @@ bool verifyShardEntry(const llvm::json::Object &object,
     return true;
 
   if (rank < 0 || rank >= logicalRankCount)
-    return rejectBundle("parameter shard rank is out of range", diagnostics);
+    return rejectProgramDirectory("parameter shard rank is out of range",
+                                  diagnostics);
   if (seenRanks[rank])
-    return rejectBundle("duplicate parameter shard rank", diagnostics);
+    return rejectProgramDirectory("duplicate parameter shard rank",
+                                  diagnostics);
   seenRanks[rank] = true;
 
   if (replicaId < 0)
-    return rejectBundle("parameter shard replica_id must be non-negative",
-                        diagnostics);
+    return rejectProgramDirectory(
+        "parameter shard replica_id must be non-negative", diagnostics);
 
   size_t rankSize = globalShape.size();
   if (offsets.size() != rankSize || sizes.size() != rankSize ||
       strides.size() != rankSize)
-    return rejectBundle("parameter shard rank does not match global shape",
-                        diagnostics);
+    return rejectProgramDirectory(
+        "parameter shard rank does not match global shape", diagnostics);
 
   for (auto [dim, offset] : llvm::enumerate(offsets)) {
     int64_t size = sizes[dim];
     if (offset > globalShape[dim] || size > globalShape[dim] - offset)
-      return rejectBundle("parameter shard slice exceeds global shape",
-                          diagnostics);
+      return rejectProgramDirectory(
+          "parameter shard slice exceeds global shape", diagnostics);
     if (dim < localShape.size() && size > localShape[dim])
-      return rejectBundle("parameter shard size exceeds local tensor shape",
-                          diagnostics);
+      return rejectProgramDirectory(
+          "parameter shard size exceeds local tensor shape", diagnostics);
   }
 
   if (!isSafeRelativePath(file))
-    return rejectBundle("parameter shard file must be a safe relative path",
-                        diagnostics);
+    return rejectProgramDirectory(
+        "parameter shard file must be a safe relative path", diagnostics);
   std::string expectedPrefix =
       (Twine("parameter_shards/") + parameterName + "/").str();
   if (!llvm::StringRef(file).starts_with(expectedPrefix))
-    return rejectBundle("parameter shard file path does not match parameter",
-                        diagnostics);
+    return rejectProgramDirectory(
+        "parameter shard file path does not match parameter", diagnostics);
 
-  std::string path = bundlePath(bundleDir, {file});
+  std::string path = programPath(programDir, {file});
   llvm::sys::fs::file_status status;
   if (std::error_code error = llvm::sys::fs::status(path, status))
-    return rejectBundle("parameter shard file is missing: " + file,
-                        diagnostics);
+    return rejectProgramDirectory("parameter shard file is missing: " + file,
+                                  diagnostics);
   if (!llvm::sys::fs::is_regular_file(status))
-    return rejectBundle("parameter shard path is not a regular file: " + file,
-                        diagnostics);
+    return rejectProgramDirectory(
+        "parameter shard path is not a regular file: " + file, diagnostics);
 
-  return verifyNpyTensorPayloadFile(path, file, sizes, elementType, diagnostics);
+  return verifyNpyTensorPayloadFile(path, file, sizes, elementType,
+                                    diagnostics);
 }
 
 bool verifyParameterShardBinding(const llvm::json::Object &object,
-                                 const BundleMeta &meta,
+                                 const ProgramMetadata &meta,
                                  FunctionType functionType,
                                  int64_t logicalRankCount,
                                  std::vector<bool> &seenParameterArgs,
-                                 llvm::StringRef bundleDir,
+                                 llvm::StringRef programDir,
                                  llvm::raw_ostream &diagnostics) {
   int64_t argumentIndex = -1;
   std::string name;
@@ -880,60 +890,65 @@ bool verifyParameterShardBinding(const llvm::json::Object &object,
 
   if (argumentIndex < 0 ||
       argumentIndex >= static_cast<int64_t>(functionType.getNumInputs()))
-    return rejectBundle("parameter shard argument_index is out of range",
-                        diagnostics);
+    return rejectProgramDirectory(
+        "parameter shard argument_index is out of range", diagnostics);
 
-  const BundleInputLocation &location = meta.inputLocations[argumentIndex];
+  const ProgramInputLocation &location = meta.inputLocations[argumentIndex];
   if (location.type != "parameter")
-    return rejectBundle("parameter shard argument_index does not refer to a "
-                        "parameter input",
-                        diagnostics);
+    return rejectProgramDirectory(
+        "parameter shard argument_index does not refer to a "
+        "parameter input",
+        diagnostics);
   if (name != location.name)
-    return rejectBundle("parameter shard name does not match input location",
-                        diagnostics);
+    return rejectProgramDirectory(
+        "parameter shard name does not match input location", diagnostics);
 
   Type inputType = functionType.getInput(argumentIndex);
   auto tensorType = dyn_cast<RankedTensorType>(inputType);
   if (!tensorType || !tensorType.hasStaticShape())
-    return rejectBundle(
+    return rejectProgramDirectory(
         "parameter shard argument must be a static ranked tensor", diagnostics);
   if (!llvm::equal(tensorType.getShape(), localShape))
-    return rejectBundle("parameter shard local_shape does not match func.func "
-                        "argument type",
-                        diagnostics);
+    return rejectProgramDirectory(
+        "parameter shard local_shape does not match func.func "
+        "argument type",
+        diagnostics);
   if (globalShape.size() != static_cast<size_t>(tensorType.getRank()))
-    return rejectBundle("parameter shard global_shape rank does not match "
-                        "func.func argument type",
-                        diagnostics);
-  if (dtypeString(tensorType.getElementType()) != normalizeBundleDtype(dtype))
-    return rejectBundle("parameter shard dtype does not match func.func "
-                        "argument type",
-                        diagnostics);
+    return rejectProgramDirectory(
+        "parameter shard global_shape rank does not match "
+        "func.func argument type",
+        diagnostics);
+  if (dtypeString(tensorType.getElementType()) != normalizeProgramDtype(dtype))
+    return rejectProgramDirectory(
+        "parameter shard dtype does not match func.func "
+        "argument type",
+        diagnostics);
 
   uint64_t expectedGlobalBytes =
       rawByteSize(globalShape, tensorType.getElementType());
   if (expectedGlobalBytes == 0)
-    return rejectBundle("parameter shard global tensor byte size is not "
-                        "representable",
-                        diagnostics);
+    return rejectProgramDirectory(
+        "parameter shard global tensor byte size is not "
+        "representable",
+        diagnostics);
 
   const llvm::json::Array *shards = object.getArray("shards");
   if (!shards)
-    return rejectBundle("expected array field 'shards'", diagnostics);
+    return rejectProgramDirectory("expected array field 'shards'", diagnostics);
   if (shards->size() != static_cast<size_t>(logicalRankCount))
-    return rejectBundle("parameter shard count does not match "
-                        "logical_rank_count",
-                        diagnostics);
+    return rejectProgramDirectory("parameter shard count does not match "
+                                  "logical_rank_count",
+                                  diagnostics);
 
   std::vector<bool> seenRanks(logicalRankCount, false);
   for (const llvm::json::Value &value : *shards) {
     const llvm::json::Object *shardObject = value.getAsObject();
     if (!shardObject)
-      return rejectBundle("parameter shard entries must be objects",
-                          diagnostics);
+      return rejectProgramDirectory("parameter shard entries must be objects",
+                                    diagnostics);
     if (verifyShardEntry(*shardObject, logicalRankCount, globalShape,
                          localShape, tensorType.getElementType(), name,
-                         bundleDir, seenRanks, diagnostics))
+                         programDir, seenRanks, diagnostics))
       return true;
   }
 
@@ -942,16 +957,17 @@ bool verifyParameterShardBinding(const llvm::json::Object &object,
 }
 
 bool verifyParameterShardBindings(
-    ModuleOp module, llvm::StringRef bundleDir, const BundleMeta &meta,
+    ModuleOp module, llvm::StringRef programDir, const ProgramMetadata &meta,
     FunctionType functionType, llvm::raw_ostream &diagnostics,
-    wafer::frontend::ArtifactVerificationResult *result) {
+    wafer::frontend::FrontendProgramVerificationResult *result) {
   std::string path =
-      bundlePath(bundleDir, {"functions", "forward.parameter_shards.json"});
+      programPath(programDir, {"functions", "forward.parameter_shards.json"});
   if (!fileExists(path)) {
     if (hasSpmdParameterShardings(module))
-      return rejectBundle("partitioned StableHLO bundle is missing parameter "
-                          "shard bindings",
-                          diagnostics);
+      return rejectProgramDirectory(
+          "partitioned StableHLO program directory is missing parameter "
+          "shard bindings",
+          diagnostics);
     return false;
   }
 
@@ -961,8 +977,8 @@ bool verifyParameterShardBindings(
 
   const llvm::json::Object *root = parsed->getAsObject();
   if (!root)
-    return rejectBundle("parameter shard binding root must be an object",
-                        diagnostics);
+    return rejectProgramDirectory(
+        "parameter shard binding root must be an object", diagnostics);
 
   int64_t version = 0;
   std::string function;
@@ -974,41 +990,44 @@ bool verifyParameterShardBindings(
                        diagnostics))
     return true;
   if (version != 2)
-    return rejectBundle("unsupported parameter shard binding version",
-                        diagnostics);
+    return rejectProgramDirectory("unsupported parameter shard binding version",
+                                  diagnostics);
   if (function != meta.name)
-    return rejectBundle("parameter shard function does not match bundle meta",
-                        diagnostics);
+    return rejectProgramDirectory(
+        "parameter shard function does not match program directory meta",
+        diagnostics);
   if (logicalRankCount <= 0)
-    return rejectBundle("logical_rank_count must be positive", diagnostics);
+    return rejectProgramDirectory("logical_rank_count must be positive",
+                                  diagnostics);
 
   const llvm::json::Array *parameters = root->getArray("parameters");
   if (!parameters)
-    return rejectBundle("expected array field 'parameters'", diagnostics);
+    return rejectProgramDirectory("expected array field 'parameters'",
+                                  diagnostics);
 
   std::vector<bool> seenParameterArgs(functionType.getNumInputs(), false);
   unsigned bindingCount = 0;
   for (const llvm::json::Value &value : *parameters) {
     const llvm::json::Object *object = value.getAsObject();
     if (!object)
-      return rejectBundle("parameter shard binding entries must be objects",
-                          diagnostics);
+      return rejectProgramDirectory(
+          "parameter shard binding entries must be objects", diagnostics);
     if (verifyParameterShardBinding(*object, meta, functionType,
                                     logicalRankCount, seenParameterArgs,
-                                    bundleDir, diagnostics))
+                                    programDir, diagnostics))
       return true;
     ++bindingCount;
   }
 
   for (auto [index, location] : llvm::enumerate(meta.inputLocations)) {
     if (location.type == "parameter" && !seenParameterArgs[index])
-      return rejectBundle("parameter input is missing shard binding: " +
-                              location.name,
-                          diagnostics);
+      return rejectProgramDirectory(
+          "parameter input is missing shard binding: " + location.name,
+          diagnostics);
   }
 
   if (result)
-    result->bundleParameterShardBindingCount = bindingCount;
+    result->programParameterShardBindingCount = bindingCount;
   return false;
 }
 
@@ -1016,11 +1035,11 @@ bool verifyParameterShardBindings(
 
 namespace wafer::frontend {
 
-LogicalResult verifyFrontendArtifact(ModuleOp module,
-                                     llvm::raw_ostream &diagnostics,
-                                     ArtifactVerificationResult *result) {
+LogicalResult verifyFrontendProgram(ModuleOp module,
+                                    llvm::raw_ostream &diagnostics,
+                                    FrontendProgramVerificationResult *result) {
   if (result)
-    *result = ArtifactVerificationResult{};
+    *result = FrontendProgramVerificationResult{};
 
   bool rejected = false;
   rejected |= rejectImportMarker(module, "wafer.import.graph_break",
@@ -1032,28 +1051,29 @@ LogicalResult verifyFrontendArtifact(ModuleOp module,
   return rejected ? failure() : success();
 }
 
-LogicalResult verifyStableHLOBundle(ModuleOp module, llvm::StringRef bundlePath,
-                                    llvm::raw_ostream &diagnostics,
-                                    ArtifactVerificationResult *result) {
+LogicalResult
+verifyStableHLOProgramDir(ModuleOp module, llvm::StringRef programPath,
+                          llvm::raw_ostream &diagnostics,
+                          FrontendProgramVerificationResult *result) {
   if (result)
-    *result = ArtifactVerificationResult{};
+    *result = FrontendProgramVerificationResult{};
 
-  if (failed(verifyFrontendArtifact(module, diagnostics, result)))
+  if (failed(verifyFrontendProgram(module, diagnostics, result)))
     return failure();
 
   std::string metaPath =
-      ::bundlePath(bundlePath, {"functions", "forward.meta"});
-  FailureOr<BundleMeta> meta = parseBundleMeta(metaPath, diagnostics);
+      ::programPath(programPath, {"functions", "forward.meta"});
+  FailureOr<ProgramMetadata> meta = parseProgramMetadata(metaPath, diagnostics);
   if (failed(meta))
     return failure();
 
   bool rejected =
-      verifyBundleMeta(module, bundlePath, *meta, diagnostics, result);
+      verifyProgramMetadata(module, programPath, *meta, diagnostics, result);
   if (!rejected) {
     FailureOr<func::FuncOp> func = findSingleFunction(module, diagnostics);
     if (failed(func))
       return failure();
-    rejected |= verifyParameterShardBindings(module, bundlePath, *meta,
+    rejected |= verifyParameterShardBindings(module, programPath, *meta,
                                              func->getFunctionType(),
                                              diagnostics, result);
   }

@@ -16,7 +16,7 @@
 - `tasks/2026-05-13-wafer-design-docs-gap-review.md`
 - `tasks/2026-05-21-wafer-layout-materialization-design.md`
 - `tasks/2026-05-21-wafer-spm-bufferization-design.md`
-- `tasks/2026-05-25-wafer-frontend-stablehlo-artifact-design.md`
+- `tasks/2026-05-25-wafer-frontend-stablehlo-program-design.md`
 - `tasks/2026-05-25-wafer-shardy-spmd-design.md`
 - `tasks/2026-05-25-wafer-placement-design.md`
 - `tasks/2026-05-25-wafer-local-compute-normalization-design.md`
@@ -89,21 +89,21 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   layout requirement 和 resource effect。关键 movement/compute/comm op 也接入 MLIR
   `MemoryEffectOpInterface` 的 Wafer resource。
 - R1.3 的历史 stage-connection gate 已在 2026-06-02 清理中删除；后续 group/tile/storage/C ABI
-  连接必须由 R3/R6/R7 消费真实 frontend/SPMD artifact chain 后重新建立。
+  连接必须由 R3/R6/R7 消费真实 frontend/SPMD program chain 后重新建立。
 
 缺口：
 
-- 工程能跑不等于 P0-P6 主路径完成；R2 已恢复 frontend artifact verifier 和 SDY artifact bridge，
+- 工程能跑不等于 P0-P6 主路径完成；R2 已恢复 frontend program verifier 和 SDY program bridge，
   但 group/resource/package/runtime 主链路仍需后续 R3/P8 恢复。
 - R1.2 恢复的是可查询合同和局部 legality；它还不是完整 planner/resource oracle。closed-loop group
   search、SPM/DDR trial、storage realization、runtime/package 主链路仍归 R3 之后恢复。
-- StableHLO/Shardy dependency 当前主要服务 textual lowering 最小验证 和 SDY artifact bridge
+- StableHLO/Shardy dependency 当前主要服务 textual lowering 最小验证 和 SDY program bridge
   dependency boundary；R0.3 依赖栈用 PyTorch/XLA 2.5 的 `WORKSPACE` `xla_hash` 选择 OpenXLA/XLA，再由 XLA
   workspace 选择 LLVM/StableHLO/Shardy base。PyTorch/XLA source 也是后续构建/安装 `torch_xla`
   frontend importer runtime 的源码事实源；Wafer core compiler 代码还没有调用 `torch_xla`，它不能成为
   core compiler public dependency 或第二套 XLA/LLVM/StableHLO 事实源；Shardy 编译验证目标只证明公共
   SPMD 依赖可用，
-  R2.2 只额外证明 Wafer 工具能接收 SDY artifact 并把 StableHLO replica group 显式传入
+  R2.2 只额外证明 Wafer 工具能接收 SDY program 并把 StableHLO replica group 显式传入
   `wafer.comm`。
 - runtime/driver 头文件和真实 runtime adapter 尚未进入 launch/C ABI 层。
 
@@ -154,13 +154,13 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - R1.1：已完成；按 op family 拆 ODS、C++ verifier 和测试目录，并保持一个 `wafer` dialect namespace。
 - R1.2：已完成；interface/effect/resource 已从占位定义扩成 planner/resource/verifier 可调用的合同。
 - R1.3：历史完成项；local compute stage-connection tests 已随旧 pass 链删除，后续由 R3 重新建立
-  真实 artifact chain gate。
+  真实 program chain gate。
 
-## P2 Frontend Artifact 和 Local Compute Normalization
+## P2 Frontend Program 和 Local Compute Normalization
 
 设计合同：
 
-- 稳定入口是 verified exporter-native StableHLO bundle / MLIR artifact，不是某个框架 API 或 Wafer
+- 稳定入口是 verified exporter-native StableHLO program directory / MLIR program，不是某个框架 API 或 Wafer
   私有伴随 JSON。
 - frontend 保留 function signature、shape、dtype、dynamic bound、constant/weight 和 sharding annotation；
   不引入 Wafer SPM、DDR、layout materialization、runtime launch 或 private tensor constant op。
@@ -170,28 +170,28 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 
 当前实现：
 
-- 有 StableHLO textual artifact tests、`wafer-normalize-constants`、dot/shape/elementwise/reduce
+- 有 StableHLO textual program tests、`wafer-normalize-constants`、dot/shape/elementwise/reduce
   lowering pass，以及 norm/softmax/projection/MLP frontend lowering fixtures；历史 case-specific
   acceptance passes 已删除。
 - attention QK^T / AV rank-4 `dot_general` 不再由 `wafer-lower-stablehlo-dot` 特判 lowering；full
   local transformer fixture 只证明前段 reduce/elementwise/shape 和 rank-2 GEMM 子图的 structured
   tensor dataflow。
-- `wafer-import-model` 已通过 `WaferFrontend` verifier 接收 pre-exported StableHLO / MLIR artifact，
+- `wafer-compile-stablehlo` 已通过 `WaferFrontend` verifier 接收 pre-exported StableHLO / MLIR program，
   并覆盖 graph break、eager fallback、bounded dynamic shape 诊断；P2.F1 进一步验证 PyTorch/XLA
-  bundle `forward.meta` / pre-SPMD `data/<parameter>` 与 MLIR function signature 一致；post-SPMD
+  program directory `forward.meta` / pre-SPMD `data/<parameter>` 与 MLIR function signature 一致；post-SPMD
   `forward.parameter_shards.json` 与 rank-local shard payload 只有 verifier fixture 覆盖，真实产物
   等 P2.S2 生成。
-- `WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON` 时，`wafer-opt` / `wafer-import-model` 能注册 SDY dialect；
-  `sdy.mesh` / `sdy.sharding` artifact 可被 parse/verify。历史上曾有 StableHLO `replica_groups`
+- `WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON` 时，`wafer-opt` / `wafer-compile-stablehlo` 能注册 SDY dialect；
+  `sdy.mesh` / `sdy.sharding` program 可被 parse/verify。历史上曾有 StableHLO `replica_groups`
   到 `wafer.comm` `rank_group` 的 bridge；该路线已退出主线，只作为已删除路径的覆盖记录，
   不再作为 group/tiling 前的 collective handoff。
 
 缺口：
 
-- R2.1/R2.2 已恢复 pre-exported artifact adapter/verifier 和 SDY artifact bridge；P2.F1 已补
-  source-built PyTorch/XLA bundle capture；P2.S1 已补真实 framework `mark_sharding`、default input
+- R2.1/R2.2 已恢复 pre-exported program adapter/verifier 和 SDY program bridge；P2.F1 已补
+  source-built PyTorch/XLA program directory capture；P2.S1 已补真实 framework `mark_sharding`、default input
   seed policy 和 Wafer Shardy propagation stage gate。旧 Python post-SPMD export 入口已删除；仍需
-  P2.S2 建立 Wafer-owned XLA SPMD partition artifact stage，之后 R2.4 再把 post-SPMD collective
+  P2.S2 建立 Wafer-owned XLA SPMD partition compiler stage，之后 R2.4 再把 post-SPMD collective
   handoff 成 Wafer LinalgExt-style tensor collective IR。
 - frontend fixtures 只覆盖当前 structured IR dataflow，不等于 group schedule planner 或 full
   transformer local compile 已完成。
@@ -200,9 +200,9 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 
 恢复任务：
 
-- R2.1：已完成；记录见 `tasks/2026-05-26-wafer-r2-recovery.md`，包含 frontend artifact verifier、
+- R2.1：已完成；记录见 `tasks/2026-05-26-wafer-r2-recovery.md`，包含 frontend program verifier、
   dynamic bound 和 diagnostics。
-- R2.2：已完成；记录见 `tasks/2026-05-26-wafer-r2-recovery.md`，logical mesh/sharding artifact
+- R2.2：已完成；记录见 `tasks/2026-05-26-wafer-r2-recovery.md`，logical mesh/sharding program
   可进入工具链。StableHLO replica group materialize 为 `wafer.comm` `rank_group` 的历史实现只作为
   已删除路线覆盖记录，不作为后段 placement/ring 或 group/tiling 输入。
 - R2.3：已完成；记录见 `tasks/2026-05-26-wafer-r2-recovery.md` 和
@@ -210,20 +210,20 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   op/dataflow contract 重写，不把 acceptance pass 当 schedule completion。
 - P2.F1：已完成；`tools/build_pytorch_xla_runtime.py` 从 `third_party/pytorch-xla` 源码构建/安装
   `torch_xla` 2.5.0，并通过 Bazel override 使用本仓库 `third_party/xla` / `third_party/llvm-project`；
-  `test/Tools/Inputs/wafer_pytorch_xla_capture.py` 作为 test artifact generator 调用 `torch.export.export` 和
+  `test/Tools/Inputs/wafer_pytorch_xla_capture.py` 作为 test program directory generator 调用 `torch.export.export` 和
   `torch_xla.stablehlo.exported_program_to_stablehlo`，为 `4096x4096 @ 4096x4096` f32 matmul +
-  bias + tanh + residual 生成 PyTorch/XLA StableHLO bundle，包含 `functions/forward.mlir`、
+  bias + tanh + residual 生成 PyTorch/XLA StableHLO program directory，包含 `functions/forward.mlir`、
   `functions/forward.meta`、`functions/forward.bytecode` 和 `data/weight` / `data/bias`；完成证明已跑通真实
-  source-built PyTorch/XLA adapter -> bundle -> verifier 链。prebuilt `torch_xla` wheel、手写
+  source-built PyTorch/XLA adapter -> program directory -> verifier 链。prebuilt `torch_xla` wheel、手写
   MLIR 或手写 emitter 仍不能作为后续完成证明。
 - P2.S1：骨架；`test/Tools/Inputs/wafer_pytorch_xla_capture.py` 用 source-built PyTorch/XLA lazy SPMD runtime
-  的 `mark_sharding` 生成六种用户 sharding 策略的真实 PyTorch/XLA StableHLO bundle，bundle 继续由
+  的 `mark_sharding` 生成六种用户 sharding 策略的真实 PyTorch/XLA StableHLO program directory，program directory 继续由
   frontend verifier 和 Wafer Shardy propagation gate 消费。完全没有用户 seed 时，P2.S1 在 SPMD
   层补默认 single-card function-input sharding seed（默认 16 tile，调试 1 tile，找不到合适切分
   维度时 replicated）。P2.S1 不生成 partitioned StableHLO、rank-local shard payload、
   `wafer.spmd.*`、私有 sharding JSON 或名字约定。P2.S2 必须接上 XLA SPMD partitioner 并产出
-  partitioned / replicated-local artifact；R3.1 依赖 P2.F1/P2.S1/P2.S2/R2.4 提供真实
-  frontend/SPMD artifact 来源和 tensor collective handoff。
+  partitioned / replicated-local program；R3.1 依赖 P2.F1/P2.S1/P2.S2/R2.4 提供真实
+  frontend/SPMD program 来源和 tensor collective handoff。
 
 ## P3 Single-Tile Local Compute
 
@@ -244,7 +244,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   `wafer-propagate-stablehlo-sharding` 和 `wafer-lower-stablehlo-to-linalg`；
   `wafer-lower-linalg-to-cabi`、`wafer-lower-stablehlo-to-cabi`、
   `wafer-lower-tile-communication-to-cabi` 以及
-  `wafer-import-model --compile-stablehlo-bundle-to-cabi` 已删除，避免把 R3/R6/R7 的 pending
+  `wafer-compile-stablehlo --compile-stablehlo-program-to-cabi` 已删除，避免把 R3/R6/R7 的 pending
   skeleton 写成用户级 compile flow。
 - 旧 `wafer-form-groups`、`wafer-materialize-single-tile`、`wafer-compact-layout-assignment`、
   `wafer-check-spm-allocation`、`wafer-materialize-ddr-external-bindings`、
@@ -255,7 +255,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 缺口：
 
 - group formation、root tile feasibility、SPM allocation、DDR demand 和 ring collective lowering 的旧
-  unit pass 已删除；后续必须从真实 artifact chain 恢复 closed-loop planner / oracle。
+  unit pass 已删除；后续必须从真实 program chain 恢复 closed-loop planner / oracle。
 - SPM/DDR 仍未基于完整 interface demand、async lifetime、storage-realized memref/descriptor、
   workspace、resident constants、pool/domain、bandwidth 或 runtime binding 建立主线实现。
 - C ABI 还是 `wafer.abi.*` issue op 和 descriptor builder，不是真实 `wafer_*` call、LLVM lowering
@@ -288,7 +288,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - Placement 负责 logical rank 到 physical card/tile coordinate、good-tile/PG、block id、local shard
   metadata；不负责 SPM offset、DTE schedule 或 runtime API 细节。
 - Multi-tile no-comm 需要每个 tile 处理自己的 local shard、写回对应 output slice，并由 package /
-  generated artifact 区分 per-tile args。
+  generated program 区分 per-tile args。
 - `wafer.tile_region` / launch metadata 必须表达 per-tile identity 和 shard slice；不能用 whole-tensor
   clone 代替 shard。
 
@@ -317,7 +317,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   input/output slice，不再 clone whole tensor。
 - R4.4：恢复 per-rank writeback / merge contract，明确 sharded output、host-side readback 或
   output merge 的 IR/package 责任。
-- R4.5：恢复 package / generated artifact gate，让 placement metadata、local shards、per-rank
+- R4.5：恢复 package / generated program gate，让 placement metadata、local shards、per-rank
   launch args 和 issue sequence 从当前 lowering 输出导出。
 
 ## P5 Transformer Local Vertical Slice
@@ -331,7 +331,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - layout/SPM/DDR feasibility 要覆盖所有 accepted groups；constant/weight slice 要能追溯到
   `ConstantLike` + `wafer.load_tile` / storage transform。
 - package/runtime metadata 要覆盖 block inputs/outputs、resident constants、workspace；当前无卡环境
-  只能做 generated artifact compile，不能声称 device correctness。
+  只能做 generated program compile，不能声称 device correctness。
 
 当前实现：
 
@@ -350,7 +350,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - mask/select、dynamic shape、非 constant-init reduce、复杂 broadcast 和 true constant slicing/storage
   transform 未闭环。
 - layout/SPM/DDR feasibility 未覆盖 full block 所有 accepted groups，只覆盖当前局部子图。
-- 没有真实 full-block device artifact、runtime completion 或数值对比。
+- 没有真实 full-block device program、runtime completion 或数值对比。
 
 恢复任务：
 
@@ -404,10 +404,10 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 | --- | --- | --- |
 | P0 | 骨架 | 工程入口存在，源码 ownership、依赖层级边界和 IR op-family 文件边界已由 R0.2/R0.3/R1.1 恢复；仍不代表 frontend/runtime/package 主路径完成 |
 | P1 | 骨架 | 核心 op/type/verifier 基础实现存在，interface/effect/resource 已恢复；历史 local compute stage-connection gate 已删除，storage-realized 主链路和 communication cast bridge 仍未闭环 |
-| P2 | 骨架 | StableHLO textual lowering、frontend artifact verifier、PyTorch/XLA bundle capture、SDY artifact bridge、P2.S1 Shardy propagation stage gate 和 local compute coverage 口径已恢复；Wafer-owned SPMD partition、dynamic/mask/constant-storage、tensor collective handoff 和 physical schedule 仍未闭环 |
+| P2 | 骨架 | StableHLO textual lowering、frontend program verifier、PyTorch/XLA program directory capture、SDY program bridge、P2.S1 Shardy propagation stage gate 和 local compute coverage 口径已恢复；Wafer-owned SPMD partition、dynamic/mask/constant-storage、tensor collective handoff 和 physical schedule 仍未闭环 |
 | P3 | 骨架 | 旧 single-tile local unit path 已删除；group/resource/C ABI/package 主链路未闭环 |
 | P4 | 骨架 | placement/map 和 multi-tile fixture 可跑，但真实 shard/merge/launch binding 未闭环 |
-| P5 | 骨架 | transformer staged frontend fixtures 和 local fixture 可跑，但 full schedule/resource/package/device artifact 未闭环 |
+| P5 | 骨架 | transformer staged frontend fixtures 和 local fixture 可跑，但 full schedule/resource/package/device program 未闭环 |
 | P6 | 骨架 | comm/DTE fixture 可跑，但 resource allocator、buffer slice/address、package/runtime metadata 未闭环 |
 
 R2 之后的下一步是 R2.4：建立 Wafer LinalgExt-style tensor collective handoff；随后进入 R3.1，

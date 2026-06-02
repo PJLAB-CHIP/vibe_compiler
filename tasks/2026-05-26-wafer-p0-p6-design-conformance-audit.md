@@ -18,16 +18,16 @@ tests 按 op family 拆开；R1.2/R1.3 曾补 interface/resource 查询合同和
 stage-connection gate；2026-06-02 后历史 stage-connection gate 和旧 unit/debug pass 链已删除。
 
 2026-06-01 复查进一步确认：历史 P2.S1 路线若把 sharding facts 写成 `wafer.spmd.*` 或私有
-sidecar，不是主线 SPMD artifact contract；历史 StableHLO collective 直降 `wafer.comm` 的 pass
+sidecar，不是主线 SPMD program contract；历史 StableHLO collective 直降 `wafer.comm` 的 pass
 只能算已删除的后段 communication coverage，不能作为 group/tiling 输入。正确主线需要
 `frontend export -> StableHLO/SDY -> Wafer Shardy propagation -> Wafer-owned XLA SPMD partitioner
-artifact stage -> partitioned StableHLO`，再经 Wafer LinalgExt-style tensor collective handoff 进入
+compiler stage -> partitioned StableHLO`，再经 Wafer LinalgExt-style tensor collective handoff 进入
 group/tiling。旧 PyTorch/XLA post-SPMD export 测试入口已删除；它不消费 Wafer propagation 输出，
 不能作为 P2.S1 主链完成证明。
 
 历史 `tasks/progress.md` 中 P0-P6 的 `done` 应理解为“该局部批次有对应测试”，不能理解为：
 
-- frontend artifact 由真实 importer adapter 产出。
+- frontend program 由真实 importer adapter 产出。
 - group planner 已按设计接入下游 legality/resource oracle。
 - tile/layout/SPM/DDR 已实现完整 storage-realized program。
 - C ABI 已 lower 到真实 `wafer_*` call / wrapper / packet。
@@ -40,20 +40,20 @@ group/tiling。旧 PyTorch/XLA post-SPMD export 测试入口已删除；它不�
 | --- | --- | --- |
 | P0 工程/依赖/组织 | CMake、`wafer-opt`、lit/gtest、dependency pin/checker 已有；R0.2 已把源码 ownership 拆到 Frontend / IR / stage-specific Transforms / Conversion / ABI；2026-06-02 后旧 Conversion pass target 已删除；R0.3 已记录并检查依赖层级边界；R1.1 已恢复 IR op-family 文件边界 | 最小工程入口可用，不代表后端链路完成 |
 | P1 Wafer IR verifier | ODS/type/attr/op/verifier 正负例覆盖了核心基础实现；ODS、verifier 和 dialect tests 已按 op family 拆开；R1.2 已补 interface/resource/effect 查询合同；历史 R1.3 local compute stage-connection gate 已删除 | dialect verifier 的孤立负例仍会使用 `builtin.unrealized_conversion_cast` 构造非法边界值；communication bridge 的 visible cast 仍未清理；storage-realized 主链路仍未闭环 |
-| P2 frontend / local compute | StableHLO textual lowering 到 linalg/tensor/arith/math 子集已有，部分 transformer staged form 有 FileCheck | `wafer-import-model` 早期只是 synthetic 最小验证 tool；PyTorch/XLA bundle capture 已补入 P2.F1，但 ConstantLike/storage contract 仍未闭环；部分 slice 只是 frontend dataflow fixture，不是完整 frontend artifact pipeline |
-| P3 single-tile local compute | 旧 group formation、root tile check、single-tile materialization、SPM trial、DDR external binding、C ABI issue unit pass 链已删除；保留 ABI descriptor / manifest tool-unit 覆盖 | group planner、root tile oracle、SPM/DDR/storage realization、C ABI lowering 和 IR-derived package manifest 均需按真实 artifact chain 恢复 |
+| P2 frontend / local compute | StableHLO textual lowering 到 linalg/tensor/arith/math 子集已有，部分 transformer staged form 有 FileCheck | `wafer-compile-stablehlo` 早期只是 synthetic 最小验证 tool；PyTorch/XLA program directory capture 已补入 P2.F1，但 ConstantLike/storage contract 仍未闭环；部分 slice 只是 frontend dataflow fixture，不是完整 frontend program pipeline |
+| P3 single-tile local compute | 旧 group formation、root tile check、single-tile materialization、SPM trial、DDR external binding、C ABI issue unit pass 链已删除；保留 ABI descriptor / manifest tool-unit 覆盖 | group planner、root tile oracle、SPM/DDR/storage realization、C ABI lowering 和 IR-derived package manifest 均需按真实 program chain 恢复 |
 | P4 multi-tile no communication | placement map verifier、multi-tile no-comm outlining已有 | multi-tile materialization 克隆同一 whole-tensor tile_region，最后用最后一个 tile_region result 替换 group result；没有真实 local shard slicing、per-rank output merge 或 runtime launch binding；manifest placement metadata 尚未由 IR-derived package path 生成 |
-| P5 transformer block | norm/softmax/projection/MLP frontend lowering fixtures、attention QK/AV lowering、transformer textual pipeline 已有 | 这些 fixture 只证明 structured tensor dataflow 覆盖，不是 full schedule planner；transformer package manifest 尚未由 transformer IR 导出；workspace/resident constant metadata 与 IR dataflow 没有自动一致性来源；没有真实 full-block device artifact |
+| P5 transformer block | norm/softmax/projection/MLP frontend lowering fixtures、attention QK/AV lowering、transformer textual pipeline 已有 | 这些 fixture 只证明 structured tensor dataflow 覆盖，不是 full schedule planner；transformer package manifest 尚未由 transformer IR 导出；workspace/resident constant metadata 与 IR dataflow 没有自动一致性来源；没有真实 full-block device program |
 | P6 communication | p2p / collective verifier 和历史 StableHLO collective bridge coverage 曾存在；旧 ring lowering / C ABI issue unit pass 链已删除 | Direct DTE resource allocator、collective buffer slice/address offset lowering、tensor collective handoff 到 tiled communication materialization，以及真实 package/runtime metadata 均未闭环 |
 
 ## 主要根因
 
 1. 任务看板把“局部 fixture gate 可运行”记录成了“设计主路径完成”。
 2. 历史上多个 integration test 把 IR lowering 和 fixed manifest/C stub fixture 放在同一文件里，
-   但二者没有 use-def 或 artifact 生成关系；这些测试拼接和 fixed emitter 已删除。
+   但二者没有 use-def 或 program 生成关系；这些测试拼接和 fixed emitter 已删除。
 3. 设计文档里明确要求的 LLVM/C ABI/runtime/package 边界没有落成实现，却被 local compile/package
    gate 的措辞覆盖掉了。
-4. P3-P6 继续叠加功能时，没有先关闭 P3 的真实 artifact/package 闭环，导致后续 multi-tile、
+4. P3-P6 继续叠加功能时，没有先关闭 P3 的真实 program/package 闭环，导致后续 multi-tile、
    transformer 和 communication gate 都继承
    fixture 出口。
 5. R0.1 时源码组织没有跟随设计文档的 IR stage / op prefix 边界演进，导致 frontend、planner、
@@ -71,7 +71,7 @@ group/tiling。旧 PyTorch/XLA post-SPMD export 测试入口已删除；它不�
 - 每个被恢复为 `done` 的任务必须满足对应设计文档的合同，或在任务名/验收里明确收窄为局部 fixture。
 - 显式 manifest fixture 只能作为 validator/stub tool unit fixture，不能作为 compile pipeline
   correctness fence；fixed manifest emitter 不应恢复。
-- 当前下游实现缺口不能作为上游 artifact / IR 的语义边界。若合法上游语义能由 Wafer 硬件/ABI
+- 当前下游实现缺口不能作为上游 program / IR 的语义边界。若合法上游语义能由 Wafer 硬件/ABI
   能力组合表达，恢复任务应补 IR contract、verifier、lowering 或 runtime/package gate。
 
 ## 优先修复顺序
@@ -83,7 +83,7 @@ group/tiling。旧 PyTorch/XLA post-SPMD export 测试入口已删除；它不�
    dependency target 可见范围；R1.1/R1.2/R1.3 已补 IR 文件边界、interface/resource 查询和 local
    compute stage-connection gate；该历史 gate 已在 2026-06-02 随旧 pass 链删除。Launch/runtime 仍只有
    局部 boundary，真实 adapter 后续恢复。
-4. 从 P2/P3 开始恢复主链路：frontend artifact、group planner、tile/layout/SPM/DDR/C ABI/package 的
+4. 从 P2/P3 开始恢复主链路：frontend program、group planner、tile/layout/SPM/DDR/C ABI/package 的
    每一步都必须按设计合同闭环。
 5. 在恢复 local compile gate 时，补 IR-derived package manifest emission：manifest 和
    C stub 必须来自当前 `wafer-opt` pipeline 输出。

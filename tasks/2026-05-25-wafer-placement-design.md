@@ -203,4 +203,4 @@ V0 支持：
 
 这些不是 logical mesh / rank group 的语义不支持。若上游产出硬件 topology 可表达的跨卡 mesh，
 placement IR 应保留必要 mapping / capability fact；缺少最优策略或 runtime route 时，失败应定位到
-placement/runtime 恢复项，而不是让上游 sharding artifact 改写语义。
+placement/runtime 恢复项，而不是让上游 sharding program 改写语义。

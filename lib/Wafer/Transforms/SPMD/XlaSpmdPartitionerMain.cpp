@@ -46,8 +46,8 @@ namespace fs = std::filesystem;
 namespace {
 
 struct Options {
-  fs::path inputBundle;
-  fs::path outputBundle;
+  fs::path inputProgramDir;
+  fs::path outputProgramDir;
   std::string entryFunction = "forward";
   int64_t logicalRankCount = 0;
 };
@@ -62,7 +62,7 @@ struct TensorSignature {
   std::string dtype;
 };
 
-struct BundleMeta {
+struct ProgramMetadata {
   llvm::json::Object root;
   std::vector<InputLocation> inputLocations;
   std::vector<TensorSignature> inputSignatures;
@@ -94,7 +94,7 @@ struct TensorPayload {
 
 void printUsage() {
   std::cerr << "wafer_xla_spmd_partitioner "
-               "--input-bundle <dir> --output-bundle <dir> "
+               "--input-program-dir <dir> --output-program-dir <dir> "
                "--entry-function forward --logical-rank-count <n>\n";
 }
 
@@ -109,12 +109,12 @@ absl::StatusOr<Options> parseOptions(int argc, char **argv) {
       return argv[++i];
     };
 
-    if (arg == "--input-bundle") {
+    if (arg == "--input-program-dir") {
       TF_ASSIGN_OR_RETURN(char *value, requireValue(arg));
-      options.inputBundle = value;
-    } else if (arg == "--output-bundle") {
+      options.inputProgramDir = value;
+    } else if (arg == "--output-program-dir") {
       TF_ASSIGN_OR_RETURN(char *value, requireValue(arg));
-      options.outputBundle = value;
+      options.outputProgramDir = value;
     } else if (arg == "--entry-function") {
       TF_ASSIGN_OR_RETURN(char *value, requireValue(arg));
       options.entryFunction = value;
@@ -134,10 +134,10 @@ absl::StatusOr<Options> parseOptions(int argc, char **argv) {
     }
   }
 
-  if (options.inputBundle.empty())
-    return absl::InvalidArgumentError("missing --input-bundle");
-  if (options.outputBundle.empty())
-    return absl::InvalidArgumentError("missing --output-bundle");
+  if (options.inputProgramDir.empty())
+    return absl::InvalidArgumentError("missing --input-program-dir");
+  if (options.outputProgramDir.empty())
+    return absl::InvalidArgumentError("missing --output-program-dir");
   if (options.entryFunction.empty())
     return absl::InvalidArgumentError("missing --entry-function");
   if (options.logicalRankCount <= 0)
@@ -219,16 +219,17 @@ parseSignatures(const llvm::json::Object &root, llvm::StringRef field) {
   return signatures;
 }
 
-absl::StatusOr<BundleMeta> parseMeta(const fs::path &path) {
+absl::StatusOr<ProgramMetadata> parseMeta(const fs::path &path) {
   TF_ASSIGN_OR_RETURN(std::string metaText, readFile(path));
   llvm::Expected<llvm::json::Value> parsed = llvm::json::parse(metaText);
   if (!parsed)
     return absl::InvalidArgumentError(llvm::toString(parsed.takeError()));
   llvm::json::Object *root = parsed->getAsObject();
   if (!root)
-    return absl::InvalidArgumentError("bundle meta root must be an object");
+    return absl::InvalidArgumentError(
+        "program metadata root must be an object");
 
-  BundleMeta meta;
+  ProgramMetadata meta;
   meta.root = std::move(*root);
   TF_ASSIGN_OR_RETURN(meta.inputSignatures,
                       parseSignatures(meta.root, "input_signature"));
@@ -272,7 +273,7 @@ signaturesToJson(const std::vector<TensorSignature> &signatures) {
   return array;
 }
 
-std::string metaToString(BundleMeta meta,
+std::string metaToString(ProgramMetadata meta,
                          std::vector<TensorSignature> inputSignatures,
                          std::vector<TensorSignature> outputSignatures) {
   meta.root["input_signature"] = signaturesToJson(inputSignatures);
@@ -328,12 +329,12 @@ absl::StatusOr<mlir::func::FuncOp> findMain(mlir::ModuleOp module) {
 }
 
 absl::StatusOr<std::vector<TensorSignature>>
-inputSignaturesFromFunc(mlir::func::FuncOp func, const BundleMeta &meta) {
+inputSignaturesFromFunc(mlir::func::FuncOp func, const ProgramMetadata &meta) {
   std::vector<TensorSignature> signatures;
   mlir::FunctionType type = func.getFunctionType();
   if (type.getNumInputs() != meta.inputSignatures.size())
     return absl::InvalidArgumentError(
-        "post-SPMD argument count differs from bundle metadata");
+        "post-SPMD argument count differs from program directory metadata");
   for (auto [index, input] : llvm::enumerate(type.getInputs())) {
     TF_ASSIGN_OR_RETURN(
         TensorSignature signature,
@@ -344,12 +345,12 @@ inputSignaturesFromFunc(mlir::func::FuncOp func, const BundleMeta &meta) {
 }
 
 absl::StatusOr<std::vector<TensorSignature>>
-outputSignaturesFromFunc(mlir::func::FuncOp func, const BundleMeta &meta) {
+outputSignaturesFromFunc(mlir::func::FuncOp func, const ProgramMetadata &meta) {
   std::vector<TensorSignature> signatures;
   mlir::FunctionType type = func.getFunctionType();
   if (type.getNumResults() != meta.outputSignatures.size())
     return absl::InvalidArgumentError(
-        "post-SPMD result count differs from bundle metadata");
+        "post-SPMD result count differs from program directory metadata");
   for (auto [index, result] : llvm::enumerate(type.getResults())) {
     TF_ASSIGN_OR_RETURN(
         TensorSignature signature,
@@ -425,9 +426,9 @@ absl::StatusOr<std::vector<uint8_t>>
 makeNpyPayload(llvm::ArrayRef<uint8_t> rawBytes, std::string_view dtype,
                llvm::ArrayRef<int64_t> shape) {
   TF_ASSIGN_OR_RETURN(std::string descr, npyDescrForDtype(dtype));
-  std::string header = absl::StrCat("{'descr': '", descr,
-                                    "', 'fortran_order': False, 'shape': ",
-                                    npyShapeTuple(shape), ", }");
+  std::string header = absl::StrCat(
+      "{'descr': '", descr,
+      "', 'fortran_order': False, 'shape': ", npyShapeTuple(shape), ", }");
   constexpr size_t kPreambleSize = 10;
   size_t padding = (16 - ((kPreambleSize + header.size() + 1) % 16)) % 16;
   header.append(padding, ' ');
@@ -611,7 +612,7 @@ std::string bindingsToJson(const std::string &functionName,
 }
 
 absl::Status
-materializeParameterShards(const Options &options, const BundleMeta &meta,
+materializeParameterShards(const Options &options, const ProgramMetadata &meta,
                            const xla::HloModule &prePartitionModule,
                            const xla::HloModule &partitionedModule,
                            std::vector<ParameterBinding> &bindings) {
@@ -646,7 +647,7 @@ materializeParameterShards(const Options &options, const BundleMeta &meta,
         preParam->has_sharding() ? &preParam->sharding() : nullptr;
     TF_ASSIGN_OR_RETURN(
         TensorPayload payload,
-        readTensorPayload(options.inputBundle / "data" / location.name));
+        readTensorPayload(options.inputProgramDir / "data" / location.name));
     int64_t bytesPerElement = elementSize(binding.dtype);
     if (bytesPerElement <= 0)
       return absl::InvalidArgumentError(
@@ -664,7 +665,8 @@ materializeParameterShards(const Options &options, const BundleMeta &meta,
                                                bytesPerElement));
       TF_ASSIGN_OR_RETURN(std::vector<uint8_t> npyShard,
                           makeNpyPayload(rawShard, binding.dtype, shard.sizes));
-      TF_RETURN_IF_ERROR(writeBytes(options.outputBundle / relative, npyShard));
+      TF_RETURN_IF_ERROR(
+          writeBytes(options.outputProgramDir / relative, npyShard));
       binding.shards.push_back(std::move(shard));
     }
 
@@ -756,14 +758,15 @@ std::string moduleToString(mlir::ModuleOp module) {
 }
 
 absl::Status run(const Options &options) {
-  fs::remove_all(options.outputBundle);
-  fs::create_directories(options.outputBundle / "functions");
+  fs::remove_all(options.outputProgramDir);
+  fs::create_directories(options.outputProgramDir / "functions");
 
-  TF_ASSIGN_OR_RETURN(BundleMeta meta, parseMeta(options.inputBundle /
-                                                 "functions" / "forward.meta"));
+  TF_ASSIGN_OR_RETURN(
+      ProgramMetadata meta,
+      parseMeta(options.inputProgramDir / "functions" / "forward.meta"));
   TF_ASSIGN_OR_RETURN(
       std::string mlirText,
-      readFile(options.inputBundle / "functions" / "forward.mlir"));
+      readFile(options.inputProgramDir / "functions" / "forward.mlir"));
 
   mlir::MLIRContext inputContext;
   TF_ASSIGN_OR_RETURN(mlir::OwningOpRef<mlir::ModuleOp> inputModule,
@@ -802,14 +805,14 @@ absl::Status run(const Options &options) {
       options, meta, *prePartitionModule, *partitionedModule, bindings));
 
   TF_RETURN_IF_ERROR(
-      writeFile(options.outputBundle / "functions" / "forward.mlir",
+      writeFile(options.outputProgramDir / "functions" / "forward.mlir",
                 moduleToString(*outputModule)));
   TF_RETURN_IF_ERROR(
-      writeFile(options.outputBundle / "functions" / "forward.meta",
+      writeFile(options.outputProgramDir / "functions" / "forward.meta",
                 metaToString(std::move(meta), std::move(inputSignatures),
                              std::move(outputSignatures))));
   TF_RETURN_IF_ERROR(writeFile(
-      options.outputBundle / "functions" / "forward.parameter_shards.json",
+      options.outputProgramDir / "functions" / "forward.parameter_shards.json",
       bindingsToJson(options.entryFunction, options.logicalRankCount,
                      bindings)));
   return absl::OkStatus();

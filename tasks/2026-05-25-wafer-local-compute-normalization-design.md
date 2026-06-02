@@ -16,7 +16,7 @@ DTE、C ABI 或 runtime package。
 
 本文依赖：
 
-- `tasks/2026-05-25-wafer-frontend-stablehlo-artifact-design.md`
+- `tasks/2026-05-25-wafer-frontend-stablehlo-program-design.md`
 - `tasks/2026-05-25-wafer-shardy-spmd-design.md`
 - `tasks/2026-05-12-wafer-group-design.md`
 - `tasks/2026-05-25-wafer-compute-dialect-design.md`
@@ -326,13 +326,13 @@ R2.4 pipeline position：
 
 ```text
 Pipeline position:
-- Upstream artifact / IR: P2.S2 partitioned / replicated-local StableHLO bundle，含 rank-local function signature、StableHLO collective op、replica_groups、channel metadata 和 rank-local parameter payload。
+- Upstream program / IR: P2.S2 partitioned / replicated-local StableHLO program directory，含 rank-local function signature、StableHLO collective op、replica_groups、channel metadata 和 rank-local parameter payload。
 - Current stage responsibility: 把 post-SPMD StableHLO logical collective normalize 成 Wafer-owned destination-style tensor collective op，并保留 group/tiling 可验证的 tensor-level collective facts。
-- Output artifact / IR: `linalg` / `tensor` / `scf` local compute IR 加 `wafer.tensor_collective.*` ops；不含 `wafer.comm`、SPM tile buffer、DTE token 或 runtime handle。
+- Output program / IR: `linalg` / `tensor` / `scf` local compute IR 加 `wafer.tensor_collective.*` ops；不含 `wafer.comm`、SPM tile buffer、DTE token 或 runtime handle。
 - Downstream consumer: R3 group candidate / tiling，以及 R6 tiled tensor collective -> `wafer.comm` materialization。
 - User-level driver / named pipeline: `wafer-lower-stablehlo-to-linalg` 消费 P2.S2 输出的 rank-local StableHLO module；collective normalization 是该 named pipeline 的一部分，不要求用户手动拼 pass。
 - Explicit non-goals: 不恢复 `wafer.spmd.*` 私有协议，不把 StableHLO collective 直接 lower 到 `wafer.comm`，不在 R2.4 选择 physical peer、ring schedule、SPM/DDR buffer 或 packet/runtime ABI。
-- Completion gate: 真实 P2.S2 artifact 中的 StableHLO collective 经 named pipeline 变成 verifier-legal `wafer.tensor_collective.*` op；这些 op 实现 `DestinationStyleOpInterface`、MLIR `TilingInterface`、`WaferTilingInterface` 和 `WaferTensorCollectiveOpInterface`，输出可被 group 边界作为 tensor-level IR 消费；fixture/FileCheck/gtest 只做补充覆盖。
+- Completion gate: 真实 P2.S2 program 中的 StableHLO collective 经 named pipeline 变成 verifier-legal `wafer.tensor_collective.*` op；这些 op 实现 `DestinationStyleOpInterface`、MLIR `TilingInterface`、`WaferTilingInterface` 和 `WaferTensorCollectiveOpInterface`，输出可被 group 边界作为 tensor-level IR 消费；fixture/FileCheck/gtest 只做补充覆盖。
 ```
 
 ## 5. Softmax and Norm Staged Form
@@ -442,7 +442,7 @@ Normalization 后必须能检查：
 
 | 子结构 | 当前证据 | 结论边界 |
 | --- | --- | --- |
-| dot / 2D GEMM | `test/Frontend/lower-stablehlo-dot-to-linalg.mlir`、`stablehlo-dot-artifact.mlir`、`linalg-gemm-artifact.mlir` | 证明 2D dot 可进入 structured matmul，不证明 tile shape / GEMM packet |
+| dot / 2D GEMM | `test/Frontend/lower-stablehlo-dot-to-linalg.mlir`、`stablehlo-dot-program.mlir`、`linalg-gemm-program.mlir` | 证明 2D dot 可进入 structured matmul，不证明 tile shape / GEMM packet |
 | attention QK^T / AV | `lower-stablehlo-attention-score.mlir`、`lower-stablehlo-attention-value.mlir`、`lower-stablehlo-attention-softmax-value.mlir` | rank-4 attention dot 当前不再特判 lowering；测试确认它保留为 StableHLO `dot_general`，后续需要通用 batched contraction / tensor collective handoff 合同 |
 | elementwise / broadcast | `lower-stablehlo-elementwise.mlir`、`lower-stablehlo-projection-residual.mlir` | 证明当前 add/sub/mul/div/tanh/exp/broadcast 子集的 SSA dataflow；mask/select 和 complex broadcast 未闭环 |
 | reduce | `lower-stablehlo-reduce.mlir`、norm/softmax staged tests | 证明细粒度 StableHLO reduce 到 `linalg.reduce` 的 constant-init 子集；non-constant-init reduce 和 numeric policy 未闭环 |
@@ -455,7 +455,7 @@ Normalization 后必须能检查：
 
 ## 8. 与其它文档的关系
 
-- Frontend 文档负责 artifact 和 constant normalization 的入口。
+- Frontend 文档负责 program 和 constant normalization 的入口。
 - Shardy / SPMD 文档负责用户 sharding 和 no-user-sharding 默认 policy 生成的 SDY seed、
   partitioned / replicated-local StableHLO 和 StableHLO logical collective。
 - 本文负责 SPMD 后 local body 内的 structured tensor IR，以及 StableHLO collective 到 Wafer

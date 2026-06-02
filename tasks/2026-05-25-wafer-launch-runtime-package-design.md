@@ -143,7 +143,7 @@ allocation failure 由 DDR 设计负责定义；launch 负责把这些失败报�
 当前 `tools/wafer_package_manifest.py` 只负责验证和 roundtrip 显式输入的 manifest schema，不再提供
 固定 package emitter。manifest schema 记录 launch signature、placement metadata、DDR external
 binding bytes、SPM/DDR resource summary、workspace buffer demand、resident constant demand、ABI
-issue ops、device-code artifact id 和 runtime completion source。validator 要求
+issue ops、device-code program id 和 runtime completion source。validator 要求
 `resources.workspace_bytes` 与
 `workspace_buffers` 的 compact tensor storage bytes 求和一致，要求
 `resources.resident_constant_bytes` 与 `resident_constants` 求和一致；`launch_input` resident

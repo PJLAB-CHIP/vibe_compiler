@@ -40,9 +40,9 @@ Serving integration 暂不纳入本文通过标准。
 
 | gate | 输入 | 通过条件 |
 | --- | --- | --- |
-| Frontend artifact | imported StableHLO bundle / MLIR | importer adapter diagnostics、parse/roundtrip、shape/dtype、constant normalization、sharding import source、third-party dialect registration 合法 |
+| Frontend program | imported StableHLO program directory / MLIR | importer adapter diagnostics、parse/roundtrip、shape/dtype、constant normalization、sharding import source、third-party dialect registration 合法 |
 | Shardy propagation | StableHLO + user sharding seed or default no-user input seed | logical mesh、SDY sharding seed、propagation 结果合法；不要求 partitioned local body |
-| SPMD partition artifact | sharding propagation stage 输出的 StableHLO/SDY IR | XLA SPMD partitioner 或等价 stage 产出 partitioned/replicated-local StableHLO、rank-local shape、collective group 和 parameter shard binding 合法 |
+| SPMD partition program | sharding propagation stage 输出的 StableHLO/SDY IR | XLA SPMD partitioner 或等价 stage 产出 partitioned/replicated-local StableHLO、rank-local shape、collective group 和 parameter shard binding 合法 |
 | Placement | logical ranks + topology | physical mapping 覆盖所有 rank，过滤 bad tile，cluster capability 合法 |
 | Local compute normalization | partitioned or replicated-local StableHLO | Linalg/Tensor/SCF/Arith/Math structured semantics、DPS/indexing relation、fine-grained softmax/norm/RoPE staged form 合法；不执行 SPMD partition |
 | Tensor collective handoff | partitioned StableHLO collective | Wafer LinalgExt-style tensor collective op 合法；rank group、combiner/slice relation、DPS/tiling interface 可验证，且不含 `wafer.comm`、tile_buffer 或 DTE token |
@@ -72,26 +72,26 @@ Gate 通过只说明进入下一层的输入合法，不说明整个 compiler �
 - golden packet tests：C ABI 参数到 wrapper/packet field。
 - package serialization tests：manifest、bootparam/TLV fallback、constant bytes metadata。
 - runtime shielding tests：已知 stub path 不能被选为 correctness fence。
-- importer/dependency 最小验证：至少一个 importer path 能产出 verified StableHLO / MLIR artifact；
+- importer/dependency 最小验证：至少一个 importer path 能产出 verified StableHLO / MLIR program；
   后端 textual MLIR tests 不依赖 importer-only Python / framework 包，但不能作为主链路完成证明。
 - board 最小验证：只在 runtime path 和 hardware availability 明确时作为新增 milestone gate。
 
-P2.F1 之后的任务完成验证还需要一条真实 artifact chain gate：输入必须来自真实 framework/exporter
-图导出的 artifact，测试应重放已完成的上游链路，并检查本任务新增的 IR fact、verifier fact、
+P2.F1 之后的任务完成验证还需要一条真实 program chain gate：输入必须来自真实 framework/exporter
+图导出的 program，测试应重放已完成的上游链路，并检查本任务新增的 IR fact、verifier fact、
 resource fact 或 package fact 能在该任务边界正确导出并被直接消费。局部 verifier negative、
 pattern FileCheck、手写 StableHLO/Linalg fixture 和显式 manifest tool-unit fixture 可以保留，但只能补覆盖，不能
 单独作为任务完成证明。若直接下游还没有实现某个硬件可表达语义，完成证明应把缺口记录为下游恢复
-任务，而不是修改上游 artifact 或 verifier 让该语义消失。
+任务，而不是修改上游 program 或 verifier 让该语义消失。
 
 每个主线 gate 在新增或标记完成前，必须先给出 pipeline contract，并在验证记录中逐项对应：
 
-- upstream artifact / IR：该 gate 消费哪个已完成阶段的产物。
+- upstream program / IR：该 gate 消费哪个已完成阶段的产物。
 - current stage responsibility：当前 gate 只验证或 materialize 哪一层语义。
-- output artifact / IR：通过后产生或确认的 artifact / IR contract。
+- output program / IR：通过后产生或确认的 program / IR contract。
 - downstream consumer：哪个后续 stage 会直接消费该输出。
 - user-level driver / named pipeline：主链路如何由 Wafer driver 或 named pipeline 重放。
 - explicit non-goals：哪些 pass、tool、fixture 或下游缺口不能被算进当前完成证明。
-- completion gate：哪条命令或测试证明当前 stage 的输出沿真实 artifact chain 可被消费。
+- completion gate：哪条命令或测试证明当前 stage 的输出沿真实 program chain 可被消费。
 
 如果验证只能证明某个单 pass、手写 fixture、dump 文件或局部 FileCheck 成立，而不能对应上述
 contract，它只能作为 unit/debug 覆盖，不能把任务状态推进到主线 `done`。
@@ -100,32 +100,32 @@ contract，它只能作为 unit/debug 覆盖，不能把任务状态推进到主
 
 Single-tile local compute：
 
-- 主链路 gate 应消费 P2.F1/P2.S1/P2.S2/R2.4 产出的真实图 artifact，并继续通过 frontend/local compute /
-  tensor collective handoff gate；graph break / fallback 不被当成合法 artifact。手写 StableHLO/Linalg
+- 主链路 gate 应消费 P2.F1/P2.S1/P2.S2/R2.4 产出的真实图 program，并继续通过 frontend/local compute /
+  tensor collective handoff gate；graph break / fallback 不被当成合法 program。手写 StableHLO/Linalg
   输入只保留为局部 verifier、lowering pattern 或 bring-up fixture。
 - R2.4-pre 之后，主链路 gate 必须通过 Wafer named pipeline 或用户级 driver mode 重放上述链路；
   单独拼 `wafer-opt` pass、`shardy-sdy-opt`、PyTorch/XLA runtime 环境变量和 verifier tool 只能作为
-  unit/debug 覆盖。2026-06-02 后，当前用户级 artifact 入口是
-  `wafer-import-model --verify-stablehlo-bundle`、`--propagate-stablehlo-sharding` 和
-  `--partition-stablehlo-bundle`；`--compile-stablehlo-bundle-to-cabi` 已删除。`wafer-opt` named
+  unit/debug 覆盖。2026-06-02 后，当前用户级 program 入口是
+  `wafer-compile-stablehlo --verify-stablehlo-program`、`--propagate-stablehlo-sharding` 和
+  `--partition-stablehlo-program`；`--compile-stablehlo-program-to-cabi` 已删除。`wafer-opt` named
   pipeline 入口只保留 `wafer-propagate-stablehlo-sharding` 和 `wafer-lower-stablehlo-to-linalg`。
   旧 C ABI issue、single-tile materialization、SPM/DDR trial 和 ring lowering unit/debug pass 链已删除，
   当前没有 group/tile/storage/C ABI 主链路 compile gate。
 - 后续 R3/R6/R7 gate 必须证明 `wafer.group` 到 `wafer.tile_region` 的 load/compute/store、
-  SPM allocation、DDR external/workspace/constant demand 和 C ABI/package 边界来自真实 artifact chain。
+  SPM allocation、DDR external/workspace/constant demand 和 C ABI/package 边界来自真实 program chain。
 - 至少一个 compute/movement ABI family 有 golden packet。
-- 当前无卡开发环境要求 generated artifact compile；package manifest roundtrip 只能作为 tool-unit
+- 当前无卡开发环境要求 generated program compile；package manifest roundtrip 只能作为 tool-unit
   schema 覆盖，不能替代 IR-derived package emission。runtime completion 在带实际计算卡服务器上再
   验证，届时 completion 必须来自 HPGR model/module/stream completion、legacy `TsmRun` synchronous
   path，或 device-side drain + 可信 host completion。
 
 Multi-tile no communication：
 
-- 主链路 gate 继续消费同一条真实图 artifact chain，不重新退回手写 tile_region 或显式 manifest fixture。
+- 主链路 gate 继续消费同一条真实图 program chain，不重新退回手写 tile_region 或显式 manifest fixture。
 - placement 覆盖多个 tile，并使用 good-tile metadata。
 - 每个 tile 有 block id / local shard metadata。
 - 无 tile 间 DTE 依赖。
-- local package / generated artifact 能区分 per-tile args；runtime launch 和 completion 后续在有卡环境验证。
+- local package / generated program 能区分 per-tile args；runtime launch 和 completion 后续在有卡环境验证。
 
 Direct DTE p2p：
 
@@ -154,7 +154,7 @@ Partitioned StableHLO collective handoff：
   可被 group/tiling 边界直接消费。slot-crossing 或当前 IR 不可证明的 collective-axis tile 必须显式
   failure，不能被伪装成已 materialize 的 `wafer.comm` 或 hidden schedule。
 - placement 和 comm lowering 在其实现范围内保留 collective semantics；未实现的硬件可表达
-  collective 形成 R6/R4 恢复任务，不能反向限制 sharding propagation artifact export，也不能把 tensor collective
+  collective 形成 R6/R4 恢复任务，不能反向限制 sharding propagation program export，也不能把 tensor collective
   伪装成已经 materialize 的 `wafer.comm`。
 - layout/SPM/DDR resource gates 只对本 milestone 已经 materialize 的 movement / buffer demand
   负责；尚未 materialize 的 logical collective 不能被伪装成已通过 resource gate。
@@ -181,7 +181,7 @@ Transformer block vertical slice：
   `ConstantLike` value 和 `wafer.load_tile`。
 - 若启用 tensor parallel collective，R2.4 tensor collective handoff 以及 p2p/ring/multi-replica
   collective gate 已通过；否则只验证单卡/单 shard local transformer block。
-- 当前无卡开发环境要求 generated artifact compile，package/runtime metadata 覆盖所有 block
+- 当前无卡开发环境要求 generated program compile，package/runtime metadata 覆盖所有 block
   input/output、resident constants 和 workspace；completion 和数值对比后续在有卡环境验证。
 
 当前 transformer static fixture 只覆盖 frontend/local structured tensor dataflow。旧 full local block
@@ -189,16 +189,16 @@ Transformer block vertical slice：
 的 pass 链已删除；workspace buffers、resident constants、package metadata 和 IR-derived manifest
 emission 仍属后续恢复任务。completion、数值对比和 profiling 仍等有卡环境补 gate。
 
-M7 ABI / LLVM artifact gate：
+M7 ABI / LLVM program gate：
 
 - `wafer.abi.*` 到 `wafer_*` C ABI call contract 必须固定函数名、参数单位、wait/completion
   责任和 ABI version，不允许把 C stub issue table 当作真实 runtime call。
 - lowering 后应生成 LLVM dialect call 或等价可审计 call IR；该 IR 不残留 `wafer.abi.*`，并能
   通过 `mlir-translate` 或等价路径生成 LLVM IR。
 - 本地 gate 至少检查 LLVM IR 文本中的 entrypoint、runtime symbol declaration、参数顺序和
-  metadata/artifact 引用；随后用当前 toolchain 做 object 或 link 最小验证。
-- package manifest 必须记录真实 LLVM/object artifact id、entrypoint 和 ABI version；C stub-only
-  artifact 只允许作为 P0-P6 历史局部 fixture 的验证物。
+  metadata/program 引用；随后用当前 toolchain 做 object 或 link 最小验证。
+- package manifest 必须记录真实 LLVM/object program id、entrypoint 和 ABI version；C stub-only
+  program 只允许作为 P0-P6 历史局部 fixture 的验证物。
 
 M8 runtime / board correctness gate：
 
@@ -232,7 +232,7 @@ Wafer 硬件能力表达，就不能把当前 static gate 的覆盖范围写成�
 
 验证失败要回到拥有该事实的阶段：
 
-- frontend artifact 错误回 frontend。
+- frontend program 错误回 frontend。
 - sharding / collective group 错误回 Shardy。
 - physical tile 不可用回 placement。
 - tile shape 或 group 资源不合法回 group planner。

@@ -188,12 +188,12 @@ class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
         sys.modules.clear()
         sys.modules.update(self.saved_modules)
 
-    def test_capture_uses_torch_xla_runtime_and_saves_bundle(self):
+    def test_capture_uses_torch_xla_runtime_and_saves_program_dir(self):
         with tempfile.TemporaryDirectory() as tmp:
-            bundle_path = pathlib.Path(tmp) / "bundle"
+            program_dir = pathlib.Path(tmp) / "program"
 
-            self.tool.emit_reference_stablehlo_bundle(
-                bundle_path=bundle_path,
+            self.tool.emit_reference_stablehlo_program(
+                program_dir=program_dir,
                 torch_module=self.fake_torch,
                 stablehlo_module=self.fake_stablehlo,
                 reference_module_factory=FakeReferenceModule,
@@ -204,17 +204,17 @@ class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
             self.assertTrue(self.fake_stablehlo.last_options.save_weights)
             self.assertTrue(self.fake_stablehlo.last_options.include_human_readable_text)
             self.assertTrue(self.fake_torch.no_grad_entered)
-            self.assertTrue((bundle_path / "functions" / "forward.mlir").is_file())
-            self.assertTrue((bundle_path / "functions" / "forward.meta").is_file())
-            self.assertTrue((bundle_path / "data" / "weight").is_file())
+            self.assertTrue((program_dir / "functions" / "forward.mlir").is_file())
+            self.assertTrue((program_dir / "functions" / "forward.meta").is_file())
+            self.assertTrue((program_dir / "data" / "weight").is_file())
 
-    def test_emit_rejects_missing_bundle_files(self):
+    def test_emit_rejects_missing_program_dir_files(self):
         with tempfile.TemporaryDirectory() as tmp:
-            bundle_path = pathlib.Path(tmp) / "bundle"
-            bundle_path.mkdir()
+            program_dir = pathlib.Path(tmp) / "program"
+            program_dir.mkdir()
 
-            with self.assertRaisesRegex(RuntimeError, "missing StableHLO bundle file"):
-                self.tool._verify_bundle_layout(bundle_path)
+            with self.assertRaisesRegex(RuntimeError, "missing StableHLO program directory file"):
+                self.tool._verify_program_dir_layout(program_dir)
 
     def test_sharding_strategy_matrix_names_are_fixed(self):
         self.assertEqual(

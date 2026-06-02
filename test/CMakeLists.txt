@@ -62,7 +62,7 @@ set(WAFER_XLA_SPMD_PARTITIONER_HELPER "" CACHE FILEPATH
 
 add_custom_target(check-wafer-lit
   COMMAND ${WAFER_LIT_EXECUTABLE} ${WAFER_LIT_ARGS} ${CMAKE_CURRENT_BINARY_DIR}
-  DEPENDS wafer-import-model wafer-opt
+  DEPENDS wafer-compile-stablehlo wafer-opt
   USES_TERMINAL
 )
 

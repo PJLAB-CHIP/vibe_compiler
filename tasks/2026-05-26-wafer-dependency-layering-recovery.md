@@ -10,7 +10,7 @@ R0.3 明确当前工程的依赖层级和 CMake target 可见范围，并把第�
 `cmake/third_party/`，避免 optional frontend/importer、runtime/driver 或 test tools 依赖穿透到
 core compiler target。
 
-本任务只收敛依赖 ownership，不改变 IR 语义、pass pipeline、runtime ABI 或 frontend artifact
+本任务只收敛依赖 ownership，不改变 IR 语义、pass pipeline、runtime ABI 或 frontend program
 合同。
 
 ## 术语口径
@@ -20,16 +20,16 @@ core compiler target。
 - 实际使用：Wafer 的 C++ target、pass、tool 或 Python importer 直接 link/import/call 了对应依赖。
   按这个口径，R0.3 中实际进入编译验证的是 LLVM/MLIR、StableHLO 和 Shardy/SDY；PyTorch/XLA 与
   XLA/GSPMD 当时还没有进入 Wafer 主线代码路径。P2.F1 之后，PyTorch/XLA 通过 importer Python
-  runtime 进入 frontend artifact 生成路径；P2.S1 之后，Wafer C++ pipeline 消费 pre-SPMD bundle
+  runtime 进入 frontend program 生成路径；P2.S1 之后，Wafer C++ pipeline 消费 pre-SPMD program directory
   并运行 Shardy propagation。旧 Python post-SPMD export 入口已删除；它不能变成 `WaferIR` 或
   core backend library 的 public dependency，也不能算 Wafer-owned SPMD partition stage。
 - 编译验证目标：一个明确的 build target，用来证明某部分源码能在当前工程里编译和链接。它不是
   feature 完成证明。例如 `wafer-shardy-cmake-gate` 只证明 Shardy/SDY 公共 dialect/pass 能编译，
-  不证明 R2.2 的 Shardy/SPMD artifact bridge 已完成。
+  不证明 R2.2 的 Shardy/SPMD program bridge 已完成。
 
 ## 非目标
 
-- 不实现真实 model importer adapter、exporter bundle metadata verifier 或 Shardy SPMD bridge。
+- 不实现真实 model importer adapter、exporter program directory metadata verifier 或 Shardy SPMD bridge。
 - 不引入 HPGR / KMD / legacy `Tsm*` runtime adapter target。
 - 不把 `wafer.abi.*` lower 到 LLVM dialect、object 或真实 runtime call。
 - 不拆分 Wafer ODS / verifier op-prefix 文件；这是 R1.1。
@@ -42,7 +42,7 @@ core compiler target。
 | ABI helper | `WaferABI`、`include/Wafer/ABI`、`lib/Wafer/ABI` | C++ standard library 和项目 ABI headers | MLIR dialect API、StableHLO/Shardy、runtime/driver headers、test tools |
 | Core transforms | `WaferTransforms`、`lib/Wafer/Transforms` | `WaferIR`、MLIR arith/linalg/tensor/pass/support；`StableHLOToLinalg` 源文件可在 importer enabled 时使用 StableHLO op C++ API；`SPMD/` 源文件可在 `WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON` 时 private 使用 Shardy/SDY C++ API | importer framework headers、runtime/driver headers、test tools、C ABI conversion ownership；StableHLO/Shardy 不能成为 public dependency |
 | Conversion | 后续重建 | 旧 `WaferConversion` / `include/Wafer/Conversion` / `lib/Wafer/Conversion` 已删除；后续 WaferToLLVM / real C ABI lowering 可在本层按 storage-realized contract 重建 | StableHLO/Shardy importer API、test tools；runtime/driver headers 只能在 future launch/runtime adapter 层进入 |
-| Frontend/importer | `include/Wafer/Frontend`、`tools/wafer-import-model` | optional StableHLO dialect registration、artifact parsing/verification 依赖；固定版本的 torch / PyTorch/XLA importer Python runtime，后续只允许在 importer 工具中使用 | SPM/layout/runtime/driver target details |
+| Frontend/importer | `include/Wafer/Frontend`、`tools/wafer-compile-stablehlo` | optional StableHLO dialect registration、program parsing/verification 依赖；固定版本的 torch / PyTorch/XLA importer Python runtime，后续只允许在 importer 工具中使用 | SPM/layout/runtime/driver target details |
 | SPMD bridge | `ShardySdy*` CMake shim target、future Shardy/SPMD pass target | Shardy/SDY source dependency、MLIR dialect registration、import/export/propagation pass 编译验证 | physical tile id、DTE algorithm、runtime package |
 | Driver tool | `wafer-opt` | `WaferIR`、`WaferTransforms`、MLIR tool main；optional StableHLO registration | importer framework implementation details、runtime/driver headers |
 | Runtime/driver | future `WaferRuntimeAdapter` / launch package layer | HPGR/KMD/legacy runtime headers and libraries, isolated behind adapter | Frontend tensor/group planning dependencies |
@@ -72,7 +72,7 @@ core compiler target。
   `third_party/stablehlo/temporary.patch`。Wafer 不把 patched copy 作为第二个源码 submodule；
   patch 作为对应上游 workspace 的输入存在，并由依赖检查确认 XLA/Shardy patch 内容一致。
 - OpenXLA/XLA 源码固定版本是为了后续 P2.S2 的 Wafer-owned XLA SPMD partitioner /
-  local-body partitioning integration。R2.2 以 Shardy 的 MLIR sharding representation 作为 artifact
+  local-body partitioning integration。R2.2 以 Shardy 的 MLIR sharding representation 作为 program
   bridge 边界；P2.S1 已在 Wafer C++ pipeline 中接入 Shardy propagation。旧 Python post-SPMD
   export 入口已删除；P2.S2 必须复用同一 `third_party/xla`、`third_party/llvm-project` 和
   `third_party/stablehlo`。不能下载或引入第二套 XLA/LLVM stack，也不能让 XLA/GSPMD 成为 core IR
@@ -81,7 +81,7 @@ core compiler target。
   packages：`torch==2.5.0`、`torchvision==0.20.0`、`absl-py==2.1.0`、`pyyaml==6.0.1`、
   `requests==2.32.3`。P2.F1 的 `torch_xla` runtime 必须从 `third_party/pytorch-xla`
   源码构建/安装出同版本 package；prebuilt `torch_xla` wheel 不能作为 P2.F1 完成证明。该 runtime
-  只用于 importer 工具 / artifact 生成测试，不能穿透到 core compiler public dependency。
+  只用于 importer 工具 / program 生成测试，不能穿透到 core compiler public dependency。
 - `tools/build_pytorch_xla_runtime.py` 是当前源码构建入口；它为 PyTorch/XLA Bazel build 提供本地
   `@xla`、`@llvm-raw` 和 `@torch` override，使源码构建复用同一套 `third_party/xla`、
   `third_party/llvm-project` 和 importer Python 环境，而不是下载或引入另一套 XLA/LLVM stack。
@@ -94,7 +94,7 @@ core compiler target。
 - `ShardySdyDialect` 是 `WaferTransforms` 的 private implementation dependency，只在
   `WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON` 时服务 `lib/Wafer/Transforms/SPMD/*` 的 SPMD/default seed
   passes；不能从 `WaferIR`、future `WaferConversion` 或 `WaferABI` public 暴露。
-- `StablehloRegister` 只由 `wafer-opt` 和 `wafer-import-model` 私有链接，用于工具进程注册 dialect。
+- `StablehloRegister` 只由 `wafer-opt` 和 `wafer-compile-stablehlo` 私有链接，用于工具进程注册 dialect。
 - `cmake/third_party/WaferShardyCMake.cmake` 在 `WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON` 时从
   `third_party/shardy` 生成 SDY ODS TableGen 产物，并编译 `ShardySdyDialect`、
   `ShardySdyRegister`、`ShardySdyImportPasses`、`ShardySdyExportPasses`、
@@ -103,7 +103,7 @@ core compiler target。
   dependency 编译验证。
 - `wafer-shardy-cmake-gate` 是 dependency compile 验证目标；开启 SPMD deps 时 `check-wafer` 依赖它。
   该目标只证明公共 Shardy/SPMD 依赖能在同一套固定版本 compiler stack 下编译和注册，不表示 R2.2
-  artifact bridge 已完成。
+  program bridge 已完成。
 - 旧 `WaferConversion` pass target 已删除；后续 conversion target 重建时仍不得由 `WaferTransforms`
   ownership 隐式携带 C ABI lowering。
 - `WaferIR`、future `WaferConversion` 和 `WaferABI` 不链接 StableHLO/Shardy/importer/runtime/test tools。
@@ -137,8 +137,8 @@ core compiler target。
 
 ## 未完成项
 
-- P2.S1 已接上真实 PyTorch/XLA pre-SPMD artifact 和 Wafer Shardy propagation stage gate；仍未完成
-  Wafer-owned XLA SPMD partition artifact stage。P2.S2 需要决定独立 C++ 工具或 driver/library stage
+- P2.S1 已接上真实 PyTorch/XLA pre-SPMD program 和 Wafer Shardy propagation stage gate；仍未完成
+  Wafer-owned XLA SPMD partition compiler stage。P2.S2 需要决定独立 C++ 工具或 driver/library stage
   如何 link XLA ShardyXLA / SpmdPartitioner，同时继续隔离在 optional target 中，避免 core
   IR/backend target 获得 XLA/GSPMD public dependency。
 - torch-mlir source-tree adapter 的精确 commit 仍属于后续 frontend importer 扩展；R0.3

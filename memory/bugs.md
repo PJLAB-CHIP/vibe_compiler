@@ -14,7 +14,7 @@
 
 ## 2026-06-01 P2.S2 helper MLIRContext lifetime crash
 
-- 现象：`wafer_xla_spmd_partitioner` 构建成功，但写 partitioned bundle 时空 stderr 段错误。
+- 现象：`wafer_xla_spmd_partitioner` 构建成功，但写 partitioned program directory 时空 stderr 段错误。
   `gdb -batch -ex run -ex bt --args ...` 显示崩在 `mlir::Attribute::getContext()`。
 - 根因：helper 在 `hloModuleToStablehlo()` 的局部 `mlir::MLIRContext` 上创建
   `OwningOpRef<mlir::ModuleOp>` 并返回；调用方继续检查返回的 module 时 context 已销毁。

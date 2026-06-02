@@ -17,7 +17,7 @@ C ABI conversion 混在旧的聚合目录里。
 - R0.2 当时不把 `WaferOps.td` / `WaferDialect.cpp` 按 group、tile_region、layout、SPM、compute、
   comm、sync、launch 拆开；该后续项已由 R1.1 完成。
 - 不把 interface/effect/resource 基础定义扩成 planner 可查询合同；这是 R1.2。
-- 不实现真实 importer adapter、exporter bundle metadata verifier 或 Shardy bridge；这是 R2.1/R2.2。
+- 不实现真实 importer adapter、exporter program directory metadata verifier 或 Shardy bridge；这是 R2.1/R2.2。
 - 不把 `wafer.abi.*` lower 到 LLVM dialect、LLVM IR、object 或真实 runtime call。
 - 不实现 launch/runtime adapter、BO binding 或板端 completion。
 
@@ -37,7 +37,7 @@ C ABI conversion 混在旧的聚合目录里。
 - `StableHLOToLinalg/`：StableHLO textual lowering 和 constant normalization。
 - 旧 `GroupFormation/`、`TileRegionMaterialization/`、`SPMBufferize/`、`LayoutMaterialization/`、
   `Communication/`、`LaunchOutlining/` 和 `Support/ElementwiseUtils` unit/debug pass 链已删除。
-  后续 R3/R6/R7 恢复时按真实 artifact chain、IR contract 和 CMake ownership 重新建立目录。
+  后续 R3/R6/R7 恢复时按真实 program chain、IR contract 和 CMake ownership 重新建立目录。
 
 ## 合同
 
@@ -53,7 +53,7 @@ C ABI conversion 混在旧的聚合目录里。
 - R0.3：补 core compiler、frontend/importer、runtime/driver、test tooling 的 dependency target
   可见范围。
 - R1.1：已完成，按 op family 拆 ODS、C++ verifier 和 tests。
-- R2.1/R2.2：恢复 frontend artifact / importer / Shardy bridge。
+- R2.1/R2.2：恢复 frontend program / importer / Shardy bridge。
 - R3.1/R3.2：恢复 group / root tile 主链路和 IR-derived package gate。
 
 ## 验证

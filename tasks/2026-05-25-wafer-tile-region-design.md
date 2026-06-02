@@ -149,7 +149,7 @@ compute、comm 和 sync op 能通过 layout/materialization/resource interface �
 当前实现状态：
 
 - 旧 `--wafer-materialize-single-tile` explicit unit/debug pass 已删除。后续 tile_region materialization
-  必须由 R3 消费真实 frontend/SPMD artifact chain 和 group candidate contract 后恢复。
+  必须由 R3 消费真实 frontend/SPMD program chain 和 group candidate contract 后恢复。
 - `--wafer-materialize-multi-tile-no-comm` 已删除。旧实现按 placement rank 数 clone whole-tensor
   tile_region，既没有 per-rank shard slice，也没有 output merge/writeback contract，不能作为
   multi-tile materialization 证据。

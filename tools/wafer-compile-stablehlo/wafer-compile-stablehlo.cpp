@@ -1,8 +1,8 @@
-//===- wafer-import-model.cpp - Wafer importer artifact tool -------------===//
+//===- wafer-compile-stablehlo.cpp - Wafer StableHLO compiler entry -------===//
 
 #ifdef WAFER_ENABLE_STABLEHLO
-#include "Wafer/Frontend/Artifact.h"
 #include "Wafer/Frontend/InitImporterDialects.h"
+#include "Wafer/Frontend/Program.h"
 #include "Wafer/InitAll.h"
 #include "Wafer/Pipelines/Pipelines.h"
 
@@ -33,20 +33,21 @@
 namespace {
 
 void printHelp() {
-  llvm::outs() << "wafer-import-model\n";
+  llvm::outs() << "wafer-compile-stablehlo\n";
 #ifdef WAFER_ENABLE_STABLEHLO
-  llvm::outs() << "  --verify-import-result <mlir-file>\n"
-               << "  --verify-stablehlo-bundle <bundle-dir>\n";
+  llvm::outs() << "  --verify-frontend-program <mlir-file>\n"
+               << "  --verify-stablehlo-program <program-dir>\n";
 #ifdef WAFER_ENABLE_SHARDY
-  llvm::outs() << "  --propagate-stablehlo-sharding <bundle-dir>\n"
+  llvm::outs() << "  --propagate-stablehlo-sharding <program-dir>\n"
                << "    [--default-tile-count=16]\n"
-               << "  --partition-stablehlo-bundle <bundle-dir>\n"
-               << "    --output-bundle <bundle-dir>\n"
+               << "  --partition-stablehlo-program <program-dir>\n"
+               << "    --output-program-dir <program-dir>\n"
                << "    --xla-spmd-partitioner-helper <path>\n"
                << "    [--default-tile-count=16]\n";
 #endif
 #else
-  llvm::outs() << "  importer dependencies are disabled in this build\n";
+  llvm::outs()
+      << "  StableHLO frontend dependencies are disabled in this build\n";
 #endif
 }
 
@@ -66,7 +67,7 @@ void registerToolDialects(mlir::DialectRegistry &registry) {
   mlir::func::registerInlinerExtension(registry);
 }
 
-int verifyImportResult(llvm::StringRef filename) {
+int verifyFrontendProgramFile(llvm::StringRef filename) {
   mlir::DialectRegistry registry;
   registerToolDialects(registry);
 
@@ -78,19 +79,19 @@ int verifyImportResult(llvm::StringRef filename) {
   if (mlir::failed(mlir::verify(*module)))
     return 1;
 
-  wafer::frontend::ArtifactVerificationResult result;
-  if (mlir::failed(wafer::frontend::verifyFrontendArtifact(
-          *module, llvm::errs(), &result)))
+  wafer::frontend::FrontendProgramVerificationResult result;
+  if (mlir::failed(wafer::frontend::verifyFrontendProgram(*module, llvm::errs(),
+                                                          &result)))
     return 1;
 
-  llvm::outs() << "wafer-import-model: verified frontend artifact\n";
+  llvm::outs() << "wafer-compile-stablehlo: verified frontend program\n";
   return 0;
 }
 
-mlir::OwningOpRef<mlir::ModuleOp> parseAndVerifyStableHLOBundle(
-    llvm::StringRef bundlePath, mlir::MLIRContext &context,
-    wafer::frontend::ArtifactVerificationResult *result = nullptr) {
-  llvm::SmallString<256> mlirPath(bundlePath);
+mlir::OwningOpRef<mlir::ModuleOp> parseAndVerifyStableHLOProgramDir(
+    llvm::StringRef programPath, mlir::MLIRContext &context,
+    wafer::frontend::FrontendProgramVerificationResult *result = nullptr) {
+  llvm::SmallString<256> mlirPath(programPath);
   llvm::sys::path::append(mlirPath, "functions", "forward.mlir");
 
   mlir::OwningOpRef<mlir::ModuleOp> module = parseModule(mlirPath, context);
@@ -99,40 +100,42 @@ mlir::OwningOpRef<mlir::ModuleOp> parseAndVerifyStableHLOBundle(
   if (mlir::failed(mlir::verify(*module)))
     return {};
 
-  if (mlir::failed(wafer::frontend::verifyStableHLOBundle(
-          *module, bundlePath, llvm::errs(), result)))
+  if (mlir::failed(wafer::frontend::verifyStableHLOProgramDir(
+          *module, programPath, llvm::errs(), result)))
     return {};
 
   return module;
 }
 
-int verifyStableHLOBundle(llvm::StringRef bundlePath) {
+int verifyStableHLOProgramDir(llvm::StringRef programPath) {
   mlir::DialectRegistry registry;
   registerToolDialects(registry);
 
   mlir::MLIRContext context(registry);
   context.loadAllAvailableDialects();
 
-  wafer::frontend::ArtifactVerificationResult result;
+  wafer::frontend::FrontendProgramVerificationResult result;
   mlir::OwningOpRef<mlir::ModuleOp> module =
-      parseAndVerifyStableHLOBundle(bundlePath, context, &result);
+      parseAndVerifyStableHLOProgramDir(programPath, context, &result);
   if (!module)
     return 1;
 
-  llvm::outs() << "wafer-import-model: verified StableHLO bundle parameters: "
-               << result.bundleParameterCount << "\n";
-  if (result.bundleParameterShardBindingCount)
-    llvm::outs() << "wafer-import-model: verified StableHLO bundle "
-                    "parameter shard bindings: "
-                 << result.bundleParameterShardBindingCount << "\n";
-  llvm::outs() << "wafer-import-model: verified frontend artifact\n";
+  llvm::outs() << "wafer-compile-stablehlo: verified StableHLO program "
+                  "directory parameters: "
+               << result.programParameterCount << "\n";
+  if (result.programParameterShardBindingCount)
+    llvm::outs()
+        << "wafer-compile-stablehlo: verified StableHLO program directory "
+           "parameter shard bindings: "
+        << result.programParameterShardBindingCount << "\n";
+  llvm::outs() << "wafer-compile-stablehlo: verified StableHLO program\n";
   return 0;
 }
 
 #ifdef WAFER_ENABLE_SHARDY
-std::string bundleFile(llvm::StringRef bundlePath,
-                       llvm::ArrayRef<llvm::StringRef> components) {
-  llvm::SmallString<256> path(bundlePath);
+std::string programFile(llvm::StringRef programPath,
+                        llvm::ArrayRef<llvm::StringRef> components) {
+  llvm::SmallString<256> path(programPath);
   for (llvm::StringRef component : components)
     llvm::sys::path::append(path, component);
   return path.str().str();
@@ -140,8 +143,8 @@ std::string bundleFile(llvm::StringRef bundlePath,
 
 bool createDirectory(llvm::StringRef path) {
   if (std::error_code error = llvm::sys::fs::create_directories(path)) {
-    llvm::errs() << "wafer-import-model: failed to create directory '" << path
-                 << "': " << error.message() << "\n";
+    llvm::errs() << "wafer-compile-stablehlo: failed to create directory '"
+                 << path << "': " << error.message() << "\n";
     return true;
   }
   return false;
@@ -149,8 +152,8 @@ bool createDirectory(llvm::StringRef path) {
 
 bool copyFile(llvm::StringRef from, llvm::StringRef to) {
   if (std::error_code error = llvm::sys::fs::copy_file(from, to)) {
-    llvm::errs() << "wafer-import-model: failed to copy '" << from << "' to '"
-                 << to << "': " << error.message() << "\n";
+    llvm::errs() << "wafer-compile-stablehlo: failed to copy '" << from
+                 << "' to '" << to << "': " << error.message() << "\n";
     return true;
   }
   return false;
@@ -167,8 +170,8 @@ bool copyDirectoryIfPresent(llvm::StringRef from, llvm::StringRef to) {
   for (llvm::sys::fs::recursive_directory_iterator it(from, error), end;
        it != end; it.increment(error)) {
     if (error) {
-      llvm::errs() << "wafer-import-model: failed to walk directory '" << from
-                   << "': " << error.message() << "\n";
+      llvm::errs() << "wafer-compile-stablehlo: failed to walk directory '"
+                   << from << "': " << error.message() << "\n";
       return true;
     }
 
@@ -183,7 +186,7 @@ bool copyDirectoryIfPresent(llvm::StringRef from, llvm::StringRef to) {
 
     llvm::sys::fs::file_status status;
     if (std::error_code statusError = llvm::sys::fs::status(source, status)) {
-      llvm::errs() << "wafer-import-model: failed to stat '" << source
+      llvm::errs() << "wafer-compile-stablehlo: failed to stat '" << source
                    << "': " << statusError.message() << "\n";
       return true;
     }
@@ -203,27 +206,28 @@ bool copyDirectoryIfPresent(llvm::StringRef from, llvm::StringRef to) {
   }
 
   if (error) {
-    llvm::errs() << "wafer-import-model: failed to walk directory '" << from
-                 << "': " << error.message() << "\n";
+    llvm::errs() << "wafer-compile-stablehlo: failed to walk directory '"
+                 << from << "': " << error.message() << "\n";
     return true;
   }
   return false;
 }
 
-bool writePropagatedBundle(mlir::ModuleOp module, llvm::StringRef inputBundle,
-                           llvm::StringRef stagedBundle) {
+bool writePropagatedProgramDir(mlir::ModuleOp module,
+                               llvm::StringRef inputProgramDir,
+                               llvm::StringRef stagedProgramDir) {
   std::string stagedFunctions =
-      bundleFile(stagedBundle, {llvm::StringRef("functions")});
+      programFile(stagedProgramDir, {llvm::StringRef("functions")});
   if (createDirectory(stagedFunctions))
     return true;
 
   std::string stagedMlir =
-      bundleFile(stagedBundle, {llvm::StringRef("functions"),
-                                llvm::StringRef("forward.mlir")});
+      programFile(stagedProgramDir, {llvm::StringRef("functions"),
+                                     llvm::StringRef("forward.mlir")});
   std::error_code error;
   llvm::raw_fd_ostream os(stagedMlir, error, llvm::sys::fs::OF_Text);
   if (error) {
-    llvm::errs() << "wafer-import-model: failed to write '" << stagedMlir
+    llvm::errs() << "wafer-compile-stablehlo: failed to write '" << stagedMlir
                  << "': " << error.message() << "\n";
     return true;
   }
@@ -231,23 +235,24 @@ bool writePropagatedBundle(mlir::ModuleOp module, llvm::StringRef inputBundle,
   os << "\n";
   os.close();
   if (os.has_error()) {
-    llvm::errs() << "wafer-import-model: failed to close '" << stagedMlir
+    llvm::errs() << "wafer-compile-stablehlo: failed to close '" << stagedMlir
                  << "'\n";
     return true;
   }
 
-  if (copyFile(bundleFile(inputBundle, {llvm::StringRef("functions"),
+  if (copyFile(
+          programFile(inputProgramDir, {llvm::StringRef("functions"),
                                         llvm::StringRef("forward.meta")}),
-               bundleFile(stagedBundle, {llvm::StringRef("functions"),
+          programFile(stagedProgramDir, {llvm::StringRef("functions"),
                                          llvm::StringRef("forward.meta")})))
     return true;
 
   return copyDirectoryIfPresent(
-      bundleFile(inputBundle, {llvm::StringRef("data")}),
-      bundleFile(stagedBundle, {llvm::StringRef("data")}));
+      programFile(inputProgramDir, {llvm::StringRef("data")}),
+      programFile(stagedProgramDir, {llvm::StringRef("data")}));
 }
 
-int propagateStableHLOSharding(llvm::StringRef bundlePath,
+int propagateStableHLOSharding(llvm::StringRef programPath,
                                int64_t defaultTileCount) {
   mlir::DialectRegistry registry;
   registerToolDialects(registry);
@@ -256,7 +261,7 @@ int propagateStableHLOSharding(llvm::StringRef bundlePath,
   context.loadAllAvailableDialects();
 
   mlir::OwningOpRef<mlir::ModuleOp> module =
-      parseAndVerifyStableHLOBundle(bundlePath, context);
+      parseAndVerifyStableHLOProgramDir(programPath, context);
   if (!module)
     return 1;
 
@@ -270,17 +275,17 @@ int propagateStableHLOSharding(llvm::StringRef bundlePath,
   return 0;
 }
 
-int partitionStableHLOBundle(llvm::StringRef bundlePath,
-                             llvm::StringRef outputBundlePath,
-                             llvm::StringRef helperPath,
-                             int64_t defaultTileCount) {
-  if (outputBundlePath.empty()) {
-    llvm::errs() << "wafer-import-model: --partition-stablehlo-bundle "
-                    "requires --output-bundle\n";
+int partitionStableHLOProgram(llvm::StringRef programPath,
+                              llvm::StringRef outputProgramDirPath,
+                              llvm::StringRef helperPath,
+                              int64_t defaultTileCount) {
+  if (outputProgramDirPath.empty()) {
+    llvm::errs() << "wafer-compile-stablehlo: --partition-stablehlo-program "
+                    "requires --output-program-dir\n";
     return 1;
   }
   if (helperPath.empty()) {
-    llvm::errs() << "wafer-import-model: --partition-stablehlo-bundle "
+    llvm::errs() << "wafer-compile-stablehlo: --partition-stablehlo-program "
                     "requires --xla-spmd-partitioner-helper\n";
     return 1;
   }
@@ -292,7 +297,7 @@ int partitionStableHLOBundle(llvm::StringRef bundlePath,
   context.loadAllAvailableDialects();
 
   mlir::OwningOpRef<mlir::ModuleOp> module =
-      parseAndVerifyStableHLOBundle(bundlePath, context);
+      parseAndVerifyStableHLOProgramDir(programPath, context);
   if (!module)
     return 1;
 
@@ -301,53 +306,56 @@ int partitionStableHLOBundle(llvm::StringRef bundlePath,
   if (mlir::failed(pm.run(*module)))
     return 1;
 
-  llvm::SmallString<256> tempPrefix(outputBundlePath);
+  llvm::SmallString<256> tempPrefix(outputProgramDirPath);
   llvm::sys::path::remove_filename(tempPrefix);
   if (tempPrefix.empty())
     tempPrefix = ".";
   llvm::sys::path::append(tempPrefix, "wafer-spmd-propagated");
 
-  llvm::SmallString<256> stagedBundle;
+  llvm::SmallString<256> stagedProgramDir;
   if (std::error_code error =
-          llvm::sys::fs::createUniqueDirectory(tempPrefix, stagedBundle)) {
-    llvm::errs() << "wafer-import-model: failed to create temporary "
-                    "propagated bundle: "
+          llvm::sys::fs::createUniqueDirectory(tempPrefix, stagedProgramDir)) {
+    llvm::errs() << "wafer-compile-stablehlo: failed to create temporary "
+                    "propagated program directory: "
                  << error.message() << "\n";
     return 1;
   }
 
-  if (writePropagatedBundle(*module, bundlePath, stagedBundle)) {
-    llvm::sys::fs::remove_directories(stagedBundle);
+  if (writePropagatedProgramDir(*module, programPath, stagedProgramDir)) {
+    llvm::sys::fs::remove_directories(stagedProgramDir);
     return 1;
   }
 
   std::string helper = helperPath.str();
-  std::string staged = stagedBundle.str().str();
-  std::string output = outputBundlePath.str();
+  std::string staged = stagedProgramDir.str().str();
+  std::string output = outputProgramDirPath.str();
   std::string logicalRankCount = std::to_string(defaultTileCount);
   llvm::SmallVector<llvm::StringRef, 8> args = {
-      helper,           "--input-bundle",   staged,    "--output-bundle",
-      output,           "--entry-function", "forward", "--logical-rank-count",
+      helper,           "--input-program-dir",
+      staged,           "--output-program-dir",
+      output,           "--entry-function",
+      "forward",        "--logical-rank-count",
       logicalRankCount,
   };
   int exitCode = llvm::sys::ExecuteAndWait(helper, args);
-  llvm::sys::fs::remove_directories(stagedBundle);
+  llvm::sys::fs::remove_directories(stagedProgramDir);
   if (exitCode != 0) {
-    llvm::errs() << "wafer-import-model: XLA SPMD partition helper failed";
+    llvm::errs() << "wafer-compile-stablehlo: XLA SPMD partition helper failed";
     if (exitCode > 0)
       llvm::errs() << " with exit code " << exitCode;
     llvm::errs() << "\n";
     return 1;
   }
 
-  wafer::frontend::ArtifactVerificationResult result;
+  wafer::frontend::FrontendProgramVerificationResult result;
   mlir::OwningOpRef<mlir::ModuleOp> outputModule =
-      parseAndVerifyStableHLOBundle(outputBundlePath, context, &result);
+      parseAndVerifyStableHLOProgramDir(outputProgramDirPath, context, &result);
   if (!outputModule)
     return 1;
 
-  llvm::outs() << "wafer-import-model: partitioned StableHLO bundle written: "
-               << outputBundlePath << "\n";
+  llvm::outs() << "wafer-compile-stablehlo: partitioned StableHLO program "
+                  "directory written: "
+               << outputProgramDirPath << "\n";
   return 0;
 }
 #endif
@@ -363,107 +371,110 @@ int main(int argc, char **argv) {
   }
 
 #ifndef WAFER_ENABLE_STABLEHLO
-  llvm::errs() << "wafer-import-model: importer dependencies are disabled in "
-                  "this build\n";
+  llvm::errs()
+      << "wafer-compile-stablehlo: StableHLO frontend dependencies are "
+         "disabled in this build\n";
   return 1;
 #else
   std::string verifyFilename;
-  std::string bundlePath;
-  std::string shardingPropagationBundlePath;
-  std::string partitionBundlePath;
-  std::string partitionOutputBundlePath;
+  std::string programPath;
+  std::string shardingPropagationProgramDir;
+  std::string partitionProgramDir;
+  std::string partitionOutputProgramDir;
   std::string spmdPartitionerHelperPath;
   int64_t defaultTileCount = 16;
   for (int i = 1; i < argc; ++i) {
     llvm::StringRef arg(argv[i]);
-    if (arg == "--verify-import-result") {
+    if (arg == "--verify-frontend-program") {
       if (i + 1 >= argc) {
-        llvm::errs() << "wafer-import-model: missing --verify-import-result "
-                        "filename\n";
+        llvm::errs()
+            << "wafer-compile-stablehlo: missing --verify-frontend-program "
+               "filename\n";
         return 1;
       }
       verifyFilename = argv[++i];
       continue;
     }
 
-    constexpr llvm::StringRef verifyPrefix = "--verify-import-result=";
+    constexpr llvm::StringRef verifyPrefix = "--verify-frontend-program=";
     if (arg.starts_with(verifyPrefix)) {
       verifyFilename = arg.drop_front(verifyPrefix.size()).str();
       continue;
     }
 
-    if (arg == "--verify-stablehlo-bundle") {
+    if (arg == "--verify-stablehlo-program") {
       if (i + 1 >= argc) {
-        llvm::errs() << "wafer-import-model: missing "
-                        "--verify-stablehlo-bundle directory\n";
+        llvm::errs() << "wafer-compile-stablehlo: missing "
+                        "--verify-stablehlo-program directory\n";
         return 1;
       }
-      bundlePath = argv[++i];
+      programPath = argv[++i];
       continue;
     }
 
-    constexpr llvm::StringRef bundlePrefix = "--verify-stablehlo-bundle=";
-    if (arg.starts_with(bundlePrefix)) {
-      bundlePath = arg.drop_front(bundlePrefix.size()).str();
+    constexpr llvm::StringRef programPrefix = "--verify-stablehlo-program=";
+    if (arg.starts_with(programPrefix)) {
+      programPath = arg.drop_front(programPrefix.size()).str();
       continue;
     }
 
 #ifdef WAFER_ENABLE_SHARDY
     if (arg == "--propagate-stablehlo-sharding") {
       if (i + 1 >= argc) {
-        llvm::errs() << "wafer-import-model: missing "
+        llvm::errs() << "wafer-compile-stablehlo: missing "
                         "--propagate-stablehlo-sharding directory\n";
         return 1;
       }
-      shardingPropagationBundlePath = argv[++i];
+      shardingPropagationProgramDir = argv[++i];
       continue;
     }
 
     constexpr llvm::StringRef propagateShardingPrefix =
         "--propagate-stablehlo-sharding=";
     if (arg.starts_with(propagateShardingPrefix)) {
-      shardingPropagationBundlePath =
+      shardingPropagationProgramDir =
           arg.drop_front(propagateShardingPrefix.size()).str();
       continue;
     }
 
-    if (arg == "--partition-stablehlo-bundle") {
+    if (arg == "--partition-stablehlo-program") {
       if (i + 1 >= argc) {
-        llvm::errs() << "wafer-import-model: missing "
-                        "--partition-stablehlo-bundle directory\n";
+        llvm::errs() << "wafer-compile-stablehlo: missing "
+                        "--partition-stablehlo-program directory\n";
         return 1;
       }
-      partitionBundlePath = argv[++i];
+      partitionProgramDir = argv[++i];
       continue;
     }
 
-    constexpr llvm::StringRef partitionBundlePrefix =
-        "--partition-stablehlo-bundle=";
-    if (arg.starts_with(partitionBundlePrefix)) {
-      partitionBundlePath = arg.drop_front(partitionBundlePrefix.size()).str();
+    constexpr llvm::StringRef partitionProgramPrefix =
+        "--partition-stablehlo-program=";
+    if (arg.starts_with(partitionProgramPrefix)) {
+      partitionProgramDir = arg.drop_front(partitionProgramPrefix.size()).str();
       continue;
     }
 #endif
 
-    if (arg == "--output-bundle") {
+    if (arg == "--output-program-dir") {
       if (i + 1 >= argc) {
-        llvm::errs() << "wafer-import-model: missing --output-bundle value\n";
+        llvm::errs()
+            << "wafer-compile-stablehlo: missing --output-program-dir value\n";
         return 1;
       }
-      partitionOutputBundlePath = argv[++i];
+      partitionOutputProgramDir = argv[++i];
       continue;
     }
 
-    constexpr llvm::StringRef outputBundlePrefix = "--output-bundle=";
-    if (arg.starts_with(outputBundlePrefix)) {
-      partitionOutputBundlePath =
-          arg.drop_front(outputBundlePrefix.size()).str();
+    constexpr llvm::StringRef outputProgramDirPrefix = "--output-program-dir=";
+    if (arg.starts_with(outputProgramDirPrefix)) {
+      partitionOutputProgramDir =
+          arg.drop_front(outputProgramDirPrefix.size()).str();
       continue;
     }
 
     if (arg == "--xla-spmd-partitioner-helper") {
       if (i + 1 >= argc) {
-        llvm::errs() << "wafer-import-model: missing "
+        llvm::errs() << "wafer-compile-stablehlo: missing "
                         "--xla-spmd-partitioner-helper value\n";
         return 1;
       }
@@ -480,13 +491,13 @@ int main(int argc, char **argv) {
 
     if (arg == "--default-tile-count") {
       if (i + 1 >= argc) {
-        llvm::errs() << "wafer-import-model: missing --default-tile-count "
+        llvm::errs() << "wafer-compile-stablehlo: missing --default-tile-count "
                         "value\n";
         return 1;
       }
       llvm::StringRef value(argv[++i]);
       if (value.getAsInteger(10, defaultTileCount)) {
-        llvm::errs() << "wafer-import-model: invalid --default-tile-count "
+        llvm::errs() << "wafer-compile-stablehlo: invalid --default-tile-count "
                         "value: "
                      << value << "\n";
         return 1;
@@ -498,7 +509,7 @@ int main(int argc, char **argv) {
     if (arg.starts_with(defaultTileCountPrefix)) {
       llvm::StringRef value = arg.drop_front(defaultTileCountPrefix.size());
       if (value.getAsInteger(10, defaultTileCount)) {
-        llvm::errs() << "wafer-import-model: invalid --default-tile-count "
+        llvm::errs() << "wafer-compile-stablehlo: invalid --default-tile-count "
                         "value: "
                      << value << "\n";
         return 1;
@@ -506,7 +517,8 @@ int main(int argc, char **argv) {
       continue;
     }
 
-    llvm::errs() << "wafer-import-model: unknown argument: " << arg << "\n";
+    llvm::errs() << "wafer-compile-stablehlo: unknown argument: " << arg
+                 << "\n";
     printHelp();
     return 1;
   }
@@ -514,32 +526,32 @@ int main(int argc, char **argv) {
   unsigned actionCount = 0;
   if (!verifyFilename.empty())
     ++actionCount;
-  if (!bundlePath.empty())
+  if (!programPath.empty())
     ++actionCount;
-  if (!shardingPropagationBundlePath.empty())
+  if (!shardingPropagationProgramDir.empty())
     ++actionCount;
-  if (!partitionBundlePath.empty())
+  if (!partitionProgramDir.empty())
     ++actionCount;
   if (actionCount > 1) {
-    llvm::errs() << "wafer-import-model: choose exactly one action\n";
+    llvm::errs() << "wafer-compile-stablehlo: choose exactly one action\n";
     printHelp();
     return 1;
   }
 
   if (!verifyFilename.empty())
-    return verifyImportResult(verifyFilename);
-  if (!bundlePath.empty())
-    return verifyStableHLOBundle(bundlePath);
+    return verifyFrontendProgramFile(verifyFilename);
+  if (!programPath.empty())
+    return verifyStableHLOProgramDir(programPath);
 #ifdef WAFER_ENABLE_SHARDY
-  if (!shardingPropagationBundlePath.empty())
-    return propagateStableHLOSharding(shardingPropagationBundlePath,
+  if (!shardingPropagationProgramDir.empty())
+    return propagateStableHLOSharding(shardingPropagationProgramDir,
                                       defaultTileCount);
-  if (!partitionBundlePath.empty())
-    return partitionStableHLOBundle(
-        partitionBundlePath, partitionOutputBundlePath,
+  if (!partitionProgramDir.empty())
+    return partitionStableHLOProgram(
+        partitionProgramDir, partitionOutputProgramDir,
         spmdPartitionerHelperPath, defaultTileCount);
 #endif
-  llvm::errs() << "wafer-import-model: unknown or incomplete arguments\n";
+  llvm::errs() << "wafer-compile-stablehlo: unknown or incomplete arguments\n";
   printHelp();
   return 1;
 #endif

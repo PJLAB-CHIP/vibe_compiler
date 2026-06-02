@@ -1,0 +1,31 @@
+# REQUIRES: stablehlo, pytorch-xla-importer
+
+# RUN: %importer_python %wafer_src_root/test/Tools/Inputs/wafer_pytorch_xla_capture.py --help | FileCheck %s --check-prefix=CAPTURE-HELP
+
+# RUN: rm -rf %t.program
+# RUN: %importer_python %wafer_src_root/test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-reference-program --output-program-dir %t.program
+# RUN: test -f %t.program/functions/forward.mlir
+# RUN: test -f %t.program/functions/forward.meta
+# RUN: test -f %t.program/data/weight
+# RUN: test -f %t.program/data/bias
+# RUN: FileCheck %s --input-file=%t.program/functions/forward.mlir --check-prefix=MLIR
+# RUN: FileCheck %s --input-file=%t.program/functions/forward.meta --check-prefix=META
+# RUN: wafer-compile-stablehlo --verify-stablehlo-program %t.program | FileCheck %s --check-prefix=VERIFY
+
+# MLIR: func.func
+# MLIR: tensor<4096xf32>
+# MLIR: tensor<4096x4096xf32>
+# MLIR: stablehlo
+
+# META: "input_locations":
+# META: "type_": "parameter"
+# META: "name": "bias"
+# META: "type_": "parameter"
+# META: "name": "weight"
+# META: "type_": "input_arg"
+
+# VERIFY: wafer-compile-stablehlo: verified StableHLO program directory parameters: 2
+# VERIFY: wafer-compile-stablehlo: verified StableHLO program
+
+# CAPTURE-HELP: --emit-reference-program
+# CAPTURE-HELP: --emit-sharded-program

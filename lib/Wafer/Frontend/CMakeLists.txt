@@ -1,5 +1,5 @@
 add_mlir_library(WaferFrontend
-  Artifact.cpp
+  Program.cpp
 
   LINK_LIBS PUBLIC
   LLVMSupport

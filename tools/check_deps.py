@@ -44,7 +44,7 @@ STABLEHLO_API_NEEDLES = [
 STABLEHLO_API_ALLOWED_PREFIXES = [
     "include/Wafer/Frontend",
     "lib/Wafer/Transforms/StableHLOToLinalg",
-    "tools/wafer-import-model",
+    "tools/wafer-compile-stablehlo",
 ]
 
 SHARDY_API_NEEDLES = [
@@ -57,7 +57,7 @@ SHARDY_API_ALLOWED_PREFIXES = [
     "include/Wafer/Pipelines",
     "lib/Wafer/Pipelines",
     "lib/Wafer/Transforms/SPMD",
-    "tools/wafer-import-model",
+    "tools/wafer-compile-stablehlo",
     "tools/wafer-opt",
 ]
 
@@ -308,15 +308,15 @@ def check_cmake_target_visibility() -> None:
     ]:
         check_text_contains(REPO_ROOT / "tools" / "wafer-opt" / "CMakeLists.txt", needle)
     check_text_contains(
-        REPO_ROOT / "tools" / "wafer-import-model" / "CMakeLists.txt",
+        REPO_ROOT / "tools" / "wafer-compile-stablehlo" / "CMakeLists.txt",
         "StablehloRegister",
     )
     for needle in [
         "WAFER_ENABLE_SHARDY=1",
-        "target_link_libraries(wafer-import-model PRIVATE ShardySdyRegister)",
+        "target_link_libraries(wafer-compile-stablehlo PRIVATE ShardySdyRegister)",
     ]:
         check_text_contains(
-            REPO_ROOT / "tools" / "wafer-import-model" / "CMakeLists.txt", needle
+            REPO_ROOT / "tools" / "wafer-compile-stablehlo" / "CMakeLists.txt", needle
         )
     pipelines_cmake_path = REPO_ROOT / "lib" / "Wafer" / "Pipelines" / "CMakeLists.txt"
     for needle in [
@@ -344,7 +344,7 @@ def check_dependency_layering() -> None:
         REPO_ROOT / "include" / "Wafer",
         REPO_ROOT / "lib" / "Wafer",
         REPO_ROOT / "tools" / "wafer-opt",
-        REPO_ROOT / "tools" / "wafer-import-model",
+        REPO_ROOT / "tools" / "wafer-compile-stablehlo",
     ]
     compiler_library_roots = [
         REPO_ROOT / "include" / "Wafer",

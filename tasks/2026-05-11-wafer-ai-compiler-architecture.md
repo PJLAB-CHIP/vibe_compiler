@@ -25,7 +25,7 @@
 目标是构建一套面向 Wafer 硬件的 AI compiler/runtime 栈，使上游模型可以通过标准图编译路径运行到
 Wafer 多 tile / 多卡系统上。PyTorch 是重要入口之一，但不是 Wafer 后端的唯一或长期 IR 边界。
 
-主路径选择 verified StableHLO / MLIR artifact、Shardy/SPMD 和 Wafer IR contract，而不是从历史
+主路径选择 verified StableHLO / MLIR program、Shardy/SPMD 和 Wafer IR contract，而不是从历史
 backend、某个 importer 或 runtime wrapper 反推整套架构：
 
 ```text
@@ -61,7 +61,7 @@ Wafer 是基于 MLIR 的编译器。每一层 IR 只携带自己能稳定解释�
 
 | 阶段 | 主体 Dialect / IR | 允许表达 | 不应提前表达 |
 | --- | --- | --- | --- |
-| Frontend | StableHLO, func, tensor, arith | 模型语义、shape、dtype、constant/weight artifact | tile id、SPM、layout materialization、runtime launch |
+| Frontend | StableHLO, func, tensor, arith | 模型语义、shape、dtype、constant/weight program | tile id、SPM、layout materialization、runtime launch |
 | Sharding | StableHLO + Shardy/SDY | global sharding、logical mesh、collective 语义 | physical tile placement、DTE protocol、SPM buffer |
 | Local compute normalization | Linalg, Tensor, SCF, Arith, Math, Wafer LinalgExt-style tensor collective ops | structured loop、indexing map、tile slice、producer/consumer、DPS/in-place、transformer block composite pattern、post-SPMD tensor collective semantics | SPM address、`Cx/NCx` storage、worker id、packet field、`wafer.comm` / DTE protocol |
 | Group scheduling | `wafer.group` | fusion boundary、traversal schedule、tiled tensor IR、abstract resource demand | raw register field、DTE node id、physical SPM slot、C ABI call |
@@ -97,7 +97,7 @@ lowering 选择 `ChannelNorm`、`DechannelNorm`、`GatherScatter`、TDMA 或 wra
 
 constant 语义同样分层：
 
-- Frontend / StableHLO 阶段允许 `stablehlo.constant` 或 exporter-native bundle 中的 weight data。
+- Frontend / StableHLO 阶段允许 `stablehlo.constant` 或 exporter-native program directory 中的 weight data。
 - 进入 Linalg / Wafer planning 前，常量统一成 `arith.constant` 或其它 `ConstantLike` tensor op；
   大 tensor 可以使用 resource-backed elements attr。
 - Wafer 不定义私有 tensor constant op。constant 不是 group external input，但 tile execution 中仍要
@@ -112,7 +112,7 @@ constant 语义同样分层：
 
 ## 3. 阶段和 Dialect Ownership
 
-### 3.1 Frontend Artifact Stage
+### 3.1 Frontend Program Stage
 
 主体 IR / Dialect：
 
@@ -134,7 +134,7 @@ source model / exported program / pre-exported StableHLO
 
 - 保留模型语义、dtype、rank、shape 和有限动态 shape 信息。
 - 保留或导入用户/框架侧 sharding 标记。
-- 决定 weight 表达方式：StableHLO constant 或 exporter-native StableHLO bundle metadata/data。
+- 决定 weight 表达方式：StableHLO constant 或 exporter-native StableHLO program directory metadata/data。
 - freeze weights 的逻辑保持硬件无关，命名和实现不绑定 Wafer。
 
 不负责：
@@ -145,19 +145,19 @@ source model / exported program / pre-exported StableHLO
 
 V0 策略：
 
-- 稳定 compiler 入口是 verified StableHLO / MLIR artifact。
-- 主链路完成证明优先来自真实 framework/exporter 产生的实际图 artifact，例如 PyTorch/XLA、
-  JAX 或其它 exporter 导出的 StableHLO / MLIR。手写 StableHLO 只保留为 pre-exported artifact
+- 稳定 compiler 入口是 verified StableHLO / MLIR program。
+- 主链路完成证明优先来自真实 framework/exporter 产生的实际图 program，例如 PyTorch/XLA、
+  JAX 或其它 exporter 导出的 StableHLO / MLIR。手写 StableHLO 只保留为 pre-exported program
   fixture、verifier negative test 或局部 lowering bring-up，不能证明 framework-specific capture 已完成。
-- 具体 importer API 不是 Wafer 后端合同；后端只消费 verified artifact 和已 materialize 到 IR 的
+- 具体 importer API 不是 Wafer 后端合同；后端只消费 verified program 和已 materialize 到 IR 的
   importer facts。
 - v0 先接受静态或有限动态 shape；任意 PyTorch eager 动态行为不是 V0 目标。
-- 支持范围由 exporter artifact 的合法语义、Wafer 硬件能力和当前 IR contract 决定；当前某个后续
+- 支持范围由 exporter program 的合法语义、Wafer 硬件能力和当前 IR contract 决定；当前某个后续
   lowering / placement / runtime pass 尚未实现，不能反向成为 frontend、SPMD 或 planner 的不支持
   理由。若硬件可表达但 IR/lowering 未覆盖，必须补 IR contract 或下游恢复任务。
 
-Frontend artifact 的模型导入、第三方依赖组织、constant/weight、sharding annotation 和验证合同见
-`tasks/2026-05-25-wafer-frontend-stablehlo-artifact-design.md`。
+Frontend program 的模型导入、第三方依赖组织、constant/weight、sharding annotation 和验证合同见
+`tasks/2026-05-25-wafer-frontend-stablehlo-program-design.md`。
 
 ### 3.2 Sharding and SPMD Stage
 
@@ -208,7 +208,7 @@ V0 collective 语义：
 - `all_reduce`
 
 `all_to_all` 的高性能 lowering 不作为 V0 核心目标；如果 Shardy/SPMD 产出合法 `all_to_all`
-语义，SPMD/per-rank artifact 仍必须保留 split / exchange / concat、rank group 和 shard relation。
+语义，SPMD/per-rank program 仍必须保留 split / exchange / concat、rank group 和 shard relation。
 后续 communication lowering 可先用 unicast p2p schedule 组合实现。
 
 Shardy / SPMD 的 logical mesh、partition 和 collective 合同见
@@ -577,9 +577,9 @@ WaferRuntimeAdapter cluster launch
 
 范围：
 
-- 主路径从 P2.F1/P2.S1/P2.S2 产生的 verified frontend / per-rank artifact 开始。
+- 主路径从 P2.F1/P2.S1/P2.S2 产生的 verified frontend / per-rank program 开始。
 - 手写 partitioned StableHLO 只作为 collective lowering 的局部 verifier / pattern fixture；它不能替代
-  importer/Shardy 自动导出的 artifact chain。
+  importer/Shardy 自动导出的 program chain。
 
 验收标准：
 
@@ -638,7 +638,7 @@ WaferRuntimeAdapter cluster launch
 
 | 范围 | 阶段内验证 |
 | --- | --- |
-| Frontend / StableHLO artifact | artifact parse/roundtrip、shape/dtype/sharding 保留、exporter bundle weight metadata 一致性 |
+| Frontend / StableHLO program | program parse/roundtrip、shape/dtype/sharding 保留、exporter program directory weight metadata 一致性 |
 | Shardy / SPMD | sharding import/propagation、partition 后 collective 语义、logical mesh roundtrip |
 | Placement | logical-to-physical tile mapping、good-tile/PG metadata、slice metadata verifier |
 | Local compute normalization | StableHLO dot/broadcast/reduce/shape op 到 structured tensor IR，softmax/norm/RoPE staged form |
@@ -662,7 +662,7 @@ PMU microbench 不应成为 single-tile compute 前置条件。
 
 - 任意 PyTorch 模型无约束 seamless 运行。
 - 复杂 dynamic shape 全覆盖。
-- `all_to_all` 高性能实现；logical artifact 和 p2p 组合实现路径仍应保留。
+- `all_to_all` 高性能实现；logical program 和 p2p 组合实现路径仍应保留。
 - 完整 vLLM/SGLang serving 集成。
 - 自定义 LLVM 后端或真正 ISA intrinsic lowering。
 - 依赖旧 Stream/Score data-plane 作为主通信路径。
@@ -710,7 +710,7 @@ include/Wafer/
 lib/Wafer/
   Frontend/
     ModelImport/
-    Artifact/
+    Program/
     ThirdPartyAdapters/
   IR/
     WaferDialect.cpp
@@ -740,7 +740,7 @@ lib/Wafer/
     WaferToCABI/
 
 tools/
-  wafer-import-model/
+  wafer-compile-stablehlo/
 
 cmake/
   third_party/
@@ -762,15 +762,15 @@ Pass pipeline 建议：
 任何新增主线 stage 或重写现有 stage 前，任务文档必须先写清楚 pipeline contract，而不是只描述
 某个 pass / tool 的局部功能：
 
-- upstream artifact / IR。
+- upstream program / IR。
 - current stage responsibility。
-- output artifact / IR。
+- output program / IR。
 - downstream consumer。
 - user-level driver / named pipeline。
 - explicit non-goals。
 - completion gate。
 
-pass 名、tool flag、test 名和任务号只作为实现索引；架构边界仍由 IR / artifact contract 和
+pass 名、tool flag、test 名和任务号只作为实现索引；架构边界仍由 IR / program contract 和
 verifier/lowering 责任定义。主线 gate 必须通过 Wafer named pipeline 或用户级 driver mode
 重放已完成上游链路，不能依赖 integration test 手动拼 pass、Python helper 或手写 fixture 来表示
 长期 compile flow。
@@ -779,17 +779,17 @@ verifier/lowering 责任定义。主线 gate 必须通过 Wafer named pipeline �
 注册按 IR 边界命名且真实成立的 pipeline：`wafer-propagate-stablehlo-sharding` 和
 `wafer-lower-stablehlo-to-linalg`。
 `wafer-propagate-stablehlo-sharding` 组合 Wafer default input seed 和 Shardy propagation，但不冒充
-XLA SPMD partitioner；partitioned / replicated-local StableHLO bundle 必须由 P2.S2 的 Wafer-owned
-SPMD partition artifact stage 消费 sharding propagation stage 输出的 StableHLO/SDY IR 后产出。
-`wafer-import-model --propagate-stablehlo-sharding` 是 sharding propagation 阶段检查入口，对
-pre-SPMD bundle 运行 Shardy propagation；`wafer-import-model --partition-stablehlo-bundle` 是
-P2.S2 partition artifact 入口。`wafer-lower-linalg-to-cabi`、`wafer-lower-stablehlo-to-cabi`、
-`wafer-lower-tile-communication-to-cabi` 和 `wafer-import-model --compile-stablehlo-bundle-to-cabi`
+XLA SPMD partitioner；partitioned / replicated-local StableHLO program directory 必须由 P2.S2 的 Wafer-owned
+SPMD partition compiler stage 消费 sharding propagation stage 输出的 StableHLO/SDY IR 后产出。
+`wafer-compile-stablehlo --propagate-stablehlo-sharding` 是 sharding propagation 阶段检查入口，对
+pre-SPMD program directory 运行 Shardy propagation；`wafer-compile-stablehlo --partition-stablehlo-program` 是
+P2.S2 partition program 入口。`wafer-lower-linalg-to-cabi`、`wafer-lower-stablehlo-to-cabi`、
+`wafer-lower-tile-communication-to-cabi` 和 `wafer-compile-stablehlo --compile-stablehlo-program-to-cabi`
 已删除；旧 single-tile/C ABI/ring/SPM/DDR unit/debug pass 链也已删除。`tx8` 只保留为底层硬件/
 依赖事实名，不作为 compiler driver target。下面列表描述长期阶段边界，不是要求用户手动串 pass。
 
 ```text
-ModelImport/FrontendArtifact
+ModelImport/FrontendProgram
   -> StableHLO/Shardy
   -> Shardy propagation / XLA SPMD partitioner
   -> partitioned or replicated-local StableHLO
@@ -861,7 +861,7 @@ V0 先保持统一 `wafer` namespace，降低跨 dialect type/attr 演进成本�
 
 | 范围 | 主文档 | 状态 | 只负责 | 不负责 |
 | --- | --- | --- | --- | --- |
-| Frontend / StableHLO artifact | `tasks/2026-05-25-wafer-frontend-stablehlo-artifact-design.md` | 草案 | model import adapter、输入 artifact、shape/dtype/dynamic shape、exporter bundle weight metadata、sharding 标记、第三方依赖隔离 | SPM、DTE、runtime completion |
+| Frontend / StableHLO program | `tasks/2026-05-25-wafer-frontend-stablehlo-program-design.md` | 草案 | model import adapter、输入 program、shape/dtype/dynamic shape、exporter program directory weight metadata、sharding 标记、第三方依赖隔离 | SPM、DTE、runtime completion |
 | Shardy / SPMD | `tasks/2026-05-25-wafer-shardy-spmd-design.md` | 草案 | logical mesh、sharding propagation、partition 后 collective 语义 | physical tile id、DTE algorithm、SPM buffer |
 | Placement | `tasks/2026-05-25-wafer-placement-design.md` | 草案 | logical mesh 到 card/tile cluster、good-tile/PG metadata、slice metadata | Cx/NCx、packet queue、C ABI |
 | Local compute normalization | `tasks/2026-05-25-wafer-local-compute-normalization-design.md` | 草案 | partitioned StableHLO 到 structured tensor IR、dot/broadcast/reduce/softmax/norm/RoPE staged form、StableHLO collective 到 Wafer LinalgExt-style tensor collective handoff | group scheduling、physical layout、SPM/DDR、`wafer.comm`、C ABI |
@@ -883,7 +883,7 @@ V0 先保持统一 `wafer` namespace，降低跨 dialect type/attr 演进成本�
 Transformer block 落地时的文档阅读顺序是：
 
 ```text
-Frontend artifact
+Frontend program
   -> Shardy / SPMD
   -> Placement
   -> Local compute normalization + tensor collective handoff

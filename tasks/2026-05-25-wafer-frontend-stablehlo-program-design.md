@@ -1,11 +1,11 @@
-# Wafer Frontend and StableHLO Artifact Design
+# Wafer Frontend and StableHLO Program Design
 
 日期：2026-05-25
 
 状态：设计草案；2026-05-25 独立边界收口；2026-05-27 明确 P2.F1 capture 和跨阶段消费链
 
-本文定义 Wafer compiler 的 model import 和 frontend artifact 边界。它只负责把上游模型表达成
-可验证的 StableHLO bundle / MLIR 输入，并保留 exporter 自带的 graph、meta 和 weight data
+本文定义 Wafer compiler 的 model import 和 frontend program 边界。它只负责把上游模型表达成
+可验证的 StableHLO program directory / MLIR 输入，并保留 exporter 自带的 graph、meta 和 weight data
 关系。它不表达 Wafer tile、SPM、DDR allocation、layout materialization、DTE、runtime package
 或 launch completion。
 
@@ -27,7 +27,7 @@
 - 保留或规范化上游 sharding annotation，使 Shardy / SDY 阶段可以接管。
 - 统一 constant / weight 的 frontend 表达，使后续 Linalg / Wafer planning 只消费
   `arith.constant` 或其它 `ConstantLike` tensor value。
-- 在 frontend 边界发现 artifact 错误，而不是让后端用名字或 runtime fallback 猜测。
+- 在 frontend 边界发现 program 错误，而不是让后端用名字或 runtime fallback 猜测。
 - 管理 LLVM / MLIR / StableHLO / Shardy / importer / runtime headers 这类第三方工程依赖的
   adapter 边界和版本兼容性。
 
@@ -47,7 +47,7 @@
 ```text
 source model / exported program / pre-exported StableHLO
   -> frontend importer adapter
-  -> exporter-native StableHLO bundle or MLIR module
+  -> exporter-native StableHLO program directory or MLIR module
 ```
 
 输出：
@@ -59,39 +59,39 @@ StableHLO + func + tensor + arith module
   + ConstantLike tensor values or resource-backed constant values
 ```
 
-PyTorch/XLA 路线的 frontend artifact 只保留一套 exporter-native 事实源：
+PyTorch/XLA 路线的 frontend program 只保留一套 exporter-native 事实源：
 
 | 信息 | 归属 | import 边界责任 |
 | --- | --- | --- |
 | `functions/forward.mlir` | StableHLO IR 主体 | parse / verify 后进入 compiler pipeline |
 | `functions/forward.meta` | PyTorch/XLA 导出的 metadata | 校验 function arg/result 与 parameter / user input / shape / dtype 的关系 |
-| `functions/forward.parameter_shards.json` | post-SPMD parameter shard binding | 仅在 partitioned bundle 中存在；校验 local function parameter 与 rank-local shard payload 的关系 |
-| `functions/forward.bytecode` | StableHLO bytecode | 与 bundle 一起保留，当前不作为 Wafer IR 合同 |
-| `data/<parameter>` | PyTorch/XLA 导出的 pre-SPMD weight data | 非 partitioned bundle 的 import 边界检查 NPY stream、shape 和 dtype，不提交进 git fixture |
-| `parameter_shards/<parameter>/rank_XXXXX.npy` | post-SPMD rank-local weight shard payload | partitioned bundle 的参数 payload；由 P2.S2 SPMD partition artifact stage 生成，不从 strategy 名或文件名推断 |
+| `functions/forward.parameter_shards.json` | post-SPMD parameter shard binding | 仅在 partitioned program directory 中存在；校验 local function parameter 与 rank-local shard payload 的关系 |
+| `functions/forward.bytecode` | StableHLO bytecode | 与 program directory 一起保留，当前不作为 Wafer IR 合同 |
+| `data/<parameter>` | PyTorch/XLA 导出的 pre-SPMD weight data | 非 partitioned program directory 的 import 边界检查 NPY stream、shape 和 dtype，不提交进 git fixture |
+| `parameter_shards/<parameter>/rank_XXXXX.npy` | post-SPMD rank-local weight shard payload | partitioned program directory 的参数 payload；由 P2.S2 SPMD partition compiler stage 生成，不从 strategy 名或文件名推断 |
 
 除本节定义的 post-SPMD parameter shard manifest 外，不要为同一件事再生成 Wafer 私有伴随 JSON /
 compile JSON。`forward.meta` 是 function boundary
 事实源；`forward.parameter_shards.json` 只承接 post-SPMD 后 local parameter argument 到
 rank-local shard payload 的绑定关系。offsets、sizes、strides、replica id 和 payload 文件必须来自
 XLA sharding / partitioner 暴露的 shard facts，不能由 Wafer 从 `partition_spec`、strategy 名或
-parameter 名手算。后续 compiler pass 不能直接读取 bundle metadata，而应消费 importer
+parameter 名手算。后续 compiler pass 不能直接读取 program directory metadata，而应消费 importer
 materialize 到 MLIR IR 的显式事实。metadata 也不描述 Wafer physical layout、buffer object pool、
 DDR address 或 package path。
 
 ### 2.1 模型导入合同
 
-Wafer 后端的稳定入口是 verified StableHLO / MLIR artifact，不是某个前端框架 API。Model import
+Wafer 后端的稳定入口是 verified StableHLO / MLIR program，不是某个前端框架 API。Model import
 层可以支持 PyTorch、JAX、pre-exported StableHLO 或其它 exporter，但这些路径都必须收敛成同一类
-artifact。P2.F1 之后，主链路完成证明应来自真实 framework/exporter 产生的实际图 artifact；手写
+program。P2.F1 之后，主链路完成证明应来自真实 framework/exporter 产生的实际图 program；手写
 StableHLO 只作为 pre-exported fixture、verifier negative test 或局部 lowering 测试，不证明
 framework-specific capture 已完成：
 
 ```text
 model source
   -> importer-specific capture/export
-  -> StableHLO / MLIR artifact
-  -> Wafer frontend artifact verifier
+  -> StableHLO / MLIR program
+  -> Wafer frontend program verifier
 ```
 
 importer 可以返回工程层面的 import result，例如：
@@ -116,14 +116,14 @@ Model import 必须拒绝或显式诊断：
 
 #### 2.1.1 P2.F1 Framework Capture Adapter Contract
 
-P2.F1 在 R3 之前完成，原因是后续 group / tile / resource 链路必须消费真实 frontend artifact
+P2.F1 在 R3 之前完成，原因是后续 group / tile / resource 链路必须消费真实 frontend program
 来源，而不是继续围绕手写 MLIR fixture 自洽。P2.F1 的产物是工具层三件套，不是新的 Wafer IR：
 
 ```text
 framework model / exported program
   -> framework-specific capture adapter
-  -> PyTorch/XLA StableHLO bundle
-  -> bundle MLIR + meta verifier
+  -> PyTorch/XLA StableHLO program directory
+  -> program directory MLIR + meta verifier
   -> WaferFrontend verifier
 ```
 
@@ -143,28 +143,28 @@ matcher、手写 StableHLO 文本 emitter 或 pre-exported fixture 冒充 PyTorc
 - dynamic shape 必须产出可验证 bounded policy。V0 可以继续使用
   `wafer.frontend.dynamic_bounds`，也可以来自 exporter metadata；进入后端前必须 materialize 成
   verifier 能检查的 function boundary fact。
-- weight / constant 必须来自 exporter bundle metadata / data，并在进入后端前 materialize 成明确的
-  IR 事实或 `ConstantLike` value。PyTorch/XLA parameter 名只用于在 bundle data 目录中定位 exporter
+- weight / constant 必须来自 exporter program directory metadata / data，并在进入后端前 materialize 成明确的
+  IR 事实或 `ConstantLike` value。PyTorch/XLA parameter 名只用于在 program directory data 目录中定位 exporter
   自己保存的文件，不能成为后端 lowering 分支条件。
 - sharding annotation 必须保留为 StableHLO / SDY 可解释结构。adapter 不能把 sharding 提前改写成
   physical card/tile id。
 
 验证时，framework adapter 最小验证 必须把真实 adapter 产物继续交给
-`wafer-import-model --verify-stablehlo-bundle`。手写 MLIR 仍可作为 verifier unit test，但
+`wafer-compile-stablehlo --verify-stablehlo-program`。手写 MLIR 仍可作为 verifier unit test，但
 不能单独作为 P2.F1 完成证明。若 `third_party/pytorch-xla` 源码编译/安装出的 runtime 不可
 import，P2.F1 不得标记为完成；测试可以保留依赖隔离或 contract 级覆盖，但主线验收仍必须跑通真实
-PyTorch/XLA adapter -> StableHLO bundle -> bundle metadata verifier -> WaferFrontend verifier 链。
+PyTorch/XLA adapter -> StableHLO program directory -> program directory metadata verifier -> WaferFrontend verifier 链。
 
 2026-05-27 修正实现记录：P2.F1 已完成。`tools/build_pytorch_xla_runtime.py` 从
 `third_party/pytorch-xla` 源码安装 `torch_xla` 2.5.0，并通过 Bazel override 复用本仓库
 `third_party/xla`、`third_party/llvm-project` 和 importer Python 的 `torch` headers/libs；
 没有使用 prebuilt `torch_xla` wheel。`test/Tools/Inputs/wafer_pytorch_xla_capture.py` 是 test
-artifact generator，用于产出 PyTorch/XLA StableHLO bundle；lit 最小验证 将该 bundle 继续交给
-`wafer-import-model --verify-stablehlo-bundle`。
+program directory generator，用于产出 PyTorch/XLA StableHLO program directory；lit 最小验证 将该 program directory 继续交给
+`wafer-compile-stablehlo --verify-stablehlo-program`。
 
 #### 2.1.2 P2.F1 主链路 Capture Model
 
-P2.F1 的主链路 artifact 使用 4096 规模的静态 matmul + bias + tanh + residual 模型，避免后续
+P2.F1 的主链路 program 使用 4096 规模的静态 matmul + bias + tanh + residual 模型，避免后续
 R3/R5 的 tiling、SPM/DDR demand、resident constant 和 package gate 退化成 trivial case：
 
 ```python
@@ -195,14 +195,14 @@ group、tiling、SPM/DDR resource 和 package manifest 消费真实规模的 sha
 
 约束：
 
-- 4096 主链路 artifact 可以由测试脚本或 adapter 生成，但不能把 64 MiB weight 直接提交进 git
+- 4096 主链路 program 可以由测试脚本或 adapter 生成，但不能把 64 MiB weight 直接提交进 git
   test file。
-- pre-SPMD 大 weight 必须使用 PyTorch/XLA bundle 的 `forward.meta` 和 `data/<parameter>`；partitioned
-  artifact 必须使用 `forward.parameter_shards.json` 和 `parameter_shards/<parameter>/rank_XXXXX.npy`
+- pre-SPMD 大 weight 必须使用 PyTorch/XLA program directory 的 `forward.meta` 和 `data/<parameter>`；partitioned
+  program 必须使用 `forward.parameter_shards.json` 和 `parameter_shards/<parameter>/rank_XXXXX.npy`
   表达 rank-local payload。测试验证 function argument / parameter location / shape / dtype /
   data payload 或 shard payload 的 NPY stream header 与 tensor 边界绑定关系。
 - 小 shape MLIR 仍可用于 graph break、eager fallback、dynamic bound 等快速负例；
-  这些测试不能替代 4096 主链路 artifact 的完成证明。
+  这些测试不能替代 4096 主链路 program 的完成证明。
 
 ### 2.2 第三方工程依赖组织
 
@@ -213,7 +213,7 @@ group、tiling、SPM/DDR resource 和 package manifest 消费真实规模的 sha
 | core compiler deps | LLVM、MLIR | build system、MLIR pass/IR implementation | design contract 中作为 Wafer 语义名词 |
 | input dialect deps | StableHLO、Shardy / SDY | frontend、SPMD、conversion pipeline | Wafer 低层 runtime / packet contract |
 | model importer deps | torch-xla、torch-mlir、Python exporter、OpenXLA exporter | importer adapter、tooling、import tests | backend pass、Wafer dialect verifier |
-| runtime / driver deps | HPGR、KMD/UAPI、legacy Tsm headers | runtime adapter、C ABI / launch layer | frontend artifact、group、layout、SPM planner |
+| runtime / driver deps | HPGR、KMD/UAPI、legacy Tsm headers | runtime adapter、C ABI / launch layer | frontend program、group、layout、SPM planner |
 | test / tooling deps | lit、FileCheck、gtest、Python test utilities | test harness、CI scripts | IR 语义或 package manifest |
 
 工程上建议：
@@ -224,7 +224,7 @@ group、tiling、SPM/DDR resource 和 package manifest 消费真实规模的 sha
   build 配置声明；不要在各个 pass 或工具里散落 include path / library path。
 - `cmake/third_party/` 或等价目录集中声明外部工程、版本检查、dialect registration 和 feature
   toggles；实现代码只依赖目标库，不直接拼路径。
-- `include/Wafer/Frontend` / `lib/Wafer/Frontend` 放 model import adapter 和 artifact verifier；
+- `include/Wafer/Frontend` / `lib/Wafer/Frontend` 放 model import adapter 和 program verifier；
   backend pass 只消费 verified MLIR module，不 include importer-only headers。
 - runtime / driver headers 只进入 runtime adapter、C ABI 和 launch/package 层；frontend 和 tensor
   pipeline 不依赖 runtime headers。
@@ -233,7 +233,7 @@ group、tiling、SPM/DDR resource 和 package manifest 消费真实规模的 sha
 
 LLVM / MLIR / StableHLO / Shardy 的 dialect 使用是 IR 层合同的一部分；具体 C++ API 版本、
 注册函数名、CMake target 名和源码 checkout 路径不是 IR 合同。适配层负责吸收第三方 API 变化，
-artifact verifier 负责保证进入 Wafer pipeline 的 IR 仍满足本文合同。
+program verifier 负责保证进入 Wafer pipeline 的 IR 仍满足本文合同。
 
 ## 3. IR 合同
 
@@ -245,7 +245,7 @@ Frontend function signature 是用户可见语义边界：
 - shape、rank、dtype 必须可从 type 或明确的 shape constraint 推出。
 - dynamic shape 必须有后续阶段可验证的 bounded policy；V0 可以拒绝无法静态界定容量的
   dynamic program。
-- input/output alias 只有在 frontend artifact 明确表达时才进入后续 IR；不能通过名字推断。
+- input/output alias 只有在 frontend program 明确表达时才进入后续 IR；不能通过名字推断。
 
 R2.1 V0 用 function argument/result attr
 `wafer.frontend.dynamic_bounds = [d0, d1, ...]` 表达 bounded dynamic shape。attr rank 必须匹配
@@ -257,7 +257,7 @@ tensor rank，dynamic dimension 的 bound 必须为正，static dimension 的 bo
 常量策略：
 
 - Frontend 可以接收 `stablehlo.constant`。
-- 大 weight 可以作为 StableHLO resource-backed parameter 保留在 exporter bundle 中。
+- 大 weight 可以作为 StableHLO resource-backed parameter 保留在 exporter program directory 中。
 - 进入 Linalg / Wafer planning 前，常量统一成 `arith.constant` 或其它 MLIR `ConstantLike`
   tensor op。
 - Wafer 不定义 `wafer.constant` 或 `constant_ref` 作为普通 tensor 常量的替代。
@@ -275,7 +275,7 @@ Frontend 只保存上游显式 sharding 事实：
 - Shardy / SDY 是 propagation 和 SPMD partition 的 owner。
 - logical mesh name、axis 和 annotation 必须能被 Shardy verifier 解释。
 
-如果 source model / exported artifact 没有 `mark_sharding` 或其它可解释 sharding annotation，
+如果 source model / exported program 没有 `mark_sharding` 或其它可解释 sharding annotation，
 frontend 语义上仍是普通 StableHLO 图。Frontend verifier 不应因此报错，也不应在 frontend
 边界合成一套默认 `sdy.sharding` / `wafer.spmd.*` 描述；是否为了单卡 16 tile 利用率补默认
 sharding seed，属于 P2.S1 SPMD 阶段的默认策略。
@@ -283,13 +283,13 @@ sharding seed，属于 P2.S1 SPMD 阶段的默认策略。
 P2.S1 的真实图 sharding 测试必须通过 framework frontend mark 接口生成这些事实，例如
 PyTorch/XLA 的 `mark_sharding` 或 export 可追踪的等价前端 op。Frontend adapter 不为 sharding
 额外生成 Wafer 私有 JSON、sidecar、`wafer.spmd.*` attr 或名字约定；如果 mark 无法进入
-StableHLO / SDY 可解释 artifact，应诊断为 frontend export / sharding import 问题，而不是在后端
+StableHLO / SDY 可解释 program，应诊断为 frontend export / sharding import 问题，而不是在后端
 补第二套描述。
 
 2026-06-01 P2.S1 当前实现使用 source-built PyTorch/XLA lazy SPMD runtime 的 `mark_sharding`
-生成带 `mhlo.sharding` 的 PyTorch/XLA StableHLO bundle，并交给 Wafer Shardy propagation stage。
-partitioned local body 必须由 P2.S2 的 Wafer-owned SPMD partition artifact stage 取得。Frontend
-verifier 只校验 bundle metadata / data / function boundary，不把 sharding 转成 Wafer 私有协议。
+生成带 `mhlo.sharding` 的 PyTorch/XLA StableHLO program directory，并交给 Wafer Shardy propagation stage。
+partitioned local body 必须由 P2.S2 的 Wafer-owned SPMD partition compiler stage 取得。Frontend
+verifier 只校验 program directory metadata / data / function boundary，不把 sharding 转成 Wafer 私有协议。
 
 Frontend 不把 sharding annotation 转成 physical card/tile id，也不提前选择 DTE route。
 
@@ -300,7 +300,7 @@ signature 和 runtime binding contract，不等于已经分配 DDR。
 
 例外必须显式表达：
 
-- 外部输入输出如果要求非 compact layout，artifact 必须有可验证 metadata。
+- 外部输入输出如果要求非 compact layout，program 必须有可验证 metadata。
 - Weight 可以在后续 compiler pass 中重排 storage，但重排结果不反向改变用户可见 tensor 语义。
 - Runtime staging、host-visible buffer object、H2D/D2H copy 由 launch/runtime 和 DDR 文档负责。
 
@@ -311,10 +311,10 @@ tool / pass 名字不是架构边界，但实现上至少需要以下职责：
 | 职责 | 输入 | 输出 |
 | --- | --- | --- |
 | dependency/config validate | build manifest + dialect registry | importer/backend capability diagnostics |
-| artifact import | exported model / StableHLO | MLIR module + exporter metadata |
-| artifact verify | MLIR module + exporter metadata | diagnostics |
+| program import | exported model / StableHLO | MLIR module + exporter metadata |
+| program verify | MLIR module + exporter metadata | diagnostics |
 | sharding import normalization | old sharding attrs | Shardy-consumable annotations |
-| constant normalization | StableHLO constants / bundle metadata | `arith.constant` / `ConstantLike` |
+| constant normalization | StableHLO constants / program directory metadata | `arith.constant` / `ConstantLike` |
 | frontend cleanup | frontend-only metadata | 后端可消费的 StableHLO module |
 
 这些 pass 不能创建 Wafer low-level op，也不能把 runtime path、buffer object pool、SPM address 或
@@ -332,47 +332,47 @@ Frontend 应在这些场景直接报错：
 - exporter metadata 中的 shape、dtype 或 parameter data payload size 与 IR value 不一致。
 - dynamic shape 没有 V0 可接受的 bound。
 - sharding annotation 无法被 Shardy import。
-- artifact 依赖 TXDA eager CPU fallback 才能运行。
-- artifact metadata 只有名字关系，没有 type / shape / resource key 可验证关系。
-- LLVM / MLIR / StableHLO / Shardy 版本或 dialect registration 不满足 artifact verifier 需要的
+- program 依赖 TXDA eager CPU fallback 才能运行。
+- program metadata 只有名字关系，没有 type / shape / resource key 可验证关系。
+- LLVM / MLIR / StableHLO / Shardy 版本或 dialect registration 不满足 program verifier 需要的
   最小能力。
 
 `docs/tx8-deps-reverse-engineering/txda-pytorch-runtime-wheel-analysis.md` 中的 TXDA
-PrivateUse1 eager path 可以作为生态事实，但不能作为 compiler artifact correctness path。测试
+PrivateUse1 eager path 可以作为生态事实，但不能作为 compiler program correctness path。测试
 需要避免 silent CPU fallback 掩盖 frontend import 或 backend coverage 缺口。
 
 ## 6. 验证
 
 V0 验证项：
 
-- model import 最小验证：至少一个真实 framework/exporter 静态图能导出到 StableHLO / MLIR artifact，
+- model import 最小验证：至少一个真实 framework/exporter 静态图能导出到 StableHLO / MLIR program，
   并且 graph break / fallback 会被诊断。
 - StableHLO parse / printer roundtrip。
 - function signature 的 shape、rank、dtype、dynamic bound 检查。
-- `stablehlo.constant` / exporter bundle metadata 到 `arith.constant` / `ConstantLike` 的 normalization 检查。
+- `stablehlo.constant` / exporter program directory metadata 到 `arith.constant` / `ConstantLike` 的 normalization 检查。
 - sharding annotation import 后仍能被 Shardy verifier 接受。
 - dependency configuration test：LLVM / MLIR / StableHLO / Shardy dialect 能显式注册；可选 importer
   关闭时后端 textual tests 仍能运行。
 - `rg` / FileCheck 确认 frontend 输出中没有 Wafer SPM、DDR buffer object、DTE、packet、runtime launch
   语义。
 
-Frontend 验证只证明 artifact 可进入 compiler pipeline，不证明 tile planning、layout、SPM、
+Frontend 验证只证明 program 可进入 compiler pipeline，不证明 tile planning、layout、SPM、
 runtime package 或板端执行正确。
 
 ### 6.1 跨阶段消费链
 
-P2.F1 之后的验证不能停在 artifact dump。后续主线 gate 必须逐步消费同一条 artifact chain：
+P2.F1 之后的验证不能停在 program dump。后续主线 gate 必须逐步消费同一条 program chain：
 
 ```text
-framework capture artifact
+framework capture program
   -> frontend verifier
   -> if user sharding seed exists:
        Shardy propagation / SPMD partitioner
-       -> partitioned StableHLO / per-rank artifact verifier
+       -> partitioned StableHLO / per-rank program verifier
      else:
        P2.S1 default input sharding seed
        -> Shardy propagation / SPMD partitioner
-       -> partitioned or replicated-local StableHLO / per-rank artifact verifier
+       -> partitioned or replicated-local StableHLO / per-rank program verifier
   -> StableHLO / local compute normalization
   -> tensor collective normalization if collectives exist
   -> wafer.group candidate
@@ -381,9 +381,9 @@ framework capture artifact
 
 每层可以保留手写 MLIR 做 verifier negative test，但完成证明必须说明当前任务边界消费、验证或
 导出了上游产物中的哪些事实。若某个测试只 dump 或 FileCheck 当前层输出，而当前层 verifier /
-lowering / artifact writer 没有使用这些字段，它只能证明局部工具可用，不能证明主链路完成。
+lowering / program writer 没有使用这些字段，它只能证明局部工具可用，不能证明主链路完成。
 
-P2.F1 之后的每个相关任务都要把这条 chain 继续向下延伸：任务完成时必须有一条从真实图 artifact
+P2.F1 之后的每个相关任务都要把这条 chain 继续向下延伸：任务完成时必须有一条从真实图 program
 出发的端到端 gate，重放已完成上游阶段，并证明本任务新增语义在本任务边界可验证、可导出或被
-直接消费。手写 artifact、局部 pattern test 和显式 manifest tool-unit fixture 只能作为补充覆盖。后续 stage 当前
-未实现时，应记录为恢复任务或补 IR contract，不能反向要求 frontend/SPMD artifact 避开该语义。
+直接消费。手写 program、局部 pattern test 和显式 manifest tool-unit fixture 只能作为补充覆盖。后续 stage 当前
+未实现时，应记录为恢复任务或补 IR contract，不能反向要求 frontend/SPMD program 避开该语义。

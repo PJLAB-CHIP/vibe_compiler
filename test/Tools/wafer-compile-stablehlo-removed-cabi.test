@@ -1,0 +1,10 @@
+# REQUIRES: stablehlo
+
+# RUN: rm -rf %t.compile.program && mkdir -p %t.compile.program/functions
+# RUN: printf '%b' 'module {\n  func.func @main(%%lhs: tensor<4x8xf16>, %%rhs: tensor<8x16xf16>) -> tensor<4x16xf16> {\n    %%0 = "stablehlo.dot_general"(%%lhs, %%rhs) {\n      dot_dimension_numbers = #stablehlo.dot<lhs_contracting_dimensions = [1], rhs_contracting_dimensions = [0]>,\n      precision_config = [#stablehlo<precision DEFAULT>, #stablehlo<precision DEFAULT>]\n    } : (tensor<4x8xf16>, tensor<8x16xf16>) -> tensor<4x16xf16>\n    return %%0 : tensor<4x16xf16>\n  }\n}\n' > %t.compile.program/functions/forward.mlir
+# RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[4,8],"dtype":"float16","dynamic_dims":[]},{"shape":[8,16],"dtype":"float16","dynamic_dims":[]}],"output_signature":[{"shape":[4,16],"dtype":"float16","dynamic_dims":[]}],"input_locations":[{"type_":"input_arg","position":0,"name":"lhs"},{"type_":"input_arg","position":1,"name":"rhs"}],"unused_inputs":[]}\n' > %t.compile.program/functions/forward.meta
+# RUN: wafer-compile-stablehlo --help | FileCheck %s --check-prefix=HELP
+# RUN: not wafer-compile-stablehlo --compile-stablehlo-program-to-cabi %t.compile.program --target=wafer 2>&1 | FileCheck %s --check-prefix=NO-COMPILE
+
+# HELP-NOT: --compile-stablehlo-program-to-cabi
+# NO-COMPILE: wafer-compile-stablehlo: unknown argument: --compile-stablehlo-program-to-cabi

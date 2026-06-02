@@ -1,0 +1,86 @@
+# REQUIRES: stablehlo
+
+# RUN: wafer-compile-stablehlo --help | FileCheck %s --check-prefix=HELP
+# RUN: printf '%b' 'module {\n  func.func @frontend_verifier_smoke(%%arg0: tensor<2x4xf32>, %%arg1: tensor<2x4xf32>) -> tensor<2x4xf32> {\n    %%0 = stablehlo.add %%arg0, %%arg1 : tensor<2x4xf32>\n    return %%0 : tensor<2x4xf32>\n  }\n}\n' > %t.verify.mlir
+# RUN: wafer-compile-stablehlo --verify-frontend-program %t.verify.mlir | FileCheck %s --check-prefix=VERIFY
+
+# RUN: printf '%b' 'module attributes {"wafer.import.graph_break" = "python control flow escaped capture"} {}\n' > %t.graph-break.mlir
+# RUN: not wafer-compile-stablehlo --verify-frontend-program %t.graph-break.mlir 2>&1 | FileCheck %s --check-prefix=GRAPH
+
+# RUN: printf '%b' 'module attributes {"wafer.import.eager_fallback" = "aten fallback remained in capture"} {}\n' > %t.eager-fallback.mlir
+# RUN: not wafer-compile-stablehlo --verify-frontend-program %t.eager-fallback.mlir 2>&1 | FileCheck %s --check-prefix=EAGER
+
+# RUN: printf '%b' 'module {\n  func.func @unbounded_dynamic(%%arg0: tensor<?x4xf32>) -> tensor<?x4xf32> {\n    return %%arg0 : tensor<?x4xf32>\n  }\n}\n' > %t.dynamic.mlir
+# RUN: not wafer-compile-stablehlo --verify-frontend-program %t.dynamic.mlir 2>&1 | FileCheck %s --check-prefix=DYNAMIC
+
+# RUN: printf '%b' 'module {\n  func.func @bounded_dynamic(%%arg0: tensor<?x4xf32> {wafer.frontend.dynamic_bounds = [8, 4]}) -> (tensor<?x4xf32> {wafer.frontend.dynamic_bounds = [8, 4]}) {\n    return %%arg0 : tensor<?x4xf32>\n  }\n}\n' > %t.bounded-dynamic.mlir
+# RUN: wafer-compile-stablehlo --verify-frontend-program %t.bounded-dynamic.mlir | FileCheck %s --check-prefix=VERIFY
+
+# RUN: printf '%b' 'module {\n  func.func @bad_dynamic_bound(%%arg0: tensor<?x4xf32> {wafer.frontend.dynamic_bounds = [0, 4]}) -> tensor<?x4xf32> {\n    return %%arg0 : tensor<?x4xf32>\n  }\n}\n' > %t.bad-dynamic-bound.mlir
+# RUN: not wafer-compile-stablehlo --verify-frontend-program %t.bad-dynamic-bound.mlir 2>&1 | FileCheck %s --check-prefix=BAD-BOUND
+
+# RUN: rm -rf %t.program && mkdir -p %t.program/functions %t.program/data
+# RUN: printf '%b' 'module {\n  func.func @main(%%arg0: tensor<2x4xf32>) -> tensor<2x4xf32> {\n    return %%arg0 : tensor<2x4xf32>\n  }\n}\n' > %t.program/functions/forward.mlir
+# RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[2,4],"dtype":"float32","dynamic_dims":[]}],"output_signature":[{"shape":[2,4],"dtype":"float32","dynamic_dims":[]}],"input_locations":[{"type_":"parameter","position":-1,"name":"weight"}],"unused_inputs":[]}\n' > %t.program/functions/forward.meta
+# RUN: %python -c 'import numpy as np; from pathlib import Path; p = Path("%t.program/data/weight"); f = p.open("wb"); np.save(f, np.zeros((2, 4), dtype=np.float32)); f.close()'
+# RUN: wafer-compile-stablehlo --verify-stablehlo-program %t.program | FileCheck %s --check-prefix=PROGRAM
+
+# RUN: rm -rf %t.shards.program && mkdir -p %t.shards.program/functions %t.shards.program/parameter_shards/weight
+# RUN: printf '%b' 'module attributes {"mhlo.spmd_parameters_shardings" = ""} {\n  func.func @main(%%arg0: tensor<1x4xf32>) -> tensor<1x4xf32> {\n    return %%arg0 : tensor<1x4xf32>\n  }\n}\n' > %t.shards.program/functions/forward.mlir
+# RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[1,4],"dtype":"float32","dynamic_dims":[]}],"output_signature":[{"shape":[1,4],"dtype":"float32","dynamic_dims":[]}],"input_locations":[{"type_":"parameter","position":-1,"name":"weight"}],"unused_inputs":[]}\n' > %t.shards.program/functions/forward.meta
+# RUN: printf '%b' '{"parameter_shards_version":2,"function":"forward","logical_rank_count":2,"parameters":[{"argument_index":0,"name":"weight","global_shape":[2,4],"local_shape":[1,4],"dtype":"float32","shards":[{"rank":0,"replica_id":0,"file":"parameter_shards/weight/rank_00000.npy","offsets":[0,0],"sizes":[1,4],"strides":[1,1]},{"rank":1,"replica_id":0,"file":"parameter_shards/weight/rank_00001.npy","offsets":[1,0],"sizes":[1,4],"strides":[1,1]}]}]}\n' > %t.shards.program/functions/forward.parameter_shards.json
+# RUN: %python -c 'import numpy as np; from pathlib import Path; np.save(Path("%t.shards.program/parameter_shards/weight/rank_00000.npy"), np.zeros((1, 4), dtype=np.float32)); np.save(Path("%t.shards.program/parameter_shards/weight/rank_00001.npy"), np.zeros((1, 4), dtype=np.float32))'
+# RUN: wafer-compile-stablehlo --verify-stablehlo-program %t.shards.program | FileCheck %s --check-prefix=SHARD-PROGRAM
+
+# RUN: rm -rf %t.missing-shards.program && mkdir -p %t.missing-shards.program && cp -R %t.shards.program/. %t.missing-shards.program
+# RUN: rm %t.missing-shards.program/functions/forward.parameter_shards.json
+# RUN: not wafer-compile-stablehlo --verify-stablehlo-program %t.missing-shards.program 2>&1 | FileCheck %s --check-prefix=MISSING-SHARDS
+
+# RUN: rm -rf %t.missing-shard-file.program && mkdir -p %t.missing-shard-file.program && cp -R %t.shards.program/. %t.missing-shard-file.program
+# RUN: rm %t.missing-shard-file.program/parameter_shards/weight/rank_00001.npy
+# RUN: not wafer-compile-stablehlo --verify-stablehlo-program %t.missing-shard-file.program 2>&1 | FileCheck %s --check-prefix=MISSING-SHARD-FILE
+
+# RUN: rm -rf %t.bad-shape.program && mkdir -p %t.bad-shape.program && cp -R %t.program/. %t.bad-shape.program
+# RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[4,2],"dtype":"float32","dynamic_dims":[]}],"output_signature":[{"shape":[2,4],"dtype":"float32","dynamic_dims":[]}],"input_locations":[{"type_":"parameter","position":-1,"name":"weight"}],"unused_inputs":[]}\n' > %t.bad-shape.program/functions/forward.meta
+# RUN: not wafer-compile-stablehlo --verify-stablehlo-program %t.bad-shape.program 2>&1 | FileCheck %s --check-prefix=PROGRAM-SHAPE
+
+# RUN: rm -rf %t.missing-data.program && mkdir -p %t.missing-data.program && cp -R %t.program/. %t.missing-data.program
+# RUN: rm %t.missing-data.program/data/weight
+# RUN: not wafer-compile-stablehlo --verify-stablehlo-program %t.missing-data.program 2>&1 | FileCheck %s --check-prefix=PROGRAM-DATA
+
+# HELP-NOT: --emit-static-reference-program
+# HELP-NOT: --verify-spmd-program
+# HELP-NOT: --compile-stablehlo-program-to-cabi
+
+# VERIFY: wafer-compile-stablehlo: verified frontend program
+
+# GRAPH: wafer-compile-stablehlo: graph break rejected
+# GRAPH: python control flow escaped capture
+
+# EAGER: wafer-compile-stablehlo: eager fallback rejected
+# EAGER: aten fallback remained in capture
+
+# DYNAMIC: wafer-compile-stablehlo: unbounded dynamic shape rejected
+# DYNAMIC: func.func @unbounded_dynamic
+
+# BAD-BOUND: wafer-compile-stablehlo: invalid dynamic bound rejected
+# BAD-BOUND: func.func @bad_dynamic_bound argument 0
+
+# PROGRAM: wafer-compile-stablehlo: verified StableHLO program directory parameters: 1
+# PROGRAM: wafer-compile-stablehlo: verified StableHLO program
+
+# SHARD-PROGRAM: wafer-compile-stablehlo: verified StableHLO program directory parameters: 1
+# SHARD-PROGRAM: wafer-compile-stablehlo: verified StableHLO program directory parameter shard bindings: 1
+# SHARD-PROGRAM: wafer-compile-stablehlo: verified StableHLO program
+
+# MISSING-SHARDS: wafer-compile-stablehlo: StableHLO program directory metadata rejected
+# MISSING-SHARDS: partitioned StableHLO program directory is missing parameter shard bindings
+
+# MISSING-SHARD-FILE: wafer-compile-stablehlo: StableHLO program directory metadata rejected
+# MISSING-SHARD-FILE: parameter shard file is missing
+
+# PROGRAM-SHAPE: wafer-compile-stablehlo: StableHLO program directory metadata rejected
+# PROGRAM-SHAPE: shape mismatch for function argument 0
+
+# PROGRAM-DATA: wafer-compile-stablehlo: StableHLO program directory metadata rejected
+# PROGRAM-DATA: parameter data file is missing: weight

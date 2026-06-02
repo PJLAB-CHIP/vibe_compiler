@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PyTorch/XLA test artifact generator for Wafer frontend export gates."""
+"""PyTorch/XLA StableHLO program directory generator for Wafer frontend gates."""
 
 from __future__ import annotations
 
@@ -115,17 +115,17 @@ def apply_strategy_marks(
     spmd_module.mark_sharding(reference_module.bias, mesh, strategy.bias_spec)
 
 
-def _verify_bundle_layout(bundle_path: pathlib.Path) -> None:
+def _verify_program_dir_layout(program_dir: pathlib.Path) -> None:
     for relative in [
         pathlib.Path("functions") / "forward.mlir",
         pathlib.Path("functions") / "forward.meta",
         pathlib.Path("functions") / "forward.bytecode",
     ]:
-        path = bundle_path / relative
+        path = program_dir / relative
         if not path.is_file():
-            raise RuntimeError(f"missing StableHLO bundle file: {relative}")
-    if not (bundle_path / "data").is_dir():
-        raise RuntimeError("missing StableHLO bundle directory: data")
+            raise RuntimeError(f"missing StableHLO program directory file: {relative}")
+    if not (program_dir / "data").is_dir():
+        raise RuntimeError("missing StableHLO program data directory: data")
 
 
 def _make_reference_matmul_module(torch_module: Any, size: int) -> Any:
@@ -200,7 +200,7 @@ def _move_to_device(value: Any, device: Any) -> Any:
     return value
 
 
-def _build_lazy_stablehlo_bundle(
+def _build_lazy_stablehlo_program(
     *,
     stablehlo_module: Any,
     xla_model_module: Any,
@@ -263,8 +263,8 @@ def _build_lazy_stablehlo_bundle(
     )
 
 
-def emit_reference_stablehlo_bundle(
-    bundle_path: pathlib.Path,
+def emit_reference_stablehlo_program(
+    program_dir: pathlib.Path,
     torch_module: Any | None = None,
     stablehlo_module: Any | None = None,
     reference_module_factory: Callable[[], Any] | None = None,
@@ -292,15 +292,15 @@ def emit_reference_stablehlo_bundle(
             exported, options=options
         )
 
-    if bundle_path.exists():
-        shutil.rmtree(bundle_path)
-    bundle_path.parent.mkdir(parents=True, exist_ok=True)
-    stablehlo_program.save(str(bundle_path))
-    _verify_bundle_layout(bundle_path)
+    if program_dir.exists():
+        shutil.rmtree(program_dir)
+    program_dir.parent.mkdir(parents=True, exist_ok=True)
+    stablehlo_program.save(str(program_dir))
+    _verify_program_dir_layout(program_dir)
 
 
-def emit_sharded_stablehlo_bundle(
-    bundle_path: pathlib.Path,
+def emit_sharded_stablehlo_program(
+    program_dir: pathlib.Path,
     strategy_name: str,
     torch_module: Any | None = None,
     stablehlo_module: Any | None = None,
@@ -335,7 +335,7 @@ def emit_sharded_stablehlo_bundle(
         raise RuntimeError(
             f"sharding strategy '{strategy.name}' requires "
             f"{strategy.device_count} XLA devices, got {device_count}; "
-            "for CPU artifact tests set CPU_NUM_DEVICES=16 before importing "
+            "for CPU program directory tests set CPU_NUM_DEVICES=16 before importing "
             "torch_xla"
         )
 
@@ -369,7 +369,7 @@ def emit_sharded_stablehlo_bundle(
 
     with torch_module.no_grad():
         output_tensor = reference_module(input_tensor)
-        bundle = _build_lazy_stablehlo_bundle(
+        stablehlo_graph = _build_lazy_stablehlo_program(
             stablehlo_module=stablehlo_module,
             xla_model_module=xla_model_module,
             xlac_module=xlac_module,
@@ -379,24 +379,26 @@ def emit_sharded_stablehlo_bundle(
             state_dict=state_dict,
         )
 
-    if bundle_path.exists():
-        shutil.rmtree(bundle_path)
-    bundle_path.parent.mkdir(parents=True, exist_ok=True)
-    stablehlo_module.StableHLOGraphModule(bundle).save(str(bundle_path), options)
-    _verify_bundle_layout(bundle_path)
+    if program_dir.exists():
+        shutil.rmtree(program_dir)
+    program_dir.parent.mkdir(parents=True, exist_ok=True)
+    stablehlo_module.StableHLOGraphModule(stablehlo_graph).save(
+        str(program_dir), options
+    )
+    _verify_program_dir_layout(program_dir)
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--emit-reference-bundle",
+        "--emit-reference-program",
         action="store_true",
-        help="emit the reference 4096x4096 matmul+bias+tanh+residual StableHLO artifact",
+        help="emit the reference 4096x4096 matmul+bias+tanh+residual StableHLO program directory",
     )
     parser.add_argument(
-        "--emit-sharded-bundle",
+        "--emit-sharded-program",
         action="store_true",
-        help="emit the 4096x4096 sharded StableHLO artifact",
+        help="emit the 4096x4096 sharded StableHLO program directory",
     )
     parser.add_argument(
         "--sharding-strategy",
@@ -407,36 +409,36 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         "--size",
         type=int,
         default=DEFAULT_REFERENCE_MATMUL_SIZE,
-        help="square matmul size for generated reference artifacts",
+        help="square matmul size for generated reference program directories",
     )
-    parser.add_argument("--output-bundle", type=pathlib.Path)
+    parser.add_argument("--output-program-dir", type=pathlib.Path)
     return parser.parse_args(argv)
 
 
 def main(argv: list[str]) -> int:
     args = _parse_args(argv)
-    if args.emit_reference_bundle:
-        if args.output_bundle is None:
-            raise RuntimeError("missing --output-bundle")
+    if args.emit_reference_program:
+        if args.output_program_dir is None:
+            raise RuntimeError("missing --output-program-dir")
 
-        emit_reference_stablehlo_bundle(args.output_bundle, size=args.size)
+        emit_reference_stablehlo_program(args.output_program_dir, size=args.size)
         return 0
 
-    if args.emit_sharded_bundle:
-        if args.output_bundle is None:
-            raise RuntimeError("missing --output-bundle")
+    if args.emit_sharded_program:
+        if args.output_program_dir is None:
+            raise RuntimeError("missing --output-program-dir")
         if args.sharding_strategy is None:
             raise RuntimeError("missing --sharding-strategy")
 
-        emit_sharded_stablehlo_bundle(
-            args.output_bundle,
+        emit_sharded_stablehlo_program(
+            args.output_program_dir,
             strategy_name=args.sharding_strategy,
             size=args.size,
         )
         return 0
 
     raise RuntimeError(
-        "missing --emit-reference-bundle or --emit-sharded-bundle"
+        "missing --emit-reference-program or --emit-sharded-program"
     )
 
 

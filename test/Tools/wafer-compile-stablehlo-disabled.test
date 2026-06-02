@@ -1,0 +1,5 @@
+# UNSUPPORTED: stablehlo
+# RUN: wafer-compile-stablehlo --help | FileCheck %s
+
+# CHECK: wafer-compile-stablehlo
+# CHECK: StableHLO frontend dependencies are disabled
