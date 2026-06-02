@@ -45,11 +45,10 @@ void registerWaferOptDialects(mlir::DialectRegistry &registry) {
   mlir::func::registerInlinerExtension(registry);
 }
 
-bool hasStableHLOProgramPartitionRequest(int argc, char **argv) {
+bool hasWaferProgramPipelineRequest(int argc, char **argv) {
   for (int i = 1; i < argc; ++i) {
     llvm::StringRef arg(argv[i]);
-    if (arg == "--partition-stablehlo-program" ||
-        arg.starts_with("--partition-stablehlo-program="))
+    if (arg == "--program-pipeline" || arg.starts_with("--program-pipeline="))
       return true;
   }
   return false;
@@ -161,24 +160,19 @@ bool copyDirectoryIfPresent(llvm::StringRef from, llvm::StringRef to) {
   return false;
 }
 
-bool stageProgramWithPropagatedModule(mlir::ModuleOp module,
-                                      llvm::StringRef inputProgramDir,
-                                      llvm::StringRef stagedProgramDir) {
-  if (copyDirectoryIfPresent(inputProgramDir, stagedProgramDir))
+bool writeProgramModule(mlir::ModuleOp module, llvm::StringRef programDir) {
+  std::string functionsDir =
+      programFile(programDir, {llvm::StringRef("functions")});
+  if (createDirectory(functionsDir))
     return true;
 
-  std::string stagedFunctions =
-      programFile(stagedProgramDir, {llvm::StringRef("functions")});
-  if (createDirectory(stagedFunctions))
-    return true;
-
-  std::string stagedMlir =
-      programFile(stagedProgramDir, {llvm::StringRef("functions"),
-                                     llvm::StringRef("forward.mlir")});
+  std::string mlirPath =
+      programFile(programDir, {llvm::StringRef("functions"),
+                               llvm::StringRef("forward.mlir")});
   std::error_code error;
-  llvm::raw_fd_ostream os(stagedMlir, error, llvm::sys::fs::OF_Text);
+  llvm::raw_fd_ostream os(mlirPath, error, llvm::sys::fs::OF_Text);
   if (error) {
-    llvm::errs() << "wafer-opt: failed to write '" << stagedMlir
+    llvm::errs() << "wafer-opt: failed to write '" << mlirPath
                  << "': " << error.message() << "\n";
     return true;
   }
@@ -186,41 +180,168 @@ bool stageProgramWithPropagatedModule(mlir::ModuleOp module,
   os << "\n";
   os.close();
   if (os.has_error()) {
-    llvm::errs() << "wafer-opt: failed to close '" << stagedMlir << "'\n";
+    llvm::errs() << "wafer-opt: failed to close '" << mlirPath << "'\n";
     return true;
   }
 
   return false;
 }
 
-int partitionStableHLOProgram(llvm::StringRef programPath,
-                              llvm::StringRef outputProgramDirPath,
-                              llvm::StringRef helperPath,
-                              int64_t defaultTileCount) {
-  if (programPath.empty()) {
-    llvm::errs() << "wafer-opt: --partition-stablehlo-program requires an "
-                    "input program directory\n";
-    return 1;
+bool stageProgramWithPropagatedModule(mlir::ModuleOp module,
+                                      llvm::StringRef inputProgramDir,
+                                      llvm::StringRef stagedProgramDir) {
+  if (copyDirectoryIfPresent(inputProgramDir, stagedProgramDir))
+    return true;
+  return writeProgramModule(module, stagedProgramDir);
+}
+
+struct WaferProgramPipelineOptions {
+  std::string pipelineName;
+  std::string inputProgramDir;
+  std::string outputProgramDir;
+  std::string spmdPartitionerHelperPath;
+  int64_t defaultTileCount = 16;
+};
+
+bool parseIntegerOption(llvm::StringRef optionName, llvm::StringRef value,
+                        int64_t &result) {
+  if (value.getAsInteger(10, result)) {
+    llvm::errs() << "wafer-opt: invalid " << optionName << " value: " << value
+                 << "\n";
+    return true;
   }
-  if (outputProgramDirPath.empty()) {
-    llvm::errs() << "wafer-opt: --partition-stablehlo-program requires "
+  return false;
+}
+
+bool parseWaferProgramPipelineOptions(int argc, char **argv,
+                                      WaferProgramPipelineOptions &options) {
+  for (int i = 1; i < argc; ++i) {
+    llvm::StringRef arg(argv[i]);
+    if (arg == "--program-pipeline") {
+      if (i + 1 >= argc) {
+        llvm::errs() << "wafer-opt: missing --program-pipeline value\n";
+        return true;
+      }
+      options.pipelineName = argv[++i];
+      continue;
+    }
+
+    constexpr llvm::StringRef programPipelinePrefix = "--program-pipeline=";
+    if (arg.starts_with(programPipelinePrefix)) {
+      options.pipelineName = arg.drop_front(programPipelinePrefix.size()).str();
+      continue;
+    }
+
+    if (arg == "--input-program-dir") {
+      if (i + 1 >= argc) {
+        llvm::errs() << "wafer-opt: missing --input-program-dir value\n";
+        return true;
+      }
+      options.inputProgramDir = argv[++i];
+      continue;
+    }
+
+    constexpr llvm::StringRef inputProgramDirPrefix = "--input-program-dir=";
+    if (arg.starts_with(inputProgramDirPrefix)) {
+      options.inputProgramDir =
+          arg.drop_front(inputProgramDirPrefix.size()).str();
+      continue;
+    }
+
+    if (arg == "--output-program-dir") {
+      if (i + 1 >= argc) {
+        llvm::errs() << "wafer-opt: missing --output-program-dir value\n";
+        return true;
+      }
+      options.outputProgramDir = argv[++i];
+      continue;
+    }
+
+    constexpr llvm::StringRef outputProgramDirPrefix = "--output-program-dir=";
+    if (arg.starts_with(outputProgramDirPrefix)) {
+      options.outputProgramDir =
+          arg.drop_front(outputProgramDirPrefix.size()).str();
+      continue;
+    }
+
+    if (arg == "--xla-spmd-partitioner-helper") {
+      if (i + 1 >= argc) {
+        llvm::errs()
+            << "wafer-opt: missing --xla-spmd-partitioner-helper value\n";
+        return true;
+      }
+      options.spmdPartitionerHelperPath = argv[++i];
+      continue;
+    }
+
+    constexpr llvm::StringRef spmdHelperPrefix =
+        "--xla-spmd-partitioner-helper=";
+    if (arg.starts_with(spmdHelperPrefix)) {
+      options.spmdPartitionerHelperPath =
+          arg.drop_front(spmdHelperPrefix.size()).str();
+      continue;
+    }
+
+    if (arg == "--default-tile-count") {
+      if (i + 1 >= argc) {
+        llvm::errs() << "wafer-opt: missing --default-tile-count value\n";
+        return true;
+      }
+      if (parseIntegerOption("--default-tile-count", argv[++i],
+                             options.defaultTileCount))
+        return true;
+      continue;
+    }
+
+    constexpr llvm::StringRef defaultTileCountPrefix = "--default-tile-count=";
+    if (arg.starts_with(defaultTileCountPrefix)) {
+      if (parseIntegerOption("--default-tile-count",
+                             arg.drop_front(defaultTileCountPrefix.size()),
+                             options.defaultTileCount))
+        return true;
+      continue;
+    }
+
+    llvm::errs() << "wafer-opt: unknown program pipeline argument: " << arg
+                 << "\n";
+    return true;
+  }
+
+  if (options.pipelineName.empty()) {
+    llvm::errs() << "wafer-opt: --program-pipeline requires a pipeline name\n";
+    return true;
+  }
+  if (options.inputProgramDir.empty()) {
+    llvm::errs() << "wafer-opt: --program-pipeline requires "
+                    "--input-program-dir\n";
+    return true;
+  }
+  if (options.outputProgramDir.empty()) {
+    llvm::errs() << "wafer-opt: --program-pipeline requires "
                     "--output-program-dir\n";
-    return 1;
+    return true;
   }
-  if (helperPath.empty()) {
-    llvm::errs() << "wafer-opt: --partition-stablehlo-program requires "
+  if (options.spmdPartitionerHelperPath.empty()) {
+    llvm::errs() << "wafer-opt: --program-pipeline requires "
                     "--xla-spmd-partitioner-helper\n";
-    return 1;
+    return true;
+  }
+  if (options.pipelineName != "stablehlo-spmd" &&
+      options.pipelineName != "stablehlo-spmd-to-linalg") {
+    llvm::errs() << "wafer-opt: unknown Wafer program pipeline: "
+                 << options.pipelineName << "\n";
+    return true;
   }
 
-  mlir::DialectRegistry registry;
-  registerWaferOptDialects(registry);
+  return false;
+}
 
-  mlir::MLIRContext context(registry);
-  context.loadAllAvailableDialects();
-
+int runStableHLOSPMDStage(llvm::StringRef inputProgramDir,
+                          llvm::StringRef outputProgramDir,
+                          llvm::StringRef helperPath, int64_t defaultTileCount,
+                          mlir::MLIRContext &context) {
   mlir::OwningOpRef<mlir::ModuleOp> module =
-      parseAndVerifyStableHLOProgramDir(programPath, context);
+      parseAndVerifyStableHLOProgramDir(inputProgramDir, context);
   if (!module)
     return 1;
 
@@ -229,7 +350,7 @@ int partitionStableHLOProgram(llvm::StringRef programPath,
   if (mlir::failed(pm.run(*module)))
     return 1;
 
-  llvm::SmallString<256> tempPrefix(outputProgramDirPath);
+  llvm::SmallString<256> tempPrefix(outputProgramDir);
   llvm::sys::path::remove_filename(tempPrefix);
   if (tempPrefix.empty())
     tempPrefix = ".";
@@ -244,7 +365,7 @@ int partitionStableHLOProgram(llvm::StringRef programPath,
     return 1;
   }
 
-  if (stageProgramWithPropagatedModule(*module, programPath,
+  if (stageProgramWithPropagatedModule(*module, inputProgramDir,
                                        stagedProgramDir)) {
     llvm::sys::fs::remove_directories(stagedProgramDir);
     return 1;
@@ -252,7 +373,7 @@ int partitionStableHLOProgram(llvm::StringRef programPath,
 
   std::string helper = helperPath.str();
   std::string staged = stagedProgramDir.str().str();
-  std::string output = outputProgramDirPath.str();
+  std::string output = outputProgramDir.str();
   std::string logicalRankCount = std::to_string(defaultTileCount);
   llvm::SmallVector<llvm::StringRef, 8> args = {
       helper,           "--input-program-dir",
@@ -273,17 +394,38 @@ int partitionStableHLOProgram(llvm::StringRef programPath,
 
   wafer::frontend::FrontendProgramVerificationResult result;
   mlir::OwningOpRef<mlir::ModuleOp> outputModule =
-      parseAndVerifyStableHLOProgramDir(outputProgramDirPath, context, &result);
+      parseAndVerifyStableHLOProgramDir(outputProgramDir, context, &result);
   if (!outputModule)
     return 1;
 
-  llvm::outs() << "wafer-opt: partitioned StableHLO program directory written: "
-               << outputProgramDirPath << "\n";
+  return 0;
+}
+
+int runStableHLOToLinalgStage(llvm::StringRef programDir,
+                              mlir::MLIRContext &context) {
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      parseAndVerifyStableHLOProgramDir(programDir, context);
+  if (!module)
+    return 1;
+
+  mlir::PassManager pm(&context);
+  wafer::buildStablehloToLinalgPipeline(pm);
+  if (mlir::failed(pm.run(*module)))
+    return 1;
+
+  if (writeProgramModule(*module, programDir))
+    return 1;
+
+  mlir::OwningOpRef<mlir::ModuleOp> loweredModule =
+      parseAndVerifyStableHLOProgramDir(programDir, context);
+  if (!loweredModule)
+    return 1;
+
   return 0;
 }
 #endif
 
-int runStableHLOProgramPartition(int argc, char **argv) {
+int runWaferProgramPipeline(int argc, char **argv) {
 #ifndef WAFER_ENABLE_STABLEHLO
   llvm::errs()
       << "wafer-opt: StableHLO frontend dependencies are disabled in this "
@@ -294,103 +436,37 @@ int runStableHLOProgramPartition(int argc, char **argv) {
                   "this build\n";
   return 1;
 #else
-  std::string partitionProgramDir;
-  std::string partitionOutputProgramDir;
-  std::string spmdPartitionerHelperPath;
-  int64_t defaultTileCount = 16;
-  for (int i = 1; i < argc; ++i) {
-    llvm::StringRef arg(argv[i]);
-    if (arg == "--partition-stablehlo-program") {
-      if (i + 1 >= argc) {
-        llvm::errs()
-            << "wafer-opt: missing --partition-stablehlo-program directory\n";
-        return 1;
-      }
-      partitionProgramDir = argv[++i];
-      continue;
-    }
-
-    constexpr llvm::StringRef partitionProgramPrefix =
-        "--partition-stablehlo-program=";
-    if (arg.starts_with(partitionProgramPrefix)) {
-      partitionProgramDir = arg.drop_front(partitionProgramPrefix.size()).str();
-      continue;
-    }
-
-    if (arg == "--output-program-dir") {
-      if (i + 1 >= argc) {
-        llvm::errs() << "wafer-opt: missing --output-program-dir value\n";
-        return 1;
-      }
-      partitionOutputProgramDir = argv[++i];
-      continue;
-    }
-
-    constexpr llvm::StringRef outputProgramDirPrefix = "--output-program-dir=";
-    if (arg.starts_with(outputProgramDirPrefix)) {
-      partitionOutputProgramDir =
-          arg.drop_front(outputProgramDirPrefix.size()).str();
-      continue;
-    }
-
-    if (arg == "--xla-spmd-partitioner-helper") {
-      if (i + 1 >= argc) {
-        llvm::errs()
-            << "wafer-opt: missing --xla-spmd-partitioner-helper value\n";
-        return 1;
-      }
-      spmdPartitionerHelperPath = argv[++i];
-      continue;
-    }
-
-    constexpr llvm::StringRef spmdHelperPrefix =
-        "--xla-spmd-partitioner-helper=";
-    if (arg.starts_with(spmdHelperPrefix)) {
-      spmdPartitionerHelperPath = arg.drop_front(spmdHelperPrefix.size()).str();
-      continue;
-    }
-
-    if (arg == "--default-tile-count") {
-      if (i + 1 >= argc) {
-        llvm::errs() << "wafer-opt: missing --default-tile-count value\n";
-        return 1;
-      }
-      llvm::StringRef value(argv[++i]);
-      if (value.getAsInteger(10, defaultTileCount)) {
-        llvm::errs() << "wafer-opt: invalid --default-tile-count value: "
-                     << value << "\n";
-        return 1;
-      }
-      continue;
-    }
-
-    constexpr llvm::StringRef defaultTileCountPrefix = "--default-tile-count=";
-    if (arg.starts_with(defaultTileCountPrefix)) {
-      llvm::StringRef value = arg.drop_front(defaultTileCountPrefix.size());
-      if (value.getAsInteger(10, defaultTileCount)) {
-        llvm::errs() << "wafer-opt: invalid --default-tile-count value: "
-                     << value << "\n";
-        return 1;
-      }
-      continue;
-    }
-
-    llvm::errs() << "wafer-opt: unknown program partition argument: " << arg
-                 << "\n";
+  WaferProgramPipelineOptions options;
+  if (parseWaferProgramPipelineOptions(argc, argv, options))
     return 1;
-  }
 
-  return partitionStableHLOProgram(partitionProgramDir,
-                                   partitionOutputProgramDir,
-                                   spmdPartitionerHelperPath, defaultTileCount);
+  mlir::DialectRegistry registry;
+  registerWaferOptDialects(registry);
+
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  if (runStableHLOSPMDStage(options.inputProgramDir, options.outputProgramDir,
+                            options.spmdPartitionerHelperPath,
+                            options.defaultTileCount, context))
+    return 1;
+
+  if (options.pipelineName == "stablehlo-spmd-to-linalg" &&
+      runStableHLOToLinalgStage(options.outputProgramDir, context))
+    return 1;
+
+  llvm::outs() << "wafer-opt: completed Wafer program pipeline "
+               << options.pipelineName << ": " << options.outputProgramDir
+               << "\n";
+  return 0;
 #endif
 }
 
 } // namespace
 
 int main(int argc, char **argv) {
-  if (hasStableHLOProgramPartitionRequest(argc, argv))
-    return runStableHLOProgramPartition(argc, argv);
+  if (hasWaferProgramPipelineRequest(argc, argv))
+    return runWaferProgramPipeline(argc, argv);
 
   mlir::DialectRegistry registry;
   registerWaferOptDialects(registry);

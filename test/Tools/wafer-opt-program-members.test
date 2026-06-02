@@ -8,8 +8,14 @@
 # RUN: printf 'payload member must be preserved\n' > %t.input.program/data/aux.payload
 # RUN: printf '%b' '#!/usr/bin/env bash\nset -euo pipefail\ninput=""\noutput=""\nwhile [[ $# -gt 0 ]]; do\n  case "$1" in\n    --input-program-dir) input="$2"; shift 2 ;;\n    --output-program-dir) output="$2"; shift 2 ;;\n    --entry-function|--logical-rank-count) shift 2 ;;\n    *) shift ;;\n  esac\ndone\ntest -f "$input/functions/forward.bytecode"\ntest -f "$input/data/aux.payload"\nrm -rf "$output"\nmkdir -p "$output"\ncp -R "$input/." "$output/"\n' > %t.fake-helper
 # RUN: chmod +x %t.fake-helper
-# RUN: wafer-opt --partition-stablehlo-program %t.input.program --output-program-dir %t.partitioned.program --xla-spmd-partitioner-helper %t.fake-helper --default-tile-count=16 | FileCheck %s
+# RUN: wafer-opt --program-pipeline=stablehlo-spmd --input-program-dir %t.input.program --output-program-dir %t.partitioned.program --xla-spmd-partitioner-helper %t.fake-helper --default-tile-count=16 | FileCheck %s
 # RUN: test -f %t.partitioned.program/functions/forward.bytecode
 # RUN: test -f %t.partitioned.program/data/aux.payload
+# RUN: not wafer-opt --program-pipeline=not-a-pipeline --input-program-dir %t.input.program --output-program-dir %t.partitioned.program --xla-spmd-partitioner-helper %t.fake-helper 2>&1 | FileCheck %s --check-prefix=BAD-PIPELINE
+# RUN: not wafer-opt --partition-stablehlo-program %t.input.program 2>&1 | FileCheck %s --check-prefix=OLD-PARTITION
 
-# CHECK: wafer-opt: partitioned StableHLO program directory written:
+# CHECK: wafer-opt: completed Wafer program pipeline stablehlo-spmd:
+
+# BAD-PIPELINE: wafer-opt: unknown Wafer program pipeline: not-a-pipeline
+
+# OLD-PARTITION: Unknown command line argument '--partition-stablehlo-program'

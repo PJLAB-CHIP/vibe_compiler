@@ -103,13 +103,14 @@ Single-tile local compute：
 - 主链路 gate 应消费 P2.F1/P2.S1/P2.S2/R2.4 产出的真实图 program，并继续通过 frontend/local compute /
   tensor collective handoff gate；graph break / fallback 不被当成合法 program。手写 StableHLO/Linalg
   输入只保留为局部 verifier、lowering pattern 或 bring-up fixture。
-- R2.4-pre 之后，主链路 gate 必须通过 Wafer named pipeline 或 `wafer-opt` program pipeline 重放上述链路；
-  单独拼 `wafer-opt` pass、`shardy-sdy-opt`、PyTorch/XLA runtime 环境变量和 verifier tool 只能作为
-  unit/debug 覆盖。2026-06-02 后，frontend program verifier 入口是
-  `wafer-compile-stablehlo --verify-stablehlo-program`；P2.S2 `wafer-opt` program pipeline 入口是
-  `wafer-opt --partition-stablehlo-program`；`--compile-stablehlo-program-to-cabi` 已删除。
-  `wafer-opt` named pipeline 入口保留 `wafer-propagate-stablehlo-sharding` 和
-  `wafer-lower-stablehlo-to-linalg`。
+- R2.4-pre 之后，主链路 gate 必须通过 `wafer-opt` program pipeline 重放上述链路；单独拼
+  `wafer-opt` pass、named MLIR pipeline、`shardy-sdy-opt`、PyTorch/XLA runtime 环境变量和
+  verifier tool 只能作为 unit/debug 覆盖。2026-06-02 后，frontend program verifier 入口是
+  `wafer-compile-stablehlo --verify-stablehlo-program`；P2.S2/R2.4 `wafer-opt` program pipeline
+  入口是 `--program-pipeline=stablehlo-spmd` 和
+  `--program-pipeline=stablehlo-spmd-to-linalg`；`--compile-stablehlo-program-to-cabi` 已删除。
+  `wafer-opt` named MLIR pipeline 入口保留 `wafer-propagate-stablehlo-sharding` 和
+  `wafer-lower-stablehlo-to-linalg` 作为内部构件/局部覆盖，不作为用户级主链路。
   旧 C ABI issue、single-tile materialization、SPM/DDR trial 和 ring lowering unit/debug pass 链已删除，
   当前没有 group/tile/storage/C ABI 主链路 compile gate。
 - 后续 R3/R6/R7 gate 必须证明 `wafer.group` 到 `wafer.tile_region` 的 load/compute/store、

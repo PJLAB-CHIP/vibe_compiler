@@ -330,9 +330,13 @@ Pipeline position:
 - Current stage responsibility: 把 post-SPMD StableHLO logical collective normalize 成 Wafer-owned destination-style tensor collective op，并保留 group/tiling 可验证的 tensor-level collective facts。
 - Output program / IR: `linalg` / `tensor` / `scf` local compute IR 加 `wafer.tensor_collective.*` ops；不含 `wafer.comm`、SPM tile buffer、DTE token 或 runtime handle。
 - Downstream consumer: R3 group candidate / tiling，以及 R6 tiled tensor collective -> `wafer.comm` materialization。
-- User-level driver / named pipeline: `wafer-lower-stablehlo-to-linalg` 消费 P2.S2 输出的 rank-local StableHLO module；collective normalization 是该 named pipeline 的一部分，不要求用户手动拼 pass。
+- User-level driver / named pipeline: 用户级主线由
+  `wafer-opt --program-pipeline=stablehlo-spmd-to-linalg` 从 frontend Wafer program 重放 P2.S2 并写回
+  post-linalg Wafer program；`wafer-lower-stablehlo-to-linalg` 是该 program pipeline 内部复用的
+  named MLIR pipeline，也可作为局部 debug/unit 覆盖。
 - Explicit non-goals: 不恢复 `wafer.spmd.*` 私有协议，不把 StableHLO collective 直接 lower 到 `wafer.comm`，不在 R2.4 选择 physical peer、ring schedule、SPM/DDR buffer 或 packet/runtime ABI。
-- Completion gate: 真实 P2.S2 program 中的 StableHLO collective 经 named pipeline 变成 verifier-legal `wafer.tensor_collective.*` op；这些 op 实现 `DestinationStyleOpInterface`、MLIR `TilingInterface`、`WaferTilingInterface` 和 `WaferTensorCollectiveOpInterface`，输出可被 group 边界作为 tensor-level IR 消费；fixture/FileCheck/gtest 只做补充覆盖。
+- Completion gate: 真实 frontend -> P2.S2 -> R2.4 program chain 经
+  `stablehlo-spmd-to-linalg` 变成含 verifier-legal `wafer.tensor_collective.*` op 的 Wafer program；这些 op 实现 `DestinationStyleOpInterface`、MLIR `TilingInterface`、`WaferTilingInterface` 和 `WaferTensorCollectiveOpInterface`，输出可被 group 边界作为 tensor-level IR 消费；fixture/FileCheck/gtest 只做补充覆盖。
 ```
 
 ## 5. Softmax and Norm Staged Form

@@ -36,14 +36,14 @@
 
 | ID | 状态 | 任务 | 完成标准 |
 | --- | --- | --- | --- |
-| P2.S2 | done | 建立 Wafer compiler-owned XLA SPMD partition stage | `wafer-opt --partition-stablehlo-program` 消费经过 Wafer sharding propagation stage 的 StableHLO / SDY program，调用 pinned-XLA SPMD helper，输出 post-SPMD local / replicated-local StableHLO program directory、post-SPMD marker、rank-local function signature、collective metadata、`forward.parameter_shards.json` 和 rank-local parameter payload；该入口不挂在 frontend StableHLO export / verifier tool 下 |
+| P2.S2 | done | 建立 Wafer compiler-owned XLA SPMD partition stage | `wafer-opt --program-pipeline=stablehlo-spmd` 消费 frontend Wafer program，在同一个 program pipeline 内执行 Wafer sharding propagation 并调用 pinned-XLA SPMD helper，输出 post-SPMD local / replicated-local StableHLO program directory、post-SPMD marker、rank-local function signature、collective metadata、`forward.parameter_shards.json` 和 rank-local parameter payload；该入口不挂在 frontend StableHLO export / verifier tool 下 |
 | R2.4 | done | Wafer LinalgExt-style tensor collective handoff | 消费 P2.S2 partitioned StableHLO program directory 中的 logical collective 和 rank-local signature，normalize 成实现 destination-style、MLIR `TilingInterface`、Wafer tiling demand 和 Wafer collective info contract 的 `wafer.tensor_collective.*` tensor IR |
 | R3.1 | ready | group boundary / candidate contract | 消费 P2.S2/R2.4 真实 frontend/SPMD program chain 的 local compute IR 和 tensor collective IR，建立 group candidate 的 IR 边界和完成 gate |
 
 P2.S2 pipeline contract：
 
-- upstream program / IR：P2.F1 verified PyTorch/XLA StableHLO program directory，经过 Wafer
-  sharding propagation stage 处理后的 StableHLO/SDY IR。
+- upstream program / IR：P2.F1 verified PyTorch/XLA StableHLO Wafer program directory，包含
+  `functions/forward.mlir`、`functions/forward.meta` 和参数 payload。
 - current stage responsibility：在 Wafer-owned driver / library stage 中调用 XLA SPMD partitioner
   或等价 local-body partitioning service，并导出 partitioned / replicated-local program。
 - output program / IR：partitioned / replicated-local StableHLO program directory、post-SPMD marker、
@@ -51,7 +51,7 @@ P2.S2 pipeline contract：
   parameter payload。
 - downstream consumer：R2.4 tensor collective handoff、`wafer-lower-stablehlo-to-linalg` local
   compute normalization、R3 group pipeline 和后续 placement / package stages。
-- user-level driver / named pipeline：`wafer-opt --partition-stablehlo-program` 消费 frontend
+- user-level driver / named pipeline：`wafer-opt --program-pipeline=stablehlo-spmd` 消费 frontend
   Wafer program，并在同一 program pipeline 内执行 sharding propagation + XLA SPMD partition；不能挂在
   `wafer-compile-stablehlo` frontend verifier 下，也不能由 Python capture helper 或 integration test
   手动拼外部流程替代。
@@ -71,9 +71,9 @@ R3.1 pipeline contract：
   materialization、`wafer.comm`、C ABI issue 或 package manifest。
 - downstream consumer：R3.2 root tile feasibility、R3.3 tile_region materialization、R3.4/R3.5
   layout/SPM/DDR feasibility 和后续 ABI/package stages。
-- user-level driver / named pipeline：应由 Wafer named pipeline 或 `wafer-opt` program pipeline 重放 frontend/SPMD/R2.4
-  chain 后进入 group candidate gate；不能让 integration test 手动拼 raw StableHLO、tensor collective
-  fixture 和 group fixture 作为长期主线。
+- user-level driver / named pipeline：应由 `wafer-opt` program pipeline 重放 frontend/SPMD/R2.4
+  chain 后进入 group candidate gate；named MLIR pipeline 只作为内部构件或局部覆盖，不能让 integration
+  test 手动拼 raw StableHLO、tensor collective fixture 和 group fixture 作为长期主线。
 - explicit non-goals：不做 physical placement、tile shape search、SPM allocation、DTE schedule、
   `wafer.comm` materialization、C ABI 或 package emission。
 - completion gate：真实 P2.S2/R2.4 program chain 的 local compute + tensor collective 输出能进入
@@ -95,7 +95,9 @@ P7/P8/P9 依赖 P0-P6 主链路恢复，不提前推进。
 - `wafer-propagate-stablehlo-sharding` 只做 default seed + Shardy propagation；不是 XLA SPMD partitioner。
 - P2.S2 才拥有 XLA SPMD partition compiler stage。旧 Python post-SPMD helper 和 oracle tests 已删除；
   2026-06-02 已撤销把 P2.S2 挂在 `wafer-compile-stablehlo` frontend verifier 下的错误入口，并恢复为
-  `wafer-opt --partition-stablehlo-program` program pipeline。
+  `wafer-opt --program-pipeline=stablehlo-spmd` program pipeline；R2.4 handoff 使用
+  `wafer-opt --program-pipeline=stablehlo-spmd-to-linalg` 在同一 Wafer program pipeline 内继续写回
+  lowered `functions/forward.mlir`。
 - R2.4 才把 partitioned StableHLO collective normalize 成 tensor-level collective；`wafer.comm` 只能在
   tile_region / SPM materialization / placement 明确后 materialize。
 - R2.4 已建立 `wafer.tensor_collective.*` op family 和
@@ -113,10 +115,12 @@ P7/P8/P9 依赖 P0-P6 主链路恢复，不提前推进。
   R3/R6/R7 必须按新的 IR contract 从真实 program chain 恢复，不能复用这条旧链作为完成证明。
 - `wafer-compile-stablehlo` 当前只保留 `--verify-frontend-program` 和
   `--verify-stablehlo-program`，用于 frontend / StableHLO program directory 验证。Shardy propagation
-  的 IR named pipeline 是 `wafer-propagate-stablehlo-sharding`；P2.S2 program pipeline 是
-  `wafer-opt --partition-stablehlo-program`，它负责 program directory verify、in-memory Wafer
-  sharding propagation、临时 propagated program staging、pinned-XLA helper 调用和输出 program
-  verifier。staging 保留未改变的 program metadata/payload，只重写 propagated IR。helper 执行 StableHLO/SDY -> XLA HLO、`SpmdPrepare` / `SpmdPartitioner` /
+  的 IR named pipeline 是 `wafer-propagate-stablehlo-sharding`；P2.S2/R2.4 用户级 program pipeline 是
+  `wafer-opt --program-pipeline=stablehlo-spmd` 或
+  `wafer-opt --program-pipeline=stablehlo-spmd-to-linalg`，它负责 program directory verify、in-memory Wafer
+  sharding propagation、临时 propagated program staging、pinned-XLA helper 调用、输出 program
+  verifier，以及可选的 StableHLO -> Linalg/tensor collective 写回。staging 保留未改变的 program
+  metadata/payload，只重写 propagated IR。helper 执行 StableHLO/SDY -> XLA HLO、`SpmdPrepare` / `SpmdPartitioner` /
   `HloVerifier`、partitioned HLO -> StableHLO round trip，并写回 rank-local function signature、
   StableHLO collective metadata、`forward.parameter_shards.json` 和
   `parameter_shards/<parameter>/rank_XXXXX.npy` NPY stream payload。
@@ -177,7 +181,7 @@ P7/P8/P9 依赖 P0-P6 主链路恢复，不提前推进。
 
 | ID | 状态 | 任务 | 依赖 / 说明 |
 | --- | --- | --- | --- |
-| P2.S2 | done | Wafer-owned XLA SPMD partition compiler stage | `wafer-opt --partition-stablehlo-program` 已接真实 pinned XLA helper/service，并通过六种 sharding strategy 的真实 program gate；不得挂在 `wafer-compile-stablehlo` frontend verifier 下；stage 必须把 IR、metadata 和 parameter payload 当作同一个 Wafer program 同步维护 |
+| P2.S2 | done | Wafer-owned XLA SPMD partition compiler stage | `wafer-opt --program-pipeline=stablehlo-spmd` 已接真实 pinned XLA helper/service，并通过六种 sharding strategy 的真实 program gate；不得挂在 `wafer-compile-stablehlo` frontend verifier 下；stage 必须把 IR、metadata 和 parameter payload 当作同一个 Wafer program 同步维护 |
 | R2.4 | done | Wafer LinalgExt-style tensor collective handoff | `wafer.tensor_collective.*` op / verifier / StableHLO normalization pass 已接入 named pipeline，并实现 destination-style、MLIR `TilingInterface`、Wafer tiling demand 和 Wafer collective info contract；通过 P2.S2 真实 program handoff gate |
 | R3.1 | ready | group boundary / candidate contract | 依赖 P2.S2、R2.4 和真实 frontend/SPMD program |
 | R3.2 | pending | root tile feasibility oracle | 依赖 R3.1 |

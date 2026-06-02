@@ -296,8 +296,9 @@ StableHLO / SDY 可解释 program，应诊断为 frontend export / sharding impo
 
 2026-06-02 P2.S1 当前实现使用 source-built PyTorch/XLA lazy SPMD runtime 的 `mark_sharding`
 生成带 `mhlo.sharding` 的 PyTorch/XLA StableHLO program directory，并交给 Wafer Shardy propagation stage。
-partitioned local body 和 rank-local payload 由 P2.S2 的 `wafer-opt --partition-stablehlo-program`
-program pipeline 取得。
+partitioned local body 和 rank-local payload 由 P2.S2 的
+`wafer-opt --program-pipeline=stablehlo-spmd` program pipeline 取得；如果要继续进入 tensor
+collective handoff，则使用同一 driver 下的 `--program-pipeline=stablehlo-spmd-to-linalg`。
 `wafer-compile-stablehlo` frontend verifier 只校验 program metadata / payload /
 function boundary，不执行 Shardy propagation、XLA SPMD partition，也不把 sharding 转成 Wafer 私有协议。
 

@@ -44,9 +44,10 @@
 - P2.S1 不能用手写 `sdy.sharding`、`wafer.spmd.*` attr、私有 JSON 或名字约定冒充 partitioned
   program。正确主链是：frontend Python 只通过 `torch_xla.distributed.spmd.mark_sharding`
   标记 4096 matmul 图并导出带 `mhlo.sharding` 的 PyTorch/XLA StableHLO program directory；随后由
-  `wafer-propagate-stablehlo-sharding` 在 Wafer compiler 层接管 default input seed + Shardy
-  propagation；再由 `wafer-opt --partition-stablehlo-program` 调 XLA SPMD partitioner 并导出
-  partitioned StableHLO program directory。旧的私有 sharding attr
+  `wafer-opt --program-pipeline=stablehlo-spmd` 或
+  `wafer-opt --program-pipeline=stablehlo-spmd-to-linalg` 在 Wafer compiler 层接管 default input
+  seed、Shardy propagation 和 XLA SPMD partition，并导出 partitioned StableHLO program 或继续
+  写回 post-linalg Wafer program。旧的私有 sharding attr
   emitter、sidecar JSON、单独旧 SPMD verify flag 和 Python post-SPMD
   路线已移除；不要恢复只生成私有 attrs/sidecar、只跑 SDY propagation 冒充完成，或把 Python
   test helper 写成 SPMD / 用户编译入口。
@@ -83,11 +84,10 @@
   group/tiling；`wafer.comm` 只能在 `wafer.tile_region` / SPM tile buffers / placement 明确后
   materialize。StableHLO collective 直降 `wafer.comm` 且靠 `unrealized_conversion_cast` 桥 tensor
   和 tile_buffer 的 pass/test 已移除；不要在 group 输入侧恢复这种入口。
-- R2.4 tensor collective handoff 的主线验证入口接在 P2.S2 真实 program 后：
-  `wafer-opt --partition-stablehlo-program ...` 产出的
-  `functions/forward.mlir` 必须能通过
-  `wafer-opt --pass-pipeline='builtin.module(wafer-lower-stablehlo-to-linalg)'`
-  生成 `wafer.tensor_collective.*`。局部 `test/Frontend` fixture 可以覆盖
+- R2.4 tensor collective handoff 的主线验证入口是同一个 Wafer program pipeline：
+  `wafer-opt --program-pipeline=stablehlo-spmd-to-linalg ...` 必须从真实 PyTorch/XLA sharded
+  program 产出含 `wafer.tensor_collective.*` 的 `functions/forward.mlir`，并保留
+  `forward.parameter_shards.json` 与 rank-local NPY payload。局部 `test/Frontend` fixture 可以覆盖
   `all_reduce` / `reduce_scatter` / `all_to_all` / `collective_permute`，但不能替代这个 program
   handoff gate。
 - R2.4 `wafer.tensor_collective.*` 不是只靠 op 名字或 pass switch 的 skeleton；五类 collective
@@ -111,15 +111,17 @@
   responsibility、output program / IR、downstream consumer、user-level driver / named pipeline、
   explicit non-goals 和 completion gate。只说明某个 pass / tool / test 的局部功能不够；完成证明
   必须重放已完成上游 program chain，并证明当前 stage 输出会被下游边界直接消费。
-- 主链路 gate 用 `WaferPipelines` 中注册的 named pipeline 或 `wafer-opt` program pipeline，不在 Integration
+- 主链路 gate 用 `wafer-opt` program pipeline 重放已完成上游链路，不在 Integration
   里手动拼 pass 串。当前 frontend verifier 入口是
-  `wafer-compile-stablehlo --verify-stablehlo-program`；P2.S2 `wafer-opt` program pipeline 入口是
-  `wafer-opt --partition-stablehlo-program`；`wafer-compile-stablehlo --propagate-stablehlo-sharding`、
+  `wafer-compile-stablehlo --verify-stablehlo-program`；P2.S2/R2.4 用户级 `wafer-opt` program
+  pipeline 入口是 `--program-pipeline=stablehlo-spmd` 和
+  `--program-pipeline=stablehlo-spmd-to-linalg`；`wafer-compile-stablehlo --propagate-stablehlo-sharding`、
   `wafer-compile-stablehlo --partition-stablehlo-program` 已删除，因为 Shardy/SPMD 不属于 frontend
   verifier tool；`wafer-compile-stablehlo --compile-stablehlo-program-to-cabi` 也已删除，因为 R3/R6/R7
   还没有从真实 frontend/SPMD program 到 C ABI/package 的完整主线合同。当前 `wafer-opt` named pipeline
-  只保留 `wafer-propagate-stablehlo-sharding` 和 `wafer-lower-stablehlo-to-linalg`。旧显式
-  C ABI issue、ring collective、SPM/DDR trial 和 single-tile materialization pass 链已删除；不要恢复成用户级 compile flow。
+  只保留 `wafer-propagate-stablehlo-sharding` 和 `wafer-lower-stablehlo-to-linalg` 作为内部/局部
+  debug 覆盖。旧显式 C ABI issue、ring collective、SPM/DDR trial 和 single-tile materialization
+  pass 链已删除；不要恢复成用户级 compile flow。
 - ODS op 如果引入 `RecursiveMemoryEffects`、`ReturnLike` 等 interface trait，公开 dialect 头要
   include 对应 C++ interface header，`WaferIR` 也要显式 link 对应 MLIR interface target。
 - ODS op 如果直接使用 MLIR `TilingInterface` 这类 upstream op interface，避免让 TableGen 在

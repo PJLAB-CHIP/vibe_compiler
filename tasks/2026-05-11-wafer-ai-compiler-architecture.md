@@ -772,9 +772,9 @@ Pass pipeline 建议：
 - completion gate。
 
 pass 名、tool flag、test 名和任务号只作为实现索引；架构边界仍由 IR / program contract 和
-verifier/lowering 责任定义。主线 gate 必须通过 Wafer named pipeline 或 `wafer-opt` program pipeline
-重放已完成上游链路，不能依赖 integration test 手动拼 pass、Python helper 或手写 fixture 来表示
-长期 compile flow。
+verifier/lowering 责任定义。主线 gate 必须通过 `wafer-opt` program pipeline 重放已完成上游链路；
+Wafer named MLIR pipeline 只作为内部构件或局部 debug/unit 覆盖。不能依赖 integration test
+手动拼 pass、Python helper 或手写 fixture 来表示长期 compile flow。
 
 当前用户级 / Integration 主链路不直接暴露下面这些单 pass。2026-06-02 后由 `WaferPipelines`
 注册按 IR 边界命名且真实成立的 pipeline：`wafer-propagate-stablehlo-sharding` 和
@@ -783,7 +783,8 @@ verifier/lowering 责任定义。主线 gate 必须通过 Wafer named pipeline �
 XLA SPMD partitioner；partitioned / replicated-local StableHLO program directory 必须由 P2.S2 的 Wafer-owned
 SPMD partition compiler stage 消费 sharding propagation stage 输出的 StableHLO/SDY IR 后产出。
 `wafer-compile-stablehlo` 只保留 frontend / StableHLO program verifier；program-level
-P2.S2 partition 入口是 `wafer-opt --partition-stablehlo-program`。`wafer-lower-linalg-to-cabi`、`wafer-lower-stablehlo-to-cabi`、
+P2.S2/R2.4 入口统一在 `wafer-opt --program-pipeline=stablehlo-spmd` 和
+`wafer-opt --program-pipeline=stablehlo-spmd-to-linalg` 下。`wafer-lower-linalg-to-cabi`、`wafer-lower-stablehlo-to-cabi`、
 `wafer-lower-tile-communication-to-cabi` 和 `wafer-compile-stablehlo --compile-stablehlo-program-to-cabi`
 已删除；旧 single-tile/C ABI/ring/SPM/DDR unit/debug pass 链也已删除。`tx8` 只保留为底层硬件/
 依赖事实名，不作为 compiler target。下面列表描述长期阶段边界，不是要求用户手动串 pass。
