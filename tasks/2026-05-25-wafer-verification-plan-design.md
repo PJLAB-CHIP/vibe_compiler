@@ -105,14 +105,12 @@ Single-tile local compute：
   输入只保留为局部 verifier、lowering pattern 或 bring-up fixture。
 - R2.4-pre 之后，主链路 gate 必须通过 Wafer named pipeline 或用户级 driver mode 重放上述链路；
   单独拼 `wafer-opt` pass、`shardy-sdy-opt`、PyTorch/XLA runtime 环境变量和 verifier tool 只能作为
-  unit/debug 覆盖。当前用户级 compile 入口是
-  `wafer-import-model --compile-stablehlo-bundle-to-cabi`；sharding propagation 阶段检查入口是
-  `wafer-import-model --propagate-stablehlo-sharding`。`wafer-opt` named pipeline 入口是
-  `wafer-propagate-stablehlo-sharding`、`wafer-lower-stablehlo-to-linalg`、
-  `wafer-lower-linalg-to-cabi`、`wafer-lower-stablehlo-to-cabi` 和
-  `wafer-lower-tile-communication-to-cabi`。compile driver 必须拒绝带 pre-SPMD sharding seed 但没有
-  post-SPMD marker 的 bundle，避免绕过 Shardy/XLA SPMD。用户级 target 名称统一为 `wafer`，并由
-  pipeline option materialize/校验。
+  unit/debug 覆盖。2026-06-02 后，当前用户级 artifact 入口是
+  `wafer-import-model --verify-stablehlo-bundle`、`--propagate-stablehlo-sharding` 和
+  `--partition-stablehlo-bundle`；`--compile-stablehlo-bundle-to-cabi` 已删除。`wafer-opt` named
+  pipeline 入口只保留 `wafer-propagate-stablehlo-sharding` 和 `wafer-lower-stablehlo-to-linalg`。
+  C ABI issue、single-tile materialization 和 ring lowering 只作为 unit/debug pass 覆盖，不能作为
+  当前主链路 compile gate。
 - `wafer.group` 到 `wafer.tile_region` 可生成单 tile load/compute/store。
 - SPM allocation trial 成功。
 - DDR external input/output 或 constant read-only demand 可绑定。
@@ -136,16 +134,19 @@ Direct DTE p2p：
 - fixed-size unicast DTE helper lowering 合法。
 - DTE wait 与 local compute drain 分离。
 - FSM / packet / stream resource 不冲突。
-- 当前 integration gate：`test/Integration/p2p-comm-gate.mlir` 覆盖 placement-verified p2p
-  send/recv/wait 到 `wafer.abi.dte_*` issue op。
+- 当前 unit gate：`test/Transforms/comm-local-c-abi-issues.mlir` 覆盖 tile-level p2p
+  send/recv/wait 到 `wafer.abi.dte_*` issue op。该 gate 不代表 tensor collective handoff 或 runtime
+  launch 已完成。
 
 Single-card collective：
 
 - ring all-gather / reduce-scatter / all-reduce 可追溯到 unicast steps。
 - 每步 send/recv/wait token 和 buffer lifetime 合法。
 - raw non-unicast DTE 不作为 correctness path。
-- 当前 integration gate：`test/Integration/single-card-collective-gate.mlir` 覆盖 `wafer.comm`
-  all-gather/all-reduce 到 ring p2p、Direct DTE ABI 和 elementwise ABI。
+- 当前 unit gate：`test/Transforms/ring-all-gather*.mlir`、`ring-reduce-scatter.mlir`、
+  `ring-all-reduce.mlir` 以及 ring/C ABI issue fixtures 覆盖 `wafer.comm` all-gather/all-reduce
+  到 explicit ring p2p 和 Direct DTE ABI。该 gate 是 fixed ring transform coverage，不是 R2.4 tensor
+  collective handoff 或 communication planner。
 
 Partitioned StableHLO collective handoff：
 

@@ -2,7 +2,6 @@
 
 #include "Wafer/Transforms/Passes.h"
 
-#include "Support/AttentionGemmUtils.h"
 #include "Support/ElementwiseUtils.h"
 #include "Wafer/IR/WaferDialect.h"
 
@@ -67,18 +66,6 @@ static bool canFormSingleMatmulGroup(mlir::linalg::MatmulOp matmul) {
   if (!llvm::all_of(matmul.getInputs(), isTensorValue))
     return false;
   if (!llvm::all_of(matmul.getOutputs(), isTensorValue))
-    return false;
-  return true;
-}
-
-static bool canFormSingleAttentionGemmGroup(mlir::linalg::GenericOp generic) {
-  if (generic->getParentOfType<wafer::GroupOp>())
-    return false;
-  if (!matchAttentionGemm(generic))
-    return false;
-  if (!llvm::all_of(generic.getDpsInputs(), isTensorValue))
-    return false;
-  if (!llvm::all_of(generic.getDpsInits(), isTensorValue))
     return false;
   return true;
 }
@@ -250,9 +237,7 @@ struct FormGroupsPass
         return;
       }
       if (auto generic = mlir::dyn_cast<mlir::linalg::GenericOp>(op)) {
-        if (canFormSingleAttentionGemmGroup(generic))
-          roots.push_back(op);
-        else if (canFormSingleElementwiseGroup(generic))
+        if (canFormSingleElementwiseGroup(generic))
           roots.push_back(op);
         return;
       }

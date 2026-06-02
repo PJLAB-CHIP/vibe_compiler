@@ -1,6 +1,6 @@
 # Wafer Compiler Progress
 
-更新时间：2026-06-01
+更新时间：2026-06-02
 
 本文件只记录当前看板、状态和下一步。设计边界、实现细节、验证记录和历史复盘分别以对应
 `tasks/` 设计文档、git commit 和审计文档为准，不在这里重复。
@@ -78,6 +78,11 @@ P7/P8/P9 依赖 P0-P6 主链路恢复，不提前推进。
   tile_region / SPM materialization / placement 明确后 materialize。
 - `wafer-lower-stablehlo-to-linalg` 只做 local compute normalization；不承载 sharding propagation、
   SPMD partition、group、placement、SPM/DDR 或 C ABI。
+- `wafer-lower-linalg-to-cabi`、`wafer-lower-stablehlo-to-cabi`、
+  `wafer-lower-tile-communication-to-cabi` 和
+  `wafer-import-model --compile-stablehlo-bundle-to-cabi` 已删除；single-tile materialization、ring
+  lowering 和 C ABI issue lowering 只保留为 explicit unit/debug pass 覆盖，不能作为主线 compile
+  完成证明。
 - P2.S2 已完成当前 artifact gate：`wafer-import-model --partition-stablehlo-bundle` 负责 bundle
   verify、in-memory Wafer sharding propagation、临时 propagated bundle、pinned-XLA helper 调用和输出
   bundle verifier。helper 执行 StableHLO/SDY -> XLA HLO、`SpmdPrepare` / `SpmdPartitioner` /

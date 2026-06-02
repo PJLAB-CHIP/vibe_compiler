@@ -1,5 +1,4 @@
 add_mlir_library(WaferTransforms
-  Support/AttentionGemmUtils.cpp
   Support/ElementwiseUtils.cpp
   StableHLOToLinalg/NormalizeConstants.cpp
   StableHLOToLinalg/LowerStablehloDot.cpp
@@ -7,8 +6,6 @@ add_mlir_library(WaferTransforms
   StableHLOToLinalg/LowerStablehloReduce.cpp
   StableHLOToLinalg/LowerStablehloShape.cpp
   GroupFormation/FormGroups.cpp
-  GroupScheduling/CheckRootTileCandidates.cpp
-  TileRegionMaterialization/MaterializeMultiTileNoComm.cpp
   TileRegionMaterialization/MaterializeSingleTile.cpp
   SPMBufferize/CheckSPMAllocation.cpp
   LayoutMaterialization/CompactLayoutAssignment.cpp

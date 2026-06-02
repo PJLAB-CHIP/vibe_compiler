@@ -1,4 +1,4 @@
-// RUN: wafer-opt --wafer-form-groups --wafer-check-root-tile-candidates --wafer-materialize-single-tile %s | FileCheck %s
+// RUN: wafer-opt --wafer-form-groups --wafer-materialize-single-tile %s | FileCheck %s
 
 module {
   func.func @single_matmul(

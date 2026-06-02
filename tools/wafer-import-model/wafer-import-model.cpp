@@ -16,7 +16,6 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Verifier.h"
-#include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassManager.h"
 #endif
@@ -46,8 +45,6 @@ void printHelp() {
                << "    --xla-spmd-partitioner-helper <path>\n"
                << "    [--default-tile-count=16]\n";
 #endif
-  llvm::outs() << "  --compile-stablehlo-bundle-to-cabi <bundle-dir>\n"
-               << "    [--target=wafer] [--tile-mapping=single]\n";
 #else
   llvm::outs() << "  importer dependencies are disabled in this build\n";
 #endif
@@ -67,71 +64,6 @@ void registerToolDialects(mlir::DialectRegistry &registry) {
   wafer::registerAllDialects(registry);
   wafer::registerImporterDialects(registry);
   mlir::func::registerInlinerExtension(registry);
-}
-
-bool isPostSpmdMarker(llvm::StringRef name) {
-  return name == "mhlo.spmd_parameters_shardings";
-}
-
-bool isPreSpmdShardingAttr(mlir::NamedAttribute attr) {
-  llvm::StringRef name = attr.getName().getValue();
-  if (name == "mhlo.sharding")
-    return true;
-  if (name == "mhlo.spmd_parameters_sharding")
-    return true;
-  return name == "sdy.sharding";
-}
-
-bool hasPostSpmdMarker(mlir::ModuleOp module) {
-  if (module->getAttr("mhlo.spmd_parameters_shardings"))
-    return true;
-
-  bool found = false;
-  module.walk([&](mlir::Operation *op) {
-    if (op->getAttr("mhlo.spmd_parameters_shardings")) {
-      found = true;
-      return mlir::WalkResult::interrupt();
-    }
-    return mlir::WalkResult::advance();
-  });
-  return found;
-}
-
-bool hasPreSpmdShardingSeed(mlir::ModuleOp module) {
-  bool found = false;
-  module.walk([&](mlir::Operation *op) {
-    if (op->getName().getStringRef().starts_with("sdy.")) {
-      found = true;
-      return mlir::WalkResult::interrupt();
-    }
-
-    for (mlir::NamedAttribute attr : op->getAttrs()) {
-      if (isPostSpmdMarker(attr.getName().getValue()))
-        continue;
-      if (isPreSpmdShardingAttr(attr)) {
-        found = true;
-        return mlir::WalkResult::interrupt();
-      }
-    }
-
-    if (auto func = mlir::dyn_cast<mlir::FunctionOpInterface>(op)) {
-      for (unsigned i = 0, e = func.getNumArguments(); i != e; ++i)
-        for (mlir::NamedAttribute attr : func.getArgAttrs(i))
-          if (isPreSpmdShardingAttr(attr)) {
-            found = true;
-            return mlir::WalkResult::interrupt();
-          }
-      for (unsigned i = 0, e = func.getNumResults(); i != e; ++i)
-        for (mlir::NamedAttribute attr : func.getResultAttrs(i))
-          if (isPreSpmdShardingAttr(attr)) {
-            found = true;
-            return mlir::WalkResult::interrupt();
-          }
-    }
-
-    return mlir::WalkResult::advance();
-  });
-  return found;
 }
 
 int verifyImportResult(llvm::StringRef filename) {
@@ -420,37 +352,6 @@ int partitionStableHLOBundle(llvm::StringRef bundlePath,
 }
 #endif
 
-int compileStableHLOBundleToCAbi(llvm::StringRef bundlePath,
-                                 llvm::StringRef target,
-                                 llvm::StringRef tileMapping) {
-  mlir::DialectRegistry registry;
-  registerToolDialects(registry);
-
-  mlir::MLIRContext context(registry);
-  context.loadAllAvailableDialects();
-
-  mlir::OwningOpRef<mlir::ModuleOp> module =
-      parseAndVerifyStableHLOBundle(bundlePath, context);
-  if (!module)
-    return 1;
-
-  if (hasPreSpmdShardingSeed(*module) && !hasPostSpmdMarker(*module)) {
-    llvm::errs() << "wafer-import-model: StableHLO bundle contains pre-SPMD "
-                    "sharding seeds; run Shardy/XLA SPMD partitioning before "
-                    "Wafer C ABI lowering\n";
-    return 1;
-  }
-
-  mlir::PassManager pm(&context);
-  wafer::buildStablehloToCAbiPipeline(pm, target, tileMapping);
-  if (mlir::failed(pm.run(*module)))
-    return 1;
-
-  module->print(llvm::outs());
-  llvm::outs() << "\n";
-  return 0;
-}
-
 #endif
 
 } // namespace
@@ -472,9 +373,6 @@ int main(int argc, char **argv) {
   std::string partitionBundlePath;
   std::string partitionOutputBundlePath;
   std::string spmdPartitionerHelperPath;
-  std::string compileBundlePath;
-  std::string target = "wafer";
-  std::string tileMapping = "single";
   int64_t defaultTileCount = 16;
   for (int i = 1; i < argc; ++i) {
     llvm::StringRef arg(argv[i]);
@@ -547,16 +445,6 @@ int main(int argc, char **argv) {
     }
 #endif
 
-    if (arg == "--compile-stablehlo-bundle-to-cabi") {
-      if (i + 1 >= argc) {
-        llvm::errs() << "wafer-import-model: missing "
-                        "--compile-stablehlo-bundle-to-cabi directory\n";
-        return 1;
-      }
-      compileBundlePath = argv[++i];
-      continue;
-    }
-
     if (arg == "--output-bundle") {
       if (i + 1 >= argc) {
         llvm::errs() << "wafer-import-model: missing --output-bundle value\n";
@@ -590,13 +478,6 @@ int main(int argc, char **argv) {
       continue;
     }
 
-    constexpr llvm::StringRef compileBundlePrefix =
-        "--compile-stablehlo-bundle-to-cabi=";
-    if (arg.starts_with(compileBundlePrefix)) {
-      compileBundlePath = arg.drop_front(compileBundlePrefix.size()).str();
-      continue;
-    }
-
     if (arg == "--default-tile-count") {
       if (i + 1 >= argc) {
         llvm::errs() << "wafer-import-model: missing --default-tile-count "
@@ -625,36 +506,6 @@ int main(int argc, char **argv) {
       continue;
     }
 
-    if (arg == "--target") {
-      if (i + 1 >= argc) {
-        llvm::errs() << "wafer-import-model: missing --target value\n";
-        return 1;
-      }
-      target = argv[++i];
-      continue;
-    }
-
-    constexpr llvm::StringRef targetPrefix = "--target=";
-    if (arg.starts_with(targetPrefix)) {
-      target = arg.drop_front(targetPrefix.size()).str();
-      continue;
-    }
-
-    if (arg == "--tile-mapping") {
-      if (i + 1 >= argc) {
-        llvm::errs() << "wafer-import-model: missing --tile-mapping value\n";
-        return 1;
-      }
-      tileMapping = argv[++i];
-      continue;
-    }
-
-    constexpr llvm::StringRef tileMappingPrefix = "--tile-mapping=";
-    if (arg.starts_with(tileMappingPrefix)) {
-      tileMapping = arg.drop_front(tileMappingPrefix.size()).str();
-      continue;
-    }
-
     llvm::errs() << "wafer-import-model: unknown argument: " << arg << "\n";
     printHelp();
     return 1;
@@ -668,8 +519,6 @@ int main(int argc, char **argv) {
   if (!shardingPropagationBundlePath.empty())
     ++actionCount;
   if (!partitionBundlePath.empty())
-    ++actionCount;
-  if (!compileBundlePath.empty())
     ++actionCount;
   if (actionCount > 1) {
     llvm::errs() << "wafer-import-model: choose exactly one action\n";
@@ -690,9 +539,6 @@ int main(int argc, char **argv) {
         partitionBundlePath, partitionOutputBundlePath,
         spmdPartitionerHelperPath, defaultTileCount);
 #endif
-  if (!compileBundlePath.empty())
-    return compileStableHLOBundleToCAbi(compileBundlePath, target, tileMapping);
-
   llvm::errs() << "wafer-import-model: unknown or incomplete arguments\n";
   printHelp();
   return 1;

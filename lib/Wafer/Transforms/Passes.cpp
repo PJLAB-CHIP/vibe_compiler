@@ -15,9 +15,7 @@ void registerWaferTransformPasses() {
     mlir::registerPass(createLowerStablehloShapePass);
     mlir::registerPass(createNormalizeConstantsPass);
     mlir::registerPass(createFormGroupsPass);
-    mlir::registerPass(createCheckRootTileCandidatesPass);
     mlir::registerPass(createMaterializeSingleTilePass);
-    mlir::registerPass(createMaterializeMultiTileNoCommPass);
     mlir::registerPass(createCompactLayoutAssignmentPass);
     mlir::registerPass(createCheckSPMAllocationPass);
     mlir::registerPass(createMaterializeDDRExternalBindingsPass);

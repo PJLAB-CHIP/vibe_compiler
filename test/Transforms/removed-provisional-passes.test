@@ -1,0 +1,6 @@
+# RUN: printf 'module {}\n' > %t.empty.mlir
+# RUN: not wafer-opt --wafer-check-root-tile-candidates %t.empty.mlir 2>&1 | FileCheck %s --check-prefix=NO-ROOT-TILE
+# RUN: not wafer-opt --wafer-materialize-multi-tile-no-comm %t.empty.mlir 2>&1 | FileCheck %s --check-prefix=NO-MULTI-NOCOMM
+
+# NO-ROOT-TILE: Unknown command line argument '--wafer-check-root-tile-candidates'
+# NO-MULTI-NOCOMM: Unknown command line argument '--wafer-materialize-multi-tile-no-comm'

@@ -148,16 +148,14 @@ compute、comm 和 sync op 能通过 layout/materialization/resource interface �
 
 当前实现状态：
 
-- `--wafer-materialize-single-tile` 覆盖 single-tile local compute：一个 GEMM group materialize 成一个
-  `wafer.tile_region`。
-- `--wafer-materialize-multi-tile-no-comm` 覆盖 multi-tile no-communication 起点：该 pass 要求当前 module 中存在唯一
-  `wafer.placement.map`，按 `logical_rank_count` 生成多个独立 `wafer.tile_region`，每个 region
-  都是 load-GEMM-store fixture，且不插入 `wafer.comm`。
+- `--wafer-materialize-single-tile` 只作为 explicit unit/debug pass，覆盖 accepted local single-root
+  group 到一个 `wafer.tile_region` 的 load/compute/store bridge。
+- `--wafer-materialize-multi-tile-no-comm` 已删除。旧实现按 placement rank 数 clone whole-tensor
+  tile_region，既没有 per-rank shard slice，也没有 output merge/writeback contract，不能作为
+  multi-tile materialization 证据。
 
-P4.3 还不把 per-tile logical rank、block id 或 physical coordinate 传入 region body；这些属于
-P4.4 per-tile launch args / identity lowering。当前 multi-tile outlining 只证明多个 tile-local
-execution scopes 可以从 accepted placement map 派生出来，不能被理解成完整 runtime launch
-contract。
+P4.3/P4.4 需要重新建立 per-tile logical rank、block id、physical coordinate、local shard slice 和
+launch args / identity lowering 的 IR contract。当前没有 multi-tile no-comm 主线 materialization。
 
 ## 7. Verifier
 

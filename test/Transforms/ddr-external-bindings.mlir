@@ -1,4 +1,4 @@
-// RUN: wafer-opt --wafer-form-groups --wafer-check-root-tile-candidates --wafer-materialize-single-tile --wafer-check-spm-allocation --wafer-materialize-ddr-external-bindings %s | FileCheck %s
+// RUN: wafer-opt --wafer-form-groups --wafer-materialize-single-tile --wafer-check-spm-allocation --wafer-materialize-ddr-external-bindings %s | FileCheck %s
 
 module {
   func.func @single_matmul(

@@ -5,8 +5,6 @@
 
 #include <cstdint>
 
-#include "llvm/ADT/StringRef.h"
-
 namespace mlir {
 class OpPassManager;
 } // namespace mlir
@@ -19,17 +17,6 @@ void buildStablehloToLinalgPipeline(mlir::OpPassManager &pm);
 void buildStablehloShardingPropagationPipeline(mlir::OpPassManager &pm,
                                                int64_t defaultTileCount = 16);
 #endif
-
-void buildLinalgToCAbiPipeline(mlir::OpPassManager &pm,
-                               llvm::StringRef target = "wafer",
-                               llvm::StringRef tileMapping = "single");
-
-void buildStablehloToCAbiPipeline(mlir::OpPassManager &pm,
-                                  llvm::StringRef target = "wafer",
-                                  llvm::StringRef tileMapping = "single");
-
-void buildTileCommunicationToCAbiPipeline(mlir::OpPassManager &pm,
-                                          llvm::StringRef target = "wafer");
 
 void registerWaferPipelines();
 

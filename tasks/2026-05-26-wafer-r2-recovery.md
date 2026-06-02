@@ -40,23 +40,16 @@ body 必须由 P2.S2 的 Wafer-owned stage 生成。后续主链路
 bin 只负责注册和调用，单 pass flag 只保留为 unit/debug 入口。用户级 compile target 名称统一为
 `wafer`；`tx8` 只保留为硬件/依赖逆向资料中的事实名，不作为 compiler driver target 字符串。
 
-2026-06-01 实现结论：R2.4-pre 已新增 `WaferPipelines` 库并由 `wafer-opt` 注册。当前已收口的
-named pipeline 是 `wafer-propagate-stablehlo-sharding`、`wafer-lower-stablehlo-to-linalg`、
-`wafer-lower-linalg-to-cabi`、`wafer-lower-stablehlo-to-cabi` 和
-`wafer-lower-tile-communication-to-cabi`。这些名字按 IR 输入/输出和职责命名，不按任务号、case
-或 workload 命名；`wafer-propagate-stablehlo-sharding` 组合 Wafer default input seed 与
-Shardy propagation，不冒充 XLA SPMD partitioner。`wafer-lower-stablehlo-to-cabi`
-明确组合 StableHLO->Linalg 与 Linalg->C ABI 两层。`wafer-import-model
---propagate-stablehlo-sharding` 是 pre-SPMD bundle 到 Shardy propagation 的阶段检查入口；
-`wafer-import-model --compile-stablehlo-bundle-to-cabi` 是用户级 compile 入口，从 verified local / post-SPMD
-partitioned StableHLO bundle 进入 StableHLO->C ABI pipeline，并拒绝带 pre-SPMD sharding seed 但
-没有 post-SPMD marker 的 bundle，防止绕过 Shardy/XLA SPMD。当前没有保留 Python post-SPMD
-产物入口；P2.S2 必须接上 Wafer-owned XLA SPMD partition stage。
-pipeline option `target=wafer` 会 materialize/校验 module 的
-`#wafer.target<wafer>`；非 `wafer` target 会诊断。Integration 主链路 gate 已改为分层 named
-pipeline 或 driver mode；lit 同时覆盖手写最小 bundle、真实 source-built PyTorch/XLA 小尺寸
-export bundle 和 Shardy propagation driver。单 pass flags 继续只作为 Transforms/StageConnections
-的局部 unit/debug 覆盖。
+2026-06-02 清理结论：R2.4-pre 只保留当前真实成立的 named pipeline：
+`wafer-propagate-stablehlo-sharding` 和 `wafer-lower-stablehlo-to-linalg`。
+`wafer-lower-linalg-to-cabi`、`wafer-lower-stablehlo-to-cabi`、
+`wafer-lower-tile-communication-to-cabi` 以及 `wafer-import-model
+--compile-stablehlo-bundle-to-cabi` 已删除，因为它们把 R3/R6/R7 尚未完成的 group/tile/resource/C ABI
+链路包装成用户级 compile flow。`wafer-import-model --propagate-stablehlo-sharding` 仍是
+pre-SPMD bundle 到 Shardy propagation 的阶段检查入口；P2.S2 的用户级入口是
+`wafer-import-model --partition-stablehlo-bundle`，负责消费 propagation stage 输出并调用
+Wafer-owned XLA SPMD partition helper。显式 C ABI issue、ring collective 和 single-tile
+materialization pass 只保留为 Transforms/StageConnections 的局部 unit/debug 覆盖。
 
 2026-06-01 pass 边界复查结论：当前 `test/Spmd` 两个 case 只覆盖 default input seed 和
 SDY/Shardy artifact parse/verify，不覆盖 XLA SPMD partitioner，也不输出 rank-local StableHLO。
@@ -126,7 +119,7 @@ boundary、tile shape、multi-stage schedule、SPM residency 或 C ABI issue seq
 | 子结构 | 当前证据 | 当前结论 | 仍未完成 |
 | --- | --- | --- | --- |
 | dot / 2D GEMM | `test/Frontend/lower-stablehlo-dot-to-linalg.mlir`、`stablehlo-dot-artifact.mlir`、`linalg-gemm-artifact.mlir` | StableHLO 2D dot 可降到 structured linalg matmul 输入 | accumulator dtype policy 和更宽 batch matmul family 仍需扩展 |
-| attention QK^T / AV | `lower-stablehlo-attention-score.mlir`、`lower-stablehlo-attention-value.mlir`、`lower-stablehlo-attention-softmax-value.mlir` | rank-4 attention score/value 的 transpose relation 来自 dot dimension numbers 和 indexing map | 不代表 attention schedule、SPM residency 或 workspace 已完成 |
+| attention QK^T / AV | `lower-stablehlo-attention-score.mlir`、`lower-stablehlo-attention-value.mlir`、`lower-stablehlo-attention-softmax-value.mlir` | rank-4 attention dot 目前保留为 StableHLO `dot_general`，不再特判成 `linalg.generic` contraction | 通用 batched contraction lowering、attention schedule、SPM residency 和 workspace 均未完成 |
 | elementwise / broadcast | `lower-stablehlo-elementwise.mlir`、`elementwise-broadcast-local-c-abi-issues.mlir`、`lower-stablehlo-projection-residual.mlir` | add/sub/mul/div/tanh/exp 等当前子集进入 `linalg.generic` / `arith` / `math` dataflow | complex broadcast、compare/select、mask add policy 仍未闭环 |
 | reduce | `lower-stablehlo-reduce.mlir`、norm/softmax staged tests | fine-grained StableHLO reduce 到 `linalg.reduce` 的 constant-init 子集保留 reduction dimension 和 kind | non-constant-init reduce、NaN/overflow/approx policy 仍未闭环 |
 | softmax | `lower-stablehlo-softmax-staged.mlir` | row max、subtract、exp、row sum、divide 的 fine-grained StableHLO SSA dataflow 可 lower 到 `linalg.reduce` / `linalg.generic` staged IR | 历史 acceptance checker 已删除；multi-stage workspace/materialization 属 R3/R5/R6 后续 |
@@ -204,30 +197,22 @@ R2.4-pre 完成后，上述消费链不能再依赖用户或 lit 手动串联多
 debug/unit 入口，但这些 flag 不能被写成用户级 compile 流程。Python post-SPMD helper 已删除；
 不得把 frontend capture 写成 SPMD partition 或用户编译入口。
 
-当前 R2.4-pre 落地的 Wafer pipeline / driver 边界：
+当前 R2.4-pre 落地后仍保留的 Wafer pipeline / driver 边界：
 
 - `wafer-import-model --propagate-stablehlo-sharding`：pre-SPMD sharding propagation 检查入口。输入是
   `functions/forward.mlir`、`functions/forward.meta` 和可选 weight payload 组成的 StableHLO bundle；
   driver 先执行 bundle verifier，再调用 `wafer-propagate-stablehlo-sharding` 的 C++ builder，输出
   default input seed + Shardy propagation 后的 StableHLO/SDY module。
-- `wafer-import-model --compile-stablehlo-bundle-to-cabi`：local / partitioned StableHLO artifact
-  compile 入口。输入是 `functions/forward.mlir`、`functions/forward.meta` 和可选 weight/shard payload 组成的
-  StableHLO bundle；driver 先执行 bundle verifier，再调用 `wafer-lower-stablehlo-to-cabi` 的 C++
-  builder。带 pre-SPMD sharding seed 但没有 post-SPMD marker 的 bundle 会诊断，不能绕过
-  Shardy/XLA SPMD 直接下沉。
 - `wafer-propagate-stablehlo-sharding`：StableHLO/SDY sharding seed -> propagated StableHLO/SDY。
   该 pipeline 只负责 no-user default seed 和 Shardy propagation，不产生 partitioned local body；
   P2.S2 必须让 Wafer 自己消费 sharding propagation stage 的输出 artifact 并产出 partitioned bundle。
 - `wafer-lower-stablehlo-to-linalg`：StableHLO tensor IR -> Linalg/Tensor/Arith/Math/SCF 结构化
   tensor IR。它不做 group/tile/SPM/DDR/C ABI，也不承载 target 或 tile mapping。
-- `wafer-lower-linalg-to-cabi`：已是 structured tensor/linalg 的 tensor compute -> group/tile/SPM/DDR
-  -> C ABI issue IR；`tile-mapping=single` 是默认 materialization，
-  `tile-mapping=multi-tile-no-comm` 只覆盖已有 no-communication tile materialization 路线。
-- `wafer-lower-stablehlo-to-cabi`：StableHLO tensor IR -> Linalg/Tensor IR -> group/tile/SPM/DDR ->
-  C ABI issue IR。它组合前两层的 body，不是单独一套隐藏转换。
-- `wafer-lower-tile-communication-to-cabi`：已经处在 tile-level `wafer.comm` / p2p IR 的通信 -> C ABI
-  issue IR。它不是 R2.4 tensor collective handoff；R2.4 仍要从 partitioned StableHLO collective
-  normalizes 到 LinalgExt-style tensor collective，再进入 group/tiling。
+
+已撤回的旧入口：`wafer-import-model --compile-stablehlo-bundle-to-cabi`、
+`wafer-lower-linalg-to-cabi`、`wafer-lower-stablehlo-to-cabi` 和
+`wafer-lower-tile-communication-to-cabi` 不再注册。single-tile/C ABI/ring lowering 只作为显式
+unit pass 覆盖，不作为主线完成证明。
 
 P2.F1 主链路 artifact 采用 `4096x4096 @ 4096x4096` f32 matmul + bias + tanh + residual 最小验证。
 该规模用于给后续 tiling、SPM/DDR resource、resident constant 和 package gate 提供非 trivial

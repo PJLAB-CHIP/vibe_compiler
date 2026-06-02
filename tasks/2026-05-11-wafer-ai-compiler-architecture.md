@@ -775,21 +775,18 @@ verifier/lowering 责任定义。主线 gate 必须通过 Wafer named pipeline �
 重放已完成上游链路，不能依赖 integration test 手动拼 pass、Python helper 或手写 fixture 来表示
 长期 compile flow。
 
-当前用户级 / Integration 主链路不直接暴露下面这些单 pass。R2.4-pre 后由 `WaferPipelines`
-注册按 IR 边界命名的 pipeline：`wafer-propagate-stablehlo-sharding`、
-`wafer-lower-stablehlo-to-linalg`、`wafer-lower-linalg-to-cabi`、
-`wafer-lower-stablehlo-to-cabi` 和 `wafer-lower-tile-communication-to-cabi`。
+当前用户级 / Integration 主链路不直接暴露下面这些单 pass。2026-06-02 后由 `WaferPipelines`
+注册按 IR 边界命名且真实成立的 pipeline：`wafer-propagate-stablehlo-sharding` 和
+`wafer-lower-stablehlo-to-linalg`。
 `wafer-propagate-stablehlo-sharding` 组合 Wafer default input seed 和 Shardy propagation，但不冒充
 XLA SPMD partitioner；partitioned / replicated-local StableHLO bundle 必须由 P2.S2 的 Wafer-owned
 SPMD partition artifact stage 消费 sharding propagation stage 输出的 StableHLO/SDY IR 后产出。
-`wafer-lower-stablehlo-to-cabi` 组合 StableHLO->Linalg 与
-Linalg->C ABI 两层。`wafer-import-model --propagate-stablehlo-sharding` 是 sharding propagation
-阶段检查入口，对 pre-SPMD bundle 运行 Shardy propagation；用户级 compile 入口是
-`wafer-import-model --compile-stablehlo-bundle-to-cabi`，只从 verified local / post-SPMD partitioned
-bundle 进入 C ABI lowering，并拒绝带
-pre-SPMD sharding seed 但没有 post-SPMD marker 的 bundle。这些 pipeline 通过 option
-`target=wafer` materialize/校验 `#wafer.target<wafer>`；`tx8` 只保留为底层硬件/依赖事实名，不作为
-compiler driver target。下面列表描述长期阶段边界，不是要求用户手动串 pass。
+`wafer-import-model --propagate-stablehlo-sharding` 是 sharding propagation 阶段检查入口，对
+pre-SPMD bundle 运行 Shardy propagation；`wafer-import-model --partition-stablehlo-bundle` 是
+P2.S2 partition artifact 入口。`wafer-lower-linalg-to-cabi`、`wafer-lower-stablehlo-to-cabi`、
+`wafer-lower-tile-communication-to-cabi` 和 `wafer-import-model --compile-stablehlo-bundle-to-cabi`
+已删除；single-tile/C ABI/ring lowering 只保留为 unit/debug pass 覆盖。`tx8` 只保留为底层硬件/
+依赖事实名，不作为 compiler driver target。下面列表描述长期阶段边界，不是要求用户手动串 pass。
 
 ```text
 ModelImport/FrontendArtifact

@@ -174,8 +174,9 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - 有 StableHLO textual artifact tests、`wafer-normalize-constants`、dot/shape/elementwise/reduce
   lowering pass，以及 norm/softmax/projection/MLP frontend lowering fixtures；历史 case-specific
   acceptance passes 已删除。
-- 有 attention QK^T / AV rank-4 `dot_general` lowering 和 full local transformer block structured
-  fixture。
+- attention QK^T / AV rank-4 `dot_general` 不再由 `wafer-lower-stablehlo-dot` 特判 lowering；full
+  local transformer fixture 只证明前段 reduce/elementwise/shape 和 rank-2 GEMM 子图的 structured
+  tensor dataflow。
 - `wafer-import-model` 已通过 `WaferFrontend` verifier 接收 pre-exported StableHLO / MLIR artifact，
   并覆盖 graph break、eager fallback、bounded dynamic shape 诊断；P2.F1 进一步验证 PyTorch/XLA
   bundle `forward.meta` / pre-SPMD `data/<parameter>` 与 MLIR function signature 一致；post-SPMD
@@ -240,20 +241,18 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 
 当前实现：
 
-- 有 `wafer-form-groups`、`wafer-check-root-tile-candidates`、`wafer-materialize-single-tile`、
-  `wafer-compact-layout-assignment`、`wafer-check-spm-allocation`、`wafer-materialize-ddr-external-bindings`
-  和 `wafer-lower-tile-region-to-c-abi`。
-- R2.4-pre 后，Integration 主链路通过 `WaferPipelines` 的
-  `wafer-propagate-stablehlo-sharding` / `wafer-lower-stablehlo-to-linalg` /
-  `wafer-lower-linalg-to-cabi` / `wafer-lower-stablehlo-to-cabi` /
-  `wafer-lower-tile-communication-to-cabi` 重放；用户级 artifact 入口通过
-  `wafer-import-model --propagate-stablehlo-sharding` 先校验 pre-SPMD bundle 再调用 Shardy
-  propagation，通过 `wafer-import-model --compile-stablehlo-bundle-to-cabi` 先校验 local/partitioned
-  bundle 再调用 StableHLO->C ABI builder。compile driver 会拒绝 pre-SPMD sharding seed 绕过
-  Shardy/XLA SPMD。单 pass flags 只保留为局部 unit/debug 入口。
+- 有 `wafer-form-groups`、`wafer-materialize-single-tile`、`wafer-compact-layout-assignment`、
+  `wafer-check-spm-allocation`、`wafer-materialize-ddr-external-bindings` 和
+  `wafer-lower-tile-region-to-c-abi` 作为显式 unit/debug pass 覆盖。
+- 2026-06-02 后，Integration 主链路不再注册 C ABI named pipeline。`WaferPipelines` 只保留
+  `wafer-propagate-stablehlo-sharding` 和 `wafer-lower-stablehlo-to-linalg`；
+  `wafer-lower-linalg-to-cabi`、`wafer-lower-stablehlo-to-cabi`、
+  `wafer-lower-tile-communication-to-cabi` 以及
+  `wafer-import-model --compile-stablehlo-bundle-to-cabi` 已删除，避免把 R3/R6/R7 的 pending
+  skeleton 写成用户级 compile flow。
 - 有 `wafer.abi.rdma`、`wafer.abi.wdma`、`wafer.abi.gemm`、elementwise/reduce ABI issue ops。
-- 有 `Wafer/ABI/TileAbi.h` descriptor unit tests、single-tile integration test、manifest validator 和 generated C
-  stub syntax compile。
+- 有 `Wafer/ABI/TileAbi.h` descriptor unit tests、explicit single-tile/C ABI issue transform fixture、
+  manifest validator 和 generated C stub syntax compile。
 
 缺口：
 
@@ -299,7 +298,8 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 当前实现：
 
 - 有 `wafer.placement.map` verifier，检查 rank count、topology bounds、bad tile 和 duplicate tile。
-- 有 `wafer-materialize-multi-tile-no-comm`，按 placement rank 数生成多个 independent tile regions。
+- `wafer-materialize-multi-tile-no-comm` 已删除；旧实现只是按 placement rank 数 clone whole-tensor
+  tile_region，并用最后一个结果替换 group 结果，不能作为 multi-tile no-comm 主线证据。
 - package fixture / C stub 可以生成 per-tile launch arg table 和 placement metadata。
 
 缺口：

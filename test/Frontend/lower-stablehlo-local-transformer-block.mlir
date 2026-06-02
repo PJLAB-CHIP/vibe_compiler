@@ -122,11 +122,12 @@ module {
 }
 
 // CHECK-LABEL: func.func @local_transformer_block
-// CHECK-NOT: stablehlo.
 // CHECK: math.rsqrt
 // CHECK: linalg.generic
+// CHECK: stablehlo.dot_general
 // CHECK: math.exp
 // CHECK: linalg.generic
+// CHECK: stablehlo.dot_general
 // CHECK: tensor.collapse_shape
 // CHECK: linalg.matmul
 // CHECK: math.tanh

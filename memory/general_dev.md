@@ -101,21 +101,14 @@
   responsibility、output artifact / IR、downstream consumer、user-level driver / named pipeline、
   explicit non-goals 和 completion gate。只说明某个 pass / tool / test 的局部功能不够；完成证明
   必须重放已完成上游 artifact chain，并证明当前 stage 输出会被下游边界直接消费。
-- 主链路 compile gate 用 `WaferPipelines` 中注册的 named pipeline，不在 Integration 里手动拼 pass
-  串。当前用户级 compile 入口是 `wafer-import-model --compile-stablehlo-bundle-to-cabi`；
-  sharding propagation 阶段检查入口是 `wafer-import-model --propagate-stablehlo-sharding`。
-  `wafer-opt` named pipeline 是
-  `wafer-propagate-stablehlo-sharding`、`wafer-lower-stablehlo-to-linalg`、
-  `wafer-lower-linalg-to-cabi`、`wafer-lower-stablehlo-to-cabi` 和
-  `wafer-lower-tile-communication-to-cabi`。`wafer-propagate-stablehlo-sharding` 只做 default input
-  seed + Shardy propagation，不冒充 XLA SPMD partitioner；当前没有 Python post-SPMD 路线。
-  P2.S2 的 Wafer-owned partition artifact stage 由 `wafer-import-model --partition-stablehlo-bundle`
-  消费 propagated StableHLO/SDY 并调用 pinned-XLA helper，不能塞进 frontend Python 或
-  `wafer-lower-stablehlo-to-linalg`。`wafer-lower-stablehlo-to-cabi` 必须组合
-  StableHLO->Linalg 与 Linalg->C ABI body，不能另起一套 parallel lowering。`target=wafer` 会
-  materialize/校验 `#wafer.target<wafer>`，非 `wafer` target 必须诊断。compile driver 必须拒绝带
-  pre-SPMD sharding seed 但没有 post-SPMD marker 的 bundle。单 pass flags 只用于
-  `test/Transforms`、`test/StageConnections` 等 unit/debug 覆盖。
+- 主链路 gate 用 `WaferPipelines` 中注册的 named pipeline 或用户级 driver mode，不在 Integration
+  里手动拼 pass 串。当前用户级 artifact 入口是
+  `wafer-import-model --verify-stablehlo-bundle`、`--propagate-stablehlo-sharding` 和
+  `--partition-stablehlo-bundle`；`--compile-stablehlo-bundle-to-cabi` 已删除，因为 R3/R6/R7 还没有
+  从真实 frontend/SPMD artifact 到 C ABI/package 的完整主线合同。当前 `wafer-opt` named pipeline
+  只保留 `wafer-propagate-stablehlo-sharding` 和 `wafer-lower-stablehlo-to-linalg`。显式
+  C ABI issue、ring collective 和 single-tile materialization pass 只用于 `test/Transforms`、
+  `test/StageConnections` 等 unit/debug 覆盖，不能写成用户级 compile flow。
 - ODS op 如果引入 `RecursiveMemoryEffects`、`ReturnLike` 等 interface trait，公开 dialect 头要
   include 对应 C++ interface header，`WaferIR` 也要显式 link 对应 MLIR interface target。
 - Dialect 增加 TypeDef 后，base dialect td 需要启用 `useDefaultTypePrinterParser = 1`，否则即使

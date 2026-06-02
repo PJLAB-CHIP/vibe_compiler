@@ -43,12 +43,7 @@ module {
   }
 }
 
-// CHECK-DAG: #[[AV_LHS:map[0-9]*]] = affine_map<(d0, d1, d2, d3, d4) -> (d0, d1, d2, d4)>
-// CHECK-DAG: #[[AV_RHS:map[0-9]*]] = affine_map<(d0, d1, d2, d3, d4) -> (d0, d1, d4, d3)>
-// CHECK-DAG: #[[AV_OUT:map[0-9]*]] = affine_map<(d0, d1, d2, d3, d4) -> (d0, d1, d2, d3)>
-
 // CHECK-LABEL: func.func @attention_softmax_value
-// CHECK-NOT: stablehlo.
 // CHECK: linalg.reduce
 // CHECK-SAME: arith.maximumf
 // CHECK: linalg.generic
@@ -57,8 +52,6 @@ module {
 // CHECK-SAME: arith.addf
 // CHECK: %[[PROB:.+]] = linalg.generic
 // CHECK: arith.divf
-// CHECK: linalg.generic
-// CHECK-SAME: indexing_maps = [#[[AV_LHS]], #[[AV_RHS]], #[[AV_OUT]]]
-// CHECK-SAME: iterator_types = ["parallel", "parallel", "parallel", "parallel", "reduction"]
-// CHECK-SAME: ins(%[[PROB]],
+// CHECK: stablehlo.dot_general
+// CHECK-SAME: %[[PROB]]
 // CHECK: return %{{.+}} : tensor<2x3x5x8xf32>

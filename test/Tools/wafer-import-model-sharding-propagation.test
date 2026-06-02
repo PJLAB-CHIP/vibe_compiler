@@ -7,13 +7,12 @@
 # RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[32,16],"dtype":"float32","dynamic_dims":[]},{"shape":[16,8],"dtype":"float32","dynamic_dims":[]}],"output_signature":[{"shape":[32,8],"dtype":"float32","dynamic_dims":[]}],"input_locations":[{"type_":"input_arg","position":0,"name":"lhs"},{"type_":"input_arg","position":1,"name":"rhs"}],"unused_inputs":[]}\n' > %t.sharding.bundle/functions/forward.meta
 
 # RUN: wafer-import-model --propagate-stablehlo-sharding %t.sharding.bundle --default-tile-count=16 | FileCheck %s --check-prefix=PROPAGATE
-# RUN: not wafer-import-model --compile-stablehlo-bundle-to-cabi %t.sharding.bundle --target=wafer 2>&1 | FileCheck %s --check-prefix=PRE-SPMD-ERROR
+# RUN: not wafer-import-model --compile-stablehlo-bundle-to-cabi %t.sharding.bundle --target=wafer 2>&1 | FileCheck %s --check-prefix=NO-COMPILE
 
 # PROPAGATE: mhlo.sharding
 # PROPAGATE: stablehlo.dot_general
 
-# PRE-SPMD-ERROR: StableHLO bundle contains pre-SPMD sharding seeds
-# PRE-SPMD-ERROR: run Shardy/XLA SPMD partitioning before Wafer C ABI lowering
+# NO-COMPILE: wafer-import-model: unknown argument: --compile-stablehlo-bundle-to-cabi
 
 # HELP-NOT: --prepare-stablehlo-spmd-bundle
 # HELP: --propagate-stablehlo-sharding

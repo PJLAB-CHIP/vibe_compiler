@@ -50,7 +50,7 @@
 
 # HELP-NOT: --emit-static-reference-artifact
 # HELP-NOT: --verify-spmd-bundle
-# HELP: --compile-stablehlo-bundle-to-cabi
+# HELP-NOT: --compile-stablehlo-bundle-to-cabi
 
 # VERIFY: wafer-import-model: verified frontend artifact
 
