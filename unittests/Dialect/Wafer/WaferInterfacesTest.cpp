@@ -6,6 +6,7 @@
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/Interfaces/DestinationStyleOpInterface.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/TilingInterface.h"
 #include "mlir/Parser/Parser.h"
@@ -61,6 +62,133 @@ bool hasResourceEffect(llvm::ArrayRef<wafer::WaferResourceEffect> effects,
            effect.role == role && effect.index == index &&
            effect.bytes == bytes;
   });
+}
+
+bool hasTilingDemand(llvm::ArrayRef<wafer::WaferTilingDemand> demands,
+                     wafer::WaferTilingDemandKind kind, unsigned index,
+                     mlir::Type type) {
+  return llvm::any_of(demands, [&](const wafer::WaferTilingDemand &demand) {
+    return demand.kind == kind && demand.index == index && demand.type == type;
+  });
+}
+
+llvm::SmallVector<mlir::OpFoldResult>
+getIndexOpFoldResults(mlir::MLIRContext &context,
+                      llvm::ArrayRef<int64_t> values) {
+  return mlir::getAsIndexOpFoldResult(&context, values);
+}
+
+bool hasConstantIntValues(llvm::ArrayRef<mlir::OpFoldResult> values,
+                          llvm::ArrayRef<int64_t> expected) {
+  std::optional<llvm::SmallVector<int64_t>> constants =
+      mlir::getConstantIntValues(values);
+  return constants && llvm::equal(*constants, expected);
+}
+
+template <typename OpT> void expectTensorCollectiveInterfaces(OpT op) {
+  auto dps =
+      mlir::dyn_cast<mlir::DestinationStyleOpInterface>(op.getOperation());
+  ASSERT_TRUE(dps);
+  ASSERT_EQ(dps.getNumDpsInputs(), static_cast<int64_t>(op.getInputs().size()));
+  ASSERT_EQ(dps.getNumDpsInits(), static_cast<int64_t>(op.getOuts().size()));
+  llvm::SmallVector<mlir::Value> dpsInputs = dps.getDpsInputs();
+  ASSERT_EQ(dpsInputs.size(), op.getInputs().size());
+  for (auto [index, input] : llvm::enumerate(op.getInputs()))
+    EXPECT_EQ(dpsInputs[index], input);
+  for (auto [index, out] : llvm::enumerate(op.getOuts()))
+    EXPECT_EQ(dps.getDpsInits()[index], out);
+
+  auto waferTiling =
+      mlir::dyn_cast<wafer::WaferTilingInterface>(op.getOperation());
+  ASSERT_TRUE(waferTiling);
+  llvm::SmallVector<wafer::WaferTilingDemand, 8> demands;
+  waferTiling.collectWaferTilingDemand(demands);
+  for (auto [index, input] : llvm::enumerate(op.getInputs())) {
+    EXPECT_TRUE(hasTilingDemand(demands, wafer::WaferTilingDemandKind::Input,
+                                static_cast<unsigned>(index), input.getType()));
+  }
+  for (auto [index, out] : llvm::enumerate(op.getOuts())) {
+    EXPECT_TRUE(hasTilingDemand(demands, wafer::WaferTilingDemandKind::Output,
+                                static_cast<unsigned>(index), out.getType()));
+  }
+  for (auto [index, result] : llvm::enumerate(op.getResults())) {
+    EXPECT_TRUE(hasTilingDemand(demands, wafer::WaferTilingDemandKind::Result,
+                                static_cast<unsigned>(index),
+                                result.getType()));
+  }
+  EXPECT_TRUE(mlir::succeeded(waferTiling.verifyWaferTilingContract()));
+
+  auto collective = mlir::dyn_cast<wafer::WaferTensorCollectiveOpInterface>(
+      op.getOperation());
+  ASSERT_TRUE(collective);
+  EXPECT_TRUE(
+      mlir::succeeded(collective.verifyWaferTensorCollectiveContract()));
+
+  auto tiling = mlir::dyn_cast<mlir::TilingInterface>(op.getOperation());
+  ASSERT_TRUE(tiling);
+  auto resultType =
+      mlir::cast<mlir::RankedTensorType>(op.getResults().front().getType());
+  mlir::OpBuilder builder(op);
+  llvm::SmallVector<mlir::Range> domain = tiling.getIterationDomain(builder);
+  ASSERT_EQ(domain.size(), static_cast<size_t>(resultType.getRank()));
+  llvm::SmallVector<mlir::utils::IteratorType> iterators =
+      tiling.getLoopIteratorTypes();
+  ASSERT_EQ(iterators.size(), static_cast<size_t>(resultType.getRank()));
+  for (int64_t dim = 0; dim < resultType.getRank(); ++dim) {
+    EXPECT_EQ(iterators[dim], mlir::utils::IteratorType::parallel);
+    EXPECT_EQ(mlir::getConstantIntValue(domain[dim].offset), 0);
+    EXPECT_EQ(mlir::getConstantIntValue(domain[dim].stride), 1);
+    if (!mlir::ShapedType::isDynamic(resultType.getDimSize(dim)))
+      EXPECT_EQ(mlir::getConstantIntValue(domain[dim].size),
+                resultType.getDimSize(dim));
+  }
+}
+
+template <typename OpT>
+void expectTiledImplementation(OpT op, mlir::MLIRContext &context,
+                               llvm::ArrayRef<int64_t> offsetValues,
+                               llvm::ArrayRef<int64_t> sizeValues,
+                               llvm::ArrayRef<int64_t> expectedShape) {
+  auto tiling = mlir::dyn_cast<mlir::TilingInterface>(op.getOperation());
+  ASSERT_TRUE(tiling);
+  mlir::OpBuilder builder(op);
+  llvm::SmallVector<mlir::OpFoldResult> offsets =
+      getIndexOpFoldResults(context, offsetValues);
+  llvm::SmallVector<mlir::OpFoldResult> sizes =
+      getIndexOpFoldResults(context, sizeValues);
+
+  mlir::FailureOr<mlir::TilingResult> tiled =
+      tiling.getTiledImplementation(builder, offsets, sizes);
+  ASSERT_TRUE(mlir::succeeded(tiled));
+  ASSERT_EQ(tiled->tiledOps.size(), 1u);
+  EXPECT_TRUE(mlir::isa<OpT>(tiled->tiledOps.front()));
+  ASSERT_EQ(tiled->tiledValues.size(), op.getResults().size());
+  auto tiledType = mlir::dyn_cast<mlir::RankedTensorType>(
+      tiled->tiledValues.front().getType());
+  ASSERT_TRUE(tiledType);
+  EXPECT_EQ(tiledType.getShape(), expectedShape);
+
+  llvm::SmallVector<mlir::OpFoldResult> resultOffsets;
+  llvm::SmallVector<mlir::OpFoldResult> resultSizes;
+  EXPECT_TRUE(mlir::succeeded(tiling.getResultTilePosition(
+      builder, 0, offsets, sizes, resultOffsets, resultSizes)));
+  EXPECT_TRUE(hasConstantIntValues(resultOffsets, offsetValues));
+  EXPECT_TRUE(hasConstantIntValues(resultSizes, sizeValues));
+}
+
+template <typename OpT>
+void expectTiledImplementationFailure(OpT op, mlir::MLIRContext &context,
+                                      llvm::ArrayRef<int64_t> offsetValues,
+                                      llvm::ArrayRef<int64_t> sizeValues) {
+  auto tiling = mlir::dyn_cast<mlir::TilingInterface>(op.getOperation());
+  ASSERT_TRUE(tiling);
+  mlir::OpBuilder builder(op);
+  llvm::SmallVector<mlir::OpFoldResult> offsets =
+      getIndexOpFoldResults(context, offsetValues);
+  llvm::SmallVector<mlir::OpFoldResult> sizes =
+      getIndexOpFoldResults(context, sizeValues);
+  EXPECT_TRUE(
+      mlir::failed(tiling.getTiledImplementation(builder, offsets, sizes)));
 }
 
 TEST(WaferInterfacesTest, LayoutResourceAndMemoryEffectsAreQueryable) {
@@ -324,6 +452,7 @@ module {
 
   auto allReduce = findSingleOp<wafer::TensorCollectiveAllReduceOp>(*module);
   ASSERT_TRUE(allReduce);
+  expectTensorCollectiveInterfaces(allReduce);
   auto collective = mlir::dyn_cast<wafer::WaferTensorCollectiveOpInterface>(
       allReduce.getOperation());
   ASSERT_TRUE(collective);
@@ -380,6 +509,7 @@ module {
 
   auto allGather = findSingleOp<wafer::TensorCollectiveAllGatherOp>(*module);
   ASSERT_TRUE(allGather);
+  expectTensorCollectiveInterfaces(allGather);
   auto gatherCollective =
       mlir::dyn_cast<wafer::WaferTensorCollectiveOpInterface>(
           allGather.getOperation());
@@ -391,6 +521,9 @@ module {
   EXPECT_EQ(info.axis, 0);
   EXPECT_EQ(info.channelId, 9);
   EXPECT_EQ(info.rankGroup, llvm::SmallVector<int64_t>({0, 1}));
+  expectTiledImplementation(allGather, context, llvm::SmallVector<int64_t>{0},
+                            llvm::SmallVector<int64_t>{8},
+                            llvm::SmallVector<int64_t>{8});
 
   auto gatherTiling =
       mlir::dyn_cast<mlir::TilingInterface>(allGather.getOperation());
@@ -407,6 +540,7 @@ module {
   auto reduceScatter =
       findSingleOp<wafer::TensorCollectiveReduceScatterOp>(*module);
   ASSERT_TRUE(reduceScatter);
+  expectTensorCollectiveInterfaces(reduceScatter);
   auto reduceScatterCollective =
       mlir::dyn_cast<wafer::WaferTensorCollectiveOpInterface>(
           reduceScatter.getOperation());
@@ -422,9 +556,16 @@ module {
   EXPECT_TRUE(mlir::succeeded(
       reduceScatterCollective.verifyWaferTensorCollectiveContract()));
   EXPECT_TRUE(mlir::isa<mlir::TilingInterface>(reduceScatter.getOperation()));
+  expectTiledImplementation(
+      reduceScatter, context, llvm::SmallVector<int64_t>{0},
+      llvm::SmallVector<int64_t>{4}, llvm::SmallVector<int64_t>{4});
+  expectTiledImplementationFailure(reduceScatter, context,
+                                   llvm::SmallVector<int64_t>{1},
+                                   llvm::SmallVector<int64_t>{2});
 
   auto allToAll = findSingleOp<wafer::TensorCollectiveAllToAllOp>(*module);
   ASSERT_TRUE(allToAll);
+  expectTensorCollectiveInterfaces(allToAll);
   auto allToAllCollective =
       mlir::dyn_cast<wafer::WaferTensorCollectiveOpInterface>(
           allToAll.getOperation());
@@ -443,10 +584,17 @@ module {
   EXPECT_TRUE(mlir::succeeded(
       allToAllCollective.verifyWaferTensorCollectiveContract()));
   EXPECT_TRUE(mlir::isa<mlir::TilingInterface>(allToAll.getOperation()));
+  expectTiledImplementation(allToAll, context, llvm::SmallVector<int64_t>{0, 0},
+                            llvm::SmallVector<int64_t>{2, 4},
+                            llvm::SmallVector<int64_t>{2, 4});
+  expectTiledImplementationFailure(allToAll, context,
+                                   llvm::SmallVector<int64_t>{0, 1},
+                                   llvm::SmallVector<int64_t>{2, 2});
 
   auto permute =
       findSingleOp<wafer::TensorCollectiveCollectivePermuteOp>(*module);
   ASSERT_TRUE(permute);
+  expectTensorCollectiveInterfaces(permute);
   auto permuteCollective =
       mlir::dyn_cast<wafer::WaferTensorCollectiveOpInterface>(
           permute.getOperation());
@@ -460,6 +608,9 @@ module {
   EXPECT_TRUE(
       mlir::succeeded(permuteCollective.verifyWaferTensorCollectiveContract()));
   EXPECT_TRUE(mlir::isa<mlir::TilingInterface>(permute.getOperation()));
+  expectTiledImplementation(permute, context, llvm::SmallVector<int64_t>{1},
+                            llvm::SmallVector<int64_t>{2},
+                            llvm::SmallVector<int64_t>{2});
 }
 
 } // namespace
