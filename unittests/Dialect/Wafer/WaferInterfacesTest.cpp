@@ -14,6 +14,7 @@
 
 #include "gtest/gtest.h"
 
+#include <initializer_list>
 #include <optional>
 
 namespace {
@@ -85,6 +86,22 @@ bool hasConstantIntValues(llvm::ArrayRef<mlir::OpFoldResult> values,
   return constants && llvm::equal(*constants, expected);
 }
 
+struct ExpectedExtractSlice {
+  mlir::Value source;
+  llvm::SmallVector<int64_t> offsets;
+  llvm::SmallVector<int64_t> sizes;
+  llvm::SmallVector<int64_t> resultShape;
+};
+
+ExpectedExtractSlice expectSlice(mlir::Value source,
+                                 std::initializer_list<int64_t> offsets,
+                                 std::initializer_list<int64_t> sizes,
+                                 std::initializer_list<int64_t> resultShape) {
+  return {source, llvm::SmallVector<int64_t>(offsets),
+          llvm::SmallVector<int64_t>(sizes),
+          llvm::SmallVector<int64_t>(resultShape)};
+}
+
 template <typename OpT> void expectTensorCollectiveInterfaces(OpT op) {
   auto dps =
       mlir::dyn_cast<mlir::DestinationStyleOpInterface>(op.getOperation());
@@ -145,10 +162,10 @@ template <typename OpT> void expectTensorCollectiveInterfaces(OpT op) {
 }
 
 template <typename OpT>
-void expectTiledImplementation(OpT op, mlir::MLIRContext &context,
-                               llvm::ArrayRef<int64_t> offsetValues,
-                               llvm::ArrayRef<int64_t> sizeValues,
-                               llvm::ArrayRef<int64_t> expectedShape) {
+void expectTiledImplementation(
+    OpT op, mlir::MLIRContext &context, llvm::ArrayRef<int64_t> offsetValues,
+    llvm::ArrayRef<int64_t> sizeValues, llvm::ArrayRef<int64_t> expectedShape,
+    llvm::ArrayRef<ExpectedExtractSlice> expectedSlices = {}) {
   auto tiling = mlir::dyn_cast<mlir::TilingInterface>(op.getOperation());
   ASSERT_TRUE(tiling);
   mlir::OpBuilder builder(op);
@@ -174,6 +191,25 @@ void expectTiledImplementation(OpT op, mlir::MLIRContext &context,
       builder, 0, offsets, sizes, resultOffsets, resultSizes)));
   EXPECT_TRUE(hasConstantIntValues(resultOffsets, offsetValues));
   EXPECT_TRUE(hasConstantIntValues(resultSizes, sizeValues));
+
+  if (!expectedSlices.empty()) {
+    ASSERT_EQ(tiled->generatedSlices.size(), expectedSlices.size());
+    for (auto [sliceOp, expected] :
+         llvm::zip(tiled->generatedSlices, expectedSlices)) {
+      auto slice = mlir::dyn_cast<mlir::tensor::ExtractSliceOp>(sliceOp);
+      ASSERT_TRUE(slice);
+      EXPECT_EQ(slice.getSource(), expected.source);
+      EXPECT_TRUE(
+          hasConstantIntValues(slice.getMixedOffsets(), expected.offsets));
+      EXPECT_TRUE(hasConstantIntValues(slice.getMixedSizes(), expected.sizes));
+      llvm::SmallVector<int64_t> unitStrides(expected.offsets.size(), 1);
+      EXPECT_TRUE(hasConstantIntValues(slice.getMixedStrides(), unitStrides));
+      auto sliceType = mlir::dyn_cast<mlir::RankedTensorType>(slice.getType());
+      ASSERT_TRUE(sliceType);
+      EXPECT_EQ(sliceType.getShape(),
+                llvm::ArrayRef<int64_t>(expected.resultShape));
+    }
+  }
 }
 
 template <typename OpT>
@@ -479,33 +515,12 @@ module {
       tiling.getLoopIteratorTypes();
   ASSERT_EQ(iterators.size(), 1u);
   EXPECT_EQ(iterators[0], mlir::utils::IteratorType::parallel);
-
-  llvm::SmallVector<int64_t> offsetValues{1};
-  llvm::SmallVector<int64_t> sizeValues{2};
-  llvm::SmallVector<mlir::OpFoldResult> offsets =
-      mlir::getAsIndexOpFoldResult(&context, offsetValues);
-  llvm::SmallVector<mlir::OpFoldResult> sizes =
-      mlir::getAsIndexOpFoldResult(&context, sizeValues);
-  mlir::FailureOr<mlir::TilingResult> tiled =
-      tiling.getTiledImplementation(builder, offsets, sizes);
-  ASSERT_TRUE(mlir::succeeded(tiled));
-  ASSERT_EQ(tiled->tiledOps.size(), 1u);
-  EXPECT_TRUE(
-      mlir::isa<wafer::TensorCollectiveAllReduceOp>(tiled->tiledOps.front()));
-  ASSERT_EQ(tiled->tiledValues.size(), 1u);
-  auto tiledType = mlir::dyn_cast<mlir::RankedTensorType>(
-      tiled->tiledValues.front().getType());
-  ASSERT_TRUE(tiledType);
-  EXPECT_EQ(tiledType.getShape(), llvm::ArrayRef<int64_t>({2}));
-
-  llvm::SmallVector<mlir::OpFoldResult> resultOffsets;
-  llvm::SmallVector<mlir::OpFoldResult> resultSizes;
-  EXPECT_TRUE(mlir::succeeded(tiling.getResultTilePosition(
-      builder, 0, offsets, sizes, resultOffsets, resultSizes)));
-  EXPECT_EQ(mlir::getConstantIntValues(resultOffsets),
-            std::optional<llvm::SmallVector<int64_t>>({{1}}));
-  EXPECT_EQ(mlir::getConstantIntValues(resultSizes),
-            std::optional<llvm::SmallVector<int64_t>>({{2}}));
+  expectTiledImplementation(
+      allReduce, context, llvm::SmallVector<int64_t>{1},
+      llvm::SmallVector<int64_t>{2}, llvm::SmallVector<int64_t>{2},
+      llvm::SmallVector<ExpectedExtractSlice>{
+          expectSlice(allReduce.getInputs()[0], {1}, {2}, {2}),
+          expectSlice(allReduce.getOuts()[0], {1}, {2}, {2})});
 
   auto allGather = findSingleOp<wafer::TensorCollectiveAllGatherOp>(*module);
   ASSERT_TRUE(allGather);
@@ -521,9 +536,12 @@ module {
   EXPECT_EQ(info.axis, 0);
   EXPECT_EQ(info.channelId, 9);
   EXPECT_EQ(info.rankGroup, llvm::SmallVector<int64_t>({0, 1}));
-  expectTiledImplementation(allGather, context, llvm::SmallVector<int64_t>{0},
-                            llvm::SmallVector<int64_t>{8},
-                            llvm::SmallVector<int64_t>{8});
+  expectTiledImplementation(
+      allGather, context, llvm::SmallVector<int64_t>{0},
+      llvm::SmallVector<int64_t>{8}, llvm::SmallVector<int64_t>{8},
+      llvm::SmallVector<ExpectedExtractSlice>{
+          expectSlice(allGather.getInputs()[0], {0}, {4}, {4}),
+          expectSlice(allGather.getOuts()[0], {0}, {8}, {8})});
 
   auto gatherTiling =
       mlir::dyn_cast<mlir::TilingInterface>(allGather.getOperation());
@@ -558,7 +576,10 @@ module {
   EXPECT_TRUE(mlir::isa<mlir::TilingInterface>(reduceScatter.getOperation()));
   expectTiledImplementation(
       reduceScatter, context, llvm::SmallVector<int64_t>{0},
-      llvm::SmallVector<int64_t>{4}, llvm::SmallVector<int64_t>{4});
+      llvm::SmallVector<int64_t>{4}, llvm::SmallVector<int64_t>{4},
+      llvm::SmallVector<ExpectedExtractSlice>{
+          expectSlice(reduceScatter.getInputs()[0], {0}, {8}, {8}),
+          expectSlice(reduceScatter.getOuts()[0], {0}, {4}, {4})});
   expectTiledImplementationFailure(reduceScatter, context,
                                    llvm::SmallVector<int64_t>{1},
                                    llvm::SmallVector<int64_t>{2});
@@ -584,9 +605,12 @@ module {
   EXPECT_TRUE(mlir::succeeded(
       allToAllCollective.verifyWaferTensorCollectiveContract()));
   EXPECT_TRUE(mlir::isa<mlir::TilingInterface>(allToAll.getOperation()));
-  expectTiledImplementation(allToAll, context, llvm::SmallVector<int64_t>{0, 0},
-                            llvm::SmallVector<int64_t>{2, 4},
-                            llvm::SmallVector<int64_t>{2, 4});
+  expectTiledImplementation(
+      allToAll, context, llvm::SmallVector<int64_t>{0, 0},
+      llvm::SmallVector<int64_t>{2, 4}, llvm::SmallVector<int64_t>{2, 4},
+      llvm::SmallVector<ExpectedExtractSlice>{
+          expectSlice(allToAll.getInputs()[0], {0, 0}, {4, 2}, {4, 2}),
+          expectSlice(allToAll.getOuts()[0], {0, 0}, {2, 4}, {2, 4})});
   expectTiledImplementationFailure(allToAll, context,
                                    llvm::SmallVector<int64_t>{0, 1},
                                    llvm::SmallVector<int64_t>{2, 2});
@@ -608,9 +632,12 @@ module {
   EXPECT_TRUE(
       mlir::succeeded(permuteCollective.verifyWaferTensorCollectiveContract()));
   EXPECT_TRUE(mlir::isa<mlir::TilingInterface>(permute.getOperation()));
-  expectTiledImplementation(permute, context, llvm::SmallVector<int64_t>{1},
-                            llvm::SmallVector<int64_t>{2},
-                            llvm::SmallVector<int64_t>{2});
+  expectTiledImplementation(
+      permute, context, llvm::SmallVector<int64_t>{1},
+      llvm::SmallVector<int64_t>{2}, llvm::SmallVector<int64_t>{2},
+      llvm::SmallVector<ExpectedExtractSlice>{
+          expectSlice(permute.getInputs()[0], {1}, {2}, {2}),
+          expectSlice(permute.getOuts()[0], {1}, {2}, {2})});
 }
 
 TEST(WaferInterfacesTest, TensorCollectiveTilingHandlesNonTrivialShapes) {
@@ -687,14 +714,22 @@ module {
   expectTensorCollectiveInterfaces(allReduce);
   expectTiledImplementation(
       allReduce, context, llvm::SmallVector<int64_t>{128, 256},
-      llvm::SmallVector<int64_t>{64, 512}, llvm::SmallVector<int64_t>{64, 512});
+      llvm::SmallVector<int64_t>{64, 512}, llvm::SmallVector<int64_t>{64, 512},
+      llvm::SmallVector<ExpectedExtractSlice>{
+          expectSlice(allReduce.getInputs()[0], {128, 256}, {64, 512},
+                      {64, 512}),
+          expectSlice(allReduce.getOuts()[0], {128, 256}, {64, 512},
+                      {64, 512})});
 
   auto allGather = findSingleOp<wafer::TensorCollectiveAllGatherOp>(*module);
   ASSERT_TRUE(allGather);
   expectTensorCollectiveInterfaces(allGather);
   expectTiledImplementation(
       allGather, context, llvm::SmallVector<int64_t>{16, 0},
-      llvm::SmallVector<int64_t>{8, 4096}, llvm::SmallVector<int64_t>{8, 4096});
+      llvm::SmallVector<int64_t>{8, 4096}, llvm::SmallVector<int64_t>{8, 4096},
+      llvm::SmallVector<ExpectedExtractSlice>{
+          expectSlice(allGather.getInputs()[0], {16, 0}, {8, 512}, {8, 512}),
+          expectSlice(allGather.getOuts()[0], {16, 0}, {8, 4096}, {8, 4096})});
   expectTiledImplementationFailure(allGather, context,
                                    llvm::SmallVector<int64_t>{16, 512},
                                    llvm::SmallVector<int64_t>{8, 1024});
@@ -706,7 +741,12 @@ module {
   expectTiledImplementation(reduceScatter, context,
                             llvm::SmallVector<int64_t>{32, 0},
                             llvm::SmallVector<int64_t>{16, 1024},
-                            llvm::SmallVector<int64_t>{16, 1024});
+                            llvm::SmallVector<int64_t>{16, 1024},
+                            llvm::SmallVector<ExpectedExtractSlice>{
+                                expectSlice(reduceScatter.getInputs()[0],
+                                            {32, 0}, {16, 4096}, {16, 4096}),
+                                expectSlice(reduceScatter.getOuts()[0], {32, 0},
+                                            {16, 1024}, {16, 1024})});
   expectTiledImplementationFailure(reduceScatter, context,
                                    llvm::SmallVector<int64_t>{32, 128},
                                    llvm::SmallVector<int64_t>{16, 512});
@@ -717,7 +757,12 @@ module {
   expectTiledImplementation(allToAll, context,
                             llvm::SmallVector<int64_t>{0, 0, 16},
                             llvm::SmallVector<int64_t>{128, 512, 8},
-                            llvm::SmallVector<int64_t>{128, 512, 8});
+                            llvm::SmallVector<int64_t>{128, 512, 8},
+                            llvm::SmallVector<ExpectedExtractSlice>{
+                                expectSlice(allToAll.getInputs()[0], {0, 0, 16},
+                                            {512, 128, 8}, {512, 128, 8}),
+                                expectSlice(allToAll.getOuts()[0], {0, 0, 16},
+                                            {128, 512, 8}, {128, 512, 8})});
   expectTiledImplementationFailure(allToAll, context,
                                    llvm::SmallVector<int64_t>{0, 64, 16},
                                    llvm::SmallVector<int64_t>{128, 128, 8});
@@ -726,10 +771,15 @@ module {
       findSingleOp<wafer::TensorCollectiveCollectivePermuteOp>(*module);
   ASSERT_TRUE(permute);
   expectTensorCollectiveInterfaces(permute);
-  expectTiledImplementation(permute, context,
-                            llvm::SmallVector<int64_t>{1, 128, 256},
-                            llvm::SmallVector<int64_t>{2, 64, 512},
-                            llvm::SmallVector<int64_t>{2, 64, 512});
+  expectTiledImplementation(
+      permute, context, llvm::SmallVector<int64_t>{1, 128, 256},
+      llvm::SmallVector<int64_t>{2, 64, 512},
+      llvm::SmallVector<int64_t>{2, 64, 512},
+      llvm::SmallVector<ExpectedExtractSlice>{
+          expectSlice(permute.getInputs()[0], {1, 128, 256}, {2, 64, 512},
+                      {2, 64, 512}),
+          expectSlice(permute.getOuts()[0], {1, 128, 256}, {2, 64, 512},
+                      {2, 64, 512})});
 }
 
 TEST(WaferInterfacesTest, TensorCollectiveTilingHandlesDynamicNonAxisShapes) {
@@ -774,14 +824,20 @@ module {
   expectTensorCollectiveInterfaces(allReduce);
   expectTiledImplementation(
       allReduce, context, llvm::SmallVector<int64_t>{0, 1024},
-      llvm::SmallVector<int64_t>{8, 512}, llvm::SmallVector<int64_t>{8, 512});
+      llvm::SmallVector<int64_t>{8, 512}, llvm::SmallVector<int64_t>{8, 512},
+      llvm::SmallVector<ExpectedExtractSlice>{
+          expectSlice(allReduce.getInputs()[0], {0, 1024}, {8, 512}, {8, 512}),
+          expectSlice(allReduce.getOuts()[0], {0, 1024}, {8, 512}, {8, 512})});
 
   auto allGather = findSingleOp<wafer::TensorCollectiveAllGatherOp>(*module);
   ASSERT_TRUE(allGather);
   expectTensorCollectiveInterfaces(allGather);
   expectTiledImplementation(
       allGather, context, llvm::SmallVector<int64_t>{0, 0},
-      llvm::SmallVector<int64_t>{8, 2048}, llvm::SmallVector<int64_t>{8, 2048});
+      llvm::SmallVector<int64_t>{8, 2048}, llvm::SmallVector<int64_t>{8, 2048},
+      llvm::SmallVector<ExpectedExtractSlice>{
+          expectSlice(allGather.getInputs()[0], {0, 0}, {8, 512}, {8, 512}),
+          expectSlice(allGather.getOuts()[0], {0, 0}, {8, 2048}, {8, 2048})});
 }
 
 } // namespace
