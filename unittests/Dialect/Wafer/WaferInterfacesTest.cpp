@@ -613,4 +613,175 @@ module {
                             llvm::SmallVector<int64_t>{2});
 }
 
+TEST(WaferInterfacesTest, TensorCollectiveTilingHandlesNonTrivialShapes) {
+  mlir::DialectRegistry registry;
+  wafer::registerAllDialects(registry);
+  registry.insert<mlir::arith::ArithDialect, mlir::tensor::TensorDialect>();
+
+  mlir::MLIRContext context(registry);
+  context.loadDialect<wafer::WaferDialect, mlir::arith::ArithDialect,
+                      mlir::tensor::TensorDialect>();
+
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  %ar_input = "builtin.unrealized_conversion_cast"() : () -> tensor<1024x4096xf32>
+  %ar_out = "builtin.unrealized_conversion_cast"() : () -> tensor<1024x4096xf32>
+  %ar = wafer.tensor_collective.all_reduce
+      ins(%ar_input : tensor<1024x4096xf32>)
+      outs(%ar_out : tensor<1024x4096xf32>)
+      {
+    ^bb0(%lhs: f32, %rhs: f32):
+      %sum = arith.addf %lhs, %rhs : f32
+      wafer.tensor_collective.yield %sum : f32
+      } {channel_id = 17 : i64, rank_group = array<i64: 0, 1, 2, 3, 4, 5, 6, 7>}
+      -> tensor<1024x4096xf32>
+
+  %ag_input = "builtin.unrealized_conversion_cast"() : () -> tensor<64x512xf32>
+  %ag_out = "builtin.unrealized_conversion_cast"() : () -> tensor<64x4096xf32>
+  %ag = wafer.tensor_collective.all_gather
+      ins(%ag_input : tensor<64x512xf32>)
+      outs(%ag_out : tensor<64x4096xf32>)
+      {axis = 1 : i64, channel_id = 18 : i64,
+       rank_group = array<i64: 0, 1, 2, 3, 4, 5, 6, 7>}
+      -> tensor<64x4096xf32>
+
+  %rs_input = "builtin.unrealized_conversion_cast"() : () -> tensor<256x4096xf32>
+  %rs_out = "builtin.unrealized_conversion_cast"() : () -> tensor<256x1024xf32>
+  %rs = wafer.tensor_collective.reduce_scatter
+      ins(%rs_input : tensor<256x4096xf32>)
+      outs(%rs_out : tensor<256x1024xf32>)
+      {
+    ^bb0(%lhs: f32, %rhs: f32):
+      %sum = arith.addf %lhs, %rhs : f32
+      wafer.tensor_collective.yield %sum : f32
+      } {axis = 1 : i64, channel_id = 19 : i64,
+         rank_group = array<i64: 0, 1, 2, 3>}
+      -> tensor<256x1024xf32>
+
+  %a2a_input = "builtin.unrealized_conversion_cast"() : () -> tensor<512x128x64xf32>
+  %a2a_out = "builtin.unrealized_conversion_cast"() : () -> tensor<128x512x64xf32>
+  %a2a = wafer.tensor_collective.all_to_all
+      ins(%a2a_input : tensor<512x128x64xf32>)
+      outs(%a2a_out : tensor<128x512x64xf32>)
+      {split_axis = 0 : i64, concat_axis = 1 : i64,
+       split_count = 4 : i64, channel_id = 20 : i64,
+       rank_group = array<i64: 0, 1, 2, 3>}
+      -> tensor<128x512x64xf32>
+
+  %cp_input = "builtin.unrealized_conversion_cast"() : () -> tensor<4x1024x4096xf32>
+  %cp_out = "builtin.unrealized_conversion_cast"() : () -> tensor<4x1024x4096xf32>
+  %cp = wafer.tensor_collective.collective_permute
+      ins(%cp_input : tensor<4x1024x4096xf32>)
+      outs(%cp_out : tensor<4x1024x4096xf32>)
+      {channel_id = 21 : i64,
+       source_target_pairs = array<i64: 0, 1, 1, 2, 2, 3, 3, 0>}
+      -> tensor<4x1024x4096xf32>
+}
+)mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(module);
+
+  auto allReduce = findSingleOp<wafer::TensorCollectiveAllReduceOp>(*module);
+  ASSERT_TRUE(allReduce);
+  expectTensorCollectiveInterfaces(allReduce);
+  expectTiledImplementation(
+      allReduce, context, llvm::SmallVector<int64_t>{128, 256},
+      llvm::SmallVector<int64_t>{64, 512}, llvm::SmallVector<int64_t>{64, 512});
+
+  auto allGather = findSingleOp<wafer::TensorCollectiveAllGatherOp>(*module);
+  ASSERT_TRUE(allGather);
+  expectTensorCollectiveInterfaces(allGather);
+  expectTiledImplementation(
+      allGather, context, llvm::SmallVector<int64_t>{16, 0},
+      llvm::SmallVector<int64_t>{8, 4096}, llvm::SmallVector<int64_t>{8, 4096});
+  expectTiledImplementationFailure(allGather, context,
+                                   llvm::SmallVector<int64_t>{16, 512},
+                                   llvm::SmallVector<int64_t>{8, 1024});
+
+  auto reduceScatter =
+      findSingleOp<wafer::TensorCollectiveReduceScatterOp>(*module);
+  ASSERT_TRUE(reduceScatter);
+  expectTensorCollectiveInterfaces(reduceScatter);
+  expectTiledImplementation(reduceScatter, context,
+                            llvm::SmallVector<int64_t>{32, 0},
+                            llvm::SmallVector<int64_t>{16, 1024},
+                            llvm::SmallVector<int64_t>{16, 1024});
+  expectTiledImplementationFailure(reduceScatter, context,
+                                   llvm::SmallVector<int64_t>{32, 128},
+                                   llvm::SmallVector<int64_t>{16, 512});
+
+  auto allToAll = findSingleOp<wafer::TensorCollectiveAllToAllOp>(*module);
+  ASSERT_TRUE(allToAll);
+  expectTensorCollectiveInterfaces(allToAll);
+  expectTiledImplementation(allToAll, context,
+                            llvm::SmallVector<int64_t>{0, 0, 16},
+                            llvm::SmallVector<int64_t>{128, 512, 8},
+                            llvm::SmallVector<int64_t>{128, 512, 8});
+  expectTiledImplementationFailure(allToAll, context,
+                                   llvm::SmallVector<int64_t>{0, 64, 16},
+                                   llvm::SmallVector<int64_t>{128, 128, 8});
+
+  auto permute =
+      findSingleOp<wafer::TensorCollectiveCollectivePermuteOp>(*module);
+  ASSERT_TRUE(permute);
+  expectTensorCollectiveInterfaces(permute);
+  expectTiledImplementation(permute, context,
+                            llvm::SmallVector<int64_t>{1, 128, 256},
+                            llvm::SmallVector<int64_t>{2, 64, 512},
+                            llvm::SmallVector<int64_t>{2, 64, 512});
+}
+
+TEST(WaferInterfacesTest, TensorCollectiveTilingHandlesDynamicNonAxisShapes) {
+  mlir::DialectRegistry registry;
+  wafer::registerAllDialects(registry);
+  registry.insert<mlir::arith::ArithDialect, mlir::tensor::TensorDialect>();
+
+  mlir::MLIRContext context(registry);
+  context.loadDialect<wafer::WaferDialect, mlir::arith::ArithDialect,
+                      mlir::tensor::TensorDialect>();
+
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  %ar_input = "builtin.unrealized_conversion_cast"() : () -> tensor<?x4096xf32>
+  %ar_out = "builtin.unrealized_conversion_cast"() : () -> tensor<?x4096xf32>
+  %ar = wafer.tensor_collective.all_reduce
+      ins(%ar_input : tensor<?x4096xf32>)
+      outs(%ar_out : tensor<?x4096xf32>)
+      {
+    ^bb0(%lhs: f32, %rhs: f32):
+      %sum = arith.addf %lhs, %rhs : f32
+      wafer.tensor_collective.yield %sum : f32
+      } {channel_id = 22 : i64, rank_group = array<i64: 0, 1, 2, 3>}
+      -> tensor<?x4096xf32>
+
+  %ag_input = "builtin.unrealized_conversion_cast"() : () -> tensor<?x512xf32>
+  %ag_out = "builtin.unrealized_conversion_cast"() : () -> tensor<?x2048xf32>
+  %ag = wafer.tensor_collective.all_gather
+      ins(%ag_input : tensor<?x512xf32>)
+      outs(%ag_out : tensor<?x2048xf32>)
+      {axis = 1 : i64, channel_id = 23 : i64,
+       rank_group = array<i64: 0, 1, 2, 3>}
+      -> tensor<?x2048xf32>
+}
+)mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(module);
+
+  auto allReduce = findSingleOp<wafer::TensorCollectiveAllReduceOp>(*module);
+  ASSERT_TRUE(allReduce);
+  expectTensorCollectiveInterfaces(allReduce);
+  expectTiledImplementation(
+      allReduce, context, llvm::SmallVector<int64_t>{0, 1024},
+      llvm::SmallVector<int64_t>{8, 512}, llvm::SmallVector<int64_t>{8, 512});
+
+  auto allGather = findSingleOp<wafer::TensorCollectiveAllGatherOp>(*module);
+  ASSERT_TRUE(allGather);
+  expectTensorCollectiveInterfaces(allGather);
+  expectTiledImplementation(
+      allGather, context, llvm::SmallVector<int64_t>{0, 0},
+      llvm::SmallVector<int64_t>{8, 2048}, llvm::SmallVector<int64_t>{8, 2048});
+}
+
 } // namespace
