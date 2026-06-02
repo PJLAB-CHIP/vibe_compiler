@@ -2,8 +2,6 @@
 
 #include "Wafer/Transforms/Passes.h"
 
-#include "Wafer/IR/WaferDialect.h"
-
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Math/IR/Math.h"
@@ -15,6 +13,8 @@
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
+
+#include <cassert>
 
 #ifdef WAFER_ENABLE_STABLEHLO
 #include "stablehlo/dialect/StablehloOps.h"
@@ -28,6 +28,16 @@ struct ElementwiseInput {
   mlir::Value value;
   mlir::AffineMap indexingMap;
   mlir::Operation *sourceBroadcast = nullptr;
+};
+
+using ScalarElementwiseBuilder =
+    mlir::Value (*)(mlir::OpBuilder &, mlir::Location, mlir::ValueRange);
+
+struct ScalarElementwiseLowering {
+  size_t arity;
+  bool supportsFloat;
+  bool supportsInteger;
+  ScalarElementwiseBuilder build;
 };
 
 static mlir::Value createEmptyTensor(mlir::OpBuilder &builder,
@@ -100,28 +110,13 @@ static ElementwiseInput getElementwiseInput(mlir::OpBuilder &builder,
 }
 
 static bool canCreateScalarElementwise(mlir::Type type,
-                                       wafer::ComputeElementwiseKind kind,
+                                       const ScalarElementwiseLowering &lowering,
                                        size_t arity) {
   bool isFloat = mlir::isa<mlir::FloatType>(type);
   bool isInteger = mlir::isa<mlir::IntegerType>(type);
-  switch (kind) {
-  case wafer::ComputeElementwiseKind::Add:
-  case wafer::ComputeElementwiseKind::Sub:
-  case wafer::ComputeElementwiseKind::Mul:
-  case wafer::ComputeElementwiseKind::Div:
-  case wafer::ComputeElementwiseKind::Max:
-  case wafer::ComputeElementwiseKind::Min:
-    return arity == 2 && (isFloat || isInteger);
-  case wafer::ComputeElementwiseKind::Neg:
-    return arity == 1 && (isFloat || isInteger);
-  case wafer::ComputeElementwiseKind::Recip:
-  case wafer::ComputeElementwiseKind::Sqrt:
-  case wafer::ComputeElementwiseKind::Rsqrt:
-  case wafer::ComputeElementwiseKind::Exp:
-  case wafer::ComputeElementwiseKind::Tanh:
-    return arity == 1 && isFloat;
-  }
-  return false;
+  return arity == lowering.arity &&
+         ((isFloat && lowering.supportsFloat) ||
+          (isInteger && lowering.supportsInteger));
 }
 
 static mlir::Value createScalarConstant(mlir::OpBuilder &builder,
@@ -137,70 +132,137 @@ static mlir::Value createScalarConstant(mlir::OpBuilder &builder,
   return builder.create<mlir::arith::ConstantOp>(loc, attr).getResult();
 }
 
-static mlir::Value createScalarElementwise(mlir::OpBuilder &builder,
-                                           mlir::Location loc,
-                                           wafer::ComputeElementwiseKind kind,
-                                           mlir::ValueRange args) {
+static mlir::Value createAddScalar(mlir::OpBuilder &builder,
+                                   mlir::Location loc,
+                                   mlir::ValueRange args) {
   mlir::Type type = args.front().getType();
-  if (!canCreateScalarElementwise(type, kind, args.size()))
-    return {};
+  if (mlir::isa<mlir::FloatType>(type))
+    return builder.create<mlir::arith::AddFOp>(loc, args[0], args[1]);
+  return builder.create<mlir::arith::AddIOp>(loc, args[0], args[1]);
+}
 
-  bool isFloat = mlir::isa<mlir::FloatType>(type);
-  switch (kind) {
-  case wafer::ComputeElementwiseKind::Add:
-    if (isFloat)
-      return builder.create<mlir::arith::AddFOp>(loc, args[0], args[1]);
-    return builder.create<mlir::arith::AddIOp>(loc, args[0], args[1]);
-  case wafer::ComputeElementwiseKind::Sub:
-    if (isFloat)
-      return builder.create<mlir::arith::SubFOp>(loc, args[0], args[1]);
-    return builder.create<mlir::arith::SubIOp>(loc, args[0], args[1]);
-  case wafer::ComputeElementwiseKind::Mul:
-    if (isFloat)
-      return builder.create<mlir::arith::MulFOp>(loc, args[0], args[1]);
-    return builder.create<mlir::arith::MulIOp>(loc, args[0], args[1]);
-  case wafer::ComputeElementwiseKind::Div:
-    if (isFloat)
-      return builder.create<mlir::arith::DivFOp>(loc, args[0], args[1]);
-    return builder.create<mlir::arith::DivSIOp>(loc, args[0], args[1]);
-  case wafer::ComputeElementwiseKind::Max:
-    if (isFloat)
-      return builder.create<mlir::arith::MaximumFOp>(loc, args[0], args[1]);
-    return builder.create<mlir::arith::MaxSIOp>(loc, args[0], args[1]);
-  case wafer::ComputeElementwiseKind::Min:
-    if (isFloat)
-      return builder.create<mlir::arith::MinimumFOp>(loc, args[0], args[1]);
-    return builder.create<mlir::arith::MinSIOp>(loc, args[0], args[1]);
-  case wafer::ComputeElementwiseKind::Neg:
-    if (isFloat)
-      return builder.create<mlir::arith::NegFOp>(loc, args[0]);
-    if (mlir::Value zero = createScalarConstant(builder, loc, type, 0.0))
-      return builder.create<mlir::arith::SubIOp>(loc, zero, args[0]);
-    return {};
-  case wafer::ComputeElementwiseKind::Recip:
-    if (mlir::Value one = createScalarConstant(builder, loc, type, 1.0))
-      return builder.create<mlir::arith::DivFOp>(loc, one, args[0]);
-    return {};
-  case wafer::ComputeElementwiseKind::Sqrt:
-    return builder.create<mlir::math::SqrtOp>(loc, args[0]);
-  case wafer::ComputeElementwiseKind::Rsqrt:
-    return builder.create<mlir::math::RsqrtOp>(loc, args[0]);
-  case wafer::ComputeElementwiseKind::Exp:
-    return builder.create<mlir::math::ExpOp>(loc, args[0]);
-  case wafer::ComputeElementwiseKind::Tanh:
-    return builder.create<mlir::math::TanhOp>(loc, args[0]);
-  }
+static mlir::Value createSubScalar(mlir::OpBuilder &builder,
+                                   mlir::Location loc,
+                                   mlir::ValueRange args) {
+  mlir::Type type = args.front().getType();
+  if (mlir::isa<mlir::FloatType>(type))
+    return builder.create<mlir::arith::SubFOp>(loc, args[0], args[1]);
+  return builder.create<mlir::arith::SubIOp>(loc, args[0], args[1]);
+}
+
+static mlir::Value createMulScalar(mlir::OpBuilder &builder,
+                                   mlir::Location loc,
+                                   mlir::ValueRange args) {
+  mlir::Type type = args.front().getType();
+  if (mlir::isa<mlir::FloatType>(type))
+    return builder.create<mlir::arith::MulFOp>(loc, args[0], args[1]);
+  return builder.create<mlir::arith::MulIOp>(loc, args[0], args[1]);
+}
+
+static mlir::Value createDivScalar(mlir::OpBuilder &builder,
+                                   mlir::Location loc,
+                                   mlir::ValueRange args) {
+  mlir::Type type = args.front().getType();
+  if (mlir::isa<mlir::FloatType>(type))
+    return builder.create<mlir::arith::DivFOp>(loc, args[0], args[1]);
+  return builder.create<mlir::arith::DivSIOp>(loc, args[0], args[1]);
+}
+
+static mlir::Value createMaxScalar(mlir::OpBuilder &builder,
+                                   mlir::Location loc,
+                                   mlir::ValueRange args) {
+  mlir::Type type = args.front().getType();
+  if (mlir::isa<mlir::FloatType>(type))
+    return builder.create<mlir::arith::MaximumFOp>(loc, args[0], args[1]);
+  return builder.create<mlir::arith::MaxSIOp>(loc, args[0], args[1]);
+}
+
+static mlir::Value createMinScalar(mlir::OpBuilder &builder,
+                                   mlir::Location loc,
+                                   mlir::ValueRange args) {
+  mlir::Type type = args.front().getType();
+  if (mlir::isa<mlir::FloatType>(type))
+    return builder.create<mlir::arith::MinimumFOp>(loc, args[0], args[1]);
+  return builder.create<mlir::arith::MinSIOp>(loc, args[0], args[1]);
+}
+
+static mlir::Value createNegScalar(mlir::OpBuilder &builder,
+                                   mlir::Location loc,
+                                   mlir::ValueRange args) {
+  mlir::Type type = args.front().getType();
+  if (mlir::isa<mlir::FloatType>(type))
+    return builder.create<mlir::arith::NegFOp>(loc, args[0]);
+  if (mlir::Value zero = createScalarConstant(builder, loc, type, 0.0))
+    return builder.create<mlir::arith::SubIOp>(loc, zero, args[0]);
   return {};
 }
 
+static mlir::Value createRecipScalar(mlir::OpBuilder &builder,
+                                     mlir::Location loc,
+                                     mlir::ValueRange args) {
+  if (mlir::Value one =
+          createScalarConstant(builder, loc, args.front().getType(), 1.0))
+    return builder.create<mlir::arith::DivFOp>(loc, one, args[0]);
+  return {};
+}
+
+static mlir::Value createSqrtScalar(mlir::OpBuilder &builder,
+                                    mlir::Location loc,
+                                    mlir::ValueRange args) {
+  return builder.create<mlir::math::SqrtOp>(loc, args[0]);
+}
+
+static mlir::Value createRsqrtScalar(mlir::OpBuilder &builder,
+                                     mlir::Location loc,
+                                     mlir::ValueRange args) {
+  return builder.create<mlir::math::RsqrtOp>(loc, args[0]);
+}
+
+static mlir::Value createExpScalar(mlir::OpBuilder &builder,
+                                   mlir::Location loc,
+                                   mlir::ValueRange args) {
+  return builder.create<mlir::math::ExpOp>(loc, args[0]);
+}
+
+static mlir::Value createTanhScalar(mlir::OpBuilder &builder,
+                                    mlir::Location loc,
+                                    mlir::ValueRange args) {
+  return builder.create<mlir::math::TanhOp>(loc, args[0]);
+}
+
+static constexpr ScalarElementwiseLowering kAddLowering{2, true, true,
+                                                        createAddScalar};
+static constexpr ScalarElementwiseLowering kSubLowering{2, true, true,
+                                                        createSubScalar};
+static constexpr ScalarElementwiseLowering kMulLowering{2, true, true,
+                                                        createMulScalar};
+static constexpr ScalarElementwiseLowering kDivLowering{2, true, true,
+                                                        createDivScalar};
+static constexpr ScalarElementwiseLowering kMaxLowering{2, true, true,
+                                                        createMaxScalar};
+static constexpr ScalarElementwiseLowering kMinLowering{2, true, true,
+                                                        createMinScalar};
+static constexpr ScalarElementwiseLowering kNegLowering{1, true, true,
+                                                        createNegScalar};
+static constexpr ScalarElementwiseLowering kRecipLowering{1, true, false,
+                                                          createRecipScalar};
+static constexpr ScalarElementwiseLowering kSqrtLowering{1, true, false,
+                                                         createSqrtScalar};
+static constexpr ScalarElementwiseLowering kRsqrtLowering{1, true, false,
+                                                          createRsqrtScalar};
+static constexpr ScalarElementwiseLowering kExpLowering{1, true, false,
+                                                        createExpScalar};
+static constexpr ScalarElementwiseLowering kTanhLowering{1, true, false,
+                                                         createTanhScalar};
+
 static bool lowerElementwise(mlir::Operation *op,
-                             wafer::ComputeElementwiseKind kind,
+                             const ScalarElementwiseLowering &lowering,
                              llvm::ArrayRef<mlir::Value> inputs) {
   auto resultType =
       mlir::dyn_cast<mlir::RankedTensorType>(op->getResult(0).getType());
   if (!resultType || !resultType.hasStaticShape())
     return false;
-  if (!canCreateScalarElementwise(resultType.getElementType(), kind,
+  if (!canCreateScalarElementwise(resultType.getElementType(), lowering,
                                   inputs.size()))
     return false;
 
@@ -226,8 +288,10 @@ static bool lowerElementwise(mlir::Operation *op,
       mlir::ValueRange{empty}, indexingMaps, iteratorTypes,
       [&](mlir::OpBuilder &nestedBuilder, mlir::Location loc,
           mlir::ValueRange blockArgs) {
-        mlir::Value scalar = createScalarElementwise(
-            nestedBuilder, loc, kind, blockArgs.take_front(inputs.size()));
+        mlir::Value scalar =
+            lowering.build(nestedBuilder, loc,
+                           blockArgs.take_front(inputs.size()));
+        assert(scalar && "prechecked scalar elementwise lowering failed");
         nestedBuilder.create<mlir::linalg::YieldOp>(loc, scalar);
       });
 
@@ -246,13 +310,13 @@ static bool lowerElementwise(mlir::Operation *op,
 }
 
 static bool lowerBinary(mlir::Operation *op, mlir::Value lhs, mlir::Value rhs,
-                        wafer::ComputeElementwiseKind kind) {
-  return lowerElementwise(op, kind, {lhs, rhs});
+                        const ScalarElementwiseLowering &lowering) {
+  return lowerElementwise(op, lowering, {lhs, rhs});
 }
 
 static bool lowerUnary(mlir::Operation *op, mlir::Value input,
-                       wafer::ComputeElementwiseKind kind) {
-  return lowerElementwise(op, kind, {input});
+                       const ScalarElementwiseLowering &lowering) {
+  return lowerElementwise(op, lowering, {input});
 }
 #endif
 
@@ -292,48 +356,36 @@ struct LowerStablehloElementwisePass
 
     for (mlir::Operation *op : ops) {
       if (auto add = mlir::dyn_cast<mlir::stablehlo::AddOp>(op)) {
-        (void)lowerBinary(op, add.getLhs(), add.getRhs(),
-                          wafer::ComputeElementwiseKind::Add);
+        (void)lowerBinary(op, add.getLhs(), add.getRhs(), kAddLowering);
       } else if (auto sub =
                      mlir::dyn_cast<mlir::stablehlo::SubtractOp>(op)) {
-        (void)lowerBinary(op, sub.getLhs(), sub.getRhs(),
-                          wafer::ComputeElementwiseKind::Sub);
+        (void)lowerBinary(op, sub.getLhs(), sub.getRhs(), kSubLowering);
       } else if (auto mul = mlir::dyn_cast<mlir::stablehlo::MulOp>(op)) {
-        (void)lowerBinary(op, mul.getLhs(), mul.getRhs(),
-                          wafer::ComputeElementwiseKind::Mul);
+        (void)lowerBinary(op, mul.getLhs(), mul.getRhs(), kMulLowering);
       } else if (auto div = mlir::dyn_cast<mlir::stablehlo::DivOp>(op)) {
         mlir::Value lhs = div.getLhs();
         if (isConstantOne(lhs)) {
-          if (lowerUnary(op, div.getRhs(),
-                         wafer::ComputeElementwiseKind::Recip))
+          if (lowerUnary(op, div.getRhs(), kRecipLowering))
             if (mlir::Operation *constant = lhs.getDefiningOp();
                 constant && constant->use_empty())
               constant->erase();
         } else {
-          (void)lowerBinary(op, div.getLhs(), div.getRhs(),
-                            wafer::ComputeElementwiseKind::Div);
+          (void)lowerBinary(op, div.getLhs(), div.getRhs(), kDivLowering);
         }
       } else if (auto max = mlir::dyn_cast<mlir::stablehlo::MaxOp>(op)) {
-        (void)lowerBinary(op, max.getLhs(), max.getRhs(),
-                          wafer::ComputeElementwiseKind::Max);
+        (void)lowerBinary(op, max.getLhs(), max.getRhs(), kMaxLowering);
       } else if (auto min = mlir::dyn_cast<mlir::stablehlo::MinOp>(op)) {
-        (void)lowerBinary(op, min.getLhs(), min.getRhs(),
-                          wafer::ComputeElementwiseKind::Min);
+        (void)lowerBinary(op, min.getLhs(), min.getRhs(), kMinLowering);
       } else if (auto neg = mlir::dyn_cast<mlir::stablehlo::NegOp>(op)) {
-        (void)lowerUnary(op, neg.getOperand(),
-                         wafer::ComputeElementwiseKind::Neg);
+        (void)lowerUnary(op, neg.getOperand(), kNegLowering);
       } else if (auto sqrt = mlir::dyn_cast<mlir::stablehlo::SqrtOp>(op)) {
-        (void)lowerUnary(op, sqrt.getOperand(),
-                         wafer::ComputeElementwiseKind::Sqrt);
+        (void)lowerUnary(op, sqrt.getOperand(), kSqrtLowering);
       } else if (auto rsqrt = mlir::dyn_cast<mlir::stablehlo::RsqrtOp>(op)) {
-        (void)lowerUnary(op, rsqrt.getOperand(),
-                         wafer::ComputeElementwiseKind::Rsqrt);
+        (void)lowerUnary(op, rsqrt.getOperand(), kRsqrtLowering);
       } else if (auto exp = mlir::dyn_cast<mlir::stablehlo::ExpOp>(op)) {
-        (void)lowerUnary(op, exp.getOperand(),
-                         wafer::ComputeElementwiseKind::Exp);
+        (void)lowerUnary(op, exp.getOperand(), kExpLowering);
       } else if (auto tanh = mlir::dyn_cast<mlir::stablehlo::TanhOp>(op)) {
-        (void)lowerUnary(op, tanh.getOperand(),
-                         wafer::ComputeElementwiseKind::Tanh);
+        (void)lowerUnary(op, tanh.getOperand(), kTanhLowering);
       }
     }
 #endif
