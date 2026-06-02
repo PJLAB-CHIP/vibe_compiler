@@ -202,7 +202,7 @@ SwiGLU 的其它 decomposition 需要通过通用 structured tensor lowering 和
 验证扩展，不能再新增 case-specific schedule checker。当前不引入 `wafer.mlp`、fused activation op
 或名字约定，也不把中间 tile/group split 写成 IR attr。
 
-当前 P5.7 增加 full local transformer block structured IR gate。该 integration test 在单个函数中
+当前保留 full local transformer block structured IR fixture。该 integration test 在单个函数中
 串联：
 
 - rank-4 RMSNorm staged form。
@@ -211,9 +211,11 @@ SwiGLU 的其它 decomposition 需要通过通用 structured tensor lowering 和
 - output projection + bias + residual。
 - MLP gate/up/down projection。
 
-该 gate 运行 norm、softmax、projection/residual 和 MLP acceptance passes，验证 local tensor
-IR 的 dataflow 可以串成一个 transformer block。为支持该 gate，`--wafer-lower-stablehlo-shape`
-现在支持静态连续维度 reassociation 的 expand/collapse reshape，例如
+该 fixture 只验证这些 fine-grained StableHLO dataflow 经过 local tensor normalization 后仍能由
+`linalg` / `tensor` / `arith` / `math` structured IR 表达；不运行 transformer-specific schedule
+acceptance pass，也不证明 group schedule、SPM residency、workspace 或 package completion。为支持
+该 fixture，`--wafer-lower-stablehlo-shape` 现在支持静态连续维度 reassociation 的
+expand/collapse reshape，例如
 `tensor<BxHxQxD> -> tensor<(BHQ)xD>`。该批次仍不声称 physical layout、SPM residency、
 workspace 或 DDR binding 已完成；这些事实必须在后续 Wafer group/resource lowering 和
 transformer local compile gate 中 materialize。
@@ -313,7 +315,9 @@ MLIR tiling / fusion 相关接口：
 当前测试里的输入 StableHLO 已经是 `stablehlo.reduce`、`stablehlo.subtract`、`stablehlo.exponential`、
 `stablehlo.divide`、`stablehlo.rsqrt`、`stablehlo.broadcast_in_dim` 等细粒度算子。Wafer lowering
 把这些 op 分别转成 `linalg.reduce`、`linalg.generic`、`arith`、`math` 和 `tensor`/`linalg` shape
-ops；后续 softmax/norm schedule acceptance 只从这些结构化 IR 和 SSA use-def 关系重算 pattern。
+ops。后续 softmax/norm 是否能进入合法 tile/group schedule，必须由通用 group/resource planner 和
+materialization verifier 从 structured IR 与 SSA use-def 关系重算，不能再由 case-specific
+acceptance checker 给出结论。
 
 Softmax 的 normalized form 至少是：
 
@@ -414,13 +418,13 @@ Normalization 后必须能检查：
 | --- | --- | --- |
 | dot / 2D GEMM | `test/Frontend/lower-stablehlo-dot-to-linalg.mlir`、`stablehlo-dot-artifact.mlir`、`linalg-gemm-artifact.mlir` | 证明 2D dot 可进入 structured matmul，不证明 tile shape / GEMM packet |
 | attention QK^T / AV | `lower-stablehlo-attention-score.mlir`、`lower-stablehlo-attention-value.mlir`、`lower-stablehlo-attention-softmax-value.mlir` | rank-4 transpose / contraction relation 来自 `dot_general` dimension numbers 和 indexing map |
-| elementwise / broadcast | `lower-stablehlo-elementwise.mlir`、projection residual gate | 证明当前 add/sub/mul/div/tanh/exp/broadcast 子集的 SSA dataflow；mask/select 和 complex broadcast 未闭环 |
+| elementwise / broadcast | `lower-stablehlo-elementwise.mlir`、`lower-stablehlo-projection-residual.mlir` | 证明当前 add/sub/mul/div/tanh/exp/broadcast 子集的 SSA dataflow；mask/select 和 complex broadcast 未闭环 |
 | reduce | `lower-stablehlo-reduce.mlir`、norm/softmax staged tests | 证明细粒度 StableHLO reduce 到 `linalg.reduce` 的 constant-init 子集；non-constant-init reduce 和 numeric policy 未闭环 |
 | softmax | `lower-stablehlo-softmax-staged.mlir` | 证明 fine-grained StableHLO softmax dataflow 可变成 `linalg.reduce` / `linalg.generic` staged IR；不证明 multi-stage workspace 或 group schedule |
 | norm | `lower-stablehlo-norm-staged.mlir` | 证明 fine-grained RMSNorm/LayerNorm dataflow 中 last-dim reduce / rsqrt / broadcast multiply gate；不证明完整 LayerNorm/RMSNorm family |
 | RoPE | `lower-stablehlo-rope-mlp-staged.mlir` | 证明当前 RoPE slice/shape/elementwise staged pattern；sin/cos table storage slicing 未闭环 |
-| MLP | `lower-stablehlo-mlp.mlir`、`lower-stablehlo-local-transformer-block.mlir` | 证明 tanh-gated MLP vertical slice 和 full local transformer structured gate；GELU/SwiGLU/package consistency 未闭环 |
-| shape views | `lower-stablehlo-shape.mlir`、local transformer block gate | 证明 static expand/collapse shape-only relation；dynamic shape view 和 layout materialization 未闭环 |
+| MLP | `lower-stablehlo-mlp.mlir`、`lower-stablehlo-local-transformer-block.mlir` | 证明 tanh-gated MLP dataflow fixture 和 full local transformer structured fixture；GELU/SwiGLU/package consistency 未闭环 |
+| shape views | `lower-stablehlo-shape.mlir`、`lower-stablehlo-local-transformer-block.mlir` | 证明 static expand/collapse shape-only relation；dynamic shape view 和 layout materialization 未闭环 |
 | tensor collective handoff | 设计已收口，代码未恢复 | StableHLO collective 需要先进入 Wafer LinalgExt-style tensor collective 层；旧的 StableHLO -> `wafer.comm` bridge 已移除，不能作为 group/tiling 输入 |
 
 ## 8. 与其它文档的关系

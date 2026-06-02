@@ -127,13 +127,13 @@ boundary、tile shape、multi-stage schedule、SPM residency 或 C ABI issue seq
 | --- | --- | --- | --- |
 | dot / 2D GEMM | `test/Frontend/lower-stablehlo-dot-to-linalg.mlir`、`stablehlo-dot-artifact.mlir`、`linalg-gemm-artifact.mlir` | StableHLO 2D dot 可降到 structured linalg matmul 输入 | accumulator dtype policy 和更宽 batch matmul family 仍需扩展 |
 | attention QK^T / AV | `lower-stablehlo-attention-score.mlir`、`lower-stablehlo-attention-value.mlir`、`lower-stablehlo-attention-softmax-value.mlir` | rank-4 attention score/value 的 transpose relation 来自 dot dimension numbers 和 indexing map | 不代表 attention schedule、SPM residency 或 workspace 已完成 |
-| elementwise / broadcast | `lower-stablehlo-elementwise.mlir`、`elementwise-broadcast-local-c-abi-issues.mlir`、projection residual gate | add/sub/mul/div/tanh/exp 等当前子集进入 `linalg.generic` / `arith` / `math` dataflow | complex broadcast、compare/select、mask add policy 仍未闭环 |
+| elementwise / broadcast | `lower-stablehlo-elementwise.mlir`、`elementwise-broadcast-local-c-abi-issues.mlir`、`lower-stablehlo-projection-residual.mlir` | add/sub/mul/div/tanh/exp 等当前子集进入 `linalg.generic` / `arith` / `math` dataflow | complex broadcast、compare/select、mask add policy 仍未闭环 |
 | reduce | `lower-stablehlo-reduce.mlir`、norm/softmax staged tests | fine-grained StableHLO reduce 到 `linalg.reduce` 的 constant-init 子集保留 reduction dimension 和 kind | non-constant-init reduce、NaN/overflow/approx policy 仍未闭环 |
 | softmax | `lower-stablehlo-softmax-staged.mlir` | row max、subtract、exp、row sum、divide 的 fine-grained StableHLO SSA dataflow 可 lower 到 `linalg.reduce` / `linalg.generic` staged IR | 历史 acceptance checker 已删除；multi-stage workspace/materialization 属 R3/R5/R6 后续 |
 | norm | `lower-stablehlo-norm-staged.mlir` | RMSNorm / LayerNorm staged graph 中 last-dim reduce、rsqrt、broadcast mul gate 已记录；没有 `wafer.norm` 或 high-level norm op | 历史 acceptance checker 已删除；LayerNorm/RMSNorm 更宽 decomposition、epsilon policy 和 storage/resource 闭环未完成 |
 | RoPE | `lower-stablehlo-rope-mlp-staged.mlir` | RoPE 当前作为 slice/shape/elementwise staged dataflow 覆盖 | sin/cos table 的 bundle/storage slicing 和更宽 shape family 未完成 |
-| MLP | `lower-stablehlo-mlp.mlir`、`lower-stablehlo-local-transformer-block.mlir` | tanh-gated MLP vertical slice 和 full local transformer structured gate 已记录 | GELU/SwiGLU 其它 decomposition、constant slicing 和 package consistency 未完成 |
-| shape views | `lower-stablehlo-shape.mlir`、local transformer block gate | static reshape expand/collapse 的 shape-only relation 可进入 local tensor IR | dynamic shape view、layout materialization 和 real movement 属后续层 |
+| MLP | `lower-stablehlo-mlp.mlir`、`lower-stablehlo-local-transformer-block.mlir` | tanh-gated MLP dataflow fixture 和 full local transformer structured fixture 已记录 | GELU/SwiGLU 其它 decomposition、constant slicing 和 package consistency 未完成 |
+| shape views | `lower-stablehlo-shape.mlir`、`lower-stablehlo-local-transformer-block.mlir` | static reshape expand/collapse 的 shape-only relation 可进入 local tensor IR | dynamic shape view、layout materialization 和 real movement 属后续层 |
 
 ## 验证
 

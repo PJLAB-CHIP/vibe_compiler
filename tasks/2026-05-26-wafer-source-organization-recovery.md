@@ -36,7 +36,8 @@ C ABI conversion 混在旧的聚合目录里。
 
 - `StableHLOToLinalg/`：StableHLO textual lowering 和 constant normalization。
 - `GroupFormation/`：tensor-level `wafer.group` 形成。
-- `GroupScheduling/`：当前 schedule acceptance / candidate checker fixture。
+- `GroupScheduling/`：当前 root tile feasibility / candidate checker fixture；不承载 transformer
+  case-specific schedule acceptance。
 - `TileRegionMaterialization/`：single-tile 和 multi-tile `wafer.tile_region` materialization。
 - `SPMBufferize/`：SPM allocation trial checker。
 - `LayoutMaterialization/`：layout assignment/materialization fixture。

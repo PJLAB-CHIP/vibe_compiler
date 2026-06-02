@@ -172,8 +172,10 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 当前实现：
 
 - 有 StableHLO textual artifact tests、`wafer-normalize-constants`、dot/shape/elementwise/reduce
-  lowering pass，以及 norm/softmax/projection/MLP acceptance passes。
-- 有 attention QK^T / AV rank-4 `dot_general` lowering 和 full local transformer block structured gate。
+  lowering pass，以及 norm/softmax/projection/MLP frontend lowering fixtures；历史 case-specific
+  acceptance passes 已删除。
+- 有 attention QK^T / AV rank-4 `dot_general` lowering 和 full local transformer block structured
+  fixture。
 - `wafer-import-model` 已通过 `WaferFrontend` verifier 接收 pre-exported StableHLO / MLIR artifact，
   并覆盖 graph break、eager fallback、bounded dynamic shape 诊断；P2.F1 进一步验证 PyTorch/XLA
   bundle `forward.meta` / pre-SPMD `data/<parameter>` 与 MLIR function signature 一致；post-SPMD
@@ -191,7 +193,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   seed policy 和 Wafer Shardy propagation stage gate。旧 Python post-SPMD export 入口已删除；仍需
   P2.S2 建立 Wafer-owned XLA SPMD partition artifact stage，之后 R2.4 再把 post-SPMD collective
   handoff 成 Wafer LinalgExt-style tensor collective IR。
-- acceptance passes 只识别当前 structured IR pattern，不等于 group schedule planner 或 full
+- frontend fixtures 只覆盖当前 structured IR dataflow，不等于 group schedule planner 或 full
   transformer local compile 已完成。
 - mask/select、dynamic shape、非 constant-init reduce、复杂 broadcast、常量 slicing/storage transform
   仍未按设计闭环。
@@ -336,8 +338,8 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 
 当前实现：
 
-- 有 norm、softmax、projection/residual、MLP acceptance passes 和 full local transformer block
-  structured gate。
+- 有 norm、softmax、projection/residual、MLP frontend lowering fixtures 和 full local transformer
+  block structured fixture；旧 transformer-specific acceptance passes 已删除。
 - 有 rank-4 QK^T / AV contraction lowering、same-shape/projected-permutation elementwise、local reduce
   和 batched GEMM issue lowering。
 - local-transformer fixture manifest 覆盖 workspace buffers、resident constants 和 82 个 ABI issue，
@@ -345,7 +347,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 
 缺口：
 
-- 多数 transformer pass 是 pattern acceptance，不是 full schedule planner。
+- transformer frontend fixtures 只证明 structured tensor dataflow 覆盖，不是 full schedule planner。
 - transformer package manifest 是 fixed fixture，不由 transformer IR 自动导出；workspace/resident constant metadata
   与 IR dataflow 无统一事实源。
 - mask/select、dynamic shape、非 constant-init reduce、复杂 broadcast 和 true constant slicing/storage
