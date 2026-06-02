@@ -410,7 +410,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 | P2 | 骨架 | StableHLO textual lowering、frontend artifact verifier、PyTorch/XLA bundle capture、SDY artifact bridge、P2.S1 Shardy propagation stage gate 和 local compute coverage 口径已恢复；Wafer-owned SPMD partition、dynamic/mask/constant-storage、tensor collective handoff 和 physical schedule 仍未闭环 |
 | P3 | 骨架 | single-tile local path 可跑，但 group/resource/C ABI/package 主链路未闭环 |
 | P4 | 骨架 | placement/map 和 multi-tile fixture 可跑，但真实 shard/merge/launch binding 未闭环 |
-| P5 | 骨架 | transformer staged acceptance 和 local fixture 可跑，但 full schedule/resource/package/device artifact 未闭环 |
+| P5 | 骨架 | transformer staged frontend fixtures 和 local fixture 可跑，但 full schedule/resource/package/device artifact 未闭环 |
 | P6 | 骨架 | comm/DTE fixture 可跑，但 resource allocator、buffer slice/address、package/runtime metadata 未闭环 |
 
 R2 之后的下一步是 R2.4：建立 Wafer LinalgExt-style tensor collective handoff；随后进入 R3.1，
