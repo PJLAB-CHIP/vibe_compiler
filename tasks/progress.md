@@ -137,7 +137,9 @@ P7/P8/P9 依赖 P0-P6 主链路恢复，不提前推进。
   `all_to_all` / `collective_permute` fixture 能 normalize 成 `wafer.tensor_collective.*`；P2.S2
   真实 partitioned bundle 的 `forward.mlir` 能经 `wafer-lower-stablehlo-to-linalg` 产出
   `wafer.tensor_collective.all_gather`，且不绕到 `wafer.comm`；gtest 覆盖五类 tensor collective 的
-  `WaferTensorCollectiveOpInterface` 和 MLIR `TilingInterface` 查询合同。
+  `WaferTensorCollectiveOpInterface` 和 MLIR `TilingInterface` 查询合同，并覆盖
+  named pipeline 生成的 `wafer.tensor_collective.all_gather` 可继续调用 tiling interface 生成正确
+  `tensor.extract_slice`。
 
 不能作为主线完成证明：
 

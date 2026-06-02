@@ -1,7 +1,13 @@
+#include "Wafer/Frontend/InitImporterDialects.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/InitAll.h"
+#include "Wafer/Pipelines/Pipelines.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -10,6 +16,7 @@
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/TilingInterface.h"
 #include "mlir/Parser/Parser.h"
+#include "mlir/Pass/PassManager.h"
 #include "llvm/ADT/STLExtras.h"
 
 #include "gtest/gtest.h"
@@ -838,6 +845,62 @@ module {
       llvm::SmallVector<ExpectedExtractSlice>{
           expectSlice(allGather.getInputs()[0], {0, 0}, {8, 512}, {8, 512}),
           expectSlice(allGather.getOuts()[0], {0, 0}, {8, 2048}, {8, 2048})});
+}
+
+TEST(WaferInterfacesTest, StablehloPipelineProducedCollectiveCanBeTiled) {
+#ifndef WAFER_ENABLE_STABLEHLO
+  GTEST_SKIP() << "StableHLO importer dependencies are disabled";
+#else
+  mlir::DialectRegistry registry;
+  registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
+                  mlir::linalg::LinalgDialect, mlir::math::MathDialect,
+                  mlir::scf::SCFDialect, mlir::tensor::TensorDialect>();
+  wafer::registerAllDialects(registry);
+  wafer::registerImporterDialects(registry);
+
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  func.func @partitioned_all_gather(%input: tensor<64x512xf32>) -> tensor<64x4096xf32> {
+    %0 = "stablehlo.all_gather"(%input) {
+      all_gather_dim = 1 : i64,
+      replica_groups = dense<[[0, 1, 2, 3, 4, 5, 6, 7]]> : tensor<1x8xi64>,
+      channel_handle = #stablehlo.channel_handle<handle = 41, type = 1>
+    } : (tensor<64x512xf32>) -> tensor<64x4096xf32>
+    return %0 : tensor<64x4096xf32>
+  }
+}
+)mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(module);
+
+  mlir::PassManager pm(&context);
+  wafer::buildStablehloToLinalgPipeline(pm);
+  ASSERT_TRUE(mlir::succeeded(pm.run(*module)));
+
+  auto allGather = findSingleOp<wafer::TensorCollectiveAllGatherOp>(*module);
+  ASSERT_TRUE(allGather);
+  expectTensorCollectiveInterfaces(allGather);
+  auto collective = mlir::dyn_cast<wafer::WaferTensorCollectiveOpInterface>(
+      allGather.getOperation());
+  ASSERT_TRUE(collective);
+  wafer::WaferTensorCollectiveInfo info;
+  collective.collectWaferTensorCollectiveInfo(info);
+  EXPECT_EQ(info.kind, wafer::WaferTensorCollectiveKind::AllGather);
+  EXPECT_EQ(info.axis, 1);
+  EXPECT_EQ(info.channelId, 41);
+  EXPECT_EQ(info.rankGroup,
+            llvm::SmallVector<int64_t>({0, 1, 2, 3, 4, 5, 6, 7}));
+  expectTiledImplementation(
+      allGather, context, llvm::SmallVector<int64_t>{16, 0},
+      llvm::SmallVector<int64_t>{8, 4096}, llvm::SmallVector<int64_t>{8, 4096},
+      llvm::SmallVector<ExpectedExtractSlice>{
+          expectSlice(allGather.getInputs()[0], {16, 0}, {8, 512}, {8, 512}),
+          expectSlice(allGather.getOuts()[0], {16, 0}, {8, 4096}, {8, 4096})});
+#endif
 }
 
 } // namespace
