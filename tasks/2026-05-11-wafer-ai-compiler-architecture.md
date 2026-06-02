@@ -785,7 +785,7 @@ SPMD partition artifact stage 消费 sharding propagation stage 输出的 Stable
 pre-SPMD bundle 运行 Shardy propagation；`wafer-import-model --partition-stablehlo-bundle` 是
 P2.S2 partition artifact 入口。`wafer-lower-linalg-to-cabi`、`wafer-lower-stablehlo-to-cabi`、
 `wafer-lower-tile-communication-to-cabi` 和 `wafer-import-model --compile-stablehlo-bundle-to-cabi`
-已删除；single-tile/C ABI/ring lowering 只保留为 unit/debug pass 覆盖。`tx8` 只保留为底层硬件/
+已删除；旧 single-tile/C ABI/ring/SPM/DDR unit/debug pass 链也已删除。`tx8` 只保留为底层硬件/
 依赖事实名，不作为 compiler driver target。下面列表描述长期阶段边界，不是要求用户手动串 pass。
 
 ```text

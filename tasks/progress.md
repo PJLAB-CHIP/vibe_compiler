@@ -80,9 +80,9 @@ P7/P8/P9 依赖 P0-P6 主链路恢复，不提前推进。
   SPMD partition、group、placement、SPM/DDR 或 C ABI。
 - `wafer-lower-linalg-to-cabi`、`wafer-lower-stablehlo-to-cabi`、
   `wafer-lower-tile-communication-to-cabi` 和
-  `wafer-import-model --compile-stablehlo-bundle-to-cabi` 已删除；single-tile materialization、ring
-  lowering 和 C ABI issue lowering 只保留为 explicit unit/debug pass 覆盖，不能作为主线 compile
-  完成证明。
+  `wafer-import-model --compile-stablehlo-bundle-to-cabi` 已删除；旧 single-tile materialization、ring
+  lowering、SPM/DDR trial 和 tile_region-to-C-ABI issue lowering 的 explicit unit/debug pass 链也已删除。
+  R3/R6/R7 必须按新的 IR contract 从真实 artifact chain 恢复，不能复用这条旧链作为完成证明。
 - P2.S2 已完成当前 artifact gate：`wafer-import-model --partition-stablehlo-bundle` 负责 bundle
   verify、in-memory Wafer sharding propagation、临时 propagated bundle、pinned-XLA helper 调用和输出
   bundle verifier。helper 执行 StableHLO/SDY -> XLA HLO、`SpmdPrepare` / `SpmdPartitioner` /
@@ -107,8 +107,7 @@ P7/P8/P9 依赖 P0-P6 主链路恢复，不提前推进。
 - SDY `sdy.mesh` / `sdy.sharding` parse/verify、default input seed、Shardy propagation driver gate。
 - P2.S2 pinned-XLA SPMD helper build、six-strategy frontend artifact -> Wafer propagation -> XLA SPMD
   partition -> post-SPMD bundle verification gate。
-- StableHLO/Linalg local compute normalization、stage-connection gate、C ABI issue fixture、package manifest
-  validator/stub tool-unit fixture。
+- StableHLO/Linalg local compute normalization、package manifest validator/stub tool-unit fixture。
 
 不能作为主线完成证明：
 
@@ -122,7 +121,8 @@ P7/P8/P9 依赖 P0-P6 主链路恢复，不提前推进。
 这些项只作为当前队列的前置锚点，详细记录见对应设计/恢复文档：
 
 - R0.1-R0.3：P0-P6 状态重读、源码 ownership、依赖层级和版本一致性恢复。
-- R1.1-R1.3：Wafer IR op-family 文件边界、interface/effect/resource 合同和 stage-connection tests。
+- R1.1-R1.3：Wafer IR op-family 文件边界、interface/effect/resource 合同；历史 stage-connection unit
+  gate 已在 2026-06-02 清理中删除，后续 R3 按真实 artifact chain 恢复。
 - R2.1-R2.3：frontend artifact verifier、SDY artifact bridge、local compute normalization 覆盖状态。
 - P2.F1：source-built PyTorch/XLA capture adapter。
 - R2.4-pre：Wafer named pipeline / driver contract。

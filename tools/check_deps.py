@@ -266,11 +266,15 @@ def check_cmake_target_visibility() -> None:
     ]:
         check_text_contains(transforms_cmake_path, needle)
 
-    for cmake_path in [
+    cmake_paths = [
         REPO_ROOT / "lib" / "Wafer" / "IR" / "CMakeLists.txt",
-        REPO_ROOT / "lib" / "Wafer" / "Conversion" / "CMakeLists.txt",
         REPO_ROOT / "lib" / "Wafer" / "ABI" / "CMakeLists.txt",
-    ]:
+    ]
+    future_conversion_cmake = REPO_ROOT / "lib" / "Wafer" / "Conversion" / "CMakeLists.txt"
+    if future_conversion_cmake.exists():
+        cmake_paths.append(future_conversion_cmake)
+
+    for cmake_path in cmake_paths:
         text = cmake_path.read_text(encoding="utf-8")
         for needle in [
             "Stablehlo",
@@ -283,6 +287,15 @@ def check_cmake_target_visibility() -> None:
         ]:
             if needle in text:
                 raise RuntimeError(f"{rel(cmake_path)} leaks {needle!r}")
+
+    for cmake_path in [
+        REPO_ROOT / "lib" / "Wafer" / "CMakeLists.txt",
+        REPO_ROOT / "lib" / "Wafer" / "Pipelines" / "CMakeLists.txt",
+        REPO_ROOT / "tools" / "wafer-opt" / "CMakeLists.txt",
+    ]:
+        text = cmake_path.read_text(encoding="utf-8")
+        if "WaferConversion" in text:
+            raise RuntimeError(f"{rel(cmake_path)} still links removed WaferConversion")
 
     check_text_contains(
         REPO_ROOT / "tools" / "wafer-opt" / "CMakeLists.txt",

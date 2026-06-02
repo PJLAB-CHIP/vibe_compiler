@@ -37,7 +37,7 @@ frontend/SPMD artifact 来源，而不是继续围绕手写 fixture 自洽。
 已经证明 frontend export 和 Wafer Shardy propagation stage 能跑通；post-SPMD partitioned local
 body 必须由 P2.S2 的 Wafer-owned stage 生成。后续主链路
 必须通过库中注册的 named pipeline 或用户级 driver mode 表达，
-bin 只负责注册和调用，单 pass flag 只保留为 unit/debug 入口。用户级 compile target 名称统一为
+bin 只负责注册和调用，单 pass flag 不能替代主线 compile flow。用户级 compile target 名称统一为
 `wafer`；`tx8` 只保留为硬件/依赖逆向资料中的事实名，不作为 compiler driver target 字符串。
 
 2026-06-02 清理结论：R2.4-pre 只保留当前真实成立的 named pipeline：
@@ -48,16 +48,17 @@ bin 只负责注册和调用，单 pass flag 只保留为 unit/debug 入口。�
 链路包装成用户级 compile flow。`wafer-import-model --propagate-stablehlo-sharding` 仍是
 pre-SPMD bundle 到 Shardy propagation 的阶段检查入口；P2.S2 的用户级入口是
 `wafer-import-model --partition-stablehlo-bundle`，负责消费 propagation stage 输出并调用
-Wafer-owned XLA SPMD partition helper。显式 C ABI issue、ring collective 和 single-tile
-materialization pass 只保留为 Transforms/StageConnections 的局部 unit/debug 覆盖。
+Wafer-owned XLA SPMD partition helper。旧显式 C ABI issue、ring collective、SPM/DDR trial 和
+single-tile materialization unit/debug pass 链已删除；R3/R6/R7 后续必须按真实 artifact chain 和
+新的 IR contract 恢复。
 
 2026-06-01 pass 边界复查结论：当前 `test/Spmd` 两个 case 只覆盖 default input seed 和
 SDY/Shardy artifact parse/verify，不覆盖 XLA SPMD partitioner，也不输出 rank-local StableHLO。
 当前 `test/Frontend` 16 个 case 覆盖 StableHLO / Linalg local compute normalization，其中
 softmax、RMSNorm 和 LayerNorm 的输入都是 fine-grained StableHLO staged graph，而不是
 `stablehlo.softmax`、`stablehlo.norm` 或 Wafer 私有 high-level op。剩余 lit case 数量主要来自
-Dialect verifier、Transforms、Frontend lowering、Pipelines、Integration 和 Tools，不是旧
-Python post-SPMD oracle 残留。
+Dialect verifier、Frontend lowering、Pipelines 和 Tools，不是旧 Python post-SPMD oracle 或旧
+C ABI unit/debug pass 链残留。
 
 ## R2.1 Frontend Artifact / Importer Contract
 
@@ -94,8 +95,8 @@ parameter name 只用于定位 exporter artifact 中的 parameter payload，不�
   `all_gather` textual artifact 和 frontend verifier 的同一 artifact 入口；它只证明 SDY dialect /
   StableHLO collective 可以进入工具链，不证明 XLA SPMD partition 或 rank-local body 已产生。
 - 历史 StableHLO collective bridge 曾把 `replica_groups` materialize 到后段 `wafer.comm`
-  `rank_group`，用于证明 rank-group metadata 可被 communication verifier 和 ring lowering 消费。
-  该入口已经从主线路径删除，不能作为 group/tiling 前的 collective 表示恢复。
+  `rank_group`，用于证明 rank-group metadata 可被 communication verifier 和旧 ring lowering 消费。
+  该入口和旧 ring lowering pass 已从主线路径删除，不能作为 group/tiling 前的 collective 表示恢复。
 - 主线必须拆成 StableHLO -> Wafer LinalgExt-style tensor collective，以及 tiled tensor collective
   + SPM tile buffers -> `wafer.comm` 两层。`wafer.comm` 只能在 tile_region / SPM materialization /
   placement 明确后 materialize。
@@ -120,7 +121,7 @@ boundary、tile shape、multi-stage schedule、SPM residency 或 C ABI issue seq
 | --- | --- | --- | --- |
 | dot / 2D GEMM | `test/Frontend/lower-stablehlo-dot-to-linalg.mlir`、`stablehlo-dot-artifact.mlir`、`linalg-gemm-artifact.mlir` | StableHLO 2D dot 可降到 structured linalg matmul 输入 | accumulator dtype policy 和更宽 batch matmul family 仍需扩展 |
 | attention QK^T / AV | `lower-stablehlo-attention-score.mlir`、`lower-stablehlo-attention-value.mlir`、`lower-stablehlo-attention-softmax-value.mlir` | rank-4 attention dot 目前保留为 StableHLO `dot_general`，不再特判成 `linalg.generic` contraction | 通用 batched contraction lowering、attention schedule、SPM residency 和 workspace 均未完成 |
-| elementwise / broadcast | `lower-stablehlo-elementwise.mlir`、`elementwise-broadcast-local-c-abi-issues.mlir`、`lower-stablehlo-projection-residual.mlir` | add/sub/mul/div/tanh/exp 等当前子集进入 `linalg.generic` / `arith` / `math` dataflow | complex broadcast、compare/select、mask add policy 仍未闭环 |
+| elementwise / broadcast | `lower-stablehlo-elementwise.mlir`、`lower-stablehlo-projection-residual.mlir` | add/sub/mul/div/tanh/exp 等当前子集进入 `linalg.generic` / `arith` / `math` dataflow | complex broadcast、compare/select、mask add policy 仍未闭环 |
 | reduce | `lower-stablehlo-reduce.mlir`、norm/softmax staged tests | fine-grained StableHLO reduce 到 `linalg.reduce` 的 constant-init 子集保留 reduction dimension 和 kind | non-constant-init reduce、NaN/overflow/approx policy 仍未闭环 |
 | softmax | `lower-stablehlo-softmax-staged.mlir` | row max、subtract、exp、row sum、divide 的 fine-grained StableHLO SSA dataflow 可 lower 到 `linalg.reduce` / `linalg.generic` staged IR | 历史 acceptance checker 已删除；multi-stage workspace/materialization 属 R3/R5/R6 后续 |
 | norm | `lower-stablehlo-norm-staged.mlir` | RMSNorm / LayerNorm staged graph 中 last-dim reduce、rsqrt、broadcast mul gate 已记录；没有 `wafer.norm` 或 high-level norm op | 历史 acceptance checker 已删除；LayerNorm/RMSNorm 更宽 decomposition、epsilon policy 和 storage/resource 闭环未完成 |
@@ -135,7 +136,7 @@ boundary、tile shape、multi-stage schedule、SPM residency 或 C ABI issue seq
 - `test/Tools/wafer-import-model-reference.test`
 - `test/Spmd/shardy-artifact-bridge.mlir`
 - `test/Dialect/Wafer/Comm/invalid-comm-rank-group-size.mlir`
-- `test/Transforms/ring-all-gather-rank-group.mlir`
+- 历史 `test/Transforms/ring-all-gather-rank-group.mlir` 已随旧 ring lowering unit pass 链删除。
 
 2026-05-27 后续清理删除了旧的 `--verify-spmd-bundle`、P2.S1 私有 attr emitter 和 StableHLO
 直降 `wafer.comm` pass/tests；上述 R2 记录只保留历史背景，不再表示这些旧入口仍存在。
@@ -211,8 +212,8 @@ debug/unit 入口，但这些 flag 不能被写成用户级 compile 流程。Pyt
 
 已撤回的旧入口：`wafer-import-model --compile-stablehlo-bundle-to-cabi`、
 `wafer-lower-linalg-to-cabi`、`wafer-lower-stablehlo-to-cabi` 和
-`wafer-lower-tile-communication-to-cabi` 不再注册。single-tile/C ABI/ring lowering 只作为显式
-unit pass 覆盖，不作为主线完成证明。
+`wafer-lower-tile-communication-to-cabi` 不再注册。旧 single-tile/C ABI/ring/SPM/DDR unit pass
+链也已删除，不作为主线完成证明。
 
 P2.F1 主链路 artifact 采用 `4096x4096 @ 4096x4096` f32 matmul + bias + tanh + residual 最小验证。
 该规模用于给后续 tiling、SPM/DDR resource、resident constant 和 package gate 提供非 trivial

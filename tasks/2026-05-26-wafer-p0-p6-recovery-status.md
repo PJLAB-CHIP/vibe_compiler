@@ -70,9 +70,11 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   `tools/check_deps.py` 和 bootstrap 脚本。
 - 有 `WAFER_ENABLE_IMPORTER_DEPS` 开关、disabled importer 最小验证，以及 LLVM/MLIR、StableHLO、
   Shardy、OpenXLA/XLA、googletest public submodule checkout 和 OpenXLA stack 固定版本检查。
-- R0.2 后源码已使用 `include/Wafer/Frontend`、`include/Wafer/IR`、`include/Wafer/Conversion`、
-  `lib/Wafer/IR`、stage-specific `lib/Wafer/Transforms/*` 和 `lib/Wafer/Conversion`。
-- `WaferTransforms` 只注册 transform pass；C ABI issue lowering 归入 `WaferConversion`。
+- R0.2 后源码曾使用 `include/Wafer/Frontend`、`include/Wafer/IR`、`include/Wafer/Conversion`、
+  `lib/Wafer/IR`、stage-specific `lib/Wafer/Transforms/*` 和 `lib/Wafer/Conversion`；2026-06-02
+  清理后旧 `WaferConversion` pass target 已删除。
+- `WaferTransforms` 只注册当前仍成立的 transform pass；旧 C ABI issue lowering 和 `WaferConversion`
+  pass target 已删除，后续按 storage-realized contract 重建。
 - R0.3 后 core compiler、frontend/importer、runtime/driver 和 test tools 的 target 可见范围记录在
   `tasks/2026-05-26-wafer-dependency-layering-recovery.md`，并由 `tools/check_deps.py` 检查。
 - Shardy/SDY 公共 dialect 与 import/export/propagation passes 已通过 Wafer 顶层 CMake shim 复用
@@ -86,10 +88,8 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   group、layout/materialize、SPM、DDR、compute、comm、sync 和 ABI op 可通过接口查询边界值、
   layout requirement 和 resource effect。关键 movement/compute/comm op 也接入 MLIR
   `MemoryEffectOpInterface` 的 Wafer resource。
-- R1.3 后 `test/StageConnections/local-compute-pipeline.mlir` 从 public linalg matmul、elementwise
-  和 reduce source 分别验证 source-to-group、group-to-tile、tile-to-ABI issue 连接；对应
-  `tools/check_stage_connection_tests.py` 防止这些 gate 退回到 `unrealized_conversion_cast`
-  cast-only 形态。
+- R1.3 的历史 stage-connection gate 已在 2026-06-02 清理中删除；后续 group/tile/storage/C ABI
+  连接必须由 R3/R6/R7 消费真实 frontend/SPMD artifact chain 后重新建立。
 
 缺口：
 
@@ -135,9 +135,8 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - 有 `WaferTilingInterface`、`WaferLayoutOpInterface`、
   `WaferLayoutMaterializationOpInterface`、`WaferResourceEffectInterface` 和 Wafer resource-backed
   MLIR memory effects；接口查询覆盖 group 边界、layout/SPM/DDR、compute/comm/sync/ABI 的局部需求。
-- 有 local compute stage-connection lit gate，覆盖 public linalg source 到 `wafer.group`、
-  `wafer.tile_region` 和 `wafer.abi.*` issue 层连接，且 gate 本身禁止使用
-  `unrealized_conversion_cast` 作为边界值来源。
+- 历史 local compute stage-connection lit gate 已删除；当前不再用 public linalg 手写 source
+  拼旧 group/tile/C ABI issue pass 链。
 
 缺口：
 
@@ -146,16 +145,16 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - interface/resource/effect 已能作为 planner/verifier 的结构化查询入口，但还没有被 R3 的
   closed-loop group planner、SPM/DDR oracle 和 storage-realized lowering 全量消费。
 - Wafer dialect verifier 的孤立负例仍会使用 `builtin.unrealized_conversion_cast` 构造非法边界值；
-  这些用例只能证明 verifier 形态。R1.3 已补 local compute stage-connection gate，但 communication
-  bridge 的 visible cast 仍归 R6.2 清理。
+  这些用例只能证明 verifier 形态。历史 R1.3 stage-connection gate 已删除；communication bridge
+  的 visible cast 仍归 R6.2 清理。
 - 没有 storage-realized memref/descriptor 层，因此 `!wafer.tile_buffer` 还没有按设计消失。
 
 恢复任务：
 
 - R1.1：已完成；按 op family 拆 ODS、C++ verifier 和测试目录，并保持一个 `wafer` dialect namespace。
 - R1.2：已完成；interface/effect/resource 已从占位定义扩成 planner/resource/verifier 可调用的合同。
-- R1.3：已完成；补 local compute stage-connection tests，减少只靠 `unrealized_conversion_cast`
-  的孤立 verifier 用例。
+- R1.3：历史完成项；local compute stage-connection tests 已随旧 pass 链删除，后续由 R3 重新建立
+  真实 artifact chain gate。
 
 ## P2 Frontend Artifact 和 Local Compute Normalization
 
@@ -241,26 +240,24 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 
 当前实现：
 
-- 有 `wafer-form-groups`、`wafer-materialize-single-tile`、`wafer-compact-layout-assignment`、
-  `wafer-check-spm-allocation`、`wafer-materialize-ddr-external-bindings` 和
-  `wafer-lower-tile-region-to-c-abi` 作为显式 unit/debug pass 覆盖。
 - 2026-06-02 后，Integration 主链路不再注册 C ABI named pipeline。`WaferPipelines` 只保留
   `wafer-propagate-stablehlo-sharding` 和 `wafer-lower-stablehlo-to-linalg`；
   `wafer-lower-linalg-to-cabi`、`wafer-lower-stablehlo-to-cabi`、
   `wafer-lower-tile-communication-to-cabi` 以及
   `wafer-import-model --compile-stablehlo-bundle-to-cabi` 已删除，避免把 R3/R6/R7 的 pending
   skeleton 写成用户级 compile flow。
+- 旧 `wafer-form-groups`、`wafer-materialize-single-tile`、`wafer-compact-layout-assignment`、
+  `wafer-check-spm-allocation`、`wafer-materialize-ddr-external-bindings`、
+  `wafer-lower-ring-*` 和 `wafer-lower-tile-region-to-c-abi` unit/debug pass 链已删除。
 - 有 `wafer.abi.rdma`、`wafer.abi.wdma`、`wafer.abi.gemm`、elementwise/reduce ABI issue ops。
-- 有 `Wafer/ABI/TileAbi.h` descriptor unit tests、explicit single-tile/C ABI issue transform fixture、
-  manifest validator 和 generated C stub syntax compile。
+- 有 `Wafer/ABI/TileAbi.h` descriptor unit tests、manifest validator 和 generated C stub syntax compile。
 
 缺口：
 
-- group formation 主要覆盖有限 single-op / accepted-pattern 子集；没有 closed-loop group planner。
-- root tile candidate 基本是静态 result shape 检查，不是 tile shape search + downstream oracle。
-- SPM 是顺序 trial，未基于完整 interface demand、async lifetime、storage-realized memref/descriptor。
-- DDR 只有 external compact bytes demand；没有 workspace、resident constants、pool/domain、bandwidth
-  或 runtime binding。
+- group formation、root tile feasibility、SPM allocation、DDR demand 和 ring collective lowering 的旧
+  unit pass 已删除；后续必须从真实 artifact chain 恢复 closed-loop planner / oracle。
+- SPM/DDR 仍未基于完整 interface demand、async lifetime、storage-realized memref/descriptor、
+  workspace、resident constants、pool/domain、bandwidth 或 runtime binding 建立主线实现。
 - C ABI 还是 `wafer.abi.*` issue op 和 descriptor builder，不是真实 `wafer_*` call、LLVM lowering
   或 wrapper-to-register golden packet。
 - fixed manifest emitter 已删除；IR-derived package manifest 仍未由当前 `wafer-opt` output 自动导出。
@@ -406,9 +403,9 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 | ID | 状态 | 理由 |
 | --- | --- | --- |
 | P0 | 骨架 | 工程入口存在，源码 ownership、依赖层级边界和 IR op-family 文件边界已由 R0.2/R0.3/R1.1 恢复；仍不代表 frontend/runtime/package 主路径完成 |
-| P1 | 骨架 | 核心 op/type/verifier 基础实现存在，interface/effect/resource 和 local compute stage-connection gate 已恢复；storage-realized 主链路和 communication cast bridge 仍未闭环 |
+| P1 | 骨架 | 核心 op/type/verifier 基础实现存在，interface/effect/resource 已恢复；历史 local compute stage-connection gate 已删除，storage-realized 主链路和 communication cast bridge 仍未闭环 |
 | P2 | 骨架 | StableHLO textual lowering、frontend artifact verifier、PyTorch/XLA bundle capture、SDY artifact bridge、P2.S1 Shardy propagation stage gate 和 local compute coverage 口径已恢复；Wafer-owned SPMD partition、dynamic/mask/constant-storage、tensor collective handoff 和 physical schedule 仍未闭环 |
-| P3 | 骨架 | single-tile local path 可跑，但 group/resource/C ABI/package 主链路未闭环 |
+| P3 | 骨架 | 旧 single-tile local unit path 已删除；group/resource/C ABI/package 主链路未闭环 |
 | P4 | 骨架 | placement/map 和 multi-tile fixture 可跑，但真实 shard/merge/launch binding 未闭环 |
 | P5 | 骨架 | transformer staged frontend fixtures 和 local fixture 可跑，但 full schedule/resource/package/device artifact 未闭环 |
 | P6 | 骨架 | comm/DTE fixture 可跑，但 resource allocator、buffer slice/address、package/runtime metadata 未闭环 |

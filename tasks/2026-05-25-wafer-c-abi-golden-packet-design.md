@@ -105,9 +105,9 @@ V0 family：
 
 当前 V0 ABI issue 层用 `wafer.abi.rdma`、`wafer.abi.wdma`、`wafer.abi.gemm`、
 same-shape / limited-broadcast 子集的 `wafer.abi.elementwise`，以及 scalar-constant-init 子集的
-`wafer.abi.reduce` 作为 wrapper-first C ABI issue 点；P6.2 起，fixed-size unicast
-`wafer.comm.send` / `recv` / `wait` 会 lower 到 `wafer.abi.dte_send`、`wafer.abi.dte_recv` 和
-`wafer.abi.dte_wait` issue op。它们保留 SSA/type verifier，用 explicit byte count、M/K/N、
+`wafer.abi.reduce` 作为 wrapper-first C ABI issue 点；fixed-size unicast
+`wafer.comm.send` / `recv` / `wait` 后续应 lower 到 `wafer.abi.dte_send`、`wafer.abi.dte_recv` 和
+`wafer.abi.dte_wait` issue op 或真实 C ABI call。它们保留 SSA/type verifier，用 explicit byte count、M/K/N、
 elementwise/reduce kind、reduce dimensions、init value、peer tile id、Direct DTE
 `fsm_id` / `packet_id` / `stream_id` resource tuple、可选 p2p `slot` 和 async token wait 表达参数
 单位、address direction、有限资源占用、gather slot 和 wait 边界；它们不是 raw packet dialect，
@@ -115,9 +115,9 @@ elementwise/reduce kind、reduce dimensions、init value、peer tile id、Direct
 C/LLVM lowering 可以把这些 issue op 转成实际 `wafer_*` C shim 调用，golden packet 测试再验证
 shim 到 wrapper/packet field 的映射。
 
-Ring reduce collectives 在进入 C ABI issue 前已展开为 p2p Direct DTE issue 和
-`wafer.compute.elementwise` accumulator step；`--wafer-lower-tile-region-to-c-abi` 会分别生成
-`wafer.abi.dte_*` 和 `wafer.abi.elementwise`。C ABI 层不引入“带 reduction 的 DTE issue”。
+Ring reduce collectives 在进入 C ABI issue 前应先展开为 p2p Direct DTE issue 和明确
+`wafer.compute.elementwise` accumulator step。旧 tile_region-to-C-ABI pass 已删除；后续 C ABI 层
+仍不应引入“带 reduction 的 DTE issue”。
 
 ## 5. Instruction Facts to Preserve
 

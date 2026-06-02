@@ -27,29 +27,23 @@ C ABI conversion 混在旧的聚合目录里。
 | --- | --- | --- |
 | Frontend hook | `include/Wafer/Frontend/InitImporterDialects.h` | 可选 StableHLO dialect 注册入口归到 frontend；真实 model import adapter 仍未实现 |
 | Wafer IR | `include/Wafer/IR`、`lib/Wafer/IR`、`WaferIR` | 保持一个 `wafer` dialect namespace；R1.1 后 ODS/verifier/tests 已按 op family 拆分 |
-| Transform pipeline | `include/Wafer/Transforms`、`lib/Wafer/Transforms`、`WaferTransforms` | 只注册 tensor/group/tile/resource/comm 等 transform pass，不再拥有 C ABI conversion pass |
-| Conversion pipeline | `include/Wafer/Conversion`、`lib/Wafer/Conversion`、`WaferConversion` | 目前只承载 `WaferToCABI/LowerTileRegionToCAbi.cpp`；后续 WaferToLLVM / real C ABI lowering 在这里扩展 |
+| Transform pipeline | `include/Wafer/Transforms`、`lib/Wafer/Transforms`、`WaferTransforms` | 只注册当前仍成立的 StableHLO/Linalg normalization 和 Shardy/SPMD propagation helper pass；旧 group/tile/resource/comm unit pass 已删除 |
+| Conversion pipeline | 后续重建 | 旧 `include/Wafer/Conversion`、`lib/Wafer/Conversion`、`WaferConversion` 和 `WaferToCABI/LowerTileRegionToCAbi.cpp` 已删除；后续 WaferToLLVM / real C ABI lowering 按 storage-realized contract 重建 |
 | ABI helpers | `include/Wafer/ABI`、`lib/Wafer/ABI`、`WaferABI` | 继续承载 tile-level C ABI descriptor/helper，不混入 transform pass |
-| Launch/runtime | `lib/Wafer/Transforms/LaunchOutlining` | 当前只保留 DDR external binding demand fixture；真实 launch/runtime/package adapter 仍是后续任务 |
+| Launch/runtime | 后续重建 | 旧 DDR external binding demand fixture 已删除；真实 launch/runtime/package adapter 仍是后续任务 |
 
 `lib/Wafer/Transforms` 进一步按 stage 分组：
 
 - `StableHLOToLinalg/`：StableHLO textual lowering 和 constant normalization。
-- `GroupFormation/`：tensor-level `wafer.group` 形成。
-- `GroupScheduling/`：当前 root tile feasibility / candidate checker fixture；不承载 transformer
-  case-specific schedule acceptance。
-- `TileRegionMaterialization/`：single-tile 和 multi-tile `wafer.tile_region` materialization。
-- `SPMBufferize/`：SPM allocation trial checker。
-- `LayoutMaterialization/`：layout assignment/materialization fixture。
-- `Communication/`：ring collective lowering fixture。
-- `LaunchOutlining/`：DDR external binding demand fixture。
-- `Support/`：跨 transform stage 的局部 C++ helper，不作为 IR 协议通道。
+- 旧 `GroupFormation/`、`TileRegionMaterialization/`、`SPMBufferize/`、`LayoutMaterialization/`、
+  `Communication/`、`LaunchOutlining/` 和 `Support/ElementwiseUtils` unit/debug pass 链已删除。
+  后续 R3/R6/R7 恢复时按真实 artifact chain、IR contract 和 CMake ownership 重新建立目录。
 
 ## 合同
 
-- `wafer-opt` 分别注册 transform pass 和 conversion pass，避免 C ABI lowering 继续由
-  `WaferTransforms` ownership 隐式携带。
-- pass argument 名称保持不变，已有 lit/FileCheck pipeline 不需要因目录调整改写。
+- `wafer-opt` 当前只注册 transform pass 和 named pipelines；没有 conversion pass target。
+- 旧 unit/debug pass argument 已移除，并由 `test/Transforms/removed-provisional-passes.test`
+  负向覆盖。
 - 可选 StableHLO 依赖仍由 `WAFER_ENABLE_IMPORTER_DEPS` 控制；更细的 dependency target 可见范围由
   R0.3 单独收敛。
 - 本次没有新增 side table、名字匹配或跨阶段语义通道。

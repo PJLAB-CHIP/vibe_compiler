@@ -1,4 +1,0 @@
-# RUN: %python %wafer_src_root/tools/check_stage_connection_tests.py --root %wafer_src_root
-
-# CHECK-NOT lines live in the StageConnections lit tests. This tool test keeps
-# the repository-level gate wired into check-wafer-lit.

@@ -88,9 +88,8 @@
   tool dependency layering。
 - Wafer IR 文件组织检查入口是 `tools/check_ir_organization.py --root .`；它检查 `WaferOps.td` 只作为
   TableGen 聚合入口、op family ODS/verifier 文件存在，以及 `test/Dialect/Wafer` 按 family 分目录。
-- Stage-connection 测试放在 `test/StageConnections`；入口是
-  `tools/check_stage_connection_tests.py --root .`，用于防止这类 gate 退回到
-  `unrealized_conversion_cast` cast-only 用例。
+- 历史 stage-connection 测试和 `tools/check_stage_connection_tests.py` 已删除；后续 group/tile/storage
+  连接必须由真实 frontend/SPMD artifact chain 和 R3/R6/R7 contract 恢复，不能重建手写 fixture 链来冒充主线。
 - 任务支持范围按硬件能力、runtime/ABI 证据和当前 IR contract 判断，不能按“当前下游 pass 尚未
   实现”反向裁剪上游语义。若 frontend/SPMD/planner 产出合法且硬件可表达的事实，而 IR/lowering
   还没覆盖，应补 IR contract、verifier 或下游恢复任务；不能把实现缺口写成上游不支持。
@@ -106,9 +105,8 @@
   `wafer-import-model --verify-stablehlo-bundle`、`--propagate-stablehlo-sharding` 和
   `--partition-stablehlo-bundle`；`--compile-stablehlo-bundle-to-cabi` 已删除，因为 R3/R6/R7 还没有
   从真实 frontend/SPMD artifact 到 C ABI/package 的完整主线合同。当前 `wafer-opt` named pipeline
-  只保留 `wafer-propagate-stablehlo-sharding` 和 `wafer-lower-stablehlo-to-linalg`。显式
-  C ABI issue、ring collective 和 single-tile materialization pass 只用于 `test/Transforms`、
-  `test/StageConnections` 等 unit/debug 覆盖，不能写成用户级 compile flow。
+  只保留 `wafer-propagate-stablehlo-sharding` 和 `wafer-lower-stablehlo-to-linalg`。旧显式
+  C ABI issue、ring collective、SPM/DDR trial 和 single-tile materialization pass 链已删除；不要恢复成用户级 compile flow。
 - ODS op 如果引入 `RecursiveMemoryEffects`、`ReturnLike` 等 interface trait，公开 dialect 头要
   include 对应 C++ interface header，`WaferIR` 也要显式 link 对应 MLIR interface target。
 - Dialect 增加 TypeDef 后，base dialect td 需要启用 `useDefaultTypePrinterParser = 1`，否则即使

@@ -213,19 +213,17 @@ collective 仍应由 unicast p2p schedule 组合表达，而不是在 logical IR
 
 当前实现中，`wafer.comm.send` / `wafer.comm.recv` 的 p2p verifier 已在存在
 `wafer.placement.map` 时检查 peer 指向 active physical tile，`wafer.comm.wait` 要求至少一个
-async token。`--wafer-lower-tile-region-to-c-abi` 会把 fixed-size unicast p2p op lower 到
-`wafer.abi.dte_send`、`wafer.abi.dte_recv` 和 `wafer.abi.dte_wait` issue op；这些 ABI op 携带
-peer、byte count、async token，以及 `fsm_id` / `packet_id` / `stream_id` provisional resource tuple。
-Verifier 要求 resource id 非负，并拒绝同一 block 内尚未被 `wafer.abi.dte_wait` 释放的 tuple 冲突；
-wait 后同一 tuple 可以复用。这一层仍不 materialize raw non-unicast register 字段，也不把 DTE id、
-runtime physical address 或 wrapper packet bitfield 暴露成上层 communication IR 语义。
+async token。旧 `--wafer-lower-tile-region-to-c-abi` pass 已删除；fixed-size unicast p2p 到
+`wafer.abi.dte_send`、`wafer.abi.dte_recv`、`wafer.abi.dte_wait` 或真实 C ABI call 的 lowering
+必须在 R6/R7 从 storage-realized IR 重新建立。这一层仍不应 materialize raw non-unicast register
+字段，也不把 DTE id、runtime physical address 或 wrapper packet bitfield 暴露成上层 communication
+IR 语义。
 
 P6.4 起，collective-level `wafer.comm.all_gather` 已进入 IR。该 op 接收 local chunk、gather
 buffer、`local_rank`、`group_size` 和单 chunk `bytes`，verifier 检查 SPM tile buffer、rank 范围、
-单 chunk byte size 和 gather buffer 总 byte size。`--wafer-lower-ring-all-gather` 按 placement
-rank order 展开成 `group_size - 1` 个 unicast ring step；每个 step 都显式生成 send、recv 和 wait，
-并在 p2p op 上用 `slot` attr 标出发送或接收的 gather slot。后续 `--wafer-lower-tile-region-to-c-abi`
-保留该 `slot` attr 到 Direct DTE ABI issue op，用于后续地址 offset / packet 参数 lowering。
+单 chunk byte size 和 gather buffer 总 byte size。旧 `--wafer-lower-ring-all-gather` 和后续
+tile_region-to-C-ABI issue pass 链已删除。后续 lowering 仍应把 accepted schedule rewrite 成显式
+send/recv/wait body，并保留 destination slot 供地址 offset / packet 参数 lowering 使用。
 P6.6 的早期实现允许 StableHLO logical `all_gather` 直接 normalize 到该 op。2026-05-27 复查后，
 这条 pass/test 路线已移除；不能作为 group/tiling 前的主线输入，也不应恢复。后续应实现两层：
 
@@ -262,9 +260,8 @@ for step in 0..group_size-2:
 IR 中应能看到每个 step 的 send/recv/wait 和 destination slot。ring order 来自 placement/rank order；
 cost model 可以选择不同 order，但接受后要 rewrite 成 explicit body。
 
-当前实现使用 `wafer.comm.all_gather` 作为 collective-level input，并由
-`--wafer-lower-ring-all-gather` 直接 materialize p2p schedule。V0 只覆盖 fixed-size unicast ring；
-raw DTE non-unicast gather 不在 correctness path。
+当前只保留 collective op/verifier 层；直接 materialize p2p schedule 的旧 ring lowering pass 已删除。
+V0 correctness path 仍应先走 fixed-size unicast schedule，raw DTE non-unicast gather 不在 correctness path。
 
 ### 6.3 Reduce-Scatter and All-Reduce
 
@@ -277,12 +274,10 @@ raw DTE non-unicast gather 不在 correctness path。
 - 每个 communication step 是 unicast p2p。
 - local reduce 与 recv buffer 的 use-def / wait 顺序明确。
 
-当前实现新增 `wafer.comm.reduce_scatter` 和 `wafer.comm.all_reduce` 作为 fixed-size ring reduce
-collective input。`reduce_scatter` 的 V0 gate 表达单个 local scatter slot；完整多 slot
-reduce-scatter 可以由多个 slot op 或后续 buffer-slice IR 组合。`--wafer-lower-ring-reduce-collectives`
-按 placement rank order 展开 p2p send/recv/wait，并在每个 wait 后用
-`wafer.compute.elementwise` 的 add/max/min 对 accumulator 和 recv staging buffer 做显式本地累计。
-这保证 reduction kind、dtype、use-def 和 wait 顺序都留在 IR 中，而不是变成 DTE side effect。
+当前只保留 `wafer.comm.reduce_scatter` 和 `wafer.comm.all_reduce` 作为 collective IR / verifier 层。
+旧 `--wafer-lower-ring-reduce-collectives` pass 已删除。后续 accepted schedule 仍应显式展开 p2p
+send/recv/wait，并在 wait 后用明确 compute op 对 accumulator 和 recv staging buffer 做本地累计；
+reduction kind、dtype、use-def 和 wait 顺序不能变成 DTE side effect。
 P6.6 的早期 StableHLO normalization pass 会把 single-result StableHLO `all_reduce` /
 `reduce_scatter` 直接降到这些 collective-level op；该路径和 all-gather 一样已经退出主线，
 不应作为 tensor group/tiling 输入。主线恢复后，应先由 Wafer

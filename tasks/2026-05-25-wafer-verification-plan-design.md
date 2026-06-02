@@ -109,11 +109,10 @@ Single-tile local compute：
   `wafer-import-model --verify-stablehlo-bundle`、`--propagate-stablehlo-sharding` 和
   `--partition-stablehlo-bundle`；`--compile-stablehlo-bundle-to-cabi` 已删除。`wafer-opt` named
   pipeline 入口只保留 `wafer-propagate-stablehlo-sharding` 和 `wafer-lower-stablehlo-to-linalg`。
-  C ABI issue、single-tile materialization 和 ring lowering 只作为 unit/debug pass 覆盖，不能作为
-  当前主链路 compile gate。
-- `wafer.group` 到 `wafer.tile_region` 可生成单 tile load/compute/store。
-- SPM allocation trial 成功。
-- DDR external input/output 或 constant read-only demand 可绑定。
+  旧 C ABI issue、single-tile materialization、SPM/DDR trial 和 ring lowering unit/debug pass 链已删除，
+  当前没有 group/tile/storage/C ABI 主链路 compile gate。
+- 后续 R3/R6/R7 gate 必须证明 `wafer.group` 到 `wafer.tile_region` 的 load/compute/store、
+  SPM allocation、DDR external/workspace/constant demand 和 C ABI/package 边界来自真实 artifact chain。
 - 至少一个 compute/movement ABI family 有 golden packet。
 - 当前无卡开发环境要求 generated artifact compile；package manifest roundtrip 只能作为 tool-unit
   schema 覆盖，不能替代 IR-derived package emission。runtime completion 在带实际计算卡服务器上再
@@ -134,19 +133,17 @@ Direct DTE p2p：
 - fixed-size unicast DTE helper lowering 合法。
 - DTE wait 与 local compute drain 分离。
 - FSM / packet / stream resource 不冲突。
-- 当前 unit gate：`test/Transforms/comm-local-c-abi-issues.mlir` 覆盖 tile-level p2p
-  send/recv/wait 到 `wafer.abi.dte_*` issue op。该 gate 不代表 tensor collective handoff 或 runtime
-  launch 已完成。
+- 旧 `test/Transforms/comm-local-c-abi-issues.mlir` unit gate 已删除。后续 tile-level p2p 到
+  `wafer.abi.dte_*` 或真实 C ABI call 的 gate 必须由 R6/R7 从 storage-realized IR 恢复。
 
 Single-card collective：
 
 - ring all-gather / reduce-scatter / all-reduce 可追溯到 unicast steps。
 - 每步 send/recv/wait token 和 buffer lifetime 合法。
 - raw non-unicast DTE 不作为 correctness path。
-- 当前 unit gate：`test/Transforms/ring-all-gather*.mlir`、`ring-reduce-scatter.mlir`、
-  `ring-all-reduce.mlir` 以及 ring/C ABI issue fixtures 覆盖 `wafer.comm` all-gather/all-reduce
-  到 explicit ring p2p 和 Direct DTE ABI。该 gate 是 fixed ring transform coverage，不是 R2.4 tensor
-  collective handoff 或 communication planner。
+- 旧 `test/Transforms/ring-all-gather*.mlir`、`ring-reduce-scatter.mlir`、`ring-all-reduce.mlir`
+  以及 ring/C ABI issue fixtures 已删除。后续 collective gate 必须先经 R2.4 tensor collective
+  handoff，再由 R6 恢复 tiled communication materialization。
 
 Partitioned StableHLO collective handoff：
 
@@ -183,13 +180,10 @@ Transformer block vertical slice：
 - 当前无卡开发环境要求 generated artifact compile，package/runtime metadata 覆盖所有 block
   input/output、resident constants 和 workspace；completion 和数值对比后续在有卡环境验证。
 
-当前实现中的 transformer static fixture 覆盖 full local block 中 rank-2 GEMM 子图、attention QK^T /
-AV rank-4 batched GEMM 子图、same-shape / projected-permutation limited broadcast elementwise 子图，
-以及 scalar-constant-init reduce max/sum 子图的 local IR path：normalization、group split、
-single-tile materialization、SPM allocation check、DDR binding demand 和 C ABI issue。历史 fixed
-manifest / C stub gate 已删除；workspace buffers、resident constants、package metadata 和 IR-derived
-manifest emission 仍属后续恢复任务。它是当前无卡环境的 transformer IR fixture 覆盖；completion、
-数值对比和 profiling 仍等有卡环境补 gate。
+当前 transformer static fixture 只覆盖 frontend/local structured tensor dataflow。旧 full local block
+到 group split、single-tile materialization、SPM allocation check、DDR binding demand 和 C ABI issue
+的 pass 链已删除；workspace buffers、resident constants、package metadata 和 IR-derived manifest
+emission 仍属后续恢复任务。completion、数值对比和 profiling 仍等有卡环境补 gate。
 
 M7 ABI / LLVM artifact gate：
 
@@ -260,7 +254,7 @@ Wafer 硬件能力表达，就不能把当前 static gate 的覆盖范围写成�
 - golden packet tests：至少覆盖 single-tile local compute 用到的 wrapper family。
 
 如果某个 milestone 暂时只能做文档验证，必须明确说明还缺 build/test harness 或板端 runtime。
-当前 local compile gate 只能证明 IR pipeline 到 C ABI issue；显式 manifest / C stub tool-unit
+当前没有 local compile gate 能证明 IR pipeline 到 C ABI issue。显式 manifest / C stub tool-unit
 coverage 不能替代 IR-derived package emission、LLVM IR lowering、object code emission、真实
 runtime call emission、板端运行、数值正确性、completion 或 profiling 证明。
 

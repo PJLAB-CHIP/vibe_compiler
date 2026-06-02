@@ -41,10 +41,10 @@ core compiler target。
 | Core IR | `WaferIR`、`include/Wafer/IR`、`lib/Wafer/IR` | MLIR IR、interfaces、Async dialect、TableGen 产物 | StableHLO/Shardy importer API、runtime/driver headers、GTest/lit/FileCheck |
 | ABI helper | `WaferABI`、`include/Wafer/ABI`、`lib/Wafer/ABI` | C++ standard library 和项目 ABI headers | MLIR dialect API、StableHLO/Shardy、runtime/driver headers、test tools |
 | Core transforms | `WaferTransforms`、`lib/Wafer/Transforms` | `WaferIR`、MLIR arith/linalg/tensor/pass/support；`StableHLOToLinalg` 源文件可在 importer enabled 时使用 StableHLO op C++ API；`SPMD/` 源文件可在 `WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON` 时 private 使用 Shardy/SDY C++ API | importer framework headers、runtime/driver headers、test tools、C ABI conversion ownership；StableHLO/Shardy 不能成为 public dependency |
-| Conversion | `WaferConversion`、`include/Wafer/Conversion`、`lib/Wafer/Conversion` | `WaferIR`、MLIR pass/IR/support；后续 WaferToLLVM 可在本层引入 LLVM dialect | StableHLO/Shardy importer API、test tools；runtime/driver headers 只能在 future launch/runtime adapter 层进入 |
+| Conversion | 后续重建 | 旧 `WaferConversion` / `include/Wafer/Conversion` / `lib/Wafer/Conversion` 已删除；后续 WaferToLLVM / real C ABI lowering 可在本层按 storage-realized contract 重建 | StableHLO/Shardy importer API、test tools；runtime/driver headers 只能在 future launch/runtime adapter 层进入 |
 | Frontend/importer | `include/Wafer/Frontend`、`tools/wafer-import-model` | optional StableHLO dialect registration、artifact parsing/verification 依赖；固定版本的 torch / PyTorch/XLA importer Python runtime，后续只允许在 importer 工具中使用 | SPM/layout/runtime/driver target details |
 | SPMD bridge | `ShardySdy*` CMake shim target、future Shardy/SPMD pass target | Shardy/SDY source dependency、MLIR dialect registration、import/export/propagation pass 编译验证 | physical tile id、DTE algorithm、runtime package |
-| Driver tool | `wafer-opt` | `WaferIR`、`WaferTransforms`、`WaferConversion`、MLIR tool main；optional StableHLO registration | importer framework implementation details、runtime/driver headers |
+| Driver tool | `wafer-opt` | `WaferIR`、`WaferTransforms`、MLIR tool main；optional StableHLO registration | importer framework implementation details、runtime/driver headers |
 | Runtime/driver | future `WaferRuntimeAdapter` / launch package layer | HPGR/KMD/legacy runtime headers and libraries, isolated behind adapter | Frontend tensor/group planning dependencies |
 | Test tools | `check-wafer-lit`、`WaferUnitTests`、tool tests | lit/FileCheck、GTest、Python test scripts | production library public interfaces |
 
@@ -93,7 +93,7 @@ core compiler target。
   `lib/Wafer/Transforms/StableHLOToLinalg/*` 的 textual frontend lowering 实现。
 - `ShardySdyDialect` 是 `WaferTransforms` 的 private implementation dependency，只在
   `WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON` 时服务 `lib/Wafer/Transforms/SPMD/*` 的 SPMD/default seed
-  passes；不能从 `WaferIR`、`WaferConversion` 或 `WaferABI` public 暴露。
+  passes；不能从 `WaferIR`、future `WaferConversion` 或 `WaferABI` public 暴露。
 - `StablehloRegister` 只由 `wafer-opt` 和 `wafer-import-model` 私有链接，用于工具进程注册 dialect。
 - `cmake/third_party/WaferShardyCMake.cmake` 在 `WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON` 时从
   `third_party/shardy` 生成 SDY ODS TableGen 产物，并编译 `ShardySdyDialect`、
@@ -104,8 +104,9 @@ core compiler target。
 - `wafer-shardy-cmake-gate` 是 dependency compile 验证目标；开启 SPMD deps 时 `check-wafer` 依赖它。
   该目标只证明公共 Shardy/SPMD 依赖能在同一套固定版本 compiler stack 下编译和注册，不表示 R2.2
   artifact bridge 已完成。
-- `WaferConversion` 单独注册 conversion pass；`WaferTransforms` 不再拥有 C ABI conversion pass。
-- `WaferIR`、`WaferConversion` 和 `WaferABI` 不链接 StableHLO/Shardy/importer/runtime/test tools。
+- 旧 `WaferConversion` pass target 已删除；后续 conversion target 重建时仍不得由 `WaferTransforms`
+  ownership 隐式携带 C ABI lowering。
+- `WaferIR`、future `WaferConversion` 和 `WaferABI` 不链接 StableHLO/Shardy/importer/runtime/test tools。
 - GTest 优先使用 `third_party/googletest`，只在 `WaferUnitTests` 中出现；lit/FileCheck 只在 test
   CMake / lit config 中出现。
 
@@ -130,7 +131,7 @@ core compiler target。
 - StableHLO C++ API 只出现在 frontend hook、StableHLO lowering implementation 和 importer tool。
 - runtime/driver header 词项不出现在 production compiler include/lib 源码中。
 - `WaferTransforms` 不再以 `PUBLIC` 方式暴露 `StablehloOps`。
-- `WaferIR` / `WaferConversion` / `WaferABI` 不含 importer、runtime 或 test tool target 泄漏。
+- `WaferIR` / future `WaferConversion` / `WaferABI` 不含 importer、runtime 或 test tool target 泄漏。
 - Shardy CMake shim、`wafer-shardy-cmake-gate` 和 `check-wafer` 的依赖关系存在；Shardy target 使用
   `llvm_update_compile_flags`，避免和固定版本 no-RTTI LLVM/MLIR 产生 ABI/link mismatch。
 

@@ -14,8 +14,8 @@ R0.1 审计时，工程组织也没有按
 `tasks/2026-05-11-wafer-ai-compiler-architecture.md` 第 7 节收敛：frontend lowering、
 group/tile materialization、layout/SPM/DDR、communication 和 ABI issue 基本都堆在
 `lib/Wafer/Transforms`。R0.2 已恢复源码 ownership 边界；R1.1 已把 ODS、op verifier 和 dialect
-tests 按 op family 拆开；R1.2/R1.3 已补 interface/resource 查询合同和 local compute
-stage-connection gate。
+tests 按 op family 拆开；R1.2/R1.3 曾补 interface/resource 查询合同和 local compute
+stage-connection gate；2026-06-02 后历史 stage-connection gate 和旧 unit/debug pass 链已删除。
 
 2026-06-01 复查进一步确认：历史 P2.S1 路线若把 sharding facts 写成 `wafer.spmd.*` 或私有
 sidecar，不是主线 SPMD artifact contract；历史 StableHLO collective 直降 `wafer.comm` 的 pass
@@ -38,13 +38,13 @@ group/tiling。旧 PyTorch/XLA post-SPMD export 测试入口已删除；它不�
 
 | 范围 | 当前实现 | 与设计文档的偏差 |
 | --- | --- | --- |
-| P0 工程/依赖/组织 | CMake、`wafer-opt`、lit/gtest、dependency pin/checker 已有；R0.2 已把源码 ownership 拆到 Frontend / IR / stage-specific Transforms / Conversion / ABI；R0.3 已记录并检查依赖层级边界；R1.1 已恢复 IR op-family 文件边界 | 最小工程入口可用，不代表后端链路完成 |
-| P1 Wafer IR verifier | ODS/type/attr/op/verifier 正负例覆盖了核心基础实现；ODS、verifier 和 dialect tests 已按 op family 拆开；R1.2 已补 interface/resource/effect 查询合同；R1.3 已补 local compute stage-connection gate | dialect verifier 的孤立负例仍会使用 `builtin.unrealized_conversion_cast` 构造非法边界值；communication bridge 的 visible cast 仍未清理；storage-realized 主链路仍未闭环 |
+| P0 工程/依赖/组织 | CMake、`wafer-opt`、lit/gtest、dependency pin/checker 已有；R0.2 已把源码 ownership 拆到 Frontend / IR / stage-specific Transforms / Conversion / ABI；2026-06-02 后旧 Conversion pass target 已删除；R0.3 已记录并检查依赖层级边界；R1.1 已恢复 IR op-family 文件边界 | 最小工程入口可用，不代表后端链路完成 |
+| P1 Wafer IR verifier | ODS/type/attr/op/verifier 正负例覆盖了核心基础实现；ODS、verifier 和 dialect tests 已按 op family 拆开；R1.2 已补 interface/resource/effect 查询合同；历史 R1.3 local compute stage-connection gate 已删除 | dialect verifier 的孤立负例仍会使用 `builtin.unrealized_conversion_cast` 构造非法边界值；communication bridge 的 visible cast 仍未清理；storage-realized 主链路仍未闭环 |
 | P2 frontend / local compute | StableHLO textual lowering 到 linalg/tensor/arith/math 子集已有，部分 transformer staged form 有 FileCheck | `wafer-import-model` 早期只是 synthetic 最小验证 tool；PyTorch/XLA bundle capture 已补入 P2.F1，但 ConstantLike/storage contract 仍未闭环；部分 slice 只是 frontend dataflow fixture，不是完整 frontend artifact pipeline |
-| P3 single-tile local compute | group formation、root tile check、single-tile materialization、SPM trial、DDR external binding、C ABI issue 均有测试 | group planner 只处理有限 single-op pattern；root tile candidate 基本等于完整静态 result shape，不是候选搜索+下游 oracle；SPM 是顺序 trial；DDR 只有 external compact bytes demand；C ABI 是 ABI issue op，不是 `wafer_*` call；golden packet 只是 descriptor builder，不是 wrapper-to-register golden；fixed manifest emitter 已删除但 IR-derived package manifest 尚未恢复 |
+| P3 single-tile local compute | 旧 group formation、root tile check、single-tile materialization、SPM trial、DDR external binding、C ABI issue unit pass 链已删除；保留 ABI descriptor / manifest tool-unit 覆盖 | group planner、root tile oracle、SPM/DDR/storage realization、C ABI lowering 和 IR-derived package manifest 均需按真实 artifact chain 恢复 |
 | P4 multi-tile no communication | placement map verifier、multi-tile no-comm outlining已有 | multi-tile materialization 克隆同一 whole-tensor tile_region，最后用最后一个 tile_region result 替换 group result；没有真实 local shard slicing、per-rank output merge 或 runtime launch binding；manifest placement metadata 尚未由 IR-derived package path 生成 |
 | P5 transformer block | norm/softmax/projection/MLP frontend lowering fixtures、attention QK/AV lowering、transformer textual pipeline 已有 | 这些 fixture 只证明 structured tensor dataflow 覆盖，不是 full schedule planner；transformer package manifest 尚未由 transformer IR 导出；workspace/resident constant metadata 与 IR dataflow 没有自动一致性来源；没有真实 full-block device artifact |
-| P6 communication | p2p verifier、ring all-gather/reduce collectives、历史 StableHLO collective bridge coverage、DTE resource verifier 已有 | Direct DTE resource id 是单调 provisional 分配，不是目标资源 allocator；collective lowering 没有真实 buffer slice/address offset lowering；历史 StableHLO collective bridge 用 visible cast 衔接 tensor/tile_buffer，且插入点早于 group/tiling，已退出主线；communication metadata 没进入真实 package/runtime path |
+| P6 communication | p2p / collective verifier 和历史 StableHLO collective bridge coverage 曾存在；旧 ring lowering / C ABI issue unit pass 链已删除 | Direct DTE resource allocator、collective buffer slice/address offset lowering、tensor collective handoff 到 tiled communication materialization，以及真实 package/runtime metadata 均未闭环 |
 
 ## 主要根因
 
@@ -81,7 +81,8 @@ group/tiling。旧 PyTorch/XLA post-SPMD export 测试入口已删除；它不�
 2. 修正 `tasks/progress.md` 中 P0-P6 的状态，不再让局部 fixture gate 占用设计完成语义。
 3. R0.2 已按架构文档第 7 节恢复源码 ownership 边界；R0.3 已补 core/frontend/runtime/test tooling
    dependency target 可见范围；R1.1/R1.2/R1.3 已补 IR 文件边界、interface/resource 查询和 local
-   compute stage-connection gate。Launch/runtime 仍只有局部 boundary，真实 adapter 后续恢复。
+   compute stage-connection gate；该历史 gate 已在 2026-06-02 随旧 pass 链删除。Launch/runtime 仍只有
+   局部 boundary，真实 adapter 后续恢复。
 4. 从 P2/P3 开始恢复主链路：frontend artifact、group planner、tile/layout/SPM/DDR/C ABI/package 的
    每一步都必须按设计合同闭环。
 5. 在恢复 local compile gate 时，补 IR-derived package manifest emission：manifest 和

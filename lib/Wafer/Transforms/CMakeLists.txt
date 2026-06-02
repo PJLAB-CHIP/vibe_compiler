@@ -1,16 +1,9 @@
 add_mlir_library(WaferTransforms
-  Support/ElementwiseUtils.cpp
   StableHLOToLinalg/NormalizeConstants.cpp
   StableHLOToLinalg/LowerStablehloDot.cpp
   StableHLOToLinalg/LowerStablehloElementwise.cpp
   StableHLOToLinalg/LowerStablehloReduce.cpp
   StableHLOToLinalg/LowerStablehloShape.cpp
-  GroupFormation/FormGroups.cpp
-  TileRegionMaterialization/MaterializeSingleTile.cpp
-  SPMBufferize/CheckSPMAllocation.cpp
-  LayoutMaterialization/CompactLayoutAssignment.cpp
-  LaunchOutlining/MaterializeDDRExternalBindings.cpp
-  Communication/LowerRingCollectives.cpp
   SPMD/ApplyDefaultSpmdSharding.cpp
   Passes.cpp
 

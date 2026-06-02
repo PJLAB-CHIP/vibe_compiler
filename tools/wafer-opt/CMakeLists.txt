@@ -1,7 +1,6 @@
 add_executable(wafer-opt wafer-opt.cpp)
 target_link_libraries(wafer-opt
   PRIVATE
-  WaferConversion
   WaferIR
   WaferPipelines
   WaferTransforms
