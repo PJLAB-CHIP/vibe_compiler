@@ -55,7 +55,7 @@ wafer-opt \
 
 | ID | 状态 | 任务 | 输入 / 输出边界 | 完成 gate |
 | --- | --- | --- | --- | --- |
-| R3.1 | ready | group boundary / candidate contract | 输入：`stablehlo-spmd-to-linalg` tensor-level IR；输出：verifier-legal `wafer.group` candidate | 真实 program chain 的 local compute + tensor collective 进入 group gate；raw StableHLO/`wafer.comm`/SPM/DTE 被拒绝 |
+| R3.1 | ready | group boundary / candidate contract | 输入：`stablehlo-spmd-to-linalg` tensor-level IR；输出：root-seeded verifier-legal `wafer.group` candidate | 真实 program chain 的 local compute + tensor collective 进入 `stablehlo-spmd-to-group` gate；raw StableHLO/`wafer.comm`/SPM/DTE 被拒绝 |
 | R3.2 | pending | root tile feasibility oracle | 输入：`wafer.group` candidate；输出：accepted/rejected root tile candidate 和明确拒绝原因 | op tiling、layout、SPM、DDR、compute/movement legality 接到同一 candidate check |
 | R3.3 | pending | tile_region materialization contract | 输入：R3.2 accepted group；输出：`wafer.tile_region` | 只 materialize accepted group；未接受 group 不产生 tile_region |
 | R3.4 | pending | layout / SPM feasibility gate | 输入：`wafer.tile_region` tensor effects/liveness；输出：layout + SPM feasibility facts | layout materialization 和 SPM trial 由 effect、range 和 tile buffer lifetime 驱动 |
@@ -83,13 +83,15 @@ wafer-opt \
 - output program / IR：可验证的 tensor-level `wafer.group` candidate IR。
 - downstream consumer：R3.2 root tile feasibility、R3.3 tile_region materialization、R3.4/R3.5
   layout/SPM/DDR feasibility、R3.6/R3.7 ABI/package stages。
-- user-level driver / named pipeline：由 `wafer-opt` program pipeline 重放 frontend/SPMD/R2.4 后进入
-  group candidate gate；不能让 integration test 手动拼 raw StableHLO、tensor collective fixture 和
-  group fixture 作为长期主线。
+- user-level driver / named pipeline：计划新增
+  `wafer-opt --program-pipeline=stablehlo-spmd-to-group`，由该 program pipeline 重放
+  frontend/SPMD/R2.4 后进入 group candidate gate；不能让 integration test 手动拼 raw StableHLO、
+  tensor collective fixture 和 group fixture 作为长期主线。
 - explicit non-goals：不做 physical placement、tile shape search、SPM allocation、DTE schedule、
   `wafer.comm` materialization、C ABI 或 package emission。
 - completion gate：真实 P2.S2/R2.4 program chain 的 local compute + tensor collective 输出能进入
-  group candidate gate，且 verifier 证明 group 边界只包含 tensor-level IR；fixture 只做负例和局部覆盖。
+  `stablehlo-spmd-to-group` group candidate gate，且 verifier 证明 group 边界只包含 tensor-level IR；
+  fixture 只做负例和局部覆盖。
 
 ## 当前不做
 
@@ -112,7 +114,8 @@ wafer-opt \
 
 ## 下一步
 
-推进 R3.1。输入必须来自 `stablehlo-spmd-to-linalg` 的真实 program chain：`linalg` / `tensor` /
-`scf` local compute IR 和 `wafer.tensor_collective.*` tensor collective IR。不要把 raw StableHLO
-collective、`wafer.comm`、SPM tile buffer、DTE token、Python helper 或手写 fixture 当作 group
-主线输入。
+推进 R3.1。新增 `stablehlo-spmd-to-group` program pipeline gate，在重放
+`stablehlo-spmd-to-linalg` 真实 program chain 后形成 root-seeded logical `wafer.group`
+candidate。输入必须是 `linalg` / `tensor` / `scf` local compute IR 和
+`wafer.tensor_collective.*` tensor collective IR。不要把 raw StableHLO collective、`wafer.comm`、
+SPM tile buffer、DTE token、Python helper 或手写 fixture 当作 group 主线输入。

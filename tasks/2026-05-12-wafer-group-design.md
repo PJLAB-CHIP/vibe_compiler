@@ -2,7 +2,8 @@
 
 日期：2026-05-12
 
-状态：设计草案；2026-05-25 边界收口；2026-05-27 补 post-SPMD tensor collective 边界
+状态：设计草案；2026-05-25 边界收口；2026-05-27 补 post-SPMD tensor collective 边界；
+2026-06-03 收敛 R3.1 root-seeded logical group candidate scope
 
 本文只定义 `wafer.group` 的 tensor-level grouping 和 scheduling contract。它回答：
 
@@ -74,6 +75,42 @@ schedule 下，让中间值只在 group tile 内部存活。
 `tasks/2026-05-25-wafer-ddr-resource-allocation-design.md`、
 `tasks/2026-05-25-wafer-compute-dialect-design.md` 和
 `tasks/2026-05-25-wafer-communication-dialect-design.md`。
+
+### 2.1 R3.1 Pipeline Contract
+
+R3.1 是 Stage 0 到 Stage 1 的恢复任务。它只建立 logical `wafer.group` candidate
+边界，不做 scheduled group、root tile search 或任何 storage/runtime lowering。
+
+```text
+Pipeline position:
+- Upstream artifact / IR:
+  `wafer-opt --program-pipeline=stablehlo-spmd-to-linalg` 输出的 rank-local
+  `func.func`，body 为 `linalg` / `tensor` / `scf` / `arith` / `math`
+  local compute IR 和 `wafer.tensor_collective.*` tensor collective IR。
+- Current stage responsibility:
+  按 root/hero op 建立 dependency-preserving logical `wafer.group` candidate，
+  说明哪些 tensor SSA value、outs、producer/consumer 和 tensor collective 能进入
+  group 候选。
+- Output artifact / IR:
+  verifier-legal 的 tensor-level `wafer.group` candidate IR；candidate 仍是可被
+  R3.2 接受、拆分或拒绝的 logical region。
+- Downstream consumer:
+  R3.2 root tile feasibility oracle；R3.3 `wafer.tile_region` materialization；
+  R3.4/R3.5 layout/SPM/DDR feasibility；R3.6/R3.7 ABI/package stages。
+- User-level driver / named pipeline:
+  计划新增 `wafer-opt --program-pipeline=stablehlo-spmd-to-group`，由该 program
+  pipeline 重放 frontend/SPMD/R2.4 后进入 group candidate gate。局部 MLIR pass
+  只作为实现索引和单元测试入口，不能替代 program pipeline completion gate。
+- Explicit non-goals:
+  不做 physical placement、tile shape search、scheduled loop materialization、
+  SPM allocation、DDR demand check、DTE schedule、`wafer.comm` materialization、
+  C ABI 或 package emission。
+- Completion gate:
+  真实 P2.S2/R2.4 program chain 的 local compute + tensor collective 输出能形成
+  verifier-legal `wafer.group` candidate；raw StableHLO collective、`wafer.comm`、
+  `wafer.tile_region`、SPM tile buffer、DTE token、C ABI/runtime op 和只靠手写
+  fixture 拼出的 group 主线都被拒绝。
+```
 
 ## 3. 典型 Case
 
@@ -501,6 +538,10 @@ logical / scheduled tensor-level `wafer.group` body 第一版应保持保守。�
   queue、packet field、CSR、BO/TLV 等低层对象。
 - body 中 layout-changing、shape-changing 或 aligned-layout-only op 必须能被 layout
   propagation/verifier 覆盖。
+- body 中不得出现 raw StableHLO collective、lower-level Wafer memory / compute /
+  communication / sync / ABI / launch op、LLVM/runtime call、任意 `memref.*`
+  allocation/load/store 或 SPM/tile-buffer typed value。若未来某类通信允许进入 group，
+  必须先有 tensor-level op/effect 和 verifier 合同，不能直接插 `wafer.comm`。
 
 阶段特定合法性另外检查：
 
@@ -512,17 +553,45 @@ logical / scheduled tensor-level `wafer.group` body 第一版应保持保守。�
 
 group formation 只负责形成候选 group，不负责最终 tile size 或 physical storage allocation。
 
-下面是初始实现的启发式候选，不是 `wafer.group` 语义的一部分。长期应由 op interface、
-producer/consumer 图、layout/shape legality 和 cost model 共同决定是否入 group。
+R3.1 的初始实现采用 root-seeded、dependency-preserving candidate formation。它不是
+普通 greedy fusion，也不承诺找到最优 group；第一版宁可产生更小的 legal candidate，也不把
+不可证明的融合写成 IR 事实。长期应由 op interface、producer/consumer 图、layout/shape
+legality、temporary/materialization 判断和 cost model 共同决定是否入 group。
+
+### 9.1 R3.1 Op 分类
+
+formation pass 在每个 `func.func` 的 region/block 内先做局部 op 分类：
+
+- tensor-level candidate body：`linalg.*`、`tensor.*`、`arith.*`、`math.*`、
+  shape/index op、必要的 `scf`，以及已规整并实现 destination-style / tiling /
+  tensor collective interface 的 `wafer.tensor_collective.*`。
+- hard boundary：raw `stablehlo.*` collective、remote load/store、explicit DMA/
+  communication、任意 `memref.*` allocation/load/store、`llvm.*`、runtime call、
+  lower-level Wafer memory / compute / communication / sync / ABI / launch op、
+  `wafer.tile_region`、SPM memref、`!wafer.tile_buffer`、DTE token 或 packet-like value。
+- analysis-only input：single-use、use count、producer/consumer reachability、DPS outs、
+  indexing maps、shape/rank/dtype、side-effect/memory-effect information。这些只驱动
+  candidate formation，不写入 `wafer.group` attribute。
+
+### 9.2 Root / Hero Seed
+
+R3.1 从 root/hero op 建立最小 group seed，再向周围扩展。root 优先级是：
 
 常见 traversal anchor 候选：
 
 - matmul / batch matmul。
 - reduction。
+- 已规整的 tensor collective。
 - softmax-like composite。
 - large elementwise chain。
 - dequant + matmul + epilogue。
 - convolution 可作为后续受限目标，但不作为最小链路的主线。
+
+root/hero 只决定 logical candidate 的初始边界，不决定 traversal tile shape。真正的 traversal
+domain、tile shape、internal split 和 output coverage 仍由 R3.2 scheduled group planning
+决定。
+
+### 9.3 Conservative Expansion
 
 优先纳入候选：
 
@@ -534,6 +603,20 @@ producer/consumer 图、layout/shape legality 和 cost model 共同决定是否�
 - cast/bitcast/dequant。
 - relu/gelu/sigmoid 等 epilogue。
 - reshape/expand/collapse 这类可安全 fold 的 shape-only op。
+- 已规整且能通过 interface/verifier 证明 rank group、combiner 或 slice relation 的
+  `wafer.tensor_collective.*`。
+
+candidate expansion 必须保持 dependency-preserving：
+
+- group 内部中间 tensor 必须只由 group 内 op 产生并只被 group 内 op 消费，或作为
+  explicit result/yield 暴露。
+- 若某个 value 在 group 外仍有 live use，必须成为 group result 或停在 group boundary；
+  不能假设后续 pass 会补 materialization/writeback。
+- 多 use producer 第一版默认不吸收。后续若要放开，必须证明所有 users 对该 producer 的
+  indexing / slice 关系一致，或者 R3.2 能给出合法且成本可接受的 recomputation /
+  materialization 方案。
+- shape-only op 可以被吸收，但不能用名字匹配；必须由 op 语义、type、rank/shape 和 SSA
+  use-def 证明它不会引入新的 storage/runtime 语义。
 
 默认不跨越：
 
@@ -552,6 +635,22 @@ Wafer LinalgExt-style tensor collective、且实现 tiling interface 的 post-SP
 对于 multi-output 候选，formation 只标记“可能共享 tile-local residency”的候选，不保证最终
 一定保持一个 group。schedule 阶段如果无法找到一个合法且成本可接受的 selected traversal
 domain，应把候选拆成多个 groups，再分别调度。
+
+### 9.4 IR Construction Rules
+
+R3.1 pass 构造 logical `wafer.group` 时遵守以下规则：
+
+- `ins` 来自 group body 需要读取、且定义在 group 外部的 SSA value。名字只用于 debug，
+  不参与角色恢复。
+- `outs` 来自 destination-style init/output tensor。若无法稳定识别 DPS out 或 yielded
+  result 的 shape/type 关系，candidate 必须缩小或拒绝。
+- `results` 与 `wafer.group_yield` 一一对应，类型、rank 和 shape 与 `outs`/yielded value
+  可由 verifier 检查。
+- body 通过 clone + SSA remap 构造；外部依赖必须经 block arguments 显式进入，不允许
+  region body 隐式捕获外部 SSA value。
+- `wafer.group` 不携带 semantic attribute，不保存 root kind、fusion reason、tile size、
+  cost trace、temporary set、materialization point 或 rejected-candidate diagnostic。
+  这些都是 analysis 或诊断信息。
 
 ## 10. Group Schedule Planning
 
