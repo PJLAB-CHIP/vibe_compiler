@@ -9,6 +9,7 @@ add_mlir_library(WaferTransforms
   StableHLOToLinalg/NormalizeConstants.cpp
   StableHLOToLinalg/LowerStablehloDot.cpp
   StableHLOToLinalg/LowerStablehloElementwise.cpp
+  StableHLOToLinalg/LegalizeStablehloToLinalg.cpp
   StableHLOToLinalg/NormalizeStablehloCollectives.cpp
   StableHLOToLinalg/LowerStablehloReduce.cpp
   StableHLOToLinalg/LowerStablehloShape.cpp
@@ -35,7 +36,9 @@ if(WAFER_ENABLE_IMPORTER_DEPS)
   target_compile_definitions(obj.WaferTransforms PRIVATE WAFER_ENABLE_STABLEHLO=1)
   target_compile_definitions(WaferTransforms PRIVATE WAFER_ENABLE_STABLEHLO=1)
   target_link_libraries(obj.WaferTransforms PRIVATE StablehloOps)
+  target_link_libraries(obj.WaferTransforms PRIVATE StablehloLinalgTransforms)
   target_link_libraries(WaferTransforms PRIVATE StablehloOps)
+  target_link_libraries(WaferTransforms PRIVATE StablehloLinalgTransforms)
 endif()
 
 if(WAFER_ENABLE_SPMD_PARTITIONER_DEPS)

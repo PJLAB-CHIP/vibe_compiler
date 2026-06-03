@@ -13,10 +13,10 @@
 # GROUP-MLIR: mhlo.spmd_parameters_shardings
 # GROUP-MLIR: func.func @main
 # GROUP-MLIR-NOT: stablehlo.all_gather
-# GROUP-MLIR: wafer.group
+# GROUP-MLIR: wafer.group ins(%{{[^, ]+}}, %{{[^, ]+}}, %{{[^, ]+}} : tensor<32x2xf32>, tensor<32x32xf32>, tensor<2xf32>) outs(%{{[^ ]+}} : tensor<32x32xf32>) {
 # GROUP-MLIR: wafer.tensor_collective.all_gather
 # GROUP-MLIR-SAME: rank_group = array<i64:
-# GROUP-MLIR: wafer.group ins(%arg0, %{{[^ ]+}} : tensor<2xf32>, tensor<32x32xf32>) outs(%{{[^ ]+}} : tensor<32x32xf32>) {
+# GROUP-MLIR: linalg.matmul
 # GROUP-MLIR: wafer.tensor_collective.all_gather
 # GROUP-MLIR: linalg.generic
 # GROUP-MLIR: arith.addf
@@ -25,18 +25,24 @@
 
 # DEMAND-LABEL: wafer.tiling_demand group @main#0
 # DEMAND: result_tile #0 type=tensor<32x32xf32> slice=[d0,d1]
-# DEMAND: op #0 wafer.tensor_collective.all_gather
+# DEMAND: op #1 wafer.tensor_collective.all_gather
 # DEMAND: collective kind=all_gather rank_group=[
-# DEMAND: op #1 linalg.generic
-# DEMAND: input #0 slice=[d0,d1]
+# DEMAND: op #5 linalg.matmul
+# DEMAND: accumulator result #0 reduction_dims=[d2]
+# DEMAND: op #7 wafer.tensor_collective.all_gather
+# DEMAND: op #10 linalg.generic
+# DEMAND: input #1 slice=[d0,d1]
 
 # LAYOUT-LABEL: wafer.layout_plan group @main#0
-# LAYOUT: op #0 wafer.tensor_collective.all_gather
+# LAYOUT: op #1 wafer.tensor_collective.all_gather
 # LAYOUT: collective kind=all_gather rank_group=[
 # LAYOUT: result #0 layout=tensor slice=[d0,d1]
-# LAYOUT: op #1 linalg.generic
-# LAYOUT: input #0 layout=tensor slice=[d0,d1]
-# LAYOUT: result #0 layout=tensor slice=[d0,d1]
+# LAYOUT: op #5 linalg.matmul
+# LAYOUT: input #0 layout=cx slice=[d0,d2]
+# LAYOUT: accumulator result #0 layout=cx reduction_dims=[d2]
+# LAYOUT: op #7 wafer.tensor_collective.all_gather
+# LAYOUT: op #10 linalg.generic
+# LAYOUT: materialization #5 op #10 result #0 -> group result #0 cx->tensor type=tensor<32x32xf32>
 
 # TILE-CANDIDATE-LABEL: wafer.tile_region.candidate group @main#0
 # TILE-CANDIDATE: failure collective lowering requires placement/local-rank facts

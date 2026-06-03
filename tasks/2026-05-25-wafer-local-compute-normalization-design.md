@@ -429,28 +429,26 @@ workspace 选择固化成 IR 合同。若后续需要 multi-stage softmax，row 
 
 ### 6.1 R2.4 StableHLO Conversion Coverage / Practice Matrix
 
-R2.4 当前实现曾以本地小 pass 恢复覆盖，很多 pass 仍是 hand-written walk +
-`replaceAllUsesWith` / `erase`。这只能作为恢复期证据，不能作为长期 lowering 架构。R2.4 主线应优先
-复用或对齐 StableHLO 官方 Linalg conversion patterns：`ConversionTarget` 定义合法 IR，
-`OpConversionPattern` 按 op family 分文件，`TypeConverter` 处理类型/materialization，
-`applyPartialConversion` / `applyFullConversion` 作为 legality gate。Wafer 自有逻辑只补官方
-conversion 不表达的 post-SPMD tensor collective handoff 和 Wafer-specific policy。
+R2.4 主线已从本地小 pass 串切换为 StableHLO 官方 Linalg legalization pass：
+`wafer-lower-stablehlo-to-linalg` 先运行 Wafer-owned post-SPMD collective handoff，再运行当前 pin 的
+`stablehlo-legalize-to-linalg`。官方 pass 内部使用 `ConversionTarget`、`OpConversionPattern`、
+`TypeConverter` 和 `applyPartialConversion` 作为 legality gate；不能转换的 raw StableHLO op 会让
+pipeline 失败。Wafer 自有逻辑只补官方 conversion 不表达的 post-SPMD tensor collective handoff 和
+Wafer-specific policy。
 
-| source StableHLO family | 当前本地覆盖 | 覆盖状态 | 正确 conversion 做法 / 后续要求 |
+历史 `wafer-lower-stablehlo-{dot,elementwise,reduce,shape}` pass 仍可作为局部 debug / fixture 覆盖入口，
+但不再构成 R2.4 主线 completion gate，也不能继续扩展成本项目维护的窄版 StableHLO lowering。
+
+| source StableHLO family | R2.4 主线处理 | 覆盖状态 | 后续要求 |
 | --- | --- | --- | --- |
-| constants | `stablehlo.constant` -> `arith.constant` 本地 normalize | partial | 对齐官方 constant conversion；program constant residency / payload binding 不在此层决定。 |
-| pointwise elementwise | add/sub/mul/div/max/min/neg/sqrt/rsqrt/exp/tanh -> `linalg.generic` + arith/math | narrow subset | 优先复用/对齐官方 pointwise patterns，覆盖更宽 StableHLO scalar op set、scalar broadcast、rank/type checks 和 `notifyMatchFailure`。本地不应维护长 if/else 子集。 |
-| broadcast / reshape / transpose / slice / concatenate | 本地 shape pass 覆盖静态常见子集 | partial | 对齐官方 data movement / shape conversion；动态 shape、view 与真实 data movement 要分层，不能在 R2.4 提前引入 layout/SPM 事实。 |
-| `dot_general` / dot | 只支持 simple 2D matmul；rank-4 attention dot 当前保留 | narrow subset | 优先对齐官方 dot/dot_general conversion，包括 dot/matvec/vecmat/matmul/batch matmul/generic dot_general 的 legality。Wafer 后端不应因为当前只支持 2D 就把其它可表达 contraction 写成长期不支持。 |
-| reduce | 单输入、rank0 init、sum/max combiner -> `linalg.reduce` | narrow subset | 对齐官方 reduction patterns，包括 reduce region return conversion、multi-result/combiner legality、reduce_window 可表达子集。数值 policy 不清楚时结构化失败。 |
-| softmax / norm / RoPE / MLP staged graph | 只证明 fine-grained StableHLO dataflow 可经过本地子集变成 staged structured tensor IR | evidence only | 不引入 high-level `wafer.softmax` / `wafer.norm`。这些是 pattern coverage 证据，不是单独 op conversion contract；更宽 decomposition 依赖官方 StableHLO conversion + 后续 planner。 |
-| StableHLO collectives | all_gather/all_reduce/reduce_scatter/all_to_all/collective_permute -> `wafer.tensor_collective.*` | Wafer-specific | 这是 Wafer 自有 handoff，不能用官方 linalg conversion 替代；但也应 pattern 化并放进 R2.4 conversion pipeline 的明确 legal/illegal contract。不能直接 lower 到 `wafer.comm`。 |
-| unsupported StableHLO op | 当前可能被局部 pass 静默保留 | weak | 主线 conversion gate 必须明确：可 legalize 的 StableHLO op 被转换；不可转换但允许保留的 op 必须有 dynamic legality 和文档理由；否则 fail。 |
-
-本表的结论是：R2.4 不应继续扩展一组窄的本地 `wafer-lower-stablehlo-*` 手写 pass。后续重构应把
-`wafer-lower-stablehlo-to-linalg` named pipeline 收口为：官方/对齐官方 StableHLO-to-Linalg
-conversion + Wafer tensor collective normalization + verifier gate。局部 pass 可以保留作
-canonicalization 或测试入口，但不能替代主线 conversion legality。
+| constants | 官方 StableHLO Linalg conversion 转成 `arith.constant` / structured tensor form | supported by upstream patterns | program constant residency / payload binding 不在 R2.4 决定。 |
+| pointwise elementwise | 官方 pointwise patterns 转成 `linalg.generic` + arith/math/complex 等 scalar ops | supported by upstream patterns | 更宽 op family 随 StableHLO pin 演进；Wafer 不维护长 if/else 子集。 |
+| broadcast / reshape / transpose / slice / concatenate | 官方 data movement / shape conversion 转成 linalg/tensor/scf shape-level IR | supported by upstream patterns | 动态 shape、view 与真实 data movement 仍分层处理，不能在 R2.4 引入 layout/SPM 事实。 |
+| `dot_general` / dot | 官方 dot product patterns 覆盖 2D matmul 和可表达 batched/generic contraction | supported by upstream patterns | 是否能成为合法 Wafer compute schedule 仍由 R3/R5 planner 和 resource legality 决定。 |
+| reduce / reduce_window 可表达子集 | 官方 reduction patterns 转成 linalg reduction / pooling 类 structured IR | supported by upstream patterns | 数值 policy、非可表达 combiner 或 backend resource legality 不在 R2.4 假装完成。 |
+| softmax / norm / RoPE / MLP staged graph | 作为 fine-grained StableHLO dataflow 经过官方 conversion 进入 staged structured tensor IR | evidence only | 不引入 high-level `wafer.softmax` / `wafer.norm`；multi-stage workspace/materialization 属后续 planner。 |
+| StableHLO collectives | Wafer handoff pass 把 all_gather/all_reduce/reduce_scatter/all_to_all/collective_permute 转成 `wafer.tensor_collective.*` | Wafer-specific supported subset | 不能用官方 linalg conversion 替代，也不能直接 lower 到 `wafer.comm`。无法证明 rank group、shape 或 combiner 的 collective 必须 fail。 |
+| unsupported StableHLO op | 官方 `applyPartialConversion` 或 Wafer collective handoff gate 报错 | explicit illegal | 不允许主线静默保留 raw StableHLO 给 R3 group 消费；需要支持时扩官方对齐 pattern、Wafer IR 或后续任务。 |
 
 ## 7. Verifier
 
@@ -473,16 +471,16 @@ Normalization 后必须能检查：
 
 | 子结构 | 当前证据 | 结论边界 |
 | --- | --- | --- |
-| dot / 2D GEMM | `test/Frontend/lower-stablehlo-dot-to-linalg.mlir`、`stablehlo-dot-program.mlir`、`linalg-gemm-program.mlir` | 证明 2D dot 可进入 structured matmul，不证明 tile shape / GEMM packet |
-| attention QK^T / AV | `lower-stablehlo-attention-score.mlir`、`lower-stablehlo-attention-value.mlir`、`lower-stablehlo-attention-softmax-value.mlir` | rank-4 attention dot 当前不再特判 lowering；测试确认它保留为 StableHLO `dot_general`，后续需要通用 batched contraction / tensor collective handoff 合同 |
-| elementwise / broadcast | `lower-stablehlo-elementwise.mlir`、`lower-stablehlo-projection-residual.mlir` | 证明当前 add/sub/mul/div/tanh/exp/broadcast 子集的 SSA dataflow；mask/select 和 complex broadcast 未闭环 |
-| reduce | `lower-stablehlo-reduce.mlir`、norm/softmax staged tests | 证明细粒度 StableHLO reduce 到 `linalg.reduce` 的 constant-init 子集；non-constant-init reduce 和 numeric policy 未闭环 |
+| dot / 2D GEMM | `test/Frontend/lower-stablehlo-dot-to-linalg.mlir`、`stablehlo-to-linalg.mlir`、program gate | 证明 2D dot 可进入 structured matmul，不证明 tile shape / GEMM packet |
+| attention QK^T / AV | `lower-stablehlo-attention-score.mlir`、`lower-stablehlo-attention-value.mlir`、`lower-stablehlo-attention-softmax-value.mlir` | rank-4 attention dot 由官方 conversion 转成 linalg generic contraction；是否能 schedule 仍归后续 planner |
+| elementwise / broadcast | `lower-stablehlo-elementwise.mlir`、`lower-stablehlo-official-linalg-coverage.mlir`、`lower-stablehlo-projection-residual.mlir` | 证明本地 legacy 子集和官方 pointwise conversion 都可产生 structured tensor IR；mask/select 是否能进入合法 tile schedule 仍未闭环 |
+| reduce | `lower-stablehlo-reduce.mlir`、norm/softmax staged tests | 证明细粒度 StableHLO reduce 可进入 structured reduction IR；backend numeric policy 和 resource legality 未闭环 |
 | softmax | `lower-stablehlo-softmax-staged.mlir` | 证明 fine-grained StableHLO softmax dataflow 可变成 `linalg.reduce` / `linalg.generic` staged IR；不证明 multi-stage workspace 或 group schedule |
 | norm | `lower-stablehlo-norm-staged.mlir` | 证明 fine-grained RMSNorm/LayerNorm dataflow 中 last-dim reduce / rsqrt / broadcast multiply gate；不证明完整 LayerNorm/RMSNorm family |
 | RoPE | `lower-stablehlo-rope-mlp-staged.mlir` | 证明当前 RoPE slice/shape/elementwise staged pattern；sin/cos table storage slicing 未闭环 |
 | MLP | `lower-stablehlo-mlp.mlir`、`lower-stablehlo-local-transformer-block.mlir` | 证明 tanh-gated MLP dataflow fixture 和 full local transformer structured fixture；GELU/SwiGLU/package consistency 未闭环 |
 | shape views | `lower-stablehlo-shape.mlir`、`lower-stablehlo-local-transformer-block.mlir` | 证明 static expand/collapse shape-only relation；dynamic shape view 和 layout materialization 未闭环 |
-| tensor collective handoff | R2.4 已恢复 | `stablehlo-spmd-to-linalg` 主线已把 post-SPMD StableHLO logical collective normalize 成 `wafer.tensor_collective.*`；`wafer-lower-stablehlo-to-linalg` 只作为内部/局部 named MLIR pipeline；旧的 StableHLO -> `wafer.comm` bridge 已移除，不能作为 group/tiling 输入 |
+| tensor collective handoff | R2.4 已恢复 | `stablehlo-spmd-to-linalg` 主线已把 post-SPMD StableHLO logical collective normalize 成 `wafer.tensor_collective.*`；unsupported collective handoff 会 fail；`wafer-lower-stablehlo-to-linalg` 只作为内部/局部 named MLIR pipeline；旧的 StableHLO -> `wafer.comm` bridge 已移除，不能作为 group/tiling 输入 |
 
 ## 8. 与其它文档的关系
 

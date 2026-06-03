@@ -386,20 +386,30 @@ struct NormalizeStablehloCollectivesPass
     });
 
     for (mlir::Operation *op : collectives) {
-      if (auto allGather = mlir::dyn_cast<mlir::stablehlo::AllGatherOp>(op))
-        (void)lowerAllGather(allGather);
-      else if (auto allReduce =
-                   mlir::dyn_cast<mlir::stablehlo::AllReduceOp>(op))
-        (void)lowerAllReduce(allReduce);
-      else if (auto reduceScatter =
-                   mlir::dyn_cast<mlir::stablehlo::ReduceScatterOp>(op))
-        (void)lowerReduceScatter(reduceScatter);
-      else if (auto allToAll =
-                   mlir::dyn_cast<mlir::stablehlo::AllToAllOp>(op))
-        (void)lowerAllToAll(allToAll);
-      else if (auto collectivePermute =
-                   mlir::dyn_cast<mlir::stablehlo::CollectivePermuteOp>(op))
-        (void)lowerCollectivePermute(collectivePermute);
+      bool lowered = false;
+      if (auto allGather = mlir::dyn_cast<mlir::stablehlo::AllGatherOp>(op)) {
+        lowered = lowerAllGather(allGather);
+      } else if (auto allReduce =
+                     mlir::dyn_cast<mlir::stablehlo::AllReduceOp>(op)) {
+        lowered = lowerAllReduce(allReduce);
+      } else if (auto reduceScatter =
+                     mlir::dyn_cast<mlir::stablehlo::ReduceScatterOp>(op)) {
+        lowered = lowerReduceScatter(reduceScatter);
+      } else if (auto allToAll =
+                     mlir::dyn_cast<mlir::stablehlo::AllToAllOp>(op)) {
+        lowered = lowerAllToAll(allToAll);
+      } else if (auto collectivePermute =
+                     mlir::dyn_cast<mlir::stablehlo::CollectivePermuteOp>(
+                         op)) {
+        lowered = lowerCollectivePermute(collectivePermute);
+      }
+
+      if (!lowered) {
+        op->emitError("failed to normalize StableHLO collective to "
+                      "wafer.tensor_collective handoff");
+        signalPassFailure();
+        return;
+      }
     }
 #endif
   }

@@ -31,7 +31,8 @@
 # MLIR: wafer.tensor_collective.all_gather
 # MLIR-SAME: rank_group = array<i64:
 # MLIR-NOT: wafer.comm
-# MLIR: stablehlo.dot
+# MLIR-NOT: stablehlo.
+# MLIR: linalg.matmul
 
 # SHARDS: "logical_rank_count": 16
 # SHARDS: "parameter_shards_version": 2
