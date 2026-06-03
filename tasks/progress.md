@@ -69,32 +69,11 @@ wafer-opt \
 | R2.4 | done | `2026-05-25-wafer-local-compute-normalization-design.md` | post-SPMD StableHLO program | `stablehlo-spmd-to-linalg` 产出 Linalg/Tensor/SCF local compute 和 `wafer.tensor_collective.*`；不生成 `wafer.comm` |
 | R3.1 | done | `2026-05-12-wafer-group-design.md` 2.1、9.1-9.5 | `stablehlo-spmd-to-linalg` 输出的 rank-local tensor IR | `stablehlo-spmd-to-group` 形成 verifier-legal logical `wafer.group` candidate；支持 dependency-preserving conservative expansion、fill/init、bias/epilogue/simple elementwise、tensor collective handoff 和显式 `ins` / `outs` / `group_yield` 边界 |
 
-## 当前活跃任务
+## 当前状态
 
 当前没有 active 实现任务。R3.2a op tiling demand analysis 已完成；下一项是 R3.2b layout
 planning，消费 R3.2a 的 tile value graph / op layout constraints，恢复 layout assignment、
 materialization cut 和 materialization buffer demand。
-
-R3.2a Pipeline Contract:
-
-- upstream program / IR：R3.1 verifier-legal tensor-level `wafer.group` candidate，来自
-  `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 或等价局部 group fixture。
-- current stage responsibility：从 SSA use-def、destination-style ties、Linalg structured semantics、
-  indexing maps、iterator types、MLIR `TilingInterface` 和 Wafer interfaces 恢复 per-op operand
-  slice、result slice、temporary/scratch/accumulator 和 movement / collective demand。
-- output program / IR：transformation-local `GroupTilingDemand` analysis result；debug dump pass
-  只打印同一结构，不修改 IR、不生成 scheduled group、不写 semantic attr。
-- downstream consumer：R3.2b layout planning、R3.2c SPM allocation、R3.2d DDR/resource
-  planning + compute/movement legality analysis、R3.2e closed-loop planner。
-- user-level driver / named pipeline：主线由
-  `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 产生 group；R3.2a 局部验证用
-  `wafer-opt --wafer-dump-group-tiling-demand` 在 group IR 上 dump analysis 输出。
-- explicit non-goals：不选择最终 tile shape、不 accept/reject/split group、不做 layout assignment、
-  不分配 SPM、不判断 DDR pool/range/bandwidth、不 materialize compute/movement/comm op、不生成
-  package/ABI。
-- completion gate：FileCheck 覆盖 linalg matmul/broadcast/elementwise、multi-group、tensor
-  collective 和 negative failure reason；program pipeline gate 在真实
-  `stablehlo-spmd-to-group` 输出上重放 demand dump。
 
 ## 恢复队列
 
@@ -128,27 +107,6 @@ tile shape、layout、SPM/DDR/resource 和 cost 都可证明兼容时，R3.2e �
 co-scheduled candidate 接受。仅因为同 block、同 shape 或语法上可放进同一个 region，不能合并。
 若 legality/resource/cost 不成立，保持多个 groups 或按 R3.2e split/reject 规则处理。
 
-## R3.1 Pipeline Contract
-
-- upstream program / IR：`stablehlo-spmd-to-linalg` 输出的 rank-local `linalg` / `tensor` / `scf`
-  local compute IR 和 `wafer.tensor_collective.*` tensor collective IR。
-- current stage responsibility：建立 root-seeded、dependency-preserving `wafer.group` candidate 边界，
-  说明哪些 tensor SSA value、outs、producer/consumer 和 tensor collective 能进入 group 候选。
-- output program / IR：可验证的 tensor-level `wafer.group` candidate IR；candidate 可被 R3.2e
-  接受、拆分或拒绝。
-- downstream consumer：R3.2a-d planning / analysis results 和 R3.2e closed-loop planner、R3.3 tile_region
-  materialization、R3.4/R3.5 accepted layout/SPM/DDR materialization、R3.6/R3.7 ABI/package stages。
-- user-level driver / named pipeline：
-  `wafer-opt --program-pipeline=stablehlo-spmd-to-group`，由该 program pipeline 重放
-  frontend/SPMD/R2.4 后进入 group candidate gate；不能让 integration test 手动拼 raw StableHLO、
-  tensor collective fixture 和 group fixture 作为长期主线。
-- explicit non-goals：不做 physical placement、tile shape search、SPM allocation、DTE schedule、
-  `wafer.comm` materialization、C ABI 或 package emission。
-- completion gate：真实 P2.S2/R2.4 program chain 的 local compute + tensor collective 输出能形成
-  dependency-preserving conservative `wafer.group` candidate；合法 single-use producer/consumer、
-  fill/init、bias/epilogue/simple elementwise 能进入 group；verifier 证明 group 边界只包含 tensor-level
-  IR；raw StableHLO、`wafer.comm`、`wafer.tile_region`、SPM tile buffer、DTE token 被拒绝。
-
 ## 当前不做
 
 - Serving integration。
@@ -157,20 +115,6 @@ co-scheduled candidate 接受。仅因为同 block、同 shape 或语法上可�
 - LLVM dialect / LLVM IR lowering、object emission 或真实 `wafer_*` runtime call emission。
 - 自定义 LLVM backend 或 ISA intrinsic lowering。
 - 以 importer、runtime path、workload shape 或 parameter 名称作为 IR 合同。
-
-## 最近验证
-
-当前已验证的是 R3.2a completion gate：
-
-- `cmake --build build/r0-deps-pytorch-xla --target wafer-opt -- -j128`。
-- `/root/miniconda3/bin/lit -sv build/r0-deps-pytorch-xla/test/Transforms/dump-group-tiling-demand.mlir build/r0-deps-pytorch-xla/test/Transforms/dump-group-tiling-demand-failure.mlir build/r0-deps-pytorch-xla/test/Tools/wafer-opt-spmd-to-group.test`：
-  3/3 passed。
-- `cmake --build build/r0-deps-pytorch-xla --target check-wafer -- -j128`：109 passed,
-  1 unsupported。
-- `ctest --test-dir build/r0-deps-pytorch-xla --output-on-failure`：2/2 passed。
-- `python3 tools/check_deps.py`。
-- `python3 tools/check_ir_organization.py --root .`。
-- `git diff --check`。
 
 ## 下一步
 
