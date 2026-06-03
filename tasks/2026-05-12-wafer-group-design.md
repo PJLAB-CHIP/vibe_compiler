@@ -773,6 +773,27 @@ group planner 不替每个 op 实现 tiling，也不把 matmul、reduction、win
 层。本文 case 里的 accumulator、bias/relu 位置和 result1 的跨 traversal tile 累加方式只是
 各 op interface 和 data dependence 合成出的结果，不是 `wafer.group` 对所有 op 的固定字段。
 
+### 10.2.1 Multi-root Packing / Co-scheduling
+
+multi-root packing 是 R3.2+ 的 planner 策略，不是 R3.1 group formation 的完成条件。
+R3.1 产出的基本单位仍是 dependency-connected logical group；两个完全独立的 chains
+即使在同一个 block、shape 相同，也不因为语法上可以放进一个 region 就自动合并。
+
+R3.2 可以把多个 R3.1 logical groups 作为 co-scheduling 候选，但必须满足：
+
+- 输入是多个 verifier-legal R3.1 groups，不是 raw op list 或名字匹配出的 op bag。
+- traversal domain、tile shape、output coverage、layout assignment、SPM/DDR demand、
+  compute/movement/collective resource 和 cost 都能在 planner analysis 中证明兼容。
+- 合并必须降低 materialization、movement、launch/sync 或其它可度量成本；不能只因为
+  同 block、同 dtype、同 shape 或相邻出现而合并。
+- 如果 feasibility 或 cost 不成立，planner 保持多个 groups，或按 output domain /
+  producer cut / schedule cut 规则拆分。
+- packing 决策、失败原因、cost trace 和搜索顺序都是 transformation-local analysis，不写回
+  `wafer.group` attribute；IR 只保留被接受的 scheduled structure。
+
+因此，R3.2 的默认安全行为仍是分别调度 R3.1 connected groups；multi-root packing 只是有
+可证明收益和可行性时的优化路径。
+
 ### 10.3 Traversal Anchor Analysis
 
 下面是 traversal anchor 选择的常见例子，不是固定 op 列表。这些选择属于 planner analysis，

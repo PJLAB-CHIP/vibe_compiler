@@ -95,6 +95,12 @@ wafer-opt \
 | R6.2 | pending | communication design；layout/SPM/materialization docs | 输入：buffer-slice/layout/materialized collective；输出：`wafer.comm` | 移除临时 visible cast，由可验证 buffer-slice/materialization 路径承接 |
 | P7/P8/P9 | later | architecture / verification / launch / C ABI docs | 输入：P0-P6 恢复后的 package/runtime boundary | P0-P6 主链路恢复后再推进 LLVM/object、runtime adapter、board/profiling |
 
+R3.2 明确包含一个可选子目标：multi-root packing / co-scheduling。它的输入不是 raw op list，
+而是多个已由 R3.1 形成的 dependency-connected logical groups；只有当 traversal domain、
+tile shape、layout、SPM/DDR/resource 和 cost 都可证明兼容时，R3.2 才能把它们作为一个
+co-scheduled candidate 接受。仅因为同 block、同 shape 或语法上可放进同一个 region，不能合并。
+若 feasibility/cost 不成立，保持多个 groups 或按 R3.2 split/reject 规则处理。
+
 ## R3.1 Pipeline Contract
 
 - upstream program / IR：`stablehlo-spmd-to-linalg` 输出的 rank-local `linalg` / `tensor` / `scf`
