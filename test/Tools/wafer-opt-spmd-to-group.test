@@ -5,6 +5,7 @@
 # RUN: wafer-opt --program-pipeline=stablehlo-spmd-to-group --input-program-dir %t.input.program --output-program-dir %t.group.program --default-tile-count=16 | FileCheck %s --check-prefix=PIPELINE
 # RUN: FileCheck %s --input-file=%t.group.program/functions/forward.mlir --check-prefix=GROUP-MLIR
 # RUN: wafer-opt --wafer-dump-group-tiling-demand %t.group.program/functions/forward.mlir 2>&1 | FileCheck %s --check-prefix=DEMAND
+# RUN: wafer-opt --wafer-dump-group-layout-plan %t.group.program/functions/forward.mlir 2>&1 | FileCheck %s --check-prefix=LAYOUT
 
 # PIPELINE: wafer-opt: completed Wafer program pipeline stablehlo-spmd-to-group:
 
@@ -27,3 +28,11 @@
 # DEMAND: collective kind=all_gather rank_group=[
 # DEMAND: op #1 linalg.generic
 # DEMAND: input #0 slice=[d0,d1]
+
+# LAYOUT-LABEL: wafer.layout_plan group @main#0
+# LAYOUT: op #0 wafer.tensor_collective.all_gather
+# LAYOUT: collective kind=all_gather rank_group=[
+# LAYOUT: result #0 layout=tensor slice=[d0,d1]
+# LAYOUT: op #1 linalg.generic
+# LAYOUT: input #0 layout=tensor slice=[d0,d1]
+# LAYOUT: result #0 layout=tensor slice=[d0,d1]

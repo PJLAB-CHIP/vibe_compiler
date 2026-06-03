@@ -71,18 +71,18 @@ wafer-opt \
 
 ## 当前状态
 
-当前没有 active 实现任务。R3.2a op tiling demand analysis 已完成；下一项是 R3.2b layout
-planning，消费 R3.2a 的 `GroupTilingDemand` facts 和当前 group SSA use-def，构造 layout
-planning 所需的 tile value graph / op layout constraints，并恢复 layout assignment、
-materialization cut 和 materialization buffer demand。
+当前没有 active 实现任务。R3.2b logical-group layout planning 已完成；下一项是 R3.2c SPM
+allocation，消费 R3.2a `GroupTilingDemand` 和 R3.2b `GroupLayoutPlan` 中的 tile-local
+buffer demand、selected layout、materialization demand、lifetime/effect 输入，恢复真实 SPM
+window placement。
 
 ## 恢复队列
 
 | ID | 状态 | 设计来源 | 输入 / 输出边界 | 完成 gate |
 | --- | --- | --- | --- | --- |
 | R3.2a | done | `2026-05-12-wafer-group-design.md` 10.1-10.2；MLIR Linalg/TilingInterface；tensor collective docs | 输入：R3.1 logical `wafer.group` body；输出：`GroupTilingDemand` analysis result，包括 boundary/result tile facts、per-op slice / iterator / accumulator / collective demand | `GroupTilingDemand` analysis + `--wafer-dump-group-tiling-demand` debug gate 已恢复；覆盖 linalg indexing maps、reduction accumulator、tensor collective interface、多 group 和 unsupported op failure；不写 `wafer.group` attr |
-| R3.2b | ready | `2026-05-21-wafer-layout-materialization-design.md` | 输入：R3.2a `GroupTilingDemand` facts 和当前 group SSA use-def；输出：layout planning graph、layout assignment、materialization cut 和 materialization buffer demand | 给出可验证 layout assignment、materialization cut 和 materialization buffer demand；失败返回结构化原因；不把 layout plan 写进 `wafer.group` attr |
-| R3.2c | pending | `2026-05-21-wafer-spm-bufferization-design.md` | 输入：R3.2a/b 的 tile-local buffer demand、layout、lifetime 和 effect；输出：SPM allocation | 做真实 SPM window placement：alignment、layout padding、scratch/psum/temp、lifetime overlap、range/end-address/conflict 都参与；不是 byte-size estimate；失败返回 planner |
+| R3.2b | done | `2026-05-21-wafer-layout-materialization-design.md` | 输入：R3.2a `GroupTilingDemand` facts 和当前 group SSA use-def；输出：`GroupLayoutPlan` analysis result，包括 boundary layout、per-op layout constraints/assignment、materialization cut 和 materialization buffer demand | `GroupLayoutPlan` analysis + `--wafer-dump-group-layout-plan` debug gate 已恢复；覆盖 contraction/accumulator、broadcast/flexible op、tensor collective、多 group、unsupported op failure 和 `stablehlo-spmd-to-group` 主链路 dump；不写 `wafer.group` attr，不生成 `wafer.tile_region` |
+| R3.2c | ready | `2026-05-21-wafer-spm-bufferization-design.md` | 输入：R3.2a `GroupTilingDemand` 和 R3.2b `GroupLayoutPlan` 的 tile-local buffer demand、layout、materialization demand、lifetime 和 effect；输出：SPM allocation | 做真实 SPM window placement：alignment、layout padding、scratch/psum/temp、lifetime overlap、range/end-address/conflict 都参与；不是 byte-size estimate；失败返回 planner |
 | R3.2d | pending | `2026-05-25-wafer-ddr-resource-allocation-design.md`；compute/movement docs | 输入：R3.2a/b 的 boundary、load/store、constant、workspace、movement 和 compute legality demand；输出：DDR/resource plan 和 compute/movement legality result | 覆盖 external/workspace/resident-constant、pool/domain/capacity/bandwidth/range demand；compute/movement/collective 的 layout、dtype、shape、effect 通过接口/verifier 验证；不能用 manifest fixture 替代 |
 | R3.2e | pending | `2026-05-12-wafer-group-design.md` 10.x；R3.2a-d planning / analysis results | 输入：R3.1 logical group 和 R3.2a-d planning results；输出：accepted/rejected/split group planning decision | closed-loop 搜索 group boundary、traversal、tile shape、layout、SPM/DDR/resource plan；accepted plan 带 R3.3 可消费的 traversal/tile/slice/layout/SPM/DDR facts；未接受 plan 不落 IR；可选 multi-root packing 只有在 legality/resource/cost 证明兼容时接受 |
 | R3.3 | pending | `2026-05-25-wafer-tile-region-design.md` | 输入：R3.2e accepted plan；输出：`wafer.tile_region` | 只 materialize accepted plan；未接受 group 不产生 `wafer.tile_region` |
@@ -119,8 +119,7 @@ co-scheduled candidate 接受。仅因为同 block、同 shape 或语法上可�
 
 ## 下一步
 
-从 R3.2b 开始：消费 R3.2a 的 `GroupTilingDemand` facts 和当前 group SSA use-def，先构造
-layout planning graph / constraints，再恢复 layout assignment、materialization cut 和
-materialization buffer demand。完整 R3.2e closed-loop planner 只有在 layout planning、
-SPM allocation、DDR/resource planning、compute/movement legality analysis 都能真实参与
-decision 后才能进入 `ready`。
+从 R3.2c 开始：消费 R3.2a `GroupTilingDemand` 和 R3.2b `GroupLayoutPlan`，恢复真实 SPM
+allocation。完整 R3.2e closed-loop planner 只有在 layout planning、SPM allocation、
+DDR/resource planning、compute/movement legality analysis 都能真实参与 decision 后才能进入
+`ready`。

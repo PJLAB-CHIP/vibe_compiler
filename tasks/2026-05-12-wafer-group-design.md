@@ -750,8 +750,9 @@ compute/movement legality 是 group 是否成立的决定条件，不是 R3.3/R3
 
 - R3.2a 恢复 op tiling demand：从 structured op semantics、indexing maps、tiling interface
   和 Wafer interfaces 推导 operand/result slice、temporary/scratch/accumulator 和 movement demand。
-- R3.2b 恢复 layout planning：对 tile value graph 做 layout assignment、materialization
-  cut 和 materialization buffer demand。
+- R3.2b 恢复 layout planning：消费 R3.2a `GroupTilingDemand` facts 和 logical group SSA
+  use-def，构造 transformation-local tile value graph / op layout constraints，再产出
+  layout assignment、materialization cut 和 materialization buffer demand。
 - R3.2c 恢复 SPM allocation：在真实 SPM window、alignment、layout padding、lifetime、
   scratch/psum/temp 和 conflict 约束下搜索可接受 buffer placement。
 - R3.2d 恢复 DDR/resource planning 和 compute/movement legality analysis：覆盖 external/workspace/

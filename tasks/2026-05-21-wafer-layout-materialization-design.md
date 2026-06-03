@@ -75,10 +75,22 @@ backing data/resource 如何按目标 layout 存放，并由 `wafer.load_tile` /
 
 ### 3.1 输入边界
 
-layout planning 的输入来自 target-abstract tile-region IR。它由 scheduled `wafer.group` lowering
-而来，但 layout-sensitive tiled op 已经被绑定为正式的 `wafer.compute` / boundary / data movement
-op。layout pass 不从裸 `linalg.*` 名字推断硬件 layout，而是通过这些 Wafer op 的
-`WaferLayoutOpInterface` 查询 hard constraint 和 preference。
+layout planning 有两个恢复层次：
+
+- R3.2b 在 logical `wafer.group` 层运行。它消费 R3.2a `GroupTilingDemand` facts 和当前
+  group SSA use-def，构造 transformation-local `LayoutVariable` / `LayoutEdge` graph、op
+  layout constraints、layout assignment candidate、materialization cut 和 materialization
+  buffer demand。该层只产出 analysis result 和 debug dump，不 rewrite `wafer.group`，不写
+  layout attr，也不生成 `wafer.tile_region`。
+- R3.4 在 accepted `wafer.tile_region` 层运行。它消费 R3.2e accepted plan，把 layout
+  assignment 和 materialization cut materialize 成带 `mem_layout` 的 tile buffer type 和
+  `wafer.layout.materialize` op。
+
+完整 layout materialization 的输入来自 target-abstract tile-region IR。它由 scheduled
+`wafer.group` lowering 而来，但 layout-sensitive tiled op 已经被绑定为正式的
+`wafer.compute` / boundary / data movement op。layout materialization pass 不从裸
+`linalg.*` 名字推断硬件 layout，而是通过这些 Wafer op 的 `WaferLayoutOpInterface`
+查询 hard constraint 和 preference。
 
 输入信息只有这些：
 
@@ -91,7 +103,41 @@ op。layout pass 不从裸 `linalg.*` 名字推断硬件 layout，而是通过�
   accumulator demand。
 
 这些信息不作为 `wafer.group` attribute 保存；layout planner 直接从 scheduled body 和当前
-transformation-local analysis 读取。
+transformation-local analysis 读取。R3.2b 的 logical-group implementation 在 target-abstract
+compute op 尚未 materialize 前，只能使用 `GroupTilingDemand`、structured op semantics、tensor
+collective interface 和 target policy 构造保守 layout constraints；不能把单个 workload 或 op
+名字序列写成长期协议。
+
+#### 3.1.1 R3.2b Pipeline Contract
+
+```text
+Pipeline position:
+- Upstream artifact / IR:
+  R3.1 verifier-legal tensor-level `wafer.group` candidate，以及 R3.2a
+  `GroupTilingDemand` analysis result。
+- Current stage responsibility:
+  从 `GroupTilingDemand` facts、group body SSA use-def、DPS ties、structured op
+  semantics 和 tensor collective facts 构造 transformation-local layout planning graph；
+  为 tile values / uses / boundary 生成 layout constraints、candidate layout assignment、
+  materialization cuts 和 materialization buffer demand。
+- Output artifact / IR:
+  transformation-local `GroupLayoutPlan` analysis result；debug dump pass 可以打印同一结构。
+  本阶段不修改 `wafer.group`，不生成 `wafer.tile_region`，不写 layout attr。
+- Downstream consumer:
+  R3.2c SPM allocation、R3.2d DDR/resource planning + compute/movement legality
+  analysis，以及 R3.2e closed-loop planner。
+- User-level driver / named pipeline:
+  主线仍由 `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 产生 R3.1 group；
+  R3.2b 的局部验证入口是 `wafer-opt --wafer-dump-group-layout-plan`，用于在
+  group IR 上 dump analysis 输出。
+- Explicit non-goals:
+  不选择最终 closed-loop tile shape、不 accept/reject/split group、不分配 SPM、不判断
+  DDR pool/range/bandwidth、不 materialize compute/movement/comm op、不生成 package/ABI。
+- Completion gate:
+  FileCheck 覆盖 linalg matmul/broadcast/elementwise、multi-group、tensor collective、
+  materialization demand 和 unsupported tiling failure；program pipeline gate 能在真实
+  `stablehlo-spmd-to-group` 输出上重放 layout-plan dump。
+```
 
 ### 3.2 从 Tensor Value 到 Buffer Value
 

@@ -1,6 +1,8 @@
 add_mlir_library(WaferTransforms
+  Group/DumpLayoutPlan.cpp
   Group/DumpTilingDemand.cpp
   Group/FormGroupCandidates.cpp
+  Group/LayoutPlanningAnalysis.cpp
   Group/TilingDemandAnalysis.cpp
   StableHLOToLinalg/NormalizeConstants.cpp
   StableHLOToLinalg/LowerStablehloDot.cpp

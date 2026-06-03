@@ -18,6 +18,7 @@ std::unique_ptr<mlir::Pass> createLowerStablehloReducePass();
 std::unique_ptr<mlir::Pass> createLowerStablehloShapePass();
 std::unique_ptr<mlir::Pass> createFormGroupCandidatesPass();
 std::unique_ptr<mlir::Pass> createDumpGroupTilingDemandPass();
+std::unique_ptr<mlir::Pass> createDumpGroupLayoutPlanPass();
 std::unique_ptr<mlir::Pass> createNormalizeStablehloCollectivesPass();
 std::unique_ptr<mlir::Pass> createNormalizeConstantsPass();
 #ifdef WAFER_ENABLE_SHARDY
