@@ -47,23 +47,24 @@ PyTorch/XLA StableHLO Wafer program directory
 | R3.1 | done | `2026-05-12-wafer-group-design.md` 2.1、9.1-9.5 | R2.4 rank-local structured tensor IR | verifier-legal logical `wafer.group`；覆盖 fill/init、matmul+bias+epilogue、simple elementwise、tensor collective handoff、多 group 和 raw StableHLO / lower-level op 禁止 |
 | R3.2a | done | `2026-05-12-wafer-group-design.md` 10.1-10.2 | R3.1 logical `wafer.group` body | `GroupTilingDemand` analysis result；覆盖 boundary/result tile facts、per-op slice、iterator、accumulator/reduction dims、collective demand 和 unsupported-op failure |
 | R3.2b | done | `2026-05-21-wafer-layout-materialization-design.md` 3.1.1 | R3.2a `GroupTilingDemand` facts + group SSA use-def | `GroupLayoutPlan` analysis result；覆盖 boundary layout、op layout constraints、broadcast relation、materialization cut/result demand 和 failure forwarding；不修改 IR |
+| R3.2c | done | `2026-05-25-wafer-tile-region-design.md` 2.1-2.2 | R3.1 group + R3.2a demand + R3.2b layout plan | MLIR DialectConversion 驱动的 scratch full conversion；输出 provisional `wafer.tile_region` candidate，包含 load/store、`wafer.alloc_tile`、layout materialization、`wafer.compute.fill/gemm/elementwise` 和结构化 failure；不写主 IR、不做 SPM offset |
 
 ## 当前状态
 
-当前 active task 是 **R3.2c tile-region candidate conversion/pass 边界收口**。
+当前 active task 是 **R3.2d SPM allocation on provisional tile-region candidate**。
 
-R3.2c 可以消费 R3.1 logical group、R3.2a tiling demand 和 R3.2b layout plan。当前未完成点是：
+R3.2d 可以消费 R3.2c 的 provisional `wafer.tile_region` candidate。当前边界是：
 
-- op coverage 表仍有限，需要明确 supported / unsupported / deferred。
-- 当前 candidate emitter 是否应重构为 conversion pass 还未收口。
-- R3.2c 未完成前，R3.2d SPM allocation 不能标 ready。
+- candidate 中的 `!wafer.tile_buffer`、`wafer.alloc_tile`、`wafer.load_tile`、`wafer.store_tile`、
+  `wafer.layout.materialize` 和 `wafer.compute.*` 已能暴露 layout/resource demand。
+- R3.2d 只做真实 SPM window placement / conflict / lifetime，不重新决定 group formation 或 op lowering。
+- tensor collective 到 `wafer.comm.*` 仍 deferred，等待 placement/local-rank/buffer facts。
 
 ## 恢复队列
 
 | ID | 状态 | 输入 / 输出边界 | 完成 gate |
 | --- | --- | --- | --- |
-| R3.2c | active | 输入：R3.1 group + R3.2a demand + R3.2b layout plan；输出：transformation-local provisional `wafer.tile_region` candidate | 明确 conversion/pass 边界和 op coverage；candidate 包含 target-abstract compute / load-store / layout materialization / tile-buffer / effect 结构；rejected candidate 不写主 IR |
-| R3.2d | pending | 输入：R3.2c provisional `wafer.tile_region` candidate；输出：SPM allocation result 或结构化失败 | 真实 SPM window placement：alignment、layout padding、scratch/psum/temp、materialization temp、communication staging、lifetime overlap、range/end-address/conflict 都参与 |
+| R3.2d | active | 输入：R3.2c provisional `wafer.tile_region` candidate；输出：SPM allocation result 或结构化失败 | 真实 SPM window placement：alignment、layout padding、scratch/psum/temp、materialization temp、communication staging、lifetime overlap、range/end-address/conflict 都参与 |
 | R3.2e | pending | 输入：R3.2c candidate + R3.2d SPM facts；输出：DDR/resource plan 和 compute/movement legality result | 覆盖 external/workspace/resident-constant、pool/domain/capacity/bandwidth/range demand；不能用 manifest fixture 替代 |
 | R3.2f | pending | 输入：R3.1 group + R3.2a-e planning results；输出：accepted/rejected/split group planning decision | closed-loop 搜索 group boundary、traversal、tile shape、layout、SPM/DDR/resource plan；未接受 plan 不落 IR；multi-root packing 只作为可证明兼容时的可选策略 |
 | R3.3 | pending | 输入：R3.2f accepted plan；输出：committed `wafer.tile_region` | 只 materialize accepted candidate；不重新决定 group 是否可行 |
@@ -88,5 +89,4 @@ R3.2c 可以消费 R3.1 logical group、R3.2a tiling demand 和 R3.2b layout pla
 
 ## 下一步
 
-收口 R3.2c conversion coverage 和 pass 边界。R3.2c 完成后再进入 R3.2d，在 provisional
-`wafer.tile_region` candidate 上恢复真实 SPM allocation。
+进入 R3.2d，在 R3.2c provisional `wafer.tile_region` candidate 上恢复真实 SPM allocation。

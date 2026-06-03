@@ -3,6 +3,26 @@
 #ifndef WAFER_IR_OPS_COMPUTEOPS_TD
 #define WAFER_IR_OPS_COMPUTEOPS_TD
 
+def Wafer_ComputeFillOp : Wafer_Op<"compute.fill", [
+    DeclareOpInterfaceMethods<WaferLayoutOpInterface>,
+    DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
+    MemoryEffects<[MemWrite<Wafer_SPMResource>,
+                   MemWrite<Wafer_ComputeResource>]>
+  ]> {
+  let summary = "target-abstract tile fill compute";
+  let description = [{
+    `wafer.compute.fill` initializes an existing tile-local destination buffer
+    with a scalar value. The operation is explicit because the initialized
+    buffer participates in SPM lifetime and resource planning; it does not
+    assign a physical SPM offset.
+  }];
+
+  let arguments = (ins AnyType:$dest, AnyType:$value);
+  let hasVerifier = 1;
+  let assemblyFormat =
+      "$dest `,` $value attr-dict `:` type($dest) `,` type($value)";
+}
+
 def Wafer_ComputeGemmOp : Wafer_Op<"compute.gemm", [
     DeclareOpInterfaceMethods<WaferLayoutOpInterface>,
     DeclareOpInterfaceMethods<WaferResourceEffectInterface>,

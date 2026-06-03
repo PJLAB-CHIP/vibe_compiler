@@ -4,7 +4,7 @@ add_mlir_library(WaferTransforms
   Group/DumpTileRegionCandidate.cpp
   Group/FormGroupCandidates.cpp
   Group/LayoutPlanningAnalysis.cpp
-  Group/TileRegionCandidate.cpp
+  ../Conversion/TileRegionCandidate/TileRegionCandidate.cpp
   Group/TilingDemandAnalysis.cpp
   StableHLOToLinalg/LegalizeStablehloToLinalg.cpp
   StableHLOToLinalg/NormalizeStablehloCollectives.cpp
@@ -22,6 +22,7 @@ add_mlir_library(WaferTransforms
   MLIRPass
   MLIRSupport
   MLIRTensorDialect
+  MLIRTransforms
 )
 
 target_include_directories(obj.WaferTransforms PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

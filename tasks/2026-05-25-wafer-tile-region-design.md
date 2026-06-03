@@ -2,7 +2,8 @@
 
 日期：2026-05-25
 
-状态：设计草案；2026-05-25 独立边界收口；2026-05-27 对齐 tensor collective 到 `wafer.comm` materialization
+状态：设计草案；2026-05-25 独立边界收口；2026-05-27 对齐 tensor collective 到 `wafer.comm` materialization；
+2026-06-03 R3.2c 对齐 MLIR DialectConversion scratch full conversion
 
 本文定义 `wafer.tile_region` 作为 `wafer.group` lowering 之后的 tile-local execution boundary。
 它组织 tile-local buffer、movement、layout materialization、target-abstract compute、communication
@@ -71,7 +72,10 @@ Pipeline position:
   R3.1 verifier-legal tensor-level `wafer.group` candidate、R3.2a
   `GroupTilingDemand` analysis result 和 R3.2b `GroupLayoutPlan` analysis result。
 - Current stage responsibility:
-  在 transformation-local / scratch IR 中构造 provisional `wafer.tile_region` candidate；
+  通过 MLIR DialectConversion 在 transformation-local / scratch IR 中构造 provisional
+  `wafer.tile_region` candidate；`wafer.group` 是 illegal root，conversion pattern 产出完整
+  legal `wafer.tile_region`，并用 full conversion 保证 candidate 内不残留 logical group / linalg /
+  tensor allocation op；
   把 logical group boundary 映射成 `wafer.load_tile` / `wafer.store_tile`，把 selected
   layout 和 materialization cut 映射成 `!wafer.tile_buffer` 与 `wafer.layout.materialize`，
   把可验证的 structured compute / tensor collective 映射成 target-abstract
@@ -101,23 +105,23 @@ Pipeline position:
 
 | source IR / op family | 当前 R3.2c 处理 | 覆盖状态 | 正确 conversion 做法 / 后续要求 |
 | --- | --- | --- | --- |
-| `wafer.group` / `wafer.group_yield` boundary | scratch candidate 中构造 `wafer.tile_region`，对 `ins + outs` 生成 `wafer.load_tile` / `wafer.store_tile` / `wafer.tile_yield` | partial | 主线应由 `OpConversionPattern<wafer.group>` + `ConversionTarget` 驱动；debug dump 只能复用同一 emission helper，不能成为主线 pass 边界。 |
+| `wafer.group` / `wafer.group_yield` boundary | scratch full conversion 中由 `OpConversionPattern<wafer.group>` 构造 `wafer.tile_region`，对 `ins + outs` 生成 `wafer.load_tile` / `wafer.store_tile` / `wafer.tile_yield` | supported for candidate | `ConversionTarget` 将 `wafer.group` / `wafer.group_yield` 标为 illegal；debug dump 只调用同一 conversion builder，不能自己承担 lowering 逻辑。 |
 | ranked tensor boundary values | 生成 `!wafer.tile_buffer<tensor, tensor, spm>`，记录 tensor layout 版本 | supported for ranked tensor | 保持类型/verifier 驱动；非 ranked tensor 必须失败。后续 SPM allocation 再决定 offset/window。 |
 | `arith.constant` tensor | clone constant 后 `wafer.load_tile` 到 tensor-layout tile buffer | partial | 只适合 tensor constant；scalar constant 只应在 compute body 或显式 init 语义中消费。需要区分 constant residency / DDR / immediate policy。 |
 | `arith.constant` scalar | 当前通常忽略，只在原 linalg body 中作为说明性输入存在 | limited | 若 scalar 影响 tile compute，应进入 `wafer.compute.*` op 的明确 operand / attr / region 语义，不能靠原 op 残留。 |
-| `tensor.empty` | 结构化失败：缺显式 tile-buffer allocation | unsupported by design | 需要先定义 tile-buffer allocation / workspace / init 语义，或由后续 bufferization 层 materialize；不能把 empty 偷映射成 output alias。 |
-| `linalg.fill` | 当前把 fill result 记录为 output tensor buffer，没有生成 compute op | partial / weak | 应补明确 `wafer.compute.fill`、init effect 或 allocation-init 合同；否则 lifetime、latency、zero-fill 和 output alias 都不可验证。 |
+| `tensor.empty` | 生成 `wafer.alloc_tile`，结果类型携带 tensor shape、layout 和 SPM memory-space demand | supported as abstract allocation demand | `wafer.alloc_tile` 不分配物理 offset/window；R3.2d 才做真实 SPM placement。不能把 empty 偷映射成 output alias。 |
+| `linalg.fill` | 生成显式 `wafer.compute.fill`，写入 existing tile buffer；fill result 映射为该 initialized buffer | supported for scalar fill | `wafer.compute.fill` 暴露 layout/resource effect，供 R3.2d 计算 lifetime 和 write demand；不表达物理 SPM offset。 |
 | `linalg.matmul` | lhs/rhs materialize 到 `cx`，生成 `wafer.compute.gemm`，结果记录为 `cx` | supported for simple `linalg.matmul` | pattern 应检查 rank、dtype、accumulator/result relation、layout requirement；batch matmul / generic contraction 另列，不应混成 matmul 特判。 |
-| `linalg.generic` simple elementwise | 单 result、单 `linalg.yield`，yield value 必须由 add/sub/mul/div/min/max scalar op 定义；生成 `wafer.compute.elementwise` 并带原 `indexing_maps` | limited | 不能长期用 op name string 推 kind；应改 typed scalar-op mapper 或 compute elementwise region/interface。需要覆盖 broadcast map、多输入、多 dtype policy 和 passthrough。 |
+| `linalg.generic` simple elementwise | 单 result、单 `linalg.yield`，typed scalar mapper 识别 add/sub/mul/div/min/max/neg/exp/sqrt/rsqrt/tanh；生成 `wafer.compute.elementwise` 并带原 `indexing_maps` | supported for simple elementwise | 不靠 op name string 恢复语义；passthrough、复杂 region、多 result 和 reduction-like generic 仍必须失败或等待明确 compute op/interface。 |
 | `linalg.reduce` / reduction-like generic | 当前不生成 tile compute；会在 op conversion 处失败或无法表达 | unsupported | 需要目标 `wafer.compute.reduce` / reduction interface、accumulator layout、init/fill 和 numeric policy。R3.2a demand 有 accumulator 信息不等于 R3.2c lowering 已支持。 |
 | `linalg.broadcast` / `linalg.transpose` / `linalg.copy` / shape-style structured ops | 当前没有 tile execution emission；进入 group 后通常会失败为 unsupported linalg op | unsupported | 应分别决定是 layout materialization、movement op、view/slice op，还是保留在上游 canonicalization；不能全部塞进 generic elementwise。 |
 | `tensor.extract_slice` / `tensor.insert_slice` / `tensor.expand_shape` / `tensor.collapse_shape` | 当前 tiling demand 阶段失败或 R3.2c 失败 | unsupported | 需要 tile slice/view/movement 语义和 verifier；shape-only relation 与真实 data movement 必须分层。 |
 | `wafer.tensor_collective.*` | R3.2a/R3.2b 可收集 demand/layout；R3.2c 当前失败为缺 placement/local-rank facts | explicitly deferred | 只有 placement/local-rank/buffer facts 进入可验证 IR 后，才能 pattern 化到 `wafer.comm.*` / `wafer.sync.*`；不能写死 local rank 或 ring schedule。 |
 | unknown op inside group | 结构化失败 | unsupported | conversion target 应把 `wafer.group` 设为 illegal；unsupported body op 应导致 conversion failure，而不是留下半转换 group。 |
 
-按这个表，R3.2c 的下一步不是“全做所有 op”，而是先把 supported 子集 pattern 化，并把 unsupported
-子集的 failure gate 固定下来。扩展 coverage 时每新增一类 op 都要同时补：IR 语义、verifier、
-conversion pattern、negative test 和下游 SPM/DDR demand 来源。
+按这个表，R3.2c 已把 supported 子集放到 conversion builder 下，并把 unsupported / deferred 子集的
+failure gate 固定下来。扩展 coverage 时每新增一类 op 都要同时补：IR 语义、verifier、conversion
+pattern、negative test 和下游 SPM/DDR demand 来源。
 
 `wafer.tile_region` 可以跨这些 lowering 子阶段保留为 region container。早期 region 中的 buffer
 可能还是 `!wafer.tile_buffer`；后期可以变成带 Wafer memory space 的 `memref` 或 descriptor。

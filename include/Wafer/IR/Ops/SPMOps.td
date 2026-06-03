@@ -3,6 +3,23 @@
 #ifndef WAFER_IR_OPS_SPMOPS_TD
 #define WAFER_IR_OPS_SPMOPS_TD
 
+def Wafer_AllocTileOp : Wafer_Op<"alloc_tile", [
+    DeclareOpInterfaceMethods<WaferLayoutOpInterface>,
+    DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
+    MemoryEffects<[MemWrite<Wafer_SPMResource>]>
+  ]> {
+  let summary = "create an abstract tile-local buffer allocation demand";
+  let description = [{
+    `wafer.alloc_tile` creates a tile-local buffer value before physical SPM
+    offset allocation. It records shape, layout, and memory-space demand in
+    the result type only; R3.2d assigns the concrete SPM window.
+  }];
+
+  let results = (outs AnyType:$result);
+  let hasVerifier = 1;
+  let assemblyFormat = "attr-dict `:` type($result)";
+}
+
 def Wafer_LoadTileOp : Wafer_Op<"load_tile", [
     DeclareOpInterfaceMethods<WaferLayoutOpInterface>,
     DeclareOpInterfaceMethods<WaferResourceEffectInterface>,

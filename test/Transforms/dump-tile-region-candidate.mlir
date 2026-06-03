@@ -92,6 +92,20 @@ module {
     return %0, %1 : tensor<4xf32>, tensor<8xf32>
   }
 
+  func.func @empty_fill_group(%input: tensor<4xf32>, %out: tensor<4xf32>)
+      -> tensor<4xf32> {
+    %0 = wafer.group ins(%input : tensor<4xf32>) outs(%out : tensor<4xf32>) {
+    ^bb0(%arg0: tensor<4xf32>, %arg1: tensor<4xf32>):
+      %empty = tensor.empty() : tensor<4xf32>
+      %c0 = arith.constant 0.000000e+00 : f32
+      %fill = linalg.fill
+          ins(%c0 : f32)
+          outs(%empty : tensor<4xf32>) -> tensor<4xf32>
+      wafer.group_yield %fill : tensor<4xf32>
+    } : tensor<4xf32>
+    return %0 : tensor<4xf32>
+  }
+
   func.func @collective_group(%input: tensor<4xf32>, %out: tensor<4xf32>)
       -> tensor<4xf32> {
     %0 = wafer.group ins(%input : tensor<4xf32>) outs(%out : tensor<4xf32>) {
@@ -125,6 +139,7 @@ module {
 // CHECK: wafer.tile_region(
 // CHECK: wafer.load_tile
 // CHECK: !wafer.tile_buffer<tensor<4x8xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
+// CHECK: wafer.compute.fill
 // CHECK: wafer.layout.materialize
 // CHECK: #wafer.mem_layout<cx>
 // CHECK: wafer.compute.gemm
@@ -139,6 +154,10 @@ module {
 // CHECK: wafer.compute.elementwise <add>
 // CHECK-LABEL: wafer.tile_region.candidate group @two_independent_groups#1
 // CHECK: wafer.compute.elementwise <add>
+// CHECK-LABEL: wafer.tile_region.candidate group @empty_fill_group#0
+// CHECK: wafer.alloc_tile
+// CHECK: wafer.compute.fill
+// CHECK: wafer.store_tile
 // CHECK-LABEL: wafer.tile_region.candidate group @collective_group#0
 // CHECK: failure collective lowering requires placement/local-rank facts
 // CHECK-LABEL: wafer.tile_region.candidate group @unsupported_body_op#0

@@ -9,6 +9,51 @@
 using namespace wafer;
 using namespace wafer::detail;
 
+mlir::LogicalResult ComputeFillOp::verify() {
+  auto destType = mlir::dyn_cast<TileBufferType>(getDest().getType());
+  if (!destType)
+    return emitOpError("expects tile_buffer destination");
+  if (!hasTileBufferMemorySpace(destType, MemorySpace::SPM))
+    return emitOpError("fill destination must use SPM memory space");
+  if (!hasTileBufferLayout(destType, MemLayout::Tensor))
+    return emitOpError("fill destination must use tensor mem_layout");
+
+  mlir::RankedTensorType destTensor = getTileBufferTensorType(destType);
+  if (getValue().getType() != destTensor.getElementType())
+    return emitOpError(
+        "fill value type must match destination tensor element type");
+  return mlir::success();
+}
+
+void ComputeFillOp::collectWaferLayoutRequirements(
+    llvm::SmallVectorImpl<WaferLayoutRequirement> &requirements) {
+  if (auto destType = mlir::dyn_cast<TileBufferType>(getDest().getType()))
+    appendLayoutRequirement(requirements, WaferValueRole::Operand, 0,
+                            destType);
+}
+
+mlir::LogicalResult ComputeFillOp::verifyWaferLayoutContract() {
+  llvm::SmallVector<WaferLayoutRequirement, 1> requirements;
+  collectWaferLayoutRequirements(requirements);
+  return verifyLayoutRequirements(getOperation(), requirements);
+}
+
+void ComputeFillOp::collectWaferResourceEffects(
+    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
+  appendResourceEffect(effects, WaferResourceKind::SPM,
+                       WaferResourceAccess::Write, WaferValueRole::Operand, 0,
+                       getCompactByteSizeOrUnknown(getDest().getType()));
+  appendResourceEffect(effects, WaferResourceKind::Compute,
+                       WaferResourceAccess::Issue, WaferValueRole::None, 0,
+                       getCompactByteSizeOrUnknown(getDest().getType()));
+}
+
+mlir::LogicalResult ComputeFillOp::verifyWaferResourceEffectContract() {
+  llvm::SmallVector<WaferResourceEffect, 2> effects;
+  collectWaferResourceEffects(effects);
+  return verifyResourceEffects(getOperation(), effects);
+}
+
 mlir::LogicalResult ComputeGemmOp::verify() {
   auto lhsType = mlir::dyn_cast<TileBufferType>(getLhs().getType());
   auto rhsType = mlir::dyn_cast<TileBufferType>(getRhs().getType());

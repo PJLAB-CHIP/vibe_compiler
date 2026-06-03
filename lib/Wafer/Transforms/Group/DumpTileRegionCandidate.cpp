@@ -2,8 +2,8 @@
 
 #include "Wafer/Transforms/Passes.h"
 
+#include "Wafer/Conversion/TileRegionCandidate/TileRegionCandidate.h"
 #include "Wafer/IR/WaferDialect.h"
-#include "Wafer/Transforms/Group/TileRegionCandidate.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Async/IR/Async.h"

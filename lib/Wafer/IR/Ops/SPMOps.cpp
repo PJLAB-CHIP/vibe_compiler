@@ -9,6 +9,41 @@
 using namespace wafer;
 using namespace wafer::detail;
 
+mlir::LogicalResult AllocTileOp::verify() {
+  auto resultType = mlir::dyn_cast<TileBufferType>(getResult().getType());
+  if (!resultType)
+    return emitOpError("expects tile_buffer result");
+  if (!hasTileBufferMemorySpace(resultType, MemorySpace::SPM))
+    return emitOpError("result must use SPM memory space");
+  return mlir::success();
+}
+
+void AllocTileOp::collectWaferLayoutRequirements(
+    llvm::SmallVectorImpl<WaferLayoutRequirement> &requirements) {
+  if (auto resultType = mlir::dyn_cast<TileBufferType>(getResult().getType()))
+    appendLayoutRequirement(requirements, WaferValueRole::Result, 0,
+                            resultType);
+}
+
+mlir::LogicalResult AllocTileOp::verifyWaferLayoutContract() {
+  llvm::SmallVector<WaferLayoutRequirement, 1> requirements;
+  collectWaferLayoutRequirements(requirements);
+  return verifyLayoutRequirements(getOperation(), requirements);
+}
+
+void AllocTileOp::collectWaferResourceEffects(
+    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
+  appendResourceEffect(effects, WaferResourceKind::SPM,
+                       WaferResourceAccess::Write, WaferValueRole::Result, 0,
+                       getCompactByteSizeOrUnknown(getResult().getType()));
+}
+
+mlir::LogicalResult AllocTileOp::verifyWaferResourceEffectContract() {
+  llvm::SmallVector<WaferResourceEffect, 1> effects;
+  collectWaferResourceEffects(effects);
+  return verifyResourceEffects(getOperation(), effects);
+}
+
 mlir::LogicalResult LoadTileOp::verify() {
   auto sourceType =
       mlir::dyn_cast<mlir::RankedTensorType>(getSource().getType());
