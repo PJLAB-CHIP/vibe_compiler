@@ -49,7 +49,7 @@ Serving integration 暂不纳入本文通过标准。
 | `wafer.group` | local compute IR + tensor collective IR | group boundary、tiled SSA、multi-output/domain、resource feedback loop 合法 |
 | `wafer.tile_region` | scheduled group | region boundary、effect、load/store、async wait/drain、buffer ownership 合法 |
 | Layout | tile region | layout assignment、materialization cut、冗余 conversion cleanup 合法 |
-| SPM | tile region + demands | allocation trial、range/end-address、lifetime、reserved range 合法 |
+| SPM | tile region + demands | allocation、range/end-address、lifetime、reserved range 合法 |
 | DDR | tile region + launch boundary | external binding、workspace/constant demand、pool/domain/capacity 合法 |
 | Compute / Movement | storage-realized IR | wrapper family、layout、dtype、shape、issue/drain 合法 |
 | Communication | tile_region / SPM materialization 后的 collective/p2p IR | endpoint、token、DTE/FSM resource、wait policy 合法 |
@@ -112,7 +112,7 @@ Single-tile local compute：
   `--program-pipeline=stablehlo-spmd-to-linalg`；`--compile-stablehlo-program-to-cabi` 已删除。
   `wafer-opt` named MLIR pipeline 入口保留 `wafer-propagate-stablehlo-sharding` 和
   `wafer-lower-stablehlo-to-linalg` 作为内部构件/局部覆盖，不作为用户级主链路。
-  旧 C ABI issue、single-tile materialization、SPM/DDR trial 和 ring lowering unit/debug pass 链已删除，
+  旧 C ABI issue、single-tile materialization、SPM/DDR debug path 和 ring lowering unit/debug pass 链已删除，
   当前没有 group/tile/storage/C ABI 主链路 compile gate。
 - 后续 R3/R6/R7 gate 必须证明 `wafer.group` 到 `wafer.tile_region` 的 load/compute/store、
   SPM allocation、DDR external/workspace/constant demand 和 C ABI/package 边界来自真实 program chain。
@@ -188,7 +188,7 @@ Transformer block vertical slice：
   input/output、resident constants 和 workspace；completion 和数值对比后续在有卡环境验证。
 
 当前 transformer static fixture 只覆盖 frontend/local structured tensor dataflow。旧 full local block
-到 group split、single-tile materialization、SPM allocation check、DDR binding demand 和 C ABI issue
+到 group split、single-tile materialization、SPM allocation、DDR binding demand 和 C ABI issue
 的 pass 链已删除；workspace buffers、resident constants、package metadata 和 IR-derived manifest
 emission 仍属后续恢复任务。completion、数值对比和 profiling 仍等有卡环境补 gate。
 
@@ -240,7 +240,7 @@ Wafer 硬件能力表达，就不能把当前 static gate 的覆盖范围写成�
 - physical tile 不可用回 placement。
 - tile shape 或 group 资源不合法回 group planner。
 - layout conversion 过多或不合法回 layout assignment。
-- SPM 放不下回 SPM oracle，建议 repair 但不写入 IR。
+- SPM 放不下回 SPM allocation，建议 repair 但不写入 IR。
 - DDR allocation / capacity / binding 错误回 DDR planner 或 launch runtime binding。
 - wrapper unit/range 错误回 C ABI verifier。
 - completion source 错误回 launch/runtime adapter。

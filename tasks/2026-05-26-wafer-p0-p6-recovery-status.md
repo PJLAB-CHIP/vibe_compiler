@@ -95,8 +95,8 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 
 - 工程能跑不等于 P0-P6 主路径完成；R2 已恢复 frontend program verifier 和 SDY program bridge，
   但 group/resource/package/runtime 主链路仍需后续 R3/P8 恢复。
-- R1.2 恢复的是可查询合同和局部 legality；它还不是完整 planner/resource oracle。closed-loop group
-  search、SPM/DDR trial、storage realization、runtime/package 主链路仍归 R3 之后恢复。
+- R1.2 恢复的是可查询合同和局部 legality；它还不是完整 planner/resource planning。closed-loop group
+  search、SPM/DDR debug path、storage realization、runtime/package 主链路仍归 R3 之后恢复。
 - StableHLO/Shardy dependency 当前主要服务 textual lowering 最小验证 和 SDY program bridge
   dependency boundary；R0.3 依赖栈用 PyTorch/XLA 2.5 的 `WORKSPACE` `xla_hash` 选择 OpenXLA/XLA，再由 XLA
   workspace 选择 LLVM/StableHLO/Shardy base。PyTorch/XLA source 也是后续构建/安装 `torch_xla`
@@ -143,7 +143,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - ODS、op verifier 和 dialect tests 已按 op family 拆文件；共享 verifier helper 集中在
   `lib/Wafer/IR/Ops/OpVerifierUtils.*`。
 - interface/resource/effect 已能作为 planner/verifier 的结构化查询入口，但还没有被 R3 的
-  closed-loop group planner、SPM/DDR oracle 和 storage-realized lowering 全量消费。
+  closed-loop group planner、SPM allocation / DDR resource planning 和 storage-realized lowering 全量消费。
 - Wafer dialect verifier 的孤立负例仍会使用 `builtin.unrealized_conversion_cast` 构造非法边界值；
   这些用例只能证明 verifier 形态。历史 R1.3 stage-connection gate 已删除；communication bridge
   的 visible cast 仍归 R6.2 清理。
@@ -233,7 +233,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - Single-tile local compute 必须验证 StableHLO/Linalg -> `wafer.group` -> `wafer.tile_region` -> layout/SPM/DDR ->
   `wafer.compute`/movement -> C ABI/package 的单 tile 闭环。
 - `wafer.group` planner 需要 closed-loop search：tile shape、op tiling interface、layout materialization、
-  SPM allocation trial、DDR demand/bandwidth、compute/movement legality 都要作为同一候选的检查。
+  SPM allocation、DDR demand/bandwidth、compute/movement legality 都要作为同一候选的 decision input。
 - layout materialization 是真实 movement；SPM allocator 要用 liveness/effect/range/end-address；
   DDR 要有 external binding、workspace、resident constant、pool/domain/capacity/bandwidth。
 - C ABI gate 要固定 `wafer_*` 参数单位和 wait policy，并通过 wrapper/golden packet 覆盖；package 要来自
@@ -256,8 +256,8 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 
 缺口：
 
-- group formation、root tile feasibility、SPM allocation、DDR demand 和 ring collective lowering 的旧
-  unit pass 已删除；后续必须从真实 program chain 恢复 closed-loop planner / oracle。
+- group formation、root tile planning、SPM allocation、DDR demand 和 ring collective lowering 的旧
+  unit pass 已删除；后续必须从真实 program chain 恢复 closed-loop planner / resource planning。
 - SPM/DDR 仍未基于完整 interface demand、async lifetime、storage-realized memref/descriptor、
   workspace、resident constants、pool/domain、bandwidth 或 runtime binding 建立主线实现。
 - C ABI 还是 `wafer.abi.*` issue op 和 descriptor builder，不是真实 `wafer_*` call、LLVM lowering
@@ -268,11 +268,11 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 
 - R3.1：恢复 group boundary / candidate contract，保证 `wafer.group` 只表达 local tensor grouping
   和 candidate boundary，并按 group 设计完成 dependency-preserving conservative expansion。
-- R3.2：恢复 root tile feasibility oracle，把 op tiling、layout、SPM、DDR 和 compute/movement
-  legality 接到同一 candidate 检查。
+- R3.2：恢复 root tile planning，把 op tiling、layout、SPM、DDR 和 compute/movement
+  legality 接到同一 candidate decision。
 - R3.3：恢复 tile_region materialization contract，只把 accepted group materialize 成
   `wafer.tile_region`。
-- R3.4：恢复 layout/SPM feasibility gate，让 layout materialization 和 SPM trial 由 effect、
+- R3.4：恢复 layout/SPM materialization gate，让 layout materialization 和 SPM allocation 由 effect、
   liveness/range 和 tile buffer lifetime 驱动。
 - R3.5：恢复 DDR/resource demand gate，覆盖 external binding、workspace、resident constant、
   pool/domain、capacity/bandwidth demand。
@@ -376,8 +376,8 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 
 当前实现：
 
-- 有 `wafer.comm.send` / `recv` / `wait` verifier、placement peer check、non-empty wait check。
-- 有 `wafer.abi.dte_send` / `recv` / `wait` issue op 和 block-local resource tuple conflict check。
+- 有 `wafer.comm.send` / `recv` / `wait` verifier、placement peer validation、non-empty wait validation。
+- 有 `wafer.abi.dte_send` / `recv` / `wait` issue op 和 block-local resource tuple conflict validation。
 - 有 ring all-gather、reduce-scatter、all-reduce lowering 到 p2p + local elementwise accumulation。
 - 旧的 StableHLO all_gather/all_reduce/reduce_scatter 到 `wafer.comm` collective-level op 的
   normalization 已移除；R2.4 主线已恢复 StableHLO -> Wafer LinalgExt-style tensor collective
@@ -414,5 +414,5 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 | P6 | 骨架 | comm/DTE fixture 可跑，但 resource allocator、buffer slice/address、package/runtime metadata 未闭环 |
 
 R2.4 已建立 Wafer LinalgExt-style tensor collective handoff；当前下一步仍是 R3.1，补完整
-group boundary / conservative expansion，再进入 root tile feasibility oracle 和 tile_region
+group boundary / conservative expansion，再进入 root tile planning 和 tile_region
 materialization 主链路。

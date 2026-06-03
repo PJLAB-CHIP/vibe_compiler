@@ -51,7 +51,7 @@ directory verifier；P2.S2 的用户级入口是 `wafer-opt --program-pipeline=s
 pre-SPMD Wafer program，在同一 program pipeline 内执行 sharding propagation 并调用 Wafer-owned
 XLA SPMD partition helper；R2.4 用户级主线入口是
 `wafer-opt --program-pipeline=stablehlo-spmd-to-linalg`，在同一 program pipeline 内继续写回
-post-linalg Wafer program。旧显式 C ABI issue、ring collective、SPM/DDR trial 和
+post-linalg Wafer program。旧显式 C ABI issue、ring collective、SPM/DDR debug path 和
 single-tile materialization unit/debug pass 链已删除；R3/R6/R7 后续必须按真实 program chain 和
 新的 IR contract 恢复。
 
@@ -60,7 +60,7 @@ SDY/Shardy program parse/verify，不覆盖 XLA SPMD partitioner，也不输出 
 当前 `test/Frontend` 16 个 case 覆盖 StableHLO / Linalg local compute normalization，其中
 softmax、RMSNorm 和 LayerNorm 的输入都是 fine-grained StableHLO staged graph，而不是
 `stablehlo.softmax`、`stablehlo.norm` 或 Wafer 私有 high-level op。剩余 lit case 数量主要来自
-Dialect verifier、Frontend lowering、Pipelines 和 Tools，不是旧 Python post-SPMD oracle 或旧
+Dialect verifier、Frontend lowering、Pipelines 和 Tools，不是旧 Python post-SPMD helper 或旧
 C ABI unit/debug pass 链残留。
 
 ## R2.1 Frontend Program / Importer Contract
@@ -126,8 +126,8 @@ boundary、tile shape、multi-stage schedule、SPM residency 或 C ABI issue seq
 | attention QK^T / AV | `lower-stablehlo-attention-score.mlir`、`lower-stablehlo-attention-value.mlir`、`lower-stablehlo-attention-softmax-value.mlir` | rank-4 attention dot 目前保留为 StableHLO `dot_general`，不再特判成 `linalg.generic` contraction | 通用 batched contraction lowering、attention schedule、SPM residency 和 workspace 均未完成 |
 | elementwise / broadcast | `lower-stablehlo-elementwise.mlir`、`lower-stablehlo-projection-residual.mlir` | add/sub/mul/div/tanh/exp 等当前子集进入 `linalg.generic` / `arith` / `math` dataflow | complex broadcast、compare/select、mask add policy 仍未闭环 |
 | reduce | `lower-stablehlo-reduce.mlir`、norm/softmax staged tests | fine-grained StableHLO reduce 到 `linalg.reduce` 的 constant-init 子集保留 reduction dimension 和 kind | non-constant-init reduce、NaN/overflow/approx policy 仍未闭环 |
-| softmax | `lower-stablehlo-softmax-staged.mlir` | row max、subtract、exp、row sum、divide 的 fine-grained StableHLO SSA dataflow 可 lower 到 `linalg.reduce` / `linalg.generic` staged IR | 历史 acceptance checker 已删除；multi-stage workspace/materialization 属 R3/R5/R6 后续 |
-| norm | `lower-stablehlo-norm-staged.mlir` | RMSNorm / LayerNorm staged graph 中 last-dim reduce、rsqrt、broadcast mul gate 已记录；没有 `wafer.norm` 或 high-level norm op | 历史 acceptance checker 已删除；LayerNorm/RMSNorm 更宽 decomposition、epsilon policy 和 storage/resource 闭环未完成 |
+| softmax | `lower-stablehlo-softmax-staged.mlir` | row max、subtract、exp、row sum、divide 的 fine-grained StableHLO SSA dataflow 可 lower 到 `linalg.reduce` / `linalg.generic` staged IR | 历史 acceptance validator 已删除；multi-stage workspace/materialization 属 R3/R5/R6 后续 |
+| norm | `lower-stablehlo-norm-staged.mlir` | RMSNorm / LayerNorm staged graph 中 last-dim reduce、rsqrt、broadcast mul gate 已记录；没有 `wafer.norm` 或 high-level norm op | 历史 acceptance validator 已删除；LayerNorm/RMSNorm 更宽 decomposition、epsilon policy 和 storage/resource 闭环未完成 |
 | RoPE | `lower-stablehlo-rope-mlp-staged.mlir` | RoPE 当前作为 slice/shape/elementwise staged dataflow 覆盖 | sin/cos table 的 program directory/storage slicing 和更宽 shape family 未完成 |
 | MLP | `lower-stablehlo-mlp.mlir`、`lower-stablehlo-local-transformer-block.mlir` | tanh-gated MLP dataflow fixture 和 full local transformer structured fixture 已记录 | GELU/SwiGLU 其它 decomposition、constant slicing 和 package consistency 未完成 |
 | shape views | `lower-stablehlo-shape.mlir`、`lower-stablehlo-local-transformer-block.mlir` | static reshape expand/collapse 的 shape-only relation 可进入 local tensor IR | dynamic shape view、layout materialization 和 real movement 属后续层 |

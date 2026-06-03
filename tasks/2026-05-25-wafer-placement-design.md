@@ -178,7 +178,7 @@ accepted placement 选择 ring/tree/unicast protocol。
 
 - logical rank 数量与 physical coordinate 数量一致。
 - physical coordinate 在 target topology 内。
-- 每个 mapped tile 通过 good-tile / PG check。
+- 每个 mapped tile 通过 good-tile / PG validation。
 - mapping 满足 selected cluster 的 launch capability。
 - logical rank group 中的 endpoints 都有 physical coordinate。
 - block id / tile id 没有重复冲突，除非明确表达 replicated execution。

@@ -181,27 +181,27 @@ Transformer block 第一阶段需要的 elementwise kind 至少包括：
 这些 op 在 local tensor IR 中仍是普通 `arith` / `math` / `linalg` 语义；是否能 lower 到 CT
 wrapper、是否需要拆成多个 target op，由 `wafer.compute` 负责。
 
-历史 P5.5 曾用 output projection + residual vertical slice 的 acceptance checker 证明以下 SSA 链
+历史 P5.5 曾用 output projection + residual vertical slice 的 acceptance validator 证明以下 SSA 链
 可由 structured tensor IR 表达：
 
 - rank-2 `linalg.matmul` 作为 projection。
 - 消费 projection 结果的 rank-2 / rank-1 broadcast add 作为 bias add。
 - 消费 bias add 结果的 rank-2 / rank-2 add 作为 residual add。
 
-该 checker 已删除；当前只保留 frontend lowering fixture 覆盖 StableHLO 2D projection dot、bias
+该 validator 已删除；当前只保留 frontend lowering fixture 覆盖 StableHLO 2D projection dot、bias
 broadcast 和 residual add 进入 `linalg.matmul` / `linalg.generic`。不引入 `wafer.projection`
 或 fused residual op，也不把 bias/residual tensor 名写成语义来源。
 
-历史 P5.6 曾用 MLP vertical slice 的 acceptance checker 证明以下 SSA 链可由 structured tensor
+历史 P5.6 曾用 MLP vertical slice 的 acceptance validator 证明以下 SSA 链可由 structured tensor
 IR 表达：
 
 - rank-2 projection `linalg.matmul` 的结果进入 `linalg.elementwise<tanh>` activation。
 - activation 结果与另一个 rank-2 projection matmul 结果进入 `linalg.elementwise<mul>` gate。
 - gated activation 结果进入 rank-2 down projection `linalg.matmul`。
 
-该 checker 已删除；当前只保留 frontend lowering fixture 覆盖已有 tanh activation 子集。GELU /
+该 validator 已删除；当前只保留 frontend lowering fixture 覆盖已有 tanh activation 子集。GELU /
 SwiGLU 的其它 decomposition 需要通过通用 structured tensor lowering 和后续 group/materialization
-验证扩展，不能再新增 case-specific schedule checker。当前不引入 `wafer.mlp`、fused activation op
+验证扩展，不能再新增 case-specific schedule validator。当前不引入 `wafer.mlp`、fused activation op
 或名字约定，也不把中间 tile/group split 写成 IR attr。
 
 当前保留 full local transformer block structured IR fixture。该 integration test 在单个函数中
@@ -349,7 +349,7 @@ Pipeline position:
 把这些 op 分别转成 `linalg.reduce`、`linalg.generic`、`arith`、`math` 和 `tensor`/`linalg` shape
 ops。后续 softmax/norm 是否能进入合法 tile/group schedule，必须由通用 group/resource planner 和
 materialization verifier 从 structured IR 与 SSA use-def 关系重算，不能再由 case-specific
-acceptance checker 给出结论。
+acceptance validator 给出结论。
 
 Softmax 的 normalized form 至少是：
 
@@ -384,18 +384,18 @@ y = (x - mean) * rsqrt(var + eps) * weight + bias
 
 epsilon、scale、bias 都是普通 constant / input value。它们不通过名字或 layer type 特判。
 
-历史 P5.1 曾用 norm vertical slice 的 schedule acceptance checker 从 structured tensor IR 重算
+历史 P5.1 曾用 norm vertical slice 的 schedule acceptance validator 从 structured tensor IR 重算
 以下事实：
 
 - 是否存在沿最后一维的 `linalg.reduce`。
 - 是否存在 `rsqrt` elementwise stage。
 - 是否存在 rank-N / rank-(N-1) broadcast multiply stage。
 
-该 checker 已删除；当前 coverage 只来自 StableHLO -> Linalg lowering fixture。真正 tile shape、
-SPM residency 和 group split 仍归后续 group/resource planner，不能再靠 case-specific checker
+该 validator 已删除；当前 coverage 只来自 StableHLO -> Linalg lowering fixture。真正 tile shape、
+SPM residency 和 group split 仍归后续 group/resource planner，不能再靠 case-specific validator
 冒充 schedule 完成。
 
-历史 P5.2 曾用 softmax vertical slice 的 schedule acceptance checker 从 structured tensor IR 和
+历史 P5.2 曾用 softmax vertical slice 的 schedule acceptance validator 从 structured tensor IR 和
 SSA use-def 重算以下事实：
 
 - 是否存在沿最后一维的 reduce max，作为 row/key 维最大值阶段。
@@ -404,7 +404,7 @@ SSA use-def 重算以下事实：
 - 是否存在消费 exp 结果、沿同一最后一维的 reduce sum。
 - 是否存在 `exp_scores / row_sum` 的 broadcast divide normalize。
 
-该 checker 已删除。当前不引入 `wafer.softmax`，不写入 schedule attr，也不把 group split 或
+该 validator 已删除。当前不引入 `wafer.softmax`，不写入 schedule attr，也不把 group split 或
 workspace 选择固化成 IR 合同。若后续需要 multi-stage softmax，row max、row sum、normalize/value
 的分割应由 group/resource planner 通过显式 IR 边界和 workspace demand materialize。
 

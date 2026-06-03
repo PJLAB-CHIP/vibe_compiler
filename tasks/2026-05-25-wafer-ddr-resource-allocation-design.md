@@ -262,7 +262,7 @@ Runtime 在 launch 时负责：
 - validate binding contract。
 - perform H2D/D2H staging if the provided host object is not directly Wafer-addressable。
 
-Verifier / runtime check 失败必须暴露为 launch-time diagnostic，不能 silent fallback 到错误 layout
+Verifier / runtime validation 失败必须暴露为 launch-time diagnostic，不能 silent fallback 到错误 layout
 或错误 pool。
 
 当前 V0 compiler 用 `wafer.ddr.external_binding` 作为最小 external binding demand
@@ -455,7 +455,7 @@ Group formation 不能只问 “SPM 放不放得下”。候选 group / tile pla
 
 ```text
 layout assignment
-  -> SPM demand / allocation trial
+  -> SPM demand / allocation
   -> DDR demand summary
   -> movement bandwidth / range hazard estimate
   -> downstream legality
@@ -497,7 +497,7 @@ SPM allocator 只分配 `#spm` offset。它仍需要看见 `#ddr`：
 - DDR range hazard 和 bandwidth cost。
 - host-visible output boundary 的 drain/wait requirement。
 
-SPM oracle 不分配 DDR BO；DDR resource planner 不分配 SPM offset。二者通过同一套 memory effect、
+SPM allocation 不分配 DDR BO；DDR resource planner 不分配 SPM offset。二者通过同一套 memory effect、
 lifetime event 和 movement op contract 对齐。
 
 ## 10. IR Contract Sketch
@@ -578,7 +578,7 @@ DDR verifier 至少检查：
 | DDR resource planning | external binding、constant residency、workspace suballocation、requirement summary |
 | storage realization | 把 DDR buffer abstraction 降成 `memref #ddr`、descriptor 或 workspace base+offset |
 | runtime/package lowering | BO alloc/import/query/free、constant serialization/loading、launch metadata、fence |
-| instruction lowering | RDMA/WDMA/DTE descriptor、byte stride、iteration、end range、direction check |
+| instruction lowering | RDMA/WDMA/DTE descriptor、byte stride、iteration、end range、direction validation |
 | verifier | memory_space、pool/domain、range、alignment、lifetime、host visibility、completion |
 
 Lowering 到 LLVM 时应尽量复用 MLIR `memref` lowering 能表达的部分。目标 runtime handle、
@@ -633,7 +633,7 @@ runtime boundary 才进入 IR 或 package metadata。
 4. Group output 0 通过 `wafer.store_tile` 写 `%out0_ddr`，需要 completion fence 后 host 才能观察。
 5. Group output 1 没有 host-visible boundary，DDR planner 可以把它放入 compiler workspace slice，
    下游 group 再从该 slice load。
-6. SPM oracle 只分配 tile-local input/psum/output/materialization temp；DDR planner 另外统计
+6. SPM allocation 只分配 tile-local input/psum/output/materialization temp；DDR planner 另外统计
    `%out1` workspace lifetime、constant residency 和 load/store bandwidth。
 7. Runtime launch 时分配 workspace BO，绑定 external BO，query physical address；storage-realized
    IR 只消费 descriptor/base+offset，不再携带抽象 plan。
@@ -643,7 +643,7 @@ runtime boundary 才进入 IR 或 package metadata。
 - 是否 resident weight、是否 chunked packed constant、是否 workspace BO 合并，是 planner/runtime
   policy，不改变 compute tiling 语义。
 - output 1 是否落 DDR 取决于跨 group lifetime 和 downstream use，不是多输出规则。
-- tile shape、layout cut、SPM allocation 和 DDR workspace peak 都是 planner trial 结果。
+- tile shape、layout cut、SPM allocation 和 DDR workspace peak 都是 planner analysis 结果。
 - `#ddr` 始终是统一 memory space；pool/domain/visible/cache/import 是 allocation/binding policy。
 
 ## 15. Open Questions

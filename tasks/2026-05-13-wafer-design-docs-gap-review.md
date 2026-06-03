@@ -221,7 +221,7 @@ physical `mem_layout` / constant storage encoding / external layout contract，�
 ## 7. SPM planner 已由 SPM 子设计承接
 
 当前边界：`tasks/2026-05-21-wafer-spm-bufferization-design.md` 已经把 SPM range、reserved range、
-layout storage size、bool bitpack、liveness、allocation trial、failure feedback 和 tile buffer
+layout storage size、bool bitpack、liveness、allocation、failure feedback 和 tile buffer
 storage realization 写成独立设计。`wafer.group` 只消费 feasibility 结果，不保存 offset。
 
 实现时仍需要落地：
@@ -351,8 +351,8 @@ issue/drain、communication wait 和 group barrier 应在 `wafer.tile_region` �
 buffer/lifetime/range，DDR 文档承接 external binding、workspace BO、constant residency、
 pool/domain、capacity 和 bandwidth，compute 文档承接 CT/NE/RDMA/WDMA/TDMA queue family，
 comm 文档承接 DTE/FSM/packet/stream resource class。R1.2 已把局部 tiling/layout/materialization/
-resource interface 做成 verifier 和单测可查询的实现；剩余工作是让 group planner、SPM/DDR oracle
-和 lower-level resource allocator 全量消费这些合同。
+resource interface 做成 verifier 和单测可查询的实现；剩余工作是让 group planner、SPM allocation /
+DDR resource planning 和 lower-level resource allocator 全量消费这些合同。
 
 实现时资源模型至少包含：
 
@@ -491,7 +491,7 @@ Frontend program
 - RMSNorm / LayerNorm 和 softmax 的数学结构可以表达成 reduction + elementwise 的 staged tensor IR。
 - Weight / scale / bias / RoPE table 可以作为 `ConstantLike`，通过 `wafer.load_tile`、constant
   storage transform 和 DDR resident/streaming policy 进入 device storage。
-- Layout materialization、SPM trial、DDR demand、launch/runtime 和 C ABI 都有独立边界，不需要把
+- Layout materialization、SPM allocation、DDR demand、launch/runtime 和 C ABI 都有独立边界，不需要把
   transformer case 的某个调度结果写成架构字段。
 
 ### 17.3 Transformer Block 落地前置实现项

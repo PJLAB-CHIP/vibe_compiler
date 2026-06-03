@@ -81,7 +81,7 @@
   compute normalization；softmax、RMSNorm、LayerNorm 输入是 fine-grained StableHLO staged graph
   （reduce、broadcast、elementwise、shape ops），不是 `stablehlo.softmax` / `stablehlo.norm`
   或 Wafer 私有 high-level op。`check-wafer` 的大量 lit case 主要来自 Dialect/Transforms/Frontend/
-  Pipelines/Integration/Tools，不代表旧 Python post-SPMD oracle 仍存在。
+  Pipelines/Integration/Tools，不代表旧 Python post-SPMD helper 仍存在。
 - post-SPMD collective 先进入 Wafer LinalgExt-style tensor collective handoff，和 `linalg` 一起进入
   group/tiling；`wafer.comm` 只能在 `wafer.tile_region` / SPM tile buffers / placement 明确后
   materialize。StableHLO collective 直降 `wafer.comm` 且靠 `unrealized_conversion_cast` 桥 tensor
@@ -122,7 +122,7 @@
   verifier tool；`wafer-compile-stablehlo --compile-stablehlo-program-to-cabi` 也已删除，因为 R3/R6/R7
   还没有从真实 frontend/SPMD program 到 C ABI/package 的完整主线合同。当前 `wafer-opt` named pipeline
   只保留 `wafer-propagate-stablehlo-sharding` 和 `wafer-lower-stablehlo-to-linalg` 作为内部/局部
-  debug 覆盖。旧显式 C ABI issue、ring collective、SPM/DDR trial 和 single-tile materialization
+  debug 覆盖。旧显式 C ABI issue、ring collective、SPM/DDR debug path 和 single-tile materialization
   pass 链已删除；不要恢复成用户级 compile flow。
 - ODS op 如果引入 `RecursiveMemoryEffects`、`ReturnLike` 等 interface trait，公开 dialect 头要
   include 对应 C++ interface header，`WaferIR` 也要显式 link 对应 MLIR interface target。

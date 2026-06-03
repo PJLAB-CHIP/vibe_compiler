@@ -31,7 +31,7 @@ placement-derived endpoint 和 communication staging demand 的层级；`wafer.c
 - 把 tensor tile value materialize 成 tile-local buffer、descriptor 或 storage-realized value。
 - 在同一个 region 内表达 load/store、layout materialization、compute、communication、sync 和
   wait/drain ordering。
-- 为 layout/SPM/DDR/resource feasibility 提供可重算 IR 结构。
+- 为 layout planning、SPM allocation 和 DDR/resource planning 提供可重算 IR 结构。
 - 为 lower-level Wafer ops、C ABI 和 launch outline 提供清楚的输入。
 
 非目标：
@@ -135,7 +135,7 @@ V0 需要以下 op family：
    `wafer.comm` 或 explicit p2p schedule。
 3. layout assignment：为 op 约束选择 `mem_layout`，在 cut edge 插入 materialization。
 4. demand collection：从 op interface 收集 SPM/DDR/layout/comm demand。
-5. resource feasibility：运行 SPM allocation trial、DDR capacity/bandwidth check 和 layout cleanup。
+5. resource planning：运行 SPM allocation、DDR capacity/bandwidth analysis 和 layout cleanup。
 6. storage realization：把 accepted buffer 降到 memref/descriptor。
 7. lower-level op lowering：转成 wrapper-friendly Wafer ops，最后进入 C ABI / launch。
 
@@ -144,7 +144,7 @@ planner 重新选择 tile shape、internal split、layout 或 group boundary。
 
 R1.2 已完成第 4 步所需的局部查询入口：accepted `wafer.tile_region` 内的 movement、layout、
 compute、comm 和 sync op 能通过 layout/materialization/resource interface 暴露需求。第 5-6 步的
-完整 SPM/DDR feasibility 和 storage realization 仍未完成。
+完整 SPM/DDR resource planning 和 storage realization 仍未完成。
 
 当前实现状态：
 
@@ -167,8 +167,8 @@ launch args / identity lowering 的 IR contract。当前没有 multi-tile no-com
 - async producer 的 source/destination 在 wait/drain 前不能被非法复用。
 - `wafer.layout.materialize` 的输入输出 layout relation 合法；同 layout 冗余转换应由
   canonicalization 删除。
-- `#spm` buffer 在 storage realization 前必须经过 SPM feasibility；`#ddr` buffer 必须有
-  DDR demand / binding policy。
+- `#spm` buffer 在 storage realization 前必须经过 SPM allocation；`#ddr` buffer 必须有
+  DDR resource plan / binding policy。
 - lower-level op 出现时，其 operand 已经是 storage-realized value 或 verifier 可解释 descriptor。
 
 Verifier 不检查 group 是否应该形成；那是 `wafer.group` 和 planner 的职责。

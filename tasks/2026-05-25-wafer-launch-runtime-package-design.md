@@ -221,7 +221,7 @@ local shard bounds 不越过 launch signature tensor shape。
 - `TsmLaunch/TsmLaunchPg` stub success。
 - KMD compute fence that only signals after MHU doorbell submission。
 
-Runtime adapter 必须把 stub shielding 做成显式 check。不能把 “API 返回 success” 当成模型已经
+Runtime adapter 必须把 stub shielding 做成显式 validation。不能把 “API 返回 success” 当成模型已经
 执行完成。
 
 ## 8. Verifier and Tests

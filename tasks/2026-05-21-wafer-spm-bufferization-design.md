@@ -4,7 +4,7 @@
 
 状态：设计草案；2026-05-25 边界收口
 
-本文定义 Wafer SPM bufferization、tile-local allocation 和 feasibility oracle。它服务于
+本文定义 Wafer SPM bufferization、tile-local allocation 和 storage validation。它服务于
 `wafer.group` planning 的合法性搜索，也负责把 `wafer.tile_region` 中的 tile-local value
 落到可验证的 memory space、liveness、range 和 effect。
 
@@ -12,14 +12,14 @@
 
 - 收集 target-abstract compute/movement/comm/layout op 的 buffer demand、lifetime、effect 和
   async wait/drain 约束。
-- 对 candidate `wafer.tile_region` 做 SPM allocation trial、range/end-address/alignment check 和
+- 对 candidate `wafer.tile_region` 做 SPM allocation、range/end-address/alignment validation 和
   failure feedback。
 - 为 storage realization 提供 accepted offset/range/lifetime/alias 信息。
 
 本文不分配 DDR，不选择 physical layout，不决定 group boundary，不选择 compute/communication
 algorithm，也不生成 runtime package。DDR source/destination range 和 bandwidth 可以作为 legality
 或 cost input；DDR BO/pool/domain 的主设计见
-`tasks/2026-05-25-wafer-ddr-resource-allocation-design.md`。SPM oracle 的失败 trace、搜索顺序和
+`tasks/2026-05-25-wafer-ddr-resource-allocation-design.md`。SPM allocation 的失败 trace、搜索顺序和
 未接受 offset 都是 analysis，不写进长期 IR。
 
 ## 1. 核心结论
@@ -30,9 +30,9 @@ SPM planning 不能只做 byte-size estimate。候选 tile plan 是否合法，�
 layout materialization
   -> buffer demand collection
   -> liveness/effect analysis
-  -> SPM allocation trial
+  -> SPM allocation
   -> tile buffer storage realization
-  -> range/end-address check
+  -> range/end-address validation
 ```
 
 如果没有合法 allocation，不能生成一个等待下游修复的 scheduled group。planner 应回到 tile shape、
@@ -116,7 +116,7 @@ SPM allocator 不按 op 名字猜 buffer。demand 来源应是明确 interface �
   fixed byte count、token/wait lifetime 和 DTE/FSM resource class。
 - `wafer.sync.*`：报告 local drain、comm wait、group barrier 对 buffer lifetime 和 reuse 的收口。
 
-如果某个 op 无法通过这些接口说明自己的 demand，不能让 SPM oracle 用名字或示例 shape 猜测；
+如果某个 op 无法通过这些接口说明自己的 demand，不能让 SPM allocation 用名字或示例 shape 猜测；
 应先扩 op interface 或保持在更高层 IR。
 
 `storage_size` 必须用统一 calculator 计算，至少包含：
@@ -160,9 +160,9 @@ reuse 分类：
 - may-reuse：lifetime 不重叠，memory/alignment 兼容。
 - must-not-alias：lifetime 重叠、async 未 wait、external-visible 或 verifier 禁止 alias。
 
-## 6. Feasibility Oracle Contract
+## 6. Feasibility Analysis Contract
 
-SPM oracle 的职责是回答一个具体 tile plan 在指定 layout assignment 下是否可 lower。它不负责
+SPM allocation 的职责是回答一个具体 tile plan 在指定 layout assignment 下是否可 lower。它不负责
 全局寻找最佳 group，也不把失败方案 materialize 到 IR。
 
 输入必须足够接近真实 lowering：
@@ -269,7 +269,7 @@ Interval {
 - 不能碰 reserved/forbidden range。
 - 若 color policy 不满足，V0 先计入 penalty；hard policy 下返回失败。
 
-7. range/end check：
+7. range/end validation：
 
 - 检查 `base + allocated_size`。
 - 检查 wrapper begin/end range。
@@ -306,12 +306,12 @@ allocator 不做无限 repair；它只返回结构化失败，让 group/layout p
 
 ## 10. Commit Model
 
-V0 推荐 `trial and materialize immediately`：
+V0 推荐 `allocate and materialize immediately`：
 
 ```text
 accepted group tile plan
   -> layout assignment
-  -> SPM allocation trial
+  -> SPM allocation
   -> materialize wafer.tile_region with layout/materialization/SPM facts
   -> realize tile buffers into physical storage
 ```
@@ -319,7 +319,7 @@ accepted group tile plan
 原因是 layout、SPM、tile shape 强耦合。早期如果只生成 scheduled group，再把真实 allocation
 推到更晚的 pass，容易让合法性承诺漂移。
 
-失败的 trial、offset search trace、cost trace 都不进入 IR。
+失败的 allocation、offset search trace、cost trace 都不进入 IR。
 
 ## 11. Tile Buffer Storage Realization
 
@@ -383,7 +383,7 @@ SPM / tile-region verifier 至少检查：
 
 ## 14. 与 Layout / Group 的关系
 
-全局文档边界见 `tasks/2026-05-11-wafer-ai-compiler-architecture.md` 第 8 节。SPM oracle 只回答
+全局文档边界见 `tasks/2026-05-11-wafer-ai-compiler-architecture.md` 第 8 节。SPM allocation 只回答
 candidate tile-region 的 `#spm` allocation 是否可行，并把失败原因返回 group/layout planner。
 闭环顺序：
 
@@ -391,13 +391,13 @@ candidate tile-region 的 `#spm` allocation 是否可行，并把失败原因返
 candidate tile plan
   -> layout assignment
   -> materialization demand
-  -> SPM allocation trial
+  -> SPM allocation
   -> tile buffer storage realization
   -> accepted or failure feedback
 ```
 
 layout planner 先尝试移动 materialization cut 或换 flexible layout；SPM 仍失败时，group planner
-再缩 tile、请求 internal split 或拆 group。SPM oracle 消费 compute/comm op 暴露的 demand 和
+再缩 tile、请求 internal split 或拆 group。SPM allocation 消费 compute/comm op 暴露的 demand 和
 effect，不选择 compute implementation，也不选择 communication algorithm。
 - local drain、comm wait、group barrier 是不同 sync event。SPM lifetime 可以把它们都建成 event，
   但不能把 NCC local drain 当成 DTE completion 或 multi-tile barrier。

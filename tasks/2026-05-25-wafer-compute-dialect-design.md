@@ -22,7 +22,7 @@ allocation、communication collective lowering 或 launch/package emission。
 
 - 给 layout planner 一个稳定查询入口：每个 op 明确 operand/result 允许的 physical layout、
   preferred layout、materialization cost 和组合合法性。
-- 给 SPM oracle 一个稳定输入：每个 op 能报告 input/output/temp/scratch/accumulator demand，
+- 给 SPM allocation 一个稳定输入：每个 op 能报告 input/output/temp/scratch/accumulator demand，
   以及 effect / async lifetime 对 buffer reuse 的约束。
 - 给 hardware lowering 一个稳定 legality target：CT、NE、native reduce、RDMA、WDMA、TDMA
   等 target family 的合法性先在 `wafer.compute` / movement 层被验证，再进入更低层发射。
@@ -85,7 +85,7 @@ verifier 和 lowering contract 一致即可。
 ### 3.1 GEMM
 
 `wafer.compute.gemm` 表达本 tile 内的矩阵乘或批量矩阵乘。它不表达 group 的 internal reduction
-split 决策；内部 reduction 是否需要进一步切分是 op tiling / SPM feasibility search 的结果，
+split 决策；内部 reduction 是否需要进一步切分是 op tiling / SPM allocation search 的结果，
 不能写成固定架构规则。
 
 最小合同：
@@ -262,7 +262,7 @@ Storage-realized / instruction-form verifier：
 | --- | --- | --- | --- |
 | select Wafer compute implementation | tiled `linalg` / tensor / SCF | target-abstract `wafer.compute` / movement op | 选择本 tile 实现族，保留数学语义，建立 layout/resource interface |
 | layout materialization | target-abstract Wafer op | accepted `!wafer.tile_buffer` + materialization edge | 基于 op interface 做 layout assignment 和真实 movement cut |
-| SPM bufferization | accepted tile buffer IR | allocation-ready tile-region IR | 收集 buffer demand、liveness、effects、SPM feasibility |
+| SPM bufferization | accepted tile buffer IR | allocation-ready tile-region IR | 收集 buffer demand、liveness、effects，执行 SPM allocation |
 | tile buffer storage realization | `!wafer.tile_buffer` | `memref` / flat storage / descriptor | 复用标准 memref lowering 或生成目标 descriptor |
 | lower compute/movement to instruction form | storage-realized Wafer op | lower-level Wafer instruction/runtime op | 选择 CT/NE/RDMA/WDMA/TDMA family 和 Wafer C ABI shape |
 | Wafer to LLVM C ABI | instruction/runtime op | LLVM call / package metadata | 生成具体 ABI call，不回头修改 schedule/layout |
@@ -279,7 +279,7 @@ V0 模型：
 
 - target-abstract compute/movement op 从 SSA 语义看是顺序 op；lowering 可以把它拆成 issue op 和
   later drain/wait op。
-- SPM oracle 通过 effect event 扩展 async op 的 source/destination lifetime。
+- SPM allocation 通过 effect event 扩展 async op 的 source/destination lifetime。
 - local drain 是显式 sync op，例如 `wafer.sync.local_wait` 或等价 IR；它不是 compute op 的默认后缀。
 - DTE wait、stream wait、group barrier 属于 `wafer.comm` / `wafer.sync` 的完成边界，不能用 local
   NCC wait 代替。

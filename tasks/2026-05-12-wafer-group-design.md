@@ -9,7 +9,7 @@
 
 - logical group 和 scheduled group 如何表达 tiled tensor dataflow、traversal schedule、
   per-op operand/result slice 和 abstract resource demand。
-- group planner 如何用 layout/SPM/DDR/compute/comm 的 feasibility 结果闭环搜索 tile shape、
+- group planner 如何用 layout/SPM/DDR/compute/comm 的 planning / legality 结果闭环搜索 tile shape、
   internal split 和 group boundary。
 - 哪些事实必须留给下游 `wafer.tile_region`、layout materialization、SPM/DDR resource、
   target-abstract compute/comm 和 launch/runtime。
@@ -95,7 +95,7 @@ Pipeline position:
   verifier-legal 的 tensor-level `wafer.group` candidate IR；candidate 仍是可被
   R3.2e 接受、拆分或拒绝的 logical region。
 - Downstream consumer:
-  R3.2a-e feasibility oracle / closed-loop planner；R3.3 `wafer.tile_region`
+  R3.2a-d planning / analysis results 和 R3.2e closed-loop planner；R3.3 `wafer.tile_region`
   materialization；R3.4/R3.5 accepted layout/SPM/DDR materialization；
   R3.6/R3.7 ABI/package stages。
 - User-level driver / named pipeline:
@@ -104,7 +104,7 @@ Pipeline position:
   只作为实现索引和单元测试入口，不能替代 program pipeline completion gate。
 - Explicit non-goals:
   不做 physical placement、tile shape search、scheduled loop materialization、
-  SPM allocation、DDR demand check、DTE schedule、`wafer.comm` materialization、
+  SPM allocation、DDR demand analysis、DTE schedule、`wafer.comm` materialization、
   C ABI 或 package emission。
 - Completion gate:
   真实 P2.S2/R2.4 program chain 的 local compute + tensor collective 输出能形成
@@ -593,7 +593,7 @@ root 优先级是：
 - convolution 可作为后续受限目标，但不作为最小链路的主线。
 
 root/hero 只决定 logical candidate 的初始边界，不决定 traversal tile shape。真正的 traversal
-domain、tile shape、internal split 和 output coverage 仍由 R3.2a-d feasibility oracle 和
+domain、tile shape、internal split 和 output coverage 仍由 R3.2a-d planning / analysis results 和
 R3.2e closed-loop scheduled group planner 决定。
 
 ### 9.3 Conservative Expansion
@@ -635,7 +635,7 @@ candidate expansion 必须保持 dependency-preserving：
 
 这些边界可以在后续 cost model 和 communication planner 更强之后逐步放开。已经规整成
 Wafer LinalgExt-style tensor collective、且实现 tiling interface 的 post-SPMD collective 可以作为
-受控 group candidate；是否纳入由 verifier、op interface、resource trial 和 cost model 决定。
+受控 group candidate；是否纳入由 verifier、op interface、resource planning 和 cost model 决定。
 
 对于 multi-output 候选，formation 只标记“可能共享 tile-local residency”的候选，不保证最终
 一定保持一个 group。schedule 阶段如果无法找到一个合法且成本可接受的 selected traversal
@@ -687,7 +687,7 @@ group planner 输入 logical group，输出 scheduled group。
 ### 10.1 Closed-Loop Planning
 
 group planning 不是单向地先固定 group 再交给下游碰运气。logical group 只是 candidate；
-scheduled group 必须来自一个已经通过下游合法性检查的 plan。
+scheduled group 必须来自一个已经被下游 legality analysis / resource planning 接受的 plan。
 
 对每个 candidate group，planner 应在 transformation 内部做闭环搜索：
 
@@ -696,10 +696,10 @@ scheduled group 必须来自一个已经通过下游合法性检查的 plan。
    accumulator 需求，以及可能的 internal split 候选。
 3. 构造 provisional tile-local execution model：包含预计的 `wafer.tile_region` 边界、
    tile-local buffer、layout materialization、movement、compute、tensor collective 和 sync/effect 需求。
-4. 调用下游 legality / resource oracle 做实际检查。这里不能只看抽象 size estimate；
-   必须跑与下游一致的 layout materialization、SPM allocation trial 和 DDR demand /
-   bandwidth feasibility。layout 规则见
-   `tasks/2026-05-21-wafer-layout-materialization-design.md`，SPM trial 规则见
+4. 调用下游 legality analysis / resource planning 产出实际 planning result。这里不能只看抽象 size estimate；
+   必须跑与下游一致的 layout materialization、SPM allocation 和 DDR demand /
+   bandwidth analysis。layout 规则见
+   `tasks/2026-05-21-wafer-layout-materialization-design.md`，SPM allocation 规则见
    `tasks/2026-05-21-wafer-spm-bufferization-design.md`，DDR resource 规则见
    `tasks/2026-05-25-wafer-ddr-resource-allocation-design.md`；target-abstract compute/movement
    的 layout/resource/effect contract 见
@@ -711,7 +711,7 @@ scheduled group 必须来自一个已经通过下游合法性检查的 plan。
    group boundary 继续搜索。
 6. 如果找不到合法且成本可接受的 plan，拆分或拒绝该 group candidate。
 
-实际 SPM allocation trial 和 DDR demand/resource trial 都是必要的，因为下游指令、layout 和
+实际 SPM allocation 和 DDR demand/resource planning 都是必要的，因为下游指令、layout 和
 boundary placement 会改变真实需求：
 
 - NE、Reduce、Pool、UnPool 这类 aligned-only 指令要求 operand/result 已经 materialize 成
@@ -736,41 +736,41 @@ boundary placement 会改变真实需求：
 - overlap-critical buffer 还可能受 bank/page coloring、in-flight bank set、worker/local wait
   和 communication wait 影响。
 
-这些检查可以作为 planner 内部 oracle 或 trial lowering 实现，但搜索过程、失败的 allocation、
+这些分析可以作为 planner 内部 analysis 或 provisional lowering 实现，但搜索过程、失败的 allocation、
 候选 tile shape 和 cost trace 都是 analysis，不写入 `wafer.group` attribute。IR 里只保留
 被接受的 scheduled structure；若没有 plan 被接受，就不生成这个 scheduled group。
 
-### 10.1.1 Feasibility Oracle 和 Materialization 依赖
+### 10.1.1 Planning Inputs 和 Materialization 依赖
 
 R3.2a-e 的核心不是先生成 tiled IR 再让下游修复，而是在生成 accepted scheduled structure
-之前完成联合 feasibility trial。SPM allocation、layout assignment、DDR/resource demand 和
+之前完成 layout/resource/legalization planning。SPM allocation、layout assignment、DDR/resource demand 和
 compute/movement legality 是 group 是否成立的决定条件，不是 R3.3/R3.4/R3.5 的后处理。
 
-因此恢复顺序必须分清 analysis trial 和 IR materialization：
+因此恢复顺序必须分清 planning facts 和 IR materialization：
 
 - R3.2a 恢复 op tiling demand：从 structured op semantics、indexing maps、tiling interface
   和 Wafer interfaces 推导 operand/result slice、temporary/scratch/accumulator 和 movement demand。
-- R3.2b 恢复 layout feasibility trial：对 tile value graph 做 layout assignment、materialization
-  cut 和 materialization buffer demand 试算。
-- R3.2c 恢复 SPM allocation trial：在真实 SPM window、alignment、layout padding、lifetime、
-  scratch/psum/temp 和 conflict 约束下尝试放置 buffer。
-- R3.2d 恢复 DDR/resource 和 compute/movement legality trial：检查 external/workspace/
+- R3.2b 恢复 layout planning：对 tile value graph 做 layout assignment、materialization
+  cut 和 materialization buffer demand。
+- R3.2c 恢复 SPM allocation：在真实 SPM window、alignment、layout padding、lifetime、
+  scratch/psum/temp 和 conflict 约束下搜索可接受 buffer placement。
+- R3.2d 恢复 DDR/resource planning 和 compute/movement legality analysis：覆盖 external/workspace/
   resident-constant、bandwidth/range/pool/domain，以及 op layout/dtype/shape/effect 合法性。
 - R3.2e 才能做 closed-loop group planner：搜索 traversal、tile shape、layout、SPM/DDR/resource
   plan，并输出 accepted / rejected / split decision。
 
 R3.3 只 materialize R3.2e 已接受的 plan 为 `wafer.tile_region`。R3.4/R3.5 只把 R3.2e
 已经接受的 layout/SPM/DDR facts 落到可验证 IR 或 resource boundary；它们不能成为第一次发现
-SPM 放不下、layout 不合法或 DDR demand 不可接受的阶段。若 R3.2a-d oracle 使 R3.2e trial
-不通过，planner 必须回到 tile shape、layout、internal split 或 group boundary，而不是落一个
+SPM 放不下、layout 不合法或 DDR demand 不可接受的阶段。若 R3.2a-d planning results 让
+R3.2e 不能接受当前 candidate，planner 必须回到 tile shape、layout、internal split 或 group boundary，而不是落一个
 未接受的 `wafer.tile_region` 等待下游补救。
 
-### 10.1.2 R3.2a Op Tiling Demand Oracle
+### 10.1.2 R3.2a Op Tiling Demand Analysis
 
-R3.2a 的边界是 analysis oracle，不是 scheduled IR materialization。它消费 R3.1 形成的
+R3.2a 的边界是 analysis，不是 scheduled IR materialization。它消费 R3.1 形成的
 logical `wafer.group`，在给定 target-abstract traversal / output tile candidate 时，从每个
 op 的结构化语义恢复 tile-level demand graph。第一版可以用 full-result tile 作为默认候选来
-验证语义恢复；后续 R3.2e planner 会用同一 oracle 查询不同 tile shape。
+验证语义恢复；后续 R3.2e planner 会用同一 analysis 查询不同 tile shape。
 
 Pipeline position:
 
@@ -787,12 +787,12 @@ Pipeline position:
   transformation-local `GroupTilingDemand` analysis result；debug pass 可以 dump 同一结构，
   但不修改 IR、不生成 `wafer.tile_region`、不写 `wafer.group` attribute。
 - Downstream consumer:
-  R3.2b layout feasibility trial、R3.2c SPM allocation trial、R3.2d DDR/resource +
-  compute/movement legality trial，以及 R3.2e closed-loop planner。
+  R3.2b layout planning、R3.2c SPM allocation、R3.2d DDR/resource planning +
+  compute/movement legality analysis，以及 R3.2e closed-loop planner。
 - User-level driver / named pipeline:
   主线仍由 `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 产生 R3.1 group；
   R3.2a 的局部验证入口是 `wafer-opt --wafer-dump-group-tiling-demand`，用于在同一
-  group IR 上检查 oracle 输出。它是调试/测试入口，不是长期 compile flow。
+  group IR 上 dump analysis 输出。它是调试/测试入口，不是长期 compile flow。
 - Explicit non-goals:
   不选择最终 tile shape、不 accept/reject/split group、不做 layout assignment、不分配 SPM、
   不判断 DDR pool/range/bandwidth、不 materialize compute/movement/comm op、不生成 package/ABI。
@@ -824,7 +824,7 @@ slot-aligned 时返回 failure，让 R3.2e 回到 tile shape 或 group split。
 
 `tensor.empty` 在该层是 destination/init storage placeholder，不是可执行 compute demand。
 `linalg.fill` 是 init/write demand；若它初始化后续 reduction / contraction output，对应 value
-可以被后续 SPM/layout oracle 视为 accumulator/psum live range 的起点。
+可以被后续 SPM/layout analysis 视为 accumulator/psum live range 的起点。
 
 layout 文档中的 `!wafer.tile_buffer` / `wafer.layout.materialize` 不是 `wafer.group` 的另一套
 上游 IR。它们是 scheduled group 中同一批 tiled tensor SSA value 在 `wafer.tile_region` 层的
@@ -839,7 +839,7 @@ scheduled wafer.group tensor value
 
 例如本文 case 中的 `%a_tile`、`%b_tile`、`%matmul_tile`、`%relu` 和 loop-carried `%r_tile`
 会成为 layout planning 的 value graph；是否保持 `Tensor/NTensor`，是否 materialize 成 `Cx/NCx`，
-以及 materialization 放在哪条 producer-consumer edge 上，都由 layout 子设计和 SPM trial 决定，
+以及 materialization 放在哪条 producer-consumer edge 上，都由 layout 子设计和 SPM allocation 决定，
 不回写成 `wafer.group` attribute。
 
 ### 10.2 Planner 和 Per-Op Tiling Interface 的边界
@@ -853,7 +853,7 @@ group planner 不替每个 op 实现 tiling，也不把 matmul、reduction、win
   temporary/scratch/accumulator，以及 tiled implementation；若资源或合法性不满足，再请求
   该 op interface 给出内部维度切分候选。
 - 汇总 per-op 返回的信息，生成 tiled IR，并在当前 transformation 内部完成
-  liveness/resource/cost 分析和下游 feasibility trial。
+  liveness/resource/cost 分析和下游 layout/resource/legalization planning。
 - 在 resource/legalization/cost 约束下接受、拒绝或调整 tile shape。
 
 也就是说，group planner 是 orchestration 层；op tiling interface 是 implementation
@@ -863,7 +863,7 @@ group planner 不替每个 op 实现 tiling，也不把 matmul、reduction、win
 ### 10.2.1 Multi-root Packing / Co-scheduling
 
 multi-root packing 是 R3.2e closed-loop planner 的可选策略，不是 R3.1 group formation
-或 R3.2a-d feasibility oracle 的完成条件。
+或 R3.2a-d planning / analysis results 的完成条件。
 R3.1 产出的基本单位仍是 dependency-connected logical group；两个完全独立的 chains
 即使在同一个 block、shape 相同，也不因为语法上可以放进一个 region 就自动合并。
 
@@ -926,7 +926,7 @@ reduction axis、window/kernel axis、被 collapse/expand 的 layout axis、padd
 - 对每个 op，tiling interface 基于这个 traversal tile 和 op 的 indexing/shape 语义，返回完整
   operand demand、result slice、temporary/scratch/accumulator 和默认 tile-local
   implementation。
-- planner 汇总所有 op 的 demand，做资源容量、layout/lowering 合法性、buffering 和 cost 检查。
+- planner 汇总所有 op 的 demand，做资源容量、layout/lowering 合法性、buffering 和 cost 分析。
 - 只有当完整 demand 不合法或代价不可接受时，planner 才回到相关 op interface 请求 internal
   split candidates。
 - internal split 的候选大小由 op interface 根据自身语义、目标硬件约束、layout、dtype、
@@ -1021,7 +1021,7 @@ normalization 展开成 structured tensor IR；group 只处理 staged dataflow�
 - RoPE schedule：由 slice/reshape/broadcast/elementwise 表达，sin/cos table 是普通
   `ConstantLike` source 或上游 input，不形成新的 group boundary 语义。
 - MLP schedule：GEMM + activation + elementwise multiply + GEMM 可以作为候选 group，但是否保持
-  一个 group 取决于 SPM/DDR/layout feasibility；失败时按 producer cut 或 stage cut 拆分。
+  一个 group 取决于 SPM allocation、DDR/resource planning 和 layout planning；失败时按 producer cut 或 stage cut 拆分。
 
 如果这些 staged schedule 找不到合法且成本可接受的 selected traversal domain，planner 应拆成多个
 groups，并通过 `wafer.store_tile` / `wafer.load_tile`、DDR workspace 或下游 communication
@@ -1038,7 +1038,7 @@ physical layout 决策写进 `wafer.group` 语义。需要 materialization 时�
 memory space 和 data movement 的 IR 层落成明确 op。layout materialization 的具体算法、
 从 scheduled group value 到 `wafer.tile_region` tile buffer 的映射、`#ddr` compact external boundary、
 constant storage transform 和最小化 layout change 的策略见
-`tasks/2026-05-21-wafer-layout-materialization-design.md`；SPM allocation trial 见
+`tasks/2026-05-21-wafer-layout-materialization-design.md`；SPM allocation 见
 `tasks/2026-05-21-wafer-spm-bufferization-design.md`；DDR external binding、workspace BO、
 resident constant、pool/domain 和 bandwidth/range cost 见
 `tasks/2026-05-25-wafer-ddr-resource-allocation-design.md`；layout-sensitive compute/movement op
@@ -1056,7 +1056,7 @@ planner 的替代品。
 ```text
 group planner 在当前 transformation 中生成 accepted schedule。
 planner 可以导出等价 Transform script，用于复现、调试和调参。
-Transform script replay 不能绕过 verifier、layout planning 或 SPM feasibility oracle。
+Transform script replay 不能绕过 verifier、layout planning、SPM allocation 或 DDR/resource planning。
 ```
 
 可用场景：

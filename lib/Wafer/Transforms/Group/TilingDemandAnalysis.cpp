@@ -1,6 +1,6 @@
-//===- TilingDemandOracle.cpp - Wafer group tiling demand oracle ----------===//
+//===- TilingDemandAnalysis.cpp - Wafer group tiling demand analysis ------===//
 
-#include "Wafer/Transforms/Group/TilingDemandOracle.h"
+#include "Wafer/Transforms/Group/TilingDemandAnalysis.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"

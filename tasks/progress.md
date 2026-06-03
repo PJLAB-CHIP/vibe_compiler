@@ -71,9 +71,9 @@ wafer-opt \
 
 ## 当前活跃任务
 
-当前没有 active 实现任务。R3.2a op tiling demand oracle 已完成；下一项是 R3.2b layout
-feasibility trial，消费 R3.2a 的 tile value graph / op layout constraints，恢复 layout
-assignment 和 materialization demand 试算。
+当前没有 active 实现任务。R3.2a op tiling demand analysis 已完成；下一项是 R3.2b layout
+planning，消费 R3.2a 的 tile value graph / op layout constraints，恢复 layout assignment、
+materialization cut 和 materialization buffer demand。
 
 R3.2a Pipeline Contract:
 
@@ -84,11 +84,11 @@ R3.2a Pipeline Contract:
   slice、result slice、temporary/scratch/accumulator 和 movement / collective demand。
 - output program / IR：transformation-local `GroupTilingDemand` analysis result；debug dump pass
   只打印同一结构，不修改 IR、不生成 scheduled group、不写 semantic attr。
-- downstream consumer：R3.2b layout feasibility trial、R3.2c SPM allocation trial、R3.2d DDR/resource
-  + compute/movement legality trial、R3.2e closed-loop planner。
+- downstream consumer：R3.2b layout planning、R3.2c SPM allocation、R3.2d DDR/resource
+  planning + compute/movement legality analysis、R3.2e closed-loop planner。
 - user-level driver / named pipeline：主线由
   `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 产生 group；R3.2a 局部验证用
-  `wafer-opt --wafer-dump-group-tiling-demand` 在 group IR 上 dump oracle 输出。
+  `wafer-opt --wafer-dump-group-tiling-demand` 在 group IR 上 dump analysis 输出。
 - explicit non-goals：不选择最终 tile shape、不 accept/reject/split group、不做 layout assignment、
   不分配 SPM、不判断 DDR pool/range/bandwidth、不 materialize compute/movement/comm op、不生成
   package/ABI。
@@ -101,13 +101,13 @@ R3.2a Pipeline Contract:
 | ID | 状态 | 设计来源 | 输入 / 输出边界 | 完成 gate |
 | --- | --- | --- | --- | --- |
 | R3.2a | done | `2026-05-12-wafer-group-design.md` 10.1-10.2；MLIR Linalg/TilingInterface；tensor collective docs | 输入：R3.1 logical `wafer.group` body；输出：target-abstract tile plan candidate 和 per-op tile demand | `GroupTilingDemand` analysis + `--wafer-dump-group-tiling-demand` debug gate 已恢复；覆盖 linalg indexing maps、reduction accumulator、tensor collective interface、多 group 和 unsupported op failure；不写 `wafer.group` attr |
-| R3.2b | ready | `2026-05-21-wafer-layout-materialization-design.md` | 输入：R3.2a tile value graph 和 op layout constraints；输出：layout assignment / materialization demand trial | 给出可验证 layout assignment、materialization cut 和 materialization buffer demand；失败返回结构化原因；不把 layout plan 写进 `wafer.group` attr |
-| R3.2c | pending | `2026-05-21-wafer-spm-bufferization-design.md` | 输入：R3.2a/b 的 tile-local buffer demand、layout、lifetime 和 effect；输出：SPM allocation trial result | 做真实 SPM window placement：alignment、layout padding、scratch/psum/temp、lifetime overlap、range/end-address/conflict 都参与；不是 byte-size estimate；失败返回 planner |
-| R3.2d | pending | `2026-05-25-wafer-ddr-resource-allocation-design.md`；compute/movement docs | 输入：R3.2a/b 的 boundary、load/store、constant、workspace、movement 和 compute legality demand；输出：DDR/resource trial 和 compute/movement legality result | 覆盖 external/workspace/resident-constant、pool/domain/capacity/bandwidth/range demand；compute/movement/collective 的 layout、dtype、shape、effect 通过接口/verifier 检查；不能用 manifest fixture 替代 |
-| R3.2e | pending | `2026-05-12-wafer-group-design.md` 10.x；R3.2a-d oracle results | 输入：R3.1 logical group 和 R3.2a-d feasibility oracles；输出：accepted/rejected/split group planning decision | closed-loop 搜索 group boundary、traversal、tile shape、layout、SPM/DDR/resource plan；accepted plan 带 R3.3 可消费的 traversal/tile/slice/layout/SPM/DDR facts；未接受 plan 不落 IR；可选 multi-root packing 只有在 feasibility/cost 证明兼容时接受 |
+| R3.2b | ready | `2026-05-21-wafer-layout-materialization-design.md` | 输入：R3.2a tile value graph 和 op layout constraints；输出：layout assignment、materialization cut 和 materialization buffer demand | 给出可验证 layout assignment、materialization cut 和 materialization buffer demand；失败返回结构化原因；不把 layout plan 写进 `wafer.group` attr |
+| R3.2c | pending | `2026-05-21-wafer-spm-bufferization-design.md` | 输入：R3.2a/b 的 tile-local buffer demand、layout、lifetime 和 effect；输出：SPM allocation | 做真实 SPM window placement：alignment、layout padding、scratch/psum/temp、lifetime overlap、range/end-address/conflict 都参与；不是 byte-size estimate；失败返回 planner |
+| R3.2d | pending | `2026-05-25-wafer-ddr-resource-allocation-design.md`；compute/movement docs | 输入：R3.2a/b 的 boundary、load/store、constant、workspace、movement 和 compute legality demand；输出：DDR/resource plan 和 compute/movement legality result | 覆盖 external/workspace/resident-constant、pool/domain/capacity/bandwidth/range demand；compute/movement/collective 的 layout、dtype、shape、effect 通过接口/verifier 验证；不能用 manifest fixture 替代 |
+| R3.2e | pending | `2026-05-12-wafer-group-design.md` 10.x；R3.2a-d planning / analysis results | 输入：R3.1 logical group 和 R3.2a-d planning results；输出：accepted/rejected/split group planning decision | closed-loop 搜索 group boundary、traversal、tile shape、layout、SPM/DDR/resource plan；accepted plan 带 R3.3 可消费的 traversal/tile/slice/layout/SPM/DDR facts；未接受 plan 不落 IR；可选 multi-root packing 只有在 legality/resource/cost 证明兼容时接受 |
 | R3.3 | pending | `2026-05-25-wafer-tile-region-design.md` | 输入：R3.2e accepted plan；输出：`wafer.tile_region` | 只 materialize accepted plan；未接受 group 不产生 `wafer.tile_region` |
-| R3.4 | pending | `2026-05-21-wafer-layout-materialization-design.md`；`2026-05-21-wafer-spm-bufferization-design.md` | 输入：R3.2e accepted layout/SPM facts 和 R3.3 `wafer.tile_region`；输出：materialized layout/SPM buffer/storage IR | 只把已通过 R3.2e accepted feasibility trial 的 layout assignment、materialization cut、SPM allocation facts 落到可验证 IR；不在 R3.4 第一次决定 group 是否可行 |
-| R3.5 | pending | `2026-05-25-wafer-ddr-resource-allocation-design.md` | 输入：R3.2e accepted DDR/resource facts 和 storage-aware tile IR；输出：materialized DDR resource / binding boundary | 只 materialize 已通过 R3.2e accepted feasibility trial 的 external/workspace/resident-constant/resource demand；覆盖 pool/domain/capacity/bandwidth，不能用 manifest fixture 替代 |
+| R3.4 | pending | `2026-05-21-wafer-layout-materialization-design.md`；`2026-05-21-wafer-spm-bufferization-design.md` | 输入：R3.2e accepted layout/SPM facts 和 R3.3 `wafer.tile_region`；输出：materialized layout/SPM buffer/storage IR | 只把 R3.2e accepted plan 中的 layout assignment、materialization cut、SPM allocation facts 落到可验证 IR；不在 R3.4 第一次决定 group 是否可行 |
+| R3.5 | pending | `2026-05-25-wafer-ddr-resource-allocation-design.md` | 输入：R3.2e accepted DDR/resource facts 和 storage-aware tile IR；输出：materialized DDR resource / binding boundary | 只 materialize R3.2e accepted plan 中的 external/workspace/resident-constant/resource demand；覆盖 pool/domain/capacity/bandwidth，不能用 manifest fixture 替代 |
 | R3.6 | pending | `2026-05-25-wafer-c-abi-golden-packet-design.md` | 输入：storage/movement/compute IR；输出：`wafer.abi.*` issue sequence | issue sequence 从 IR 派生，只表达 ABI 参数单位和 wait policy |
 | R3.7 | pending | `2026-05-25-wafer-launch-runtime-package-design.md` | 输入：ABI issue / launch signature IR；输出：IR-derived package manifest | manifest、C stub、launch signature 从当前 `wafer-opt` 输出导出，不使用 fixed manifest emitter |
 | R3.8 | pending | `2026-05-25-wafer-c-abi-golden-packet-design.md`；launch/runtime package design | 输入：R3.6/R3.7 输出；输出：wrapper-facing call contract 和 golden packet | 至少 RDMA/WDMA/GEMM 有真实 wrapper-facing call contract 和 packet 对照 |
@@ -126,7 +126,7 @@ R3.2e 明确包含一个可选子目标：multi-root packing / co-scheduling。�
 而是多个已由 R3.1 形成的 dependency-connected logical groups；只有当 traversal domain、
 tile shape、layout、SPM/DDR/resource 和 cost 都可证明兼容时，R3.2e 才能把它们作为一个
 co-scheduled candidate 接受。仅因为同 block、同 shape 或语法上可放进同一个 region，不能合并。
-若 feasibility/cost 不成立，保持多个 groups 或按 R3.2e split/reject 规则处理。
+若 legality/resource/cost 不成立，保持多个 groups 或按 R3.2e split/reject 规则处理。
 
 ## R3.1 Pipeline Contract
 
@@ -136,7 +136,7 @@ co-scheduled candidate 接受。仅因为同 block、同 shape 或语法上可�
   说明哪些 tensor SSA value、outs、producer/consumer 和 tensor collective 能进入 group 候选。
 - output program / IR：可验证的 tensor-level `wafer.group` candidate IR；candidate 可被 R3.2e
   接受、拆分或拒绝。
-- downstream consumer：R3.2a-e feasibility oracle / closed-loop planner、R3.3 tile_region
+- downstream consumer：R3.2a-d planning / analysis results 和 R3.2e closed-loop planner、R3.3 tile_region
   materialization、R3.4/R3.5 accepted layout/SPM/DDR materialization、R3.6/R3.7 ABI/package stages。
 - user-level driver / named pipeline：
   `wafer-opt --program-pipeline=stablehlo-spmd-to-group`，由该 program pipeline 重放
@@ -174,6 +174,7 @@ co-scheduled candidate 接受。仅因为同 block、同 shape 或语法上可�
 
 ## 下一步
 
-从 R3.2b 开始：消费 R3.2a 的 tile value graph 和 op layout constraints，恢复 layout assignment /
-materialization demand trial。完整 R3.2e closed-loop planner 只有在 layout、SPM、DDR、
-compute/movement feasibility oracles 都能真实参与 decision 后才能进入 `ready`。
+从 R3.2b 开始：消费 R3.2a 的 tile value graph 和 op layout constraints，恢复 layout assignment、
+materialization cut 和 materialization buffer demand。完整 R3.2e closed-loop planner 只有在
+layout planning、SPM allocation、DDR/resource planning、compute/movement legality analysis
+都能真实参与 decision 后才能进入 `ready`。

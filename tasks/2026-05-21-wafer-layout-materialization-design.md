@@ -51,7 +51,7 @@ scheduled tile tensor IR
 
 - layout planner 是 analysis + rewrite，不是 IR attr plan。
 - layout-sensitive op 通过 interface 给出 hard domain 和 preference。
-- layout assignment 必须调用 SPM oracle 和 DDR resource feasibility；只算 layout conversion 次数不够。
+- layout assignment 必须调用 SPM allocation 和 DDR resource planning；只算 layout conversion 次数不够。
 
 ## 3. 表示生命周期
 
@@ -597,7 +597,7 @@ pass 名是实现组织，不是架构边界；边界仍以 IR contract 和 veri
 
    运行位置：scheduled tile tensor IR 已经形成、tile shape 已被当前 group candidate 接受、
    layout-sensitive tiled op 已经被选成 target-abstract `wafer.compute` / boundary / data movement
-   op、下游 SPM feasibility checker 可用、最终硬件 movement 还没 lower 之前。
+   op、下游 SPM allocator 可用、最终硬件 movement 还没 lower 之前。
 
    输入：
 
@@ -606,7 +606,7 @@ pass 名是实现组织，不是架构边界；边界仍以 IR contract 和 veri
    - `wafer.comm` p2p op 的 byte-preserving layout relation、token/effect 和 staging demand。
    - `#ddr` compact external boundary。
    - normalized `ConstantLike` tensor value 及其 backing data/resource。
-   - target policy、SPM feasibility checker 和 DDR resource feasibility checker。
+   - target policy、SPM allocator 和 DDR resource planner。
 
    行为：
 
@@ -615,7 +615,7 @@ pass 名是实现组织，不是架构边界；边界仍以 IR contract 和 veri
    - 对 device-side group-to-group edge 做 bounded co-planning，并把 accepted boundary layout 作为
      当前 transformation 的 hard constraint 传回本地 planner。
    - 选择最终 physical layout assignment 和 materialization edge。
-   - 对候选 assignment 调用 SPM feasibility checker 和 DDR resource feasibility；改变 boundary
+   - 对候选 assignment 调用 SPM allocator 和 DDR resource planner；改变 boundary
      layout 或 materialization cut 后必须重新验证。
    - 对 accepted assignment rewrite IR：生成或更新 tile-local buffer type 的 `mem_layout`，插入
      `wafer.layout.materialize`，并把 compile-time constant 的 storage transform 机会保留在
@@ -637,7 +637,7 @@ pass 名是实现组织，不是架构边界；边界仍以 IR contract 和 veri
 
    - 删除 same-layout、dead、inverse-pair materialization。
    - 对 flexible op 做 layout-aware rewrite，减少两侧 conversion。
-   - 合并重复 conversion 或移动 materialization cut 前，重新调用 SPM feasibility checker。
+   - 合并重复 conversion 或移动 materialization cut 前，重新运行 SPM allocation。
    - 不读取旧 planner side table，不创建新的 layout plan attr。
 
 3. `wafer-constant-storage-transform`
@@ -786,7 +786,7 @@ cut placement:
 ```
 
 V0 不把这个问题写成“遇到某类 op 就插 conversion”。通用算法是 hard constraint propagation、
-小规模 graph labeling、局部 cut 优化、SPM feasibility 和 DDR resource acceptance 的组合。
+小规模 graph labeling、局部 cut 优化、SPM allocation 和 DDR resource acceptance 的组合。
 
 #### 6.1.1 Hard Constraint Propagation
 
@@ -841,7 +841,7 @@ V0 不默认上 ILP。先用 deterministic greedy 生成一个初始 assignment�
 4. 对 large tensor，避免为多个 consumers 重复 materialize。
 5. 对 host-visible output，只在最终 writeback boundary 前 materialize 回 compact。
 6. 对 compile-time constant，把 compile-time storage transform 作为候选之一；只有 consumer layout、
-   package size、SPM trial 和 DDR resource trial 都合适时才接受。
+   package size、SPM allocation 和 DDR resource planning 都合适时才接受。
 
 这个 assignment 只产生 candidate，不代表已经可 lower。
 
@@ -876,7 +876,7 @@ V0 不默认上 ILP。先用 deterministic greedy 生成一个初始 assignment�
 - 标记 conflict edge，建议 group planner 拆 group 或缩 tile。
 
 frontier 大小由 target policy 控制，必须是小常数。每个 alternative 都要重新构造真实
-materialization demand 并跑 SPM feasibility。
+materialization demand 并运行 SPM allocation。
 
 #### 6.1.6 Resource Acceptance
 
@@ -884,10 +884,10 @@ materialization demand 并跑 SPM feasibility。
 
 - layout combination verifier 通过。
 - `wafer.layout.materialize` 都有 lowerable conversion path。
-- SPM allocation trial 通过，包含 materialization temp、communication staging、loop-carried value、
-  async lifetime 和 range/end-address check。
+- SPM allocation 通过，包含 materialization temp、communication staging、loop-carried value、
+  async lifetime 和 range/end-address validation。
 - DDR demand / workspace / external binding / bandwidth summary 可由 DDR resource planner 接受。
-- cleanup 后仍能通过 layout verifier、SPM feasibility 和 DDR resource feasibility。
+- cleanup 后仍能通过 layout verifier、SPM allocation 和 DDR resource planning。
 
 如果所有 bounded alternatives 都失败，layout planner 不生成“等待下游修复”的 IR，而是返回
 structured failure，让 group planner 调整 tile shape、internal split、output coverage 或 group
@@ -905,7 +905,7 @@ boundary。
 Wafer 的常见 case 是 multi-label、op hyperedge、loop-carried value、SPM peak 和 boundary
 co-planning 耦合，所以 V0 不把 min-cut 当主算法。后续如果 profiling 证明某个局部区域的
 conversion cost 是主瓶颈，可以在 bounded frontier 的局部子图上引入 ILP / beam search；结果仍必须
-通过同一套 verifier、SPM feasibility 和 DDR resource acceptance。
+通过同一套 verifier、SPM allocation 和 DDR resource acceptance。
 
 ## 7. Boundary Contract
 
@@ -924,8 +924,8 @@ compile-time constants：
 - constant 虽然不是 group external input，但每个 tile-region use 都必须通过显式 load source
   表达，并参与 DDR demand / tiling / bandwidth 计算。
 - 若同一个 constant 被多个 incompatible consumers 共享，V0 可以 clone / specialize constant use，
-  也可以在 consumer edge 做 runtime materialization；选择由 cost、package size、SPM feasibility
-  和 DDR resource feasibility 决定。
+  也可以在 consumer edge 做 runtime materialization；选择由 cost、package size、SPM allocation
+  和 DDR resource planning 决定。
 - constant storage transform 只是把 conversion 提前到编译期执行，不是新的上层 IR 语义。
 
 load/store：
@@ -969,14 +969,14 @@ V0 做 bounded adjacent co-planning，不做 full-program layout solve：
      allowed_layouts
      preferred_layouts
      local_cost(layout)
-     spm_feasible(layout)
-     ddr_feasible(layout)
+     spm_allocation(layout)
+     ddr_resource_plan(layout)
    }
    ```
 
    summary 是 analysis，不进入 IR。`local_cost` 必须包含 group 内 materialization bytes、peak SPM
-   变化、DDR workspace / bandwidth pressure 和 writeback/load movement；`spm_feasible` 必须来自
-   同一个 SPM feasibility checker，`ddr_feasible` 必须来自 DDR resource planner。
+   变化、DDR workspace / bandwidth pressure 和 writeback/load movement；`spm_allocation` 必须来自
+   同一个 SPM allocator，`ddr_resource_plan` 必须来自 DDR resource planner。
 
 2. 建 boundary graph
 
@@ -1012,7 +1012,7 @@ V0 做 bounded adjacent co-planning，不做 full-program layout solve：
 4. 带 boundary constraint 重新本地规划
 
    selected boundary layout 作为当前 transformation 的 hard boundary constraint 传回 producer 和
-   consumer 的本地 planner。若任一 group 的 SPM trial 或 DDR resource trial 失败，回退到下一个
+   consumer 的本地 planner。若任一 group 的 SPM allocation 或 DDR resource planning 失败，回退到下一个
    boundary candidate；
    frontier 耗尽时，退回本地规划并保留显式 boundary materialization。
 
@@ -1024,7 +1024,7 @@ V0 做 bounded adjacent co-planning，不做 full-program layout solve：
 
 这个机制的关键不是引入全局最优，而是允许相邻 group 在 device-side boundary 上共享一个 verifier
 可见的 physical layout。它覆盖常见 repeated materialization 成本，同时保持每个 group 的 local
-legality、SPM feasibility 和 DDR resource feasibility 可独立重算。
+legality、SPM allocation 和 DDR resource planning 可独立重算。
 
 ## 9. Materialization Cleanup
 
@@ -1039,7 +1039,7 @@ layout-aware cleanup；它是普通 IR rewrite / canonicalization，不是重新
 - 同一 source、同一 destination layout、同一 shape/dtype 的 materialization，如果共享结果不会引入
   新的 lifetime 冲突，可以合并；否则不能只按文本相同做 CSE。
 
-需要重新验证 layout interface、SPM feasibility 和 DDR resource feasibility 的 rewrite：
+需要重新验证 layout interface、SPM allocation 和 DDR resource planning 的 rewrite：
 
 - sink：把 conversion 从 producer 后推到真正需要该 layout 的 consumer 前，避免 fanout 上所有 use
   都承担 conversion。
@@ -1055,7 +1055,7 @@ cleanup 的限制：
 - 不能跨 host-visible boundary、unknown alias、runtime escape 或 verifier 无法表达 layout 的 edge。
 - 不能改变 tensor semantic layout、shape、dtype 或 memory space。
 - 任何会延长 buffer lifetime、改变 materialization cut 或合并多个 conversion result 的 rewrite，
-  都必须重新调用 SPM feasibility checker 和 DDR resource planner；只删除 dead/same-layout
+  都必须重新运行 SPM allocation 和 DDR resource planning；只删除 dead/same-layout
   conversion 且缩短 lifetime 的 fold 可以直接应用。
 - cleanup 后仍由 verifier 检查 op layout contract、loop-carried entry/yield layout、
   `wafer.load_tile` result layout、constant source 可 lower 性和 lowerable conversion path。
@@ -1112,10 +1112,10 @@ V0 不做全局最优，但不能只做一次贪心选择。主路径是 determi
 
    frontier 大小应是 target policy 控制的小常量；它是编译期 search 策略，不进入 IR。
 
-6. 生成 resource-checked local candidates
+6. 生成 resource-planned local candidates
 
-   对初始 assignment 和 bounded alternatives 构造真实 materialization demand，调用 SPM feasibility
-   oracle 和 DDR resource planner，形成 group-local feasible candidate / boundary summary。SPM 或 DDR
+   对初始 assignment 和 bounded alternatives 构造真实 materialization demand，运行 SPM allocation
+   和 DDR resource planning，形成 group-local candidate / boundary summary。SPM 或 DDR
    失败时，layout planner 只做有限调整：
 
    - 移动 materialization cut。
@@ -1140,7 +1140,7 @@ V0 不做全局最优，但不能只做一次贪心选择。主路径是 determi
 9. Cleanup
 
    在 accepted IR 上运行 layout materialization cleanup。无条件 fold 直接删除冗余 op；改变 lifetime
-   或 boundary layout 的 rewrite 必须重新通过 SPM feasibility checker 和 DDR resource planner。
+   或 boundary layout 的 rewrite 必须重新通过 SPM allocation 和 DDR resource planning。
 
 10. Storage realization handoff
 

@@ -1,7 +1,7 @@
-//===- TilingDemandOracle.h - Wafer group tiling demand oracle --*- C++ -*-===//
+//===- TilingDemandAnalysis.h - Group tiling demand analysis ----*- C++ -*-===//
 
-#ifndef WAFER_TRANSFORMS_GROUP_TILINGDEMANDORACLE_H
-#define WAFER_TRANSFORMS_GROUP_TILINGDEMANDORACLE_H
+#ifndef WAFER_TRANSFORMS_GROUP_TILINGDEMANDANALYSIS_H
+#define WAFER_TRANSFORMS_GROUP_TILINGDEMANDANALYSIS_H
 
 #include "Wafer/IR/WaferDialect.h"
 
@@ -77,4 +77,4 @@ void dumpGroupTilingDemand(const GroupTilingDemand &demand,
 
 } // namespace wafer
 
-#endif // WAFER_TRANSFORMS_GROUP_TILINGDEMANDORACLE_H
+#endif // WAFER_TRANSFORMS_GROUP_TILINGDEMANDANALYSIS_H

@@ -186,7 +186,7 @@ communication issue/wait 和 byte count；p2p/collective op 同时有 Wafer comm
 MLIR memory effect。具体 DTE/FSM/packet/stream id 仍只在 lower-level ABI issue/resource allocator
 层出现，不回写到 collective-level op。
 
-通信 staging buffer 是 SPM oracle 的 `BufferDemand(kind = communication_staging)`，不是
+通信 staging buffer 是 SPM allocation 的 `BufferDemand(kind = communication_staging)`，不是
 `wafer.comm` 的私有内存计划。
 
 ## 5. Direct DTE Contract
@@ -312,7 +312,7 @@ schedule、resource allocation 和 package/runtime metadata。
   选择结果必须通过 accepted tile-local IR 表达，不能由 `wafer.comm` 保存 side plan。
 - 如果 producer group 以 `Cx` 输出，而 consumer group 也能接受 `Cx`，comm 可以直接传输该 physical
   layout；如果 consumer 需要 compact，layout materialization op 应在明确 cut edge 上出现。
-- communication staging buffer、double buffer、in-flight recv slot 都进入 SPM oracle 的 demand 和
+- communication staging buffer、double buffer、in-flight recv slot 都进入 SPM allocation 的 demand 和
   liveness。没有合法 SPM allocation 时，planner 必须回到 group boundary、tile shape、layout 或
   communication schedule 搜索，而不是生成等待下游修复的 comm IR。
 - 如果 selected protocol 使用 DDR-backed staging、host/runtime D2D/P2P path 或 DDR2DDR helper，
@@ -333,7 +333,7 @@ sender waits receiver ready if protocol requires it
 DTE attach / resource acquire
 send async or sync
 receiver FSM monitor receive / completion observe
-sender DTE wait done / status check
+sender DTE wait done / status validation
 resource release
 ```
 
@@ -364,7 +364,7 @@ P2P-level verifier：
 - 若 selected protocol 使用 `#ddr` endpoint，descriptor 必须满足 DDR resource plan 的 pool/domain、
   range、alignment 和 ownership contract。
 - byte count 与 buffer slice/storage representation 一致。
-- token wait 支配后续消费或 reuse；async lifetime 被 SPM oracle 看到。
+- token wait 支配后续消费或 reuse；async lifetime 被 SPM allocation 看到。
 - no raw non-unicast field；no hidden DTE id/FSM id attr before resource allocation layer。
 
 Lower-level verifier：
@@ -408,7 +408,7 @@ wafer.comm.wait %send1, %recv1
 - single-card fixed-size unicast Direct DTE。
 - `collective_permute` 和 ring `all_gather`。
 - `reduce_scatter` / `all_reduce` 通过 p2p + local reduce 组合。
-- explicit token/wait、communication staging buffer、SPM oracle integration。
+- explicit token/wait、communication staging buffer、SPM allocation integration。
 - Direct DTE send/recv/wait golden path 和 error diagnostic。
 
 后续进入条件：
