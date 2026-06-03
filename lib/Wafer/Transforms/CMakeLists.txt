@@ -1,4 +1,5 @@
 add_mlir_library(WaferTransforms
+  Group/FormGroupCandidates.cpp
   StableHLOToLinalg/NormalizeConstants.cpp
   StableHLOToLinalg/LowerStablehloDot.cpp
   StableHLOToLinalg/LowerStablehloElementwise.cpp

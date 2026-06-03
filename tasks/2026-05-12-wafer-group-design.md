@@ -98,7 +98,7 @@ Pipeline position:
   R3.2 root tile feasibility oracle；R3.3 `wafer.tile_region` materialization；
   R3.4/R3.5 layout/SPM/DDR feasibility；R3.6/R3.7 ABI/package stages。
 - User-level driver / named pipeline:
-  计划新增 `wafer-opt --program-pipeline=stablehlo-spmd-to-group`，由该 program
+  `wafer-opt --program-pipeline=stablehlo-spmd-to-group`，由该 program
   pipeline 重放 frontend/SPMD/R2.4 后进入 group candidate gate。局部 MLIR pass
   只作为实现索引和单元测试入口，不能替代 program pipeline completion gate。
 - Explicit non-goals:
@@ -575,7 +575,11 @@ formation pass 在每个 `func.func` 的 region/block 内先做局部 op 分类�
 
 ### 9.2 Root / Hero Seed
 
-R3.1 从 root/hero op 建立最小 group seed，再向周围扩展。root 优先级是：
+R3.1 从 root/hero op 建立最小 group seed。当前已实现的第一版只 materialize one-root
+candidate，不做 producer/consumer expansion；下面的 expansion 规则是后续放宽候选范围时必须遵守的
+legality 边界，不是当前完成 gate。
+
+root 优先级是：
 
 常见 traversal anchor 候选：
 

@@ -29,14 +29,17 @@ PyTorch/XLA StableHLO Wafer program directory
   -> wafer-opt --program-pipeline=stablehlo-spmd-to-linalg
        same SPMD stage
        write back Linalg/Tensor/SCF local compute + wafer.tensor_collective.*
-  -> R3 group / tiling / placement / package recovery
+  -> wafer-opt --program-pipeline=stablehlo-spmd-to-group
+       same SPMD and R2.4 lowering stages
+       write back root-seeded verifier-legal wafer.group candidates
+  -> R3.2+ tiling / placement / package recovery
 ```
 
 用户级 command 不传 helper path：
 
 ```bash
 wafer-opt \
-  --program-pipeline=stablehlo-spmd-to-linalg \
+  --program-pipeline=stablehlo-spmd-to-group \
   --input-program-dir <input.program> \
   --output-program-dir <output.program> \
   --default-tile-count=16
@@ -50,13 +53,13 @@ wafer-opt \
 | P2.S1 | done | P2.F1 program 或 textual StableHLO/SDY fixture | default input seed + Shardy propagation；作为 `stablehlo-spmd` 内部阶段，不产出 partitioned local body |
 | P2.S2 | done | P2.F1 sharded program | `stablehlo-spmd` 产出 post-SPMD StableHLO program、rank-local signature、collective metadata、parameter shard metadata/payload |
 | R2.4 | done | post-SPMD StableHLO program | `stablehlo-spmd-to-linalg` 产出 Linalg/Tensor/SCF local compute 和 `wafer.tensor_collective.*`；不生成 `wafer.comm` |
+| R3.1 | done | `stablehlo-spmd-to-linalg` tensor-level IR | `stablehlo-spmd-to-group` 产出 root-seeded verifier-legal `wafer.group` candidate；raw StableHLO/`wafer.comm`/SPM/DTE 被 group verifier 拒绝 |
 
 ## 恢复队列
 
 | ID | 状态 | 任务 | 输入 / 输出边界 | 完成 gate |
 | --- | --- | --- | --- | --- |
-| R3.1 | ready | group boundary / candidate contract | 输入：`stablehlo-spmd-to-linalg` tensor-level IR；输出：root-seeded verifier-legal `wafer.group` candidate | 真实 program chain 的 local compute + tensor collective 进入 `stablehlo-spmd-to-group` gate；raw StableHLO/`wafer.comm`/SPM/DTE 被拒绝 |
-| R3.2 | pending | root tile feasibility oracle | 输入：`wafer.group` candidate；输出：accepted/rejected root tile candidate 和明确拒绝原因 | op tiling、layout、SPM、DDR、compute/movement legality 接到同一 candidate check |
+| R3.2 | ready | root tile feasibility oracle | 输入：`wafer.group` candidate；输出：accepted/rejected root tile candidate 和明确拒绝原因 | op tiling、layout、SPM、DDR、compute/movement legality 接到同一 candidate check |
 | R3.3 | pending | tile_region materialization contract | 输入：R3.2 accepted group；输出：`wafer.tile_region` | 只 materialize accepted group；未接受 group 不产生 tile_region |
 | R3.4 | pending | layout / SPM feasibility gate | 输入：`wafer.tile_region` tensor effects/liveness；输出：layout + SPM feasibility facts | layout materialization 和 SPM trial 由 effect、range 和 tile buffer lifetime 驱动 |
 | R3.5 | pending | DDR / resource demand gate | 输入：storage-aware tile IR；输出：external/workspace/resident-constant/resource demand | 覆盖 pool/domain/capacity/bandwidth demand，不能用 manifest fixture 替代 |
@@ -83,7 +86,7 @@ wafer-opt \
 - output program / IR：可验证的 tensor-level `wafer.group` candidate IR。
 - downstream consumer：R3.2 root tile feasibility、R3.3 tile_region materialization、R3.4/R3.5
   layout/SPM/DDR feasibility、R3.6/R3.7 ABI/package stages。
-- user-level driver / named pipeline：计划新增
+- user-level driver / named pipeline：
   `wafer-opt --program-pipeline=stablehlo-spmd-to-group`，由该 program pipeline 重放
   frontend/SPMD/R2.4 后进入 group candidate gate；不能让 integration test 手动拼 raw StableHLO、
   tensor collective fixture 和 group fixture 作为长期主线。
@@ -104,9 +107,9 @@ wafer-opt \
 
 ## 最近验证
 
-当前 `stablehlo-spmd-to-linalg` 主线收口已验证：
+当前 R3.1 主线收口已验证：
 
-- `cmake --build build/r0-deps-pytorch-xla --target check-wafer -- -j8`：102 passed, 1 unsupported。
+- `cmake --build build/r0-deps-pytorch-xla --target check-wafer -- -j8`：106 passed, 1 unsupported。
 - `ctest --test-dir build/r0-deps-pytorch-xla --output-on-failure`：2/2 passed。
 - `python3 tools/check_deps.py`。
 - `python3 tools/check_ir_organization.py --root .`。
@@ -114,8 +117,7 @@ wafer-opt \
 
 ## 下一步
 
-推进 R3.1。新增 `stablehlo-spmd-to-group` program pipeline gate，在重放
-`stablehlo-spmd-to-linalg` 真实 program chain 后形成 root-seeded logical `wafer.group`
-candidate。输入必须是 `linalg` / `tensor` / `scf` local compute IR 和
-`wafer.tensor_collective.*` tensor collective IR。不要把 raw StableHLO collective、`wafer.comm`、
-SPM tile buffer、DTE token、Python helper 或手写 fixture 当作 group 主线输入。
+推进 R3.2 root tile feasibility oracle。输入必须是 R3.1 产出的 verifier-legal
+`wafer.group` candidate；tile feasibility 要从 op tiling interface、layout/SPM/DDR legality
+和 compute/movement legality 派生，不能把 tile shape、SPM buffer、DTE token 或 cost trace
+反写成 R3.1 group attribute。

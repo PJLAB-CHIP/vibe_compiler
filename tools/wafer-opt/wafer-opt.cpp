@@ -308,7 +308,8 @@ bool parseWaferProgramPipelineOptions(int argc, char **argv,
     return true;
   }
   if (options.pipelineName != "stablehlo-spmd" &&
-      options.pipelineName != "stablehlo-spmd-to-linalg") {
+      options.pipelineName != "stablehlo-spmd-to-linalg" &&
+      options.pipelineName != "stablehlo-spmd-to-group") {
     llvm::errs() << "wafer-opt: unknown Wafer program pipeline: "
                  << options.pipelineName << "\n";
     return true;
@@ -410,6 +411,29 @@ int runStableHLOToLinalgStage(llvm::StringRef programDir,
 
   return 0;
 }
+
+int runFormGroupCandidatesStage(llvm::StringRef programDir,
+                                mlir::MLIRContext &context) {
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      parseAndVerifyStableHLOProgramDir(programDir, context);
+  if (!module)
+    return 1;
+
+  mlir::PassManager pm(&context);
+  wafer::buildFormGroupCandidatesPipeline(pm);
+  if (mlir::failed(pm.run(*module)))
+    return 1;
+
+  if (writeProgramModule(*module, programDir))
+    return 1;
+
+  mlir::OwningOpRef<mlir::ModuleOp> groupedModule =
+      parseAndVerifyStableHLOProgramDir(programDir, context);
+  if (!groupedModule)
+    return 1;
+
+  return 0;
+}
 #endif
 
 int runWaferProgramPipeline(int argc, char **argv) {
@@ -446,8 +470,14 @@ int runWaferProgramPipeline(int argc, char **argv) {
                             context))
     return 1;
 
-  if (options.pipelineName == "stablehlo-spmd-to-linalg" &&
+  bool needsLinalgStage = options.pipelineName == "stablehlo-spmd-to-linalg" ||
+                          options.pipelineName == "stablehlo-spmd-to-group";
+  if (needsLinalgStage &&
       runStableHLOToLinalgStage(options.outputProgramDir, context))
+    return 1;
+
+  if (options.pipelineName == "stablehlo-spmd-to-group" &&
+      runFormGroupCandidatesStage(options.outputProgramDir, context))
     return 1;
 
   llvm::outs() << "wafer-opt: completed Wafer program pipeline "

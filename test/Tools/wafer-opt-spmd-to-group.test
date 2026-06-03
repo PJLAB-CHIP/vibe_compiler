@@ -1,0 +1,16 @@
+# REQUIRES: stablehlo, shardy, pytorch-xla-importer, xla-spmd-helper
+
+# RUN: rm -rf %t.input.program %t.group.program
+# RUN: env CPU_NUM_DEVICES=16 PJRT_DEVICE=CPU %importer_python %wafer_src_root/test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-sharded-program --sharding-strategy column --size 32 --output-program-dir %t.input.program
+# RUN: wafer-opt --program-pipeline=stablehlo-spmd-to-group --input-program-dir %t.input.program --output-program-dir %t.group.program --default-tile-count=16 | FileCheck %s --check-prefix=PIPELINE
+# RUN: FileCheck %s --input-file=%t.group.program/functions/forward.mlir --check-prefix=GROUP-MLIR
+
+# PIPELINE: wafer-opt: completed Wafer program pipeline stablehlo-spmd-to-group:
+
+# GROUP-MLIR: mhlo.spmd_parameters_shardings
+# GROUP-MLIR: func.func @main
+# GROUP-MLIR-NOT: stablehlo.all_gather
+# GROUP-MLIR: wafer.group
+# GROUP-MLIR: wafer.tensor_collective.all_gather
+# GROUP-MLIR-SAME: rank_group = array<i64:
+# GROUP-MLIR-NOT: wafer.comm

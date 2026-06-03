@@ -4,10 +4,42 @@
 
 #include "OpVerifierUtils.h"
 
+#include "mlir/Dialect/Async/IR/Async.h"
 #include "llvm/ADT/STLExtras.h"
 
 using namespace wafer;
 using namespace wafer::detail;
+
+namespace {
+
+bool isRawStableHLOOp(mlir::Operation *op) {
+  llvm::StringRef dialect = op->getName().getDialectNamespace();
+  return dialect == "stablehlo" || dialect == "mhlo";
+}
+
+bool isAllowedWaferGroupBodyOp(mlir::Operation *op) {
+  if (mlir::isa<GroupYieldOp>(op))
+    return true;
+  return op->getName().getStringRef().starts_with("wafer.tensor_collective.");
+}
+
+bool isLowerLevelWaferOp(mlir::Operation *op) {
+  return op->getName().getDialectNamespace() == "wafer" &&
+         !isAllowedWaferGroupBodyOp(op);
+}
+
+bool isAllowedTensorLevelDialect(mlir::Operation *op) {
+  llvm::StringRef dialect = op->getName().getDialectNamespace();
+  return dialect == "arith" || dialect == "linalg" || dialect == "math" ||
+         dialect == "scf" || dialect == "tensor";
+}
+
+bool isForbiddenGroupBoundaryType(mlir::Type type) {
+  return isSPMMemRef(type) || isSPMTileBuffer(type) ||
+         mlir::isa<mlir::async::TokenType>(type);
+}
+
+} // namespace
 
 mlir::LogicalResult GroupOp::verify() {
   if (getNumResults() != getOuts().size())
@@ -27,6 +59,10 @@ mlir::LogicalResult GroupOp::verify() {
   for (auto input : getInputs()) {
     if (isSPMMemRef(input.getType()))
       return emitOpError("does not accept SPM memref inputs");
+    if (isSPMTileBuffer(input.getType()))
+      return emitOpError("does not accept SPM tile_buffer inputs");
+    if (mlir::isa<mlir::async::TokenType>(input.getType()))
+      return emitOpError("does not accept async token inputs");
   }
 
   if (getBody().empty())
@@ -49,6 +85,10 @@ mlir::LogicalResult GroupOp::verify() {
              << " at index " << blockArgIndex;
     if (isSPMMemRef(blockArgType))
       return emitOpError("does not accept SPM memref body arguments");
+    if (isSPMTileBuffer(blockArgType))
+      return emitOpError("does not accept SPM tile_buffer body arguments");
+    if (mlir::isa<mlir::async::TokenType>(blockArgType))
+      return emitOpError("does not accept async token body arguments");
     ++blockArgIndex;
   }
   for (auto out : getOuts()) {
@@ -57,6 +97,8 @@ mlir::LogicalResult GroupOp::verify() {
       return emitOpError("body block argument type ")
              << blockArgType << " does not match outs type " << out.getType()
              << " at index " << blockArgIndex;
+    if (isForbiddenGroupBoundaryType(blockArgType))
+      return emitOpError("does not accept lower-level body arguments");
     ++blockArgIndex;
   }
 
@@ -79,6 +121,47 @@ mlir::LogicalResult GroupOp::verify() {
              << yieldedType << " does not match result type " << resultType
              << " at index " << index;
   }
+
+  mlir::WalkResult bodyLegality =
+      getBody().walk<mlir::WalkOrder::PreOrder>([&](mlir::Operation *op) {
+        if (isRawStableHLOOp(op)) {
+          emitOpError("body cannot contain raw StableHLO op '")
+              << op->getName() << "'";
+          return mlir::WalkResult::interrupt();
+        }
+
+        if (isLowerLevelWaferOp(op)) {
+          emitOpError("body cannot contain lower-level op '")
+              << op->getName() << "'";
+          return mlir::WalkResult::interrupt();
+        }
+
+        if (!isAllowedWaferGroupBodyOp(op) &&
+            !isAllowedTensorLevelDialect(op)) {
+          emitOpError("body cannot contain unsupported op '")
+              << op->getName() << "'";
+          return mlir::WalkResult::interrupt();
+        }
+
+        for (mlir::Value operand : op->getOperands()) {
+          if (isForbiddenGroupBoundaryType(operand.getType())) {
+            emitOpError("body cannot contain lower-level operand type ")
+                << operand.getType() << " on op '" << op->getName() << "'";
+            return mlir::WalkResult::interrupt();
+          }
+        }
+        for (mlir::Value result : op->getResults()) {
+          if (isForbiddenGroupBoundaryType(result.getType())) {
+            emitOpError("body cannot contain lower-level result type ")
+                << result.getType() << " on op '" << op->getName() << "'";
+            return mlir::WalkResult::interrupt();
+          }
+        }
+
+        return mlir::WalkResult::advance();
+      });
+  if (bodyLegality.wasInterrupted())
+    return mlir::failure();
 
   for (mlir::NamedAttribute attr : getOperation()->getAttrs()) {
     if (attr.getName() != getOperandSegmentSizesAttrName())

@@ -43,6 +43,10 @@ void buildStablehloToLinalgPipeline(mlir::OpPassManager &pm) {
   addStablehloToLinalgBody(pm);
 }
 
+void buildFormGroupCandidatesPipeline(mlir::OpPassManager &pm) {
+  pm.addPass(createFormGroupCandidatesPass());
+}
+
 #ifdef WAFER_ENABLE_SHARDY
 void buildStablehloShardingPropagationPipeline(mlir::OpPassManager &pm,
                                                int64_t defaultTileCount) {
