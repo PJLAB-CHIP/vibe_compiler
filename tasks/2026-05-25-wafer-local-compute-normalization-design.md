@@ -427,6 +427,31 @@ workspace 选择固化成 IR 合同。若后续需要 multi-stage softmax，row 
 可验证表示；如果该语义能由 StableHLO / structured tensor IR 和 Wafer 硬件能力表达，后续任务应
 扩展 normalized IR、verifier 或 lowering，而不是把当前 pattern 覆盖范围写成长期不支持。
 
+### 6.1 R2.4 StableHLO Conversion Coverage / Practice Matrix
+
+R2.4 当前实现曾以本地小 pass 恢复覆盖，很多 pass 仍是 hand-written walk +
+`replaceAllUsesWith` / `erase`。这只能作为恢复期证据，不能作为长期 lowering 架构。R2.4 主线应优先
+复用或对齐 StableHLO 官方 Linalg conversion patterns：`ConversionTarget` 定义合法 IR，
+`OpConversionPattern` 按 op family 分文件，`TypeConverter` 处理类型/materialization，
+`applyPartialConversion` / `applyFullConversion` 作为 legality gate。Wafer 自有逻辑只补官方
+conversion 不表达的 post-SPMD tensor collective handoff 和 Wafer-specific policy。
+
+| source StableHLO family | 当前本地覆盖 | 覆盖状态 | 正确 conversion 做法 / 后续要求 |
+| --- | --- | --- | --- |
+| constants | `stablehlo.constant` -> `arith.constant` 本地 normalize | partial | 对齐官方 constant conversion；program constant residency / payload binding 不在此层决定。 |
+| pointwise elementwise | add/sub/mul/div/max/min/neg/sqrt/rsqrt/exp/tanh -> `linalg.generic` + arith/math | narrow subset | 优先复用/对齐官方 pointwise patterns，覆盖更宽 StableHLO scalar op set、scalar broadcast、rank/type checks 和 `notifyMatchFailure`。本地不应维护长 if/else 子集。 |
+| broadcast / reshape / transpose / slice / concatenate | 本地 shape pass 覆盖静态常见子集 | partial | 对齐官方 data movement / shape conversion；动态 shape、view 与真实 data movement 要分层，不能在 R2.4 提前引入 layout/SPM 事实。 |
+| `dot_general` / dot | 只支持 simple 2D matmul；rank-4 attention dot 当前保留 | narrow subset | 优先对齐官方 dot/dot_general conversion，包括 dot/matvec/vecmat/matmul/batch matmul/generic dot_general 的 legality。Wafer 后端不应因为当前只支持 2D 就把其它可表达 contraction 写成长期不支持。 |
+| reduce | 单输入、rank0 init、sum/max combiner -> `linalg.reduce` | narrow subset | 对齐官方 reduction patterns，包括 reduce region return conversion、multi-result/combiner legality、reduce_window 可表达子集。数值 policy 不清楚时结构化失败。 |
+| softmax / norm / RoPE / MLP staged graph | 只证明 fine-grained StableHLO dataflow 可经过本地子集变成 staged structured tensor IR | evidence only | 不引入 high-level `wafer.softmax` / `wafer.norm`。这些是 pattern coverage 证据，不是单独 op conversion contract；更宽 decomposition 依赖官方 StableHLO conversion + 后续 planner。 |
+| StableHLO collectives | all_gather/all_reduce/reduce_scatter/all_to_all/collective_permute -> `wafer.tensor_collective.*` | Wafer-specific | 这是 Wafer 自有 handoff，不能用官方 linalg conversion 替代；但也应 pattern 化并放进 R2.4 conversion pipeline 的明确 legal/illegal contract。不能直接 lower 到 `wafer.comm`。 |
+| unsupported StableHLO op | 当前可能被局部 pass 静默保留 | weak | 主线 conversion gate 必须明确：可 legalize 的 StableHLO op 被转换；不可转换但允许保留的 op 必须有 dynamic legality 和文档理由；否则 fail。 |
+
+本表的结论是：R2.4 不应继续扩展一组窄的本地 `wafer-lower-stablehlo-*` 手写 pass。后续重构应把
+`wafer-lower-stablehlo-to-linalg` named pipeline 收口为：官方/对齐官方 StableHLO-to-Linalg
+conversion + Wafer tensor collective normalization + verifier gate。局部 pass 可以保留作
+canonicalization 或测试入口，但不能替代主线 conversion legality。
+
 ## 7. Verifier
 
 Normalization 后必须能检查：
