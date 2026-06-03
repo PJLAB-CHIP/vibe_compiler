@@ -47,7 +47,7 @@ PyTorch/XLA StableHLO Wafer program directory
 | R3.1 | done | `2026-05-12-wafer-group-design.md` 2.1、9.1-9.5 | R2.4 rank-local structured tensor IR | verifier-legal logical `wafer.group`；覆盖 fill/init、matmul+bias+epilogue、simple elementwise、tensor collective handoff、多 group 和 raw StableHLO / lower-level op 禁止 |
 | R3.2a | done | `2026-05-12-wafer-group-design.md` 10.1-10.2 | R3.1 logical `wafer.group` body | `GroupTilingDemand` analysis result；覆盖 boundary/result tile facts、per-op slice、iterator、accumulator/reduction dims、collective demand 和 unsupported-op failure |
 | R3.2b | done | `2026-05-21-wafer-layout-materialization-design.md` 3.1.1 | R3.2a `GroupTilingDemand` facts + group SSA use-def | `GroupLayoutPlan` analysis result；覆盖 boundary layout、op layout constraints、broadcast relation、materialization cut/result demand 和 failure forwarding；不修改 IR |
-| R3.2c | done | `2026-05-25-wafer-tile-region-design.md` 2.1-2.2 | R3.1 group + R3.2a demand + R3.2b layout plan | MLIR DialectConversion 驱动的 scratch full conversion；输出 provisional `wafer.tile_region` candidate，包含 load/store、`wafer.alloc_tile`、layout materialization、`wafer.compute.fill/gemm/elementwise` 和结构化 failure；不写主 IR、不做 SPM offset |
+| R3.2c | done | `2026-05-25-wafer-tile-region-design.md` 2.1-2.2 | R3.1 group + R3.2a demand + R3.2b layout plan | MLIR DialectConversion 驱动的 scratch full conversion；输出 provisional `wafer.tile_region` candidate，覆盖 load/store、`wafer.alloc_tile`、layout materialization、`wafer.compute.fill/gemm/elementwise/reduce`、`wafer.move.*` 和 `wafer.view.reshape`；硬件 V0 无承载或缺 placement/local-rank facts 时结构化 failure；不写主 IR、不做 SPM offset |
 
 ## 当前状态
 
@@ -56,7 +56,8 @@ PyTorch/XLA StableHLO Wafer program directory
 R3.2d 可以消费 R3.2c 的 provisional `wafer.tile_region` candidate。当前边界是：
 
 - candidate 中的 `!wafer.tile_buffer`、`wafer.alloc_tile`、`wafer.load_tile`、`wafer.store_tile`、
-  `wafer.layout.materialize` 和 `wafer.compute.*` 已能暴露 layout/resource demand。
+  `wafer.layout.materialize`、`wafer.compute.*`、`wafer.move.*` 和 `wafer.view.reshape` 已能暴露
+  layout/resource/view demand。
 - R3.2d 只做真实 SPM window placement / conflict / lifetime，不重新决定 group formation 或 op lowering。
 - tensor collective 到 `wafer.comm.*` 仍 deferred，等待 placement/local-rank/buffer facts。
 

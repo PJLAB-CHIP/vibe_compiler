@@ -466,6 +466,12 @@ static unsigned getElementwiseArity(ComputeElementwiseKind kind) {
   case ComputeElementwiseKind::Div:
   case ComputeElementwiseKind::Max:
   case ComputeElementwiseKind::Min:
+  case ComputeElementwiseKind::Eq:
+  case ComputeElementwiseKind::Ne:
+  case ComputeElementwiseKind::Lt:
+  case ComputeElementwiseKind::Le:
+  case ComputeElementwiseKind::Gt:
+  case ComputeElementwiseKind::Ge:
     return 2;
   case ComputeElementwiseKind::Neg:
   case ComputeElementwiseKind::Recip:
@@ -476,6 +482,20 @@ static unsigned getElementwiseArity(ComputeElementwiseKind kind) {
     return 1;
   }
   llvm_unreachable("unknown compute elementwise kind");
+}
+
+static bool isRelationKind(ComputeElementwiseKind kind) {
+  switch (kind) {
+  case ComputeElementwiseKind::Eq:
+  case ComputeElementwiseKind::Ne:
+  case ComputeElementwiseKind::Lt:
+  case ComputeElementwiseKind::Le:
+  case ComputeElementwiseKind::Gt:
+  case ComputeElementwiseKind::Ge:
+    return true;
+  default:
+    return false;
+  }
 }
 
 mlir::LogicalResult verifyElementwiseTileContract(mlir::Operation *op,
@@ -526,12 +546,32 @@ mlir::LogicalResult verifyElementwiseTileContract(mlir::Operation *op,
     if (!hasTileBufferLayout(inputTileType, MemLayout::Tensor))
       return op->emitOpError("elementwise operands must use tensor mem_layout");
     mlir::RankedTensorType inputTensor = getTileBufferTensorType(inputTileType);
-    if (inputTensor.getElementType() != resultTensor.getElementType())
+    if (isRelationKind(kind)) {
+      if (!resultTensor.getElementType().isInteger(1))
+        return op->emitOpError("relation result element type must be i1");
+      if (index > 0) {
+        auto firstInputType =
+            mlir::cast<TileBufferType>(inputs.front().getType());
+        mlir::RankedTensorType firstInputTensor =
+            getTileBufferTensorType(firstInputType);
+        if (inputTensor.getElementType() != firstInputTensor.getElementType())
+          return op->emitOpError(
+              "relation operand element types must match each other");
+      }
+    } else if (inputTensor.getElementType() != resultTensor.getElementType()) {
       return op->emitOpError(
           "elementwise operand element types must match result element type");
-    if (!indexingMaps && inputTensor != resultTensor)
+    }
+    if (!indexingMaps && isRelationKind(kind)) {
+      if (inputTensor.getShape() != resultTensor.getShape())
+        return op->emitOpError(
+            "relation operand shapes must match result shape");
+      continue;
+    }
+    if (!indexingMaps && inputTensor != resultTensor) {
       return op->emitOpError(
           "elementwise operand tensor types must match result tensor type");
+    }
     if (!indexingMaps)
       continue;
 
@@ -575,13 +615,22 @@ mlir::LogicalResult verifyReduceTileContract(mlir::Operation *op,
   if (!hasTileBufferMemorySpace(inputTileType, MemorySpace::SPM) ||
       !hasTileBufferMemorySpace(resultTileType, MemorySpace::SPM))
     return op->emitOpError("reduce operands/results must use SPM memory space");
-  if (!hasTileBufferLayout(inputTileType, MemLayout::Tensor) ||
-      !hasTileBufferLayout(resultTileType, MemLayout::Tensor))
-    return op->emitOpError(
-        "reduce operands/results must use tensor mem_layout");
 
   mlir::RankedTensorType inputTensor = getTileBufferTensorType(inputTileType);
   mlir::RankedTensorType resultTensor = getTileBufferTensorType(resultTileType);
+  MemLayout expectedInputLayout =
+      inputTensor.getRank() > 2 ? MemLayout::NCx : MemLayout::Cx;
+  MemLayout expectedResultLayout =
+      resultTensor.getRank() > 2 ? MemLayout::NCx : MemLayout::Cx;
+  if (!hasTileBufferLayout(inputTileType, expectedInputLayout) ||
+      !hasTileBufferLayout(resultTileType, expectedResultLayout)) {
+    if (inputTensor.getRank() > 2 || resultTensor.getRank() > 2)
+      return op->emitOpError(
+          "reduce rank > 2 operands/results must use ncx mem_layout");
+    return op->emitOpError(
+        "reduce rank <= 2 operands/results must use cx mem_layout");
+  }
+
   if (inputTensor.getElementType() != resultTensor.getElementType())
     return op->emitOpError(
         "reduce input element type must match result element type");
@@ -621,14 +670,24 @@ mlir::LogicalResult verifyReduceTileContract(mlir::Operation *op,
   }
 
   mlir::Attribute initValue = op->getAttr("init_value");
-  if (!initValue)
-    return op->emitOpError("requires reduce init_value attr");
-  auto typedInit = mlir::dyn_cast<mlir::TypedAttr>(initValue);
-  if (!typedInit || typedInit.getType() != inputTensor.getElementType())
-    return op->emitOpError(
-        "reduce init_value type must match input element type");
+  if (initValue) {
+    auto typedInit = mlir::dyn_cast<mlir::TypedAttr>(initValue);
+    if (!typedInit || typedInit.getType() != inputTensor.getElementType())
+      return op->emitOpError(
+          "reduce init_value type must match input element type");
+    return mlir::success();
+  }
 
-  return mlir::success();
+  if (op->getNumOperands() >= 2) {
+    mlir::Type initType = op->getOperand(1).getType();
+    if (initType != inputTensor.getElementType())
+      return op->emitOpError(
+          "reduce init operand type must match input element type");
+    return mlir::success();
+  }
+
+  return op->emitOpError(
+      "requires reduce init_value attr or scalar init operand");
 }
 
 } // namespace wafer::detail

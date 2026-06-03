@@ -34,6 +34,24 @@ OP_FAMILIES = {
         "mnemonics": ["load_tile", "store_tile"],
         "tests": "SPM",
     },
+    "Move": {
+        "td": "MoveOps.td",
+        "cpp": "MoveOps.cpp",
+        "mnemonics": [
+            "move.extract_slice",
+            "move.insert_slice",
+            "move.copy",
+            "move.transpose",
+            "move.broadcast",
+        ],
+        "tests": "Move",
+    },
+    "View": {
+        "td": "ViewOps.td",
+        "cpp": "ViewOps.cpp",
+        "mnemonics": ["view.reshape"],
+        "tests": "View",
+    },
     "DDR": {
         "td": "DDROps.td",
         "cpp": "DDROps.cpp",

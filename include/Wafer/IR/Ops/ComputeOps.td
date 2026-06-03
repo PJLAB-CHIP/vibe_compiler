@@ -83,12 +83,13 @@ def Wafer_ComputeReduceOp : Wafer_Op<"compute.reduce", [
 
   let arguments = (ins
     Wafer_ComputeReduceKindAttr:$kind,
-    AnyType:$input
+    AnyType:$input,
+    Optional<AnyType>:$init
   );
   let results = (outs AnyType:$result);
   let hasVerifier = 1;
   let assemblyFormat =
-      "$kind $input attr-dict `:` functional-type(operands, results)";
+      "$kind $input (`,` $init^)? attr-dict `:` functional-type(operands, results)";
 }
 
 class Wafer_CommP2POp<string mnemonic> : Wafer_Op<mnemonic, [

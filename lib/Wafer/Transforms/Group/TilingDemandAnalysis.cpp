@@ -35,7 +35,10 @@ static void addBoundaryValue(llvm::SmallVectorImpl<TilingDemandValue> &values,
 }
 
 static bool isSupportOp(mlir::Operation *op) {
-  return mlir::isa<mlir::arith::ConstantOp, mlir::tensor::EmptyOp>(op);
+  return mlir::isa<mlir::arith::ConstantOp, mlir::tensor::EmptyOp,
+                   mlir::tensor::ExtractOp, mlir::tensor::ExtractSliceOp,
+                   mlir::tensor::InsertSliceOp, mlir::tensor::ExpandShapeOp,
+                   mlir::tensor::CollapseShapeOp>(op);
 }
 
 static llvm::StringRef iteratorName(mlir::utils::IteratorType iteratorType) {

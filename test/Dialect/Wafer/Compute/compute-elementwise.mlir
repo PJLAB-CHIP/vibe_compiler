@@ -10,6 +10,8 @@ module {
       : () -> !wafer.tile_buffer<tensor<4x8xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
   %row = "builtin.unrealized_conversion_cast"()
       : () -> !wafer.tile_buffer<tensor<4xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
+  %bool = "builtin.unrealized_conversion_cast"()
+      : () -> !wafer.tile_buffer<tensor<4x8xi1>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
   %sum = wafer.compute.elementwise #wafer.elementwise_kind<add> %a, %b
       : (!wafer.tile_buffer<tensor<4x8xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>,
          !wafer.tile_buffer<tensor<4x8xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>)
@@ -22,9 +24,14 @@ module {
       : (!wafer.tile_buffer<tensor<4x8xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>,
          !wafer.tile_buffer<tensor<4xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>)
      -> !wafer.tile_buffer<tensor<4x8xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
+  %gt = wafer.compute.elementwise #wafer.elementwise_kind<gt> %a, %b
+      : (!wafer.tile_buffer<tensor<4x8xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>,
+         !wafer.tile_buffer<tensor<4x8xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>)
+     -> !wafer.tile_buffer<tensor<4x8xi1>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
 }
 
 // CHECK: wafer.compute.elementwise <add>
 // CHECK: wafer.compute.elementwise <exp>
 // CHECK: wafer.compute.elementwise <add>
 // CHECK-SAME: indexing_maps
+// CHECK: wafer.compute.elementwise <gt>

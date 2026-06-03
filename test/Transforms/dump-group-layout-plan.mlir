@@ -109,7 +109,7 @@ module {
     return %0 : tensor<4xf32>
   }
 
-  func.func @unsupported_body_op(%input: tensor<8xf32>, %out: tensor<4xf32>)
+  func.func @static_slice_support_op(%input: tensor<8xf32>, %out: tensor<4xf32>)
       -> tensor<4xf32> {
     %0 = wafer.group ins(%input : tensor<8xf32>) outs(%out : tensor<4xf32>) {
     ^bb0(%arg0: tensor<8xf32>, %arg1: tensor<4xf32>):
@@ -146,5 +146,5 @@ module {
 // CHECK: collective kind=all_reduce rank_group=[0,1]
 // CHECK: input #0 layout=tensor slice=[d0]
 // CHECK: result #0 layout=tensor slice=[d0]
-// CHECK-LABEL: wafer.layout_plan group @unsupported_body_op#0
-// CHECK: failure tiling demand failed: unsupported op tensor.extract_slice
+// CHECK-LABEL: wafer.layout_plan group @static_slice_support_op#0
+// CHECK: op #0 tensor.extract_slice

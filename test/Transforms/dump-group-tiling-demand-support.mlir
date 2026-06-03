@@ -1,7 +1,7 @@
 // RUN: wafer-opt --wafer-dump-group-tiling-demand %s 2>&1 | FileCheck %s
 
 module {
-  func.func @unsupported_body_op(%input: tensor<8xf32>, %out: tensor<4xf32>)
+  func.func @static_slice_support_op(%input: tensor<8xf32>, %out: tensor<4xf32>)
       -> tensor<4xf32> {
     %0 = wafer.group ins(%input : tensor<8xf32>) outs(%out : tensor<4xf32>) {
     ^bb0(%arg0: tensor<8xf32>, %arg1: tensor<4xf32>):
@@ -13,5 +13,5 @@ module {
   }
 }
 
-// CHECK-LABEL: wafer.tiling_demand group @unsupported_body_op#0
-// CHECK: failure unsupported op tensor.extract_slice
+// CHECK-LABEL: wafer.tiling_demand group @static_slice_support_op#0
+// CHECK: op #0 tensor.extract_slice

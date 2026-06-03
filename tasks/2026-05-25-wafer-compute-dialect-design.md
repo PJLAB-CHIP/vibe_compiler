@@ -119,13 +119,15 @@ transcendental 子集。它应满足：
   支持的子集；没有被支持的 transcendental 不能靠名字 fallback。
 
 当前落地的 V0 子集约束在 accepted-layout `!wafer.tile_buffer` 形式：operands/result 必须是
-SPM + tensor layout、element type 一致，并由 `#wafer.elementwise_kind<...>` 记录
-add/sub/mul/div/max/min/neg/recip/sqrt/rsqrt/exp/tanh。`wafer.compute.elementwise` 可以不带
+SPM + tensor layout。普通 arithmetic / activation / transcendental 要求 operand/result element type
+一致；relation kind 要求 operand element type 彼此一致、result element type 为 `i1`。op 由
+`#wafer.elementwise_kind<...>` 记录 add/sub/mul/div/max/min/neg/recip/sqrt/rsqrt/exp/tanh 和
+eq/ne/lt/le/gt/ge。`wafer.compute.elementwise` 可以不带
 `indexing_maps`，此时要求所有 operand/result 逻辑 tensor type 完全一致；也可以携带和
 `linalg.elementwise` 对齐的 projected-permutation `indexing_maps`，此时 result map 必须是 identity，
 input map 的每个维度必须映射到 result 的一个维度，静态维度必须一致。这个合同覆盖当前
 same-shape、row/head/vector broadcast 子集；更复杂 broadcast、scalar immediate、dynamic shape、
-relation/logic 和 convert 仍按后续 gate 推进。
+logic、select/mask 和 convert 仍按后续 gate 推进。
 
 ### 3.3 Reduce
 
@@ -142,10 +144,14 @@ recv chunk 与 accumulator 的本地累计步骤；`wafer.compute.reduce` 仍只
   op；进入 `wafer.compute.reduce` 后仍应能被 verifier 和 printer 明确看到。
 - V0 native reduce 只承诺 `sum`、`avg`、`max`、`min`。其它 reduction 可以在上游保持 structured
   loop，或 lower 成多个 supported compute op。
-- native reduce 属于 aligned-only op，layout planner 必须看到 input/output hard constraint。
+- native reduce 属于 aligned-only op，verifier 要求 rank <= 2 使用 `Cx`，rank > 2 使用 `NCx`；
+  这来自硬件指令集的 Reduce operand/result physical layout 约束，不是 planner 偏好。
 - output dtype、init value 和 NaN/overflow 等细节如果会影响语义，应保留在 op contract 中，而不是
-  留给 wrapper 默认值。当前 local issue path 从 scalar-constant `linalg.fill` out 恢复
-  `init_value`，并把 `dimensions` / `init_value` 一起带到 `wafer.abi.reduce`。
+  留给 wrapper 默认值。当前 tile-region candidate lowering 从 scalar-constant `linalg.fill` out
+  恢复 `init_value` attr；若 init 是 group boundary scalar，则作为 `wafer.compute.reduce` 的
+  scalar init operand 保留 SSA 关系。`wafer.abi.reduce` 当前仍要求 issue-time `init_value` attr；
+  动态 init 的 ABI lowering 需要在 R3.6 明确拆成 native reduce + supported scalar combine，或扩展
+  wrapper contract，不能在 R3.2C 丢失语义。
 
 ### 3.4 Movement Ops
 
@@ -166,6 +172,14 @@ movement op 的合同：
   只有需要作为 tensor tile data 读取的 constant 才生成 `wafer.load_tile` 和 DDR demand。
 - `wafer.layout.materialize` 是真实 data movement，不是 cast。它由 layout 文档定义，compute/movement
   lowering 负责把它展开成可执行的 GatherScatter、TDMA 或其它 path。
+- `wafer.move.extract_slice` / `wafer.move.insert_slice` 表达 static offsets/sizes/strides 的
+  tile-local slice movement。它们读写 SPM，并通过 verifier 检查 full slice shape、MLIR 合法的
+  rank reduction、slice range、layout 和 memory-space；不能用 tensor name 或 side table 恢复
+  slice。
+- `wafer.move.broadcast` / `wafer.move.transpose` / `wafer.move.copy` 表达 R2.4 当前以 passthrough
+  `linalg.generic` 形式产出的 movement。它们是 TDMA/DataMove 候选，不是 compute elementwise。
+- `wafer.view.reshape` 只表达 static element-count-preserving shape view；它无 SPM write effect。
+  如果 reshape 需要 physical layout change，必须使用 explicit materialization/movement op。
 - RDMA 方向是 `#ddr -> #spm`，WDMA 方向是 `#spm -> #ddr`。TDMA / local movement 只在 tile-local
   memory 或 verifier 允许的 address domain 内工作。
 - stride 和 byte count 的单位在 storage-realized 层必须明确。上层 tensor stride 是 element stride，

@@ -93,9 +93,11 @@ Pipeline position:
   不做 SPM offset allocation、不做 DDR pool/range/bandwidth planning、不 accept/reject/split
   group、不把 candidate commit 到主 IR、不 lower 到 packet/ABI/LLVM。
 - Completion gate:
-  FileCheck 覆盖 load/store boundary、layout materialization、GEMM、broadcast/elementwise、
-  multi-group、unsupported op failure 和缺少 placement/local-rank 的 collective failure；
-  program pipeline gate 能在真实 `stablehlo-spmd-to-group` 输出上重放 candidate dump 或结构化 failure。
+  FileCheck 和主线 pipeline 覆盖 R2.4/R3.1 已能产出的 Wafer V0 硬件可承载 local
+  compute/movement/view family：load/store boundary、layout materialization、SPM abstract
+  allocation、fill、GEMM、elementwise/relation、native reduce、passthrough broadcast/transpose/copy、
+  tensor slice movement 和 static reshape view。硬件 V0 无承载或当前 IR 缺 placement/local-rank /
+  runtime ABI 事实时才允许结构化 failure。
 ```
 
 ### 2.2 R3.2c Op Coverage Matrix
@@ -106,16 +108,19 @@ Pipeline position:
 | source IR / op family | 当前 R3.2c 处理 | 覆盖状态 | 正确 conversion 做法 / 后续要求 |
 | --- | --- | --- | --- |
 | `wafer.group` / `wafer.group_yield` boundary | scratch full conversion 中由 `OpConversionPattern<wafer.group>` 构造 `wafer.tile_region`，对 `ins + outs` 生成 `wafer.load_tile` / `wafer.store_tile` / `wafer.tile_yield` | supported for candidate | `ConversionTarget` 将 `wafer.group` / `wafer.group_yield` 标为 illegal；debug dump 只调用同一 conversion builder，不能自己承担 lowering 逻辑。 |
-| ranked tensor boundary values | 生成 `!wafer.tile_buffer<tensor, tensor, spm>`，记录 tensor layout 版本 | supported for ranked tensor | 保持类型/verifier 驱动；非 ranked tensor 必须失败。后续 SPM allocation 再决定 offset/window。 |
+| ranked tensor boundary values | 生成 `!wafer.tile_buffer<tensor, tensor, spm>`，记录 tensor layout 版本 | supported for ranked tensor | 保持类型/verifier 驱动；后续 SPM allocation 再决定 offset/window。 |
+| scalar boundary values | 作为 tile-region block scalar SSA value 传入，供 fill/reduce init 等 scalar operand 使用 | supported for scalar | 只支持 float / integer / index scalar；不生成 tile buffer，不作为长期 side channel。 |
 | `arith.constant` tensor | clone constant 后 `wafer.load_tile` 到 tensor-layout tile buffer | partial | 只适合 tensor constant；scalar constant 只应在 compute body 或显式 init 语义中消费。需要区分 constant residency / DDR / immediate policy。 |
-| `arith.constant` scalar | 当前通常忽略，只在原 linalg body 中作为说明性输入存在 | limited | 若 scalar 影响 tile compute，应进入 `wafer.compute.*` op 的明确 operand / attr / region 语义，不能靠原 op 残留。 |
+| `arith.constant` scalar | clone scalar constant，并作为 `wafer.compute.fill`、`wafer.compute.reduce init_value` 或 elementwise body 推导输入 | supported for scalar constants | scalar 语义通过 SSA value 或 typed attr 进入目标 op；不靠名字或原 op 残留。 |
 | `tensor.empty` | 生成 `wafer.alloc_tile`，结果类型携带 tensor shape、layout 和 SPM memory-space demand | supported as abstract allocation demand | `wafer.alloc_tile` 不分配物理 offset/window；R3.2d 才做真实 SPM placement。不能把 empty 偷映射成 output alias。 |
+| `tensor.extract` scalar | clone 到 tile-region 内，供动态 scalar init / scalar value 使用 | supported for scalar extract | 只作为 scalar SSA 支持 op；不表示 tile compute。 |
 | `linalg.fill` | 生成显式 `wafer.compute.fill`，写入 existing tile buffer；fill result 映射为该 initialized buffer | supported for scalar fill | `wafer.compute.fill` 暴露 layout/resource effect，供 R3.2d 计算 lifetime 和 write demand；不表达物理 SPM offset。 |
 | `linalg.matmul` | lhs/rhs materialize 到 `cx`，生成 `wafer.compute.gemm`，结果记录为 `cx` | supported for simple `linalg.matmul` | pattern 应检查 rank、dtype、accumulator/result relation、layout requirement；batch matmul / generic contraction 另列，不应混成 matmul 特判。 |
-| `linalg.generic` simple elementwise | 单 result、单 `linalg.yield`，typed scalar mapper 识别 add/sub/mul/div/min/max/neg/exp/sqrt/rsqrt/tanh；生成 `wafer.compute.elementwise` 并带原 `indexing_maps` | supported for simple elementwise | 不靠 op name string 恢复语义；passthrough、复杂 region、多 result 和 reduction-like generic 仍必须失败或等待明确 compute op/interface。 |
-| `linalg.reduce` / reduction-like generic | 当前不生成 tile compute；会在 op conversion 处失败或无法表达 | unsupported | 需要目标 `wafer.compute.reduce` / reduction interface、accumulator layout、init/fill 和 numeric policy。R3.2a demand 有 accumulator 信息不等于 R3.2c lowering 已支持。 |
-| `linalg.broadcast` / `linalg.transpose` / `linalg.copy` / shape-style structured ops | 当前没有 tile execution emission；进入 group 后通常会失败为 unsupported linalg op | unsupported | 应分别决定是 layout materialization、movement op、view/slice op，还是保留在上游 canonicalization；不能全部塞进 generic elementwise。 |
-| `tensor.extract_slice` / `tensor.insert_slice` / `tensor.expand_shape` / `tensor.collapse_shape` | 当前 tiling demand 阶段失败或 R3.2c 失败 | unsupported | 需要 tile slice/view/movement 语义和 verifier；shape-only relation 与真实 data movement 必须分层。 |
+| `linalg.generic` simple elementwise / relation | 单 result、单 `linalg.yield`，typed scalar mapper 识别 add/sub/mul/div/min/max/neg/exp/sqrt/rsqrt/tanh 和 cmp eq/ne/lt/le/gt/ge；生成 `wafer.compute.elementwise` 并带原 `indexing_maps` | supported for simple CT family | 不靠 op name string 恢复语义；复杂 region、多 result、select/mask 和 convert 仍需要明确 kind / op contract。 |
+| `linalg.reduce` / reduction-like generic | reduction iterator + scalar combiner lower 到 `wafer.compute.reduce`；input/result materialize 到 aligned `cx`/`ncx`；constant init 用 `init_value`，dynamic init 用 scalar operand | supported for native sum/max/min | `avg` 是 Wafer reduce kind，但当前 R2.4 fixture 尚未产出可直接识别的 avg combiner；`mul` 不伪装 native。 |
+| passthrough `linalg.generic` for broadcast / transpose / copy | 根据 projected-permutation indexing map lower 到 `wafer.move.broadcast`、`wafer.move.transpose` 或 `wafer.move.copy` | supported for static projected maps | 这是 movement，不是 elementwise compute；result map 必须是 identity，动态/非 projected map 结构化失败。 |
+| `tensor.extract_slice` / `tensor.insert_slice` | static offsets/sizes/strides lower 到 `wafer.move.extract_slice` / `wafer.move.insert_slice` | supported for static slices，包括 MLIR 合法的 rank-reduced slice | move op verifier 检查 full slice shape、可选 rank reduction、element type、layout/memory space 和 slice range；dynamic slice metadata 需要先扩 IR。 |
+| `tensor.expand_shape` / `tensor.collapse_shape` | static element-count-preserving reshape lower 到 `wafer.view.reshape` | supported for static shape-only reshape | `wafer.view.reshape` 不移动数据；layout/materialization 不兼容时必须使用 explicit movement，不用 reshape 逃避 physical layout。 |
 | `wafer.tensor_collective.*` | R3.2a/R3.2b 可收集 demand/layout；R3.2c 当前失败为缺 placement/local-rank facts | explicitly deferred | 只有 placement/local-rank/buffer facts 进入可验证 IR 后，才能 pattern 化到 `wafer.comm.*` / `wafer.sync.*`；不能写死 local rank 或 ring schedule。 |
 | unknown op inside group | 结构化失败 | unsupported | conversion target 应把 `wafer.group` 设为 illegal；unsupported body op 应导致 conversion failure，而不是留下半转换 group。 |
 

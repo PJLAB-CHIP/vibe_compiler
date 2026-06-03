@@ -8,12 +8,14 @@ add_mlir_dialect_library(WaferIR
   Ops/GroupOps.cpp
   Ops/LaunchOps.cpp
   Ops/LayoutOps.cpp
+  Ops/MoveOps.cpp
   Ops/OpVerifierUtils.cpp
   Ops/PlacementOps.cpp
   Ops/SPMOps.cpp
   Ops/SyncOps.cpp
   Ops/TensorCollectiveOps.cpp
   Ops/TileRegionOps.cpp
+  Ops/ViewOps.cpp
 
   DEPENDS
   WaferAttrsIncGen

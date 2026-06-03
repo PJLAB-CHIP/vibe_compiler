@@ -113,6 +113,12 @@ def Wafer_ComputeElementwiseKindSqrt : I32EnumAttrCase<"Sqrt", 8, "sqrt">;
 def Wafer_ComputeElementwiseKindRsqrt : I32EnumAttrCase<"Rsqrt", 9, "rsqrt">;
 def Wafer_ComputeElementwiseKindExp : I32EnumAttrCase<"Exp", 10, "exp">;
 def Wafer_ComputeElementwiseKindTanh : I32EnumAttrCase<"Tanh", 11, "tanh">;
+def Wafer_ComputeElementwiseKindEq : I32EnumAttrCase<"Eq", 12, "eq">;
+def Wafer_ComputeElementwiseKindNe : I32EnumAttrCase<"Ne", 13, "ne">;
+def Wafer_ComputeElementwiseKindLt : I32EnumAttrCase<"Lt", 14, "lt">;
+def Wafer_ComputeElementwiseKindLe : I32EnumAttrCase<"Le", 15, "le">;
+def Wafer_ComputeElementwiseKindGt : I32EnumAttrCase<"Gt", 16, "gt">;
+def Wafer_ComputeElementwiseKindGe : I32EnumAttrCase<"Ge", 17, "ge">;
 def Wafer_ComputeElementwiseKind
     : I32EnumAttr<"ComputeElementwiseKind",
                   "Wafer target-abstract elementwise compute kind", [
@@ -127,7 +133,13 @@ def Wafer_ComputeElementwiseKind
   Wafer_ComputeElementwiseKindSqrt,
   Wafer_ComputeElementwiseKindRsqrt,
   Wafer_ComputeElementwiseKindExp,
-  Wafer_ComputeElementwiseKindTanh
+  Wafer_ComputeElementwiseKindTanh,
+  Wafer_ComputeElementwiseKindEq,
+  Wafer_ComputeElementwiseKindNe,
+  Wafer_ComputeElementwiseKindLt,
+  Wafer_ComputeElementwiseKindLe,
+  Wafer_ComputeElementwiseKindGt,
+  Wafer_ComputeElementwiseKindGe
 ]> {
   let cppNamespace = "::wafer";
   let genSpecializedAttr = 0;
@@ -141,12 +153,14 @@ def Wafer_ComputeElementwiseKindAttr
 def Wafer_ComputeReduceKindSum : I32EnumAttrCase<"Sum", 0, "sum">;
 def Wafer_ComputeReduceKindMax : I32EnumAttrCase<"Max", 1, "max">;
 def Wafer_ComputeReduceKindMin : I32EnumAttrCase<"Min", 2, "min">;
+def Wafer_ComputeReduceKindAvg : I32EnumAttrCase<"Avg", 3, "avg">;
 def Wafer_ComputeReduceKind
     : I32EnumAttr<"ComputeReduceKind",
                   "Wafer target-abstract local reduce kind", [
   Wafer_ComputeReduceKindSum,
   Wafer_ComputeReduceKindMax,
-  Wafer_ComputeReduceKindMin
+  Wafer_ComputeReduceKindMin,
+  Wafer_ComputeReduceKindAvg
 ]> {
   let cppNamespace = "::wafer";
   let genSpecializedAttr = 0;

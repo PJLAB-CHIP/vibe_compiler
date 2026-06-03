@@ -106,6 +106,96 @@ module {
     return %0 : tensor<4xf32>
   }
 
+  func.func @reduce_sum_group(%input: tensor<2x4xf32>, %init: tensor<f32>,
+                              %out: tensor<2xf32>) -> tensor<2xf32> {
+    %0 = wafer.group ins(%input, %init : tensor<2x4xf32>, tensor<f32>)
+        outs(%out : tensor<2xf32>) {
+    ^bb0(%arg0: tensor<2x4xf32>, %arg1: tensor<f32>, %arg2: tensor<2xf32>):
+      %init_scalar = tensor.extract %arg1[] : tensor<f32>
+      %empty = tensor.empty() : tensor<2xf32>
+      %filled = linalg.fill
+          ins(%init_scalar : f32)
+          outs(%empty : tensor<2xf32>) -> tensor<2xf32>
+      %sum = linalg.generic {
+          indexing_maps = [
+            affine_map<(d0, d1) -> (d0, d1)>,
+            affine_map<(d0, d1) -> (d0)>
+          ],
+          iterator_types = ["parallel", "reduction"]
+        } ins(%arg0 : tensor<2x4xf32>)
+          outs(%filled : tensor<2xf32>) {
+        ^bb0(%value: f32, %acc: f32):
+          %add = arith.addf %value, %acc : f32
+          linalg.yield %add : f32
+        } -> tensor<2xf32>
+      wafer.group_yield %sum : tensor<2xf32>
+    } : tensor<2xf32>
+    return %0 : tensor<2xf32>
+  }
+
+  func.func @tensor_movement_group(%input: tensor<8xf32>,
+                                   %patch: tensor<4xf32>,
+                                   %out: tensor<8xf32>) -> tensor<8xf32> {
+    %0 = wafer.group ins(%input, %patch : tensor<8xf32>, tensor<4xf32>)
+        outs(%out : tensor<8xf32>) {
+    ^bb0(%arg0: tensor<8xf32>, %arg1: tensor<4xf32>, %arg2: tensor<8xf32>):
+      %slice = tensor.extract_slice %arg0[2] [4] [1]
+          : tensor<8xf32> to tensor<4xf32>
+      %inserted = tensor.insert_slice %slice into %arg2[2] [4] [1]
+          : tensor<4xf32> into tensor<8xf32>
+      wafer.group_yield %inserted : tensor<8xf32>
+    } : tensor<8xf32>
+    return %0 : tensor<8xf32>
+  }
+
+  func.func @tensor_rank_reduced_slice_group(%input: tensor<2x4xf32>,
+                                             %out: tensor<2x4xf32>)
+      -> tensor<2x4xf32> {
+    %0 = wafer.group ins(%input : tensor<2x4xf32>) outs(%out : tensor<2x4xf32>) {
+    ^bb0(%arg0: tensor<2x4xf32>, %arg1: tensor<2x4xf32>):
+      %row = tensor.extract_slice %arg0[0, 0] [1, 4] [1, 1]
+          : tensor<2x4xf32> to tensor<4xf32>
+      %inserted = tensor.insert_slice %row into %arg1[1, 0] [1, 4] [1, 1]
+          : tensor<4xf32> into tensor<2x4xf32>
+      wafer.group_yield %inserted : tensor<2x4xf32>
+    } : tensor<2x4xf32>
+    return %0 : tensor<2x4xf32>
+  }
+
+  func.func @tensor_reshape_group(%input: tensor<6xf32>,
+                                  %out: tensor<6xf32>) -> tensor<6xf32> {
+    %0 = wafer.group ins(%input : tensor<6xf32>) outs(%out : tensor<6xf32>) {
+    ^bb0(%arg0: tensor<6xf32>, %arg1: tensor<6xf32>):
+      %expanded = tensor.expand_shape %arg0 [[0, 1]]
+          output_shape [2, 3] : tensor<6xf32> into tensor<2x3xf32>
+      %collapsed = tensor.collapse_shape %expanded [[0, 1]]
+          : tensor<2x3xf32> into tensor<6xf32>
+      wafer.group_yield %collapsed : tensor<6xf32>
+    } : tensor<6xf32>
+    return %0 : tensor<6xf32>
+  }
+
+  func.func @passthrough_movement_group(%input: tensor<2x3xf32>,
+                                        %out: tensor<3x2xf32>)
+      -> tensor<3x2xf32> {
+    %0 = wafer.group ins(%input : tensor<2x3xf32>) outs(%out : tensor<3x2xf32>) {
+    ^bb0(%arg0: tensor<2x3xf32>, %arg1: tensor<3x2xf32>):
+      %transposed = linalg.generic {
+          indexing_maps = [
+            affine_map<(d0, d1) -> (d1, d0)>,
+            affine_map<(d0, d1) -> (d0, d1)>
+          ],
+          iterator_types = ["parallel", "parallel"]
+        } ins(%arg0 : tensor<2x3xf32>)
+          outs(%arg1 : tensor<3x2xf32>) {
+        ^bb0(%value: f32, %out_el: f32):
+          linalg.yield %value : f32
+        } -> tensor<3x2xf32>
+      wafer.group_yield %transposed : tensor<3x2xf32>
+    } : tensor<3x2xf32>
+    return %0 : tensor<3x2xf32>
+  }
+
   func.func @collective_group(%input: tensor<4xf32>, %out: tensor<4xf32>)
       -> tensor<4xf32> {
     %0 = wafer.group ins(%input : tensor<4xf32>) outs(%out : tensor<4xf32>) {
@@ -123,7 +213,7 @@ module {
     return %0 : tensor<4xf32>
   }
 
-  func.func @unsupported_body_op(%input: tensor<8xf32>, %out: tensor<4xf32>)
+  func.func @static_slice_support_op(%input: tensor<8xf32>, %out: tensor<4xf32>)
       -> tensor<4xf32> {
     %0 = wafer.group ins(%input : tensor<8xf32>) outs(%out : tensor<4xf32>) {
     ^bb0(%arg0: tensor<8xf32>, %arg1: tensor<4xf32>):
@@ -158,7 +248,38 @@ module {
 // CHECK: wafer.alloc_tile
 // CHECK: wafer.compute.fill
 // CHECK: wafer.store_tile
+// CHECK-LABEL: wafer.tile_region.candidate group @reduce_sum_group#0
+// CHECK: tensor.extract
+// CHECK: wafer.compute.fill
+// CHECK: wafer.layout.materialize
+// CHECK: #wafer.mem_layout<cx>
+// CHECK: wafer.compute.reduce <sum>
+// CHECK-SAME: dimensions = array<i64: 1>
+// CHECK: wafer.layout.materialize
+// CHECK: #wafer.mem_layout<tensor>
+// CHECK: wafer.store_tile
+// CHECK-LABEL: wafer.tile_region.candidate group @tensor_movement_group#0
+// CHECK: wafer.move.extract_slice
+// CHECK-SAME: offsets = array<i64: 2>
+// CHECK: wafer.move.insert_slice
+// CHECK-SAME: offsets = array<i64: 2>
+// CHECK: wafer.store_tile
+// CHECK-LABEL: wafer.tile_region.candidate group @tensor_rank_reduced_slice_group#0
+// CHECK: wafer.move.extract_slice
+// CHECK-SAME: sizes = array<i64: 1, 4>
+// CHECK: !wafer.tile_buffer<tensor<4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
+// CHECK: wafer.move.insert_slice
+// CHECK-SAME: sizes = array<i64: 1, 4>
+// CHECK: wafer.store_tile
+// CHECK-LABEL: wafer.tile_region.candidate group @tensor_reshape_group#0
+// CHECK: wafer.view.reshape
+// CHECK: wafer.view.reshape
+// CHECK: wafer.store_tile
+// CHECK-LABEL: wafer.tile_region.candidate group @passthrough_movement_group#0
+// CHECK: wafer.move.transpose
+// CHECK-SAME: permutation = array<i64: 1, 0>
+// CHECK: wafer.store_tile
 // CHECK-LABEL: wafer.tile_region.candidate group @collective_group#0
 // CHECK: failure collective lowering requires placement/local-rank facts
-// CHECK-LABEL: wafer.tile_region.candidate group @unsupported_body_op#0
-// CHECK: failure tiling demand failed: unsupported op tensor.extract_slice
+// CHECK-LABEL: wafer.tile_region.candidate group @static_slice_support_op#0
+// CHECK: wafer.move.extract_slice
