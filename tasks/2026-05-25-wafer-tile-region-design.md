@@ -63,6 +63,37 @@ wafer.group
 - committed `wafer.tile_region`：R3.3 只把 R3.2f 已接受的 plan 写入主 IR。后续 R3.4/R3.5
   只 materialize accepted layout/SPM/DDR facts，不重新决定 group 是否可行。
 
+### 2.1 R3.2c Pipeline Contract
+
+```text
+Pipeline position:
+- Upstream artifact / IR:
+  R3.1 verifier-legal tensor-level `wafer.group` candidate、R3.2a
+  `GroupTilingDemand` analysis result 和 R3.2b `GroupLayoutPlan` analysis result。
+- Current stage responsibility:
+  在 transformation-local / scratch IR 中构造 provisional `wafer.tile_region` candidate；
+  把 logical group boundary 映射成 `wafer.load_tile` / `wafer.store_tile`，把 selected
+  layout 和 materialization cut 映射成 `!wafer.tile_buffer` 与 `wafer.layout.materialize`，
+  把可验证的 structured compute / tensor collective 映射成 target-abstract
+  `wafer.compute` / `wafer.comm` / sync/effect op。
+- Output artifact / IR:
+  verifier-legal provisional `wafer.tile_region` candidate 或结构化 failure reason。
+  candidate 只用于 dump、verification 和后续 planning analysis；rejected candidate 不写入主 IR。
+- Downstream consumer:
+  R3.2d SPM allocation、R3.2e DDR/resource planning + compute/movement legality analysis、
+  R3.2f closed-loop planner。
+- User-level driver / named pipeline:
+  主线仍由 `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 产生 logical group；
+  R3.2c 的局部验证入口是 `wafer-opt --wafer-dump-tile-region-candidate`。
+- Explicit non-goals:
+  不做 SPM offset allocation、不做 DDR pool/range/bandwidth planning、不 accept/reject/split
+  group、不把 candidate commit 到主 IR、不 lower 到 packet/ABI/LLVM。
+- Completion gate:
+  FileCheck 覆盖 load/store boundary、layout materialization、GEMM、broadcast/elementwise、
+  multi-group、unsupported op failure 和缺少 placement/local-rank 的 collective failure；
+  program pipeline gate 能在真实 `stablehlo-spmd-to-group` 输出上重放 candidate dump 或结构化 failure。
+```
+
 `wafer.tile_region` 可以跨这些 lowering 子阶段保留为 region container。早期 region 中的 buffer
 可能还是 `!wafer.tile_buffer`；后期可以变成带 Wafer memory space 的 `memref` 或 descriptor。
 因此不能简单说 tile region 内“永远不允许 memref”或“永远不允许 lower-level op”。正确边界是：

@@ -1,8 +1,10 @@
 add_mlir_library(WaferTransforms
   Group/DumpLayoutPlan.cpp
   Group/DumpTilingDemand.cpp
+  Group/DumpTileRegionCandidate.cpp
   Group/FormGroupCandidates.cpp
   Group/LayoutPlanningAnalysis.cpp
+  Group/TileRegionCandidate.cpp
   Group/TilingDemandAnalysis.cpp
   StableHLOToLinalg/NormalizeConstants.cpp
   StableHLOToLinalg/LowerStablehloDot.cpp
@@ -16,6 +18,8 @@ add_mlir_library(WaferTransforms
   LINK_LIBS PUBLIC
   WaferIR
   MLIRArithDialect
+  MLIRAsyncDialect
+  MLIRFuncDialect
   MLIRIR
   MLIRLinalgDialect
   MLIRMathDialect
