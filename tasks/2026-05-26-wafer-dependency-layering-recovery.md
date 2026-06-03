@@ -137,13 +137,12 @@ core compiler target。
 
 ## 未完成项
 
-- P2.S1 已接上真实 PyTorch/XLA pre-SPMD program 和 Wafer Shardy propagation stage gate；仍未完成
-  Wafer-owned XLA SPMD partition compiler stage。P2.S2 需要决定独立 C++ 工具或 driver/library stage
-  如何 link XLA ShardyXLA / SpmdPartitioner，同时继续隔离在 optional target 中，避免 core
-  IR/backend target 获得 XLA/GSPMD public dependency。
+- P2.S1/P2.S2/R2.4 已接上真实 PyTorch/XLA pre-SPMD program、Wafer Shardy propagation、
+  Wafer-owned XLA SPMD partition helper 和 post-SPMD tensor collective handoff；R3.1 仍需补完整
+  group conservative expansion，不能把 one-root group shell 当作完成。
 - torch-mlir source-tree adapter 的精确 commit 仍属于后续 frontend importer 扩展；R0.3
   已先用 PyTorch/XLA 2.5 源码版本收敛 XLA/LLVM/StableHLO/Shardy 版本来源。
-- R3.2：从当前 `wafer.abi.*` IR 自动导出 package manifest。
+- R3.7：从当前 `wafer.abi.*` / launch IR 自动导出 package manifest。
 - P8：runtime adapter、BO binding 和 completion source 仍未实现。
 
 ## 验证

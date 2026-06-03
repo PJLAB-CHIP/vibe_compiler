@@ -55,7 +55,7 @@ C ABI conversion 混在旧的聚合目录里。
   可见范围。
 - R1.1：已完成，按 op family 拆 ODS、C++ verifier 和 tests。
 - R2.1/R2.2：恢复 frontend program / importer / Shardy bridge。
-- R3.1/R3.2：恢复 group / root tile 主链路和 IR-derived package gate。
+- R3.1/R3.2：恢复 group / root tile 主链路；R3.7 恢复 IR-derived package gate。
 
 ## 验证
 

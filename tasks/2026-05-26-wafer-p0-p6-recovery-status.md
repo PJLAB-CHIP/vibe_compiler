@@ -267,7 +267,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 恢复任务：
 
 - R3.1：恢复 group boundary / candidate contract，保证 `wafer.group` 只表达 local tensor grouping
-  和 candidate boundary。
+  和 candidate boundary，并按 group 设计完成 dependency-preserving conservative expansion。
 - R3.2：恢复 root tile feasibility oracle，把 op tiling、layout、SPM、DDR 和 compute/movement
   legality 接到同一 candidate 检查。
 - R3.3：恢复 tile_region materialization contract，只把 accepted group materialize 成
@@ -380,7 +380,8 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - 有 `wafer.abi.dte_send` / `recv` / `wait` issue op 和 block-local resource tuple conflict check。
 - 有 ring all-gather、reduce-scatter、all-reduce lowering 到 p2p + local elementwise accumulation。
 - 旧的 StableHLO all_gather/all_reduce/reduce_scatter 到 `wafer.comm` collective-level op 的
-  normalization 已移除；主线仍需补 StableHLO -> Wafer LinalgExt-style tensor collective handoff。
+  normalization 已移除；R2.4 主线已恢复 StableHLO -> Wafer LinalgExt-style tensor collective
+  handoff，R6 仍需恢复 tiled tensor collective -> `wafer.comm` materialization。
 - 有 p2p/ring communication fixture 验证；multi-replica collective 需按新的 tensor collective
   handoff 重新建立。
 
@@ -406,12 +407,12 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 | --- | --- | --- |
 | P0 | 骨架 | 工程入口存在，源码 ownership、依赖层级边界和 IR op-family 文件边界已由 R0.2/R0.3/R1.1 恢复；仍不代表 frontend/runtime/package 主路径完成 |
 | P1 | 骨架 | 核心 op/type/verifier 基础实现存在，interface/effect/resource 已恢复；历史 local compute stage-connection gate 已删除，storage-realized 主链路和 communication cast bridge 仍未闭环 |
-| P2 | 骨架 | StableHLO textual lowering、frontend program verifier、PyTorch/XLA program directory capture、SDY program bridge、P2.S1 Shardy propagation stage gate 和 local compute coverage 口径已恢复；Wafer-owned SPMD partition、dynamic/mask/constant-storage、tensor collective handoff 和 physical schedule 仍未闭环 |
+| P2 | 骨架 | StableHLO textual lowering、frontend program verifier、PyTorch/XLA program directory capture、SDY program bridge、P2.S1 Shardy propagation stage gate、P2.S2 Wafer-owned SPMD partition 和 R2.4 tensor collective handoff 已恢复；dynamic/mask/constant-storage、group/resource/package 和 physical schedule 仍未闭环 |
 | P3 | 骨架 | 旧 single-tile local unit path 已删除；group/resource/C ABI/package 主链路未闭环 |
 | P4 | 骨架 | placement/map 和 multi-tile fixture 可跑，但真实 shard/merge/launch binding 未闭环 |
 | P5 | 骨架 | transformer staged frontend fixtures 和 local fixture 可跑，但 full schedule/resource/package/device program 未闭环 |
 | P6 | 骨架 | comm/DTE fixture 可跑，但 resource allocator、buffer slice/address、package/runtime metadata 未闭环 |
 
-R2 之后的下一步是 R2.4：建立 Wafer LinalgExt-style tensor collective handoff；随后进入 R3.1，
-恢复 group boundary / candidate contract，再进入 root tile feasibility oracle 和 tile_region
+R2.4 已建立 Wafer LinalgExt-style tensor collective handoff；当前下一步仍是 R3.1，补完整
+group boundary / conservative expansion，再进入 root tile feasibility oracle 和 tile_region
 materialization 主链路。

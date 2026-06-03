@@ -575,9 +575,9 @@ formation pass 在每个 `func.func` 的 region/block 内先做局部 op 分类�
 
 ### 9.2 Root / Hero Seed
 
-R3.1 从 root/hero op 建立最小 group seed。当前已实现的第一版只 materialize one-root
-candidate，不做 producer/consumer expansion；下面的 expansion 规则是后续放宽候选范围时必须遵守的
-legality 边界，不是当前完成 gate。
+R3.1 从 root/hero op 建立最小 group seed，并按 9.3 做 conservative expansion。实现可以宁可
+产生更小的合法 candidate，但不能把 one-root shell 当作 R3.1 完成 gate；若某个 producer /
+consumer 满足 9.3 的可证明条件，应进入 candidate，除非下游 legality 明确拒绝并给出原因。
 
 root 优先级是：
 
