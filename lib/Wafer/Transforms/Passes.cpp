@@ -12,6 +12,7 @@ void registerWaferTransformPasses() {
     mlir::registerPass(createLowerStablehloDotPass);
     mlir::registerPass(createLowerStablehloElementwisePass);
     mlir::registerPass(createFormGroupCandidatesPass);
+    mlir::registerPass(createDumpGroupTilingDemandPass);
     mlir::registerPass(createLowerStablehloReducePass);
     mlir::registerPass(createLowerStablehloShapePass);
     mlir::registerPass(createNormalizeStablehloCollectivesPass);

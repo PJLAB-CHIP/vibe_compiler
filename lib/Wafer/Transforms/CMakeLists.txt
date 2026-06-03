@@ -1,5 +1,7 @@
 add_mlir_library(WaferTransforms
+  Group/DumpTilingDemand.cpp
   Group/FormGroupCandidates.cpp
+  Group/TilingDemandOracle.cpp
   StableHLOToLinalg/NormalizeConstants.cpp
   StableHLOToLinalg/LowerStablehloDot.cpp
   StableHLOToLinalg/LowerStablehloElementwise.cpp

@@ -71,15 +71,37 @@ wafer-opt \
 
 ## 当前活跃任务
 
-当前没有 active 实现任务。下一项不是完整 R3.2e closed-loop planner；应先从 R3.2a 开始恢复
-group planner 依赖的真实 feasibility/oracle 能力。R3.2e 在 R3.2a-d 完成前保持 pending。
+当前没有 active 实现任务。R3.2a op tiling demand oracle 已完成；下一项是 R3.2b layout
+feasibility trial，消费 R3.2a 的 tile value graph / op layout constraints，恢复 layout
+assignment 和 materialization demand 试算。
+
+R3.2a Pipeline Contract:
+
+- upstream program / IR：R3.1 verifier-legal tensor-level `wafer.group` candidate，来自
+  `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 或等价局部 group fixture。
+- current stage responsibility：从 SSA use-def、destination-style ties、Linalg structured semantics、
+  indexing maps、iterator types、MLIR `TilingInterface` 和 Wafer interfaces 恢复 per-op operand
+  slice、result slice、temporary/scratch/accumulator 和 movement / collective demand。
+- output program / IR：transformation-local `GroupTilingDemand` analysis result；debug dump pass
+  只打印同一结构，不修改 IR、不生成 scheduled group、不写 semantic attr。
+- downstream consumer：R3.2b layout feasibility trial、R3.2c SPM allocation trial、R3.2d DDR/resource
+  + compute/movement legality trial、R3.2e closed-loop planner。
+- user-level driver / named pipeline：主线由
+  `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 产生 group；R3.2a 局部验证用
+  `wafer-opt --wafer-dump-group-tiling-demand` 在 group IR 上 dump oracle 输出。
+- explicit non-goals：不选择最终 tile shape、不 accept/reject/split group、不做 layout assignment、
+  不分配 SPM、不判断 DDR pool/range/bandwidth、不 materialize compute/movement/comm op、不生成
+  package/ABI。
+- completion gate：FileCheck 覆盖 linalg matmul/broadcast/elementwise、multi-group、tensor
+  collective 和 negative failure reason；program pipeline gate 在真实
+  `stablehlo-spmd-to-group` 输出上重放 demand dump。
 
 ## 恢复队列
 
 | ID | 状态 | 设计来源 | 输入 / 输出边界 | 完成 gate |
 | --- | --- | --- | --- | --- |
-| R3.2a | ready | `2026-05-12-wafer-group-design.md` 10.1-10.2；MLIR Linalg/TilingInterface；tensor collective docs | 输入：R3.1 logical `wafer.group` body；输出：target-abstract tile plan candidate 和 per-op tile demand | 通过 op 语义 / interface 推导 operand slice、result slice、temporary/scratch/accumulator 和 movement demand；`linalg` 走 structured semantics / indexing maps，`wafer.tensor_collective.*` 走 tiling interface；不能靠 op 名、变量名、单个 case shape 或 side table |
-| R3.2b | pending | `2026-05-21-wafer-layout-materialization-design.md` | 输入：R3.2a tile value graph 和 op layout constraints；输出：layout assignment / materialization demand trial | 给出可验证 layout assignment、materialization cut 和 materialization buffer demand；失败返回结构化原因；不把 layout plan 写进 `wafer.group` attr |
+| R3.2a | done | `2026-05-12-wafer-group-design.md` 10.1-10.2；MLIR Linalg/TilingInterface；tensor collective docs | 输入：R3.1 logical `wafer.group` body；输出：target-abstract tile plan candidate 和 per-op tile demand | `GroupTilingDemand` analysis + `--wafer-dump-group-tiling-demand` debug gate 已恢复；覆盖 linalg indexing maps、reduction accumulator、tensor collective interface、多 group 和 unsupported op failure；不写 `wafer.group` attr |
+| R3.2b | ready | `2026-05-21-wafer-layout-materialization-design.md` | 输入：R3.2a tile value graph 和 op layout constraints；输出：layout assignment / materialization demand trial | 给出可验证 layout assignment、materialization cut 和 materialization buffer demand；失败返回结构化原因；不把 layout plan 写进 `wafer.group` attr |
 | R3.2c | pending | `2026-05-21-wafer-spm-bufferization-design.md` | 输入：R3.2a/b 的 tile-local buffer demand、layout、lifetime 和 effect；输出：SPM allocation trial result | 做真实 SPM window placement：alignment、layout padding、scratch/psum/temp、lifetime overlap、range/end-address/conflict 都参与；不是 byte-size estimate；失败返回 planner |
 | R3.2d | pending | `2026-05-25-wafer-ddr-resource-allocation-design.md`；compute/movement docs | 输入：R3.2a/b 的 boundary、load/store、constant、workspace、movement 和 compute legality demand；输出：DDR/resource trial 和 compute/movement legality result | 覆盖 external/workspace/resident-constant、pool/domain/capacity/bandwidth/range demand；compute/movement/collective 的 layout、dtype、shape、effect 通过接口/verifier 检查；不能用 manifest fixture 替代 |
 | R3.2e | pending | `2026-05-12-wafer-group-design.md` 10.x；R3.2a-d oracle results | 输入：R3.1 logical group 和 R3.2a-d feasibility oracles；输出：accepted/rejected/split group planning decision | closed-loop 搜索 group boundary、traversal、tile shape、layout、SPM/DDR/resource plan；accepted plan 带 R3.3 可消费的 traversal/tile/slice/layout/SPM/DDR facts；未接受 plan 不落 IR；可选 multi-root packing 只有在 feasibility/cost 证明兼容时接受 |
@@ -138,13 +160,13 @@ co-scheduled candidate 接受。仅因为同 block、同 shape 或语法上可�
 
 ## 最近验证
 
-当前已验证的是 R3.1 completion gate：
+当前已验证的是 R3.2a completion gate：
 
-- `cmake --build build/r0-deps-pytorch-xla --target wafer-opt -- -j8`。
-- `/root/miniconda3/bin/lit -sv build/r0-deps-pytorch-xla/test --filter='form-group-candidates-expansion'`。
-- `/root/miniconda3/bin/lit -sv build/r0-deps-pytorch-xla/test --filter='form-group-candidates.mlir'`。
-- `/root/miniconda3/bin/lit -sv build/r0-deps-pytorch-xla/test --filter='wafer-opt-spmd-to-group'`。
-- `cmake --build build/r0-deps-pytorch-xla --target check-wafer -- -j8`：107 passed, 1 unsupported。
+- `cmake --build build/r0-deps-pytorch-xla --target wafer-opt -- -j128`。
+- `/root/miniconda3/bin/lit -sv build/r0-deps-pytorch-xla/test/Transforms/dump-group-tiling-demand.mlir build/r0-deps-pytorch-xla/test/Transforms/dump-group-tiling-demand-failure.mlir build/r0-deps-pytorch-xla/test/Tools/wafer-opt-spmd-to-group.test`：
+  3/3 passed。
+- `cmake --build build/r0-deps-pytorch-xla --target check-wafer -- -j128`：109 passed,
+  1 unsupported。
 - `ctest --test-dir build/r0-deps-pytorch-xla --output-on-failure`：2/2 passed。
 - `python3 tools/check_deps.py`。
 - `python3 tools/check_ir_organization.py --root .`。
@@ -152,6 +174,6 @@ co-scheduled candidate 接受。仅因为同 block、同 shape 或语法上可�
 
 ## 下一步
 
-从 R3.2a 开始：先恢复 op tiling demand 和 target-abstract tile plan candidate。完整 R3.2e
-closed-loop planner 只有在 layout、SPM、DDR、compute/movement feasibility oracles 都能真实参与
-decision 后才能进入 `ready`。
+从 R3.2b 开始：消费 R3.2a 的 tile value graph 和 op layout constraints，恢复 layout assignment /
+materialization demand trial。完整 R3.2e closed-loop planner 只有在 layout、SPM、DDR、
+compute/movement feasibility oracles 都能真实参与 decision 后才能进入 `ready`。

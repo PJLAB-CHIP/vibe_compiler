@@ -4,6 +4,7 @@
 # RUN: env CPU_NUM_DEVICES=16 PJRT_DEVICE=CPU %importer_python %wafer_src_root/test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-sharded-program --sharding-strategy column --size 32 --output-program-dir %t.input.program
 # RUN: wafer-opt --program-pipeline=stablehlo-spmd-to-group --input-program-dir %t.input.program --output-program-dir %t.group.program --default-tile-count=16 | FileCheck %s --check-prefix=PIPELINE
 # RUN: FileCheck %s --input-file=%t.group.program/functions/forward.mlir --check-prefix=GROUP-MLIR
+# RUN: wafer-opt --wafer-dump-group-tiling-demand %t.group.program/functions/forward.mlir 2>&1 | FileCheck %s --check-prefix=DEMAND
 
 # PIPELINE: wafer-opt: completed Wafer program pipeline stablehlo-spmd-to-group:
 
@@ -19,3 +20,10 @@
 # GROUP-MLIR: arith.addf
 # GROUP-MLIR: wafer.group_yield
 # GROUP-MLIR-NOT: wafer.comm
+
+# DEMAND-LABEL: wafer.tiling_demand group @main#0
+# DEMAND: result_tile #0 type=tensor<32x32xf32> slice=[d0,d1]
+# DEMAND: op #0 wafer.tensor_collective.all_gather
+# DEMAND: collective kind=all_gather rank_group=[
+# DEMAND: op #1 linalg.generic
+# DEMAND: input #0 slice=[d0,d1]

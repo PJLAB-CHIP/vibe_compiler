@@ -765,6 +765,67 @@ SPM 放不下、layout 不合法或 DDR demand 不可接受的阶段。若 R3.2a
 不通过，planner 必须回到 tile shape、layout、internal split 或 group boundary，而不是落一个
 未接受的 `wafer.tile_region` 等待下游补救。
 
+### 10.1.2 R3.2a Op Tiling Demand Oracle
+
+R3.2a 的边界是 analysis oracle，不是 scheduled IR materialization。它消费 R3.1 形成的
+logical `wafer.group`，在给定 target-abstract traversal / output tile candidate 时，从每个
+op 的结构化语义恢复 tile-level demand graph。第一版可以用 full-result tile 作为默认候选来
+验证语义恢复；后续 R3.2e planner 会用同一 oracle 查询不同 tile shape。
+
+Pipeline position:
+
+```text
+Pipeline position:
+- Upstream artifact / IR:
+  R3.1 verifier-legal tensor-level `wafer.group` candidate，body 中只包含 tensor-level
+  `linalg` / `tensor` / `scf` / `arith` / `math` 和 `wafer.tensor_collective.*`。
+- Current stage responsibility:
+  从 SSA use-def、destination-style ties、Linalg structured semantics、indexing maps、
+  iterator types、MLIR `TilingInterface` 和 Wafer op interfaces 恢复 per-op operand slice、
+  result slice、temporary/scratch/accumulator 和 movement/collective demand。
+- Output artifact / IR:
+  transformation-local `GroupTilingDemand` analysis result；debug pass 可以 dump 同一结构，
+  但不修改 IR、不生成 `wafer.tile_region`、不写 `wafer.group` attribute。
+- Downstream consumer:
+  R3.2b layout feasibility trial、R3.2c SPM allocation trial、R3.2d DDR/resource +
+  compute/movement legality trial，以及 R3.2e closed-loop planner。
+- User-level driver / named pipeline:
+  主线仍由 `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 产生 R3.1 group；
+  R3.2a 的局部验证入口是 `wafer-opt --wafer-dump-group-tiling-demand`，用于在同一
+  group IR 上检查 oracle 输出。它是调试/测试入口，不是长期 compile flow。
+- Explicit non-goals:
+  不选择最终 tile shape、不 accept/reject/split group、不做 layout assignment、不分配 SPM、
+  不判断 DDR pool/range/bandwidth、不 materialize compute/movement/comm op、不生成 package/ABI。
+- Completion gate:
+  FileCheck 覆盖 linalg matmul/broadcast/elementwise、multi-group、tensor collective 和 negative
+  failure reason；program pipeline gate 从真实 `stablehlo-spmd-to-group` 输出上重放 demand dump。
+```
+
+R3.2a 的核心数据结构应表达：
+
+- group boundary values：input、out、result 和 body block argument 的对应关系。
+- traversal / result tile：第一版至少能表达 full-result tile；后续可替换为 planner 传入的
+  offsets/sizes。
+- per-op demand：operand slice、output slice、result slice、iterator role、internal/reduction
+  dims、temporary/scratch/accumulator 需求和 movement/collective demand。
+- structured failure：unsupported op、非 ranked tensor、无法投影的 indexing map、collective tile
+  跨 slot 或动态不可证明等原因。
+
+`linalg` op 必须走 `linalg::LinalgOp` 的 iterator types 和 indexing maps。operand slice
+由 indexing map 把 op loop domain 投影到 operand/result 维度；parallel dims 连接 traversal
+tile，reduction / contraction dims 作为 hidden/internal demand 保留。不能把
+`matmul + bias + relu` 写成固定 op 序列 matcher；这个 case 只能作为 structured semantics
+自然推出的测试。
+
+`wafer.tensor_collective.*` 必须走 MLIR `TilingInterface` 和
+`WaferTensorCollectiveOpInterface`。shape-preserving collective 可以返回同 shape tile demand；
+all-gather / reduce-scatter / all-to-all 必须检查 collective axis / slot relation，无法证明
+slot-aligned 时返回 failure，让 R3.2e 回到 tile shape 或 group split。
+
+`tensor.empty` 在该层是 destination/init storage placeholder，不是可执行 compute demand。
+`linalg.fill` 是 init/write demand；若它初始化后续 reduction / contraction output，对应 value
+可以被后续 SPM/layout oracle 视为 accumulator/psum live range 的起点。
+
 layout 文档中的 `!wafer.tile_buffer` / `wafer.layout.materialize` 不是 `wafer.group` 的另一套
 上游 IR。它们是 scheduled group 中同一批 tiled tensor SSA value 在 `wafer.tile_region` 层的
 bufferized 表达：
