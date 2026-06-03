@@ -140,6 +140,13 @@ Pipeline position:
   `stablehlo-spmd-to-group` 输出上重放 layout-plan dump。
 ```
 
+2026-06-03 收口状态：R3.2b 已按上述 logical-group analysis 边界完成。当前
+`GroupLayoutPlan` 消费 R3.2a `GroupTilingDemand` facts 和 group SSA use-def，输出
+boundary layout、per-op layout constraints/assignment、materialization cut、group-result
+materialization demand 和 failure forwarding；它不 rewrite `wafer.group`，不写 layout attr，
+不生成 `wafer.tile_region`。completion gate 覆盖手写 group fixture 和真实
+`stablehlo-spmd-to-group` program 输出。
+
 ### 3.2 从 Tensor Value 到 Buffer Value
 
 layout planner 先把 target-abstract tile-region 中的 tiled SSA value 映射成 layout variable，

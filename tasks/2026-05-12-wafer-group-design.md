@@ -815,6 +815,12 @@ Pipeline position:
   failure reason；program pipeline gate 从真实 `stablehlo-spmd-to-group` 输出上重放 demand dump。
 ```
 
+2026-06-03 收口状态：R3.2a 已按上述 analysis-only 边界完成。当前实现通过
+`GroupTilingDemand` 从 logical `wafer.group` body 的 SSA use-def、DPS ties、Linalg
+iterator/indexing map、accumulator/reduction dims 和 `wafer.tensor_collective.*` interface
+恢复 demand；`--wafer-dump-group-tiling-demand` 只是同一 analysis result 的 debug view，不修改 IR。
+completion gate 覆盖手写 group fixture 和真实 `stablehlo-spmd-to-group` program 输出。
+
 R3.2a 的核心数据结构应表达：
 
 - group boundary values：input、out、result 和 body block argument 的对应关系。

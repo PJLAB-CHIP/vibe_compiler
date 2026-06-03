@@ -101,6 +101,10 @@
   必须实现 `DestinationStyleOpInterface`、MLIR `TilingInterface`、`WaferTilingInterface` 和
   `WaferTensorCollectiveOpInterface`。slot-crossing 或动态不可证明的 collective-axis tile 应由
   `TilingInterface` 返回 failure，等待 group planner 拆 slot-aligned tile 或 R6 materialization。
+- R3.2a/R3.2b 是 analysis-only 阶段：`GroupTilingDemand` 和 `GroupLayoutPlan` 可以用
+  `--wafer-dump-group-tiling-demand` / `--wafer-dump-group-layout-plan` dump，但不能把 tile demand、
+  layout assignment 或 materialization cut 写成 `wafer.group` attr，也不能在这两步生成
+  `wafer.tile_region`。主线 completion gate 要在真实 `stablehlo-spmd-to-group` 输出上重放这些 dump。
 - 依赖一致性检查入口是 `tools/check_deps.py`；默认检查固定版本、importer registration hook、
   public source submodule checkout HEAD、importer Python package pin 和 core/frontend/runtime/test
   tool dependency layering。

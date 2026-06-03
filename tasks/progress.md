@@ -39,8 +39,8 @@ PyTorch/XLA StableHLO Wafer program directory
   -> R3.2+ tiling / placement / package recovery
 ```
 
-当前可重放的用户级 command 不传 helper path。R2.4 / R3.1 已有可运行实现，但按下方状态表需要
-完成 conversion legality 重审后才能恢复为 `done`：
+当前可重放的用户级 command 不传 helper path。R2.4 / R3.1 / R3.2a / R3.2b 已按当前
+pipeline contract 收口：
 
 ```bash
 wafer-opt \
@@ -60,6 +60,13 @@ wafer-opt \
   --default-tile-count=16
 ```
 
+R3.2a / R3.2b 当前局部 analysis gate 在 R3.1 输出的 group IR 上重放：
+
+```bash
+wafer-opt --wafer-dump-group-tiling-demand <group-program>/functions/forward.mlir
+wafer-opt --wafer-dump-group-layout-plan <group-program>/functions/forward.mlir
+```
+
 ## 已完成链路
 
 | ID | 状态 | 设计来源 | 输入 | 输出 / 完成 gate |
@@ -68,23 +75,22 @@ wafer-opt \
 | P2.S1 | done | `2026-05-25-wafer-shardy-spmd-design.md` | P2.F1 program 或 textual StableHLO/SDY fixture | default input seed + Shardy propagation；作为 `stablehlo-spmd` 内部阶段，不产出 partitioned local body |
 | P2.S2 | done | `2026-05-25-wafer-shardy-spmd-design.md` | P2.F1 sharded program | `stablehlo-spmd` 产出 post-SPMD StableHLO program、rank-local signature、collective metadata、parameter shard metadata/payload |
 | R2.4 | done | `2026-05-25-wafer-local-compute-normalization-design.md` | post-SPMD StableHLO program | `stablehlo-spmd-to-linalg` 主线先将 post-SPMD StableHLO collective normalize 成 verifier-legal `wafer.tensor_collective.*`，再调用当前 pin 的官方 `stablehlo-legalize-to-linalg` conversion；unsupported collective 或 raw StableHLO 残留会让 pipeline fail；输出 Linalg/Tensor/SCF/Arith/Math local compute，不生成 `wafer.comm` / SPM / ABI；旧本地 StableHLO compute lowering pass 入口已删除 |
+| R3.1 | done | `2026-05-12-wafer-group-design.md` 2.1、9.1-9.5 | R2.4 输出的 rank-local structured tensor IR | `stablehlo-spmd-to-group` 主线形成 verifier-legal logical `wafer.group`；覆盖 fill/init、matmul+bias+epilogue、simple elementwise、tensor collective handoff、多 group 和无 raw StableHLO / `wafer.comm` / lower-level storage op |
+| R3.2a | done | `2026-05-12-wafer-group-design.md` 10.1-10.2 | R3.1 logical `wafer.group` body | `GroupTilingDemand` analysis result；覆盖 boundary/result tile facts、linalg iterator/indexing-map slice、accumulator/reduction dims、tensor collective demand、多 group 和 unsupported-op failure；真实 `stablehlo-spmd-to-group` 输出可重放 demand dump |
+| R3.2b | done | `2026-05-21-wafer-layout-materialization-design.md` 3.1.1 | R3.2a `GroupTilingDemand` facts + group SSA use-def | `GroupLayoutPlan` analysis result；覆盖 boundary layout、matmul cx constraints、broadcast tensor relation、collective tensor layout、materialization cut/result materialization demand 和 tiling failure forwarding；不修改 `wafer.group`，不生成 `wafer.tile_region` |
 
 ## 当前状态
 
-当前 active task 是 R3.1 group candidate 重新验证：R2.4 输入合同已经稳定为 Wafer collective
-handoff + 官方 StableHLO Linalg conversion，R3.1 需要在新的 rank-local structured tensor IR 上重跑
-dependency-preserving expansion、fill/init、bias/epilogue/simple elementwise、tensor collective handoff 和
-主链路 program gate。R3.2a / R3.2b / R3.2c 已有局部实现和测试证据，但在 R3.1 重审前不能标
-`done`；R3.2c 仍需要按 op coverage 表决定是否重构为 conversion pass。
+当前 active task 是 R3.2c tile-region candidate conversion/pass 边界收口。R3.2a / R3.2b 已作为
+analysis-only 阶段完成，R3.2c 可以消费 R3.1 logical group、R3.2a tiling demand 和 R3.2b layout plan。
+但 R3.2c 当前 op coverage 仍有限，且是否重构为 conversion pass 尚未收口；未完成前不能把
+R3.2c 作为 R3.2d 的稳定输入。
 
 ## 恢复队列
 
 | ID | 状态 | 设计来源 | 输入 / 输出边界 | 完成 gate |
 | --- | --- | --- | --- | --- |
-| R3.1 | active | `2026-05-12-wafer-group-design.md` 2.1、9.1-9.5 | 输入：R2.4 输出的 rank-local structured tensor IR；输出：logical `wafer.group` candidate | 已有 `stablehlo-spmd-to-group` 实现和 group verifier/debug 测试；现在需要基于 R2.4 官方 conversion 后的输出重新验证 dependency-preserving expansion、fill/init、bias/epilogue/simple elementwise、tensor collective handoff 和主链路 program gate，再恢复 `done` |
-| R3.2a | pending | `2026-05-12-wafer-group-design.md` 10.1-10.2；MLIR Linalg/TilingInterface；tensor collective docs | 输入：R3.1 logical `wafer.group` body；输出：`GroupTilingDemand` analysis result，包括 boundary/result tile facts、per-op slice / iterator / accumulator / collective demand | 已有 `GroupTilingDemand` analysis + `--wafer-dump-group-tiling-demand` debug gate；但需在 R2.4/R3.1 重审后的 group IR 上重新验证，且不能把 debug dump 当主线 completion gate |
-| R3.2b | pending | `2026-05-21-wafer-layout-materialization-design.md` | 输入：R3.2a `GroupTilingDemand` facts 和当前 group SSA use-def；输出：`GroupLayoutPlan` analysis result，包括 boundary layout、per-op layout constraints/assignment、materialization cut 和 materialization buffer demand | 已有 `GroupLayoutPlan` analysis + `--wafer-dump-group-layout-plan` debug gate；但需在重审后的 R3.2a demand 上重新验证，并明确它仍是 analysis result，不生成 `wafer.tile_region` |
-| R3.2c | pending | `2026-05-25-wafer-tile-region-design.md`；layout/SPM/compute/communication docs | 输入：R3.1 logical group、R3.2a `GroupTilingDemand`、R3.2b `GroupLayoutPlan`；输出：transformation-local provisional `wafer.tile_region` candidate，包含 target-abstract `wafer.compute` / load-store / `wafer.layout.materialize` / `!wafer.tile_buffer` / effect 结构 | 已有 candidate emitter 和 `--wafer-dump-tile-region-candidate` debug gate；但 op coverage 表显示覆盖有限，且主线是否应重构为 conversion pass 尚未收口。未完成前不能把 R3.2c 作为 R3.2d 的稳定输入 |
+| R3.2c | active | `2026-05-25-wafer-tile-region-design.md`；layout/SPM/compute/communication docs | 输入：R3.1 logical group、R3.2a `GroupTilingDemand`、R3.2b `GroupLayoutPlan`；输出：transformation-local provisional `wafer.tile_region` candidate，包含 target-abstract `wafer.compute` / load-store / `wafer.layout.materialize` / `!wafer.tile_buffer` / effect 结构 | 已有 candidate emitter 和 `--wafer-dump-tile-region-candidate` debug gate；但 op coverage 表显示覆盖有限，且主线是否应重构为 conversion pass 尚未收口。未完成前不能把 R3.2c 作为 R3.2d 的稳定输入 |
 | R3.2d | pending | `2026-05-21-wafer-spm-bufferization-design.md` | 输入：R3.2c provisional `wafer.tile_region` candidate 中的 compute/comm/layout/load-store/sync op interface、tile buffer、lifetime 和 effect；输出：SPM allocation result 或结构化失败 | 前置 R3.2c 边界未稳定，暂不 ready。恢复后必须做真实 SPM window placement：alignment、layout padding、scratch/psum/temp、layout materialization temp、communication staging、lifetime overlap、range/end-address/conflict 都参与；不是 byte-size estimate；失败返回 planner |
 | R3.2e | pending | `2026-05-25-wafer-ddr-resource-allocation-design.md`；compute/movement docs | 输入：R3.2c provisional `wafer.tile_region` candidate、R3.2d SPM allocation facts、load/store/constant/workspace/movement/compute/comm demand；输出：DDR/resource plan 和 compute/movement legality result | 覆盖 external/workspace/resident-constant、pool/domain/capacity/bandwidth/range demand；compute/movement/collective 的 layout、dtype、shape、effect 通过接口/verifier 验证；不能用 manifest fixture 替代 |
 | R3.2f | pending | `2026-05-12-wafer-group-design.md` 10.x；R3.2a-e planning / analysis results | 输入：R3.1 logical group 和 R3.2a-e planning results；输出：accepted/rejected/split group planning decision | closed-loop 搜索 group boundary、traversal、tile shape、layout、SPM/DDR/resource plan；accepted plan 带 R3.3 可消费的 traversal/tile/slice/layout/SPM/DDR facts；未接受 plan 不落 IR；可选 multi-root packing 只有在 legality/resource/cost 证明兼容时接受 |
@@ -122,11 +128,9 @@ co-scheduled candidate 接受。仅因为同 block、同 shape 或语法上可�
 
 ## 下一步
 
-先重审 R3.1：在 R2.4 新输出上重新跑 logical group candidate gate，确认 group body 不含 raw
-StableHLO，且 fill/init、bias/epilogue、simple elementwise、tensor collective handoff 和多 group case
-仍满足 verifier。之后再收口 R3.2c conversion coverage 和 pass 边界：按 op coverage 表明确
-supported / unsupported / deferred，并决定是否把当前 candidate emitter 重构成 conversion pass。该
-设计确认后再进入 R3.2d：在 R3.2c provisional `wafer.tile_region` candidate 上恢复真实 SPM
-allocation，从 target-abstract Wafer IR 的 op interface、buffer、lifetime 和 effect 收集 demand。
-完整 R3.2f closed-loop planner 只有在 provisional tile-region lowering、SPM allocation、
-DDR/resource planning、compute/movement legality analysis 都能真实参与 decision 后才能进入 `ready`。
+先收口 R3.2c conversion coverage 和 pass 边界：按 op coverage 表明确 supported /
+unsupported / deferred，并决定是否把当前 candidate emitter 重构成 conversion pass。该设计确认后再
+进入 R3.2d：在 R3.2c provisional `wafer.tile_region` candidate 上恢复真实 SPM allocation，从
+target-abstract Wafer IR 的 op interface、buffer、lifetime 和 effect 收集 demand。完整 R3.2f
+closed-loop planner 只有在 provisional tile-region lowering、SPM allocation、DDR/resource planning、
+compute/movement legality analysis 都能真实参与 decision 后才能进入 `ready`。
