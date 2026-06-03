@@ -93,10 +93,11 @@ Pipeline position:
   group 候选。
 - Output artifact / IR:
   verifier-legal 的 tensor-level `wafer.group` candidate IR；candidate 仍是可被
-  R3.2 接受、拆分或拒绝的 logical region。
+  R3.2e 接受、拆分或拒绝的 logical region。
 - Downstream consumer:
-  R3.2 root tile feasibility oracle；R3.3 `wafer.tile_region` materialization；
-  R3.4/R3.5 layout/SPM/DDR feasibility；R3.6/R3.7 ABI/package stages。
+  R3.2a-e feasibility oracle / closed-loop planner；R3.3 `wafer.tile_region`
+  materialization；R3.4/R3.5 accepted layout/SPM/DDR materialization；
+  R3.6/R3.7 ABI/package stages。
 - User-level driver / named pipeline:
   `wafer-opt --program-pipeline=stablehlo-spmd-to-group`，由该 program
   pipeline 重放 frontend/SPMD/R2.4 后进入 group candidate gate。局部 MLIR pass
@@ -592,8 +593,8 @@ root 优先级是：
 - convolution 可作为后续受限目标，但不作为最小链路的主线。
 
 root/hero 只决定 logical candidate 的初始边界，不决定 traversal tile shape。真正的 traversal
-domain、tile shape、internal split 和 output coverage 仍由 R3.2 scheduled group planning
-决定。
+domain、tile shape、internal split 和 output coverage 仍由 R3.2a-d feasibility oracle 和
+R3.2e closed-loop scheduled group planner 决定。
 
 ### 9.3 Conservative Expansion
 
@@ -617,7 +618,7 @@ candidate expansion 必须保持 dependency-preserving：
 - 若某个 value 在 group 外仍有 live use，必须成为 group result 或停在 group boundary；
   不能假设后续 pass 会补 materialization/writeback。
 - 多 use producer 第一版默认不吸收。后续若要放开，必须证明所有 users 对该 producer 的
-  indexing / slice 关系一致，或者 R3.2 能给出合法且成本可接受的 recomputation /
+  indexing / slice 关系一致，或者 R3.2e 能给出合法且成本可接受的 recomputation /
   materialization 方案。
 - shape-only op 可以被吸收，但不能用名字匹配；必须由 op 语义、type、rank/shape 和 SSA
   use-def 证明它不会引入新的 storage/runtime 语义。
@@ -739,6 +740,31 @@ boundary placement 会改变真实需求：
 候选 tile shape 和 cost trace 都是 analysis，不写入 `wafer.group` attribute。IR 里只保留
 被接受的 scheduled structure；若没有 plan 被接受，就不生成这个 scheduled group。
 
+### 10.1.1 Feasibility Oracle 和 Materialization 依赖
+
+R3.2a-e 的核心不是先生成 tiled IR 再让下游修复，而是在生成 accepted scheduled structure
+之前完成联合 feasibility trial。SPM allocation、layout assignment、DDR/resource demand 和
+compute/movement legality 是 group 是否成立的决定条件，不是 R3.3/R3.4/R3.5 的后处理。
+
+因此恢复顺序必须分清 analysis trial 和 IR materialization：
+
+- R3.2a 恢复 op tiling demand：从 structured op semantics、indexing maps、tiling interface
+  和 Wafer interfaces 推导 operand/result slice、temporary/scratch/accumulator 和 movement demand。
+- R3.2b 恢复 layout feasibility trial：对 tile value graph 做 layout assignment、materialization
+  cut 和 materialization buffer demand 试算。
+- R3.2c 恢复 SPM allocation trial：在真实 SPM window、alignment、layout padding、lifetime、
+  scratch/psum/temp 和 conflict 约束下尝试放置 buffer。
+- R3.2d 恢复 DDR/resource 和 compute/movement legality trial：检查 external/workspace/
+  resident-constant、bandwidth/range/pool/domain，以及 op layout/dtype/shape/effect 合法性。
+- R3.2e 才能做 closed-loop group planner：搜索 traversal、tile shape、layout、SPM/DDR/resource
+  plan，并输出 accepted / rejected / split decision。
+
+R3.3 只 materialize R3.2e 已接受的 plan 为 `wafer.tile_region`。R3.4/R3.5 只把 R3.2e
+已经接受的 layout/SPM/DDR facts 落到可验证 IR 或 resource boundary；它们不能成为第一次发现
+SPM 放不下、layout 不合法或 DDR demand 不可接受的阶段。若 R3.2a-d oracle 使 R3.2e trial
+不通过，planner 必须回到 tile shape、layout、internal split 或 group boundary，而不是落一个
+未接受的 `wafer.tile_region` 等待下游补救。
+
 layout 文档中的 `!wafer.tile_buffer` / `wafer.layout.materialize` 不是 `wafer.group` 的另一套
 上游 IR。它们是 scheduled group 中同一批 tiled tensor SSA value 在 `wafer.tile_region` 层的
 bufferized 表达：
@@ -775,11 +801,12 @@ group planner 不替每个 op 实现 tiling，也不把 matmul、reduction、win
 
 ### 10.2.1 Multi-root Packing / Co-scheduling
 
-multi-root packing 是 R3.2+ 的 planner 策略，不是 R3.1 group formation 的完成条件。
+multi-root packing 是 R3.2e closed-loop planner 的可选策略，不是 R3.1 group formation
+或 R3.2a-d feasibility oracle 的完成条件。
 R3.1 产出的基本单位仍是 dependency-connected logical group；两个完全独立的 chains
 即使在同一个 block、shape 相同，也不因为语法上可以放进一个 region 就自动合并。
 
-R3.2 可以把多个 R3.1 logical groups 作为 co-scheduling 候选，但必须满足：
+R3.2e 可以把多个 R3.1 logical groups 作为 co-scheduling 候选，但必须满足：
 
 - 输入是多个 verifier-legal R3.1 groups，不是 raw op list 或名字匹配出的 op bag。
 - traversal domain、tile shape、output coverage、layout assignment、SPM/DDR demand、
@@ -791,7 +818,7 @@ R3.2 可以把多个 R3.1 logical groups 作为 co-scheduling 候选，但必须
 - packing 决策、失败原因、cost trace 和搜索顺序都是 transformation-local analysis，不写回
   `wafer.group` attribute；IR 只保留被接受的 scheduled structure。
 
-因此，R3.2 的默认安全行为仍是分别调度 R3.1 connected groups；multi-root packing 只是有
+因此，R3.2e 的默认安全行为仍是分别调度 R3.1 connected groups；multi-root packing 只是有
 可证明收益和可行性时的优化路径。
 
 ### 10.3 Traversal Anchor Analysis
