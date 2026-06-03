@@ -32,10 +32,10 @@ PyTorch/XLA StableHLO Wafer program directory
   -> wafer-opt --program-pipeline=stablehlo-spmd-to-linalg
        same SPMD stage
        write back Linalg/Tensor/SCF local compute + wafer.tensor_collective.*
-  -> R3.1 active: wafer-opt --program-pipeline=stablehlo-spmd-to-group
+  -> wafer-opt --program-pipeline=stablehlo-spmd-to-group
        same SPMD and R2.4 lowering stages
-       currently has verifier + one-root group shell
-       still missing dependency-preserving conservative expansion
+       form dependency-preserving logical wafer.group candidates
+       verify multi-op tensor-level group body legality
   -> R3.2+ tiling / placement / package recovery
 ```
 
@@ -49,7 +49,7 @@ wafer-opt \
   --default-tile-count=16
 ```
 
-R3.1 开发入口已存在，但不是 R3.1 completion gate：
+R3.1 用户级入口：
 
 ```bash
 wafer-opt \
@@ -67,18 +67,17 @@ wafer-opt \
 | P2.S1 | done | `2026-05-25-wafer-shardy-spmd-design.md` | P2.F1 program 或 textual StableHLO/SDY fixture | default input seed + Shardy propagation；作为 `stablehlo-spmd` 内部阶段，不产出 partitioned local body |
 | P2.S2 | done | `2026-05-25-wafer-shardy-spmd-design.md` | P2.F1 sharded program | `stablehlo-spmd` 产出 post-SPMD StableHLO program、rank-local signature、collective metadata、parameter shard metadata/payload |
 | R2.4 | done | `2026-05-25-wafer-local-compute-normalization-design.md` | post-SPMD StableHLO program | `stablehlo-spmd-to-linalg` 产出 Linalg/Tensor/SCF local compute 和 `wafer.tensor_collective.*`；不生成 `wafer.comm` |
+| R3.1 | done | `2026-05-12-wafer-group-design.md` 2.1、9.1-9.5 | `stablehlo-spmd-to-linalg` 输出的 rank-local tensor IR | `stablehlo-spmd-to-group` 形成 verifier-legal logical `wafer.group` candidate；支持 dependency-preserving conservative expansion、fill/init、bias/epilogue/simple elementwise、tensor collective handoff 和显式 `ins` / `outs` / `group_yield` 边界 |
 
 ## 当前活跃任务
 
-| ID | 状态 | 设计来源 | 已落地 | 未完成 / completion gate |
-| --- | --- | --- | --- | --- |
-| R3.1 | active | `2026-05-12-wafer-group-design.md` 2.1、9.1-9.4 | `stablehlo-spmd-to-group` program gate、`wafer.group` body legality verifier、one-root `wafer.group` shell | 按 9.3 做 dependency-preserving conservative expansion：吸收合法 single-use producer/consumer、fill/init、bias add、scale/mul、relu/gelu/sigmoid/simple elementwise、可证明 shape-only op；重建 `ins` / `outs` / `results` / `group_yield`；真实 P2.S2/R2.4 program chain 能形成 verifier-legal multi-op candidate |
+当前没有 active 实现任务。下一项 R3.2 已满足前置边界，可在用户明确进入时开始。
 
 ## 恢复队列
 
 | ID | 状态 | 设计来源 | 输入 / 输出边界 | 完成 gate |
 | --- | --- | --- | --- | --- |
-| R3.2 | pending | `2026-05-12-wafer-group-design.md` 10.x；layout/SPM/DDR/compute docs | 输入：完整 R3.1 `wafer.group` candidate；输出：accepted/rejected root tile candidate 和明确拒绝原因 | op tiling、layout、SPM、DDR、compute/movement legality 接到同一 candidate check；不能把 tile shape/cost trace 写回 R3.1 attr |
+| R3.2 | ready | `2026-05-12-wafer-group-design.md` 10.x；layout/SPM/DDR/compute docs | 输入：完整 R3.1 `wafer.group` candidate；输出：accepted/rejected root tile candidate 和明确拒绝原因 | op tiling、layout、SPM、DDR、compute/movement legality 接到同一 candidate check；不能把 tile shape/cost trace 写回 R3.1 attr |
 | R3.3 | pending | `2026-05-25-wafer-tile-region-design.md` | 输入：R3.2 accepted group；输出：`wafer.tile_region` | 只 materialize accepted group；未接受 group 不产生 `wafer.tile_region` |
 | R3.4 | pending | `2026-05-21-wafer-layout-materialization-design.md`；`2026-05-21-wafer-spm-bufferization-design.md` | 输入：`wafer.tile_region` tensor effects/liveness；输出：accepted layout + SPM feasibility facts | layout materialization 和 SPM trial 由 effect、range 和 tile buffer lifetime 驱动；失败返回 planner |
 | R3.5 | pending | `2026-05-25-wafer-ddr-resource-allocation-design.md` | 输入：storage-aware tile IR；输出：external/workspace/resident-constant/resource demand | 覆盖 pool/domain/capacity/bandwidth demand，不能用 manifest fixture 替代 |
@@ -128,9 +127,13 @@ wafer-opt \
 
 ## 最近验证
 
-当前已验证的是 R3.1 partial gate，不是 R3.1 completion：
+当前已验证的是 R3.1 completion gate：
 
-- `cmake --build build/r0-deps-pytorch-xla --target check-wafer -- -j8`：106 passed, 1 unsupported。
+- `cmake --build build/r0-deps-pytorch-xla --target wafer-opt -- -j8`。
+- `/root/miniconda3/bin/lit -sv build/r0-deps-pytorch-xla/test --filter='form-group-candidates-expansion'`。
+- `/root/miniconda3/bin/lit -sv build/r0-deps-pytorch-xla/test --filter='form-group-candidates.mlir'`。
+- `/root/miniconda3/bin/lit -sv build/r0-deps-pytorch-xla/test --filter='wafer-opt-spmd-to-group'`。
+- `cmake --build build/r0-deps-pytorch-xla --target check-wafer -- -j8`：107 passed, 1 unsupported。
 - `ctest --test-dir build/r0-deps-pytorch-xla --output-on-failure`：2/2 passed。
 - `python3 tools/check_deps.py`。
 - `python3 tools/check_ir_organization.py --root .`。
@@ -138,5 +141,5 @@ wafer-opt \
 
 ## 下一步
 
-继续 R3.1，补 dependency-preserving conservative expansion。R3.2 只能在完整 R3.1 candidate
-formation 收口后进入 `ready`。
+R3.2 可以开始：消费完整 R3.1 logical `wafer.group` candidate，恢复 root tile feasibility
+oracle 和明确拒绝原因。

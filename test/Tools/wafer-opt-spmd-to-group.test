@@ -13,4 +13,9 @@
 # GROUP-MLIR: wafer.group
 # GROUP-MLIR: wafer.tensor_collective.all_gather
 # GROUP-MLIR-SAME: rank_group = array<i64:
+# GROUP-MLIR: wafer.group ins(%arg0, %{{[^ ]+}} : tensor<2xf32>, tensor<32x32xf32>) outs(%{{[^ ]+}} : tensor<32x32xf32>) {
+# GROUP-MLIR: wafer.tensor_collective.all_gather
+# GROUP-MLIR: linalg.generic
+# GROUP-MLIR: arith.addf
+# GROUP-MLIR: wafer.group_yield
 # GROUP-MLIR-NOT: wafer.comm

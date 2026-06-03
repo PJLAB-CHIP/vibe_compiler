@@ -656,6 +656,29 @@ R3.1 pass 构造 logical `wafer.group` 时遵守以下规则：
   cost trace、temporary set、materialization point 或 rejected-candidate diagnostic。
   这些都是 analysis 或诊断信息。
 
+### 9.5 R3.1 当前实现边界
+
+2026-06-03 的 R3.1 实现按同一 block 内的 SSA use-def 和
+`DestinationStyleOpInterface` 构造 group，不引入新的长期 attribute 或 side table：
+
+1. 从 root/hero seed 出发。当前 root 是 tensor-level DPS `linalg.*`（`linalg.fill`
+   不单独作为 root）或已规整的 `wafer.tensor_collective.*`。
+2. 对 tensor-level DPS producer/consumer 做 fixpoint expansion。producer 只有在所有 result
+   use 都已经在 candidate 内时被吸收；consumer 只有在消费的 candidate-produced value 没有
+   candidate 外 live use 时被吸收。多 use 大 tensor producer 第一版仍停在 boundary。
+3. `results` 来自 candidate 内仍有外部 use 的 tensor value。每个 yielded result 通过
+   DPS tied init 反查对应 `outs`；如果 init 本身由已吸收的 DPS producer 产生，则沿 tied init
+   继续追到 group 外部的 destination tensor。
+4. 在 `outs` 固定后，只吸收内部 support op：目前包括只被 candidate 内部使用、且不是
+   group `outs` 的 `arith.constant` 和 `tensor.empty`。这样 internal scratch 留在 group body，
+   最终 destination-style output 仍作为显式 `outs`。
+5. body 按原 block order clone，并通过 block arguments 显式 remap 外部 `ins` / `outs`。
+   pass 只替换 selected values 的 group 外 use；group 内中间 tensor 由 body dataflow 表达。
+
+这个实现仍然故意保守：不跨 block，不吸收 raw StableHLO、lower-level Wafer op、memref/runtime
+op 或 side-effect op；shape-only、cast/dequant 和更宽松的 multi-output/multi-use expansion
+只能在可由 op 语义、type/rank/shape 和 verifier 证明时逐步放开。
+
 ## 10. Group Schedule Planning
 
 group planner 输入 logical group，输出 scheduled group。
