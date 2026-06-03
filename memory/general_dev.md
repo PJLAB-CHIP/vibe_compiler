@@ -61,10 +61,12 @@
 - P2.S2 pinned-XLA helper 构建入口是 `tools/build_xla_spmd_partitioner_helper.py`；它在
   `build/xla-spmd-helper/workspace` 生成围绕 `third_party/xla` 的 Bazel overlay，默认用 clang 构建
   `//xla/wafer_tools:wafer_xla_spmd_partitioner`，产物复制到
-  `build/xla-spmd-helper/wafer_xla_spmd_partitioner`。本地把 helper 接进 lit：
+  `build/xla-spmd-helper/wafer_xla_spmd_partitioner`。本地把 helper 接进 `wafer-opt` build / lit：
   `cmake -S . -B build/r0-deps-pytorch-xla -DWAFER_XLA_SPMD_PARTITIONER_HELPER=$PWD/build/xla-spmd-helper/wafer_xla_spmd_partitioner`。
-  之后 `cmake --build build/r0-deps-pytorch-xla --target check-wafer-lit` 会运行真实 P2.S2 partition
-  program gate；没有配置 helper 时该 gate 通过 `REQUIRES: xla-spmd-helper` 自动 unsupported。
+  之后用户级 `wafer-opt --program-pipeline=stablehlo-spmd*` 命令不再传 helper 路径；`wafer-opt`
+  从 build-time `WAFER_XLA_SPMD_PARTITIONER_HELPER` 解析 helper。`cmake --build
+  build/r0-deps-pytorch-xla --target check-wafer-lit` 会运行真实 P2.S2 partition program gate；没有配置
+  helper 时该 gate 通过 `REQUIRES: xla-spmd-helper` 自动 unsupported。
 - PyTorch/XLA StableHLO program directory 的 `data/<parameter>` 由 upstream exporter 用 `np.save` 写入，因此
   P2.S2 helper 需要解析 `.npy` header 才能切片输入参数；P2.S2 输出的 rank-local shard payload 沿用
   NPY stream，路径为 `parameter_shards/<parameter>/rank_XXXXX.npy`。形状和 dtype 由 NPY header 与

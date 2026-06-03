@@ -11,6 +11,8 @@ set(CMAKE_CXX_EXTENSIONS NO)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(WAFER_ENABLE_UNIT_TESTS "Build Wafer C++ unit tests" ON)
+set(WAFER_XLA_SPMD_PARTITIONER_HELPER "" CACHE FILEPATH
+  "Path to the optional pinned-XLA SPMD partitioner helper used by wafer-opt program pipelines")
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")

@@ -28,10 +28,15 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdint>
+#include <cstdlib>
 #include <string>
 
 #ifdef WAFER_ENABLE_SHARDY
 #include "shardy/dialect/sdy/transforms/passes.h"
+#endif
+
+#ifndef WAFER_XLA_SPMD_PARTITIONER_HELPER
+#define WAFER_XLA_SPMD_PARTITIONER_HELPER ""
 #endif
 
 namespace {
@@ -199,7 +204,6 @@ struct WaferProgramPipelineOptions {
   std::string pipelineName;
   std::string inputProgramDir;
   std::string outputProgramDir;
-  std::string spmdPartitionerHelperPath;
   int64_t defaultTileCount = 16;
 };
 
@@ -264,24 +268,6 @@ bool parseWaferProgramPipelineOptions(int argc, char **argv,
       continue;
     }
 
-    if (arg == "--xla-spmd-partitioner-helper") {
-      if (i + 1 >= argc) {
-        llvm::errs()
-            << "wafer-opt: missing --xla-spmd-partitioner-helper value\n";
-        return true;
-      }
-      options.spmdPartitionerHelperPath = argv[++i];
-      continue;
-    }
-
-    constexpr llvm::StringRef spmdHelperPrefix =
-        "--xla-spmd-partitioner-helper=";
-    if (arg.starts_with(spmdHelperPrefix)) {
-      options.spmdPartitionerHelperPath =
-          arg.drop_front(spmdHelperPrefix.size()).str();
-      continue;
-    }
-
     if (arg == "--default-tile-count") {
       if (i + 1 >= argc) {
         llvm::errs() << "wafer-opt: missing --default-tile-count value\n";
@@ -321,11 +307,6 @@ bool parseWaferProgramPipelineOptions(int argc, char **argv,
                     "--output-program-dir\n";
     return true;
   }
-  if (options.spmdPartitionerHelperPath.empty()) {
-    llvm::errs() << "wafer-opt: --program-pipeline requires "
-                    "--xla-spmd-partitioner-helper\n";
-    return true;
-  }
   if (options.pipelineName != "stablehlo-spmd" &&
       options.pipelineName != "stablehlo-spmd-to-linalg") {
     llvm::errs() << "wafer-opt: unknown Wafer program pipeline: "
@@ -334,6 +315,12 @@ bool parseWaferProgramPipelineOptions(int argc, char **argv,
   }
 
   return false;
+}
+
+std::string resolveSpmdPartitionerHelperPath() {
+  if (const char *envPath = std::getenv("WAFER_XLA_SPMD_PARTITIONER_HELPER"))
+    return envPath;
+  return WAFER_XLA_SPMD_PARTITIONER_HELPER;
 }
 
 int runStableHLOSPMDStage(llvm::StringRef inputProgramDir,
@@ -446,9 +433,17 @@ int runWaferProgramPipeline(int argc, char **argv) {
   mlir::MLIRContext context(registry);
   context.loadAllAvailableDialects();
 
+  std::string spmdPartitionerHelperPath = resolveSpmdPartitionerHelperPath();
+  if (spmdPartitionerHelperPath.empty()) {
+    llvm::errs() << "wafer-opt: no XLA SPMD partitioner helper configured; "
+                    "set WAFER_XLA_SPMD_PARTITIONER_HELPER at CMake "
+                    "configure time\n";
+    return 1;
+  }
+
   if (runStableHLOSPMDStage(options.inputProgramDir, options.outputProgramDir,
-                            options.spmdPartitionerHelperPath,
-                            options.defaultTileCount, context))
+                            spmdPartitionerHelperPath, options.defaultTileCount,
+                            context))
     return 1;
 
   if (options.pipelineName == "stablehlo-spmd-to-linalg" &&

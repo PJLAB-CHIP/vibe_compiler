@@ -210,6 +210,7 @@ P2/R3 任务号、单个 workload 或 case 命名。`wafer-opt` 可以继续暴�
   directory 序列化；`wafer-opt` 先执行 program verifier，再调用同一套
   `wafer-propagate-stablehlo-sharding` C++ pipeline builder，随后调用 Wafer-owned pinned-XLA SPMD helper
   产出 partitioned StableHLO program。IR、metadata 和 parameter payload 必须由同一 program writer 保持一致。
+  helper 路径来自 build-time `WAFER_XLA_SPMD_PARTITIONER_HELPER` 配置，不是用户级 pipeline flag。
 - `wafer-opt --program-pipeline=stablehlo-spmd-to-linalg`：P2.S2 + R2.4 用户级主线 program pipeline。
   它先执行同一套 `stablehlo-spmd` stage，再把输出 program directory 中的 `functions/forward.mlir`
   原地 lowering 到 Linalg/Tensor/Arith/Math/SCF 和 `wafer.tensor_collective.*`，不要求用户或 lit

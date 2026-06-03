@@ -120,7 +120,8 @@ P7/P8/P9 依赖 P0-P6 主链路恢复，不提前推进。
   `wafer-opt --program-pipeline=stablehlo-spmd-to-linalg`，它负责 program directory verify、in-memory Wafer
   sharding propagation、临时 propagated program staging、pinned-XLA helper 调用、输出 program
   verifier，以及可选的 StableHLO -> Linalg/tensor collective 写回。staging 保留未改变的 program
-  metadata/payload，只重写 propagated IR。helper 执行 StableHLO/SDY -> XLA HLO、`SpmdPrepare` / `SpmdPartitioner` /
+  metadata/payload，只重写 propagated IR。pinned-XLA helper 路径来自 build-time
+  `WAFER_XLA_SPMD_PARTITIONER_HELPER` 配置，不是用户级 pipeline flag。helper 执行 StableHLO/SDY -> XLA HLO、`SpmdPrepare` / `SpmdPartitioner` /
   `HloVerifier`、partitioned HLO -> StableHLO round trip，并写回 rank-local function signature、
   StableHLO collective metadata、`forward.parameter_shards.json` 和
   `parameter_shards/<parameter>/rank_XXXXX.npy` NPY stream payload。

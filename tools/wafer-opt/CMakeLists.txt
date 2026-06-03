@@ -25,6 +25,9 @@ if(WAFER_ENABLE_IMPORTER_DEPS)
 endif()
 
 if(WAFER_ENABLE_SPMD_PARTITIONER_DEPS)
-  target_compile_definitions(wafer-opt PRIVATE WAFER_ENABLE_SHARDY=1)
+  target_compile_definitions(wafer-opt PRIVATE
+    WAFER_ENABLE_SHARDY=1
+    WAFER_XLA_SPMD_PARTITIONER_HELPER="${WAFER_XLA_SPMD_PARTITIONER_HELPER}"
+  )
   target_link_libraries(wafer-opt PRIVATE ShardySdyRegister ShardySdyTransforms)
 endif()

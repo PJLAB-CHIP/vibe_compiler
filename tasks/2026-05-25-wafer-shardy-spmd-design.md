@@ -169,7 +169,8 @@ P2.S2 工程 gate 必须把 XLA SPMD partitioner 或等价 local-body partitioni
   partitioned HLO -> StableHLO round trip，并写回 partitioned StableHLO program directory。
   `wafer-opt` staging 必须保留未被 propagation 改写的 program members，只重写 propagated IR；
   helper / writer 在产生 partitioned program 时负责同步更新 local function signature、rank-local
-  parameter payload 和 shard binding metadata。
+  parameter payload 和 shard binding metadata。helper 路径由 build-time
+  `WAFER_XLA_SPMD_PARTITIONER_HELPER` 配置进入 `wafer-opt`，不是用户级 pipeline flag。
 - 2026-06-01 直接 CMake link 评估结论：当前 build 虽启用 `WAFER_ENABLE_SPMD_PARTITIONER_DEPS`，
   但 CMake target graph 只包含 Wafer / StableHLO / Shardy，没有 XLA `spmd_partitioner`、HLO
   service、TSL、Abseil 或 generated XLA proto targets。为避免把任务拖进 XLA CMake shim，P2.S2

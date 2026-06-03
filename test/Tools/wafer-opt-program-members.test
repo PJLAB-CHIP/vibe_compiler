@@ -8,14 +8,20 @@
 # RUN: printf 'payload member must be preserved\n' > %t.input.program/data/aux.payload
 # RUN: printf '%b' '#!/usr/bin/env bash\nset -euo pipefail\ninput=""\noutput=""\nwhile [[ $# -gt 0 ]]; do\n  case "$1" in\n    --input-program-dir) input="$2"; shift 2 ;;\n    --output-program-dir) output="$2"; shift 2 ;;\n    --entry-function|--logical-rank-count) shift 2 ;;\n    *) shift ;;\n  esac\ndone\ntest -f "$input/functions/forward.bytecode"\ntest -f "$input/data/aux.payload"\nrm -rf "$output"\nmkdir -p "$output"\ncp -R "$input/." "$output/"\n' > %t.fake-helper
 # RUN: chmod +x %t.fake-helper
-# RUN: wafer-opt --program-pipeline=stablehlo-spmd --input-program-dir %t.input.program --output-program-dir %t.partitioned.program --xla-spmd-partitioner-helper %t.fake-helper --default-tile-count=16 | FileCheck %s
+# RUN: env WAFER_XLA_SPMD_PARTITIONER_HELPER=%t.fake-helper wafer-opt --program-pipeline=stablehlo-spmd --input-program-dir %t.input.program --output-program-dir %t.partitioned.program --default-tile-count=16 | FileCheck %s
 # RUN: test -f %t.partitioned.program/functions/forward.bytecode
 # RUN: test -f %t.partitioned.program/data/aux.payload
-# RUN: not wafer-opt --program-pipeline=not-a-pipeline --input-program-dir %t.input.program --output-program-dir %t.partitioned.program --xla-spmd-partitioner-helper %t.fake-helper 2>&1 | FileCheck %s --check-prefix=BAD-PIPELINE
+# RUN: not wafer-opt --program-pipeline=not-a-pipeline --input-program-dir %t.input.program --output-program-dir %t.partitioned.program 2>&1 | FileCheck %s --check-prefix=BAD-PIPELINE
+# RUN: not env WAFER_XLA_SPMD_PARTITIONER_HELPER= wafer-opt --program-pipeline=stablehlo-spmd --input-program-dir %t.input.program --output-program-dir %t.partitioned.program 2>&1 | FileCheck %s --check-prefix=NO-HELPER
+# RUN: not wafer-opt --program-pipeline=stablehlo-spmd --input-program-dir %t.input.program --output-program-dir %t.partitioned.program --xla-spmd-partitioner-helper %t.fake-helper 2>&1 | FileCheck %s --check-prefix=OLD-HELPER-FLAG
 # RUN: not wafer-opt --partition-stablehlo-program %t.input.program 2>&1 | FileCheck %s --check-prefix=OLD-PARTITION
 
 # CHECK: wafer-opt: completed Wafer program pipeline stablehlo-spmd:
 
 # BAD-PIPELINE: wafer-opt: unknown Wafer program pipeline: not-a-pipeline
+
+# NO-HELPER: wafer-opt: no XLA SPMD partitioner helper configured
+
+# OLD-HELPER-FLAG: wafer-opt: unknown program pipeline argument: --xla-spmd-partitioner-helper
 
 # OLD-PARTITION: Unknown command line argument '--partition-stablehlo-program'
