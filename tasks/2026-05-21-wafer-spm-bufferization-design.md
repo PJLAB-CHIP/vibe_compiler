@@ -52,7 +52,8 @@ internal split、layout assignment、output coverage 或 group boundary 继续�
 
 输入：
 
-- accepted 或 provisional tile plan。
+- transformation-local provisional 或已经 committed 的 `wafer.tile_region` candidate；在 R3.2d
+  中这是 scratch IR / cloned IR，rejected candidate 必须丢弃。
 - layout planner 产生的 physical layout assignment 和 materialization demand。
 - per-op tiling interface 产生的 operand/result/temp/scratch/accumulator demand。
 - `WaferComputeOpInterface` / movement op 提供的 buffer demand、queue family 和 async policy。
@@ -118,6 +119,9 @@ SPM allocator 不按 op 名字猜 buffer。demand 来源应是明确 interface �
 
 如果某个 op 无法通过这些接口说明自己的 demand，不能让 SPM allocation 用名字或示例 shape 猜测；
 应先扩 op interface 或保持在更高层 IR。
+如果当前只有 R3.2a/R3.2b 的 group-level analysis summary，而没有 R3.2c provisional
+`wafer.tile_region` candidate，SPM allocation 不能直接运行；必须先把 candidate 降到
+target-abstract Wafer IR，让 demand provider、lifetime 和 effect 都可由 IR 结构重算。
 
 `storage_size` 必须用统一 calculator 计算，至少包含：
 
@@ -306,18 +310,24 @@ allocator 不做无限 repair；它只返回结构化失败，让 group/layout p
 
 ## 10. Commit Model
 
-V0 推荐 `allocate and materialize immediately`：
+V0 推荐 `allocate on provisional tile-region before commit`：
 
 ```text
-accepted group tile plan
-  -> layout assignment
+logical group + tile/layout candidate
+  -> build provisional wafer.tile_region candidate
+     (target-abstract compute/comm/load-store/layout/sync/tile_buffer/effect)
+  -> collect BufferDemand + liveness/effect from op interfaces
   -> SPM allocation
-  -> materialize wafer.tile_region with layout/materialization/SPM facts
+  -> accepted plan or failure feedback
+  -> commit accepted wafer.tile_region with layout/materialization/SPM facts
   -> realize tile buffers into physical storage
 ```
 
-原因是 layout、SPM、tile shape 强耦合。早期如果只生成 scheduled group，再把真实 allocation
-推到更晚的 pass，容易让合法性承诺漂移。
+原因是 layout、SPM、tile shape 和 target-abstract op selection 强耦合。早期如果只看 logical
+group summary 或裸 tensor value，再把真实 allocation 推到更晚的 pass，容易让合法性承诺漂移；
+但把 rejected candidate 直接落入主 IR 再回滚也会污染 IR 边界。因此 R3.2d 应在
+transformation-local / scratch `wafer.tile_region` 上运行，与下游 op interface 和 verifier 使用同一套
+demand / lifetime / effect 事实源。
 
 失败的 allocation、offset search trace、cost trace 都不进入 IR。
 
@@ -390,7 +400,8 @@ candidate tile-region 的 `#spm` allocation 是否可行，并把失败原因返
 ```text
 candidate tile plan
   -> layout assignment
-  -> materialization demand
+  -> provisional wafer.tile_region candidate
+  -> materialization op / buffer / effect demand
   -> SPM allocation
   -> tile buffer storage realization
   -> accepted or failure feedback

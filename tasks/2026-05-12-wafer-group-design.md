@@ -93,9 +93,9 @@ Pipeline position:
   group 候选。
 - Output artifact / IR:
   verifier-legal 的 tensor-level `wafer.group` candidate IR；candidate 仍是可被
-  R3.2e 接受、拆分或拒绝的 logical region。
+  R3.2f 接受、拆分或拒绝的 logical region。
 - Downstream consumer:
-  R3.2a-d planning / analysis results 和 R3.2e closed-loop planner；R3.3 `wafer.tile_region`
+  R3.2a-e planning / analysis results 和 R3.2f closed-loop planner；R3.3 `wafer.tile_region`
   materialization；R3.4/R3.5 accepted layout/SPM/DDR materialization；
   R3.6/R3.7 ABI/package stages。
 - User-level driver / named pipeline:
@@ -593,8 +593,8 @@ root 优先级是：
 - convolution 可作为后续受限目标，但不作为最小链路的主线。
 
 root/hero 只决定 logical candidate 的初始边界，不决定 traversal tile shape。真正的 traversal
-domain、tile shape、internal split 和 output coverage 仍由 R3.2a-d planning / analysis results 和
-R3.2e closed-loop scheduled group planner 决定。
+domain、tile shape、internal split 和 output coverage 仍由 R3.2a-e planning / analysis results 和
+R3.2f closed-loop scheduled group planner 决定。
 
 ### 9.3 Conservative Expansion
 
@@ -618,7 +618,7 @@ candidate expansion 必须保持 dependency-preserving：
 - 若某个 value 在 group 外仍有 live use，必须成为 group result 或停在 group boundary；
   不能假设后续 pass 会补 materialization/writeback。
 - 多 use producer 第一版默认不吸收。后续若要放开，必须证明所有 users 对该 producer 的
-  indexing / slice 关系一致，或者 R3.2e 能给出合法且成本可接受的 recomputation /
+  indexing / slice 关系一致，或者 R3.2f 能给出合法且成本可接受的 recomputation /
   materialization 方案。
 - shape-only op 可以被吸收，但不能用名字匹配；必须由 op 语义、type、rank/shape 和 SSA
   use-def 证明它不会引入新的 storage/runtime 语义。
@@ -742,9 +742,13 @@ boundary placement 会改变真实需求：
 
 ### 10.1.1 Planning Inputs 和 Materialization 依赖
 
-R3.2a-e 的核心不是先生成 tiled IR 再让下游修复，而是在生成 accepted scheduled structure
-之前完成 layout/resource/legalization planning。SPM allocation、layout assignment、DDR/resource demand 和
-compute/movement legality 是 group 是否成立的决定条件，不是 R3.3/R3.4/R3.5 的后处理。
+R3.2a-f 的核心不是先把 rejected candidate 写进主 IR 再让下游修复，而是在生成 accepted
+scheduled structure 之前完成 layout/resource/legalization planning。实现上可以构造
+transformation-local / scratch `wafer.tile_region` candidate，用它承载 target-abstract
+Wafer op、layout materialization、buffer、lifetime 和 effect，再从这层 IR 调用下游 analysis。
+这个 candidate 是 planning artifact；只有 accepted plan 才能由 R3.3 commit 到主 IR。
+SPM allocation、layout assignment、DDR/resource demand 和 compute/movement legality 是 group 是否成立的
+决定条件，不是 R3.3/R3.4/R3.5 的后处理。
 
 因此恢复顺序必须分清 planning facts 和 IR materialization：
 
@@ -753,25 +757,33 @@ compute/movement legality 是 group 是否成立的决定条件，不是 R3.3/R3
 - R3.2b 恢复 layout planning：消费 R3.2a `GroupTilingDemand` facts 和 logical group SSA
   use-def，构造 transformation-local tile value graph / op layout constraints，再产出
   layout assignment、materialization cut 和 materialization buffer demand。
-- R3.2c 恢复 SPM allocation：在真实 SPM window、alignment、layout padding、lifetime、
-  scratch/psum/temp 和 conflict 约束下搜索可接受 buffer placement。
-- R3.2d 恢复 DDR/resource planning 和 compute/movement legality analysis：覆盖 external/workspace/
-  resident-constant、bandwidth/range/pool/domain，以及 op layout/dtype/shape/effect 合法性。
-- R3.2e 才能做 closed-loop group planner：搜索 traversal、tile shape、layout、SPM/DDR/resource
+- R3.2c 恢复 provisional tile-region candidate lowering：消费 R3.2a/R3.2b facts，把 logical
+  group candidate 降成 transformation-local `wafer.tile_region` candidate，内部使用
+  target-abstract `wafer.compute` / `wafer.comm` / load-store / `wafer.layout.materialize` /
+  sync / `!wafer.tile_buffer` / effect 结构。rejected candidate 不写入主 IR，不 lower 到
+  packet/ABI/LLVM。
+- R3.2d 恢复 SPM allocation：在 R3.2c candidate IR 上，从 compute/comm/layout/load-store/sync
+  op interface、tile buffer、lifetime 和 effect 收集 `BufferDemand`，并在真实 SPM window、
+  alignment、layout padding、scratch/psum/temp、materialization temp、communication staging 和
+  conflict 约束下搜索可接受 buffer placement。
+- R3.2e 恢复 DDR/resource planning 和 compute/movement legality analysis：在同一个 candidate
+  tile-region IR 上覆盖 external/workspace/resident-constant、bandwidth/range/pool/domain，以及
+  op layout/dtype/shape/effect 合法性。
+- R3.2f 才能做 closed-loop group planner：搜索 traversal、tile shape、layout、SPM/DDR/resource
   plan，并输出 accepted / rejected / split decision。
 
-R3.3 只 materialize R3.2e 已接受的 plan 为 `wafer.tile_region`。R3.4/R3.5 只把 R3.2e
+R3.3 只 materialize R3.2f 已接受的 plan 为 committed `wafer.tile_region`。R3.4/R3.5 只把 R3.2f
 已经接受的 layout/SPM/DDR facts 落到可验证 IR 或 resource boundary；它们不能成为第一次发现
-SPM 放不下、layout 不合法或 DDR demand 不可接受的阶段。若 R3.2a-d planning results 让
-R3.2e 不能接受当前 candidate，planner 必须回到 tile shape、layout、internal split 或 group boundary，而不是落一个
-未接受的 `wafer.tile_region` 等待下游补救。
+SPM 放不下、layout 不合法或 DDR demand 不可接受的阶段。若 R3.2a-e planning results 让
+R3.2f 不能接受当前 candidate，planner 必须回到 tile shape、layout、internal split 或 group
+boundary，而不是落一个未接受的 `wafer.tile_region` 等待下游补救。
 
 ### 10.1.2 R3.2a Op Tiling Demand Analysis
 
 R3.2a 的边界是 analysis，不是 scheduled IR materialization。它消费 R3.1 形成的
 logical `wafer.group`，在给定 target-abstract traversal / output tile candidate 时，从每个
 op 的结构化语义恢复 tile-level demand graph。第一版可以用 full-result tile 作为默认候选来
-验证语义恢复；后续 R3.2e planner 会用同一 analysis 查询不同 tile shape。
+验证语义恢复；后续 R3.2f planner 会用同一 analysis 查询不同 tile shape。
 
 Pipeline position:
 
@@ -788,8 +800,9 @@ Pipeline position:
   transformation-local `GroupTilingDemand` analysis result；debug pass 可以 dump 同一结构，
   但不修改 IR、不生成 `wafer.tile_region`、不写 `wafer.group` attribute。
 - Downstream consumer:
-  R3.2b layout planning、R3.2c SPM allocation、R3.2d DDR/resource planning +
-  compute/movement legality analysis，以及 R3.2e closed-loop planner。
+  R3.2b layout planning、R3.2c provisional tile-region candidate lowering、
+  R3.2d SPM allocation、R3.2e DDR/resource planning + compute/movement legality analysis，
+  以及 R3.2f closed-loop planner。
 - User-level driver / named pipeline:
   主线仍由 `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 产生 R3.1 group；
   R3.2a 的局部验证入口是 `wafer-opt --wafer-dump-group-tiling-demand`，用于在同一
@@ -821,7 +834,7 @@ tile，reduction / contraction dims 作为 hidden/internal demand 保留。不�
 `wafer.tensor_collective.*` 必须走 MLIR `TilingInterface` 和
 `WaferTensorCollectiveOpInterface`。shape-preserving collective 可以返回同 shape tile demand；
 all-gather / reduce-scatter / all-to-all 必须检查 collective axis / slot relation，无法证明
-slot-aligned 时返回 failure，让 R3.2e 回到 tile shape 或 group split。
+slot-aligned 时返回 failure，让 R3.2f 回到 tile shape 或 group split。
 
 `tensor.empty` 在该层是 destination/init storage placeholder，不是可执行 compute demand。
 `linalg.fill` 是 init/write demand；若它初始化后续 reduction / contraction output，对应 value
@@ -863,12 +876,12 @@ group planner 不替每个 op 实现 tiling，也不把 matmul、reduction、win
 
 ### 10.2.1 Multi-root Packing / Co-scheduling
 
-multi-root packing 是 R3.2e closed-loop planner 的可选策略，不是 R3.1 group formation
-或 R3.2a-d planning / analysis results 的完成条件。
+multi-root packing 是 R3.2f closed-loop planner 的可选策略，不是 R3.1 group formation
+或 R3.2a-e planning / analysis results 的完成条件。
 R3.1 产出的基本单位仍是 dependency-connected logical group；两个完全独立的 chains
 即使在同一个 block、shape 相同，也不因为语法上可以放进一个 region 就自动合并。
 
-R3.2e 可以把多个 R3.1 logical groups 作为 co-scheduling 候选，但必须满足：
+R3.2f 可以把多个 R3.1 logical groups 作为 co-scheduling 候选，但必须满足：
 
 - 输入是多个 verifier-legal R3.1 groups，不是 raw op list 或名字匹配出的 op bag。
 - traversal domain、tile shape、output coverage、layout assignment、SPM/DDR demand、
@@ -880,7 +893,7 @@ R3.2e 可以把多个 R3.1 logical groups 作为 co-scheduling 候选，但必�
 - packing 决策、失败原因、cost trace 和搜索顺序都是 transformation-local analysis，不写回
   `wafer.group` attribute；IR 只保留被接受的 scheduled structure。
 
-因此，R3.2e 的默认安全行为仍是分别调度 R3.1 connected groups；multi-root packing 只是有
+因此，R3.2f 的默认安全行为仍是分别调度 R3.1 connected groups；multi-root packing 只是有
 可证明收益和可行性时的优化路径。
 
 ### 10.3 Traversal Anchor Analysis

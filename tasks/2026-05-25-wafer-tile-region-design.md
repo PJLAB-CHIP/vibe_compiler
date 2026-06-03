@@ -46,13 +46,22 @@ placement-derived endpoint 和 communication staging demand 的层级；`wafer.c
 
 ```text
 wafer.group
-  -> wafer.tile_region
-  -> layout assignment / materialization
-  -> SPM + DDR demand planning
+  -> provisional wafer.tile_region candidate for planning
+  -> layout assignment / materialization + SPM / DDR / legality planning
+  -> accepted / rejected / split decision
+  -> committed wafer.tile_region
   -> storage-realized memref / descriptor
   -> wafer.compute / tiled tensor collective materialization / wafer.comm / wafer.sync lower-level ops
   -> C ABI / launch
 ```
+
+本文区分两种生命周期：
+
+- provisional `wafer.tile_region` candidate：R3.2c 在 transformation-local / scratch IR 中构造，
+  用来承载 target-abstract compute/comm/load-store/layout/sync op、tile buffer、lifetime 和 effect，
+  供 R3.2d/R3.2e 从 op interface 收集 demand。rejected candidate 不进入主 IR。
+- committed `wafer.tile_region`：R3.3 只把 R3.2f 已接受的 plan 写入主 IR。后续 R3.4/R3.5
+  只 materialize accepted layout/SPM/DDR facts，不重新决定 group 是否可行。
 
 `wafer.tile_region` 可以跨这些 lowering 子阶段保留为 region container。早期 region 中的 buffer
 可能还是 `!wafer.tile_buffer`；后期可以变成带 Wafer memory space 的 `memref` 或 descriptor。
@@ -129,15 +138,20 @@ V0 需要以下 op family：
 
 实现上可以分多步，但每一步只改写当前 IR：
 
-1. `wafer.group` lowering：把 accepted tiled value graph 转成 `wafer.tile_region`。
-2. target-abstract op selection：把 tile-level linalg/tensor compute 绑定到 `wafer.compute` /
-   movement op；把 tiled tensor collective 在 placement 和 SPM buffer 明确后 materialize 为
-   `wafer.comm` 或 explicit p2p schedule。
-3. layout assignment：为 op 约束选择 `mem_layout`，在 cut edge 插入 materialization。
-4. demand collection：从 op interface 收集 SPM/DDR/layout/comm demand。
-5. resource planning：运行 SPM allocation、DDR capacity/bandwidth analysis 和 layout cleanup。
-6. storage realization：把 accepted buffer 降到 memref/descriptor。
-7. lower-level op lowering：转成 wrapper-friendly Wafer ops，最后进入 C ABI / launch。
+1. provisional `wafer.group` lowering：R3.2c 把 logical group + R3.2a/R3.2b facts 转成
+   transformation-local `wafer.tile_region` candidate。
+2. target-abstract op selection：在 candidate 内把 tile-level linalg/tensor compute 绑定到
+   `wafer.compute` / movement op；把 tiled tensor collective 在可表达的 placement / buffer /
+   communication demand 下 materialize 为 `wafer.comm` 或 explicit p2p schedule candidate。
+3. layout assignment：为 op 约束选择 `mem_layout`，在 cut edge 插入 candidate
+   `wafer.layout.materialize`。
+4. demand collection：从 candidate IR 的 op interface 收集 SPM/DDR/layout/comm demand。
+5. resource planning：在 candidate IR 上运行 SPM allocation、DDR capacity/bandwidth analysis 和
+   layout cleanup。
+6. closed-loop decision：R3.2f 接受、拒绝或要求 split；rejected candidate 丢弃。
+7. committed `wafer.tile_region` materialization：R3.3 只把 accepted candidate / plan 写入主 IR。
+8. storage realization：把 accepted buffer 降到 memref/descriptor。
+9. lower-level op lowering：转成 wrapper-friendly Wafer ops，最后进入 C ABI / launch。
 
 未接受的候选 plan 不能落入 IR 后等待下游修复。合法性失败应反馈给 group/layout/resource
 planner 重新选择 tile shape、internal split、layout 或 group boundary。
