@@ -241,7 +241,8 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 
 当前实现：
 
-- 2026-06-02 后，Integration 主链路不再注册 C ABI named pipeline。`WaferPipelines` 只保留
+- 2026-06-03 后，Integration 主链路不再注册 C ABI named pipeline。用户级主线统一到
+  `wafer-opt --program-pipeline=stablehlo-spmd*`；`WaferPipelines` 只保留内部/局部
   `wafer-propagate-stablehlo-sharding` 和 `wafer-lower-stablehlo-to-linalg`；
   `wafer-lower-linalg-to-cabi`、`wafer-lower-stablehlo-to-cabi`、
   `wafer-lower-tile-communication-to-cabi` 以及

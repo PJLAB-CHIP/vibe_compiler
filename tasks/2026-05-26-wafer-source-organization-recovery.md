@@ -41,7 +41,8 @@ C ABI conversion 混在旧的聚合目录里。
 
 ## 合同
 
-- `wafer-opt` 当前只注册 transform pass 和 named pipelines；没有 conversion pass target。
+- `wafer-opt` 当前注册 transform pass、内部/局部 named MLIR pipelines，并承载用户级
+  `--program-pipeline=stablehlo-spmd*` program pipeline driver；没有 conversion pass target。
 - 旧 unit/debug pass argument 已移除，并由 `test/Transforms/removed-provisional-passes.test`
   负向覆盖。
 - 可选 StableHLO 依赖仍由 `WAFER_ENABLE_IMPORTER_DEPS` 控制；更细的 dependency target 可见范围由

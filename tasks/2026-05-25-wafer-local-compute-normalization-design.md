@@ -77,7 +77,9 @@ no-user-sharding 的默认 seed policy 属于 SPMD 阶段，不属于本阶段�
 local body；如果默认 policy 选择 `tile-count=1` 或 replicated fallback，本阶段看到的可能是
 whole-shape local body 且没有 collective。缺少 collective 不能作为拒绝 local compute lowering 的理由。
 
-本阶段的主 pipeline 是 `wafer-lower-stablehlo-to-linalg`。它只负责 local compute normalization：
+本阶段的局部 named MLIR pipeline 是 `wafer-lower-stablehlo-to-linalg`；用户级主线由
+`wafer-opt --program-pipeline=stablehlo-spmd-to-linalg` 调用同一 lowering body。该 named pipeline
+只负责 local compute normalization：
 `stablehlo.reduce` -> `linalg.reduce`，StableHLO elementwise -> `linalg.generic` + `arith` /
 `math`，shape-only ops -> `tensor` / `linalg` shape ops，`stablehlo.constant` -> `arith.constant`。
 它不执行 Shardy propagation，不调用 XLA SPMD partitioner，不写 per-rank parameter shard binding，
@@ -455,7 +457,7 @@ Normalization 后必须能检查：
 | RoPE | `lower-stablehlo-rope-mlp-staged.mlir` | 证明当前 RoPE slice/shape/elementwise staged pattern；sin/cos table storage slicing 未闭环 |
 | MLP | `lower-stablehlo-mlp.mlir`、`lower-stablehlo-local-transformer-block.mlir` | 证明 tanh-gated MLP dataflow fixture 和 full local transformer structured fixture；GELU/SwiGLU/package consistency 未闭环 |
 | shape views | `lower-stablehlo-shape.mlir`、`lower-stablehlo-local-transformer-block.mlir` | 证明 static expand/collapse shape-only relation；dynamic shape view 和 layout materialization 未闭环 |
-| tensor collective handoff | R2.4 已恢复 | `wafer-lower-stablehlo-to-linalg` 已把 StableHLO logical collective normalize 成 `wafer.tensor_collective.*`；旧的 StableHLO -> `wafer.comm` bridge 已移除，不能作为 group/tiling 输入 |
+| tensor collective handoff | R2.4 已恢复 | `stablehlo-spmd-to-linalg` 主线已把 post-SPMD StableHLO logical collective normalize 成 `wafer.tensor_collective.*`；`wafer-lower-stablehlo-to-linalg` 只作为内部/局部 named MLIR pipeline；旧的 StableHLO -> `wafer.comm` bridge 已移除，不能作为 group/tiling 输入 |
 
 ## 8. 与其它文档的关系
 

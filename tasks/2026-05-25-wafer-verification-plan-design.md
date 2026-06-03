@@ -89,7 +89,8 @@ pattern FileCheck、手写 StableHLO/Linalg fixture 和显式 manifest tool-unit
 - current stage responsibility：当前 gate 只验证或 materialize 哪一层语义。
 - output program / IR：通过后产生或确认的 program / IR contract。
 - downstream consumer：哪个后续 stage 会直接消费该输出。
-- user-level driver / named pipeline：主链路如何由 `wafer-opt` program pipeline 或 named pipeline 重放。
+- user-level driver / named pipeline：主链路如何由 `wafer-opt` program pipeline 重放；named MLIR
+  pipeline 只能作为内部构件或局部覆盖。
 - explicit non-goals：哪些 pass、tool、fixture 或下游缺口不能被算进当前完成证明。
 - completion gate：哪条命令或测试证明当前 stage 的输出沿真实 program chain 可被消费。
 
@@ -150,7 +151,7 @@ Single-card collective：
 Partitioned StableHLO collective handoff：
 
 - Shardy / XLA SPMD 输出的 logical collective 能保留为 partitioned StableHLO / SDY metadata，并先
-  经 `wafer-lower-stablehlo-to-linalg` normalize 成 Wafer LinalgExt-style
+  经 `wafer-opt --program-pipeline=stablehlo-spmd-to-linalg` normalize 成 Wafer LinalgExt-style
   `wafer.tensor_collective.*` op；该 op 实现 destination-style tensor operand/result contract 和
   MLIR `TilingInterface`、Wafer tiling demand interface、Wafer tensor collective info interface，
   可被 group/tiling 边界直接消费。slot-crossing 或当前 IR 不可证明的 collective-axis tile 必须显式

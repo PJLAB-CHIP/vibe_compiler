@@ -40,7 +40,8 @@ body 必须由 P2.S2 的 Wafer-owned stage 生成。后续主链路必须通过 
 单 pass flag 不能替代主线 compile flow。用户级 compile target 名称统一为
 `wafer`；`tx8` 只保留为硬件/依赖逆向资料中的事实名，不作为 compiler target 字符串。
 
-2026-06-02 清理结论：R2.4-pre 只保留当前真实成立的 named pipeline：
+2026-06-02/03 清理结论：用户级主线统一到 `wafer-opt --program-pipeline=stablehlo-spmd` 和
+`wafer-opt --program-pipeline=stablehlo-spmd-to-linalg`；局部 named MLIR pipeline 只保留当前真实成立的
 `wafer-propagate-stablehlo-sharding` 和 `wafer-lower-stablehlo-to-linalg`。
 `wafer-lower-linalg-to-cabi`、`wafer-lower-stablehlo-to-cabi`、
 `wafer-lower-tile-communication-to-cabi` 以及 `wafer-compile-stablehlo

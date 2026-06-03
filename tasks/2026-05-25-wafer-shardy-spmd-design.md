@@ -367,14 +367,14 @@ exporter-native facts，而不是检查 `wafer.spmd.*`：
 - program 中不得出现 physical tile、DTE packet、SPM offset 或 runtime handle 这类下游 lowering
   metadata。
 
-Shardy propagation gate 通过 Wafer named pipeline 直接消费 `functions/forward.mlir`：
+Shardy propagation 的局部 gate 可以通过 Wafer named MLIR pipeline 直接消费 `functions/forward.mlir`：
 
 ```text
 wafer-opt --pass-pipeline='builtin.module(wafer-propagate-stablehlo-sharding)' <strategy>/functions/forward.mlir
 ```
 
-standalone `shardy-sdy-opt` 可以作为第三方 pipeline 对照，但不应是 Wafer 用户级流程的唯一入口。
-这个 gate 只证明 SDY dialect / propagation pipeline 能读取真实 program 中的 sharding facts；它必须和
+standalone `shardy-sdy-opt` 可以作为第三方 pipeline 对照，但不是 Wafer 用户级主线入口。
+这个局部 gate 只证明 SDY dialect / propagation pipeline 能读取真实 program 中的 sharding facts；它必须和
 Wafer compiler-owned XLA SPMD partitioner / partitioned StableHLO export gate 配套使用，不能单独作为
 P2.S2 完成证明。
 row / contracting 类 case 需要保留 reduction collective op；如果后续 tensor collective
