@@ -39,7 +39,8 @@ PyTorch/XLA StableHLO Wafer program directory
   -> R3.2+ tiling / placement / package recovery
 ```
 
-当前已完成链路的用户级 command 不传 helper path：
+当前可重放的用户级 command 不传 helper path。R2.4 / R3.1 已有可运行实现，但按下方状态表需要
+完成 conversion legality 重审后才能恢复为 `done`：
 
 ```bash
 wafer-opt \
@@ -49,7 +50,7 @@ wafer-opt \
   --default-tile-count=16
 ```
 
-R3.1 用户级入口：
+R3.1 当前可重放入口：
 
 ```bash
 wafer-opt \
@@ -66,24 +67,24 @@ wafer-opt \
 | P2.F1 | done | `2026-05-25-wafer-frontend-stablehlo-program-design.md` | PyTorch/XLA model + parameter payload | StableHLO Wafer program directory；frontend 只导出 reference / pre-SPMD sharded program，不做 Shardy/SPMD |
 | P2.S1 | done | `2026-05-25-wafer-shardy-spmd-design.md` | P2.F1 program 或 textual StableHLO/SDY fixture | default input seed + Shardy propagation；作为 `stablehlo-spmd` 内部阶段，不产出 partitioned local body |
 | P2.S2 | done | `2026-05-25-wafer-shardy-spmd-design.md` | P2.F1 sharded program | `stablehlo-spmd` 产出 post-SPMD StableHLO program、rank-local signature、collective metadata、parameter shard metadata/payload |
-| R2.4 | done | `2026-05-25-wafer-local-compute-normalization-design.md` | post-SPMD StableHLO program | `stablehlo-spmd-to-linalg` 产出 Linalg/Tensor/SCF local compute 和 `wafer.tensor_collective.*`；不生成 `wafer.comm`；已补 StableHLO conversion coverage / practice 表，后续应优先复用或对齐 StableHLO 官方 Linalg conversion patterns，不能继续扩展本地窄子集作为主线 |
-| R3.1 | done | `2026-05-12-wafer-group-design.md` 2.1、9.1-9.5 | `stablehlo-spmd-to-linalg` 输出的 rank-local tensor IR | `stablehlo-spmd-to-group` 形成 verifier-legal logical `wafer.group` candidate；支持 dependency-preserving conservative expansion、fill/init、bias/epilogue/simple elementwise、tensor collective handoff 和显式 `ins` / `outs` / `group_yield` 边界 |
 
 ## 当前状态
 
-当前先做 R2.4 / R3.2c conversion coverage 对齐和设计收口，不启动 R3.2d 实现。R3.2c
-provisional tile-region candidate lowering 已完成；下一项实现仍是 R3.2d SPM allocation，但在
-进入 R3.2d 前需要先确认 R2.4 是否复用/对齐 StableHLO 官方 conversion patterns，以及 R3.2c
-supported / unsupported op coverage 和 conversion pass 边界。
+当前 active task 是 R2.4 conversion legality 重审：把 StableHLO -> structured tensor 主线对齐
+StableHLO 官方 Linalg conversion patterns，并保留 Wafer tensor collective handoff 的明确
+legal/illegal contract。R3.1 / R3.2a / R3.2b / R3.2c 都已有局部实现和测试证据，但在 R2.4
+输入合同稳定前不能标 `done`；R3.2c 还需要按 op coverage 表决定是否重构为 conversion pass。
 
 ## 恢复队列
 
 | ID | 状态 | 设计来源 | 输入 / 输出边界 | 完成 gate |
 | --- | --- | --- | --- | --- |
-| R3.2a | done | `2026-05-12-wafer-group-design.md` 10.1-10.2；MLIR Linalg/TilingInterface；tensor collective docs | 输入：R3.1 logical `wafer.group` body；输出：`GroupTilingDemand` analysis result，包括 boundary/result tile facts、per-op slice / iterator / accumulator / collective demand | `GroupTilingDemand` analysis + `--wafer-dump-group-tiling-demand` debug gate 已恢复；覆盖 linalg indexing maps、reduction accumulator、tensor collective interface、多 group 和 unsupported op failure；不写 `wafer.group` attr |
-| R3.2b | done | `2026-05-21-wafer-layout-materialization-design.md` | 输入：R3.2a `GroupTilingDemand` facts 和当前 group SSA use-def；输出：`GroupLayoutPlan` analysis result，包括 boundary layout、per-op layout constraints/assignment、materialization cut 和 materialization buffer demand | `GroupLayoutPlan` analysis + `--wafer-dump-group-layout-plan` debug gate 已恢复；覆盖 contraction/accumulator、broadcast/flexible op、tensor collective、多 group、unsupported op failure 和 `stablehlo-spmd-to-group` 主链路 dump；不写 `wafer.group` attr，不生成 `wafer.tile_region` |
-| R3.2c | done | `2026-05-25-wafer-tile-region-design.md`；layout/SPM/compute/communication docs | 输入：R3.1 logical group、R3.2a `GroupTilingDemand`、R3.2b `GroupLayoutPlan`；输出：transformation-local provisional `wafer.tile_region` candidate，包含 target-abstract `wafer.compute` / `wafer.comm` / load-store / `wafer.layout.materialize` / sync / `!wafer.tile_buffer` / effect 结构 | `--wafer-dump-tile-region-candidate` debug gate 已恢复；覆盖 load/store boundary、layout materialization、GEMM、broadcast/elementwise、多 group、unsupported op failure、缺少 placement/local-rank 的 collective failure 和 `stablehlo-spmd-to-group` 主链路 dump；candidate 可 verify，rejected candidate 不写入主 IR，不 lower 到 packet/ABI/LLVM；已补 op coverage 表，后续需按表重构 conversion pass 边界 |
-| R3.2d | ready | `2026-05-21-wafer-spm-bufferization-design.md` | 输入：R3.2c provisional `wafer.tile_region` candidate 中的 compute/comm/layout/load-store/sync op interface、tile buffer、lifetime 和 effect；输出：SPM allocation result 或结构化失败 | 做真实 SPM window placement：alignment、layout padding、scratch/psum/temp、layout materialization temp、communication staging、lifetime overlap、range/end-address/conflict 都参与；不是 byte-size estimate；失败返回 planner |
+| R2.4 | active | `2026-05-25-wafer-local-compute-normalization-design.md` | 输入：post-SPMD StableHLO program；输出：Linalg/Tensor/SCF local compute + `wafer.tensor_collective.*` | 当前本地 lowering 子集可运行，但主线 completion gate 未收口：需要复用或对齐 StableHLO 官方 Linalg conversion patterns，建立 conversion legality gate；Wafer 自有 tensor collective handoff 必须进入明确 pattern / legality 合同；不能继续扩展本地窄子集作为主线 |
+| R3.1 | pending | `2026-05-12-wafer-group-design.md` 2.1、9.1-9.5 | 输入：R2.4 输出的 rank-local structured tensor IR；输出：logical `wafer.group` candidate | 已有 `stablehlo-spmd-to-group` 实现和 group verifier/debug 测试；但依赖 R2.4 输出合同稳定。R2.4 conversion 重审后需重新验证 dependency-preserving expansion、fill/init、bias/epilogue/simple elementwise、tensor collective handoff 和主链路 program gate，再恢复 `done` |
+| R3.2a | pending | `2026-05-12-wafer-group-design.md` 10.1-10.2；MLIR Linalg/TilingInterface；tensor collective docs | 输入：R3.1 logical `wafer.group` body；输出：`GroupTilingDemand` analysis result，包括 boundary/result tile facts、per-op slice / iterator / accumulator / collective demand | 已有 `GroupTilingDemand` analysis + `--wafer-dump-group-tiling-demand` debug gate；但需在 R2.4/R3.1 重审后的 group IR 上重新验证，且不能把 debug dump 当主线 completion gate |
+| R3.2b | pending | `2026-05-21-wafer-layout-materialization-design.md` | 输入：R3.2a `GroupTilingDemand` facts 和当前 group SSA use-def；输出：`GroupLayoutPlan` analysis result，包括 boundary layout、per-op layout constraints/assignment、materialization cut 和 materialization buffer demand | 已有 `GroupLayoutPlan` analysis + `--wafer-dump-group-layout-plan` debug gate；但需在重审后的 R3.2a demand 上重新验证，并明确它仍是 analysis result，不生成 `wafer.tile_region` |
+| R3.2c | pending | `2026-05-25-wafer-tile-region-design.md`；layout/SPM/compute/communication docs | 输入：R3.1 logical group、R3.2a `GroupTilingDemand`、R3.2b `GroupLayoutPlan`；输出：transformation-local provisional `wafer.tile_region` candidate，包含 target-abstract `wafer.compute` / load-store / `wafer.layout.materialize` / `!wafer.tile_buffer` / effect 结构 | 已有 candidate emitter 和 `--wafer-dump-tile-region-candidate` debug gate；但 op coverage 表显示覆盖有限，且主线是否应重构为 conversion pass 尚未收口。未完成前不能把 R3.2c 作为 R3.2d 的稳定输入 |
+| R3.2d | pending | `2026-05-21-wafer-spm-bufferization-design.md` | 输入：R3.2c provisional `wafer.tile_region` candidate 中的 compute/comm/layout/load-store/sync op interface、tile buffer、lifetime 和 effect；输出：SPM allocation result 或结构化失败 | 前置 R3.2c 边界未稳定，暂不 ready。恢复后必须做真实 SPM window placement：alignment、layout padding、scratch/psum/temp、layout materialization temp、communication staging、lifetime overlap、range/end-address/conflict 都参与；不是 byte-size estimate；失败返回 planner |
 | R3.2e | pending | `2026-05-25-wafer-ddr-resource-allocation-design.md`；compute/movement docs | 输入：R3.2c provisional `wafer.tile_region` candidate、R3.2d SPM allocation facts、load/store/constant/workspace/movement/compute/comm demand；输出：DDR/resource plan 和 compute/movement legality result | 覆盖 external/workspace/resident-constant、pool/domain/capacity/bandwidth/range demand；compute/movement/collective 的 layout、dtype、shape、effect 通过接口/verifier 验证；不能用 manifest fixture 替代 |
 | R3.2f | pending | `2026-05-12-wafer-group-design.md` 10.x；R3.2a-e planning / analysis results | 输入：R3.1 logical group 和 R3.2a-e planning results；输出：accepted/rejected/split group planning decision | closed-loop 搜索 group boundary、traversal、tile shape、layout、SPM/DDR/resource plan；accepted plan 带 R3.3 可消费的 traversal/tile/slice/layout/SPM/DDR facts；未接受 plan 不落 IR；可选 multi-root packing 只有在 legality/resource/cost 证明兼容时接受 |
 | R3.3 | pending | `2026-05-25-wafer-tile-region-design.md` | 输入：R3.2f accepted plan；输出：committed `wafer.tile_region` | 只 materialize accepted candidate；未接受 group 不产生 `wafer.tile_region`；不重新决定 group 是否可行 |
