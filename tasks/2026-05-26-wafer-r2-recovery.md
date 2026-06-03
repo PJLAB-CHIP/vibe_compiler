@@ -200,7 +200,7 @@ P2/R3 任务号、单个 workload 或 case 命名。`wafer-opt` 可以继续暴�
 作为局部 debug/unit 入口，但这些 flag 不能被写成用户级 compile 流程。Python post-SPMD helper 已删除；
 不得把 frontend capture 写成 SPMD partition 或用户编译入口。
 
-当前 R2.4-pre 落地后仍保留的 Wafer pipeline / driver 边界：
+当前保留的 Wafer pipeline / driver 边界：
 
 - `wafer-propagate-stablehlo-sharding`：StableHLO/SDY sharding seed -> propagated StableHLO/SDY。
   该 pipeline 只负责 no-user default seed 和 Shardy propagation，不产生 partitioned local body；
