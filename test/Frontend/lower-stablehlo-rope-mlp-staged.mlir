@@ -1,5 +1,5 @@
 // REQUIRES: stablehlo
-// RUN: wafer-opt --wafer-normalize-constants --wafer-lower-stablehlo-shape --wafer-lower-stablehlo-elementwise %s | FileCheck %s
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-stablehlo-to-linalg)' %s | FileCheck %s
 
 module {
   func.func @rope_staged(%x: tensor<2x4xf32>,
@@ -53,7 +53,8 @@ module {
 // CHECK: arith.mulf
 // CHECK: arith.subf
 // CHECK: arith.addf
-// CHECK: tensor.concat dim(1)
+// CHECK: scf.if
+// CHECK: tensor.extract
 
 // CHECK-LABEL: func.func @gelu_tanh_staged
 // CHECK-NOT: stablehlo.

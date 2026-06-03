@@ -67,7 +67,7 @@ wafer-opt \
 | P2.F1 | done | `2026-05-25-wafer-frontend-stablehlo-program-design.md` | PyTorch/XLA model + parameter payload | StableHLO Wafer program directory；frontend 只导出 reference / pre-SPMD sharded program，不做 Shardy/SPMD |
 | P2.S1 | done | `2026-05-25-wafer-shardy-spmd-design.md` | P2.F1 program 或 textual StableHLO/SDY fixture | default input seed + Shardy propagation；作为 `stablehlo-spmd` 内部阶段，不产出 partitioned local body |
 | P2.S2 | done | `2026-05-25-wafer-shardy-spmd-design.md` | P2.F1 sharded program | `stablehlo-spmd` 产出 post-SPMD StableHLO program、rank-local signature、collective metadata、parameter shard metadata/payload |
-| R2.4 | done | `2026-05-25-wafer-local-compute-normalization-design.md` | post-SPMD StableHLO program | `stablehlo-spmd-to-linalg` 主线先将 post-SPMD StableHLO collective normalize 成 verifier-legal `wafer.tensor_collective.*`，再调用当前 pin 的官方 `stablehlo-legalize-to-linalg` conversion；unsupported collective 或 raw StableHLO 残留会让 pipeline fail；输出 Linalg/Tensor/SCF/Arith/Math local compute，不生成 `wafer.comm` / SPM / ABI |
+| R2.4 | done | `2026-05-25-wafer-local-compute-normalization-design.md` | post-SPMD StableHLO program | `stablehlo-spmd-to-linalg` 主线先将 post-SPMD StableHLO collective normalize 成 verifier-legal `wafer.tensor_collective.*`，再调用当前 pin 的官方 `stablehlo-legalize-to-linalg` conversion；unsupported collective 或 raw StableHLO 残留会让 pipeline fail；输出 Linalg/Tensor/SCF/Arith/Math local compute，不生成 `wafer.comm` / SPM / ABI；旧本地 StableHLO compute lowering pass 入口已删除 |
 
 ## 当前状态
 

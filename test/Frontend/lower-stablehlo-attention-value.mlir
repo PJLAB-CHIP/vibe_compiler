@@ -1,5 +1,5 @@
 // REQUIRES: stablehlo
-// RUN: wafer-opt --wafer-lower-stablehlo-dot %s | FileCheck %s
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-stablehlo-to-linalg)' %s | FileCheck %s
 
 module {
   func.func @attention_value_av(
@@ -19,6 +19,10 @@ module {
 }
 
 // CHECK-LABEL: func.func @attention_value_av
-// CHECK: stablehlo.dot_general
-// CHECK-NOT: linalg.generic
+// CHECK-NOT: stablehlo.
+// CHECK: linalg.fill
+// CHECK: linalg.generic
+// CHECK-SAME: iterator_types = ["parallel", "parallel", "parallel", "parallel", "reduction"]
+// CHECK: arith.mulf
+// CHECK: arith.addf
 // CHECK: return %{{.+}} : tensor<2x3x5x8xf16>

@@ -12,17 +12,12 @@ class Pass;
 
 namespace wafer {
 
-std::unique_ptr<mlir::Pass> createLowerStablehloDotPass();
-std::unique_ptr<mlir::Pass> createLowerStablehloElementwisePass();
-std::unique_ptr<mlir::Pass> createLowerStablehloReducePass();
-std::unique_ptr<mlir::Pass> createLowerStablehloShapePass();
 std::unique_ptr<mlir::Pass> createLegalizeStablehloToLinalgPass();
 std::unique_ptr<mlir::Pass> createFormGroupCandidatesPass();
 std::unique_ptr<mlir::Pass> createDumpGroupTilingDemandPass();
 std::unique_ptr<mlir::Pass> createDumpGroupLayoutPlanPass();
 std::unique_ptr<mlir::Pass> createDumpTileRegionCandidatePass();
 std::unique_ptr<mlir::Pass> createNormalizeStablehloCollectivesPass();
-std::unique_ptr<mlir::Pass> createNormalizeConstantsPass();
 #ifdef WAFER_ENABLE_SHARDY
 std::unique_ptr<mlir::Pass> createApplyDefaultSpmdShardingPass();
 std::unique_ptr<mlir::Pass>

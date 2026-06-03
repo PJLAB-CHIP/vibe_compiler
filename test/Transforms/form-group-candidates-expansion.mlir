@@ -1,5 +1,5 @@
 // REQUIRES: stablehlo
-// RUN: wafer-opt --wafer-normalize-constants --wafer-lower-stablehlo-dot --wafer-lower-stablehlo-elementwise --wafer-form-group-candidates %s | FileCheck %s
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-stablehlo-to-linalg,wafer-form-group-candidates)' %s | FileCheck %s
 
 module {
   func.func @matmul_bias_relu(

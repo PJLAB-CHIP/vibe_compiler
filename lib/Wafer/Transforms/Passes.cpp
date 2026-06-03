@@ -9,16 +9,11 @@ namespace wafer {
 
 void registerWaferTransformPasses() {
   static bool registered = [] {
-    mlir::registerPass(createLowerStablehloDotPass);
-    mlir::registerPass(createLowerStablehloElementwisePass);
     mlir::registerPass(createFormGroupCandidatesPass);
     mlir::registerPass(createDumpGroupTilingDemandPass);
     mlir::registerPass(createDumpGroupLayoutPlanPass);
     mlir::registerPass(createDumpTileRegionCandidatePass);
-    mlir::registerPass(createLowerStablehloReducePass);
-    mlir::registerPass(createLowerStablehloShapePass);
     mlir::registerPass(createNormalizeStablehloCollectivesPass);
-    mlir::registerPass(createNormalizeConstantsPass);
 #ifdef WAFER_ENABLE_SHARDY
     mlir::registerPass([] { return createApplyDefaultSpmdShardingPass(); });
 #endif

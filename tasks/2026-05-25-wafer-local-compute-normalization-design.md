@@ -79,9 +79,9 @@ whole-shape local body 且没有 collective。缺少 collective 不能作为拒�
 
 本阶段的局部 named MLIR pipeline 是 `wafer-lower-stablehlo-to-linalg`；用户级主线由
 `wafer-opt --program-pipeline=stablehlo-spmd-to-linalg` 调用同一 lowering body。该 named pipeline
-只负责 local compute normalization：
-`stablehlo.reduce` -> `linalg.reduce`，StableHLO elementwise -> `linalg.generic` + `arith` /
-`math`，shape-only ops -> `tensor` / `linalg` shape ops，`stablehlo.constant` -> `arith.constant`。
+只负责 local compute normalization：先把 post-SPMD StableHLO logical collective handoff 成
+`wafer.tensor_collective.*`，再调用当前 pin 的官方 StableHLO-to-Linalg conversion，把 StableHLO
+compute / data movement / constant 转成 `linalg` / `tensor` / `scf` / `arith` / `math` structured IR。
 它不执行 Shardy propagation，不调用 XLA SPMD partitioner，不写 per-rank parameter shard binding，
 也不决定 group / tile / SPM / DDR / C ABI。
 
@@ -123,7 +123,7 @@ StableHLO op semantics、types、indexing maps、SSA use-def 和 verifier 可证
 检查。QK^T 不应该靠 `rhs` 名字识别 transpose；transpose relation 来自 dot dimension numbers
 或显式 `transpose` / indexing map。
 
-当前 P5.3 实现扩展 `--wafer-lower-stablehlo-dot`，支持 attention score 的 QK^T 形态：
+当前 R2.4 主线通过官方 StableHLO-to-Linalg conversion 支持 attention score 的 QK^T 形态：
 
 ```text
 query : tensor<BxHxQxD>
@@ -131,9 +131,9 @@ key   : tensor<BxHxKxD>
 score : tensor<BxHxQxK>
 ```
 
-该 lowering 只接受 StableHLO `dot_general` 中可验证的 dimension numbers：`lhs/rhs` batch
+该 lowering 由 StableHLO `dot_general` 中可验证的 dimension numbers 推导：`lhs/rhs` batch
 dimensions 都是 `[0, 1]`，contracting dimension 都是最后一维 `[3]`，并检查静态 shape 和
-输出 shape 一致。输出使用 `linalg.generic` contraction：
+输出 shape 一致。当前 pin 的官方 conversion 输出 `linalg.generic` contraction：
 
 - `query` map: `(b, h, q, k, d) -> (b, h, q, d)`。
 - `key` map: `(b, h, q, k, d) -> (b, h, k, d)`。
@@ -144,7 +144,7 @@ dimensions 都是 `[0, 1]`，contracting dimension 都是最后一维 `[3]`，�
 参数名、函数名或模型层名字。更宽泛的 batch matmul 形态应继续按同一原则扩展，不把某个
 head 数、sequence length 或隐藏维写成协议。
 
-当前 P5.4 实现继续扩展 `--wafer-lower-stablehlo-dot`，支持 attention value 的 AV 形态：
+当前 R2.4 主线也通过同一官方 conversion 支持 attention value 的 AV 形态：
 
 ```text
 prob  : tensor<BxHxQxK>
@@ -152,8 +152,8 @@ value : tensor<BxHxKxD>
 out   : tensor<BxHxQxD>
 ```
 
-该 lowering 接受 `lhs/rhs` batch dimensions `[0, 1]`、`lhs` contracting dimension `[3]` 和
-`rhs` contracting dimension `[2]`，并检查输出 shape 与 `B/H/Q/D` 对齐。输出使用
+该 lowering 由 `lhs/rhs` batch dimensions `[0, 1]`、`lhs` contracting dimension `[3]` 和
+`rhs` contracting dimension `[2]` 推导，并检查输出 shape 与 `B/H/Q/D` 对齐。输出使用
 `linalg.generic` contraction：
 
 - `prob` map: `(b, h, q, d, k) -> (b, h, q, k)`。
@@ -216,8 +216,8 @@ SwiGLU 的其它 decomposition 需要通过通用 structured tensor lowering 和
 该 fixture 只验证这些 fine-grained StableHLO dataflow 经过 local tensor normalization 后仍能由
 `linalg` / `tensor` / `arith` / `math` structured IR 表达；不运行 transformer-specific schedule
 acceptance pass，也不证明 group schedule、SPM residency、workspace 或 package completion。为支持
-该 fixture，`--wafer-lower-stablehlo-shape` 现在支持静态连续维度 reassociation 的
-expand/collapse reshape，例如
+该 fixture，当前官方 conversion 会把静态连续维度 reassociation 转成
+`tensor.expand_shape` / `tensor.collapse_shape`，例如
 `tensor<BxHxQxD> -> tensor<(BHQ)xD>`。该批次仍不声称 physical layout、SPM residency、
 workspace 或 DDR binding 已完成；这些事实必须在后续 Wafer group/resource lowering 和
 transformer local compile gate 中 materialize。
@@ -436,8 +436,9 @@ R2.4 主线已从本地小 pass 串切换为 StableHLO 官方 Linalg legalizatio
 pipeline 失败。Wafer 自有逻辑只补官方 conversion 不表达的 post-SPMD tensor collective handoff 和
 Wafer-specific policy。
 
-历史 `wafer-lower-stablehlo-{dot,elementwise,reduce,shape}` pass 仍可作为局部 debug / fixture 覆盖入口，
-但不再构成 R2.4 主线 completion gate，也不能继续扩展成本项目维护的窄版 StableHLO lowering。
+历史 `wafer-lower-stablehlo-{dot,elementwise,reduce,shape}` / `wafer-normalize-constants` 本地 pass
+入口已删除；frontend fixture 统一通过 `wafer-lower-stablehlo-to-linalg` named pipeline 覆盖。Wafer
+不再维护自己的窄版 StableHLO compute lowering。
 
 | source StableHLO family | R2.4 主线处理 | 覆盖状态 | 后续要求 |
 | --- | --- | --- | --- |

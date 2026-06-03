@@ -1,5 +1,5 @@
 // REQUIRES: stablehlo
-// RUN: wafer-opt --wafer-lower-stablehlo-reduce --wafer-normalize-constants --wafer-lower-stablehlo-elementwise --wafer-lower-stablehlo-shape %s | FileCheck %s
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-stablehlo-to-linalg)' %s | FileCheck %s
 
 module {
   func.func @rmsnorm_staged(%x: tensor<2x4xf32>,
@@ -74,32 +74,29 @@ module {
   }
 }
 
-// CHECK-DAG: #[[ROW_MAP:map[0-9]*]] = affine_map<(d0, d1) -> (d0)>
-// CHECK-DAG: #[[COL_MAP:map[0-9]*]] = affine_map<(d0, d1) -> (d1)>
-// CHECK-DAG: #[[IDENTITY_MAP:map[0-9]*]] = affine_map<(d0, d1) -> (d0, d1)>
-
 // CHECK-LABEL: func.func @rmsnorm_staged
 // CHECK-NOT: stablehlo.
-// CHECK: linalg.reduce
-// CHECK-SAME: arith.addf
-// CHECK-SAME: dimensions = [1]
+// CHECK: arith.mulf
+// CHECK: linalg.generic
+// CHECK: iterator_types = ["parallel", "reduction"]
+// CHECK: arith.addf
 // CHECK: arith.divf
 // CHECK: arith.addf
 // CHECK: math.rsqrt
 // CHECK: linalg.generic
-// CHECK-SAME: indexing_maps = [#[[IDENTITY_MAP]], #[[ROW_MAP]], #[[IDENTITY_MAP]]]
 // CHECK: arith.mulf
 // CHECK: linalg.generic
-// CHECK-SAME: indexing_maps = [#[[IDENTITY_MAP]], #[[COL_MAP]], #[[IDENTITY_MAP]]]
 // CHECK: arith.mulf
 
 // CHECK-LABEL: func.func @layernorm_staged
 // CHECK-NOT: stablehlo.
-// CHECK: linalg.reduce
-// CHECK-SAME: dimensions = [1]
+// CHECK: linalg.generic
+// CHECK: iterator_types = ["parallel", "reduction"]
+// CHECK: arith.addf
 // CHECK: arith.subf
-// CHECK: linalg.reduce
-// CHECK-SAME: dimensions = [1]
+// CHECK: linalg.generic
+// CHECK: iterator_types = ["parallel", "reduction"]
+// CHECK: arith.addf
 // CHECK: math.rsqrt
 // CHECK: linalg.generic
 // CHECK: arith.addf

@@ -170,12 +170,12 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 
 当前实现：
 
-- 有 StableHLO textual program tests、`wafer-normalize-constants`、dot/shape/elementwise/reduce
-  lowering pass，以及 norm/softmax/projection/MLP frontend lowering fixtures；历史 case-specific
-  acceptance passes 已删除。
-- attention QK^T / AV rank-4 `dot_general` 不再由 `wafer-lower-stablehlo-dot` 特判 lowering；full
-  local transformer fixture 只证明前段 reduce/elementwise/shape 和 rank-2 GEMM 子图的 structured
-  tensor dataflow。
+- StableHLO textual program tests 和 norm/softmax/projection/MLP frontend lowering fixtures 统一通过
+  `wafer-lower-stablehlo-to-linalg` named pipeline 覆盖；历史 case-specific acceptance passes 和本地
+  `wafer-lower-stablehlo-{dot,elementwise,reduce,shape}` / `wafer-normalize-constants` pass 均已删除。
+- attention QK^T / AV rank-4 `dot_general` 由官方 StableHLO-to-Linalg conversion 转成 structured
+  generic contraction；full local transformer fixture 只证明 fine-grained StableHLO dataflow 能进入
+  structured tensor IR，不证明 group schedule、SPM residency 或 package completion。
 - `wafer-compile-stablehlo` 已通过 `WaferFrontend` verifier 接收 pre-exported Wafer program，
   并覆盖 graph break、eager fallback、bounded dynamic shape 诊断；P2.F1 进一步验证 PyTorch/XLA
   program directory `forward.meta` / pre-SPMD `data/<parameter>` 与 MLIR function signature 一致；post-SPMD

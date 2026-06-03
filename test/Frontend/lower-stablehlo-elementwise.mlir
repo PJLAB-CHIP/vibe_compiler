@@ -1,5 +1,5 @@
 // REQUIRES: stablehlo
-// RUN: wafer-opt --wafer-normalize-constants --wafer-lower-stablehlo-elementwise %s | FileCheck %s
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-stablehlo-to-linalg)' %s | FileCheck %s
 
 module {
   func.func @lower_binary(%arg0: tensor<4xf32>, %arg1: tensor<4xf32>)
@@ -65,5 +65,6 @@ module {
 // CHECK-LABEL: func.func @lower_broadcasted_add
 // CHECK-NOT: stablehlo.
 // CHECK: linalg.generic
-// CHECK-SAME: indexing_maps = [#[[BCAST_MAP]], #[[IDENTITY_MAP]], #[[IDENTITY_MAP]]]
+// CHECK-SAME: ins(%arg0 : tensor<4xf32>)
+// CHECK: linalg.generic
 // CHECK: arith.addf

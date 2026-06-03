@@ -1,5 +1,5 @@
 // REQUIRES: stablehlo
-// RUN: wafer-opt --wafer-lower-stablehlo-shape %s | FileCheck %s
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-stablehlo-to-linalg)' %s | FileCheck %s
 
 module {
   func.func @lower_broadcast(%arg0: tensor<4xf32>) -> tensor<2x4xf32> {
@@ -39,8 +39,7 @@ module {
 // CHECK-LABEL: func.func @lower_broadcast
 // CHECK-NOT: stablehlo.broadcast_in_dim
 // CHECK: tensor.empty() : tensor<2x4xf32>
-// CHECK: linalg.broadcast
-// CHECK-SAME: dimensions = [0]
+// CHECK: linalg.generic
 
 // CHECK-LABEL: func.func @lower_expand_reshape
 // CHECK-NOT: stablehlo.reshape
@@ -55,8 +54,7 @@ module {
 // CHECK-LABEL: func.func @lower_transpose
 // CHECK-NOT: stablehlo.transpose
 // CHECK: tensor.empty() : tensor<3x2xf32>
-// CHECK: linalg.transpose
-// CHECK-SAME: permutation = [1, 0]
+// CHECK: linalg.generic
 
 // CHECK-LABEL: func.func @lower_slice
 // CHECK-NOT: stablehlo.slice

@@ -1,5 +1,5 @@
 // REQUIRES: stablehlo
-// RUN: wafer-opt --wafer-lower-stablehlo-dot --wafer-lower-stablehlo-elementwise --wafer-lower-stablehlo-shape %s | FileCheck %s
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-stablehlo-to-linalg)' %s | FileCheck %s
 
 module {
   func.func @projection_residual(
@@ -23,17 +23,14 @@ module {
   }
 }
 
-// CHECK-DAG: #[[IDENTITY:map[0-9]*]] = affine_map<(d0, d1) -> (d0, d1)>
-// CHECK-DAG: #[[COL:map[0-9]*]] = affine_map<(d0, d1) -> (d1)>
-
 // CHECK-LABEL: func.func @projection_residual
 // CHECK-NOT: stablehlo.
 // CHECK: linalg.matmul
 // CHECK: linalg.generic
-// CHECK-SAME: indexing_maps = [#[[IDENTITY]], #[[COL]], #[[IDENTITY]]]
+// CHECK-SAME: ins(%arg2 : tensor<16xf32>)
+// CHECK: linalg.generic
 // CHECK: arith.addf
 // CHECK: linalg.generic
-// CHECK-SAME: tensor<4x16xf32>, tensor<4x16xf32>
 // CHECK: arith.addf
 // CHECK-NOT: wafer.projection
 // CHECK: return %{{.+}} : tensor<4x16xf32>

@@ -30,15 +30,7 @@ struct StablehloShardingPropagationPipelineOptions
 
 static void addStablehloToLinalgBody(mlir::OpPassManager &pm) {
   pm.addPass(createNormalizeStablehloCollectivesPass());
-#ifdef WAFER_ENABLE_STABLEHLO
   pm.addPass(createLegalizeStablehloToLinalgPass());
-#else
-  pm.addPass(createLowerStablehloReducePass());
-  pm.addPass(createNormalizeConstantsPass());
-  pm.addPass(createLowerStablehloDotPass());
-  pm.addPass(createLowerStablehloElementwisePass());
-  pm.addPass(createLowerStablehloShapePass());
-#endif
 }
 
 } // namespace

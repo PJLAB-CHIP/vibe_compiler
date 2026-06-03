@@ -92,10 +92,11 @@
   `forward.parameter_shards.json` 与 rank-local NPY payload。局部 `test/Frontend` fixture 可以覆盖
   `all_reduce` / `reduce_scatter` / `all_to_all` / `collective_permute`，但不能替代这个 program
   handoff gate。
-- R2.4 local compute 主线不要继续扩展本地 `wafer-lower-stablehlo-{dot,elementwise,reduce,shape}`
-  窄子集。`wafer-lower-stablehlo-to-linalg` 的主线 body 先运行 Wafer collective handoff，再调用当前
-  StableHLO pin 的官方 `stablehlo-legalize-to-linalg`；Wafer collective handoff 不能证明时要
-  `signalPassFailure`，不能静默把 raw StableHLO 留给 R3 group。
+- R2.4 local compute 主线不要恢复本地 `wafer-lower-stablehlo-{dot,elementwise,reduce,shape}` 或
+  `wafer-normalize-constants` 窄子集；这些旧 pass 入口已经删除。`wafer-lower-stablehlo-to-linalg`
+  的主线 body 先运行 Wafer collective handoff，再调用当前 StableHLO pin 的官方
+  `stablehlo-legalize-to-linalg`；Wafer collective handoff 不能证明时要 `signalPassFailure`，
+  不能静默把 raw StableHLO 留给 R3 group。
 - R2.4 `wafer.tensor_collective.*` 不是只靠 op 名字或 pass switch 的 skeleton；五类 collective
   必须实现 `DestinationStyleOpInterface`、MLIR `TilingInterface`、`WaferTilingInterface` 和
   `WaferTensorCollectiveOpInterface`。slot-crossing 或动态不可证明的 collective-axis tile 应由

@@ -1,5 +1,5 @@
 // REQUIRES: stablehlo
-// RUN: wafer-opt --wafer-lower-stablehlo-reduce --wafer-normalize-constants --wafer-lower-stablehlo-dot --wafer-lower-stablehlo-elementwise --wafer-lower-stablehlo-shape %s | FileCheck %s
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-stablehlo-to-linalg)' %s | FileCheck %s
 
 module {
   func.func @local_transformer_block(
@@ -122,12 +122,13 @@ module {
 }
 
 // CHECK-LABEL: func.func @local_transformer_block
+// CHECK-NOT: stablehlo.
 // CHECK: math.rsqrt
 // CHECK: linalg.generic
-// CHECK: stablehlo.dot_general
+// CHECK: iterator_types = ["parallel", "parallel", "parallel", "parallel", "reduction"]
 // CHECK: math.exp
 // CHECK: linalg.generic
-// CHECK: stablehlo.dot_general
+// CHECK: iterator_types = ["parallel", "parallel", "parallel", "parallel", "reduction"]
 // CHECK: tensor.collapse_shape
 // CHECK: linalg.matmul
 // CHECK: math.tanh

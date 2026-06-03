@@ -1,5 +1,5 @@
 // REQUIRES: stablehlo
-// RUN: wafer-opt --wafer-lower-stablehlo-reduce %s | FileCheck %s
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-stablehlo-to-linalg)' %s | FileCheck %s
 
 module {
   func.func @lower_reduce_sum(%arg0: tensor<2x4xf32>,
@@ -32,15 +32,15 @@ module {
 // CHECK: tensor.extract %arg1[]
 // CHECK: tensor.empty() : tensor<2xf32>
 // CHECK: linalg.fill
-// CHECK: linalg.reduce
-// CHECK-SAME: arith.addf
-// CHECK-SAME: dimensions = [1]
+// CHECK: linalg.generic
+// CHECK-SAME: iterator_types = ["parallel", "reduction"]
+// CHECK: arith.addf
 
 // CHECK-LABEL: func.func @lower_reduce_max
 // CHECK-NOT: stablehlo.reduce
 // CHECK: tensor.extract %arg1[]
 // CHECK: tensor.empty() : tensor<4xf32>
 // CHECK: linalg.fill
-// CHECK: linalg.reduce
-// CHECK-SAME: arith.maximumf
-// CHECK-SAME: dimensions = [0]
+// CHECK: linalg.generic
+// CHECK-SAME: iterator_types = ["parallel", "reduction"]
+// CHECK: arith.maximumf

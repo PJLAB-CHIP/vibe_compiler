@@ -1,5 +1,5 @@
 // REQUIRES: stablehlo
-// RUN: wafer-opt --wafer-lower-stablehlo-reduce --wafer-normalize-constants --wafer-lower-stablehlo-elementwise --wafer-lower-stablehlo-shape --wafer-lower-stablehlo-dot %s | FileCheck %s
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-stablehlo-to-linalg)' %s | FileCheck %s
 
 module {
   func.func @attention_softmax_value(
@@ -44,14 +44,19 @@ module {
 }
 
 // CHECK-LABEL: func.func @attention_softmax_value
-// CHECK: linalg.reduce
-// CHECK-SAME: arith.maximumf
+// CHECK-NOT: stablehlo.
+// CHECK: linalg.generic
+// CHECK-SAME: iterator_types = ["parallel", "parallel", "parallel", "reduction"]
+// CHECK: arith.maximumf
 // CHECK: linalg.generic
 // CHECK: math.exp
-// CHECK: linalg.reduce
-// CHECK-SAME: arith.addf
-// CHECK: %[[PROB:.+]] = linalg.generic
+// CHECK: linalg.generic
+// CHECK-SAME: iterator_types = ["parallel", "parallel", "parallel", "reduction"]
+// CHECK: arith.addf
+// CHECK: linalg.generic
 // CHECK: arith.divf
-// CHECK: stablehlo.dot_general
-// CHECK-SAME: %[[PROB]]
+// CHECK: linalg.generic
+// CHECK-SAME: iterator_types = ["parallel", "parallel", "parallel", "parallel", "reduction"]
+// CHECK: arith.mulf
+// CHECK: arith.addf
 // CHECK: return %{{.+}} : tensor<2x3x5x8xf32>
