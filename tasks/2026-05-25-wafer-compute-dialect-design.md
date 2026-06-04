@@ -2,15 +2,16 @@
 
 日期：2026-05-25
 
-状态：设计草案；2026-05-25 边界收口
+状态：设计草案；2026-05-25 边界收口；2026-06-04 对齐 hardware recipe expansion 先于 SPM allocation
 
 本文定义 Wafer 后端中 target-abstract compute / movement IR 的边界。它连接
 `wafer.group` 产生的 tile-local tensor program、layout materialization / SPM bufferization，
 以及后续 instruction / C ABI lowering。
 
 本文中的 `wafer.compute` 是正式 IR contract。它表达“这个 tile-local op 已经选择了某类
-Wafer 目标实现，并能提供 layout、buffer demand、effect 和 lowering legality”。它仍然不表达
-raw packet bitfield、SPM physical offset、worker window、runtime launch 或 host ABI。
+Wafer 目标实现族，并能提供 layout、effect 和 hardware recipe legality”。它仍然不表达 raw packet
+bitfield、SPM physical offset、worker window、runtime launch 或 host ABI。最终 SPM storage demand
+不是 target-abstract op 自身的属性，而是 selected hardware recipe / instruction storage plan 的结果。
 
 本文只负责 target-abstract compute/movement op 的语义、interface、effect、issue/drain 和
 lowering legality。它不重新做 group formation、tile search、layout assignment、SPM/DDR
@@ -22,8 +23,9 @@ allocation、communication collective lowering 或 launch/package emission。
 
 - 给 layout planner 一个稳定查询入口：每个 op 明确 operand/result 允许的 physical layout、
   preferred layout、materialization cost 和组合合法性。
-- 给 SPM allocation 一个稳定输入：每个 op 能报告 input/output/temp/scratch/accumulator demand，
-  以及 effect / async lifetime 对 buffer reuse 的约束。
+- 给 hardware recipe expansion 一个稳定入口：每个 op 能枚举或选择可验证的 CT/NE/TDMA/RDMA/WDMA
+  recipe；recipe 再报告 input/output/temp/scratch/accumulator/psum demand，以及 effect /
+  async lifetime 对 buffer reuse 的约束。
 - 给 hardware lowering 一个稳定 legality target：CT、NE、native reduce、RDMA、WDMA、TDMA
   等 target family 的合法性先在 `wafer.compute` / movement 层被验证，再进入更低层发射。
 - 保留 issue/drain 优化空间：IR 不在每个 compute/movement op 后隐式插入 wait。
@@ -44,6 +46,7 @@ allocation、communication collective lowering 或 launch/package emission。
 scheduled wafer.group tensor body
   -> target-abstract tile_region IR with wafer.compute / movement ops
   -> layout materialization and accepted !wafer.tile_buffer values
+  -> hardware recipe / instruction storage plan
   -> SPM bufferization and tile buffer storage realization
   -> lower-level instruction/runtime-form Wafer ops
   -> LLVM call to Wafer C ABI or package/runtime emission
@@ -56,6 +59,7 @@ scheduled wafer.group tensor body
 | scheduled group | `linalg.*` / `tensor.*` / `scf.*` | tensor SSA value | 表达数学语义、tile-local dataflow 和 traversal，不选硬件实现 |
 | target-abstract compute | `wafer.compute.*` 和 target-abstract movement op | tensor SSA value | 选择目标实现族，提供 layout/resource/lowering interface，不绑定 storage |
 | accepted layout | 同一类 compute/movement op | `!wafer.tile_buffer<shape,dtype,mem_layout,space>` | 验证 physical layout，显式插入 `wafer.layout.materialize` |
+| hardware recipe | address-free CT/NE/TDMA/RDMA/WDMA/DTE recipe | concrete storage value graph，但无 SPM offset | 选择一组可发射硬件指令方案，列出 storage values、queue、temp/psum/staging、alias、effect 和 storage-size policy |
 | storage-realized | lower-level Wafer op | `memref`、flat storage value 或 descriptor | 具备 address/range/stride/descriptor，可进入 instruction/runtime lowering |
 | launch/ABI | LLVM / `wafer.launch` | concrete ABI arg | 调用 Wafer C ABI、发 package metadata、连接 host runtime |
 
@@ -197,11 +201,14 @@ movement op 的合同：
 getComputeKind()
 verifySemanticOperandsAndResults()
 getLoweringFamilies(target)
-collectTileBufferDemand(tileShape, layoutAssignment, target)
+enumerateHardwareRecipes(tileShape, layoutAssignment, target)
+verifyRecipeLegality(recipe, target)
 getAsyncLoweringPolicy(target)
 ```
 
-它回答“这个 op 作为 tile-local compute 是什么”，不回答“最终 packet 每个 bit 怎么写”。
+它回答“这个 op 作为 tile-local compute 是什么，以及有哪些可验证硬件 recipe”。它不回答
+“最终 packet 每个 bit 怎么写”，也不直接替 SPM allocator 给出唯一 storage demand；storage demand
+属于 selected recipe。
 
 ### 4.2 `WaferLayoutOpInterface`
 
@@ -276,7 +283,8 @@ Storage-realized / instruction-form verifier：
 | --- | --- | --- | --- |
 | select Wafer compute implementation | tiled `linalg` / tensor / SCF | target-abstract `wafer.compute` / movement op | 选择本 tile 实现族，保留数学语义，建立 layout/resource interface |
 | layout materialization | target-abstract Wafer op | accepted `!wafer.tile_buffer` + materialization edge | 基于 op interface 做 layout assignment 和真实 movement cut |
-| SPM bufferization | accepted tile buffer IR | allocation-ready tile-region IR | 收集 buffer demand、liveness、effects，执行 SPM allocation |
+| hardware recipe expansion | accepted tile buffer IR | address-free instruction storage plan candidate | 将 target-abstract op 展开成 CT/NE/TDMA/RDMA/WDMA/DTE recipe，列出 concrete storage values、queue、effects、temp/psum/staging、alias 和 storage-size policy |
+| SPM bufferization | selected instruction storage plan | allocation-ready tile-region IR | 从 recipe 收集 buffer demand、liveness、effects，执行 SPM allocation |
 | tile buffer storage realization | `!wafer.tile_buffer` | `memref` / flat storage / descriptor | 复用标准 memref lowering 或生成目标 descriptor |
 | lower compute/movement to instruction form | storage-realized Wafer op | lower-level Wafer instruction/runtime op | 选择 CT/NE/RDMA/WDMA/TDMA family 和 Wafer C ABI shape |
 | Wafer to LLVM C ABI | instruction/runtime op | LLVM call / package metadata | 生成具体 ABI call，不回头修改 schedule/layout |
@@ -293,7 +301,8 @@ V0 模型：
 
 - target-abstract compute/movement op 从 SSA 语义看是顺序 op；lowering 可以把它拆成 issue op 和
   later drain/wait op。
-- SPM allocation 通过 effect event 扩展 async op 的 source/destination lifetime。
+- hardware recipe expansion 决定哪些 issue / drain / wait event 参与 storage lifetime；SPM allocation
+  通过 recipe effect event 扩展 async op 的 source/destination lifetime。
 - local drain 是显式 sync op，例如 `wafer.sync.local_wait` 或等价 IR；它不是 compute op 的默认后缀。
 - DTE wait、stream wait、group barrier 属于 `wafer.comm` / `wafer.sync` 的完成边界，不能用 local
   NCC wait 代替。

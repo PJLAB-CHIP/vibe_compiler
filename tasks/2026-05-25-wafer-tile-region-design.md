@@ -3,7 +3,8 @@
 日期：2026-05-25
 
 状态：设计草案；2026-05-25 独立边界收口；2026-05-27 对齐 tensor collective 到 `wafer.comm` materialization；
-2026-06-03 R3.2c 对齐 MLIR DialectConversion scratch full conversion
+2026-06-03 R3.2c 对齐 MLIR DialectConversion scratch full conversion；2026-06-04 对齐
+hardware recipe expansion 先于 SPM allocation
 
 本文定义 `wafer.tile_region` 作为 `wafer.group` lowering 之后的 tile-local execution boundary。
 它组织 tile-local buffer、movement、layout materialization、target-abstract compute、communication
@@ -48,7 +49,8 @@ placement-derived endpoint 和 communication staging demand 的层级；`wafer.c
 ```text
 wafer.group
   -> provisional wafer.tile_region candidate for planning
-  -> layout assignment / materialization + SPM / DDR / legality planning
+  -> hardware recipe / instruction storage plan candidates
+  -> SPM / DDR / legality planning on selected recipe
   -> accepted / rejected / split decision
   -> committed wafer.tile_region
   -> storage-realized memref / descriptor
@@ -60,8 +62,9 @@ wafer.group
 
 - provisional `wafer.tile_region` candidate：R3.2c 在 transformation-local / scratch IR 中构造，
   用来承载 target-abstract compute/comm/load-store/layout/sync op、tile buffer、lifetime 和 effect，
-  供 R3.2d/R3.2e 从 op interface 收集 demand。rejected candidate 不进入主 IR。
-- committed `wafer.tile_region`：R3.3 只把 R3.2f 已接受的 plan 写入主 IR。后续 R3.4/R3.5
+  供 R3.2d 做硬件 recipe expansion。它不是 allocation-ready storage graph；rejected candidate
+  不进入主 IR。
+- committed `wafer.tile_region`：R3.3 只把 R3.2g 已接受的 plan 写入主 IR。后续 R3.4/R3.5
   只 materialize accepted layout/SPM/DDR facts，不重新决定 group 是否可行。
 
 ### 2.1 R3.2c Pipeline Contract
@@ -84,8 +87,8 @@ Pipeline position:
   verifier-legal provisional `wafer.tile_region` candidate 或结构化 failure reason。
   candidate 只用于 dump、verification 和后续 planning analysis；rejected candidate 不写入主 IR。
 - Downstream consumer:
-  R3.2d SPM allocation、R3.2e DDR/resource planning + compute/movement legality analysis、
-  R3.2f closed-loop planner。
+  R3.2d hardware recipe expansion、R3.2e SPM allocation、R3.2f DDR/resource planning +
+  compute/movement legality analysis、R3.2g closed-loop planner。
 - User-level driver / named pipeline:
   主线仍由 `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 产生 logical group；
   R3.2c 的局部验证入口是 `wafer-opt --wafer-dump-tile-region-candidate`。
@@ -108,13 +111,13 @@ Pipeline position:
 | source IR / op family | 当前 R3.2c 处理 | 覆盖状态 | 正确 conversion 做法 / 后续要求 |
 | --- | --- | --- | --- |
 | `wafer.group` / `wafer.group_yield` boundary | scratch full conversion 中由 `OpConversionPattern<wafer.group>` 构造 `wafer.tile_region`，对 `ins + outs` 生成 `wafer.load_tile` / `wafer.store_tile` / `wafer.tile_yield` | supported for candidate | `ConversionTarget` 将 `wafer.group` / `wafer.group_yield` 标为 illegal；debug dump 只调用同一 conversion builder，不能自己承担 lowering 逻辑。 |
-| ranked tensor boundary values | 生成 `!wafer.tile_buffer<tensor, tensor, spm>`，记录 tensor layout 版本 | supported for ranked tensor | 保持类型/verifier 驱动；后续 SPM allocation 再决定 offset/window。 |
+| ranked tensor boundary values | 生成 `!wafer.tile_buffer<tensor, tensor, spm>`，记录 tensor layout 版本 | supported for ranked tensor | 保持类型/verifier 驱动；后续 recipe/storage plan 和 SPM allocation 再决定 concrete storage 与 offset/window。 |
 | scalar boundary values | 作为 tile-region block scalar SSA value 传入，供 fill/reduce init 等 scalar operand 使用 | supported for scalar | 只支持 float / integer / index scalar；不生成 tile buffer，不作为长期 side channel。 |
 | `arith.constant` tensor | clone constant 后 `wafer.load_tile` 到 tensor-layout tile buffer | partial | 只适合 tensor constant；scalar constant 只应在 compute body 或显式 init 语义中消费。需要区分 constant residency / DDR / immediate policy。 |
 | `arith.constant` scalar | clone scalar constant，并作为 `wafer.compute.fill`、`wafer.compute.reduce init_value` 或 elementwise body 推导输入 | supported for scalar constants | scalar 语义通过 SSA value 或 typed attr 进入目标 op；不靠名字或原 op 残留。 |
-| `tensor.empty` | 生成 `wafer.alloc_tile`，结果类型携带 tensor shape、layout 和 SPM memory-space demand | supported as abstract allocation demand | `wafer.alloc_tile` 不分配物理 offset/window；R3.2d 才做真实 SPM placement。不能把 empty 偷映射成 output alias。 |
+| `tensor.empty` | 生成 `wafer.alloc_tile`，结果类型携带 tensor shape、layout 和 SPM memory-space demand | supported as abstract allocation demand | `wafer.alloc_tile` 不分配物理 offset/window；R3.2d 只把它纳入 recipe storage graph，R3.2e 才做真实 SPM placement。不能把 empty 偷映射成 output alias。 |
 | `tensor.extract` scalar | clone 到 tile-region 内，供动态 scalar init / scalar value 使用 | supported for scalar extract | 只作为 scalar SSA 支持 op；不表示 tile compute。 |
-| `linalg.fill` | 生成显式 `wafer.compute.fill`，写入 existing tile buffer；fill result 映射为该 initialized buffer | supported for scalar fill | `wafer.compute.fill` 暴露 layout/resource effect，供 R3.2d 计算 lifetime 和 write demand；不表达物理 SPM offset。 |
+| `linalg.fill` | 生成显式 `wafer.compute.fill`，写入 existing tile buffer；fill result 映射为该 initialized buffer | supported for scalar fill | `wafer.compute.fill` 暴露 target-abstract write relation；具体是否 lower 成 CT fill、memset 或 immediate pattern 由 R3.2d recipe 决定。 |
 | `linalg.matmul` | lhs/rhs materialize 到 `cx`，生成 `wafer.compute.gemm`，结果记录为 `cx` | supported for simple `linalg.matmul` | pattern 应检查 rank、dtype、accumulator/result relation、layout requirement；batch matmul / generic contraction 另列，不应混成 matmul 特判。 |
 | `linalg.generic` simple elementwise / relation | 单 result、单 `linalg.yield`，typed scalar mapper 识别 add/sub/mul/div/min/max/neg/exp/sqrt/rsqrt/tanh 和 cmp eq/ne/lt/le/gt/ge；生成 `wafer.compute.elementwise` 并带原 `indexing_maps` | supported for simple CT family | 不靠 op name string 恢复语义；复杂 region、多 result、select/mask 和 convert 仍需要明确 kind / op contract。 |
 | `linalg.reduce` / reduction-like generic | reduction iterator + scalar combiner lower 到 `wafer.compute.reduce`；input/result materialize 到 aligned `cx`/`ncx`；constant init 用 `init_value`，dynamic init 用 scalar operand | supported for native sum/max/min | `avg` 是 Wafer reduce kind，但当前 R2.4 fixture 尚未产出可直接识别的 avg combiner；`mul` 不伪装 native。 |
@@ -126,7 +129,7 @@ Pipeline position:
 
 按这个表，R3.2c 已把 supported 子集放到 conversion builder 下，并把 unsupported / deferred 子集的
 failure gate 固定下来。扩展 coverage 时每新增一类 op 都要同时补：IR 语义、verifier、conversion
-pattern、negative test 和下游 SPM/DDR demand 来源。
+pattern、negative test 和下游 recipe/storage plan 来源。
 
 `wafer.tile_region` 可以跨这些 lowering 子阶段保留为 region container。早期 region 中的 buffer
 可能还是 `!wafer.tile_buffer`；后期可以变成带 Wafer memory space 的 `memref` 或 descriptor。
@@ -210,20 +213,25 @@ V0 需要以下 op family：
    communication demand 下 materialize 为 `wafer.comm` 或 explicit p2p schedule candidate。
 3. layout assignment：为 op 约束选择 `mem_layout`，在 cut edge 插入 candidate
    `wafer.layout.materialize`。
-4. demand collection：从 candidate IR 的 op interface 收集 SPM/DDR/layout/comm demand。
-5. resource planning：在 candidate IR 上运行 SPM allocation、DDR capacity/bandwidth analysis 和
-   layout cleanup。
-6. closed-loop decision：R3.2f 接受、拒绝或要求 split；rejected candidate 丢弃。
-7. committed `wafer.tile_region` materialization：R3.3 只把 accepted candidate / plan 写入主 IR。
-8. storage realization：把 accepted buffer 降到 memref/descriptor。
-9. lower-level op lowering：转成 wrapper-friendly Wafer ops，最后进入 C ABI / launch。
+4. hardware recipe expansion：R3.2d 把 target-abstract op 展开成 address-free instruction storage
+   plan candidate。recipe 需要显式列出 concrete storage values、queue family、read/write/issue
+   effects、temp/psum/staging、alias/view 关系、storage size policy 和 reject reason。
+5. SPM allocation：R3.2e 只消费 selected recipe storage graph，分配 offset/end/bank span 和
+   lifetime/reuse；不能直接从 target-abstract op 猜 storage demand。
+6. DDR/resource planning：R3.2f 消费 selected recipe、SPM facts 和 DDR boundary，做 capacity /
+   bandwidth / range legality。
+7. closed-loop decision：R3.2g 接受、拒绝或要求 split / retry；rejected candidate 丢弃。
+8. committed `wafer.tile_region` materialization：R3.3 只把 accepted candidate / plan 写入主 IR。
+9. storage realization：把 accepted buffer 降到 memref/descriptor。
+10. lower-level op lowering：转成 wrapper-friendly Wafer ops，最后进入 C ABI / launch。
 
 未接受的候选 plan 不能落入 IR 后等待下游修复。合法性失败应反馈给 group/layout/resource
 planner 重新选择 tile shape、internal split、layout 或 group boundary。
 
-R1.2 已完成第 4 步所需的局部查询入口：accepted `wafer.tile_region` 内的 movement、layout、
-compute、comm 和 sync op 能通过 layout/materialization/resource interface 暴露需求。第 5-6 步的
-完整 SPM/DDR resource planning 和 storage realization 仍未完成。
+R1.2 已完成 accepted `wafer.tile_region` 内 movement、layout、compute、comm 和 sync op 的基础
+layout/materialization/resource interface 查询入口，但这些接口只表达 target-abstract 关系，不足以
+作为最终 SPM allocation 输入。第 4 步 hardware recipe expansion 需要把这些 op 先展开成
+instruction storage plan；第 5-7 步的完整 SPM/DDR resource planning 和 closed-loop decision 仍未完成。
 
 当前实现状态：
 

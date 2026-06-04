@@ -2,7 +2,8 @@
 
 日期：2026-05-21
 
-状态：设计草案；2026-05-25 边界收口
+状态：设计草案；2026-05-25 边界收口；2026-06-04 对齐 hardware recipe expansion 先于
+SPM allocation
 
 本文定义 Wafer 后端的 physical layout planning 和 layout materialization 边界。它服务于
 `wafer.group` 的 legality search，也服务于 `wafer.tile_region` / SPM bufferization 的真实
@@ -82,7 +83,7 @@ layout planning 有两个恢复层次：
   layout constraints、layout assignment candidate、materialization cut 和 materialization
   buffer demand。该层只产出 analysis result 和 debug dump，不 rewrite `wafer.group`，不写
   layout attr，也不生成 `wafer.tile_region`。
-- R3.4 在 accepted `wafer.tile_region` 层运行。它消费 R3.2f accepted plan，把 layout
+- R3.4 在 accepted `wafer.tile_region` 层运行。它消费 R3.2g accepted plan，把 layout
   assignment 和 materialization cut materialize 成带 `mem_layout` 的 tile buffer type 和
   `wafer.layout.materialize` op。
 
@@ -124,9 +125,9 @@ Pipeline position:
   transformation-local `GroupLayoutPlan` analysis result；debug dump pass 可以打印同一结构。
   本阶段不修改 `wafer.group`，不生成 `wafer.tile_region`，不写 layout attr。
 - Downstream consumer:
-  R3.2c provisional tile-region candidate lowering、R3.2d SPM allocation、
-  R3.2e DDR/resource planning + compute/movement legality analysis，以及 R3.2f
-  closed-loop planner。
+  R3.2c provisional tile-region candidate lowering、R3.2d hardware recipe expansion、
+  R3.2e SPM allocation、R3.2f DDR/resource planning + compute/movement legality analysis，
+  以及 R3.2g closed-loop planner。
 - User-level driver / named pipeline:
   主线仍由 `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 产生 R3.1 group；
   R3.2b 的局部验证入口是 `wafer-opt --wafer-dump-group-layout-plan`，用于在

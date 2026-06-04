@@ -358,8 +358,9 @@ tile-and-fuse 的主文档，本架构文档只规定它在全 pipeline 中的�
 - 引入 `wafer.tile_region` 作为 `wafer.group` lowering 之后的 tile-local execution scope。
 - 把 accepted tiled SSA graph materialize 成 tile-local buffer、movement、layout conversion、
   target-abstract compute、communication 和 sync/effect op。
-- 通过当前 IR、op interface 和 effect analysis 收集 layout/SPM/DDR/resource demand，并把失败反馈给
-  group/layout/resource planner。
+- 对 target-abstract op 先做 hardware recipe expansion，产出 address-free instruction storage plan；
+  SPM/DDR/resource planner 只消费 selected recipe 的 concrete storage graph、effect 和 lifetime，
+  不从高层 op 名或单个 case 猜 demand。
 - 在 accepted layout、SPM allocation 和 DDR binding contract 后，把 tile buffer 降到 memref 或
   Wafer descriptor。
 
@@ -382,7 +383,8 @@ bufferization 见 `tasks/2026-05-21-wafer-spm-bufferization-design.md`；DDR res
 
 - 输入是 target-abstract `wafer.compute` / data movement op；这些 op 已经在 layout materialization
   前进入 IR，并提供 layout contract。
-- 将 target-abstract op lower 到具体硬件 instruction/runtime form，但仍不直接手写 raw packet
+- 将 target-abstract op 先 lower 到 address-free hardware recipe / instruction storage plan，再在
+  storage-realized 阶段 lower 到具体硬件 instruction/runtime form；两层都不直接手写 raw packet
   bitfield。
 - 覆盖 CT、NE、RDMA、WDMA、TDMA 的 issue/drain 抽象和 wrapper selection。
 - 区分 issue-only op、local drain、host-visible boundary、group barrier。
@@ -841,6 +843,9 @@ ModelImport/FrontendProgram
   verifier 依赖的 IR contract。
 - layout materialization ops 是真实 data movement，负责表达 physical layout conversion，
   不作为 metadata cast。
+- hardware recipe expansion 必须发生在 SPM allocation 之前；`wafer.compute.*` / `wafer.move.*`
+  只表达 target family，selected recipe 才表达 concrete storage values、temp/psum/staging、
+  queue 和 async lifetime。
 - memory space 和 `mem_layout` 只在 `wafer.tile_region` / SPM bufferization 层出现，不进入
   tensor-level `wafer.group`。
 - `wafer-realize-tile-buffer-storage` 把 `!wafer.tile_buffer` 降成 physical `memref`、flat storage
