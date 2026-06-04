@@ -1,4 +1,4 @@
-//===- FormGroupCandidates.cpp - Wafer group candidate formation ---------===//
+//===- FormLogicalGroups.cpp - Wafer logical group formation -------------===//
 
 #include "Wafer/Transforms/Passes.h"
 
@@ -18,7 +18,7 @@
 #include "llvm/ADT/SmallVector.h"
 
 namespace wafer {
-#define GEN_PASS_DEF_FORMGROUPCANDIDATESPASS
+#define GEN_PASS_DEF_FORMLOGICALGROUPSPASS
 #include "Wafer/Transforms/WaferPasses.h.inc"
 
 namespace {
@@ -64,7 +64,7 @@ static bool isLinalgRoot(mlir::Operation *op) {
   return !mlir::isa<mlir::linalg::FillOp>(op);
 }
 
-static bool isTensorLevelDpsCandidate(mlir::Operation *op) {
+static bool isTensorLevelGroupableDpsOp(mlir::Operation *op) {
   if (op->getParentOfType<GroupOp>())
     return false;
   if (!hasTensorResults(op))
@@ -79,8 +79,8 @@ static bool isTensorLevelDpsCandidate(mlir::Operation *op) {
   return mlir::isa<mlir::linalg::LinalgOp>(op) || isTensorCollectiveRoot(op);
 }
 
-static bool isCandidateRoot(mlir::Operation *op) {
-  if (!isTensorLevelDpsCandidate(op))
+static bool isLogicalGroupRoot(mlir::Operation *op) {
+  if (!isTensorLevelGroupableDpsOp(op))
     return false;
   return isLinalgRoot(op) || isTensorCollectiveRoot(op);
 }
@@ -100,13 +100,12 @@ static bool isSelectedDef(mlir::Value value,
   return def && selected.contains(def);
 }
 
-static bool
-allUsesInsideOrCandidate(mlir::Value value,
-                         const llvm::DenseSet<mlir::Operation *> &selected,
-                         mlir::Operation *candidate = nullptr) {
+static bool allUsesInsideOrAllowedConsumer(
+    mlir::Value value, const llvm::DenseSet<mlir::Operation *> &selected,
+    mlir::Operation *allowedConsumer = nullptr) {
   for (mlir::OpOperand &use : value.getUses()) {
     mlir::Operation *owner = use.getOwner();
-    if (!selected.contains(owner) && owner != candidate)
+    if (!selected.contains(owner) && owner != allowedConsumer)
       return false;
   }
   return true;
@@ -116,7 +115,7 @@ static bool
 allResultsUsedBySelected(mlir::Operation *op,
                          const llvm::DenseSet<mlir::Operation *> &selected) {
   return llvm::all_of(op->getResults(), [&](mlir::Value result) {
-    return allUsesInsideOrCandidate(result, selected);
+    return allUsesInsideOrAllowedConsumer(result, selected);
   });
 }
 
@@ -134,7 +133,7 @@ canAbsorbProducer(mlir::Operation *producer, mlir::Block *block,
                   const llvm::DenseSet<mlir::Operation *> &selected) {
   if (!producer || producer->getBlock() != block || selected.contains(producer))
     return false;
-  if (!isTensorLevelDpsCandidate(producer))
+  if (!isTensorLevelGroupableDpsOp(producer))
     return false;
 
   return allResultsUsedBySelected(producer, selected);
@@ -145,7 +144,7 @@ canAbsorbConsumer(mlir::Operation *consumer, mlir::Block *block,
                   const llvm::DenseSet<mlir::Operation *> &selected) {
   if (!consumer || consumer->getBlock() != block || selected.contains(consumer))
     return false;
-  if (!isTensorLevelDpsCandidate(consumer))
+  if (!isTensorLevelGroupableDpsOp(consumer))
     return false;
 
   bool consumesSelectedValue = false;
@@ -154,7 +153,7 @@ canAbsorbConsumer(mlir::Operation *consumer, mlir::Block *block,
       continue;
 
     consumesSelectedValue = true;
-    if (!allUsesInsideOrCandidate(operand, selected, consumer))
+    if (!allUsesInsideOrAllowedConsumer(operand, selected, consumer))
       return false;
   }
 
@@ -173,8 +172,8 @@ orderSelectedOps(mlir::Block *block,
 }
 
 static void
-expandTensorDpsCandidate(mlir::Operation *root,
-                         llvm::DenseSet<mlir::Operation *> &selected) {
+expandLogicalGroupSelection(mlir::Operation *root,
+                            llvm::DenseSet<mlir::Operation *> &selected) {
   mlir::Block *block = root->getBlock();
   selected.insert(root);
 
@@ -324,7 +323,7 @@ collectBoundaryInputs(llvm::ArrayRef<mlir::Operation *> orderedOps,
   }
 }
 
-struct GroupCandidate {
+struct LogicalGroupSelection {
   llvm::DenseSet<mlir::Operation *> selected;
   llvm::SmallVector<mlir::Operation *> orderedOps;
   llvm::SmallVector<mlir::Value> inputs;
@@ -332,22 +331,22 @@ struct GroupCandidate {
   llvm::SmallVector<mlir::Value> yieldedValues;
 };
 
-static bool buildGroupCandidate(mlir::Operation *root,
-                                GroupCandidate &candidate) {
-  expandTensorDpsCandidate(root, candidate.selected);
-  orderSelectedOps(root->getBlock(), candidate.selected, candidate.orderedOps);
+static bool buildLogicalGroupSelection(mlir::Operation *root,
+                                       LogicalGroupSelection &selection) {
+  expandLogicalGroupSelection(root, selection.selected);
+  orderSelectedOps(root->getBlock(), selection.selected, selection.orderedOps);
 
-  if (!collectYieldedValuesAndOuts(candidate.orderedOps, candidate.selected,
-                                   candidate.yieldedValues, candidate.outs))
+  if (!collectYieldedValuesAndOuts(selection.orderedOps, selection.selected,
+                                   selection.yieldedValues, selection.outs))
     return false;
 
-  absorbInternalSupportOps(root->getBlock(), candidate.selected,
-                           candidate.outs);
-  orderSelectedOps(root->getBlock(), candidate.selected, candidate.orderedOps);
-  collectBoundaryInputs(candidate.orderedOps, candidate.selected,
-                        candidate.outs, candidate.inputs);
+  absorbInternalSupportOps(root->getBlock(), selection.selected,
+                           selection.outs);
+  orderSelectedOps(root->getBlock(), selection.selected, selection.orderedOps);
+  collectBoundaryInputs(selection.orderedOps, selection.selected,
+                        selection.outs, selection.inputs);
 
-  if (hasDuplicateBoundaryValues(candidate.inputs, candidate.outs))
+  if (hasDuplicateBoundaryValues(selection.inputs, selection.outs))
     return false;
 
   return true;
@@ -356,68 +355,68 @@ static bool buildGroupCandidate(mlir::Operation *root,
 static mlir::LogicalResult
 formGroupForRoot(mlir::Operation *root,
                  llvm::DenseSet<mlir::Operation *> &consumed) {
-  GroupCandidate candidate;
-  if (!buildGroupCandidate(root, candidate))
+  LogicalGroupSelection selection;
+  if (!buildLogicalGroupSelection(root, selection))
     return mlir::success();
 
-  for (mlir::Operation *op : candidate.selected)
+  for (mlir::Operation *op : selection.selected)
     consumed.insert(op);
 
-  mlir::Operation *insertionPoint = candidate.orderedOps.back();
+  mlir::Operation *insertionPoint = selection.orderedOps.back();
   mlir::OpBuilder builder(insertionPoint);
   auto group =
-      builder.create<GroupOp>(root->getLoc(), mlir::TypeRange(candidate.outs),
-                              candidate.inputs, candidate.outs);
+      builder.create<GroupOp>(root->getLoc(), mlir::TypeRange(selection.outs),
+                              selection.inputs, selection.outs);
 
   mlir::Region &body = group.getBody();
   body.push_back(new mlir::Block);
   mlir::Block &block = body.front();
-  for (mlir::Value input : candidate.inputs)
+  for (mlir::Value input : selection.inputs)
     block.addArgument(input.getType(), input.getLoc());
-  for (mlir::Value out : candidate.outs)
+  for (mlir::Value out : selection.outs)
     block.addArgument(out.getType(), out.getLoc());
 
   mlir::IRMapping mapping;
   unsigned blockArgIndex = 0;
-  for (mlir::Value input : candidate.inputs)
+  for (mlir::Value input : selection.inputs)
     mapping.map(input, block.getArgument(blockArgIndex++));
-  for (mlir::Value out : candidate.outs)
+  for (mlir::Value out : selection.outs)
     mapping.map(out, block.getArgument(blockArgIndex++));
 
   mlir::OpBuilder bodyBuilder(&block, block.end());
-  for (mlir::Operation *op : candidate.orderedOps)
+  for (mlir::Operation *op : selection.orderedOps)
     bodyBuilder.clone(*op, mapping);
 
   llvm::SmallVector<mlir::Value> yieldedValues;
-  for (mlir::Value yielded : candidate.yieldedValues)
+  for (mlir::Value yielded : selection.yieldedValues)
     yieldedValues.push_back(mapping.lookup(yielded));
   bodyBuilder.create<GroupYieldOp>(root->getLoc(), yieldedValues);
 
   for (auto [result, yielded] :
-       llvm::zip_equal(group.getResults(), candidate.yieldedValues)) {
+       llvm::zip_equal(group.getResults(), selection.yieldedValues)) {
     llvm::SmallVector<mlir::OpOperand *> externalUses;
     for (mlir::OpOperand &use : yielded.getUses()) {
-      if (!candidate.selected.contains(use.getOwner()))
+      if (!selection.selected.contains(use.getOwner()))
         externalUses.push_back(&use);
     }
     for (mlir::OpOperand *use : externalUses)
       use->set(result);
   }
 
-  for (mlir::Operation *op : llvm::reverse(candidate.orderedOps))
+  for (mlir::Operation *op : llvm::reverse(selection.orderedOps))
     op->erase();
   return mlir::success();
 }
 
-struct FormGroupCandidatesPass
-    : public impl::FormGroupCandidatesPassBase<FormGroupCandidatesPass> {
-  using impl::FormGroupCandidatesPassBase<
-      FormGroupCandidatesPass>::FormGroupCandidatesPassBase;
+struct FormLogicalGroupsPass
+    : public impl::FormLogicalGroupsPassBase<FormLogicalGroupsPass> {
+  using impl::FormLogicalGroupsPassBase<
+      FormLogicalGroupsPass>::FormLogicalGroupsPassBase;
 
   void runOnOperation() final {
     llvm::SmallVector<mlir::Operation *> roots;
     getOperation().walk([&](mlir::Operation *op) {
-      if (isCandidateRoot(op))
+      if (isLogicalGroupRoot(op))
         roots.push_back(op);
     });
 

@@ -6,7 +6,7 @@
 # RUN: FileCheck %s --input-file=%t.group.program/functions/forward.mlir --check-prefix=GROUP-MLIR
 # RUN: wafer-opt --wafer-dump-group-tiling-demand %t.group.program/functions/forward.mlir 2>&1 | FileCheck %s --check-prefix=DEMAND
 # RUN: wafer-opt --wafer-dump-group-layout-plan %t.group.program/functions/forward.mlir 2>&1 | FileCheck %s --check-prefix=LAYOUT
-# RUN: wafer-opt --wafer-dump-tile-region-candidate %t.group.program/functions/forward.mlir 2>&1 | FileCheck %s --check-prefix=TILE-CANDIDATE
+# RUN: wafer-opt --wafer-dump-group-to-tile-region %t.group.program/functions/forward.mlir 2>&1 | FileCheck %s --check-prefix=GROUP-TO-TILE
 
 # PIPELINE: wafer-opt: completed Wafer program pipeline stablehlo-spmd-to-group:
 
@@ -44,5 +44,5 @@
 # LAYOUT: op #10 linalg.generic
 # LAYOUT: materialization #5 op #10 result #0 -> group result #0 cx->tensor type=tensor<32x32xf32>
 
-# TILE-CANDIDATE-LABEL: wafer.tile_region.candidate group @main#0
-# TILE-CANDIDATE: failure collective lowering requires placement/local-rank facts
+# GROUP-TO-TILE-LABEL: wafer.group_to_tile_region group @main#0
+# GROUP-TO-TILE: failure collective lowering requires placement/local-rank facts

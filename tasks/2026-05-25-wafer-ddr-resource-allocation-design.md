@@ -145,7 +145,7 @@ layout：
 这些 heap 说明 DDR 还有 tile-local/runtime policy 维度。V0 不默认把 local tile heap 当成普通
 compiler workspace；它必须作为 target policy / runtime capability 输入。只有 launch/runtime
 ABI 明确把某类 tensor workspace 分配到 local tile heap 时，DDR planner 才能把它纳入
-pool/domain candidate，并在 verifier 中检查 per-tile heap size、tile mapping 和 address formula。
+pool/domain alternatives，并在 verifier 中检查 per-tile heap size、tile mapping 和 address formula。
 
 ## 3. IR 层和边界
 
@@ -156,7 +156,7 @@ DDR 相关事实按 IR 层分布：
 | tensor / linalg / group | tensor shape、dtype、semantic layout、group boundary | DDR pool、physical address、BO handle、runtime allocation |
 | `wafer.tile_region` | `#ddr` / `#spm` memory space、load/store boundary、layout materialization、movement/effect | raw BO address、driver handle、unaccepted allocation trace |
 | accepted layout / buffer layer | `!wafer.tile_buffer<..., mem_layout, #ddr/#spm>` 或等价 buffer abstraction | host malloc pointer、runtime-private pool internals |
-| DDR resource planning | `DdrBufferDemand`、external binding、workspace BO demand、constant residency、pool candidates、lifetime、bandwidth | tensor math semantics、SPM offset search |
+| DDR resource planning | `DdrBufferDemand`、external binding、workspace BO demand、constant residency、pool alternatives、lifetime、bandwidth | tensor math semantics、SPM offset search |
 | placed instruction/storage IR | `memref<..., memory_space = #ddr>`、descriptor、workspace base+offset、movement ops | unresolved `tile_buffer` |
 | launch / package / runtime | BO allocation/import/query、constant serialization、physical address binding、completion/fence | group formation 或 layout search 的内部 trace |
 
@@ -209,8 +209,8 @@ DdrBufferDemand {
   required_alignment
   preferred_alignment
   memory_space          // always #ddr for this document
-  domain_candidates     // local_dram, remote_dram/imported
-  pool_candidates       // npu_normal, visible, visible_extended, ...
+  domain_alternatives   // local_dram, remote_dram/imported
+  pool_alternatives     // npu_normal, visible, visible_extended, ...
   flags                 // read_only, host_visible, cpu_access, external_visible
   lifetime
   alias_group
@@ -296,7 +296,7 @@ storage 读入 tile buffer。因此 DDR planner 必须统计：
 - accepted tile shape、tile slice / access range、consumer indexing map 和 reuse count。
 - load result `mem_layout`，以及 raw compact backing data 是否能直接 lower 到该 layout。
 - resident DDR BO、per-use staging/streaming load、或 compile-time transformed backing data 的候选。
-- read-only lifetime、alignment、storage size、bandwidth class 和 pool/domain candidates。
+- read-only lifetime、alignment、storage size、bandwidth class 和 pool/domain alternatives。
 
 #### 6.2.1 Weight / Constant Slicing
 

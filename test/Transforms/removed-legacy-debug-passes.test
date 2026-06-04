@@ -1,6 +1,7 @@
 # RUN: printf 'module {}\n' > %t.empty.mlir
 # RUN: not wafer-opt --wafer-check-root-tile-candidates %t.empty.mlir 2>&1 | FileCheck %s --check-prefix=NO-ROOT-TILE
 # RUN: not wafer-opt --wafer-materialize-multi-tile-no-comm %t.empty.mlir 2>&1 | FileCheck %s --check-prefix=NO-MULTI-NOCOMM
+# RUN: not wafer-opt --wafer-form-group-candidates %t.empty.mlir 2>&1 | FileCheck %s --check-prefix=NO-FORM-GROUP-CANDIDATES
 # RUN: not wafer-opt --wafer-form-groups %t.empty.mlir 2>&1 | FileCheck %s --check-prefix=NO-FORM-GROUPS
 # RUN: not wafer-opt --wafer-materialize-single-tile %t.empty.mlir 2>&1 | FileCheck %s --check-prefix=NO-SINGLE-TILE
 # RUN: not wafer-opt --wafer-compact-layout-assignment %t.empty.mlir 2>&1 | FileCheck %s --check-prefix=NO-COMPACT-LAYOUT
@@ -12,6 +13,7 @@
 
 # NO-ROOT-TILE: Unknown command line argument '--wafer-check-root-tile-candidates'
 # NO-MULTI-NOCOMM: Unknown command line argument '--wafer-materialize-multi-tile-no-comm'
+# NO-FORM-GROUP-CANDIDATES: Unknown command line argument '--wafer-form-group-candidates'
 # NO-FORM-GROUPS: Unknown command line argument '--wafer-form-groups'
 # NO-SINGLE-TILE: Unknown command line argument '--wafer-materialize-single-tile'
 # NO-COMPACT-LAYOUT: Unknown command line argument '--wafer-compact-layout-assignment'

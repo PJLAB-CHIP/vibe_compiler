@@ -331,7 +331,7 @@ Pipeline position:
 - Upstream program / IR: P2.S2 partitioned / replicated-local StableHLO program directory，含 rank-local function signature、StableHLO collective op、replica_groups、channel metadata 和 rank-local parameter payload。
 - Current stage responsibility: 把 post-SPMD StableHLO logical collective normalize 成 Wafer-owned destination-style tensor collective op，并保留 group/tiling 可验证的 tensor-level collective facts。
 - Output program / IR: `linalg` / `tensor` / `scf` local compute IR 加 `wafer.tensor_collective.*` ops；不含 `wafer.comm`、SPM tile buffer、DTE token 或 runtime handle。
-- Downstream consumer: R3 group candidate / tiling，以及 R6 tiled tensor collective -> `wafer.comm` materialization。
+- Downstream consumer: R3 logical group / tiling，以及 R6 tiled tensor collective -> `wafer.comm` materialization。
 - User-level driver / named pipeline: 用户级主线由
   `wafer-opt --program-pipeline=stablehlo-spmd-to-linalg` 从 frontend Wafer program 重放 P2.S2 并写回
   post-linalg Wafer program；`wafer-lower-stablehlo-to-linalg` 是该 program pipeline 内部复用的

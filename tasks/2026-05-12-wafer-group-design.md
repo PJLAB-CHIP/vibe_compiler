@@ -3,7 +3,7 @@
 日期：2026-05-12
 
 状态：设计草案；2026-05-25 边界收口；2026-05-27 补 post-SPMD tensor collective 边界；
-2026-06-03 收敛 R3.1 root-seeded logical group candidate scope；2026-06-04 对齐
+2026-06-03 收敛 R3.1 root-seeded logical group scope；2026-06-04 对齐
 instruction-level Wafer IR 先于 SPM placement
 
 本文只定义 `wafer.group` 的 tensor-level grouping 和 scheduling contract。它回答：
@@ -65,7 +65,7 @@ schedule 下，让中间值只在 group tile 内部存活。
 | 阶段 | IR 边界 | 主要 IR | 可以表达 | 不提前表达 |
 | --- | --- | --- | --- | --- |
 | 0. Local tensor compute / collective | 上游 local shard compute 和 post-SPMD tensor collective | `linalg` / `tensor` / `scf` + Wafer LinalgExt-style tensor collective ops | tensor compute、DPS、shape/indexing、tensor-level collective tiling contract | group 边界、tile-local lifetime、physical storage、`wafer.comm` / DTE protocol |
-| 1. Logical group | fusion 候选 region | logical-form `wafer.group` | candidate boundary、body region | tile size、schedule effect、physical allocation、queue、packet |
+| 1. Logical group | fusion planning region | logical-form `wafer.group` | group boundary、body region | tile size、schedule effect、physical allocation、queue、packet |
 | 2. Scheduled group | tiled tensor/control-flow region | scheduled-form `wafer.group` + tiled tensor IR | traversal loop、tiled body、必要的显式 constraint/effect | physical address、worker、DTE node、C ABI |
 | 3+. Downstream | bufferization / hardware / runtime | `wafer.tile_region`、layout/SPM、`wafer.compute`、`wafer.comm`、`wafer.launch` | 消费 scheduled group 的 tiled body、resource demand 和 boundary movement | 不回写 tensor-level fusion 语义 |
 
@@ -79,7 +79,7 @@ schedule 下，让中间值只在 group tile 内部存活。
 
 ### 2.1 R3.1 Pipeline Contract
 
-R3.1 是 Stage 0 到 Stage 1 的恢复任务。它只建立 logical `wafer.group` candidate
+R3.1 是 Stage 0 到 Stage 1 的恢复任务。它只建立 logical `wafer.group`
 边界，不做 scheduled group、root tile search 或任何 storage/runtime lowering。
 
 ```text
@@ -89,19 +89,18 @@ Pipeline position:
   `func.func`，body 为 `linalg` / `tensor` / `scf` / `arith` / `math`
   local compute IR 和 `wafer.tensor_collective.*` tensor collective IR。
 - Current stage responsibility:
-  按 root/hero op 建立 dependency-preserving logical `wafer.group` candidate，
-  说明哪些 tensor SSA value、outs、producer/consumer 和 tensor collective 能进入
-  group 候选。
+  按 root/hero op 建立 dependency-preserving logical `wafer.group`，说明哪些
+  tensor SSA value、outs、producer/consumer 和 tensor collective 能进入 group。
 - Output artifact / IR:
-  verifier-legal 的 tensor-level `wafer.group` candidate IR；candidate 仍是可被
-  R3.2g 接受、拆分或拒绝的 logical region。
+  verifier-legal 的 tensor-level `wafer.group` op；它仍是可被 R3.2g 接受、拆分或
+  拒绝的 logical group。
 - Downstream consumer:
   R3.2a-f planning / analysis results 和 R3.2g closed-loop planner；R3.3 `wafer.tile_region`
   materialization；R3.4/R3.5 accepted layout/SPM/DDR materialization；
   R3.6/R3.7 ABI/package stages。
 - User-level driver / named pipeline:
   `wafer-opt --program-pipeline=stablehlo-spmd-to-group`，由该 program
-  pipeline 重放 frontend/SPMD/R2.4 后进入 group candidate gate。局部 MLIR pass
+  pipeline 重放 frontend/SPMD/R2.4 后进入 logical group formation gate。局部 MLIR pass
   只作为实现索引和单元测试入口，不能替代 program pipeline completion gate。
 - Explicit non-goals:
   不做 physical placement、tile shape search、scheduled loop materialization、
@@ -109,7 +108,7 @@ Pipeline position:
   C ABI 或 package emission。
 - Completion gate:
   真实 P2.S2/R2.4 program chain 的 local compute + tensor collective 输出能形成
-  verifier-legal `wafer.group` candidate；raw StableHLO collective、`wafer.comm`、
+  verifier-legal logical `wafer.group`；raw StableHLO collective、`wafer.comm`、
   `wafer.tile_region`、SPM tile buffer、DTE token、C ABI/runtime op 和只靠手写
   fixture 拼出的 group 主线都被拒绝。
 ```
@@ -294,7 +293,7 @@ legality 和 cost hint 为输入，形成 logical group。logical group 只回�
 ```
 
 此时不能把 region body 理解为“按顺序执行完整 tensor”。它只是后续 planner 可以调度的
-fusion candidate。logical group 不携带 tile size、physical allocation、physical layout、
+fusion planning boundary。logical group 不携带 tile size、physical allocation、physical layout、
 DMA、queue、worker、packet 或 runtime call。
 
 ## 6. Stage 2：Scheduled `wafer.group`
@@ -553,10 +552,10 @@ logical / scheduled tensor-level `wafer.group` body 第一版应保持保守。�
 
 ## 9. Group Formation
 
-group formation 只负责形成候选 group，不负责最终 tile size 或 physical storage allocation。
+group formation 只负责形成 logical group，不负责最终 tile size 或 physical storage allocation。
 
-R3.1 的初始实现采用 root-seeded、dependency-preserving candidate formation。它不是
-普通 greedy fusion，也不承诺找到最优 group；第一版宁可产生更小的 legal candidate，也不把
+R3.1 的初始实现采用 root-seeded、dependency-preserving logical group formation。它不是
+普通 greedy fusion，也不承诺找到最优 group；第一版宁可产生更小的 legal group，也不把
 不可证明的融合写成 IR 事实。长期应由 op interface、producer/consumer 图、layout/shape
 legality、temporary/materialization 判断和 cost model 共同决定是否入 group。
 
@@ -564,7 +563,7 @@ legality、temporary/materialization 判断和 cost model 共同决定是否入 
 
 formation pass 在每个 `func.func` 的 region/block 内先做局部 op 分类：
 
-- tensor-level candidate body：`linalg.*`、`tensor.*`、`arith.*`、`math.*`、
+- tensor-level group body：`linalg.*`、`tensor.*`、`arith.*`、`math.*`、
   shape/index op、必要的 `scf`，以及已规整并实现 destination-style / tiling /
   tensor collective interface 的 `wafer.tensor_collective.*`。
 - hard boundary：raw `stablehlo.*` collective、remote load/store、explicit DMA/
@@ -573,13 +572,13 @@ formation pass 在每个 `func.func` 的 region/block 内先做局部 op 分类�
   `wafer.tile_region`、SPM memref、`!wafer.tile_buffer`、DTE token 或 packet-like value。
 - analysis-only input：single-use、use count、producer/consumer reachability、DPS outs、
   indexing maps、shape/rank/dtype、side-effect/memory-effect information。这些只驱动
-  candidate formation，不写入 `wafer.group` attribute。
+  group formation，不写入 `wafer.group` attribute。
 
 ### 9.2 Root / Hero Seed
 
 R3.1 从 root/hero op 建立最小 group seed，并按 9.3 做 conservative expansion。实现可以宁可
-产生更小的合法 candidate，但不能把 one-root shell 当作 R3.1 完成 gate；若某个 producer /
-consumer 满足 9.3 的可证明条件，应进入 candidate，除非下游 legality 明确拒绝并给出原因。
+产生更小的合法 group，但不能把 one-root shell 当作 R3.1 完成 gate；若某个 producer /
+consumer 满足 9.3 的可证明条件，应进入 group selection，除非下游 legality 明确拒绝并给出原因。
 
 root 优先级是：
 
@@ -593,7 +592,7 @@ root 优先级是：
 - dequant + matmul + epilogue。
 - convolution 可作为后续受限目标，但不作为最小链路的主线。
 
-root/hero 只决定 logical candidate 的初始边界，不决定 traversal tile shape。真正的 traversal
+root/hero 只决定 logical group 的初始边界，不决定 traversal tile shape。真正的 traversal
 domain、tile shape、internal split、output coverage 和 instruction selection 仍由 R3.2a-f planning /
 analysis results 和 R3.2g closed-loop scheduled group planner 决定。
 
@@ -612,7 +611,7 @@ analysis results 和 R3.2g closed-loop scheduled group planner 决定。
 - 已规整且能通过 interface/verifier 证明 rank group、combiner 或 slice relation 的
   `wafer.tensor_collective.*`。
 
-candidate expansion 必须保持 dependency-preserving：
+logical group expansion 必须保持 dependency-preserving：
 
 - group 内部中间 tensor 必须只由 group 内 op 产生并只被 group 内 op 消费，或作为
   explicit result/yield 暴露。
@@ -636,11 +635,11 @@ candidate expansion 必须保持 dependency-preserving：
 
 这些边界可以在后续 cost model 和 communication planner 更强之后逐步放开。已经规整成
 Wafer LinalgExt-style tensor collective、且实现 tiling interface 的 post-SPMD collective 可以作为
-受控 group candidate；是否纳入由 verifier、op interface、resource planning 和 cost model 决定。
+受控 logical group 成员；是否纳入由 verifier、op interface、resource planning 和 cost model 决定。
 
-对于 multi-output 候选，formation 只标记“可能共享 tile-local residency”的候选，不保证最终
+对于 multi-output group，formation 只标记“可能共享 tile-local residency”的 selection，不保证最终
 一定保持一个 group。schedule 阶段如果无法找到一个合法且成本可接受的 selected traversal
-domain，应把候选拆成多个 groups，再分别调度。
+domain，应把 group 拆成多个 groups，再分别调度。
 
 ### 9.4 IR Construction Rules
 
@@ -649,13 +648,13 @@ R3.1 pass 构造 logical `wafer.group` 时遵守以下规则：
 - `ins` 来自 group body 需要读取、且定义在 group 外部的 SSA value。名字只用于 debug，
   不参与角色恢复。
 - `outs` 来自 destination-style init/output tensor。若无法稳定识别 DPS out 或 yielded
-  result 的 shape/type 关系，candidate 必须缩小或拒绝。
+  result 的 shape/type 关系，group 必须缩小或拒绝。
 - `results` 与 `wafer.group_yield` 一一对应，类型、rank 和 shape 与 `outs`/yielded value
   可由 verifier 检查。
 - body 通过 clone + SSA remap 构造；外部依赖必须经 block arguments 显式进入，不允许
   region body 隐式捕获外部 SSA value。
 - `wafer.group` 不携带 semantic attribute，不保存 root kind、fusion reason、tile size、
-  cost trace、temporary set、materialization point 或 rejected-candidate diagnostic。
+  cost trace、temporary set、materialization point 或 rejected-group diagnostic。
   这些都是 analysis 或诊断信息。
 
 ### 9.5 R3.1 当前实现边界
@@ -666,12 +665,12 @@ R3.1 pass 构造 logical `wafer.group` 时遵守以下规则：
 1. 从 root/hero seed 出发。当前 root 是 tensor-level DPS `linalg.*`（`linalg.fill`
    不单独作为 root）或已规整的 `wafer.tensor_collective.*`。
 2. 对 tensor-level DPS producer/consumer 做 fixpoint expansion。producer 只有在所有 result
-   use 都已经在 candidate 内时被吸收；consumer 只有在消费的 candidate-produced value 没有
-   candidate 外 live use 时被吸收。多 use 大 tensor producer 第一版仍停在 boundary。
-3. `results` 来自 candidate 内仍有外部 use 的 tensor value。每个 yielded result 通过
+   use 都已经在 selection 内时被吸收；consumer 只有在消费的 selection-produced value 没有
+   selection 外 live use 时被吸收。多 use 大 tensor producer 第一版仍停在 boundary。
+3. `results` 来自 selection 内仍有外部 use 的 tensor value。每个 yielded result 通过
    DPS tied init 反查对应 `outs`；如果 init 本身由已吸收的 DPS producer 产生，则沿 tied init
    继续追到 group 外部的 destination tensor。
-4. 在 `outs` 固定后，只吸收内部 support op：目前包括只被 candidate 内部使用、且不是
+4. 在 `outs` 固定后，只吸收内部 support op：目前包括只被 selection 内部使用、且不是
    group `outs` 的 `arith.constant` 和 `tensor.empty`。这样 internal scratch 留在 group body，
    最终 destination-style output 仍作为显式 `outs`。
 5. body 按原 block order clone，并通过 block arguments 显式 remap 外部 `ins` / `outs`。
@@ -687,15 +686,15 @@ group planner 输入 logical group，输出 scheduled group。
 
 ### 10.1 Closed-Loop Planning
 
-group planning 不是单向地先固定 group 再交给下游碰运气。logical group 只是 candidate；
+group planning 不是单向地先固定 group 再交给下游碰运气。logical group 只是未提交的 planning boundary；
 scheduled group 必须来自一个已经被下游 legality analysis / resource planning 接受的 plan。
 
-对每个 candidate group，planner 应在 transformation 内部做闭环搜索：
+对每个 logical group，planner 应在 transformation 内部做闭环搜索：
 
 1. 选择 traversal domain / traversal tile shape / output 覆盖策略。
 2. 调用每个 op 的 tiling interface，得到 operand slice、result slice、temporary/scratch/
    accumulator 需求，以及可能的 internal split 候选。
-3. 构造 provisional tile-local execution model：包含预计的 `wafer.tile_region` 边界、
+3. 构造 tile-local execution model：包含预计的 `wafer.tile_region` 边界、
    tile-local buffer、layout materialization、movement、compute、tensor collective 和 sync/effect 需求。
 4. 调用下游 legality analysis / resource planning 产出实际 planning result。这里不能只看抽象 size estimate；
    必须跑与下游一致的 layout materialization、SPM allocation 和 DDR demand /
@@ -710,7 +709,7 @@ scheduled group 必须来自一个已经被下游 legality analysis / resource p
    `tasks/2026-05-25-wafer-communication-dialect-design.md`。
 5. 对合法 plan 计算 cost；如果不合法，回到 tile shape、internal split、output coverage 或
    group boundary 继续搜索。
-6. 如果找不到合法且成本可接受的 plan，拆分或拒绝该 group candidate。
+6. 如果找不到合法且成本可接受的 plan，拆分或拒绝该 logical group。
 
 实际 SPM allocation 和 DDR demand/resource planning 都是必要的，因为下游指令、layout 和
 boundary placement 会改变真实需求：
@@ -737,17 +736,17 @@ boundary placement 会改变真实需求：
 - overlap-critical buffer 还可能受 bank/page coloring、in-flight bank set、worker/local wait
   和 communication wait 影响。
 
-这些分析可以作为 planner 内部 analysis 或 provisional lowering 实现，但搜索过程、失败的 allocation、
+这些分析可以作为 planner 内部 analysis 或 group-to-tile-region lowering 实现，但搜索过程、失败的 allocation、
 候选 tile shape 和 cost trace 都是 analysis，不写入 `wafer.group` attribute。IR 里只保留
 被接受的 scheduled structure；若没有 plan 被接受，就不生成这个 scheduled group。
 
 ### 10.1.1 Planning Inputs 和 Materialization 依赖
 
-R3.2a-g 的核心不是先把 rejected candidate 写进主 IR 再让下游修复，而是在生成 accepted
+R3.2a-g 的核心不是先把 rejected group plan 写进主 IR 再让下游修复，而是在生成 accepted
 scheduled structure 之前完成 layout/resource/legalization planning。实现上可以构造
-transformation-local / scratch `wafer.tile_region` candidate，用它承载 target-abstract
+transformation-local / scratch `wafer.tile_region` IR，用它承载 target-abstract
 Wafer op、layout materialization、buffer、lifetime 和 effect，再从这层 IR 调用下游 analysis。
-这个 candidate 是 planning artifact；只有 accepted plan 才能由 R3.3 commit 到主 IR。
+这层 lowered IR 是 planning artifact；只有 accepted plan 才能由 R3.3 commit 到主 IR。
 SPM allocation、layout assignment、DDR/resource demand 和 compute/movement legality 是 group 是否成立的
 决定条件，不是 R3.3/R3.4/R3.5 的后处理。
 
@@ -758,12 +757,12 @@ SPM allocation、layout assignment、DDR/resource demand 和 compute/movement le
 - R3.2b 恢复 layout planning：消费 R3.2a `GroupTilingDemand` facts 和 logical group SSA
   use-def，构造 transformation-local tile value graph / op layout constraints，再产出
   layout assignment、materialization cut 和 materialization buffer demand。
-- R3.2c 恢复 provisional tile-region candidate lowering：消费 R3.2a/R3.2b facts，把 logical
-  group candidate 降成 transformation-local `wafer.tile_region` candidate，内部使用
+- R3.2c 恢复 group-to-tile-region lowering：消费 R3.2a/R3.2b facts，把 logical
+  group 降成 transformation-local `wafer.tile_region` IR，内部使用
   target-abstract `wafer.compute` / `wafer.comm` / load-store / `wafer.layout.materialize` /
-  sync / `!wafer.tile_buffer` / effect 结构。rejected candidate 不写入主 IR，不 lower 到
+  sync / `!wafer.tile_buffer` / effect 结构。rejected lowered IR 不写入主 IR，不 lower 到
   packet/ABI/LLVM。
-- R3.2d 恢复 Wafer instruction legalization / selection：在 R3.2c candidate IR 上，把
+- R3.2d 恢复 Wafer instruction legalization / selection：在 R3.2c lowered tile-region IR 上，把
   target-abstract compute/comm/layout/load-store/move/sync op 合法化并选择成 instruction-level
   `wafer.instr.*`，同时生成 unplaced `wafer.storage.*`，显式列出 concrete storage values、
   queue、read/write/issue effects、temp/psum/staging、alias/view 关系、storage-size policy 和
@@ -780,13 +779,13 @@ SPM allocation、layout assignment、DDR/resource demand 和 compute/movement le
 R3.3 只 materialize R3.2g 已接受的 plan 为 committed `wafer.tile_region`。R3.4/R3.5 只把
 R3.2g 已经接受的 layout/instruction/SPM/DDR facts 落到可验证 IR 或 resource boundary；它们不能成为
 第一次发现 SPM 放不下、layout 不合法或 DDR demand 不可接受的阶段。若 R3.2a-f planning results
-让 R3.2g 不能接受当前 candidate，planner 必须回到 tile shape、layout、internal split、instruction
+让 R3.2g 不能接受当前 group plan，planner 必须回到 tile shape、layout、internal split、instruction
 选择或 group boundary，而不是落一个未接受的 `wafer.tile_region` 等待下游补救。
 
 ### 10.1.2 R3.2a Op Tiling Demand Analysis
 
 R3.2a 的边界是 analysis，不是 scheduled IR materialization。它消费 R3.1 形成的
-logical `wafer.group`，在给定 target-abstract traversal / output tile candidate 时，从每个
+logical `wafer.group`，在给定 target-abstract traversal / output tile proposal 时，从每个
 op 的结构化语义恢复 tile-level demand graph。第一版可以用 full-result tile 作为默认候选来
 验证语义恢复；后续 R3.2g planner 会用同一 analysis 查询不同 tile shape。
 
@@ -795,7 +794,7 @@ Pipeline position:
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  R3.1 verifier-legal tensor-level `wafer.group` candidate，body 中只包含 tensor-level
+  R3.1 verifier-legal tensor-level logical `wafer.group`，body 中只包含 tensor-level
   `linalg` / `tensor` / `scf` / `arith` / `math` 和 `wafer.tensor_collective.*`。
 - Current stage responsibility:
   从 SSA use-def、destination-style ties、Linalg structured semantics、indexing maps、
@@ -805,7 +804,7 @@ Pipeline position:
   transformation-local `GroupTilingDemand` analysis result；debug pass 可以 dump 同一结构，
   但不修改 IR、不生成 `wafer.tile_region`、不写 `wafer.group` attribute。
 - Downstream consumer:
-  R3.2b layout planning、R3.2c provisional tile-region candidate lowering、
+  R3.2b layout planning、R3.2c group-to-tile-region lowering、
   R3.2d Wafer instruction legalization / selection、R3.2e SPM placement、R3.2f DDR/resource planning +
   compute/movement legality analysis，以及 R3.2g closed-loop planner。
 - User-level driver / named pipeline:
@@ -953,7 +952,7 @@ reduction axis、window/kernel axis、被 collapse/expand 的 layout axis、padd
   implementation。
 - planner 汇总所有 op 的 demand，做资源容量、layout/lowering 合法性、buffering 和 cost 分析。
 - 只有当完整 demand 不合法或代价不可接受时，planner 才回到相关 op interface 请求 internal
-  split candidates。
+  split proposals。
 - internal split 的候选大小由 op interface 根据自身语义、目标硬件约束、layout、dtype、
   alignment、accumulator 精度、pipeline/double-buffer 需求和 cost hint 生成；planner 只在
   group 级合并多个 op 的候选并选择合法成本点。
@@ -1133,7 +1132,7 @@ tensor spatial split。之后 `wafer.group` 在 partitioned local graph 上工�
 - reduction 先支持简单 single-axis case。
 - convolution 只保留基础规则和 verifier，完整 lowering 作为后续目标。
 - raw StableHLO collective、remote op 和 explicit communication 作为 group boundary；已规整且实现
-  tiling interface 的 Wafer tensor collective 可以在受控条件下进入 candidate。
+  tiling interface 的 Wafer tensor collective 可以在受控条件下进入 logical group。
 - Transform dialect 先做 dump/replay，不作为主链路的唯一驱动。
 
 不在初始范围：
@@ -1189,7 +1188,7 @@ recomputation。初期默认不 fuse 大型 multi-use producer。
 
 它把 group 内部 op 调度到同一个外层 tile schedule 下，让中间值以 tile-local value 的
 形式存在，并只在 group boundary 访问外部 tensor 或通信资源。logical group 表达
-fusion candidate 和边界；scheduled group 通过 tiled IR 表达 traversal loop 和必要的
+fusion planning boundary；scheduled group 通过 tiled IR 表达 traversal loop 和必要的
 schedule effect；下游阶段再引入 memory space、physical layout、hardware action、
 sync primitive 和 Wafer C ABI。
 

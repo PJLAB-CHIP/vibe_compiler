@@ -19,7 +19,7 @@ lowering。
 
 本文不负责 group formation、tile shape search、SPM offset allocation、DDR BO allocation、
 compute/comm op 语义、launch/runtime package 或 raw instruction packet。layout planner 的中间
-图、candidate、cost trace 和失败原因都是 analysis；只有 accepted buffer layout、explicit
+constraint graph、layout alternatives、cost trace 和失败原因都是 analysis；只有 accepted buffer layout、explicit
 movement 和可 lower 的 constant storage 选择进入 IR 或 lowering 输入。
 
 ## 1. 核心结论
@@ -63,7 +63,7 @@ lowering IR 写成三套互不相干的东西：
 | --- | --- | --- | --- |
 | scheduled tile tensor IR | `wafer.group` scheduled body 中的 tensor SSA value | 是 | 表达 tile-local tensor dataflow、loop/control-flow、boundary slice；不表达 physical layout |
 | target-abstract tile-region IR | `wafer.tile_region` 中的 `wafer.compute` / boundary / data movement op | 是 | 承载选中的 Wafer implementation 和 `WaferLayoutOpInterface`，但尚未绑定 concrete instruction/runtime descriptor |
-| layout analysis | `LayoutVariable` / `LayoutEdge` / candidate assignment | 否 | 从 SSA use-def、op interface 和 boundary contract 推导 layout domain、preference、materialization cut |
+| layout analysis | `LayoutVariable` / `LayoutEdge` / layout assignment alternatives | 否 | 从 SSA use-def、op interface 和 boundary contract 推导 layout domain、preference、materialization cut |
 | boundary co-planning analysis | 相邻 device-side group boundary 的可行 layout summary 和 selected boundary layout | 否 | 在不引入全局 plan attr 的前提下，减少 producer/consumer 边界上的重复 materialization |
 | accepted tile-local buffer IR | `!wafer.tile_buffer<shape, mem_layout, memory_space>` 和 `wafer.layout.materialize` | 是 | 记录已接受的 physical layout，以及真实 layout movement 的抽象边 |
 | materialization cleanup | canonicalization pattern 和 layout-aware rewrite | 是，通过 rewrite 当前 IR | 删除冗余 materialization；不保存搜索过程 |
@@ -80,7 +80,7 @@ layout planning 有两个恢复层次：
 
 - R3.2b 在 logical `wafer.group` 层运行。它消费 R3.2a `GroupTilingDemand` facts 和当前
   group SSA use-def，构造 transformation-local `LayoutVariable` / `LayoutEdge` graph、op
-  layout constraints、layout assignment candidate、materialization cut 和 materialization
+  layout constraints、layout assignment alternatives、materialization cut 和 materialization
   buffer demand。该层只产出 analysis result 和 debug dump，不 rewrite `wafer.group`，不写
   layout attr，也不生成 `wafer.tile_region`。
 - R3.4 在 accepted `wafer.tile_region` / instruction-level IR 层运行。它消费 R3.2g accepted plan，把 layout
@@ -114,18 +114,18 @@ collective interface 和 target policy 构造保守 layout constraints；不能�
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  R3.1 verifier-legal tensor-level `wafer.group` candidate，以及 R3.2a
+  R3.1 verifier-legal tensor-level logical `wafer.group` op，以及 R3.2a
   `GroupTilingDemand` analysis result。
 - Current stage responsibility:
   从 `GroupTilingDemand` facts、group body SSA use-def、DPS ties、structured op
   semantics 和 tensor collective facts 构造 transformation-local layout planning graph；
-  为 tile values / uses / boundary 生成 layout constraints、candidate layout assignment、
+  为 tile values / uses / boundary 生成 layout constraints、layout assignment alternatives、
   materialization cuts 和 materialization buffer demand。
 - Output artifact / IR:
   transformation-local `GroupLayoutPlan` analysis result；debug dump pass 可以打印同一结构。
   本阶段不修改 `wafer.group`，不生成 `wafer.tile_region`，不写 layout attr。
 - Downstream consumer:
-  R3.2c provisional tile-region candidate lowering、R3.2d Wafer instruction legalization / selection、
+  R3.2c group-to-tile-region lowering、R3.2d Wafer instruction legalization / selection、
   R3.2e SPM placement、R3.2f DDR/resource planning + compute/movement legality analysis，
   以及 R3.2g closed-loop planner。
 - User-level driver / named pipeline:
@@ -650,7 +650,7 @@ pass 名是实现组织，不是架构边界；边界仍以 IR contract 和 veri
 
 1. `wafer-layout-materialize`
 
-   运行位置：scheduled tile tensor IR 已经形成、tile shape 已被当前 group candidate 接受、
+   运行位置：scheduled tile tensor IR 已经形成、tile shape 已被当前 group plan 接受、
    layout-sensitive tiled op 已经被选成 target-abstract `wafer.compute` / boundary / data movement
    op、下游 SPM allocator 可用、最终硬件 movement 还没 lower 之前。
 
@@ -666,7 +666,7 @@ pass 名是实现组织，不是架构边界；边界仍以 IR contract 和 veri
    行为：
 
    - 从当前 IR 构造 `LayoutVariable` / `LayoutEdge` analysis；analysis 不写入 IR。
-   - 生成 group-local layout candidates 和 boundary summary。
+   - 生成 group-local layout alternatives 和 boundary summary。
    - 对 device-side group-to-group edge 做 bounded co-planning，并把 accepted boundary layout 作为
      当前 transformation 的 hard constraint 传回本地 planner。
    - 选择最终 physical layout assignment 和 materialization edge。
@@ -675,7 +675,7 @@ pass 名是实现组织，不是架构边界；边界仍以 IR contract 和 veri
    - 对 accepted assignment rewrite IR：生成或更新 tile-local buffer type 的 `mem_layout`，插入
      `wafer.layout.materialize`，并把 compile-time constant 的 storage transform 机会保留在
      `wafer.load_tile` use 上。
-   - 对 rejected candidate 只发 diagnostic，不写入 IR。
+   - 对 rejected layout alternative 只发 diagnostic，不写入 IR。
 
    输出：
 
@@ -805,7 +805,7 @@ LayoutEdge {
 - DPS / in-place tie 形成的 alias group。
 - loop-carried entry / yield value。
 - group input/output 和 host-visible writeback boundary。
-- materialization candidate 产生的新 value。
+- materialization placement alternative 产生的新 value。
 
 约束来源：
 
@@ -824,7 +824,7 @@ V0 只需要区分 hard constraint 和 preference：
   implementation。
 
 accepted assignment 只通过 rewrite 后的 tile-local buffer type、`wafer.layout.materialize`、
-`wafer.load_tile` 的 use-def 和 result type 体现。candidate domain、cost trace、备选 cut、失败原因
+`wafer.load_tile` 的 use-def 和 result type 体现。domain frontier、cost trace、备选 cut、失败原因
 都属于 diagnostic / debug dump，不能成为下游 pass 依赖的 IR 事实。
 
 ### 6.1 Materialization Cut Placement Algorithm
@@ -898,7 +898,7 @@ V0 不默认上 ILP。先用 deterministic greedy 生成一个初始 assignment�
 6. 对 compile-time constant，把 compile-time storage transform 作为候选之一；只有 consumer layout、
    package size、SPM allocation 和 DDR resource planning 都合适时才接受。
 
-这个 assignment 只产生 candidate，不代表已经可 lower。
+这个 assignment 只产生 layout alternative，不代表已经可 lower。
 
 #### 6.1.4 Cut Placement Rules
 
@@ -916,7 +916,7 @@ V0 不默认上 ILP。先用 deterministic greedy 生成一个初始 assignment�
 - communication p2p boundary：若 producer/consumer 都能接受同一 physical layout，优先保持
   byte-preserving transfer；否则在明确 edge 上插 `wafer.layout.materialize`。
 
-任何 cut 移动只是在 candidate 上发生。被接受前不能写入 `wafer.group` 或全局 attr。
+任何 cut 移动只是在 layout alternative 上发生。被接受前不能写入 `wafer.group` 或全局 attr。
 
 #### 6.1.5 Bounded Alternatives and Repair
 
@@ -1015,7 +1015,7 @@ V0 做 bounded adjacent co-planning，不做 full-program layout solve：
 
 1. 本地 summary
 
-   对每个 group candidate，layout planner 在 rewrite 前生成 boundary summary：
+   对每个 logical group，layout planner 在 rewrite 前生成 boundary summary：
 
    ```text
    BoundaryLayoutSummary {
@@ -1068,7 +1068,7 @@ V0 做 bounded adjacent co-planning，不做 full-program layout solve：
 
    selected boundary layout 作为当前 transformation 的 hard boundary constraint 传回 producer 和
    consumer 的本地 planner。若任一 group 的 SPM allocation 或 DDR resource planning 失败，回退到下一个
-   boundary candidate；
+   boundary alternative；
    frontier 耗尽时，退回本地规划并保留显式 boundary materialization。
 
 5. Rewrite
@@ -1144,9 +1144,9 @@ V0 不做全局最优，但不能只做一次贪心选择。主路径是 determi
      runtime materialize。
    - 对 host-visible output，只在最终 writeback boundary 前 materialize 回 compact。
 
-4. 插 materialization candidate
+4. 插 materialization placement alternative
 
-   只在 producer/consumer selected layout 不一致的 edge 上插 candidate。cut placement 使用第
+   只在 producer/consumer selected layout 不一致的 edge 上插 alternative。cut placement 使用第
    6.1.4 节的规则。多 use producer 的常见策略：
 
    - 若 consumers 都能接受 aligned，保持 aligned。
@@ -1167,17 +1167,17 @@ V0 不做全局最优，但不能只做一次贪心选择。主路径是 determi
 
    frontier 大小应是 target policy 控制的小常量；它是编译期 search 策略，不进入 IR。
 
-6. 生成 resource-planned local candidates
+6. 生成 resource-planned local alternatives
 
    对初始 assignment 和 bounded alternatives 构造真实 materialization demand，运行 SPM allocation
-   和 DDR resource planning，形成 group-local candidate / boundary summary。SPM 或 DDR
+   和 DDR resource planning，形成 group-local alternative / boundary summary。SPM 或 DDR
    失败时，layout planner 只做有限调整：
 
    - 移动 materialization cut。
    - 改用 specialized constant storage backing。
    - 让 flexible op 接受另一个已有 layout。
 
-   如果仍没有本地可行 candidate，返回 group planner 调整 tile shape、internal split 或 group
+   如果仍没有本地可行 alternative，返回 group planner 调整 tile shape、internal split 或 group
    boundary。
 
 7. 跨 group boundary co-planning
@@ -1247,7 +1247,7 @@ layout 相关事实按第 3 节生命周期分层表达：
 - lower-level movement IR 表达具体 instruction/wrapper path、sync/effect 和 byte/range 约束。
 
 不要维护全局 `layout_plan` attr，也不要把 analysis graph 序列化成 side table 给后续 pass 使用。
-失败的 layout candidate、cost trace、materialization 尝试都只是 analysis。
+失败的 layout alternative、cost trace、materialization 尝试都只是 analysis。
 
 ## 13. Verifier
 

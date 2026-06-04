@@ -523,7 +523,7 @@ P2.S2 的完成证明必须至少覆盖：
 per-rank program
   -> local compute normalization
   -> tensor collective normalization if collectives exist
-  -> group candidate
+  -> logical group
   -> tile_region materialization
   -> placement / communication / resource gate
 ```

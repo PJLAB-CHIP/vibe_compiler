@@ -74,7 +74,7 @@ side table 中保留影子计划。
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  R3.2c provisional `wafer.tile_region` candidate，内部包含 accepted layout 的
+  R3.2c `wafer.tile_region` IR，内部包含 accepted layout 的
   `!wafer.tile_buffer`、`wafer.compute.*`、`wafer.move.*`、`wafer.layout.materialize`、
   load/store boundary 和 view/alias relation。
 - Current stage responsibility:
@@ -181,7 +181,7 @@ recv chunk 与 accumulator 的本地累计步骤；`wafer.compute.reduce` 仍只
 - native reduce 属于 aligned-only op，verifier 要求 rank <= 2 使用 `Cx`，rank > 2 使用 `NCx`；
   这来自硬件指令集的 Reduce operand/result physical layout 约束，不是 planner 偏好。
 - output dtype、init value 和 NaN/overflow 等细节如果会影响语义，应保留在 op contract 中，而不是
-  留给 wrapper 默认值。当前 tile-region candidate lowering 从 scalar-constant `linalg.fill` out
+  留给 wrapper 默认值。当前 tile-region IR lowering 从 scalar-constant `linalg.fill` out
   恢复 `init_value` attr；若 init 是 group boundary scalar，则作为 `wafer.compute.reduce` 的
   scalar init operand 保留 SSA 关系。R3.6 codegen emission 如果目标 wrapper 仍只接受 issue-time
   `init_value` 参数，必须把动态 init 明确拆成 native reduce + supported scalar combine，或扩展

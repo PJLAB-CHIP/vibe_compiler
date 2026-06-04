@@ -60,7 +60,7 @@ accepted placement map
   + topology cost summary
 ```
 
-accepted placement 如果影响 codegen，必须进入 IR 或 launch metadata；candidate search trace、
+accepted placement 如果影响 codegen，必须进入 IR 或 launch metadata；placement search trace、
 rejected maps、score breakdown 是 analysis，不写入长期 IR。
 
 ## 3. Physical Coordinate Model

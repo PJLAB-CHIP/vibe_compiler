@@ -1,5 +1,5 @@
 // REQUIRES: stablehlo
-// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-stablehlo-to-linalg,wafer-form-group-candidates,wafer-dump-tile-region-candidate)' %s 2>&1 | FileCheck %s
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-stablehlo-to-linalg,wafer-form-logical-groups,wafer-dump-group-to-tile-region)' %s 2>&1 | FileCheck %s
 
 module {
   func.func @lower_reduce_sum(%arg0: tensor<2x4xf32>,
@@ -30,7 +30,7 @@ module {
   }
 }
 
-// CHECK-LABEL: wafer.tile_region.candidate group @lower_reduce_sum#0
+// CHECK-LABEL: wafer.group_to_tile_region group @lower_reduce_sum#0
 // CHECK: wafer.compute.fill
 // CHECK: wafer.layout.materialize
 // CHECK: #wafer.mem_layout<cx>
@@ -38,10 +38,10 @@ module {
 // CHECK-SAME: dimensions = array<i64: 1>
 // CHECK: f32) -> !wafer.tile_buffer<tensor<2xf32>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
 // CHECK: wafer.store_tile
-// CHECK-LABEL: wafer.tile_region.candidate group @lower_broadcast#0
+// CHECK-LABEL: wafer.group_to_tile_region group @lower_broadcast#0
 // CHECK: wafer.move.broadcast
 // CHECK-SAME: dimensions = array<i64: 1>
 // CHECK: wafer.store_tile
-// CHECK-LABEL: wafer.tile_region.candidate group @lower_compare#0
+// CHECK-LABEL: wafer.group_to_tile_region group @lower_compare#0
 // CHECK: wafer.compute.elementwise <gt>
 // CHECK: wafer.store_tile

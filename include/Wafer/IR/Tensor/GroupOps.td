@@ -3,25 +3,21 @@
 #ifndef WAFER_IR_OPS_GROUPOPS_TD
 #define WAFER_IR_OPS_GROUPOPS_TD
 
-def Wafer_GroupOp : Wafer_Op<"group", [
-    AttrSizedOperandSegments,
-    DeclareOpInterfaceMethods<WaferTilingInterface>,
-    IsolatedFromAbove,
-    RecursiveMemoryEffects,
-    SingleBlockImplicitTerminator<"GroupYieldOp">
-  ]> {
+def Wafer_GroupOp
+    : Wafer_Op<"group", [AttrSizedOperandSegments,
+                         DeclareOpInterfaceMethods<WaferTilingInterface>,
+                         IsolatedFromAbove, RecursiveMemoryEffects,
+                         SingleBlockImplicitTerminator<"GroupYieldOp">]> {
   let summary = "tensor-level Wafer grouping and scheduling boundary";
   let description = [{
-    `wafer.group` carries a tensor-level fusion/scheduling candidate. It owns
+    `wafer.group` carries a tensor-level fusion/scheduling boundary. It owns
     explicit inputs, explicit destination-style outputs, and a single body
-    region. Tile sizes, physical addresses, queues, packets, runtime buffers,
-    and planner-local search state are deliberately outside this operation.
+    region. Downstream planning may accept, split, or reject that boundary.
+    Tile sizes, physical addresses, queues, packets, runtime buffers, and
+    planner-local search state are deliberately outside this operation.
   }];
 
-  let arguments = (ins
-    Variadic<AnyType>:$inputs,
-    Variadic<AnyTensor>:$outs
-  );
+  let arguments = (ins Variadic<AnyType>:$inputs, Variadic<AnyTensor>:$outs);
   let results = (outs Variadic<AnyTensor>:$results);
   let regions = (region SizedRegion<1>:$body);
 
@@ -34,12 +30,8 @@ def Wafer_GroupOp : Wafer_Op<"group", [
   }];
 }
 
-def Wafer_GroupYieldOp : Wafer_Op<"group_yield", [
-    HasParent<"GroupOp">,
-    Pure,
-    ReturnLike,
-    Terminator
-  ]> {
+def Wafer_GroupYieldOp : Wafer_Op<"group_yield", [HasParent<"GroupOp">, Pure,
+                                                  ReturnLike, Terminator]> {
   let summary = "terminate a wafer.group body";
   let description = [{
     `wafer.group_yield` returns tensor-level values from a `wafer.group` body.

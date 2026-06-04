@@ -1,7 +1,7 @@
-// RUN: wafer-opt --wafer-form-group-candidates %s | FileCheck %s
+// RUN: wafer-opt --wafer-form-logical-groups %s | FileCheck %s
 
 module {
-  func.func @matmul_candidate(
+  func.func @matmul_logical_group(
       %lhs: tensor<4x8xf32>,
       %rhs: tensor<8x16xf32>) -> tensor<4x16xf32> {
     %cst = arith.constant 0.000000e+00 : f32
@@ -15,7 +15,7 @@ module {
     return %0 : tensor<4x16xf32>
   }
 
-  func.func @tensor_collective_candidate(
+  func.func @tensor_collective_logical_group(
       %input: tensor<4xf32>,
       %out: tensor<8xf32>) -> tensor<8xf32> {
     %0 = wafer.tensor_collective.all_gather
@@ -27,7 +27,7 @@ module {
   }
 }
 
-// CHECK-LABEL: func.func @matmul_candidate
+// CHECK-LABEL: func.func @matmul_logical_group
 // CHECK: %[[GROUP:.+]] = wafer.group
 // CHECK-SAME: ins(%{{.+}}, %{{.+}} : tensor<4x8xf32>, tensor<8x16xf32>)
 // CHECK-SAME: outs(%{{.+}} : tensor<4x16xf32>)
@@ -35,7 +35,7 @@ module {
 // CHECK: wafer.group_yield
 // CHECK: return %[[GROUP]] : tensor<4x16xf32>
 
-// CHECK-LABEL: func.func @tensor_collective_candidate
+// CHECK-LABEL: func.func @tensor_collective_logical_group
 // CHECK: %[[TCGROUP:.+]] = wafer.group
 // CHECK-SAME: ins(%{{.+}} : tensor<4xf32>)
 // CHECK-SAME: outs(%{{.+}} : tensor<8xf32>)

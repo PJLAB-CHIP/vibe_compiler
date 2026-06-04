@@ -182,7 +182,7 @@ P2.F1 framework capture program
        -> partitioned or replicated-local StableHLO / per-rank program verifier
   -> StableHLO / local compute normalization
   -> tensor collective normalization if collectives exist
-  -> R3 group candidate
+  -> R3 logical group
   -> R3 tile_region / resource / ABI / package gates
 ```
 

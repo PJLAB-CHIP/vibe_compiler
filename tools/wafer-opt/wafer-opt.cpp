@@ -413,15 +413,15 @@ int runStableHLOToLinalgStage(llvm::StringRef programDir,
   return 0;
 }
 
-int runFormGroupCandidatesStage(llvm::StringRef programDir,
-                                mlir::MLIRContext &context) {
+int runFormLogicalGroupsStage(llvm::StringRef programDir,
+                              mlir::MLIRContext &context) {
   mlir::OwningOpRef<mlir::ModuleOp> module =
       parseAndVerifyStableHLOProgramDir(programDir, context);
   if (!module)
     return 1;
 
   mlir::PassManager pm(&context);
-  wafer::buildFormGroupCandidatesPipeline(pm);
+  wafer::buildFormLogicalGroupsPipeline(pm);
   if (mlir::failed(pm.run(*module)))
     return 1;
 
@@ -478,7 +478,7 @@ int runWaferProgramPipeline(int argc, char **argv) {
     return 1;
 
   if (options.pipelineName == "stablehlo-spmd-to-group" &&
-      runFormGroupCandidatesStage(options.outputProgramDir, context))
+      runFormLogicalGroupsStage(options.outputProgramDir, context))
     return 1;
 
   llvm::outs() << "wafer-opt: completed Wafer program pipeline "

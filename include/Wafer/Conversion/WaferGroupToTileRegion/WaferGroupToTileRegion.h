@@ -1,4 +1,4 @@
-//===- WaferGroupToTileRegion.h - Group to tile-region conversion -*- C++ -*-===//
+//===- WaferGroupToTileRegion.h - Group-to-tile-region API -----*- C++ -*-===//
 
 #ifndef WAFER_CONVERSION_WAFERGROUPTOTILEREGION_WAFERGROUPTOTILEREGION_H
 #define WAFER_CONVERSION_WAFERGROUPTOTILEREGION_WAFERGROUPTOTILEREGION_H
@@ -14,18 +14,14 @@
 
 namespace wafer {
 
-struct TileRegionCandidate {
-  GroupOp group;
-  mlir::OwningOpRef<mlir::ModuleOp> module;
-  bool succeeded = true;
-  std::string failureReason;
-};
+mlir::LogicalResult
+lowerGroupToTileRegionModule(GroupOp group,
+                             mlir::OwningOpRef<mlir::ModuleOp> &module,
+                             std::string *failureReason = nullptr);
 
-mlir::LogicalResult buildTileRegionCandidate(GroupOp group,
-                                             TileRegionCandidate &candidate);
-
-void dumpTileRegionCandidate(const TileRegionCandidate &candidate,
-                             llvm::StringRef groupLabel, llvm::raw_ostream &os);
+void dumpGroupToTileRegionModule(mlir::ModuleOp module,
+                                 llvm::StringRef groupLabel,
+                                 llvm::raw_ostream &os);
 
 } // namespace wafer
 

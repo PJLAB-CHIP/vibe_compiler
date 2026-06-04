@@ -35,16 +35,16 @@ struct BufferVersions {
   mlir::Value nCx;
 };
 
-static void markFailure(TileRegionCandidate &candidate,
-                        llvm::StringRef reason) {
-  candidate.succeeded = false;
-  candidate.failureReason = reason.str();
+static void setFailureReason(std::string *failureReason,
+                             llvm::StringRef reason) {
+  if (failureReason)
+    *failureReason = reason.str();
 }
 
 class TileRegionBodyEmitter {
 public:
-  explicit TileRegionBodyEmitter(TileRegionCandidate &candidate)
-      : candidate(candidate) {}
+  explicit TileRegionBodyEmitter(std::string *failureReason)
+      : failureReason(failureReason) {}
 
   mlir::FailureOr<TileRegionOp>
   emit(GroupOp group, mlir::ValueRange convertedInputs,
@@ -52,7 +52,7 @@ public:
        mlir::ConversionPatternRewriter &rewriter) {
     GroupLayoutPlan layoutPlan;
     if (mlir::failed(collectGroupLayoutPlan(group, layoutPlan)))
-      return failAndReturn("tile-region candidate layout planning failed");
+      return failAndReturn("group-to-tile-region layout planning failed");
     if (!layoutPlan.succeeded)
       return failAndReturn(layoutPlan.failureReason);
 
@@ -90,7 +90,7 @@ public:
   }
 
 private:
-  TileRegionCandidate &candidate;
+  std::string *failureReason;
   llvm::DenseMap<mlir::Value, BufferVersions> buffers;
   llvm::DenseMap<mlir::Value, mlir::Value> scalarValues;
   llvm::DenseMap<mlir::Value, mlir::Attribute> scalarAttrs;
@@ -99,17 +99,17 @@ private:
   llvm::DenseMap<mlir::Value, mlir::Attribute> fillInitAttrs;
 
   mlir::LogicalResult fail(llvm::StringRef reason) {
-    markFailure(candidate, reason);
+    setFailureReason(failureReason, reason);
     return mlir::failure();
   }
 
   mlir::FailureOr<TileRegionOp> failAndReturn(llvm::StringRef reason) {
-    markFailure(candidate, reason);
+    setFailureReason(failureReason, reason);
     return mlir::failure();
   }
 
   mlir::FailureOr<mlir::Value> failValue(llvm::StringRef reason) {
-    markFailure(candidate, reason);
+    setFailureReason(failureReason, reason);
     return mlir::failure();
   }
 
@@ -924,16 +924,17 @@ private:
   }
 };
 
-struct GroupToTileRegionCandidatePattern
+struct GroupToTileRegionLoweringPattern
     : public mlir::OpConversionPattern<GroupOp> {
-  GroupToTileRegionCandidatePattern(mlir::MLIRContext *context,
-                                    TileRegionCandidate &candidate)
-      : mlir::OpConversionPattern<GroupOp>(context), candidate(candidate) {}
+  GroupToTileRegionLoweringPattern(mlir::MLIRContext *context,
+                                   std::string *failureReason)
+      : mlir::OpConversionPattern<GroupOp>(context),
+        failureReason(failureReason) {}
 
   mlir::LogicalResult
   matchAndRewrite(GroupOp group, OpAdaptor adaptor,
                   mlir::ConversionPatternRewriter &rewriter) const final {
-    TileRegionBodyEmitter emitter(candidate);
+    TileRegionBodyEmitter emitter(failureReason);
     mlir::FailureOr<TileRegionOp> tileRegion =
         emitter.emit(group, adaptor.getInputs(), adaptor.getOuts(), rewriter);
     if (mlir::failed(tileRegion))
@@ -943,7 +944,7 @@ struct GroupToTileRegionCandidatePattern
     return mlir::success();
   }
 
-  TileRegionCandidate &candidate;
+  std::string *failureReason;
 };
 
 static mlir::OwningOpRef<mlir::ModuleOp>
@@ -961,7 +962,7 @@ cloneGroupToScratchModule(GroupOp group) {
   auto funcType =
       moduleBuilder.getFunctionType(inputTypes, group.getResultTypes());
   auto func = moduleBuilder.create<mlir::func::FuncOp>(
-      loc, "tile_region_candidate", funcType);
+      loc, "group_to_tile_region", funcType);
   mlir::Block *entry = func.addEntryBlock();
 
   mlir::IRMapping mapping;
@@ -997,16 +998,16 @@ struct ConvertGroupToTileRegionPass
     mlir::ConversionTarget target(*context);
     configureGroupToTileRegionTarget(target);
 
-    TileRegionCandidate candidate;
+    std::string failureReason;
     mlir::RewritePatternSet patterns(context);
-    patterns.add<GroupToTileRegionCandidatePattern>(context, candidate);
+    patterns.add<GroupToTileRegionLoweringPattern>(context, &failureReason);
 
     if (mlir::succeeded(mlir::applyFullConversion(getOperation(), target,
                                                   std::move(patterns))))
       return;
 
-    if (!candidate.succeeded)
-      getOperation().emitError(candidate.failureReason);
+    if (!failureReason.empty())
+      getOperation().emitError(failureReason);
     else
       getOperation().emitError("group to tile-region conversion failed");
     signalPassFailure();
@@ -1016,51 +1017,48 @@ struct ConvertGroupToTileRegionPass
 } // namespace
 
 mlir::LogicalResult
-wafer::buildTileRegionCandidate(GroupOp group, TileRegionCandidate &candidate) {
-  candidate = {};
-  candidate.group = group;
+wafer::lowerGroupToTileRegionModule(GroupOp group,
+                                    mlir::OwningOpRef<mlir::ModuleOp> &module,
+                                    std::string *failureReason) {
+  if (failureReason)
+    failureReason->clear();
 
-  mlir::OwningOpRef<mlir::ModuleOp> scratchModule =
-      cloneGroupToScratchModule(group);
+  module = cloneGroupToScratchModule(group);
   mlir::MLIRContext *context = group.getContext();
 
   mlir::ConversionTarget target(*context);
   configureGroupToTileRegionTarget(target);
 
   mlir::RewritePatternSet patterns(context);
-  patterns.add<GroupToTileRegionCandidatePattern>(context, candidate);
+  patterns.add<GroupToTileRegionLoweringPattern>(context, failureReason);
 
   bool conversionSucceeded = false;
   {
     mlir::ScopedDiagnosticHandler handler(
         context, [](mlir::Diagnostic &) { return mlir::success(); });
     conversionSucceeded = mlir::succeeded(
-        mlir::applyFullConversion(*scratchModule, target, std::move(patterns)));
+        mlir::applyFullConversion(*module, target, std::move(patterns)));
   }
 
   if (!conversionSucceeded) {
-    if (candidate.succeeded)
-      markFailure(candidate, "tile-region candidate conversion failed");
-    return mlir::success();
+    if (!failureReason || failureReason->empty())
+      setFailureReason(failureReason, "group-to-tile-region lowering failed");
+    return mlir::failure();
   }
 
-  if (mlir::failed(mlir::verify(*scratchModule))) {
-    markFailure(candidate, "candidate verifier failed");
-    return mlir::success();
+  if (mlir::failed(mlir::verify(*module))) {
+    setFailureReason(failureReason,
+                     "lowered tile-region module failed verifier");
+    return mlir::failure();
   }
 
-  candidate.module = std::move(scratchModule);
   return mlir::success();
 }
 
-void wafer::dumpTileRegionCandidate(const TileRegionCandidate &candidate,
-                                    llvm::StringRef groupLabel,
-                                    llvm::raw_ostream &os) {
-  os << "wafer.tile_region.candidate group " << groupLabel << "\n";
-  if (!candidate.succeeded) {
-    os << "  failure " << candidate.failureReason << "\n";
-    return;
-  }
-  candidate.module.get().print(os);
+void wafer::dumpGroupToTileRegionModule(mlir::ModuleOp module,
+                                        llvm::StringRef groupLabel,
+                                        llvm::raw_ostream &os) {
+  os << "wafer.group_to_tile_region group " << groupLabel << "\n";
+  module.print(os);
   os << "\n";
 }

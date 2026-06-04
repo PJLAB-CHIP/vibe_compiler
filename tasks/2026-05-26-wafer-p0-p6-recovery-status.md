@@ -132,7 +132,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 
 - 有 `WaferAttrs.td`、`WaferTypes.td`、`WaferInterfaces.td` 和 `WaferOps.td`，覆盖 target、
   memory space、mem layout、placement、wait policy、elementwise/reduce kind、`!wafer.tile_buffer`
-  以及 group/tile/layout/load/store/placement/ABI/compute/comm/sync/launch provisional ops。
+  以及 group/tile/layout/load/store/placement/ABI/compute/comm/sync/launch temporary ops。
 - 有 parser/printer/verifier 正负例；`WaferDialect.cpp` 实现多数 verifier。
 - 有 `WaferTilingInterface`、`WaferLayoutOpInterface`、
   `WaferLayoutMaterializationOpInterface`、`WaferResourceEffectInterface` 和 Wafer resource-backed
@@ -270,10 +270,10 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 
 恢复任务：
 
-- R3.1：恢复 group boundary / candidate contract，保证 `wafer.group` 只表达 local tensor grouping
-  和 candidate boundary，并按 group 设计完成 dependency-preserving conservative expansion。
+- R3.1：恢复 logical group boundary contract，保证 `wafer.group` 只表达 local tensor grouping
+  和 group boundary，并按 group 设计完成 dependency-preserving conservative expansion。
 - R3.2：恢复 root tile planning，把 op tiling、layout、SPM、DDR 和 compute/movement
-  legality 接到同一 candidate decision。
+  legality 接到同一 group planning decision。
 - R3.3：恢复 tile_region materialization contract，只把 accepted group materialize 成
   `wafer.tile_region`。
 - R3.4：恢复 layout/SPM materialization gate，让 layout materialization 和 SPM allocation 由 effect、
@@ -392,7 +392,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 
 缺口：
 
-- DTE resource id 是单调 provisional 分配，不是目标 DTE/FSM allocator。
+- DTE resource id 是单调 placeholder 分配，不是目标 DTE/FSM allocator。
 - collective buffer slice / slot / address offset lowering 没有真实 descriptor 或 placed storage buffer。
 - tiled tensor collective -> `wafer.comm` materialization 尚未实现；R6.2 需要在 tile_region / SPM
   materialization 之后补可验证 buffer-slice / layout/materialization 路径。

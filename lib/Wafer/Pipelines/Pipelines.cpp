@@ -39,8 +39,8 @@ void buildStablehloToLinalgPipeline(mlir::OpPassManager &pm) {
   addStablehloToLinalgBody(pm);
 }
 
-void buildFormGroupCandidatesPipeline(mlir::OpPassManager &pm) {
-  pm.addPass(createFormGroupCandidatesPass());
+void buildFormLogicalGroupsPipeline(mlir::OpPassManager &pm) {
+  pm.addPass(createFormLogicalGroupsPass());
 }
 
 #ifdef WAFER_ENABLE_SHARDY

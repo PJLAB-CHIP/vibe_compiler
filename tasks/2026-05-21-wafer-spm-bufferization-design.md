@@ -79,9 +79,9 @@ Pipeline position:
 
 输入：
 
-- transformation-local provisional 或已经 committed 的 `wafer.tile_region` candidate；在 R3.2d
-  中这是 scratch IR / cloned IR，rejected candidate 必须丢弃。SPM placement 不直接消费
-  target-abstract candidate，而消费 R3.2d 生成的 instruction-level IR with unplaced storage。
+- transformation-local 或已经 committed 的 `wafer.tile_region` IR；在 R3.2d
+  中这是 scratch IR / cloned IR，rejected tile-region IR 必须丢弃。SPM placement 不直接消费
+  target-abstract tile-region IR，而消费 R3.2d 生成的 instruction-level IR with unplaced storage。
 - layout planner 产生的 physical layout assignment 和 materialization demand。
 - instruction legalization / selection 产生的 concrete storage value、operand/result/temp/scratch/
   accumulator/psum/staging 分类、queue family、effect event 和 async policy。
@@ -154,9 +154,9 @@ SPM allocator 不按 op 名字猜 buffer，也不把一个 target-abstract op �
 
 如果某个 target-abstract op 无法产出可验证 instruction-level IR，不能让 SPM placement 用名字或示例
 shape 猜测；应先扩 op interface / instruction IR，或保持在更高层 IR。
-如果当前只有 R3.2a/R3.2b 的 group-level analysis summary，而没有 R3.2c provisional
-`wafer.tile_region` candidate，SPM placement 不能直接运行；如果只有 R3.2c target-abstract
-candidate 而没有 R3.2d instruction-level IR，SPM placement 同样不能运行。必须先把 candidate 降到
+如果当前只有 R3.2a/R3.2b 的 group-level analysis summary，而没有 R3.2c
+`wafer.tile_region` IR，SPM placement 不能直接运行；如果只有 R3.2c target-abstract
+tile-region IR 而没有 R3.2d instruction-level IR，SPM placement 同样不能运行。必须先降到
 `wafer.instr.*` / `wafer.storage.*`，让 storage values、lifetime 和 effect 都可由 IR 结构重算。
 
 `storage_size` 必须用统一 calculator 计算，至少包含：
@@ -218,7 +218,7 @@ lowering 下放置 `#spm` storage。它不负责全局寻找最佳 group，不�
 输出：
 
 ```text
-AllocationResult {
+SPMPlacementReport {
   status
   peak_spm
   allocation_summary
@@ -347,11 +347,11 @@ allocator 不做无限 repair；它只返回结构化失败，让 group/layout p
 
 ## 10. Commit Model
 
-V0 推荐 `allocate on provisional tile-region before commit`：
+V0 推荐 `allocate on tile-region before commit`：
 
 ```text
-logical group + tile/layout candidate
-  -> build provisional wafer.tile_region candidate
+logical group + tile/layout proposal
+  -> build wafer.tile_region IR
      (target-abstract compute/comm/load-store/layout/sync/tile_buffer/effect)
   -> legalize/select instruction-level wafer.instr.* with unplaced wafer.storage.*
   -> collect BufferDemand + liveness/effect from instruction-level IR
@@ -363,7 +363,7 @@ logical group + tile/layout candidate
 
 原因是 layout、SPM、tile shape 和 target-abstract op selection 强耦合。早期如果只看 logical
 group summary 或裸 tensor value，再把真实 allocation 推到更晚的 pass，容易让合法性承诺漂移；
-但把 rejected candidate 直接落入主 IR 再回滚也会污染 IR 边界。因此 instruction legalization /
+但把 rejected tile-region IR 直接落入主 IR 再回滚也会污染 IR 边界。因此 instruction legalization /
 selection 和 SPM placement 都应在 transformation-local / scratch `wafer.tile_region` 上运行；
 allocation 使用 instruction-level IR 的 storage / lifetime / effect 事实源，而不是 target-abstract
 op 的粗粒度 effect。
@@ -390,7 +390,7 @@ movement/compute lowering 之前把它转换成真实 storage representation。
 这个阶段不重新选择 layout，也不重新移动 materialization cut。它只消费 accepted `mem_layout`、
 allocation result 和 `PhysicalLayoutInfo`，把 IR 从 layout-aware buffer 层降到 storage/effect 层。
 如果某个 `!wafer.tile_buffer` 无法实现成 memref-compatible storage 或 explicit descriptor，说明
-前面的 layout/SPM candidate 不合法，应返回 planner，而不是让 LLVM lowering 才失败。
+前面的 layout/SPM plan 不合法，应返回 planner，而不是让 LLVM lowering 才失败。
 
 ## 12. IR 表达
 
@@ -433,13 +433,13 @@ SPM / tile-region verifier 至少检查：
 ## 14. 与 Layout / Group 的关系
 
 全局文档边界见 `tasks/2026-05-11-wafer-ai-compiler-architecture.md` 第 8 节。SPM allocation 只回答
-candidate tile-region 的 `#spm` placement 是否可行，并把失败原因返回 group/layout planner。
+tile-region IR 的 `#spm` placement 是否可行，并把失败原因返回 group/layout planner。
 闭环顺序：
 
 ```text
-candidate tile plan
+tile plan
   -> layout assignment
-  -> provisional wafer.tile_region candidate
+  -> wafer.tile_region IR
   -> instruction-level wafer.instr.* with unplaced wafer.storage.*
   -> instruction storage / buffer / effect demand
   -> SPM placement

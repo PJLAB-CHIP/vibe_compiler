@@ -12,7 +12,7 @@ class OpPassManager;
 namespace wafer {
 
 void buildStablehloToLinalgPipeline(mlir::OpPassManager &pm);
-void buildFormGroupCandidatesPipeline(mlir::OpPassManager &pm);
+void buildFormLogicalGroupsPipeline(mlir::OpPassManager &pm);
 
 #ifdef WAFER_ENABLE_SHARDY
 void buildStablehloShardingPropagationPipeline(mlir::OpPassManager &pm,

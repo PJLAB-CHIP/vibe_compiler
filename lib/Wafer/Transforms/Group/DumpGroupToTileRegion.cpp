@@ -1,4 +1,4 @@
-//===- DumpTileRegionCandidate.cpp - Dump Wafer tile-region candidates ---===//
+//===- DumpGroupToTileRegion.cpp - Dump group-to-tile-region lowering -----===//
 
 #include "Wafer/Transforms/Passes.h"
 
@@ -15,8 +15,10 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <string>
+
 namespace wafer {
-#define GEN_PASS_DEF_DUMPTILEREGIONCANDIDATEPASS
+#define GEN_PASS_DEF_DUMPGROUPTOTILEREGIONPASS
 #include "Wafer/Transforms/WaferPasses.h.inc"
 
 namespace {
@@ -30,11 +32,10 @@ static std::string getNearestSymbolName(mlir::Operation *op) {
   return "@<unknown>";
 }
 
-struct DumpTileRegionCandidatePass
-    : public impl::DumpTileRegionCandidatePassBase<
-          DumpTileRegionCandidatePass> {
-  using impl::DumpTileRegionCandidatePassBase<
-      DumpTileRegionCandidatePass>::DumpTileRegionCandidatePassBase;
+struct DumpGroupToTileRegionPass
+    : public impl::DumpGroupToTileRegionPassBase<DumpGroupToTileRegionPass> {
+  using impl::DumpGroupToTileRegionPassBase<
+      DumpGroupToTileRegionPass>::DumpGroupToTileRegionPassBase;
 
   void runOnOperation() final {
     llvm::DenseMap<mlir::Operation *, unsigned> groupOrdinals;
@@ -45,12 +46,21 @@ struct DumpTileRegionCandidatePass
       llvm::raw_string_ostream labelOs(label);
       labelOs << symbolName << "#" << ordinal;
 
-      TileRegionCandidate candidate;
-      if (mlir::failed(buildTileRegionCandidate(group, candidate))) {
-        signalPassFailure();
+      mlir::OwningOpRef<mlir::ModuleOp> loweredModule;
+      std::string failureReason;
+      if (mlir::failed(lowerGroupToTileRegionModule(group, loweredModule,
+                                                    &failureReason))) {
+        llvm::errs() << "wafer.group_to_tile_region group " << labelOs.str()
+                     << "\n";
+        llvm::errs() << "  failure "
+                     << (failureReason.empty()
+                             ? llvm::StringRef("group-to-tile-region lowering "
+                                               "failed")
+                             : llvm::StringRef(failureReason))
+                     << "\n";
         return;
       }
-      dumpTileRegionCandidate(candidate, labelOs.str(), llvm::errs());
+      dumpGroupToTileRegionModule(*loweredModule, labelOs.str(), llvm::errs());
     });
     markAllAnalysesPreserved();
   }

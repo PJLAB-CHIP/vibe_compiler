@@ -36,7 +36,7 @@ C ABI conversion 混在旧的聚合目录里。
 `lib/Wafer/Conversion` 当前按 conversion contract 分组：
 
 - `StableHLOToLinalg/`：frontend/local compute normalization 的 StableHLO-to-Linalg conversion target。
-- `WaferGroupToTileRegion/`：logical `wafer.group` 到 provisional `wafer.tile_region` candidate 的
+- `WaferGroupToTileRegion/`：logical `wafer.group` 到 `wafer.tile_region` IR 的
   conversion implementation。
 
 `lib/Wafer/Transforms` 只保留 transform pass 注册、dump/debug pass 和 pipeline glue。旧
@@ -49,7 +49,7 @@ C ABI conversion 混在旧的聚合目录里。
 - `wafer-opt` 当前注册 transform pass、conversion pass、内部/局部 named MLIR pipelines，并承载用户级
   `--program-pipeline=stablehlo-spmd*` program pipeline driver；conversion target 由
   `lib/Wafer/Conversion` 单独 owning，`WaferTransforms` 只链接使用。
-- 旧 unit/debug pass argument 已移除，并由 `test/Transforms/removed-provisional-passes.test`
+- 旧 unit/debug pass argument 已移除，并由 `test/Transforms/removed-legacy-debug-passes.test`
   负向覆盖。
 - 可选 StableHLO 依赖仍由 `WAFER_ENABLE_IMPORTER_DEPS` 控制；更细的 dependency target 可见范围由
   R0.3 单独收敛。

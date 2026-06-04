@@ -1,4 +1,4 @@
-// RUN: wafer-opt --wafer-dump-tile-region-candidate %s 2>&1 | FileCheck %s
+// RUN: wafer-opt --wafer-dump-group-to-tile-region %s 2>&1 | FileCheck %s
 
 module {
   func.func @matmul_bias_relu(
@@ -225,7 +225,7 @@ module {
   }
 }
 
-// CHECK-LABEL: wafer.tile_region.candidate group @matmul_bias_relu#0
+// CHECK-LABEL: wafer.group_to_tile_region group @matmul_bias_relu#0
 // CHECK: wafer.tile_region(
 // CHECK: wafer.load_tile
 // CHECK: !wafer.tile_buffer<tensor<4x8xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
@@ -240,15 +240,15 @@ module {
 // CHECK: wafer.compute.elementwise <max>
 // CHECK: wafer.store_tile
 // CHECK: wafer.tile_yield
-// CHECK-LABEL: wafer.tile_region.candidate group @two_independent_groups#0
+// CHECK-LABEL: wafer.group_to_tile_region group @two_independent_groups#0
 // CHECK: wafer.compute.elementwise <add>
-// CHECK-LABEL: wafer.tile_region.candidate group @two_independent_groups#1
+// CHECK-LABEL: wafer.group_to_tile_region group @two_independent_groups#1
 // CHECK: wafer.compute.elementwise <add>
-// CHECK-LABEL: wafer.tile_region.candidate group @empty_fill_group#0
+// CHECK-LABEL: wafer.group_to_tile_region group @empty_fill_group#0
 // CHECK: wafer.alloc_tile
 // CHECK: wafer.compute.fill
 // CHECK: wafer.store_tile
-// CHECK-LABEL: wafer.tile_region.candidate group @reduce_sum_group#0
+// CHECK-LABEL: wafer.group_to_tile_region group @reduce_sum_group#0
 // CHECK: tensor.extract
 // CHECK: wafer.compute.fill
 // CHECK: wafer.layout.materialize
@@ -258,28 +258,28 @@ module {
 // CHECK: wafer.layout.materialize
 // CHECK: #wafer.mem_layout<tensor>
 // CHECK: wafer.store_tile
-// CHECK-LABEL: wafer.tile_region.candidate group @tensor_movement_group#0
+// CHECK-LABEL: wafer.group_to_tile_region group @tensor_movement_group#0
 // CHECK: wafer.move.extract_slice
 // CHECK-SAME: offsets = array<i64: 2>
 // CHECK: wafer.move.insert_slice
 // CHECK-SAME: offsets = array<i64: 2>
 // CHECK: wafer.store_tile
-// CHECK-LABEL: wafer.tile_region.candidate group @tensor_rank_reduced_slice_group#0
+// CHECK-LABEL: wafer.group_to_tile_region group @tensor_rank_reduced_slice_group#0
 // CHECK: wafer.move.extract_slice
 // CHECK-SAME: sizes = array<i64: 1, 4>
 // CHECK: !wafer.tile_buffer<tensor<4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
 // CHECK: wafer.move.insert_slice
 // CHECK-SAME: sizes = array<i64: 1, 4>
 // CHECK: wafer.store_tile
-// CHECK-LABEL: wafer.tile_region.candidate group @tensor_reshape_group#0
+// CHECK-LABEL: wafer.group_to_tile_region group @tensor_reshape_group#0
 // CHECK: wafer.view.reshape
 // CHECK: wafer.view.reshape
 // CHECK: wafer.store_tile
-// CHECK-LABEL: wafer.tile_region.candidate group @passthrough_movement_group#0
+// CHECK-LABEL: wafer.group_to_tile_region group @passthrough_movement_group#0
 // CHECK: wafer.move.transpose
 // CHECK-SAME: permutation = array<i64: 1, 0>
 // CHECK: wafer.store_tile
-// CHECK-LABEL: wafer.tile_region.candidate group @collective_group#0
+// CHECK-LABEL: wafer.group_to_tile_region group @collective_group#0
 // CHECK: failure collective lowering requires placement/local-rank facts
-// CHECK-LABEL: wafer.tile_region.candidate group @static_slice_support_op#0
+// CHECK-LABEL: wafer.group_to_tile_region group @static_slice_support_op#0
 // CHECK: wafer.move.extract_slice

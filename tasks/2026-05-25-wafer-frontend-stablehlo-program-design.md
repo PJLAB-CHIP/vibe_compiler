@@ -386,7 +386,7 @@ framework capture program
        -> partitioned or replicated-local StableHLO / per-rank program verifier
   -> StableHLO / local compute normalization
   -> tensor collective normalization if collectives exist
-  -> wafer.group candidate
+  -> wafer.group logical group
   -> tile_region / resource / ABI / package gate
 ```
 
