@@ -138,7 +138,7 @@ boundary、tile shape、multi-stage schedule、SPM residency 或 C ABI emission 
 
 - `test/Tools/wafer-compile-stablehlo-reference.test`
 - `test/Spmd/shardy-program-bridge.mlir`
-- `test/Dialect/Wafer/Comm/invalid-comm-rank-group-size.mlir`
+- `test/Dialect/Wafer/Tile/Comm/invalid-comm-rank-group-size.mlir`
 - 历史 `test/Transforms/ring-all-gather-rank-group.mlir` 已随旧 ring lowering unit pass 链删除。
 
 2026-05-27 后续清理删除了旧的 SPMD verify flag、P2.S1 私有 attr emitter 和 StableHLO

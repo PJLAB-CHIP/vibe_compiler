@@ -36,6 +36,14 @@ PyTorch/XLA StableHLO Wafer program directory
 `wafer-propagate-stablehlo-sharding`、`wafer-lower-stablehlo-to-linalg` 和 R3.2a/b dump pass
 只是内部或局部测试入口，不是用户级编译流程。
 
+## 工程组织口径
+
+- `wafer` 保持单 dialect namespace，但 IR 定义、verifier 和 dialect tests 按 IR 层组织：
+  `Tensor`、`Tile`、`Resource`、`Instr`、`Runtime`、`Debug`、`Common`。
+- `WaferAnalysis` 只承载可从当前 IR 重算的 group analysis；`WaferTransforms` 只注册 transform pass /
+  pipeline glue；`WaferStableHLOToLinalg` 和 `WaferGroupToTileRegion` 在 `lib/Wafer/Conversion` 中按
+  source/target IR contract 单独 owning。
+
 ## 已完成链路
 
 | ID | 状态 | 设计来源 | 输入 | 输出 / 完成 gate |

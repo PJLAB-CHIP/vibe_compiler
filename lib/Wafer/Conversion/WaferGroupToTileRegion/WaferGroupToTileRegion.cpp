@@ -1,8 +1,8 @@
-//===- TileRegionCandidate.cpp - Provisional tile-region candidate -------===//
+//===- WaferGroupToTileRegion.cpp - Group to tile-region conversion -------===//
 
-#include "Wafer/Conversion/TileRegionCandidate/TileRegionCandidate.h"
+#include "Wafer/Conversion/WaferGroupToTileRegion/WaferGroupToTileRegion.h"
 
-#include "Wafer/Transforms/Group/LayoutPlanningAnalysis.h"
+#include "Wafer/Analysis/Group/LayoutPlanningAnalysis.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"

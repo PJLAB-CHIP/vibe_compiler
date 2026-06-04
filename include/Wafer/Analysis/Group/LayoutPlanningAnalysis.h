@@ -1,10 +1,10 @@
 //===- LayoutPlanningAnalysis.h - Group layout planning analysis -*- C++ -*-===//
 
-#ifndef WAFER_TRANSFORMS_GROUP_LAYOUTPLANNINGANALYSIS_H
-#define WAFER_TRANSFORMS_GROUP_LAYOUTPLANNINGANALYSIS_H
+#ifndef WAFER_ANALYSIS_GROUP_LAYOUTPLANNINGANALYSIS_H
+#define WAFER_ANALYSIS_GROUP_LAYOUTPLANNINGANALYSIS_H
 
 #include "Wafer/IR/WaferDialect.h"
-#include "Wafer/Transforms/Group/TilingDemandAnalysis.h"
+#include "Wafer/Analysis/Group/TilingDemandAnalysis.h"
 
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/raw_ostream.h"
@@ -71,4 +71,4 @@ void dumpGroupLayoutPlan(const GroupLayoutPlan &plan,
 
 } // namespace wafer
 
-#endif // WAFER_TRANSFORMS_GROUP_LAYOUTPLANNINGANALYSIS_H
+#endif // WAFER_ANALYSIS_GROUP_LAYOUTPLANNINGANALYSIS_H

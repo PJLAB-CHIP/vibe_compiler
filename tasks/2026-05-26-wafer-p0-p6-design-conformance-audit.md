@@ -13,9 +13,9 @@ gate 只证明了局部 fixture 可以运行，尚未证明设计文档要求的
 R0.1 审计时，工程组织也没有按
 `tasks/2026-05-11-wafer-ai-compiler-architecture.md` 第 7 节收敛：frontend lowering、
 group/tile materialization、layout/SPM/DDR、communication 和旧 ABI issue-op lowering 基本都堆在
-`lib/Wafer/Transforms`。R0.2 已恢复源码 ownership 边界；R1.1 已把 ODS、op verifier 和 dialect
-tests 按 op family 拆开；R1.2/R1.3 曾补 interface/resource 查询合同和 local compute
-stage-connection gate；2026-06-02 后历史 stage-connection gate 和旧 unit/debug pass 链已删除。
+`lib/Wafer/Transforms`。R0.2 已恢复源码 ownership 边界；R1.1 之后 ODS、op verifier 和 dialect
+tests 已按 IR 层组织；R1.2/R1.3 曾补 interface/resource 查询合同和 local compute stage-connection
+gate；2026-06-02 后历史 stage-connection gate 和旧 unit/debug pass 链已删除。
 
 2026-06-01 复查进一步确认：历史 P2.S1 路线若把 sharding facts 写成 `wafer.spmd.*` 或私有
 sidecar，不是主线 SPMD program contract；历史 StableHLO collective 直降 `wafer.comm` 的 pass
@@ -38,8 +38,8 @@ group/tiling。旧 PyTorch/XLA post-SPMD export 测试入口已删除；它不�
 
 | 范围 | 当前实现 | 与设计文档的偏差 |
 | --- | --- | --- |
-| P0 工程/依赖/组织 | CMake、`wafer-opt`、lit/gtest、dependency pin/layering validation 已有；R0.2 已把源码 ownership 拆到 Frontend / IR / stage-specific Transforms / Conversion / ABI；2026-06-02 后旧 Conversion pass target 已删除；R0.3 已记录并验证依赖层级边界；R1.1 已恢复 IR op-family 文件边界 | 最小工程入口可用，不代表后端链路完成 |
-| P1 Wafer IR verifier | ODS/type/attr/op/verifier 正负例覆盖了核心基础实现；ODS、verifier 和 dialect tests 已按 op family 拆开；R1.2 已补 interface/resource/effect 查询合同；历史 R1.3 local compute stage-connection gate 已删除 | dialect verifier 的孤立负例仍会使用 `builtin.unrealized_conversion_cast` 构造非法边界值；communication bridge 的 visible cast 仍未清理；placed instruction-level 主链路仍未闭环 |
+| P0 工程/依赖/组织 | CMake、`wafer-opt`、lit/gtest、dependency pin/layering validation 已有；源码 ownership 拆到 Frontend / IR / Analysis / Transforms / Conversion / ABI；旧聚合 Conversion pass target 已删除；R0.3 已记录并验证依赖层级边界；IR 文件和测试已按层组织 | 最小工程入口可用，不代表后端链路完成 |
+| P1 Wafer IR verifier | ODS/type/attr/op/verifier 正负例覆盖了核心基础实现；ODS、verifier 和 dialect tests 已按 IR 层组织；R1.2 已补 interface/resource/effect 查询合同；历史 R1.3 local compute stage-connection gate 已删除 | dialect verifier 的孤立负例仍会使用 `builtin.unrealized_conversion_cast` 构造非法边界值；communication bridge 的 visible cast 仍未清理；placed instruction-level 主链路仍未闭环 |
 | P2 frontend / local compute | StableHLO textual lowering 到 linalg/tensor/arith/math 子集已有，部分 transformer staged form 有 FileCheck | `wafer-compile-stablehlo` 早期只是 synthetic 最小验证 tool；PyTorch/XLA program directory capture 已补入 P2.F1，但 ConstantLike/storage contract 仍未闭环；部分 slice 只是 frontend dataflow fixture，不是完整 frontend program pipeline |
 | P3 single-tile local compute | 旧 group formation、root tile exploration、single-tile materialization、SPM allocation、DDR external binding、C ABI issue-op unit pass 链已删除；保留 ABI descriptor / manifest tool-unit 覆盖 | group planner、root tile planning、SPM/DDR/instruction-level lowering、C ABI emission 和 IR-derived package manifest 均需按真实 program chain 恢复 |
 | P4 multi-tile no communication | placement map verifier、multi-tile no-comm outlining已有 | multi-tile materialization 克隆同一 whole-tensor tile_region，最后用最后一个 tile_region result 替换 group result；没有真实 local shard slicing、per-rank output merge 或 runtime launch binding；manifest placement metadata 尚未由 IR-derived package path 生成 |
@@ -58,7 +58,7 @@ group/tiling。旧 PyTorch/XLA post-SPMD export 测试入口已删除；它不�
    fixture 出口。
 5. R0.1 时源码组织没有跟随设计文档的 IR stage / op prefix 边界演进，导致 frontend、planner、
    materialization、resource planning、communication 和 ABI lowering 的 ownership 被同一个
-   `Transforms` 聚合目录掩盖。R0.2 已修正源码 ownership；R1.1 已修正 op-family IR 文件拆分。
+   `Transforms` 聚合目录掩盖。R0.2 已修正源码 ownership；当前 IR 文件和 dialect tests 已按 IR 层组织。
 6. 个别任务口径把“当前下游 lowering/resource/runtime 没实现”混成了“上游语义不支持”。后续恢复
    必须按硬件能力和 IR contract 判断支持范围；当前实现缺口应落成下游恢复任务或 IR 扩展，不能
    反向污染 frontend、SPMD、group 或 placement 语义。

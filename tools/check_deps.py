@@ -43,7 +43,7 @@ STABLEHLO_API_NEEDLES = [
 
 STABLEHLO_API_ALLOWED_PREFIXES = [
     "include/Wafer/Frontend",
-    "lib/Wafer/Transforms/StableHLOToLinalg",
+    "lib/Wafer/Conversion/StableHLOToLinalg",
     "tools/wafer-opt",
     "tools/wafer-compile-stablehlo",
 ]
@@ -259,22 +259,36 @@ def check_cmake_target_visibility() -> None:
         raise RuntimeError(
             "WaferTransforms must not expose StablehloOps as a PUBLIC dependency"
         )
-    if "target_link_libraries(WaferTransforms PRIVATE StablehloOps)" not in transforms_cmake:
-        raise RuntimeError("WaferTransforms must keep StablehloOps as a PRIVATE dependency")
+    if "StablehloOps" in transforms_cmake:
+        raise RuntimeError("WaferTransforms must not link StablehloOps")
     for needle in [
         "target_compile_definitions(WaferTransforms PRIVATE WAFER_ENABLE_SHARDY=1)",
         "target_link_libraries(WaferTransforms PRIVATE ShardySdyDialect)",
     ]:
         check_text_contains(transforms_cmake_path, needle)
 
+    conversion_cmake_path = REPO_ROOT / "lib" / "Wafer" / "Conversion" / "CMakeLists.txt"
+    conversion_cmake = conversion_cmake_path.read_text(encoding="utf-8")
+    if re.search(
+        r"target_link_libraries\(\s*WaferStableHLOToLinalg\s+PUBLIC\s+StablehloOps",
+        conversion_cmake,
+    ):
+        raise RuntimeError(
+            "WaferStableHLOToLinalg must not expose StablehloOps as a PUBLIC dependency"
+        )
+    if (
+        "target_link_libraries(WaferStableHLOToLinalg PRIVATE StablehloOps)"
+        not in conversion_cmake
+    ):
+        raise RuntimeError(
+            "WaferStableHLOToLinalg must keep StablehloOps as a PRIVATE dependency"
+        )
+
     cmake_paths = [
+        REPO_ROOT / "lib" / "Wafer" / "Analysis" / "CMakeLists.txt",
         REPO_ROOT / "lib" / "Wafer" / "IR" / "CMakeLists.txt",
         REPO_ROOT / "lib" / "Wafer" / "ABI" / "CMakeLists.txt",
     ]
-    future_conversion_cmake = REPO_ROOT / "lib" / "Wafer" / "Conversion" / "CMakeLists.txt"
-    if future_conversion_cmake.exists():
-        cmake_paths.append(future_conversion_cmake)
-
     for cmake_path in cmake_paths:
         text = cmake_path.read_text(encoding="utf-8")
         for needle in [

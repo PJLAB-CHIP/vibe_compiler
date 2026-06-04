@@ -2,7 +2,7 @@
 
 #include "Wafer/Transforms/Passes.h"
 
-#include "Wafer/Conversion/TileRegionCandidate/TileRegionCandidate.h"
+#include "Wafer/Conversion/WaferGroupToTileRegion/WaferGroupToTileRegion.h"
 #include "Wafer/IR/WaferDialect.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"

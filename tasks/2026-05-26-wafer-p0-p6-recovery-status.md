@@ -45,9 +45,9 @@ pass/op/test 覆盖。
 P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、verifier、pass 和 最小验证 能跑，
 但没有满足架构文档按 IR stage 闭环的完成口径：
 
-- R0.2 已把源码 ownership 拆到 `Frontend`、`IR`、stage-specific `Transforms`、`Conversion` 和 `ABI`
-  边界；R1.1 已把 `wafer` dialect 内部 ODS、op verifier 和 dialect tests 按 op family 拆开。
-- `WaferOps.td` 现在只作为 TableGen 聚合入口，具体 op 定义在 `include/Wafer/IR/Ops/*Ops.td`；
+- R0.2 已把源码 ownership 拆到 `Frontend`、`IR`、`Analysis`、`Transforms`、`Conversion` 和 `ABI`
+  边界；R1.1 之后又把 `wafer` dialect 内部 ODS、op verifier 和 dialect tests 按 IR 层收口。
+- `WaferOps.td` 现在只作为 TableGen 聚合入口，具体 op 定义在 `include/Wafer/IR/{Tensor,Tile,Resource,Instr,Runtime,Debug}/*Ops.td`；
   `WaferDialect.cpp` 只保留 dialect/attr/type/op 注册和 `TileBufferType` verifier。
 - 历史 local integration gate 曾把 `wafer-opt` IR FileCheck 和 fixed manifest/C stub fixture 放在同一
   测试文件里；这些 fixed emitter 和测试拼接已删除，当前 integration 只保留 IR pipeline coverage。
@@ -61,8 +61,8 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 
 - 建立可配置、可测试的 MLIR 工程入口，包含 `wafer-opt`、lit/FileCheck、gtest 和固定依赖版本。
 - StableHLO/Shardy/importer/runtime 依赖按层隔离；importer-only 依赖不能成为后端 textual tests 的硬依赖。
-- 源码按架构文档第 7 节组织：`Frontend`、`IR`、`Transforms`、`Conversion`、`ABI`、launch/runtime
-  ownership 清晰；一个 `wafer` dialect namespace 内按 op family 拆 ODS、verifier 和测试。
+- 源码按架构文档第 7 节组织：`Frontend`、`IR`、`Analysis`、`Transforms`、`Conversion`、`ABI`、
+  launch/runtime ownership 清晰；一个 `wafer` dialect namespace 内按 IR 层拆 ODS、verifier 和测试。
 - 不把本机路径、checkout path、第三方 C++ API 名或临时 build override 写成 IR contract。
 
 当前实现：
@@ -71,9 +71,10 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   `tools/check_deps.py` 和 bootstrap 脚本。
 - 有 `WAFER_ENABLE_IMPORTER_DEPS` 开关、disabled importer 最小验证，以及 LLVM/MLIR、StableHLO、
   Shardy、OpenXLA/XLA、googletest public submodule checkout 和 OpenXLA stack 固定版本检查。
-- R0.2 后源码曾使用 `include/Wafer/Frontend`、`include/Wafer/IR`、`include/Wafer/Conversion`、
-  `lib/Wafer/IR`、stage-specific `lib/Wafer/Transforms/*` 和 `lib/Wafer/Conversion`；2026-06-02
-  清理后旧 `WaferConversion` pass target 已删除。
+- 当前源码使用 `include/Wafer/Frontend`、`include/Wafer/IR`、`include/Wafer/Analysis`、
+  `include/Wafer/Conversion`、`lib/Wafer/IR`、`lib/Wafer/Analysis`、`lib/Wafer/Transforms` 和
+  `lib/Wafer/Conversion`；旧聚合 `WaferConversion` pass target 已删除，conversion 按 source/target
+  IR contract 建 target。
 - `WaferTransforms` 只注册当前仍成立的 transform pass；旧 C ABI issue-op lowering 和 `WaferConversion`
   pass target 已删除，后续按 placed instruction-level IR contract 重建。
 - R0.3 后 core compiler、frontend/importer、runtime/driver 和 test tools 的 target 可见范围记录在
@@ -81,9 +82,9 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - Shardy/SDY 公共 dialect 与 import/export/propagation passes 已通过 Wafer 顶层 CMake shim 复用
   同一套固定版本 LLVM/MLIR/StableHLO 编译到 `shardy-sdy-opt`；不再以 Shardy standalone Bazel
   workspace 作为 Wafer dependency 编译验证。
-- R1.1 后 `include/Wafer/IR/Ops` 承载 group、tile_region、layout、SPM、DDR、placement、ABI、
-  compute、comm、sync 和 launch op family 的 ODS；`lib/Wafer/IR/Ops` 承载对应 verifier；
-  `test/Dialect/Wafer` 按相同 family 分目录。
+- Wafer IR ODS 和 verifier 按层组织：`Tensor` 承载 group/tensor collective，`Tile` 承载
+  tile_region/layout/compute/move/view/comm，`Resource` 承载 SPM/DDR/placement，`Instr` 承载 sync，
+  `Runtime` 承载 launch，`Debug` 承载 `wafer.abi.*` 调试 IR；`test/Dialect/Wafer` 按相同层级分目录。
 - R1.2 后 `WaferTilingInterface`、`WaferLayoutOpInterface`、
   `WaferLayoutMaterializationOpInterface` 和 `WaferResourceEffectInterface` 不再只是 marker；
   group、layout/materialize、SPM、DDR、compute、comm、sync 和 ABI op 可通过接口查询边界值、
@@ -114,7 +115,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   `tasks/2026-05-26-wafer-source-organization-recovery.md`。
 - R0.3：已完成依赖层级清单、检查和统一 Shardy CMake 编译验证目标；记录见
   `tasks/2026-05-26-wafer-dependency-layering-recovery.md`。
-- R1.1：已完成 Wafer IR op-family 文件边界拆分，并由 `tools/check_ir_organization.py` 检查。
+- R1.1：已完成 Wafer IR layer-based 文件边界拆分，并由 `tools/check_ir_organization.py` 检查。
 
 ## P1 Wafer IR Skeleton 和 Verifier
 
@@ -141,8 +142,8 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 
 缺口：
 
-- ODS、op verifier 和 dialect tests 已按 op family 拆文件；共享 verifier helper 集中在
-  `lib/Wafer/IR/Ops/OpVerifierUtils.*`。
+- ODS、op verifier 和 dialect tests 已按 IR 层拆文件；共享 verifier helper 集中在
+  `lib/Wafer/IR/Common/OpVerifierUtils.*`。
 - interface/resource/effect 已能作为 planner/verifier 的结构化查询入口，但还没有被 R3 的
   closed-loop group planner、SPM allocation / DDR resource planning 和 placed instruction-level lowering
   全量消费。
@@ -153,7 +154,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 
 恢复任务：
 
-- R1.1：已完成；按 op family 拆 ODS、C++ verifier 和测试目录，并保持一个 `wafer` dialect namespace。
+- R1.1：已完成；ODS、C++ verifier 和测试目录已按 IR 层组织，并保持一个 `wafer` dialect namespace。
 - R1.2：已完成；interface/effect/resource 已从占位定义扩成 planner/resource/verifier 可调用的合同。
 - R1.3：历史完成项；local compute stage-connection tests 已随旧 pass 链删除，后续由 R3 重新建立
   真实 program chain gate。
@@ -409,7 +410,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 
 | ID | 状态 | 理由 |
 | --- | --- | --- |
-| P0 | 骨架 | 工程入口存在，源码 ownership、依赖层级边界和 IR op-family 文件边界已由 R0.2/R0.3/R1.1 恢复；仍不代表 frontend/runtime/package 主路径完成 |
+| P0 | 骨架 | 工程入口存在，源码 ownership、依赖层级边界和 IR layer-based 文件边界已由 R0.2/R0.3/R1.1 恢复；仍不代表 frontend/runtime/package 主路径完成 |
 | P1 | 骨架 | 核心 op/type/verifier 基础实现存在，interface/effect/resource 已恢复；历史 local compute stage-connection gate 已删除，placed instruction-level 主链路和 communication cast bridge 仍未闭环 |
 | P2 | 骨架 | StableHLO textual lowering、frontend program verifier、PyTorch/XLA program directory capture、SDY program bridge、P2.S1 Shardy propagation stage gate、P2.S2 Wafer-owned SPMD partition 和 R2.4 tensor collective handoff 已恢复；dynamic/mask/constant-storage、group/resource/package 和 physical schedule 仍未闭环 |
 | P3 | 骨架 | 旧 single-tile local unit path 已删除；group/resource/C ABI/package 主链路未闭环 |

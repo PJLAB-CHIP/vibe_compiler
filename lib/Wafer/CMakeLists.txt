@@ -1,5 +1,7 @@
 add_subdirectory(ABI)
 add_subdirectory(Frontend)
 add_subdirectory(IR)
+add_subdirectory(Analysis)
+add_subdirectory(Conversion)
 add_subdirectory(Transforms)
 add_subdirectory(Pipelines)

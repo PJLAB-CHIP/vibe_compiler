@@ -698,14 +698,28 @@ include/Wafer/
   IR/
     WaferBase.td
     WaferDialect.td
-    WaferGroupOps.td
-    WaferTileRegionOps.td
-    WaferLayoutOps.td
-    WaferSPMOps.td
-    WaferComputeOps.td
-    WaferCommOps.td
-    WaferSyncOps.td
-    WaferLaunchOps.td
+    WaferOps.td
+    Tensor/
+      GroupOps.td
+      TensorCollectiveOps.td
+    Tile/
+      TileRegionOps.td
+      LayoutOps.td
+      ComputeOps.td
+      MoveOps.td
+      ViewOps.td
+      CommOps.td
+    Resource/
+      SPMOps.td
+      DDROps.td
+      PlacementOps.td
+    Instr/
+      SyncOps.td
+    Runtime/
+      LaunchOps.td
+    Debug/
+      AbiOps.td
+  Analysis/
   Transforms/
   Conversion/
 
@@ -718,16 +732,16 @@ lib/Wafer/
     WaferDialect.cpp
     WaferTypes.cpp
     WaferAttrs.cpp
-    WaferGroupOps.cpp
-    WaferTileRegionOps.cpp
-    WaferLayoutOps.cpp
-    WaferSPMOps.cpp
-    WaferComputeOps.cpp
-    WaferCommOps.cpp
-    WaferSyncOps.cpp
-    WaferLaunchOps.cpp
+    Tensor/
+    Tile/
+    Resource/
+    Instr/
+    Runtime/
+    Debug/
+    Common/
+  Analysis/
+    Group/
   Transforms/
-    StableHLOToLinalg/
     GroupFormation/
     GroupScheduling/
     TileRegionMaterialization/
@@ -735,11 +749,11 @@ lib/Wafer/
     LayoutMaterialization/
     LaunchOutlining/
   Conversion/
-    LinalgToWafer/
-    WaferGroupToSCF/
-    WaferSPMToMemRef/
+    StableHLOToLinalg/
+    WaferGroupToTileRegion/
+    WaferInstructionLegalization/
+    WaferSPMPlacement/
     WaferToLLVM/
-    WaferToCABI/
 
 tools/
   wafer-opt/

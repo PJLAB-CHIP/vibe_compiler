@@ -3,16 +3,14 @@ add_mlir_library(WaferTransforms
   Group/DumpTilingDemand.cpp
   Group/DumpTileRegionCandidate.cpp
   Group/FormGroupCandidates.cpp
-  Group/LayoutPlanningAnalysis.cpp
-  ../Conversion/TileRegionCandidate/TileRegionCandidate.cpp
-  Group/TilingDemandAnalysis.cpp
-  StableHLOToLinalg/LegalizeStablehloToLinalg.cpp
-  StableHLOToLinalg/NormalizeStablehloCollectives.cpp
   SPMD/ApplyDefaultSpmdSharding.cpp
   Passes.cpp
 
   LINK_LIBS PUBLIC
+  WaferAnalysis
+  WaferGroupToTileRegion
   WaferIR
+  WaferStableHLOToLinalg
   MLIRArithDialect
   MLIRAsyncDialect
   MLIRFuncDialect
@@ -27,15 +25,6 @@ add_mlir_library(WaferTransforms
 
 target_include_directories(obj.WaferTransforms PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(WaferTransforms PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-
-if(WAFER_ENABLE_IMPORTER_DEPS)
-  target_compile_definitions(obj.WaferTransforms PRIVATE WAFER_ENABLE_STABLEHLO=1)
-  target_compile_definitions(WaferTransforms PRIVATE WAFER_ENABLE_STABLEHLO=1)
-  target_link_libraries(obj.WaferTransforms PRIVATE StablehloOps)
-  target_link_libraries(obj.WaferTransforms PRIVATE StablehloLinalgTransforms)
-  target_link_libraries(WaferTransforms PRIVATE StablehloOps)
-  target_link_libraries(WaferTransforms PRIVATE StablehloLinalgTransforms)
-endif()
 
 if(WAFER_ENABLE_SPMD_PARTITIONER_DEPS)
   target_compile_definitions(obj.WaferTransforms PRIVATE WAFER_ENABLE_SHARDY=1)

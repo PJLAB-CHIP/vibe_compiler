@@ -1,7 +1,7 @@
-//===- TileRegionCandidate.h - Provisional tile-region candidate -*- C++ -*-===//
+//===- WaferGroupToTileRegion.h - Group to tile-region conversion -*- C++ -*-===//
 
-#ifndef WAFER_CONVERSION_TILEREGIONCANDIDATE_TILEREGIONCANDIDATE_H
-#define WAFER_CONVERSION_TILEREGIONCANDIDATE_TILEREGIONCANDIDATE_H
+#ifndef WAFER_CONVERSION_WAFERGROUPTOTILEREGION_WAFERGROUPTOTILEREGION_H
+#define WAFER_CONVERSION_WAFERGROUPTOTILEREGION_WAFERGROUPTOTILEREGION_H
 
 #include "Wafer/IR/WaferDialect.h"
 
@@ -29,4 +29,4 @@ void dumpTileRegionCandidate(const TileRegionCandidate &candidate,
 
 } // namespace wafer
 
-#endif // WAFER_CONVERSION_TILEREGIONCANDIDATE_TILEREGIONCANDIDATE_H
+#endif // WAFER_CONVERSION_WAFERGROUPTOTILEREGION_WAFERGROUPTOTILEREGION_H

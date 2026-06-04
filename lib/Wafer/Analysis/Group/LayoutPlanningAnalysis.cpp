@@ -1,6 +1,6 @@
 //===- LayoutPlanningAnalysis.cpp - Wafer group layout planning analysis --===//
 
-#include "Wafer/Transforms/Group/LayoutPlanningAnalysis.h"
+#include "Wafer/Analysis/Group/LayoutPlanningAnalysis.h"
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "llvm/ADT/DenseMap.h"
