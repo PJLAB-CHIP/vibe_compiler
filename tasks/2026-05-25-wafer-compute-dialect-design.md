@@ -2,16 +2,17 @@
 
 日期：2026-05-25
 
-状态：设计草案；2026-05-25 边界收口；2026-06-04 对齐 hardware recipe expansion 先于 SPM allocation
+状态：设计草案；2026-05-25 边界收口；2026-06-04 对齐 instruction-level Wafer IR 先于 SPM placement
 
 本文定义 Wafer 后端中 target-abstract compute / movement IR 的边界。它连接
 `wafer.group` 产生的 tile-local tensor program、layout materialization / SPM bufferization，
 以及后续 instruction / C ABI lowering。
 
 本文中的 `wafer.compute` 是正式 IR contract。它表达“这个 tile-local op 已经选择了某类
-Wafer 目标实现族，并能提供 layout、effect 和 hardware recipe legality”。它仍然不表达 raw packet
+Wafer 目标实现族，并能提供 layout、effect 和 instruction family legality”。它仍然不表达 raw packet
 bitfield、SPM physical offset、worker window、runtime launch 或 host ABI。最终 SPM storage demand
-不是 target-abstract op 自身的属性，而是 selected hardware recipe / instruction storage plan 的结果。
+不是 target-abstract op 自身的属性，而是 R3.2d 产出的 instruction-level `wafer.instr.*` /
+`wafer.storage.*` IR 的结果。
 
 本文只负责 target-abstract compute/movement op 的语义、interface、effect、issue/drain 和
 lowering legality。它不重新做 group formation、tile search、layout assignment、SPM/DDR
@@ -23,9 +24,10 @@ allocation、communication collective lowering 或 launch/package emission。
 
 - 给 layout planner 一个稳定查询入口：每个 op 明确 operand/result 允许的 physical layout、
   preferred layout、materialization cost 和组合合法性。
-- 给 hardware recipe expansion 一个稳定入口：每个 op 能枚举或选择可验证的 CT/NE/TDMA/RDMA/WDMA
-  recipe；recipe 再报告 input/output/temp/scratch/accumulator/psum demand，以及 effect /
-  async lifetime 对 buffer reuse 的约束。
+- 给 instruction legalization / selection 一个稳定入口：每个 op 能提供可验证的 CT/NE/TDMA/RDMA/WDMA
+  instruction family legality；R3.2d 再生成 instruction-level IR，并显式报告
+  input/output/temp/scratch/accumulator/psum storage，以及 effect / async lifetime 对 buffer reuse
+  的约束。
 - 给 hardware lowering 一个稳定 legality target：CT、NE、native reduce、RDMA、WDMA、TDMA
   等 target family 的合法性先在 `wafer.compute` / movement 层被验证，再进入更低层发射。
 - 保留 issue/drain 优化空间：IR 不在每个 compute/movement op 后隐式插入 wait。
@@ -46,10 +48,9 @@ allocation、communication collective lowering 或 launch/package emission。
 scheduled wafer.group tensor body
   -> target-abstract tile_region IR with wafer.compute / movement ops
   -> layout materialization and accepted !wafer.tile_buffer values
-  -> hardware recipe / instruction storage plan
-  -> SPM bufferization and tile buffer storage realization
-  -> lower-level instruction/runtime-form Wafer ops
-  -> LLVM call to Wafer C ABI or package/runtime emission
+  -> instruction-level wafer.instr.* IR with unplaced wafer.storage.*
+  -> same instruction-level IR after SPM placement
+  -> codegen emission to Wafer C ABI / packet / package metadata
 ```
 
 各层表示：
@@ -57,16 +58,45 @@ scheduled wafer.group tensor body
 | 层次 | op 形态 | value 形态 | 责任 |
 | --- | --- | --- | --- |
 | scheduled group | `linalg.*` / `tensor.*` / `scf.*` | tensor SSA value | 表达数学语义、tile-local dataflow 和 traversal，不选硬件实现 |
-| target-abstract compute | `wafer.compute.*` 和 target-abstract movement op | tensor SSA value | 选择目标实现族，提供 layout/resource/lowering interface，不绑定 storage |
+| target-abstract compute | `wafer.compute.*` 和 target-abstract movement op | tensor SSA value 或 `!wafer.tile_buffer` | 选择目标实现族，提供 layout/resource/lowering interface，不绑定具体 storage placement |
 | accepted layout | 同一类 compute/movement op | `!wafer.tile_buffer<shape,dtype,mem_layout,space>` | 验证 physical layout，显式插入 `wafer.layout.materialize` |
-| hardware recipe | address-free CT/NE/TDMA/RDMA/WDMA/DTE recipe | concrete storage value graph，但无 SPM offset | 选择一组可发射硬件指令方案，列出 storage values、queue、temp/psum/staging、alias、effect 和 storage-size policy |
-| storage-realized | lower-level Wafer op | `memref`、flat storage value 或 descriptor | 具备 address/range/stride/descriptor，可进入 instruction/runtime lowering |
-| launch/ABI | LLVM / `wafer.launch` | concrete ABI arg | 调用 Wafer C ABI、发 package metadata、连接 host runtime |
+| instruction-level | `wafer.instr.*` | unplaced `wafer.storage.*` SSA value | 选择 CT/NE/TDMA/RDMA/WDMA/DTE 指令形态，列出 storage values、queue、temp/psum/staging、alias、effect 和 storage-size policy，不含 SPM offset |
+| placed instruction-level | 同一 `wafer.instr.*` | placed `wafer.storage.*`、`memref`、flat storage value 或 descriptor | 具备 SPM offset/range/bank、stride/descriptor，可进入 codegen emission |
+| launch/ABI emission | LLVM / C call / package metadata | concrete ABI arg | 调用 Wafer C ABI、发 package metadata、连接 host runtime；不作为主线 IR 层 |
 
 因此，`wafer.compute.gemm` 这类 op 在不同阶段可以被 type conversion 改写 operand/result type，
 但它的 semantic contract 仍是同一个：本 tile 内的 GEMM target implementation。若某个阶段需要
 的信息无法由当前 IR、type、interface 或 verifier 推出，应扩 op/type/interface，而不是在 pass
 side table 中保留影子计划。
+
+### 2.1 R3.2d Pipeline Contract
+
+```text
+Pipeline position:
+- Upstream artifact / IR:
+  R3.2c provisional `wafer.tile_region` candidate，内部包含 accepted layout 的
+  `!wafer.tile_buffer`、`wafer.compute.*`、`wafer.move.*`、`wafer.layout.materialize`、
+  load/store boundary 和 view/alias relation。
+- Current stage responsibility:
+  对 target-abstract compute/movement/layout/load/store op 做 Wafer instruction legalization /
+  selection，改写或构造 instruction-level `wafer.instr.*`，并显式生成 unplaced
+  `wafer.storage.*` SSA value、queue/effect、temp/psum/staging、alias/view 和 storage-size policy。
+- Output artifact / IR:
+  instruction-level Wafer IR with unplaced storage，或结构化 failure reason。
+- Downstream consumer:
+  R3.2e SPM placement、R3.2f DDR/resource legality、R3.2g closed-loop planner，以及 R3.6
+  codegen emission。
+- User-level driver / named pipeline:
+  主线仍从 `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 进入 R3.1/R3.2；
+  R3.2d 可提供局部 dump / lit gate，但不能成为用户级 compile flow。
+- Explicit non-goals:
+  不决定 group boundary、tile shape、layout assignment、SPM offset、DDR BO binding、ABI call
+  symbol 或 packet field。
+- Completion gate:
+  对 R3.2c 已支持的 compute/movement/view family 生成 verifier-legal instruction-level IR；
+  unsupported hardware instruction form 必须结构化失败，不能让 SPM placement 从 target-abstract op
+  猜 storage demand。
+```
 
 ## 3. Op 家族
 
@@ -153,9 +183,9 @@ recv chunk 与 accumulator 的本地累计步骤；`wafer.compute.reduce` 仍只
 - output dtype、init value 和 NaN/overflow 等细节如果会影响语义，应保留在 op contract 中，而不是
   留给 wrapper 默认值。当前 tile-region candidate lowering 从 scalar-constant `linalg.fill` out
   恢复 `init_value` attr；若 init 是 group boundary scalar，则作为 `wafer.compute.reduce` 的
-  scalar init operand 保留 SSA 关系。`wafer.abi.reduce` 当前仍要求 issue-time `init_value` attr；
-  动态 init 的 ABI lowering 需要在 R3.6 明确拆成 native reduce + supported scalar combine，或扩展
-  wrapper contract，不能在 R3.2C 丢失语义。
+  scalar init operand 保留 SSA 关系。R3.6 codegen emission 如果目标 wrapper 仍只接受 issue-time
+  `init_value` 参数，必须把动态 init 明确拆成 native reduce + supported scalar combine，或扩展
+  wrapper contract，不能在 R3.2c 丢失语义。
 
 ### 3.4 Movement Ops
 
@@ -186,7 +216,7 @@ movement op 的合同：
   如果 reshape 需要 physical layout change，必须使用 explicit materialization/movement op。
 - RDMA 方向是 `#ddr -> #spm`，WDMA 方向是 `#spm -> #ddr`。TDMA / local movement 只在 tile-local
   memory 或 verifier 允许的 address domain 内工作。
-- stride 和 byte count 的单位在 storage-realized 层必须明确。上层 tensor stride 是 element stride，
+- stride 和 byte count 的单位在 placed instruction/storage 层必须明确。上层 tensor stride 是 element stride，
   lower 到 DMA/TDMA/DTE descriptor 前必须转换成 byte stride。
 
 ## 4. Interfaces
@@ -201,14 +231,14 @@ movement op 的合同：
 getComputeKind()
 verifySemanticOperandsAndResults()
 getLoweringFamilies(target)
-enumerateHardwareRecipes(tileShape, layoutAssignment, target)
-verifyRecipeLegality(recipe, target)
+getInstructionFamilies(tileShape, layoutAssignment, target)
+verifyInstructionLegality(instructionFamily, operands, results, target)
 getAsyncLoweringPolicy(target)
 ```
 
-它回答“这个 op 作为 tile-local compute 是什么，以及有哪些可验证硬件 recipe”。它不回答
+它回答“这个 op 作为 tile-local compute 是什么，以及有哪些可验证硬件 instruction family”。它不回答
 “最终 packet 每个 bit 怎么写”，也不直接替 SPM allocator 给出唯一 storage demand；storage demand
-属于 selected recipe。
+属于 R3.2d 生成的 instruction-level IR。
 
 ### 4.2 `WaferLayoutOpInterface`
 
@@ -261,7 +291,7 @@ Accepted layout verifier：
 - loop-carried buffer 的 entry/yield layout 一致，除非 loop body 内有显式 materialization。
 - boundary load/store 的 external layout contract 与 host/runtime 或 package metadata 一致。
 
-Storage-realized / instruction-form verifier：
+Placed instruction-level verifier：
 
 - CT、NE、TDMA operand 是 SPM address 或 descriptor；RDMA source 是 DDR、destination 是 SPM；
   WDMA source 是 SPM、destination 是 DDR。
@@ -283,11 +313,10 @@ Storage-realized / instruction-form verifier：
 | --- | --- | --- | --- |
 | select Wafer compute implementation | tiled `linalg` / tensor / SCF | target-abstract `wafer.compute` / movement op | 选择本 tile 实现族，保留数学语义，建立 layout/resource interface |
 | layout materialization | target-abstract Wafer op | accepted `!wafer.tile_buffer` + materialization edge | 基于 op interface 做 layout assignment 和真实 movement cut |
-| hardware recipe expansion | accepted tile buffer IR | address-free instruction storage plan candidate | 将 target-abstract op 展开成 CT/NE/TDMA/RDMA/WDMA/DTE recipe，列出 concrete storage values、queue、effects、temp/psum/staging、alias 和 storage-size policy |
-| SPM bufferization | selected instruction storage plan | allocation-ready tile-region IR | 从 recipe 收集 buffer demand、liveness、effects，执行 SPM allocation |
-| tile buffer storage realization | `!wafer.tile_buffer` | `memref` / flat storage / descriptor | 复用标准 memref lowering 或生成目标 descriptor |
-| lower compute/movement to instruction form | storage-realized Wafer op | lower-level Wafer instruction/runtime op | 选择 CT/NE/RDMA/WDMA/TDMA family 和 Wafer C ABI shape |
-| Wafer to LLVM C ABI | instruction/runtime op | LLVM call / package metadata | 生成具体 ABI call，不回头修改 schedule/layout |
+| instruction legalization / selection | accepted tile buffer IR | instruction-level `wafer.instr.*` with unplaced `wafer.storage.*` | 将 target-abstract op 改写成 CT/NE/TDMA/RDMA/WDMA/DTE 指令形态，列出 concrete storage values、queue、effects、temp/psum/staging、alias 和 storage-size policy |
+| SPM placement | instruction-level IR with unplaced storage | same instruction-level IR with placed SPM storage | 从 instruction storage 收集 demand、liveness、effects，分配 offset/range/bank |
+| storage realization | placed instruction-level IR | `memref` / flat storage / descriptor | 复用标准 memref lowering 或生成目标 descriptor |
+| codegen emission | placed instruction-level IR | LLVM call / C ABI call / package metadata | 生成具体 ABI call 或 packet emission，不回头修改 schedule/layout |
 
 如果一个 pass 创建 `wafer.compute`、movement、layout、SPM 或 sync op，应声明 dependent dialects。pass
 pipeline 只表达 transformation 顺序，不承载隐藏语义。
@@ -301,8 +330,8 @@ V0 模型：
 
 - target-abstract compute/movement op 从 SSA 语义看是顺序 op；lowering 可以把它拆成 issue op 和
   later drain/wait op。
-- hardware recipe expansion 决定哪些 issue / drain / wait event 参与 storage lifetime；SPM allocation
-  通过 recipe effect event 扩展 async op 的 source/destination lifetime。
+- instruction legalization / selection 决定哪些 issue / drain / wait event 参与 storage lifetime；
+  SPM placement 通过 instruction effect event 扩展 async op 的 source/destination lifetime。
 - local drain 是显式 sync op，例如 `wafer.sync.local_wait` 或等价 IR；它不是 compute op 的默认后缀。
 - DTE wait、stream wait、group barrier 属于 `wafer.comm` / `wafer.sync` 的完成边界，不能用 local
   NCC wait 代替。
@@ -322,18 +351,18 @@ V0 推荐实现顺序：
 
 当前实现顺序已经先覆盖了 accepted-layout `wafer.compute.gemm`、load/store、layout materialize，
 并补入 same-shape identity 与 projected-permutation limited broadcast elementwise 到
-`wafer.compute.elementwise` / `wafer.abi.elementwise` 的 local issue path；随后补入 sum/max/min
-local reduce 到 `wafer.compute.reduce` / `wafer.abi.reduce` 的 issue path，保留 reduce dimensions
+`wafer.compute.elementwise` 的 target-abstract path；随后补入 sum/max/min
+local reduce 到 `wafer.compute.reduce` 的 path，保留 reduce dimensions
 和 scalar init value。P5.8 后续又补入 attention QK^T / AV 的 rank-4 contraction physical
 slice：只接受可由 `linalg.generic` indexing maps、parallel/reduction iterator types、mul-add
 body 和静态 shape relation 验证的 batch/head 形态，materialize 为带显式 batch/head/m/k/n 维度
-attrs 的 `wafer.compute.gemm`，并 lower 到带 `batch_count` 和 M/K/N 的 `wafer.abi.gemm`
-issue op。历史 transformer fixed package fixture 已删除；workspace/resident constant metadata、
+attrs 的 `wafer.compute.gemm`。后续 R3.2d/R3.6 必须把它 lower 成带 `batch_count` 和 M/K/N 的
+instruction-level GEMM 以及对应 C ABI emission。历史 transformer fixed package fixture 已删除；workspace/resident constant metadata、
 resource summary 一致性验证和 full block package manifest 必须由后续 IR-derived package gate
 恢复。当前覆盖仍不是通用 elementwise/reduce/GEMM coverage；更复杂 broadcast、relation/logic、convert、多输入/非
 constant-init reduce 和 mask/select 仍按后续泛化 gate 推进。当前 coverage 不能被解释成
 Wafer compute 语义上不支持这些结构；只要硬件 wrapper / structured lowering 能表达，就应补
-compute op、verifier、ABI 或 resource gate。
+compute op、verifier、instruction lowering、ABI emission 或 resource gate。
 
 V1 或后续扩展：
 
@@ -429,4 +458,4 @@ Accepted layout 后：
 全局文档边界见 `tasks/2026-05-11-wafer-ai-compiler-architecture.md` 第 8 节。本文只维护
 target-abstract compute/movement op 的语义、interface 和 lowering legality；group formation、
 layout assignment、SPM/DDR allocation、communication 和 launch/runtime 不在本文重复定义。
-register-level wrapper / packet 约束只在 storage-realized lowering 后消费。
+register-level wrapper / packet 约束只在 placed instruction/storage lowering 后消费。

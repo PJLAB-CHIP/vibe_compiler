@@ -183,8 +183,8 @@ collectCommunicationBufferDemand(target)
 
 R1.2 当前实现中，`wafer.comm.*` 通过 `WaferResourceEffectInterface` 暴露 SPM read/write、
 communication issue/wait 和 byte count；p2p/collective op 同时有 Wafer communication resource 的
-MLIR memory effect。具体 DTE/FSM/packet/stream id 仍只在 lower-level ABI issue/resource allocator
-层出现，不回写到 collective-level op。
+MLIR memory effect。具体 DTE/FSM/packet/stream id 仍只在 placed Direct DTE instruction/resource
+stage 出现，不回写到 collective-level op。
 
 通信 staging buffer 是 SPM allocation 的 `BufferDemand(kind = communication_staging)`，不是
 `wafer.comm` 的私有内存计划。
@@ -214,15 +214,14 @@ collective 仍应由 unicast p2p schedule 组合表达，而不是在 logical IR
 当前实现中，`wafer.comm.send` / `wafer.comm.recv` 的 p2p verifier 已在存在
 `wafer.placement.map` 时检查 peer 指向 active physical tile，`wafer.comm.wait` 要求至少一个
 async token。旧 `--wafer-lower-tile-region-to-c-abi` pass 已删除；fixed-size unicast p2p 到
-`wafer.abi.dte_send`、`wafer.abi.dte_recv`、`wafer.abi.dte_wait` 或真实 C ABI call 的 lowering
-必须在 R6/R7 从 storage-realized IR 重新建立。这一层仍不应 materialize raw non-unicast register
-字段，也不把 DTE id、runtime physical address 或 wrapper packet bitfield 暴露成上层 communication
-IR 语义。
+placed Direct DTE instruction form 和 C ABI emission 的 lowering 必须在 R6/R7 从 placed
+instruction-level IR 重新建立。这一层仍不应 materialize raw non-unicast register 字段，也不把 DTE id、
+runtime physical address 或 wrapper packet bitfield 暴露成上层 communication IR 语义。
 
 P6.4 起，collective-level `wafer.comm.all_gather` 已进入 IR。该 op 接收 local chunk、gather
 buffer、`local_rank`、`group_size` 和单 chunk `bytes`，verifier 检查 SPM tile buffer、rank 范围、
 单 chunk byte size 和 gather buffer 总 byte size。旧 `--wafer-lower-ring-all-gather` 和后续
-tile_region-to-C-ABI issue pass 链已删除。后续 lowering 仍应把 accepted schedule rewrite 成显式
+tile_region-to-C-ABI debug pass 链已删除。后续 lowering 仍应把 accepted schedule rewrite 成显式
 send/recv/wait body，并保留 destination slot 供地址 offset / packet 参数 lowering 使用。
 P6.6 的早期实现允许 StableHLO logical `all_gather` 直接 normalize 到该 op。2026-05-27 复查后，
 这条 pass/test 路线已移除；不能作为 group/tiling 前的主线输入，也不应恢复。后续应实现两层：

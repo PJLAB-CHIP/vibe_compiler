@@ -19,7 +19,7 @@ Wafer 工具链接收并保留 logical rank facts，local compute normalization 
 tensor IR 合同记录。
 
 本记录本身不声明 framework-specific PyTorch/JAX capture、完整 Shardy propagation/SPMD partitioner
-pipeline、mask/select/dynamic-shape 全覆盖、storage-realized constant slicing、group schedule
+pipeline、mask/select/dynamic-shape 全覆盖、placed instruction/storage constant slicing、group schedule
 completion、SPM/DDR/resource planning 或 runtime/package 闭环完成。2026-05-27 后续 P2.F1/P2.S1
 分别补上 source-built PyTorch/XLA capture adapter、真实 `mark_sharding` pre-SPMD program 和
 Wafer Shardy propagation stage gate；2026-06-01 复查删除了误导性的 Python post-SPMD export
@@ -51,7 +51,7 @@ directory verifier；P2.S2 的用户级入口是 `wafer-opt --program-pipeline=s
 pre-SPMD Wafer program，在同一 program pipeline 内执行 sharding propagation 并调用 Wafer-owned
 XLA SPMD partition helper；R2.4 用户级主线入口是
 `wafer-opt --program-pipeline=stablehlo-spmd-to-linalg`，在同一 program pipeline 内继续写回
-post-linalg Wafer program。旧显式 C ABI issue、ring collective、SPM/DDR debug path 和
+post-linalg Wafer program。旧显式 C ABI issue-op、ring collective、SPM/DDR debug path 和
 single-tile materialization unit/debug pass 链已删除；R3/R6/R7 后续必须按真实 program chain 和
 新的 IR contract 恢复。
 
@@ -118,7 +118,7 @@ parameter name 只用于定位 exporter program 中的 parameter payload，不�
 ## R2.3 Local Compute Normalization Coverage Status
 
 当前 coverage 只说明 local shard structured tensor IR dataflow 可以被识别或 lowering，不说明 group
-boundary、tile shape、multi-stage schedule、SPM residency 或 C ABI issue sequence 已完成。
+boundary、tile shape、multi-stage schedule、SPM residency 或 C ABI emission sequence 已完成。
 
 | 子结构 | 当前证据 | 当前结论 | 仍未完成 |
 | --- | --- | --- | --- |

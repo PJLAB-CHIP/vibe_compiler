@@ -4,7 +4,7 @@
 
 状态：设计草案；2026-05-25 边界收口；2026-05-27 补 post-SPMD tensor collective 边界；
 2026-06-03 收敛 R3.1 root-seeded logical group candidate scope；2026-06-04 对齐
-hardware recipe expansion 先于 SPM allocation
+instruction-level Wafer IR 先于 SPM placement
 
 本文只定义 `wafer.group` 的 tensor-level grouping 和 scheduling contract。它回答：
 
@@ -594,7 +594,7 @@ root 优先级是：
 - convolution 可作为后续受限目标，但不作为最小链路的主线。
 
 root/hero 只决定 logical candidate 的初始边界，不决定 traversal tile shape。真正的 traversal
-domain、tile shape、internal split、output coverage 和硬件 recipe 仍由 R3.2a-f planning /
+domain、tile shape、internal split、output coverage 和 instruction selection 仍由 R3.2a-f planning /
 analysis results 和 R3.2g closed-loop scheduled group planner 决定。
 
 ### 9.3 Conservative Expansion
@@ -763,23 +763,24 @@ SPM allocation、layout assignment、DDR/resource demand 和 compute/movement le
   target-abstract `wafer.compute` / `wafer.comm` / load-store / `wafer.layout.materialize` /
   sync / `!wafer.tile_buffer` / effect 结构。rejected candidate 不写入主 IR，不 lower 到
   packet/ABI/LLVM。
-- R3.2d 恢复 hardware recipe expansion：在 R3.2c candidate IR 上，把 target-abstract
-  compute/comm/layout/load-store/move/sync op 展开成 address-free instruction storage plan
-  candidate，显式列出 concrete storage values、queue、read/write/issue effects、temp/psum/staging、
-  alias/view 关系、storage-size policy 和 reject reason。
-- R3.2e 恢复 SPM allocation：只消费 R3.2d selected recipe storage graph，在真实 SPM window、
+- R3.2d 恢复 Wafer instruction legalization / selection：在 R3.2c candidate IR 上，把
+  target-abstract compute/comm/layout/load-store/move/sync op 合法化并选择成 instruction-level
+  `wafer.instr.*`，同时生成 unplaced `wafer.storage.*`，显式列出 concrete storage values、
+  queue、read/write/issue effects、temp/psum/staging、alias/view 关系、storage-size policy 和
+  reject reason。
+- R3.2e 恢复 SPM placement：只消费 R3.2d instruction-level IR with unplaced storage，在真实 SPM window、
   alignment、layout padding、scratch/psum/temp、materialization temp、communication staging、
   lifetime overlap、range/end-address/bank span 和 conflict 约束下搜索可接受 buffer placement。
-- R3.2f 恢复 DDR/resource planning 和 compute/movement legality analysis：消费 selected recipe
-  和 SPM facts，覆盖 external/workspace/resident-constant、bandwidth/range/pool/domain，以及
-  op layout/dtype/shape/effect 合法性；不能回头改变 recipe 语义。
-- R3.2g 才能做 closed-loop group planner：搜索 traversal、tile shape、layout、hardware recipe、
+- R3.2f 恢复 DDR/resource planning 和 compute/movement legality analysis：消费 placed
+  instruction-level IR 和 SPM facts，覆盖 external/workspace/resident-constant、bandwidth/range/
+  pool/domain，以及 op layout/dtype/shape/effect 合法性；不能回头改变 instruction semantics。
+- R3.2g 才能做 closed-loop group planner：搜索 traversal、tile shape、layout、instruction selection、
   SPM/DDR/resource plan，并输出 accepted / rejected / split decision。
 
 R3.3 只 materialize R3.2g 已接受的 plan 为 committed `wafer.tile_region`。R3.4/R3.5 只把
-R3.2g 已经接受的 layout/recipe/SPM/DDR facts 落到可验证 IR 或 resource boundary；它们不能成为
+R3.2g 已经接受的 layout/instruction/SPM/DDR facts 落到可验证 IR 或 resource boundary；它们不能成为
 第一次发现 SPM 放不下、layout 不合法或 DDR demand 不可接受的阶段。若 R3.2a-f planning results
-让 R3.2g 不能接受当前 candidate，planner 必须回到 tile shape、layout、internal split、recipe
+让 R3.2g 不能接受当前 candidate，planner 必须回到 tile shape、layout、internal split、instruction
 选择或 group boundary，而不是落一个未接受的 `wafer.tile_region` 等待下游补救。
 
 ### 10.1.2 R3.2a Op Tiling Demand Analysis
@@ -805,7 +806,7 @@ Pipeline position:
   但不修改 IR、不生成 `wafer.tile_region`、不写 `wafer.group` attribute。
 - Downstream consumer:
   R3.2b layout planning、R3.2c provisional tile-region candidate lowering、
-  R3.2d hardware recipe expansion、R3.2e SPM allocation、R3.2f DDR/resource planning +
+  R3.2d Wafer instruction legalization / selection、R3.2e SPM placement、R3.2f DDR/resource planning +
   compute/movement legality analysis，以及 R3.2g closed-loop planner。
 - User-level driver / named pipeline:
   主线仍由 `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 产生 R3.1 group；

@@ -18,7 +18,7 @@ C ABI conversion 混在旧的聚合目录里。
   comm、sync、launch 拆开；该后续项已由 R1.1 完成。
 - 不把 interface/effect/resource 基础定义扩成 planner 可查询合同；这是 R1.2。
 - 不实现真实 importer adapter、Wafer program verifier 或 Shardy bridge；这是 R2.1/R2.2。
-- 不把 `wafer.abi.*` lower 到 LLVM dialect、LLVM IR、object 或真实 runtime call。
+- 不把 `wafer.abi.*` 作为主线 IR 层 lower 到 LLVM dialect、LLVM IR、object 或真实 runtime call。
 - 不实现 launch/runtime adapter、BO binding 或板端 completion。
 
 ## 当前组织
@@ -28,7 +28,7 @@ C ABI conversion 混在旧的聚合目录里。
 | Frontend hook | `include/Wafer/Frontend/InitImporterDialects.h` | 可选 StableHLO dialect 注册入口归到 frontend；真实 model import adapter 仍未实现 |
 | Wafer IR | `include/Wafer/IR`、`lib/Wafer/IR`、`WaferIR` | 保持一个 `wafer` dialect namespace；R1.1 后 ODS/verifier/tests 已按 op family 拆分 |
 | Transform pipeline | `include/Wafer/Transforms`、`lib/Wafer/Transforms`、`WaferTransforms` | 只注册当前仍成立的 StableHLO/Linalg normalization 和 Shardy/SPMD propagation helper pass；旧 group/tile/resource/comm unit pass 已删除 |
-| Conversion pipeline | 后续重建 | 旧 `include/Wafer/Conversion`、`lib/Wafer/Conversion`、`WaferConversion` 和 `WaferToCABI/LowerTileRegionToCAbi.cpp` 已删除；后续 WaferToLLVM / real C ABI lowering 按 storage-realized contract 重建 |
+| Conversion pipeline | 后续重建 | 旧 `include/Wafer/Conversion`、`lib/Wafer/Conversion`、`WaferConversion` 和 `WaferToCABI/LowerTileRegionToCAbi.cpp` 已删除；后续 WaferToLLVM / real C ABI lowering 按 placed instruction-level IR contract 重建 |
 | ABI helpers | `include/Wafer/ABI`、`lib/Wafer/ABI`、`WaferABI` | 继续承载 tile-level C ABI descriptor/helper，不混入 transform pass |
 | Launch/runtime | 后续重建 | 旧 DDR external binding demand fixture 已删除；真实 launch/runtime/package adapter 仍是后续任务 |
 

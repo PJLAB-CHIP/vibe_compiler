@@ -2,22 +2,22 @@
 
 日期：2026-05-21
 
-状态：设计草案；2026-05-25 边界收口；2026-06-04 对齐 hardware recipe expansion 先于 SPM allocation
+状态：设计草案；2026-05-25 边界收口；2026-06-04 对齐 instruction-level Wafer IR 先于 SPM placement
 
-本文定义 Wafer SPM bufferization、tile-local allocation 和 storage validation。它服务于
+本文定义 Wafer SPM bufferization、tile-local allocation 和 storage verification。它服务于
 `wafer.group` planning 的合法性搜索，也负责把 `wafer.tile_region` 中的 tile-local value
 落到可验证的 memory space、liveness、range 和 effect。
 
 本文只负责 `#wafer.memory_space<spm>` 的 tile-local allocation：
 
-- 消费 hardware recipe expansion 产出的 address-free instruction storage plan candidate，并从该
-  recipe 的 concrete storage values、effects、queue 和 async policy 构造 allocation input。
-- 对 selected recipe 做 SPM allocation、range/end-address/alignment/bank-span validation 和 failure
+- 消费 R3.2d 产出的 instruction-level `wafer.instr.*` IR 和 unplaced `wafer.storage.*`，并从
+  instruction storage values、effects、queue 和 async policy 构造 allocation input。
+- 对 instruction-level IR 做 SPM placement、range/end-address/alignment/bank-span verification 和 failure
   feedback。
 - 为 storage realization 提供 accepted offset/range/lifetime/alias 信息。
 
 本文不分配 DDR，不选择 physical layout，不决定 group boundary，不选择 compute/communication
-algorithm recipe，也不生成 runtime package。DDR source/destination range 和 bandwidth 可以作为
+instruction selection，也不生成 runtime package。DDR source/destination range 和 bandwidth 可以作为
 legality 或 cost input；DDR BO/pool/domain 的主设计见
 `tasks/2026-05-25-wafer-ddr-resource-allocation-design.md`。SPM allocation 的失败 trace、搜索顺序和
 未接受 offset 都是 analysis，不写进长期 IR。
@@ -28,16 +28,42 @@ SPM planning 不能只做 byte-size estimate。候选 tile plan 是否合法，�
 
 ```text
 layout materialization
-  -> hardware recipe expansion / instruction storage plan
+  -> instruction legalization / selection
+  -> instruction-level IR with unplaced storage
   -> storage requirement collection
   -> liveness/effect analysis
-  -> SPM allocation
-  -> tile buffer storage realization
-  -> range/end-address validation
+  -> SPM placement
+  -> placed instruction/storage realization
+  -> range/end-address verification
 ```
 
 如果没有合法 allocation，不能生成一个等待下游修复的 scheduled group。planner 应回到 tile shape、
 internal split、layout assignment、output coverage 或 group boundary 继续搜索。
+
+### 1.1 R3.2e Pipeline Contract
+
+```text
+Pipeline position:
+- Upstream artifact / IR:
+  R3.2d instruction-level `wafer.instr.*` IR with unplaced `wafer.storage.*`，以及 accepted layout
+  assignment、materialization cut、effect/order 和 target SPM policy。
+- Current stage responsibility:
+  在同一 instruction-level IR 上为 `#spm` storage 做 placement，计算 offset/end/bank span、
+  alignment、lifetime/reuse、must-alias/must-not-alias、reserved range 和 range-end verification。
+- Output artifact / IR:
+  same instruction-level IR with placed SPM storage，或结构化 allocation failure reason。
+- Downstream consumer:
+  R3.2f DDR/resource legality、R3.2g closed-loop planner、R3.4 materialized placed storage IR，
+  以及 R3.6 codegen emission。
+- User-level driver / named pipeline:
+  主线仍由 R3.2 closed-loop planner 调用；局部 allocator dump 只能作为 debug/lit coverage，
+  不能成为用户级 compile flow。
+- Explicit non-goals:
+  不选择 instruction form、不改变 layout assignment、不分配 DDR BO、不生成 C ABI call 或 packet。
+- Completion gate:
+  对 R3.2d 支持的 storage kinds 给出 deterministic placement 或结构化失败；placed storage 的 size、
+  alignment、range/end、lifetime 和 alias relation 能由 IR/effect/verifier 重算。
+```
 
 ## 2. 借鉴点
 
@@ -54,12 +80,12 @@ internal split、layout assignment、output coverage 或 group boundary 继续�
 输入：
 
 - transformation-local provisional 或已经 committed 的 `wafer.tile_region` candidate；在 R3.2d
-  中这是 scratch IR / cloned IR，rejected candidate 必须丢弃。SPM allocation 不直接消费
-  target-abstract candidate，而消费 R3.2d 选中的 instruction storage plan。
+  中这是 scratch IR / cloned IR，rejected candidate 必须丢弃。SPM placement 不直接消费
+  target-abstract candidate，而消费 R3.2d 生成的 instruction-level IR with unplaced storage。
 - layout planner 产生的 physical layout assignment 和 materialization demand。
-- hardware recipe expansion 产生的 concrete storage value、operand/result/temp/scratch/accumulator /
-  psum/staging 分类、queue family、effect event 和 async policy。
-- `WaferCommOpInterface` 或后续 communication recipe 提供的 source/destination buffer、byte count、
+- instruction legalization / selection 产生的 concrete storage value、operand/result/temp/scratch/
+  accumulator/psum/staging 分类、queue family、effect event 和 async policy。
+- `WaferCommOpInterface` 或后续 communication instruction selection 提供的 source/destination buffer、byte count、
   token/wait 和 staging storage。
 - target policy：SPM range、reserved range、alignment、coloring preference。
 - `wafer.tile_region` 的 control-flow、op effect、drain/wait/barrier。
@@ -82,7 +108,7 @@ residency/storage、workspace BO、全局容量、largest contiguous range 和 b
 ## 4. Instruction Storage Requirements
 
 allocator 的输入仍可命名为 `BufferDemand`，但它不是直接从 target-abstract `wafer.compute.*` /
-`wafer.move.*` op 猜出来的。它必须由 selected hardware recipe / instruction storage plan 产生：
+`wafer.move.*` op 猜出来的。它必须由 instruction-level `wafer.instr.*` / `wafer.storage.*` 产生：
 
 ```text
 BufferDemand {
@@ -109,29 +135,29 @@ V0 `kind`：
 - communication staging buffer。
 - host-visible writeback staging。
 
-### 4.1 Recipe Providers
+### 4.1 Instruction Storage Providers
 
 SPM allocator 不按 op 名字猜 buffer，也不把一个 target-abstract op 当成一条硬件指令。demand
-来源应是 recipe expansion 后的明确 storage graph：
+来源应是 instruction legalization / selection 后的明确 storage graph：
 
 - `wafer.compute.*` / target-abstract movement op：通过 compute/movement 文档定义的接口枚举或选择
-  hardware recipe，例如 NE GEMM、CT elementwise/reduce、TDMA memcpy / GatherScatter /
-  ChannelNorm。recipe 再报告 operand/result/temp/scratch/accumulator/psum demand、queue family
+  hardware instruction family，例如 NE GEMM、CT elementwise/reduce、TDMA memcpy / GatherScatter /
+  ChannelNorm。instruction-level IR 再报告 operand/result/temp/scratch/accumulator/psum demand、queue family
   和 async lowering policy。
 - `wafer.layout.materialize`：不能只报告“source read / result write”。它必须先选择具体
-  materialization recipe，例如 ChannelNorm、DechannelNorm、GatherScatter 或 reject；不同 recipe
+  materialization instruction lowering，例如 ChannelNorm、DechannelNorm、GatherScatter 或 reject；不同 lowering
   可产生不同 temp、padding、range 和 queue 行为。
-- `wafer.comm.*` p2p op：需要 communication recipe 报告 send source、recv destination、
+- `wafer.comm.*` p2p op：需要 communication instruction lowering 报告 send source、recv destination、
   communication staging buffer、fixed byte count、token/wait lifetime 和 DTE/FSM resource class。
-- `wafer.sync.*`：报告 local drain、comm wait、group barrier 对 recipe event、buffer lifetime 和
+- `wafer.sync.*`：报告 local drain、comm wait、group barrier 对 instruction event、buffer lifetime 和
   reuse 的收口。
 
-如果某个 target-abstract op 无法产出可验证 recipe，不能让 SPM allocation 用名字或示例 shape
-猜测；应先扩 op interface / recipe IR，或保持在更高层 IR。
+如果某个 target-abstract op 无法产出可验证 instruction-level IR，不能让 SPM placement 用名字或示例
+shape 猜测；应先扩 op interface / instruction IR，或保持在更高层 IR。
 如果当前只有 R3.2a/R3.2b 的 group-level analysis summary，而没有 R3.2c provisional
-`wafer.tile_region` candidate，SPM allocation 不能直接运行；如果只有 R3.2c target-abstract
-candidate 而没有 R3.2d selected recipe，SPM allocation 同样不能运行。必须先把 candidate 展开到
-instruction storage plan，让 storage values、lifetime 和 effect 都可由 IR/recipe 结构重算。
+`wafer.tile_region` candidate，SPM placement 不能直接运行；如果只有 R3.2c target-abstract
+candidate 而没有 R3.2d instruction-level IR，SPM placement 同样不能运行。必须先把 candidate 降到
+`wafer.instr.*` / `wafer.storage.*`，让 storage values、lifetime 和 effect 都可由 IR 结构重算。
 
 `storage_size` 必须用统一 calculator 计算，至少包含：
 
@@ -174,17 +200,17 @@ reuse 分类：
 - may-reuse：lifetime 不重叠，memory/alignment 兼容。
 - must-not-alias：lifetime 重叠、async 未 wait、external-visible 或 verifier 禁止 alias。
 
-## 6. Feasibility Analysis Contract
+## 6. Allocation Contract
 
-SPM allocation 的职责是回答一个具体 tile plan 在指定 layout assignment 和 selected hardware
-recipe 下是否可 lower。它不负责全局寻找最佳 group，不选择 compute/movement algorithm recipe，
+SPM allocation 的职责是在一个具体 tile plan、指定 layout assignment 和 selected instruction
+lowering 下放置 `#spm` storage。它不负责全局寻找最佳 group，不选择 compute/movement instruction form，
 也不把失败方案 materialize 到 IR。
 
 输入必须足够接近真实 lowering：
 
 - tiled control-flow / event order。
-- layout assignment 和 selected materialization / compute / movement recipe。
-- recipe-derived `BufferDemand`。
+- layout assignment 和 selected materialization / compute / movement instruction form。
+- instruction-derived `BufferDemand`。
 - effect / async issue / drain / wait / barrier。
 - target range、reserved range、alignment、range-end policy。
 - optional double-buffer / communication staging policy。
@@ -192,7 +218,7 @@ recipe 下是否可 lower。它不负责全局寻找最佳 group，不选择 com
 输出：
 
 ```text
-FeasibilityResult {
+AllocationResult {
   status
   peak_spm
   allocation_summary
@@ -248,7 +274,7 @@ V0 对 coloring 的处理：
 
 V0 只采用一个 deterministic greedy arena allocator。
 
-1. 从 selected instruction storage plan 收集 `BufferDemand`。
+1. 从 instruction-level IR with unplaced storage 收集 `BufferDemand`。
 
 2. 生成 interval：
 
@@ -284,7 +310,7 @@ Interval {
 - 不能碰 reserved/forbidden range。
 - 若 color policy 不满足，V0 先计入 penalty；hard policy 下返回失败。
 
-7. range/end validation：
+7. range/end verification：
 
 - 检查 `base + allocated_size`。
 - 检查 wrapper begin/end range。
@@ -327,19 +353,20 @@ V0 推荐 `allocate on provisional tile-region before commit`：
 logical group + tile/layout candidate
   -> build provisional wafer.tile_region candidate
      (target-abstract compute/comm/load-store/layout/sync/tile_buffer/effect)
-  -> expand hardware recipe / instruction storage plan
-  -> collect BufferDemand + liveness/effect from selected recipe
-  -> SPM allocation
+  -> legalize/select instruction-level wafer.instr.* with unplaced wafer.storage.*
+  -> collect BufferDemand + liveness/effect from instruction-level IR
+  -> SPM placement
   -> accepted plan or failure feedback
-  -> commit accepted wafer.tile_region with layout/materialization/SPM facts
-  -> realize tile buffers into physical storage
+  -> commit accepted wafer.tile_region with layout/materialization/instruction/SPM facts
+  -> materialize placed instruction/storage IR
 ```
 
 原因是 layout、SPM、tile shape 和 target-abstract op selection 强耦合。早期如果只看 logical
 group summary 或裸 tensor value，再把真实 allocation 推到更晚的 pass，容易让合法性承诺漂移；
-但把 rejected candidate 直接落入主 IR 再回滚也会污染 IR 边界。因此 hardware recipe expansion 和
-SPM allocation 都应在 transformation-local / scratch `wafer.tile_region` 上运行；allocation 使用
-selected recipe 的 storage / lifetime / effect 事实源，而不是 target-abstract op 的粗粒度 effect。
+但把 rejected candidate 直接落入主 IR 再回滚也会污染 IR 边界。因此 instruction legalization /
+selection 和 SPM placement 都应在 transformation-local / scratch `wafer.tile_region` 上运行；
+allocation 使用 instruction-level IR 的 storage / lifetime / effect 事实源，而不是 target-abstract
+op 的粗粒度 effect。
 
 失败的 allocation、offset search trace、cost trace 都不进入 IR。
 
@@ -380,7 +407,7 @@ storage realization 后，`!wafer.tile_buffer` 应消失，IR 应使用 physical
 worker、queue、packet field 只在能验证它们的 lower-level IR 出现。
 `wafer.group` 只消费 feasibility 结论，不携带这些字段。
 
-`memory_space` 在 storage-realized IR 中仍是统一语义：`#spm` 表示 tile-local SRAM，`#ddr` 表示
+`memory_space` 在 placed instruction/storage IR 中仍是统一语义：`#spm` 表示 tile-local SRAM，`#ddr` 表示
 device/global DDR address domain。RDMA/WDMA verifier 用 source/destination memory space 检查方向；
 DDR resource / runtime/package lowering 用 `#ddr` 继续关联 BO pool/domain、host visibility、workspace
 BO、constant storage/residency 和 launch metadata。
@@ -406,24 +433,24 @@ SPM / tile-region verifier 至少检查：
 ## 14. 与 Layout / Group 的关系
 
 全局文档边界见 `tasks/2026-05-11-wafer-ai-compiler-architecture.md` 第 8 节。SPM allocation 只回答
-candidate tile-region 的 `#spm` allocation 是否可行，并把失败原因返回 group/layout planner。
+candidate tile-region 的 `#spm` placement 是否可行，并把失败原因返回 group/layout planner。
 闭环顺序：
 
 ```text
 candidate tile plan
   -> layout assignment
   -> provisional wafer.tile_region candidate
-  -> hardware recipe / instruction storage plan
-  -> recipe storage / buffer / effect demand
-  -> SPM allocation
-  -> tile buffer storage realization
+  -> instruction-level wafer.instr.* with unplaced wafer.storage.*
+  -> instruction storage / buffer / effect demand
+  -> SPM placement
+  -> placed instruction/storage realization
   -> accepted or failure feedback
 ```
 
 layout planner 先尝试移动 materialization cut 或换 flexible layout；SPM 仍失败时，group planner
-再缩 tile、请求 internal split 或拆 group。SPM allocation 消费 selected recipe 暴露的 demand 和
-effect；compute implementation 和 communication algorithm 的选择属于 recipe expansion / closed-loop
-planner，不在 allocator 内部用名字或 case 猜测。
+再缩 tile、请求 internal split 或拆 group。SPM allocation 消费 instruction-level IR 暴露的 demand
+和 effect；compute implementation 和 communication algorithm 的选择属于 instruction selection /
+closed-loop planner，不在 allocator 内部用名字或 case 猜测。
 - local drain、comm wait、group barrier 是不同 sync event。SPM lifetime 可以把它们都建成 event，
   但不能把 NCC local drain 当成 DTE completion 或 multi-tile barrier。
 

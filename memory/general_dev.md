@@ -131,8 +131,9 @@
   verifier tool；`wafer-compile-stablehlo --compile-stablehlo-program-to-cabi` 也已删除，因为 R3/R6/R7
   还没有从真实 frontend/SPMD program 到 C ABI/package 的完整主线合同。当前 `wafer-opt` named pipeline
   只保留 `wafer-propagate-stablehlo-sharding` 和 `wafer-lower-stablehlo-to-linalg` 作为内部/局部
-  debug 覆盖。旧显式 C ABI issue、ring collective、SPM/DDR debug path 和 single-tile materialization
-  pass 链已删除；不要恢复成用户级 compile flow。
+  debug 覆盖。旧显式 C ABI issue-op、ring collective、SPM/DDR debug path 和 single-tile
+  materialization pass 链已删除；不要恢复成用户级 compile flow。后续 C ABI/package 必须从
+  placed instruction-level IR 和 emission metadata 导出。
 - ODS op 如果引入 `RecursiveMemoryEffects`、`ReturnLike` 等 interface trait，公开 dialect 头要
   include 对应 C++ interface header，`WaferIR` 也要显式 link 对应 MLIR interface target。
 - ODS op 如果直接使用 MLIR `TilingInterface` 这类 upstream op interface，避免让 TableGen 在

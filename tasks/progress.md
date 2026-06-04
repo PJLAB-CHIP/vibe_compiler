@@ -51,30 +51,32 @@ PyTorch/XLA StableHLO Wafer program directory
 
 ## 当前状态
 
-当前 active task 是 **R3.2d hardware recipe expansion on provisional tile-region candidate**。
+当前 active task 是 **R3.2d Wafer instruction legalization / selection on provisional tile-region
+candidate**。
 
 R3.2d 可以消费 R3.2c 的 provisional `wafer.tile_region` candidate。当前边界是：
 
 - candidate 中的 `!wafer.tile_buffer`、`wafer.alloc_tile`、`wafer.load_tile`、`wafer.store_tile`、
   `wafer.layout.materialize`、`wafer.compute.*`、`wafer.move.*` 和 `wafer.view.reshape` 已能表达
-  target-abstract layout/resource/view 关系，但还不是 allocation-ready storage graph。
-- R3.2d 只做硬件 recipe expansion：为 target-abstract op 枚举或选择 address-free instruction
-  storage plan candidate；不分配 SPM offset，不重新决定 group formation。
+  target-abstract layout/resource/view 关系，但还不是 SPM allocation 的直接输入。
+- R3.2d 只做 Wafer instruction legalization / selection：把 target-abstract op 合法化并选择成
+  instruction-level `wafer.instr.*` IR，同时显式生成 unplaced `wafer.storage.*` SSA value；
+  不分配 SPM offset，不生成 C ABI call，不重新决定 group formation。
 - tensor collective 到 `wafer.comm.*` 仍 deferred，等待 placement/local-rank/buffer facts。
 
 ## 恢复队列
 
 | ID | 状态 | 输入 / 输出边界 | 完成 gate |
 | --- | --- | --- | --- |
-| R3.2d | active | 输入：R3.2c target-abstract `wafer.tile_region` candidate；输出：address-free instruction storage plan candidate 或结构化失败 | 为 load/store、layout materialize、compute.gemm/reduce/elementwise、move.*、view alias 枚举/选择硬件 recipe；每个 recipe 暴露 concrete storage values、queue family、read/write/issue effects、temp/psum/staging、storage size policy 和 reject reason；不做 SPM offset |
-| R3.2e | pending | 输入：R3.2d selected instruction storage plan candidate；输出：SPM allocation result 或结构化失败 | 真实 SPM window placement：alignment、layout padding、scratch/psum/temp、materialization temp、communication staging、lifetime overlap、range/end-address/bank span/conflict 都参与 |
-| R3.2f | pending | 输入：R3.2d recipe + R3.2e SPM facts；输出：DDR/resource plan 和 compute/movement legality result | 覆盖 external/workspace/resident-constant、pool/domain/capacity/bandwidth/range demand；不能用 manifest fixture 替代；不能回头改变 recipe 语义 |
-| R3.2g | pending | 输入：R3.1 group + R3.2a-f planning results；输出：accepted/rejected/split group planning decision | closed-loop 搜索 group boundary、traversal、tile shape、layout、hardware recipe、SPM/DDR/resource plan；未接受 plan 不落 IR；multi-root packing 只作为可证明兼容时的可选策略 |
-| R3.3 | pending | 输入：R3.2g accepted plan；输出：committed `wafer.tile_region` | 只 materialize accepted candidate；不重新决定 group 是否可行 |
-| R3.4 | pending | 输入：R3.2g accepted layout/SPM facts + R3.3 tile-region；输出：materialized layout/SPM buffer/storage IR | 只落已接受的 layout assignment、materialization cut、recipe storage graph 和 SPM allocation facts |
+| R3.2d | active | 输入：R3.2c target-abstract `wafer.tile_region` candidate；输出：instruction-level `wafer.instr.*` IR + unplaced `wafer.storage.*` 或结构化失败 | 为 load/store、layout materialize、compute.gemm/reduce/elementwise、move.*、view alias 选择 CT/NE/TDMA/RDMA/WDMA 等硬件指令形态；IR 显式暴露 storage values、queue family、read/write/issue effects、temp/psum/staging、alias/view、storage size policy 和 reject reason；不做 SPM offset、不生成 ABI call |
+| R3.2e | pending | 输入：R3.2d instruction-level IR with unplaced storage；输出：同一 instruction-level IR with placed SPM storage 或结构化失败 | 真实 SPM window placement：alignment、layout padding、scratch/psum/temp、materialization temp、communication staging、lifetime overlap、range/end-address/bank span/conflict 都参与 |
+| R3.2f | pending | 输入：R3.2e placed instruction-level IR + DDR boundary facts；输出：DDR/resource legality result 和 movement/compute resource validation | 覆盖 external/workspace/resident-constant、pool/domain/capacity/bandwidth/range demand；不能用 manifest fixture 替代；不能回头改变 instruction semantics |
+| R3.2g | pending | 输入：R3.1 group + R3.2a-f planning results；输出：accepted/rejected/split group planning decision | closed-loop 搜索 group boundary、traversal、tile shape、layout、instruction selection、SPM/DDR/resource plan；未接受 plan 不落 IR；multi-root packing 只作为可证明兼容时的可选策略 |
+| R3.3 | pending | 输入：R3.2g accepted plan；输出：committed `wafer.tile_region` + accepted instruction-level lowering boundary | 只 materialize accepted candidate；不重新决定 group 是否可行 |
+| R3.4 | pending | 输入：R3.2g accepted layout/SPM facts + R3.3 tile-region；输出：materialized placed instruction/storage IR | 只落已接受的 layout assignment、materialization cut、instruction storage graph 和 SPM placement facts |
 | R3.5 | pending | 输入：R3.2g accepted DDR/resource facts + storage-aware tile IR；输出：materialized DDR resource / binding boundary | 只 materialize accepted external/workspace/resident-constant/resource demand |
-| R3.6 | pending | 输入：storage/movement/compute IR；输出：`wafer.abi.*` issue sequence | issue sequence 从 IR 派生，只表达 ABI 参数单位和 wait policy |
-| R3.7 | pending | 输入：ABI issue / launch signature IR；输出：IR-derived package manifest | manifest、C stub、launch signature 从 current lowering 输出导出，不使用 fixed manifest emitter |
+| R3.6 | pending | 输入：placed instruction-level IR + launch signature；输出：C ABI call / packet emission 或 debug dump | codegen/emission 从 placed `wafer.instr.*` 派生 ABI 参数单位和 wait policy；`wafer.abi.*` 如保留只作为调试/测试 dump，不是主线 IR 层 |
+| R3.7 | pending | 输入：R3.6 emitted call/packet metadata + launch signature；输出：IR-derived package manifest | manifest、C stub、launch signature 从 current lowering 输出导出，不使用 fixed manifest emitter |
 | R3.8 | pending | 输入：R3.6/R3.7 输出；输出：wrapper-facing call contract 和 golden packet | 至少 RDMA/WDMA/GEMM 有真实 wrapper-facing call contract 和 packet 对照 |
 | R4.1-R4.5 | pending | placement + local shard + launch/package metadata | placement、rank/block/coord、per-rank slices、writeback 和 placed package 从 lowering 输出导出 |
 | R5.1-R5.2 | pending | static transformer local shard IR / staged IR gaps | full-block schedule 或拒绝原因；补 mask/select、dynamic-bound policy、non-constant-init reduce、constant/weight slice |
@@ -92,5 +94,5 @@ R3.2d 可以消费 R3.2c 的 provisional `wafer.tile_region` candidate。当前�
 
 ## 下一步
 
-进入 R3.2d，在 R3.2c provisional `wafer.tile_region` candidate 上恢复硬件 recipe expansion /
-instruction storage plan candidate。
+进入 R3.2d，在 R3.2c provisional `wafer.tile_region` candidate 上恢复 Wafer instruction
+legalization / selection，产出 instruction-level `wafer.instr.*` IR 和 unplaced `wafer.storage.*`。

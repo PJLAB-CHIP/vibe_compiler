@@ -31,7 +31,7 @@ core compiler target。
 
 - 不实现真实 model importer adapter、Wafer program verifier 或 Shardy SPMD bridge。
 - 不引入 HPGR / KMD / legacy `Tsm*` runtime adapter target。
-- 不把 `wafer.abi.*` lower 到 LLVM dialect、object 或真实 runtime call。
+- 不把 `wafer.abi.*` 作为主线 IR 层 lower 到 LLVM dialect、object 或真实 runtime call。
 - 不拆分 Wafer ODS / verifier op-prefix 文件；这是 R1.1。
 
 ## 依赖层级
@@ -41,7 +41,7 @@ core compiler target。
 | Core IR | `WaferIR`、`include/Wafer/IR`、`lib/Wafer/IR` | MLIR IR、interfaces、Async dialect、TableGen 产物 | StableHLO/Shardy importer API、runtime/driver headers、GTest/lit/FileCheck |
 | ABI helper | `WaferABI`、`include/Wafer/ABI`、`lib/Wafer/ABI` | C++ standard library 和项目 ABI headers | MLIR dialect API、StableHLO/Shardy、runtime/driver headers、test tools |
 | Core transforms | `WaferTransforms`、`lib/Wafer/Transforms` | `WaferIR`、MLIR arith/linalg/tensor/pass/support；`StableHLOToLinalg` 源文件可在 importer enabled 时使用 StableHLO op C++ API；`SPMD/` 源文件可在 `WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON` 时 private 使用 Shardy/SDY C++ API | importer framework headers、runtime/driver headers、test tools、C ABI conversion ownership；StableHLO/Shardy 不能成为 public dependency |
-| Conversion | 后续重建 | 旧 `WaferConversion` / `include/Wafer/Conversion` / `lib/Wafer/Conversion` 已删除；后续 WaferToLLVM / real C ABI lowering 可在本层按 storage-realized contract 重建 | StableHLO/Shardy importer API、test tools；runtime/driver headers 只能在 future launch/runtime adapter 层进入 |
+| Conversion | 后续重建 | 旧 `WaferConversion` / `include/Wafer/Conversion` / `lib/Wafer/Conversion` 已删除；后续 WaferToLLVM / real C ABI lowering 可在本层按 placed instruction-level IR contract 重建 | StableHLO/Shardy importer API、test tools；runtime/driver headers 只能在 future launch/runtime adapter 层进入 |
 | Frontend/importer | `include/Wafer/Frontend`、`tools/wafer-compile-stablehlo` | optional StableHLO / SDY dialect registration、program parsing/verification 依赖；固定版本的 torch / PyTorch/XLA importer Python runtime，后续只允许在 importer 工具中使用 | SPMD partition、SPM/layout/runtime/tool target details |
 | SPMD bridge | `ShardySdy*` CMake shim target、future Shardy/SPMD pass target | Shardy/SDY source dependency、MLIR dialect registration、import/export/propagation pass 编译验证 | physical tile id、DTE algorithm、runtime package |
 | Driver tool | `tools/wafer-opt` | `WaferIR`、`WaferTransforms` / `WaferPipelines`、MLIR tool main；optional StableHLO / SDY registration；P2.S2 可调用 Wafer-owned pinned-XLA helper | importer framework implementation details、runtime/driver headers、frontend-only exporter behavior |
@@ -142,7 +142,7 @@ core compiler target。
   group conservative expansion，不能把 one-root group shell 当作完成。
 - torch-mlir source-tree adapter 的精确 commit 仍属于后续 frontend importer 扩展；R0.3
   已先用 PyTorch/XLA 2.5 源码版本收敛 XLA/LLVM/StableHLO/Shardy 版本来源。
-- R3.7：从当前 `wafer.abi.*` / launch IR 自动导出 package manifest。
+- R3.7：从当前 C ABI emission metadata / launch IR 自动导出 package manifest。
 - P8：runtime adapter、BO binding 和 completion source 仍未实现。
 
 ## 验证

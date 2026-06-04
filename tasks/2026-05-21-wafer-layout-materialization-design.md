@@ -2,8 +2,8 @@
 
 日期：2026-05-21
 
-状态：设计草案；2026-05-25 边界收口；2026-06-04 对齐 hardware recipe expansion 先于
-SPM allocation
+状态：设计草案；2026-05-25 边界收口；2026-06-04 对齐 instruction-level Wafer IR 先于
+SPM placement
 
 本文定义 Wafer 后端的 physical layout planning 和 layout materialization 边界。它服务于
 `wafer.group` 的 legality search，也服务于 `wafer.tile_region` / SPM bufferization 的真实
@@ -83,7 +83,7 @@ layout planning 有两个恢复层次：
   layout constraints、layout assignment candidate、materialization cut 和 materialization
   buffer demand。该层只产出 analysis result 和 debug dump，不 rewrite `wafer.group`，不写
   layout attr，也不生成 `wafer.tile_region`。
-- R3.4 在 accepted `wafer.tile_region` 层运行。它消费 R3.2g accepted plan，把 layout
+- R3.4 在 accepted `wafer.tile_region` / instruction-level IR 层运行。它消费 R3.2g accepted plan，把 layout
   assignment 和 materialization cut materialize 成带 `mem_layout` 的 tile buffer type 和
   `wafer.layout.materialize` op。
 
@@ -125,8 +125,8 @@ Pipeline position:
   transformation-local `GroupLayoutPlan` analysis result；debug dump pass 可以打印同一结构。
   本阶段不修改 `wafer.group`，不生成 `wafer.tile_region`，不写 layout attr。
 - Downstream consumer:
-  R3.2c provisional tile-region candidate lowering、R3.2d hardware recipe expansion、
-  R3.2e SPM allocation、R3.2f DDR/resource planning + compute/movement legality analysis，
+  R3.2c provisional tile-region candidate lowering、R3.2d Wafer instruction legalization / selection、
+  R3.2e SPM placement、R3.2f DDR/resource planning + compute/movement legality analysis，
   以及 R3.2g closed-loop planner。
 - User-level driver / named pipeline:
   主线仍由 `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 产生 R3.1 group；
@@ -422,7 +422,7 @@ tail/fold 和 256B padding 的 target storage rule。
 
 现有示例大多使用 `#spm`，因为 tile-local compute operand 默认落在 SPM。DDR 不是另一套语义：
 如果 DDR buffer 在 `wafer.tile_region` 中以同一 buffer abstraction 出现，就用 `#ddr`；
-如果它已经 storage-realized 成 memref/descriptor，也必须携带同一 `WaferMemorySpaceAttr`。
+如果它已经 placed 成 memref/descriptor，也必须携带同一 `WaferMemorySpaceAttr`。
 
 如果某个 lowering 阶段必须落到 `memref`，那里的 memref layout / offset / stride / byte range
 应由 `PhysicalLayoutInfo` 展开得到，属于更低层 lowering 结果，不是 V0 layout planning 的

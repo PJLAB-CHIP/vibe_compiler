@@ -72,7 +72,7 @@ Wafer 是基于 MLIR 的编译器。每一层 IR 只携带自己能稳定解释�
 两条 layout 线必须分开：
 
 - `layout` 是 tensor semantic layout，只说明维度业务含义和 op 如何解释 shape，例如 feature `NHWC`、conv weight `HWOI/HWIO`、普通 GEMM matrix。它可以出现在 tensor/group 层。
-- `mem_layout` 是 physical layout family，说明 SPM/DDR 中真实组织形式，例如 `Tensor`、`NTensor`、`Cx`、`NCx`。它只能在 `wafer.tile_region` / SPM bufferization 之后出现在 tile-local buffer 或 storage-realized value 上。Cx/NCx 的 `C0`、storage bytes 和 256B padding 是从 shape、dtype 和 target policy 推导出的 layout info，不写进 `mem_layout` 本身。
+- `mem_layout` 是 physical layout family，说明 SPM/DDR 中真实组织形式，例如 `Tensor`、`NTensor`、`Cx`、`NCx`。它只能在 `wafer.tile_region` / SPM bufferization 之后出现在 tile-local buffer 或 placed instruction/storage value 上。Cx/NCx 的 `C0`、storage bytes 和 256B padding 是从 shape、dtype 和 target policy 推导出的 layout info，不写进 `mem_layout` 本身。
 
 `memory_space` 是统一的 addressable storage space，不按阶段发明不同语义。V0 至少区分：
 
@@ -358,11 +358,12 @@ tile-and-fuse 的主文档，本架构文档只规定它在全 pipeline 中的�
 - 引入 `wafer.tile_region` 作为 `wafer.group` lowering 之后的 tile-local execution scope。
 - 把 accepted tiled SSA graph materialize 成 tile-local buffer、movement、layout conversion、
   target-abstract compute、communication 和 sync/effect op。
-- 对 target-abstract op 先做 hardware recipe expansion，产出 address-free instruction storage plan；
-  SPM/DDR/resource planner 只消费 selected recipe 的 concrete storage graph、effect 和 lifetime，
+- 对 target-abstract op 先做 Wafer instruction legalization / selection，产出 instruction-level
+  `wafer.instr.*` IR 和 unplaced `wafer.storage.*`；SPM/DDR/resource planner 只消费
+  instruction-level IR 的 concrete storage graph、effect 和 lifetime，
   不从高层 op 名或单个 case 猜 demand。
-- 在 accepted layout、SPM allocation 和 DDR binding contract 后，把 tile buffer 降到 memref 或
-  Wafer descriptor。
+- 在 accepted layout、SPM placement 和 DDR binding contract 后，把 instruction/storage 降到 memref
+  或 Wafer descriptor。
 
 `wafer.tile_region` 不重新做 group formation、root tile search 或 traversal selection，也不表达
 host launch/package ABI。详细合同见 `tasks/2026-05-25-wafer-tile-region-design.md`。
@@ -383,9 +384,8 @@ bufferization 见 `tasks/2026-05-21-wafer-spm-bufferization-design.md`；DDR res
 
 - 输入是 target-abstract `wafer.compute` / data movement op；这些 op 已经在 layout materialization
   前进入 IR，并提供 layout contract。
-- 将 target-abstract op 先 lower 到 address-free hardware recipe / instruction storage plan，再在
-  storage-realized 阶段 lower 到具体硬件 instruction/runtime form；两层都不直接手写 raw packet
-  bitfield。
+- 将 target-abstract op lower 到 instruction-level `wafer.instr.*` IR 和 unplaced `wafer.storage.*`，
+  再由 SPM placement 在同一 IR 上填入 offset/range/bank；这一层不直接手写 raw packet bitfield。
 - 覆盖 CT、NE、RDMA、WDMA、TDMA 的 issue/drain 抽象和 wrapper selection。
 - 区分 issue-only op、local drain、host-visible boundary、group barrier。
 - 为 verifier 提供明确的 legality target。
@@ -396,7 +396,7 @@ bufferization 见 `tasks/2026-05-21-wafer-spm-bufferization-design.md`；DDR res
 compute/movement 层的 verifier 和 lowering 边界，不把某个 wrapper 名、示例 tile shape 或 raw
 packet 字段写成上层 IR 语义。
 
-storage-realized Wafer op 到 C ABI、wrapper 和 golden packet 的合同见
+placed instruction-level Wafer IR 到 C ABI、wrapper 和 golden packet emission 的合同见
 `tasks/2026-05-25-wafer-c-abi-golden-packet-design.md`。
 
 ### 3.8 Wafer Communication Dialect Stage
@@ -843,20 +843,20 @@ ModelImport/FrontendProgram
   verifier 依赖的 IR contract。
 - layout materialization ops 是真实 data movement，负责表达 physical layout conversion，
   不作为 metadata cast。
-- hardware recipe expansion 必须发生在 SPM allocation 之前；`wafer.compute.*` / `wafer.move.*`
-  只表达 target family，selected recipe 才表达 concrete storage values、temp/psum/staging、
-  queue 和 async lifetime。
+- instruction legalization / selection 必须发生在 SPM placement 之前；`wafer.compute.*` /
+  `wafer.move.*` 只表达 target family，instruction-level IR 才表达 concrete storage values、
+  temp/psum/staging、queue 和 async lifetime。
 - memory space 和 `mem_layout` 只在 `wafer.tile_region` / SPM bufferization 层出现，不进入
   tensor-level `wafer.group`。
-- `wafer-realize-tile-buffer-storage` 把 `!wafer.tile_buffer` 降成 physical `memref`、flat storage
+- storage realization 把 placed `wafer.storage.*` / `!wafer.tile_buffer` 降成 physical `memref`、flat storage
   或 explicit descriptor；compact layout 优先复用标准 memref/LLVM lowering，Cx/NCx 只把
   必要的 target storage facts 放入 descriptor。
-- `wafer.compute.*` / `wafer.comm.*` 消费 storage-realized SPM value 或 descriptor，不再做 fusion
+- `wafer.compute.*` / `wafer.comm.*` 消费 placed SPM value 或 descriptor，不再做 fusion
   决策。
 - `wafer.sync.*` 提供 local drain、communication wait、group barrier 等同步抽象，供 compute/comm lowering 复用。
 - `wafer.launch` 是 runtime-level launch boundary，负责参数、metadata 和 host/device ABI
   交接，不替代 tile-local execution region。
-- `wafer-to-llvm-cabi` 只处理 ABI，不回头改 schedule。
+- C ABI / packet emission 只消费 placed instruction-level IR，不回头改 schedule、layout 或 placement。
 
 如果后续 `wafer.comm` 或 `wafer.spm` 变得足够大、接口足够稳定，再拆成独立 dialect。
 V0 先保持统一 `wafer` namespace，降低跨 dialect type/attr 演进成本。
@@ -875,11 +875,11 @@ V0 先保持统一 `wafer` namespace，降低跨 dialect type/attr 演进成本�
 | `wafer.tile_region` | `tasks/2026-05-25-wafer-tile-region-design.md` | 草案 | bufferized tile-local execution scope、memory/effect ownership、movement/compute/sync ordering | tensor fusion、traversal selection、host launch/package ABI |
 | Layout materialization | `tasks/2026-05-21-wafer-layout-materialization-design.md` | 草案 | physical layout domain、op layout constraint、constant storage transform、materialization placement/cost | SPM address、packet field、group fusion |
 | SPM bufferization | `tasks/2026-05-21-wafer-spm-bufferization-design.md` | 草案 | `#spm` demand、liveness、range/alignment、allocation、storage realization input | DDR buffer object allocation、collective algorithm、host launch |
-| Compute / movement | `tasks/2026-05-25-wafer-compute-dialect-design.md` | 草案 | target-abstract compute/move op、layout/resource interface、issue/drain、lowering legality | tensor fusion、global sharding、host package format |
+| Compute / movement | `tasks/2026-05-25-wafer-compute-dialect-design.md` | 草案 | target-abstract compute/move op、layout/resource interface、instruction legality、issue/drain | tensor fusion、global sharding、host package format |
 | Communication | `tasks/2026-05-25-wafer-communication-dialect-design.md` | 草案 | tile_region / SPM materialization 之后的 collective-level op、p2p schedule、Direct DTE V0、token/effect、sync boundary | compute op legality、SPM allocator internals、SPMD tensor collective handoff |
 | DDR resource | `tasks/2026-05-25-wafer-ddr-resource-allocation-design.md` | 草案 | `#ddr` demand、external binding、workspace buffer object、constant residency、buffer object pool/domain、capacity/bandwidth | tensor fusion、SPM offset、packet bitfield |
 | Launch / runtime package | `tasks/2026-05-25-wafer-launch-runtime-package-design.md` | 草案 | `wafer.launch`、HPGR/KMD/legacy Tsm 分层、completion、buffer object pools、bootparam/TLV、package metadata | Linalg tiling、group formation、tile-local ordering |
-| C ABI / golden packet | `tasks/2026-05-25-wafer-c-abi-golden-packet-design.md` | 草案 | storage-realized Wafer op 到 C ABI 的参数单位、wait policy、golden packet | 上层 IR formation 和 layout search |
+| C ABI / golden packet | `tasks/2026-05-25-wafer-c-abi-golden-packet-design.md` | 草案 | placed instruction-level Wafer IR 到 C ABI / packet emission 的参数单位、wait policy、golden packet | 上层 IR formation、layout search 和 SPM placement |
 | Verification plan | `tasks/2026-05-25-wafer-verification-plan-design.md` | 草案 | stage diagnostics、roundtrip、golden packet、runtime shielding、PMU/cost-model gate | 替代各 dialect 语义设计 |
 | Serving integration | 暂不支持 | 延后 | graph capture、prefill/decode、KV cache 管理 | compiler core IR 合同 |
 

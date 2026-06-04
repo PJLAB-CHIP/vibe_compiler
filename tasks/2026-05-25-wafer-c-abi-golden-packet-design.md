@@ -4,7 +4,7 @@
 
 状态：设计草案；2026-05-25 独立边界收口
 
-本文定义 storage-realized Wafer device program 到 C ABI / wrapper / packet 的 lowering 合同，
+本文定义 placed instruction-level Wafer device program 到 C ABI / wrapper / packet 的 lowering 合同，
 以及 golden packet 测试边界。C ABI 是 lower-level codegen 的稳定调用面，不是上层 IR 语义。
 上层 `wafer.group`、`wafer.tile_region`、layout、SPM、DDR 和 communication 只需要满足该 ABI
 的 verifier 条件，不能继承历史 wrapper 的名字、默认 wait 策略或 packet bitfield 作为架构边界。
@@ -23,7 +23,8 @@
 目标：
 
 - 定义 `wafer_*` C ABI family 的参数单位、address domain、wait policy 和 error/status contract。
-- 把 lower-level `wafer.compute` / movement / `wafer.comm` / `wafer.sync` op 转成明确 C ABI call。
+- 把 placed instruction-level `wafer.instr.*` / movement / `wafer.comm` / `wafer.sync` op 转成明确
+  C ABI call 或 packet emission。
 - 通过 wrapper-first lowering 生成硬件任务，避免在主路径手写 raw packet bitfield。
 - 为每个 ABI family 建 golden packet tests，验证 wrapper 参数到 register packet 的映射。
 
@@ -39,15 +40,15 @@
 输入：
 
 ```text
-storage-realized wafer.tile_region
-  + memref / descriptor values
-  + lower-level wafer.compute / move / comm / sync ops
+placed instruction-level wafer.tile_region
+  + placed wafer.storage.* / memref / descriptor values
+  + wafer.instr.* / move / comm / sync ops
 ```
 
 输出：
 
 ```text
-LLVM dialect / C call sequence
+LLVM dialect / C call sequence or packet emission
   -> wafer_* C ABI functions
   -> public wrapper or runtime helper
   -> hardware packet / CSR / DTE helper
@@ -58,6 +59,30 @@ LLVM dialect / C call sequence
 - CT / NE / RDMA / WDMA / TDMA 通过 wrapper 或等价 runtime helper。
 - DTE / FSM / CSR 不走普通 `TsmExecute` packet path，需要独立 ABI family。
 - raw packet 只用于 debug、bring-up 或 golden test 对照，不作为普通 lowering 输出。
+
+### 2.1 R3.6 Pipeline Contract
+
+```text
+Pipeline position:
+- Upstream artifact / IR:
+  R3.2e/R3.4 产出的 placed instruction-level `wafer.instr.*` IR、placed `wafer.storage.*` /
+  memref / descriptor value、R3.5 DDR/resource binding facts 和 launch signature。
+- Current stage responsibility:
+  从 placed instruction-level IR 发射 `wafer_*` C ABI call、LLVM call 或 packet builder 输入，
+  固定参数单位、address domain、wait/completion policy 和 ABI version。
+- Output artifact / IR:
+  C ABI call sequence / packet emission metadata / debug dump，以及 golden packet test input。
+- Downstream consumer:
+  R3.7 IR-derived package manifest、R3.8 wrapper-facing call contract 和 board/runtime adapter。
+- User-level driver / named pipeline:
+  主线由后端 compile pipeline 调用；`wafer.abi.*` 如保留，只能作为 very-late debug/test dump，
+  不能成为用户级 compile flow。
+- Explicit non-goals:
+  不重新选择 group、tile shape、layout、instruction form、SPM placement 或 DDR resource plan。
+- Completion gate:
+  至少 RDMA/WDMA/GEMM 的 placed instruction 能生成可审计 ABI call/packet emission，并由 verifier
+  和 golden packet gate 覆盖参数单位、range-end、wait policy 和 wrapper mapping。
+```
 
 ## 3. ABI Design Rules
 
@@ -103,21 +128,17 @@ V0 family：
 这些函数名是 compiler-facing ABI family，不要求一一等同底层 public symbol。实现可以在 C shim 内
 调用 public Tsm wrapper、Kcore runtime helper 或未来 native helper。
 
-当前 V0 ABI issue 层用 `wafer.abi.rdma`、`wafer.abi.wdma`、`wafer.abi.gemm`、
-same-shape / limited-broadcast 子集的 `wafer.abi.elementwise`，以及 scalar-constant-init 子集的
-`wafer.abi.reduce` 作为 wrapper-first C ABI issue 点；fixed-size unicast
-`wafer.comm.send` / `recv` / `wait` 后续应 lower 到 `wafer.abi.dte_send`、`wafer.abi.dte_recv` 和
-`wafer.abi.dte_wait` issue op 或真实 C ABI call。它们保留 SSA/type verifier，用 explicit byte count、M/K/N、
-elementwise/reduce kind、reduce dimensions、init value、peer tile id、Direct DTE
-`fsm_id` / `packet_id` / `stream_id` resource tuple、可选 p2p `slot` 和 async token wait 表达参数
-单位、address direction、有限资源占用、gather slot 和 wait 边界；它们不是 raw packet dialect，
-也不保存 runtime physical address、BO handle、DTE id 或 raw non-unicast register field。后续
-C/LLVM lowering 可以把这些 issue op 转成实际 `wafer_*` C shim 调用，golden packet 测试再验证
-shim 到 wrapper/packet field 的映射。
+R3.6 主线不要求专门的 `wafer.abi.*` IR 层。codegen 可以直接从 placed `wafer.instr.*` 和
+placed `wafer.storage.*` 发射 `wafer_*` C shim 调用、LLVM call 或 packet builder 输入。
+如果保留 `wafer.abi.rdma`、`wafer.abi.wdma`、`wafer.abi.gemm`、`wafer.abi.elementwise`、
+`wafer.abi.reduce`、`wafer.abi.dte_*` 这类 op，它们只作为 very-late debug/test dump 或 emission
+helper，不能作为主线架构层，也不能承载 placement、layout 或 instruction selection 决策。
 
-Ring reduce collectives 在进入 C ABI issue 前应先展开为 p2p Direct DTE issue 和明确
-`wafer.compute.elementwise` accumulator step。旧 tile_region-to-C-ABI pass 已删除；后续 C ABI 层
-仍不应引入“带 reduction 的 DTE issue”。
+fixed-size unicast `wafer.comm.send` / `recv` / `wait` 在进入 C ABI emission 前应已经 lower 成
+placed Direct DTE instruction form，显式包含 byte count、endpoint、FSM/packet/stream resource、
+token/wait lifetime 和 staging storage。Ring reduce collectives 在进入 C ABI emission 前应先展开为
+p2p Direct DTE issue 和明确 `wafer.compute.elementwise` accumulator step。旧 tile_region-to-C-ABI
+pass 已删除；后续 C ABI 层仍不应引入“带 reduction 的 DTE issue”。
 
 ## 5. Instruction Facts to Preserve
 
@@ -177,9 +198,9 @@ Golden data 必须来自 register-level spec 和 wrapper behavior，不能来自
 
 当前 V0 unit gate 先用 `Wafer/ABI/TileAbi.h` 的 descriptor builder 固定 tile ABI argument contract：
 RDMA / WDMA 的 DDR lower bound、SPM usable range、byte count、exclusive end range 和
-`issue_only` policy，以及 GEMM 的 M/K/N 参数。这个 gate 覆盖 ABI issue op 的下游参数单位和
-address direction，但还不是最终 wrapper-to-register bitfield golden；真实 packet field 对照在
-接入 public wrapper 或 C shim 后继续扩展。
+`issue_only` policy，以及 GEMM 的 M/K/N 参数。这个 gate 覆盖 placed instruction 到 ABI 参数单位和
+address direction 的映射，但还不是最终 wrapper-to-register bitfield golden；真实 packet field 对照
+在接入 public wrapper 或 C shim 后继续扩展。
 
 ## 8. Verifier
 

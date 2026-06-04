@@ -51,8 +51,9 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   `WaferDialect.cpp` 只保留 dialect/attr/type/op 注册和 `TileBufferType` verifier。
 - 历史 local integration gate 曾把 `wafer-opt` IR FileCheck 和 fixed manifest/C stub fixture 放在同一
   测试文件里；这些 fixed emitter 和测试拼接已删除，当前 integration 只保留 IR pipeline coverage。
-- 当前 local compile 只到 `wafer.abi.*` issue ops；没有 IR-derived package manifest、LLVM dialect、
-  LLVM IR、object、真实 `wafer_*` call、runtime adapter 或板端 completion。
+- 当前 local compile 还没有从 placed instruction-level IR 导出 C ABI emission metadata、
+  IR-derived package manifest、LLVM dialect、LLVM IR、object、真实 `wafer_*` call、runtime adapter
+  或板端 completion。
 
 ## P0 工程、依赖、组织
 
@@ -73,8 +74,8 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - R0.2 后源码曾使用 `include/Wafer/Frontend`、`include/Wafer/IR`、`include/Wafer/Conversion`、
   `lib/Wafer/IR`、stage-specific `lib/Wafer/Transforms/*` 和 `lib/Wafer/Conversion`；2026-06-02
   清理后旧 `WaferConversion` pass target 已删除。
-- `WaferTransforms` 只注册当前仍成立的 transform pass；旧 C ABI issue lowering 和 `WaferConversion`
-  pass target 已删除，后续按 storage-realized contract 重建。
+- `WaferTransforms` 只注册当前仍成立的 transform pass；旧 C ABI issue-op lowering 和 `WaferConversion`
+  pass target 已删除，后续按 placed instruction-level IR contract 重建。
 - R0.3 后 core compiler、frontend/importer、runtime/driver 和 test tools 的 target 可见范围记录在
   `tasks/2026-05-26-wafer-dependency-layering-recovery.md`，并由 `tools/check_deps.py` 检查。
 - Shardy/SDY 公共 dialect 与 import/export/propagation passes 已通过 Wafer 顶层 CMake shim 复用
@@ -136,18 +137,19 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   `WaferLayoutMaterializationOpInterface`、`WaferResourceEffectInterface` 和 Wafer resource-backed
   MLIR memory effects；接口查询覆盖 group 边界、layout/SPM/DDR、compute/comm/sync/ABI 的局部需求。
 - 历史 local compute stage-connection lit gate 已删除；当前不再用 public linalg 手写 source
-  拼旧 group/tile/C ABI issue pass 链。
+  拼旧 group/tile/C ABI issue-op pass 链。
 
 缺口：
 
 - ODS、op verifier 和 dialect tests 已按 op family 拆文件；共享 verifier helper 集中在
   `lib/Wafer/IR/Ops/OpVerifierUtils.*`。
 - interface/resource/effect 已能作为 planner/verifier 的结构化查询入口，但还没有被 R3 的
-  closed-loop group planner、SPM allocation / DDR resource planning 和 storage-realized lowering 全量消费。
+  closed-loop group planner、SPM allocation / DDR resource planning 和 placed instruction-level lowering
+  全量消费。
 - Wafer dialect verifier 的孤立负例仍会使用 `builtin.unrealized_conversion_cast` 构造非法边界值；
   这些用例只能证明 verifier 形态。历史 R1.3 stage-connection gate 已删除；communication bridge
   的 visible cast 仍归 R6.2 清理。
-- 没有 storage-realized memref/descriptor 层，因此 `!wafer.tile_buffer` 还没有按设计消失。
+- 没有 placed instruction/storage memref/descriptor 层，因此 `!wafer.tile_buffer` 还没有按设计消失。
 
 恢复任务：
 
@@ -251,17 +253,18 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - 旧 `wafer-form-groups`、`wafer-materialize-single-tile`、`wafer-compact-layout-assignment`、
   `wafer-check-spm-allocation`、`wafer-materialize-ddr-external-bindings`、
   `wafer-lower-ring-*` 和 `wafer-lower-tile-region-to-c-abi` unit/debug pass 链已删除。
-- 有 `wafer.abi.rdma`、`wafer.abi.wdma`、`wafer.abi.gemm`、elementwise/reduce ABI issue ops。
+- 历史上有 `wafer.abi.rdma`、`wafer.abi.wdma`、`wafer.abi.gemm`、elementwise/reduce ABI issue ops；
+  当前主线不把它们作为必经 IR 层。
 - 有 `Wafer/ABI/TileAbi.h` descriptor unit tests、manifest validator 和 generated C stub syntax compile。
 
 缺口：
 
 - group formation、root tile planning、SPM allocation、DDR demand 和 ring collective lowering 的旧
   unit pass 已删除；后续必须从真实 program chain 恢复 closed-loop planner / resource planning。
-- SPM/DDR 仍未基于完整 interface demand、async lifetime、storage-realized memref/descriptor、
+- SPM/DDR 仍未基于完整 interface demand、async lifetime、placed instruction/storage memref/descriptor、
   workspace、resident constants、pool/domain、bandwidth 或 runtime binding 建立主线实现。
-- C ABI 还是 `wafer.abi.*` issue op 和 descriptor builder，不是真实 `wafer_*` call、LLVM lowering
-  或 wrapper-to-register golden packet。
+- C ABI 仍只有 descriptor builder / stub 工具覆盖，尚未从 placed instruction-level IR 生成真实
+  `wafer_*` call、LLVM lowering 或 wrapper-to-register golden packet。
 - fixed manifest emitter 已删除；IR-derived package manifest 仍未由当前 `wafer-opt` output 自动导出。
 
 恢复任务：
@@ -276,11 +279,11 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   liveness/range 和 tile buffer lifetime 驱动。
 - R3.5：恢复 DDR/resource demand gate，覆盖 external binding、workspace、resident constant、
   pool/domain、capacity/bandwidth demand。
-- R3.6：恢复 ABI issue gate，让 `wafer.abi.*` issue sequence 从当前 storage/movement/
-  compute IR 派生，并只表达 ABI 参数单位和 wait policy。
+- R3.6：恢复 C ABI / packet emission gate，让 ABI 参数单位和 wait policy 从 placed
+  instruction-level IR 派生；`wafer.abi.*` 如保留只作为 very-late debug/test dump。
 - R3.7：恢复 package manifest gate，manifest、C stub 和 launch signature 从当前 `wafer-opt`
   输出导出。
-- R3.8：恢复 storage-realized / C ABI / golden packet 边界，至少让 RDMA/WDMA/GEMM 有真实
+- R3.8：恢复 placed instruction-level IR / C ABI / golden packet 边界，至少让 RDMA/WDMA/GEMM 有真实
   wrapper-facing call contract 和 golden packet 对照。
 
 ## P4 Multi-Tile No Communication
@@ -342,7 +345,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - 有 rank-4 QK^T / AV contraction lowering、same-shape/projected-permutation elementwise、local reduce
   和 batched GEMM issue lowering。
 - 旧 local-transformer fixed manifest / C stub gate 已删除；当前 transformer integration 只覆盖
-  StableHLO -> C ABI issue IR pipeline。
+  StableHLO -> structured tensor/local compute pipeline，不覆盖 placed instruction-level IR 或 C ABI emission。
 
 缺口：
 
@@ -356,7 +359,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 
 恢复任务：
 
-- R5.1：恢复 transformer local 编译验证，让 workspace/resident constants/ABI issue sequence
+- R5.1：恢复 transformer local 编译验证，让 workspace/resident constants 和 C ABI emission metadata
   来自 full-block IR dataflow 和 lowering 输出。
 - R5.2：补 transformer compute coverage gaps：mask/select、dynamic-bound policy、non-constant-init reduce、
   constant/weight slice 和 package consistency。
@@ -377,7 +380,8 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 当前实现：
 
 - 有 `wafer.comm.send` / `recv` / `wait` verifier、placement peer validation、non-empty wait validation。
-- 有 `wafer.abi.dte_send` / `recv` / `wait` issue op 和 block-local resource tuple conflict validation。
+- 历史上有 `wafer.abi.dte_send` / `recv` / `wait` issue op 和 block-local resource tuple conflict
+  validation；当前主线应恢复 placed Direct DTE instruction form 和 C ABI emission。
 - 有 ring all-gather、reduce-scatter、all-reduce lowering 到 p2p + local elementwise accumulation。
 - 旧的 StableHLO all_gather/all_reduce/reduce_scatter 到 `wafer.comm` collective-level op 的
   normalization 已移除；R2.4 主线已恢复 StableHLO -> Wafer LinalgExt-style tensor collective
@@ -388,7 +392,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 缺口：
 
 - DTE resource id 是单调 provisional 分配，不是目标 DTE/FSM allocator。
-- collective buffer slice / slot / address offset lowering 没有真实 descriptor 或 storage-realized buffer。
+- collective buffer slice / slot / address offset lowering 没有真实 descriptor 或 placed storage buffer。
 - tiled tensor collective -> `wafer.comm` materialization 尚未实现；R6.2 需要在 tile_region / SPM
   materialization 之后补可验证 buffer-slice / layout/materialization 路径。
 - SPM/DDR resource 验证没有和 communication staging / buffer lifetime 完整组合。
@@ -406,7 +410,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 | ID | 状态 | 理由 |
 | --- | --- | --- |
 | P0 | 骨架 | 工程入口存在，源码 ownership、依赖层级边界和 IR op-family 文件边界已由 R0.2/R0.3/R1.1 恢复；仍不代表 frontend/runtime/package 主路径完成 |
-| P1 | 骨架 | 核心 op/type/verifier 基础实现存在，interface/effect/resource 已恢复；历史 local compute stage-connection gate 已删除，storage-realized 主链路和 communication cast bridge 仍未闭环 |
+| P1 | 骨架 | 核心 op/type/verifier 基础实现存在，interface/effect/resource 已恢复；历史 local compute stage-connection gate 已删除，placed instruction-level 主链路和 communication cast bridge 仍未闭环 |
 | P2 | 骨架 | StableHLO textual lowering、frontend program verifier、PyTorch/XLA program directory capture、SDY program bridge、P2.S1 Shardy propagation stage gate、P2.S2 Wafer-owned SPMD partition 和 R2.4 tensor collective handoff 已恢复；dynamic/mask/constant-storage、group/resource/package 和 physical schedule 仍未闭环 |
 | P3 | 骨架 | 旧 single-tile local unit path 已删除；group/resource/C ABI/package 主链路未闭环 |
 | P4 | 骨架 | placement/map 和 multi-tile fixture 可跑，但真实 shard/merge/launch binding 未闭环 |

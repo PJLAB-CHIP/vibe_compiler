@@ -5,8 +5,9 @@
 状态：设计草案；2026-05-25 独立边界收口
 
 本文定义 `wafer.launch`、runtime package、host runtime adapter 和 completion contract。该阶段
-位于 storage-realized device program、C ABI lowering 之后，负责把 device code、runtime metadata、
-placement、DDR binding、constant storage bytes 和 launch arguments 组织成可执行单元。
+位于 placed instruction-level device program、C ABI / packet emission 之后，负责把 device code、
+runtime metadata、placement、DDR binding、constant storage bytes 和 launch arguments 组织成
+可执行单元。
 
 本文依赖：
 
@@ -143,16 +144,16 @@ allocation failure 由 DDR 设计负责定义；launch 负责把这些失败报�
 当前 `tools/wafer_package_manifest.py` 只负责验证和 roundtrip 显式输入的 manifest schema，不再提供
 固定 package emitter。manifest schema 记录 launch signature、placement metadata、DDR external
 binding bytes、SPM/DDR resource summary、workspace buffer demand、resident constant demand、ABI
-issue ops、device-code program id 和 runtime completion source。validator 要求
+call/packet emission metadata、device-code program id 和 runtime completion source。validator 要求
 `resources.workspace_bytes` 与
 `workspace_buffers` 的 compact tensor storage bytes 求和一致，要求
 `resources.resident_constant_bytes` 与 `resident_constants` 求和一致；`launch_input` resident
 constant 必须引用 launch signature input，且不能引用 output。validator 显式拒绝已知 stub
 completion fence，例如 `TsmDeviceSynchronize` / `TsmLaunch`，因此 package correctness 不能只依赖
 legacy stub path 成功返回。`tools/wafer_emit_c_abi_stub.py` 只作为 tool-unit adapter，从显式 manifest
-fixture 生成可被 C compiler 做 syntax compile 的 ABI issue table、tile launch-arg table、workspace
-buffer table 和 resident constant table；它不代表当前 IR pipeline 已生成 package，也不代表真实
-device code 已可执行。
+fixture 生成可被 C compiler 做 syntax compile 的 ABI emission table、tile launch-arg table、
+workspace buffer table 和 resident constant table；它不代表当前 IR pipeline 已生成 package，也不代表
+真实 device code 已可执行。
 
 P4.4 起，C ABI stub 还从 placement metadata 生成 per-tile launch arg table：
 
@@ -173,7 +174,7 @@ arguments；它不反向定义 tensor semantics，也不包含 BO handle、physi
 
 历史 `--emit-single-tile-matmul`、`--emit-multi-tile-no-comm-matmul`、
 `--emit-single-tile-elementwise` 和 `--emit-local-transformer-block` fixed emitter 已删除。后续 package
-gate 必须从当前 `wafer-opt` pipeline 的 storage-realized / C ABI / launch IR 自动导出 manifest；
+gate 必须从当前 `wafer-opt` pipeline 的 placed instruction-level IR / C ABI emission / launch IR 自动导出 manifest；
 不能恢复独立固定 emitter 作为完成证明。
 
 placement metadata 当前包含：

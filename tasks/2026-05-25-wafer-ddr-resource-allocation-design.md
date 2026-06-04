@@ -76,7 +76,7 @@ range 和 BO allocation result 给出失败诊断。
 | `BAR2 visible` | small-BAR 情况最多 32 MiB visible window，visible BO 地址会加 KMD device offset |
 | `BAR4/ATU` | 覆盖 MHU、tile window、C2C、DDR controller、VPU、SYS_CTRL、log 等 aperture |
 
-Compiler IR 不应直接硬编码某个 runtime 返回的 physical address，但 storage-realized IR /
+Compiler IR 不应直接硬编码某个 runtime 返回的 physical address，但 placed instruction/storage IR /
 descriptor verifier 必须能检查：
 
 - DDR descriptor 是否位于 target policy 允许的 DDR address domain。
@@ -157,7 +157,7 @@ DDR 相关事实按 IR 层分布：
 | `wafer.tile_region` | `#ddr` / `#spm` memory space、load/store boundary、layout materialization、movement/effect | raw BO address、driver handle、unaccepted allocation trace |
 | accepted layout / buffer layer | `!wafer.tile_buffer<..., mem_layout, #ddr/#spm>` 或等价 buffer abstraction | host malloc pointer、runtime-private pool internals |
 | DDR resource planning | `DdrBufferDemand`、external binding、workspace BO demand、constant residency、pool candidates、lifetime、bandwidth | tensor math semantics、SPM offset search |
-| storage-realized IR | `memref<..., memory_space = #ddr>`、descriptor、workspace base+offset、movement ops | unresolved `tile_buffer` |
+| placed instruction/storage IR | `memref<..., memory_space = #ddr>`、descriptor、workspace base+offset、movement ops | unresolved `tile_buffer` |
 | launch / package / runtime | BO allocation/import/query、constant serialization、physical address binding、completion/fence | group formation 或 layout search 的内部 trace |
 
 `wafer.group` 可以依赖 DDR feasibility 结论，但不携带 DDR plan。DDR plan 要么进入更低层 IR
@@ -235,10 +235,11 @@ DdrBufferDemand {
 如果一个 demand 只能通过 name 或示例 case 恢复，说明 IR contract 不够，应该扩 op/type/interface，
 不能让 DDR planner 猜。
 
-R1.2 当前实现已给 `wafer.load_tile`、`wafer.store_tile`、`wafer.ddr.external_binding`、
-`wafer.comm.*` 和 `wafer.abi.*` 接入 `WaferResourceEffectInterface`，可查询 DDR read/write、
-SPM 对端、byte count 和 movement/communication issue。完整的 `DdrBufferDemand`、pool/domain、
-lifetime、range 和 bandwidth summary 仍属于后续 DDR resource planner。
+R1.2 当前实现已给 `wafer.load_tile`、`wafer.store_tile`、`wafer.ddr.external_binding` 和
+`wafer.comm.*` 接入 `WaferResourceEffectInterface`，可查询 DDR read/write、SPM 对端、byte count
+和 movement/communication issue。R3.2d/R3.6 后续需要让 placed `wafer.instr.*` / C ABI emission
+复用同一 resource-effect 合同。完整的 `DdrBufferDemand`、pool/domain、lifetime、range 和
+bandwidth summary 仍属于后续 DDR resource planner。
 
 ## 6. Allocation / Binding Model
 
@@ -270,7 +271,7 @@ materialization。该 op 由 `wafer.tile_region` 内的 `wafer.load_tile` / `waf
 use-def 推导，记录 input/output kind、compact tensor byte size、required alignment、read-only 和
 host-visible policy，供后续 launch/runtime package 层消费。它不记录 DDR physical address、BO
 handle、pool/domain 选择、workspace offset 或 allocation/search trace；这些事实仍属于 runtime
-binding、storage-realized descriptor 或 package metadata。
+binding、placed instruction/storage descriptor 或 package metadata。
 
 ### 6.2 Constant Residency
 
@@ -377,7 +378,7 @@ wafer.ddr.free(handle)
 conversion，或 `wafer.launch` metadata lowering；关键是：
 
 - allocation / import / query / free 是显式 runtime boundary，不是 group attr。
-- storage-realized movement op 消费的是带 `#ddr` memory space 的 memref 或 descriptor。
+- placed movement op 消费的是带 `#ddr` memory space 的 memref 或 descriptor。
 - pool/domain/flags 是 allocation policy，不改变 tensor math semantics。
 - runtime allocation failure 是合法的动态失败路径，不能被 compiler 伪装成静态成功。
 
@@ -568,7 +569,7 @@ DDR verifier 至少检查：
   relation 与 use-def/effect 一致。
 - pool/domain policy 满足 buffer class：普通 tensor workspace 不落 `NPU_BIN` / `LOG`，visible pool
   只用于 CPU-visible/control 需求或显式 policy。
-- storage-realized IR 中不再有无法 lowering 的 abstract DDR boundary。
+- placed instruction/storage IR 中不再有无法 lowering 的 abstract DDR boundary。
 
 ## 12. Lowering Responsibility
 
@@ -635,7 +636,7 @@ runtime boundary 才进入 IR 或 package metadata。
    下游 group 再从该 slice load。
 6. SPM allocation 只分配 tile-local input/psum/output/materialization temp；DDR planner 另外统计
    `%out1` workspace lifetime、constant residency 和 load/store bandwidth。
-7. Runtime launch 时分配 workspace BO，绑定 external BO，query physical address；storage-realized
+7. Runtime launch 时分配 workspace BO，绑定 external BO，query physical address；placed instruction-level
    IR 只消费 descriptor/base+offset，不再携带抽象 plan。
 
 这个 case 只说明 IR 流向，不是架构边界：

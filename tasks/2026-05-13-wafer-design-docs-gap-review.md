@@ -180,7 +180,7 @@ legality；comm 负责 Direct DTE / FSM / token/wait；runtime/package、C ABI �
 
 `tasks/2026-05-25-wafer-c-abi-golden-packet-design.md` 和
 `tasks/2026-05-25-wafer-verification-plan-design.md` 已把 lower-level Wafer instruction/runtime op、
-C ABI call、storage-realized memref/descriptor、legality diagnostics 和 wrapper golden packet
+C ABI call、placed instruction/storage memref/descriptor、legality diagnostics 和 wrapper golden packet
 tests 拆到对应层级。
 
 ## 6. Layout 设计已由 layout 子设计承接
