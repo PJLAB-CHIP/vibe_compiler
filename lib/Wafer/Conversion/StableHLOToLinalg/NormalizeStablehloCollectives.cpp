@@ -17,6 +17,9 @@
 #endif
 
 namespace wafer {
+#define GEN_PASS_DEF_NORMALIZESTABLEHLOCOLLECTIVESPASS
+#include "Wafer/Transforms/WaferPasses.h.inc"
+
 namespace {
 
 #ifdef WAFER_ENABLE_STABLEHLO
@@ -44,8 +47,8 @@ getSingleReplicaGroup(mlir::DenseIntElementsAttr replicaGroups) {
   return ranks;
 }
 
-static mlir::DenseI64ArrayAttr
-getRankGroupAttr(mlir::OpBuilder &builder, llvm::ArrayRef<int64_t> ranks) {
+static mlir::DenseI64ArrayAttr getRankGroupAttr(mlir::OpBuilder &builder,
+                                                llvm::ArrayRef<int64_t> ranks) {
   return mlir::DenseI64ArrayAttr::get(builder.getContext(), ranks);
 }
 
@@ -83,9 +86,9 @@ static void replaceAndErase(mlir::Operation *oldOp, mlir::Operation *newOp) {
   oldOp->erase();
 }
 
-static bool areMappedBlockArguments(
-    mlir::Value lhs, mlir::Value rhs, mlir::BlockArgument sourceLhs,
-    mlir::BlockArgument sourceRhs) {
+static bool areMappedBlockArguments(mlir::Value lhs, mlir::Value rhs,
+                                    mlir::BlockArgument sourceLhs,
+                                    mlir::BlockArgument sourceRhs) {
   return (lhs == sourceLhs && rhs == sourceRhs) ||
          (lhs == sourceRhs && rhs == sourceLhs);
 }
@@ -148,9 +151,10 @@ static mlir::Value convertReturnedCombinerValue(
   return {};
 }
 
-static mlir::LogicalResult
-convertCombinerRegion(mlir::Region &sourceRegion, mlir::Region &destRegion,
-                      mlir::ValueRange inputs, mlir::ResultRange results) {
+static mlir::LogicalResult convertCombinerRegion(mlir::Region &sourceRegion,
+                                                 mlir::Region &destRegion,
+                                                 mlir::ValueRange inputs,
+                                                 mlir::ResultRange results) {
   if (!sourceRegion.hasOneBlock())
     return mlir::failure();
   mlir::Block &sourceBlock = sourceRegion.front();
@@ -223,8 +227,8 @@ static bool lowerAllGather(mlir::stablehlo::AllGatherOp allGather) {
     return false;
 
   auto lowered = builder.create<TensorCollectiveAllGatherOp>(
-      allGather.getLoc(), allGather->getResultTypes(),
-      allGather.getOperands(), *outs, allGather.getAllGatherDimAttr(),
+      allGather.getLoc(), allGather->getResultTypes(), allGather.getOperands(),
+      *outs, allGather.getAllGatherDimAttr(),
       getRankGroupAttr(builder, *rankGroup),
       getChannelIdAttr(builder, allGather.getChannelHandleAttr()),
       getUseGlobalDeviceIdsAttr(builder, allGather.getUseGlobalDeviceIds()));
@@ -248,10 +252,9 @@ static bool lowerAllReduce(mlir::stablehlo::AllReduceOp allReduce) {
       *outs, getRankGroupAttr(builder, *rankGroup),
       getChannelIdAttr(builder, allReduce.getChannelHandleAttr()),
       getUseGlobalDeviceIdsAttr(builder, allReduce.getUseGlobalDeviceIds()));
-  if (mlir::failed(convertCombinerRegion(allReduce.getComputation(),
-                                         lowered.getCombiner(),
-                                         allReduce.getOperands(),
-                                         lowered.getResults()))) {
+  if (mlir::failed(convertCombinerRegion(
+          allReduce.getComputation(), lowered.getCombiner(),
+          allReduce.getOperands(), lowered.getResults()))) {
     lowered.erase();
     eraseUnusedDestinationTensors(*outs);
     return false;
@@ -273,15 +276,15 @@ static bool lowerReduceScatter(mlir::stablehlo::ReduceScatterOp reduceScatter) {
 
   auto lowered = builder.create<TensorCollectiveReduceScatterOp>(
       reduceScatter.getLoc(), reduceScatter->getResultTypes(),
-      reduceScatter->getOperands(), *outs, reduceScatter.getScatterDimensionAttr(),
+      reduceScatter->getOperands(), *outs,
+      reduceScatter.getScatterDimensionAttr(),
       getRankGroupAttr(builder, *rankGroup),
       getChannelIdAttr(builder, reduceScatter.getChannelHandleAttr()),
       getUseGlobalDeviceIdsAttr(builder,
                                 reduceScatter.getUseGlobalDeviceIds()));
-  if (mlir::failed(convertCombinerRegion(reduceScatter.getComputation(),
-                                         lowered.getCombiner(),
-                                         reduceScatter->getOperands(),
-                                         lowered.getResults()))) {
+  if (mlir::failed(convertCombinerRegion(
+          reduceScatter.getComputation(), lowered.getCombiner(),
+          reduceScatter->getOperands(), lowered.getResults()))) {
     lowered.erase();
     eraseUnusedDestinationTensors(*outs);
     return false;
@@ -303,8 +306,9 @@ static bool lowerAllToAll(mlir::stablehlo::AllToAllOp allToAll) {
 
   auto lowered = builder.create<TensorCollectiveAllToAllOp>(
       allToAll.getLoc(), allToAll->getResultTypes(), allToAll.getOperands(),
-      *outs, allToAll.getSplitDimensionAttr(), allToAll.getConcatDimensionAttr(),
-      allToAll.getSplitCountAttr(), getRankGroupAttr(builder, *rankGroup),
+      *outs, allToAll.getSplitDimensionAttr(),
+      allToAll.getConcatDimensionAttr(), allToAll.getSplitCountAttr(),
+      getRankGroupAttr(builder, *rankGroup),
       getChannelIdAttr(builder, allToAll.getChannelHandleAttr()),
       mlir::BoolAttr());
   replaceAndErase(allToAll, lowered);
@@ -351,23 +355,14 @@ lowerCollectivePermute(mlir::stablehlo::CollectivePermuteOp collectivePermute) {
 #endif
 
 struct NormalizeStablehloCollectivesPass
-    : public mlir::PassWrapper<NormalizeStablehloCollectivesPass,
-                               mlir::OperationPass<mlir::ModuleOp>> {
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(
-      NormalizeStablehloCollectivesPass)
-
-  llvm::StringRef getArgument() const final {
-    return "wafer-normalize-stablehlo-collectives";
-  }
-
-  llvm::StringRef getDescription() const final {
-    return "normalize post-SPMD StableHLO collectives to Wafer tensor "
-           "collective handoff ops";
-  }
+    : public impl::NormalizeStablehloCollectivesPassBase<
+          NormalizeStablehloCollectivesPass> {
+  using impl::NormalizeStablehloCollectivesPassBase<
+      NormalizeStablehloCollectivesPass>::NormalizeStablehloCollectivesPassBase;
 
   void getDependentDialects(mlir::DialectRegistry &registry) const final {
-    registry.insert<mlir::arith::ArithDialect, mlir::tensor::TensorDialect,
-                    wafer::WaferDialect>();
+    impl::NormalizeStablehloCollectivesPassBase<
+        NormalizeStablehloCollectivesPass>::getDependentDialects(registry);
 #ifdef WAFER_ENABLE_STABLEHLO
     registry.insert<mlir::stablehlo::StablehloDialect>();
 #endif
@@ -377,8 +372,7 @@ struct NormalizeStablehloCollectivesPass
 #ifdef WAFER_ENABLE_STABLEHLO
     llvm::SmallVector<mlir::Operation *> collectives;
     getOperation().walk([&](mlir::Operation *op) {
-      if (mlir::isa<mlir::stablehlo::AllGatherOp,
-                    mlir::stablehlo::AllReduceOp,
+      if (mlir::isa<mlir::stablehlo::AllGatherOp, mlir::stablehlo::AllReduceOp,
                     mlir::stablehlo::ReduceScatterOp,
                     mlir::stablehlo::AllToAllOp,
                     mlir::stablehlo::CollectivePermuteOp>(op))
@@ -399,8 +393,7 @@ struct NormalizeStablehloCollectivesPass
                      mlir::dyn_cast<mlir::stablehlo::AllToAllOp>(op)) {
         lowered = lowerAllToAll(allToAll);
       } else if (auto collectivePermute =
-                     mlir::dyn_cast<mlir::stablehlo::CollectivePermuteOp>(
-                         op)) {
+                     mlir::dyn_cast<mlir::stablehlo::CollectivePermuteOp>(op)) {
         lowered = lowerCollectivePermute(collectivePermute);
       }
 
@@ -416,9 +409,5 @@ struct NormalizeStablehloCollectivesPass
 };
 
 } // namespace
-
-std::unique_ptr<mlir::Pass> createNormalizeStablehloCollectivesPass() {
-  return std::make_unique<NormalizeStablehloCollectivesPass>();
-}
 
 } // namespace wafer

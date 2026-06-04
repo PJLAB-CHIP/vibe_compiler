@@ -2,8 +2,8 @@
 
 #include "Wafer/Transforms/Passes.h"
 
-#include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Analysis/Group/TilingDemandAnalysis.h"
+#include "Wafer/IR/WaferDialect.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -14,6 +14,9 @@
 #include "llvm/Support/raw_ostream.h"
 
 namespace wafer {
+#define GEN_PASS_DEF_DUMPGROUPTILINGDEMANDPASS
+#include "Wafer/Transforms/WaferPasses.h.inc"
+
 namespace {
 
 static std::string getNearestSymbolName(mlir::Operation *op) {
@@ -26,22 +29,9 @@ static std::string getNearestSymbolName(mlir::Operation *op) {
 }
 
 struct DumpGroupTilingDemandPass
-    : public mlir::PassWrapper<DumpGroupTilingDemandPass,
-                               mlir::OperationPass<mlir::ModuleOp>> {
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(DumpGroupTilingDemandPass)
-
-  llvm::StringRef getArgument() const final {
-    return "wafer-dump-group-tiling-demand";
-  }
-
-  llvm::StringRef getDescription() const final {
-    return "dump R3.2a wafer.group op tiling demand analysis";
-  }
-
-  void getDependentDialects(mlir::DialectRegistry &registry) const final {
-    registry.insert<mlir::arith::ArithDialect, mlir::linalg::LinalgDialect,
-                    mlir::tensor::TensorDialect, wafer::WaferDialect>();
-  }
+    : public impl::DumpGroupTilingDemandPassBase<DumpGroupTilingDemandPass> {
+  using impl::DumpGroupTilingDemandPassBase<
+      DumpGroupTilingDemandPass>::DumpGroupTilingDemandPassBase;
 
   void runOnOperation() final {
     llvm::DenseMap<mlir::Operation *, unsigned> groupOrdinals;
@@ -59,13 +49,10 @@ struct DumpGroupTilingDemandPass
       }
       dumpGroupTilingDemand(demand, labelOs.str(), llvm::errs());
     });
+    markAllAnalysesPreserved();
   }
 };
 
 } // namespace
-
-std::unique_ptr<mlir::Pass> createDumpGroupTilingDemandPass() {
-  return std::make_unique<DumpGroupTilingDemandPass>();
-}
 
 } // namespace wafer

@@ -7,13 +7,12 @@
 
 namespace wafer {
 
+#define GEN_PASS_REGISTRATION
+#include "Wafer/Transforms/WaferPasses.h.inc"
+
 void registerWaferTransformPasses() {
   static bool registered = [] {
-    mlir::registerPass(createFormGroupCandidatesPass);
-    mlir::registerPass(createDumpGroupTilingDemandPass);
-    mlir::registerPass(createDumpGroupLayoutPlanPass);
-    mlir::registerPass(createDumpTileRegionCandidatePass);
-    mlir::registerPass(createNormalizeStablehloCollectivesPass);
+    registerWaferTransformsPasses();
 #ifdef WAFER_ENABLE_SHARDY
     mlir::registerPass([] { return createApplyDefaultSpmdShardingPass(); });
 #endif

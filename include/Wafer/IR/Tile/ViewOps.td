@@ -15,9 +15,10 @@ def Wafer_ViewReshapeOp : Wafer_Op<"view.reshape", [
     needs physical layout materialization, it must use explicit movement.
   }];
 
-  let arguments = (ins AnyType:$source);
-  let results = (outs AnyType:$result);
+  let arguments = (ins Wafer_AnyTileBuffer:$source);
+  let results = (outs Wafer_AnyTileBuffer:$result);
   let hasVerifier = 1;
+  let hasFolder = 1;
   let assemblyFormat = "$source attr-dict `:` type($source) `->` type($result)";
 }
 

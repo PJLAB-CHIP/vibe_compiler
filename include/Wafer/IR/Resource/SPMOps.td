@@ -15,7 +15,7 @@ def Wafer_AllocTileOp : Wafer_Op<"alloc_tile", [
     the result type only; R3.2d assigns the concrete SPM window.
   }];
 
-  let results = (outs AnyType:$result);
+  let results = (outs Wafer_AnyTileBuffer:$result);
   let hasVerifier = 1;
   let assemblyFormat = "attr-dict `:` type($result)";
 }
@@ -28,8 +28,8 @@ def Wafer_LoadTileOp : Wafer_Op<"load_tile", [
                    MemWrite<Wafer_MovementResource>]>
   ]> {
   let summary = "load an external tensor tile into a tile buffer";
-  let arguments = (ins AnyType:$source);
-  let results = (outs AnyType:$result);
+  let arguments = (ins AnyRankedTensor:$source);
+  let results = (outs Wafer_AnyTileBuffer:$result);
   let hasVerifier = 1;
   let assemblyFormat = "$source attr-dict `:` type($source) `->` type($result)";
 }
@@ -42,7 +42,7 @@ def Wafer_StoreTileOp : Wafer_Op<"store_tile", [
                    MemWrite<Wafer_MovementResource>]>
   ]> {
   let summary = "store a tile buffer to an external tensor boundary";
-  let arguments = (ins AnyType:$source, AnyType:$dest);
+  let arguments = (ins Wafer_AnyTileBuffer:$source, AnyRankedTensor:$dest);
   let hasVerifier = 1;
   let assemblyFormat =
       "$source `,` $dest attr-dict `:` type($source) `->` type($dest)";

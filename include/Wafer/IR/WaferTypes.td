@@ -6,6 +6,7 @@
 include "Wafer/IR/WaferAttrs.td"
 include "Wafer/IR/WaferBase.td"
 include "mlir/IR/AttrTypeBase.td"
+include "mlir/IR/CommonTypeConstraints.td"
 
 def Wafer_TileBufferType : TypeDef<Wafer_Dialect, "TileBuffer"> {
   let mnemonic = "tile_buffer";
@@ -27,5 +28,14 @@ def Wafer_TileBufferType : TypeDef<Wafer_Dialect, "TileBuffer"> {
   let genVerifyDecl = 1;
   let assemblyFormat = "`<` $tensorType `,` $layout `,` $memorySpace `>`";
 }
+
+def Wafer_AnyTileBuffer : Type<
+  CPred<"::llvm::isa<::wafer::TileBufferType>($_self)">,
+  "Wafer tile buffer">;
+
+def Wafer_AnyRankedTensorOrTileBuffer : AnyTypeOf<[
+  AnyRankedTensor,
+  Wafer_AnyTileBuffer
+]>;
 
 #endif // WAFER_IR_WAFERTYPES_TD

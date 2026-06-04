@@ -11,9 +11,6 @@ using namespace wafer;
 using namespace wafer::detail;
 
 mlir::LogicalResult TileRegionOp::verify() {
-  if (getBody().empty())
-    return emitOpError("expected non-empty body region");
-
   for (mlir::Type resultType : getResultTypes()) {
     if (isSPMTileBuffer(resultType))
       return emitOpError(
@@ -24,6 +21,13 @@ mlir::LogicalResult TileRegionOp::verify() {
       return emitOpError(
           "SPM tile buffers cannot cross wafer.tile_region boundaries");
   }
+
+  return mlir::success();
+}
+
+mlir::LogicalResult TileRegionOp::verifyRegions() {
+  if (getBody().empty())
+    return emitOpError("expected non-empty body region");
 
   mlir::Block &block = getBody().front();
   if (block.getNumArguments() != getInputs().size())

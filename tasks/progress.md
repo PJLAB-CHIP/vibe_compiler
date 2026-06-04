@@ -40,9 +40,10 @@ PyTorch/XLA StableHLO Wafer program directory
 
 - `wafer` 保持单 dialect namespace，但 IR 定义、verifier 和 dialect tests 按 IR 层组织：
   `Tensor`、`Tile`、`Resource`、`Instr`、`Runtime`、`Debug`、`Common`。
-- `WaferAnalysis` 只承载可从当前 IR 重算的 group analysis；`WaferTransforms` 只注册 transform pass /
-  pipeline glue；`WaferStableHLOToLinalg` 和 `WaferGroupToTileRegion` 在 `lib/Wafer/Conversion` 中按
-  source/target IR contract 单独 owning。
+- `WaferAnalysis` 只承载可从当前 IR 重算的 group analysis；`WaferTransforms` 用
+  `include/Wafer/Transforms/Passes.td` 声明 pass API 并注册 transform pass / pipeline glue；
+  `WaferStableHLOToLinalg` 和 `WaferGroupToTileRegion` 在 `lib/Wafer/Conversion` 中按 source/target
+  IR contract 单独 owning。
 
 ## 已完成链路
 
@@ -55,7 +56,7 @@ PyTorch/XLA StableHLO Wafer program directory
 | R3.1 | done | `2026-05-12-wafer-group-design.md` 2.1、9.1-9.5 | R2.4 rank-local structured tensor IR | verifier-legal logical `wafer.group`；覆盖 fill/init、matmul+bias+epilogue、simple elementwise、tensor collective handoff、多 group 和 raw StableHLO / lower-level op 禁止 |
 | R3.2a | done | `2026-05-12-wafer-group-design.md` 10.1-10.2 | R3.1 logical `wafer.group` body | `GroupTilingDemand` analysis result；覆盖 boundary/result tile facts、per-op slice、iterator、accumulator/reduction dims、collective demand 和 unsupported-op failure |
 | R3.2b | done | `2026-05-21-wafer-layout-materialization-design.md` 3.1.1 | R3.2a `GroupTilingDemand` facts + group SSA use-def | `GroupLayoutPlan` analysis result；覆盖 boundary layout、op layout constraints、broadcast relation、materialization cut/result demand 和 failure forwarding；不修改 IR |
-| R3.2c | done | `2026-05-25-wafer-tile-region-design.md` 2.1-2.2 | R3.1 group + R3.2a demand + R3.2b layout plan | MLIR DialectConversion 驱动的 scratch full conversion；输出 provisional `wafer.tile_region` candidate，覆盖 load/store、`wafer.alloc_tile`、layout materialization、`wafer.compute.fill/gemm/elementwise/reduce`、`wafer.move.*` 和 `wafer.view.reshape`；硬件 V0 无承载或缺 placement/local-rank facts 时结构化 failure；不写主 IR、不做 SPM offset |
+| R3.2c | done | `2026-05-25-wafer-tile-region-design.md` 2.1-2.2 | R3.1 group + R3.2a demand + R3.2b layout plan | MLIR DialectConversion 驱动的 `wafer-convert-group-to-tile-region` pass 和同源 scratch/dump candidate builder；输出 provisional `wafer.tile_region` IR，覆盖 load/store、`wafer.alloc_tile`、layout materialization、`wafer.compute.fill/gemm/elementwise/reduce`、`wafer.move.*` 和 `wafer.view.reshape`；硬件 V0 无承载或缺 placement/local-rank facts 时结构化 failure；不做 SPM offset，不把 candidate 当成 R3.3 accepted materialization |
 
 ## 当前状态
 
@@ -64,7 +65,9 @@ candidate**。
 
 R3.2d 可以消费 R3.2c 的 provisional `wafer.tile_region` candidate。当前边界是：
 
-- candidate 中的 `!wafer.tile_buffer`、`wafer.alloc_tile`、`wafer.load_tile`、`wafer.store_tile`、
+- R3.2c 的正式 conversion pass 可在 supported group 上 materialize provisional `wafer.tile_region` IR；
+  dump/planner 入口复用同一个 conversion builder。candidate 中的 `!wafer.tile_buffer`、`wafer.alloc_tile`、
+  `wafer.load_tile`、`wafer.store_tile`、
   `wafer.layout.materialize`、`wafer.compute.*`、`wafer.move.*` 和 `wafer.view.reshape` 已能表达
   target-abstract layout/resource/view 关系，但还不是 SPM allocation 的直接输入。
 - R3.2d 只做 Wafer instruction legalization / selection：把 target-abstract op 合法化并选择成

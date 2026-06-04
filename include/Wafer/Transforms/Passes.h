@@ -12,12 +12,10 @@ class Pass;
 
 namespace wafer {
 
+#define GEN_PASS_DECL
+#include "Wafer/Transforms/WaferPasses.h.inc"
+
 std::unique_ptr<mlir::Pass> createLegalizeStablehloToLinalgPass();
-std::unique_ptr<mlir::Pass> createFormGroupCandidatesPass();
-std::unique_ptr<mlir::Pass> createDumpGroupTilingDemandPass();
-std::unique_ptr<mlir::Pass> createDumpGroupLayoutPlanPass();
-std::unique_ptr<mlir::Pass> createDumpTileRegionCandidatePass();
-std::unique_ptr<mlir::Pass> createNormalizeStablehloCollectivesPass();
 #ifdef WAFER_ENABLE_SHARDY
 std::unique_ptr<mlir::Pass> createApplyDefaultSpmdShardingPass();
 std::unique_ptr<mlir::Pass>

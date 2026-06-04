@@ -17,6 +17,7 @@ target_link_libraries(wafer-opt
   MLIRPass
   MLIRSCFDialect
   MLIRTensorDialect
+  MLIRTransforms
 )
 
 if(WAFER_ENABLE_IMPORTER_DEPS)

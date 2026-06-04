@@ -111,6 +111,19 @@
 - Wafer IR 文件组织检查入口是 `tools/check_ir_organization.py --root .`；它检查 `WaferOps.td` 只作为
   TableGen 聚合入口、ODS/verifier/test 按 `Tensor`、`Tile`、`Resource`、`Instr`、`Runtime`、`Debug`
   和 `Common` IR 层组织，并检查 `Conversion` 不再被 `WaferTransforms` 直接 owning。
+- Wafer transform pass API 的主入口是 `include/Wafer/Transforms/Passes.td` 生成的
+  `WaferPasses.h.inc`；新增非可选 pass 应先在 `Passes.td` 声明 argument、summary 和
+  dependent dialects，再让实现继承 generated base。只读 dump pass 结束前要
+  `markAllAnalysesPreserved()`。
+- Region op 的 verifier 要按 MLIR 阶段拆：boundary / operand / result invariant 放普通
+  `verify()`，body argument、terminator 和 region body legality 放 `verifyRegions()`。父 region op
+  只解释自己 body 的直接 op，不递归解释子 op 内部 region。
+- 长期 op/type 协议优先放 ODS type constraints 和 verifier，不靠手写字符串诊断补类型合法性；
+  `!wafer.tile_buffer`、ranked tensor boundary 和 async token 这类类型要在 ODS 里约束，并在公开
+  dialect header / CMake link 中显式包含对应 MLIR type 依赖。
+- `wafer-opt` 需要显式注册要暴露的 MLIR pass families；如果测试或用户入口依赖 canonicalizer/CSE
+  这类标准 pass，注册 `mlir::registerTransformsPasses()` 并链接 `MLIRTransforms`，不要假设
+  `MlirOptMain` 会自动注册。
 - 历史 stage-connection 测试和 `tools/check_stage_connection_tests.py` 已删除；后续 group/tile/storage
   连接必须由真实 frontend/SPMD program chain 和 R3/R6/R7 contract 恢复，不能重建手写 fixture 链来冒充主线。
 - 任务支持范围按硬件能力、runtime/ABI 证据和当前 IR contract 判断，不能按“当前下游 pass 尚未

@@ -5,4 +5,4 @@ module {
   wafer.comm.wait %not_token : tensor<4xf32>
 }
 
-// CHECK: comm wait operands must be async tokens
+// CHECK: operand #0 must be variadic of async token type

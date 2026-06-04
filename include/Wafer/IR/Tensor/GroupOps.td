@@ -26,6 +26,7 @@ def Wafer_GroupOp : Wafer_Op<"group", [
   let regions = (region SizedRegion<1>:$body);
 
   let hasVerifier = 1;
+  let hasRegionVerifier = 1;
   let assemblyFormat = [{
     `ins` `(` $inputs `:` type($inputs) `)`
     `outs` `(` $outs `:` type($outs) `)`

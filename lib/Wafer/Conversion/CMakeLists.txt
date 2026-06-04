@@ -4,6 +4,9 @@ add_mlir_conversion_library(WaferGroupToTileRegion
   ADDITIONAL_HEADER_DIRS
   ${PROJECT_SOURCE_DIR}/include/Wafer/Conversion/WaferGroupToTileRegion
 
+  DEPENDS
+  WaferPassesIncGen
+
   LINK_LIBS PUBLIC
   WaferAnalysis
   WaferIR
@@ -20,6 +23,9 @@ add_mlir_conversion_library(WaferGroupToTileRegion
 add_mlir_conversion_library(WaferStableHLOToLinalg
   StableHLOToLinalg/LegalizeStablehloToLinalg.cpp
   StableHLOToLinalg/NormalizeStablehloCollectives.cpp
+
+  DEPENDS
+  WaferPassesIncGen
 
   LINK_LIBS PUBLIC
   WaferIR

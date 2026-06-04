@@ -3,6 +3,8 @@
 #ifndef WAFER_IR_OPS_COMPUTEOPS_TD
 #define WAFER_IR_OPS_COMPUTEOPS_TD
 
+include "mlir/Dialect/Async/IR/AsyncTypes.td"
+
 def Wafer_ComputeFillOp : Wafer_Op<"compute.fill", [
     DeclareOpInterfaceMethods<WaferLayoutOpInterface>,
     DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
@@ -17,7 +19,7 @@ def Wafer_ComputeFillOp : Wafer_Op<"compute.fill", [
     assign a physical SPM offset.
   }];
 
-  let arguments = (ins AnyType:$dest, AnyType:$value);
+  let arguments = (ins Wafer_AnyTileBuffer:$dest, AnyType:$value);
   let hasVerifier = 1;
   let assemblyFormat =
       "$dest `,` $value attr-dict `:` type($dest) `,` type($value)";
@@ -31,8 +33,8 @@ def Wafer_ComputeGemmOp : Wafer_Op<"compute.gemm", [
                    MemWrite<Wafer_ComputeResource>]>
   ]> {
   let summary = "target-abstract tile GEMM";
-  let arguments = (ins AnyType:$lhs, AnyType:$rhs);
-  let results = (outs AnyType:$result);
+  let arguments = (ins Wafer_AnyTileBuffer:$lhs, Wafer_AnyTileBuffer:$rhs);
+  let results = (outs Wafer_AnyTileBuffer:$result);
   let hasVerifier = 1;
   let assemblyFormat =
       "$lhs `,` $rhs attr-dict `:` functional-type(operands, results)";
@@ -58,9 +60,9 @@ def Wafer_ComputeElementwiseOp : Wafer_Op<"compute.elementwise", [
 
   let arguments = (ins
     Wafer_ComputeElementwiseKindAttr:$kind,
-    Variadic<AnyType>:$inputs
+    Variadic<Wafer_AnyTileBuffer>:$inputs
   );
-  let results = (outs AnyType:$result);
+  let results = (outs Wafer_AnyTileBuffer:$result);
   let hasVerifier = 1;
   let assemblyFormat =
       "$kind $inputs attr-dict `:` functional-type(operands, results)";
@@ -83,10 +85,10 @@ def Wafer_ComputeReduceOp : Wafer_Op<"compute.reduce", [
 
   let arguments = (ins
     Wafer_ComputeReduceKindAttr:$kind,
-    AnyType:$input,
+    Wafer_AnyTileBuffer:$input,
     Optional<AnyType>:$init
   );
-  let results = (outs AnyType:$result);
+  let results = (outs Wafer_AnyTileBuffer:$result);
   let hasVerifier = 1;
   let assemblyFormat =
       "$kind $input (`,` $init^)? attr-dict `:` functional-type(operands, results)";
@@ -100,11 +102,11 @@ class Wafer_CommP2POp<string mnemonic> : Wafer_Op<mnemonic, [
                    MemWrite<Wafer_CommunicationResource>]>
   ]> {
   let arguments = (ins
-    AnyType:$buffer,
+    Wafer_AnyTileBuffer:$buffer,
     I64Attr:$peer,
     I64Attr:$bytes
   );
-  let results = (outs AnyType:$token);
+  let results = (outs Async_TokenType:$token);
   let hasVerifier = 1;
   let assemblyFormat =
       "$buffer attr-dict `:` type($buffer) `->` type($token)";

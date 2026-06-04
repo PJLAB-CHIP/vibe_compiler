@@ -3,6 +3,7 @@
 #include "Wafer/Conversion/WaferGroupToTileRegion/WaferGroupToTileRegion.h"
 
 #include "Wafer/Analysis/Group/LayoutPlanningAnalysis.h"
+#include "Wafer/Transforms/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -13,11 +14,17 @@
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Verifier.h"
+#include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 
 using namespace wafer;
+
+namespace wafer {
+#define GEN_PASS_DEF_CONVERTGROUPTOTILEREGIONPASS
+#include "Wafer/Transforms/WaferPasses.h.inc"
+} // namespace wafer
 
 namespace {
 
@@ -971,6 +978,41 @@ cloneGroupToScratchModule(GroupOp group) {
   return scratchModule;
 }
 
+static void configureGroupToTileRegionTarget(mlir::ConversionTarget &target) {
+  target.addLegalDialect<mlir::arith::ArithDialect, mlir::func::FuncDialect,
+                         wafer::WaferDialect>();
+  target.addLegalOp<mlir::ModuleOp>();
+  target.addIllegalOp<GroupOp, GroupYieldOp>();
+  target.markUnknownOpDynamicallyLegal([](mlir::Operation *) { return true; });
+}
+
+struct ConvertGroupToTileRegionPass
+    : public wafer::impl::ConvertGroupToTileRegionPassBase<
+          ConvertGroupToTileRegionPass> {
+  using wafer::impl::ConvertGroupToTileRegionPassBase<
+      ConvertGroupToTileRegionPass>::ConvertGroupToTileRegionPassBase;
+
+  void runOnOperation() final {
+    mlir::MLIRContext *context = &getContext();
+    mlir::ConversionTarget target(*context);
+    configureGroupToTileRegionTarget(target);
+
+    TileRegionCandidate candidate;
+    mlir::RewritePatternSet patterns(context);
+    patterns.add<GroupToTileRegionCandidatePattern>(context, candidate);
+
+    if (mlir::succeeded(mlir::applyFullConversion(getOperation(), target,
+                                                  std::move(patterns))))
+      return;
+
+    if (!candidate.succeeded)
+      getOperation().emitError(candidate.failureReason);
+    else
+      getOperation().emitError("group to tile-region conversion failed");
+    signalPassFailure();
+  }
+};
+
 } // namespace
 
 mlir::LogicalResult
@@ -983,11 +1025,7 @@ wafer::buildTileRegionCandidate(GroupOp group, TileRegionCandidate &candidate) {
   mlir::MLIRContext *context = group.getContext();
 
   mlir::ConversionTarget target(*context);
-  target.addLegalOp<mlir::ModuleOp>();
-  target.addLegalDialect<mlir::arith::ArithDialect, mlir::func::FuncDialect,
-                         wafer::WaferDialect>();
-  target.addLegalOp<mlir::tensor::ExtractOp>();
-  target.addIllegalOp<GroupOp, GroupYieldOp>();
+  configureGroupToTileRegionTarget(target);
 
   mlir::RewritePatternSet patterns(context);
   patterns.add<GroupToTileRegionCandidatePattern>(context, candidate);

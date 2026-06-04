@@ -6,6 +6,9 @@ add_mlir_library(WaferTransforms
   SPMD/ApplyDefaultSpmdSharding.cpp
   Passes.cpp
 
+  DEPENDS
+  WaferPassesIncGen
+
   LINK_LIBS PUBLIC
   WaferAnalysis
   WaferGroupToTileRegion

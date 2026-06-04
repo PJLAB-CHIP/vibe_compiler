@@ -65,3 +65,9 @@ mlir::LogicalResult ViewReshapeOp::verifyWaferLayoutContract() {
   collectWaferLayoutRequirements(requirements);
   return verifyLayoutRequirements(getOperation(), requirements);
 }
+
+mlir::OpFoldResult ViewReshapeOp::fold(FoldAdaptor adaptor) {
+  if (getSource().getType() == getResult().getType())
+    return getSource();
+  return {};
+}

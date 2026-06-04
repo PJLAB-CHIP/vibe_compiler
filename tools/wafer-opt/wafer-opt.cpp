@@ -19,6 +19,7 @@
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
+#include "mlir/Transforms/Passes.h"
 
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringRef.h"
@@ -495,6 +496,7 @@ int main(int argc, char **argv) {
 
   mlir::DialectRegistry registry;
   registerWaferOptDialects(registry);
+  mlir::registerTransformsPasses();
   wafer::registerWaferTransformPasses();
   wafer::registerWaferPipelines();
 #ifdef WAFER_ENABLE_SHARDY

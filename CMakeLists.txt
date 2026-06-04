@@ -19,6 +19,7 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 
 add_subdirectory(include/Wafer/IR)
+add_subdirectory(include/Wafer/Transforms)
 add_subdirectory(lib/Wafer)
 add_subdirectory(tools/wafer-opt)
 add_subdirectory(tools/wafer-compile-stablehlo)

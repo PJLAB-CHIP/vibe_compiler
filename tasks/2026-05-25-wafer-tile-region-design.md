@@ -3,8 +3,8 @@
 日期：2026-05-25
 
 状态：设计草案；2026-05-25 独立边界收口；2026-05-27 对齐 tensor collective 到 `wafer.comm` materialization；
-2026-06-03 R3.2c 对齐 MLIR DialectConversion scratch full conversion；2026-06-04 对齐
-instruction-level Wafer IR 先于 SPM placement
+2026-06-03 R3.2c 对齐 MLIR DialectConversion full conversion；2026-06-04 对齐
+instruction-level Wafer IR 先于 SPM placement，并补正式 `group -> tile_region` conversion pass
 
 本文定义 `wafer.tile_region` 作为 `wafer.group` lowering 之后的 tile-local execution boundary。
 它组织 tile-local buffer、movement、layout materialization、target-abstract compute、communication
@@ -60,10 +60,11 @@ wafer.group
 
 本文区分两种生命周期：
 
-- provisional `wafer.tile_region` candidate：R3.2c 在 transformation-local / scratch IR 中构造，
-  用来承载 target-abstract compute/comm/load-store/layout/sync op、tile buffer、lifetime 和 effect，
-  供 R3.2d 做 Wafer instruction legalization / selection。它不是 SPM allocator 的直接输入；
-  rejected candidate 不进入主 IR。
+- provisional `wafer.tile_region` candidate：R3.2c 通过同一套 MLIR DialectConversion builder
+  构造。局部 dump / planner 可以在 transformation-local scratch IR 中观察 candidate；
+  `--wafer-convert-group-to-tile-region` 可以把当前模块中的 supported logical group 重写成
+  provisional tile-region IR，用作 legality/debug/后续 pass bring-up。它仍不是 accepted plan，
+  也不是 SPM allocator 的直接输入；rejected candidate 不进入主线 accepted IR。
 - committed `wafer.tile_region`：R3.3 只把 R3.2g 已接受的 plan 写入主 IR。后续 R3.4/R3.5
   只 materialize accepted layout/SPM/DDR/instruction facts，不重新决定 group 是否可行。
 
@@ -75,28 +76,29 @@ Pipeline position:
   R3.1 verifier-legal tensor-level `wafer.group` candidate、R3.2a
   `GroupTilingDemand` analysis result 和 R3.2b `GroupLayoutPlan` analysis result。
 - Current stage responsibility:
-  通过 MLIR DialectConversion 在 transformation-local / scratch IR 中构造 provisional
-  `wafer.tile_region` candidate；`wafer.group` 是 illegal root，conversion pattern 产出完整
-  legal `wafer.tile_region`，并用 full conversion 保证 candidate 内不残留 logical group / linalg /
-  tensor allocation op；
+  通过 MLIR DialectConversion 构造 provisional `wafer.tile_region` candidate；
+  `wafer.group` 是 illegal root，conversion pattern 产出完整 legal `wafer.tile_region`，并用 full
+  conversion 保证 converted region 内不残留 logical group / linalg / tensor allocation op；
   把 logical group boundary 映射成 `wafer.load_tile` / `wafer.store_tile`，把 selected
   layout 和 materialization cut 映射成 `!wafer.tile_buffer` 与 `wafer.layout.materialize`，
   把可验证的 structured compute / tensor collective 映射成 target-abstract
   `wafer.compute` / `wafer.comm` / sync/effect op。
 - Output artifact / IR:
-  verifier-legal provisional `wafer.tile_region` candidate 或结构化 failure reason。
-  candidate 只用于 dump、verification 和后续 planning analysis；rejected candidate 不写入主 IR。
+  verifier-legal provisional `wafer.tile_region` candidate 或结构化 failure reason。局部 conversion
+  pass 可以把 supported group 重写成 tile-region IR；planner scratch entry 返回 candidate 用于
+  dump、verification 和后续 planning analysis。rejected candidate 不写入主线 accepted IR。
 - Downstream consumer:
   R3.2d Wafer instruction legalization / selection、R3.2e SPM placement、R3.2f DDR/resource planning +
   compute/movement legality analysis、R3.2g closed-loop planner。
 - User-level driver / named pipeline:
   主线仍由 `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 产生 logical group；
-  R3.2c 的局部验证入口是 `wafer-opt --wafer-dump-tile-region-candidate`。
+  R3.2c 的局部验证入口是 `wafer-opt --wafer-convert-group-to-tile-region` 和
+  `wafer-opt --wafer-dump-tile-region-candidate`。
 - Explicit non-goals:
   不做 SPM offset allocation、不做 DDR pool/range/bandwidth planning、不 accept/reject/split
-  group、不把 candidate commit 到主 IR、不 lower 到 packet/ABI/LLVM。
+  group、不把 candidate 当成 R3.3 accepted materialization、不 lower 到 packet/ABI/LLVM。
 - Completion gate:
-  FileCheck 和主线 pipeline 覆盖 R2.4/R3.1 已能产出的 Wafer V0 硬件可承载 local
+  FileCheck、conversion pass、dump pass 和主线 pipeline 覆盖 R2.4/R3.1 已能产出的 Wafer V0 硬件可承载 local
   compute/movement/view family：load/store boundary、layout materialization、SPM abstract
   allocation、fill、GEMM、elementwise/relation、native reduce、passthrough broadcast/transpose/copy、
   tensor slice movement 和 static reshape view。硬件 V0 无承载或当前 IR 缺 placement/local-rank /
@@ -110,7 +112,7 @@ Pipeline position:
 
 | source IR / op family | 当前 R3.2c 处理 | 覆盖状态 | 正确 conversion 做法 / 后续要求 |
 | --- | --- | --- | --- |
-| `wafer.group` / `wafer.group_yield` boundary | scratch full conversion 中由 `OpConversionPattern<wafer.group>` 构造 `wafer.tile_region`，对 `ins + outs` 生成 `wafer.load_tile` / `wafer.store_tile` / `wafer.tile_yield` | supported for candidate | `ConversionTarget` 将 `wafer.group` / `wafer.group_yield` 标为 illegal；debug dump 只调用同一 conversion builder，不能自己承担 lowering 逻辑。 |
+| `wafer.group` / `wafer.group_yield` boundary | DialectConversion 中由 `OpConversionPattern<wafer.group>` 构造 `wafer.tile_region`，对 `ins + outs` 生成 `wafer.load_tile` / `wafer.store_tile` / `wafer.tile_yield`；同一 builder 支持 scratch candidate dump 和正式 `--wafer-convert-group-to-tile-region` pass | supported for candidate | `ConversionTarget` 将 `wafer.group` / `wafer.group_yield` 标为 illegal；debug dump 只调用同一 conversion builder，不能自己承担 lowering 逻辑。 |
 | ranked tensor boundary values | 生成 `!wafer.tile_buffer<tensor, tensor, spm>`，记录 tensor layout 版本 | supported for ranked tensor | 保持类型/verifier 驱动；后续 instruction-level IR 再决定 concrete storage，SPM placement 再决定 offset/window。 |
 | scalar boundary values | 作为 tile-region block scalar SSA value 传入，供 fill/reduce init 等 scalar operand 使用 | supported for scalar | 只支持 float / integer / index scalar；不生成 tile buffer，不作为长期 side channel。 |
 | `arith.constant` tensor | clone constant 后 `wafer.load_tile` 到 tensor-layout tile buffer | partial | 只适合 tensor constant；scalar constant 只应在 compute body 或显式 init 语义中消费。需要区分 constant residency / DDR / immediate policy。 |
@@ -236,6 +238,9 @@ instruction-level IR；第 5-7 步的完整 SPM/DDR resource planning 和 closed
 
 当前实现状态：
 
+- `--wafer-convert-group-to-tile-region` 是正式 MLIR conversion pass，使用 `Passes.td` 声明和
+  DialectConversion legality target，在 supported 子集上重写当前模块；`--wafer-dump-tile-region-candidate`
+  是同一 builder 的只读 dump 入口，并显式 preserve analyses。
 - 旧 `--wafer-materialize-single-tile` explicit unit/debug pass 已删除。后续 tile_region materialization
   必须由 R3 消费真实 frontend/SPMD program chain 和 group candidate contract 后恢复。
 - `--wafer-materialize-multi-tile-no-comm` 已删除。旧实现按 placement rank 数 clone whole-tensor
@@ -253,13 +258,17 @@ launch args / identity lowering 的 IR contract。当前没有 multi-tile no-com
 - region 中没有无法解释的 side table dependency 或名字匹配语义。
 - external load/store boundary 都有明确 memory space、shape、dtype、layout 和 effect。
 - async producer 的 source/destination 在 wait/drain 前不能被非法复用。
-- `wafer.layout.materialize` 的输入输出 layout relation 合法；同 layout 冗余转换应由
-  canonicalization 删除。
+- `wafer.layout.materialize` 的输入输出 layout relation 合法；同 layout 冗余转换应由 verifier
+  拒绝，上游应避免生成这种 no-op conversion。`wafer.view.reshape` 这类无副作用 view op 可由
+  canonicalization 删除同类型 no-op。
 - `#spm` buffer 在 storage realization 前必须经过 SPM allocation；`#ddr` buffer 必须有
   DDR resource plan / binding policy。
 - lower-level op 出现时，其 operand 已经是 placed instruction/storage value 或 verifier 可解释 descriptor。
 
 Verifier 不检查 group 是否应该形成；那是 `wafer.group` 和 planner 的职责。
+`wafer.group` / `wafer.tile_region` 这类 region op 的 boundary invariants 放在普通 `verify()`，
+body / terminator / nested region 关系放在 `verifyRegions()`；父 region op 只解释自己 body 的直接 op，
+不递归解释 tensor collective 等子 op 的内部 region。
 
 ## 8. 与 Case 的关系
 

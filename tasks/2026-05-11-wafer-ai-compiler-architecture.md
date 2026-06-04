@@ -721,6 +721,7 @@ include/Wafer/
       AbiOps.td
   Analysis/
   Transforms/
+    Passes.td
   Conversion/
 
 lib/Wafer/
@@ -773,6 +774,16 @@ cmake/
 - `WaferTileMappingAttr`
 - common op interfaces，例如 `WaferTilingInterface`、`WaferLayoutOpInterface`、
   `WaferLayoutMaterializationOpInterface`、`WaferResourceEffectInterface`
+
+`include/Wafer/Transforms/Passes.td` 是 Wafer transform pass API 的声明源。非可选 pass 的 command
+line argument、summary、dependent dialects 和 factory declaration 由 TableGen 生成；C++ 实现只定义
+pass body 并继承 generated base。可选依赖 pass 可以保留条件编译的手写注册，但不能让普通 pass
+继续散落手写 argument / description / dependent dialects。
+
+Region op 的 verifier 按 MLIR 约定拆分：不依赖 region body 的 boundary invariant 放普通
+`verify()`；body argument、terminator、nested body legality 和 region-specific semantic attrs 放
+`verifyRegions()`。父 region op 只解释自己 body 的直接 op；子 op 内部 region 由子 op 自己的
+verifier 负责。
 
 Pass pipeline 建议：
 

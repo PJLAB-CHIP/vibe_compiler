@@ -21,6 +21,7 @@ def Wafer_TileRegionOp : Wafer_Op<"tile_region", [
   let regions = (region SizedRegion<1>:$body);
 
   let hasVerifier = 1;
+  let hasRegionVerifier = 1;
   let assemblyFormat = [{
     `(` $inputs `:` type($inputs) `)` `->` `(` type($results) `)`
     $body attr-dict

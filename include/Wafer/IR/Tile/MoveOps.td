@@ -21,12 +21,12 @@ def Wafer_MoveExtractSliceOp : Wafer_MoveOp<"move.extract_slice"> {
   }];
 
   let arguments = (ins
-    AnyType:$source,
+    Wafer_AnyTileBuffer:$source,
     DenseI64ArrayAttr:$offsets,
     DenseI64ArrayAttr:$sizes,
     DenseI64ArrayAttr:$strides
   );
-  let results = (outs AnyType:$result);
+  let results = (outs Wafer_AnyTileBuffer:$result);
   let hasVerifier = 1;
   let assemblyFormat =
       "$source attr-dict `:` type($source) `->` type($result)";
@@ -41,13 +41,13 @@ def Wafer_MoveInsertSliceOp : Wafer_MoveOp<"move.insert_slice"> {
   }];
 
   let arguments = (ins
-    AnyType:$source,
-    AnyType:$dest,
+    Wafer_AnyTileBuffer:$source,
+    Wafer_AnyTileBuffer:$dest,
     DenseI64ArrayAttr:$offsets,
     DenseI64ArrayAttr:$sizes,
     DenseI64ArrayAttr:$strides
   );
-  let results = (outs AnyType:$result);
+  let results = (outs Wafer_AnyTileBuffer:$result);
   let hasVerifier = 1;
   let assemblyFormat =
       "$source `into` $dest attr-dict `:` type($source) `into` type($dest) `->` type($result)";
@@ -55,8 +55,8 @@ def Wafer_MoveInsertSliceOp : Wafer_MoveOp<"move.insert_slice"> {
 
 def Wafer_MoveCopyOp : Wafer_MoveOp<"move.copy"> {
   let summary = "tile-local explicit same-shape copy movement";
-  let arguments = (ins AnyType:$source);
-  let results = (outs AnyType:$result);
+  let arguments = (ins Wafer_AnyTileBuffer:$source);
+  let results = (outs Wafer_AnyTileBuffer:$result);
   let hasVerifier = 1;
   let assemblyFormat = "$source attr-dict `:` type($source) `->` type($result)";
 }
@@ -64,10 +64,10 @@ def Wafer_MoveCopyOp : Wafer_MoveOp<"move.copy"> {
 def Wafer_MoveTransposeOp : Wafer_MoveOp<"move.transpose"> {
   let summary = "tile-local explicit transpose movement";
   let arguments = (ins
-    AnyType:$source,
+    Wafer_AnyTileBuffer:$source,
     DenseI64ArrayAttr:$permutation
   );
-  let results = (outs AnyType:$result);
+  let results = (outs Wafer_AnyTileBuffer:$result);
   let hasVerifier = 1;
   let assemblyFormat =
       "$source attr-dict `:` type($source) `->` type($result)";
@@ -76,10 +76,10 @@ def Wafer_MoveTransposeOp : Wafer_MoveOp<"move.transpose"> {
 def Wafer_MoveBroadcastOp : Wafer_MoveOp<"move.broadcast"> {
   let summary = "tile-local explicit broadcast movement";
   let arguments = (ins
-    AnyType:$source,
+    Wafer_AnyTileBuffer:$source,
     DenseI64ArrayAttr:$dimensions
   );
-  let results = (outs AnyType:$result);
+  let results = (outs Wafer_AnyTileBuffer:$result);
   let hasVerifier = 1;
   let assemblyFormat =
       "$source attr-dict `:` type($source) `->` type($result)";

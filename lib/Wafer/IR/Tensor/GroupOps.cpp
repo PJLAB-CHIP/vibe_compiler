@@ -20,7 +20,7 @@ bool isRawStableHLOOp(mlir::Operation *op) {
 bool isAllowedWaferGroupBodyOp(mlir::Operation *op) {
   if (mlir::isa<GroupYieldOp>(op))
     return true;
-  return op->getName().getStringRef().starts_with("wafer.tensor_collective.");
+  return mlir::isa<WaferTensorCollectiveOpInterface>(op);
 }
 
 bool isLowerLevelWaferOp(mlir::Operation *op) {
@@ -65,6 +65,10 @@ mlir::LogicalResult GroupOp::verify() {
       return emitOpError("does not accept async token inputs");
   }
 
+  return mlir::success();
+}
+
+mlir::LogicalResult GroupOp::verifyRegions() {
   if (getBody().empty())
     return emitOpError("expected non-empty body region");
 
@@ -122,46 +126,31 @@ mlir::LogicalResult GroupOp::verify() {
              << " at index " << index;
   }
 
-  mlir::WalkResult bodyLegality =
-      getBody().walk<mlir::WalkOrder::PreOrder>([&](mlir::Operation *op) {
-        if (isRawStableHLOOp(op)) {
-          emitOpError("body cannot contain raw StableHLO op '")
-              << op->getName() << "'";
-          return mlir::WalkResult::interrupt();
-        }
+  for (mlir::Operation &bodyOp : block.without_terminator()) {
+    mlir::Operation *op = &bodyOp;
+    if (isRawStableHLOOp(op))
+      return emitOpError("body cannot contain raw StableHLO op '")
+             << op->getName() << "'";
 
-        if (isLowerLevelWaferOp(op)) {
-          emitOpError("body cannot contain lower-level op '")
-              << op->getName() << "'";
-          return mlir::WalkResult::interrupt();
-        }
+    if (isLowerLevelWaferOp(op))
+      return emitOpError("body cannot contain lower-level op '")
+             << op->getName() << "'";
 
-        if (!isAllowedWaferGroupBodyOp(op) &&
-            !isAllowedTensorLevelDialect(op)) {
-          emitOpError("body cannot contain unsupported op '")
-              << op->getName() << "'";
-          return mlir::WalkResult::interrupt();
-        }
+    if (!isAllowedWaferGroupBodyOp(op) && !isAllowedTensorLevelDialect(op))
+      return emitOpError("body cannot contain unsupported op '")
+             << op->getName() << "'";
 
-        for (mlir::Value operand : op->getOperands()) {
-          if (isForbiddenGroupBoundaryType(operand.getType())) {
-            emitOpError("body cannot contain lower-level operand type ")
-                << operand.getType() << " on op '" << op->getName() << "'";
-            return mlir::WalkResult::interrupt();
-          }
-        }
-        for (mlir::Value result : op->getResults()) {
-          if (isForbiddenGroupBoundaryType(result.getType())) {
-            emitOpError("body cannot contain lower-level result type ")
-                << result.getType() << " on op '" << op->getName() << "'";
-            return mlir::WalkResult::interrupt();
-          }
-        }
-
-        return mlir::WalkResult::advance();
-      });
-  if (bodyLegality.wasInterrupted())
-    return mlir::failure();
+    for (mlir::Value operand : op->getOperands()) {
+      if (isForbiddenGroupBoundaryType(operand.getType()))
+        return emitOpError("body cannot contain lower-level operand type ")
+               << operand.getType() << " on op '" << op->getName() << "'";
+    }
+    for (mlir::Value result : op->getResults()) {
+      if (isForbiddenGroupBoundaryType(result.getType()))
+        return emitOpError("body cannot contain lower-level result type ")
+               << result.getType() << " on op '" << op->getName() << "'";
+    }
+  }
 
   for (mlir::NamedAttribute attr : getOperation()->getAttrs()) {
     if (attr.getName() != getOperandSegmentSizesAttrName())

@@ -18,6 +18,9 @@
 #include "llvm/ADT/SmallVector.h"
 
 namespace wafer {
+#define GEN_PASS_DEF_FORMGROUPCANDIDATESPASS
+#include "Wafer/Transforms/WaferPasses.h.inc"
+
 namespace {
 
 static bool isTensorType(mlir::Type type) {
@@ -49,8 +52,7 @@ static bool hasDuplicateBoundaryValues(mlir::ValueRange inputs,
 }
 
 static bool isTensorCollectiveRoot(mlir::Operation *op) {
-  return op->getName().getStringRef().starts_with("wafer.tensor_collective.") &&
-         !mlir::isa<TensorCollectiveYieldOp>(op);
+  return mlir::isa<WaferTensorCollectiveOpInterface>(op);
 }
 
 static bool isLinalgRoot(mlir::Operation *op) {
@@ -59,7 +61,7 @@ static bool isLinalgRoot(mlir::Operation *op) {
 
   // A fill is usually the init producer for the real root. Grouping it alone
   // adds a boundary that does not help downstream tile feasibility.
-  return op->getName().getStringRef() != "linalg.fill";
+  return !mlir::isa<mlir::linalg::FillOp>(op);
 }
 
 static bool isTensorLevelDpsCandidate(mlir::Operation *op) {
@@ -74,8 +76,7 @@ static bool isTensorLevelDpsCandidate(mlir::Operation *op) {
   if (!dpsOp.hasPureTensorSemantics())
     return false;
 
-  return mlir::isa<mlir::linalg::LinalgOp>(op) ||
-         isTensorCollectiveRoot(op);
+  return mlir::isa<mlir::linalg::LinalgOp>(op) || isTensorCollectiveRoot(op);
 }
 
 static bool isCandidateRoot(mlir::Operation *op) {
@@ -111,15 +112,16 @@ allUsesInsideOrCandidate(mlir::Value value,
   return true;
 }
 
-static bool allResultsUsedBySelected(
-    mlir::Operation *op, const llvm::DenseSet<mlir::Operation *> &selected) {
+static bool
+allResultsUsedBySelected(mlir::Operation *op,
+                         const llvm::DenseSet<mlir::Operation *> &selected) {
   return llvm::all_of(op->getResults(), [&](mlir::Value result) {
     return allUsesInsideOrCandidate(result, selected);
   });
 }
 
-static bool hasExternalUse(
-    mlir::Value value, const llvm::DenseSet<mlir::Operation *> &selected) {
+static bool hasExternalUse(mlir::Value value,
+                           const llvm::DenseSet<mlir::Operation *> &selected) {
   for (mlir::OpOperand &use : value.getUses()) {
     if (!selected.contains(use.getOwner()))
       return true;
@@ -127,9 +129,9 @@ static bool hasExternalUse(
   return false;
 }
 
-static bool canAbsorbProducer(
-    mlir::Operation *producer, mlir::Block *block,
-    const llvm::DenseSet<mlir::Operation *> &selected) {
+static bool
+canAbsorbProducer(mlir::Operation *producer, mlir::Block *block,
+                  const llvm::DenseSet<mlir::Operation *> &selected) {
   if (!producer || producer->getBlock() != block || selected.contains(producer))
     return false;
   if (!isTensorLevelDpsCandidate(producer))
@@ -138,9 +140,9 @@ static bool canAbsorbProducer(
   return allResultsUsedBySelected(producer, selected);
 }
 
-static bool canAbsorbConsumer(
-    mlir::Operation *consumer, mlir::Block *block,
-    const llvm::DenseSet<mlir::Operation *> &selected) {
+static bool
+canAbsorbConsumer(mlir::Operation *consumer, mlir::Block *block,
+                  const llvm::DenseSet<mlir::Operation *> &selected) {
   if (!consumer || consumer->getBlock() != block || selected.contains(consumer))
     return false;
   if (!isTensorLevelDpsCandidate(consumer))
@@ -159,9 +161,10 @@ static bool canAbsorbConsumer(
   return consumesSelectedValue;
 }
 
-static void orderSelectedOps(
-    mlir::Block *block, const llvm::DenseSet<mlir::Operation *> &selected,
-    llvm::SmallVectorImpl<mlir::Operation *> &orderedOps) {
+static void
+orderSelectedOps(mlir::Block *block,
+                 const llvm::DenseSet<mlir::Operation *> &selected,
+                 llvm::SmallVectorImpl<mlir::Operation *> &orderedOps) {
   orderedOps.clear();
   for (mlir::Operation &op : *block) {
     if (selected.contains(&op))
@@ -169,8 +172,9 @@ static void orderSelectedOps(
   }
 }
 
-static void expandTensorDpsCandidate(
-    mlir::Operation *root, llvm::DenseSet<mlir::Operation *> &selected) {
+static void
+expandTensorDpsCandidate(mlir::Operation *root,
+                         llvm::DenseSet<mlir::Operation *> &selected) {
   mlir::Block *block = root->getBlock();
   selected.insert(root);
 
@@ -210,8 +214,9 @@ static void expandTensorDpsCandidate(
   }
 }
 
-static mlir::Value getExternalDpsInitForResult(
-    mlir::Value value, const llvm::DenseSet<mlir::Operation *> &selected) {
+static mlir::Value
+getExternalDpsInitForResult(mlir::Value value,
+                            const llvm::DenseSet<mlir::Operation *> &selected) {
   mlir::Value current = value;
   while (auto result = mlir::dyn_cast<mlir::OpResult>(current)) {
     auto dpsOp =
@@ -235,11 +240,11 @@ static mlir::Value getExternalDpsInitForResult(
   return {};
 }
 
-static bool collectYieldedValuesAndOuts(
-    llvm::ArrayRef<mlir::Operation *> orderedOps,
-    const llvm::DenseSet<mlir::Operation *> &selected,
-    llvm::SmallVectorImpl<mlir::Value> &yieldedValues,
-    llvm::SmallVectorImpl<mlir::Value> &outs) {
+static bool
+collectYieldedValuesAndOuts(llvm::ArrayRef<mlir::Operation *> orderedOps,
+                            const llvm::DenseSet<mlir::Operation *> &selected,
+                            llvm::SmallVectorImpl<mlir::Value> &yieldedValues,
+                            llvm::SmallVectorImpl<mlir::Value> &outs) {
   yieldedValues.clear();
   outs.clear();
 
@@ -263,9 +268,10 @@ static bool collectYieldedValuesAndOuts(
   return true;
 }
 
-static void absorbInternalSupportOps(
-    mlir::Block *block, llvm::DenseSet<mlir::Operation *> &selected,
-    mlir::ValueRange outs) {
+static void
+absorbInternalSupportOps(mlir::Block *block,
+                         llvm::DenseSet<mlir::Operation *> &selected,
+                         mlir::ValueRange outs) {
   llvm::DenseSet<mlir::Value> outSet;
   for (mlir::Value out : outs)
     outSet.insert(out);
@@ -297,10 +303,11 @@ static void absorbInternalSupportOps(
   }
 }
 
-static void collectBoundaryInputs(
-    llvm::ArrayRef<mlir::Operation *> orderedOps,
-    const llvm::DenseSet<mlir::Operation *> &selected, mlir::ValueRange outs,
-    llvm::SmallVectorImpl<mlir::Value> &inputs) {
+static void
+collectBoundaryInputs(llvm::ArrayRef<mlir::Operation *> orderedOps,
+                      const llvm::DenseSet<mlir::Operation *> &selected,
+                      mlir::ValueRange outs,
+                      llvm::SmallVectorImpl<mlir::Value> &inputs) {
   llvm::DenseSet<mlir::Value> seen;
   for (mlir::Value out : outs)
     seen.insert(out);
@@ -358,9 +365,9 @@ formGroupForRoot(mlir::Operation *root,
 
   mlir::Operation *insertionPoint = candidate.orderedOps.back();
   mlir::OpBuilder builder(insertionPoint);
-  auto group = builder.create<GroupOp>(
-      root->getLoc(), mlir::TypeRange(candidate.outs), candidate.inputs,
-      candidate.outs);
+  auto group =
+      builder.create<GroupOp>(root->getLoc(), mlir::TypeRange(candidate.outs),
+                              candidate.inputs, candidate.outs);
 
   mlir::Region &body = group.getBody();
   body.push_back(new mlir::Block);
@@ -403,23 +410,9 @@ formGroupForRoot(mlir::Operation *root,
 }
 
 struct FormGroupCandidatesPass
-    : public mlir::PassWrapper<FormGroupCandidatesPass,
-                               mlir::OperationPass<mlir::ModuleOp>> {
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(FormGroupCandidatesPass)
-
-  llvm::StringRef getArgument() const final {
-    return "wafer-form-group-candidates";
-  }
-
-  llvm::StringRef getDescription() const final {
-    return "form root-seeded tensor-level wafer.group candidates";
-  }
-
-  void getDependentDialects(mlir::DialectRegistry &registry) const final {
-    registry.insert<mlir::arith::ArithDialect, mlir::linalg::LinalgDialect,
-                    mlir::math::MathDialect, mlir::scf::SCFDialect,
-                    mlir::tensor::TensorDialect, wafer::WaferDialect>();
-  }
+    : public impl::FormGroupCandidatesPassBase<FormGroupCandidatesPass> {
+  using impl::FormGroupCandidatesPassBase<
+      FormGroupCandidatesPass>::FormGroupCandidatesPassBase;
 
   void runOnOperation() final {
     llvm::SmallVector<mlir::Operation *> roots;
@@ -445,9 +438,5 @@ struct FormGroupCandidatesPass
 };
 
 } // namespace
-
-std::unique_ptr<mlir::Pass> createFormGroupCandidatesPass() {
-  return std::make_unique<FormGroupCandidatesPass>();
-}
 
 } // namespace wafer

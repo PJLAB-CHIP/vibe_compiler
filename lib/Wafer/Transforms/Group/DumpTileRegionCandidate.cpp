@@ -16,6 +16,9 @@
 #include "llvm/Support/raw_ostream.h"
 
 namespace wafer {
+#define GEN_PASS_DEF_DUMPTILEREGIONCANDIDATEPASS
+#include "Wafer/Transforms/WaferPasses.h.inc"
+
 namespace {
 
 static std::string getNearestSymbolName(mlir::Operation *op) {
@@ -28,23 +31,10 @@ static std::string getNearestSymbolName(mlir::Operation *op) {
 }
 
 struct DumpTileRegionCandidatePass
-    : public mlir::PassWrapper<DumpTileRegionCandidatePass,
-                               mlir::OperationPass<mlir::ModuleOp>> {
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(DumpTileRegionCandidatePass)
-
-  llvm::StringRef getArgument() const final {
-    return "wafer-dump-tile-region-candidate";
-  }
-
-  llvm::StringRef getDescription() const final {
-    return "dump R3.2c provisional wafer.tile_region candidates";
-  }
-
-  void getDependentDialects(mlir::DialectRegistry &registry) const final {
-    registry.insert<mlir::arith::ArithDialect, mlir::async::AsyncDialect,
-                    mlir::func::FuncDialect, mlir::linalg::LinalgDialect,
-                    mlir::tensor::TensorDialect, wafer::WaferDialect>();
-  }
+    : public impl::DumpTileRegionCandidatePassBase<
+          DumpTileRegionCandidatePass> {
+  using impl::DumpTileRegionCandidatePassBase<
+      DumpTileRegionCandidatePass>::DumpTileRegionCandidatePassBase;
 
   void runOnOperation() final {
     llvm::DenseMap<mlir::Operation *, unsigned> groupOrdinals;
@@ -62,13 +52,10 @@ struct DumpTileRegionCandidatePass
       }
       dumpTileRegionCandidate(candidate, labelOs.str(), llvm::errs());
     });
+    markAllAnalysesPreserved();
   }
 };
 
 } // namespace
-
-std::unique_ptr<mlir::Pass> createDumpTileRegionCandidatePass() {
-  return std::make_unique<DumpTileRegionCandidatePass>();
-}
 
 } // namespace wafer
