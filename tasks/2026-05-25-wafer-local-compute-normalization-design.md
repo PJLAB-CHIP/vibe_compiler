@@ -41,7 +41,7 @@ DTE、C ABI 或 runtime package。
 非目标：
 
 - 不决定 group boundary、traversal tile shape 或 internal split。
-- 不表达 physical `mem_layout`、SPM offset、DDR buffer object、DTE resource、packet field、
+- 不表达 physical layout marker、Wafer memory attr、SPM offset、DDR buffer object、DTE resource、packet field、
   worker id 或 C ABI call。
 - 不引入 `wafer.softmax`、`wafer.layer_norm`、`wafer.rope` 这类普通 tensor 语义 op 作为长期
   架构边界。需要 pattern 时使用 rewrite / canonicalization，把它们展开到结构化 IR。
@@ -162,7 +162,7 @@ out   : tensor<BxHxQxD>
 - iterator types: `b/h/q/d` 是 parallel，`k` 是 reduction。
 
 配套测试覆盖 softmax staged output 作为 AV lhs operand 的 SSA use-def 链。这里验证的是
-local structured tensor IR 中的 dataflow 和结果 lifetime 边界；SPM residency、workspace
+local structured tensor IR 中的 dataflow 和结果 lifetime 边界；SPM residency、intermediate storage
 materialization 和 physical buffer lifetime 仍由后续 group/resource planner 在 Wafer IR 层表达。
 
 ### 4.2 Elementwise and Broadcast
@@ -215,11 +215,11 @@ SwiGLU 的其它 decomposition 需要通过通用 structured tensor lowering 和
 
 该 fixture 只验证这些 fine-grained StableHLO dataflow 经过 local tensor normalization 后仍能由
 `linalg` / `tensor` / `arith` / `math` structured IR 表达；不运行 transformer-specific schedule
-acceptance pass，也不证明 group schedule、SPM residency、workspace 或 package completion。为支持
+acceptance pass，也不证明 group schedule、SPM residency、compiler-managed intermediate storage 或 package completion。为支持
 该 fixture，当前官方 conversion 会把静态连续维度 reassociation 转成
 `tensor.expand_shape` / `tensor.collapse_shape`，例如
 `tensor<BxHxQxD> -> tensor<(BHQ)xD>`。该批次仍不声称 physical layout、SPM residency、
-workspace 或 DDR binding 已完成；这些事实必须在后续 Wafer group/resource lowering 和
+compiler-managed intermediate storage 或 DDR resource allocation 已完成；这些事实必须在后续 Wafer group/resource lowering 和
 transformer local compile gate 中 materialize。
 
 ### 4.3 Reduction
@@ -364,7 +364,7 @@ prob = exp_scores / row_sum
 
 这只是数学/dataflow 结构，不是要求一个 `wafer.group` 覆盖整条链。若 key dimension 无法在一个
 tile schedule 内合法覆盖，group planner 必须拆成多阶段 schedule，例如 row max stage、row sum
-stage、normalize/value stage，并通过 DDR workspace 或 tile-local loop-carried state 明确表达
+stage、normalize/value stage，并通过 DDR compiler-managed allocation 或 tile-local loop-carried state 明确表达
 中间结果。
 
 RMSNorm / LayerNorm 类似：
@@ -405,8 +405,8 @@ SSA use-def 重算以下事实：
 - 是否存在 `exp_scores / row_sum` 的 broadcast divide normalize。
 
 该 validator 已删除。当前不引入 `wafer.softmax`，不写入 schedule attr，也不把 group split 或
-workspace 选择固化成 IR 合同。若后续需要 multi-stage softmax，row max、row sum、normalize/value
-的分割应由 group/resource planner 通过显式 IR 边界和 workspace demand materialize。
+intermediate storage 选择固化成 IR 合同。若后续需要 multi-stage softmax，row max、row sum、normalize/value
+的分割应由 group/resource planner 通过显式 IR 边界和 compiler-managed demand materialize。
 
 ## 6. Pass 合同
 
@@ -442,12 +442,12 @@ Wafer-specific policy。
 
 | source StableHLO family | R2.4 主线处理 | 覆盖状态 | 后续要求 |
 | --- | --- | --- | --- |
-| constants | 官方 StableHLO Linalg conversion 转成 `arith.constant` / structured tensor form | supported by upstream patterns | program constant residency / payload binding 不在 R2.4 决定。 |
+| constants | 官方 StableHLO Linalg conversion 转成 `arith.constant` / structured tensor form | supported by upstream patterns | program constant residency / payload association 不在 R2.4 决定。 |
 | pointwise elementwise | 官方 pointwise patterns 转成 `linalg.generic` + arith/math/complex 等 scalar ops | supported by upstream patterns | 更宽 op family 随 StableHLO pin 演进；Wafer 不维护长 if/else 子集。 |
 | broadcast / reshape / transpose / slice / concatenate | 官方 data movement / shape conversion 转成 linalg/tensor/scf shape-level IR | supported by upstream patterns | 动态 shape、view 与真实 data movement 仍分层处理，不能在 R2.4 引入 layout/SPM 事实。 |
 | `dot_general` / dot | 官方 dot product patterns 覆盖 2D matmul 和可表达 batched/generic contraction | supported by upstream patterns | 是否能成为合法 Wafer compute schedule 仍由 R3/R5 planner 和 resource legality 决定。 |
 | reduce / reduce_window 可表达子集 | 官方 reduction patterns 转成 linalg reduction / pooling 类 structured IR | supported by upstream patterns | 数值 policy、非可表达 combiner 或 backend resource legality 不在 R2.4 假装完成。 |
-| softmax / norm / RoPE / MLP staged graph | 作为 fine-grained StableHLO dataflow 经过官方 conversion 进入 staged structured tensor IR | evidence only | 不引入 high-level `wafer.softmax` / `wafer.norm`；multi-stage workspace/materialization 属后续 planner。 |
+| softmax / norm / RoPE / MLP staged graph | 作为 fine-grained StableHLO dataflow 经过官方 conversion 进入 staged structured tensor IR | evidence only | 不引入 high-level `wafer.softmax` / `wafer.norm`；multi-stage intermediate storage/materialization 属后续 planner。 |
 | StableHLO collectives | Wafer handoff pass 把 all_gather/all_reduce/reduce_scatter/all_to_all/collective_permute 转成 `wafer.tensor.*` | Wafer-specific supported subset | 不能用官方 linalg conversion 替代，也不能直接 lower 到 `wafer.tile.*` communication。无法证明 rank group、shape 或 combiner 的 collective 必须 fail。 |
 | unsupported StableHLO op | 官方 `applyPartialConversion` 或 Wafer collective handoff gate 报错 | explicit illegal | 不允许主线静默保留 raw StableHLO 给 R3 group 消费；需要支持时扩官方对齐 pattern、Wafer IR 或后续任务。 |
 
@@ -476,7 +476,7 @@ Normalization 后必须能检查：
 | attention QK^T / AV | `lower-stablehlo-attention-score.mlir`、`lower-stablehlo-attention-value.mlir`、`lower-stablehlo-attention-softmax-value.mlir` | rank-4 attention dot 由官方 conversion 转成 linalg generic contraction；是否能 schedule 仍归后续 planner |
 | elementwise / broadcast | `lower-stablehlo-elementwise.mlir`、`lower-stablehlo-official-linalg-coverage.mlir`、`lower-stablehlo-projection-residual.mlir` | 证明本地 legacy 子集和官方 pointwise conversion 都可产生 structured tensor IR；mask/select 是否能进入合法 tile schedule 仍未闭环 |
 | reduce | `lower-stablehlo-reduce.mlir`、norm/softmax staged tests | 证明细粒度 StableHLO reduce 可进入 structured reduction IR；backend numeric policy 和 resource legality 未闭环 |
-| softmax | `lower-stablehlo-softmax-staged.mlir` | 证明 fine-grained StableHLO softmax dataflow 可变成 `linalg.reduce` / `linalg.generic` staged IR；不证明 multi-stage workspace 或 group schedule |
+| softmax | `lower-stablehlo-softmax-staged.mlir` | 证明 fine-grained StableHLO softmax dataflow 可变成 `linalg.reduce` / `linalg.generic` staged IR；不证明 multi-stage intermediate storage 或 group schedule |
 | norm | `lower-stablehlo-norm-staged.mlir` | 证明 fine-grained RMSNorm/LayerNorm dataflow 中 last-dim reduce / rsqrt / broadcast multiply gate；不证明完整 LayerNorm/RMSNorm family |
 | RoPE | `lower-stablehlo-rope-mlp-staged.mlir` | 证明当前 RoPE slice/shape/elementwise staged pattern；sin/cos table storage slicing 未闭环 |
 | MLP | `lower-stablehlo-mlp.mlir`、`lower-stablehlo-local-transformer-block.mlir` | 证明 tanh-gated MLP dataflow fixture 和 full local transformer structured fixture；GELU/SwiGLU/package consistency 未闭环 |

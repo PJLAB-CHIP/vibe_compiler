@@ -314,7 +314,7 @@ shape 和 op 参数推导输出，同时作为 IR check。早期截图材料中�
 | Pad | 同时支持 feature 类和普通类，例如 `NCHW -> NTensor` 或 `NTensor -> NCHW` 这类边界需要显式记录 semantic/layout change。 |
 | Add/elementwise | 可以作用在 feature、weight、普通 tensor 等不同 semantic 类；输出 semantic layout 不能只由 opcode 决定，必须结合输入类别推导，例如 `NCHW + NCHW -> NTensor`、`NCHW + NTensor -> NCHW`、`IOHW + Tensor -> Tensor` 这类规则应由 verifier 明确处理。 |
 
-`ChannelNorm/DechannelNorm` 应理解为真实 data movement/materialization，不是 metadata reshape。它用于在 `Tensor/NTensor` 和 `Cx/NCx` 之间转换；V0 可以用 `TsmDataMove::GatherScatter` 实现，公开 CRT 只是展示了其中一种样例路径。
+`ChannelNorm/DechannelNorm` 应理解为真实 data movement/materialization，不是 metadata reshape。它用于在 `Tensor/NTensor` 和 `Cx/NCx` 之间转换；V0 可以用 `TsmDataMove::GatherScatter` 实现，公开 CRT 只是展示了其中一种样例路径。当 `C > B` 且 `get_CxC0` 保留 `C0` tail 时，full blocks 和 compact tail 的 inner width / stride 不同，compiler lowering 需要把它们拆成 full-block 与 tail 两段 GatherScatter，或在 descriptor 不可表达时结构化失败。
 
 ### Conv 和 Pool 的 semantic layout
 

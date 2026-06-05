@@ -127,7 +127,7 @@ tx81 dialect op
 | 泛化 RDMA/WDMA | `__Rdma/__Wdma(src, dst, src_shape, src_stride, dst_shape, dst_stride, rank, elem_bytes, fmt)` | 能映射到单个三层 descriptor 时走 `__Rdma4d/__Wdma4d`；否则拆成多个 contiguous helper 调用 | 源 IR stride 是 element stride；CRT 内部用 `elem_bytes` 转 byte offset；不支持负 stride |
 | SPM memcpy | `__Memcpy(src, dst, elem_count, fmt)` | `TsmDataMove::GatherScatter` | `GatherScatter` 的 `size` 参数传的是 byte 数；bool 会按 bitpack 转成 INT8 byte copy |
 | GatherScatter | `__GatherScatter(src, dst, bytes, src_stride*, src_iter*, dst_stride*, dst_iter*)` | `TsmDataMove::GatherScatter(&inst, src, dst, bytes, &src_si, &dst_si)` | `bytes` 是内层 byte count；`St_StrideIteration` 字段单位按 byte 使用 |
-| ChannelNorm/DechannelNorm | `__ChannelNorm/__DechannelNorm(src, dst, n,h,w,c,c0_align,dtype_size)` | 多次 `TsmDataMove::GatherScatter` | 不走 `TensorNom` 主路径；按 `bit_width` 选择通道块：8-bit 为 128，其他为 64 |
+| ChannelNorm/DechannelNorm | `__ChannelNorm/__DechannelNorm(src, dst, n,h,w,c,c0_align,dtype_size)` | 多次 `TsmDataMove::GatherScatter` | 不走 `TensorNom` 主路径；按 `bit_width` 选择通道块：8-bit 为 128，其他为 64；`C > block` 且保留 `C0` tail 时 full-block 与 tail span 可能需要分两段 GatherScatter |
 | GEMM | `__Gemm(srcA, srcB, bias, dst, dims, enPsum, psum, transA, transB, batchA, batchB, reluMode, enBias, enNegScale, negScale, enPosScale, posScale, srcFmt, dstFmt)` | `TsmGemm::{AddInput, ConfigMKN, AddOutput, SetPsum, SetTransflag, ConfigBatch, AddBias, Set*Scale, EnableRelu/LeakyRelu}` | `dims` 是 M/K/N；psum format 当前用 dst format；quant 路径留空 |
 | Conv | `__Conv(opType, srcAct, srcDims, weight, weightDims, ..., pads, unpads, strides, dilations, ..., dst, dstDims)` helper 存在；当前 `Tx81ToLLVM.cpp` snapshot 未看到 `ConvOpConversion` 注册 | `TsmConv::{AddInput, AddWeight, AddBias, AddOutput, SetOpType, SetPsum, SetPads, SetUnPads, SetKernelStrides, SetDilations, Set*Scale, SetSparse, EnableRelu/LeakyRelu}` | `src/dst` shape 按 NHWC 填 `Data_Shape`；注释说 weight dims 是 Kx/Ky/Sx/Sy，但实际 CRT 把 `weightDims[0..3]` 也放进 `Data_Shape`；CRT 当前 `SetPsum` 传 `dstFmt`，且 `enLeakyRelu=false` 时默认 `EnableRelu` |
 | Elementwise VV | `__AddVV/__SubVV/__MulVV/... (src0, src1, dst, elem_count, rnd_mode, fmt)` | `TsmArith::*VV` | `elem_count` 是元素数；`rnd_mode` 直接传 wrapper |
@@ -234,7 +234,7 @@ Conv(`2`) 时写 `dilation` 并置 `dilation_conv=1`；对 Depthwise/GEMM
 | physical layout | 决定 SPM buffer 能否直接作为 operand；`Tensor/NTensor` 是紧密排布，`Cx/NCx` 是最后一维 aligned 后的物理形态 |
 | aligned-only 指令 | NE、Reduce、Pool、UnPool 的输入输出默认都要 aligned；2D 使用 `Cx`，rank > 2 使用 `NCx` |
 | 其他 CT/DataMove/DMA | 原则上可接受 `Tensor`、`NTensor`、`Cx`、`NCx`，但仍要满足各 wrapper 的地址、stride、dtype、bitpack 限制 |
-| materialization | `ChannelNorm/DechannelNorm` 是真实 data movement，不是 metadata reshape；V0 可以用 `TsmDataMove::GatherScatter` 实现，公开 CRT 的 ChannelNorm/DechannelNorm 只是一个样例 |
+| materialization | `ChannelNorm/DechannelNorm` 是真实 data movement，不是 metadata reshape；V0 可以用 `TsmDataMove::GatherScatter` 实现，公开 CRT 的 ChannelNorm/DechannelNorm 只是一个样例；full-block span 和 retained `C0` tail span 不能合成同一个三层 descriptor 时必须拆成多条 GatherScatter |
 | allocator | SPM size 必须计入 C0 tail/fold 和 256B bank padding；普通 base address 没有额外硬性对齐要求，256B alloc alignment 只能作为保守性能策略 |
 
 因此，Wafer IR/verifier 至少需要同时记录 semantic layout、physical layout、dtype、rank 和 shape。`Tensor_Fmt` 不能作为 compiler layout 模型。

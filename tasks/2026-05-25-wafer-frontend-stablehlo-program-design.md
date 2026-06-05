@@ -37,7 +37,7 @@ SPM、DDR allocation、layout materialization、DTE、runtime package 或 launch
 非目标：
 
 - 不选择 physical tile placement。
-- 不表达 `#wafer.memory_space<spm>`、`#wafer.memory_space<ddr>`、SPM offset、buffer object pool、
+- 不表达 Wafer memory attr、SPM offset、buffer object pool、
   runtime handle 或 device physical address。
 - 不引入 Wafer 私有 tensor constant op。
 - 不选择 `Tensor/Cx/NCx` physical memory layout。

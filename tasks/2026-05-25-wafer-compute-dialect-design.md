@@ -2,7 +2,8 @@
 
 日期：2026-05-25
 
-状态：设计草案；2026-05-25 边界收口；2026-06-04 对齐 instruction-level Wafer IR 先于 SPM placement
+状态：设计草案；2026-05-25 边界收口；2026-06-04 对齐 instruction-level Wafer IR 先于 SPM placement；
+2026-06-05 对齐 memref-backed Wafer memory attr 合同
 
 本文定义 Wafer 后端中 target-abstract compute / movement IR 的边界。它连接
 `wafer.group` 产生的 tile-local tensor program、layout materialization / SPM bufferization，
@@ -12,7 +13,7 @@
 Wafer 目标实现族，并能提供 layout、effect 和 instruction family legality”。它仍然不表达 raw packet
 bitfield、SPM physical offset、worker window、runtime launch 或 host ABI。最终 SPM storage demand
 不是 target-abstract op 自身的属性，而是 R3.2d 产出的 instruction-level `wafer.instr.*`
-over existing `!wafer.storage` IR 的结果。
+over unplaced Wafer-tagged memref IR 的结果。
 instruction-level IR 的具体 op/type/interface 合同见
 `tasks/2026-06-05-wafer-instruction-ir-design.md`；本文不重复维护 `wafer.instr` op 列表。
 
@@ -49,8 +50,8 @@ allocation、communication collective lowering 或 launch/package emission。
 ```text
 scheduled wafer.group tensor body
   -> target-abstract tile_region IR with wafer.tile.* compute / movement ops
-  -> layout materialization and accepted !wafer.storage values
-  -> instruction-level wafer.instr.* IR over unplaced !wafer.storage
+  -> layout materialization and accepted Wafer-tagged memref values
+  -> instruction-level wafer.instr.* IR over unplaced Wafer-tagged memref values
   -> same instruction-level IR after SPM placement
   -> codegen emission to Wafer C ABI / packet / package metadata
 ```
@@ -60,10 +61,10 @@ scheduled wafer.group tensor body
 | 层次 | op 形态 | value 形态 | 责任 |
 | --- | --- | --- | --- |
 | scheduled group | `linalg.*` / `tensor.*` / `scf.*` | tensor SSA value | 表达数学语义、tile-local dataflow 和 traversal，不选硬件实现 |
-| target-abstract compute | `wafer.tile.*` compute ops 和 target-abstract movement op | tensor SSA value 或 `!wafer.storage` | 选择目标实现族，提供 layout/resource/lowering interface，不绑定具体 storage placement |
-| accepted layout | 同一类 compute/movement op | `!wafer.storage<shape,dtype,mem_layout,space>` | 验证 physical layout，显式插入 `wafer.tile.materialize_layout` |
-| instruction-level | `wafer.instr.*` | unplaced `!wafer.storage` SSA value | 选择 CT/NE/TDMA/RDMA/WDMA 指令形态，列出 queue、temp/psum/staging storage values、alias、effect 和 descriptor attrs，不含 SPM offset；DTE 属于 `wafer.tile.*` communication / communication lowering |
-| placed instruction-level | 同一 `wafer.instr.*` | placed `!wafer.storage`、`memref`、flat storage value 或 descriptor | 具备 SPM offset/range/bank、stride/descriptor，可进入 codegen emission |
+| target-abstract compute | `wafer.tile.*` compute ops 和 target-abstract movement op | tensor SSA value 或 Wafer-tagged memref | 选择目标实现族，提供 layout/resource/lowering interface，不绑定具体 storage placement |
+| accepted layout | 同一类 compute/movement op | `memref<..., #wafer.memory<space, layout>>` | 验证 address space 和 physical layout marker，显式插入 `wafer.tile.materialize_layout` |
+| instruction-level | `wafer.instr.*` | unplaced Wafer-tagged memref SSA value | 选择 CT/NE/TDMA/RDMA/WDMA 指令形态，列出 queue、temp/psum/staging memref values、alias、effect 和 descriptor attrs，不含 SPM offset；DTE 属于 `wafer.tile.*` communication / communication lowering |
+| placed instruction-level | 同一 `wafer.instr.*` | placed memref、flat storage value 或 access descriptor | 具备 SPM offset/range/bank、stride/descriptor，可进入 codegen emission |
 | launch/ABI emission | LLVM / C call / package metadata | concrete ABI arg | 调用 Wafer C ABI、发 package metadata、连接 host runtime；不作为主线 IR 层 |
 
 因此，`wafer.tile.gemm` 这类 op 在不同阶段可以被 type conversion 改写 operand/result type，
@@ -77,14 +78,14 @@ side table 中保留影子计划。
 Pipeline position:
 - Upstream artifact / IR:
   R3.2c `wafer.tile.region` IR，内部包含 accepted layout 的
-  `!wafer.storage`、`wafer.tile.*` compute ops、`wafer.tile.*` movement ops、`wafer.tile.materialize_layout`、
+  Wafer-tagged memref、`wafer.tile.*` compute ops、`wafer.tile.*` movement ops、`wafer.tile.materialize_layout`、
   load/store boundary 和 view/alias relation。
 - Current stage responsibility:
   对 target-abstract compute/movement/layout/load/store op 做 Wafer instruction legalization /
-  selection，改写或构造 instruction-level `wafer.instr.*`，复用现有 `!wafer.storage`
+  selection，改写或构造 instruction-level `wafer.instr.*`，复用现有 Wafer-tagged memref
   SSA graph，并显式生成 queue/effect、temp/psum/staging、alias/view 和 descriptor attrs。
 - Output artifact / IR:
-  instruction-level Wafer IR over unplaced `!wafer.storage`，或结构化 failure reason。
+  instruction-level Wafer IR over unplaced Wafer-tagged memref，或结构化 failure reason。
 - Downstream consumer:
   R3.2e SPM placement、R3.2f DDR/resource legality、R3.2g closed-loop planner，以及 R3.6
   codegen emission。
@@ -92,7 +93,7 @@ Pipeline position:
   主线仍从 `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 进入 R3.1/R3.2；
   R3.2d 可提供局部 dump / lit gate，但不能成为用户级 compile flow。
 - Explicit non-goals:
-  不决定 group boundary、tile shape、layout assignment、SPM offset、DDR BO binding、ABI call
+  不决定 group boundary、tile shape、layout assignment、SPM offset、DDR BO allocation policy、ABI call
   symbol 或 packet field。
 - Completion gate:
   对 R3.2c 已支持的 compute/movement/view family 生成 verifier-legal instruction-level IR；
@@ -132,7 +133,7 @@ split 决策；内部 reduction 是否需要进一步切分是 op tiling / SPM a
 - 如果存在累加输入，它应是 SSA operand；如果结果需要被后续累加，使用 SSA result 或
   loop-carried value 表达，不把 psum 生命周期复制成全局计划 attr。
 - layout interface 给出 aligned-only 约束。2D 矩阵通常映射到 `Cx` family；具体 C0、padding 和
-  descriptor 由 layout/SPM/storage realization 计算。
+  descriptor 由 `computeWaferPhysicalTensorInfo`、SPM placement 和 placement realization 计算。
 
 V0 不把 bias、scale、sparse、INT8 quant、fused activation 作为默认合同。若后续引入 fused form，
 它们应是可验证 operand/attr，并能 canonicalize 回非 fused form 或明确 lower 到目标 wrapper。
@@ -145,7 +146,7 @@ transcendental 子集。它应满足：
 - op kind 使用受控 enum 或拆分 op，不通过字符串名字匹配。
 - dtype 组合由 verifier 检查；普通 elementwise 默认 input/output dtype 一致，convert 明确记录
   src/dst dtype pair 和 rounding / zero-point 语义。
-- bool/i1 使用 logical element count，storage bytes 和 bitpack 由 storage realization / lower-level
+- bool/i1 使用 logical element count，storage bytes 和 bitpack 由 placement realization / lower-level
   verifier 负责。
 - layout preference 通常是 flexible：若 producer 已经是 aligned layout，elementwise 可以继承以避免
   materialization；若 consumer 更偏好 compact，也可以在 cut edge 上 materialize。
@@ -154,8 +155,8 @@ transcendental 子集。它应满足：
   SiLU / GELU 可以先作为 staged decomposition，使用 sigmoid/tanh/erf/exp 中已经被 verifier
   支持的子集；没有被支持的 transcendental 不能靠名字 fallback。
 
-当前落地的 V0 子集约束在 accepted-layout `!wafer.storage` 形式：operands/result 必须是
-SPM + tensor layout。普通 arithmetic / activation / transcendental 要求 operand/result element type
+当前落地的 V0 子集约束在 accepted-layout Wafer-tagged memref 形式：operands/result 必须是
+`#wafer.memory<spm, tensor>`。普通 arithmetic / activation / transcendental 要求 operand/result element type
 一致；relation kind 要求 operand element type 彼此一致、result element type 为 `i1`。op 由
 `#wafer.elementwise_kind<...>` 记录 add/sub/mul/div/max/min/neg/recip/sqrt/rsqrt/exp/tanh 和
 eq/ne/lt/le/gt/ge。`wafer.tile.elementwise` 可以不带
@@ -197,10 +198,10 @@ load/store、SPM local copy、strided movement 和 layout materialization suppor
 
 movement op 的合同：
 
-- `wafer.tile.load` / `wafer.tile.store` 连接 `#ddr` compact external tensor boundary、DDR workspace /
-  resident constant descriptor 和 `#spm` tile-local storage。host-visible dynamic input/output 默认
+- `wafer.tile.load` / `wafer.tile.store` 连接 `#wafer.memory<ddr, tensor>` compact external tensor boundary、
+  DDR runtime allocation / resident constant source 和 `#wafer.memory<spm, *>` tile-local memref。host-visible dynamic input/output 默认
   compact；constant source 由 `ConstantLike` value、constant storage transform 和 load op contract 表达，
-  DDR binding / workspace / pool 由 DDR resource 文档定义。
+  DDR allocation policy / compiler-managed allocation / pool 由 DDR resource 文档定义。
 - 当 `wafer.tile.load` 的 source 是 `ConstantLike` 时，load op 仍必须表达 logical slice / index
   operands。Weight chunking 是 storage/lowering 策略；compute op 只消费 load 后的 storage，
   不依赖旁路 metadata 或名字约定。
@@ -216,7 +217,8 @@ movement op 的合同：
   `linalg.generic` 形式产出的 movement。它们是 TDMA/DataMove 候选，不是 compute elementwise。
 - `wafer.tile.reshape` 只表达 static element-count-preserving shape view；它无 SPM write effect。
   如果 reshape 需要 physical layout change，必须使用 explicit materialization/movement op。
-- RDMA 方向是 `#ddr -> #spm`，WDMA 方向是 `#spm -> #ddr`。TDMA / local movement 只在 tile-local
+- RDMA 方向是 `#wafer.memory<ddr, *> -> #wafer.memory<spm, *>`，WDMA 方向是
+  `#wafer.memory<spm, *> -> #wafer.memory<ddr, *>`。TDMA / local movement 只在 tile-local
   memory 或 verifier 允许的 address domain 内工作。
 - stride 和 byte count 的单位在 placed instruction/storage 层必须明确。上层 tensor stride 是 element stride，
   lower 到 DMA/TDMA/DTE descriptor 前必须转换成 byte stride。
@@ -245,8 +247,8 @@ getAsyncLoweringPolicy(target)
 ### 4.2 `WaferLayoutOpInterface`
 
 R1.2 当前实现先覆盖 accepted-layout 层：所有 layout-sensitive compute/movement op 通过
-`collectWaferLayoutRequirements` 暴露当前 IR 中 operand/result `!wafer.storage` 已经承诺的
-`mem_layout` 和 `memory_space`，并通过 `verifyWaferLayoutContract` 做 verifier 可调用检查。
+`collectWaferLayoutRequirements` 暴露当前 IR 中 operand/result Wafer-tagged memref 已经承诺的
+address space 和 layout marker，并通过 `verifyWaferLayoutContract` 做 verifier 可调用检查。
 pre-assignment planner 需要的 allowed/preferred layout domain 仍是同一接口边界上的后续扩展：
 
 ```text
@@ -287,7 +289,7 @@ Target-abstract verifier：
 
 Accepted layout verifier：
 
-- `!wafer.storage` 的 `mem_layout` 满足 op hard constraint。
+- Wafer-tagged memref 的 layout marker 满足 op hard constraint。
 - `wafer.tile.materialize_layout` 的 source/destination layout family 合法，且 materialization op 有真实 movement
   lowering。
 - loop-carried buffer 的 entry/yield layout 一致，除非 loop body 内有显式 materialization。
@@ -297,9 +299,9 @@ Placed instruction-level verifier：
 
 - CT、NE、TDMA operand 是 SPM address 或 descriptor；RDMA source 是 DDR、destination 是 SPM；
   WDMA source 是 SPM、destination 是 DDR。
-- memory-space verifier 必须用统一的 `WaferMemorySpaceAttr` 检查这些 address domains；不能把
+- memory-space verifier 必须用统一的 `#wafer.memory<space, layout>` 检查这些 address domains；不能把
   external boundary、DDR descriptor 和 SPM storage 当成几套不相干的空间语义。
-- DDR descriptor 的 pool/domain、workspace slice、external binding、capacity 和 bandwidth 不是本层
+- DDR access descriptor 的 pool/domain、compiler-managed slice、external allocation、capacity 和 bandwidth 不是本层
   op attr；本层只通过 memory effects、range、byte count 和 direction contract 把需求暴露给
   DDR resource planner。
 - stride、iteration、byte count、range end、bool bitpack 和 alignment 规则已完成转换和检查。
@@ -314,10 +316,10 @@ Placed instruction-level verifier：
 | 阶段 | 输入 | 输出 | 责任 |
 | --- | --- | --- | --- |
 | select Wafer compute implementation | tiled `linalg` / tensor / SCF | target-abstract `wafer.tile.*` compute / movement op | 选择本 tile 实现族，保留数学语义，建立 layout/resource interface |
-| layout materialization | target-abstract Wafer op | accepted `!wafer.storage` + materialization edge | 基于 op interface 做 layout assignment 和真实 movement cut |
-| instruction legalization / selection | accepted storage IR | instruction-level `wafer.instr.*` over unplaced `!wafer.storage` | 将 target-abstract op 改写成 CT/NE/TDMA/RDMA/WDMA 指令形态，列出 queue、effects、temp/psum/staging storage values、alias 和 descriptor attrs；DTE communication 不进入普通 `wafer.instr` path |
-| SPM placement | instruction-level IR with unplaced `!wafer.storage` | same instruction-level IR with placed SPM storage values | 从 storage use-def 和 instruction effects 收集 demand、liveness，分配 offset/range/bank |
-| storage realization | placed instruction-level IR | `memref` / flat storage / descriptor | 复用标准 memref lowering 或生成目标 descriptor |
+| layout materialization | target-abstract Wafer op | accepted Wafer-tagged memref + materialization edge | 基于 op interface 做 layout assignment 和真实 movement cut |
+| instruction legalization / selection | accepted layout IR | instruction-level `wafer.instr.*` over unplaced Wafer-tagged memref | 将 target-abstract op 改写成 CT/NE/TDMA/RDMA/WDMA 指令形态，列出 queue、effects、temp/psum/staging memref values、alias 和 descriptor attrs；DTE communication 不进入普通 `wafer.instr` path |
+| SPM placement | instruction-level IR with unplaced Wafer-tagged memref | same instruction-level IR with placed SPM memref values | 从 memref use-def 和 instruction effects 收集 demand、liveness，分配 offset/range/bank |
+| placement realization | placed instruction-level IR | placed `memref` / flat storage / access descriptor | 复用标准 memref lowering 或生成目标 access descriptor |
 | codegen emission | placed instruction-level IR | LLVM call / C ABI call / package metadata | 生成具体 ABI call 或 packet emission，不回头修改 schedule/layout |
 
 如果一个 pass 创建 `wafer.tile.*` compute、movement、layout、SPM 或 sync op，应声明 dependent dialects。pass
@@ -359,7 +361,7 @@ local reduce 到 `wafer.tile.reduce` 的 path，保留 reduce dimensions
 slice：只接受可由 `linalg.generic` indexing maps、parallel/reduction iterator types、mul-add
 body 和静态 shape relation 验证的 batch/head 形态，materialize 为带显式 batch/head/m/k/n 维度
 attrs 的 `wafer.tile.gemm`。后续 R3.2d/R3.6 必须把它 lower 成带 `batch_count` 和 M/K/N 的
-instruction-level GEMM 以及对应 C ABI emission。历史 transformer fixed package fixture 已删除；workspace/resident constant metadata、
+instruction-level GEMM 以及对应 C ABI emission。历史 transformer fixed package fixture 已删除；compiler-managed/resident constant metadata、
 resource summary 一致性验证和 full block package manifest 必须由后续 IR-derived package gate
 恢复。当前覆盖仍不是通用 elementwise/reduce/GEMM coverage；更复杂 broadcast、relation/logic、convert、多输入/非
 constant-init reduce 和 mask/select 仍按后续泛化 gate 推进。当前 coverage 不能被解释成
@@ -424,30 +426,30 @@ Accepted layout 后：
 
 ```mlir
 %a_spm = wafer.tile.load %a[%m0, 0]
-    : tensor<64x256xf16> -> !wafer.storage<64x256xf16, #tensor, #spm>
+    : tensor<64x256xf16> -> memref<64x256xf16, #wafer.memory<spm, tensor>>
 %a_cx = wafer.tile.materialize_layout %a_spm
-    : !wafer.storage<64x256xf16, #tensor, #spm>
-   -> !wafer.storage<64x256xf16, #cx, #spm>
+    : memref<64x256xf16, #wafer.memory<spm, tensor>>
+   -> memref<64x256xf16, #wafer.memory<spm, cx>>
 
 %b_spm = wafer.tile.load %b[0, %n0]
-    : tensor<256x64xf16> -> !wafer.storage<256x64xf16, #tensor, #spm>
+    : tensor<256x64xf16> -> memref<256x64xf16, #wafer.memory<spm, tensor>>
 %b_cx = wafer.tile.materialize_layout %b_spm
-    : !wafer.storage<256x64xf16, #tensor, #spm>
-   -> !wafer.storage<256x64xf16, #cx, #spm>
+    : memref<256x64xf16, #wafer.memory<spm, tensor>>
+   -> memref<256x64xf16, #wafer.memory<spm, cx>>
 
 %mm = wafer.tile.gemm %a_cx, %b_cx
-    : (!wafer.storage<64x256xf16, #cx, #spm>,
-       !wafer.storage<256x64xf16, #cx, #spm>)
-   -> !wafer.storage<64x64xf16, #cx, #spm>
+    : (memref<64x256xf16, #wafer.memory<spm, cx>>,
+       memref<256x64xf16, #wafer.memory<spm, cx>>)
+   -> memref<64x64xf16, #wafer.memory<spm, cx>>
 
 %act = wafer.tile.elementwise %mm {kind = #wafer.elementwise_kind<relu>}
-    : !wafer.storage<64x64xf16, #cx, #spm>
-   -> !wafer.storage<64x64xf16, #cx, #spm>
+    : memref<64x64xf16, #wafer.memory<spm, cx>>
+   -> memref<64x64xf16, #wafer.memory<spm, cx>>
 
 %row_sum = wafer.tile.reduce #wafer.reduce_kind<sum> %act
     {dimensions = array<i64: 1>, init_value = 0.000000e+00 : f16}
-    : !wafer.storage<64x64xf16, #cx, #spm>
-   -> !wafer.storage<64xf32, #tensor, #spm>
+    : memref<64x64xf16, #wafer.memory<spm, cx>>
+   -> memref<64xf32, #wafer.memory<spm, tensor>>
 ```
 
 这个例子里 `wafer.tile.gemm` 需要 aligned layout，elementwise 继承 producer layout，reduce

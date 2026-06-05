@@ -2,22 +2,24 @@
 
 日期：2026-05-21
 
-状态：设计草案；2026-05-25 边界收口；2026-06-04 对齐 instruction-level Wafer IR 先于 SPM placement
+状态：设计草案；2026-05-25 边界收口；2026-06-04 对齐 instruction-level Wafer IR 先于 SPM placement；
+2026-06-05 对齐 memref-backed buffer contract
 
 本文定义 Wafer SPM bufferization、tile-local allocation 和 storage verification。它服务于
 `wafer.group` planning 的合法性搜索，也负责把 `wafer.tile.region` 中的 tile-local value
 落到可验证的 memory space、liveness、range 和 effect。
 SPM placement 的 instruction-level 输入合同由
 `tasks/2026-06-05-wafer-instruction-ir-design.md` 定义；本文只消费该层暴露的
-`!wafer.storage` / `wafer.instr.*` / effects，不重复定义 instruction op。
+Wafer-tagged memref / `wafer.instr.*` / effects，不重复定义 instruction op。
 
-本文只负责 `#wafer.memory_space<spm>` 的 tile-local allocation：
+本文只负责 `#wafer.memory<spm, *>` 的 tile-local allocation：
 
-- 消费 R3.2d 产出的 instruction-level `wafer.instr.*` IR 和 unplaced `!wafer.storage`，并从
-  storage use-def、effects、queue 和 async policy 构造 allocation input。
+- 消费 R3.2d 产出的 instruction-level `wafer.instr.*` IR 和 unplaced
+  `memref<..., #wafer.memory<spm, layout>>`，并从 memref use-def、effects、queue 和 async policy
+  构造 allocation input。
 - 对 instruction-level IR 做 SPM placement、range/end-address/alignment/bank-span verification 和 failure
   feedback。
-- 为 storage realization 提供 accepted offset/range/lifetime/alias 信息。
+- 为 placement realization 提供 accepted offset/range/lifetime/alias 信息。
 
 本文不分配 DDR，不选择 physical layout，不决定 group boundary，不选择 compute/communication
 instruction selection，也不生成 runtime package。DDR source/destination range 和 bandwidth 可以作为
@@ -32,11 +34,11 @@ SPM planning 不能只做 byte-size estimate。候选 tile plan 是否合法，�
 ```text
 layout materialization
   -> instruction legalization / selection
-  -> instruction-level IR with unplaced !wafer.storage
+  -> instruction-level IR with unplaced Wafer-tagged memref values
   -> storage requirement collection
   -> liveness/effect analysis
   -> SPM placement
-  -> placed instruction/storage realization
+  -> placed instruction/memref realization
   -> range/end-address verification
 ```
 
@@ -48,13 +50,15 @@ internal split、layout assignment、output coverage 或 group boundary 继续�
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  R3.2d instruction-level `wafer.instr.*` IR with unplaced `!wafer.storage`，以及 accepted layout
-  assignment、materialization cut、effect/order 和 target SPM policy。
+  R3.2d instruction-level `wafer.instr.*` IR with unplaced
+  `memref<..., #wafer.memory<spm, layout>>` values，以及 accepted layout assignment、
+  materialization cut、effect/order 和 target SPM policy。
 - Current stage responsibility:
-  在同一 instruction-level IR 上为 `#spm` storage 做 placement，计算 offset/end/bank span、
+  在同一 instruction-level IR 上为 `#wafer.memory<spm, layout>` memref 做 placement，计算 offset/end/bank span、
   alignment、lifetime/reuse、must-alias/must-not-alias、reserved range 和 range-end verification。
 - Output artifact / IR:
-  same instruction-level IR with placed SPM storage values，或结构化 allocation failure reason。
+  same instruction-level IR with placed SPM memref values / address descriptors，或结构化 allocation
+  failure reason。
 - Downstream consumer:
   R3.2f DDR/resource legality、R3.2g closed-loop planner、R3.4 materialized placed storage IR，
   以及 R3.6 codegen emission。
@@ -84,9 +88,10 @@ Pipeline position:
 
 - transformation-local 或已经 committed 的 `wafer.tile.region` IR；在 R3.2d
   中这是 scratch IR / cloned IR，rejected tile-region IR 必须丢弃。SPM placement 不直接消费
-  target-abstract tile-region IR，而消费 R3.2d 生成的 instruction-level IR with unplaced `!wafer.storage`。
+  target-abstract tile-region IR，而消费 R3.2d 生成的 instruction-level IR with unplaced
+  Wafer-tagged memref values。
 - layout planner 产生的 physical layout assignment 和 materialization demand。
-- instruction legalization / selection 产生的 concrete storage value、operand/result/temp/scratch/
+- instruction legalization / selection 产生的 concrete memref value、operand/result/temp/scratch/
   accumulator/psum/staging 分类、queue family、effect event 和 async policy。
 - `WaferCommOpInterface` 或后续 communication instruction selection 提供的 source/destination buffer、byte count、
   token/wait 和 staging storage。
@@ -95,28 +100,29 @@ Pipeline position:
 
 输出：
 
-- `wafer.tile.region` 中带 memory space / `mem_layout` 的 buffer；其中 `#spm` buffer 由本文
-  allocator 分配，`#ddr` buffer/descriptor 由 DDR resource planner / runtime/package/launch 层提供
+- `wafer.tile.region` 中带 `#wafer.memory<space, layout>` 的 memref；其中 `#wafer.memory<spm, *>` memref 由本文
+  allocator 分配，`#wafer.memory<ddr, *>` memref/access descriptor 由 DDR resource planner / runtime/package/launch 层提供
   ownership。
-- storage realization 后的 physical `memref`、flat storage `memref` 或 Wafer descriptor。
+- placement realization 后的 placed memref、flat backing memref 或 Wafer address descriptor。
 - movement/materialization/compute/sync op。
 - allocation summary：offset/range、size、alignment、lifetime、alias group。
 - hardware lowering 需要的 begin/end range 和 dtype storage size。
 
 这些输出属于 SPM / tile-region 层，不回写到 `wafer.group`。
-其中 allocation summary 只覆盖 `#spm`；DDR 的 BO pool/domain、host visibility、constant
-residency/storage、workspace BO、全局容量、largest contiguous range 和 bandwidth 属于 DDR resource plan，
+其中 allocation summary 只覆盖 `#wafer.memory<spm, *>`；DDR 的 BO pool/domain、host visibility、constant
+residency/storage、compiler-managed BO、全局容量、largest contiguous range 和 bandwidth 属于 DDR resource plan，
 但 movement/scheduler 仍要把 DDR range 和 bandwidth 作为 cost/legality input。
 
 ## 4. Instruction Storage Requirements
 
 allocator 的输入仍可命名为 `BufferDemand`，但它不是直接从 target-abstract `wafer.tile.*` compute /
-movement op 猜出来的。它必须由 instruction-level `wafer.instr.*` / `!wafer.storage` 产生：
+movement op 猜出来的。它必须由 instruction-level `wafer.instr.*` / Wafer-tagged memref 产生：
 
 ```text
 BufferDemand {
   id
   kind
+  wafer_memory_attr
   physical_layout
   storage_size
   required_alignment
@@ -141,12 +147,12 @@ V0 `kind`：
 ### 4.1 Instruction Storage Providers
 
 SPM allocator 不按 op 名字猜 buffer，也不把一个 target-abstract op 当成一条硬件指令。demand
-来源应是 instruction legalization / selection 后的明确 storage graph：
+来源应是 instruction legalization / selection 后的明确 Wafer-tagged memref graph：
 
 - `wafer.tile.*` compute ops / target-abstract movement op：通过 compute/movement 文档定义的接口枚举或选择
   hardware instruction family，例如 NE GEMM、CT elementwise/reduce、TDMA GatherScatter；SPM
   memcpy 是 GatherScatter 的 contiguous descriptor 特例。
-  instruction-level IR 再报告 operand/result/temp/scratch/accumulator/psum demand、queue family
+  instruction-level IR 再报告 operand/result/temp/scratch/accumulator/psum memref demand、queue family
   和 async lowering policy。
 - `wafer.tile.materialize_layout`：不能只报告“source read / result write”。它必须先选择具体
   materialization instruction lowering，例如可展开成具体 GatherScatter 序列的 ChannelNorm /
@@ -162,9 +168,9 @@ shape 猜测；应先扩 op interface / instruction IR，或保持在更高层 I
 如果当前只有 R3.2a/R3.2b 的 group-level analysis summary，而没有 R3.2c
 `wafer.tile.region` IR，SPM placement 不能直接运行；如果只有 R3.2c target-abstract
 tile-region IR 而没有 R3.2d instruction-level IR，SPM placement 同样不能运行。必须先降到
-`wafer.instr.*` / `!wafer.storage`，让 storage values、lifetime 和 effect 都可由 IR 结构重算。
+`wafer.instr.*` / Wafer-tagged memref，让 buffer values、lifetime 和 effect 都可由 IR 结构重算。
 
-`storage_size` 必须用统一 calculator 计算，至少包含：
+`storage_size` 必须由 `computeWaferPhysicalTensorInfo(memrefType)` 统一计算，至少包含：
 
 - compact `Tensor/NTensor` vs aligned `Cx/NCx`。
 - dtype storage size 和 bool bitpack。
@@ -173,8 +179,8 @@ tile-region IR 而没有 R3.2d instruction-level IR，SPM placement 同样不能
 - NHWC batch bank alignment。
 - wrapper-specific byte count / range-end rule。
 
-`BufferDemand` 的 `physical_layout` 和 `storage_size` 适用于所有 memory space；但本文 allocator 只为
-`#spm` demand 放置 offset。`#ddr` demand 不进入 SPM first-fit placement，只进入 movement legality、
+`BufferDemand` 的 `wafer_memory_attr`、`physical_layout` 和 `storage_size` 适用于所有 memory space；
+但本文 allocator 只为 `#wafer.memory<spm, *>` demand 放置 offset。`#wafer.memory<ddr, *>` demand 不进入 SPM first-fit placement，只进入 movement legality、
 range/bandwidth cost、host-visible lifetime 和 DDR resource ownership 检查。
 
 ## 5. Lifetime and Effects
@@ -208,7 +214,7 @@ reuse 分类：
 ## 6. Allocation Contract
 
 SPM allocation 的职责是在一个具体 tile plan、指定 layout assignment 和 selected instruction
-lowering 下放置 `#spm` storage。它不负责全局寻找最佳 group，不选择 compute/movement instruction form，
+lowering 下放置 `#wafer.memory<spm, *>` memref。它不负责全局寻找最佳 group，不选择 compute/movement instruction form，
 也不把失败方案 materialize 到 IR。
 
 输入必须足够接近真实 lowering：
@@ -279,7 +285,7 @@ V0 对 coloring 的处理：
 
 V0 只采用一个 deterministic greedy arena allocator。
 
-1. 从 instruction-level IR with unplaced `!wafer.storage` 收集 `BufferDemand`。
+1. 从 instruction-level IR with unplaced Wafer-tagged memref values 收集 `BufferDemand`。
 
 2. 生成 interval：
 
@@ -358,64 +364,64 @@ V0 推荐 `allocate on tile-region before commit`：
 logical group + tile/layout proposal
   -> build wafer.tile.region IR
      (target-abstract compute/comm/load-store/layout/sync/storage/effect)
-  -> legalize/select instruction-level wafer.instr.* over unplaced !wafer.storage
+  -> legalize/select instruction-level wafer.instr.* over unplaced Wafer-tagged memref values
   -> collect BufferDemand + liveness/effect from instruction-level IR
   -> SPM placement
   -> accepted plan or failure feedback
   -> commit accepted wafer.tile.region with layout/materialization/instruction/SPM facts
-  -> materialize placed instruction/storage IR
+  -> materialize placed instruction/memref IR
 ```
 
 原因是 layout、SPM、tile shape 和 target-abstract op selection 强耦合。早期如果只看 logical
 group summary 或裸 tensor value，再把真实 allocation 推到更晚的 pass，容易让合法性承诺漂移；
 但把 rejected tile-region IR 直接落入主 IR 再回滚也会污染 IR 边界。因此 instruction legalization /
 selection 和 SPM placement 都应在 transformation-local / scratch `wafer.tile.region` 上运行；
-allocation 使用 instruction-level IR 的 storage / lifetime / effect 事实源，而不是 target-abstract
+allocation 使用 instruction-level IR 的 memref / lifetime / effect 事实源，而不是 target-abstract
 op 的粗粒度 effect。
 
 失败的 allocation、offset search trace、cost trace 都不进入 IR。
 
-## 11. Tile Buffer Storage Realization
+## 11. Placed MemRef Realization
 
-`!wafer.storage` 是 layout / SPM planning 阶段的 tile-local storage abstraction，不是替代
-`memref` 的长期底座。SPM bufferization 接受 layout assignment 和 allocation 后，必须在 lower-level
-movement/compute lowering 之前把它转换成真实 storage representation。
+Wafer-tagged memref 是 layout / SPM planning 阶段的 tile-local buffer value。SPM bufferization
+接受 layout assignment 和 allocation 后，必须在 lower-level movement/compute lowering 之前把
+unplaced memref 转换成 placed storage representation。
 
 转换规则：
 
-- compact `Tensor/NTensor`：lower 成带 SPM memory space 的普通 strided/identity `memref`，尽量复用
-  MLIR memref、buffer deallocation 和 LLVM conversion。
-- aligned `Cx/NCx`：先用统一 `PhysicalLayoutInfo` 展开 physical extent、padding、storage bytes、
-  begin/end range；再 lower 成 physical-shape `memref`、flat storage `memref`，或 descriptor + backing
-  storage。
+- compact `Tensor/NTensor`：可保持为 placed SPM memref，或在更低层 lower 成普通 strided/identity
+  memref，尽量复用 MLIR memref、buffer deallocation 和 LLVM conversion。
+- aligned `Cx/NCx`：先用 `computeWaferPhysicalTensorInfo(memrefType)` 展开 physical extent、padding、
+  storage bytes、begin/end range；再 lower 成 placed backing memref、flat storage memref，或
+  descriptor + backing storage。
 - descriptor 只用于普通 `memref` 无法表达、但目标 movement/compute instruction 必须携带的事实，
   例如 range、logical-to-physical mapping、layout family、stride / packet field。它最终必须 lower
   成 LLVM dialect 可表达的 struct、pointer 或 integer operands。
 
-这个阶段不重新选择 layout，也不重新移动 materialization cut。它只消费 accepted `mem_layout`、
-allocation result 和 `PhysicalLayoutInfo`，把 IR 从 layout-aware buffer 层降到 storage/effect 层。
-如果某个 `!wafer.storage` 无法实现成 memref-compatible storage 或 explicit descriptor，说明
+这个阶段不重新选择 layout，也不重新移动 materialization cut。它只消费 accepted
+`#wafer.memory<space, layout>` marker、allocation result 和 `computeWaferPhysicalTensorInfo`，
+把 IR 从 unplaced buffer 层降到 placed storage/effect 层。
+如果某个 Wafer-tagged memref 无法实现成 placed memref-compatible storage 或 explicit descriptor，说明
 前面的 layout/SPM plan 不合法，应返回 planner，而不是让 LLVM lowering 才失败。
 
 ## 12. IR 表达
 
 SPM bufferization 后，IR 应显式表达：
 
-- memory space。
-- physical `mem_layout`。
+- Wafer memory attr：address space + physical layout marker。
 - buffer ownership / alias relation。
 - movement / materialization / compute / sync op。
 - necessary effect / wait / barrier。
 
-storage realization 后，`!wafer.storage` 应消失，IR 应使用 physical `memref`、flat storage
-`memref` 或 explicit descriptor 连接 lower-level movement/compute op。physical address、bank/color、
-worker、queue、packet field 只在能验证它们的 lower-level IR 出现。
+placement realization 后，IR 应使用 placed memref、flat backing memref 或 explicit descriptor
+连接 lower-level movement/compute op。physical address、bank/color、worker、queue、packet field
+只在能验证它们的 lower-level IR 出现。
 `wafer.group` 只消费 feasibility 结论，不携带这些字段。
 
-`memory_space` 在 placed instruction/storage IR 中仍是统一语义：`#spm` 表示 tile-local SRAM，`#ddr` 表示
-device/global DDR address domain。RDMA/WDMA verifier 用 source/destination memory space 检查方向；
-DDR resource / runtime/package lowering 用 `#ddr` 继续关联 BO pool/domain、host visibility、workspace
-BO、constant storage/residency 和 launch metadata。
+`#wafer.memory<space, layout>` 在 placed instruction IR 中仍是统一语义：`spm` 表示 tile-local
+SRAM，`ddr` 表示 device/global DDR address domain。RDMA/WDMA verifier 用 source/destination
+address space 检查方向；DDR resource / runtime/package lowering 用 `ddr` 继续关联 BO
+pool/domain、host visibility、compiler-managed BO、constant storage/residency 和 launch metadata。
 
 不要把 `wafer.tile.region` body 已经表达的执行结构复制成全局 allocation plan attr。
 
@@ -426,29 +432,29 @@ SPM / tile-region verifier 至少检查：
 - buffer range 不越过可用 SPM window 和 reserved range。
 - begin/end range 与 physical layout size 一致。
 - Cx/NCx、C0 tail/fold、256B padding、NHWC bank alignment、bool bitpack 计算一致。
-- op operand/result 的 memory space 和 `mem_layout` 满足对应 op verifier。
+- op operand/result 的 Wafer memory attr 满足对应 op verifier。
 - must-alias relation 的读写顺序合法。
 - may-reuse buffers 的 lifetime 不重叠，或由明确 wait/barrier 收口。
 - async buffer 在 drain/wait 前不能复用。
 - host-visible writeback 和 communication boundary 有明确 drain/wait/sync。
-- storage realization 后不存在残留 `!wafer.storage` typed value；compact buffer 走合法 SPM
-  `memref`，Cx/NCx buffer 的 descriptor 与 `PhysicalLayoutInfo`、allocation range 和 op verifier
-  一致。
+- placement realization 后不存在 unplaced `#wafer.memory<spm, *>` buffer；compact buffer 走合法
+  placed SPM memref，Cx/NCx buffer 的 descriptor 与 `computeWaferPhysicalTensorInfo`、
+  allocation range 和 op verifier 一致。
 
 ## 14. 与 Layout / Group 的关系
 
 全局文档边界见 `tasks/2026-05-11-wafer-ai-compiler-architecture.md` 第 8 节。SPM allocation 只回答
-tile-region IR 的 `#spm` placement 是否可行，并把失败原因返回 group/layout planner。
+tile-region IR 的 `#wafer.memory<spm, *>` placement 是否可行，并把失败原因返回 group/layout planner。
 闭环顺序：
 
 ```text
 tile plan
   -> layout assignment
   -> wafer.tile.region IR
-  -> instruction-level wafer.instr.* over unplaced !wafer.storage
+  -> instruction-level wafer.instr.* over unplaced Wafer-tagged memref values
   -> instruction storage / effect demand
   -> SPM placement
-  -> placed instruction/storage realization
+  -> placed instruction/memref realization
   -> accepted or failure feedback
 ```
 

@@ -3,7 +3,7 @@
 日期：2026-05-21
 
 状态：设计草案；2026-05-25 边界收口；2026-06-04 对齐 instruction-level Wafer IR 先于
-SPM placement
+SPM placement；2026-06-05 对齐 memref-backed Wafer memory attr 合同
 
 本文定义 Wafer 后端的 physical layout planning 和 layout materialization 边界。它服务于
 `wafer.group` 的 legality search，也服务于 `wafer.tile.region` / SPM bufferization 的真实
@@ -30,9 +30,9 @@ layout materialization 是从硬约束出发的局部 dataflow planning：
 scheduled tile tensor IR
   -> pass-local LayoutVariable / LayoutEdge analysis
   -> bounded group-to-group boundary co-planning
-  -> accepted tile-local storage IR with physical layout
+  -> accepted tile-local memref IR with Wafer physical layout marker
   -> materialization cleanup / canonicalization
-  -> storage realization
+  -> placement realization
   -> concrete movement / compute lowering
 ```
 
@@ -65,9 +65,9 @@ lowering IR 写成三套互不相干的东西：
 | target-abstract tile-region IR | `wafer.tile.region` 中的 `wafer.tile.*` compute / boundary / data movement op | 是 | 承载选中的 Wafer implementation 和 `WaferLayoutOpInterface`，但尚未绑定 concrete instruction/runtime descriptor |
 | layout analysis | `LayoutVariable` / `LayoutEdge` / layout assignment alternatives | 否 | 从 SSA use-def、op interface 和 boundary contract 推导 layout domain、preference、materialization cut |
 | boundary co-planning analysis | 相邻 device-side group boundary 的可行 layout summary 和 selected boundary layout | 否 | 在不引入全局 plan attr 的前提下，减少 producer/consumer 边界上的重复 materialization |
-| accepted tile-local storage IR | `!wafer.storage<shape, mem_layout, memory_space>` 和 `wafer.tile.materialize_layout` | 是 | 记录已接受的 physical layout，以及真实 layout movement 的抽象边 |
+| accepted tile-local memref IR | `memref<shape x dtype, #wafer.memory<space, layout>>` 和 `wafer.tile.materialize_layout` | 是 | 记录已接受的 address space 和 physical layout marker，以及真实 layout movement 的抽象边 |
 | materialization cleanup | canonicalization pattern 和 layout-aware rewrite | 是，通过 rewrite 当前 IR | 删除冗余 materialization；不保存搜索过程 |
-| storage realization | physical `memref` / flat storage / Wafer descriptor | 是 | 把 `!wafer.storage` 降成标准 lowering 和目标指令能消费的 storage representation |
+| placement realization | placed memref / flat backing storage / Wafer access descriptor | 是 | 把 unplaced Wafer-tagged memref 降成目标指令能消费的 address/range/stride representation |
 | lowered movement IR | `ChannelNorm` / `DechannelNorm` / `GatherScatter` / TDMA / lower-level effects | 是 | 把 abstract materialization 展开为目标相关 movement、sync 和 byte/range 约束 |
 
 constant storage transform 与这条主线并行：它只处理 compile-time `ConstantLike` value 的
@@ -84,7 +84,7 @@ layout planning 有两个恢复层次：
   buffer demand。该层只产出 analysis result 和 debug dump，不 rewrite `wafer.group`，不写
   layout attr，也不生成 `wafer.tile.region`。
 - R3.4 在 accepted `wafer.tile.region` / instruction-level IR 层运行。它消费 R3.2g accepted plan，把 layout
-  assignment 和 materialization cut materialize 成带 `mem_layout` 的 storage type 和
+  assignment 和 materialization cut materialize 成 Wafer-tagged memref value 和
   `wafer.tile.materialize_layout` op。
 
 完整 layout materialization 的输入来自 target-abstract tile-region IR。它由 scheduled
@@ -156,13 +156,13 @@ layout planner 先把 target-abstract tile-region 中的 tiled SSA value 映射�
 
 | target-abstract tile-region value | layout planning 中的角色 | accepted `wafer.tile.region` 表达 |
 | --- | --- | --- |
-| group block argument / external input slice | `#ddr` compact external boundary + load demand | `wafer.tile.load` 产生 storage |
-| tiled op operand/result | `LayoutVariable` + op layout constraints | 带 `mem_layout` family 的 `!wafer.storage` |
+| group block argument / external input slice | `#wafer.memory<ddr, tensor>` compact external boundary + load demand | `wafer.tile.load` 产生 Wafer-tagged memref |
+| tiled op operand/result | `LayoutVariable` + op layout constraints | `memref<..., #wafer.memory<space, layout>>` |
 | producer-consumer edge | `LayoutEdge`，可能允许 materialization | same-layout use 或 `wafer.tile.materialize_layout` |
 | group output slice | writeback boundary | `wafer.tile.store` 或后续 writeback movement |
 | loop-carried accumulator / partial result | loop-carried layout variable | entry/yield layout 一致，或 loop 内显式 materialization |
 
-因此 layout 文档中的 `!wafer.storage` 不是另一套上游 IR；它是 target-abstract tile-region
+因此 layout 文档中的 Wafer-tagged memref 不是另一套上游 IR；它是 target-abstract tile-region
 中的 tiled SSA value 在 accepted layout 层的 bufferized 表达。
 
 ### 3.3 贯穿本文的 Case Fragment
@@ -214,8 +214,8 @@ layout planning 对 target-abstract Wafer IR 的理解是：
 这一层的 analysis 可以抽象成下面的 constraint graph。注意这不是 IR，也不是 attr plan：
 
 ```text
-Var(%a_tile): #ddr compact external boundary, materializable to aligned for consumer
-Var(%b_tile): #ddr compact external boundary, materializable to aligned for consumer
+Var(%a_tile): #wafer.memory<ddr, tensor> compact external boundary, materializable to aligned for consumer
+Var(%b_tile): #wafer.memory<ddr, tensor> compact external boundary, materializable to aligned for consumer
 Var(%matmul_tile): constrained by selected matmul implementation
 Var(%relu): flexible, preferably inherit producer layout
 Var(%r_partial): constrained by selected reduce implementation and loop-carried tie
@@ -231,38 +231,38 @@ Edge(%relu -> reduce operand 0): materializable only if selected reduce requires
 ```mlir
 wafer.tile.region {
   %a_t = wafer.tile.load %ga[%m0, 0]
-      : tensor<64x256xf16> -> !wafer.storage<64x256xf16, #tensor, #spm>
+      : tensor<64x256xf16> -> memref<64x256xf16, #wafer.memory<spm, tensor>>
   %b_t = wafer.tile.load %gb[0, %n0]
-      : tensor<256x64xf16> -> !wafer.storage<256x64xf16, #tensor, #spm>
+      : tensor<256x64xf16> -> memref<256x64xf16, #wafer.memory<spm, tensor>>
 
   %a_cx = wafer.tile.materialize_layout %a_t
-      : !wafer.storage<64x256xf16, #tensor, #spm>
-     -> !wafer.storage<64x256xf16, #cx, #spm>
+      : memref<64x256xf16, #wafer.memory<spm, tensor>>
+     -> memref<64x256xf16, #wafer.memory<spm, cx>>
   %b_cx = wafer.tile.materialize_layout %b_t
-      : !wafer.storage<256x64xf16, #tensor, #spm>
-     -> !wafer.storage<256x64xf16, #cx, #spm>
+      : memref<256x64xf16, #wafer.memory<spm, tensor>>
+     -> memref<256x64xf16, #wafer.memory<spm, cx>>
 
   %mm = wafer.tile.gemm %a_cx, %b_cx
-      : (!wafer.storage<64x256xf16, #cx, #spm>,
-         !wafer.storage<256x64xf16, #cx, #spm>)
-     -> !wafer.storage<64x64xf16, #cx, #spm>
+      : (memref<64x256xf16, #wafer.memory<spm, cx>>,
+         memref<256x64xf16, #wafer.memory<spm, cx>>)
+     -> memref<64x64xf16, #wafer.memory<spm, cx>>
 
   %relu = wafer.tile.elementwise %mm
-      : !wafer.storage<64x64xf16, #cx, #spm>
-     -> !wafer.storage<64x64xf16, #cx, #spm>
+      : memref<64x64xf16, #wafer.memory<spm, cx>>
+     -> memref<64x64xf16, #wafer.memory<spm, cx>>
 
   %r_partial = wafer.tile.reduce %relu
-      : !wafer.storage<64x64xf16, #cx, #spm>
-     -> !wafer.storage<64xf32, #tensor, #spm>
+      : memref<64x64xf16, #wafer.memory<spm, cx>>
+     -> memref<64xf32, #wafer.memory<spm, tensor>>
 
   %relu_tensor = wafer.tile.materialize_layout %relu
-      : !wafer.storage<64x64xf16, #cx, #spm>
-     -> !wafer.storage<64x64xf16, #tensor, #spm>
+      : memref<64x64xf16, #wafer.memory<spm, cx>>
+     -> memref<64x64xf16, #wafer.memory<spm, tensor>>
 
   wafer.tile.store %relu_tensor, %go0[%m0, %n0]
-      : !wafer.storage<64x64xf16, #tensor, #spm> -> tensor<128x128xf16>
+      : memref<64x64xf16, #wafer.memory<spm, tensor>> -> tensor<128x128xf16>
   wafer.tile.store %r_partial, %go1[%m0]
-      : !wafer.storage<64xf32, #tensor, #spm> -> tensor<128xf32>
+      : memref<64xf32, #wafer.memory<spm, tensor>> -> tensor<128xf32>
 }
 ```
 
@@ -278,7 +278,7 @@ implementation 选择都只是为了说明 IR 如何流动，不是 layout 架�
 layout 和 storage encoding 概念必须分开：
 
 - semantic layout：tensor 维度业务含义，例如 NHWC、HWOI/HWIO、GEMM matrix。
-- physical layout / `mem_layout`：device buffer 的实际组织，例如 compact `Tensor/NTensor`、
+- physical layout marker：device buffer 的实际组织，例如 compact `Tensor/NTensor`、
   aligned `Cx/NCx`。
 - constant storage encoding：compile-time constant 的 backing data/resource 在 storage lowering
   或最终 package 中的字节排布。它可以保持原始 compact 排布，也可以由显式 constant storage
@@ -287,7 +287,7 @@ layout 和 storage encoding 概念必须分开：
 
 V0 规则：
 
-- host-visible dynamic input/output 默认 `#ddr` compact external tensor layout。
+- host-visible dynamic input/output 默认 `#wafer.memory<ddr, tensor>` compact external tensor layout。
 - compile-time constants 可以通过显式 constant storage transform 直接改写 backing data/resource
   或替换为等价 storage-level constant；这不是隐式 layout fact，也不是 weight 专属规则。
 - device-side intermediate 可以选择 `Tensor/NTensor` 或 `Cx/NCx` physical layout family。
@@ -318,8 +318,10 @@ V0 只需要三类 op：
 
 3. materialization op
 
-   layout conversion 先用统一的 `wafer.tile.materialize_layout` 表示，再 lower 到 `GatherScatter`、
-   TDMA 或 wrapper path。same-layout materialization 必须 canonicalize 掉。
+   layout conversion 先用统一的 `wafer.tile.materialize_layout` 表示，再 lower 到一条或多条
+   `GatherScatter`、TDMA 或 wrapper path。same-layout materialization 必须 canonicalize 掉。
+   对 `C > block` 且保留 `C0` tail 的 `Cx/NCx` 转换，full C blocks 和 compact tail block 的
+   inner width / stride 不同，通常需要至少两段 GatherScatter：full-block 段和 tail-C0 段。
 
 compute/movement op 的具体 interface、op family 和 issue/drain 边界见
 `tasks/2026-05-25-wafer-compute-dialect-design.md`。communication op 不改变 tensor semantic
@@ -337,38 +339,37 @@ lowering 计划。
 
 #### 5.1.1 Attributes / Types
 
-`WaferMemLayoutAttr` 只表达 device buffer 的 physical layout family。它只能出现在
-`wafer.tile.region` 及其下游 buffer / memref / descriptor 上，不进入 `wafer.group`。
-
-`WaferMemorySpaceAttr` 统一表达 addressable storage space。不要把 SPM、DDR、host-visible DDR
-或 package/runtime storage 处理成几套互不相干的 memory-space 语义。V0 至少需要：
+V0 使用 MLIR `memref` 作为 buffer value。Wafer 的 address space 和 physical layout marker
+统一放在 memref memory-space attr 中：
 
 ```mlir
-#tensor = #wafer.mem_layout<tensor>
-#ntensor = #wafer.mem_layout<ntensor>
-#cx = #wafer.mem_layout<cx>
-#ncx = #wafer.mem_layout<ncx>
-#spm = #wafer.memory_space<spm>
-#ddr = #wafer.memory_space<ddr>
+memref<64x64xf16, #wafer.memory<spm, tensor>>
+memref<64x64xf16, #wafer.memory<spm, cx>>
+memref<64x64xf16, #wafer.memory<ddr, tensor>>
 ```
+
+`#wafer.memory<space, layout>` 的 `space` 至少包含 `spm`、`ddr`；`layout` 至少包含
+`tensor`、`ntensor`、`cx`、`ncx`。它只能出现在 `wafer.tile.region` 及其下游 buffer /
+instruction IR 上，不进入 `wafer.group`。
 
 语义约定：
 
-- `#spm` 是 tile-local SRAM，容量、lifetime、range 和 reuse 由 SPM bufferization 负责。
-- `#ddr` 是 device/global DDR 或 host-visible device buffer 的目标侧 address space，allocation /
-  BO pool / visibility / package ownership 由 DDR resource planning 和 launch/runtime/package 层负责。
-- `mem_layout` 和 `memory_space` 正交。DDR buffer 可以是 compact，也可以在 constant storage
-  transform 或 device-side materialization 后带目标相关 physical layout；SPM buffer 同样通过
-  `mem_layout` 表达 compact 或 aligned family。
+- `spm` 是 tile-local SRAM，容量、lifetime、range 和 reuse 由 SPM bufferization 负责。
+- `ddr` 是 device/global DDR 或 host-visible device buffer 的目标侧 address space；allocation
+  policy、pool/domain、visibility 和 package ownership 由 DDR resource planning 和
+  launch/runtime/package 层负责。
+- `layout` 是 Wafer physical layout marker。DDR buffer 可以是 compact，也可以在 constant storage
+  transform 或 device-side materialization 后带目标相关 marker；SPM buffer 同样通过这个 marker
+  表达 compact 或 aligned family。
 - compile-time constant 在 semantic tensor IR 中仍是 `ConstantLike` value。只有在
-  `wafer.tile.load` / storage lowering 需要 addressable device storage 时，才产生明确
-  memory space、descriptor 或 runtime/package metadata。
+  `wafer.tile.load` / lowering 需要 addressable device storage 时，才产生明确 memref、placed
+  address/range 或 runtime/package metadata。
 
-DDR 的 pool/domain、workspace BO、external binding、constant residency、capacity 和 bandwidth
-不属于 `WaferMemLayoutAttr`，见
+DDR 的 pool/domain、runtime allocation policy、resident constant、capacity 和 bandwidth 不属于
+`#wafer.memory<space, layout>`，见
 `tasks/2026-05-25-wafer-ddr-resource-allocation-design.md`。
 
-V0 不把以下派生结果写进 `WaferMemLayoutAttr`：
+V0 不把以下派生结果写进 `#wafer.memory<space, layout>`：
 
 - aligned axis。
 - C block size。
@@ -382,8 +383,9 @@ V0 不把以下派生结果写进 `WaferMemLayoutAttr`：
 calculator / verifier 负责从以下输入计算 layout storage facts：
 
 ```text
-PhysicalLayoutInfo {
-  mem_layout_family   // Tensor / NTensor / Cx / NCx
+WaferPhysicalTensorInfo {
+  memory_space        // spm / ddr
+  layout_marker       // Tensor / NTensor / Cx / NCx
   semantic_layout
   logical_shape
   dtype
@@ -407,39 +409,28 @@ PhysicalLayoutInfo {
 
 `Cx/C0/aligned_C/batch_mem_elems/storage_bytes` 按硬件文档中的 `get_CxC0` /
 `common_tensor_info_generate_i64` 口径计算：INT8/UINT8 full block 是 128，其它 dtype full
-block 是 64；tail 是否保留由半块阈值决定；随后继续计入 256B bank padding。
+block 是 64；tail 是否保留由半块阈值决定；随后继续计入 256B bank padding。对于 `C > block`
+且保留 `C0` tail 的 layout conversion，lowering 必须把 full-block span 和 tail span 分开建模；
+如果它们不能分别映射到 V0 GatherScatter 的三层 stride/iteration descriptor，就结构化失败。
 
-V0 推荐引入 Wafer layout-aware buffer type，或者等价的 target storage abstraction。不要把
-`Cx/NCx` 直接伪装成 MLIR affine memref layout encoding；它不是简单 affine map，而是依赖 dtype、
-tail/fold 和 256B padding 的 target storage rule。
+`Cx/NCx` 不放进 memref layout slot，也不实现为 `MemRefLayoutAttrInterface`。普通 compact
+tensor、static subview 和 affine/strided view 可以继续使用标准 memref layout 机制；Wafer
+`Cx/NCx` 是依赖 dtype、tail/fold 和 256B padding 的 target storage rule，不能伪装成单个
+affine map。所有 pass 通过统一 helper 解析：
 
-```mlir
-// 设计草图：具体 printer 可按 MLIR type/parser 约束调整。
-!wafer.storage<64x64xf16, #tensor, #spm>
-!wafer.storage<64x64xf16, #cx, #spm>
-!wafer.storage<64x64xf16, #tensor, #ddr>
+```text
+computeWaferPhysicalTensorInfo(memrefType)
 ```
 
-现有示例大多使用 `#spm`，因为 tile-local compute operand 默认落在 SPM。DDR 不是另一套语义：
-如果 DDR buffer 在 `wafer.tile.region` 中以同一 storage abstraction 出现，就用 `#ddr`；
-如果它已经 placed 成 memref/descriptor，也必须携带同一 `WaferMemorySpaceAttr`。
+该 helper 返回 address space、layout marker、bool bitpack、block size、`Cx/C0`、
+`aligned_C`、footprint、range-end、descriptor stride 和 legality。禁止每个 pass 自己根据
+字符串或局部约定解释 `cx/ncx`。
 
-如果某个 lowering 阶段必须落到 `memref`，那里的 memref layout / offset / stride / byte range
-应由 `PhysicalLayoutInfo` 展开得到，属于更低层 lowering 结果，不是 V0 layout planning 的
-canonical IR contract。
-
-`!wafer.storage` 不是替代 `memref` 的长期底座，也不应保留到 LLVM lowering 前才处理。它在
-accepted layout IR 和 SPM bufferization 之间提供一个 layout-aware storage abstraction；随后必须由
-storage realization 转成标准 lowering 能消费的 storage：
-
-- compact `Tensor/NTensor`：优先 lower 成对应 memory space 的 strided/identity `memref`，复用
-  MLIR memref/LLVM lowering。`#spm` 由 SPM allocator 给 range；`#ddr` 由 DDR resource plan /
-  runtime BO binding 给 addressability 和 ownership。
-- aligned `Cx/NCx`：由 `PhysicalLayoutInfo` 展开成 physical-shape `memref`、flat storage `memref`，
-  或 descriptor + backing storage；descriptor 只承载目标指令需要的 address/range/stride/layout
-  facts。
-- 任何 descriptor 最终都必须 lower 成 LLVM dialect 可表达的 struct / pointer / integer operands；
-  不允许让下游靠 `storage` 类型本身解释 storage。
+Wafer-tagged memref 在 placement 之前仍是 unplaced logical-shape memref：shape 是 logical
+shape，element type 是 logical dtype；它不能被 generic memref-to-LLVM lowering 当成
+`product(shape) * elemBytes` 的真实 footprint。placement realization 负责把它转换成 placed
+memref、flat backing storage 或 explicit access descriptor；descriptor 只承载目标指令需要的
+address/range/stride/layout facts。
 
 V0 不定义额外的 constant storage encoding attr。constant 的 storage encoding 不作为独立
 layout attr 在 pipeline 中传播；它由当前 `ConstantLike` value、consumer `wafer.tile.load`
@@ -454,8 +445,8 @@ physical layout 生成另一个 physical layout；不改变 tensor 数学语义�
 
 ```mlir
 %dst = wafer.tile.materialize_layout %src
-    : !wafer.storage<64x64xf16, #tensor, #spm>
-   -> !wafer.storage<64x64xf16, #cx, #spm>
+    : memref<64x64xf16, #wafer.memory<spm, tensor>>
+   -> memref<64x64xf16, #wafer.memory<spm, cx>>
 ```
 
 ODS 草图：
@@ -465,8 +456,8 @@ def Wafer_LayoutMaterializeOp : Wafer_Op<"tile.materialize_layout", [
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
     DeclareOpInterfaceMethods<WaferLayoutMaterializationOpInterface>
   ]> {
-  let arguments = (ins Wafer_StorageType:$source);
-  let results = (outs Wafer_StorageType:$result);
+  let arguments = (ins AnyMemRef:$source);
+  let results = (outs AnyMemRef:$result);
 }
 ```
 
@@ -474,9 +465,10 @@ Verifier 至少检查：
 
 - source/result rank、shape、element type 的 semantic extent 一致。
 - source/result memory space 合法；V0 只允许 tile-local device buffer。
-- source/result `mem_layout` 不同；相同 layout 的 materialize 必须 canonicalize 掉。
+- source/result `#wafer.memory<space, layout>` 的 layout marker 不同；相同 layout 的 materialize
+  必须 canonicalize 掉。
 - 对应 conversion path 存在，且由 shape/dtype/semantic layout/target policy 推出的
-  `PhysicalLayoutInfo` 合法。
+  `WaferPhysicalTensorInfo` 合法。
 - op effects 正确表达 read source / write result；若 lowering 变成 async movement，后续 sync
   verifier 必须能看到 wait/drain。
 
@@ -502,14 +494,14 @@ Wafer 不定义新的 tensor constant op。constant 的数学值复用已有 MLI
 
 compile-time constant 如果需要目标相关排布，不生成新的 Wafer tensor constant op。相关 pass
 直接读取 `ConstantLike` value 的 elements/resource，
-按 consumer 需要的 `mem_layout` 生成新的 backing data/resource，或在 `wafer.tile.load` lowering
+按 consumer 需要的 layout marker 生成新的 backing data/resource，或在 `wafer.tile.load` lowering
 时直接生成对应 storage。
 
 constant 不是 `wafer.group` 的 external input，但它仍然是 tile execution 的 source。进入
 `wafer.tile.region` 后，constant use 必须变成显式 `wafer.tile.load` 或等价 load source：
 
 - tile shape 和 consumer indexing 决定 constant 的 tile slice / access range。
-- `wafer.tile.load` result type 决定 load 后 storage 的 `mem_layout` 和 memory space。
+- `wafer.tile.load` result type 决定 load 后 memref 的 address space 和 layout marker。
 - DDR resource planner 必须看到 constant 的 read-only source demand，包括 resident 或 streaming
   策略、storage size、alignment、lifetime、bandwidth 和 per-tile access range。
 - 若原始 compact backing data 不能直接满足 result layout，planner 可以选择 compile-time storage
@@ -533,7 +525,7 @@ weight 切分不是新的 Wafer constant 语义。它只是某个 `ConstantLike`
 - `wafer.tile.load` 必须显式携带这个 source slice 或等价 index operands；slice 可以包含 reduction
   dimension、channel/block dimension，也可以是 op interface 推出的 hidden/internal dimension。
 - storage transform 可以选择 whole-constant backing，也可以选择 chunked backing。chunk key 来自
-  `(constant SSA value, logical slice/chunk shape, result mem_layout, target policy)`，不是新的 IR 名词。
+  `(constant SSA value, logical slice/chunk shape, result layout marker, target policy)`，不是新的 IR 名词。
 - chunked backing 只能覆盖已有 `wafer.tile.load` slice 的 union/coalescing；不能为了 packing 引入
   额外 compute tiling 或 reduction split。若需要改变 K/internal split，必须回到 group/op tiling planner。
 - 如果 chunk 数量、package size、DDR residency 或 bandwidth 失控，应回退到 raw backing +
@@ -547,7 +539,7 @@ physical layout：
 %w = arith.constant dense_resource<W_cx> : tensor<256x128xf16>
 
 %wt = wafer.tile.load %w[%tile]
-    : tensor<256x128xf16> -> !wafer.storage<256x64xf16, #cx, #spm>
+    : tensor<256x128xf16> -> memref<256x64xf16, #wafer.memory<spm, cx>>
 ```
 
 如果 planner 没有选择 constant storage transform，`wafer.tile.load` 从 normalized
@@ -617,8 +609,8 @@ V0 implementer 范围：
 
 | op / provider | 是否实现 | 说明 |
 | --- | --- | --- |
-| `wafer.tile.load` / 等价 boundary load op | 必须 | 暴露 `#ddr` compact external boundary、constant source 和 storage result 的 allowed/preferred layout |
-| `wafer.tile.store` / 等价 boundary store op | 必须 | 暴露 `#ddr` host-visible compact writeback、device-side group boundary 和 store input layout 约束 |
+| `wafer.tile.load` / 等价 boundary load op | 必须 | 暴露 `#wafer.memory<ddr, tensor>` compact external boundary、constant source 和 result memref 的 allowed/preferred layout |
+| `wafer.tile.store` / 等价 boundary store op | 必须 | 暴露 `#wafer.memory<ddr, tensor>` host-visible compact writeback、device-side group boundary 和 store input layout 约束 |
 | `wafer.tile.gemm` / NE-style matmul op | 必须 | 通常是 aligned-only consumer/producer；决定 operand/result 是否必须是 `Cx/NCx` family |
 | `wafer.tile.reduce`、pool、unpool | 必须 | 这些 op 有硬件 layout legality，不能靠通用 passthrough 规则猜 |
 | `wafer.tile.elementwise` / CT-style flexible op | 必须或提供默认 flexible trait | 若 op 只是 shape-preserving passthrough，可复用默认 flexible 规则；若受 dtype/range/wrapper 限制，必须实现接口 |
@@ -634,13 +626,13 @@ constant storage transform 的 implementer 是 pass / pattern，不是 op interf
 - 输入必须是已经 normalized 的 `ConstantLike` tensor value；若来自 `stablehlo.constant`，必须先经过
   constant normalization。
 - transform 从当前 IR 的 use-def、accepted tile shape、op tiling interface 推出的 operand slice、
-  `wafer.tile.load` tile slice、result `mem_layout`、target policy 和 `PhysicalLayoutInfo`
+  `wafer.tile.load` tile slice、result layout marker、target policy 和 `computeWaferPhysicalTensorInfo`
   推导目标 storage order。
 - transform 直接替换 constant backing data/resource，或在 lowering `wafer.tile.load` 时生成
   packed storage；不创建新的旁路 IR 事实源。
 - transform 不处理已经被合法 fold 成 immediate / attribute / fill pattern 的 constants；这类
   constants 不进入 DDR demand。
-- dynamic host input/output 不能走这条路径；它们仍受 `#ddr` compact external ABI 和 runtime binding
+- dynamic host input/output 不能走这条路径；它们仍受 `#wafer.memory<ddr, tensor>` compact external ABI 和 runtime allocation
   约束。
 
 ### 5.3 Pass Contract
@@ -659,7 +651,7 @@ pass 名是实现组织，不是架构边界；边界仍以 IR contract 和 veri
    - target-abstract `wafer.tile.region` SSA body。
    - op 的 `WaferLayoutOpInterface`。
    - `wafer.tile.*` communication p2p op 的 byte-preserving layout relation、token/effect 和 staging demand。
-   - `#ddr` compact external boundary。
+   - `#wafer.memory<ddr, tensor>` compact external boundary。
    - normalized `ConstantLike` tensor value 及其 backing data/resource。
    - target policy、SPM allocator 和 DDR resource planner。
 
@@ -672,14 +664,14 @@ pass 名是实现组织，不是架构边界；边界仍以 IR contract 和 veri
    - 选择最终 physical layout assignment 和 materialization edge。
    - 对候选 assignment 调用 SPM allocator 和 DDR resource planner；改变 boundary
      layout 或 materialization cut 后必须重新验证。
-   - 对 accepted assignment rewrite IR：生成或更新 tile-local storage type 的 `mem_layout`，插入
+   - 对 accepted assignment rewrite IR：生成或更新 tile-local memref 的 `#wafer.memory<space, layout>`，插入
      `wafer.tile.materialize_layout`，并把 compile-time constant 的 storage transform 机会保留在
      `wafer.tile.load` use 上。
    - 对 rejected layout alternative 只发 diagnostic，不写入 IR。
 
    输出：
 
-   - 带 `mem_layout` 的 tile-local storage values。
+   - 带 `#wafer.memory<space, layout>` 的 tile-local memref values。
    - 明确的 `wafer.tile.materialize_layout` op。
    - `wafer.tile.load` 对 constant source 的明确 use-def 关系，供后续 storage transform / lowering 使用。
 
@@ -702,10 +694,10 @@ pass 名是实现组织，不是架构边界；边界仍以 IR contract 和 veri
    输入：
 
    - normalized `ConstantLike` tensor value。
-   - `wafer.tile.load` use、result `mem_layout`、tile slice 和从 op tiling interface 推出的 operand
+   - `wafer.tile.load` use、result layout marker、tile slice 和从 op tiling interface 推出的 operand
      slice relation。
    - 原始 constant data。
-   - `PhysicalLayoutInfo` calculator 和 target policy。
+   - `computeWaferPhysicalTensorInfo` calculator 和 target policy。
 
    行为：
 
@@ -727,25 +719,25 @@ pass 名是实现组织，不是架构边界；边界仍以 IR contract 和 veri
    - 不决定 runtime materialization cut。
    - 不修改 tensor semantic layout。
 
-4. `wafer-realize-storage-storage`
+4. `wafer-realize-placement`
 
-   运行位置：accepted layout IR 和 cleanup 完成之后，lower-level movement/compute op 需要真实 storage
+   运行位置：accepted layout IR 和 cleanup 完成之后，lower-level movement/compute op 需要 placed storage
    之前。它可以作为 `wafer-spm-bufferize` 的后半段，也可以拆成独立 conversion pass；边界是
-   `!wafer.storage` 在这里消失。
+   unplaced Wafer-tagged memref 在这里消失。
 
    输入：
 
-   - tile-local storage 的 logical shape、dtype、memory space 和 `mem_layout`。
-   - `PhysicalLayoutInfo` calculator。
+   - tile-local memref 的 logical shape、dtype 和 `#wafer.memory<space, layout>`。
+   - `computeWaferPhysicalTensorInfo` calculator。
    - SPM allocation / range / lifetime result。
    - target descriptor policy。
 
    行为：
 
-   - compact layout 转成普通 SPM `memref`。
-   - `Cx/NCx` 转成 physical-shape `memref`、flat storage `memref` 或 explicit Wafer descriptor。
-   - 给 lower-level movement/compute op 绑定 address/range/stride/layout descriptor。
-   - 删除或替换所有 `!wafer.storage` typed values。
+   - compact layout 转成 placed SPM/DDR `memref`。
+   - `Cx/NCx` 转成 placed physical-shape `memref`、flat storage `memref` 或 explicit Wafer access descriptor。
+   - 给 lower-level movement/compute op 绑定 address/range/stride/layout facts。
+   - 删除或替换所有 unplaced `#wafer.memory<spm, *>` memref values。
 
    不负责：
 
@@ -755,7 +747,7 @@ pass 名是实现组织，不是架构边界；边界仍以 IR contract 和 veri
 
 5. `wafer-lower-layout-materialize`
 
-   运行位置：storage realization 已经给出真实 storage / descriptor 之后，lower-level
+   运行位置：placement realization 已经给出 placed memref / access descriptor 之后，lower-level
    movement/compute dialect 之前或过程中。
 
    输入：
@@ -811,7 +803,7 @@ LayoutEdge {
 
 - op layout interface 的 allowed / preferred layouts。
 - dtype、rank、shape、bool bitpack、C0 tail/fold、padding、range-end 规则。
-- `#ddr` compact external ABI。
+- `#wafer.memory<ddr, tensor>` compact external ABI。
 - compile-time constant source 的 current backing data/resource，以及 `wafer.tile.load` result layout。
 - producer-consumer edge 是否允许插入 real movement。
 
@@ -823,7 +815,7 @@ V0 只需要区分 hard constraint 和 preference：
   `wafer.tile.materialize_layout`；否则必须回到 group planner 拆 group、换 tile 或请求 op-local
   implementation。
 
-accepted assignment 只通过 rewrite 后的 tile-local storage type、`wafer.tile.materialize_layout`、
+accepted assignment 只通过 rewrite 后的 tile-local memref type、`wafer.tile.materialize_layout`、
 `wafer.tile.load` 的 use-def 和 result type 体现。domain frontier、cost trace、备选 cut、失败原因
 都属于 diagnostic / debug dump，不能成为下游 pass 依赖的 IR 事实。
 
@@ -848,7 +840,7 @@ V0 不把这个问题写成“遇到某类 op 就插 conversion”。通用算�
 先从当前 IR、type、op interface 和 boundary contract 推导 hard domain：
 
 - aligned-only op 收窄 operand/result domain，例如 NE/GEMM、native reduce、pool/unpool。
-- host-visible dynamic input/output 固定为 `#ddr` compact external layout。
+- host-visible dynamic input/output 固定为 `#wafer.memory<ddr, tensor>` compact external layout。
 - loop-carried entry/yield value 必须 layout 一致，除非 loop body 内有显式 materialization。
 - DPS / in-place / must-alias value 必须共享 compatible layout。
 - non-materializable producer-consumer edge 两端必须同 layout。
@@ -941,7 +933,7 @@ materialization demand 并运行 SPM allocation。
 - `wafer.tile.materialize_layout` 都有 lowerable conversion path。
 - SPM allocation 通过，包含 materialization temp、communication staging、loop-carried value、
   async lifetime 和 range/end-address validation。
-- DDR demand / workspace / external binding / bandwidth summary 可由 DDR resource planner 接受。
+- DDR demand / compiler-managed allocation / external allocation / bandwidth summary 可由 DDR resource planner 接受。
 - cleanup 后仍能通过 layout verifier、SPM allocation 和 DDR resource planning。
 
 如果所有 bounded alternatives 都失败，layout planner 不生成“等待下游修复”的 IR，而是返回
@@ -966,7 +958,7 @@ conversion cost 是主瓶颈，可以在 bounded frontier 的局部子图上引�
 
 dynamic host input/output：
 
-- 固定为 `#ddr` compact external layout。
+- 固定为 `#wafer.memory<ddr, tensor>` compact external layout。
 - 不要求用户提供 `Cx/NCx`。
 
 compile-time constants：
@@ -985,14 +977,15 @@ compile-time constants：
 
 load/store：
 
-- load/store 根据 source/destination memory space 和 layout assignment 选择 movement lowering。
-  典型 dynamic boundary 是 `#ddr` compact buffer 与 `#spm` tile-local storage 之间的 RDMA/WDMA。
+- load/store 根据 source/destination memory attr 和 layout assignment 选择 movement lowering。
+  典型 dynamic boundary 是 `#wafer.memory<ddr, tensor>` compact buffer 与
+  `#wafer.memory<spm, *>` tile-local memref 之间的 RDMA/WDMA。
 - 它们不是 layout 的根本来源。
 
 group output：
 
 - device-side group-to-group value 可以保持 selected physical layout。
-- host-visible output 在 writeback 前必须回到 `#ddr` compact external layout。
+- host-visible output 在 writeback 前必须回到 `#wafer.memory<ddr, tensor>` compact external layout。
 
 ## 8. 跨 Group Boundary Co-Planning
 
@@ -1006,7 +999,7 @@ group A produces value in layout X
 ```
 
 如果这个 boundary 不是 host-visible、不逃逸到未知 runtime ABI、且下游 verifier 能用 boundary
-value 的 type/effect 检查 memory space 和 `mem_layout`，那它可以保持 `X` 或 `Y`，不必强制回到
+value 的 type/effect 检查 `#wafer.memory<space, layout>`，那它可以保持 `X` 或 `Y`，不必强制回到
 compact。这个选择仍然不能写成 `wafer.group` 上的全局 layout plan；它只能作为当前 planning 的
 analysis，最终通过 accepted boundary buffer value 的 type 和必要的 `wafer.tile.materialize_layout`
 进入 IR。
@@ -1030,7 +1023,7 @@ V0 做 bounded adjacent co-planning，不做 full-program layout solve：
    ```
 
    summary 是 analysis，不进入 IR。`local_cost` 必须包含 group 内 materialization bytes、peak SPM
-   变化、DDR workspace / bandwidth pressure 和 writeback/load movement；`spm_allocation` 必须来自
+   变化、DDR compiler-managed allocation / bandwidth pressure 和 writeback/load movement；`spm_allocation` 必须来自
    同一个 SPM allocator，`ddr_resource_plan` 必须来自 DDR resource planner。
 
 2. 建 boundary graph
@@ -1188,7 +1181,7 @@ V0 不做全局最优，但不能只做一次贪心选择。主路径是 determi
 
 8. Rewrite
 
-   只对 accepted assignment 写 IR：`wafer.tile.region` 中出现 physical `mem_layout` 和
+   只对 accepted assignment 写 IR：`wafer.tile.region` 中出现 Wafer-tagged memref 和
    `wafer.tile.materialize_layout`。具体 `ChannelNorm` / `GatherScatter` / TDMA 等 lower-level movement
    由后续 lowering pass 生成。
 
@@ -1197,10 +1190,10 @@ V0 不做全局最优，但不能只做一次贪心选择。主路径是 determi
    在 accepted IR 上运行 layout materialization cleanup。无条件 fold 直接删除冗余 op；改变 lifetime
    或 boundary layout 的 rewrite 必须重新通过 SPM allocation 和 DDR resource planning。
 
-10. Storage realization handoff
+10. Placement realization handoff
 
-   cleanup 后交给 `wafer-realize-storage-storage` / `wafer-spm-bufferize` 后半段，把
-   `!wafer.storage` 转成 physical `memref`、flat storage 或 descriptor。layout planner 不直接
+   cleanup 后交给 `wafer-realize-placement` / `wafer-spm-bufferize` 后半段，把
+   unplaced Wafer-tagged memref 转成 placed `memref`、flat storage 或 access descriptor。layout planner 不直接
    生成 LLVM ABI，但必须保证 accepted layout 都能被这个 conversion 合法实现。
 
 ## 11. Cost Model
@@ -1237,13 +1230,13 @@ layout 相关事实按第 3 节生命周期分层表达：
 - `LayoutVariable` / `LayoutEdge` 是 pass-local analysis，不表达成 op/type/attr。
 - group boundary summary / co-planning frontier 是 pass-local analysis，不表达成 op/type/attr。
 - accepted `wafer.tile.region` / SPM bufferization 层表达：
-  - tile-local storage 的 memory space 和 `mem_layout`。
+  - tile-local memref 的 address space 和 physical layout marker。
   - `wafer.tile.materialize_layout` 或等价 explicit data movement op。
-  - `wafer.tile.load` 对 `ConstantLike` source 的 use-def，以及 result `mem_layout`。
+  - `wafer.tile.load` 对 `ConstantLike` source 的 use-def，以及 result layout marker。
   - op verifier 可检查的 layout contract。
-- storage realization 层删除 `!wafer.storage`，把它转换成 physical `memref`、flat
-  storage `memref` 或 explicit descriptor。compact layout 应尽量复用标准 memref lowering；
-  Cx/NCx 的 descriptor 只承载 lower-level instruction 必需的 storage facts。
+- placement realization 层删除 unplaced Wafer-tagged memref，把它转换成 placed `memref`、flat
+  storage `memref` 或 explicit access descriptor。compact layout 应尽量复用标准 memref lowering；
+  Cx/NCx 的 access descriptor 只承载 lower-level instruction 必需的 storage facts。
 - lower-level movement IR 表达具体 instruction/wrapper path、sync/effect 和 byte/range 约束。
 
 不要维护全局 `layout_plan` attr，也不要把 analysis graph 序列化成 side table 给后续 pass 使用。
@@ -1253,13 +1246,13 @@ layout 相关事实按第 3 节生命周期分层表达：
 
 layout verifier 至少检查：
 
-- `WaferMemLayoutAttr` 只包含 `Tensor/NTensor/Cx/NCx` family，不包含 `axis/C0/aligned_C/storage_bytes`
-  这类可推导字段。
+- `#wafer.memory<space, layout>` 的 layout marker 只包含 `Tensor/NTensor/Cx/NCx` family，不包含
+  `axis/C0/aligned_C/storage_bytes` 这类可推导字段。
 - aligned-only op 的 operand/result physical layout 合法。
-- 通过统一 calculator 推出的 `PhysicalLayoutInfo` 与 dtype、rank、shape、C0 tail/fold、bool
+- 通过统一 calculator 推出的 physical tensor info 与 dtype、rank、shape、C0 tail/fold、bool
   bitpack 一致。
 - materialization source/destination layout 不同，且 conversion path 可 lower。
-- host-visible dynamic input/output 满足 `#ddr` compact external layout contract。
+- host-visible dynamic input/output 满足 `#wafer.memory<ddr, tensor>` compact external layout contract。
 - compile-time constant source 可以被 `wafer.tile.load` lowering 成 result layout 要求的 storage。
 - loop-carried value 的 entry/yield layout 一致，除非 loop body 中有明确 materialization。
 - device-side group boundary 的 producer value 和 consumer value physical layout 一致；如果不一致，

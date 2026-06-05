@@ -99,7 +99,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - 工程能跑不等于 P0-P6 主路径完成；R2 已恢复 frontend program verifier 和 SDY program bridge，
   但 group/resource/package/runtime 主链路仍需后续 R3/P8 恢复。
 - R1.2 恢复的是可查询合同和局部 legality；它还不是完整 planner/resource planning。closed-loop group
-  search、SPM/DDR debug path、storage realization、runtime/package 主链路仍归 R3 之后恢复。
+  search、SPM/DDR debug path、placement realization、runtime/package 主链路仍归 R3 之后恢复。
 - StableHLO/Shardy dependency 当前主要服务 textual lowering 最小验证 和 SDY program bridge
   dependency boundary；R0.3 依赖栈用 PyTorch/XLA 2.5 的 `WORKSPACE` `xla_hash` 选择 OpenXLA/XLA，再由 XLA
   workspace 选择 LLVM/StableHLO/Shardy base。PyTorch/XLA source 也是后续构建/安装 `torch_xla`
@@ -132,8 +132,9 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 当前实现：
 
 - 有 `WaferAttrs.td`、`WaferTypes.td`、`WaferInterfaces.td` 和 `WaferOps.td`，覆盖 target、
-  memory space、mem layout、placement、wait policy、elementwise/reduce kind、`!wafer.storage`
-  以及 group/tile/layout/load/store/placement/ABI/compute/comm/sync/launch temporary ops。
+  placement、wait policy、elementwise/reduce kind，以及 group/tile/layout/load/store/placement/
+  ABI/compute/comm/sync/launch temporary ops；旧 memory-space / mem-layout / `!wafer.storage`
+  原型仍需按 2026-06-05 memref-backed Wafer memory attr 合同迁移。
 - 有 parser/printer/verifier 正负例；`WaferDialect.cpp` 实现多数 verifier。
 - 有 `WaferTilingInterface`、`WaferLayoutOpInterface`、
   `WaferLayoutMaterializationOpInterface`、`WaferResourceEffectInterface` 和 Wafer resource-backed
@@ -151,7 +152,8 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - Wafer dialect verifier 的孤立负例仍会使用 `builtin.unrealized_conversion_cast` 构造非法边界值；
   这些用例只能证明 verifier 形态。历史 R1.3 stage-connection gate 已删除；communication bridge
   的 visible cast 仍归 R6.2 清理。
-- 没有 placed instruction/storage memref/descriptor 层，因此 `!wafer.storage` 还没有按设计消失。
+- 没有 placed instruction/storage memref/access descriptor 层，因此旧 `!wafer.storage` 原型还没有
+  按设计消失。
 
 恢复任务：
 

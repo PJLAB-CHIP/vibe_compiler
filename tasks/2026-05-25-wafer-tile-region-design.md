@@ -4,7 +4,8 @@
 
 状态：设计草案；2026-05-25 独立边界收口；2026-05-27 对齐 tensor collective 到 `wafer.tile.*` communication materialization；
 2026-06-03 R3.2c 对齐 MLIR DialectConversion full conversion；2026-06-04 对齐
-instruction-level Wafer IR 先于 SPM placement，并补正式 `group -> tile_region` conversion pass
+instruction-level Wafer IR 先于 SPM placement，并补正式 `group -> tile_region` conversion pass；
+2026-06-05 对齐 memref-backed buffer contract，`Cx/NCx` 改为 Wafer memory attr marker
 
 本文定义 `wafer.tile.region` 作为 `wafer.group` lowering 之后的 tile-local execution boundary。
 它组织 tile-local storage、movement、layout materialization、target-abstract compute、communication
@@ -50,7 +51,7 @@ placement-derived endpoint 和 communication staging demand 的层级；`wafer.t
 ```text
 wafer.group
   -> group-to-tile-region lowered `wafer.tile.region` IR
-  -> instruction-level wafer.instr.* IR over unplaced !wafer.storage
+  -> instruction-level wafer.instr.* IR over unplaced Wafer-tagged memref values
   -> SPM placement on the same instruction-level IR
   -> DDR / resource legality on placed instruction IR
   -> accepted / rejected / split decision
@@ -81,7 +82,8 @@ Pipeline position:
   `wafer.group` 是 illegal root，conversion pattern 产出完整 legal `wafer.tile.region`，并用 full
   conversion 保证 converted region 内不残留 logical group / linalg / tensor allocation op；
   把 logical group boundary 映射成 `wafer.tile.load` / `wafer.tile.store`，把 selected
-  layout 和 materialization cut 映射成 `!wafer.storage` 与 `wafer.tile.materialize_layout`，
+  layout 和 materialization cut 映射成带 `#wafer.memory<space, layout>` 的 memref value
+  与 `wafer.tile.materialize_layout`，
   把可验证的 structured compute / tensor collective 映射成 target-abstract
   `wafer.tile.*` compute / `wafer.tile.*` communication / sync/effect op。
 - Output artifact / IR:
@@ -114,11 +116,11 @@ Pipeline position:
 | source IR / op family | 当前 R3.2c 处理 | 覆盖状态 | 正确 conversion 做法 / 后续要求 |
 | --- | --- | --- | --- |
 | `wafer.group` / `wafer.group.yield` boundary | DialectConversion 中由 `OpConversionPattern<wafer.group>` 构造 `wafer.tile.region`，对 `ins + outs` 生成 `wafer.tile.load` / `wafer.tile.store` / `wafer.tile.yield`；同一 builder 支持 scratch dump 和正式 `--wafer-convert-group-to-tile-region` pass | supported for tile-region IR | `ConversionTarget` 将 `wafer.group` / `wafer.group.yield` 标为 illegal；debug dump 只调用同一 conversion builder，不能自己承担 lowering 逻辑。 |
-| ranked tensor boundary values | 生成 `!wafer.storage<tensor, tensor, spm>`，记录 tensor layout 版本 | supported for ranked tensor | 保持类型/verifier 驱动；后续 instruction-level IR 再决定 concrete storage，SPM placement 再决定 offset/window。 |
+| ranked tensor boundary values | 生成 logical-shape memref，memory attr 默认 `#wafer.memory<spm, tensor>`，记录 compact tensor layout version | supported for ranked tensor | 保持类型/verifier 驱动；后续 instruction-level IR 再决定 concrete instruction，SPM placement 再决定 offset/window。 |
 | scalar boundary values | 作为 tile-region block scalar SSA value 传入，供 fill/reduce init 等 scalar operand 使用 | supported for scalar | 只支持 float / integer / index scalar；不生成 storage，不作为长期 side channel。 |
 | `arith.constant` tensor | clone constant 后 `wafer.tile.load` 到 tensor-layout storage | partial | 只适合 tensor constant；scalar constant 只应在 compute body 或显式 init 语义中消费。需要区分 constant residency / DDR / immediate policy。 |
 | `arith.constant` scalar | clone scalar constant，并作为 `wafer.tile.fill`、`wafer.tile.reduce init_value` 或 elementwise body 推导输入 | supported for scalar constants | scalar 语义通过 SSA value 或 typed attr 进入目标 op；不靠名字或原 op 残留。 |
-| `tensor.empty` | 生成 `wafer.tile.alloc`，结果类型携带 tensor shape、layout 和 SPM memory-space demand | supported as abstract allocation demand | `wafer.tile.alloc` 不分配物理 offset/window；R3.2d 只把它合法化为 unplaced instruction storage，R3.2e 才做真实 SPM placement。不能把 empty 偷映射成 output alias。 |
+| `tensor.empty` | 生成 `memref.alloc`，memref type 携带 logical shape、element type 和 `#wafer.memory<spm, layout>` marker | supported as abstract allocation demand | `memref.alloc` 不分配物理 offset/window；R3.2d 只把 target-abstract op 合法化到读写该 memref 的 instruction op，R3.2e 才做真实 SPM placement。不能把 empty 偷映射成 output alias。 |
 | `tensor.extract` scalar | clone 到 tile-region 内，供动态 scalar init / scalar value 使用 | supported for scalar extract | 只作为 scalar SSA 支持 op；不表示 tile compute。 |
 | `linalg.fill` | 生成显式 `wafer.tile.fill`，写入 existing storage；fill result 映射为该 initialized buffer | supported for scalar fill | `wafer.tile.fill` 暴露 target-abstract write relation；具体是否 lower 成 CT fill、memset 或 immediate pattern 由 R3.2d instruction selection 决定。 |
 | `linalg.matmul` | lhs/rhs materialize 到 `cx`，生成 `wafer.tile.gemm`，结果记录为 `cx` | supported for simple `linalg.matmul` | pattern 应检查 rank、dtype、accumulator/result relation、layout requirement；batch matmul / generic contraction 另列，不应混成 matmul 特判。 |
@@ -134,12 +136,14 @@ Pipeline position:
 failure gate 固定下来。扩展 coverage 时每新增一类 op 都要同时补：IR 语义、verifier、conversion
 pattern、negative test 和下游 instruction/storage 来源。
 
-`wafer.tile.region` 可以跨这些 lowering 子阶段保留为 region container。早期 region 中的 buffer
-可能还是 `!wafer.storage`；后期可以变成带 Wafer memory space 的 `memref` 或 descriptor。
-因此不能简单说 tile region 内“永远不允许 memref”或“永远不允许 lower-level op”。正确边界是：
+`wafer.tile.region` 可以跨这些 lowering 子阶段保留为 region container。当前长期边界是：buffer
+value 使用带 Wafer memory attr 的 `memref`，lower-level descriptor 只在 placement / emission
+能验证其语义时出现。因此不能简单说 tile region 内“永远不允许 memref”或“永远不允许 lower-level
+op”。正确边界是：
 
-- abstract tile-region 阶段不允许任意 `memref.alloc/load/store` 作为语义逃逸。
-- storage realization 后允许 verifier 可解释的 `memref` / descriptor / lower-level Wafer op。
+- abstract tile-region 阶段只允许 verifier 可解释的 Wafer-tagged `memref.alloc`、metadata view 和
+  Wafer movement/compute op；不允许 generic `memref.load/store/copy` 作为语义逃逸。
+- placement / realization 后允许 verifier 可解释的 placed `memref` / descriptor / lower-level Wafer op。
 - LLVM call、runtime call、C ABI call 不属于 `tile_region` 主体，应在 launch / ABI lowering 后
   出现。
 
@@ -173,21 +177,38 @@ wafer.tile.region (...) -> (...) {
 
 ## 4. Tile Buffer and Memory Space
 
-`!wafer.storage` 是 tile-region 内部的抽象 buffer type。它应该携带或关联：
+tile-region 内部的长期 buffer value 是 MLIR `memref`。Wafer target-specific memory attr 放在
+memref memory-space slot 中：
 
-- logical shape / dtype。
-- memory space：`#wafer.memory_space<spm>` 或 `#wafer.memory_space<ddr>`。
-- physical `mem_layout`：`Tensor`、`NTensor`、`Cx`、`NCx` 等 layout family。
-- effect / lifetime / alias class。
+```mlir
+memref<64x256xf16, #wafer.memory<spm, tensor>>
+memref<64x256xf16, #wafer.memory<spm, cx>>
+memref<64x256xf16, #wafer.memory<ddr, tensor>>
+```
+
+该 attr 同时携带两类 target facts：
+
+- address space：`spm` 或 `ddr`。
+- physical layout marker：`tensor`、`ntensor`、`cx`、`ncx`。
+
+memref shape / element type 表达 logical shape / dtype。`Cx/NCx` 的 `C0`、storage bytes、
+range-end、bool bitpack 和 256B padding 不写入 type 字段，统一由
+`computeWaferPhysicalTensorInfo(memrefType)` 从 logical shape、element type 和 Wafer memory attr 推导。
 
 SPM buffer 由 SPM allocator 放置；DDR buffer/descriptor 由 DDR planner 和 launch/runtime 负责
 ownership。二者使用同一套 memory-space 语义，不在不同文档发明不同含义。
 
-storage realization 后：
+Wafer `Cx/NCx` marker 不占用 MLIR memref layout slot。MLIR memref layout slot 只用于 MLIR 能
+按 affine / strided 语义解释的普通 layout；Wafer `Cx/C0` 是 target physical layout marker，
+由 Wafer verifier、SPM allocator 和 instruction lowering 解释。
 
-- compact buffer 优先降到标准 `memref`，复用 MLIR memref lowering。
-- Cx/NCx buffer 可降到 flat memref + descriptor 或专门 Wafer descriptor。
-- descriptor 中的 storage bytes、C0、padding、range-end 等必须由 verifier 可重算或明确字段表达。
+在 placement / realization 前：
+
+- `memref.alloc` 表达 tile-local allocation identity 和 lifetime，不表达 physical offset。
+- `memref.dim` 可用于读取 logical shape。
+- generic `memref.load/store/copy` 不能用于 Wafer-tagged SPM buffer。
+- metadata-only view 只有在 verifier 能证明 Wafer layout marker 仍然合法时才允许；真实 physical
+  layout conversion 必须通过 `wafer.tile.materialize_layout` / TDMA movement 表达。
 
 ## 5. Core Ops Inside Tile Region
 
@@ -195,7 +216,7 @@ V0 需要以下 op family：
 
 | family | 作用 | 主要 verifier |
 | --- | --- | --- |
-| `wafer.tile.load` | 从 `#ddr` / external / constant source 读入 tile-local storage | source range、dtype、layout、stride、effect |
+| `wafer.tile.load` | 从 `#wafer.memory<ddr, tensor>` / external / constant source 读入 tile-local memref | source range、dtype、layout、stride、effect |
 | `wafer.tile.store` | 写回 external output / inter-group DDR value | destination range、layout、visibility、effect |
 | `wafer.tile.materialize_layout` | 显式 layout conversion | source/result layout relation、可消除冗余转换 |
 | `wafer.tile.*` compute ops | target-abstract compute | operand/result layout、instruction family legality、scratch/psum demand |
@@ -214,19 +235,20 @@ V0 需要以下 op family：
 2. target-abstract op selection：在 tile-region IR 内把 tile-level linalg/tensor compute 绑定到
    `wafer.tile.*` compute / movement op；把 tiled tensor collective 在可表达的 placement / buffer /
    communication demand 下 materialize 为 `wafer.tile.*` communication 或 explicit p2p schedule proposal。
-3. layout assignment：为 op 约束选择 `mem_layout`，在 cut edge 插入
+3. layout assignment：为 op 约束选择 physical layout marker，在 cut edge 插入
    `wafer.tile.materialize_layout`。
 4. Wafer instruction legalization / selection：R3.2d 把 target-abstract executable op 合法化并
-   选择成 instruction-level `wafer.instr.*`，复用现有 `!wafer.storage` SSA graph。
+   选择成 instruction-level `wafer.instr.*`，复用现有 Wafer-tagged memref SSA graph。
    instruction-level IR 需要列出 queue family、read/write/issue effects、descriptor attrs、
-   temp/psum/staging storage values、alias/view 关系和 reject reason。
-5. SPM placement：R3.2e 只消费 instruction-level IR with unplaced `!wafer.storage`，在同一 IR 上填入
-   offset/end/bank span 和 lifetime/reuse；不能直接从 target-abstract op 猜 storage demand。
+   temp/psum/staging memref values、alias/view 关系和 reject reason。
+5. SPM placement：R3.2e 只消费 instruction-level IR with unplaced Wafer-tagged memref values，
+   在同一 IR 上填入 offset/end/bank span 和 lifetime/reuse；不能直接从 target-abstract op 猜
+   storage demand。
 6. DDR/resource planning：R3.2f 消费 placed instruction-level IR、SPM facts 和 DDR boundary，做 capacity /
    bandwidth / range legality。
 7. closed-loop decision：R3.2g 接受、拒绝或要求 split / retry；rejected tile-region IR 丢弃。
 8. committed `wafer.tile.region` materialization：R3.3 只把 accepted plan 写入主 IR。
-9. storage realization：把 accepted buffer 降到 memref/descriptor。
+9. placement realization：把 accepted unplaced memref 降到 placed memref / address descriptor。
 10. lower-level op lowering：转成 wrapper-friendly Wafer ops，最后进入 C ABI / launch。
 
 未接受的候选 plan 不能落入 IR 后等待下游修复。合法性失败应反馈给 group/layout/resource
@@ -262,9 +284,9 @@ launch args / identity lowering 的 IR contract。当前没有 multi-tile no-com
 - `wafer.tile.materialize_layout` 的输入输出 layout relation 合法；同 layout 冗余转换应由 verifier
   拒绝，上游应避免生成这种 no-op conversion。`wafer.tile.reshape` 这类无副作用 view op 可由
   canonicalization 删除同类型 no-op。
-- `#spm` buffer 在 storage realization 前必须经过 SPM allocation；`#ddr` buffer 必须有
-  DDR resource plan / binding policy。
-- lower-level op 出现时，其 operand 已经是 placed instruction/storage value 或 verifier 可解释 descriptor。
+- `#wafer.memory<spm, *>` memref 在 placement realization 前必须经过 SPM allocation；
+  `#wafer.memory<ddr, *>` memref 必须有 DDR resource plan / allocation policy。
+- lower-level op 出现时，其 operand 已经是 placed memref 或 verifier 可解释 descriptor。
 
 Verifier 不检查 group 是否应该形成；那是 `wafer.group` 和 planner 的职责。
 `wafer.group` / `wafer.tile.region` 这类 region op 的 boundary invariants 放在普通 `verify()`，

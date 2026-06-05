@@ -315,8 +315,8 @@ schedule、resource allocation 和 package/runtime metadata。
   liveness。没有合法 SPM allocation 时，planner 必须回到 group boundary、tile shape、layout 或
   communication schedule 搜索，而不是生成等待下游修复的 comm IR。
 - 如果 selected protocol 使用 DDR-backed staging、host/runtime D2D/P2P path 或 DDR2DDR helper，
-  对应 source/destination 必须作为 `#ddr` demand 进入 DDR resource planner。`wafer.tile.*` communication 不保存
-  DDR pool/domain、workspace BO 或 visible binding attr；它只通过 buffer type、byte count、effect
+  对应 source/destination 必须作为 `#wafer.memory<ddr, *>` demand 进入 DDR resource planner。`wafer.tile.*` communication 不保存
+  DDR pool/domain、compiler-managed BO 或 visible allocation attr；它只通过 buffer type、byte count、effect
   和 token/wait 暴露需求。
 - DTE 读取 NCC 产物前需要 local drain；DTE 写入后 compute 消费前需要 comm wait。两者都应通过
   effect/token/verifier 检查。
@@ -382,22 +382,22 @@ offset 都不是这个层级的语义。
 // 每个 tile 持有 %local_chunk，并写入 %gather_buf 的本 rank slot。
 %send0 = wafer.tile.send %local_chunk to %next
     {bytes = 4096}
-    : !wafer.storage<..., #tensor, #spm> -> async.token
+    : memref<..., #wafer.memory<spm, tensor>> -> async.token
 %recv0 = wafer.tile.recv %gather_buf[%prev_slot] from %prev
     {bytes = 4096}
-    : !wafer.storage<..., #tensor, #spm> -> async.token
+    : memref<..., #wafer.memory<spm, tensor>> -> async.token
 wafer.tile.wait %send0, %recv0
 
 %send1 = wafer.tile.send %gather_buf[%prev_slot] to %next {bytes = 4096}
-    : !wafer.storage<..., #tensor, #spm> -> async.token
+    : memref<..., #wafer.memory<spm, tensor>> -> async.token
 %recv1 = wafer.tile.recv %gather_buf[%prev2_slot] from %prev
     {bytes = 4096}
-    : !wafer.storage<..., #tensor, #spm> -> async.token
+    : memref<..., #wafer.memory<spm, tensor>> -> async.token
 wafer.tile.wait %send1, %recv1
 ```
 
 这个 case 中的 `4096` 只是示例 byte count。真实 byte count 应由 tile slice、dtype、physical layout
-和 storage realization 推导或显式 SSA value 表达。ring order 只是 V0 候选算法；如果 planner
+和 placement realization 推导或显式 SSA value 表达。ring order 只是 V0 候选算法；如果 planner
 接受 tree 或其它算法，IR 也应展开为对应 p2p body，而不是保留一个不可验证的 plan attr。
 
 ## 11. Current Implementation and Future Work
