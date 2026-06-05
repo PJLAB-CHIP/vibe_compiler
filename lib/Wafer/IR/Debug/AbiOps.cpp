@@ -119,8 +119,7 @@ static mlir::LogicalResult
 verifyIssueOnlyWaitPolicy(mlir::Operation *op,
                           wafer::AbiWaitPolicyAttr policy) {
   if (policy.getValue() != wafer::AbiWaitPolicy::IssueOnly)
-    return op->emitOpError(
-        "C ABI issue ops must use issue_only wait policy");
+    return op->emitOpError("C ABI issue ops must use issue_only wait policy");
   return mlir::success();
 }
 
@@ -131,17 +130,17 @@ mlir::LogicalResult AbiRdmaOp::verify() {
 
   auto sourceType =
       mlir::dyn_cast<mlir::RankedTensorType>(getSource().getType());
-  auto resultType = mlir::dyn_cast<TileBufferType>(getResult().getType());
+  auto resultType = mlir::dyn_cast<StorageType>(getResult().getType());
   if (!sourceType || !resultType)
     return emitOpError(
-        "ABI RDMA expects ranked tensor source and tile_buffer result");
+        "ABI RDMA expects ranked tensor source and storage result");
 
   if (resultType.getTensorType() != sourceType)
     return emitOpError(
         "ABI RDMA result tensor type must match source tensor type");
-  if (!hasTileBufferMemorySpace(resultType, MemorySpace::SPM))
+  if (!hasStorageMemorySpace(resultType, MemorySpace::SPM))
     return emitOpError("ABI RDMA result must use SPM memory space");
-  if (!hasTileBufferLayout(resultType, MemLayout::Tensor))
+  if (!hasStorageLayout(resultType, MemLayout::Tensor))
     return emitOpError("ABI RDMA result must use tensor mem_layout");
 
   std::optional<int64_t> expectedBytes = getCompactTensorByteSize(sourceType);
@@ -160,18 +159,18 @@ mlir::LogicalResult AbiWdmaOp::verify() {
           verifyIssueOnlyWaitPolicy(getOperation(), getWaitPolicyAttr())))
     return mlir::failure();
 
-  auto sourceType = mlir::dyn_cast<TileBufferType>(getSource().getType());
+  auto sourceType = mlir::dyn_cast<StorageType>(getSource().getType());
   auto destType = mlir::dyn_cast<mlir::RankedTensorType>(getDest().getType());
   if (!sourceType || !destType)
     return emitOpError(
-        "ABI WDMA expects tile_buffer source and ranked tensor dest");
+        "ABI WDMA expects storage source and ranked tensor dest");
 
   if (sourceType.getTensorType() != destType)
     return emitOpError(
         "ABI WDMA source tensor type must match dest tensor type");
-  if (!hasTileBufferMemorySpace(sourceType, MemorySpace::SPM))
+  if (!hasStorageMemorySpace(sourceType, MemorySpace::SPM))
     return emitOpError("ABI WDMA source must use SPM memory space");
-  if (!hasTileBufferLayout(sourceType, MemLayout::Tensor))
+  if (!hasStorageLayout(sourceType, MemLayout::Tensor))
     return emitOpError("ABI WDMA source must use tensor mem_layout");
 
   std::optional<int64_t> expectedBytes = getCompactTensorByteSize(destType);
@@ -190,22 +189,22 @@ mlir::LogicalResult AbiGemmOp::verify() {
           verifyIssueOnlyWaitPolicy(getOperation(), getWaitPolicyAttr())))
     return mlir::failure();
 
-  auto lhsType = mlir::dyn_cast<TileBufferType>(getLhs().getType());
-  auto rhsType = mlir::dyn_cast<TileBufferType>(getRhs().getType());
-  auto resultType = mlir::dyn_cast<TileBufferType>(getResult().getType());
+  auto lhsType = mlir::dyn_cast<StorageType>(getLhs().getType());
+  auto rhsType = mlir::dyn_cast<StorageType>(getRhs().getType());
+  auto resultType = mlir::dyn_cast<StorageType>(getResult().getType());
   if (!lhsType || !rhsType || !resultType)
-    return emitOpError("ABI GEMM expects tile_buffer operands and result");
+    return emitOpError("ABI GEMM expects storage operands and result");
 
-  for (TileBufferType type : {lhsType, rhsType, resultType}) {
-    if (!hasTileBufferMemorySpace(type, MemorySpace::SPM))
-      return emitOpError("ABI GEMM tile buffers must use SPM memory space");
-    if (!hasTileBufferLayout(type, MemLayout::Cx))
-      return emitOpError("ABI GEMM tile buffers must use cx mem_layout");
+  for (StorageType type : {lhsType, rhsType, resultType}) {
+    if (!hasStorageMemorySpace(type, MemorySpace::SPM))
+      return emitOpError("ABI GEMM storage values must use SPM memory space");
+    if (!hasStorageLayout(type, MemLayout::Cx))
+      return emitOpError("ABI GEMM storage values must use cx mem_layout");
   }
 
-  mlir::RankedTensorType lhsTensor = getTileBufferTensorType(lhsType);
-  mlir::RankedTensorType rhsTensor = getTileBufferTensorType(rhsType);
-  mlir::RankedTensorType resultTensor = getTileBufferTensorType(resultType);
+  mlir::RankedTensorType lhsTensor = getStorageTensorType(lhsType);
+  mlir::RankedTensorType rhsTensor = getStorageTensorType(rhsType);
+  mlir::RankedTensorType resultTensor = getStorageTensorType(resultType);
 
   if (lhsTensor.getElementType() != rhsTensor.getElementType() ||
       lhsTensor.getElementType() != resultTensor.getElementType())
@@ -238,7 +237,7 @@ mlir::LogicalResult AbiGemmOp::verify() {
   if (getMAttr().getInt() != lhsTensor.getDimSize(0) ||
       getKAttr().getInt() != lhsTensor.getDimSize(1) ||
       getNAttr().getInt() != rhsTensor.getDimSize(1))
-    return emitOpError("ABI GEMM m/k/n attrs must match tile buffer shapes");
+    return emitOpError("ABI GEMM m/k/n attrs must match storage shapes");
 
   return mlir::success();
 }

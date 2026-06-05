@@ -245,25 +245,25 @@ TEST(WaferInterfacesTest, LayoutResourceAndMemoryEffectsAreQueryable) {
       R"mlir(
 module {
   %arg = "builtin.unrealized_conversion_cast"() : () -> tensor<4x4xf32>
-  %tile = wafer.load_tile %arg
+  %tile = wafer.storage.load %arg
       : tensor<4x4xf32>
-     -> !wafer.tile_buffer<tensor<4x4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
+     -> !wafer.storage<tensor<4x4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
   %cx = wafer.layout.materialize %tile
-      : !wafer.tile_buffer<tensor<4x4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
-     -> !wafer.tile_buffer<tensor<4x4xf32>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
+      : !wafer.storage<tensor<4x4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
+     -> !wafer.storage<tensor<4x4xf32>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
   %mm = wafer.compute.gemm %cx, %cx
-      : (!wafer.tile_buffer<tensor<4x4xf32>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>,
-         !wafer.tile_buffer<tensor<4x4xf32>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>)
-     -> !wafer.tile_buffer<tensor<4x4xf32>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
+      : (!wafer.storage<tensor<4x4xf32>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>,
+         !wafer.storage<tensor<4x4xf32>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>)
+     -> !wafer.storage<tensor<4x4xf32>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
   %send = wafer.comm.send %tile {peer = 0 : i64, bytes = 64 : i64}
-      : !wafer.tile_buffer<tensor<4x4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>> -> !async.token
+      : !wafer.storage<tensor<4x4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>> -> !async.token
   wafer.comm.wait %send : !async.token
 }
 )mlir",
       mlir::ParserConfig(&context));
   ASSERT_TRUE(module);
 
-  auto load = findSingleOp<wafer::LoadTileOp>(*module);
+  auto load = findSingleOp<wafer::StorageLoadOp>(*module);
   ASSERT_TRUE(load);
 
   auto loadLayout =

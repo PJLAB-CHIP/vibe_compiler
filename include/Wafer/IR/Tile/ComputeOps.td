@@ -13,13 +13,13 @@ def Wafer_ComputeFillOp : Wafer_Op<"compute.fill", [
   ]> {
   let summary = "target-abstract tile fill compute";
   let description = [{
-    `wafer.compute.fill` initializes an existing tile-local destination buffer
+    `wafer.compute.fill` initializes an existing tile-local destination storage
     with a scalar value. The operation is explicit because the initialized
     buffer participates in SPM lifetime and resource planning; it does not
     assign a physical SPM offset.
   }];
 
-  let arguments = (ins Wafer_AnyTileBuffer:$dest, AnyType:$value);
+  let arguments = (ins Wafer_AnyStorage:$dest, AnyType:$value);
   let hasVerifier = 1;
   let assemblyFormat =
       "$dest `,` $value attr-dict `:` type($dest) `,` type($value)";
@@ -33,8 +33,8 @@ def Wafer_ComputeGemmOp : Wafer_Op<"compute.gemm", [
                    MemWrite<Wafer_ComputeResource>]>
   ]> {
   let summary = "target-abstract tile GEMM";
-  let arguments = (ins Wafer_AnyTileBuffer:$lhs, Wafer_AnyTileBuffer:$rhs);
-  let results = (outs Wafer_AnyTileBuffer:$result);
+  let arguments = (ins Wafer_AnyStorage:$lhs, Wafer_AnyStorage:$rhs);
+  let results = (outs Wafer_AnyStorage:$result);
   let hasVerifier = 1;
   let assemblyFormat =
       "$lhs `,` $rhs attr-dict `:` functional-type(operands, results)";
@@ -50,19 +50,19 @@ def Wafer_ComputeElementwiseOp : Wafer_Op<"compute.elementwise", [
   let summary = "target-abstract tile elementwise compute";
   let description = [{
     `wafer.compute.elementwise` represents tile-local scalar elementwise
-    compute over already materialized SPM tile buffers. The V0 operation keeps
+    compute over already materialized SPM storage values. The V0 operation keeps
     its operand/result relation explicit: without `indexing_maps`, all operands
     and the result must have the same logical tensor type; with
     `indexing_maps`, operands may use verifier-proven projected-permutation
     broadcast from result dimensions. All operands and the result must use SPM
-    tensor tile buffers with matching element types.
+    tensor storage values with matching element types.
   }];
 
   let arguments = (ins
     Wafer_ComputeElementwiseKindAttr:$kind,
-    Variadic<Wafer_AnyTileBuffer>:$inputs
+    Variadic<Wafer_AnyStorage>:$inputs
   );
-  let results = (outs Wafer_AnyTileBuffer:$result);
+  let results = (outs Wafer_AnyStorage:$result);
   let hasVerifier = 1;
   let assemblyFormat =
       "$kind $inputs attr-dict `:` functional-type(operands, results)";
@@ -85,10 +85,10 @@ def Wafer_ComputeReduceOp : Wafer_Op<"compute.reduce", [
 
   let arguments = (ins
     Wafer_ComputeReduceKindAttr:$kind,
-    Wafer_AnyTileBuffer:$input,
+    Wafer_AnyStorage:$input,
     Optional<AnyType>:$init
   );
-  let results = (outs Wafer_AnyTileBuffer:$result);
+  let results = (outs Wafer_AnyStorage:$result);
   let hasVerifier = 1;
   let assemblyFormat =
       "$kind $input (`,` $init^)? attr-dict `:` functional-type(operands, results)";
@@ -102,7 +102,7 @@ class Wafer_CommP2POp<string mnemonic> : Wafer_Op<mnemonic, [
                    MemWrite<Wafer_CommunicationResource>]>
   ]> {
   let arguments = (ins
-    Wafer_AnyTileBuffer:$buffer,
+    Wafer_AnyStorage:$buffer,
     I64Attr:$peer,
     I64Attr:$bytes
   );

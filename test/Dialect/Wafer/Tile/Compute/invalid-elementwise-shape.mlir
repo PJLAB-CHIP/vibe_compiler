@@ -2,13 +2,13 @@
 
 module {
   %a = "builtin.unrealized_conversion_cast"()
-      : () -> !wafer.tile_buffer<tensor<4x8xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
+      : () -> !wafer.storage<tensor<4x8xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
   %b = "builtin.unrealized_conversion_cast"()
-      : () -> !wafer.tile_buffer<tensor<4x7xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
+      : () -> !wafer.storage<tensor<4x7xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
   %sum = wafer.compute.elementwise #wafer.elementwise_kind<add> %a, %b
-      : (!wafer.tile_buffer<tensor<4x8xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>,
-         !wafer.tile_buffer<tensor<4x7xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>)
-     -> !wafer.tile_buffer<tensor<4x8xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
+      : (!wafer.storage<tensor<4x8xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>,
+         !wafer.storage<tensor<4x7xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>)
+     -> !wafer.storage<tensor<4x8xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
 }
 
 // CHECK: elementwise operand tensor types must match result tensor type

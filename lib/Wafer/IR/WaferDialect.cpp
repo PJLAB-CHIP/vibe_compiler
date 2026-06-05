@@ -35,16 +35,16 @@ using namespace wafer;
 #include "Wafer/IR/WaferOps.cpp.inc"
 
 mlir::LogicalResult
-TileBufferType::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
-                       mlir::Type tensorType, mlir::Attribute layout,
-                       mlir::Attribute memorySpace) {
+StorageType::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+                    mlir::Type tensorType, mlir::Attribute layout,
+                    mlir::Attribute memorySpace) {
   if (!mlir::isa<mlir::RankedTensorType>(tensorType))
-    return emitError() << "tile_buffer logical type must be a ranked tensor";
+    return emitError() << "storage logical type must be a ranked tensor";
   if (!mlir::isa<MemLayoutAttr>(layout))
-    return emitError() << "tile_buffer layout must be a wafer mem_layout attr";
+    return emitError() << "storage layout must be a wafer mem_layout attr";
   if (!mlir::isa<MemorySpaceAttr>(memorySpace))
     return emitError()
-           << "tile_buffer memory space must be a wafer memory_space attr";
+           << "storage memory space must be a wafer memory_space attr";
   return mlir::success();
 }
 

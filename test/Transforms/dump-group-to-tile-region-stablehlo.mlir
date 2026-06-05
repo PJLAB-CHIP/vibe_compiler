@@ -36,12 +36,12 @@ module {
 // CHECK: #wafer.mem_layout<cx>
 // CHECK: wafer.compute.reduce <sum>
 // CHECK-SAME: dimensions = array<i64: 1>
-// CHECK: f32) -> !wafer.tile_buffer<tensor<2xf32>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
-// CHECK: wafer.store_tile
+// CHECK: f32) -> !wafer.storage<tensor<2xf32>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
+// CHECK: wafer.storage.store
 // CHECK-LABEL: wafer.group_to_tile_region group @lower_broadcast#0
 // CHECK: wafer.move.broadcast
 // CHECK-SAME: dimensions = array<i64: 1>
-// CHECK: wafer.store_tile
+// CHECK: wafer.storage.store
 // CHECK-LABEL: wafer.group_to_tile_region group @lower_compare#0
 // CHECK: wafer.compute.elementwise <gt>
-// CHECK: wafer.store_tile
+// CHECK: wafer.storage.store

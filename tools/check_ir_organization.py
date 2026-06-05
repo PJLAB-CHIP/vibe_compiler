@@ -35,7 +35,7 @@ OP_FAMILIES = {
         "layer": "Resource",
         "td": "SPMOps.td",
         "cpp": "SPMOps.cpp",
-        "mnemonics": ["load_tile", "store_tile"],
+        "mnemonics": ["storage.alloc", "storage.load", "storage.store"],
         "tests": "Resource/SPM",
     },
     "Move": {
@@ -207,7 +207,7 @@ def check_op_family_files(root: Path, errors: list[str]) -> None:
         if name != "Sync" and "::verify()" not in cpp_text:
             fail(errors, f"{spec['cpp']} must own {name} verifier definitions")
 
-    if "::verify()" in dialect_cpp.replace("TileBufferType::verify()", ""):
+    if "::verify()" in dialect_cpp.replace("StorageType::verify()", ""):
         fail(errors, "WaferDialect.cpp must not own op verifier definitions")
 
     check_file(cpp_root / "Common/OpVerifierUtils.h", errors)

@@ -7,12 +7,12 @@
 instruction-level Wafer IR 先于 SPM placement，并补正式 `group -> tile_region` conversion pass
 
 本文定义 `wafer.tile_region` 作为 `wafer.group` lowering 之后的 tile-local execution boundary。
-它组织 tile-local buffer、movement、layout materialization、target-abstract compute、communication
+它组织 tile-local storage、movement、layout materialization、target-abstract compute、communication
 和 sync/effect op。它不重新做 group formation、traversal selection、root tile search 或 runtime
 launch/package 组织。
 
 SPMD 后的 StableHLO collective 在进入本文之前应已经规整成 Wafer LinalgExt-style tensor collective
-并参与 group/tiling。`wafer.tile_region` 是这些 tiled tensor collective 第一次拥有 SPM tile buffer、
+并参与 group/tiling。`wafer.tile_region` 是这些 tiled tensor collective 第一次拥有 SPM storage、
 placement-derived endpoint 和 communication staging demand 的层级；`wafer.comm.*` 不应在这之前
 作为 group 输入出现。
 
@@ -31,7 +31,7 @@ placement-derived endpoint 和 communication staging demand 的层级；`wafer.c
 目标：
 
 - 给 group 后的 tiled program 一个稳定 region boundary。
-- 把 tensor tile value materialize 成 tile-local buffer、descriptor 或 placed instruction/storage value。
+- 把 tensor tile value materialize 成 tile-local storage、descriptor 或 placed instruction/storage value。
 - 在同一个 region 内表达 load/store、layout materialization、compute、communication、sync 和
   wait/drain ordering。
 - 为 layout planning、SPM allocation 和 DDR/resource planning 提供可重算 IR 结构。
@@ -50,7 +50,7 @@ placement-derived endpoint 和 communication staging demand 的层级；`wafer.c
 ```text
 wafer.group
   -> group-to-tile-region lowered `wafer.tile_region` IR
-  -> instruction-level wafer.instr.* IR over unplaced !wafer.tile_buffer
+  -> instruction-level wafer.instr.* IR over unplaced !wafer.storage
   -> SPM placement on the same instruction-level IR
   -> DDR / resource legality on placed instruction IR
   -> accepted / rejected / split decision
@@ -80,8 +80,8 @@ Pipeline position:
   通过 MLIR DialectConversion 构造 `wafer.tile_region` IR；
   `wafer.group` 是 illegal root，conversion pattern 产出完整 legal `wafer.tile_region`，并用 full
   conversion 保证 converted region 内不残留 logical group / linalg / tensor allocation op；
-  把 logical group boundary 映射成 `wafer.load_tile` / `wafer.store_tile`，把 selected
-  layout 和 materialization cut 映射成 `!wafer.tile_buffer` 与 `wafer.layout.materialize`，
+  把 logical group boundary 映射成 `wafer.storage.load` / `wafer.storage.store`，把 selected
+  layout 和 materialization cut 映射成 `!wafer.storage` 与 `wafer.layout.materialize`，
   把可验证的 structured compute / tensor collective 映射成 target-abstract
   `wafer.compute` / `wafer.comm` / sync/effect op。
 - Output artifact / IR:
@@ -113,14 +113,14 @@ Pipeline position:
 
 | source IR / op family | 当前 R3.2c 处理 | 覆盖状态 | 正确 conversion 做法 / 后续要求 |
 | --- | --- | --- | --- |
-| `wafer.group` / `wafer.group_yield` boundary | DialectConversion 中由 `OpConversionPattern<wafer.group>` 构造 `wafer.tile_region`，对 `ins + outs` 生成 `wafer.load_tile` / `wafer.store_tile` / `wafer.tile_yield`；同一 builder 支持 scratch dump 和正式 `--wafer-convert-group-to-tile-region` pass | supported for tile-region IR | `ConversionTarget` 将 `wafer.group` / `wafer.group_yield` 标为 illegal；debug dump 只调用同一 conversion builder，不能自己承担 lowering 逻辑。 |
-| ranked tensor boundary values | 生成 `!wafer.tile_buffer<tensor, tensor, spm>`，记录 tensor layout 版本 | supported for ranked tensor | 保持类型/verifier 驱动；后续 instruction-level IR 再决定 concrete storage，SPM placement 再决定 offset/window。 |
-| scalar boundary values | 作为 tile-region block scalar SSA value 传入，供 fill/reduce init 等 scalar operand 使用 | supported for scalar | 只支持 float / integer / index scalar；不生成 tile buffer，不作为长期 side channel。 |
-| `arith.constant` tensor | clone constant 后 `wafer.load_tile` 到 tensor-layout tile buffer | partial | 只适合 tensor constant；scalar constant 只应在 compute body 或显式 init 语义中消费。需要区分 constant residency / DDR / immediate policy。 |
+| `wafer.group` / `wafer.group_yield` boundary | DialectConversion 中由 `OpConversionPattern<wafer.group>` 构造 `wafer.tile_region`，对 `ins + outs` 生成 `wafer.storage.load` / `wafer.storage.store` / `wafer.tile_yield`；同一 builder 支持 scratch dump 和正式 `--wafer-convert-group-to-tile-region` pass | supported for tile-region IR | `ConversionTarget` 将 `wafer.group` / `wafer.group_yield` 标为 illegal；debug dump 只调用同一 conversion builder，不能自己承担 lowering 逻辑。 |
+| ranked tensor boundary values | 生成 `!wafer.storage<tensor, tensor, spm>`，记录 tensor layout 版本 | supported for ranked tensor | 保持类型/verifier 驱动；后续 instruction-level IR 再决定 concrete storage，SPM placement 再决定 offset/window。 |
+| scalar boundary values | 作为 tile-region block scalar SSA value 传入，供 fill/reduce init 等 scalar operand 使用 | supported for scalar | 只支持 float / integer / index scalar；不生成 storage，不作为长期 side channel。 |
+| `arith.constant` tensor | clone constant 后 `wafer.storage.load` 到 tensor-layout storage | partial | 只适合 tensor constant；scalar constant 只应在 compute body 或显式 init 语义中消费。需要区分 constant residency / DDR / immediate policy。 |
 | `arith.constant` scalar | clone scalar constant，并作为 `wafer.compute.fill`、`wafer.compute.reduce init_value` 或 elementwise body 推导输入 | supported for scalar constants | scalar 语义通过 SSA value 或 typed attr 进入目标 op；不靠名字或原 op 残留。 |
-| `tensor.empty` | 生成 `wafer.alloc_tile`，结果类型携带 tensor shape、layout 和 SPM memory-space demand | supported as abstract allocation demand | `wafer.alloc_tile` 不分配物理 offset/window；R3.2d 只把它合法化为 unplaced instruction storage，R3.2e 才做真实 SPM placement。不能把 empty 偷映射成 output alias。 |
+| `tensor.empty` | 生成 `wafer.storage.alloc`，结果类型携带 tensor shape、layout 和 SPM memory-space demand | supported as abstract allocation demand | `wafer.storage.alloc` 不分配物理 offset/window；R3.2d 只把它合法化为 unplaced instruction storage，R3.2e 才做真实 SPM placement。不能把 empty 偷映射成 output alias。 |
 | `tensor.extract` scalar | clone 到 tile-region 内，供动态 scalar init / scalar value 使用 | supported for scalar extract | 只作为 scalar SSA 支持 op；不表示 tile compute。 |
-| `linalg.fill` | 生成显式 `wafer.compute.fill`，写入 existing tile buffer；fill result 映射为该 initialized buffer | supported for scalar fill | `wafer.compute.fill` 暴露 target-abstract write relation；具体是否 lower 成 CT fill、memset 或 immediate pattern 由 R3.2d instruction selection 决定。 |
+| `linalg.fill` | 生成显式 `wafer.compute.fill`，写入 existing storage；fill result 映射为该 initialized buffer | supported for scalar fill | `wafer.compute.fill` 暴露 target-abstract write relation；具体是否 lower 成 CT fill、memset 或 immediate pattern 由 R3.2d instruction selection 决定。 |
 | `linalg.matmul` | lhs/rhs materialize 到 `cx`，生成 `wafer.compute.gemm`，结果记录为 `cx` | supported for simple `linalg.matmul` | pattern 应检查 rank、dtype、accumulator/result relation、layout requirement；batch matmul / generic contraction 另列，不应混成 matmul 特判。 |
 | `linalg.generic` simple elementwise / relation | 单 result、单 `linalg.yield`，typed scalar mapper 识别 add/sub/mul/div/min/max/neg/exp/sqrt/rsqrt/tanh 和 cmp eq/ne/lt/le/gt/ge；生成 `wafer.compute.elementwise` 并带原 `indexing_maps` | supported for simple CT family | 不靠 op name string 恢复语义；复杂 region、多 result、select/mask 和 convert 仍需要明确 kind / op contract。 |
 | `linalg.reduce` / reduction-like generic | reduction iterator + scalar combiner lower 到 `wafer.compute.reduce`；input/result materialize 到 aligned `cx`/`ncx`；constant init 用 `init_value`，dynamic init 用 scalar operand | supported for native sum/max/min | `avg` 是 Wafer reduce kind，但当前 R2.4 fixture 尚未产出可直接识别的 avg combiner；`mul` 不伪装 native。 |
@@ -135,7 +135,7 @@ failure gate 固定下来。扩展 coverage 时每新增一类 op 都要同时�
 pattern、negative test 和下游 instruction/storage 来源。
 
 `wafer.tile_region` 可以跨这些 lowering 子阶段保留为 region container。早期 region 中的 buffer
-可能还是 `!wafer.tile_buffer`；后期可以变成带 Wafer memory space 的 `memref` 或 descriptor。
+可能还是 `!wafer.storage`；后期可以变成带 Wafer memory space 的 `memref` 或 descriptor。
 因此不能简单说 tile region 内“永远不允许 memref”或“永远不允许 lower-level op”。正确边界是：
 
 - abstract tile-region 阶段不允许任意 `memref.alloc/load/store` 作为语义逃逸。
@@ -161,7 +161,7 @@ wafer.tile_region (...) -> (...) {
 - per-tile identity，例如 logical rank、block id、physical tile coordinate 或 placement-derived
   descriptor。
 - external input/output、constant source、inter-group value 的 load/store boundary。
-- tile-local buffer ownership、memory space、layout 和 effect。
+- tile-local storage ownership、memory space、layout 和 effect。
 - async issue 与对应 wait/drain/barrier。
 
 不应表达：
@@ -173,7 +173,7 @@ wafer.tile_region (...) -> (...) {
 
 ## 4. Tile Buffer and Memory Space
 
-`!wafer.tile_buffer` 是 tile-region 内部的抽象 buffer type。它应该携带或关联：
+`!wafer.storage` 是 tile-region 内部的抽象 buffer type。它应该携带或关联：
 
 - logical shape / dtype。
 - memory space：`#wafer.memory_space<spm>` 或 `#wafer.memory_space<ddr>`。
@@ -195,8 +195,8 @@ V0 需要以下 op family：
 
 | family | 作用 | 主要 verifier |
 | --- | --- | --- |
-| `wafer.load_tile` | 从 `#ddr` / external / constant source 读入 tile-local buffer | source range、dtype、layout、stride、effect |
-| `wafer.store_tile` | 写回 external output / inter-group DDR value | destination range、layout、visibility、effect |
+| `wafer.storage.load` | 从 `#ddr` / external / constant source 读入 tile-local storage | source range、dtype、layout、stride、effect |
+| `wafer.storage.store` | 写回 external output / inter-group DDR value | destination range、layout、visibility、effect |
 | `wafer.layout.materialize` | 显式 layout conversion | source/result layout relation、可消除冗余转换 |
 | `wafer.compute.*` | target-abstract compute | operand/result layout、instruction family legality、scratch/psum demand |
 | `wafer.comm.*` | tile 间或 collective movement；由 tiled tensor collective + SPM buffer + placement materialize | endpoint、token、fixed byte count、buffer lifetime |
@@ -217,10 +217,10 @@ V0 需要以下 op family：
 3. layout assignment：为 op 约束选择 `mem_layout`，在 cut edge 插入
    `wafer.layout.materialize`。
 4. Wafer instruction legalization / selection：R3.2d 把 target-abstract executable op 合法化并
-   选择成 instruction-level `wafer.instr.*`，复用现有 `!wafer.tile_buffer` SSA graph。
+   选择成 instruction-level `wafer.instr.*`，复用现有 `!wafer.storage` SSA graph。
    instruction-level IR 需要列出 queue family、read/write/issue effects、descriptor attrs、
-   temp/psum/staging tile buffers、alias/view 关系和 reject reason。
-5. SPM placement：R3.2e 只消费 instruction-level IR with unplaced `!wafer.tile_buffer`，在同一 IR 上填入
+   temp/psum/staging storage values、alias/view 关系和 reject reason。
+5. SPM placement：R3.2e 只消费 instruction-level IR with unplaced `!wafer.storage`，在同一 IR 上填入
    offset/end/bank span 和 lifetime/reuse；不能直接从 target-abstract op 猜 storage demand。
 6. DDR/resource planning：R3.2f 消费 placed instruction-level IR、SPM facts 和 DDR boundary，做 capacity /
    bandwidth / range legality。

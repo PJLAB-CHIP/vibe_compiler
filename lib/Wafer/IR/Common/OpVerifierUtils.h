@@ -17,13 +17,13 @@
 namespace wafer::detail {
 
 bool isSPMMemRef(mlir::Type type);
-bool isSPMTileBuffer(mlir::Type type);
-wafer::MemLayoutAttr getTileBufferLayout(wafer::TileBufferType type);
-wafer::MemorySpaceAttr getTileBufferMemorySpace(wafer::TileBufferType type);
-mlir::RankedTensorType getTileBufferTensorType(wafer::TileBufferType type);
-bool hasTileBufferLayout(wafer::TileBufferType type, wafer::MemLayout layout);
-bool hasTileBufferMemorySpace(wafer::TileBufferType type,
-                              wafer::MemorySpace memorySpace);
+bool isSPMStorage(mlir::Type type);
+wafer::MemLayoutAttr getStorageLayout(wafer::StorageType type);
+wafer::MemorySpaceAttr getStorageMemorySpace(wafer::StorageType type);
+mlir::RankedTensorType getStorageTensorType(wafer::StorageType type);
+bool hasStorageLayout(wafer::StorageType type, wafer::MemLayout layout);
+bool hasStorageMemorySpace(wafer::StorageType type,
+                           wafer::MemorySpace memorySpace);
 bool hasStaticMismatch(int64_t lhs, int64_t rhs);
 bool checkedMul(int64_t lhs, int64_t rhs, int64_t &result);
 bool checkedAdd(int64_t lhs, int64_t rhs, int64_t &result);
@@ -37,7 +37,7 @@ std::optional<int64_t> getCompactByteSize(mlir::Type type);
 int64_t getCompactByteSizeOrUnknown(mlir::Type type);
 void appendLayoutRequirement(
     llvm::SmallVectorImpl<wafer::WaferLayoutRequirement> &requirements,
-    wafer::WaferValueRole role, unsigned index, wafer::TileBufferType type);
+    wafer::WaferValueRole role, unsigned index, wafer::StorageType type);
 void appendResourceEffect(
     llvm::SmallVectorImpl<wafer::WaferResourceEffect> &effects,
     wafer::WaferResourceKind resource, wafer::WaferResourceAccess access,

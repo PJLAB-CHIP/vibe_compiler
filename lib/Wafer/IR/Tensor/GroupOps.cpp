@@ -35,7 +35,7 @@ bool isAllowedTensorLevelDialect(mlir::Operation *op) {
 }
 
 bool isForbiddenGroupBoundaryType(mlir::Type type) {
-  return isSPMMemRef(type) || isSPMTileBuffer(type) ||
+  return isSPMMemRef(type) || isSPMStorage(type) ||
          mlir::isa<mlir::async::TokenType>(type);
 }
 
@@ -59,8 +59,8 @@ mlir::LogicalResult GroupOp::verify() {
   for (auto input : getInputs()) {
     if (isSPMMemRef(input.getType()))
       return emitOpError("does not accept SPM memref inputs");
-    if (isSPMTileBuffer(input.getType()))
-      return emitOpError("does not accept SPM tile_buffer inputs");
+    if (isSPMStorage(input.getType()))
+      return emitOpError("does not accept SPM storage inputs");
     if (mlir::isa<mlir::async::TokenType>(input.getType()))
       return emitOpError("does not accept async token inputs");
   }
@@ -89,8 +89,8 @@ mlir::LogicalResult GroupOp::verifyRegions() {
              << " at index " << blockArgIndex;
     if (isSPMMemRef(blockArgType))
       return emitOpError("does not accept SPM memref body arguments");
-    if (isSPMTileBuffer(blockArgType))
-      return emitOpError("does not accept SPM tile_buffer body arguments");
+    if (isSPMStorage(blockArgType))
+      return emitOpError("does not accept SPM storage body arguments");
     if (mlir::isa<mlir::async::TokenType>(blockArgType))
       return emitOpError("does not accept async token body arguments");
     ++blockArgIndex;

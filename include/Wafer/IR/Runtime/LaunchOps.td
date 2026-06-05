@@ -11,7 +11,7 @@ def Wafer_LaunchOp : Wafer_Op<"launch", [
     `wafer.launch` is the host-visible boundary for a compiled Wafer package.
     It binds ranked tensor inputs and outputs to a device package reference and
     carries coarse resource summaries needed by the runtime boundary. It does
-    not expose tile-local buffers, packet streams, physical addresses, or other
+    not expose tile-local storage values, packet streams, physical addresses, or other
     lower-level execution details back into tensor IR.
   }];
 

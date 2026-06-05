@@ -10,20 +10,20 @@ using namespace wafer;
 using namespace wafer::detail;
 
 mlir::LogicalResult LayoutMaterializeOp::verify() {
-  auto sourceType = mlir::dyn_cast<TileBufferType>(getSource().getType());
-  auto resultType = mlir::dyn_cast<TileBufferType>(getResult().getType());
+  auto sourceType = mlir::dyn_cast<StorageType>(getSource().getType());
+  auto resultType = mlir::dyn_cast<StorageType>(getResult().getType());
   if (!sourceType || !resultType)
-    return emitOpError("expects tile_buffer source and result types");
+    return emitOpError("expects storage source and result types");
 
   if (sourceType.getTensorType() != resultType.getTensorType())
     return emitOpError("layout materialize must preserve logical tensor type");
 
-  if (getTileBufferMemorySpace(sourceType).getValue() !=
-      getTileBufferMemorySpace(resultType).getValue())
+  if (getStorageMemorySpace(sourceType).getValue() !=
+      getStorageMemorySpace(resultType).getValue())
     return emitOpError("layout materialize must preserve memory space");
 
-  if (getTileBufferLayout(sourceType).getValue() ==
-      getTileBufferLayout(resultType).getValue())
+  if (getStorageLayout(sourceType).getValue() ==
+      getStorageLayout(resultType).getValue())
     return emitOpError("layout materialize must change mem_layout");
 
   return mlir::success();
@@ -31,10 +31,10 @@ mlir::LogicalResult LayoutMaterializeOp::verify() {
 
 void LayoutMaterializeOp::collectWaferMaterializationLayouts(
     llvm::SmallVectorImpl<WaferLayoutRequirement> &requirements) {
-  if (auto sourceType = mlir::dyn_cast<TileBufferType>(getSource().getType()))
+  if (auto sourceType = mlir::dyn_cast<StorageType>(getSource().getType()))
     appendLayoutRequirement(requirements, WaferValueRole::Operand, 0,
                             sourceType);
-  if (auto resultType = mlir::dyn_cast<TileBufferType>(getResult().getType()))
+  if (auto resultType = mlir::dyn_cast<StorageType>(getResult().getType()))
     appendLayoutRequirement(requirements, WaferValueRole::Result, 0,
                             resultType);
 }

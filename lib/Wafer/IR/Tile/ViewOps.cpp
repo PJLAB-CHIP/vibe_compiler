@@ -22,22 +22,22 @@ getStaticElementCount(mlir::RankedTensorType tensorType) {
 }
 
 mlir::LogicalResult ViewReshapeOp::verify() {
-  auto sourceType = mlir::dyn_cast<TileBufferType>(getSource().getType());
-  auto resultType = mlir::dyn_cast<TileBufferType>(getResult().getType());
+  auto sourceType = mlir::dyn_cast<StorageType>(getSource().getType());
+  auto resultType = mlir::dyn_cast<StorageType>(getResult().getType());
   if (!sourceType || !resultType)
-    return emitOpError("expects tile_buffer source and result");
-  if (!hasTileBufferMemorySpace(sourceType, MemorySpace::SPM) ||
-      !hasTileBufferMemorySpace(resultType, MemorySpace::SPM))
+    return emitOpError("expects storage source and result");
+  if (!hasStorageMemorySpace(sourceType, MemorySpace::SPM) ||
+      !hasStorageMemorySpace(resultType, MemorySpace::SPM))
     return emitOpError("reshape source/result must use SPM memory space");
-  if (getTileBufferLayout(sourceType).getValue() !=
-      getTileBufferLayout(resultType).getValue())
+  if (getStorageLayout(sourceType).getValue() !=
+      getStorageLayout(resultType).getValue())
     return emitOpError("reshape must preserve mem_layout");
-  if (getTileBufferMemorySpace(sourceType).getValue() !=
-      getTileBufferMemorySpace(resultType).getValue())
+  if (getStorageMemorySpace(sourceType).getValue() !=
+      getStorageMemorySpace(resultType).getValue())
     return emitOpError("reshape must preserve memory_space");
 
-  mlir::RankedTensorType sourceTensor = getTileBufferTensorType(sourceType);
-  mlir::RankedTensorType resultTensor = getTileBufferTensorType(resultType);
+  mlir::RankedTensorType sourceTensor = getStorageTensorType(sourceType);
+  mlir::RankedTensorType resultTensor = getStorageTensorType(resultType);
   if (sourceTensor.getElementType() != resultTensor.getElementType())
     return emitOpError("reshape element types must match");
 
@@ -52,10 +52,10 @@ mlir::LogicalResult ViewReshapeOp::verify() {
 
 void ViewReshapeOp::collectWaferLayoutRequirements(
     llvm::SmallVectorImpl<WaferLayoutRequirement> &requirements) {
-  if (auto sourceType = mlir::dyn_cast<TileBufferType>(getSource().getType()))
+  if (auto sourceType = mlir::dyn_cast<StorageType>(getSource().getType()))
     appendLayoutRequirement(requirements, WaferValueRole::Operand, 0,
                             sourceType);
-  if (auto resultType = mlir::dyn_cast<TileBufferType>(getResult().getType()))
+  if (auto resultType = mlir::dyn_cast<StorageType>(getResult().getType()))
     appendLayoutRequirement(requirements, WaferValueRole::Result, 0,
                             resultType);
 }

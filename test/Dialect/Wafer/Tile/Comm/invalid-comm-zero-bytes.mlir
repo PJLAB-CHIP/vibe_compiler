@@ -2,9 +2,9 @@
 
 module {
   %buf = "builtin.unrealized_conversion_cast"()
-      : () -> !wafer.tile_buffer<tensor<4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
+      : () -> !wafer.storage<tensor<4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
   %recv = wafer.comm.recv %buf {peer = 0 : i64, bytes = 0 : i64}
-      : !wafer.tile_buffer<tensor<4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>> -> !async.token
+      : !wafer.storage<tensor<4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>> -> !async.token
 }
 
 // CHECK: comm byte count must be positive

@@ -83,9 +83,9 @@
   或 Wafer 私有 high-level op。`check-wafer` 的大量 lit case 主要来自 Dialect/Transforms/Frontend/
   Pipelines/Integration/Tools，不代表旧 Python post-SPMD helper 仍存在。
 - post-SPMD collective 先进入 Wafer LinalgExt-style tensor collective handoff，和 `linalg` 一起进入
-  group/tiling；`wafer.comm` 只能在 `wafer.tile_region` / SPM tile buffers / placement 明确后
+  group/tiling；`wafer.comm` 只能在 `wafer.tile_region` / SPM storage values / placement 明确后
   materialize。StableHLO collective 直降 `wafer.comm` 且靠 `unrealized_conversion_cast` 桥 tensor
-  和 tile_buffer 的 pass/test 已移除；不要在 group 输入侧恢复这种入口。
+  和 storage 的 pass/test 已移除；不要在 group 输入侧恢复这种入口。
 - R2.4 tensor collective handoff 的主线验证入口是同一个 Wafer program pipeline：
   `wafer-opt --program-pipeline=stablehlo-spmd-to-linalg ...` 必须从真实 PyTorch/XLA sharded
   program 产出含 `wafer.tensor_collective.*` 的 `functions/forward.mlir`，并保留
@@ -119,7 +119,7 @@
   `verify()`，body argument、terminator 和 region body legality 放 `verifyRegions()`。父 region op
   只解释自己 body 的直接 op，不递归解释子 op 内部 region。
 - 长期 op/type 协议优先放 ODS type constraints 和 verifier，不靠手写字符串诊断补类型合法性；
-  `!wafer.tile_buffer`、ranked tensor boundary 和 async token 这类类型要在 ODS 里约束，并在公开
+  `!wafer.storage`、ranked tensor boundary 和 async token 这类类型要在 ODS 里约束，并在公开
   dialect header / CMake link 中显式包含对应 MLIR type 依赖。
 - `wafer-opt` 需要显式注册要暴露的 MLIR pass families；如果测试或用户入口依赖 canonicalizer/CSE
   这类标准 pass，注册 `mlir::registerTransformsPasses()` 并链接 `MLIRTransforms`，不要假设

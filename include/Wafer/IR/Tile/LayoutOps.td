@@ -10,17 +10,17 @@ def Wafer_LayoutMaterializeOp : Wafer_Op<"layout.materialize", [
                    MemWrite<Wafer_SPMResource>,
                    MemWrite<Wafer_MovementResource>]>
   ]> {
-  let summary = "explicit tile-buffer layout materialization";
+  let summary = "explicit storage layout materialization";
   let description = [{
     `wafer.layout.materialize` represents real device-side data movement from
     one Wafer physical layout family to another. It preserves the logical
-    tensor type and memory space; only the tile-buffer `mem_layout` changes.
+    tensor type and memory space; only the storage `mem_layout` changes.
     Same-layout materialization is not a meaningful IR edge; the verifier
     rejects it instead of relying on canonicalization for legality.
   }];
 
-  let arguments = (ins Wafer_AnyTileBuffer:$source);
-  let results = (outs Wafer_AnyTileBuffer:$result);
+  let arguments = (ins Wafer_AnyStorage:$source);
+  let results = (outs Wafer_AnyStorage:$result);
 
   let hasVerifier = 1;
   let assemblyFormat = "$source attr-dict `:` type($source) `->` type($result)";

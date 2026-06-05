@@ -12,31 +12,29 @@ using namespace wafer::detail;
 
 namespace {
 
-static mlir::LogicalResult getSPMTileBuffer(mlir::Operation *op,
-                                            mlir::Type type,
-                                            llvm::StringRef role,
-                                            TileBufferType &tileType) {
-  tileType = mlir::dyn_cast<TileBufferType>(type);
-  if (!tileType)
-    return op->emitOpError() << role << " must be a tile_buffer";
-  if (!hasTileBufferMemorySpace(tileType, MemorySpace::SPM))
+static mlir::LogicalResult getSPMStorage(mlir::Operation *op, mlir::Type type,
+                                         llvm::StringRef role,
+                                         StorageType &storageType) {
+  storageType = mlir::dyn_cast<StorageType>(type);
+  if (!storageType)
+    return op->emitOpError() << role << " must be a storage";
+  if (!hasStorageMemorySpace(storageType, MemorySpace::SPM))
     return op->emitOpError() << role << " must use SPM memory space";
   return mlir::success();
 }
 
 static mlir::LogicalResult
-verifySameElementLayoutAndSpace(mlir::Operation *op, TileBufferType lhs,
-                                TileBufferType rhs,
+verifySameElementLayoutAndSpace(mlir::Operation *op, StorageType lhs,
+                                StorageType rhs,
                                 llvm::StringRef messagePrefix) {
-  mlir::RankedTensorType lhsTensor = getTileBufferTensorType(lhs);
-  mlir::RankedTensorType rhsTensor = getTileBufferTensorType(rhs);
+  mlir::RankedTensorType lhsTensor = getStorageTensorType(lhs);
+  mlir::RankedTensorType rhsTensor = getStorageTensorType(rhs);
   if (lhsTensor.getElementType() != rhsTensor.getElementType())
     return op->emitOpError() << messagePrefix << " element types must match";
-  if (getTileBufferLayout(lhs).getValue() !=
-      getTileBufferLayout(rhs).getValue())
+  if (getStorageLayout(lhs).getValue() != getStorageLayout(rhs).getValue())
     return op->emitOpError() << messagePrefix << " mem_layout must match";
-  if (getTileBufferMemorySpace(lhs).getValue() !=
-      getTileBufferMemorySpace(rhs).getValue())
+  if (getStorageMemorySpace(lhs).getValue() !=
+      getStorageMemorySpace(rhs).getValue())
     return op->emitOpError() << messagePrefix << " memory_space must match";
   return mlir::success();
 }
@@ -111,28 +109,28 @@ static mlir::LogicalResult verifyPermutation(mlir::Operation *op,
 } // namespace
 
 mlir::LogicalResult MoveExtractSliceOp::verify() {
-  TileBufferType sourceType;
-  TileBufferType resultType;
-  if (mlir::failed(getSPMTileBuffer(getOperation(), getSource().getType(),
-                                    "extract_slice source", sourceType)) ||
-      mlir::failed(getSPMTileBuffer(getOperation(), getResult().getType(),
-                                    "extract_slice result", resultType)))
+  StorageType sourceType;
+  StorageType resultType;
+  if (mlir::failed(getSPMStorage(getOperation(), getSource().getType(),
+                                 "extract_slice source", sourceType)) ||
+      mlir::failed(getSPMStorage(getOperation(), getResult().getType(),
+                                 "extract_slice result", resultType)))
     return mlir::failure();
   if (mlir::failed(verifySameElementLayoutAndSpace(
           getOperation(), sourceType, resultType, "extract_slice")))
     return mlir::failure();
   return verifySliceAttrs(
-      getOperation(), getTileBufferTensorType(sourceType),
-      getTileBufferTensorType(resultType), getOffsetsAttr().asArrayRef(),
+      getOperation(), getStorageTensorType(sourceType),
+      getStorageTensorType(resultType), getOffsetsAttr().asArrayRef(),
       getSizesAttr().asArrayRef(), getStridesAttr().asArrayRef());
 }
 
 void MoveExtractSliceOp::collectWaferLayoutRequirements(
     llvm::SmallVectorImpl<WaferLayoutRequirement> &requirements) {
-  if (auto sourceType = mlir::dyn_cast<TileBufferType>(getSource().getType()))
+  if (auto sourceType = mlir::dyn_cast<StorageType>(getSource().getType()))
     appendLayoutRequirement(requirements, WaferValueRole::Operand, 0,
                             sourceType);
-  if (auto resultType = mlir::dyn_cast<TileBufferType>(getResult().getType()))
+  if (auto resultType = mlir::dyn_cast<StorageType>(getResult().getType()))
     appendLayoutRequirement(requirements, WaferValueRole::Result, 0,
                             resultType);
 }
@@ -156,15 +154,15 @@ mlir::LogicalResult MoveExtractSliceOp::verifyWaferResourceEffectContract() {
 }
 
 mlir::LogicalResult MoveInsertSliceOp::verify() {
-  TileBufferType sourceType;
-  TileBufferType destType;
-  TileBufferType resultType;
-  if (mlir::failed(getSPMTileBuffer(getOperation(), getSource().getType(),
-                                    "insert_slice source", sourceType)) ||
-      mlir::failed(getSPMTileBuffer(getOperation(), getDest().getType(),
-                                    "insert_slice dest", destType)) ||
-      mlir::failed(getSPMTileBuffer(getOperation(), getResult().getType(),
-                                    "insert_slice result", resultType)))
+  StorageType sourceType;
+  StorageType destType;
+  StorageType resultType;
+  if (mlir::failed(getSPMStorage(getOperation(), getSource().getType(),
+                                 "insert_slice source", sourceType)) ||
+      mlir::failed(getSPMStorage(getOperation(), getDest().getType(),
+                                 "insert_slice dest", destType)) ||
+      mlir::failed(getSPMStorage(getOperation(), getResult().getType(),
+                                 "insert_slice result", resultType)))
     return mlir::failure();
   if (destType != resultType)
     return emitOpError("insert_slice result type must match dest type");
@@ -172,19 +170,19 @@ mlir::LogicalResult MoveInsertSliceOp::verify() {
                                                    destType, "insert_slice")))
     return mlir::failure();
   return verifySliceAttrs(
-      getOperation(), getTileBufferTensorType(destType),
-      getTileBufferTensorType(sourceType), getOffsetsAttr().asArrayRef(),
+      getOperation(), getStorageTensorType(destType),
+      getStorageTensorType(sourceType), getOffsetsAttr().asArrayRef(),
       getSizesAttr().asArrayRef(), getStridesAttr().asArrayRef());
 }
 
 void MoveInsertSliceOp::collectWaferLayoutRequirements(
     llvm::SmallVectorImpl<WaferLayoutRequirement> &requirements) {
-  if (auto sourceType = mlir::dyn_cast<TileBufferType>(getSource().getType()))
+  if (auto sourceType = mlir::dyn_cast<StorageType>(getSource().getType()))
     appendLayoutRequirement(requirements, WaferValueRole::Operand, 0,
                             sourceType);
-  if (auto destType = mlir::dyn_cast<TileBufferType>(getDest().getType()))
+  if (auto destType = mlir::dyn_cast<StorageType>(getDest().getType()))
     appendLayoutRequirement(requirements, WaferValueRole::Operand, 1, destType);
-  if (auto resultType = mlir::dyn_cast<TileBufferType>(getResult().getType()))
+  if (auto resultType = mlir::dyn_cast<StorageType>(getResult().getType()))
     appendLayoutRequirement(requirements, WaferValueRole::Result, 0,
                             resultType);
 }
@@ -218,12 +216,12 @@ mlir::LogicalResult MoveInsertSliceOp::verifyWaferResourceEffectContract() {
 }
 
 mlir::LogicalResult MoveCopyOp::verify() {
-  TileBufferType sourceType;
-  TileBufferType resultType;
-  if (mlir::failed(getSPMTileBuffer(getOperation(), getSource().getType(),
-                                    "copy source", sourceType)) ||
-      mlir::failed(getSPMTileBuffer(getOperation(), getResult().getType(),
-                                    "copy result", resultType)))
+  StorageType sourceType;
+  StorageType resultType;
+  if (mlir::failed(getSPMStorage(getOperation(), getSource().getType(),
+                                 "copy source", sourceType)) ||
+      mlir::failed(getSPMStorage(getOperation(), getResult().getType(),
+                                 "copy result", resultType)))
     return mlir::failure();
   if (sourceType != resultType)
     return emitOpError("copy source and result types must match");
@@ -232,10 +230,10 @@ mlir::LogicalResult MoveCopyOp::verify() {
 
 void MoveCopyOp::collectWaferLayoutRequirements(
     llvm::SmallVectorImpl<WaferLayoutRequirement> &requirements) {
-  if (auto sourceType = mlir::dyn_cast<TileBufferType>(getSource().getType()))
+  if (auto sourceType = mlir::dyn_cast<StorageType>(getSource().getType()))
     appendLayoutRequirement(requirements, WaferValueRole::Operand, 0,
                             sourceType);
-  if (auto resultType = mlir::dyn_cast<TileBufferType>(getResult().getType()))
+  if (auto resultType = mlir::dyn_cast<StorageType>(getResult().getType()))
     appendLayoutRequirement(requirements, WaferValueRole::Result, 0,
                             resultType);
 }
@@ -259,19 +257,19 @@ mlir::LogicalResult MoveCopyOp::verifyWaferResourceEffectContract() {
 }
 
 mlir::LogicalResult MoveTransposeOp::verify() {
-  TileBufferType sourceType;
-  TileBufferType resultType;
-  if (mlir::failed(getSPMTileBuffer(getOperation(), getSource().getType(),
-                                    "transpose source", sourceType)) ||
-      mlir::failed(getSPMTileBuffer(getOperation(), getResult().getType(),
-                                    "transpose result", resultType)))
+  StorageType sourceType;
+  StorageType resultType;
+  if (mlir::failed(getSPMStorage(getOperation(), getSource().getType(),
+                                 "transpose source", sourceType)) ||
+      mlir::failed(getSPMStorage(getOperation(), getResult().getType(),
+                                 "transpose result", resultType)))
     return mlir::failure();
   if (mlir::failed(verifySameElementLayoutAndSpace(getOperation(), sourceType,
                                                    resultType, "transpose")))
     return mlir::failure();
 
-  mlir::RankedTensorType sourceTensor = getTileBufferTensorType(sourceType);
-  mlir::RankedTensorType resultTensor = getTileBufferTensorType(resultType);
+  mlir::RankedTensorType sourceTensor = getStorageTensorType(sourceType);
+  mlir::RankedTensorType resultTensor = getStorageTensorType(resultType);
   llvm::ArrayRef<int64_t> permutation = getPermutationAttr().asArrayRef();
   if (resultTensor.getRank() != sourceTensor.getRank())
     return emitOpError("transpose source and result ranks must match");
@@ -289,10 +287,10 @@ mlir::LogicalResult MoveTransposeOp::verify() {
 
 void MoveTransposeOp::collectWaferLayoutRequirements(
     llvm::SmallVectorImpl<WaferLayoutRequirement> &requirements) {
-  if (auto sourceType = mlir::dyn_cast<TileBufferType>(getSource().getType()))
+  if (auto sourceType = mlir::dyn_cast<StorageType>(getSource().getType()))
     appendLayoutRequirement(requirements, WaferValueRole::Operand, 0,
                             sourceType);
-  if (auto resultType = mlir::dyn_cast<TileBufferType>(getResult().getType()))
+  if (auto resultType = mlir::dyn_cast<StorageType>(getResult().getType()))
     appendLayoutRequirement(requirements, WaferValueRole::Result, 0,
                             resultType);
 }
@@ -316,19 +314,19 @@ mlir::LogicalResult MoveTransposeOp::verifyWaferResourceEffectContract() {
 }
 
 mlir::LogicalResult MoveBroadcastOp::verify() {
-  TileBufferType sourceType;
-  TileBufferType resultType;
-  if (mlir::failed(getSPMTileBuffer(getOperation(), getSource().getType(),
-                                    "broadcast source", sourceType)) ||
-      mlir::failed(getSPMTileBuffer(getOperation(), getResult().getType(),
-                                    "broadcast result", resultType)))
+  StorageType sourceType;
+  StorageType resultType;
+  if (mlir::failed(getSPMStorage(getOperation(), getSource().getType(),
+                                 "broadcast source", sourceType)) ||
+      mlir::failed(getSPMStorage(getOperation(), getResult().getType(),
+                                 "broadcast result", resultType)))
     return mlir::failure();
   if (mlir::failed(verifySameElementLayoutAndSpace(getOperation(), sourceType,
                                                    resultType, "broadcast")))
     return mlir::failure();
 
-  mlir::RankedTensorType sourceTensor = getTileBufferTensorType(sourceType);
-  mlir::RankedTensorType resultTensor = getTileBufferTensorType(resultType);
+  mlir::RankedTensorType sourceTensor = getStorageTensorType(sourceType);
+  mlir::RankedTensorType resultTensor = getStorageTensorType(resultType);
   llvm::ArrayRef<int64_t> dimensions = getDimensionsAttr().asArrayRef();
   if (static_cast<int64_t>(dimensions.size()) != sourceTensor.getRank())
     return emitOpError("broadcast dimensions must match source tensor rank");
@@ -349,10 +347,10 @@ mlir::LogicalResult MoveBroadcastOp::verify() {
 
 void MoveBroadcastOp::collectWaferLayoutRequirements(
     llvm::SmallVectorImpl<WaferLayoutRequirement> &requirements) {
-  if (auto sourceType = mlir::dyn_cast<TileBufferType>(getSource().getType()))
+  if (auto sourceType = mlir::dyn_cast<StorageType>(getSource().getType()))
     appendLayoutRequirement(requirements, WaferValueRole::Operand, 0,
                             sourceType);
-  if (auto resultType = mlir::dyn_cast<TileBufferType>(getResult().getType()))
+  if (auto resultType = mlir::dyn_cast<StorageType>(getResult().getType()))
     appendLayoutRequirement(requirements, WaferValueRole::Result, 0,
                             resultType);
 }

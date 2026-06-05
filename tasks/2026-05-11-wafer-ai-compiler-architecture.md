@@ -65,14 +65,14 @@ Wafer 是基于 MLIR 的编译器。每一层 IR 只携带自己能稳定解释�
 | Sharding | StableHLO + Shardy/SDY | global sharding、logical mesh、collective 语义 | physical tile placement、DTE protocol、SPM buffer |
 | Local compute normalization | Linalg, Tensor, SCF, Arith, Math, Wafer LinalgExt-style tensor collective ops | structured loop、indexing map、tile slice、producer/consumer、DPS/in-place、transformer block composite pattern、post-SPMD tensor collective semantics | SPM address、`Cx/NCx` storage、worker id、packet field、`wafer.comm` / DTE protocol |
 | Group scheduling | `wafer.group` | fusion boundary、traversal schedule、tiled tensor IR、abstract resource demand | raw register field、DTE node id、physical SPM slot、C ABI call |
-| Tile execution | `wafer.tile_region`, `!wafer.tile_buffer`, target-abstract `wafer.compute` / data movement ops, memref / descriptor | bufferized tile-local execution scope、memory/liveness、movement/compute/sync ordering、layout contract | tensor fusion decision、host launch/package ABI |
+| Tile execution | `wafer.tile_region`, `!wafer.storage`, target-abstract `wafer.compute` / data movement ops, memref / descriptor | bufferized tile-local execution scope、memory/liveness、movement/compute/sync ordering、layout contract | tensor fusion decision、host launch/package ABI |
 | Hardware/runtime lowering | lower-level Wafer ops, `wafer.comm`, `wafer.sync` | RDMA/WDMA/TDMA/CT/NE/DTE instruction/runtime form、issue/drain abstraction、wait/barrier abstraction | raw packet bitfield unless in debug/raw dialect |
 | Launch / ABI | `wafer.launch`, LLVM dialect, package metadata | host/device launch boundary、concrete `wafer_*` call、runtime adapter、HPGR or legacy launch metadata | tensor-level fusion, sharding decisions |
 
 两条 layout 线必须分开：
 
 - `layout` 是 tensor semantic layout，只说明维度业务含义和 op 如何解释 shape，例如 feature `NHWC`、conv weight `HWOI/HWIO`、普通 GEMM matrix。它可以出现在 tensor/group 层。
-- `mem_layout` 是 physical layout family，说明 SPM/DDR 中真实组织形式，例如 `Tensor`、`NTensor`、`Cx`、`NCx`。它只能在 `wafer.tile_region` / SPM bufferization 之后出现在 tile-local buffer 或 placed instruction/storage value 上。Cx/NCx 的 `C0`、storage bytes 和 256B padding 是从 shape、dtype 和 target policy 推导出的 layout info，不写进 `mem_layout` 本身。
+- `mem_layout` 是 physical layout family，说明 SPM/DDR 中真实组织形式，例如 `Tensor`、`NTensor`、`Cx`、`NCx`。它只能在 `wafer.tile_region` / SPM bufferization 之后出现在 tile-local storage 或 placed instruction/storage value 上。Cx/NCx 的 `C0`、storage bytes 和 256B padding 是从 shape、dtype 和 target policy 推导出的 layout info，不写进 `mem_layout` 本身。
 
 `memory_space` 是统一的 addressable storage space，不按阶段发明不同语义。V0 至少区分：
 
@@ -101,7 +101,7 @@ constant 语义同样分层：
 - 进入 Linalg / Wafer planning 前，常量统一成 `arith.constant` 或其它 `ConstantLike` tensor op；
   大 tensor 可以使用 resource-backed elements attr。
 - Wafer 不定义私有 tensor constant op。constant 不是 group external input，但 tile execution 中仍要
-  通过 `wafer.load_tile` 从 device-addressable storage 读入；constant storage transform / load
+  通过 `wafer.storage.load` 从 device-addressable storage 读入；constant storage transform / load
   lowering 直接改写 backing data/resource 或生成 packed storage，并把 read-only DDR demand 交给
   DDR resource planner。
 - 能被目标 op 合法 fold 成 immediate、attribute 或 fill pattern 的 scalar/splat/small constants
@@ -307,7 +307,7 @@ tensor-level Linalg/Tensor/SCF/Arith/Math local shard program
 - Linalg 是结构化计算表达，不是最终硬件计划。
 - 历史 backend 观察只能作为实现证据或反例，不决定当前 IR 边界。
 - StableHLO collective 不在本阶段直接 lower 成 `wafer.comm`。需要跨 tile 的通信语义先作为
-  tensor collective 进入 group/tiling；physical communication 在 tile buffer 和 placement 明确后
+  tensor collective 进入 group/tiling；physical communication 在 storage 和 placement 明确后
   materialize。
 
 Local compute normalization 的 StableHLO-to-structured-IR 合同、transformer block 所需
@@ -356,11 +356,11 @@ tile-and-fuse 的主文档，本架构文档只规定它在全 pipeline 中的�
 职责：
 
 - 引入 `wafer.tile_region` 作为 `wafer.group` lowering 之后的 tile-local execution scope。
-- 把 accepted tiled SSA graph materialize 成 tile-local buffer、movement、layout conversion、
+- 把 accepted tiled SSA graph materialize 成 tile-local storage、movement、layout conversion、
   target-abstract compute、communication 和 sync/effect op。
 - 对 target-abstract op 先做 Wafer instruction legalization / selection，在现有
-  `!wafer.tile_buffer` graph 上产出 instruction-level `wafer.instr.*` IR；SPM/DDR/resource
-  planner 只消费 instruction-level IR 的 tile-buffer use-def、effect 和 lifetime，
+  `!wafer.storage` graph 上产出 instruction-level `wafer.instr.*` IR；SPM/DDR/resource
+  planner 只消费 instruction-level IR 的 storage use-def、effect 和 lifetime，
   不从高层 op 名或单个 case 猜 demand。
 - 在 accepted layout、SPM placement 和 DDR binding contract 后，把 instruction/storage 降到 memref
   或 Wafer descriptor。
@@ -384,7 +384,7 @@ bufferization 见 `tasks/2026-05-21-wafer-spm-bufferization-design.md`；DDR res
 
 - 输入是 target-abstract `wafer.compute` / data movement op；这些 op 已经在 layout materialization
   前进入 IR，并提供 layout contract。
-- 将 target-abstract op lower 到复用 `!wafer.tile_buffer` 的 instruction-level
+- 将 target-abstract op lower 到复用 `!wafer.storage` 的 instruction-level
   `wafer.instr.*` IR，再由 SPM placement 在同一 IR 上填入 offset/range/bank；
   这一层不直接手写 raw packet bitfield。
 - 覆盖 CT、NE、RDMA、WDMA、TDMA 的 issue/drain 抽象和 wrapper selection。
@@ -627,7 +627,7 @@ WaferRuntimeAdapter cluster launch
 - softmax、RMSNorm/LayerNorm、RoPE 和 MLP activation 都展开成可验证 staged tensor IR。
 - group planner 能对 staged reduction/softmax 给出合法 group split 或明确拒绝原因。
 - layout/SPM/DDR feasibility 对所有 accepted groups 通过；constants/weights 通过 `ConstantLike`
-  + `wafer.load_tile` / constant storage transform 路径进入 device storage。
+  + `wafer.storage.load` / constant storage transform 路径进入 device storage。
 - 所有启用的 compute/movement/communication ABI family 有 verifier 和必要 golden packet 覆盖。
 - Runtime completion 仍使用可信 fence，不使用旧 launch/sync stub。
 
@@ -832,7 +832,7 @@ ModelImport/FrontendProgram
   -> wafer-layout-materialize
   -> wafer-constant-storage-transform
   -> wafer-spm-bufferize
-  -> wafer-realize-tile-buffer-storage
+  -> wafer-realize-storage-storage
   -> wafer-lower-layout-materialize
   -> lower-wafer-compute-to-instruction
   -> lower-wafer-comm-to-instruction
@@ -874,7 +874,7 @@ ModelImport/FrontendProgram
   temp/psum/staging、queue 和 async lifetime。
 - memory space 和 `mem_layout` 只在 `wafer.tile_region` / SPM bufferization 层出现，不进入
   tensor-level `wafer.group`。
-- storage realization 把 placed `!wafer.tile_buffer` 降成 physical `memref`、flat storage
+- storage realization 把 placed `!wafer.storage` 降成 physical `memref`、flat storage
   或 explicit descriptor；compact layout 优先复用标准 memref/LLVM lowering，Cx/NCx 只把
   必要的 target storage facts 放入 descriptor。
 - `wafer.compute.*` / `wafer.comm.*` 消费 placed SPM value 或 descriptor，不再做 fusion
@@ -902,7 +902,7 @@ V0 先保持统一 `wafer` namespace，降低跨 dialect type/attr 演进成本�
 | Layout materialization | `tasks/2026-05-21-wafer-layout-materialization-design.md` | 草案 | physical layout domain、op layout constraint、constant storage transform、materialization placement/cost | SPM address、packet field、group fusion |
 | SPM bufferization | `tasks/2026-05-21-wafer-spm-bufferization-design.md` | 草案 | `#spm` demand、liveness、range/alignment、allocation、storage realization input | DDR buffer object allocation、collective algorithm、host launch |
 | Compute / movement | `tasks/2026-05-25-wafer-compute-dialect-design.md` | 草案 | target-abstract compute/move op、layout/resource interface、instruction legality、issue/drain | tensor fusion、global sharding、host package format |
-| Instruction IR | `tasks/2026-06-05-wafer-instruction-ir-design.md` | 草案 | `wafer.instr.*`、现有 `!wafer.tile_buffer` graph、queue family、tile-buffer read/write/issue effect | SPM offset、DDR BO binding、raw packet、C ABI call、重复 storage IR |
+| Instruction IR | `tasks/2026-06-05-wafer-instruction-ir-design.md` | 草案 | `wafer.instr.*`、现有 `!wafer.storage` graph、queue family、storage read/write/issue effect | SPM offset、DDR BO binding、raw packet、C ABI call、重复 storage IR |
 | Communication | `tasks/2026-05-25-wafer-communication-dialect-design.md` | 草案 | tile_region / SPM materialization 之后的 collective-level op、p2p schedule、Direct DTE V0、token/effect、sync boundary | compute op legality、SPM allocator internals、SPMD tensor collective handoff |
 | DDR resource | `tasks/2026-05-25-wafer-ddr-resource-allocation-design.md` | 草案 | `#ddr` demand、external binding、workspace buffer object、constant residency、buffer object pool/domain、capacity/bandwidth | tensor fusion、SPM offset、packet bitfield |
 | Launch / runtime package | `tasks/2026-05-25-wafer-launch-runtime-package-design.md` | 草案 | `wafer.launch`、HPGR/KMD/legacy Tsm 分层、completion、buffer object pools、bootparam/TLV、package metadata | Linalg tiling、group formation、tile-local ordering |

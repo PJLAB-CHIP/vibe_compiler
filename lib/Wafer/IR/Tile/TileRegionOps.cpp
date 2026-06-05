@@ -12,14 +12,14 @@ using namespace wafer::detail;
 
 mlir::LogicalResult TileRegionOp::verify() {
   for (mlir::Type resultType : getResultTypes()) {
-    if (isSPMTileBuffer(resultType))
+    if (isSPMStorage(resultType))
       return emitOpError(
-          "SPM tile buffers cannot cross wafer.tile_region boundaries");
+          "SPM storage values cannot cross wafer.tile_region boundaries");
   }
   for (auto input : getInputs()) {
-    if (isSPMTileBuffer(input.getType()))
+    if (isSPMStorage(input.getType()))
       return emitOpError(
-          "SPM tile buffers cannot cross wafer.tile_region boundaries");
+          "SPM storage values cannot cross wafer.tile_region boundaries");
   }
 
   return mlir::success();
@@ -44,9 +44,9 @@ mlir::LogicalResult TileRegionOp::verifyRegions() {
       return emitOpError("body block argument type ")
              << blockArgType << " does not match input type " << inputType
              << " at index " << index;
-    if (isSPMTileBuffer(blockArgType))
+    if (isSPMStorage(blockArgType))
       return emitOpError(
-          "SPM tile buffers cannot cross wafer.tile_region boundaries");
+          "SPM storage values cannot cross wafer.tile_region boundaries");
   }
 
   auto yield = mlir::dyn_cast<TileYieldOp>(block.getTerminator());
@@ -63,9 +63,9 @@ mlir::LogicalResult TileRegionOp::verifyRegions() {
        llvm::enumerate(llvm::zip(yield.getValues(), getResults()))) {
     mlir::Type yieldedType = std::get<0>(yieldedAndResult).getType();
     mlir::Type resultType = std::get<1>(yieldedAndResult).getType();
-    if (isSPMTileBuffer(yieldedType))
+    if (isSPMStorage(yieldedType))
       return emitOpError(
-          "SPM tile buffers cannot cross wafer.tile_region boundaries");
+          "SPM storage values cannot cross wafer.tile_region boundaries");
     if (yieldedType != resultType)
       return emitOpError("tile_yield type ")
              << yieldedType << " does not match tile_region result type "

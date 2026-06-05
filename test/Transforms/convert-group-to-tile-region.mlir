@@ -13,7 +13,7 @@ func.func @fill_group(%arg0: f32) -> tensor<4xf32> {
 // CHECK-LABEL: func.func @fill_group
 // CHECK-NOT: wafer.group
 // CHECK: wafer.tile_region
-// CHECK: wafer.load_tile
+// CHECK: wafer.storage.load
 // CHECK: wafer.compute.fill
-// CHECK: wafer.store_tile
+// CHECK: wafer.storage.store
 // CHECK: wafer.tile_yield

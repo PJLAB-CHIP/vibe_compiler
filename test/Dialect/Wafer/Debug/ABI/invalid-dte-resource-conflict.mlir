@@ -12,13 +12,13 @@ module {
        tile_y_count = 4 : i64}
 
   %buf = "builtin.unrealized_conversion_cast"()
-      : () -> !wafer.tile_buffer<tensor<4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
+      : () -> !wafer.storage<tensor<4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
   %send0 = wafer.abi.dte_send %buf
       {bytes = 16 : i64, peer = 1 : i64, fsm_id = 0 : i64, packet_id = 0 : i64, stream_id = 0 : i64}
-      : !wafer.tile_buffer<tensor<4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>> -> !async.token
+      : !wafer.storage<tensor<4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>> -> !async.token
   %send1 = wafer.abi.dte_send %buf
       {bytes = 16 : i64, peer = 1 : i64, fsm_id = 0 : i64, packet_id = 0 : i64, stream_id = 0 : i64}
-      : !wafer.tile_buffer<tensor<4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>> -> !async.token
+      : !wafer.storage<tensor<4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>> -> !async.token
 }
 
 // CHECK: Direct DTE resource tuple is already in use

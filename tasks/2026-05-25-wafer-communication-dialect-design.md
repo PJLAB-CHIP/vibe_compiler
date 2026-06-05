@@ -46,7 +46,7 @@ fixed-size unicast Direct DTE，但 logical collective IR 的支持范围不能�
 partitioned StableHLO + collectives
   -> Wafer LinalgExt-style tensor collective normalization
   -> wafer.group tiling / scheduled tensor collective
-  -> wafer.tile_region + SPM tile buffers + placement
+  -> wafer.tile_region + SPM storage values + placement
   -> target-abstract wafer.comm collective or permute op
   -> explicit wafer.comm point-to-point steps
   -> Direct DTE/FSM/sync lowering
@@ -59,7 +59,7 @@ partitioned StableHLO + collectives
 | --- | --- | --- |
 | StableHLO / Shardy | `all_gather`、`reduce_scatter`、`all_reduce`、`collective_permute` | global tensor 和 logical mesh 语义 |
 | Tensor collective handoff | Wafer LinalgExt-style tensor collective ops | DPS/tensor-level collective、tiling/fusion、rank group/axis/combiner verifier |
-| Scheduled group / tile_region | tiled tensor collective + tile buffers | tile slice、SPM buffer、layout/materialization、communication staging demand |
+| Scheduled group / tile_region | tiled tensor collective + storage values | tile slice、SPM buffer、layout/materialization、communication staging demand |
 | Placement | logical rank 到 card/tile 的 mapping | good-tile/PG、cluster、rank order、physical peer |
 | target-abstract comm | `wafer.comm.*` collective / permute op | 保留 tile-local communication semantic 和 physical group，不选择 raw DTE register |
 | p2p schedule | `wafer.comm.send`、`recv`、`wait`、local compute step | 显式 ring/tree step、buffer slice、byte count、token/effect |
@@ -82,9 +82,9 @@ semantic。
 - `wafer.comm.all_reduce`
 - `wafer.comm.all_to_all`
 
-这些 op 处在 tiled tensor collective / SPM tile buffer 与 explicit p2p schedule 之间。它们应携带：
+这些 op 处在 tiled tensor collective / SPM storage 与 explicit p2p schedule 之间。它们应携带：
 
-- source/result tile-buffer values。
+- source/result storage values。
 - logical group / rank order，来自 upstream tensor collective 和 placement。
 - physical placement reference，来自 placement stage。
 - reduction kind 和 dtype 语义，如果 collective 包含 reduce。
@@ -219,7 +219,7 @@ instruction-level IR 重新建立。这一层仍不应 materialize raw non-unica
 runtime physical address 或 wrapper packet bitfield 暴露成上层 communication IR 语义。
 
 P6.4 起，collective-level `wafer.comm.all_gather` 已进入 IR。该 op 接收 local chunk、gather
-buffer、`local_rank`、`group_size` 和单 chunk `bytes`，verifier 检查 SPM tile buffer、rank 范围、
+buffer、`local_rank`、`group_size` 和单 chunk `bytes`，verifier 检查 SPM storage、rank 范围、
 单 chunk byte size 和 gather buffer 总 byte size。旧 `--wafer-lower-ring-all-gather` 和后续
 tile_region-to-C-ABI debug pass 链已删除。后续 lowering 仍应把 accepted schedule rewrite 成显式
 send/recv/wait body，并保留 destination slot 供地址 offset / packet 参数 lowering 使用。
@@ -228,7 +228,7 @@ P6.6 的早期实现允许 StableHLO logical `all_gather` 直接 normalize 到�
 
 ```text
 StableHLO collective -> Wafer LinalgExt-style tensor collective
-tiled tensor collective + SPM tile buffers -> wafer.comm.*
+tiled tensor collective + SPM storage values -> wafer.comm.*
 ```
 
 ## 6. Collective Lowering
@@ -350,7 +350,7 @@ tile-local `wafer.comm` 开始。
 
 Collective-level `wafer.comm` verifier：
 
-- collective semantic、rank group、tile-buffer shape、slice、dtype 与输入输出一致。
+- collective semantic、rank group、storage shape、slice、dtype 与输入输出一致。
 - physical placement 覆盖 logical group，且 good-tile/PG 条件满足。
 - 对目标硬件 / ABI 证据明确无法表达的 route 或 protocol 给出 diagnostic。当前某个 lowering pass
   未实现的 collective、multi replica group 或 cross-card schedule 不应在 collective-level verifier
@@ -359,7 +359,7 @@ Collective-level `wafer.comm` verifier：
 P2P-level verifier：
 
 - peer 是单个 active physical tile；当前 Direct DTE compiler path 只允许 fixed-size unicast。
-- send source 和 recv destination 是 SPM tile-local buffer 或 lowerable descriptor。
+- send source 和 recv destination 是 SPM tile-local storage 或 lowerable descriptor。
 - 若 selected protocol 使用 `#ddr` endpoint，descriptor 必须满足 DDR resource plan 的 pool/domain、
   range、alignment 和 ownership contract。
 - byte count 与 buffer slice/storage representation 一致。
@@ -382,17 +382,17 @@ offset 都不是这个层级的语义。
 // 每个 tile 持有 %local_chunk，并写入 %gather_buf 的本 rank slot。
 %send0 = wafer.comm.send %local_chunk to %next
     {bytes = 4096}
-    : !wafer.tile_buffer<..., #tensor, #spm> -> async.token
+    : !wafer.storage<..., #tensor, #spm> -> async.token
 %recv0 = wafer.comm.recv %gather_buf[%prev_slot] from %prev
     {bytes = 4096}
-    : !wafer.tile_buffer<..., #tensor, #spm> -> async.token
+    : !wafer.storage<..., #tensor, #spm> -> async.token
 wafer.comm.wait %send0, %recv0
 
 %send1 = wafer.comm.send %gather_buf[%prev_slot] to %next {bytes = 4096}
-    : !wafer.tile_buffer<..., #tensor, #spm> -> async.token
+    : !wafer.storage<..., #tensor, #spm> -> async.token
 %recv1 = wafer.comm.recv %gather_buf[%prev2_slot] from %prev
     {bytes = 4096}
-    : !wafer.tile_buffer<..., #tensor, #spm> -> async.token
+    : !wafer.storage<..., #tensor, #spm> -> async.token
 wafer.comm.wait %send1, %recv1
 ```
 

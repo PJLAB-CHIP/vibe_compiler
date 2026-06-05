@@ -41,8 +41,8 @@ def Wafer_CommAllGatherOp : Wafer_Op<"comm.all_gather", [
   }];
 
   let arguments = (ins
-    Wafer_AnyTileBuffer:$local_chunk,
-    Wafer_AnyTileBuffer:$gather_buffer,
+    Wafer_AnyStorage:$local_chunk,
+    Wafer_AnyStorage:$gather_buffer,
     I64Attr:$local_rank,
     I64Attr:$group_size,
     DenseI64ArrayAttr:$rank_group,
@@ -63,14 +63,14 @@ class Wafer_CommReduceCollectiveOp<string mnemonic> : Wafer_Op<mnemonic, [
   ]> {
   let arguments = (ins
     Wafer_ComputeReduceKindAttr:$kind,
-    Wafer_AnyTileBuffer:$input,
-    Wafer_AnyTileBuffer:$recv_buffer,
+    Wafer_AnyStorage:$input,
+    Wafer_AnyStorage:$recv_buffer,
     I64Attr:$local_rank,
     I64Attr:$group_size,
     DenseI64ArrayAttr:$rank_group,
     I64Attr:$bytes
   );
-  let results = (outs Wafer_AnyTileBuffer:$result);
+  let results = (outs Wafer_AnyStorage:$result);
   let hasVerifier = 1;
   let assemblyFormat =
       "$kind $input `using` $recv_buffer attr-dict `:` functional-type(operands, results)";

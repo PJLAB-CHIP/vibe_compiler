@@ -421,7 +421,7 @@ StableHLO logical collective
 ```
 
 Shardy / SPMD 只负责第一行之前的 logical collective 生成。StableHLO collective 不应在 group /
-tiling 前直接 lower 成 `wafer.comm`，因为 `wafer.comm` 当前属于 tile-local buffer / communication
+tiling 前直接 lower 成 `wafer.comm`，因为 `wafer.comm` 当前属于 tile-local storage / communication
 IR；它需要 SPM buffer、byte count、placement 和 token/effect 语义。
 
 R2.4 的用户级 program gate 是 `wafer-opt --program-pipeline=stablehlo-spmd-to-linalg`：该 pipeline
@@ -472,7 +472,7 @@ SPMD 不应该为了特定 Wafer mesh 重新解释 StableHLO semantics。physica
 | SPMD partition | annotated global module | partitioned StableHLO |
 | per-rank program selection | partitioned StableHLO + rank selection policy | verified local-rank StableHLO program |
 | collective tensor normalization | partitioned StableHLO collective ops | Wafer LinalgExt-style tensor collective IR |
-| communication materialization | tiled tensor collective + tile buffers + placement | `wafer.comm` collective-level op or explicit p2p schedule |
+| communication materialization | tiled tensor collective + storage values + placement | `wafer.comm` collective-level op or explicit p2p schedule |
 
 这些 pass 的合法输出不包含 Wafer physical memory space、tile coordinates、DTE resource 或
 runtime package metadata。

@@ -8,32 +8,32 @@ module {
       : tensor<4x8xf16>, tensor<8x16xf16>, tensor<4x16xf16>)
       -> (tensor<4x16xf16>) {
   ^bb0(%arg0: tensor<4x8xf16>, %arg1: tensor<8x16xf16>, %arg2: tensor<4x16xf16>):
-    %a_t = wafer.load_tile %arg0
+    %a_t = wafer.storage.load %arg0
         : tensor<4x8xf16>
-       -> !wafer.tile_buffer<tensor<4x8xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
-    %b_t = wafer.load_tile %arg1
+       -> !wafer.storage<tensor<4x8xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
+    %b_t = wafer.storage.load %arg1
         : tensor<8x16xf16>
-       -> !wafer.tile_buffer<tensor<8x16xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
+       -> !wafer.storage<tensor<8x16xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
     %a_cx = wafer.layout.materialize %a_t
-        : !wafer.tile_buffer<tensor<4x8xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
-       -> !wafer.tile_buffer<tensor<4x8xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
+        : !wafer.storage<tensor<4x8xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
+       -> !wafer.storage<tensor<4x8xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
     %b_cx = wafer.layout.materialize %b_t
-        : !wafer.tile_buffer<tensor<8x16xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
-       -> !wafer.tile_buffer<tensor<8x16xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
+        : !wafer.storage<tensor<8x16xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
+       -> !wafer.storage<tensor<8x16xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
     %mm = wafer.compute.gemm %a_cx, %b_cx
-        : (!wafer.tile_buffer<tensor<4x8xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>,
-           !wafer.tile_buffer<tensor<8x16xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>)
-       -> !wafer.tile_buffer<tensor<4x16xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
+        : (!wafer.storage<tensor<4x8xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>,
+           !wafer.storage<tensor<8x16xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>)
+       -> !wafer.storage<tensor<4x16xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
     %mm_tensor = wafer.layout.materialize %mm
-        : !wafer.tile_buffer<tensor<4x16xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
-       -> !wafer.tile_buffer<tensor<4x16xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
-    wafer.store_tile %mm_tensor, %arg2
-        : !wafer.tile_buffer<tensor<4x16xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
+        : !wafer.storage<tensor<4x16xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
+       -> !wafer.storage<tensor<4x16xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
+    wafer.storage.store %mm_tensor, %arg2
+        : !wafer.storage<tensor<4x16xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
        -> tensor<4x16xf16>
     wafer.tile_yield %arg2 : tensor<4x16xf16>
   }
 }
 
-// CHECK: wafer.load_tile
+// CHECK: wafer.storage.load
 // CHECK: wafer.compute.gemm
-// CHECK: wafer.store_tile
+// CHECK: wafer.storage.store

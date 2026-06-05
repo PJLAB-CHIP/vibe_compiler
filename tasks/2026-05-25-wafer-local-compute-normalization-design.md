@@ -47,7 +47,7 @@ DTE、C ABI 或 runtime package。
   架构边界。需要 pattern 时使用 rewrite / canonicalization，把它们展开到结构化 IR。
 - 不把 transformer block 的某个 shape、head 数或隐藏维度写成协议。
 - 不把 sharding 表示成 `wafer.spmd.*`，也不把 tensor-level collective 提前 lower 成
-  `wafer.comm` / `tile_buffer` / DTE op。
+  `wafer.comm` / `storage` / DTE op。
 
 ## 2. 输入和输出
 
@@ -330,7 +330,7 @@ R2.4 pipeline position：
 Pipeline position:
 - Upstream program / IR: P2.S2 partitioned / replicated-local StableHLO program directory，含 rank-local function signature、StableHLO collective op、replica_groups、channel metadata 和 rank-local parameter payload。
 - Current stage responsibility: 把 post-SPMD StableHLO logical collective normalize 成 Wafer-owned destination-style tensor collective op，并保留 group/tiling 可验证的 tensor-level collective facts。
-- Output program / IR: `linalg` / `tensor` / `scf` local compute IR 加 `wafer.tensor_collective.*` ops；不含 `wafer.comm`、SPM tile buffer、DTE token 或 runtime handle。
+- Output program / IR: `linalg` / `tensor` / `scf` local compute IR 加 `wafer.tensor_collective.*` ops；不含 `wafer.comm`、SPM storage、DTE token 或 runtime handle。
 - Downstream consumer: R3 logical group / tiling，以及 R6 tiled tensor collective -> `wafer.comm` materialization。
 - User-level driver / named pipeline: 用户级主线由
   `wafer-opt --program-pipeline=stablehlo-spmd-to-linalg` 从 frontend Wafer program 重放 P2.S2 并写回
@@ -462,7 +462,7 @@ Normalization 后必须能检查：
 - softmax/norm staged IR 中的 reduction axis 和 elementwise consumer 关系。
 - shape-only ops 没有提前变成 target movement。
 - StableHLO collectives 已经规整成 tensor-level collective ops，且这些 ops 不含 `wafer.spmd.*`、
-  `wafer.comm`、`tile_buffer`、DTE 或 runtime metadata。
+  `wafer.comm`、`storage`、DTE 或 runtime metadata。
 - IR 中没有 Wafer physical memory、layout materialization、DTE、packet 或 runtime launch 事实。
 
 ### 7.1 R2.3 覆盖状态口径

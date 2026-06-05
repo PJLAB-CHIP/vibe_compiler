@@ -11,7 +11,7 @@ def Wafer_TileRegionOp : Wafer_Op<"tile_region", [
   let summary = "tile-local Wafer execution region";
   let description = [{
     `wafer.tile_region` is the post-group device-side execution scope for
-    tile-local buffers, layout materialization, movement, target-abstract
+    tile-local storage values, layout materialization, movement, target-abstract
     compute, communication, and sync/effect ordering. It does not store group
     planner search state, raw packets, runtime buffer handles, or C ABI calls.
   }];
@@ -37,7 +37,7 @@ def Wafer_TileYieldOp : Wafer_Op<"tile_yield", [
   let summary = "terminate a wafer.tile_region body";
   let description = [{
     `wafer.tile_yield` returns values from a `wafer.tile_region` body. The
-    parent verifier checks value count, value types, and tile-buffer boundary
+    parent verifier checks value count, value types, and storage boundary
     ownership.
   }];
 

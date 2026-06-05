@@ -2,18 +2,19 @@
 
 日期：2026-06-05
 
-状态：R3.2d 设计收口；2026-06-05 简化为复用 `!wafer.tile_buffer`；实现未完成
+状态：R3.2d 设计收口；2026-06-05 统一 storage 命名；实现未完成
 
 本文定义 R3.2d 的 instruction-level Wafer IR。核心结论：
 
 - 只新增 `wafer.instr.*` 硬件指令级 op。
-- 复用现有 `!wafer.tile_buffer`、`wafer.alloc_tile`、`wafer.view.reshape`。
-- 不新增 `!wafer.storage`、`wafer.storage.*`、tile-buffer role attr 或 size policy attr。
+- 复用现有 `!wafer.storage`、`wafer.storage.alloc`、`wafer.view.reshape`。
+- `!wafer.storage` 是唯一 storage-like IR 对象；不保留旧 buffer alias，
+  不新增 storage role attr 或 size policy attr。
 - 不生成 SPM offset、DDR BO binding、raw packet 或 C ABI call。
 
 `wafer.instr` 的作用是把 target-abstract tile-region op 变成可执行硬件动作，并让下游能从
-`!wafer.tile_buffer` SSA、op operands、attrs、MemoryEffects 和显式 drain 直接推导 placement
-输入。它不是另一层 buffer IR。
+`!wafer.storage` SSA、op operands、attrs、MemoryEffects 和显式 drain 直接推导 placement
+输入。它不是另一层 storage IR。
 
 本文依赖：
 
@@ -27,26 +28,26 @@
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  R3.2c `wafer.tile_region` IR，内部包含 accepted layout 的 `!wafer.tile_buffer`、
-  `wafer.alloc_tile`、`wafer.load_tile` / `wafer.store_tile`、
+  R3.2c `wafer.tile_region` IR，内部包含 accepted layout 的 `!wafer.storage`、
+  `wafer.storage.alloc`、`wafer.storage.load` / `wafer.storage.store`、
   `wafer.layout.materialize`、`wafer.compute.*`、`wafer.move.*`、
   `wafer.view.reshape` 和 `wafer.sync.*`。
 - Current stage responsibility:
   只做 Wafer instruction legalization / selection：把可执行的 target-abstract op 改写成
-  `wafer.instr.*`，并保留现有 tile-buffer SSA graph。instruction op 显式表达 queue family、
-  tile-buffer read/write、descriptor attrs 和 issue effect。
+  `wafer.instr.*`，并保留现有 storage SSA graph。instruction op 显式表达 queue family、
+  storage read/write、descriptor attrs 和 issue effect。
 - Output artifact / IR:
   同一个 `wafer.tile_region` execution scope 内的 instruction-level IR：
-  `!wafer.tile_buffer` + `wafer.alloc_tile` / `wafer.view.reshape` + `wafer.instr.*` +
+  `!wafer.storage` + `wafer.storage.alloc` / `wafer.view.reshape` + `wafer.instr.*` +
   `wafer.sync.*`，或结构化 legalization failure reason。
 - Downstream consumer:
   R3.2e SPM placement、R3.2f DDR/resource legality、R3.2g closed-loop planner、
-  R3.4 placed tile-buffer realization 和 R3.6 codegen emission。
+  R3.4 placed storage realization 和 R3.6 codegen emission。
 - User-level driver / named pipeline:
   主线由 R3.2 closed-loop planner 调用；局部 bring-up pass 可命名为
   `--wafer-convert-tile-region-to-instr`，只作为 lit/debug 入口。
 - Explicit non-goals:
-  不新增 storage IR，不决定 group boundary、tile shape、layout assignment、SPM offset、
+  不新增第二套 storage/buffer IR，不决定 group boundary、tile shape、layout assignment、SPM offset、
   DDR BO binding、raw register packet field、Tsm wrapper call、C ABI symbol 或 launch ABI。
   DTE、CSR 和 SCALAR 不进入普通 `wafer.instr` issue path。
 - Completion gate:
@@ -61,9 +62,9 @@ Pipeline position:
 R3.2d 前：
 
 ```text
-!wafer.tile_buffer
-wafer.alloc_tile
-wafer.load_tile / wafer.store_tile
+!wafer.storage
+wafer.storage.alloc
+wafer.storage.load / wafer.storage.store
 wafer.layout.materialize
 wafer.compute.* / wafer.move.*
 wafer.view.reshape
@@ -73,8 +74,8 @@ wafer.sync.*
 R3.2d 后：
 
 ```text
-!wafer.tile_buffer
-wafer.alloc_tile
+!wafer.storage
+wafer.storage.alloc
 wafer.view.reshape
 wafer.instr.rdma / wafer.instr.wdma
 wafer.instr.tdma.gather_scatter
@@ -83,7 +84,7 @@ wafer.instr.ne.gemm
 wafer.sync.*
 ```
 
-没有 type conversion：`!wafer.tile_buffer<tensor, mem_layout, memory_space>` 从 target-abstract
+没有 type conversion：`!wafer.storage<tensor, mem_layout, memory_space>` 从 target-abstract
 tile-region 贯穿到 instruction-level tile-region。它仍然不带 physical offset、raw address、
 packet 或 runtime handle。
 
@@ -91,8 +92,8 @@ packet 或 runtime handle。
 
 | family | V0 op | 来源 | 说明 |
 | --- | --- | --- | --- |
-| RDMA | `wafer.instr.rdma` | `wafer.load_tile` | DDR boundary value -> `#spm` tile buffer |
-| WDMA | `wafer.instr.wdma` | `wafer.store_tile` | `#spm` tile buffer -> DDR boundary value |
+| RDMA | `wafer.instr.rdma` | `wafer.storage.load` | DDR boundary value -> `#spm` storage |
+| WDMA | `wafer.instr.wdma` | `wafer.storage.store` | `#spm` storage -> DDR boundary value |
 | TDMA | `wafer.instr.tdma.gather_scatter` | `wafer.layout.materialize`、`wafer.move.*` | byte-counted movement；contiguous copy 是 descriptor 特例 |
 | CT | `wafer.instr.ct.fill` | `wafer.compute.fill` | scalar/immediate fill |
 | CT | `wafer.instr.ct.elementwise` | `wafer.compute.elementwise` | arithmetic / relation / activation |
@@ -112,11 +113,11 @@ R3.2d 要么展开成一条或多条 `wafer.instr.tdma.gather_scatter`，要么�
 
 ## 4. Operand Model
 
-instruction op 直接读写 `!wafer.tile_buffer`：
+instruction op 直接读写 `!wafer.storage`：
 
-- source tile buffer 是 operand。
-- destination tile buffer 也是 operand。
-- 新 result/temp/psum/staging buffer 仍由 `wafer.alloc_tile` 创建。
+- source storage 是 operand。
+- destination storage 也是 operand。
+- 新 result/temp/psum/staging buffer 仍由 `wafer.storage.alloc` 创建。
 - static reshape alias 仍由 `wafer.view.reshape` 表达。
 - SPM offset、range、bank span 由 R3.2e 写入或在 R3.4 realization 降成 memref/descriptor。
 
@@ -128,7 +129,7 @@ RDMA/WDMA 的 DDR side 使用 tensor、memref 或后续 DDR descriptor boundary�
 ```text
 WaferInstructionOpInterface {
   getInstructionQueueFamily() -> InstrQueue
-  collectInstructionEffects(...) -> tile-buffer read/write + queue issue
+  collectInstructionEffects(...) -> storage read/write + queue issue
   verifyInstructionContract()
 }
 ```
@@ -139,25 +140,25 @@ interface 只返回能从 op 本身和当前 IR 重算的事实，不返回 plan
 
 R3.2d 应实现为 MLIR DialectConversion：
 
-- illegal：`wafer.load_tile`、`wafer.store_tile`、`wafer.layout.materialize`、
+- illegal：`wafer.storage.load`、`wafer.storage.store`、`wafer.layout.materialize`、
   `wafer.compute.*`、`wafer.move.*`。
-- legal：`wafer.alloc_tile`、`wafer.view.reshape`、`wafer.instr.*`、`wafer.sync.*`、
+- legal：`wafer.storage.alloc`、`wafer.view.reshape`、`wafer.instr.*`、`wafer.sync.*`、
   `wafer.tile_region` container 和必要 scalar/support op。
-- no type conversion for `!wafer.tile_buffer`。
+- no type conversion for `!wafer.storage`。
 - conversion failure 必须结构化返回给 planner；rejected instruction IR 不进入 committed 主线 IR。
 
 V0 mapping：
 
 | target-abstract op | instruction-level lowering |
 | --- | --- |
-| `wafer.load_tile` | `wafer.alloc_tile` + `wafer.instr.rdma` |
-| `wafer.store_tile` | `wafer.instr.wdma` |
-| `wafer.layout.materialize` | `wafer.alloc_tile` + one or more `wafer.instr.tdma.gather_scatter` |
+| `wafer.storage.load` | `wafer.storage.alloc` + `wafer.instr.rdma` |
+| `wafer.storage.store` | `wafer.instr.wdma` |
+| `wafer.layout.materialize` | `wafer.storage.alloc` + one or more `wafer.instr.tdma.gather_scatter` |
 | `wafer.compute.fill` | `wafer.instr.ct.fill` |
-| `wafer.compute.gemm` | `wafer.alloc_tile` if needed + `wafer.instr.ne.gemm` |
-| `wafer.compute.elementwise` | `wafer.alloc_tile` if needed + `wafer.instr.ct.elementwise` |
-| `wafer.compute.reduce` | `wafer.alloc_tile` if needed + `wafer.instr.ct.reduce` |
-| `wafer.move.copy/broadcast/transpose` | `wafer.alloc_tile` if needed + `wafer.instr.tdma.gather_scatter` |
+| `wafer.compute.gemm` | `wafer.storage.alloc` if needed + `wafer.instr.ne.gemm` |
+| `wafer.compute.elementwise` | `wafer.storage.alloc` if needed + `wafer.instr.ct.elementwise` |
+| `wafer.compute.reduce` | `wafer.storage.alloc` if needed + `wafer.instr.ct.reduce` |
+| `wafer.move.copy/broadcast/transpose` | `wafer.storage.alloc` if needed + `wafer.instr.tdma.gather_scatter` |
 | `wafer.move.extract_slice/insert_slice` | one or more `wafer.instr.tdma.gather_scatter` |
 | `wafer.view.reshape` | stays as aliasing view; no instruction issue |
 | `wafer.comm.*` | not handled by R3.2d V0 |
@@ -166,9 +167,9 @@ V0 mapping：
 
 R3.2d verifier checks only instruction legality:
 
-- `!wafer.tile_buffer` tensor type is ranked and static for V0.
+- `!wafer.storage` tensor type is ranked and static for V0.
 - memory space matches instruction family:
-  RDMA writes `#spm`; WDMA reads `#spm`; TDMA/CT/NE read/write tile-local buffers.
+  RDMA writes `#spm`; WDMA reads `#spm`; TDMA/CT/NE read/write tile-local storage values.
 - NE GEMM and CT reduce require supported aligned layout, dtype and rank.
 - GatherScatter/DMA descriptor attrs use byte count and byte stride, with non-negative static values.
 - relation/elementwise bool storage uses logical `i1`; physical byte size remains derived, not stored.
@@ -179,27 +180,27 @@ R3.2d verifier checks only instruction legality:
 
 ```mlir
 wafer.tile_region ... {
-  %a = wafer.alloc_tile
-      : !wafer.tile_buffer<tensor<128x64xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
-  %b = wafer.alloc_tile
-      : !wafer.tile_buffer<tensor<64x128xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
-  %c = wafer.alloc_tile
-      : !wafer.tile_buffer<tensor<128x128xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
+  %a = wafer.storage.alloc
+      : !wafer.storage<tensor<128x64xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
+  %b = wafer.storage.alloc
+      : !wafer.storage<tensor<64x128xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
+  %c = wafer.storage.alloc
+      : !wafer.storage<tensor<128x128xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
 
   wafer.instr.rdma %arg0 to %a {byte_count = 16384 : i64}
       : tensor<128x64xf16>
-     to !wafer.tile_buffer<tensor<128x64xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
+     to !wafer.storage<tensor<128x64xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
   wafer.instr.rdma %arg1 to %b {byte_count = 16384 : i64}
       : tensor<64x128xf16>
-     to !wafer.tile_buffer<tensor<64x128xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
+     to !wafer.storage<tensor<64x128xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
 
   wafer.instr.ne.gemm %a, %b into %c {m = 128 : i64, k = 64 : i64, n = 128 : i64}
-      : !wafer.tile_buffer<tensor<128x64xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>,
-        !wafer.tile_buffer<tensor<64x128xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
-    into !wafer.tile_buffer<tensor<128x128xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
+      : !wafer.storage<tensor<128x64xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>,
+        !wafer.storage<tensor<64x128xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
+    into !wafer.storage<tensor<128x128xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
 
   wafer.instr.wdma %c to %arg2 {byte_count = 32768 : i64}
-      : !wafer.tile_buffer<tensor<128x128xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
+      : !wafer.storage<tensor<128x128xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
      to tensor<128x128xf16>
 
   wafer.sync.local_drain

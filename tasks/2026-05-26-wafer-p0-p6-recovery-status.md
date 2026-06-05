@@ -48,7 +48,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - R0.2 已把源码 ownership 拆到 `Frontend`、`IR`、`Analysis`、`Transforms`、`Conversion` 和 `ABI`
   边界；R1.1 之后又把 `wafer` dialect 内部 ODS、op verifier 和 dialect tests 按 IR 层收口。
 - `WaferOps.td` 现在只作为 TableGen 聚合入口，具体 op 定义在 `include/Wafer/IR/{Tensor,Tile,Resource,Instr,Runtime,Debug}/*Ops.td`；
-  `WaferDialect.cpp` 只保留 dialect/attr/type/op 注册和 `TileBufferType` verifier。
+  `WaferDialect.cpp` 只保留 dialect/attr/type/op 注册和 `StorageType` verifier。
 - 历史 local integration gate 曾把 `wafer-opt` IR FileCheck 和 fixed manifest/C stub fixture 放在同一
   测试文件里；这些 fixed emitter 和测试拼接已删除，当前 integration 只保留 IR pipeline coverage。
 - 当前 local compile 还没有从 placed instruction-level IR 导出 C ABI emission metadata、
@@ -131,7 +131,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 当前实现：
 
 - 有 `WaferAttrs.td`、`WaferTypes.td`、`WaferInterfaces.td` 和 `WaferOps.td`，覆盖 target、
-  memory space、mem layout、placement、wait policy、elementwise/reduce kind、`!wafer.tile_buffer`
+  memory space、mem layout、placement、wait policy、elementwise/reduce kind、`!wafer.storage`
   以及 group/tile/layout/load/store/placement/ABI/compute/comm/sync/launch temporary ops。
 - 有 parser/printer/verifier 正负例；`WaferDialect.cpp` 实现多数 verifier。
 - 有 `WaferTilingInterface`、`WaferLayoutOpInterface`、
@@ -150,7 +150,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - Wafer dialect verifier 的孤立负例仍会使用 `builtin.unrealized_conversion_cast` 构造非法边界值；
   这些用例只能证明 verifier 形态。历史 R1.3 stage-connection gate 已删除；communication bridge
   的 visible cast 仍归 R6.2 清理。
-- 没有 placed instruction/storage memref/descriptor 层，因此 `!wafer.tile_buffer` 还没有按设计消失。
+- 没有 placed instruction/storage memref/descriptor 层，因此 `!wafer.storage` 还没有按设计消失。
 
 恢复任务：
 
@@ -277,7 +277,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - R3.3：恢复 tile_region materialization contract，只把 accepted group materialize 成
   `wafer.tile_region`。
 - R3.4：恢复 layout/SPM materialization gate，让 layout materialization 和 SPM allocation 由 effect、
-  liveness/range 和 tile buffer lifetime 驱动。
+  liveness/range 和 storage lifetime 驱动。
 - R3.5：恢复 DDR/resource demand gate，覆盖 external binding、workspace、resident constant、
   pool/domain、capacity/bandwidth demand。
 - R3.6：恢复 C ABI / packet emission gate，让 ABI 参数单位和 wait policy 从 placed
@@ -335,7 +335,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - compute 覆盖至少包括 batch/head GEMM、reduce max/sum、elementwise add/sub/mul/div/max/min/neg/
   recip/sqrt/rsqrt/exp、limited broadcast、mask-add 或 compare/select。
 - layout/SPM/DDR feasibility 要覆盖所有 accepted groups；constant/weight slice 要能追溯到
-  `ConstantLike` + `wafer.load_tile` / storage transform。
+  `ConstantLike` + `wafer.storage.load` / storage transform。
 - package/runtime metadata 要覆盖 block inputs/outputs、resident constants、workspace；当前无卡环境
   只能做 generated program compile，不能声称 device correctness。
 

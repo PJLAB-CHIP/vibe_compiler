@@ -192,7 +192,7 @@ physical `mem_layout` / constant storage encoding / external layout contract，�
 原始缺口（已由 layout 子设计修正）：
 
 - `2026-05-11` 只写 `SPM/layout metadata` 和 `SPM/layout planner`。
-- `2026-05-12` 只写 tile buffer、alignment/bank padding，没有定义 tensor semantic
+- `2026-05-12` 只写 storage、alignment/bank padding，没有定义 tensor semantic
   layout 和 SPM physical layout。
 - 上一轮 review 提到了 `Cx/NCx physical layout`，但还没有覆盖 `layout` /
   `mem_layout` 分层和 `inferlayout` / `infershape` 责任。
@@ -221,7 +221,7 @@ physical `mem_layout` / constant storage encoding / external layout contract，�
 ## 7. SPM planner 已由 SPM 子设计承接
 
 当前边界：`tasks/2026-05-21-wafer-spm-bufferization-design.md` 已经把 SPM range、reserved range、
-layout storage size、bool bitpack、liveness、allocation、failure feedback 和 tile buffer
+layout storage size、bool bitpack、liveness、allocation、failure feedback 和 storage
 storage realization 写成独立设计。`wafer.group` 只消费 feasibility 结果，不保存 offset。
 
 实现时仍需要落地：
@@ -489,7 +489,7 @@ Frontend program
 - Residual、bias、scale、RoPE 的 elementwise 部分可以走 structured tensor IR 到
   `wafer.compute.elementwise`。
 - RMSNorm / LayerNorm 和 softmax 的数学结构可以表达成 reduction + elementwise 的 staged tensor IR。
-- Weight / scale / bias / RoPE table 可以作为 `ConstantLike`，通过 `wafer.load_tile`、constant
+- Weight / scale / bias / RoPE table 可以作为 `ConstantLike`，通过 `wafer.storage.load`、constant
   storage transform 和 DDR resident/streaming policy 进入 device storage。
 - Layout materialization、SPM allocation、DDR demand、launch/runtime 和 C ABI 都有独立边界，不需要把
   transformer case 的某个调度结果写成架构字段。

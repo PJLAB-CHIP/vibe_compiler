@@ -23,34 +23,34 @@ bool isSPMMemRef(mlir::Type type) {
   return memorySpace && memorySpace.getValue() == wafer::MemorySpace::SPM;
 }
 
-bool isSPMTileBuffer(mlir::Type type) {
-  auto tileBufferType = mlir::dyn_cast<wafer::TileBufferType>(type);
-  if (!tileBufferType)
+bool isSPMStorage(mlir::Type type) {
+  auto storageType = mlir::dyn_cast<wafer::StorageType>(type);
+  if (!storageType)
     return false;
   auto memorySpace =
-      mlir::cast<wafer::MemorySpaceAttr>(tileBufferType.getMemorySpace());
+      mlir::cast<wafer::MemorySpaceAttr>(storageType.getMemorySpace());
   return memorySpace.getValue() == wafer::MemorySpace::SPM;
 }
 
-wafer::MemLayoutAttr getTileBufferLayout(wafer::TileBufferType type) {
+wafer::MemLayoutAttr getStorageLayout(wafer::StorageType type) {
   return mlir::cast<wafer::MemLayoutAttr>(type.getLayout());
 }
 
-wafer::MemorySpaceAttr getTileBufferMemorySpace(wafer::TileBufferType type) {
+wafer::MemorySpaceAttr getStorageMemorySpace(wafer::StorageType type) {
   return mlir::cast<wafer::MemorySpaceAttr>(type.getMemorySpace());
 }
 
-mlir::RankedTensorType getTileBufferTensorType(wafer::TileBufferType type) {
+mlir::RankedTensorType getStorageTensorType(wafer::StorageType type) {
   return mlir::cast<mlir::RankedTensorType>(type.getTensorType());
 }
 
-bool hasTileBufferLayout(wafer::TileBufferType type, wafer::MemLayout layout) {
-  return getTileBufferLayout(type).getValue() == layout;
+bool hasStorageLayout(wafer::StorageType type, wafer::MemLayout layout) {
+  return getStorageLayout(type).getValue() == layout;
 }
 
-bool hasTileBufferMemorySpace(wafer::TileBufferType type,
-                              wafer::MemorySpace memorySpace) {
-  return getTileBufferMemorySpace(type).getValue() == memorySpace;
+bool hasStorageMemorySpace(wafer::StorageType type,
+                           wafer::MemorySpace memorySpace) {
+  return getStorageMemorySpace(type).getValue() == memorySpace;
 }
 
 bool hasStaticMismatch(int64_t lhs, int64_t rhs) {
@@ -147,8 +147,8 @@ getCompactTensorByteSize(mlir::RankedTensorType tensorType) {
 }
 
 std::optional<int64_t> getCompactByteSize(mlir::Type type) {
-  if (auto tileBufferType = mlir::dyn_cast<TileBufferType>(type))
-    return getCompactTensorByteSize(getTileBufferTensorType(tileBufferType));
+  if (auto storageType = mlir::dyn_cast<StorageType>(type))
+    return getCompactTensorByteSize(getStorageTensorType(storageType));
   if (auto tensorType = mlir::dyn_cast<mlir::RankedTensorType>(type))
     return getCompactTensorByteSize(tensorType);
   return std::nullopt;
@@ -161,9 +161,9 @@ int64_t getCompactByteSizeOrUnknown(mlir::Type type) {
 
 void appendLayoutRequirement(
     llvm::SmallVectorImpl<wafer::WaferLayoutRequirement> &requirements,
-    wafer::WaferValueRole role, unsigned index, wafer::TileBufferType type) {
-  requirements.push_back({role, index, getTileBufferLayout(type).getValue(),
-                          getTileBufferMemorySpace(type).getValue()});
+    wafer::WaferValueRole role, unsigned index, wafer::StorageType type) {
+  requirements.push_back({role, index, getStorageLayout(type).getValue(),
+                          getStorageMemorySpace(type).getValue()});
 }
 
 void appendResourceEffect(
@@ -205,15 +205,15 @@ mlir::LogicalResult verifyLayoutRequirements(
       return op->emitOpError("layout interface returned an invalid value "
                              "reference");
 
-    auto tileBufferType = mlir::dyn_cast<TileBufferType>(valueType);
-    if (!tileBufferType)
+    auto storageType = mlir::dyn_cast<StorageType>(valueType);
+    if (!storageType)
       return op->emitOpError("layout interface requirements must refer to "
-                             "tile_buffer values");
+                             "storage values");
 
-    if (!hasTileBufferLayout(tileBufferType, requirement.layout))
+    if (!hasStorageLayout(storageType, requirement.layout))
       return op->emitOpError(
           "layout interface requirement does not match value mem_layout");
-    if (!hasTileBufferMemorySpace(tileBufferType, requirement.memorySpace))
+    if (!hasStorageMemorySpace(storageType, requirement.memorySpace))
       return op->emitOpError(
           "layout interface requirement does not match value memory_space");
   }
@@ -244,10 +244,10 @@ mlir::LogicalResult verifyCommP2P(mlir::Operation *op, mlir::Value buffer,
                                   mlir::IntegerAttr peer,
                                   mlir::IntegerAttr bytes,
                                   mlir::Type tokenType) {
-  auto tileBufferType = mlir::dyn_cast<TileBufferType>(buffer.getType());
-  if (!tileBufferType)
-    return op->emitOpError("comm p2p buffer must be a tile_buffer");
-  if (!hasTileBufferMemorySpace(tileBufferType, MemorySpace::SPM))
+  auto storageType = mlir::dyn_cast<StorageType>(buffer.getType());
+  if (!storageType)
+    return op->emitOpError("comm p2p buffer must be a storage");
+  if (!hasStorageMemorySpace(storageType, MemorySpace::SPM))
     return op->emitOpError("comm p2p buffer must use SPM memory space");
   if (!mlir::isa<mlir::async::TokenType>(tokenType))
     return op->emitOpError("comm p2p result must be an async token");
@@ -502,21 +502,21 @@ mlir::LogicalResult verifyElementwiseTileContract(mlir::Operation *op,
                                                   ComputeElementwiseKind kind,
                                                   mlir::ValueRange inputs,
                                                   mlir::Type resultType) {
-  auto resultTileType = mlir::dyn_cast<TileBufferType>(resultType);
-  if (!resultTileType)
-    return op->emitOpError("expects tile_buffer result");
+  auto resultStorageType = mlir::dyn_cast<StorageType>(resultType);
+  if (!resultStorageType)
+    return op->emitOpError("expects storage result");
 
   unsigned expectedArity = getElementwiseArity(kind);
   if (inputs.size() != expectedArity)
     return op->emitOpError("elementwise kind expects ")
            << expectedArity << " operand(s), got " << inputs.size();
 
-  if (!hasTileBufferMemorySpace(resultTileType, MemorySpace::SPM))
+  if (!hasStorageMemorySpace(resultStorageType, MemorySpace::SPM))
     return op->emitOpError("elementwise result must use SPM memory space");
-  if (!hasTileBufferLayout(resultTileType, MemLayout::Tensor))
+  if (!hasStorageLayout(resultStorageType, MemLayout::Tensor))
     return op->emitOpError("elementwise result must use tensor mem_layout");
 
-  mlir::RankedTensorType resultTensor = getTileBufferTensorType(resultTileType);
+  mlir::RankedTensorType resultTensor = getStorageTensorType(resultStorageType);
   mlir::ArrayAttr indexingMaps =
       op->getAttrOfType<mlir::ArrayAttr>("indexing_maps");
 
@@ -538,22 +538,22 @@ mlir::LogicalResult verifyElementwiseTileContract(mlir::Operation *op,
   }
 
   for (auto [index, input] : llvm::enumerate(inputs)) {
-    auto inputTileType = mlir::dyn_cast<TileBufferType>(input.getType());
-    if (!inputTileType)
-      return op->emitOpError("expects tile_buffer operands");
-    if (!hasTileBufferMemorySpace(inputTileType, MemorySpace::SPM))
+    auto inputStorageType = mlir::dyn_cast<StorageType>(input.getType());
+    if (!inputStorageType)
+      return op->emitOpError("expects storage operands");
+    if (!hasStorageMemorySpace(inputStorageType, MemorySpace::SPM))
       return op->emitOpError("elementwise operands must use SPM memory space");
-    if (!hasTileBufferLayout(inputTileType, MemLayout::Tensor))
+    if (!hasStorageLayout(inputStorageType, MemLayout::Tensor))
       return op->emitOpError("elementwise operands must use tensor mem_layout");
-    mlir::RankedTensorType inputTensor = getTileBufferTensorType(inputTileType);
+    mlir::RankedTensorType inputTensor = getStorageTensorType(inputStorageType);
     if (isRelationKind(kind)) {
       if (!resultTensor.getElementType().isInteger(1))
         return op->emitOpError("relation result element type must be i1");
       if (index > 0) {
-        auto firstInputType =
-            mlir::cast<TileBufferType>(inputs.front().getType());
+        auto firstInputStorageType =
+            mlir::cast<StorageType>(inputs.front().getType());
         mlir::RankedTensorType firstInputTensor =
-            getTileBufferTensorType(firstInputType);
+            getStorageTensorType(firstInputStorageType);
         if (inputTensor.getElementType() != firstInputTensor.getElementType())
           return op->emitOpError(
               "relation operand element types must match each other");
@@ -605,25 +605,25 @@ mlir::LogicalResult verifyElementwiseTileContract(mlir::Operation *op,
 mlir::LogicalResult verifyReduceTileContract(mlir::Operation *op,
                                              mlir::Value input,
                                              mlir::Type resultType) {
-  auto inputTileType = mlir::dyn_cast<TileBufferType>(input.getType());
-  if (!inputTileType)
-    return op->emitOpError("expects tile_buffer input");
-  auto resultTileType = mlir::dyn_cast<TileBufferType>(resultType);
-  if (!resultTileType)
-    return op->emitOpError("expects tile_buffer result");
+  auto inputStorageType = mlir::dyn_cast<StorageType>(input.getType());
+  if (!inputStorageType)
+    return op->emitOpError("expects storage input");
+  auto resultStorageType = mlir::dyn_cast<StorageType>(resultType);
+  if (!resultStorageType)
+    return op->emitOpError("expects storage result");
 
-  if (!hasTileBufferMemorySpace(inputTileType, MemorySpace::SPM) ||
-      !hasTileBufferMemorySpace(resultTileType, MemorySpace::SPM))
+  if (!hasStorageMemorySpace(inputStorageType, MemorySpace::SPM) ||
+      !hasStorageMemorySpace(resultStorageType, MemorySpace::SPM))
     return op->emitOpError("reduce operands/results must use SPM memory space");
 
-  mlir::RankedTensorType inputTensor = getTileBufferTensorType(inputTileType);
-  mlir::RankedTensorType resultTensor = getTileBufferTensorType(resultTileType);
+  mlir::RankedTensorType inputTensor = getStorageTensorType(inputStorageType);
+  mlir::RankedTensorType resultTensor = getStorageTensorType(resultStorageType);
   MemLayout expectedInputLayout =
       inputTensor.getRank() > 2 ? MemLayout::NCx : MemLayout::Cx;
   MemLayout expectedResultLayout =
       resultTensor.getRank() > 2 ? MemLayout::NCx : MemLayout::Cx;
-  if (!hasTileBufferLayout(inputTileType, expectedInputLayout) ||
-      !hasTileBufferLayout(resultTileType, expectedResultLayout)) {
+  if (!hasStorageLayout(inputStorageType, expectedInputLayout) ||
+      !hasStorageLayout(resultStorageType, expectedResultLayout)) {
     if (inputTensor.getRank() > 2 || resultTensor.getRank() > 2)
       return op->emitOpError(
           "reduce rank > 2 operands/results must use ncx mem_layout");

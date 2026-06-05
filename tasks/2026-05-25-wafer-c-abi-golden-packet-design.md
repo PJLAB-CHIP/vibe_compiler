@@ -41,7 +41,7 @@
 
 ```text
 placed instruction-level wafer.tile_region
-  + placed !wafer.tile_buffer / memref / descriptor values
+  + placed !wafer.storage / memref / descriptor values
   + wafer.instr.* / move / comm / sync ops
 ```
 
@@ -65,7 +65,7 @@ LLVM dialect / C call sequence or packet emission
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  R3.2e/R3.4 产出的 placed instruction-level `wafer.instr.*` IR、placed `!wafer.tile_buffer` /
+  R3.2e/R3.4 产出的 placed instruction-level `wafer.instr.*` IR、placed `!wafer.storage` /
   memref / descriptor value、R3.5 DDR/resource binding facts 和 launch signature。
 - Current stage responsibility:
   从 placed instruction-level IR 发射 `wafer_*` C ABI call、LLVM call 或 packet builder 输入，
@@ -129,7 +129,7 @@ V0 family：
 调用 public Tsm wrapper、Kcore runtime helper 或未来 native helper。
 
 R3.6 主线不要求专门的 `wafer.abi.*` IR 层。codegen 可以直接从 placed `wafer.instr.*` 和
-placed `!wafer.tile_buffer` / descriptor 发射 `wafer_*` C shim 调用、LLVM call 或 packet builder 输入。
+placed `!wafer.storage` / descriptor 发射 `wafer_*` C shim 调用、LLVM call 或 packet builder 输入。
 如果保留 `wafer.abi.rdma`、`wafer.abi.wdma`、`wafer.abi.gemm`、`wafer.abi.elementwise`、
 `wafer.abi.reduce`、`wafer.abi.dte_*` 这类 op，它们只作为 very-late debug/test dump 或 emission
 helper，不能作为主线架构层，也不能承载 placement、layout 或 instruction selection 决策。

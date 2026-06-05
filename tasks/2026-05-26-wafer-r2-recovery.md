@@ -101,7 +101,7 @@ parameter name 只用于定位 exporter program 中的 parameter payload，不�
   `rank_group`，用于证明 rank-group metadata 可被 communication verifier 和旧 ring lowering 消费。
   该入口和旧 ring lowering pass 已从主线路径删除，不能作为 group/tiling 前的 collective 表示恢复。
 - 主线必须拆成 StableHLO -> Wafer LinalgExt-style tensor collective，以及 tiled tensor collective
-  + SPM tile buffers -> `wafer.comm` 两层。`wafer.comm` 只能在 tile_region / SPM materialization /
+  + SPM storage values -> `wafer.comm` 两层。`wafer.comm` 只能在 tile_region / SPM materialization /
   placement 明确后 materialize。
 
 历史 bridge 覆盖状态：
@@ -113,7 +113,7 @@ parameter name 只用于定位 exporter program 中的 parameter payload，不�
   P2.S1 已用真实 PyTorch/XLA mark program 和 Wafer Shardy propagation gate 收回 pre-SPMD stage。
   Python post-SPMD export 入口已删除，不能定义后续主线入口。R2.2 只留下 program dialect/metadata
   bridge 的历史证据和后段 communication fixture。
-- StableHLO collective 到 tile buffer 的 visible `unrealized_conversion_cast` 仍属于 R6.2 缺口。
+- StableHLO collective 到 storage 的 visible `unrealized_conversion_cast` 仍属于 R6.2 缺口。
 
 ## R2.3 Local Compute Normalization Coverage Status
 

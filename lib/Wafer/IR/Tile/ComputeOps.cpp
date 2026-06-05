@@ -10,15 +10,15 @@ using namespace wafer;
 using namespace wafer::detail;
 
 mlir::LogicalResult ComputeFillOp::verify() {
-  auto destType = mlir::dyn_cast<TileBufferType>(getDest().getType());
+  auto destType = mlir::dyn_cast<StorageType>(getDest().getType());
   if (!destType)
-    return emitOpError("expects tile_buffer destination");
-  if (!hasTileBufferMemorySpace(destType, MemorySpace::SPM))
+    return emitOpError("expects storage destination");
+  if (!hasStorageMemorySpace(destType, MemorySpace::SPM))
     return emitOpError("fill destination must use SPM memory space");
-  if (!hasTileBufferLayout(destType, MemLayout::Tensor))
+  if (!hasStorageLayout(destType, MemLayout::Tensor))
     return emitOpError("fill destination must use tensor mem_layout");
 
-  mlir::RankedTensorType destTensor = getTileBufferTensorType(destType);
+  mlir::RankedTensorType destTensor = getStorageTensorType(destType);
   if (getValue().getType() != destTensor.getElementType())
     return emitOpError(
         "fill value type must match destination tensor element type");
@@ -27,9 +27,8 @@ mlir::LogicalResult ComputeFillOp::verify() {
 
 void ComputeFillOp::collectWaferLayoutRequirements(
     llvm::SmallVectorImpl<WaferLayoutRequirement> &requirements) {
-  if (auto destType = mlir::dyn_cast<TileBufferType>(getDest().getType()))
-    appendLayoutRequirement(requirements, WaferValueRole::Operand, 0,
-                            destType);
+  if (auto destType = mlir::dyn_cast<StorageType>(getDest().getType()))
+    appendLayoutRequirement(requirements, WaferValueRole::Operand, 0, destType);
 }
 
 mlir::LogicalResult ComputeFillOp::verifyWaferLayoutContract() {
@@ -55,22 +54,22 @@ mlir::LogicalResult ComputeFillOp::verifyWaferResourceEffectContract() {
 }
 
 mlir::LogicalResult ComputeGemmOp::verify() {
-  auto lhsType = mlir::dyn_cast<TileBufferType>(getLhs().getType());
-  auto rhsType = mlir::dyn_cast<TileBufferType>(getRhs().getType());
-  auto resultType = mlir::dyn_cast<TileBufferType>(getResult().getType());
+  auto lhsType = mlir::dyn_cast<StorageType>(getLhs().getType());
+  auto rhsType = mlir::dyn_cast<StorageType>(getRhs().getType());
+  auto resultType = mlir::dyn_cast<StorageType>(getResult().getType());
   if (!lhsType || !rhsType || !resultType)
-    return emitOpError("expects tile_buffer operands and result");
+    return emitOpError("expects storage operands and result");
 
-  for (TileBufferType type : {lhsType, rhsType, resultType}) {
-    if (!hasTileBufferMemorySpace(type, MemorySpace::SPM))
-      return emitOpError("gemm tile buffers must use SPM memory space");
-    if (!hasTileBufferLayout(type, MemLayout::Cx))
-      return emitOpError("gemm tile buffers must use cx mem_layout");
+  for (StorageType type : {lhsType, rhsType, resultType}) {
+    if (!hasStorageMemorySpace(type, MemorySpace::SPM))
+      return emitOpError("gemm storage values must use SPM memory space");
+    if (!hasStorageLayout(type, MemLayout::Cx))
+      return emitOpError("gemm storage values must use cx mem_layout");
   }
 
-  mlir::RankedTensorType lhsTensor = getTileBufferTensorType(lhsType);
-  mlir::RankedTensorType rhsTensor = getTileBufferTensorType(rhsType);
-  mlir::RankedTensorType resultTensor = getTileBufferTensorType(resultType);
+  mlir::RankedTensorType lhsTensor = getStorageTensorType(lhsType);
+  mlir::RankedTensorType rhsTensor = getStorageTensorType(rhsType);
+  mlir::RankedTensorType resultTensor = getStorageTensorType(resultType);
 
   if (lhsTensor.getElementType() != rhsTensor.getElementType() ||
       lhsTensor.getElementType() != resultTensor.getElementType())
@@ -97,11 +96,11 @@ mlir::LogicalResult ComputeGemmOp::verify() {
 
 void ComputeGemmOp::collectWaferLayoutRequirements(
     llvm::SmallVectorImpl<WaferLayoutRequirement> &requirements) {
-  if (auto lhsType = mlir::dyn_cast<TileBufferType>(getLhs().getType()))
+  if (auto lhsType = mlir::dyn_cast<StorageType>(getLhs().getType()))
     appendLayoutRequirement(requirements, WaferValueRole::Operand, 0, lhsType);
-  if (auto rhsType = mlir::dyn_cast<TileBufferType>(getRhs().getType()))
+  if (auto rhsType = mlir::dyn_cast<StorageType>(getRhs().getType()))
     appendLayoutRequirement(requirements, WaferValueRole::Operand, 1, rhsType);
-  if (auto resultType = mlir::dyn_cast<TileBufferType>(getResult().getType()))
+  if (auto resultType = mlir::dyn_cast<StorageType>(getResult().getType()))
     appendLayoutRequirement(requirements, WaferValueRole::Result, 0,
                             resultType);
 }
@@ -142,11 +141,11 @@ mlir::LogicalResult ComputeElementwiseOp::verify() {
 void ComputeElementwiseOp::collectWaferLayoutRequirements(
     llvm::SmallVectorImpl<WaferLayoutRequirement> &requirements) {
   for (auto [index, value] : llvm::enumerate(getInputs())) {
-    if (auto inputType = mlir::dyn_cast<TileBufferType>(value.getType()))
+    if (auto inputType = mlir::dyn_cast<StorageType>(value.getType()))
       appendLayoutRequirement(requirements, WaferValueRole::Operand, index,
                               inputType);
   }
-  if (auto resultType = mlir::dyn_cast<TileBufferType>(getResult().getType()))
+  if (auto resultType = mlir::dyn_cast<StorageType>(getResult().getType()))
     appendLayoutRequirement(requirements, WaferValueRole::Result, 0,
                             resultType);
 }
@@ -185,10 +184,10 @@ mlir::LogicalResult ComputeReduceOp::verify() {
 
 void ComputeReduceOp::collectWaferLayoutRequirements(
     llvm::SmallVectorImpl<WaferLayoutRequirement> &requirements) {
-  if (auto inputType = mlir::dyn_cast<TileBufferType>(getInput().getType()))
+  if (auto inputType = mlir::dyn_cast<StorageType>(getInput().getType()))
     appendLayoutRequirement(requirements, WaferValueRole::Operand, 0,
                             inputType);
-  if (auto resultType = mlir::dyn_cast<TileBufferType>(getResult().getType()))
+  if (auto resultType = mlir::dyn_cast<StorageType>(getResult().getType()))
     appendLayoutRequirement(requirements, WaferValueRole::Result, 0,
                             resultType);
 }

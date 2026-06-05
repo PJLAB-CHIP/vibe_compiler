@@ -29,7 +29,7 @@ package format；这些文档只能把 DDR feasibility 作为 cost/legality feed
   launch/package metadata。
 - 给 group/layout/SPM planner 一个可重算的 DDR demand / bandwidth / range 输入，而不是只看
   SPM capacity。
-- 给 `wafer.load_tile` / `wafer.store_tile`、D2D/P2P、constant load、launch ABI
+- 给 `wafer.storage.load` / `wafer.storage.store`、D2D/P2P、constant load、launch ABI
   一个一致的 source/destination descriptor contract。
 - 让 capacity、largest contiguous range、pool、alignment、read-only、host-visible、lifetime、
   alias 和 bandwidth pressure 都能进入 verifier 或 runtime allocation failure diagnostic。
@@ -155,9 +155,9 @@ DDR 相关事实按 IR 层分布：
 | --- | --- | --- |
 | tensor / linalg / group | tensor shape、dtype、semantic layout、group boundary | DDR pool、physical address、BO handle、runtime allocation |
 | `wafer.tile_region` | `#ddr` / `#spm` memory space、load/store boundary、layout materialization、movement/effect | raw BO address、driver handle、unaccepted allocation trace |
-| accepted layout / buffer layer | `!wafer.tile_buffer<..., mem_layout, #ddr/#spm>` 或等价 buffer abstraction | host malloc pointer、runtime-private pool internals |
+| accepted layout / buffer layer | `!wafer.storage<..., mem_layout, #ddr/#spm>` 或等价 storage abstraction | host malloc pointer、runtime-private pool internals |
 | DDR resource planning | `DdrBufferDemand`、external binding、workspace BO demand、constant residency、pool alternatives、lifetime、bandwidth | tensor math semantics、SPM offset search |
-| placed instruction/storage IR | `memref<..., memory_space = #ddr>`、descriptor、workspace base+offset、movement ops | unresolved `tile_buffer` |
+| placed instruction/storage IR | `memref<..., memory_space = #ddr>`、descriptor、workspace base+offset、movement ops | unresolved `storage` |
 | launch / package / runtime | BO allocation/import/query、constant serialization、physical address binding、completion/fence | group formation 或 layout search 的内部 trace |
 
 `wafer.group` 可以依赖 DDR feasibility 结论，但不携带 DDR plan。DDR plan 要么进入更低层 IR
@@ -185,7 +185,7 @@ V0 默认策略：
   host-visible BO，也可以由 runtime 负责 H2D/D2H staging；compiler 只依赖 `#ddr` descriptor
   contract，不假设 host 原始指针就是 device DDR。
 - Weight / constant 先是 `ConstantLike` tensor value。若需要目标相关排布，由显式 constant
-  storage transform / `wafer.load_tile` lowering 直接生成 packed backing data 或 resident DDR
+  storage transform / `wafer.storage.load` lowering 直接生成 packed backing data 或 resident DDR
   constant；不要把 weight 特殊写成另一种 physical layout。
 - Temporary、inter-group tensor 和 layout/communication staging 优先进入 compiler-managed
   workspace BO，由 compiler 在 BO 内 suballocate offset，以便 verifier 能证明 range、lifetime
@@ -224,9 +224,9 @@ DdrBufferDemand {
 来源：
 
 - function / launch boundary：external input/output binding demand。
-- `wafer.load_tile`：DDR source read range、layout、stride、bandwidth demand；如果 source 是
+- `wafer.storage.load`：DDR source read range、layout、stride、bandwidth demand；如果 source 是
   `ConstantLike`，它仍产生 read-only constant demand。
-- `wafer.store_tile`：DDR destination write range、layout、stride、writeback visibility。
+- `wafer.storage.store`：DDR destination write range、layout、stride、writeback visibility。
 - `arith.constant` / `ConstantLike` lowering：constant size、storage transform、read-only residency。
 - inter-group value escape：workspace or explicit output demand。
 - `wafer.comm.*` / DTE op：D2D/P2P/DDR2DDR source/destination demand 和 byte count。
@@ -235,7 +235,7 @@ DdrBufferDemand {
 如果一个 demand 只能通过 name 或示例 case 恢复，说明 IR contract 不够，应该扩 op/type/interface，
 不能让 DDR planner 猜。
 
-R1.2 当前实现已给 `wafer.load_tile`、`wafer.store_tile`、`wafer.ddr.external_binding` 和
+R1.2 当前实现已给 `wafer.storage.load`、`wafer.storage.store`、`wafer.ddr.external_binding` 和
 `wafer.comm.*` 接入 `WaferResourceEffectInterface`，可查询 DDR read/write、SPM 对端、byte count
 和 movement/communication issue。R3.2d/R3.6 后续需要让 placed `wafer.instr.*` / C ABI emission
 复用同一 resource-effect 合同。完整的 `DdrBufferDemand`、pool/domain、lifetime、range 和
@@ -267,7 +267,7 @@ Verifier / runtime validation 失败必须暴露为 launch-time diagnostic，不
 或错误 pool。
 
 当前 V0 compiler 用 `wafer.ddr.external_binding` 作为最小 external binding demand
-materialization。该 op 由 `wafer.tile_region` 内的 `wafer.load_tile` / `wafer.store_tile` boundary
+materialization。该 op 由 `wafer.tile_region` 内的 `wafer.storage.load` / `wafer.storage.store` boundary
 use-def 推导，记录 input/output kind、compact tensor byte size、required alignment、read-only 和
 host-visible policy，供后续 launch/runtime package 层消费。它不记录 DDR physical address、BO
 handle、pool/domain 选择、workspace offset 或 allocation/search trace；这些事实仍属于 runtime
@@ -289,8 +289,8 @@ Constant value 本身不是 `#ddr` runtime buffer。只有当 constant 被加载
 read-only，可以跨 launch cache，但 cache key、eviction 和 sharing 属于 runtime policy。
 
 constant 不是 group external input，也不由 launch caller 提供；但它不能被视为隐式 SPM resident。
-每个 tile-region use 都必须经过 `wafer.load_tile` 或等价 load source，最终从 device-addressable
-storage 读入 tile buffer。因此 DDR planner 必须统计：
+每个 tile-region use 都必须经过 `wafer.storage.load` 或等价 load source，最终从 device-addressable
+storage 读入 storage。因此 DDR planner 必须统计：
 
 - constant full logical shape、dtype、element count 和 current backing data/resource。
 - accepted tile shape、tile slice / access range、consumer indexing map 和 reuse count。
@@ -301,7 +301,7 @@ storage 读入 tile buffer。因此 DDR planner 必须统计：
 #### 6.2.1 Weight / Constant Slicing
 
 Weight 切分由 consumer op 的 tiling relation 推出，不由 DDR planner 单独发明。DDR planner 看到的是
-已经在 `wafer.tile_region` 中形成的 constant `wafer.load_tile` uses：
+已经在 `wafer.tile_region` 中形成的 constant `wafer.storage.load` uses：
 
 - logical slice：由 accepted tile shape、op indexing map / tiling interface 和 load indices 推导。
 - storage chunk：为满足 layout、reuse、capacity 或 bandwidth 而选择的 backing data 粒度。
@@ -323,9 +323,9 @@ tiling planner，而不是在 DDR planner 内部隐式改变 compute split。
 
 如果原始 constant backing data 与 selected consumer layout 不兼容，合法 repair 只有三类：
 
-- 在 accepted tile/layout 之后做 compile-time constant storage transform，生成与 `wafer.load_tile`
+- 在 accepted tile/layout 之后做 compile-time constant storage transform，生成与 `wafer.storage.load`
   result layout 兼容的 backing data，并把它作为 read-only constant demand 交给 DDR planner。
-- 从 raw compact backing data load 到 compact tile buffer，再插入 `wafer.layout.materialize` 到 consumer
+- 从 raw compact backing data load 到 compact storage，再插入 `wafer.layout.materialize` 到 consumer
   需要的 layout；这会增加 SPM temp / movement / bandwidth cost。
 - 若两种方案都因 SPM、DDR capacity、alignment、largest contiguous range 或 bandwidth 失败，返回
   group planner 调整 tile shape、constant residency policy 或 group boundary。
@@ -520,12 +520,12 @@ lifetime event 和 movement op contract 对齐。
     : !wafer.ddr_workspace<#ddr> -> !wafer.buffer<tensor<...xf16>, #tensor, #ddr>
 
 // Tile load and store use unified memory spaces.
-%tile = wafer.load_tile %arg0_ddr[%m, %k]
+%tile = wafer.storage.load %arg0_ddr[%m, %k]
     : !wafer.buffer<tensor<1024x4096xf16>, #tensor, #ddr>
-   -> !wafer.tile_buffer<64x256xf16, #tensor, #spm>
+   -> !wafer.storage<64x256xf16, #tensor, #spm>
 
-wafer.store_tile %out_tile, %out_ddr[%m, %n]
-    : !wafer.tile_buffer<64x64xf16, #tensor, #spm>,
+wafer.storage.store %out_tile, %out_ddr[%m, %n]
+    : !wafer.storage<64x64xf16, #tensor, #spm>,
       !wafer.buffer<tensor<1024x1024xf16>, #tensor, #ddr>
 ```
 
@@ -577,14 +577,14 @@ DDR verifier 至少检查：
 | --- | --- |
 | layout / compute / comm lowering | 生成 `#ddr` load/store/comm demand，保持 use-def 和 effect |
 | DDR resource planning | external binding、constant residency、workspace suballocation、requirement summary |
-| storage realization | 把 DDR buffer abstraction 降成 `memref #ddr`、descriptor 或 workspace base+offset |
+| storage realization | 把 DDR storage abstraction 降成 `memref #ddr`、descriptor 或 workspace base+offset |
 | runtime/package lowering | BO alloc/import/query/free、constant serialization/loading、launch metadata、fence |
 | instruction lowering | RDMA/WDMA/DTE descriptor、byte stride、iteration、end range、direction validation |
 | verifier | memory_space、pool/domain、range、alignment、lifetime、host visibility、completion |
 
 Lowering 到 LLVM 时应尽量复用 MLIR `memref` lowering 能表达的部分。目标 runtime handle、
 physical address query、BO pool/domain 和 descriptor struct 通过 target-specific conversion
-进入 LLVM dialect / runtime call；不要让高层 `tile_buffer` 或 package-only metadata 直接漏到 LLVM。
+进入 LLVM dialect / runtime call；不要让高层 `storage` 或 package-only metadata 直接漏到 LLVM。
 
 ## 13. Failure Feedback and Repairs
 
@@ -623,15 +623,15 @@ runtime boundary 才进入 IR 或 package metadata。
 
 1. Launch binding 产生 `%input_ddr` 和 `%out0_ddr` external contract。它们是 `#ddr`，
    默认 `#ddr` compact external layout，但实际 BO 由 runtime import/allocate。
-2. `%weight_const` 不是 group external input，但它在 tile-region 中仍通过 `wafer.load_tile`
+2. `%weight_const` 不是 group external input，但它在 tile-region 中仍通过 `wafer.storage.load`
    读入。Op tiling interface 从 consumer tile 推出 weight logical slice。Constant storage transform /
    load lowering 决定它使用 raw compact backing data、whole transformed backing data，还是按 load
    slice / coalesced chunk 生成 transformed backing data。若选择 resident constant，DDR planner
    创建 read-only resident `#ddr` demand；若选择 streaming，DDR planner 统计每个 tile slice 的
    read range 和 bandwidth。
-3. Layout planner 在 `wafer.tile_region` 中为 compute operand 插入 `wafer.load_tile`，source
-   是 `%input_ddr` / `%weight_ddr`，destination 是 `#spm` tile buffer。
-4. Group output 0 通过 `wafer.store_tile` 写 `%out0_ddr`，需要 completion fence 后 host 才能观察。
+3. Layout planner 在 `wafer.tile_region` 中为 compute operand 插入 `wafer.storage.load`，source
+   是 `%input_ddr` / `%weight_ddr`，destination 是 `#spm` storage。
+4. Group output 0 通过 `wafer.storage.store` 写 `%out0_ddr`，需要 completion fence 后 host 才能观察。
 5. Group output 1 没有 host-visible boundary，DDR planner 可以把它放入 compiler workspace slice，
    下游 group 再从该 slice load。
 6. SPM allocation 只分配 tile-local input/psum/output/materialization temp；DDR planner 另外统计

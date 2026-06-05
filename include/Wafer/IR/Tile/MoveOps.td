@@ -15,18 +15,18 @@ def Wafer_MoveExtractSliceOp : Wafer_MoveOp<"move.extract_slice"> {
   let summary = "tile-local explicit slice extraction movement";
   let description = [{
     `wafer.move.extract_slice` copies a statically described slice from an SPM
-    tile buffer into another SPM tile buffer. It is explicit movement, not an
+    storage into another SPM storage. It is explicit movement, not an
     aliasing view, so SPM allocation and resource planning can see the read
     and write.
   }];
 
   let arguments = (ins
-    Wafer_AnyTileBuffer:$source,
+    Wafer_AnyStorage:$source,
     DenseI64ArrayAttr:$offsets,
     DenseI64ArrayAttr:$sizes,
     DenseI64ArrayAttr:$strides
   );
-  let results = (outs Wafer_AnyTileBuffer:$result);
+  let results = (outs Wafer_AnyStorage:$result);
   let hasVerifier = 1;
   let assemblyFormat =
       "$source attr-dict `:` type($source) `->` type($result)";
@@ -35,19 +35,19 @@ def Wafer_MoveExtractSliceOp : Wafer_MoveOp<"move.extract_slice"> {
 def Wafer_MoveInsertSliceOp : Wafer_MoveOp<"move.insert_slice"> {
   let summary = "tile-local explicit slice insertion movement";
   let description = [{
-    `wafer.move.insert_slice` copies a source tile buffer into a statically
-    described slice of a destination tile buffer and returns the updated tile
+    `wafer.move.insert_slice` copies a source storage into a statically
+    described slice of a destination storage and returns the updated tile
     buffer value.
   }];
 
   let arguments = (ins
-    Wafer_AnyTileBuffer:$source,
-    Wafer_AnyTileBuffer:$dest,
+    Wafer_AnyStorage:$source,
+    Wafer_AnyStorage:$dest,
     DenseI64ArrayAttr:$offsets,
     DenseI64ArrayAttr:$sizes,
     DenseI64ArrayAttr:$strides
   );
-  let results = (outs Wafer_AnyTileBuffer:$result);
+  let results = (outs Wafer_AnyStorage:$result);
   let hasVerifier = 1;
   let assemblyFormat =
       "$source `into` $dest attr-dict `:` type($source) `into` type($dest) `->` type($result)";
@@ -55,8 +55,8 @@ def Wafer_MoveInsertSliceOp : Wafer_MoveOp<"move.insert_slice"> {
 
 def Wafer_MoveCopyOp : Wafer_MoveOp<"move.copy"> {
   let summary = "tile-local explicit same-shape copy movement";
-  let arguments = (ins Wafer_AnyTileBuffer:$source);
-  let results = (outs Wafer_AnyTileBuffer:$result);
+  let arguments = (ins Wafer_AnyStorage:$source);
+  let results = (outs Wafer_AnyStorage:$result);
   let hasVerifier = 1;
   let assemblyFormat = "$source attr-dict `:` type($source) `->` type($result)";
 }
@@ -64,10 +64,10 @@ def Wafer_MoveCopyOp : Wafer_MoveOp<"move.copy"> {
 def Wafer_MoveTransposeOp : Wafer_MoveOp<"move.transpose"> {
   let summary = "tile-local explicit transpose movement";
   let arguments = (ins
-    Wafer_AnyTileBuffer:$source,
+    Wafer_AnyStorage:$source,
     DenseI64ArrayAttr:$permutation
   );
-  let results = (outs Wafer_AnyTileBuffer:$result);
+  let results = (outs Wafer_AnyStorage:$result);
   let hasVerifier = 1;
   let assemblyFormat =
       "$source attr-dict `:` type($source) `->` type($result)";
@@ -76,10 +76,10 @@ def Wafer_MoveTransposeOp : Wafer_MoveOp<"move.transpose"> {
 def Wafer_MoveBroadcastOp : Wafer_MoveOp<"move.broadcast"> {
   let summary = "tile-local explicit broadcast movement";
   let arguments = (ins
-    Wafer_AnyTileBuffer:$source,
+    Wafer_AnyStorage:$source,
     DenseI64ArrayAttr:$dimensions
   );
-  let results = (outs Wafer_AnyTileBuffer:$result);
+  let results = (outs Wafer_AnyStorage:$result);
   let hasVerifier = 1;
   let assemblyFormat =
       "$source attr-dict `:` type($source) `->` type($result)";

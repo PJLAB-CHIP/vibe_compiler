@@ -5,7 +5,7 @@ module {
     %0 = wafer.abi.rdma <issue_only> %input
         {bytes = 8 : i64}
         : tensor<4xf32>
-       -> !wafer.tile_buffer<tensor<4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
+       -> !wafer.storage<tensor<4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
     return
   }
 }
