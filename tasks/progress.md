@@ -57,12 +57,12 @@ PyTorch/XLA StableHLO Wafer program directory
 | R3.2a | done | `2026-05-12-wafer-group-design.md` 10.1-10.2 | R3.1 logical `wafer.group` body | `GroupTilingDemand` analysis result；覆盖 boundary/result tile facts、per-op slice、iterator、accumulator/reduction dims、collective demand 和 unsupported-op failure |
 | R3.2b | done | `2026-05-21-wafer-layout-materialization-design.md` 3.1.1 | R3.2a `GroupTilingDemand` facts + group SSA use-def | `GroupLayoutPlan` analysis result；覆盖 boundary layout、op layout constraints、broadcast relation、materialization cut/result demand 和 failure forwarding；不修改 IR |
 | R3.2c | done | `2026-05-25-wafer-tile-region-design.md` 2.1-2.2 | R3.1 group + R3.2a demand + R3.2b layout plan | MLIR DialectConversion 驱动的 `wafer-convert-group-to-tile-region` pass 和同源 scratch/dump lowering builder；输出 `wafer.tile_region` IR，覆盖 load/store、`wafer.storage.alloc`、layout materialization、`wafer.compute.fill/gemm/elementwise/reduce`、`wafer.move.*` 和 `wafer.view.reshape`；硬件 V0 无承载或缺 placement/local-rank facts 时结构化 failure；不做 SPM offset，不把 tile-region IR 当成 R3.3 accepted materialization |
-| R3.2d | active | `2026-06-05-wafer-instruction-ir-design.md` | R3.2c target-abstract `wafer.tile_region` IR | 设计已收口；实现未完成。目标输出是在现有 `!wafer.storage` graph 上生成 instruction-level `wafer.instr.*`，覆盖 CT/NE/TDMA/RDMA/WDMA effect/queue contract；不新增第二套 storage/buffer IR、不做 SPM offset、不生成 ABI call |
+| R3.2d | active | `2026-06-05-wafer-instruction-ir-design.md` | R3.2c target-abstract `wafer.tile_region` IR | 实现级设计已收口；实现未完成。目标输出是在现有 `!wafer.storage` graph 上生成 instruction-level `wafer.instr.*`，覆盖 CT/NE/TDMA/RDMA/WDMA op contract、descriptor attrs、effect/queue contract 和 structured failure；不新增第二套 storage/buffer IR、不做 SPM offset、不生成 ABI call |
 
 ## 当前状态
 
 当前 active task 是 **R3.2d Wafer instruction legalization / selection on tile-region IR**。
-R3.2d 的 IR 设计主文档是 `tasks/2026-06-05-wafer-instruction-ir-design.md`；当前状态是设计已收口、
+R3.2d 的 IR 设计主文档是 `tasks/2026-06-05-wafer-instruction-ir-design.md`；当前状态是实现级设计已收口、
 实现未完成。
 
 R3.2d 可以消费 R3.2c 的 `wafer.tile_region` IR。当前边界是：
@@ -81,7 +81,7 @@ R3.2d 可以消费 R3.2c 的 `wafer.tile_region` IR。当前边界是：
 
 | ID | 状态 | 输入 / 输出边界 | 完成 gate |
 | --- | --- | --- | --- |
-| R3.2d | active | 输入：R3.2c target-abstract `wafer.tile_region` IR；输出：复用 `!wafer.storage` 的 instruction-level `wafer.instr.*` IR 或结构化失败 | 按 `2026-06-05-wafer-instruction-ir-design.md` 实现 CT/NE/TDMA/RDMA/WDMA instruction ops、instruction interface、verifier 和 DialectConversion；为 load/store、layout materialize、compute.gemm/reduce/elementwise、move.* 选择硬件指令形态；IR 显式暴露 queue family、read/write/issue effects、descriptor attrs 和 alias/view；不新增第二套 storage/buffer IR、不做 SPM offset、不生成 ABI call |
+| R3.2d | active | 输入：R3.2c target-abstract `wafer.tile_region` IR；输出：复用 `!wafer.storage` 的 instruction-level `wafer.instr.*` IR 或结构化失败 | 按 `2026-06-05-wafer-instruction-ir-design.md` 实现 RDMA/WDMA/TDMA gather_scatter、CT fill/elementwise/reduce/convert、NE GEMM instruction ops、instruction interface、verifier 和 DialectConversion；为 load/store、layout materialize、compute.gemm/reduce/elementwise、move.* 选择硬件指令形态；IR 显式暴露 queue family、read/write/issue effects、descriptor attrs 和 alias/view；不新增第二套 storage/buffer IR、不做 SPM offset、不生成 ABI call |
 | R3.2e | pending | 输入：R3.2d instruction-level IR with unplaced `!wafer.storage`；输出：同一 instruction-level IR with placed SPM storage values 或结构化失败 | 真实 SPM window placement：alignment、layout padding、scratch/psum/temp、materialization temp、communication staging、lifetime overlap、range/end-address/bank span/conflict 都参与 |
 | R3.2f | pending | 输入：R3.2e placed instruction-level IR + DDR boundary facts；输出：DDR/resource legality result 和 movement/compute resource validation | 覆盖 external/workspace/resident-constant、pool/domain/capacity/bandwidth/range demand；不能用 manifest fixture 替代；不能回头改变 instruction semantics |
 | R3.2g | pending | 输入：R3.1 group + R3.2a-f planning results；输出：accepted/rejected/split group planning decision | closed-loop 搜索 group boundary、traversal、tile shape、layout、instruction selection、SPM/DDR/resource plan；未接受 plan 不落 IR；multi-root packing 只作为可证明兼容时的可选策略 |

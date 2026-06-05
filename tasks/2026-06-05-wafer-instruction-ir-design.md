@@ -2,7 +2,7 @@
 
 日期：2026-06-05
 
-状态：R3.2d 设计收口；2026-06-05 统一 storage 命名；实现未完成
+状态：R3.2d 实现级设计收口；2026-06-05 统一 storage 命名；实现未完成
 
 本文定义 R3.2d 的 instruction-level Wafer IR。核心结论：
 
@@ -111,20 +111,30 @@ R3.2d 要么展开成一条或多条 `wafer.instr.tdma.gather_scatter`，要么�
 `TsmExecute` 普通 issue path 只覆盖 CT/NE/RDMA/WDMA/TDMA。DTE、CSR、SCALAR 走
 `wafer.comm`、runtime/MMIO 或 sync 边界，不放进 `wafer.instr.*`。
 
-## 4. Operand Model
+## 4. Operand And Result Model
 
-instruction op 直接读写 `!wafer.storage`：
+instruction op 直接读写 `!wafer.storage`，但 **instruction op 本身不产生 storage result**。
+凡是 target-abstract op 原来返回 storage 的地方，R3.2d 先创建新的 `wafer.storage.alloc`，
+再生成写入该 storage 的 instruction op，并用 alloc result 替换原 op result 的 uses。
 
-- source storage 是 operand。
-- destination storage 也是 operand。
-- 新 result/temp/psum/staging buffer 仍由 `wafer.storage.alloc` 创建。
+这个模型避免把指令 issue 和 storage identity 混在一起：
+
+- source storage 是 instruction operand。
+- destination storage 也是 instruction operand。
+- result/temp/psum/staging storage 仍由 `wafer.storage.alloc` 创建。
 - static reshape alias 仍由 `wafer.view.reshape` 表达。
-- SPM offset、range、bank span 由 R3.2e 写入或在 R3.4 realization 降成 memref/descriptor。
+- SPM offset、range、bank span 由 R3.2e 写入，或在 R3.4 realization 降成 memref/descriptor。
+- RDMA/WDMA 的 DDR side 使用 ranked tensor boundary；后续 DDR resource stage 可把它换成
+  memref/DDR descriptor，但 R3.2d 不为 DDR side 新增 storage wrapper。
 
-RDMA/WDMA 的 DDR side 使用 tensor、memref 或后续 DDR descriptor boundary。R3.2d 不为 DDR side
-新增 storage wrapper。
+R3.2d 只 materialize **unplaced logical descriptor facts**：byte count、stride/iteration、op kind、
+reduction dimensions、GEMM dimensions、elementwise kind 等。这些字段能从当前 IR type、attrs 和
+source op verifier 重算。physical base address、end address、SPM bank/color、worker register window、
+runtime pointer 和 packet word 都不属于 R3.2d。
 
-所有 `wafer.instr.*` op 应实现一个窄 interface：
+## 5. Common Instruction Interface
+
+所有 `wafer.instr.*` op 必须实现同一个窄 interface：
 
 ```text
 WaferInstructionOpInterface {
@@ -134,9 +144,124 @@ WaferInstructionOpInterface {
 }
 ```
 
-interface 只返回能从 op 本身和当前 IR 重算的事实，不返回 planner side table。
+`InstrQueue` 是 Wafer enum attr，V0 只包含：
 
-## 5. Lowering Rules
+| enum | hardware issue family |
+| --- | --- |
+| `ct` | CT / CGRA queue |
+| `ne` | NE queue |
+| `rdma` | RDMA queue |
+| `wdma` | WDMA queue |
+| `tdma` | TDMA queue |
+
+interface 返回的是 op-local facts，不返回 planner side table，也不复制全局 schedule。resource
+effects 至少要表达：
+
+| queue | storage effects | issue effect |
+| --- | --- | --- |
+| RDMA | DDR boundary read + SPM storage write | Movement/RDMA issue |
+| WDMA | SPM storage read + DDR boundary write | Movement/WDMA issue |
+| TDMA | SPM storage read + SPM storage write | Movement/TDMA issue |
+| CT | SPM storage read/write as operand contract requires | Compute/CT issue |
+| NE | SPM storage read + SPM storage write | Compute/NE issue |
+
+R3.2d 不建模 worker id。`TsmExecute` 的 worker bits、register window 和 packet field 属于 placed
+instruction / codegen emission。
+
+## 6. ODS-Level Op Contracts
+
+本节是实现时的 ODS 合同。assembly format 可以按 MLIR 可读性微调，但 operand/result/attr
+语义不能变。
+
+### 6.1 DMA Descriptor Attributes
+
+RDMA、WDMA 和 TDMA 共同使用 fixed-rank descriptor attrs。字段是 logical descriptor，不是
+physical packet：
+
+| attr | type | meaning |
+| --- | --- | --- |
+| `byte_count` | `I64Attr` | 该 instruction 的 total logical payload bytes，用于 resource effect |
+| `inner_bytes` | `I64Attr` | 最内层 contiguous byte count |
+| `src_strides` | `DenseI64ArrayAttr` | source byte strides，长度为 3 |
+| `src_iterations` | `DenseI64ArrayAttr` | source logical iterations，长度为 3，值为正数 |
+| `dst_strides` | `DenseI64ArrayAttr` | destination byte strides，长度为 3 |
+| `dst_iterations` | `DenseI64ArrayAttr` | destination logical iterations，长度为 3，值为正数 |
+
+contiguous movement 使用 `inner_bytes == byte_count`，stride 全 0，iteration 全 1。byte stride
+必须已经从 element stride 转换完成。descriptor 表达不了的 dynamic stride、超过 3 层的静态 stride
+或两端都需要复杂非连续访问的情况，R3.2d 必须结构化失败，不能生成名字上合法但下游无法 packetize
+的 instruction op。
+
+### 6.2 RDMA / WDMA
+
+```text
+wafer.instr.rdma source to dest attr-dict : type(source) to type(dest)
+wafer.instr.wdma source to dest attr-dict : type(source) to type(dest)
+```
+
+| op | operands | result | required attrs |
+| --- | --- | --- | --- |
+| `wafer.instr.rdma` | `source: AnyRankedTensor`, `dest: !wafer.storage` | none | `byte_count`, `inner_bytes`, `src_strides`, `src_iterations` |
+| `wafer.instr.wdma` | `source: !wafer.storage`, `dest: AnyRankedTensor` | none | `byte_count`, `inner_bytes`, `dst_strides`, `dst_iterations` |
+
+V0 要求 RDMA destination 和 WDMA source 使用 `#spm` memory space。R3.2c 的
+`wafer.storage.load/store` 边界默认是 compact tensor layout；如果 consumer 需要 `Cx/NCx`，
+必须通过 `wafer.layout.materialize` 再 lower 到 TDMA，而不是让 RDMA/WDMA 隐式承担 layout
+conversion。
+
+### 6.3 TDMA GatherScatter
+
+```text
+wafer.instr.tdma.gather_scatter source to dest attr-dict
+    : type(source) to type(dest)
+```
+
+| op | operands | result | required attrs |
+| --- | --- | --- | --- |
+| `wafer.instr.tdma.gather_scatter` | `source: !wafer.storage`, `dest: !wafer.storage` | none | `byte_count`, `inner_bytes`, `src_strides`, `src_iterations`, `dst_strides`, `dst_iterations` |
+
+V0 只定义这一条 TDMA movement op。copy、layout materialization、static slice movement、broadcast
+和 transpose 都要么映射成一条或多条 gather_scatter，要么失败。`wafer.instr.tdma.copy` 不作为
+单独 IR op；contiguous copy 是 gather_scatter descriptor 特例。
+
+### 6.4 CT Fill / Elementwise / Reduce / Convert
+
+```text
+wafer.instr.ct.fill dest, value attr-dict : type(dest), type(value)
+wafer.instr.ct.elementwise kind inputs into dest attr-dict
+    : type(inputs) into type(dest)
+wafer.instr.ct.reduce kind input into dest (, init)? attr-dict
+    : type(input) into type(dest)
+wafer.instr.ct.convert source into dest attr-dict : type(source) to type(dest)
+```
+
+| op | operands | result | required attrs |
+| --- | --- | --- | --- |
+| `wafer.instr.ct.fill` | `dest: !wafer.storage`, `value: scalar` | none | none |
+| `wafer.instr.ct.elementwise` | `inputs: Variadic<!wafer.storage>`, `dest: !wafer.storage` | none | `kind`; optional `indexing_maps` copied from target-abstract op |
+| `wafer.instr.ct.reduce` | `input: !wafer.storage`, `dest: !wafer.storage`, optional scalar `init` | none | `kind`, `dimensions` |
+| `wafer.instr.ct.convert` | `source: !wafer.storage`, `dest: !wafer.storage` | none | `src_dtype`, `dst_dtype`; future source op only |
+
+`ct.convert` 作为 instruction op 定义，因为 hardware CT convert 属于同一 queue family；但当前
+R3.2c 没有 `wafer.compute.convert` source op。因此 R3.2d V0 需要定义 ODS/verifier，但
+completion 不要求 convert lowering pattern，直到 source op 存在。
+
+### 6.5 NE GEMM
+
+```text
+wafer.instr.ne.gemm lhs, rhs into dest attr-dict
+    : type(lhs), type(rhs) into type(dest)
+```
+
+| op | operands | result | required attrs |
+| --- | --- | --- | --- |
+| `wafer.instr.ne.gemm` | `lhs: !wafer.storage`, `rhs: !wafer.storage`, `dest: !wafer.storage` | none | `m`, `k`, `n`; optional batched GEMM attrs copied from `wafer.compute.gemm` |
+
+V0 要求三个 storage operand 都使用 `#spm` 和 aligned layout：rank <= 2 使用 `Cx`，rank > 2
+使用 `NCx`。Fused bias、activation、quant、psum accumulation policy 和 sparse / INT8 variants
+不属于 R3.2d V0。
+
+## 7. Lowering Rules
 
 R3.2d 应实现为 MLIR DialectConversion：
 
@@ -151,70 +276,147 @@ V0 mapping：
 
 | target-abstract op | instruction-level lowering |
 | --- | --- |
-| `wafer.storage.load` | `wafer.storage.alloc` + `wafer.instr.rdma` |
-| `wafer.storage.store` | `wafer.instr.wdma` |
-| `wafer.layout.materialize` | `wafer.storage.alloc` + one or more `wafer.instr.tdma.gather_scatter` |
-| `wafer.compute.fill` | `wafer.instr.ct.fill` |
-| `wafer.compute.gemm` | `wafer.storage.alloc` if needed + `wafer.instr.ne.gemm` |
-| `wafer.compute.elementwise` | `wafer.storage.alloc` if needed + `wafer.instr.ct.elementwise` |
-| `wafer.compute.reduce` | `wafer.storage.alloc` if needed + `wafer.instr.ct.reduce` |
-| `wafer.move.copy/broadcast/transpose` | `wafer.storage.alloc` if needed + `wafer.instr.tdma.gather_scatter` |
-| `wafer.move.extract_slice/insert_slice` | one or more `wafer.instr.tdma.gather_scatter` |
+| `wafer.storage.load` | create `wafer.storage.alloc` with original result type; emit `wafer.instr.rdma`; replace original result with alloc result |
+| `wafer.storage.store` | emit `wafer.instr.wdma`; erase store |
+| `wafer.layout.materialize` | create destination `wafer.storage.alloc`; emit one or more `wafer.instr.tdma.gather_scatter`; replace result with alloc result |
+| `wafer.compute.fill` | emit `wafer.instr.ct.fill` writing the existing dest storage |
+| `wafer.compute.gemm` | create destination `wafer.storage.alloc`; emit `wafer.instr.ne.gemm`; replace result with alloc result |
+| `wafer.compute.elementwise` | create destination `wafer.storage.alloc`; emit `wafer.instr.ct.elementwise`; replace result with alloc result |
+| `wafer.compute.reduce` | create destination `wafer.storage.alloc`; emit `wafer.instr.ct.reduce`; replace result with alloc result |
+| `wafer.move.copy` | create destination `wafer.storage.alloc`; emit one gather_scatter; replace result with alloc result |
+| `wafer.move.extract_slice` | create destination `wafer.storage.alloc`; emit gather_scatter from source slice to compact destination |
+| `wafer.move.insert_slice` | create result `wafer.storage.alloc`; first gather_scatter copy dest to result, then gather_scatter source into result slice |
+| `wafer.move.broadcast` | create destination `wafer.storage.alloc`; emit one or more gather_scatter if static broadcast descriptor is expressible |
+| `wafer.move.transpose` | create destination `wafer.storage.alloc`; emit gather_scatter if permutation is statically expressible |
 | `wafer.view.reshape` | stays as aliasing view; no instruction issue |
 | `wafer.comm.*` | not handled by R3.2d V0 |
 
-## 6. Verifier Contract
+R3.2d may generate multiple instruction ops for a single target-abstract movement op, but it must not write a
+global schedule attr. The instruction sequence is the region body itself.
+
+## 8. Failure Contract
+
+R3.2d failure is a legalization result, not an IR artifact. A rejected candidate may carry diagnostics to
+the closed-loop planner or debug pass, but rejected instruction IR is discarded.
+
+必须结构化失败的情况：
+
+- non-ranked or dynamic-shaped storage tensor where V0 needs static byte/stride computation.
+- unsupported memory space or layout for an instruction family.
+- unsupported dtype, including relation/elementwise/convert pairs not mapped to CT V0.
+- movement descriptor cannot be represented with `inner_bytes` plus three stride/iteration levels.
+- static slice/broadcast/transpose cannot be converted into one or more gather_scatter descriptors.
+- NE GEMM dimension attrs cannot be derived from operand/result types and optional batch attrs.
+- reduce `dimensions` cannot map to supported native reduce dimension encoding.
+- any source op that would require DTE/CSR/SCALAR, raw packet fields, SPM offset, DDR BO binding or
+  runtime ABI call to be legal.
+
+Diagnostics should mention the source op and the missing legality fact, for example:
+`wafer.move.transpose cannot lower to TDMA gather_scatter: unsupported permutation`.
+
+## 9. Verifier Contract
 
 R3.2d verifier checks only instruction legality:
 
-- `!wafer.storage` tensor type is ranked and static for V0.
+- ODS type constraints enforce storage/tensor/scalar operand classes.
+- all `!wafer.storage` tensor types used by instruction ops are ranked and static for V0.
 - memory space matches instruction family:
   RDMA writes `#spm`; WDMA reads `#spm`; TDMA/CT/NE read/write tile-local storage values.
+- RDMA/WDMA/TDMA descriptor attrs have fixed array length, positive iteration values, non-negative byte
+  strides and positive byte counts.
+- descriptor byte counts are consistent with compact tensor payload size or statically described
+  slice/broadcast/transpose domain as applicable. Cx/NCx padding span is derived later from
+  `!wafer.storage` layout and target policy, not copied into `byte_count`.
 - NE GEMM and CT reduce require supported aligned layout, dtype and rank.
-- GatherScatter/DMA descriptor attrs use byte count and byte stride, with non-negative static values.
 - relation/elementwise bool storage uses logical `i1`; physical byte size remains derived, not stored.
 - no SPM offset/end/bank attrs before R3.2e.
 - no DTE/CSR/SCALAR ordinary instruction op.
 
-## 7. Example
+R3.2d does **not** verify physical address range, SPM bank conflicts, DDR pool/domain capacity, runtime
+symbol, packet bit layout or worker register window. Those checks belong to R3.2e/R3.2f/R3.4/R3.6.
+
+## 10. Example
 
 ```mlir
 wafer.tile_region ... {
-  %a = wafer.storage.alloc
+  %a_tensor = wafer.storage.alloc
+      : !wafer.storage<tensor<128x64xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
+  %b_tensor = wafer.storage.alloc
+      : !wafer.storage<tensor<64x128xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
+  %a_cx = wafer.storage.alloc
       : !wafer.storage<tensor<128x64xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
-  %b = wafer.storage.alloc
+  %b_cx = wafer.storage.alloc
       : !wafer.storage<tensor<64x128xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
-  %c = wafer.storage.alloc
+  %c_cx = wafer.storage.alloc
       : !wafer.storage<tensor<128x128xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
+  %c_tensor = wafer.storage.alloc
+      : !wafer.storage<tensor<128x128xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
 
-  wafer.instr.rdma %arg0 to %a {byte_count = 16384 : i64}
+  wafer.instr.rdma %arg0 to %a_tensor
+      {byte_count = 16384 : i64, inner_bytes = 16384 : i64,
+       src_strides = array<i64: 0, 0, 0>, src_iterations = array<i64: 1, 1, 1>}
       : tensor<128x64xf16>
-     to !wafer.storage<tensor<128x64xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
-  wafer.instr.rdma %arg1 to %b {byte_count = 16384 : i64}
+     to !wafer.storage<tensor<128x64xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
+  wafer.instr.rdma %arg1 to %b_tensor
+      {byte_count = 16384 : i64, inner_bytes = 16384 : i64,
+       src_strides = array<i64: 0, 0, 0>, src_iterations = array<i64: 1, 1, 1>}
       : tensor<64x128xf16>
+     to !wafer.storage<tensor<64x128xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
+
+  wafer.instr.tdma.gather_scatter %a_tensor to %a_cx
+      {byte_count = 16384 : i64, inner_bytes = 128 : i64,
+       src_strides = array<i64: 128, 0, 0>, src_iterations = array<i64: 128, 1, 1>,
+       dst_strides = array<i64: 256, 0, 0>, dst_iterations = array<i64: 128, 1, 1>}
+      : !wafer.storage<tensor<128x64xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
+     to !wafer.storage<tensor<128x64xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
+  wafer.instr.tdma.gather_scatter %b_tensor to %b_cx
+      {byte_count = 16384 : i64, inner_bytes = 128 : i64,
+       src_strides = array<i64: 128, 0, 0>, src_iterations = array<i64: 128, 1, 1>,
+       dst_strides = array<i64: 256, 0, 0>, dst_iterations = array<i64: 128, 1, 1>}
+      : !wafer.storage<tensor<64x128xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
      to !wafer.storage<tensor<64x128xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
 
-  wafer.instr.ne.gemm %a, %b into %c {m = 128 : i64, k = 64 : i64, n = 128 : i64}
+  wafer.instr.ne.gemm %a_cx, %b_cx into %c_cx
+      {m = 128 : i64, k = 64 : i64, n = 128 : i64}
       : !wafer.storage<tensor<128x64xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>,
         !wafer.storage<tensor<64x128xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
     into !wafer.storage<tensor<128x128xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
 
-  wafer.instr.wdma %c to %arg2 {byte_count = 32768 : i64}
+  wafer.instr.tdma.gather_scatter %c_cx to %c_tensor
+      {byte_count = 32768 : i64, inner_bytes = 256 : i64,
+       src_strides = array<i64: 256, 0, 0>, src_iterations = array<i64: 128, 1, 1>,
+       dst_strides = array<i64: 256, 0, 0>, dst_iterations = array<i64: 128, 1, 1>}
       : !wafer.storage<tensor<128x128xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
+     to !wafer.storage<tensor<128x128xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
+  wafer.instr.wdma %c_tensor to %arg2
+      {byte_count = 32768 : i64, inner_bytes = 32768 : i64,
+       dst_strides = array<i64: 0, 0, 0>, dst_iterations = array<i64: 1, 1, 1>}
+      : !wafer.storage<tensor<128x128xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
      to tensor<128x128xf16>
 
   wafer.sync.local_drain
 }
 ```
 
-这是形态示例，不固定 parser/printer。真实 padded size、Cx/NCx 对齐、bool bitpack、
-descriptor stride 和 SPM offset 分别由 verifier、SPM placement 和 later realization 处理。
+这是形态示例，不固定 parser/printer，也不固定 planner 对 layout materialization 的具体选择。
+例子中 stride 数值只说明 descriptor 字段位置，不作为 Cx padding 或 hardware packet 的规范值；
+真实 padded size、Cx/NCx 对齐、bool bitpack、descriptor stride 和 SPM offset 分别由 verifier、
+SPM placement 和 later realization 处理。
 
-## 8. Implementation Work
+## 11. Implementation Work
 
-R3.2d 实现只需要：
+R3.2d 实现需要：
 
-1. 增加 `InstrQueue` 和必要 instruction kind enum。
-2. 增加 `wafer.instr.*` ODS、verifier、MemoryEffects 和 interface。
-3. 实现 `--wafer-convert-tile-region-to-instr` DialectConversion。
-4. 增加 supported op family 的 positive/negative tests。
+1. 增加 `InstrQueue` enum、`WaferInstructionOpInterface` 和 instruction effect helper。
+2. 增加 `wafer.instr.rdma`、`wafer.instr.wdma`、
+   `wafer.instr.tdma.gather_scatter`、`wafer.instr.ct.fill`、
+   `wafer.instr.ct.elementwise`、`wafer.instr.ct.reduce`、
+   `wafer.instr.ct.convert` 和 `wafer.instr.ne.gemm` ODS。
+3. 为每个 op 实现 verifier、MemoryEffects、instruction interface 和 positive/negative lit tests。
+4. 实现 `--wafer-convert-tile-region-to-instr` DialectConversion，并让 main R3.2 planner 调用同一
+   conversion implementation。
+5. 增加 conversion tests，覆盖 load/store、layout materialize、fill、GEMM、elementwise/relation、
+   reduce、copy/broadcast/transpose、extract_slice/insert_slice、view.reshape preserved 和 structured
+   failure。
+6. 为 `wafer.instr.ct.convert` 增加 parser/verifier tests；convert lowering 等 `wafer.compute.convert`
+   或等价 source op 出现后再接入 completion gate。
