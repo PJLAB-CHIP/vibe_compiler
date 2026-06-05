@@ -12,7 +12,7 @@ def Wafer_AllocTileOp : Wafer_Op<"alloc_tile", [
   let description = [{
     `wafer.alloc_tile` creates a tile-local buffer value before physical SPM
     offset allocation. It records shape, layout, and memory-space demand in
-    the result type only; R3.2d assigns the concrete SPM window.
+    the result type only; R3.2e assigns the concrete SPM window.
   }];
 
   let results = (outs Wafer_AnyTileBuffer:$result);

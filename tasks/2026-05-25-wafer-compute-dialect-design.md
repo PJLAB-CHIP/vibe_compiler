@@ -11,8 +11,8 @@
 本文中的 `wafer.compute` 是正式 IR contract。它表达“这个 tile-local op 已经选择了某类
 Wafer 目标实现族，并能提供 layout、effect 和 instruction family legality”。它仍然不表达 raw packet
 bitfield、SPM physical offset、worker window、runtime launch 或 host ABI。最终 SPM storage demand
-不是 target-abstract op 自身的属性，而是 R3.2d 产出的 instruction-level `wafer.instr.*` /
-`wafer.storage.*` IR 的结果。
+不是 target-abstract op 自身的属性，而是 R3.2d 产出的 instruction-level `wafer.instr.*`
+over existing `!wafer.tile_buffer` IR 的结果。
 instruction-level IR 的具体 op/type/interface 合同见
 `tasks/2026-06-05-wafer-instruction-ir-design.md`；本文不重复维护 `wafer.instr` op 列表。
 
@@ -50,7 +50,7 @@ allocation、communication collective lowering 或 launch/package emission。
 scheduled wafer.group tensor body
   -> target-abstract tile_region IR with wafer.compute / movement ops
   -> layout materialization and accepted !wafer.tile_buffer values
-  -> instruction-level wafer.instr.* IR with unplaced wafer.storage.*
+  -> instruction-level wafer.instr.* IR over unplaced !wafer.tile_buffer
   -> same instruction-level IR after SPM placement
   -> codegen emission to Wafer C ABI / packet / package metadata
 ```
@@ -62,8 +62,8 @@ scheduled wafer.group tensor body
 | scheduled group | `linalg.*` / `tensor.*` / `scf.*` | tensor SSA value | 表达数学语义、tile-local dataflow 和 traversal，不选硬件实现 |
 | target-abstract compute | `wafer.compute.*` 和 target-abstract movement op | tensor SSA value 或 `!wafer.tile_buffer` | 选择目标实现族，提供 layout/resource/lowering interface，不绑定具体 storage placement |
 | accepted layout | 同一类 compute/movement op | `!wafer.tile_buffer<shape,dtype,mem_layout,space>` | 验证 physical layout，显式插入 `wafer.layout.materialize` |
-| instruction-level | `wafer.instr.*` | unplaced `wafer.storage.*` SSA value | 选择 CT/NE/TDMA/RDMA/WDMA 指令形态，列出 storage values、queue、temp/psum/staging、alias、effect 和 storage-size policy，不含 SPM offset；DTE 属于 `wafer.comm` / communication lowering |
-| placed instruction-level | 同一 `wafer.instr.*` | placed `wafer.storage.*`、`memref`、flat storage value 或 descriptor | 具备 SPM offset/range/bank、stride/descriptor，可进入 codegen emission |
+| instruction-level | `wafer.instr.*` | unplaced `!wafer.tile_buffer` SSA value | 选择 CT/NE/TDMA/RDMA/WDMA 指令形态，列出 queue、temp/psum/staging tile buffers、alias、effect 和 descriptor attrs，不含 SPM offset；DTE 属于 `wafer.comm` / communication lowering |
+| placed instruction-level | 同一 `wafer.instr.*` | placed `!wafer.tile_buffer`、`memref`、flat storage value 或 descriptor | 具备 SPM offset/range/bank、stride/descriptor，可进入 codegen emission |
 | launch/ABI emission | LLVM / C call / package metadata | concrete ABI arg | 调用 Wafer C ABI、发 package metadata、连接 host runtime；不作为主线 IR 层 |
 
 因此，`wafer.compute.gemm` 这类 op 在不同阶段可以被 type conversion 改写 operand/result type，
@@ -81,10 +81,10 @@ Pipeline position:
   load/store boundary 和 view/alias relation。
 - Current stage responsibility:
   对 target-abstract compute/movement/layout/load/store op 做 Wafer instruction legalization /
-  selection，改写或构造 instruction-level `wafer.instr.*`，并显式生成 unplaced
-  `wafer.storage.*` SSA value、queue/effect、temp/psum/staging、alias/view 和 storage-size policy。
+  selection，改写或构造 instruction-level `wafer.instr.*`，复用现有 `!wafer.tile_buffer`
+  SSA graph，并显式生成 queue/effect、temp/psum/staging、alias/view 和 descriptor attrs。
 - Output artifact / IR:
-  instruction-level Wafer IR with unplaced storage，或结构化 failure reason。
+  instruction-level Wafer IR over unplaced `!wafer.tile_buffer`，或结构化 failure reason。
 - Downstream consumer:
   R3.2e SPM placement、R3.2f DDR/resource legality、R3.2g closed-loop planner，以及 R3.6
   codegen emission。
@@ -315,8 +315,8 @@ Placed instruction-level verifier：
 | --- | --- | --- | --- |
 | select Wafer compute implementation | tiled `linalg` / tensor / SCF | target-abstract `wafer.compute` / movement op | 选择本 tile 实现族，保留数学语义，建立 layout/resource interface |
 | layout materialization | target-abstract Wafer op | accepted `!wafer.tile_buffer` + materialization edge | 基于 op interface 做 layout assignment 和真实 movement cut |
-| instruction legalization / selection | accepted tile buffer IR | instruction-level `wafer.instr.*` with unplaced `wafer.storage.*` | 将 target-abstract op 改写成 CT/NE/TDMA/RDMA/WDMA 指令形态，列出 concrete storage values、queue、effects、temp/psum/staging、alias 和 storage-size policy；DTE communication 不进入普通 `wafer.instr` path |
-| SPM placement | instruction-level IR with unplaced storage | same instruction-level IR with placed SPM storage | 从 instruction storage 收集 demand、liveness、effects，分配 offset/range/bank |
+| instruction legalization / selection | accepted tile buffer IR | instruction-level `wafer.instr.*` over unplaced `!wafer.tile_buffer` | 将 target-abstract op 改写成 CT/NE/TDMA/RDMA/WDMA 指令形态，列出 queue、effects、temp/psum/staging tile buffers、alias 和 descriptor attrs；DTE communication 不进入普通 `wafer.instr` path |
+| SPM placement | instruction-level IR with unplaced `!wafer.tile_buffer` | same instruction-level IR with placed SPM tile buffers | 从 tile-buffer use-def 和 instruction effects 收集 demand、liveness，分配 offset/range/bank |
 | storage realization | placed instruction-level IR | `memref` / flat storage / descriptor | 复用标准 memref lowering 或生成目标 descriptor |
 | codegen emission | placed instruction-level IR | LLVM call / C ABI call / package metadata | 生成具体 ABI call 或 packet emission，不回头修改 schedule/layout |
 

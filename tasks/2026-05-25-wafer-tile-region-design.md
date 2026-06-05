@@ -50,7 +50,7 @@ placement-derived endpoint 和 communication staging demand 的层级；`wafer.c
 ```text
 wafer.group
   -> group-to-tile-region lowered `wafer.tile_region` IR
-  -> instruction-level wafer.instr.* IR with unplaced wafer.storage.*
+  -> instruction-level wafer.instr.* IR over unplaced !wafer.tile_buffer
   -> SPM placement on the same instruction-level IR
   -> DDR / resource legality on placed instruction IR
   -> accepted / rejected / split decision
@@ -216,11 +216,11 @@ V0 需要以下 op family：
    communication demand 下 materialize 为 `wafer.comm` 或 explicit p2p schedule proposal。
 3. layout assignment：为 op 约束选择 `mem_layout`，在 cut edge 插入
    `wafer.layout.materialize`。
-4. Wafer instruction legalization / selection：R3.2d 把 target-abstract op 合法化并选择成
-   instruction-level `wafer.instr.*`，同时显式构造 unplaced `wafer.storage.*` SSA value。
-   instruction-level IR 需要列出 concrete storage values、queue family、read/write/issue
-   effects、temp/psum/staging、alias/view 关系、storage size policy 和 reject reason。
-5. SPM placement：R3.2e 只消费 instruction-level IR with unplaced storage，在同一 IR 上填入
+4. Wafer instruction legalization / selection：R3.2d 把 target-abstract executable op 合法化并
+   选择成 instruction-level `wafer.instr.*`，复用现有 `!wafer.tile_buffer` SSA graph。
+   instruction-level IR 需要列出 queue family、read/write/issue effects、descriptor attrs、
+   temp/psum/staging tile buffers、alias/view 关系和 reject reason。
+5. SPM placement：R3.2e 只消费 instruction-level IR with unplaced `!wafer.tile_buffer`，在同一 IR 上填入
    offset/end/bank span 和 lifetime/reuse；不能直接从 target-abstract op 猜 storage demand。
 6. DDR/resource planning：R3.2f 消费 placed instruction-level IR、SPM facts 和 DDR boundary，做 capacity /
    bandwidth / range legality。

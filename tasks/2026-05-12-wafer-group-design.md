@@ -764,10 +764,9 @@ SPM allocation、layout assignment、DDR/resource demand 和 compute/movement le
   packet/ABI/LLVM。
 - R3.2d 恢复 Wafer instruction legalization / selection：在 R3.2c lowered tile-region IR 上，把
   target-abstract compute/comm/layout/load-store/move/sync op 合法化并选择成 instruction-level
-  `wafer.instr.*`，同时生成 unplaced `wafer.storage.*`，显式列出 concrete storage values、
-  queue、read/write/issue effects、temp/psum/staging、alias/view 关系、storage-size policy 和
-  reject reason。
-- R3.2e 恢复 SPM placement：只消费 R3.2d instruction-level IR with unplaced storage，在真实 SPM window、
+  `wafer.instr.*`，复用现有 `!wafer.tile_buffer` graph，显式列出 queue、read/write/issue
+  effects、descriptor attrs、temp/psum/staging tile buffers、alias/view 关系和 reject reason。
+- R3.2e 恢复 SPM placement：只消费 R3.2d instruction-level IR with unplaced `!wafer.tile_buffer`，在真实 SPM window、
   alignment、layout padding、scratch/psum/temp、materialization temp、communication staging、
   lifetime overlap、range/end-address/bank span 和 conflict 约束下搜索可接受 buffer placement。
 - R3.2f 恢复 DDR/resource planning 和 compute/movement legality analysis：消费 placed
