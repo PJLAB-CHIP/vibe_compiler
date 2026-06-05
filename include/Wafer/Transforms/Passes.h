@@ -7,6 +7,7 @@
 #include <memory>
 
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 
 namespace mlir {
 class Pass;

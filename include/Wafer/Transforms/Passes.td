@@ -42,6 +42,7 @@ def DumpGroupToTileRegionPass
                            "mlir::func::FuncDialect",
                            "mlir::linalg::LinalgDialect",
                            "mlir::memref::MemRefDialect",
+                           "mlir::scf::SCFDialect",
                            "mlir::tensor::TensorDialect", "wafer::WaferDialect",
   ];
 }
@@ -64,6 +65,7 @@ def ConvertGroupToTileRegionPass
                            "mlir::linalg::LinalgDialect",
                            "mlir::math::MathDialect",
                            "mlir::memref::MemRefDialect",
+                           "mlir::scf::SCFDialect",
                            "mlir::tensor::TensorDialect", "wafer::WaferDialect",
   ];
 }

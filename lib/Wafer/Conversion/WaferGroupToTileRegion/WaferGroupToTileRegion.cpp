@@ -11,6 +11,7 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/Diagnostics.h"
@@ -123,6 +124,15 @@ private:
   llvm::DenseMap<mlir::Value, mlir::Value> fillInitScalars;
   llvm::DenseMap<mlir::Value, mlir::Attribute> fillInitAttrs;
 
+  struct StateSnapshot {
+    llvm::DenseMap<mlir::Value, BufferVersions> buffers;
+    llvm::DenseMap<mlir::Value, mlir::Value> scalarValues;
+    llvm::DenseMap<mlir::Value, mlir::Attribute> scalarAttrs;
+    llvm::DenseMap<mlir::Value, mlir::Value> externalBuffers;
+    llvm::DenseMap<mlir::Value, mlir::Value> fillInitScalars;
+    llvm::DenseMap<mlir::Value, mlir::Attribute> fillInitAttrs;
+  };
+
   mlir::LogicalResult fail(llvm::StringRef reason) {
     setFailureReason(failureReason, reason);
     return mlir::failure();
@@ -134,6 +144,11 @@ private:
   }
 
   mlir::FailureOr<mlir::Value> failValue(llvm::StringRef reason) {
+    setFailureReason(failureReason, reason);
+    return mlir::failure();
+  }
+
+  mlir::FailureOr<mlir::Type> failType(llvm::StringRef reason) {
     setFailureReason(failureReason, reason);
     return mlir::failure();
   }
@@ -155,6 +170,55 @@ private:
   mlir::MemRefType makeDDRMemRefType(mlir::RankedTensorType tensorType) {
     return makeWaferMemRefType(tensorType, MemorySpace::DDR,
                                MemLayout::Tensor);
+  }
+
+  bool isScalarType(mlir::Type type) const {
+    return mlir::isa<mlir::FloatType, mlir::IntegerType, mlir::IndexType>(type);
+  }
+
+  StateSnapshot snapshotState() const {
+    return {buffers,         scalarValues,    scalarAttrs,
+            externalBuffers, fillInitScalars, fillInitAttrs};
+  }
+
+  void restoreState(const StateSnapshot &snapshot) {
+    buffers = snapshot.buffers;
+    scalarValues = snapshot.scalarValues;
+    scalarAttrs = snapshot.scalarAttrs;
+    externalBuffers = snapshot.externalBuffers;
+    fillInitScalars = snapshot.fillInitScalars;
+    fillInitAttrs = snapshot.fillInitAttrs;
+  }
+
+  mlir::FailureOr<mlir::Type>
+  convertControlFlowType(mlir::Type type) {
+    if (auto tensorType = mlir::dyn_cast<mlir::RankedTensorType>(type))
+      return makeSPMMemRefType(tensorType, MemLayout::Tensor);
+    if (isScalarType(type))
+      return type;
+    return failType("control-flow value is not a ranked tensor or scalar");
+  }
+
+  mlir::LogicalResult recordControlFlowValue(mlir::Value original,
+                                             mlir::Value converted) {
+    if (mlir::isa<mlir::RankedTensorType>(original.getType())) {
+      record(original, MemLayout::Tensor, converted);
+      return mlir::success();
+    }
+    if (isScalarType(original.getType())) {
+      scalarValues[original] = converted;
+      return mlir::success();
+    }
+    return fail("control-flow value is not a ranked tensor or scalar");
+  }
+
+  mlir::FailureOr<mlir::Value>
+  materializeControlFlowValue(mlir::Value original, mlir::OpBuilder &builder) {
+    if (mlir::isa<mlir::RankedTensorType>(original.getType()))
+      return getOrMaterialize(original, MemLayout::Tensor, builder);
+    if (isScalarType(original.getType()))
+      return getScalarValue(original);
+    return failValue("control-flow yield is not a ranked tensor or scalar");
   }
 
   mlir::FailureOr<mlir::Value>
@@ -369,7 +433,157 @@ private:
       return convertTensorReshape(collapseShape.getOperation(),
                                   collapseShape.getSrc(),
                                   collapseShape.getResult(), builder);
+    if (auto ifOp = mlir::dyn_cast<mlir::scf::IfOp>(op))
+      return convertScfIf(ifOp, builder);
+    if (auto forOp = mlir::dyn_cast<mlir::scf::ForOp>(op))
+      return convertScfFor(forOp, builder);
 
+    return mlir::success();
+  }
+
+  mlir::LogicalResult convertNestedOp(mlir::Operation *op,
+                                      mlir::OpBuilder &builder) {
+    if (mlir::isa<WaferTensorCollectiveOpInterface>(op))
+      return fail("collective lowering requires placement/local-rank facts");
+    if (auto fill = mlir::dyn_cast<mlir::linalg::FillOp>(op))
+      return convertFill(fill, builder);
+    if (mlir::isa<mlir::linalg::MatmulOp>(op))
+      return convertMatmul(mlir::cast<mlir::linalg::LinalgOp>(op), builder);
+    if (auto generic = mlir::dyn_cast<mlir::linalg::GenericOp>(op))
+      return convertGeneric(generic, builder);
+    if (mlir::isa<mlir::arith::ConstantOp, mlir::tensor::EmptyOp,
+                  mlir::tensor::ExtractOp, mlir::tensor::ExtractSliceOp,
+                  mlir::tensor::InsertSliceOp, mlir::tensor::ExpandShapeOp,
+                  mlir::tensor::CollapseShapeOp, mlir::scf::IfOp,
+                  mlir::scf::ForOp>(op))
+      return convertSupportOp(op, builder);
+    return fail("unsupported op inside structured control-flow " +
+                op->getName().getStringRef().str());
+  }
+
+  mlir::LogicalResult convertScfYield(mlir::scf::YieldOp yield,
+                                      mlir::OpBuilder &builder) {
+    llvm::SmallVector<mlir::Value, 4> yielded;
+    for (mlir::Value value : yield.getResults()) {
+      mlir::FailureOr<mlir::Value> converted =
+          materializeControlFlowValue(value, builder);
+      if (mlir::failed(converted))
+        return mlir::failure();
+      yielded.push_back(*converted);
+    }
+    builder.create<mlir::scf::YieldOp>(yield.getLoc(), yielded);
+    return mlir::success();
+  }
+
+  mlir::LogicalResult convertScfBlock(mlir::Block &source,
+                                      mlir::OpBuilder &builder) {
+    for (mlir::Operation &op : source.without_terminator()) {
+      if (mlir::failed(convertNestedOp(&op, builder)))
+        return mlir::failure();
+    }
+    auto yield = mlir::dyn_cast<mlir::scf::YieldOp>(source.getTerminator());
+    if (!yield)
+      return fail("structured control-flow body must terminate with scf.yield");
+    return convertScfYield(yield, builder);
+  }
+
+  void eraseImplicitYield(mlir::Block *block) {
+    if (!block || block->empty())
+      return;
+    if (mlir::isa<mlir::scf::YieldOp>(block->back()))
+      block->back().erase();
+  }
+
+  mlir::LogicalResult convertScfIf(mlir::scf::IfOp ifOp,
+                                   mlir::OpBuilder &builder) {
+    mlir::FailureOr<mlir::Value> condition = getScalarValue(ifOp.getCondition());
+    if (mlir::failed(condition))
+      return mlir::failure();
+
+    llvm::SmallVector<mlir::Type, 4> resultTypes;
+    for (mlir::Type type : ifOp->getResultTypes()) {
+      mlir::FailureOr<mlir::Type> converted = convertControlFlowType(type);
+      if (mlir::failed(converted))
+        return mlir::failure();
+      resultTypes.push_back(*converted);
+    }
+
+    bool hasElse = !ifOp.getElseRegion().empty();
+    auto convertedIf = builder.create<mlir::scf::IfOp>(
+        ifOp.getLoc(), resultTypes, *condition, hasElse);
+
+    {
+      StateSnapshot outer = snapshotState();
+      mlir::Block *thenBlock = convertedIf.thenBlock();
+      eraseImplicitYield(thenBlock);
+      mlir::OpBuilder thenBuilder(thenBlock, thenBlock->end());
+      if (mlir::failed(convertScfBlock(*ifOp.thenBlock(), thenBuilder)))
+        return mlir::failure();
+      restoreState(outer);
+    }
+
+    if (hasElse) {
+      StateSnapshot outer = snapshotState();
+      mlir::Block *elseBlock = convertedIf.elseBlock();
+      eraseImplicitYield(elseBlock);
+      mlir::OpBuilder elseBuilder(elseBlock, elseBlock->end());
+      if (mlir::failed(convertScfBlock(*ifOp.elseBlock(), elseBuilder)))
+        return mlir::failure();
+      restoreState(outer);
+    }
+
+    for (auto [original, converted] :
+         llvm::zip(ifOp->getResults(), convertedIf->getResults())) {
+      if (mlir::failed(recordControlFlowValue(original, converted)))
+        return mlir::failure();
+    }
+    return mlir::success();
+  }
+
+  mlir::LogicalResult convertScfFor(mlir::scf::ForOp forOp,
+                                    mlir::OpBuilder &builder) {
+    mlir::FailureOr<mlir::Value> lowerBound =
+        getScalarValue(forOp.getLowerBound());
+    mlir::FailureOr<mlir::Value> upperBound =
+        getScalarValue(forOp.getUpperBound());
+    mlir::FailureOr<mlir::Value> step = getScalarValue(forOp.getStep());
+    if (mlir::failed(lowerBound) || mlir::failed(upperBound) ||
+        mlir::failed(step))
+      return mlir::failure();
+
+    llvm::SmallVector<mlir::Value, 4> initArgs;
+    for (mlir::Value init : forOp.getInitArgs()) {
+      mlir::FailureOr<mlir::Value> converted =
+          materializeControlFlowValue(init, builder);
+      if (mlir::failed(converted))
+        return mlir::failure();
+      initArgs.push_back(*converted);
+    }
+
+    auto convertedFor = builder.create<mlir::scf::ForOp>(
+        forOp.getLoc(), *lowerBound, *upperBound, *step, initArgs);
+    eraseImplicitYield(convertedFor.getBody());
+
+    StateSnapshot outer = snapshotState();
+    scalarValues[forOp.getInductionVar()] = convertedFor.getInductionVar();
+    for (auto [original, converted] :
+         llvm::zip(forOp.getRegionIterArgs(),
+                   convertedFor.getRegionIterArgs())) {
+      if (mlir::failed(recordControlFlowValue(original, converted)))
+        return mlir::failure();
+    }
+
+    mlir::OpBuilder bodyBuilder(convertedFor.getBody(),
+                                convertedFor.getBody()->end());
+    if (mlir::failed(convertScfBlock(*forOp.getBody(), bodyBuilder)))
+      return mlir::failure();
+    restoreState(outer);
+
+    for (auto [original, converted] :
+         llvm::zip(forOp->getResults(), convertedFor->getResults())) {
+      if (mlir::failed(recordControlFlowValue(original, converted)))
+        return mlir::failure();
+    }
     return mlir::success();
   }
 
@@ -1045,7 +1259,7 @@ static void configureGroupToTileRegionTarget(mlir::ConversionTarget &target) {
   target.addLegalDialect<mlir::arith::ArithDialect,
                          mlir::bufferization::BufferizationDialect,
                          mlir::func::FuncDialect, mlir::memref::MemRefDialect,
-                         wafer::WaferDialect>();
+                         mlir::scf::SCFDialect, wafer::WaferDialect>();
   target.addLegalOp<mlir::ModuleOp>();
   target.addIllegalOp<GroupOp, GroupYieldOp>();
   target.markUnknownOpDynamicallyLegal([](mlir::Operation *) { return true; });

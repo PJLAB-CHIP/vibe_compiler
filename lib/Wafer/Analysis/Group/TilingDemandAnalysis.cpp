@@ -4,6 +4,7 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/AffineExpr.h"
 #include "mlir/Interfaces/DestinationStyleOpInterface.h"
@@ -38,7 +39,8 @@ static bool isSupportOp(mlir::Operation *op) {
   return mlir::isa<mlir::arith::ConstantOp, mlir::tensor::EmptyOp,
                    mlir::tensor::ExtractOp, mlir::tensor::ExtractSliceOp,
                    mlir::tensor::InsertSliceOp, mlir::tensor::ExpandShapeOp,
-                   mlir::tensor::CollapseShapeOp>(op);
+                   mlir::tensor::CollapseShapeOp, mlir::scf::IfOp,
+                   mlir::scf::ForOp>(op);
 }
 
 static llvm::StringRef iteratorName(mlir::utils::IteratorType iteratorType) {
