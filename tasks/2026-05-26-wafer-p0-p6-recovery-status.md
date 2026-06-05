@@ -132,10 +132,12 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 当前实现：
 
 - 有 `WaferAttrs.td`、`WaferTypes.td`、`WaferInterfaces.td` 和 `WaferOps.td`，覆盖 target、
-  placement、wait policy、elementwise/reduce kind，以及 group/tile/layout/load/store/placement/
-  ABI/compute/comm/sync/launch temporary ops；旧 memory-space / mem-layout / `!wafer.storage`
-  原型仍需按 2026-06-05 memref-backed Wafer memory attr 合同迁移。
-- 有 parser/printer/verifier 正负例；`WaferDialect.cpp` 实现多数 verifier。
+  placement、elementwise/reduce kind，以及 group、tensor collective、tile-region、tile
+  load/store/layout/compute/move/view/comm、placement、`wafer.instr.local_drain` 和 launch op。
+- 当前代码仍包含旧 memory-space / mem-layout attrs、`!wafer.storage` 和 `wafer.tile.alloc`
+  原型；主线合同已经改为 `memref<..., #wafer.memory<space, layout>>`，迁移任务归 R3.2c。
+- 有 parser/printer/verifier 正负例；op verifier 已按 IR 层拆到对应 C++ 文件，公共 helper 在
+  `lib/Wafer/IR/Common/OpVerifierUtils.*`。
 - 有 `WaferTilingInterface`、`WaferLayoutOpInterface`、
   `WaferLayoutMaterializationOpInterface`、`WaferResourceEffectInterface` 和 Wafer resource-backed
   MLIR memory effects；接口查询覆盖 group 边界、layout/SPM/DDR、compute/comm/sync/ABI 的局部需求。
@@ -152,7 +154,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - Wafer dialect verifier 的孤立负例仍会使用 `builtin.unrealized_conversion_cast` 构造非法边界值；
   这些用例只能证明 verifier 形态。历史 R1.3 stage-connection gate 已删除；communication bridge
   的 visible cast 仍归 R6.2 清理。
-- 没有 placed instruction/storage memref/access descriptor 层，因此旧 `!wafer.storage` 原型还没有
+- 没有 placed instruction-level IR、placed memref 或 access descriptor 层，因此旧 `!wafer.storage` 原型还没有
   按设计消失。
 
 恢复任务：
@@ -265,7 +267,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 
 - group formation、root tile planning、SPM allocation、DDR demand 和 ring collective lowering 的旧
   unit pass 已删除；后续必须从真实 program chain 恢复 closed-loop planner / resource planning。
-- SPM/DDR 仍未基于完整 interface demand、async lifetime、placed instruction/storage memref/descriptor、
+- SPM/DDR 仍未基于完整 interface demand、async lifetime、placed instruction-level IR / placed memref / access descriptor、
   workspace、resident constants、pool/domain、bandwidth 或 runtime binding 建立主线实现。
 - C ABI 仍只有 descriptor builder / stub 工具覆盖，尚未从 placed instruction-level IR 生成真实
   `wafer_*` call、LLVM lowering 或 wrapper-to-register golden packet。

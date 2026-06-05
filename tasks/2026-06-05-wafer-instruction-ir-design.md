@@ -22,6 +22,15 @@
 memref SSA、Wafer memory attr、op operands、attrs、MemoryEffects 和显式 drain 直接推导 placement
 输入。它不是另一层 buffer IR。
 
+当前实现状态：
+
+- 仓库代码当前只落地了 `wafer.instr.local_drain`。
+- `wafer.instr.rdma`、`wafer.instr.wdma`、`wafer.instr.gather_scatter`、`wafer.instr.fill`、
+  `wafer.instr.elementwise`、`wafer.instr.reduce`、`wafer.instr.convert` 和 `wafer.instr.gemm`
+  是 R3.2d 待实现 ODS / verifier / conversion 合同。
+- R3.2d 的实现前置是 R3.2c 先产出 memref-backed `wafer.tile.region`；不能再基于旧
+  `!wafer.storage` / `wafer.tile.alloc` 原型新增 instruction lowering。
+
 本文依赖：
 
 - `tasks/2026-05-25-wafer-tile-region-design.md`

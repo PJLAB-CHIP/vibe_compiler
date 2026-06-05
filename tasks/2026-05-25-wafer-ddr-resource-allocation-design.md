@@ -76,7 +76,7 @@ range 和 BO allocation result 给出失败诊断。
 | `BAR2 visible` | small-BAR 情况最多 32 MiB visible window，visible BO 地址会加 KMD device offset |
 | `BAR4/ATU` | 覆盖 MHU、tile window、C2C、DDR controller、VPU、SYS_CTRL、log 等 aperture |
 
-Compiler IR 不应直接硬编码某个 runtime 返回的 physical address，但 placed instruction/storage IR /
+Compiler IR 不应直接硬编码某个 runtime 返回的 physical address，但 placed instruction-level IR /
 access descriptor verifier 必须能检查：
 
 - DDR access descriptor 是否位于 target policy 允许的 DDR address domain。
@@ -157,7 +157,7 @@ DDR 相关事实按 IR 层分布：
 | `wafer.tile.region` | `#wafer.memory<ddr, layout>` / `#wafer.memory<spm, layout>`、load/store boundary、layout materialization、movement/effect | raw BO address、driver handle、unaccepted allocation trace |
 | accepted layout / buffer layer | `memref<..., #wafer.memory<ddr/spm, layout>>` | host malloc pointer、runtime-private pool internals |
 | DDR resource planning | `DdrBufferDemand`、external allocation contract、resident/compiler-managed demand、pool alternatives、lifetime、bandwidth | tensor math semantics、SPM offset search |
-| placed instruction/storage IR | placed memref、access descriptor、compiler-managed base+offset、movement ops | unresolved unplaced Wafer-tagged memref |
+| placed instruction-level IR | placed memref、access descriptor、compiler-managed base+offset、movement ops | unresolved unplaced Wafer-tagged memref |
 | launch / package / runtime | BO allocation/import/query、constant serialization、physical address query/assignment、completion/fence | group formation 或 layout search 的内部 trace |
 
 `wafer.group` 可以依赖 DDR feasibility 结论，但不携带 DDR plan。DDR plan 要么进入更低层 IR
@@ -235,11 +235,12 @@ DdrBufferDemand {
 如果一个 demand 只能通过 name 或示例 case 恢复，说明 IR contract 不够，应该扩 op/type/interface，
 不能让 DDR planner 猜。
 
-R1.2 当前实现已给 `wafer.tile.load`、`wafer.tile.store`、DDR external allocation metadata 和
-`wafer.tile.*` communication ops 接入 `WaferResourceEffectInterface`，可查询 DDR read/write、SPM 对端、byte count
-和 movement/communication issue。R3.2d/R3.6 后续需要让 placed `wafer.instr.*` / C ABI emission
-复用同一 resource-effect 合同。完整的 `DdrBufferDemand`、pool/domain、lifetime、range 和
-bandwidth summary 仍属于后续 DDR resource planner。
+当前 ODS / verifier 原型已给 `wafer.tile.load`、`wafer.tile.store`、DDR external allocation metadata 和
+`wafer.tile.*` communication ops 接入 `WaferResourceEffectInterface`，可查询 DDR read/write、SPM 对端、
+byte count 和 movement/communication issue。该路径仍要随 R3.2c 迁移到
+`memref<..., #wafer.memory<space, layout>>`。R3.2d/R3.6 后续需要让 placed `wafer.instr.*` /
+C ABI emission 复用同一 resource-effect 合同。完整的 `DdrBufferDemand`、pool/domain、lifetime、
+range 和 bandwidth summary 仍属于后续 DDR resource planner。
 
 ## 6. Allocation Model
 
@@ -272,7 +273,7 @@ Verifier / runtime validation 失败必须暴露为 launch-time diagnostic，不
 记录 input/output kind、compact tensor byte size、required alignment、read-only 和 host-visible
 policy，供后续 launch/runtime package 层消费。它不记录 DDR physical address、BO handle、
 pool/domain 选择、compiler-managed offset 或 allocation/search trace；这些事实仍属于 runtime allocation、
-placed instruction/storage descriptor 或 package metadata。
+placed access descriptor 或 package metadata。
 
 ### 6.2 Constant Residency
 
@@ -565,7 +566,7 @@ DDR verifier 至少检查：
   relation 与 use-def/effect 一致。
 - pool/domain policy 满足 buffer class：普通 tensor allocation 不落 `NPU_BIN` / `LOG`，visible pool
   只用于 CPU-visible/control 需求或显式 policy。
-- placed instruction/storage IR 中不再有无法 lowering 的 abstract DDR boundary。
+- placed instruction-level IR 中不再有无法 lowering 的 abstract DDR boundary。
 
 ## 12. Lowering Responsibility
 

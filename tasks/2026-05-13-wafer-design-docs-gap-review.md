@@ -182,7 +182,7 @@ legality；comm 负责 Direct DTE / FSM / token/wait；runtime/package、C ABI �
 
 `tasks/2026-05-25-wafer-c-abi-golden-packet-design.md` 和
 `tasks/2026-05-25-wafer-verification-plan-design.md` 已把 lower-level Wafer instruction/runtime op、
-C ABI call、placed instruction/storage memref/descriptor、legality diagnostics 和 wrapper golden packet
+C ABI call、placed instruction-level IR / placed memref / access descriptor、legality diagnostics 和 wrapper golden packet
 tests 拆到对应层级。
 
 ## 6. Layout 设计已由 layout 子设计承接
@@ -351,7 +351,7 @@ issue/drain、communication wait 和 group barrier 应在 `wafer.tile.region` �
 
 当前边界：group planner 只保留 abstract resource demand；SPM 文档承接 tile-local
 buffer/lifetime/range，DDR 文档承接 external binding、workspace BO、constant residency、
-pool/domain、capacity 和 bandwidth，compute 文档承接 CT/NE/RDMA/WDMA/TDMA queue family，
+pool/domain、capacity 和 bandwidth，compute 文档承接 CT/NE/RDMA/WDMA/TDMA issue family，
 comm 文档承接 DTE/FSM/packet/stream resource class。R1.2 已把局部 tiling/layout/materialization/
 resource interface 做成 verifier 和单测可查询的实现；剩余工作是让 group planner、SPM allocation /
 DDR resource planning 和 lower-level resource allocator 全量消费这些合同。

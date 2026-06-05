@@ -27,12 +27,22 @@ placement-derived endpoint 和 communication staging demand 的层级；`wafer.t
 - `tasks/2026-05-25-wafer-communication-dialect-design.md`
 - `tasks/2026-06-05-wafer-instruction-ir-design.md`
 
+当前实现状态口径：
+
+- 仓库代码已有 `wafer.tile.region`、旧 `!wafer.storage`、`wafer.tile.alloc/load/store`、
+  target-abstract compute/layout/move/view/comm op 和 group-to-tile-region conversion 原型。
+- 2026-06-05 之后的主线合同已经改为 memref-backed buffer value：
+  `memref<..., #wafer.memory<space, layout>>`。因此旧 `!wafer.storage` / `wafer.tile.alloc`
+  只能视为待迁移原型，不能作为 R3.2c done 口径。
+- 本文下面的 R3.2c coverage 表描述迁移后的目标合同；若与当前 ODS / test fixture 冲突，
+  以 `tasks/progress.md` 的“当前 IR 状态”和本节口径为准。
+
 ## 1. 目标和非目标
 
 目标：
 
 - 给 group 后的 tiled program 一个稳定 region boundary。
-- 把 tensor tile value materialize 成 tile-local storage、descriptor 或 placed instruction/storage value。
+- 把 tensor tile value materialize 成 tile-local memref、descriptor 或 placed instruction-level value。
 - 在同一个 region 内表达 load/store、layout materialization、compute、communication、sync 和
   wait/drain ordering。
 - 为 layout planning、SPM allocation 和 DDR/resource planning 提供可重算 IR 结构。
@@ -56,7 +66,7 @@ wafer.group
   -> DDR / resource legality on placed instruction IR
   -> accepted / rejected / split decision
   -> committed wafer.tile.region
-  -> materialized placed instruction / storage IR
+  -> materialized placed instruction-level IR / placed memref / access descriptor
   -> codegen emission to C ABI / packet / launch
 ```
 
@@ -108,12 +118,13 @@ Pipeline position:
   runtime ABI 事实时才允许结构化 failure。
 ```
 
-### 2.2 R3.2c Op Coverage Matrix
+### 2.2 R3.2c Target Coverage Matrix
 
-本表是当前实现和后续 conversion 重构的事实表，不是“全量已支持”声明。R3.2c 只应该转换当前 IR
-可以验证的 op；缺少 IR 事实或目标 op 的情况必须结构化失败，不能用名字、case 或 side table 补协议。
+本表是 R3.2c memref-backed migration 的完成表，不是“当前代码已全部支持”的声明。R3.2c 只应该转换
+当前 IR 可以验证的 op；缺少 IR 事实或目标 op 的情况必须结构化失败，不能用名字、case 或 side
+table 补协议。
 
-| source IR / op family | 当前 R3.2c 处理 | 覆盖状态 | 正确 conversion 做法 / 后续要求 |
+| source IR / op family | R3.2c 目标处理 | 覆盖状态 | 正确 conversion 做法 / 后续要求 |
 | --- | --- | --- | --- |
 | `wafer.group` / `wafer.group.yield` boundary | DialectConversion 中由 `OpConversionPattern<wafer.group>` 构造 `wafer.tile.region`，对 `ins + outs` 生成 `wafer.tile.load` / `wafer.tile.store` / `wafer.tile.yield`；同一 builder 支持 scratch dump 和正式 `--wafer-convert-group-to-tile-region` pass | supported for tile-region IR | `ConversionTarget` 将 `wafer.group` / `wafer.group.yield` 标为 illegal；debug dump 只调用同一 conversion builder，不能自己承担 lowering 逻辑。 |
 | ranked tensor boundary values | 生成 logical-shape memref，memory attr 默认 `#wafer.memory<spm, tensor>`，记录 compact tensor layout version | supported for ranked tensor | 保持类型/verifier 驱动；后续 instruction-level IR 再决定 concrete instruction，SPM placement 再决定 offset/window。 |
@@ -132,9 +143,9 @@ Pipeline position:
 | `wafer.tensor.*` | R3.2a/R3.2b 可收集 demand/layout；R3.2c 当前失败为缺 placement/local-rank facts | explicitly deferred | 只有 placement/local-rank/buffer facts 进入可验证 IR 后，才能 pattern 化到 `wafer.tile.*` communication ops / `wafer.instr.local_drain` 和后续 sync boundary；不能写死 local rank 或 ring schedule。 |
 | unknown op inside group | 结构化失败 | unsupported | conversion target 应把 `wafer.group` 设为 illegal；unsupported body op 应导致 conversion failure，而不是留下半转换 group。 |
 
-按这个表，R3.2c 已把 supported 子集放到 conversion builder 下，并把 unsupported / deferred 子集的
-failure gate 固定下来。扩展 coverage 时每新增一类 op 都要同时补：IR 语义、verifier、conversion
-pattern、negative test 和下游 instruction/storage 来源。
+R3.2c 迁移完成后，supported 子集必须由同一 conversion builder 覆盖，并把 unsupported / deferred
+子集的 failure gate 固定下来。扩展 coverage 时每新增一类 op 都要同时补：IR 语义、verifier、
+conversion pattern、negative test 和下游 instruction/memref demand 来源。
 
 `wafer.tile.region` 可以跨这些 lowering 子阶段保留为 region container。当前长期边界是：buffer
 value 使用带 Wafer memory attr 的 `memref`，lower-level descriptor 只在 placement / emission
@@ -239,11 +250,11 @@ V0 需要以下 op family：
    `wafer.tile.materialize_layout`。
 4. Wafer instruction legalization / selection：R3.2d 把 target-abstract executable op 合法化并
    选择成 instruction-level `wafer.instr.*`，复用现有 Wafer-tagged memref SSA graph。
-   instruction-level IR 需要列出 queue family、read/write/issue effects、descriptor attrs、
+   instruction-level IR 需要列出 issue family、read/write/issue effects、descriptor attrs、
    temp/psum/staging memref values、alias/view 关系和 reject reason。
 5. SPM placement：R3.2e 只消费 instruction-level IR with unplaced Wafer-tagged memref values，
    在同一 IR 上填入 offset/end/bank span 和 lifetime/reuse；不能直接从 target-abstract op 猜
-   storage demand。
+   memref demand。
 6. DDR/resource planning：R3.2f 消费 placed instruction-level IR、SPM facts 和 DDR boundary，做 capacity /
    bandwidth / range legality。
 7. closed-loop decision：R3.2g 接受、拒绝或要求 split / retry；rejected tile-region IR 丢弃。
@@ -254,15 +265,18 @@ V0 需要以下 op family：
 未接受的候选 plan 不能落入 IR 后等待下游修复。合法性失败应反馈给 group/layout/resource
 planner 重新选择 tile shape、internal split、layout 或 group boundary。
 
-R1.2 已完成 accepted `wafer.tile.region` 内 movement、layout、compute、comm 和 sync op 的基础
-layout/materialization/resource interface 查询入口，但这些接口只表达 target-abstract 关系，不足以
-作为最终 SPM placement 输入。第 4 步 instruction legalization / selection 需要把这些 op 先降到
-instruction-level IR；第 5-7 步的完整 SPM/DDR resource planning 和 closed-loop decision 仍未完成。
+当前 ODS 已有 `wafer.tile.region` 内 movement、layout、compute、comm 和 sync op 的基础
+layout/materialization/resource interface 查询入口，但这些接口和 verifier 仍基于旧 storage 原型；
+R3.2c 需要迁移到 memref-backed contract。第 4 步 instruction legalization / selection 需要把
+target-abstract op 先降到 instruction-level IR；第 5-7 步的完整 SPM/DDR resource planning 和
+closed-loop decision 仍未完成。
 
 当前实现状态：
 
 - `--wafer-convert-group-to-tile-region` 是正式 MLIR conversion pass，使用 `Passes.td` 声明和
-  DialectConversion legality target，在 supported 子集上重写当前模块；`--wafer-dump-group-to-tile-region`
+  DialectConversion legality target，在 supported 子集上重写当前模块；当前输出仍使用旧
+  `!wafer.storage` / `wafer.tile.alloc` 原型，R3.2c active work 是迁到
+  `memref<..., #wafer.memory<space, layout>>`。`--wafer-dump-group-to-tile-region`
   是同一 builder 的只读 dump 入口，并显式 preserve analyses。
 - 旧 `--wafer-materialize-single-tile` explicit unit/debug pass 已删除。后续 tile_region materialization
   必须由 R3 消费真实 frontend/SPMD program chain 和 group contract 后恢复。

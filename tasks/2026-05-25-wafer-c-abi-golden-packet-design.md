@@ -122,7 +122,7 @@ V0 family：
 | conversion | `wafer_convert_*` | CT / NE wrapper | source/result dtype、rounding/saturation policy |
 | convolution | `wafer_conv` | NE wrapper | V0 subset only, layout and kernel constraints |
 | Direct DTE | `wafer_dte_send`, `wafer_dte_recv`, `wafer_dte_wait` | Direct DTE / FSM helper | endpoint、byte count、FSM id、packet/stream resource |
-| sync | `wafer_local_wait`, `wafer_group_barrier` | CSR / runtime helper | queue family、token/effect ordering |
+| sync | `wafer_local_wait`, `wafer_group_barrier` | CSR / runtime helper | issue family、token/effect ordering |
 
 这些函数名是 compiler-facing ABI family，不要求一一等同底层 public symbol。实现可以在 C shim 内
 调用 public Tsm wrapper、Kcore runtime helper 或未来 native helper。
@@ -163,7 +163,7 @@ ABI 默认不隐藏 wait。
 V0 区分：
 
 - issue-only：提交硬件任务，返回 token/status。
-- local drain：等待 CT/NE/RDMA/WDMA/TDMA queue 或指定 queue family。
+- local drain：等待 CT/NE/RDMA/WDMA/TDMA issue queue 或指定 issue family。
 - DTE wait：等待 DTE/FSM completion。
 - group barrier：等待一组 tile / rank 的同步点。
 - synchronous helper：仅用于 bring-up 或明确 synchronous API，函数名必须体现。

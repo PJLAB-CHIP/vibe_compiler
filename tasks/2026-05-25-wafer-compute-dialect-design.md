@@ -11,7 +11,7 @@
 
 本文中的 `wafer.tile.*` compute 是正式 IR contract。它表达“这个 tile-local op 已经选择了某类
 Wafer 目标实现族，并能提供 layout、effect 和 instruction family legality”。它仍然不表达 raw packet
-bitfield、SPM physical offset、worker window、runtime launch 或 host ABI。最终 SPM storage demand
+bitfield、SPM physical offset、worker window、runtime launch 或 host ABI。最终 SPM memref demand
 不是 target-abstract op 自身的属性，而是 R3.2d 产出的 instruction-level `wafer.instr.*`
 over unplaced Wafer-tagged memref IR 的结果。
 instruction-level IR 的具体 op/type/interface 合同见
@@ -29,7 +29,7 @@ allocation、communication collective lowering 或 launch/package emission。
   preferred layout、materialization cost 和组合合法性。
 - 给 instruction legalization / selection 一个稳定入口：每个 op 能提供可验证的 CT/NE/TDMA/RDMA/WDMA
   instruction family legality；R3.2d 再生成 instruction-level IR，并显式报告
-  input/output/temp/scratch/accumulator/psum storage，以及 effect / async lifetime 对 buffer reuse
+  input/output/temp/scratch/accumulator/psum memref demand，以及 effect / async lifetime 对 buffer reuse
   的约束。
 - 给 hardware lowering 一个稳定 legality target：CT、NE、native reduce、RDMA、WDMA、TDMA
   等 target family 的合法性先在 `wafer.tile.*` compute / movement 层被验证，再进入更低层发射。
@@ -98,7 +98,7 @@ Pipeline position:
 - Completion gate:
   对 R3.2c 已支持的 compute/movement/view family 生成 verifier-legal instruction-level IR；
   unsupported hardware instruction form 必须结构化失败，不能让 SPM placement 从 target-abstract op
-  猜 storage demand。
+  猜 memref demand。
 ```
 
 ## 3. Op 家族
@@ -221,7 +221,7 @@ movement op 的合同：
 - RDMA 方向是 `#wafer.memory<ddr, *> -> #wafer.memory<spm, *>`，WDMA 方向是
   `#wafer.memory<spm, *> -> #wafer.memory<ddr, *>`。TDMA / local movement 只在 tile-local
   memory 或 verifier 允许的 address domain 内工作。
-- stride 和 byte count 的单位在 placed instruction/storage 层必须明确。上层 tensor stride 是 element stride，
+- stride 和 byte count 的单位在 placed instruction-level IR / access descriptor 层必须明确。上层 tensor stride 是 element stride，
   lower 到 DMA/TDMA/DTE descriptor 前必须转换成 byte stride。
 
 ## 4. Interfaces
@@ -242,14 +242,16 @@ getAsyncLoweringPolicy(target)
 ```
 
 它回答“这个 op 作为 tile-local compute 是什么，以及有哪些可验证硬件 instruction family”。它不回答
-“最终 packet 每个 bit 怎么写”，也不直接替 SPM allocator 给出唯一 storage demand；storage demand
+“最终 packet 每个 bit 怎么写”，也不直接替 SPM allocator 给出唯一 memref demand；memref demand
 属于 R3.2d 生成的 instruction-level IR。
 
 ### 4.2 `WaferLayoutOpInterface`
 
-R1.2 当前实现先覆盖 accepted-layout 层：所有 layout-sensitive compute/movement op 通过
-`collectWaferLayoutRequirements` 暴露当前 IR 中 operand/result Wafer-tagged memref 已经承诺的
-address space 和 layout marker，并通过 `verifyWaferLayoutContract` 做 verifier 可调用检查。
+当前 ODS / verifier 原型先覆盖 accepted-layout 层：layout-sensitive compute/movement op 通过
+`collectWaferLayoutRequirements` 暴露 operand/result 当前承诺的 address space 和 layout marker，
+并通过 `verifyWaferLayoutContract` 做 verifier 可调用检查。仓库代码仍有旧
+`!wafer.storage` / `#wafer.memory_space` / `#wafer.mem_layout` 路径；R3.2c 需要把同一接口迁移到
+`memref<..., #wafer.memory<space, layout>>`。
 pre-assignment planner 需要的 allowed/preferred layout domain 仍是同一接口边界上的后续扩展：
 
 ```text
@@ -268,7 +270,7 @@ compute/movement op 应实现或组合 MLIR memory effect / resource effect：
 
 - read effects：input storage、constant load source、DDR source。
 - write effects：output storage、store destination、temporary/scratch。
-- resource effects：CT/NE/RDMA/WDMA/TDMA queue family、worker resource、SPM bank/page/color class。
+- resource effects：CT/NE/RDMA/WDMA/TDMA issue family、worker resource、SPM bank/page/color class。
 - async policy：op 是否可 lower 成 issue-only，以及哪些 buffer lifetime 必须延伸到 drain/wait。
 
 这些 effect 用于 liveness、SPM reuse、scheduler 和 verifier。它们不等于保存一份全局 issue plan。
@@ -354,7 +356,7 @@ V0 推荐实现顺序：
 4. `wafer.tile.reduce`：覆盖 `sum/max/min/avg` 中至少一个。
 5. `wafer.tile.materialize_layout` 到 GatherScatter / TDMA 的最小闭环。
 
-当前实现顺序已经先覆盖了 accepted-layout `wafer.tile.gemm`、load/store、layout materialize，
+当前旧原型已经先覆盖了 accepted-layout `wafer.tile.gemm`、load/store、layout materialize，
 并补入 same-shape identity 与 projected-permutation limited broadcast elementwise 到
 `wafer.tile.elementwise` 的 target-abstract path；随后补入 sum/max/min
 local reduce 到 `wafer.tile.reduce` 的 path，保留 reduce dimensions
@@ -463,4 +465,4 @@ Accepted layout 后：
 全局文档边界见 `tasks/2026-05-11-wafer-ai-compiler-architecture.md` 第 8 节。本文只维护
 target-abstract compute/movement op 的语义、interface 和 lowering legality；group formation、
 layout assignment、SPM/DDR allocation、communication 和 launch/runtime 不在本文重复定义。
-register-level wrapper / packet 约束只在 placed instruction/storage lowering 后消费。
+register-level wrapper / packet 约束只在 placed instruction-level lowering / codegen emission 后消费。

@@ -92,7 +92,7 @@ Pipeline position:
   Wafer-tagged memref values。
 - layout planner 产生的 physical layout assignment 和 materialization demand。
 - instruction legalization / selection 产生的 concrete memref value、operand/result/temp/scratch/
-  accumulator/psum/staging 分类、queue family、effect event 和 async policy。
+  accumulator/psum/staging 分类、issue family、effect event 和 async policy。
 - `WaferCommOpInterface` 或后续 communication instruction selection 提供的 source/destination buffer、byte count、
   token/wait 和 staging storage。
 - target policy：SPM range、reserved range、alignment、coloring preference。
@@ -152,7 +152,7 @@ SPM allocator 不按 op 名字猜 buffer，也不把一个 target-abstract op �
 - `wafer.tile.*` compute ops / target-abstract movement op：通过 compute/movement 文档定义的接口枚举或选择
   hardware instruction family，例如 NE GEMM、CT elementwise/reduce、TDMA GatherScatter；SPM
   memcpy 是 GatherScatter 的 contiguous descriptor 特例。
-  instruction-level IR 再报告 operand/result/temp/scratch/accumulator/psum memref demand、queue family
+  instruction-level IR 再报告 operand/result/temp/scratch/accumulator/psum memref demand、issue family
   和 async lowering policy。
 - `wafer.tile.materialize_layout`：不能只报告“source read / result write”。它必须先选择具体
   materialization instruction lowering，例如可展开成具体 GatherScatter 序列的 ChannelNorm /

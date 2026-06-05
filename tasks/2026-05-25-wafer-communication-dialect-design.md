@@ -181,10 +181,11 @@ collectCommunicationBufferDemand(target)
 - layout relation：p2p byte movement preserve physical layout；collective result layout 由 input
   layout、consumer constraint 和 layout materialization/co-planning 决定，不由 DTE 协议隐式改变。
 
-R1.2 当前实现中，`wafer.tile.*` communication ops 通过 `WaferResourceEffectInterface` 暴露 SPM read/write、
-communication issue/wait 和 byte count；p2p/collective op 同时有 Wafer communication resource 的
-MLIR memory effect。具体 DTE/FSM/packet/stream id 仍只在 placed Direct DTE instruction/resource
-stage 出现，不回写到 collective-level op。
+当前 ODS / verifier 原型中，`wafer.tile.*` communication ops 通过 `WaferResourceEffectInterface`
+暴露 SPM read/write、communication issue/wait 和 byte count；p2p/collective op 同时有 Wafer
+communication resource 的 MLIR memory effect。该路径仍要随 R3.2c 迁移到 memref-backed buffer
+contract。具体 DTE/FSM/packet/stream id 仍只在 placed Direct DTE instruction/resource stage 出现，
+不回写到 collective-level op。
 
 通信 staging buffer 是 SPM allocation 的 `BufferDemand(kind = communication_staging)`，不是
 `wafer.tile.*` communication 的私有内存计划。
@@ -211,7 +212,7 @@ raw non-unicast DTE 可以作为 HardwareVerify 主题：需要独立 ABI、reso
 错误语义后才能进入 compiler lowering。在这些证据补齐前，all-gather、all-reduce、all-to-all 等
 collective 仍应由 unicast p2p schedule 组合表达，而不是在 logical IR 层被拒绝。
 
-当前实现中，`wafer.tile.send` / `wafer.tile.recv` 的 p2p verifier 已在存在
+当前 ODS / verifier 原型中，`wafer.tile.send` / `wafer.tile.recv` 的 p2p verifier 已在存在
 `wafer.placement.map` 时检查 peer 指向 active physical tile，`wafer.tile.wait` 要求至少一个
 async token。旧 `--wafer-lower-tile-region-to-c-abi` pass 已删除；fixed-size unicast p2p 到
 placed Direct DTE instruction form 和 C ABI emission 的 lowering 必须在 R6/R7 从 placed
@@ -404,11 +405,13 @@ wafer.tile.wait %send1, %recv1
 
 当前实现：
 
-- single-card fixed-size unicast Direct DTE。
-- `collective_permute` 和 ring `all_gather`。
-- `reduce_scatter` / `all_reduce` 通过 p2p + local reduce 组合。
-- explicit token/wait、communication staging buffer、SPM allocation integration。
-- Direct DTE send/recv/wait golden path 和 error diagnostic。
+- dialect / verifier 层有 `wafer.tile.send`、`recv`、`wait`、`all_gather`、`reduce_scatter` 和
+  `all_reduce`，以及旧 storage 原型上的 token/effect / byte-count 检查。
+- `collective_permute`、ring `all_gather`、`reduce_scatter` / `all_reduce` 的 p2p + local reduce
+  lowering 仍依赖后续 placement/local-rank/buffer facts，不是当前主线完成项。
+- Direct DTE send/recv/wait golden path 和 error diagnostic 属于历史 bring-up 证据；placed Direct DTE
+  instruction form、resource allocation 和 C ABI emission 需要在 R6/R7 从 placed instruction-level IR
+  重新建立。
 
 后续进入条件：
 
