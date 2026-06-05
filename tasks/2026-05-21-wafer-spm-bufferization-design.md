@@ -144,7 +144,8 @@ SPM allocator 不按 op 名字猜 buffer，也不把一个 target-abstract op �
 来源应是 instruction legalization / selection 后的明确 storage graph：
 
 - `wafer.compute.*` / target-abstract movement op：通过 compute/movement 文档定义的接口枚举或选择
-  hardware instruction family，例如 NE GEMM、CT elementwise/reduce、TDMA memcpy / GatherScatter。
+  hardware instruction family，例如 NE GEMM、CT elementwise/reduce、TDMA GatherScatter；SPM
+  memcpy 是 GatherScatter 的 contiguous descriptor 特例。
   instruction-level IR 再报告 operand/result/temp/scratch/accumulator/psum demand、queue family
   和 async lowering policy。
 - `wafer.layout.materialize`：不能只报告“source read / result write”。它必须先选择具体

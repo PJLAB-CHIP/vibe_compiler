@@ -88,7 +88,7 @@ instruction-level tile-region IR
 | NE | supported | GEMM，后续 conv/pool 类 op 在 verifier 完整后加入 |
 | RDMA | supported | DDR -> SPM load |
 | WDMA | supported | SPM -> DDR store |
-| TDMA / DataMove | supported | SPM copy、GatherScatter、layout materialization 展开的 concrete movement |
+| TDMA / DataMove | supported | GatherScatter、layout materialization 展开的 concrete movement；SPM memcpy 也用 GatherScatter 表达 |
 | DTE | not `wafer.instr` V0 | tile 间 communication；走 `wafer.comm` / communication lowering 独立边界 |
 | CSR / SCALAR | not `wafer.instr` V0 | wait、CSR/MMIO、Kcore helper；不经 `TsmExecute` 普通 path |
 
@@ -193,13 +193,16 @@ movement 映射到硬件 descriptor，必须失败；不能把 element stride �
 
 | op | 语义 | 来源 |
 | --- | --- | --- |
-| `wafer.instr.tdma.copy` | tile-local contiguous SPM copy | `wafer.move.copy`、contiguous slice movement |
-| `wafer.instr.tdma.gather_scatter` | byte-strided SPM movement | static extract/insert slice、general layout materialization |
+| `wafer.instr.tdma.gather_scatter` | byte-counted SPM movement；contiguous copy 是 stride/iteration 可折叠的特例 | `wafer.move.copy`、static extract/insert slice、general layout materialization |
 
 `ChannelNorm/DechannelNorm` 是 layout materialization algorithm，不是 V0 `wafer.instr` 单条 op。
 当前硬件资料显示 V0 主路径用 `TsmDataMove::GatherScatter` 实现它们，因此 R3.2d 应把这类
 materialization 展开成一条或多条 `wafer.instr.tdma.gather_scatter`，或者在无法表达时结构化失败。
 只有硬件或 stable wrapper 后续暴露可验证的单条指令形态时，才新增对应 `wafer.instr.tdma.*` op。
+
+V0 不定义 `wafer.instr.tdma.copy`。公开 SPM memcpy helper 本身也是 GatherScatter wrapper 样例；
+把 copy 单独做成 instruction op 会把 helper 名字提升为 IR 语义，并让 storage-size / descriptor
+verifier 出现第二套事实源。
 
 ### 4.3 CT Ops
 
@@ -260,14 +263,14 @@ Mapping V0：
 | --- | --- |
 | `wafer.load_tile` | `wafer.storage.external` + `wafer.storage.alloc` + `wafer.instr.rdma` |
 | `wafer.store_tile` | source storage + `wafer.storage.external` + `wafer.instr.wdma` |
-| `wafer.layout.materialize` | `wafer.storage.alloc` + 一条或多条 `wafer.instr.tdma.copy` / `gather_scatter`，无法展开则结构化失败 |
+| `wafer.layout.materialize` | `wafer.storage.alloc` + 一条或多条 `wafer.instr.tdma.gather_scatter`，无法展开则结构化失败 |
 | `wafer.compute.fill` | destination storage + `wafer.instr.ct.fill` |
 | `wafer.compute.gemm` | result/psum storage + `wafer.instr.ne.gemm` |
 | `wafer.compute.elementwise` | result storage + `wafer.instr.ct.elementwise` |
 | `wafer.compute.reduce` | result storage + `wafer.instr.ct.reduce` |
-| `wafer.move.copy` | result storage + `wafer.instr.tdma.copy` |
+| `wafer.move.copy` | result storage + `wafer.instr.tdma.gather_scatter` |
 | `wafer.move.broadcast` / `transpose` | result storage + `wafer.instr.tdma.gather_scatter` 或结构化失败 |
-| `wafer.move.extract_slice` / `insert_slice` | result/update storage + `wafer.instr.tdma.copy` 或 `gather_scatter` |
+| `wafer.move.extract_slice` / `insert_slice` | result/update storage + 一条或多条 `wafer.instr.tdma.gather_scatter` |
 | `wafer.view.reshape` | `wafer.storage.view`，无 instruction issue |
 | `wafer.comm.*` | R3.2d V0 不映射到 `wafer.instr`；communication instruction lowering 独立推进 |
 
