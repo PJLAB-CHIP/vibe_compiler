@@ -226,8 +226,12 @@ module {
 }
 
 // CHECK-LABEL: wafer.group_to_tile_region group @matmul_bias_relu#0
+// CHECK: bufferization.to_memref
+// CHECK-SAME: #wafer.memory<ddr, tensor>
 // CHECK: wafer.tile.region(
+// CHECK-SAME: #wafer.memory<ddr, tensor>
 // CHECK: wafer.tile.load
+// CHECK-SAME: #wafer.memory<ddr, tensor>
 // CHECK: memref<4x8xf32, #wafer.memory<spm, tensor>>
 // CHECK: wafer.tile.fill
 // CHECK: wafer.tile.materialize_layout
@@ -239,7 +243,9 @@ module {
 // CHECK-SAME: indexing_maps
 // CHECK: wafer.tile.elementwise <max>
 // CHECK: wafer.tile.store
+// CHECK-SAME: #wafer.memory<ddr, tensor>
 // CHECK: wafer.tile.yield
+// CHECK: bufferization.to_tensor
 // CHECK-LABEL: wafer.group_to_tile_region group @two_independent_groups#0
 // CHECK: wafer.tile.elementwise <add>
 // CHECK-LABEL: wafer.group_to_tile_region group @two_independent_groups#1
@@ -249,7 +255,8 @@ module {
 // CHECK: wafer.tile.fill
 // CHECK: wafer.tile.store
 // CHECK-LABEL: wafer.group_to_tile_region group @reduce_sum_group#0
-// CHECK: tensor.extract
+// CHECK: memref.load
+// CHECK-SAME: #wafer.memory<ddr, tensor>
 // CHECK: wafer.tile.fill
 // CHECK: wafer.tile.materialize_layout
 // CHECK: #wafer.memory<spm, cx>

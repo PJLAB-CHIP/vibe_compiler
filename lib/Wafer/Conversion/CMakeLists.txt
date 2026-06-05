@@ -11,6 +11,7 @@ add_mlir_conversion_library(WaferGroupToTileRegion
   WaferAnalysis
   WaferIR
   MLIRArithDialect
+  MLIRBufferizationDialect
   MLIRFuncDialect
   MLIRIR
   MLIRLinalgDialect

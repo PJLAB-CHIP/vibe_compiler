@@ -10,8 +10,8 @@ def Wafer_StorageLoadOp : Wafer_Op<"tile.load", [
                    MemWrite<Wafer_SPMResource>,
                    MemWrite<Wafer_MovementResource>]>
 ]> {
-  let summary = "load an external tensor boundary into an SPM buffer";
-  let arguments = (ins AnyRankedTensor:$source);
+  let summary = "load a DDR boundary buffer into an SPM buffer";
+  let arguments = (ins Wafer_AnyDDRMemRef:$source);
   let results = (outs Wafer_AnySPMMemRef:$result);
   let hasVerifier = 1;
   let assemblyFormat = "$source attr-dict `:` type($source) `->` type($result)";
@@ -24,8 +24,8 @@ def Wafer_StorageStoreOp : Wafer_Op<"tile.store", [
                    MemWrite<Wafer_DDRResource>,
                    MemWrite<Wafer_MovementResource>]>
 ]> {
-  let summary = "store an SPM buffer to an external tensor boundary";
-  let arguments = (ins Wafer_AnySPMMemRef:$source, AnyRankedTensor:$dest);
+  let summary = "store an SPM buffer to a DDR boundary buffer";
+  let arguments = (ins Wafer_AnySPMMemRef:$source, Wafer_AnyDDRMemRef:$dest);
   let hasVerifier = 1;
   let assemblyFormat =
       "$source `,` $dest attr-dict `:` type($source) `->` type($dest)";

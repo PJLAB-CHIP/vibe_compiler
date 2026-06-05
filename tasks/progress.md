@@ -29,11 +29,15 @@ PyTorch/XLA StableHLO Wafer program directory
        post-SPMD StableHLO collective handoff + official StableHLO-to-Linalg
   -> stablehlo-spmd-to-group
        dependency-preserving logical wafer.group ops
-  -> R3.2+ planning / tile-region / placement / package recovery
+  -> wafer-lower-groups-to-tile-region
+       DDR boundary materialization, memref-backed wafer.tile.region,
+       One-Shot function-boundary bufferization
+  -> R3.2d+ instruction / placement / package recovery
 ```
 
 `wafer-compile-stablehlo` 只做 frontend / StableHLO program verifier。
-`wafer-propagate-stablehlo-sharding`、`wafer-lower-stablehlo-to-linalg` 和 R3.2a/b dump pass
+`wafer-propagate-stablehlo-sharding`、`wafer-lower-stablehlo-to-linalg`、R3.2a/b dump pass 和
+`--wafer-convert-group-to-tile-region`
 只是内部或局部测试入口，不是用户级编译流程。
 
 ## 工程组织口径
@@ -54,7 +58,7 @@ PyTorch/XLA StableHLO Wafer program directory
 | --- | --- | --- |
 | Tensor | `wafer.group`、`wafer.group.yield`、`wafer.tensor.*` collective handoff | 保持；R3.1 已完成 group，tensor collective 到 tile communication 仍 deferred |
 | Tile region | `wafer.tile.region`、`wafer.tile.yield` | 保持 region container；R3.2c 已迁移为 memref-backed target-abstract tile IR |
-| Tile load/store/allocation | `wafer.tile.load/store` + `memref.alloc` + `#wafer.memory<space, layout>` | `wafer.tile.alloc` 和 `!wafer.storage` 已删除；buffer identity 使用 `memref.alloc` / block args / views |
+| Tile load/store/allocation | `wafer.tile.load/store` + `memref.alloc` + `#wafer.memory<space, layout>` | `wafer.tile.load/store` 的 DDR 侧使用 `#wafer.memory<ddr, tensor>` memref，SPM 侧使用 `#wafer.memory<spm, *>` memref；`wafer.tile.alloc` 和 `!wafer.storage` 已删除；buffer identity 使用 `memref.alloc` / block args / views |
 | Tile compute/layout/move/view | `wafer.tile.fill/gemm/elementwise/reduce`、`materialize_layout`、`copy/extract_slice/insert_slice/transpose/broadcast`、`reshape` | 保持为 target-abstract tile ops；operand/result 已改为 Wafer-tagged memref |
 | Tile communication | `wafer.tile.send/recv/wait/all_gather/reduce_scatter/all_reduce` | 保持 dialect 层；真实 materialization 依赖 placement/local-rank/buffer facts |
 | Instr | `wafer.instr.local_drain` | 保持；R3.2d 新增语义命名的 instruction ops：`rdma`、`wdma`、`gather_scatter`、`fill`、`elementwise`、`reduce`、`convert`、`gemm` |
@@ -72,21 +76,24 @@ PyTorch/XLA StableHLO Wafer program directory
 | R3.1 | done | `2026-05-12-wafer-group-design.md` 2.1、9.1-9.5 | R2.4 rank-local structured tensor IR | verifier-legal logical `wafer.group`；覆盖 fill/init、matmul+bias+epilogue、simple elementwise、tensor collective handoff、多 group 和 raw StableHLO / lower-level op 禁止 |
 | R3.2a | done | `2026-05-12-wafer-group-design.md` 10.1-10.2 | R3.1 logical `wafer.group` body | `GroupTilingDemand` analysis result；覆盖 boundary/result tile facts、per-op slice、iterator、accumulator/reduction dims、collective demand 和 unsupported-op failure |
 | R3.2b | done | `2026-05-21-wafer-layout-materialization-design.md` 3.1.1 | R3.2a `GroupTilingDemand` facts + group SSA use-def | `GroupLayoutPlan` analysis result；覆盖 boundary layout、op layout constraints、broadcast relation、materialization cut/result demand 和 failure forwarding；不修改 IR |
-| R3.2c | done | `2026-05-25-wafer-tile-region-design.md` 2.1-2.2 | R3.1 group + R3.2a demand + R3.2b layout plan | DialectConversion 输出 verifier-legal memref-backed `wafer.tile.region` IR；覆盖 load/store、layout materialization、`wafer.tile.fill/gemm/elementwise/reduce`、`wafer.tile.copy/extract_slice/insert_slice/transpose/broadcast` 和 `wafer.tile.reshape`；硬件 V0 无承载或缺 placement/local-rank facts 时结构化 failure；不做 SPM offset，不把 tile-region IR 当成 R3.3 accepted materialization |
-| R3.2d | ready | `2026-06-05-wafer-instruction-ir-design.md` | memref-backed R3.2c target-abstract `wafer.tile.region` IR | 在 unplaced Wafer-tagged memref graph 上生成 instruction-level `wafer.instr.*`，覆盖 `rdma/wdma/gather_scatter/fill/elementwise/reduce/convert/gemm` op contract、descriptor attrs、effect/issue-family contract 和 structured failure；不新增第二套 storage/buffer IR、不做 SPM offset、不生成 ABI call |
+| R3.2c | done | `2026-05-25-wafer-tile-region-design.md` 2.1-2.2 | R3.1 group + R3.2a demand + R3.2b layout plan | `wafer-lower-groups-to-tile-region` 输出 verifier-legal memref-backed `wafer.tile.region` IR 和 DDR memref function boundary；覆盖 DDR/SPM load/store、layout materialization、`wafer.tile.fill/gemm/elementwise/reduce`、`wafer.tile.copy/extract_slice/insert_slice/transpose/broadcast`、`wafer.tile.reshape` 和 One-Shot function-boundary bufferization；硬件 V0 无承载或缺 placement/local-rank facts 时结构化 failure；不做 SPM offset，不把 tile-region IR 当成 R3.3 accepted materialization |
+| R3.2d | ready | `2026-06-05-wafer-instruction-ir-design.md` | R3.2c memref-backed target-abstract `wafer.tile.region` IR；DDR side 是 `#wafer.memory<ddr, tensor>` memref，SPM side 是 unplaced `#wafer.memory<spm, *>` memref | 在 unplaced Wafer-tagged memref graph 上生成 instruction-level `wafer.instr.*`，覆盖 `rdma/wdma/gather_scatter/fill/elementwise/reduce/convert/gemm` op contract、descriptor attrs、effect/issue-family contract 和 structured failure；不新增第二套 storage/buffer IR、不做 SPM offset、不生成 ABI call |
 
 ## 当前状态
 
-R3.2c memref-backed tile-region IR migration 已完成。下一项 ready task 是 **R3.2d instruction
-legalization / selection**。R3.2d 的 IR 设计主文档
+R3.2c memref-backed tile-region IR migration 已完成：group boundary 已 materialize 为 DDR memref，
+tile-local value 使用 SPM memref，named pipeline 已接入 MLIR One-Shot function-boundary bufferization。
+下一项 ready task 是 **R3.2d instruction legalization / selection**。R3.2d 的 IR 设计主文档
 `tasks/2026-06-05-wafer-instruction-ir-design.md` 已按 memref-backed buffer contract 收口，输入就是
 R3.2c 产出的 unplaced Wafer-tagged memref tile-region IR。
 
 R3.2c/R3.2d 当前边界是：
 
 - R3.2c 的 conversion pass 可在 supported group 上 materialize verifier-legal `wafer.tile.region`
-  IR；tile-local buffer 值统一使用 `memref<..., #wafer.memory<space, layout>>`，`tensor.empty`
-  降为 `memref.alloc`。
+  IR；DDR boundary 使用 `memref<..., #wafer.memory<ddr, tensor>>`，tile-local buffer 值使用
+  `memref<..., #wafer.memory<spm, layout>>`，`tensor.empty` 按 boundary/local 语义降为 DDR 或 SPM
+  `memref.alloc`。`wafer-lower-groups-to-tile-region` 会继续运行 One-Shot，把外层函数 tensor
+  boundary 转成 DDR memref boundary。
 - R3.2d 只做 Wafer instruction legalization / selection：把 target-abstract executable op 合法化并
   选择成 instruction-level `wafer.instr.*`，复用 unplaced Wafer-tagged memref SSA graph；
   不新增第二套 storage/buffer IR，不分配 SPM offset，不生成 C ABI call，不重新决定 group formation。
@@ -96,8 +103,8 @@ R3.2c/R3.2d 当前边界是：
 
 | ID | 状态 | 输入 / 输出边界 | 完成 gate |
 | --- | --- | --- | --- |
-| R3.2c | done | 输入：R3.1 group + R3.2a demand + R3.2b layout plan；输出：memref-backed target-abstract `wafer.tile.region` IR 或结构化失败 | `#wafer.memory<space, layout>` attr、`computeWaferPhysicalTensorInfo(memrefType)`、GroupToTileRegion conversion、Tile ODS/verifier 和 lit/unit tests 已迁移；旧 `!wafer.storage` / `wafer.tile.alloc` 已删除 |
-| R3.2d | ready | 输入：R3.2c target-abstract `wafer.tile.region` IR with unplaced Wafer-tagged memref；输出：instruction-level `wafer.instr.*` IR 或结构化失败 | 按 `2026-06-05-wafer-instruction-ir-design.md` 实现 `rdma`、`wdma`、`gather_scatter`、`fill`、`elementwise`、`reduce`、`convert` 和 `gemm` instruction ops、instruction interface、verifier 和 DialectConversion；为 load/store、layout materialize、tile.gemm/reduce/elementwise、tile movement op 选择硬件指令形态；IR 通过 interface 暴露 issue family、read/write/issue effects、descriptor attrs 和 alias/view；不新增第二套 storage/buffer IR、不做 SPM offset、不生成 ABI call |
+| R3.2c | done | 输入：R3.1 group + R3.2a demand + R3.2b layout plan；输出：memref-backed target-abstract `wafer.tile.region` IR，DDR memref function boundary，或结构化失败 | `#wafer.memory<space, layout>` attr、`computeWaferPhysicalTensorInfo(memrefType)`、GroupToTileRegion conversion、DDR/SPM `tile.load/store` ODS/verifier、`wafer-lower-groups-to-tile-region` named pipeline、MLIR One-Shot external model registration 和 lit/unit tests 已迁移；旧 `!wafer.storage` / `wafer.tile.alloc` 已删除 |
+| R3.2d | ready | 输入：R3.2c target-abstract `wafer.tile.region` IR with DDR boundary memref and unplaced SPM memref；输出：instruction-level `wafer.instr.*` IR 或结构化失败 | 按 `2026-06-05-wafer-instruction-ir-design.md` 实现 `rdma`、`wdma`、`gather_scatter`、`fill`、`elementwise`、`reduce`、`convert` 和 `gemm` instruction ops、instruction interface、verifier 和 DialectConversion；为 load/store、layout materialize、tile.gemm/reduce/elementwise、tile movement op 选择硬件指令形态；IR 通过 interface 暴露 issue family、read/write/issue effects、descriptor attrs 和 alias/view；不新增第二套 storage/buffer IR、不做 SPM offset、不生成 ABI call |
 | R3.2e | pending | 输入：R3.2d instruction-level IR with unplaced Wafer-tagged memref；输出：同一 instruction-level IR with placed SPM memref values 或结构化失败 | 真实 SPM window placement：alignment、layout padding、scratch/psum/temp、materialization temp、communication staging、lifetime overlap、range/end-address/bank span/conflict 都参与 |
 | R3.2f | pending | 输入：R3.2e placed instruction-level IR + DDR boundary facts；输出：DDR/resource legality result 和 movement/compute resource validation | 覆盖 external/compiler-managed/resident-constant、pool/domain/capacity/bandwidth/range demand；不能用 manifest fixture 替代；不能回头改变 instruction semantics |
 | R3.2g | pending | 输入：R3.1 group + R3.2a-f planning results；输出：accepted/rejected/split group planning decision | closed-loop 搜索 group boundary、traversal、tile shape、layout、instruction selection、SPM/DDR/resource plan；未接受 plan 不落 IR；multi-root packing 只作为可证明兼容时的可选策略 |
@@ -123,5 +130,5 @@ R3.2c/R3.2d 当前边界是：
 
 ## 下一步
 
-下一步进入 R3.2d instruction legalization / selection：在 R3.2c 的 unplaced Wafer-tagged memref
+下一步进入 R3.2d instruction legalization / selection：在 R3.2c 的 DDR/SPM Wafer-tagged memref
 tile-region IR 上实现 `wafer.instr.*` op、instruction interface、verifier 和 DialectConversion。

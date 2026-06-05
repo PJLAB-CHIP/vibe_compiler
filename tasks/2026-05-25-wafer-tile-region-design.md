@@ -5,7 +5,8 @@
 状态：设计草案；2026-05-25 独立边界收口；2026-05-27 对齐 tensor collective 到 `wafer.tile.*` communication materialization；
 2026-06-03 R3.2c 对齐 MLIR DialectConversion full conversion；2026-06-04 对齐
 instruction-level Wafer IR 先于 SPM placement，并补正式 `group -> tile_region` conversion pass；
-2026-06-05 对齐 memref-backed buffer contract，`Cx/NCx` 改为 Wafer memory attr marker
+2026-06-05 对齐 memref-backed buffer contract，`Cx/NCx` 改为 Wafer memory attr marker；
+2026-06-05 补齐 R3.2c DDR boundary materialization 和 One-Shot function-boundary pipeline
 
 本文定义 `wafer.tile.region` 作为 `wafer.group` lowering 之后的 tile-local execution boundary。
 它组织 tile-local Wafer-tagged memref、movement、layout materialization、target-abstract compute、communication
@@ -32,9 +33,16 @@ placement-derived endpoint 和 communication staging demand 的层级；`wafer.t
 - 仓库代码已有 `wafer.tile.region`、`wafer.tile.load/store`、target-abstract
   compute/layout/move/view/comm op 和 group-to-tile-region conversion。
 - 2026-06-05 R3.2c 已把 tile-local buffer value 迁移为 memref-backed contract：
-  `memref<..., #wafer.memory<space, layout>>`；`tensor.empty` 在 tile-region lowering 中降为
-  `memref.alloc`。旧 `!wafer.storage`、`wafer.tile.alloc`、`#wafer.memory_space` 和
-  `#wafer.mem_layout` 已从主线 IR 定义、verifier 和测试中删除。
+  `memref<..., #wafer.memory<space, layout>>`；group boundary tensor 先 materialize 为
+  `memref<..., #wafer.memory<ddr, tensor>>`，tile-local value 使用
+  `memref<..., #wafer.memory<spm, layout>>`。`tensor.empty` 作为 writable group output 时降为 DDR
+  `memref.alloc`；tile-local temporary 降为 SPM `memref.alloc`。旧 `!wafer.storage`、
+  `wafer.tile.alloc`、`#wafer.memory_space` 和 `#wafer.mem_layout` 已从主线 IR 定义、verifier
+  和测试中删除。
+- `--wafer-convert-group-to-tile-region` 是局部 conversion 入口，会在外层 tensor IR 与 tile-region
+  DDR memref boundary 之间保留 `bufferization.to_memref` / `bufferization.to_tensor` bridge。
+  `wafer-lower-groups-to-tile-region` named pipeline 在该 conversion 后运行 MLIR One-Shot
+  Bufferize，把函数 tensor boundary 转成 `#wafer.memory<ddr, tensor>` memref boundary。
 - 本文下面的 R3.2c coverage 表描述已落地合同；若与历史任务文档冲突，以本节和
   `tasks/progress.md` 的“当前 IR 状态”为准。
 
@@ -61,7 +69,8 @@ placement-derived endpoint 和 communication staging demand 的层级；`wafer.t
 
 ```text
 wafer.group
-  -> group-to-tile-region lowered `wafer.tile.region` IR
+  -> DDR boundary materialization + group-to-tile-region lowered `wafer.tile.region` IR
+  -> One-Shot bufferized function boundary for main R3.2c pipeline
   -> instruction-level wafer.instr.* IR over unplaced Wafer-tagged memref values
   -> SPM placement on the same instruction-level IR
   -> DDR / resource legality on placed instruction IR
@@ -89,34 +98,41 @@ Pipeline position:
   R3.1 verifier-legal tensor-level logical `wafer.group` op、R3.2a
   `GroupTilingDemand` analysis result 和 R3.2b `GroupLayoutPlan` analysis result。
 - Current stage responsibility:
-  通过 MLIR DialectConversion 构造 `wafer.tile.region` IR；
+  通过 MLIR DialectConversion 构造 memref-backed `wafer.tile.region` IR；
   `wafer.group` 是 illegal root，conversion pattern 产出完整 legal `wafer.tile.region`，并用 full
   conversion 保证 converted region 内不残留 logical group / linalg / tensor allocation op；
-  把 logical group boundary 映射成 `wafer.tile.load` / `wafer.tile.store`，把 selected
+  把 logical group tensor boundary materialize 成 `#wafer.memory<ddr, tensor>` memref，再映射成
+  `wafer.tile.load` / `wafer.tile.store`；把 selected
   layout 和 materialization cut 映射成带 `#wafer.memory<space, layout>` 的 memref value
   与 `wafer.tile.materialize_layout`，
   把可验证的 structured compute / tensor collective 映射成 target-abstract
-  `wafer.tile.*` compute / `wafer.tile.*` communication / sync/effect op。
+  `wafer.tile.*` compute / `wafer.tile.*` communication / sync/effect op；
+  named pipeline 在 conversion 后运行 MLIR One-Shot Bufferize，把外层函数 tensor signature 和
+  return boundary 转成 `#wafer.memory<ddr, tensor>` memref signature。
 - Output artifact / IR:
-  verifier-legal `wafer.tile.region` IR 或结构化 failure reason。局部 conversion
-  pass 可以把 supported group 重写成 tile-region IR；planner scratch entry 返回 tile-region IR 用于
-  dump、verification 和后续 planning analysis。rejected tile-region IR 不写入主线 accepted IR。
+  verifier-legal memref-backed `wafer.tile.region` IR 或结构化 failure reason。局部 conversion
+  pass 可以把 supported group 重写成 tile-region IR，并保留 tensor/memref bridge 以便接在 tensor-level
+  IR 上独立调试；named pipeline 输出函数边界已 One-Shot bufferized 的 DDR memref IR。planner scratch
+  entry 返回 tile-region IR 用于 dump、verification 和后续 planning analysis。rejected tile-region IR
+  不写入主线 accepted IR。
 - Downstream consumer:
   R3.2d Wafer instruction legalization / selection、R3.2e SPM placement、R3.2f DDR/resource planning +
   compute/movement legality analysis、R3.2g closed-loop planner。
 - User-level driver / named pipeline:
   主线仍由 `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 产生 logical group；
-  R3.2c 的局部验证入口是 `wafer-opt --wafer-convert-group-to-tile-region` 和
-  `wafer-opt --wafer-dump-group-to-tile-region`。
+  R3.2c 的主线验证入口是
+  `wafer-opt --pass-pipeline='builtin.module(wafer-lower-groups-to-tile-region)'`。局部验证入口是
+  `wafer-opt --wafer-convert-group-to-tile-region` 和 `wafer-opt --wafer-dump-group-to-tile-region`。
 - Explicit non-goals:
   不做 SPM offset allocation、不做 DDR pool/range/bandwidth planning、不 accept/reject/split
   group、不把 tile-region IR 当成 R3.3 accepted materialization、不 lower 到 packet/ABI/LLVM。
 - Completion gate:
   FileCheck、conversion pass、dump pass 和主线 pipeline 覆盖 R2.4/R3.1 已能产出的 Wafer V0 硬件可承载 local
-  compute/movement/view family：load/store boundary、layout materialization、`memref.alloc`
-  tile-local allocation、fill、GEMM、elementwise/relation、native reduce、passthrough broadcast/transpose/copy、
-  tensor slice movement 和 static reshape view。硬件 V0 无承载或当前 IR 缺 placement/local-rank /
-  runtime ABI 事实时才允许结构化 failure。
+  compute/movement/view family：DDR memref load/store boundary、layout materialization、DDR/SPM
+  `memref.alloc`、tile-local allocation、fill、GEMM、elementwise/relation、native reduce、passthrough
+  broadcast/transpose/copy、tensor slice movement、static reshape view 和 function-boundary One-Shot
+  bufferization。硬件 V0 无承载或当前 IR 缺 placement/local-rank / runtime ABI 事实时才允许结构化
+  failure。
 ```
 
 ### 2.2 R3.2c Target Coverage Matrix
@@ -127,13 +143,13 @@ table 补协议。
 
 | source IR / op family | R3.2c 目标处理 | 覆盖状态 | 正确 conversion 做法 / 后续要求 |
 | --- | --- | --- | --- |
-| `wafer.group` / `wafer.group.yield` boundary | DialectConversion 中由 `OpConversionPattern<wafer.group>` 构造 `wafer.tile.region`，对 `ins + outs` 生成 `wafer.tile.load` / `wafer.tile.store` / `wafer.tile.yield`；同一 builder 支持 scratch dump 和正式 `--wafer-convert-group-to-tile-region` pass | supported for tile-region IR | `ConversionTarget` 将 `wafer.group` / `wafer.group.yield` 标为 illegal；debug dump 只调用同一 conversion builder，不能自己承担 lowering 逻辑。 |
-| ranked tensor boundary values | 生成 logical-shape memref，memory attr 默认 `#wafer.memory<spm, tensor>`，记录 compact tensor layout version | supported for ranked tensor | 保持类型/verifier 驱动；后续 instruction-level IR 再决定 concrete instruction，SPM placement 再决定 offset/window。 |
+| `wafer.group` / `wafer.group.yield` boundary | DialectConversion 中由 `OpConversionPattern<wafer.group>` 构造 `wafer.tile.region`；`ins + outs` 先 materialize 为 `#wafer.memory<ddr, tensor>` memref，再生成 `wafer.tile.load` / `wafer.tile.store` / `wafer.tile.yield`；同一 builder 支持 scratch dump 和正式 `--wafer-convert-group-to-tile-region` pass | supported for tile-region IR | `ConversionTarget` 将 `wafer.group` / `wafer.group.yield` 标为 illegal；debug dump 只调用同一 conversion builder，不能自己承担 lowering 逻辑。 |
+| ranked tensor boundary values | 生成 logical-shape DDR memref，memory attr 默认 `#wafer.memory<ddr, tensor>`；`wafer.tile.load` 再产生 compact SPM tensor-layout version | supported for ranked tensor | 保持类型/verifier 驱动；后续 instruction-level IR 再决定 concrete instruction，SPM placement 再决定 offset/window；函数边界由 named pipeline 的 One-Shot Bufferize 转成 DDR memref。 |
 | scalar boundary values | 作为 tile-region block scalar SSA value 传入，供 fill/reduce init 等 scalar operand 使用 | supported for scalar | 只支持 float / integer / index scalar；不生成 storage，不作为长期 side channel。 |
-| `arith.constant` tensor | clone constant 后 `wafer.tile.load` 到 tensor-layout storage | partial | 只适合 tensor constant；scalar constant 只应在 compute body 或显式 init 语义中消费。需要区分 constant residency / DDR / immediate policy。 |
+| `arith.constant` tensor | clone constant 后用 `bufferization.to_memref` materialize 为 read-only DDR source，再 `wafer.tile.load` 到 tensor-layout SPM storage | partial | 只适合 tensor constant；scalar constant 只应在 compute body 或显式 init 语义中消费。需要区分 constant residency / DDR / immediate policy。 |
 | `arith.constant` scalar | clone scalar constant，并作为 `wafer.tile.fill`、`wafer.tile.reduce init_value` 或 elementwise body 推导输入 | supported for scalar constants | scalar 语义通过 SSA value 或 typed attr 进入目标 op；不靠名字或原 op 残留。 |
-| `tensor.empty` | 生成 `memref.alloc`，memref type 携带 logical shape、element type 和 `#wafer.memory<spm, layout>` marker | supported as abstract allocation demand | `memref.alloc` 不分配物理 offset/window；R3.2d 只把 target-abstract op 合法化到读写该 memref 的 instruction op，R3.2e 才做真实 SPM placement。不能把 empty 偷映射成 output alias。 |
-| `tensor.extract` scalar | clone 到 tile-region 内，供动态 scalar init / scalar value 使用 | supported for scalar extract | 只作为 scalar SSA 支持 op；不表示 tile compute。 |
+| `tensor.empty` | writable group output 的 `tensor.empty` 生成 `#wafer.memory<ddr, tensor>` `memref.alloc`；tile-local temporary 的 `tensor.empty` 生成 `#wafer.memory<spm, tensor>` `memref.alloc` | supported as abstract allocation demand | `memref.alloc` 不分配物理 offset/window；DDR alloc 只是 compiler-visible boundary value，真实 DDR ownership/resource plan 仍归 R3.2f/R3.5；SPM physical placement 归 R3.2e。不能把 arbitrary empty 偷映射成 output alias。 |
+| `tensor.extract` scalar | 从已 materialized DDR boundary memref 生成 `memref.load`，供动态 scalar init / scalar value 使用 | supported for boundary scalar extract | 只作为 scalar SSA 支持 op；不表示 tile compute；tile-local tensor element read 不能用 generic memref.load 伪装。 |
 | `linalg.fill` | 生成显式 `wafer.tile.fill`，写入 existing storage；fill result 映射为该 initialized buffer | supported for scalar fill | `wafer.tile.fill` 暴露 target-abstract write relation；具体是否 lower 成 CT fill、memset 或 immediate pattern 由 R3.2d instruction selection 决定。 |
 | `linalg.matmul` | lhs/rhs materialize 到 `cx`，生成 `wafer.tile.gemm`，结果记录为 `cx` | supported for simple `linalg.matmul` | pattern 应检查 rank、dtype、accumulator/result relation、layout requirement；batch matmul / generic contraction 另列，不应混成 matmul 特判。 |
 | `linalg.generic` simple elementwise / relation | 单 result、单 `linalg.yield`，typed scalar mapper 识别 add/sub/mul/div/min/max/neg/exp/sqrt/rsqrt/tanh 和 cmp eq/ne/lt/le/gt/ge；生成 `wafer.tile.elementwise` 并带原 `indexing_maps` | supported for simple CT family | 不靠 op name string 恢复语义；复杂 region、多 result、select/mask 和 convert 仍需要明确 kind / op contract。 |
@@ -276,8 +292,12 @@ closed-loop decision 仍未完成。
 
 - `--wafer-convert-group-to-tile-region` 是正式 MLIR conversion pass，使用 `Passes.td` 声明和
   DialectConversion legality target，在 supported 子集上重写当前模块；当前输出是
-  verifier-legal memref-backed `wafer.tile.region` IR。`--wafer-dump-group-to-tile-region`
-  是同一 builder 的只读 dump 入口，并显式 preserve analyses。
+  verifier-legal memref-backed `wafer.tile.region` IR，外层 tensor IR 通过
+  `bufferization.to_memref` / `bufferization.to_tensor` bridge 保持局部 pass 可组合。
+  `--wafer-dump-group-to-tile-region` 是同一 builder 的只读 dump 入口，并显式 preserve analyses。
+- `wafer-lower-groups-to-tile-region` 是 R3.2c named pipeline：先运行 group-to-tile-region conversion，
+  再运行 MLIR One-Shot Bufferize，并使用 Wafer function argument type converter 把 tensor function
+  boundary 转成 `memref<..., #wafer.memory<ddr, tensor>>`。
 - 旧 `--wafer-materialize-single-tile` explicit unit/debug pass 已删除。后续 tile_region materialization
   必须由 R3 消费真实 frontend/SPMD program chain 和 group contract 后恢复。
 - `--wafer-materialize-multi-tile-no-comm` 已删除。旧实现按 placement rank 数 clone whole-tensor

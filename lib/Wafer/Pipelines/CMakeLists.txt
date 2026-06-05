@@ -4,7 +4,11 @@ add_mlir_library(WaferPipelines
   LINK_LIBS PUBLIC
   WaferIR
   WaferTransforms
+  MLIRBufferizationDialect
+  MLIRBufferizationTransforms
+  MLIRFuncDialect
   MLIRIR
+  MLIRMemRefDialect
   MLIRPass
   MLIRSupport
 )

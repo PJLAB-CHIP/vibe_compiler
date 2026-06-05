@@ -1,18 +1,25 @@
 // RUN: wafer-opt %s | FileCheck %s
 
 module {
-  %a = "builtin.unrealized_conversion_cast"() : () -> tensor<4x8xf16>
-  %b = "builtin.unrealized_conversion_cast"() : () -> tensor<8x16xf16>
-  %c = "builtin.unrealized_conversion_cast"() : () -> tensor<4x16xf16>
+  %a = "builtin.unrealized_conversion_cast"()
+      : () -> memref<4x8xf16, #wafer.memory<ddr, tensor>>
+  %b = "builtin.unrealized_conversion_cast"()
+      : () -> memref<8x16xf16, #wafer.memory<ddr, tensor>>
+  %c = "builtin.unrealized_conversion_cast"()
+      : () -> memref<4x16xf16, #wafer.memory<ddr, tensor>>
   %0 = wafer.tile.region(%a, %b, %c
-      : tensor<4x8xf16>, tensor<8x16xf16>, tensor<4x16xf16>)
-      -> (tensor<4x16xf16>) {
-  ^bb0(%arg0: tensor<4x8xf16>, %arg1: tensor<8x16xf16>, %arg2: tensor<4x16xf16>):
+      : memref<4x8xf16, #wafer.memory<ddr, tensor>>,
+        memref<8x16xf16, #wafer.memory<ddr, tensor>>,
+        memref<4x16xf16, #wafer.memory<ddr, tensor>>)
+      -> (memref<4x16xf16, #wafer.memory<ddr, tensor>>) {
+  ^bb0(%arg0: memref<4x8xf16, #wafer.memory<ddr, tensor>>,
+       %arg1: memref<8x16xf16, #wafer.memory<ddr, tensor>>,
+       %arg2: memref<4x16xf16, #wafer.memory<ddr, tensor>>):
     %a_t = wafer.tile.load %arg0
-        : tensor<4x8xf16>
+        : memref<4x8xf16, #wafer.memory<ddr, tensor>>
        -> memref<4x8xf16, #wafer.memory<spm, tensor>>
     %b_t = wafer.tile.load %arg1
-        : tensor<8x16xf16>
+        : memref<8x16xf16, #wafer.memory<ddr, tensor>>
        -> memref<8x16xf16, #wafer.memory<spm, tensor>>
     %a_cx = wafer.tile.materialize_layout %a_t
         : memref<4x8xf16, #wafer.memory<spm, tensor>>
@@ -29,8 +36,9 @@ module {
        -> memref<4x16xf16, #wafer.memory<spm, tensor>>
     wafer.tile.store %mm_tensor, %arg2
         : memref<4x16xf16, #wafer.memory<spm, tensor>>
-       -> tensor<4x16xf16>
-    wafer.tile.yield %arg2 : tensor<4x16xf16>
+       -> memref<4x16xf16, #wafer.memory<ddr, tensor>>
+    wafer.tile.yield %arg2
+        : memref<4x16xf16, #wafer.memory<ddr, tensor>>
   }
 }
 

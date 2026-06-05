@@ -2,8 +2,12 @@
 
 #include "Wafer/Pipelines/Pipelines.h"
 
+#include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Transforms/Passes.h"
 
+#include "mlir/Dialect/Bufferization/Transforms/Passes.h"
+#include "mlir/Dialect/Bufferization/Transforms/OneShotAnalysis.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
@@ -43,6 +47,38 @@ void buildFormLogicalGroupsPipeline(mlir::OpPassManager &pm) {
   pm.addPass(createFormLogicalGroupsPass());
 }
 
+void buildLowerGroupsToTileRegionPipeline(mlir::OpPassManager &pm) {
+  pm.addPass(createConvertGroupToTileRegionPass());
+
+  mlir::bufferization::OneShotBufferizationOptions options;
+  options.bufferizeFunctionBoundaries = true;
+  options.allowReturnAllocsFromLoops = true;
+  options.inferFunctionResultLayout = true;
+  options.bufferAlignment = 64;
+  options.functionArgTypeConverterFn =
+      [](mlir::TensorType tensorType, mlir::Attribute memorySpace,
+         mlir::func::FuncOp funcOp,
+         const mlir::bufferization::BufferizationOptions &options)
+          -> mlir::BaseMemRefType {
+    (void)memorySpace;
+    (void)funcOp;
+    (void)options;
+    if (auto ranked = mlir::dyn_cast<mlir::RankedTensorType>(tensorType)) {
+      return mlir::MemRefType::get(
+          ranked.getShape(), ranked.getElementType(),
+          mlir::MemRefLayoutAttrInterface{},
+          MemoryAttr::get(ranked.getContext(), MemorySpace::DDR,
+                          MemLayout::Tensor));
+    }
+    return mlir::UnrankedMemRefType::get(
+        tensorType.getElementType(),
+        MemoryAttr::get(tensorType.getContext(), MemorySpace::DDR,
+                        MemLayout::Tensor));
+  };
+
+  pm.addPass(mlir::bufferization::createOneShotBufferizePass(options));
+}
+
 #ifdef WAFER_ENABLE_SHARDY
 void buildStablehloShardingPropagationPipeline(mlir::OpPassManager &pm,
                                                int64_t defaultTileCount) {
@@ -57,6 +93,12 @@ void registerWaferPipelines() {
         "wafer-lower-stablehlo-to-linalg",
         "Lower StableHLO tensor IR to structured Linalg/Tensor IR",
         [](mlir::OpPassManager &pm) { buildStablehloToLinalgPipeline(pm); });
+    mlir::PassPipelineRegistration<>(
+        "wafer-lower-groups-to-tile-region",
+        "Lower logical wafer.group ops to memref-backed wafer.tile.region IR",
+        [](mlir::OpPassManager &pm) {
+          buildLowerGroupsToTileRegionPipeline(pm);
+        });
 #ifdef WAFER_ENABLE_SHARDY
     mlir::PassPipelineRegistration<StablehloShardingPropagationPipelineOptions>(
         "wafer-propagate-stablehlo-sharding",

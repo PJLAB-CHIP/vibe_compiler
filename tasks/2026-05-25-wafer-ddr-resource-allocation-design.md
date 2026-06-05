@@ -511,17 +511,19 @@ lifetime event 和 movement op contract 对齐。
 
 ```mlir
 // External DDR allocation is represented at launch/package resource metadata.
-// Tile IR sees a ranked tensor boundary value plus memory-space/effect facts.
-%arg0 = "builtin.unrealized_conversion_cast"() : () -> tensor<64x256xf16>
+// Tile IR sees a ranked DDR memref boundary value plus memory-space/effect facts.
+%arg0 = "builtin.unrealized_conversion_cast"()
+    : () -> memref<64x256xf16, #wafer.memory<ddr, tensor>>
 
 %tile = wafer.tile.load %arg0
-    : tensor<64x256xf16>
+    : memref<64x256xf16, #wafer.memory<ddr, tensor>>
    -> memref<64x256xf16, #wafer.memory<spm, tensor>>
 
-%out = "builtin.unrealized_conversion_cast"() : () -> tensor<64x64xf16>
+%out = "builtin.unrealized_conversion_cast"()
+    : () -> memref<64x64xf16, #wafer.memory<ddr, tensor>>
 wafer.tile.store %out_tile, %out
     : memref<64x64xf16, #wafer.memory<spm, tensor>>
-   -> tensor<64x64xf16>
+   -> memref<64x64xf16, #wafer.memory<ddr, tensor>>
 ```
 
 DDR addressability 可以用 placed `memref<..., #wafer.memory<ddr, layout>>`、launch/package metadata

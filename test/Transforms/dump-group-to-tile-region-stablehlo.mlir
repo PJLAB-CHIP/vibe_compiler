@@ -31,6 +31,10 @@ module {
 }
 
 // CHECK-LABEL: wafer.group_to_tile_region group @lower_reduce_sum#0
+// CHECK: bufferization.to_memref
+// CHECK-SAME: #wafer.memory<ddr, tensor>
+// CHECK: wafer.tile.region
+// CHECK-SAME: #wafer.memory<ddr, tensor>
 // CHECK: wafer.tile.fill
 // CHECK: wafer.tile.materialize_layout
 // CHECK: #wafer.memory<spm, cx>

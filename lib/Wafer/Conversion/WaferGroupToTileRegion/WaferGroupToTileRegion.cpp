@@ -6,6 +6,7 @@
 #include "Wafer/Transforms/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Math/IR/Math.h"
@@ -58,12 +59,35 @@ public:
       return failAndReturn(layoutPlan.failureReason);
 
     llvm::SmallVector<mlir::Value, 4> tileRegionInputs;
-    tileRegionInputs.append(convertedInputs.begin(), convertedInputs.end());
-    tileRegionInputs.append(convertedOuts.begin(), convertedOuts.end());
+    for (auto [original, converted] :
+         llvm::zip(group.getInputs(), convertedInputs)) {
+      mlir::FailureOr<mlir::Value> boundary =
+          materializeDdrBoundary(original, converted, /*readOnly=*/true,
+                                 rewriter);
+      if (mlir::failed(boundary))
+        return mlir::failure();
+      tileRegionInputs.push_back(*boundary);
+    }
+    for (auto [original, converted] : llvm::zip(group.getOuts(), convertedOuts)) {
+      mlir::FailureOr<mlir::Value> boundary =
+          materializeDdrBoundary(original, converted, /*readOnly=*/false,
+                                 rewriter);
+      if (mlir::failed(boundary))
+        return mlir::failure();
+      tileRegionInputs.push_back(*boundary);
+    }
+
+    llvm::SmallVector<mlir::Type, 2> tileRegionResultTypes;
+    for (mlir::Type resultType : group.getResultTypes()) {
+      auto tensorType = mlir::dyn_cast<mlir::RankedTensorType>(resultType);
+      if (!tensorType)
+        return failAndReturn("group result is not a ranked tensor");
+      tileRegionResultTypes.push_back(makeDDRMemRefType(tensorType));
+    }
 
     mlir::OpBuilder::InsertionGuard guard(rewriter);
     auto tileRegion = rewriter.create<TileRegionOp>(
-        group.getLoc(), group.getResultTypes(), tileRegionInputs);
+        group.getLoc(), tileRegionResultTypes, tileRegionInputs);
     mlir::Block *tileBlock = new mlir::Block();
     tileRegion.getBody().push_back(tileBlock);
     for (mlir::Value input : tileRegion.getInputs())
@@ -95,7 +119,7 @@ private:
   llvm::DenseMap<mlir::Value, BufferVersions> buffers;
   llvm::DenseMap<mlir::Value, mlir::Value> scalarValues;
   llvm::DenseMap<mlir::Value, mlir::Attribute> scalarAttrs;
-  llvm::DenseMap<mlir::Value, mlir::Value> tensorValues;
+  llvm::DenseMap<mlir::Value, mlir::Value> externalBuffers;
   llvm::DenseMap<mlir::Value, mlir::Value> fillInitScalars;
   llvm::DenseMap<mlir::Value, mlir::Attribute> fillInitAttrs;
 
@@ -114,13 +138,44 @@ private:
     return mlir::failure();
   }
 
-  mlir::MemRefType makeSPMMemRefType(mlir::RankedTensorType tensorType,
-                                     MemLayout layout) {
+  mlir::MemRefType makeWaferMemRefType(mlir::RankedTensorType tensorType,
+                                       MemorySpace space, MemLayout layout) {
     auto *context = tensorType.getContext();
     return mlir::MemRefType::get(
         tensorType.getShape(), tensorType.getElementType(),
         mlir::MemRefLayoutAttrInterface{},
-        MemoryAttr::get(context, MemorySpace::SPM, layout));
+        MemoryAttr::get(context, space, layout));
+  }
+
+  mlir::MemRefType makeSPMMemRefType(mlir::RankedTensorType tensorType,
+                                     MemLayout layout) {
+    return makeWaferMemRefType(tensorType, MemorySpace::SPM, layout);
+  }
+
+  mlir::MemRefType makeDDRMemRefType(mlir::RankedTensorType tensorType) {
+    return makeWaferMemRefType(tensorType, MemorySpace::DDR,
+                               MemLayout::Tensor);
+  }
+
+  mlir::FailureOr<mlir::Value>
+  materializeDdrBoundary(mlir::Value original, mlir::Value converted,
+                         bool readOnly,
+                         mlir::ConversionPatternRewriter &rewriter) {
+    auto tensorType = mlir::dyn_cast<mlir::RankedTensorType>(original.getType());
+    if (!tensorType) {
+      if (mlir::isa<mlir::FloatType, mlir::IntegerType, mlir::IndexType>(
+              original.getType()))
+        return converted;
+      return failValue("group boundary is not a ranked tensor or scalar");
+    }
+    if (!readOnly && original.getDefiningOp<mlir::tensor::EmptyOp>()) {
+      auto alloc = rewriter.create<mlir::memref::AllocOp>(
+          original.getLoc(), makeDDRMemRefType(tensorType));
+      return alloc.getResult();
+    }
+    auto toMemref = rewriter.create<mlir::bufferization::ToMemrefOp>(
+        original.getLoc(), makeDDRMemRefType(tensorType), converted, readOnly);
+    return toMemref.getMemref();
   }
 
   MemLayout alignedLayoutForTensor(mlir::RankedTensorType tensorType) const {
@@ -235,7 +290,7 @@ private:
           groupArg.getLoc(), makeSPMMemRefType(tensorType, MemLayout::Tensor),
           tileArg);
       record(groupArg, MemLayout::Tensor, load.getResult());
-      tensorValues[groupArg] = tileArg;
+      externalBuffers[groupArg] = tileArg;
     }
     return mlir::success();
   }
@@ -278,11 +333,14 @@ private:
           continue;
         }
 
+        auto ddr = builder.create<mlir::bufferization::ToMemrefOp>(
+            constant.getLoc(), makeDDRMemRefType(tensorType), clonedResult,
+            /*read_only=*/true);
         auto load = builder.create<StorageLoadOp>(
             constant.getLoc(), makeSPMMemRefType(tensorType, MemLayout::Tensor),
-            clonedResult);
+            ddr.getMemref());
         record(originalResult, MemLayout::Tensor, load.getResult());
-        tensorValues[originalResult] = clonedResult;
+        externalBuffers[originalResult] = ddr.getMemref();
       }
       return mlir::success();
     }
@@ -317,23 +375,22 @@ private:
 
   mlir::LogicalResult convertTensorExtract(mlir::tensor::ExtractOp extract,
                                            mlir::OpBuilder &builder) {
-    mlir::IRMapping mapping;
-    for (mlir::Value operand : extract->getOperands()) {
-      if (auto tensorIt = tensorValues.find(operand);
-          tensorIt != tensorValues.end()) {
-        mapping.map(operand, tensorIt->second);
-        continue;
-      }
-      if (auto scalarIt = scalarValues.find(operand);
-          scalarIt != scalarValues.end()) {
-        mapping.map(operand, scalarIt->second);
-        continue;
-      }
-      return fail("missing value for tensor.extract operand");
+    auto bufferIt = externalBuffers.find(extract.getTensor());
+    if (bufferIt == externalBuffers.end())
+      return fail("tensor.extract from tile-local tensor is not representable");
+
+    llvm::SmallVector<mlir::Value, 4> indices;
+    for (mlir::Value index : extract.getIndices()) {
+      auto scalarIt = scalarValues.find(index);
+      if (scalarIt == scalarValues.end())
+        return fail("missing index value for tensor.extract");
+      indices.push_back(scalarIt->second);
     }
 
-    mlir::Operation *cloned = builder.clone(*extract.getOperation(), mapping);
-    scalarValues[extract.getResult()] = cloned->getResult(0);
+    auto load =
+        builder.create<mlir::memref::LoadOp>(extract.getLoc(), bufferIt->second,
+                                             indices);
+    scalarValues[extract.getResult()] = load.getResult();
     return mlir::success();
   }
 
@@ -901,7 +958,7 @@ private:
       return fail("group terminator is not wafer.group.yield");
 
     unsigned inputCount = static_cast<unsigned>(group.getInputs().size());
-    llvm::SmallVector<mlir::Value, 2> yieldedTensors;
+    llvm::SmallVector<mlir::Value, 2> yieldedValues;
     mlir::Block &tileBlock = tileRegion.getBody().front();
     for (auto [index, value] : llvm::enumerate(yield.getValues())) {
       mlir::FailureOr<mlir::Value> tensorBuffer =
@@ -913,10 +970,10 @@ private:
         return fail("group result has no output boundary");
       mlir::Value output = tileBlock.getArgument(inputCount + index);
       builder.create<StorageStoreOp>(value.getLoc(), *tensorBuffer, output);
-      yieldedTensors.push_back(output);
+      yieldedValues.push_back(output);
     }
 
-    builder.create<TileYieldOp>(group.getLoc(), yieldedTensors);
+    builder.create<TileYieldOp>(group.getLoc(), yieldedValues);
     return mlir::success();
   }
 };
@@ -937,7 +994,15 @@ struct GroupToTileRegionLoweringPattern
     if (mlir::failed(tileRegion))
       return mlir::failure();
 
-    rewriter.replaceOp(group, (*tileRegion).getResults());
+    rewriter.setInsertionPointAfter((*tileRegion).getOperation());
+    llvm::SmallVector<mlir::Value, 2> replacements;
+    for (mlir::Value result : (*tileRegion).getResults()) {
+      auto tensor = rewriter.create<mlir::bufferization::ToTensorOp>(
+          group.getLoc(), result, /*restrict=*/true, /*writeable=*/true);
+      replacements.push_back(tensor.getResult());
+    }
+
+    rewriter.replaceOp(group, replacements);
     return mlir::success();
   }
 
@@ -977,8 +1042,10 @@ cloneGroupToScratchModule(GroupOp group) {
 }
 
 static void configureGroupToTileRegionTarget(mlir::ConversionTarget &target) {
-  target.addLegalDialect<mlir::arith::ArithDialect, mlir::func::FuncDialect,
-                         mlir::memref::MemRefDialect, wafer::WaferDialect>();
+  target.addLegalDialect<mlir::arith::ArithDialect,
+                         mlir::bufferization::BufferizationDialect,
+                         mlir::func::FuncDialect, mlir::memref::MemRefDialect,
+                         wafer::WaferDialect>();
   target.addLegalOp<mlir::ModuleOp>();
   target.addIllegalOp<GroupOp, GroupYieldOp>();
   target.markUnknownOpDynamicallyLegal([](mlir::Operation *) { return true; });

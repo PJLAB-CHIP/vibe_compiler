@@ -7,12 +7,19 @@
 #include "Wafer/Transforms/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
+#include "mlir/Dialect/Bufferization/Transforms/FuncBufferizableOpInterfaceImpl.h"
 #include "mlir/Dialect/Func/Extensions/InlinerExtension.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Linalg/Transforms/BufferizableOpInterfaceImpl.h"
 #include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/SCF/Transforms/BufferizableOpInterfaceImpl.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Tensor/Transforms/BufferizableOpInterfaceImpl.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Verifier.h"
@@ -43,11 +50,19 @@
 namespace {
 
 void registerWaferOptDialects(mlir::DialectRegistry &registry) {
-  registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
-                  mlir::linalg::LinalgDialect, mlir::math::MathDialect,
+  registry.insert<mlir::arith::ArithDialect,
+                  mlir::bufferization::BufferizationDialect,
+                  mlir::func::FuncDialect, mlir::linalg::LinalgDialect,
+                  mlir::math::MathDialect, mlir::memref::MemRefDialect,
                   mlir::scf::SCFDialect, mlir::tensor::TensorDialect>();
   wafer::registerAllDialects(registry);
   wafer::registerImporterDialects(registry);
+  mlir::arith::registerBufferizableOpInterfaceExternalModels(registry);
+  mlir::bufferization::func_ext::
+      registerBufferizableOpInterfaceExternalModels(registry);
+  mlir::linalg::registerBufferizableOpInterfaceExternalModels(registry);
+  mlir::scf::registerBufferizableOpInterfaceExternalModels(registry);
+  mlir::tensor::registerBufferizableOpInterfaceExternalModels(registry);
   mlir::func::registerInlinerExtension(registry);
 }
 

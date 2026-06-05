@@ -12,8 +12,14 @@ func.func @fill_group(%arg0: f32) -> tensor<4xf32> {
 
 // CHECK-LABEL: func.func @fill_group
 // CHECK-NOT: wafer.group
+// CHECK: memref.alloc
+// CHECK-SAME: memref<4xf32, #wafer.memory<ddr, tensor>>
 // CHECK: wafer.tile.region
+// CHECK-SAME: memref<4xf32, #wafer.memory<ddr, tensor>>
 // CHECK: wafer.tile.load
+// CHECK-SAME: memref<4xf32, #wafer.memory<ddr, tensor>>
 // CHECK: wafer.tile.fill
 // CHECK: wafer.tile.store
+// CHECK-SAME: memref<4xf32, #wafer.memory<ddr, tensor>>
 // CHECK: wafer.tile.yield
+// CHECK: bufferization.to_tensor

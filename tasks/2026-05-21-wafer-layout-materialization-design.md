@@ -230,10 +230,12 @@ Edge(%relu -> reduce operand 0): materializable only if selected reduce requires
 
 ```mlir
 wafer.tile.region {
-  %a_t = wafer.tile.load %ga[%m0, 0]
-      : tensor<64x256xf16> -> memref<64x256xf16, #wafer.memory<spm, tensor>>
-  %b_t = wafer.tile.load %gb[0, %n0]
-      : tensor<256x64xf16> -> memref<256x64xf16, #wafer.memory<spm, tensor>>
+  %a_t = wafer.tile.load %ga_tile
+      : memref<64x256xf16, #wafer.memory<ddr, tensor>>
+     -> memref<64x256xf16, #wafer.memory<spm, tensor>>
+  %b_t = wafer.tile.load %gb_tile
+      : memref<256x64xf16, #wafer.memory<ddr, tensor>>
+     -> memref<256x64xf16, #wafer.memory<spm, tensor>>
 
   %a_cx = wafer.tile.materialize_layout %a_t
       : memref<64x256xf16, #wafer.memory<spm, tensor>>
@@ -259,10 +261,12 @@ wafer.tile.region {
       : memref<64x64xf16, #wafer.memory<spm, cx>>
      -> memref<64x64xf16, #wafer.memory<spm, tensor>>
 
-  wafer.tile.store %relu_tensor, %go0[%m0, %n0]
-      : memref<64x64xf16, #wafer.memory<spm, tensor>> -> tensor<128x128xf16>
-  wafer.tile.store %r_partial, %go1[%m0]
-      : memref<64xf32, #wafer.memory<spm, tensor>> -> tensor<128xf32>
+  wafer.tile.store %relu_tensor, %go0_tile
+      : memref<64x64xf16, #wafer.memory<spm, tensor>>
+     -> memref<64x64xf16, #wafer.memory<ddr, tensor>>
+  wafer.tile.store %r_partial, %go1_tile
+      : memref<64xf32, #wafer.memory<spm, tensor>>
+     -> memref<64xf32, #wafer.memory<ddr, tensor>>
 }
 ```
 
@@ -271,7 +275,9 @@ wafer.tile.region {
 assignment、materialization edge 和 verifier 责任。示例里两个 output 的 shape 不同，layout
 planner 只按各自 SSA value、boundary contract 和 consumer/producer constraint 处理；不要求它们
 共享一个 root domain，也不编造二者之间的 shape relation。示例里的 tile shape、op 名和某个
-implementation 选择都只是为了说明 IR 如何流动，不是 layout 架构边界。
+implementation 选择都只是为了说明 IR 如何流动，不是 layout 架构边界。示例里的
+`%ga_tile` / `%gb_tile` / `%go*_tile` 是已经由 group/tile boundary lowering 切分出的 DDR
+tile memref，不表示 layout planner 自己负责 global tensor slicing。
 
 ## 4. Layout 分类
 
@@ -537,14 +543,20 @@ physical layout：
 
 ```mlir
 %w = arith.constant dense_resource<W_cx> : tensor<256x128xf16>
+%w_ddr = bufferization.to_memref %w read_only
+    : memref<256x128xf16, #wafer.memory<ddr, tensor>>
 
-%wt = wafer.tile.load %w[%tile]
-    : tensor<256x128xf16> -> memref<256x64xf16, #wafer.memory<spm, cx>>
+%wt_tensor = wafer.tile.load %w_ddr
+    : memref<256x128xf16, #wafer.memory<ddr, tensor>>
+   -> memref<256x128xf16, #wafer.memory<spm, tensor>>
+%wt = wafer.tile.materialize_layout %wt_tensor
+    : memref<256x128xf16, #wafer.memory<spm, tensor>>
+   -> memref<256x128xf16, #wafer.memory<spm, cx>>
 ```
 
-如果 planner 没有选择 constant storage transform，`wafer.tile.load` 从 normalized
-`ConstantLike` value 的原始 compact backing data 读取，并在必要 edge 上插入
-`wafer.tile.materialize_layout`。这个选择是 load/storage lowering 的事实，不改变 constant 的数学语义。
+`wafer.tile.load` 的边界仍是 DDR memref；是否把 constant backing data 预先放成硬件友好的物理布局，
+属于后续 constant/storage lowering 的事实。当前 layout planner 只固定 tile-local consumer 需要的
+SPM layout，并在必要 edge 上插入 `wafer.tile.materialize_layout`，不改变 constant 的数学语义。
 
 注意：在 semantic tensor IR 层，不能在保持同一个 logical tensor contract 的同时无标记地把
 payload 改成另一种 physical byte order。packing 必须发生在 layout 已经被 `wafer.tile.load`

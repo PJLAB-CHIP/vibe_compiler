@@ -6,6 +6,8 @@
 #include <cstdint>
 #include <memory>
 
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
+
 namespace mlir {
 class Pass;
 } // namespace mlir

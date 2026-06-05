@@ -13,6 +13,7 @@ namespace wafer {
 
 void buildStablehloToLinalgPipeline(mlir::OpPassManager &pm);
 void buildFormLogicalGroupsPipeline(mlir::OpPassManager &pm);
+void buildLowerGroupsToTileRegionPipeline(mlir::OpPassManager &pm);
 
 #ifdef WAFER_ENABLE_SHARDY
 void buildStablehloShardingPropagationPipeline(mlir::OpPassManager &pm,

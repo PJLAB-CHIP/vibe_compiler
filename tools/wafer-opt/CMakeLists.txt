@@ -7,16 +7,23 @@ target_link_libraries(wafer-opt
   WaferPipelines
   WaferTransforms
   MLIRArithDialect
+  MLIRArithTransforms
   MLIRAsyncDialect
+  MLIRBufferizationDialect
+  MLIRBufferizationTransforms
   MLIRFuncDialect
   MLIRFuncInlinerExtension
   MLIRLinalgDialect
+  MLIRLinalgTransforms
   MLIRMathDialect
+  MLIRMemRefDialect
   MLIRMlirOptMain
   MLIRParser
   MLIRPass
   MLIRSCFDialect
+  MLIRSCFTransforms
   MLIRTensorDialect
+  MLIRTensorTransforms
   MLIRTransforms
 )
 

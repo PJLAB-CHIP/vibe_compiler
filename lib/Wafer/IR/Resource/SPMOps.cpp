@@ -10,16 +10,20 @@ using namespace wafer;
 using namespace wafer::detail;
 
 mlir::LogicalResult StorageLoadOp::verify() {
-  auto sourceType =
-      mlir::dyn_cast<mlir::RankedTensorType>(getSource().getType());
+  std::optional<mlir::RankedTensorType> sourceType =
+      getLogicalTensorType(getSource().getType());
   std::optional<mlir::RankedTensorType> resultTensor =
       getLogicalTensorType(getResult().getType());
   if (!sourceType || !resultTensor)
-    return emitOpError("expects ranked tensor source and SPM memref result");
+    return emitOpError("expects DDR memref source and SPM memref result");
 
   if (*resultTensor != sourceType)
     return emitOpError(
         "tile.load result tensor type must match source tensor type");
+  if (!hasWaferMemorySpace(getSource().getType(), MemorySpace::DDR))
+    return emitOpError("tile.load source must use DDR memory space");
+  if (!hasWaferLayout(getSource().getType(), MemLayout::Tensor))
+    return emitOpError("tile.load source must use tensor layout");
   if (!hasWaferMemorySpace(getResult().getType(), MemorySpace::SPM))
     return emitOpError("tile.load result must use SPM memory space");
   if (!hasWaferLayout(getResult().getType(), MemLayout::Tensor))
@@ -30,6 +34,8 @@ mlir::LogicalResult StorageLoadOp::verify() {
 
 void StorageLoadOp::collectWaferLayoutRequirements(
     llvm::SmallVectorImpl<WaferLayoutRequirement> &requirements) {
+  appendLayoutRequirement(requirements, WaferValueRole::Operand, 0,
+                          getSource().getType());
   appendLayoutRequirement(requirements, WaferValueRole::Result, 0,
                           getResult().getType());
 }
@@ -62,9 +68,10 @@ mlir::LogicalResult StorageLoadOp::verifyWaferResourceEffectContract() {
 mlir::LogicalResult StorageStoreOp::verify() {
   std::optional<mlir::RankedTensorType> sourceTensor =
       getLogicalTensorType(getSource().getType());
-  auto destType = mlir::dyn_cast<mlir::RankedTensorType>(getDest().getType());
+  std::optional<mlir::RankedTensorType> destType =
+      getLogicalTensorType(getDest().getType());
   if (!sourceTensor || !destType)
-    return emitOpError("expects SPM memref source and ranked tensor dest");
+    return emitOpError("expects SPM memref source and DDR memref dest");
 
   if (*sourceTensor != destType)
     return emitOpError(
@@ -74,6 +81,10 @@ mlir::LogicalResult StorageStoreOp::verify() {
   if (!hasWaferLayout(getSource().getType(), MemLayout::Tensor))
     return emitOpError("tile.store source must use tensor layout for "
                        "external writeback");
+  if (!hasWaferMemorySpace(getDest().getType(), MemorySpace::DDR))
+    return emitOpError("tile.store dest must use DDR memory space");
+  if (!hasWaferLayout(getDest().getType(), MemLayout::Tensor))
+    return emitOpError("tile.store dest must use tensor layout");
 
   return mlir::success();
 }
@@ -82,6 +93,8 @@ void StorageStoreOp::collectWaferLayoutRequirements(
     llvm::SmallVectorImpl<WaferLayoutRequirement> &requirements) {
   appendLayoutRequirement(requirements, WaferValueRole::Operand, 0,
                           getSource().getType());
+  appendLayoutRequirement(requirements, WaferValueRole::Operand, 1,
+                          getDest().getType());
 }
 
 mlir::LogicalResult StorageStoreOp::verifyWaferLayoutContract() {

@@ -428,14 +428,16 @@ Target-abstract tile-region：
 Accepted layout 后：
 
 ```mlir
-%a_spm = wafer.tile.load %a[%m0, 0]
-    : tensor<64x256xf16> -> memref<64x256xf16, #wafer.memory<spm, tensor>>
+%a_spm = wafer.tile.load %a_tile
+    : memref<64x256xf16, #wafer.memory<ddr, tensor>>
+   -> memref<64x256xf16, #wafer.memory<spm, tensor>>
 %a_cx = wafer.tile.materialize_layout %a_spm
     : memref<64x256xf16, #wafer.memory<spm, tensor>>
    -> memref<64x256xf16, #wafer.memory<spm, cx>>
 
-%b_spm = wafer.tile.load %b[0, %n0]
-    : tensor<256x64xf16> -> memref<256x64xf16, #wafer.memory<spm, tensor>>
+%b_spm = wafer.tile.load %b_tile
+    : memref<256x64xf16, #wafer.memory<ddr, tensor>>
+   -> memref<256x64xf16, #wafer.memory<spm, tensor>>
 %b_cx = wafer.tile.materialize_layout %b_spm
     : memref<256x64xf16, #wafer.memory<spm, tensor>>
    -> memref<256x64xf16, #wafer.memory<spm, cx>>

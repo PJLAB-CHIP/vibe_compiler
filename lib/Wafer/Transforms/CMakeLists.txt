@@ -16,6 +16,7 @@ add_mlir_library(WaferTransforms
   WaferStableHLOToLinalg
   MLIRArithDialect
   MLIRAsyncDialect
+  MLIRBufferizationDialect
   MLIRFuncDialect
   MLIRIR
   MLIRLinalgDialect
