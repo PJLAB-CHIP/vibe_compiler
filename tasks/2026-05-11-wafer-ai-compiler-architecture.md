@@ -691,9 +691,9 @@ PMU microbench 不应成为 single-tile compute 前置条件。
 wafer.group
 wafer.tile.region
 wafer.tile.materialize_layout
-wafer.spm.alloc
+memref.alloc : memref<..., #wafer.memory<spm, *>>
 wafer.tile.gemm
-wafer.tile.dte_send
+wafer.tile.send
 wafer.instr.local_drain
 wafer.launch
 ```

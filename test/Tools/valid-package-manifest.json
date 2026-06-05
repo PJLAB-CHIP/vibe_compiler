@@ -103,8 +103,8 @@
   "instructions": [
     {"op": "wafer.instr.rdma", "bytes": 16, "wait_policy": "issue_only"},
     {"op": "wafer.instr.rdma", "bytes": 16, "wait_policy": "issue_only"},
-    {"op": "wafer.instr.ct.elementwise", "kind": "add", "wait_policy": "issue_only"},
-    {"op": "wafer.instr.ct.reduce", "kind": "max", "dimensions": [1], "init_value": -1.0, "wait_policy": "issue_only"},
+    {"op": "wafer.instr.elementwise", "kind": "add", "wait_policy": "issue_only"},
+    {"op": "wafer.instr.reduce", "kind": "max", "dimensions": [1], "init_value": -1.0, "wait_policy": "issue_only"},
     {"op": "wafer.instr.wdma", "bytes": 16, "wait_policy": "issue_only"}
   ]
 }

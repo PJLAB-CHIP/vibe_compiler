@@ -42,8 +42,8 @@ Pipeline position:
   `wafer.instr.local_drain`。
 - Current stage responsibility:
   只做 Wafer instruction legalization / selection：把可执行的 target-abstract op 改写成
-  `wafer.instr.*`，并保留 memref SSA graph。instruction op 显式表达 queue family、
-  memref read/write、descriptor attrs 和 issue effect。
+  `wafer.instr.*`，并保留 memref SSA graph。instruction op 通过 interface 显式暴露 issue
+  family、memref read/write、descriptor attrs 和 issue effect。
 - Output artifact / IR:
   同一个 `wafer.tile.region` execution scope 内的 instruction-level IR：
   memref values with `#wafer.memory<space, layout>` + `wafer.instr.*` +
@@ -132,7 +132,7 @@ instruction-level IR 中解释它：
   一致时使用 `memref.cast` / `memref.reinterpret_cast` / `memref.subview`。
 - 对 `#wafer.memory<spm, cx/ncx>`，不能用 generic `memref.load/store/copy/subview` 伪装硬件
   physical indexing；真实 layout conversion、slice movement 和 copy 必须通过
-  `wafer.tile.materialize_layout` 或 `wafer.instr.tdma.gather_scatter` 等 Wafer op 表达。
+  `wafer.tile.materialize_layout` 或 `wafer.instr.gather_scatter` 等 Wafer op 表达。
 - 在 Wafer placement/realization 前，不能让 generic memref-to-LLVM lowering 按 dense memref
   footprint 处理 `#wafer.memory<spm, cx/ncx>`。
 
@@ -156,9 +156,9 @@ R3.2d 后：
 memref values with #wafer.memory<space, layout>
 memref.alloc / verifier-legal metadata views
 wafer.instr.rdma / wafer.instr.wdma
-wafer.instr.tdma.gather_scatter
-wafer.instr.ct.*
-wafer.instr.ne.gemm
+wafer.instr.gather_scatter
+wafer.instr.{fill, elementwise, reduce, convert}
+wafer.instr.gemm
 wafer.instr.local_drain
 ```
 
@@ -166,25 +166,31 @@ R3.2d 不做 memref type conversion。它只把 executable target-abstract op �
 并复用同一批 memref values。physical base address、SPM offset、end address、bank/color、
 worker register window、runtime pointer 和 packet word 都不属于 R3.2d。
 
-## 4. Instruction Families
+## 4. Instruction Ops And Issue Families
 
-| family | V0 op | 来源 | 说明 |
+`wafer.instr.*` 的 op mnemonic 表达指令语义，不把 CT/NE/TDMA 这类硬件 issue family 做成
+额外 namespace。Issue family 由 `WaferInstructionOpInterface` 派生；固定 family 的 op 不打印
+冗余 attr。只有当同一个 instruction op 在相同 operand/result/attr contract 下确实能合法选择
+多个 issue family 时，才允许引入显式 `issue_family` attr，并由 verifier 保证取值和 op contract
+一致。
+
+| issue family | V0 op | 来源 | 说明 |
 | --- | --- | --- | --- |
 | RDMA | `wafer.instr.rdma` | `wafer.tile.load` | DDR memref -> SPM memref |
 | WDMA | `wafer.instr.wdma` | `wafer.tile.store` | SPM memref -> DDR memref |
-| TDMA | `wafer.instr.tdma.gather_scatter` | `wafer.tile.materialize_layout`、tile movement ops | byte-counted SPM movement；contiguous copy 是 descriptor 特例 |
-| CT | `wafer.instr.ct.fill` | `wafer.tile.fill` | scalar/immediate fill |
-| CT | `wafer.instr.ct.elementwise` | `wafer.tile.elementwise` | arithmetic / relation / activation |
-| CT | `wafer.instr.ct.reduce` | `wafer.tile.reduce` | native local reduce |
-| CT | `wafer.instr.ct.convert` | future convert lowering | dtype conversion |
-| NE | `wafer.instr.ne.gemm` | `wafer.tile.gemm` | tile-local GEMM / batched GEMM |
+| TDMA | `wafer.instr.gather_scatter` | `wafer.tile.materialize_layout`、tile movement ops | byte-counted SPM movement；contiguous copy 是 descriptor 特例 |
+| CT | `wafer.instr.fill` | `wafer.tile.fill` | scalar/immediate fill |
+| CT | `wafer.instr.elementwise` | `wafer.tile.elementwise` | arithmetic / relation / activation |
+| CT | `wafer.instr.reduce` | `wafer.tile.reduce` | native local reduce |
+| CT | `wafer.instr.convert` | future convert lowering | dtype conversion |
+| NE | `wafer.instr.gemm` | `wafer.tile.gemm` | tile-local GEMM / batched GEMM |
 
-V0 不定义 `wafer.instr.tdma.copy`。公开 SPM memcpy helper 本身也是
+V0 不定义 `wafer.instr.copy`。公开 SPM memcpy helper 本身也是
 `TsmDataMove::GatherScatter` 样例；把 copy 单独做成 instruction op 会把 helper 名字提升为 IR
 语义。
 
 `ChannelNorm/DechannelNorm` 也不是 V0 单条 instruction op。它们是 layout materialization algorithm；
-R3.2d 要么展开成一条或多条 `wafer.instr.tdma.gather_scatter`，要么结构化失败。对于
+R3.2d 要么展开成一条或多条 `wafer.instr.gather_scatter`，要么结构化失败。对于
 `C > block` 且存在 retained `C0` tail 的 `Cx/NCx`，full C blocks 和 compact tail block 的
 inner width / stride 不同，lowering 通常需要至少两段 GatherScatter：一段搬 full blocks，一段搬
 tail `C0`。如果 full-block 段和 tail 段都无法分别表示为 V0 三层 stride/iteration descriptor，
@@ -228,7 +234,7 @@ WaferInstructionOpInterface {
 }
 ```
 
-`InstrQueue` 是 Wafer enum attr，V0 只包含：
+`InstrQueue` 是 Wafer enum/interface fact，V0 只包含：
 
 | enum | hardware issue family |
 | --- | --- |
@@ -238,8 +244,13 @@ WaferInstructionOpInterface {
 | `wdma` | WDMA queue |
 | `tdma` | TDMA queue |
 
-interface 返回的是 op-local facts，不返回 planner side table，也不复制全局 schedule。resource
-effects 至少要表达：
+interface 返回的是 op-local facts，不返回 planner side table，也不复制全局 schedule。对
+`rdma`、`wdma`、`gather_scatter`、`fill`、`elementwise`、`reduce`、`convert` 和 `gemm` 这类
+固定 issue family 的 V0 op，`getInstructionQueueFamily()` 由 op class 静态派生，不要求 IR
+打印 `issue_family` attr。后续若出现同一个 op contract 下可选择多个 issue family 的 instruction
+op，才在该 op 上增加显式 attr，并把合法取值纳入 verifier。
+
+resource effects 至少要表达：
 
 | queue | buffer effects | issue effect |
 | --- | --- | --- |
@@ -292,53 +303,53 @@ R3.2c 的 `wafer.tile.load/store` 边界默认是 compact tensor layout；如果
 必须通过 `wafer.tile.materialize_layout` 再 lower 到 TDMA，而不是让 RDMA/WDMA 隐式承担 layout
 conversion。
 
-### 7.3 TDMA GatherScatter
+### 7.3 GatherScatter
 
 ```text
-wafer.instr.tdma.gather_scatter source to dest attr-dict
+wafer.instr.gather_scatter source to dest attr-dict
     : type(source) to type(dest)
 ```
 
 | op | operands | result | required attrs |
 | --- | --- | --- | --- |
-| `wafer.instr.tdma.gather_scatter` | `source: MemRef<#wafer.memory<spm, *>>`, `dest: MemRef<#wafer.memory<spm, *>>` | none | `byte_count`, `inner_bytes`, `src_strides`, `src_iterations`, `dst_strides`, `dst_iterations` |
+| `wafer.instr.gather_scatter` | `source: MemRef<#wafer.memory<spm, *>>`, `dest: MemRef<#wafer.memory<spm, *>>` | none | `byte_count`, `inner_bytes`, `src_strides`, `src_iterations`, `dst_strides`, `dst_iterations` |
 
-V0 只定义这一条 TDMA movement op。copy、layout materialization、static slice movement、broadcast
-和 transpose 都要么映射成一条或多条 gather_scatter，要么失败。`wafer.instr.tdma.copy` 不作为
+V0 只定义这一条 TDMA-backed movement op。copy、layout materialization、static slice movement、broadcast
+和 transpose 都要么映射成一条或多条 gather_scatter，要么失败。`wafer.instr.copy` 不作为
 单独 IR op；contiguous copy 是 gather_scatter descriptor 特例。
 
-### 7.4 CT Fill / Elementwise / Reduce / Convert
+### 7.4 Fill / Elementwise / Reduce / Convert
 
 ```text
-wafer.instr.ct.fill dest, value attr-dict : type(dest), type(value)
-wafer.instr.ct.elementwise kind inputs into dest attr-dict
+wafer.instr.fill dest, value attr-dict : type(dest), type(value)
+wafer.instr.elementwise kind inputs into dest attr-dict
     : type(inputs) into type(dest)
-wafer.instr.ct.reduce kind input into dest (, init)? attr-dict
+wafer.instr.reduce kind input into dest (, init)? attr-dict
     : type(input) into type(dest)
-wafer.instr.ct.convert source into dest attr-dict : type(source) to type(dest)
+wafer.instr.convert source into dest attr-dict : type(source) to type(dest)
 ```
 
 | op | operands | result | required attrs |
 | --- | --- | --- | --- |
-| `wafer.instr.ct.fill` | `dest: SPM memref`, `value: scalar` | none | none |
-| `wafer.instr.ct.elementwise` | `inputs: Variadic<SPM memref>`, `dest: SPM memref` | none | `kind`; optional `indexing_maps` copied from target-abstract op |
-| `wafer.instr.ct.reduce` | `input: SPM memref`, `dest: SPM memref`, optional scalar `init` | none | `kind`, `dimensions` |
-| `wafer.instr.ct.convert` | `source: SPM memref`, `dest: SPM memref` | none | `src_dtype`, `dst_dtype`; future source op only |
+| `wafer.instr.fill` | `dest: SPM memref`, `value: scalar` | none | none |
+| `wafer.instr.elementwise` | `inputs: Variadic<SPM memref>`, `dest: SPM memref` | none | `kind`; optional `indexing_maps` copied from target-abstract op |
+| `wafer.instr.reduce` | `input: SPM memref`, `dest: SPM memref`, optional scalar `init` | none | `kind`, `dimensions` |
+| `wafer.instr.convert` | `source: SPM memref`, `dest: SPM memref` | none | `src_dtype`, `dst_dtype`; future source op only |
 
-`ct.convert` 作为 instruction op 定义，因为 hardware CT convert 属于同一 queue family；但当前
-R3.2c 没有 `wafer.tile.convert` source op。因此 R3.2d V0 需要定义 ODS/verifier，但
+`wafer.instr.convert` 作为 instruction op 定义，因为 hardware convert 当前属于 CT issue family；
+但当前 R3.2c 没有 `wafer.tile.convert` source op。因此 R3.2d V0 需要定义 ODS/verifier，但
 completion 不要求 convert lowering pattern，直到 source op 存在。
 
-### 7.5 NE GEMM
+### 7.5 GEMM
 
 ```text
-wafer.instr.ne.gemm lhs, rhs into dest attr-dict
+wafer.instr.gemm lhs, rhs into dest attr-dict
     : type(lhs), type(rhs) into type(dest)
 ```
 
 | op | operands | result | required attrs |
 | --- | --- | --- | --- |
-| `wafer.instr.ne.gemm` | `lhs: SPM memref`, `rhs: SPM memref`, `dest: SPM memref` | none | `m`, `k`, `n`; optional batched GEMM attrs copied from `wafer.tile.gemm` |
+| `wafer.instr.gemm` | `lhs: SPM memref`, `rhs: SPM memref`, `dest: SPM memref` | none | `m`, `k`, `n`; optional batched GEMM attrs copied from `wafer.tile.gemm` |
 
 V0 要求三个 SPM memref operand 都使用 aligned layout marker：rank <= 2 使用
 `#wafer.memory<spm, cx>`，rank > 2 使用 `#wafer.memory<spm, ncx>`。Fused bias、activation、
@@ -361,11 +372,11 @@ V0 mapping：
 | --- | --- |
 | `wafer.tile.load` | ensure / create destination `memref<..., #wafer.memory<spm, tensor>>`; emit `wafer.instr.rdma`; replace original result with dest memref |
 | `wafer.tile.store` | emit `wafer.instr.wdma`; erase store |
-| `wafer.tile.materialize_layout` | ensure / create destination memref with requested marker; emit one or more `wafer.instr.tdma.gather_scatter`; replace result with dest memref |
-| `wafer.tile.fill` | emit `wafer.instr.ct.fill` writing the existing dest memref |
-| `wafer.tile.gemm` | ensure / create destination aligned SPM memref; emit `wafer.instr.ne.gemm`; replace result with dest memref |
-| `wafer.tile.elementwise` | ensure / create destination SPM memref; emit `wafer.instr.ct.elementwise`; replace result with dest memref |
-| `wafer.tile.reduce` | ensure / create destination SPM memref; emit `wafer.instr.ct.reduce`; replace result with dest memref |
+| `wafer.tile.materialize_layout` | ensure / create destination memref with requested marker; emit one or more `wafer.instr.gather_scatter`; replace result with dest memref |
+| `wafer.tile.fill` | emit `wafer.instr.fill` writing the existing dest memref |
+| `wafer.tile.gemm` | ensure / create destination aligned SPM memref; emit `wafer.instr.gemm`; replace result with dest memref |
+| `wafer.tile.elementwise` | ensure / create destination SPM memref; emit `wafer.instr.elementwise`; replace result with dest memref |
+| `wafer.tile.reduce` | ensure / create destination SPM memref; emit `wafer.instr.reduce`; replace result with dest memref |
 | `wafer.tile.copy` | ensure / create destination SPM memref; emit one gather_scatter; replace result with dest memref |
 | `wafer.tile.extract_slice` | ensure / create destination compact SPM memref; emit gather_scatter from source slice to destination |
 | `wafer.tile.insert_slice` | ensure / create result SPM memref; first gather_scatter copy dest to result, then gather_scatter source into result slice |
@@ -397,7 +408,7 @@ the closed-loop planner or debug pass, but rejected instruction IR is discarded.
   runtime ABI call to be legal.
 
 Diagnostics should mention the source op and the missing legality fact, for example:
-`wafer.tile.transpose cannot lower to TDMA gather_scatter: unsupported permutation`.
+`wafer.tile.transpose cannot lower to TDMA-backed wafer.instr.gather_scatter: unsupported permutation`.
 
 ## 10. Verifier Contract
 
@@ -455,27 +466,27 @@ wafer.tile.region ... {
       : memref<64x128xf16, #wafer.memory<ddr, tensor>>
      to memref<64x128xf16, #wafer.memory<spm, tensor>>
 
-  wafer.instr.tdma.gather_scatter %a_tensor to %a_cx
+  wafer.instr.gather_scatter %a_tensor to %a_cx
       {byte_count = 16384 : i64, inner_bytes = 128 : i64,
        src_strides = array<i64: 128, 0, 0>, src_iterations = array<i64: 128, 1, 1>,
        dst_strides = array<i64: 256, 0, 0>, dst_iterations = array<i64: 128, 1, 1>}
       : memref<128x64xf16, #wafer.memory<spm, tensor>>
      to memref<128x64xf16, #wafer.memory<spm, cx>>
 
-  wafer.instr.tdma.gather_scatter %b_tensor to %b_cx
+  wafer.instr.gather_scatter %b_tensor to %b_cx
       {byte_count = 16384 : i64, inner_bytes = 128 : i64,
        src_strides = array<i64: 128, 0, 0>, src_iterations = array<i64: 128, 1, 1>,
        dst_strides = array<i64: 256, 0, 0>, dst_iterations = array<i64: 128, 1, 1>}
       : memref<64x128xf16, #wafer.memory<spm, tensor>>
      to memref<64x128xf16, #wafer.memory<spm, cx>>
 
-  wafer.instr.ne.gemm %a_cx, %b_cx into %c_cx
+  wafer.instr.gemm %a_cx, %b_cx into %c_cx
       {m = 128 : i64, k = 64 : i64, n = 128 : i64}
       : memref<128x64xf16, #wafer.memory<spm, cx>>,
         memref<64x128xf16, #wafer.memory<spm, cx>>
     into memref<128x128xf16, #wafer.memory<spm, cx>>
 
-  wafer.instr.tdma.gather_scatter %c_cx to %c_tensor
+  wafer.instr.gather_scatter %c_cx to %c_tensor
       {byte_count = 32768 : i64, inner_bytes = 256 : i64,
        src_strides = array<i64: 256, 0, 0>, src_iterations = array<i64: 128, 1, 1>,
        dst_strides = array<i64: 256, 0, 0>, dst_iterations = array<i64: 128, 1, 1>}
@@ -507,14 +518,14 @@ R3.2d 实现需要：
    footprint、range-end、bool bitpack 和 wrapper layout enum。
 3. 增加 `InstrQueue` enum、`WaferInstructionOpInterface` 和 instruction effect helper。
 4. 增加 `wafer.instr.rdma`、`wafer.instr.wdma`、
-   `wafer.instr.tdma.gather_scatter`、`wafer.instr.ct.fill`、
-   `wafer.instr.ct.elementwise`、`wafer.instr.ct.reduce`、
-   `wafer.instr.ct.convert` 和 `wafer.instr.ne.gemm` ODS。
+   `wafer.instr.gather_scatter`、`wafer.instr.fill`、
+   `wafer.instr.elementwise`、`wafer.instr.reduce`、
+   `wafer.instr.convert` 和 `wafer.instr.gemm` ODS。
 5. 为每个 op 实现 verifier、MemoryEffects、instruction interface 和 positive/negative lit tests。
 6. 实现 `--wafer-convert-tile-region-to-instr` DialectConversion，并让 main R3.2 planner 调用同一
    conversion implementation。
 7. 增加 conversion tests，覆盖 load/store、layout materialize、fill、GEMM、elementwise/relation、
    reduce、copy/broadcast/transpose、extract_slice/insert_slice、metadata view preserved 和 structured
    failure。
-8. 为 `wafer.instr.ct.convert` 增加 parser/verifier tests；convert lowering 等 `wafer.tile.convert`
+8. 为 `wafer.instr.convert` 增加 parser/verifier tests；convert lowering 等 `wafer.tile.convert`
    或等价 source op 出现后再接入 completion gate。

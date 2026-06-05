@@ -614,7 +614,7 @@ V0 implementer 范围：
 | `wafer.tile.gemm` / NE-style matmul op | 必须 | 通常是 aligned-only consumer/producer；决定 operand/result 是否必须是 `Cx/NCx` family |
 | `wafer.tile.reduce`、pool、unpool | 必须 | 这些 op 有硬件 layout legality，不能靠通用 passthrough 规则猜 |
 | `wafer.tile.elementwise` / CT-style flexible op | 必须或提供默认 flexible trait | 若 op 只是 shape-preserving passthrough，可复用默认 flexible 规则；若受 dtype/range/wrapper 限制，必须实现接口 |
-| `wafer.data_move.*` / target-abstract movement op | 必须 | DMA、load/store、local movement 如果限制 physical layout、range 或 stride，需要把限制暴露给 planner/verifier |
+| `wafer.tile.*` target-abstract movement op | 必须 | load/store、local movement 如果限制 physical layout、range 或 stride，需要把限制暴露给 planner/verifier；不新增单独 movement op namespace |
 | `wafer.tile.*` communication ops 中消费/产生 storage 的 op | 必须或提供等价 relation | p2p comm 默认 byte-preserving，但仍要暴露 source/destination buffer、byte count、token/effect 和 staging demand；collective-level op 展开前只表达 semantic，展开后由 p2p op 验证 |
 | `wafer.tile.materialize_layout` | 不实现这个接口；实现 `WaferLayoutMaterializationOpInterface` | 它表示 layout conversion edge，本身由 source/result type 和 materialization interface 验证 |
 | `wafer.group`、`wafer.tile.region`、`scf.*` | 不实现 | 它们提供 region/control-flow/边界结构；layout 约束来自 region 内 value 和 op interface |

@@ -194,7 +194,8 @@ recv chunk 与 accumulator 的本地累计步骤；`wafer.tile.reduce` 仍只表
 
 load/store、SPM local copy、strided movement 和 layout materialization support 与 compute 紧密相邻，
 但它们不等同于 tensor semantic compute。本文把它们称作 target-abstract movement op；最终可按工程
-需要组织为 `wafer.mem.*`、`wafer.tile.*` movement ops 或同一 Wafer namespace 下的 op。
+需要组织为 `wafer.tile.*` movement ops，并通过 memref type 上的 `#wafer.memory<space, layout>`
+表达 memory space / physical layout；不新增单独 memory op namespace。
 
 movement op 的合同：
 

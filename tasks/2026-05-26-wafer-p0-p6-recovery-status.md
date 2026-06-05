@@ -257,7 +257,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - 旧 `wafer-form-groups`、`wafer-materialize-single-tile`、`wafer-compact-layout-assignment`、
   `wafer-check-spm-allocation`、`wafer-materialize-ddr-external-bindings`、
   `wafer-lower-ring-*` 和 `wafer-lower-tile-region-to-c-abi` unit/debug pass 链已删除。
-- 历史上有 `wafer.instr.rdma`、`wafer.instr.wdma`、`wafer.instr.ne.gemm`、elementwise/reduce ABI issue ops；
+- 历史上有 `wafer.instr.rdma`、`wafer.instr.wdma`、`wafer.instr.gemm`、elementwise/reduce ABI issue ops；
   当前主线不把它们作为必经 IR 层。
 - 有 `Wafer/ABI/TileAbi.h` descriptor unit tests、manifest validator 和 generated C stub syntax compile。
 

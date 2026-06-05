@@ -18,9 +18,9 @@ from wafer_package_manifest import load_manifest, validate_manifest  # noqa: E40
 OP_ENUMS = {
     "wafer.instr.rdma": "WAFER_INSTR_RDMA",
     "wafer.instr.wdma": "WAFER_INSTR_WDMA",
-    "wafer.instr.ne.gemm": "WAFER_INSTR_NE_GEMM",
-    "wafer.instr.ct.elementwise": "WAFER_INSTR_CT_ELEMENTWISE",
-    "wafer.instr.ct.reduce": "WAFER_INSTR_CT_REDUCE",
+    "wafer.instr.gemm": "WAFER_INSTR_GEMM",
+    "wafer.instr.elementwise": "WAFER_INSTR_ELEMENTWISE",
+    "wafer.instr.reduce": "WAFER_INSTR_REDUCE",
 }
 
 ELEMENTWISE_ENUMS = {
@@ -77,9 +77,9 @@ def emit_c(manifest: dict) -> str:
         "typedef enum {",
         "  WAFER_INSTR_RDMA = 1,",
         "  WAFER_INSTR_WDMA = 2,",
-        "  WAFER_INSTR_NE_GEMM = 3,",
-        "  WAFER_INSTR_CT_ELEMENTWISE = 4,",
-        "  WAFER_INSTR_CT_REDUCE = 5,",
+        "  WAFER_INSTR_GEMM = 3,",
+        "  WAFER_INSTR_ELEMENTWISE = 4,",
+        "  WAFER_INSTR_REDUCE = 5,",
         "} wafer_instruction_op_t;",
         "",
         "typedef enum {",
@@ -149,13 +149,13 @@ def emit_c(manifest: dict) -> str:
         m = int(op.get("m", 0))
         k = int(op.get("k", 0))
         n = int(op.get("n", 0))
-        default_batch_count = 1 if mnemonic == "wafer.instr.ne.gemm" else 0
+        default_batch_count = 1 if mnemonic == "wafer.instr.gemm" else 0
         batch_count = int(op.get("batch_count", default_batch_count))
         elementwise_kind = "WAFER_ELEMENTWISE_NONE"
-        if mnemonic == "wafer.instr.ct.elementwise":
+        if mnemonic == "wafer.instr.elementwise":
             elementwise_kind = ELEMENTWISE_ENUMS[op["kind"]]
         reduce_kind = "WAFER_REDUCE_NONE"
-        if mnemonic == "wafer.instr.ct.reduce":
+        if mnemonic == "wafer.instr.reduce":
             reduce_kind = REDUCE_ENUMS[op["kind"]]
         reduce_dimensions = [int(dim) for dim in op.get("dimensions", [])]
         padded_reduce_dimensions = (reduce_dimensions + [0, 0, 0, 0])[:4]

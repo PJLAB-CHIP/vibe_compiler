@@ -92,7 +92,7 @@
   "instructions": [
     {"op": "wafer.instr.rdma", "bytes": 64, "wait_policy": "issue_only"},
     {"op": "wafer.instr.rdma", "bytes": 256, "wait_policy": "issue_only"},
-    {"op": "wafer.instr.ne.gemm", "m": 4, "k": 8, "n": 16, "wait_policy": "issue_only"},
+    {"op": "wafer.instr.gemm", "m": 4, "k": 8, "n": 16, "wait_policy": "issue_only"},
     {"op": "wafer.instr.wdma", "bytes": 128, "wait_policy": "issue_only"}
   ]
 }

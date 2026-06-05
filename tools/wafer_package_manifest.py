@@ -27,9 +27,9 @@ KNOWN_STUB_FENCES = {
 SUPPORTED_INSTRUCTION_OPS = {
     "wafer.instr.rdma",
     "wafer.instr.wdma",
-    "wafer.instr.ne.gemm",
-    "wafer.instr.ct.elementwise",
-    "wafer.instr.ct.reduce",
+    "wafer.instr.gemm",
+    "wafer.instr.elementwise",
+    "wafer.instr.reduce",
 }
 
 SUPPORTED_ELEMENTWISE_KINDS = {
@@ -416,7 +416,7 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
             fail(f"instructions[{index}].wait_policy must be issue_only")
         if mnemonic in {"wafer.instr.rdma", "wafer.instr.wdma"}:
             require_positive_int(item.get("bytes"), f"instructions[{index}].bytes")
-        elif mnemonic == "wafer.instr.ne.gemm":
+        elif mnemonic == "wafer.instr.gemm":
             require_positive_int(item.get("m"), f"instructions[{index}].m")
             require_positive_int(item.get("k"), f"instructions[{index}].k")
             require_positive_int(item.get("n"), f"instructions[{index}].n")
@@ -424,11 +424,11 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
                 require_positive_int(
                     item.get("batch_count"), f"instructions[{index}].batch_count"
                 )
-        elif mnemonic == "wafer.instr.ct.elementwise":
+        elif mnemonic == "wafer.instr.elementwise":
             kind = require_non_empty_string(item.get("kind"), f"instructions[{index}].kind")
             if kind not in SUPPORTED_ELEMENTWISE_KINDS:
                 fail(f"instructions[{index}].kind is not supported")
-        elif mnemonic == "wafer.instr.ct.reduce":
+        elif mnemonic == "wafer.instr.reduce":
             kind = require_non_empty_string(item.get("kind"), f"instructions[{index}].kind")
             if kind not in SUPPORTED_REDUCE_KINDS:
                 fail(f"instructions[{index}].kind is not supported")
