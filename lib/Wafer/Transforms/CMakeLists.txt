@@ -20,6 +20,7 @@ add_mlir_library(WaferTransforms
   MLIRIR
   MLIRLinalgDialect
   MLIRMathDialect
+  MLIRMemRefDialect
   MLIRPass
   MLIRSupport
   MLIRTensorDialect

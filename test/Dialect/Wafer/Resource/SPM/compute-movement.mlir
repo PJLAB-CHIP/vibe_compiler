@@ -10,25 +10,25 @@ module {
   ^bb0(%arg0: tensor<4x8xf16>, %arg1: tensor<8x16xf16>, %arg2: tensor<4x16xf16>):
     %a_t = wafer.tile.load %arg0
         : tensor<4x8xf16>
-       -> !wafer.storage<tensor<4x8xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
+       -> memref<4x8xf16, #wafer.memory<spm, tensor>>
     %b_t = wafer.tile.load %arg1
         : tensor<8x16xf16>
-       -> !wafer.storage<tensor<8x16xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
+       -> memref<8x16xf16, #wafer.memory<spm, tensor>>
     %a_cx = wafer.tile.materialize_layout %a_t
-        : !wafer.storage<tensor<4x8xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
-       -> !wafer.storage<tensor<4x8xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
+        : memref<4x8xf16, #wafer.memory<spm, tensor>>
+       -> memref<4x8xf16, #wafer.memory<spm, cx>>
     %b_cx = wafer.tile.materialize_layout %b_t
-        : !wafer.storage<tensor<8x16xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
-       -> !wafer.storage<tensor<8x16xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
+        : memref<8x16xf16, #wafer.memory<spm, tensor>>
+       -> memref<8x16xf16, #wafer.memory<spm, cx>>
     %mm = wafer.tile.gemm %a_cx, %b_cx
-        : (!wafer.storage<tensor<4x8xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>,
-           !wafer.storage<tensor<8x16xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>)
-       -> !wafer.storage<tensor<4x16xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
+        : (memref<4x8xf16, #wafer.memory<spm, cx>>,
+           memref<8x16xf16, #wafer.memory<spm, cx>>)
+       -> memref<4x16xf16, #wafer.memory<spm, cx>>
     %mm_tensor = wafer.tile.materialize_layout %mm
-        : !wafer.storage<tensor<4x16xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
-       -> !wafer.storage<tensor<4x16xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
+        : memref<4x16xf16, #wafer.memory<spm, cx>>
+       -> memref<4x16xf16, #wafer.memory<spm, tensor>>
     wafer.tile.store %mm_tensor, %arg2
-        : !wafer.storage<tensor<4x16xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
+        : memref<4x16xf16, #wafer.memory<spm, tensor>>
        -> tensor<4x16xf16>
     wafer.tile.yield %arg2 : tensor<4x16xf16>
   }

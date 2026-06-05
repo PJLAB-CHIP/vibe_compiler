@@ -22,27 +22,27 @@ getStaticElementCount(mlir::RankedTensorType tensorType) {
 }
 
 mlir::LogicalResult ViewReshapeOp::verify() {
-  auto sourceType = mlir::dyn_cast<StorageType>(getSource().getType());
-  auto resultType = mlir::dyn_cast<StorageType>(getResult().getType());
-  if (!sourceType || !resultType)
-    return emitOpError("expects storage source and result");
-  if (!hasStorageMemorySpace(sourceType, MemorySpace::SPM) ||
-      !hasStorageMemorySpace(resultType, MemorySpace::SPM))
+  std::optional<mlir::RankedTensorType> sourceTensor =
+      getLogicalTensorType(getSource().getType());
+  std::optional<mlir::RankedTensorType> resultTensor =
+      getLogicalTensorType(getResult().getType());
+  if (!sourceTensor || !resultTensor)
+    return emitOpError("expects Wafer buffer source and result");
+  if (!hasWaferMemorySpace(getSource().getType(), MemorySpace::SPM) ||
+      !hasWaferMemorySpace(getResult().getType(), MemorySpace::SPM))
     return emitOpError("reshape source/result must use SPM memory space");
-  if (getStorageLayout(sourceType).getValue() !=
-      getStorageLayout(resultType).getValue())
-    return emitOpError("reshape must preserve mem_layout");
-  if (getStorageMemorySpace(sourceType).getValue() !=
-      getStorageMemorySpace(resultType).getValue())
-    return emitOpError("reshape must preserve memory_space");
+  if (getWaferLayout(getSource().getType()) !=
+      getWaferLayout(getResult().getType()))
+    return emitOpError("reshape must preserve layout");
+  if (getWaferMemorySpace(getSource().getType()) !=
+      getWaferMemorySpace(getResult().getType()))
+    return emitOpError("reshape must preserve memory space");
 
-  mlir::RankedTensorType sourceTensor = getStorageTensorType(sourceType);
-  mlir::RankedTensorType resultTensor = getStorageTensorType(resultType);
-  if (sourceTensor.getElementType() != resultTensor.getElementType())
+  if (sourceTensor->getElementType() != resultTensor->getElementType())
     return emitOpError("reshape element types must match");
 
-  std::optional<int64_t> sourceElements = getStaticElementCount(sourceTensor);
-  std::optional<int64_t> resultElements = getStaticElementCount(resultTensor);
+  std::optional<int64_t> sourceElements = getStaticElementCount(*sourceTensor);
+  std::optional<int64_t> resultElements = getStaticElementCount(*resultTensor);
   if (!sourceElements || !resultElements)
     return emitOpError("reshape requires static tensor shapes");
   if (*sourceElements != *resultElements)
@@ -52,12 +52,10 @@ mlir::LogicalResult ViewReshapeOp::verify() {
 
 void ViewReshapeOp::collectWaferLayoutRequirements(
     llvm::SmallVectorImpl<WaferLayoutRequirement> &requirements) {
-  if (auto sourceType = mlir::dyn_cast<StorageType>(getSource().getType()))
-    appendLayoutRequirement(requirements, WaferValueRole::Operand, 0,
-                            sourceType);
-  if (auto resultType = mlir::dyn_cast<StorageType>(getResult().getType()))
-    appendLayoutRequirement(requirements, WaferValueRole::Result, 0,
-                            resultType);
+  appendLayoutRequirement(requirements, WaferValueRole::Operand, 0,
+                          getSource().getType());
+  appendLayoutRequirement(requirements, WaferValueRole::Result, 0,
+                          getResult().getType());
 }
 
 mlir::LogicalResult ViewReshapeOp::verifyWaferLayoutContract() {

@@ -17,7 +17,7 @@ def Wafer_ComputeFillOp : Wafer_Op<"tile.fill", [
     assign a physical SPM offset.
   }];
 
-  let arguments = (ins Wafer_AnyStorage:$dest, AnyType:$value);
+  let arguments = (ins Wafer_AnySPMMemRef:$dest, AnyType:$value);
   let hasVerifier = 1;
   let assemblyFormat =
       "$dest `,` $value attr-dict `:` type($dest) `,` type($value)";
@@ -31,8 +31,8 @@ def Wafer_ComputeGemmOp : Wafer_Op<"tile.gemm", [
                    MemWrite<Wafer_ComputeResource>]>
   ]> {
   let summary = "target-abstract tile GEMM";
-  let arguments = (ins Wafer_AnyStorage:$lhs, Wafer_AnyStorage:$rhs);
-  let results = (outs Wafer_AnyStorage:$result);
+  let arguments = (ins Wafer_AnySPMMemRef:$lhs, Wafer_AnySPMMemRef:$rhs);
+  let results = (outs Wafer_AnySPMMemRef:$result);
   let hasVerifier = 1;
   let assemblyFormat =
       "$lhs `,` $rhs attr-dict `:` functional-type(operands, results)";
@@ -58,9 +58,9 @@ def Wafer_ComputeElementwiseOp : Wafer_Op<"tile.elementwise", [
 
   let arguments = (ins
     Wafer_ComputeElementwiseKindAttr:$kind,
-    Variadic<Wafer_AnyStorage>:$inputs
+    Variadic<Wafer_AnySPMMemRef>:$inputs
   );
-  let results = (outs Wafer_AnyStorage:$result);
+  let results = (outs Wafer_AnySPMMemRef:$result);
   let hasVerifier = 1;
   let assemblyFormat =
       "$kind $inputs attr-dict `:` functional-type(operands, results)";
@@ -83,10 +83,10 @@ def Wafer_ComputeReduceOp : Wafer_Op<"tile.reduce", [
 
   let arguments = (ins
     Wafer_ComputeReduceKindAttr:$kind,
-    Wafer_AnyStorage:$input,
+    Wafer_AnySPMMemRef:$input,
     Optional<AnyType>:$init
   );
-  let results = (outs Wafer_AnyStorage:$result);
+  let results = (outs Wafer_AnySPMMemRef:$result);
   let hasVerifier = 1;
   let assemblyFormat =
       "$kind $input (`,` $init^)? attr-dict `:` functional-type(operands, results)";

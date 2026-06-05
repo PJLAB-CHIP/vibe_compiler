@@ -15,6 +15,7 @@ add_mlir_conversion_library(WaferGroupToTileRegion
   MLIRIR
   MLIRLinalgDialect
   MLIRMathDialect
+  MLIRMemRefDialect
   MLIRSupport
   MLIRTensorDialect
   MLIRTransforms

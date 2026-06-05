@@ -2,7 +2,7 @@
 
 日期：2026-06-05
 
-状态：R3.2d 设计已按 memref-backed buffer contract 重新收口；实现未完成
+状态：R3.2d 设计已按 memref-backed buffer contract 重新收口；R3.2c 前置已完成，R3.2d 实现未完成
 
 本文定义 R3.2d 的 instruction-level Wafer IR。核心结论：
 
@@ -28,8 +28,8 @@ memref SSA、Wafer memory attr、op operands、attrs、MemoryEffects 和显式 d
 - `wafer.instr.rdma`、`wafer.instr.wdma`、`wafer.instr.gather_scatter`、`wafer.instr.fill`、
   `wafer.instr.elementwise`、`wafer.instr.reduce`、`wafer.instr.convert` 和 `wafer.instr.gemm`
   是 R3.2d 待实现 ODS / verifier / conversion 合同。
-- R3.2d 的实现前置是 R3.2c 先产出 memref-backed `wafer.tile.region`；不能再基于旧
-  `!wafer.storage` / `wafer.tile.alloc` 原型新增 instruction lowering。
+- R3.2c 已产出 memref-backed `wafer.tile.region`；R3.2d 必须基于该 unplaced Wafer-tagged memref
+  graph 做 instruction lowering，不能再引入 storage/buffer IR 层。
 
 本文依赖：
 
@@ -519,19 +519,23 @@ wafer.tile.region ... {
 
 ## 12. Implementation Work
 
+R3.2c 已完成的前置：
+
+1. `#wafer.memory<space, layout>` target memory attr。
+2. `computeWaferPhysicalTensorInfo(memrefType)`，统一计算 layout marker、Cx/C0、
+   footprint、range-end、bool bitpack 和 wrapper layout enum。
+3. 旧 `#wafer.memory_space` / `#wafer.mem_layout` / `!wafer.storage` / `wafer.tile.alloc`
+   合同已从主线 IR 定义和测试中删除。
+
 R3.2d 实现需要：
 
-1. 增加 `#wafer.memory<space, layout>` target memory attr，并迁移旧
-   `#wafer.memory_space` / `#wafer.mem_layout` / `!wafer.storage` 合同。
-2. 增加 `computeWaferPhysicalTensorInfo(memrefType)`，统一计算 layout marker、Cx/C0、
-   footprint、range-end、bool bitpack 和 wrapper layout enum。
-3. 增加 `InstrQueue` enum、`WaferInstructionOpInterface` 和 instruction effect helper。
-4. 增加 `wafer.instr.rdma`、`wafer.instr.wdma`、
+1. 增加 `InstrQueue` enum、`WaferInstructionOpInterface` 和 instruction effect helper。
+2. 增加 `wafer.instr.rdma`、`wafer.instr.wdma`、
    `wafer.instr.gather_scatter`、`wafer.instr.fill`、
    `wafer.instr.elementwise`、`wafer.instr.reduce`、
    `wafer.instr.convert` 和 `wafer.instr.gemm` ODS。
-5. 为每个 op 实现 verifier、MemoryEffects、instruction interface 和 positive/negative lit tests。
-6. 实现 `--wafer-convert-tile-region-to-instr` DialectConversion，并让 main R3.2 planner 调用同一
+3. 为每个 op 实现 verifier、MemoryEffects、instruction interface 和 positive/negative lit tests。
+4. 实现 `--wafer-convert-tile-region-to-instr` DialectConversion，并让 main R3.2 planner 调用同一
    conversion implementation。
 7. 增加 conversion tests，覆盖 load/store、layout materialize、fill、GEMM、elementwise/relation、
    reduce、copy/broadcast/transpose、extract_slice/insert_slice、metadata view preserved 和 structured

@@ -5,29 +5,29 @@
 
 module {
   %a = "builtin.unrealized_conversion_cast"()
-      : () -> !wafer.storage<tensor<4x8xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
+      : () -> memref<4x8xf16, #wafer.memory<spm, tensor>>
   %b = "builtin.unrealized_conversion_cast"()
-      : () -> !wafer.storage<tensor<4x8xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
+      : () -> memref<4x8xf16, #wafer.memory<spm, tensor>>
   %row = "builtin.unrealized_conversion_cast"()
-      : () -> !wafer.storage<tensor<4xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
+      : () -> memref<4xf16, #wafer.memory<spm, tensor>>
   %bool = "builtin.unrealized_conversion_cast"()
-      : () -> !wafer.storage<tensor<4x8xi1>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
+      : () -> memref<4x8xi1, #wafer.memory<spm, tensor>>
   %sum = wafer.tile.elementwise #wafer.elementwise_kind<add> %a, %b
-      : (!wafer.storage<tensor<4x8xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>,
-         !wafer.storage<tensor<4x8xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>)
-     -> !wafer.storage<tensor<4x8xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
+      : (memref<4x8xf16, #wafer.memory<spm, tensor>>,
+         memref<4x8xf16, #wafer.memory<spm, tensor>>)
+     -> memref<4x8xf16, #wafer.memory<spm, tensor>>
   %exp = wafer.tile.elementwise #wafer.elementwise_kind<exp> %sum
-      : (!wafer.storage<tensor<4x8xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>)
-     -> !wafer.storage<tensor<4x8xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
+      : (memref<4x8xf16, #wafer.memory<spm, tensor>>)
+     -> memref<4x8xf16, #wafer.memory<spm, tensor>>
   %row_add = wafer.tile.elementwise #wafer.elementwise_kind<add> %a, %row
       {indexing_maps = [#map, #row, #map]}
-      : (!wafer.storage<tensor<4x8xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>,
-         !wafer.storage<tensor<4xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>)
-     -> !wafer.storage<tensor<4x8xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
+      : (memref<4x8xf16, #wafer.memory<spm, tensor>>,
+         memref<4xf16, #wafer.memory<spm, tensor>>)
+     -> memref<4x8xf16, #wafer.memory<spm, tensor>>
   %gt = wafer.tile.elementwise #wafer.elementwise_kind<gt> %a, %b
-      : (!wafer.storage<tensor<4x8xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>,
-         !wafer.storage<tensor<4x8xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>)
-     -> !wafer.storage<tensor<4x8xi1>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
+      : (memref<4x8xf16, #wafer.memory<spm, tensor>>,
+         memref<4x8xf16, #wafer.memory<spm, tensor>>)
+     -> memref<4x8xi1, #wafer.memory<spm, tensor>>
 }
 
 // CHECK: wafer.tile.elementwise <add>

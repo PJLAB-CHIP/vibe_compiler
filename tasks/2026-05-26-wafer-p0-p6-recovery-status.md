@@ -134,8 +134,8 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - 有 `WaferAttrs.td`、`WaferTypes.td`、`WaferInterfaces.td` 和 `WaferOps.td`，覆盖 target、
   placement、elementwise/reduce kind，以及 group、tensor collective、tile-region、tile
   load/store/layout/compute/move/view/comm、placement、`wafer.instr.local_drain` 和 launch op。
-- 当前代码仍包含旧 memory-space / mem-layout attrs、`!wafer.storage` 和 `wafer.tile.alloc`
-  原型；主线合同已经改为 `memref<..., #wafer.memory<space, layout>>`，迁移任务归 R3.2c。
+- R3.2c 已删除旧 split memory attrs、`!wafer.storage` 和 `wafer.tile.alloc` 原型；主线合同是
+  `memref<..., #wafer.memory<space, layout>>`。
 - 有 parser/printer/verifier 正负例；op verifier 已按 IR 层拆到对应 C++ 文件，公共 helper 在
   `lib/Wafer/IR/Common/OpVerifierUtils.*`。
 - 有 `WaferTilingInterface`、`WaferLayoutOpInterface`、
@@ -154,8 +154,8 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - Wafer dialect verifier 的孤立负例仍会使用 `builtin.unrealized_conversion_cast` 构造非法边界值；
   这些用例只能证明 verifier 形态。历史 R1.3 stage-connection gate 已删除；communication bridge
   的 visible cast 仍归 R6.2 清理。
-- 没有 placed instruction-level IR、placed memref 或 access descriptor 层，因此旧 `!wafer.storage` 原型还没有
-  按设计消失。
+- 没有 placed instruction-level IR、placed memref 或 access descriptor 层；下一步由 R3.2d/R3.2e
+  在 R3.2c 的 unplaced Wafer-tagged memref graph 上继续恢复。
 
 恢复任务：
 

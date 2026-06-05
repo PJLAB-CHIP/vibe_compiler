@@ -9,6 +9,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/Diagnostics.h"
@@ -113,18 +114,13 @@ private:
     return mlir::failure();
   }
 
-  mlir::Attribute layoutAttr(mlir::MLIRContext *context, MemLayout layout) {
-    return MemLayoutAttr::get(context, layout);
-  }
-
-  mlir::Attribute spmAttr(mlir::MLIRContext *context) {
-    return MemorySpaceAttr::get(context, MemorySpace::SPM);
-  }
-
-  mlir::Type makeStorageType(mlir::Type tensorType, MemLayout layout) {
+  mlir::MemRefType makeSPMMemRefType(mlir::RankedTensorType tensorType,
+                                     MemLayout layout) {
     auto *context = tensorType.getContext();
-    return StorageType::get(context, tensorType, layoutAttr(context, layout),
-                            spmAttr(context));
+    return mlir::MemRefType::get(
+        tensorType.getShape(), tensorType.getElementType(),
+        mlir::MemRefLayoutAttrInterface{},
+        MemoryAttr::get(context, MemorySpace::SPM, layout));
   }
 
   MemLayout alignedLayoutForTensor(mlir::RankedTensorType tensorType) const {
@@ -200,7 +196,7 @@ private:
     MemLayout sourceLayout = MemLayout::Tensor;
     mlir::Value source = lookupAny(original, sourceLayout);
     if (!source)
-      return failValue("missing storage for value");
+      return failValue("missing buffer for value");
     if (sourceLayout == targetLayout)
       return source;
 
@@ -209,7 +205,7 @@ private:
     if (!tensorType)
       return failValue("cannot materialize non-ranked-tensor value");
 
-    mlir::Type resultType = makeStorageType(tensorType, targetLayout);
+    mlir::Type resultType = makeSPMMemRefType(tensorType, targetLayout);
     auto materialize = builder.create<LayoutMaterializeOp>(original.getLoc(),
                                                            resultType, source);
     record(original, targetLayout, materialize.getResult());
@@ -236,7 +232,7 @@ private:
         return fail("group boundary is not a ranked tensor or scalar");
       }
       auto load = builder.create<StorageLoadOp>(
-          groupArg.getLoc(), makeStorageType(tensorType, MemLayout::Tensor),
+          groupArg.getLoc(), makeSPMMemRefType(tensorType, MemLayout::Tensor),
           tileArg);
       record(groupArg, MemLayout::Tensor, load.getResult());
       tensorValues[groupArg] = tileArg;
@@ -283,7 +279,7 @@ private:
         }
 
         auto load = builder.create<StorageLoadOp>(
-            constant.getLoc(), makeStorageType(tensorType, MemLayout::Tensor),
+            constant.getLoc(), makeSPMMemRefType(tensorType, MemLayout::Tensor),
             clonedResult);
         record(originalResult, MemLayout::Tensor, load.getResult());
         tensorValues[originalResult] = clonedResult;
@@ -295,8 +291,8 @@ private:
       auto tensorType = mlir::dyn_cast<mlir::RankedTensorType>(empty.getType());
       if (!tensorType)
         return fail("tensor.empty result is not a ranked tensor");
-      auto alloc = builder.create<StorageAllocOp>(
-          empty.getLoc(), makeStorageType(tensorType, MemLayout::Tensor));
+      auto alloc = builder.create<mlir::memref::AllocOp>(
+          empty.getLoc(), makeSPMMemRefType(tensorType, MemLayout::Tensor));
       record(empty.getResult(), MemLayout::Tensor, alloc.getResult());
       return mlir::success();
     }
@@ -374,7 +370,7 @@ private:
         mlir::DenseI64ArrayAttr::get(context, extractSlice.getStaticStrides());
     auto move = builder.create<MoveExtractSliceOp>(
         extractSlice.getLoc(),
-        makeStorageType(resultTensorType, MemLayout::Tensor), *source, offsets,
+        makeSPMMemRefType(resultTensorType, MemLayout::Tensor), *source, offsets,
         sizes, strides);
     record(extractSlice.getResult(), MemLayout::Tensor, move.getResult());
     return mlir::success();
@@ -409,7 +405,7 @@ private:
         mlir::DenseI64ArrayAttr::get(context, insertSlice.getStaticStrides());
     auto move = builder.create<MoveInsertSliceOp>(
         insertSlice.getLoc(),
-        makeStorageType(resultTensorType, MemLayout::Tensor), *source, *dest,
+        makeSPMMemRefType(resultTensorType, MemLayout::Tensor), *source, *dest,
         offsets, sizes, strides);
     record(insertSlice.getResult(), MemLayout::Tensor, move.getResult());
     return mlir::success();
@@ -422,7 +418,7 @@ private:
     MemLayout sourceLayout = MemLayout::Tensor;
     mlir::Value source = lookupAny(sourceValue, sourceLayout);
     if (!source)
-      return fail("missing storage for tensor reshape source");
+      return fail("missing buffer for tensor reshape source");
 
     auto resultTensorType =
         mlir::dyn_cast<mlir::RankedTensorType>(resultValue.getType());
@@ -430,7 +426,7 @@ private:
       return fail("tensor reshape result is not a ranked tensor");
 
     auto reshape = builder.create<ViewReshapeOp>(
-        op->getLoc(), makeStorageType(resultTensorType, sourceLayout), source);
+        op->getLoc(), makeSPMMemRefType(resultTensorType, sourceLayout), source);
     record(resultValue, sourceLayout, reshape.getResult());
     return mlir::success();
   }
@@ -482,7 +478,7 @@ private:
       return fail("matmul result is not a ranked tensor");
 
     auto gemm = builder.create<ComputeGemmOp>(
-        op->getLoc(), makeStorageType(resultTensorType, MemLayout::Cx), *lhs,
+        op->getLoc(), makeSPMMemRefType(resultTensorType, MemLayout::Cx), *lhs,
         *rhs);
     record(op->getResult(0), MemLayout::Cx, gemm.getResult());
     return mlir::success();
@@ -742,7 +738,7 @@ private:
     if (mlir::failed(input))
       return mlir::failure();
 
-    mlir::Type reduceResultType = makeStorageType(
+    mlir::Type reduceResultType = makeSPMMemRefType(
         resultTensorType, alignedLayoutForTensor(resultTensorType));
     mlir::Value reduceResult;
     auto kindAttr = ComputeReduceKindAttr::get(generic.getContext(), *kind);
@@ -810,7 +806,7 @@ private:
       return fail("passthrough generic result map must be identity");
 
     mlir::Type resultType =
-        makeStorageType(resultTensorType, MemLayout::Tensor);
+        makeSPMMemRefType(resultTensorType, MemLayout::Tensor);
     mlir::Value result;
     if (inputTensorType == resultTensorType &&
         isIdentityMap(inputMap, resultTensorType.getRank())) {
@@ -888,7 +884,7 @@ private:
     auto kindAttr =
         ComputeElementwiseKindAttr::get(generic.getContext(), *kind);
     auto elementwise = builder.create<ComputeElementwiseOp>(
-        generic.getLoc(), makeStorageType(resultTensorType, MemLayout::Tensor),
+        generic.getLoc(), makeSPMMemRefType(resultTensorType, MemLayout::Tensor),
         kindAttr, inputs);
     if (mlir::Attribute indexingMaps = generic->getAttr("indexing_maps"))
       elementwise->setAttr("indexing_maps", indexingMaps);
@@ -982,7 +978,7 @@ cloneGroupToScratchModule(GroupOp group) {
 
 static void configureGroupToTileRegionTarget(mlir::ConversionTarget &target) {
   target.addLegalDialect<mlir::arith::ArithDialect, mlir::func::FuncDialect,
-                         wafer::WaferDialect>();
+                         mlir::memref::MemRefDialect, wafer::WaferDialect>();
   target.addLegalOp<mlir::ModuleOp>();
   target.addIllegalOp<GroupOp, GroupYieldOp>();
   target.markUnknownOpDynamicallyLegal([](mlir::Operation *) { return true; });

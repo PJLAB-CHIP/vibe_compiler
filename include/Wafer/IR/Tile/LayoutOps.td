@@ -19,8 +19,8 @@ def Wafer_LayoutMaterializeOp : Wafer_Op<"tile.materialize_layout", [
     rejects it instead of relying on canonicalization for legality.
   }];
 
-  let arguments = (ins Wafer_AnyStorage:$source);
-  let results = (outs Wafer_AnyStorage:$result);
+  let arguments = (ins Wafer_AnySPMMemRef:$source);
+  let results = (outs Wafer_AnySPMMemRef:$result);
 
   let hasVerifier = 1;
   let assemblyFormat = "$source attr-dict `:` type($source) `->` type($result)";

@@ -228,13 +228,13 @@ module {
 // CHECK-LABEL: wafer.group_to_tile_region group @matmul_bias_relu#0
 // CHECK: wafer.tile.region(
 // CHECK: wafer.tile.load
-// CHECK: !wafer.storage<tensor<4x8xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
+// CHECK: memref<4x8xf32, #wafer.memory<spm, tensor>>
 // CHECK: wafer.tile.fill
 // CHECK: wafer.tile.materialize_layout
-// CHECK: #wafer.mem_layout<cx>
+// CHECK: #wafer.memory<spm, cx>
 // CHECK: wafer.tile.gemm
 // CHECK: wafer.tile.materialize_layout
-// CHECK: #wafer.mem_layout<tensor>
+// CHECK: #wafer.memory<spm, tensor>
 // CHECK: wafer.tile.elementwise <add>
 // CHECK-SAME: indexing_maps
 // CHECK: wafer.tile.elementwise <max>
@@ -245,18 +245,18 @@ module {
 // CHECK-LABEL: wafer.group_to_tile_region group @two_independent_groups#1
 // CHECK: wafer.tile.elementwise <add>
 // CHECK-LABEL: wafer.group_to_tile_region group @empty_fill_group#0
-// CHECK: wafer.tile.alloc
+// CHECK: memref.alloc
 // CHECK: wafer.tile.fill
 // CHECK: wafer.tile.store
 // CHECK-LABEL: wafer.group_to_tile_region group @reduce_sum_group#0
 // CHECK: tensor.extract
 // CHECK: wafer.tile.fill
 // CHECK: wafer.tile.materialize_layout
-// CHECK: #wafer.mem_layout<cx>
+// CHECK: #wafer.memory<spm, cx>
 // CHECK: wafer.tile.reduce <sum>
 // CHECK-SAME: dimensions = array<i64: 1>
 // CHECK: wafer.tile.materialize_layout
-// CHECK: #wafer.mem_layout<tensor>
+// CHECK: #wafer.memory<spm, tensor>
 // CHECK: wafer.tile.store
 // CHECK-LABEL: wafer.group_to_tile_region group @tensor_movement_group#0
 // CHECK: wafer.tile.extract_slice
@@ -267,7 +267,7 @@ module {
 // CHECK-LABEL: wafer.group_to_tile_region group @tensor_rank_reduced_slice_group#0
 // CHECK: wafer.tile.extract_slice
 // CHECK-SAME: sizes = array<i64: 1, 4>
-// CHECK: !wafer.storage<tensor<4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
+// CHECK: memref<4xf32, #wafer.memory<spm, tensor>>
 // CHECK: wafer.tile.insert_slice
 // CHECK-SAME: sizes = array<i64: 1, 4>
 // CHECK: wafer.tile.store

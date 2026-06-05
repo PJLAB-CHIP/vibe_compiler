@@ -5,11 +5,11 @@ module {
   %0 = wafer.tile.region(%source : tensor<4xf32>) -> (tensor<4xf32>) {
   ^bb0(%arg0: tensor<4xf32>):
     %local = "builtin.unrealized_conversion_cast"()
-        : () -> !wafer.storage<tensor<4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
+        : () -> memref<4xf32, #wafer.memory<spm, tensor>>
     wafer.tile.yield %arg0 : tensor<4xf32>
   }
 }
 
 // CHECK: wafer.tile.region(%{{.+}} : tensor<4xf32>) -> (tensor<4xf32>) {
-// CHECK: !wafer.storage<tensor<4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
+// CHECK: memref<4xf32, #wafer.memory<spm, tensor>>
 // CHECK: wafer.tile.yield %{{.+}} : tensor<4xf32>

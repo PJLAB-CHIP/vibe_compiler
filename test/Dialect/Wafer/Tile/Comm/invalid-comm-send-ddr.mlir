@@ -2,9 +2,9 @@
 
 module {
   %buf = "builtin.unrealized_conversion_cast"()
-      : () -> !wafer.storage<tensor<4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<ddr>>
+      : () -> memref<4xf32, #wafer.memory<ddr, tensor>>
   %send = wafer.tile.send %buf {peer = 1 : i64, bytes = 16 : i64}
-      : !wafer.storage<tensor<4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<ddr>> -> !async.token
+      : memref<4xf32, #wafer.memory<ddr, tensor>> -> !async.token
 }
 
-// CHECK: comm p2p buffer must use SPM memory space
+// CHECK: operand #0 must be Wafer SPM memref

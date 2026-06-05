@@ -17,13 +17,12 @@
 namespace wafer::detail {
 
 bool isSPMMemRef(mlir::Type type);
-bool isSPMStorage(mlir::Type type);
-wafer::MemLayoutAttr getStorageLayout(wafer::StorageType type);
-wafer::MemorySpaceAttr getStorageMemorySpace(wafer::StorageType type);
-mlir::RankedTensorType getStorageTensorType(wafer::StorageType type);
-bool hasStorageLayout(wafer::StorageType type, wafer::MemLayout layout);
-bool hasStorageMemorySpace(wafer::StorageType type,
-                           wafer::MemorySpace memorySpace);
+bool isSPMBuffer(mlir::Type type);
+std::optional<wafer::MemLayout> getWaferLayout(mlir::Type type);
+std::optional<wafer::MemorySpace> getWaferMemorySpace(mlir::Type type);
+std::optional<mlir::RankedTensorType> getLogicalTensorType(mlir::Type type);
+bool hasWaferLayout(mlir::Type type, wafer::MemLayout layout);
+bool hasWaferMemorySpace(mlir::Type type, wafer::MemorySpace memorySpace);
 bool hasStaticMismatch(int64_t lhs, int64_t rhs);
 bool checkedMul(int64_t lhs, int64_t rhs, int64_t &result);
 bool checkedAdd(int64_t lhs, int64_t rhs, int64_t &result);
@@ -37,7 +36,7 @@ std::optional<int64_t> getCompactByteSize(mlir::Type type);
 int64_t getCompactByteSizeOrUnknown(mlir::Type type);
 void appendLayoutRequirement(
     llvm::SmallVectorImpl<wafer::WaferLayoutRequirement> &requirements,
-    wafer::WaferValueRole role, unsigned index, wafer::StorageType type);
+    wafer::WaferValueRole role, unsigned index, mlir::Type type);
 void appendResourceEffect(
     llvm::SmallVectorImpl<wafer::WaferResourceEffect> &effects,
     wafer::WaferResourceKind resource, wafer::WaferResourceAccess access,

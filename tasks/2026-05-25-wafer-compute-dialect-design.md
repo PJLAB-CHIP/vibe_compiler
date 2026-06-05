@@ -249,9 +249,9 @@ getAsyncLoweringPolicy(target)
 
 当前 ODS / verifier 原型先覆盖 accepted-layout 层：layout-sensitive compute/movement op 通过
 `collectWaferLayoutRequirements` 暴露 operand/result 当前承诺的 address space 和 layout marker，
-并通过 `verifyWaferLayoutContract` 做 verifier 可调用检查。仓库代码仍有旧
-`!wafer.storage` / `#wafer.memory_space` / `#wafer.mem_layout` 路径；R3.2c 需要把同一接口迁移到
-`memref<..., #wafer.memory<space, layout>>`。
+并通过 `verifyWaferLayoutContract` 做 verifier 可调用检查。R3.2c 已把同一接口迁移到
+`memref<..., #wafer.memory<space, layout>>`；旧 storage / split memory attr 路径不再是主线 IR
+合同。
 pre-assignment planner 需要的 allowed/preferred layout domain 仍是同一接口边界上的后续扩展：
 
 ```text

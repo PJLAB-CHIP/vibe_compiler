@@ -33,10 +33,10 @@ module {
 // CHECK-LABEL: wafer.group_to_tile_region group @lower_reduce_sum#0
 // CHECK: wafer.tile.fill
 // CHECK: wafer.tile.materialize_layout
-// CHECK: #wafer.mem_layout<cx>
+// CHECK: #wafer.memory<spm, cx>
 // CHECK: wafer.tile.reduce <sum>
 // CHECK-SAME: dimensions = array<i64: 1>
-// CHECK: f32) -> !wafer.storage<tensor<2xf32>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
+// CHECK: f32) -> memref<2xf32, #wafer.memory<spm, cx>>
 // CHECK: wafer.tile.store
 // CHECK-LABEL: wafer.group_to_tile_region group @lower_broadcast#0
 // CHECK: wafer.tile.broadcast

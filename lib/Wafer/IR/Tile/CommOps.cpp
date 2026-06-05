@@ -17,9 +17,8 @@ mlir::LogicalResult CommRecvOp::verify() {
 
 void CommRecvOp::collectWaferLayoutRequirements(
     llvm::SmallVectorImpl<WaferLayoutRequirement> &requirements) {
-  if (auto bufferType = mlir::dyn_cast<StorageType>(getBuffer().getType()))
-    appendLayoutRequirement(requirements, WaferValueRole::Operand, 0,
-                            bufferType);
+  appendLayoutRequirement(requirements, WaferValueRole::Operand, 0,
+                          getBuffer().getType());
 }
 
 mlir::LogicalResult CommRecvOp::verifyWaferLayoutContract() {
@@ -52,9 +51,8 @@ mlir::LogicalResult CommSendOp::verify() {
 
 void CommSendOp::collectWaferLayoutRequirements(
     llvm::SmallVectorImpl<WaferLayoutRequirement> &requirements) {
-  if (auto bufferType = mlir::dyn_cast<StorageType>(getBuffer().getType()))
-    appendLayoutRequirement(requirements, WaferValueRole::Operand, 0,
-                            bufferType);
+  appendLayoutRequirement(requirements, WaferValueRole::Operand, 0,
+                          getBuffer().getType());
 }
 
 mlir::LogicalResult CommSendOp::verifyWaferLayoutContract() {
@@ -101,17 +99,17 @@ mlir::LogicalResult CommWaitOp::verifyWaferResourceEffectContract() {
 }
 
 mlir::LogicalResult CommAllGatherOp::verify() {
-  auto localType = mlir::dyn_cast<StorageType>(getLocalChunk().getType());
-  auto gatherType = mlir::dyn_cast<StorageType>(getGatherBuffer().getType());
-  if (!localType || !gatherType)
-    return emitOpError("all_gather expects storage operands");
-  if (!hasStorageMemorySpace(localType, MemorySpace::SPM) ||
-      !hasStorageMemorySpace(gatherType, MemorySpace::SPM))
+  std::optional<mlir::RankedTensorType> localTensor =
+      getLogicalTensorType(getLocalChunk().getType());
+  std::optional<mlir::RankedTensorType> gatherTensor =
+      getLogicalTensorType(getGatherBuffer().getType());
+  if (!localTensor || !gatherTensor)
+    return emitOpError("all_gather expects Wafer buffer operands");
+  if (!hasWaferMemorySpace(getLocalChunk().getType(), MemorySpace::SPM) ||
+      !hasWaferMemorySpace(getGatherBuffer().getType(), MemorySpace::SPM))
     return emitOpError("all_gather buffers must use SPM memory space");
 
-  mlir::RankedTensorType localTensor = getStorageTensorType(localType);
-  mlir::RankedTensorType gatherTensor = getStorageTensorType(gatherType);
-  if (localTensor.getElementType() != gatherTensor.getElementType())
+  if (localTensor->getElementType() != gatherTensor->getElementType())
     return emitOpError("all_gather local and gather element types must match");
 
   int64_t groupSize = getGroupSizeAttr().getInt();
@@ -135,7 +133,7 @@ mlir::LogicalResult CommAllGatherOp::verify() {
   if (bytes <= 0)
     return emitOpError("all_gather byte count must be positive");
 
-  std::optional<int64_t> localBytes = getCompactTensorByteSize(localTensor);
+  std::optional<int64_t> localBytes = getCompactTensorByteSize(*localTensor);
   if (!localBytes)
     return emitOpError(
         "all_gather local compact byte size is not representable");
@@ -146,7 +144,7 @@ mlir::LogicalResult CommAllGatherOp::verify() {
   int64_t expectedGatherBytes = 0;
   if (!checkedMul(bytes, groupSize, expectedGatherBytes))
     return emitOpError("all_gather total byte size is not representable");
-  std::optional<int64_t> gatherBytes = getCompactTensorByteSize(gatherTensor);
+  std::optional<int64_t> gatherBytes = getCompactTensorByteSize(*gatherTensor);
   if (!gatherBytes)
     return emitOpError(
         "all_gather gather buffer compact byte size is not representable");
@@ -160,13 +158,10 @@ mlir::LogicalResult CommAllGatherOp::verify() {
 
 void CommAllGatherOp::collectWaferLayoutRequirements(
     llvm::SmallVectorImpl<WaferLayoutRequirement> &requirements) {
-  if (auto localType = mlir::dyn_cast<StorageType>(getLocalChunk().getType()))
-    appendLayoutRequirement(requirements, WaferValueRole::Operand, 0,
-                            localType);
-  if (auto gatherType =
-          mlir::dyn_cast<StorageType>(getGatherBuffer().getType()))
-    appendLayoutRequirement(requirements, WaferValueRole::Operand, 1,
-                            gatherType);
+  appendLayoutRequirement(requirements, WaferValueRole::Operand, 0,
+                          getLocalChunk().getType());
+  appendLayoutRequirement(requirements, WaferValueRole::Operand, 1,
+                          getGatherBuffer().getType());
 }
 
 mlir::LogicalResult CommAllGatherOp::verifyWaferLayoutContract() {
@@ -201,16 +196,19 @@ static mlir::LogicalResult verifyCommReduceCollective(
     mlir::Value recvBuffer, mlir::Type resultType,
     mlir::IntegerAttr localRankAttr, mlir::IntegerAttr groupSizeAttr,
     mlir::DenseI64ArrayAttr rankGroupAttr, mlir::IntegerAttr bytesAttr) {
-  auto inputType = mlir::dyn_cast<StorageType>(input.getType());
-  auto recvType = mlir::dyn_cast<StorageType>(recvBuffer.getType());
-  auto resultStorageType = mlir::dyn_cast<StorageType>(resultType);
-  if (!inputType || !recvType || !resultStorageType)
+  std::optional<mlir::RankedTensorType> inputTensor =
+      getLogicalTensorType(input.getType());
+  std::optional<mlir::RankedTensorType> recvTensor =
+      getLogicalTensorType(recvBuffer.getType());
+  std::optional<mlir::RankedTensorType> resultTensor =
+      getLogicalTensorType(resultType);
+  if (!inputTensor || !recvTensor || !resultTensor)
     return op->emitOpError(collectiveName)
-           << " expects storage operands and result";
-  if (inputType != recvType || inputType != resultStorageType)
+           << " expects Wafer buffer operands and result";
+  if (input.getType() != recvBuffer.getType() || input.getType() != resultType)
     return op->emitOpError(collectiveName)
            << " input, recv buffer, and result types must match";
-  if (!hasStorageMemorySpace(inputType, MemorySpace::SPM))
+  if (!hasWaferMemorySpace(input.getType(), MemorySpace::SPM))
     return op->emitOpError(collectiveName)
            << " buffers must use SPM memory space";
 
@@ -240,7 +238,7 @@ static mlir::LogicalResult verifyCommReduceCollective(
     return op->emitOpError(collectiveName) << " byte count must be positive";
 
   std::optional<int64_t> compactBytes =
-      getCompactTensorByteSize(getStorageTensorType(inputType));
+      getCompactTensorByteSize(*inputTensor);
   if (!compactBytes)
     return op->emitOpError(collectiveName)
            << " compact byte size is not representable";
@@ -261,14 +259,12 @@ mlir::LogicalResult CommReduceScatterOp::verify() {
 static void collectCommReduceCollectiveLayoutRequirements(
     mlir::Value input, mlir::Value recvBuffer, mlir::Value result,
     llvm::SmallVectorImpl<WaferLayoutRequirement> &requirements) {
-  if (auto inputType = mlir::dyn_cast<StorageType>(input.getType()))
-    appendLayoutRequirement(requirements, WaferValueRole::Operand, 0,
-                            inputType);
-  if (auto recvType = mlir::dyn_cast<StorageType>(recvBuffer.getType()))
-    appendLayoutRequirement(requirements, WaferValueRole::Operand, 1, recvType);
-  if (auto resultType = mlir::dyn_cast<StorageType>(result.getType()))
-    appendLayoutRequirement(requirements, WaferValueRole::Result, 0,
-                            resultType);
+  appendLayoutRequirement(requirements, WaferValueRole::Operand, 0,
+                          input.getType());
+  appendLayoutRequirement(requirements, WaferValueRole::Operand, 1,
+                          recvBuffer.getType());
+  appendLayoutRequirement(requirements, WaferValueRole::Result, 0,
+                          result.getType());
 }
 
 void CommReduceScatterOp::collectWaferLayoutRequirements(

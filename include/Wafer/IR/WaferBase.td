@@ -16,7 +16,7 @@ def Wafer_Dialect : Dialect {
     IR layer.
   }];
   let useDefaultAttributePrinterParser = 1;
-  let useDefaultTypePrinterParser = 1;
+  let useDefaultTypePrinterParser = 0;
 }
 
 class Wafer_Op<string mnemonic, list<Trait> traits = []>

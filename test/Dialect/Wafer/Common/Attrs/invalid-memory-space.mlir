@@ -1,8 +1,8 @@
 // RUN: not wafer-opt %s 2>&1 | FileCheck %s
 
 module attributes {
-  wafer.memory_space = #wafer.memory_space<register_file>
+  wafer.memory = #wafer.memory<register_file, tensor>
 } {
 }
 
-// CHECK: expected ::wafer::MemorySpace to be one of: spm, ddr
+// CHECK: invalid Wafer addressable storage space specification

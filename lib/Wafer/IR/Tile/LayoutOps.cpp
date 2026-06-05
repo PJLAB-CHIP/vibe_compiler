@@ -10,33 +10,33 @@ using namespace wafer;
 using namespace wafer::detail;
 
 mlir::LogicalResult LayoutMaterializeOp::verify() {
-  auto sourceType = mlir::dyn_cast<StorageType>(getSource().getType());
-  auto resultType = mlir::dyn_cast<StorageType>(getResult().getType());
-  if (!sourceType || !resultType)
-    return emitOpError("expects storage source and result types");
+  std::optional<mlir::RankedTensorType> sourceTensor =
+      getLogicalTensorType(getSource().getType());
+  std::optional<mlir::RankedTensorType> resultTensor =
+      getLogicalTensorType(getResult().getType());
+  if (!sourceTensor || !resultTensor)
+    return emitOpError("expects Wafer buffer source and result types");
 
-  if (sourceType.getTensorType() != resultType.getTensorType())
+  if (*sourceTensor != *resultTensor)
     return emitOpError("layout materialize must preserve logical tensor type");
 
-  if (getStorageMemorySpace(sourceType).getValue() !=
-      getStorageMemorySpace(resultType).getValue())
+  if (getWaferMemorySpace(getSource().getType()) !=
+      getWaferMemorySpace(getResult().getType()))
     return emitOpError("layout materialize must preserve memory space");
 
-  if (getStorageLayout(sourceType).getValue() ==
-      getStorageLayout(resultType).getValue())
-    return emitOpError("layout materialize must change mem_layout");
+  if (getWaferLayout(getSource().getType()) ==
+      getWaferLayout(getResult().getType()))
+    return emitOpError("layout materialize must change layout");
 
   return mlir::success();
 }
 
 void LayoutMaterializeOp::collectWaferMaterializationLayouts(
     llvm::SmallVectorImpl<WaferLayoutRequirement> &requirements) {
-  if (auto sourceType = mlir::dyn_cast<StorageType>(getSource().getType()))
-    appendLayoutRequirement(requirements, WaferValueRole::Operand, 0,
-                            sourceType);
-  if (auto resultType = mlir::dyn_cast<StorageType>(getResult().getType()))
-    appendLayoutRequirement(requirements, WaferValueRole::Result, 0,
-                            resultType);
+  appendLayoutRequirement(requirements, WaferValueRole::Operand, 0,
+                          getSource().getType());
+  appendLayoutRequirement(requirements, WaferValueRole::Result, 0,
+                          getResult().getType());
 }
 
 mlir::LogicalResult

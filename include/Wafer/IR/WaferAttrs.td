@@ -4,6 +4,7 @@
 #define WAFER_IR_WAFERATTRS_TD
 
 include "Wafer/IR/WaferBase.td"
+include "mlir/IR/AttrTypeBase.td"
 include "mlir/IR/EnumAttr.td"
 
 def Wafer_TargetWafer : I32EnumAttrCase<"Wafer", 0, "wafer">;
@@ -28,11 +29,6 @@ def Wafer_MemorySpace : I32EnumAttr<"MemorySpace", "Wafer addressable storage sp
   let genSpecializedAttr = 0;
 }
 
-def Wafer_MemorySpaceAttr
-    : EnumAttr<Wafer_Dialect, Wafer_MemorySpace, "memory_space"> {
-  let assemblyFormat = "`<` $value `>`";
-}
-
 def Wafer_MemLayoutTensor : I32EnumAttrCase<"Tensor", 0, "tensor">;
 def Wafer_MemLayoutNTensor : I32EnumAttrCase<"NTensor", 1, "ntensor">;
 def Wafer_MemLayoutCx : I32EnumAttrCase<"Cx", 2, "cx">;
@@ -47,9 +43,23 @@ def Wafer_MemLayout : I32EnumAttr<"MemLayout", "Wafer physical memory layout fam
   let genSpecializedAttr = 0;
 }
 
-def Wafer_MemLayoutAttr
-    : EnumAttr<Wafer_Dialect, Wafer_MemLayout, "mem_layout"> {
-  let assemblyFormat = "`<` $value `>`";
+def Wafer_MemoryAttr : AttrDef<Wafer_Dialect, "Memory"> {
+  let mnemonic = "memory";
+  let summary = "Wafer memory-space and physical layout marker";
+  let description = [{
+    `#wafer.memory<space, layout>` is the memory-space attribute carried by
+    Wafer-owned memref values. The memref shape and element type remain the
+    logical tensor view; this attribute records which Wafer addressable memory
+    space contains the buffer and which physical layout family the buffer uses.
+    It does not encode a physical SPM offset, runtime handle, packet field, or
+    ABI descriptor.
+  }];
+
+  let parameters = (ins
+    "wafer::MemorySpace":$space,
+    "wafer::MemLayout":$layout
+  );
+  let assemblyFormat = "`<` $space `,` $layout `>`";
 }
 
 def Wafer_PlacementSingleTile : I32EnumAttrCase<"SingleTile", 0, "single_tile">;

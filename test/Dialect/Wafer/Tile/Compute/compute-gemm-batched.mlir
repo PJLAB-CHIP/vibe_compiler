@@ -2,8 +2,8 @@
 
 module {
   func.func @batched_attention_score(
-      %query: !wafer.storage<tensor<2x3x5x8xf32>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>,
-      %key: !wafer.storage<tensor<2x3x7x8xf32>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>) {
+      %query: memref<2x3x5x8xf32, #wafer.memory<spm, cx>>,
+      %key: memref<2x3x7x8xf32, #wafer.memory<spm, cx>>) {
     %score = wafer.tile.gemm %query, %key
         {batch_count = 6 : i64,
          lhs_batch_dims = array<i64: 0, 1>,
@@ -15,9 +15,9 @@ module {
          rhs_batch_dims = array<i64: 0, 1>,
          rhs_contracting_dim = 3 : i64,
          rhs_n_dim = 2 : i64}
-        : (!wafer.storage<tensor<2x3x5x8xf32>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>,
-           !wafer.storage<tensor<2x3x7x8xf32>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>)
-       -> !wafer.storage<tensor<2x3x5x7xf32>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
+        : (memref<2x3x5x8xf32, #wafer.memory<spm, cx>>,
+           memref<2x3x7x8xf32, #wafer.memory<spm, cx>>)
+       -> memref<2x3x5x7xf32, #wafer.memory<spm, cx>>
     return
   }
 }

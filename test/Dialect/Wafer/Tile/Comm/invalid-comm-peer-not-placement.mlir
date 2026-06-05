@@ -12,9 +12,9 @@ module {
        tile_y_count = 4 : i64}
 
   %buf = "builtin.unrealized_conversion_cast"()
-      : () -> !wafer.storage<tensor<4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
+      : () -> memref<4xf32, #wafer.memory<spm, tensor>>
   %send = wafer.tile.send %buf {peer = 2 : i64, bytes = 16 : i64}
-      : !wafer.storage<tensor<4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>> -> !async.token
+      : memref<4xf32, #wafer.memory<spm, tensor>> -> !async.token
 }
 
 // CHECK: comm peer must refer to an active placement tile

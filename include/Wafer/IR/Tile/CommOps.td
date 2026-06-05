@@ -13,7 +13,7 @@ class Wafer_CommP2POp<string mnemonic> : Wafer_Op<mnemonic, [
                    MemWrite<Wafer_CommunicationResource>]>
   ]> {
   let arguments = (ins
-    Wafer_AnyStorage:$buffer,
+    Wafer_AnySPMMemRef:$buffer,
     I64Attr:$peer,
     I64Attr:$bytes
   );
@@ -59,8 +59,8 @@ def Wafer_CommAllGatherOp : Wafer_Op<"tile.all_gather", [
   }];
 
   let arguments = (ins
-    Wafer_AnyStorage:$local_chunk,
-    Wafer_AnyStorage:$gather_buffer,
+    Wafer_AnySPMMemRef:$local_chunk,
+    Wafer_AnySPMMemRef:$gather_buffer,
     I64Attr:$local_rank,
     I64Attr:$group_size,
     DenseI64ArrayAttr:$rank_group,
@@ -81,14 +81,14 @@ class Wafer_CommReduceCollectiveOp<string mnemonic> : Wafer_Op<mnemonic, [
   ]> {
   let arguments = (ins
     Wafer_ComputeReduceKindAttr:$kind,
-    Wafer_AnyStorage:$input,
-    Wafer_AnyStorage:$recv_buffer,
+    Wafer_AnySPMMemRef:$input,
+    Wafer_AnySPMMemRef:$recv_buffer,
     I64Attr:$local_rank,
     I64Attr:$group_size,
     DenseI64ArrayAttr:$rank_group,
     I64Attr:$bytes
   );
-  let results = (outs Wafer_AnyStorage:$result);
+  let results = (outs Wafer_AnySPMMemRef:$result);
   let hasVerifier = 1;
   let assemblyFormat =
       "$kind $input `using` $recv_buffer attr-dict `:` functional-type(operands, results)";

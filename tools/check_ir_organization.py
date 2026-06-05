@@ -35,7 +35,7 @@ OP_FAMILIES = {
         "layer": "Resource",
         "td": "SPMOps.td",
         "cpp": "SPMOps.cpp",
-        "mnemonics": ["tile.alloc", "tile.load", "tile.store"],
+        "mnemonics": ["tile.load", "tile.store"],
         "tests": "Resource/SPM",
     },
     "Move": {
@@ -116,7 +116,7 @@ OP_FAMILIES = {
     },
 }
 
-SUPPORT_TEST_DIRS = {"Common/Attrs", "Common/Types"}
+SUPPORT_TEST_DIRS = {"Common/Attrs"}
 IR_LAYERS = {"Tensor", "Tile", "Resource", "Instr", "Runtime", "Common"}
 CONVERSION_LIBRARIES = {
     "WaferGroupToTileRegion": {
@@ -204,7 +204,7 @@ def check_op_family_files(root: Path, errors: list[str]) -> None:
         if name != "Sync" and "::verify()" not in cpp_text:
             fail(errors, f"{spec['cpp']} must own {name} verifier definitions")
 
-    if "::verify()" in dialect_cpp.replace("StorageType::verify()", ""):
+    if "::verify()" in dialect_cpp:
         fail(errors, "WaferDialect.cpp must not own op verifier definitions")
 
     check_file(cpp_root / "Common/OpVerifierUtils.h", errors)

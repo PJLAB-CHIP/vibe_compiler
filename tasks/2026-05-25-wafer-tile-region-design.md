@@ -8,7 +8,7 @@ instruction-level Wafer IR 先于 SPM placement，并补正式 `group -> tile_re
 2026-06-05 对齐 memref-backed buffer contract，`Cx/NCx` 改为 Wafer memory attr marker
 
 本文定义 `wafer.tile.region` 作为 `wafer.group` lowering 之后的 tile-local execution boundary。
-它组织 tile-local storage、movement、layout materialization、target-abstract compute、communication
+它组织 tile-local Wafer-tagged memref、movement、layout materialization、target-abstract compute、communication
 和 sync/effect op。它不重新做 group formation、traversal selection、root tile search 或 runtime
 launch/package 组织。
 
@@ -29,13 +29,14 @@ placement-derived endpoint 和 communication staging demand 的层级；`wafer.t
 
 当前实现状态口径：
 
-- 仓库代码已有 `wafer.tile.region`、旧 `!wafer.storage`、`wafer.tile.alloc/load/store`、
-  target-abstract compute/layout/move/view/comm op 和 group-to-tile-region conversion 原型。
-- 2026-06-05 之后的主线合同已经改为 memref-backed buffer value：
-  `memref<..., #wafer.memory<space, layout>>`。因此旧 `!wafer.storage` / `wafer.tile.alloc`
-  只能视为待迁移原型，不能作为 R3.2c done 口径。
-- 本文下面的 R3.2c coverage 表描述迁移后的目标合同；若与当前 ODS / test fixture 冲突，
-  以 `tasks/progress.md` 的“当前 IR 状态”和本节口径为准。
+- 仓库代码已有 `wafer.tile.region`、`wafer.tile.load/store`、target-abstract
+  compute/layout/move/view/comm op 和 group-to-tile-region conversion。
+- 2026-06-05 R3.2c 已把 tile-local buffer value 迁移为 memref-backed contract：
+  `memref<..., #wafer.memory<space, layout>>`；`tensor.empty` 在 tile-region lowering 中降为
+  `memref.alloc`。旧 `!wafer.storage`、`wafer.tile.alloc`、`#wafer.memory_space` 和
+  `#wafer.mem_layout` 已从主线 IR 定义、verifier 和测试中删除。
+- 本文下面的 R3.2c coverage 表描述已落地合同；若与历史任务文档冲突，以本节和
+  `tasks/progress.md` 的“当前 IR 状态”为准。
 
 ## 1. 目标和非目标
 
@@ -112,8 +113,8 @@ Pipeline position:
   group、不把 tile-region IR 当成 R3.3 accepted materialization、不 lower 到 packet/ABI/LLVM。
 - Completion gate:
   FileCheck、conversion pass、dump pass 和主线 pipeline 覆盖 R2.4/R3.1 已能产出的 Wafer V0 硬件可承载 local
-  compute/movement/view family：load/store boundary、layout materialization、SPM abstract
-  allocation、fill、GEMM、elementwise/relation、native reduce、passthrough broadcast/transpose/copy、
+  compute/movement/view family：load/store boundary、layout materialization、`memref.alloc`
+  tile-local allocation、fill、GEMM、elementwise/relation、native reduce、passthrough broadcast/transpose/copy、
   tensor slice movement 和 static reshape view。硬件 V0 无承载或当前 IR 缺 placement/local-rank /
   runtime ABI 事实时才允许结构化 failure。
 ```
@@ -266,17 +267,16 @@ V0 需要以下 op family：
 planner 重新选择 tile shape、internal split、layout 或 group boundary。
 
 当前 ODS 已有 `wafer.tile.region` 内 movement、layout、compute、comm 和 sync op 的基础
-layout/materialization/resource interface 查询入口，但这些接口和 verifier 仍基于旧 storage 原型；
-R3.2c 需要迁移到 memref-backed contract。第 4 步 instruction legalization / selection 需要把
+layout/materialization/resource interface 查询入口；这些接口和 verifier 已基于
+`memref<..., #wafer.memory<space, layout>>` 合同。第 4 步 instruction legalization / selection 需要把
 target-abstract op 先降到 instruction-level IR；第 5-7 步的完整 SPM/DDR resource planning 和
 closed-loop decision 仍未完成。
 
 当前实现状态：
 
 - `--wafer-convert-group-to-tile-region` 是正式 MLIR conversion pass，使用 `Passes.td` 声明和
-  DialectConversion legality target，在 supported 子集上重写当前模块；当前输出仍使用旧
-  `!wafer.storage` / `wafer.tile.alloc` 原型，R3.2c active work 是迁到
-  `memref<..., #wafer.memory<space, layout>>`。`--wafer-dump-group-to-tile-region`
+  DialectConversion legality target，在 supported 子集上重写当前模块；当前输出是
+  verifier-legal memref-backed `wafer.tile.region` IR。`--wafer-dump-group-to-tile-region`
   是同一 builder 的只读 dump 入口，并显式 preserve analyses。
 - 旧 `--wafer-materialize-single-tile` explicit unit/debug pass 已删除。后续 tile_region materialization
   必须由 R3 消费真实 frontend/SPMD program chain 和 group contract 后恢复。

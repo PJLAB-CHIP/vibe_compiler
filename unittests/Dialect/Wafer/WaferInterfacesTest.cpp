@@ -247,16 +247,16 @@ module {
   %arg = "builtin.unrealized_conversion_cast"() : () -> tensor<4x4xf32>
   %tile = wafer.tile.load %arg
       : tensor<4x4xf32>
-     -> !wafer.storage<tensor<4x4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
+     -> memref<4x4xf32, #wafer.memory<spm, tensor>>
   %cx = wafer.tile.materialize_layout %tile
-      : !wafer.storage<tensor<4x4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
-     -> !wafer.storage<tensor<4x4xf32>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
+      : memref<4x4xf32, #wafer.memory<spm, tensor>>
+     -> memref<4x4xf32, #wafer.memory<spm, cx>>
   %mm = wafer.tile.gemm %cx, %cx
-      : (!wafer.storage<tensor<4x4xf32>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>,
-         !wafer.storage<tensor<4x4xf32>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>)
-     -> !wafer.storage<tensor<4x4xf32>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
+      : (memref<4x4xf32, #wafer.memory<spm, cx>>,
+         memref<4x4xf32, #wafer.memory<spm, cx>>)
+     -> memref<4x4xf32, #wafer.memory<spm, cx>>
   %send = wafer.tile.send %tile {peer = 0 : i64, bytes = 64 : i64}
-      : !wafer.storage<tensor<4x4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>> -> !async.token
+      : memref<4x4xf32, #wafer.memory<spm, tensor>> -> !async.token
   wafer.tile.wait %send : !async.token
 }
 )mlir",
@@ -384,7 +384,7 @@ TEST(WaferInterfacesTest, TilingAndTileLoadContractsAreQueryable) {
       R"mlir(
 module {
   %source = "builtin.unrealized_conversion_cast"() : () -> tensor<4xf32>
-  %loaded = wafer.tile.load %source : tensor<4xf32> -> !wafer.storage<tensor<4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
+  %loaded = wafer.tile.load %source : tensor<4xf32> -> memref<4xf32, #wafer.memory<spm, tensor>>
   %0 = wafer.group ins(%source : tensor<4xf32>)
                     outs(%source : tensor<4xf32>) {
   ^bb0(%in: tensor<4xf32>, %out: tensor<4xf32>):
