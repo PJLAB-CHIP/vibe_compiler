@@ -46,9 +46,9 @@ Serving integration 暂不纳入本文通过标准。
 | SPMD partition program | sharding propagation stage 输出的 StableHLO/SDY IR | XLA SPMD partitioner 或等价 stage 产出 partitioned/replicated-local StableHLO、rank-local shape、collective group 和 parameter shard binding 合法 |
 | Placement | logical ranks + topology | physical mapping 覆盖所有 rank，过滤 bad tile，cluster capability 合法 |
 | Local compute normalization | partitioned or replicated-local StableHLO | Linalg/Tensor/SCF/Arith/Math structured semantics、DPS/indexing relation、fine-grained softmax/norm/RoPE staged form 合法；不执行 SPMD partition |
-| Tensor collective handoff | partitioned StableHLO collective | Wafer LinalgExt-style tensor collective op 合法；rank group、combiner/slice relation、DPS/tiling interface 可验证，且不含 `wafer.comm`、storage 或 DTE token |
+| Tensor collective handoff | partitioned StableHLO collective | Wafer LinalgExt-style tensor collective op 合法；rank group、combiner/slice relation、DPS/tiling interface 可验证，且不含 `wafer.tile.*` communication、storage 或 DTE token |
 | `wafer.group` | local compute IR + tensor collective IR | group boundary、tiled SSA、multi-output/domain、resource feedback loop 合法 |
-| `wafer.tile_region` | scheduled group | region boundary、effect、load/store、async wait/drain、buffer ownership 合法 |
+| `wafer.tile.region` | scheduled group | region boundary、effect、load/store、async wait/drain、buffer ownership 合法 |
 | Layout | tile region | layout assignment、materialization cut、冗余 conversion cleanup 合法 |
 | SPM | tile region + demands | allocation、range/end-address、lifetime、reserved range 合法 |
 | DDR | tile region + launch boundary | external binding、workspace/constant demand、pool/domain/capacity 合法 |
@@ -115,7 +115,7 @@ Single-tile local compute：
   `wafer-lower-stablehlo-to-linalg` 作为内部构件/局部覆盖，不作为用户级主链路。
   旧 C ABI issue op、single-tile materialization、SPM/DDR debug path 和 ring lowering unit/debug pass 链已删除，
   当前没有 group/tile/storage/C ABI 主链路 compile gate。
-- 后续 R3/R6/R7 gate 必须证明 `wafer.group` 到 `wafer.tile_region` 的 load/compute/store、
+- 后续 R3/R6/R7 gate 必须证明 `wafer.group` 到 `wafer.tile.region` 的 load/compute/store、
   instruction selection、SPM allocation、DDR external/workspace/constant demand 和 C ABI/package
   边界来自真实 program chain。
 - 至少一个 compute/movement ABI family 有 golden packet。
@@ -134,7 +134,7 @@ Multi-tile no communication：
 
 Direct DTE p2p：
 
-- `wafer.comm` p2p op 的 endpoint 来自 placement。
+- `wafer.tile.*` communication p2p op 的 endpoint 来自 placement。
 - fixed-size unicast DTE helper lowering 合法。
 - DTE wait 与 local compute drain 分离。
 - FSM / packet / stream resource 不冲突。
@@ -155,17 +155,17 @@ Partitioned StableHLO collective handoff：
 
 - Shardy / XLA SPMD 输出的 logical collective 能保留为 partitioned StableHLO / SDY metadata，并先
   经 `wafer-opt --program-pipeline=stablehlo-spmd-to-linalg` normalize 成 Wafer LinalgExt-style
-  `wafer.tensor_collective.*` op；该 op 实现 destination-style tensor operand/result contract 和
+  `wafer.tensor.*` op；该 op 实现 destination-style tensor operand/result contract 和
   MLIR `TilingInterface`、Wafer tiling demand interface、Wafer tensor collective info interface，
   可被 group/tiling 边界直接消费。slot-crossing 或当前 IR 不可证明的 collective-axis tile 必须显式
-  failure，不能被伪装成已 materialize 的 `wafer.comm` 或 hidden schedule。
+  failure，不能被伪装成已 materialize 的 `wafer.tile.*` communication 或 hidden schedule。
 - placement 和 comm lowering 在其实现范围内保留 collective semantics；未实现的硬件可表达
   collective 形成 R6/R4 恢复任务，不能反向限制 sharding propagation program export，也不能把 tensor collective
-  伪装成已经 materialize 的 `wafer.comm`。
+  伪装成已经 materialize 的 `wafer.tile.*` communication。
 - layout/SPM/DDR resource gates 只对本 milestone 已经 materialize 的 movement / buffer demand
   负责；尚未 materialize 的 logical collective 不能被伪装成已通过 resource gate。
-- 旧的 StableHLO -> `wafer.comm` integration 已移除。R2.4 需要补 StableHLO -> tensor
-  collective 的 gate，R6 再验证 tiled tensor collective -> `wafer.comm` 的 materialization。
+- 旧的 StableHLO -> `wafer.tile.*` communication integration 已移除。R2.4 需要补 StableHLO -> tensor
+  collective 的 gate，R6 再验证 tiled tensor collective -> `wafer.tile.*` communication 的 materialization。
 
 Overlap and cost model（优化类，当前执行看板后移为 P9）：
 
@@ -184,7 +184,7 @@ Transformer block vertical slice：
 - compute coverage 包含 GEMM、reduce max/sum、elementwise add/sub/mul/div/max/min/neg/recip/
   sqrt/rsqrt/exp、limited broadcast、mask-add 或 compare/select。
 - layout/SPM/DDR feasibility 对所有 accepted groups 通过；constant/weight slices 可追溯到
-  `ConstantLike` value 和 `wafer.storage.load`。
+  `ConstantLike` value 和 `wafer.tile.load`。
 - 若启用 tensor parallel collective，R2.4 tensor collective handoff 以及 p2p/ring/multi-replica
   collective gate 已通过；否则只验证单卡/单 shard local transformer block。
 - 当前无卡开发环境要求 generated program compile，package/runtime metadata 覆盖所有 block
@@ -199,8 +199,8 @@ M7 ABI / LLVM program gate：
 
 - placed `wafer.instr.*` 到 `wafer_*` C ABI call contract 必须固定函数名、参数单位、wait/completion
   责任和 ABI version，不允许把 C stub emission table 当作真实 runtime call。
-- lowering 后应生成 LLVM dialect call 或等价可审计 call IR；若使用 very-late `wafer.abi.*`
-  debug/test dump，该 IR 在进入 LLVM call 前必须消失，并能
+- lowering 后应生成 LLVM dialect call 或等价可审计 call IR；不使用专门 ABI IR op family
+  作为 debug/test dump 或 LLVM call 前置层，并能
   通过 `mlir-translate` 或等价路径生成 LLVM IR。
 - 本地 gate 至少检查 LLVM IR 文本中的 entrypoint、runtime symbol declaration、参数顺序和
   metadata/program 引用；随后用当前 toolchain 做 object 或 link 最小验证。
@@ -225,11 +225,11 @@ M9 overlap / cost model / profiling calibration gate：
 
 2026-05-25 后续实现补入了 `linalg.elementwise` 的局部 physical slice：same-shape identity 和
 可由 projected-permutation `indexing_maps` 验证的 row/head/vector broadcast 可以形成
-`wafer.group`，materialize 为 `wafer.compute.elementwise`，后续应 lower 到带 `indexing_maps` 的
+`wafer.group`，materialize 为 `wafer.tile.elementwise`，后续应 lower 到带 `indexing_maps` 的
 instruction-level elementwise 和 C ABI emission。后续 reduce slice 让 scalar-constant-init
-`linalg.reduce` materialize 为 `wafer.compute.reduce`，并应 lower 到带 `dimensions` / `init_value`
+`linalg.reduce` materialize 为 `wafer.tile.reduce`，并应 lower 到带 `dimensions` / `init_value`
 的 instruction-level reduce 和 C ABI emission。attention slice 让 QK^T / AV 的 rank-4
-`linalg.generic` contraction materialize 为 batched `wafer.compute.gemm`，并应 lower 到带
+`linalg.generic` contraction materialize 为 batched `wafer.tile.gemm`，并应 lower 到带
 `batch_count`、M/K/N 和 batch/head dimension attrs 的 instruction-level GEMM 和 C ABI emission。
 当前 transformer static fixture 覆盖的是 frontend/local structured tensor dataflow，不覆盖
 IR-derived package manifest。当前仍不覆盖 mask/select、dynamic shape 或非 constant-init reduce；

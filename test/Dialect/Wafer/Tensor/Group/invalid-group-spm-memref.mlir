@@ -6,7 +6,7 @@ module {
   %0 = wafer.group ins(%spm : memref<4xf32, #wafer.memory_space<spm>>)
                     outs(%source : tensor<4xf32>) {
   ^bb0(%buffer: memref<4xf32, #wafer.memory_space<spm>>, %out: tensor<4xf32>):
-    wafer.group_yield %out : tensor<4xf32>
+    wafer.group.yield %out : tensor<4xf32>
   } : tensor<4xf32>
 }
 

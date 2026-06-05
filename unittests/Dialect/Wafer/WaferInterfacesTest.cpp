@@ -245,19 +245,19 @@ TEST(WaferInterfacesTest, LayoutResourceAndMemoryEffectsAreQueryable) {
       R"mlir(
 module {
   %arg = "builtin.unrealized_conversion_cast"() : () -> tensor<4x4xf32>
-  %tile = wafer.storage.load %arg
+  %tile = wafer.tile.load %arg
       : tensor<4x4xf32>
      -> !wafer.storage<tensor<4x4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
-  %cx = wafer.layout.materialize %tile
+  %cx = wafer.tile.materialize_layout %tile
       : !wafer.storage<tensor<4x4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
      -> !wafer.storage<tensor<4x4xf32>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
-  %mm = wafer.compute.gemm %cx, %cx
+  %mm = wafer.tile.gemm %cx, %cx
       : (!wafer.storage<tensor<4x4xf32>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>,
          !wafer.storage<tensor<4x4xf32>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>)
      -> !wafer.storage<tensor<4x4xf32>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
-  %send = wafer.comm.send %tile {peer = 0 : i64, bytes = 64 : i64}
+  %send = wafer.tile.send %tile {peer = 0 : i64, bytes = 64 : i64}
       : !wafer.storage<tensor<4x4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>> -> !async.token
-  wafer.comm.wait %send : !async.token
+  wafer.tile.wait %send : !async.token
 }
 )mlir",
       mlir::ParserConfig(&context));
@@ -373,7 +373,7 @@ module {
       wafer::WaferResourceAccess::Wait, wafer::WaferValueRole::Operand, 0, -1));
 }
 
-TEST(WaferInterfacesTest, TilingAndDDRContractsAreQueryable) {
+TEST(WaferInterfacesTest, TilingAndTileLoadContractsAreQueryable) {
   mlir::DialectRegistry registry;
   wafer::registerAllDialects(registry);
 
@@ -384,13 +384,11 @@ TEST(WaferInterfacesTest, TilingAndDDRContractsAreQueryable) {
       R"mlir(
 module {
   %source = "builtin.unrealized_conversion_cast"() : () -> tensor<4xf32>
-  wafer.ddr.external_binding <input> %source
-      {alignment = 256 : i64, bytes = 16 : i64, host_visible = true, read_only = true}
-      : tensor<4xf32>
+  %loaded = wafer.tile.load %source : tensor<4xf32> -> !wafer.storage<tensor<4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
   %0 = wafer.group ins(%source : tensor<4xf32>)
                     outs(%source : tensor<4xf32>) {
   ^bb0(%in: tensor<4xf32>, %out: tensor<4xf32>):
-    wafer.group_yield %in : tensor<4xf32>
+    wafer.group.yield %in : tensor<4xf32>
   } : tensor<4xf32>
 }
 )mlir",
@@ -418,16 +416,19 @@ module {
   }));
   EXPECT_TRUE(mlir::succeeded(tiling.verifyWaferTilingContract()));
 
-  auto binding = findSingleOp<wafer::DdrExternalBindingOp>(*module);
-  ASSERT_TRUE(binding);
-  auto bindingResources = mlir::dyn_cast<wafer::WaferResourceEffectInterface>(
-      binding.getOperation());
-  ASSERT_TRUE(bindingResources);
+  auto load = findSingleOp<wafer::StorageLoadOp>(*module);
+  ASSERT_TRUE(load);
+  auto loadResources =
+      mlir::dyn_cast<wafer::WaferResourceEffectInterface>(load.getOperation());
+  ASSERT_TRUE(loadResources);
   llvm::SmallVector<wafer::WaferResourceEffect, 4> effects;
-  bindingResources.collectWaferResourceEffects(effects);
+  loadResources.collectWaferResourceEffects(effects);
   EXPECT_TRUE(hasResourceEffect(effects, wafer::WaferResourceKind::DDR,
                                 wafer::WaferResourceAccess::Read,
                                 wafer::WaferValueRole::Operand, 0, 16));
+  EXPECT_TRUE(hasResourceEffect(effects, wafer::WaferResourceKind::SPM,
+                                wafer::WaferResourceAccess::Write,
+                                wafer::WaferValueRole::Result, 0, 16));
 }
 
 TEST(WaferInterfacesTest, TensorCollectivesExposeLinalgExtStyleContracts) {
@@ -444,38 +445,38 @@ TEST(WaferInterfacesTest, TensorCollectivesExposeLinalgExtStyleContracts) {
 module {
   %input = "builtin.unrealized_conversion_cast"() : () -> tensor<4xf32>
   %out = "builtin.unrealized_conversion_cast"() : () -> tensor<4xf32>
-  %reduced = wafer.tensor_collective.all_reduce
+  %reduced = wafer.tensor.all_reduce
       ins(%input : tensor<4xf32>)
       outs(%out : tensor<4xf32>)
       {
     ^bb0(%lhs: f32, %rhs: f32):
       %sum = arith.addf %lhs, %rhs : f32
-      wafer.tensor_collective.yield %sum : f32
+      wafer.tensor.yield %sum : f32
       } {channel_id = 7 : i64, rank_group = array<i64: 0, 1>}
       -> tensor<4xf32>
 
   %gathered_out = "builtin.unrealized_conversion_cast"() : () -> tensor<8xf32>
-  %gathered = wafer.tensor_collective.all_gather
+  %gathered = wafer.tensor.all_gather
       ins(%input : tensor<4xf32>)
       outs(%gathered_out : tensor<8xf32>)
       {axis = 0 : i64, channel_id = 9 : i64, rank_group = array<i64: 0, 1>}
       -> tensor<8xf32>
 
   %wide = "builtin.unrealized_conversion_cast"() : () -> tensor<8xf32>
-  %scattered = wafer.tensor_collective.reduce_scatter
+  %scattered = wafer.tensor.reduce_scatter
       ins(%wide : tensor<8xf32>)
       outs(%out : tensor<4xf32>)
       {
     ^bb0(%lhs: f32, %rhs: f32):
       %sum = arith.addf %lhs, %rhs : f32
-      wafer.tensor_collective.yield %sum : f32
+      wafer.tensor.yield %sum : f32
       } {axis = 0 : i64, channel_id = 10 : i64,
          rank_group = array<i64: 0, 1>}
       -> tensor<4xf32>
 
   %matrix = "builtin.unrealized_conversion_cast"() : () -> tensor<4x2xf32>
   %matrix_out = "builtin.unrealized_conversion_cast"() : () -> tensor<2x4xf32>
-  %a2a = wafer.tensor_collective.all_to_all
+  %a2a = wafer.tensor.all_to_all
       ins(%matrix : tensor<4x2xf32>)
       outs(%matrix_out : tensor<2x4xf32>)
       {split_axis = 0 : i64, concat_axis = 1 : i64,
@@ -483,7 +484,7 @@ module {
        rank_group = array<i64: 0, 1>}
       -> tensor<2x4xf32>
 
-  %permuted = wafer.tensor_collective.collective_permute
+  %permuted = wafer.tensor.collective_permute
       ins(%input : tensor<4xf32>)
       outs(%out : tensor<4xf32>)
       {channel_id = 12 : i64, source_target_pairs = array<i64: 0, 1, 1, 0>}
@@ -661,19 +662,19 @@ TEST(WaferInterfacesTest, TensorCollectiveTilingHandlesNonTrivialShapes) {
 module {
   %ar_input = "builtin.unrealized_conversion_cast"() : () -> tensor<1024x4096xf32>
   %ar_out = "builtin.unrealized_conversion_cast"() : () -> tensor<1024x4096xf32>
-  %ar = wafer.tensor_collective.all_reduce
+  %ar = wafer.tensor.all_reduce
       ins(%ar_input : tensor<1024x4096xf32>)
       outs(%ar_out : tensor<1024x4096xf32>)
       {
     ^bb0(%lhs: f32, %rhs: f32):
       %sum = arith.addf %lhs, %rhs : f32
-      wafer.tensor_collective.yield %sum : f32
+      wafer.tensor.yield %sum : f32
       } {channel_id = 17 : i64, rank_group = array<i64: 0, 1, 2, 3, 4, 5, 6, 7>}
       -> tensor<1024x4096xf32>
 
   %ag_input = "builtin.unrealized_conversion_cast"() : () -> tensor<64x512xf32>
   %ag_out = "builtin.unrealized_conversion_cast"() : () -> tensor<64x4096xf32>
-  %ag = wafer.tensor_collective.all_gather
+  %ag = wafer.tensor.all_gather
       ins(%ag_input : tensor<64x512xf32>)
       outs(%ag_out : tensor<64x4096xf32>)
       {axis = 1 : i64, channel_id = 18 : i64,
@@ -682,20 +683,20 @@ module {
 
   %rs_input = "builtin.unrealized_conversion_cast"() : () -> tensor<256x4096xf32>
   %rs_out = "builtin.unrealized_conversion_cast"() : () -> tensor<256x1024xf32>
-  %rs = wafer.tensor_collective.reduce_scatter
+  %rs = wafer.tensor.reduce_scatter
       ins(%rs_input : tensor<256x4096xf32>)
       outs(%rs_out : tensor<256x1024xf32>)
       {
     ^bb0(%lhs: f32, %rhs: f32):
       %sum = arith.addf %lhs, %rhs : f32
-      wafer.tensor_collective.yield %sum : f32
+      wafer.tensor.yield %sum : f32
       } {axis = 1 : i64, channel_id = 19 : i64,
          rank_group = array<i64: 0, 1, 2, 3>}
       -> tensor<256x1024xf32>
 
   %a2a_input = "builtin.unrealized_conversion_cast"() : () -> tensor<512x128x64xf32>
   %a2a_out = "builtin.unrealized_conversion_cast"() : () -> tensor<128x512x64xf32>
-  %a2a = wafer.tensor_collective.all_to_all
+  %a2a = wafer.tensor.all_to_all
       ins(%a2a_input : tensor<512x128x64xf32>)
       outs(%a2a_out : tensor<128x512x64xf32>)
       {split_axis = 0 : i64, concat_axis = 1 : i64,
@@ -705,7 +706,7 @@ module {
 
   %cp_input = "builtin.unrealized_conversion_cast"() : () -> tensor<4x1024x4096xf32>
   %cp_out = "builtin.unrealized_conversion_cast"() : () -> tensor<4x1024x4096xf32>
-  %cp = wafer.tensor_collective.collective_permute
+  %cp = wafer.tensor.collective_permute
       ins(%cp_input : tensor<4x1024x4096xf32>)
       outs(%cp_out : tensor<4x1024x4096xf32>)
       {channel_id = 21 : i64,
@@ -803,19 +804,19 @@ TEST(WaferInterfacesTest, TensorCollectiveTilingHandlesDynamicNonAxisShapes) {
 module {
   %ar_input = "builtin.unrealized_conversion_cast"() : () -> tensor<?x4096xf32>
   %ar_out = "builtin.unrealized_conversion_cast"() : () -> tensor<?x4096xf32>
-  %ar = wafer.tensor_collective.all_reduce
+  %ar = wafer.tensor.all_reduce
       ins(%ar_input : tensor<?x4096xf32>)
       outs(%ar_out : tensor<?x4096xf32>)
       {
     ^bb0(%lhs: f32, %rhs: f32):
       %sum = arith.addf %lhs, %rhs : f32
-      wafer.tensor_collective.yield %sum : f32
+      wafer.tensor.yield %sum : f32
       } {channel_id = 22 : i64, rank_group = array<i64: 0, 1, 2, 3>}
       -> tensor<?x4096xf32>
 
   %ag_input = "builtin.unrealized_conversion_cast"() : () -> tensor<?x512xf32>
   %ag_out = "builtin.unrealized_conversion_cast"() : () -> tensor<?x2048xf32>
-  %ag = wafer.tensor_collective.all_gather
+  %ag = wafer.tensor.all_gather
       ins(%ag_input : tensor<?x512xf32>)
       outs(%ag_out : tensor<?x2048xf32>)
       {axis = 1 : i64, channel_id = 23 : i64,

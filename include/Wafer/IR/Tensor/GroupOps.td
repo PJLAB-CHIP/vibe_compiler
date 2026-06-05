@@ -30,11 +30,11 @@ def Wafer_GroupOp
   }];
 }
 
-def Wafer_GroupYieldOp : Wafer_Op<"group_yield", [HasParent<"GroupOp">, Pure,
+def Wafer_GroupYieldOp : Wafer_Op<"group.yield", [HasParent<"GroupOp">, Pure,
                                                   ReturnLike, Terminator]> {
   let summary = "terminate a wafer.group body";
   let description = [{
-    `wafer.group_yield` returns tensor-level values from a `wafer.group` body.
+    `wafer.group.yield` returns tensor-level values from a `wafer.group` body.
     The parent `wafer.group` verifier checks the yielded value count and types
     against the group results.
   }];

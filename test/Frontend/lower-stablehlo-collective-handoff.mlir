@@ -58,44 +58,44 @@ module {
 
 // IR-LABEL: func.func @partitioned_all_gather
 // IR: tensor.empty() : tensor<8xf32>
-// IR: wafer.tensor_collective.all_gather
+// IR: wafer.tensor.all_gather
 // IR-SAME: axis = 0 : i64
 // IR-SAME: channel_id = 1 : i64
 // IR-SAME: rank_group = array<i64: 0, 1>
 // IR-NOT: stablehlo.all_gather
-// IR-NOT: wafer.comm
+// IR-NOT: wafer.tile.send
 
 // IR-LABEL: func.func @partitioned_all_reduce
 // IR: tensor.empty() : tensor<4xf32>
-// IR: wafer.tensor_collective.all_reduce
+// IR: wafer.tensor.all_reduce
 // IR: ^bb0(%{{.*}}: f32, %{{.*}}: f32):
 // IR: arith.addf
-// IR: wafer.tensor_collective.yield
+// IR: wafer.tensor.yield
 // IR: channel_id = 2 : i64
 // IR-SAME: rank_group = array<i64: 0, 1>
 // IR-NOT: stablehlo.all_reduce
-// IR-NOT: wafer.comm
+// IR-NOT: wafer.tile.send
 
 // IR-LABEL: func.func @partitioned_reduce_scatter
 // IR: tensor.empty() : tensor<4x4xf32>
-// IR: wafer.tensor_collective.reduce_scatter
+// IR: wafer.tensor.reduce_scatter
 // IR: channel_id = 3 : i64
 // IR-SAME: rank_group = array<i64: 0, 1>
 // IR-NOT: stablehlo.reduce_scatter
-// IR-NOT: wafer.comm
+// IR-NOT: wafer.tile.send
 
 // IR-LABEL: func.func @partitioned_all_to_all
 // IR: tensor.empty() : tensor<4x8xf32>
-// IR: wafer.tensor_collective.all_to_all
+// IR: wafer.tensor.all_to_all
 // IR-SAME: channel_id = 4 : i64
 // IR-SAME: split_count = 2 : i64
 // IR-NOT: stablehlo.all_to_all
-// IR-NOT: wafer.comm
+// IR-NOT: wafer.tile.send
 
 // IR-LABEL: func.func @partitioned_collective_permute
 // IR: tensor.empty() : tensor<4xf32>
-// IR: wafer.tensor_collective.collective_permute
+// IR: wafer.tensor.collective_permute
 // IR-SAME: channel_id = 5 : i64
 // IR-SAME: source_target_pairs = array<i64: 0, 1, 1, 0>
 // IR-NOT: stablehlo.collective_permute
-// IR-NOT: wafer.comm
+// IR-NOT: wafer.tile.send

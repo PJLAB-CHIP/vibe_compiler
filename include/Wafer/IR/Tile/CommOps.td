@@ -5,15 +5,33 @@
 
 include "mlir/Dialect/Async/IR/AsyncTypes.td"
 
-def Wafer_CommSendOp : Wafer_CommP2POp<"comm.send"> {
+class Wafer_CommP2POp<string mnemonic> : Wafer_Op<mnemonic, [
+    DeclareOpInterfaceMethods<WaferLayoutOpInterface>,
+    DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
+    MemoryEffects<[MemRead<Wafer_SPMResource>,
+                   MemWrite<Wafer_SPMResource>,
+                   MemWrite<Wafer_CommunicationResource>]>
+  ]> {
+  let arguments = (ins
+    Wafer_AnyStorage:$buffer,
+    I64Attr:$peer,
+    I64Attr:$bytes
+  );
+  let results = (outs Async_TokenType:$token);
+  let hasVerifier = 1;
+  let assemblyFormat =
+      "$buffer attr-dict `:` type($buffer) `->` type($token)";
+}
+
+def Wafer_CommSendOp : Wafer_CommP2POp<"tile.send"> {
   let summary = "fixed-size unicast p2p send";
 }
 
-def Wafer_CommRecvOp : Wafer_CommP2POp<"comm.recv"> {
+def Wafer_CommRecvOp : Wafer_CommP2POp<"tile.recv"> {
   let summary = "fixed-size unicast p2p receive";
 }
 
-def Wafer_CommWaitOp : Wafer_Op<"comm.wait", [
+def Wafer_CommWaitOp : Wafer_Op<"tile.wait", [
     DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
     MemoryEffects<[MemRead<Wafer_CommunicationResource>]>
   ]> {
@@ -23,7 +41,7 @@ def Wafer_CommWaitOp : Wafer_Op<"comm.wait", [
   let assemblyFormat = "$tokens attr-dict `:` type($tokens)";
 }
 
-def Wafer_CommAllGatherOp : Wafer_Op<"comm.all_gather", [
+def Wafer_CommAllGatherOp : Wafer_Op<"tile.all_gather", [
     DeclareOpInterfaceMethods<WaferLayoutOpInterface>,
     DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
     MemoryEffects<[MemRead<Wafer_SPMResource>,
@@ -32,12 +50,12 @@ def Wafer_CommAllGatherOp : Wafer_Op<"comm.all_gather", [
   ]> {
   let summary = "target-abstract fixed-size ring all-gather request";
   let description = [{
-    `wafer.comm.all_gather` is the collective-level communication boundary
+    `wafer.tile.all_gather` is the collective-level communication boundary
     between logical StableHLO all-gather semantics and explicit p2p schedules.
     It carries the local shard buffer, the complete gather buffer, rank/group
     facts, and the fixed byte size of one shard. It does not choose raw DTE
     register modes or hide a communication plan side table; lowering rewrites
-    it into explicit `wafer.comm.send` / `recv` / `wait` steps.
+    it into explicit `wafer.tile.send` / `recv` / `wait` steps.
   }];
 
   let arguments = (ins
@@ -76,20 +94,20 @@ class Wafer_CommReduceCollectiveOp<string mnemonic> : Wafer_Op<mnemonic, [
       "$kind $input `using` $recv_buffer attr-dict `:` functional-type(operands, results)";
 }
 
-def Wafer_CommReduceScatterOp : Wafer_CommReduceCollectiveOp<"comm.reduce_scatter"> {
+def Wafer_CommReduceScatterOp : Wafer_CommReduceCollectiveOp<"tile.reduce_scatter"> {
   let summary = "target-abstract fixed-size ring reduce-scatter slot request";
   let description = [{
-    `wafer.comm.reduce_scatter` represents one local scatter slot of a
+    `wafer.tile.reduce_scatter` represents one local scatter slot of a
     collective reduction. Lowering must express communication as p2p ring
     steps and express local accumulation with compute ops; reduction semantics
     are not hidden in DTE protocol.
   }];
 }
 
-def Wafer_CommAllReduceOp : Wafer_CommReduceCollectiveOp<"comm.all_reduce"> {
+def Wafer_CommAllReduceOp : Wafer_CommReduceCollectiveOp<"tile.all_reduce"> {
   let summary = "target-abstract fixed-size ring all-reduce request";
   let description = [{
-    `wafer.comm.all_reduce` represents a same-shaped collective reduction.
+    `wafer.tile.all_reduce` represents a same-shaped collective reduction.
     V0 lowering uses unicast ring communication plus explicit local
     elementwise accumulation instead of raw DTE non-unicast or packet-side
     reduction.

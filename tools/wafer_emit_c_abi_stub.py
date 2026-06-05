@@ -16,11 +16,11 @@ from wafer_package_manifest import load_manifest, validate_manifest  # noqa: E40
 
 
 OP_ENUMS = {
-    "wafer.abi.rdma": "WAFER_ABI_RDMA",
-    "wafer.abi.wdma": "WAFER_ABI_WDMA",
-    "wafer.abi.gemm": "WAFER_ABI_GEMM",
-    "wafer.abi.elementwise": "WAFER_ABI_ELEMENTWISE",
-    "wafer.abi.reduce": "WAFER_ABI_REDUCE",
+    "wafer.instr.rdma": "WAFER_INSTR_RDMA",
+    "wafer.instr.wdma": "WAFER_INSTR_WDMA",
+    "wafer.instr.ne.gemm": "WAFER_INSTR_NE_GEMM",
+    "wafer.instr.ct.elementwise": "WAFER_INSTR_CT_ELEMENTWISE",
+    "wafer.instr.ct.reduce": "WAFER_INSTR_CT_REDUCE",
 }
 
 ELEMENTWISE_ENUMS = {
@@ -59,7 +59,7 @@ def format_c_float(value: int | float) -> str:
 def emit_c(manifest: dict) -> str:
     validate_manifest(manifest)
     package_ident = c_ident(manifest["package_name"])
-    abi_ops = manifest["abi_ops"]
+    instructions = manifest["instructions"]
     workspace_buffers = manifest["workspace_buffers"]
     resident_constants = manifest["resident_constants"]
     placement_ranks = sorted(
@@ -75,12 +75,12 @@ def emit_c(manifest: dict) -> str:
         "} wafer_wait_policy_t;",
         "",
         "typedef enum {",
-        "  WAFER_ABI_RDMA = 1,",
-        "  WAFER_ABI_WDMA = 2,",
-        "  WAFER_ABI_GEMM = 3,",
-        "  WAFER_ABI_ELEMENTWISE = 4,",
-        "  WAFER_ABI_REDUCE = 5,",
-        "} wafer_abi_op_t;",
+        "  WAFER_INSTR_RDMA = 1,",
+        "  WAFER_INSTR_WDMA = 2,",
+        "  WAFER_INSTR_NE_GEMM = 3,",
+        "  WAFER_INSTR_CT_ELEMENTWISE = 4,",
+        "  WAFER_INSTR_CT_REDUCE = 5,",
+        "} wafer_instruction_op_t;",
         "",
         "typedef enum {",
         "  WAFER_ELEMENTWISE_NONE = 0,",
@@ -106,7 +106,7 @@ def emit_c(manifest: dict) -> str:
         "} wafer_reduce_kind_t;",
         "",
         "typedef struct {",
-        "  wafer_abi_op_t op;",
+        "  wafer_instruction_op_t op;",
         "  uint64_t bytes;",
         "  int64_t m;",
         "  int64_t k;",
@@ -118,7 +118,7 @@ def emit_c(manifest: dict) -> str:
         "  int64_t reduce_dimensions[4];",
         "  double reduce_init_value;",
         "  wafer_wait_policy_t wait_policy;",
-        "} wafer_abi_issue_t;",
+        "} wafer_instruction_issue_t;",
         "",
         "typedef struct {",
         "  uint32_t logical_rank;",
@@ -139,23 +139,23 @@ def emit_c(manifest: dict) -> str:
         "  uint64_t alignment;",
         "} wafer_resident_constant_t;",
         "",
-        f"static const wafer_abi_issue_t k_{package_ident}_issues[] = {{",
+        f"static const wafer_instruction_issue_t k_{package_ident}_issues[] = {{",
     ]
 
-    for op in abi_ops:
+    for op in instructions:
         mnemonic = op["op"]
         enum_name = OP_ENUMS[mnemonic]
         bytes_value = int(op.get("bytes", 0))
         m = int(op.get("m", 0))
         k = int(op.get("k", 0))
         n = int(op.get("n", 0))
-        default_batch_count = 1 if mnemonic == "wafer.abi.gemm" else 0
+        default_batch_count = 1 if mnemonic == "wafer.instr.ne.gemm" else 0
         batch_count = int(op.get("batch_count", default_batch_count))
         elementwise_kind = "WAFER_ELEMENTWISE_NONE"
-        if mnemonic == "wafer.abi.elementwise":
+        if mnemonic == "wafer.instr.ct.elementwise":
             elementwise_kind = ELEMENTWISE_ENUMS[op["kind"]]
         reduce_kind = "WAFER_REDUCE_NONE"
-        if mnemonic == "wafer.abi.reduce":
+        if mnemonic == "wafer.instr.ct.reduce":
             reduce_kind = REDUCE_ENUMS[op["kind"]]
         reduce_dimensions = [int(dim) for dim in op.get("dimensions", [])]
         padded_reduce_dimensions = (reduce_dimensions + [0, 0, 0, 0])[:4]

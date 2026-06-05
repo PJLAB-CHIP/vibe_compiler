@@ -3,9 +3,9 @@
 module {
   %input = "builtin.unrealized_conversion_cast"()
       : () -> !wafer.storage<tensor<6xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
-  %reshaped = wafer.view.reshape %input
+  %reshaped = wafer.tile.reshape %input
       : !wafer.storage<tensor<6xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
      -> !wafer.storage<tensor<2x3xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
 }
 
-// CHECK: wafer.view.reshape
+// CHECK: wafer.tile.reshape

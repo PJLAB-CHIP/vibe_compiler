@@ -3,7 +3,7 @@
 #ifndef WAFER_IR_OPS_LAYOUTOPS_TD
 #define WAFER_IR_OPS_LAYOUTOPS_TD
 
-def Wafer_LayoutMaterializeOp : Wafer_Op<"layout.materialize", [
+def Wafer_LayoutMaterializeOp : Wafer_Op<"tile.materialize_layout", [
     DeclareOpInterfaceMethods<WaferLayoutMaterializationOpInterface>,
     DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
     MemoryEffects<[MemRead<Wafer_SPMResource>,
@@ -12,7 +12,7 @@ def Wafer_LayoutMaterializeOp : Wafer_Op<"layout.materialize", [
   ]> {
   let summary = "explicit storage layout materialization";
   let description = [{
-    `wafer.layout.materialize` represents real device-side data movement from
+    `wafer.tile.materialize_layout` represents real device-side data movement from
     one Wafer physical layout family to another. It preserves the logical
     tensor type and memory space; only the storage `mem_layout` changes.
     Same-layout materialization is not a meaningful IR edge; the verifier

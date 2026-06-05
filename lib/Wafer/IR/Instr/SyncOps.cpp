@@ -7,8 +7,8 @@
 using namespace wafer;
 using namespace wafer::detail;
 
-// `wafer.sync.*` ops currently rely on ODS traits only. This file owns
-// future sync-family verifier code so verifier ownership stays explicit.
+// Instruction ordering ops currently rely on ODS traits only. This file owns
+// future verifier code so verifier ownership stays explicit.
 
 void SyncLocalDrainOp::collectWaferResourceEffects(
     llvm::SmallVectorImpl<WaferResourceEffect> &effects) {

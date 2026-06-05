@@ -902,7 +902,7 @@ private:
     auto yield =
         mlir::dyn_cast<GroupYieldOp>(group.getBody().front().getTerminator());
     if (!yield)
-      return fail("group terminator is not wafer.group_yield");
+      return fail("group terminator is not wafer.group.yield");
 
     unsigned inputCount = static_cast<unsigned>(group.getInputs().size());
     llvm::SmallVector<mlir::Value, 2> yieldedTensors;

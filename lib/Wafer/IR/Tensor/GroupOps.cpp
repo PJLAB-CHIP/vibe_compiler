@@ -108,11 +108,11 @@ mlir::LogicalResult GroupOp::verifyRegions() {
 
   auto yield = mlir::dyn_cast<GroupYieldOp>(block.getTerminator());
   if (!yield)
-    return emitOpError("expected wafer.group_yield terminator");
+    return emitOpError("expected wafer.group.yield terminator");
 
   if (yield.getValues().size() != getNumResults())
     return emitOpError(
-               "expected group_yield value count to match result count, got ")
+               "expected group.yield value count to match result count, got ")
            << yield.getValues().size() << " values and " << getNumResults()
            << " results";
 

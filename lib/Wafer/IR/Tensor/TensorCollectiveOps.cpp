@@ -669,7 +669,7 @@ mlir::LogicalResult verifyCombinerRegion(mlir::Operation *op,
   auto yield = mlir::dyn_cast<TensorCollectiveYieldOp>(block.getTerminator());
   if (!yield)
     return op->emitOpError(
-        "combiner must terminate with wafer.tensor_collective.yield");
+        "combiner must terminate with wafer.tensor.yield");
 
   if (yield.getValues().size() != results.size()) {
     if (results.size() == 1)

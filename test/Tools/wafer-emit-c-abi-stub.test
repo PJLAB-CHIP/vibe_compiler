@@ -10,9 +10,9 @@
 # CHECK: uint32_t tile_y;
 # CHECK: uint32_t tile_x;
 # CHECK: } wafer_tile_launch_arg_t;
-# CHECK: static const wafer_abi_issue_t k_manifest_schema_fixture_issues[] = {
-# CHECK: {WAFER_ABI_ELEMENTWISE, 0u, 0, 0, 0, 0, WAFER_ELEMENTWISE_ADD, WAFER_REDUCE_NONE, 0u, {0, 0, 0, 0}, 0, WAFER_WAIT_ISSUE_ONLY}
-# CHECK: {WAFER_ABI_REDUCE, 0u, 0, 0, 0, 0, WAFER_ELEMENTWISE_NONE, WAFER_REDUCE_MAX, 1u, {1, 0, 0, 0}, -1, WAFER_WAIT_ISSUE_ONLY}
+# CHECK: static const wafer_instruction_issue_t k_manifest_schema_fixture_issues[] = {
+# CHECK: {WAFER_INSTR_CT_ELEMENTWISE, 0u, 0, 0, 0, 0, WAFER_ELEMENTWISE_ADD, WAFER_REDUCE_NONE, 0u, {0, 0, 0, 0}, 0, WAFER_WAIT_ISSUE_ONLY}
+# CHECK: {WAFER_INSTR_CT_REDUCE, 0u, 0, 0, 0, 0, WAFER_ELEMENTWISE_NONE, WAFER_REDUCE_MAX, 1u, {1, 0, 0, 0}, -1, WAFER_WAIT_ISSUE_ONLY}
 # CHECK: static const wafer_tile_launch_arg_t k_manifest_schema_fixture_tile_args[] = {
 # CHECK: {0u, 0u, 0u, 0u, 0u, 0u},
 # CHECK: int manifest_schema_fixture_tile_arg_count(void)

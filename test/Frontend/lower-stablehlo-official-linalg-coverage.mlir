@@ -15,4 +15,4 @@ module {
 // IR-NOT: stablehlo.
 // IR: linalg.generic
 // IR: arith.cmpf ogt
-// IR-NOT: wafer.comm
+// IR-NOT: wafer.tile.

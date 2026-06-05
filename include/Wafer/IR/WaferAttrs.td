@@ -69,38 +69,6 @@ def Wafer_PlacementAttr
   let assemblyFormat = "`<` $value `>`";
 }
 
-def Wafer_DdrBindingKindInput : I32EnumAttrCase<"Input", 0, "input">;
-def Wafer_DdrBindingKindOutput : I32EnumAttrCase<"Output", 1, "output">;
-def Wafer_DdrBindingKind
-    : I32EnumAttr<"DdrBindingKind", "Wafer DDR external binding kind", [
-  Wafer_DdrBindingKindInput,
-  Wafer_DdrBindingKindOutput
-]> {
-  let cppNamespace = "::wafer";
-  let genSpecializedAttr = 0;
-}
-
-def Wafer_DdrBindingKindAttr
-    : EnumAttr<Wafer_Dialect, Wafer_DdrBindingKind, "ddr_binding_kind"> {
-  let assemblyFormat = "`<` $value `>`";
-}
-
-def Wafer_AbiWaitPolicyIssueOnly : I32EnumAttrCase<"IssueOnly", 0, "issue_only">;
-def Wafer_AbiWaitPolicySynchronous : I32EnumAttrCase<"Synchronous", 1, "synchronous">;
-def Wafer_AbiWaitPolicy
-    : I32EnumAttr<"AbiWaitPolicy", "Wafer C ABI wait policy", [
-  Wafer_AbiWaitPolicyIssueOnly,
-  Wafer_AbiWaitPolicySynchronous
-]> {
-  let cppNamespace = "::wafer";
-  let genSpecializedAttr = 0;
-}
-
-def Wafer_AbiWaitPolicyAttr
-    : EnumAttr<Wafer_Dialect, Wafer_AbiWaitPolicy, "abi_wait_policy"> {
-  let assemblyFormat = "`<` $value `>`";
-}
-
 def Wafer_ComputeElementwiseKindAdd : I32EnumAttrCase<"Add", 0, "add">;
 def Wafer_ComputeElementwiseKindSub : I32EnumAttrCase<"Sub", 1, "sub">;
 def Wafer_ComputeElementwiseKindMul : I32EnumAttrCase<"Mul", 2, "mul">;

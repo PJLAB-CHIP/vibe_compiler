@@ -18,7 +18,7 @@ C ABI conversion 混在旧的聚合目录里。
   清理中收口为按 IR 层组织。
 - 不把 interface/effect/resource 基础定义扩成 planner 可查询合同；这是 R1.2。
 - 不实现真实 importer adapter、Wafer program verifier 或 Shardy bridge；这是 R2.1/R2.2。
-- 不把 `wafer.abi.*` 作为主线 IR 层 lower 到 LLVM dialect、LLVM IR、object 或真实 runtime call。
+- 不把专门 ABI IR op family 作为主线 IR 层 lower 到 LLVM dialect、LLVM IR、object 或真实 runtime call。
 - 不实现 launch/runtime adapter、BO binding 或板端 completion。
 
 ## 当前组织
@@ -26,7 +26,7 @@ C ABI conversion 混在旧的聚合目录里。
 | 边界 | 当前目录 / target | 说明 |
 | --- | --- | --- |
 | Frontend hook | `include/Wafer/Frontend/InitImporterDialects.h` | 可选 StableHLO dialect 注册入口归到 frontend；真实 model import adapter 仍未实现 |
-| Wafer IR | `include/Wafer/IR`、`lib/Wafer/IR`、`WaferIR` | 保持一个 `wafer` dialect namespace；ODS、verifier 和 dialect tests 按 IR 层组织：`Tensor`、`Tile`、`Resource`、`Instr`、`Runtime`、`Debug`、`Common` |
+| Wafer IR | `include/Wafer/IR`、`lib/Wafer/IR`、`WaferIR` | 保持一个 `wafer` dialect namespace；ODS、verifier 和 dialect tests 按 IR 层组织：`Tensor`、`Tile`、`Resource`、`Instr`、`Runtime`、`Common` |
 | Analysis | `include/Wafer/Analysis`、`lib/Wafer/Analysis`、`WaferAnalysis` | 承载可从当前 IR 重算的 analysis，例如 group tiling demand 和 layout plan；不修改 IR、不携带 lowering ownership |
 | Transform pipeline | `include/Wafer/Transforms`、`lib/Wafer/Transforms`、`WaferTransforms` | 只注册当前仍成立的 group/debug dump、SPMD propagation helper 和 named pipeline glue；不直接编译 conversion 源文件 |
 | Conversion pipeline | `include/Wafer/Conversion`、`lib/Wafer/Conversion` | 按 source/target IR contract 分 target：`WaferStableHLOToLinalg`、`WaferGroupToTileRegion`；不把 conversion 放在 `Transforms` 下，也不按临时 artifact 名称组织目录 |
@@ -36,7 +36,7 @@ C ABI conversion 混在旧的聚合目录里。
 `lib/Wafer/Conversion` 当前按 conversion contract 分组：
 
 - `StableHLOToLinalg/`：frontend/local compute normalization 的 StableHLO-to-Linalg conversion target。
-- `WaferGroupToTileRegion/`：logical `wafer.group` 到 `wafer.tile_region` IR 的
+- `WaferGroupToTileRegion/`：logical `wafer.group` 到 `wafer.tile.region` IR 的
   conversion implementation。
 
 `lib/Wafer/Transforms` 只保留 transform pass 注册、dump/debug pass 和 pipeline glue。旧

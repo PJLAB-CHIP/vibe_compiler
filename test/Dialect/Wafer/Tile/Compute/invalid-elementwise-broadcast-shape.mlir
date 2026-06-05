@@ -8,7 +8,7 @@ module {
       : () -> !wafer.storage<tensor<4x8xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
   %b = "builtin.unrealized_conversion_cast"()
       : () -> !wafer.storage<tensor<4xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
-  %sum = wafer.compute.elementwise #wafer.elementwise_kind<add> %a, %b
+  %sum = wafer.tile.elementwise #wafer.elementwise_kind<add> %a, %b
       {indexing_maps = [#map, #col, #map]}
       : (!wafer.storage<tensor<4x8xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>,
          !wafer.storage<tensor<4xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>)

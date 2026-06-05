@@ -8,7 +8,7 @@
   "device_code": [
     {
       "name": "schema_fixture_issue_sequence",
-      "kind": "c_abi_issue_sequence",
+      "kind": "instruction_sequence",
       "artifact": "bad_completion.o"
     }
   ],
@@ -69,8 +69,8 @@
     "workspace_bytes": 0,
     "resident_constant_bytes": 0
   },
-  "abi_ops": [
-    {"op": "wafer.abi.rdma", "bytes": 16, "wait_policy": "issue_only"},
-    {"op": "wafer.abi.wdma", "bytes": 16, "wait_policy": "issue_only"}
+  "instructions": [
+    {"op": "wafer.instr.rdma", "bytes": 16, "wait_policy": "issue_only"},
+    {"op": "wafer.instr.wdma", "bytes": 16, "wait_policy": "issue_only"}
   ]
 }

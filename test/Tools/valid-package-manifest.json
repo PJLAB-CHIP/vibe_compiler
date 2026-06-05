@@ -8,7 +8,7 @@
   "device_code": [
     {
       "name": "schema_fixture_issue_sequence",
-      "kind": "c_abi_issue_sequence",
+      "kind": "instruction_sequence",
       "artifact": "schema_fixture.o"
     }
   ],
@@ -100,11 +100,11 @@
     "workspace_bytes": 16,
     "resident_constant_bytes": 16
   },
-  "abi_ops": [
-    {"op": "wafer.abi.rdma", "bytes": 16, "wait_policy": "issue_only"},
-    {"op": "wafer.abi.rdma", "bytes": 16, "wait_policy": "issue_only"},
-    {"op": "wafer.abi.elementwise", "kind": "add", "wait_policy": "issue_only"},
-    {"op": "wafer.abi.reduce", "kind": "max", "dimensions": [1], "init_value": -1.0, "wait_policy": "issue_only"},
-    {"op": "wafer.abi.wdma", "bytes": 16, "wait_policy": "issue_only"}
+  "instructions": [
+    {"op": "wafer.instr.rdma", "bytes": 16, "wait_policy": "issue_only"},
+    {"op": "wafer.instr.rdma", "bytes": 16, "wait_policy": "issue_only"},
+    {"op": "wafer.instr.ct.elementwise", "kind": "add", "wait_policy": "issue_only"},
+    {"op": "wafer.instr.ct.reduce", "kind": "max", "dimensions": [1], "init_value": -1.0, "wait_policy": "issue_only"},
+    {"op": "wafer.instr.wdma", "bytes": 16, "wait_policy": "issue_only"}
   ]
 }

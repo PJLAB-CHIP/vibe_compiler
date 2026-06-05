@@ -6,7 +6,7 @@
 
 本文定义 logical mesh / rank 到 Wafer physical card/tile cluster 的 placement 边界。Placement
 消费 Shardy / SPMD 与 Wafer LinalgExt-style tensor collective handoff 保留下来的 logical rank /
-rank group 事实，并为 `wafer.group` / `wafer.tile_region` / runtime launch 提供物理映射合同。
+rank group 事实，并为 `wafer.group` / `wafer.tile.region` / runtime launch 提供物理映射合同。
 它不负责 tensor tiling、SPM offset、physical layout、DTE algorithm、DDR allocation 或 C ABI。
 
 本文依赖：
@@ -25,7 +25,7 @@ rank group 事实，并为 `wafer.group` / `wafer.tile_region` / runtime launch 
 - 把 logical rank / block / shard 映射到 physical card/tile coordinate。
 - 吸收 runtime capability、topology、good-tile bitmap、PG/bad-tile metadata 和 card/tile mesh
   信息。
-- 为 `wafer.group`、`wafer.tile_region`、后续 `wafer.comm` materialization 和 `wafer.launch` 提供
+- 为 `wafer.group`、`wafer.tile.region`、后续 `wafer.tile.*` communication materialization 和 `wafer.launch` 提供
   可验证的 physical mapping。
 - 在不能得到合法 placement 时，把原因反馈给 planner 或 compile driver。
 
@@ -89,9 +89,9 @@ SPMD 不产生跨卡 logical mesh 或 rank group。
 accepted placement 需要在边界 op 上显式表达。推荐结构：
 
 - 在 `wafer.launch` 或被 launch outline 的 function 上保存 cluster-level placement mapping。
-- 在 `wafer.tile_region` lowering 时把 per-tile logical id / block id / physical coordinate 作为
+- 在 `wafer.tile.region` lowering 时把 per-tile logical id / block id / physical coordinate 作为
   region argument、constant-like descriptor 或 launch argument 传入。
-- 在 `wafer.comm` lowering 时通过 placement mapping 查 physical source/destination tile；这个查询发生在
+- 在 `wafer.tile.*` communication lowering 时通过 placement mapping 查 physical source/destination tile；这个查询发生在
   tensor collective 已经经 group/tiling 和 tile_region / SPM materialization 之后。
 
 Placement attr 可以保存结构性 mapping，因为它不能从 local IR 重新推出，且直接影响 codegen。
@@ -165,8 +165,8 @@ cost model 可以考虑：
 | 阶段 | Placement 提供 | Placement 不提供 |
 | --- | --- | --- |
 | `wafer.group` | per-rank local shard / block identity、tensor collective rank group 可解释性 | tile shape、fusion boundary |
-| `wafer.tile_region` | physical tile coordinate / block id args | SPM offset、layout assignment |
-| `wafer.comm` | tile_region / SPM materialization 后的 logical endpoint 到 physical endpoint mapping | DTE node/FSM/packet allocation |
+| `wafer.tile.region` | physical tile coordinate / block id args | SPM offset、layout assignment |
+| `wafer.tile.*` communication | tile_region / SPM materialization 后的 logical endpoint 到 physical endpoint mapping | DTE node/FSM/packet allocation |
 | `wafer.launch` | cluster membership and launch metadata | buffer object allocation、completion source |
 
 Placement 不应把 DTE route 或 runtime launch API 写进上层。Communication lowering 可以基于

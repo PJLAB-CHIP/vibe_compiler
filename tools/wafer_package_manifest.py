@@ -24,12 +24,12 @@ KNOWN_STUB_FENCES = {
     "KmdDoorbellOnly",
 }
 
-SUPPORTED_ABI_OPS = {
-    "wafer.abi.rdma",
-    "wafer.abi.wdma",
-    "wafer.abi.gemm",
-    "wafer.abi.elementwise",
-    "wafer.abi.reduce",
+SUPPORTED_INSTRUCTION_OPS = {
+    "wafer.instr.rdma",
+    "wafer.instr.wdma",
+    "wafer.instr.ne.gemm",
+    "wafer.instr.ct.elementwise",
+    "wafer.instr.ct.reduce",
 }
 
 SUPPORTED_ELEMENTWISE_KINDS = {
@@ -406,46 +406,46 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
     if resident_constant_bytes != resident_bytes:
         fail("resources.resident_constant_bytes does not match resident constants")
 
-    abi_ops = require_list(manifest.get("abi_ops"), "abi_ops")
-    for index, op in enumerate(abi_ops):
-        item = require_dict(op, f"abi_ops[{index}]")
-        mnemonic = require_non_empty_string(item.get("op"), f"abi_ops[{index}].op")
-        if mnemonic not in SUPPORTED_ABI_OPS:
-            fail(f"abi_ops[{index}].op is not supported by the package manifest")
+    instructions = require_list(manifest.get("instructions"), "instructions")
+    for index, op in enumerate(instructions):
+        item = require_dict(op, f"instructions[{index}]")
+        mnemonic = require_non_empty_string(item.get("op"), f"instructions[{index}].op")
+        if mnemonic not in SUPPORTED_INSTRUCTION_OPS:
+            fail(f"instructions[{index}].op is not supported by the package manifest")
         if item.get("wait_policy") != "issue_only":
-            fail(f"abi_ops[{index}].wait_policy must be issue_only")
-        if mnemonic in {"wafer.abi.rdma", "wafer.abi.wdma"}:
-            require_positive_int(item.get("bytes"), f"abi_ops[{index}].bytes")
-        elif mnemonic == "wafer.abi.gemm":
-            require_positive_int(item.get("m"), f"abi_ops[{index}].m")
-            require_positive_int(item.get("k"), f"abi_ops[{index}].k")
-            require_positive_int(item.get("n"), f"abi_ops[{index}].n")
+            fail(f"instructions[{index}].wait_policy must be issue_only")
+        if mnemonic in {"wafer.instr.rdma", "wafer.instr.wdma"}:
+            require_positive_int(item.get("bytes"), f"instructions[{index}].bytes")
+        elif mnemonic == "wafer.instr.ne.gemm":
+            require_positive_int(item.get("m"), f"instructions[{index}].m")
+            require_positive_int(item.get("k"), f"instructions[{index}].k")
+            require_positive_int(item.get("n"), f"instructions[{index}].n")
             if "batch_count" in item:
                 require_positive_int(
-                    item.get("batch_count"), f"abi_ops[{index}].batch_count"
+                    item.get("batch_count"), f"instructions[{index}].batch_count"
                 )
-        elif mnemonic == "wafer.abi.elementwise":
-            kind = require_non_empty_string(item.get("kind"), f"abi_ops[{index}].kind")
+        elif mnemonic == "wafer.instr.ct.elementwise":
+            kind = require_non_empty_string(item.get("kind"), f"instructions[{index}].kind")
             if kind not in SUPPORTED_ELEMENTWISE_KINDS:
-                fail(f"abi_ops[{index}].kind is not supported")
-        elif mnemonic == "wafer.abi.reduce":
-            kind = require_non_empty_string(item.get("kind"), f"abi_ops[{index}].kind")
+                fail(f"instructions[{index}].kind is not supported")
+        elif mnemonic == "wafer.instr.ct.reduce":
+            kind = require_non_empty_string(item.get("kind"), f"instructions[{index}].kind")
             if kind not in SUPPORTED_REDUCE_KINDS:
-                fail(f"abi_ops[{index}].kind is not supported")
+                fail(f"instructions[{index}].kind is not supported")
             dimensions = require_list(
-                item.get("dimensions"), f"abi_ops[{index}].dimensions"
+                item.get("dimensions"), f"instructions[{index}].dimensions"
             )
             if not dimensions:
-                fail(f"abi_ops[{index}].dimensions must be non-empty")
+                fail(f"instructions[{index}].dimensions must be non-empty")
             if len(dimensions) > 4:
-                fail(f"abi_ops[{index}].dimensions supports at most four dimensions")
+                fail(f"instructions[{index}].dimensions supports at most four dimensions")
             for dim_index, dim in enumerate(dimensions):
                 require_non_negative_int(
-                    dim, f"abi_ops[{index}].dimensions[{dim_index}]"
+                    dim, f"instructions[{index}].dimensions[{dim_index}]"
                 )
-            require_number(item.get("init_value"), f"abi_ops[{index}].init_value")
+            require_number(item.get("init_value"), f"instructions[{index}].init_value")
         elif "kind" in item:
-            fail(f"abi_ops[{index}].kind is only valid for elementwise or reduce ops")
+            fail(f"instructions[{index}].kind is only valid for elementwise or reduce ops")
 
     input_bytes = 0
     output_bytes = 0

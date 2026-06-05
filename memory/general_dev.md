@@ -83,12 +83,12 @@
   或 Wafer 私有 high-level op。`check-wafer` 的大量 lit case 主要来自 Dialect/Transforms/Frontend/
   Pipelines/Integration/Tools，不代表旧 Python post-SPMD helper 仍存在。
 - post-SPMD collective 先进入 Wafer LinalgExt-style tensor collective handoff，和 `linalg` 一起进入
-  group/tiling；`wafer.comm` 只能在 `wafer.tile_region` / SPM storage values / placement 明确后
-  materialize。StableHLO collective 直降 `wafer.comm` 且靠 `unrealized_conversion_cast` 桥 tensor
+  group/tiling；`wafer.tile.*` communication 只能在 `wafer.tile.region` / SPM storage values / placement 明确后
+  materialize。StableHLO collective 直降 `wafer.tile.*` communication 且靠 `unrealized_conversion_cast` 桥 tensor
   和 storage 的 pass/test 已移除；不要在 group 输入侧恢复这种入口。
 - R2.4 tensor collective handoff 的主线验证入口是同一个 Wafer program pipeline：
   `wafer-opt --program-pipeline=stablehlo-spmd-to-linalg ...` 必须从真实 PyTorch/XLA sharded
-  program 产出含 `wafer.tensor_collective.*` 的 `functions/forward.mlir`，并保留
+  program 产出含 `wafer.tensor.*` 的 `functions/forward.mlir`，并保留
   `forward.parameter_shards.json` 与 rank-local NPY payload。局部 `test/Frontend` fixture 可以覆盖
   `all_reduce` / `reduce_scatter` / `all_to_all` / `collective_permute`，但不能替代这个 program
   handoff gate。
@@ -97,19 +97,19 @@
   的主线 body 先运行 Wafer collective handoff，再调用当前 StableHLO pin 的官方
   `stablehlo-legalize-to-linalg`；Wafer collective handoff 不能证明时要 `signalPassFailure`，
   不能静默把 raw StableHLO 留给 R3 group。
-- R2.4 `wafer.tensor_collective.*` 不是只靠 op 名字或 pass switch 的 skeleton；五类 collective
+- R2.4 `wafer.tensor.*` 不是只靠 op 名字或 pass switch 的 skeleton；五类 collective
   必须实现 `DestinationStyleOpInterface`、MLIR `TilingInterface`、`WaferTilingInterface` 和
   `WaferTensorCollectiveOpInterface`。slot-crossing 或动态不可证明的 collective-axis tile 应由
   `TilingInterface` 返回 failure，等待 group planner 拆 slot-aligned tile 或 R6 materialization。
 - R3.2a/R3.2b 是 analysis-only 阶段：`GroupTilingDemand` 和 `GroupLayoutPlan` 可以用
   `--wafer-dump-group-tiling-demand` / `--wafer-dump-group-layout-plan` dump，但不能把 tile demand、
   layout assignment 或 materialization cut 写成 `wafer.group` attr，也不能在这两步生成
-  `wafer.tile_region`。主线 completion gate 要在真实 `stablehlo-spmd-to-group` 输出上重放这些 dump。
+  `wafer.tile.region`。主线 completion gate 要在真实 `stablehlo-spmd-to-group` 输出上重放这些 dump。
 - 依赖一致性检查入口是 `tools/check_deps.py`；默认检查固定版本、importer registration hook、
   public source submodule checkout HEAD、importer Python package pin 和 core/frontend/runtime/test
   tool dependency layering。
 - Wafer IR 文件组织检查入口是 `tools/check_ir_organization.py --root .`；它检查 `WaferOps.td` 只作为
-  TableGen 聚合入口、ODS/verifier/test 按 `Tensor`、`Tile`、`Resource`、`Instr`、`Runtime`、`Debug`
+  TableGen 聚合入口、ODS/verifier/test 按 `Tensor`、`Tile`、`Resource`、`Instr`、`Runtime`
   和 `Common` IR 层组织，并检查 `Conversion` 不再被 `WaferTransforms` 直接 owning。
 - Wafer transform pass API 的主入口是 `include/Wafer/Transforms/Passes.td` 生成的
   `WaferPasses.h.inc`；新增非可选 pass 应先在 `Passes.td` 声明 argument、summary 和

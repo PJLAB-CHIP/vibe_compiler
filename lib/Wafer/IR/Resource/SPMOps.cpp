@@ -53,11 +53,11 @@ mlir::LogicalResult StorageLoadOp::verify() {
 
   if (resultType.getTensorType() != sourceType)
     return emitOpError(
-        "storage.load result tensor type must match source tensor type");
+        "tile.load result tensor type must match source tensor type");
   if (!hasStorageMemorySpace(resultType, MemorySpace::SPM))
-    return emitOpError("storage.load result must use SPM memory space");
+    return emitOpError("tile.load result must use SPM memory space");
   if (!hasStorageLayout(resultType, MemLayout::Tensor))
-    return emitOpError("storage.load result must use tensor mem_layout");
+    return emitOpError("tile.load result must use tensor mem_layout");
 
   return mlir::success();
 }
@@ -102,11 +102,11 @@ mlir::LogicalResult StorageStoreOp::verify() {
 
   if (sourceType.getTensorType() != destType)
     return emitOpError(
-        "storage.store source tensor type must match dest tensor type");
+        "tile.store source tensor type must match dest tensor type");
   if (!hasStorageMemorySpace(sourceType, MemorySpace::SPM))
-    return emitOpError("storage.store source must use SPM memory space");
+    return emitOpError("tile.store source must use SPM memory space");
   if (!hasStorageLayout(sourceType, MemLayout::Tensor))
-    return emitOpError("storage.store source must use tensor mem_layout for "
+    return emitOpError("tile.store source must use tensor mem_layout for "
                        "external writeback");
 
   return mlir::success();

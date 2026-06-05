@@ -7,7 +7,7 @@ module {
                     outs(%source : tensor<4xf32>) {
   ^bb0(%in: tensor<4xf32>, %out: tensor<4xf32>):
     %sum = stablehlo.add %in, %in : tensor<4xf32>
-    wafer.group_yield %sum : tensor<4xf32>
+    wafer.group.yield %sum : tensor<4xf32>
   } : tensor<4xf32>
 }
 

@@ -2,9 +2,7 @@ add_mlir_dialect_library(WaferIR
   WaferDialect.cpp
   WaferInterfaces.cpp
   Common/OpVerifierUtils.cpp
-  Debug/AbiOps.cpp
   Instr/SyncOps.cpp
-  Resource/DDROps.cpp
   Resource/PlacementOps.cpp
   Resource/SPMOps.cpp
   Runtime/LaunchOps.cpp

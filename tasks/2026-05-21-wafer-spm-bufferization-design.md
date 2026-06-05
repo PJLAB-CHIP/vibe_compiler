@@ -5,7 +5,7 @@
 状态：设计草案；2026-05-25 边界收口；2026-06-04 对齐 instruction-level Wafer IR 先于 SPM placement
 
 本文定义 Wafer SPM bufferization、tile-local allocation 和 storage verification。它服务于
-`wafer.group` planning 的合法性搜索，也负责把 `wafer.tile_region` 中的 tile-local value
+`wafer.group` planning 的合法性搜索，也负责把 `wafer.tile.region` 中的 tile-local value
 落到可验证的 memory space、liveness、range 和 effect。
 SPM placement 的 instruction-level 输入合同由
 `tasks/2026-06-05-wafer-instruction-ir-design.md` 定义；本文只消费该层暴露的
@@ -82,7 +82,7 @@ Pipeline position:
 
 输入：
 
-- transformation-local 或已经 committed 的 `wafer.tile_region` IR；在 R3.2d
+- transformation-local 或已经 committed 的 `wafer.tile.region` IR；在 R3.2d
   中这是 scratch IR / cloned IR，rejected tile-region IR 必须丢弃。SPM placement 不直接消费
   target-abstract tile-region IR，而消费 R3.2d 生成的 instruction-level IR with unplaced `!wafer.storage`。
 - layout planner 产生的 physical layout assignment 和 materialization demand。
@@ -91,11 +91,11 @@ Pipeline position:
 - `WaferCommOpInterface` 或后续 communication instruction selection 提供的 source/destination buffer、byte count、
   token/wait 和 staging storage。
 - target policy：SPM range、reserved range、alignment、coloring preference。
-- `wafer.tile_region` 的 control-flow、op effect、drain/wait/barrier。
+- `wafer.tile.region` 的 control-flow、op effect、drain/wait/barrier。
 
 输出：
 
-- `wafer.tile_region` 中带 memory space / `mem_layout` 的 buffer；其中 `#spm` buffer 由本文
+- `wafer.tile.region` 中带 memory space / `mem_layout` 的 buffer；其中 `#spm` buffer 由本文
   allocator 分配，`#ddr` buffer/descriptor 由 DDR resource planner / runtime/package/launch 层提供
   ownership。
 - storage realization 后的 physical `memref`、flat storage `memref` 或 Wafer descriptor。
@@ -110,8 +110,8 @@ residency/storage、workspace BO、全局容量、largest contiguous range 和 b
 
 ## 4. Instruction Storage Requirements
 
-allocator 的输入仍可命名为 `BufferDemand`，但它不是直接从 target-abstract `wafer.compute.*` /
-`wafer.move.*` op 猜出来的。它必须由 instruction-level `wafer.instr.*` / `!wafer.storage` 产生：
+allocator 的输入仍可命名为 `BufferDemand`，但它不是直接从 target-abstract `wafer.tile.*` compute /
+movement op 猜出来的。它必须由 instruction-level `wafer.instr.*` / `!wafer.storage` 产生：
 
 ```text
 BufferDemand {
@@ -143,24 +143,24 @@ V0 `kind`：
 SPM allocator 不按 op 名字猜 buffer，也不把一个 target-abstract op 当成一条硬件指令。demand
 来源应是 instruction legalization / selection 后的明确 storage graph：
 
-- `wafer.compute.*` / target-abstract movement op：通过 compute/movement 文档定义的接口枚举或选择
+- `wafer.tile.*` compute ops / target-abstract movement op：通过 compute/movement 文档定义的接口枚举或选择
   hardware instruction family，例如 NE GEMM、CT elementwise/reduce、TDMA GatherScatter；SPM
   memcpy 是 GatherScatter 的 contiguous descriptor 特例。
   instruction-level IR 再报告 operand/result/temp/scratch/accumulator/psum demand、queue family
   和 async lowering policy。
-- `wafer.layout.materialize`：不能只报告“source read / result write”。它必须先选择具体
+- `wafer.tile.materialize_layout`：不能只报告“source read / result write”。它必须先选择具体
   materialization instruction lowering，例如可展开成具体 GatherScatter 序列的 ChannelNorm /
   DechannelNorm algorithm、普通 GatherScatter 或 reject；不同 lowering 可产生不同 temp、padding、
   range 和 queue 行为。
-- `wafer.comm.*` p2p op：需要 communication instruction lowering 报告 send source、recv destination、
+- `wafer.tile.*` communication ops p2p op：需要 communication instruction lowering 报告 send source、recv destination、
   communication staging buffer、fixed byte count、token/wait lifetime 和 DTE/FSM resource class。
-- `wafer.sync.*`：报告 local drain、comm wait、group barrier 对 instruction event、buffer lifetime 和
+- `wafer.instr.local_drain` 和后续 sync boundary：报告 local drain、comm wait、group barrier 对 instruction event、buffer lifetime 和
   reuse 的收口。
 
 如果某个 target-abstract op 无法产出可验证 instruction-level IR，不能让 SPM placement 用名字或示例
 shape 猜测；应先扩 op interface / instruction IR，或保持在更高层 IR。
 如果当前只有 R3.2a/R3.2b 的 group-level analysis summary，而没有 R3.2c
-`wafer.tile_region` IR，SPM placement 不能直接运行；如果只有 R3.2c target-abstract
+`wafer.tile.region` IR，SPM placement 不能直接运行；如果只有 R3.2c target-abstract
 tile-region IR 而没有 R3.2d instruction-level IR，SPM placement 同样不能运行。必须先降到
 `wafer.instr.*` / `!wafer.storage`，让 storage values、lifetime 和 effect 都可由 IR 结构重算。
 
@@ -193,7 +193,7 @@ V0 规则：
 
 - synchronous op 的 input live 到该 op read 完；output live 到最后 use。
 - async movement/compute/communication 的 source/destination live 到对应 drain/wait。
-- `wafer.comm.send` 的 source buffer live 到 send completion 或 protocol 允许复用的 wait；`recv`
+- `wafer.tile.send` 的 source buffer live 到 send completion 或 protocol 允许复用的 wait；`recv`
   destination 在 comm wait 前不能被 compute 读取。
 - loop-carried accumulator/psum 跨 backedge live。
 - per-iteration temporary 可以跨 iteration 复用，除非 pipeline/double-buffer 要求保留。
@@ -235,7 +235,7 @@ SPMPlacementReport {
 V0 event model：
 
 - 每个 movement / materialization / compute / sync op 产生 issue/read/write/drain/wait event。
-- communication p2p op 产生 send/recv issue event，`wafer.comm.wait` 或 lower-level DTE/FSM wait
+- communication p2p op 产生 send/recv issue event，`wafer.tile.wait` 或 lower-level DTE/FSM wait
   产生 completion event。
 - synchronous op 可以用单个 read/write event conservative 建模。
 - async op 的 source/destination lifetime 延伸到对应 drain/wait。
@@ -356,20 +356,20 @@ V0 推荐 `allocate on tile-region before commit`：
 
 ```text
 logical group + tile/layout proposal
-  -> build wafer.tile_region IR
+  -> build wafer.tile.region IR
      (target-abstract compute/comm/load-store/layout/sync/storage/effect)
   -> legalize/select instruction-level wafer.instr.* over unplaced !wafer.storage
   -> collect BufferDemand + liveness/effect from instruction-level IR
   -> SPM placement
   -> accepted plan or failure feedback
-  -> commit accepted wafer.tile_region with layout/materialization/instruction/SPM facts
+  -> commit accepted wafer.tile.region with layout/materialization/instruction/SPM facts
   -> materialize placed instruction/storage IR
 ```
 
 原因是 layout、SPM、tile shape 和 target-abstract op selection 强耦合。早期如果只看 logical
 group summary 或裸 tensor value，再把真实 allocation 推到更晚的 pass，容易让合法性承诺漂移；
 但把 rejected tile-region IR 直接落入主 IR 再回滚也会污染 IR 边界。因此 instruction legalization /
-selection 和 SPM placement 都应在 transformation-local / scratch `wafer.tile_region` 上运行；
+selection 和 SPM placement 都应在 transformation-local / scratch `wafer.tile.region` 上运行；
 allocation 使用 instruction-level IR 的 storage / lifetime / effect 事实源，而不是 target-abstract
 op 的粗粒度 effect。
 
@@ -417,7 +417,7 @@ device/global DDR address domain。RDMA/WDMA verifier 用 source/destination mem
 DDR resource / runtime/package lowering 用 `#ddr` 继续关联 BO pool/domain、host visibility、workspace
 BO、constant storage/residency 和 launch metadata。
 
-不要把 `wafer.tile_region` body 已经表达的执行结构复制成全局 allocation plan attr。
+不要把 `wafer.tile.region` body 已经表达的执行结构复制成全局 allocation plan attr。
 
 ## 13. Verifier
 
@@ -444,7 +444,7 @@ tile-region IR 的 `#spm` placement 是否可行，并把失败原因返回 grou
 ```text
 tile plan
   -> layout assignment
-  -> wafer.tile_region IR
+  -> wafer.tile.region IR
   -> instruction-level wafer.instr.* over unplaced !wafer.storage
   -> instruction storage / effect demand
   -> SPM placement
@@ -465,7 +465,7 @@ closed-loop planner，不在 allocator 内部用名字或 case 猜测。
 
 - 多 pool placement：当 ordinary pool、communication staging、runtime-visible buffer 的 reserved
   range 和 lifetime 约束稳定后引入；在此之前用单 pool + reserved range 更容易验证。
-- linear scan allocator：当 `wafer.tile_region` 大多是线性 schedule，且 greedy arena 编译成本或
+- linear scan allocator：当 `wafer.tile.region` 大多是线性 schedule，且 greedy arena 编译成本或
   fragmentation 成为问题时引入。
 - graph-coloring / interval-coloring allocator：当 lifetime 图复杂、first-fit 产生明显 peak SPM
   浪费，且诊断能保持清楚时引入。

@@ -35,7 +35,7 @@ def DumpGroupLayoutPlanPass
 
 def DumpGroupToTileRegionPass
     : Pass<"wafer-dump-group-to-tile-region", "mlir::ModuleOp"> {
-  let summary = "Dump wafer.group to wafer.tile_region lowering IR";
+  let summary = "Dump wafer.group to wafer.tile.region lowering IR";
   let dependentDialects = ["mlir::arith::ArithDialect",
                            "mlir::async::AsyncDialect",
                            "mlir::func::FuncDialect",
@@ -55,7 +55,7 @@ def NormalizeStablehloCollectivesPass
 
 def ConvertGroupToTileRegionPass
     : Pass<"wafer-convert-group-to-tile-region", "mlir::ModuleOp"> {
-  let summary = "Convert logical wafer.group ops to wafer.tile_region IR";
+  let summary = "Convert logical wafer.group ops to wafer.tile.region IR";
   let dependentDialects = ["mlir::arith::ArithDialect",
                            "mlir::func::FuncDialect",
                            "mlir::linalg::LinalgDialect",

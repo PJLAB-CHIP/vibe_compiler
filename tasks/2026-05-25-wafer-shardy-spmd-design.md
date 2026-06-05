@@ -39,7 +39,7 @@ placement、DTE protocol、SPM buffer、layout materialization 或 runtime launc
 
 - 不选择 card/tile 物理坐标。
 - 不决定 tile-goodness、PG/bad-tile fallback 或 cluster placement。
-- 不生成 `wafer.comm` DTE send/recv、FSM id、stream id、packet id 或 SPM sync slot。
+- 不生成 `wafer.tile.*` communication DTE send/recv、FSM id、stream id、packet id 或 SPM sync slot。
 - 不做 group fusion、SPM allocation、DDR allocation 或 C ABI lowering。
 
 ## 2. 输入和输出
@@ -145,7 +145,7 @@ P2.S2 工程 gate 必须把 XLA SPMD partitioner 或等价 local-body partitioni
   program directory 目录名、program 类型名或长期协议字段。
 - R2.4 消费 P2.S2 的 partitioned StableHLO collective，并 normalize 到 Wafer LinalgExt-style
   tensor collective。它不是 XLA SPMD partitioner，也不能从 P2.S1 的 propagated global module
-  直接补 `wafer.comm`。
+  直接补 `wafer.tile.*` communication。
 - `wafer-lower-stablehlo-to-linalg` 消费 post-SPMD local body 或 no-sharding replicated local body，
   只做 StableHLO local compute -> Linalg/Tensor/Arith/Math；它不做 sharding propagation、SPMD
   partition、placement、group、SPM/DDR 或 communication materialization。
@@ -399,11 +399,11 @@ V0 关注以下 StableHLO collective 语义：
 
 | collective | SPMD 语义 | 下游 owner |
 | --- | --- | --- |
-| `collective_permute` | logical point-to-point value movement | tensor collective handoff + placement + later `wafer.comm` |
+| `collective_permute` | logical point-to-point value movement | tensor collective handoff + placement + later `wafer.tile.*` communication |
 | `all_gather` | shard concat / replication | Wafer LinalgExt-style tensor collective handoff |
 | `reduce_scatter` | reduce + shard distribution | Wafer LinalgExt-style tensor collective handoff |
 | `all_reduce` | all-rank reduction | Wafer LinalgExt-style tensor collective handoff |
-| `all_to_all` | split / exchange / concatenate across logical ranks | Wafer LinalgExt-style tensor collective handoff；later `wafer.comm` p2p schedule |
+| `all_to_all` | split / exchange / concatenate across logical ranks | Wafer LinalgExt-style tensor collective handoff；later `wafer.tile.*` communication p2p schedule |
 
 `all_to_all` 的高性能算法可以后于 ring all-gather / all-reduce 实现，但 SPMD program stage 不应因为当前
 communication lowering 未实现该算法而丢失或拒绝它的 logical collective 语义。若硬件 data plane
@@ -414,34 +414,34 @@ Collective handoff 分三步：
 
 ```text
 StableHLO logical collective
-  -> Wafer LinalgExt-style `wafer.tensor_collective.*` op
+  -> Wafer LinalgExt-style `wafer.tensor.*` op
   -> tiled tensor collective inside scheduled group / tile_region materialization
-  -> wafer.comm collective-level op or explicit p2p schedule
+  -> wafer.tile.* communication collective-level op or explicit p2p schedule
   -> Direct DTE / sync / wait lower-level op
 ```
 
 Shardy / SPMD 只负责第一行之前的 logical collective 生成。StableHLO collective 不应在 group /
-tiling 前直接 lower 成 `wafer.comm`，因为 `wafer.comm` 当前属于 tile-local storage / communication
+tiling 前直接 lower 成 `wafer.tile.*` communication，因为 `wafer.tile.*` communication 当前属于 tile-local storage / communication
 IR；它需要 SPM buffer、byte count、placement 和 token/effect 语义。
 
 R2.4 的用户级 program gate 是 `wafer-opt --program-pipeline=stablehlo-spmd-to-linalg`：该 pipeline
 先执行 P2.S2 `stablehlo-spmd` stage，再在同一个输出 program directory 中把 partitioned /
 replicated-local StableHLO module lowering 到 Linalg/Tensor IR，并把 StableHLO collective normalize 成
-`wafer.tensor_collective.*`。底层 `wafer-lower-stablehlo-to-linalg` named MLIR pipeline 只作为该
+`wafer.tensor.*`。底层 `wafer-lower-stablehlo-to-linalg` named MLIR pipeline 只作为该
 program pipeline 的内部构件和局部 debug/unit 覆盖；slot-aligned tile generation、physical rank
 placement、ring/p2p schedule 和 DTE token 仍属于 R3/R6。
 
-旧的 StableHLO collective 直降 `wafer.comm.*` pass 已移除。后续不得恢复 group/tiling 前的
-StableHLO -> `wafer.comm` 插入点；需要分别实现“StableHLO -> tensor collective”和
-“tiled tensor collective -> wafer.comm”两层。
+旧的 StableHLO collective 直降 `wafer.tile.*` communication ops pass 已移除。后续不得恢复 group/tiling 前的
+StableHLO -> `wafer.tile.*` communication 插入点；需要分别实现“StableHLO -> tensor collective”和
+“tiled tensor collective -> wafer.tile.* communication”两层。
 
 2026-05-26 R2.2 恢复了 SDY program bridge 的工程入口：`WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON`
 时，`wafer-opt` 和 frontend verifier tool 显式注册 Shardy / SDY dialect，`wafer-opt` 也注册
 SDY passes/pipelines。带 `sdy.mesh` / `sdy.sharding` 的 partitioned StableHLO program 可以作为
 Wafer 输入被 parse/verify。
 
-同一批次曾把 StableHLO `replica_groups` 的 logical rank group materialize 到 `wafer.comm.*`
-`rank_group = array<i64: ...>` attr；该 StableHLO -> `wafer.comm` bridge 已移除，避免后续误把它当成
+同一批次曾把 StableHLO `replica_groups` 的 logical rank group materialize 到 `wafer.tile.*` communication ops
+`rank_group = array<i64: ...>` attr；该 StableHLO -> `wafer.tile.*` communication bridge 已移除，避免后续误把它当成
 group/tiling 输入。SPMD program stage 的任务是通过真实 partitioner 输出和 program verifier 保留这些事实，
 R2.4/R6 再分别恢复 tensor collective handoff 和 tile-local comm lowering。
 
@@ -472,7 +472,7 @@ SPMD 不应该为了特定 Wafer mesh 重新解释 StableHLO semantics。physica
 | SPMD partition | annotated global module | partitioned StableHLO |
 | per-rank program selection | partitioned StableHLO + rank selection policy | verified local-rank StableHLO program |
 | collective tensor normalization | partitioned StableHLO collective ops | Wafer LinalgExt-style tensor collective IR |
-| communication materialization | tiled tensor collective + storage values + placement | `wafer.comm` collective-level op or explicit p2p schedule |
+| communication materialization | tiled tensor collective + storage values + placement | `wafer.tile.*` communication collective-level op or explicit p2p schedule |
 
 这些 pass 的合法输出不包含 Wafer physical memory space、tile coordinates、DTE resource 或
 runtime package metadata。
@@ -501,15 +501,15 @@ P2.S2 的完成证明必须至少覆盖：
 - Shardy propagation 能直接消费每个 strategy 的 `functions/forward.mlir`，并且 XLA SPMD
   partitioner / equivalent service 能产出 partitioned StableHLO 或等价 per-rank StableHLO body。
 - `wafer-opt --program-pipeline=stablehlo-spmd-to-linalg` 能从真实 PyTorch/XLA sharded program
-  继续产出含 `wafer.tensor_collective.*` 的 post-linalg Wafer program，不能要求用户或 lit 手动拼
+  继续产出含 `wafer.tensor.*` 的 post-linalg Wafer program，不能要求用户或 lit 手动拼
   `wafer-lower-stablehlo-to-linalg`。
 - per-rank program 仍通过 frontend boundary verifier 或等价 verifier，不丢 function boundary、
   dynamic bound、program-directory-derived constant facts 和 sharding facts。
 - per-rank program 完整保留 logical collective、replica group / rank group、local rank、local shard
   shape、dtype 和 user-visible input/output shard relation。
 - P2.S2 输出必须完整保留 StableHLO collective 和 metadata，供 R2.4 进入 Wafer LinalgExt-style
-  tensor collective handoff；对当前已有 `wafer.comm` 表示的 collective，可以保留后段 最小验证 证明
-  metadata 能进入 `wafer.comm` `rank_group`，但该 最小验证 不能作为 P2.S2、R2.4 或 group/tiling
+  tensor collective handoff；对当前已有 `wafer.tile.*` communication 表示的 collective，可以保留后段 最小验证 证明
+  metadata 能进入 `wafer.tile.*` communication `rank_group`，但该 最小验证 不能作为 P2.S2、R2.4 或 group/tiling
   完成证明。
 - no-user-sharding P2.F1 program 必须通过默认 policy 生成 function-input sharding seed：默认
   `tile-count=16`，并覆盖找不到合适切分维度时的 16-tile replicated fallback；`tile-count=1`

@@ -64,7 +64,7 @@ wafer.launch @compiled_kernel(
 - runtime mode：HPGR 主路径或 legacy fallback。
 
 `wafer.launch` 不包含 tensor-level fusion plan，也不组织 tile-local memory effects；这些属于
-`wafer.group` 和 `wafer.tile_region`。
+`wafer.group` 和 `wafer.tile.region`。
 
 ## 3. Runtime Package Contents
 

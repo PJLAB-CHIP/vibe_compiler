@@ -19,10 +19,10 @@
 # CHECK: "ddr_external_output_bytes": 16
 # CHECK: "workspace_bytes": 16
 # CHECK: "resident_constant_bytes": 16
-# CHECK: "wafer.abi.rdma"
-# CHECK: "wafer.abi.elementwise"
-# CHECK: "wafer.abi.reduce"
-# CHECK: "wafer.abi.wdma"
+# CHECK: "wafer.instr.rdma"
+# CHECK: "wafer.instr.ct.elementwise"
+# CHECK: "wafer.instr.ct.reduce"
+# CHECK: "wafer.instr.wdma"
 
 # ERR: completion source is a known stub fence
 # PLACEMENT-ERR: maps to tile id 1 that is not marked good

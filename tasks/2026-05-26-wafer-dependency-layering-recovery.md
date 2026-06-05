@@ -31,7 +31,7 @@ core compiler target。
 
 - 不实现真实 model importer adapter、Wafer program verifier 或 Shardy SPMD bridge。
 - 不引入 HPGR / KMD / legacy `Tsm*` runtime adapter target。
-- 不把 `wafer.abi.*` 作为主线 IR 层 lower 到 LLVM dialect、object 或真实 runtime call。
+- 不把专门 ABI IR op family 作为主线 IR 层 lower 到 LLVM dialect、object 或真实 runtime call。
 - 不拆分 Wafer ODS / verifier op-prefix 文件；这是 R1.1。
 
 ## 依赖层级

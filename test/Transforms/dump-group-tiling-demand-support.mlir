@@ -7,7 +7,7 @@ module {
     ^bb0(%arg0: tensor<8xf32>, %arg1: tensor<4xf32>):
       %slice = tensor.extract_slice %arg0[0] [4] [1]
           : tensor<8xf32> to tensor<4xf32>
-      wafer.group_yield %slice : tensor<4xf32>
+      wafer.group.yield %slice : tensor<4xf32>
     } : tensor<4xf32>
     return %0 : tensor<4xf32>
   }

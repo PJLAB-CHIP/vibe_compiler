@@ -44,7 +44,7 @@ module {
           %max = arith.maximumf %value, %zero_el : f32
           linalg.yield %max : f32
         } -> tensor<4x16xf32>
-      wafer.group_yield %relu : tensor<4x16xf32>
+      wafer.group.yield %relu : tensor<4x16xf32>
     } : tensor<4x16xf32>
     return %0 : tensor<4x16xf32>
   }
@@ -69,7 +69,7 @@ module {
           %add = arith.addf %lhs_el, %rhs_el : f32
           linalg.yield %add : f32
         } -> tensor<4xf32>
-      wafer.group_yield %sum : tensor<4xf32>
+      wafer.group.yield %sum : tensor<4xf32>
     } : tensor<4xf32>
     %1 = wafer.group ins(%a1, %b1 : tensor<8xf32>, tensor<8xf32>)
         outs(%out1 : tensor<8xf32>) {
@@ -87,7 +87,7 @@ module {
           %add = arith.addf %lhs_el, %rhs_el : f32
           linalg.yield %add : f32
         } -> tensor<8xf32>
-      wafer.group_yield %sum : tensor<8xf32>
+      wafer.group.yield %sum : tensor<8xf32>
     } : tensor<8xf32>
     return %0, %1 : tensor<4xf32>, tensor<8xf32>
   }
@@ -101,7 +101,7 @@ module {
       %fill = linalg.fill
           ins(%c0 : f32)
           outs(%empty : tensor<4xf32>) -> tensor<4xf32>
-      wafer.group_yield %fill : tensor<4xf32>
+      wafer.group.yield %fill : tensor<4xf32>
     } : tensor<4xf32>
     return %0 : tensor<4xf32>
   }
@@ -128,7 +128,7 @@ module {
           %add = arith.addf %value, %acc : f32
           linalg.yield %add : f32
         } -> tensor<2xf32>
-      wafer.group_yield %sum : tensor<2xf32>
+      wafer.group.yield %sum : tensor<2xf32>
     } : tensor<2xf32>
     return %0 : tensor<2xf32>
   }
@@ -143,7 +143,7 @@ module {
           : tensor<8xf32> to tensor<4xf32>
       %inserted = tensor.insert_slice %slice into %arg2[2] [4] [1]
           : tensor<4xf32> into tensor<8xf32>
-      wafer.group_yield %inserted : tensor<8xf32>
+      wafer.group.yield %inserted : tensor<8xf32>
     } : tensor<8xf32>
     return %0 : tensor<8xf32>
   }
@@ -157,7 +157,7 @@ module {
           : tensor<2x4xf32> to tensor<4xf32>
       %inserted = tensor.insert_slice %row into %arg1[1, 0] [1, 4] [1, 1]
           : tensor<4xf32> into tensor<2x4xf32>
-      wafer.group_yield %inserted : tensor<2x4xf32>
+      wafer.group.yield %inserted : tensor<2x4xf32>
     } : tensor<2x4xf32>
     return %0 : tensor<2x4xf32>
   }
@@ -170,7 +170,7 @@ module {
           output_shape [2, 3] : tensor<6xf32> into tensor<2x3xf32>
       %collapsed = tensor.collapse_shape %expanded [[0, 1]]
           : tensor<2x3xf32> into tensor<6xf32>
-      wafer.group_yield %collapsed : tensor<6xf32>
+      wafer.group.yield %collapsed : tensor<6xf32>
     } : tensor<6xf32>
     return %0 : tensor<6xf32>
   }
@@ -191,7 +191,7 @@ module {
         ^bb0(%value: f32, %out_el: f32):
           linalg.yield %value : f32
         } -> tensor<3x2xf32>
-      wafer.group_yield %transposed : tensor<3x2xf32>
+      wafer.group.yield %transposed : tensor<3x2xf32>
     } : tensor<3x2xf32>
     return %0 : tensor<3x2xf32>
   }
@@ -200,15 +200,15 @@ module {
       -> tensor<4xf32> {
     %0 = wafer.group ins(%input : tensor<4xf32>) outs(%out : tensor<4xf32>) {
     ^bb0(%arg0: tensor<4xf32>, %arg1: tensor<4xf32>):
-      %ar = wafer.tensor_collective.all_reduce
+      %ar = wafer.tensor.all_reduce
           ins(%arg0 : tensor<4xf32>)
           outs(%arg1 : tensor<4xf32>)
           {
           ^bb0(%lhs: f32, %rhs: f32):
             %sum = arith.addf %lhs, %rhs : f32
-            wafer.tensor_collective.yield %sum : f32
+            wafer.tensor.yield %sum : f32
           } {rank_group = array<i64: 0, 1>} -> tensor<4xf32>
-      wafer.group_yield %ar : tensor<4xf32>
+      wafer.group.yield %ar : tensor<4xf32>
     } : tensor<4xf32>
     return %0 : tensor<4xf32>
   }
@@ -219,67 +219,67 @@ module {
     ^bb0(%arg0: tensor<8xf32>, %arg1: tensor<4xf32>):
       %slice = tensor.extract_slice %arg0[0] [4] [1]
           : tensor<8xf32> to tensor<4xf32>
-      wafer.group_yield %slice : tensor<4xf32>
+      wafer.group.yield %slice : tensor<4xf32>
     } : tensor<4xf32>
     return %0 : tensor<4xf32>
   }
 }
 
 // CHECK-LABEL: wafer.group_to_tile_region group @matmul_bias_relu#0
-// CHECK: wafer.tile_region(
-// CHECK: wafer.storage.load
+// CHECK: wafer.tile.region(
+// CHECK: wafer.tile.load
 // CHECK: !wafer.storage<tensor<4x8xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
-// CHECK: wafer.compute.fill
-// CHECK: wafer.layout.materialize
+// CHECK: wafer.tile.fill
+// CHECK: wafer.tile.materialize_layout
 // CHECK: #wafer.mem_layout<cx>
-// CHECK: wafer.compute.gemm
-// CHECK: wafer.layout.materialize
+// CHECK: wafer.tile.gemm
+// CHECK: wafer.tile.materialize_layout
 // CHECK: #wafer.mem_layout<tensor>
-// CHECK: wafer.compute.elementwise <add>
+// CHECK: wafer.tile.elementwise <add>
 // CHECK-SAME: indexing_maps
-// CHECK: wafer.compute.elementwise <max>
-// CHECK: wafer.storage.store
-// CHECK: wafer.tile_yield
+// CHECK: wafer.tile.elementwise <max>
+// CHECK: wafer.tile.store
+// CHECK: wafer.tile.yield
 // CHECK-LABEL: wafer.group_to_tile_region group @two_independent_groups#0
-// CHECK: wafer.compute.elementwise <add>
+// CHECK: wafer.tile.elementwise <add>
 // CHECK-LABEL: wafer.group_to_tile_region group @two_independent_groups#1
-// CHECK: wafer.compute.elementwise <add>
+// CHECK: wafer.tile.elementwise <add>
 // CHECK-LABEL: wafer.group_to_tile_region group @empty_fill_group#0
-// CHECK: wafer.storage.alloc
-// CHECK: wafer.compute.fill
-// CHECK: wafer.storage.store
+// CHECK: wafer.tile.alloc
+// CHECK: wafer.tile.fill
+// CHECK: wafer.tile.store
 // CHECK-LABEL: wafer.group_to_tile_region group @reduce_sum_group#0
 // CHECK: tensor.extract
-// CHECK: wafer.compute.fill
-// CHECK: wafer.layout.materialize
+// CHECK: wafer.tile.fill
+// CHECK: wafer.tile.materialize_layout
 // CHECK: #wafer.mem_layout<cx>
-// CHECK: wafer.compute.reduce <sum>
+// CHECK: wafer.tile.reduce <sum>
 // CHECK-SAME: dimensions = array<i64: 1>
-// CHECK: wafer.layout.materialize
+// CHECK: wafer.tile.materialize_layout
 // CHECK: #wafer.mem_layout<tensor>
-// CHECK: wafer.storage.store
+// CHECK: wafer.tile.store
 // CHECK-LABEL: wafer.group_to_tile_region group @tensor_movement_group#0
-// CHECK: wafer.move.extract_slice
+// CHECK: wafer.tile.extract_slice
 // CHECK-SAME: offsets = array<i64: 2>
-// CHECK: wafer.move.insert_slice
+// CHECK: wafer.tile.insert_slice
 // CHECK-SAME: offsets = array<i64: 2>
-// CHECK: wafer.storage.store
+// CHECK: wafer.tile.store
 // CHECK-LABEL: wafer.group_to_tile_region group @tensor_rank_reduced_slice_group#0
-// CHECK: wafer.move.extract_slice
+// CHECK: wafer.tile.extract_slice
 // CHECK-SAME: sizes = array<i64: 1, 4>
 // CHECK: !wafer.storage<tensor<4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
-// CHECK: wafer.move.insert_slice
+// CHECK: wafer.tile.insert_slice
 // CHECK-SAME: sizes = array<i64: 1, 4>
-// CHECK: wafer.storage.store
+// CHECK: wafer.tile.store
 // CHECK-LABEL: wafer.group_to_tile_region group @tensor_reshape_group#0
-// CHECK: wafer.view.reshape
-// CHECK: wafer.view.reshape
-// CHECK: wafer.storage.store
+// CHECK: wafer.tile.reshape
+// CHECK: wafer.tile.reshape
+// CHECK: wafer.tile.store
 // CHECK-LABEL: wafer.group_to_tile_region group @passthrough_movement_group#0
-// CHECK: wafer.move.transpose
+// CHECK: wafer.tile.transpose
 // CHECK-SAME: permutation = array<i64: 1, 0>
-// CHECK: wafer.storage.store
+// CHECK: wafer.tile.store
 // CHECK-LABEL: wafer.group_to_tile_region group @collective_group#0
 // CHECK: failure collective lowering requires placement/local-rank facts
 // CHECK-LABEL: wafer.group_to_tile_region group @static_slice_support_op#0
-// CHECK: wafer.move.extract_slice
+// CHECK: wafer.tile.extract_slice

@@ -12,26 +12,26 @@ module {
       : () -> !wafer.storage<tensor<4xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
   %bool = "builtin.unrealized_conversion_cast"()
       : () -> !wafer.storage<tensor<4x8xi1>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
-  %sum = wafer.compute.elementwise #wafer.elementwise_kind<add> %a, %b
+  %sum = wafer.tile.elementwise #wafer.elementwise_kind<add> %a, %b
       : (!wafer.storage<tensor<4x8xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>,
          !wafer.storage<tensor<4x8xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>)
      -> !wafer.storage<tensor<4x8xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
-  %exp = wafer.compute.elementwise #wafer.elementwise_kind<exp> %sum
+  %exp = wafer.tile.elementwise #wafer.elementwise_kind<exp> %sum
       : (!wafer.storage<tensor<4x8xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>)
      -> !wafer.storage<tensor<4x8xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
-  %row_add = wafer.compute.elementwise #wafer.elementwise_kind<add> %a, %row
+  %row_add = wafer.tile.elementwise #wafer.elementwise_kind<add> %a, %row
       {indexing_maps = [#map, #row, #map]}
       : (!wafer.storage<tensor<4x8xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>,
          !wafer.storage<tensor<4xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>)
      -> !wafer.storage<tensor<4x8xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
-  %gt = wafer.compute.elementwise #wafer.elementwise_kind<gt> %a, %b
+  %gt = wafer.tile.elementwise #wafer.elementwise_kind<gt> %a, %b
       : (!wafer.storage<tensor<4x8xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>,
          !wafer.storage<tensor<4x8xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>)
      -> !wafer.storage<tensor<4x8xi1>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
 }
 
-// CHECK: wafer.compute.elementwise <add>
-// CHECK: wafer.compute.elementwise <exp>
-// CHECK: wafer.compute.elementwise <add>
+// CHECK: wafer.tile.elementwise <add>
+// CHECK: wafer.tile.elementwise <exp>
+// CHECK: wafer.tile.elementwise <add>
 // CHECK-SAME: indexing_maps
-// CHECK: wafer.compute.elementwise <gt>
+// CHECK: wafer.tile.elementwise <gt>

@@ -47,7 +47,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 
 - R0.2 已把源码 ownership 拆到 `Frontend`、`IR`、`Analysis`、`Transforms`、`Conversion` 和 `ABI`
   边界；R1.1 之后又把 `wafer` dialect 内部 ODS、op verifier 和 dialect tests 按 IR 层收口。
-- `WaferOps.td` 现在只作为 TableGen 聚合入口，具体 op 定义在 `include/Wafer/IR/{Tensor,Tile,Resource,Instr,Runtime,Debug}/*Ops.td`；
+- `WaferOps.td` 现在只作为 TableGen 聚合入口，具体 op 定义在 `include/Wafer/IR/{Tensor,Tile,Resource,Instr,Runtime}/*Ops.td`；
   `WaferDialect.cpp` 只保留 dialect/attr/type/op 注册和 `StorageType` verifier。
 - 历史 local integration gate 曾把 `wafer-opt` IR FileCheck 和 fixed manifest/C stub fixture 放在同一
   测试文件里；这些 fixed emitter 和测试拼接已删除，当前 integration 只保留 IR pipeline coverage。
@@ -83,8 +83,9 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   同一套固定版本 LLVM/MLIR/StableHLO 编译到 `shardy-sdy-opt`；不再以 Shardy standalone Bazel
   workspace 作为 Wafer dependency 编译验证。
 - Wafer IR ODS 和 verifier 按层组织：`Tensor` 承载 group/tensor collective，`Tile` 承载
-  tile_region/layout/compute/move/view/comm，`Resource` 承载 SPM/DDR/placement，`Instr` 承载 sync，
-  `Runtime` 承载 launch，`Debug` 承载 `wafer.abi.*` 调试 IR；`test/Dialect/Wafer` 按相同层级分目录。
+  tile-region/layout/compute/move/view/communication，`Resource` 承载 SPM/placement，
+  `Instr` 承载 instruction/sync，`Runtime` 承载 launch；不再保留专门 ABI IR op family。
+  `test/Dialect/Wafer` 按相同层级分目录。
 - R1.2 后 `WaferTilingInterface`、`WaferLayoutOpInterface`、
   `WaferLayoutMaterializationOpInterface` 和 `WaferResourceEffectInterface` 不再只是 marker；
   group、layout/materialize、SPM、DDR、compute、comm、sync 和 ABI op 可通过接口查询边界值、
@@ -106,7 +107,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   core compiler public dependency 或第二套 XLA/LLVM/StableHLO 事实源；Shardy 编译验证目标只证明公共
   SPMD 依赖可用，
   R2.2 只额外证明 Wafer 工具能接收 SDY program 并把 StableHLO replica group 显式传入
-  `wafer.comm`。
+  `wafer.tile.*` communication。
 - runtime/driver 头文件和真实 runtime adapter 尚未进入 launch/C ABI 层。
 
 恢复任务：
@@ -123,7 +124,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 
 - `wafer.group` 只表达 tensor-level grouping/scheduling boundary，不携带 physical address、SPM
   offset、DTE resource、C ABI 或 planner trace。
-- `wafer.tile_region` 表达 post-group device-side execution scope，承载 load/store、layout、
+- `wafer.tile.region` 表达 post-group device-side execution scope，承载 load/store、layout、
   compute、comm、sync/effect ordering，但不替代 launch。
 - layout、SPM、DDR、compute、comm、sync、launch 都应有 op/type/interface/verifier 合同；共享字段只定义一次。
 - op interface、type、effect 和 verifier 应暴露协议错误；pass 不能靠 side table 或名字匹配传语义。
@@ -187,7 +188,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - `WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON` 时，`wafer-opt` / `wafer-compile-stablehlo`
   能注册 SDY dialect；
   `sdy.mesh` / `sdy.sharding` program 可被 parse/verify。历史上曾有 StableHLO `replica_groups`
-  到 `wafer.comm` `rank_group` 的 bridge；该路线已退出主线，只作为已删除路径的覆盖记录，
+  到 `wafer.tile.*` communication `rank_group` 的 bridge；该路线已退出主线，只作为已删除路径的覆盖记录，
   不再作为 group/tiling 前的 collective handoff。
 
 缺口：
@@ -207,7 +208,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - R2.1：已完成；记录见 `tasks/2026-05-26-wafer-r2-recovery.md`，包含 frontend program verifier、
   dynamic bound 和 diagnostics。
 - R2.2：已完成；记录见 `tasks/2026-05-26-wafer-r2-recovery.md`，logical mesh/sharding program
-  可进入工具链。StableHLO replica group materialize 为 `wafer.comm` `rank_group` 的历史实现只作为
+  可进入工具链。StableHLO replica group materialize 为 `wafer.tile.*` communication `rank_group` 的历史实现只作为
   已删除路线覆盖记录，不作为后段 placement/ring 或 group/tiling 输入。
 - R2.3：已完成；记录见 `tasks/2026-05-26-wafer-r2-recovery.md` 和
   `tasks/2026-05-25-wafer-local-compute-normalization-design.md`，local compute coverage 按
@@ -233,8 +234,8 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 
 设计合同：
 
-- Single-tile local compute 必须验证 StableHLO/Linalg -> `wafer.group` -> `wafer.tile_region` -> layout/SPM/DDR ->
-  `wafer.compute`/movement -> C ABI/package 的单 tile 闭环。
+- Single-tile local compute 必须验证 StableHLO/Linalg -> `wafer.group` -> `wafer.tile.region` -> layout/SPM/DDR ->
+  `wafer.tile.*` compute/movement -> C ABI/package 的单 tile 闭环。
 - `wafer.group` planner 需要 closed-loop search：tile shape、op tiling interface、layout materialization、
   SPM allocation、DDR demand/bandwidth、compute/movement legality 都要作为同一候选的 decision input。
 - layout materialization 是真实 movement；SPM allocator 要用 liveness/effect/range/end-address；
@@ -254,7 +255,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - 旧 `wafer-form-groups`、`wafer-materialize-single-tile`、`wafer-compact-layout-assignment`、
   `wafer-check-spm-allocation`、`wafer-materialize-ddr-external-bindings`、
   `wafer-lower-ring-*` 和 `wafer-lower-tile-region-to-c-abi` unit/debug pass 链已删除。
-- 历史上有 `wafer.abi.rdma`、`wafer.abi.wdma`、`wafer.abi.gemm`、elementwise/reduce ABI issue ops；
+- 历史上有 `wafer.instr.rdma`、`wafer.instr.wdma`、`wafer.instr.ne.gemm`、elementwise/reduce ABI issue ops；
   当前主线不把它们作为必经 IR 层。
 - 有 `Wafer/ABI/TileAbi.h` descriptor unit tests、manifest validator 和 generated C stub syntax compile。
 
@@ -275,13 +276,13 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - R3.2：恢复 root tile planning，把 op tiling、layout、SPM、DDR 和 compute/movement
   legality 接到同一 group planning decision。
 - R3.3：恢复 tile_region materialization contract，只把 accepted group materialize 成
-  `wafer.tile_region`。
+  `wafer.tile.region`。
 - R3.4：恢复 layout/SPM materialization gate，让 layout materialization 和 SPM allocation 由 effect、
   liveness/range 和 storage lifetime 驱动。
 - R3.5：恢复 DDR/resource demand gate，覆盖 external binding、workspace、resident constant、
   pool/domain、capacity/bandwidth demand。
 - R3.6：恢复 C ABI / packet emission gate，让 ABI 参数单位和 wait policy 从 placed
-  instruction-level IR 派生；`wafer.abi.*` 如保留只作为 very-late debug/test dump。
+  instruction-level IR 派生；不再保留专门 ABI IR op family 作为主线或 debug layer。
 - R3.7：恢复 package manifest gate，manifest、C stub 和 launch signature 从当前 `wafer-opt`
   输出导出。
 - R3.8：恢复 placed instruction-level IR / C ABI / golden packet 边界，至少让 RDMA/WDMA/GEMM 有真实
@@ -295,7 +296,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   metadata；不负责 SPM offset、DTE schedule 或 runtime API 细节。
 - Multi-tile no-comm 需要每个 tile 处理自己的 local shard、写回对应 output slice，并由 package /
   generated program 区分 per-tile args。
-- `wafer.tile_region` / launch metadata 必须表达 per-tile identity 和 shard slice；不能用 whole-tensor
+- `wafer.tile.region` / launch metadata 必须表达 per-tile identity 和 shard slice；不能用 whole-tensor
   clone 代替 shard。
 
 当前实现：
@@ -335,7 +336,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - compute 覆盖至少包括 batch/head GEMM、reduce max/sum、elementwise add/sub/mul/div/max/min/neg/
   recip/sqrt/rsqrt/exp、limited broadcast、mask-add 或 compare/select。
 - layout/SPM/DDR feasibility 要覆盖所有 accepted groups；constant/weight slice 要能追溯到
-  `ConstantLike` + `wafer.storage.load` / storage transform。
+  `ConstantLike` + `wafer.tile.load` / storage transform。
 - package/runtime metadata 要覆盖 block inputs/outputs、resident constants、workspace；当前无卡环境
   只能做 generated program compile，不能声称 device correctness。
 
@@ -369,7 +370,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 
 设计合同：
 
-- Shardy/SPMD 保留 logical collective；placement 提供 physical peer；`wafer.comm` 保留 collective /
+- Shardy/SPMD 保留 logical collective；placement 提供 physical peer；`wafer.tile.*` communication 保留 collective /
   p2p semantics；p2p schedule 用 send/recv/wait/token/effect 显式表达。
 - 当前已验证 compiler data plane 只使用 fixed-size unicast Direct DTE；raw non-unicast DTE 需要单独
   ABI 和板端验证。未验证 raw non-unicast 不能成为 logical collective 不支持的理由，collective 可
@@ -380,13 +381,13 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 
 当前实现：
 
-- 有 `wafer.comm.send` / `recv` / `wait` verifier、placement peer validation、non-empty wait validation。
-- 历史上有 `wafer.abi.dte_send` / `recv` / `wait` issue op 和 block-local resource tuple conflict
+- 有 `wafer.tile.send` / `recv` / `wait` verifier、placement peer validation、non-empty wait validation。
+- 历史上有 旧 ABI debug op `dte_send` / `recv` / `wait` issue op 和 block-local resource tuple conflict
   validation；当前主线应恢复 placed Direct DTE instruction form 和 C ABI emission。
 - 有 ring all-gather、reduce-scatter、all-reduce lowering 到 p2p + local elementwise accumulation。
-- 旧的 StableHLO all_gather/all_reduce/reduce_scatter 到 `wafer.comm` collective-level op 的
+- 旧的 StableHLO all_gather/all_reduce/reduce_scatter 到 `wafer.tile.*` communication collective-level op 的
   normalization 已移除；R2.4 主线已恢复 StableHLO -> Wafer LinalgExt-style tensor collective
-  handoff，R6 仍需恢复 tiled tensor collective -> `wafer.comm` materialization。
+  handoff，R6 仍需恢复 tiled tensor collective -> `wafer.tile.*` communication materialization。
 - 有 p2p/ring communication fixture 验证；multi-replica collective 需按新的 tensor collective
   handoff 重新建立。
 
@@ -394,7 +395,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 
 - DTE resource id 是单调 placeholder 分配，不是目标 DTE/FSM allocator。
 - collective buffer slice / slot / address offset lowering 没有真实 descriptor 或 placed storage buffer。
-- tiled tensor collective -> `wafer.comm` materialization 尚未实现；R6.2 需要在 tile_region / SPM
+- tiled tensor collective -> `wafer.tile.*` communication materialization 尚未实现；R6.2 需要在 tile_region / SPM
   materialization 之后补可验证 buffer-slice / layout/materialization 路径。
 - SPM/DDR resource 验证没有和 communication staging / buffer lifetime 完整组合。
 - communication plan metadata 没进入真实 package/runtime path；没有 Direct DTE board completion/error 验证。

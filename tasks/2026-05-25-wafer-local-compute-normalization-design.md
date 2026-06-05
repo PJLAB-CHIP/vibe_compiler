@@ -47,7 +47,7 @@ DTE、C ABI 或 runtime package。
   架构边界。需要 pattern 时使用 rewrite / canonicalization，把它们展开到结构化 IR。
 - 不把 transformer block 的某个 shape、head 数或隐藏维度写成协议。
 - 不把 sharding 表示成 `wafer.spmd.*`，也不把 tensor-level collective 提前 lower 成
-  `wafer.comm` / `storage` / DTE op。
+  `wafer.tile.*` communication / `storage` / DTE op。
 
 ## 2. 输入和输出
 
@@ -80,7 +80,7 @@ whole-shape local body 且没有 collective。缺少 collective 不能作为拒�
 本阶段的局部 named MLIR pipeline 是 `wafer-lower-stablehlo-to-linalg`；用户级主线由
 `wafer-opt --program-pipeline=stablehlo-spmd-to-linalg` 调用同一 lowering body。该 named pipeline
 只负责 local compute normalization：先把 post-SPMD StableHLO logical collective handoff 成
-`wafer.tensor_collective.*`，再调用当前 pin 的官方 StableHLO-to-Linalg conversion，把 StableHLO
+`wafer.tensor.*`，再调用当前 pin 的官方 StableHLO-to-Linalg conversion，把 StableHLO
 compute / data movement / constant 转成 `linalg` / `tensor` / `scf` / `arith` / `math` structured IR。
 它不执行 Shardy propagation，不调用 XLA SPMD partitioner，不写 per-rank parameter shard binding，
 也不决定 group / tile / SPM / DDR / C ABI。
@@ -179,7 +179,7 @@ Transformer block 第一阶段需要的 elementwise kind 至少包括：
 - sigmoid 或 tanh，如果 SiLU / GELU 选择该 decomposition。
 
 这些 op 在 local tensor IR 中仍是普通 `arith` / `math` / `linalg` 语义；是否能 lower 到 CT
-wrapper、是否需要拆成多个 target op，由 `wafer.compute` 负责。
+wrapper、是否需要拆成多个 target op，由 `wafer.tile.*` compute 负责。
 
 历史 P5.5 曾用 output projection + residual vertical slice 的 acceptance validator 证明以下 SSA 链
 可由 structured tensor IR 表达：
@@ -243,7 +243,7 @@ reduce + elementwise 的 staged tensor IR，使 group planner 可以决定是否
 
 reshape、transpose、slice、concat、split、expand/collapse 这类 op 在本阶段优先保持为
 shape/indexing relation。只有当后续 layout / memory / hardware lowering 需要真实 movement 时，
-才在 `wafer.tile_region` / layout materialization 阶段生成 movement op。
+才在 `wafer.tile.region` / layout materialization 阶段生成 movement op。
 
 Normalization 不能因为目标硬件偏好提前插入 ChannelNorm、DechannelNorm、GatherScatter、
 RDMA/WDMA 或 TDMA。
@@ -251,7 +251,7 @@ RDMA/WDMA 或 TDMA。
 ### 4.5 Tensor Collective Normalization
 
 StableHLO collective 不适合直接混在 Linalg tiling 主链路中，也不应在本阶段直接 lower 到
-`wafer.comm`。本阶段新增一层 Wafer LinalgExt-style tensor collective IR：它不是 sharding
+`wafer.tile.*` communication。本阶段新增一层 Wafer LinalgExt-style tensor collective IR：它不是 sharding
 表示，不是 `wafer.spmd`，也不是 tile-local communication op；它是 post-SPMD partitioned
 StableHLO collective 的 tensor-level handoff。
 
@@ -261,7 +261,7 @@ destination-style tensor op + MLIR `TilingInterface` + `WaferTilingInterface` +
 `WaferTensorCollectiveOpInterface`；它必须让 group / tiling 边界能直接发现 collective 的 tensor
 operand、destination、result、rank group、axis/slot、combiner 和 communication effect。后续
 R3/R6 在 tile shape、SPM buffer 和 placement 明确后，再把 tiled tensor collective materialize
-到 `wafer.comm` 或 explicit p2p schedule。
+到 `wafer.tile.*` communication 或 explicit p2p schedule。
 
 R2.4 V0 interface contract：
 
@@ -281,20 +281,20 @@ R2.4 V0 interface contract：
 
 概念层面的 ops 包括：
 
-- `wafer.tensor_collective.all_reduce`
-- `wafer.tensor_collective.all_gather`
-- `wafer.tensor_collective.reduce_scatter`
-- `wafer.tensor_collective.all_to_all`
-- `wafer.tensor_collective.collective_permute`
+- `wafer.tensor.all_reduce`
+- `wafer.tensor.all_gather`
+- `wafer.tensor.reduce_scatter`
+- `wafer.tensor.all_to_all`
+- `wafer.tensor.collective_permute`
 
-R2.4 ODS 落地命名采用 `wafer.tensor_collective.*` op family。长期合同是
+R2.4 ODS 落地命名采用 `wafer.tensor.*` op family。长期合同是
 LinalgExt-style tensor collective 层；`tensor_collective` 是 Wafer dialect 内的 op-family
 前缀，不是新的 sharding dialect、physical communication dialect 或 runtime protocol。
 
 各 collective 的 tile 关系：
 
 - `all_reduce`：input tile 和 result tile 同 shape、同 offset；combiner region 保留在 tensor
-  collective 层，后续 lowering 再判断可否映射到 `wafer.compute`。
+  collective 层，后续 lowering 再判断可否映射到 `wafer.tile.*` compute。
 - `all_gather`：沿 gather dimension 按 rank slot concat。result tile 不能隐式跨 slot；若 tile
   覆盖多个 rank slot，tiling 必须拆成多个 slot-aligned tiled collective 或由 planner 选择
   slot-aligned tile。
@@ -311,17 +311,17 @@ LinalgExt-style tensor collective 层；`tensor_collective` 是 Wafer dialect �
 ```mlir
 %mm = linalg.matmul ins(%a, %b : tensor<...>, tensor<...>)
       outs(%init : tensor<...>) -> tensor<...>
-%red = wafer.tensor_collective.all_reduce ins(%mm : tensor<...>)
+%red = wafer.tensor.all_reduce ins(%mm : tensor<...>)
        outs(%init : tensor<...>) {
   ^bb0(%lhs: f32, %rhs: f32):
     %sum = arith.addf %lhs, %rhs : f32
-    wafer.tensor_collective.yield %sum : f32
+    wafer.tensor.yield %sum : f32
 } -> tensor<...>
 %y = linalg.generic ... ins(%red : tensor<...>) ...
 ```
 
-这里的 `wafer.tensor_collective.*` 不拥有 physical placement、SPM buffer 或 DTE resource。到
-`wafer.tile_region` / SPM materialization 之后，tiled tensor collective 才会变成 `wafer.comm.*`
+这里的 `wafer.tensor.*` 不拥有 physical placement、SPM buffer 或 DTE resource。到
+`wafer.tile.region` / SPM materialization 之后，tiled tensor collective 才会变成 `wafer.tile.*` communication ops
 或 explicit p2p schedule。
 
 R2.4 pipeline position：
@@ -330,15 +330,15 @@ R2.4 pipeline position：
 Pipeline position:
 - Upstream program / IR: P2.S2 partitioned / replicated-local StableHLO program directory，含 rank-local function signature、StableHLO collective op、replica_groups、channel metadata 和 rank-local parameter payload。
 - Current stage responsibility: 把 post-SPMD StableHLO logical collective normalize 成 Wafer-owned destination-style tensor collective op，并保留 group/tiling 可验证的 tensor-level collective facts。
-- Output program / IR: `linalg` / `tensor` / `scf` local compute IR 加 `wafer.tensor_collective.*` ops；不含 `wafer.comm`、SPM storage、DTE token 或 runtime handle。
-- Downstream consumer: R3 logical group / tiling，以及 R6 tiled tensor collective -> `wafer.comm` materialization。
+- Output program / IR: `linalg` / `tensor` / `scf` local compute IR 加 `wafer.tensor.*` ops；不含 `wafer.tile.*` communication、SPM storage、DTE token 或 runtime handle。
+- Downstream consumer: R3 logical group / tiling，以及 R6 tiled tensor collective -> `wafer.tile.*` communication materialization。
 - User-level driver / named pipeline: 用户级主线由
   `wafer-opt --program-pipeline=stablehlo-spmd-to-linalg` 从 frontend Wafer program 重放 P2.S2 并写回
   post-linalg Wafer program；`wafer-lower-stablehlo-to-linalg` 是该 program pipeline 内部复用的
   named MLIR pipeline，也可作为局部 debug/unit 覆盖。
-- Explicit non-goals: 不恢复 `wafer.spmd.*` 私有协议，不把 StableHLO collective 直接 lower 到 `wafer.comm`，不在 R2.4 选择 physical peer、ring schedule、SPM/DDR buffer 或 packet/runtime ABI。
+- Explicit non-goals: 不恢复 `wafer.spmd.*` 私有协议，不把 StableHLO collective 直接 lower 到 `wafer.tile.*` communication，不在 R2.4 选择 physical peer、ring schedule、SPM/DDR buffer 或 packet/runtime ABI。
 - Completion gate: 真实 frontend -> P2.S2 -> R2.4 program chain 经
-  `stablehlo-spmd-to-linalg` 变成含 verifier-legal `wafer.tensor_collective.*` op 的 Wafer program；这些 op 实现 `DestinationStyleOpInterface`、MLIR `TilingInterface`、`WaferTilingInterface` 和 `WaferTensorCollectiveOpInterface`，输出可被 group 边界作为 tensor-level IR 消费；fixture/FileCheck/gtest 只做补充覆盖。
+  `stablehlo-spmd-to-linalg` 变成含 verifier-legal `wafer.tensor.*` op 的 Wafer program；这些 op 实现 `DestinationStyleOpInterface`、MLIR `TilingInterface`、`WaferTilingInterface` 和 `WaferTensorCollectiveOpInterface`，输出可被 group 边界作为 tensor-level IR 消费；fixture/FileCheck/gtest 只做补充覆盖。
 ```
 
 ## 5. Softmax and Norm Staged Form
@@ -448,7 +448,7 @@ Wafer-specific policy。
 | `dot_general` / dot | 官方 dot product patterns 覆盖 2D matmul 和可表达 batched/generic contraction | supported by upstream patterns | 是否能成为合法 Wafer compute schedule 仍由 R3/R5 planner 和 resource legality 决定。 |
 | reduce / reduce_window 可表达子集 | 官方 reduction patterns 转成 linalg reduction / pooling 类 structured IR | supported by upstream patterns | 数值 policy、非可表达 combiner 或 backend resource legality 不在 R2.4 假装完成。 |
 | softmax / norm / RoPE / MLP staged graph | 作为 fine-grained StableHLO dataflow 经过官方 conversion 进入 staged structured tensor IR | evidence only | 不引入 high-level `wafer.softmax` / `wafer.norm`；multi-stage workspace/materialization 属后续 planner。 |
-| StableHLO collectives | Wafer handoff pass 把 all_gather/all_reduce/reduce_scatter/all_to_all/collective_permute 转成 `wafer.tensor_collective.*` | Wafer-specific supported subset | 不能用官方 linalg conversion 替代，也不能直接 lower 到 `wafer.comm`。无法证明 rank group、shape 或 combiner 的 collective 必须 fail。 |
+| StableHLO collectives | Wafer handoff pass 把 all_gather/all_reduce/reduce_scatter/all_to_all/collective_permute 转成 `wafer.tensor.*` | Wafer-specific supported subset | 不能用官方 linalg conversion 替代，也不能直接 lower 到 `wafer.tile.*` communication。无法证明 rank group、shape 或 combiner 的 collective 必须 fail。 |
 | unsupported StableHLO op | 官方 `applyPartialConversion` 或 Wafer collective handoff gate 报错 | explicit illegal | 不允许主线静默保留 raw StableHLO 给 R3 group 消费；需要支持时扩官方对齐 pattern、Wafer IR 或后续任务。 |
 
 ## 7. Verifier
@@ -462,7 +462,7 @@ Normalization 后必须能检查：
 - softmax/norm staged IR 中的 reduction axis 和 elementwise consumer 关系。
 - shape-only ops 没有提前变成 target movement。
 - StableHLO collectives 已经规整成 tensor-level collective ops，且这些 ops 不含 `wafer.spmd.*`、
-  `wafer.comm`、`storage`、DTE 或 runtime metadata。
+  `wafer.tile.*` communication、`storage`、DTE 或 runtime metadata。
 - IR 中没有 Wafer physical memory、layout materialization、DTE、packet 或 runtime launch 事实。
 
 ### 7.1 R2.3 覆盖状态口径
@@ -481,7 +481,7 @@ Normalization 后必须能检查：
 | RoPE | `lower-stablehlo-rope-mlp-staged.mlir` | 证明当前 RoPE slice/shape/elementwise staged pattern；sin/cos table storage slicing 未闭环 |
 | MLP | `lower-stablehlo-mlp.mlir`、`lower-stablehlo-local-transformer-block.mlir` | 证明 tanh-gated MLP dataflow fixture 和 full local transformer structured fixture；GELU/SwiGLU/package consistency 未闭环 |
 | shape views | `lower-stablehlo-shape.mlir`、`lower-stablehlo-local-transformer-block.mlir` | 证明 static expand/collapse shape-only relation；dynamic shape view 和 layout materialization 未闭环 |
-| tensor collective handoff | R2.4 已恢复 | `stablehlo-spmd-to-linalg` 主线已把 post-SPMD StableHLO logical collective normalize 成 `wafer.tensor_collective.*`；unsupported collective handoff 会 fail；`wafer-lower-stablehlo-to-linalg` 只作为内部/局部 named MLIR pipeline；旧的 StableHLO -> `wafer.comm` bridge 已移除，不能作为 group/tiling 输入 |
+| tensor collective handoff | R2.4 已恢复 | `stablehlo-spmd-to-linalg` 主线已把 post-SPMD StableHLO logical collective normalize 成 `wafer.tensor.*`；unsupported collective handoff 会 fail；`wafer-lower-stablehlo-to-linalg` 只作为内部/局部 named MLIR pipeline；旧的 StableHLO -> `wafer.tile.*` communication bridge 已移除，不能作为 group/tiling 输入 |
 
 ## 8. 与其它文档的关系
 
@@ -491,7 +491,7 @@ Normalization 后必须能检查：
 - 本文负责 SPMD 后 local body 内的 structured tensor IR，以及 StableHLO collective 到 Wafer
   LinalgExt-style tensor collective IR 的 handoff。
 - Group 文档负责 tile-local residency、traversal schedule 和 closed-loop resource search。
-- Compute 文档负责把 selected tensor op lower 到 target-abstract `wafer.compute`。
+- Compute 文档负责把 selected tensor op lower 到 target-abstract `wafer.tile.*` compute。
 - Layout / SPM / DDR 文档负责 physical layout、bufferization 和 resource legality。
 
 参考 MLIR 官方方向：Linalg structured ops 提供 tiling/fusion 所需的 indexing/interface 基础；

@@ -3,14 +3,14 @@
 #ifndef WAFER_IR_OPS_SPMOPS_TD
 #define WAFER_IR_OPS_SPMOPS_TD
 
-def Wafer_StorageAllocOp : Wafer_Op<"storage.alloc", [
+def Wafer_StorageAllocOp : Wafer_Op<"tile.alloc", [
     DeclareOpInterfaceMethods<WaferLayoutOpInterface>,
     DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
     MemoryEffects<[MemWrite<Wafer_SPMResource>]>
   ]> {
   let summary = "create an abstract tile-local storage allocation demand";
   let description = [{
-    `wafer.storage.alloc` creates a storage value before physical SPM offset
+    `wafer.tile.alloc` creates a storage value before physical SPM offset
     allocation. It records shape, layout, and memory-space demand in the result
     type only; R3.2e assigns the concrete SPM window.
   }];
@@ -20,7 +20,7 @@ def Wafer_StorageAllocOp : Wafer_Op<"storage.alloc", [
   let assemblyFormat = "attr-dict `:` type($result)";
 }
 
-def Wafer_StorageLoadOp : Wafer_Op<"storage.load", [
+def Wafer_StorageLoadOp : Wafer_Op<"tile.load", [
     DeclareOpInterfaceMethods<WaferLayoutOpInterface>,
     DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
     MemoryEffects<[MemRead<Wafer_DDRResource>,
@@ -34,7 +34,7 @@ def Wafer_StorageLoadOp : Wafer_Op<"storage.load", [
   let assemblyFormat = "$source attr-dict `:` type($source) `->` type($result)";
 }
 
-def Wafer_StorageStoreOp : Wafer_Op<"storage.store", [
+def Wafer_StorageStoreOp : Wafer_Op<"tile.store", [
     DeclareOpInterfaceMethods<WaferLayoutOpInterface>,
     DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
     MemoryEffects<[MemRead<Wafer_SPMResource>,

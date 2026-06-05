@@ -18,7 +18,7 @@ tests 已按 IR 层组织；R1.2/R1.3 曾补 interface/resource 查询合同和 
 gate；2026-06-02 后历史 stage-connection gate 和旧 unit/debug pass 链已删除。
 
 2026-06-01 复查进一步确认：历史 P2.S1 路线若把 sharding facts 写成 `wafer.spmd.*` 或私有
-sidecar，不是主线 SPMD program contract；历史 StableHLO collective 直降 `wafer.comm` 的 pass
+sidecar，不是主线 SPMD program contract；历史 StableHLO collective 直降 `wafer.tile.*` communication 的 pass
 只能算已删除的后段 communication coverage，不能作为 group/tiling 输入。正确主线需要
 `frontend export -> StableHLO/SDY -> Wafer Shardy propagation -> Wafer-owned XLA SPMD partitioner
 compiler stage -> partitioned StableHLO`，再经 Wafer LinalgExt-style tensor collective handoff 进入

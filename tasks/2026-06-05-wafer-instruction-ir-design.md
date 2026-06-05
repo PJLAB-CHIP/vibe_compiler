@@ -7,7 +7,7 @@
 本文定义 R3.2d 的 instruction-level Wafer IR。核心结论：
 
 - 只新增 `wafer.instr.*` 硬件指令级 op。
-- 复用现有 `!wafer.storage`、`wafer.storage.alloc`、`wafer.view.reshape`。
+- 复用现有 `!wafer.storage`、`wafer.tile.alloc`、`wafer.tile.reshape`。
 - `!wafer.storage` 是唯一 storage-like IR 对象；不保留旧 buffer alias，
   不新增 storage role attr 或 size policy attr。
 - 不生成 SPM offset、DDR BO binding、raw packet 或 C ABI call。
@@ -28,18 +28,19 @@
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  R3.2c `wafer.tile_region` IR，内部包含 accepted layout 的 `!wafer.storage`、
-  `wafer.storage.alloc`、`wafer.storage.load` / `wafer.storage.store`、
-  `wafer.layout.materialize`、`wafer.compute.*`、`wafer.move.*`、
-  `wafer.view.reshape` 和 `wafer.sync.*`。
+  R3.2c `wafer.tile.region` IR，内部包含 accepted layout 的 `!wafer.storage`、
+  `wafer.tile.alloc`、`wafer.tile.load` / `wafer.tile.store`、
+  `wafer.tile.materialize_layout`、`wafer.tile.fill/gemm/elementwise/reduce`、
+  `wafer.tile.copy/extract_slice/insert_slice/transpose/broadcast`、
+  `wafer.tile.reshape` 和 `wafer.instr.local_drain`。
 - Current stage responsibility:
   只做 Wafer instruction legalization / selection：把可执行的 target-abstract op 改写成
   `wafer.instr.*`，并保留现有 storage SSA graph。instruction op 显式表达 queue family、
   storage read/write、descriptor attrs 和 issue effect。
 - Output artifact / IR:
-  同一个 `wafer.tile_region` execution scope 内的 instruction-level IR：
-  `!wafer.storage` + `wafer.storage.alloc` / `wafer.view.reshape` + `wafer.instr.*` +
-  `wafer.sync.*`，或结构化 legalization failure reason。
+  同一个 `wafer.tile.region` execution scope 内的 instruction-level IR：
+  `!wafer.storage` + `wafer.tile.alloc` / `wafer.tile.reshape` + `wafer.instr.*` +
+  `wafer.instr.local_drain`，或结构化 legalization failure reason。
 - Downstream consumer:
   R3.2e SPM placement、R3.2f DDR/resource legality、R3.2g closed-loop planner、
   R3.4 placed storage realization 和 R3.6 codegen emission。
@@ -63,25 +64,26 @@ R3.2d 前：
 
 ```text
 !wafer.storage
-wafer.storage.alloc
-wafer.storage.load / wafer.storage.store
-wafer.layout.materialize
-wafer.compute.* / wafer.move.*
-wafer.view.reshape
-wafer.sync.*
+wafer.tile.alloc
+wafer.tile.load / wafer.tile.store
+wafer.tile.materialize_layout
+wafer.tile.fill/gemm/elementwise/reduce
+wafer.tile.copy/extract_slice/insert_slice/transpose/broadcast
+wafer.tile.reshape
+wafer.instr.local_drain
 ```
 
 R3.2d 后：
 
 ```text
 !wafer.storage
-wafer.storage.alloc
-wafer.view.reshape
+wafer.tile.alloc
+wafer.tile.reshape
 wafer.instr.rdma / wafer.instr.wdma
 wafer.instr.tdma.gather_scatter
 wafer.instr.ct.*
 wafer.instr.ne.gemm
-wafer.sync.*
+wafer.instr.local_drain
 ```
 
 没有 type conversion：`!wafer.storage<tensor, mem_layout, memory_space>` 从 target-abstract
@@ -92,14 +94,14 @@ packet 或 runtime handle。
 
 | family | V0 op | 来源 | 说明 |
 | --- | --- | --- | --- |
-| RDMA | `wafer.instr.rdma` | `wafer.storage.load` | DDR boundary value -> `#spm` storage |
-| WDMA | `wafer.instr.wdma` | `wafer.storage.store` | `#spm` storage -> DDR boundary value |
-| TDMA | `wafer.instr.tdma.gather_scatter` | `wafer.layout.materialize`、`wafer.move.*` | byte-counted movement；contiguous copy 是 descriptor 特例 |
-| CT | `wafer.instr.ct.fill` | `wafer.compute.fill` | scalar/immediate fill |
-| CT | `wafer.instr.ct.elementwise` | `wafer.compute.elementwise` | arithmetic / relation / activation |
-| CT | `wafer.instr.ct.reduce` | `wafer.compute.reduce` | native local reduce |
+| RDMA | `wafer.instr.rdma` | `wafer.tile.load` | DDR boundary value -> `#spm` storage |
+| WDMA | `wafer.instr.wdma` | `wafer.tile.store` | `#spm` storage -> DDR boundary value |
+| TDMA | `wafer.instr.tdma.gather_scatter` | `wafer.tile.materialize_layout`、tile movement ops | byte-counted movement；contiguous copy 是 descriptor 特例 |
+| CT | `wafer.instr.ct.fill` | `wafer.tile.fill` | scalar/immediate fill |
+| CT | `wafer.instr.ct.elementwise` | `wafer.tile.elementwise` | arithmetic / relation / activation |
+| CT | `wafer.instr.ct.reduce` | `wafer.tile.reduce` | native local reduce |
 | CT | `wafer.instr.ct.convert` | future convert lowering | dtype conversion |
-| NE | `wafer.instr.ne.gemm` | `wafer.compute.gemm` | tile-local GEMM / batched GEMM |
+| NE | `wafer.instr.ne.gemm` | `wafer.tile.gemm` | tile-local GEMM / batched GEMM |
 
 V0 不定义 `wafer.instr.tdma.copy`。公开 SPM memcpy helper 本身也是
 `TsmDataMove::GatherScatter` 样例；把 copy 单独做成 instruction op 会把 helper 名字提升为 IR
@@ -109,20 +111,20 @@ V0 不定义 `wafer.instr.tdma.copy`。公开 SPM memcpy helper 本身也是
 R3.2d 要么展开成一条或多条 `wafer.instr.tdma.gather_scatter`，要么结构化失败。
 
 `TsmExecute` 普通 issue path 只覆盖 CT/NE/RDMA/WDMA/TDMA。DTE、CSR、SCALAR 走
-`wafer.comm`、runtime/MMIO 或 sync 边界，不放进 `wafer.instr.*`。
+tile communication、runtime/MMIO 或专门 sync 边界，不放进普通 `wafer.instr.*` issue path。
 
 ## 4. Operand And Result Model
 
 instruction op 直接读写 `!wafer.storage`，但 **instruction op 本身不产生 storage result**。
-凡是 target-abstract op 原来返回 storage 的地方，R3.2d 先创建新的 `wafer.storage.alloc`，
+凡是 target-abstract op 原来返回 storage 的地方，R3.2d 先创建新的 `wafer.tile.alloc`，
 再生成写入该 storage 的 instruction op，并用 alloc result 替换原 op result 的 uses。
 
 这个模型避免把指令 issue 和 storage identity 混在一起：
 
 - source storage 是 instruction operand。
 - destination storage 也是 instruction operand。
-- result/temp/psum/staging storage 仍由 `wafer.storage.alloc` 创建。
-- static reshape alias 仍由 `wafer.view.reshape` 表达。
+- result/temp/psum/staging storage 仍由 `wafer.tile.alloc` 创建。
+- static reshape alias 仍由 `wafer.tile.reshape` 表达。
 - SPM offset、range、bank span 由 R3.2e 写入，或在 R3.4 realization 降成 memref/descriptor。
 - RDMA/WDMA 的 DDR side 使用 ranked tensor boundary；后续 DDR resource stage 可把它换成
   memref/DDR descriptor，但 R3.2d 不为 DDR side 新增 storage wrapper。
@@ -205,8 +207,8 @@ wafer.instr.wdma source to dest attr-dict : type(source) to type(dest)
 | `wafer.instr.wdma` | `source: !wafer.storage`, `dest: AnyRankedTensor` | none | `byte_count`, `inner_bytes`, `dst_strides`, `dst_iterations` |
 
 V0 要求 RDMA destination 和 WDMA source 使用 `#spm` memory space。R3.2c 的
-`wafer.storage.load/store` 边界默认是 compact tensor layout；如果 consumer 需要 `Cx/NCx`，
-必须通过 `wafer.layout.materialize` 再 lower 到 TDMA，而不是让 RDMA/WDMA 隐式承担 layout
+`wafer.tile.load/store` 边界默认是 compact tensor layout；如果 consumer 需要 `Cx/NCx`，
+必须通过 `wafer.tile.materialize_layout` 再 lower 到 TDMA，而不是让 RDMA/WDMA 隐式承担 layout
 conversion。
 
 ### 6.3 TDMA GatherScatter
@@ -243,7 +245,7 @@ wafer.instr.ct.convert source into dest attr-dict : type(source) to type(dest)
 | `wafer.instr.ct.convert` | `source: !wafer.storage`, `dest: !wafer.storage` | none | `src_dtype`, `dst_dtype`; future source op only |
 
 `ct.convert` 作为 instruction op 定义，因为 hardware CT convert 属于同一 queue family；但当前
-R3.2c 没有 `wafer.compute.convert` source op。因此 R3.2d V0 需要定义 ODS/verifier，但
+R3.2c 没有 `wafer.tile.convert` source op。因此 R3.2d V0 需要定义 ODS/verifier，但
 completion 不要求 convert lowering pattern，直到 source op 存在。
 
 ### 6.5 NE GEMM
@@ -255,7 +257,7 @@ wafer.instr.ne.gemm lhs, rhs into dest attr-dict
 
 | op | operands | result | required attrs |
 | --- | --- | --- | --- |
-| `wafer.instr.ne.gemm` | `lhs: !wafer.storage`, `rhs: !wafer.storage`, `dest: !wafer.storage` | none | `m`, `k`, `n`; optional batched GEMM attrs copied from `wafer.compute.gemm` |
+| `wafer.instr.ne.gemm` | `lhs: !wafer.storage`, `rhs: !wafer.storage`, `dest: !wafer.storage` | none | `m`, `k`, `n`; optional batched GEMM attrs copied from `wafer.tile.gemm` |
 
 V0 要求三个 storage operand 都使用 `#spm` 和 aligned layout：rank <= 2 使用 `Cx`，rank > 2
 使用 `NCx`。Fused bias、activation、quant、psum accumulation policy 和 sparse / INT8 variants
@@ -265,10 +267,10 @@ V0 要求三个 storage operand 都使用 `#spm` 和 aligned layout：rank <= 2 
 
 R3.2d 应实现为 MLIR DialectConversion：
 
-- illegal：`wafer.storage.load`、`wafer.storage.store`、`wafer.layout.materialize`、
-  `wafer.compute.*`、`wafer.move.*`。
-- legal：`wafer.storage.alloc`、`wafer.view.reshape`、`wafer.instr.*`、`wafer.sync.*`、
-  `wafer.tile_region` container 和必要 scalar/support op。
+- illegal：`wafer.tile.load`、`wafer.tile.store`、`wafer.tile.materialize_layout`、
+  `wafer.tile.fill/gemm/elementwise/reduce` 和 tile movement ops。
+- legal：`wafer.tile.alloc`、`wafer.tile.reshape`、`wafer.instr.*`、`wafer.instr.local_drain`、
+  `wafer.tile.region` container 和必要 scalar/support op。
 - no type conversion for `!wafer.storage`。
 - conversion failure 必须结构化返回给 planner；rejected instruction IR 不进入 committed 主线 IR。
 
@@ -276,20 +278,20 @@ V0 mapping：
 
 | target-abstract op | instruction-level lowering |
 | --- | --- |
-| `wafer.storage.load` | create `wafer.storage.alloc` with original result type; emit `wafer.instr.rdma`; replace original result with alloc result |
-| `wafer.storage.store` | emit `wafer.instr.wdma`; erase store |
-| `wafer.layout.materialize` | create destination `wafer.storage.alloc`; emit one or more `wafer.instr.tdma.gather_scatter`; replace result with alloc result |
-| `wafer.compute.fill` | emit `wafer.instr.ct.fill` writing the existing dest storage |
-| `wafer.compute.gemm` | create destination `wafer.storage.alloc`; emit `wafer.instr.ne.gemm`; replace result with alloc result |
-| `wafer.compute.elementwise` | create destination `wafer.storage.alloc`; emit `wafer.instr.ct.elementwise`; replace result with alloc result |
-| `wafer.compute.reduce` | create destination `wafer.storage.alloc`; emit `wafer.instr.ct.reduce`; replace result with alloc result |
-| `wafer.move.copy` | create destination `wafer.storage.alloc`; emit one gather_scatter; replace result with alloc result |
-| `wafer.move.extract_slice` | create destination `wafer.storage.alloc`; emit gather_scatter from source slice to compact destination |
-| `wafer.move.insert_slice` | create result `wafer.storage.alloc`; first gather_scatter copy dest to result, then gather_scatter source into result slice |
-| `wafer.move.broadcast` | create destination `wafer.storage.alloc`; emit one or more gather_scatter if static broadcast descriptor is expressible |
-| `wafer.move.transpose` | create destination `wafer.storage.alloc`; emit gather_scatter if permutation is statically expressible |
-| `wafer.view.reshape` | stays as aliasing view; no instruction issue |
-| `wafer.comm.*` | not handled by R3.2d V0 |
+| `wafer.tile.load` | create `wafer.tile.alloc` with original result type; emit `wafer.instr.rdma`; replace original result with alloc result |
+| `wafer.tile.store` | emit `wafer.instr.wdma`; erase store |
+| `wafer.tile.materialize_layout` | create destination `wafer.tile.alloc`; emit one or more `wafer.instr.tdma.gather_scatter`; replace result with alloc result |
+| `wafer.tile.fill` | emit `wafer.instr.ct.fill` writing the existing dest storage |
+| `wafer.tile.gemm` | create destination `wafer.tile.alloc`; emit `wafer.instr.ne.gemm`; replace result with alloc result |
+| `wafer.tile.elementwise` | create destination `wafer.tile.alloc`; emit `wafer.instr.ct.elementwise`; replace result with alloc result |
+| `wafer.tile.reduce` | create destination `wafer.tile.alloc`; emit `wafer.instr.ct.reduce`; replace result with alloc result |
+| `wafer.tile.copy` | create destination `wafer.tile.alloc`; emit one gather_scatter; replace result with alloc result |
+| `wafer.tile.extract_slice` | create destination `wafer.tile.alloc`; emit gather_scatter from source slice to compact destination |
+| `wafer.tile.insert_slice` | create result `wafer.tile.alloc`; first gather_scatter copy dest to result, then gather_scatter source into result slice |
+| `wafer.tile.broadcast` | create destination `wafer.tile.alloc`; emit one or more gather_scatter if static broadcast descriptor is expressible |
+| `wafer.tile.transpose` | create destination `wafer.tile.alloc`; emit gather_scatter if permutation is statically expressible |
+| `wafer.tile.reshape` | stays as aliasing view; no instruction issue |
+| `wafer.tile.send/recv/wait/all_gather/reduce_scatter/all_reduce` | not handled by R3.2d V0 |
 
 R3.2d may generate multiple instruction ops for a single target-abstract movement op, but it must not write a
 global schedule attr. The instruction sequence is the region body itself.
@@ -312,7 +314,7 @@ the closed-loop planner or debug pass, but rejected instruction IR is discarded.
   runtime ABI call to be legal.
 
 Diagnostics should mention the source op and the missing legality fact, for example:
-`wafer.move.transpose cannot lower to TDMA gather_scatter: unsupported permutation`.
+`wafer.tile.transpose cannot lower to TDMA gather_scatter: unsupported permutation`.
 
 ## 9. Verifier Contract
 
@@ -338,18 +340,18 @@ symbol, packet bit layout or worker register window. Those checks belong to R3.2
 ## 10. Example
 
 ```mlir
-wafer.tile_region ... {
-  %a_tensor = wafer.storage.alloc
+wafer.tile.region ... {
+  %a_tensor = wafer.tile.alloc
       : !wafer.storage<tensor<128x64xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
-  %b_tensor = wafer.storage.alloc
+  %b_tensor = wafer.tile.alloc
       : !wafer.storage<tensor<64x128xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
-  %a_cx = wafer.storage.alloc
+  %a_cx = wafer.tile.alloc
       : !wafer.storage<tensor<128x64xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
-  %b_cx = wafer.storage.alloc
+  %b_cx = wafer.tile.alloc
       : !wafer.storage<tensor<64x128xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
-  %c_cx = wafer.storage.alloc
+  %c_cx = wafer.tile.alloc
       : !wafer.storage<tensor<128x128xf16>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
-  %c_tensor = wafer.storage.alloc
+  %c_tensor = wafer.tile.alloc
       : !wafer.storage<tensor<128x128xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
 
   wafer.instr.rdma %arg0 to %a_tensor
@@ -394,7 +396,7 @@ wafer.tile_region ... {
       : !wafer.storage<tensor<128x128xf16>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
      to tensor<128x128xf16>
 
-  wafer.sync.local_drain
+  wafer.instr.local_drain
 }
 ```
 
@@ -416,7 +418,7 @@ R3.2d 实现需要：
 4. 实现 `--wafer-convert-tile-region-to-instr` DialectConversion，并让 main R3.2 planner 调用同一
    conversion implementation。
 5. 增加 conversion tests，覆盖 load/store、layout materialize、fill、GEMM、elementwise/relation、
-   reduce、copy/broadcast/transpose、extract_slice/insert_slice、view.reshape preserved 和 structured
+   reduce、copy/broadcast/transpose、extract_slice/insert_slice、tile.reshape preserved 和 structured
    failure。
-6. 为 `wafer.instr.ct.convert` 增加 parser/verifier tests；convert lowering 等 `wafer.compute.convert`
+6. 为 `wafer.instr.ct.convert` 增加 parser/verifier tests；convert lowering 等 `wafer.tile.convert`
    或等价 source op 出现后再接入 completion gate。

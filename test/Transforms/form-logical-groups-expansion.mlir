@@ -32,6 +32,6 @@ module {
 // CHECK: arith.addf
 // CHECK: linalg.generic
 // CHECK: arith.maximumf
-// CHECK: wafer.group_yield
+// CHECK: wafer.group.yield
 // CHECK-NOT: wafer.group
 // CHECK: return %[[GROUP]] : tensor<4x16xf32>

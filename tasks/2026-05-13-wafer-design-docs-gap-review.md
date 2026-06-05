@@ -41,7 +41,7 @@ boundary 补设计，不能反向污染上层 IR 语义。
 importer adapter，LLVM/MLIR/StableHLO/Shardy 等第三方工程依赖按层组织，不反向变成 Wafer IR
 语义。Wafer 后端通过 C ABI 调 public Tsm wrapper/Kcore runtime，不围绕历史
 backend/CRT 或裸 LLVM intrinsic 建架构。2026-05-25 后，frontend program、Shardy/SPMD、
-placement、local compute normalization、`wafer.group`、`wafer.tile_region`、layout materialization、
+placement、local compute normalization、`wafer.group`、`wafer.tile.region`、layout materialization、
 SPM、DDR、target-abstract compute/movement、device-side communication、launch/runtime package、
 C ABI/golden packet 和 verification plan 都已有单独子设计承接。Serving integration 暂时延后，
 不作为当前跑通主线的文档缺口。
@@ -125,7 +125,7 @@ SPM/layout 和 communication plan，没有把 host runtime 实际交付路径写
 
 ## 4. Wafer C ABI 已由低层合同承接
 
-当前边界：`wafer.compute` 和 `wafer.comm` 文档已经把 target-abstract op、issue/drain、
+当前边界：`wafer.tile.*` compute 和 `wafer.tile.*` communication 文档已经把 target-abstract op、issue/drain、
 Direct DTE V0 和 wrapper family 的上层边界写清楚。lower-level C ABI / instruction-form 的
 实现级合同已由 `tasks/2026-05-25-wafer-c-abi-golden-packet-design.md` 承接。
 
@@ -325,8 +325,8 @@ fence。
 ## 11. issue/drain 和同步域已拆到下游 IR
 
 当前边界：`wafer.group` 不再保存 phase plan 或 resource schedule attr。硬件可见性、NCC
-issue/drain、communication wait 和 group barrier 应在 `wafer.tile_region` 及更低层通过
-`wafer.compute` / `wafer.comm` / `wafer.sync` op、effect 和 token 表达。
+issue/drain、communication wait 和 group barrier 应在 `wafer.tile.region` 及更低层通过
+`wafer.tile.*` compute / `wafer.tile.*` communication / `wafer.instr.local_drain` 和后续 sync boundary op、effect 和 token 表达。
 
 下游 IR 需要显式表达的 phase：
 
@@ -341,7 +341,7 @@ issue/drain、communication wait 和 group barrier 应在 `wafer.tile_region` �
 实现建议：
 
 - scheduled group 可以把这些作为 legality/cost input，但不能把 issue 顺序或 phase plan 写成 attr。
-- `wafer.sync.local_wait`、communication wait 和 group barrier 是不同 IR / ABI 语义。
+- `wafer.instr.local_drain`、communication wait 和 group barrier 是不同 IR / ABI 语义。
 - MemoryEffect/ResourceEffect 应区分 NCC queue、DTE resource、Kcore SPM sync slot 和
   host-visible completion。
 
@@ -467,7 +467,7 @@ Frontend program
   -> Placement
   -> Local compute normalization + tensor collective handoff
   -> wafer.group
-  -> wafer.tile_region
+  -> wafer.tile.region
   -> Layout / SPM / DDR
   -> Compute / Communication
   -> C ABI / Launch runtime package
@@ -478,18 +478,18 @@ Frontend program
 
 - local compute normalization 只把 StableHLO local shard 展开成 structured tensor IR。
 - SPMD 后的 StableHLO collective 先进入 Wafer LinalgExt-style tensor collective handoff，不在
-  group/tiling 前直接 lower 成 `wafer.comm`。
+  group/tiling 前直接 lower 成 `wafer.tile.*` communication。
 - `wafer.group` 只做 tile-local residency 和 staged schedule，不发明 softmax/RMSNorm/RoPE 高层 op。
-- `wafer.compute` 只表达 target-abstract compute/movement op 和 lower-level legality。
+- `wafer.tile.*` compute 只表达 target-abstract compute/movement op 和 lower-level legality。
 
 ### 17.2 当前设计已经覆盖的部分
 
 - QKV、attention score、attention value、output projection 和 MLP GEMM 可以走
-  dot/batch-matmul normalization、group tiling、`wafer.compute.gemm`、layout/SPM/DDR 和 C ABI。
+  dot/batch-matmul normalization、group tiling、`wafer.tile.gemm`、layout/SPM/DDR 和 C ABI。
 - Residual、bias、scale、RoPE 的 elementwise 部分可以走 structured tensor IR 到
-  `wafer.compute.elementwise`。
+  `wafer.tile.elementwise`。
 - RMSNorm / LayerNorm 和 softmax 的数学结构可以表达成 reduction + elementwise 的 staged tensor IR。
-- Weight / scale / bias / RoPE table 可以作为 `ConstantLike`，通过 `wafer.storage.load`、constant
+- Weight / scale / bias / RoPE table 可以作为 `ConstantLike`，通过 `wafer.tile.load`、constant
   storage transform 和 DDR resident/streaming policy 进入 device storage。
 - Layout materialization、SPM allocation、DDR demand、launch/runtime 和 C ABI 都有独立边界，不需要把
   transformer case 的某个调度结果写成架构字段。
@@ -502,7 +502,7 @@ Frontend program
 | 层级 | 前置项 | 验收口径 |
 | --- | --- | --- |
 | Frontend program | 从真实 framework/exporter 图导出语义完整的 Wafer program，保留 StableHLO/MLIR IR、shape、dtype、constant、weight payload、sharding 和 bounded dynamic shape；LLVM/MLIR/StableHLO/Shardy/importer 依赖由 adapter 和 build 配置隔离 | 没有 eager fallback、名字约定、不可界定 dynamic shape；主链路完成证明消费真实图 program，后端 textual tests 只作为局部 verifier / lowering 覆盖且不依赖 importer-only framework 包 |
-| Local compute normalization / tensor collective | 实现 dot_general、batch/head matmul、broadcast、reduction、reshape/transpose/slice、softmax、RMSNorm / LayerNorm、RoPE 和 MLP activation 的 structured IR 输出；SPMD collective 规整成 Wafer LinalgExt-style tensor collective | 输出只依赖 StableHLO semantics、type、indexing map、collective metadata 和 SSA use-def，不靠 layer 名或 tensor 名；tensor collective 不携带 `wafer.comm`、SPM buffer 或 DTE token |
+| Local compute normalization / tensor collective | 实现 dot_general、batch/head matmul、broadcast、reduction、reshape/transpose/slice、softmax、RMSNorm / LayerNorm、RoPE 和 MLP activation 的 structured IR 输出；SPMD collective 规整成 Wafer LinalgExt-style tensor collective | 输出只依赖 StableHLO semantics、type、indexing map、collective metadata 和 SSA use-def，不靠 layer 名或 tensor 名；tensor collective 不携带 `wafer.tile.*` communication、SPM buffer 或 DTE token |
 | Group planning | softmax staged schedule 有可测试 pattern：row max、exp、row sum、normalize 和 value accumulation 跨 key dimension 的状态明确表达 | 状态由 SSA、loop-carried value、explicit workspace 或 group split 表达，不写入 planner side table |
 | Compute coverage | elementwise 覆盖 add/sub/mul/div/max/min/neg/recip/sqrt/rsqrt/exp、limited broadcast、mask-add 或 compare/select；reduction 至少覆盖 max 和 sum | 能服务 softmax 与 norm；只有一个 demo reduce 或一个 GEMM 最小验证 不算覆盖 |
 | Shape / indexing | Batch/head transpose relation 从 StableHLO dot dimension numbers 或 indexing map 推出 | 不能靠 Q/K/V 名字、参数顺序或示例 shape 恢复语义 |
@@ -543,18 +543,18 @@ IR stage 内的问题，并明确哪些问题属于下游 dialect、runtime 或 
 - Runtime/package：当前 host completion 来自 HPGR command/module/stream，还是
   Kcore/CSR/DTE/Stream 显式 wait？
 - Shape/layout IR stage：这个 op 或 tensor value 的 semantic layout、dtype、rank、
-  shape 是什么？进入 `wafer.tile_region` / SPM bufferization 后，physical `mem_layout` 是什么？
+  shape 是什么？进入 `wafer.tile.region` / SPM bufferization 后，physical `mem_layout` 是什么？
 - Layout/SPM：是否需要 layout materialization？如果需要，它是否作为真实 data movement
   计入 SPM 和时间？
 - SPM：SPM allocation 落在哪个区间？是否越过 `[0x10000, 0x2F0000)`？是否占用了
   Kcore/runtime reserved slot？
 - Scheduler/PMU：该 buffer 是否 overlap-critical？如果是，是否使用 64KB page/color 策略？如果不是，
   是否只做 256B layout padding？
-- `wafer.compute` / `wafer.comm`：该 NCC packet 属于 CT/NE/RDMA/WDMA/TDMA 哪个 queue？
+- `wafer.tile.*` compute / `wafer.tile.*` communication：该 NCC packet 属于 CT/NE/RDMA/WDMA/TDMA 哪个 queue？
   是否依赖 `serial_mode=0`？
-- `wafer.compute` / `wafer.comm` / runtime：是否存在 Kcore 直接 SPM 访问、DTE、Stream、
+- `wafer.tile.*` compute / `wafer.tile.*` communication / runtime：是否存在 Kcore 直接 SPM 访问、DTE、Stream、
   host-visible output 或 group barrier 边界？如果有，本地 drain 和通信 wait 是否显式存在？
-- `wafer.comm`：Direct DTE 使用的是 public unicast helper，还是 raw non-unicast ABI？
+- `wafer.tile.*` communication：Direct DTE 使用的是 public unicast helper，还是 raw non-unicast ABI？
   后者是否有板端验证？
 - Verification plan：该 stage 是否需要 wrapper golden packet、verifier diagnostics、
   runtime stub shielding 或 PMU/cost-model case？如果需要，它们在哪个 milestone 成为 gate？

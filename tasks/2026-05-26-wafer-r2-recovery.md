@@ -4,7 +4,7 @@
 
 状态：R2 完成记录
 
-2026-06-01 复查更新：R2.2 中 StableHLO collective 直接 bridge 到 `wafer.comm` 的实现只保留为
+2026-06-01 复查更新：R2.2 中 StableHLO collective 直接 bridge 到 `wafer.tile.*` communication 的实现只保留为
 已删除路线的后段 communication coverage，不再作为 P2.S1、group 或 tiling 的主线完成证明。真实 P2.S1 必须走
 `frontend export -> StableHLO/SDY program directory -> Wafer Shardy propagation -> Wafer-owned XLA SPMD
 partition compiler stage -> partitioned or replicated-local StableHLO`，post-SPMD collective 先进入
@@ -97,11 +97,11 @@ parameter name 只用于定位 exporter program 中的 parameter payload，不�
 - `test/Spmd/shardy-program-bridge.mlir` 覆盖 `sdy.mesh`、`sdy.sharding`、StableHLO
   `all_gather` textual program 和 frontend verifier 的同一 program 入口；它只证明 SDY dialect /
   StableHLO collective 可以进入工具链，不证明 XLA SPMD partition 或 rank-local body 已产生。
-- 历史 StableHLO collective bridge 曾把 `replica_groups` materialize 到后段 `wafer.comm`
+- 历史 StableHLO collective bridge 曾把 `replica_groups` materialize 到后段 `wafer.tile.*` communication
   `rank_group`，用于证明 rank-group metadata 可被 communication verifier 和旧 ring lowering 消费。
   该入口和旧 ring lowering pass 已从主线路径删除，不能作为 group/tiling 前的 collective 表示恢复。
 - 主线必须拆成 StableHLO -> Wafer LinalgExt-style tensor collective，以及 tiled tensor collective
-  + SPM storage values -> `wafer.comm` 两层。`wafer.comm` 只能在 tile_region / SPM materialization /
+  + SPM storage values -> `wafer.tile.*` communication 两层。`wafer.tile.*` communication 只能在 tile_region / SPM materialization /
   placement 明确后 materialize。
 
 历史 bridge 覆盖状态：
@@ -142,7 +142,7 @@ boundary、tile shape、multi-stage schedule、SPM residency 或 C ABI emission 
 - 历史 `test/Transforms/ring-all-gather-rank-group.mlir` 已随旧 ring lowering unit pass 链删除。
 
 2026-05-27 后续清理删除了旧的 SPMD verify flag、P2.S1 私有 attr emitter 和 StableHLO
-直降 `wafer.comm` pass/tests；上述 R2 记录只保留历史背景，不再表示这些旧入口仍存在。
+直降 `wafer.tile.*` communication pass/tests；上述 R2 记录只保留历史背景，不再表示这些旧入口仍存在。
 
 2026-05-27 后续 P2.S1 新增或扩大了这些 gate：
 
@@ -214,7 +214,7 @@ P2/R3 任务号、单个 workload 或 case 命名。`wafer-opt` 可以继续暴�
   helper 路径来自 build-time `WAFER_XLA_SPMD_PARTITIONER_HELPER` 配置，不是用户级 pipeline flag。
 - `wafer-opt --program-pipeline=stablehlo-spmd-to-linalg`：P2.S2 + R2.4 用户级主线 program pipeline。
   它先执行同一套 `stablehlo-spmd` stage，再把输出 program directory 中的 `functions/forward.mlir`
-  原地 lowering 到 Linalg/Tensor/Arith/Math/SCF 和 `wafer.tensor_collective.*`，不要求用户或 lit
+  原地 lowering 到 Linalg/Tensor/Arith/Math/SCF 和 `wafer.tensor.*`，不要求用户或 lit
   手动拼接 `wafer-lower-stablehlo-to-linalg`。
 - `wafer-lower-stablehlo-to-linalg`：StableHLO tensor IR -> Linalg/Tensor/Arith/Math/SCF 结构化
   tensor IR。它是 `stablehlo-spmd-to-linalg` 内部复用的 named MLIR pipeline，也可作为局部

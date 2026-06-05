@@ -6,7 +6,7 @@ module {
   %gather = "builtin.unrealized_conversion_cast"()
       : () -> !wafer.storage<tensor<8xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>
 
-  wafer.comm.all_gather %local into %gather
+  wafer.tile.all_gather %local into %gather
       {bytes = 16 : i64, group_size = 2 : i64, local_rank = 0 : i64,
        rank_group = array<i64: 0, 1, 2>}
       : !wafer.storage<tensor<4xf32>, #wafer.mem_layout<tensor>, #wafer.memory_space<spm>>

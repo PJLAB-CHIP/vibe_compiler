@@ -19,10 +19,8 @@ include "Wafer/IR/Tile/MoveOps.td"
 include "Wafer/IR/Tile/ViewOps.td"
 include "Wafer/IR/Tile/CommOps.td"
 include "Wafer/IR/Resource/SPMOps.td"
-include "Wafer/IR/Resource/DDROps.td"
 include "Wafer/IR/Resource/PlacementOps.td"
 include "Wafer/IR/Instr/SyncOps.td"
 include "Wafer/IR/Runtime/LaunchOps.td"
-include "Wafer/IR/Debug/AbiOps.td"
 
 #endif // WAFER_IR_WAFEROPS_TD

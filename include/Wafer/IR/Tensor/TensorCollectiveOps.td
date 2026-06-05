@@ -56,7 +56,7 @@ class Wafer_TensorCollectiveRankGroupOp<string mnemonic,
 }
 
 def Wafer_TensorCollectiveAllGatherOp
-    : Wafer_TensorCollectiveRankGroupOp<"tensor_collective.all_gather"> {
+    : Wafer_TensorCollectiveRankGroupOp<"tensor.all_gather"> {
   let summary = "tensor-level post-SPMD all-gather handoff";
   let description = [{
     Carries StableHLO all_gather semantics after SPMD partitioning as a
@@ -72,7 +72,7 @@ def Wafer_TensorCollectiveAllGatherOp
 }
 
 def Wafer_TensorCollectiveReduceScatterOp
-    : Wafer_TensorCollectiveRankGroupOp<"tensor_collective.reduce_scatter",
+    : Wafer_TensorCollectiveRankGroupOp<"tensor.reduce_scatter",
         [SingleBlockImplicitTerminator<"TensorCollectiveYieldOp">]> {
   let summary = "tensor-level post-SPMD reduce-scatter handoff";
   let regions = (region SizedRegion<1>:$combiner);
@@ -85,7 +85,7 @@ def Wafer_TensorCollectiveReduceScatterOp
 }
 
 def Wafer_TensorCollectiveAllReduceOp
-    : Wafer_TensorCollectiveOp<"tensor_collective.all_reduce",
+    : Wafer_TensorCollectiveOp<"tensor.all_reduce",
         [SingleBlockImplicitTerminator<"TensorCollectiveYieldOp">]> {
   let summary = "tensor-level post-SPMD all-reduce handoff";
   let arguments = (ins
@@ -105,7 +105,7 @@ def Wafer_TensorCollectiveAllReduceOp
 }
 
 def Wafer_TensorCollectiveAllToAllOp
-    : Wafer_TensorCollectiveOp<"tensor_collective.all_to_all"> {
+    : Wafer_TensorCollectiveOp<"tensor.all_to_all"> {
   let summary = "tensor-level post-SPMD all-to-all handoff";
   let arguments = (ins
     Variadic<AnyType>:$inputs,
@@ -125,7 +125,7 @@ def Wafer_TensorCollectiveAllToAllOp
 }
 
 def Wafer_TensorCollectiveCollectivePermuteOp
-    : Wafer_TensorCollectiveOp<"tensor_collective.collective_permute"> {
+    : Wafer_TensorCollectiveOp<"tensor.collective_permute"> {
   let summary = "tensor-level post-SPMD collective-permute handoff";
   let arguments = (ins
     Variadic<AnyType>:$inputs,
@@ -140,7 +140,7 @@ def Wafer_TensorCollectiveCollectivePermuteOp
   }];
 }
 
-def Wafer_TensorCollectiveYieldOp : Wafer_Op<"tensor_collective.yield", [
+def Wafer_TensorCollectiveYieldOp : Wafer_Op<"tensor.yield", [
     ParentOneOf<["TensorCollectiveAllReduceOp",
                  "TensorCollectiveReduceScatterOp"]>,
     Pure,

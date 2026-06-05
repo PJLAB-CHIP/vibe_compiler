@@ -14,12 +14,12 @@ mlir::LogicalResult TileRegionOp::verify() {
   for (mlir::Type resultType : getResultTypes()) {
     if (isSPMStorage(resultType))
       return emitOpError(
-          "SPM storage values cannot cross wafer.tile_region boundaries");
+          "SPM storage values cannot cross wafer.tile.region boundaries");
   }
   for (auto input : getInputs()) {
     if (isSPMStorage(input.getType()))
       return emitOpError(
-          "SPM storage values cannot cross wafer.tile_region boundaries");
+          "SPM storage values cannot cross wafer.tile.region boundaries");
   }
 
   return mlir::success();
@@ -33,7 +33,7 @@ mlir::LogicalResult TileRegionOp::verifyRegions() {
   if (block.getNumArguments() != getInputs().size())
     return emitOpError("expected ")
            << getInputs().size()
-           << " body block arguments matching tile_region inputs, got "
+           << " body block arguments matching wafer.tile.region inputs, got "
            << block.getNumArguments();
 
   for (auto [index, inputAndArg] :
@@ -46,16 +46,16 @@ mlir::LogicalResult TileRegionOp::verifyRegions() {
              << " at index " << index;
     if (isSPMStorage(blockArgType))
       return emitOpError(
-          "SPM storage values cannot cross wafer.tile_region boundaries");
+          "SPM storage values cannot cross wafer.tile.region boundaries");
   }
 
   auto yield = mlir::dyn_cast<TileYieldOp>(block.getTerminator());
   if (!yield)
-    return emitOpError("expected wafer.tile_yield terminator");
+    return emitOpError("expected wafer.tile.yield terminator");
 
   if (yield.getValues().size() != getNumResults())
     return emitOpError(
-               "expected tile_yield value count to match result count, got ")
+               "expected tile.yield value count to match result count, got ")
            << yield.getValues().size() << " values and " << getNumResults()
            << " results";
 
@@ -65,10 +65,10 @@ mlir::LogicalResult TileRegionOp::verifyRegions() {
     mlir::Type resultType = std::get<1>(yieldedAndResult).getType();
     if (isSPMStorage(yieldedType))
       return emitOpError(
-          "SPM storage values cannot cross wafer.tile_region boundaries");
+          "SPM storage values cannot cross wafer.tile.region boundaries");
     if (yieldedType != resultType)
-      return emitOpError("tile_yield type ")
-             << yieldedType << " does not match tile_region result type "
+      return emitOpError("tile.yield type ")
+             << yieldedType << " does not match wafer.tile.region result type "
              << resultType << " at index " << index;
   }
 

@@ -19,5 +19,5 @@ module {
 // IR-LABEL: func.func @stablehlo_matmul(
 // IR-NOT: stablehlo.
 // IR: linalg.matmul
-// IR-NOT: wafer.tile_region
-// IR-NOT: wafer.abi.
+// IR-NOT: wafer.tile.region
+// IR-NOT: wafer.instr.

@@ -4,7 +4,7 @@ module {
   func.func @bad_batch_count(
       %query: !wafer.storage<tensor<2x3x5x8xf32>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>,
       %key: !wafer.storage<tensor<2x3x7x8xf32>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>) {
-    %score = wafer.compute.gemm %query, %key
+    %score = wafer.tile.gemm %query, %key
         {batch_count = 5 : i64,
          lhs_batch_dims = array<i64: 0, 1>,
          lhs_contracting_dim = 3 : i64,
@@ -22,4 +22,4 @@ module {
   }
 }
 
-// CHECK: error: 'wafer.compute.gemm' op GEMM batch_count attr must match product of result batch dimensions
+// CHECK: error: 'wafer.tile.gemm' op GEMM batch_count attr must match product of result batch dimensions

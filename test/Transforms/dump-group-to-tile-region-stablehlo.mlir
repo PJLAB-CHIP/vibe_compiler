@@ -31,17 +31,17 @@ module {
 }
 
 // CHECK-LABEL: wafer.group_to_tile_region group @lower_reduce_sum#0
-// CHECK: wafer.compute.fill
-// CHECK: wafer.layout.materialize
+// CHECK: wafer.tile.fill
+// CHECK: wafer.tile.materialize_layout
 // CHECK: #wafer.mem_layout<cx>
-// CHECK: wafer.compute.reduce <sum>
+// CHECK: wafer.tile.reduce <sum>
 // CHECK-SAME: dimensions = array<i64: 1>
 // CHECK: f32) -> !wafer.storage<tensor<2xf32>, #wafer.mem_layout<cx>, #wafer.memory_space<spm>>
-// CHECK: wafer.storage.store
+// CHECK: wafer.tile.store
 // CHECK-LABEL: wafer.group_to_tile_region group @lower_broadcast#0
-// CHECK: wafer.move.broadcast
+// CHECK: wafer.tile.broadcast
 // CHECK-SAME: dimensions = array<i64: 1>
-// CHECK: wafer.storage.store
+// CHECK: wafer.tile.store
 // CHECK-LABEL: wafer.group_to_tile_region group @lower_compare#0
-// CHECK: wafer.compute.elementwise <gt>
-// CHECK: wafer.storage.store
+// CHECK: wafer.tile.elementwise <gt>
+// CHECK: wafer.tile.store

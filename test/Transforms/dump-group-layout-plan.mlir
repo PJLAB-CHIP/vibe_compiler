@@ -44,7 +44,7 @@ module {
           %max = arith.maximumf %value, %zero_el : f32
           linalg.yield %max : f32
         } -> tensor<4x16xf32>
-      wafer.group_yield %relu : tensor<4x16xf32>
+      wafer.group.yield %relu : tensor<4x16xf32>
     } : tensor<4x16xf32>
     return %0 : tensor<4x16xf32>
   }
@@ -69,7 +69,7 @@ module {
           %add = arith.addf %lhs_el, %rhs_el : f32
           linalg.yield %add : f32
         } -> tensor<4xf32>
-      wafer.group_yield %sum : tensor<4xf32>
+      wafer.group.yield %sum : tensor<4xf32>
     } : tensor<4xf32>
     %1 = wafer.group ins(%a1, %b1 : tensor<8xf32>, tensor<8xf32>)
         outs(%out1 : tensor<8xf32>) {
@@ -87,7 +87,7 @@ module {
           %add = arith.addf %lhs_el, %rhs_el : f32
           linalg.yield %add : f32
         } -> tensor<8xf32>
-      wafer.group_yield %sum : tensor<8xf32>
+      wafer.group.yield %sum : tensor<8xf32>
     } : tensor<8xf32>
     return %0, %1 : tensor<4xf32>, tensor<8xf32>
   }
@@ -96,15 +96,15 @@ module {
       -> tensor<4xf32> {
     %0 = wafer.group ins(%input : tensor<4xf32>) outs(%out : tensor<4xf32>) {
     ^bb0(%arg0: tensor<4xf32>, %arg1: tensor<4xf32>):
-      %ar = wafer.tensor_collective.all_reduce
+      %ar = wafer.tensor.all_reduce
           ins(%arg0 : tensor<4xf32>)
           outs(%arg1 : tensor<4xf32>)
           {
           ^bb0(%lhs: f32, %rhs: f32):
             %sum = arith.addf %lhs, %rhs : f32
-            wafer.tensor_collective.yield %sum : f32
+            wafer.tensor.yield %sum : f32
           } {rank_group = array<i64: 0, 1>} -> tensor<4xf32>
-      wafer.group_yield %ar : tensor<4xf32>
+      wafer.group.yield %ar : tensor<4xf32>
     } : tensor<4xf32>
     return %0 : tensor<4xf32>
   }
@@ -115,7 +115,7 @@ module {
     ^bb0(%arg0: tensor<8xf32>, %arg1: tensor<4xf32>):
       %slice = tensor.extract_slice %arg0[0] [4] [1]
           : tensor<8xf32> to tensor<4xf32>
-      wafer.group_yield %slice : tensor<4xf32>
+      wafer.group.yield %slice : tensor<4xf32>
     } : tensor<4xf32>
     return %0 : tensor<4xf32>
   }
@@ -142,7 +142,7 @@ module {
 // CHECK-LABEL: wafer.layout_plan group @two_independent_groups#1
 // CHECK: result #0 layout=tensor slice=[d0]
 // CHECK-LABEL: wafer.layout_plan group @collective_group#0
-// CHECK: op #0 wafer.tensor_collective.all_reduce
+// CHECK: op #0 wafer.tensor.all_reduce
 // CHECK: collective kind=all_reduce rank_group=[0,1]
 // CHECK: input #0 layout=tensor slice=[d0]
 // CHECK: result #0 layout=tensor slice=[d0]

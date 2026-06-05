@@ -41,7 +41,7 @@ SPM、DDR allocation、layout materialization、DTE、runtime package 或 launch
   runtime handle 或 device physical address。
 - 不引入 Wafer 私有 tensor constant op。
 - 不选择 `Tensor/Cx/NCx` physical memory layout。
-- 不生成 `wafer.group`、`wafer.tile_region`、`wafer.compute`、`wafer.comm` 或 `wafer.launch`。
+- 不生成 `wafer.group`、`wafer.tile.region`、`wafer.tile.*` compute、`wafer.tile.*` communication 或 `wafer.launch`。
 
 ## 2. 输入和输出
 
