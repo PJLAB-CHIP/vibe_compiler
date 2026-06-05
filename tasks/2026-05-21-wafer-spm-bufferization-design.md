@@ -7,6 +7,9 @@
 本文定义 Wafer SPM bufferization、tile-local allocation 和 storage verification。它服务于
 `wafer.group` planning 的合法性搜索，也负责把 `wafer.tile_region` 中的 tile-local value
 落到可验证的 memory space、liveness、range 和 effect。
+SPM placement 的 instruction-level 输入合同由
+`tasks/2026-06-05-wafer-instruction-ir-design.md` 定义；本文只消费该层暴露的
+`wafer.storage.*` / `wafer.instr.*`，不重复定义 instruction op。
 
 本文只负责 `#wafer.memory_space<spm>` 的 tile-local allocation：
 
@@ -141,12 +144,13 @@ SPM allocator 不按 op 名字猜 buffer，也不把一个 target-abstract op �
 来源应是 instruction legalization / selection 后的明确 storage graph：
 
 - `wafer.compute.*` / target-abstract movement op：通过 compute/movement 文档定义的接口枚举或选择
-  hardware instruction family，例如 NE GEMM、CT elementwise/reduce、TDMA memcpy / GatherScatter /
-  ChannelNorm。instruction-level IR 再报告 operand/result/temp/scratch/accumulator/psum demand、queue family
+  hardware instruction family，例如 NE GEMM、CT elementwise/reduce、TDMA memcpy / GatherScatter。
+  instruction-level IR 再报告 operand/result/temp/scratch/accumulator/psum demand、queue family
   和 async lowering policy。
 - `wafer.layout.materialize`：不能只报告“source read / result write”。它必须先选择具体
-  materialization instruction lowering，例如 ChannelNorm、DechannelNorm、GatherScatter 或 reject；不同 lowering
-  可产生不同 temp、padding、range 和 queue 行为。
+  materialization instruction lowering，例如可展开成具体 GatherScatter 序列的 ChannelNorm /
+  DechannelNorm algorithm、普通 GatherScatter 或 reject；不同 lowering 可产生不同 temp、padding、
+  range 和 queue 行为。
 - `wafer.comm.*` p2p op：需要 communication instruction lowering 报告 send source、recv destination、
   communication staging buffer、fixed byte count、token/wait lifetime 和 DTE/FSM resource class。
 - `wafer.sync.*`：报告 local drain、comm wait、group barrier 对 instruction event、buffer lifetime 和

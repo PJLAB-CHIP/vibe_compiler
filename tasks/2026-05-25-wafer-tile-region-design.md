@@ -24,6 +24,7 @@ placement-derived endpoint 和 communication staging demand 的层级；`wafer.c
 - `tasks/2026-05-25-wafer-ddr-resource-allocation-design.md`
 - `tasks/2026-05-25-wafer-compute-dialect-design.md`
 - `tasks/2026-05-25-wafer-communication-dialect-design.md`
+- `tasks/2026-06-05-wafer-instruction-ir-design.md`
 
 ## 1. 目标和非目标
 

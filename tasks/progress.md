@@ -1,6 +1,6 @@
 # Wafer Compiler Progress
 
-更新时间：2026-06-04
+更新时间：2026-06-05
 
 本文件只记录当前看板、主线 pipeline、完成口径和下一步。设计细节、历史复盘、测试命令和长验证说明
 放在对应 `tasks/` 设计文档、git commit 和测试里，不在这里重复。
@@ -45,7 +45,7 @@ PyTorch/XLA StableHLO Wafer program directory
   `WaferStableHLOToLinalg` 和 `WaferGroupToTileRegion` 在 `lib/Wafer/Conversion` 中按 source/target
   IR contract 单独 owning。
 
-## 已完成链路
+## 当前链路状态
 
 | ID | 状态 | 设计来源 | 输入 | 输出 / 完成 gate |
 | --- | --- | --- | --- | --- |
@@ -57,10 +57,13 @@ PyTorch/XLA StableHLO Wafer program directory
 | R3.2a | done | `2026-05-12-wafer-group-design.md` 10.1-10.2 | R3.1 logical `wafer.group` body | `GroupTilingDemand` analysis result；覆盖 boundary/result tile facts、per-op slice、iterator、accumulator/reduction dims、collective demand 和 unsupported-op failure |
 | R3.2b | done | `2026-05-21-wafer-layout-materialization-design.md` 3.1.1 | R3.2a `GroupTilingDemand` facts + group SSA use-def | `GroupLayoutPlan` analysis result；覆盖 boundary layout、op layout constraints、broadcast relation、materialization cut/result demand 和 failure forwarding；不修改 IR |
 | R3.2c | done | `2026-05-25-wafer-tile-region-design.md` 2.1-2.2 | R3.1 group + R3.2a demand + R3.2b layout plan | MLIR DialectConversion 驱动的 `wafer-convert-group-to-tile-region` pass 和同源 scratch/dump lowering builder；输出 `wafer.tile_region` IR，覆盖 load/store、`wafer.alloc_tile`、layout materialization、`wafer.compute.fill/gemm/elementwise/reduce`、`wafer.move.*` 和 `wafer.view.reshape`；硬件 V0 无承载或缺 placement/local-rank facts 时结构化 failure；不做 SPM offset，不把 tile-region IR 当成 R3.3 accepted materialization |
+| R3.2d | active | `2026-06-05-wafer-instruction-ir-design.md` | R3.2c target-abstract `wafer.tile_region` IR | 设计已收口；实现未完成。目标输出是 instruction-level `wafer.instr.*` + unplaced `wafer.storage.*`，覆盖 CT/NE/TDMA/RDMA/WDMA storage/effect/queue contract；不做 SPM offset、不生成 ABI call |
 
 ## 当前状态
 
 当前 active task 是 **R3.2d Wafer instruction legalization / selection on tile-region IR**。
+R3.2d 的 IR 设计主文档是 `tasks/2026-06-05-wafer-instruction-ir-design.md`；当前状态是设计已收口、
+实现未完成。
 
 R3.2d 可以消费 R3.2c 的 `wafer.tile_region` IR。当前边界是：
 
@@ -78,7 +81,7 @@ R3.2d 可以消费 R3.2c 的 `wafer.tile_region` IR。当前边界是：
 
 | ID | 状态 | 输入 / 输出边界 | 完成 gate |
 | --- | --- | --- | --- |
-| R3.2d | active | 输入：R3.2c target-abstract `wafer.tile_region` IR；输出：instruction-level `wafer.instr.*` IR + unplaced `wafer.storage.*` 或结构化失败 | 为 load/store、layout materialize、compute.gemm/reduce/elementwise、move.*、view alias 选择 CT/NE/TDMA/RDMA/WDMA 等硬件指令形态；IR 显式暴露 storage values、queue family、read/write/issue effects、temp/psum/staging、alias/view、storage size policy 和 reject reason；不做 SPM offset、不生成 ABI call |
+| R3.2d | active | 输入：R3.2c target-abstract `wafer.tile_region` IR；输出：instruction-level `wafer.instr.*` IR + unplaced `wafer.storage.*` 或结构化失败 | 按 `2026-06-05-wafer-instruction-ir-design.md` 实现 storage type/ops、CT/NE/TDMA/RDMA/WDMA instruction ops、instruction interface、verifier 和 DialectConversion；为 load/store、layout materialize、compute.gemm/reduce/elementwise、move.*、view alias 选择硬件指令形态；IR 显式暴露 storage values、queue family、read/write/issue effects、temp/psum/staging、alias/view 和 storage size policy；不做 SPM offset、不生成 ABI call |
 | R3.2e | pending | 输入：R3.2d instruction-level IR with unplaced storage；输出：同一 instruction-level IR with placed SPM storage 或结构化失败 | 真实 SPM window placement：alignment、layout padding、scratch/psum/temp、materialization temp、communication staging、lifetime overlap、range/end-address/bank span/conflict 都参与 |
 | R3.2f | pending | 输入：R3.2e placed instruction-level IR + DDR boundary facts；输出：DDR/resource legality result 和 movement/compute resource validation | 覆盖 external/workspace/resident-constant、pool/domain/capacity/bandwidth/range demand；不能用 manifest fixture 替代；不能回头改变 instruction semantics |
 | R3.2g | pending | 输入：R3.1 group + R3.2a-f planning results；输出：accepted/rejected/split group planning decision | closed-loop 搜索 group boundary、traversal、tile shape、layout、instruction selection、SPM/DDR/resource plan；未接受 plan 不落 IR；multi-root packing 只作为可证明兼容时的可选策略 |
@@ -104,5 +107,6 @@ R3.2d 可以消费 R3.2c 的 `wafer.tile_region` IR。当前边界是：
 
 ## 下一步
 
-进入 R3.2d，在 R3.2c `wafer.tile_region` IR 上恢复 Wafer instruction
-legalization / selection，产出 instruction-level `wafer.instr.*` IR 和 unplaced `wafer.storage.*`。
+按 `tasks/2026-06-05-wafer-instruction-ir-design.md` 实现 R3.2d：
+新增 `!wafer.storage`、`wafer.storage.*`、`wafer.instr.*`、instruction interface、storage-size
+calculator、verifier 和 `--wafer-convert-tile-region-to-instr` DialectConversion。
