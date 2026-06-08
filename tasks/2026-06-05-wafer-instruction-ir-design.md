@@ -2,7 +2,8 @@
 
 日期：2026-06-05；更新：2026-06-08
 
-状态：R3.2d 设计已按 memref-backed buffer contract 重新收口；R3.2c 前置已完成，R3.2d 为当前 active task
+状态：R3.2d 设计已按 memref-backed buffer contract 重新收口；R3.2c 前置已完成，
+R3.2d.1 instruction op contract 已落地，当前 active task 是 R3.2d.2 DialectConversion
 
 本文定义 R3.2d 的 instruction-level Wafer IR。核心结论：
 
@@ -24,10 +25,13 @@ memref SSA、Wafer memory attr、op operands、attrs、MemoryEffects 和显式 d
 
 当前实现状态：
 
-- 仓库代码当前只落地了 `wafer.instr.local_drain`。
-- `wafer.instr.rdma`、`wafer.instr.wdma`、`wafer.instr.gather_scatter`、`wafer.instr.fill`、
+- 仓库代码当前已落地 `wafer.instr.local_drain`，以及
+  `wafer.instr.rdma`、`wafer.instr.wdma`、`wafer.instr.gather_scatter`、`wafer.instr.fill`、
   `wafer.instr.elementwise`、`wafer.instr.reduce`、`wafer.instr.convert` 和 `wafer.instr.gemm`
-  是 R3.2d 待实现 ODS / verifier / conversion 合同。
+  的 ODS、verifier、MemoryEffects、`WaferInstructionOpInterface` 和 lit/unit 覆盖。
+- `wafer.instr.*` op 只读写 Wafer-tagged memref，不产生 buffer result，不携带 SPM offset、
+  worker id、raw packet field 或 C ABI 字段。
+- R3.2d.2 仍需实现 target-abstract tile-region op 到这些 instruction op 的 DialectConversion。
 - R3.2c 已产出 memref-backed `wafer.tile.region`；R3.2d 必须基于该 unplaced Wafer-tagged memref
   graph 做 instruction lowering，不能再引入 storage/buffer IR 层。
 - R3.2c 已支持 `scf.if` / `scf.for` 作为 tile-region 内 structured control-flow。R3.2d 必须递归
@@ -540,7 +544,7 @@ R3.2c 已完成的前置：
 3. 旧 `#wafer.memory_space` / `#wafer.mem_layout` / `!wafer.storage` / `wafer.tile.alloc`
    合同已从主线 IR 定义和测试中删除。
 
-R3.2d 实现需要：
+R3.2d.1 已完成：
 
 1. 增加 `InstrQueue` enum、`WaferInstructionOpInterface` 和 instruction effect helper。
 2. 增加 `wafer.instr.rdma`、`wafer.instr.wdma`、
@@ -548,6 +552,9 @@ R3.2d 实现需要：
    `wafer.instr.elementwise`、`wafer.instr.reduce`、
    `wafer.instr.convert` 和 `wafer.instr.gemm` ODS。
 3. 为每个 op 实现 verifier、MemoryEffects、instruction interface 和 positive/negative lit tests。
+
+R3.2d.2/R3.2d.3 仍需实现：
+
 4. 实现 `--wafer-convert-tile-region-to-instr` DialectConversion，并让 main R3.2 planner 调用同一
    conversion implementation。
 5. conversion 递归处理 `scf.if` / `scf.for` region body，并保留 scalar / memref yield 关系。

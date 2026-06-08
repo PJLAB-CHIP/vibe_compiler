@@ -20,6 +20,7 @@ include "Wafer/IR/Tile/ViewOps.td"
 include "Wafer/IR/Tile/CommOps.td"
 include "Wafer/IR/Resource/SPMOps.td"
 include "Wafer/IR/Resource/PlacementOps.td"
+include "Wafer/IR/Instr/InstructionOps.td"
 include "Wafer/IR/Instr/SyncOps.td"
 include "Wafer/IR/Runtime/LaunchOps.td"
 

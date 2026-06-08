@@ -436,6 +436,136 @@ module {
                                 wafer::WaferValueRole::Result, 0, 16));
 }
 
+TEST(WaferInterfacesTest, InstructionInterfacesExposeQueueAndEffects) {
+  mlir::DialectRegistry registry;
+  wafer::registerAllDialects(registry);
+  registry.insert<mlir::arith::ArithDialect>();
+
+  mlir::MLIRContext context(registry);
+  context.loadDialect<wafer::WaferDialect, mlir::arith::ArithDialect>();
+
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  %ddr_in = "builtin.unrealized_conversion_cast"()
+      : () -> memref<4x8xf16, #wafer.memory<ddr, tensor>>
+  %ddr_out = "builtin.unrealized_conversion_cast"()
+      : () -> memref<4x8xf16, #wafer.memory<ddr, tensor>>
+  %tensor = "builtin.unrealized_conversion_cast"()
+      : () -> memref<4x8xf16, #wafer.memory<spm, tensor>>
+  %cx = "builtin.unrealized_conversion_cast"()
+      : () -> memref<4x8xf16, #wafer.memory<spm, cx>>
+  %reduce_out = "builtin.unrealized_conversion_cast"()
+      : () -> memref<4xf16, #wafer.memory<spm, cx>>
+  %lhs = "builtin.unrealized_conversion_cast"()
+      : () -> memref<4x8xf16, #wafer.memory<spm, cx>>
+  %rhs = "builtin.unrealized_conversion_cast"()
+      : () -> memref<8x16xf16, #wafer.memory<spm, cx>>
+  %gemm_out = "builtin.unrealized_conversion_cast"()
+      : () -> memref<4x16xf16, #wafer.memory<spm, cx>>
+  %f16 = arith.constant 0.000000e+00 : f16
+
+  wafer.instr.rdma %ddr_in to %tensor
+      {byte_count = 64 : i64, inner_bytes = 64 : i64,
+       src_strides = array<i64: 0, 0, 0>,
+       src_iterations = array<i64: 1, 1, 1>}
+      : memref<4x8xf16, #wafer.memory<ddr, tensor>>
+     to memref<4x8xf16, #wafer.memory<spm, tensor>>
+  wafer.instr.gather_scatter %tensor to %cx
+      {byte_count = 64 : i64, inner_bytes = 16 : i64,
+       src_strides = array<i64: 16, 0, 0>,
+       src_iterations = array<i64: 4, 1, 1>,
+       dst_strides = array<i64: 16, 0, 0>,
+       dst_iterations = array<i64: 4, 1, 1>}
+      : memref<4x8xf16, #wafer.memory<spm, tensor>>
+     to memref<4x8xf16, #wafer.memory<spm, cx>>
+  wafer.instr.fill %tensor, %f16
+      : memref<4x8xf16, #wafer.memory<spm, tensor>>, f16
+  wafer.instr.elementwise #wafer.elementwise_kind<add> %tensor, %tensor into %tensor
+      : memref<4x8xf16, #wafer.memory<spm, tensor>>,
+        memref<4x8xf16, #wafer.memory<spm, tensor>>
+    into memref<4x8xf16, #wafer.memory<spm, tensor>>
+  wafer.instr.reduce #wafer.reduce_kind<sum> %cx into %reduce_out, %f16 : f16
+      {dimensions = array<i64: 1>}
+      : memref<4x8xf16, #wafer.memory<spm, cx>>
+    into memref<4xf16, #wafer.memory<spm, cx>>
+  wafer.instr.convert %tensor into %tensor
+      {src_dtype = f16, dst_dtype = f16}
+      : memref<4x8xf16, #wafer.memory<spm, tensor>>
+     to memref<4x8xf16, #wafer.memory<spm, tensor>>
+  wafer.instr.gemm %lhs, %rhs into %gemm_out
+      {m = 4 : i64, k = 8 : i64, n = 16 : i64}
+      : memref<4x8xf16, #wafer.memory<spm, cx>>,
+        memref<8x16xf16, #wafer.memory<spm, cx>>
+    into memref<4x16xf16, #wafer.memory<spm, cx>>
+  wafer.instr.wdma %tensor to %ddr_out
+      {byte_count = 64 : i64, inner_bytes = 64 : i64,
+       dst_strides = array<i64: 0, 0, 0>,
+       dst_iterations = array<i64: 1, 1, 1>}
+      : memref<4x8xf16, #wafer.memory<spm, tensor>>
+     to memref<4x8xf16, #wafer.memory<ddr, tensor>>
+}
+)mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(module);
+
+  auto rdma = findSingleOp<wafer::InstrRDMAOp>(*module);
+  ASSERT_TRUE(rdma);
+  auto rdmaInstruction =
+      mlir::dyn_cast<wafer::WaferInstructionOpInterface>(rdma.getOperation());
+  ASSERT_TRUE(rdmaInstruction);
+  EXPECT_EQ(rdmaInstruction.getInstructionQueueFamily(),
+            wafer::InstrQueue::RDMA);
+  EXPECT_TRUE(mlir::succeeded(rdmaInstruction.verifyInstructionContract()));
+
+  auto rdmaResources =
+      mlir::dyn_cast<wafer::WaferResourceEffectInterface>(rdma.getOperation());
+  ASSERT_TRUE(rdmaResources);
+  llvm::SmallVector<wafer::WaferResourceEffect, 4> effects;
+  rdmaResources.collectWaferResourceEffects(effects);
+  EXPECT_TRUE(hasResourceEffect(effects, wafer::WaferResourceKind::DDR,
+                                wafer::WaferResourceAccess::Read,
+                                wafer::WaferValueRole::Operand, 0, 64));
+  EXPECT_TRUE(hasResourceEffect(effects, wafer::WaferResourceKind::SPM,
+                                wafer::WaferResourceAccess::Write,
+                                wafer::WaferValueRole::Operand, 1, 64));
+  EXPECT_TRUE(hasResourceEffect(effects, wafer::WaferResourceKind::Movement,
+                                wafer::WaferResourceAccess::Issue,
+                                wafer::WaferValueRole::None, 0, 64));
+
+  auto gather = findSingleOp<wafer::InstrGatherScatterOp>(*module);
+  ASSERT_TRUE(gather);
+  auto gatherInstruction =
+      mlir::dyn_cast<wafer::WaferInstructionOpInterface>(gather.getOperation());
+  ASSERT_TRUE(gatherInstruction);
+  EXPECT_EQ(gatherInstruction.getInstructionQueueFamily(),
+            wafer::InstrQueue::TDMA);
+
+  auto elementwise = findSingleOp<wafer::InstrElementwiseOp>(*module);
+  ASSERT_TRUE(elementwise);
+  auto elementwiseInstruction =
+      mlir::dyn_cast<wafer::WaferInstructionOpInterface>(
+          elementwise.getOperation());
+  ASSERT_TRUE(elementwiseInstruction);
+  EXPECT_EQ(elementwiseInstruction.getInstructionQueueFamily(),
+            wafer::InstrQueue::CT);
+
+  auto gemm = findSingleOp<wafer::InstrGemmOp>(*module);
+  ASSERT_TRUE(gemm);
+  auto gemmInstruction =
+      mlir::dyn_cast<wafer::WaferInstructionOpInterface>(gemm.getOperation());
+  ASSERT_TRUE(gemmInstruction);
+  EXPECT_EQ(gemmInstruction.getInstructionQueueFamily(), wafer::InstrQueue::NE);
+
+  auto wdma = findSingleOp<wafer::InstrWDMAOp>(*module);
+  ASSERT_TRUE(wdma);
+  auto wdmaInstruction =
+      mlir::dyn_cast<wafer::WaferInstructionOpInterface>(wdma.getOperation());
+  ASSERT_TRUE(wdmaInstruction);
+  EXPECT_EQ(wdmaInstruction.getInstructionQueueFamily(),
+            wafer::InstrQueue::WDMA);
+}
+
 TEST(WaferInterfacesTest, TensorCollectivesExposeLinalgExtStyleContracts) {
   mlir::DialectRegistry registry;
   wafer::registerAllDialects(registry);

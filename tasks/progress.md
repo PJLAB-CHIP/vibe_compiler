@@ -88,7 +88,7 @@ PyTorch/XLA StableHLO Wafer program directory
 R3.2c memref-backed tile-region IR migration 已完成：group boundary 已 materialize 为 DDR memref，
 tile-local value 使用 SPM memref，named pipeline 已接入 MLIR One-Shot function-boundary bufferization，
 并支持 `scf.if` / `scf.for` 的 tile-local structured control-flow lowering。当前 active task 是
-**R3.2d instruction legalization / selection**。R3.2d 的 IR 设计主文档
+**R3.2d.2 instruction legalization / selection DialectConversion**。R3.2d 的 IR 设计主文档
 `tasks/2026-06-05-wafer-instruction-ir-design.md` 已按 memref-backed buffer contract 收口，输入就是
 R3.2c 产出的 unplaced Wafer-tagged memref tile-region IR。
 
@@ -104,14 +104,17 @@ R3.2c/R3.2d 当前边界是：
 - R3.2d 只做 Wafer instruction legalization / selection：把 target-abstract executable op 合法化并
   选择成 instruction-level `wafer.instr.*`，复用 unplaced Wafer-tagged memref SSA graph；
   不新增第二套 storage/buffer IR，不分配 SPM offset，不生成 C ABI call，不重新决定 group formation。
+  R3.2d.1 已落地 instruction op contract：`InstrQueue`、`WaferInstructionOpInterface`、
+  `rdma/wdma/gather_scatter/fill/elementwise/reduce/convert/gemm` ODS、verifier、MemoryEffects 和
+  lit/unit 覆盖。R3.2d.2 下一步实现 tile-region 到 instruction IR 的 conversion。
 - tensor collective 到 tile communication IR 仍 deferred，等待 placement/local-rank/buffer facts。
 
 ## 后续任务队列
 
 | ID | 状态 | 输入 / 输出边界 | 完成 gate |
 | --- | --- | --- | --- |
-| R3.2d.1 | active | 输入：R3.2c target-abstract `wafer.tile.region` IR with DDR boundary memref、unplaced SPM memref 和 structured control-flow；输出：`wafer.instr.*` ODS / interface / verifier 合同 | 实现 `InstrQueue`、instruction interface、effect helper，以及 `rdma`、`wdma`、`gather_scatter`、`fill`、`elementwise`、`reduce`、`convert`、`gemm` op contract；op 只读写 Wafer-tagged memref，不产生 buffer result，不携带 SPM offset 或 ABI 字段 |
-| R3.2d.2 | pending | 输入：R3.2d.1 instruction ops + R3.2c tile-region IR；输出：instruction-level `wafer.instr.*` IR 或结构化失败 | 实现 `--wafer-convert-tile-region-to-instr` DialectConversion；为 load/store、layout materialize、tile.gemm/reduce/elementwise、tile movement/view op 选择硬件指令形态；递归处理 `scf.if` / `scf.for` body；不新增 storage/buffer IR |
+| R3.2d.1 | done | 输入：R3.2c target-abstract `wafer.tile.region` IR with DDR boundary memref、unplaced SPM memref 和 structured control-flow；输出：`wafer.instr.*` ODS / interface / verifier 合同 | 已实现 `InstrQueue`、instruction interface、effect helper，以及 `rdma`、`wdma`、`gather_scatter`、`fill`、`elementwise`、`reduce`、`convert`、`gemm` op contract；op 只读写 Wafer-tagged memref，不产生 buffer result，不携带 SPM offset 或 ABI 字段 |
+| R3.2d.2 | active | 输入：R3.2d.1 instruction ops + R3.2c tile-region IR；输出：instruction-level `wafer.instr.*` IR 或结构化失败 | 实现 `--wafer-convert-tile-region-to-instr` DialectConversion；为 load/store、layout materialize、tile.gemm/reduce/elementwise、tile movement/view op 选择硬件指令形态；递归处理 `scf.if` / `scf.for` body；不新增 storage/buffer IR |
 | R3.2d.3 | pending | 输入：R3.2d.2 conversion；输出：可由 placement/resource stage 消费的 instruction-level IR | 接入 named pipeline / planner scratch path；测试覆盖多 op、多 group、mixed nested control-flow、metadata view preserved、unsupported movement/comm structured failure；转换后不能残留 executable target-abstract op |
 | R3.2e | pending | 输入：R3.2d instruction-level IR with unplaced Wafer-tagged memref；输出：同一 instruction-level IR with placed SPM memref values 或结构化失败 | 真实 SPM window placement：alignment、layout padding、scratch/psum/temp、materialization temp、communication staging、control-flow lifetime、range/end-address/bank span/conflict 都参与 |
 | R3.2f | pending | 输入：R3.2e placed instruction-level IR + DDR boundary facts；输出：DDR/resource legality result 和 movement/compute resource validation | 覆盖 external/compiler-managed/resident-constant、pool/domain/capacity/bandwidth/range demand；不能用 manifest fixture 替代；不能回头改变 instruction semantics |
@@ -138,6 +141,7 @@ R3.2c/R3.2d 当前边界是：
 
 ## 下一步
 
-下一步进入 R3.2d.1 instruction op contract：在 R3.2c 的 DDR/SPM Wafer-tagged memref tile-region
-IR 边界上实现 `wafer.instr.*` ODS、instruction interface、verifier 和 effect helper。随后 R3.2d.2
-实现 DialectConversion，R3.2d.3 接入 pipeline 和 planner scratch path。
+下一步进入 R3.2d.2 DialectConversion：在 R3.2c 的 DDR/SPM Wafer-tagged memref tile-region IR
+边界上，将 load/store、layout materialize、tile.gemm/reduce/elementwise 和 tile movement/view op
+选择成 R3.2d.1 已落地的 `wafer.instr.*`，递归处理 `scf.if` / `scf.for` body，并在 unsupported
+instruction form 上结构化失败。随后 R3.2d.3 接入 pipeline 和 planner scratch path。

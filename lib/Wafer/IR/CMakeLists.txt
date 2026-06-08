@@ -2,6 +2,7 @@ add_mlir_dialect_library(WaferIR
   WaferDialect.cpp
   WaferInterfaces.cpp
   Common/OpVerifierUtils.cpp
+  Instr/InstructionOps.cpp
   Instr/SyncOps.cpp
   Resource/PlacementOps.cpp
   Resource/SPMOps.cpp

@@ -108,4 +108,23 @@ def WaferResourceEffectInterface : OpInterface<"WaferResourceEffectInterface"> {
   ];
 }
 
+def WaferInstructionOpInterface : OpInterface<"WaferInstructionOpInterface"> {
+  let cppNamespace = "::wafer";
+  let description = [{
+    Interface for instruction-level Wafer operations. Implementations expose
+    only facts represented by the operation itself: issue queue family and
+    verifier-checkable instruction contract. Scheduling state, worker id, SPM
+    offsets, packet fields, and ABI symbols are intentionally outside this
+    interface.
+  }];
+  let methods = [
+    InterfaceMethod<
+      "Return the hardware issue queue family selected by this instruction op.",
+      "::wafer::InstrQueue", "getInstructionQueueFamily", (ins)>,
+    InterfaceMethod<
+      "Verify the instruction contract represented by this operation.",
+      "::mlir::LogicalResult", "verifyInstructionContract", (ins)>
+  ];
+}
+
 #endif // WAFER_IR_WAFERINTERFACES_TD

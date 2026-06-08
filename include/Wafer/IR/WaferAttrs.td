@@ -149,4 +149,21 @@ def Wafer_ComputeReduceKindAttr
   let assemblyFormat = "`<` $value `>`";
 }
 
+def Wafer_InstrQueueCT : I32EnumAttrCase<"CT", 0, "ct">;
+def Wafer_InstrQueueNE : I32EnumAttrCase<"NE", 1, "ne">;
+def Wafer_InstrQueueRDMA : I32EnumAttrCase<"RDMA", 2, "rdma">;
+def Wafer_InstrQueueWDMA : I32EnumAttrCase<"WDMA", 3, "wdma">;
+def Wafer_InstrQueueTDMA : I32EnumAttrCase<"TDMA", 4, "tdma">;
+def Wafer_InstrQueue : I32EnumAttr<"InstrQueue",
+                                   "Wafer instruction issue queue family", [
+  Wafer_InstrQueueCT,
+  Wafer_InstrQueueNE,
+  Wafer_InstrQueueRDMA,
+  Wafer_InstrQueueWDMA,
+  Wafer_InstrQueueTDMA
+]> {
+  let cppNamespace = "::wafer";
+  let genSpecializedAttr = 0;
+}
+
 #endif // WAFER_IR_WAFERATTRS_TD

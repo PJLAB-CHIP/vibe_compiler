@@ -15,6 +15,7 @@ namespace wafer {
 
 enum class MemLayout : uint32_t;
 enum class MemorySpace : uint32_t;
+enum class InstrQueue : uint32_t;
 
 enum class WaferValueRole {
   None,
