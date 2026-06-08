@@ -209,3 +209,27 @@ func.func @reshape_view(
 // CHECK-SAME: sizes: [8, 8]
 // CHECK-SAME: strides: [8, 1]
 // CHECK: wafer.instr.wdma
+
+func.func @reshape_padded_layout_materializes(%zero: f16) {
+  %region = wafer.tile.region(%zero : f16) -> (f16) {
+  ^bb0(%fill: f16):
+    %source = memref.alloc()
+        : memref<4x16xf16, #wafer.memory<spm, cx>>
+    %reshaped = wafer.tile.reshape %source
+        : memref<4x16xf16, #wafer.memory<spm, cx>>
+       -> memref<8x8xf16, #wafer.memory<spm, cx>>
+    wafer.tile.yield %fill : f16
+  }
+  return
+}
+
+// CHECK-LABEL: func.func @reshape_padded_layout_materializes
+// CHECK-NOT: wafer.tile.reshape
+// CHECK: memref.alloc() : memref<4x16xf16, #wafer.memory<spm, cx>>
+// CHECK: %[[RESHAPED:.+]] = memref.alloc() : memref<8x8xf16, #wafer.memory<spm, cx>>
+// CHECK: wafer.instr.gather_scatter %{{.+}} to %[[RESHAPED]]
+// CHECK-SAME: byte_count = 16 : i64
+// CHECK-SAME: inner_bytes = 16 : i64
+// CHECK: wafer.instr.gather_scatter %{{.+}} to %[[RESHAPED]]
+// CHECK-SAME: dst_offset = 128 : i64
+// CHECK-SAME: src_offset = 16 : i64

@@ -45,6 +45,13 @@ static mlir::LogicalResult verifyPositiveI64Attr(mlir::Operation *op,
   return mlir::success();
 }
 
+static mlir::LogicalResult verifyNonNegativeOptionalI64Attr(
+    mlir::Operation *op, mlir::IntegerAttr attr, llvm::StringRef name) {
+  if (attr && attr.getInt() < 0)
+    return op->emitOpError() << name << " must be non-negative";
+  return mlir::success();
+}
+
 static mlir::LogicalResult verifyDescriptorArray(mlir::Operation *op,
                                                  mlir::DenseI64ArrayAttr attr,
                                                  llvm::StringRef name,
@@ -57,6 +64,57 @@ static mlir::LogicalResult verifyDescriptorArray(mlir::Operation *op,
     if (!positive && value < 0)
       return op->emitOpError() << name << " entries must be non-negative";
   }
+  return mlir::success();
+}
+
+static int64_t getOptionalI64AttrValue(mlir::IntegerAttr attr) {
+  return attr ? attr.getInt() : 0;
+}
+
+static mlir::FailureOr<int64_t> getMovementDescriptorEnd(
+    mlir::Operation *op, int64_t offset, int64_t innerBytes,
+    mlir::DenseI64ArrayAttr strides, mlir::DenseI64ArrayAttr iterations,
+    llvm::StringRef role) {
+  int64_t end = 0;
+  if (!checkedAdd(offset, innerBytes, end))
+    return op->emitOpError()
+           << role << " descriptor byte range overflows int64";
+
+  if (!strides || !iterations)
+    return end;
+
+  for (auto [stride, iteration] :
+       llvm::zip(strides.asArrayRef(), iterations.asArrayRef())) {
+    int64_t span = 0;
+    if (!checkedMul(stride, iteration - 1, span) ||
+        !checkedAdd(end, span, end))
+      return op->emitOpError()
+             << role << " descriptor byte range overflows int64";
+  }
+  return end;
+}
+
+static mlir::LogicalResult verifyDescriptorWithinPhysicalRange(
+    mlir::Operation *op, mlir::Type type, mlir::IntegerAttr offsetAttr,
+    mlir::IntegerAttr innerBytesAttr, mlir::DenseI64ArrayAttr strides,
+    mlir::DenseI64ArrayAttr iterations, llvm::StringRef role) {
+  auto memrefType = mlir::dyn_cast<mlir::MemRefType>(type);
+  if (!memrefType)
+    return mlir::success();
+
+  std::optional<WaferPhysicalTensorInfo> info =
+      wafer::computeWaferPhysicalTensorInfo(memrefType);
+  if (!info || info->physicalBytes < 0)
+    return mlir::success();
+
+  mlir::FailureOr<int64_t> end = getMovementDescriptorEnd(
+      op, getOptionalI64AttrValue(offsetAttr), innerBytesAttr.getInt(), strides,
+      iterations, role);
+  if (mlir::failed(end))
+    return mlir::failure();
+  if (*end > info->physicalBytes)
+    return op->emitOpError()
+           << role << " descriptor byte range exceeds physical byte size";
   return mlir::success();
 }
 
@@ -294,10 +352,24 @@ mlir::LogicalResult InstrGatherScatterOp::verify() {
       mlir::failed(
           verifySPMMemRef(getOperation(), getDest().getType(), "dest")))
     return mlir::failure();
-  return verifyMovementDescriptor(getOperation(), getByteCountAttr(),
-                                  getInnerBytesAttr(), getSrcStridesAttr(),
-                                  getSrcIterationsAttr(), getDstStridesAttr(),
-                                  getDstIterationsAttr());
+  if (mlir::failed(verifyNonNegativeOptionalI64Attr(
+          getOperation(), getSrcOffsetAttr(), "src_offset")) ||
+      mlir::failed(verifyNonNegativeOptionalI64Attr(
+          getOperation(), getDstOffsetAttr(), "dst_offset")) ||
+      mlir::failed(verifyMovementDescriptor(
+          getOperation(), getByteCountAttr(), getInnerBytesAttr(),
+          getSrcStridesAttr(), getSrcIterationsAttr(), getDstStridesAttr(),
+          getDstIterationsAttr())) ||
+      mlir::failed(verifyDescriptorWithinPhysicalRange(
+          getOperation(), getSource().getType(), getSrcOffsetAttr(),
+          getInnerBytesAttr(), getSrcStridesAttr(), getSrcIterationsAttr(),
+          "source")) ||
+      mlir::failed(verifyDescriptorWithinPhysicalRange(
+          getOperation(), getDest().getType(), getDstOffsetAttr(),
+          getInnerBytesAttr(), getDstStridesAttr(), getDstIterationsAttr(),
+          "dest")))
+    return mlir::failure();
+  return mlir::success();
 }
 
 InstrQueue InstrGatherScatterOp::getInstructionQueueFamily() {

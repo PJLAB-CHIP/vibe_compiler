@@ -14,6 +14,7 @@
 #include "mlir/Transforms/DialectConversion.h"
 #include "llvm/ADT/STLExtras.h"
 
+#include <algorithm>
 #include <optional>
 #include <string>
 
@@ -29,8 +30,15 @@ namespace {
 struct MovementDescriptor {
   int64_t byteCount = 0;
   int64_t innerBytes = 0;
+  int64_t byteOffset = 0;
   llvm::SmallVector<int64_t, 3> strides;
   llvm::SmallVector<int64_t, 3> iterations;
+};
+
+struct ReshapeMovementSegment {
+  int64_t sourceOffset = 0;
+  int64_t destOffset = 0;
+  int64_t bytes = 0;
 };
 
 static void setFailureReason(std::string *failureReason,
@@ -165,10 +173,19 @@ static void createGatherScatter(mlir::PatternRewriter &rewriter,
                                 mlir::Value dest,
                                 const MovementDescriptor &sourceDescriptor,
                                 const MovementDescriptor &destDescriptor) {
+  mlir::IntegerAttr sourceOffset =
+      sourceDescriptor.byteOffset == 0
+          ? mlir::IntegerAttr{}
+          : rewriter.getI64IntegerAttr(sourceDescriptor.byteOffset);
+  mlir::IntegerAttr destOffset =
+      destDescriptor.byteOffset == 0
+          ? mlir::IntegerAttr{}
+          : rewriter.getI64IntegerAttr(destDescriptor.byteOffset);
   rewriter.create<InstrGatherScatterOp>(
       loc, source, dest, destDescriptor.byteCount, destDescriptor.innerBytes,
-      sourceDescriptor.strides, sourceDescriptor.iterations,
-      destDescriptor.strides, destDescriptor.iterations);
+      sourceOffset, destOffset, sourceDescriptor.strides,
+      sourceDescriptor.iterations, destDescriptor.strides,
+      destDescriptor.iterations);
 }
 
 static void copyOptionalAttr(mlir::Operation *from, mlir::Operation *to,
@@ -217,6 +234,125 @@ getStaticCompactStrides(mlir::PatternRewriter &rewriter, mlir::Operation *op,
     runningStride *= size;
   }
   return strides;
+}
+
+static bool isStandardViewCompatibleLayout(MemLayout layout) {
+  return layout == MemLayout::Tensor || layout == MemLayout::NTensor;
+}
+
+static mlir::FailureOr<int64_t>
+getStaticOuterElementCount(mlir::PatternRewriter &rewriter,
+                           mlir::Operation *op, mlir::MemRefType type,
+                           std::string *failureReason,
+                           llvm::StringRef role) {
+  if (type.getRank() == 0)
+    return 1;
+
+  int64_t outer = 1;
+  for (int64_t dim : type.getShape().drop_back()) {
+    if (dim == mlir::ShapedType::kDynamic)
+      return failFailureOr<int64_t>(
+          rewriter, op, failureReason,
+          llvm::Twine(role).concat(" requires static tensor shape").str());
+    outer *= dim;
+  }
+  if (outer <= 0)
+    return failFailureOr<int64_t>(
+        rewriter, op, failureReason,
+        llvm::Twine(role).concat(" requires positive outer extent").str());
+  return outer;
+}
+
+static mlir::FailureOr<llvm::SmallVector<ReshapeMovementSegment>>
+getStaticReshapeMovementSegments(mlir::PatternRewriter &rewriter,
+                                 mlir::Operation *op,
+                                 mlir::MemRefType sourceType,
+                                 mlir::MemRefType destType,
+                                 std::string *failureReason) {
+  std::optional<WaferPhysicalTensorInfo> sourceInfo =
+      wafer::computeWaferPhysicalTensorInfo(sourceType);
+  std::optional<WaferPhysicalTensorInfo> destInfo =
+      wafer::computeWaferPhysicalTensorInfo(destType);
+  if (!sourceInfo || !destInfo || sourceInfo->compactBytes <= 0 ||
+      destInfo->compactBytes <= 0 || sourceInfo->physicalBytes <= 0 ||
+      destInfo->physicalBytes <= 0)
+    return failFailureOr<llvm::SmallVector<ReshapeMovementSegment>>(
+        rewriter, op, failureReason,
+        "tile.reshape gather/scatter lowering requires static positive byte "
+        "sizes");
+  if (sourceInfo->compactBytes != destInfo->compactBytes)
+    return failFailureOr<llvm::SmallVector<ReshapeMovementSegment>>(
+        rewriter, op, failureReason,
+        "tile.reshape gather/scatter lowering requires equal static compact "
+        "byte counts");
+
+  mlir::FailureOr<int64_t> sourceOuter = getStaticOuterElementCount(
+      rewriter, op, sourceType, failureReason, "tile.reshape source");
+  mlir::FailureOr<int64_t> destOuter = getStaticOuterElementCount(
+      rewriter, op, destType, failureReason, "tile.reshape result");
+  if (mlir::failed(sourceOuter) || mlir::failed(destOuter))
+    return mlir::failure();
+
+  if (sourceInfo->compactBytes % *sourceOuter != 0 ||
+      sourceInfo->physicalBytes % *sourceOuter != 0 ||
+      destInfo->compactBytes % *destOuter != 0 ||
+      destInfo->physicalBytes % *destOuter != 0)
+    return failFailureOr<llvm::SmallVector<ReshapeMovementSegment>>(
+        rewriter, op, failureReason,
+        "tile.reshape gather/scatter lowering cannot form static byte rows");
+
+  int64_t sourceRowBytes = sourceInfo->compactBytes / *sourceOuter;
+  int64_t sourcePhysicalRowBytes = sourceInfo->physicalBytes / *sourceOuter;
+  int64_t destRowBytes = destInfo->compactBytes / *destOuter;
+  int64_t destPhysicalRowBytes = destInfo->physicalBytes / *destOuter;
+  if (sourceRowBytes <= 0 || destRowBytes <= 0 ||
+      sourcePhysicalRowBytes < sourceRowBytes ||
+      destPhysicalRowBytes < destRowBytes)
+    return failFailureOr<llvm::SmallVector<ReshapeMovementSegment>>(
+        rewriter, op, failureReason,
+        "tile.reshape gather/scatter lowering found invalid physical row "
+        "layout");
+
+  llvm::SmallVector<ReshapeMovementSegment> segments;
+  int64_t remaining = sourceInfo->compactBytes;
+  int64_t sourcePhysicalRowBase = 0;
+  int64_t destPhysicalRowBase = 0;
+  int64_t sourceRowOffset = 0;
+  int64_t destRowOffset = 0;
+  while (remaining > 0) {
+    int64_t sourceAvailable = sourceRowBytes - sourceRowOffset;
+    int64_t destAvailable = destRowBytes - destRowOffset;
+    int64_t bytes = std::min({remaining, sourceAvailable, destAvailable});
+    if (bytes <= 0)
+      return failFailureOr<llvm::SmallVector<ReshapeMovementSegment>>(
+          rewriter, op, failureReason,
+          "tile.reshape gather/scatter lowering produced an empty segment");
+
+    int64_t sourceOffset = sourcePhysicalRowBase + sourceRowOffset;
+    int64_t destOffset = destPhysicalRowBase + destRowOffset;
+    if (sourceOffset + bytes > sourceInfo->physicalBytes ||
+        destOffset + bytes > destInfo->physicalBytes)
+      return failFailureOr<llvm::SmallVector<ReshapeMovementSegment>>(
+          rewriter, op, failureReason,
+          "tile.reshape gather/scatter segment exceeds static physical byte "
+          "range");
+
+    segments.push_back({sourceOffset, destOffset, bytes});
+    remaining -= bytes;
+    sourceRowOffset += bytes;
+    destRowOffset += bytes;
+
+    if (sourceRowOffset == sourceRowBytes) {
+      sourcePhysicalRowBase += sourcePhysicalRowBytes;
+      sourceRowOffset = 0;
+    }
+    if (destRowOffset == destRowBytes) {
+      destPhysicalRowBase += destPhysicalRowBytes;
+      destRowOffset = 0;
+    }
+  }
+
+  return segments;
 }
 
 static mlir::FailureOr<int64_t>
@@ -525,35 +661,82 @@ public:
       return mlir::success();
     }
 
+    auto sourceType =
+        mlir::dyn_cast<mlir::MemRefType>(op.getSource().getType());
+    if (!sourceType)
+      return failPattern(rewriter, op, failureReason,
+                         "tile.reshape lowering requires memref source type");
     auto resultType =
         mlir::dyn_cast<mlir::MemRefType>(op.getResult().getType());
     if (!resultType)
       return failPattern(rewriter, op, failureReason,
                          "tile.reshape lowering requires memref result type");
 
-    mlir::FailureOr<int64_t> sourceBytes =
-        getStaticPhysicalBytes(rewriter, op, op.getSource().getType(),
-                               failureReason, "tile.reshape source");
-    mlir::FailureOr<int64_t> resultBytes =
-        getStaticPhysicalBytes(rewriter, op, op.getResult().getType(),
-                               failureReason, "tile.reshape result");
-    if (mlir::failed(sourceBytes) || mlir::failed(resultBytes))
-      return mlir::failure();
-    if (*sourceBytes != *resultBytes)
+    MemoryAttr sourceMemory = wafer::getWaferMemoryAttr(sourceType);
+    MemoryAttr resultMemory = wafer::getWaferMemoryAttr(resultType);
+    if (!sourceMemory || !resultMemory)
       return failPattern(rewriter, op, failureReason,
-                         "tile.reshape lowering requires equal static "
-                         "physical byte counts");
+                         "tile.reshape lowering requires Wafer memref types");
 
-    llvm::SmallVector<int64_t> sizes(resultType.getShape().begin(),
-                                     resultType.getShape().end());
-    mlir::FailureOr<llvm::SmallVector<int64_t>> strides =
-        getStaticCompactStrides(rewriter, op, resultType, failureReason);
-    if (mlir::failed(strides))
+    if (isStandardViewCompatibleLayout(sourceMemory.getLayout()) &&
+        isStandardViewCompatibleLayout(resultMemory.getLayout())) {
+      mlir::FailureOr<int64_t> sourceBytes =
+          getStaticPhysicalBytes(rewriter, op, op.getSource().getType(),
+                                 failureReason, "tile.reshape source");
+      mlir::FailureOr<int64_t> resultBytes =
+          getStaticPhysicalBytes(rewriter, op, op.getResult().getType(),
+                                 failureReason, "tile.reshape result");
+      if (mlir::failed(sourceBytes) || mlir::failed(resultBytes))
+        return mlir::failure();
+      if (*sourceBytes != *resultBytes)
+        return failPattern(rewriter, op, failureReason,
+                           "tile.reshape standard view lowering requires "
+                           "equal static physical byte counts");
+
+      llvm::SmallVector<int64_t> sizes(resultType.getShape().begin(),
+                                       resultType.getShape().end());
+      mlir::FailureOr<llvm::SmallVector<int64_t>> strides =
+          getStaticCompactStrides(rewriter, op, resultType, failureReason);
+      if (mlir::failed(strides))
+        return mlir::failure();
+
+      auto view = rewriter.create<mlir::memref::ReinterpretCastOp>(
+          op.getLoc(), resultType, op.getSource(), /*offset=*/0, sizes,
+          *strides);
+      rewriter.replaceOp(op, view.getResult());
+      return mlir::success();
+    }
+
+    mlir::FailureOr<llvm::SmallVector<ReshapeMovementSegment>> segments =
+        getStaticReshapeMovementSegments(rewriter, op, sourceType, resultType,
+                                         failureReason);
+    if (mlir::failed(segments))
       return mlir::failure();
 
-    auto view = rewriter.create<mlir::memref::ReinterpretCastOp>(
-        op.getLoc(), resultType, op.getSource(), /*offset=*/0, sizes, *strides);
-    rewriter.replaceOp(op, view.getResult());
+    mlir::FailureOr<mlir::Value> dest = createDestAlloc(
+        op.getLoc(), op.getResult().getType(), rewriter, op, failureReason);
+    if (mlir::failed(dest))
+      return mlir::failure();
+
+    for (const ReshapeMovementSegment &segment : *segments) {
+      MovementDescriptor sourceDescriptor;
+      sourceDescriptor.byteCount = segment.bytes;
+      sourceDescriptor.innerBytes = segment.bytes;
+      sourceDescriptor.byteOffset = segment.sourceOffset;
+      sourceDescriptor.strides.assign({0, 0, 0});
+      sourceDescriptor.iterations.assign({1, 1, 1});
+
+      MovementDescriptor destDescriptor;
+      destDescriptor.byteCount = segment.bytes;
+      destDescriptor.innerBytes = segment.bytes;
+      destDescriptor.byteOffset = segment.destOffset;
+      destDescriptor.strides.assign({0, 0, 0});
+      destDescriptor.iterations.assign({1, 1, 1});
+
+      createGatherScatter(rewriter, op.getLoc(), op.getSource(), *dest,
+                          sourceDescriptor, destDescriptor);
+    }
+    rewriter.replaceOp(op, *dest);
     return mlir::success();
   }
 

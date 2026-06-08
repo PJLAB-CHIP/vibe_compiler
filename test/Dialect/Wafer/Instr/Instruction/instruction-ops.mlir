@@ -37,6 +37,16 @@ module {
       : memref<4x8xf16, #wafer.memory<spm, tensor>>
      to memref<4x8xf16, #wafer.memory<spm, cx>>
 
+  wafer.instr.gather_scatter %tensor to %cx
+      {byte_count = 16 : i64, inner_bytes = 16 : i64,
+       src_offset = 16 : i64, dst_offset = 128 : i64,
+       src_strides = array<i64: 0, 0, 0>,
+       src_iterations = array<i64: 1, 1, 1>,
+       dst_strides = array<i64: 0, 0, 0>,
+       dst_iterations = array<i64: 1, 1, 1>}
+      : memref<4x8xf16, #wafer.memory<spm, tensor>>
+     to memref<4x8xf16, #wafer.memory<spm, cx>>
+
   wafer.instr.fill %tensor, %f16
       : memref<4x8xf16, #wafer.memory<spm, tensor>>, f16
 
@@ -74,6 +84,9 @@ module {
 // CHECK-SAME: byte_count = 64 : i64
 // CHECK: wafer.instr.gather_scatter
 // CHECK-SAME: dst_iterations = array<i64: 4, 1, 1>
+// CHECK: wafer.instr.gather_scatter
+// CHECK-SAME: dst_offset = 128 : i64
+// CHECK-SAME: src_offset = 16 : i64
 // CHECK: wafer.instr.fill
 // CHECK: wafer.instr.elementwise <add>
 // CHECK-SAME: indexing_maps

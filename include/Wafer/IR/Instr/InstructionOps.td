@@ -56,11 +56,18 @@ def Wafer_InstrGatherScatterOp : Wafer_InstrDMAOp<"instr.gather_scatter", [
                    MemWrite<Wafer_MovementResource>]>
   ]> {
   let summary = "instruction-level TDMA SPM gather/scatter movement";
+  let description = [{
+    `src_offset` and `dst_offset` are byte offsets within the source and
+    destination operand buffers. They do not assign physical SPM base addresses;
+    placement still owns the final buffer base/range.
+  }];
   let arguments = (ins
     AnyMemRef:$source,
     AnyMemRef:$dest,
     I64Attr:$byte_count,
     I64Attr:$inner_bytes,
+    OptionalAttr<I64Attr>:$src_offset,
+    OptionalAttr<I64Attr>:$dst_offset,
     DenseI64ArrayAttr:$src_strides,
     DenseI64ArrayAttr:$src_iterations,
     DenseI64ArrayAttr:$dst_strides,

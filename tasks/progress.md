@@ -108,8 +108,8 @@ R3.2c/R3.2d 当前边界是：
   R3.2d.1 已落地 instruction op contract：`InstrQueue`、`WaferInstructionOpInterface`、
   `rdma/wdma/gather_scatter/fill/elementwise/reduce/convert/gemm` ODS、verifier、MemoryEffects 和
   lit/unit 覆盖。R3.2d.2 已实现 `--wafer-convert-tile-region-to-instr`：覆盖 load/store、
-  静态可证明的 layout materialize、fill、rank-2 GEMM、elementwise、reduce、copy、metadata
-  reshape lowered to standard memref view、nested `scf.if` / `scf.for` 递归 legalization，以及 communication / padding layout
+  静态可证明的 layout materialize、fill、rank-2 GEMM、elementwise、reduce、copy、compact metadata
+  reshape lowered to standard memref view、padded reshape lowered to TDMA gather/scatter、nested `scf.if` / `scf.for` 递归 legalization，以及 communication / padding layout
   materialization structured failure。R3.2d.3 已接入 `wafer-lower-tile-region-to-instr` 和
   `wafer-lower-groups-to-instr` named pipeline，pipeline gate 覆盖多 group、structured control-flow、
   no executable target-abstract op residue 和 unsupported movement structured failure。
@@ -120,7 +120,7 @@ R3.2c/R3.2d 当前边界是：
 | ID | 状态 | 输入 / 输出边界 | 完成 gate |
 | --- | --- | --- | --- |
 | R3.2d.1 | done | 输入：R3.2c target-abstract `wafer.tile.region` IR with DDR boundary memref、unplaced SPM memref 和 structured control-flow；输出：`wafer.instr.*` ODS / interface / verifier 合同 | 已实现 `InstrQueue`、instruction interface、effect helper，以及 `rdma`、`wdma`、`gather_scatter`、`fill`、`elementwise`、`reduce`、`convert`、`gemm` op contract；op 只读写 Wafer-tagged memref，不产生 buffer result，不携带 SPM offset 或 ABI 字段 |
-| R3.2d.2 | done | 输入：R3.2d.1 instruction ops + R3.2c tile-region IR；输出：instruction-level `wafer.instr.*` IR 或结构化失败 | 已实现 `--wafer-convert-tile-region-to-instr` DialectConversion；为 load/store、静态可证明的 layout materialize、tile.gemm/reduce/elementwise、copy 选择 instruction-level IR，并把 metadata view 降成标准 memref view 或 identity；递归处理 structured control-flow body；communication 和不可证明 padding layout materialization 结构化失败；不新增 storage/buffer IR |
+| R3.2d.2 | done | 输入：R3.2d.1 instruction ops + R3.2c tile-region IR；输出：instruction-level `wafer.instr.*` IR 或结构化失败 | 已实现 `--wafer-convert-tile-region-to-instr` DialectConversion；为 load/store、静态可证明的 layout materialize、tile.gemm/reduce/elementwise、copy 选择 instruction-level IR，并把 compact metadata reshape 降成标准 memref view 或 identity，把 padded reshape materialize 成 TDMA gather/scatter；递归处理 structured control-flow body；communication 和不可证明 padding layout materialization 结构化失败；不新增 storage/buffer IR |
 | R3.2d.3 | done | 输入：R3.2d.2 conversion；输出：可由 placement/resource stage 消费的 instruction-level IR | 已接入 `wafer-lower-tile-region-to-instr` 和 `wafer-lower-groups-to-instr` named pipeline / planner scratch path；测试覆盖多 op、多 group、structured control-flow、metadata view lowering、unsupported movement/comm structured failure；转换后不能残留 executable target-abstract op |
 | R3.2e | active | 输入：R3.2d instruction-level IR with unplaced Wafer-tagged memref；输出：同一 instruction-level IR with placed SPM memref values 或结构化失败 | 真实 SPM window placement：alignment、layout padding、scratch/psum/temp、materialization temp、communication staging、control-flow lifetime、range/end-address/bank span/conflict 都参与 |
 | R3.2f | pending | 输入：R3.2e placed instruction-level IR + DDR boundary facts；输出：DDR/resource legality result 和 movement/compute resource validation | 覆盖 external/compiler-managed/resident-constant、pool/domain/capacity/bandwidth/range demand；不能用 manifest fixture 替代；不能回头改变 instruction semantics |

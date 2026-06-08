@@ -333,11 +333,13 @@ wafer.instr.gather_scatter source to dest attr-dict
 
 | op | operands | result | required attrs |
 | --- | --- | --- | --- |
-| `wafer.instr.gather_scatter` | `source: MemRef<#wafer.memory<spm, *>>`, `dest: MemRef<#wafer.memory<spm, *>>` | none | `byte_count`, `inner_bytes`, `src_strides`, `src_iterations`, `dst_strides`, `dst_iterations` |
+| `wafer.instr.gather_scatter` | `source: MemRef<#wafer.memory<spm, *>>`, `dest: MemRef<#wafer.memory<spm, *>>` | none | `byte_count`, `inner_bytes`, optional `src_offset` / `dst_offset`, `src_strides`, `src_iterations`, `dst_strides`, `dst_iterations` |
 
 V0 只定义这一条 TDMA-backed movement op。copy、layout materialization、static slice movement、broadcast
 和 transpose 都要么映射成一条或多条 gather_scatter，要么失败。`wafer.instr.copy` 不作为
-单独 IR op；contiguous copy 是 gather_scatter descriptor 特例。
+单独 IR op；contiguous copy 是 gather_scatter descriptor 特例。`src_offset` / `dst_offset`
+是 operand buffer 内的字节偏移，用于表达同一 buffer 内的分段 movement；它们不是 R3.2e/R3.4
+负责分配的 physical SPM base address。
 
 ### 7.4 Fill / Elementwise / Reduce / Convert
 
@@ -404,7 +406,7 @@ V0 mapping：
 | `wafer.tile.insert_slice` | structured failure until copy-plus-slice insertion descriptor splitting is proven against the V0 TDMA descriptor |
 | `wafer.tile.broadcast` | structured failure until static broadcast descriptor expansion is proven against the V0 TDMA descriptor |
 | `wafer.tile.transpose` | structured failure until permutation descriptor expansion is proven against the V0 TDMA descriptor |
-| metadata reshape/view | lower to standard memref view or identity replacement; no Wafer tile op residue and no instruction issue |
+| `wafer.tile.reshape` | identity replacement when types are identical; compact `tensor/ntensor` reshape lowers to a verifier-legal standard memref view; padded/aligned layouts such as `Cx/NCx` materialize a destination memref and emit one or more `wafer.instr.gather_scatter`; structured failure only when the static reshape movement plan cannot be represented by V0 descriptors |
 | `scf.if` / `scf.for` | preserve the structured control-flow op; recursively legalize executable target-abstract ops in each nested region; keep scalar and memref yields explicit |
 | `wafer.tile.send/recv/wait/all_gather/reduce_scatter/all_reduce` | not handled by R3.2d V0 |
 
@@ -423,7 +425,8 @@ diagnostics to the closed-loop planner or debug pass, but rejected instruction I
 - non-ranked or dynamic-shaped memref where V0 needs static byte/stride computation.
 - unsupported Wafer memory attr, address space or physical layout marker for an instruction family.
 - unsupported dtype, including relation/elementwise/convert pairs not mapped to CT V0.
-- movement descriptor cannot be represented with `inner_bytes` plus three stride/iteration levels.
+- movement descriptor cannot be represented with buffer-local offsets, `inner_bytes` and three
+  stride/iteration levels.
 - `Cx/NCx` materialization with retained `C0` tail cannot be split into separately representable
   full-block and tail GatherScatter descriptors.
 - static slice/broadcast/transpose cannot be converted into one or more gather_scatter descriptors.
