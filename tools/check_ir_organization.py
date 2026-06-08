@@ -123,6 +123,10 @@ CONVERSION_LIBRARIES = {
         "include": "include/Wafer/Conversion/WaferGroupToTileRegion/WaferGroupToTileRegion.h",
         "lib": "lib/Wafer/Conversion/WaferGroupToTileRegion/WaferGroupToTileRegion.cpp",
     },
+    "WaferTileRegionToInstr": {
+        "include": "include/Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h",
+        "lib": "lib/Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.cpp",
+    },
 }
 STABLEHLO_CONVERSION_SOURCES = [
     "lib/Wafer/Conversion/StableHLOToLinalg/LegalizeStablehloToLinalg.cpp",

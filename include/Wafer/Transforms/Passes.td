@@ -70,4 +70,16 @@ def ConvertGroupToTileRegionPass
   ];
 }
 
+def ConvertTileRegionToInstrPass
+    : Pass<"wafer-convert-tile-region-to-instr", "mlir::ModuleOp"> {
+  let summary = "Convert executable wafer.tile.region ops to wafer.instr IR";
+  let dependentDialects = ["mlir::arith::ArithDialect",
+                           "mlir::async::AsyncDialect",
+                           "mlir::func::FuncDialect",
+                           "mlir::memref::MemRefDialect",
+                           "mlir::scf::SCFDialect",
+                           "wafer::WaferDialect",
+  ];
+}
+
 #endif // WAFER_TRANSFORMS_PASSES_TD

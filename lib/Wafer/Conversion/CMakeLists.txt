@@ -23,6 +23,27 @@ add_mlir_conversion_library(WaferGroupToTileRegion
   MLIRTransforms
 )
 
+add_mlir_conversion_library(WaferTileRegionToInstr
+  WaferTileRegionToInstr/WaferTileRegionToInstr.cpp
+
+  ADDITIONAL_HEADER_DIRS
+  ${PROJECT_SOURCE_DIR}/include/Wafer/Conversion/WaferTileRegionToInstr
+
+  DEPENDS
+  WaferPassesIncGen
+
+  LINK_LIBS PUBLIC
+  WaferIR
+  MLIRArithDialect
+  MLIRAsyncDialect
+  MLIRFuncDialect
+  MLIRIR
+  MLIRMemRefDialect
+  MLIRSCFDialect
+  MLIRSupport
+  MLIRTransforms
+)
+
 add_mlir_conversion_library(WaferStableHLOToLinalg
   StableHLOToLinalg/LegalizeStablehloToLinalg.cpp
   StableHLOToLinalg/NormalizeStablehloCollectives.cpp

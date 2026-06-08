@@ -393,16 +393,16 @@ V0 mapping：
 | --- | --- |
 | `wafer.tile.load` | ensure / create destination `memref<..., #wafer.memory<spm, tensor>>`; emit `wafer.instr.rdma`; replace original result with dest memref |
 | `wafer.tile.store` | emit `wafer.instr.wdma`; erase store |
-| `wafer.tile.materialize_layout` | ensure / create destination memref with requested marker; emit one or more `wafer.instr.gather_scatter`; replace result with dest memref |
+| `wafer.tile.materialize_layout` | ensure / create destination memref with requested marker; emit `wafer.instr.gather_scatter` only when static source/dest physical byte counts and 3-level row descriptors are provably compatible; otherwise structured failure |
 | `wafer.tile.fill` | emit `wafer.instr.fill` writing the existing dest memref |
 | `wafer.tile.gemm` | ensure / create destination aligned SPM memref; emit `wafer.instr.gemm`; replace result with dest memref |
 | `wafer.tile.elementwise` | ensure / create destination SPM memref; emit `wafer.instr.elementwise`; replace result with dest memref |
 | `wafer.tile.reduce` | ensure / create destination SPM memref; emit `wafer.instr.reduce`; replace result with dest memref |
 | `wafer.tile.copy` | ensure / create destination SPM memref; emit one gather_scatter; replace result with dest memref |
-| `wafer.tile.extract_slice` | ensure / create destination compact SPM memref; emit gather_scatter from source slice to destination |
-| `wafer.tile.insert_slice` | ensure / create result SPM memref; first gather_scatter copy dest to result, then gather_scatter source into result slice |
-| `wafer.tile.broadcast` | ensure / create destination SPM memref; emit one or more gather_scatter if static broadcast descriptor is expressible |
-| `wafer.tile.transpose` | ensure / create destination SPM memref; emit gather_scatter if permutation is statically expressible |
+| `wafer.tile.extract_slice` | structured failure until slice descriptor splitting is proven against the V0 TDMA descriptor |
+| `wafer.tile.insert_slice` | structured failure until copy-plus-slice insertion descriptor splitting is proven against the V0 TDMA descriptor |
+| `wafer.tile.broadcast` | structured failure until static broadcast descriptor expansion is proven against the V0 TDMA descriptor |
+| `wafer.tile.transpose` | structured failure until permutation descriptor expansion is proven against the V0 TDMA descriptor |
 | metadata reshape/view | stays as verifier-legal memref alias; no instruction issue |
 | `scf.if` / `scf.for` | preserve the structured control-flow op; recursively legalize executable target-abstract ops in each nested region; keep scalar and memref yields explicit |
 | `wafer.tile.send/recv/wait/all_gather/reduce_scatter/all_reduce` | not handled by R3.2d V0 |
@@ -553,13 +553,20 @@ R3.2d.1 已完成：
    `wafer.instr.convert` 和 `wafer.instr.gemm` ODS。
 3. 为每个 op 实现 verifier、MemoryEffects、instruction interface 和 positive/negative lit tests。
 
-R3.2d.2/R3.2d.3 仍需实现：
+R3.2d.2 已完成：
 
-4. 实现 `--wafer-convert-tile-region-to-instr` DialectConversion，并让 main R3.2 planner 调用同一
-   conversion implementation。
+4. 实现 `--wafer-convert-tile-region-to-instr` DialectConversion，并提供
+   `WaferTileRegionToInstr` conversion library API。
 5. conversion 递归处理 `scf.if` / `scf.for` region body，并保留 scalar / memref yield 关系。
-6. 增加 conversion tests，覆盖 load/store、layout materialize、fill、GEMM、elementwise/relation、
-   reduce、copy/broadcast/transpose、extract_slice/insert_slice、metadata view preserved 和 structured
-   control-flow failure。
-7. 为 `wafer.instr.convert` 增加 parser/verifier tests；convert lowering 等 `wafer.tile.convert`
+6. conversion tests 覆盖 load/store、layout materialize、fill、GEMM、elementwise、reduce、
+   copy、metadata view preserved、nested `scf.if`、tile communication structured failure，以及
+   padding layout materialization structured failure。
+
+R3.2d.3 仍需实现：
+
+7. 让 main R3.2 planner / named pipeline 调用同一 conversion implementation。
+8. 扩展 conversion tests 覆盖多 group、mixed nested control-flow、broadcast/transpose、
+   extract_slice/insert_slice descriptor expansion、unsupported movement structured failure，以及
+   转换后不能残留 executable target-abstract op 的 pipeline-level gate。
+9. 为 `wafer.instr.convert` 增加 parser/verifier tests；convert lowering 等 `wafer.tile.convert`
    或等价 source op 出现后再接入 completion gate。
