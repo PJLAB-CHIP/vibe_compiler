@@ -102,7 +102,7 @@ func.func @gemm_reduce_and_reshape(
 // CHECK-SAME: n = 64 : i64
 // CHECK: wafer.instr.reduce <sum>
 // CHECK-SAME: dimensions = array<i64: 0>
-// CHECK: wafer.tile.reshape
+// CHECK-NOT: wafer.tile.reshape
 // CHECK: wafer.instr.wdma
 
 func.func @nested_control_flow(
@@ -178,3 +178,34 @@ func.func @nested_loop(
 // CHECK-NOT: wafer.tile.copy
 // CHECK: wafer.instr.gather_scatter
 // CHECK: scf.yield
+
+func.func @reshape_view(
+    %input: memref<4x16xf16, #wafer.memory<ddr, tensor>>,
+    %output: memref<8x8xf16, #wafer.memory<ddr, tensor>>) {
+  %region = wafer.tile.region(%input, %output
+      : memref<4x16xf16, #wafer.memory<ddr, tensor>>,
+        memref<8x8xf16, #wafer.memory<ddr, tensor>>)
+      -> (memref<8x8xf16, #wafer.memory<ddr, tensor>>) {
+  ^bb0(%in: memref<4x16xf16, #wafer.memory<ddr, tensor>>,
+       %out: memref<8x8xf16, #wafer.memory<ddr, tensor>>):
+    %loaded = wafer.tile.load %in
+        : memref<4x16xf16, #wafer.memory<ddr, tensor>>
+       -> memref<4x16xf16, #wafer.memory<spm, tensor>>
+    %view = wafer.tile.reshape %loaded
+        : memref<4x16xf16, #wafer.memory<spm, tensor>>
+       -> memref<8x8xf16, #wafer.memory<spm, tensor>>
+    wafer.tile.store %view, %out
+        : memref<8x8xf16, #wafer.memory<spm, tensor>>
+       -> memref<8x8xf16, #wafer.memory<ddr, tensor>>
+    wafer.tile.yield %out
+        : memref<8x8xf16, #wafer.memory<ddr, tensor>>
+  }
+  return
+}
+
+// CHECK-LABEL: func.func @reshape_view
+// CHECK-NOT: wafer.tile.reshape
+// CHECK: memref.reinterpret_cast
+// CHECK-SAME: sizes: [8, 8]
+// CHECK-SAME: strides: [8, 1]
+// CHECK: wafer.instr.wdma

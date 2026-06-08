@@ -183,6 +183,43 @@ static mlir::IntegerAttr getI64Attr(mlir::PatternRewriter &rewriter,
 }
 
 static mlir::FailureOr<int64_t>
+getStaticPhysicalBytes(mlir::PatternRewriter &rewriter, mlir::Operation *op,
+                       mlir::Type type, std::string *failureReason,
+                       llvm::StringRef role) {
+  auto memrefType = mlir::dyn_cast<mlir::MemRefType>(type);
+  if (!memrefType)
+    return failFailureOr<int64_t>(
+        rewriter, op, failureReason,
+        llvm::Twine(role).concat(" must be a Wafer memref").str());
+  std::optional<WaferPhysicalTensorInfo> info =
+      wafer::computeWaferPhysicalTensorInfo(memrefType);
+  if (!info || info->physicalBytes <= 0)
+    return failFailureOr<int64_t>(
+        rewriter, op, failureReason,
+        llvm::Twine(role)
+            .concat(" requires static positive physical byte size")
+            .str());
+  return info->physicalBytes;
+}
+
+static mlir::FailureOr<llvm::SmallVector<int64_t>>
+getStaticCompactStrides(mlir::PatternRewriter &rewriter, mlir::Operation *op,
+                        mlir::MemRefType type, std::string *failureReason) {
+  llvm::SmallVector<int64_t> strides(type.getRank(), 1);
+  int64_t runningStride = 1;
+  for (int64_t dim = type.getRank() - 1; dim >= 0; --dim) {
+    strides[dim] = runningStride;
+    int64_t size = type.getDimSize(dim);
+    if (size == mlir::ShapedType::kDynamic)
+      return failFailureOr<llvm::SmallVector<int64_t>>(
+          rewriter, op, failureReason,
+          "tile.reshape lowering requires static result shape");
+    runningStride *= size;
+  }
+  return strides;
+}
+
+static mlir::FailureOr<int64_t>
 getStaticDim(mlir::PatternRewriter &rewriter, mlir::Operation *op,
              mlir::RankedTensorType type, int64_t dim,
              std::string *failureReason, llvm::StringRef role) {
@@ -474,6 +511,56 @@ private:
   std::string *failureReason;
 };
 
+class ViewReshapeLowering : public mlir::OpRewritePattern<ViewReshapeOp> {
+public:
+  ViewReshapeLowering(mlir::MLIRContext *context, std::string *failureReason)
+      : mlir::OpRewritePattern<ViewReshapeOp>(context),
+        failureReason(failureReason) {}
+
+  mlir::LogicalResult
+  matchAndRewrite(ViewReshapeOp op,
+                  mlir::PatternRewriter &rewriter) const final {
+    if (op.getSource().getType() == op.getResult().getType()) {
+      rewriter.replaceOp(op, op.getSource());
+      return mlir::success();
+    }
+
+    auto resultType =
+        mlir::dyn_cast<mlir::MemRefType>(op.getResult().getType());
+    if (!resultType)
+      return failPattern(rewriter, op, failureReason,
+                         "tile.reshape lowering requires memref result type");
+
+    mlir::FailureOr<int64_t> sourceBytes =
+        getStaticPhysicalBytes(rewriter, op, op.getSource().getType(),
+                               failureReason, "tile.reshape source");
+    mlir::FailureOr<int64_t> resultBytes =
+        getStaticPhysicalBytes(rewriter, op, op.getResult().getType(),
+                               failureReason, "tile.reshape result");
+    if (mlir::failed(sourceBytes) || mlir::failed(resultBytes))
+      return mlir::failure();
+    if (*sourceBytes != *resultBytes)
+      return failPattern(rewriter, op, failureReason,
+                         "tile.reshape lowering requires equal static "
+                         "physical byte counts");
+
+    llvm::SmallVector<int64_t> sizes(resultType.getShape().begin(),
+                                     resultType.getShape().end());
+    mlir::FailureOr<llvm::SmallVector<int64_t>> strides =
+        getStaticCompactStrides(rewriter, op, resultType, failureReason);
+    if (mlir::failed(strides))
+      return mlir::failure();
+
+    auto view = rewriter.create<mlir::memref::ReinterpretCastOp>(
+        op.getLoc(), resultType, op.getSource(), /*offset=*/0, sizes, *strides);
+    rewriter.replaceOp(op, view.getResult());
+    return mlir::success();
+  }
+
+private:
+  std::string *failureReason;
+};
+
 template <typename OpT>
 class UnsupportedCommLowering : public mlir::OpRewritePattern<OpT> {
 public:
@@ -496,26 +583,25 @@ static void configureTileRegionToInstrTarget(mlir::ConversionTarget &target) {
   target.addLegalDialect<mlir::arith::ArithDialect, mlir::async::AsyncDialect,
                          mlir::func::FuncDialect, mlir::memref::MemRefDialect,
                          mlir::scf::SCFDialect>();
-  target.addLegalOp<mlir::ModuleOp, TileRegionOp, TileYieldOp, ViewReshapeOp,
-                    SyncLocalDrainOp, InstrRDMAOp, InstrWDMAOp,
-                    InstrGatherScatterOp, InstrFillOp, InstrElementwiseOp,
-                    InstrReduceOp, InstrConvertOp, InstrGemmOp>();
+  target.addLegalOp<mlir::ModuleOp, TileRegionOp, TileYieldOp, SyncLocalDrainOp,
+                    InstrRDMAOp, InstrWDMAOp, InstrGatherScatterOp, InstrFillOp,
+                    InstrElementwiseOp, InstrReduceOp, InstrConvertOp,
+                    InstrGemmOp>();
   target.addIllegalOp<StorageLoadOp, StorageStoreOp, LayoutMaterializeOp,
                       ComputeFillOp, ComputeGemmOp, ComputeElementwiseOp,
                       ComputeReduceOp, MoveCopyOp, MoveExtractSliceOp,
                       MoveInsertSliceOp, MoveTransposeOp, MoveBroadcastOp,
-                      CommSendOp, CommRecvOp, CommWaitOp, CommAllGatherOp,
-                      CommReduceScatterOp, CommAllReduceOp>();
+                      ViewReshapeOp, CommSendOp, CommRecvOp, CommWaitOp,
+                      CommAllGatherOp, CommReduceScatterOp, CommAllReduceOp>();
   target.markUnknownOpDynamicallyLegal([](mlir::Operation *) { return true; });
 }
 
 static void populateTileRegionToInstrPatterns(mlir::RewritePatternSet &patterns,
                                               std::string *failureReason) {
   mlir::MLIRContext *context = patterns.getContext();
-  patterns
-      .add<TileLoadLowering, TileStoreLowering, LayoutMaterializeLowering,
-           TileCopyLowering, ElementwiseLowering, ReduceLowering, GemmLowering>(
-          context, failureReason);
+  patterns.add<TileLoadLowering, TileStoreLowering, LayoutMaterializeLowering,
+               TileCopyLowering, ElementwiseLowering, ReduceLowering,
+               GemmLowering, ViewReshapeLowering>(context, failureReason);
   patterns.add<FillLowering>(context);
   patterns.add<UnsupportedMovementLowering<MoveExtractSliceOp>>(
       context, failureReason,

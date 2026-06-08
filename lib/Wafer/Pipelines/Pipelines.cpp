@@ -5,8 +5,8 @@
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Transforms/Passes.h"
 
-#include "mlir/Dialect/Bufferization/Transforms/Passes.h"
 #include "mlir/Dialect/Bufferization/Transforms/OneShotAnalysis.h"
+#include "mlir/Dialect/Bufferization/Transforms/Passes.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/PassManager.h"
@@ -59,16 +59,16 @@ void buildLowerGroupsToTileRegionPipeline(mlir::OpPassManager &pm) {
       [](mlir::TensorType tensorType, mlir::Attribute memorySpace,
          mlir::func::FuncOp funcOp,
          const mlir::bufferization::BufferizationOptions &options)
-          -> mlir::BaseMemRefType {
+      -> mlir::BaseMemRefType {
     (void)memorySpace;
     (void)funcOp;
     (void)options;
     if (auto ranked = mlir::dyn_cast<mlir::RankedTensorType>(tensorType)) {
-      return mlir::MemRefType::get(
-          ranked.getShape(), ranked.getElementType(),
-          mlir::MemRefLayoutAttrInterface{},
-          MemoryAttr::get(ranked.getContext(), MemorySpace::DDR,
-                          MemLayout::Tensor));
+      return mlir::MemRefType::get(ranked.getShape(), ranked.getElementType(),
+                                   mlir::MemRefLayoutAttrInterface{},
+                                   MemoryAttr::get(ranked.getContext(),
+                                                   MemorySpace::DDR,
+                                                   MemLayout::Tensor));
     }
     return mlir::UnrankedMemRefType::get(
         tensorType.getElementType(),
@@ -77,6 +77,15 @@ void buildLowerGroupsToTileRegionPipeline(mlir::OpPassManager &pm) {
   };
 
   pm.addPass(mlir::bufferization::createOneShotBufferizePass(options));
+}
+
+void buildLowerTileRegionToInstrPipeline(mlir::OpPassManager &pm) {
+  pm.addPass(createConvertTileRegionToInstrPass());
+}
+
+void buildLowerGroupsToInstrPipeline(mlir::OpPassManager &pm) {
+  buildLowerGroupsToTileRegionPipeline(pm);
+  buildLowerTileRegionToInstrPipeline(pm);
 }
 
 #ifdef WAFER_ENABLE_SHARDY
@@ -99,6 +108,16 @@ void registerWaferPipelines() {
         [](mlir::OpPassManager &pm) {
           buildLowerGroupsToTileRegionPipeline(pm);
         });
+    mlir::PassPipelineRegistration<>(
+        "wafer-lower-tile-region-to-instr",
+        "Lower executable wafer.tile.region ops to wafer.instr IR",
+        [](mlir::OpPassManager &pm) {
+          buildLowerTileRegionToInstrPipeline(pm);
+        });
+    mlir::PassPipelineRegistration<>(
+        "wafer-lower-groups-to-instr",
+        "Lower logical wafer.group ops to instruction-level Wafer IR",
+        [](mlir::OpPassManager &pm) { buildLowerGroupsToInstrPipeline(pm); });
 #ifdef WAFER_ENABLE_SHARDY
     mlir::PassPipelineRegistration<StablehloShardingPropagationPipelineOptions>(
         "wafer-propagate-stablehlo-sharding",

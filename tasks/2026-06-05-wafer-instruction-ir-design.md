@@ -69,18 +69,19 @@ Pipeline position:
   R3.2e SPM placement、R3.2f DDR/resource legality、R3.2g closed-loop planner、
   R3.4 placed memref realization 和 R3.6 codegen emission。
 - User-level driver / named pipeline:
-  主线由 R3.2 closed-loop planner 调用；局部 bring-up pass 可命名为
-  `--wafer-convert-tile-region-to-instr`，只作为 lit/debug 入口。
+  主线由 R3.2 closed-loop planner 调用；局部 bring-up / planner scratch 入口是
+  `wafer-lower-tile-region-to-instr` 和 `wafer-lower-groups-to-instr` named pipeline。
+  `--wafer-convert-tile-region-to-instr` 只作为 lit/debug pass 入口。
 - Explicit non-goals:
   不新增第二套 storage/buffer IR，不决定 group boundary、tile shape、layout assignment、SPM offset、
   DDR allocation policy、raw register packet field、Tsm wrapper call、C ABI symbol 或 launch ABI。
   DTE、CSR 和 SCALAR 不进入普通 `wafer.instr` issue path。
 - Completion gate:
-  对 R3.2c 已支持的 load/store、layout materialize、fill、GEMM、elementwise/relation、
-  reduce、copy/broadcast/transpose、static slice movement 和 metadata view 生成
-  verifier-legal instruction-level IR，并覆盖 nested `scf.if` / `scf.for` body 递归转换。
-  unsupported hardware instruction form 必须结构化失败，不能让 SPM placement 从 target-abstract op
-  猜 demand。
+  对 R3.2c 已支持的 load/store、静态可证明 layout materialize、fill、GEMM、
+  elementwise/relation、reduce、copy 和 metadata view 生成 verifier-legal instruction-level IR
+  或标准 memref view，并覆盖 nested `scf.if` / `scf.for` body 递归转换。unsupported hardware
+  instruction form，包括当前无法证明的 slice/broadcast/transpose descriptor，必须结构化失败，
+  不能让 SPM placement 从 target-abstract op 猜 demand。
 ```
 
 ## 2. Wafer MemRef Contract
@@ -381,7 +382,7 @@ R3.2d 应实现为 MLIR DialectConversion：
 
 - illegal：`wafer.tile.load`、`wafer.tile.store`、`wafer.tile.materialize_layout`、
   `wafer.tile.fill/gemm/elementwise/reduce` 和 tile movement ops。
-- legal：`memref.alloc`、verifier-legal metadata view ops、`wafer.instr.*`、
+- legal：`memref.alloc`、standard memref view ops、`wafer.instr.*`、
   `wafer.instr.local_drain`、`wafer.tile.region` container、`scf.if` / `scf.for` container
   和必要 scalar/support op。
 - no type conversion for Wafer tagged memref values。
@@ -403,7 +404,7 @@ V0 mapping：
 | `wafer.tile.insert_slice` | structured failure until copy-plus-slice insertion descriptor splitting is proven against the V0 TDMA descriptor |
 | `wafer.tile.broadcast` | structured failure until static broadcast descriptor expansion is proven against the V0 TDMA descriptor |
 | `wafer.tile.transpose` | structured failure until permutation descriptor expansion is proven against the V0 TDMA descriptor |
-| metadata reshape/view | stays as verifier-legal memref alias; no instruction issue |
+| metadata reshape/view | lower to standard memref view or identity replacement; no Wafer tile op residue and no instruction issue |
 | `scf.if` / `scf.for` | preserve the structured control-flow op; recursively legalize executable target-abstract ops in each nested region; keep scalar and memref yields explicit |
 | `wafer.tile.send/recv/wait/all_gather/reduce_scatter/all_reduce` | not handled by R3.2d V0 |
 
@@ -559,14 +560,17 @@ R3.2d.2 已完成：
    `WaferTileRegionToInstr` conversion library API。
 5. conversion 递归处理 `scf.if` / `scf.for` region body，并保留 scalar / memref yield 关系。
 6. conversion tests 覆盖 load/store、layout materialize、fill、GEMM、elementwise、reduce、
-   copy、metadata view preserved、nested `scf.if`、tile communication structured failure，以及
+   copy、metadata view lowered to standard memref view、nested `scf.if`、tile communication structured failure，以及
    padding layout materialization structured failure。
 
-R3.2d.3 仍需实现：
+R3.2d.3 已完成：
 
-7. 让 main R3.2 planner / named pipeline 调用同一 conversion implementation。
-8. 扩展 conversion tests 覆盖多 group、mixed nested control-flow、broadcast/transpose、
-   extract_slice/insert_slice descriptor expansion、unsupported movement structured failure，以及
-   转换后不能残留 executable target-abstract op 的 pipeline-level gate。
-9. 为 `wafer.instr.convert` 增加 parser/verifier tests；convert lowering 等 `wafer.tile.convert`
+7. 增加 `wafer-lower-tile-region-to-instr` 和 `wafer-lower-groups-to-instr` named pipeline，
+   复用同一 `WaferTileRegionToInstr` conversion implementation。
+8. pipeline tests 覆盖多 group、structured `scf.if` / `scf.for`、unsupported movement
+   structured failure，以及转换后不能残留 executable target-abstract op 的 pipeline-level gate。
+
+后续仍需：
+
+9. convert lowering 等 `wafer.tile.convert`
    或等价 source op 出现后再接入 completion gate。
