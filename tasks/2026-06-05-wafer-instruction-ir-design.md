@@ -1,8 +1,8 @@
 # Wafer Instruction IR Design
 
-日期：2026-06-05
+日期：2026-06-05；更新：2026-06-08
 
-状态：R3.2d 设计已按 memref-backed buffer contract 重新收口；R3.2c 前置已完成，R3.2d 实现未完成
+状态：R3.2d 设计已按 memref-backed buffer contract 重新收口；R3.2c 前置已完成，R3.2d 为当前 active task
 
 本文定义 R3.2d 的 instruction-level Wafer IR。核心结论：
 
@@ -15,7 +15,7 @@
   256B padding 必须由统一 Wafer layout calculator 从 memref type 推导，不写进 IR 字段。
 - `Cx/NCx` 不使用 MLIR memref layout slot，也不实现为 `MemRefLayoutAttrInterface`。MLIR memref
   layout slot 仍只用于 MLIR 能按 affine / strided 语义解释的普通 layout。
-- 不引入 `wafer.physical_view`、`!wafer.physical_memref`、side descriptor value、SPM offset、DDR BO
+- 不引入 `wafer.physical_view`、`!wafer.physical_memref`、side descriptor value、SPM offset、DDR
   allocation policy、raw packet 或 C ABI call。
 
 `wafer.instr` 的作用是把 target-abstract tile-region op 变成可执行硬件动作，并让下游能从
@@ -30,6 +30,9 @@ memref SSA、Wafer memory attr、op operands、attrs、MemoryEffects 和显式 d
   是 R3.2d 待实现 ODS / verifier / conversion 合同。
 - R3.2c 已产出 memref-backed `wafer.tile.region`；R3.2d 必须基于该 unplaced Wafer-tagged memref
   graph 做 instruction lowering，不能再引入 storage/buffer IR 层。
+- R3.2c 已支持 `scf.if` / `scf.for` 作为 tile-region 内 structured control-flow。R3.2d 必须递归
+  legalize 这些 region body 内的 executable target-abstract op，并保留 `scf` container；是否选择
+  硬件 branch/loop、predication 或 unroll 不是 R3.2d V0 的职责。
 
 本文依赖：
 
@@ -47,12 +50,13 @@ Pipeline position:
   R3.2c `wafer.tile.region` IR，内部包含带 Wafer memory attr 的 memref values、
   `memref.alloc` / verifier-legal metadata view、`wafer.tile.load` / `wafer.tile.store`、
   `wafer.tile.materialize_layout`、`wafer.tile.fill/gemm/elementwise/reduce`、
-  `wafer.tile.copy/extract_slice/insert_slice/transpose/broadcast` 和
-  `wafer.instr.local_drain`。
+  `wafer.tile.copy/extract_slice/insert_slice/transpose/broadcast`、
+  tile-region 内 `scf.if` / `scf.for` structured control-flow 和 `wafer.instr.local_drain`。
 - Current stage responsibility:
   只做 Wafer instruction legalization / selection：把可执行的 target-abstract op 改写成
-  `wafer.instr.*`，并保留 memref SSA graph。instruction op 通过 interface 显式暴露 issue
-  family、memref read/write、descriptor attrs 和 issue effect。
+  `wafer.instr.*`，并保留 memref SSA graph。对 `scf.if` / `scf.for` 只递归转换其 region body，
+  不改变 control-flow 结构。instruction op 通过 interface 显式暴露 issue family、memref read/write、
+  descriptor attrs 和 issue effect。
 - Output artifact / IR:
   同一个 `wafer.tile.region` execution scope 内的 instruction-level IR：
   memref values with `#wafer.memory<space, layout>` + `wafer.instr.*` +
@@ -65,13 +69,14 @@ Pipeline position:
   `--wafer-convert-tile-region-to-instr`，只作为 lit/debug 入口。
 - Explicit non-goals:
   不新增第二套 storage/buffer IR，不决定 group boundary、tile shape、layout assignment、SPM offset、
-  DDR BO allocation policy、raw register packet field、Tsm wrapper call、C ABI symbol 或 launch ABI。
+  DDR allocation policy、raw register packet field、Tsm wrapper call、C ABI symbol 或 launch ABI。
   DTE、CSR 和 SCALAR 不进入普通 `wafer.instr` issue path。
 - Completion gate:
   对 R3.2c 已支持的 load/store、layout materialize、fill、GEMM、elementwise/relation、
   reduce、copy/broadcast/transpose、static slice movement 和 metadata view 生成
-  verifier-legal instruction-level IR。unsupported hardware instruction form 必须结构化失败，
-  不能让 SPM placement 从 target-abstract op 猜 demand。
+  verifier-legal instruction-level IR，并覆盖 nested `scf.if` / `scf.for` body 递归转换。
+  unsupported hardware instruction form 必须结构化失败，不能让 SPM placement 从 target-abstract op
+  猜 demand。
 ```
 
 ## 2. Wafer MemRef Contract
@@ -156,6 +161,7 @@ wafer.tile.load / wafer.tile.store
 wafer.tile.materialize_layout
 wafer.tile.fill/gemm/elementwise/reduce
 wafer.tile.copy/extract_slice/insert_slice/transpose/broadcast
+scf.if / scf.for
 wafer.instr.local_drain
 ```
 
@@ -168,6 +174,7 @@ wafer.instr.rdma / wafer.instr.wdma
 wafer.instr.gather_scatter
 wafer.instr.{fill, elementwise, reduce, convert}
 wafer.instr.gemm
+scf.if / scf.for
 wafer.instr.local_drain
 ```
 
@@ -371,7 +378,8 @@ R3.2d 应实现为 MLIR DialectConversion：
 - illegal：`wafer.tile.load`、`wafer.tile.store`、`wafer.tile.materialize_layout`、
   `wafer.tile.fill/gemm/elementwise/reduce` 和 tile movement ops。
 - legal：`memref.alloc`、verifier-legal metadata view ops、`wafer.instr.*`、
-  `wafer.instr.local_drain`、`wafer.tile.region` container 和必要 scalar/support op。
+  `wafer.instr.local_drain`、`wafer.tile.region` container、`scf.if` / `scf.for` container
+  和必要 scalar/support op。
 - no type conversion for Wafer tagged memref values。
 - conversion failure 必须结构化返回给 planner；rejected instruction IR 不进入 committed 主线 IR。
 
@@ -392,15 +400,18 @@ V0 mapping：
 | `wafer.tile.broadcast` | ensure / create destination SPM memref; emit one or more gather_scatter if static broadcast descriptor is expressible |
 | `wafer.tile.transpose` | ensure / create destination SPM memref; emit gather_scatter if permutation is statically expressible |
 | metadata reshape/view | stays as verifier-legal memref alias; no instruction issue |
+| `scf.if` / `scf.for` | preserve the structured control-flow op; recursively legalize executable target-abstract ops in each nested region; keep scalar and memref yields explicit |
 | `wafer.tile.send/recv/wait/all_gather/reduce_scatter/all_reduce` | not handled by R3.2d V0 |
 
 R3.2d may generate multiple instruction ops for a single target-abstract movement op, but it must not write a
 global schedule attr. The instruction sequence is the region body itself.
+Nested `scf` regions are part of that body: R3.2d rewrites their executable contents under MLIR region
+scoping rules, but it does not lower them to hardware branch/loop instructions.
 
 ## 9. Failure Contract
 
-R3.2d failure is a legalization result, not an IR artifact. A rejected candidate may carry diagnostics to
-the closed-loop planner or debug pass, but rejected instruction IR is discarded.
+R3.2d failure is a legalization result, not an IR artifact. A rejected legalization attempt may carry
+diagnostics to the closed-loop planner or debug pass, but rejected instruction IR is discarded.
 
 必须结构化失败的情况：
 
@@ -411,9 +422,11 @@ the closed-loop planner or debug pass, but rejected instruction IR is discarded.
 - `Cx/NCx` materialization with retained `C0` tail cannot be split into separately representable
   full-block and tail GatherScatter descriptors.
 - static slice/broadcast/transpose cannot be converted into one or more gather_scatter descriptors.
+- unsupported control-flow op, multi-block region, or nested region whose executable body cannot be fully
+  legalized under the same instruction conversion rules.
 - NE GEMM dimension attrs cannot be derived from operand/result types and optional batch attrs.
 - reduce `dimensions` cannot map to supported native reduce dimension encoding.
-- any source op that would require DTE/CSR/SCALAR, raw packet fields, SPM offset, DDR BO allocation policy or
+- any source op that would require DTE/CSR/SCALAR, raw packet fields, SPM offset, DDR allocation policy or
   runtime ABI call to be legal.
 
 Diagnostics should mention the source op and the missing legality fact, for example:
@@ -537,8 +550,9 @@ R3.2d 实现需要：
 3. 为每个 op 实现 verifier、MemoryEffects、instruction interface 和 positive/negative lit tests。
 4. 实现 `--wafer-convert-tile-region-to-instr` DialectConversion，并让 main R3.2 planner 调用同一
    conversion implementation。
-7. 增加 conversion tests，覆盖 load/store、layout materialize、fill、GEMM、elementwise/relation、
+5. conversion 递归处理 `scf.if` / `scf.for` region body，并保留 scalar / memref yield 关系。
+6. 增加 conversion tests，覆盖 load/store、layout materialize、fill、GEMM、elementwise/relation、
    reduce、copy/broadcast/transpose、extract_slice/insert_slice、metadata view preserved 和 structured
-   failure。
-8. 为 `wafer.instr.convert` 增加 parser/verifier tests；convert lowering 等 `wafer.tile.convert`
+   control-flow failure。
+7. 为 `wafer.instr.convert` 增加 parser/verifier tests；convert lowering 等 `wafer.tile.convert`
    或等价 source op 出现后再接入 completion gate。

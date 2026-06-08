@@ -3,7 +3,7 @@
 日期：2026-05-25
 
 状态：设计草案；2026-05-25 边界收口；2026-06-04 对齐 instruction-level Wafer IR 先于 SPM placement；
-2026-06-05 对齐 memref-backed Wafer memory attr 合同
+2026-06-05 对齐 memref-backed Wafer memory attr 合同；2026-06-08 同步 DDR allocation policy 命名
 
 本文定义 Wafer 后端中 target-abstract compute / movement IR 的边界。它连接
 `wafer.group` 产生的 tile-local tensor program、layout materialization / SPM bufferization，
@@ -93,7 +93,7 @@ Pipeline position:
   主线仍从 `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 进入 R3.1/R3.2；
   R3.2d 可提供局部 dump / lit gate，但不能成为用户级 compile flow。
 - Explicit non-goals:
-  不决定 group boundary、tile shape、layout assignment、SPM offset、DDR BO allocation policy、ABI call
+  不决定 group boundary、tile shape、layout assignment、SPM offset、DDR allocation policy、ABI call
   symbol 或 packet field。
 - Completion gate:
   对 R3.2c 已支持的 compute/movement/view family 生成 verifier-legal instruction-level IR；

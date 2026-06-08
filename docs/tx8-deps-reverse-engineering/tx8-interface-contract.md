@@ -1020,7 +1020,7 @@ compiler target, or instruction semantic category.
 | `TsmSend` / `TsmRecv` | Dispatch to txccl send/recv implementation; exact transport success requires runtime target. |
 | `TsmNpuPowerOn` / `TsmNpuPowerOff` | Implemented host calls but hardware/power sequencing remains board-validated. |
 
-Minimal host runtime recipe:
+Minimal host runtime flow:
 
 ```cpp
 TsmInitRuntime(true);

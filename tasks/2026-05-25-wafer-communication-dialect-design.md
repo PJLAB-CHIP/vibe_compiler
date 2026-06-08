@@ -3,7 +3,8 @@
 日期：2026-05-25
 
 状态：设计草案；2026-05-25 边界收口；2026-05-27 明确 `wafer.tile.*` communication 后移到
-`wafer.tile.region` / SPM materialization 之后
+`wafer.tile.region` / SPM materialization 之后；2026-06-08 同步 instruction-level / codegen emission
+边界
 
 本文定义 Wafer 后端的 device-side communication IR。它连接 post-SPMD tensor collective 语义、
 placement 产生的 physical tile mapping、`wafer.tile.region` 中的 SPM buffer，以及后续
@@ -15,7 +16,7 @@ communication plan attr，也不把 raw DTE register 字段提前写进上层 co
 
 本文只负责 device-side communication IR：tile-local collective-level op、explicit p2p steps、
 token/effect、Direct DTE 和 sync boundary。它不定义 Shardy/SPMD partition、Wafer LinalgExt-style
-tensor collective handoff、compute op legality、layout assignment、SPM allocation、DDR BO allocation、
+tensor collective handoff、compute op legality、layout assignment、SPM allocation、DDR allocation policy、
 host runtime D2D/P2P ABI 或 raw non-unicast DTE packet。当前已验证 data plane 可以先使用
 fixed-size unicast Direct DTE，但 logical collective IR 的支持范围不能由当前某个 ring lowering pass
 的覆盖范围反向决定；只要硬件通信能力可组合表达，IR 就应保留对应语义事实。
@@ -317,7 +318,7 @@ schedule、resource allocation 和 package/runtime metadata。
   communication schedule 搜索，而不是生成等待下游修复的 comm IR。
 - 如果 selected protocol 使用 DDR-backed staging、host/runtime D2D/P2P path 或 DDR2DDR helper，
   对应 source/destination 必须作为 `#wafer.memory<ddr, *>` demand 进入 DDR resource planner。`wafer.tile.*` communication 不保存
-  DDR pool/domain、compiler-managed BO 或 visible allocation attr；它只通过 buffer type、byte count、effect
+  DDR pool/domain、compiler-managed DDR allocation 或 visible allocation attr；它只通过 buffer type、byte count、effect
   和 token/wait 暴露需求。
 - DTE 读取 NCC 产物前需要 local drain；DTE 写入后 compute 消费前需要 comm wait。两者都应通过
   effect/token/verifier 检查。
@@ -337,7 +338,8 @@ sender DTE wait done / status validation
 resource release
 ```
 
-这个序列可以由 lower-level Wafer ops 表达，再由 `wafer-to-llvm-cabi` 生成具体 runtime/C ABI call。
+这个序列可以由 lower-level Wafer ops 表达，再由 placed instruction / launch codegen emission 生成具体
+runtime/C ABI call。
 `wafer.tile.send` 不直接携带每个 helper 调用名；helper 选择属于 lowering。
 
 Host runtime dyn TLV D2D/P2P path 是另一条兼容或 host-managed route。若后续需要 fallback，应在

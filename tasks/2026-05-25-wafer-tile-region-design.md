@@ -7,7 +7,8 @@
 instruction-level Wafer IR 先于 SPM placement，并补正式 `group -> tile_region` conversion pass；
 2026-06-05 对齐 memref-backed buffer contract，`Cx/NCx` 改为 Wafer memory attr marker；
 2026-06-05 补齐 R3.2c DDR boundary materialization 和 One-Shot function-boundary pipeline；
-2026-06-05 补 R3.2c `scf.if` / `scf.for` 结构化 control-flow lowering 合同
+2026-06-05 补 R3.2c `scf.if` / `scf.for` 结构化 control-flow lowering 合同；
+2026-06-08 同步 R3.2c 完成状态和 R3.2d active 边界
 
 本文定义 `wafer.tile.region` 作为 `wafer.group` lowering 之后的 tile-local execution boundary。
 它组织 tile-local Wafer-tagged memref、movement、layout materialization、target-abstract compute、communication
@@ -131,9 +132,9 @@ Pipeline position:
   FileCheck、conversion pass、dump pass 和主线 pipeline 覆盖 R2.4/R3.1 已能产出的 Wafer V0 硬件可承载 local
   compute/movement/view family：DDR memref load/store boundary、layout materialization、DDR/SPM
   `memref.alloc`、tile-local allocation、fill、GEMM、elementwise/relation、native reduce、passthrough
-  broadcast/transpose/copy、tensor slice movement、static reshape view 和 function-boundary One-Shot
-  bufferization。硬件 V0 无承载或当前 IR 缺 placement/local-rank / runtime ABI 事实时才允许结构化
-  failure。
+  broadcast/transpose/copy、tensor slice movement、static reshape view、tile-region 内 `scf.if` /
+  `scf.for` 递归 lowering 和 function-boundary One-Shot bufferization。硬件 V0 无承载或当前 IR 缺
+  placement/local-rank / runtime ABI 事实时才允许结构化 failure。
 ```
 
 ### 2.2 R3.2c Target Coverage Matrix
@@ -186,7 +187,7 @@ op”。正确边界是：
 wafer.tile.region (...) -> (...) {
   ^bb0(%tile_id, %block_id, %region_args...):
     ...
-    wafer.yield ...
+    wafer.tile.yield ...
 }
 ```
 
@@ -288,9 +289,11 @@ planner 重新选择 tile shape、internal split、layout 或 group boundary。
 `scf.if` / `scf.for` 在 R3.2c 中是 tile-region 内的结构化 control-flow container，不是
 instruction-level branch/loop。R3.2c 只负责把 region 内 tensor dataflow 递归降成 Wafer-tagged
 SPM memref dataflow，并让 `scf.yield` / loop-carried value 显式携带 SPM memref 或 scalar SSA。
-SPM placement 后续应直接消费这些 region/control-flow lifetime；R3.2d+ 才决定是否需要硬件
-branch/loop、predication 或展开。`scf.while`、`scf.forall`、`scf.execute_region` 和 CFG branch
-需要额外 memory-effect / concurrency / multi-block 合同，当前必须结构化失败。
+R3.2d 只递归 legalize control-flow body 内的 executable target-abstract op，并保留 `scf` container。
+SPM placement 后续应直接消费这些 region/control-flow lifetime；硬件 branch/loop、predication 或
+展开只能在 placed instruction / codegen 边界具备足够 lifetime 和 effect 信息后决定。`scf.while`、
+`scf.forall`、`scf.execute_region` 和 CFG branch 需要额外 memory-effect / concurrency / multi-block
+合同，当前必须结构化失败。
 
 当前 ODS 已有 `wafer.tile.region` 内 movement、layout、compute、comm 和 sync op 的基础
 layout/materialization/resource interface 查询入口；这些接口和 verifier 已基于

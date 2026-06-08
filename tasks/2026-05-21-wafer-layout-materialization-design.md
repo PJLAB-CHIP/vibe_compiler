@@ -3,7 +3,8 @@
 日期：2026-05-21
 
 状态：设计草案；2026-05-25 边界收口；2026-06-04 对齐 instruction-level Wafer IR 先于
-SPM placement；2026-06-05 对齐 memref-backed Wafer memory attr 合同
+SPM placement；2026-06-05 对齐 memref-backed Wafer memory attr 合同；2026-06-08 同步 DDR/resource
+和 instruction-level pipeline 边界
 
 本文定义 Wafer 后端的 physical layout planning 和 layout materialization 边界。它服务于
 `wafer.group` 的 legality search，也服务于 `wafer.tile.region` / SPM bufferization 的真实
@@ -17,7 +18,7 @@ lowering。
   storage transform。
 - 做 bounded group-to-group boundary co-planning 和 materialization cleanup。
 
-本文不负责 group formation、tile shape search、SPM offset allocation、DDR BO allocation、
+本文不负责 group formation、tile shape search、SPM offset allocation、DDR allocation policy、
 compute/comm op 语义、launch/runtime package 或 raw instruction packet。layout planner 的中间
 constraint graph、layout alternatives、cost trace 和失败原因都是 analysis；只有 accepted buffer layout、explicit
 movement 和可 lower 的 constant storage 选择进入 IR 或 lowering 输入。
@@ -685,7 +686,8 @@ pass 名是实现组织，不是架构边界；边界仍以 IR contract 和 veri
 
    - 带 `#wafer.memory<space, layout>` 的 tile-local memref values。
    - 明确的 `wafer.tile.materialize_layout` op。
-   - `wafer.tile.load` 对 constant source 的明确 use-def 关系，供后续 storage transform / lowering 使用。
+   - `wafer.tile.load` 对 constant source 的明确 use-def 关系，供后续 constant resource transform /
+     lowering 使用。
 
 2. `wafer-layout-materialize-cleanup`
 
@@ -699,7 +701,7 @@ pass 名是实现组织，不是架构边界；边界仍以 IR contract 和 veri
    - 合并重复 conversion 或移动 materialization cut 前，重新运行 SPM allocation。
    - 不读取旧 planner side table，不创建新的 layout plan attr。
 
-3. `wafer-constant-storage-transform`
+3. Constant storage/resource transform stage
 
    运行位置：layout assignment 已接受之后，`wafer.tile.load` lowering 或 package emission 之前。
 
