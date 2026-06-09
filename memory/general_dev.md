@@ -129,6 +129,19 @@
 - 任务支持范围按硬件能力、runtime/ABI 证据和当前 IR contract 判断，不能按“当前下游 pass 尚未
   实现”反向裁剪上游语义。若 frontend/SPMD/planner 产出合法且硬件可表达的事实，而 IR/lowering
   还没覆盖，应补 IR contract、verifier 或下游恢复任务；不能把实现缺口写成上游不支持。
+- `Cx/NCx` layout 规则容易误用，必须按硬件文档的 `get_CxC0` /
+  `common_tensor_info_generate_i64` 口径理解：对齐的是 logical last dimension `C`，不是 flatten
+  后的任意元素流；INT8/UINT8 full block 是 128，其它 dtype full block 是 64；tail 小于等于半块时
+  保留为按 `4/8/16/32/64` 级别对齐的 `C0`，大于半块时 fold 到下一 full block；C alignment 后还要
+  计入 256B bank alignment。`Cx` 通常用于 2D，`NCx` 用于 rank > 2，但 `NCx` 的 `N` 只是历史外层
+  slice 命名，不等于 semantic batch。不要用 `ceil(C/64)*64`、layout marker 名字或
+  `physicalBytes` 单点事实替代完整 physical mapping。
+- 判断 `wafer.tile.reshape` 是否需要 instruction movement 时，触发条件是 logical element 到
+  physical byte offset 的映射变化，或目标 physical footprint/descriptor 需要 materialized buffer；
+  不是“看见 reshape”或“看见 cx/ncx”。compact `tensor/ntensor` 可用标准 memref view；`Cx/NCx`
+  reshape 要先用统一 physical layout calculator 比较 source/result mapping，只有排布变化才发
+  `wafer.instr.gather_scatter`。如果统一 helper 还不能表达真实 `C0` tail/fold 和 bank padding，
+  先补 helper，不要在 lowering 里临时重写一份局部 layout 解释。
 - 用户级 compiler target 名称统一为 `wafer`，Wafer IR target attr 的唯一主线 spelling 是
   `#wafer.target<wafer>`。`tx8` / `tx81` 只保留在硬件、依赖逆向和外部历史命名事实里，不能作为
   compiler target、pipeline 名称或测试 fixture 的主线命名。

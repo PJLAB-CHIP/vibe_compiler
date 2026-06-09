@@ -140,6 +140,14 @@ metadata-only reshape 或标准 strided view 可以继续使用 MLIR memref layo
 Wafer `Cx/NCx` physical interpretation 只由 `#wafer.memory<..., cx/ncx>` marker 和
 `computeWaferPhysicalTensorInfo` 解释。
 
+R3.2d 不能把 `Cx/NCx` layout marker 本身当作 movement trigger。对 reshape 来说，是否需要
+instruction movement 取决于 source/result logical element 到 physical byte offset 的映射是否变化，
+以及 result 是否需要新的 materialized physical footprint；不是取决于 op 名字、layout marker 或
+`physicalBytes` 是否相等。`computeWaferPhysicalTensorInfo` 必须按硬件文档的 `get_CxC0` /
+`common_tensor_info_generate_i64` 口径实现 INT8/UINT8 block 128、其它 dtype block 64、tail
+retain/fold、tail align 和 256B bank padding。若该 helper 不能给出真实 mapping，R3.2d lowering
+不能用局部 `ceil(C/64)` 近似来证明 reshape identity 或 descriptor 合法性。
+
 ### 2.2 Generic MemRef Op Boundary
 
 带 Wafer memory attr 的 memref 是标准 SSA buffer value，但不是任意 generic memref op 都能在
@@ -406,7 +414,7 @@ V0 mapping：
 | `wafer.tile.insert_slice` | structured failure until copy-plus-slice insertion descriptor splitting is proven against the V0 TDMA descriptor |
 | `wafer.tile.broadcast` | structured failure until static broadcast descriptor expansion is proven against the V0 TDMA descriptor |
 | `wafer.tile.transpose` | structured failure until permutation descriptor expansion is proven against the V0 TDMA descriptor |
-| `wafer.tile.reshape` | identity replacement when types are identical; compact `tensor/ntensor` reshape lowers to a verifier-legal standard memref view; padded/aligned layouts such as `Cx/NCx` materialize a destination memref and emit one or more `wafer.instr.gather_scatter`; structured failure only when the static reshape movement plan cannot be represented by V0 descriptors |
+| `wafer.tile.reshape` | identity replacement when types are identical; compact `tensor/ntensor` reshape lowers to a verifier-legal standard memref view; `Cx/NCx` reshape first compares source/result logical-to-physical byte mapping with the unified physical layout calculator, materializes a destination memref and emits one or more `wafer.instr.gather_scatter` only when the physical mapping or required footprint changes; structured failure only when the static reshape movement plan cannot be represented by V0 descriptors |
 | `scf.if` / `scf.for` | preserve the structured control-flow op; recursively legalize executable target-abstract ops in each nested region; keep scalar and memref yields explicit |
 | `wafer.tile.send/recv/wait/all_gather/reduce_scatter/all_reduce` | not handled by R3.2d V0 |
 

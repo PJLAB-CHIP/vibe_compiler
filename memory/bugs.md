@@ -20,3 +20,17 @@
   `OwningOpRef<mlir::ModuleOp>` 并返回；调用方继续检查返回的 module 时 context 已销毁。
 - 修复模式：`MLIRContext` 生命周期必须覆盖返回 `ModuleOp` 的完整使用期；不要返回依赖 callee
   栈上 context 的 MLIR IR 对象。
+
+## 2026-06-09 Cx/NCx reshape lowering boundary
+
+- 现象：R3.2d `wafer.tile.reshape` lowering 曾把 physical byte count 不一致直接当成结构化失败；
+  随后又过度修成“非 `tensor/ntensor` reshape 都 materialize 成 TDMA gather/scatter”。这两个边界都不精确。
+- 根因：忘了 `Cx/NCx` 是 logical last dimension 的 target physical layout rule，不是 dense memref
+  stride，也不是 `ceil(C/64)*64` 的简单 padding。真实规则来自 `get_CxC0` /
+  `common_tensor_info_generate_i64`：INT8/UINT8 block 128，其它 dtype block 64，tail 有 retain/fold，
+  C alignment 后还有 256B bank padding。
+- 修复模式：reshape lowering 不能从 layout marker 或 `physicalBytes` 单点事实直接判断是否需要
+  instruction。正确顺序是：用统一 physical layout calculator 得到 source/result logical index
+  到 physical byte offset 的映射；映射不变且 footprint 可 alias 时用 metadata view/alias；映射变化
+  或必须 materialize 新 footprint 时生成一条或多条 `wafer.instr.gather_scatter`；descriptor 表达不了才
+  structured failure。若 helper 还没实现真实 C0 tail/fold/bank padding，先补 helper 和覆盖测试。
