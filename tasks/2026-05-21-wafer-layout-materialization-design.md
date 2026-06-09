@@ -437,9 +437,10 @@ affine map。所有 pass 通过统一 helper 解析：
 computeWaferPhysicalTensorInfo(memrefType)
 ```
 
-该 helper 返回 address space、layout marker、bool bitpack、block size、`Cx/C0`、
-`aligned_C`、footprint、range-end、descriptor stride 和 legality。禁止每个 pass 自己根据
-字符串或局部约定解释 `cx/ncx`。
+`computeWaferPhysicalTensorInfo` 返回 address space、layout marker、bool bitpack、block size、
+`Cx/C0`、`aligned_C`、footprint、range-end、descriptor stride 和 legality；
+`computeWaferPhysicalElementByteOffset` 返回 logical index 到 physical byte offset 的映射。禁止每个
+pass 自己根据字符串或局部约定解释 `cx/ncx`。
 
 Wafer-tagged memref 在 placement 之前仍是 unplaced logical-shape memref：shape 是 logical
 shape，element type 是 logical dtype；它不能被 generic memref-to-LLVM lowering 当成

@@ -210,7 +210,7 @@ func.func @reshape_view(
 // CHECK-SAME: strides: [8, 1]
 // CHECK: wafer.instr.wdma
 
-func.func @reshape_padded_layout_materializes(%zero: f16) {
+func.func @reshape_cx_tail_only_metadata_view(%zero: f16) {
   %region = wafer.tile.region(%zero : f16) -> (f16) {
   ^bb0(%fill: f16):
     %source = memref.alloc()
@@ -223,13 +223,41 @@ func.func @reshape_padded_layout_materializes(%zero: f16) {
   return
 }
 
-// CHECK-LABEL: func.func @reshape_padded_layout_materializes
+// CHECK-LABEL: func.func @reshape_cx_tail_only_metadata_view
 // CHECK-NOT: wafer.tile.reshape
 // CHECK: memref.alloc() : memref<4x16xf16, #wafer.memory<spm, cx>>
-// CHECK: %[[RESHAPED:.+]] = memref.alloc() : memref<8x8xf16, #wafer.memory<spm, cx>>
+// CHECK: memref.reinterpret_cast
+// CHECK-SAME: sizes: [8, 8]
+// CHECK-SAME: strides: [8, 1]
+// CHECK-NOT: wafer.instr.gather_scatter
+// CHECK: return
+
+func.func @reshape_cx_block_major_materializes(%zero: f16) {
+  %region = wafer.tile.region(%zero : f16) -> (f16) {
+  ^bb0(%fill: f16):
+    %source = memref.alloc()
+        : memref<2x128xf16, #wafer.memory<spm, cx>>
+    %reshaped = wafer.tile.reshape %source
+        : memref<2x128xf16, #wafer.memory<spm, cx>>
+       -> memref<4x64xf16, #wafer.memory<spm, cx>>
+    wafer.tile.yield %fill : f16
+  }
+  return
+}
+
+// CHECK-LABEL: func.func @reshape_cx_block_major_materializes
+// CHECK-NOT: wafer.tile.reshape
+// CHECK: memref.alloc() : memref<2x128xf16, #wafer.memory<spm, cx>>
+// CHECK: %[[RESHAPED:.+]] = memref.alloc() : memref<4x64xf16, #wafer.memory<spm, cx>>
 // CHECK: wafer.instr.gather_scatter %{{.+}} to %[[RESHAPED]]
-// CHECK-SAME: byte_count = 16 : i64
-// CHECK-SAME: inner_bytes = 16 : i64
+// CHECK-SAME: byte_count = 128 : i64
+// CHECK-SAME: inner_bytes = 128 : i64
 // CHECK: wafer.instr.gather_scatter %{{.+}} to %[[RESHAPED]]
 // CHECK-SAME: dst_offset = 128 : i64
-// CHECK-SAME: src_offset = 16 : i64
+// CHECK-SAME: src_offset = 256 : i64
+// CHECK: wafer.instr.gather_scatter %{{.+}} to %[[RESHAPED]]
+// CHECK-SAME: dst_offset = 256 : i64
+// CHECK-SAME: src_offset = 128 : i64
+// CHECK: wafer.instr.gather_scatter %{{.+}} to %[[RESHAPED]]
+// CHECK-SAME: dst_offset = 384 : i64
+// CHECK-SAME: src_offset = 384 : i64

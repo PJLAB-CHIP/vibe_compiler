@@ -12,6 +12,7 @@
 #include "mlir/Interfaces/DestinationStyleOpInterface.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/TilingInterface.h"
+#include "llvm/ADT/ArrayRef.h"
 
 #include <cstdint>
 #include <optional>
@@ -41,9 +42,17 @@ struct WaferPhysicalTensorInfo {
   MemLayout layout;
   int64_t compactBytes = -1;
   int64_t physicalBytes = -1;
+  int64_t physicalElements = -1;
+  int64_t elementBytes = -1;
   int64_t cBlock = 0;
+  int64_t cxBlocks = 0;
+  int64_t c0 = 0;
   int64_t alignedC = -1;
   int64_t tailC = 0;
+  int64_t outerElements = -1;
+  int64_t hwElements = -1;
+  int64_t batchElements = -1;
+  int64_t bankAlignElements = -1;
   bool bitPackedElement = false;
 };
 
@@ -53,6 +62,9 @@ bool isWaferDDRMemRefType(mlir::Type type);
 MemoryAttr getWaferMemoryAttr(mlir::MemRefType type);
 std::optional<WaferPhysicalTensorInfo>
 computeWaferPhysicalTensorInfo(mlir::MemRefType type);
+std::optional<int64_t>
+computeWaferPhysicalElementByteOffset(mlir::MemRefType type,
+                                      llvm::ArrayRef<int64_t> logicalIndices);
 
 } // namespace wafer
 

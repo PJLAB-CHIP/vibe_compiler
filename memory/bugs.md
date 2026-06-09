@@ -36,3 +36,6 @@
   到 physical byte offset 的映射；映射不变且 footprint 可 alias 时用 metadata view/alias；映射变化
   或必须 materialize 新 footprint 时生成一条或多条 `wafer.instr.gather_scatter`；descriptor 表达不了才
   structured failure。若 helper 还没实现真实 C0 tail/fold/bank padding，先补 helper 和覆盖测试。
+  当前实现中 `computeWaferPhysicalTensorInfo` 计算 `Cx/C0/aligned_C/batchElements`，
+  `computeWaferPhysicalElementByteOffset` 计算 block-major offset；`wafer.tile.reshape` 和
+  `wafer.tile.materialize_layout` 共用 logical-to-physical segment 生成。

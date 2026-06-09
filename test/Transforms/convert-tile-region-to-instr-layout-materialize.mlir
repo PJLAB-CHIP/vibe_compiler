@@ -1,6 +1,6 @@
-// RUN: not wafer-opt --wafer-convert-tile-region-to-instr %s 2>&1 | FileCheck %s
+// RUN: wafer-opt --wafer-convert-tile-region-to-instr %s | FileCheck %s
 
-func.func @reject_padded_layout_materialize(
+func.func @materialize_padded_layout(
     %boundary: memref<4x8xf16, #wafer.memory<ddr, tensor>>) {
   %region = wafer.tile.region(%boundary
       : memref<4x8xf16, #wafer.memory<ddr, tensor>>)
@@ -18,4 +18,10 @@ func.func @reject_padded_layout_materialize(
   return
 }
 
-// CHECK: layout materialize lowering requires equal static physical byte counts
+// CHECK-LABEL: func.func @materialize_padded_layout
+// CHECK-NOT: wafer.tile.materialize_layout
+// CHECK: memref.alloc() : memref<4x8xf16, #wafer.memory<spm, tensor>>
+// CHECK: %[[CX:.+]] = memref.alloc() : memref<4x8xf16, #wafer.memory<spm, cx>>
+// CHECK: wafer.instr.gather_scatter %{{.+}} to %[[CX]]
+// CHECK-SAME: byte_count = 64 : i64
+// CHECK-SAME: inner_bytes = 64 : i64

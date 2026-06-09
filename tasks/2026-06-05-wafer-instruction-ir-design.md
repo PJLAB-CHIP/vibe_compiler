@@ -1,9 +1,9 @@
 # Wafer Instruction IR Design
 
-日期：2026-06-05；更新：2026-06-08
+日期：2026-06-05；更新：2026-06-09
 
 状态：R3.2d 设计已按 memref-backed buffer contract 重新收口；R3.2c 前置已完成，
-R3.2d.1 instruction op contract 已落地，当前 active task 是 R3.2d.2 DialectConversion
+R3.2d.1 instruction op contract、R3.2d.2 DialectConversion 和 R3.2d.3 named pipeline 接入已落地。
 
 本文定义 R3.2d 的 instruction-level Wafer IR。核心结论：
 
@@ -31,7 +31,7 @@ memref SSA、Wafer memory attr、op operands、attrs、MemoryEffects 和显式 d
   的 ODS、verifier、MemoryEffects、`WaferInstructionOpInterface` 和 lit/unit 覆盖。
 - `wafer.instr.*` op 只读写 Wafer-tagged memref，不产生 buffer result，不携带 SPM offset、
   worker id、raw packet field 或 C ABI 字段。
-- R3.2d.2 仍需实现 target-abstract tile-region op 到这些 instruction op 的 DialectConversion。
+- R3.2d.2 已实现 target-abstract tile-region op 到这些 instruction op 的 DialectConversion。
 - R3.2c 已产出 memref-backed `wafer.tile.region`；R3.2d 必须基于该 unplaced Wafer-tagged memref
   graph 做 instruction lowering，不能再引入 storage/buffer IR 层。
 - R3.2c 已支持 `scf.if` / `scf.for` 作为 tile-region 内 structured control-flow。R3.2d 必须递归
@@ -414,7 +414,7 @@ V0 mapping：
 | --- | --- |
 | `wafer.tile.load` | ensure / create destination `memref<..., #wafer.memory<spm, tensor>>`; emit `wafer.instr.rdma`; replace original result with dest memref |
 | `wafer.tile.store` | emit `wafer.instr.wdma`; erase store |
-| `wafer.tile.materialize_layout` | ensure / create destination memref with requested marker; emit `wafer.instr.gather_scatter` only when static source/dest physical byte counts and 3-level row descriptors are provably compatible; otherwise structured failure |
+| `wafer.tile.materialize_layout` | ensure / create destination memref with requested marker; compare source/result logical element to physical byte mapping through the unified physical layout calculator; emit one or more `wafer.instr.gather_scatter` segments for logical element movement; do not require source/result physical byte counts to match; structured failure only when static logical movement cannot be represented by V0 descriptors |
 | `wafer.tile.fill` | emit `wafer.instr.fill` writing the existing dest memref |
 | `wafer.tile.gemm` | ensure / create destination aligned SPM memref; emit `wafer.instr.gemm`; replace result with dest memref |
 | `wafer.tile.elementwise` | ensure / create destination SPM memref; emit `wafer.instr.elementwise`; replace result with dest memref |
@@ -561,8 +561,9 @@ wafer.tile.region ... {
 R3.2c 已完成的前置：
 
 1. `#wafer.memory<space, layout>` target memory attr。
-2. `computeWaferPhysicalTensorInfo(memrefType)`，统一计算 layout marker、Cx/C0、
-   footprint、range-end、bool bitpack 和 wrapper layout enum。
+2. `computeWaferPhysicalTensorInfo(memrefType)` 和
+   `computeWaferPhysicalElementByteOffset(memrefType, indices)`，统一计算 layout marker、Cx/C0、
+   footprint、range-end、bool bitpack、wrapper layout enum 和 logical-to-physical offset。
 3. 旧 `#wafer.memory_space` / `#wafer.mem_layout` / `!wafer.storage` / `wafer.tile.alloc`
    合同已从主线 IR 定义和测试中删除。
 
@@ -581,7 +582,8 @@ R3.2d.2 已完成：
    `WaferTileRegionToInstr` conversion library API。
 5. conversion 递归处理 `scf.if` / `scf.for` region body，并保留 scalar / memref yield 关系。
 6. conversion tests 覆盖 load/store、layout materialize、fill、GEMM、elementwise、reduce、
-   copy、metadata view lowered to standard memref view、nested `scf.if`、tile communication structured failure，以及
+   copy、metadata view lowered to standard memref view、`Cx/NCx` block-major reshape、
+   tail-only metadata reshape、nested `scf.if`、tile communication structured failure，以及
    padding layout materialization structured failure。
 
 R3.2d.3 已完成：
