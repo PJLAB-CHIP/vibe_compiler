@@ -150,10 +150,18 @@ metadata-only reshape 或标准 strided view 可以继续使用 MLIR memref layo
 Wafer `Cx/NCx` physical interpretation 只由 `#wafer.memory<..., cx/ncx>` marker 和
 `computeWaferPhysicalTensorInfo` 解释。
 
+`wafer.tile.reshape` 先表达 StableHLO / tensor 层的 logical linear-order reindex：source 和
+result 的同一个 canonical linear element number 对齐，但 result multi-index 按新 shape
+重新解释，因此它不是“无语义 no-op”。R3.2d lowering 再判断这个 logical reindex 能否由当前
+physical storage alias 表达。compact `tensor/ntensor` 的物理字节序已经等于 canonical linear
+order，所以可用 `memref.reinterpret_cast`；`Cx/NCx` 或其它 physical interpretation 改变时，必须按
+同一 linear element number 分别计算 source/result physical byte offset，必要时 materialize
+成 `wafer.instr.gather_scatter`。
+
 R3.2d 不能把 `Cx/NCx` layout marker 本身当作 movement trigger。对 reshape 来说，是否需要
-instruction movement 取决于 source/result logical element 到 physical byte offset 的映射是否变化，
-以及 result 是否需要新的 materialized physical footprint；不是取决于 op 名字、layout marker 或
-`physicalBytes` 是否相等。`computeWaferPhysicalTensorInfo` 必须按硬件文档的 `get_CxC0` /
+instruction movement 取决于同一 canonical linear element number 在 source/result 中的
+physical byte offset 映射是否变化，以及 result 是否需要新的 materialized physical footprint；
+不是取决于 op 名字、layout marker 或 `physicalBytes` 是否相等。`computeWaferPhysicalTensorInfo` 必须按硬件文档的 `get_CxC0` /
 `common_tensor_info_generate_i64` 口径实现 INT8/UINT8 block 128、其它 dtype block 64、tail
 retain/fold、tail align 和 256B bank padding。若该 helper 不能给出真实 mapping，R3.2d lowering
 不能用局部 `ceil(C/64)` 近似来证明 reshape identity 或 descriptor 合法性。
@@ -424,7 +432,7 @@ V0 mapping：
 | `wafer.tile.insert_slice` | structured failure until copy-plus-slice insertion descriptor splitting is proven against the V0 TDMA descriptor |
 | `wafer.tile.broadcast` | structured failure until static broadcast descriptor expansion is proven against the V0 TDMA descriptor |
 | `wafer.tile.transpose` | structured failure until permutation descriptor expansion is proven against the V0 TDMA descriptor |
-| `wafer.tile.reshape` | identity replacement when types are identical; compact `tensor/ntensor` reshape lowers to a verifier-legal standard memref view; `Cx/NCx` reshape first compares source/result logical-to-physical byte mapping with the unified physical layout calculator, materializes a destination memref and emits one or more `wafer.instr.gather_scatter` only when the physical mapping or required footprint changes; structured failure only when the static reshape movement plan cannot be represented by V0 descriptors |
+| `wafer.tile.reshape` | identity replacement when types are identical; otherwise preserve source/result canonical linear element order and reinterpret result multi-indices through the new shape; compact `tensor/ntensor` reshape lowers to a verifier-legal standard memref view because compact physical bytes already follow that linear order; `Cx/NCx` reshape first compares same-linear-element source/result physical byte offsets with the unified physical layout calculator, materializes a destination memref and emits one or more `wafer.instr.gather_scatter` only when the physical mapping or required footprint changes; structured failure only when the static reshape movement plan cannot be represented by V0 descriptors |
 | `scf.if` / `scf.for` | preserve the structured control-flow op; recursively legalize executable target-abstract ops in each nested region; keep scalar and memref yields explicit |
 | `wafer.tile.send/recv/wait/all_gather/reduce_scatter/all_reduce` | not handled by R3.2d V0 |
 

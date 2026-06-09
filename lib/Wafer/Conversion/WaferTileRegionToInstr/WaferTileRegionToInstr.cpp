@@ -258,6 +258,10 @@ getStaticLogicalMovementSegments(mlir::PatternRewriter &rewriter,
     return indices;
   };
 
+  // Reshape preserves canonical logical linear order, not per-dimension index
+  // equality.  Delinearize the same logical element number through the source
+  // and destination shapes, then ask the physical layout helper where that
+  // logical element lives in each buffer.
   llvm::SmallVector<LogicalMovementSegment> segments;
   for (int64_t linearIndex = 0; linearIndex < elementCount; ++linearIndex) {
     mlir::FailureOr<llvm::SmallVector<int64_t>> sourceIndices =

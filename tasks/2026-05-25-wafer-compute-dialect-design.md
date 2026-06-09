@@ -216,8 +216,10 @@ movement op 的合同：
   slice。
 - `wafer.tile.broadcast` / `wafer.tile.transpose` / `wafer.tile.copy` 表达 R2.4 当前以 passthrough
   `linalg.generic` 形式产出的 movement。它们是 TDMA/DataMove 候选，不是 compute elementwise。
-- `wafer.tile.reshape` 只表达 static element-count-preserving shape view；它无 SPM write effect。
-  如果 reshape 需要 physical layout change，必须使用 explicit materialization/movement op。
+- `wafer.tile.reshape` 只表达 static element-count-preserving logical reindex：source/result 的
+  canonical linear element order 保持一致，result multi-index 按新 shape 重新解释。tile 层 op
+  本身无 SPM write effect；如果该 logical reindex 在当前 physical layout 下不能 alias，lowering
+  必须显式 materialize 成 movement。
 - RDMA 方向是 `#wafer.memory<ddr, *> -> #wafer.memory<spm, *>`，WDMA 方向是
   `#wafer.memory<spm, *> -> #wafer.memory<ddr, *>`。TDMA / local movement 只在 tile-local
   memory 或 verifier 允许的 address domain 内工作。

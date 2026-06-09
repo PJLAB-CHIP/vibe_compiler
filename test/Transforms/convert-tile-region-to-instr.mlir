@@ -210,6 +210,43 @@ func.func @reshape_view(
 // CHECK-SAME: strides: [8, 1]
 // CHECK: wafer.instr.wdma
 
+func.func @reshape_then_materialize_cx_uses_reshaped_logical_order(%zero: f16) {
+  %region = wafer.tile.region(%zero : f16) -> (f16) {
+  ^bb0(%fill: f16):
+    %source = memref.alloc()
+        : memref<4x64xf16, #wafer.memory<spm, tensor>>
+    %reshaped = wafer.tile.reshape %source
+        : memref<4x64xf16, #wafer.memory<spm, tensor>>
+       -> memref<2x128xf16, #wafer.memory<spm, tensor>>
+    %cx = wafer.tile.materialize_layout %reshaped
+        : memref<2x128xf16, #wafer.memory<spm, tensor>>
+       -> memref<2x128xf16, #wafer.memory<spm, cx>>
+    wafer.tile.yield %fill : f16
+  }
+  return
+}
+
+// CHECK-LABEL: func.func @reshape_then_materialize_cx_uses_reshaped_logical_order
+// CHECK-NOT: wafer.tile.reshape
+// CHECK-NOT: wafer.tile.materialize_layout
+// CHECK: %[[SOURCE:.+]] = memref.alloc() : memref<4x64xf16, #wafer.memory<spm, tensor>>
+// CHECK: %[[RESHAPED:.+]] = memref.reinterpret_cast %[[SOURCE]]
+// CHECK-SAME: sizes: [2, 128]
+// CHECK-SAME: strides: [128, 1]
+// CHECK: %[[CX:.+]] = memref.alloc() : memref<2x128xf16, #wafer.memory<spm, cx>>
+// CHECK: wafer.instr.gather_scatter %[[RESHAPED]] to %[[CX]]
+// CHECK-SAME: byte_count = 128 : i64
+// CHECK-SAME: inner_bytes = 128 : i64
+// CHECK: wafer.instr.gather_scatter %[[RESHAPED]] to %[[CX]]
+// CHECK-SAME: dst_offset = 256 : i64
+// CHECK-SAME: src_offset = 128 : i64
+// CHECK: wafer.instr.gather_scatter %[[RESHAPED]] to %[[CX]]
+// CHECK-SAME: dst_offset = 128 : i64
+// CHECK-SAME: src_offset = 256 : i64
+// CHECK: wafer.instr.gather_scatter %[[RESHAPED]] to %[[CX]]
+// CHECK-SAME: dst_offset = 384 : i64
+// CHECK-SAME: src_offset = 384 : i64
+
 func.func @reshape_cx_tail_only_metadata_view(%zero: f16) {
   %region = wafer.tile.region(%zero : f16) -> (f16) {
   ^bb0(%fill: f16):

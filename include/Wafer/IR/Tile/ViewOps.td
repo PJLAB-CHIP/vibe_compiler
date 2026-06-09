@@ -9,11 +9,13 @@ def Wafer_ViewReshapeOp : Wafer_Op<"tile.reshape", [
   let summary = "tile-local logical reshape";
   let description = [{
     `wafer.tile.reshape` changes the logical tensor shape attached to storage
-    while preserving static element count, element type, memory space, and
-    layout marker. Instruction lowering may represent it as a metadata view
-    when the target layout can be expressed that way, or materialize it with
-    explicit movement when the target physical interpretation requires data
-    rearrangement.
+    while preserving canonical logical linear element order, static element
+    count, element type, memory space, and layout marker. Result multi-indices
+    are reinterpreted through the new shape; they are not required to equal the
+    source multi-indices. Instruction lowering may represent that logical
+    reindexing as a metadata view when the current physical layout can alias the
+    same linear element order, or materialize it with explicit movement when the
+    target physical interpretation requires data rearrangement.
   }];
 
   let arguments = (ins Wafer_AnySPMMemRef:$source);

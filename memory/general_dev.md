@@ -138,10 +138,12 @@
   `[CxBlock][outer][lane]`，`NCx` 是 `[N][CxBlock][HW][lane]`；`aligned_C` 只用于 footprint /
   batch size，不是 logical row stride。不要用 `ceil(C/64)*64`、layout marker 名字或
   `physicalBytes` 单点事实替代完整 physical mapping。
-- 判断 `wafer.tile.reshape` 是否需要 instruction movement 时，触发条件是 logical element 到
-  physical byte offset 的映射变化，或目标 physical footprint/descriptor 需要 materialized buffer；
-  不是“看见 reshape”或“看见 cx/ncx”。compact `tensor/ntensor` 可用标准 memref view；`Cx/NCx`
-  reshape 要先用统一 physical layout calculator 比较 source/result mapping，只有排布变化才发
+- 判断 `wafer.tile.reshape` 是否需要 instruction movement 时，先保留 StableHLO/tensor reshape
+  的 logical 语义：source/result 的 canonical linear element number 对齐，result multi-index
+  按新 shape 解释。movement 触发条件是同一 linear element 在 source/result 中的 physical byte
+  offset 映射变化，或目标 physical footprint/descriptor 需要 materialized buffer；不是“看见
+  reshape”或“看见 cx/ncx”。compact `tensor/ntensor` 可用标准 memref view；`Cx/NCx` reshape
+  要先用统一 physical layout calculator 比较 source/result mapping，只有排布变化才发
   `wafer.instr.gather_scatter`。如果统一 helper 还不能表达真实 `C0` tail/fold 和 bank padding，
   先补 helper，不要在 lowering 里临时重写一份局部 layout 解释。
 - 用户级 compiler target 名称统一为 `wafer`，Wafer IR target attr 的唯一主线 spelling 是
