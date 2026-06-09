@@ -134,7 +134,9 @@
   后的任意元素流；INT8/UINT8 full block 是 128，其它 dtype full block 是 64；tail 小于等于半块时
   保留为按 `4/8/16/32/64` 级别对齐的 `C0`，大于半块时 fold 到下一 full block；C alignment 后还要
   计入 256B bank alignment。`Cx` 通常用于 2D，`NCx` 用于 rank > 2，但 `NCx` 的 `N` 只是历史外层
-  slice 命名，不等于 semantic batch。不要用 `ceil(C/64)*64`、layout marker 名字或
+  slice 命名，不等于 semantic batch。full-block 物理顺序是 channel-block major：`Cx` 是
+  `[CxBlock][outer][lane]`，`NCx` 是 `[N][CxBlock][HW][lane]`；`aligned_C` 只用于 footprint /
+  batch size，不是 logical row stride。不要用 `ceil(C/64)*64`、layout marker 名字或
   `physicalBytes` 单点事实替代完整 physical mapping。
 - 判断 `wafer.tile.reshape` 是否需要 instruction movement 时，触发条件是 logical element 到
   physical byte offset 的映射变化，或目标 physical footprint/descriptor 需要 materialized buffer；

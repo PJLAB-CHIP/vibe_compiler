@@ -28,7 +28,9 @@
 - 根因：忘了 `Cx/NCx` 是 logical last dimension 的 target physical layout rule，不是 dense memref
   stride，也不是 `ceil(C/64)*64` 的简单 padding。真实规则来自 `get_CxC0` /
   `common_tensor_info_generate_i64`：INT8/UINT8 block 128，其它 dtype block 64，tail 有 retain/fold，
-  C alignment 后还有 256B bank padding。
+  C alignment 后还有 256B bank padding。另一个常见误解是把 `aligned_C` 当作 outer/HW row
+  stride；full-block 实际是 channel-block major，`Cx` 为 `[CxBlock][outer][lane]`，`NCx` 为
+  `[N][CxBlock][HW][lane]`。
 - 修复模式：reshape lowering 不能从 layout marker 或 `physicalBytes` 单点事实直接判断是否需要
   instruction。正确顺序是：用统一 physical layout calculator 得到 source/result logical index
   到 physical byte offset 的映射；映射不变且 footprint 可 alias 时用 metadata view/alias；映射变化

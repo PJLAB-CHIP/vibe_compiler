@@ -294,7 +294,7 @@ layout 相关信息分成两层，二者不能混用：
 | Pool/UnPool | `NHWC` | 输入输出默认 aligned；rank > 2 使用 `NCx` |
 | 其他 CT/DataMove/DMA | 按各自 op 语义解释 | `Tensor`、`NTensor`、`Cx`、`NCx` 都可接受；若有额外限制，在 per-op 约束中单独记录 |
 
-`Tensor/NTensor` 表示紧密排布，logical shape 不做最后一维 block materialization。`Cx/NCx` 表示最后一维按硬件规则 aligned 后的 SPM physical layout：2D 使用 `Cx`，rank > 2 使用 `NCx`。这里 `NCx` 名字里的 `N` 只是历史命名里的外层 slice 表示，不等价于 semantic batch；Conv weight 的 `HWOI/HWIO` 作为 rank > 2 operand 也可以有对应 aligned physical layout。
+`Tensor/NTensor` 表示紧密排布，logical shape 不做最后一维 block materialization。`Cx/NCx` 表示最后一维按硬件规则 aligned 后的 SPM physical layout：2D 使用 `Cx`，rank > 2 使用 `NCx`。`Cx/NCx` 的 full-block 物理顺序是 channel-block major，不是把 `aligned_C` 当作每个 outer/HW row 的 dense stride：`Cx` 对应 `[CxBlock][outer][lane]`，`NCx` 对应 `[N][CxBlock][HW][lane]`。这里 `NCx` 名字里的 `N` 只是历史命名里的外层 slice 表示，不等价于 semantic batch；Conv weight 的 `HWOI/HWIO` 作为 rank > 2 operand 也可以有对应 aligned physical layout。
 
 前端/中端 layout 推导应保留两个字段：
 
@@ -397,6 +397,41 @@ else:
 | INT8，`B=128` | 129 | `q=1,r=1`，保留 tail，`aligned_C=128+4=132`，`Cx=1,C0=4` |
 | INT8，`B=128` | 192 | `q=1,r=64`，保留 tail，`aligned_C=128+64=192`，`Cx=1,C0=64` |
 | INT8，`B=128` | 193 | `r=65`，fold 成下一个 full block，`aligned_C=256`，`Cx=2,C0=0` |
+
+full-block 的 logical index 到 physical offset 按 block-major 顺序解释，不能按
+`outer_idx * aligned_C + c` 的 dense row 公式解释。令 `c = cb * B + lane`，其中
+`0 <= lane < B`：
+
+```text
+Cx:
+  outer = product(shape[0..rank-2])
+  offset_elems(full block) =
+    cb * outer * B + outer_idx * B + lane
+
+NCx:
+  hw = product(shape[1..rank-2])
+  batch_num = align_to(hw * aligned_C, bank_align_elem(dtype))
+  offset_elems(full block) =
+    n * batch_num + cb * hw * B + hw_idx * B + lane
+```
+
+当 tail 被保留为 `C0` 时，tail 是每个 `Cx/NCx` batch 中跟在 full blocks 后面的 compact
+span，inner width 是 `C0` 而不是 `B`：
+
+```text
+Cx retained C0 tail:
+  offset_elems(tail) =
+    Cx * outer * B + outer_idx * C0 + tail_lane
+
+NCx retained C0 tail:
+  offset_elems(tail) =
+    n * batch_num + Cx * hw * B + hw_idx * C0 + tail_lane
+```
+
+`aligned_C` 只参与 footprint / `batch_num` 计算；它不表示 logical row 的标准 memref stride。
+例如非 INT8/UINT8 的 `C=1000` 会 fold 成 `Cx=16,C0=0,aligned_C=1024`。若 logical shape 是
+`[M,1000]`，`Cx` full-block order 是 `[16][M][64]`，logical `(m,c)` 的 offset 是
+`(c/64) * M * 64 + m * 64 + (c%64)`，不是 `m * 1024 + c`。
 
 ### bank alignment、SPM0 bank conflict 和 base address
 

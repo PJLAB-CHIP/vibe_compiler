@@ -231,7 +231,7 @@ Conv(`2`) 时写 `dilation` 并置 `dilation_conv=1`；对 Depthwise/GEMM
 | 检查项 | 发射侧含义 |
 | --- | --- |
 | semantic layout | 决定 wrapper 如何解释 shape 字段，例如 Conv forward 是 `NHWC + HWOI`，BPA weight 是 `HWIO`，Pool/UnPool 是 `NHWC` |
-| physical layout | 决定 SPM buffer 能否直接作为 operand；`Tensor/NTensor` 是紧密排布，`Cx/NCx` 是最后一维 aligned 后的物理形态 |
+| physical layout | 决定 SPM buffer 能否直接作为 operand；`Tensor/NTensor` 是紧密排布，`Cx/NCx` 是最后一维 aligned 后的 block-major 物理形态：full block 按 `Cx:[CxBlock][outer][lane]`、`NCx:[N][CxBlock][HW][lane]` 解释，不能把 `aligned_C` 当成 dense row stride |
 | aligned-only 指令 | NE、Reduce、Pool、UnPool 的输入输出默认都要 aligned；2D 使用 `Cx`，rank > 2 使用 `NCx` |
 | 其他 CT/DataMove/DMA | 原则上可接受 `Tensor`、`NTensor`、`Cx`、`NCx`，但仍要满足各 wrapper 的地址、stride、dtype、bitpack 限制 |
 | materialization | `ChannelNorm/DechannelNorm` 是真实 data movement，不是 metadata reshape；V0 可以用 `TsmDataMove::GatherScatter` 实现，公开 CRT 的 ChannelNorm/DechannelNorm 只是一个样例；full-block span 和 retained `C0` tail span 不能合成同一个三层 descriptor 时必须拆成多条 GatherScatter |
@@ -705,7 +705,7 @@ GEMM packet 的静态寄存器映射已经足够明确。V0 verifier 还需要�
 | `linalg.matmul` | `channelNorm(a/b/out) -> mk.dot -> tx.gemm -> dechannelNorm` | 说明该实现选择在 GEMM 前后显式 materialize；Wafer verifier 仍以 GEMM aligned physical layout 约束为准 |
 | `linalg.reduce` | 公开 Triton 样例会 reshape 到 4D 后 `channelNorm(input) -> mk.reduce_sum/max/min -> tx.reduce_sum/max/min -> dechannelNorm` | Reduce 的规范能力以 `TsmReduce` 为准；Triton 当前只用 C/W 两类映射，不能作为 V0 支持范围上限 |
 | `lastDim < 4` | pad 到 4 | 最小 channel lane 粒度为 4 |
-| `lastDim > block` | reshape/split + transpose 到 block layout | 大 C 必须拆成 full block + optional C0 tail；tail 是否保留由 dtype 的半块阈值决定 |
+| `lastDim > block` | materialize 到 channel-block major layout | 大 C 必须拆成 full block + optional C0 tail；tail 是否保留由 dtype 的半块阈值决定；这不是 `outer * aligned_C + c` 的 dense reshape |
 | SPM 对齐 | `AllocateSharedMemoryPass` 给 `mk::DotOp` 和 `mk::Reduce*` operand alloc 设置 256B alignment | 这是现有 Triton backend 的保守 alloc 策略/性能线索；不是普通 SPM base address 的硬性要求，不能和 Cx/NCx 的 C0 tail/bank padding 规则混为一谈 |
 | GEMM 发射 | `MKToTx81` 从 channelNorm 后的 memref 取 shape：`M=a.shape[1]`、`K=b.shape[1]`、`N=b.shape[0]*b.shape[2]`，并设置 `transA=false/transB=true` | 可作为 GEMM 参数组织的 sanity check；Wafer GEMM verifier 以 `TsmGemm` wrapper、semantic layout 和 Cx/C0 规则为准 |
 

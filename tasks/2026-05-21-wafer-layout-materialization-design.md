@@ -412,7 +412,15 @@ WaferPhysicalTensorInfo {
 `Cx/NCx` 的 C alignment 总是针对 logical last dimension，不是 attr 中任选的 axis。`Cx` 用于
 2D operand，`NCx` 用于 rank > 2 operand；`NCx` 名字里的 `N` 只是历史命名的外层 slice，
 不等价于 semantic batch。Conv weight 的 `HWOI/HWIO` 这类 rank > 2 operand 也可以使用
-`NCx` physical layout family。
+`NCx` physical layout family。full-block 物理顺序是 channel-block major：`Cx` 为
+`[CxBlock][outer][lane]`，`NCx` 为 `[N][CxBlock][HW][lane]`。`aligned_C` 只参与
+footprint / batch size 计算，不能当成 logical outer/HW row 的 dense stride。
+
+```text
+full block, c = cb * B + lane:
+  Cx  offset = cb * outer * B + outer_idx * B + lane
+  NCx offset = n * batch_mem_elems + cb * hw * B + hw_idx * B + lane
+```
 
 `Cx/C0/aligned_C/batch_mem_elems/storage_bytes` 按硬件文档中的 `get_CxC0` /
 `common_tensor_info_generate_i64` 口径计算：INT8/UINT8 full block 是 128，其它 dtype full

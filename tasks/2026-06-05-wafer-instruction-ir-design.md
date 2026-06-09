@@ -125,13 +125,23 @@ computeWaferPhysicalTensorInfo(memrefType)
 ### 2.1 Why Not MemRef Layout Slot
 
 MLIR memref layout slot 表达的是 MLIR 可解释的 affine / strided address layout。Wafer
-`Cx/NCx` 有 compact `C0` tail：
+`Cx/NCx` 的 full-block 物理顺序是 channel-block major，且 retained tail 是 compact `C0`
+span：
 
 ```text
 full C blocks:
-  hw-major blocks with full block width
+  Cx  : [CxBlock][outer][lane]
+  NCx : [N][CxBlock][HW][lane]
 tail block:
-  hw-major compact C0 width
+  compact C0 span after full blocks inside each Cx/NCx batch
+```
+
+因此 `aligned_C` 不能解释成 logical outer/HW row 的 dense stride。对 full block 中的
+`c = cb * B + lane`：
+
+```text
+Cx  offset = cb * outer * B + outer_idx * B + lane
+NCx offset = n * batch_num + cb * hw * B + hw_idx * B + lane
 ```
 
 这不是普通 `strided<[aligned_C, 1]>`，也不是一个单一 affine map 能完整表达的 layout。因此
