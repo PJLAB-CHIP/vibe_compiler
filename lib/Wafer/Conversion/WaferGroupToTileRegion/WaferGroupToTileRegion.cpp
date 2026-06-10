@@ -9,10 +9,12 @@
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Linalg/Utils/Utils.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Utils/StructuredOpsUtils.h"
 #include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/IRMapping.h"
@@ -1387,6 +1389,209 @@ cloneGroupToScratchModule(GroupOp group) {
   return scratchModule;
 }
 
+static GroupOp findSingleScratchGroup(mlir::ModuleOp module) {
+  GroupOp found;
+  module.walk([&](GroupOp group) {
+    if (!found)
+      found = group;
+  });
+  return found;
+}
+
+static bool isGroupOutputBoundary(GroupOp group, mlir::Value value,
+                                  unsigned outputIndex) {
+  auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(value);
+  if (!blockArg || blockArg.getOwner() != &group.getBody().front())
+    return false;
+  unsigned inputCount = static_cast<unsigned>(group.getInputs().size());
+  return blockArg.getArgNumber() == inputCount + outputIndex;
+}
+
+static mlir::LogicalResult validateCandidateTile(
+    mlir::RankedTensorType resultType, llvm::ArrayRef<int64_t> offsets,
+    llvm::ArrayRef<int64_t> sizes, std::string *failureReason) {
+  if (offsets.size() != static_cast<size_t>(resultType.getRank()) ||
+      sizes.size() != static_cast<size_t>(resultType.getRank())) {
+    setFailureReason(failureReason,
+                     "candidate tile rank does not match group result rank");
+    return mlir::failure();
+  }
+
+  for (auto [dim, values] : llvm::enumerate(llvm::zip(offsets, sizes))) {
+    int64_t offset = std::get<0>(values);
+    int64_t size = std::get<1>(values);
+    int64_t bound = resultType.getDimSize(dim);
+    if (mlir::ShapedType::isDynamic(bound)) {
+      setFailureReason(failureReason,
+                       "candidate tile requires static result shape");
+      return mlir::failure();
+    }
+    if (offset < 0 || size <= 0 || offset + size > bound) {
+      setFailureReason(failureReason,
+                       "candidate tile is outside group result bounds");
+      return mlir::failure();
+    }
+  }
+  return mlir::success();
+}
+
+static mlir::LogicalResult
+buildCandidateLoopTile(mlir::OpBuilder &builder, mlir::Location loc,
+                       mlir::linalg::LinalgOp op, mlir::AffineMap outputMap,
+                       llvm::ArrayRef<int64_t> candidateOffsets,
+                       llvm::ArrayRef<int64_t> candidateSizes,
+                       llvm::SmallVectorImpl<mlir::OpFoldResult> &loopOffsets,
+                       llvm::SmallVectorImpl<mlir::OpFoldResult> &ivs,
+                       llvm::SmallVectorImpl<mlir::OpFoldResult> &tileSizes,
+                       llvm::SmallVectorImpl<mlir::OpFoldResult> &sizeBounds,
+                       std::string *failureReason) {
+  llvm::SmallVector<int64_t, 4> loopRanges = op.getStaticLoopRanges();
+  if (llvm::any_of(loopRanges, [](int64_t value) {
+        return mlir::ShapedType::isDynamic(value);
+      })) {
+    setFailureReason(failureReason,
+                     "candidate tile requires static linalg loop ranges");
+    return mlir::failure();
+  }
+
+  llvm::DenseMap<unsigned, unsigned> resultDimForLoopDim;
+  for (auto [resultDim, expr] : llvm::enumerate(outputMap.getResults())) {
+    auto dimExpr = mlir::dyn_cast<mlir::AffineDimExpr>(expr);
+    if (!dimExpr) {
+      setFailureReason(failureReason,
+                       "candidate tile requires projected output map");
+      return mlir::failure();
+    }
+    resultDimForLoopDim[dimExpr.getPosition()] =
+        static_cast<unsigned>(resultDim);
+  }
+
+  mlir::OpFoldResult zero = builder.getIndexAttr(0);
+  for (auto [loopDim, loopRange] : llvm::enumerate(loopRanges)) {
+    sizeBounds.push_back(builder.getIndexAttr(loopRange));
+    loopOffsets.push_back(zero);
+    tileSizes.push_back(zero);
+
+    auto resultDimIt = resultDimForLoopDim.find(static_cast<unsigned>(loopDim));
+    if (resultDimIt == resultDimForLoopDim.end())
+      continue;
+
+    unsigned resultDim = resultDimIt->second;
+    mlir::OpFoldResult offset =
+        builder.getIndexAttr(candidateOffsets[resultDim]);
+    mlir::OpFoldResult size = builder.getIndexAttr(candidateSizes[resultDim]);
+    loopOffsets.back() = offset;
+    tileSizes.back() = size;
+    ivs.push_back(offset);
+  }
+
+  return mlir::success();
+}
+
+static mlir::LogicalResult materializeCandidateTileSlices(
+    GroupOp group, llvm::ArrayRef<int64_t> candidateTileOffsets,
+    llvm::ArrayRef<int64_t> candidateTileSizes, std::string *failureReason) {
+  auto yield =
+      mlir::dyn_cast<GroupYieldOp>(group.getBody().front().getTerminator());
+  if (!yield || yield.getValues().size() != 1) {
+    setFailureReason(
+        failureReason,
+        "candidate tile materialization requires one group result");
+    return mlir::failure();
+  }
+
+  auto root = mlir::dyn_cast_or_null<mlir::linalg::LinalgOp>(
+      yield.getValues().front().getDefiningOp());
+  if (!root) {
+    setFailureReason(failureReason,
+                     "candidate tile materialization requires a linalg root");
+    return mlir::failure();
+  }
+  if (root.getNumDpsInits() != 1 || root->getNumResults() != 1) {
+    setFailureReason(failureReason,
+                     "candidate tile materialization requires one DPS output");
+    return mlir::failure();
+  }
+  if (!root.hasOnlyProjectedPermutations()) {
+    setFailureReason(failureReason,
+                     "candidate tile materialization requires projected maps");
+    return mlir::failure();
+  }
+
+  if (!isGroupOutputBoundary(group, root.getDpsInits().front(),
+                             /*outputIndex=*/0)) {
+    setFailureReason(
+        failureReason,
+        "candidate tile materialization requires direct output boundary init");
+    return mlir::failure();
+  }
+
+  auto resultType =
+      mlir::dyn_cast<mlir::RankedTensorType>(root->getResult(0).getType());
+  if (!resultType) {
+    setFailureReason(failureReason,
+                     "candidate tile materialization result is not ranked");
+    return mlir::failure();
+  }
+  if (mlir::failed(validateCandidateTile(resultType, candidateTileOffsets,
+                                         candidateTileSizes, failureReason)))
+    return mlir::failure();
+
+  llvm::SmallVector<mlir::AffineMap, 4> indexingMaps =
+      root.getIndexingMapsArray();
+  unsigned outputMapIndex = static_cast<unsigned>(root.getNumDpsInputs());
+  if (outputMapIndex >= indexingMaps.size()) {
+    setFailureReason(failureReason,
+                     "candidate tile materialization missing output map");
+    return mlir::failure();
+  }
+
+  mlir::OpBuilder builder(root);
+  llvm::SmallVector<mlir::OpFoldResult, 4> loopOffsets;
+  llvm::SmallVector<mlir::OpFoldResult, 4> ivs;
+  llvm::SmallVector<mlir::OpFoldResult, 4> tileSizes;
+  llvm::SmallVector<mlir::OpFoldResult, 4> sizeBounds;
+  if (mlir::failed(buildCandidateLoopTile(
+          builder, root.getLoc(), root, indexingMaps[outputMapIndex],
+          candidateTileOffsets, candidateTileSizes, loopOffsets, ivs, tileSizes,
+          sizeBounds, failureReason)))
+    return mlir::failure();
+
+  llvm::SmallVector<mlir::Value, 4> valuesToTile(root->operand_begin(),
+                                                 root->operand_end());
+  llvm::SmallVector<mlir::Value, 4> tiledOperands =
+      mlir::linalg::makeTiledShapes(builder, root.getLoc(), root, valuesToTile,
+                                    ivs, tileSizes, sizeBounds,
+                                    /*omitPartialTileCheck=*/true);
+  llvm::SmallVector<mlir::Type, 2> resultTypes =
+      mlir::linalg::getTensorOutputTypes(root, tiledOperands);
+  if (resultTypes.size() != 1) {
+    setFailureReason(
+        failureReason,
+        "candidate tile materialization expected one tiled result type");
+    return mlir::failure();
+  }
+
+  mlir::Operation *tiled =
+      mlir::clone(builder, root.getOperation(), resultTypes, tiledOperands);
+  auto tiledLinalg = mlir::cast<mlir::linalg::LinalgOp>(tiled);
+  mlir::linalg::offsetIndices(builder, tiledLinalg, loopOffsets);
+
+  builder.setInsertionPointAfter(tiled);
+  llvm::SmallVector<mlir::Value, 2> inserted = mlir::linalg::insertSlicesBack(
+      builder, root.getLoc(), root, tiledOperands, tiled->getResults());
+  if (inserted.size() != 1) {
+    setFailureReason(
+        failureReason,
+        "candidate tile materialization expected one inserted result");
+    return mlir::failure();
+  }
+
+  yield->setOperand(0, inserted.front());
+  root->erase();
+  return mlir::success();
+}
+
 static void configureGroupToTileRegionTarget(mlir::ConversionTarget &target) {
   target.addLegalDialect<mlir::arith::ArithDialect,
                          mlir::bufferization::BufferizationDialect,
@@ -1395,6 +1600,39 @@ static void configureGroupToTileRegionTarget(mlir::ConversionTarget &target) {
   target.addLegalOp<mlir::ModuleOp>();
   target.addIllegalOp<GroupOp, GroupYieldOp>();
   target.markUnknownOpDynamicallyLegal([](mlir::Operation *) { return true; });
+}
+
+static mlir::LogicalResult
+convertGroupToTileRegionModuleInPlace(mlir::ModuleOp module,
+                                      mlir::MLIRContext *context,
+                                      std::string *failureReason) {
+  mlir::ConversionTarget target(*context);
+  configureGroupToTileRegionTarget(target);
+
+  mlir::RewritePatternSet patterns(context);
+  patterns.add<GroupToTileRegionLoweringPattern>(context, failureReason);
+
+  bool conversionSucceeded = false;
+  {
+    mlir::ScopedDiagnosticHandler handler(
+        context, [](mlir::Diagnostic &) { return mlir::success(); });
+    conversionSucceeded = mlir::succeeded(
+        mlir::applyFullConversion(module, target, std::move(patterns)));
+  }
+
+  if (!conversionSucceeded) {
+    if (!failureReason || failureReason->empty())
+      setFailureReason(failureReason, "group-to-tile-region lowering failed");
+    return mlir::failure();
+  }
+
+  if (mlir::failed(mlir::verify(module))) {
+    setFailureReason(failureReason,
+                     "lowered tile-region module failed verifier");
+    return mlir::failure();
+  }
+
+  return mlir::success();
 }
 
 struct ConvertGroupToTileRegionPass
@@ -1434,35 +1672,31 @@ wafer::lowerGroupToTileRegionModule(GroupOp group,
     failureReason->clear();
 
   module = cloneGroupToScratchModule(group);
-  mlir::MLIRContext *context = group.getContext();
+  return convertGroupToTileRegionModuleInPlace(*module, group.getContext(),
+                                               failureReason);
+}
 
-  mlir::ConversionTarget target(*context);
-  configureGroupToTileRegionTarget(target);
+mlir::LogicalResult wafer::lowerCandidateGroupToTileRegionModule(
+    GroupOp group, llvm::ArrayRef<int64_t> candidateTileOffsets,
+    llvm::ArrayRef<int64_t> candidateTileSizes,
+    mlir::OwningOpRef<mlir::ModuleOp> &module, std::string *failureReason) {
+  if (failureReason)
+    failureReason->clear();
 
-  mlir::RewritePatternSet patterns(context);
-  patterns.add<GroupToTileRegionLoweringPattern>(context, failureReason);
-
-  bool conversionSucceeded = false;
-  {
-    mlir::ScopedDiagnosticHandler handler(
-        context, [](mlir::Diagnostic &) { return mlir::success(); });
-    conversionSucceeded = mlir::succeeded(
-        mlir::applyFullConversion(*module, target, std::move(patterns)));
-  }
-
-  if (!conversionSucceeded) {
-    if (!failureReason || failureReason->empty())
-      setFailureReason(failureReason, "group-to-tile-region lowering failed");
+  module = cloneGroupToScratchModule(group);
+  GroupOp clonedGroup = findSingleScratchGroup(*module);
+  if (!clonedGroup) {
+    setFailureReason(failureReason, "scratch module has no wafer.group");
     return mlir::failure();
   }
 
-  if (mlir::failed(mlir::verify(*module))) {
-    setFailureReason(failureReason,
-                     "lowered tile-region module failed verifier");
+  if (mlir::failed(
+          materializeCandidateTileSlices(clonedGroup, candidateTileOffsets,
+                                         candidateTileSizes, failureReason)))
     return mlir::failure();
-  }
 
-  return mlir::success();
+  return convertGroupToTileRegionModuleInPlace(*module, group.getContext(),
+                                               failureReason);
 }
 
 void wafer::dumpGroupToTileRegionModule(mlir::ModuleOp module,

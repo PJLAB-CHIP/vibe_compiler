@@ -47,6 +47,28 @@ def DumpGroupToTileRegionPass
   ];
 }
 
+def DumpCandidateDdrTileViewsPass
+    : Pass<"wafer-dump-candidate-ddr-tile-views", "mlir::ModuleOp"> {
+  let summary = "Dump R3.2e candidate DDR tile-view scratch lowering IR";
+  let dependentDialects = ["mlir::arith::ArithDialect",
+                           "mlir::bufferization::BufferizationDialect",
+                           "mlir::func::FuncDialect",
+                           "mlir::linalg::LinalgDialect",
+                           "mlir::math::MathDialect",
+                           "mlir::memref::MemRefDialect",
+                           "mlir::scf::SCFDialect",
+                           "mlir::tensor::TensorDialect", "wafer::WaferDialect",
+  ];
+  let options = [
+    Option<"candidateTileOffsets", "candidate-tile-offsets", "std::string",
+           /*default=*/"\"\"",
+           "Comma-separated candidate output tile offsets">,
+    Option<"candidateTileSizes", "candidate-tile-sizes", "std::string",
+           /*default=*/"\"\"",
+           "Comma-separated candidate output tile sizes">
+  ];
+}
+
 def NormalizeStablehloCollectivesPass
     : Pass<"wafer-normalize-stablehlo-collectives", "mlir::ModuleOp"> {
   let summary =

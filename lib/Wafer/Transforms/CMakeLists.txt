@@ -1,4 +1,5 @@
 add_mlir_library(WaferTransforms
+  Group/DumpCandidateDdrTileViews.cpp
   Group/DumpLayoutPlan.cpp
   Group/DumpTilingDemand.cpp
   Group/DumpGroupToTileRegion.cpp

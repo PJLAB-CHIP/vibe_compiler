@@ -154,10 +154,12 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - Wafer dialect verifier 的孤立负例仍会使用 `builtin.unrealized_conversion_cast` 构造非法边界值；
   这些用例只能证明 verifier 形态。历史 R1.3 stage-connection gate 已删除；communication bridge
   的 visible cast 仍归 R6.2 清理。
-- R3.2e 已为 explicit static boundary slice 接入 DDR tile-view producer，R3.2d 已能消费这些
-  view 生成 instruction-level RDMA/WDMA descriptor；仍没有 placed instruction-level IR、placed
-  memref 或 access descriptor 层，下一步由 R3.2f SPM placement 在 R3.2d 的 unplaced
-  Wafer-tagged memref graph 上继续恢复。
+- R3.2e 已接入 DDR tile-view producer：explicit static boundary slice 和 candidate output tile
+  offsets/sizes scratch lowering 都能 materialize 为 DDR `memref.subview`；R3.2d 已能消费这些
+  view 生成 instruction-level RDMA/WDMA descriptor。closed-loop traversal / tile-shape search
+  和 plan accept/reject 仍归 R3.2h；仍没有 placed instruction-level IR、placed memref 或 access
+  descriptor 层，下一步由 R3.2f SPM placement 在 R3.2d 的 unplaced Wafer-tagged memref graph
+  上继续恢复。
 
 恢复任务：
 

@@ -768,11 +768,13 @@ SPM allocation、layout assignment、DDR/resource demand 和 compute/movement le
   target-abstract compute/comm/layout/load-store/move/sync op 合法化并选择成 instruction-level
   `wafer.instr.*`，复用现有 Wafer-tagged memref graph，显式列出 queue、read/write/issue
   effects、descriptor attrs、temp/psum/staging memref values、alias/view 关系和 reject reason。
-- R3.2e 恢复 candidate DDR tile-view materialization：当前已消费 group IR 中 explicit static
+- R3.2e 恢复 candidate DDR tile-view materialization：已消费 group IR 中 explicit static
   boundary slice fact，为 external boundary `tensor.extract_slice` 和 direct output
-  `tensor.insert_slice` storeback 生成 `memref.subview` / strided DDR tile operands。它只构造
-  planner scratch IR，不 accept plan，也不把 rejected candidate 写入主 IR；真实 candidate traversal /
-  tile shape 枚举仍由 R3.2h/planner 后续产生同类 boundary slice fact。
+  `tensor.insert_slice` storeback 生成 `memref.subview` / strided DDR tile operands；也已提供
+  `--wafer-dump-candidate-ddr-tile-views` scratch 入口，从 candidate output tile offsets/sizes 和
+  linalg indexing maps 生成同类 boundary slice fact。它只构造 planner scratch IR，不 accept plan，
+  也不把 rejected candidate 写入主 IR；真实 candidate traversal / tile shape search 仍由 R3.2h/planner
+  闭环执行。
 - R3.2f 恢复 SPM placement：只消费 R3.2e candidate tile-view materialization 后经 R3.2d
   instruction legalization 产出的 instruction-level IR with actual DDR
   tile views and unplaced Wafer-tagged memref，在真实 SPM window、
