@@ -232,8 +232,9 @@ module {
 // CHECK-SAME: #wafer.memory<ddr, tensor>
 // CHECK: wafer.tile.load
 // CHECK-SAME: #wafer.memory<ddr, tensor>
-// CHECK: memref<4x8xf32, #wafer.memory<spm, tensor>>
 // CHECK: wafer.tile.fill
+// CHECK: wafer.tile.load
+// CHECK: memref<4x8xf32, #wafer.memory<spm, tensor>>
 // CHECK: wafer.tile.materialize_layout
 // CHECK: #wafer.memory<spm, cx>
 // CHECK: wafer.tile.gemm
@@ -266,18 +267,27 @@ module {
 // CHECK: #wafer.memory<spm, tensor>
 // CHECK: wafer.tile.store
 // CHECK-LABEL: wafer.group_to_tile_region group @tensor_movement_group#0
-// CHECK: wafer.tile.extract_slice
-// CHECK-SAME: offsets = array<i64: 2>
-// CHECK: wafer.tile.insert_slice
-// CHECK-SAME: offsets = array<i64: 2>
+// CHECK: memref.subview
+// CHECK-SAME: [2] [4] [1]
+// CHECK-SAME: memref<4xf32, strided<[1], offset: 2>, #wafer.memory<ddr, tensor>>
+// CHECK: wafer.tile.load
+// CHECK-SAME: memref<4xf32, strided<[1], offset: 2>, #wafer.memory<ddr, tensor>>
+// CHECK: memref.subview
+// CHECK-SAME: [2] [4] [1]
+// CHECK-SAME: memref<4xf32, strided<[1], offset: 2>, #wafer.memory<ddr, tensor>>
 // CHECK: wafer.tile.store
+// CHECK-SAME: memref<4xf32, strided<[1], offset: 2>, #wafer.memory<ddr, tensor>>
 // CHECK-LABEL: wafer.group_to_tile_region group @tensor_rank_reduced_slice_group#0
-// CHECK: wafer.tile.extract_slice
-// CHECK-SAME: sizes = array<i64: 1, 4>
-// CHECK: memref<4xf32, #wafer.memory<spm, tensor>>
-// CHECK: wafer.tile.insert_slice
-// CHECK-SAME: sizes = array<i64: 1, 4>
+// CHECK: memref.subview
+// CHECK-SAME: [0, 0] [1, 4] [1, 1]
+// CHECK-SAME: memref<4xf32, strided<[1]>, #wafer.memory<ddr, tensor>>
+// CHECK: wafer.tile.load
+// CHECK-SAME: memref<4xf32, strided<[1]>, #wafer.memory<ddr, tensor>>
+// CHECK: memref.subview
+// CHECK-SAME: [1, 0] [1, 4] [1, 1]
+// CHECK-SAME: memref<4xf32, strided<[1], offset: 4>, #wafer.memory<ddr, tensor>>
 // CHECK: wafer.tile.store
+// CHECK-SAME: memref<4xf32, strided<[1], offset: 4>, #wafer.memory<ddr, tensor>>
 // CHECK-LABEL: wafer.group_to_tile_region group @tensor_reshape_group#0
 // CHECK: wafer.tile.reshape
 // CHECK: wafer.tile.reshape
@@ -289,4 +299,9 @@ module {
 // CHECK-LABEL: wafer.group_to_tile_region group @collective_group#0
 // CHECK: failure collective lowering requires placement/local-rank facts
 // CHECK-LABEL: wafer.group_to_tile_region group @static_slice_support_op#0
-// CHECK: wafer.tile.extract_slice
+// CHECK: memref.subview
+// CHECK-SAME: [0] [4] [1]
+// CHECK-SAME: memref<4xf32, strided<[1]>, #wafer.memory<ddr, tensor>>
+// CHECK: wafer.tile.load
+// CHECK-SAME: memref<4xf32, strided<[1]>, #wafer.memory<ddr, tensor>>
+// CHECK: wafer.tile.store

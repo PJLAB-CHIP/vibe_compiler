@@ -37,11 +37,12 @@ memref SSA、Wafer memory attr、op operands、attrs、MemoryEffects 和显式 d
   DialectConversion；静态 `extract_slice`、`insert_slice`、`broadcast` 和 `transpose`
   通过统一 logical-to-physical offset calculator 生成 logical movement segments，并尽量打包成
   三层 stride/iteration `wafer.instr.gather_scatter` descriptor。
-- R3.2c 已产出 memref-backed `wafer.tile.region`；R3.2d 必须基于该 unplaced Wafer-tagged memref
-  graph 做 instruction lowering，不能再引入 storage/buffer IR 层。
+- R3.2c 已产出 memref-backed `wafer.tile.region`，R3.2e 已为 explicit static boundary slice
+  接入 DDR `memref.subview` producer；R3.2d 必须基于该 unplaced Wafer-tagged memref graph 做
+  instruction lowering，不能再引入 storage/buffer IR 层。
 - R3.2d 的 RDMA/WDMA lowering 可以消费 DDR `memref.subview` / strided memref view，但不会从
-  group tiling plan 自己生成这些 view。candidate tile 的 DDR subview 由 R3.2e 在 planner scratch
-  path 中 materialize。
+  group tiling plan 自己生成这些 view。closed-loop planner 后续产生的 candidate tile 仍必须先由
+  R3.2e/accepted materialization 显式变成 DDR subview。
 - R3.2c 已支持 `scf.if` / `scf.for` 作为 tile-region 内 structured control-flow。R3.2d 必须递归
   legalize 这些 region body 内的 executable target-abstract op，并保留 `scf` container；是否选择
   硬件 branch/loop、predication 或 unroll 不是 R3.2d V0 的职责。
@@ -59,8 +60,9 @@ memref SSA、Wafer memory attr、op operands、attrs、MemoryEffects 和显式 d
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  R3.2c `wafer.tile.region` IR，内部包含带 Wafer memory attr 的 memref values、
-  `memref.alloc` / verifier-legal metadata view、`wafer.tile.load` / `wafer.tile.store`、
+  R3.2c/R3.2e `wafer.tile.region` IR，内部包含带 Wafer memory attr 的 memref values、
+  `memref.alloc` / `memref.subview` / verifier-legal metadata view、
+  `wafer.tile.load` / `wafer.tile.store`、
   `wafer.tile.materialize_layout`、`wafer.tile.fill/gemm/elementwise/reduce`、
   `wafer.tile.copy/extract_slice/insert_slice/transpose/broadcast`、
   tile-region 内 `scf.if` / `scf.for` structured control-flow 和 `wafer.instr.local_drain`。
@@ -74,14 +76,14 @@ Pipeline position:
   memref values with `#wafer.memory<space, layout>` + `wafer.instr.*` +
   `wafer.instr.local_drain`，或结构化 legalization failure reason。
 - Downstream consumer:
-  R3.2e candidate DDR tile-view materialization、R3.2f SPM placement、
-  R3.2g DDR/resource legality、R3.2h closed-loop planner、
+  R3.2f SPM placement、R3.2g DDR/resource legality、R3.2h closed-loop planner、
   R3.4 placed memref realization 和 R3.6 codegen emission。
 - User-level driver / named pipeline:
   主线由 R3.2 closed-loop planner 调用；局部 bring-up / planner scratch 入口是
   `wafer-lower-tile-region-to-instr` 和 `wafer-lower-groups-to-instr` named pipeline。
-  planner scratch 调用 R3.2d 时，DDR load/store operand 必须已经由 R3.2e 表达成 candidate
-  tile view；如果仍是 whole-boundary memref，R3.2d 只能生成 whole-boundary descriptor。
+  planner scratch 调用 R3.2d 时，tiled DDR load/store operand 必须已经由 R3.2e 或 accepted
+  materialization 表达成 tile view；如果仍是 whole-boundary memref，R3.2d 只能生成 whole-boundary
+  descriptor。
   `--wafer-convert-tile-region-to-instr` 只作为 lit/debug pass 入口。
 - Explicit non-goals:
   不新增第二套 storage/buffer IR，不决定 group boundary、tile shape、layout assignment、SPM offset、
@@ -366,7 +368,8 @@ R3.2c 的 `wafer.tile.load/store` SPM 侧必须是 compact tensor layout；如�
 conversion。DDR 侧可以是 compact boundary，也可以是 `memref.subview` / strided memref view；
 R3.2d 从 DDR memref layout 中恢复静态 element stride，转成 byte stride/iteration descriptor。
 R3.2d 不负责把 whole-boundary DDR memref 按 tile shape 切成 subview；该事实必须由 R3.2e
-或 accepted materialization 通过 IR view 显式提供。
+explicit static boundary slice producer、planner scratch 或 accepted materialization 通过 IR view
+显式提供。
 动态 view、负 stride、bit-packed element、超过三层 stride/iteration 或不能静态证明 descriptor 的
 情况必须 structured failure，不能从 memref 名字或 shape 猜测。
 
@@ -639,7 +642,8 @@ R3.2d.3 已完成：
 
 7. 增加 `wafer-lower-tile-region-to-instr` 和 `wafer-lower-groups-to-instr` named pipeline，
    复用同一 `WaferTileRegionToInstr` conversion implementation。它们是 bring-up / explicit-view
-   lowering 入口；真实 candidate tiling 需要 R3.2e 先 materialize DDR tile views。
+   lowering 入口；R3.2e 已支持当前 IR 中 explicit static boundary slice 到 DDR tile view，真实
+   candidate traversal / tile shape 枚举仍需 planner 后续产生同类 facts。
 8. pipeline tests 覆盖多 group、structured `scf.if` / `scf.for`、tile communication
    structured failure，以及转换后不能残留 executable target-abstract op 的 pipeline-level gate。
 

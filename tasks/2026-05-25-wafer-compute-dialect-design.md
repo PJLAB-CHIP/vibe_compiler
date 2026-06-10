@@ -89,9 +89,8 @@ Pipeline position:
 - Output artifact / IR:
   instruction-level Wafer IR over unplaced Wafer-tagged memref，或结构化 failure reason。
 - Downstream consumer:
-  R3.2e candidate DDR tile-view materialization、R3.2f SPM placement、
-  R3.2g DDR/resource legality、R3.2h closed-loop planner，以及 R3.6
-  codegen emission。
+  R3.2f SPM placement、R3.2g DDR/resource legality、R3.2h closed-loop planner，以及 R3.6
+  codegen emission。tiled DDR load/store view 必须已经在 R3.2e 或 accepted materialization 中显式提供。
 - User-level driver / named pipeline:
   主线仍从 `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 进入 R3.1/R3.2；
   R3.2d 可提供局部 dump / lit gate，但不能成为用户级 compile flow。
@@ -325,7 +324,7 @@ Placed instruction-level verifier：
 | --- | --- | --- | --- |
 | select Wafer compute implementation | tiled `linalg` / tensor / SCF | target-abstract `wafer.tile.*` compute / movement op | 选择本 tile 实现族，保留数学语义，建立 layout/resource interface |
 | layout materialization | target-abstract Wafer op | accepted Wafer-tagged memref + materialization edge | 基于 op interface 做 layout assignment 和真实 movement cut |
-| candidate DDR tile-view materialization | candidate target-abstract tile-region IR + candidate tile shape | same scratch tile-region IR with DDR `memref.subview` tile operands | 从 tiling facts 显式生成 load/store 的 DDR tile view，不从名字或 whole-boundary shape 猜 DMA |
+| candidate DDR tile-view materialization | candidate target-abstract tile-region IR + explicit static boundary slice fact | same scratch tile-region IR with DDR `memref.subview` tile operands | 当前覆盖 external boundary extract 和 direct output insert storeback；真实 candidate traversal / tile shape 仍由 planner 后续产生 facts；不从名字或 whole-boundary shape 猜 DMA |
 | instruction legalization / selection | accepted layout IR | instruction-level `wafer.instr.*` over unplaced Wafer-tagged memref | 将 target-abstract op 改写成 CT/NE/TDMA/RDMA/WDMA 指令形态，列出 queue、effects、temp/psum/staging memref values、alias 和 descriptor attrs；DTE communication 不进入普通 `wafer.instr` path |
 | SPM placement | instruction-level IR with unplaced Wafer-tagged memref | same instruction-level IR with placed SPM memref values | 从 memref use-def 和 instruction effects 收集 demand、liveness，分配 offset/range/bank |
 | placement realization | placed instruction-level IR | placed `memref` / flat storage / access descriptor | 复用标准 memref lowering 或生成目标 access descriptor |

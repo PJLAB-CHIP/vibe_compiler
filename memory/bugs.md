@@ -56,3 +56,13 @@
   stride/iteration。descriptor offset 仍相对 operand view origin，subview base offset 由 memref
   value/type 留给后续 packetization。动态 view、负 stride、bit-packed element 或超过三层时
   structured failure，不能靠名字或 shape 猜测。
+
+## 2026-06-10 Boundary slice 被 eager whole-load 遮蔽
+
+- 现象：group-to-tile-region 先把每个 tensor boundary 整块 `wafer.tile.load` 到 SPM，随后
+  `tensor.extract_slice` 只能 lower 成 SPM 内 `wafer.tile.extract_slice` / `gather_scatter`，R3.2d
+  看不到 DDR `memref.subview`，最终仍生成 whole-boundary RDMA/WDMA。
+- 修复模式：group boundary 只登记 DDR memref handle；full tensor use 才 lazy load。external
+  boundary 上的 static `tensor.extract_slice` 直接生成 DDR `memref.subview` + tile load；direct
+  output `tensor.insert_slice` storeback 只在写 `outs` 且直接作为同 index group yield 时生成 DDR
+  `memref.subview` + tile store，避免误写 read-only input 或破坏 updated-dest tensor 语义。

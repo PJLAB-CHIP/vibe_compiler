@@ -20,6 +20,7 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 
 using namespace wafer;
@@ -62,17 +63,16 @@ public:
     llvm::SmallVector<mlir::Value, 4> tileRegionInputs;
     for (auto [original, converted] :
          llvm::zip(group.getInputs(), convertedInputs)) {
-      mlir::FailureOr<mlir::Value> boundary =
-          materializeDdrBoundary(original, converted, /*readOnly=*/true,
-                                 rewriter);
+      mlir::FailureOr<mlir::Value> boundary = materializeDdrBoundary(
+          original, converted, /*readOnly=*/true, rewriter);
       if (mlir::failed(boundary))
         return mlir::failure();
       tileRegionInputs.push_back(*boundary);
     }
-    for (auto [original, converted] : llvm::zip(group.getOuts(), convertedOuts)) {
-      mlir::FailureOr<mlir::Value> boundary =
-          materializeDdrBoundary(original, converted, /*readOnly=*/false,
-                                 rewriter);
+    for (auto [original, converted] :
+         llvm::zip(group.getOuts(), convertedOuts)) {
+      mlir::FailureOr<mlir::Value> boundary = materializeDdrBoundary(
+          original, converted, /*readOnly=*/false, rewriter);
       if (mlir::failed(boundary))
         return mlir::failure();
       tileRegionInputs.push_back(*boundary);
@@ -121,6 +121,9 @@ private:
   llvm::DenseMap<mlir::Value, mlir::Value> scalarValues;
   llvm::DenseMap<mlir::Value, mlir::Attribute> scalarAttrs;
   llvm::DenseMap<mlir::Value, mlir::Value> externalBuffers;
+  llvm::DenseSet<mlir::Value> writableExternalBuffers;
+  llvm::DenseMap<mlir::Value, unsigned> externalOutputIndices;
+  llvm::DenseMap<mlir::Value, mlir::Value> directYieldBuffers;
   llvm::DenseMap<mlir::Value, mlir::Value> fillInitScalars;
   llvm::DenseMap<mlir::Value, mlir::Attribute> fillInitAttrs;
 
@@ -129,6 +132,9 @@ private:
     llvm::DenseMap<mlir::Value, mlir::Value> scalarValues;
     llvm::DenseMap<mlir::Value, mlir::Attribute> scalarAttrs;
     llvm::DenseMap<mlir::Value, mlir::Value> externalBuffers;
+    llvm::DenseSet<mlir::Value> writableExternalBuffers;
+    llvm::DenseMap<mlir::Value, unsigned> externalOutputIndices;
+    llvm::DenseMap<mlir::Value, mlir::Value> directYieldBuffers;
     llvm::DenseMap<mlir::Value, mlir::Value> fillInitScalars;
     llvm::DenseMap<mlir::Value, mlir::Attribute> fillInitAttrs;
   };
@@ -156,10 +162,10 @@ private:
   mlir::MemRefType makeWaferMemRefType(mlir::RankedTensorType tensorType,
                                        MemorySpace space, MemLayout layout) {
     auto *context = tensorType.getContext();
-    return mlir::MemRefType::get(
-        tensorType.getShape(), tensorType.getElementType(),
-        mlir::MemRefLayoutAttrInterface{},
-        MemoryAttr::get(context, space, layout));
+    return mlir::MemRefType::get(tensorType.getShape(),
+                                 tensorType.getElementType(),
+                                 mlir::MemRefLayoutAttrInterface{},
+                                 MemoryAttr::get(context, space, layout));
   }
 
   mlir::MemRefType makeSPMMemRefType(mlir::RankedTensorType tensorType,
@@ -168,8 +174,7 @@ private:
   }
 
   mlir::MemRefType makeDDRMemRefType(mlir::RankedTensorType tensorType) {
-    return makeWaferMemRefType(tensorType, MemorySpace::DDR,
-                               MemLayout::Tensor);
+    return makeWaferMemRefType(tensorType, MemorySpace::DDR, MemLayout::Tensor);
   }
 
   bool isScalarType(mlir::Type type) const {
@@ -177,8 +182,15 @@ private:
   }
 
   StateSnapshot snapshotState() const {
-    return {buffers,         scalarValues,    scalarAttrs,
-            externalBuffers, fillInitScalars, fillInitAttrs};
+    return {buffers,
+            scalarValues,
+            scalarAttrs,
+            externalBuffers,
+            writableExternalBuffers,
+            externalOutputIndices,
+            directYieldBuffers,
+            fillInitScalars,
+            fillInitAttrs};
   }
 
   void restoreState(const StateSnapshot &snapshot) {
@@ -186,12 +198,14 @@ private:
     scalarValues = snapshot.scalarValues;
     scalarAttrs = snapshot.scalarAttrs;
     externalBuffers = snapshot.externalBuffers;
+    writableExternalBuffers = snapshot.writableExternalBuffers;
+    externalOutputIndices = snapshot.externalOutputIndices;
+    directYieldBuffers = snapshot.directYieldBuffers;
     fillInitScalars = snapshot.fillInitScalars;
     fillInitAttrs = snapshot.fillInitAttrs;
   }
 
-  mlir::FailureOr<mlir::Type>
-  convertControlFlowType(mlir::Type type) {
+  mlir::FailureOr<mlir::Type> convertControlFlowType(mlir::Type type) {
     if (auto tensorType = mlir::dyn_cast<mlir::RankedTensorType>(type))
       return makeSPMMemRefType(tensorType, MemLayout::Tensor);
     if (isScalarType(type))
@@ -225,7 +239,8 @@ private:
   materializeDdrBoundary(mlir::Value original, mlir::Value converted,
                          bool readOnly,
                          mlir::ConversionPatternRewriter &rewriter) {
-    auto tensorType = mlir::dyn_cast<mlir::RankedTensorType>(original.getType());
+    auto tensorType =
+        mlir::dyn_cast<mlir::RankedTensorType>(original.getType());
     if (!tensorType) {
       if (mlir::isa<mlir::FloatType, mlir::IntegerType, mlir::IndexType>(
               original.getType()))
@@ -314,8 +329,23 @@ private:
 
     MemLayout sourceLayout = MemLayout::Tensor;
     mlir::Value source = lookupAny(original, sourceLayout);
-    if (!source)
-      return failValue("missing buffer for value");
+    if (!source) {
+      auto externalIt = externalBuffers.find(original);
+      if (externalIt == externalBuffers.end())
+        return failValue("missing buffer for value");
+
+      auto tensorType =
+          mlir::dyn_cast<mlir::RankedTensorType>(original.getType());
+      if (!tensorType)
+        return failValue("cannot materialize non-ranked-tensor value");
+
+      auto load = builder.create<StorageLoadOp>(
+          original.getLoc(), makeSPMMemRefType(tensorType, MemLayout::Tensor),
+          externalIt->second);
+      record(original, MemLayout::Tensor, load.getResult());
+      source = load.getResult();
+      sourceLayout = MemLayout::Tensor;
+    }
     if (sourceLayout == targetLayout)
       return source;
 
@@ -350,11 +380,13 @@ private:
         }
         return fail("group boundary is not a ranked tensor or scalar");
       }
-      auto load = builder.create<StorageLoadOp>(
-          groupArg.getLoc(), makeSPMMemRefType(tensorType, MemLayout::Tensor),
-          tileArg);
-      record(groupArg, MemLayout::Tensor, load.getResult());
       externalBuffers[groupArg] = tileArg;
+      unsigned argIndex = groupArg.getArgNumber();
+      unsigned inputCount = static_cast<unsigned>(group.getInputs().size());
+      if (argIndex >= inputCount) {
+        writableExternalBuffers.insert(groupArg);
+        externalOutputIndices[groupArg] = argIndex - inputCount;
+      }
     }
     return mlir::success();
   }
@@ -496,7 +528,8 @@ private:
 
   mlir::LogicalResult convertScfIf(mlir::scf::IfOp ifOp,
                                    mlir::OpBuilder &builder) {
-    mlir::FailureOr<mlir::Value> condition = getScalarValue(ifOp.getCondition());
+    mlir::FailureOr<mlir::Value> condition =
+        getScalarValue(ifOp.getCondition());
     if (mlir::failed(condition))
       return mlir::failure();
 
@@ -566,9 +599,8 @@ private:
 
     StateSnapshot outer = snapshotState();
     scalarValues[forOp.getInductionVar()] = convertedFor.getInductionVar();
-    for (auto [original, converted] :
-         llvm::zip(forOp.getRegionIterArgs(),
-                   convertedFor.getRegionIterArgs())) {
+    for (auto [original, converted] : llvm::zip(
+             forOp.getRegionIterArgs(), convertedFor.getRegionIterArgs())) {
       if (mlir::failed(recordControlFlowValue(original, converted)))
         return mlir::failure();
     }
@@ -601,9 +633,8 @@ private:
       indices.push_back(scalarIt->second);
     }
 
-    auto load =
-        builder.create<mlir::memref::LoadOp>(extract.getLoc(), bufferIt->second,
-                                             indices);
+    auto load = builder.create<mlir::memref::LoadOp>(extract.getLoc(),
+                                                     bufferIt->second, indices);
     scalarValues[extract.getResult()] = load.getResult();
     return mlir::success();
   }
@@ -614,6 +645,45 @@ private:
     });
   }
 
+  mlir::FailureOr<mlir::Value> materializeDdrSubview(
+      mlir::Location loc, mlir::Value sourceDdr,
+      mlir::RankedTensorType tileTensorType, llvm::ArrayRef<int64_t> offsets,
+      llvm::ArrayRef<int64_t> sizes, llvm::ArrayRef<int64_t> strides,
+      mlir::OpBuilder &builder) {
+    auto sourceType = mlir::dyn_cast<mlir::MemRefType>(sourceDdr.getType());
+    if (!sourceType)
+      return failValue("external tile view source is not a memref");
+    if (sourceType.getElementType() != tileTensorType.getElementType())
+      return failValue("external tile view element type mismatch");
+    if (sourceType.getRank() != static_cast<int64_t>(offsets.size()) ||
+        sourceType.getRank() != static_cast<int64_t>(sizes.size()) ||
+        sourceType.getRank() != static_cast<int64_t>(strides.size()))
+      return failValue("external tile view rank mismatch");
+
+    auto subviewType = mlir::cast<mlir::MemRefType>(
+        mlir::memref::SubViewOp::inferRankReducedResultType(
+            tileTensorType.getShape(), sourceType, offsets, sizes, strides));
+    auto subview = builder.create<mlir::memref::SubViewOp>(
+        loc, subviewType, sourceDdr, offsets, sizes, strides);
+    return subview.getResult();
+  }
+
+  std::optional<unsigned>
+  getSingleGroupYieldOperandIndex(mlir::Value value) const {
+    mlir::OpOperand *singleUse = nullptr;
+    for (mlir::OpOperand &use : value.getUses()) {
+      if (singleUse)
+        return std::nullopt;
+      singleUse = &use;
+    }
+    if (!singleUse)
+      return std::nullopt;
+
+    if (!mlir::isa<GroupYieldOp>(singleUse->getOwner()))
+      return std::nullopt;
+    return singleUse->getOperandNumber();
+  }
+
   mlir::LogicalResult
   convertTensorExtractSlice(mlir::tensor::ExtractSliceOp extractSlice,
                             mlir::OpBuilder &builder) {
@@ -622,15 +692,31 @@ private:
         !allStatic(extractSlice.getStaticStrides()))
       return fail("dynamic tensor.extract_slice is not representable");
 
-    mlir::FailureOr<mlir::Value> source =
-        getOrMaterialize(extractSlice.getSource(), MemLayout::Tensor, builder);
-    if (mlir::failed(source))
-      return mlir::failure();
-
     auto resultTensorType =
         mlir::dyn_cast<mlir::RankedTensorType>(extractSlice.getType());
     if (!resultTensorType)
       return fail("tensor.extract_slice result is not a ranked tensor");
+
+    if (auto externalIt = externalBuffers.find(extractSlice.getSource());
+        externalIt != externalBuffers.end()) {
+      mlir::FailureOr<mlir::Value> tileView = materializeDdrSubview(
+          extractSlice.getLoc(), externalIt->second, resultTensorType,
+          extractSlice.getStaticOffsets(), extractSlice.getStaticSizes(),
+          extractSlice.getStaticStrides(), builder);
+      if (mlir::failed(tileView))
+        return mlir::failure();
+
+      auto load = builder.create<StorageLoadOp>(
+          extractSlice.getLoc(),
+          makeSPMMemRefType(resultTensorType, MemLayout::Tensor), *tileView);
+      record(extractSlice.getResult(), MemLayout::Tensor, load.getResult());
+      return mlir::success();
+    }
+
+    mlir::FailureOr<mlir::Value> source =
+        getOrMaterialize(extractSlice.getSource(), MemLayout::Tensor, builder);
+    if (mlir::failed(source))
+      return mlir::failure();
 
     mlir::MLIRContext *context = extractSlice.getContext();
     auto offsets =
@@ -641,8 +727,8 @@ private:
         mlir::DenseI64ArrayAttr::get(context, extractSlice.getStaticStrides());
     auto move = builder.create<MoveExtractSliceOp>(
         extractSlice.getLoc(),
-        makeSPMMemRefType(resultTensorType, MemLayout::Tensor), *source, offsets,
-        sizes, strides);
+        makeSPMMemRefType(resultTensorType, MemLayout::Tensor), *source,
+        offsets, sizes, strides);
     record(extractSlice.getResult(), MemLayout::Tensor, move.getResult());
     return mlir::success();
   }
@@ -655,17 +741,46 @@ private:
         !allStatic(insertSlice.getStaticStrides()))
       return fail("dynamic tensor.insert_slice is not representable");
 
+    auto resultTensorType =
+        mlir::dyn_cast<mlir::RankedTensorType>(insertSlice.getType());
+    if (!resultTensorType)
+      return fail("tensor.insert_slice result is not a ranked tensor");
+    auto sourceTensorType =
+        mlir::dyn_cast<mlir::RankedTensorType>(insertSlice.getSourceType());
+    if (!sourceTensorType)
+      return fail("tensor.insert_slice source is not a ranked tensor");
+
+    auto externalIt = externalBuffers.find(insertSlice.getDest());
+    auto outputIndexIt = externalOutputIndices.find(insertSlice.getDest());
+    std::optional<unsigned> yieldIndex =
+        getSingleGroupYieldOperandIndex(insertSlice.getResult());
+    if (externalIt != externalBuffers.end() &&
+        writableExternalBuffers.contains(insertSlice.getDest()) &&
+        outputIndexIt != externalOutputIndices.end() && yieldIndex &&
+        outputIndexIt->second == *yieldIndex) {
+      mlir::FailureOr<mlir::Value> source =
+          getOrMaterialize(insertSlice.getSource(), MemLayout::Tensor, builder);
+      if (mlir::failed(source))
+        return mlir::failure();
+
+      mlir::FailureOr<mlir::Value> tileView = materializeDdrSubview(
+          insertSlice.getLoc(), externalIt->second, sourceTensorType,
+          insertSlice.getStaticOffsets(), insertSlice.getStaticSizes(),
+          insertSlice.getStaticStrides(), builder);
+      if (mlir::failed(tileView))
+        return mlir::failure();
+
+      builder.create<StorageStoreOp>(insertSlice.getLoc(), *source, *tileView);
+      directYieldBuffers[insertSlice.getResult()] = externalIt->second;
+      return mlir::success();
+    }
+
     mlir::FailureOr<mlir::Value> source =
         getOrMaterialize(insertSlice.getSource(), MemLayout::Tensor, builder);
     mlir::FailureOr<mlir::Value> dest =
         getOrMaterialize(insertSlice.getDest(), MemLayout::Tensor, builder);
     if (mlir::failed(source) || mlir::failed(dest))
       return mlir::failure();
-
-    auto resultTensorType =
-        mlir::dyn_cast<mlir::RankedTensorType>(insertSlice.getType());
-    if (!resultTensorType)
-      return fail("tensor.insert_slice result is not a ranked tensor");
 
     mlir::MLIRContext *context = insertSlice.getContext();
     auto offsets =
@@ -688,8 +803,14 @@ private:
                                            mlir::OpBuilder &builder) {
     MemLayout sourceLayout = MemLayout::Tensor;
     mlir::Value source = lookupAny(sourceValue, sourceLayout);
-    if (!source)
-      return fail("missing buffer for tensor reshape source");
+    if (!source) {
+      mlir::FailureOr<mlir::Value> loaded =
+          getOrMaterialize(sourceValue, MemLayout::Tensor, builder);
+      if (mlir::failed(loaded))
+        return mlir::failure();
+      source = *loaded;
+      sourceLayout = MemLayout::Tensor;
+    }
 
     auto resultTensorType =
         mlir::dyn_cast<mlir::RankedTensorType>(resultValue.getType());
@@ -697,7 +818,8 @@ private:
       return fail("tensor reshape result is not a ranked tensor");
 
     auto reshape = builder.create<ViewReshapeOp>(
-        op->getLoc(), makeSPMMemRefType(resultTensorType, sourceLayout), source);
+        op->getLoc(), makeSPMMemRefType(resultTensorType, sourceLayout),
+        source);
     record(resultValue, sourceLayout, reshape.getResult());
     return mlir::success();
   }
@@ -1155,8 +1277,9 @@ private:
     auto kindAttr =
         ComputeElementwiseKindAttr::get(generic.getContext(), *kind);
     auto elementwise = builder.create<ComputeElementwiseOp>(
-        generic.getLoc(), makeSPMMemRefType(resultTensorType, MemLayout::Tensor),
-        kindAttr, inputs);
+        generic.getLoc(),
+        makeSPMMemRefType(resultTensorType, MemLayout::Tensor), kindAttr,
+        inputs);
     if (mlir::Attribute indexingMaps = generic->getAttr("indexing_maps"))
       elementwise->setAttr("indexing_maps", indexingMaps);
 
@@ -1175,14 +1298,23 @@ private:
     llvm::SmallVector<mlir::Value, 2> yieldedValues;
     mlir::Block &tileBlock = tileRegion.getBody().front();
     for (auto [index, value] : llvm::enumerate(yield.getValues())) {
+      if (inputCount + index >= tileBlock.getNumArguments())
+        return fail("group result has no output boundary");
+      mlir::Value output = tileBlock.getArgument(inputCount + index);
+
+      if (auto directIt = directYieldBuffers.find(value);
+          directIt != directYieldBuffers.end()) {
+        if (directIt->second != output)
+          return fail("direct boundary storeback target mismatch");
+        yieldedValues.push_back(output);
+        continue;
+      }
+
       mlir::FailureOr<mlir::Value> tensorBuffer =
           getOrMaterialize(value, MemLayout::Tensor, builder);
       if (mlir::failed(tensorBuffer))
         return mlir::failure();
 
-      if (inputCount + index >= tileBlock.getNumArguments())
-        return fail("group result has no output boundary");
-      mlir::Value output = tileBlock.getArgument(inputCount + index);
       builder.create<StorageStoreOp>(value.getLoc(), *tensorBuffer, output);
       yieldedValues.push_back(output);
     }

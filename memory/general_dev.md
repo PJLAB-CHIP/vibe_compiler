@@ -156,10 +156,10 @@
   DDR 侧 `memref.subview` / strided memref layout：整块 compact DDR boundary 生成 contiguous
   descriptor，静态 strided tile view 生成三层 byte stride/iteration descriptor；动态 view、负
   stride、bit-packed element 或超过三层的 descriptor 不能靠名字/shape 猜测，必须 structured
-  failure 或等上游补显式 boundary facts。注意：RDMA/WDMA consumer 支持不等于 tiling producer
-  已经完成；从 candidate traversal / tile shape 到 DDR `memref.subview` 的 materialization 必须由
-  上游 planner scratch / accepted materialization 显式产出，不能让 R3.2d 根据 whole-boundary shape
-  自己恢复 subview。
+  failure 或等上游补显式 boundary facts。R3.2e 已覆盖当前 IR 中 explicit static boundary
+  `tensor.extract_slice` 和 direct output `tensor.insert_slice` storeback 的 DDR `memref.subview`
+  producer；真实 candidate traversal / tile shape 枚举仍必须由上游 planner scratch / accepted
+  materialization 显式产出，不能让 R3.2d 根据 whole-boundary shape 自己恢复 subview。
 - 用户级 compiler target 名称统一为 `wafer`，Wafer IR target attr 的唯一主线 spelling 是
   `#wafer.target<wafer>`。`tx8` / `tx81` 只保留在硬件、依赖逆向和外部历史命名事实里，不能作为
   compiler target、pipeline 名称或测试 fixture 的主线命名。

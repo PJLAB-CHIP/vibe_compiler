@@ -32,7 +32,7 @@ PyTorch/XLA StableHLO Wafer program directory
   -> wafer-lower-groups-to-tile-region / R3.2c
        memref-backed wafer.tile.region + DDR memref function boundary
   -> R3.2e candidate DDR tile-view materialization
-       candidate traversal/tile shape -> DDR memref.subview tile operands
+       explicit static boundary slice facts -> DDR memref.subview tile operands
   -> wafer-lower-tile-region-to-instr / R3.2d
        target-abstract tile ops -> wafer.instr.* over unplaced Wafer-tagged memref
   -> R3.2f SPM placement
@@ -52,45 +52,46 @@ PyTorch/XLA StableHLO Wafer program directory
 | --- | --- | --- |
 | Tensor | `wafer.group`、`wafer.group.yield`、`wafer.tensor.*` collective handoff | R3.1 已完成 logical group；tensor collective 到 tile communication 仍 deferred |
 | Tile region | `wafer.tile.region`、`wafer.tile.yield` | R3.2c 已是 memref-backed target-abstract tile IR，支持 `scf.if` / `scf.for` 递归 lowering |
-| Tile storage / boundary | `wafer.tile.load/store`、`memref.alloc`、`#wafer.memory<space, layout>` | DDR side 使用 `#wafer.memory<ddr, tensor>` memref；SPM side 使用 `#wafer.memory<spm, *>` memref；`!wafer.storage` / `wafer.tile.alloc` 已删除 |
+| Tile storage / boundary | `wafer.tile.load/store`、`memref.alloc`、`memref.subview`、`#wafer.memory<space, layout>` | DDR side 使用 `#wafer.memory<ddr, tensor>` memref 或显式 strided tile view；SPM side 使用 `#wafer.memory<spm, *>` memref；`!wafer.storage` / `wafer.tile.alloc` 已删除 |
 | Tile compute / movement | `wafer.tile.fill/gemm/elementwise/reduce`、layout materialization、copy/slice/broadcast/transpose/reshape | 保持 target-abstract tile ops；layout / movement 语义由 memref type、Wafer memory attr 和 op interface 表达 |
 | Instr | `wafer.instr.rdma/wdma/gather_scatter/fill/elementwise/reduce/convert/gemm/local_drain` | R3.2d 已能消费显式 DDR subview / strided view；不做 SPM offset、DDR allocation、ABI call |
 | Resource / runtime | `wafer.placement.map`、`wafer.launch` | SPM/DDR policy 不新增单独 storage IR；accepted facts 后续 materialize 到 placed memref / descriptor / launch boundary |
 
 ## 当前 Active
 
-**R3.2e candidate DDR tile-view materialization**
+**R3.2f SPM placement**
 
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  R3.1 verifier-legal `wafer.group`、R3.2a tiling demand、R3.2b layout plan，以及
-  candidate traversal / tile shape / boundary slice proposal。
+  R3.2e explicit DDR tile-view materialization 后，经 R3.2d instruction legalization 产出的
+  instruction-level `wafer.tile.region` / `wafer.instr.*` IR。
 - Current stage responsibility:
-  在 planner scratch IR 中为 tile load/store 从 full DDR boundary memref 显式生成
-  `memref.subview` / strided DDR tile operands。
+  为 Wafer SPM memref 计算可验证的 placement fact：offset、end/range、alignment、bank span/conflict
+  和跨 structured control-flow 的 lifetime/reuse 边界。
 - Output artifact / IR:
-  R3.2d 可消费的 scratch `wafer.tile.region` / memref IR，其中 DDR operands 已表达 actual tile view；
-  或结构化 failure reason。
+  带 placed SPM memref / address facts 的 instruction-level IR，或结构化 placement failure reason。
 - Downstream consumer:
-  R3.2d instruction legalization / RDMA-WDMA descriptor lowering、R3.2f SPM placement、
-  R3.2g DDR/resource legality、R3.2h closed-loop planner。
+  R3.2g DDR/resource legality、R3.2h closed-loop planner、R3.4 placed memref realization。
 - Explicit non-goals:
-  不分配 SPM offset，不做 DDR pool/resource planning，不 accept plan，不把 scratch IR commit 到主 IR。
+  不重新做 tile shape / DDR view 推导，不做 DDR pool/resource planning，不 accept plan，不生成 ABI call。
 - Completion gate:
-  static affine boundary slice 和 simple tiled matmul/elementwise/storeback 能生成 DDR `memref.subview`；
-  R3.2d RDMA/WDMA descriptor 从这些 view 推导 stride/iteration；tiled boundary 不能退回 whole-boundary
-  DMA。
+  简单 tiled matmul/elementwise/storeback 的 unplaced SPM memref 能得到非重叠、对齐、range 合法的
+  placement；超出 SPM capacity、alignment 或 bank/lifetime 约束时结构化失败。
 ```
 
 ## 当前边界
 
-- R3.2c 只 materialize whole logical boundary 的 DDR memref 和 tile-local SPM memref；它不从
-  candidate tile shape 自动切 temporal DDR tile view。
+- R3.2c materialize whole logical boundary 的 DDR memref handle；full tensor use 才 lazy
+  `wafer.tile.load` 到 SPM。R3.2e 已接入第一批 producer：external boundary 上的 static
+  `tensor.extract_slice` 生成 DDR `memref.subview` + tile load，direct output `tensor.insert_slice`
+  storeback 生成 DDR `memref.subview` + tile store。
+- R3.2e 不从名字、shape 或 R3.2d consumer 反推 tile view；dynamic slice、非 direct-yield
+  storeback 和真实 candidate traversal/tile-shape 枚举仍需要 planner 后续补 facts。
 - R3.2d RDMA/WDMA 支持 strided DDR view 是 consumer 能力；descriptor 的 offset/stride 必须来自
   IR 中的 memref view，不能从名字、shape 或 whole-boundary memref 推断。
-- `wafer-lower-groups-to-instr` 目前是 bring-up / explicit-view lowering 入口，不是完整 tiling
-  planner completion proof。
+- `wafer-lower-groups-to-instr` 目前是 bring-up / explicit static-view lowering 入口，不是完整
+  closed-loop tiling planner completion proof。
 - Tile communication 仍 deferred，等待 placement/local-rank/buffer facts 后再 lower 到 communication /
   DTE / local-drain 边界。
 
@@ -105,13 +106,13 @@ Pipeline position:
 | R3.2b | done | R3.2a demand + group SSA use-def | `GroupLayoutPlan` analysis；覆盖 boundary layout、op layout constraints、broadcast relation、materialization cut/result demand 和 failure forwarding |
 | R3.2c | done | R3.1 group + R3.2a/R3.2b facts | memref-backed `wafer.tile.region` + DDR memref function boundary；覆盖 supported compute/movement/view/control-flow；不做 SPM offset，不生成 candidate DDR tile subview |
 | R3.2d | done | R3.2c target-abstract tile-region IR；DDR side 是 Wafer DDR memref，SPM side 是 unplaced Wafer SPM memref | instruction-level `wafer.instr.*`；覆盖 RDMA/WDMA/TDMA/CT/NE op contract、structured control-flow body legalization、static movement descriptor packing；不生成 ABI call |
+| R3.2e | done | R3.1 group + explicit static boundary slice facts + R3.2c/R3.2d lowering chain | external boundary `tensor.extract_slice` 和 direct output `tensor.insert_slice` materialize 为 DDR `memref.subview` tile operands；simple tiled elementwise/matmul/storeback 的 RDMA/WDMA descriptor 来自 actual tile view，不退回 whole-boundary DMA |
 
 ## 后续队列
 
 | ID | 状态 | 输入 | 输出 / 完成 gate |
 | --- | --- | --- | --- |
-| R3.2e | active | R3.1 group + R3.2a/R3.2b facts + candidate traversal/tile shape | planner scratch IR 中的 DDR `memref.subview` tile operands；R3.2d RDMA/WDMA descriptor 必须从 actual tile view 推导 |
-| R3.2f | pending | R3.2e candidate tile-view IR 经 R3.2d legalization 后的 instruction-level IR | placed SPM memref / address facts；覆盖 alignment、range/end-address、bank span/conflict、control-flow lifetime |
+| R3.2f | active | R3.2e candidate tile-view IR 经 R3.2d legalization 后的 instruction-level IR | placed SPM memref / address facts；覆盖 alignment、range/end-address、bank span/conflict、control-flow lifetime |
 | R3.2g | pending | R3.2f placed instruction IR + actual DDR tile-view facts | DDR/resource legality；覆盖 external/compiler-managed/resident-constant、pool/domain/capacity/bandwidth/range demand |
 | R3.2h | pending | R3.1 group + R3.2a-g planning results | accepted / rejected / split group decision；未接受 plan 不落 IR |
 | R3.3 | pending | R3.2h accepted plan | committed `wafer.tile.region` + accepted instruction-level lowering boundary |
@@ -133,9 +134,8 @@ Pipeline position:
 
 ## 下一步
 
-实现 R3.2e：
+实现 R3.2f：
 
-1. 从 candidate traversal / tile shape 和 R3.2a/R3.2b facts 推导 input/output tile 的
-   `memref.subview` offset/sizes/strides。
-2. 让 `wafer.tile.load/store` 读写 tile view，而不是 whole group boundary。
-3. 用 R3.2d 验证 RDMA/WDMA descriptor 来自 actual DDR tile view。
+1. 定义 placed SPM memref / address fact 的 IR 表示和 verifier 边界，避免 side table 成为长期协议。
+2. 基于 R3.2d instruction-level memref use-def 建立简单 linear placement 和 lifetime/range 检查。
+3. 用 R3.2e/R3.2d 的 tiled matmul/elementwise/storeback pipeline 验证 SPM offset/range/bank fact 可被下游直接消费。
