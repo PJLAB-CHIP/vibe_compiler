@@ -229,17 +229,23 @@ func.func @movement_extract_insert_broadcast_transpose(%zero: f16) {
 // CHECK: %[[MATRIX:.+]] = memref.alloc() : memref<2x3xf16, #wafer.memory<spm, tensor>>
 // CHECK: %[[TRANSPOSED:.+]] = memref.alloc() : memref<3x2xf16, #wafer.memory<spm, tensor>>
 // CHECK: wafer.instr.gather_scatter %[[MATRIX]] to %[[TRANSPOSED]]
-// CHECK-SAME: byte_count = 2 : i64
-// CHECK: wafer.instr.gather_scatter %[[MATRIX]] to %[[TRANSPOSED]]
-// CHECK-SAME: dst_offset = 2 : i64
-// CHECK-SAME: src_offset = 6 : i64
+// CHECK-SAME: byte_count = 12 : i64
+// CHECK-SAME: dst_iterations = array<i64: 2, 3, 1>
+// CHECK-SAME: dst_strides = array<i64: 2, 4, 0>
+// CHECK-SAME: inner_bytes = 2 : i64
+// CHECK-SAME: src_iterations = array<i64: 2, 3, 1>
+// CHECK-SAME: src_strides = array<i64: 6, 2, 0>
+// CHECK-NOT: wafer.instr.gather_scatter %[[MATRIX]] to %[[TRANSPOSED]]
 // CHECK: %[[VECTOR:.+]] = memref.alloc() : memref<3xf16, #wafer.memory<spm, tensor>>
 // CHECK: %[[BROADCAST:.+]] = memref.alloc() : memref<2x3xf16, #wafer.memory<spm, tensor>>
 // CHECK: wafer.instr.gather_scatter %[[VECTOR]] to %[[BROADCAST]]
-// CHECK-SAME: byte_count = 6 : i64
-// CHECK: wafer.instr.gather_scatter %[[VECTOR]] to %[[BROADCAST]]
-// CHECK-SAME: byte_count = 6 : i64
-// CHECK-SAME: dst_offset = 6 : i64
+// CHECK-SAME: byte_count = 12 : i64
+// CHECK-SAME: dst_iterations = array<i64: 2, 1, 1>
+// CHECK-SAME: dst_strides = array<i64: 6, 0, 0>
+// CHECK-SAME: inner_bytes = 6 : i64
+// CHECK-SAME: src_iterations = array<i64: 2, 1, 1>
+// CHECK-SAME: src_strides = array<i64: 0, 0, 0>
+// CHECK-NOT: wafer.instr.gather_scatter %[[VECTOR]] to %[[BROADCAST]]
 
 func.func @movement_cx_ncx_block_major_offsets(%zero: f16) {
   %region = wafer.tile.region(%zero : f16) -> (f16) {
@@ -266,21 +272,25 @@ func.func @movement_cx_ncx_block_major_offsets(%zero: f16) {
 // CHECK: %[[CX_SOURCE:.+]] = memref.alloc() : memref<2x128xf16, #wafer.memory<spm, cx>>
 // CHECK: %[[CX_SLICE:.+]] = memref.alloc() : memref<1x128xf16, #wafer.memory<spm, cx>>
 // CHECK: wafer.instr.gather_scatter %[[CX_SOURCE]] to %[[CX_SLICE]]
-// CHECK-SAME: byte_count = 128 : i64
+// CHECK-SAME: byte_count = 256 : i64
+// CHECK-SAME: dst_iterations = array<i64: 2, 1, 1>
+// CHECK-SAME: dst_strides = array<i64: 128, 0, 0>
+// CHECK-SAME: inner_bytes = 128 : i64
+// CHECK-SAME: src_iterations = array<i64: 2, 1, 1>
 // CHECK-SAME: src_offset = 128 : i64
-// CHECK: wafer.instr.gather_scatter %[[CX_SOURCE]] to %[[CX_SLICE]]
-// CHECK-SAME: byte_count = 128 : i64
-// CHECK-SAME: dst_offset = 128 : i64
-// CHECK-SAME: src_offset = 384 : i64
+// CHECK-SAME: src_strides = array<i64: 256, 0, 0>
+// CHECK-NOT: wafer.instr.gather_scatter %[[CX_SOURCE]] to %[[CX_SLICE]]
 // CHECK: %[[NCX_SOURCE:.+]] = memref.alloc() : memref<2x2x128xf16, #wafer.memory<spm, ncx>>
 // CHECK: %[[NCX_SLICE:.+]] = memref.alloc() : memref<1x2x128xf16, #wafer.memory<spm, ncx>>
 // CHECK: wafer.instr.gather_scatter %[[NCX_SOURCE]] to %[[NCX_SLICE]]
-// CHECK-SAME: byte_count = 128 : i64
+// CHECK-SAME: byte_count = 512 : i64
+// CHECK-SAME: dst_iterations = array<i64: 2, 2, 1>
+// CHECK-SAME: dst_strides = array<i64: 256, 128, 0>
+// CHECK-SAME: inner_bytes = 128 : i64
+// CHECK-SAME: src_iterations = array<i64: 2, 2, 1>
 // CHECK-SAME: src_offset = 512 : i64
-// CHECK: wafer.instr.gather_scatter %[[NCX_SOURCE]] to %[[NCX_SLICE]]
-// CHECK-SAME: byte_count = 128 : i64
-// CHECK-SAME: dst_offset = 256 : i64
-// CHECK-SAME: src_offset = 768 : i64
+// CHECK-SAME: src_strides = array<i64: 256, 128, 0>
+// CHECK-NOT: wafer.instr.gather_scatter %[[NCX_SOURCE]] to %[[NCX_SLICE]]
 
 func.func @reshape_view(
     %input: memref<4x16xf16, #wafer.memory<ddr, tensor>>,
@@ -338,17 +348,13 @@ func.func @reshape_then_materialize_cx_uses_reshaped_logical_order(%zero: f16) {
 // CHECK-SAME: strides: [128, 1]
 // CHECK: %[[CX:.+]] = memref.alloc() : memref<2x128xf16, #wafer.memory<spm, cx>>
 // CHECK: wafer.instr.gather_scatter %[[RESHAPED]] to %[[CX]]
-// CHECK-SAME: byte_count = 128 : i64
+// CHECK-SAME: byte_count = 512 : i64
+// CHECK-SAME: dst_iterations = array<i64: 2, 2, 1>
+// CHECK-SAME: dst_strides = array<i64: 256, 128, 0>
 // CHECK-SAME: inner_bytes = 128 : i64
-// CHECK: wafer.instr.gather_scatter %[[RESHAPED]] to %[[CX]]
-// CHECK-SAME: dst_offset = 256 : i64
-// CHECK-SAME: src_offset = 128 : i64
-// CHECK: wafer.instr.gather_scatter %[[RESHAPED]] to %[[CX]]
-// CHECK-SAME: dst_offset = 128 : i64
-// CHECK-SAME: src_offset = 256 : i64
-// CHECK: wafer.instr.gather_scatter %[[RESHAPED]] to %[[CX]]
-// CHECK-SAME: dst_offset = 384 : i64
-// CHECK-SAME: src_offset = 384 : i64
+// CHECK-SAME: src_iterations = array<i64: 2, 2, 1>
+// CHECK-SAME: src_strides = array<i64: 128, 256, 0>
+// CHECK-NOT: wafer.instr.gather_scatter %[[RESHAPED]] to %[[CX]]
 
 func.func @reshape_cx_tail_only_metadata_view(%zero: f16) {
   %region = wafer.tile.region(%zero : f16) -> (f16) {
@@ -390,14 +396,10 @@ func.func @reshape_cx_block_major_materializes(%zero: f16) {
 // CHECK: memref.alloc() : memref<2x128xf16, #wafer.memory<spm, cx>>
 // CHECK: %[[RESHAPED:.+]] = memref.alloc() : memref<4x64xf16, #wafer.memory<spm, cx>>
 // CHECK: wafer.instr.gather_scatter %{{.+}} to %[[RESHAPED]]
-// CHECK-SAME: byte_count = 128 : i64
+// CHECK-SAME: byte_count = 512 : i64
+// CHECK-SAME: dst_iterations = array<i64: 2, 2, 1>
+// CHECK-SAME: dst_strides = array<i64: 128, 256, 0>
 // CHECK-SAME: inner_bytes = 128 : i64
-// CHECK: wafer.instr.gather_scatter %{{.+}} to %[[RESHAPED]]
-// CHECK-SAME: dst_offset = 128 : i64
-// CHECK-SAME: src_offset = 256 : i64
-// CHECK: wafer.instr.gather_scatter %{{.+}} to %[[RESHAPED]]
-// CHECK-SAME: dst_offset = 256 : i64
-// CHECK-SAME: src_offset = 128 : i64
-// CHECK: wafer.instr.gather_scatter %{{.+}} to %[[RESHAPED]]
-// CHECK-SAME: dst_offset = 384 : i64
-// CHECK-SAME: src_offset = 384 : i64
+// CHECK-SAME: src_iterations = array<i64: 2, 2, 1>
+// CHECK-SAME: src_strides = array<i64: 256, 128, 0>
+// CHECK-NOT: wafer.instr.gather_scatter %{{.+}} to %[[RESHAPED]]

@@ -149,9 +149,13 @@
 - R3.2d movement descriptor lowering（`extract_slice/insert_slice/broadcast/transpose`）要从 op
   自身的 logical index relation 出发，枚举静态 iteration domain，再调用同一个
   `computeWaferPhysicalElementByteOffset` 得到 source/dest byte offset 并 coalesce 相邻段；
-  compact、`Cx`、`NCx` 都走这条路径。`insert_slice` 不是只写 slice：它返回 updated dest buffer，
-  所以 lowering 必须先把旧 dest payload copy 到新 result，再把 source slice overlay 到 result。
-  后续若压缩成更高阶 TDMA stride/iteration descriptor，也不能改变这个语义边界。
+  compact、`Cx`、`NCx` 都走这条路径。coalesce 后要尽量把规则段打包进 TDMA 三层
+  source/dest stride/iteration descriptor，不能退回“每个 coalesced segment 一条 instruction”的长期
+  lowering。`insert_slice` 不是只写 slice：它返回 updated dest buffer，所以 lowering 必须先把旧
+  dest payload copy 到新 result，再把 source slice overlay 到 result。RDMA/WDMA 硬件同样支持三层
+  strided descriptor；当前 `wafer.tile.load/store` 只生成 contiguous descriptor，是因为 source op
+  只表达整块 compact DDR boundary，后续需要显式 DDR slice/view stride 或一端 strided boundary
+  facts 才能安全利用。
 - 用户级 compiler target 名称统一为 `wafer`，Wafer IR target attr 的唯一主线 spelling 是
   `#wafer.target<wafer>`。`tx8` / `tx81` 只保留在硬件、依赖逆向和外部历史命名事实里，不能作为
   compiler target、pipeline 名称或测试 fixture 的主线命名。

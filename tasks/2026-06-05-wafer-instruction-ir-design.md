@@ -4,7 +4,7 @@
 
 状态：R3.2d 设计已按 memref-backed buffer contract 重新收口；R3.2c 前置已完成，
 R3.2d.1 instruction op contract、R3.2d.2 DialectConversion、R3.2d.3 named pipeline 接入和
-R3.2d.4 static movement descriptor splitting 已落地。
+R3.2d.4 static movement descriptor splitting / packing 已落地。
 
 本文定义 R3.2d 的 instruction-level Wafer IR。核心结论：
 
@@ -34,7 +34,8 @@ memref SSA、Wafer memory attr、op operands、attrs、MemoryEffects 和显式 d
   worker id、raw packet field 或 C ABI 字段。
 - R3.2d.2/R3.2d.4 已实现 target-abstract tile-region op 到这些 instruction op 的
   DialectConversion；静态 `extract_slice`、`insert_slice`、`broadcast` 和 `transpose`
-  通过统一 logical-to-physical offset calculator 拆成一条或多条 `wafer.instr.gather_scatter`。
+  通过统一 logical-to-physical offset calculator 生成 logical movement segments，并尽量打包成
+  三层 stride/iteration `wafer.instr.gather_scatter` descriptor。
 - R3.2c 已产出 memref-backed `wafer.tile.region`；R3.2d 必须基于该 unplaced Wafer-tagged memref
   graph 做 instruction lowering，不能再引入 storage/buffer IR 层。
 - R3.2c 已支持 `scf.if` / `scf.for` 作为 tile-region 内 structured control-flow。R3.2d 必须递归
@@ -333,9 +334,11 @@ physical packet：
 | `dst_iterations` | `DenseI64ArrayAttr` | destination logical iterations，长度为 3，值为正数 |
 
 contiguous movement 使用 `inner_bytes == byte_count`，stride 全 0，iteration 全 1。byte stride
-必须已经从 element stride 转换完成。descriptor 表达不了的 dynamic stride、超过 3 层的静态 stride
-或两端都需要复杂非连续访问的情况，R3.2d 必须结构化失败，不能生成名字上合法但下游无法 packetize
-的 instruction op。
+必须已经从 element stride 转换完成。硬件 RDMA/WDMA 和 TDMA 都是“最内层连续搬运 +
+三层 byte stride/logical iteration”的 descriptor 模型；RDMA/WDMA packetization 时最内层字段会按
+dtype element count 写入，R3.2d IR 仍用 byte-level `inner_bytes` / `byte_count` 作为统一
+resource/legality 合同。descriptor 表达不了的 dynamic stride、超过 3 层的静态 stride 或不规则
+非连续访问，R3.2d 必须结构化失败，不能生成名字上合法但下游无法 packetize 的 instruction op。
 
 ### 7.2 RDMA / WDMA
 
@@ -352,6 +355,12 @@ wafer.instr.wdma source to dest attr-dict : type(source) to type(dest)
 R3.2c 的 `wafer.tile.load/store` 边界默认是 compact tensor layout；如果 consumer 需要 `Cx/NCx`，
 必须通过 `wafer.tile.materialize_layout` 再 lower 到 TDMA，而不是让 RDMA/WDMA 隐式承担 layout
 conversion。
+
+硬件和 wrapper 路径支持 RDMA/WDMA 三层 strided descriptor；当前 `wafer.tile.load/store` lowering
+只生成 contiguous descriptor，是因为 R3.2c/R3.2d 的 source op 只表达整块 compact DDR boundary
+与对应整块 SPM buffer，不表达 DDR slice、view stride 或一端 strided 的 tile boundary。后续若上游
+IR 显式产生 strided DDR/SPM boundary facts，R3.2d/R3.2f 可以复用同一 fixed-rank descriptor 合同
+选择 strided RDMA/WDMA；不能从 memref 名字或 shape 猜测。
 
 ### 7.3 GatherScatter
 
@@ -425,31 +434,31 @@ V0 mapping：
 | --- | --- |
 | `wafer.tile.load` | ensure / create destination `memref<..., #wafer.memory<spm, tensor>>`; emit `wafer.instr.rdma`; replace original result with dest memref |
 | `wafer.tile.store` | emit `wafer.instr.wdma`; erase store |
-| `wafer.tile.materialize_layout` | ensure / create destination memref with requested marker; compare source/result logical element to physical byte mapping through the unified physical layout calculator; emit one or more `wafer.instr.gather_scatter` segments for logical element movement; do not require source/result physical byte counts to match; structured failure only when static logical movement cannot be represented by V0 descriptors |
+| `wafer.tile.materialize_layout` | ensure / create destination memref with requested marker; compare source/result logical element to physical byte mapping through the unified physical layout calculator; coalesce adjacent byte segments, pack regular segments into up to three stride/iteration levels, and emit one or more `wafer.instr.gather_scatter`; do not require source/result physical byte counts to match; structured failure only when static logical movement cannot be represented by V0 descriptors |
 | `wafer.tile.fill` | emit `wafer.instr.fill` writing the existing dest memref |
 | `wafer.tile.gemm` | ensure / create destination aligned SPM memref; emit `wafer.instr.gemm`; replace result with dest memref |
 | `wafer.tile.elementwise` | ensure / create destination SPM memref; emit `wafer.instr.elementwise`; replace result with dest memref |
 | `wafer.tile.reduce` | ensure / create destination SPM memref; emit `wafer.instr.reduce`; replace result with dest memref |
 | `wafer.tile.copy` | ensure / create destination SPM memref; emit one gather_scatter; replace result with dest memref |
-| `wafer.tile.extract_slice` | create destination SPM memref; enumerate the static slice result logical domain, map each result index through offsets/sizes/strides back to the source logical index, compute physical byte offsets with the unified Wafer layout calculator, coalesce adjacent byte segments, emit one or more `wafer.instr.gather_scatter`, and replace result with dest memref |
-| `wafer.tile.insert_slice` | create destination SPM memref; first copy the original destination payload into the result via logical-to-physical segments, then enumerate source logical indices and overlay them into the statically described destination slice via one or more `wafer.instr.gather_scatter`; replace result with the new memref |
-| `wafer.tile.broadcast` | create destination SPM memref; enumerate the static result domain, map source dims through `dimensions`, compute source/result physical byte offsets, coalesce adjacent segments, emit one or more `wafer.instr.gather_scatter`, and replace result with dest memref |
-| `wafer.tile.transpose` | create destination SPM memref; enumerate the static result domain, invert `permutation` to source logical indices, compute source/result physical byte offsets, coalesce adjacent segments, emit one or more `wafer.instr.gather_scatter`, and replace result with dest memref |
-| `wafer.tile.reshape` | identity replacement when types are identical; otherwise preserve source/result canonical linear element order and reinterpret result multi-indices through the new shape; compact `tensor/ntensor` reshape lowers to a verifier-legal standard memref view because compact physical bytes already follow that linear order; `Cx/NCx` reshape first compares same-linear-element source/result physical byte offsets with the unified physical layout calculator, materializes a destination memref and emits one or more `wafer.instr.gather_scatter` only when the physical mapping or required footprint changes; structured failure only when the static reshape movement plan cannot be represented by V0 descriptors |
+| `wafer.tile.extract_slice` | create destination SPM memref; enumerate the static slice result logical domain, map each result index through offsets/sizes/strides back to the source logical index, compute physical byte offsets with the unified Wafer layout calculator, coalesce adjacent byte segments, pack regular segments into up to three stride/iteration levels, emit one or more `wafer.instr.gather_scatter`, and replace result with dest memref |
+| `wafer.tile.insert_slice` | create destination SPM memref; first copy the original destination payload into the result via logical-to-physical segments, then enumerate source logical indices and overlay them into the statically described destination slice via packed `wafer.instr.gather_scatter` descriptors; replace result with the new memref |
+| `wafer.tile.broadcast` | create destination SPM memref; enumerate the static result domain, map source dims through `dimensions`, compute source/result physical byte offsets, coalesce adjacent segments, pack regular segments into up to three stride/iteration levels, emit one or more `wafer.instr.gather_scatter`, and replace result with dest memref |
+| `wafer.tile.transpose` | create destination SPM memref; enumerate the static result domain, invert `permutation` to source logical indices, compute source/result physical byte offsets, coalesce adjacent segments, pack regular segments into up to three stride/iteration levels, emit one or more `wafer.instr.gather_scatter`, and replace result with dest memref |
+| `wafer.tile.reshape` | identity replacement when types are identical; otherwise preserve source/result canonical linear element order and reinterpret result multi-indices through the new shape; compact `tensor/ntensor` reshape lowers to a verifier-legal standard memref view because compact physical bytes already follow that linear order; `Cx/NCx` reshape first compares same-linear-element source/result physical byte offsets with the unified physical layout calculator, materializes a destination memref and emits packed `wafer.instr.gather_scatter` descriptors only when the physical mapping or required footprint changes; structured failure only when the static reshape movement plan cannot be represented by V0 descriptors |
 | `scf.if` / `scf.for` | preserve the structured control-flow op; recursively legalize executable target-abstract ops in each nested region; keep scalar and memref yields explicit |
 | `wafer.tile.send/recv/wait/all_gather/reduce_scatter/all_reduce` | not handled by R3.2d V0 |
 
-R3.2d.4 已覆盖 static movement descriptor splitting：
+R3.2d.4 已覆盖 static movement descriptor splitting / packing：
 
 - `wafer.tile.extract_slice`、`wafer.tile.insert_slice`、`wafer.tile.broadcast`、`wafer.tile.transpose`
   都复用统一 logical-to-physical calculator，覆盖 compact `tensor/ntensor` 与 `Cx/NCx`。它们先从
   op 语义恢复 source/result logical index relation，再计算两端 physical byte offset；不能用 generic
   memref load/store/copy 或名字匹配绕过 movement 语义。
 - V0 当前只 materialize 静态、byte-addressable、可按 buffer-local offset 表示的 descriptor 序列。
-  每个 coalesced segment 仍落成一条 `wafer.instr.gather_scatter`，`src/dst_strides` 和
-  `src/dst_iterations` 为 `{0, 0, 0}` / `{1, 1, 1}`；后续可以在不改变 IR 语义的前提下把多段
-  压缩成更高阶 TDMA stride/iteration descriptor。dynamic shape、bit-packed element 或 helper 无法
-  证明真实 physical offset 的情况仍 structured failure。
+  lowering 先 coalesce 相邻 byte 段，再贪心识别可由三层 source/dest stride/iteration 同时描述的
+  规则 segment block；不能被单个 descriptor 表达的剩余段继续拆成后续 `wafer.instr.gather_scatter`。
+  dynamic shape、bit-packed element、超过三层或 helper 无法证明真实 physical offset 的情况仍
+  structured failure。
 
 R3.2d V0 剩余明显 coverage gap 是 tile communication：
 
@@ -630,11 +639,15 @@ R3.2d.4 已完成：
 9. `wafer.tile.extract_slice`、`wafer.tile.insert_slice`、`wafer.tile.broadcast` 和
    `wafer.tile.transpose` 的静态 movement lowering 已接入同一个 DialectConversion，按 op 语义枚举
    logical iteration domain，调用统一 physical layout calculator 计算 source/dest byte offset，并
-   coalesce 相邻 byte 段后生成 `wafer.instr.gather_scatter`。
+   coalesce 相邻 byte 段后打包成三层 stride/iteration `wafer.instr.gather_scatter` descriptor。
 10. conversion tests 覆盖 compact tensor movement，以及 `Cx:[CxBlock][outer][lane]` /
-    `NCx:[N][CxBlock][HW][lane]` block-major physical offset 的切片 descriptor。
+    `NCx:[N][CxBlock][HW][lane]` block-major physical offset 的切片 descriptor 和 reshape/layout
+    materialization descriptor packing。
 
 后续仍需：
 
 11. convert lowering 等 `wafer.tile.convert`
    或等价 source op 出现后再接入 completion gate。
+12. strided RDMA/WDMA lowering 等上游显式产生 DDR slice/view stride 或一端 strided tile boundary
+    facts 后再接入；当前 `wafer.tile.load/store` 的整块 compact boundary 不能靠名字或 shape 猜测出
+    strided descriptor。

@@ -43,6 +43,11 @@ struct LogicalMovementSegment {
   int64_t bytes = 0;
 };
 
+struct PackedMovementDescriptor {
+  MovementDescriptor source;
+  MovementDescriptor dest;
+};
+
 static std::optional<int64_t>
 getStaticPositiveElementCount(llvm::ArrayRef<int64_t> shape) {
   int64_t count = 1;
@@ -54,6 +59,43 @@ getStaticPositiveElementCount(llvm::ArrayRef<int64_t> shape) {
     count *= dim;
   }
   return count;
+}
+
+static std::optional<int64_t> checkedMulI64(int64_t lhs, int64_t rhs) {
+  if (lhs < 0 || rhs < 0)
+    return std::nullopt;
+  if (lhs != 0 && rhs > std::numeric_limits<int64_t>::max() / lhs)
+    return std::nullopt;
+  return lhs * rhs;
+}
+
+static std::optional<int64_t> checkedAddI64(int64_t lhs, int64_t rhs) {
+  if (lhs < 0 || rhs < 0)
+    return std::nullopt;
+  if (rhs > std::numeric_limits<int64_t>::max() - lhs)
+    return std::nullopt;
+  return lhs + rhs;
+}
+
+static std::optional<int64_t> checkedAddScaledI64(int64_t base, int64_t stride,
+                                                  int64_t iteration) {
+  std::optional<int64_t> scaled = checkedMulI64(stride, iteration);
+  if (!scaled)
+    return std::nullopt;
+  return checkedAddI64(base, *scaled);
+}
+
+static std::optional<int64_t>
+computeDescriptorPayloadBytes(int64_t innerBytes,
+                              llvm::ArrayRef<int64_t> iterations) {
+  int64_t total = innerBytes;
+  for (int64_t iteration : iterations) {
+    std::optional<int64_t> next = checkedMulI64(total, iteration);
+    if (!next)
+      return std::nullopt;
+    total = *next;
+  }
+  return total;
 }
 
 static void setFailureReason(std::string *failureReason,
@@ -159,27 +201,156 @@ static void createGatherScatter(mlir::PatternRewriter &rewriter,
       destDescriptor.iterations);
 }
 
+static bool
+matchesPackedDescriptor(llvm::ArrayRef<LogicalMovementSegment> segments,
+                        size_t start, llvm::ArrayRef<int64_t> sourceStrides,
+                        llvm::ArrayRef<int64_t> destStrides,
+                        llvm::ArrayRef<int64_t> iterations) {
+  if (sourceStrides.size() != 3 || destStrides.size() != 3 ||
+      iterations.size() != 3 || start >= segments.size())
+    return false;
+
+  std::optional<int64_t> totalSegments =
+      computeDescriptorPayloadBytes(/*innerBytes=*/1, iterations);
+  if (!totalSegments)
+    return false;
+  if (*totalSegments <= 0 ||
+      start + static_cast<size_t>(*totalSegments) > segments.size())
+    return false;
+
+  const LogicalMovementSegment &base = segments[start];
+  for (int64_t linear = 0; linear < *totalSegments; ++linear) {
+    const LogicalMovementSegment &segment = segments[start + linear];
+    if (segment.bytes != base.bytes)
+      return false;
+
+    int64_t i0 = linear % iterations[0];
+    int64_t i1 = (linear / iterations[0]) % iterations[1];
+    int64_t i2 = linear / (iterations[0] * iterations[1]);
+
+    std::optional<int64_t> expectedSource =
+        checkedAddScaledI64(base.sourceOffset, sourceStrides[0], i0);
+    std::optional<int64_t> expectedDest =
+        checkedAddScaledI64(base.destOffset, destStrides[0], i0);
+    if (!expectedSource || !expectedDest)
+      return false;
+    expectedSource = checkedAddScaledI64(*expectedSource, sourceStrides[1], i1);
+    expectedDest = checkedAddScaledI64(*expectedDest, destStrides[1], i1);
+    if (!expectedSource || !expectedDest)
+      return false;
+    expectedSource = checkedAddScaledI64(*expectedSource, sourceStrides[2], i2);
+    expectedDest = checkedAddScaledI64(*expectedDest, destStrides[2], i2);
+    if (!expectedSource || !expectedDest)
+      return false;
+
+    if (segment.sourceOffset != *expectedSource ||
+        segment.destOffset != *expectedDest)
+      return false;
+  }
+  return true;
+}
+
+static int64_t
+inferPackedIteration(llvm::ArrayRef<LogicalMovementSegment> segments,
+                     size_t start, int64_t blockSize,
+                     llvm::SmallVectorImpl<int64_t> &sourceStrides,
+                     llvm::SmallVectorImpl<int64_t> &destStrides,
+                     llvm::SmallVectorImpl<int64_t> &iterations, int64_t dim) {
+  if (blockSize <= 0)
+    return 1;
+  size_t nextBlockStart = start + static_cast<size_t>(blockSize);
+  if (nextBlockStart >= segments.size())
+    return 1;
+
+  const LogicalMovementSegment &base = segments[start];
+  const LogicalMovementSegment &nextBase = segments[nextBlockStart];
+  if (nextBase.bytes != base.bytes ||
+      nextBase.sourceOffset < base.sourceOffset ||
+      nextBase.destOffset < base.destOffset)
+    return 1;
+
+  sourceStrides[dim] = nextBase.sourceOffset - base.sourceOffset;
+  destStrides[dim] = nextBase.destOffset - base.destOffset;
+
+  int64_t inferred = 1;
+  while (true) {
+    llvm::SmallVector<int64_t, 3> candidateIterations(iterations.begin(),
+                                                      iterations.end());
+    candidateIterations[dim] = inferred + 1;
+    if (!matchesPackedDescriptor(segments, start, sourceStrides, destStrides,
+                                 candidateIterations))
+      break;
+    iterations[dim] = inferred + 1;
+    ++inferred;
+  }
+  if (inferred == 1) {
+    sourceStrides[dim] = 0;
+    destStrides[dim] = 0;
+  }
+  return inferred;
+}
+
+static PackedMovementDescriptor
+packMovementDescriptor(llvm::ArrayRef<LogicalMovementSegment> segments,
+                       size_t start) {
+  const LogicalMovementSegment &base = segments[start];
+  llvm::SmallVector<int64_t, 3> sourceStrides({0, 0, 0});
+  llvm::SmallVector<int64_t, 3> destStrides({0, 0, 0});
+  llvm::SmallVector<int64_t, 3> iterations({1, 1, 1});
+
+  inferPackedIteration(segments, start, /*blockSize=*/1, sourceStrides,
+                       destStrides, iterations, /*dim=*/0);
+  std::optional<int64_t> dim1Block = computeDescriptorPayloadBytes(
+      /*innerBytes=*/1, llvm::ArrayRef<int64_t>(iterations).take_front(1));
+  if (dim1Block)
+    inferPackedIteration(segments, start, *dim1Block, sourceStrides,
+                         destStrides, iterations, /*dim=*/1);
+  std::optional<int64_t> dim2Block = computeDescriptorPayloadBytes(
+      /*innerBytes=*/1, llvm::ArrayRef<int64_t>(iterations).take_front(2));
+  if (dim2Block)
+    inferPackedIteration(segments, start, *dim2Block, sourceStrides,
+                         destStrides, iterations, /*dim=*/2);
+
+  std::optional<int64_t> byteCount =
+      computeDescriptorPayloadBytes(base.bytes, iterations);
+  if (!byteCount) {
+    sourceStrides.assign({0, 0, 0});
+    destStrides.assign({0, 0, 0});
+    iterations.assign({1, 1, 1});
+    byteCount = base.bytes;
+  }
+
+  MovementDescriptor sourceDescriptor;
+  sourceDescriptor.byteCount = *byteCount;
+  sourceDescriptor.innerBytes = base.bytes;
+  sourceDescriptor.byteOffset = base.sourceOffset;
+  sourceDescriptor.strides = sourceStrides;
+  sourceDescriptor.iterations = iterations;
+
+  MovementDescriptor destDescriptor;
+  destDescriptor.byteCount = *byteCount;
+  destDescriptor.innerBytes = base.bytes;
+  destDescriptor.byteOffset = base.destOffset;
+  destDescriptor.strides = destStrides;
+  destDescriptor.iterations = iterations;
+
+  return {sourceDescriptor, destDescriptor};
+}
+
 static void
 createGatherScatterSegments(mlir::PatternRewriter &rewriter, mlir::Location loc,
                             mlir::Value source, mlir::Value dest,
                             llvm::ArrayRef<LogicalMovementSegment> segments) {
-  for (const LogicalMovementSegment &segment : segments) {
-    MovementDescriptor sourceDescriptor;
-    sourceDescriptor.byteCount = segment.bytes;
-    sourceDescriptor.innerBytes = segment.bytes;
-    sourceDescriptor.byteOffset = segment.sourceOffset;
-    sourceDescriptor.strides.assign({0, 0, 0});
-    sourceDescriptor.iterations.assign({1, 1, 1});
+  for (size_t index = 0; index < segments.size();) {
+    PackedMovementDescriptor packed = packMovementDescriptor(segments, index);
+    createGatherScatter(rewriter, loc, source, dest, packed.source,
+                        packed.dest);
 
-    MovementDescriptor destDescriptor;
-    destDescriptor.byteCount = segment.bytes;
-    destDescriptor.innerBytes = segment.bytes;
-    destDescriptor.byteOffset = segment.destOffset;
-    destDescriptor.strides.assign({0, 0, 0});
-    destDescriptor.iterations.assign({1, 1, 1});
-
-    createGatherScatter(rewriter, loc, source, dest, sourceDescriptor,
-                        destDescriptor);
+    std::optional<int64_t> descriptorSegments = computeDescriptorPayloadBytes(
+        /*innerBytes=*/1, packed.source.iterations);
+    if (!descriptorSegments || *descriptorSegments <= 0)
+      descriptorSegments = 1;
+    index += static_cast<size_t>(*descriptorSegments);
   }
 }
 
