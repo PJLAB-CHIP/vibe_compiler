@@ -121,10 +121,10 @@ R3.2c/R3.2d 当前边界是：
   `outer * aligned_C + c` 近似判定。R3.2d.3 已接入 `wafer-lower-tile-region-to-instr` 和
   `wafer-lower-groups-to-instr` named pipeline，pipeline gate 覆盖多 group、structured control-flow、
   no executable target-abstract op residue 和 tile communication structured failure。
-- 硬件 RDMA/WDMA 也支持三层 strided descriptor，但当前 R3.2d `wafer.tile.load/store` source op
-  只表达整块 compact DDR boundary 与对应 SPM buffer，所以 lowering 只生成 contiguous descriptor。
-  后续若上游显式产生 DDR slice/view stride 或一端 strided tile boundary fact，再在同一
-  descriptor 合同下选择 strided RDMA/WDMA；不能从名字或 shape 猜测。
+- R3.2d `wafer.tile.load/store` 已消费 DDR 侧 `memref.subview` / strided memref layout：静态
+  strided tile view 会生成 RDMA/WDMA 三层 byte stride/iteration descriptor；整块 compact DDR
+  boundary 仍生成 contiguous descriptor。动态 view、负 stride、bit-packed element 或超过三层的
+  descriptor 仍 structured failure，不能从名字或 shape 猜测。
 - 下一批明显 op coverage gap 是 tile communication op：它仍 deferred，等待
   placement/local-rank/buffer facts 后再 materialize 到
   communication / DTE / local-drain 边界。
@@ -136,9 +136,9 @@ R3.2c/R3.2d 当前边界是：
 | R3.2d.1 | done | 输入：R3.2c target-abstract `wafer.tile.region` IR with DDR boundary memref、unplaced SPM memref 和 structured control-flow；输出：`wafer.instr.*` ODS / interface / verifier 合同 | 已实现 `InstrQueue`、instruction interface、effect helper，以及 `rdma`、`wdma`、`gather_scatter`、`fill`、`elementwise`、`reduce`、`convert`、`gemm` op contract；op 只读写 Wafer-tagged memref，不产生 buffer result，不携带 SPM offset 或 ABI 字段 |
 | R3.2d.2 | done | 输入：R3.2d.1 instruction ops + R3.2c tile-region IR；输出：instruction-level `wafer.instr.*` IR 或结构化失败 | 已实现 `--wafer-convert-tile-region-to-instr` DialectConversion；为 load/store、layout materialize、tile.gemm/reduce/elementwise、copy 选择 instruction-level IR，把 compact reshape 的 logical linear-order reindex 降成标准 memref view 或 identity，并按同一 canonical linear element 在 `Cx:[CxBlock][outer][lane]` / `NCx:[N][CxBlock][HW][lane]` 中的 physical offset 判定 `Cx/NCx` reshape 的 metadata view、gather/scatter materialization 或 structured failure；不能用 physical byte count 或 dense aligned row 近似 |
 | R3.2d.3 | done | 输入：R3.2d.2 conversion；输出：可由 placement/resource stage 消费的 instruction-level IR | 已接入 `wafer-lower-tile-region-to-instr` 和 `wafer-lower-groups-to-instr` named pipeline / planner scratch path；测试覆盖多 op、多 group、structured control-flow、metadata view lowering、tile communication structured failure；转换后不能残留 executable target-abstract op |
-| R3.2d.4 | done | 输入：R3.2c/R3.2d target-abstract movement ops + unplaced Wafer-tagged memref；输出：instruction-level `wafer.instr.gather_scatter` descriptor sequence 或结构化失败 | 已补 `wafer.tile.extract_slice/insert_slice/broadcast/transpose` 的静态 descriptor splitting / packing；沿用统一 logical-to-physical calculator，覆盖 compact 与 `Cx/NCx`，先 coalesce 相邻 byte 段，再把规则段打包进 TDMA 三层 source/dest stride/iteration descriptor；不使用 generic memref load/store/copy 或名字匹配伪装语义；descriptor 不可表达时仍 structured failure |
+| R3.2d.4 | done | 输入：R3.2c/R3.2d target-abstract movement ops + unplaced Wafer-tagged memref；输出：instruction-level `wafer.instr.gather_scatter` / strided RDMA/WDMA descriptor sequence 或结构化失败 | 已补 `wafer.tile.extract_slice/insert_slice/broadcast/transpose` 的静态 descriptor splitting / packing；沿用统一 logical-to-physical calculator，覆盖 compact 与 `Cx/NCx`，先 coalesce 相邻 byte 段，再把规则段打包进 TDMA 三层 source/dest stride/iteration descriptor；`wafer.tile.load/store` 消费 DDR 侧 strided memref layout 生成 RDMA/WDMA 三层 descriptor；不使用 generic memref load/store/copy 或名字匹配伪装语义；descriptor 不可表达时仍 structured failure |
 | R3.2e | active | 输入：R3.2d instruction-level IR with unplaced Wafer-tagged memref；输出：同一 instruction-level IR with placed SPM memref values 或结构化失败 | 真实 SPM window placement：alignment、layout padding、scratch/psum/temp、materialization temp、communication staging、control-flow lifetime、range/end-address/bank span/conflict 都参与 |
-| R3.2f | pending | 输入：R3.2e placed instruction-level IR + DDR boundary facts；输出：DDR/resource legality result 和 movement/compute resource validation | 覆盖 external/compiler-managed/resident-constant、pool/domain/capacity/bandwidth/range demand，以及 strided RDMA/WDMA descriptor 是否能由显式 DDR/SPM boundary facts packetize；不能用 manifest fixture 替代；不能回头改变 instruction semantics |
+| R3.2f | pending | 输入：R3.2e placed instruction-level IR + DDR boundary facts；输出：DDR/resource legality result 和 movement/compute resource validation | 覆盖 external/compiler-managed/resident-constant、pool/domain/capacity/bandwidth/range demand，并验证已生成的 contiguous / strided RDMA/WDMA descriptor 能否按 placed DDR/SPM facts packetize；不能用 manifest fixture 替代；不能回头改变 instruction semantics |
 | R3.2g | pending | 输入：R3.1 group + R3.2a-f planning results；输出：accepted/rejected/split group planning decision | closed-loop 搜索 group boundary、traversal、tile shape、layout、instruction selection、SPM/DDR/resource plan；未接受 plan 不落 IR；multi-root packing 只作为可证明兼容时的可选策略 |
 | R3.3 | pending | 输入：R3.2g accepted plan；输出：committed `wafer.tile.region` + accepted instruction-level lowering boundary | 只 materialize accepted plan；不重新决定 group 是否可行 |
 | R3.4 | pending | 输入：R3.2g accepted layout/SPM facts + R3.3 tile-region；输出：placed instruction-level IR / placed memref 或 access descriptor | 只落已接受的 layout assignment、materialization cut、instruction effects 和 SPM placement facts；不恢复单独 storage IR 层 |

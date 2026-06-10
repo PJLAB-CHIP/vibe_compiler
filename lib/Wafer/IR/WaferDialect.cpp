@@ -259,6 +259,35 @@ static std::optional<int64_t> getStaticByteSize(mlir::Type elementType,
   return ceilDivToBytes(totalBits);
 }
 
+static std::optional<int64_t>
+getStaticStridedElementSpan(mlir::MemRefType type) {
+  if (!type.hasStaticShape())
+    return std::nullopt;
+
+  llvm::SmallVector<int64_t> strides;
+  int64_t offset = 0;
+  if (mlir::failed(mlir::getStridesAndOffset(type, strides, offset)))
+    return std::nullopt;
+  if (static_cast<int64_t>(strides.size()) != type.getRank())
+    return std::nullopt;
+
+  if (type.getRank() == 0)
+    return 1;
+
+  int64_t span = 1;
+  for (auto [dim, stride] : llvm::zip(type.getShape(), strides)) {
+    if (dim == 0)
+      return 0;
+    if (dim < 0 || stride == mlir::ShapedType::kDynamic || stride < 0)
+      return std::nullopt;
+    int64_t dimSpan = 0;
+    if (!checkedMul(dim - 1, stride, dimSpan) ||
+        !checkedAdd(span, dimSpan, span))
+      return std::nullopt;
+  }
+  return span;
+}
+
 static std::optional<int64_t> linearizeIndex(llvm::ArrayRef<int64_t> shape,
                                              llvm::ArrayRef<int64_t> indices) {
   if (shape.size() != indices.size())
@@ -330,8 +359,12 @@ wafer::computeWaferPhysicalTensorInfo(mlir::MemRefType type) {
       info.compactBytes = *bytes;
   }
 
-  std::optional<int64_t> physicalElements = getStaticPhysicalElementCount(
-      type.getShape(), type.getElementType(), info.layout, info);
+  std::optional<int64_t> physicalElements;
+  if (info.layout == MemLayout::Tensor || info.layout == MemLayout::NTensor)
+    physicalElements = getStaticStridedElementSpan(type);
+  else
+    physicalElements = getStaticPhysicalElementCount(
+        type.getShape(), type.getElementType(), info.layout, info);
   if (physicalElements) {
     info.physicalElements = *physicalElements;
     if (std::optional<int64_t> bytes =
@@ -352,12 +385,26 @@ std::optional<int64_t> wafer::computeWaferPhysicalElementByteOffset(
     return std::nullopt;
 
   if (info->layout != MemLayout::Cx && info->layout != MemLayout::NCx) {
-    std::optional<int64_t> linear =
-        linearizeIndex(type.getShape(), logicalIndices);
-    if (!linear)
+    llvm::SmallVector<int64_t> strides;
+    int64_t offset = 0;
+    if (mlir::failed(mlir::getStridesAndOffset(type, strides, offset)) ||
+        strides.size() != logicalIndices.size())
       return std::nullopt;
+
+    int64_t linear = 0;
+    for (auto [dim, index, stride] :
+         llvm::zip_equal(type.getShape(), logicalIndices, strides)) {
+      if (dim == mlir::ShapedType::kDynamic || dim < 0 || index < 0 ||
+          index >= dim || stride == mlir::ShapedType::kDynamic || stride < 0)
+        return std::nullopt;
+      int64_t scaled = 0;
+      if (!checkedMul(index, stride, scaled) ||
+          !checkedAdd(linear, scaled, linear))
+        return std::nullopt;
+    }
+
     int64_t byteOffset = 0;
-    if (!checkedMul(*linear, info->elementBytes, byteOffset))
+    if (!checkedMul(linear, info->elementBytes, byteOffset))
       return std::nullopt;
     return byteOffset;
   }

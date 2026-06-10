@@ -35,12 +35,58 @@ func.func @load_compute_store(
 // CHECK-NOT: wafer.tile.elementwise
 // CHECK-NOT: wafer.tile.store
 // CHECK: %[[LOAD_DST:.+]] = memref.alloc() : memref<4x8xf16, #wafer.memory<spm, tensor>>
-// CHECK: wafer.instr.rdma %{{.+}} to %[[LOAD_DST]]
+// CHECK: wafer.instr.rdma %{{[a-zA-Z0-9_]+}} to %[[LOAD_DST]]
 // CHECK-SAME: byte_count = 64 : i64
 // CHECK: wafer.instr.fill %[[LOAD_DST]]
 // CHECK: %[[SUM:.+]] = memref.alloc() : memref<4x8xf16, #wafer.memory<spm, tensor>>
 // CHECK: wafer.instr.elementwise <add> %[[LOAD_DST]], %[[LOAD_DST]] into %[[SUM]]
 // CHECK: wafer.instr.wdma %[[SUM]] to %{{.+}}
+
+func.func @strided_ddr_tile_load_store(
+    %input: memref<4x8xf16, #wafer.memory<ddr, tensor>>,
+    %output: memref<4x8xf16, #wafer.memory<ddr, tensor>>) {
+  %input_tile = memref.subview %input[1, 2] [2, 3] [1, 1]
+      : memref<4x8xf16, #wafer.memory<ddr, tensor>>
+     to memref<2x3xf16, strided<[8, 1], offset: 10>, #wafer.memory<ddr, tensor>>
+  %output_tile = memref.subview %output[1, 2] [2, 3] [1, 1]
+      : memref<4x8xf16, #wafer.memory<ddr, tensor>>
+     to memref<2x3xf16, strided<[8, 1], offset: 10>, #wafer.memory<ddr, tensor>>
+  %region = wafer.tile.region(%input_tile, %output_tile
+      : memref<2x3xf16, strided<[8, 1], offset: 10>, #wafer.memory<ddr, tensor>>,
+        memref<2x3xf16, strided<[8, 1], offset: 10>, #wafer.memory<ddr, tensor>>)
+      -> (memref<2x3xf16, strided<[8, 1], offset: 10>, #wafer.memory<ddr, tensor>>) {
+  ^bb0(%in: memref<2x3xf16, strided<[8, 1], offset: 10>, #wafer.memory<ddr, tensor>>,
+       %out: memref<2x3xf16, strided<[8, 1], offset: 10>, #wafer.memory<ddr, tensor>>):
+    %loaded = wafer.tile.load %in
+        : memref<2x3xf16, strided<[8, 1], offset: 10>, #wafer.memory<ddr, tensor>>
+       -> memref<2x3xf16, #wafer.memory<spm, tensor>>
+    wafer.tile.store %loaded, %out
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>
+       -> memref<2x3xf16, strided<[8, 1], offset: 10>, #wafer.memory<ddr, tensor>>
+    wafer.tile.yield %out
+        : memref<2x3xf16, strided<[8, 1], offset: 10>, #wafer.memory<ddr, tensor>>
+  }
+  return
+}
+
+// CHECK-LABEL: func.func @strided_ddr_tile_load_store
+// CHECK-NOT: wafer.tile.load
+// CHECK-NOT: wafer.tile.store
+// CHECK: %[[INPUT_TILE:.+]] = memref.subview
+// CHECK: %[[OUTPUT_TILE:.+]] = memref.subview
+// CHECK: %[[LOAD_DST:.+]] = memref.alloc() : memref<2x3xf16, #wafer.memory<spm, tensor>>
+// CHECK: wafer.instr.rdma %{{[a-zA-Z0-9_]+}} to %[[LOAD_DST]]
+// CHECK-SAME: byte_count = 12 : i64
+// CHECK-SAME: inner_bytes = 6 : i64
+// CHECK-SAME: src_iterations = array<i64: 2, 1, 1>
+// CHECK-SAME: src_strides = array<i64: 16, 0, 0>
+// CHECK-SAME: memref<2x3xf16, strided<[8, 1], offset: 10>, #wafer.memory<ddr, tensor>>
+// CHECK: wafer.instr.wdma %[[LOAD_DST]] to %{{[a-zA-Z0-9_]+}}
+// CHECK-SAME: byte_count = 12 : i64
+// CHECK-SAME: dst_iterations = array<i64: 2, 1, 1>
+// CHECK-SAME: dst_strides = array<i64: 16, 0, 0>
+// CHECK-SAME: inner_bytes = 6 : i64
+// CHECK-SAME: memref<2x3xf16, strided<[8, 1], offset: 10>, #wafer.memory<ddr, tensor>>
 
 func.func @gemm_reduce_and_reshape(
     %lhs_ddr: memref<4x64xf16, #wafer.memory<ddr, tensor>>,

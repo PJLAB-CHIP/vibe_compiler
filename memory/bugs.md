@@ -41,3 +41,18 @@
   当前实现中 `computeWaferPhysicalTensorInfo` 计算 `Cx/C0/aligned_C/batchElements`，
   `computeWaferPhysicalElementByteOffset` 计算 block-major offset；`wafer.tile.reshape` 和
   `wafer.tile.materialize_layout` 共用 logical-to-physical segment 生成。
+
+## 2026-06-10 RDMA/WDMA strided DDR tile view
+
+- 现象：R3.2d `wafer.tile.load/store` 曾无条件用 contiguous descriptor；当 DDR operand 是
+  `memref.subview` / strided memref view，例如从 `4x8` DDR tensor 读写 `2x3` tile 时，实际每行
+  stride 是 8 个元素，但 lowering 会生成 `inner_bytes=12`、stride 全 0，等价于错误地连续搬运。
+- 根因：把 `tile.load/store` 的 tile shape 当成整块 compact DDR boundary，没有消费 Wafer DDR
+  memref 的 standard strided layout。`computeWaferPhysicalTensorInfo` 对 `tensor/ntensor` 也只按
+  shape 算 compact bytes，导致 strided view 的 descriptor range/verifier 边界不准确。
+- 修复模式：`#wafer.memory<ddr, tensor/ntensor>` 的 `memref.subview` / strided layout 是显式
+  boundary fact。RDMA descriptor 从 source DDR memref strides 生成，WDMA descriptor 从 dest DDR
+  memref strides 生成；stride 单位先从 element stride 转 byte stride，最多打包三层
+  stride/iteration。descriptor offset 仍相对 operand view origin，subview base offset 由 memref
+  value/type 留给后续 packetization。动态 view、负 stride、bit-packed element 或超过三层时
+  structured failure，不能靠名字或 shape 猜测。

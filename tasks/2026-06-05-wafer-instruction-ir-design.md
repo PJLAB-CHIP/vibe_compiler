@@ -177,8 +177,10 @@ instruction-level IR 中解释它：
 
 - 允许 `memref.alloc` / ownership-preserving aliases 表达 allocation、lifetime 和 value identity。
 - 允许 `memref.dim` 读取 logical shape。
-- 对 `#wafer.memory<spm, tensor/ntensor>`，可在 verifier 证明 metadata view 与 logical layout
-  一致时使用 `memref.cast` / `memref.reinterpret_cast` / `memref.subview`。
+- 对 `#wafer.memory<spm, tensor/ntensor>` 和 `#wafer.memory<ddr, tensor/ntensor>`，可在 verifier
+  证明 metadata view 与 logical layout 一致时使用 `memref.cast` / `memref.reinterpret_cast` /
+  `memref.subview`。对 DDR 边界，`memref.subview` / strided memref layout 是 tile load/store 的
+  显式 slice/stride fact，R3.2d lowering 必须消费它生成 RDMA/WDMA descriptor。
 - 对 `#wafer.memory<spm, cx/ncx>`，不能用 generic `memref.load/store/copy/subview` 伪装硬件
   physical indexing；真实 layout conversion、slice movement 和 copy 必须通过
   `wafer.tile.materialize_layout` 或 `wafer.instr.gather_scatter` 等 Wafer op 表达。
@@ -352,15 +354,12 @@ wafer.instr.wdma source to dest attr-dict : type(source) to type(dest)
 | `wafer.instr.rdma` | `source: MemRef<#wafer.memory<ddr, *>>`, `dest: MemRef<#wafer.memory<spm, *>>` | none | `byte_count`, `inner_bytes`, `src_strides`, `src_iterations` |
 | `wafer.instr.wdma` | `source: MemRef<#wafer.memory<spm, *>>`, `dest: MemRef<#wafer.memory<ddr, *>>` | none | `byte_count`, `inner_bytes`, `dst_strides`, `dst_iterations` |
 
-R3.2c 的 `wafer.tile.load/store` 边界默认是 compact tensor layout；如果 consumer 需要 `Cx/NCx`，
+R3.2c 的 `wafer.tile.load/store` SPM 侧必须是 compact tensor layout；如果 consumer 需要 `Cx/NCx`，
 必须通过 `wafer.tile.materialize_layout` 再 lower 到 TDMA，而不是让 RDMA/WDMA 隐式承担 layout
-conversion。
-
-硬件和 wrapper 路径支持 RDMA/WDMA 三层 strided descriptor；当前 `wafer.tile.load/store` lowering
-只生成 contiguous descriptor，是因为 R3.2c/R3.2d 的 source op 只表达整块 compact DDR boundary
-与对应整块 SPM buffer，不表达 DDR slice、view stride 或一端 strided 的 tile boundary。后续若上游
-IR 显式产生 strided DDR/SPM boundary facts，R3.2d/R3.2f 可以复用同一 fixed-rank descriptor 合同
-选择 strided RDMA/WDMA；不能从 memref 名字或 shape 猜测。
+conversion。DDR 侧可以是 compact boundary，也可以是 `memref.subview` / strided memref view；
+R3.2d 从 DDR memref layout 中恢复静态 element stride，转成 byte stride/iteration descriptor。
+动态 view、负 stride、bit-packed element、超过三层 stride/iteration 或不能静态证明 descriptor 的
+情况必须 structured failure，不能从 memref 名字或 shape 猜测。
 
 ### 7.3 GatherScatter
 
@@ -432,8 +431,8 @@ V0 mapping：
 
 | target-abstract op | instruction-level lowering |
 | --- | --- |
-| `wafer.tile.load` | ensure / create destination `memref<..., #wafer.memory<spm, tensor>>`; emit `wafer.instr.rdma`; replace original result with dest memref |
-| `wafer.tile.store` | emit `wafer.instr.wdma`; erase store |
+| `wafer.tile.load` | ensure / create destination `memref<..., #wafer.memory<spm, tensor>>`; read source DDR memref strided layout, emit contiguous or three-level strided `wafer.instr.rdma`; replace original result with dest memref |
+| `wafer.tile.store` | read destination DDR memref strided layout, emit contiguous or three-level strided `wafer.instr.wdma`; erase store |
 | `wafer.tile.materialize_layout` | ensure / create destination memref with requested marker; compare source/result logical element to physical byte mapping through the unified physical layout calculator; coalesce adjacent byte segments, pack regular segments into up to three stride/iteration levels, and emit one or more `wafer.instr.gather_scatter`; do not require source/result physical byte counts to match; structured failure only when static logical movement cannot be represented by V0 descriptors |
 | `wafer.tile.fill` | emit `wafer.instr.fill` writing the existing dest memref |
 | `wafer.tile.gemm` | ensure / create destination aligned SPM memref; emit `wafer.instr.gemm`; replace result with dest memref |
@@ -648,6 +647,5 @@ R3.2d.4 已完成：
 
 11. convert lowering 等 `wafer.tile.convert`
    或等价 source op 出现后再接入 completion gate。
-12. strided RDMA/WDMA lowering 等上游显式产生 DDR slice/view stride 或一端 strided tile boundary
-    facts 后再接入；当前 `wafer.tile.load/store` 的整块 compact boundary 不能靠名字或 shape 猜测出
-    strided descriptor。
+12. dynamic DDR view、超过三层的 RDMA/WDMA descriptor packing、以及非 tensor-layout DDR 边界等
+    source op 出现后再接入；当前不能靠名字或 shape 猜测出缺失的 strided boundary facts。

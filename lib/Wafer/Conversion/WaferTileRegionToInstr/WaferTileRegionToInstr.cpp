@@ -48,6 +48,11 @@ struct PackedMovementDescriptor {
   MovementDescriptor dest;
 };
 
+struct DescriptorLoop {
+  int64_t strideBytes = 0;
+  int64_t iterations = 1;
+};
+
 static std::optional<int64_t>
 getStaticPositiveElementCount(llvm::ArrayRef<int64_t> shape) {
   int64_t count = 1;
@@ -162,6 +167,118 @@ getContiguousDescriptor(mlir::PatternRewriter &rewriter, mlir::Operation *op,
   descriptor.innerBytes = info->physicalBytes;
   descriptor.strides.assign({0, 0, 0});
   descriptor.iterations.assign({1, 1, 1});
+  return descriptor;
+}
+
+static mlir::FailureOr<MovementDescriptor>
+getStridedTensorDescriptor(mlir::PatternRewriter &rewriter, mlir::Operation *op,
+                           mlir::Type type, std::string *failureReason,
+                           llvm::StringRef role) {
+  auto memrefType = mlir::dyn_cast<mlir::MemRefType>(type);
+  if (!memrefType)
+    return failFailureOr<MovementDescriptor>(
+        rewriter, op, failureReason,
+        llvm::Twine(role).concat(" requires a Wafer memref type").str());
+
+  std::optional<WaferPhysicalTensorInfo> info =
+      wafer::computeWaferPhysicalTensorInfo(memrefType);
+  if (!info || info->compactBytes <= 0 || info->elementBytes <= 0 ||
+      info->bitPackedElement)
+    return failFailureOr<MovementDescriptor>(
+        rewriter, op, failureReason,
+        llvm::Twine(role)
+            .concat(" requires static byte-addressable tensor")
+            .str());
+
+  llvm::SmallVector<int64_t> memrefStrides;
+  int64_t memrefOffset = 0;
+  if (mlir::failed(
+          mlir::getStridesAndOffset(memrefType, memrefStrides, memrefOffset)) ||
+      static_cast<int64_t>(memrefStrides.size()) != memrefType.getRank())
+    return failFailureOr<MovementDescriptor>(
+        rewriter, op, failureReason,
+        llvm::Twine(role)
+            .concat(" requires static strided memref layout")
+            .str());
+
+  int64_t innerElements = 1;
+  llvm::SmallVector<DescriptorLoop, 3> loops;
+  for (int64_t dim = memrefType.getRank() - 1; dim >= 0; --dim) {
+    int64_t dimSize = memrefType.getDimSize(dim);
+    int64_t dimStride = memrefStrides[dim];
+    if (dimSize == mlir::ShapedType::kDynamic || dimSize <= 0 ||
+        dimStride == mlir::ShapedType::kDynamic || dimStride < 0)
+      return failFailureOr<MovementDescriptor>(
+          rewriter, op, failureReason,
+          llvm::Twine(role)
+              .concat(" requires static positive shape and non-negative "
+                      "strides")
+              .str());
+
+    if (dimSize == 1)
+      continue;
+
+    if (loops.empty() && dimStride == innerElements) {
+      std::optional<int64_t> nextInner = checkedMulI64(innerElements, dimSize);
+      if (!nextInner)
+        return failFailureOr<MovementDescriptor>(
+            rewriter, op, failureReason,
+            llvm::Twine(role).concat(" descriptor inner span overflows").str());
+      innerElements = *nextInner;
+      continue;
+    }
+
+    std::optional<int64_t> strideBytes =
+        checkedMulI64(dimStride, info->elementBytes);
+    if (!strideBytes)
+      return failFailureOr<MovementDescriptor>(
+          rewriter, op, failureReason,
+          llvm::Twine(role).concat(" descriptor stride overflows").str());
+
+    if (!loops.empty()) {
+      std::optional<int64_t> collapsedStride =
+          checkedMulI64(loops.back().strideBytes, loops.back().iterations);
+      if (collapsedStride && *collapsedStride == *strideBytes) {
+        std::optional<int64_t> collapsedIterations =
+            checkedMulI64(loops.back().iterations, dimSize);
+        if (!collapsedIterations)
+          return failFailureOr<MovementDescriptor>(
+              rewriter, op, failureReason,
+              llvm::Twine(role)
+                  .concat(" descriptor iteration overflows")
+                  .str());
+        loops.back().iterations = *collapsedIterations;
+        continue;
+      }
+    }
+
+    if (loops.size() == 3)
+      return failFailureOr<MovementDescriptor>(
+          rewriter, op, failureReason,
+          llvm::Twine(role)
+              .concat(" requires at most three strided descriptor levels")
+              .str());
+    loops.push_back({*strideBytes, dimSize});
+  }
+
+  std::optional<int64_t> innerBytes =
+      checkedMulI64(innerElements, info->elementBytes);
+  if (!innerBytes)
+    return failFailureOr<MovementDescriptor>(
+        rewriter, op, failureReason,
+        llvm::Twine(role)
+            .concat(" descriptor inner byte count overflows")
+            .str());
+
+  MovementDescriptor descriptor;
+  descriptor.byteCount = info->compactBytes;
+  descriptor.innerBytes = *innerBytes;
+  descriptor.strides.assign({0, 0, 0});
+  descriptor.iterations.assign({1, 1, 1});
+  for (auto [index, loop] : llvm::enumerate(loops)) {
+    descriptor.strides[index] = loop.strideBytes;
+    descriptor.iterations[index] = loop.iterations;
+  }
   return descriptor;
 }
 
@@ -708,8 +825,9 @@ public:
         op.getLoc(), op.getResult().getType(), rewriter, op, failureReason);
     if (mlir::failed(dest))
       return mlir::failure();
-    mlir::FailureOr<MovementDescriptor> descriptor = getContiguousDescriptor(
-        rewriter, op, op.getResult().getType(), failureReason);
+    mlir::FailureOr<MovementDescriptor> descriptor =
+        getStridedTensorDescriptor(rewriter, op, op.getSource().getType(),
+                                   failureReason, "tile.load source");
     if (mlir::failed(descriptor))
       return mlir::failure();
 
@@ -731,8 +849,8 @@ public:
   mlir::LogicalResult
   matchAndRewrite(StorageStoreOp op,
                   mlir::PatternRewriter &rewriter) const final {
-    mlir::FailureOr<MovementDescriptor> descriptor = getContiguousDescriptor(
-        rewriter, op, op.getSource().getType(), failureReason);
+    mlir::FailureOr<MovementDescriptor> descriptor = getStridedTensorDescriptor(
+        rewriter, op, op.getDest().getType(), failureReason, "tile.store dest");
     if (mlir::failed(descriptor))
       return mlir::failure();
 

@@ -152,10 +152,11 @@
   compact、`Cx`、`NCx` 都走这条路径。coalesce 后要尽量把规则段打包进 TDMA 三层
   source/dest stride/iteration descriptor，不能退回“每个 coalesced segment 一条 instruction”的长期
   lowering。`insert_slice` 不是只写 slice：它返回 updated dest buffer，所以 lowering 必须先把旧
-  dest payload copy 到新 result，再把 source slice overlay 到 result。RDMA/WDMA 硬件同样支持三层
-  strided descriptor；当前 `wafer.tile.load/store` 只生成 contiguous descriptor，是因为 source op
-  只表达整块 compact DDR boundary，后续需要显式 DDR slice/view stride 或一端 strided boundary
-  facts 才能安全利用。
+  dest payload copy 到新 result，再把 source slice overlay 到 result。RDMA/WDMA lowering 要消费
+  DDR 侧 `memref.subview` / strided memref layout：整块 compact DDR boundary 生成 contiguous
+  descriptor，静态 strided tile view 生成三层 byte stride/iteration descriptor；动态 view、负
+  stride、bit-packed element 或超过三层的 descriptor 不能靠名字/shape 猜测，必须 structured
+  failure 或等上游补显式 boundary facts。
 - 用户级 compiler target 名称统一为 `wafer`，Wafer IR target attr 的唯一主线 spelling 是
   `#wafer.target<wafer>`。`tx8` / `tx81` 只保留在硬件、依赖逆向和外部历史命名事实里，不能作为
   compiler target、pipeline 名称或测试 fixture 的主线命名。
