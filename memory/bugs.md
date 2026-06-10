@@ -66,5 +66,5 @@
   boundary 上的 static `tensor.extract_slice` 直接生成 DDR `memref.subview` + tile load；direct
   output `tensor.insert_slice` storeback 只在写 `outs` 且直接作为同 index group yield 时生成 DDR
   `memref.subview` + tile store，避免误写 read-only input 或破坏 updated-dest tensor 语义。
-  Candidate tile offsets/sizes 也必须先在 planner scratch clone 中生成同类 tensor slice proposal，
+  Candidate tile offsets/sizes 也必须先在 planner candidate projection 中生成同类 tensor slice proposal，
   再进入 DDR `memref.subview` producer；不能让 R3.2d 从 full boundary descriptor 反推切片。

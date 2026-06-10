@@ -369,7 +369,7 @@ tile-and-fuse 的主文档，本架构文档只规定它在全 pipeline 中的�
 - 引入 `wafer.tile.region` 作为 `wafer.group` lowering 之后的 tile-local execution scope。
 - 把 accepted tiled SSA graph materialize 成 tile-local storage、movement、layout conversion、
   target-abstract compute、communication 和 sync/effect op。
-- 在 planner scratch path 中根据 candidate tile shape 把 DDR boundary materialize 成显式
+- 在 planner candidate projection 中根据 candidate tile shape 把 DDR boundary materialize 成显式
   `memref.subview` tile view，让 RDMA/WDMA descriptor 从 IR view 推出。
 - 对 target-abstract op 先做 Wafer instruction legalization / selection，在 Wafer-tagged
   memref graph 上产出 instruction-level `wafer.instr.*` IR；SPM/DDR/resource

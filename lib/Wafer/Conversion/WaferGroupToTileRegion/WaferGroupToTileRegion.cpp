@@ -1358,10 +1358,11 @@ struct GroupToTileRegionLoweringPattern
 };
 
 static mlir::OwningOpRef<mlir::ModuleOp>
-cloneGroupToScratchModule(GroupOp group) {
+cloneGroupToProjectionModule(GroupOp group) {
   mlir::Location loc = group.getLoc();
-  mlir::OwningOpRef<mlir::ModuleOp> scratchModule = mlir::ModuleOp::create(loc);
-  mlir::OpBuilder moduleBuilder(scratchModule->getBodyRegion());
+  mlir::OwningOpRef<mlir::ModuleOp> projectionModule =
+      mlir::ModuleOp::create(loc);
+  mlir::OpBuilder moduleBuilder(projectionModule->getBodyRegion());
 
   llvm::SmallVector<mlir::Type, 4> inputTypes;
   for (mlir::Value input : group.getInputs())
@@ -1386,10 +1387,10 @@ cloneGroupToScratchModule(GroupOp group) {
   auto clonedGroup =
       mlir::cast<GroupOp>(builder.clone(*group.getOperation(), mapping));
   builder.create<mlir::func::ReturnOp>(loc, clonedGroup.getResults());
-  return scratchModule;
+  return projectionModule;
 }
 
-static GroupOp findSingleScratchGroup(mlir::ModuleOp module) {
+static GroupOp findSingleProjectionGroup(mlir::ModuleOp module) {
   GroupOp found;
   module.walk([&](GroupOp group) {
     if (!found)
@@ -1671,7 +1672,7 @@ wafer::lowerGroupToTileRegionModule(GroupOp group,
   if (failureReason)
     failureReason->clear();
 
-  module = cloneGroupToScratchModule(group);
+  module = cloneGroupToProjectionModule(group);
   return convertGroupToTileRegionModuleInPlace(*module, group.getContext(),
                                                failureReason);
 }
@@ -1683,10 +1684,10 @@ mlir::LogicalResult wafer::lowerCandidateGroupToTileRegionModule(
   if (failureReason)
     failureReason->clear();
 
-  module = cloneGroupToScratchModule(group);
-  GroupOp clonedGroup = findSingleScratchGroup(*module);
+  module = cloneGroupToProjectionModule(group);
+  GroupOp clonedGroup = findSingleProjectionGroup(*module);
   if (!clonedGroup) {
-    setFailureReason(failureReason, "scratch module has no wafer.group");
+    setFailureReason(failureReason, "projection module has no wafer.group");
     return mlir::failure();
   }
 

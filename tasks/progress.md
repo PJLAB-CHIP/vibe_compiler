@@ -86,8 +86,8 @@ Pipeline position:
   `wafer.tile.load` 到 SPM。R3.2e 已接入第一批 producer：external boundary 上的 static
   `tensor.extract_slice` 生成 DDR `memref.subview` + tile load，direct output `tensor.insert_slice`
   storeback 生成 DDR `memref.subview` + tile store。
-- R3.2e 已接入 candidate scratch producer：`--wafer-dump-candidate-ddr-tile-views` 接收 candidate
-  output tile offsets/sizes，在 scratch clone 中通过 linalg indexing maps 生成 boundary
+- R3.2e 已接入 candidate projection producer：`--wafer-dump-candidate-ddr-tile-views` 接收 candidate
+  output tile offsets/sizes，在 projection clone 中通过 linalg indexing maps 生成 boundary
   `tensor.extract_slice` / output `tensor.insert_slice` proposal，再 materialize 为 DDR `memref.subview`。
   当前覆盖单结果 destination-style linalg root 的 simple matmul/elementwise；closed-loop traversal /
   tile-shape search 仍归 R3.2h。
@@ -110,7 +110,7 @@ Pipeline position:
 | R3.2c | done | R3.1 group + R3.2a/R3.2b facts | memref-backed `wafer.tile.region` + DDR memref function boundary；覆盖 supported compute/movement/view/control-flow；不做 SPM offset，不生成 candidate DDR tile subview |
 | R3.2d | done | R3.2c target-abstract tile-region IR；DDR side 是 Wafer DDR memref，SPM side 是 unplaced Wafer SPM memref | instruction-level `wafer.instr.*`；覆盖 RDMA/WDMA/TDMA/CT/NE op contract、structured control-flow body legalization、static movement descriptor packing；不生成 ABI call |
 | R3.2e.a | done | R3.1 group + explicit static boundary slice facts + R3.2c/R3.2d lowering chain | external boundary `tensor.extract_slice` 和 direct output `tensor.insert_slice` materialize 为 DDR `memref.subview` tile operands；simple tiled elementwise/matmul/storeback 的 RDMA/WDMA descriptor 来自 actual tile view，不退回 whole-boundary DMA |
-| R3.2e.b | done | R3.1 group + candidate output tile offsets/sizes + R3.2a/R3.2b facts | planner scratch clone 中通过 linalg indexing maps 生成 boundary slice proposal；simple full-tensor matmul group 生成 input/output DDR `memref.subview` tile operands，不写回主 IR |
+| R3.2e.b | done | R3.1 group + candidate output tile offsets/sizes + R3.2a/R3.2b facts | planner candidate projection 中通过 linalg indexing maps 生成 boundary slice proposal；simple full-tensor matmul group 生成 input/output DDR `memref.subview` tile operands，不写回主 IR |
 
 ## 后续队列
 

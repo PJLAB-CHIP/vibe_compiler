@@ -49,7 +49,7 @@ def DumpGroupToTileRegionPass
 
 def DumpCandidateDdrTileViewsPass
     : Pass<"wafer-dump-candidate-ddr-tile-views", "mlir::ModuleOp"> {
-  let summary = "Dump R3.2e candidate DDR tile-view scratch lowering IR";
+  let summary = "Dump R3.2e candidate DDR tile-view projection IR";
   let dependentDialects = ["mlir::arith::ArithDialect",
                            "mlir::bufferization::BufferizationDialect",
                            "mlir::func::FuncDialect",
