@@ -5,7 +5,8 @@
 状态：设计草案；2026-05-25 边界收口；2026-06-04 对齐 instruction-level Wafer IR 先于 SPM placement；
 2026-06-05 对齐 memref-backed buffer contract；2026-06-08 同步 DDR/resource policy 命名；
 2026-06-10 R3.2e 前移为 candidate DDR tile-view producer，SPM placement 后移为 R3.2f；
-2026-06-10 R3.2f V0 落地为 instruction-level SPM placement fact
+2026-06-10 R3.2f V0 落地为 instruction-level SPM placement fact；
+2026-06-10 R3.2f lifetime dataflow 覆盖 `scf.if` / `scf.for` / async token wait
 
 本文定义 Wafer SPM bufferization、tile-local allocation 和 storage verification。它服务于
 `wafer.group` planning 的合法性搜索，也负责把 `wafer.tile.region` 中的 tile-local value
@@ -447,16 +448,28 @@ placement fact。该 attr 挂在定义 SPM buffer value 的 `memref.alloc` 上�
 
 placement arena 的作用域是单个 `wafer.tile.region`，因为普通 SPM window 是 tile-local。不同
 tile-region 可以使用相同 offset；同一个 tile-region 内的 SPM allocation 必须在 accepted
-placement 下不重叠、range/end 合法。当前 R3.2f V0 对 `wafer.tile.region` 直接 body 内的
-straight-line op 建立 def/use event interval：`memref.alloc` 是 start event，base value 或
-view-like alias 的最后一次 use 是 end event；first-fit 只避开 lifetime overlap 的已放置 interval，
-因此 last-use 后的 buffer 可以复用同一 SPM range。
+placement 下不重叠、range/end 合法。当前 R3.2f V0 递归读取 `wafer.tile.region` 内的
+instruction-level IR、structured control-flow、SSA alias 和 async token use，建立可重算的 lifetime
+segments；first-fit 只避开 lifetime segment 可同时发生且 byte range overlap 的已放置 interval。
 
-嵌套 structured control-flow、带 region 的 op、非直接 body allocation / use 和后续 async wait/drain
-关系当前仍保守成 full-region interval。也就是说，branch 互斥复用、loop iteration temp 复用、
-async issue/drain/wait 后复用和 must-alias group 合并还没有作为 R3.2f V0 的 completed capability；
-这些后续必须继续由 IR use-def、structured control-flow 和 effect/wait 重新计算，不能写成旁路
-协议或搜索 trace。
+R3.2f V0 的 dataflow 边界：
+
+- `memref.alloc` 产生 SPM demand，`size` 来自 physical bytes，base value 和 view-like result
+  共享同一 root ref。
+- `scf.if` 为 then / else region 建立互斥 path condition；两个分支内只在各自 path 上 live 的
+  SPM buffer 可以复用同一 offset，yield 到 if result 的 buffer 会按分支条件继续延伸到 result use。
+- `scf.for` 将 `iter_args` 映射到 init refs，并把 yielded loop-carried refs 作为 backedge lifetime
+  覆盖整个 loop subtree；loop body 内没有 yield 出 loop 的 per-iteration temp 只按实际 use 建段，
+  可以在 loop 后复用。
+- 产生 `!async.token` 且带 SPM operand 的 issue op 会把对应 SPM refs 挂到 token 上；token 被
+  `wafer.tile.wait` 或后续 drain/wait-like op 消费时，source/destination lifetime 延伸到该 token use。
+- 未接受的 candidate offset、search trace、cost estimate 和 repair suggestion 仍是 analysis，不写入
+  IR。
+
+当前实现边界是 R3.2d 已支持的 structured `scf.if` / `scf.for`、single-block `scf.yield` 和
+instruction-level async token use。未结构化 CFG、超过 64 个 branch decision point，以及未来显式
+must-alias group 需要先由 SSA / op interface / verifier 表达，再进入 placement；不能靠名字或旁路
+协议恢复。
 
 `wafer.spm.placement` 是 accepted fact，不是搜索 trace。失败原因仍通过 pass diagnostic 返回，
 不写进 IR；未接受的 candidate offset、first-fit 探索过程和 repair suggestion 都保持为 analysis。

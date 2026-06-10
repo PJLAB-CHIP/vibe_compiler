@@ -4,7 +4,9 @@
 
 #include "Wafer/IR/WaferDialect.h"
 
+#include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "mlir/Pass/Pass.h"
@@ -23,20 +25,45 @@ namespace wafer {
 
 namespace {
 
+struct PathCondition {
+  uint64_t trueBranches = 0;
+  uint64_t falseBranches = 0;
+};
+
+struct LiveSegment {
+  int64_t startEvent = 0;
+  int64_t endEvent = 0;
+  PathCondition condition;
+};
+
 struct SPMDemand {
   mlir::memref::AllocOp alloc;
   int64_t size = 0;
   int64_t alignment = 0;
-  int64_t startEvent = 0;
-  int64_t endEvent = 0;
+  int64_t allocEvent = 0;
+  PathCondition allocCondition;
   unsigned ordinal = 0;
+  llvm::SmallVector<LiveSegment, 4> segments;
 };
 
 struct PlacedSPMInterval {
-  int64_t startEvent = 0;
-  int64_t endEvent = 0;
+  unsigned demandIndex = 0;
   int64_t offset = 0;
   int64_t end = 0;
+};
+
+struct RootRef {
+  unsigned demandIndex = 0;
+  PathCondition condition;
+};
+
+struct EventInfo {
+  llvm::DenseMap<mlir::Operation *, int64_t> operationEvents;
+  llvm::DenseMap<mlir::Operation *, PathCondition> operationConditions;
+  llvm::DenseMap<mlir::Operation *, int64_t> subtreeEndEvents;
+  int64_t nextEvent = 0;
+  unsigned nextBranch = 0;
+  bool branchLimitExceeded = false;
 };
 
 static bool checkedAdd(int64_t lhs, int64_t rhs, int64_t &result) {
@@ -82,19 +109,41 @@ static bool belongsToTileRegion(TileRegionOp tileRegion, mlir::Operation *op) {
   return false;
 }
 
-static bool isDirectTileRegionBodyOp(TileRegionOp tileRegion,
-                                     mlir::Operation *op) {
-  return op->getParentRegion() == &tileRegion.getBody();
+static bool areCompatible(PathCondition lhs, PathCondition rhs) {
+  return (lhs.trueBranches & rhs.falseBranches) == 0 &&
+         (lhs.falseBranches & rhs.trueBranches) == 0;
 }
 
-static bool hasNestedRegions(mlir::Operation *op) {
-  return op->getNumRegions() != 0;
+static std::optional<PathCondition> mergeConditions(PathCondition lhs,
+                                                    PathCondition rhs) {
+  if (!areCompatible(lhs, rhs))
+    return std::nullopt;
+  return PathCondition{lhs.trueBranches | rhs.trueBranches,
+                       lhs.falseBranches | rhs.falseBranches};
 }
 
-static bool lifetimesOverlap(const SPMDemand &demand,
-                             const PlacedSPMInterval &placed) {
-  return demand.startEvent <= placed.endEvent &&
-         placed.startEvent <= demand.endEvent;
+static std::optional<PathCondition> withBranch(PathCondition condition,
+                                               unsigned branch, bool thenPath) {
+  if (branch >= 64)
+    return std::nullopt;
+  uint64_t bit = uint64_t{1} << branch;
+  PathCondition branchCondition =
+      thenPath ? PathCondition{bit, 0} : PathCondition{0, bit};
+  return mergeConditions(condition, branchCondition);
+}
+
+static bool segmentsOverlap(const LiveSegment &lhs, const LiveSegment &rhs) {
+  if (!areCompatible(lhs.condition, rhs.condition))
+    return false;
+  return lhs.startEvent <= rhs.endEvent && rhs.startEvent <= lhs.endEvent;
+}
+
+static bool lifetimesOverlap(const SPMDemand &lhs, const SPMDemand &rhs) {
+  for (const LiveSegment &lhsSegment : lhs.segments)
+    for (const LiveSegment &rhsSegment : rhs.segments)
+      if (segmentsOverlap(lhsSegment, rhsSegment))
+        return true;
+  return false;
 }
 
 static bool byteRangesOverlap(int64_t lhsBegin, int64_t lhsEnd,
@@ -102,40 +151,281 @@ static bool byteRangesOverlap(int64_t lhsBegin, int64_t lhsEnd,
   return lhsBegin < rhsEnd && rhsBegin < lhsEnd;
 }
 
-static void assignOperationEvents(
-    TileRegionOp tileRegion,
-    llvm::DenseMap<mlir::Operation *, int64_t> &operationEvents,
-    int64_t &regionEndEvent) {
-  int64_t nextEvent = 0;
-  tileRegion.getBody().walk([&](mlir::Operation *op) {
-    if (!belongsToTileRegion(tileRegion, op))
-      return;
-    operationEvents[op] = nextEvent++;
-  });
-  regionEndEvent = nextEvent;
-}
+static void assignRegionEvents(mlir::Region &region, PathCondition condition,
+                               EventInfo &events);
 
-static void markFullRegionLifetime(SPMDemand &demand, int64_t regionEndEvent) {
-  demand.startEvent = 0;
-  demand.endEvent = regionEndEvent;
-}
+static void assignBlockEvents(mlir::Block &block, PathCondition condition,
+                              EventInfo &events) {
+  for (mlir::Operation &op : block) {
+    events.operationEvents[&op] = events.nextEvent++;
+    events.operationConditions[&op] = condition;
 
-static void recordUse(SPMDemand &demand, mlir::Operation *user,
-                      int64_t userEvent, TileRegionOp tileRegion,
-                      int64_t regionEndEvent) {
-  if (!isDirectTileRegionBodyOp(tileRegion, user) || hasNestedRegions(user)) {
-    markFullRegionLifetime(demand, regionEndEvent);
-    return;
+    if (auto ifOp = mlir::dyn_cast<mlir::scf::IfOp>(op)) {
+      unsigned branch = events.nextBranch++;
+      std::optional<PathCondition> thenCondition =
+          withBranch(condition, branch, /*thenPath=*/true);
+      std::optional<PathCondition> elseCondition =
+          withBranch(condition, branch, /*thenPath=*/false);
+      if (!thenCondition || !elseCondition) {
+        events.branchLimitExceeded = true;
+      } else {
+        assignRegionEvents(ifOp.getThenRegion(), *thenCondition, events);
+        assignRegionEvents(ifOp.getElseRegion(), *elseCondition, events);
+      }
+    } else {
+      for (mlir::Region &region : op.getRegions())
+        assignRegionEvents(region, condition, events);
+    }
+
+    events.subtreeEndEvents[&op] = events.nextEvent - 1;
   }
-  demand.endEvent = std::max(demand.endEvent, userEvent);
 }
 
-static mlir::LogicalResult collectSPMDemands(
-    TileRegionOp tileRegion, int64_t defaultAlignment,
-    const llvm::DenseMap<mlir::Operation *, int64_t> &operationEvents,
-    int64_t regionEndEvent, llvm::SmallVectorImpl<SPMDemand> &demands) {
+static void assignRegionEvents(mlir::Region &region, PathCondition condition,
+                               EventInfo &events) {
+  for (mlir::Block &block : region)
+    assignBlockEvents(block, condition, events);
+}
+
+static mlir::LogicalResult assignOperationEvents(TileRegionOp tileRegion,
+                                                 EventInfo &events) {
+  assignRegionEvents(tileRegion.getBody(), PathCondition{}, events);
+  if (events.branchLimitExceeded)
+    return tileRegion.emitError()
+           << "lifetime_overlap_conflict: SPM placement supports at most 64 "
+              "nested branch decision points";
+  return mlir::success();
+}
+
+static void addLiveSegment(SPMDemand &demand, int64_t startEvent,
+                           int64_t endEvent, PathCondition condition) {
+  if (endEvent < startEvent)
+    return;
+  demand.segments.push_back(LiveSegment{startEvent, endEvent, condition});
+}
+
+static void recordDemandUse(SPMDemand &demand, int64_t event,
+                            PathCondition condition) {
+  addLiveSegment(demand, demand.allocEvent, event, condition);
+}
+
+static llvm::SmallVector<RootRef, 2>
+getRefsAtUse(mlir::Value value, PathCondition useCondition,
+             const llvm::DenseMap<mlir::Value, llvm::SmallVector<RootRef, 2>>
+                 &valueRefs) {
+  llvm::SmallVector<RootRef, 2> refs;
+  auto it = valueRefs.find(value);
+  if (it == valueRefs.end())
+    return refs;
+  for (RootRef ref : it->second) {
+    std::optional<PathCondition> merged =
+        mergeConditions(ref.condition, useCondition);
+    if (merged)
+      refs.push_back(RootRef{ref.demandIndex, *merged});
+  }
+  return refs;
+}
+
+static void
+recordValueUse(mlir::Value value, int64_t event, PathCondition useCondition,
+               llvm::MutableArrayRef<SPMDemand> demands,
+               const llvm::DenseMap<mlir::Value, llvm::SmallVector<RootRef, 2>>
+                   &valueRefs) {
+  for (RootRef ref : getRefsAtUse(value, useCondition, valueRefs))
+    recordDemandUse(demands[ref.demandIndex], event, ref.condition);
+}
+
+static void
+recordTokenUse(mlir::Value value, int64_t event, PathCondition useCondition,
+               llvm::MutableArrayRef<SPMDemand> demands,
+               const llvm::DenseMap<mlir::Value, llvm::SmallVector<RootRef, 2>>
+                   &tokenRefs) {
+  auto it = tokenRefs.find(value);
+  if (it == tokenRefs.end())
+    return;
+  for (RootRef ref : it->second) {
+    std::optional<PathCondition> merged =
+        mergeConditions(ref.condition, useCondition);
+    if (merged)
+      recordDemandUse(demands[ref.demandIndex], event, *merged);
+  }
+}
+
+static bool hasAsyncTokenType(mlir::Value value) {
+  return mlir::isa<mlir::async::TokenType>(value.getType());
+}
+
+static mlir::scf::YieldOp getSingleBlockYield(mlir::Region &region) {
+  if (region.empty())
+    return {};
+  return mlir::dyn_cast<mlir::scf::YieldOp>(region.front().getTerminator());
+}
+
+struct LifetimeDataflow {
+  const EventInfo &events;
+  llvm::MutableArrayRef<SPMDemand> demands;
+  llvm::DenseMap<mlir::Value, llvm::SmallVector<RootRef, 2>> valueRefs;
+  llvm::DenseMap<mlir::Value, llvm::SmallVector<RootRef, 2>> tokenRefs;
+
+  PathCondition getOperationCondition(mlir::Operation *op) const {
+    auto it = events.operationConditions.find(op);
+    if (it == events.operationConditions.end())
+      return {};
+    return it->second;
+  }
+
+  int64_t getOperationEvent(mlir::Operation *op) const {
+    auto it = events.operationEvents.find(op);
+    return it == events.operationEvents.end() ? 0 : it->second;
+  }
+
+  int64_t getSubtreeEndEvent(mlir::Operation *op) const {
+    auto it = events.subtreeEndEvents.find(op);
+    return it == events.subtreeEndEvents.end() ? getOperationEvent(op)
+                                               : it->second;
+  }
+
+  void recordOperands(mlir::Operation *op) {
+    int64_t event = getOperationEvent(op);
+    PathCondition condition = getOperationCondition(op);
+    for (mlir::Value operand : op->getOperands()) {
+      if (hasAsyncTokenType(operand)) {
+        recordTokenUse(operand, event, condition, demands, tokenRefs);
+        continue;
+      }
+      recordValueUse(operand, event, condition, demands, valueRefs);
+    }
+  }
+
+  void mapViewLikeResults(mlir::Operation *op) {
+    auto viewLike = mlir::dyn_cast<mlir::ViewLikeOpInterface>(op);
+    if (!viewLike)
+      return;
+    llvm::SmallVector<RootRef, 2> refs = getRefsAtUse(
+        viewLike.getViewSource(), getOperationCondition(op), valueRefs);
+    if (refs.empty())
+      return;
+    for (mlir::Value result : op->getResults()) {
+      if (isWaferSPMMemRefType(result.getType()))
+        valueRefs[result] = refs;
+    }
+  }
+
+  void mapAsyncTokenResults(mlir::Operation *op) {
+    llvm::SmallVector<RootRef, 2> refs;
+    PathCondition condition = getOperationCondition(op);
+    for (mlir::Value operand : op->getOperands()) {
+      llvm::SmallVector<RootRef, 2> operandRefs =
+          getRefsAtUse(operand, condition, valueRefs);
+      refs.append(operandRefs.begin(), operandRefs.end());
+    }
+    if (refs.empty())
+      return;
+    for (mlir::Value result : op->getResults()) {
+      if (hasAsyncTokenType(result))
+        tokenRefs[result] = refs;
+    }
+  }
+
+  void mapIfResults(mlir::scf::IfOp ifOp) {
+    mlir::scf::YieldOp thenYield = getSingleBlockYield(ifOp.getThenRegion());
+    mlir::scf::YieldOp elseYield = getSingleBlockYield(ifOp.getElseRegion());
+    if (!thenYield || !elseYield)
+      return;
+
+    for (auto [index, result] : llvm::enumerate(ifOp.getResults())) {
+      if (!isWaferSPMMemRefType(result.getType()))
+        continue;
+      llvm::SmallVector<RootRef, 2> refs;
+      appendYieldOperandRefs(thenYield, index, refs);
+      appendYieldOperandRefs(elseYield, index, refs);
+      if (!refs.empty())
+        valueRefs[result] = refs;
+    }
+  }
+
+  void appendYieldOperandRefs(mlir::scf::YieldOp yieldOp, unsigned index,
+                              llvm::SmallVectorImpl<RootRef> &refs) {
+    if (index >= yieldOp.getResults().size())
+      return;
+    llvm::SmallVector<RootRef, 2> yieldedRefs = getRefsAtUse(
+        yieldOp.getResults()[index], getOperationCondition(yieldOp), valueRefs);
+    refs.append(yieldedRefs.begin(), yieldedRefs.end());
+  }
+
+  void mapForRegionIterArgs(mlir::scf::ForOp forOp) {
+    for (auto [init, iterArg] :
+         llvm::zip(forOp.getInitArgs(), forOp.getRegionIterArgs())) {
+      llvm::SmallVector<RootRef, 2> refs =
+          getRefsAtUse(init, getOperationCondition(forOp), valueRefs);
+      if (!refs.empty())
+        valueRefs[iterArg] = refs;
+    }
+  }
+
+  void mapForResultsAndBackedge(mlir::scf::ForOp forOp) {
+    mlir::scf::YieldOp yieldOp =
+        mlir::dyn_cast<mlir::scf::YieldOp>(forOp.getBody()->getTerminator());
+    if (!yieldOp)
+      return;
+
+    int64_t loopStart = getOperationEvent(forOp);
+    int64_t loopEnd = getSubtreeEndEvent(forOp);
+    PathCondition loopCondition = getOperationCondition(forOp);
+
+    for (auto [index, result] : llvm::enumerate(forOp.getResults())) {
+      if (!isWaferSPMMemRefType(result.getType()))
+        continue;
+
+      llvm::SmallVector<RootRef, 2> refs;
+      if (index < forOp.getInitArgs().size()) {
+        llvm::SmallVector<RootRef, 2> initRefs =
+            getRefsAtUse(forOp.getInitArgs()[index], loopCondition, valueRefs);
+        refs.append(initRefs.begin(), initRefs.end());
+      }
+      appendYieldOperandRefs(yieldOp, index, refs);
+
+      for (RootRef ref : refs)
+        addLiveSegment(demands[ref.demandIndex], loopStart, loopEnd,
+                       ref.condition);
+      if (!refs.empty())
+        valueRefs[result] = refs;
+    }
+  }
+
+  void processRegion(mlir::Region &region) {
+    for (mlir::Block &block : region)
+      processBlock(block);
+  }
+
+  void processBlock(mlir::Block &block) {
+    for (mlir::Operation &op : block) {
+      recordOperands(&op);
+
+      if (auto forOp = mlir::dyn_cast<mlir::scf::ForOp>(op)) {
+        mapForRegionIterArgs(forOp);
+        processRegion(forOp.getRegion());
+        mapForResultsAndBackedge(forOp);
+      } else if (auto ifOp = mlir::dyn_cast<mlir::scf::IfOp>(op)) {
+        processRegion(ifOp.getThenRegion());
+        processRegion(ifOp.getElseRegion());
+        mapIfResults(ifOp);
+      } else {
+        for (mlir::Region &region : op.getRegions())
+          processRegion(region);
+        mapViewLikeResults(&op);
+      }
+
+      mapAsyncTokenResults(&op);
+    }
+  }
+};
+
+static mlir::LogicalResult initializeSPMDemands(
+    TileRegionOp tileRegion, int64_t defaultAlignment, const EventInfo &events,
+    llvm::SmallVectorImpl<SPMDemand> &demands,
+    llvm::DenseMap<mlir::Value, llvm::SmallVector<RootRef, 2>> &valueRefs) {
   mlir::LogicalResult result = mlir::success();
-  llvm::DenseMap<mlir::Value, unsigned> valueToDemand;
   tileRegion.walk([&](mlir::memref::AllocOp alloc) {
     if (mlir::failed(result) ||
         !belongsToTileRegion(tileRegion, alloc.getOperation()))
@@ -178,8 +468,10 @@ static mlir::LogicalResult collectSPMDemands(
           std::max(requiredAlignment, static_cast<int64_t>(*allocAlignment));
     }
 
-    auto eventIt = operationEvents.find(alloc.getOperation());
-    if (eventIt == operationEvents.end()) {
+    auto eventIt = events.operationEvents.find(alloc.getOperation());
+    auto conditionIt = events.operationConditions.find(alloc.getOperation());
+    if (eventIt == events.operationEvents.end() ||
+        conditionIt == events.operationConditions.end()) {
       alloc.emitError()
           << "lifetime_overlap_conflict: missing event for SPM allocation";
       result = mlir::failure();
@@ -188,52 +480,33 @@ static mlir::LogicalResult collectSPMDemands(
 
     unsigned demandIndex = demands.size();
     SPMDemand demand{alloc,           info->physicalBytes, requiredAlignment,
-                     eventIt->second, eventIt->second,     demandIndex};
-    if (!isDirectTileRegionBodyOp(tileRegion, alloc.getOperation()))
-      markFullRegionLifetime(demand, regionEndEvent);
-
+                     eventIt->second, conditionIt->second, demandIndex};
     demands.push_back(demand);
-    valueToDemand[alloc.getMemref()] = demandIndex;
+    valueRefs[alloc.getMemref()] = llvm::SmallVector<RootRef, 2>{
+        RootRef{demandIndex, conditionIt->second}};
   });
-
-  if (mlir::failed(result))
-    return result;
-
-  tileRegion.getBody().walk([&](mlir::Operation *op) {
-    if (!belongsToTileRegion(tileRegion, op))
-      return;
-
-    auto eventIt = operationEvents.find(op);
-    if (eventIt == operationEvents.end())
-      return;
-    int64_t opEvent = eventIt->second;
-
-    for (mlir::Value operand : op->getOperands()) {
-      auto demandIt = valueToDemand.find(operand);
-      if (demandIt == valueToDemand.end())
-        continue;
-      recordUse(demands[demandIt->second], op, opEvent, tileRegion,
-                regionEndEvent);
-    }
-
-    if (auto viewLike = mlir::dyn_cast<mlir::ViewLikeOpInterface>(op)) {
-      auto demandIt = valueToDemand.find(viewLike.getViewSource());
-      if (demandIt == valueToDemand.end())
-        return;
-      for (mlir::Value resultValue : op->getResults()) {
-        if (isWaferSPMMemRefType(resultValue.getType()))
-          valueToDemand[resultValue] = demandIt->second;
-      }
-    }
-  });
-
   return result;
 }
 
-static mlir::FailureOr<int64_t>
-findFirstFitOffset(const SPMDemand &demand,
-                   llvm::ArrayRef<PlacedSPMInterval> placedIntervals,
-                   int64_t spmBase, int64_t spmLimit) {
+static mlir::LogicalResult
+collectSPMDemands(TileRegionOp tileRegion, int64_t defaultAlignment,
+                  const EventInfo &events,
+                  llvm::SmallVectorImpl<SPMDemand> &demands) {
+  llvm::DenseMap<mlir::Value, llvm::SmallVector<RootRef, 2>> valueRefs;
+  if (mlir::failed(initializeSPMDemands(tileRegion, defaultAlignment, events,
+                                        demands, valueRefs)))
+    return mlir::failure();
+
+  llvm::DenseMap<mlir::Value, llvm::SmallVector<RootRef, 2>> tokenRefs;
+  LifetimeDataflow dataflow{events, demands, std::move(valueRefs),
+                            std::move(tokenRefs)};
+  dataflow.processRegion(tileRegion.getBody());
+  return mlir::success();
+}
+
+static mlir::FailureOr<int64_t> findFirstFitOffset(
+    const SPMDemand &demand, llvm::ArrayRef<PlacedSPMInterval> placedIntervals,
+    llvm::ArrayRef<SPMDemand> demands, int64_t spmBase, int64_t spmLimit) {
   int64_t candidate = spmBase;
   while (true) {
     std::optional<int64_t> alignedOffset = alignUp(candidate, demand.alignment);
@@ -248,7 +521,7 @@ findFirstFitOffset(const SPMDemand &demand,
 
     int64_t nextCandidate = *alignedOffset;
     for (const PlacedSPMInterval &placed : placedIntervals) {
-      if (!lifetimesOverlap(demand, placed))
+      if (!lifetimesOverlap(demand, demands[placed.demandIndex]))
         continue;
       if (!byteRangesOverlap(*alignedOffset, candidateEnd, placed.offset,
                              placed.end))
@@ -264,33 +537,30 @@ findFirstFitOffset(const SPMDemand &demand,
 
 static mlir::LogicalResult placeRegion(TileRegionOp tileRegion, int64_t spmBase,
                                        int64_t spmLimit, int64_t spmAlignment) {
-  llvm::DenseMap<mlir::Operation *, int64_t> operationEvents;
-  int64_t regionEndEvent = 0;
-  assignOperationEvents(tileRegion, operationEvents, regionEndEvent);
+  EventInfo events;
+  if (mlir::failed(assignOperationEvents(tileRegion, events)))
+    return mlir::failure();
 
   llvm::SmallVector<SPMDemand, 8> demands;
-  if (mlir::failed(collectSPMDemands(tileRegion, spmAlignment, operationEvents,
-                                     regionEndEvent, demands)))
+  if (mlir::failed(
+          collectSPMDemands(tileRegion, spmAlignment, events, demands)))
     return mlir::failure();
 
   llvm::sort(demands, [](const SPMDemand &lhs, const SPMDemand &rhs) {
-    if (lhs.startEvent != rhs.startEvent)
-      return lhs.startEvent < rhs.startEvent;
-    if (lhs.endEvent != rhs.endEvent)
-      return lhs.endEvent > rhs.endEvent;
+    if (lhs.allocEvent != rhs.allocEvent)
+      return lhs.allocEvent < rhs.allocEvent;
     return lhs.ordinal < rhs.ordinal;
   });
 
   llvm::SmallVector<PlacedSPMInterval, 8> placedIntervals;
-  for (SPMDemand demand : demands) {
+  for (auto [demandIndex, demand] : llvm::enumerate(demands)) {
     mlir::FailureOr<int64_t> offset =
-        findFirstFitOffset(demand, placedIntervals, spmBase, spmLimit);
+        findFirstFitOffset(demand, placedIntervals, demands, spmBase, spmLimit);
     if (mlir::failed(offset)) {
       demand.alloc.emitError()
           << "capacity_overflow: SPM placement range [" << spmBase << ", "
           << spmLimit << ") cannot fit " << demand.size
-          << " byte buffer with lifetime [" << demand.startEvent << ", "
-          << demand.endEvent << "]";
+          << " byte buffer with IR-derived lifetime";
       return mlir::failure();
     }
 
@@ -323,7 +593,7 @@ static mlir::LogicalResult placeRegion(TileRegionOp tileRegion, int64_t spmBase,
         SPMPlacementAttr::get(demand.alloc.getContext(), *offset, demand.size,
                               demand.alignment, bankBegin, *bankLimit));
     placedIntervals.push_back(
-        PlacedSPMInterval{demand.startEvent, demand.endEvent, *offset, end});
+        PlacedSPMInterval{static_cast<unsigned>(demandIndex), *offset, end});
   }
 
   return mlir::success();
