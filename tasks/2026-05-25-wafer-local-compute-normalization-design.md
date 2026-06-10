@@ -92,7 +92,7 @@ normalization 输出应能表达的 IR 结构，不是 group 边界或硬件实�
 
 | 子结构 | Normalized IR | 后续主要 owner |
 | --- | --- | --- |
-| QKV / output projection / MLP GEMM | `linalg.matmul`、`linalg.batch_matmul` 或等价 structured generic | group + compute GEMM |
+| QKV / output linear matmul / MLP GEMM | `linalg.matmul`、`linalg.batch_matmul` 或等价 structured generic | group + compute GEMM |
 | QK^T / attention value matmul | batch/head 维保留在 type/indexing map 中，transpose 是显式 indexing / shape-only 关系 | group + compute GEMM |
 | bias / residual / scale | `linalg.generic` + `arith`，带可证明 broadcast | group + compute elementwise |
 | RMSNorm | square、reduce sum/mean、rsqrt、mul、scale 的 staged tensor IR | group + compute reduce/elementwise |
@@ -181,23 +181,23 @@ Transformer block 第一阶段需要的 elementwise kind 至少包括：
 这些 op 在 local tensor IR 中仍是普通 `arith` / `math` / `linalg` 语义；是否能 lower 到 CT
 wrapper、是否需要拆成多个 target op，由 `wafer.tile.*` compute 负责。
 
-历史 P5.5 曾用 output projection + residual vertical slice 的 acceptance validator 证明以下 SSA 链
+历史 P5.5 曾用 output linear + residual vertical slice 的 acceptance validator 证明以下 SSA 链
 可由 structured tensor IR 表达：
 
-- rank-2 `linalg.matmul` 作为 projection。
-- 消费 projection 结果的 rank-2 / rank-1 broadcast add 作为 bias add。
+- rank-2 `linalg.matmul` 作为 linear layer。
+- 消费 linear 结果的 rank-2 / rank-1 broadcast add 作为 bias add。
 - 消费 bias add 结果的 rank-2 / rank-2 add 作为 residual add。
 
-该 validator 已删除；当前只保留 frontend lowering fixture 覆盖 StableHLO 2D projection dot、bias
-broadcast 和 residual add 进入 `linalg.matmul` / `linalg.generic`。不引入 `wafer.projection`
+该 validator 已删除；当前只保留 frontend lowering fixture 覆盖 StableHLO 2D linear dot、bias
+broadcast 和 residual add 进入 `linalg.matmul` / `linalg.generic`。不引入 `wafer.linear`
 或 fused residual op，也不把 bias/residual tensor 名写成语义来源。
 
 历史 P5.6 曾用 MLP vertical slice 的 acceptance validator 证明以下 SSA 链可由 structured tensor
 IR 表达：
 
-- rank-2 projection `linalg.matmul` 的结果进入 `linalg.elementwise<tanh>` activation。
-- activation 结果与另一个 rank-2 projection matmul 结果进入 `linalg.elementwise<mul>` gate。
-- gated activation 结果进入 rank-2 down projection `linalg.matmul`。
+- rank-2 linear `linalg.matmul` 的结果进入 `linalg.elementwise<tanh>` activation。
+- activation 结果与另一个 rank-2 linear matmul 结果进入 `linalg.elementwise<mul>` gate。
+- gated activation 结果进入 rank-2 down linear `linalg.matmul`。
 
 该 validator 已删除；当前只保留 frontend lowering fixture 覆盖已有 tanh activation 子集。GELU /
 SwiGLU 的其它 decomposition 需要通过通用 structured tensor lowering 和后续 group/materialization
@@ -209,9 +209,9 @@ SwiGLU 的其它 decomposition 需要通过通用 structured tensor lowering 和
 
 - rank-4 RMSNorm staged form。
 - QK^T attention score、softmax 和 AV attention value。
-- rank-4 到 rank-2 的 shape-only collapse，用于 output projection 和 MLP。
-- output projection + bias + residual。
-- MLP gate/up/down projection。
+- rank-4 到 rank-2 的 shape-only collapse，用于 output linear matmul 和 MLP。
+- output linear matmul + bias + residual。
+- MLP gate/up/down linear matmul。
 
 该 fixture 只验证这些 fine-grained StableHLO dataflow 经过 local tensor normalization 后仍能由
 `linalg` / `tensor` / `arith` / `math` structured IR 表达；不运行 transformer-specific schedule
@@ -474,7 +474,7 @@ Normalization 后必须能检查：
 | --- | --- | --- |
 | dot / 2D GEMM | `test/Frontend/lower-stablehlo-dot-to-linalg.mlir`、`stablehlo-to-linalg.mlir`、program gate | 证明 2D dot 可进入 structured matmul，不证明 tile shape / GEMM packet |
 | attention QK^T / AV | `lower-stablehlo-attention-score.mlir`、`lower-stablehlo-attention-value.mlir`、`lower-stablehlo-attention-softmax-value.mlir` | rank-4 attention dot 由官方 conversion 转成 linalg generic contraction；是否能 schedule 仍归后续 planner |
-| elementwise / broadcast | `lower-stablehlo-elementwise.mlir`、`lower-stablehlo-official-linalg-coverage.mlir`、`lower-stablehlo-projection-residual.mlir` | 证明本地 legacy 子集和官方 pointwise conversion 都可产生 structured tensor IR；mask/select 是否能进入合法 tile schedule 仍未闭环 |
+| elementwise / broadcast | `lower-stablehlo-elementwise.mlir`、`lower-stablehlo-official-linalg-coverage.mlir`、`lower-stablehlo-linear-residual.mlir` | 证明本地 legacy 子集和官方 pointwise conversion 都可产生 structured tensor IR；mask/select 是否能进入合法 tile schedule 仍未闭环 |
 | reduce | `lower-stablehlo-reduce.mlir`、norm/softmax staged tests | 证明细粒度 StableHLO reduce 可进入 structured reduction IR；backend numeric policy 和 resource legality 未闭环 |
 | softmax | `lower-stablehlo-softmax-staged.mlir` | 证明 fine-grained StableHLO softmax dataflow 可变成 `linalg.reduce` / `linalg.generic` staged IR；不证明 multi-stage intermediate storage 或 group schedule |
 | norm | `lower-stablehlo-norm-staged.mlir` | 证明 fine-grained RMSNorm/LayerNorm dataflow 中 last-dim reduce / rsqrt / broadcast multiply gate；不证明完整 LayerNorm/RMSNorm family |

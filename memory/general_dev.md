@@ -158,7 +158,7 @@
   stride、bit-packed element 或超过三层的 descriptor 不能靠名字/shape 猜测，必须 structured
   failure 或等上游补显式 boundary facts。R3.2e 已覆盖当前 IR 中 explicit static boundary
   `tensor.extract_slice`、direct output `tensor.insert_slice` storeback，以及 candidate output
-  tile offsets/sizes candidate projection lowering 的 DDR `memref.subview` producer；R3.2d 仍不能根据
+  tile offsets/sizes candidate evaluation lowering 的 DDR `memref.subview` producer；R3.2d 仍不能根据
   whole-boundary shape 自己恢复 subview，closed-loop traversal / tile-shape search 归 R3.2h。
 - 用户级 compiler target 名称统一为 `wafer`，Wafer IR target attr 的唯一主线 spelling 是
   `#wafer.target<wafer>`。`tx8` / `tx81` 只保留在硬件、依赖逆向和外部历史命名事实里，不能作为
@@ -191,7 +191,7 @@
 - MLIR pass 如果会创建其它 dialect 的 op，必须在 `getDependentDialects` 中显式声明对应 dialect；
   只在 driver registry 里注册还不保证 pass 运行时 context 已加载该 dialect。
 - 不要恢复 `wafer-check-softmax-schedule`、`wafer-check-norm-schedule`、
-  `wafer-check-projection-residual-schedule` 或 `wafer-check-mlp-schedule` 这类 case-specific
+  `wafer-check-linear-residual-schedule` 或 `wafer-check-mlp-schedule` 这类 case-specific
   transformer acceptance pass。StableHLO->Linalg 只证明 structured tensor lowering；softmax/norm/MLP
   的真实完成证明应来自通用 group formation、tile/materialization、resource verifier 和下游消费。
 - 不要恢复 `tools/wafer_package_manifest.py --emit-*` 这类 fixed package emitter，也不要把

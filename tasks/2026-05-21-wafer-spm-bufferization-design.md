@@ -90,7 +90,7 @@ Pipeline position:
 输入：
 
 - transformation-local 或已经 committed 的 `wafer.tile.region` IR；在 R3.2d
-  中这是 projection IR / cloned IR，rejected tile-region IR 必须丢弃。SPM placement 不直接消费
+  中这是 candidate evaluation IR / cloned IR，rejected tile-region IR 必须丢弃。SPM placement 不直接消费
   target-abstract tile-region IR，而消费 R3.2d 生成的 instruction-level IR with unplaced
   Wafer-tagged memref values。
 - layout planner 产生的 physical layout assignment 和 materialization demand。
@@ -381,7 +381,7 @@ logical group + tile/layout proposal
 原因是 layout、SPM、tile shape 和 target-abstract op selection 强耦合。早期如果只看 logical
 group summary 或裸 tensor value，再把真实 allocation 推到更晚的 pass，容易让合法性承诺漂移；
 但把 rejected tile-region IR 直接落入主 IR 再回滚也会污染 IR 边界。因此 instruction legalization /
-selection 和 SPM placement 都应在 transformation-local projection `wafer.tile.region` 上运行；
+selection 和 SPM placement 都应在 transformation-local candidate evaluation `wafer.tile.region` 上运行；
 allocation 使用 instruction-level IR 的 memref / lifetime / effect 事实源，而不是 target-abstract
 op 的粗粒度 effect。
 

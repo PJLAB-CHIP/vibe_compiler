@@ -163,7 +163,7 @@ transcendental 子集。它应满足：
 `#wafer.elementwise_kind<...>` 记录 add/sub/mul/div/max/min/neg/recip/sqrt/rsqrt/exp/tanh 和
 eq/ne/lt/le/gt/ge。`wafer.tile.elementwise` 可以不带
 `indexing_maps`，此时要求所有 operand/result 逻辑 tensor type 完全一致；也可以携带和
-`linalg.elementwise` 对齐的 projected-permutation `indexing_maps`，此时 result map 必须是 identity，
+`linalg.elementwise` 对齐的 permutation-only `indexing_maps`，此时 result map 必须是 identity，
 input map 的每个维度必须映射到 result 的一个维度，静态维度必须一致。这个合同覆盖当前
 same-shape、row/head/vector broadcast 子集；更复杂 broadcast、scalar immediate、dynamic shape、
 logic、select/mask 和 convert 仍按后续 gate 推进。
@@ -324,7 +324,7 @@ Placed instruction-level verifier：
 | --- | --- | --- | --- |
 | select Wafer compute implementation | tiled `linalg` / tensor / SCF | target-abstract `wafer.tile.*` compute / movement op | 选择本 tile 实现族，保留数学语义，建立 layout/resource interface |
 | layout materialization | target-abstract Wafer op | accepted Wafer-tagged memref + materialization edge | 基于 op interface 做 layout assignment 和真实 movement cut |
-| candidate DDR tile-view materialization | candidate target-abstract tile-region IR + explicit static boundary slice fact 或 candidate output tile offsets/sizes | same candidate projection tile-region IR with DDR `memref.subview` tile operands | 覆盖 external boundary extract、direct output insert storeback，以及单结果 destination-style linalg root 的 candidate tile offsets/sizes 到 boundary slice proposal；closed-loop traversal / tile-shape search 仍由 planner 后续产生 facts；不从名字或 whole-boundary shape 猜 DMA |
+| candidate DDR tile-view materialization | candidate target-abstract tile-region IR + explicit static boundary slice fact 或 candidate output tile offsets/sizes | same candidate evaluation tile-region IR with DDR `memref.subview` tile operands | 覆盖 external boundary extract、direct output insert storeback，以及单结果 destination-style linalg root 的 candidate tile offsets/sizes 到 boundary slice proposal；closed-loop traversal / tile-shape search 仍由 planner 后续产生 facts；不从名字或 whole-boundary shape 猜 DMA |
 | instruction legalization / selection | accepted layout IR | instruction-level `wafer.instr.*` over unplaced Wafer-tagged memref | 将 target-abstract op 改写成 CT/NE/TDMA/RDMA/WDMA 指令形态，列出 queue、effects、temp/psum/staging memref values、alias 和 descriptor attrs；DTE communication 不进入普通 `wafer.instr` path |
 | SPM placement | instruction-level IR with unplaced Wafer-tagged memref | same instruction-level IR with placed SPM memref values | 从 memref use-def 和 instruction effects 收集 demand、liveness，分配 offset/range/bank |
 | placement realization | placed instruction-level IR | placed `memref` / flat storage / access descriptor | 复用标准 memref lowering 或生成目标 access descriptor |
@@ -362,7 +362,7 @@ V0 推荐实现顺序：
 5. `wafer.tile.materialize_layout` 到 GatherScatter / TDMA 的最小闭环。
 
 当前旧原型已经先覆盖了 accepted-layout `wafer.tile.gemm`、load/store、layout materialize，
-并补入 same-shape identity 与 projected-permutation limited broadcast elementwise 到
+并补入 same-shape identity 与 permutation-only limited broadcast elementwise 到
 `wafer.tile.elementwise` 的 target-abstract path；随后补入 sum/max/min
 local reduce 到 `wafer.tile.reduce` 的 path，保留 reduce dimensions
 和 scalar init value。P5.8 后续又补入 attention QK^T / AV 的 rank-4 contraction physical
@@ -389,8 +389,8 @@ V1 或后续扩展：
 不能只因为 GEMM、一个 elementwise 和一个 reduce 能跑，就声称 transformer block 支持完成。
 在 transformer block vertical slice 之前，compute/movement 层至少要覆盖：
 
-- `wafer.tile.gemm` 的 batch/head 维和 transpose relation，用于 QKV projection、QK^T、
-  attention value、output projection 和 MLP。
+- `wafer.tile.gemm` 的 batch/head 维和 transpose relation，用于 QKV linear matmul、QK^T、
+  attention value、output linear matmul 和 MLP。
 - `wafer.tile.reduce` 的 `max` 和 `sum`，用于 softmax；`sum` 或 `avg`，用于 RMSNorm /
   LayerNorm。
 - elementwise `add/sub/mul/div/max/min/neg/recip/sqrt/rsqrt/exp`。
@@ -398,7 +398,7 @@ V1 或后续扩展：
   验证。
 - compare/select 或 mask-add path，用于 causal / padding mask。若直接使用 large negative
   add-mask，constant 必须走普通 `ConstantLike` / immediate / load 规则。
-- load/store 对 sin/cos RoPE table、norm scale/bias、projection weights 和 MLP weights 的
+- load/store 对 sin/cos RoPE table、norm scale/bias、linear weights 和 MLP weights 的
   constant slice 关系。
 
 不在第一版 transformer block gate 内：

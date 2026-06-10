@@ -9,8 +9,8 @@ module {
       %norm_weight: tensor<8xf32>,
       %key: tensor<2x3x7x8xf32>,
       %value: tensor<2x3x7x8xf32>,
-      %proj_w: tensor<8x8xf32>,
-      %proj_bias: tensor<8xf32>,
+      %out_linear_w: tensor<8x8xf32>,
+      %out_linear_bias: tensor<8xf32>,
       %gate_w: tensor<8x16xf32>,
       %up_w: tensor<8x16xf32>,
       %down_w: tensor<16x8xf32>) -> tensor<30x8xf32> {
@@ -81,17 +81,17 @@ module {
 
     %attn2d = "stablehlo.reshape"(%attn) : (tensor<2x3x5x8xf32>) -> tensor<30x8xf32>
     %residual2d = "stablehlo.reshape"(%normed) : (tensor<2x3x5x8xf32>) -> tensor<30x8xf32>
-    %projected = "stablehlo.dot_general"(%attn2d, %proj_w) {
+    %out_linear = "stablehlo.dot_general"(%attn2d, %out_linear_w) {
       dot_dimension_numbers = #stablehlo.dot<
         lhs_contracting_dimensions = [1],
         rhs_contracting_dimensions = [0]
       >,
       precision_config = [#stablehlo<precision DEFAULT>, #stablehlo<precision DEFAULT>]
     } : (tensor<30x8xf32>, tensor<8x8xf32>) -> tensor<30x8xf32>
-    %proj_bias_bcast = "stablehlo.broadcast_in_dim"(%proj_bias) {
+    %out_linear_bias_bcast = "stablehlo.broadcast_in_dim"(%out_linear_bias) {
       broadcast_dimensions = array<i64: 1>
     } : (tensor<8xf32>) -> tensor<30x8xf32>
-    %biased = stablehlo.add %projected, %proj_bias_bcast : tensor<30x8xf32>
+    %biased = stablehlo.add %out_linear, %out_linear_bias_bcast : tensor<30x8xf32>
     %resid = stablehlo.add %biased, %residual2d : tensor<30x8xf32>
 
     %gate = "stablehlo.dot_general"(%resid, %gate_w) {

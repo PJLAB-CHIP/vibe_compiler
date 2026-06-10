@@ -486,7 +486,7 @@ Frontend program
 
 ### 17.2 当前设计已经覆盖的部分
 
-- QKV、attention score、attention value、output projection 和 MLP GEMM 可以走
+- QKV、attention score、attention value、output linear matmul 和 MLP GEMM 可以走
   dot/batch-matmul normalization、group tiling、`wafer.tile.gemm`、layout/SPM/DDR 和 C ABI。
 - Residual、bias、scale、RoPE 的 elementwise 部分可以走 structured tensor IR 到
   `wafer.tile.elementwise`。

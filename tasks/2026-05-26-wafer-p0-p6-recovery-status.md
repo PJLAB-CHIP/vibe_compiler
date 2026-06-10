@@ -155,7 +155,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   这些用例只能证明 verifier 形态。历史 R1.3 stage-connection gate 已删除；communication bridge
   的 visible cast 仍归 R6.2 清理。
 - R3.2e 已接入 DDR tile-view producer：explicit static boundary slice 和 candidate output tile
-  offsets/sizes candidate projection lowering 都能 materialize 为 DDR `memref.subview`；R3.2d 已能消费这些
+  offsets/sizes candidate evaluation lowering 都能 materialize 为 DDR `memref.subview`；R3.2d 已能消费这些
   view 生成 instruction-level RDMA/WDMA descriptor。closed-loop traversal / tile-shape search
   和 plan accept/reject 仍归 R3.2h；仍没有 placed instruction-level IR、placed memref 或 access
   descriptor 层，下一步由 R3.2f SPM placement 在 R3.2d 的 unplaced Wafer-tagged memref graph
@@ -182,7 +182,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 
 当前实现：
 
-- StableHLO textual program tests 和 norm/softmax/projection/MLP frontend lowering fixtures 统一通过
+- StableHLO textual program tests 和 norm/softmax/linear-residual/MLP frontend lowering fixtures 统一通过
   `wafer-lower-stablehlo-to-linalg` named pipeline 覆盖；历史 case-specific acceptance passes 和本地
   `wafer-lower-stablehlo-{dot,elementwise,reduce,shape}` / `wafer-normalize-constants` pass 均已删除。
 - attention QK^T / AV rank-4 `dot_general` 由官方 StableHLO-to-Linalg conversion 转成 structured
@@ -350,9 +350,9 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 
 当前实现：
 
-- 有 norm、softmax、projection/residual、MLP frontend lowering fixtures 和 full local transformer
+- 有 norm、softmax、linear-residual、MLP frontend lowering fixtures 和 full local transformer
   block structured fixture；旧 transformer-specific acceptance passes 已删除。
-- 有 rank-4 QK^T / AV contraction lowering、same-shape/projected-permutation elementwise、local reduce
+- 有 rank-4 QK^T / AV contraction lowering、same-shape/permutation-only elementwise、local reduce
   和 batched GEMM issue lowering。
 - 旧 local-transformer fixed manifest / C stub gate 已删除；当前 transformer integration 只覆盖
   StableHLO -> structured tensor/local compute pipeline，不覆盖 placed instruction-level IR 或 C ABI emission。

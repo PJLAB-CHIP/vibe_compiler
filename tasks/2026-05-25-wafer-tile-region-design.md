@@ -74,7 +74,7 @@ placement-derived endpoint 和 communication staging demand 的层级；`wafer.t
 wafer.group
   -> DDR boundary materialization + group-to-tile-region lowered `wafer.tile.region` IR
   -> One-Shot bufferized function boundary for main R3.2c pipeline
-  -> candidate DDR tile-view materialization for planner candidate projection
+  -> candidate DDR tile-view materialization for planner candidate evaluation
   -> instruction-level wafer.instr.* IR over unplaced Wafer-tagged memref values
   -> SPM placement on the same instruction-level IR
   -> DDR / resource legality on placed instruction IR
@@ -87,7 +87,7 @@ wafer.group
 本文区分两种生命周期：
 
 - `wafer.tile.region` IR：R3.2c 通过同一套 MLIR DialectConversion builder
-  构造。局部 dump / planner 可以在 transformation-local projection IR 中观察 tile-region IR；
+  构造。局部 dump / planner 可以在 transformation-local evaluation IR 中观察 tile-region IR；
   `--wafer-convert-group-to-tile-region` 可以把当前模块中的 supported logical group 重写成
   tile-region IR，用作 legality/debug/后续 pass bring-up。它仍不是 accepted plan，
   也不是 SPM allocator 的直接输入；rejected tile-region IR 不进入主线 accepted IR。
@@ -116,7 +116,7 @@ Pipeline position:
 - Output artifact / IR:
   verifier-legal memref-backed `wafer.tile.region` IR 或结构化 failure reason。局部 conversion
   pass 可以把 supported group 重写成 tile-region IR，并保留 tensor/memref bridge 以便接在 tensor-level
-  IR 上独立调试；named pipeline 输出函数边界已 One-Shot bufferized 的 DDR memref IR。planner projection
+  IR 上独立调试；named pipeline 输出函数边界已 One-Shot bufferized 的 DDR memref IR。candidate evaluation
   entry 返回 tile-region IR 用于 dump、verification 和后续 planning analysis。rejected tile-region IR
   不写入主线 accepted IR。
 - Downstream consumer:
@@ -149,8 +149,8 @@ table 补协议。
 
 | source IR / op family | R3.2c 目标处理 | 覆盖状态 | 正确 conversion 做法 / 后续要求 |
 | --- | --- | --- | --- |
-| `wafer.group` / `wafer.group.yield` boundary | DialectConversion 中由 `OpConversionPattern<wafer.group>` 构造 `wafer.tile.region`；`ins + outs` materialize 为 `#wafer.memory<ddr, tensor>` memref handle；full tensor use 才 lazy 生成 `wafer.tile.load`，yield writeback 生成 `wafer.tile.store` / `wafer.tile.yield`；同一 builder 支持 projection dump 和正式 `--wafer-convert-group-to-tile-region` pass | supported for tile-region IR | `ConversionTarget` 将 `wafer.group` / `wafer.group.yield` 标为 illegal；debug dump 只调用同一 conversion builder，不能自己承担 lowering 逻辑。边界 handle、lazy full load 和 explicit tile view 都必须由 SSA/memref type 表达，不能靠名字恢复。 |
-| ranked tensor boundary values | 生成 logical-shape DDR memref，memory attr 默认 `#wafer.memory<ddr, tensor>`；full tensor use 产生 compact SPM tensor-layout version；external boundary 上的 static `tensor.extract_slice` / direct output `tensor.insert_slice` storeback 和 candidate tile offsets/sizes projection lowering 由 R3.2e materialize 为 DDR `memref.subview` tile view | supported for ranked tensor and static candidate slice | 保持类型/verifier 驱动；后续 instruction-level IR 再决定 concrete instruction，SPM placement 再决定 offset/window；函数边界由 named pipeline 的 One-Shot Bufferize 转成 DDR memref。R3.2e 只构造 candidate projection tile views，不 accept plan；closed-loop traversal / tile-shape search 仍归 R3.2h。 |
+| `wafer.group` / `wafer.group.yield` boundary | DialectConversion 中由 `OpConversionPattern<wafer.group>` 构造 `wafer.tile.region`；`ins + outs` materialize 为 `#wafer.memory<ddr, tensor>` memref handle；full tensor use 才 lazy 生成 `wafer.tile.load`，yield writeback 生成 `wafer.tile.store` / `wafer.tile.yield`；同一 builder 支持 standalone dump 和正式 `--wafer-convert-group-to-tile-region` pass | supported for tile-region IR | `ConversionTarget` 将 `wafer.group` / `wafer.group.yield` 标为 illegal；debug dump 只调用同一 conversion builder，不能自己承担 lowering 逻辑。边界 handle、lazy full load 和 explicit tile view 都必须由 SSA/memref type 表达，不能靠名字恢复。 |
+| ranked tensor boundary values | 生成 logical-shape DDR memref，memory attr 默认 `#wafer.memory<ddr, tensor>`；full tensor use 产生 compact SPM tensor-layout version；external boundary 上的 static `tensor.extract_slice` / direct output `tensor.insert_slice` storeback 和 candidate tile offsets/sizes evaluation lowering 由 R3.2e materialize 为 DDR `memref.subview` tile view | supported for ranked tensor and static candidate slice | 保持类型/verifier 驱动；后续 instruction-level IR 再决定 concrete instruction，SPM placement 再决定 offset/window；函数边界由 named pipeline 的 One-Shot Bufferize 转成 DDR memref。R3.2e 只构造 candidate evaluation tile views，不 accept plan；closed-loop traversal / tile-shape search 仍归 R3.2h。 |
 | scalar boundary values | 作为 tile-region block scalar SSA value 传入，供 fill/reduce init 等 scalar operand 使用 | supported for scalar | 只支持 float / integer / index scalar；不生成 storage，不作为长期 side channel。 |
 | `arith.constant` tensor | clone constant 后用 `bufferization.to_memref` materialize 为 read-only DDR source，再 `wafer.tile.load` 到 tensor-layout SPM storage | partial | 只适合 tensor constant；scalar constant 只应在 compute body 或显式 init 语义中消费。需要区分 constant residency / DDR / immediate policy。 |
 | `arith.constant` scalar | clone scalar constant，并作为 `wafer.tile.fill`、`wafer.tile.reduce init_value` 或 elementwise body 推导输入 | supported for scalar constants | scalar 语义通过 SSA value 或 typed attr 进入目标 op；不靠名字或原 op 残留。 |
@@ -160,7 +160,7 @@ table 补协议。
 | `linalg.matmul` | lhs/rhs materialize 到 `cx`，生成 `wafer.tile.gemm`，结果记录为 `cx` | supported for simple `linalg.matmul` | pattern 应检查 rank、dtype、accumulator/result relation、layout requirement；batch matmul / generic contraction 另列，不应混成 matmul 特判。 |
 | `linalg.generic` simple elementwise / relation | 单 result、单 `linalg.yield`，typed scalar mapper 识别 add/sub/mul/div/min/max/neg/exp/sqrt/rsqrt/tanh 和 cmp eq/ne/lt/le/gt/ge；生成 `wafer.tile.elementwise` 并带原 `indexing_maps` | supported for simple CT family | 不靠 op name string 恢复语义；复杂 region、多 result、select/mask 和 convert 仍需要明确 kind / op contract。 |
 | `linalg.reduce` / reduction-like generic | reduction iterator + scalar combiner lower 到 `wafer.tile.reduce`；input/result materialize 到 aligned `cx`/`ncx`；constant init 用 `init_value`，dynamic init 用 scalar operand | supported for native sum/max/min | `avg` 是 Wafer reduce kind，但当前 R2.4 fixture 尚未产出可直接识别的 avg combiner；`mul` 不伪装 native。 |
-| passthrough `linalg.generic` for broadcast / transpose / copy | 根据 projected-permutation indexing map lower 到 `wafer.tile.broadcast`、`wafer.tile.transpose` 或 `wafer.tile.copy` | supported for static projected maps | 这是 movement，不是 elementwise compute；result map 必须是 identity，动态/非 projected map 结构化失败。 |
+| passthrough `linalg.generic` for broadcast / transpose / copy | 根据 permutation-only indexing map lower 到 `wafer.tile.broadcast`、`wafer.tile.transpose` 或 `wafer.tile.copy` | supported for static permutation maps | 这是 movement，不是 elementwise compute；result map 必须是 identity，动态/非 permutation-only map 结构化失败。 |
 | `tensor.extract_slice` / `tensor.insert_slice` | tile-local source/dest 的 static offsets/sizes/strides lower 到 `wafer.tile.extract_slice` / `wafer.tile.insert_slice`；external boundary source 的 static extract 直接生成 DDR `memref.subview` + `wafer.tile.load`；direct-yield output boundary insert 生成 DDR `memref.subview` + `wafer.tile.store` | supported for static slices，包括 MLIR 合法的 rank-reduced slice | move op verifier 检查 full slice shape、可选 rank reduction、element type、layout/memory space 和 slice range；dynamic slice metadata 需要先扩 IR。direct storeback 只允许写 `outs` boundary 且 yield index 与 output index 一致；非 direct-yield insert 仍保持 updated-dest tensor 语义，走 tile-local insert。 |
 | `tensor.expand_shape` / `tensor.collapse_shape` | static element-count-preserving reshape lower 到 `wafer.tile.reshape` | supported for static shape-only reshape | `wafer.tile.reshape` 表达 canonical linear element order 保持不变、result multi-index 按新 shape 重新解释的 logical reindex；tile-region 层 op 本身无 write effect，但下游若当前 physical layout 不能 alias 该 logical reindex，必须 materialize 成 explicit movement，不能用 reshape 逃避 physical layout。 |
 | `scf.if` | 保留为 tile-region 内 structured control-flow；condition 使用 scalar SSA，then/else body 递归 lower，tensor result / yield value 以 SPM memref result 穿过 `scf.if` | supported for single-block `scf.if` with supported nested ops | 分支内局部 value 不泄漏；只有 `scf.yield` result 重新进入父 scope。外部 scalar 必须作为 `wafer.group` input 或在 group 内定义，不能绕过 `IsolatedFromAbove`。不在 R3.2c 展开分支或选择硬件 branch 指令。 |
@@ -273,12 +273,12 @@ V0 需要以下 op family：
    communication demand 下 materialize 为 `wafer.tile.*` communication 或 explicit p2p schedule proposal。
 3. layout assignment：为 op 约束选择 physical layout marker，在 cut edge 插入
    `wafer.tile.materialize_layout`。
-4. candidate DDR tile-view materialization：R3.2e 在 planner candidate projection 中消费 candidate
+4. candidate DDR tile-view materialization：R3.2e 在 planner candidate evaluation 中消费 candidate
    traversal / tile shape / boundary slice proposal，把 full DDR boundary memref 改写成
    `memref.subview` / strided DDR tile operands，供 `wafer.tile.load/store` 读写实际 tile。当前已接入
    explicit static `tensor.extract_slice` 和 direct output `tensor.insert_slice` storeback；R3.2e.b
-   已接入 candidate tile offsets/sizes 到 boundary slice proposal 的 projection materialization。这一步
-   不 accept plan，也不把 candidate projection IR commit 到主 IR。
+   已接入 candidate tile offsets/sizes 到 boundary slice proposal 的 evaluation materialization。这一步
+   不 accept plan，也不把 candidate evaluation IR commit 到主 IR。
 5. Wafer instruction legalization / selection：R3.2d 把 target-abstract executable op 合法化并
    选择成 instruction-level `wafer.instr.*`，复用现有 Wafer-tagged memref SSA graph。
    instruction-level IR 需要列出 issue family、read/write/issue effects、descriptor attrs、
@@ -324,7 +324,7 @@ operand 表达真实 tile view；第 5 步 instruction legalization / selection 
 - R3.2e.a 已接入 explicit static boundary slice producer：boundary `tensor.extract_slice` 生成
   DDR `memref.subview` + tile load，direct output `tensor.insert_slice` storeback 生成 DDR
   `memref.subview` + tile store；R3.2d 消费这些 view 并生成 RDMA/WDMA 三层 stride/iteration
-  descriptor。R3.2e.b 已接入 `--wafer-dump-candidate-ddr-tile-views` projection 入口：输入 candidate
+  descriptor。R3.2e.b 已接入 `--wafer-dump-candidate-ddr-tile-views` evaluation 入口：输入 candidate
   output tile offsets/sizes，在 clone 后通过 linalg indexing maps 生成 operand/output slice proposal，
   再复用 R3.2e.a materialize DDR `memref.subview`。当前覆盖单结果 destination-style linalg root；
   closed-loop traversal / tile-shape search 仍归 R3.2h。

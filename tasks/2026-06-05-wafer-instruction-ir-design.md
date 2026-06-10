@@ -38,7 +38,7 @@ memref SSA、Wafer memory attr、op operands、attrs、MemoryEffects 和显式 d
   通过统一 logical-to-physical offset calculator 生成 logical movement segments，并尽量打包成
   三层 stride/iteration `wafer.instr.gather_scatter` descriptor。
 - R3.2c 已产出 memref-backed `wafer.tile.region`，R3.2e 已为 explicit static boundary slice
-  和 candidate output tile offsets/sizes candidate projection lowering 接入 DDR `memref.subview` producer；
+  和 candidate output tile offsets/sizes candidate evaluation lowering 接入 DDR `memref.subview` producer；
   R3.2d 必须基于该 unplaced Wafer-tagged memref graph 做 instruction lowering，不能再引入
   storage/buffer IR 层。
 - R3.2d 的 RDMA/WDMA lowering 可以消费 DDR `memref.subview` / strided memref view，但不会从
@@ -80,9 +80,9 @@ Pipeline position:
   R3.2f SPM placement、R3.2g DDR/resource legality、R3.2h closed-loop planner、
   R3.4 placed memref realization 和 R3.6 codegen emission。
 - User-level driver / named pipeline:
-  主线由 R3.2 closed-loop planner 调用；局部 bring-up / planner projection 入口是
+  主线由 R3.2 closed-loop planner 调用；局部 bring-up / candidate evaluation 入口是
   `wafer-lower-tile-region-to-instr` 和 `wafer-lower-groups-to-instr` named pipeline。
-  planner projection 调用 R3.2d 时，tiled DDR load/store operand 必须已经由 R3.2e 或 accepted
+  candidate evaluation 调用 R3.2d 时，tiled DDR load/store operand 必须已经由 R3.2e 或 accepted
   materialization 表达成 tile view；如果仍是 whole-boundary memref，R3.2d 只能生成 whole-boundary
   descriptor。
   `--wafer-convert-tile-region-to-instr` 只作为 lit/debug pass 入口。
@@ -369,7 +369,7 @@ R3.2c 的 `wafer.tile.load/store` SPM 侧必须是 compact tensor layout；如�
 conversion。DDR 侧可以是 compact boundary，也可以是 `memref.subview` / strided memref view；
 R3.2d 从 DDR memref layout 中恢复静态 element stride，转成 byte stride/iteration descriptor。
 R3.2d 不负责把 whole-boundary DDR memref 按 tile shape 切成 subview；该事实必须由 R3.2e
-explicit static boundary slice producer、planner candidate projection 或 accepted materialization 通过 IR view
+explicit static boundary slice producer、planner candidate evaluation 或 accepted materialization 通过 IR view
 显式提供。
 动态 view、负 stride、bit-packed element、超过三层 stride/iteration 或不能静态证明 descriptor 的
 情况必须 structured failure，不能从 memref 名字或 shape 猜测。
@@ -644,7 +644,7 @@ R3.2d.3 已完成：
 7. 增加 `wafer-lower-tile-region-to-instr` 和 `wafer-lower-groups-to-instr` named pipeline，
    复用同一 `WaferTileRegionToInstr` conversion implementation。它们是 bring-up / explicit-view
    lowering 入口；R3.2e 已支持当前 IR 中 explicit static boundary slice 到 DDR tile view，也提供
-   candidate output tile offsets/sizes 的 projection materialization。R3.2d 仍只消费 DDR view，不负责
+   candidate output tile offsets/sizes 的 evaluation materialization。R3.2d 仍只消费 DDR view，不负责
    搜索 traversal / tile shape。
 8. pipeline tests 覆盖多 group、structured `scf.if` / `scf.for`、tile communication
    structured failure，以及转换后不能残留 executable target-abstract op 的 pipeline-level gate。

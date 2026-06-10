@@ -74,9 +74,9 @@ sliceFromIndexingMap(mlir::AffineMap map,
 }
 
 static mlir::LogicalResult
-addProjectedValue(llvm::SmallVectorImpl<TilingDemandValue> &values,
-                  TilingDemandValueRole role, unsigned index, mlir::Value value,
-                  mlir::AffineMap map, std::string &failureReason) {
+addMappedValue(llvm::SmallVectorImpl<TilingDemandValue> &values,
+               TilingDemandValueRole role, unsigned index, mlir::Value value,
+               mlir::AffineMap map, std::string &failureReason) {
   TilingDemandValue demand{role, index, value, value.getType(), {}};
   if (mlir::failed(
           sliceFromIndexingMap(map, demand.slice.loopDims, failureReason)))
@@ -119,10 +119,10 @@ static mlir::LogicalResult collectLinalgDemand(mlir::linalg::LinalgOp op,
       demand.failureReason = "linalg input is not ranked tensor or scalar";
       return mlir::failure();
     }
-    if (mlir::failed(
-            addProjectedValue(demand.values, TilingDemandValueRole::Input,
-                              static_cast<unsigned>(index), operand,
-                              indexingMaps[index], demand.failureReason))) {
+    if (mlir::failed(addMappedValue(demand.values, TilingDemandValueRole::Input,
+                                    static_cast<unsigned>(index), operand,
+                                    indexingMaps[index],
+                                    demand.failureReason))) {
       demand.kind = OpTilingDemandKind::Failure;
       return mlir::failure();
     }
@@ -135,7 +135,7 @@ static mlir::LogicalResult collectLinalgDemand(mlir::linalg::LinalgOp op,
       demand.failureReason = "linalg output is not ranked tensor";
       return mlir::failure();
     }
-    if (mlir::failed(addProjectedValue(
+    if (mlir::failed(addMappedValue(
             demand.values, TilingDemandValueRole::Output,
             static_cast<unsigned>(index), output,
             indexingMaps[outputMapBase + index], demand.failureReason))) {
@@ -155,7 +155,7 @@ static mlir::LogicalResult collectLinalgDemand(mlir::linalg::LinalgOp op,
       demand.failureReason = "linalg result has no tied DPS output";
       return mlir::failure();
     }
-    if (mlir::failed(addProjectedValue(
+    if (mlir::failed(addMappedValue(
             demand.values, TilingDemandValueRole::Result,
             static_cast<unsigned>(index), result,
             indexingMaps[outputMapBase + index], demand.failureReason))) {

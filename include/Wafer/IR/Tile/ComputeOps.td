@@ -51,7 +51,7 @@ def Wafer_ComputeElementwiseOp : Wafer_Op<"tile.elementwise", [
     compute over already materialized SPM storage values. The V0 operation keeps
     its operand/result relation explicit: without `indexing_maps`, all operands
     and the result must have the same logical tensor type; with
-    `indexing_maps`, operands may use verifier-proven projected-permutation
+    `indexing_maps`, operands may use verifier-proven permutation-only
     broadcast from result dimensions. All operands and the result must use SPM
     tensor storage values with matching element types.
   }];

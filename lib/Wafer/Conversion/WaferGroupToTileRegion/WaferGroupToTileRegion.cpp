@@ -1358,11 +1358,11 @@ struct GroupToTileRegionLoweringPattern
 };
 
 static mlir::OwningOpRef<mlir::ModuleOp>
-cloneGroupToProjectionModule(GroupOp group) {
+cloneGroupToStandaloneModule(GroupOp group) {
   mlir::Location loc = group.getLoc();
-  mlir::OwningOpRef<mlir::ModuleOp> projectionModule =
+  mlir::OwningOpRef<mlir::ModuleOp> standaloneModule =
       mlir::ModuleOp::create(loc);
-  mlir::OpBuilder moduleBuilder(projectionModule->getBodyRegion());
+  mlir::OpBuilder moduleBuilder(standaloneModule->getBodyRegion());
 
   llvm::SmallVector<mlir::Type, 4> inputTypes;
   for (mlir::Value input : group.getInputs())
@@ -1387,10 +1387,10 @@ cloneGroupToProjectionModule(GroupOp group) {
   auto clonedGroup =
       mlir::cast<GroupOp>(builder.clone(*group.getOperation(), mapping));
   builder.create<mlir::func::ReturnOp>(loc, clonedGroup.getResults());
-  return projectionModule;
+  return standaloneModule;
 }
 
-static GroupOp findSingleProjectionGroup(mlir::ModuleOp module) {
+static GroupOp findSingleStandaloneGroup(mlir::ModuleOp module) {
   GroupOp found;
   module.walk([&](GroupOp group) {
     if (!found)
@@ -1460,7 +1460,7 @@ buildCandidateLoopTile(mlir::OpBuilder &builder, mlir::Location loc,
     auto dimExpr = mlir::dyn_cast<mlir::AffineDimExpr>(expr);
     if (!dimExpr) {
       setFailureReason(failureReason,
-                       "candidate tile requires projected output map");
+                       "candidate tile requires permutation-only output map");
       return mlir::failure();
     }
     resultDimForLoopDim[dimExpr.getPosition()] =
@@ -1514,8 +1514,9 @@ static mlir::LogicalResult materializeCandidateTileSlices(
     return mlir::failure();
   }
   if (!root.hasOnlyProjectedPermutations()) {
-    setFailureReason(failureReason,
-                     "candidate tile materialization requires projected maps");
+    setFailureReason(
+        failureReason,
+        "candidate tile materialization requires permutation-only maps");
     return mlir::failure();
   }
 
@@ -1672,7 +1673,7 @@ wafer::lowerGroupToTileRegionModule(GroupOp group,
   if (failureReason)
     failureReason->clear();
 
-  module = cloneGroupToProjectionModule(group);
+  module = cloneGroupToStandaloneModule(group);
   return convertGroupToTileRegionModuleInPlace(*module, group.getContext(),
                                                failureReason);
 }
@@ -1684,10 +1685,10 @@ mlir::LogicalResult wafer::lowerCandidateGroupToTileRegionModule(
   if (failureReason)
     failureReason->clear();
 
-  module = cloneGroupToProjectionModule(group);
-  GroupOp clonedGroup = findSingleProjectionGroup(*module);
+  module = cloneGroupToStandaloneModule(group);
+  GroupOp clonedGroup = findSingleStandaloneGroup(*module);
   if (!clonedGroup) {
-    setFailureReason(failureReason, "projection module has no wafer.group");
+    setFailureReason(failureReason, "standalone module has no wafer.group");
     return mlir::failure();
   }
 

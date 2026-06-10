@@ -14,13 +14,9 @@
 
 namespace wafer::detail {
 
-bool isSPMMemRef(mlir::Type type) {
-  return wafer::isWaferSPMMemRefType(type);
-}
+bool isSPMMemRef(mlir::Type type) { return wafer::isWaferSPMMemRefType(type); }
 
-bool isSPMBuffer(mlir::Type type) {
-  return isSPMMemRef(type);
-}
+bool isSPMBuffer(mlir::Type type) { return isSPMMemRef(type); }
 
 std::optional<wafer::MemLayout> getWaferLayout(mlir::Type type) {
   if (auto memrefType = mlir::dyn_cast<mlir::MemRefType>(type)) {
@@ -568,8 +564,7 @@ mlir::LogicalResult verifyElementwiseTileContract(mlir::Operation *op,
       if (!resultTensor->getElementType().isInteger(1))
         return op->emitOpError("relation result element type must be i1");
       if (index > 0) {
-        if (inputTensor->getElementType() !=
-            firstInputTensor->getElementType())
+        if (inputTensor->getElementType() != firstInputTensor->getElementType())
           return op->emitOpError(
               "relation operand element types must match each other");
       }
@@ -602,7 +597,7 @@ mlir::LogicalResult verifyElementwiseTileContract(mlir::Operation *op,
         inputMap.getNumResults() != inputTensor->getRank() ||
         !inputMap.isProjectedPermutation())
       return op->emitOpError(
-          "elementwise input indexing maps must be projected permutations");
+          "elementwise input indexing maps must be permutation-only maps");
 
     for (auto [dim, expr] : llvm::enumerate(inputMap.getResults())) {
       auto dimExpr = mlir::dyn_cast<mlir::AffineDimExpr>(expr);

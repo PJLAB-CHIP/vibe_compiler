@@ -746,7 +746,7 @@ boundary placement 会改变真实需求：
 
 R3.2a-g 的核心不是先把 rejected group plan 写进主 IR 再让下游修复，而是在生成 accepted
 scheduled structure 之前完成 layout/resource/legalization planning。实现上可以构造
-transformation-local candidate projection `wafer.tile.region` IR，用它承载 target-abstract
+transformation-local candidate evaluation `wafer.tile.region` IR，用它承载 target-abstract
 Wafer op、layout materialization、buffer、lifetime 和 effect，再从这层 IR 调用下游 analysis。
 这层 lowered IR 是 planning artifact；只有 accepted plan 才能由 R3.3 commit 到主 IR。
 SPM allocation、layout assignment、DDR/resource demand 和 compute/movement legality 是 group 是否成立的
@@ -771,8 +771,8 @@ SPM allocation、layout assignment、DDR/resource demand 和 compute/movement le
 - R3.2e 恢复 candidate DDR tile-view materialization：已消费 group IR 中 explicit static
   boundary slice fact，为 external boundary `tensor.extract_slice` 和 direct output
   `tensor.insert_slice` storeback 生成 `memref.subview` / strided DDR tile operands；也已提供
-  `--wafer-dump-candidate-ddr-tile-views` projection 入口，从 candidate output tile offsets/sizes 和
-  linalg indexing maps 生成同类 boundary slice fact。它只构造 planner candidate projection，不 accept plan，
+  `--wafer-dump-candidate-ddr-tile-views` evaluation 入口，从 candidate output tile offsets/sizes 和
+  linalg indexing maps 生成同类 boundary slice fact。它只构造 planner candidate evaluation，不 accept plan，
   也不把 rejected candidate 写入主 IR；真实 candidate traversal / tile shape search 仍由 R3.2h/planner
   闭环执行。
 - R3.2f 恢复 SPM placement：只消费 R3.2e candidate tile-view materialization 后经 R3.2d
@@ -928,7 +928,7 @@ R3.2h 可以把多个 R3.1 logical groups 作为 co-scheduling 候选，但必�
 - 对不同 shape/domain 的 outputs，选择一个 selected traversal domain；其它 results 的
   domain、producer dependence 和 writeback policy 由 body 结构、op tiling interface 和
   transformation-local analysis 得出。只有在关系可证明且对调度有用时，planner 才在 analysis 中
-  利用 projection / slice / reduction 关系。
+  利用 linear matmul / slice / reduction 关系。
 - 对 matmul + epilogue，选 matmul output domain `(M, N)`。
 - 对 reduction，选 reduction output domain，同时额外管理 reduction axis tiling。
 - 对 softmax，通常需要 multi-stage tiled schedule，而不是单个线性 traversal loop。
