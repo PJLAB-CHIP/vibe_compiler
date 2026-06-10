@@ -436,6 +436,19 @@ V0 mapping：
 | `scf.if` / `scf.for` | preserve the structured control-flow op; recursively legalize executable target-abstract ops in each nested region; keep scalar and memref yields explicit |
 | `wafer.tile.send/recv/wait/all_gather/reduce_scatter/all_reduce` | not handled by R3.2d V0 |
 
+R3.2d V0 的下一批明显 coverage gap 是 movement descriptor splitting 和 tile communication：
+
+- `wafer.tile.extract_slice`、`wafer.tile.insert_slice`、`wafer.tile.broadcast`、`wafer.tile.transpose`
+  已经是 target-abstract tile movement op，但当前 instruction lowering 只做 structured failure。
+  后续 R3.2d follow-up 需要证明这些静态 movement 可以拆成一条或多条
+  `wafer.instr.gather_scatter` descriptor，descriptor 生成必须复用统一 logical-to-physical
+  calculator，覆盖 compact `tensor/ntensor` 与 `Cx/NCx`，并在 V0 descriptor 无法表达时继续
+  structured failure。不能用 generic memref load/store/copy 或名字匹配绕过 movement 语义。
+- `wafer.tile.send/recv/wait/all_gather/reduce_scatter/all_reduce` 依赖 placement、local rank、
+  buffer slice、communication staging 和 DTE resource facts。R3.2d 不能从 op 名、rank 常量或
+  unplaced memref 推断通信协议；tile communication materialization 应在这些 facts 明确后进入
+  R6.1/R6.2 或对应 accepted-plan materialization 阶段。
+
 R3.2d may generate multiple instruction ops for a single target-abstract movement op, but it must not write a
 global schedule attr. The instruction sequence is the region body itself.
 Nested `scf` regions are part of that body: R3.2d rewrites their executable contents under MLIR region

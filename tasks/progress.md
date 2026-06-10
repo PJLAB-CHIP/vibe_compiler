@@ -118,7 +118,11 @@ R3.2c/R3.2d 当前边界是：
   `outer * aligned_C + c` 近似判定。R3.2d.3 已接入 `wafer-lower-tile-region-to-instr` 和
   `wafer-lower-groups-to-instr` named pipeline，pipeline gate 覆盖多 group、structured control-flow、
   no executable target-abstract op residue 和 unsupported movement structured failure。
-- tensor collective 到 tile communication IR 仍 deferred，等待 placement/local-rank/buffer facts。
+- 下一批明显 op coverage gap 分两类：`extract_slice/insert_slice/broadcast/transpose` 已有
+  target-abstract tile movement op，但 R3.2d 还只做 structured failure，后续需要证明静态 slice /
+  broadcast / permutation 能拆成 V0 `wafer.instr.gather_scatter` descriptor 序列；tile
+  communication op 仍 deferred，等待 placement/local-rank/buffer facts 后再 materialize 到
+  communication / DTE / local-drain 边界。
 
 ## 后续任务队列
 
@@ -127,6 +131,7 @@ R3.2c/R3.2d 当前边界是：
 | R3.2d.1 | done | 输入：R3.2c target-abstract `wafer.tile.region` IR with DDR boundary memref、unplaced SPM memref 和 structured control-flow；输出：`wafer.instr.*` ODS / interface / verifier 合同 | 已实现 `InstrQueue`、instruction interface、effect helper，以及 `rdma`、`wdma`、`gather_scatter`、`fill`、`elementwise`、`reduce`、`convert`、`gemm` op contract；op 只读写 Wafer-tagged memref，不产生 buffer result，不携带 SPM offset 或 ABI 字段 |
 | R3.2d.2 | done | 输入：R3.2d.1 instruction ops + R3.2c tile-region IR；输出：instruction-level `wafer.instr.*` IR 或结构化失败 | 已实现 `--wafer-convert-tile-region-to-instr` DialectConversion；为 load/store、layout materialize、tile.gemm/reduce/elementwise、copy 选择 instruction-level IR，把 compact reshape 的 logical linear-order reindex 降成标准 memref view 或 identity，并按同一 canonical linear element 在 `Cx:[CxBlock][outer][lane]` / `NCx:[N][CxBlock][HW][lane]` 中的 physical offset 判定 `Cx/NCx` reshape 的 metadata view、gather/scatter materialization 或 structured failure；不能用 physical byte count 或 dense aligned row 近似 |
 | R3.2d.3 | done | 输入：R3.2d.2 conversion；输出：可由 placement/resource stage 消费的 instruction-level IR | 已接入 `wafer-lower-tile-region-to-instr` 和 `wafer-lower-groups-to-instr` named pipeline / planner scratch path；测试覆盖多 op、多 group、structured control-flow、metadata view lowering、unsupported movement/comm structured failure；转换后不能残留 executable target-abstract op |
+| R3.2d.4 | ready | 输入：R3.2c/R3.2d target-abstract movement ops + unplaced Wafer-tagged memref；输出：instruction-level `wafer.instr.gather_scatter` descriptor sequence 或结构化失败 | 补 `wafer.tile.extract_slice/insert_slice/broadcast/transpose` 的静态 descriptor splitting；必须沿用统一 logical-to-physical calculator，覆盖 compact 与 `Cx/NCx`，不能用 generic memref load/store/copy 或名字匹配伪装语义；descriptor 不可表达时仍 structured failure |
 | R3.2e | active | 输入：R3.2d instruction-level IR with unplaced Wafer-tagged memref；输出：同一 instruction-level IR with placed SPM memref values 或结构化失败 | 真实 SPM window placement：alignment、layout padding、scratch/psum/temp、materialization temp、communication staging、control-flow lifetime、range/end-address/bank span/conflict 都参与 |
 | R3.2f | pending | 输入：R3.2e placed instruction-level IR + DDR boundary facts；输出：DDR/resource legality result 和 movement/compute resource validation | 覆盖 external/compiler-managed/resident-constant、pool/domain/capacity/bandwidth/range demand；不能用 manifest fixture 替代；不能回头改变 instruction semantics |
 | R3.2g | pending | 输入：R3.1 group + R3.2a-f planning results；输出：accepted/rejected/split group planning decision | closed-loop 搜索 group boundary、traversal、tile shape、layout、instruction selection、SPM/DDR/resource plan；未接受 plan 不落 IR；multi-root packing 只作为可证明兼容时的可选策略 |
@@ -138,7 +143,7 @@ R3.2c/R3.2d 当前边界是：
 | R3.8 | pending | 输入：R3.6/R3.7 输出；输出：wrapper-facing call contract 和 golden packet | 至少 RDMA/WDMA/GEMM 有真实 wrapper-facing call contract 和 packet 对照 |
 | R4.1-R4.5 | pending | placement + local shard + launch/package metadata | placement、rank/block/coord、per-rank slices、writeback 和 placed package 从 lowering 输出导出 |
 | R5.1-R5.2 | pending | static transformer local shard IR / staged IR gaps | full-block schedule 或拒绝原因；补 mask/select、dynamic-bound policy、non-constant-init reduce、constant/weight slice |
-| R6.1-R6.2 | pending | tiled tensor collective / placement / buffer-slice facts | DTE resource/package metadata 和 tile communication materialization；移除临时 visible cast 路径 |
+| R6.1-R6.2 | pending | tiled tensor collective / placement / local-rank / buffer-slice facts | materialize `wafer.tile.send/recv/wait/all_gather/reduce_scatter/all_reduce` 到 communication / DTE / local-drain 边界，产出 DTE resource/package metadata；不能在 R3.2d 从名字、rank 常量或未 placed buffer 中推断通信协议；移除临时 visible cast 路径 |
 | P7/P8/P9 | later | P0-P6 主链路后的 package/runtime boundary | P0-P6 主链路收口后再推进 LLVM/object、runtime adapter、board/profiling |
 
 ## 当前不做
