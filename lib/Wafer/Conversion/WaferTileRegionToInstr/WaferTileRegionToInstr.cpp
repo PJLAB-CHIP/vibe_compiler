@@ -12,9 +12,11 @@
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 
 #include <algorithm>
+#include <limits>
 #include <optional>
 #include <string>
 
@@ -40,6 +42,19 @@ struct LogicalMovementSegment {
   int64_t destOffset = 0;
   int64_t bytes = 0;
 };
+
+static std::optional<int64_t>
+getStaticPositiveElementCount(llvm::ArrayRef<int64_t> shape) {
+  int64_t count = 1;
+  for (int64_t dim : shape) {
+    if (dim == mlir::ShapedType::kDynamic || dim <= 0)
+      return std::nullopt;
+    if (count > std::numeric_limits<int64_t>::max() / dim)
+      return std::nullopt;
+    count *= dim;
+  }
+  return count;
+}
 
 static void setFailureReason(std::string *failureReason,
                              llvm::StringRef reason) {
@@ -144,6 +159,30 @@ static void createGatherScatter(mlir::PatternRewriter &rewriter,
       destDescriptor.iterations);
 }
 
+static void
+createGatherScatterSegments(mlir::PatternRewriter &rewriter, mlir::Location loc,
+                            mlir::Value source, mlir::Value dest,
+                            llvm::ArrayRef<LogicalMovementSegment> segments) {
+  for (const LogicalMovementSegment &segment : segments) {
+    MovementDescriptor sourceDescriptor;
+    sourceDescriptor.byteCount = segment.bytes;
+    sourceDescriptor.innerBytes = segment.bytes;
+    sourceDescriptor.byteOffset = segment.sourceOffset;
+    sourceDescriptor.strides.assign({0, 0, 0});
+    sourceDescriptor.iterations.assign({1, 1, 1});
+
+    MovementDescriptor destDescriptor;
+    destDescriptor.byteCount = segment.bytes;
+    destDescriptor.innerBytes = segment.bytes;
+    destDescriptor.byteOffset = segment.destOffset;
+    destDescriptor.strides.assign({0, 0, 0});
+    destDescriptor.iterations.assign({1, 1, 1});
+
+    createGatherScatter(rewriter, loc, source, dest, sourceDescriptor,
+                        destDescriptor);
+  }
+}
+
 static void copyOptionalAttr(mlir::Operation *from, mlir::Operation *to,
                              llvm::StringRef name) {
   if (mlir::Attribute attr = from->getAttr(name))
@@ -196,6 +235,152 @@ static bool isStandardViewCompatibleLayout(MemLayout layout) {
   return layout == MemLayout::Tensor || layout == MemLayout::NTensor;
 }
 
+static mlir::FailureOr<llvm::SmallVector<int64_t>>
+delinearizeIndex(mlir::PatternRewriter &rewriter, mlir::Operation *op,
+                 llvm::ArrayRef<int64_t> shape, int64_t linearIndex,
+                 std::string *failureReason, llvm::StringRef opLabel) {
+  llvm::SmallVector<int64_t> indices(shape.size(), 0);
+  for (int64_t dim = static_cast<int64_t>(shape.size()) - 1; dim >= 0; --dim) {
+    int64_t size = shape[dim];
+    if (size == mlir::ShapedType::kDynamic || size <= 0)
+      return failFailureOr<llvm::SmallVector<int64_t>>(
+          rewriter, op, failureReason,
+          llvm::Twine(opLabel).concat(" requires static positive shape").str());
+    indices[dim] = linearIndex % size;
+    linearIndex /= size;
+  }
+  if (linearIndex != 0)
+    return failFailureOr<llvm::SmallVector<int64_t>>(
+        rewriter, op, failureReason,
+        llvm::Twine(opLabel).concat(" cannot delinearize logical index").str());
+  return indices;
+}
+
+template <typename SourceIndexFn, typename DestIndexFn>
+static mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>>
+getStaticMappedMovementSegments(
+    mlir::PatternRewriter &rewriter, mlir::Operation *op,
+    mlir::MemRefType sourceType, mlir::MemRefType destType,
+    llvm::ArrayRef<int64_t> iterationShape, SourceIndexFn sourceIndexFn,
+    DestIndexFn destIndexFn, std::string *failureReason,
+    llvm::StringRef opLabel) {
+  std::optional<WaferPhysicalTensorInfo> sourceInfo =
+      wafer::computeWaferPhysicalTensorInfo(sourceType);
+  std::optional<WaferPhysicalTensorInfo> destInfo =
+      wafer::computeWaferPhysicalTensorInfo(destType);
+  if (!sourceInfo || !destInfo || sourceInfo->physicalBytes <= 0 ||
+      destInfo->physicalBytes <= 0)
+    return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
+        rewriter, op, failureReason,
+        llvm::Twine(opLabel)
+            .concat(" requires static positive physical byte sizes")
+            .str());
+  if (sourceInfo->elementBytes <= 0 ||
+      sourceInfo->elementBytes != destInfo->elementBytes ||
+      sourceInfo->bitPackedElement || destInfo->bitPackedElement)
+    return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
+        rewriter, op, failureReason,
+        llvm::Twine(opLabel)
+            .concat(" requires byte-addressable elements")
+            .str());
+
+  std::optional<int64_t> elementCount =
+      getStaticPositiveElementCount(iterationShape);
+  if (!elementCount)
+    return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
+        rewriter, op, failureReason,
+        llvm::Twine(opLabel)
+            .concat(" requires static positive iteration shape")
+            .str());
+
+  int64_t elementBytes = sourceInfo->elementBytes;
+  llvm::SmallVector<LogicalMovementSegment> segments;
+  for (int64_t linearIndex = 0; linearIndex < *elementCount; ++linearIndex) {
+    mlir::FailureOr<llvm::SmallVector<int64_t>> iterationIndices =
+        delinearizeIndex(rewriter, op, iterationShape, linearIndex,
+                         failureReason, opLabel);
+    if (mlir::failed(iterationIndices))
+      return mlir::failure();
+
+    mlir::FailureOr<llvm::SmallVector<int64_t>> sourceIndices =
+        sourceIndexFn(*iterationIndices);
+    mlir::FailureOr<llvm::SmallVector<int64_t>> destIndices =
+        destIndexFn(*iterationIndices);
+    if (mlir::failed(sourceIndices) || mlir::failed(destIndices))
+      return mlir::failure();
+
+    std::optional<int64_t> sourceOffset =
+        wafer::computeWaferPhysicalElementByteOffset(sourceType,
+                                                     *sourceIndices);
+    std::optional<int64_t> destOffset =
+        wafer::computeWaferPhysicalElementByteOffset(destType, *destIndices);
+    if (!sourceOffset || !destOffset)
+      return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
+          rewriter, op, failureReason,
+          llvm::Twine(opLabel)
+              .concat(" cannot compute physical element offset")
+              .str());
+    if (*sourceOffset + elementBytes > sourceInfo->physicalBytes ||
+        *destOffset + elementBytes > destInfo->physicalBytes)
+      return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
+          rewriter, op, failureReason,
+          llvm::Twine(opLabel)
+              .concat(" segment exceeds static physical byte range")
+              .str());
+
+    if (!segments.empty()) {
+      LogicalMovementSegment &last = segments.back();
+      if (last.sourceOffset + last.bytes == *sourceOffset &&
+          last.destOffset + last.bytes == *destOffset) {
+        last.bytes += elementBytes;
+        continue;
+      }
+    }
+    segments.push_back({*sourceOffset, *destOffset, elementBytes});
+  }
+
+  return segments;
+}
+
+static mlir::FailureOr<llvm::SmallVector<int64_t>>
+expandRankReducedSliceIndices(mlir::PatternRewriter &rewriter,
+                              mlir::Operation *op,
+                              llvm::ArrayRef<int64_t> fullShape,
+                              llvm::ArrayRef<int64_t> reducedShape,
+                              llvm::ArrayRef<int64_t> reducedIndices,
+                              std::string *failureReason,
+                              llvm::StringRef opLabel) {
+  std::optional<llvm::SmallDenseSet<unsigned>> rankReductionMask =
+      mlir::computeRankReductionMask(fullShape, reducedShape);
+  if (!rankReductionMask)
+    return failFailureOr<llvm::SmallVector<int64_t>>(
+        rewriter, op, failureReason,
+        llvm::Twine(opLabel).concat(" cannot map rank-reduced slice").str());
+  if (reducedShape.size() != reducedIndices.size())
+    return failFailureOr<llvm::SmallVector<int64_t>>(
+        rewriter, op, failureReason,
+        llvm::Twine(opLabel).concat(" has mismatched reduced indices").str());
+
+  llvm::SmallVector<int64_t> fullIndices(fullShape.size(), 0);
+  size_t reducedDim = 0;
+  for (unsigned fullDim = 0; fullDim < fullShape.size(); ++fullDim) {
+    if (rankReductionMask->contains(fullDim)) {
+      fullIndices[fullDim] = 0;
+      continue;
+    }
+    if (reducedDim >= reducedIndices.size())
+      return failFailureOr<llvm::SmallVector<int64_t>>(
+          rewriter, op, failureReason,
+          llvm::Twine(opLabel).concat(" has incomplete slice index").str());
+    fullIndices[fullDim] = reducedIndices[reducedDim++];
+  }
+  if (reducedDim != reducedIndices.size())
+    return failFailureOr<llvm::SmallVector<int64_t>>(
+        rewriter, op, failureReason,
+        llvm::Twine(opLabel).concat(" has unused reduced slice index").str());
+  return fullIndices;
+}
+
 static mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>>
 getStaticLogicalMovementSegments(mlir::PatternRewriter &rewriter,
                                  mlir::Operation *op,
@@ -234,30 +419,6 @@ getStaticLogicalMovementSegments(mlir::PatternRewriter &rewriter,
   int64_t elementBytes = sourceInfo->elementBytes;
   int64_t elementCount = sourceInfo->compactBytes / elementBytes;
 
-  auto delinearize =
-      [&](mlir::MemRefType type,
-          int64_t linearIndex) -> mlir::FailureOr<llvm::SmallVector<int64_t>> {
-    llvm::SmallVector<int64_t> indices(type.getRank(), 0);
-    for (int64_t dim = type.getRank() - 1; dim >= 0; --dim) {
-      int64_t size = type.getDimSize(dim);
-      if (size == mlir::ShapedType::kDynamic || size <= 0)
-        return failFailureOr<llvm::SmallVector<int64_t>>(
-            rewriter, op, failureReason,
-            llvm::Twine(opLabel)
-                .concat(" requires static positive shape")
-                .str());
-      indices[dim] = linearIndex % size;
-      linearIndex /= size;
-    }
-    if (linearIndex != 0)
-      return failFailureOr<llvm::SmallVector<int64_t>>(
-          rewriter, op, failureReason,
-          llvm::Twine(opLabel)
-              .concat(" cannot delinearize logical index")
-              .str());
-    return indices;
-  };
-
   // Reshape preserves canonical logical linear order, not per-dimension index
   // equality.  Delinearize the same logical element number through the source
   // and destination shapes, then ask the physical layout helper where that
@@ -265,9 +426,10 @@ getStaticLogicalMovementSegments(mlir::PatternRewriter &rewriter,
   llvm::SmallVector<LogicalMovementSegment> segments;
   for (int64_t linearIndex = 0; linearIndex < elementCount; ++linearIndex) {
     mlir::FailureOr<llvm::SmallVector<int64_t>> sourceIndices =
-        delinearize(sourceType, linearIndex);
-    mlir::FailureOr<llvm::SmallVector<int64_t>> destIndices =
-        delinearize(destType, linearIndex);
+        delinearizeIndex(rewriter, op, sourceType.getShape(), linearIndex,
+                         failureReason, opLabel);
+    mlir::FailureOr<llvm::SmallVector<int64_t>> destIndices = delinearizeIndex(
+        rewriter, op, destType.getShape(), linearIndex, failureReason, opLabel);
     if (mlir::failed(sourceIndices) || mlir::failed(destIndices))
       return mlir::failure();
 
@@ -444,24 +606,8 @@ public:
     if (mlir::failed(segments))
       return mlir::failure();
 
-    for (const LogicalMovementSegment &segment : *segments) {
-      MovementDescriptor sourceDescriptor;
-      sourceDescriptor.byteCount = segment.bytes;
-      sourceDescriptor.innerBytes = segment.bytes;
-      sourceDescriptor.byteOffset = segment.sourceOffset;
-      sourceDescriptor.strides.assign({0, 0, 0});
-      sourceDescriptor.iterations.assign({1, 1, 1});
-
-      MovementDescriptor destDescriptor;
-      destDescriptor.byteCount = segment.bytes;
-      destDescriptor.innerBytes = segment.bytes;
-      destDescriptor.byteOffset = segment.destOffset;
-      destDescriptor.strides.assign({0, 0, 0});
-      destDescriptor.iterations.assign({1, 1, 1});
-
-      createGatherScatter(rewriter, op.getLoc(), op.getSource(), *dest,
-                          sourceDescriptor, destDescriptor);
-    }
+    createGatherScatterSegments(rewriter, op.getLoc(), op.getSource(), *dest,
+                                *segments);
     rewriter.replaceOp(op, *dest);
     return mlir::success();
   }
@@ -498,23 +644,260 @@ private:
   std::string *failureReason;
 };
 
-template <typename OpT>
-class UnsupportedMovementLowering : public mlir::OpRewritePattern<OpT> {
+class MoveExtractSliceLowering
+    : public mlir::OpRewritePattern<MoveExtractSliceOp> {
 public:
-  UnsupportedMovementLowering(mlir::MLIRContext *context,
-                              std::string *failureReason,
-                              llvm::StringRef reason)
-      : mlir::OpRewritePattern<OpT>(context), failureReason(failureReason),
-        reason(reason.str()) {}
+  MoveExtractSliceLowering(mlir::MLIRContext *context,
+                           std::string *failureReason)
+      : mlir::OpRewritePattern<MoveExtractSliceOp>(context),
+        failureReason(failureReason) {}
 
   mlir::LogicalResult
-  matchAndRewrite(OpT op, mlir::PatternRewriter &rewriter) const final {
-    return failPattern(rewriter, op, failureReason, reason);
+  matchAndRewrite(MoveExtractSliceOp op,
+                  mlir::PatternRewriter &rewriter) const final {
+    auto sourceType =
+        mlir::dyn_cast<mlir::MemRefType>(op.getSource().getType());
+    auto resultType =
+        mlir::dyn_cast<mlir::MemRefType>(op.getResult().getType());
+    if (!sourceType || !resultType)
+      return failPattern(rewriter, op, failureReason,
+                         "tile.extract_slice lowering requires memref types");
+
+    llvm::ArrayRef<int64_t> offsets = op.getOffsets();
+    llvm::ArrayRef<int64_t> sizes = op.getSizes();
+    llvm::ArrayRef<int64_t> strides = op.getStrides();
+    llvm::ArrayRef<int64_t> resultShape = resultType.getShape();
+
+    auto sourceIndexFn = [&](llvm::ArrayRef<int64_t> resultIndices)
+        -> mlir::FailureOr<llvm::SmallVector<int64_t>> {
+      mlir::FailureOr<llvm::SmallVector<int64_t>> fullSliceIndices =
+          expandRankReducedSliceIndices(rewriter, op, sizes, resultShape,
+                                        resultIndices, failureReason,
+                                        "tile.extract_slice lowering");
+      if (mlir::failed(fullSliceIndices))
+        return mlir::failure();
+      llvm::SmallVector<int64_t> sourceIndices(sizes.size(), 0);
+      for (size_t dim = 0; dim < sizes.size(); ++dim)
+        sourceIndices[dim] =
+            offsets[dim] + (*fullSliceIndices)[dim] * strides[dim];
+      return sourceIndices;
+    };
+    auto destIndexFn = [](llvm::ArrayRef<int64_t> resultIndices)
+        -> mlir::FailureOr<llvm::SmallVector<int64_t>> {
+      return llvm::SmallVector<int64_t>(resultIndices.begin(),
+                                        resultIndices.end());
+    };
+
+    mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>> segments =
+        getStaticMappedMovementSegments(
+            rewriter, op, sourceType, resultType, resultShape, sourceIndexFn,
+            destIndexFn, failureReason, "tile.extract_slice lowering");
+    if (mlir::failed(segments))
+      return mlir::failure();
+
+    mlir::FailureOr<mlir::Value> dest = createDestAlloc(
+        op.getLoc(), op.getResult().getType(), rewriter, op, failureReason);
+    if (mlir::failed(dest))
+      return mlir::failure();
+
+    createGatherScatterSegments(rewriter, op.getLoc(), op.getSource(), *dest,
+                                *segments);
+    rewriter.replaceOp(op, *dest);
+    return mlir::success();
   }
 
 private:
   std::string *failureReason;
-  std::string reason;
+};
+
+class MoveInsertSliceLowering
+    : public mlir::OpRewritePattern<MoveInsertSliceOp> {
+public:
+  MoveInsertSliceLowering(mlir::MLIRContext *context,
+                          std::string *failureReason)
+      : mlir::OpRewritePattern<MoveInsertSliceOp>(context),
+        failureReason(failureReason) {}
+
+  mlir::LogicalResult
+  matchAndRewrite(MoveInsertSliceOp op,
+                  mlir::PatternRewriter &rewriter) const final {
+    auto sourceType =
+        mlir::dyn_cast<mlir::MemRefType>(op.getSource().getType());
+    auto destType = mlir::dyn_cast<mlir::MemRefType>(op.getDest().getType());
+    auto resultType =
+        mlir::dyn_cast<mlir::MemRefType>(op.getResult().getType());
+    if (!sourceType || !destType || !resultType)
+      return failPattern(rewriter, op, failureReason,
+                         "tile.insert_slice lowering requires memref types");
+
+    auto identityIndexFn = [](llvm::ArrayRef<int64_t> indices)
+        -> mlir::FailureOr<llvm::SmallVector<int64_t>> {
+      return llvm::SmallVector<int64_t>(indices.begin(), indices.end());
+    };
+
+    mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>> copySegments =
+        getStaticMappedMovementSegments(rewriter, op, destType, resultType,
+                                        resultType.getShape(), identityIndexFn,
+                                        identityIndexFn, failureReason,
+                                        "tile.insert_slice dest copy lowering");
+    if (mlir::failed(copySegments))
+      return mlir::failure();
+
+    llvm::ArrayRef<int64_t> offsets = op.getOffsets();
+    llvm::ArrayRef<int64_t> sizes = op.getSizes();
+    llvm::ArrayRef<int64_t> strides = op.getStrides();
+    llvm::ArrayRef<int64_t> sourceShape = sourceType.getShape();
+
+    auto sourceIndexFn = [](llvm::ArrayRef<int64_t> sourceIndices)
+        -> mlir::FailureOr<llvm::SmallVector<int64_t>> {
+      return llvm::SmallVector<int64_t>(sourceIndices.begin(),
+                                        sourceIndices.end());
+    };
+    auto destIndexFn = [&](llvm::ArrayRef<int64_t> sourceIndices)
+        -> mlir::FailureOr<llvm::SmallVector<int64_t>> {
+      mlir::FailureOr<llvm::SmallVector<int64_t>> fullSliceIndices =
+          expandRankReducedSliceIndices(rewriter, op, sizes, sourceShape,
+                                        sourceIndices, failureReason,
+                                        "tile.insert_slice lowering");
+      if (mlir::failed(fullSliceIndices))
+        return mlir::failure();
+      llvm::SmallVector<int64_t> destIndices(sizes.size(), 0);
+      for (size_t dim = 0; dim < sizes.size(); ++dim)
+        destIndices[dim] =
+            offsets[dim] + (*fullSliceIndices)[dim] * strides[dim];
+      return destIndices;
+    };
+
+    mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>> insertSegments =
+        getStaticMappedMovementSegments(
+            rewriter, op, sourceType, resultType, sourceShape, sourceIndexFn,
+            destIndexFn, failureReason, "tile.insert_slice lowering");
+    if (mlir::failed(insertSegments))
+      return mlir::failure();
+
+    mlir::FailureOr<mlir::Value> result = createDestAlloc(
+        op.getLoc(), op.getResult().getType(), rewriter, op, failureReason);
+    if (mlir::failed(result))
+      return mlir::failure();
+
+    createGatherScatterSegments(rewriter, op.getLoc(), op.getDest(), *result,
+                                *copySegments);
+    createGatherScatterSegments(rewriter, op.getLoc(), op.getSource(), *result,
+                                *insertSegments);
+    rewriter.replaceOp(op, *result);
+    return mlir::success();
+  }
+
+private:
+  std::string *failureReason;
+};
+
+class MoveTransposeLowering : public mlir::OpRewritePattern<MoveTransposeOp> {
+public:
+  MoveTransposeLowering(mlir::MLIRContext *context, std::string *failureReason)
+      : mlir::OpRewritePattern<MoveTransposeOp>(context),
+        failureReason(failureReason) {}
+
+  mlir::LogicalResult
+  matchAndRewrite(MoveTransposeOp op,
+                  mlir::PatternRewriter &rewriter) const final {
+    auto sourceType =
+        mlir::dyn_cast<mlir::MemRefType>(op.getSource().getType());
+    auto resultType =
+        mlir::dyn_cast<mlir::MemRefType>(op.getResult().getType());
+    if (!sourceType || !resultType)
+      return failPattern(rewriter, op, failureReason,
+                         "tile.transpose lowering requires memref types");
+
+    llvm::ArrayRef<int64_t> permutation = op.getPermutation();
+    auto sourceIndexFn = [&](llvm::ArrayRef<int64_t> resultIndices)
+        -> mlir::FailureOr<llvm::SmallVector<int64_t>> {
+      llvm::SmallVector<int64_t> sourceIndices(sourceType.getRank(), 0);
+      for (auto [resultDim, sourceDim] : llvm::enumerate(permutation))
+        sourceIndices[sourceDim] = resultIndices[resultDim];
+      return sourceIndices;
+    };
+    auto destIndexFn = [](llvm::ArrayRef<int64_t> resultIndices)
+        -> mlir::FailureOr<llvm::SmallVector<int64_t>> {
+      return llvm::SmallVector<int64_t>(resultIndices.begin(),
+                                        resultIndices.end());
+    };
+
+    mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>> segments =
+        getStaticMappedMovementSegments(rewriter, op, sourceType, resultType,
+                                        resultType.getShape(), sourceIndexFn,
+                                        destIndexFn, failureReason,
+                                        "tile.transpose lowering");
+    if (mlir::failed(segments))
+      return mlir::failure();
+
+    mlir::FailureOr<mlir::Value> dest = createDestAlloc(
+        op.getLoc(), op.getResult().getType(), rewriter, op, failureReason);
+    if (mlir::failed(dest))
+      return mlir::failure();
+
+    createGatherScatterSegments(rewriter, op.getLoc(), op.getSource(), *dest,
+                                *segments);
+    rewriter.replaceOp(op, *dest);
+    return mlir::success();
+  }
+
+private:
+  std::string *failureReason;
+};
+
+class MoveBroadcastLowering : public mlir::OpRewritePattern<MoveBroadcastOp> {
+public:
+  MoveBroadcastLowering(mlir::MLIRContext *context, std::string *failureReason)
+      : mlir::OpRewritePattern<MoveBroadcastOp>(context),
+        failureReason(failureReason) {}
+
+  mlir::LogicalResult
+  matchAndRewrite(MoveBroadcastOp op,
+                  mlir::PatternRewriter &rewriter) const final {
+    auto sourceType =
+        mlir::dyn_cast<mlir::MemRefType>(op.getSource().getType());
+    auto resultType =
+        mlir::dyn_cast<mlir::MemRefType>(op.getResult().getType());
+    if (!sourceType || !resultType)
+      return failPattern(rewriter, op, failureReason,
+                         "tile.broadcast lowering requires memref types");
+
+    llvm::ArrayRef<int64_t> dimensions = op.getDimensions();
+    auto sourceIndexFn = [&](llvm::ArrayRef<int64_t> resultIndices)
+        -> mlir::FailureOr<llvm::SmallVector<int64_t>> {
+      llvm::SmallVector<int64_t> sourceIndices(sourceType.getRank(), 0);
+      for (auto [sourceDim, resultDim] : llvm::enumerate(dimensions))
+        sourceIndices[sourceDim] = resultIndices[resultDim];
+      return sourceIndices;
+    };
+    auto destIndexFn = [](llvm::ArrayRef<int64_t> resultIndices)
+        -> mlir::FailureOr<llvm::SmallVector<int64_t>> {
+      return llvm::SmallVector<int64_t>(resultIndices.begin(),
+                                        resultIndices.end());
+    };
+
+    mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>> segments =
+        getStaticMappedMovementSegments(rewriter, op, sourceType, resultType,
+                                        resultType.getShape(), sourceIndexFn,
+                                        destIndexFn, failureReason,
+                                        "tile.broadcast lowering");
+    if (mlir::failed(segments))
+      return mlir::failure();
+
+    mlir::FailureOr<mlir::Value> dest = createDestAlloc(
+        op.getLoc(), op.getResult().getType(), rewriter, op, failureReason);
+    if (mlir::failed(dest))
+      return mlir::failure();
+
+    createGatherScatterSegments(rewriter, op.getLoc(), op.getSource(), *dest,
+                                *segments);
+    rewriter.replaceOp(op, *dest);
+    return mlir::success();
+  }
+
+private:
+  std::string *failureReason;
 };
 
 class FillLowering : public mlir::OpRewritePattern<ComputeFillOp> {
@@ -719,24 +1102,8 @@ public:
     if (mlir::failed(dest))
       return mlir::failure();
 
-    for (const LogicalMovementSegment &segment : *segments) {
-      MovementDescriptor sourceDescriptor;
-      sourceDescriptor.byteCount = segment.bytes;
-      sourceDescriptor.innerBytes = segment.bytes;
-      sourceDescriptor.byteOffset = segment.sourceOffset;
-      sourceDescriptor.strides.assign({0, 0, 0});
-      sourceDescriptor.iterations.assign({1, 1, 1});
-
-      MovementDescriptor destDescriptor;
-      destDescriptor.byteCount = segment.bytes;
-      destDescriptor.innerBytes = segment.bytes;
-      destDescriptor.byteOffset = segment.destOffset;
-      destDescriptor.strides.assign({0, 0, 0});
-      destDescriptor.iterations.assign({1, 1, 1});
-
-      createGatherScatter(rewriter, op.getLoc(), op.getSource(), *dest,
-                          sourceDescriptor, destDescriptor);
-    }
+    createGatherScatterSegments(rewriter, op.getLoc(), op.getSource(), *dest,
+                                *segments);
     rewriter.replaceOp(op, *dest);
     return mlir::success();
   }
@@ -783,26 +1150,13 @@ static void configureTileRegionToInstrTarget(mlir::ConversionTarget &target) {
 static void populateTileRegionToInstrPatterns(mlir::RewritePatternSet &patterns,
                                               std::string *failureReason) {
   mlir::MLIRContext *context = patterns.getContext();
-  patterns.add<TileLoadLowering, TileStoreLowering, LayoutMaterializeLowering,
-               TileCopyLowering, ElementwiseLowering, ReduceLowering,
-               GemmLowering, ViewReshapeLowering>(context, failureReason);
+  patterns
+      .add<TileLoadLowering, TileStoreLowering, LayoutMaterializeLowering,
+           TileCopyLowering, MoveExtractSliceLowering, MoveInsertSliceLowering,
+           MoveTransposeLowering, MoveBroadcastLowering, ElementwiseLowering,
+           ReduceLowering, GemmLowering, ViewReshapeLowering>(context,
+                                                              failureReason);
   patterns.add<FillLowering>(context);
-  patterns.add<UnsupportedMovementLowering<MoveExtractSliceOp>>(
-      context, failureReason,
-      "wafer.tile.extract_slice cannot lower to TDMA-backed "
-      "wafer.instr.gather_scatter: unsupported slice descriptor");
-  patterns.add<UnsupportedMovementLowering<MoveInsertSliceOp>>(
-      context, failureReason,
-      "wafer.tile.insert_slice cannot lower to TDMA-backed "
-      "wafer.instr.gather_scatter: unsupported slice descriptor");
-  patterns.add<UnsupportedMovementLowering<MoveTransposeOp>>(
-      context, failureReason,
-      "wafer.tile.transpose cannot lower to TDMA-backed "
-      "wafer.instr.gather_scatter: unsupported permutation");
-  patterns.add<UnsupportedMovementLowering<MoveBroadcastOp>>(
-      context, failureReason,
-      "wafer.tile.broadcast cannot lower to TDMA-backed "
-      "wafer.instr.gather_scatter: unsupported broadcast descriptor");
   patterns.add<UnsupportedCommLowering<CommSendOp>,
                UnsupportedCommLowering<CommRecvOp>,
                UnsupportedCommLowering<CommWaitOp>,

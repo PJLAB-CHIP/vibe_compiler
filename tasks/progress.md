@@ -1,6 +1,6 @@
 # Wafer Compiler Progress
 
-更新时间：2026-06-09
+更新时间：2026-06-10
 
 本文件只记录当前看板、主线 pipeline、完成口径和下一步。设计细节、历史复盘、测试命令和长验证说明
 放在对应 `tasks/` 设计文档、git commit 和测试里，不在这里重复。
@@ -81,15 +81,16 @@ PyTorch/XLA StableHLO Wafer program directory
 | R3.2a | done | `2026-05-12-wafer-group-design.md` 10.1-10.2 | R3.1 logical `wafer.group` body | `GroupTilingDemand` analysis result；覆盖 boundary/result tile facts、per-op slice、iterator、accumulator/reduction dims、collective demand 和 unsupported-op failure |
 | R3.2b | done | `2026-05-21-wafer-layout-materialization-design.md` 3.1.1 | R3.2a `GroupTilingDemand` facts + group SSA use-def | `GroupLayoutPlan` analysis result；覆盖 boundary layout、op layout constraints、broadcast relation、materialization cut/result demand 和 failure forwarding；不修改 IR |
 | R3.2c | done | `2026-05-25-wafer-tile-region-design.md` 2.1-2.2 | R3.1 group + R3.2a demand + R3.2b layout plan | `wafer-lower-groups-to-tile-region` 输出 verifier-legal memref-backed `wafer.tile.region` IR 和 DDR memref function boundary；覆盖 DDR/SPM load/store、layout materialization、`wafer.tile.fill/gemm/elementwise/reduce`、`wafer.tile.copy/extract_slice/insert_slice/transpose/broadcast`、`wafer.tile.reshape`、`scf.if` / `scf.for` 结构化 control-flow 和 One-Shot function-boundary bufferization；硬件 V0 无承载或缺 placement/local-rank facts 时结构化 failure；不做 SPM offset，不把 tile-region IR 当成 R3.3 accepted materialization |
-| R3.2d | done | `2026-06-05-wafer-instruction-ir-design.md` | R3.2c memref-backed target-abstract `wafer.tile.region` IR；DDR side 是 `#wafer.memory<ddr, tensor>` memref，SPM side 是 unplaced `#wafer.memory<spm, *>` memref，region 内可包含 `scf.if` / `scf.for` | 在 unplaced Wafer-tagged memref graph 上生成 instruction-level `wafer.instr.*`，覆盖 `rdma/wdma/gather_scatter/fill/elementwise/reduce/convert/gemm` op contract、descriptor attrs、effect/issue-family contract 和 structured failure；递归处理 structured control-flow body；reshape 先保留 source/result canonical linear element order，再按 block-major physical mapping 生成 `Cx/NCx` movement 或 metadata view；layout materialization 按 logical-to-physical mapping 生成 movement；不新增第二套 storage/buffer IR、不做 SPM offset、不生成 ABI call |
+| R3.2d | done | `2026-06-05-wafer-instruction-ir-design.md` | R3.2c memref-backed target-abstract `wafer.tile.region` IR；DDR side 是 `#wafer.memory<ddr, tensor>` memref，SPM side 是 unplaced `#wafer.memory<spm, *>` memref，region 内可包含 `scf.if` / `scf.for` | 在 unplaced Wafer-tagged memref graph 上生成 instruction-level `wafer.instr.*`，覆盖 `rdma/wdma/gather_scatter/fill/elementwise/reduce/convert/gemm` op contract、descriptor attrs、effect/issue-family contract 和 structured failure；递归处理 structured control-flow body；reshape 先保留 source/result canonical linear element order，再按 block-major physical mapping 生成 `Cx/NCx` movement 或 metadata view；layout materialization 和 static `extract_slice/insert_slice/broadcast/transpose` 按 logical-to-physical mapping 生成 movement；不新增第二套 storage/buffer IR、不做 SPM offset、不生成 ABI call |
 
 ## 当前状态
 
 R3.2c memref-backed tile-region IR migration 已完成：group boundary 已 materialize 为 DDR memref，
 tile-local value 使用 SPM memref，named pipeline 已接入 MLIR One-Shot function-boundary bufferization，
 并支持 `scf.if` / `scf.for` 的 tile-local structured control-flow lowering。R3.2d
-instruction op contract、DialectConversion、`Cx/NCx` block-major physical mapping correction 和
-named pipeline 接入已落地；当前 active task 是 **R3.2e SPM placement / offset assignment**。
+instruction op contract、DialectConversion、`Cx/NCx` block-major physical mapping correction、
+static movement descriptor splitting 和 named pipeline 接入已落地；当前 active task 是
+**R3.2e SPM placement / offset assignment**。
 R3.2d 的 IR 设计主文档
 `tasks/2026-06-05-wafer-instruction-ir-design.md` 已按 memref-backed buffer contract 收口，输入就是
 R3.2c 产出的 unplaced Wafer-tagged memref tile-region IR。
@@ -111,17 +112,16 @@ R3.2c/R3.2d 当前边界是：
   lit/unit 覆盖。R3.2d.2 已实现 `--wafer-convert-tile-region-to-instr`：覆盖 load/store、
   静态可证明的 layout materialize、fill、rank-2 GEMM、elementwise、reduce、copy、compact metadata
   reshape lowered to standard memref view、`Cx/NCx` block-major reshape movement、tail-only
-  metadata reshape、nested `scf.if` / `scf.for` 递归 legalization，以及 communication / padding
-  layout materialization structured failure。reshape 按 same-linear-element logical-to-physical
+  metadata reshape、static `extract_slice/insert_slice/broadcast/transpose` movement descriptor splitting、
+  nested `scf.if` / `scf.for` 递归 legalization，以及 communication / padding layout materialization
+  structured failure。reshape 按 same-linear-element logical-to-physical
   mapping 生成 movement 或 metadata view；layout materialization 按 logical-to-physical mapping
   生成 movement；二者都不按 physical byte count 或 dense
   `outer * aligned_C + c` 近似判定。R3.2d.3 已接入 `wafer-lower-tile-region-to-instr` 和
   `wafer-lower-groups-to-instr` named pipeline，pipeline gate 覆盖多 group、structured control-flow、
-  no executable target-abstract op residue 和 unsupported movement structured failure。
-- 下一批明显 op coverage gap 分两类：`extract_slice/insert_slice/broadcast/transpose` 已有
-  target-abstract tile movement op，但 R3.2d 还只做 structured failure，后续需要证明静态 slice /
-  broadcast / permutation 能拆成 V0 `wafer.instr.gather_scatter` descriptor 序列；tile
-  communication op 仍 deferred，等待 placement/local-rank/buffer facts 后再 materialize 到
+  no executable target-abstract op residue 和 tile communication structured failure。
+- 下一批明显 op coverage gap 是 tile communication op：它仍 deferred，等待
+  placement/local-rank/buffer facts 后再 materialize 到
   communication / DTE / local-drain 边界。
 
 ## 后续任务队列
@@ -130,8 +130,8 @@ R3.2c/R3.2d 当前边界是：
 | --- | --- | --- | --- |
 | R3.2d.1 | done | 输入：R3.2c target-abstract `wafer.tile.region` IR with DDR boundary memref、unplaced SPM memref 和 structured control-flow；输出：`wafer.instr.*` ODS / interface / verifier 合同 | 已实现 `InstrQueue`、instruction interface、effect helper，以及 `rdma`、`wdma`、`gather_scatter`、`fill`、`elementwise`、`reduce`、`convert`、`gemm` op contract；op 只读写 Wafer-tagged memref，不产生 buffer result，不携带 SPM offset 或 ABI 字段 |
 | R3.2d.2 | done | 输入：R3.2d.1 instruction ops + R3.2c tile-region IR；输出：instruction-level `wafer.instr.*` IR 或结构化失败 | 已实现 `--wafer-convert-tile-region-to-instr` DialectConversion；为 load/store、layout materialize、tile.gemm/reduce/elementwise、copy 选择 instruction-level IR，把 compact reshape 的 logical linear-order reindex 降成标准 memref view 或 identity，并按同一 canonical linear element 在 `Cx:[CxBlock][outer][lane]` / `NCx:[N][CxBlock][HW][lane]` 中的 physical offset 判定 `Cx/NCx` reshape 的 metadata view、gather/scatter materialization 或 structured failure；不能用 physical byte count 或 dense aligned row 近似 |
-| R3.2d.3 | done | 输入：R3.2d.2 conversion；输出：可由 placement/resource stage 消费的 instruction-level IR | 已接入 `wafer-lower-tile-region-to-instr` 和 `wafer-lower-groups-to-instr` named pipeline / planner scratch path；测试覆盖多 op、多 group、structured control-flow、metadata view lowering、unsupported movement/comm structured failure；转换后不能残留 executable target-abstract op |
-| R3.2d.4 | ready | 输入：R3.2c/R3.2d target-abstract movement ops + unplaced Wafer-tagged memref；输出：instruction-level `wafer.instr.gather_scatter` descriptor sequence 或结构化失败 | 补 `wafer.tile.extract_slice/insert_slice/broadcast/transpose` 的静态 descriptor splitting；必须沿用统一 logical-to-physical calculator，覆盖 compact 与 `Cx/NCx`，不能用 generic memref load/store/copy 或名字匹配伪装语义；descriptor 不可表达时仍 structured failure |
+| R3.2d.3 | done | 输入：R3.2d.2 conversion；输出：可由 placement/resource stage 消费的 instruction-level IR | 已接入 `wafer-lower-tile-region-to-instr` 和 `wafer-lower-groups-to-instr` named pipeline / planner scratch path；测试覆盖多 op、多 group、structured control-flow、metadata view lowering、tile communication structured failure；转换后不能残留 executable target-abstract op |
+| R3.2d.4 | done | 输入：R3.2c/R3.2d target-abstract movement ops + unplaced Wafer-tagged memref；输出：instruction-level `wafer.instr.gather_scatter` descriptor sequence 或结构化失败 | 已补 `wafer.tile.extract_slice/insert_slice/broadcast/transpose` 的静态 descriptor splitting；沿用统一 logical-to-physical calculator，覆盖 compact 与 `Cx/NCx`，不使用 generic memref load/store/copy 或名字匹配伪装语义；descriptor 不可表达时仍 structured failure |
 | R3.2e | active | 输入：R3.2d instruction-level IR with unplaced Wafer-tagged memref；输出：同一 instruction-level IR with placed SPM memref values 或结构化失败 | 真实 SPM window placement：alignment、layout padding、scratch/psum/temp、materialization temp、communication staging、control-flow lifetime、range/end-address/bank span/conflict 都参与 |
 | R3.2f | pending | 输入：R3.2e placed instruction-level IR + DDR boundary facts；输出：DDR/resource legality result 和 movement/compute resource validation | 覆盖 external/compiler-managed/resident-constant、pool/domain/capacity/bandwidth/range demand；不能用 manifest fixture 替代；不能回头改变 instruction semantics |
 | R3.2g | pending | 输入：R3.1 group + R3.2a-f planning results；输出：accepted/rejected/split group planning decision | closed-loop 搜索 group boundary、traversal、tile shape、layout、instruction selection、SPM/DDR/resource plan；未接受 plan 不落 IR；multi-root packing 只作为可证明兼容时的可选策略 |

@@ -146,6 +146,12 @@
   要先用统一 physical layout calculator 比较 source/result mapping，只有排布变化才发
   `wafer.instr.gather_scatter`。如果统一 helper 还不能表达真实 `C0` tail/fold 和 bank padding，
   先补 helper，不要在 lowering 里临时重写一份局部 layout 解释。
+- R3.2d movement descriptor lowering（`extract_slice/insert_slice/broadcast/transpose`）要从 op
+  自身的 logical index relation 出发，枚举静态 iteration domain，再调用同一个
+  `computeWaferPhysicalElementByteOffset` 得到 source/dest byte offset 并 coalesce 相邻段；
+  compact、`Cx`、`NCx` 都走这条路径。`insert_slice` 不是只写 slice：它返回 updated dest buffer，
+  所以 lowering 必须先把旧 dest payload copy 到新 result，再把 source slice overlay 到 result。
+  后续若压缩成更高阶 TDMA stride/iteration descriptor，也不能改变这个语义边界。
 - 用户级 compiler target 名称统一为 `wafer`，Wafer IR target attr 的唯一主线 spelling 是
   `#wafer.target<wafer>`。`tx8` / `tx81` 只保留在硬件、依赖逆向和外部历史命名事实里，不能作为
   compiler target、pipeline 名称或测试 fixture 的主线命名。

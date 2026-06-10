@@ -1,9 +1,10 @@
 # Wafer Instruction IR Design
 
-日期：2026-06-05；更新：2026-06-09
+日期：2026-06-05；更新：2026-06-10
 
 状态：R3.2d 设计已按 memref-backed buffer contract 重新收口；R3.2c 前置已完成，
-R3.2d.1 instruction op contract、R3.2d.2 DialectConversion 和 R3.2d.3 named pipeline 接入已落地。
+R3.2d.1 instruction op contract、R3.2d.2 DialectConversion、R3.2d.3 named pipeline 接入和
+R3.2d.4 static movement descriptor splitting 已落地。
 
 本文定义 R3.2d 的 instruction-level Wafer IR。核心结论：
 
@@ -31,7 +32,9 @@ memref SSA、Wafer memory attr、op operands、attrs、MemoryEffects 和显式 d
   的 ODS、verifier、MemoryEffects、`WaferInstructionOpInterface` 和 lit/unit 覆盖。
 - `wafer.instr.*` op 只读写 Wafer-tagged memref，不产生 buffer result，不携带 SPM offset、
   worker id、raw packet field 或 C ABI 字段。
-- R3.2d.2 已实现 target-abstract tile-region op 到这些 instruction op 的 DialectConversion。
+- R3.2d.2/R3.2d.4 已实现 target-abstract tile-region op 到这些 instruction op 的
+  DialectConversion；静态 `extract_slice`、`insert_slice`、`broadcast` 和 `transpose`
+  通过统一 logical-to-physical offset calculator 拆成一条或多条 `wafer.instr.gather_scatter`。
 - R3.2c 已产出 memref-backed `wafer.tile.region`；R3.2d 必须基于该 unplaced Wafer-tagged memref
   graph 做 instruction lowering，不能再引入 storage/buffer IR 层。
 - R3.2c 已支持 `scf.if` / `scf.for` 作为 tile-region 内 structured control-flow。R3.2d 必须递归
@@ -428,22 +431,28 @@ V0 mapping：
 | `wafer.tile.elementwise` | ensure / create destination SPM memref; emit `wafer.instr.elementwise`; replace result with dest memref |
 | `wafer.tile.reduce` | ensure / create destination SPM memref; emit `wafer.instr.reduce`; replace result with dest memref |
 | `wafer.tile.copy` | ensure / create destination SPM memref; emit one gather_scatter; replace result with dest memref |
-| `wafer.tile.extract_slice` | structured failure until slice descriptor splitting is proven against the V0 TDMA descriptor |
-| `wafer.tile.insert_slice` | structured failure until copy-plus-slice insertion descriptor splitting is proven against the V0 TDMA descriptor |
-| `wafer.tile.broadcast` | structured failure until static broadcast descriptor expansion is proven against the V0 TDMA descriptor |
-| `wafer.tile.transpose` | structured failure until permutation descriptor expansion is proven against the V0 TDMA descriptor |
+| `wafer.tile.extract_slice` | create destination SPM memref; enumerate the static slice result logical domain, map each result index through offsets/sizes/strides back to the source logical index, compute physical byte offsets with the unified Wafer layout calculator, coalesce adjacent byte segments, emit one or more `wafer.instr.gather_scatter`, and replace result with dest memref |
+| `wafer.tile.insert_slice` | create destination SPM memref; first copy the original destination payload into the result via logical-to-physical segments, then enumerate source logical indices and overlay them into the statically described destination slice via one or more `wafer.instr.gather_scatter`; replace result with the new memref |
+| `wafer.tile.broadcast` | create destination SPM memref; enumerate the static result domain, map source dims through `dimensions`, compute source/result physical byte offsets, coalesce adjacent segments, emit one or more `wafer.instr.gather_scatter`, and replace result with dest memref |
+| `wafer.tile.transpose` | create destination SPM memref; enumerate the static result domain, invert `permutation` to source logical indices, compute source/result physical byte offsets, coalesce adjacent segments, emit one or more `wafer.instr.gather_scatter`, and replace result with dest memref |
 | `wafer.tile.reshape` | identity replacement when types are identical; otherwise preserve source/result canonical linear element order and reinterpret result multi-indices through the new shape; compact `tensor/ntensor` reshape lowers to a verifier-legal standard memref view because compact physical bytes already follow that linear order; `Cx/NCx` reshape first compares same-linear-element source/result physical byte offsets with the unified physical layout calculator, materializes a destination memref and emits one or more `wafer.instr.gather_scatter` only when the physical mapping or required footprint changes; structured failure only when the static reshape movement plan cannot be represented by V0 descriptors |
 | `scf.if` / `scf.for` | preserve the structured control-flow op; recursively legalize executable target-abstract ops in each nested region; keep scalar and memref yields explicit |
 | `wafer.tile.send/recv/wait/all_gather/reduce_scatter/all_reduce` | not handled by R3.2d V0 |
 
-R3.2d V0 的下一批明显 coverage gap 是 movement descriptor splitting 和 tile communication：
+R3.2d.4 已覆盖 static movement descriptor splitting：
 
 - `wafer.tile.extract_slice`、`wafer.tile.insert_slice`、`wafer.tile.broadcast`、`wafer.tile.transpose`
-  已经是 target-abstract tile movement op，但当前 instruction lowering 只做 structured failure。
-  后续 R3.2d follow-up 需要证明这些静态 movement 可以拆成一条或多条
-  `wafer.instr.gather_scatter` descriptor，descriptor 生成必须复用统一 logical-to-physical
-  calculator，覆盖 compact `tensor/ntensor` 与 `Cx/NCx`，并在 V0 descriptor 无法表达时继续
-  structured failure。不能用 generic memref load/store/copy 或名字匹配绕过 movement 语义。
+  都复用统一 logical-to-physical calculator，覆盖 compact `tensor/ntensor` 与 `Cx/NCx`。它们先从
+  op 语义恢复 source/result logical index relation，再计算两端 physical byte offset；不能用 generic
+  memref load/store/copy 或名字匹配绕过 movement 语义。
+- V0 当前只 materialize 静态、byte-addressable、可按 buffer-local offset 表示的 descriptor 序列。
+  每个 coalesced segment 仍落成一条 `wafer.instr.gather_scatter`，`src/dst_strides` 和
+  `src/dst_iterations` 为 `{0, 0, 0}` / `{1, 1, 1}`；后续可以在不改变 IR 语义的前提下把多段
+  压缩成更高阶 TDMA stride/iteration descriptor。dynamic shape、bit-packed element 或 helper 无法
+  证明真实 physical offset 的情况仍 structured failure。
+
+R3.2d V0 剩余明显 coverage gap 是 tile communication：
+
 - `wafer.tile.send/recv/wait/all_gather/reduce_scatter/all_reduce` 依赖 placement、local rank、
   buffer slice、communication staging 和 DTE resource facts。R3.2d 不能从 op 名、rank 常量或
   unplaced memref 推断通信协议；tile communication materialization 应在这些 facts 明确后进入
@@ -468,7 +477,8 @@ diagnostics to the closed-loop planner or debug pass, but rejected instruction I
   stride/iteration levels.
 - `Cx/NCx` materialization with retained `C0` tail cannot be split into separately representable
   full-block and tail GatherScatter descriptors.
-- static slice/broadcast/transpose cannot be converted into one or more gather_scatter descriptors.
+- static slice/insert/broadcast/transpose whose logical index relation or physical byte offsets cannot be
+  converted into one or more `gather_scatter` descriptors.
 - unsupported control-flow op, multi-block region, or nested region whose executable body cannot be fully
   legalized under the same instruction conversion rules.
 - NE GEMM dimension attrs cannot be derived from operand/result types and optional batch attrs.
@@ -477,7 +487,8 @@ diagnostics to the closed-loop planner or debug pass, but rejected instruction I
   runtime ABI call to be legal.
 
 Diagnostics should mention the source op and the missing legality fact, for example:
-`wafer.tile.transpose cannot lower to TDMA-backed wafer.instr.gather_scatter: unsupported permutation`.
+`tile.communication lowering requires placement/local-rank facts` or
+`tile.broadcast lowering requires static positive iteration shape`.
 
 ## 10. Verifier Contract
 
@@ -611,10 +622,19 @@ R3.2d.3 已完成：
 
 7. 增加 `wafer-lower-tile-region-to-instr` 和 `wafer-lower-groups-to-instr` named pipeline，
    复用同一 `WaferTileRegionToInstr` conversion implementation。
-8. pipeline tests 覆盖多 group、structured `scf.if` / `scf.for`、unsupported movement
+8. pipeline tests 覆盖多 group、structured `scf.if` / `scf.for`、tile communication
    structured failure，以及转换后不能残留 executable target-abstract op 的 pipeline-level gate。
+
+R3.2d.4 已完成：
+
+9. `wafer.tile.extract_slice`、`wafer.tile.insert_slice`、`wafer.tile.broadcast` 和
+   `wafer.tile.transpose` 的静态 movement lowering 已接入同一个 DialectConversion，按 op 语义枚举
+   logical iteration domain，调用统一 physical layout calculator 计算 source/dest byte offset，并
+   coalesce 相邻 byte 段后生成 `wafer.instr.gather_scatter`。
+10. conversion tests 覆盖 compact tensor movement，以及 `Cx:[CxBlock][outer][lane]` /
+    `NCx:[N][CxBlock][HW][lane]` block-major physical offset 的切片 descriptor。
 
 后续仍需：
 
-9. convert lowering 等 `wafer.tile.convert`
+11. convert lowering 等 `wafer.tile.convert`
    或等价 source op 出现后再接入 completion gate。

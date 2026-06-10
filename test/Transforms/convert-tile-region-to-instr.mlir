@@ -179,6 +179,109 @@ func.func @nested_loop(
 // CHECK: wafer.instr.gather_scatter
 // CHECK: scf.yield
 
+func.func @movement_extract_insert_broadcast_transpose(%zero: f16) {
+  %region = wafer.tile.region(%zero : f16) -> (f16) {
+  ^bb0(%fill: f16):
+    %wide = memref.alloc()
+        : memref<8xf16, #wafer.memory<spm, tensor>>
+    %slice = wafer.tile.extract_slice %wide
+        {offsets = array<i64: 2>, sizes = array<i64: 4>, strides = array<i64: 1>}
+        : memref<8xf16, #wafer.memory<spm, tensor>>
+       -> memref<4xf16, #wafer.memory<spm, tensor>>
+    %inserted = wafer.tile.insert_slice %slice into %wide
+        {offsets = array<i64: 2>, sizes = array<i64: 4>, strides = array<i64: 1>}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+         into memref<8xf16, #wafer.memory<spm, tensor>>
+       -> memref<8xf16, #wafer.memory<spm, tensor>>
+    %matrix = memref.alloc()
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    %transposed = wafer.tile.transpose %matrix
+        {permutation = array<i64: 1, 0>}
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>
+       -> memref<3x2xf16, #wafer.memory<spm, tensor>>
+    %vector = memref.alloc()
+        : memref<3xf16, #wafer.memory<spm, tensor>>
+    %broadcast = wafer.tile.broadcast %vector
+        {dimensions = array<i64: 1>}
+        : memref<3xf16, #wafer.memory<spm, tensor>>
+       -> memref<2x3xf16, #wafer.memory<spm, tensor>>
+    wafer.tile.yield %fill : f16
+  }
+  return
+}
+
+// CHECK-LABEL: func.func @movement_extract_insert_broadcast_transpose
+// CHECK-NOT: wafer.tile.extract_slice
+// CHECK-NOT: wafer.tile.insert_slice
+// CHECK-NOT: wafer.tile.transpose
+// CHECK-NOT: wafer.tile.broadcast
+// CHECK: %[[WIDE:.+]] = memref.alloc() : memref<8xf16, #wafer.memory<spm, tensor>>
+// CHECK: %[[SLICE:.+]] = memref.alloc() : memref<4xf16, #wafer.memory<spm, tensor>>
+// CHECK: wafer.instr.gather_scatter %[[WIDE]] to %[[SLICE]]
+// CHECK-SAME: byte_count = 8 : i64
+// CHECK-SAME: src_offset = 4 : i64
+// CHECK: %[[INSERTED:.+]] = memref.alloc() : memref<8xf16, #wafer.memory<spm, tensor>>
+// CHECK: wafer.instr.gather_scatter %[[WIDE]] to %[[INSERTED]]
+// CHECK-SAME: byte_count = 16 : i64
+// CHECK: wafer.instr.gather_scatter %[[SLICE]] to %[[INSERTED]]
+// CHECK-SAME: byte_count = 8 : i64
+// CHECK-SAME: dst_offset = 4 : i64
+// CHECK: %[[MATRIX:.+]] = memref.alloc() : memref<2x3xf16, #wafer.memory<spm, tensor>>
+// CHECK: %[[TRANSPOSED:.+]] = memref.alloc() : memref<3x2xf16, #wafer.memory<spm, tensor>>
+// CHECK: wafer.instr.gather_scatter %[[MATRIX]] to %[[TRANSPOSED]]
+// CHECK-SAME: byte_count = 2 : i64
+// CHECK: wafer.instr.gather_scatter %[[MATRIX]] to %[[TRANSPOSED]]
+// CHECK-SAME: dst_offset = 2 : i64
+// CHECK-SAME: src_offset = 6 : i64
+// CHECK: %[[VECTOR:.+]] = memref.alloc() : memref<3xf16, #wafer.memory<spm, tensor>>
+// CHECK: %[[BROADCAST:.+]] = memref.alloc() : memref<2x3xf16, #wafer.memory<spm, tensor>>
+// CHECK: wafer.instr.gather_scatter %[[VECTOR]] to %[[BROADCAST]]
+// CHECK-SAME: byte_count = 6 : i64
+// CHECK: wafer.instr.gather_scatter %[[VECTOR]] to %[[BROADCAST]]
+// CHECK-SAME: byte_count = 6 : i64
+// CHECK-SAME: dst_offset = 6 : i64
+
+func.func @movement_cx_ncx_block_major_offsets(%zero: f16) {
+  %region = wafer.tile.region(%zero : f16) -> (f16) {
+  ^bb0(%fill: f16):
+    %cx_source = memref.alloc()
+        : memref<2x128xf16, #wafer.memory<spm, cx>>
+    %cx_slice = wafer.tile.extract_slice %cx_source
+        {offsets = array<i64: 1, 0>, sizes = array<i64: 1, 128>, strides = array<i64: 1, 1>}
+        : memref<2x128xf16, #wafer.memory<spm, cx>>
+       -> memref<1x128xf16, #wafer.memory<spm, cx>>
+    %ncx_source = memref.alloc()
+        : memref<2x2x128xf16, #wafer.memory<spm, ncx>>
+    %ncx_slice = wafer.tile.extract_slice %ncx_source
+        {offsets = array<i64: 1, 0, 0>, sizes = array<i64: 1, 2, 128>, strides = array<i64: 1, 1, 1>}
+        : memref<2x2x128xf16, #wafer.memory<spm, ncx>>
+       -> memref<1x2x128xf16, #wafer.memory<spm, ncx>>
+    wafer.tile.yield %fill : f16
+  }
+  return
+}
+
+// CHECK-LABEL: func.func @movement_cx_ncx_block_major_offsets
+// CHECK-NOT: wafer.tile.extract_slice
+// CHECK: %[[CX_SOURCE:.+]] = memref.alloc() : memref<2x128xf16, #wafer.memory<spm, cx>>
+// CHECK: %[[CX_SLICE:.+]] = memref.alloc() : memref<1x128xf16, #wafer.memory<spm, cx>>
+// CHECK: wafer.instr.gather_scatter %[[CX_SOURCE]] to %[[CX_SLICE]]
+// CHECK-SAME: byte_count = 128 : i64
+// CHECK-SAME: src_offset = 128 : i64
+// CHECK: wafer.instr.gather_scatter %[[CX_SOURCE]] to %[[CX_SLICE]]
+// CHECK-SAME: byte_count = 128 : i64
+// CHECK-SAME: dst_offset = 128 : i64
+// CHECK-SAME: src_offset = 384 : i64
+// CHECK: %[[NCX_SOURCE:.+]] = memref.alloc() : memref<2x2x128xf16, #wafer.memory<spm, ncx>>
+// CHECK: %[[NCX_SLICE:.+]] = memref.alloc() : memref<1x2x128xf16, #wafer.memory<spm, ncx>>
+// CHECK: wafer.instr.gather_scatter %[[NCX_SOURCE]] to %[[NCX_SLICE]]
+// CHECK-SAME: byte_count = 128 : i64
+// CHECK-SAME: src_offset = 512 : i64
+// CHECK: wafer.instr.gather_scatter %[[NCX_SOURCE]] to %[[NCX_SLICE]]
+// CHECK-SAME: byte_count = 128 : i64
+// CHECK-SAME: dst_offset = 256 : i64
+// CHECK-SAME: src_offset = 768 : i64
+
 func.func @reshape_view(
     %input: memref<4x16xf16, #wafer.memory<ddr, tensor>>,
     %output: memref<8x8xf16, #wafer.memory<ddr, tensor>>) {
