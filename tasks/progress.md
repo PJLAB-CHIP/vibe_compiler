@@ -96,8 +96,9 @@ Pipeline position:
   IR 中的 memref view，不能从名字、shape 或 whole-boundary memref 推断。
 - R3.2f 已接入 `wafer.spm.placement = #wafer.spm_placement<offset, size, alignment, bank_begin,
   bank_limit>` accepted fact；arena 作用域是单个 `wafer.tile.region`，默认普通 SPM range 为
-  `[0x10000, 0x2F0000)`，size 来自 `computeWaferPhysicalTensorInfo` 的 physical bytes。V0 lifetime
-  保守为 full-region interval，不做跨 branch/loop/async wait 的 reuse。
+  `[0x10000, 0x2F0000)`，size 来自 `computeWaferPhysicalTensorInfo` 的 physical bytes。V0 已对
+  tile-region direct body 的 straight-line def/use 建立 interval first-fit reuse；nested control-flow、
+  loop iteration temp、async wait/drain 和 must-alias group 仍保守处理，后续继续补精细 lifetime。
 - `wafer-lower-groups-to-instr` 目前是 bring-up / explicit static-view lowering 入口，不是完整
   closed-loop tiling planner completion proof。
 - `wafer-lower-groups-to-placed-instr` 是 R3.2f 当前可重放入口：它在 R3.2c/R3.2d 后追加 SPM placement，
@@ -118,7 +119,7 @@ Pipeline position:
 | R3.2d | done | R3.2c target-abstract tile-region IR；DDR side 是 Wafer DDR memref，SPM side 是 unplaced Wafer SPM memref | instruction-level `wafer.instr.*`；覆盖 RDMA/WDMA/TDMA/CT/NE op contract、structured control-flow body legalization、static movement descriptor packing；不生成 ABI call |
 | R3.2e.a | done | R3.1 group + explicit static boundary slice facts + R3.2c/R3.2d lowering chain | external boundary `tensor.extract_slice` 和 direct output `tensor.insert_slice` materialize 为 DDR `memref.subview` tile operands；simple tiled elementwise/matmul/storeback 的 RDMA/WDMA descriptor 来自 actual tile view，不退回 whole-boundary DMA |
 | R3.2e.b | done | R3.1 group + candidate output tile offsets/sizes + R3.2a/R3.2b facts | planner candidate evaluation 中通过 linalg indexing maps 生成 boundary slice proposal；simple full-tensor matmul group 生成 input/output DDR `memref.subview` tile operands，不写回主 IR |
-| R3.2f | done | R3.2e candidate tile-view IR 经 R3.2d legalization 后的 instruction-level IR | `wafer.spm.placement` accepted fact 标注 SPM `memref.alloc`；simple tiled elementwise/matmul/storeback 获得非重叠、256B 对齐、range/end 合法 placement；Cx/NCx 使用 physical bytes；capacity/alignment/range failure 结构化诊断；V0 保守 full-region lifetime、不做 reuse |
+| R3.2f | done | R3.2e candidate tile-view IR 经 R3.2d legalization 后的 instruction-level IR | `wafer.spm.placement` accepted fact 标注 SPM `memref.alloc`；simple tiled elementwise/matmul/storeback 获得非重叠、256B 对齐、range/end 合法 placement；Cx/NCx 使用 physical bytes；straight-line last-use 后可复用 SPM range；capacity/alignment/range failure 结构化诊断；nested control-flow/async 精细 lifetime 仍后续 |
 
 ## 后续队列
 

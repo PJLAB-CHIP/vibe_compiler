@@ -447,9 +447,16 @@ placement fact。该 attr 挂在定义 SPM buffer value 的 `memref.alloc` 上�
 
 placement arena 的作用域是单个 `wafer.tile.region`，因为普通 SPM window 是 tile-local。不同
 tile-region 可以使用相同 offset；同一个 tile-region 内的 SPM allocation 必须在 accepted
-placement 下不重叠、range/end 合法。V0 lifetime 采用保守全 region interval：不尝试跨
-branch/loop/async wait 复用 buffer，因此不会把可复用机会写成 IR 协议；后续精细 lifetime/reuse
-仍必须由 IR use-def、structured control-flow 和 effect/wait 重新计算。
+placement 下不重叠、range/end 合法。当前 R3.2f V0 对 `wafer.tile.region` 直接 body 内的
+straight-line op 建立 def/use event interval：`memref.alloc` 是 start event，base value 或
+view-like alias 的最后一次 use 是 end event；first-fit 只避开 lifetime overlap 的已放置 interval，
+因此 last-use 后的 buffer 可以复用同一 SPM range。
+
+嵌套 structured control-flow、带 region 的 op、非直接 body allocation / use 和后续 async wait/drain
+关系当前仍保守成 full-region interval。也就是说，branch 互斥复用、loop iteration temp 复用、
+async issue/drain/wait 后复用和 must-alias group 合并还没有作为 R3.2f V0 的 completed capability；
+这些后续必须继续由 IR use-def、structured control-flow 和 effect/wait 重新计算，不能写成旁路
+协议或搜索 trace。
 
 `wafer.spm.placement` 是 accepted fact，不是搜索 trace。失败原因仍通过 pass diagnostic 返回，
 不写进 IR；未接受的 candidate offset、first-fit 探索过程和 repair suggestion 都保持为 analysis。

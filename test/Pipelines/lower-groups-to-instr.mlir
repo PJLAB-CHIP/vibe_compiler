@@ -299,8 +299,8 @@ func.func @boundary_tiled_matmul_group(%lhs: tensor<4x8xf16>,
 // PLACED: memref.alloc() {wafer.spm.placement = #wafer.spm_placement<65536, 16, 256, 256, 257>} : memref<2x4xf16, #wafer.memory<spm, tensor>>
 // PLACED: memref.alloc() {wafer.spm.placement = #wafer.spm_placement<65792, 24, 256, 257, 258>} : memref<4x3xf16, #wafer.memory<spm, tensor>>
 // PLACED: memref.alloc() {wafer.spm.placement = #wafer.spm_placement<66048, 12, 256, 258, 259>} : memref<2x3xf16, #wafer.memory<spm, tensor>>
-// PLACED: memref.alloc() {wafer.spm.placement = #wafer.spm_placement<66304, 256, 256, 259, 260>} : memref<2x4xf16, #wafer.memory<spm, cx>>
-// PLACED: memref.alloc() {wafer.spm.placement = #wafer.spm_placement<66560, 256, 256, 260, 261>} : memref<4x3xf16, #wafer.memory<spm, cx>>
-// PLACED: memref.alloc() {wafer.spm.placement = #wafer.spm_placement<66816, 256, 256, 261, 262>} : memref<2x3xf16, #wafer.memory<spm, cx>>
-// PLACED: memref.alloc() {wafer.spm.placement = #wafer.spm_placement<67072, 12, 256, 262, 263>} : memref<2x3xf16, #wafer.memory<spm, tensor>>
+// PLACED: memref.alloc() {wafer.spm.placement = #wafer.spm_placement<66048, 256, 256, 258, 259>} : memref<2x4xf16, #wafer.memory<spm, cx>>
+// PLACED: memref.alloc() {wafer.spm.placement = #wafer.spm_placement<65536, 256, 256, 256, 257>} : memref<4x3xf16, #wafer.memory<spm, cx>>
+// PLACED: memref.alloc() {wafer.spm.placement = #wafer.spm_placement<65792, 256, 256, 257, 258>} : memref<2x3xf16, #wafer.memory<spm, cx>>
+// PLACED: memref.alloc() {wafer.spm.placement = #wafer.spm_placement<65536, 12, 256, 256, 257>} : memref<2x3xf16, #wafer.memory<spm, tensor>>
 // PLACED: wafer.instr.wdma

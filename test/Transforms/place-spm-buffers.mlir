@@ -43,7 +43,7 @@ func.func @place_instruction_spm(%input: memref<2x3xf16, #wafer.memory<ddr, tens
 // CHECK: wafer.instr.rdma {{.*}} to %[[LOADED]]
 // CHECK: %[[ELEMENTWISE:.+]] = memref.alloc() {wafer.spm.placement = #wafer.spm_placement<65792, 12, 256, 257, 258>} : memref<2x3xf16, #wafer.memory<spm, tensor>>
 // CHECK: wafer.instr.elementwise <add> %[[LOADED]], %[[LOADED]] into %[[ELEMENTWISE]]
-// CHECK: %[[CX:.+]] = memref.alloc() {wafer.spm.placement = #wafer.spm_placement<66048, 256, 256, 258, 259>} : memref<4x8xf16, #wafer.memory<spm, cx>>
+// CHECK: %[[CX:.+]] = memref.alloc() {wafer.spm.placement = #wafer.spm_placement<65536, 256, 256, 256, 257>} : memref<4x8xf16, #wafer.memory<spm, cx>>
 // CHECK: wafer.instr.wdma %[[ELEMENTWISE]]
 
 // OVERFLOW: capacity_overflow
