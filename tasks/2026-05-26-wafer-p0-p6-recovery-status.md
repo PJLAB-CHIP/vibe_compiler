@@ -278,14 +278,14 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 
 - R3.1：恢复 logical group boundary contract，保证 `wafer.group` 只表达 local tensor grouping
   和 group boundary，并按 group 设计完成 dependency-preserving conservative expansion。
-- R3.2：恢复 root tile planning，把 op tiling、layout、SPM、DDR 和 compute/movement
-  legality 接到同一 group planning decision。
+- R3.2：恢复 root tile planning，把 op tiling、candidate DDR tile-view materialization、layout、SPM、
+  DDR/resource legality 和 compute/movement legality 接到同一 group planning decision。
 - R3.3：恢复 tile_region materialization contract，只把 accepted group materialize 成
   `wafer.tile.region`。
 - R3.4：恢复 layout/SPM materialization gate，让 layout materialization 和 SPM allocation 由 effect、
   liveness/range 和 storage lifetime 驱动。
-- R3.5：恢复 DDR/resource demand gate，覆盖 external binding、workspace、resident constant、
-  pool/domain、capacity/bandwidth demand。
+- R3.5：materialize R3.2h 已接受的 DDR/resource boundary；legality / capacity / bandwidth demand
+  在 R3.2g 中完成，R3.5 不重新决定 group plan。
 - R3.6：恢复 C ABI / packet emission gate，让 ABI 参数单位和 wait policy 从 placed
   instruction-level IR 派生；不再保留专门 ABI IR op family 作为主线或 debug layer。
 - R3.7：恢复 package manifest gate，manifest、C stub 和 launch signature 从当前 `wafer-opt`

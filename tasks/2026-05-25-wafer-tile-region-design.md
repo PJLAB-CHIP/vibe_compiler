@@ -8,7 +8,7 @@ instruction-level Wafer IR 先于 SPM placement，并补正式 `group -> tile_re
 2026-06-05 对齐 memref-backed buffer contract，`Cx/NCx` 改为 Wafer memory attr marker；
 2026-06-05 补齐 R3.2c DDR boundary materialization 和 One-Shot function-boundary pipeline；
 2026-06-05 补 R3.2c `scf.if` / `scf.for` 结构化 control-flow lowering 合同；
-2026-06-08 同步 R3.2c 完成状态和 R3.2d active 边界；
+2026-06-08 同步 R3.2c 完成状态和 R3.2d instruction lowering 边界；
 2026-06-10 将 candidate DDR tile-view producer 前移为 R3.2e active 边界
 
 本文定义 `wafer.tile.region` 作为 `wafer.group` lowering 之后的 tile-local execution boundary。
