@@ -16,6 +16,8 @@ void buildFormLogicalGroupsPipeline(mlir::OpPassManager &pm);
 void buildLowerGroupsToTileRegionPipeline(mlir::OpPassManager &pm);
 void buildLowerTileRegionToInstrPipeline(mlir::OpPassManager &pm);
 void buildLowerGroupsToInstrPipeline(mlir::OpPassManager &pm);
+void buildPlaceSPMBuffersPipeline(mlir::OpPassManager &pm);
+void buildLowerGroupsToPlacedInstrPipeline(mlir::OpPassManager &pm);
 
 #ifdef WAFER_ENABLE_SHARDY
 void buildStablehloShardingPropagationPipeline(mlir::OpPassManager &pm,

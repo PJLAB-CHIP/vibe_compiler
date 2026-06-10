@@ -1,4 +1,5 @@
 // RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-groups-to-instr)' %s | FileCheck %s
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-groups-to-placed-instr)' %s | FileCheck --check-prefix=PLACED %s
 
 func.func @add_group(%lhs: tensor<4xf32>, %rhs: tensor<4xf32>,
                      %out: tensor<4xf32>) -> tensor<4xf32> {
@@ -288,3 +289,18 @@ func.func @boundary_tiled_matmul_group(%lhs: tensor<4x8xf16>,
 // CHECK-SAME: dst_iterations = array<i64: 2, 1, 1>
 // CHECK-SAME: dst_strides = array<i64: 16, 0, 0>
 // CHECK-SAME: inner_bytes = 6 : i64
+
+// PLACED-LABEL: func.func @boundary_slice_group
+// PLACED: memref.alloc() {wafer.spm.placement = #wafer.spm_placement<65536, 12, 256, 256, 257>} : memref<2x3xf16, #wafer.memory<spm, tensor>>
+// PLACED: memref.alloc() {wafer.spm.placement = #wafer.spm_placement<65792, 12, 256, 257, 258>} : memref<2x3xf16, #wafer.memory<spm, tensor>>
+// PLACED: wafer.instr.wdma
+
+// PLACED-LABEL: func.func @boundary_tiled_matmul_group
+// PLACED: memref.alloc() {wafer.spm.placement = #wafer.spm_placement<65536, 16, 256, 256, 257>} : memref<2x4xf16, #wafer.memory<spm, tensor>>
+// PLACED: memref.alloc() {wafer.spm.placement = #wafer.spm_placement<65792, 24, 256, 257, 258>} : memref<4x3xf16, #wafer.memory<spm, tensor>>
+// PLACED: memref.alloc() {wafer.spm.placement = #wafer.spm_placement<66048, 12, 256, 258, 259>} : memref<2x3xf16, #wafer.memory<spm, tensor>>
+// PLACED: memref.alloc() {wafer.spm.placement = #wafer.spm_placement<66304, 256, 256, 259, 260>} : memref<2x4xf16, #wafer.memory<spm, cx>>
+// PLACED: memref.alloc() {wafer.spm.placement = #wafer.spm_placement<66560, 256, 256, 260, 261>} : memref<4x3xf16, #wafer.memory<spm, cx>>
+// PLACED: memref.alloc() {wafer.spm.placement = #wafer.spm_placement<66816, 256, 256, 261, 262>} : memref<2x3xf16, #wafer.memory<spm, cx>>
+// PLACED: memref.alloc() {wafer.spm.placement = #wafer.spm_placement<67072, 12, 256, 262, 263>} : memref<2x3xf16, #wafer.memory<spm, tensor>>
+// PLACED: wafer.instr.wdma

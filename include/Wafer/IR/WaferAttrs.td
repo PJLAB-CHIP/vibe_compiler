@@ -62,6 +62,33 @@ def Wafer_MemoryAttr : AttrDef<Wafer_Dialect, "Memory"> {
   let assemblyFormat = "`<` $space `,` $layout `>`";
 }
 
+def Wafer_SPMPlacementAttr : AttrDef<Wafer_Dialect, "SPMPlacement"> {
+  let mnemonic = "spm_placement";
+  let summary = "Accepted Wafer SPM byte placement fact";
+  let description = [{
+    `#wafer.spm_placement<offset, size, alignment, bank_begin, bank_limit>`
+    records an accepted tile-local SPM byte range for a Wafer SPM memref
+    definition. The `size` is the physical storage size computed from the
+    memref type and Wafer layout, not merely the logical compact tensor byte
+    count. `bank_begin` and `bank_limit` describe the half-open span of 256B
+    bank lines touched by the placed range.
+
+    This attribute is an accepted placement fact for instruction-level IR. It
+    does not encode allocator search trace, runtime handles, packet fields, or
+    DDR resource ownership.
+  }];
+
+  let parameters = (ins
+    "int64_t":$offset,
+    "int64_t":$size,
+    "int64_t":$alignment,
+    "int64_t":$bankBegin,
+    "int64_t":$bankLimit
+  );
+  let assemblyFormat = "`<` $offset `,` $size `,` $alignment `,` "
+                       "$bankBegin `,` $bankLimit `>`";
+}
+
 def Wafer_PlacementSingleTile : I32EnumAttrCase<"SingleTile", 0, "single_tile">;
 def Wafer_PlacementTileMesh : I32EnumAttrCase<"TileMesh", 1, "tile_mesh">;
 def Wafer_PlacementCardMesh : I32EnumAttrCase<"CardMesh", 2, "card_mesh">;

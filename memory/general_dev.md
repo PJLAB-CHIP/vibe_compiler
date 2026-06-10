@@ -160,6 +160,13 @@
   `tensor.extract_slice`、direct output `tensor.insert_slice` storeback，以及 candidate output
   tile offsets/sizes candidate evaluation lowering 的 DDR `memref.subview` producer；R3.2d 仍不能根据
   whole-boundary shape 自己恢复 subview，closed-loop traversal / tile-shape search 归 R3.2h。
+- R3.2f SPM placement fact 不属于 `#wafer.memory<spm, layout>` 本身，也不属于 logical
+  `wafer.placement.map`。accepted fact 当前挂在 SPM `memref.alloc` 的 `wafer.spm.placement`
+  attr 上，值为 `#wafer.spm_placement<offset, size, alignment, bank_begin, bank_limit>`；arena
+  作用域是单个 `wafer.tile.region`，不同 tile-region 可以复用相同 offset。`size` 必须来自
+  `computeWaferPhysicalTensorInfo(memrefType).physicalBytes`，所以 `Cx/NCx` padding、C0 tail/fold
+  和 256B bank alignment 都进入 footprint。V0 lifetime 保守为 full-region interval，不把未实现的
+  reuse 机会写进 IR。
 - 用户级 compiler target 名称统一为 `wafer`，Wafer IR target attr 的唯一主线 spelling 是
   `#wafer.target<wafer>`。`tx8` / `tx81` 只保留在硬件、依赖逆向和外部历史命名事实里，不能作为
   compiler target、pipeline 名称或测试 fixture 的主线命名。

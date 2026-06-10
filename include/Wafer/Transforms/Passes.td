@@ -104,4 +104,21 @@ def ConvertTileRegionToInstrPass
   ];
 }
 
+def PlaceSPMBuffersPass
+    : Pass<"wafer-place-spm-buffers", "mlir::ModuleOp"> {
+  let summary =
+      "Place Wafer SPM memref allocations with tile-local byte offsets";
+  let dependentDialects = ["mlir::memref::MemRefDialect",
+                           "wafer::WaferDialect",
+  ];
+  let options = [
+    Option<"spmBase", "spm-base", "int64_t", /*default=*/"65536",
+           "Inclusive byte offset for ordinary tile-local SPM placement">,
+    Option<"spmLimit", "spm-limit", "int64_t", /*default=*/"3080192",
+           "Exclusive byte limit for ordinary tile-local SPM placement">,
+    Option<"spmAlignment", "spm-alignment", "int64_t", /*default=*/"256",
+           "Preferred byte alignment for ordinary tile-local SPM placement">
+  ];
+}
+
 #endif // WAFER_TRANSFORMS_PASSES_TD

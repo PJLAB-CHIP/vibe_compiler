@@ -4,6 +4,7 @@ add_mlir_library(WaferTransforms
   Group/DumpTilingDemand.cpp
   Group/DumpGroupToTileRegion.cpp
   Group/FormLogicalGroups.cpp
+  SPM/PlaceSPMBuffers.cpp
   SPMD/ApplyDefaultSpmdSharding.cpp
   Passes.cpp
 

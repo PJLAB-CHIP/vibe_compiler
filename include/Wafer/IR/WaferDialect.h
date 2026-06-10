@@ -35,6 +35,8 @@
 namespace wafer {
 
 inline constexpr char kWaferCommSlotAttrName[] = "slot";
+inline constexpr char kWaferSPMPlacementAttrName[] = "wafer.spm.placement";
+inline constexpr int64_t kWaferSPMBankLineBytes = 256;
 
 struct WaferPhysicalTensorInfo {
   mlir::RankedTensorType logicalTensorType;
