@@ -4,7 +4,8 @@
 
 状态：R3.2d 设计已按 memref-backed buffer contract 重新收口；R3.2c 前置已完成，
 R3.2d.1 instruction op contract、R3.2d.2 DialectConversion、R3.2d.3 named pipeline 接入和
-R3.2d.4 static movement descriptor splitting / packing 已落地。
+R3.2d.4 static movement descriptor splitting / packing 已落地；2026-06-10 明确 R3.2d 只消费
+已显式 materialize 的 DDR `memref.subview`，candidate tile-view producer 前移为 R3.2e。
 
 本文定义 R3.2d 的 instruction-level Wafer IR。核心结论：
 
@@ -38,6 +39,9 @@ memref SSA、Wafer memory attr、op operands、attrs、MemoryEffects 和显式 d
   三层 stride/iteration `wafer.instr.gather_scatter` descriptor。
 - R3.2c 已产出 memref-backed `wafer.tile.region`；R3.2d 必须基于该 unplaced Wafer-tagged memref
   graph 做 instruction lowering，不能再引入 storage/buffer IR 层。
+- R3.2d 的 RDMA/WDMA lowering 可以消费 DDR `memref.subview` / strided memref view，但不会从
+  group tiling plan 自己生成这些 view。candidate tile 的 DDR subview 由 R3.2e 在 planner scratch
+  path 中 materialize。
 - R3.2c 已支持 `scf.if` / `scf.for` 作为 tile-region 内 structured control-flow。R3.2d 必须递归
   legalize 这些 region body 内的 executable target-abstract op，并保留 `scf` container；是否选择
   硬件 branch/loop、predication 或 unroll 不是 R3.2d V0 的职责。
@@ -70,11 +74,14 @@ Pipeline position:
   memref values with `#wafer.memory<space, layout>` + `wafer.instr.*` +
   `wafer.instr.local_drain`，或结构化 legalization failure reason。
 - Downstream consumer:
-  R3.2e SPM placement、R3.2f DDR/resource legality、R3.2g closed-loop planner、
+  R3.2e candidate DDR tile-view materialization、R3.2f SPM placement、
+  R3.2g DDR/resource legality、R3.2h closed-loop planner、
   R3.4 placed memref realization 和 R3.6 codegen emission。
 - User-level driver / named pipeline:
   主线由 R3.2 closed-loop planner 调用；局部 bring-up / planner scratch 入口是
   `wafer-lower-tile-region-to-instr` 和 `wafer-lower-groups-to-instr` named pipeline。
+  planner scratch 调用 R3.2d 时，DDR load/store operand 必须已经由 R3.2e 表达成 candidate
+  tile view；如果仍是 whole-boundary memref，R3.2d 只能生成 whole-boundary descriptor。
   `--wafer-convert-tile-region-to-instr` 只作为 lit/debug pass 入口。
 - Explicit non-goals:
   不新增第二套 storage/buffer IR，不决定 group boundary、tile shape、layout assignment、SPM offset、
@@ -266,7 +273,7 @@ memref 替换原 op result 的 uses。
 - result/temp/psum/staging buffer 由 `memref.alloc` 或 accepted alias/view 创建。
 - metadata-only reshape 由 verifier-legal memref view 表达；physical layout conversion 必须是
   explicit movement。
-- SPM offset、range、bank span 由 R3.2e 写入，或在 R3.4 realization 降成 placed memref /
+- SPM offset、range、bank span 由 R3.2f 写入，或在 R3.4 realization 降成 placed memref /
   address descriptor。
 - RDMA/WDMA 的 DDR side 使用 `memref<..., #wafer.memory<ddr, layout>>`；DDR resource stage 负责
   external allocation contract、pool/domain、compiler-managed allocation 和 constant residency。
@@ -358,6 +365,8 @@ R3.2c 的 `wafer.tile.load/store` SPM 侧必须是 compact tensor layout；如�
 必须通过 `wafer.tile.materialize_layout` 再 lower 到 TDMA，而不是让 RDMA/WDMA 隐式承担 layout
 conversion。DDR 侧可以是 compact boundary，也可以是 `memref.subview` / strided memref view；
 R3.2d 从 DDR memref layout 中恢复静态 element stride，转成 byte stride/iteration descriptor。
+R3.2d 不负责把 whole-boundary DDR memref 按 tile shape 切成 subview；该事实必须由 R3.2e
+或 accepted materialization 通过 IR view 显式提供。
 动态 view、负 stride、bit-packed element、超过三层 stride/iteration 或不能静态证明 descriptor 的
 情况必须 structured failure，不能从 memref 名字或 shape 猜测。
 
@@ -375,7 +384,7 @@ wafer.instr.gather_scatter source to dest attr-dict
 V0 只定义这一条 TDMA-backed movement op。copy、layout materialization、static slice movement、broadcast
 和 transpose 都要么映射成一条或多条 gather_scatter，要么失败。`wafer.instr.copy` 不作为
 单独 IR op；contiguous copy 是 gather_scatter descriptor 特例。`src_offset` / `dst_offset`
-是 operand buffer 内的字节偏移，用于表达同一 buffer 内的分段 movement；它们不是 R3.2e/R3.4
+是 operand buffer 内的字节偏移，用于表达同一 buffer 内的分段 movement；它们不是 R3.2f/R3.4
 负责分配的 physical SPM base address。
 
 ### 7.4 Fill / Elementwise / Reduce / Convert
@@ -515,11 +524,11 @@ R3.2d verifier checks only instruction legality:
   `computeWaferPhysicalTensorInfo(memrefType)` and target policy, not copied into `byte_count`.
 - NE GEMM and CT reduce require supported aligned layout marker, dtype and rank.
 - relation/elementwise bool storage uses logical `i1`; physical byte size remains derived, not stored.
-- no SPM offset/end/bank attrs before R3.2e.
+- no SPM offset/end/bank attrs before R3.2f.
 - no DTE/CSR/SCALAR ordinary instruction op.
 
 R3.2d does **not** verify physical address range, SPM bank conflicts, DDR pool/domain capacity, runtime
-symbol, packet bit layout or worker register window. Those checks belong to R3.2e/R3.2f/R3.4/R3.6.
+symbol, packet bit layout or worker register window. Those checks belong to R3.2f/R3.2g/R3.4/R3.6.
 
 ## 11. Example
 
@@ -629,7 +638,8 @@ R3.2d.2 已完成：
 R3.2d.3 已完成：
 
 7. 增加 `wafer-lower-tile-region-to-instr` 和 `wafer-lower-groups-to-instr` named pipeline，
-   复用同一 `WaferTileRegionToInstr` conversion implementation。
+   复用同一 `WaferTileRegionToInstr` conversion implementation。它们是 bring-up / explicit-view
+   lowering 入口；真实 candidate tiling 需要 R3.2e 先 materialize DDR tile views。
 8. pipeline tests 覆盖多 group、structured `scf.if` / `scf.for`、tile communication
    structured failure，以及转换后不能残留 executable target-abstract op 的 pipeline-level gate。
 

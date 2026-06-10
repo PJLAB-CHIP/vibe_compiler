@@ -4,7 +4,8 @@
 
 状态：设计草案；2026-05-25 边界收口；2026-06-04 对齐 instruction-level Wafer IR 先于
 SPM placement；2026-06-05 对齐 memref-backed Wafer memory attr 合同；2026-06-08 同步 DDR/resource
-和 instruction-level pipeline 边界
+和 instruction-level pipeline 边界；2026-06-10 同步 candidate DDR tile-view producer / R3.2h
+closed-loop 边界
 
 本文定义 Wafer 后端的 physical layout planning 和 layout materialization 边界。它服务于
 `wafer.group` 的 legality search，也服务于 `wafer.tile.region` / SPM bufferization 的真实
@@ -84,7 +85,7 @@ layout planning 有两个恢复层次：
   layout constraints、layout assignment alternatives、materialization cut 和 materialization
   buffer demand。该层只产出 analysis result 和 debug dump，不 rewrite `wafer.group`，不写
   layout attr，也不生成 `wafer.tile.region`。
-- R3.4 在 accepted `wafer.tile.region` / instruction-level IR 层运行。它消费 R3.2g accepted plan，把 layout
+- R3.4 在 accepted `wafer.tile.region` / instruction-level IR 层运行。它消费 R3.2h accepted plan，把 layout
   assignment 和 materialization cut materialize 成 Wafer-tagged memref value 和
   `wafer.tile.materialize_layout` op。
 
@@ -127,8 +128,9 @@ Pipeline position:
   本阶段不修改 `wafer.group`，不生成 `wafer.tile.region`，不写 layout attr。
 - Downstream consumer:
   R3.2c group-to-tile-region lowering、R3.2d Wafer instruction legalization / selection、
-  R3.2e SPM placement、R3.2f DDR/resource planning + compute/movement legality analysis，
-  以及 R3.2g closed-loop planner。
+  R3.2e candidate DDR tile-view materialization、R3.2f SPM placement、
+  R3.2g DDR/resource planning + compute/movement legality analysis，
+  以及 R3.2h closed-loop planner。
 - User-level driver / named pipeline:
   主线仍由 `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 产生 R3.1 group；
   R3.2b 的局部验证入口是 `wafer-opt --wafer-dump-group-layout-plan`，用于在

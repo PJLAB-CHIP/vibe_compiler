@@ -2,7 +2,7 @@
 
 状态：架构设计草案；2026-05-25 边界收口；2026-05-27 修正 post-SPMD collective handoff；
 2026-06-01 同步 Wafer-owned SPMD partition stage 边界；2026-06-08 同步 memref-backed tile-region
-和 R3.2d instruction legalization 边界
+和 R3.2d instruction legalization 边界；2026-06-10 同步 candidate DDR tile-view producer
 
 日期：2026-05-11
 
@@ -40,6 +40,7 @@ source model / exported program / pre-exported StableHLO
   -> constant normalization to arith/ConstantLike tensor values
   -> wafer.group scheduling IR
   -> wafer.tile.region bufferized tile-local execution IR
+  -> candidate DDR tile-view materialization
   -> wafer.instr.* instruction-level IR over Wafer-tagged memref
   -> SPM placement + DDR/resource planning
   -> wafer.launch runtime launch boundary
@@ -368,6 +369,8 @@ tile-and-fuse 的主文档，本架构文档只规定它在全 pipeline 中的�
 - 引入 `wafer.tile.region` 作为 `wafer.group` lowering 之后的 tile-local execution scope。
 - 把 accepted tiled SSA graph materialize 成 tile-local storage、movement、layout conversion、
   target-abstract compute、communication 和 sync/effect op。
+- 在 planner scratch path 中根据 candidate tile shape 把 DDR boundary materialize 成显式
+  `memref.subview` tile view，让 RDMA/WDMA descriptor 从 IR view 推出。
 - 对 target-abstract op 先做 Wafer instruction legalization / selection，在 Wafer-tagged
   memref graph 上产出 instruction-level `wafer.instr.*` IR；SPM/DDR/resource
   planner 只消费 instruction-level IR 的 memref use-def、effect 和 lifetime，
@@ -393,6 +396,8 @@ bufferization 见 `tasks/2026-05-21-wafer-spm-bufferization-design.md`；DDR res
 
 - 输入是 target-abstract `wafer.tile.*` compute / movement / boundary op；这些 op 已经在 layout materialization
   前进入 IR，并提供 layout contract。
+- 如果 RDMA/WDMA 读写的是 DDR tile slice，输入 IR 必须已经通过 `memref.subview` / strided
+  memref view 表达该 slice；instruction legalization 只消费 view，不从 tile shape 自己恢复 view。
 - 将 target-abstract op lower 到复用 Wafer-tagged memref 的 instruction-level
   `wafer.instr.*` IR，再由 SPM placement 在同一 IR 上填入 offset/range/bank；
   这一层不直接手写 raw packet bitfield。
@@ -829,6 +834,7 @@ ModelImport/FrontendProgram
   -> Linalg/Tensor/SCF local compute + Wafer tensor collective handoff
   -> logical wafer.group IR
   -> memref-backed wafer.tile.region IR
+  -> candidate DDR tile-view materialization
   -> instruction-level wafer.instr.* IR over unplaced Wafer-tagged memref
   -> placed instruction-level IR with SPM placement facts
   -> DDR/resource legality facts

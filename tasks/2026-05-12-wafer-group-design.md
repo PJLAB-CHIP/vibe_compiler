@@ -5,7 +5,7 @@
 状态：设计草案；2026-05-25 边界收口；2026-05-27 补 post-SPMD tensor collective 边界；
 2026-06-03 收敛 R3.1 root-seeded logical group scope；2026-06-04 对齐
 instruction-level Wafer IR 先于 SPM placement；2026-06-05 对齐 memref-backed Wafer memory attr 合同；
-2026-06-08 同步 DDR/resource policy 命名
+2026-06-08 同步 DDR/resource policy 命名；2026-06-10 前移 candidate DDR tile-view producer 到 R3.2e
 
 本文只定义 `wafer.group` 的 tensor-level grouping 和 scheduling contract。它回答：
 
@@ -93,10 +93,10 @@ Pipeline position:
   按 root/hero op 建立 dependency-preserving logical `wafer.group`，说明哪些
   tensor SSA value、outs、producer/consumer 和 tensor collective 能进入 group。
 - Output artifact / IR:
-  verifier-legal 的 tensor-level `wafer.group` op；它仍是可被 R3.2g 接受、拆分或
+  verifier-legal 的 tensor-level `wafer.group` op；它仍是可被 R3.2h 接受、拆分或
   拒绝的 logical group。
 - Downstream consumer:
-  R3.2a-f planning / analysis results 和 R3.2g closed-loop planner；R3.3 `wafer.tile.region`
+  R3.2a-g planning / analysis results 和 R3.2h closed-loop planner；R3.3 `wafer.tile.region`
   materialization；R3.4/R3.5 accepted layout/SPM/DDR materialization；
   R3.6/R3.7 ABI/package stages。
 - User-level driver / named pipeline:
@@ -594,8 +594,9 @@ root 优先级是：
 - convolution 可作为后续受限目标，但不作为最小链路的主线。
 
 root/hero 只决定 logical group 的初始边界，不决定 traversal tile shape。真正的 traversal
-domain、tile shape、internal split、output coverage 和 instruction selection 仍由 R3.2a-f planning /
-analysis results 和 R3.2g closed-loop scheduled group planner 决定。
+domain、tile shape、internal split、output coverage、candidate DDR tile-view materialization 和
+instruction selection 仍由 R3.2a-g planning / analysis results 和 R3.2h closed-loop
+scheduled group planner 决定。
 
 ### 9.3 Conservative Expansion
 
@@ -619,7 +620,7 @@ logical group expansion 必须保持 dependency-preserving：
 - 若某个 value 在 group 外仍有 live use，必须成为 group result 或停在 group boundary；
   不能假设后续 pass 会补 materialization/writeback。
 - 多 use producer 第一版默认不吸收。后续若要放开，必须证明所有 users 对该 producer 的
-  indexing / slice 关系一致，或者 R3.2g 能给出合法且成本可接受的 recomputation /
+  indexing / slice 关系一致，或者 R3.2h 能给出合法且成本可接受的 recomputation /
   materialization 方案。
 - shape-only op 可以被吸收，但不能用名字匹配；必须由 op 语义、type、rank/shape 和 SSA
   use-def 证明它不会引入新的 storage/runtime 语义。
@@ -767,19 +768,25 @@ SPM allocation、layout assignment、DDR/resource demand 和 compute/movement le
   target-abstract compute/comm/layout/load-store/move/sync op 合法化并选择成 instruction-level
   `wafer.instr.*`，复用现有 Wafer-tagged memref graph，显式列出 queue、read/write/issue
   effects、descriptor attrs、temp/psum/staging memref values、alias/view 关系和 reject reason。
-- R3.2e 恢复 SPM placement：只消费 R3.2d instruction-level IR with unplaced Wafer-tagged memref，在真实 SPM window、
+- R3.2e 恢复 candidate DDR tile-view materialization：消费 R3.1 group、R3.2a/R3.2b facts 和
+  candidate traversal / tile shape / boundary slice proposal，为 tile load/store 从 full DDR memref
+  生成 `memref.subview` / strided DDR tile operands。它只构造 planner scratch IR，不 accept plan，
+  也不把 rejected candidate 写入主 IR。
+- R3.2f 恢复 SPM placement：只消费 R3.2e candidate tile-view materialization 后经 R3.2d
+  instruction legalization 产出的 instruction-level IR with actual DDR
+  tile views and unplaced Wafer-tagged memref，在真实 SPM window、
   alignment、layout padding、scratch/psum/temp、materialization temp、communication staging、
   lifetime overlap、range/end-address/bank span 和 conflict 约束下搜索可接受 buffer placement。
-- R3.2f 恢复 DDR/resource planning 和 compute/movement legality analysis：消费 placed
+- R3.2g 恢复 DDR/resource planning 和 compute/movement legality analysis：消费 placed
   instruction-level IR 和 SPM facts，覆盖 external/compiler-managed/resident-constant、bandwidth/range/
   pool/domain，以及 op layout/dtype/shape/effect 合法性；不能回头改变 instruction semantics。
-- R3.2g 才能做 closed-loop group planner：搜索 traversal、tile shape、layout、instruction selection、
-  SPM/DDR/resource plan，并输出 accepted / rejected / split decision。
+- R3.2h 才能做 closed-loop group planner：搜索 traversal、tile shape、layout、DDR tile view、
+  instruction selection、SPM/DDR/resource plan，并输出 accepted / rejected / split decision。
 
-R3.3 只 materialize R3.2g 已接受的 plan 为 committed `wafer.tile.region`。R3.4/R3.5 只把
-R3.2g 已经接受的 layout/instruction/SPM/DDR facts 落到可验证 IR 或 resource boundary；它们不能成为
-第一次发现 SPM 放不下、layout 不合法或 DDR demand 不可接受的阶段。若 R3.2a-f planning results
-让 R3.2g 不能接受当前 group plan，planner 必须回到 tile shape、layout、internal split、instruction
+R3.3 只 materialize R3.2h 已接受的 plan 为 committed `wafer.tile.region`。R3.4/R3.5 只把
+R3.2h 已经接受的 layout/instruction/SPM/DDR facts 落到可验证 IR 或 resource boundary；它们不能成为
+第一次发现 SPM 放不下、layout 不合法或 DDR demand 不可接受的阶段。若 R3.2a-g planning results
+让 R3.2h 不能接受当前 group plan，planner 必须回到 tile shape、layout、internal split、instruction
 选择或 group boundary，而不是落一个未接受的 `wafer.tile.region` 等待下游补救。
 
 ### 10.1.2 R3.2a Op Tiling Demand Analysis
@@ -787,7 +794,7 @@ R3.2g 已经接受的 layout/instruction/SPM/DDR facts 落到可验证 IR 或 re
 R3.2a 的边界是 analysis，不是 scheduled IR materialization。它消费 R3.1 形成的
 logical `wafer.group`，在给定 target-abstract traversal / output tile proposal 时，从每个
 op 的结构化语义恢复 tile-level demand graph。第一版可以用 full-result tile 作为默认候选来
-验证语义恢复；后续 R3.2g planner 会用同一 analysis 查询不同 tile shape。
+验证语义恢复；后续 R3.2h planner 会用同一 analysis 查询不同 tile shape。
 
 Pipeline position:
 
@@ -805,8 +812,9 @@ Pipeline position:
   但不修改 IR、不生成 `wafer.tile.region`、不写 `wafer.group` attribute。
 - Downstream consumer:
   R3.2b layout planning、R3.2c group-to-tile-region lowering、
-  R3.2d Wafer instruction legalization / selection、R3.2e SPM placement、R3.2f DDR/resource planning +
-  compute/movement legality analysis，以及 R3.2g closed-loop planner。
+  R3.2e candidate DDR tile-view materialization、R3.2d Wafer instruction legalization / selection、
+  R3.2f SPM placement、R3.2g DDR/resource planning + compute/movement legality analysis，
+  以及 R3.2h closed-loop planner。
 - User-level driver / named pipeline:
   主线仍由 `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 产生 R3.1 group；
   R3.2a 的局部验证入口是 `wafer-opt --wafer-dump-group-tiling-demand`，用于在同一
@@ -844,7 +852,7 @@ tile，reduction / contraction dims 作为 hidden/internal demand 保留。不�
 `wafer.tensor.*` 必须走 MLIR `TilingInterface` 和
 `WaferTensorCollectiveOpInterface`。shape-preserving collective 可以返回同 shape tile demand；
 all-gather / reduce-scatter / all-to-all 必须检查 collective axis / slot relation，无法证明
-slot-aligned 时返回 failure，让 R3.2g 回到 tile shape 或 group split。
+slot-aligned 时返回 failure，让 R3.2h 回到 tile shape 或 group split。
 
 `tensor.empty` 在该层是 destination/init storage placeholder，不是可执行 compute demand。
 `linalg.fill` 是 init/write demand；若它初始化后续 reduction / contraction output，对应 value
@@ -886,12 +894,12 @@ group planner 不替每个 op 实现 tiling，也不把 matmul、reduction、win
 
 ### 10.2.1 Multi-root Packing / Co-scheduling
 
-multi-root packing 是 R3.2g closed-loop planner 的可选策略，不是 R3.1 group formation
-或 R3.2a-f planning / analysis results 的完成条件。
+multi-root packing 是 R3.2h closed-loop planner 的可选策略，不是 R3.1 group formation
+或 R3.2a-g planning / analysis results 的完成条件。
 R3.1 产出的基本单位仍是 dependency-connected logical group；两个完全独立的 chains
 即使在同一个 block、shape 相同，也不因为语法上可以放进一个 region 就自动合并。
 
-R3.2g 可以把多个 R3.1 logical groups 作为 co-scheduling 候选，但必须满足：
+R3.2h 可以把多个 R3.1 logical groups 作为 co-scheduling 候选，但必须满足：
 
 - 输入是多个 verifier-legal R3.1 groups，不是 raw op list 或名字匹配出的 op bag。
 - traversal domain、tile shape、output coverage、layout assignment、SPM/DDR demand、
@@ -903,7 +911,7 @@ R3.2g 可以把多个 R3.1 logical groups 作为 co-scheduling 候选，但必�
 - packing 决策、失败原因、cost trace 和搜索顺序都是 transformation-local analysis，不写回
   `wafer.group` attribute；IR 只保留被接受的 scheduled structure。
 
-因此，R3.2g 的默认安全行为仍是分别调度 R3.1 connected groups；multi-root packing 只是有
+因此，R3.2h 的默认安全行为仍是分别调度 R3.1 connected groups；multi-root packing 只是有
 可证明收益和可行性时的优化路径。
 
 ### 10.3 Traversal Anchor Analysis

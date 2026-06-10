@@ -8,7 +8,8 @@ instruction-level Wafer IR 先于 SPM placement，并补正式 `group -> tile_re
 2026-06-05 对齐 memref-backed buffer contract，`Cx/NCx` 改为 Wafer memory attr marker；
 2026-06-05 补齐 R3.2c DDR boundary materialization 和 One-Shot function-boundary pipeline；
 2026-06-05 补 R3.2c `scf.if` / `scf.for` 结构化 control-flow lowering 合同；
-2026-06-08 同步 R3.2c 完成状态和 R3.2d active 边界
+2026-06-08 同步 R3.2c 完成状态和 R3.2d active 边界；
+2026-06-10 将 candidate DDR tile-view producer 前移为 R3.2e active 边界
 
 本文定义 `wafer.tile.region` 作为 `wafer.group` lowering 之后的 tile-local execution boundary。
 它组织 tile-local Wafer-tagged memref、movement、layout materialization、target-abstract compute、communication
@@ -73,6 +74,7 @@ placement-derived endpoint 和 communication staging demand 的层级；`wafer.t
 wafer.group
   -> DDR boundary materialization + group-to-tile-region lowered `wafer.tile.region` IR
   -> One-Shot bufferized function boundary for main R3.2c pipeline
+  -> candidate DDR tile-view materialization for planner scratch
   -> instruction-level wafer.instr.* IR over unplaced Wafer-tagged memref values
   -> SPM placement on the same instruction-level IR
   -> DDR / resource legality on placed instruction IR
@@ -89,7 +91,7 @@ wafer.group
   `--wafer-convert-group-to-tile-region` 可以把当前模块中的 supported logical group 重写成
   tile-region IR，用作 legality/debug/后续 pass bring-up。它仍不是 accepted plan，
   也不是 SPM allocator 的直接输入；rejected tile-region IR 不进入主线 accepted IR。
-- committed `wafer.tile.region`：R3.3 只把 R3.2g 已接受的 plan 写入主 IR。后续 R3.4/R3.5
+- committed `wafer.tile.region`：R3.3 只把 R3.2h 已接受的 plan 写入主 IR。后续 R3.4/R3.5
   只 materialize accepted layout/SPM/DDR/instruction facts，不重新决定 group 是否可行。
 
 ### 2.1 R3.2c Pipeline Contract
@@ -118,8 +120,9 @@ Pipeline position:
   entry 返回 tile-region IR 用于 dump、verification 和后续 planning analysis。rejected tile-region IR
   不写入主线 accepted IR。
 - Downstream consumer:
-  R3.2d Wafer instruction legalization / selection、R3.2e SPM placement、R3.2f DDR/resource planning +
-  compute/movement legality analysis、R3.2g closed-loop planner。
+  R3.2e candidate DDR tile-view materialization、R3.2d Wafer instruction legalization / selection、
+  R3.2f SPM placement、R3.2g DDR/resource planning + compute/movement legality analysis、
+  R3.2h closed-loop planner。
 - User-level driver / named pipeline:
   主线仍由 `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 产生 logical group；
   R3.2c 的主线验证入口是
@@ -127,7 +130,8 @@ Pipeline position:
   `wafer-opt --wafer-convert-group-to-tile-region` 和 `wafer-opt --wafer-dump-group-to-tile-region`。
 - Explicit non-goals:
   不做 SPM offset allocation、不做 DDR pool/range/bandwidth planning、不 accept/reject/split
-  group、不把 tile-region IR 当成 R3.3 accepted materialization、不 lower 到 packet/ABI/LLVM。
+  group、不从 candidate tile shape 生成 temporal DDR tile `memref.subview`、不把 tile-region IR
+  当成 R3.3 accepted materialization、不 lower 到 packet/ABI/LLVM。
 - Completion gate:
   FileCheck、conversion pass、dump pass 和主线 pipeline 覆盖 R2.4/R3.1 已能产出的 Wafer V0 硬件可承载 local
   compute/movement/view family：DDR memref load/store boundary、layout materialization、DDR/SPM
@@ -146,11 +150,11 @@ table 补协议。
 | source IR / op family | R3.2c 目标处理 | 覆盖状态 | 正确 conversion 做法 / 后续要求 |
 | --- | --- | --- | --- |
 | `wafer.group` / `wafer.group.yield` boundary | DialectConversion 中由 `OpConversionPattern<wafer.group>` 构造 `wafer.tile.region`；`ins + outs` 先 materialize 为 `#wafer.memory<ddr, tensor>` memref，再生成 `wafer.tile.load` / `wafer.tile.store` / `wafer.tile.yield`；同一 builder 支持 scratch dump 和正式 `--wafer-convert-group-to-tile-region` pass | supported for tile-region IR | `ConversionTarget` 将 `wafer.group` / `wafer.group.yield` 标为 illegal；debug dump 只调用同一 conversion builder，不能自己承担 lowering 逻辑。 |
-| ranked tensor boundary values | 生成 logical-shape DDR memref，memory attr 默认 `#wafer.memory<ddr, tensor>`；`wafer.tile.load` 再产生 compact SPM tensor-layout version | supported for ranked tensor | 保持类型/verifier 驱动；后续 instruction-level IR 再决定 concrete instruction，SPM placement 再决定 offset/window；函数边界由 named pipeline 的 One-Shot Bufferize 转成 DDR memref。 |
+| ranked tensor boundary values | 生成 logical-shape DDR memref，memory attr 默认 `#wafer.memory<ddr, tensor>`；`wafer.tile.load` 再产生 compact SPM tensor-layout version | supported for ranked tensor | 保持类型/verifier 驱动；后续 instruction-level IR 再决定 concrete instruction，SPM placement 再决定 offset/window；函数边界由 named pipeline 的 One-Shot Bufferize 转成 DDR memref。candidate tile 的 temporal DDR `memref.subview` 由 R3.2e 从 tiling facts 生成，不属于 R3.2c 默认 boundary materialization。 |
 | scalar boundary values | 作为 tile-region block scalar SSA value 传入，供 fill/reduce init 等 scalar operand 使用 | supported for scalar | 只支持 float / integer / index scalar；不生成 storage，不作为长期 side channel。 |
 | `arith.constant` tensor | clone constant 后用 `bufferization.to_memref` materialize 为 read-only DDR source，再 `wafer.tile.load` 到 tensor-layout SPM storage | partial | 只适合 tensor constant；scalar constant 只应在 compute body 或显式 init 语义中消费。需要区分 constant residency / DDR / immediate policy。 |
 | `arith.constant` scalar | clone scalar constant，并作为 `wafer.tile.fill`、`wafer.tile.reduce init_value` 或 elementwise body 推导输入 | supported for scalar constants | scalar 语义通过 SSA value 或 typed attr 进入目标 op；不靠名字或原 op 残留。 |
-| `tensor.empty` | writable group output 的 `tensor.empty` 生成 `#wafer.memory<ddr, tensor>` `memref.alloc`；tile-local temporary 的 `tensor.empty` 生成 `#wafer.memory<spm, tensor>` `memref.alloc` | supported as abstract allocation demand | `memref.alloc` 不分配物理 offset/window；DDR alloc 只是 compiler-visible boundary value，真实 DDR ownership/resource plan 仍归 R3.2f/R3.5；SPM physical placement 归 R3.2e。不能把 arbitrary empty 偷映射成 output alias。 |
+| `tensor.empty` | writable group output 的 `tensor.empty` 生成 `#wafer.memory<ddr, tensor>` `memref.alloc`；tile-local temporary 的 `tensor.empty` 生成 `#wafer.memory<spm, tensor>` `memref.alloc` | supported as abstract allocation demand | `memref.alloc` 不分配物理 offset/window；DDR alloc 只是 compiler-visible boundary value，真实 DDR ownership/resource plan 仍归 R3.2g/R3.5；SPM physical placement 归 R3.2f。不能把 arbitrary empty 偷映射成 output alias。 |
 | `tensor.extract` scalar | 从已 materialized DDR boundary memref 生成 `memref.load`，供动态 scalar init / scalar value 使用 | supported for boundary scalar extract | 只作为 scalar SSA 支持 op；不表示 tile compute；tile-local tensor element read 不能用 generic memref.load 伪装。 |
 | `linalg.fill` | 生成显式 `wafer.tile.fill`，写入 existing storage；fill result 映射为该 initialized buffer | supported for scalar fill | `wafer.tile.fill` 暴露 target-abstract write relation；具体是否 lower 成 CT fill、memset 或 immediate pattern 由 R3.2d instruction selection 决定。 |
 | `linalg.matmul` | lhs/rhs materialize 到 `cx`，生成 `wafer.tile.gemm`，结果记录为 `cx` | supported for simple `linalg.matmul` | pattern 应检查 rank、dtype、accumulator/result relation、layout requirement；batch matmul / generic contraction 另列，不应混成 matmul 特判。 |
@@ -269,19 +273,23 @@ V0 需要以下 op family：
    communication demand 下 materialize 为 `wafer.tile.*` communication 或 explicit p2p schedule proposal。
 3. layout assignment：为 op 约束选择 physical layout marker，在 cut edge 插入
    `wafer.tile.materialize_layout`。
-4. Wafer instruction legalization / selection：R3.2d 把 target-abstract executable op 合法化并
+4. candidate DDR tile-view materialization：R3.2e 在 planner scratch path 中消费 candidate
+   traversal / tile shape / boundary slice proposal，把 full DDR boundary memref 改写成
+   `memref.subview` / strided DDR tile operands，供 `wafer.tile.load/store` 读写实际 tile。
+   这一步不 accept plan，也不把 scratch IR commit 到主 IR。
+5. Wafer instruction legalization / selection：R3.2d 把 target-abstract executable op 合法化并
    选择成 instruction-level `wafer.instr.*`，复用现有 Wafer-tagged memref SSA graph。
    instruction-level IR 需要列出 issue family、read/write/issue effects、descriptor attrs、
    temp/psum/staging memref values、alias/view 关系和 reject reason。
-5. SPM placement：R3.2e 只消费 instruction-level IR with unplaced Wafer-tagged memref values，
+6. SPM placement：R3.2f 只消费 instruction-level IR with unplaced Wafer-tagged memref values，
    在同一 IR 上填入 offset/end/bank span 和 lifetime/reuse；不能直接从 target-abstract op 猜
    memref demand。
-6. DDR/resource planning：R3.2f 消费 placed instruction-level IR、SPM facts 和 DDR boundary，做 capacity /
-   bandwidth / range legality。
-7. closed-loop decision：R3.2g 接受、拒绝或要求 split / retry；rejected tile-region IR 丢弃。
-8. committed `wafer.tile.region` materialization：R3.3 只把 accepted plan 写入主 IR。
-9. placement realization：把 accepted unplaced memref 降到 placed memref / address descriptor。
-10. lower-level op lowering：转成 wrapper-friendly Wafer ops，最后进入 C ABI / launch。
+7. DDR/resource planning：R3.2g 消费 placed instruction-level IR、SPM facts 和 DDR tile-view
+   boundary，做 capacity / bandwidth / range legality。
+8. closed-loop decision：R3.2h 接受、拒绝或要求 split / retry；rejected tile-region IR 丢弃。
+9. committed `wafer.tile.region` materialization：R3.3 只把 accepted plan 写入主 IR。
+10. placement realization：把 accepted unplaced memref 降到 placed memref / address descriptor。
+11. lower-level op lowering：转成 wrapper-friendly Wafer ops，最后进入 C ABI / launch。
 
 未接受的候选 plan 不能落入 IR 后等待下游修复。合法性失败应反馈给 group/layout/resource
 planner 重新选择 tile shape、internal split、layout 或 group boundary。
@@ -297,8 +305,9 @@ SPM placement 后续应直接消费这些 region/control-flow lifetime；硬件 
 
 当前 ODS 已有 `wafer.tile.region` 内 movement、layout、compute、comm 和 sync op 的基础
 layout/materialization/resource interface 查询入口；这些接口和 verifier 已基于
-`memref<..., #wafer.memory<space, layout>>` 合同。第 4 步 instruction legalization / selection 需要把
-target-abstract op 先降到 instruction-level IR；第 5-7 步的完整 SPM/DDR resource planning 和
+`memref<..., #wafer.memory<space, layout>>` 合同。第 4 步 candidate DDR tile-view materialization
+需要先让 tile load/store 的 DDR operand 表达真实 tiling；第 5 步 instruction legalization /
+selection 再把 target-abstract op 降到 instruction-level IR；第 6-8 步的完整 SPM/DDR resource planning 和
 closed-loop decision 仍未完成。
 
 当前实现状态：
@@ -311,6 +320,10 @@ closed-loop decision 仍未完成。
 - `wafer-lower-groups-to-tile-region` 是 R3.2c named pipeline：先运行 group-to-tile-region conversion，
   再运行 MLIR One-Shot Bufferize，并使用 Wafer function argument type converter 把 tensor function
   boundary 转成 `memref<..., #wafer.memory<ddr, tensor>>`。
+- R3.2d 已能消费显式 DDR `memref.subview` / strided memref view 并生成 RDMA/WDMA 三层
+  stride/iteration descriptor；R3.2e 仍需补 producer，在 planner scratch path 中从 candidate
+  tile shape 和 boundary slice facts 生成这些 subview。否则后续 placement/resource stage 看到的
+  仍是 whole-boundary DMA，而不是真实 tile 读写。
 - 旧 `--wafer-materialize-single-tile` explicit unit/debug pass 已删除。后续 tile_region materialization
   必须由 R3 消费真实 frontend/SPMD program chain 和 group contract 后恢复。
 - `--wafer-materialize-multi-tile-no-comm` 已删除。旧实现按 placement rank 数 clone whole-tensor

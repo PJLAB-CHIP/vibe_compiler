@@ -3,7 +3,8 @@
 日期：2026-05-21
 
 状态：设计草案；2026-05-25 边界收口；2026-06-04 对齐 instruction-level Wafer IR 先于 SPM placement；
-2026-06-05 对齐 memref-backed buffer contract；2026-06-08 同步 DDR/resource policy 命名
+2026-06-05 对齐 memref-backed buffer contract；2026-06-08 同步 DDR/resource policy 命名；
+2026-06-10 R3.2e 前移为 candidate DDR tile-view producer，SPM placement 后移为 R3.2f
 
 本文定义 Wafer SPM bufferization、tile-local allocation 和 storage verification。它服务于
 `wafer.group` planning 的合法性搜索，也负责把 `wafer.tile.region` 中的 tile-local value
@@ -33,6 +34,7 @@ SPM planning 不能只做 byte-size estimate。候选 tile plan 是否合法，�
 
 ```text
 layout materialization
+  -> candidate DDR tile-view materialization
   -> instruction legalization / selection
   -> instruction-level IR with unplaced Wafer-tagged memref values
   -> storage requirement collection
@@ -45,12 +47,13 @@ layout materialization
 如果没有合法 allocation，不能生成一个等待下游修复的 scheduled group。planner 应回到 tile shape、
 internal split、layout assignment、output coverage 或 group boundary 继续搜索。
 
-### 1.1 R3.2e Pipeline Contract
+### 1.1 R3.2f Pipeline Contract
 
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  R3.2d instruction-level `wafer.instr.*` IR with unplaced
+  R3.2e candidate DDR tile-view materialization 后，经 R3.2d instruction legalization 产出的
+  instruction-level `wafer.instr.*` IR with actual DDR tile views and unplaced
   `memref<..., #wafer.memory<spm, layout>>` values，以及 accepted layout assignment、
   materialization cut、effect/order 和 target SPM policy。
 - Current stage responsibility:
@@ -60,7 +63,7 @@ Pipeline position:
   same instruction-level IR with placed SPM memref values / address descriptors，或结构化 allocation
   failure reason。
 - Downstream consumer:
-  R3.2f DDR/resource legality、R3.2g closed-loop planner、R3.4 materialized placed storage IR，
+  R3.2g DDR/resource legality、R3.2h closed-loop planner、R3.4 materialized placed storage IR，
   以及 R3.6 codegen emission。
 - User-level driver / named pipeline:
   主线仍由 R3.2 closed-loop planner 调用；局部 allocator dump 只能作为 debug/lit coverage，
@@ -167,8 +170,10 @@ SPM allocator 不按 op 名字猜 buffer，也不把一个 target-abstract op �
 shape 猜测；应先扩 op interface / instruction IR，或保持在更高层 IR。
 如果当前只有 R3.2a/R3.2b 的 group-level analysis summary，而没有 R3.2c
 `wafer.tile.region` IR，SPM placement 不能直接运行；如果只有 R3.2c target-abstract
-tile-region IR 而没有 R3.2d instruction-level IR，SPM placement 同样不能运行。必须先降到
-`wafer.instr.*` / Wafer-tagged memref，让 buffer values、lifetime 和 effect 都可由 IR 结构重算。
+tile-region IR 而没有 R3.2e candidate DDR tile views 和 R3.2d instruction-level IR，SPM placement
+同样不能运行。必须先把 tile load/store 的 DDR operand 降成真实 `memref.subview` view，再降到
+`wafer.instr.*` / Wafer-tagged memref，让 buffer values、lifetime、effect 和 DMA descriptor
+都可由 IR 结构重算。
 
 `storage_size` 必须由 `computeWaferPhysicalTensorInfo(memrefType)` 统一计算，至少包含：
 
@@ -364,6 +369,7 @@ V0 推荐 `allocate on tile-region before commit`：
 logical group + tile/layout proposal
   -> build wafer.tile.region IR
      (target-abstract compute/comm/load-store/layout/sync/storage/effect)
+  -> materialize candidate DDR tile views as memref.subview operands
   -> legalize/select instruction-level wafer.instr.* over unplaced Wafer-tagged memref values
   -> collect BufferDemand + liveness/effect from instruction-level IR
   -> SPM placement
@@ -451,6 +457,7 @@ tile-region IR 的 `#wafer.memory<spm, *>` placement 是否可行，并把失败
 tile plan
   -> layout assignment
   -> wafer.tile.region IR
+  -> candidate DDR tile-view materialization
   -> instruction-level wafer.instr.* over unplaced Wafer-tagged memref values
   -> instruction storage / effect demand
   -> SPM placement

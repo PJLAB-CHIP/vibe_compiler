@@ -65,7 +65,7 @@ LLVM dialect / C call sequence or packet emission
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  R3.2e/R3.4 产出的 placed instruction-level `wafer.instr.*` IR、placed memref /
+  R3.2f/R3.4 产出的 placed instruction-level `wafer.instr.*` IR、placed memref /
   access descriptor value、R3.5 DDR/resource facts 和 launch signature。
 - Current stage responsibility:
   从 placed instruction-level IR 发射 `wafer_*` C ABI call、LLVM call 或 packet builder 输入，
