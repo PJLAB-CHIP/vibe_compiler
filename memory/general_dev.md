@@ -20,7 +20,7 @@
 - 用 `python3 tools/bootstrap_deps.py --llvm` 下载固定版本 LLVM/MLIR 预编译包；脚本会检查远端
   Content-Length，并把未完成下载保存在 `.part` 后续续传，避免把半包当成可解包 archive。
 - 在固定版本 LLVM/MLIR 预编译包下载完成前，本地 bring-up 可以显式 override：
-  `cmake -S . -B build/p0 -GNinja -DMLIR_DIR=<mlir-cmake-dir> -DLLVM_DIR=<llvm-cmake-dir>
+  `cmake -S . -B build/wafer-bootstrap -GNinja -DMLIR_DIR=<mlir-cmake-dir> -DLLVM_DIR=<llvm-cmake-dir>
   -DPython3_EXECUTABLE=$PWD/third_party/python/bin/python -DWAFER_ALLOW_UNPINNED_LLVM=ON`。
 - 当前统一依赖验证使用固定版本 LLVM/MLIR install 配置，默认 build dir 使用中性的
   `build/wafer-dev`，不要把阶段名、任务号或某个 frontend 依赖名写进长期 build 目录约定：

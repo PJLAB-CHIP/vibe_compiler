@@ -67,6 +67,6 @@ C ABI conversion 混在旧的聚合目录里。
 
 已验证通过：
 
-- `cmake --build build/p0 --target wafer-opt`
-- `cmake --build build/p0 --target check-wafer-lit`
-- `ctest --test-dir build/p0 --output-on-failure`
+- `cmake --build build/wafer-bootstrap --target wafer-opt`
+- `cmake --build build/wafer-bootstrap --target check-wafer-lit`
+- `ctest --test-dir build/wafer-bootstrap --output-on-failure`
