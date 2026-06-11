@@ -152,21 +152,21 @@ func.func @loop_group(%input: tensor<4xf32>, %out: tensor<4xf32>,
   return %group : tensor<4xf32>
 }
 
-// SUMMARY: wafer.r3_2h selected group @elementwise_small#0
+// SUMMARY: wafer.select_group_tile selected group @elementwise_small#0
 // SUMMARY-SAME: mode=first-legal
 // SUMMARY-SAME: tile=[4]
-// SUMMARY: wafer.r3_2h selected group @static_slice_elementwise#0
+// SUMMARY: wafer.select_group_tile selected group @static_slice_elementwise#0
 // SUMMARY-SAME: mode=first-legal
-// SUMMARY: wafer.r3_2h selected group @large_matmul_last_dim_1000#0
+// SUMMARY: wafer.select_group_tile selected group @large_matmul_last_dim_1000#0
 // SUMMARY-SAME: mode=first-legal
 // SUMMARY-SAME: tile=[
 // SUMMARY-SAME: representatives=4
-// SUMMARY: wafer.r3_2h selected group @reduce_sum_group#0
+// SUMMARY: wafer.select_group_tile selected group @reduce_sum_group#0
 // SUMMARY-SAME: mode=first-legal
 // SUMMARY-SAME: tile=[2]
-// SUMMARY: wafer.r3_2h selected group @if_group#0
+// SUMMARY: wafer.select_group_tile selected group @if_group#0
 // SUMMARY-SAME: mode=first-legal
-// SUMMARY: wafer.r3_2h selected group @loop_group#0
+// SUMMARY: wafer.select_group_tile selected group @loop_group#0
 // SUMMARY-SAME: mode=first-legal
 
 // IR-LABEL: func.func @elementwise_small_selected_group_0

@@ -16,7 +16,7 @@ func.func @matmul_requires_k_split(%lhs: tensor<1x1024xf16>,
   return %group : tensor<1x1xf16>
 }
 
-// SUMMARY: wafer.r3_2h selected group @matmul_requires_k_split#0
+// SUMMARY: wafer.select_group_tile selected group @matmul_requires_k_split#0
 // SUMMARY-SAME: mode=first-legal
 // SUMMARY-SAME: tile=[1,1]
 // SUMMARY-SAME: split=[{{[1-9][0-9]*}}]

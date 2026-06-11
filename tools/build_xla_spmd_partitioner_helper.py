@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the pinned-XLA SPMD partitioner helper for Wafer P2.S2."""
+"""Build the pinned-XLA SPMD partitioner helper for Wafer."""
 
 from __future__ import annotations
 

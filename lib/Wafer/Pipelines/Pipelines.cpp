@@ -156,7 +156,7 @@ void registerWaferPipelines() {
         });
     mlir::PassPipelineRegistration<>(
         "wafer-lower-groups-to-selected-instr",
-        "Select R3.2h group tile candidates and emit memory-planned "
+        "Select group tile candidates and emit memory-planned "
         "instruction-level Wafer IR",
         [](mlir::OpPassManager &pm) {
           buildLowerGroupsToSelectedInstrPipeline(pm);

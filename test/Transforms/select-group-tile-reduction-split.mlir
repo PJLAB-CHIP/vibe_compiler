@@ -28,7 +28,7 @@ func.func @reduce_requires_internal_split(%input: tensor<1x4096xf32>,
   return %group : tensor<1xf32>
 }
 
-// SUMMARY: wafer.r3_2h selected group @reduce_requires_internal_split#0
+// SUMMARY: wafer.select_group_tile selected group @reduce_requires_internal_split#0
 // SUMMARY-SAME: mode=first-legal
 // SUMMARY-SAME: tile=[1]
 // SUMMARY-SAME: split=[{{[1-9][0-9]*}}]

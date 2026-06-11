@@ -33,6 +33,6 @@ func.func @if_group_spm_failure(%lhs: tensor<4xf32>, %rhs: tensor<4xf32>,
 
 // BAD-MODE: invalid_tile_search: expected first-legal or min-estimated-time
 
-// SPM: no_candidate: R3.2h found no passing candidate
-// SPM-SAME: last failure: R3.2f
-// SPM-NOT: R3.2g
+// SPM: no_candidate: tile selection found no passing candidate
+// SPM-SAME: last failure: spm-offsets
+// SPM-NOT: ddr-offsets

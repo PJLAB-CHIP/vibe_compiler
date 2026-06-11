@@ -40,7 +40,7 @@ func.func @multi_output_same_domain(%lhs: tensor<1x4096xf32>,
   return %group#0, %group#1 : tensor<1x4096xf32>, tensor<1x4096xf32>
 }
 
-// SUMMARY: wafer.r3_2h selected group @multi_output_same_domain#0
+// SUMMARY: wafer.select_group_tile selected group @multi_output_same_domain#0
 // SUMMARY-SAME: mode=first-legal
 // SUMMARY-SAME: tile=[1,{{[0-9]+}}]
 // SUMMARY-SAME: split=[]

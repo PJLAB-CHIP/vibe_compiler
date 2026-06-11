@@ -293,8 +293,10 @@ diagnostic 应记录：
 - 失败发生在哪个 gate。
 - candidate spec 的 traversal tile shape、reduction/internal split 和 output coverage；未来 layout
   候选需要等对应 interface 落地后再进入 diagnostic。
-- R3.2f/R3.2g 的结构化 reason，例如 capacity、largest-contiguous、bandwidth、alignment、descriptor/view
-  mismatch。
+- diagnostic gate prefix 使用稳定语义边界名：`tile-region`、`instr-lowering`、`spm-offsets`、
+  `ddr-offsets`、`verifier`；不把 `R3.2*` 任务号打印成用户可见诊断。
+- SPM/DDR offset assignment gate 的结构化 reason，例如 capacity、largest-contiguous、
+  bandwidth、alignment、descriptor/view mismatch。
 - `min-estimated-time` 模式下 winning candidate 的 cost breakdown。
 
 diagnostic 不成为 IR 合同；R3.3 只消费被选中的 passing candidate artifact。
@@ -305,17 +307,19 @@ R3.2h completion proof 至少覆盖：
 
 - `first-legal`：两个合法 candidate 中选择排序最靠前的 passing candidate。
 - `min-estimated-time`：两个合法 candidate 中选择 `estimated_cycles` 更低的 candidate。
-- gate early-exit：R3.2f SPM failure 后不继续把当前 candidate 当作 passing candidate，也不写入
+- gate early-exit：SPM offset gate failure 后不继续把当前 candidate 当作 passing candidate，也不写入
   DDR offset fact。
 - representative tile classes：tail / corner tail 失败时整个 tile shape 被 reject。
 - simple matmul：traversal domain 是 `C[M, N]`，`K` split 作为 internal split；合法 candidate
-  的 DDR tile views 来自 R3.2e，不由 R3.2d/R3.2f/R3.2g 猜。
+  的 DDR tile views 来自 tile-region materialization，不由 instruction lowering、SPM offset
+  assignment 或 DDR offset assignment 猜。
 - simple elementwise：tile size 来自实际 output shape，external input/output DDR subview 和
   RDMA/WDMA descriptor 匹配。
 - same-domain multi-output：多个输出共享同一个 traversal tile；每个 root 的 output map 都通过
-  R3.2e 生成对应 DDR tile view，R3.2d/R3.2f/R3.2g 对同一 candidate artifact 统一验证。
+  tile-region materialization 生成对应 DDR tile view，instruction lowering、SPM offset assignment
+  和 DDR offset assignment 对同一 candidate artifact 统一验证。
 - generic reduction split：`linalg.generic` reduction root 的 reduction iterator split 生成多个
-  partial reduce 和 tile-local combine；只有所有 representative tiles 的完整 R3.2e-g gates 通过才接受。
+  partial reduce 和 tile-local combine；只有所有 representative tiles 的完整 candidate gates 通过才接受。
 - 文本一致性：R3.2h 文档和 progress 不再把资源上限建模成 candidate 字段，也不把 DDR access
   summary/range attr 当成 committed IR fact。
 
@@ -331,10 +335,10 @@ R3.2h completion proof 至少覆盖：
   supported `linalg.generic` reduction root 额外生成 bounded reduction split。候选顺序是全部 no-split
   traversal candidates 先行，然后再进入 split candidates。
 - representative coverage：每个 tile shape 至少验证 first / last / tail / corner tail 的代表
-  tile classes；所有代表都通过 R3.2e-g 才接受该 candidate。
-- gates：每个 candidate evaluation clone 按 R3.2e candidate DDR tile-view materialization、
-  R3.2d instruction lowering、R3.2f SPM memory planning、R3.2g DDR memory planning、verifier
-  顺序执行；gate failure 早停，不继续跑后续 gate。
+  tile classes；所有代表都通过 candidate gates 才接受该 candidate。
+- gates：每个 candidate evaluation clone 按 candidate DDR tile-view materialization、instruction
+  lowering、SPM offset assignment、DDR offset assignment、verifier 顺序执行；gate failure 早停，
+  不继续跑后续 gate。
 - `tile-search=first-legal`：默认模式，返回第一个 passing candidate。
 - `tile-search=min-estimated-time`：只在 passing candidates 之间用 lowered instruction IR 的
   compute/DDR/SPM/issue 粗估时间排序。

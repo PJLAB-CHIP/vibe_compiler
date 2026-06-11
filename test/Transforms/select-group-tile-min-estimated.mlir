@@ -26,7 +26,7 @@ func.func @elementwise_last_dim_1000(%lhs: tensor<2x1000xf16>,
   return %group : tensor<2x1000xf16>
 }
 
-// SUMMARY: wafer.r3_2h selected group @elementwise_last_dim_1000#0
+// SUMMARY: wafer.select_group_tile selected group @elementwise_last_dim_1000#0
 // SUMMARY-SAME: mode=min-estimated-time
 // SUMMARY-SAME: tile=[
 // SUMMARY-SAME: estimated_cycles=

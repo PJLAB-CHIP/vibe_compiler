@@ -49,7 +49,7 @@ def DumpGroupToTileRegionPass
 
 def DumpCandidateDdrTileViewsPass
     : Pass<"wafer-dump-candidate-ddr-tile-views", "mlir::ModuleOp"> {
-  let summary = "Dump R3.2e candidate DDR tile-view evaluation IR";
+  let summary = "Dump candidate DDR tile-view evaluation IR";
   let dependentDialects = ["mlir::arith::ArithDialect",
                            "mlir::bufferization::BufferizationDialect",
                            "mlir::func::FuncDialect",
@@ -71,7 +71,7 @@ def DumpCandidateDdrTileViewsPass
 
 def SelectGroupTilePass
     : Pass<"wafer-select-group-tile", "mlir::ModuleOp"> {
-  let summary = "Run R3.2h closed-loop group tile candidate selection";
+  let summary = "Run closed-loop group tile candidate selection";
   let dependentDialects = ["mlir::arith::ArithDialect",
                            "mlir::async::AsyncDialect",
                            "mlir::bufferization::BufferizationDialect",

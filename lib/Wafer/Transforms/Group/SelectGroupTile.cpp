@@ -1,4 +1,4 @@
-//===- SelectGroupTile.cpp - R3.2h group tile selection ------------------===//
+//===- SelectGroupTile.cpp - Closed-loop group tile selection -------------===//
 
 #include "Wafer/Transforms/Passes.h"
 
@@ -401,7 +401,7 @@ estimateCompactSPMBytes(GroupOp group, const CandidateSpec &candidate) {
     elements = saturatingAdd(elements, saturatingMul(m, n));
     // GEMM lowering currently materializes tensor and aligned-family SPM
     // buffers. This bound is intentionally conservative; full legality still
-    // comes from R3.2e-g.
+    // comes from tile-region lowering and memory offset assignment.
     return saturatingMul(saturatingMul(elements, *elementBytes), 4);
   }
 
@@ -669,7 +669,8 @@ static CandidateEvaluation evaluateTileInstance(
   }
 
   if (mlir::failed(result)) {
-    evaluation.failureReason = joinFailure("R3.2e", failureReason, diagnostics);
+    evaluation.failureReason =
+        joinFailure("tile-region", failureReason, diagnostics);
     return evaluation;
   }
 
@@ -682,7 +683,8 @@ static CandidateEvaluation evaluateTileInstance(
       },
       result);
   if (mlir::failed(result)) {
-    evaluation.failureReason = joinFailure("R3.2d", failureReason, diagnostics);
+    evaluation.failureReason =
+        joinFailure("instr-lowering", failureReason, diagnostics);
     return evaluation;
   }
 
@@ -694,7 +696,7 @@ static CandidateEvaluation evaluateTileInstance(
       },
       result);
   if (mlir::failed(result)) {
-    evaluation.failureReason = joinFailure("R3.2f", "", diagnostics);
+    evaluation.failureReason = joinFailure("spm-offsets", "", diagnostics);
     return evaluation;
   }
 
@@ -707,7 +709,7 @@ static CandidateEvaluation evaluateTileInstance(
       },
       result);
   if (mlir::failed(result)) {
-    evaluation.failureReason = joinFailure("R3.2g", "", diagnostics);
+    evaluation.failureReason = joinFailure("ddr-offsets", "", diagnostics);
     return evaluation;
   }
 
@@ -788,7 +790,8 @@ selectCandidateForGroup(GroupOp group, llvm::StringRef label, unsigned ordinal,
   mlir::FailureOr<llvm::SmallVector<int64_t, 4>> shape =
       getStaticTraversalShape(group);
   if (mlir::failed(shape)) {
-    group.emitError() << "no_candidate: R3.2h requires static ranked group "
+    group.emitError() << "no_candidate: tile selection requires static ranked "
+                         "group "
                          "results with one traversal shape";
     return mlir::failure();
   }
@@ -797,7 +800,7 @@ selectCandidateForGroup(GroupOp group, llvm::StringRef label, unsigned ordinal,
       getStaticRootReductionRanges(group);
   if (mlir::failed(reductionRanges)) {
     group.emitError()
-        << "no_candidate: R3.2h requires static reduction ranges";
+        << "no_candidate: tile selection requires static reduction ranges";
     return mlir::failure();
   }
 
@@ -874,7 +877,7 @@ selectCandidateForGroup(GroupOp group, llvm::StringRef label, unsigned ordinal,
     return std::move(*best);
   }
 
-  group.emitError() << "no_candidate: R3.2h found no passing candidate"
+  group.emitError() << "no_candidate: tile selection found no passing candidate"
                     << (lastFailure.empty() ? "" : "; last failure: ")
                     << lastFailure;
   return mlir::failure();
@@ -882,7 +885,8 @@ selectCandidateForGroup(GroupOp group, llvm::StringRef label, unsigned ordinal,
 
 static void printSelectedSummary(const SelectedCandidate &selected,
                                  TileSearchMode mode) {
-  llvm::errs() << "wafer.r3_2h selected group " << selected.label << " mode="
+  llvm::errs() << "wafer.select_group_tile selected group " << selected.label
+               << " mode="
                << (mode == TileSearchMode::FirstLegal ? "first-legal"
                                                       : "min-estimated-time")
                << " tile=";
