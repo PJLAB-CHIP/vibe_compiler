@@ -75,8 +75,8 @@
 - `docs/tx8-deps-reverse-engineering/`：依赖、runtime、firmware、接口约束整理。
 - `tools/`：辅助脚本。
 - `memory/general_dev.md`：通用开发经验、构建方式、调试入口和环境约定。
-- `memory/bugs.md`：历史 bug、复现方式、根因和修复经验。
-- `memory/`：稳定经验或可复用问题记录；如果为空，不要虚构。
+- `memory/bugs.md` 和其它 `memory/` 文件：稳定经验、历史 bug、复现方式、根因和修复经验；
+  如果为空，不要虚构。
 
 当前可优先阅读的设计上下文：
 
@@ -111,7 +111,8 @@
 7. 如果涉及 MLIR dialect、pass、interface、verifier、region 或 conversion 设计，优先查
    MLIR 官方文档，不用二手博客替代一手资料。
 
-早期仓库可能没有完整构建系统。不要因此降低设计要求；也不要假设存在固定 build/test 命令。
+构建和测试入口以当前 CMake / lit 配置以及 `memory/general_dev.md` 的最新记录为准。不要把旧
+build 目录、临时任务名或本地实验路径写成长期约定。
 
 ## 版本控制约定
 
@@ -145,6 +146,11 @@ Pipeline position:
 约束：
 
 - `pass`、tool、test、文件名和任务号只是实现索引，不能替代 IR 层、artifact 合同或长期架构对象。
+- 任务号、阶段号和临时里程碑编号（例如 `R3.2h`、`P2.S2`、`p0`、`r0-deps-*`）只能作为任务文档、
+  历史记录和路线图索引。它们不能进入 build 目录、CMake target/cache variable、artifact 名、
+  tool/script/CLI/help/docstring、pass/pipeline 名称或描述、IR op/type/attr/interface/verifier
+  合同、diagnostic/log 前缀、FileCheck/golden output。需要表达阶段关系时，使用稳定语义边界名，
+  例如 `tile-region`、`instr-lowering`、`spm-offsets`、`ddr-offsets`、`candidate-selection`。
 - 单个 pass 可以作为局部实现单元，但主线设计必须说明它在 named pipeline / driver mode 中的
   位置；不能让用户或 integration test 手动拼一串 pass 当作长期 compile flow。
 - 局部 FileCheck、fixture、negative verifier 或 shape-only dump 只能补覆盖，不能作为主线完成
@@ -152,33 +158,12 @@ Pipeline position:
 - 如果直接下游尚未实现但硬件 / ABI 能表达该语义，应记录为下游恢复任务或扩 IR；不能把下游缺口
   反向写成当前上游不支持，也不能绕到 Python helper、sidecar 或名字约定中补协议。
 
-### 0.1 任务号不能进入长期命名
-
-任务号、阶段号和临时里程碑编号（例如 `R3.2h`、`P2.S2`、`p0`、`r0-deps-*`）只能作为
-任务文档、历史记录和路线图中的索引，不能进入任何会被工具、测试、用户或下游消费固定下来的
-名字或输出。
-
-禁止把任务号 / 阶段号用于：
-
-- build 目录、CMake target/cache variable、生成 artifact 目录或文件名。
-- tool 名、脚本名、CLI option、help/summary/docstring。
-- pass / pipeline 名称、pass summary、pipeline description。
-- IR dialect / op / type / attr / interface / enum / verifier 合同。
-- diagnostic、error message、warning、debug summary、日志前缀。
-- FileCheck 期望、golden output 或其它测试固定输出。
-
-如果需要表达阶段关系，使用稳定语义边界名，例如 `tile-region`、`instr-lowering`、`spm-offsets`、
-`ddr-offsets`、`candidate-selection`、`program-capture`。任务号可以在设计文档中标注
-“这个语义边界由哪个任务恢复 / 验证”，但不能反过来把任务号变成接口名。提交前必须用文本扫描
-确认代码、工具和测试层没有新增这类任务号命名污染。
-
 ### 先设计后编码
 
 非小修复时，先建立或更新设计文档。设计文档至少说明：
 
 - 目标和非目标。
-- pipeline contract：上游 artifact / IR、当前 stage、输出 artifact / IR、下游 consumer、用户级
-  driver / named pipeline、显式非目标和完成 gate。
+- pipeline contract（使用上节模板）。
 - 所在 IR 层和边界。
 - 新增或修改的 op / type / attr / interface / pass 合同。
 - verifier / legality / lowering 责任。
@@ -299,8 +284,8 @@ legality、planning、lowering、diagnostic，或删除旧 matcher / fallback / 
 - 当前文档默认中文。
 - 先讲边界和通用方法，再给 case。
 - case 后必须说明哪些只是示例，不是协议。
-- 主线任务文档必须先讲 compiler pipeline 位置，再讲单个 pass / tool 的实现入口；不要用 pass 名、
-  测试名、任务号或脚本名代替 artifact / IR 合同。
+- 主线任务文档遵守 pipeline contract 和长期命名规则；实现入口只能作为索引，不能替代 artifact /
+  IR 合同。
 - 不要把其它项目的路径、环境变量、测试入口、动态任务状态或 runtime 路线写成当前项目主线。
 - 不要把尚未收敛的设计选择写进本文件当作长期规范；这类内容应留在设计文档里讨论和演进。
 - 不要把 `TODO` / `TBD` 当作结论。没确定就写成“待讨论问题”，并说明为什么未定。
