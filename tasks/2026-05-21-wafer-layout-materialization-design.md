@@ -364,9 +364,9 @@ instruction IR 上，不进入 `wafer.group`。
 语义约定：
 
 - `spm` 是 tile-local SRAM，容量、lifetime、range 和 reuse 由 SPM bufferization 负责。
-- `ddr` 是 device/global DDR 的目标侧 address space；explicit view/range、default allocatable
-  arena resource 和 package/runtime allocation mapping 由 DDR memory planning 与
-  launch/runtime/package 层分层负责。
+- `ddr` 是 device/global DDR 的目标侧 address space；explicit view/range、planned DDR range 和
+  default arena resource 由 DDR memory planning 负责，package/runtime allocation mapping 由
+  launch/runtime/package 层负责。
 - `layout` 是 Wafer physical layout marker。DDR buffer 可以是 compact，也可以在 constant storage
   transform 或 device-side materialization 后带目标相关 marker；SPM buffer 同样通过这个 marker
   表达 compact 或 aligned family。
@@ -374,7 +374,7 @@ instruction IR 上，不进入 `wafer.group`。
   `wafer.tile.load` / lowering 需要 addressable device storage 时，才产生明确 memref、placed
   address/range 或 runtime/package metadata。
 
-DDR 的 runtime allocation mapping、resident constant、capacity 和 bandwidth 不属于
+DDR planned ranges、runtime allocation mapping、resident constant、capacity 和 bandwidth 不属于
 `#wafer.memory<space, layout>`，见
 `tasks/2026-05-25-wafer-ddr-memory-planning-design.md`。
 

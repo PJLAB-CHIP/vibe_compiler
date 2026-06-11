@@ -1,138 +1,145 @@
 # Wafer DDR Memory Planning Design
 
-2026-06-11 更新：R3.2g 的 compiler 合同收敛为 DDR memory planning gate。本文删除旧的
-runtime 分配分类建模，不再把 driver/runtime 的分配种类提升成 Wafer IR attr 或 R3.2g
-合法性分支。
+2026-06-11 更新：R3.2g 重新收敛为 **compiler-side DDR memory planning**。它不能只是
+DDR access validation；凡是会影响 candidate 是否成立的 DDR range、lifetime、capacity、
+largest-contiguous 和 bandwidth 约束，都必须在 R3.2g/R3.2h candidate gate 内决定或拒绝。
+R3.5 只 materialize 已接受的 DDR plan 到 runtime allocation/import/package，不重新做 planning。
 
-本文定义 `#wafer.memory<ddr, layout>` 在 Wafer 编译器中的语义、资源检查和 lowering
-边界。DDR 是 Wafer 可寻址的 global storage space；它和 SPM 使用同一套 Wafer memory attr
-机制表达 address space 与 physical layout，但它不表达运行时分配对象的内部类别。
+本文定义 `#wafer.memory<ddr, layout>` 在 Wafer 编译器中的语义、资源规划、verifier 和
+lowering 边界。DDR 是 Wafer 可寻址的 global storage space；它和 SPM 使用同一套 Wafer memory
+attr 机制表达 address space 与 physical layout，但 runtime/driver 的分配对象类别不进入
+compiler IR 合同。
 
 ## 1. Goal and Non-Goals
 
 目标：
 
-- 让 R3.2g 从当前 instruction-level IR 重算 DDR access demand，而不是依赖名字、side table
-  或历史 runtime 分类。
-- 验证 RDMA/WDMA 的 descriptor payload、view byte range、root byte range、默认 DDR
-  allocatable arena 的 capacity、largest contiguous range 和 bandwidth demand。
-- 给 R3.2h 一个可重放的 candidate gate：成功表示当前候选的 DDR view/resource 已显式合法；
-  失败返回结构化原因，供 candidate repair/split。
-- 保持 DDR planned facts 由 SSA use-def、`#wafer.memory<ddr, layout>` memref type、
-  `memref.subview` / static strided view、instruction descriptor 和 pass option resource bounds
-  推出；成功路径不写重复 plan attr。
+- 从 instruction-level candidate IR 重算 DDR access demand 和 DDR allocation requirement。
+- 对 external input/output DDR view 做 descriptor、view/root byte range 和 resource validation。
+- 对 compiler-managed workspace、resident constant、inter-group DDR temporary 等非 external demand，
+  在 default DDR arena 中规划 symbolic range/offset/size/alignment，并用 lifetime/reuse 证明互不冲突。
+- 给 R3.2h 一个真实 candidate gate：成功表示当前 candidate 的 DDR view、planned range 和 resource
+  都可被下游直接消费；失败返回结构化 reason，供 tile/layout/resource candidate repair 或 split。
+- 保持 DDR planned facts 显式：由 SSA use-def、memref type、view、descriptor、requirement op/interface
+  和 planned range fact 表达，不能只存在 pass-local side table。
 
 非目标：
 
-- R3.2g V0 不做最终 runtime allocation，不生成 physical DDR address、runtime handle、ABI call
-  或 package metadata。
+- R3.2g 不生成 physical DDR address、runtime handle、ABI call、packet 或 package metadata。
+- R3.2g 不调用 runtime allocator，不 import user buffer，不 query physical address。
 - 不把 runtime/driver 的分配对象类别、host-visible window、executable/log storage 等低层事实建成
   Wafer compiler IR 类型或 attr。
-- 不在 `wafer.group`、tile-region 或 instruction op 上保存 DDR allocation search trace。
-- 不把 compiler-managed DDR temporary 的 owner/lifetime/range requirement 伪装成裸
-  `memref.alloc`；当前 IR 表达不了时必须结构化失败。
+- 不从裸 `memref.alloc` 猜 compiler-managed DDR 语义；缺少 owner/lifetime/range requirement 时必须失败。
 
 ## 2. Pipeline Contract
 
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  R3.2f 之后的 instruction-level IR。DDR operand 必须已经由
-  `#wafer.memory<ddr, layout>` memref、tile-region block argument、
-  `memref.subview` / static strided view 和 RDMA/WDMA descriptor 显式表达。
+  R3.2f 之后的 instruction-level candidate IR。SPM side 已有 planned SPM range；
+  DDR side 已由 `#wafer.memory<ddr, layout>` memref、tile-region block argument、
+  `memref.subview` / static strided view、RDMA/WDMA descriptor 和 explicit DDR requirement
+  表达 external / compiler-managed / resident / inter-group demand。
 - Current stage responsibility:
-  从当前 IR 重算 DDR access demand；验证 descriptor payload、static view expressibility、
-  view/root byte range、default DDR allocatable arena 的 capacity、largest contiguous range、
-  bandwidth limit，以及当前是否存在无法表达 owner/lifetime/range requirement 的
-  compiler-managed DDR allocation。
+  从当前 IR 重算 DDR access demand、DDR requirement 和 lifetime；验证 external DDR descriptor
+  与 view/root range；为 compiler-managed/resident/inter-group demand 在 default DDR arena 内规划
+  symbolic planned range；验证 range overlap、capacity、largest-contiguous、alignment、bandwidth
+  和 descriptor 对 planned range 的覆盖。
 - Output artifact / IR:
-  同一份 instruction-level IR，或结构化 failure reason。成功不写 DDR plan attr、
-  不写 runtime allocation object、不保存 search trace。
+  同一 instruction-level candidate artifact，带显式 DDR planned range / requirement facts；
+  或结构化 failure reason。成功路径不能只写 diagnostic，也不能只把 plan 保存在 pass-local
+  analysis 里。
 - Downstream consumer:
-  R3.2h closed-loop candidate driver 用成功/失败作为候选 legality gate；
-  R3.3/R3.4 只提交已通过 gate 的 DDR facts；
-  R3.5 launch/runtime/package boundary 再把已通过的 DDR requirement 映射到运行时分配对象。
+  R3.2h 用 R3.2g 成功/失败选择 candidate；
+  R3.3 只 commit 已通过 R3.2e-g gates 的 candidate；
+  R3.4 把 accepted DDR planned range realize 成 placed memref/access descriptor；
+  R3.5 把 accepted DDR plan materialize 到 runtime allocation/import/query/package metadata。
 - User-level driver / named pipeline:
   局部 pass 是 `wafer-plan-ddr-memory`；
-  主线验证入口是 `wafer-lower-groups-to-ddr-memory-planned-instr`，从 R3.2c/R3.2d/R3.2f
-  重放到 R3.2g。
+  主线验证入口是从 R3.2c/R3.2d/R3.2f 跑到 R3.2g 的 named pipeline。completion proof 必须覆盖
+  actual DDR planned range，不接受只验证 external DDR view。
 - Explicit non-goals:
-  不重新推 DDR tile subview，不重做 SPM memory planning，不选择 tile shape/layout/group
-  boundary，不生成 ABI call、packet、physical address 或 runtime handle。
+  不重新推 DDR tile subview，不重做 SPM memory planning，不选择 tile shape/layout/group boundary，
+  不生成 ABI call、packet、physical DDR address 或 runtime handle。
 - Completion gate:
-  R3.2f 输出的 tiled matmul/elementwise/storeback 能通过 DDR descriptor/range/capacity/
-  largest-contiguous/bandwidth checks；非法 dynamic view、payload/range/resource failure 和
-  当前无法表达的 compiler-managed DDR allocation 能被结构化拒绝。
+  simple matmul/elementwise candidate 中 external input/output DDR views、compiler-managed DDR temporary
+  或 resident constant demand 都能获得可验证 planned range；非法 dynamic view、payload/range、
+  overlap/capacity/largest-contiguous/bandwidth/alignment failure 能结构化拒绝。
 ```
 
 ## 3. Core Model
 
 ### 3.1 `#wafer.memory<ddr, layout>`
 
-`#wafer.memory<ddr, layout>` 只说明这个 memref 是 Wafer 可寻址 DDR storage，并携带
-physical layout marker。它不说明这个 storage 未来由哪个 runtime allocation path 创建，也不说明
-host 是否可见。
+`#wafer.memory<ddr, layout>` 说明 memref 是 Wafer 可寻址 DDR storage，并携带 physical layout
+marker。它不说明 future runtime allocation path，也不说明 host 是否可见。
 
-允许的基本来源：
+允许来源：
 
-- function / tile-region boundary argument：由 launch/runtime 在更低层绑定或导入。
+- external function / tile-region boundary argument：由 launch/runtime 在更低层绑定或导入。
 - `memref.subview` / view-like op：从已有 DDR memref 派生静态 view。
-- future explicit DDR requirement op/interface：用于表达 compiler-managed DDR range、owner 和
-  lifetime。R3.2g V0 尚未引入。
+- explicit DDR requirement op/interface：表达 compiler-managed range、owner、lifetime、read/write intent
+  和 alignment。
+- resident constant lowering：表达 read-only backing data、storage transform 和 lifetime。
 
-裸 `memref.alloc` 到 DDR 表达不出 owner、lifetime 和 range requirement，因此 R3.2g V0 拒绝它，
-诊断为 `unsupported_compiler_managed_ddr`。
+裸 `memref.alloc` 到 DDR 表达不出 owner、lifetime 和 range requirement，因此不是合法的
+compiler-managed DDR plan 输入。
 
-### 3.2 Default DDR Allocatable Arena
+### 3.2 Default DDR Arena
 
-编译器侧只建模默认可分配 DDR arena 的资源边界：
+编译器侧默认只有一个普通 DDR allocatable arena：
 
 ```text
 default_ddr_arena:
-  base: runtime/placed stage 才能确定；R3.2g 不写入 IR
-  capacity_bytes: 当前候选可用总量
-  largest_contiguous_bytes: 单个 root/range 的最大连续可用空间
-  alignment_bytes: target policy / descriptor preference，V0 默认由 view/descriptor 合法性覆盖
-  bandwidth_limit_bytes: 当前 planning window 的 DDR movement byte budget
+  symbolic_base: physical base 由 R3.4/R3.5 placed/runtime stage materialize
+  capacity_bytes
+  largest_contiguous_bytes
+  alignment_bytes
+  bandwidth_limit_bytes
 ```
 
-普通 tensor、workspace、temporary、resident constant 在 compiler 语义上都默认落到这个
-allocatable arena。后续 runtime/package 层可以把它映射到真实运行时分配对象；这种映射不反向改变
-R3.2g 的 IR 合同。
+R3.2g 在这个 arena 内规划 symbolic offset/range。R3.5 之后才把 symbolic base + offset 映射到
+runtime allocation object 和 physical address。
 
-如果以后确实需要 host-visible/control/special arena，必须先引入明确的 compiler IR requirement
-或 target policy 输入，并说明 verifier 如何检查。不能把 driver/runtime 名称直接塞成 generic
-compiler attr。
+如果以后确实需要 host-visible/control/special arena，必须先引入明确的 compiler requirement 或
+target policy 输入，并说明 verifier 如何检查。不能把 driver/runtime 名称直接塞成 generic compiler attr。
 
-## 4. Hardware and Runtime Facts Used by This Layer
+### 3.3 Planned DDR Range
 
-R3.2g 只吸收会影响 compiler legality/cost 的稳定事实：
+R3.2g 成功后，非 external DDR demand 必须有 planned range fact：
 
-| fact | compiler meaning |
-| --- | --- |
-| 单卡 DDR 容量 64 GB / 128 GB | capacity resource bound 的来源之一 |
-| 单卡 DDR 带宽约 200 GB/s | bandwidth cost / legality input |
-| RDMA / WDMA 连接 DDR 与 SPM | descriptor byte count、stride、iteration 和 range 必须可验证 |
-| public adapter DDR lower bound | placed descriptor / ABI lowering 的下游边界；R3.2g 不写 physical address |
-| DDR2DDR / DTE preferred 256B alignment | cost / selected path constraint；不是所有 DDR view 的统一 hard rule |
+```text
+DdrPlannedRange:
+  arena              // default arena in V0
+  offset_bytes       // symbolic offset within arena
+  size_bytes         // physical bytes, including layout padding
+  alignment_bytes
+  lifetime_begin
+  lifetime_end
+  access_intent      // read, write, read_write, read_only
+  root_or_requirement_value
+```
 
-runtime/driver 可能有多种内部 allocation path、visible aperture、executable/log/control buffer。
-这些事实只在 launch/runtime/package 或 target policy 中使用；R3.2g 不把它们变成 Wafer dialect
-allocation attrs。
+字段名是语义合同，不要求当前实现使用这个 exact attr spelling。要求是：下游能从 IR/artifact
+直接消费 planned range，不能靠 pass-local map、名字或 fixture 复原。
 
-## 5. IR Layer Boundary
+External input/output 通常不由 compiler 分配 offset，但 R3.2g 仍要记录或验证它们的 access range
+requirement，使 descriptor lowering 和 runtime binding 能检查 size/alignment/read-write intent。
 
-| layer | carries | must not carry |
+## 4. Demand Classes
+
+| class | R3.2g responsibility | R3.5 responsibility |
 | --- | --- | --- |
-| tensor / linalg / `wafer.group` | tensor shape、dtype、semantic layout、group boundary | DDR physical address、runtime handle、allocation object、DDR planning result |
-| `wafer.tile.region` | DDR/SPM memref boundary、tile load/store、layout materialization、movement/effect | final DDR allocation, runtime-private allocation category |
-| instruction-level IR | `wafer.instr.rdma/wdma` operands and descriptors over Wafer-tagged memrefs | duplicate DDR plan attr、runtime handle、packet field |
-| R3.2g DDR memory planning gate | recomputed DDR demand, descriptor/range/resource verification, structured failure | tensor math semantics、SPM offset search、candidate search trace |
-| launch / runtime / package | runtime allocation/import/query, physical address materialization, ABI/package metadata | group formation or layout search internals |
+| external input | validate view/range/descriptor, record binding requirement | import/bind runtime object, query physical address, validate size/alignment |
+| external output | validate view/range/descriptor and write intent | bind output object, query physical address, validate writeback visibility |
+| compiler-managed workspace/temp | plan symbolic range with lifetime/reuse | allocate runtime object backing accepted ranges |
+| resident constant | plan read-only range or reject if residency/streaming choice is not explicit | serialize/load backing data and bind physical address |
+| inter-group DDR value | plan range across producer-to-last-consumer lifetime when explicitly represented | materialize backing allocation and package metadata |
+| executable/log/control metadata | not generic tensor DDR planning | runtime/package internal allocation |
 
-## 6. Demand Model
+## 5. Demand Recovery
 
-R3.2g does not consume a naked byte size. It reconstructs demand from current IR:
+R3.2g reconstructs demand from current IR:
 
 ```text
 DdrAccessDemand:
@@ -149,25 +156,36 @@ DdrAccessDemand:
   descriptor_iterations
 ```
 
-Demand recovery rules:
+Rules:
 
 - RDMA source must be `#wafer.memory<ddr, *>`; destination must be `#wafer.memory<spm, *>`.
 - WDMA source must be `#wafer.memory<spm, *>`; destination must be `#wafer.memory<ddr, *>`.
 - tile-region block arguments are resolved back to the corresponding region operands.
-- view-like chains are resolved with `ViewLikeOpInterface` until the root DDR memref.
-- view/root memref shape, offset and strides must be static and non-negative.
-- physical byte size uses `computeWaferPhysicalTensorInfo`, so Cx/NCx physical bytes, alignment padding
-  and bitpacked limitations are handled consistently with other Wafer memory planning.
+- view-like chains are resolved with `ViewLikeOpInterface` until the root DDR memref or planned requirement.
+- view/root memref shape, offset and strides must be static and non-negative unless a future descriptor form
+  explicitly supports dynamic bounds and verifier can prove them.
+- physical bytes use `computeWaferPhysicalTensorInfo`, so Cx/NCx physical bytes, alignment padding and
+  bitpacked limitations stay consistent with SPM planning and instruction lowering.
 
-The scope summary keeps:
+## 6. Planning Algorithm
 
-```text
-DdrDemandSummary:
-  unique_root_bytes
-  movement_bandwidth_bytes
-```
+R3.2g planning is an analysis + transformation pair:
 
-The summary is pass-local analysis and is recomputed from IR. It is not serialized into the IR.
+1. Collect external DDR access demands from RDMA/WDMA descriptors.
+2. Collect explicit DDR allocation requirements for compiler-managed workspace/temp, resident constants and
+   inter-group DDR values.
+3. Compute physical bytes and alignment from memref type, Wafer layout and target policy.
+4. Build lifetime intervals from SSA use-def, region/control-flow and async token/wait/drain effects. For V0,
+   scope is the candidate artifact; broader inter-group lifetime requires explicit producer/consumer relation.
+5. Build conflict edges for intervals that may overlap in time and require distinct DDR bytes.
+6. Pack requirements into default DDR arena using deterministic interval packing. Reuse offset only when
+   lifetime analysis proves non-overlap.
+7. Validate each descriptor/view range against either the external root byte size or the planned range.
+8. Validate capacity, largest contiguous range, alignment and bandwidth.
+9. Materialize planned range facts into the candidate artifact or return structured failure.
+
+The search order and rejected candidates are analysis. The accepted planned ranges are cross-stage facts and
+must be explicit.
 
 ## 7. Verification Rules
 
@@ -175,20 +193,22 @@ R3.2g verifies:
 
 - descriptor payload: `byte_count == inner_bytes * iterations[0] * iterations[1] * iterations[2]`。
 - descriptor local range: `inner_bytes + sum(stride_i * (iteration_i - 1))` must not overflow。
-- local descriptor range must fit inside the DDR view span。
-- `view_offset_bytes + descriptor_end` must fit inside the root DDR byte size。
-- each unique DDR root demand must fit within `largest_contiguous_bytes`。
-- total unique DDR root bytes must fit within `capacity_bytes`。
-- total RDMA/WDMA DDR movement bytes must fit within `bandwidth_limit_bytes`。
-- pass option resource limits must be non-negative。
-- DDR roots created by bare `memref.alloc` fail until a proper owner/lifetime/range requirement is present。
+- local descriptor range fits inside the DDR view span or planned range。
+- `view_offset_bytes + descriptor_end` fits inside the root DDR byte size。
+- each planned range respects required alignment。
+- planned ranges with overlapping lifetimes do not overlap in bytes。
+- each planned range fits within `largest_contiguous_bytes`。
+- total live/planned DDR bytes fit within `capacity_bytes` under the selected arena model。
+- total RDMA/WDMA DDR movement bytes fit within `bandwidth_limit_bytes` for the candidate window。
+- pass option resource limits are non-negative。
+- missing owner/lifetime/range requirement for compiler-managed DDR is rejected。
 
 R3.2g does not validate final physical address lower bound because physical address is not materialized yet.
-That check belongs to placed descriptor / ABI lowering.
+That check belongs to placed descriptor / ABI/runtime lowering.
 
 ## 8. Failure Reasons
 
-Current structured diagnostics:
+Required failure classes:
 
 - `unsupported_ddr_view`
 - `descriptor_payload_mismatch`
@@ -199,37 +219,49 @@ Current structured diagnostics:
 - `bandwidth_pressure_too_high`
 - `invalid_ddr_resource_limit`
 - `unsupported_compiler_managed_ddr`
+- `missing_ddr_requirement`
+- `ddr_range_overlap`
+- `ddr_alignment_failure`
+- `ddr_planned_range_missing`
 
-These names describe compiler-visible failure classes. They intentionally do not mention runtime allocation
-categories.
+Diagnostics should describe compiler-visible failure classes. They must not mention runtime allocation category
+names as if those were compiler IR concepts.
 
 ## 9. Interaction With Other Stages
 
 ### 9.1 SPM Memory Planning
 
-SPM memory planning assigns offsets only for `#wafer.memory<spm, *>` memrefs. It may use DDR range and
-bandwidth as cost/legality input, but it does not allocate DDR. DDR memory planning does not assign SPM
-offsets.
+SPM memory planning assigns offsets for `#wafer.memory<spm, *>` memrefs. DDR memory planning assigns
+symbolic ranges for explicit DDR requirements. They share lifetime/effect reasoning but do not allocate each
+other's storage.
 
 ### 9.2 Layout Materialization
 
-Layout materialization may add DDR reads/writes or staging pressure. The inserted movement must still appear
-as explicit DDR memref operands and descriptors so R3.2g can rederive demand. If a layout transform changes
-physical bytes, the corresponding memref type/layout must make that visible.
+Layout materialization may add DDR reads/writes or staging pressure. The inserted movement must appear as
+explicit DDR memref operands, requirements and descriptors so R3.2g can rederive demand. If a layout transform
+changes physical bytes, the corresponding memref type/layout or requirement must make that visible.
 
-### 9.3 R3.2h Candidate Driver
+### 9.3 R3.2h Candidate Decision
 
-R3.2h enumerates tile/layout/resource candidates, then reruns R3.2e/R3.2d/R3.2f/R3.2g. A candidate rejected
-by DDR memory planning is not written into the main IR; the driver may retry with a different tile shape,
-layout cut, streaming/residency choice or split.
+R3.2h enumerates tile/layout/resource candidates and reruns R3.2e/R3.2d/R3.2f/R3.2g. A candidate rejected by
+DDR planning is not written into main IR. The driver may retry with a different tile shape, layout cut,
+streaming/residency choice, arena resource bound or split.
 
-### 9.4 Launch / Runtime / Package
+### 9.4 R3.5 Launch / Runtime / Package
 
-R3.5 materializes accepted DDR requirements into launch/runtime/package objects. It is responsible for actual
-allocation/import/query, physical address assignment and ABI metadata. It must not redo tile/view/range
-analysis by name; it consumes the explicit DDR facts already accepted by R3.2g/R3.4.
+R3.5 consumes accepted DDR planned ranges and external binding requirements. It:
+
+- allocates/imports runtime objects,
+- queries physical base/size,
+- validates runtime object capacity/alignment/intent against the accepted plan,
+- fills package/launch metadata,
+- reports runtime allocation failure without changing compiler planning decisions.
+
+R3.5 must not redo DDR lifetime/range planning by name or by inspecting high-level tensor semantics.
 
 ## 10. Example Shape
+
+External view validation:
 
 ```mlir
 %input_tile = memref.subview %input[1, 2] [2, 3] [1, 1]
@@ -244,28 +276,38 @@ wafer.instr.rdma %input_tile to %spm
  to memref<2x3xf16, #wafer.memory<spm, tensor>>
 ```
 
-R3.2g derives the root `%input`, the static view offset, the descriptor payload and the root byte demand
-from this IR. It does not need a separate runtime-allocation attr to decide whether the access is legal.
+Compiler-managed DDR must not be inferred from a bare allocation. It needs an explicit requirement and accepted
+planned range before R3.2g can succeed:
+
+```text
+requirement:
+  bytes = physical_bytes(memref type)
+  alignment = target DDR alignment
+  lifetime = producer to last consumer
+  access_intent = read_write
+
+planned range:
+  arena = default_ddr
+  offset = symbolic offset
+  size = bytes
+```
 
 ## 11. Verification
 
 Expected coverage:
 
-- lit positive: explicit static DDR subview over external boundary passes without adding DDR plan attrs。
-- lit negative: descriptor payload mismatch, descriptor/view/root range overflow, dynamic view, default arena
-  capacity overflow, largest contiguous failure, bandwidth failure and unsupported compiler-managed DDR。
-- text consistency: task/docs should not describe runtime allocation categories as R3.2g compiler IR attrs。
-- build: TableGen and `wafer-opt` rebuild after removing obsolete attr definitions。
+- lit positive: explicit static external DDR subview passes descriptor/view/root validation。
+- lit positive: explicit compiler-managed DDR requirement receives planned range and descriptor uses it。
+- lit positive: non-overlapping lifetimes reuse DDR range; overlapping lifetimes do not。
+- lit negative: descriptor payload mismatch、descriptor/view/root range overflow、dynamic unsupported view。
+- lit negative: capacity overflow、largest contiguous failure、bandwidth failure、alignment failure、
+  missing requirement、range overlap。
+- text consistency: task/docs must not describe runtime allocation categories as R3.2g compiler IR attrs。
+- build: TableGen and `wafer-opt` rebuild after IR/interface changes。
 
 ## 12. Deferred Work
 
-后续恢复任务必须先扩 IR/interface，而不是复用旧 policy 名称：
-
-- explicit compiler-managed DDR range requirement：owner、lifetime、required bytes、alignment、reuse
-  relation 和 launch/runtime materialization contract。
-- resident constant DDR requirement：read-only storage、packed backing data、streaming/residency choice 和
-  package serialization boundary。
-- optional non-default DDR arena：只有 ABI 或 runtime capability 需要时再引入，并作为 target policy /
-  explicit requirement 表达。
-- placed descriptor / ABI verification：physical address lower bound、alignment、range fence 和 runtime
-  allocation mapping。
+- Multi-arena DDR planning if ABI/runtime capability requires a real non-default arena。
+- Cross-group DDR lifetime beyond a single candidate artifact, once producer/consumer relation is explicit。
+- Board-validated runtime allocation failure mapping and recovery policy。
+- PMU-calibrated DDR bandwidth model。

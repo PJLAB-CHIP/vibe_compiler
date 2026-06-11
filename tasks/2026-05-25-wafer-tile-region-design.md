@@ -77,7 +77,7 @@ wafer.group
   -> candidate DDR tile-view materialization for planner candidate evaluation
   -> instruction-level wafer.instr.* IR over unplaced Wafer-tagged memref values
   -> SPM memory planning on the same instruction-level IR
-  -> DDR memory planning gate on memory-planned instruction IR
+  -> DDR memory planning on memory-planned instruction IR
   -> closed-loop candidate driver for retry/split/commit decision
   -> committed wafer.tile.region
   -> materialized placed instruction-level IR / placed memref / access descriptor
@@ -155,7 +155,7 @@ table 补协议。
 | scalar boundary values | 作为 tile-region block scalar SSA value 传入，供 fill/reduce init 等 scalar operand 使用 | supported for scalar | 只支持 float / integer / index scalar；不生成 storage，不作为长期 side channel。 |
 | `arith.constant` tensor | clone constant 后用 `bufferization.to_memref` materialize 为 read-only DDR source，再 `wafer.tile.load` 到 tensor-layout SPM storage | partial | 只适合 tensor constant；scalar constant 只应在 compute body 或显式 init 语义中消费。需要区分 constant residency / DDR / immediate policy。 |
 | `arith.constant` scalar | clone scalar constant，并作为 `wafer.tile.fill`、`wafer.tile.reduce init_value` 或 elementwise body 推导输入 | supported for scalar constants | scalar 语义通过 SSA value 或 typed attr 进入目标 op；不靠名字或原 op 残留。 |
-| `tensor.empty` | writable group output 的 `tensor.empty` 生成 `#wafer.memory<ddr, tensor>` `memref.alloc`；tile-local temporary 的 `tensor.empty` 生成 `#wafer.memory<spm, tensor>` `memref.alloc` | supported as abstract allocation demand | `memref.alloc` 不分配物理 offset/window；DDR alloc 只是 compiler-visible boundary value，真实 DDR ownership/memory plan 仍归 R3.2g/R3.5；SPM offset/window 归 R3.2f memory planning。不能把 arbitrary empty 偷映射成 output alias。 |
+| `tensor.empty` | writable group output 的 `tensor.empty` 生成 `#wafer.memory<ddr, tensor>` boundary value；tile-local temporary 的 `tensor.empty` 生成 `#wafer.memory<spm, tensor>` `memref.alloc` | supported as abstract allocation demand | `memref.alloc` 不分配物理 offset/window；DDR boundary / requirement 的 planned range 归 R3.2g，runtime materialization 归 R3.5；SPM offset/window 归 R3.2f memory planning。不能把 arbitrary empty 偷映射成 output alias。 |
 | `tensor.extract` scalar | 从已 materialized DDR boundary memref 生成 `memref.load`，供动态 scalar init / scalar value 使用 | supported for boundary scalar extract | 只作为 scalar SSA 支持 op；不表示 tile compute；tile-local tensor element read 不能用 generic memref.load 伪装。 |
 | `linalg.fill` | 生成显式 `wafer.tile.fill`，写入 existing storage；fill result 映射为该 initialized buffer | supported for scalar fill | `wafer.tile.fill` 暴露 target-abstract write relation；具体是否 lower 成 CT fill、memset 或 immediate pattern 由 R3.2d instruction selection 决定。 |
 | `linalg.matmul` | lhs/rhs materialize 到 `cx`，生成 `wafer.tile.gemm`，结果记录为 `cx` | supported for simple `linalg.matmul` | pattern 应检查 rank、dtype、accumulator/result relation、layout requirement；batch matmul / generic contraction 另列，不应混成 matmul 特判。 |
@@ -287,9 +287,10 @@ V0 需要以下 op family：
 6. SPM memory planning：R3.2f 只消费 instruction-level IR with unplaced Wafer-tagged memref values，
    在同一 IR 上填入 offset/end/bank span 和 lifetime/reuse；不能直接从 target-abstract op 猜
    memref demand。
-7. DDR memory planning gate：R3.2g 消费 memory-planned instruction-level IR、SPM facts 和 DDR
-   tile-view boundary，验证或拒绝当前 IR 中显式表达的 descriptor、view/root range、default
-   allocatable arena capacity/largest-contiguous、bandwidth 和 fence demand。成功时不写重复 DDR plan attr；失败时给结构化原因。
+7. DDR memory planning：R3.2g 消费 memory-planned instruction-level IR、SPM facts、DDR
+   tile-view boundary 和 explicit DDR requirements，规划 compiler-managed/resident/inter-group DDR planned
+   ranges，并验证 descriptor、view/root range、default arena capacity/largest-contiguous、bandwidth、
+   alignment、overlap 和 fence demand。成功 facts 必须能被 R3.2h/R3.3/R3.4/R3.5 直接消费；失败时给结构化原因。
 8. closed-loop candidate driver：R3.2h 枚举 tile/layout/resource 候选，逐个运行 R3.2e/R3.2d/R3.2f/R3.2g
    gates；选择已通过全部 gates 的 candidate artifact，或要求 split / retry；rejected candidate IR
    丢弃。
@@ -314,7 +315,7 @@ SPM memory planning 后续应直接消费这些 region/control-flow lifetime；�
 layout/materialization/resource interface 查询入口；这些接口和 verifier 已基于
 `memref<..., #wafer.memory<space, layout>>` 合同。第 4 步必须让 candidate boundary slice 的 DDR
 operand 表达真实 tile view；第 5 步 instruction legalization / selection 再把 target-abstract op
-降到 instruction-level IR；第 6-8 步分别完成 SPM planned offset、DDR memory planning gate
+降到 instruction-level IR；第 6-8 步分别完成 SPM planned offset、DDR memory planning
 和 closed-loop candidate driver，不能互相推迟协议补全。
 
 当前实现状态：
@@ -355,7 +356,8 @@ launch args / identity lowering 的 IR contract。当前没有 multi-tile no-com
   拒绝，上游应避免生成这种 no-op conversion。`wafer.tile.reshape` 这类无副作用 view op 可由
   canonicalization 删除同类型 no-op。
 - `#wafer.memory<spm, *>` memref 在 placement realization 前必须经过 SPM allocation；
-  `#wafer.memory<ddr, *>` memref 必须有 DDR memory planning 接受的 explicit view/range/resource requirement。
+  `#wafer.memory<ddr, *>` memref 必须有 DDR memory planning 接受的 explicit view/range/resource requirement
+  或 accepted planned DDR range。
 - lower-level op 出现时，其 operand 已经是 placed memref 或 verifier 可解释 descriptor。
 
 Verifier 不检查 group 是否应该形成；那是 `wafer.group` 和 planner 的职责。

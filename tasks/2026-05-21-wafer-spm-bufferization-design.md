@@ -431,8 +431,9 @@ placement realization 后，IR 应使用 placed memref、flat backing memref 或
 
 `#wafer.memory<space, layout>` 在 placed instruction IR 中仍是统一语义：`spm` 表示 tile-local
 SRAM，`ddr` 表示 device/global DDR address domain。RDMA/WDMA verifier 用 source/destination
-address space 检查方向；DDR memory planning / runtime/package lowering 用 `ddr` 继续关联 view/range、
-compiler-managed DDR requirement、constant storage/residency、default allocatable arena resource 和 launch metadata。
+address space 检查方向；DDR memory planning 用 `ddr` 继续关联 view/range、compiler-managed DDR
+planned range、constant storage/residency 和 default arena resource；runtime/package lowering 再把
+accepted DDR planned ranges 关联到 launch metadata。
 
 不要把 `wafer.tile.region` body 已经表达的执行结构复制成全局 allocation plan attr。
 

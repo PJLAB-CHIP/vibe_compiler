@@ -97,7 +97,7 @@ Pipeline position:
   拒绝的 logical group。
 - Downstream consumer:
   R3.2a-g analysis/planning/legalization gates 和 R3.2h closed-loop candidate driver；R3.3 `wafer.tile.region`
-  materialization；R3.4/R3.5 planned layout/SPM/DDR materialization；
+  materialization；R3.4 placed layout/SPM/DDR realization；R3.5 runtime/package materialization；
   R3.6/R3.7 ABI/package stages。
 - User-level driver / named pipeline:
   `wafer-opt --program-pipeline=stablehlo-spmd-to-group`，由该 program
@@ -469,8 +469,8 @@ group 设计只规定交接合同：
   `tasks/2026-05-21-wafer-layout-materialization-design.md`。
 - physical memory planning、SPM allocator、reserved resource policy、range/alignment/coloring；
   见 `tasks/2026-05-21-wafer-spm-bufferization-design.md`。
-- DDR external allocation contract、compiler-managed requirement、constant residency、explicit
-  view/range、default allocatable arena capacity/largest-contiguous 和 bandwidth；
+- DDR external allocation contract、compiler-managed/resident/inter-group planned range、constant residency、
+  explicit view/range、default arena capacity/largest-contiguous 和 bandwidth；
   见 `tasks/2026-05-25-wafer-ddr-memory-planning-design.md`。
 - `wafer.tile.*` compute / `wafer.dma` / `wafer.tile.*` communication / `wafer.instr.local_drain` 和后续 sync boundary 的 op contract。
 - Wafer C ABI family、wrapper 参数、issue/drain 策略和 package/runtime 格式。
@@ -729,8 +729,8 @@ boundary placement 会改变真实需求：
   constant storage transform 可以 whole/chunked/streaming，但不能在 DDR 层引入额外 compute split。
   load/store 根据 source 和 destination layout assignment 选择 movement 实现，不是 `wafer.group`
   的 layout root。
-- DDR 不是无限外部内存：external allocation、compiler-managed requirement、resident constant、
-  explicit view/range、default allocatable arena capacity/largest-contiguous 和 bandwidth pressure 都可能让候选 plan 失败，失败后
+- DDR 不是无限外部内存：external allocation、compiler-managed range requirement、resident constant、
+  explicit view/range、planned DDR range、default arena capacity/largest-contiguous 和 bandwidth pressure 都可能让候选 plan 失败，失败后
   planner 需要回到 group boundary、layout cut、streaming/residency policy 或 executable split。
 - Cx/NCx 的 C0 tail/fold、256B line/layout padding、bool bitpack、psum/scratch/double
   buffer、communication buffer 都会改变实际 SPM footprint。
@@ -750,7 +750,7 @@ scheduled structure 之前完成 layout/resource/legalization planning。实现�
 transformation-local candidate evaluation `wafer.tile.region` IR，用它承载 target-abstract
 Wafer op、layout materialization、buffer、lifetime 和 effect，再从这层 IR 调用下游 analysis。
 这层 lowered IR 是 planning artifact；只有 passing plan 才能由 R3.3 commit 到主 IR。
-SPM allocation、layout assignment、DDR memory demand 和 compute/movement legality 是 group 是否成立的
+SPM allocation、layout assignment、DDR planned ranges 和 compute/movement legality 是 group 是否成立的
 决定条件，不是 R3.3/R3.4/R3.5 的后处理。
 
 因此恢复顺序必须分清 planning facts 和 IR materialization：
@@ -781,17 +781,19 @@ SPM allocation、layout assignment、DDR memory demand 和 compute/movement lega
   tile views and unplaced Wafer-tagged memref，在真实 SPM window、
   alignment、layout padding、scratch/psum/temp、materialization temp、communication staging、
   lifetime overlap、range/end-address/bank span 和 conflict 约束下搜索可接受 memory plan。
-- R3.2g 恢复 DDR memory planning gate 和 compute/movement legality analysis：消费 memory-planned
-  instruction-level IR 和 SPM facts，覆盖 external/compiler-managed/resident-constant、descriptor、
-  view/root range、default allocatable arena capacity/largest-contiguous/bandwidth，以及 op layout/dtype/shape/effect 合法性；成功即证明当前 IR 中显式表达的 DDR
-  demand 可规划，失败给结构化原因，不能回头改变 instruction semantics，也不能产出等待后续补全的
-  DDR plan。
+- R3.2g 恢复 DDR memory planning 和 compute/movement legality analysis：消费 memory-planned
+  instruction-level IR、SPM facts、external DDR tile views 和 explicit DDR requirements，覆盖
+  external/compiler-managed/resident/inter-group demand、descriptor、view/root range、planned DDR range、
+  default arena capacity/largest-contiguous/bandwidth/alignment，以及 op layout/dtype/shape/effect 合法性；
+  成功即证明当前 candidate 的 DDR demand 已规划并可被下游消费，失败给结构化原因，不能回头改变
+  instruction semantics，也不能产出等待 R3.5 再补全的 DDR plan。
 - R3.2h 才能做 closed-loop candidate driver：搜索 traversal、tile shape、layout、DDR tile view、
   instruction selection、SPM/DDR resource candidate，并逐个运行 R3.2e/R3.2d/R3.2f/R3.2g gates，
   输出 passing candidate artifact、rejected reason 或 split decision。
 
 R3.3 只 materialize R3.2h 选中的 passing candidate artifact 为 committed `wafer.tile.region`。R3.4/R3.5 只把
-已经通过 R3.2e-g gates 的 layout/instruction/SPM/DDR facts 落到可验证 IR 或 resource boundary；它们不能成为
+已经通过 R3.2e-g gates 的 layout/instruction/SPM/DDR planned facts 落到可验证 IR、placed descriptor
+或 runtime/package boundary；它们不能成为
 第一次发现 SPM 放不下、layout 不合法或 DDR demand 不可接受的阶段。若 R3.2a-g gates
 让 R3.2h 不能接受当前 group plan，planner 必须回到 tile shape、layout、internal split、instruction
 选择或 group boundary，而不是落一个 rejected `wafer.tile.region` 等待下游补救。
@@ -1023,8 +1025,8 @@ group planner 层只在 analysis 中建模抽象资源，不把完整 resource p
 
 - tile-local tensor storage：input/output/intermediate/temporary/scratch/accumulator。
 - communication storage need：若存在 send/recv staging，记录其大小和生命周期。
-- DDR memory need：external input/output allocation、inter-group tensor compiler-managed DDR requirement、resident constant、
-  DDR staging、range/bandwidth pressure 和 host-visible completion 需求。
+- DDR memory need：external input/output allocation、inter-group tensor compiler-managed DDR range requirement、
+  resident constant、DDR staging、planned range、range/bandwidth pressure 和 host-visible completion 需求。
 - sync need：若存在 local visibility、remote communication wait 或 group barrier，记录同步需求。
 - compute / DMA / communication pressure：用于 cost model。
 - host-visible boundary：用于标记 output 或 profiling 边界。
@@ -1078,8 +1080,8 @@ memory space 和 data movement 的 IR 层落成明确 op。layout materializatio
 从 scheduled group value 到 `wafer.tile.region` memref 的映射、`#wafer.memory<ddr, tensor>` compact external boundary、
 constant storage transform 和最小化 layout change 的策略见
 `tasks/2026-05-21-wafer-layout-materialization-design.md`；SPM allocation 见
-`tasks/2026-05-21-wafer-spm-bufferization-design.md`；DDR external allocation、compiler-managed requirement、
-resident constant、default allocatable arena 和 bandwidth/range cost 见
+`tasks/2026-05-21-wafer-spm-bufferization-design.md`；DDR external allocation、compiler-managed range requirement、
+resident constant、planned DDR range、default arena 和 bandwidth/range cost 见
 `tasks/2026-05-25-wafer-ddr-memory-planning-design.md`；layout-sensitive compute/movement op
 如何向 planner 暴露 hard constraint 和 preference，见
 `tasks/2026-05-25-wafer-compute-dialect-design.md`；device-side group-to-group boundary

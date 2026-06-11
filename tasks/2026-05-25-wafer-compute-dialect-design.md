@@ -56,7 +56,7 @@ scheduled wafer.group tensor body
   -> candidate DDR tile-view materialization
   -> instruction-level wafer.instr.* IR over unplaced Wafer-tagged memref values
   -> same instruction-level IR after SPM memory planning
-  -> same instruction-level IR after DDR memory planning gate
+  -> same instruction-level IR with accepted DDR planned range facts
   -> codegen emission to Wafer C ABI / packet / package metadata
 ```
 
@@ -68,8 +68,8 @@ scheduled wafer.group tensor body
 | target-abstract compute | `wafer.tile.*` compute ops 和 target-abstract movement op | tensor SSA value 或 Wafer-tagged memref | 选择目标实现族，提供 layout/resource/lowering interface，不绑定具体 storage placement |
 | layout-materialized | 同一类 compute/movement op | `memref<..., #wafer.memory<space, layout>>` | 验证 address space 和 physical layout marker，显式插入 `wafer.tile.materialize_layout` |
 | instruction-level | `wafer.instr.*` | unplaced Wafer-tagged memref SSA value | 选择 CT/NE/TDMA/RDMA/WDMA 指令形态，列出 queue、temp/psum/staging memref values、alias、effect 和 descriptor attrs，不含 SPM offset；DTE 属于 `wafer.tile.*` communication / communication lowering |
-| DDR memory-planned instruction-level | 同一 `wafer.instr.*` | memory-planned Wafer-tagged memref SSA value | DDR view/root range、descriptor、default allocatable arena capacity/largest-contiguous/bandwidth 已通过 DDR memory planning；不含重复 DDR plan attr |
-| placed instruction-level | 同一 `wafer.instr.*` | placed memref、flat storage value 或 access descriptor | 具备 SPM offset/range/bank、DDR access descriptor 或 compiler-managed base+offset，可进入 codegen emission |
+| DDR memory-planned instruction-level | 同一 `wafer.instr.*` | memory-planned Wafer-tagged memref SSA value | DDR view/root range、descriptor、compiler-managed/resident/inter-group planned ranges、lifetime/reuse、default arena capacity/largest-contiguous/bandwidth 已通过 DDR memory planning |
+| placed instruction-level | 同一 `wafer.instr.*` | placed memref、flat storage value 或 access descriptor | 具备 SPM offset/range/bank、DDR access descriptor 或 accepted DDR range realization，可进入 codegen emission |
 | launch/ABI emission | LLVM / C call / package metadata | concrete ABI arg | 调用 Wafer C ABI、发 package metadata、连接 host runtime；不作为主线 IR 层 |
 
 因此，`wafer.tile.gemm` 这类 op 在不同阶段可以被 type conversion 改写 operand/result type，
@@ -311,7 +311,7 @@ Placed instruction-level verifier：
   WDMA source 是 SPM、destination 是 DDR。
 - memory-space verifier 必须用统一的 `#wafer.memory<space, layout>` 检查这些 address domains；不能把
   external boundary、DDR descriptor 和 SPM storage 当成几套不相干的空间语义。
-- DDR access descriptor 的 compiler-managed requirement、external allocation、capacity 和 bandwidth 不是本层
+- DDR access descriptor 的 compiler-managed/resident planned range、external allocation、capacity 和 bandwidth 不是本层
   op attr；本层只通过 memory effects、range、byte count 和 direction contract 把需求暴露给
   DDR memory planner。
 - stride、iteration、byte count、range end、bool bitpack 和 alignment 规则已完成转换和检查。
@@ -330,7 +330,7 @@ Placed instruction-level verifier：
 | candidate DDR tile-view materialization | candidate target-abstract tile-region IR + explicit static boundary slice fact 或 candidate output tile offsets/sizes | same candidate evaluation tile-region IR with DDR `memref.subview` tile operands | 覆盖 external boundary extract、direct output insert storeback，以及单结果 destination-style linalg root 的 candidate tile offsets/sizes 到 boundary slice proposal；closed-loop traversal / tile-shape search 仍由 planner 后续产生 facts；不从名字或 whole-boundary shape 猜 DMA |
 | instruction legalization / selection | layout-materialized IR | instruction-level `wafer.instr.*` over unplaced Wafer-tagged memref | 将 target-abstract op 改写成 CT/NE/TDMA/RDMA/WDMA 指令形态，列出 queue、effects、temp/psum/staging memref values、alias 和 descriptor attrs；DTE communication 不进入普通 `wafer.instr` path |
 | SPM memory planning | instruction-level IR with unplaced Wafer-tagged memref | same instruction-level IR with planned SPM offset facts | 从 memref use-def 和 instruction effects 收集 demand、liveness，分配 offset/range/bank |
-| DDR memory planning gate | SPM-planned instruction-level IR with actual DDR tile views | same instruction-level IR after DDR memory planning，或结构化失败 | 从 memref view、descriptor、requirement 和 target resource 重算 DDR demand；验证或拒绝当前 IR 中显式表达的 DDR demand，不写重复 plan attr |
+| DDR memory planning | SPM-planned instruction-level IR with actual DDR tile views and explicit DDR requirements | same instruction-level IR with accepted DDR planned range facts，或结构化失败 | 从 memref view、descriptor、requirement、lifetime 和 target resource 重算 DDR demand；规划 compiler-managed/resident/inter-group DDR ranges；验证或拒绝当前 IR 中显式表达的 DDR demand |
 | placement realization | DDR memory-planned instruction-level IR | placed `memref` / flat storage / access descriptor | 复用标准 memref lowering 或生成目标 access descriptor，不重新决定 layout/SPM/DDR plan |
 | codegen emission | placed instruction-level IR | LLVM call / C ABI call / package metadata | 生成具体 ABI call 或 packet emission，不回头修改 schedule/layout |
 

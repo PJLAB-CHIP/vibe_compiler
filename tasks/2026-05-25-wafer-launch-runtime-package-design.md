@@ -133,10 +133,10 @@ Runtime package 必须区分：
 - executable/log/control metadata allocation。它们是 runtime/package 内部对象，不是 generic tensor
   DDR planning arena。
 
-KMD/UAPI 的低层分配类别只作为 runtime mapping evidence 使用；R3.2g compiler planning 只消费
-default DDR allocatable arena 的 capacity、largest contiguous range、alignment/bandwidth resource
-和显式 DDR requirement。small-BAR visible address offset、alignment、runtime allocation failure
-由 runtime/package 层在 materialization 时报告到用户可理解的位置。
+KMD/UAPI 的低层分配类别只作为 runtime mapping evidence 使用；R3.2g compiler planning 产出
+accepted DDR planned ranges 和 external binding requirements。R3.5 只把这些 accepted facts
+materialize 到 runtime allocation/import/query/package metadata，并报告 runtime allocation failure；
+不能在 runtime/package 层重新决定 DDR range plan。
 
 当前 `tools/wafer_package_manifest.py` 只负责验证和 roundtrip 显式输入的 manifest schema，不再提供
 固定 package emitter。manifest schema 记录 launch signature、placement metadata、DDR external

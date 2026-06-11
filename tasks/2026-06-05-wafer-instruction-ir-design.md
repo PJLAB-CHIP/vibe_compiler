@@ -279,7 +279,8 @@ memref 替换原 op result 的 uses。
 - SPM offset、range、bank span 由 R3.2f 写入，或在 R3.4 realization 降成 placed memref /
   address descriptor。
 - RDMA/WDMA 的 DDR side 使用 `memref<..., #wafer.memory<ddr, layout>>`；DDR memory planning stage 负责
-  external allocation contract、default allocatable arena resource、compiler-managed requirement 和 constant residency。
+  external allocation contract、default arena resource、compiler-managed/resident requirement、planned DDR
+  ranges 和 constant residency。
 
 R3.2d 只 materialize **unplaced logical descriptor facts**：byte count、stride/iteration、op kind、
 reduction dimensions、GEMM dimensions、elementwise kind 等。这些字段能从当前 IR type、attrs 和
@@ -531,10 +532,10 @@ R3.2d verifier checks only instruction legality:
 - no SPM offset/end/bank attrs before R3.2f.
 - no DTE/CSR/SCALAR ordinary instruction op.
 
-R3.2d does **not** verify physical address range, SPM bank conflicts, DDR default allocatable arena capacity, runtime
+R3.2d does **not** verify physical address range, SPM bank conflicts, DDR default arena capacity, runtime
 symbol, packet bit layout or worker register window. Those checks belong to R3.2f/R3.2g/R3.4/R3.6.
-R3.2g must accept or reject the explicit DDR views and descriptors already present in this IR; it must not
-invent a separate candidate DDR plan for a later pass to complete.
+R3.2g must accept or reject the explicit DDR views, descriptors and DDR requirements already present in this
+IR, and must materialize accepted DDR planned range facts before later placement/runtime stages consume them.
 
 ## 11. Example
 
