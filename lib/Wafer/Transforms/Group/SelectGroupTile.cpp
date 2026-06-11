@@ -262,14 +262,24 @@ static CandidateStats estimateStats(mlir::ModuleOp module) {
 
 static mlir::FailureOr<llvm::SmallVector<int64_t, 4>>
 getStaticTraversalShape(GroupOp group) {
-  if (group.getNumResults() != 1)
+  if (group.getNumResults() == 0)
     return mlir::failure();
-  auto resultType =
+
+  auto firstType =
       mlir::dyn_cast<mlir::RankedTensorType>(group.getResult(0).getType());
-  if (!resultType || !resultType.hasStaticShape())
+  if (!firstType || !firstType.hasStaticShape())
     return mlir::failure();
-  llvm::SmallVector<int64_t, 4> shape(resultType.getShape().begin(),
-                                      resultType.getShape().end());
+  llvm::SmallVector<int64_t, 4> shape(firstType.getShape().begin(),
+                                      firstType.getShape().end());
+
+  for (mlir::Value result : group.getResults().drop_front()) {
+    auto resultType = mlir::dyn_cast<mlir::RankedTensorType>(result.getType());
+    if (!resultType || !resultType.hasStaticShape())
+      return mlir::failure();
+    if (!std::equal(shape.begin(), shape.end(), resultType.getShape().begin(),
+                    resultType.getShape().end()))
+      return mlir::failure();
+  }
   return shape;
 }
 
@@ -292,25 +302,70 @@ static mlir::linalg::LinalgOp getYieldedRootLinalgOp(GroupOp group) {
       yield.getValues().front().getDefiningOp());
 }
 
+static std::optional<llvm::SmallVector<mlir::linalg::LinalgOp, 4>>
+getYieldedRootLinalgOps(GroupOp group) {
+  auto yield =
+      mlir::dyn_cast<GroupYieldOp>(group.getBody().front().getTerminator());
+  if (!yield || yield.getValues().empty())
+    return std::nullopt;
+
+  llvm::SmallVector<mlir::linalg::LinalgOp, 4> roots;
+  for (mlir::Value value : yield.getValues()) {
+    auto root = mlir::dyn_cast_or_null<mlir::linalg::LinalgOp>(
+        value.getDefiningOp());
+    if (!root)
+      return std::nullopt;
+    roots.push_back(root);
+  }
+  return roots;
+}
+
+static bool hasReductionIterator(mlir::linalg::LinalgOp op) {
+  for (mlir::utils::IteratorType iteratorType : op.getIteratorTypesArray()) {
+    if (iteratorType == mlir::utils::IteratorType::reduction)
+      return true;
+  }
+  return false;
+}
+
 static mlir::FailureOr<llvm::SmallVector<int64_t, 2>>
-getStaticMatmulReductionRanges(GroupOp group) {
-  mlir::linalg::LinalgOp root = getYieldedRootLinalgOp(group);
-  if (!root || !mlir::isa<mlir::linalg::MatmulOp>(root.getOperation()))
+getStaticRootReductionRanges(GroupOp group) {
+  std::optional<llvm::SmallVector<mlir::linalg::LinalgOp, 4>> roots =
+      getYieldedRootLinalgOps(group);
+  if (!roots)
     return llvm::SmallVector<int64_t, 2>{};
 
-  llvm::SmallVector<int64_t, 4> loopRanges = root.getStaticLoopRanges();
-  if (llvm::any_of(loopRanges, [](int64_t range) {
-        return mlir::ShapedType::isDynamic(range);
-      }))
-    return mlir::failure();
+  std::optional<llvm::SmallVector<int64_t, 2>> commonReductionRanges;
+  for (mlir::linalg::LinalgOp root : *roots) {
+    if (!mlir::isa<mlir::linalg::MatmulOp, mlir::linalg::GenericOp>(
+            root.getOperation()) ||
+        !hasReductionIterator(root))
+      continue;
 
-  llvm::SmallVector<int64_t, 2> reductionRanges;
-  for (auto [index, iteratorType] :
-       llvm::enumerate(root.getIteratorTypesArray())) {
-    if (iteratorType == mlir::utils::IteratorType::reduction)
-      reductionRanges.push_back(loopRanges[index]);
+    llvm::SmallVector<int64_t, 4> loopRanges = root.getStaticLoopRanges();
+    if (llvm::any_of(loopRanges, [](int64_t range) {
+          return mlir::ShapedType::isDynamic(range);
+        }))
+      return mlir::failure();
+
+    llvm::SmallVector<int64_t, 2> reductionRanges;
+    for (auto [index, iteratorType] :
+         llvm::enumerate(root.getIteratorTypesArray())) {
+      if (iteratorType == mlir::utils::IteratorType::reduction)
+        reductionRanges.push_back(loopRanges[index]);
+    }
+    if (reductionRanges.empty())
+      continue;
+    if (!commonReductionRanges) {
+      commonReductionRanges = reductionRanges;
+      continue;
+    }
+    if (*commonReductionRanges != reductionRanges)
+      return llvm::SmallVector<int64_t, 2>{};
   }
-  return reductionRanges;
+  if (!commonReductionRanges)
+    return llvm::SmallVector<int64_t, 2>{};
+  return *commonReductionRanges;
 }
 
 static std::optional<int64_t>
@@ -601,7 +656,8 @@ static CandidateEvaluation evaluateTileInstance(
       },
       result);
 
-  if (mlir::failed(result) && isFullFirstTile(traversalShape, tile)) {
+  if (mlir::failed(result) && candidate.reductionSplitSizes.empty() &&
+      isFullFirstTile(traversalShape, tile)) {
     failureReason.clear();
     diagnostics = takeDiagnostics(
         context,
@@ -732,16 +788,16 @@ selectCandidateForGroup(GroupOp group, llvm::StringRef label, unsigned ordinal,
   mlir::FailureOr<llvm::SmallVector<int64_t, 4>> shape =
       getStaticTraversalShape(group);
   if (mlir::failed(shape)) {
-    group.emitError()
-        << "no_candidate: R3.2h requires one static ranked group result";
+    group.emitError() << "no_candidate: R3.2h requires static ranked group "
+                         "results with one traversal shape";
     return mlir::failure();
   }
 
   mlir::FailureOr<llvm::SmallVector<int64_t, 2>> reductionRanges =
-      getStaticMatmulReductionRanges(group);
+      getStaticRootReductionRanges(group);
   if (mlir::failed(reductionRanges)) {
     group.emitError()
-        << "no_candidate: R3.2h requires static matmul reduction ranges";
+        << "no_candidate: R3.2h requires static reduction ranges";
     return mlir::failure();
   }
 

@@ -40,7 +40,8 @@ PyTorch/XLA StableHLO Wafer program directory
   -> R3.2g DDR memory planning
        DDR external view validation + compiler-managed/resident/inter-group DDR offset facts
   -> R3.2h closed-loop candidate decision
-       enumerate bounded traversal tile candidates and matmul K split candidates, rerun R3.2e-g, choose passing candidate or split
+       enumerate bounded traversal tile candidates, same-domain output coverage and reduction split candidates,
+       rerun R3.2e-g, choose passing candidate or split
   -> R3.3 committed materialization
        commit only the accepted candidate into main IR
   -> R3.4 placed instruction-level realization
@@ -124,13 +125,14 @@ Pipeline position:
   loop-carried/backedge lifetime 和 async token 延伸；compiler-managed DDR demand 在 default arena 内做
   pressure-weighted first-fit packing，并覆盖 capacity、largest-contiguous、bandwidth 和 alignment failure。
 - R3.2h 已接入 `wafer-select-group-tile` 和 `wafer-lower-groups-to-selected-instr`。候选由实际
-  single-output static traversal shape 生成 bounded tile sizes；direct matmul root 额外枚举 `K`
-  split，no-split traversal candidates 先于 split candidates。每个 candidate 的 first / last /
-  tail / corner-tail representative tile 都要按 R3.2e -> R3.2d -> R3.2f -> R3.2g -> verifier
+  static traversal shape 生成 bounded tile sizes；同 traversal domain 的多个输出可共享同一个
+  traversal tile；direct matmul root 和 supported `linalg.generic` reduction root 可额外枚举
+  reduction split，no-split traversal candidates 先于 split candidates。每个 candidate 的 first /
+  last / tail / corner-tail representative tile 都要按 R3.2e -> R3.2d -> R3.2f -> R3.2g -> verifier
   通过后才接受。`tile-search=first-legal` 返回第一个 passing candidate；
   `tile-search=min-estimated-time` 只在 passing candidates 中按 lowered instruction IR 的粗估时间排序。
-  multi-output coverage、不同 output domain 和 general reduction split 仍是后续 IR/interface 扩展任务，
-  当前不能用 side table 或名字伪支持。
+  不同 output domain、partial scatter coverage、复杂 recompute/cut 和 dynamic reduction range 仍需要
+  后续 IR/interface 扩展，当前不能用 side table 或名字伪支持。
 - Tile communication 仍 deferred，等待 memory planning/local-rank/buffer facts 后再 lower 到 communication /
   DTE / local-drain 边界。
 
@@ -149,7 +151,7 @@ Pipeline position:
 | R3.2e.b | done | R3.1 group + candidate output tile offsets/sizes + R3.2a/R3.2b facts | planner candidate evaluation 中通过 linalg indexing maps 生成 boundary slice proposal；simple full-tensor matmul group 生成 input/output DDR `memref.subview` tile operands，不写回主 IR |
 | R3.2f | done | R3.2e candidate tile-view IR 经 R3.2d legalization 后的 instruction-level IR | `wafer.spm.offset` planning fact 标注 SPM `memref.alloc`；simple tiled elementwise/matmul/storeback 获得非重叠、256B 对齐、range/end 合法 memory plan；Cx/NCx 使用 physical bytes；straight-line、structured `scf.if` / `scf.for` 和 async token wait 的 lifetime/reuse 由 IR dataflow 重算；pressure-weighted offline packing 避免 alloc-event first-fit 碎片化；capacity/alignment/range failure 结构化诊断 |
 | R3.2g | done | R3.2f memory-planned instruction IR + actual DDR tile-view facts + DDR `memref.alloc` / external DDR boundary values | `wafer.ddr.offset` 标注 compiler-managed DDR accepted offset；external DDR access summary 不落主 IR；descriptor/view/root validation 从当前 IR 重算；straight-line、`scf.if`、`scf.for` 和 async token lifetime 支持 offset reuse；capacity、largest-contiguous、bandwidth、alignment 等 failure 结构化诊断 |
-| R3.2h | done | R3.1 group + R3.2a/b facts + R3.2e-g gates | `wafer-select-group-tile` / `wafer-lower-groups-to-selected-instr` 自动枚举 bounded traversal tile candidate 和 matmul `K` split candidate，逐个重放 R3.2e/R3.2d/R3.2f/R3.2g/verifier；支持 `tile-search=first-legal|min-estimated-time`；输出 passing candidate artifact，不把 rejected plan 或 cost breakdown 写入 committed IR；覆盖 elementwise、static slice、large K=1000 matmul、matmul K split、reduce、`scf.if`、`scf.for`、tail/corner representatives 和 gate early-exit |
+| R3.2h | done | R3.1 group + R3.2a/b facts + R3.2e-g gates | `wafer-select-group-tile` / `wafer-lower-groups-to-selected-instr` 自动枚举 bounded traversal tile candidate、same-domain multi-output coverage 和 reduction split candidate，逐个重放 R3.2e/R3.2d/R3.2f/R3.2g/verifier；支持 `tile-search=first-legal|min-estimated-time`；输出 passing candidate artifact，不把 rejected plan 或 cost breakdown 写入 committed IR；覆盖 elementwise、static slice、large K=1000 matmul、matmul K split、generic reduction split、same-domain multi-output、reduce、`scf.if`、`scf.for`、tail/corner representatives 和 gate early-exit |
 
 ## 后续队列
 

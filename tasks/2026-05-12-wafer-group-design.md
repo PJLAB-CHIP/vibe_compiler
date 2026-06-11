@@ -789,11 +789,13 @@ SPM planning、layout assignment、DDR memory planning 和 compute/movement lega
   DDR offset、default arena capacity/largest-contiguous/bandwidth/alignment，以及 op layout/dtype/shape/effect
   合法性；成功即证明当前 candidate 的 DDR demand 已规划并可被下游消费，失败给结构化原因，不能
   回头改变 instruction semantics，也不能产出等待 R3.5 再补全的 DDR plan。
-- R3.2h 才能做 closed-loop candidate driver：搜索 bounded traversal tile shape 和当前支持的
-  matmul `K` split，并逐个运行 R3.2e/R3.2d/R3.2f/R3.2g gates；默认选择第一个 passing candidate，
-  或在 `tile_search=min_estimated_time` 下只对 passing candidate 做粗估时间排序，输出 passing
-  candidate artifact、rejected reason 或 split decision。layout 替代候选、multi-output coverage 和
-  general reduction split 要等对应 interface/IR 语义明确后再进入 R3.2h search space。
+- R3.2h 才能做 closed-loop candidate driver：搜索 bounded traversal tile shape、同 traversal domain
+  的 output coverage，以及当前支持的 reduction/internal split，并逐个运行
+  R3.2e/R3.2d/R3.2f/R3.2g gates；默认选择第一个 passing candidate，或在
+  `tile_search=min_estimated_time` 下只对 passing candidate 做粗估时间排序，输出 passing
+  candidate artifact、rejected reason 或 split decision。layout 替代候选、不同 output domain、
+  partial scatter/recompute coverage 和 dynamic reduction range 要等对应 interface/IR 语义明确后再进入
+  R3.2h search space。
 
 R3.3 只 materialize R3.2h 选中的 passing candidate artifact 为 committed `wafer.tile.region`。R3.4/R3.5 只把
 已经通过 R3.2e-g gates 的 layout/instruction/SPM/DDR accepted facts 落到可验证 IR、placed descriptor

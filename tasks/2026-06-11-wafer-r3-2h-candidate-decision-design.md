@@ -9,8 +9,9 @@ allocator，也不是把失败计划写进 IR 等后段修复的阶段；它负�
 目标：
 
 - 根据实际 traversal shape 枚举 bounded tile candidate。
-- 把 bounded traversal tile shape 和当前支持的 matmul `K` split 转成 candidate evaluation IR；layout
-  choice 和 output coverage 只在对应 interface 能表达多个合法候选后进入 search space。
+- 把 bounded traversal tile shape、可证明同 traversal domain 的 output coverage，以及当前支持的
+  reduction/internal split 转成 candidate evaluation IR；layout choice 只在对应 interface 能表达多个
+  合法候选后进入 search space。
 - 对每个 candidate 重放 R3.2e candidate DDR tile-view materialization、R3.2d instruction lowering、
   R3.2f SPM memory planning、R3.2g DDR memory planning 和 verifier。
 - 默认选择第一个合法 candidate；可通过 `tile_search` 选项改为估算时间最小的合法 candidate。
@@ -74,11 +75,14 @@ CandidateSpec:
 - `layout_choice`：来自 R3.2b layout analysis / layout interface 的候选。当前实现使用 R3.2b /
   lowering 默认给出的 layout 顺序，不在 R3.2h 中重新发明 `tensor`、`cx`、`ncx` 规则；未来如果
   layout interface 暴露多个可选 materialization cut，R3.2h 只把它们作为候选维度。
-- `internal_split`：matmul/reduction 这类 op 的内部 reduction split，例如 `K` split。它不是
-  traversal domain。
-- `output_coverage`：candidate 如何覆盖 result。当前实现支持单输出 candidate artifact；多输出、
-  不同 output domain、partial writeback、复杂 scatter coverage 返回结构化 failure，后续需要先扩
-  group output coverage interface 和 R3.2e multi-result tile-view materializer。
+- `internal_split`：matmul/reduction 这类 op 的内部 reduction split，例如 matmul 的 `K` split 或
+  `linalg.generic` reduction iterator split。它不是 traversal domain。
+- `output_coverage`：candidate 如何覆盖 result。当前实现支持单输出，以及多个静态 ranked result
+  共享同一个 traversal shape、每个 yielded root 都能映射到对应 output boundary 的 multi-output
+  coverage。非 reduction root 要求 DPS init 是对应 direct output boundary；reduction root 可以使用
+  tile-local fill/init，并由 R3.2e 显式生成到对应 output boundary 的 `tensor.insert_slice` storeback。
+  不同 output domain、partial writeback、复杂 scatter coverage 返回结构化 failure；这些需要先扩
+  group output coverage interface 和 R3.2e materializer，不能用名字或 side table 伪支持。
 
 下面这些不属于 candidate：
 
@@ -155,8 +159,12 @@ Internal split 由 op tiling interface 提供。V0 策略：
   tile。
 - matmul K split 的 candidate evaluation IR 生成多个 partial GEMM，并用 tile-local elementwise
   add 累加 partial results，最后只 storeback 一次 output tile。
-- general reduction split 暂不伪装支持；当前 `wafer.tile.reduce` / `wafer.instr.reduce` 还缺少
-  loop-carried partial accumulator contract，必须先扩对应 tile/instr 语义再让 R3.2h 枚举。
+- `linalg.generic` reduction split 使用同一个机制：R3.2h 从 reduction iterator 的静态 range
+  枚举 split size；R3.2e 在 candidate evaluation IR 中为每个 reduction chunk 生成 partial reduce，
+  再用 tile-local elementwise combine 合并 partial results，最后只 storeback 一次 output tile。
+- reduction split 只接受 reducer body 可识别、且 partial init / combine 语义能从当前 IR 验证的
+  reduction。当前实现覆盖 sum/max/min 形态，其中 split evaluation 需要能复用合法的 tile-local
+  reduction init；不能在 IR 外记一个 loop-carried accumulator 让后段猜语义。
 - 在 `tile_search=min_estimated_time` 下，合法的 internal split 也参与估算时间比较。
 
 以 matmul 为例，`K` split 的 footprint 粗估来自：
@@ -283,8 +291,8 @@ R3.2h 的失败原因分三类：
 diagnostic 应记录：
 
 - 失败发生在哪个 gate。
-- candidate spec 的 traversal tile shape 和 matmul `K` split；未来 layout/output coverage 候选需要等
-  对应 interface 落地后再进入 diagnostic。
+- candidate spec 的 traversal tile shape、reduction/internal split 和 output coverage；未来 layout
+  候选需要等对应 interface 落地后再进入 diagnostic。
 - R3.2f/R3.2g 的结构化 reason，例如 capacity、largest-contiguous、bandwidth、alignment、descriptor/view
   mismatch。
 - `min-estimated-time` 模式下 winning candidate 的 cost breakdown。
@@ -304,6 +312,10 @@ R3.2h completion proof 至少覆盖：
   的 DDR tile views 来自 R3.2e，不由 R3.2d/R3.2f/R3.2g 猜。
 - simple elementwise：tile size 来自实际 output shape，external input/output DDR subview 和
   RDMA/WDMA descriptor 匹配。
+- same-domain multi-output：多个输出共享同一个 traversal tile；每个 root 的 output map 都通过
+  R3.2e 生成对应 DDR tile view，R3.2d/R3.2f/R3.2g 对同一 candidate artifact 统一验证。
+- generic reduction split：`linalg.generic` reduction root 的 reduction iterator split 生成多个
+  partial reduce 和 tile-local combine；只有所有 representative tiles 的完整 R3.2e-g gates 通过才接受。
 - 文本一致性：R3.2h 文档和 progress 不再把资源上限建模成 candidate 字段，也不把 DDR access
   summary/range attr 当成 committed IR fact。
 
@@ -314,9 +326,10 @@ R3.2h completion proof 至少覆盖：
 - `wafer-select-group-tile`：module pass，扫描 `wafer.group`，为每个 group 生成独立 passing
   candidate artifact。
 - `wafer-lower-groups-to-selected-instr`：named pipeline，作为 R3.2h 用户级 replay 入口。
-- candidate 生成：从单输出 static ranked result 的实际 traversal shape 生成 bounded tile sizes；
-  matmul root 额外生成 bounded `K` split。候选顺序是全部 no-split traversal candidates 先行，
-  然后再进入 `K` split candidates。
+- candidate 生成：从 static ranked result 的实际 traversal shape 生成 bounded tile sizes；同一个
+  group 的多个 result 必须共享同一 traversal shape 才进入 multi-output candidate。matmul root 和
+  supported `linalg.generic` reduction root 额外生成 bounded reduction split。候选顺序是全部 no-split
+  traversal candidates 先行，然后再进入 split candidates。
 - representative coverage：每个 tile shape 至少验证 first / last / tail / corner tail 的代表
   tile classes；所有代表都通过 R3.2e-g 才接受该 candidate。
 - gates：每个 candidate evaluation clone 按 R3.2e candidate DDR tile-view materialization、
@@ -330,9 +343,14 @@ R3.2h completion proof 至少覆盖：
 
 当前显式限制：
 
-- 多输出 output coverage、不同 output domain 和 partial scatter coverage 尚未实现；当前返回
-  structured `no_candidate` / gate failure，不能用名字或 side table 伪支持。
-- general reduction split 尚未实现；需要先扩 tile/instr reduction 的 partial accumulator 语义。
+- multi-output coverage 当前只覆盖所有 result 具有相同 static traversal shape，且每个 yielded value
+  是可独立 materialize 的 destination-style linalg root。非 reduction root 的 DPS init 必须是对应
+  group output boundary；reduction root 可以使用 tile-local fill/init，但 storeback 必须由 R3.2e
+  显式写到对应 output boundary。不同 output domain、partial scatter coverage、跨 output 依赖或需要
+  recompute/cut 的复杂 coverage 继续返回 structured `no_candidate` / gate failure。
+- general reduction split 当前只覆盖 R3.2d 可 lowering 的 `linalg.generic` reduction 形态，并要求
+  partial reduce 的 init/combine 语义能从 IR 中验证。softmax/scan、非结构化 loop-carried accumulator、
+  dynamic reduction range 和需要跨 tile 状态的 reduction 不在 R3.2h V0 范围。
 - layout 候选仍消费 R3.2b / lowering 的默认 layout 决策；R3.2h 不在本层硬编码 `tensor`、`cx`、
   `ncx` 的替代 layout 枚举。
 
@@ -342,6 +360,9 @@ R3.2h completion proof 至少覆盖：
   `scf.if`、`scf.for`、tail/corner representative coverage。
 - `test/Transforms/select-group-tile-internal-split.mlir`：SPM gate 迫使 matmul 使用 `K` split，
   并检查 partial GEMM + elementwise add + single WDMA 形态。
+- `test/Transforms/select-group-tile-multi-output.mlir`：同 traversal domain 的多输出 candidate 覆盖。
+- `test/Transforms/select-group-tile-reduction-split.mlir`：SPM gate 迫使 `linalg.generic` reduction
+  使用 internal split，并检查 partial reduce + elementwise combine + single WDMA 形态。
 - `test/Transforms/select-group-tile-min-estimated.mlir`：`tile-search=min-estimated-time`。
 - `test/Transforms/select-group-tile-failure.mlir`：invalid mode 和 gate early-exit。
 - `test/Pipelines/lower-groups-to-selected-instr.mlir`：named pipeline replay。

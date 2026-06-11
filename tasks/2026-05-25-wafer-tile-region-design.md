@@ -292,8 +292,9 @@ V0 需要以下 op family：
    DDR accepted offset facts，并验证 descriptor、view/root range、default arena capacity/largest-contiguous、
    bandwidth、alignment、overlap 和 fence demand。成功 facts 必须能被 R3.2h/R3.3/R3.4/R3.5 直接消费；
    失败时给结构化原因。
-8. closed-loop candidate driver：R3.2h 枚举 bounded traversal tile 和当前支持的 matmul `K`
-   split 候选，逐个运行 R3.2e/R3.2d/R3.2f/R3.2g gates；默认选择第一个 passing candidate，或在
+8. closed-loop candidate driver：R3.2h 枚举 bounded traversal tile、同 traversal domain 的
+   output coverage 和当前支持的 reduction/internal split 候选，逐个运行
+   R3.2e/R3.2d/R3.2f/R3.2g gates；默认选择第一个 passing candidate，或在
    `tile_search=min_estimated_time` 下只对 passing candidate 做粗估时间排序；选择已通过全部 gates
    的 candidate artifact，或要求 split / retry；rejected candidate IR
    丢弃。

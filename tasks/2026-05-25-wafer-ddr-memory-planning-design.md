@@ -259,11 +259,12 @@ physical bytes, the corresponding memref type/layout must make that visible.
 
 ### 9.3 R3.2h Candidate Decision
 
-R3.2h enumerates bounded traversal tile candidates and currently supported matmul `K` split candidates, then
-reruns R3.2e/R3.2d/R3.2f/R3.2g. A candidate rejected by DDR planning is not written into main IR. The driver may
-retry with a different tile shape or supported internal split; future layout cut, multi-output coverage,
-streaming/residency choice and group split require explicit IR/interface support before they become candidate
-dimensions. SPM/DDR arena and bandwidth limits are inputs to their planning gates, not candidate fields.
+R3.2h enumerates bounded traversal tile candidates, same-domain output coverage and currently supported
+reduction/internal split candidates, then reruns R3.2e/R3.2d/R3.2f/R3.2g. A candidate rejected by DDR planning is
+not written into main IR. The driver may retry with a different tile shape or supported internal split; future
+layout cut, different output domain coverage, streaming/residency choice and group split require explicit
+IR/interface support before they become candidate dimensions. SPM/DDR arena and bandwidth limits are inputs to
+their planning gates, not candidate fields.
 
 ### 9.4 R3.5 Launch / Runtime / Package
 
