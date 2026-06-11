@@ -29,19 +29,19 @@ PyTorch/XLA StableHLO Wafer program directory
        post-SPMD StableHLO collective handoff + official StableHLO-to-Linalg
   -> stablehlo-spmd-to-group
        dependency-preserving logical wafer.group
-  -> wafer-lower-groups-to-tile-region / R3.2c
+  -> wafer-lower-groups-to-tile-region / tile-region materialization
        memref-backed wafer.tile.region + DDR memref function boundary
-  -> R3.2e candidate DDR tile-view materialization
+  -> candidate DDR tile-view materialization
        candidate traversal/tile shape/boundary slice proposal -> DDR memref.subview tile operands
-  -> wafer-lower-tile-region-to-instr / R3.2d
+  -> wafer-lower-tile-region-to-instr / instruction lowering
        target-abstract tile ops -> wafer.instr.* over unplaced Wafer-tagged memref
-  -> wafer-lower-groups-to-memory-planned-instr / R3.2f SPM memory planning
+  -> wafer-lower-groups-to-memory-planned-instr / SPM offset assignment
        accepted SPM offset facts and lifetimes on instruction-level candidate IR
-  -> R3.2g DDR memory planning
+  -> DDR offset assignment
        DDR external view validation + compiler-managed/resident/inter-group DDR offset facts
-  -> R3.2h closed-loop candidate decision
+  -> wafer-lower-groups-to-selected-instr / candidate-selection
        enumerate bounded traversal tile candidates, same-domain output coverage and reduction split candidates,
-       rerun R3.2e-g, choose passing candidate or split
+       rerun candidate gates, choose passing candidate or split
   -> R3.3 committed materialization
        commit only the accepted candidate into main IR
   -> R3.4 placed instruction-level realization
@@ -65,7 +65,7 @@ PyTorch/XLA StableHLO Wafer program directory
 | Tile storage / boundary | `wafer.tile.load/store`、`memref.alloc`、`memref.subview`、`#wafer.memory<space, layout>` | DDR side 使用 `#wafer.memory<ddr, tensor>` memref 或显式 strided tile view；SPM side 使用 `#wafer.memory<spm, *>` memref；`!wafer.storage` / `wafer.tile.alloc` 已删除 |
 | Tile compute / movement | `wafer.tile.fill/gemm/elementwise/reduce`、layout materialization、copy/slice/broadcast/transpose/reshape | 保持 target-abstract tile ops；layout / movement 语义由 memref type、Wafer memory attr 和 op interface 表达 |
 | Instr | `wafer.instr.rdma/wdma/gather_scatter/fill/elementwise/reduce/convert/gemm/local_drain` | R3.2d 已能消费显式 DDR subview / strided view；不做 SPM offset、DDR planned range、ABI call |
-| Resource / runtime | `wafer.placement.map`、`wafer.launch` | SPM/DDR planning 不新增单独 storage IR；accepted planning facts 后续 materialize 到 placed memref / descriptor / launch boundary |
+| Resource / runtime | `wafer.placement.map`、`wafer.launch` | SPM/DDR planning 不新增单独 storage IR；accepted SPM/DDR offset facts 后续 materialize 到 placed memref / descriptor / launch boundary |
 
 ## 当前 Active
 
@@ -74,10 +74,10 @@ PyTorch/XLA StableHLO Wafer program directory
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  R3.2h passing candidate artifact；artifact 已包含 actual DDR tile views、instruction-level IR、
+  candidate-selection passing candidate artifact；artifact 已包含 actual DDR tile views、instruction-level IR、
   accepted SPM offset facts 和 accepted DDR offset facts。
 - Current stage responsibility:
-  只把 R3.2h 选中的 passing candidate commit 回主 IR；删除原 logical `wafer.group` 边界；
+  只把 candidate-selection 选中的 passing candidate commit 回主 IR；删除原 logical `wafer.group` 边界；
   保留已通过 gates 的 DDR tile views、instruction-level ops、SPM/DDR offset facts 和 verifier-legal
   structure。
 - Output artifact / IR:
@@ -86,13 +86,13 @@ Pipeline position:
 - Downstream consumer:
   R3.4 placed instruction-level realization；R3.5 launch/runtime DDR materialization。
 - User-level driver / named pipeline:
-  在 R3.2h 的 `wafer-lower-groups-to-selected-instr` 基础上增加 commit stage；最终 named pipeline
+  在 `wafer-lower-groups-to-selected-instr` 基础上增加 commit stage；最终 named pipeline
   不应要求用户手工搬运 selected candidate artifact。
 - Explicit non-goals:
   不重新做 tile search、layout search、SPM planning 或 DDR planning；不生成 placed memref、
   runtime allocation/import、ABI call、packet 或 physical address。
 - Completion gate:
-  以 named pipeline 重放 R3.1 -> R3.2h 已完成链路，R3.3 输出不再包含原 `wafer.group`，且 R3.4
+  以 named pipeline 重放 R3.1 -> candidate-selection 已完成链路，R3.3 输出不再包含原 `wafer.group`，且 R3.4
   能直接消费 accepted SPM/DDR facts。
 ```
 
@@ -106,7 +106,7 @@ Pipeline position:
   output tile offsets/sizes，在 candidate evaluation clone 中通过 linalg indexing maps 生成 boundary
   `tensor.extract_slice` / output `tensor.insert_slice` proposal，再 materialize 为 DDR `memref.subview`。
   当前覆盖单结果 destination-style linalg root 的 simple matmul/elementwise；closed-loop traversal /
-  tile-shape search 仍归 R3.2h。
+  tile-shape search 归 candidate-selection。
 - R3.2d RDMA/WDMA 支持 strided DDR view 是 consumer 能力；descriptor 的 offset/stride 必须来自
   IR 中的 memref view，不能从名字、shape 或 whole-boundary memref 推断。
 - R3.2f 已接入 offset-only `wafer.spm.offset = #wafer.spm_offset<offset>` planning fact；arena
@@ -128,7 +128,8 @@ Pipeline position:
   static traversal shape 生成 bounded tile sizes；同 traversal domain 的多个输出可共享同一个
   traversal tile；direct matmul root 和 supported `linalg.generic` reduction root 可额外枚举
   reduction split，no-split traversal candidates 先于 split candidates。每个 candidate 的 first /
-  last / tail / corner-tail representative tile 都要按 R3.2e -> R3.2d -> R3.2f -> R3.2g -> verifier
+  last / tail / corner-tail representative tile 都要按 candidate tile-view materialization ->
+  instruction lowering -> SPM offset assignment -> DDR offset assignment -> verifier
   通过后才接受。`tile-search=first-legal` 返回第一个 passing candidate；
   `tile-search=min-estimated-time` 只在 passing candidates 中按 lowered instruction IR 的粗估时间排序。
   不同 output domain、partial scatter coverage、复杂 recompute/cut 和 dynamic reduction range 仍需要
@@ -151,15 +152,15 @@ Pipeline position:
 | R3.2e.b | done | R3.1 group + candidate output tile offsets/sizes + R3.2a/R3.2b facts | planner candidate evaluation 中通过 linalg indexing maps 生成 boundary slice proposal；simple full-tensor matmul group 生成 input/output DDR `memref.subview` tile operands，不写回主 IR |
 | R3.2f | done | R3.2e candidate tile-view IR 经 R3.2d legalization 后的 instruction-level IR | `wafer.spm.offset` planning fact 标注 SPM `memref.alloc`；simple tiled elementwise/matmul/storeback 获得非重叠、256B 对齐、range/end 合法 memory plan；Cx/NCx 使用 physical bytes；straight-line、structured `scf.if` / `scf.for` 和 async token wait 的 lifetime/reuse 由 IR dataflow 重算；pressure-weighted offline packing 避免 alloc-event first-fit 碎片化；capacity/alignment/range failure 结构化诊断 |
 | R3.2g | done | R3.2f memory-planned instruction IR + actual DDR tile-view facts + DDR `memref.alloc` / external DDR boundary values | `wafer.ddr.offset` 标注 compiler-managed DDR accepted offset；external DDR access summary 不落主 IR；descriptor/view/root validation 从当前 IR 重算；straight-line、`scf.if`、`scf.for` 和 async token lifetime 支持 offset reuse；capacity、largest-contiguous、bandwidth、alignment 等 failure 结构化诊断 |
-| R3.2h | done | R3.1 group + R3.2a/b facts + R3.2e-g gates | `wafer-select-group-tile` / `wafer-lower-groups-to-selected-instr` 自动枚举 bounded traversal tile candidate、same-domain multi-output coverage 和 reduction split candidate，逐个重放 R3.2e/R3.2d/R3.2f/R3.2g/verifier；支持 `tile-search=first-legal|min-estimated-time`；输出 passing candidate artifact，不把 rejected plan 或 cost breakdown 写入 committed IR；覆盖 elementwise、static slice、large K=1000 matmul、matmul K split、generic reduction split、same-domain multi-output、reduce、`scf.if`、`scf.for`、tail/corner representatives 和 gate early-exit |
+| R3.2h | done | R3.1 group + R3.2a/b facts + candidate gates | `wafer-select-group-tile` / `wafer-lower-groups-to-selected-instr` 自动枚举 bounded traversal tile candidate、same-domain multi-output coverage 和 reduction split candidate，逐个重放 candidate tile-view materialization、instruction lowering、SPM offset assignment、DDR offset assignment 和 verifier；支持 `tile-search=first-legal|min-estimated-time`；输出 passing candidate artifact，不把 rejected plan 或 cost breakdown 写入 committed IR；覆盖 elementwise、static slice、large K=1000 matmul、matmul K split、generic reduction split、same-domain multi-output、reduce、`scf.if`、`scf.for`、tail/corner representatives 和 gate early-exit |
 
 ## 后续队列
 
 | ID | 状态 | 输入 | 输出 / 完成 gate |
 | --- | --- | --- | --- |
-| R3.3 | active | R3.2h passing candidate artifact | committed `wafer.tile.region` + instruction-level lowering boundary；只提交已通过 R3.2e-g gates 的候选 |
+| R3.3 | active | candidate-selection passing candidate artifact | committed `wafer.tile.region` + instruction-level lowering boundary；只提交已通过 candidate gates 的候选 |
 | R3.4 | pending | R3.3 committed tile-region + accepted layout/SPM/DDR facts | placed instruction-level IR / placed memref / access descriptor；不重新决定 tile/layout/memory plan |
-| R3.5 | pending | R3.4 placed/memref-aware IR + accepted DDR offset facts and descriptor/view demand | runtime allocation/import/query/package materialization；验证 runtime object 满足 accepted plan，不重新做 DDR planning |
+| R3.5 | pending | R3.4 placed/memref-aware IR + accepted DDR offset facts and descriptor/view demand | runtime allocation/import/query/package materialization；验证 runtime object 满足 committed IR-derived DDR offsets/ranges，不重新做 DDR planning |
 | R3.6-R3.8 | pending | placed instruction IR + launch signature | C ABI / packet emission、IR-derived package manifest、wrapper-facing golden packet |
 | R4.1-R4.5 | pending | placement + local shard + launch/package metadata | rank/block/coord、per-rank slices、writeback、placed package |
 | R5.1-R5.2 | pending | static transformer local shard IR / staged IR gaps | full-block schedule 或拒绝原因；补 mask/select、dynamic-bound policy、constant/weight slice 等 |
@@ -180,8 +181,8 @@ Pipeline position:
 
 1. 定义 selected candidate artifact 到主 IR 的 commit 边界：哪些 op/value 直接进入 committed
    `wafer.tile.region` / instruction-level IR，哪些诊断和 rejected candidate 必须丢弃。
-2. 在 named pipeline 中把 R3.2h selected artifact commit 回当前 module，不再只输出 standalone
+2. 在 named pipeline 中把 candidate-selection selected artifact commit 回当前 module，不再只输出 standalone
    selected function artifact。
-3. 保证 R3.3 不重新做 tile/layout/memory planning，只消费 R3.2h 已通过 R3.2e-g 的结果。
-4. 补 completion proof：R3.1 -> R3.2h -> R3.3 的 named pipeline 输出不含原 `wafer.group`，
+3. 保证 R3.3 不重新做 tile/layout/memory planning，只消费 candidate-selection 已通过 candidate gates 的结果。
+4. 补 completion proof：R3.1 -> candidate-selection -> R3.3 的 named pipeline 输出不含原 `wafer.group`，
    且 R3.4 能直接消费 accepted SPM/DDR offset facts。

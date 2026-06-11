@@ -710,8 +710,8 @@ scheduled group 必须来自一个已经被下游 legality analysis / resource p
    `tasks/2026-05-25-wafer-local-compute-normalization-design.md`，跨 tile communication 的 token、
    staging buffer 和 wait contract 见
    `tasks/2026-05-25-wafer-communication-dialect-design.md`。
-5. 按 `tile_search` 策略选择 passing plan：默认 `first_legal` 选择第一个通过全部 gates 的
-   plan；`min_estimated_time` 只在 passing plan 之间用粗估时间排序。如果不合法，回到 tile
+5. 按 `tile-search` 策略选择 passing plan：默认 `first-legal` 选择第一个通过全部 gates 的
+   plan；`min-estimated-time` 只在 passing plan 之间用粗估时间排序。如果不合法，回到 tile
    shape、internal split、output coverage 或 group boundary 继续搜索。
 6. 如果找不到合法且成本可接受的 plan，拆分或拒绝该 logical group。
 
@@ -789,16 +789,17 @@ SPM planning、layout assignment、DDR memory planning 和 compute/movement lega
   DDR offset、default arena capacity/largest-contiguous/bandwidth/alignment，以及 op layout/dtype/shape/effect
   合法性；成功即证明当前 candidate 的 DDR demand 已规划并可被下游消费，失败给结构化原因，不能
   回头改变 instruction semantics，也不能产出等待 R3.5 再补全的 DDR plan。
-- R3.2h 才能做 closed-loop candidate driver：搜索 bounded traversal tile shape、同 traversal domain
+- R3.2h 才能做 candidate-selection driver：搜索 bounded traversal tile shape、同 traversal domain
   的 output coverage，以及当前支持的 reduction/internal split，并逐个运行
-  R3.2e/R3.2d/R3.2f/R3.2g gates；默认选择第一个 passing candidate，或在
-  `tile_search=min_estimated_time` 下只对 passing candidate 做粗估时间排序，输出 passing
+  candidate tile-view materialization、instruction lowering、SPM offset assignment、DDR offset assignment
+  和 verifier gates；默认选择第一个 passing candidate，或在
+  `tile-search=min-estimated-time` 下只对 passing candidate 做粗估时间排序，输出 passing
   candidate artifact、rejected reason 或 split decision。layout 替代候选、不同 output domain、
   partial scatter/recompute coverage 和 dynamic reduction range 要等对应 interface/IR 语义明确后再进入
   R3.2h search space。
 
 R3.3 只 materialize R3.2h 选中的 passing candidate artifact 为 committed `wafer.tile.region`。R3.4/R3.5 只把
-已经通过 R3.2e-g gates 的 layout/instruction/SPM/DDR accepted facts 落到可验证 IR、placed descriptor
+已经通过 candidate gates 的 layout/instruction/SPM/DDR accepted facts 落到可验证 IR、placed descriptor
 或 runtime/package boundary；它们不能成为
 第一次发现 SPM 放不下、layout 不合法或 DDR demand 不可接受的阶段。若 R3.2a-g gates
 让 R3.2h 不能接受当前 group plan，planner 必须回到 tile shape、layout、internal split、instruction

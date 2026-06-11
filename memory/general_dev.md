@@ -147,7 +147,7 @@
   要先用统一 physical layout calculator 比较 source/result mapping，只有排布变化才发
   `wafer.instr.gather_scatter`。如果统一 helper 还不能表达真实 `C0` tail/fold 和 bank padding，
   先补 helper，不要在 lowering 里临时重写一份局部 layout 解释。
-- R3.2d movement descriptor lowering（`extract_slice/insert_slice/broadcast/transpose`）要从 op
+- movement descriptor lowering（`extract_slice/insert_slice/broadcast/transpose`）要从 op
   自身的 logical index relation 出发，枚举静态 iteration domain，再调用同一个
   `computeWaferPhysicalElementByteOffset` 得到 source/dest byte offset 并 coalesce 相邻段；
   compact、`Cx`、`NCx` 都走这条路径。coalesce 后要尽量把规则段打包进 TDMA 三层
@@ -157,11 +157,12 @@
   DDR 侧 `memref.subview` / strided memref layout：整块 compact DDR boundary 生成 contiguous
   descriptor，静态 strided tile view 生成三层 byte stride/iteration descriptor；动态 view、负
   stride、bit-packed element 或超过三层的 descriptor 不能靠名字/shape 猜测，必须 structured
-  failure 或等上游补显式 boundary facts。R3.2e 已覆盖当前 IR 中 explicit static boundary
+  failure 或等上游补显式 boundary facts。candidate tile-view materialization 已覆盖当前 IR 中 explicit static boundary
   `tensor.extract_slice`、direct output `tensor.insert_slice` storeback，以及 candidate output
-  tile offsets/sizes candidate evaluation lowering 的 DDR `memref.subview` producer；R3.2d 仍不能根据
-  whole-boundary shape 自己恢复 subview，closed-loop traversal / tile-shape search 归 R3.2h。
-- R3.2f SPM memory planning 的 planned offset fact 不属于 `#wafer.memory<spm, layout>` 本身，
+  tile offsets/sizes candidate evaluation lowering 的 DDR `memref.subview` producer；instruction lowering
+  仍不能根据 whole-boundary shape 自己恢复 subview，closed-loop traversal / tile-shape search 归
+  candidate-selection。
+- SPM offset assignment 的 planned offset fact 不属于 `#wafer.memory<spm, layout>` 本身，
   也不属于 logical `wafer.placement.map`。planning fact 当前挂在 SPM `memref.alloc` 的 `wafer.spm.offset`
   attr 上，值为 `#wafer.spm_offset<offset>`；arena 作用域是单个 `wafer.tile.region`，不同 tile-region
   可以复用相同 offset。`size`、alignment 和 bank span 必须由
@@ -172,15 +173,15 @@
   的 SPM operand 通过 `!async.token` 延伸到 wait/drain use。offset 搜索使用
   pressure-weighted offline packing：physical size 大、conflict pressure 高、lifetime span 长的 demand
   先放置，再在合法 gap 中选最低 offset；搜索 trace、priority weight 和未接受 offset 不写进 IR。
-- R3.2g DDR memory planning 不是 external DMA validation 的别名。compiler-managed DDR demand 由 DDR
+- DDR offset assignment 不是 external DMA validation 的别名。compiler-managed DDR demand 由 DDR
   `memref.alloc` 本身表达；accepted fact 写回同一个 alloc 的 `wafer.ddr.offset =
   #wafer.ddr_offset<offset>`。external function argument 不分配 offset，也不写 access summary attr；
   runtime binding requirement 由 R3.5 从 committed descriptors / placed IR 重算或在 runtime/launch 层
   materialize。DDR planner 复用 SPM 同类 structured lifetime dataflow：view-like alias、tile-region
   boundary arg、`scf.if` path condition、`scf.for` iter_args/yield/backedge 和 async token 都从 IR
   结构重算；offset 搜索在 default DDR arena 中做 pressure-weighted first-fit，只有 lifetime 证明不重叠
-  时才复用。runtime allocation object、physical address、packet/ABI 字段仍属于 R3.5+，不能塞进
-  R3.2g attr。
+  时才复用。runtime allocation object、physical address、packet/ABI 字段仍属于 runtime/ABI boundary，
+  不能塞进 DDR planning attr。
 - 用户级 compiler target 名称统一为 `wafer`，Wafer IR target attr 的唯一主线 spelling 是
   `#wafer.target<wafer>`。`tx8` / `tx81` 只保留在硬件、依赖逆向和外部历史命名事实里，不能作为
   compiler target、pipeline 名称或测试 fixture 的主线命名。

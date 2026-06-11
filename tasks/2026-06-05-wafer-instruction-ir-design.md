@@ -529,12 +529,13 @@ R3.2d verifier checks only instruction legality:
   `computeWaferPhysicalTensorInfo(memrefType)` and target policy, not copied into `byte_count`.
 - NE GEMM and CT reduce require supported aligned layout marker, dtype and rank.
 - relation/elementwise bool storage uses logical `i1`; physical byte size remains derived, not stored.
-- no SPM offset/end/bank attrs before R3.2f.
+- no SPM offset/end/bank attrs before SPM offset assignment.
 - no DTE/CSR/SCALAR ordinary instruction op.
 
-R3.2d does **not** verify physical address range, SPM bank conflicts, DDR default arena capacity, runtime
-symbol, packet bit layout or worker register window. Those checks belong to R3.2f/R3.2g/R3.4/R3.6.
-R3.2g must accept or reject the explicit DDR views, descriptors and compiler-managed DDR `memref.alloc`
+Instruction lowering does **not** verify physical address range, SPM bank conflicts, DDR default arena capacity,
+runtime symbol, packet bit layout or worker register window. Those checks belong to SPM/DDR offset assignment,
+placed realization and ABI/packet emission.
+DDR offset assignment must accept or reject the explicit DDR views, descriptors and compiler-managed DDR `memref.alloc`
 already present in this IR, and must materialize accepted DDR offset facts before later placement/runtime
 stages consume them.
 

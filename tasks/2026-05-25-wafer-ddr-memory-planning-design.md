@@ -2,8 +2,9 @@
 
 2026-06-11 更新：R3.2g 重新收敛为 **compiler-side DDR memory planning**。它不能只是
 DDR access validation；凡是会影响 candidate 是否成立的 DDR byte footprint、lifetime、capacity、
-largest-contiguous 和 bandwidth 约束，都必须在 R3.2g/R3.2h candidate gate 内决定或拒绝。
-R3.5 只 materialize 已接受的 DDR plan 到 runtime allocation/import/package，不重新做 planning。
+largest-contiguous 和 bandwidth 约束，都必须在 DDR offset assignment / candidate-selection gate 内决定或拒绝。
+R3.5 只 materialize 已接受的 DDR offset facts 和 IR-derived demand 到 runtime allocation/import/package，
+不重新做 planning。
 同日进一步收敛：compiler-managed DDR allocation 由 DDR `memref.alloc` 本身表达；R3.2g 只把
 accepted offset 写入 IR，size、alignment、lifetime、read/write intent 和 external access-end 都从
 当前 IR 重算，不作为长期 attr 字段保存。
@@ -21,7 +22,7 @@ compiler IR 合同。
 - 对 external input/output DDR view 做 descriptor、view/root byte range、capacity 和 bandwidth validation。
 - 对 compiler-managed workspace、resident constant、inter-group DDR temporary 等非 external allocation，
   在 default DDR arena 中规划 symbolic range/offset/size/alignment，并用 lifetime/reuse 证明互不冲突。
-- 给 R3.2h 一个真实 candidate gate：成功表示当前 candidate 的 DDR view、accepted offset fact 和
+- 给 candidate-selection 一个真实 candidate gate：成功表示当前 candidate 的 DDR view、accepted offset fact 和
   IR-derived demand 都可被下游直接消费；失败返回结构化 reason，供
   traversal tile / 当前支持的 matmul `K` split candidate repair 或 split。layout 替代候选、
   multi-output coverage 和 general reduction split 需要先有显式 IR/interface 语义。
@@ -42,7 +43,7 @@ compiler IR 合同。
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  R3.2f 之后的 instruction-level candidate IR。SPM side 已有 accepted SPM offset facts；
+  SPM offset assignment 之后的 instruction-level candidate IR。SPM side 已有 accepted SPM offset facts；
   DDR side 已由 `#wafer.memory<ddr, layout>` memref、tile-region block argument、
   `memref.alloc`、`memref.subview` / static strided view 和 RDMA/WDMA descriptor
   表达 external / compiler-managed / resident / inter-group demand。
@@ -57,13 +58,14 @@ Pipeline position:
   或结构化 failure reason。成功路径不能只写 diagnostic，也不能只把 plan 保存在 pass-local
   analysis 里。
 - Downstream consumer:
-  R3.2h 用 R3.2g 成功/失败选择 candidate；
-  R3.3 只 commit 已通过 R3.2e-g gates 的 candidate；
+  candidate-selection 用 DDR offset assignment 成功/失败选择 candidate；
+  R3.3 只 commit 已通过 candidate gates 的 candidate；
   R3.4 把 accepted DDR offset facts realize 成 placed memref/access descriptor；
   R3.5 把 accepted DDR demand materialize 到 runtime allocation/import/query/package metadata。
 - User-level driver / named pipeline:
   局部 pass 是 `wafer-plan-ddr-memory`；
-  主线验证入口是从 R3.2c/R3.2d/R3.2f 跑到 R3.2g 的 named pipeline。completion proof 必须覆盖
+  主线验证入口是从 tile-region materialization、instruction lowering、SPM offset assignment 跑到
+  DDR offset assignment 的 named pipeline。completion proof 必须覆盖
   accepted DDR offset fact 和 descriptor/view/root validation，不接受只验证 external DDR view。
 - Explicit non-goals:
   不重新推 DDR tile subview，不重做 SPM memory planning，不选择 tile shape/layout/group boundary，
@@ -257,10 +259,11 @@ Layout materialization may add DDR reads/writes or staging pressure. The inserte
 explicit DDR memref operands and descriptors so R3.2g can rederive demand. If a layout transform changes
 physical bytes, the corresponding memref type/layout must make that visible.
 
-### 9.3 R3.2h Candidate Decision
+### 9.3 Candidate Selection
 
-R3.2h enumerates bounded traversal tile candidates, same-domain output coverage and currently supported
-reduction/internal split candidates, then reruns R3.2e/R3.2d/R3.2f/R3.2g. A candidate rejected by DDR planning is
+Candidate selection enumerates bounded traversal tile candidates, same-domain output coverage and currently supported
+reduction/internal split candidates, then reruns candidate tile-view materialization, instruction lowering,
+SPM offset assignment and DDR offset assignment. A candidate rejected by DDR planning is
 not written into main IR. The driver may retry with a different tile shape or supported internal split; future
 layout cut, different output domain coverage, streaming/residency choice and group split require explicit
 IR/interface support before they become candidate dimensions. SPM/DDR arena and bandwidth limits are inputs to
