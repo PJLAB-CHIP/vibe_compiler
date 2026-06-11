@@ -152,6 +152,26 @@ Pipeline position:
 - 如果直接下游尚未实现但硬件 / ABI 能表达该语义，应记录为下游恢复任务或扩 IR；不能把下游缺口
   反向写成当前上游不支持，也不能绕到 Python helper、sidecar 或名字约定中补协议。
 
+### 0.1 任务号不能进入长期命名
+
+任务号、阶段号和临时里程碑编号（例如 `R3.2h`、`P2.S2`、`p0`、`r0-deps-*`）只能作为
+任务文档、历史记录和路线图中的索引，不能进入任何会被工具、测试、用户或下游消费固定下来的
+名字或输出。
+
+禁止把任务号 / 阶段号用于：
+
+- build 目录、CMake target/cache variable、生成 artifact 目录或文件名。
+- tool 名、脚本名、CLI option、help/summary/docstring。
+- pass / pipeline 名称、pass summary、pipeline description。
+- IR dialect / op / type / attr / interface / enum / verifier 合同。
+- diagnostic、error message、warning、debug summary、日志前缀。
+- FileCheck 期望、golden output 或其它测试固定输出。
+
+如果需要表达阶段关系，使用稳定语义边界名，例如 `tile-region`、`instr-lowering`、`spm-offsets`、
+`ddr-offsets`、`candidate-selection`、`program-capture`。任务号可以在设计文档中标注
+“这个语义边界由哪个任务恢复 / 验证”，但不能反过来把任务号变成接口名。提交前必须用文本扫描
+确认代码、工具和测试层没有新增这类任务号命名污染。
+
 ### 先设计后编码
 
 非小修复时，先建立或更新设计文档。设计文档至少说明：
