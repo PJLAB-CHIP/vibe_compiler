@@ -89,7 +89,7 @@ func.func @compiler_managed_ddr_requires_range_requirement() {
   ^bb0(%out: memref<2x3xf16, #wafer.memory<ddr, tensor>>):
     %input = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536, 12, 256, 256, 257>}
         : memref<2x3xf16, #wafer.memory<spm, tensor>>
-    // expected-error @below {{unsupported_compiler_managed_ddr}}
+    // expected-error @below {{missing_ddr_requirement}}
     wafer.instr.wdma %input to %out
         {byte_count = 12 : i64, dst_iterations = array<i64: 2, 1, 1>,
          dst_strides = array<i64: 6, 0, 0>, inner_bytes = 6 : i64}

@@ -164,6 +164,11 @@ FORBIDDEN_IR_STRINGS = (
     "DdrBindingKind",
     "AbiWaitPolicy",
 )
+ALLOWED_IR_SPECIALIZATIONS = (
+    "wafer.ddr.requirement",
+    "wafer.ddr.range",
+    "wafer.ddr.access",
+)
 
 
 def fail(errors: list[str], message: str) -> None:
@@ -264,7 +269,10 @@ def check_forbidden_ir_specializations(root: Path, errors: list[str]) -> None:
                 continue
             text = path.read_text(errors="ignore")
             for forbidden in FORBIDDEN_IR_STRINGS:
-                if forbidden in text:
+                scan_text = text
+                for allowed in ALLOWED_IR_SPECIALIZATIONS:
+                    scan_text = scan_text.replace(allowed, "")
+                if forbidden in scan_text:
                     fail(errors, f"{path} contains forbidden IR specialization {forbidden}")
 
 

@@ -38,6 +38,8 @@ func.func @plan_external_strided_views(
 }
 
 // CHECK-LABEL: func.func @plan_external_strided_views
+// CHECK-SAME: wafer.ddr.access = #wafer.ddr_access<64, 42, read>
+// CHECK-SAME: wafer.ddr.access = #wafer.ddr_access<64, 42, write>
 // CHECK: %[[INPUT_TILE:.+]] = memref.subview
 // CHECK: %[[OUTPUT_TILE:.+]] = memref.subview
 // CHECK: wafer.instr.rdma

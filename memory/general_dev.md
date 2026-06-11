@@ -171,6 +171,16 @@
   的 SPM operand 通过 `!async.token` 延伸到 wait/drain use。offset 搜索使用
   pressure-weighted offline packing：physical size 大、conflict pressure 高、lifetime span 长的 demand
   先放置，再在合法 gap 中选最低 offset；搜索 trace、priority weight 和未接受 offset 不写进 IR。
+- R3.2g DDR memory planning 不是 external DMA validation 的别名。compiler-managed DDR demand 由 DDR
+  `memref.alloc` 上的 `wafer.ddr.requirement = #wafer.ddr_requirement<alignment, intent>` 表达；
+  accepted fact 写回同一个 alloc 的 `wafer.ddr.range =
+  #wafer.ddr_range<offset, size, alignment, lifetime_begin, lifetime_end, intent>`。external function
+  argument 不分配 offset，但 R3.2g 会写 `wafer.ddr.access =
+  #wafer.ddr_access<root_bytes, max_access_end, intent>` 供后续 runtime binding 校验。DDR planner 复用
+  SPM 同类 structured lifetime dataflow：view-like alias、tile-region boundary arg、`scf.if`
+  path condition、`scf.for` iter_args/yield/backedge 和 async token 都从 IR 结构重算；offset 搜索在
+  default DDR arena 中做 pressure-weighted first-fit，只有 lifetime 证明不重叠时才复用。runtime
+  allocation object、physical address、packet/ABI 字段仍属于 R3.5+，不能塞进 R3.2g attr。
 - 用户级 compiler target 名称统一为 `wafer`，Wafer IR target attr 的唯一主线 spelling 是
   `#wafer.target<wafer>`。`tx8` / `tx81` 只保留在硬件、依赖逆向和外部历史命名事实里，不能作为
   compiler target、pipeline 名称或测试 fixture 的主线命名。

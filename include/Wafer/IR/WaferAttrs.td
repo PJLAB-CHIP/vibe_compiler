@@ -89,6 +89,93 @@ def Wafer_SPMOffsetAttr : AttrDef<Wafer_Dialect, "SPMOffset"> {
                        "$bankBegin `,` $bankLimit `>`";
 }
 
+def Wafer_DDRAccessIntentNone : I32EnumAttrCase<"None", 0, "none">;
+def Wafer_DDRAccessIntentRead : I32EnumAttrCase<"Read", 1, "read">;
+def Wafer_DDRAccessIntentWrite : I32EnumAttrCase<"Write", 2, "write">;
+def Wafer_DDRAccessIntentReadWrite
+    : I32EnumAttrCase<"ReadWrite", 3, "read_write">;
+def Wafer_DDRAccessIntentReadOnly
+    : I32EnumAttrCase<"ReadOnly", 4, "read_only">;
+def Wafer_DDRAccessIntent
+    : I32EnumAttr<"DDRAccessIntent",
+                  "Wafer DDR read/write access intent", [
+  Wafer_DDRAccessIntentNone,
+  Wafer_DDRAccessIntentRead,
+  Wafer_DDRAccessIntentWrite,
+  Wafer_DDRAccessIntentReadWrite,
+  Wafer_DDRAccessIntentReadOnly
+]> {
+  let cppNamespace = "::wafer";
+  let genSpecializedAttr = 0;
+}
+
+def Wafer_DDRRequirementAttr : AttrDef<Wafer_Dialect, "DDRRequirement"> {
+  let mnemonic = "ddr_requirement";
+  let summary = "Wafer compiler-managed DDR range requirement";
+  let description = [{
+    `#wafer.ddr_requirement<alignment, intent>` marks a Wafer DDR memref
+    allocation as a compiler-managed demand in the default DDR arena. The
+    storage size is derived from the memref type and Wafer physical layout.
+    The alignment and access intent are planner inputs that must be satisfied
+    before a planned range can be accepted.
+
+    This attribute is not a runtime allocation object, physical address,
+    driver pool, or ABI descriptor.
+  }];
+
+  let parameters = (ins
+    "int64_t":$alignment,
+    "wafer::DDRAccessIntent":$intent
+  );
+  let assemblyFormat = "`<` $alignment `,` $intent `>`";
+}
+
+def Wafer_DDRRangeAttr : AttrDef<Wafer_Dialect, "DDRRange"> {
+  let mnemonic = "ddr_range";
+  let summary = "Accepted Wafer DDR symbolic byte range";
+  let description = [{
+    `#wafer.ddr_range<offset, size, alignment, lifetime_begin, lifetime_end,
+    intent>` records an accepted compiler-side symbolic DDR range in the
+    default DDR arena. `size` is the physical storage size computed from the
+    memref type and Wafer layout; `offset` is symbolic and is resolved to a
+    runtime physical base only after placement/runtime materialization.
+
+    This is the cross-stage fact consumed by downstream placed descriptor and
+    runtime materialization. It does not encode planner search trace, rejected
+    candidates, runtime handles, packet fields, or physical DDR addresses.
+  }];
+
+  let parameters = (ins
+    "int64_t":$offset,
+    "int64_t":$size,
+    "int64_t":$alignment,
+    "int64_t":$lifetimeBegin,
+    "int64_t":$lifetimeEnd,
+    "wafer::DDRAccessIntent":$intent
+  );
+  let assemblyFormat = "`<` $offset `,` $size `,` $alignment `,` "
+                       "$lifetimeBegin `,` $lifetimeEnd `,` $intent `>`";
+}
+
+def Wafer_DDRAccessAttr : AttrDef<Wafer_Dialect, "DDRAccess"> {
+  let mnemonic = "ddr_access";
+  let summary = "Accepted Wafer external DDR access requirement";
+  let description = [{
+    `#wafer.ddr_access<root_bytes, max_access_end, intent>` records the
+    compiler-visible external DDR access requirement recovered from
+    instruction-level RDMA/WDMA descriptors. It is used for runtime binding
+    validation of external function boundary buffers; it does not allocate a
+    compiler-managed DDR offset and does not encode a physical address.
+  }];
+
+  let parameters = (ins
+    "int64_t":$rootBytes,
+    "int64_t":$maxAccessEnd,
+    "wafer::DDRAccessIntent":$intent
+  );
+  let assemblyFormat = "`<` $rootBytes `,` $maxAccessEnd `,` $intent `>`";
+}
+
 def Wafer_PlacementSingleTile : I32EnumAttrCase<"SingleTile", 0, "single_tile">;
 def Wafer_PlacementTileMesh : I32EnumAttrCase<"TileMesh", 1, "tile_mesh">;
 def Wafer_PlacementCardMesh : I32EnumAttrCase<"CardMesh", 2, "card_mesh">;

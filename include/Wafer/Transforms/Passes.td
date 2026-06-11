@@ -125,8 +125,10 @@ def PlanDDRMemoryPass
     : Pass<"wafer-plan-ddr-memory", "mlir::ModuleOp"> {
   let summary =
       "Plan and verify DDR memory demands in instruction-level Wafer IR";
-  let dependentDialects = ["mlir::memref::MemRefDialect",
-                           "wafer::WaferDialect",
+  let dependentDialects = ["mlir::async::AsyncDialect",
+                           "mlir::func::FuncDialect",
+                           "mlir::memref::MemRefDialect",
+                           "mlir::scf::SCFDialect", "wafer::WaferDialect",
   ];
   let options = [
     Option<"ddrCapacityBytes", "ddr-capacity-bytes", "int64_t",
