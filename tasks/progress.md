@@ -109,21 +109,21 @@ Pipeline position:
   tile-shape search 仍归 R3.2h。
 - R3.2d RDMA/WDMA 支持 strided DDR view 是 consumer 能力；descriptor 的 offset/stride 必须来自
   IR 中的 memref view，不能从名字、shape 或 whole-boundary memref 推断。
-- R3.2f 已接入 `wafer.spm.offset = #wafer.spm_offset<offset, size, alignment, bank_begin,
-  bank_limit>` planning fact；arena 作用域是单个 `wafer.tile.region`，默认普通 SPM range 为
-  `[0x10000, 0x2F0000)`，size 来自 `computeWaferPhysicalTensorInfo` 的 physical bytes。V0 已对
+- R3.2f 已接入 offset-only `wafer.spm.offset = #wafer.spm_offset<offset>` planning fact；arena
+  作用域是单个 `wafer.tile.region`，默认普通 SPM range 为 `[0x10000, 0x2F0000)`，size、alignment
+  和 bank span 由 memref type/layout 与 target policy 重算。V0 已对
   instruction-level IR 建立 region-aware lifetime dataflow：straight-line last-use 后复用、
   `scf.if` path-sensitive branch 互斥复用、`scf.for` loop-carried/backedge lifetime、loop 后 temp
   复用，以及 async token 到 wait/drain 的 lifetime 延伸都由 IR 结构重算；offset 搜索采用
   pressure-weighted offline packing。
-- R3.2g 已接入 `wafer.ddr.requirement = #wafer.ddr_requirement<alignment, intent>`、
-  `wafer.ddr.range = #wafer.ddr_range<offset, size, alignment, lifetime_begin, lifetime_end, intent>` 和
-  `wafer.ddr.access = #wafer.ddr_access<root_bytes, max_access_end, intent>`。`wafer-plan-ddr-memory`
-  对 function/candidate scope 建立 structured lifetime dataflow，覆盖 straight-line reuse、`scf.if`
-  path-sensitive 互斥复用、`scf.for` loop-carried/backedge lifetime 和 async token 延伸；compiler-managed
-  DDR demand 在 default arena 内做 pressure-weighted first-fit packing，external DDR function args
-  materialize access facts。descriptor/view/root validation 已接到 planned range/access fact 上，并覆盖
-  capacity、largest-contiguous、bandwidth、alignment、missing requirement 和 intent mismatch failure。
+- R3.2g 已接入 offset-only `wafer.ddr.offset = #wafer.ddr_offset<offset>` planning fact。DDR
+  `memref.alloc` 本身表达 compiler-managed allocation；size、alignment、lifetime 和 read/write role
+  由 memref type/layout、target policy、SSA use-def、structured control-flow、async token 和
+  RDMA/WDMA descriptor 重算。external DDR function args 不写 access summary attr；descriptor/view/root
+  validation 保持 pass-local analysis。`wafer-plan-ddr-memory` 对 function/candidate scope 建立
+  structured lifetime dataflow，覆盖 straight-line reuse、`scf.if` path-sensitive 互斥复用、`scf.for`
+  loop-carried/backedge lifetime 和 async token 延伸；compiler-managed DDR demand 在 default arena 内做
+  pressure-weighted first-fit packing，并覆盖 capacity、largest-contiguous、bandwidth 和 alignment failure。
 - Tile communication 仍 deferred，等待 memory planning/local-rank/buffer facts 后再 lower 到 communication /
   DTE / local-drain 边界。
 
@@ -141,7 +141,7 @@ Pipeline position:
 | R3.2e.a | done | R3.1 group + explicit static boundary slice facts + R3.2c/R3.2d lowering chain | external boundary `tensor.extract_slice` 和 direct output `tensor.insert_slice` materialize 为 DDR `memref.subview` tile operands；simple tiled elementwise/matmul/storeback 的 RDMA/WDMA descriptor 来自 actual tile view，不退回 whole-boundary DMA |
 | R3.2e.b | done | R3.1 group + candidate output tile offsets/sizes + R3.2a/R3.2b facts | planner candidate evaluation 中通过 linalg indexing maps 生成 boundary slice proposal；simple full-tensor matmul group 生成 input/output DDR `memref.subview` tile operands，不写回主 IR |
 | R3.2f | done | R3.2e candidate tile-view IR 经 R3.2d legalization 后的 instruction-level IR | `wafer.spm.offset` planning fact 标注 SPM `memref.alloc`；simple tiled elementwise/matmul/storeback 获得非重叠、256B 对齐、range/end 合法 memory plan；Cx/NCx 使用 physical bytes；straight-line、structured `scf.if` / `scf.for` 和 async token wait 的 lifetime/reuse 由 IR dataflow 重算；pressure-weighted offline packing 避免 alloc-event first-fit 碎片化；capacity/alignment/range failure 结构化诊断 |
-| R3.2g | done | R3.2f memory-planned instruction IR + actual DDR tile-view facts + explicit DDR requirements | `wafer.ddr.range` 标注 compiler-managed DDR planned range，`wafer.ddr.access` 标注 external DDR access requirement；descriptor/view/root validation 消费 accepted range/access facts；straight-line、`scf.if`、`scf.for` 和 async token lifetime 支持 offset reuse；capacity、largest-contiguous、bandwidth、alignment、missing requirement、intent mismatch 等 failure 结构化诊断 |
+| R3.2g | done | R3.2f memory-planned instruction IR + actual DDR tile-view facts + DDR `memref.alloc` / external DDR boundary values | `wafer.ddr.offset` 标注 compiler-managed DDR accepted offset；external DDR access summary 不落主 IR；descriptor/view/root validation 从当前 IR 重算；straight-line、`scf.if`、`scf.for` 和 async token lifetime 支持 offset reuse；capacity、largest-contiguous、bandwidth、alignment 等 failure 结构化诊断 |
 
 ## 后续队列
 

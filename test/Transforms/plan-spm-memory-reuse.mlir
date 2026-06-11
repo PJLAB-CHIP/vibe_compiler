@@ -18,7 +18,7 @@ func.func @reuse_after_last_use(%boundary: memref<128xf16, #wafer.memory<ddr, te
 }
 
 // CHECK-LABEL: func.func @reuse_after_last_use
-// CHECK: %[[FIRST:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536, 256, 256, 256, 257>} : memref<128xf16, #wafer.memory<spm, tensor>>
+// CHECK: %[[FIRST:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>} : memref<128xf16, #wafer.memory<spm, tensor>>
 // CHECK: wafer.instr.fill %[[FIRST]]
-// CHECK: %[[SECOND:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536, 256, 256, 256, 257>} : memref<128xf16, #wafer.memory<spm, tensor>>
+// CHECK: %[[SECOND:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>} : memref<128xf16, #wafer.memory<spm, tensor>>
 // CHECK: wafer.instr.fill %[[SECOND]]

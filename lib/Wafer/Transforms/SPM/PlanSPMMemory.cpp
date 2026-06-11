@@ -91,16 +91,6 @@ static std::optional<int64_t> alignUp(int64_t value, int64_t alignment) {
   return result;
 }
 
-static std::optional<int64_t> ceilDivNonNegative(int64_t numerator,
-                                                 int64_t denominator) {
-  if (numerator < 0 || denominator <= 0)
-    return std::nullopt;
-  int64_t biased = 0;
-  if (!checkedAdd(numerator, denominator - 1, biased))
-    return std::nullopt;
-  return biased / denominator;
-}
-
 static bool belongsToTileRegion(TileRegionOp tileRegion, mlir::Operation *op) {
   for (mlir::Operation *parent = op->getParentOp(); parent;
        parent = parent->getParentOp()) {
@@ -647,19 +637,9 @@ static mlir::LogicalResult planRegion(TileRegionOp tileRegion, int64_t spmBase,
       return mlir::failure();
     }
 
-    int64_t bankBegin = *offset / kWaferSPMBankLineBytes;
-    std::optional<int64_t> bankLimit =
-        ceilDivNonNegative(end, kWaferSPMBankLineBytes);
-    if (!bankLimit) {
-      demand.alloc.emitError()
-          << "range_end_overflow: cannot compute SPM bank span";
-      return mlir::failure();
-    }
-
-    demand.alloc->setAttr(kWaferSPMOffsetAttrName,
-                          SPMOffsetAttr::get(demand.alloc.getContext(), *offset,
-                                             demand.size, demand.alignment,
-                                             bankBegin, *bankLimit));
+    demand.alloc->setAttr(
+        kWaferSPMOffsetAttrName,
+        SPMOffsetAttr::get(demand.alloc.getContext(), *offset));
     assignedIntervals.push_back(
         AssignedSPMInterval{static_cast<unsigned>(demandIndex), *offset, end});
   }

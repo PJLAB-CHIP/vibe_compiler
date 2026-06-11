@@ -41,7 +41,6 @@ struct DDRDemand {
   mlir::memref::AllocOp alloc;
   int64_t size = 0;
   int64_t alignment = 0;
-  DDRAccessIntent intent = DDRAccessIntent::None;
   int64_t allocEvent = 0;
   PathCondition allocCondition;
   unsigned ordinal = 0;
@@ -51,7 +50,7 @@ struct DDRDemand {
   llvm::SmallVector<LiveSegment, 4> segments;
 };
 
-struct AssignedDDRRange {
+struct AssignedDDROffset {
   unsigned demandIndex = 0;
   int64_t offset = 0;
   int64_t end = 0;
@@ -77,7 +76,6 @@ struct MovementDescriptor {
   mlir::DenseI64ArrayAttr strides;
   mlir::DenseI64ArrayAttr iterations;
   llvm::StringRef role;
-  DDRAccessIntent accessIntent = DDRAccessIntent::None;
 };
 
 struct DDRView {
@@ -91,8 +89,6 @@ struct DDRView {
 
 struct ExternalDDRRootDemand {
   int64_t rootBytes = 0;
-  int64_t maxAccessEnd = 0;
-  DDRAccessIntent intent = DDRAccessIntent::None;
 };
 
 struct DDRDemandSummary {
@@ -266,39 +262,6 @@ static bool isCompilerManagedDDRRoot(mlir::Value root) {
   mlir::Operation *def = root.getDefiningOp();
   return def && mlir::isa<mlir::memref::AllocOp>(def) &&
          isWaferDDRMemRefType(root.getType());
-}
-
-static bool allowsRead(DDRAccessIntent intent) {
-  return intent == DDRAccessIntent::Read ||
-         intent == DDRAccessIntent::ReadWrite ||
-         intent == DDRAccessIntent::ReadOnly;
-}
-
-static bool allowsWrite(DDRAccessIntent intent) {
-  return intent == DDRAccessIntent::Write ||
-         intent == DDRAccessIntent::ReadWrite;
-}
-
-static bool isIntentAllowed(DDRAccessIntent requirement,
-                            DDRAccessIntent access) {
-  if (access == DDRAccessIntent::Read)
-    return allowsRead(requirement);
-  if (access == DDRAccessIntent::Write)
-    return allowsWrite(requirement);
-  return true;
-}
-
-static DDRAccessIntent mergeAccessIntents(DDRAccessIntent lhs,
-                                          DDRAccessIntent rhs) {
-  if (lhs == DDRAccessIntent::None)
-    return rhs;
-  if (rhs == DDRAccessIntent::None || lhs == rhs)
-    return lhs;
-  if (lhs == DDRAccessIntent::ReadOnly && rhs == DDRAccessIntent::Read)
-    return DDRAccessIntent::ReadOnly;
-  if (lhs == DDRAccessIntent::Read && rhs == DDRAccessIntent::ReadOnly)
-    return DDRAccessIntent::ReadOnly;
-  return DDRAccessIntent::ReadWrite;
 }
 
 static void addLiveSegment(DDRDemand &demand, int64_t startEvent,
@@ -634,7 +597,7 @@ getDescriptorLocalEnd(mlir::Operation *op,
 }
 
 static mlir::LogicalResult verifyDDRRoot(mlir::Operation *op, mlir::Value root,
-                                         DDRAccessIntent accessIntent) {
+                                         int64_t defaultAlignment) {
   mlir::Operation *def = root.getDefiningOp();
   if (!def)
     return mlir::success();
@@ -643,31 +606,25 @@ static mlir::LogicalResult verifyDDRRoot(mlir::Operation *op, mlir::Value root,
   if (!alloc || !isWaferDDRMemRefType(root.getType()))
     return mlir::success();
 
-  auto requirement =
-      alloc->getAttrOfType<DDRRequirementAttr>(kWaferDDRRequirementAttrName);
-  if (!requirement)
-    return op->emitError()
-           << "missing_ddr_requirement: compiler-managed DDR allocation "
-              "used by "
-           << (accessIntent == DDRAccessIntent::Read ? "read" : "write")
-           << " access must carry wafer.ddr.requirement";
-
-  if (!isIntentAllowed(requirement.getIntent(), accessIntent))
-    return op->emitError()
-           << "ddr_access_intent_mismatch: DDR access is incompatible with "
-              "wafer.ddr.requirement intent";
-
-  auto range = alloc->getAttrOfType<DDRRangeAttr>(kWaferDDRRangeAttrName);
-  if (!range)
+  auto offset = alloc->getAttrOfType<DDROffsetAttr>(kWaferDDROffsetAttrName);
+  if (!offset)
     return op->emitError()
            << "ddr_planned_range_missing: compiler-managed DDR allocation "
-              "has requirement but no accepted wafer.ddr.range";
+              "has no accepted wafer.ddr.offset";
 
-  if (range.getAlignment() < requirement.getAlignment() ||
-      range.getAlignment() <= 0 ||
-      range.getOffset() % range.getAlignment() != 0)
+  int64_t requiredAlignment = defaultAlignment;
+  if (std::optional<uint64_t> allocAlignment = alloc.getAlignment()) {
+    if (*allocAlignment >
+        static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
+      return op->emitError()
+             << "ddr_alignment_failure: memref.alloc alignment exceeds int64";
+    requiredAlignment =
+        std::max(requiredAlignment, static_cast<int64_t>(*allocAlignment));
+  }
+
+  if (requiredAlignment <= 0 || offset.getOffset() % requiredAlignment != 0)
     return op->emitError()
-           << "ddr_alignment_failure: accepted DDR range does not satisfy "
+           << "ddr_alignment_failure: accepted DDR offset does not satisfy "
               "required alignment";
 
   return mlir::success();
@@ -675,7 +632,7 @@ static mlir::LogicalResult verifyDDRRoot(mlir::Operation *op, mlir::Value root,
 
 static mlir::FailureOr<DDRView>
 resolveDDRView(mlir::Operation *op, mlir::Value ddrValue,
-               const MovementDescriptor &descriptor) {
+               const MovementDescriptor &descriptor, int64_t defaultAlignment) {
   auto viewType = mlir::dyn_cast<mlir::MemRefType>(ddrValue.getType());
   if (!viewType || !isWaferDDRMemRefType(viewType))
     return op->emitError() << "unsupported_ddr_view: " << descriptor.role
@@ -715,7 +672,7 @@ resolveDDRView(mlir::Operation *op, mlir::Value ddrValue,
     return op->emitError()
            << "range_end_overflow: DDR view byte offset overflows int64";
 
-  if (mlir::failed(verifyDDRRoot(op, root, descriptor.accessIntent)))
+  if (mlir::failed(verifyDDRRoot(op, root, defaultAlignment)))
     return mlir::failure();
 
   return DDRView{root,
@@ -727,9 +684,10 @@ resolveDDRView(mlir::Operation *op, mlir::Value ddrValue,
 }
 
 static mlir::LogicalResult
-collectDDRAccessDemand(mlir::Operation *op, mlir::Value ddrValue,
-                       const MovementDescriptor &descriptor,
-                       DDRDemandSummary &summary) {
+collectDDRDescriptorDemand(mlir::Operation *op, mlir::Value ddrValue,
+                           const MovementDescriptor &descriptor,
+                           int64_t defaultAlignment,
+                           DDRDemandSummary &summary) {
   mlir::FailureOr<int64_t> payload = getDescriptorPayloadBytes(op, descriptor);
   if (mlir::failed(payload))
     return mlir::failure();
@@ -743,7 +701,8 @@ collectDDRAccessDemand(mlir::Operation *op, mlir::Value ddrValue,
   if (mlir::failed(localEnd))
     return mlir::failure();
 
-  mlir::FailureOr<DDRView> view = resolveDDRView(op, ddrValue, descriptor);
+  mlir::FailureOr<DDRView> view =
+      resolveDDRView(op, ddrValue, descriptor, defaultAlignment);
   if (mlir::failed(view))
     return mlir::failure();
 
@@ -766,9 +725,6 @@ collectDDRAccessDemand(mlir::Operation *op, mlir::Value ddrValue,
     ExternalDDRRootDemand &rootDemand = it->second;
     if (inserted)
       rootDemand.rootBytes = view->rootBytes;
-    rootDemand.maxAccessEnd = std::max(rootDemand.maxAccessEnd, absoluteEnd);
-    rootDemand.intent =
-        mergeAccessIntents(rootDemand.intent, descriptor.accessIntent);
   }
 
   if (!checkedAdd(summary.bandwidthBytes, descriptor.byteCount,
@@ -779,33 +735,17 @@ collectDDRAccessDemand(mlir::Operation *op, mlir::Value ddrValue,
 }
 
 static mlir::LogicalResult initializeDDRDemand(
-    mlir::memref::AllocOp alloc, const EventInfo &events,
-    llvm::SmallVectorImpl<DDRDemand> &demands,
+    mlir::memref::AllocOp alloc, int64_t defaultAlignment,
+    const EventInfo &events, llvm::SmallVectorImpl<DDRDemand> &demands,
     llvm::DenseMap<mlir::Value, llvm::SmallVector<RootRef, 2>> &valueRefs) {
-  auto requirement =
-      alloc->getAttrOfType<DDRRequirementAttr>(kWaferDDRRequirementAttrName);
-  if (!requirement)
-    return mlir::success();
-
   mlir::MemRefType memrefType = alloc.getType();
   if (!isWaferDDRMemRefType(memrefType))
-    return alloc.emitError()
-           << "unsupported_compiler_managed_ddr: wafer.ddr.requirement "
-              "requires a Wafer DDR memref allocation";
+    return mlir::success();
 
   if (!alloc.getDynamicSizes().empty() || !alloc.getSymbolOperands().empty())
     return alloc.emitError()
            << "unsupported_compiler_managed_ddr: DDR memory planning requires "
               "static memref.alloc sizes and symbols";
-
-  if (requirement.getAlignment() <= 0)
-    return alloc.emitError()
-           << "ddr_alignment_failure: wafer.ddr.requirement alignment must be "
-              "positive";
-  if (requirement.getIntent() == DDRAccessIntent::None)
-    return alloc.emitError()
-           << "ddr_access_intent_mismatch: wafer.ddr.requirement intent must "
-              "not be none";
 
   std::optional<WaferPhysicalTensorInfo> info =
       computeWaferPhysicalTensorInfo(memrefType);
@@ -815,7 +755,7 @@ static mlir::LogicalResult initializeDDRDemand(
               "byte size for "
            << memrefType;
 
-  int64_t requiredAlignment = requirement.getAlignment();
+  int64_t requiredAlignment = defaultAlignment;
   if (std::optional<uint64_t> allocAlignment = alloc.getAlignment()) {
     if (*allocAlignment >
         static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
@@ -833,29 +773,26 @@ static mlir::LogicalResult initializeDDRDemand(
            << "lifetime_overlap_conflict: missing event for DDR allocation";
 
   unsigned demandIndex = demands.size();
-  DDRDemand demand{alloc,
-                   info->physicalBytes,
-                   requiredAlignment,
-                   requirement.getIntent(),
-                   eventIt->second,
-                   conditionIt->second,
-                   demandIndex};
+  DDRDemand demand{alloc,           info->physicalBytes, requiredAlignment,
+                   eventIt->second, conditionIt->second, demandIndex};
   demands.push_back(demand);
   valueRefs[alloc.getMemref()] =
       llvm::SmallVector<RootRef, 2>{RootRef{demandIndex, conditionIt->second}};
-  alloc->removeAttr(kWaferDDRRangeAttrName);
+  alloc->removeAttr(kWaferDDROffsetAttrName);
   return mlir::success();
 }
 
 static mlir::LogicalResult
-collectDDRDemand(mlir::Operation *scope, const EventInfo &events,
+collectDDRDemand(mlir::Operation *scope, int64_t defaultAlignment,
+                 const EventInfo &events,
                  llvm::SmallVectorImpl<DDRDemand> &demands) {
   llvm::DenseMap<mlir::Value, llvm::SmallVector<RootRef, 2>> valueRefs;
   mlir::LogicalResult result = mlir::success();
   scope->walk([&](mlir::memref::AllocOp alloc) {
     if (mlir::failed(result))
       return;
-    result = initializeDDRDemand(alloc, events, demands, valueRefs);
+    result = initializeDDRDemand(alloc, defaultAlignment, events, demands,
+                                 valueRefs);
   });
   if (mlir::failed(result))
     return mlir::failure();
@@ -870,7 +807,7 @@ collectDDRDemand(mlir::Operation *scope, const EventInfo &events,
 
 static mlir::FailureOr<int64_t>
 findFirstFitOffset(const DDRDemand &demand,
-                   llvm::ArrayRef<AssignedDDRRange> assignedRanges,
+                   llvm::ArrayRef<AssignedDDROffset> assignedOffsets,
                    llvm::ArrayRef<DDRDemand> demands, int64_t capacityBytes) {
   int64_t candidate = 0;
   while (true) {
@@ -885,7 +822,7 @@ findFirstFitOffset(const DDRDemand &demand,
       return mlir::failure();
 
     int64_t nextCandidate = *alignedOffset;
-    for (const AssignedDDRRange &assigned : assignedRanges) {
+    for (const AssignedDDROffset &assigned : assignedOffsets) {
       if (!lifetimesOverlap(demand, demands[assigned.demandIndex]))
         continue;
       if (!byteRangesOverlap(*alignedOffset, candidateEnd, assigned.offset,
@@ -901,15 +838,15 @@ findFirstFitOffset(const DDRDemand &demand,
 }
 
 static mlir::LogicalResult
-planManagedDDRRanges(mlir::Operation *scope,
-                     llvm::MutableArrayRef<DDRDemand> demands,
-                     int64_t capacityBytes, int64_t largestContiguousBytes,
-                     int64_t &plannedHighWaterBytes) {
+planManagedDDROffsets(mlir::Operation *scope,
+                      llvm::MutableArrayRef<DDRDemand> demands,
+                      int64_t capacityBytes, int64_t largestContiguousBytes,
+                      int64_t &plannedHighWaterBytes) {
   computePlanningPriorities(demands);
   llvm::sort(demands, hasHigherPlanningPriority);
 
   plannedHighWaterBytes = 0;
-  llvm::SmallVector<AssignedDDRRange, 8> assignedRanges;
+  llvm::SmallVector<AssignedDDROffset, 8> assignedOffsets;
   for (auto [demandIndex, demand] : llvm::enumerate(demands)) {
     if (demand.size > largestContiguousBytes)
       return demand.alloc.emitError()
@@ -918,7 +855,7 @@ planManagedDDRRanges(mlir::Operation *scope,
              << largestContiguousBytes;
 
     mlir::FailureOr<int64_t> offset =
-        findFirstFitOffset(demand, assignedRanges, demands, capacityBytes);
+        findFirstFitOffset(demand, assignedOffsets, demands, capacityBytes);
     if (mlir::failed(offset))
       return demand.alloc.emitError()
              << "memory_capacity_overflow: DDR planning capacity "
@@ -935,78 +872,44 @@ planManagedDDRRanges(mlir::Operation *scope,
              << " is not aligned to " << demand.alignment;
 
     demand.alloc->setAttr(
-        kWaferDDRRangeAttrName,
-        DDRRangeAttr::get(demand.alloc.getContext(), *offset, demand.size,
-                          demand.alignment, demand.firstLiveEvent,
-                          demand.lastLiveEvent, demand.intent));
+        kWaferDDROffsetAttrName,
+        DDROffsetAttr::get(demand.alloc.getContext(), *offset));
     plannedHighWaterBytes = std::max(plannedHighWaterBytes, end);
-    assignedRanges.push_back(
-        AssignedDDRRange{static_cast<unsigned>(demandIndex), *offset, end});
+    assignedOffsets.push_back(
+        AssignedDDROffset{static_cast<unsigned>(demandIndex), *offset, end});
   }
 
   (void)scope;
   return mlir::success();
 }
 
-static mlir::LogicalResult collectDDRAccessDemands(mlir::Operation *scope,
-                                                   DDRDemandSummary &summary) {
+static mlir::LogicalResult
+collectDDRDescriptorDemands(mlir::Operation *scope, int64_t defaultAlignment,
+                            DDRDemandSummary &summary) {
   mlir::LogicalResult result = mlir::success();
   scope->walk([&](mlir::Operation *op) {
     if (mlir::failed(result))
       return;
 
     if (auto rdma = mlir::dyn_cast<InstrRDMAOp>(op)) {
-      MovementDescriptor descriptor{rdma.getByteCountAttr().getInt(),
-                                    rdma.getInnerBytesAttr().getInt(),
-                                    rdma.getSrcStridesAttr(),
-                                    rdma.getSrcIterationsAttr(),
-                                    "source",
-                                    DDRAccessIntent::Read};
-      result =
-          collectDDRAccessDemand(op, rdma.getSource(), descriptor, summary);
+      MovementDescriptor descriptor{
+          rdma.getByteCountAttr().getInt(), rdma.getInnerBytesAttr().getInt(),
+          rdma.getSrcStridesAttr(), rdma.getSrcIterationsAttr(), "source"};
+      result = collectDDRDescriptorDemand(op, rdma.getSource(), descriptor,
+                                          defaultAlignment, summary);
       return;
     }
 
     if (auto wdma = mlir::dyn_cast<InstrWDMAOp>(op)) {
-      MovementDescriptor descriptor{wdma.getByteCountAttr().getInt(),
-                                    wdma.getInnerBytesAttr().getInt(),
-                                    wdma.getDstStridesAttr(),
-                                    wdma.getDstIterationsAttr(),
-                                    "dest",
-                                    DDRAccessIntent::Write};
-      result = collectDDRAccessDemand(op, wdma.getDest(), descriptor, summary);
+      MovementDescriptor descriptor{
+          wdma.getByteCountAttr().getInt(), wdma.getInnerBytesAttr().getInt(),
+          wdma.getDstStridesAttr(), wdma.getDstIterationsAttr(), "dest"};
+      result = collectDDRDescriptorDemand(op, wdma.getDest(), descriptor,
+                                          defaultAlignment, summary);
       return;
     }
   });
   return result;
-}
-
-static void materializeExternalDDRAccessFacts(const DDRDemandSummary &summary) {
-  for (auto entry : summary.externalRootDemands) {
-    auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(entry.first);
-    if (!blockArg)
-      continue;
-    auto funcOp = mlir::dyn_cast_or_null<mlir::func::FuncOp>(
-        blockArg.getOwner()->getParentOp());
-    if (!funcOp)
-      continue;
-
-    const ExternalDDRRootDemand &demand = entry.second;
-    funcOp.setArgAttr(blockArg.getArgNumber(), kWaferDDRAccessAttrName,
-                      DDRAccessAttr::get(funcOp.getContext(), demand.rootBytes,
-                                         demand.maxAccessEnd, demand.intent));
-  }
-}
-
-static void clearExternalDDRAccessFacts(mlir::Operation *scope) {
-  auto funcOp = mlir::dyn_cast<mlir::func::FuncOp>(scope);
-  if (!funcOp)
-    return;
-  mlir::StringAttr accessAttr =
-      mlir::StringAttr::get(funcOp.getContext(), kWaferDDRAccessAttrName);
-  for (unsigned index = 0, count = funcOp.getNumArguments(); index < count;
-       ++index)
-    funcOp.removeArgAttr(index, accessAttr);
 }
 
 static mlir::LogicalResult verifyResourceLimits(mlir::Operation *op,
@@ -1047,26 +950,26 @@ static mlir::LogicalResult verifyResourceLimits(mlir::Operation *op,
 }
 
 static mlir::LogicalResult planScopeDDRMemory(mlir::Operation *scope,
+                                              int64_t defaultAlignment,
                                               int64_t capacityBytes,
                                               int64_t largestContiguousBytes,
                                               int64_t bandwidthLimitBytes) {
-  clearExternalDDRAccessFacts(scope);
-
   EventInfo events;
   if (mlir::failed(assignOperationEvents(scope, events)))
     return mlir::failure();
 
   llvm::SmallVector<DDRDemand, 8> demands;
-  if (mlir::failed(collectDDRDemand(scope, events, demands)))
+  if (mlir::failed(collectDDRDemand(scope, defaultAlignment, events, demands)))
     return mlir::failure();
 
   DDRDemandSummary summary;
-  if (mlir::failed(planManagedDDRRanges(scope, demands, capacityBytes,
-                                        largestContiguousBytes,
-                                        summary.plannedHighWaterBytes)))
+  if (mlir::failed(planManagedDDROffsets(scope, demands, capacityBytes,
+                                         largestContiguousBytes,
+                                         summary.plannedHighWaterBytes)))
     return mlir::failure();
 
-  if (mlir::failed(collectDDRAccessDemands(scope, summary)))
+  if (mlir::failed(
+          collectDDRDescriptorDemands(scope, defaultAlignment, summary)))
     return mlir::failure();
 
   if (mlir::failed(verifyResourceLimits(scope, summary, capacityBytes,
@@ -1074,11 +977,11 @@ static mlir::LogicalResult planScopeDDRMemory(mlir::Operation *scope,
                                         bandwidthLimitBytes)))
     return mlir::failure();
 
-  materializeExternalDDRAccessFacts(summary);
   return mlir::success();
 }
 
 static mlir::LogicalResult planModuleDDRMemory(mlir::ModuleOp moduleOp,
+                                               int64_t defaultAlignment,
                                                int64_t capacityBytes,
                                                int64_t largestContiguousBytes,
                                                int64_t bandwidthLimitBytes) {
@@ -1088,13 +991,15 @@ static mlir::LogicalResult planModuleDDRMemory(mlir::ModuleOp moduleOp,
     sawFunction = true;
     if (mlir::failed(result))
       return;
-    result = planScopeDDRMemory(funcOp.getOperation(), capacityBytes,
-                                largestContiguousBytes, bandwidthLimitBytes);
+    result = planScopeDDRMemory(funcOp.getOperation(), defaultAlignment,
+                                capacityBytes, largestContiguousBytes,
+                                bandwidthLimitBytes);
   });
   if (mlir::failed(result) || sawFunction)
     return result;
-  return planScopeDDRMemory(moduleOp.getOperation(), capacityBytes,
-                            largestContiguousBytes, bandwidthLimitBytes);
+  return planScopeDDRMemory(moduleOp.getOperation(), defaultAlignment,
+                            capacityBytes, largestContiguousBytes,
+                            bandwidthLimitBytes);
 }
 
 struct PlanDDRMemoryPass
@@ -1103,17 +1008,17 @@ struct PlanDDRMemoryPass
 
   void runOnOperation() final {
     if (ddrCapacityBytes < 0 || ddrLargestContiguousBytes < 0 ||
-        ddrBandwidthLimitBytes < 0) {
+        ddrBandwidthLimitBytes < 0 || ddrAlignmentBytes <= 0) {
       getOperation()->emitError()
           << "invalid_ddr_resource_limit: DDR resource limits must be "
-             "non-negative";
+             "non-negative and DDR alignment must be positive";
       signalPassFailure();
       return;
     }
 
-    if (mlir::failed(planModuleDDRMemory(getOperation(), ddrCapacityBytes,
-                                         ddrLargestContiguousBytes,
-                                         ddrBandwidthLimitBytes)))
+    if (mlir::failed(planModuleDDRMemory(
+            getOperation(), ddrAlignmentBytes, ddrCapacityBytes,
+            ddrLargestContiguousBytes, ddrBandwidthLimitBytes)))
       signalPassFailure();
   }
 };

@@ -291,16 +291,16 @@ func.func @boundary_tiled_matmul_group(%lhs: tensor<4x8xf16>,
 // CHECK-SAME: inner_bytes = 6 : i64
 
 // PLANNED-LABEL: func.func @boundary_slice_group
-// PLANNED: memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536, 12, 256, 256, 257>} : memref<2x3xf16, #wafer.memory<spm, tensor>>
-// PLANNED: memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65792, 12, 256, 257, 258>} : memref<2x3xf16, #wafer.memory<spm, tensor>>
+// PLANNED: memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>} : memref<2x3xf16, #wafer.memory<spm, tensor>>
+// PLANNED: memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65792>} : memref<2x3xf16, #wafer.memory<spm, tensor>>
 // PLANNED: wafer.instr.wdma
 
 // PLANNED-LABEL: func.func @boundary_tiled_matmul_group
-// PLANNED: memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65792, 16, 256, 257, 258>} : memref<2x4xf16, #wafer.memory<spm, tensor>>
-// PLANNED: memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66048, 24, 256, 258, 259>} : memref<4x3xf16, #wafer.memory<spm, tensor>>
-// PLANNED: memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536, 12, 256, 256, 257>} : memref<2x3xf16, #wafer.memory<spm, tensor>>
-// PLANNED: memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536, 256, 256, 256, 257>} : memref<2x4xf16, #wafer.memory<spm, cx>>
-// PLANNED: memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65792, 256, 256, 257, 258>} : memref<4x3xf16, #wafer.memory<spm, cx>>
-// PLANNED: memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66048, 256, 256, 258, 259>} : memref<2x3xf16, #wafer.memory<spm, cx>>
-// PLANNED: memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536, 12, 256, 256, 257>} : memref<2x3xf16, #wafer.memory<spm, tensor>>
+// PLANNED: memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65792>} : memref<2x4xf16, #wafer.memory<spm, tensor>>
+// PLANNED: memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66048>} : memref<4x3xf16, #wafer.memory<spm, tensor>>
+// PLANNED: memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>} : memref<2x3xf16, #wafer.memory<spm, tensor>>
+// PLANNED: memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>} : memref<2x4xf16, #wafer.memory<spm, cx>>
+// PLANNED: memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65792>} : memref<4x3xf16, #wafer.memory<spm, cx>>
+// PLANNED: memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66048>} : memref<2x3xf16, #wafer.memory<spm, cx>>
+// PLANNED: memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>} : memref<2x3xf16, #wafer.memory<spm, tensor>>
 // PLANNED: wafer.instr.wdma

@@ -2,10 +2,9 @@
 
 func.func @single_ddr_range_exceeds_largest_contiguous() {
   %ddr = memref.alloc()
-      {wafer.ddr.requirement = #wafer.ddr_requirement<256, write>}
       : memref<128xf16, #wafer.memory<ddr, tensor>>
   %spm = memref.alloc()
-      {wafer.spm.offset = #wafer.spm_offset<65536, 256, 256, 256, 257>}
+      {wafer.spm.offset = #wafer.spm_offset<65536>}
       : memref<128xf16, #wafer.memory<spm, tensor>>
   wafer.instr.wdma %spm to %ddr
       {byte_count = 256 : i64, dst_iterations = array<i64: 1, 1, 1>,

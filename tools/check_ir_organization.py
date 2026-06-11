@@ -165,9 +165,7 @@ FORBIDDEN_IR_STRINGS = (
     "AbiWaitPolicy",
 )
 ALLOWED_IR_SPECIALIZATIONS = (
-    "wafer.ddr.requirement",
-    "wafer.ddr.range",
-    "wafer.ddr.access",
+    "wafer.ddr.offset",
 )
 
 

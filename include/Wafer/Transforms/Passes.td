@@ -139,7 +139,10 @@ def PlanDDRMemoryPass
            "Largest contiguous DDR range available to a single root demand">,
     Option<"ddrBandwidthLimitBytes", "ddr-bandwidth-limit-bytes", "int64_t",
            /*default=*/"9223372036854775807",
-           "Total DDR movement bytes allowed by this planning gate">
+           "Total DDR movement bytes allowed by this planning gate">,
+    Option<"ddrAlignmentBytes", "ddr-alignment-bytes", "int64_t",
+           /*default=*/"256",
+           "Preferred byte alignment for compiler-managed DDR planning">
   ];
 }
 

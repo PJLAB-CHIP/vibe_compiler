@@ -18,7 +18,7 @@ func.func @plan_external_strided_views(
       -> (memref<2x3xf16, strided<[8, 1], offset: 10>, #wafer.memory<ddr, tensor>>) {
   ^bb0(%in: memref<2x3xf16, strided<[8, 1], offset: 10>, #wafer.memory<ddr, tensor>>,
        %out: memref<2x3xf16, strided<[8, 1], offset: 10>, #wafer.memory<ddr, tensor>>):
-    %loaded = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536, 12, 256, 256, 257>}
+    %loaded = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
         : memref<2x3xf16, #wafer.memory<spm, tensor>>
     wafer.instr.rdma %in to %loaded
         {byte_count = 12 : i64, inner_bytes = 6 : i64,
@@ -38,8 +38,7 @@ func.func @plan_external_strided_views(
 }
 
 // CHECK-LABEL: func.func @plan_external_strided_views
-// CHECK-SAME: wafer.ddr.access = #wafer.ddr_access<64, 42, read>
-// CHECK-SAME: wafer.ddr.access = #wafer.ddr_access<64, 42, write>
+// CHECK-NOT: {{wafer[.]ddr[.]access}}
 // CHECK: %[[INPUT_TILE:.+]] = memref.subview
 // CHECK: %[[OUTPUT_TILE:.+]] = memref.subview
 // CHECK: wafer.instr.rdma

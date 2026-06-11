@@ -25,11 +25,11 @@ func.func @pressure_weighted_packing_avoids_fragmentation(
 }
 
 // CHECK-LABEL: func.func @pressure_weighted_packing_avoids_fragmentation
-// CHECK: %[[EARLY:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536, 256, 256, 256, 257>} : memref<128xf16, #wafer.memory<spm, tensor>>
-// CHECK: %[[LEFT:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66048, 256, 256, 258, 259>} : memref<128xf16, #wafer.memory<spm, tensor>>
-// CHECK: %[[RIGHT:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66304, 256, 256, 259, 260>} : memref<128xf16, #wafer.memory<spm, tensor>>
+// CHECK: %[[EARLY:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>} : memref<128xf16, #wafer.memory<spm, tensor>>
+// CHECK: %[[LEFT:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66048>} : memref<128xf16, #wafer.memory<spm, tensor>>
+// CHECK: %[[RIGHT:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66304>} : memref<128xf16, #wafer.memory<spm, tensor>>
 // CHECK: wafer.instr.fill %[[EARLY]]
-// CHECK: %[[LARGE:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536, 512, 256, 256, 258>} : memref<256xf16, #wafer.memory<spm, tensor>>
+// CHECK: %[[LARGE:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>} : memref<256xf16, #wafer.memory<spm, tensor>>
 // CHECK: wafer.instr.fill %[[LEFT]]
 // CHECK: wafer.instr.fill %[[RIGHT]]
 // CHECK: wafer.instr.fill %[[LARGE]]

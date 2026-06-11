@@ -162,25 +162,24 @@
   whole-boundary shape 自己恢复 subview，closed-loop traversal / tile-shape search 归 R3.2h。
 - R3.2f SPM memory planning 的 planned offset fact 不属于 `#wafer.memory<spm, layout>` 本身，
   也不属于 logical `wafer.placement.map`。planning fact 当前挂在 SPM `memref.alloc` 的 `wafer.spm.offset`
-  attr 上，值为 `#wafer.spm_offset<offset, size, alignment, bank_begin, bank_limit>`；arena
-  作用域是单个 `wafer.tile.region`，不同 tile-region 可以复用相同 offset。`size` 必须来自
-  `computeWaferPhysicalTensorInfo(memrefType).physicalBytes`，所以 `Cx/NCx` padding、C0 tail/fold
-  和 256B bank alignment 都进入 footprint。当前 V0 对 instruction-level IR 建立可重算的
+  attr 上，值为 `#wafer.spm_offset<offset>`；arena 作用域是单个 `wafer.tile.region`，不同 tile-region
+  可以复用相同 offset。`size`、alignment 和 bank span 必须由
+  `computeWaferPhysicalTensorInfo(memrefType)`、target policy 和 offset 重算，所以 `Cx/NCx` padding、
+  C0 tail/fold 和 256B bank alignment 都进入 footprint。当前 V0 对 instruction-level IR 建立可重算的
   region-aware lifetime dataflow：base/view-like alias 共享 root ref，`scf.if` 用互斥 path condition
   判断 branch reuse，`scf.for` 对 iter_args/yield/backedge 延伸 loop-carried lifetime，async issue
   的 SPM operand 通过 `!async.token` 延伸到 wait/drain use。offset 搜索使用
   pressure-weighted offline packing：physical size 大、conflict pressure 高、lifetime span 长的 demand
   先放置，再在合法 gap 中选最低 offset；搜索 trace、priority weight 和未接受 offset 不写进 IR。
 - R3.2g DDR memory planning 不是 external DMA validation 的别名。compiler-managed DDR demand 由 DDR
-  `memref.alloc` 上的 `wafer.ddr.requirement = #wafer.ddr_requirement<alignment, intent>` 表达；
-  accepted fact 写回同一个 alloc 的 `wafer.ddr.range =
-  #wafer.ddr_range<offset, size, alignment, lifetime_begin, lifetime_end, intent>`。external function
-  argument 不分配 offset，但 R3.2g 会写 `wafer.ddr.access =
-  #wafer.ddr_access<root_bytes, max_access_end, intent>` 供后续 runtime binding 校验。DDR planner 复用
-  SPM 同类 structured lifetime dataflow：view-like alias、tile-region boundary arg、`scf.if`
-  path condition、`scf.for` iter_args/yield/backedge 和 async token 都从 IR 结构重算；offset 搜索在
-  default DDR arena 中做 pressure-weighted first-fit，只有 lifetime 证明不重叠时才复用。runtime
-  allocation object、physical address、packet/ABI 字段仍属于 R3.5+，不能塞进 R3.2g attr。
+  `memref.alloc` 本身表达；accepted fact 写回同一个 alloc 的 `wafer.ddr.offset =
+  #wafer.ddr_offset<offset>`。external function argument 不分配 offset，也不写 access summary attr；
+  runtime binding requirement 由 R3.5 从 committed descriptors / placed IR 重算或在 runtime/launch 层
+  materialize。DDR planner 复用 SPM 同类 structured lifetime dataflow：view-like alias、tile-region
+  boundary arg、`scf.if` path condition、`scf.for` iter_args/yield/backedge 和 async token 都从 IR
+  结构重算；offset 搜索在 default DDR arena 中做 pressure-weighted first-fit，只有 lifetime 证明不重叠
+  时才复用。runtime allocation object、physical address、packet/ABI 字段仍属于 R3.5+，不能塞进
+  R3.2g attr。
 - 用户级 compiler target 名称统一为 `wafer`，Wafer IR target attr 的唯一主线 spelling 是
   `#wafer.target<wafer>`。`tx8` / `tx81` 只保留在硬件、依赖逆向和外部历史命名事实里，不能作为
   compiler target、pipeline 名称或测试 fixture 的主线命名。

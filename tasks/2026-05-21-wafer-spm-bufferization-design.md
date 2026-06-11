@@ -7,7 +7,9 @@
 2026-06-10 R3.2e 前移为 candidate DDR tile-view producer，SPM memory planning 后移为 R3.2f；
 2026-06-10 R3.2f V0 落地为 instruction-level `wafer.spm.offset` planning fact；
 2026-06-10 R3.2f lifetime dataflow 覆盖 `scf.if` / `scf.for` / async token wait；
-2026-06-11 R3.2f allocator 从 alloc-event first-fit 升级为 pressure-weighted offline packing
+2026-06-11 R3.2f allocator 从 alloc-event first-fit 升级为 pressure-weighted offline packing；
+2026-06-11 `wafer.spm.offset` 收敛为 offset-only accepted fact，size / bank span / alignment
+由 memref type、layout 和 target policy 重算
 
 本文定义 Wafer SPM bufferization、tile-local allocation 和 storage verification。它服务于
 `wafer.group` planning 的合法性搜索，也负责把 `wafer.tile.region` 中的 tile-local value
@@ -23,7 +25,8 @@ Wafer-tagged memref / `wafer.instr.*` / effects，不重复定义 instruction op
   构造 allocation input。
 - 对 instruction-level IR 做 SPM memory planning、range/end-address/alignment/bank-span verification 和 failure
   feedback。
-- 为 placement realization 提供 planned offset/range/lifetime/alias 信息。
+- 为 placement realization 提供 accepted offset；range、lifetime 和 alias 信息由当前 IR 和 helper
+  重算，不作为长期 attr 字段保存。
 
 本文不分配 DDR，不选择 physical layout，不决定 group boundary，不选择 compute/communication
 instruction selection，也不生成 runtime package。DDR source/destination range 和 bandwidth 可以作为
@@ -64,7 +67,7 @@ Pipeline position:
   计算 offset/end/bank span、alignment、lifetime/reuse、must-alias/must-not-alias、reserved range
   和 range-end verification。
 - Output artifact / IR:
-  same instruction-level IR with `wafer.spm.offset` planning facts on SPM memref definitions，或结构化
+  same instruction-level IR with offset-only `wafer.spm.offset` planning facts on SPM memref definitions，或结构化
   allocation failure reason；后续 R3.4 再把 fact materialize 成 placed memref / descriptor。
 - Downstream consumer:
   R3.2g DDR memory planning、R3.2h closed-loop candidate driver、R3.4 materialized placed storage IR，
@@ -113,7 +116,7 @@ Pipeline position:
   ownership。
 - placement realization 后的 placed memref、flat backing memref 或 Wafer address descriptor。
 - movement/materialization/compute/sync op。
-- allocation summary：offset/range、size、alignment、lifetime、alias group。
+- pass-local allocation summary：offset/range、size、alignment、lifetime、alias group。
 - hardware lowering 需要的 begin/end range 和 dtype storage size。
 
 这些输出属于 SPM / tile-region 层，不回写到 `wafer.group`。
@@ -437,17 +440,20 @@ accepted DDR planned ranges 关联到 launch metadata。
 
 不要把 `wafer.tile.region` body 已经表达的执行结构复制成全局 allocation plan attr。
 
-### 12.1 R3.2f V0 Accepted SPM Offset Fact
+### 12.1 R3.2f Accepted SPM Offset Fact
 
 R3.2f V0 在 instruction-level IR 上使用 `wafer.spm.offset` op attr 表达 SPM memory planning
 接受的 offset/range fact。该 attr 挂在定义 SPM buffer value 的 `memref.alloc` 上，值为
-`#wafer.spm_offset<offset, size, alignment, bank_begin, bank_limit>`：
+`#wafer.spm_offset<offset>`：
 
 - `offset` 是 tile-local SPM byte offset。
-- `size` 是 `computeWaferPhysicalTensorInfo(memrefType).physicalBytes`，不是 logical compact bytes。
-- `alignment` 是 allocator 接受的 byte alignment；V0 普通 allocation 默认 256B。
-- `bank_begin` / `bank_limit` 是按 256B bank-line 粒度计算的半开区间
-  `[offset / 256, ceil((offset + size) / 256))`。
+
+以下事实不写入 attr，因为它们可由当前 IR 或 target policy 稳定重算：
+
+- `size` 来自 `computeWaferPhysicalTensorInfo(memrefType).physicalBytes`，不是 logical compact bytes。
+- `alignment` 来自 target policy 和 `memref.alloc` alignment；planner 用它验证 offset，但 accepted
+  IR 不复制该输入。
+- bank span 按 256B bank-line 粒度由 `[offset / 256, ceil((offset + size) / 256))` 重算。
 
 SPM planning arena 的作用域是单个 `wafer.tile.region`，因为普通 SPM window 是 tile-local。不同
 tile-region 可以使用相同 offset；同一个 tile-region 内的 SPM allocation 必须在 accepted
@@ -488,7 +494,8 @@ offset 选择仍保持 deterministic bounded search：只在当前 assigned inte
 `wafer.spm.offset`。后续若要引入 graph coloring、ILP、schedule-aware double buffering 或
 bank-aware coloring，必须继续保持 same input/output IR contract，只改变 analysis / search。
 
-`wafer.spm.offset` 是 planning fact，不是搜索 trace。失败原因仍通过 pass diagnostic 返回，
+`wafer.spm.offset` 只保存 accepted offset，不保存 size、alignment、bank span、lifetime 或搜索 trace。
+失败原因仍通过 pass diagnostic 返回，
 不写进 IR；rejected/candidate offset、lowest-gap 探索过程和 repair suggestion 都保持为 analysis。
 
 ## 13. Verifier
