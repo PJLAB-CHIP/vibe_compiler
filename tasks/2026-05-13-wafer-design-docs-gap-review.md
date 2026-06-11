@@ -78,7 +78,7 @@ host/runtime 的主分层，旧 `Tsm*` 只是兼容和证据层。
   device/memory/stream/event/module/kernel/model/graph/rank/tile/P2P。
 - HPGR model/module completion 由 command-slot completion、async receive thread、
   module `completeSignal` 和 stream wait 表达。
-- KMD/UAPI 负责 `/dev/accel/dev-N`、BO（buffer object）、jobs、NPU tile memory、C2C、log、device
+- KMD/UAPI 负责 `/dev/accel/dev-N`、runtime allocation object、jobs、NPU tile memory、C2C、log、device
   info、driver topo、driver-level DTE ioctl、BAR/ATU 和 firmware loading。
 - KMD compute fence 在当前 driver snapshot 中 MHU doorbell 后直接 signal，不代表
   model/kernel 已完成。
@@ -115,9 +115,9 @@ SPM/layout 和 communication plan，没有把 host runtime 实际交付路径写
 
 最新 `firmware_kuiper` 还要求 package 设计区分 host/driver 地址空间：
 
-- KMD BO pools 包括 `NPU_BIN`、`VISIBLE`、`NPU_NORMAL`、`VISIBLE_EXTENDED`、`LOG`，
+- KMD runtime allocation resources 包括 `NPU_BIN`、`VISIBLE`、`NPU_NORMAL`、`VISIBLE_EXTENDED`、`LOG`，
   不能把 device memory 当成单一平坦空间。
-- small-BAR 情况 visible BO device address 会加 BAR2 device offset
+- small-BAR 情况 host-visible runtime allocation device address 会加 BAR2 device offset
   `0x1F6000000`。
 - Kcore 每 tile 固定 109MiB firmware slot，Score0/Score1 跟在 16 个 Kcore slot 后。
 - PG/bad-tile 需要进入 placement metadata；不能默认 16 tile 全好。
@@ -350,8 +350,8 @@ issue/drain、communication wait 和 group barrier 应在 `wafer.tile.region` �
 ## 12. 硬件资源模型已分层承接
 
 当前边界：group planner 只保留 abstract resource demand；SPM 文档承接 tile-local
-buffer/lifetime/range，DDR 文档承接 external binding、workspace BO、constant residency、
-pool/domain、capacity 和 bandwidth，compute 文档承接 CT/NE/RDMA/WDMA/TDMA issue family，
+buffer/lifetime/range，DDR 文档承接 external binding、workspace runtime allocation、constant residency、
+default DDR arena resource、capacity 和 bandwidth，compute 文档承接 CT/NE/RDMA/WDMA/TDMA issue family，
 comm 文档承接 DTE/FSM/packet/stream resource class。R1.2 已把局部 tiling/layout/materialization/
 resource interface 做成 verifier 和单测可查询的实现；剩余工作是让 group planner、SPM allocation /
 DDR memory planning 和 lower-level resource allocator 全量消费这些合同。
@@ -361,12 +361,12 @@ DDR memory planning 和 lower-level resource allocator 全量消费这些合同�
 - SPM tensor buffer：input/output/intermediate/psum/scratch。
 - SPM communication buffer：DTE send/recv staging。
 - reserved SPM slots：barrier/sync/debug/message ring。
-- DDR external binding、compiler workspace、resident constant、visible/control BO、pool/domain、
+- DDR external binding、compiler workspace、resident constant、host-visible/control runtime allocation、default DDR arena resource、
   largest contiguous range 和 bandwidth/range conflict。
 - NCC queues：CT、NE、RDMA、WDMA、TDMA。
 - NCC worker：`worker_id`、per-worker queue、per-worker local drain。
 - DTE nodes：normal/high-performance、FSM id、packet id、stream id。
-- host runtime resources：device allocation、BO pool、bootparam buffer、dyn data buffer。
+- host runtime resources：device allocation、runtime allocation resource、bootparam buffer、dyn data buffer。
 - profiling resources：PMU record buffer、D_PROF_CFG TLV。
 
 多 worker 需要谨慎：静态证据只确认 3 个 worker register window 和

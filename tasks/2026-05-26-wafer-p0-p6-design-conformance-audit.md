@@ -32,7 +32,7 @@ group/tiling。旧 PyTorch/XLA post-SPMD export 测试入口已删除；它不�
 - tile/layout/SPM/DDR 已实现完整 placed instruction-level program。
 - C ABI 已 lower 到真实 `wafer_*` call / wrapper / packet。
 - package manifest 由当前 `wafer-opt` lowering 输出自动生成。
-- runtime adapter、BO binding、completion 和板端数值验证已实现。
+- runtime adapter、runtime allocation binding、completion 和板端数值验证已实现。
 
 ## 分层审计
 

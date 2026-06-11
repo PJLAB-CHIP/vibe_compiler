@@ -247,7 +247,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - `wafer.group` planner 需要 closed-loop search：tile shape、op tiling interface、layout materialization、
   SPM allocation、DDR demand/bandwidth、compute/movement legality 都要作为同一候选的 decision input。
 - layout materialization 是真实 movement；SPM allocator 要用 liveness/effect/range/end-address；
-  DDR 要有 external binding、workspace、resident constant、pool/domain/capacity/bandwidth。
+  DDR 要有 external binding、workspace、resident constant、default DDR arena resource/capacity/bandwidth。
 - C ABI gate 要固定 `wafer_*` 参数单位和 wait policy，并通过 wrapper/golden packet 覆盖；package 要来自
   当前 lowering 输出。
 
@@ -272,7 +272,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - group formation、root tile planning、SPM allocation、DDR demand 和 ring collective lowering 的旧
   unit pass 已删除；后续必须从真实 program chain 恢复 closed-loop planner / resource planning。
 - SPM/DDR 仍未基于完整 interface demand、async lifetime、placed instruction-level IR / placed memref / access descriptor、
-  workspace、resident constants、pool/domain、bandwidth 或 runtime binding 建立主线实现。
+  workspace、resident constants、default DDR arena resource、bandwidth 或 runtime binding 建立主线实现。
 - C ABI 仍只有 descriptor builder / stub 工具覆盖，尚未从 placed instruction-level IR 生成真实
   `wafer_*` call、LLVM lowering 或 wrapper-to-register golden packet。
 - fixed manifest emitter 已删除；IR-derived package manifest 仍未由当前 `wafer-opt` output 自动导出。

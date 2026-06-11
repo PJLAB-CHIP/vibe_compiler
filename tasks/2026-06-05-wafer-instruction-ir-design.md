@@ -19,7 +19,7 @@ R3.2d.4 static movement descriptor splitting / packing 已落地；2026-06-10 �
 - `Cx/NCx` 不使用 MLIR memref layout slot，也不实现为 `MemRefLayoutAttrInterface`。MLIR memref
   layout slot 仍只用于 MLIR 能按 affine / strided 语义解释的普通 layout。
 - 不引入 `wafer.physical_view`、`!wafer.physical_memref`、side descriptor value、SPM offset、DDR
-  allocation policy、raw packet 或 C ABI call。
+  DDR planning result、raw packet 或 C ABI call。
 
 `wafer.instr` 的作用是把 target-abstract tile-region op 变成可执行硬件动作，并让下游能从
 memref SSA、Wafer memory attr、op operands、attrs、MemoryEffects 和显式 drain 直接推导 placement
@@ -88,7 +88,7 @@ Pipeline position:
   `--wafer-convert-tile-region-to-instr` 只作为 lit/debug pass 入口。
 - Explicit non-goals:
   不新增第二套 storage/buffer IR，不决定 group boundary、tile shape、layout assignment、SPM offset、
-  DDR allocation policy、raw register packet field、Tsm wrapper call、C ABI symbol 或 launch ABI。
+  DDR planning result、raw register packet field、Tsm wrapper call、C ABI symbol 或 launch ABI。
   DTE、CSR 和 SCALAR 不进入普通 `wafer.instr` issue path。
 - Completion gate:
   对 R3.2c 已支持的 load/store、静态可证明 layout materialize、fill、GEMM、
@@ -279,7 +279,7 @@ memref 替换原 op result 的 uses。
 - SPM offset、range、bank span 由 R3.2f 写入，或在 R3.4 realization 降成 placed memref /
   address descriptor。
 - RDMA/WDMA 的 DDR side 使用 `memref<..., #wafer.memory<ddr, layout>>`；DDR memory planning stage 负责
-  external allocation contract、pool/domain、compiler-managed allocation 和 constant residency。
+  external allocation contract、default allocatable arena resource、compiler-managed requirement 和 constant residency。
 
 R3.2d 只 materialize **unplaced logical descriptor facts**：byte count、stride/iteration、op kind、
 reduction dimensions、GEMM dimensions、elementwise kind 等。这些字段能从当前 IR type、attrs 和
@@ -504,7 +504,7 @@ diagnostics to the closed-loop planner or debug pass, but rejected instruction I
   legalized under the same instruction conversion rules.
 - NE GEMM dimension attrs cannot be derived from operand/result types and optional batch attrs.
 - reduce `dimensions` cannot map to supported native reduce dimension encoding.
-- any source op that would require DTE/CSR/SCALAR, raw packet fields, SPM offset, DDR allocation policy or
+- any source op that would require DTE/CSR/SCALAR, raw packet fields, SPM offset, DDR planning result or
   runtime ABI call to be legal.
 
 Diagnostics should mention the source op and the missing legality fact, for example:
@@ -531,7 +531,7 @@ R3.2d verifier checks only instruction legality:
 - no SPM offset/end/bank attrs before R3.2f.
 - no DTE/CSR/SCALAR ordinary instruction op.
 
-R3.2d does **not** verify physical address range, SPM bank conflicts, DDR pool/domain capacity, runtime
+R3.2d does **not** verify physical address range, SPM bank conflicts, DDR default allocatable arena capacity, runtime
 symbol, packet bit layout or worker register window. Those checks belong to R3.2f/R3.2g/R3.4/R3.6.
 R3.2g must accept or reject the explicit DDR views and descriptors already present in this IR; it must not
 invent a separate candidate DDR plan for a later pass to complete.

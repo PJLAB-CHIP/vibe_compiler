@@ -146,7 +146,7 @@ core compiler target。
 - torch-mlir source-tree adapter 的精确 commit 仍属于后续 frontend importer 扩展；R0.3
   已先用 PyTorch/XLA 2.5 源码版本收敛 XLA/LLVM/StableHLO/Shardy 版本来源。
 - R3.7：从当前 C ABI emission metadata / launch IR 自动导出 package manifest。
-- P8：runtime adapter、BO binding 和 completion source 仍未实现。
+- P8：runtime adapter、runtime allocation binding 和 completion source 仍未实现。
 
 ## 验证
 

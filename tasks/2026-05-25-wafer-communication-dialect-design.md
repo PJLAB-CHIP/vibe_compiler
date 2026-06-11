@@ -16,7 +16,7 @@ communication plan attr，也不把 raw DTE register 字段提前写进上层 co
 
 本文只负责 device-side communication IR：tile-local collective-level op、explicit p2p steps、
 token/effect、Direct DTE 和 sync boundary。它不定义 Shardy/SPMD partition、Wafer LinalgExt-style
-tensor collective handoff、compute op legality、layout assignment、SPM allocation、DDR allocation policy、
+tensor collective handoff、compute op legality、layout assignment、SPM allocation、DDR memory planning、
 host runtime D2D/P2P ABI 或 raw non-unicast DTE packet。当前已验证 data plane 可以先使用
 fixed-size unicast Direct DTE，但 logical collective IR 的支持范围不能由当前某个 ring lowering pass
 的覆盖范围反向决定；只要硬件通信能力可组合表达，IR 就应保留对应语义事实。
@@ -318,7 +318,7 @@ schedule、resource allocation 和 package/runtime metadata。
   communication schedule 搜索，而不是生成等待下游修复的 comm IR。
 - 如果 selected protocol 使用 DDR-backed staging、host/runtime D2D/P2P path 或 DDR2DDR helper，
   对应 source/destination 必须作为 `#wafer.memory<ddr, *>` demand 进入 DDR memory planner。`wafer.tile.*` communication 不保存
-  DDR pool/domain、compiler-managed DDR allocation 或 visible allocation attr；它只通过 buffer type、byte count、effect
+  DDR default allocatable arena resource、compiler-managed DDR requirement 或 visible allocation attr；它只通过 buffer type、byte count、effect
   和 token/wait 暴露需求。
 - DTE 读取 NCC 产物前需要 local drain；DTE 写入后 compute 消费前需要 comm wait。两者都应通过
   effect/token/verifier 检查。
@@ -363,8 +363,8 @@ P2P-level verifier：
 
 - peer 是单个 active physical tile；当前 Direct DTE compiler path 只允许 fixed-size unicast。
 - send source 和 recv destination 是 SPM tile-local storage 或 lowerable descriptor。
-- 若 selected protocol 使用 `#ddr` endpoint，descriptor 必须满足 DDR memory plan 的 pool/domain、
-  range、alignment 和 ownership contract。
+- 若 selected protocol 使用 `#ddr` endpoint，descriptor 必须满足 DDR memory plan 的 default allocatable arena
+  resource、range、alignment 和 requirement contract。
 - byte count 与 buffer slice/storage representation 一致。
 - token wait 支配后续消费或 reuse；async lifetime 被 SPM allocation 看到。
 - no raw non-unicast field；no hidden DTE id/FSM id attr before resource allocation layer。

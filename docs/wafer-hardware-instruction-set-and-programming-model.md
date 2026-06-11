@@ -25,7 +25,7 @@
 | Direct DTE 文档 | `docs/official_docs/Kcore Direct DTE编程使用文档.pdf` | DTE/FSM 编程模型、同步方式、DTE 资源约束 | 高 |
 | Runtime 文档 | `docs/official_docs/系统软件NpuRuntime调度方案.pdf`, `docs/official_docs/c-intrisic.pdf`, `docs/official_docs/HostRuntime支持C-Intrisic调度.pdf`, `docs/official_docs/Tx81-工具链Triton及Kcore固件升级方案.pdf` | Host/AP/Kcore 调度、cluster kernel、ringbuffer、C-intrinsic 模型 | 中高 |
 | TX8 逆向合同 | `docs/tx8-deps-reverse-engineering/tx8-interface-contract.md` | `tx8_deps` 静态反汇编后的接口语义、MMIO surface、runtime/driver 行为、DTE/stream/mailbox/PMU、bootparam/TLV | 高；当旧公开资料与反汇编口径冲突时，以该合同和 register-level spec 为准 |
-| Firmware Kuiper SDK 逆向 | `docs/tx8-deps-reverse-engineering/firmware-kuiper-runtime-hardware-analysis.md` | HPGR runtime、KMD UAPI、BO/BAR/ATU、driver DTE/C2C、PG、completion 语义、系统工具、固件加载 | 高；host runtime/driver/地址空间/PG 以该文档和 KMD 源码为准 |
+| Firmware Kuiper SDK 逆向 | `docs/tx8-deps-reverse-engineering/firmware-kuiper-runtime-hardware-analysis.md` | HPGR runtime、KMD UAPI、runtime allocation/BAR/ATU、driver DTE/C2C、PG、completion 语义、系统工具、固件加载 | 高；host runtime/driver/地址空间/PG 以该文档和 KMD 源码为准 |
 | TXDA PyTorch wheel 逆向 | `docs/tx8-deps-reverse-engineering/txda-pytorch-runtime-wheel-analysis.md` | PyTorch `PrivateUse1` eager backend、`tx_runtime`/`txdnn` 依赖、stream/event host 语义 | 中；只作为 eager/runtime integration 线索，不作为硬件 ISA 或 SPM layout 依据 |
 | 指令定义 | `/root/dlc_dev/tx8_deps/include/instr_def.h` | register packet、opcode enum、`Data_Format`，以及 `Tensor_Fmt` 等 public enum 的存在性 | 高；具体表格放 register-level spec，`Tensor_Fmt` 不作为 Wafer layout 模型 |
 | C intrinsic adapter | `/root/dlc_dev/tx8_deps/include/instr_adapter_plat.h`, `instr_adapter.h`, `instr_operator.h` | public intrinsic API、地址边界、`TsmExecute` 入口 | 高；具体 wrapper 表放 register-level spec |
@@ -86,9 +86,9 @@ runtime/compiler 需要当作硬件 surface 的部分。公开 PDF 中只给出�
 | --- | --- |
 | tile memory ioctl | `TSM_NPU_GET/SET_TILE_MEM` 只允许访问每 tile 前 3MiB SPM，且 tile 必须在 good bitmap 中 |
 | tile register window | KMD 按 `0x800000` 间隔组织 tile register group；logic id/phy id/chip id 位于 `0x6A0058/0x6A005C/0x6A0064` |
-| BAR2 visible | small-BAR 情况映射 32MiB，visible BO 的 device address 会加 KMD 的 BAR2 device offset `0x1F6000000` |
+| BAR2 visible | small-BAR 情况映射 32MiB，host-visible runtime allocation 的 device address 会加 KMD 的 BAR2 device offset `0x1F6000000` |
 | BAR4/ATU | inbound ATU 覆盖 MHU、NPU tile window、C2C、DDR controller、VPU、SYS_CTRL、log descriptor 等硬件 aperture |
-| BO pools | `NPU_BIN`、`VISIBLE`、`NPU_NORMAL`、`VISIBLE_EXTENDED`、`LOG` 是不同 pool；不能把 runtime device memory 视为单一平坦空间 |
+| runtime allocation paths | KMD/HPGR 对 executable、host-visible、normal device allocation、log/control metadata 有不同 runtime path；这些是 runtime mapping evidence，不是 Wafer compiler DDR planning attr |
 | Kcore/Score 固件槽 | Kcore 每 tile 固定 109MiB slot，Score0/Score1 跟在 16 个 Kcore slot 后；KMD 用 tile-good bitmap 启动 active cores |
 | stream mapping table | KMD 把 32-card tile mapping table 复制到 `0x17F000000`，再通过 KIQ 通知 firmware |
 
@@ -118,7 +118,7 @@ runtime/compiler 需要当作硬件 surface 的部分。公开 PDF 中只给出�
 | 层 | 当前结论 | Wafer 侧处理 |
 | --- | --- | --- |
 | HPGR `tx_runtime` | `firmware_kuiper/kuiper/include/tx_runtime.h` 与 `libhpgr.so` 暴露真实 CUDA-like runtime：device/memory/stream/event/module/kernel/model/graph/rank/tile/P2P。HPGR model/module completion 通过 command slot completion、async receive thread、`completeSignal` 和 stream command wait 表达 | host runtime adapter 的主目标；compiled model/stream/event 语义优先按 HPGR 建模 |
-| KMD/UAPI | `/dev/accel/dev-N`、`/dev/accel_drv_mgr` 提供 BO、jobs、NPU tile mem、C2C、log、device info、driver topo、driver-level DTE ioctl。KMD compute fence 在当前 driver 中 MHU doorbell 后直接 signal，不代表设备完成 | 不把 KMD compute fence 当 model/kernel completion；需要 HPGR/AP/Kcore completion 协议或显式 sync |
+| KMD/UAPI | `/dev/accel/dev-N`、`/dev/accel_drv_mgr` 提供 runtime allocation、jobs、NPU tile mem、C2C、log、device info、driver topo、driver-level DTE ioctl。KMD compute fence 在当前 driver 中 MHU doorbell 后直接 signal，不代表设备完成 | 不把 KMD compute fence 当 model/kernel completion；需要 HPGR/AP/Kcore completion 协议或显式 sync |
 | VS/旧 `Tsm*` runtime | `libvs_runtime.so` 桥接部分 HPGR API，但 `TsmLaunch/TsmLaunchPg/TsmAsyncRun/TsmDeviceSynchronize` 等路径在当前构建中是 stub/no-op success；D2D/P2P TLV 仍有 DTE 证据价值 | 只作为兼容层和 DTE TLV 证据；不要作为 correctness fence 或最终 ABI |
 
 逆向 `libtx8_runtime.so` 后，HostRuntime 不能只按公开 runtime PDF 理解。

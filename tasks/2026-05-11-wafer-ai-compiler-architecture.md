@@ -85,19 +85,20 @@ memref<64x256xf16, #wafer.memory<spm, cx>>
 memref<64x256xf16, #wafer.memory<ddr, tensor>>
 ```
 
-`#wafer.memory<space, layout>` 是统一的 addressable storage domain + physical layout marker。
+`#wafer.memory<space, layout>` 是统一的 addressable storage space + physical layout marker。
 V0 至少区分：
 
 - `#wafer.memory<spm, *>`：tile-local SRAM，由 SPM bufferization / allocator 负责容量、
   lifetime、range 和 reuse。
-- `#wafer.memory<ddr, *>`：device/global DDR 或 host-visible device buffer 的目标侧地址空间，
-  由 DDR memory planning、launch/runtime/package、buffer object pool 和 bandwidth/cost model 负责。
+- `#wafer.memory<ddr, *>`：device/global DDR 的目标侧地址空间，由 DDR memory planning
+  验证显式 view/range/resource demand；launch/runtime/package 负责把已接受的 requirement
+  映射到运行时分配对象。
 
 SPM allocator 只分配 `spm` buffer，不代表 IR 里没有 `ddr`。RDMA/WDMA、host-visible input/output、
-constant load 和 runtime buffer object 都应通过同一套 memory-space / effect / verifier 体系表达
-source/destination address domain；差别在于资源 owner、allocation policy 和 lowering 层级不同。
-DDR 的容量、pool/domain、visible BAR、compiler-managed allocation、external allocation、constant residency 和
-bandwidth 设计见 `tasks/2026-05-25-wafer-ddr-memory-planning-design.md`。
+constant load 和 runtime allocation object 都应通过同一套 memory-space / effect / verifier 体系表达
+source/destination address space；差别在于 resource requirement、owner 和 lowering 层级不同。
+DDR 的 default allocatable arena、view/range、compiler-managed requirement、external allocation、
+constant residency 和 bandwidth 设计见 `tasks/2026-05-25-wafer-ddr-memory-planning-design.md`。
 
 `Tensor_Fmt` 不能作为 compiler layout 模型。layout conversion 是真实 data movement，不是
 metadata reshape；它先在合适层级表达成 `wafer.tile.materialize_layout` 或等价 movement op，再由
@@ -486,7 +487,7 @@ contract、collective lowering 和 verifier 见
 边界、参数和 runtime metadata；后者表达 device-side tile-local execution scope。`wafer.launch`
 也不回头承载 tensor fusion、traversal selection 或 group planner 的中间计划。
 
-Runtime/package 的 package 内容、HPGR/KMD/legacy `TsmRun` 分层、buffer object allocation/import、
+Runtime/package 的 package 内容、HPGR/KMD/legacy `TsmRun` 分层、runtime allocation/import mapping、
 legacy bootparam/TLV 和 completion/stub shielding 合同见
 `tasks/2026-05-25-wafer-launch-runtime-package-design.md`。C ABI 到 wrapper/golden packet 的细节见
 `tasks/2026-05-25-wafer-c-abi-golden-packet-design.md`。
@@ -662,7 +663,7 @@ WaferRuntimeAdapter cluster launch
 | `wafer.group` | group formation legality、traversal schedule、tiled tensor IR、tile-local demand diagnostics、Transform dump/replay |
 | `wafer.tile.region` | region verifier、memory/effect ownership、movement/compute/sync ordering、liveness diagnostics |
 | Layout materialization | physical layout propagation、aligned-only op legality、`#wafer.memory<ddr, tensor>` compact external boundary、materialization placement diagnostics |
-| DDR memory planning | external allocation、compiler-managed allocation、resident constant、pool/domain、capacity、bandwidth/range diagnostics |
+| DDR memory planning | explicit DDR view/range/descriptor、external allocation requirement、compiler-managed requirement、resident constant、default allocatable arena capacity、largest-contiguous/bandwidth diagnostics |
 | `wafer.spm` | Wafer memory attr、liveness、Cx/NCx C0 tail/fold、256B padding、bool bitpack、SPM range/reserved-slot diagnostics |
 | `wafer.tile.*` compute | 对已支持 op 建 wrapper golden packet，例如 CT unary/binary、NE GEMM、RDMA/WDMA contiguous end-address、DMA stride byte-unit 和 `iteration - 1` |
 | `wafer.tile.*` communication | Direct DTE unicast send/recv/wait、packet counter update word、FSM resource allocation、raw non-unicast V1 禁用诊断 |
@@ -905,12 +906,12 @@ V0 先保持统一 `wafer` dialect namespace，但公开 op mnemonic 只保留�
 | `wafer.group` | `tasks/2026-05-12-wafer-group-design.md` | 草案 | group boundary、traversal schedule、tiled tensor IR、tile-local resource demand | SPM offset、physical layout marker、DTE resource、runtime package |
 | `wafer.tile.region` | `tasks/2026-05-25-wafer-tile-region-design.md` | 草案 | bufferized tile-local execution scope、memory/effect ownership、movement/compute/sync ordering | tensor fusion、traversal selection、host launch/package ABI |
 | Layout materialization | `tasks/2026-05-21-wafer-layout-materialization-design.md` | 草案 | physical layout domain、op layout constraint、constant storage transform、materialization placement/cost | SPM address、packet field、group fusion |
-| SPM bufferization | `tasks/2026-05-21-wafer-spm-bufferization-design.md` | 草案 | `#wafer.memory<spm, *>` demand、liveness、range/alignment、allocation、placement realization input | DDR buffer object allocation、collective algorithm、host launch |
+| SPM bufferization | `tasks/2026-05-21-wafer-spm-bufferization-design.md` | 草案 | `#wafer.memory<spm, *>` demand、liveness、range/alignment、allocation、placement realization input | DDR allocation mapping、collective algorithm、host launch |
 | Compute / movement | `tasks/2026-05-25-wafer-compute-dialect-design.md` | 草案 | target-abstract compute/move op、layout/resource interface、instruction legality、issue/drain | tensor fusion、global sharding、host package format |
-| Instruction IR | `tasks/2026-06-05-wafer-instruction-ir-design.md` | 草案 | `wafer.instr.*`、Wafer-tagged memref graph、issue family、memref read/write/issue effect | SPM offset、DDR allocation policy、raw packet、C ABI call、重复 storage IR |
+| Instruction IR | `tasks/2026-06-05-wafer-instruction-ir-design.md` | 草案 | `wafer.instr.*`、Wafer-tagged memref graph、issue family、memref read/write/issue effect | SPM offset、DDR allocation mapping、raw packet、C ABI call、重复 storage IR |
 | Communication | `tasks/2026-05-25-wafer-communication-dialect-design.md` | 草案 | tile_region / SPM materialization 之后的 collective-level op、p2p schedule、Direct DTE V0、token/effect、sync boundary | compute op legality、SPM allocator internals、SPMD tensor collective handoff |
-| DDR memory planning | `tasks/2026-05-25-wafer-ddr-memory-planning-design.md` | 草案 | `#wafer.memory<ddr, *>` demand、external/runtime allocation policy、resident constant、buffer object pool/domain、capacity/bandwidth | tensor fusion、SPM offset、packet bitfield |
-| Launch / runtime package | `tasks/2026-05-25-wafer-launch-runtime-package-design.md` | 草案 | `wafer.launch`、HPGR/KMD/legacy Tsm 分层、completion、buffer object pools、bootparam/TLV、package metadata | Linalg tiling、group formation、tile-local ordering |
+| DDR memory planning | `tasks/2026-05-25-wafer-ddr-memory-planning-design.md` | 草案 | `#wafer.memory<ddr, *>` demand、explicit view/range/descriptor、default allocatable arena capacity/largest-contiguous/bandwidth、external/compiler-managed/resident requirement | tensor fusion、SPM offset、packet bitfield |
+| Launch / runtime package | `tasks/2026-05-25-wafer-launch-runtime-package-design.md` | 草案 | `wafer.launch`、HPGR/KMD/legacy Tsm 分层、completion、runtime allocation objects、bootparam/TLV、package metadata | Linalg tiling、group formation、tile-local ordering |
 | C ABI / golden packet | `tasks/2026-05-25-wafer-c-abi-golden-packet-design.md` | 草案 | placed instruction-level Wafer IR 到 C ABI / packet emission 的参数单位、wait policy、golden packet | 上层 IR formation、layout search 和 SPM memory planning |
 | Verification plan | `tasks/2026-05-25-wafer-verification-plan-design.md` | 草案 | stage diagnostics、roundtrip、golden packet、runtime shielding、PMU/cost-model gate | 替代各 dialect 语义设计 |
 | Serving integration | 暂不支持 | 延后 | graph capture、prefill/decode、KV cache 管理 | compiler core IR 合同 |

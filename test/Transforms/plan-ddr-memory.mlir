@@ -1,6 +1,7 @@
 // RUN: wafer-opt --wafer-plan-ddr-memory %s | FileCheck %s
 // RUN: not wafer-opt --wafer-plan-ddr-memory='ddr-capacity-bytes=64' %s 2>&1 | FileCheck --check-prefix=CAPACITY %s
 // RUN: not wafer-opt --wafer-plan-ddr-memory='ddr-bandwidth-limit-bytes=20' %s 2>&1 | FileCheck --check-prefix=BANDWIDTH %s
+// RUN: not wafer-opt --wafer-plan-ddr-memory='ddr-capacity-bytes=-1' %s 2>&1 | FileCheck --check-prefix=BAD-LIMIT %s
 
 func.func @plan_external_strided_views(
     %input: memref<4x8xf16, #wafer.memory<ddr, tensor>>,
@@ -50,5 +51,6 @@ func.func @plan_external_strided_views(
 // CHECK-SAME: dst_strides = array<i64: 16, 0, 0>
 // CHECK-SAME: inner_bytes = 6 : i64
 
-// CAPACITY: pool_capacity_overflow
+// CAPACITY: memory_capacity_overflow
 // BANDWIDTH: bandwidth_pressure_too_high
+// BAD-LIMIT: invalid_ddr_resource_limit

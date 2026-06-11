@@ -146,37 +146,18 @@ getDescriptorLocalEnd(mlir::Operation *op,
   return end;
 }
 
-static mlir::LogicalResult verifyPoolAndDomain(mlir::Operation *op,
-                                               mlir::Value root) {
+static mlir::LogicalResult verifyDDRRoot(mlir::Operation *op,
+                                         mlir::Value root) {
   mlir::Operation *def = root.getDefiningOp();
   if (!def)
     return mlir::success();
-
-  if (auto pool =
-          def->getAttrOfType<MemoryPoolAttr>(kWaferMemoryPoolAttrName)) {
-    MemoryPool value = pool.getValue();
-    if (value == MemoryPool::NPUBin || value == MemoryPool::Log)
-      return op->emitError()
-             << "unsupported_domain_or_pool: ordinary DDR tensor allocation "
-                "cannot use "
-             << stringifyMemoryPool(value) << " pool";
-  }
-
-  if (auto domain =
-          def->getAttrOfType<MemoryDomainAttr>(kWaferMemoryDomainAttrName)) {
-    MemoryDomain value = domain.getValue();
-    if (value != MemoryDomain::LocalDRAM && value != MemoryDomain::RemoteDRAM)
-      return op->emitError()
-             << "unsupported_domain_or_pool: unsupported DDR domain "
-             << stringifyMemoryDomain(value);
-  }
 
   if (mlir::isa<mlir::memref::AllocOp>(def) &&
       isWaferDDRMemRefType(root.getType()))
     return op->emitError()
            << "unsupported_compiler_managed_ddr: compiler-managed DDR "
               "allocation requires explicit owner, lifetime and "
-              "suballocation requirement interface";
+              "range requirement interface";
 
   return mlir::success();
 }
@@ -223,7 +204,7 @@ static mlir::FailureOr<DDRView> resolveDDRView(mlir::Operation *op,
     return op->emitError()
            << "range_end_overflow: DDR view byte offset overflows int64";
 
-  if (mlir::failed(verifyPoolAndDomain(op, root)))
+  if (mlir::failed(verifyDDRRoot(op, root)))
     return mlir::failure();
 
   return DDRView{root,
@@ -292,11 +273,11 @@ static mlir::LogicalResult verifyResourceLimits(mlir::Operation *op,
              << largestContiguousBytes;
     if (!checkedAdd(totalRootBytes, rootBytes, totalRootBytes))
       return op->emitError()
-             << "pool_capacity_overflow: DDR root byte sum overflows";
+             << "memory_capacity_overflow: DDR root byte sum overflows";
   }
 
   if (totalRootBytes > capacityBytes)
-    return op->emitError() << "pool_capacity_overflow: DDR root demand "
+    return op->emitError() << "memory_capacity_overflow: DDR root demand "
                            << totalRootBytes << " exceeds capacity "
                            << capacityBytes;
 
@@ -368,7 +349,7 @@ struct PlanDDRMemoryPass
     if (ddrCapacityBytes < 0 || ddrLargestContiguousBytes < 0 ||
         ddrBandwidthLimitBytes < 0) {
       getOperation()->emitError()
-          << "unsupported_domain_or_pool: DDR resource limits must be "
+          << "invalid_ddr_resource_limit: DDR resource limits must be "
              "non-negative";
       signalPassFailure();
       return;

@@ -51,11 +51,11 @@ Serving integration 暂不纳入本文通过标准。
 | `wafer.tile.region` | scheduled group | region boundary、effect、load/store、async wait/drain、buffer ownership 合法 |
 | Layout | tile region | layout assignment、materialization cut、冗余 conversion cleanup 合法 |
 | SPM | tile region + demands | allocation、range/end-address、lifetime、reserved range 合法 |
-| DDR | tile region + launch boundary | external binding、workspace/constant demand、pool/domain/capacity 合法 |
+| DDR | tile region + launch boundary | external binding、workspace/constant demand、default DDR arena resource/capacity 合法 |
 | Compute / Movement | placed instruction-level IR | wrapper family、layout、dtype、shape、issue/drain 合法 |
 | Communication | tile_region / SPM materialization 后的 collective/p2p IR | endpoint、token、DTE/FSM resource、wait policy 合法 |
 | C ABI / golden packet | lower-level Wafer ops | ABI unit/address/wait verified，golden packet 覆盖 wrapper mapping |
-| Launch/runtime | package + adapter | manifest roundtrip、buffer object binding contract、local compile/package、stub shielding 合法；板端 completion 后续有卡环境验证 |
+| Launch/runtime | package + adapter | manifest roundtrip、runtime allocation object binding contract、local compile/package、stub shielding 合法；板端 completion 后续有卡环境验证 |
 
 Gate 通过只说明进入下一层的输入合法，不说明整个 compiler 已完成。
 
@@ -212,7 +212,7 @@ M8 runtime / board correctness gate：
 - runtime adapter 必须区分真实 device completion 和已知 stub path；stub completion 不能作为
   correctness fence。
 - package 中的 tensor、workspace、constant、placement 和 per-tile launch args 必须能绑定到真实
-  BO / DDR / launch argument。
+  runtime allocation / DDR / launch argument。
 - 板端 gate 分别覆盖 single-tile compute、多 tile no-comm、p2p、ring collective、partitioned
   collective 和 full local block 的 launch、completion、错误传播和数值对比。
 - profiling 只作为后续 P9 cost model calibration 的输入，不作为 M8 correctness 通过条件。

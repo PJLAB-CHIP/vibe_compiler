@@ -5,7 +5,7 @@
 状态：设计草案；2026-05-25 边界收口；2026-05-27 补 post-SPMD tensor collective 边界；
 2026-06-03 收敛 R3.1 root-seeded logical group scope；2026-06-04 对齐
 instruction-level Wafer IR 先于 SPM memory planning；2026-06-05 对齐 memref-backed Wafer memory attr 合同；
-2026-06-08 同步 DDR memory policy 命名；2026-06-10 前移 candidate DDR tile-view producer 到 R3.2e
+2026-06-08 同步 DDR memory planning 命名；2026-06-10 前移 candidate DDR tile-view producer 到 R3.2e
 
 本文只定义 `wafer.group` 的 tensor-level grouping 和 scheduling contract。它回答：
 
@@ -16,7 +16,7 @@ instruction-level Wafer IR 先于 SPM memory planning；2026-06-05 对齐 memref
 - 哪些事实必须留给下游 `wafer.tile.region`、layout materialization、SPM/DDR memory、
   target-abstract compute/comm 和 launch/runtime。
 
-本文不定义 physical layout marker、SPM offset、DDR allocation policy、DTE protocol、C ABI、
+本文不定义 physical layout marker、SPM offset、DDR memory planning、DTE protocol、C ABI、
 runtime package 或 target instruction packet。典型 case 只用于展示 IR 形态；case 中的
 op 名、shape、tile size、reduction split 和 multi-output 关系都不是 `wafer.group` 的架构字段。
 
@@ -469,7 +469,8 @@ group 设计只规定交接合同：
   `tasks/2026-05-21-wafer-layout-materialization-design.md`。
 - physical memory planning、SPM allocator、reserved resource policy、range/alignment/coloring；
   见 `tasks/2026-05-21-wafer-spm-bufferization-design.md`。
-- DDR external allocation contract、compiler-managed allocation、constant residency、pool/domain、capacity 和 bandwidth；
+- DDR external allocation contract、compiler-managed requirement、constant residency、explicit
+  view/range、default allocatable arena capacity/largest-contiguous 和 bandwidth；
   见 `tasks/2026-05-25-wafer-ddr-memory-planning-design.md`。
 - `wafer.tile.*` compute / `wafer.dma` / `wafer.tile.*` communication / `wafer.instr.local_drain` 和后续 sync boundary 的 op contract。
 - Wafer C ABI family、wrapper 参数、issue/drain 策略和 package/runtime 格式。
@@ -537,7 +538,7 @@ logical / scheduled tensor-level `wafer.group` body 第一版应保持保守。�
   use-def、per-op tiling interface 和 explicit liveness/writeback 结构来表达。共享 traversal
   不代表共享 writeback 时机，boundary/writeback/liveness 仍要逐 result 表达。
 - `wafer.group` 上不得出现 physical address、bank、storage allocation、DTE node、worker、
-  queue、packet field、CSR、buffer object/TLV 等低层对象。
+  queue、packet field、CSR、runtime allocation object/TLV 等低层对象。
 - body 中 layout-changing、shape-changing 或 aligned-layout-only op 必须能被 layout
   propagation/verifier 覆盖。
 - body 中不得出现 raw StableHLO collective、lower-level Wafer memory / compute /
@@ -728,8 +729,8 @@ boundary placement 会改变真实需求：
   constant storage transform 可以 whole/chunked/streaming，但不能在 DDR 层引入额外 compute split。
   load/store 根据 source 和 destination layout assignment 选择 movement 实现，不是 `wafer.group`
   的 layout root。
-- DDR 不是无限外部内存：external allocation、compiler-managed allocation、resident constant、
-  visible/control buffer object、largest contiguous range、pool/domain 和 bandwidth pressure 都可能让候选 plan 失败，失败后
+- DDR 不是无限外部内存：external allocation、compiler-managed requirement、resident constant、
+  explicit view/range、default allocatable arena capacity/largest-contiguous 和 bandwidth pressure 都可能让候选 plan 失败，失败后
   planner 需要回到 group boundary、layout cut、streaming/residency policy 或 executable split。
 - Cx/NCx 的 C0 tail/fold、256B line/layout padding、bool bitpack、psum/scratch/double
   buffer、communication buffer 都会改变实际 SPM footprint。
@@ -781,8 +782,8 @@ SPM allocation、layout assignment、DDR memory demand 和 compute/movement lega
   alignment、layout padding、scratch/psum/temp、materialization temp、communication staging、
   lifetime overlap、range/end-address/bank span 和 conflict 约束下搜索可接受 memory plan。
 - R3.2g 恢复 DDR memory planning gate 和 compute/movement legality analysis：消费 memory-planned
-  instruction-level IR 和 SPM facts，覆盖 external/compiler-managed/resident-constant、bandwidth/range/
-  pool/domain，以及 op layout/dtype/shape/effect 合法性；成功即证明当前 IR 中显式表达的 DDR
+  instruction-level IR 和 SPM facts，覆盖 external/compiler-managed/resident-constant、descriptor、
+  view/root range、default allocatable arena capacity/largest-contiguous/bandwidth，以及 op layout/dtype/shape/effect 合法性；成功即证明当前 IR 中显式表达的 DDR
   demand 可规划，失败给结构化原因，不能回头改变 instruction semantics，也不能产出等待后续补全的
   DDR plan。
 - R3.2h 才能做 closed-loop candidate driver：搜索 traversal、tile shape、layout、DDR tile view、
@@ -827,7 +828,7 @@ Pipeline position:
   group IR 上 dump analysis 输出。它是调试/测试入口，不是长期 compile flow。
 - Explicit non-goals:
   不选择最终 tile shape、不 select/reject/split group、不做 layout assignment、不分配 SPM、
-  不判断 DDR pool/range/bandwidth、不 materialize compute/movement/comm op、不生成 package/ABI。
+  不判断 DDR view/range/resource、不 materialize compute/movement/comm op、不生成 package/ABI。
 - Completion gate:
   FileCheck 覆盖 linalg matmul/broadcast/elementwise、multi-group、tensor collective 和 negative
   failure reason；program pipeline gate 从真实 `stablehlo-spmd-to-group` 输出上重放 demand dump。
@@ -1022,7 +1023,7 @@ group planner 层只在 analysis 中建模抽象资源，不把完整 resource p
 
 - tile-local tensor storage：input/output/intermediate/temporary/scratch/accumulator。
 - communication storage need：若存在 send/recv staging，记录其大小和生命周期。
-- DDR memory need：external input/output allocation、inter-group tensor compiler-managed allocation、resident constant、
+- DDR memory need：external input/output allocation、inter-group tensor compiler-managed DDR requirement、resident constant、
   DDR staging、range/bandwidth pressure 和 host-visible completion 需求。
 - sync need：若存在 local visibility、remote communication wait 或 group barrier，记录同步需求。
 - compute / DMA / communication pressure：用于 cost model。
@@ -1050,7 +1051,7 @@ normalization 展开成 structured tensor IR；group 只处理 staged dataflow�
 - norm schedule：沿 hidden dimension 做 sum/avg/max 等 reduction，得到 per-token 小结果，再由
   elementwise stage 做 rsqrt、scale、bias 和 residual。若 hidden dimension 不能被一个合法
   tile/internal split 覆盖，reduction state 必须用 loop-carried SSA value 或 inter-group
-  compiler-managed allocation 显式表达。
+  compiler-managed DDR range requirement 显式表达。
 - softmax schedule：score tile 先产生 row max；第二阶段产生 exp 和 row sum；第三阶段做
   normalize 并参与 value matmul。若 key dimension 被分成多个 traversal tiles，row max、row sum
   和 output accumulation 都必须是明确 state，不允许隐藏在 planner side table。
@@ -1062,7 +1063,7 @@ normalization 展开成 structured tensor IR；group 只处理 staged dataflow�
   一个 group 取决于 SPM allocation、DDR memory planning 和 layout planning；失败时按 producer cut 或 stage cut 拆分。
 
 如果这些 staged schedule 找不到合法且成本可接受的 selected traversal domain，planner 应拆成多个
-groups，并通过 `wafer.tile.store` / `wafer.tile.load`、DDR compiler-managed allocation 或下游 communication
+groups，并通过 `wafer.tile.store` / `wafer.tile.load`、DDR compiler-managed range requirement 或下游 communication
 boundary 显式连接。不能为了让 transformer case 顺畅而把 multi-stage reduction 状态写成
 `wafer.group` attribute。
 
@@ -1077,8 +1078,8 @@ memory space 和 data movement 的 IR 层落成明确 op。layout materializatio
 从 scheduled group value 到 `wafer.tile.region` memref 的映射、`#wafer.memory<ddr, tensor>` compact external boundary、
 constant storage transform 和最小化 layout change 的策略见
 `tasks/2026-05-21-wafer-layout-materialization-design.md`；SPM allocation 见
-`tasks/2026-05-21-wafer-spm-bufferization-design.md`；DDR external allocation、compiler-managed allocation、
-resident constant、pool/domain 和 bandwidth/range cost 见
+`tasks/2026-05-21-wafer-spm-bufferization-design.md`；DDR external allocation、compiler-managed requirement、
+resident constant、default allocatable arena 和 bandwidth/range cost 见
 `tasks/2026-05-25-wafer-ddr-memory-planning-design.md`；layout-sensitive compute/movement op
 如何向 planner 暴露 hard constraint 和 preference，见
 `tasks/2026-05-25-wafer-compute-dialect-design.md`；device-side group-to-group boundary

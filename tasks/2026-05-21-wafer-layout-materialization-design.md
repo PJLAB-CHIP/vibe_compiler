@@ -19,7 +19,7 @@ lowering。
   storage transform。
 - 做 bounded group-to-group boundary co-planning 和 materialization cleanup。
 
-本文不负责 group formation、tile shape search、SPM offset allocation、DDR allocation policy、
+本文不负责 group formation、tile shape search、SPM offset allocation、DDR memory planning、
 compute/comm op 语义、launch/runtime package 或 raw instruction packet。layout planner 的中间
 constraint graph、layout alternatives、cost trace 和失败原因都是 analysis；只有 accepted buffer layout、explicit
 movement 和可 lower 的 constant storage 选择进入 IR 或 lowering 输入。
@@ -137,7 +137,7 @@ Pipeline position:
   group IR 上 dump analysis 输出。
 - Explicit non-goals:
   不选择最终 closed-loop tile shape、不 select/reject/split group、不分配 SPM、不判断
-  DDR pool/range/bandwidth、不 materialize compute/movement/comm op、不生成 package/ABI。
+  DDR view/range/resource、不 materialize compute/movement/comm op、不生成 package/ABI。
 - Completion gate:
   FileCheck 覆盖 linalg matmul/broadcast/elementwise、multi-group、tensor collective、
   materialization demand 和 unsupported tiling failure；program pipeline gate 能在真实
@@ -364,9 +364,9 @@ instruction IR 上，不进入 `wafer.group`。
 语义约定：
 
 - `spm` 是 tile-local SRAM，容量、lifetime、range 和 reuse 由 SPM bufferization 负责。
-- `ddr` 是 device/global DDR 或 host-visible device buffer 的目标侧 address space；allocation
-  policy、pool/domain、visibility 和 package ownership 由 DDR memory planning 和
-  launch/runtime/package 层负责。
+- `ddr` 是 device/global DDR 的目标侧 address space；explicit view/range、default allocatable
+  arena resource 和 package/runtime allocation mapping 由 DDR memory planning 与
+  launch/runtime/package 层分层负责。
 - `layout` 是 Wafer physical layout marker。DDR buffer 可以是 compact，也可以在 constant storage
   transform 或 device-side materialization 后带目标相关 marker；SPM buffer 同样通过这个 marker
   表达 compact 或 aligned family。
@@ -374,7 +374,7 @@ instruction IR 上，不进入 `wafer.group`。
   `wafer.tile.load` / lowering 需要 addressable device storage 时，才产生明确 memref、placed
   address/range 或 runtime/package metadata。
 
-DDR 的 pool/domain、runtime allocation policy、resident constant、capacity 和 bandwidth 不属于
+DDR 的 runtime allocation mapping、resident constant、capacity 和 bandwidth 不属于
 `#wafer.memory<space, layout>`，见
 `tasks/2026-05-25-wafer-ddr-memory-planning-design.md`。
 
@@ -958,7 +958,7 @@ materialization demand 并运行 SPM allocation。
 - `wafer.tile.materialize_layout` 都有 lowerable conversion path。
 - SPM allocation 通过，包含 materialization temp、communication staging、loop-carried value、
   async lifetime 和 range/end-address validation。
-- DDR demand / compiler-managed allocation / external allocation / bandwidth summary 可由 DDR memory planner 接受。
+- DDR demand / compiler-managed range requirement / external allocation / bandwidth summary 可由 DDR memory planner 接受。
 - cleanup 后仍能通过 layout verifier、SPM allocation 和 DDR memory planning。
 
 如果所有 bounded alternatives 都失败，layout planner 不生成“等待下游修复”的 IR，而是返回
@@ -1048,7 +1048,7 @@ V0 做 bounded adjacent co-planning，不做 full-program layout solve：
    ```
 
    summary 是 analysis，不进入 IR。`local_cost` 必须包含 group 内 materialization bytes、peak SPM
-   变化、DDR compiler-managed allocation / bandwidth pressure 和 writeback/load movement；`spm_allocation` 必须来自
+   变化、DDR compiler-managed range requirement / bandwidth pressure 和 writeback/load movement；`spm_allocation` 必须来自
    同一个 SPM allocator，`ddr_memory_plan` 必须来自 DDR memory planner。
 
 2. 建 boundary graph

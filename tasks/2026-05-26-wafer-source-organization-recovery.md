@@ -19,7 +19,7 @@ C ABI conversion 混在旧的聚合目录里。
 - 不把 interface/effect/resource 基础定义扩成 planner 可查询合同；这是 R1.2。
 - 不实现真实 importer adapter、Wafer program verifier 或 Shardy bridge；这是 R2.1/R2.2。
 - 不把专门 ABI IR op family 作为主线 IR 层 lower 到 LLVM dialect、LLVM IR、object 或真实 runtime call。
-- 不实现 launch/runtime adapter、BO binding 或板端 completion。
+- 不实现 launch/runtime adapter、runtime allocation binding 或板端 completion。
 
 ## 当前组织
 

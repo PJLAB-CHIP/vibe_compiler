@@ -37,7 +37,7 @@ SPM、DDR allocation、layout materialization、DTE、runtime package 或 launch
 非目标：
 
 - 不选择 physical tile placement。
-- 不表达 Wafer memory attr、SPM offset、buffer object pool、
+- 不表达 Wafer memory attr、SPM offset、runtime allocation resource、
   runtime handle 或 device physical address。
 - 不引入 Wafer 私有 tensor constant op。
 - 不选择 `Tensor/Cx/NCx` physical memory layout。
@@ -83,7 +83,7 @@ parameter 名手算。后续 compiler stage 不能通过文件名、parameter �
 IR 中 materialize 的 parameter/resource/ConstantLike/shard-binding 事实。若某个 stage 改变 function
 boundary、parameter shard、constant storage、layout 或 package binding，它必须同步更新同一个 Wafer
 program 的 metadata / payload，并由 verifier 检查一致性。metadata 也不描述 Wafer physical layout、
-buffer object pool、DDR address 或 package path，除非后续相应 IR 层已经 materialize 这些事实。
+runtime allocation resource、DDR address 或 package path，除非后续相应 IR 层已经 materialize 这些事实。
 
 ### 2.1 模型导入合同
 
@@ -313,7 +313,7 @@ signature 和 runtime binding contract，不等于已经分配 DDR。
 
 - 外部输入输出如果要求非 compact layout，program 必须有可验证 metadata。
 - Weight 可以在后续 compiler pass 中重排 storage，但重排结果不反向改变用户可见 tensor 语义。
-- Runtime staging、host-visible buffer object、H2D/D2H copy 由 launch/runtime 和 DDR 文档负责。
+- Runtime staging、host-visible runtime allocation object、H2D/D2H copy 由 launch/runtime 和 DDR 文档负责。
 
 ## 4. Frontend Tool / Pass 合同
 
@@ -328,7 +328,7 @@ tool / pass 名字不是架构边界，但实现上至少需要以下职责：
 | constant normalization | StableHLO constants / program parameter/resource payload | `arith.constant` / `ConstantLike` / resource binding |
 | frontend cleanup | frontend-only metadata | 后端可消费的 StableHLO module |
 
-这些 pass 不能创建 Wafer low-level op，也不能把 runtime path、buffer object pool、SPM address 或
+这些 pass 不能创建 Wafer low-level op，也不能把 runtime path、runtime allocation resource、SPM address 或
 physical layout 写进 frontend IR。
 
 所有创建或解析第三方 dialect 的 pass / tool 都必须显式注册依赖 dialect，并在构建配置里声明
@@ -364,7 +364,7 @@ V0 验证项：
 - sharding annotation import 后仍能被 Shardy verifier 接受。
 - dependency configuration test：LLVM / MLIR / StableHLO / Shardy dialect 能显式注册；可选 importer
   关闭时后端 textual tests 仍能运行。
-- `rg` / FileCheck 确认 frontend 输出中没有 Wafer SPM、DDR buffer object、DTE、packet、runtime launch
+- `rg` / FileCheck 确认 frontend 输出中没有 Wafer SPM、DDR runtime allocation object、DTE、packet、runtime launch
   语义。
 
 Frontend 验证只证明 program 可进入 compiler pipeline，不证明 tile planning、layout、SPM、

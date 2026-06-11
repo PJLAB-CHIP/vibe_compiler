@@ -92,7 +92,7 @@ selected storage layout。
 ```text
 WaferRuntimeAdapter
   -> HPGR runtime surface
-  -> KMD/UAPI services for buffer object, topology, device memory and jobs
+  -> KMD/UAPI services for runtime allocation object, topology, device memory and jobs
   -> device code launch and completion
 ```
 
@@ -100,7 +100,7 @@ WaferRuntimeAdapter
 
 - HPGR `tx_runtime.h` / `libhpgr.so` 是主 host runtime surface，覆盖 device、memory、stream、
   event、module、kernel、model、graph、rank、tile、P2P。
-- KMD/UAPI 负责 `/dev/accel/dev-N`、buffer object、jobs、NPU tile memory、C2C、log、device
+- KMD/UAPI 负责 `/dev/accel/dev-N`、runtime allocation object、jobs、NPU tile memory、C2C、log、device
   info、topology、driver-level DTE ioctl、BAR/ATU 和 firmware loading。
 - Legacy `Tsm*` / VS runtime 是兼容和证据层。
 
@@ -114,32 +114,29 @@ Legacy fallback：
 - `TsmMemcpyD2D`、`TsmSend`、`TsmRecv` 是 host runtime dyn TLV + Kcore DTE path，不等价于
   compiler inline Direct DTE。
 
-## 5. Buffer Object and DDR Binding
+## 5. Runtime Allocation and DDR Binding
 
-BO 在本文中统一写作 buffer object，避免只用缩写。Runtime package 不静态保存最终 physical
-address；它保存 allocation / binding contract，runtime 在 launch 或 module load 时执行：
+Runtime package 不静态保存最终 physical address；它保存 allocation / binding contract，runtime
+在 launch 或 module load 时执行：
 
-- allocate / import buffer object。
-- query physical address、size、pool、domain。
+- allocate / import runtime allocation object。
+- query physical address、size 和 runtime capability/resource metadata。
 - validate external input/output binding。
-- suballocate compiler workspace if required。
+- assign ranges for compiler workspace if required。
 - place resident constants or streaming constant chunks。
-
-已知 pool/domain：
-
-- `TSM_BO_LOCAL_DRAM`、`TSM_BO_REMOTE_DRAM`。
-- `TSM_BO_POOL_NPU_NORMAL`、`TSM_BO_POOL_NPU_BIN`、`TSM_BO_POOL_VISIBLE`、
-  `TSM_BO_POOL_VISIBLE_EXTENDED`、`TSM_BO_POOL_LOG`。
 
 Runtime package 必须区分：
 
 - user/runtime external input/output binding。
-- compiler workspace buffer object demand。
+- compiler workspace runtime allocation object demand。
 - read-only resident constant demand。
-- binary/log/control metadata pool。
+- executable/log/control metadata allocation。它们是 runtime/package 内部对象，不是 generic tensor
+  DDR planning arena。
 
-small-BAR visible address offset、largest contiguous range、pool capacity、alignment、runtime
-allocation failure 由 DDR 设计负责定义；launch 负责把这些失败报告到用户可理解的位置。
+KMD/UAPI 的低层分配类别只作为 runtime mapping evidence 使用；R3.2g compiler planning 只消费
+default DDR allocatable arena 的 capacity、largest contiguous range、alignment/bandwidth resource
+和显式 DDR requirement。small-BAR visible address offset、alignment、runtime allocation failure
+由 runtime/package 层在 materialization 时报告到用户可理解的位置。
 
 当前 `tools/wafer_package_manifest.py` 只负责验证和 roundtrip 显式输入的 manifest schema，不再提供
 固定 package emitter。manifest schema 记录 launch signature、placement metadata、DDR external
@@ -169,7 +166,7 @@ typedef struct {
 ```
 
 该表只把已验证的 package placement metadata materialize 成 runtime 可消费的 tile-specific
-arguments；它不反向定义 tensor semantics，也不包含 BO handle、physical DDR address、SPM offset
+arguments；它不反向定义 tensor semantics，也不包含 runtime handle、physical DDR address、SPM offset
 或 DTE packet。
 
 历史 `--emit-single-tile-matmul`、`--emit-multi-tile-no-comm-matmul`、

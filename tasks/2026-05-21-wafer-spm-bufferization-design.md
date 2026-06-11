@@ -3,7 +3,7 @@
 日期：2026-05-21
 
 状态：设计草案；2026-05-25 边界收口；2026-06-04 对齐 instruction-level Wafer IR 先于 SPM memory planning；
-2026-06-05 对齐 memref-backed buffer contract；2026-06-08 同步 DDR memory policy 命名；
+2026-06-05 对齐 memref-backed buffer contract；2026-06-08 同步 DDR memory planning 命名；
 2026-06-10 R3.2e 前移为 candidate DDR tile-view producer，SPM memory planning 后移为 R3.2f；
 2026-06-10 R3.2f V0 落地为 instruction-level `wafer.spm.offset` planning fact；
 2026-06-10 R3.2f lifetime dataflow 覆盖 `scf.if` / `scf.for` / async token wait；
@@ -27,7 +27,7 @@ Wafer-tagged memref / `wafer.instr.*` / effects，不重复定义 instruction op
 
 本文不分配 DDR，不选择 physical layout，不决定 group boundary，不选择 compute/communication
 instruction selection，也不生成 runtime package。DDR source/destination range 和 bandwidth 可以作为
-legality 或 cost input；DDR memory pool/domain 的主设计见
+legality 或 cost input；DDR default arena resource 的主设计见
 `tasks/2026-05-25-wafer-ddr-memory-planning-design.md`。SPM allocation 的失败 trace、搜索顺序和
 rejected/candidate offset 都是 analysis，不写进长期 IR。
 
@@ -117,8 +117,8 @@ Pipeline position:
 - hardware lowering 需要的 begin/end range 和 dtype storage size。
 
 这些输出属于 SPM / tile-region 层，不回写到 `wafer.group`。
-其中 allocation summary 只覆盖 `#wafer.memory<spm, *>`；DDR 的 resource pool/domain、host visibility、constant
-residency/storage、compiler-managed DDR allocation、全局容量、largest contiguous range 和 bandwidth 属于 DDR memory plan，
+其中 allocation summary 只覆盖 `#wafer.memory<spm, *>`；DDR 的 explicit view/range、constant
+residency/storage、compiler-managed DDR requirement、全局容量、largest contiguous range 和 bandwidth 属于 DDR memory plan，
 但 movement/scheduler 仍要把 DDR range 和 bandwidth 作为 cost/legality input。
 
 ## 4. Instruction Storage Requirements
@@ -431,8 +431,8 @@ placement realization 后，IR 应使用 placed memref、flat backing memref 或
 
 `#wafer.memory<space, layout>` 在 placed instruction IR 中仍是统一语义：`spm` 表示 tile-local
 SRAM，`ddr` 表示 device/global DDR address domain。RDMA/WDMA verifier 用 source/destination
-address space 检查方向；DDR memory planning / runtime/package lowering 用 `ddr` 继续关联 resource
-pool/domain、host visibility、compiler-managed DDR allocation、constant storage/residency 和 launch metadata。
+address space 检查方向；DDR memory planning / runtime/package lowering 用 `ddr` 继续关联 view/range、
+compiler-managed DDR requirement、constant storage/residency、default allocatable arena resource 和 launch metadata。
 
 不要把 `wafer.tile.region` body 已经表达的执行结构复制成全局 allocation plan attr。
 

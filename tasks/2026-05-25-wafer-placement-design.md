@@ -32,7 +32,7 @@ rank group 事实，并为 `wafer.group` / `wafer.tile.region` / runtime launch 
 非目标：
 
 - 不做 Linalg tiling、group fusion 或 root tile shape search。
-- 不分配 `#spm` offset、DDR buffer object 或 workspace slice。
+- 不分配 `#spm` offset、DDR runtime allocation object 或 workspace slice。
 - 不选择 `Cx/NCx` physical layout。
 - 不选择 ring/tree/DTE packet schedule；placement 只提供 physical endpoints 和 topology cost。
 - 不把 HPGR/KMD/legacy runtime API 细节写成上层 placement 语义。
@@ -167,7 +167,7 @@ cost model 可以考虑：
 | `wafer.group` | per-rank local shard / block identity、tensor collective rank group 可解释性 | tile shape、fusion boundary |
 | `wafer.tile.region` | physical tile coordinate / block id args | SPM offset、layout assignment |
 | `wafer.tile.*` communication | tile_region / SPM materialization 后的 logical endpoint 到 physical endpoint mapping | DTE node/FSM/packet allocation |
-| `wafer.launch` | cluster membership and launch metadata | buffer object allocation、completion source |
+| `wafer.launch` | cluster membership and launch metadata | runtime allocation mapping、completion source |
 
 Placement 不应把 DTE route 或 runtime launch API 写进上层。Communication lowering 可以基于
 accepted placement 选择 ring/tree/unicast protocol。

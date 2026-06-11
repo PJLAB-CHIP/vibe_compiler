@@ -36,8 +36,6 @@ namespace wafer {
 
 inline constexpr char kWaferCommSlotAttrName[] = "slot";
 inline constexpr char kWaferSPMOffsetAttrName[] = "wafer.spm.offset";
-inline constexpr char kWaferMemoryDomainAttrName[] = "wafer.memory.domain";
-inline constexpr char kWaferMemoryPoolAttrName[] = "wafer.memory.pool";
 inline constexpr int64_t kWaferSPMBankLineBytes = 256;
 
 struct WaferPhysicalTensorInfo {

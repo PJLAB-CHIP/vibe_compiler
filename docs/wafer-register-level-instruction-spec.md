@@ -39,7 +39,7 @@ Triton CRT 的作用是帮助理解公开 wrapper 如何被某个 backend 调用
 | 2 | `/root/dlc_dev/tx8_deps/include/instr_adapter_plat.h` | Tsm wrapper 的 public signature，是 Wafer C ABI 内部可调用的 API 形态 |
 | 3 | `/root/dlc_dev/tx8_deps/include/instr_adapter.h` | 地址边界、辅助定义、`TsmExecute` 入口 |
 | 4 | `docs/tx8-deps-reverse-engineering/tx8-interface-contract.md` | 静态反汇编后的 wrapper/runtime/DTE/stream/mailbox/PMU/bootparam 语义；用于修正旧 CRT 线索 |
-| 5 | `docs/tx8-deps-reverse-engineering/firmware-kuiper-runtime-hardware-analysis.md` | HPGR/KMD/UAPI、compute completion、BO/BAR/ATU、PG、driver DTE/C2C；用于修正 host runtime 和 driver 边界 |
+| 5 | `docs/tx8-deps-reverse-engineering/firmware-kuiper-runtime-hardware-analysis.md` | HPGR/KMD/UAPI、compute completion、runtime allocation/BAR/ATU、PG、driver DTE/C2C；用于修正 host runtime 和 driver 边界 |
 | 6 | `/root/dlc_dev/tx8_deps/tx8-yoc-rt-thread-smp/include/components/oplib_tx81/riscv/riscv/include/**` 和 `interface/op_fw_sim_if/peripheral/include/*.h` | Kcore DTE/FSM/stream/mailbox/PMU helper 和使用约束 |
 | 7 | `/root/dlc_dev/FlagTree/third_party/tsingmicro/crt/lib/Tx81` | 当前 CRT 对 wrapper 的使用方式，只作为公开实现样例、单位线索和反例，不作为 Wafer 最终 ABI 或硬件 spec |
 | 8 | `docs/official_docs/` 下硬件 PDF | 拓扑、SPM、DTE、runtime 背景 |
@@ -1218,7 +1218,7 @@ PMU record type:
 需要把它作为单独 adapter 层建模，而不是和 `TsmExecute` packet issue 混在一起。
 
 当前优先级：HPGR `tx_runtime.h`/`libhpgr.so` 是主 host runtime surface；旧
-`Tsm*`/VS runtime 是兼容层和 DTE TLV 证据；KMD UAPI 负责 BO/job/NPU/DTE/C2C
+`Tsm*`/VS runtime 是兼容层和 DTE TLV 证据；KMD UAPI 负责 runtime allocation/job/NPU/DTE/C2C
 等底层服务。KMD compute fence 在当前 driver 中 MHU doorbell 后直接 signal，
 不代表 model/kernel 已完成，host-visible completion 应以 HPGR command slot、
 `completeSignal`、stream/event 或 Kcore/DTE/CSR 显式 wait 为准。

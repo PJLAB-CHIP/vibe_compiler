@@ -89,40 +89,6 @@ def Wafer_SPMOffsetAttr : AttrDef<Wafer_Dialect, "SPMOffset"> {
                        "$bankBegin `,` $bankLimit `>`";
 }
 
-def Wafer_MemoryDomainLocalDRAM : I32EnumAttrCase<"LocalDRAM", 0, "local_dram">;
-def Wafer_MemoryDomainRemoteDRAM : I32EnumAttrCase<"RemoteDRAM", 1, "remote_dram">;
-def Wafer_MemoryDomain : I32EnumAttr<"MemoryDomain", "Wafer allocation domain", [
-  Wafer_MemoryDomainLocalDRAM,
-  Wafer_MemoryDomainRemoteDRAM
-]> {
-  let cppNamespace = "::wafer";
-  let genSpecializedAttr = 0;
-}
-
-def Wafer_MemoryDomainAttr : EnumAttr<Wafer_Dialect, Wafer_MemoryDomain, "memory_domain"> {
-  let assemblyFormat = "`<` $value `>`";
-}
-
-def Wafer_MemoryPoolNPUNormal : I32EnumAttrCase<"NPUNormal", 0, "npu_normal">;
-def Wafer_MemoryPoolVisible : I32EnumAttrCase<"Visible", 1, "visible">;
-def Wafer_MemoryPoolVisibleExtended : I32EnumAttrCase<"VisibleExtended", 2, "visible_extended">;
-def Wafer_MemoryPoolNPUBin : I32EnumAttrCase<"NPUBin", 3, "npu_bin">;
-def Wafer_MemoryPoolLog : I32EnumAttrCase<"Log", 4, "log">;
-def Wafer_MemoryPool : I32EnumAttr<"MemoryPool", "Wafer allocation pool", [
-  Wafer_MemoryPoolNPUNormal,
-  Wafer_MemoryPoolVisible,
-  Wafer_MemoryPoolVisibleExtended,
-  Wafer_MemoryPoolNPUBin,
-  Wafer_MemoryPoolLog
-]> {
-  let cppNamespace = "::wafer";
-  let genSpecializedAttr = 0;
-}
-
-def Wafer_MemoryPoolAttr : EnumAttr<Wafer_Dialect, Wafer_MemoryPool, "memory_pool"> {
-  let assemblyFormat = "`<` $value `>`";
-}
-
 def Wafer_PlacementSingleTile : I32EnumAttrCase<"SingleTile", 0, "single_tile">;
 def Wafer_PlacementTileMesh : I32EnumAttrCase<"TileMesh", 1, "tile_mesh">;
 def Wafer_PlacementCardMesh : I32EnumAttrCase<"CardMesh", 2, "card_mesh">;
