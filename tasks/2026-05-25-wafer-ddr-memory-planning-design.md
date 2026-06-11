@@ -24,7 +24,7 @@ package format；这些文档只能把 DDR feasibility 作为 cost/legality feed
 R3.2f 之后的 instruction-level IR，并接受或拒绝当前 IR 已经显式表达的 DDR memory plan。
 成功时，accepted DDR facts 就是 SSA use-def、`#wafer.memory<ddr, layout>` memref type、
 `memref.subview` / strided view、`wafer.instr.*` descriptor、ownership/policy 和可重算
-requirement；不额外复制一份 `wafer.ddr.plan` attr 或 side table。失败时返回结构化原因，供
+requirement；不额外复制一份 DDR plan attr 或 side table。失败时返回结构化原因，供
 closed-loop candidate driver 改 tile/layout/resource 候选后重跑 R3.2e-g。
 
 ## 1. 目标和非目标
@@ -68,15 +68,16 @@ Pipeline position:
   拒绝这份显式 DDR memory plan。
 - Output artifact / IR:
   same instruction-level IR accepted as DDR-safe，或结构化 failure reason。成功路径不写
-  `wafer.ddr.plan`、不写失败候选、不保存 search trace；必要的 requirement summary 必须能从当前 IR
+  重复 DDR plan attr、不写失败候选、不保存 search trace；必要的 requirement summary 必须能从当前 IR
   和目标 policy 重新生成。
 - Downstream consumer:
   R3.2h closed-loop candidate driver 用 R3.2g 成功/失败作为候选 legality gate；R3.3/R3.4/R3.5
   只 materialize 已通过 R3.2g 的显式 DDR facts 到 committed tile-region、placed descriptor 和
   runtime allocation/import/package boundary。
 - User-level driver / named pipeline:
-  R3.2g 提供 `wafer-plan-ddr-memory` 局部 pass；主线验证入口必须提供从 R3.2c/R3.2d/R3.2f
-  直接跑到 R3.2g 的 named pipeline，不能要求用户手动拼 pass 作为长期 compile flow。
+  R3.2g 提供 `wafer-accept-ddr-memory-plan` 局部 pass；主线验证入口是从 R3.2c/R3.2d/R3.2f
+  直接跑到 R3.2g 的 `wafer-lower-groups-to-ddr-accepted-instr` named pipeline，不能要求用户手动拼
+  pass 作为长期 compile flow。
 - Explicit non-goals:
   不重新推 DDR tile subview，不重做 SPM memory planning，不选择 tile shape/layout/group boundary，
   不生成 ABI call、packet 或 runtime BO handle，不用名字或 whole-boundary memref 猜 tile access。
@@ -598,8 +599,23 @@ DDR access descriptor facts:
 - launch allocation key
 ```
 
-`ddr_domain` / `ddr_pool` 是 allocation policy attrs。它们不替代 `#wafer.memory<ddr, layout>`，也不应出现在
-tensor/group 层。
+`memory_domain` / `memory_pool` 是 allocation policy attrs。它们不替代
+`#wafer.memory<ddr, layout>`，也不应出现在 tensor/group 层。
+
+R3.2g V0 的最小显式 policy attr spelling：
+
+```mlir
+%ddr = memref.alloc()
+    {wafer.memory.domain = #wafer.memory_domain<local_dram>,
+     wafer.memory.pool = #wafer.memory_pool<npu_normal>}
+    : memref<..., #wafer.memory<ddr, tensor>>
+```
+
+`local_dram` / `remote_dram` 是 DDR allocation domain；`npu_normal`、`visible`、
+`visible_extended`、`npu_bin`、`log` 是 DDR pool policy。普通 tensor allocation 不能使用
+`npu_bin` 或 `log`；R3.2g 会结构化失败为 `unsupported_domain_or_pool`。没有 owner、lifetime
+和 suballocation requirement interface 的 DDR `memref.alloc` 不能被当成已接受 compiler-managed
+DDR plan，R3.2g 会结构化失败为 `unsupported_compiler_managed_ddr`。
 
 ## 11. Verifier
 

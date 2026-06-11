@@ -121,4 +121,24 @@ def PlanSPMMemoryPass
   ];
 }
 
+def AcceptDDRMemoryPlanPass
+    : Pass<"wafer-accept-ddr-memory-plan", "mlir::ModuleOp"> {
+  let summary =
+      "Accept or reject explicit DDR memory plans in instruction-level Wafer IR";
+  let dependentDialects = ["mlir::memref::MemRefDialect",
+                           "wafer::WaferDialect",
+  ];
+  let options = [
+    Option<"ddrCapacityBytes", "ddr-capacity-bytes", "int64_t",
+           /*default=*/"9223372036854775807",
+           "Total DDR bytes available to the accepted plan">,
+    Option<"ddrLargestContiguousBytes", "ddr-largest-contiguous-bytes",
+           "int64_t", /*default=*/"9223372036854775807",
+           "Largest contiguous DDR range available to a single root demand">,
+    Option<"ddrBandwidthLimitBytes", "ddr-bandwidth-limit-bytes", "int64_t",
+           /*default=*/"9223372036854775807",
+           "Total DDR movement bytes allowed by this acceptance gate">
+  ];
+}
+
 #endif // WAFER_TRANSFORMS_PASSES_TD

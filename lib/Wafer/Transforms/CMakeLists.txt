@@ -4,6 +4,7 @@ add_mlir_library(WaferTransforms
   Group/DumpTilingDemand.cpp
   Group/DumpGroupToTileRegion.cpp
   Group/FormLogicalGroups.cpp
+  DDR/AcceptDDRMemoryPlan.cpp
   SPM/PlanSPMMemory.cpp
   SPMD/ApplyDefaultSpmdSharding.cpp
   Passes.cpp
