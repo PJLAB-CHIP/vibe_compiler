@@ -77,8 +77,8 @@ wafer.group
   -> candidate DDR tile-view materialization for planner candidate evaluation
   -> instruction-level wafer.instr.* IR over unplaced Wafer-tagged memref values
   -> SPM memory planning on the same instruction-level IR
-  -> DDR memory planning on memory-planned instruction IR
-  -> accepted / rejected / split decision
+  -> DDR memory plan acceptance on memory-planned instruction IR
+  -> closed-loop candidate driver for retry/split/commit decision
   -> committed wafer.tile.region
   -> materialized placed instruction-level IR / placed memref / access descriptor
   -> codegen emission to C ABI / packet / launch
@@ -91,8 +91,9 @@ wafer.group
   `--wafer-convert-group-to-tile-region` 可以把当前模块中的 supported logical group 重写成
   tile-region IR，用作 legality/debug/后续 pass bring-up。它仍不是 accepted plan，
   也不是 SPM allocator 的直接输入；rejected tile-region IR 不进入主线 accepted IR。
-- committed `wafer.tile.region`：R3.3 只把 R3.2h 已接受的 plan 写入主 IR。后续 R3.4/R3.5
-  只 materialize accepted layout/SPM/DDR/instruction facts，不重新决定 group 是否可行。
+- committed `wafer.tile.region`：R3.3 只把 R3.2h 已选中、且已通过 R3.2e/R3.2d/R3.2f/R3.2g
+  gates 的 candidate artifact 写入主 IR。后续 R3.4/R3.5 只 materialize accepted
+  layout/SPM/DDR/instruction facts，不重新决定 group 是否可行。
 
 ### 2.1 R3.2c Pipeline Contract
 
@@ -121,8 +122,8 @@ Pipeline position:
   不写入主线 accepted IR。
 - Downstream consumer:
   R3.2e candidate DDR tile-view materialization、R3.2d Wafer instruction legalization / selection、
-  R3.2f SPM memory planning、R3.2g DDR memory planning + compute/movement legality analysis、
-  R3.2h closed-loop planner。
+  R3.2f SPM memory planning、R3.2g DDR memory plan acceptance + compute/movement legality analysis、
+  R3.2h closed-loop candidate driver。
 - User-level driver / named pipeline:
   主线仍由 `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 产生 logical group；
   R3.2c 的主线验证入口是
@@ -286,10 +287,14 @@ V0 需要以下 op family：
 6. SPM memory planning：R3.2f 只消费 instruction-level IR with unplaced Wafer-tagged memref values，
    在同一 IR 上填入 offset/end/bank span 和 lifetime/reuse；不能直接从 target-abstract op 猜
    memref demand。
-7. DDR memory planning：R3.2g 消费 memory-planned instruction-level IR、SPM facts 和 DDR tile-view
-   boundary，做 capacity / bandwidth / range legality。
-8. closed-loop decision：R3.2h 接受、拒绝或要求 split / retry；rejected tile-region IR 丢弃。
-9. committed `wafer.tile.region` materialization：R3.3 只把 accepted plan 写入主 IR。
+7. DDR memory plan acceptance：R3.2g 消费 memory-planned instruction-level IR、SPM facts 和 DDR
+   tile-view boundary，接受或拒绝当前 IR 中显式表达的 descriptor / ownership / pool-domain /
+   capacity / bandwidth / range / fence 计划。成功时不写重复 DDR plan attr；失败时给结构化原因。
+8. closed-loop candidate driver：R3.2h 枚举 tile/layout/resource 候选，逐个运行 R3.2e/R3.2d/R3.2f/R3.2g
+   gates；选择已通过全部 gates 的 candidate artifact，或要求 split / retry；rejected candidate IR
+   丢弃。
+9. committed `wafer.tile.region` materialization：R3.3 只把 R3.2h 选中的 accepted candidate artifact
+   写入主 IR。
 10. placement realization：把 accepted unplaced memref 降到 placed memref / address descriptor。
 11. lower-level op lowering：转成 wrapper-friendly Wafer ops，最后进入 C ABI / launch。
 
@@ -309,7 +314,8 @@ SPM memory planning 后续应直接消费这些 region/control-flow lifetime；�
 layout/materialization/resource interface 查询入口；这些接口和 verifier 已基于
 `memref<..., #wafer.memory<space, layout>>` 合同。第 4 步必须让 candidate boundary slice 的 DDR
 operand 表达真实 tile view；第 5 步 instruction legalization / selection 再把 target-abstract op
-降到 instruction-level IR；第 6-8 步的完整 SPM/DDR memory planning 和 closed-loop decision 仍未完成。
+降到 instruction-level IR；第 6-8 步分别完成 SPM accepted offset、DDR memory plan acceptance
+和 closed-loop candidate driver，不能互相推迟协议补全。
 
 当前实现状态：
 

@@ -67,7 +67,7 @@ Pipeline position:
   same instruction-level IR with `wafer.spm.offset` accepted facts on SPM memref definitions，或结构化
   allocation failure reason；后续 R3.4 再把 fact materialize 成 placed memref / descriptor。
 - Downstream consumer:
-  R3.2g DDR memory planning、R3.2h closed-loop planner、R3.4 materialized placed storage IR，
+  R3.2g DDR memory plan acceptance、R3.2h closed-loop candidate driver、R3.4 materialized placed storage IR，
   以及 R3.6 codegen emission。
 - User-level driver / named pipeline:
   当前可重放入口是 `wafer-lower-groups-to-memory-planned-instr`，它复用 R3.2c/R3.2d lowering 后追加

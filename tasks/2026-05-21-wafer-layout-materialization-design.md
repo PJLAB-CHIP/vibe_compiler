@@ -85,9 +85,9 @@ layout planning 有两个恢复层次：
   layout constraints、layout assignment alternatives、materialization cut 和 materialization
   buffer demand。该层只产出 analysis result 和 debug dump，不 rewrite `wafer.group`，不写
   layout attr，也不生成 `wafer.tile.region`。
-- R3.4 在 accepted `wafer.tile.region` / instruction-level IR 层运行。它消费 R3.2h accepted plan，把 layout
-  assignment 和 materialization cut materialize 成 Wafer-tagged memref value 和
-  `wafer.tile.materialize_layout` op。
+- R3.4 在 accepted `wafer.tile.region` / instruction-level IR 层运行。它消费 R3.2h 选中的
+  accepted candidate artifact，把 layout assignment 和 materialization cut materialize 成
+  Wafer-tagged memref value 和 `wafer.tile.materialize_layout` op。
 
 完整 layout materialization 的输入来自 target-abstract tile-region IR。它由 scheduled
 `wafer.group` lowering 而来，但 layout-sensitive tiled op 已经被绑定为正式的
@@ -129,8 +129,8 @@ Pipeline position:
 - Downstream consumer:
   R3.2c group-to-tile-region lowering、R3.2d Wafer instruction legalization / selection、
   R3.2e candidate DDR tile-view materialization、R3.2f SPM memory planning、
-  R3.2g DDR memory planning + compute/movement legality analysis，
-  以及 R3.2h closed-loop planner。
+  R3.2g DDR memory plan acceptance + compute/movement legality analysis，
+  以及 R3.2h closed-loop candidate driver。
 - User-level driver / named pipeline:
   主线仍由 `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 产生 R3.1 group；
   R3.2b 的局部验证入口是 `wafer-opt --wafer-dump-group-layout-plan`，用于在

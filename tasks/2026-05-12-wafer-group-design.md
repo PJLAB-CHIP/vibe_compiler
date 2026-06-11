@@ -96,7 +96,7 @@ Pipeline position:
   verifier-legal 的 tensor-level `wafer.group` op；它仍是可被 R3.2h 接受、拆分或
   拒绝的 logical group。
 - Downstream consumer:
-  R3.2a-g planning / analysis results 和 R3.2h closed-loop planner；R3.3 `wafer.tile.region`
+  R3.2a-g analysis/acceptance gates 和 R3.2h closed-loop candidate driver；R3.3 `wafer.tile.region`
   materialization；R3.4/R3.5 accepted layout/SPM/DDR materialization；
   R3.6/R3.7 ABI/package stages。
 - User-level driver / named pipeline:
@@ -595,8 +595,8 @@ root 优先级是：
 
 root/hero 只决定 logical group 的初始边界，不决定 traversal tile shape。真正的 traversal
 domain、tile shape、internal split、output coverage、candidate DDR tile-view materialization 和
-instruction selection 仍由 R3.2a-g planning / analysis results 和 R3.2h closed-loop
-scheduled group planner 决定。
+instruction selection 仍由 R3.2a-g analysis/acceptance gates 和 R3.2h closed-loop candidate
+driver 决定。
 
 ### 9.3 Conservative Expansion
 
@@ -780,15 +780,18 @@ SPM allocation、layout assignment、DDR memory demand 和 compute/movement lega
   tile views and unplaced Wafer-tagged memref，在真实 SPM window、
   alignment、layout padding、scratch/psum/temp、materialization temp、communication staging、
   lifetime overlap、range/end-address/bank span 和 conflict 约束下搜索可接受 memory plan。
-- R3.2g 恢复 DDR memory planning 和 compute/movement legality analysis：消费 memory-planned
+- R3.2g 恢复 DDR memory plan acceptance 和 compute/movement legality analysis：消费 memory-planned
   instruction-level IR 和 SPM facts，覆盖 external/compiler-managed/resident-constant、bandwidth/range/
-  pool/domain，以及 op layout/dtype/shape/effect 合法性；不能回头改变 instruction semantics。
-- R3.2h 才能做 closed-loop group planner：搜索 traversal、tile shape、layout、DDR tile view、
-  instruction selection、SPM/DDR memory plan，并输出 accepted / rejected / split decision。
+  pool/domain，以及 op layout/dtype/shape/effect 合法性；成功即接受当前 IR 中显式表达的 DDR
+  memory plan，失败给结构化原因，不能回头改变 instruction semantics，也不能产出等待后续补全的
+  DDR plan。
+- R3.2h 才能做 closed-loop candidate driver：搜索 traversal、tile shape、layout、DDR tile view、
+  instruction selection、SPM/DDR resource candidate，并逐个运行 R3.2e/R3.2d/R3.2f/R3.2g gates，
+  输出 accepted candidate artifact、rejected reason 或 split decision。
 
-R3.3 只 materialize R3.2h 已接受的 plan 为 committed `wafer.tile.region`。R3.4/R3.5 只把
-R3.2h 已经接受的 layout/instruction/SPM/DDR facts 落到可验证 IR 或 resource boundary；它们不能成为
-第一次发现 SPM 放不下、layout 不合法或 DDR demand 不可接受的阶段。若 R3.2a-g planning results
+R3.3 只 materialize R3.2h 选中的 accepted candidate artifact 为 committed `wafer.tile.region`。R3.4/R3.5 只把
+已经通过 R3.2e-g gates 的 layout/instruction/SPM/DDR facts 落到可验证 IR 或 resource boundary；它们不能成为
+第一次发现 SPM 放不下、layout 不合法或 DDR demand 不可接受的阶段。若 R3.2a-g gates
 让 R3.2h 不能接受当前 group plan，planner 必须回到 tile shape、layout、internal split、instruction
 选择或 group boundary，而不是落一个未接受的 `wafer.tile.region` 等待下游补救。
 
@@ -816,8 +819,8 @@ Pipeline position:
 - Downstream consumer:
   R3.2b layout planning、R3.2c group-to-tile-region lowering、
   R3.2e candidate DDR tile-view materialization、R3.2d Wafer instruction legalization / selection、
-  R3.2f SPM memory planning、R3.2g DDR memory planning + compute/movement legality analysis，
-  以及 R3.2h closed-loop planner。
+  R3.2f SPM memory planning、R3.2g DDR memory plan acceptance + compute/movement legality analysis，
+  以及 R3.2h closed-loop candidate driver。
 - User-level driver / named pipeline:
   主线仍由 `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 产生 R3.1 group；
   R3.2a 的局部验证入口是 `wafer-opt --wafer-dump-group-tiling-demand`，用于在同一
@@ -897,8 +900,8 @@ group planner 不替每个 op 实现 tiling，也不把 matmul、reduction、win
 
 ### 10.2.1 Multi-root Packing / Co-scheduling
 
-multi-root packing 是 R3.2h closed-loop planner 的可选策略，不是 R3.1 group formation
-或 R3.2a-g planning / analysis results 的完成条件。
+multi-root packing 是 R3.2h closed-loop candidate driver 的可选策略，不是 R3.1 group formation
+或 R3.2a-g analysis/acceptance gates 的完成条件。
 R3.1 产出的基本单位仍是 dependency-connected logical group；两个完全独立的 chains
 即使在同一个 block、shape 相同，也不因为语法上可以放进一个 region 就自动合并。
 

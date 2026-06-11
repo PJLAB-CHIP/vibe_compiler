@@ -2,7 +2,8 @@
 
 日期：2026-05-25
 
-状态：设计草案；2026-05-25 边界收口；2026-06-05 对齐 memref-backed Wafer memory attr 合同
+状态：设计草案；2026-05-25 边界收口；2026-06-05 对齐 memref-backed Wafer memory attr 合同；
+2026-06-11 收敛 R3.2g 为 DDR memory plan acceptance
 
 本文定义 Wafer 编译器中 `#wafer.memory<ddr, layout>` 的资源建模、allocation policy、
 verifier 和 lowering 责任。DDR 不是 SPM 文档里的边界注释，也不是另一套 memory-space 语义；
@@ -18,6 +19,13 @@ remote/pinned BO，并可通过 Wafer runtime / DTE / memcpy path 访问，它�
 contract、capacity/bandwidth/range planning 和 runtime allocation failure diagnostic。它不选择
 group boundary、tile shape、physical layout、SPM offset、compute/comm algorithm 或 launch
 package format；这些文档只能把 DDR feasibility 作为 cost/legality feedback 使用。
+
+2026-06-11 的任务边界收敛为：R3.2g 不产出“等待后续接受”的候选 DDR plan。R3.2g 消费
+R3.2f 之后的 instruction-level IR，并接受或拒绝当前 IR 已经显式表达的 DDR memory plan。
+成功时，accepted DDR facts 就是 SSA use-def、`#wafer.memory<ddr, layout>` memref type、
+`memref.subview` / strided view、`wafer.instr.*` descriptor、ownership/policy 和可重算
+requirement；不额外复制一份 `wafer.ddr.plan` attr 或 side table。失败时返回结构化原因，供
+closed-loop candidate driver 改 tile/layout/resource 候选后重跑 R3.2e-g。
 
 ## 1. 目标和非目标
 
@@ -42,6 +50,43 @@ package format；这些文档只能把 DDR feasibility 作为 cost/legality feed
 - 不重新发明普通 tensor constant、tensor layout 或 memref lowering 语义。
 - 不把 host runtime 的某个旧 API 路径写成唯一 ABI。本文只固定 compiler-facing contract。
 - 不在 V0 追求全局最优 memory planning；先保证可验证、可诊断、能回到 planner repair。
+- 不把 R3.2g 的成功结果推迟给 R3.2h 再 accept；R3.2h 只负责候选枚举、重试或 split，不补
+  DDR memory plan 语义。
+
+### 1.1 R3.2g Pipeline Contract
+
+```text
+Pipeline position:
+- Upstream artifact / IR:
+  R3.2f memory-planned instruction-level `wafer.tile.region` / `wafer.instr.*` IR。SPM
+  `memref.alloc` 已带 `wafer.spm.offset` accepted fact；DDR access 必须已经由
+  `#wafer.memory<ddr, layout>` memref、`memref.subview` / strided view 和 RDMA/WDMA/DTE
+  descriptor 显式表达。
+- Current stage responsibility:
+  从当前 IR 重算 DDR access demand、ownership/pool/domain policy、view range、descriptor
+  expressibility、capacity、largest-contiguous-range、bandwidth 和 completion/fence demand，并接受或
+  拒绝这份显式 DDR memory plan。
+- Output artifact / IR:
+  same instruction-level IR accepted as DDR-safe，或结构化 failure reason。成功路径不写
+  `wafer.ddr.plan`、不写失败候选、不保存 search trace；必要的 requirement summary 必须能从当前 IR
+  和目标 policy 重新生成。
+- Downstream consumer:
+  R3.2h closed-loop candidate driver 用 R3.2g 成功/失败作为候选 legality gate；R3.3/R3.4/R3.5
+  只 materialize 已通过 R3.2g 的显式 DDR facts 到 committed tile-region、placed descriptor 和
+  runtime allocation/import/package boundary。
+- User-level driver / named pipeline:
+  R3.2g 提供 `wafer-plan-ddr-memory` 局部 pass；主线验证入口必须提供从 R3.2c/R3.2d/R3.2f
+  直接跑到 R3.2g 的 named pipeline，不能要求用户手动拼 pass 作为长期 compile flow。
+- Explicit non-goals:
+  不重新推 DDR tile subview，不重做 SPM memory planning，不选择 tile shape/layout/group boundary，
+  不生成 ABI call、packet 或 runtime BO handle，不用名字或 whole-boundary memref 猜 tile access。
+  若 compiler-managed / resident DDR fact 无法由当前 IR/interface 表达，R3.2g 必须结构化失败或先扩
+  IR/interface，不能把协议藏到后续阶段。
+- Completion gate:
+  R3.2f 输出的 tiled matmul/elementwise/storeback 能通过 DDR descriptor/range/ownership/pool/domain/
+  capacity/bandwidth acceptance；非法 view、descriptor payload/range、pool/domain、capacity、
+  bandwidth 或 missing completion fence 能结构化失败。
+```
 
 ## 2. 硬件和 Runtime 事实
 
@@ -156,7 +201,7 @@ DDR 相关事实按 IR 层分布：
 | tensor / linalg / group | tensor shape、dtype、semantic layout、group boundary | DDR pool、physical address、BO handle、runtime allocation |
 | `wafer.tile.region` | `#wafer.memory<ddr, layout>` / `#wafer.memory<spm, layout>`、load/store boundary、layout materialization、movement/effect | raw BO address、driver handle、unaccepted allocation trace |
 | accepted layout / buffer layer | `memref<..., #wafer.memory<ddr/spm, layout>>` | host malloc pointer、runtime-private pool internals |
-| DDR memory planning | `DdrBufferDemand`、external allocation contract、resident/compiler-managed demand、pool alternatives、lifetime、bandwidth | tensor math semantics、SPM offset search |
+| DDR memory plan acceptance | 从 instruction-level IR 重算的 `DdrBufferDemand`、external allocation contract、resident/compiler-managed demand、pool/domain alternatives、lifetime、bandwidth、range/fence legality；输出同一 IR accepted 或结构化失败 | tensor math semantics、SPM offset search、重复 DDR plan attr、失败候选或 search trace |
 | placed instruction-level IR | placed memref、access descriptor、compiler-managed base+offset、movement ops | unresolved unplaced Wafer-tagged memref |
 | launch / package / runtime | BO allocation/import/query、constant serialization、physical address query/assignment、completion/fence | group formation 或 layout search 的内部 trace |
 
@@ -195,7 +240,8 @@ V0 默认策略：
 
 ## 5. Demand Model
 
-DDR planner 的输入不是裸 size，而是从当前 IR 和 target policy 派生的 demand：
+DDR memory plan acceptance 的输入不是裸 size，而是从当前 IR 和 target policy 派生的 demand。下面的
+`DdrBufferDemand` 是 pass 内可重算 analysis，不是跨阶段 IR artifact：
 
 ```text
 DdrBufferDemand {
@@ -235,12 +281,11 @@ DdrBufferDemand {
 如果一个 demand 只能通过 name 或示例 case 恢复，说明 IR contract 不够，应该扩 op/type/interface，
 不能让 DDR planner 猜。
 
-当前 ODS / verifier 原型已给 `wafer.tile.load`、`wafer.tile.store`、DDR external allocation metadata 和
-`wafer.tile.*` communication ops 接入 `WaferResourceEffectInterface`，可查询 DDR read/write、SPM 对端、
-byte count 和 movement/communication issue。该路径仍要随 R3.2c 迁移到
-`memref<..., #wafer.memory<space, layout>>`。R3.2d/R3.6 后续需要让 placed `wafer.instr.*` /
-C ABI emission 复用同一 resource-effect 合同。完整的 `DdrBufferDemand`、pool/domain、lifetime、
-range 和 bandwidth summary 仍属于后续 DDR memory planner。
+当前 R3.2g 的最低实现边界应从 `wafer.instr.rdma` / `wafer.instr.wdma` 和后续 DTE/communication
+instruction 形态恢复 DDR demand；`wafer.tile.load` / `wafer.tile.store` 只作为更高层 producer。
+完整的 `DdrBufferDemand`、pool/domain、lifetime、range 和 bandwidth summary 必须在 R3.2g 内由当前
+instruction-level IR 重算。若某个 demand 只能依赖旧 tile op、名字或示例 shape 推导，说明当前
+instruction IR/interface 不足，应扩 IR/interface 或结构化失败。
 
 ## 6. Allocation Model
 
@@ -269,11 +314,12 @@ Verifier / runtime validation 失败必须暴露为 launch-time diagnostic，不
 或错误 pool。
 
 当前 V0 compiler 用 DDR external allocation metadata 作为最小 external demand materialization。
-该事实由 `wafer.tile.region` 内的 `wafer.tile.load` / `wafer.tile.store` boundary use-def 推导，
-记录 input/output kind、compact tensor byte size、required alignment、read-only 和 host-visible
-policy，供后续 launch/runtime package 层消费。它不记录 DDR physical address、BO handle、
-pool/domain 选择、compiler-managed offset 或 allocation/search trace；这些事实仍属于 runtime allocation、
-placed access descriptor 或 package metadata。
+R3.2g 必须从当前 instruction-level IR 的 DDR memref boundary、view chain 和 RDMA/WDMA descriptor
+重算 input/output kind、compact tensor byte size、required alignment、read-only、host-visible
+policy 和 access range，供后续 launch/runtime package 层 materialize。它不记录 DDR physical address、
+BO handle 或 allocation/search trace；pool/domain policy、compiler-managed requirement 和 range
+legality 必须在 R3.2g acceptance 中被检查或结构化失败，后续 runtime allocation 只 materialize
+已接受的 requirement。
 
 ### 6.2 Constant Residency
 
@@ -364,6 +410,13 @@ V0 compiler-managed DDR suballocator 使用 deterministic first-fit：
 
 如果 target runtime 支持 fixed-address import 或低层 allocator 可控 placement，后续可以把 compiler-managed
 BO 拆成多个 pool-specific BO。但这不是 V0 必须条件。
+
+R3.2g 的 acceptance 口径是：只接受当前 IR/interface 已经能表达和验证的 compiler-managed DDR
+facts。若 inter-group/staging value 只有抽象 `memref.alloc`，但没有可验证 owner、lifetime、
+pool/domain 和 suballocation requirement，R3.2g V0 不能假装成功；应返回
+`unsupported_compiler_managed_ddr` 或先扩 IR/interface。若 requirement 已可表达，R3.2g 可以接受
+“compiler-managed BO demand + slice/range requirement”，实际 BO physical address 和 runtime handle
+仍由 R3.5/runtime materialize。
 
 ### 6.4 Runtime BO Allocation
 
@@ -575,7 +628,7 @@ DDR verifier 至少检查：
 | 阶段 | 责任 |
 | --- | --- |
 | layout / compute / comm lowering | 生成 `#wafer.memory<ddr, *>` load/store/comm demand，保持 use-def 和 effect |
-| DDR memory planning | external allocation contract、constant residency、compiler-managed suballocation、requirement summary |
+| DDR memory plan acceptance | 从 instruction-level IR 接受 external allocation contract、constant residency、compiler-managed requirement/suballocation、range/fence legality 和 requirement summary；失败时给结构化原因，不产出重复 plan attr |
 | placement realization | 把 DDR Wafer-tagged memref 降成 placed memref、access descriptor 或 compiler-managed base+offset |
 | runtime/package lowering | BO alloc/import/query/free、constant serialization/loading、launch metadata、fence |
 | instruction lowering | RDMA/WDMA/DTE descriptor、byte stride、iteration、end range、direction validation |
@@ -612,8 +665,9 @@ repair 建议：
 - 改用 host/runtime D2D path，而不是 inline DTE，或反过来。
 - 给用户返回需要更大 DDR / visible pool / contiguous range 的明确诊断。
 
-Planner 不应把这些 repair trace 写进 IR。只有被接受的 buffer、descriptor、compiler-managed slice 和
-runtime boundary 才进入 IR 或 package metadata。
+R3.2g 不应把这些 repair trace 写进 IR。只有当前 IR 已显式表达且通过 acceptance 的 buffer、
+descriptor、compiler-managed slice requirement 和 runtime boundary，才能在 R3.3/R3.4/R3.5
+进入 committed IR、placed descriptor 或 package metadata。
 
 ## 14. Case Sketch
 

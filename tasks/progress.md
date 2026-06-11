@@ -1,6 +1,6 @@
 # Wafer Compiler Progress
 
-更新时间：2026-06-10
+更新时间：2026-06-11
 
 本文件记录当前看板、主线 pipeline、关键 IR 状态、完成口径和下一步。设计细节、实现复盘、测试命令
 和长验证说明放在对应 `tasks/` 设计文档、git commit 和测试里；这里不写逐条 worklog。
@@ -36,8 +36,10 @@ PyTorch/XLA StableHLO Wafer program directory
   -> wafer-lower-tile-region-to-instr / R3.2d
        target-abstract tile ops -> wafer.instr.* over unplaced Wafer-tagged memref
   -> wafer-lower-groups-to-memory-planned-instr / R3.2f SPM memory planning
-  -> R3.2g DDR memory planning
-  -> R3.2h closed-loop planner decision
+  -> R3.2g DDR memory plan acceptance
+       accept/reject explicit DDR views, descriptors, ownership and resource bounds
+  -> R3.2h closed-loop candidate driver
+       enumerate candidates, rerun R3.2e-g, choose accepted candidate or split
   -> R3.3+ accepted materialization / launch / package
 ```
 
@@ -59,7 +61,7 @@ PyTorch/XLA StableHLO Wafer program directory
 
 ## 当前 Active
 
-**R3.2g DDR memory planning**
+**R3.2g DDR memory plan acceptance**
 
 ```text
 Pipeline position:
@@ -67,18 +69,27 @@ Pipeline position:
   R3.2f memory-planned instruction-level `wafer.tile.region` / `wafer.instr.*` IR，其中 SPM `memref.alloc`
   已带 `wafer.spm.offset` accepted fact，DDR tile access 来自 actual `memref.subview` / strided view。
 - Current stage responsibility:
-  规划并检查 DDR access/resource demand：external/compiler-managed/resident DDR ownership、
-  DDR range/domain/pool、descriptor 可表达性、bandwidth/capacity/resource pressure。
+  接受或拒绝当前 instruction-level IR 已显式表达的 DDR memory plan：external /
+  compiler-managed / resident DDR ownership、DDR range/domain/pool、descriptor 可表达性、
+  bandwidth/capacity/resource pressure。所有结论必须从 SSA use-def、memref type/layout、
+  `memref.subview` / strided view 和 `wafer.instr.*` descriptor 重算，不能从名字、whole-boundary
+  shape 或 pass side table 恢复。
 - Output artifact / IR:
-  memory planning result / structured failure reason，供 closed-loop planner accept/reject/split；不把未接受
-  plan 写入主 IR。
+  same memory-planned instruction-level IR accepted as DDR-safe，或结构化 failure reason。成功时不额外复制
+  一份 `wafer.ddr.plan` / hidden allocation attr；accepted DDR facts 就是当前 IR 中显式存在的
+  memref view、descriptor、ownership/policy 和后续可 materialize 的 allocation requirement。
 - Downstream consumer:
-  R3.2h closed-loop planner decision、R3.3 accepted materialization、R3.5 DDR allocation materialization。
+  R3.2h closed-loop candidate driver 以 R3.2g 成功/失败作为候选合法性 gate；R3.3 accepted
+  materialization 和 R3.5 DDR allocation materialization 消费这份已接受的显式 IR/facts。
 - Explicit non-goals:
-  不重新做 SPM memory planning，不重新推 DDR tile subview，不生成 ABI call，不 accept plan。
+  不重新做 SPM memory planning，不重新推 DDR tile subview，不生成 ABI call，不在 IR 中保存 planner
+  搜索 trace、失败候选或重复的 DDR plan attr，不把无法由当前 IR 表达的 compiler-managed DDR offset
+  偷藏到 side table。
 - Completion gate:
   R3.2f 输出的 simple tiled matmul/elementwise/storeback 能完成 DDR descriptor/range/memory planning
-  检查；非法 DDR view、pool/domain/capacity/bandwidth 或 descriptor 边界能结构化失败。
+  acceptance；非法 DDR view、pool/domain/capacity/bandwidth 或 descriptor 边界能结构化失败。若某类
+  compiler-managed / resident DDR fact 在当前 IR/interface 中不可表达，R3.2g 必须结构化失败或先扩
+  IR/interface，不能把它推给后续阶段补协议。
 ```
 
 ## 当前边界
@@ -128,11 +139,11 @@ Pipeline position:
 
 | ID | 状态 | 输入 | 输出 / 完成 gate |
 | --- | --- | --- | --- |
-| R3.2g | active | R3.2f memory-planned instruction IR + actual DDR tile-view facts | DDR memory planning；覆盖 external/compiler-managed/resident-constant、pool/domain/capacity/bandwidth/range demand |
-| R3.2h | pending | R3.1 group + R3.2a-g planning results | accepted / rejected / split group decision；未接受 plan 不落 IR |
-| R3.3 | pending | R3.2h accepted plan | committed `wafer.tile.region` + accepted instruction-level lowering boundary |
-| R3.4 | pending | R3.2h accepted layout/SPM facts + R3.3 tile-region | placed instruction-level IR / placed memref / access descriptor |
-| R3.5 | pending | R3.2h accepted DDR memory facts + memref-aware IR | materialized DDR memory / allocation boundary；不重新做 memory planning |
+| R3.2g | active | R3.2f memory-planned instruction IR + actual DDR tile-view facts | DDR memory plan acceptance；同一 IR 通过 descriptor/range/ownership/pool/domain/capacity/bandwidth gate，或结构化失败 |
+| R3.2h | pending | R3.1 group + R3.2a/b facts + R3.2e-g acceptance pipeline | closed-loop candidate driver；枚举 tile/layout/resource 候选，逐个运行 R3.2e/R3.2d/R3.2f/R3.2g，输出 accepted candidate artifact 或 split/retry failure；不重新发明 memory planning |
+| R3.3 | pending | R3.2h accepted candidate artifact | committed `wafer.tile.region` + accepted instruction-level lowering boundary；只提交已通过 R3.2e-g gates 的候选 |
+| R3.4 | pending | R3.3 committed tile-region + accepted layout/SPM/DDR facts | placed instruction-level IR / placed memref / access descriptor；不重新决定 tile/layout/memory plan |
+| R3.5 | pending | R3.4 placed/memref-aware IR + accepted DDR requirements | materialized DDR allocation/import/package boundary；BO alloc/import/query metadata and runtime validation，不重新做 memory planning |
 | R3.6-R3.8 | pending | placed instruction IR + launch signature | C ABI / packet emission、IR-derived package manifest、wrapper-facing golden packet |
 | R4.1-R4.5 | pending | placement + local shard + launch/package metadata | rank/block/coord、per-rank slices、writeback、placed package |
 | R5.1-R5.2 | pending | static transformer local shard IR / staged IR gaps | full-block schedule 或拒绝原因；补 mask/select、dynamic-bound policy、constant/weight slice 等 |
@@ -151,9 +162,10 @@ Pipeline position:
 
 实现 R3.2g：
 
-1. 定义 DDR memory planning 的 IR-derived input 和 failure reason，避免从 whole-boundary shape 或名字恢复
-   DDR tile view 语义。
-2. 基于 R3.2f memory-planned instruction IR 检查 RDMA/WDMA/TDMA descriptor、DDR memref view range、pool/domain
-   ownership 和 bandwidth/capacity demand。
-3. 用 `wafer-lower-groups-to-memory-planned-instr` 的 tiled matmul/elementwise/storeback 输出验证 DDR
-   memory planning result 可被 R3.2h planner 直接消费。
+1. 定义 DDR memory plan acceptance 的 IR-derived input 和 failure reason，避免从 whole-boundary
+   shape、名字或 side table 恢复 DDR tile view / ownership 语义。
+2. 基于 R3.2f memory-planned instruction IR 检查 RDMA/WDMA/TDMA descriptor、DDR memref view range、
+   pool/domain ownership 和 bandwidth/capacity demand；成功即接受当前 IR 中显式表达的 DDR plan，
+   失败返回结构化原因。
+3. 增加 named pipeline，使 tiled matmul/elementwise/storeback 从 R3.2c/R3.2d/R3.2f 直接跑到 R3.2g
+   acceptance；证明后续 R3.2h 只需调度/重试候选，不需要再补 DDR planning 语义。
