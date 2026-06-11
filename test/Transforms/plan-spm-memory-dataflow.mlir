@@ -1,7 +1,7 @@
-// RUN: wafer-opt --wafer-place-spm-buffers='spm-base=65536 spm-limit=66048' %s | FileCheck --check-prefix=IF %s
-// RUN: wafer-opt --wafer-place-spm-buffers='spm-base=65536 spm-limit=66048' %s | FileCheck --check-prefix=LOOP-TEMP %s
-// RUN: wafer-opt --wafer-place-spm-buffers='spm-base=65536 spm-limit=66048' %s | FileCheck --check-prefix=LOOP-CARRY %s
-// RUN: wafer-opt --wafer-place-spm-buffers='spm-base=65536 spm-limit=66048' %s | FileCheck --check-prefix=ASYNC %s
+// RUN: wafer-opt --wafer-plan-spm-memory='spm-base=65536 spm-limit=66048' %s | FileCheck --check-prefix=IF %s
+// RUN: wafer-opt --wafer-plan-spm-memory='spm-base=65536 spm-limit=66048' %s | FileCheck --check-prefix=LOOP-TEMP %s
+// RUN: wafer-opt --wafer-plan-spm-memory='spm-base=65536 spm-limit=66048' %s | FileCheck --check-prefix=LOOP-CARRY %s
+// RUN: wafer-opt --wafer-plan-spm-memory='spm-base=65536 spm-limit=66048' %s | FileCheck --check-prefix=ASYNC %s
 
 func.func @if_branch_results_reuse(%output: memref<128xf16, #wafer.memory<ddr, tensor>>,
                                    %cond: i1) {
@@ -110,29 +110,29 @@ func.func @async_token_extends_source_until_wait(%boundary: memref<128xf16, #waf
 }
 
 // IF-LABEL: func.func @if_branch_results_reuse
-// IF: %[[THEN:.+]] = memref.alloc() {wafer.spm.placement = #wafer.spm_placement<65536, 256, 256, 256, 257>} : memref<128xf16, #wafer.memory<spm, tensor>>
+// IF: %[[THEN:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536, 256, 256, 256, 257>} : memref<128xf16, #wafer.memory<spm, tensor>>
 // IF: scf.yield %[[THEN]]
 // IF-NOT: func.func @loop_body_temp_reuses_after_loop
-// IF: %[[ELSE:.+]] = memref.alloc() {wafer.spm.placement = #wafer.spm_placement<65536, 256, 256, 256, 257>} : memref<128xf16, #wafer.memory<spm, tensor>>
+// IF: %[[ELSE:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536, 256, 256, 256, 257>} : memref<128xf16, #wafer.memory<spm, tensor>>
 // IF: scf.yield %[[ELSE]]
 // IF-NOT: func.func @loop_body_temp_reuses_after_loop
 // IF: wafer.instr.wdma
 
 // LOOP-TEMP-LABEL: func.func @loop_body_temp_reuses_after_loop
-// LOOP-TEMP: %[[TMP:.+]] = memref.alloc() {wafer.spm.placement = #wafer.spm_placement<65536, 256, 256, 256, 257>} : memref<128xf16, #wafer.memory<spm, tensor>>
+// LOOP-TEMP: %[[TMP:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536, 256, 256, 256, 257>} : memref<128xf16, #wafer.memory<spm, tensor>>
 // LOOP-TEMP: wafer.instr.fill %[[TMP]]
 // LOOP-TEMP-NOT: func.func @loop_carried_result_conflicts_with_body_use
-// LOOP-TEMP: %[[AFTER:.+]] = memref.alloc() {wafer.spm.placement = #wafer.spm_placement<65536, 256, 256, 256, 257>} : memref<128xf16, #wafer.memory<spm, tensor>>
+// LOOP-TEMP: %[[AFTER:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536, 256, 256, 256, 257>} : memref<128xf16, #wafer.memory<spm, tensor>>
 // LOOP-TEMP: wafer.instr.fill %[[AFTER]]
 
 // LOOP-CARRY-LABEL: func.func @loop_carried_result_conflicts_with_body_use
-// LOOP-CARRY: %[[INIT:.+]] = memref.alloc() {wafer.spm.placement = #wafer.spm_placement<65536, 256, 256, 256, 257>} : memref<128xf16, #wafer.memory<spm, tensor>>
-// LOOP-CARRY: %[[NEXT:.+]] = memref.alloc() {wafer.spm.placement = #wafer.spm_placement<65792, 256, 256, 257, 258>} : memref<128xf16, #wafer.memory<spm, tensor>>
+// LOOP-CARRY: %[[INIT:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536, 256, 256, 256, 257>} : memref<128xf16, #wafer.memory<spm, tensor>>
+// LOOP-CARRY: %[[NEXT:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65792, 256, 256, 257, 258>} : memref<128xf16, #wafer.memory<spm, tensor>>
 // LOOP-CARRY: scf.yield %[[NEXT]]
 
 // ASYNC-LABEL: func.func @async_token_extends_source_until_wait
-// ASYNC: %[[SOURCE:.+]] = memref.alloc() {wafer.spm.placement = #wafer.spm_placement<65536, 256, 256, 256, 257>} : memref<128xf16, #wafer.memory<spm, tensor>>
+// ASYNC: %[[SOURCE:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536, 256, 256, 256, 257>} : memref<128xf16, #wafer.memory<spm, tensor>>
 // ASYNC: wafer.tile.send %[[SOURCE]]
-// ASYNC: %[[BEFORE:.+]] = memref.alloc() {wafer.spm.placement = #wafer.spm_placement<65792, 256, 256, 257, 258>} : memref<128xf16, #wafer.memory<spm, tensor>>
+// ASYNC: %[[BEFORE:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65792, 256, 256, 257, 258>} : memref<128xf16, #wafer.memory<spm, tensor>>
 // ASYNC: wafer.tile.wait
-// ASYNC: %[[AFTER:.+]] = memref.alloc() {wafer.spm.placement = #wafer.spm_placement<65536, 256, 256, 256, 257>} : memref<128xf16, #wafer.memory<spm, tensor>>
+// ASYNC: %[[AFTER:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536, 256, 256, 256, 257>} : memref<128xf16, #wafer.memory<spm, tensor>>

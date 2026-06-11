@@ -1,4 +1,4 @@
-// RUN: wafer-opt --wafer-place-spm-buffers='spm-base=65536 spm-limit=65792' %s | FileCheck %s
+// RUN: wafer-opt --wafer-plan-spm-memory='spm-base=65536 spm-limit=65792' %s | FileCheck %s
 
 func.func @reuse_after_last_use(%boundary: memref<128xf16, #wafer.memory<ddr, tensor>>) {
   %region = wafer.tile.region(%boundary
@@ -18,7 +18,7 @@ func.func @reuse_after_last_use(%boundary: memref<128xf16, #wafer.memory<ddr, te
 }
 
 // CHECK-LABEL: func.func @reuse_after_last_use
-// CHECK: %[[FIRST:.+]] = memref.alloc() {wafer.spm.placement = #wafer.spm_placement<65536, 256, 256, 256, 257>} : memref<128xf16, #wafer.memory<spm, tensor>>
+// CHECK: %[[FIRST:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536, 256, 256, 256, 257>} : memref<128xf16, #wafer.memory<spm, tensor>>
 // CHECK: wafer.instr.fill %[[FIRST]]
-// CHECK: %[[SECOND:.+]] = memref.alloc() {wafer.spm.placement = #wafer.spm_placement<65536, 256, 256, 256, 257>} : memref<128xf16, #wafer.memory<spm, tensor>>
+// CHECK: %[[SECOND:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536, 256, 256, 256, 257>} : memref<128xf16, #wafer.memory<spm, tensor>>
 // CHECK: wafer.instr.fill %[[SECOND]]

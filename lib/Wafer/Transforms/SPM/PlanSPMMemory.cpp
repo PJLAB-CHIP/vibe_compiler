@@ -1,4 +1,4 @@
-//===- PlaceSPMBuffers.cpp - Place Wafer SPM memrefs ---------------------===//
+//===- PlanSPMMemory.cpp - Plan Wafer SPM memory --------------------------===//
 
 #include "Wafer/Transforms/Passes.h"
 
@@ -20,7 +20,7 @@
 #include <optional>
 
 namespace wafer {
-#define GEN_PASS_DEF_PLACESPMBUFFERSPASS
+#define GEN_PASS_DEF_PLANSPMMEMORYPASS
 #include "Wafer/Transforms/WaferPasses.h.inc"
 
 namespace {
@@ -49,7 +49,7 @@ struct SPMDemand {
   llvm::SmallVector<LiveSegment, 4> segments;
 };
 
-struct PlacedSPMInterval {
+struct AssignedSPMInterval {
   unsigned demandIndex = 0;
   int64_t offset = 0;
   int64_t end = 0;
@@ -194,9 +194,9 @@ static mlir::LogicalResult assignOperationEvents(TileRegionOp tileRegion,
                                                  EventInfo &events) {
   assignRegionEvents(tileRegion.getBody(), PathCondition{}, events);
   if (events.branchLimitExceeded)
-    return tileRegion.emitError()
-           << "lifetime_overlap_conflict: SPM placement supports at most 64 "
-              "nested branch decision points";
+    return tileRegion.emitError() << "lifetime_overlap_conflict: SPM memory "
+                                     "planning supports at most 64 "
+                                     "nested branch decision points";
   return mlir::success();
 }
 
@@ -244,7 +244,7 @@ static int64_t getLifetimeSpan(const SPMDemand &demand) {
 }
 
 static void
-computePlacementPriorities(llvm::MutableArrayRef<SPMDemand> demands) {
+computePlanningPriorities(llvm::MutableArrayRef<SPMDemand> demands) {
   for (SPMDemand &demand : demands) {
     demand.conflictBytes = 0;
     computeLifetimeBounds(demand);
@@ -261,8 +261,8 @@ computePlacementPriorities(llvm::MutableArrayRef<SPMDemand> demands) {
   }
 }
 
-static bool hasHigherPlacementPriority(const SPMDemand &lhs,
-                                       const SPMDemand &rhs) {
+static bool hasHigherPlanningPriority(const SPMDemand &lhs,
+                                      const SPMDemand &rhs) {
   if (lhs.size != rhs.size)
     return lhs.size > rhs.size;
   if (lhs.conflictBytes != rhs.conflictBytes)
@@ -506,9 +506,9 @@ static mlir::LogicalResult initializeSPMDemands(
 
     if (!alloc.getDynamicSizes().empty() ||
         !alloc.getSymbolOperands().empty()) {
-      alloc.emitError()
-          << "unsupported_layout_conversion: SPM placement requires static "
-             "memref.alloc sizes and symbols";
+      alloc.emitError() << "unsupported_layout_conversion: SPM memory planning "
+                           "requires static "
+                           "memref.alloc sizes and symbols";
       result = mlir::failure();
       return;
     }
@@ -573,9 +573,11 @@ collectSPMDemands(TileRegionOp tileRegion, int64_t defaultAlignment,
   return mlir::success();
 }
 
-static mlir::FailureOr<int64_t> findFirstFitOffset(
-    const SPMDemand &demand, llvm::ArrayRef<PlacedSPMInterval> placedIntervals,
-    llvm::ArrayRef<SPMDemand> demands, int64_t spmBase, int64_t spmLimit) {
+static mlir::FailureOr<int64_t>
+findFirstFitOffset(const SPMDemand &demand,
+                   llvm::ArrayRef<AssignedSPMInterval> assignedIntervals,
+                   llvm::ArrayRef<SPMDemand> demands, int64_t spmBase,
+                   int64_t spmLimit) {
   int64_t candidate = spmBase;
   while (true) {
     std::optional<int64_t> alignedOffset = alignUp(candidate, demand.alignment);
@@ -589,13 +591,13 @@ static mlir::FailureOr<int64_t> findFirstFitOffset(
       return mlir::failure();
 
     int64_t nextCandidate = *alignedOffset;
-    for (const PlacedSPMInterval &placed : placedIntervals) {
-      if (!lifetimesOverlap(demand, demands[placed.demandIndex]))
+    for (const AssignedSPMInterval &assigned : assignedIntervals) {
+      if (!lifetimesOverlap(demand, demands[assigned.demandIndex]))
         continue;
-      if (!byteRangesOverlap(*alignedOffset, candidateEnd, placed.offset,
-                             placed.end))
+      if (!byteRangesOverlap(*alignedOffset, candidateEnd, assigned.offset,
+                             assigned.end))
         continue;
-      nextCandidate = std::max(nextCandidate, placed.end);
+      nextCandidate = std::max(nextCandidate, assigned.end);
     }
 
     if (nextCandidate == *alignedOffset)
@@ -604,8 +606,8 @@ static mlir::FailureOr<int64_t> findFirstFitOffset(
   }
 }
 
-static mlir::LogicalResult placeRegion(TileRegionOp tileRegion, int64_t spmBase,
-                                       int64_t spmLimit, int64_t spmAlignment) {
+static mlir::LogicalResult planRegion(TileRegionOp tileRegion, int64_t spmBase,
+                                      int64_t spmLimit, int64_t spmAlignment) {
   EventInfo events;
   if (mlir::failed(assignOperationEvents(tileRegion, events)))
     return mlir::failure();
@@ -615,16 +617,16 @@ static mlir::LogicalResult placeRegion(TileRegionOp tileRegion, int64_t spmBase,
           collectSPMDemands(tileRegion, spmAlignment, events, demands)))
     return mlir::failure();
 
-  computePlacementPriorities(demands);
-  llvm::sort(demands, hasHigherPlacementPriority);
+  computePlanningPriorities(demands);
+  llvm::sort(demands, hasHigherPlanningPriority);
 
-  llvm::SmallVector<PlacedSPMInterval, 8> placedIntervals;
+  llvm::SmallVector<AssignedSPMInterval, 8> assignedIntervals;
   for (auto [demandIndex, demand] : llvm::enumerate(demands)) {
-    mlir::FailureOr<int64_t> offset =
-        findFirstFitOffset(demand, placedIntervals, demands, spmBase, spmLimit);
+    mlir::FailureOr<int64_t> offset = findFirstFitOffset(
+        demand, assignedIntervals, demands, spmBase, spmLimit);
     if (mlir::failed(offset)) {
       demand.alloc.emitError()
-          << "capacity_overflow: SPM placement range [" << spmBase << ", "
+          << "capacity_overflow: SPM planning range [" << spmBase << ", "
           << spmLimit << ") cannot fit " << demand.size
           << " byte buffer with IR-derived lifetime";
       return mlir::failure();
@@ -633,13 +635,13 @@ static mlir::LogicalResult placeRegion(TileRegionOp tileRegion, int64_t spmBase,
     int64_t end = 0;
     if (!checkedAdd(*offset, demand.size, end)) {
       demand.alloc.emitError()
-          << "range_end_overflow: SPM placement end address overflows int64";
+          << "range_end_overflow: SPM planning end address overflows int64";
       return mlir::failure();
     }
 
     if (*offset < spmBase || end > spmLimit) {
       demand.alloc.emitError()
-          << "capacity_overflow: SPM placement range [" << spmBase << ", "
+          << "capacity_overflow: SPM planning range [" << spmBase << ", "
           << spmLimit << ") cannot fit " << demand.size
           << " byte buffer at aligned offset " << *offset;
       return mlir::failure();
@@ -654,21 +656,20 @@ static mlir::LogicalResult placeRegion(TileRegionOp tileRegion, int64_t spmBase,
       return mlir::failure();
     }
 
-    demand.alloc->setAttr(
-        kWaferSPMPlacementAttrName,
-        SPMPlacementAttr::get(demand.alloc.getContext(), *offset, demand.size,
-                              demand.alignment, bankBegin, *bankLimit));
-    placedIntervals.push_back(
-        PlacedSPMInterval{static_cast<unsigned>(demandIndex), *offset, end});
+    demand.alloc->setAttr(kWaferSPMOffsetAttrName,
+                          SPMOffsetAttr::get(demand.alloc.getContext(), *offset,
+                                             demand.size, demand.alignment,
+                                             bankBegin, *bankLimit));
+    assignedIntervals.push_back(
+        AssignedSPMInterval{static_cast<unsigned>(demandIndex), *offset, end});
   }
 
   return mlir::success();
 }
 
-struct PlaceSPMBuffersPass
-    : public impl::PlaceSPMBuffersPassBase<PlaceSPMBuffersPass> {
-  using impl::PlaceSPMBuffersPassBase<
-      PlaceSPMBuffersPass>::PlaceSPMBuffersPassBase;
+struct PlanSPMMemoryPass
+    : public impl::PlanSPMMemoryPassBase<PlanSPMMemoryPass> {
+  using impl::PlanSPMMemoryPassBase<PlanSPMMemoryPass>::PlanSPMMemoryPassBase;
 
   void runOnOperation() final {
     if (spmBase < 0 || spmLimit <= spmBase) {
@@ -688,7 +689,7 @@ struct PlaceSPMBuffersPass
     getOperation().walk([&](TileRegionOp tileRegion) {
       if (mlir::failed(result))
         return;
-      result = placeRegion(tileRegion, spmBase, spmLimit, spmAlignment);
+      result = planRegion(tileRegion, spmBase, spmLimit, spmAlignment);
     });
     if (mlir::failed(result))
       signalPassFailure();

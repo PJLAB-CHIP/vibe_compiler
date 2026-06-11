@@ -42,7 +42,7 @@ source model / exported program / pre-exported StableHLO
   -> wafer.tile.region bufferized tile-local execution IR
   -> candidate DDR tile-view materialization
   -> wafer.instr.* instruction-level IR over Wafer-tagged memref
-  -> SPM placement + DDR/resource planning
+  -> SPM memory planning + DDR memory planning
   -> wafer.launch runtime launch boundary
   -> C ABI / packet emission from placed instruction IR
   -> RISC-V kcore shared object + package metadata
@@ -375,7 +375,7 @@ tile-and-fuse 的主文档，本架构文档只规定它在全 pipeline 中的�
   memref graph 上产出 instruction-level `wafer.instr.*` IR；SPM/DDR/resource
   planner 只消费 instruction-level IR 的 memref use-def、effect 和 lifetime，
   不从高层 op 名或单个 case 猜 demand。
-- 在 accepted layout、SPM placement 和 DDR allocation contract 后，把 unplaced memref 降到 placed
+- 在 accepted layout、SPM memory planning 和 DDR allocation contract 后，把 unplaced memref 降到 placed
   memref 或 Wafer descriptor。
 
 `wafer.tile.region` 不重新做 group formation、root tile search 或 traversal selection，也不表达
@@ -399,7 +399,7 @@ bufferization 见 `tasks/2026-05-21-wafer-spm-bufferization-design.md`；DDR res
 - 如果 RDMA/WDMA 读写的是 DDR tile slice，输入 IR 必须已经通过 `memref.subview` / strided
   memref view 表达该 slice；instruction legalization 只消费 view，不从 tile shape 自己恢复 view。
 - 将 target-abstract op lower 到复用 Wafer-tagged memref 的 instruction-level
-  `wafer.instr.*` IR，再由 SPM placement 在同一 IR 上填入 offset/range/bank；
+  `wafer.instr.*` IR，再由 SPM memory planning 在同一 IR 上填入 offset/range/bank；
   这一层不直接手写 raw packet bitfield。
 - 覆盖 CT、NE、RDMA、WDMA、TDMA 的 issue/drain 抽象和 memref read/write/issue effect。
 - 区分 issue-only op、local drain、host-visible boundary、group barrier。
@@ -764,7 +764,7 @@ lib/Wafer/
     StableHLOToLinalg/
     WaferGroupToTileRegion/
     WaferInstructionLegalization/
-    WaferSPMPlacement/
+    WaferSPMMemoryPlanning/
     WaferToLLVM/
 
 tools/
@@ -836,8 +836,8 @@ ModelImport/FrontendProgram
   -> memref-backed wafer.tile.region IR
   -> candidate DDR tile-view materialization
   -> instruction-level wafer.instr.* IR over unplaced Wafer-tagged memref
-  -> placed instruction-level IR with SPM placement facts
-  -> DDR/resource legality facts
+  -> placed instruction-level IR with SPM memory planning facts
+  -> DDR memory planning facts
   -> accepted/rejected/split group plan decision
   -> committed wafer.tile.region + accepted instruction boundary
   -> placed memref / access descriptor realization
@@ -872,7 +872,7 @@ ModelImport/FrontendProgram
   verifier 依赖的 IR contract。
 - layout materialization ops 是真实 data movement，负责表达 physical layout conversion，
   不作为 metadata cast。
-- instruction legalization / selection 必须发生在 SPM placement 之前；target-abstract `wafer.tile.*`
+- instruction legalization / selection 必须发生在 SPM memory planning 之前；target-abstract `wafer.tile.*`
   op 只表达 target family，instruction-level IR 才表达 concrete storage values、
   temp/psum/staging、queue 和 async lifetime。
 - Wafer memory attr 只在 `wafer.tile.region` / SPM bufferization 层出现，不进入
@@ -911,7 +911,7 @@ V0 先保持统一 `wafer` dialect namespace，但公开 op mnemonic 只保留�
 | Communication | `tasks/2026-05-25-wafer-communication-dialect-design.md` | 草案 | tile_region / SPM materialization 之后的 collective-level op、p2p schedule、Direct DTE V0、token/effect、sync boundary | compute op legality、SPM allocator internals、SPMD tensor collective handoff |
 | DDR resource | `tasks/2026-05-25-wafer-ddr-resource-allocation-design.md` | 草案 | `#wafer.memory<ddr, *>` demand、external/runtime allocation policy、resident constant、buffer object pool/domain、capacity/bandwidth | tensor fusion、SPM offset、packet bitfield |
 | Launch / runtime package | `tasks/2026-05-25-wafer-launch-runtime-package-design.md` | 草案 | `wafer.launch`、HPGR/KMD/legacy Tsm 分层、completion、buffer object pools、bootparam/TLV、package metadata | Linalg tiling、group formation、tile-local ordering |
-| C ABI / golden packet | `tasks/2026-05-25-wafer-c-abi-golden-packet-design.md` | 草案 | placed instruction-level Wafer IR 到 C ABI / packet emission 的参数单位、wait policy、golden packet | 上层 IR formation、layout search 和 SPM placement |
+| C ABI / golden packet | `tasks/2026-05-25-wafer-c-abi-golden-packet-design.md` | 草案 | placed instruction-level Wafer IR 到 C ABI / packet emission 的参数单位、wait policy、golden packet | 上层 IR formation、layout search 和 SPM memory planning |
 | Verification plan | `tasks/2026-05-25-wafer-verification-plan-design.md` | 草案 | stage diagnostics、roundtrip、golden packet、runtime shielding、PMU/cost-model gate | 替代各 dialect 语义设计 |
 | Serving integration | 暂不支持 | 延后 | graph capture、prefill/decode、KV cache 管理 | compiler core IR 合同 |
 

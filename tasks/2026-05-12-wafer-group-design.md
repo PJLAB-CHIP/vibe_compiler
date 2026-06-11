@@ -4,7 +4,7 @@
 
 状态：设计草案；2026-05-25 边界收口；2026-05-27 补 post-SPMD tensor collective 边界；
 2026-06-03 收敛 R3.1 root-seeded logical group scope；2026-06-04 对齐
-instruction-level Wafer IR 先于 SPM placement；2026-06-05 对齐 memref-backed Wafer memory attr 合同；
+instruction-level Wafer IR 先于 SPM memory planning；2026-06-05 对齐 memref-backed Wafer memory attr 合同；
 2026-06-08 同步 DDR/resource policy 命名；2026-06-10 前移 candidate DDR tile-view producer 到 R3.2e
 
 本文只定义 `wafer.group` 的 tensor-level grouping 和 scheduling contract。它回答：
@@ -775,16 +775,16 @@ SPM allocation、layout assignment、DDR/resource demand 和 compute/movement le
   linalg indexing maps 生成同类 boundary slice fact。它只构造 planner candidate evaluation，不 accept plan，
   也不把 rejected candidate 写入主 IR；真实 candidate traversal / tile shape search 仍由 R3.2h/planner
   闭环执行。
-- R3.2f 恢复 SPM placement：只消费 R3.2e candidate tile-view materialization 后经 R3.2d
+- R3.2f 恢复 SPM memory planning：只消费 R3.2e candidate tile-view materialization 后经 R3.2d
   instruction legalization 产出的 instruction-level IR with actual DDR
   tile views and unplaced Wafer-tagged memref，在真实 SPM window、
   alignment、layout padding、scratch/psum/temp、materialization temp、communication staging、
-  lifetime overlap、range/end-address/bank span 和 conflict 约束下搜索可接受 buffer placement。
-- R3.2g 恢复 DDR/resource planning 和 compute/movement legality analysis：消费 placed
+  lifetime overlap、range/end-address/bank span 和 conflict 约束下搜索可接受 memory plan。
+- R3.2g 恢复 DDR memory planning 和 compute/movement legality analysis：消费 memory-planned
   instruction-level IR 和 SPM facts，覆盖 external/compiler-managed/resident-constant、bandwidth/range/
   pool/domain，以及 op layout/dtype/shape/effect 合法性；不能回头改变 instruction semantics。
 - R3.2h 才能做 closed-loop group planner：搜索 traversal、tile shape、layout、DDR tile view、
-  instruction selection、SPM/DDR/resource plan，并输出 accepted / rejected / split decision。
+  instruction selection、SPM/DDR memory plan，并输出 accepted / rejected / split decision。
 
 R3.3 只 materialize R3.2h 已接受的 plan 为 committed `wafer.tile.region`。R3.4/R3.5 只把
 R3.2h 已经接受的 layout/instruction/SPM/DDR facts 落到可验证 IR 或 resource boundary；它们不能成为
@@ -816,7 +816,7 @@ Pipeline position:
 - Downstream consumer:
   R3.2b layout planning、R3.2c group-to-tile-region lowering、
   R3.2e candidate DDR tile-view materialization、R3.2d Wafer instruction legalization / selection、
-  R3.2f SPM placement、R3.2g DDR/resource planning + compute/movement legality analysis，
+  R3.2f SPM memory planning、R3.2g DDR memory planning + compute/movement legality analysis，
   以及 R3.2h closed-loop planner。
 - User-level driver / named pipeline:
   主线仍由 `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 产生 R3.1 group；
@@ -1056,7 +1056,7 @@ normalization 展开成 structured tensor IR；group 只处理 staged dataflow�
 - RoPE schedule：由 slice/reshape/broadcast/elementwise 表达，sin/cos table 是普通
   `ConstantLike` source 或上游 input，不形成新的 group boundary 语义。
 - MLP schedule：GEMM + activation + elementwise multiply + GEMM 可以作为候选 group，但是否保持
-  一个 group 取决于 SPM allocation、DDR/resource planning 和 layout planning；失败时按 producer cut 或 stage cut 拆分。
+  一个 group 取决于 SPM allocation、DDR memory planning 和 layout planning；失败时按 producer cut 或 stage cut 拆分。
 
 如果这些 staged schedule 找不到合法且成本可接受的 selected traversal domain，planner 应拆成多个
 groups，并通过 `wafer.tile.store` / `wafer.tile.load`、DDR compiler-managed allocation 或下游 communication
@@ -1091,7 +1091,7 @@ planner 的替代品。
 ```text
 group planner 在当前 transformation 中生成 accepted schedule。
 planner 可以导出等价 Transform script，用于复现、调试和调参。
-Transform script replay 不能绕过 verifier、layout planning、SPM allocation 或 DDR/resource planning。
+Transform script replay 不能绕过 verifier、layout planning、SPM allocation 或 DDR memory planning。
 ```
 
 可用场景：

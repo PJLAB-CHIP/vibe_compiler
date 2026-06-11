@@ -2,9 +2,9 @@
 
 日期：2026-05-25
 
-状态：设计草案；2026-05-25 边界收口；2026-06-04 对齐 instruction-level Wafer IR 先于 SPM placement；
+状态：设计草案；2026-05-25 边界收口；2026-06-04 对齐 instruction-level Wafer IR 先于 SPM memory planning；
 2026-06-05 对齐 memref-backed Wafer memory attr 合同；2026-06-08 同步 DDR allocation policy 命名；
-2026-06-10 同步 candidate DDR tile-view producer / SPM placement 重排
+2026-06-10 同步 candidate DDR tile-view producer / SPM memory planning 重排
 
 本文定义 Wafer 后端中 target-abstract compute / movement IR 的边界。它连接
 `wafer.group` 产生的 tile-local tensor program、layout materialization / SPM bufferization，
@@ -54,7 +54,7 @@ scheduled wafer.group tensor body
   -> layout materialization and accepted Wafer-tagged memref values
   -> candidate DDR tile-view materialization
   -> instruction-level wafer.instr.* IR over unplaced Wafer-tagged memref values
-  -> same instruction-level IR after SPM placement
+  -> same instruction-level IR after SPM memory planning
   -> codegen emission to Wafer C ABI / packet / package metadata
 ```
 
@@ -89,7 +89,7 @@ Pipeline position:
 - Output artifact / IR:
   instruction-level Wafer IR over unplaced Wafer-tagged memref，或结构化 failure reason。
 - Downstream consumer:
-  R3.2f SPM placement、R3.2g DDR/resource legality、R3.2h closed-loop planner，以及 R3.6
+  R3.2f SPM memory planning、R3.2g DDR memory planning、R3.2h closed-loop planner，以及 R3.6
   codegen emission。tiled DDR load/store view 必须已经在 R3.2e 或 accepted materialization 中显式提供。
 - User-level driver / named pipeline:
   主线仍从 `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 进入 R3.1/R3.2；
@@ -99,7 +99,7 @@ Pipeline position:
   symbol 或 packet field。
 - Completion gate:
   对 R3.2c 已支持的 compute/movement/view family 生成 verifier-legal instruction-level IR；
-  unsupported hardware instruction form 必须结构化失败，不能让 SPM placement 从 target-abstract op
+  unsupported hardware instruction form 必须结构化失败，不能让 SPM memory planning 从 target-abstract op
   猜 memref demand。
 ```
 
@@ -135,7 +135,7 @@ split 决策；内部 reduction 是否需要进一步切分是 op tiling / SPM a
 - 如果存在累加输入，它应是 SSA operand；如果结果需要被后续累加，使用 SSA result 或
   loop-carried value 表达，不把 psum 生命周期复制成全局计划 attr。
 - layout interface 给出 aligned-only 约束。2D 矩阵通常映射到 `Cx` family；具体 C0、padding 和
-  descriptor 由 `computeWaferPhysicalTensorInfo`、SPM placement 和 placement realization 计算。
+  descriptor 由 `computeWaferPhysicalTensorInfo`、SPM memory planning 和 placement realization 计算。
 
 V0 不把 bias、scale、sparse、INT8 quant、fused activation 作为默认合同。若后续引入 fused form，
 它们应是可验证 operand/attr，并能 canonicalize 回非 fused form 或明确 lower 到目标 wrapper。
@@ -326,7 +326,7 @@ Placed instruction-level verifier：
 | layout materialization | target-abstract Wafer op | accepted Wafer-tagged memref + materialization edge | 基于 op interface 做 layout assignment 和真实 movement cut |
 | candidate DDR tile-view materialization | candidate target-abstract tile-region IR + explicit static boundary slice fact 或 candidate output tile offsets/sizes | same candidate evaluation tile-region IR with DDR `memref.subview` tile operands | 覆盖 external boundary extract、direct output insert storeback，以及单结果 destination-style linalg root 的 candidate tile offsets/sizes 到 boundary slice proposal；closed-loop traversal / tile-shape search 仍由 planner 后续产生 facts；不从名字或 whole-boundary shape 猜 DMA |
 | instruction legalization / selection | accepted layout IR | instruction-level `wafer.instr.*` over unplaced Wafer-tagged memref | 将 target-abstract op 改写成 CT/NE/TDMA/RDMA/WDMA 指令形态，列出 queue、effects、temp/psum/staging memref values、alias 和 descriptor attrs；DTE communication 不进入普通 `wafer.instr` path |
-| SPM placement | instruction-level IR with unplaced Wafer-tagged memref | same instruction-level IR with placed SPM memref values | 从 memref use-def 和 instruction effects 收集 demand、liveness，分配 offset/range/bank |
+| SPM memory planning | instruction-level IR with unplaced Wafer-tagged memref | same instruction-level IR with accepted SPM offset facts | 从 memref use-def 和 instruction effects 收集 demand、liveness，分配 offset/range/bank |
 | placement realization | placed instruction-level IR | placed `memref` / flat storage / access descriptor | 复用标准 memref lowering 或生成目标 access descriptor |
 | codegen emission | placed instruction-level IR | LLVM call / C ABI call / package metadata | 生成具体 ABI call 或 packet emission，不回头修改 schedule/layout |
 
@@ -343,7 +343,7 @@ V0 模型：
 - target-abstract compute/movement op 从 SSA 语义看是顺序 op；lowering 可以把它拆成 issue op 和
   later drain/wait op。
 - instruction legalization / selection 决定哪些 issue / drain / wait event 参与 storage lifetime；
-  SPM placement 通过 instruction effect event 扩展 async op 的 source/destination lifetime。
+  SPM memory planning 通过 instruction effect event 扩展 async op 的 source/destination lifetime。
 - local drain 是显式 sync op，例如 `wafer.instr.local_drain` 或等价 IR；它不是 compute op 的默认后缀。
 - DTE wait、stream wait、group barrier 属于 `wafer.tile.*` communication / `wafer.instr.local_drain` 和后续 sync boundary 的完成边界，不能用 local
   NCC wait 代替。

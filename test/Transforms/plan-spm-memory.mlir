@@ -1,5 +1,5 @@
-// RUN: wafer-opt --wafer-place-spm-buffers %s | FileCheck %s
-// RUN: not wafer-opt --wafer-place-spm-buffers='spm-base=65536 spm-limit=65792' %s 2>&1 | FileCheck --check-prefix=OVERFLOW %s
+// RUN: wafer-opt --wafer-plan-spm-memory %s | FileCheck %s
+// RUN: not wafer-opt --wafer-plan-spm-memory='spm-base=65536 spm-limit=65792' %s 2>&1 | FileCheck --check-prefix=OVERFLOW %s
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
@@ -39,11 +39,11 @@ func.func @place_instruction_spm(%input: memref<2x3xf16, #wafer.memory<ddr, tens
 }
 
 // CHECK-LABEL: func.func @place_instruction_spm
-// CHECK: %[[LOADED:.+]] = memref.alloc() {wafer.spm.placement = #wafer.spm_placement<65536, 12, 256, 256, 257>} : memref<2x3xf16, #wafer.memory<spm, tensor>>
+// CHECK: %[[LOADED:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536, 12, 256, 256, 257>} : memref<2x3xf16, #wafer.memory<spm, tensor>>
 // CHECK: wafer.instr.rdma {{.*}} to %[[LOADED]]
-// CHECK: %[[ELEMENTWISE:.+]] = memref.alloc() {wafer.spm.placement = #wafer.spm_placement<65792, 12, 256, 257, 258>} : memref<2x3xf16, #wafer.memory<spm, tensor>>
+// CHECK: %[[ELEMENTWISE:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65792, 12, 256, 257, 258>} : memref<2x3xf16, #wafer.memory<spm, tensor>>
 // CHECK: wafer.instr.elementwise <add> %[[LOADED]], %[[LOADED]] into %[[ELEMENTWISE]]
-// CHECK: %[[CX:.+]] = memref.alloc() {wafer.spm.placement = #wafer.spm_placement<65536, 256, 256, 256, 257>} : memref<4x8xf16, #wafer.memory<spm, cx>>
+// CHECK: %[[CX:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536, 256, 256, 256, 257>} : memref<4x8xf16, #wafer.memory<spm, cx>>
 // CHECK: wafer.instr.wdma %[[ELEMENTWISE]]
 
 // OVERFLOW: capacity_overflow

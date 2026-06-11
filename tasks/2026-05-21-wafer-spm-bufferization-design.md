@@ -2,17 +2,17 @@
 
 日期：2026-05-21
 
-状态：设计草案；2026-05-25 边界收口；2026-06-04 对齐 instruction-level Wafer IR 先于 SPM placement；
+状态：设计草案；2026-05-25 边界收口；2026-06-04 对齐 instruction-level Wafer IR 先于 SPM memory planning；
 2026-06-05 对齐 memref-backed buffer contract；2026-06-08 同步 DDR/resource policy 命名；
-2026-06-10 R3.2e 前移为 candidate DDR tile-view producer，SPM placement 后移为 R3.2f；
-2026-06-10 R3.2f V0 落地为 instruction-level SPM placement fact；
+2026-06-10 R3.2e 前移为 candidate DDR tile-view producer，SPM memory planning 后移为 R3.2f；
+2026-06-10 R3.2f V0 落地为 instruction-level `wafer.spm.offset` accepted fact；
 2026-06-10 R3.2f lifetime dataflow 覆盖 `scf.if` / `scf.for` / async token wait；
 2026-06-11 R3.2f allocator 从 alloc-event first-fit 升级为 pressure-weighted offline packing
 
 本文定义 Wafer SPM bufferization、tile-local allocation 和 storage verification。它服务于
 `wafer.group` planning 的合法性搜索，也负责把 `wafer.tile.region` 中的 tile-local value
 落到可验证的 memory space、liveness、range 和 effect。
-SPM placement 的 instruction-level 输入合同由
+SPM memory planning 的 instruction-level 输入合同由
 `tasks/2026-06-05-wafer-instruction-ir-design.md` 定义；本文只消费该层暴露的
 Wafer-tagged memref / `wafer.instr.*` / effects，不重复定义 instruction op。
 
@@ -21,7 +21,7 @@ Wafer-tagged memref / `wafer.instr.*` / effects，不重复定义 instruction op
 - 消费 R3.2d 产出的 instruction-level `wafer.instr.*` IR 和 unplaced
   `memref<..., #wafer.memory<spm, layout>>`，并从 memref use-def、effects、queue 和 async policy
   构造 allocation input。
-- 对 instruction-level IR 做 SPM placement、range/end-address/alignment/bank-span verification 和 failure
+- 对 instruction-level IR 做 SPM memory planning、range/end-address/alignment/bank-span verification 和 failure
   feedback。
 - 为 placement realization 提供 accepted offset/range/lifetime/alias 信息。
 
@@ -42,7 +42,7 @@ layout materialization
   -> instruction-level IR with unplaced Wafer-tagged memref values
   -> storage requirement collection
   -> liveness/effect analysis
-  -> SPM placement
+  -> SPM memory planning
   -> placed instruction/memref realization
   -> range/end-address verification
 ```
@@ -60,22 +60,23 @@ Pipeline position:
   `memref<..., #wafer.memory<spm, layout>>` values，以及 accepted layout assignment、
   materialization cut、effect/order 和 target SPM policy。
 - Current stage responsibility:
-  在同一 instruction-level IR 上为 `#wafer.memory<spm, layout>` memref 做 placement，计算 offset/end/bank span、
-  alignment、lifetime/reuse、must-alias/must-not-alias、reserved range 和 range-end verification。
+  在同一 instruction-level IR 上为 `#wafer.memory<spm, layout>` memref 做 SPM memory planning，
+  计算 offset/end/bank span、alignment、lifetime/reuse、must-alias/must-not-alias、reserved range
+  和 range-end verification。
 - Output artifact / IR:
-  same instruction-level IR with `wafer.spm.placement` accepted facts on SPM memref definitions，或结构化
+  same instruction-level IR with `wafer.spm.offset` accepted facts on SPM memref definitions，或结构化
   allocation failure reason；后续 R3.4 再把 fact materialize 成 placed memref / descriptor。
 - Downstream consumer:
-  R3.2g DDR/resource legality、R3.2h closed-loop planner、R3.4 materialized placed storage IR，
+  R3.2g DDR memory planning、R3.2h closed-loop planner、R3.4 materialized placed storage IR，
   以及 R3.6 codegen emission。
 - User-level driver / named pipeline:
-  当前可重放入口是 `wafer-lower-groups-to-placed-instr`，它复用 R3.2c/R3.2d lowering 后追加
-  `wafer-place-spm-buffers`。closed-loop planner 后续调用同一 stage；单独 placement pass 只作为
+  当前可重放入口是 `wafer-lower-groups-to-memory-planned-instr`，它复用 R3.2c/R3.2d lowering 后追加
+  `wafer-plan-spm-memory`。closed-loop planner 后续调用同一 stage；单独 SPM planning pass 只作为
   instruction-level lit/debug 入口。
 - Explicit non-goals:
   不选择 instruction form、不改变 layout assignment、不分配 DDR allocation、不生成 C ABI call 或 packet。
 - Completion gate:
-  对 R3.2d 支持的 storage kinds 给出 deterministic placement 或结构化失败；placed storage 的 size、
+  对 R3.2d 支持的 storage kinds 给出 deterministic memory plan 或结构化失败；planned storage 的 size、
   alignment、range/end、lifetime 和 alias relation 能由 IR/effect/verifier 重算。
 ```
 
@@ -94,7 +95,7 @@ Pipeline position:
 输入：
 
 - transformation-local 或已经 committed 的 `wafer.tile.region` IR；在 R3.2d
-  中这是 candidate evaluation IR / cloned IR，rejected tile-region IR 必须丢弃。SPM placement 不直接消费
+  中这是 candidate evaluation IR / cloned IR，rejected tile-region IR 必须丢弃。SPM memory planning 不直接消费
   target-abstract tile-region IR，而消费 R3.2d 生成的 instruction-level IR with unplaced
   Wafer-tagged memref values。
 - layout planner 产生的 physical layout assignment 和 materialization demand。
@@ -170,11 +171,11 @@ SPM allocator 不按 op 名字猜 buffer，也不把一个 target-abstract op �
 - `wafer.instr.local_drain` 和后续 sync boundary：报告 local drain、comm wait、group barrier 对 instruction event、buffer lifetime 和
   reuse 的收口。
 
-如果某个 target-abstract op 无法产出可验证 instruction-level IR，不能让 SPM placement 用名字或示例
+如果某个 target-abstract op 无法产出可验证 instruction-level IR，不能让 SPM memory planning 用名字或示例
 shape 猜测；应先扩 op interface / instruction IR，或保持在更高层 IR。
 如果当前只有 R3.2a/R3.2b 的 group-level analysis summary，而没有 R3.2c
-`wafer.tile.region` IR，SPM placement 不能直接运行；如果只有 R3.2c target-abstract
-tile-region IR 而没有 R3.2e candidate DDR tile views 和 R3.2d instruction-level IR，SPM placement
+`wafer.tile.region` IR，SPM memory planning 不能直接运行；如果只有 R3.2c target-abstract
+tile-region IR 而没有 R3.2e candidate DDR tile views 和 R3.2d instruction-level IR，SPM memory planning
 同样不能运行。必须先把 tile load/store 的 DDR operand 降成真实 `memref.subview` view，再降到
 `wafer.instr.*` / Wafer-tagged memref，让 buffer values、lifetime、effect 和 DMA descriptor
 都可由 IR 结构重算。
@@ -189,7 +190,7 @@ tile-region IR 而没有 R3.2e candidate DDR tile views 和 R3.2d instruction-le
 - wrapper-specific byte count / range-end rule。
 
 `BufferDemand` 的 `wafer_memory_attr`、`physical_layout` 和 `storage_size` 适用于所有 memory space；
-但本文 allocator 只为 `#wafer.memory<spm, *>` demand 放置 offset。`#wafer.memory<ddr, *>` demand 不进入 SPM placement，只进入 movement legality、
+但本文 allocator 只为 `#wafer.memory<spm, *>` demand 放置 offset。`#wafer.memory<ddr, *>` demand 不进入 SPM memory planning，只进入 movement legality、
 range/bandwidth cost、host-visible lifetime 和 DDR resource ownership 检查。
 
 ## 5. Lifetime and Effects
@@ -238,7 +239,7 @@ lowering 下放置 `#wafer.memory<spm, *>` memref。它不负责全局寻找最�
 输出：
 
 ```text
-SPMPlacementReport {
+SPMOffsetResult {
   status
   peak_spm
   allocation_summary
@@ -376,7 +377,7 @@ logical group + tile/layout proposal
   -> materialize candidate DDR tile views as memref.subview operands
   -> legalize/select instruction-level wafer.instr.* over unplaced Wafer-tagged memref values
   -> collect BufferDemand + liveness/effect from instruction-level IR
-  -> SPM placement
+  -> SPM memory planning
   -> accepted plan or failure feedback
   -> commit accepted wafer.tile.region with layout/materialization/instruction/SPM facts
   -> materialize placed instruction/memref IR
@@ -385,7 +386,7 @@ logical group + tile/layout proposal
 原因是 layout、SPM、tile shape 和 target-abstract op selection 强耦合。早期如果只看 logical
 group summary 或裸 tensor value，再把真实 allocation 推到更晚的 pass，容易让合法性承诺漂移；
 但把 rejected tile-region IR 直接落入主 IR 再回滚也会污染 IR 边界。因此 instruction legalization /
-selection 和 SPM placement 都应在 transformation-local candidate evaluation `wafer.tile.region` 上运行；
+selection 和 SPM memory planning 都应在 transformation-local candidate evaluation `wafer.tile.region` 上运行；
 allocation 使用 instruction-level IR 的 memref / lifetime / effect 事实源，而不是 target-abstract
 op 的粗粒度 effect。
 
@@ -435,11 +436,11 @@ pool/domain、host visibility、compiler-managed DDR allocation、constant stora
 
 不要把 `wafer.tile.region` body 已经表达的执行结构复制成全局 allocation plan attr。
 
-### 12.1 R3.2f V0 Placement Fact
+### 12.1 R3.2f V0 Accepted SPM Offset Fact
 
-R3.2f V0 在 instruction-level IR 上使用 `wafer.spm.placement` op attr 表达已接受的 SPM
-placement fact。该 attr 挂在定义 SPM buffer value 的 `memref.alloc` 上，值为
-`#wafer.spm_placement<offset, size, alignment, bank_begin, bank_limit>`：
+R3.2f V0 在 instruction-level IR 上使用 `wafer.spm.offset` op attr 表达 SPM memory planning
+接受的 offset/range fact。该 attr 挂在定义 SPM buffer value 的 `memref.alloc` 上，值为
+`#wafer.spm_offset<offset, size, alignment, bank_begin, bank_limit>`：
 
 - `offset` 是 tile-local SPM byte offset。
 - `size` 是 `computeWaferPhysicalTensorInfo(memrefType).physicalBytes`，不是 logical compact bytes。
@@ -447,11 +448,11 @@ placement fact。该 attr 挂在定义 SPM buffer value 的 `memref.alloc` 上�
 - `bank_begin` / `bank_limit` 是按 256B bank-line 粒度计算的半开区间
   `[offset / 256, ceil((offset + size) / 256))`。
 
-placement arena 的作用域是单个 `wafer.tile.region`，因为普通 SPM window 是 tile-local。不同
+SPM planning arena 的作用域是单个 `wafer.tile.region`，因为普通 SPM window 是 tile-local。不同
 tile-region 可以使用相同 offset；同一个 tile-region 内的 SPM allocation 必须在 accepted
-placement 下不重叠、range/end 合法。当前 R3.2f V0 递归读取 `wafer.tile.region` 内的
+memory plan 下不重叠、range/end 合法。当前 R3.2f V0 递归读取 `wafer.tile.region` 内的
 instruction-level IR、structured control-flow、SSA alias 和 async token use，建立可重算的 lifetime
-segments；weighted placement 只避开 lifetime segment 可同时发生且 byte range overlap 的已放置 interval。
+segments；weighted planner 只避开 lifetime segment 可同时发生且 byte range overlap 的已分配 interval。
 
 R3.2f V0 的 dataflow 边界：
 
@@ -469,25 +470,25 @@ R3.2f V0 的 dataflow 边界：
 
 当前实现边界是 R3.2d 已支持的 structured `scf.if` / `scf.for`、single-block `scf.yield` 和
 instruction-level async token use。未结构化 CFG、超过 64 个 branch decision point，以及未来显式
-must-alias group 需要先由 SSA / op interface / verifier 表达，再进入 placement；不能靠名字或旁路
-协议恢复。
+must-alias group 需要先由 SSA / op interface / verifier 表达，再进入 SPM memory planning；不能靠
+名字或旁路协议恢复。
 
-R3.2f placement 使用经典静态 memory planning / interval allocation 的保守 baseline，而不是把
+R3.2f SPM memory planning 使用经典静态 memory planning / interval allocation 的保守 baseline，而不是把
 alloc event 顺序直接当作 allocation 顺序。算法分两层：
 
 - lifetime analysis 仍由当前 IR 的 SSA、region、path condition 和 async token use 重算，得到可同时
   发生的 lifetime segments。
-- placement order 使用 pressure-weighted offline packing：优先放置 physical size 大、与其它 live
+- allocation order 使用 pressure-weighted offline packing：优先放置 physical size 大、与其它 live
   demand 冲突压力高、lifetime span 长的 demand，再按 alloc event / ordinal 稳定打破平局。
 
 这样可以避免小 buffer 先占低地址造成 arena fragmentation，导致后续大 buffer 在总容量可行时失败。
-offset 选择仍保持 deterministic bounded search：只在当前 placed intervals 形成的合法 gap 中选最低
+offset 选择仍保持 deterministic bounded search：只在当前 assigned intervals 形成的合法 gap 中选最低
 可行 offset；未接受 offset、candidate 排序权重和搜索 trace 都保持为 analysis，不写入
-`wafer.spm.placement`。后续若要引入 graph coloring、ILP、schedule-aware double buffering 或
+`wafer.spm.offset`。后续若要引入 graph coloring、ILP、schedule-aware double buffering 或
 bank-aware coloring，必须继续保持 same input/output IR contract，只改变 analysis / search。
 
-`wafer.spm.placement` 是 accepted fact，不是搜索 trace。失败原因仍通过 pass diagnostic 返回，
-不写进 IR；未接受的 candidate offset、first-fit 探索过程和 repair suggestion 都保持为 analysis。
+`wafer.spm.offset` 是 accepted fact，不是搜索 trace。失败原因仍通过 pass diagnostic 返回，
+不写进 IR；未接受的 candidate offset、lowest-gap 探索过程和 repair suggestion 都保持为 analysis。
 
 ## 13. Verifier
 
@@ -518,7 +519,7 @@ tile plan
   -> candidate DDR tile-view materialization
   -> instruction-level wafer.instr.* over unplaced Wafer-tagged memref values
   -> instruction storage / effect demand
-  -> SPM placement
+  -> SPM memory planning
   -> placed instruction/memref realization
   -> accepted or failure feedback
 ```

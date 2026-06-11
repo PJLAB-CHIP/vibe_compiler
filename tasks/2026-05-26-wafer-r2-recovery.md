@@ -20,7 +20,7 @@ tensor IR 合同记录。
 
 本记录本身不声明 framework-specific PyTorch/JAX capture、完整 Shardy propagation/SPMD partitioner
 pipeline、mask/select/dynamic-shape 全覆盖、placed instruction-level constant slicing、group schedule
-completion、SPM/DDR/resource planning 或 runtime/package 闭环完成。2026-05-27 后续 P2.F1/P2.S1
+completion、SPM/DDR memory planning 或 runtime/package 闭环完成。2026-05-27 后续 P2.F1/P2.S1
 分别补上 source-built PyTorch/XLA capture adapter、真实 `mark_sharding` pre-SPMD program 和
 Wafer Shardy propagation stage gate；2026-06-01 复查删除了误导性的 Python post-SPMD export
 入口，它不是 P2.S1 主链完成证据。当前状态记录在 `tasks/progress.md` 和

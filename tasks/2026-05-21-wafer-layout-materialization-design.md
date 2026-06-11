@@ -3,7 +3,7 @@
 日期：2026-05-21
 
 状态：设计草案；2026-05-25 边界收口；2026-06-04 对齐 instruction-level Wafer IR 先于
-SPM placement；2026-06-05 对齐 memref-backed Wafer memory attr 合同；2026-06-08 同步 DDR/resource
+SPM memory planning；2026-06-05 对齐 memref-backed Wafer memory attr 合同；2026-06-08 同步 DDR/resource
 和 instruction-level pipeline 边界；2026-06-10 同步 candidate DDR tile-view producer / R3.2h
 closed-loop 边界
 
@@ -128,8 +128,8 @@ Pipeline position:
   本阶段不修改 `wafer.group`，不生成 `wafer.tile.region`，不写 layout attr。
 - Downstream consumer:
   R3.2c group-to-tile-region lowering、R3.2d Wafer instruction legalization / selection、
-  R3.2e candidate DDR tile-view materialization、R3.2f SPM placement、
-  R3.2g DDR/resource planning + compute/movement legality analysis，
+  R3.2e candidate DDR tile-view materialization、R3.2f SPM memory planning、
+  R3.2g DDR memory planning + compute/movement legality analysis，
   以及 R3.2h closed-loop planner。
 - User-level driver / named pipeline:
   主线仍由 `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 产生 R3.1 group；

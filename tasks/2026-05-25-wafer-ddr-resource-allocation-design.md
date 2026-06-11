@@ -15,7 +15,7 @@ remote/pinned BO，并可通过 Wafer runtime / DTE / memcpy path 访问，它�
 `#wafer.memory<ddr, layout>`，但带有不同 domain/pool allocation policy。
 
 本文只负责 `#wafer.memory<ddr, layout>` 的 demand、allocation policy、resident allocation
-contract、capacity/bandwidth/range legality 和 runtime allocation failure diagnostic。它不选择
+contract、capacity/bandwidth/range planning 和 runtime allocation failure diagnostic。它不选择
 group boundary、tile shape、physical layout、SPM offset、compute/comm algorithm 或 launch
 package format；这些文档只能把 DDR feasibility 作为 cost/legality feedback 使用。
 
@@ -461,7 +461,7 @@ layout assignment
   -> SPM demand / allocation
   -> DDR demand summary
   -> movement bandwidth / range hazard estimate
-  -> downstream legality
+  -> downstream memory planning
 ```
 
 DDR 的全局 allocation 往往跨 group，因此不要求每个 group 内静态分配最终 BO。但如果一个 group

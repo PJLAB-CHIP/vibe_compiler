@@ -62,20 +62,20 @@ def Wafer_MemoryAttr : AttrDef<Wafer_Dialect, "Memory"> {
   let assemblyFormat = "`<` $space `,` $layout `>`";
 }
 
-def Wafer_SPMPlacementAttr : AttrDef<Wafer_Dialect, "SPMPlacement"> {
-  let mnemonic = "spm_placement";
-  let summary = "Accepted Wafer SPM byte placement fact";
+def Wafer_SPMOffsetAttr : AttrDef<Wafer_Dialect, "SPMOffset"> {
+  let mnemonic = "spm_offset";
+  let summary = "Accepted Wafer SPM byte offset fact";
   let description = [{
-    `#wafer.spm_placement<offset, size, alignment, bank_begin, bank_limit>`
+    `#wafer.spm_offset<offset, size, alignment, bank_begin, bank_limit>`
     records an accepted tile-local SPM byte range for a Wafer SPM memref
     definition. The `size` is the physical storage size computed from the
     memref type and Wafer layout, not merely the logical compact tensor byte
     count. `bank_begin` and `bank_limit` describe the half-open span of 256B
-    bank lines touched by the placed range.
+    bank lines touched by the assigned range.
 
-    This attribute is an accepted placement fact for instruction-level IR. It
-    does not encode allocator search trace, runtime handles, packet fields, or
-    DDR resource ownership.
+    This attribute is an accepted SPM memory-planning fact for
+    instruction-level IR. It does not encode planner search trace, runtime
+    handles, packet fields, or DDR resource ownership.
   }];
 
   let parameters = (ins

@@ -1,5 +1,5 @@
 // RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-groups-to-instr)' %s | FileCheck %s
-// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-groups-to-placed-instr)' %s | FileCheck --check-prefix=PLACED %s
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-groups-to-memory-planned-instr)' %s | FileCheck --check-prefix=PLANNED %s
 
 func.func @add_group(%lhs: tensor<4xf32>, %rhs: tensor<4xf32>,
                      %out: tensor<4xf32>) -> tensor<4xf32> {
@@ -290,17 +290,17 @@ func.func @boundary_tiled_matmul_group(%lhs: tensor<4x8xf16>,
 // CHECK-SAME: dst_strides = array<i64: 16, 0, 0>
 // CHECK-SAME: inner_bytes = 6 : i64
 
-// PLACED-LABEL: func.func @boundary_slice_group
-// PLACED: memref.alloc() {wafer.spm.placement = #wafer.spm_placement<65536, 12, 256, 256, 257>} : memref<2x3xf16, #wafer.memory<spm, tensor>>
-// PLACED: memref.alloc() {wafer.spm.placement = #wafer.spm_placement<65792, 12, 256, 257, 258>} : memref<2x3xf16, #wafer.memory<spm, tensor>>
-// PLACED: wafer.instr.wdma
+// PLANNED-LABEL: func.func @boundary_slice_group
+// PLANNED: memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536, 12, 256, 256, 257>} : memref<2x3xf16, #wafer.memory<spm, tensor>>
+// PLANNED: memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65792, 12, 256, 257, 258>} : memref<2x3xf16, #wafer.memory<spm, tensor>>
+// PLANNED: wafer.instr.wdma
 
-// PLACED-LABEL: func.func @boundary_tiled_matmul_group
-// PLACED: memref.alloc() {wafer.spm.placement = #wafer.spm_placement<65792, 16, 256, 257, 258>} : memref<2x4xf16, #wafer.memory<spm, tensor>>
-// PLACED: memref.alloc() {wafer.spm.placement = #wafer.spm_placement<66048, 24, 256, 258, 259>} : memref<4x3xf16, #wafer.memory<spm, tensor>>
-// PLACED: memref.alloc() {wafer.spm.placement = #wafer.spm_placement<65536, 12, 256, 256, 257>} : memref<2x3xf16, #wafer.memory<spm, tensor>>
-// PLACED: memref.alloc() {wafer.spm.placement = #wafer.spm_placement<65536, 256, 256, 256, 257>} : memref<2x4xf16, #wafer.memory<spm, cx>>
-// PLACED: memref.alloc() {wafer.spm.placement = #wafer.spm_placement<65792, 256, 256, 257, 258>} : memref<4x3xf16, #wafer.memory<spm, cx>>
-// PLACED: memref.alloc() {wafer.spm.placement = #wafer.spm_placement<66048, 256, 256, 258, 259>} : memref<2x3xf16, #wafer.memory<spm, cx>>
-// PLACED: memref.alloc() {wafer.spm.placement = #wafer.spm_placement<65536, 12, 256, 256, 257>} : memref<2x3xf16, #wafer.memory<spm, tensor>>
-// PLACED: wafer.instr.wdma
+// PLANNED-LABEL: func.func @boundary_tiled_matmul_group
+// PLANNED: memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65792, 16, 256, 257, 258>} : memref<2x4xf16, #wafer.memory<spm, tensor>>
+// PLANNED: memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66048, 24, 256, 258, 259>} : memref<4x3xf16, #wafer.memory<spm, tensor>>
+// PLANNED: memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536, 12, 256, 256, 257>} : memref<2x3xf16, #wafer.memory<spm, tensor>>
+// PLANNED: memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536, 256, 256, 256, 257>} : memref<2x4xf16, #wafer.memory<spm, cx>>
+// PLANNED: memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65792, 256, 256, 257, 258>} : memref<4x3xf16, #wafer.memory<spm, cx>>
+// PLANNED: memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66048, 256, 256, 258, 259>} : memref<2x3xf16, #wafer.memory<spm, cx>>
+// PLANNED: memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536, 12, 256, 256, 257>} : memref<2x3xf16, #wafer.memory<spm, tensor>>
+// PLANNED: wafer.instr.wdma

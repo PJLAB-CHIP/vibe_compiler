@@ -77,7 +77,7 @@ Pipeline position:
   memref values with `#wafer.memory<space, layout>` + `wafer.instr.*` +
   `wafer.instr.local_drain`，或结构化 legalization failure reason。
 - Downstream consumer:
-  R3.2f SPM placement、R3.2g DDR/resource legality、R3.2h closed-loop planner、
+  R3.2f SPM memory planning、R3.2g DDR memory planning、R3.2h closed-loop planner、
   R3.4 placed memref realization 和 R3.6 codegen emission。
 - User-level driver / named pipeline:
   主线由 R3.2 closed-loop planner 调用；局部 bring-up / candidate evaluation 入口是
@@ -95,7 +95,7 @@ Pipeline position:
   elementwise/relation、reduce、copy 和 metadata view 生成 verifier-legal instruction-level IR
   或标准 memref view，并覆盖 nested `scf.if` / `scf.for` body 递归转换。unsupported hardware
   instruction form，包括当前无法证明的 slice/broadcast/transpose descriptor，必须结构化失败，
-  不能让 SPM placement 从 target-abstract op 猜 demand。
+  不能让 SPM memory planning 从 target-abstract op 猜 demand。
 ```
 
 ## 2. Wafer MemRef Contract
@@ -133,7 +133,7 @@ computeWaferPhysicalTensorInfo(memrefType)
 - 256B line/layout padding 和 layout footprint。
 - begin/end range、wrapper layout enum、instruction operand legality。
 
-所有 verifier、SPM placement、DDR/resource planning 和 instruction lowering 都必须使用这一个
+所有 verifier、SPM memory planning、DDR memory planning 和 instruction lowering 都必须使用这一个
 入口。禁止每个 pass 自己写 `if layout == cx` 的局部解析。
 
 ### 2.1 Why Not MemRef Layout Slot
@@ -607,7 +607,7 @@ wafer.tile.region ... {
 这是形态示例，不固定 parser/printer，也不固定 planner 对 layout materialization 的具体选择。
 例子中 stride 数值只说明 descriptor 字段位置，不作为 Cx padding 或 hardware packet 的规范值；
 真实 padded size、Cx/NCx 对齐、bool bitpack、descriptor stride 和 SPM offset 分别由
-`computeWaferPhysicalTensorInfo`、SPM placement 和 later realization 处理。
+`computeWaferPhysicalTensorInfo`、SPM memory planning 和 later realization 处理。
 
 ## 12. Implementation Work
 

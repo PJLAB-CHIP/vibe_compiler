@@ -4,7 +4,7 @@
 
 状态：设计草案；2026-05-25 独立边界收口；2026-05-27 对齐 tensor collective 到 `wafer.tile.*` communication materialization；
 2026-06-03 R3.2c 对齐 MLIR DialectConversion full conversion；2026-06-04 对齐
-instruction-level Wafer IR 先于 SPM placement，并补正式 `group -> tile_region` conversion pass；
+instruction-level Wafer IR 先于 SPM memory planning，并补正式 `group -> tile_region` conversion pass；
 2026-06-05 对齐 memref-backed buffer contract，`Cx/NCx` 改为 Wafer memory attr marker；
 2026-06-05 补齐 R3.2c DDR boundary materialization 和 One-Shot function-boundary pipeline；
 2026-06-05 补 R3.2c `scf.if` / `scf.for` 结构化 control-flow lowering 合同；
@@ -57,7 +57,7 @@ placement-derived endpoint 和 communication staging demand 的层级；`wafer.t
 - 把 tensor tile value materialize 成 tile-local memref、descriptor 或 placed instruction-level value。
 - 在同一个 region 内表达 load/store、layout materialization、compute、communication、sync 和
   wait/drain ordering。
-- 为 layout planning、SPM allocation 和 DDR/resource planning 提供可重算 IR 结构。
+- 为 layout planning、SPM allocation 和 DDR memory planning 提供可重算 IR 结构。
 - 为 lower-level Wafer ops、C ABI 和 launch outline 提供清楚的输入。
 
 非目标：
@@ -76,8 +76,8 @@ wafer.group
   -> One-Shot bufferized function boundary for main R3.2c pipeline
   -> candidate DDR tile-view materialization for planner candidate evaluation
   -> instruction-level wafer.instr.* IR over unplaced Wafer-tagged memref values
-  -> SPM placement on the same instruction-level IR
-  -> DDR / resource legality on placed instruction IR
+  -> SPM memory planning on the same instruction-level IR
+  -> DDR memory planning on memory-planned instruction IR
   -> accepted / rejected / split decision
   -> committed wafer.tile.region
   -> materialized placed instruction-level IR / placed memref / access descriptor
@@ -121,7 +121,7 @@ Pipeline position:
   不写入主线 accepted IR。
 - Downstream consumer:
   R3.2e candidate DDR tile-view materialization、R3.2d Wafer instruction legalization / selection、
-  R3.2f SPM placement、R3.2g DDR/resource planning + compute/movement legality analysis、
+  R3.2f SPM memory planning、R3.2g DDR memory planning + compute/movement legality analysis、
   R3.2h closed-loop planner。
 - User-level driver / named pipeline:
   主线仍由 `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 产生 logical group；
@@ -150,11 +150,11 @@ table 补协议。
 | source IR / op family | R3.2c 目标处理 | 覆盖状态 | 正确 conversion 做法 / 后续要求 |
 | --- | --- | --- | --- |
 | `wafer.group` / `wafer.group.yield` boundary | DialectConversion 中由 `OpConversionPattern<wafer.group>` 构造 `wafer.tile.region`；`ins + outs` materialize 为 `#wafer.memory<ddr, tensor>` memref handle；full tensor use 才 lazy 生成 `wafer.tile.load`，yield writeback 生成 `wafer.tile.store` / `wafer.tile.yield`；同一 builder 支持 standalone dump 和正式 `--wafer-convert-group-to-tile-region` pass | supported for tile-region IR | `ConversionTarget` 将 `wafer.group` / `wafer.group.yield` 标为 illegal；debug dump 只调用同一 conversion builder，不能自己承担 lowering 逻辑。边界 handle、lazy full load 和 explicit tile view 都必须由 SSA/memref type 表达，不能靠名字恢复。 |
-| ranked tensor boundary values | 生成 logical-shape DDR memref，memory attr 默认 `#wafer.memory<ddr, tensor>`；full tensor use 产生 compact SPM tensor-layout version；external boundary 上的 static `tensor.extract_slice` / direct output `tensor.insert_slice` storeback 和 candidate tile offsets/sizes evaluation lowering 由 R3.2e materialize 为 DDR `memref.subview` tile view | supported for ranked tensor and static candidate slice | 保持类型/verifier 驱动；后续 instruction-level IR 再决定 concrete instruction，SPM placement 再决定 offset/window；函数边界由 named pipeline 的 One-Shot Bufferize 转成 DDR memref。R3.2e 只构造 candidate evaluation tile views，不 accept plan；closed-loop traversal / tile-shape search 仍归 R3.2h。 |
+| ranked tensor boundary values | 生成 logical-shape DDR memref，memory attr 默认 `#wafer.memory<ddr, tensor>`；full tensor use 产生 compact SPM tensor-layout version；external boundary 上的 static `tensor.extract_slice` / direct output `tensor.insert_slice` storeback 和 candidate tile offsets/sizes evaluation lowering 由 R3.2e materialize 为 DDR `memref.subview` tile view | supported for ranked tensor and static candidate slice | 保持类型/verifier 驱动；后续 instruction-level IR 再决定 concrete instruction，SPM memory planning 再决定 offset/window；函数边界由 named pipeline 的 One-Shot Bufferize 转成 DDR memref。R3.2e 只构造 candidate evaluation tile views，不 accept plan；closed-loop traversal / tile-shape search 仍归 R3.2h。 |
 | scalar boundary values | 作为 tile-region block scalar SSA value 传入，供 fill/reduce init 等 scalar operand 使用 | supported for scalar | 只支持 float / integer / index scalar；不生成 storage，不作为长期 side channel。 |
 | `arith.constant` tensor | clone constant 后用 `bufferization.to_memref` materialize 为 read-only DDR source，再 `wafer.tile.load` 到 tensor-layout SPM storage | partial | 只适合 tensor constant；scalar constant 只应在 compute body 或显式 init 语义中消费。需要区分 constant residency / DDR / immediate policy。 |
 | `arith.constant` scalar | clone scalar constant，并作为 `wafer.tile.fill`、`wafer.tile.reduce init_value` 或 elementwise body 推导输入 | supported for scalar constants | scalar 语义通过 SSA value 或 typed attr 进入目标 op；不靠名字或原 op 残留。 |
-| `tensor.empty` | writable group output 的 `tensor.empty` 生成 `#wafer.memory<ddr, tensor>` `memref.alloc`；tile-local temporary 的 `tensor.empty` 生成 `#wafer.memory<spm, tensor>` `memref.alloc` | supported as abstract allocation demand | `memref.alloc` 不分配物理 offset/window；DDR alloc 只是 compiler-visible boundary value，真实 DDR ownership/resource plan 仍归 R3.2g/R3.5；SPM physical placement 归 R3.2f。不能把 arbitrary empty 偷映射成 output alias。 |
+| `tensor.empty` | writable group output 的 `tensor.empty` 生成 `#wafer.memory<ddr, tensor>` `memref.alloc`；tile-local temporary 的 `tensor.empty` 生成 `#wafer.memory<spm, tensor>` `memref.alloc` | supported as abstract allocation demand | `memref.alloc` 不分配物理 offset/window；DDR alloc 只是 compiler-visible boundary value，真实 DDR ownership/resource plan 仍归 R3.2g/R3.5；SPM offset/window 归 R3.2f memory planning。不能把 arbitrary empty 偷映射成 output alias。 |
 | `tensor.extract` scalar | 从已 materialized DDR boundary memref 生成 `memref.load`，供动态 scalar init / scalar value 使用 | supported for boundary scalar extract | 只作为 scalar SSA 支持 op；不表示 tile compute；tile-local tensor element read 不能用 generic memref.load 伪装。 |
 | `linalg.fill` | 生成显式 `wafer.tile.fill`，写入 existing storage；fill result 映射为该 initialized buffer | supported for scalar fill | `wafer.tile.fill` 暴露 target-abstract write relation；具体是否 lower 成 CT fill、memset 或 immediate pattern 由 R3.2d instruction selection 决定。 |
 | `linalg.matmul` | lhs/rhs materialize 到 `cx`，生成 `wafer.tile.gemm`，结果记录为 `cx` | supported for simple `linalg.matmul` | pattern 应检查 rank、dtype、accumulator/result relation、layout requirement；batch matmul / generic contraction 另列，不应混成 matmul 特判。 |
@@ -164,7 +164,7 @@ table 补协议。
 | `tensor.extract_slice` / `tensor.insert_slice` | tile-local source/dest 的 static offsets/sizes/strides lower 到 `wafer.tile.extract_slice` / `wafer.tile.insert_slice`；external boundary source 的 static extract 直接生成 DDR `memref.subview` + `wafer.tile.load`；direct-yield output boundary insert 生成 DDR `memref.subview` + `wafer.tile.store` | supported for static slices，包括 MLIR 合法的 rank-reduced slice | move op verifier 检查 full slice shape、可选 rank reduction、element type、layout/memory space 和 slice range；dynamic slice metadata 需要先扩 IR。direct storeback 只允许写 `outs` boundary 且 yield index 与 output index 一致；非 direct-yield insert 仍保持 updated-dest tensor 语义，走 tile-local insert。 |
 | `tensor.expand_shape` / `tensor.collapse_shape` | static element-count-preserving reshape lower 到 `wafer.tile.reshape` | supported for static shape-only reshape | `wafer.tile.reshape` 表达 canonical linear element order 保持不变、result multi-index 按新 shape 重新解释的 logical reindex；tile-region 层 op 本身无 write effect，但下游若当前 physical layout 不能 alias 该 logical reindex，必须 materialize 成 explicit movement，不能用 reshape 逃避 physical layout。 |
 | `scf.if` | 保留为 tile-region 内 structured control-flow；condition 使用 scalar SSA，then/else body 递归 lower，tensor result / yield value 以 SPM memref result 穿过 `scf.if` | supported for single-block `scf.if` with supported nested ops | 分支内局部 value 不泄漏；只有 `scf.yield` result 重新进入父 scope。外部 scalar 必须作为 `wafer.group` input 或在 group 内定义，不能绕过 `IsolatedFromAbove`。不在 R3.2c 展开分支或选择硬件 branch 指令。 |
-| `scf.for` | 保留为 tile-region 内 structured loop；lb/ub/step 使用 scalar SSA，iter_args 中的 tensor value 转为 SPM memref loop-carried value，body 递归 lower，`scf.yield` 传回 SPM memref/scalar | supported for single-block `scf.for` with supported nested ops | loop-carried tensor 只表达 tile-local buffer dataflow，不做 unroll、trip-count planning、SPM offset placement 或 hardware loop/branch instruction selection。并行 loop / while / execute_region 不在本阶段放开。 |
+| `scf.for` | 保留为 tile-region 内 structured loop；lb/ub/step 使用 scalar SSA，iter_args 中的 tensor value 转为 SPM memref loop-carried value，body 递归 lower，`scf.yield` 传回 SPM memref/scalar | supported for single-block `scf.for` with supported nested ops | loop-carried tensor 只表达 tile-local buffer dataflow，不做 unroll、trip-count planning、SPM offset planning 或 hardware loop/branch instruction selection。并行 loop / while / execute_region 不在本阶段放开。 |
 | `wafer.tensor.*` | R3.2a/R3.2b 可收集 demand/layout；R3.2c 当前失败为缺 placement/local-rank facts | explicitly deferred | 只有 placement/local-rank/buffer facts 进入可验证 IR 后，才能 pattern 化到 `wafer.tile.*` communication ops / `wafer.instr.local_drain` 和后续 sync boundary；不能写死 local rank 或 ring schedule。 |
 | unknown op inside group | 结构化失败 | unsupported | conversion target 应把 `wafer.group` 设为 illegal；unsupported body op 应导致 conversion failure，而不是留下半转换 group。 |
 
@@ -283,10 +283,10 @@ V0 需要以下 op family：
    选择成 instruction-level `wafer.instr.*`，复用现有 Wafer-tagged memref SSA graph。
    instruction-level IR 需要列出 issue family、read/write/issue effects、descriptor attrs、
    temp/psum/staging memref values、alias/view 关系和 reject reason。
-6. SPM placement：R3.2f 只消费 instruction-level IR with unplaced Wafer-tagged memref values，
+6. SPM memory planning：R3.2f 只消费 instruction-level IR with unplaced Wafer-tagged memref values，
    在同一 IR 上填入 offset/end/bank span 和 lifetime/reuse；不能直接从 target-abstract op 猜
    memref demand。
-7. DDR/resource planning：R3.2g 消费 placed instruction-level IR、SPM facts 和 DDR tile-view
+7. DDR memory planning：R3.2g 消费 memory-planned instruction-level IR、SPM facts 和 DDR tile-view
    boundary，做 capacity / bandwidth / range legality。
 8. closed-loop decision：R3.2h 接受、拒绝或要求 split / retry；rejected tile-region IR 丢弃。
 9. committed `wafer.tile.region` materialization：R3.3 只把 accepted plan 写入主 IR。
@@ -300,7 +300,7 @@ planner 重新选择 tile shape、internal split、layout 或 group boundary。
 instruction-level branch/loop。R3.2c 只负责把 region 内 tensor dataflow 递归降成 Wafer-tagged
 SPM memref dataflow，并让 `scf.yield` / loop-carried value 显式携带 SPM memref 或 scalar SSA。
 R3.2d 只递归 legalize control-flow body 内的 executable target-abstract op，并保留 `scf` container。
-SPM placement 后续应直接消费这些 region/control-flow lifetime；硬件 branch/loop、predication 或
+SPM memory planning 后续应直接消费这些 region/control-flow lifetime；硬件 branch/loop、predication 或
 展开只能在 placed instruction / codegen 边界具备足够 lifetime 和 effect 信息后决定。`scf.while`、
 `scf.forall`、`scf.execute_region` 和 CFG branch 需要额外 memory-effect / concurrency / multi-block
 合同，当前必须结构化失败。

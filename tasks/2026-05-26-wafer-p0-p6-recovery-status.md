@@ -158,7 +158,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   offsets/sizes candidate evaluation lowering 都能 materialize 为 DDR `memref.subview`；R3.2d 已能消费这些
   view 生成 instruction-level RDMA/WDMA descriptor。closed-loop traversal / tile-shape search
   和 plan accept/reject 仍归 R3.2h；仍没有 placed instruction-level IR、placed memref 或 access
-  descriptor 层，下一步由 R3.2f SPM placement 在 R3.2d 的 unplaced Wafer-tagged memref graph
+  descriptor 层，下一步由 R3.2f SPM memory planning 在 R3.2d 的 unplaced Wafer-tagged memref graph
   上继续恢复。
 
 恢复任务：
@@ -282,7 +282,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - R3.1：恢复 logical group boundary contract，保证 `wafer.group` 只表达 local tensor grouping
   和 group boundary，并按 group 设计完成 dependency-preserving conservative expansion。
 - R3.2：恢复 root tile planning，把 op tiling、candidate DDR tile-view materialization、layout、SPM、
-  DDR/resource legality 和 compute/movement legality 接到同一 group planning decision。
+  DDR memory planning 和 compute/movement legality 接到同一 group planning decision。
 - R3.3：恢复 tile_region materialization contract，只把 accepted group materialize 成
   `wafer.tile.region`。
 - R3.4：恢复 layout/SPM materialization gate，让 layout materialization 和 SPM allocation 由 effect、

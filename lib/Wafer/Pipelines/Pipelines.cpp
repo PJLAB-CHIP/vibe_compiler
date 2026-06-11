@@ -88,13 +88,13 @@ void buildLowerGroupsToInstrPipeline(mlir::OpPassManager &pm) {
   buildLowerTileRegionToInstrPipeline(pm);
 }
 
-void buildPlaceSPMBuffersPipeline(mlir::OpPassManager &pm) {
-  pm.addPass(createPlaceSPMBuffersPass());
+void buildPlanSPMMemoryPipeline(mlir::OpPassManager &pm) {
+  pm.addPass(createPlanSPMMemoryPass());
 }
 
-void buildLowerGroupsToPlacedInstrPipeline(mlir::OpPassManager &pm) {
+void buildLowerGroupsToMemoryPlannedInstrPipeline(mlir::OpPassManager &pm) {
   buildLowerGroupsToInstrPipeline(pm);
-  buildPlaceSPMBuffersPipeline(pm);
+  buildPlanSPMMemoryPipeline(pm);
 }
 
 #ifdef WAFER_ENABLE_SHARDY
@@ -128,10 +128,11 @@ void registerWaferPipelines() {
         "Lower logical wafer.group ops to instruction-level Wafer IR",
         [](mlir::OpPassManager &pm) { buildLowerGroupsToInstrPipeline(pm); });
     mlir::PassPipelineRegistration<>(
-        "wafer-lower-groups-to-placed-instr",
-        "Lower logical wafer.group ops to placed instruction-level Wafer IR",
+        "wafer-lower-groups-to-memory-planned-instr",
+        "Lower logical wafer.group ops to memory-planned instruction-level "
+        "Wafer IR",
         [](mlir::OpPassManager &pm) {
-          buildLowerGroupsToPlacedInstrPipeline(pm);
+          buildLowerGroupsToMemoryPlannedInstrPipeline(pm);
         });
 #ifdef WAFER_ENABLE_SHARDY
     mlir::PassPipelineRegistration<StablehloShardingPropagationPipelineOptions>(

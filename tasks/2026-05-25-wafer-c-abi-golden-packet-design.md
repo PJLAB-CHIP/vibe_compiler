@@ -77,7 +77,7 @@ Pipeline position:
 - User-level driver / named pipeline:
   主线由后端 compile pipeline 调用；不引入专门 ABI IR op family 作为用户级 compile flow。
 - Explicit non-goals:
-  不重新选择 group、tile shape、layout、instruction form、SPM placement 或 DDR resource plan。
+  不重新选择 group、tile shape、layout、instruction form、SPM memory plan 或 DDR resource plan。
 - Completion gate:
   至少 RDMA/WDMA/GEMM 的 placed instruction 能生成可审计 ABI call/packet emission，并由 verifier
   和 golden packet gate 覆盖参数单位、range-end、wait policy 和 wrapper mapping。
