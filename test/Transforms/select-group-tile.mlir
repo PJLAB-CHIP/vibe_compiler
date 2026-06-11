@@ -1,4 +1,4 @@
-// RUN: wafer-opt --wafer-select-group-tile='print-candidate-summary spm-limit=1065536' %s 2>&1 | FileCheck --check-prefixes=SUMMARY,IR %s
+// RUN: wafer-opt --wafer-select-group-tile='print-candidate-summary spm-limit=1065536' %s 2>&1 | FileCheck --implicit-check-not=selected_group --check-prefixes=SUMMARY,IR %s
 
 func.func @elementwise_small(%lhs: tensor<4xf32>, %rhs: tensor<4xf32>,
                              %out: tensor<4xf32>) -> tensor<4xf32> {
@@ -169,20 +169,20 @@ func.func @loop_group(%input: tensor<4xf32>, %out: tensor<4xf32>,
 // SUMMARY: wafer.select_group_tile selected group @loop_group#0
 // SUMMARY-SAME: mode=first-legal
 
-// IR-LABEL: func.func @elementwise_small_selected_group_0
+// IR-LABEL: func.func @elementwise_small
 // IR-NOT: wafer.group
 // IR-NOT: linalg.generic
 // IR: wafer.instr.elementwise <add>
 // IR: wafer.instr.wdma
 
-// IR-LABEL: func.func @static_slice_elementwise_selected_group_0
+// IR-LABEL: func.func @static_slice_elementwise
 // IR-NOT: wafer.group
 // IR: memref.subview
 // IR-SAME: [1, 2] [2, 3] [1, 1]
 // IR: wafer.instr.elementwise <add>
 // IR: wafer.instr.wdma
 
-// IR-LABEL: func.func @large_matmul_last_dim_1000_selected_group_0
+// IR-LABEL: func.func @large_matmul_last_dim_1000
 // IR-NOT: wafer.group
 // IR-NOT: linalg.matmul
 // IR: memref.subview
@@ -193,19 +193,19 @@ func.func @loop_group(%input: tensor<4xf32>, %out: tensor<4xf32>,
 // IR-SAME: k = {{[0-9]+}} : i64
 // IR: wafer.instr.wdma
 
-// IR-LABEL: func.func @reduce_sum_group_selected_group_0
+// IR-LABEL: func.func @reduce_sum_group
 // IR-NOT: wafer.group
 // IR-NOT: linalg.generic
 // IR: wafer.instr.reduce <sum>
 // IR: wafer.instr.wdma
 
-// IR-LABEL: func.func @if_group_selected_group_0
+// IR-LABEL: func.func @if_group
 // IR-NOT: wafer.group
 // IR: scf.if
 // IR: wafer.instr.elementwise <add>
 // IR: wafer.instr.wdma
 
-// IR-LABEL: func.func @loop_group_selected_group_0
+// IR-LABEL: func.func @loop_group
 // IR-NOT: wafer.group
 // IR: scf.for
 // IR: wafer.instr.elementwise <add>

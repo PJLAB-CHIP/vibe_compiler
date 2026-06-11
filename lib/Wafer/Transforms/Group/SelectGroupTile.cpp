@@ -18,6 +18,7 @@
 #include "mlir/Dialect/Utils/StructuredOpsUtils.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Diagnostics.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/DenseMap.h"
@@ -66,8 +67,7 @@ struct CandidateEvaluation {
 
 struct SelectedCandidate {
   std::string label;
-  std::string symbolBase;
-  unsigned ordinal = 0;
+  GroupOp group;
   CandidateSpec spec;
   CandidateStats stats;
   int64_t estimatedCycles = 0;
@@ -84,28 +84,6 @@ static std::string getNearestSymbolName(mlir::Operation *op) {
       return ("@" + name.getValue()).str();
   }
   return "@unknown";
-}
-
-static std::string sanitizeSymbolBase(llvm::StringRef label) {
-  llvm::StringRef base = label;
-  if (base.consume_front("@")) {
-  }
-  size_t hash = base.find('#');
-  if (hash != llvm::StringRef::npos)
-    base = base.take_front(hash);
-
-  std::string result;
-  for (char c : base) {
-    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-        (c >= '0' && c <= '9') || c == '_') {
-      result.push_back(c);
-    } else {
-      result.push_back('_');
-    }
-  }
-  if (result.empty())
-    return "group";
-  return result;
 }
 
 static void printI64List(llvm::ArrayRef<int64_t> values,
@@ -785,7 +763,7 @@ static bool isBetterCandidate(const SelectedCandidate &candidate,
 }
 
 static mlir::FailureOr<SelectedCandidate>
-selectCandidateForGroup(GroupOp group, llvm::StringRef label, unsigned ordinal,
+selectCandidateForGroup(GroupOp group, llvm::StringRef label,
                         const SelectionConfig &config) {
   mlir::FailureOr<llvm::SmallVector<int64_t, 4>> shape =
       getStaticTraversalShape(group);
@@ -850,8 +828,7 @@ selectCandidateForGroup(GroupOp group, llvm::StringRef label, unsigned ordinal,
 
     SelectedCandidate selected;
     selected.label = label.str();
-    selected.symbolBase = sanitizeSymbolBase(label);
-    selected.ordinal = ordinal;
+    selected.group = group;
     selected.spec = candidate;
     selected.stats = firstEvaluation.stats;
     selected.estimatedCycles = estimateCycles(
@@ -899,29 +876,96 @@ static void printSelectedSummary(const SelectedCandidate &selected,
                << " representatives=" << selected.representativeCount << "\n";
 }
 
-static void moveSelectedModulesInto(
-    mlir::ModuleOp target,
-    llvm::MutableArrayRef<SelectedCandidate> selectedCandidates) {
-  mlir::Block *body = target.getBody();
-  body->getOperations().clear();
-
-  for (SelectedCandidate &selected : selectedCandidates) {
-    unsigned funcOrdinal = 0;
-    for (mlir::Operation &op : llvm::make_early_inc_range(
-             selected.module->getBody()->getOperations())) {
-      op.remove();
-      if (auto func = mlir::dyn_cast<mlir::func::FuncOp>(&op)) {
-        std::string name;
-        llvm::raw_string_ostream os(name);
-        os << selected.symbolBase << "_selected_group_" << selected.ordinal;
-        if (funcOrdinal != 0)
-          os << "_" << funcOrdinal;
-        func.setName(os.str());
-        ++funcOrdinal;
-      }
-      body->push_back(&op);
+static mlir::FailureOr<mlir::func::FuncOp>
+getStandaloneSelectedFunction(GroupOp group, mlir::ModuleOp selectedModule) {
+  mlir::func::FuncOp selectedFunc;
+  for (auto func : selectedModule.getOps<mlir::func::FuncOp>()) {
+    if (selectedFunc) {
+      group.emitError()
+          << "selected candidate commit expected one lowered function";
+      return mlir::failure();
     }
+    selectedFunc = func;
   }
+  if (!selectedFunc) {
+    group.emitError() << "selected candidate commit found no lowered function";
+    return mlir::failure();
+  }
+  return selectedFunc;
+}
+
+static mlir::LogicalResult commitSelectedCandidate(SelectedCandidate &selected) {
+  GroupOp group = selected.group;
+  if (!group || !selected.module) {
+    if (group)
+      group.emitError() << "selected candidate commit missing lowered module";
+    return mlir::failure();
+  }
+
+  mlir::FailureOr<mlir::func::FuncOp> selectedFunc =
+      getStandaloneSelectedFunction(group, *selected.module);
+  if (mlir::failed(selectedFunc))
+    return mlir::failure();
+  if (!selectedFunc->getBody().hasOneBlock()) {
+    group.emitError() << "selected candidate commit requires one-block "
+                         "lowered function";
+    return mlir::failure();
+  }
+
+  mlir::Block &entry = selectedFunc->getBody().front();
+  mlir::Operation *terminator = entry.getTerminator();
+  if (!terminator) {
+    group.emitError()
+        << "selected candidate commit requires function terminator";
+    return mlir::failure();
+  }
+  auto returnOp = mlir::dyn_cast<mlir::func::ReturnOp>(terminator);
+  if (!returnOp) {
+    group.emitError()
+        << "selected candidate commit requires func.return terminator";
+    return mlir::failure();
+  }
+
+  unsigned expectedArgCount =
+      static_cast<unsigned>(group.getInputs().size() + group.getOuts().size());
+  if (entry.getNumArguments() != expectedArgCount) {
+    group.emitError() << "selected candidate commit argument count mismatch";
+    return mlir::failure();
+  }
+  if (returnOp.getNumOperands() != group->getNumResults()) {
+    group.emitError() << "selected candidate commit result count mismatch";
+    return mlir::failure();
+  }
+
+  mlir::IRMapping mapping;
+  unsigned argumentIndex = 0;
+  for (mlir::Value input : group.getInputs())
+    mapping.map(entry.getArgument(argumentIndex++), input);
+  for (mlir::Value output : group.getOuts())
+    mapping.map(entry.getArgument(argumentIndex++), output);
+
+  mlir::OpBuilder builder(group.getOperation());
+  for (mlir::Operation &op : entry.getOperations()) {
+    if (&op == terminator)
+      break;
+    builder.clone(op, mapping);
+  }
+
+  llvm::SmallVector<mlir::Value, 2> replacements;
+  replacements.reserve(returnOp.getNumOperands());
+  for (mlir::Value returned : returnOp.getOperands()) {
+    mlir::Value mapped = mapping.lookupOrNull(returned);
+    if (!mapped) {
+      group.emitError()
+          << "selected candidate commit could not map returned value";
+      return mlir::failure();
+    }
+    replacements.push_back(mapped);
+  }
+
+  group->replaceAllUsesWith(replacements);
+  group->erase();
+  return mlir::success();
 }
 
 struct SelectGroupTilePass
@@ -983,7 +1027,7 @@ struct SelectGroupTilePass
       labelOs << symbolName << "#" << ordinal;
 
       mlir::FailureOr<SelectedCandidate> selected =
-          selectCandidateForGroup(group, labelOs.str(), ordinal, config);
+          selectCandidateForGroup(group, labelOs.str(), config);
       if (mlir::failed(selected)) {
         signalPassFailure();
         return;
@@ -993,7 +1037,19 @@ struct SelectGroupTilePass
       selectedCandidates.push_back(std::move(*selected));
     }
 
-    moveSelectedModulesInto(getOperation(), selectedCandidates);
+    for (SelectedCandidate &selected : selectedCandidates) {
+      if (mlir::failed(commitSelectedCandidate(selected))) {
+        signalPassFailure();
+        return;
+      }
+    }
+
+    if (mlir::failed(mlir::verify(getOperation()))) {
+      getOperation()->emitError()
+          << "selected candidate commit produced invalid IR";
+      signalPassFailure();
+      return;
+    }
   }
 };
 

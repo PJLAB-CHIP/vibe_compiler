@@ -59,7 +59,7 @@ Pipeline position:
   analysis 里。
 - Downstream consumer:
   candidate-selection 用 DDR offset assignment 成功/失败选择 candidate；
-  R3.3 只 commit 已通过 candidate gates 的 candidate；
+  R3.3 把已通过 candidate gates 的 selected lowering 写回主 IR；
   R3.4 把 accepted DDR offset facts realize 成 placed memref/access descriptor；
   R3.5 把 accepted DDR demand materialize 到 runtime allocation/import/query/package metadata。
 - User-level driver / named pipeline:

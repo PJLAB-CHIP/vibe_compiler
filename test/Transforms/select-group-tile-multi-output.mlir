@@ -1,4 +1,4 @@
-// RUN: wafer-opt --wafer-select-group-tile='print-candidate-summary spm-limit=73728' %s 2>&1 | FileCheck --check-prefixes=SUMMARY,IR %s
+// RUN: wafer-opt --wafer-select-group-tile='print-candidate-summary spm-limit=73728' %s 2>&1 | FileCheck --implicit-check-not=selected_group --check-prefixes=SUMMARY,IR %s
 
 func.func @multi_output_same_domain(%lhs: tensor<1x4096xf32>,
                                     %rhs: tensor<1x4096xf32>,
@@ -45,7 +45,7 @@ func.func @multi_output_same_domain(%lhs: tensor<1x4096xf32>,
 // SUMMARY-SAME: tile=[1,{{[0-9]+}}]
 // SUMMARY-SAME: split=[]
 
-// IR-LABEL: func.func @multi_output_same_domain_selected_group_0
+// IR-LABEL: func.func @multi_output_same_domain
 // IR-NOT: wafer.group
 // IR-NOT: linalg.generic
 // IR: memref.subview

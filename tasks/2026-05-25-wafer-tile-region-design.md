@@ -297,8 +297,8 @@ V0 需要以下 op family：
    `tile-search=min-estimated-time` 下只对 passing candidate 做粗估时间排序；选择已通过全部 gates
    的 candidate artifact，或要求 split / retry；rejected candidate IR
    丢弃。
-9. committed `wafer.tile.region` materialization：R3.3 只把 candidate-selection 选中的 passing candidate artifact
-   写入主 IR。
+9. committed `wafer.tile.region` materialization：R3.3 只把 candidate-selection 选中的 passing candidate
+   inline commit 回原 `wafer.group` 位置，写入主 IR。
 10. placement realization：把 planned unplaced memref 降到 placed memref / address descriptor。
 11. lower-level op lowering：转成 wrapper-friendly Wafer ops，最后进入 C ABI / launch。
 

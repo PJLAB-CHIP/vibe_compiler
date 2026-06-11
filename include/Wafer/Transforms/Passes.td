@@ -71,7 +71,7 @@ def DumpCandidateDdrTileViewsPass
 
 def SelectGroupTilePass
     : Pass<"wafer-select-group-tile", "mlir::ModuleOp"> {
-  let summary = "Run closed-loop group tile candidate selection";
+  let summary = "Run closed-loop group tile selection and commit selected lowering";
   let dependentDialects = ["mlir::arith::ArithDialect",
                            "mlir::async::AsyncDialect",
                            "mlir::bufferization::BufferizationDialect",

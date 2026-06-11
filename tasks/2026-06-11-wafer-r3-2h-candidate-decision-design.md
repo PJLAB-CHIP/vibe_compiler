@@ -3,7 +3,8 @@
 本文以 R3.2h 任务索引记录 candidate-selection 边界。candidate-selection 不是新的 memory
 allocator，也不是把失败计划写进 IR 等后段修复的阶段；它负责枚举 tile/lowering 候选，逐个
 重放 candidate DDR tile-view materialization、instruction lowering、SPM offset assignment、
-DDR offset assignment 和 verifier gates，只把已经通过全部 gates 的 candidate artifact 交给 R3.3。
+DDR offset assignment 和 verifier gates。失败 candidate 只存在于 transformation-local clone；
+selected candidate 由 R3.3 commit step 写回主 IR。
 
 ## 1. Goal and Non-Goals
 
@@ -41,11 +42,12 @@ Pipeline position:
   的顺序运行 gates。只接受通过全部 gates 的 candidate。`tile-search=first-legal`
   选择第一个合法 candidate；`tile-search=min-estimated-time` 在合法 candidate 中用粗估时间选最小。
 - Output artifact / IR:
-  passing candidate artifact，包含 actual DDR tile views、instruction-level IR、accepted SPM offset
-  facts 和 accepted DDR offset facts；或 no-candidate / split-needed failure reason。
+  committed main IR，包含 selected candidate 的 actual DDR tile views、instruction-level IR、
+  accepted SPM offset facts 和 accepted DDR offset facts；或 no-candidate / split-needed failure
+  reason。
 - Downstream consumer:
-  R3.3 只 commit candidate-selection 选出的 passing candidate artifact；
-  R3.4/R3.5 消费 accepted SPM/DDR facts 和当前 IR 可重算的 descriptor/view/allocation demand，
+  R3.4/R3.5 消费 committed main IR 中的 accepted SPM/DDR facts 和当前 IR 可重算的
+  descriptor/view/allocation demand，
   不重新枚举 candidate 或重做 memory planning。
 - User-level driver / named pipeline:
   `wafer-select-group-tile` pass 和 `wafer-lower-groups-to-selected-instr` named pipeline；
@@ -203,8 +205,9 @@ CandidateSpec
 失败也不能回头改 instruction semantics。candidate-selection 只能选择下一个 candidate 或返回 no-candidate /
 split-needed reason。
 
-Passing candidate artifact 是 transformation-local artifact。只有 R3.3 会把被选中的 artifact
-commit 到主 IR。Rejected candidate IR 必须丢弃。
+Passing candidate artifact 是 transformation-local artifact。R3.3 commit step 只把被选中的
+artifact inline 回原 `wafer.group` 所在位置，并用 selected return values 替换 group results。
+Rejected candidate IR 必须丢弃。
 
 ## 6. `tile-search` Modes
 
@@ -302,7 +305,7 @@ diagnostic 应记录：
   bandwidth、alignment、descriptor/view mismatch。
 - `min-estimated-time` 模式下 winning candidate 的 cost breakdown。
 
-diagnostic 不成为 IR 合同；R3.3 只消费被选中的 passing candidate artifact。
+diagnostic 不成为 IR 合同；R3.3 commit step 只把被选中的 passing candidate 写回原 group 位置。
 
 ## 9. Verification
 
@@ -331,7 +334,7 @@ candidate-selection completion proof 至少覆盖：
 2026-06-11 当前实现：
 
 - `wafer-select-group-tile`：module pass，扫描 `wafer.group`，为每个 group 生成独立 passing
-  candidate artifact。
+  candidate artifact，并将 selected candidate commit 回原 group 位置。
 - `wafer-lower-groups-to-selected-instr`：named pipeline，作为 candidate-selection 用户级 replay 入口。
 - candidate 生成：从 static ranked result 的实际 traversal shape 生成 bounded tile sizes；同一个
   group 的多个 result 必须共享同一 traversal shape 才进入 multi-output candidate。matmul root 和
@@ -347,6 +350,9 @@ candidate-selection completion proof 至少覆盖：
   compute/DDR/SPM/issue 粗估时间排序。
 - diagnostics：`print-candidate-summary` 输出 selected tile、split、estimated cycles、visited /
   rejected candidate 数和 representative 数；这些是诊断，不写入 committed IR。
+- commit：selected clone 的 lowered function body 按 group inputs/outs 映射 inline 回原
+  `wafer.group` 前，返回值替换 group results；原 parent function、无关函数和同函数其它 ops 保留；
+  输出不生成 `*_selected_group_*` 旁路函数。
 
 当前显式限制：
 
@@ -372,4 +378,5 @@ candidate-selection completion proof 至少覆盖：
   使用 internal split，并检查 partial reduce + elementwise combine + single WDMA 形态。
 - `test/Transforms/select-group-tile-min-estimated.mlir`：`tile-search=min-estimated-time`。
 - `test/Transforms/select-group-tile-failure.mlir`：invalid mode 和 gate early-exit。
-- `test/Pipelines/lower-groups-to-selected-instr.mlir`：named pipeline replay。
+- `test/Pipelines/lower-groups-to-selected-instr.mlir`：named pipeline replay；覆盖原函数名保留、
+  unrelated function 保留、同函数多 group commit 和禁止 `selected_group` 旁路函数。

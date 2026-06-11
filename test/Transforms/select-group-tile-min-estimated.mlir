@@ -1,4 +1,4 @@
-// RUN: wafer-opt --wafer-select-group-tile='tile-search=min-estimated-time print-candidate-summary' %s 2>&1 | FileCheck --check-prefixes=SUMMARY,IR %s
+// RUN: wafer-opt --wafer-select-group-tile='tile-search=min-estimated-time print-candidate-summary' %s 2>&1 | FileCheck --implicit-check-not=selected_group --check-prefixes=SUMMARY,IR %s
 
 func.func @elementwise_last_dim_1000(%lhs: tensor<2x1000xf16>,
                                      %rhs: tensor<2x1000xf16>,
@@ -32,7 +32,7 @@ func.func @elementwise_last_dim_1000(%lhs: tensor<2x1000xf16>,
 // SUMMARY-SAME: estimated_cycles=
 // SUMMARY-SAME: rejected=0
 
-// IR-LABEL: func.func @elementwise_last_dim_1000_selected_group_0
+// IR-LABEL: func.func @elementwise_last_dim_1000
 // IR-NOT: wafer.group
 // IR-NOT: linalg.generic
 // IR: memref.subview

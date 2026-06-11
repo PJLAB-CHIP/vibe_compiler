@@ -85,8 +85,8 @@ layout planning 有两个恢复层次：
   layout constraints、layout assignment alternatives、materialization cut 和 materialization
   buffer demand。该层只产出 analysis result 和 debug dump，不 rewrite `wafer.group`，不写
   layout attr，也不生成 `wafer.tile.region`。
-- R3.4 在 committed `wafer.tile.region` / instruction-level IR 层运行。它消费 R3.2h 选中的
-  passing candidate artifact，把 layout assignment 和 materialization cut materialize 成
+- R3.4 在 committed `wafer.tile.region` / instruction-level IR 层运行。它消费 R3.3 committed
+  main IR，把 layout assignment 和 materialization cut materialize 成
   Wafer-tagged memref value 和 `wafer.tile.materialize_layout` op。
 
 完整 layout materialization 的输入来自 target-abstract tile-region IR。它由 scheduled

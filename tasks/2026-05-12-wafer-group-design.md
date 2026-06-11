@@ -798,7 +798,8 @@ SPM planning、layout assignment、DDR memory planning 和 compute/movement lega
   partial scatter/recompute coverage 和 dynamic reduction range 要等对应 interface/IR 语义明确后再进入
   R3.2h search space。
 
-R3.3 只 materialize R3.2h 选中的 passing candidate artifact 为 committed `wafer.tile.region`。R3.4/R3.5 只把
+R3.3 只把 R3.2h 选中的 passing candidate commit 回主 IR，形成 committed `wafer.tile.region` /
+instruction-level boundary。R3.4/R3.5 只把
 已经通过 candidate gates 的 layout/instruction/SPM/DDR accepted facts 落到可验证 IR、placed descriptor
 或 runtime/package boundary；它们不能成为
 第一次发现 SPM 放不下、layout 不合法或 DDR demand 不可接受的阶段。若 R3.2a-g gates

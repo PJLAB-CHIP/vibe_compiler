@@ -1,4 +1,4 @@
-// RUN: wafer-opt --wafer-select-group-tile='print-candidate-summary spm-limit=73728' %s 2>&1 | FileCheck --check-prefixes=SUMMARY,IR %s
+// RUN: wafer-opt --wafer-select-group-tile='print-candidate-summary spm-limit=73728' %s 2>&1 | FileCheck --implicit-check-not=selected_group --check-prefixes=SUMMARY,IR %s
 
 func.func @reduce_requires_internal_split(%input: tensor<1x4096xf32>,
                                           %out: tensor<1xf32>)
@@ -34,7 +34,7 @@ func.func @reduce_requires_internal_split(%input: tensor<1x4096xf32>,
 // SUMMARY-SAME: split=[{{[1-9][0-9]*}}]
 // SUMMARY-SAME: rejected=
 
-// IR-LABEL: func.func @reduce_requires_internal_split_selected_group_0
+// IR-LABEL: func.func @reduce_requires_internal_split
 // IR-NOT: wafer.group
 // IR-NOT: linalg.generic
 // IR: wafer.instr.reduce <sum>
