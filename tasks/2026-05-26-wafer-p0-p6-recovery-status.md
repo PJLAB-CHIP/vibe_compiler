@@ -23,7 +23,7 @@
 - `tasks/2026-05-25-wafer-tile-region-design.md`
 - `tasks/2026-05-25-wafer-compute-dialect-design.md`
 - `tasks/2026-05-25-wafer-communication-dialect-design.md`
-- `tasks/2026-05-25-wafer-ddr-resource-allocation-design.md`
+- `tasks/2026-05-25-wafer-ddr-memory-planning-design.md`
 - `tasks/2026-05-25-wafer-c-abi-golden-packet-design.md`
 - `tasks/2026-05-25-wafer-launch-runtime-package-design.md`
 - `tasks/2026-05-25-wafer-verification-plan-design.md`
@@ -149,7 +149,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - ODS、op verifier 和 dialect tests 已按 IR 层拆文件；共享 verifier helper 集中在
   `lib/Wafer/IR/Common/OpVerifierUtils.*`。
 - interface/resource/effect 已能作为 planner/verifier 的结构化查询入口，但还没有被 R3 的
-  closed-loop group planner、SPM allocation / DDR resource planning 和 placed instruction-level lowering
+  closed-loop group planner、SPM allocation / DDR memory planning 和 placed instruction-level lowering
   全量消费。
 - Wafer dialect verifier 的孤立负例仍会使用 `builtin.unrealized_conversion_cast` 构造非法边界值；
   这些用例只能证明 verifier 形态。历史 R1.3 stage-connection gate 已删除；communication bridge
@@ -287,7 +287,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   `wafer.tile.region`。
 - R3.4：恢复 layout/SPM materialization gate，让 layout materialization 和 SPM allocation 由 effect、
   liveness/range 和 storage lifetime 驱动。
-- R3.5：materialize R3.2h 已接受的 DDR/resource boundary；legality / capacity / bandwidth demand
+- R3.5：materialize R3.2h 已接受的 DDR memory boundary；legality / capacity / bandwidth demand
   在 R3.2g 中完成，R3.5 不重新决定 group plan。
 - R3.6：恢复 C ABI / packet emission gate，让 ABI 参数单位和 wait policy 从 placed
   instruction-level IR 派生；不再保留专门 ABI IR op family 作为主线或 debug layer。
@@ -405,7 +405,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - collective buffer slice / slot / address offset lowering 没有真实 descriptor 或 placed storage buffer。
 - tiled tensor collective -> `wafer.tile.*` communication materialization 尚未实现；R6.2 需要在 tile_region / SPM
   materialization 之后补可验证 buffer-slice / layout/materialization 路径。
-- SPM/DDR resource 验证没有和 communication staging / buffer lifetime 完整组合。
+- SPM/DDR memory 验证没有和 communication staging / buffer lifetime 完整组合。
 - communication plan metadata 没进入真实 package/runtime path；没有 Direct DTE board completion/error 验证。
 
 恢复任务：

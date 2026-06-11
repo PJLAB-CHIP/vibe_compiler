@@ -32,7 +32,7 @@ Serving integration 暂不纳入本文通过标准。
   syntax compile。
 - LLVM dialect / LLVM IR lowering、object emission 和真实 `wafer_*` runtime call emission 不属于当前
   local compile / package gate 的通过条件，后续实现时必须作为单独 milestone gate 记录。
-- runtime package manifest、constant bytes metadata、SPM/DDR/resource summary 能 roundtrip。
+- runtime package manifest、constant bytes metadata、SPM/DDR memory summary 能 roundtrip。
 
 当前阶段不把板端 launch、device completion、数值对比或 PMU/profiling 作为通过条件。迁移到带实际
 计算卡服务器后，这些 board run 验证再成为对应 milestone 的新增 gate。
@@ -162,7 +162,7 @@ Partitioned StableHLO collective handoff：
 - placement 和 comm lowering 在其实现范围内保留 collective semantics；未实现的硬件可表达
   collective 形成 R6/R4 恢复任务，不能反向限制 sharding propagation program export，也不能把 tensor collective
   伪装成已经 materialize 的 `wafer.tile.*` communication。
-- layout/SPM/DDR resource gates 只对本 milestone 已经 materialize 的 movement / buffer demand
+- layout/SPM/DDR memory gates 只对本 milestone 已经 materialize 的 movement / buffer demand
   负责；尚未 materialize 的 logical collective 不能被伪装成已通过 resource gate。
 - 旧的 StableHLO -> `wafer.tile.*` communication integration 已移除。R2.4 需要补 StableHLO -> tensor
   collective 的 gate，R6 再验证 tiled tensor collective -> `wafer.tile.*` communication 的 materialization。

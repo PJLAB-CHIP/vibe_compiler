@@ -16,7 +16,7 @@ SPM、DDR allocation、layout materialization、DTE、runtime package 或 launch
 
 - `tasks/2026-05-11-wafer-ai-compiler-architecture.md`
 - `tasks/2026-05-21-wafer-layout-materialization-design.md`
-- `tasks/2026-05-25-wafer-ddr-resource-allocation-design.md`
+- `tasks/2026-05-25-wafer-ddr-memory-planning-design.md`
 - `docs/tx8-deps-reverse-engineering/txda-pytorch-runtime-wheel-analysis.md`
 
 ## 1. 目标和非目标
@@ -199,7 +199,7 @@ class WaferCaptureSmoke4096(torch.nn.Module):
 | output | `4096x4096` | `f32` | 64 MiB |
 
 这个模型的算子数量仍然很少，便于隔离 capture contract；但 tensor/weight 尺寸足以让后续
-group、tiling、SPM/DDR resource 和 package manifest 消费真实规模的 shape/byte facts。
+group、tiling、SPM/DDR memory 和 package manifest 消费真实规模的 shape/byte facts。
 
 约束：
 

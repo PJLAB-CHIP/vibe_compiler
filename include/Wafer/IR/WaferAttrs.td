@@ -75,7 +75,7 @@ def Wafer_SPMOffsetAttr : AttrDef<Wafer_Dialect, "SPMOffset"> {
 
     This attribute is an accepted SPM memory-planning fact for
     instruction-level IR. It does not encode planner search trace, runtime
-    handles, packet fields, or DDR resource ownership.
+    handles, packet fields, or DDR memory ownership.
   }];
 
   let parameters = (ins

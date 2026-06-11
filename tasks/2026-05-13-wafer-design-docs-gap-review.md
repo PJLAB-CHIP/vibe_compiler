@@ -17,7 +17,7 @@ boundary 补设计，不能反向污染上层 IR 语义。
 - `tasks/2026-05-12-wafer-group-design.md`
 - `tasks/2026-05-21-wafer-layout-materialization-design.md`
 - `tasks/2026-05-21-wafer-spm-bufferization-design.md`
-- `tasks/2026-05-25-wafer-ddr-resource-allocation-design.md`
+- `tasks/2026-05-25-wafer-ddr-memory-planning-design.md`
 - `tasks/2026-05-25-wafer-compute-dialect-design.md`
 - `tasks/2026-05-25-wafer-communication-dialect-design.md`
 - `tasks/2026-05-25-wafer-frontend-stablehlo-program-design.md`
@@ -354,7 +354,7 @@ buffer/lifetime/range，DDR 文档承接 external binding、workspace BO、const
 pool/domain、capacity 和 bandwidth，compute 文档承接 CT/NE/RDMA/WDMA/TDMA issue family，
 comm 文档承接 DTE/FSM/packet/stream resource class。R1.2 已把局部 tiling/layout/materialization/
 resource interface 做成 verifier 和单测可查询的实现；剩余工作是让 group planner、SPM allocation /
-DDR resource planning 和 lower-level resource allocator 全量消费这些合同。
+DDR memory planning 和 lower-level resource allocator 全量消费这些合同。
 
 实现时资源模型至少包含：
 

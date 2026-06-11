@@ -12,7 +12,7 @@ runtime metadata、placement、DDR binding、constant storage bytes 和 launch a
 本文依赖：
 
 - `tasks/2026-05-25-wafer-placement-design.md`
-- `tasks/2026-05-25-wafer-ddr-resource-allocation-design.md`
+- `tasks/2026-05-25-wafer-ddr-memory-planning-design.md`
 - `tasks/2026-05-25-wafer-c-abi-golden-packet-design.md`
 - `docs/tx8-deps-reverse-engineering/tx8-interface-contract.md`
 - `docs/tx8-deps-reverse-engineering/firmware-kuiper-runtime-hardware-analysis.md`
@@ -75,7 +75,7 @@ Runtime package 是交付给 runtime adapter 的编译产物集合。V0 需要�
 | device code | per-kernel / per-cluster kcore shared object | C ABI / LLVM lowering |
 | launch signature | inputs、outputs、runtime args、shape/dtype/layout | frontend + lowering |
 | placement metadata | cluster、tile mapping、block id、good-tile assumption | placement |
-| DDR resource metadata | external binding contract、workspace demand、resident constant demand | DDR planner |
+| DDR memory metadata | external binding contract、workspace demand、resident constant demand | DDR planner |
 | SPM summary | per-tile SPM peak、reserved range、allocation summary | SPM bufferization |
 | constant storage bytes | transformed read-only backing data, if needed | constant storage transform |
 | communication metadata | collective/p2p resource summary | communication lowering |
@@ -143,7 +143,7 @@ allocation failure 由 DDR 设计负责定义；launch 负责把这些失败报�
 
 当前 `tools/wafer_package_manifest.py` 只负责验证和 roundtrip 显式输入的 manifest schema，不再提供
 固定 package emitter。manifest schema 记录 launch signature、placement metadata、DDR external
-binding bytes、SPM/DDR resource summary、workspace buffer demand、resident constant demand、ABI
+binding bytes、SPM/DDR memory summary、workspace buffer demand、resident constant demand、ABI
 call/packet emission metadata、device-code program id 和 runtime completion source。validator 要求
 `resources.workspace_bytes` 与
 `workspace_buffers` 的 compact tensor storage bytes 求和一致，要求

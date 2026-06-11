@@ -66,7 +66,7 @@ LLVM dialect / C call sequence or packet emission
 Pipeline position:
 - Upstream artifact / IR:
   R3.2f/R3.4 产出的 placed instruction-level `wafer.instr.*` IR、placed memref /
-  access descriptor value、R3.5 DDR/resource facts 和 launch signature。
+  access descriptor value、R3.5 DDR memory facts 和 launch signature。
 - Current stage responsibility:
   从 placed instruction-level IR 发射 `wafer_*` C ABI call、LLVM call 或 packet builder 输入，
   固定参数单位、address domain、wait/completion policy 和 ABI version。
@@ -77,7 +77,7 @@ Pipeline position:
 - User-level driver / named pipeline:
   主线由后端 compile pipeline 调用；不引入专门 ABI IR op family 作为用户级 compile flow。
 - Explicit non-goals:
-  不重新选择 group、tile shape、layout、instruction form、SPM memory plan 或 DDR resource plan。
+  不重新选择 group、tile shape、layout、instruction form、SPM memory plan 或 DDR memory plan。
 - Completion gate:
   至少 RDMA/WDMA/GEMM 的 placed instruction 能生成可审计 ABI call/packet emission，并由 verifier
   和 golden packet gate 覆盖参数单位、range-end、wait policy 和 wrapper mapping。

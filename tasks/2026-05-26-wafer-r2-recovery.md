@@ -228,7 +228,7 @@ P2/R3 任务号、单个 workload 或 case 命名。`wafer-opt` 可以继续暴�
 链也已删除，不作为主线完成证明。
 
 P2.F1 主链路 program 采用 `4096x4096 @ 4096x4096` f32 matmul + bias + tanh + residual 最小验证。
-该规模用于给后续 tiling、SPM/DDR resource、resident constant 和 package gate 提供非 trivial
+该规模用于给后续 tiling、SPM/DDR memory、resident constant 和 package gate 提供非 trivial
 shape/byte facts；pre-SPMD 大 weight 只能通过 PyTorch/XLA program directory `forward.meta` /
 `data/<parameter>` 绑定，post-SPMD 大 weight 通过 `forward.parameter_shards.json` 和 rank-local
 shard payload 绑定；不提交 64 MiB weight 到 git 测试文件。

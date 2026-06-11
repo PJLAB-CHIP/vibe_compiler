@@ -1,4 +1,4 @@
-# Wafer DDR Resource and Allocation Design
+# Wafer DDR Memory Planning Design
 
 日期：2026-05-25
 
@@ -156,7 +156,7 @@ DDR 相关事实按 IR 层分布：
 | tensor / linalg / group | tensor shape、dtype、semantic layout、group boundary | DDR pool、physical address、BO handle、runtime allocation |
 | `wafer.tile.region` | `#wafer.memory<ddr, layout>` / `#wafer.memory<spm, layout>`、load/store boundary、layout materialization、movement/effect | raw BO address、driver handle、unaccepted allocation trace |
 | accepted layout / buffer layer | `memref<..., #wafer.memory<ddr/spm, layout>>` | host malloc pointer、runtime-private pool internals |
-| DDR resource planning | `DdrBufferDemand`、external allocation contract、resident/compiler-managed demand、pool alternatives、lifetime、bandwidth | tensor math semantics、SPM offset search |
+| DDR memory planning | `DdrBufferDemand`、external allocation contract、resident/compiler-managed demand、pool alternatives、lifetime、bandwidth | tensor math semantics、SPM offset search |
 | placed instruction-level IR | placed memref、access descriptor、compiler-managed base+offset、movement ops | unresolved unplaced Wafer-tagged memref |
 | launch / package / runtime | BO allocation/import/query、constant serialization、physical address query/assignment、completion/fence | group formation 或 layout search 的内部 trace |
 
@@ -240,7 +240,7 @@ DdrBufferDemand {
 byte count 和 movement/communication issue。该路径仍要随 R3.2c 迁移到
 `memref<..., #wafer.memory<space, layout>>`。R3.2d/R3.6 后续需要让 placed `wafer.instr.*` /
 C ABI emission 复用同一 resource-effect 合同。完整的 `DdrBufferDemand`、pool/domain、lifetime、
-range 和 bandwidth summary 仍属于后续 DDR resource planner。
+range 和 bandwidth summary 仍属于后续 DDR memory planner。
 
 ## 6. Allocation Model
 
@@ -373,7 +373,7 @@ Launch/runtime layer 负责实际 BO allocation / import / query：
 DDR compiler-managed allocation
 DDR external import
 DDR access descriptor query
-DDR resource release
+DDR allocation release
 ```
 
 上面是语义草图，不要求立即固定 op 名。实现可以选择 custom runtime op、`memref` memory space
@@ -500,7 +500,7 @@ SPM allocator 只分配 `#wafer.memory<spm, *>` offset。它仍需要看见 `#wa
 - DDR range hazard 和 bandwidth cost。
 - host-visible output boundary 的 drain/wait requirement。
 
-SPM allocation 不分配 DDR BO；DDR resource planner 不分配 SPM offset。二者通过同一套 memory effect、
+SPM allocation 不分配 DDR BO；DDR memory planner 不分配 SPM offset。二者通过同一套 memory effect、
 lifetime event 和 movement op contract 对齐。
 
 ## 10. IR Contract Sketch
@@ -575,7 +575,7 @@ DDR verifier 至少检查：
 | 阶段 | 责任 |
 | --- | --- |
 | layout / compute / comm lowering | 生成 `#wafer.memory<ddr, *>` load/store/comm demand，保持 use-def 和 effect |
-| DDR resource planning | external allocation contract、constant residency、compiler-managed suballocation、requirement summary |
+| DDR memory planning | external allocation contract、constant residency、compiler-managed suballocation、requirement summary |
 | placement realization | 把 DDR Wafer-tagged memref 降成 placed memref、access descriptor 或 compiler-managed base+offset |
 | runtime/package lowering | BO alloc/import/query/free、constant serialization/loading、launch metadata、fence |
 | instruction lowering | RDMA/WDMA/DTE descriptor、byte stride、iteration、end range、direction validation |

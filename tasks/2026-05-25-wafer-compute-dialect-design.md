@@ -204,7 +204,7 @@ movement op 的合同：
 - `wafer.tile.load` / `wafer.tile.store` 连接 `#wafer.memory<ddr, tensor>` compact external tensor boundary、
   DDR runtime allocation / resident constant source 和 `#wafer.memory<spm, *>` tile-local memref。host-visible dynamic input/output 默认
   compact；constant source 由 `ConstantLike` value、constant storage transform 和 load op contract 表达，
-  DDR allocation policy / compiler-managed allocation / pool 由 DDR resource 文档定义。
+  DDR allocation policy / compiler-managed allocation / pool 由 DDR memory planning 文档定义。
 - 当 `wafer.tile.load` 的 source 是 `ConstantLike` 时，load op 仍必须表达 logical slice / index
   operands。Weight chunking 是 storage/lowering 策略；compute op 只消费 load 后的 storage，
   不依赖旁路 metadata 或名字约定。
@@ -310,7 +310,7 @@ Placed instruction-level verifier：
   external boundary、DDR descriptor 和 SPM storage 当成几套不相干的空间语义。
 - DDR access descriptor 的 pool/domain、compiler-managed slice、external allocation、capacity 和 bandwidth 不是本层
   op attr；本层只通过 memory effects、range、byte count 和 direction contract 把需求暴露给
-  DDR resource planner。
+  DDR memory planner。
 - stride、iteration、byte count、range end、bool bitpack 和 alignment 规则已完成转换和检查。
 - 普通 `TsmExecute` 路径只覆盖 CT、NE、RDMA、WDMA、TDMA；SCALAR、DTE、CSR 不走该 path。
 - local drain 只出现在 Kcore 可见性、host-visible boundary、DTE/stream protocol、group barrier 或 task end

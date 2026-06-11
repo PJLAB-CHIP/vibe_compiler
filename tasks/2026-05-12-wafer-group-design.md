@@ -5,7 +5,7 @@
 状态：设计草案；2026-05-25 边界收口；2026-05-27 补 post-SPMD tensor collective 边界；
 2026-06-03 收敛 R3.1 root-seeded logical group scope；2026-06-04 对齐
 instruction-level Wafer IR 先于 SPM memory planning；2026-06-05 对齐 memref-backed Wafer memory attr 合同；
-2026-06-08 同步 DDR/resource policy 命名；2026-06-10 前移 candidate DDR tile-view producer 到 R3.2e
+2026-06-08 同步 DDR memory policy 命名；2026-06-10 前移 candidate DDR tile-view producer 到 R3.2e
 
 本文只定义 `wafer.group` 的 tensor-level grouping 和 scheduling contract。它回答：
 
@@ -13,7 +13,7 @@ instruction-level Wafer IR 先于 SPM memory planning；2026-06-05 对齐 memref
   per-op operand/result slice 和 abstract resource demand。
 - group planner 如何用 layout/SPM/DDR/compute/comm 的 planning / legality 结果闭环搜索 tile shape、
   internal split 和 group boundary。
-- 哪些事实必须留给下游 `wafer.tile.region`、layout materialization、SPM/DDR resource、
+- 哪些事实必须留给下游 `wafer.tile.region`、layout materialization、SPM/DDR memory、
   target-abstract compute/comm 和 launch/runtime。
 
 本文不定义 physical layout marker、SPM offset、DDR allocation policy、DTE protocol、C ABI、
@@ -71,10 +71,10 @@ schedule 下，让中间值只在 group tile 内部存活。
 | 3+. Downstream | bufferization / hardware / runtime | `wafer.tile.region`、layout/SPM、`wafer.tile.*` compute、`wafer.tile.*` communication、`wafer.launch` | 消费 scheduled group 的 tiled body、resource demand 和 boundary movement | 不回写 tensor-level fusion 语义 |
 
 这个分层是本文的主线。后面的 case 会在 group 自己负责的阶段给出对应 IR 草图；下游
-`wafer.tile.region`、layout/SPM、DDR resource、compute/movement 和 communication 的 IR 草图分别见
+`wafer.tile.region`、layout/SPM、DDR memory planning、compute/movement 和 communication 的 IR 草图分别见
 `tasks/2026-05-21-wafer-layout-materialization-design.md`、
 `tasks/2026-05-21-wafer-spm-bufferization-design.md`、
-`tasks/2026-05-25-wafer-ddr-resource-allocation-design.md`、
+`tasks/2026-05-25-wafer-ddr-memory-planning-design.md`、
 `tasks/2026-05-25-wafer-compute-dialect-design.md` 和
 `tasks/2026-05-25-wafer-communication-dialect-design.md`。
 
@@ -470,7 +470,7 @@ group 设计只规定交接合同：
 - physical memory planning、SPM allocator、reserved resource policy、range/alignment/coloring；
   见 `tasks/2026-05-21-wafer-spm-bufferization-design.md`。
 - DDR external allocation contract、compiler-managed allocation、constant residency、pool/domain、capacity 和 bandwidth；
-  见 `tasks/2026-05-25-wafer-ddr-resource-allocation-design.md`。
+  见 `tasks/2026-05-25-wafer-ddr-memory-planning-design.md`。
 - `wafer.tile.*` compute / `wafer.dma` / `wafer.tile.*` communication / `wafer.instr.local_drain` 和后续 sync boundary 的 op contract。
 - Wafer C ABI family、wrapper 参数、issue/drain 策略和 package/runtime 格式。
 
@@ -702,8 +702,8 @@ scheduled group 必须来自一个已经被下游 legality analysis / resource p
    必须跑与下游一致的 layout materialization、SPM allocation 和 DDR demand /
    bandwidth analysis。layout 规则见
    `tasks/2026-05-21-wafer-layout-materialization-design.md`，SPM allocation 规则见
-   `tasks/2026-05-21-wafer-spm-bufferization-design.md`，DDR resource 规则见
-   `tasks/2026-05-25-wafer-ddr-resource-allocation-design.md`；target-abstract compute/movement
+   `tasks/2026-05-21-wafer-spm-bufferization-design.md`，DDR memory 规则见
+   `tasks/2026-05-25-wafer-ddr-memory-planning-design.md`；target-abstract compute/movement
    的 layout/resource/effect contract 见
    `tasks/2026-05-25-wafer-compute-dialect-design.md`，tensor collective handoff 规则见
    `tasks/2026-05-25-wafer-local-compute-normalization-design.md`，跨 tile communication 的 token、
@@ -713,7 +713,7 @@ scheduled group 必须来自一个已经被下游 legality analysis / resource p
    group boundary 继续搜索。
 6. 如果找不到合法且成本可接受的 plan，拆分或拒绝该 logical group。
 
-实际 SPM allocation 和 DDR demand/resource planning 都是必要的，因为下游指令、layout 和
+实际 SPM allocation 和 DDR demand/memory planning 都是必要的，因为下游指令、layout 和
 boundary placement 会改变真实需求：
 
 - NE、Reduce、Pool、UnPool 这类 aligned-only 指令要求 operand/result 已经 materialize 成
@@ -749,7 +749,7 @@ scheduled structure 之前完成 layout/resource/legalization planning。实现�
 transformation-local candidate evaluation `wafer.tile.region` IR，用它承载 target-abstract
 Wafer op、layout materialization、buffer、lifetime 和 effect，再从这层 IR 调用下游 analysis。
 这层 lowered IR 是 planning artifact；只有 accepted plan 才能由 R3.3 commit 到主 IR。
-SPM allocation、layout assignment、DDR/resource demand 和 compute/movement legality 是 group 是否成立的
+SPM allocation、layout assignment、DDR memory demand 和 compute/movement legality 是 group 是否成立的
 决定条件，不是 R3.3/R3.4/R3.5 的后处理。
 
 因此恢复顺序必须分清 planning facts 和 IR materialization：
@@ -1019,7 +1019,7 @@ group planner 层只在 analysis 中建模抽象资源，不把完整 resource p
 
 - tile-local tensor storage：input/output/intermediate/temporary/scratch/accumulator。
 - communication storage need：若存在 send/recv staging，记录其大小和生命周期。
-- DDR resource need：external input/output allocation、inter-group tensor compiler-managed allocation、resident constant、
+- DDR memory need：external input/output allocation、inter-group tensor compiler-managed allocation、resident constant、
   DDR staging、range/bandwidth pressure 和 host-visible completion 需求。
 - sync need：若存在 local visibility、remote communication wait 或 group barrier，记录同步需求。
 - compute / DMA / communication pressure：用于 cost model。
@@ -1076,7 +1076,7 @@ constant storage transform 和最小化 layout change 的策略见
 `tasks/2026-05-21-wafer-layout-materialization-design.md`；SPM allocation 见
 `tasks/2026-05-21-wafer-spm-bufferization-design.md`；DDR external allocation、compiler-managed allocation、
 resident constant、pool/domain 和 bandwidth/range cost 见
-`tasks/2026-05-25-wafer-ddr-resource-allocation-design.md`；layout-sensitive compute/movement op
+`tasks/2026-05-25-wafer-ddr-memory-planning-design.md`；layout-sensitive compute/movement op
 如何向 planner 暴露 hard constraint 和 preference，见
 `tasks/2026-05-25-wafer-compute-dialect-design.md`；device-side group-to-group boundary
 如果涉及跨 tile transfer，见 `tasks/2026-05-25-wafer-communication-dialect-design.md`。

@@ -73,11 +73,11 @@ Pipeline position:
   memory planning result / structured failure reason，供 closed-loop planner accept/reject/split；不把未接受
   plan 写入主 IR。
 - Downstream consumer:
-  R3.2h closed-loop planner decision、R3.3 accepted materialization、R3.5 DDR resource materialization。
+  R3.2h closed-loop planner decision、R3.3 accepted materialization、R3.5 DDR allocation materialization。
 - Explicit non-goals:
   不重新做 SPM memory planning，不重新推 DDR tile subview，不生成 ABI call，不 accept plan。
 - Completion gate:
-  R3.2f 输出的 simple tiled matmul/elementwise/storeback 能完成 DDR descriptor/range/resource planning
+  R3.2f 输出的 simple tiled matmul/elementwise/storeback 能完成 DDR descriptor/range/memory planning
   检查；非法 DDR view、pool/domain/capacity/bandwidth 或 descriptor 边界能结构化失败。
 ```
 
@@ -132,7 +132,7 @@ Pipeline position:
 | R3.2h | pending | R3.1 group + R3.2a-g planning results | accepted / rejected / split group decision；未接受 plan 不落 IR |
 | R3.3 | pending | R3.2h accepted plan | committed `wafer.tile.region` + accepted instruction-level lowering boundary |
 | R3.4 | pending | R3.2h accepted layout/SPM facts + R3.3 tile-region | placed instruction-level IR / placed memref / access descriptor |
-| R3.5 | pending | R3.2h accepted DDR memory facts + memref-aware IR | materialized DDR resource / allocation boundary；不重新做 memory planning |
+| R3.5 | pending | R3.2h accepted DDR memory facts + memref-aware IR | materialized DDR memory / allocation boundary；不重新做 memory planning |
 | R3.6-R3.8 | pending | placed instruction IR + launch signature | C ABI / packet emission、IR-derived package manifest、wrapper-facing golden packet |
 | R4.1-R4.5 | pending | placement + local shard + launch/package metadata | rank/block/coord、per-rank slices、writeback、placed package |
 | R5.1-R5.2 | pending | static transformer local shard IR / staged IR gaps | full-block schedule 或拒绝原因；补 mask/select、dynamic-bound policy、constant/weight slice 等 |

@@ -219,7 +219,7 @@ acceptance pass，也不证明 group schedule、SPM residency、compiler-managed
 该 fixture，当前官方 conversion 会把静态连续维度 reassociation 转成
 `tensor.expand_shape` / `tensor.collapse_shape`，例如
 `tensor<BxHxQxD> -> tensor<(BHQ)xD>`。该批次仍不声称 physical layout、SPM residency、
-compiler-managed intermediate storage 或 DDR resource allocation 已完成；这些事实必须在后续 Wafer group/resource lowering 和
+compiler-managed intermediate storage 或 DDR memory allocation 已完成；这些事实必须在后续 Wafer group/resource lowering 和
 transformer local compile gate 中 materialize。
 
 ### 4.3 Reduction

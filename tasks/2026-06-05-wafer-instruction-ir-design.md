@@ -278,7 +278,7 @@ memref 替换原 op result 的 uses。
   explicit movement。
 - SPM offset、range、bank span 由 R3.2f 写入，或在 R3.4 realization 降成 placed memref /
   address descriptor。
-- RDMA/WDMA 的 DDR side 使用 `memref<..., #wafer.memory<ddr, layout>>`；DDR resource stage 负责
+- RDMA/WDMA 的 DDR side 使用 `memref<..., #wafer.memory<ddr, layout>>`；DDR memory planning stage 负责
   external allocation contract、pool/domain、compiler-managed allocation 和 constant residency。
 
 R3.2d 只 materialize **unplaced logical descriptor facts**：byte count、stride/iteration、op kind、

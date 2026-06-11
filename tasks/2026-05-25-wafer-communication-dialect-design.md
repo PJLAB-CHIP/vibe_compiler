@@ -317,7 +317,7 @@ schedule、resource allocation 和 package/runtime metadata。
   liveness。没有合法 SPM allocation 时，planner 必须回到 group boundary、tile shape、layout 或
   communication schedule 搜索，而不是生成等待下游修复的 comm IR。
 - 如果 selected protocol 使用 DDR-backed staging、host/runtime D2D/P2P path 或 DDR2DDR helper，
-  对应 source/destination 必须作为 `#wafer.memory<ddr, *>` demand 进入 DDR resource planner。`wafer.tile.*` communication 不保存
+  对应 source/destination 必须作为 `#wafer.memory<ddr, *>` demand 进入 DDR memory planner。`wafer.tile.*` communication 不保存
   DDR pool/domain、compiler-managed DDR allocation 或 visible allocation attr；它只通过 buffer type、byte count、effect
   和 token/wait 暴露需求。
 - DTE 读取 NCC 产物前需要 local drain；DTE 写入后 compute 消费前需要 comm wait。两者都应通过
@@ -363,7 +363,7 @@ P2P-level verifier：
 
 - peer 是单个 active physical tile；当前 Direct DTE compiler path 只允许 fixed-size unicast。
 - send source 和 recv destination 是 SPM tile-local storage 或 lowerable descriptor。
-- 若 selected protocol 使用 `#ddr` endpoint，descriptor 必须满足 DDR resource plan 的 pool/domain、
+- 若 selected protocol 使用 `#ddr` endpoint，descriptor 必须满足 DDR memory plan 的 pool/domain、
   range、alignment 和 ownership contract。
 - byte count 与 buffer slice/storage representation 一致。
 - token wait 支配后续消费或 reuse；async lifetime 被 SPM allocation 看到。
