@@ -27,6 +27,12 @@
   `cmake -S . -B build/wafer-dev -GNinja -DMLIR_DIR=$PWD/build/third_party/llvm-install/f0b3287297aeeddcf030e3c1b08d05a69ad465aa/lib/cmake/mlir -DLLVM_DIR=$PWD/build/third_party/llvm-install/f0b3287297aeeddcf030e3c1b08d05a69ad465aa/lib/cmake/llvm -DWAFER_ENABLE_IMPORTER_DEPS=ON -DWAFER_ENABLE_FRAMEWORK_IMPORTER_DEPS=ON -DWAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON -DWAFER_IMPORTER_PYTHON_EXECUTABLE=$PWD/third_party/python-importer-py311/bin/python`，
   然后跑 `cmake --build build/wafer-dev --target check-wafer -- -j128` 和
   `ctest --test-dir build/wafer-dev --output-on-failure`。
+- `ctest` 通过不等于关键 program / E2E gate 被执行。涉及 frontend/SPMD/program pipeline 或声称
+  主链路跑通时，还要跑
+  `/root/miniconda3/bin/lit -sv --show-unsupported build/wafer-dev/test`，确认相关 `REQUIRES` 测试没有
+  被 `unsupported` 跳过；必要时查 `build/wafer-dev/CMakeCache.txt` 中对应 feature/helper 是否为空。
+  对当前 SPMD program gate，`wafer-opt-spmd-partition.test` 和 `wafer-opt-spmd-to-group.test` 必须在
+  配置了 `WAFER_XLA_SPMD_PARTITIONER_HELPER` 后实际执行，不能用 `ctest passed` 代替。
 - Shardy 不用 standalone Bazel workspace 作为 Wafer dependency 编译验证；`WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON`
   会通过 `cmake/third_party/WaferShardyCMake.cmake` 编译 `wafer-shardy-cmake-gate` / `shardy-sdy-opt`，
   复用同一套固定版本 LLVM/MLIR 和 embedded StableHLO。
