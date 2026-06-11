@@ -168,8 +168,9 @@
   和 256B bank alignment 都进入 footprint。当前 V0 对 instruction-level IR 建立可重算的
   region-aware lifetime dataflow：base/view-like alias 共享 root ref，`scf.if` 用互斥 path condition
   判断 branch reuse，`scf.for` 对 iter_args/yield/backedge 延伸 loop-carried lifetime，async issue
-  的 SPM operand 通过 `!async.token` 延伸到 wait/drain use；first-fit 只复用 lifetime 不重叠的
-  range，不把搜索 trace 或未接受 offset 写进 IR。
+  的 SPM operand 通过 `!async.token` 延伸到 wait/drain use。offset 搜索使用
+  pressure-weighted offline packing：physical size 大、conflict pressure 高、lifetime span 长的 demand
+  先放置，再在合法 gap 中选最低 offset；搜索 trace、priority weight 和未接受 offset 不写进 IR。
 - 用户级 compiler target 名称统一为 `wafer`，Wafer IR target attr 的唯一主线 spelling 是
   `#wafer.target<wafer>`。`tx8` / `tx81` 只保留在硬件、依赖逆向和外部历史命名事实里，不能作为
   compiler target、pipeline 名称或测试 fixture 的主线命名。

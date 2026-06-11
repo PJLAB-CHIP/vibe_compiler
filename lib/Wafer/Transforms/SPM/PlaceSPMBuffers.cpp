@@ -43,6 +43,9 @@ struct SPMDemand {
   int64_t allocEvent = 0;
   PathCondition allocCondition;
   unsigned ordinal = 0;
+  int64_t conflictBytes = 0;
+  int64_t firstLiveEvent = 0;
+  int64_t lastLiveEvent = 0;
   llvm::SmallVector<LiveSegment, 4> segments;
 };
 
@@ -207,6 +210,72 @@ static void addLiveSegment(SPMDemand &demand, int64_t startEvent,
 static void recordDemandUse(SPMDemand &demand, int64_t event,
                             PathCondition condition) {
   addLiveSegment(demand, demand.allocEvent, event, condition);
+}
+
+static void addSaturated(int64_t &lhs, int64_t rhs) {
+  if (rhs <= 0)
+    return;
+  if (lhs > std::numeric_limits<int64_t>::max() - rhs) {
+    lhs = std::numeric_limits<int64_t>::max();
+    return;
+  }
+  lhs += rhs;
+}
+
+static void computeLifetimeBounds(SPMDemand &demand) {
+  if (demand.segments.empty()) {
+    demand.firstLiveEvent = demand.allocEvent;
+    demand.lastLiveEvent = demand.allocEvent;
+    return;
+  }
+
+  demand.firstLiveEvent = demand.segments.front().startEvent;
+  demand.lastLiveEvent = demand.segments.front().endEvent;
+  for (const LiveSegment &segment : demand.segments) {
+    demand.firstLiveEvent = std::min(demand.firstLiveEvent, segment.startEvent);
+    demand.lastLiveEvent = std::max(demand.lastLiveEvent, segment.endEvent);
+  }
+}
+
+static int64_t getLifetimeSpan(const SPMDemand &demand) {
+  if (demand.lastLiveEvent <= demand.firstLiveEvent)
+    return 0;
+  return demand.lastLiveEvent - demand.firstLiveEvent;
+}
+
+static void
+computePlacementPriorities(llvm::MutableArrayRef<SPMDemand> demands) {
+  for (SPMDemand &demand : demands) {
+    demand.conflictBytes = 0;
+    computeLifetimeBounds(demand);
+  }
+
+  for (size_t lhsIndex = 0; lhsIndex < demands.size(); ++lhsIndex) {
+    SPMDemand &lhs = demands[lhsIndex];
+    for (SPMDemand &rhs : demands.drop_front(lhsIndex + 1)) {
+      if (!lifetimesOverlap(lhs, rhs))
+        continue;
+      addSaturated(lhs.conflictBytes, rhs.size);
+      addSaturated(rhs.conflictBytes, lhs.size);
+    }
+  }
+}
+
+static bool hasHigherPlacementPriority(const SPMDemand &lhs,
+                                       const SPMDemand &rhs) {
+  if (lhs.size != rhs.size)
+    return lhs.size > rhs.size;
+  if (lhs.conflictBytes != rhs.conflictBytes)
+    return lhs.conflictBytes > rhs.conflictBytes;
+
+  int64_t lhsSpan = getLifetimeSpan(lhs);
+  int64_t rhsSpan = getLifetimeSpan(rhs);
+  if (lhsSpan != rhsSpan)
+    return lhsSpan > rhsSpan;
+
+  if (lhs.allocEvent != rhs.allocEvent)
+    return lhs.allocEvent < rhs.allocEvent;
+  return lhs.ordinal < rhs.ordinal;
 }
 
 static llvm::SmallVector<RootRef, 2>
@@ -546,11 +615,8 @@ static mlir::LogicalResult placeRegion(TileRegionOp tileRegion, int64_t spmBase,
           collectSPMDemands(tileRegion, spmAlignment, events, demands)))
     return mlir::failure();
 
-  llvm::sort(demands, [](const SPMDemand &lhs, const SPMDemand &rhs) {
-    if (lhs.allocEvent != rhs.allocEvent)
-      return lhs.allocEvent < rhs.allocEvent;
-    return lhs.ordinal < rhs.ordinal;
-  });
+  computePlacementPriorities(demands);
+  llvm::sort(demands, hasHigherPlacementPriority);
 
   llvm::SmallVector<PlacedSPMInterval, 8> placedIntervals;
   for (auto [demandIndex, demand] : llvm::enumerate(demands)) {

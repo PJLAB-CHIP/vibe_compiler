@@ -6,7 +6,8 @@
 2026-06-05 对齐 memref-backed buffer contract；2026-06-08 同步 DDR/resource policy 命名；
 2026-06-10 R3.2e 前移为 candidate DDR tile-view producer，SPM placement 后移为 R3.2f；
 2026-06-10 R3.2f V0 落地为 instruction-level SPM placement fact；
-2026-06-10 R3.2f lifetime dataflow 覆盖 `scf.if` / `scf.for` / async token wait
+2026-06-10 R3.2f lifetime dataflow 覆盖 `scf.if` / `scf.for` / async token wait；
+2026-06-11 R3.2f allocator 从 alloc-event first-fit 升级为 pressure-weighted offline packing
 
 本文定义 Wafer SPM bufferization、tile-local allocation 和 storage verification。它服务于
 `wafer.group` planning 的合法性搜索，也负责把 `wafer.tile.region` 中的 tile-local value
@@ -188,7 +189,7 @@ tile-region IR 而没有 R3.2e candidate DDR tile views 和 R3.2d instruction-le
 - wrapper-specific byte count / range-end rule。
 
 `BufferDemand` 的 `wafer_memory_attr`、`physical_layout` 和 `storage_size` 适用于所有 memory space；
-但本文 allocator 只为 `#wafer.memory<spm, *>` demand 放置 offset。`#wafer.memory<ddr, *>` demand 不进入 SPM first-fit placement，只进入 movement legality、
+但本文 allocator 只为 `#wafer.memory<spm, *>` demand 放置 offset。`#wafer.memory<ddr, *>` demand 不进入 SPM placement，只进入 movement legality、
 range/bandwidth cost、host-visible lifetime 和 DDR resource ownership 检查。
 
 ## 5. Lifetime and Effects
@@ -314,15 +315,15 @@ Interval {
 
 4. 固定 reserved/fixed range。
 
-5. intervals 排序：
+5. intervals / lifetime segments 排序：
 
 - fixed range 优先。
 - size 大优先。
-- lifetime 长优先。
-- overlap-critical 优先。
+- conflict pressure 高优先，即与其它 live demand overlap 的 physical bytes 多优先。
+- lifetime span 长优先。
 - materialization temp 靠后，方便失败时移动 cut。
 
-6. first-fit placement：
+6. lowest-gap placement：
 
 - 找满足 alignment 的最低可用 offset。
 - 不能与 lifetime overlap 的已放置 interval 重叠。
@@ -450,7 +451,7 @@ placement arena 的作用域是单个 `wafer.tile.region`，因为普通 SPM win
 tile-region 可以使用相同 offset；同一个 tile-region 内的 SPM allocation 必须在 accepted
 placement 下不重叠、range/end 合法。当前 R3.2f V0 递归读取 `wafer.tile.region` 内的
 instruction-level IR、structured control-flow、SSA alias 和 async token use，建立可重算的 lifetime
-segments；first-fit 只避开 lifetime segment 可同时发生且 byte range overlap 的已放置 interval。
+segments；weighted placement 只避开 lifetime segment 可同时发生且 byte range overlap 的已放置 interval。
 
 R3.2f V0 的 dataflow 边界：
 
@@ -470,6 +471,20 @@ R3.2f V0 的 dataflow 边界：
 instruction-level async token use。未结构化 CFG、超过 64 个 branch decision point，以及未来显式
 must-alias group 需要先由 SSA / op interface / verifier 表达，再进入 placement；不能靠名字或旁路
 协议恢复。
+
+R3.2f placement 使用经典静态 memory planning / interval allocation 的保守 baseline，而不是把
+alloc event 顺序直接当作 allocation 顺序。算法分两层：
+
+- lifetime analysis 仍由当前 IR 的 SSA、region、path condition 和 async token use 重算，得到可同时
+  发生的 lifetime segments。
+- placement order 使用 pressure-weighted offline packing：优先放置 physical size 大、与其它 live
+  demand 冲突压力高、lifetime span 长的 demand，再按 alloc event / ordinal 稳定打破平局。
+
+这样可以避免小 buffer 先占低地址造成 arena fragmentation，导致后续大 buffer 在总容量可行时失败。
+offset 选择仍保持 deterministic bounded search：只在当前 placed intervals 形成的合法 gap 中选最低
+可行 offset；未接受 offset、candidate 排序权重和搜索 trace 都保持为 analysis，不写入
+`wafer.spm.placement`。后续若要引入 graph coloring、ILP、schedule-aware double buffering 或
+bank-aware coloring，必须继续保持 same input/output IR contract，只改变 analysis / search。
 
 `wafer.spm.placement` 是 accepted fact，不是搜索 trace。失败原因仍通过 pass diagnostic 返回，
 不写进 IR；未接受的 candidate offset、first-fit 探索过程和 repair suggestion 都保持为 analysis。
@@ -523,7 +538,7 @@ closed-loop planner，不在 allocator 内部用名字或 case 猜测。
   range 和 lifetime 约束稳定后引入；在此之前用单 pool + reserved range 更容易验证。
 - linear scan allocator：当 `wafer.tile.region` 大多是线性 schedule，且 greedy arena 编译成本或
   fragmentation 成为问题时引入。
-- graph-coloring / interval-coloring allocator：当 lifetime 图复杂、first-fit 产生明显 peak SPM
+- graph-coloring / interval-coloring allocator：当 lifetime 图复杂、weighted greedy 产生明显 peak SPM
   浪费，且诊断能保持清楚时引入。
 - allocator 内部 repair loop：只允许有限 repair；如果 repair 开始改变 tile shape 或 group
   boundary，应交还 group planner，而不是让 allocator 变成隐藏 scheduler。
