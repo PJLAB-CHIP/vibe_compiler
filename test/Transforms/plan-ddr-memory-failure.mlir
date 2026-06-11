@@ -1,4 +1,4 @@
-// RUN: wafer-opt --wafer-accept-ddr-memory-plan -split-input-file -verify-diagnostics %s
+// RUN: wafer-opt --wafer-plan-ddr-memory -split-input-file -verify-diagnostics %s
 
 // -----
 

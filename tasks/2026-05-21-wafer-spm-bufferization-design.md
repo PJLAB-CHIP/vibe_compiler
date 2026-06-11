@@ -5,7 +5,7 @@
 状态：设计草案；2026-05-25 边界收口；2026-06-04 对齐 instruction-level Wafer IR 先于 SPM memory planning；
 2026-06-05 对齐 memref-backed buffer contract；2026-06-08 同步 DDR memory policy 命名；
 2026-06-10 R3.2e 前移为 candidate DDR tile-view producer，SPM memory planning 后移为 R3.2f；
-2026-06-10 R3.2f V0 落地为 instruction-level `wafer.spm.offset` accepted fact；
+2026-06-10 R3.2f V0 落地为 instruction-level `wafer.spm.offset` planning fact；
 2026-06-10 R3.2f lifetime dataflow 覆盖 `scf.if` / `scf.for` / async token wait；
 2026-06-11 R3.2f allocator 从 alloc-event first-fit 升级为 pressure-weighted offline packing
 
@@ -23,13 +23,13 @@ Wafer-tagged memref / `wafer.instr.*` / effects，不重复定义 instruction op
   构造 allocation input。
 - 对 instruction-level IR 做 SPM memory planning、range/end-address/alignment/bank-span verification 和 failure
   feedback。
-- 为 placement realization 提供 accepted offset/range/lifetime/alias 信息。
+- 为 placement realization 提供 planned offset/range/lifetime/alias 信息。
 
 本文不分配 DDR，不选择 physical layout，不决定 group boundary，不选择 compute/communication
 instruction selection，也不生成 runtime package。DDR source/destination range 和 bandwidth 可以作为
 legality 或 cost input；DDR memory pool/domain 的主设计见
 `tasks/2026-05-25-wafer-ddr-memory-planning-design.md`。SPM allocation 的失败 trace、搜索顺序和
-未接受 offset 都是 analysis，不写进长期 IR。
+rejected/candidate offset 都是 analysis，不写进长期 IR。
 
 ## 1. 核心结论
 
@@ -64,10 +64,10 @@ Pipeline position:
   计算 offset/end/bank span、alignment、lifetime/reuse、must-alias/must-not-alias、reserved range
   和 range-end verification。
 - Output artifact / IR:
-  same instruction-level IR with `wafer.spm.offset` accepted facts on SPM memref definitions，或结构化
+  same instruction-level IR with `wafer.spm.offset` planning facts on SPM memref definitions，或结构化
   allocation failure reason；后续 R3.4 再把 fact materialize 成 placed memref / descriptor。
 - Downstream consumer:
-  R3.2g DDR memory plan acceptance、R3.2h closed-loop candidate driver、R3.4 materialized placed storage IR，
+  R3.2g DDR memory planning、R3.2h closed-loop candidate driver、R3.4 materialized placed storage IR，
   以及 R3.6 codegen emission。
 - User-level driver / named pipeline:
   当前可重放入口是 `wafer-lower-groups-to-memory-planned-instr`，它复用 R3.2c/R3.2d lowering 后追加
@@ -378,8 +378,8 @@ logical group + tile/layout proposal
   -> legalize/select instruction-level wafer.instr.* over unplaced Wafer-tagged memref values
   -> collect BufferDemand + liveness/effect from instruction-level IR
   -> SPM memory planning
-  -> accepted plan or failure feedback
-  -> commit accepted wafer.tile.region with layout/materialization/instruction/SPM facts
+  -> planned offsets or failure feedback
+  -> commit passing wafer.tile.region with layout/materialization/instruction/SPM facts
   -> materialize placed instruction/memref IR
 ```
 
@@ -465,7 +465,7 @@ R3.2f V0 的 dataflow 边界：
   可以在 loop 后复用。
 - 产生 `!async.token` 且带 SPM operand 的 issue op 会把对应 SPM refs 挂到 token 上；token 被
   `wafer.tile.wait` 或后续 drain/wait-like op 消费时，source/destination lifetime 延伸到该 token use。
-- 未接受的 candidate offset、search trace、cost estimate 和 repair suggestion 仍是 analysis，不写入
+- rejected/candidate offset、search trace、cost estimate 和 repair suggestion 仍是 analysis，不写入
   IR。
 
 当前实现边界是 R3.2d 已支持的 structured `scf.if` / `scf.for`、single-block `scf.yield` 和
@@ -483,12 +483,12 @@ alloc event 顺序直接当作 allocation 顺序。算法分两层：
 
 这样可以避免小 buffer 先占低地址造成 arena fragmentation，导致后续大 buffer 在总容量可行时失败。
 offset 选择仍保持 deterministic bounded search：只在当前 assigned intervals 形成的合法 gap 中选最低
-可行 offset；未接受 offset、candidate 排序权重和搜索 trace 都保持为 analysis，不写入
+可行 offset；rejected/candidate offset、candidate 排序权重和搜索 trace 都保持为 analysis，不写入
 `wafer.spm.offset`。后续若要引入 graph coloring、ILP、schedule-aware double buffering 或
 bank-aware coloring，必须继续保持 same input/output IR contract，只改变 analysis / search。
 
-`wafer.spm.offset` 是 accepted fact，不是搜索 trace。失败原因仍通过 pass diagnostic 返回，
-不写进 IR；未接受的 candidate offset、lowest-gap 探索过程和 repair suggestion 都保持为 analysis。
+`wafer.spm.offset` 是 planning fact，不是搜索 trace。失败原因仍通过 pass diagnostic 返回，
+不写进 IR；rejected/candidate offset、lowest-gap 探索过程和 repair suggestion 都保持为 analysis。
 
 ## 13. Verifier
 

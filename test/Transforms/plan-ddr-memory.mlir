@@ -1,8 +1,8 @@
-// RUN: wafer-opt --wafer-accept-ddr-memory-plan %s | FileCheck %s
-// RUN: not wafer-opt --wafer-accept-ddr-memory-plan='ddr-capacity-bytes=64' %s 2>&1 | FileCheck --check-prefix=CAPACITY %s
-// RUN: not wafer-opt --wafer-accept-ddr-memory-plan='ddr-bandwidth-limit-bytes=20' %s 2>&1 | FileCheck --check-prefix=BANDWIDTH %s
+// RUN: wafer-opt --wafer-plan-ddr-memory %s | FileCheck %s
+// RUN: not wafer-opt --wafer-plan-ddr-memory='ddr-capacity-bytes=64' %s 2>&1 | FileCheck --check-prefix=CAPACITY %s
+// RUN: not wafer-opt --wafer-plan-ddr-memory='ddr-bandwidth-limit-bytes=20' %s 2>&1 | FileCheck --check-prefix=BANDWIDTH %s
 
-func.func @accept_external_strided_views(
+func.func @plan_external_strided_views(
     %input: memref<4x8xf16, #wafer.memory<ddr, tensor>>,
     %output: memref<4x8xf16, #wafer.memory<ddr, tensor>>) {
   %input_tile = memref.subview %input[1, 2] [2, 3] [1, 1]
@@ -36,7 +36,7 @@ func.func @accept_external_strided_views(
   return
 }
 
-// CHECK-LABEL: func.func @accept_external_strided_views
+// CHECK-LABEL: func.func @plan_external_strided_views
 // CHECK: %[[INPUT_TILE:.+]] = memref.subview
 // CHECK: %[[OUTPUT_TILE:.+]] = memref.subview
 // CHECK: wafer.instr.rdma

@@ -15,7 +15,7 @@ Serving integration 暂不纳入本文通过标准。
 
 - 每个 IR 层验证自己能解释的语义，不提前验证下游 raw detail。
 - analysis 可以失败并反馈 planner，但失败候选不写进 IR。
-- 影响 codegen 的 accepted fact 必须能从 IR / type / op / attr / region / effect 中验证。
+- 影响 codegen 的 planned/verifiable fact 必须能从 IR / type / op / attr / region / effect 中验证。
 - pass pipeline 只定义 transformation 顺序，不承载隐藏语义。
 - 支持范围由目标硬件能力、runtime/ABI 证据和当前 IR contract 决定，不由某个下游 lowering pass
   的当前覆盖范围反向决定。如果上游产出的是合法语义，且硬件/通信/存储模型可表达，而下游还没

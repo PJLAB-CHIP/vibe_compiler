@@ -85,8 +85,8 @@ layout planning 有两个恢复层次：
   layout constraints、layout assignment alternatives、materialization cut 和 materialization
   buffer demand。该层只产出 analysis result 和 debug dump，不 rewrite `wafer.group`，不写
   layout attr，也不生成 `wafer.tile.region`。
-- R3.4 在 accepted `wafer.tile.region` / instruction-level IR 层运行。它消费 R3.2h 选中的
-  accepted candidate artifact，把 layout assignment 和 materialization cut materialize 成
+- R3.4 在 committed `wafer.tile.region` / instruction-level IR 层运行。它消费 R3.2h 选中的
+  passing candidate artifact，把 layout assignment 和 materialization cut materialize 成
   Wafer-tagged memref value 和 `wafer.tile.materialize_layout` op。
 
 完整 layout materialization 的输入来自 target-abstract tile-region IR。它由 scheduled
@@ -129,14 +129,14 @@ Pipeline position:
 - Downstream consumer:
   R3.2c group-to-tile-region lowering、R3.2d Wafer instruction legalization / selection、
   R3.2e candidate DDR tile-view materialization、R3.2f SPM memory planning、
-  R3.2g DDR memory plan acceptance + compute/movement legality analysis，
+  R3.2g DDR memory planning + compute/movement legality analysis，
   以及 R3.2h closed-loop candidate driver。
 - User-level driver / named pipeline:
   主线仍由 `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 产生 R3.1 group；
   R3.2b 的局部验证入口是 `wafer-opt --wafer-dump-group-layout-plan`，用于在
   group IR 上 dump analysis 输出。
 - Explicit non-goals:
-  不选择最终 closed-loop tile shape、不 accept/reject/split group、不分配 SPM、不判断
+  不选择最终 closed-loop tile shape、不 select/reject/split group、不分配 SPM、不判断
   DDR pool/range/bandwidth、不 materialize compute/movement/comm op、不生成 package/ABI。
 - Completion gate:
   FileCheck 覆盖 linalg matmul/broadcast/elementwise、multi-group、tensor collective、
@@ -858,7 +858,7 @@ cut placement:
 ```
 
 V0 不把这个问题写成“遇到某类 op 就插 conversion”。通用算法是 hard constraint propagation、
-小规模 graph labeling、局部 cut 优化、SPM allocation 和 DDR memory acceptance 的组合。
+小规模 graph labeling、局部 cut 优化、SPM allocation 和 DDR memory planning 的组合。
 
 #### 6.1.1 Hard Constraint Propagation
 
@@ -977,7 +977,7 @@ boundary。
 Wafer 的常见 case 是 multi-label、op hyperedge、loop-carried value、SPM peak 和 boundary
 co-planning 耦合，所以 V0 不把 min-cut 当主算法。后续如果 profiling 证明某个局部区域的
 conversion cost 是主瓶颈，可以在 bounded frontier 的局部子图上引入 ILP / beam search；结果仍必须
-通过同一套 verifier、SPM allocation 和 DDR memory acceptance。
+通过同一套 verifier、SPM allocation 和 DDR memory planning。
 
 ## 7. Boundary Contract
 

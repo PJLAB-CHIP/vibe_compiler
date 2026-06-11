@@ -160,8 +160,8 @@
   `tensor.extract_slice`、direct output `tensor.insert_slice` storeback，以及 candidate output
   tile offsets/sizes candidate evaluation lowering 的 DDR `memref.subview` producer；R3.2d 仍不能根据
   whole-boundary shape 自己恢复 subview，closed-loop traversal / tile-shape search 归 R3.2h。
-- R3.2f SPM memory planning 的 accepted offset fact 不属于 `#wafer.memory<spm, layout>` 本身，
-  也不属于 logical `wafer.placement.map`。accepted fact 当前挂在 SPM `memref.alloc` 的 `wafer.spm.offset`
+- R3.2f SPM memory planning 的 planned offset fact 不属于 `#wafer.memory<spm, layout>` 本身，
+  也不属于 logical `wafer.placement.map`。planning fact 当前挂在 SPM `memref.alloc` 的 `wafer.spm.offset`
   attr 上，值为 `#wafer.spm_offset<offset, size, alignment, bank_begin, bank_limit>`；arena
   作用域是单个 `wafer.tile.region`，不同 tile-region 可以复用相同 offset。`size` 必须来自
   `computeWaferPhysicalTensorInfo(memrefType).physicalBytes`，所以 `Cx/NCx` padding、C0 tail/fold

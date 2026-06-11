@@ -1,4 +1,4 @@
-// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-groups-to-ddr-accepted-instr)' %s | FileCheck %s
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-groups-to-ddr-memory-planned-instr)' %s | FileCheck %s
 
 func.func @boundary_tiled_matmul_group(%lhs: tensor<4x8xf16>,
                                        %rhs: tensor<8x8xf16>,

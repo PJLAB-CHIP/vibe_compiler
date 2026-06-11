@@ -36,11 +36,11 @@ PyTorch/XLA StableHLO Wafer program directory
   -> wafer-lower-tile-region-to-instr / R3.2d
        target-abstract tile ops -> wafer.instr.* over unplaced Wafer-tagged memref
   -> wafer-lower-groups-to-memory-planned-instr / R3.2f SPM memory planning
-  -> R3.2g DDR memory plan acceptance
-       accept/reject explicit DDR views, descriptors, ownership and resource bounds
+  -> R3.2g DDR memory planning
+       verify/reject explicit DDR views, descriptors, ownership and resource bounds
   -> R3.2h closed-loop candidate driver
-       enumerate candidates, rerun R3.2e-g, choose accepted candidate or split
-  -> R3.3+ accepted materialization / launch / package
+       enumerate candidates, rerun R3.2e-g, choose passing candidate or split
+  -> R3.3+ committed materialization / launch / package
 ```
 
 `wafer-compile-stablehlo` 只做 frontend / StableHLO program verifier。
@@ -57,7 +57,7 @@ PyTorch/XLA StableHLO Wafer program directory
 | Tile storage / boundary | `wafer.tile.load/store`、`memref.alloc`、`memref.subview`、`#wafer.memory<space, layout>` | DDR side 使用 `#wafer.memory<ddr, tensor>` memref 或显式 strided tile view；SPM side 使用 `#wafer.memory<spm, *>` memref；`!wafer.storage` / `wafer.tile.alloc` 已删除 |
 | Tile compute / movement | `wafer.tile.fill/gemm/elementwise/reduce`、layout materialization、copy/slice/broadcast/transpose/reshape | 保持 target-abstract tile ops；layout / movement 语义由 memref type、Wafer memory attr 和 op interface 表达 |
 | Instr | `wafer.instr.rdma/wdma/gather_scatter/fill/elementwise/reduce/convert/gemm/local_drain` | R3.2d 已能消费显式 DDR subview / strided view；不做 SPM offset、DDR allocation、ABI call |
-| Resource / runtime | `wafer.placement.map`、`wafer.launch` | SPM/DDR policy 不新增单独 storage IR；accepted facts 后续 materialize 到 placed memref / descriptor / launch boundary |
+| Resource / runtime | `wafer.placement.map`、`wafer.launch` | SPM/DDR policy 不新增单独 storage IR；planned facts 后续 materialize 到 placed memref / descriptor / launch boundary |
 
 ## 当前 Active
 
@@ -71,22 +71,22 @@ Pipeline position:
 - Current stage responsibility:
   枚举 traversal、tile shape、layout/resource candidate，调用 R3.2e candidate DDR tile-view
   materialization、R3.2d instruction legalization、R3.2f SPM memory planning 和 R3.2g DDR memory
-  plan acceptance；选择已通过全部 gates 的 candidate artifact，或输出 split/retry failure。
+  planning；选择已通过全部 gates 的 candidate artifact，或输出 split/retry failure。
 - Output artifact / IR:
-  accepted candidate artifact，包含可提交的 tile-region/instruction-level IR 和已通过 gates 的
-  layout/SPM/DDR facts；或结构化 rejected/split reason。未接受 candidate 不写入主 IR。
+  passing candidate artifact，包含可提交的 tile-region/instruction-level IR 和已通过 gates 的
+  layout/SPM/DDR facts；或结构化 rejected/split reason。rejected candidate 不写入主 IR。
 - Downstream consumer:
   R3.3 committed `wafer.tile.region` materialization、R3.4 placed instruction-level IR、R3.5 DDR
   allocation/import/package boundary。
 - User-level driver / named pipeline:
   R3.2h 后续提供主线 candidate driver；当前 R3.2g completion proof 使用
-  `wafer-lower-groups-to-ddr-accepted-instr` 重放已完成 R3.2c/R3.2d/R3.2f/R3.2g chain。
+  `wafer-lower-groups-to-ddr-memory-planned-instr` 重放已完成 R3.2c/R3.2d/R3.2f/R3.2g chain。
 - Explicit non-goals:
   不重新实现 R3.2e/R3.2d/R3.2f/R3.2g gate，不把失败候选落入主 IR，不生成 ABI call、packet 或
   runtime BO handle。
 - Completion gate:
   simple matmul/elementwise candidate 能由 driver 生成 candidate tile views，跑通 instruction
-  selection、SPM planning、DDR acceptance 并返回 accepted candidate；非法 candidate 能被结构化拒绝并触发
+  selection、SPM planning、DDR memory planning 并返回 passing candidate；非法 candidate 能被结构化拒绝并触发
   retry/split。
 ```
 
@@ -104,7 +104,7 @@ Pipeline position:
 - R3.2d RDMA/WDMA 支持 strided DDR view 是 consumer 能力；descriptor 的 offset/stride 必须来自
   IR 中的 memref view，不能从名字、shape 或 whole-boundary memref 推断。
 - R3.2f 已接入 `wafer.spm.offset = #wafer.spm_offset<offset, size, alignment, bank_begin,
-  bank_limit>` accepted fact；arena 作用域是单个 `wafer.tile.region`，默认普通 SPM range 为
+  bank_limit>` planning fact；arena 作用域是单个 `wafer.tile.region`，默认普通 SPM range 为
   `[0x10000, 0x2F0000)`，size 来自 `computeWaferPhysicalTensorInfo` 的 physical bytes。V0 已对
   instruction-level IR 建立 region-aware lifetime dataflow：straight-line last-use 后复用、
   `scf.if` path-sensitive branch 互斥复用、`scf.for` loop-carried/backedge lifetime、loop 后 temp
@@ -115,9 +115,9 @@ Pipeline position:
   closed-loop tiling planner completion proof。
 - `wafer-lower-groups-to-memory-planned-instr` 是 R3.2f 当前可重放入口：它在 R3.2c/R3.2d 后追加 SPM memory planning，
   证明 instruction-level SPM fact 能被后续 resource/planner 边界消费。
-- R3.2g 已接入 `wafer-accept-ddr-memory-plan` 和
-  `wafer-lower-groups-to-ddr-accepted-instr`：它从 RDMA/WDMA 的 DDR operand 通过
-  tile-region block arg、`memref.subview` / view-like chain 回到 root DDR memref，接受或拒绝当前
+- R3.2g 已接入 `wafer-plan-ddr-memory` 和
+  `wafer-lower-groups-to-ddr-memory-planned-instr`：它从 RDMA/WDMA 的 DDR operand 通过
+  tile-region block arg、`memref.subview` / view-like chain 回到 root DDR memref，验证或拒绝当前
   IR 已显式表达的 descriptor payload、view/root byte range、pool/domain policy、capacity、
   largest-contiguous 和 bandwidth demand。成功不写重复 DDR plan attr；unsupported dynamic view、
   compiler-managed DDR without owner/lifetime/suballocation interface、unsupported pool/domain、
@@ -138,17 +138,17 @@ Pipeline position:
 | R3.2d | done | R3.2c target-abstract tile-region IR；DDR side 是 Wafer DDR memref，SPM side 是 unplaced Wafer SPM memref | instruction-level `wafer.instr.*`；覆盖 RDMA/WDMA/TDMA/CT/NE op contract、structured control-flow body legalization、static movement descriptor packing；不生成 ABI call |
 | R3.2e.a | done | R3.1 group + explicit static boundary slice facts + R3.2c/R3.2d lowering chain | external boundary `tensor.extract_slice` 和 direct output `tensor.insert_slice` materialize 为 DDR `memref.subview` tile operands；simple tiled elementwise/matmul/storeback 的 RDMA/WDMA descriptor 来自 actual tile view，不退回 whole-boundary DMA |
 | R3.2e.b | done | R3.1 group + candidate output tile offsets/sizes + R3.2a/R3.2b facts | planner candidate evaluation 中通过 linalg indexing maps 生成 boundary slice proposal；simple full-tensor matmul group 生成 input/output DDR `memref.subview` tile operands，不写回主 IR |
-| R3.2f | done | R3.2e candidate tile-view IR 经 R3.2d legalization 后的 instruction-level IR | `wafer.spm.offset` accepted fact 标注 SPM `memref.alloc`；simple tiled elementwise/matmul/storeback 获得非重叠、256B 对齐、range/end 合法 memory plan；Cx/NCx 使用 physical bytes；straight-line、structured `scf.if` / `scf.for` 和 async token wait 的 lifetime/reuse 由 IR dataflow 重算；pressure-weighted offline packing 避免 alloc-event first-fit 碎片化；capacity/alignment/range failure 结构化诊断 |
-| R3.2g | done | R3.2f memory-planned instruction IR + actual DDR tile-view facts | `wafer-accept-ddr-memory-plan` 接受 same instruction-level IR 中显式 DDR memory plan；RDMA/WDMA descriptor payload、tile-region block arg 到外层 `memref.subview` root、view/root byte range、pool/domain policy、capacity/largest-contiguous/bandwidth gate 可验证；unsupported dynamic view、unsupported compiler-managed DDR、unsupported pool/domain、payload/range/resource failure 结构化诊断；主线 named pipeline `wafer-lower-groups-to-ddr-accepted-instr` 跑通 boundary tiled matmul |
+| R3.2f | done | R3.2e candidate tile-view IR 经 R3.2d legalization 后的 instruction-level IR | `wafer.spm.offset` planning fact 标注 SPM `memref.alloc`；simple tiled elementwise/matmul/storeback 获得非重叠、256B 对齐、range/end 合法 memory plan；Cx/NCx 使用 physical bytes；straight-line、structured `scf.if` / `scf.for` 和 async token wait 的 lifetime/reuse 由 IR dataflow 重算；pressure-weighted offline packing 避免 alloc-event first-fit 碎片化；capacity/alignment/range failure 结构化诊断 |
+| R3.2g | done | R3.2f memory-planned instruction IR + actual DDR tile-view facts | `wafer-plan-ddr-memory` 验证 same instruction-level IR 中显式 DDR demand；RDMA/WDMA descriptor payload、tile-region block arg 到外层 `memref.subview` root、view/root byte range、pool/domain policy、capacity/largest-contiguous/bandwidth gate 可验证；unsupported dynamic view、unsupported compiler-managed DDR、unsupported pool/domain、payload/range/resource failure 结构化诊断；主线 named pipeline `wafer-lower-groups-to-ddr-memory-planned-instr` 跑通 boundary tiled matmul |
 
 ## 后续队列
 
 | ID | 状态 | 输入 | 输出 / 完成 gate |
 | --- | --- | --- | --- |
-| R3.2h | active | R3.1 group + R3.2a/b facts + R3.2e-g acceptance pipeline | closed-loop candidate driver；枚举 tile/layout/resource 候选，逐个运行 R3.2e/R3.2d/R3.2f/R3.2g，输出 accepted candidate artifact 或 split/retry failure；不重新发明 memory planning |
-| R3.3 | pending | R3.2h accepted candidate artifact | committed `wafer.tile.region` + accepted instruction-level lowering boundary；只提交已通过 R3.2e-g gates 的候选 |
-| R3.4 | pending | R3.3 committed tile-region + accepted layout/SPM/DDR facts | placed instruction-level IR / placed memref / access descriptor；不重新决定 tile/layout/memory plan |
-| R3.5 | pending | R3.4 placed/memref-aware IR + accepted DDR requirements | materialized DDR allocation/import/package boundary；BO alloc/import/query metadata and runtime validation，不重新做 memory planning |
+| R3.2h | active | R3.1 group + R3.2a/b facts + R3.2e-g planning/legalization gates | closed-loop candidate driver；枚举 tile/layout/resource 候选，逐个运行 R3.2e/R3.2d/R3.2f/R3.2g，输出 passing candidate artifact 或 split/retry failure；不重新发明 memory planning |
+| R3.3 | pending | R3.2h passing candidate artifact | committed `wafer.tile.region` + instruction-level lowering boundary；只提交已通过 R3.2e-g gates 的候选 |
+| R3.4 | pending | R3.3 committed tile-region + planned layout/SPM/DDR facts | placed instruction-level IR / placed memref / access descriptor；不重新决定 tile/layout/memory plan |
+| R3.5 | pending | R3.4 placed/memref-aware IR + planned DDR requirements | materialized DDR allocation/import/package boundary；BO alloc/import/query metadata and runtime validation，不重新做 memory planning |
 | R3.6-R3.8 | pending | placed instruction IR + launch signature | C ABI / packet emission、IR-derived package manifest、wrapper-facing golden packet |
 | R4.1-R4.5 | pending | placement + local shard + launch/package metadata | rank/block/coord、per-rank slices、writeback、placed package |
 | R5.1-R5.2 | pending | static transformer local shard IR / staged IR gaps | full-block schedule 或拒绝原因；补 mask/select、dynamic-bound policy、constant/weight slice 等 |
@@ -171,5 +171,5 @@ Pipeline position:
    choice、R3.2e/R3.2d/R3.2f/R3.2g gate result 和 rejected/split reason。
 2. 对 simple elementwise/matmul group 接入最小 candidate enumeration，先覆盖单 output tile 和当前
    R3.2e 已能 materialize 的 boundary slice。
-3. 主线 gate 用 driver 自动重放 candidate -> DDR accepted instruction chain，输出 accepted candidate
+3. 主线 gate 用 driver 自动重放 candidate -> DDR memory-planned instruction chain，输出 passing candidate
    artifact；非法 candidate 不落主 IR。

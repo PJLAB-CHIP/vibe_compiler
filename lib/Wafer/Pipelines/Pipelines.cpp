@@ -92,8 +92,8 @@ void buildPlanSPMMemoryPipeline(mlir::OpPassManager &pm) {
   pm.addPass(createPlanSPMMemoryPass());
 }
 
-void buildAcceptDDRMemoryPlanPipeline(mlir::OpPassManager &pm) {
-  pm.addPass(createAcceptDDRMemoryPlanPass());
+void buildPlanDDRMemoryPipeline(mlir::OpPassManager &pm) {
+  pm.addPass(createPlanDDRMemoryPass());
 }
 
 void buildLowerGroupsToMemoryPlannedInstrPipeline(mlir::OpPassManager &pm) {
@@ -101,9 +101,9 @@ void buildLowerGroupsToMemoryPlannedInstrPipeline(mlir::OpPassManager &pm) {
   buildPlanSPMMemoryPipeline(pm);
 }
 
-void buildLowerGroupsToDDRAcceptedInstrPipeline(mlir::OpPassManager &pm) {
+void buildLowerGroupsToDDRMemoryPlannedInstrPipeline(mlir::OpPassManager &pm) {
   buildLowerGroupsToMemoryPlannedInstrPipeline(pm);
-  buildAcceptDDRMemoryPlanPipeline(pm);
+  buildPlanDDRMemoryPipeline(pm);
 }
 
 #ifdef WAFER_ENABLE_SHARDY
@@ -144,11 +144,11 @@ void registerWaferPipelines() {
           buildLowerGroupsToMemoryPlannedInstrPipeline(pm);
         });
     mlir::PassPipelineRegistration<>(
-        "wafer-lower-groups-to-ddr-accepted-instr",
-        "Lower logical wafer.group ops to instruction-level Wafer IR accepted "
-        "by SPM and DDR memory gates",
+        "wafer-lower-groups-to-ddr-memory-planned-instr",
+        "Lower logical wafer.group ops through SPM and DDR memory planning to "
+        "instruction-level Wafer IR",
         [](mlir::OpPassManager &pm) {
-          buildLowerGroupsToDDRAcceptedInstrPipeline(pm);
+          buildLowerGroupsToDDRMemoryPlannedInstrPipeline(pm);
         });
 #ifdef WAFER_ENABLE_SHARDY
     mlir::PassPipelineRegistration<StablehloShardingPropagationPipelineOptions>(

@@ -1,4 +1,4 @@
-//===- AcceptDDRMemoryPlan.cpp - Accept Wafer DDR memory plan ------------===//
+//===- PlanDDRMemory.cpp - Plan Wafer DDR memory ------------===//
 
 #include "Wafer/Transforms/Passes.h"
 
@@ -18,7 +18,7 @@
 #include <optional>
 
 namespace wafer {
-#define GEN_PASS_DEF_ACCEPTDDRMEMORYPLANPASS
+#define GEN_PASS_DEF_PLANDDRMEMORYPASS
 #include "Wafer/Transforms/WaferPasses.h.inc"
 
 namespace {
@@ -234,10 +234,10 @@ static mlir::FailureOr<DDRView> resolveDDRView(mlir::Operation *op,
                  rootInfo->physicalBytes};
 }
 
-static mlir::LogicalResult acceptDDRAccess(mlir::Operation *op,
-                                           mlir::Value ddrValue,
-                                           const MovementDescriptor &descriptor,
-                                           DDRDemandSummary &summary) {
+static mlir::LogicalResult
+collectDDRAccessDemand(mlir::Operation *op, mlir::Value ddrValue,
+                       const MovementDescriptor &descriptor,
+                       DDRDemandSummary &summary) {
   mlir::FailureOr<int64_t> payload = getDescriptorPayloadBytes(op, descriptor);
   if (mlir::failed(payload))
     return mlir::failure();
@@ -308,10 +308,10 @@ static mlir::LogicalResult verifyResourceLimits(mlir::Operation *op,
   return mlir::success();
 }
 
-static mlir::LogicalResult acceptScope(mlir::Operation *scope,
-                                       int64_t capacityBytes,
-                                       int64_t largestContiguousBytes,
-                                       int64_t bandwidthLimitBytes) {
+static mlir::LogicalResult planScopeDDRMemory(mlir::Operation *scope,
+                                              int64_t capacityBytes,
+                                              int64_t largestContiguousBytes,
+                                              int64_t bandwidthLimitBytes) {
   DDRDemandSummary summary;
   mlir::LogicalResult result = mlir::success();
   scope->walk([&](mlir::Operation *op) {
@@ -322,7 +322,8 @@ static mlir::LogicalResult acceptScope(mlir::Operation *scope,
       MovementDescriptor descriptor{
           rdma.getByteCountAttr().getInt(), rdma.getInnerBytesAttr().getInt(),
           rdma.getSrcStridesAttr(), rdma.getSrcIterationsAttr(), "source"};
-      result = acceptDDRAccess(op, rdma.getSource(), descriptor, summary);
+      result =
+          collectDDRAccessDemand(op, rdma.getSource(), descriptor, summary);
       return;
     }
 
@@ -330,7 +331,7 @@ static mlir::LogicalResult acceptScope(mlir::Operation *scope,
       MovementDescriptor descriptor{
           wdma.getByteCountAttr().getInt(), wdma.getInnerBytesAttr().getInt(),
           wdma.getDstStridesAttr(), wdma.getDstIterationsAttr(), "dest"};
-      result = acceptDDRAccess(op, wdma.getDest(), descriptor, summary);
+      result = collectDDRAccessDemand(op, wdma.getDest(), descriptor, summary);
       return;
     }
   });
@@ -340,29 +341,28 @@ static mlir::LogicalResult acceptScope(mlir::Operation *scope,
                               largestContiguousBytes, bandwidthLimitBytes);
 }
 
-static mlir::LogicalResult acceptModule(mlir::ModuleOp moduleOp,
-                                        int64_t capacityBytes,
-                                        int64_t largestContiguousBytes,
-                                        int64_t bandwidthLimitBytes) {
+static mlir::LogicalResult planModuleDDRMemory(mlir::ModuleOp moduleOp,
+                                               int64_t capacityBytes,
+                                               int64_t largestContiguousBytes,
+                                               int64_t bandwidthLimitBytes) {
   bool sawFunction = false;
   mlir::LogicalResult result = mlir::success();
   moduleOp.walk([&](mlir::func::FuncOp funcOp) {
     sawFunction = true;
     if (mlir::failed(result))
       return;
-    result = acceptScope(funcOp.getOperation(), capacityBytes,
-                         largestContiguousBytes, bandwidthLimitBytes);
+    result = planScopeDDRMemory(funcOp.getOperation(), capacityBytes,
+                                largestContiguousBytes, bandwidthLimitBytes);
   });
   if (mlir::failed(result) || sawFunction)
     return result;
-  return acceptScope(moduleOp.getOperation(), capacityBytes,
-                     largestContiguousBytes, bandwidthLimitBytes);
+  return planScopeDDRMemory(moduleOp.getOperation(), capacityBytes,
+                            largestContiguousBytes, bandwidthLimitBytes);
 }
 
-struct AcceptDDRMemoryPlanPass
-    : public impl::AcceptDDRMemoryPlanPassBase<AcceptDDRMemoryPlanPass> {
-  using impl::AcceptDDRMemoryPlanPassBase<
-      AcceptDDRMemoryPlanPass>::AcceptDDRMemoryPlanPassBase;
+struct PlanDDRMemoryPass
+    : public impl::PlanDDRMemoryPassBase<PlanDDRMemoryPass> {
+  using impl::PlanDDRMemoryPassBase<PlanDDRMemoryPass>::PlanDDRMemoryPassBase;
 
   void runOnOperation() final {
     if (ddrCapacityBytes < 0 || ddrLargestContiguousBytes < 0 ||
@@ -374,9 +374,9 @@ struct AcceptDDRMemoryPlanPass
       return;
     }
 
-    if (mlir::failed(acceptModule(getOperation(), ddrCapacityBytes,
-                                  ddrLargestContiguousBytes,
-                                  ddrBandwidthLimitBytes)))
+    if (mlir::failed(planModuleDDRMemory(getOperation(), ddrCapacityBytes,
+                                         ddrLargestContiguousBytes,
+                                         ddrBandwidthLimitBytes)))
       signalPassFailure();
   }
 };

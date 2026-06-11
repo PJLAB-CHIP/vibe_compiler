@@ -77,7 +77,7 @@ Pipeline position:
   memref values with `#wafer.memory<space, layout>` + `wafer.instr.*` +
   `wafer.instr.local_drain`，或结构化 legalization failure reason。
 - Downstream consumer:
-  R3.2f SPM memory planning、R3.2g DDR memory plan acceptance、R3.2h closed-loop candidate driver、
+  R3.2f SPM memory planning、R3.2g DDR memory planning、R3.2h closed-loop candidate driver、
   R3.4 placed memref realization 和 R3.6 codegen emission。
 - User-level driver / named pipeline:
   主线由 R3.2 closed-loop planner 调用；局部 bring-up / candidate evaluation 入口是
