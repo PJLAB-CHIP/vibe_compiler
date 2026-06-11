@@ -40,7 +40,7 @@ PyTorch/XLA StableHLO Wafer program directory
   -> R3.2g DDR memory planning
        DDR external view validation + compiler-managed/resident/inter-group DDR offset facts
   -> R3.2h closed-loop candidate decision
-       enumerate tile/layout/internal-split/output-coverage candidates, rerun R3.2e-g, choose passing candidate or split
+       enumerate bounded traversal tile candidates and matmul K split candidates, rerun R3.2e-g, choose passing candidate or split
   -> R3.3 committed materialization
        commit only the accepted candidate into main IR
   -> R3.4 placed instruction-level realization
@@ -68,35 +68,31 @@ PyTorch/XLA StableHLO Wafer program directory
 
 ## 当前 Active
 
-**R3.2h closed-loop candidate decision**
+**R3.3 committed materialization**
 
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  R3.1 logical group + R3.2a/R3.2b analysis facts；R3.2e candidate tile-view producer；
-  R3.2d instruction lowering；R3.2f SPM memory planning；R3.2g DDR memory planning。
+  R3.2h passing candidate artifact；artifact 已包含 actual DDR tile views、instruction-level IR、
+  accepted SPM offset facts 和 accepted DDR offset facts。
 - Current stage responsibility:
-  枚举 tile/layout/internal-split/output-coverage candidate；对每个 candidate 重放
-  R3.2e/R3.2d/R3.2f/R3.2g gates；默认 `tile_search=first_legal` 接受第一个 passing candidate；
-  `tile_search=min_estimated_time` 在所有 passing candidate 中用粗估时间选择最小者；对失败
-  candidate 记录结构化 repair/split reason，不把失败计划写回主 IR。
+  只把 R3.2h 选中的 passing candidate commit 回主 IR；删除原 logical `wafer.group` 边界；
+  保留已通过 gates 的 DDR tile views、instruction-level ops、SPM/DDR offset facts 和 verifier-legal
+  structure。
 - Output artifact / IR:
-  passing candidate artifact，携带 actual DDR tile views、instruction IR、SPM offset facts、
-  DDR offset facts；或 no-candidate/split-needed failure。
+  committed tile-region / instruction-level IR boundary，后续 R3.4 可以直接 materialize placed memref /
+  descriptor，不重新枚举 candidate。
 - Downstream consumer:
-  R3.3 只 commit R3.2h 选出的 passing candidate；
-  R3.4/R3.5 消费 accepted SPM/DDR facts，不重新枚举 candidate 或重做 memory planning。
+  R3.4 placed instruction-level realization；R3.5 launch/runtime DDR materialization。
 - User-level driver / named pipeline:
-  当前已有局部 named pipelines：`wafer-lower-groups-to-ddr-memory-planned-instr` 可重放 R3.2c-g；
-  R3.2h 需要补 candidate decision 的 named driver/pipeline，并提供 `tile-search` 选项，
-  而不是让用户手动拼 pass。
+  在 R3.2h 的 `wafer-lower-groups-to-selected-instr` 基础上增加 commit stage；最终 named pipeline
+  不应要求用户手工搬运 selected candidate artifact。
 - Explicit non-goals:
-  不发明新的 SPM/DDR allocation 算法；不生成 ABI call、packet、physical address 或 runtime handle；
-  不把失败 candidate 的 transient plan 或 cost breakdown 落入 committed main IR。
+  不重新做 tile search、layout search、SPM planning 或 DDR planning；不生成 placed memref、
+  runtime allocation/import、ABI call、packet 或 physical address。
 - Completion gate:
-  simple matmul/elementwise group 通过 R3.2h driver 自动生成候选、运行 R3.2e-g、选择 passing candidate；
-  capacity/layout/view/memory failure 能驱动 retry 或给出 no-candidate reason；completion proof 不依赖
-  手工 fixture 串 pass。
+  以 named pipeline 重放 R3.1 -> R3.2h 已完成链路，R3.3 输出不再包含原 `wafer.group`，且 R3.4
+  能直接消费 accepted SPM/DDR facts。
 ```
 
 ## 当前边界
@@ -127,6 +123,14 @@ Pipeline position:
   structured lifetime dataflow，覆盖 straight-line reuse、`scf.if` path-sensitive 互斥复用、`scf.for`
   loop-carried/backedge lifetime 和 async token 延伸；compiler-managed DDR demand 在 default arena 内做
   pressure-weighted first-fit packing，并覆盖 capacity、largest-contiguous、bandwidth 和 alignment failure。
+- R3.2h 已接入 `wafer-select-group-tile` 和 `wafer-lower-groups-to-selected-instr`。候选由实际
+  single-output static traversal shape 生成 bounded tile sizes；direct matmul root 额外枚举 `K`
+  split，no-split traversal candidates 先于 split candidates。每个 candidate 的 first / last /
+  tail / corner-tail representative tile 都要按 R3.2e -> R3.2d -> R3.2f -> R3.2g -> verifier
+  通过后才接受。`tile-search=first-legal` 返回第一个 passing candidate；
+  `tile-search=min-estimated-time` 只在 passing candidates 中按 lowered instruction IR 的粗估时间排序。
+  multi-output coverage、不同 output domain 和 general reduction split 仍是后续 IR/interface 扩展任务，
+  当前不能用 side table 或名字伪支持。
 - Tile communication 仍 deferred，等待 memory planning/local-rank/buffer facts 后再 lower 到 communication /
   DTE / local-drain 边界。
 
@@ -145,13 +149,13 @@ Pipeline position:
 | R3.2e.b | done | R3.1 group + candidate output tile offsets/sizes + R3.2a/R3.2b facts | planner candidate evaluation 中通过 linalg indexing maps 生成 boundary slice proposal；simple full-tensor matmul group 生成 input/output DDR `memref.subview` tile operands，不写回主 IR |
 | R3.2f | done | R3.2e candidate tile-view IR 经 R3.2d legalization 后的 instruction-level IR | `wafer.spm.offset` planning fact 标注 SPM `memref.alloc`；simple tiled elementwise/matmul/storeback 获得非重叠、256B 对齐、range/end 合法 memory plan；Cx/NCx 使用 physical bytes；straight-line、structured `scf.if` / `scf.for` 和 async token wait 的 lifetime/reuse 由 IR dataflow 重算；pressure-weighted offline packing 避免 alloc-event first-fit 碎片化；capacity/alignment/range failure 结构化诊断 |
 | R3.2g | done | R3.2f memory-planned instruction IR + actual DDR tile-view facts + DDR `memref.alloc` / external DDR boundary values | `wafer.ddr.offset` 标注 compiler-managed DDR accepted offset；external DDR access summary 不落主 IR；descriptor/view/root validation 从当前 IR 重算；straight-line、`scf.if`、`scf.for` 和 async token lifetime 支持 offset reuse；capacity、largest-contiguous、bandwidth、alignment 等 failure 结构化诊断 |
+| R3.2h | done | R3.1 group + R3.2a/b facts + R3.2e-g gates | `wafer-select-group-tile` / `wafer-lower-groups-to-selected-instr` 自动枚举 bounded traversal tile candidate 和 matmul `K` split candidate，逐个重放 R3.2e/R3.2d/R3.2f/R3.2g/verifier；支持 `tile-search=first-legal|min-estimated-time`；输出 passing candidate artifact，不把 rejected plan 或 cost breakdown 写入 committed IR；覆盖 elementwise、static slice、large K=1000 matmul、matmul K split、reduce、`scf.if`、`scf.for`、tail/corner representatives 和 gate early-exit |
 
 ## 后续队列
 
 | ID | 状态 | 输入 | 输出 / 完成 gate |
 | --- | --- | --- | --- |
-| R3.2h | active | R3.1 group + R3.2a/b facts + R3.2e-g gates | closed-loop candidate decision；枚举 tile/layout/internal-split/output-coverage 候选，逐个运行 R3.2e/R3.2d/R3.2f/R3.2g；默认选择第一个 passing candidate，可用 `tile-search=min-estimated-time` 在合法候选中选粗估时间最小者；输出 passing candidate artifact 或 split/retry failure；不重新发明 memory planning |
-| R3.3 | pending | R3.2h passing candidate artifact | committed `wafer.tile.region` + instruction-level lowering boundary；只提交已通过 R3.2e-g gates 的候选 |
+| R3.3 | active | R3.2h passing candidate artifact | committed `wafer.tile.region` + instruction-level lowering boundary；只提交已通过 R3.2e-g gates 的候选 |
 | R3.4 | pending | R3.3 committed tile-region + accepted layout/SPM/DDR facts | placed instruction-level IR / placed memref / access descriptor；不重新决定 tile/layout/memory plan |
 | R3.5 | pending | R3.4 placed/memref-aware IR + accepted DDR offset facts and descriptor/view demand | runtime allocation/import/query/package materialization；验证 runtime object 满足 accepted plan，不重新做 DDR planning |
 | R3.6-R3.8 | pending | placed instruction IR + launch signature | C ABI / packet emission、IR-derived package manifest、wrapper-facing golden packet |
@@ -170,12 +174,12 @@ Pipeline position:
 
 ## 下一步
 
-实现 R3.2h closed-loop candidate decision：
+实现 R3.3 committed materialization：
 
-1. 建立 candidate decision 的 named driver/pipeline，自动枚举 candidate 并重放 R3.2e/R3.2d/R3.2f/R3.2g。
-2. 把 R3.2e candidate DDR tile-view producer、SPM planning 和 DDR planning 的 success/failure 接成
-   candidate gate，而不是手工串 pass。
-3. 接入 `tile-search=first-legal|min-estimated-time`：默认第一个合法候选，配置模式只在 passing
-   candidate 之间按粗估时间选择。
-4. 定义 passing candidate artifact 与 no-candidate/split-needed failure 的 IR/diagnostic 合同。
-5. 补 simple matmul/elementwise 的 closed-loop completion proof，证明 R3.3 可以只 commit accepted candidate。
+1. 定义 selected candidate artifact 到主 IR 的 commit 边界：哪些 op/value 直接进入 committed
+   `wafer.tile.region` / instruction-level IR，哪些诊断和 rejected candidate 必须丢弃。
+2. 在 named pipeline 中把 R3.2h selected artifact commit 回当前 module，不再只输出 standalone
+   selected function artifact。
+3. 保证 R3.3 不重新做 tile/layout/memory planning，只消费 R3.2h 已通过 R3.2e-g 的结果。
+4. 补 completion proof：R3.1 -> R3.2h -> R3.3 的 named pipeline 输出不含原 `wafer.group`，
+   且 R3.4 能直接消费 accepted SPM/DDR offset facts。

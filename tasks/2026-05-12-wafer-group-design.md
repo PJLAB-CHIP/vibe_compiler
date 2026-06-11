@@ -305,7 +305,7 @@ group planner 消费 logical group，输出 scheduled group。它做的事包括
 - 调用每个 op 的 tiling interface 计算该 traversal tile 对应的完整 operand demand、
   result slice 和 tile-local resource 需求。
 - 记录 per-op tiling interface 返回的可选 internal split、tile-local
-  temporary/scratch/accumulator liveness 和 consumer placement。
+  temporary/workspace/accumulator liveness 和 consumer placement。
 - 用显式 tiled IR、SSA use-def 和控制流表达普通 compute/data dependence。
 - 只有当 drain、wait、barrier、communication 这类约束必须跨阶段保留时，才在能稳定解释
   它的 IR 层 materialize 成明确的 op/effect；planner 的中间计划和 cost/resource
@@ -453,7 +453,7 @@ tile-local execution；runtime-level launch boundary 暂定命名为 `wafer.laun
 group 设计只规定交接合同：
 
 - tiled body 中哪些 value 是 tile-local producer / consumer / output。
-- 每个 op 的 tiling interface 能提供 operand slice、result slice、temporary/scratch/
+- 每个 op 的 tiling interface 能提供 operand slice、result slice、temporary/workspace/
   accumulator 需求。
 - scheduled group 中的 tiled tensor SSA value 是下游 layout planning 的直接输入；layout planner
   会把这些 value 映射成 `LayoutVariable`，在 accepted `wafer.tile.region` 中再生成
@@ -674,7 +674,7 @@ R3.1 pass 构造 logical `wafer.group` 时遵守以下规则：
    DPS tied init 反查对应 `outs`；如果 init 本身由已吸收的 DPS producer 产生，则沿 tied init
    继续追到 group 外部的 destination tensor。
 4. 在 `outs` 固定后，只吸收内部 support op：目前包括只被 selection 内部使用、且不是
-   group `outs` 的 `arith.constant` 和 `tensor.empty`。这样 internal scratch 留在 group body，
+   group `outs` 的 `arith.constant` 和 `tensor.empty`。这样 internal workspace 留在 group body，
    最终 destination-style output 仍作为显式 `outs`。
 5. body 按原 block order clone，并通过 block arguments 显式 remap 外部 `ins` / `outs`。
    pass 只替换 selected values 的 group 外 use；group 内中间 tensor 由 body dataflow 表达。
@@ -695,7 +695,7 @@ scheduled group 必须来自一个已经被下游 legality analysis / resource p
 对每个 logical group，planner 应在 transformation 内部做闭环搜索：
 
 1. 选择 traversal domain / traversal tile shape / output 覆盖策略。
-2. 调用每个 op 的 tiling interface，得到 operand slice、result slice、temporary/scratch/
+2. 调用每个 op 的 tiling interface，得到 operand slice、result slice、temporary/workspace/
    accumulator 需求，以及可能的 internal split 候选。
 3. 构造 tile-local execution model：包含预计的 `wafer.tile.region` 边界、
    tile-local storage、layout materialization、movement、compute、tensor collective 和 sync/effect 需求。
@@ -734,7 +734,7 @@ boundary placement 会改变真实需求：
   resident constant、default arena capacity/largest-contiguous、bandwidth pressure 和 alignment 都可能
   让候选 plan 失败，失败后 planner 需要回到 group boundary、layout cut、streaming/residency
   policy 或 executable split。
-- Cx/NCx 的 C0 tail/fold、256B line/layout padding、bool bitpack、psum/scratch/double
+- Cx/NCx 的 C0 tail/fold、256B line/layout padding、bool bitpack、psum/workspace/double
   buffer、communication buffer 都会改变实际 SPM footprint。
 - packet/wrapper 路径需要正确的 begin/end range；allocator 和 liveness 必须反映真实 alias
   与最后访问字节。
@@ -758,7 +758,7 @@ SPM planning、layout assignment、DDR memory planning 和 compute/movement lega
 因此恢复顺序必须分清 planning facts 和 IR materialization：
 
 - R3.2a 恢复 op tiling demand：从 structured op semantics、indexing maps、tiling interface
-  和 Wafer interfaces 推导 operand/result slice、temporary/scratch/accumulator 和 movement demand。
+  和 Wafer interfaces 推导 operand/result slice、temporary/workspace/accumulator 和 movement demand。
 - R3.2b 恢复 layout planning：消费 R3.2a `GroupTilingDemand` facts 和 logical group SSA
   use-def，构造 transformation-local tile value graph / op layout constraints，再产出
   layout assignment、materialization cut 和 materialization buffer demand。
@@ -781,7 +781,7 @@ SPM planning、layout assignment、DDR memory planning 和 compute/movement lega
 - R3.2f 恢复 SPM memory planning：只消费 R3.2e candidate tile-view materialization 后经 R3.2d
   instruction legalization 产出的 instruction-level IR with actual DDR
   tile views and unplaced Wafer-tagged memref，在真实 SPM window、
-  alignment、layout padding、scratch/psum/temp、materialization temp、communication staging、
+  alignment、layout padding、workspace/psum/temp、materialization temp、communication staging、
   lifetime overlap、range/end-address/bank span 和 conflict 约束下搜索可接受 memory plan。
 - R3.2g 恢复 DDR memory planning 和 compute/movement legality analysis：消费 memory-planned
   instruction-level IR、SPM facts、external DDR tile views、DDR `memref.alloc` 和 descriptor demand，
@@ -789,10 +789,11 @@ SPM planning、layout assignment、DDR memory planning 和 compute/movement lega
   DDR offset、default arena capacity/largest-contiguous/bandwidth/alignment，以及 op layout/dtype/shape/effect
   合法性；成功即证明当前 candidate 的 DDR demand 已规划并可被下游消费，失败给结构化原因，不能
   回头改变 instruction semantics，也不能产出等待 R3.5 再补全的 DDR plan。
-- R3.2h 才能做 closed-loop candidate driver：搜索 traversal、tile shape、layout、internal split 和
-  output coverage，并逐个运行 R3.2e/R3.2d/R3.2f/R3.2g gates；默认选择第一个 passing candidate，
+- R3.2h 才能做 closed-loop candidate driver：搜索 bounded traversal tile shape 和当前支持的
+  matmul `K` split，并逐个运行 R3.2e/R3.2d/R3.2f/R3.2g gates；默认选择第一个 passing candidate，
   或在 `tile_search=min_estimated_time` 下只对 passing candidate 做粗估时间排序，输出 passing
-  candidate artifact、rejected reason 或 split decision。
+  candidate artifact、rejected reason 或 split decision。layout 替代候选、multi-output coverage 和
+  general reduction split 要等对应 interface/IR 语义明确后再进入 R3.2h search space。
 
 R3.3 只 materialize R3.2h 选中的 passing candidate artifact 为 committed `wafer.tile.region`。R3.4/R3.5 只把
 已经通过 R3.2e-g gates 的 layout/instruction/SPM/DDR accepted facts 落到可验证 IR、placed descriptor
@@ -818,7 +819,7 @@ Pipeline position:
 - Current stage responsibility:
   从 SSA use-def、destination-style ties、Linalg structured semantics、indexing maps、
   iterator types、MLIR `TilingInterface` 和 Wafer op interfaces 恢复 per-op operand slice、
-  result slice、temporary/scratch/accumulator 和 movement/collective demand。
+  result slice、temporary/workspace/accumulator 和 movement/collective demand。
 - Output artifact / IR:
   transformation-local `GroupTilingDemand` analysis result；debug pass 可以 dump 同一结构，
   但不修改 IR、不生成 `wafer.tile.region`、不写 `wafer.group` attribute。
@@ -851,7 +852,7 @@ R3.2a 的核心数据结构应表达：
 - traversal / result tile：第一版至少能表达 full-result tile；后续可替换为 planner 传入的
   offsets/sizes。
 - per-op demand：operand slice、output slice、result slice、iterator role、internal/reduction
-  dims、temporary/scratch/accumulator 需求和 movement/collective demand。
+  dims、temporary/workspace/accumulator 需求和 movement/collective demand。
 - structured failure：unsupported op、非 ranked tensor、无法投影的 indexing map、collective tile
   跨 slot 或动态不可证明等原因。
 
@@ -894,7 +895,7 @@ group planner 不替每个 op 实现 tiling，也不把 matmul、reduction、win
 - 选择 traversal anchor 和 traversal loop。
 - 决定哪些 producer/consumer 进入同一个 group。
 - 向每个 op 的 tiling interface 查询：给定 result tile，先需要哪些完整 operand slice、
-  temporary/scratch/accumulator，以及 tiled implementation；若资源或合法性不满足，再请求
+  temporary/workspace/accumulator，以及 tiled implementation；若资源或合法性不满足，再请求
   该 op interface 给出内部维度切分候选。
 - 汇总 per-op 返回的信息，生成 tiled IR，并在当前 transformation 内部完成
   liveness/resource/cost 分析和下游 layout/resource/legalization planning。
@@ -962,13 +963,13 @@ materialization 或少量 recompute，但语义清楚，避免把一个不稳定
 traversal tile shape 只描述 group 对外可见的 traversal domain 和 output tile。很多 op 还有
 traversal domain 上看不到、或无法直接从 group outputs 推出来的内部维度，例如 contraction /
 reduction axis、window/kernel axis、被 collapse/expand 的 layout axis、padding/alignment
-引入的 physical axis，以及某些 op 私有的 scratch/accumulator 维度。
+引入的 physical axis，以及某些 op 私有的 workspace/accumulator 维度。
 
 通用流程应该是：
 
 - planner 先选择 traversal domain 和 traversal tile shape。
 - 对每个 op，tiling interface 基于这个 traversal tile 和 op 的 indexing/shape 语义，返回完整
-  operand demand、result slice、temporary/scratch/accumulator 和默认 tile-local
+  operand demand、result slice、temporary/workspace/accumulator 和默认 tile-local
   implementation。
 - planner 汇总所有 op 的 demand，做资源容量、layout/lowering 合法性、buffering 和 cost 分析。
 - 只有当完整 demand 不合法或代价不可接受时，planner 才回到相关 op interface 请求 internal
@@ -990,13 +991,13 @@ tile shape 需要同时满足：
 - group output tile 放得下。
 - producer operand tiles 放得下。
 - intermediate storage values 放得下。
-- per-op temporary/scratch/accumulator 放得下。
+- per-op temporary/workspace/accumulator 放得下。
 - 如果启用额外 buffering，对应 tile-local resource 放得下。
 - tile shape 能匹配下游 bufferization、layout、compute、tensor collective 或 communication
   lowering 的约束。
 - 必要的 materialization 路径合法。
 
-具体 op 的合法 tile shape、internal split、scratch/accumulator 需求由该 op 的 tiling
+具体 op 的合法 tile shape、internal split、workspace/accumulator 需求由该 op 的 tiling
 interface 和 verifier 提供；planner 只在 group 级合并这些约束并做 search/cost 选择。
 
 ### 10.6 Schedule Effects / Issue / Drain
@@ -1026,7 +1027,7 @@ resource conflict 和 sync cost 作为 overlap 评估输入，但不能在每个
 group planner 层只在 analysis 中建模抽象资源，不把完整 resource plan 保存成
 `wafer.group` attribute：
 
-- tile-local tensor storage：input/output/intermediate/temporary/scratch/accumulator。
+- tile-local tensor storage：input/output/intermediate/temporary/workspace/accumulator。
 - communication storage need：若存在 send/recv staging，记录其大小和生命周期。
 - DDR memory need：external input/output allocation、inter-group tensor compiler-managed DDR range requirement、
   resident constant、DDR staging、planned range、range/bandwidth pressure 和 host-visible completion 需求。
@@ -1192,7 +1193,7 @@ recomputation。初期默认不 fuse 大型 multi-use producer。
 
 - `wafer.group` 是否长期保留到 late pipeline，还是在下游 bufferization 前后消解为更低层 IR。
 - group planner 的 cost model 第一版需要哪些硬件参数。
-- per-op inner-loop tiling 和 accumulator/scratch buffer 的最终 IR 表达。
+- per-op inner-loop tiling 和 accumulator/workspace buffer 的最终 IR 表达。
 - convolution 是否作为后续阶段再投入完整 lowering。
 - softmax/reduction staged schedule 的最小 transformer block pattern 需要通过 IR tests 和
   tile-region lowering tests 固化。

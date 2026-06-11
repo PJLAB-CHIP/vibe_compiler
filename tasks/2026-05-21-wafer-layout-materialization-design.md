@@ -102,7 +102,7 @@ layout planning 有两个恢复层次：
 - `tensor.extract_slice` / `tensor.insert_slice` 表达的 boundary slice。
 - target-abstract `wafer.tile.*` compute / boundary / data movement op 通过 layout interface 暴露的
   operand/result layout constraint。
-- group planner 在当前 transformation 内部提供的 tile shape、operand demand、temporary/scratch/
+- group planner 在当前 transformation 内部提供的 tile shape、operand demand、temporary/workspace/
   accumulator demand。
 
 这些信息不作为 `wafer.group` attribute 保存；layout planner 直接从 scheduled body 和当前

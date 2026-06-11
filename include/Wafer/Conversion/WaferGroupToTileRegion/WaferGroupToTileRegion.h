@@ -22,6 +22,7 @@ lowerGroupToTileRegionModule(GroupOp group,
 mlir::LogicalResult lowerCandidateGroupToTileRegionModule(
     GroupOp group, llvm::ArrayRef<int64_t> candidateTileOffsets,
     llvm::ArrayRef<int64_t> candidateTileSizes,
+    llvm::ArrayRef<int64_t> candidateReductionTileSizes,
     mlir::OwningOpRef<mlir::ModuleOp> &module,
     std::string *failureReason = nullptr);
 

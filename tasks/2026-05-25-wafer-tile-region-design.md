@@ -256,7 +256,7 @@ V0 需要以下 op family：
 | `wafer.tile.load` | 从 `#wafer.memory<ddr, tensor>` / external / constant source 读入 tile-local memref | source range、dtype、layout、stride、effect |
 | `wafer.tile.store` | 写回 external output / inter-group DDR value | destination range、layout、visibility、effect |
 | `wafer.tile.materialize_layout` | 显式 layout conversion | source/result layout relation、可消除冗余转换 |
-| `wafer.tile.*` compute ops | target-abstract compute | operand/result layout、instruction family legality、scratch/psum demand |
+| `wafer.tile.*` compute ops | target-abstract compute | operand/result layout、instruction family legality、workspace/psum demand |
 | `wafer.tile.*` communication ops | tile 间或 collective movement；由 tiled tensor collective + SPM buffer + placement materialize | endpoint、token、fixed byte count、buffer lifetime |
 | `wafer.instr.local_drain` 和后续 sync boundary | local drain、comm wait、barrier | async op completion、effect ordering |
 
@@ -292,8 +292,8 @@ V0 需要以下 op family：
    DDR accepted offset facts，并验证 descriptor、view/root range、default arena capacity/largest-contiguous、
    bandwidth、alignment、overlap 和 fence demand。成功 facts 必须能被 R3.2h/R3.3/R3.4/R3.5 直接消费；
    失败时给结构化原因。
-8. closed-loop candidate driver：R3.2h 枚举 tile/layout/internal-split/output-coverage 候选，逐个运行
-   R3.2e/R3.2d/R3.2f/R3.2g gates；默认选择第一个 passing candidate，或在
+8. closed-loop candidate driver：R3.2h 枚举 bounded traversal tile 和当前支持的 matmul `K`
+   split 候选，逐个运行 R3.2e/R3.2d/R3.2f/R3.2g gates；默认选择第一个 passing candidate，或在
    `tile_search=min_estimated_time` 下只对 passing candidate 做粗估时间排序；选择已通过全部 gates
    的 candidate artifact，或要求 split / retry；rejected candidate IR
    丢弃。

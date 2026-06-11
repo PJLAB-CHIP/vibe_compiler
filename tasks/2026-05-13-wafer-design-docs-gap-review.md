@@ -236,7 +236,7 @@ storage realization 写成独立设计。`wafer.group` 只消费 feasibility 结
 - Kcore SPM mapping alias：`0x30400000` / `0x30800000`。
 - allocator 必须检查 `base + allocated_size`，只检查起始地址不够。
 - `Cx/NCx` size 需要计入 C0 tail/fold 和 256B bank padding。
-- bool bitpack、communication buffer、double buffer、psum/scratch 都必须进入容量估算。
+- bool bitpack、communication buffer、double buffer、psum/workspace 都必须进入容量估算。
 
 这些检查属于 SPM / tile-region verifier，不回写到 `wafer.group` attr。
 
@@ -358,7 +358,7 @@ DDR memory planning 和 lower-level resource allocator 全量消费这些合同�
 
 实现时资源模型至少包含：
 
-- SPM tensor buffer：input/output/intermediate/psum/scratch。
+- SPM tensor buffer：input/output/intermediate/psum/workspace。
 - SPM communication buffer：DTE send/recv staging。
 - reserved SPM slots：barrier/sync/debug/message ring。
 - DDR external binding、compiler workspace、resident constant、host-visible/control runtime allocation、default DDR arena resource、

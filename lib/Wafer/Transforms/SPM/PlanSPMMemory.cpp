@@ -647,31 +647,36 @@ static mlir::LogicalResult planRegion(TileRegionOp tileRegion, int64_t spmBase,
   return mlir::success();
 }
 
+} // namespace
+
+mlir::LogicalResult planSPMMemoryModule(mlir::ModuleOp moduleOp,
+                                        int64_t spmBase, int64_t spmLimit,
+                                        int64_t spmAlignment) {
+  if (spmBase < 0 || spmLimit <= spmBase)
+    return moduleOp->emitError()
+           << "invalid_spm_range: expected 0 <= spm-base < spm-limit";
+  if (spmAlignment <= 0)
+    return moduleOp->emitError()
+           << "alignment_unsatisfied: spm-alignment must be positive";
+
+  mlir::LogicalResult result = mlir::success();
+  moduleOp.walk([&](TileRegionOp tileRegion) {
+    if (mlir::failed(result))
+      return;
+    result = planRegion(tileRegion, spmBase, spmLimit, spmAlignment);
+  });
+  return result;
+}
+
+namespace {
+
 struct PlanSPMMemoryPass
     : public impl::PlanSPMMemoryPassBase<PlanSPMMemoryPass> {
   using impl::PlanSPMMemoryPassBase<PlanSPMMemoryPass>::PlanSPMMemoryPassBase;
 
   void runOnOperation() final {
-    if (spmBase < 0 || spmLimit <= spmBase) {
-      getOperation()->emitError()
-          << "invalid_spm_range: expected 0 <= spm-base < spm-limit";
-      signalPassFailure();
-      return;
-    }
-    if (spmAlignment <= 0) {
-      getOperation()->emitError()
-          << "alignment_unsatisfied: spm-alignment must be positive";
-      signalPassFailure();
-      return;
-    }
-
-    mlir::LogicalResult result = mlir::success();
-    getOperation().walk([&](TileRegionOp tileRegion) {
-      if (mlir::failed(result))
-        return;
-      result = planRegion(tileRegion, spmBase, spmLimit, spmAlignment);
-    });
-    if (mlir::failed(result))
+    if (mlir::failed(planSPMMemoryModule(getOperation(), spmBase, spmLimit,
+                                         spmAlignment)))
       signalPassFailure();
   }
 };

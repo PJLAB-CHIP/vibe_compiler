@@ -103,7 +103,8 @@ struct DumpCandidateDdrTileViewsPass
       mlir::OwningOpRef<mlir::ModuleOp> loweredModule;
       std::string failureReason;
       if (mlir::failed(lowerCandidateGroupToTileRegionModule(
-              group, *parsedOffsets, *parsedSizes, loweredModule,
+              group, *parsedOffsets, *parsedSizes,
+              /*candidateReductionTileSizes=*/{}, loweredModule,
               &failureReason))) {
         llvm::errs() << "wafer.candidate_ddr_tile_views group " << labelOs.str()
                      << "\n";

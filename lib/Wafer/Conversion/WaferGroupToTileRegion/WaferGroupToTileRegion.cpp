@@ -1436,22 +1436,48 @@ static mlir::LogicalResult validateCandidateTile(
   return mlir::success();
 }
 
+struct CandidateLoopTile {
+  llvm::SmallVector<mlir::OpFoldResult, 4> loopOffsets;
+  llvm::SmallVector<mlir::OpFoldResult, 4> ivs;
+  llvm::SmallVector<mlir::OpFoldResult, 4> tileSizes;
+  llvm::SmallVector<mlir::OpFoldResult, 4> sizeBounds;
+};
+
+static llvm::SmallVector<unsigned, 2>
+getReductionLoopDims(mlir::linalg::LinalgOp op) {
+  llvm::SmallVector<unsigned, 2> dims;
+  for (auto [index, iteratorType] :
+       llvm::enumerate(op.getIteratorTypesArray())) {
+    if (iteratorType == mlir::utils::IteratorType::reduction)
+      dims.push_back(static_cast<unsigned>(index));
+  }
+  return dims;
+}
+
 static mlir::LogicalResult
 buildCandidateLoopTile(mlir::OpBuilder &builder, mlir::Location loc,
                        mlir::linalg::LinalgOp op, mlir::AffineMap outputMap,
                        llvm::ArrayRef<int64_t> candidateOffsets,
                        llvm::ArrayRef<int64_t> candidateSizes,
-                       llvm::SmallVectorImpl<mlir::OpFoldResult> &loopOffsets,
-                       llvm::SmallVectorImpl<mlir::OpFoldResult> &ivs,
-                       llvm::SmallVectorImpl<mlir::OpFoldResult> &tileSizes,
-                       llvm::SmallVectorImpl<mlir::OpFoldResult> &sizeBounds,
-                       std::string *failureReason) {
+                       llvm::ArrayRef<int64_t> candidateReductionOffsets,
+                       llvm::ArrayRef<int64_t> candidateReductionSizes,
+                       CandidateLoopTile &tile, std::string *failureReason) {
   llvm::SmallVector<int64_t, 4> loopRanges = op.getStaticLoopRanges();
   if (llvm::any_of(loopRanges, [](int64_t value) {
         return mlir::ShapedType::isDynamic(value);
       })) {
     setFailureReason(failureReason,
                      "candidate tile requires static linalg loop ranges");
+    return mlir::failure();
+  }
+
+  llvm::SmallVector<unsigned, 2> reductionLoopDims = getReductionLoopDims(op);
+  bool hasReductionSplit =
+      !candidateReductionOffsets.empty() || !candidateReductionSizes.empty();
+  if (candidateReductionOffsets.size() != candidateReductionSizes.size() ||
+      (hasReductionSplit &&
+       candidateReductionOffsets.size() != reductionLoopDims.size())) {
+    setFailureReason(failureReason, "candidate reduction split rank mismatch");
     return mlir::failure();
   }
 
@@ -1467,31 +1493,170 @@ buildCandidateLoopTile(mlir::OpBuilder &builder, mlir::Location loc,
         static_cast<unsigned>(resultDim);
   }
 
+  llvm::DenseMap<unsigned, unsigned> reductionOrdinalForLoopDim;
+  for (auto [ordinal, loopDim] : llvm::enumerate(reductionLoopDims))
+    reductionOrdinalForLoopDim[loopDim] = static_cast<unsigned>(ordinal);
+
   mlir::OpFoldResult zero = builder.getIndexAttr(0);
   for (auto [loopDim, loopRange] : llvm::enumerate(loopRanges)) {
-    sizeBounds.push_back(builder.getIndexAttr(loopRange));
-    loopOffsets.push_back(zero);
-    tileSizes.push_back(zero);
+    tile.sizeBounds.push_back(builder.getIndexAttr(loopRange));
+    tile.loopOffsets.push_back(zero);
+    tile.tileSizes.push_back(zero);
 
     auto resultDimIt = resultDimForLoopDim.find(static_cast<unsigned>(loopDim));
-    if (resultDimIt == resultDimForLoopDim.end())
+    if (resultDimIt != resultDimForLoopDim.end()) {
+      unsigned resultDim = resultDimIt->second;
+      tile.loopOffsets.back() =
+          builder.getIndexAttr(candidateOffsets[resultDim]);
+      tile.tileSizes.back() = builder.getIndexAttr(candidateSizes[resultDim]);
+      tile.ivs.push_back(tile.loopOffsets.back());
+      continue;
+    }
+
+    auto reductionDimIt =
+        reductionOrdinalForLoopDim.find(static_cast<unsigned>(loopDim));
+    if (reductionDimIt == reductionOrdinalForLoopDim.end())
+      continue;
+    if (!hasReductionSplit)
       continue;
 
-    unsigned resultDim = resultDimIt->second;
-    mlir::OpFoldResult offset =
-        builder.getIndexAttr(candidateOffsets[resultDim]);
-    mlir::OpFoldResult size = builder.getIndexAttr(candidateSizes[resultDim]);
-    loopOffsets.back() = offset;
-    tileSizes.back() = size;
-    ivs.push_back(offset);
+    unsigned reductionOrdinal = reductionDimIt->second;
+    int64_t reductionOffset = candidateReductionOffsets[reductionOrdinal];
+    int64_t reductionSize = candidateReductionSizes[reductionOrdinal];
+    if (reductionOffset < 0 || reductionSize <= 0 ||
+        reductionOffset + reductionSize > loopRange) {
+      setFailureReason(failureReason,
+                       "candidate reduction split is outside loop bounds");
+      return mlir::failure();
+    }
+    tile.loopOffsets.back() = builder.getIndexAttr(reductionOffset);
+    tile.tileSizes.back() = builder.getIndexAttr(reductionSize);
+    tile.ivs.push_back(tile.loopOffsets.back());
   }
 
   return mlir::success();
 }
 
+struct ReductionChunk {
+  llvm::SmallVector<int64_t, 2> offsets;
+  llvm::SmallVector<int64_t, 2> sizes;
+};
+
+static void
+buildReductionChunkProducts(llvm::ArrayRef<int64_t> ranges,
+                            llvm::ArrayRef<int64_t> splitSizes, unsigned dim,
+                            llvm::SmallVectorImpl<int64_t> &currentOffsets,
+                            llvm::SmallVectorImpl<int64_t> &currentSizes,
+                            llvm::SmallVectorImpl<ReductionChunk> &chunks) {
+  if (dim == ranges.size()) {
+    chunks.push_back(
+        ReductionChunk{llvm::SmallVector<int64_t, 2>(currentOffsets.begin(),
+                                                     currentOffsets.end()),
+                       llvm::SmallVector<int64_t, 2>(currentSizes.begin(),
+                                                     currentSizes.end())});
+    return;
+  }
+
+  for (int64_t offset = 0; offset < ranges[dim]; offset += splitSizes[dim]) {
+    currentOffsets.push_back(offset);
+    currentSizes.push_back(std::min(splitSizes[dim], ranges[dim] - offset));
+    buildReductionChunkProducts(ranges, splitSizes, dim + 1, currentOffsets,
+                                currentSizes, chunks);
+    currentOffsets.pop_back();
+    currentSizes.pop_back();
+  }
+}
+
+static mlir::FailureOr<llvm::SmallVector<ReductionChunk, 8>>
+buildReductionChunks(mlir::linalg::LinalgOp root,
+                     llvm::ArrayRef<int64_t> candidateReductionTileSizes,
+                     std::string *failureReason) {
+  if (candidateReductionTileSizes.empty())
+    return llvm::SmallVector<ReductionChunk, 8>{ReductionChunk{}};
+
+  llvm::SmallVector<unsigned, 2> reductionLoopDims = getReductionLoopDims(root);
+  if (candidateReductionTileSizes.size() != reductionLoopDims.size()) {
+    setFailureReason(failureReason, "candidate reduction split rank mismatch");
+    return mlir::failure();
+  }
+
+  llvm::SmallVector<int64_t, 4> loopRanges = root.getStaticLoopRanges();
+  llvm::SmallVector<int64_t, 2> reductionRanges;
+  for (unsigned loopDim : reductionLoopDims)
+    reductionRanges.push_back(loopRanges[loopDim]);
+
+  for (auto [range, splitSize] :
+       llvm::zip(reductionRanges, candidateReductionTileSizes)) {
+    if (splitSize <= 0 || splitSize > range) {
+      setFailureReason(failureReason,
+                       "candidate reduction split is outside loop bounds");
+      return mlir::failure();
+    }
+  }
+
+  llvm::SmallVector<ReductionChunk, 8> chunks;
+  llvm::SmallVector<int64_t, 2> currentOffsets;
+  llvm::SmallVector<int64_t, 2> currentSizes;
+  buildReductionChunkProducts(reductionRanges, candidateReductionTileSizes,
+                              /*dim=*/0, currentOffsets, currentSizes, chunks);
+  return chunks;
+}
+
+static mlir::FailureOr<mlir::Value>
+createPartialSum(mlir::OpBuilder &builder, mlir::Location loc,
+                 mlir::Value accumulator, mlir::Value partial,
+                 mlir::Value outputInit, std::string *failureReason) {
+  auto resultType = mlir::dyn_cast<mlir::RankedTensorType>(partial.getType());
+  if (!resultType || accumulator.getType() != partial.getType() ||
+      outputInit.getType() != partial.getType()) {
+    setFailureReason(failureReason,
+                     "candidate reduction split accumulator type mismatch");
+    return mlir::failure();
+  }
+
+  mlir::MLIRContext *context = builder.getContext();
+  if (!mlir::isa<mlir::FloatType, mlir::IntegerType>(
+          resultType.getElementType())) {
+    setFailureReason(failureReason,
+                     "candidate reduction split requires float or integer "
+                     "accumulator element type");
+    return mlir::failure();
+  }
+
+  mlir::AffineMap identity =
+      mlir::AffineMap::getMultiDimIdentityMap(resultType.getRank(), context);
+  llvm::SmallVector<mlir::AffineMap, 3> indexingMaps = {identity, identity,
+                                                        identity};
+  llvm::SmallVector<mlir::utils::IteratorType, 4> iteratorTypes(
+      resultType.getRank(), mlir::utils::IteratorType::parallel);
+
+  auto add = builder.create<mlir::linalg::GenericOp>(
+      loc, resultType, mlir::ValueRange{accumulator, partial},
+      mlir::ValueRange{outputInit}, indexingMaps, iteratorTypes,
+      [&](mlir::OpBuilder &nestedBuilder, mlir::Location nestedLoc,
+          mlir::ValueRange blockArgs) {
+        mlir::Value value;
+        mlir::Type elementType = resultType.getElementType();
+        if (mlir::isa<mlir::FloatType>(elementType)) {
+          value = nestedBuilder.create<mlir::arith::AddFOp>(
+              nestedLoc, blockArgs[0], blockArgs[1]);
+        } else if (mlir::isa<mlir::IntegerType>(elementType)) {
+          value = nestedBuilder.create<mlir::arith::AddIOp>(
+              nestedLoc, blockArgs[0], blockArgs[1]);
+        } else {
+          return;
+        }
+        nestedBuilder.create<mlir::linalg::YieldOp>(nestedLoc, value);
+      });
+
+  return add->getResult(0);
+}
+
 static mlir::LogicalResult materializeCandidateTileSlices(
     GroupOp group, llvm::ArrayRef<int64_t> candidateTileOffsets,
-    llvm::ArrayRef<int64_t> candidateTileSizes, std::string *failureReason) {
+    llvm::ArrayRef<int64_t> candidateTileSizes,
+    llvm::ArrayRef<int64_t> candidateReductionTileSizes,
+    std::string *failureReason) {
   auto yield =
       mlir::dyn_cast<GroupYieldOp>(group.getBody().front().getTerminator());
   if (!yield || yield.getValues().size() != 1) {
@@ -1548,40 +1713,90 @@ static mlir::LogicalResult materializeCandidateTileSlices(
     return mlir::failure();
   }
 
-  mlir::OpBuilder builder(root);
-  llvm::SmallVector<mlir::OpFoldResult, 4> loopOffsets;
-  llvm::SmallVector<mlir::OpFoldResult, 4> ivs;
-  llvm::SmallVector<mlir::OpFoldResult, 4> tileSizes;
-  llvm::SmallVector<mlir::OpFoldResult, 4> sizeBounds;
-  if (mlir::failed(buildCandidateLoopTile(
-          builder, root.getLoc(), root, indexingMaps[outputMapIndex],
-          candidateTileOffsets, candidateTileSizes, loopOffsets, ivs, tileSizes,
-          sizeBounds, failureReason)))
-    return mlir::failure();
-
-  llvm::SmallVector<mlir::Value, 4> valuesToTile(root->operand_begin(),
-                                                 root->operand_end());
-  llvm::SmallVector<mlir::Value, 4> tiledOperands =
-      mlir::linalg::makeTiledShapes(builder, root.getLoc(), root, valuesToTile,
-                                    ivs, tileSizes, sizeBounds,
-                                    /*omitPartialTileCheck=*/true);
-  llvm::SmallVector<mlir::Type, 2> resultTypes =
-      mlir::linalg::getTensorOutputTypes(root, tiledOperands);
-  if (resultTypes.size() != 1) {
+  if (!candidateReductionTileSizes.empty() &&
+      !mlir::isa<mlir::linalg::MatmulOp>(root.getOperation())) {
     setFailureReason(
         failureReason,
-        "candidate tile materialization expected one tiled result type");
+        "candidate reduction split is currently supported for matmul roots");
     return mlir::failure();
   }
 
-  mlir::Operation *tiled =
-      mlir::clone(builder, root.getOperation(), resultTypes, tiledOperands);
-  auto tiledLinalg = mlir::cast<mlir::linalg::LinalgOp>(tiled);
-  mlir::linalg::offsetIndices(builder, tiledLinalg, loopOffsets);
+  mlir::FailureOr<llvm::SmallVector<ReductionChunk, 8>> reductionChunks =
+      buildReductionChunks(root, candidateReductionTileSizes, failureReason);
+  if (mlir::failed(reductionChunks))
+    return mlir::failure();
 
-  builder.setInsertionPointAfter(tiled);
+  mlir::OpBuilder builder(root);
+  llvm::SmallVector<mlir::Value, 4> valuesToTile(root->operand_begin(),
+                                                 root->operand_end());
+  unsigned initOperandIndex = static_cast<unsigned>(root.getNumDpsInputs());
+  llvm::SmallVector<mlir::Value, 4> insertOperands;
+  mlir::Value outputInitTile;
+  mlir::Value accumulator;
+
+  for (const ReductionChunk &chunk : *reductionChunks) {
+    CandidateLoopTile loopTile;
+    if (mlir::failed(buildCandidateLoopTile(
+            builder, root.getLoc(), root, indexingMaps[outputMapIndex],
+            candidateTileOffsets, candidateTileSizes, chunk.offsets,
+            chunk.sizes, loopTile, failureReason)))
+      return mlir::failure();
+
+    llvm::SmallVector<mlir::Value, 4> tiledOperands =
+        mlir::linalg::makeTiledShapes(builder, root.getLoc(), root,
+                                      valuesToTile, loopTile.ivs,
+                                      loopTile.tileSizes, loopTile.sizeBounds,
+                                      /*omitPartialTileCheck=*/true);
+    if (insertOperands.empty()) {
+      insertOperands = tiledOperands;
+      outputInitTile = tiledOperands[initOperandIndex];
+    } else if (initOperandIndex < tiledOperands.size()) {
+      mlir::Operation *unusedInitSlice =
+          tiledOperands[initOperandIndex].getDefiningOp();
+      tiledOperands[initOperandIndex] = outputInitTile;
+      if (unusedInitSlice && unusedInitSlice->use_empty())
+        unusedInitSlice->erase();
+    }
+
+    llvm::SmallVector<mlir::Type, 2> resultTypes =
+        mlir::linalg::getTensorOutputTypes(root, tiledOperands);
+    if (resultTypes.size() != 1) {
+      setFailureReason(
+          failureReason,
+          "candidate tile materialization expected one tiled result type");
+      return mlir::failure();
+    }
+
+    mlir::Operation *tiled =
+        mlir::clone(builder, root.getOperation(), resultTypes, tiledOperands);
+    auto tiledLinalg = mlir::cast<mlir::linalg::LinalgOp>(tiled);
+    mlir::linalg::offsetIndices(builder, tiledLinalg, loopTile.loopOffsets);
+
+    builder.setInsertionPointAfter(tiled);
+    mlir::Value partial = tiled->getResult(0);
+    if (!accumulator) {
+      accumulator = partial;
+      continue;
+    }
+
+    mlir::FailureOr<mlir::Value> sum =
+        createPartialSum(builder, root.getLoc(), accumulator, partial,
+                         outputInitTile, failureReason);
+    if (mlir::failed(sum))
+      return mlir::failure();
+    accumulator = *sum;
+    builder.setInsertionPointAfter(accumulator.getDefiningOp());
+  }
+
+  if (!accumulator) {
+    setFailureReason(failureReason,
+                     "candidate tile materialization produced no tiled result");
+    return mlir::failure();
+  }
+
   llvm::SmallVector<mlir::Value, 2> inserted = mlir::linalg::insertSlicesBack(
-      builder, root.getLoc(), root, tiledOperands, tiled->getResults());
+      builder, root.getLoc(), root, insertOperands,
+      mlir::ValueRange{accumulator});
   if (inserted.size() != 1) {
     setFailureReason(
         failureReason,
@@ -1681,6 +1896,7 @@ wafer::lowerGroupToTileRegionModule(GroupOp group,
 mlir::LogicalResult wafer::lowerCandidateGroupToTileRegionModule(
     GroupOp group, llvm::ArrayRef<int64_t> candidateTileOffsets,
     llvm::ArrayRef<int64_t> candidateTileSizes,
+    llvm::ArrayRef<int64_t> candidateReductionTileSizes,
     mlir::OwningOpRef<mlir::ModuleOp> &module, std::string *failureReason) {
   if (failureReason)
     failureReason->clear();
@@ -1692,9 +1908,9 @@ mlir::LogicalResult wafer::lowerCandidateGroupToTileRegionModule(
     return mlir::failure();
   }
 
-  if (mlir::failed(
-          materializeCandidateTileSlices(clonedGroup, candidateTileOffsets,
-                                         candidateTileSizes, failureReason)))
+  if (mlir::failed(materializeCandidateTileSlices(
+          clonedGroup, candidateTileOffsets, candidateTileSizes,
+          candidateReductionTileSizes, failureReason)))
     return mlir::failure();
 
   return convertGroupToTileRegionModuleInPlace(*module, group.getContext(),

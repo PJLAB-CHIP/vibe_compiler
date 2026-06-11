@@ -106,6 +106,10 @@ void buildLowerGroupsToDDRMemoryPlannedInstrPipeline(mlir::OpPassManager &pm) {
   buildPlanDDRMemoryPipeline(pm);
 }
 
+void buildLowerGroupsToSelectedInstrPipeline(mlir::OpPassManager &pm) {
+  pm.addPass(createSelectGroupTilePass());
+}
+
 #ifdef WAFER_ENABLE_SHARDY
 void buildStablehloShardingPropagationPipeline(mlir::OpPassManager &pm,
                                                int64_t defaultTileCount) {
@@ -149,6 +153,13 @@ void registerWaferPipelines() {
         "instruction-level Wafer IR",
         [](mlir::OpPassManager &pm) {
           buildLowerGroupsToDDRMemoryPlannedInstrPipeline(pm);
+        });
+    mlir::PassPipelineRegistration<>(
+        "wafer-lower-groups-to-selected-instr",
+        "Select R3.2h group tile candidates and emit memory-planned "
+        "instruction-level Wafer IR",
+        [](mlir::OpPassManager &pm) {
+          buildLowerGroupsToSelectedInstrPipeline(pm);
         });
 #ifdef WAFER_ENABLE_SHARDY
     mlir::PassPipelineRegistration<StablehloShardingPropagationPipelineOptions>(

@@ -31,7 +31,7 @@ allocation、communication collective lowering 或 launch/package emission。
   preferred layout、materialization cost 和组合合法性。
 - 给 instruction legalization / selection 一个稳定入口：每个 op 能提供可验证的 CT/NE/TDMA/RDMA/WDMA
   instruction family legality；R3.2d 再生成 instruction-level IR，并显式报告
-  input/output/temp/scratch/accumulator/psum memref demand，以及 effect / async lifetime 对 buffer reuse
+  input/output/temp/workspace/accumulator/psum memref demand，以及 effect / async lifetime 对 buffer reuse
   的约束。
 - 给 hardware lowering 一个稳定 legality target：CT、NE、native reduce、RDMA、WDMA、TDMA
   等 target family 的合法性先在 `wafer.tile.*` compute / movement 层被验证，再进入更低层发射。
@@ -277,7 +277,7 @@ flexible，但仍可因 dtype、stride、range 或 bitpack 约束拒绝某些组
 compute/movement op 应实现或组合 MLIR memory effect / resource effect：
 
 - read effects：input storage、constant load source、DDR source。
-- write effects：output storage、store destination、temporary/scratch。
+- write effects：output storage、store destination、temporary/workspace。
 - resource effects：CT/NE/RDMA/WDMA/TDMA issue family、worker resource、SPM bank/page/color class。
 - async policy：op 是否可 lower 成 issue-only，以及哪些 buffer lifetime 必须延伸到 drain/wait。
 

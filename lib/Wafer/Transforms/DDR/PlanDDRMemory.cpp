@@ -1002,21 +1002,31 @@ static mlir::LogicalResult planModuleDDRMemory(mlir::ModuleOp moduleOp,
                             bandwidthLimitBytes);
 }
 
+} // namespace
+
+mlir::LogicalResult planDDRMemoryModule(mlir::ModuleOp moduleOp,
+                                        int64_t ddrAlignmentBytes,
+                                        int64_t ddrCapacityBytes,
+                                        int64_t ddrLargestContiguousBytes,
+                                        int64_t ddrBandwidthLimitBytes) {
+  if (ddrCapacityBytes < 0 || ddrLargestContiguousBytes < 0 ||
+      ddrBandwidthLimitBytes < 0 || ddrAlignmentBytes <= 0)
+    return moduleOp->emitError()
+           << "invalid_ddr_resource_limit: DDR resource limits must be "
+              "non-negative and DDR alignment must be positive";
+
+  return planModuleDDRMemory(moduleOp, ddrAlignmentBytes, ddrCapacityBytes,
+                             ddrLargestContiguousBytes, ddrBandwidthLimitBytes);
+}
+
+namespace {
+
 struct PlanDDRMemoryPass
     : public impl::PlanDDRMemoryPassBase<PlanDDRMemoryPass> {
   using impl::PlanDDRMemoryPassBase<PlanDDRMemoryPass>::PlanDDRMemoryPassBase;
 
   void runOnOperation() final {
-    if (ddrCapacityBytes < 0 || ddrLargestContiguousBytes < 0 ||
-        ddrBandwidthLimitBytes < 0 || ddrAlignmentBytes <= 0) {
-      getOperation()->emitError()
-          << "invalid_ddr_resource_limit: DDR resource limits must be "
-             "non-negative and DDR alignment must be positive";
-      signalPassFailure();
-      return;
-    }
-
-    if (mlir::failed(planModuleDDRMemory(
+    if (mlir::failed(planDDRMemoryModule(
             getOperation(), ddrAlignmentBytes, ddrCapacityBytes,
             ddrLargestContiguousBytes, ddrBandwidthLimitBytes)))
       signalPassFailure();

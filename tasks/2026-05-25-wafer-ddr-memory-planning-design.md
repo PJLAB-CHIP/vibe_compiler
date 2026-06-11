@@ -23,7 +23,8 @@ compiler IR 合同。
   在 default DDR arena 中规划 symbolic range/offset/size/alignment，并用 lifetime/reuse 证明互不冲突。
 - 给 R3.2h 一个真实 candidate gate：成功表示当前 candidate 的 DDR view、accepted offset fact 和
   IR-derived demand 都可被下游直接消费；失败返回结构化 reason，供
-  tile/layout/internal-split/output-coverage candidate repair 或 split。
+  traversal tile / 当前支持的 matmul `K` split candidate repair 或 split。layout 替代候选、
+  multi-output coverage 和 general reduction split 需要先有显式 IR/interface 语义。
 - 保持 DDR accepted allocation fact 显式：由 SSA use-def、memref type、view、descriptor 和
   offset fact 表达，不能靠名字、fixture 或 pass-local side table 复原。
 
@@ -258,10 +259,11 @@ physical bytes, the corresponding memref type/layout must make that visible.
 
 ### 9.3 R3.2h Candidate Decision
 
-R3.2h enumerates tile/layout/internal-split/output-coverage candidates and reruns
-R3.2e/R3.2d/R3.2f/R3.2g. A candidate rejected by DDR planning is not written into main IR. The driver may
-retry with a different tile shape, layout cut, internal split, streaming/residency choice or group split.
-SPM/DDR arena and bandwidth limits are inputs to their planning gates, not candidate fields.
+R3.2h enumerates bounded traversal tile candidates and currently supported matmul `K` split candidates, then
+reruns R3.2e/R3.2d/R3.2f/R3.2g. A candidate rejected by DDR planning is not written into main IR. The driver may
+retry with a different tile shape or supported internal split; future layout cut, multi-output coverage,
+streaming/residency choice and group split require explicit IR/interface support before they become candidate
+dimensions. SPM/DDR arena and bandwidth limits are inputs to their planning gates, not candidate fields.
 
 ### 9.4 R3.5 Launch / Runtime / Package
 

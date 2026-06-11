@@ -9,7 +9,8 @@ allocator，也不是把失败计划写进 IR 等后段修复的阶段；它负�
 目标：
 
 - 根据实际 traversal shape 枚举 bounded tile candidate。
-- 把 candidate tile shape、layout choice、internal split 和 output coverage 转成 candidate evaluation IR。
+- 把 bounded traversal tile shape 和当前支持的 matmul `K` split 转成 candidate evaluation IR；layout
+  choice 和 output coverage 只在对应 interface 能表达多个合法候选后进入 search space。
 - 对每个 candidate 重放 R3.2e candidate DDR tile-view materialization、R3.2d instruction lowering、
   R3.2f SPM memory planning、R3.2g DDR memory planning 和 verifier。
 - 默认选择第一个合法 candidate；可通过 `tile_search` 选项改为估算时间最小的合法 candidate。
@@ -45,8 +46,9 @@ Pipeline position:
   R3.4/R3.5 消费 accepted SPM/DDR facts 和当前 IR 可重算的 descriptor/view/allocation demand，
   不重新枚举 candidate 或重做 memory planning。
 - User-level driver / named pipeline:
-  R3.2h 需要一个 candidate decision named driver/pipeline，内部重放 R3.2e-g；
-  用户不应手工拼接 R3.2e/R3.2d/R3.2f/R3.2g pass 作为主线 compile flow。
+  `wafer-select-group-tile` pass 和 `wafer-lower-groups-to-selected-instr` named pipeline；
+  driver 内部重放 R3.2e-g，用户不应手工拼接 R3.2e/R3.2d/R3.2f/R3.2g pass 作为主线
+  compile flow。
 - Explicit non-goals:
   不生成 placed memref、runtime allocation/import/query、ABI call、packet 或 physical address；
   不把失败 candidate 的 transient plan 落入 committed main IR。
@@ -69,12 +71,14 @@ CandidateSpec:
 ```
 
 - `traversal_tile_shape`：当前 group 的输出 traversal domain 上每维 tile size。
-- `layout_choice`：来自 R3.2b layout analysis / layout interface 的候选。R3.2h 不自己发明
-  `tensor`、`cx`、`ncx` 的 layout 规则。
+- `layout_choice`：来自 R3.2b layout analysis / layout interface 的候选。当前实现使用 R3.2b /
+  lowering 默认给出的 layout 顺序，不在 R3.2h 中重新发明 `tensor`、`cx`、`ncx` 规则；未来如果
+  layout interface 暴露多个可选 materialization cut，R3.2h 只把它们作为候选维度。
 - `internal_split`：matmul/reduction 这类 op 的内部 reduction split，例如 `K` split。它不是
   traversal domain。
-- `output_coverage`：candidate 如何覆盖 result。V0 支持单输出和同 traversal domain 的多输出；
-  不同 output domain、partial writeback、复杂 scatter coverage 返回 split-needed。
+- `output_coverage`：candidate 如何覆盖 result。当前实现支持单输出 candidate artifact；多输出、
+  不同 output domain、partial writeback、复杂 scatter coverage 返回结构化 failure，后续需要先扩
+  group output coverage interface 和 R3.2e multi-result tile-view materializer。
 
 下面这些不属于 candidate：
 
@@ -147,8 +151,12 @@ candidate reject，不能把某个局部 tile 通过当成全 shape 通过。
 
 Internal split 由 op tiling interface 提供。V0 策略：
 
-- matmul/reduction 默认先试 no split。
-- 如果 SPM planning 或 DDR planning 因 footprint / bandwidth 失败，再枚举更小的 reduction tile。
+- matmul 默认先试 no split；只有 no-split traversal candidates 都没有通过时，才枚举更小的 `K`
+  tile。
+- matmul K split 的 candidate evaluation IR 生成多个 partial GEMM，并用 tile-local elementwise
+  add 累加 partial results，最后只 storeback 一次 output tile。
+- general reduction split 暂不伪装支持；当前 `wafer.tile.reduce` / `wafer.instr.reduce` 还缺少
+  loop-carried partial accumulator contract，必须先扩对应 tile/instr 语义再让 R3.2h 枚举。
 - 在 `tile_search=min_estimated_time` 下，合法的 internal split 也参与估算时间比较。
 
 以 matmul 为例，`K` split 的 footprint 粗估来自：
@@ -266,8 +274,8 @@ cost model 接受 candidate 的依据。
 
 R3.2h 的失败原因分三类：
 
-- `retryable_candidate_failure`：当前 tile/layout/internal-split/output-coverage candidate 失败，可以换
-  下一个 candidate。
+- `retryable_candidate_failure`：当前 traversal tile / matmul `K` split candidate 失败，可以换下一个
+  candidate。
 - `split_needed`：当前 group 需要拆分，例如多输出 coverage 不兼容、required movement 还不能表达、
   或所有 bounded tile 都被 memory/movement gate 拒绝。
 - `no_candidate`：bounded search space 内没有 passing candidate，且没有更细的 split policy 可用。
@@ -275,7 +283,8 @@ R3.2h 的失败原因分三类：
 diagnostic 应记录：
 
 - 失败发生在哪个 gate。
-- candidate spec 的 shape/layout/internal split/output coverage。
+- candidate spec 的 traversal tile shape 和 matmul `K` split；未来 layout/output coverage 候选需要等
+  对应 interface 落地后再进入 diagnostic。
 - R3.2f/R3.2g 的结构化 reason，例如 capacity、largest-contiguous、bandwidth、alignment、descriptor/view
   mismatch。
 - `min-estimated-time` 模式下 winning candidate 的 cost breakdown。
@@ -297,3 +306,42 @@ R3.2h completion proof 至少覆盖：
   RDMA/WDMA descriptor 匹配。
 - 文本一致性：R3.2h 文档和 progress 不再把资源上限建模成 candidate 字段，也不把 DDR access
   summary/range attr 当成 committed IR fact。
+
+## 10. Implementation Status
+
+2026-06-11 当前实现：
+
+- `wafer-select-group-tile`：module pass，扫描 `wafer.group`，为每个 group 生成独立 passing
+  candidate artifact。
+- `wafer-lower-groups-to-selected-instr`：named pipeline，作为 R3.2h 用户级 replay 入口。
+- candidate 生成：从单输出 static ranked result 的实际 traversal shape 生成 bounded tile sizes；
+  matmul root 额外生成 bounded `K` split。候选顺序是全部 no-split traversal candidates 先行，
+  然后再进入 `K` split candidates。
+- representative coverage：每个 tile shape 至少验证 first / last / tail / corner tail 的代表
+  tile classes；所有代表都通过 R3.2e-g 才接受该 candidate。
+- gates：每个 candidate evaluation clone 按 R3.2e candidate DDR tile-view materialization、
+  R3.2d instruction lowering、R3.2f SPM memory planning、R3.2g DDR memory planning、verifier
+  顺序执行；gate failure 早停，不继续跑后续 gate。
+- `tile-search=first-legal`：默认模式，返回第一个 passing candidate。
+- `tile-search=min-estimated-time`：只在 passing candidates 之间用 lowered instruction IR 的
+  compute/DDR/SPM/issue 粗估时间排序。
+- diagnostics：`print-candidate-summary` 输出 selected tile、split、estimated cycles、visited /
+  rejected candidate 数和 representative 数；这些是诊断，不写入 committed IR。
+
+当前显式限制：
+
+- 多输出 output coverage、不同 output domain 和 partial scatter coverage 尚未实现；当前返回
+  structured `no_candidate` / gate failure，不能用名字或 side table 伪支持。
+- general reduction split 尚未实现；需要先扩 tile/instr reduction 的 partial accumulator 语义。
+- layout 候选仍消费 R3.2b / lowering 的默认 layout 决策；R3.2h 不在本层硬编码 `tensor`、`cx`、
+  `ncx` 的替代 layout 枚举。
+
+当前测试入口：
+
+- `test/Transforms/select-group-tile.mlir`：elementwise、static slice、large K=1000 matmul、reduce、
+  `scf.if`、`scf.for`、tail/corner representative coverage。
+- `test/Transforms/select-group-tile-internal-split.mlir`：SPM gate 迫使 matmul 使用 `K` split，
+  并检查 partial GEMM + elementwise add + single WDMA 形态。
+- `test/Transforms/select-group-tile-min-estimated.mlir`：`tile-search=min-estimated-time`。
+- `test/Transforms/select-group-tile-failure.mlir`：invalid mode 和 gate early-exit。
+- `test/Pipelines/lower-groups-to-selected-instr.mlir`：named pipeline replay。
