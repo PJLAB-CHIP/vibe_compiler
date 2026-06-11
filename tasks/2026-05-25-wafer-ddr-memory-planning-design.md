@@ -1,7 +1,7 @@
 # Wafer DDR Memory Planning Design
 
 2026-06-11 更新：R3.2g 重新收敛为 **compiler-side DDR memory planning**。它不能只是
-DDR access validation；凡是会影响 candidate 是否成立的 DDR range、lifetime、capacity、
+DDR access validation；凡是会影响 candidate 是否成立的 DDR byte footprint、lifetime、capacity、
 largest-contiguous 和 bandwidth 约束，都必须在 R3.2g/R3.2h candidate gate 内决定或拒绝。
 R3.5 只 materialize 已接受的 DDR plan 到 runtime allocation/import/package，不重新做 planning。
 同日进一步收敛：compiler-managed DDR allocation 由 DDR `memref.alloc` 本身表达；R3.2g 只把
@@ -18,11 +18,12 @@ compiler IR 合同。
 目标：
 
 - 从 instruction-level candidate IR 重算 DDR access demand 和 compiler-managed DDR allocation demand。
-- 对 external input/output DDR view 做 descriptor、view/root byte range 和 resource validation。
+- 对 external input/output DDR view 做 descriptor、view/root byte range、capacity 和 bandwidth validation。
 - 对 compiler-managed workspace、resident constant、inter-group DDR temporary 等非 external allocation，
   在 default DDR arena 中规划 symbolic range/offset/size/alignment，并用 lifetime/reuse 证明互不冲突。
-- 给 R3.2h 一个真实 candidate gate：成功表示当前 candidate 的 DDR view、planned range 和 resource
-  都可被下游直接消费；失败返回结构化 reason，供 tile/layout/resource candidate repair 或 split。
+- 给 R3.2h 一个真实 candidate gate：成功表示当前 candidate 的 DDR view、accepted offset fact 和
+  IR-derived demand 都可被下游直接消费；失败返回结构化 reason，供
+  tile/layout/internal-split/output-coverage candidate repair 或 split。
 - 保持 DDR accepted allocation fact 显式：由 SSA use-def、memref type、view、descriptor 和
   offset fact 表达，不能靠名字、fixture 或 pass-local side table 复原。
 
@@ -40,7 +41,7 @@ compiler IR 合同。
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  R3.2f 之后的 instruction-level candidate IR。SPM side 已有 planned SPM range；
+  R3.2f 之后的 instruction-level candidate IR。SPM side 已有 accepted SPM offset facts；
   DDR side 已由 `#wafer.memory<ddr, layout>` memref、tile-region block argument、
   `memref.alloc`、`memref.subview` / static strided view 和 RDMA/WDMA descriptor
   表达 external / compiler-managed / resident / inter-group demand。
@@ -57,12 +58,12 @@ Pipeline position:
 - Downstream consumer:
   R3.2h 用 R3.2g 成功/失败选择 candidate；
   R3.3 只 commit 已通过 R3.2e-g gates 的 candidate；
-  R3.4 把 accepted DDR planned range realize 成 placed memref/access descriptor；
-  R3.5 把 accepted DDR plan materialize 到 runtime allocation/import/query/package metadata。
+  R3.4 把 accepted DDR offset facts realize 成 placed memref/access descriptor；
+  R3.5 把 accepted DDR demand materialize 到 runtime allocation/import/query/package metadata。
 - User-level driver / named pipeline:
   局部 pass 是 `wafer-plan-ddr-memory`；
   主线验证入口是从 R3.2c/R3.2d/R3.2f 跑到 R3.2g 的 named pipeline。completion proof 必须覆盖
-  actual DDR planned range，不接受只验证 external DDR view。
+  accepted DDR offset fact 和 descriptor/view/root validation，不接受只验证 external DDR view。
 - Explicit non-goals:
   不重新推 DDR tile subview，不重做 SPM memory planning，不选择 tile shape/layout/group boundary，
   不生成 ABI call、packet、physical DDR address 或 runtime handle。
@@ -257,9 +258,10 @@ physical bytes, the corresponding memref type/layout must make that visible.
 
 ### 9.3 R3.2h Candidate Decision
 
-R3.2h enumerates tile/layout/resource candidates and reruns R3.2e/R3.2d/R3.2f/R3.2g. A candidate rejected by
-DDR planning is not written into main IR. The driver may retry with a different tile shape, layout cut,
-streaming/residency choice, arena resource bound or split.
+R3.2h enumerates tile/layout/internal-split/output-coverage candidates and reruns
+R3.2e/R3.2d/R3.2f/R3.2g. A candidate rejected by DDR planning is not written into main IR. The driver may
+retry with a different tile shape, layout cut, internal split, streaming/residency choice or group split.
+SPM/DDR arena and bandwidth limits are inputs to their planning gates, not candidate fields.
 
 ### 9.4 R3.5 Launch / Runtime / Package
 

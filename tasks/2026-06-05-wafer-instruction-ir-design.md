@@ -534,8 +534,9 @@ R3.2d verifier checks only instruction legality:
 
 R3.2d does **not** verify physical address range, SPM bank conflicts, DDR default arena capacity, runtime
 symbol, packet bit layout or worker register window. Those checks belong to R3.2f/R3.2g/R3.4/R3.6.
-R3.2g must accept or reject the explicit DDR views, descriptors and DDR requirements already present in this
-IR, and must materialize accepted DDR planned range facts before later placement/runtime stages consume them.
+R3.2g must accept or reject the explicit DDR views, descriptors and compiler-managed DDR `memref.alloc`
+already present in this IR, and must materialize accepted DDR offset facts before later placement/runtime
+stages consume them.
 
 ## 11. Example
 

@@ -364,7 +364,7 @@ prob = exp_scores / row_sum
 
 这只是数学/dataflow 结构，不是要求一个 `wafer.group` 覆盖整条链。若 key dimension 无法在一个
 tile schedule 内合法覆盖，group planner 必须拆成多阶段 schedule，例如 row max stage、row sum
-stage、normalize/value stage，并通过 DDR compiler-managed range requirement 或 tile-local loop-carried state 明确表达
+stage、normalize/value stage，并通过 compiler-managed DDR `memref.alloc` 或 tile-local loop-carried state 明确表达
 中间结果。
 
 RMSNorm / LayerNorm 类似：

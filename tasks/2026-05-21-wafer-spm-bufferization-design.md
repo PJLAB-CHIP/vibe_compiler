@@ -120,9 +120,10 @@ Pipeline position:
 - hardware lowering 需要的 begin/end range 和 dtype storage size。
 
 这些输出属于 SPM / tile-region 层，不回写到 `wafer.group`。
-其中 allocation summary 只覆盖 `#wafer.memory<spm, *>`；DDR 的 explicit view/range、constant
-residency/storage、compiler-managed DDR requirement、全局容量、largest contiguous range 和 bandwidth 属于 DDR memory plan，
-但 movement/scheduler 仍要把 DDR range 和 bandwidth 作为 cost/legality input。
+其中 allocation summary 只覆盖 `#wafer.memory<spm, *>`；DDR 的 external view/descriptor validation、
+constant residency/storage、compiler-managed DDR `memref.alloc`、全局容量、largest contiguous range
+和 bandwidth 属于 DDR memory planning，但 movement/scheduler 仍要把 DDR byte footprint 和
+bandwidth 作为 cost/legality input。
 
 ## 4. Instruction Storage Requirements
 
@@ -393,7 +394,7 @@ selection 和 SPM memory planning 都应在 transformation-local candidate evalu
 allocation 使用 instruction-level IR 的 memref / lifetime / effect 事实源，而不是 target-abstract
 op 的粗粒度 effect。
 
-失败的 allocation、offset search trace、cost trace 都不进入 IR。
+失败的 allocation、offset search trace、cost breakdown 都不进入 IR。
 
 ## 11. Placed MemRef Realization
 

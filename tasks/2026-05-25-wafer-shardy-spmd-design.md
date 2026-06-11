@@ -525,7 +525,7 @@ per-rank program
   -> tensor collective normalization if collectives exist
   -> logical group
   -> tile_region materialization
-  -> placement / communication / resource gate
+  -> placement / communication / memory planning gate
 ```
 
 手写 `sdy.mesh` / StableHLO collective fixture 只保留为 dialect/verifier/unit 级测试。它不能替代

@@ -207,7 +207,8 @@ movement op 的合同：
 - `wafer.tile.load` / `wafer.tile.store` 连接 `#wafer.memory<ddr, tensor>` compact external tensor boundary、
   DDR runtime allocation / resident constant source 和 `#wafer.memory<spm, *>` tile-local memref。host-visible dynamic input/output 默认
   compact；constant source 由 `ConstantLike` value、constant storage transform 和 load op contract 表达，
-  DDR requirement / compiler-managed range requirement / resource gate 由 DDR memory planning 文档定义。
+  DDR external view/descriptor validation、compiler-managed DDR `memref.alloc` 和 memory planning gate
+  由 DDR memory planning 文档定义。
 - 当 `wafer.tile.load` 的 source 是 `ConstantLike` 时，load op 仍必须表达 logical slice / index
   operands。Weight chunking 是 storage/lowering 策略；compute op 只消费 load 后的 storage，
   不依赖旁路 metadata 或名字约定。
@@ -330,7 +331,7 @@ Placed instruction-level verifier：
 | candidate DDR tile-view materialization | candidate target-abstract tile-region IR + explicit static boundary slice fact 或 candidate output tile offsets/sizes | same candidate evaluation tile-region IR with DDR `memref.subview` tile operands | 覆盖 external boundary extract、direct output insert storeback，以及单结果 destination-style linalg root 的 candidate tile offsets/sizes 到 boundary slice proposal；closed-loop traversal / tile-shape search 仍由 planner 后续产生 facts；不从名字或 whole-boundary shape 猜 DMA |
 | instruction legalization / selection | layout-materialized IR | instruction-level `wafer.instr.*` over unplaced Wafer-tagged memref | 将 target-abstract op 改写成 CT/NE/TDMA/RDMA/WDMA 指令形态，列出 queue、effects、temp/psum/staging memref values、alias 和 descriptor attrs；DTE communication 不进入普通 `wafer.instr` path |
 | SPM memory planning | instruction-level IR with unplaced Wafer-tagged memref | same instruction-level IR with planned SPM offset facts | 从 memref use-def 和 instruction effects 收集 demand、liveness，分配 offset/range/bank |
-| DDR memory planning | SPM-planned instruction-level IR with actual DDR tile views and explicit DDR requirements | same instruction-level IR with accepted DDR planned range facts，或结构化失败 | 从 memref view、descriptor、requirement、lifetime 和 target resource 重算 DDR demand；规划 compiler-managed/resident/inter-group DDR ranges；验证或拒绝当前 IR 中显式表达的 DDR demand |
+| DDR memory planning | SPM-planned instruction-level IR with actual DDR tile views, descriptors and compiler-managed DDR `memref.alloc` | same instruction-level IR with accepted DDR offset facts，或结构化失败 | 从 memref view、descriptor、alloc、lifetime 和 target policy 重算 DDR demand；验证 external demand，为 compiler-managed/resident/inter-group demand 规划 accepted offset；验证或拒绝当前 IR 中显式表达的 DDR demand |
 | placement realization | DDR memory-planned instruction-level IR | placed `memref` / flat storage / access descriptor | 复用标准 memref lowering 或生成目标 access descriptor，不重新决定 layout/SPM/DDR plan |
 | codegen emission | placed instruction-level IR | LLVM call / C ABI call / package metadata | 生成具体 ABI call 或 packet emission，不回头修改 schedule/layout |
 
@@ -378,7 +379,7 @@ resource summary 一致性验证和 full block package manifest 必须由后续 
 恢复。当前覆盖仍不是通用 elementwise/reduce/GEMM coverage；更复杂 broadcast、relation/logic、convert、多输入/非
 constant-init reduce 和 mask/select 仍按后续泛化 gate 推进。当前 coverage 不能被解释成
 Wafer compute 语义上不支持这些结构；只要硬件 wrapper / structured lowering 能表达，就应补
-compute op、verifier、instruction lowering、ABI emission 或 resource gate。
+compute op、verifier、instruction lowering、ABI emission 或 memory planning gate。
 
 V1 或后续扩展：
 

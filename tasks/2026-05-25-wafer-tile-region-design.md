@@ -288,19 +288,22 @@ V0 需要以下 op family：
    在同一 IR 上填入 offset/end/bank span 和 lifetime/reuse；不能直接从 target-abstract op 猜
    memref demand。
 7. DDR memory planning：R3.2g 消费 memory-planned instruction-level IR、SPM facts、DDR
-   tile-view boundary 和 explicit DDR requirements，规划 compiler-managed/resident/inter-group DDR planned
-   ranges，并验证 descriptor、view/root range、default arena capacity/largest-contiguous、bandwidth、
-   alignment、overlap 和 fence demand。成功 facts 必须能被 R3.2h/R3.3/R3.4/R3.5 直接消费；失败时给结构化原因。
-8. closed-loop candidate driver：R3.2h 枚举 tile/layout/resource 候选，逐个运行 R3.2e/R3.2d/R3.2f/R3.2g
-   gates；选择已通过全部 gates 的 candidate artifact，或要求 split / retry；rejected candidate IR
+   tile-view boundary、DDR `memref.alloc` 和 descriptor demand，规划 compiler-managed/resident/inter-group
+   DDR accepted offset facts，并验证 descriptor、view/root range、default arena capacity/largest-contiguous、
+   bandwidth、alignment、overlap 和 fence demand。成功 facts 必须能被 R3.2h/R3.3/R3.4/R3.5 直接消费；
+   失败时给结构化原因。
+8. closed-loop candidate driver：R3.2h 枚举 tile/layout/internal-split/output-coverage 候选，逐个运行
+   R3.2e/R3.2d/R3.2f/R3.2g gates；默认选择第一个 passing candidate，或在
+   `tile_search=min_estimated_time` 下只对 passing candidate 做粗估时间排序；选择已通过全部 gates
+   的 candidate artifact，或要求 split / retry；rejected candidate IR
    丢弃。
 9. committed `wafer.tile.region` materialization：R3.3 只把 R3.2h 选中的 passing candidate artifact
    写入主 IR。
 10. placement realization：把 planned unplaced memref 降到 placed memref / address descriptor。
 11. lower-level op lowering：转成 wrapper-friendly Wafer ops，最后进入 C ABI / launch。
 
-rejected candidate plan 不能落入 IR 后等待下游修复。合法性失败应反馈给 group/layout/resource
-planner 重新选择 tile shape、internal split、layout 或 group boundary。
+rejected candidate plan 不能落入 IR 后等待下游修复。合法性失败应反馈给 group/layout/candidate
+planner 重新选择 tile shape、internal split、layout、output coverage 或 group boundary。
 
 `scf.if` / `scf.for` 在 R3.2c 中是 tile-region 内的结构化 control-flow container，不是
 instruction-level branch/loop。R3.2c 只负责把 region 内 tensor dataflow 递归降成 Wafer-tagged
@@ -356,8 +359,9 @@ launch args / identity lowering 的 IR contract。当前没有 multi-tile no-com
   拒绝，上游应避免生成这种 no-op conversion。`wafer.tile.reshape` 这类无副作用 view op 可由
   canonicalization 删除同类型 no-op。
 - `#wafer.memory<spm, *>` memref 在 placement realization 前必须经过 SPM allocation；
-  `#wafer.memory<ddr, *>` memref 必须有 DDR memory planning 接受的 explicit view/range/resource requirement
-  或 accepted planned DDR range。
+  compiler-managed `#wafer.memory<ddr, *>` alloc 必须有 DDR memory planning 接受的
+  `wafer.ddr.offset` fact；external DDR boundary value 的 descriptor/view/root validation 由当前
+  instruction-level IR 重算。
 - lower-level op 出现时，其 operand 已经是 placed memref 或 verifier 可解释 descriptor。
 
 Verifier 不检查 group 是否应该形成；那是 `wafer.group` 和 planner 的职责。

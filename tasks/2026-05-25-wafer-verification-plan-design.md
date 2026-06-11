@@ -163,15 +163,18 @@ Partitioned StableHLO collective handoff：
   collective 形成 R6/R4 恢复任务，不能反向限制 sharding propagation program export，也不能把 tensor collective
   伪装成已经 materialize 的 `wafer.tile.*` communication。
 - layout/SPM/DDR memory gates 只对本 milestone 已经 materialize 的 movement / buffer demand
-  负责；尚未 materialize 的 logical collective 不能被伪装成已通过 resource gate。
+  负责；尚未 materialize 的 logical collective 不能被伪装成已通过 memory/communication gate。
 - 旧的 StableHLO -> `wafer.tile.*` communication integration 已移除。R2.4 需要补 StableHLO -> tensor
   collective 的 gate，R6 再验证 tiled tensor collective -> `wafer.tile.*` communication 的 materialization。
 
-Overlap and cost model（优化类，当前执行看板后移为 P9）：
+R3.2h tile search 估算和 P9 cost calibration 的边界：
 
+- R3.2h 可以提供 `tile_search=min_estimated_time`，在 passing candidate 之间用硬件参数、计算量、
+  DDR bytes、SPM/local movement bytes 和 instruction count 做粗估时间排序。
+- R3.2h 的粗估时间只用于合法候选 tie-break；R3.2e/R3.2d/R3.2f/R3.2g/verifier 失败的 candidate
+  不能被 cost model 接受。
 - issue/drain placement 由 effect/token verifier 证明。
-- SPM busy range、DDR range/bandwidth 和 DTE resource pressure 进入 cost model。
-- PMU/profiling 只作为 calibration，不作为 IR 语义事实。
+- PMU/profiling 只作为 P9 calibration，不作为 IR 语义事实，也不改变 R3.2h 的合法性边界。
 
 Transformer block vertical slice：
 

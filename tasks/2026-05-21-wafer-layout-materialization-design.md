@@ -21,7 +21,7 @@ lowering。
 
 本文不负责 group formation、tile shape search、SPM offset allocation、DDR memory planning、
 compute/comm op 语义、launch/runtime package 或 raw instruction packet。layout planner 的中间
-constraint graph、layout alternatives、cost trace 和失败原因都是 analysis；只有 accepted buffer layout、explicit
+constraint graph、layout alternatives、cost breakdown 和失败原因都是 analysis；只有 accepted buffer layout、explicit
 movement 和可 lower 的 constant storage 选择进入 IR 或 lowering 输入。
 
 ## 1. 核心结论
@@ -364,9 +364,9 @@ instruction IR 上，不进入 `wafer.group`。
 语义约定：
 
 - `spm` 是 tile-local SRAM，容量、lifetime、range 和 reuse 由 SPM bufferization 负责。
-- `ddr` 是 device/global DDR 的目标侧 address space；explicit view/range、planned DDR range 和
-  default arena resource 由 DDR memory planning 负责，package/runtime allocation mapping 由
-  launch/runtime/package 层负责。
+- `ddr` 是 device/global DDR 的目标侧 address space；external view/descriptor validation、
+  compiler-managed DDR accepted offset facts 和 default arena constraints 由 DDR memory planning
+  负责，package/runtime allocation mapping 由 launch/runtime/package 层负责。
 - `layout` 是 Wafer physical layout marker。DDR buffer 可以是 compact，也可以在 constant storage
   transform 或 device-side materialization 后带目标相关 marker；SPM buffer 同样通过这个 marker
   表达 compact 或 aligned family。
@@ -841,7 +841,7 @@ V0 只需要区分 hard constraint 和 preference：
   implementation。
 
 accepted assignment 只通过 rewrite 后的 tile-local memref type、`wafer.tile.materialize_layout`、
-`wafer.tile.load` 的 use-def 和 result type 体现。domain frontier、cost trace、备选 cut、失败原因
+`wafer.tile.load` 的 use-def 和 result type 体现。domain frontier、cost breakdown、备选 cut、失败原因
 都属于 diagnostic / debug dump，不能成为下游 pass 依赖的 IR 事实。
 
 ### 6.1 Materialization Cut Placement Algorithm
@@ -958,7 +958,8 @@ materialization demand 并运行 SPM allocation。
 - `wafer.tile.materialize_layout` 都有 lowerable conversion path。
 - SPM allocation 通过，包含 materialization temp、communication staging、loop-carried value、
   async lifetime 和 range/end-address validation。
-- DDR demand / compiler-managed range requirement / external allocation / bandwidth summary 可由 DDR memory planner 接受。
+- DDR external view/descriptor demand、compiler-managed DDR `memref.alloc`、resident constant demand 和
+  bandwidth summary 可由 DDR memory planner 接受。
 - cleanup 后仍能通过 layout verifier、SPM allocation 和 DDR memory planning。
 
 如果所有 bounded alternatives 都失败，layout planner 不生成“等待下游修复”的 IR，而是返回
@@ -1048,7 +1049,7 @@ V0 做 bounded adjacent co-planning，不做 full-program layout solve：
    ```
 
    summary 是 analysis，不进入 IR。`local_cost` 必须包含 group 内 materialization bytes、peak SPM
-   变化、DDR compiler-managed range requirement / bandwidth pressure 和 writeback/load movement；`spm_allocation` 必须来自
+   变化、compiler-managed DDR allocation demand / bandwidth pressure 和 writeback/load movement；`spm_allocation` 必须来自
    同一个 SPM allocator，`ddr_memory_plan` 必须来自 DDR memory planner。
 
 2. 建 boundary graph
@@ -1265,7 +1266,7 @@ layout 相关事实按第 3 节生命周期分层表达：
 - lower-level movement IR 表达具体 instruction/wrapper path、sync/effect 和 byte/range 约束。
 
 不要维护全局 `layout_plan` attr，也不要把 analysis graph 序列化成 side table 给后续 pass 使用。
-失败的 layout alternative、cost trace、materialization 尝试都只是 analysis。
+失败的 layout alternative、cost breakdown、materialization 尝试都只是 analysis。
 
 ## 13. Verifier
 

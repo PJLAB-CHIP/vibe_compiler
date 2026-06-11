@@ -30,7 +30,7 @@ Wafer Shardy propagation stage gate；2026-06-01 复查删除了误导性的 Pyt
 pipeline 不是放弃项，也不应排在 R3 之后。`P2.F1` 已完成 source-built PyTorch/XLA capture
 adapter；`P2.S1` 骨架已接上真实 `mark_sharding` / default-input-seed 到 Wafer Shardy propagation
 的 stage gate，但还没有 Wafer-owned XLA SPMD partition compiler stage。`P2.S2` 必须补这个阶段，
-不能继续把 Python post-SPMD helper 当成主链。后续 group / tile / resource gate 必须消费真实
+不能继续把 Python post-SPMD helper 当成主链。后续 group / tile / memory planning gate 必须消费真实
 frontend/SPMD program 来源，而不是继续围绕手写 fixture 自洽。
 
 2026-06-01 调度结论：R2.4 之前先补 R2.4-pre pipeline contract。当前 P2.F1/P2.S1
