@@ -156,18 +156,18 @@ core compiler target。
 - `python3 tools/check_deps.py`
 - `build/third_party/llvm-install/f0b3287297aeeddcf030e3c1b08d05a69ad465aa/bin/mlir-opt --version`
   - `LLVM version 20.0.0git`
-- `cmake -S . -B build/r0-deps-pytorch-xla -GNinja -DMLIR_DIR=$PWD/build/third_party/llvm-install/f0b3287297aeeddcf030e3c1b08d05a69ad465aa/lib/cmake/mlir -DLLVM_DIR=$PWD/build/third_party/llvm-install/f0b3287297aeeddcf030e3c1b08d05a69ad465aa/lib/cmake/llvm -DWAFER_ENABLE_IMPORTER_DEPS=ON -DWAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON`
-- `cmake --build build/r0-deps-pytorch-xla --target wafer-shardy-cmake-gate -- -j128`
+- `cmake -S . -B build/wafer-dev -GNinja -DMLIR_DIR=$PWD/build/third_party/llvm-install/f0b3287297aeeddcf030e3c1b08d05a69ad465aa/lib/cmake/mlir -DLLVM_DIR=$PWD/build/third_party/llvm-install/f0b3287297aeeddcf030e3c1b08d05a69ad465aa/lib/cmake/llvm -DWAFER_ENABLE_IMPORTER_DEPS=ON -DWAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON`
+- `cmake --build build/wafer-dev --target wafer-shardy-cmake-gate -- -j128`
   - 生成 SDY ODS include。
   - 编译并链接 `ShardySdyDialect`、`ShardySdyRegister`、`ShardySdyImportPasses`、
     `ShardySdyExportPasses`、`ShardySdyPropagationPasses`、`ShardySdyTransforms` 和 `shardy-sdy-opt`。
   - 编译期间 Shardy upstream `basic_factor_propagation.cc` 有一个 `-Wreturn-type` warning；不是本轮
     link/版本错误，后续如果启用 warnings-as-errors 再独立处理。
-- `build/r0-deps-pytorch-xla/shardy-sdy-opt third_party/shardy/shardy/dialect/sdy/ir/test/mesh_parse_print.mlir`
-- `build/r0-deps-pytorch-xla/shardy-sdy-opt third_party/shardy/shardy/dialect/sdy/transforms/propagation/test/basic_propagation_keep_sharding_rules.mlir -sdy-basic-propagate='keep-sharding-rules=true'`
-- `cmake --build build/r0-deps-pytorch-xla --target check-wafer -- -j128`
+- `build/wafer-dev/shardy-sdy-opt third_party/shardy/shardy/dialect/sdy/ir/test/mesh_parse_print.mlir`
+- `build/wafer-dev/shardy-sdy-opt third_party/shardy/shardy/dialect/sdy/transforms/propagation/test/basic_propagation_keep_sharding_rules.mlir -sdy-basic-propagate='keep-sharding-rules=true'`
+- `cmake --build build/wafer-dev --target check-wafer -- -j128`
   - `119` lit tests discovered；`118` passed；`1` unsupported。
-- `ctest --test-dir build/r0-deps-pytorch-xla --output-on-failure`
+- `ctest --test-dir build/wafer-dev --output-on-failure`
   - `wafer-lit` passed。
   - `WaferUnitTests` passed。
 - `git diff --check`
