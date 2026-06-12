@@ -133,6 +133,9 @@ Pipeline position:
   `tile-search=min-estimated-time` 只在 passing candidates 中按 lowered instruction IR 的粗估时间排序。
   selected candidate 会 inline commit 回原 `wafer.group` 位置，保留原 parent function 和无关函数；
   输出不生成 `*_selected_group_*` 旁路函数。
+  大 shape full-tile control-flow 组合已覆盖 `scf.if` 中 matmul + elementwise chain 和 `scf.for`
+  中 elementwise accumulate；需要 tiled materialization 的 `scf.if` root 当前仍结构化
+  `no_candidate`，等待 output coverage / control-flow tiling interface 扩展。
   不同 output domain、partial scatter coverage、复杂 recompute/cut 和 dynamic reduction range 仍需要
   后续 IR/interface 扩展，当前不能用 side table 或名字伪支持。
 - Tile communication 仍 deferred，等待 memory planning/local-rank/buffer facts 后再 lower 到 communication /

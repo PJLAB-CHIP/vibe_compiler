@@ -326,6 +326,13 @@ candidate-selection completion proof 至少覆盖：
   和 DDR offset assignment 对同一 candidate artifact 统一验证。
 - generic reduction split：`linalg.generic` reduction root 的 reduction iterator split 生成多个
   partial reduce 和 tile-local combine；只有所有 representative tiles 的完整 candidate gates 通过才接受。
+- large control-flow composition：full-tile candidate 下覆盖 `scf.if` 中的大 shape matmul + elementwise
+  chain，以及 `scf.for` 中的大 shape elementwise accumulate；输出必须 commit 回原函数，不生成
+  selected side artifact。
+- tiled control-flow root gap：当大 shape `scf.if` root 需要 smaller traversal tile 才能满足 SPM
+  gate 时，当前 candidate tile-view materializer 仍要求 yielded root 是 linalg root，并返回结构化
+  `no_candidate`；这需要后续 output coverage / control-flow tiling interface 扩展，不能用名字或
+  side table 伪支持。
 - 文本一致性：candidate-selection 文档和 progress 不再把资源上限建模成 candidate 字段，也不把 DDR access
   summary/range attr 当成 committed IR fact。
 
@@ -377,6 +384,9 @@ candidate-selection completion proof 至少覆盖：
 - `test/Transforms/select-group-tile-reduction-split.mlir`：SPM gate 迫使 `linalg.generic` reduction
   使用 internal split，并检查 partial reduce + elementwise combine + single WDMA 形态。
 - `test/Transforms/select-group-tile-min-estimated.mlir`：`tile-search=min-estimated-time`。
+- `test/Transforms/select-group-tile-complex-control-flow.mlir`：大 shape `scf.if` + matmul + elementwise
+  chain、大 shape `scf.for` + elementwise accumulate 的 commit；同文件 negative gate 覆盖需要 tiled
+  control-flow root materialization 时的 structured `no_candidate`。
 - `test/Transforms/select-group-tile-failure.mlir`：invalid mode 和 gate early-exit。
 - `test/Pipelines/lower-groups-to-selected-instr.mlir`：named pipeline replay；覆盖原函数名保留、
   unrelated function 保留、同函数多 group commit 和禁止 `selected_group` 旁路函数。
