@@ -80,9 +80,10 @@ unrelated functions、同函数其它 ops，以及多个 group 之间的 SSA 依
   matmul + elementwise chain、full-tile 大 shape `scf.for` 中 elementwise accumulate 都 commit 回主 IR；
   同时锁住需要 tiled control-flow root materialization 时的 structured gap。
 - `test/Transforms/select-group-tile-huge-composed.mlir`：`scf.if` 分支内 same-domain multi-output
-  group 的 `matmul + elementwise` 组合在 full-tile footprint 超过 72KB SPM planning window 时，
-  选择 `tile=[32,32]`、`split=[256]` 的 passing candidate，并把 lowered `wafer.tile.region` /
-  `wafer.instr.*` inline commit 回原函数；输出不保留 `selected_group` artifact。
+  group 的 `matmul + elementwise` 组合在显式小 SPM window stress 配置下选择 smaller candidate，
+  并把 lowered `wafer.tile.region` / `wafer.instr.*` inline commit 回原函数；输出不保留
+  `selected_group` artifact。真实默认 SPM range 下的大 shape multi-output/control-flow 组合由
+  `tools/run_heavy_candidate_selection_tests.py` 手动覆盖，不接入普通 regression。
 - 真实 reference program E2E：
   PyTorch/XLA reference program -> `stablehlo-spmd-to-group` -> `wafer-lower-groups-to-selected-instr`
   到 committed selected-instr boundary。
