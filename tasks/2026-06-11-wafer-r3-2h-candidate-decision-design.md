@@ -329,6 +329,10 @@ candidate-selection completion proof 至少覆盖：
 - large control-flow composition：full-tile candidate 下覆盖 `scf.if` 中的大 shape matmul + elementwise
   chain，以及 `scf.for` 中的大 shape elementwise accumulate；输出必须 commit 回原函数，不生成
   selected side artifact。
+- huge composed tiled selection：`scf.if` 分支内的 same-domain multi-output group 同时包含
+  `linalg.matmul` 和独立 elementwise root；full-tile `64x512xf16 * 512x64xf16 -> 64x64xf16`
+  footprint 明显超过 72KB SPM planning window，candidate-selection 必须 reject full/no-split
+  等更大候选，并选择 `tile=[32,32]` 与 `K` split `256` 后 commit 回原函数。
 - tiled control-flow root gap：当大 shape `scf.if` root 需要 smaller traversal tile 才能满足 SPM
   gate 时，当前 candidate tile-view materializer 仍要求 yielded root 是 linalg root，并返回结构化
   `no_candidate`；这需要后续 output coverage / control-flow tiling interface 扩展，不能用名字或
@@ -387,6 +391,9 @@ candidate-selection completion proof 至少覆盖：
 - `test/Transforms/select-group-tile-complex-control-flow.mlir`：大 shape `scf.if` + matmul + elementwise
   chain、大 shape `scf.for` + elementwise accumulate 的 commit；同文件 negative gate 覆盖需要 tiled
   control-flow root materialization 时的 structured `no_candidate`。
+- `test/Transforms/select-group-tile-huge-composed.mlir`：`scf.if` 分支内的 same-domain multi-output
+  group 覆盖 `matmul + elementwise` 组合；full-tile footprint 超过显式 72KB SPM planning window，
+  候选选择必须 reject 更大候选并接受 `tile=[32,32]`、`split=[256]` 后的 lowered IR。
 - `test/Transforms/select-group-tile-failure.mlir`：invalid mode 和 gate early-exit。
 - `test/Pipelines/lower-groups-to-selected-instr.mlir`：named pipeline replay；覆盖原函数名保留、
   unrelated function 保留、同函数多 group commit 和禁止 `selected_group` 旁路函数。
