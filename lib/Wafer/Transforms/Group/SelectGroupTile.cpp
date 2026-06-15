@@ -567,24 +567,25 @@ buildDimTileSizes(int64_t dim, llvm::ArrayRef<int64_t> preferred,
   return values;
 }
 
-struct SearchLadders {
+struct TileSizeOptions {
   llvm::SmallVector<llvm::SmallVector<int64_t, 8>, 4> traversal;
   llvm::SmallVector<llvm::SmallVector<int64_t, 8>, 2> reduction;
 };
 
-static SearchLadders buildSearchLadders(llvm::ArrayRef<int64_t> traversalShape,
-                                        llvm::ArrayRef<int64_t> reductionRanges,
-                                        llvm::ArrayRef<int64_t> preferred,
-                                        int64_t maxCandidatesPerDim) {
-  SearchLadders ladders;
+static TileSizeOptions
+buildTileSizeOptions(llvm::ArrayRef<int64_t> traversalShape,
+                     llvm::ArrayRef<int64_t> reductionRanges,
+                     llvm::ArrayRef<int64_t> preferred,
+                     int64_t maxCandidatesPerDim) {
+  TileSizeOptions options;
   for (int64_t dim : traversalShape)
-    ladders.traversal.push_back(
+    options.traversal.push_back(
         buildDimTileSizes(dim, preferred, maxCandidatesPerDim));
 
   for (int64_t range : reductionRanges)
-    ladders.reduction.push_back(
+    options.reduction.push_back(
         buildDimTileSizes(range, preferred, maxCandidatesPerDim));
-  return ladders;
+  return options;
 }
 
 static bool isFullFirstTile(llvm::ArrayRef<int64_t> traversalShape,
@@ -1040,34 +1041,37 @@ static llvm::SmallVector<RefinementDim, 6> rankRefinementDims(
 static std::optional<CandidateSpec>
 refineCandidateDim(const CandidateSpec &candidate,
                    llvm::ArrayRef<int64_t> reductionRanges,
-                   const SearchLadders &ladders, const RefinementDim &dim) {
+                   const TileSizeOptions &tileSizeOptions,
+                   const RefinementDim &dim) {
   CandidateSpec refined = candidate;
   if (!dim.isReduction) {
     if (dim.index >= refined.tileSizes.size() ||
-        dim.index >= ladders.traversal.size())
+        dim.index >= tileSizeOptions.traversal.size())
       return std::nullopt;
-    std::optional<size_t> index = findSizeIndex(
-        ladders.traversal[dim.index], refined.tileSizes[dim.index]);
-    if (!index || *index + 1 >= ladders.traversal[dim.index].size())
+    std::optional<size_t> index =
+        findSizeIndex(tileSizeOptions.traversal[dim.index],
+                      refined.tileSizes[dim.index]);
+    if (!index || *index + 1 >= tileSizeOptions.traversal[dim.index].size())
       return std::nullopt;
-    refined.tileSizes[dim.index] = ladders.traversal[dim.index][*index + 1];
+    refined.tileSizes[dim.index] =
+        tileSizeOptions.traversal[dim.index][*index + 1];
     return refined;
   }
 
   if (dim.index >= reductionRanges.size() ||
-      dim.index >= ladders.reduction.size())
+      dim.index >= tileSizeOptions.reduction.size())
     return std::nullopt;
   if (refined.reductionSplitSizes.empty())
     refined.reductionSplitSizes.assign(reductionRanges.begin(),
                                        reductionRanges.end());
 
   std::optional<size_t> index =
-      findSizeIndex(ladders.reduction[dim.index],
+      findSizeIndex(tileSizeOptions.reduction[dim.index],
                     refined.reductionSplitSizes[dim.index]);
-  if (!index || *index + 1 >= ladders.reduction[dim.index].size())
+  if (!index || *index + 1 >= tileSizeOptions.reduction[dim.index].size())
     return std::nullopt;
   refined.reductionSplitSizes[dim.index] =
-      ladders.reduction[dim.index][*index + 1];
+      tileSizeOptions.reduction[dim.index][*index + 1];
   return refined;
 }
 
@@ -1083,9 +1087,9 @@ static bool enqueueCandidate(
 
 static void enqueueRefinements(
     GroupOp group, const CandidateSpec &candidate,
-    llvm::ArrayRef<int64_t> reductionRanges, const SearchLadders &ladders,
-    llvm::StringSet<> &seen, llvm::SmallVectorImpl<CandidateWorkItem> &queue,
-    int64_t beamWidth) {
+    llvm::ArrayRef<int64_t> reductionRanges,
+    const TileSizeOptions &tileSizeOptions, llvm::StringSet<> &seen,
+    llvm::SmallVectorImpl<CandidateWorkItem> &queue, int64_t beamWidth) {
   llvm::SmallVector<RefinementDim, 6> dims =
       rankRefinementDims(group, candidate, reductionRanges);
 
@@ -1093,7 +1097,7 @@ static void enqueueRefinements(
   llvm::SmallVector<CandidateSpec, 8> neighbors;
   for (const RefinementDim &dim : dims) {
     std::optional<CandidateSpec> refined =
-        refineCandidateDim(candidate, reductionRanges, ladders, dim);
+        refineCandidateDim(candidate, reductionRanges, tileSizeOptions, dim);
     if (!refined)
       continue;
     oneStep.push_back(*refined);
@@ -1152,7 +1156,7 @@ selectCandidateForGroup(GroupOp group, llvm::StringRef label,
     return mlir::failure();
   }
 
-  SearchLadders ladders = buildSearchLadders(
+  TileSizeOptions tileSizeOptions = buildTileSizeOptions(
       *shape, *reductionRanges, config.preferredTileSizes,
       config.maxCandidatesPerDim);
 
@@ -1197,16 +1201,17 @@ selectCandidateForGroup(GroupOp group, llvm::StringRef label,
       ++rejectedCount;
       lastFailure = check.failureReason;
       if (isRetryableFailure(lastFailure))
-        enqueueRefinements(group, check.spec, *reductionRanges, ladders, seen,
-                           queue, best ? config.searchBeamWidth : 0);
+        enqueueRefinements(group, check.spec, *reductionRanges,
+                           tileSizeOptions, seen, queue,
+                           best ? config.searchBeamWidth : 0);
       return;
     }
 
     SelectedCandidate selected = buildSelected(check, visitedCount);
     if (isBetterCandidate(selected, best ? &*best : nullptr))
       best = std::move(selected);
-    enqueueRefinements(group, check.spec, *reductionRanges, ladders, seen,
-                       queue, config.searchBeamWidth);
+    enqueueRefinements(group, check.spec, *reductionRanges, tileSizeOptions,
+                       seen, queue, config.searchBeamWidth);
   };
 
   size_t queueIndex = 0;
@@ -1272,8 +1277,8 @@ selectCandidateForGroup(GroupOp group, llvm::StringRef label,
       ++rejectedCount;
       lastFailure =
           "cheap_bound: minimum SPM bytes exceed planning window";
-      enqueueRefinements(group, candidate, *reductionRanges, ladders, seen,
-                         queue, best ? config.searchBeamWidth : 0);
+      enqueueRefinements(group, candidate, *reductionRanges, tileSizeOptions,
+                         seen, queue, best ? config.searchBeamWidth : 0);
       continue;
     }
     llvm::SmallVector<TileInstance, 8> reps =
@@ -1299,8 +1304,8 @@ selectCandidateForGroup(GroupOp group, llvm::StringRef label,
           llvm::StringRef(lastFailure).contains("capacity_overflow") ||
           llvm::StringRef(lastFailure).contains("tile-region") ||
           llvm::StringRef(lastFailure).contains("cheap_bound"))
-        enqueueRefinements(group, candidate, *reductionRanges, ladders, seen,
-                           queue, best ? config.searchBeamWidth : 0);
+        enqueueRefinements(group, candidate, *reductionRanges, tileSizeOptions,
+                           seen, queue, best ? config.searchBeamWidth : 0);
       continue;
     }
 
@@ -1324,8 +1329,8 @@ selectCandidateForGroup(GroupOp group, llvm::StringRef label,
 
     if (isBetterCandidate(selected, best ? &*best : nullptr))
       best = std::move(selected);
-    enqueueRefinements(group, candidate, *reductionRanges, ladders, seen,
-                       queue, config.searchBeamWidth);
+    enqueueRefinements(group, candidate, *reductionRanges, tileSizeOptions,
+                       seen, queue, config.searchBeamWidth);
   }
 
   if (best) {

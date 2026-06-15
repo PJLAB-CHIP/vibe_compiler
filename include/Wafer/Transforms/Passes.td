@@ -88,7 +88,7 @@ def SelectGroupTilePass
            "Tile candidate search mode: first-legal or min-estimated-time">,
     Option<"maxCandidatesPerDim", "max-candidates-per-dim", "int64_t",
            /*default=*/"8",
-           "Maximum refinement ladder entries kept per traversal/reduction dimension">,
+           "Maximum candidate tile sizes kept per traversal/reduction dimension">,
     Option<"preferredTileSizes", "preferred-tile-sizes", "std::string",
            /*default=*/"\"128,64,32,16,8,4,2,1\"",
            "Comma-separated tile-size hints used as refinement tie-breakers">,

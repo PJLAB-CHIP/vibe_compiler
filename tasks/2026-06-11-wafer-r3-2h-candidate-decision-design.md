@@ -10,7 +10,7 @@ selected candidate 由 R3.3 commit step 写回主 IR。
 
 目标：
 
-- 根据实际 traversal shape 生成每维 refinement ladder，从 full traversal tile 开始做 lazy search
+- 根据实际 traversal shape 生成每维候选 tile size 序列，从 full traversal tile 开始做 lazy search
   frontier，而不是预先展开固定候选表。
 - 把当前 candidate 的 traversal tile shape、可证明同 traversal domain 的 output coverage，以及当前支持的
   reduction/internal split 转成 candidate evaluation IR；layout choice 只在对应 interface 能表达多个
@@ -131,23 +131,22 @@ Traversal domain 是 outer tile loop 实际遍历的输出坐标空间：
 ### 4.2 Tile Size Refinement
 
 Tile size 从实际 shape 出发逐步细化，不能只套固定表，也不能预先把所有维度做笛卡尔积展开。
-对每个 traversal 维和 reduction 维，candidate-selection 构造一个 shape-driven refinement
-ladder：
+对每个 traversal 维和 reduction 维，candidate-selection 构造一组由 shape 驱动的候选 size：
 
 - 第一个值永远是当前维度的 full size。
 - 下一步优先靠近当前 size 的一半，避免一开始就跳到过小 tile。
 - 如果实际 shape 有合适 divisor，优先选能减少 tail 的 divisor。
 - target preferred tile sizes 只作为 tie-break / hint；它们不能替代实际 shape，也不能成为固定候选表。
-- `max-candidates-per-dim` 限制每个维度最多生成多少个 ladder entry，控制 frontier 上界。
+- `max-candidates-per-dim` 限制每个维度最多保留多少个候选 size，控制 frontier 上界。
 
-例如某维长度是 `1000`，在常见 preferred hint 下，refinement ladder 可能是：
+例如某维长度是 `1000`，在常见 preferred hint 下，候选 size 序列可能是：
 
 ```text
 1000 -> 500 -> 250 -> 125 -> 64 -> ...
 ```
 
 这里的 `64` 不是“固定表里拿来枚举”的协议，而是在逐步减半、divisor 和 preferred hint 共同排序后
-进入 bounded ladder 的一个 refinement point。不同 shape 会得到不同 ladder。
+进入 bounded size options 的一个 refinement point。不同 shape 会得到不同候选序列。
 
 候选搜索从 full traversal tile 和 no split 开始。某个 candidate 被 gate 拒绝后，planner 根据
 当前 IR root 的容量压力对 refinement 维度排序：
@@ -159,7 +158,7 @@ ladder：
   planner 判定。
 
 search frontier 每次加入高压力维度的一步 refinement，并额外加入少量 top-pressure 组合邻居，用于处理
-footprint 来自多个维度乘积的情况。这样 search space 的上界仍由每维 ladder 长度限定，但默认路径不需要
+footprint 来自多个维度乘积的情况。这样 search space 的上界仍由每维候选 size 数限定，但默认路径不需要
 预先展开 `D^R` 个候选。
 
 frontier 还有三个显式控制项：
@@ -394,9 +393,9 @@ candidate-selection completion proof 至少覆盖：
 - `wafer-select-group-tile`：module pass，扫描 `wafer.group`，为每个 group 生成独立 passing
   candidate artifact，并将 selected candidate commit 回原 group 位置。
 - `wafer-lower-groups-to-selected-instr`：named pipeline，作为 candidate-selection 用户级 replay 入口。
-- candidate 生成：从 static ranked result 的实际 traversal shape 生成每维 refinement ladder；同一个
+- candidate 生成：从 static ranked result 的实际 traversal shape 生成每维候选 tile size 序列；同一个
   group 的多个 result 必须共享同一 traversal shape 才进入 multi-output candidate。matmul root 和
-  supported `linalg.generic` reduction root 额外生成 reduction-split ladder。search 从 full traversal
+  supported `linalg.generic` reduction root 额外生成 reduction split size options。search 从 full traversal
   tile/no split 开始，gate failure 后按当前 root 的容量压力扩展 traversal 或 reduction refinement
   neighbor；不预先展开固定候选表。
 - quick SPM bound：只使用最小必要 live footprint 下界做必然失败剪枝；layout padding、临时 buffer、
