@@ -1,5 +1,5 @@
 // RUN: not wafer-opt --wafer-select-group-tile='tile-search=bad-mode' %s 2>&1 | FileCheck --check-prefix=BAD-MODE %s
-// RUN: not wafer-opt --wafer-select-group-tile='spm-limit=65537 max-candidates-per-dim=1' %s 2>&1 | FileCheck --check-prefix=SPM %s
+// RUN: not wafer-opt --wafer-select-group-tile='tile-search-effort=bad-effort' %s 2>&1 | FileCheck --check-prefix=BAD-EFFORT %s
 
 func.func @if_group_spm_failure(%lhs: tensor<4xf32>, %rhs: tensor<4xf32>,
                                 %out: tensor<4xf32>, %cond: i1)
@@ -32,7 +32,4 @@ func.func @if_group_spm_failure(%lhs: tensor<4xf32>, %rhs: tensor<4xf32>,
 }
 
 // BAD-MODE: invalid_tile_search: expected first-legal or min-estimated-time
-
-// SPM: no_candidate: tile selection found no passing candidate
-// SPM-SAME: last failure: spm-offsets
-// SPM-NOT: ddr-offsets
+// BAD-EFFORT: invalid_tile_search_effort: expected quick, default or deep

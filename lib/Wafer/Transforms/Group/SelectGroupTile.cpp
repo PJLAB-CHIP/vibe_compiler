@@ -5,6 +5,7 @@
 #include "Wafer/Conversion/WaferGroupToTileRegion/WaferGroupToTileRegion.h"
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/IR/WaferDialect.h"
+#include "Wafer/Support/TargetPolicy.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Async/IR/Async.h"
@@ -87,23 +88,40 @@ struct CandidateWorkItem {
 };
 
 struct SelectionConfig {
+  explicit SelectionConfig(const WaferTargetPolicy &policy)
+      : preferredTileSizes(policy.tileSearch.preferredTileSizes),
+        maxCandidatesPerDim(policy.tileSearch.maxCandidatesPerDim),
+        maxSearchCandidates(policy.tileSearch.maxSearchCandidates),
+        searchBeamWidth(policy.tileSearch.searchBeamWidth),
+        spmBase(policy.memory.spmBase), spmLimit(policy.memory.spmLimit),
+        spmAlignment(policy.memory.spmAlignment),
+        ddrCapacityBytes(policy.memory.ddrCapacityBytes),
+        ddrLargestContiguousBytes(policy.memory.ddrLargestContiguousBytes),
+        ddrBandwidthLimitBytes(policy.memory.ddrBandwidthLimitBytes),
+        ddrAlignmentBytes(policy.memory.ddrAlignmentBytes),
+        computeOpsPerCycle(policy.timing.computeOpsPerCycle),
+        ddrBytesPerCycle(policy.timing.ddrBytesPerCycle),
+        spmBytesPerCycle(policy.timing.spmBytesPerCycle),
+        instrIssueCycles(policy.timing.instrIssueCycles),
+        assumeDdrComputeOverlap(policy.timing.assumeDdrComputeOverlap) {}
+
   TileSearchMode mode = TileSearchMode::FirstLegal;
   llvm::SmallVector<int64_t, 8> preferredTileSizes;
-  int64_t maxCandidatesPerDim = 8;
-  int64_t maxSearchCandidates = 16;
-  int64_t searchBeamWidth = 8;
+  int64_t maxCandidatesPerDim = 0;
+  int64_t maxSearchCandidates = 0;
+  int64_t searchBeamWidth = 0;
   int64_t candidateParallelism = 1;
-  int64_t spmBase = 65536;
-  int64_t spmLimit = 3080192;
-  int64_t spmAlignment = 256;
-  int64_t ddrCapacityBytes = std::numeric_limits<int64_t>::max();
-  int64_t ddrLargestContiguousBytes = std::numeric_limits<int64_t>::max();
-  int64_t ddrBandwidthLimitBytes = std::numeric_limits<int64_t>::max();
-  int64_t ddrAlignmentBytes = 256;
-  int64_t computeOpsPerCycle = 1024;
-  int64_t ddrBytesPerCycle = 256;
-  int64_t spmBytesPerCycle = 1024;
-  int64_t instrIssueCycles = 1;
+  int64_t spmBase = 0;
+  int64_t spmLimit = 0;
+  int64_t spmAlignment = 0;
+  int64_t ddrCapacityBytes = 0;
+  int64_t ddrLargestContiguousBytes = 0;
+  int64_t ddrBandwidthLimitBytes = 0;
+  int64_t ddrAlignmentBytes = 0;
+  int64_t computeOpsPerCycle = 0;
+  int64_t ddrBytesPerCycle = 0;
+  int64_t spmBytesPerCycle = 0;
+  int64_t instrIssueCycles = 0;
   bool assumeDdrComputeOverlap = false;
 };
 
@@ -163,6 +181,19 @@ parseTileSearchMode(llvm::StringRef text, mlir::Operation *anchor) {
     return TileSearchMode::MinEstimatedTime;
   anchor->emitError()
       << "invalid_tile_search: expected first-legal or min-estimated-time";
+  return mlir::failure();
+}
+
+static mlir::FailureOr<TileSearchEffort>
+parseTileSearchEffort(llvm::StringRef text, mlir::Operation *anchor) {
+  if (text == "quick")
+    return TileSearchEffort::Quick;
+  if (text == "default")
+    return TileSearchEffort::Default;
+  if (text == "deep")
+    return TileSearchEffort::Deep;
+  anchor->emitError()
+      << "invalid_tile_search_effort: expected quick, default or deep";
   return mlir::failure();
 }
 
@@ -1487,44 +1518,52 @@ struct SelectGroupTilePass
   void runOnOperation() final {
     mlir::FailureOr<TileSearchMode> parsedMode =
         parseTileSearchMode(tileSearch, getOperation());
-    mlir::FailureOr<llvm::SmallVector<int64_t, 8>> parsedPreferred =
-        parseI64List(preferredTileSizes, "preferred-tile-sizes",
-                     getOperation());
-    if (mlir::failed(parsedMode) || mlir::failed(parsedPreferred)) {
+    mlir::FailureOr<TileSearchEffort> parsedEffort =
+        parseTileSearchEffort(tileSearchEffort, getOperation());
+    if (mlir::failed(parsedMode) || mlir::failed(parsedEffort)) {
       signalPassFailure();
       return;
     }
-    if (maxCandidatesPerDim <= 0 || maxSearchCandidates <= 0 ||
-        searchBeamWidth <= 0 || candidateParallelism <= 0 ||
-        computeOpsPerCycle <= 0 || ddrBytesPerCycle <= 0 ||
-        spmBytesPerCycle <= 0 || instrIssueCycles < 0) {
+    std::optional<llvm::SmallVector<int64_t, 8>> parsedPreferred;
+    if (!llvm::StringRef(preferredTileSizes).trim().empty()) {
+      mlir::FailureOr<llvm::SmallVector<int64_t, 8>> parsed =
+          parseI64List(preferredTileSizes, "preferred-tile-sizes",
+                       getOperation());
+      if (mlir::failed(parsed)) {
+        signalPassFailure();
+        return;
+      }
+      parsedPreferred = std::move(*parsed);
+    }
+
+    if (maxCandidatesPerDim < -1 || maxSearchCandidates < -1 ||
+        searchBeamWidth < -1 || candidateParallelism <= 0) {
       getOperation()->emitError()
-          << "invalid_tile_search_config: candidate, beam, parallelism and "
-             "timing limits must be positive, with non-negative instr issue "
-             "cycles";
+          << "invalid_tile_search_config: search-space overrides must be -1 "
+             "or non-negative, and parallelism must be positive";
       signalPassFailure();
       return;
     }
 
-    SelectionConfig config;
+    WaferTargetPolicy targetPolicy = getDefaultWaferTargetPolicy(*parsedEffort);
+    SelectionConfig config(targetPolicy);
     config.mode = *parsedMode;
-    config.preferredTileSizes = *parsedPreferred;
-    config.maxCandidatesPerDim = maxCandidatesPerDim;
-    config.maxSearchCandidates = maxSearchCandidates;
-    config.searchBeamWidth = searchBeamWidth;
+    if (parsedPreferred && parsedPreferred->empty()) {
+      getOperation()->emitError()
+          << "invalid_tile_search_config: preferred-tile-sizes cannot be empty "
+             "when explicitly provided";
+      signalPassFailure();
+      return;
+    }
+    if (parsedPreferred)
+      config.preferredTileSizes = *parsedPreferred;
+    if (maxCandidatesPerDim >= 0)
+      config.maxCandidatesPerDim = maxCandidatesPerDim;
+    if (maxSearchCandidates >= 0)
+      config.maxSearchCandidates = maxSearchCandidates;
+    if (searchBeamWidth >= 0)
+      config.searchBeamWidth = searchBeamWidth;
     config.candidateParallelism = candidateParallelism;
-    config.spmBase = spmBase;
-    config.spmLimit = spmLimit;
-    config.spmAlignment = spmAlignment;
-    config.ddrCapacityBytes = ddrCapacityBytes;
-    config.ddrLargestContiguousBytes = ddrLargestContiguousBytes;
-    config.ddrBandwidthLimitBytes = ddrBandwidthLimitBytes;
-    config.ddrAlignmentBytes = ddrAlignmentBytes;
-    config.computeOpsPerCycle = computeOpsPerCycle;
-    config.ddrBytesPerCycle = ddrBytesPerCycle;
-    config.spmBytesPerCycle = spmBytesPerCycle;
-    config.instrIssueCycles = instrIssueCycles;
-    config.assumeDdrComputeOverlap = assumeDdrComputeOverlap;
 
     llvm::SmallVector<GroupOp, 8> groups;
     getOperation().walk([&](GroupOp group) { groups.push_back(group); });

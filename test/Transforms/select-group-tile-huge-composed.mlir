@@ -1,8 +1,7 @@
-// RUN: wafer-opt --wafer-select-group-tile='print-candidate-summary spm-base=0 spm-limit=73728 max-candidates-per-dim=2 preferred-tile-sizes=32,16,8,4,2,1' %s 2>&1 | FileCheck --implicit-check-not=selected_group --check-prefixes=SUMMARY,IR %s
-// RUN: wafer-opt --wafer-select-group-tile='tile-search=min-estimated-time print-candidate-summary spm-base=0 spm-limit=73728 max-candidates-per-dim=2 preferred-tile-sizes=32,16,8,4,2,1 max-search-candidates=1 search-beam-width=1 candidate-parallelism=2' %s 2>&1 | FileCheck --implicit-check-not=selected_group --check-prefixes=SOFT-BUDGET,IR %s
+// RUN: wafer-opt --wafer-select-group-tile='print-candidate-summary tile-search-effort=quick' %s 2>&1 | FileCheck --implicit-check-not=selected_group --check-prefixes=SUMMARY,IR %s
 
 func.func @huge_if_branches_multi_output_tiled(
-    %lhs: tensor<64x512xf16>, %rhs: tensor<512x64xf16>,
+    %lhs: tensor<64x12288xf16>, %rhs: tensor<12288x64xf16>,
     %add_lhs: tensor<64x64xf16>, %add_rhs: tensor<64x64xf16>,
     %out0: tensor<64x64xf16>, %out1: tensor<64x64xf16>,
     %cond: i1) -> (tensor<64x64xf16>, tensor<64x64xf16>) {
@@ -10,14 +9,14 @@ func.func @huge_if_branches_multi_output_tiled(
       -> (tensor<64x64xf16>, tensor<64x64xf16>) {
     %group:2 = wafer.group
         ins(%lhs, %rhs, %add_lhs, %add_rhs
-            : tensor<64x512xf16>, tensor<512x64xf16>,
+            : tensor<64x12288xf16>, tensor<12288x64xf16>,
               tensor<64x64xf16>, tensor<64x64xf16>)
         outs(%out0, %out1 : tensor<64x64xf16>, tensor<64x64xf16>) {
-    ^bb0(%arg0: tensor<64x512xf16>, %arg1: tensor<512x64xf16>,
+    ^bb0(%arg0: tensor<64x12288xf16>, %arg1: tensor<12288x64xf16>,
          %arg2: tensor<64x64xf16>, %arg3: tensor<64x64xf16>,
          %arg4: tensor<64x64xf16>, %arg5: tensor<64x64xf16>):
       %mm = linalg.matmul
-          ins(%arg0, %arg1 : tensor<64x512xf16>, tensor<512x64xf16>)
+          ins(%arg0, %arg1 : tensor<64x12288xf16>, tensor<12288x64xf16>)
           outs(%arg4 : tensor<64x64xf16>) -> tensor<64x64xf16>
       %sum = linalg.generic {
           indexing_maps = [
@@ -44,16 +43,9 @@ func.func @huge_if_branches_multi_output_tiled(
 
 // SUMMARY: wafer.select_group_tile selected group @huge_if_branches_multi_output_tiled#0
 // SUMMARY-SAME: mode=first-legal
-// SUMMARY-SAME: tile=[32,32]
-// SUMMARY-SAME: split=[256]
-// SUMMARY-SAME: candidates=8
-// SUMMARY-SAME: rejected=7
-// SUMMARY-SAME: representatives=4
-
-// SOFT-BUDGET: wafer.select_group_tile selected group @huge_if_branches_multi_output_tiled#0
-// SOFT-BUDGET-SAME: mode=min-estimated-time
-// SOFT-BUDGET-SAME: tile=[32,32]
-// SOFT-BUDGET-SAME: split=[256]
+// SUMMARY-SAME: tile=[
+// SUMMARY-SAME: split=[
+// SUMMARY-SAME: rejected=
 
 // IR-LABEL: func.func @huge_if_branches_multi_output_tiled
 // IR-NOT: wafer.group

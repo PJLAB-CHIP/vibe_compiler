@@ -137,7 +137,8 @@ Tile size 从实际 shape 出发逐步细化，不能只套固定表，也不能
 - 下一步优先靠近当前 size 的一半，避免一开始就跳到过小 tile。
 - 如果实际 shape 有合适 divisor，优先选能减少 tail 的 divisor。
 - target preferred tile sizes 只作为 tie-break / hint；它们不能替代实际 shape，也不能成为固定候选表。
-- `max-candidates-per-dim` 限制每个维度最多保留多少个候选 size，控制 frontier 上界。
+- `max-candidates-per-dim` 是搜索空间控制项；正数限制每个维度最多保留多少个候选 size，`0`
+  表示保留该维度的全部 shape-driven refinement。默认不能小到阻止搜索找到第一个合法 candidate。
 
 例如某维长度是 `1000`，在常见 preferred hint 下，候选 size 序列可能是：
 
@@ -161,17 +162,22 @@ search frontier 每次加入高压力维度的一步 refinement，并额外加�
 footprint 来自多个维度乘积的情况。这样 search space 的上界仍由每维候选 size 数限定，但默认路径不需要
 预先展开 `D^R` 个候选。
 
-frontier 还有三个显式控制项：
+frontier 还有显式搜索空间控制项。硬件 SPM/DDR 容量、alignment 和粗估吞吐是 target policy
+事实，不作为 `wafer-select-group-tile` 的用户 option；搜索空间本身可以配置：
 
 - `max-search-candidates`：candidate 总访问数的软上限，只在已经存在 passing candidate 后启用。
   它不能阻止 search 找到第一个合法 candidate；如果还没有 passing candidate，search 必须继续遍历
   完整 refinement frontier，直到找到合法 candidate 或 frontier 本身耗尽。并行模式可能完成当前
-  in-flight batch 后再检查上限。
+  in-flight batch 后再检查上限。`0` 表示找到第一个 passing candidate 后不继续做优化探索。
 - `search-beam-width`：找到第一个 passing candidate 后，每个 rejected/passing candidate 最多向队列
-  加入多少个 refinement neighbor。它只约束优化 frontier，不能约束第一个合法 candidate 的发现。
+  加入多少个 refinement neighbor。它只约束优化 frontier，不能约束第一个合法 candidate 的发现；
+  `0` 表示不限制 beam。
 - `candidate-parallelism`：`tile-search=min-estimated-time` 下每批最多并行评估多少个 candidate。
   并行 worker 只处理 transformation-local standalone group 文本和 worker-local MLIRContext，不直接
   修改主 IR；最终 selected candidate 的 commit artifact 仍由主线程在原 context 中重新 materialize。
+- `tile-search-effort=quick|default|deep` 提供 search-space preset；显式设置的
+  `max-candidates-per-dim`、`preferred-tile-sizes`、`max-search-candidates` 和 `search-beam-width`
+  覆盖 preset。
 
 quick SPM bound 只能做必然失败剪枝：它使用当前 candidate 的最小必要 live footprint 下界，例如 matmul 的
 `A tile + B tile + output tile` 裸字节；多输出取各 root 下界的最大值而不是相加。它不能使用 layout
@@ -409,10 +415,15 @@ candidate-selection completion proof 至少覆盖：
 - `tile-search=min-estimated-time`：先保证找到第一个 passing candidate，再遍历 budgeted bounded
   optimization frontier，在已访问的 passing candidates 之间用 lowered instruction IR 的
   compute/DDR/SPM/issue 粗估时间排序；当前不承诺全局最优。
-- search controls：`max-search-candidates` 默认 `16`，`search-beam-width` 默认 `8`，
-  `candidate-parallelism` 默认 `1`。budget/beam 只约束已经有 passing candidate 之后的优化探索；
-  并行模式只在 `min-estimated-time` 下启用，worker 使用独立 MLIRContext 评估 candidate，主线程
-  重新 materialize selected commit artifact。
+- fixed target policy：SPM range、SPM alignment、DDR planning range/alignment 和粗估 timing
+  参数由 target policy 提供，不作为 `wafer-select-group-tile` 的 public option。select pass 的 CLI
+  只控制搜索空间和诊断。
+- search controls：`tile-search-effort=quick|default|deep` 提供默认 search-space policy；
+  `max-candidates-per-dim` 默认跟随 policy，当前 policy 使用 `0` 表示不裁剪每维 shape-driven
+  refinement；`preferred-tile-sizes` 默认使用 policy hint；`max-search-candidates` 和
+  `search-beam-width` 默认跟随 policy。显式传入这些 option 会覆盖 policy。budget/beam 只约束已经有
+  passing candidate 之后的优化探索；并行模式只在 `min-estimated-time` 下启用，worker 使用独立
+  MLIRContext 评估 candidate，主线程重新 materialize selected commit artifact。
 - diagnostics：`print-candidate-summary` 输出 selected tile、split、estimated cycles、visited /
   rejected candidate 数和 representative 数；这些是诊断，不写入 committed IR。
 - commit：selected clone 的 lowered function body 按 group inputs/outs 映射 inline 回原
@@ -436,18 +447,18 @@ candidate-selection completion proof 至少覆盖：
 
 - `test/Transforms/select-group-tile.mlir`：elementwise、static slice、large K=1000 matmul、reduce、
   `scf.if`、`scf.for`、representative coverage。
-- `test/Transforms/select-group-tile-internal-split.mlir`：SPM gate 迫使 matmul 使用 `K` split，
-  并检查 partial GEMM + elementwise add + single WDMA 形态。
 - `test/Transforms/select-group-tile-multi-output.mlir`：同 traversal domain 的多输出 candidate 覆盖。
 - `test/Transforms/select-group-tile-reduction-split.mlir`：SPM gate 迫使 `linalg.generic` reduction
   使用 internal split，并检查 partial reduce + elementwise combine + single WDMA 形态。
 - `test/Transforms/select-group-tile-min-estimated.mlir`：`tile-search=min-estimated-time`。
 - `test/Transforms/select-group-tile-complex-control-flow.mlir`：大 shape `scf.if` + matmul + elementwise
-  chain、大 shape `scf.for` + elementwise accumulate 的 commit；同文件 negative gate 覆盖需要 tiled
+  chain、大 shape `scf.for` + elementwise accumulate 的 commit。
+- `test/Transforms/select-group-tile-tiled-control-flow-gap.mlir`：固定 target SPM range 下需要 tiled
   control-flow root materialization 时的 structured `no_candidate`。
 - `test/Transforms/select-group-tile-huge-composed.mlir`：`scf.if` 分支内的 same-domain multi-output
-  group 覆盖 `matmul + elementwise` 组合；该 lit 使用显式小 SPM window 作为 stress regression，
-  不代表硬件 SPM 容量。
+  group 覆盖固定 target SPM range 下的 `matmul + elementwise` 组合和 matmul `K` split。
+- `test/Transforms/select-group-tile-public-options.test`：`wafer-select-group-tile` 的 public option
+  边界；硬件/吞吐 target facts 不作为 option，搜索空间参数保持可配置。
 - `tools/run_heavy_candidate_selection_tests.py`：专用手动 heavy runner，不接入 lit/ctest；使用默认
   SPM planning range 覆盖 `257x4096 * 4096x257 -> 257x257` 的 multi-output traversal tiling、
   `257x8192 * 8192x257 -> 257x257` 的 multi-output K split，以及三输出 `matmul + add + mul`

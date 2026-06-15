@@ -1,5 +1,4 @@
-// RUN: wafer-opt --wafer-select-group-tile='print-candidate-summary spm-limit=8388608' %s 2>&1 | FileCheck --implicit-check-not=selected_group --check-prefixes=SUMMARY,IR %s
-// RUN: not wafer-opt --wafer-select-group-tile='spm-limit=1065536' %s 2>&1 | FileCheck --check-prefix=TILED-CF-GAP %s
+// RUN: wafer-opt --wafer-select-group-tile='print-candidate-summary' %s 2>&1 | FileCheck --implicit-check-not=selected_group --check-prefixes=SUMMARY,IR %s
 
 func.func @large_if_matmul_bias_chain(%lhs: tensor<257x1000xf16>,
                                       %rhs: tensor<1000x129xf16>,
@@ -109,6 +108,3 @@ func.func @large_loop_elementwise_accumulate(%input: tensor<2x1000xf16>,
 // IR: wafer.spm.offset
 // IR: wafer.instr.elementwise <add>
 // IR: wafer.instr.wdma
-
-// TILED-CF-GAP: no_candidate: tile selection found no passing candidate
-// TILED-CF-GAP-SAME: candidate tile materialization requires linalg roots

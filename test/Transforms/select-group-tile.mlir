@@ -1,4 +1,4 @@
-// RUN: wafer-opt --wafer-select-group-tile='print-candidate-summary spm-limit=1065536' %s 2>&1 | FileCheck --implicit-check-not=selected_group --check-prefixes=SUMMARY,IR %s
+// RUN: wafer-opt --wafer-select-group-tile='print-candidate-summary' %s 2>&1 | FileCheck --implicit-check-not=selected_group --check-prefixes=SUMMARY,IR %s
 
 func.func @elementwise_small(%lhs: tensor<4xf32>, %rhs: tensor<4xf32>,
                              %out: tensor<4xf32>) -> tensor<4xf32> {

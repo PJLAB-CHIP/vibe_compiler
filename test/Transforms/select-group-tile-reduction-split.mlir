@@ -1,11 +1,11 @@
-// RUN: wafer-opt --wafer-select-group-tile='print-candidate-summary spm-limit=73728' %s 2>&1 | FileCheck --implicit-check-not=selected_group --check-prefixes=SUMMARY,IR %s
+// RUN: wafer-opt --wafer-select-group-tile='print-candidate-summary tile-search-effort=quick' %s 2>&1 | FileCheck --implicit-check-not=selected_group --check-prefixes=SUMMARY,IR %s
 
-func.func @reduce_requires_internal_split(%input: tensor<1x4096xf32>,
+func.func @reduce_requires_internal_split(%input: tensor<1x786432xf32>,
                                           %out: tensor<1xf32>)
     -> tensor<1xf32> {
-  %group = wafer.group ins(%input : tensor<1x4096xf32>)
+  %group = wafer.group ins(%input : tensor<1x786432xf32>)
       outs(%out : tensor<1xf32>) {
-  ^bb0(%arg0: tensor<1x4096xf32>, %arg1: tensor<1xf32>):
+  ^bb0(%arg0: tensor<1x786432xf32>, %arg1: tensor<1xf32>):
     %init_scalar = arith.constant 0.000000e+00 : f32
     %empty = tensor.empty() : tensor<1xf32>
     %filled = linalg.fill
@@ -17,7 +17,7 @@ func.func @reduce_requires_internal_split(%input: tensor<1x4096xf32>,
           affine_map<(d0, d1) -> (d0)>
         ],
         iterator_types = ["parallel", "reduction"]
-      } ins(%arg0 : tensor<1x4096xf32>)
+      } ins(%arg0 : tensor<1x786432xf32>)
         outs(%filled : tensor<1xf32>) {
       ^bb0(%value: f32, %acc: f32):
         %add = arith.addf %value, %acc : f32

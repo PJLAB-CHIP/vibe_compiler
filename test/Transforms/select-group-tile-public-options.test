@@ -1,0 +1,16 @@
+# RUN: split-file %s %t
+# RUN: not wafer-opt --wafer-select-group-tile='spm-limit=73728' %t/empty.mlir 2>&1 | FileCheck --check-prefix=NO-SPM %s
+# RUN: not wafer-opt --wafer-select-group-tile='ddr-capacity-bytes=1048576' %t/empty.mlir 2>&1 | FileCheck --check-prefix=NO-DDR %s
+# RUN: not wafer-opt --wafer-select-group-tile='compute-ops-per-cycle=1' %t/empty.mlir 2>&1 | FileCheck --check-prefix=NO-COST %s
+# RUN: not wafer-opt --wafer-select-group-tile='max-candidates-per-dim=-2' %t/empty.mlir 2>&1 | FileCheck --check-prefix=BAD-SEARCH %s
+# RUN: wafer-opt --wafer-select-group-tile='tile-search-effort=deep max-candidates-per-dim=0 preferred-tile-sizes=256,128,64 max-search-candidates=0 search-beam-width=0 candidate-parallelism=2' %t/empty.mlir | FileCheck --check-prefix=SEARCH-OK %s
+
+# NO-SPM: no such option spm-limit
+# NO-DDR: no such option ddr-capacity-bytes
+# NO-COST: no such option compute-ops-per-cycle
+# BAD-SEARCH: invalid_tile_search_config: search-space overrides must be -1 or non-negative
+# SEARCH-OK: module
+
+//--- empty.mlir
+module {
+}

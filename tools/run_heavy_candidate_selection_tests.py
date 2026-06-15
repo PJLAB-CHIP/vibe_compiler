@@ -173,7 +173,7 @@ def run_case(case: Case, wafer_opt: pathlib.Path, timeout_seconds: int) -> bool:
     mlir = build_case_ir(case)
     command = [
         str(wafer_opt),
-        "--wafer-select-group-tile=print-candidate-summary max-candidates-per-dim=3 preferred-tile-sizes=64",
+        "--wafer-select-group-tile=print-candidate-summary tile-search-effort=deep",
         "-",
     ]
     start = time.monotonic()
