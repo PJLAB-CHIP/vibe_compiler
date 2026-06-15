@@ -789,12 +789,13 @@ SPM planning、layout assignment、DDR memory planning 和 compute/movement lega
   DDR offset、default arena capacity/largest-contiguous/bandwidth/alignment，以及 op layout/dtype/shape/effect
   合法性；成功即证明当前 candidate 的 DDR demand 已规划并可被下游消费，失败给结构化原因，不能
   回头改变 instruction semantics，也不能产出等待 R3.5 再补全的 DDR plan。
-- R3.2h 才能做 candidate-selection driver：搜索 bounded traversal tile shape、同 traversal domain
-  的 output coverage，以及当前支持的 reduction/internal split，并逐个运行
+- R3.2h 才能做 candidate-selection driver：从 full traversal tile/no split 开始，搜索
+  shape-driven traversal/reduction refinement frontier、同 traversal domain 的 output coverage，以及当前支持的
+  reduction/internal split，并逐个运行
   candidate tile-view materialization、instruction lowering、SPM offset assignment、DDR offset assignment
   和 verifier gates；默认选择第一个 passing candidate，或在
-  `tile-search=min-estimated-time` 下只对 passing candidate 做粗估时间排序，输出 passing
-  candidate artifact、rejected reason 或 split decision。layout 替代候选、不同 output domain、
+  `tile-search=min-estimated-time` 下遍历 bounded frontier 并只对 passing candidate 做粗估时间排序，
+  输出 passing candidate artifact、rejected reason 或 split decision。layout 替代候选、不同 output domain、
   partial scatter/recompute coverage 和 dynamic reduction range 要等对应 interface/IR 语义明确后再进入
   R3.2h search space。
 

@@ -10,10 +10,11 @@ selected candidate 由 R3.3 commit step 写回主 IR。
 
 目标：
 
-- 根据实际 traversal shape 枚举 bounded tile candidate。
-- 把 bounded traversal tile shape、可证明同 traversal domain 的 output coverage，以及当前支持的
+- 根据实际 traversal shape 生成每维 refinement ladder，从 full traversal tile 开始做 lazy search
+  frontier，而不是预先展开固定候选表。
+- 把当前 candidate 的 traversal tile shape、可证明同 traversal domain 的 output coverage，以及当前支持的
   reduction/internal split 转成 candidate evaluation IR；layout choice 只在对应 interface 能表达多个
-  合法候选后进入 search space。
+  合法候选后进入 search frontier。
 - 对每个 candidate 重放 candidate DDR tile-view materialization、instruction lowering、SPM offset
   assignment、DDR offset assignment 和 verifier。
 - 默认选择第一个合法 candidate；可通过 `tile-search` 选项改为估算时间最小的合法 candidate。
@@ -37,7 +38,8 @@ Pipeline position:
   R3.1 logical wafer.group；R3.2a tiling demand analysis；R3.2b layout planning analysis；
   candidate DDR tile-view producer；instruction lowering；SPM offset assignment；DDR offset assignment。
 - Current stage responsibility:
-  枚举 candidate spec；为每个 candidate 构造 evaluation clone；按 candidate DDR tile-view
+  从 full traversal tile/no-split candidate 开始，按 gate failure 和当前 IR 推导的容量压力逐步细化
+  traversal tile 或 reduction split；为每个 visited candidate 构造 evaluation clone；按 candidate DDR tile-view
   materialization -> instruction lowering -> SPM offset assignment -> DDR offset assignment -> verifier
   的顺序运行 gates。只接受通过全部 gates 的 candidate。`tile-search=first-legal`
   选择第一个合法 candidate；`tile-search=min-estimated-time` 在合法 candidate 中用粗估时间选最小。
@@ -58,7 +60,8 @@ Pipeline position:
   不生成 placed memref、runtime allocation/import/query、ABI call、packet 或 physical address；
   不把失败 candidate 的 transient plan 落入 committed main IR。
 - Completion gate:
-  simple matmul/elementwise group 能由 candidate-selection driver 自动生成候选、运行 candidate gates、按 `tile-search`
+  simple matmul/elementwise group 能由 candidate-selection driver 自动生成 shape-driven refinement frontier、
+  运行 candidate gates、按 `tile-search`
   选择 passing candidate；capacity/layout/view/memory failure 能驱动 retry 或给出 no-candidate /
   split-needed reason；completion proof 不依赖手工 fixture 串 pass。
 ```
@@ -125,24 +128,44 @@ Traversal domain 是 outer tile loop 实际遍历的输出坐标空间：
 - reduce `R[M] = reduce(Y[M, N], axis=N)`：traversal domain 是 `R[M]`；被 reduce 的 `N`
   是内部 reduction 维。
 
-### 4.2 Tile Size Candidate
+### 4.2 Tile Size Refinement
 
-Tile size 从实际 shape 生成，不能只套固定表。对每个 traversal 维，候选来源：
+Tile size 从实际 shape 出发逐步细化，不能只套固定表，也不能预先把所有维度做笛卡尔积展开。
+对每个 traversal 维和 reduction 维，candidate-selection 构造一个 shape-driven refinement
+ladder：
 
-- full dimension。
-- common divisors。
-- target preferred tile sizes 中不超过当前维度的值。
-- tail-aware size，避免产生特别小的 tail。
+- 第一个值永远是当前维度的 full size。
+- 下一步优先靠近当前 size 的一半，避免一开始就跳到过小 tile。
+- 如果实际 shape 有合适 divisor，优先选能减少 tail 的 divisor。
+- target preferred tile sizes 只作为 tie-break / hint；它们不能替代实际 shape，也不能成为固定候选表。
+- `max-candidates-per-dim` 限制每个维度最多生成多少个 ladder entry，控制 frontier 上界。
 
-例如某维长度是 `1000`，候选可以包括：
+例如某维长度是 `1000`，在常见 preferred hint 下，refinement ladder 可能是：
 
 ```text
-1000, 500, 250, 200, 125, 100, 128, 64
+1000 -> 500 -> 250 -> 125 -> 64 -> ...
 ```
 
-每维先排序并截断到 bounded 数量。排序原则是确定性的：优先覆盖更大 tile、无 tail 或小 tail
-风险低、接近 target preferred size、不会明显增加 candidate 数量。组合后先做 cheap bound
-过滤，再运行完整 candidate gates。
+这里的 `64` 不是“固定表里拿来枚举”的协议，而是在逐步减半、divisor 和 preferred hint 共同排序后
+进入 bounded ladder 的一个 refinement point。不同 shape 会得到不同 ladder。
+
+候选搜索从 full traversal tile 和 no split 开始。某个 candidate 被 gate 拒绝后，planner 根据
+当前 IR root 的容量压力对 refinement 维度排序：
+
+- matmul 的 `M` 压力来自 `A[M,K]` 和 `C[M,N]`，`N` 压力来自 `B[K,N]` 和 `C[M,N]`，reduction
+  压力来自 `A[M,K]` 和 `B[K,N]`。
+- generic / elementwise root 的压力按当前 traversal tile 的输出 footprint 分摊到 traversal 维。
+- 多输出 group 对每个 yielded root 分别累计压力，但是否能复用 buffer 仍由后续 SPM offset
+  planner 判定。
+
+search frontier 每次加入高压力维度的一步 refinement，并额外加入少量 top-pressure 组合邻居，用于处理
+footprint 来自多个维度乘积的情况。这样 search space 的上界仍由每维 ladder 长度限定，但默认路径不需要
+预先展开 `D^R` 个候选。
+
+quick SPM bound 只能做必然失败剪枝：它使用当前 candidate 的最小必要 live footprint 下界，例如 matmul 的
+`A tile + B tile + output tile` 裸字节；多输出取各 root 下界的最大值而不是相加。它不能使用 layout
+padding、临时 buffer 或 aligned-family multiplier 的上界来 reject candidate。真实 SPM 峰值、复用、
+layout padding 和 lifetime overlap 必须由 SPM offset assignment gate 在 lowered IR 上验证。
 
 ### 4.3 Representative Tile Classes
 
@@ -160,8 +183,8 @@ candidate reject，不能把某个局部 tile 通过当成全 shape 通过。
 
 Internal split 由 op tiling interface 提供。V0 策略：
 
-- matmul 默认先试 no split；只有 no-split traversal candidates 都没有通过时，才枚举更小的 `K`
-  tile。
+- 初始 candidate 使用 no split；当 gate failure 的压力主要来自 reduction 维，search frontier 会把
+  reduction split 作为 refinement neighbor 加入队列，不需要先跑完整个 no-split traversal 笛卡尔积。
 - matmul K split 的 candidate evaluation IR 生成多个 partial GEMM，并用 tile-local elementwise
   add 累加 partial results，最后只 storeback 一次 output tile。
 - `linalg.generic` reduction split 使用同一个机制：candidate-selection 从 reduction iterator 的静态 range
@@ -188,6 +211,8 @@ C tile bytes = tm * tn * sizeof(dtype or accumulator dtype)
 
 ```text
 CandidateSpec
+  -> quick SPM lower-bound check
+       fail only if minimum required bytes exceed planning window
   -> materialize candidate DDR tile views
        fail: reject candidate
   -> lower tile region to instruction IR
@@ -201,7 +226,8 @@ CandidateSpec
   -> PassingCandidate
 ```
 
-失败时立即停止当前 candidate 的后续 gates。SPM 失败不能继续假装 DDR planning 还能补救；DDR
+quick SPM lower-bound check 只能拒绝必然超过 planning window 的 candidate；它不能因为 conservative
+upper-bound estimate 失败就跳过完整 gates。失败时立即停止当前 candidate 的后续 gates。SPM 失败不能继续假装 DDR planning 还能补救；DDR
 失败也不能回头改 instruction semantics。candidate-selection 只能选择下一个 candidate 或返回 no-candidate /
 split-needed reason。
 
@@ -227,15 +253,18 @@ candidate-selection 提供用户可配置的 tile search 模式。命令行 pass
 排序原则：
 
 - layout choice 使用 layout analysis 提供的顺序。
-- tile shape 优先较大覆盖、较少 tail、较少 internal split。
-- no split 优先于 split。
+- search 从 full traversal tile/no split 开始。
+- gate failure 后按当前 IR 推导的容量压力选择下一批 traversal/reduction refinement neighbor。
+- 同一层 refinement 中，压力更高的维度先尝试；压力相同时 reduction refinement 优先，因为它通常
+  能降低 matmul/reduction 的输入 live footprint 而不增加输出 traversal tile 数。
 - 单输出优先；同 traversal 多输出必须满足 coverage legality。
 
 ### 6.2 `min-estimated-time`
 
-估算时间模式。candidate-selection 继续使用同一个 bounded search space，但不会在第一个合法 candidate 停止。
-它收集所有通过 candidate gates 的 candidate，对每个合法 candidate 计算粗估时间，选择
-`estimated_cycles` 最小者。
+估算时间模式。candidate-selection 继续使用同一个 shape-driven refinement frontier，但不会在第一个
+合法 candidate 停止。每个 passing candidate 也会继续扩展 bounded refinement neighbor，直到 frontier
+耗尽。它收集所有通过 candidate gates 的 candidate，对每个合法 candidate 计算粗估时间，选择
+`estimated_cycles` 最小者。当前实现是 bounded frontier search，不承诺全局最优。
 
 cost model 只在合法 candidate 之间排序，不参与 legality，也不能接受一个 gate 失败的 candidate。
 cost breakdown 是 diagnostic，不写入 committed IR。
@@ -288,11 +317,11 @@ cost model 接受 candidate 的依据。
 
 candidate-selection 的失败原因分三类：
 
-- `retryable_candidate_failure`：当前 traversal tile / matmul `K` split candidate 失败，可以换下一个
+- `retryable_candidate_failure`：当前 traversal tile / reduction split candidate 失败，可以换下一个
   candidate。
 - `split_needed`：当前 group 需要拆分，例如多输出 coverage 不兼容、required movement 还不能表达、
-  或所有 bounded tile 都被 memory/movement gate 拒绝。
-- `no_candidate`：bounded search space 内没有 passing candidate，且没有更细的 split policy 可用。
+  或 search frontier 内所有 candidate 都被 memory/movement gate 拒绝。
+- `no_candidate`：bounded refinement frontier 内没有 passing candidate，且没有更细的 split policy 可用。
 
 diagnostic 应记录：
 
@@ -342,23 +371,26 @@ candidate-selection completion proof 至少覆盖：
 
 ## 10. Implementation Status
 
-2026-06-11 当前实现：
+2026-06-15 当前实现：
 
 - `wafer-select-group-tile`：module pass，扫描 `wafer.group`，为每个 group 生成独立 passing
   candidate artifact，并将 selected candidate commit 回原 group 位置。
 - `wafer-lower-groups-to-selected-instr`：named pipeline，作为 candidate-selection 用户级 replay 入口。
-- candidate 生成：从 static ranked result 的实际 traversal shape 生成 bounded tile sizes；同一个
+- candidate 生成：从 static ranked result 的实际 traversal shape 生成每维 refinement ladder；同一个
   group 的多个 result 必须共享同一 traversal shape 才进入 multi-output candidate。matmul root 和
-  supported `linalg.generic` reduction root 额外生成 bounded reduction split。候选顺序是全部 no-split
-  traversal candidates 先行，然后再进入 split candidates。
+  supported `linalg.generic` reduction root 额外生成 reduction-split ladder。search 从 full traversal
+  tile/no split 开始，gate failure 后按当前 root 的容量压力扩展 traversal 或 reduction refinement
+  neighbor；不预先展开固定候选表。
+- quick SPM bound：只使用最小必要 live footprint 下界做必然失败剪枝；layout padding、临时 buffer、
+  aligned-family multiplier 和真实 lifetime overlap 由 SPM offset assignment gate 判定。
 - representative coverage：每个 tile shape 至少验证 first / last / tail / corner tail 的代表
   tile classes；所有代表都通过 candidate gates 才接受该 candidate。
 - gates：每个 candidate evaluation clone 按 candidate DDR tile-view materialization、instruction
   lowering、SPM offset assignment、DDR offset assignment、verifier 顺序执行；gate failure 早停，
   不继续跑后续 gate。
 - `tile-search=first-legal`：默认模式，返回第一个 passing candidate。
-- `tile-search=min-estimated-time`：只在 passing candidates 之间用 lowered instruction IR 的
-  compute/DDR/SPM/issue 粗估时间排序。
+- `tile-search=min-estimated-time`：遍历 bounded refinement frontier，在 passing candidates 之间用
+  lowered instruction IR 的 compute/DDR/SPM/issue 粗估时间排序；当前不承诺全局最优。
 - diagnostics：`print-candidate-summary` 输出 selected tile、split、estimated cycles、visited /
   rejected candidate 数和 representative 数；这些是诊断，不写入 committed IR。
 - commit：selected clone 的 lowered function body 按 group inputs/outs 映射 inline 回原
@@ -381,7 +413,7 @@ candidate-selection completion proof 至少覆盖：
 当前测试入口：
 
 - `test/Transforms/select-group-tile.mlir`：elementwise、static slice、large K=1000 matmul、reduce、
-  `scf.if`、`scf.for`、tail/corner representative coverage。
+  `scf.if`、`scf.for`、representative coverage。
 - `test/Transforms/select-group-tile-internal-split.mlir`：SPM gate 迫使 matmul 使用 `K` split，
   并检查 partial GEMM + elementwise add + single WDMA 形态。
 - `test/Transforms/select-group-tile-multi-output.mlir`：同 traversal domain 的多输出 candidate 覆盖。

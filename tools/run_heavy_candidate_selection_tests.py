@@ -65,6 +65,10 @@ SUMMARY_RE = re.compile(
 )
 
 
+def parse_int_list(text: str) -> list[int]:
+    return [int(part.strip()) for part in text.split(",") if part.strip()]
+
+
 def tensor_type(rows: int, cols: int) -> str:
     return f"tensor<{rows}x{cols}xf16>"
 
@@ -169,7 +173,7 @@ def run_case(case: Case, wafer_opt: pathlib.Path, timeout_seconds: int) -> bool:
     mlir = build_case_ir(case)
     command = [
         str(wafer_opt),
-        "--wafer-select-group-tile=print-candidate-summary max-candidates-per-dim=2 preferred-tile-sizes=64",
+        "--wafer-select-group-tile=print-candidate-summary max-candidates-per-dim=3 preferred-tile-sizes=64",
         "-",
     ]
     start = time.monotonic()
@@ -198,6 +202,7 @@ def run_case(case: Case, wafer_opt: pathlib.Path, timeout_seconds: int) -> bool:
     rejected = int(match.group("rejected"))
     candidates = int(match.group("candidates"))
     representatives = int(match.group("representatives"))
+    tile_sizes = parse_int_list(match.group("tile"))
     split = match.group("split")
 
     required_needles = [
@@ -216,8 +221,14 @@ def run_case(case: Case, wafer_opt: pathlib.Path, timeout_seconds: int) -> bool:
         failures.append("expected more than one candidate")
     if rejected <= 0:
         failures.append("expected at least one rejected candidate")
-    if representatives < 4:
-        failures.append("expected representative tail/corner coverage")
+    expected_representatives = 1
+    for dim_size, tile_size in zip((case.m, case.n), tile_sizes):
+        if dim_size > tile_size:
+            expected_representatives *= 2
+    if representatives < expected_representatives:
+        failures.append(
+            f"expected at least {expected_representatives} representative tile classes"
+        )
     if case.require_split and not split.strip():
         failures.append("expected a non-empty reduction split")
     for needle in required_needles:

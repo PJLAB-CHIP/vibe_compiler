@@ -291,10 +291,11 @@ V0 需要以下 op family：
    DDR accepted offset facts，并验证 descriptor、view/root range、default arena capacity/largest-contiguous、
    bandwidth、alignment、overlap 和 fence demand。成功 facts 必须能被 candidate-selection、R3.3、R3.4 和 R3.5 直接消费；
    失败时给结构化原因。
-8. candidate-selection driver：candidate-selection 枚举 bounded traversal tile、同 traversal domain 的
-   output coverage 和当前支持的 reduction/internal split 候选，逐个运行
+8. candidate-selection driver：candidate-selection 从 full traversal tile/no split 开始搜索
+   shape-driven traversal/reduction refinement frontier、同 traversal domain 的 output coverage 和当前支持的
+   reduction/internal split 候选，逐个运行
    candidate gates；默认选择第一个 passing candidate，或在
-   `tile-search=min-estimated-time` 下只对 passing candidate 做粗估时间排序；选择已通过全部 gates
+   `tile-search=min-estimated-time` 下遍历 bounded frontier 并只对 passing candidate 做粗估时间排序；选择已通过全部 gates
    的 candidate artifact，或要求 split / retry；rejected candidate IR
    丢弃。
 9. committed `wafer.tile.region` materialization：R3.3 只把 candidate-selection 选中的 passing candidate

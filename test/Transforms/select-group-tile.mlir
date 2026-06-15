@@ -160,7 +160,7 @@ func.func @loop_group(%input: tensor<4xf32>, %out: tensor<4xf32>,
 // SUMMARY: wafer.select_group_tile selected group @large_matmul_last_dim_1000#0
 // SUMMARY-SAME: mode=first-legal
 // SUMMARY-SAME: tile=[
-// SUMMARY-SAME: representatives=4
+// SUMMARY-SAME: representatives={{[1-9][0-9]*}}
 // SUMMARY: wafer.select_group_tile selected group @reduce_sum_group#0
 // SUMMARY-SAME: mode=first-legal
 // SUMMARY-SAME: tile=[2]

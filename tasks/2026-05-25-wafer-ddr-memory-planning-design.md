@@ -261,8 +261,8 @@ physical bytes, the corresponding memref type/layout must make that visible.
 
 ### 9.3 Candidate Selection
 
-Candidate selection enumerates bounded traversal tile candidates, same-domain output coverage and currently supported
-reduction/internal split candidates, then reruns candidate tile-view materialization, instruction lowering,
+Candidate selection searches a shape-driven traversal/reduction refinement frontier, validates same-domain
+output coverage and currently supported reduction/internal split candidates, then reruns candidate tile-view materialization, instruction lowering,
 SPM offset assignment and DDR offset assignment. A candidate rejected by DDR planning is
 not written into main IR. The driver may retry with a different tile shape or supported internal split; future
 layout cut, different output domain coverage, streaming/residency choice and group split require explicit

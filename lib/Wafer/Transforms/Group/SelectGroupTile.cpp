@@ -25,6 +25,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
@@ -75,6 +76,10 @@ struct SelectedCandidate {
   int64_t rejectedCount = 0;
   int64_t representativeCount = 0;
   mlir::OwningOpRef<mlir::ModuleOp> module;
+};
+
+struct CandidateWorkItem {
+  CandidateSpec spec;
 };
 
 static std::string getNearestSymbolName(mlir::Operation *op) {
@@ -271,15 +276,6 @@ static std::optional<int64_t> getElementByteWidth(mlir::Type type) {
   return std::nullopt;
 }
 
-static mlir::linalg::LinalgOp getYieldedRootLinalgOp(GroupOp group) {
-  auto yield =
-      mlir::dyn_cast<GroupYieldOp>(group.getBody().front().getTerminator());
-  if (!yield || yield.getValues().size() != 1)
-    return nullptr;
-  return mlir::dyn_cast_or_null<mlir::linalg::LinalgOp>(
-      yield.getValues().front().getDefiningOp());
-}
-
 static std::optional<llvm::SmallVector<mlir::linalg::LinalgOp, 4>>
 getYieldedRootLinalgOps(GroupOp group) {
   auto yield =
@@ -346,12 +342,8 @@ getStaticRootReductionRanges(GroupOp group) {
   return *commonReductionRanges;
 }
 
-static std::optional<int64_t>
-estimateCompactSPMBytes(GroupOp group, const CandidateSpec &candidate) {
-  mlir::linalg::LinalgOp root = getYieldedRootLinalgOp(group);
-  if (!root)
-    return std::nullopt;
-
+static std::optional<int64_t> estimateRootMinimumSPMBytes(
+    mlir::linalg::LinalgOp root, const CandidateSpec &candidate) {
   auto resultType =
       mlir::dyn_cast<mlir::RankedTensorType>(root->getResult(0).getType());
   if (!resultType || !resultType.hasStaticShape())
@@ -377,29 +369,43 @@ estimateCompactSPMBytes(GroupOp group, const CandidateSpec &candidate) {
       k = candidate.reductionSplitSizes.front();
     int64_t elements = saturatingAdd(saturatingMul(m, k), saturatingMul(k, n));
     elements = saturatingAdd(elements, saturatingMul(m, n));
-    // GEMM lowering currently materializes tensor and aligned-family SPM
-    // buffers. This bound is intentionally conservative; full legality still
-    // comes from tile-region lowering and memory offset assignment.
-    return saturatingMul(saturatingMul(elements, *elementBytes), 4);
+    return saturatingMul(elements, *elementBytes);
   }
 
   int64_t tileElements = 1;
   for (int64_t size : candidate.tileSizes)
     tileElements = saturatingMul(tileElements, size);
-  int64_t bufferCount =
-      std::max<int64_t>(1, root.getNumDpsInputs() + root.getNumDpsInits());
-  return saturatingMul(saturatingMul(tileElements, *elementBytes), bufferCount);
+  return saturatingMul(tileElements, *elementBytes);
+}
+
+static std::optional<int64_t>
+estimateRequiredSPMLowerBoundBytes(GroupOp group,
+                                   const CandidateSpec &candidate) {
+  std::optional<llvm::SmallVector<mlir::linalg::LinalgOp, 4>> roots =
+      getYieldedRootLinalgOps(group);
+  if (!roots)
+    return std::nullopt;
+
+  int64_t required = 0;
+  for (mlir::linalg::LinalgOp root : *roots) {
+    std::optional<int64_t> rootBytes =
+        estimateRootMinimumSPMBytes(root, candidate);
+    if (!rootBytes)
+      return std::nullopt;
+    required = std::max(required, *rootBytes);
+  }
+  return required;
 }
 
 static bool failsCheapSPMBound(GroupOp group, const CandidateSpec &candidate,
                                int64_t spmBase, int64_t spmLimit) {
-  std::optional<int64_t> estimatedBytes =
-      estimateCompactSPMBytes(group, candidate);
-  if (!estimatedBytes)
+  std::optional<int64_t> lowerBoundBytes =
+      estimateRequiredSPMLowerBoundBytes(group, candidate);
+  if (!lowerBoundBytes)
     return false;
   if (spmLimit <= spmBase)
     return false;
-  return *estimatedBytes > (spmLimit - spmBase);
+  return *lowerBoundBytes > (spmLimit - spmBase);
 }
 
 static void addUnique(llvm::SmallVectorImpl<int64_t> &values, int64_t value,
@@ -410,123 +416,92 @@ static void addUnique(llvm::SmallVectorImpl<int64_t> &values, int64_t value,
     values.push_back(value);
 }
 
+static int64_t absDiff(int64_t lhs, int64_t rhs) {
+  return lhs > rhs ? lhs - rhs : rhs - lhs;
+}
+
+static int64_t chooseNextRefinementSize(int64_t dim, int64_t current,
+                                        llvm::ArrayRef<int64_t> preferred) {
+  if (current <= 1)
+    return current;
+
+  int64_t target = std::max<int64_t>(1, ceilDiv(current, 2));
+  llvm::SmallVector<int64_t, 16> candidates;
+  addUnique(candidates, target, dim);
+
+  for (int64_t divisor = 2; divisor * divisor <= dim; ++divisor) {
+    if (dim % divisor != 0)
+      continue;
+    addUnique(candidates, dim / divisor, dim);
+    addUnique(candidates, divisor, dim);
+  }
+
+  for (int64_t value : preferred)
+    addUnique(candidates, value, dim);
+  addUnique(candidates, 1, dim);
+
+  int64_t best = current;
+  bool found = false;
+  for (int64_t candidate : candidates) {
+    if (candidate >= current)
+      continue;
+    if (!found) {
+      best = candidate;
+      found = true;
+      continue;
+    }
+
+    int64_t candidateScore = absDiff(candidate, target);
+    int64_t bestScore = absDiff(best, target);
+    bool candidateDividesDim = dim % candidate == 0;
+    bool bestDividesDim = dim % best == 0;
+    if (candidateScore < bestScore ||
+        (candidateScore == bestScore && candidateDividesDim &&
+         !bestDividesDim) ||
+        (candidateScore == bestScore && candidateDividesDim == bestDividesDim &&
+         candidate > best))
+      best = candidate;
+  }
+
+  return found ? best : current;
+}
+
 static llvm::SmallVector<int64_t, 8>
 buildDimTileSizes(int64_t dim, llvm::ArrayRef<int64_t> preferred,
                   int64_t maxCandidatesPerDim) {
   llvm::SmallVector<int64_t, 8> values;
   addUnique(values, dim, dim);
 
-  for (int64_t divisor = 2; divisor * divisor <= dim; ++divisor) {
-    if (dim % divisor != 0)
-      continue;
-    addUnique(values, dim / divisor, dim);
-    addUnique(values, divisor, dim);
+  int64_t current = dim;
+  while (maxCandidatesPerDim <= 0 ||
+         static_cast<int64_t>(values.size()) < maxCandidatesPerDim) {
+    int64_t next = chooseNextRefinementSize(dim, current, preferred);
+    if (next >= current)
+      break;
+    addUnique(values, next, dim);
+    current = next;
   }
-
-  for (int64_t value : preferred)
-    addUnique(values, value, dim);
-
-  llvm::sort(values, std::greater<int64_t>());
-  if (maxCandidatesPerDim > 0 &&
-      static_cast<int64_t>(values.size()) > maxCandidatesPerDim)
-    values.resize(static_cast<size_t>(maxCandidatesPerDim));
   return values;
 }
 
-static void buildTileSizeProducts(
-    llvm::ArrayRef<llvm::SmallVector<int64_t, 8>> perDimSizes, unsigned dim,
-    llvm::SmallVectorImpl<int64_t> &current,
-    llvm::SmallVectorImpl<llvm::SmallVector<int64_t, 4>> &tileProducts) {
-  if (dim == perDimSizes.size()) {
-    tileProducts.push_back(
-        llvm::SmallVector<int64_t, 4>(current.begin(), current.end()));
-    return;
-  }
-  for (int64_t size : perDimSizes[dim]) {
-    current.push_back(size);
-    buildTileSizeProducts(perDimSizes, dim + 1, current, tileProducts);
-    current.pop_back();
-  }
-}
+struct SearchLadders {
+  llvm::SmallVector<llvm::SmallVector<int64_t, 8>, 4> traversal;
+  llvm::SmallVector<llvm::SmallVector<int64_t, 8>, 2> reduction;
+};
 
-static void buildReductionSplitProducts(
-    llvm::ArrayRef<llvm::SmallVector<int64_t, 8>> perDimSizes,
-    llvm::ArrayRef<int64_t> ranges, unsigned dim,
-    llvm::SmallVectorImpl<int64_t> &current,
-    llvm::SmallVectorImpl<llvm::SmallVector<int64_t, 2>> &splits) {
-  if (dim == perDimSizes.size()) {
-    bool isFullRange = true;
-    for (auto [range, size] : llvm::zip(ranges, current)) {
-      if (range != size) {
-        isFullRange = false;
-        break;
-      }
-    }
-    if (!isFullRange)
-      splits.push_back(
-          llvm::SmallVector<int64_t, 2>(current.begin(), current.end()));
-    return;
-  }
-  for (int64_t size : perDimSizes[dim]) {
-    current.push_back(size);
-    buildReductionSplitProducts(perDimSizes, ranges, dim + 1, current, splits);
-    current.pop_back();
-  }
-}
-
-static llvm::SmallVector<llvm::SmallVector<int64_t, 2>, 8>
-buildReductionSplitSpecs(llvm::ArrayRef<int64_t> reductionRanges,
-                         llvm::ArrayRef<int64_t> preferred,
-                         int64_t maxCandidatesPerDim) {
-  llvm::SmallVector<llvm::SmallVector<int64_t, 2>, 8> splits;
-  splits.push_back({});
-  if (reductionRanges.empty())
-    return splits;
-
-  llvm::SmallVector<llvm::SmallVector<int64_t, 8>, 2> perDimSizes;
-  for (int64_t range : reductionRanges)
-    perDimSizes.push_back(
-        buildDimTileSizes(range, preferred, maxCandidatesPerDim));
-
-  llvm::SmallVector<int64_t, 2> current;
-  buildReductionSplitProducts(perDimSizes, reductionRanges, /*dim=*/0, current,
-                              splits);
-  return splits;
-}
-
-static llvm::SmallVector<CandidateSpec, 32>
-buildCandidateSpecs(llvm::ArrayRef<int64_t> traversalShape,
-                    llvm::ArrayRef<int64_t> reductionRanges,
-                    llvm::ArrayRef<int64_t> preferred,
-                    int64_t maxCandidatesPerDim) {
-  llvm::SmallVector<llvm::SmallVector<int64_t, 8>, 4> perDimSizes;
+static SearchLadders buildSearchLadders(llvm::ArrayRef<int64_t> traversalShape,
+                                        llvm::ArrayRef<int64_t> reductionRanges,
+                                        llvm::ArrayRef<int64_t> preferred,
+                                        int64_t maxCandidatesPerDim) {
+  SearchLadders ladders;
   for (int64_t dim : traversalShape)
-    perDimSizes.push_back(
+    ladders.traversal.push_back(
         buildDimTileSizes(dim, preferred, maxCandidatesPerDim));
 
-  llvm::SmallVector<llvm::SmallVector<int64_t, 4>, 32> tileProducts;
-  llvm::SmallVector<int64_t, 4> currentTile;
-  buildTileSizeProducts(perDimSizes, 0, currentTile, tileProducts);
-
-  llvm::SmallVector<llvm::SmallVector<int64_t, 2>, 8> splitSpecs =
-      buildReductionSplitSpecs(reductionRanges, preferred, maxCandidatesPerDim);
-
-  llvm::SmallVector<CandidateSpec, 32> candidates;
-  for (llvm::ArrayRef<int64_t> tileSizes : tileProducts) {
-    CandidateSpec candidate;
-    candidate.tileSizes.assign(tileSizes.begin(), tileSizes.end());
-    candidates.push_back(std::move(candidate));
-  }
-  for (llvm::ArrayRef<int64_t> splitSizes : llvm::drop_begin(splitSpecs)) {
-    for (llvm::ArrayRef<int64_t> tileSizes : tileProducts) {
-      CandidateSpec candidate;
-      candidate.tileSizes.assign(tileSizes.begin(), tileSizes.end());
-      candidate.reductionSplitSizes.assign(splitSizes.begin(),
-                                           splitSizes.end());
-      candidates.push_back(std::move(candidate));
-    }
-  }
-  return candidates;
+  for (int64_t range : reductionRanges)
+    ladders.reduction.push_back(
+        buildDimTileSizes(range, preferred, maxCandidatesPerDim));
+  return ladders;
 }
 
 static bool isFullFirstTile(llvm::ArrayRef<int64_t> traversalShape,
@@ -762,6 +737,224 @@ static bool isBetterCandidate(const SelectedCandidate &candidate,
   return candidate.spec.reductionSplitSizes > best->spec.reductionSplitSizes;
 }
 
+static std::string getCandidateKey(const CandidateSpec &candidate) {
+  std::string key;
+  llvm::raw_string_ostream os(key);
+  printI64List(candidate.tileSizes, os);
+  os << "|";
+  printI64List(candidate.reductionSplitSizes, os);
+  return os.str();
+}
+
+static std::optional<size_t> findSizeIndex(llvm::ArrayRef<int64_t> sizes,
+                                           int64_t value) {
+  for (auto [index, size] : llvm::enumerate(sizes))
+    if (size == value)
+      return static_cast<size_t>(index);
+  return std::nullopt;
+}
+
+struct RefinementDim {
+  bool isReduction = false;
+  unsigned index = 0;
+  int64_t pressure = 0;
+};
+
+static int64_t getCandidateReductionSize(const CandidateSpec &candidate,
+                                         llvm::ArrayRef<int64_t> ranges,
+                                         unsigned index) {
+  if (candidate.reductionSplitSizes.empty())
+    return ranges[index];
+  return candidate.reductionSplitSizes[index];
+}
+
+static void addPressure(llvm::SmallVectorImpl<int64_t> &pressure,
+                        unsigned index, int64_t bytes) {
+  if (index >= pressure.size())
+    return;
+  pressure[index] = saturatingAdd(pressure[index], bytes);
+}
+
+static void addMatmulPressure(mlir::linalg::LinalgOp root,
+                              const CandidateSpec &candidate,
+                              llvm::SmallVectorImpl<int64_t> &traversal,
+                              llvm::SmallVectorImpl<int64_t> &reduction) {
+  if (candidate.tileSizes.size() != 2 || root.getNumDpsInputs() != 2)
+    return;
+  auto resultType =
+      mlir::dyn_cast<mlir::RankedTensorType>(root->getResult(0).getType());
+  if (!resultType)
+    return;
+  std::optional<int64_t> elementBytes = getElementByteWidth(resultType);
+  if (!elementBytes)
+    return;
+
+  int64_t m = candidate.tileSizes[0];
+  int64_t n = candidate.tileSizes[1];
+  int64_t k = 1;
+  if (!candidate.reductionSplitSizes.empty())
+    k = candidate.reductionSplitSizes.front();
+  else {
+    auto lhsType = mlir::dyn_cast<mlir::RankedTensorType>(
+        root.getDpsInputOperand(0)->get().getType());
+    if (!lhsType || lhsType.getRank() != 2 || !lhsType.hasStaticShape())
+      return;
+    k = lhsType.getDimSize(1);
+  }
+
+  int64_t lhsBytes = saturatingMul(saturatingMul(m, k), *elementBytes);
+  int64_t rhsBytes = saturatingMul(saturatingMul(k, n), *elementBytes);
+  int64_t outBytes = saturatingMul(saturatingMul(m, n), *elementBytes);
+  addPressure(traversal, 0, saturatingAdd(lhsBytes, outBytes));
+  addPressure(traversal, 1, saturatingAdd(rhsBytes, outBytes));
+  addPressure(reduction, 0, saturatingAdd(lhsBytes, rhsBytes));
+}
+
+static void addGenericRootPressure(mlir::linalg::LinalgOp root,
+                                   const CandidateSpec &candidate,
+                                   llvm::SmallVectorImpl<int64_t> &traversal) {
+  auto resultType =
+      mlir::dyn_cast<mlir::RankedTensorType>(root->getResult(0).getType());
+  if (!resultType)
+    return;
+  std::optional<int64_t> elementBytes = getElementByteWidth(resultType);
+  if (!elementBytes)
+    return;
+
+  int64_t tileElements = 1;
+  for (int64_t size : candidate.tileSizes)
+    tileElements = saturatingMul(tileElements, size);
+  int64_t bufferCount =
+      std::max<int64_t>(1, root.getNumDpsInputs() + root.getNumDpsInits());
+  int64_t bytes =
+      saturatingMul(saturatingMul(tileElements, *elementBytes), bufferCount);
+  for (unsigned dim = 0; dim < traversal.size(); ++dim)
+    addPressure(traversal, dim, bytes);
+}
+
+static llvm::SmallVector<RefinementDim, 6> rankRefinementDims(
+    GroupOp group, const CandidateSpec &candidate,
+    llvm::ArrayRef<int64_t> reductionRanges) {
+  llvm::SmallVector<int64_t, 4> traversalPressure(candidate.tileSizes.size(),
+                                                  1);
+  llvm::SmallVector<int64_t, 2> reductionPressure(reductionRanges.size(), 1);
+
+  std::optional<llvm::SmallVector<mlir::linalg::LinalgOp, 4>> roots =
+      getYieldedRootLinalgOps(group);
+  if (roots) {
+    for (mlir::linalg::LinalgOp root : *roots) {
+      if (mlir::isa<mlir::linalg::MatmulOp>(root.getOperation())) {
+        addMatmulPressure(root, candidate, traversalPressure,
+                          reductionPressure);
+        continue;
+      }
+      addGenericRootPressure(root, candidate, traversalPressure);
+    }
+  }
+
+  llvm::SmallVector<RefinementDim, 6> dims;
+  for (auto [index, pressure] : llvm::enumerate(traversalPressure))
+    dims.push_back(RefinementDim{/*isReduction=*/false,
+                                 static_cast<unsigned>(index), pressure});
+  for (auto [index, pressure] : llvm::enumerate(reductionPressure))
+    dims.push_back(RefinementDim{/*isReduction=*/true,
+                                 static_cast<unsigned>(index), pressure});
+
+  llvm::stable_sort(dims, [](const RefinementDim &lhs,
+                             const RefinementDim &rhs) {
+    if (lhs.pressure != rhs.pressure)
+      return lhs.pressure > rhs.pressure;
+    if (lhs.isReduction != rhs.isReduction)
+      return lhs.isReduction;
+    return lhs.index < rhs.index;
+  });
+  return dims;
+}
+
+static std::optional<CandidateSpec>
+refineCandidateDim(const CandidateSpec &candidate,
+                   llvm::ArrayRef<int64_t> reductionRanges,
+                   const SearchLadders &ladders, const RefinementDim &dim) {
+  CandidateSpec refined = candidate;
+  if (!dim.isReduction) {
+    if (dim.index >= refined.tileSizes.size() ||
+        dim.index >= ladders.traversal.size())
+      return std::nullopt;
+    std::optional<size_t> index = findSizeIndex(
+        ladders.traversal[dim.index], refined.tileSizes[dim.index]);
+    if (!index || *index + 1 >= ladders.traversal[dim.index].size())
+      return std::nullopt;
+    refined.tileSizes[dim.index] = ladders.traversal[dim.index][*index + 1];
+    return refined;
+  }
+
+  if (dim.index >= reductionRanges.size() ||
+      dim.index >= ladders.reduction.size())
+    return std::nullopt;
+  if (refined.reductionSplitSizes.empty())
+    refined.reductionSplitSizes.assign(reductionRanges.begin(),
+                                       reductionRanges.end());
+
+  std::optional<size_t> index =
+      findSizeIndex(ladders.reduction[dim.index],
+                    refined.reductionSplitSizes[dim.index]);
+  if (!index || *index + 1 >= ladders.reduction[dim.index].size())
+    return std::nullopt;
+  refined.reductionSplitSizes[dim.index] =
+      ladders.reduction[dim.index][*index + 1];
+  return refined;
+}
+
+static void enqueueCandidate(
+    const CandidateSpec &candidate, llvm::StringSet<> &seen,
+    llvm::SmallVectorImpl<CandidateWorkItem> &queue) {
+  std::string key = getCandidateKey(candidate);
+  if (!seen.insert(key).second)
+    return;
+  queue.push_back(CandidateWorkItem{candidate});
+}
+
+static void enqueueRefinements(
+    GroupOp group, const CandidateSpec &candidate,
+    llvm::ArrayRef<int64_t> reductionRanges, const SearchLadders &ladders,
+    llvm::StringSet<> &seen, llvm::SmallVectorImpl<CandidateWorkItem> &queue) {
+  llvm::SmallVector<RefinementDim, 6> dims =
+      rankRefinementDims(group, candidate, reductionRanges);
+
+  llvm::SmallVector<CandidateSpec, 6> oneStep;
+  for (const RefinementDim &dim : dims) {
+    std::optional<CandidateSpec> refined =
+        refineCandidateDim(candidate, reductionRanges, ladders, dim);
+    if (!refined)
+      continue;
+    oneStep.push_back(*refined);
+    enqueueCandidate(*refined, seen, queue);
+  }
+
+  // A single split can be insufficient when pressure comes from a product of
+  // two dimensions.  Add a small combined-neighbor frontier without expanding
+  // the full Cartesian product upfront.
+  for (unsigned i = 0; i < std::min<size_t>(oneStep.size(), 3); ++i) {
+    for (unsigned j = i + 1; j < std::min<size_t>(oneStep.size(), 3); ++j) {
+      CandidateSpec combined = oneStep[i];
+      for (auto [dimIndex, value] : llvm::enumerate(oneStep[j].tileSizes))
+        if (value != candidate.tileSizes[dimIndex])
+          combined.tileSizes[dimIndex] = value;
+      if (!oneStep[j].reductionSplitSizes.empty()) {
+        if (combined.reductionSplitSizes.empty())
+          combined.reductionSplitSizes.assign(reductionRanges.begin(),
+                                              reductionRanges.end());
+        for (auto [dimIndex, value] :
+             llvm::enumerate(oneStep[j].reductionSplitSizes))
+          if (value != getCandidateReductionSize(candidate, reductionRanges,
+                                                 static_cast<unsigned>(dimIndex)))
+            combined.reductionSplitSizes[dimIndex] = value;
+      }
+      enqueueCandidate(combined, seen, queue);
+    }
+  }
+}
+
 static mlir::FailureOr<SelectedCandidate>
 selectCandidateForGroup(GroupOp group, llvm::StringRef label,
                         const SelectionConfig &config) {
@@ -782,24 +975,30 @@ selectCandidateForGroup(GroupOp group, llvm::StringRef label,
     return mlir::failure();
   }
 
-  llvm::SmallVector<CandidateSpec, 32> candidates =
-      buildCandidateSpecs(*shape, *reductionRanges, config.preferredTileSizes,
-                          config.maxCandidatesPerDim);
-  if (candidates.empty()) {
-    group.emitError() << "no_candidate: empty candidate search space";
-    return mlir::failure();
-  }
+  SearchLadders ladders = buildSearchLadders(
+      *shape, *reductionRanges, config.preferredTileSizes,
+      config.maxCandidatesPerDim);
 
   std::optional<SelectedCandidate> best;
   int64_t rejectedCount = 0;
   std::string lastFailure;
   int64_t visitedCount = 0;
+  llvm::StringSet<> seen;
+  llvm::SmallVector<CandidateWorkItem, 32> queue;
 
-  for (const CandidateSpec &candidate : candidates) {
+  CandidateSpec initial;
+  initial.tileSizes.assign(shape->begin(), shape->end());
+  enqueueCandidate(initial, seen, queue);
+
+  for (size_t queueIndex = 0; queueIndex < queue.size(); ++queueIndex) {
+    const CandidateSpec &candidate = queue[queueIndex].spec;
     ++visitedCount;
     if (failsCheapSPMBound(group, candidate, config.spmBase, config.spmLimit)) {
       ++rejectedCount;
-      lastFailure = "cheap_bound: estimated SPM bytes exceed planning window";
+      lastFailure =
+          "cheap_bound: minimum SPM bytes exceed planning window";
+      enqueueRefinements(group, candidate, *reductionRanges, ladders, seen,
+                         queue);
       continue;
     }
     llvm::SmallVector<TileInstance, 8> reps =
@@ -823,8 +1022,15 @@ selectCandidateForGroup(GroupOp group, llvm::StringRef label,
         firstEvaluation = std::move(evaluation);
     }
 
-    if (!passed)
+    if (!passed) {
+      if (llvm::StringRef(lastFailure).contains("spm-offsets") ||
+          llvm::StringRef(lastFailure).contains("capacity_overflow") ||
+          llvm::StringRef(lastFailure).contains("tile-region") ||
+          llvm::StringRef(lastFailure).contains("cheap_bound"))
+        enqueueRefinements(group, candidate, *reductionRanges, ladders, seen,
+                           queue);
       continue;
+    }
 
     SelectedCandidate selected;
     selected.label = label.str();
@@ -846,6 +1052,8 @@ selectCandidateForGroup(GroupOp group, llvm::StringRef label,
 
     if (isBetterCandidate(selected, best ? &*best : nullptr))
       best = std::move(selected);
+    enqueueRefinements(group, candidate, *reductionRanges, ladders, seen,
+                       queue);
   }
 
   if (best) {
