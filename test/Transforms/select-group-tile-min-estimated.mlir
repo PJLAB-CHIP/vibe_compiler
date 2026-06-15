@@ -1,4 +1,5 @@
 // RUN: wafer-opt --wafer-select-group-tile='tile-search=min-estimated-time print-candidate-summary' %s 2>&1 | FileCheck --implicit-check-not=selected_group --check-prefixes=SUMMARY,IR %s
+// RUN: wafer-opt --wafer-select-group-tile='tile-search=min-estimated-time print-candidate-summary max-search-candidates=4 search-beam-width=2 candidate-parallelism=2' %s 2>&1 | FileCheck --implicit-check-not=selected_group --check-prefixes=BUDGET,IR %s
 
 func.func @elementwise_last_dim_1000(%lhs: tensor<2x1000xf16>,
                                      %rhs: tensor<2x1000xf16>,
@@ -31,6 +32,10 @@ func.func @elementwise_last_dim_1000(%lhs: tensor<2x1000xf16>,
 // SUMMARY-SAME: tile=[
 // SUMMARY-SAME: estimated_cycles=
 // SUMMARY-SAME: rejected=0
+
+// BUDGET: wafer.select_group_tile selected group @elementwise_last_dim_1000#0
+// BUDGET-SAME: mode=min-estimated-time
+// BUDGET-SAME: candidates=4
 
 // IR-LABEL: func.func @elementwise_last_dim_1000
 // IR-NOT: wafer.group

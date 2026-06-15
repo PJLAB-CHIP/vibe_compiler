@@ -1,4 +1,5 @@
 // RUN: wafer-opt --wafer-select-group-tile='print-candidate-summary spm-base=0 spm-limit=73728 max-candidates-per-dim=2 preferred-tile-sizes=32,16,8,4,2,1' %s 2>&1 | FileCheck --implicit-check-not=selected_group --check-prefixes=SUMMARY,IR %s
+// RUN: wafer-opt --wafer-select-group-tile='tile-search=min-estimated-time print-candidate-summary spm-base=0 spm-limit=73728 max-candidates-per-dim=2 preferred-tile-sizes=32,16,8,4,2,1 max-search-candidates=1 search-beam-width=1 candidate-parallelism=2' %s 2>&1 | FileCheck --implicit-check-not=selected_group --check-prefixes=SOFT-BUDGET,IR %s
 
 func.func @huge_if_branches_multi_output_tiled(
     %lhs: tensor<64x512xf16>, %rhs: tensor<512x64xf16>,
@@ -48,6 +49,12 @@ func.func @huge_if_branches_multi_output_tiled(
 // SUMMARY-SAME: candidates=8
 // SUMMARY-SAME: rejected=7
 // SUMMARY-SAME: representatives=4
+
+// SOFT-BUDGET: wafer.select_group_tile selected group @huge_if_branches_multi_output_tiled#0
+// SOFT-BUDGET-SAME: mode=min-estimated-time
+// SOFT-BUDGET-SAME: tile=[32,32]
+// SOFT-BUDGET-SAME: split=[256]
+
 // IR-LABEL: func.func @huge_if_branches_multi_output_tiled
 // IR-NOT: wafer.group
 // IR-NOT: linalg.

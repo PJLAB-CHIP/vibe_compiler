@@ -162,6 +162,18 @@ search frontier 每次加入高压力维度的一步 refinement，并额外加�
 footprint 来自多个维度乘积的情况。这样 search space 的上界仍由每维 ladder 长度限定，但默认路径不需要
 预先展开 `D^R` 个候选。
 
+frontier 还有三个显式控制项：
+
+- `max-search-candidates`：candidate 总访问数的软上限，只在已经存在 passing candidate 后启用。
+  它不能阻止 search 找到第一个合法 candidate；如果还没有 passing candidate，search 必须继续遍历
+  完整 refinement frontier，直到找到合法 candidate 或 frontier 本身耗尽。并行模式可能完成当前
+  in-flight batch 后再检查上限。
+- `search-beam-width`：找到第一个 passing candidate 后，每个 rejected/passing candidate 最多向队列
+  加入多少个 refinement neighbor。它只约束优化 frontier，不能约束第一个合法 candidate 的发现。
+- `candidate-parallelism`：`tile-search=min-estimated-time` 下每批最多并行评估多少个 candidate。
+  并行 worker 只处理 transformation-local standalone group 文本和 worker-local MLIRContext，不直接
+  修改主 IR；最终 selected candidate 的 commit artifact 仍由主线程在原 context 中重新 materialize。
+
 quick SPM bound 只能做必然失败剪枝：它使用当前 candidate 的最小必要 live footprint 下界，例如 matmul 的
 `A tile + B tile + output tile` 裸字节；多输出取各 root 下界的最大值而不是相加。它不能使用 layout
 padding、临时 buffer 或 aligned-family multiplier 的上界来 reject candidate。真实 SPM 峰值、复用、
@@ -263,8 +275,13 @@ candidate-selection 提供用户可配置的 tile search 模式。命令行 pass
 
 估算时间模式。candidate-selection 继续使用同一个 shape-driven refinement frontier，但不会在第一个
 合法 candidate 停止。每个 passing candidate 也会继续扩展 bounded refinement neighbor，直到 frontier
-耗尽。它收集所有通过 candidate gates 的 candidate，对每个合法 candidate 计算粗估时间，选择
-`estimated_cycles` 最小者。当前实现是 bounded frontier search，不承诺全局最优。
+耗尽或在已经找到 passing candidate 后达到 `max-search-candidates` 软上限。它收集已访问范围内所有通过
+candidate gates 的 candidate，对每个合法 candidate 计算粗估时间，选择 `estimated_cycles` 最小者。
+当前实现是 first-legal discovery + budgeted optimization frontier，不承诺全局最优。
+
+当 `candidate-parallelism > 1` 时，candidate evaluation 按队列顺序组成 batch 并行运行；主线程按
+原队列顺序合并结果、更新 rejected count、扩展 frontier 和选择 best candidate。因此并行只改变
+evaluation wall time，不改变确定性选择规则。
 
 cost model 只在合法 candidate 之间排序，不参与 legality，也不能接受一个 gate 失败的 candidate。
 cost breakdown 是 diagnostic，不写入 committed IR。
@@ -321,7 +338,8 @@ candidate-selection 的失败原因分三类：
   candidate。
 - `split_needed`：当前 group 需要拆分，例如多输出 coverage 不兼容、required movement 还不能表达、
   或 search frontier 内所有 candidate 都被 memory/movement gate 拒绝。
-- `no_candidate`：bounded refinement frontier 内没有 passing candidate，且没有更细的 split policy 可用。
+- `no_candidate`：bounded refinement frontier 本身没有 passing candidate，且没有更细的 split policy
+  可用。search budget / beam 不能单独制造 legality failure。
 
 diagnostic 应记录：
 
@@ -389,8 +407,13 @@ candidate-selection completion proof 至少覆盖：
   lowering、SPM offset assignment、DDR offset assignment、verifier 顺序执行；gate failure 早停，
   不继续跑后续 gate。
 - `tile-search=first-legal`：默认模式，返回第一个 passing candidate。
-- `tile-search=min-estimated-time`：遍历 bounded refinement frontier，在 passing candidates 之间用
-  lowered instruction IR 的 compute/DDR/SPM/issue 粗估时间排序；当前不承诺全局最优。
+- `tile-search=min-estimated-time`：先保证找到第一个 passing candidate，再遍历 budgeted bounded
+  optimization frontier，在已访问的 passing candidates 之间用 lowered instruction IR 的
+  compute/DDR/SPM/issue 粗估时间排序；当前不承诺全局最优。
+- search controls：`max-search-candidates` 默认 `16`，`search-beam-width` 默认 `8`，
+  `candidate-parallelism` 默认 `1`。budget/beam 只约束已经有 passing candidate 之后的优化探索；
+  并行模式只在 `min-estimated-time` 下启用，worker 使用独立 MLIRContext 评估 candidate，主线程
+  重新 materialize selected commit artifact。
 - diagnostics：`print-candidate-summary` 输出 selected tile、split、estimated cycles、visited /
   rejected candidate 数和 representative 数；这些是诊断，不写入 committed IR。
 - commit：selected clone 的 lowered function body 按 group inputs/outs 映射 inline 回原
