@@ -2,10 +2,10 @@
 
 更新时间：2026-06-16
 
-本文件只做看板索引：当前任务、主线顺序、完成阶段和下一步。设计合同、实现细节、验证命令和复盘放在
-对应 `tasks/` 设计文档、git commit 和测试里。
+本文件是当前看板索引，只记录主线顺序、已完成 artifact、active task、后续输入/完成 gate 和下一步。
+设计合同、实现细节和验证命令放在对应 `tasks/` 设计文档、git commit 和测试里。
 
-## 状态
+## 完成口径
 
 局部 pass、fixture 或单个 dump 通过不等于完成；主线完成证明必须能重放已完成上游链路，并让当前
 stage 输出被下游边界直接消费。
@@ -13,33 +13,49 @@ stage 输出被下游边界直接消费。
 ## 主线顺序
 
 ```text
-StableHLO program -> SPMD -> Linalg -> wafer.group -> tile-region -> instr
-  -> SPM offsets -> DDR offsets -> selected committed instr -> placed instr
-  -> launch/runtime DDR -> C ABI / packet / object / runtime adapter
+StableHLO program
+  -> SPMD
+  -> Linalg local compute
+  -> logical group
+  -> tile-region
+  -> instruction IR
+  -> SPM offsets
+  -> DDR offsets
+  -> selected committed instruction IR
+  -> placed instruction IR
+  -> launch/runtime DDR
+  -> C ABI / packet / object / runtime adapter
 ```
 
 用户级主入口以 `wafer-opt` program pipeline 为准；局部 dump/conversion pass 不替代主线 compile flow。
 
 ## 当前 Active
 
-| ID | 当前任务 | 完成 gate |
-| --- | --- | --- |
-| R3.4 | placed instruction-level realization | 从 R3.3 committed IR 生成 placed memref / access descriptor 边界，并能被 R3.5 直接消费 |
+| ID | 状态 | 输入 | 输出 / 完成 gate |
+| --- | --- | --- | --- |
+| R3.4 | active | R3.3 committed tile-region + accepted layout/SPM/DDR facts | placed instruction-level IR / placed memref / access descriptor；不重新决定 tile/layout/memory plan，并能被 R3.5 直接消费 |
 
-R3.4 只消费 committed IR 中已接受的 layout/SPM/DDR facts，不重新做 tile search、layout search、SPM
-planning 或 DDR planning。
+R3.4 只消费 committed IR 中已经 accepted 的 facts，不重新做 tile search、layout search、SPM planning
+或 DDR planning。
 
-## 已完成
+## 已完成主线
 
-| 范围 | 输出边界 |
+| ID | 输出 artifact / IR |
 | --- | --- |
-| P2.F1-P2.S2 | StableHLO Wafer program、Shardy/SPMD、rank-local metadata/payload |
-| R2.4-R3.1 | post-SPMD local compute + logical `wafer.group` |
-| R3.2a-R3.2e | group demand/layout analysis、memref-backed tile-region、instruction IR、DDR tile views |
-| R3.2f-R3.2g | accepted SPM/DDR offset facts |
-| R3.2h-R3.3 | candidate search/gate replay + selected candidate commit 回主 IR |
+| P2.F1-P2.S2 | StableHLO Wafer program、Shardy/SPMD partition、rank-local metadata / parameter shard payload |
+| R2.4 | post-SPMD local compute structured tensor IR + `wafer.tensor.*` handoff |
+| R3.1 | logical `wafer.group` |
+| R3.2a | `GroupTilingDemand` analysis |
+| R3.2b | `GroupLayoutPlan` analysis |
+| R3.2c | memref-backed `wafer.tile.region` + DDR memref function boundary |
+| R3.2d | instruction-level `wafer.instr.*` over Wafer-tagged memref |
+| R3.2e | static/candidate DDR tile-view materialization to actual `memref.subview` |
+| R3.2f | accepted `wafer.spm.offset` facts |
+| R3.2g | accepted `wafer.ddr.offset` facts |
+| R3.2h | candidate search + gate replay |
+| R3.3 | selected candidate inline commit 回主 IR |
 
-细节边界以对应设计文档为准；本表不记录实现流水。
+已完成项的详细 legality、coverage、known gap 和验证入口以对应设计文档为准。
 
 ## 后续队列
 
@@ -54,8 +70,11 @@ planning 或 DDR planning。
 
 ## 当前不做
 
-Serving/KV cache、raw DTE collective ABI、LLVM/object emission、真实 runtime call emission、自定义 LLVM
-backend，以及任何基于名字、路径或 workload shape 的 IR 合同。
+- Serving integration、KV cache / paged attention / prefill-decode 调度。
+- raw DTE non-unicast collective ABI。
+- LLVM dialect / LLVM IR lowering、object emission 或真实 `wafer_*` runtime call emission。
+- 自定义 LLVM backend。
+- 以 importer、runtime path、workload shape 或 parameter 名称作为 IR 合同。
 
 ## 下一步
 
