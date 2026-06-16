@@ -10,16 +10,16 @@
 最小 IR 基础实现；P2-P6 形成了一批 textual lowering、verifier 和 fixture/最小验证 gate，但大量
 gate 只证明了局部 fixture 可以运行，尚未证明设计文档要求的主路径闭环。
 
-历史审计时，工程组织也没有按
+R0.1 审计时，工程组织也没有按
 `tasks/2026-05-11-wafer-ai-compiler-architecture.md` 第 7 节收敛：frontend lowering、
 group/tile materialization、layout/SPM/DDR、communication 和旧 ABI issue-op lowering 基本都堆在
 `lib/Wafer/Transforms`。R0.2 已恢复源码 ownership 边界；R1.1 之后 ODS、op verifier 和 dialect
-tests 已按 IR 层组织；interface/resource 查询合同和 local compute stage-connection gate 已由后续
-设计承接，历史 stage-connection gate 和旧 unit/debug pass 链已删除。
+tests 已按 IR 层组织；R1.2/R1.3 曾补 interface/resource 查询合同和 local compute stage-connection
+gate；2026-06-02 后历史 stage-connection gate 和旧 unit/debug pass 链已删除。
 
-主线要求：历史 P2.S1 路线若把 sharding facts 写成 `wafer.spmd.*` 或私有 sidecar，不是主线 SPMD
-program contract；历史 StableHLO collective 直降 `wafer.tile.*` communication 的 pass 只能算已删除的
-后段 communication coverage，不能作为 group/tiling 输入。正确主线需要
+主线要求：历史 P2.S1 路线若把 sharding facts 写成 `wafer.spmd.*` 或私有
+sidecar，不是主线 SPMD program contract；历史 StableHLO collective 直降 `wafer.tile.*` communication 的 pass
+只能算已删除的后段 communication coverage，不能作为 group/tiling 输入。正确主线需要
 `frontend export -> StableHLO/SDY -> Wafer Shardy propagation -> Wafer-owned XLA SPMD partitioner
 compiler stage -> partitioned StableHLO`，再经 Wafer LinalgExt-style tensor collective handoff 进入
 group/tiling。旧 PyTorch/XLA post-SPMD export 测试入口已删除；它不消费 Wafer propagation 输出，
