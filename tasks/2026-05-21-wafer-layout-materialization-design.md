@@ -2,7 +2,7 @@
 
 日期：2026-05-21
 
-状态：设计草案；当前边界已按 memref-backed Wafer memory attr、candidate planning 和 instruction-level pipeline 收口。
+状态：设计草案；范围：memref-backed Wafer memory attr、candidate planning 和 instruction-level pipeline。
 
 本文定义 Wafer 后端的 physical layout planning 和 layout materialization 边界。它服务于
 `wafer.group` 的 legality search，也服务于 `wafer.tile.region` / SPM bufferization 的真实
@@ -141,12 +141,8 @@ Pipeline position:
   `stablehlo-spmd-to-group` 输出上重放 layout-plan dump。
 ```
 
-R3.2b 当前边界：已按上述 logical-group analysis 边界完成。当前
-`GroupLayoutPlan` 消费 R3.2a `GroupTilingDemand` facts 和 group SSA use-def，输出
-boundary layout、per-op layout constraints/assignment、materialization cut、group-result
-materialization demand 和 failure forwarding；它不 rewrite `wafer.group`，不写 layout attr，
-不生成 `wafer.tile.region`。completion gate 覆盖手写 group fixture 和真实
-`stablehlo-spmd-to-group` program 输出。
+R3.2b 已落地为 analysis-only `GroupLayoutPlan`；它不 rewrite `wafer.group`，不生成
+`wafer.tile.region`，completion gate 见本节 pipeline contract。
 
 ### 3.2 从 Tensor Value 到 Buffer Value
 

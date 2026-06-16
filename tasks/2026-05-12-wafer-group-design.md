@@ -2,7 +2,7 @@
 
 日期：2026-05-12
 
-状态：设计草案；当前边界已按 logical group、candidate planning 和 committed materialization 链路收口。
+状态：设计草案；范围：logical group、candidate planning 和 committed materialization 链路。
 
 本文只定义 `wafer.group` 的 tensor-level grouping 和 scheduling contract。它回答：
 
@@ -657,9 +657,9 @@ R3.1 pass 构造 logical `wafer.group` 时遵守以下规则：
   cost breakdown、temporary set、materialization point 或 rejected-group diagnostic。
   这些都是 analysis 或诊断信息。
 
-### 9.5 R3.1 当前实现边界
+### 9.5 R3.1 实现边界
 
-当前 R3.1 实现按同一 block 内的 SSA use-def 和
+R3.1 实现按同一 block 内的 SSA use-def 和
 `DestinationStyleOpInterface` 构造 group，不引入新的长期 attribute 或 side table：
 
 1. 从 root/hero seed 出发。当前 root 是 tensor-level DPS `linalg.*`（`linalg.fill`
@@ -842,11 +842,8 @@ Pipeline position:
   failure reason；program pipeline gate 从真实 `stablehlo-spmd-to-group` 输出上重放 demand dump。
 ```
 
-R3.2a 当前边界：已按上述 analysis-only 边界完成。当前实现通过
-`GroupTilingDemand` 从 logical `wafer.group` body 的 SSA use-def、DPS ties、Linalg
-iterator/indexing map、accumulator/reduction dims 和 `wafer.tensor.*` interface
-恢复 demand；`--wafer-dump-group-tiling-demand` 只是同一 analysis result 的 debug view，不修改 IR。
-completion gate 覆盖手写 group fixture 和真实 `stablehlo-spmd-to-group` program 输出。
+R3.2a 已落地为 analysis-only `GroupTilingDemand`；dump 入口只是同一 analysis result 的 debug
+view，不修改 IR，completion gate 见本节 pipeline contract。
 
 R3.2a 的核心数据结构应表达：
 

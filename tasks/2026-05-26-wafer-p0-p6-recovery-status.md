@@ -65,7 +65,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   launch/runtime ownership 清晰；一个 `wafer` dialect namespace 内按 IR 层拆 ODS、verifier 和测试。
 - 不把本机路径、checkout path、第三方 C++ API 名或临时 build override 写成 IR contract。
 
-当前实现：
+已落地：
 
 - 有 `CMakeLists.txt`、`cmake/third_party/WaferDependencyVersions.cmake`、`wafer-opt`、lit、gtest、
   `tools/check_deps.py` 和 bootstrap 脚本。
@@ -91,7 +91,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   group、layout/materialize、SPM、DDR、compute、comm、sync 和 ABI op 可通过接口查询边界值、
   layout requirement 和 resource effect。关键 movement/compute/comm op 也接入 MLIR
   `MemoryEffectOpInterface` 的 Wafer resource。
-- R1.3 的历史 stage-connection gate 已在 2026-06-02 清理中删除；后续 group/tile/storage/C ABI
+- 历史 stage-connection gate 已删除；后续 group/tile/storage/C ABI
   连接必须由 R3/R6/R7 消费真实 frontend/SPMD program chain 后重新建立。
 
 缺口：
@@ -129,7 +129,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - layout、SPM、DDR、compute、comm、sync、launch 都应有 op/type/interface/verifier 合同；共享字段只定义一次。
 - op interface、type、effect 和 verifier 应暴露协议错误；pass 不能靠 side table 或名字匹配传语义。
 
-当前实现：
+已落地：
 
 - 有 `WaferAttrs.td`、`WaferTypes.td`、`WaferInterfaces.td` 和 `WaferOps.td`，覆盖 target、
   placement、elementwise/reduce kind，以及 group、tensor collective、tile-region、tile
@@ -180,7 +180,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   dot、batch/head matmul、broadcast、reduce、softmax、norm、RoPE、MLP 的可验证 dataflow。
 - pattern 只能来自 StableHLO semantics、types、indexing maps 和 SSA use-def，不能靠名字。
 
-当前实现：
+已落地：
 
 - StableHLO textual program tests 和 norm/softmax/linear-residual/MLP frontend lowering fixtures 统一通过
   `wafer-lower-stablehlo-to-linalg` named pipeline 覆盖；历史 case-specific acceptance passes 和本地
@@ -251,7 +251,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - C ABI gate 要固定 `wafer_*` 参数单位和 wait policy，并通过 wrapper/golden packet 覆盖；package 要来自
   当前 lowering 输出。
 
-当前实现：
+已落地：
 
 - 2026-06-03 后，Integration 主链路不再注册 C ABI named pipeline。用户级主线统一到
   `wafer-opt --program-pipeline=stablehlo-spmd*`；`WaferPipelines` 只保留内部/局部
@@ -307,7 +307,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - `wafer.tile.region` / launch metadata 必须表达 per-tile identity 和 shard slice；不能用 whole-tensor
   clone 代替 shard。
 
-当前实现：
+已落地：
 
 - 有 `wafer.placement.map` verifier，检查 rank count、topology bounds、bad tile 和 duplicate tile。
 - `wafer-materialize-multi-tile-no-comm` 已删除；旧实现只是按 placement rank 数 clone whole-tensor
@@ -348,7 +348,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - package/runtime metadata 要覆盖 block inputs/outputs、resident constants、workspace；当前无卡环境
   只能做 generated program compile，不能声称 device correctness。
 
-当前实现：
+已落地：
 
 - 有 norm、softmax、linear-residual、MLP frontend lowering fixtures 和 full local transformer
   block structured fixture；旧 transformer-specific acceptance passes 已删除。
@@ -387,7 +387,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   local drain、comm wait、group barrier 要分开。
 - communication metadata 最终要进入 C ABI / runtime package，不能停在 isolated IR 最小验证。
 
-当前实现：
+已落地：
 
 - 有 `wafer.tile.send` / `recv` / `wait` verifier、placement peer validation、non-empty wait validation。
 - 历史上有 旧 ABI debug op `dte_send` / `recv` / `wait` issue op 和 block-local resource tuple conflict

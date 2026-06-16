@@ -2,7 +2,7 @@
 
 日期：2026-05-25
 
-状态：设计草案；当前边界是 memref-backed `wafer.tile.region`、DDR boundary materialization 和
+状态：设计草案；范围：memref-backed `wafer.tile.region`、DDR boundary materialization 和
 structured control-flow lowering；candidate DDR tile-view producer 属于 R3.2e。
 
 本文定义 `wafer.tile.region` 作为 `wafer.group` lowering 之后的 tile-local execution boundary。
@@ -25,23 +25,9 @@ placement-derived endpoint 和 communication staging demand 的层级；`wafer.t
 - `tasks/2026-05-25-wafer-communication-dialect-design.md`
 - `tasks/2026-06-05-wafer-instruction-ir-design.md`
 
-当前边界：
-
-- 仓库代码已有 `wafer.tile.region`、`wafer.tile.load/store`、target-abstract
-  compute/layout/move/view/comm op 和 group-to-tile-region conversion。
-- R3.2c 已把 tile-local buffer value 迁移为 memref-backed contract：
-  `memref<..., #wafer.memory<space, layout>>`；group boundary tensor 先 materialize 为
-  `memref<..., #wafer.memory<ddr, tensor>>`，tile-local value 使用
-  `memref<..., #wafer.memory<spm, layout>>`。`tensor.empty` 作为 writable group output 时降为 DDR
-  `memref.alloc`；tile-local temporary 降为 SPM `memref.alloc`。旧 `!wafer.storage`、
-  `wafer.tile.alloc`、`#wafer.memory_space` 和 `#wafer.mem_layout` 已从主线 IR 定义、verifier
-  和测试中删除。
-- `--wafer-convert-group-to-tile-region` 是局部 conversion 入口，会在外层 tensor IR 与 tile-region
-  DDR memref boundary 之间保留 `bufferization.to_memref` / `bufferization.to_tensor` bridge。
-  `wafer-lower-groups-to-tile-region` named pipeline 在该 conversion 后运行 MLIR One-Shot
-  Bufferize，把函数 tensor boundary 转成 `#wafer.memory<ddr, tensor>` memref boundary。
-- 本文下面的 R3.2c coverage 表描述已落地合同；若与历史任务文档冲突，以本节和
-  `tasks/progress.md` 的“当前 IR 状态”为准。
+已落地概要：主线采用 `memref<..., #wafer.memory<space, layout>>`，旧 `!wafer.storage`、
+`wafer.tile.alloc`、`#wafer.memory_space` 和 `#wafer.mem_layout` 不再作为 IR 合同。R3.2c coverage
+以本文 pipeline contract 为准。
 
 ## 1. 目标和非目标
 

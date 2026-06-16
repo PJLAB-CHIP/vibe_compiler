@@ -2,7 +2,7 @@
 
 日期：2026-05-21
 
-状态：设计草案；当前边界是 instruction-level IR 上的 SPM memory planning，accepted fact 为
+状态：设计草案；范围：instruction-level IR 上的 SPM memory planning，accepted fact 为
 offset-only `wafer.spm.offset`，size / bank span / alignment 由 memref type、layout 和 target policy 重算。
 
 本文定义 Wafer SPM bufferization、tile-local allocation 和 storage verification。它服务于
@@ -470,7 +470,7 @@ R3.2f V0 的 dataflow 边界：
 - rejected/candidate offset、search trace、cost estimate 和 repair suggestion 仍是 analysis，不写入
   IR。
 
-当前实现边界是 R3.2d 已支持的 structured `scf.if` / `scf.for`、single-block `scf.yield` 和
+实现边界是 R3.2d 已支持的 structured `scf.if` / `scf.for`、single-block `scf.yield` 和
 instruction-level async token use。未结构化 CFG、超过 64 个 branch decision point，以及未来显式
 must-alias group 需要先由 SSA / op interface / verifier 表达，再进入 SPM memory planning；不能靠
 名字或旁路协议恢复。

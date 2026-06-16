@@ -2,7 +2,7 @@
 
 日期：2026-05-25
 
-状态：设计草案；当前边界是 post-SPMD local compute normalization 和 tensor collective handoff，
+状态：设计草案；范围：post-SPMD local compute normalization 和 tensor collective handoff，
 不承载 SPMD partition、SPM/DDR 或 runtime package。
 
 本文定义 SPMD 产出的 StableHLO local program 到 `wafer.group` 之前的 local tensor normalization

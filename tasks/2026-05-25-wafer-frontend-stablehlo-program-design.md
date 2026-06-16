@@ -2,7 +2,7 @@
 
 日期：2026-05-25
 
-状态：设计草案；当前边界是 frontend program、StableHLO export/import 和跨阶段 program chain。
+状态：设计草案；范围：frontend program、StableHLO export/import 和跨阶段 program chain。
 
 本文定义 Wafer compiler 的 model import 和 frontend program 边界。Wafer program 是长期编译对象：
 它包含 MLIR IR、function/signature metadata、parameter/resource payload 和后续 stage materialize

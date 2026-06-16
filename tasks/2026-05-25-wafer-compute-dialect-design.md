@@ -2,7 +2,7 @@
 
 日期：2026-05-25
 
-状态：设计草案；当前边界是 target-abstract compute / movement IR、layout/resource interface 和 instruction legality。
+状态：设计草案；范围：target-abstract compute / movement IR、layout/resource interface 和 instruction legality。
 
 本文定义 Wafer 后端中 target-abstract compute / movement IR 的边界。它连接
 `wafer.group` 产生的 tile-local tensor program、layout materialization / SPM bufferization，

@@ -2,7 +2,7 @@
 
 日期：2026-05-25
 
-状态：设计草案；当前边界是 `wafer.tile.region` / SPM materialization 之后的 tile communication IR。
+状态：设计草案；范围：`wafer.tile.region` / SPM materialization 之后的 tile communication IR。
 
 本文定义 Wafer 后端的 device-side communication IR。它连接 post-SPMD tensor collective 语义、
 placement 产生的 physical tile mapping、`wafer.tile.region` 中的 SPM buffer，以及后续
@@ -223,8 +223,8 @@ buffer、`local_rank`、`group_size` 和单 chunk `bytes`，verifier 检查 SPM 
 单 chunk byte size 和 gather buffer 总 byte size。旧 `--wafer-lower-ring-all-gather` 和后续
 tile_region-to-C-ABI debug pass 链已删除。后续 lowering 仍应把 accepted schedule rewrite 成显式
 send/recv/wait body，并保留 destination slot 供地址 offset / packet 参数 lowering 使用。
-P6.6 的早期实现允许 StableHLO logical `all_gather` 直接 normalize 到该 op。2026-05-27 复查后，
-这条 pass/test 路线已移除；不能作为 group/tiling 前的主线输入，也不应恢复。后续应实现两层：
+P6.6 的早期实现允许 StableHLO logical `all_gather` 直接 normalize 到该 op。这条 pass/test 路线已移除；
+不能作为 group/tiling 前的主线输入，也不应恢复。后续应实现两层：
 
 ```text
 StableHLO collective -> Wafer LinalgExt-style tensor collective

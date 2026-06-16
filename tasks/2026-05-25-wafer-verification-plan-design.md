@@ -2,7 +2,7 @@
 
 日期：2026-05-25
 
-状态：设计草案；当前边界是 compiler pipeline 各阶段的验证责任和 completion gate。
+状态：设计草案；范围：compiler pipeline 各阶段的验证责任和 completion gate。
 
 本文定义 Wafer compiler 的分阶段验证策略。它不是替代各 dialect 设计的总 verifier，而是把
 frontend、SPMD、placement、local compute normalization、tensor collective handoff、group、

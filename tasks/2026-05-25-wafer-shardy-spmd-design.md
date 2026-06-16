@@ -2,7 +2,7 @@
 
 日期：2026-05-25
 
-状态：设计草案；当前边界是 Wafer-owned Shardy propagation / XLA SPMD partition 和 post-SPMD tensor collective handoff。
+状态：设计草案；范围：Wafer-owned Shardy propagation / XLA SPMD partition 和 post-SPMD tensor collective handoff。
 
 本文定义 Wafer compiler 中 Shardy / SPMD 阶段的边界。该阶段负责 global tensor 的逻辑切分、
 sharding propagation、SPMD partition 和 logical collective 语义；不负责 physical tile
@@ -431,10 +431,9 @@ placement、ring/p2p schedule 和 DTE token 仍属于 R3/R6。
 StableHLO -> `wafer.tile.*` communication 插入点；需要分别实现“StableHLO -> tensor collective”和
 “tiled tensor collective -> wafer.tile.* communication”两层。
 
-2026-05-26 R2.2 恢复了 SDY program bridge 的工程入口：`WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON`
-时，`wafer-opt` 和 frontend verifier tool 显式注册 Shardy / SDY dialect，`wafer-opt` 也注册
-SDY passes/pipelines。带 `sdy.mesh` / `sdy.sharding` 的 partitioned StableHLO program 可以作为
-Wafer 输入被 parse/verify。
+SDY program bridge 的工程入口：`WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON` 时，`wafer-opt` 和
+frontend verifier tool 显式注册 Shardy / SDY dialect，`wafer-opt` 也注册 SDY passes/pipelines。
+带 `sdy.mesh` / `sdy.sharding` 的 partitioned StableHLO program 可以作为 Wafer 输入被 parse/verify。
 
 同一批次曾把 StableHLO `replica_groups` 的 logical rank group materialize 到 `wafer.tile.*` communication ops
 `rank_group = array<i64: ...>` attr；该 StableHLO -> `wafer.tile.*` communication bridge 已移除，避免后续误把它当成

@@ -48,9 +48,8 @@ C ABI/golden packet 和 verification plan 都已有单独子设计承接。Servi
 
 ## 1. 信息来源和文档边界
 
-当前边界：`2026-05-11` 架构文档已经把整理后的 Wafer 主文档和 reverse-engineering 合同放在
-一级依据。后续仍需要保持这个边界：硬件事实和 runtime 事实来自 `docs/`，task 文档只把它们放到
-正确 IR stage 的 verifier / lowering / runtime boundary 中。
+归属：硬件事实和 runtime 事实来自 `docs/`；task 文档只负责把这些事实落到对应 IR stage 的
+verifier / lowering / runtime boundary。
 
 需要补充的阅读顺序：
 
@@ -125,9 +124,8 @@ SPM/layout 和 communication plan，没有把 host runtime 实际交付路径写
 
 ## 4. Wafer C ABI 已由低层合同承接
 
-当前边界：`wafer.tile.*` compute 和 `wafer.tile.*` communication 文档已经把 target-abstract op、issue/drain、
-Direct DTE V0 和 wrapper family 的上层边界写清楚。lower-level C ABI / instruction-form 的
-实现级合同已由 `tasks/2026-05-25-wafer-c-abi-golden-packet-design.md` 承接。
+承接：target-abstract compute/communication 留在 tile 层；lower-level C ABI 和 instruction-form
+由 `tasks/2026-05-25-wafer-c-abi-golden-packet-design.md` 承接。
 
 ABI 设计至少覆盖这些族：
 
@@ -157,10 +155,8 @@ ABI 设计至少覆盖这些族：
 
 ## 5. 指令和 verifier 约束的承接状态
 
-当前边界：架构、compute、comm、layout、SPM 文档已经承接了主要 verifier 事实的 IR stage
-归属：layout/SPM 负责 physical layout、range、liveness；compute 负责 CT/NE/RDMA/WDMA/TDMA
-legality；comm 负责 Direct DTE / FSM / token/wait；runtime/package、C ABI 和 verification plan
-分别由对应子设计承接。
+归属：layout/SPM、compute、comm、runtime/package、C ABI 和 verification plan 分别承接对应
+verifier 事实，避免在单个文档里重复建模。
 
 必须在实现中落地的 verifier 事实：
 
@@ -185,9 +181,8 @@ tests 拆到对应层级。
 
 ## 6. Layout 设计已由 layout 子设计承接
 
-当前边界：`tasks/2026-05-21-wafer-layout-materialization-design.md` 已经定义 semantic layout /
-physical `mem_layout` / constant storage encoding / external layout contract，并把
-`WaferMemLayoutAttr` 收敛为 `Tensor/NTensor/Cx/NCx` family，不保存 C0/storage bytes 等可推导字段。
+承接：layout 合同由 `tasks/2026-05-21-wafer-layout-materialization-design.md` 维护；本节只保留历史
+gap 和实现检查点。
 
 原始缺口（已由 layout 子设计修正）：
 
@@ -220,9 +215,8 @@ physical `mem_layout` / constant storage encoding / external layout contract，�
 
 ## 7. SPM planner 已由 SPM 子设计承接
 
-当前边界：`tasks/2026-05-21-wafer-spm-bufferization-design.md` 已经把 SPM range、reserved range、
-layout storage size、bool bitpack、liveness、allocation、failure feedback 和 storage
-storage realization 写成独立设计。`wafer.group` 只消费 feasibility 结果，不保存 offset。
+承接：SPM range、reserved range、layout storage size、liveness、allocation 和 failure feedback
+由 `tasks/2026-05-21-wafer-spm-bufferization-design.md` 维护；`wafer.group` 不保存 offset。
 
 实现时仍需要落地：
 
@@ -238,11 +232,10 @@ storage realization 写成独立设计。`wafer.group` 只消费 feasibility 结
 
 这些检查属于 SPM / tile-region verifier，不回写到 `wafer.group` attr。
 
-## 8. Parallel/SPM bank 约束的实现状态
+## 8. Parallel/SPM bank 约束
 
-当前边界：SPM 文档已经区分普通 allocation、256B layout padding 和 overlap-critical 64KB
-page/color 策略；compute/comm 文档也保留了 issue/drain 和 overlap 的 IR 边界。剩余问题主要是
-scheduler/PMU 的实现和验证，不应反向变成 `wafer.group` attr。
+承接：allocation、layout padding、overlap policy 和 issue/drain 分别由 SPM、compute/comm 和
+scheduler/PMU 处理，不反向写成 `wafer.group` attr。
 
 原始缺口：
 
@@ -279,9 +272,8 @@ scheduler/PMU 的实现和验证，不应反向变成 `wafer.group` attr。
 
 ## 9. DTE 设计已收敛到 V0 unicast
 
-当前边界：`tasks/2026-05-25-wafer-communication-dialect-design.md` 已经明确 V0 只使用
-fixed-size unicast Direct DTE，并把 raw non-unicast 放到 V1/HardwareVerify。这里的清单继续作为
-实现和测试时的事实检查。
+承接：DTE V0 由 `tasks/2026-05-25-wafer-communication-dialect-design.md` 维护；本节只保留实现和
+测试时的事实检查。
 
 实现时必须验证：
 
@@ -324,9 +316,8 @@ fence。
 
 ## 11. issue/drain 和同步域已拆到下游 IR
 
-当前边界：`wafer.group` 不再保存 phase plan 或 resource schedule attr。硬件可见性、NCC
-issue/drain、communication wait 和 group barrier 应在 `wafer.tile.region` 及更低层通过
-`wafer.tile.*` compute / `wafer.tile.*` communication / `wafer.instr.local_drain` 和后续 sync boundary op、effect 和 token 表达。
+归属：`wafer.group` 不保存 phase plan 或 resource schedule attr；issue/drain、communication wait
+和 group barrier 在 `wafer.tile.region` 及更低层表达。
 
 下游 IR 需要显式表达的 phase：
 
@@ -347,12 +338,8 @@ issue/drain、communication wait 和 group barrier 应在 `wafer.tile.region` �
 
 ## 12. 硬件资源模型已分层承接
 
-当前边界：group planner 只保留 abstract resource demand；SPM 文档承接 tile-local
-buffer/lifetime/range，DDR 文档承接 external binding、workspace runtime allocation、constant residency、
-default DDR arena resource、capacity 和 bandwidth，compute 文档承接 CT/NE/RDMA/WDMA/TDMA issue family，
-comm 文档承接 DTE/FSM/packet/stream resource class。R1.2 已把局部 tiling/layout/materialization/
-resource interface 做成 verifier 和单测可查询的实现；剩余工作是让 group planner、SPM allocation /
-DDR memory planning 和 lower-level resource allocator 全量消费这些合同。
+归属：group planner 只保留 abstract resource demand；SPM、DDR、compute、comm 和 runtime resource
+事实分别由对应子设计维护。
 
 实现时资源模型至少包含：
 

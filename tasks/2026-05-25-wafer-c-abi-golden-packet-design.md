@@ -2,7 +2,7 @@
 
 日期：2026-05-25
 
-状态：设计草案；当前边界是 placed instruction-level IR 到 C ABI / wrapper / packet 的 lowering。
+状态：设计草案；范围：placed instruction-level IR 到 C ABI / wrapper / packet 的 lowering。
 
 本文定义 placed instruction-level Wafer device program 到 C ABI / wrapper / packet 的 lowering 合同，
 以及 golden packet 测试边界。C ABI 是 lower-level codegen 的稳定调用面，不是上层 IR 语义。
