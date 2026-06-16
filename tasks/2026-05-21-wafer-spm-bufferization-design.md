@@ -2,14 +2,8 @@
 
 日期：2026-05-21
 
-状态：设计草案；2026-05-25 边界收口；2026-06-04 对齐 instruction-level Wafer IR 先于 SPM memory planning；
-2026-06-05 对齐 memref-backed buffer contract；2026-06-08 同步 DDR memory planning 命名；
-2026-06-10 R3.2e 前移为 candidate DDR tile-view producer，SPM memory planning 后移为 R3.2f；
-2026-06-10 R3.2f V0 落地为 instruction-level `wafer.spm.offset` planning fact；
-2026-06-10 R3.2f lifetime dataflow 覆盖 `scf.if` / `scf.for` / async token wait；
-2026-06-11 R3.2f allocator 从 alloc-event first-fit 升级为 pressure-weighted offline packing；
-2026-06-11 `wafer.spm.offset` 收敛为 offset-only accepted fact，size / bank span / alignment
-由 memref type、layout 和 target policy 重算
+状态：设计草案；当前边界是 instruction-level IR 上的 SPM memory planning，accepted fact 为
+offset-only `wafer.spm.offset`，size / bank span / alignment 由 memref type、layout 和 target policy 重算。
 
 本文定义 Wafer SPM bufferization、tile-local allocation 和 storage verification。它服务于
 `wafer.group` planning 的合法性搜索，也负责把 `wafer.tile.region` 中的 tile-local value

@@ -1,8 +1,6 @@
 # Wafer AI Compiler Architecture Design
 
-状态：架构设计草案；2026-05-25 边界收口；2026-05-27 修正 post-SPMD collective handoff；
-2026-06-01 同步 Wafer-owned SPMD partition stage 边界；2026-06-08 同步 memref-backed tile-region
-和 R3.2d instruction legalization 边界；2026-06-10 同步 candidate DDR tile-view producer
+状态：架构设计草案；当前子设计状态以第 8 节和 `tasks/progress.md` 为准。
 
 日期：2026-05-11
 

@@ -2,7 +2,7 @@
 
 日期：2026-05-25
 
-状态：设计草案；2026-05-25 独立边界收口；2026-05-27 补 tensor collective handoff gate
+状态：设计草案；当前边界是 compiler pipeline 各阶段的验证责任和 completion gate。
 
 本文定义 Wafer compiler 的分阶段验证策略。它不是替代各 dialect 设计的总 verifier，而是把
 frontend、SPMD、placement、local compute normalization、tensor collective handoff、group、
@@ -226,7 +226,7 @@ M9 overlap / cost model / profiling calibration gate：
   resource model 和 PMU calibration 派生，不写入不可验证的 planner trace。
 - PMU/profiling 用于校准 latency、blocking time 和 conflict cost；不反向改变 IR 语义合同。
 
-2026-05-25 后续实现补入了 `linalg.elementwise` 的局部 physical slice：same-shape identity 和
+当前实现补入了 `linalg.elementwise` 的局部 physical slice：same-shape identity 和
 可由 permutation-only `indexing_maps` 验证的 row/head/vector broadcast 可以形成
 `wafer.group`，materialize 为 `wafer.tile.elementwise`，后续应 lower 到带 `indexing_maps` 的
 instruction-level elementwise 和 C ABI emission。后续 reduce slice 让 scalar-constant-init

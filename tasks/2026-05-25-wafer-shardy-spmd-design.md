@@ -2,11 +2,7 @@
 
 日期：2026-05-25
 
-状态：设计草案；2026-05-25 独立边界收口；2026-05-27 纠正 P2.S1 主 pipeline、禁止
-`wafer.spmd.*` 私有 sharding 协议，并引入 post-SPMD tensor collective handoff；2026-06-01
-删除误导性的 Python post-SPMD helper，明确 P2.S1/P2.S2/R2.4/local compute 的 pass 接入边界；
-2026-06-02 纠正 frontend / compiler ownership：StableHLO export / verifier tool 不再承载
-Shardy propagation 或 XLA SPMD partition，P2.S2 由 `wafer-opt` program pipeline 承载
+状态：设计草案；当前边界是 Wafer-owned Shardy propagation / XLA SPMD partition 和 post-SPMD tensor collective handoff。
 
 本文定义 Wafer compiler 中 Shardy / SPMD 阶段的边界。该阶段负责 global tensor 的逻辑切分、
 sharding propagation、SPMD partition 和 logical collective 语义；不负责 physical tile
@@ -150,7 +146,7 @@ P2.S2 工程 gate 必须把 XLA SPMD partitioner 或等价 local-body partitioni
   只做 StableHLO local compute -> Linalg/Tensor/Arith/Math；它不做 sharding propagation、SPMD
   partition、placement、group、SPM/DDR 或 communication materialization。
 
-2026-06-02 当前实现口径：
+实现边界：
 
 - frontend Python test generator 的职责只到 PyTorch/XLA StableHLO export：未标记图导出 reference
   program directory；用户 sharding 分支用 `mark_sharding` 标记同一个 4096 matmul 图的 `x`、`weight`、`bias`，

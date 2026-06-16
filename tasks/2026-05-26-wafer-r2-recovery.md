@@ -4,7 +4,7 @@
 
 状态：R2 完成记录
 
-2026-06-01 复查更新：R2.2 中 StableHLO collective 直接 bridge 到 `wafer.tile.*` communication 的实现只保留为
+当前边界：R2.2 中 StableHLO collective 直接 bridge 到 `wafer.tile.*` communication 的实现只保留为
 已删除路线的后段 communication coverage，不再作为 P2.S1、group 或 tiling 的主线完成证明。真实 P2.S1 必须走
 `frontend export -> StableHLO/SDY program directory -> Wafer Shardy propagation -> Wafer-owned XLA SPMD
 partition compiler stage -> partitioned or replicated-local StableHLO`，post-SPMD collective 先进入

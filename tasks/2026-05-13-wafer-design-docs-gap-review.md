@@ -2,9 +2,7 @@
 
 日期：2026-05-13
 
-状态：gap catalog；2026-05-25 后不再作为架构合同或子设计状态索引；2026-05-27 同步 post-SPMD collective handoff；
-2026-06-05 起，本文中 `mem_layout` / `WaferMemLayoutAttr` 等旧表示仅作为历史 gap 记录，
-当前合同以 `#wafer.memory<space, layout>` memref attr 为准
+状态：历史 gap catalog；不作为当前架构合同或子设计状态索引。本文中的旧表示只作为历史 gap 记录。
 
 本文是历史 gap catalog 和检查清单，不是新的架构合同。子设计状态的唯一索引见
 `tasks/2026-05-11-wafer-ai-compiler-architecture.md` 第 8 节。本文中涉及历史 backend、旧 CRT、
