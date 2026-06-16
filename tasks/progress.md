@@ -43,14 +43,14 @@ planning 或 DDR planning。
 
 ## 后续队列
 
-| ID | 状态 | 输出边界 |
-| --- | --- | --- |
-| R3.5 | pending | runtime allocation/import/query/package materialization |
-| R3.6-R3.8 | pending | C ABI / packet / package manifest |
-| R4.1-R4.5 | pending | rank/block/coord、per-rank slices、writeback、placed package |
-| R5.1-R5.2 | pending | static transformer local shard IR / staged IR gaps |
-| R6.1-R6.2 | pending | tile communication materialization |
-| P7/P8/P9 | later | LLVM/object、runtime adapter、board/profiling |
+| ID | 状态 | 输入 | 输出 / 完成 gate |
+| --- | --- | --- | --- |
+| R3.5 | pending | R3.4 placed/memref-aware IR + accepted DDR offset facts and descriptor/view demand | runtime allocation/import/query/package materialization；验证 runtime object 满足 committed IR-derived DDR offsets/ranges，不重新做 DDR planning |
+| R3.6-R3.8 | pending | placed instruction IR + launch signature | C ABI / packet emission、IR-derived package manifest、wrapper-facing golden packet |
+| R4.1-R4.5 | pending | placement + local shard + launch/package metadata | rank/block/coord、per-rank slices、writeback、placed package |
+| R5.1-R5.2 | pending | static transformer local shard IR / staged IR gaps | full-block schedule 或拒绝原因；补 mask/select、dynamic-bound policy、constant/weight slice 等 |
+| R6.1-R6.2 | pending | tiled tensor collective + placement/local-rank/buffer facts | materialize tile communication 到 communication / DTE / local-drain 边界 |
+| P7/P8/P9 | later | P0-P6 主链路输出 | LLVM/object、runtime adapter、board/profiling |
 
 ## 当前不做
 
@@ -59,8 +59,12 @@ backend，以及任何基于名字、路径或 workload shape 的 IR 合同。
 
 ## 下一步
 
-实现 R3.4：
+实现 R3.4 placed instruction-level realization：
 
-1. 定义 committed `wafer.tile.region` / `wafer.instr.*` 到 placed memref / access descriptor 的边界。
-2. 从 memref type/layout、`memref.subview`、`wafer.spm.offset` 和 `wafer.ddr.offset` 重算 descriptor 字段。
-3. 接入 named pipeline，并补 R3.1 -> R3.3 -> R3.4 的主线 completion proof。
+1. 定义 committed `wafer.tile.region` / `wafer.instr.*` 中 SPM/DDR offset facts 到 placed memref /
+   access descriptor 的 materialization 边界。
+2. 明确哪些 descriptor 字段由 memref type/layout、`memref.subview`、`wafer.spm.offset` 和
+   `wafer.ddr.offset` 重算，哪些仍留给 R3.5 runtime/launch boundary。
+3. 保证 R3.4 不重新做 tile/layout/SPM/DDR planning，只消费 committed IR 中已经 accepted 的 facts。
+4. 补 completion proof：R3.1 -> candidate-selection -> committed materialization -> R3.4 的 named
+   pipeline 输出能被 R3.5 runtime DDR demand materialization 直接消费。
