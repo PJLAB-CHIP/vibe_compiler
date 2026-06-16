@@ -1537,10 +1537,18 @@ struct SelectGroupTilePass
     }
 
     if (maxCandidatesPerDim < -1 || maxSearchCandidates < -1 ||
-        searchBeamWidth < -1 || candidateParallelism <= 0) {
+        searchBeamWidth < -1) {
       getOperation()->emitError()
           << "invalid_tile_search_config: search-space overrides must be -1 "
-             "or non-negative, and parallelism must be positive";
+             "or non-negative";
+      signalPassFailure();
+      return;
+    }
+    if (*parsedMode == TileSearchMode::MinEstimatedTime &&
+        candidateParallelism <= 0) {
+      getOperation()->emitError()
+          << "invalid_tile_search_config: min-estimated-time requires "
+             "positive candidate-parallelism";
       signalPassFailure();
       return;
     }
@@ -1563,7 +1571,8 @@ struct SelectGroupTilePass
       config.maxSearchCandidates = maxSearchCandidates;
     if (searchBeamWidth >= 0)
       config.searchBeamWidth = searchBeamWidth;
-    config.candidateParallelism = candidateParallelism;
+    if (config.mode == TileSearchMode::MinEstimatedTime)
+      config.candidateParallelism = candidateParallelism;
 
     llvm::SmallVector<GroupOp, 8> groups;
     getOperation().walk([&](GroupOp group) { groups.push_back(group); });

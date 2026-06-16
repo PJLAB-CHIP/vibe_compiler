@@ -110,7 +110,8 @@ def SelectGroupTilePass
            "beam cap">,
     Option<"candidateParallelism", "candidate-parallelism", "int64_t",
            /*default=*/"1",
-           "Maximum candidate evaluations run concurrently in min-estimated-time">,
+           "Maximum candidate evaluations run concurrently in "
+           "min-estimated-time; ignored by first-legal">,
     Option<"printCandidateSummary", "print-candidate-summary", "bool",
            /*default=*/"false",
            "Print selected candidate summaries to stderr">

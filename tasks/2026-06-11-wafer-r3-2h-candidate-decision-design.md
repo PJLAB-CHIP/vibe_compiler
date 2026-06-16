@@ -175,6 +175,7 @@ frontier 还有显式搜索空间控制项。硬件 SPM/DDR 容量、alignment �
 - `candidate-parallelism`：`tile-search=min-estimated-time` 下每批最多并行评估多少个 candidate。
   并行 worker 只处理 transformation-local standalone group 文本和 worker-local MLIRContext，不直接
   修改主 IR；最终 selected candidate 的 commit artifact 仍由主线程在原 context 中重新 materialize。
+  它只在 `min-estimated-time` 下校验和消费，`first-legal` 不读取这个参数。
 - `tile-search-effort=quick|default|deep` 提供 search-space preset；显式设置的
   `max-candidates-per-dim`、`preferred-tile-sizes`、`max-search-candidates` 和 `search-beam-width`
   覆盖 preset。
