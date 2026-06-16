@@ -23,16 +23,16 @@ Serving integration 暂不纳入本文通过标准。
 - 当前无卡开发环境先以 local compile / package gate 为准；板端 runtime success 必须等实际计算卡
   环境中验证，并且必须有可信 completion source，不能用已知 stub API 当 correctness fence。
 
-当前阶段的通过标准是：
+当前已完成阶段的通过标准是：
 
 - IR parse / print / verifier / conversion / FileCheck 通过。
-- resource planner、golden packet、package serialization 和 dependency/config tests 通过。
-- pipeline 能生成当前阶段的本地编译产物：committed instruction IR、runtime DDR metadata、
-  C ABI call/packet emission metadata、package manifest 和由 manifest 生成的 C stub；该 C stub 能被当前 C toolchain 做
-  syntax compile。
-- LLVM dialect / LLVM IR lowering、object emission 和真实 `wafer_*` runtime call emission 不属于当前
-  local compile / package gate 的通过条件，后续实现时必须作为单独 milestone gate 记录。
-- runtime package manifest、constant bytes metadata、SPM/DDR memory summary 能 roundtrip。
+- 已完成 resource planner、dependency/config 和已有 tool-unit tests 通过；golden packet、package
+  serialization 和 manifest roundtrip 只能证明对应工具或 fixture，不替代主线 compiler output。
+- pipeline 能生成当前阶段的本地编译产物：committed instruction IR 和 accepted SPM/DDR offset facts。
+  placement/local-shard、launch/resource contract、ABI/LLVM lowering、object/package manifest 和 runtime
+  adapter 是后续独立 gate。
+- LLVM dialect / LLVM IR lowering、object emission 和真实 `wafer_*` runtime call emission 分别属于
+  R3.6/R3.7/R3.8 gate，不属于当前 committed-instruction gate 的通过条件。
 
 当前阶段不把板端 launch、device completion、数值对比或 PMU/profiling 作为通过条件。迁移到带实际
 计算卡服务器后，这些 board run 验证再成为对应 milestone 的新增 gate。
@@ -44,7 +44,6 @@ Serving integration 暂不纳入本文通过标准。
 | Frontend program | imported Wafer program: StableHLO/MLIR IR + metadata + parameter/resource payload | importer adapter diagnostics、parse/roundtrip、shape/dtype、constant normalization、sharding import source、payload binding、third-party dialect registration 合法 |
 | Shardy propagation | StableHLO + user sharding seed or default no-user input seed | logical mesh、SDY sharding seed、propagation 结果合法；不要求 partitioned local body |
 | SPMD partition program | sharding propagation stage 输出的 StableHLO/SDY IR | XLA SPMD partitioner 或等价 stage 产出 partitioned/replicated-local StableHLO、rank-local shape、collective group 和 parameter shard binding 合法 |
-| Placement | logical ranks + topology | physical mapping 覆盖所有 rank，过滤 bad tile，cluster capability 合法 |
 | Local compute normalization | partitioned or replicated-local StableHLO | Linalg/Tensor/SCF/Arith/Math structured semantics、DPS/indexing relation、fine-grained softmax/norm/RoPE staged form 合法；不执行 SPMD partition |
 | Tensor collective handoff | partitioned StableHLO collective | Wafer LinalgExt-style tensor collective op 合法；rank group、combiner/slice relation、DPS/tiling interface 可验证，且不含 `wafer.tile.*` communication、storage 或 DTE token |
 | `wafer.group` | local compute IR + tensor collective IR | group boundary、tiled SSA、multi-output/domain、resource feedback loop 合法 |
@@ -52,10 +51,13 @@ Serving integration 暂不纳入本文通过标准。
 | Layout | tile region | layout assignment、materialization cut、冗余 conversion cleanup 合法 |
 | SPM | tile region + demands | allocation、range/end-address、lifetime、reserved range 合法 |
 | DDR | tile region + launch boundary | external binding、workspace/constant demand、default DDR arena resource/capacity 合法 |
+| Placement/local-shard | committed instruction IR + logical rank/local shard facts + topology/capability | accepted placement map 覆盖所有 rank，过滤 bad tile，block/tile 唯一，local shard bounds 合法 |
+| Launch/resource | committed instruction IR + accepted offset facts + placement/local-shard contract | launch signature、external binding、workspace、resident constant 和 control metadata resource contract 可由下游直接消费 |
 | Compute / Movement | committed instruction IR + accepted offset facts | wrapper family、layout、dtype、shape、issue/drain 合法 |
 | Communication | tile_region / SPM materialization 后的 collective/p2p IR | endpoint、token、DTE/FSM resource、wait policy 合法 |
-| C ABI / golden packet | lower-level Wafer ops | ABI unit/address/wait verified，golden packet 覆盖 wrapper mapping |
-| Launch/runtime | package + adapter | manifest roundtrip、runtime allocation object binding contract、local compile/package、stub shielding 合法；板端 completion 后续有卡环境验证 |
+| ABI / LLVM / golden packet | committed instruction IR + launch/resource contract + communication/sync lowering | LLVM dialect call 或 `wafer_*` C ABI / packet builder input 合法；ABI unit/address/wait verified，golden packet 覆盖 wrapper mapping |
+| Object/package | ABI/LLVM artifact + placement/resource/constant metadata | object/link 最小验证；manifest 记录 object/program id、entrypoint、ABI version 和 IR-derived package metadata |
+| Runtime/board | package + adapter | runtime allocation object binding contract、stub shielding、launch/completion/error propagation 合法；板端 completion 在有卡环境验证 |
 
 Gate 通过只说明进入下一层的输入合法，不说明整个 compiler 已完成。
 
@@ -139,8 +141,8 @@ Direct DTE p2p：
 - DTE wait 与 local compute drain 分离。
 - FSM / packet / stream resource 不冲突。
 - 旧 `test/Transforms/comm-local-c-abi-issues.mlir` unit gate 已删除。后续 tile-level p2p 到
-  placed Direct DTE instruction form 和 C ABI emission 的 gate 必须由 R6/R7 从 placed
-  instruction-level IR 恢复。
+  committed Direct DTE issue/wait form 和 ABI/LLVM emission 的 gate 必须由 R6/R3.6 从 committed
+  instruction-level IR、placement/resource contract 恢复。
 
 Single-card collective：
 
@@ -190,17 +192,17 @@ Transformer block vertical slice：
   `ConstantLike` value 和 `wafer.tile.load`。
 - 若启用 tensor parallel collective，R2.4 tensor collective handoff 以及 p2p/ring/multi-replica
   collective gate 已通过；否则只验证单卡/单 shard local transformer block。
-- 当前无卡开发环境要求 generated program compile，package/runtime metadata 覆盖所有 block
-  input/output、resident constants 和 workspace；completion 和数值对比后续在有卡环境验证。
+- 当前无卡开发环境要求 generated program compile；launch/resource metadata 后续应覆盖所有 block
+  input/output、resident constants 和 workspace，package/runtime completion 和数值对比在有卡环境验证。
 
 当前 transformer static fixture 只覆盖 frontend/local structured tensor dataflow。旧 full local block
-到 group split、single-tile materialization、SPM allocation、DDR binding demand 和 C ABI emission
-的 pass 链已删除；workspace buffers、resident constants、package metadata 和 IR-derived manifest
+到 group split、single-tile materialization、SPM allocation、DDR binding demand 和 ABI/LLVM lowering
+的 pass 链已删除；workspace buffers、resident constants、launch/resource metadata 和 IR-derived manifest
 emission 仍属后续恢复任务。completion、数值对比和 profiling 仍等有卡环境补 gate。
 
 M7 ABI / LLVM program gate：
 
-- placed `wafer.instr.*` 到 `wafer_*` C ABI call contract 必须固定函数名、参数单位、wait/completion
+- committed `wafer.instr.*` 到 LLVM dialect call / `wafer_*` C ABI call contract 必须固定函数名、参数单位、wait/completion
   责任和 ABI version，不允许把 C stub emission table 当作真实 runtime call。
 - lowering 后应生成 LLVM dialect call 或等价可审计 call IR；不使用专门 ABI IR op family
   作为 debug/test dump 或 LLVM call 前置层，并能
@@ -229,11 +231,11 @@ M9 overlap / cost model / profiling calibration gate：
 当前实现补入了 `linalg.elementwise` 的局部 physical slice：same-shape identity 和
 可由 permutation-only `indexing_maps` 验证的 row/head/vector broadcast 可以形成
 `wafer.group`，materialize 为 `wafer.tile.elementwise`，后续应 lower 到带 `indexing_maps` 的
-instruction-level elementwise 和 C ABI emission。后续 reduce slice 让 scalar-constant-init
+instruction-level elementwise 和 ABI/LLVM lowering。后续 reduce slice 让 scalar-constant-init
 `linalg.reduce` materialize 为 `wafer.tile.reduce`，并应 lower 到带 `dimensions` / `init_value`
-的 instruction-level reduce 和 C ABI emission。attention slice 让 QK^T / AV 的 rank-4
+的 instruction-level reduce 和 ABI/LLVM lowering。attention slice 让 QK^T / AV 的 rank-4
 `linalg.generic` contraction materialize 为 batched `wafer.tile.gemm`，并应 lower 到带
-`batch_count`、M/K/N 和 batch/head dimension attrs 的 instruction-level GEMM 和 C ABI emission。
+`batch_count`、M/K/N 和 batch/head dimension attrs 的 instruction-level GEMM 和 ABI/LLVM lowering。
 当前 transformer static fixture 覆盖的是 frontend/local structured tensor dataflow，不覆盖
 IR-derived package manifest。当前仍不覆盖 mask/select、dynamic shape 或非 constant-init reduce；
 这些是后续 compute/group/resource 恢复项。只要对应语义能由 StableHLO / structured tensor IR 和
@@ -269,13 +271,13 @@ Wafer 硬件能力表达，就不能把当前 static gate 的覆盖范围写成�
 - golden packet tests：至少覆盖 single-tile local compute 用到的 wrapper family。
 
 如果某个 milestone 暂时只能做文档验证，必须明确说明还缺 build/test harness 或板端 runtime。
-当前没有 local compile gate 能证明 IR pipeline 到 C ABI emission。显式 manifest / C stub tool-unit
+当前没有 local compile gate 能证明 IR pipeline 到 ABI/LLVM lowering。显式 manifest / C stub tool-unit
 coverage 不能替代 IR-derived package emission、LLVM IR lowering、object code emission、真实
 runtime call emission、板端运行、数值正确性、completion 或 profiling 证明。
 
 历史 local integration gate 曾把 `wafer-opt` pipeline 的 IR FileCheck 和 package manifest / C stub
 检查放在同一测试文件内，但 manifest 由 fixed fixture emitter 生成，不是从该次 `wafer-opt` 输出的
-C ABI emission metadata 自动导出。该拼接和 fixed emitter 已删除；当前只能证明 IR lowering 和
+ABI/LLVM lowering artifact 自动导出。该拼接和 fixed emitter 已删除；当前只能证明 IR lowering 和
 package schema/stub tool-unit 分别可用，不能作为 “package 由当前 lowering 结果生成” 的证据。
-进入 P7 时必须先把 IR-derived manifest emission 作为 gate，之后再推进 LLVM IR / object /
-runtime call。
+进入 object/package gate 时必须先把 IR-derived manifest emission 作为 gate，并记录 ABI/LLVM artifact、
+object/program id、entrypoint 和 ABI version；之后再推进 runtime call / board gate。

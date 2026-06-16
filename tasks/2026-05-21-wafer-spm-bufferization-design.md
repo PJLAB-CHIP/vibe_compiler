@@ -19,7 +19,7 @@ Wafer-tagged memref / `wafer.instr.*` / effects，不重复定义 instruction op
   构造 allocation input。
 - 对 instruction-level IR 做 SPM memory planning、range/end-address/alignment/bank-span verification 和 failure
   feedback。
-- 为 R3.5 runtime materialization 和 R3.6 ABI/codegen 提供 accepted offset fact；range、lifetime
+- 为 R3.5 launch/resource contract 和 R3.6 ABI/LLVM lowering 提供 accepted offset fact；range、lifetime
   和 alias 信息由当前 IR 和 helper 重算，不作为长期 attr 字段保存。
 
 本文不分配 DDR，不选择 physical layout，不决定 group boundary，不选择 compute/communication
@@ -62,11 +62,11 @@ Pipeline position:
   和 range-end verification。
 - Output artifact / IR:
   same instruction-level IR with offset-only `wafer.spm.offset` planning facts on SPM memref definitions，或结构化
-  allocation failure reason；后续 R3.5/R3.6 直接从该 fact、memref use-def 和 view relation 派生
-  runtime/ABI address-range 参数，不再经过 placed memref / descriptor 中间层。
+  allocation failure reason；后续 R3.5/R3.6 直接从该 fact、memref use-def、placement 和 view relation
+  派生 launch/resource 与 ABI address-range 参数，不再经过 placed memref / descriptor 中间层。
 - Downstream consumer:
-  R3.2g DDR memory planning、R3.2h closed-loop candidate driver、R3.5 runtime DDR materialization，
-  以及 R3.6 codegen emission。
+  R3.2g DDR memory planning、R3.2h closed-loop candidate driver、R3.5 launch/resource contract，
+  以及 R3.6 ABI/LLVM lowering。
 - User-level driver / named pipeline:
   当前可重放入口是 `wafer-lower-groups-to-memory-planned-instr`，它复用 R3.2c/R3.2d lowering 后追加
   `wafer-plan-spm-memory`。closed-loop planner 后续调用同一 stage；单独 SPM planning pass 只作为
@@ -505,7 +505,7 @@ SPM / tile-region verifier 至少检查：
 - may-reuse buffers 的 lifetime 不重叠，或由明确 wait/barrier 收口。
 - async buffer 在 drain/wait 前不能复用。
 - host-visible writeback 和 communication boundary 有明确 drain/wait/sync。
-- runtime/ABI/codegen 阶段不能要求额外 placed/access descriptor fact；compact 和 Cx/NCx buffer
+- launch/resource、ABI/LLVM 和 runtime adapter 阶段不能要求额外 placed/access descriptor fact；compact 和 Cx/NCx buffer
   的 address/range/stride 参数必须由 `computeWaferPhysicalTensorInfo`、accepted offset facts、
   allocation range 和 op verifier 一致推出。
 

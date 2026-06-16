@@ -51,8 +51,8 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   `WaferDialect.cpp` 只保留 dialect/attr/type/op 注册和 `StorageType` verifier。
 - 历史 local integration gate 曾把 `wafer-opt` IR FileCheck 和 fixed manifest/C stub fixture 放在同一
   测试文件里；这些 fixed emitter 和测试拼接已删除，当前 integration 只保留 IR pipeline coverage。
-- 当前 local compile 还没有从 committed instruction IR 和 runtime DDR metadata 导出 C ABI emission metadata、
-  IR-derived package manifest、LLVM dialect、LLVM IR、object、真实 `wafer_*` call、runtime adapter
+- 当前 local compile 还没有从 committed instruction IR、placement/local-shard contract 和 launch/resource
+  contract 导出 ABI/LLVM lowering artifact、IR-derived package manifest、LLVM IR、object、真实 `wafer_*` call、runtime adapter
   或板端 completion。
 
 ## P0 工程、依赖、组织
@@ -76,7 +76,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   `lib/Wafer/Conversion`；旧聚合 `WaferConversion` pass target 已删除，conversion 按 source/target
   IR contract 建 target。
 - `WaferTransforms` 只注册当前仍成立的 transform pass；旧 C ABI issue-op lowering 和 `WaferConversion`
-  pass target 已删除，后续按 committed instruction IR + runtime metadata contract 重建。
+  pass target 已删除，后续按 committed instruction IR + placement/resource contract 重建。
 - R0.3 后 core compiler、frontend/importer、runtime/driver 和 test tools 的 target 可见范围记录在
   `tasks/2026-05-26-wafer-dependency-layering-recovery.md`，并由 `tools/check_deps.py` 检查。
 - Shardy/SDY 公共 dialect 与 import/export/propagation passes 已通过 Wafer 顶层 CMake shim 复用
@@ -287,14 +287,16 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   `wafer.tile.region`。
 - R3.4：取消独立 placed/access descriptor materialization 主线；committed instruction IR 已经携带后续
   可重算的 operands、views、descriptor attrs 和 accepted offset facts。
-- R3.5：materialize R3.3 committed IR 中已接受的 DDR planned ranges 和 external binding requirements；
-  legality / range / capacity / bandwidth demand 在 R3.2g 中完成，R3.5 不重新决定 group plan 或 DDR range plan。
-- R3.6：恢复 C ABI / packet emission gate，让 ABI 参数单位和 wait policy 从 committed instruction IR、
-  accepted offset facts 和 R3.5 runtime metadata 派生；不再保留专门 ABI IR op family 作为主线或 debug layer。
-- R3.7：恢复 package manifest gate，manifest、C stub 和 launch signature 从当前 `wafer-opt`
-  输出导出。
-- R3.8：恢复 C ABI / golden packet 边界，至少让 RDMA/WDMA/GEMM 有真实
-  wrapper-facing call contract 和 golden packet 对照。
+- R3.5：从 R3.3 committed IR、accepted offsets 和 placement/local-shard contract 导出 launch signature
+  与 DDR resource contract；legality / range / capacity / bandwidth demand 在 R3.2g 中完成，R3.5
+  不重新决定 group plan 或 DDR range plan，也不 allocate/import/query runtime object。
+- R3.6：恢复 ABI / LLVM lowering gate，让 ABI 参数单位和 wait policy 从 committed instruction IR、
+  accepted offset facts、placement/local-shard contract 和 R3.5 launch/resource contract 派生；不再保留
+  专门 ABI IR op family 作为主线或 debug layer。
+- R3.7：恢复 object/package manifest gate，manifest、launch signature、entrypoint、ABI version 和
+  object/program id 从当前 `wafer-opt` 输出导出。
+- R3.8：恢复 runtime adapter / board gate，至少让 RDMA/WDMA/GEMM 有真实
+  wrapper-facing call contract、runtime binding 和 golden packet 对照。
 
 ## P4 Multi-Tile No Communication
 
@@ -345,7 +347,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   recip/sqrt/rsqrt/exp、limited broadcast、mask-add 或 compare/select。
 - layout/SPM/DDR feasibility 要覆盖所有 accepted groups；constant/weight slice 要能追溯到
   `ConstantLike` + `wafer.tile.load` / storage transform。
-- package/runtime metadata 要覆盖 block inputs/outputs、resident constants、workspace；当前无卡环境
+- launch/resource/package metadata 要覆盖 block inputs/outputs、resident constants、workspace；当前无卡环境
   只能做 generated program compile，不能声称 device correctness。
 
 当前实现：
@@ -355,8 +357,8 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - 有 rank-4 QK^T / AV contraction lowering、same-shape/permutation-only elementwise、local reduce
   和 batched GEMM issue lowering。
 - 旧 local-transformer fixed manifest / C stub gate 已删除；当前 transformer integration 只覆盖
-  StableHLO -> structured tensor/local compute pipeline，不覆盖 committed instruction IR、runtime DDR metadata
-  或 C ABI emission。
+  StableHLO -> structured tensor/local compute pipeline，不覆盖 committed instruction IR、placement/resource
+  contract 或 ABI/LLVM lowering。
 
 缺口：
 
@@ -370,7 +372,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 
 恢复任务：
 
-- R5.1：恢复 transformer local 编译验证，让 workspace/resident constants 和 C ABI emission metadata
+- R5.1：恢复 transformer local 编译验证，让 workspace/resident constants 和 ABI/LLVM emission metadata
   来自 full-block IR dataflow 和 lowering 输出。
 - R5.2：补 transformer compute coverage gaps：mask/select、dynamic-bound policy、non-constant-init reduce、
   constant/weight slice 和 package consistency。
@@ -392,7 +394,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 
 - 有 `wafer.tile.send` / `recv` / `wait` verifier、placement peer validation、non-empty wait validation。
 - 历史上有 旧 ABI debug op `dte_send` / `recv` / `wait` issue op 和 block-local resource tuple conflict
-  validation；当前主线应恢复 placed Direct DTE instruction form 和 C ABI emission。
+  validation；当前主线应恢复 committed Direct DTE issue/wait form 和 ABI/LLVM emission。
 - 有 ring all-gather、reduce-scatter、all-reduce lowering 到 p2p + local elementwise accumulation。
 - 旧的 StableHLO all_gather/all_reduce/reduce_scatter 到 `wafer.tile.*` communication collective-level op 的
   normalization 已移除；R2.4 主线已恢复 StableHLO -> Wafer LinalgExt-style tensor collective
@@ -407,12 +409,12 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - tiled tensor collective -> `wafer.tile.*` communication materialization 尚未实现；R6.2 需要在 tile_region / SPM
   materialization 之后补可验证 buffer-slice / layout/materialization 路径。
 - SPM/DDR memory 验证没有和 communication staging / buffer lifetime 完整组合。
-- communication plan metadata 没进入真实 package/runtime path；没有 Direct DTE board completion/error 验证。
+- communication plan metadata 没进入真实 launch/resource/package path；没有 Direct DTE board completion/error 验证。
 
 恢复任务：
 
 - R6.1：恢复 communication design-conformance gate，补 DTE resource allocation、collective buffer
-  slice/address offset、package/runtime metadata。
+  slice/address offset、launch/resource/package metadata。
 - R6.2：移除 StableHLO collective bridge 中的临时 visible cast，改由可验证 buffer-slice /
   layout/materialization 路径承接。
 
@@ -426,7 +428,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 | P3 | 骨架 | 旧 single-tile local unit path 已删除；group/resource/C ABI/package 主链路未闭环 |
 | P4 | 骨架 | placement/map 和 multi-tile fixture 可跑，但真实 shard/merge/launch binding 未闭环 |
 | P5 | 骨架 | transformer staged frontend fixtures 和 local fixture 可跑，但 full schedule/resource/package/device program 未闭环 |
-| P6 | 骨架 | comm/DTE fixture 可跑，但 resource allocator、buffer slice/address、package/runtime metadata 未闭环 |
+| P6 | 骨架 | comm/DTE fixture 可跑，但 resource allocator、buffer slice/address、launch/resource/package metadata 未闭环 |
 
 R2.4 已建立 Wafer LinalgExt-style tensor collective handoff；当前下一步仍是 R3.1，补完整
 group boundary / conservative expansion，再进入 root tile planning 和 tile_region

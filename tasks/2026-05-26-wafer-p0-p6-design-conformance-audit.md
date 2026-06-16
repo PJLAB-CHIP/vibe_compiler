@@ -29,7 +29,7 @@ group/tiling。旧 PyTorch/XLA post-SPMD export 测试入口已删除；它不�
 
 - frontend program 由真实 importer adapter 产出。
 - group planner 已按设计接入下游 legality analysis 和 resource planning。
-- tile/layout/SPM/DDR 已实现完整 committed instruction + runtime metadata program。
+- tile/layout/SPM/DDR 已实现完整 committed instruction + placement/resource/ABI program。
 - C ABI 已 lower 到真实 `wafer_*` call / wrapper / packet。
 - package manifest 由当前 `wafer-opt` lowering 输出自动生成。
 - runtime adapter、runtime allocation binding、completion 和板端数值验证已实现。
@@ -41,10 +41,10 @@ group/tiling。旧 PyTorch/XLA post-SPMD export 测试入口已删除；它不�
 | P0 工程/依赖/组织 | CMake、`wafer-opt`、lit/gtest、dependency pin/layering validation 已有；源码 ownership 拆到 Frontend / IR / Analysis / Transforms / Conversion / ABI；旧聚合 Conversion pass target 已删除；R0.3 已记录并验证依赖层级边界；IR 文件和测试已按层组织 | 最小工程入口可用，不代表后端链路完成 |
 | P1 Wafer IR verifier | ODS/type/attr/op/verifier 正负例覆盖了核心基础实现；ODS、verifier 和 dialect tests 已按 IR 层组织；R1.2 已补 interface/resource/effect 查询合同；历史 R1.3 local compute stage-connection gate 已删除 | dialect verifier 的孤立负例仍会使用 `builtin.unrealized_conversion_cast` 构造非法边界值；communication bridge 的 visible cast 仍未清理；instruction/runtime 主链路仍未闭环 |
 | P2 frontend / local compute | StableHLO textual lowering 到 linalg/tensor/arith/math 子集已有，部分 transformer staged form 有 FileCheck | `wafer-compile-stablehlo` 早期只是 synthetic 最小验证 tool；PyTorch/XLA program directory capture 已补入 P2.F1，但 ConstantLike/storage contract 仍未闭环；部分 slice 只是 frontend dataflow fixture，不是完整 frontend program pipeline |
-| P3 single-tile local compute | 旧 group formation、root tile exploration、single-tile materialization、SPM allocation、DDR external binding、C ABI issue-op unit pass 链已删除；保留 ABI descriptor / manifest tool-unit 覆盖 | group planner、root tile planning、SPM/DDR/instruction-level lowering、C ABI emission 和 IR-derived package manifest 均需按真实 program chain 恢复 |
+| P3 single-tile local compute | 旧 group formation、root tile exploration、single-tile materialization、SPM allocation、DDR external binding、C ABI issue-op unit pass 链已删除；保留 ABI descriptor / manifest tool-unit 覆盖 | group planner、root tile planning、SPM/DDR/instruction-level lowering、ABI/LLVM emission 和 IR-derived package manifest 均需按真实 program chain 恢复 |
 | P4 multi-tile no communication | placement map verifier、multi-tile no-comm outlining已有 | multi-tile materialization 克隆同一 whole-tensor tile_region，最后用最后一个 tile_region result 替换 group result；没有真实 local shard slicing、per-rank output merge 或 runtime launch binding；manifest placement metadata 尚未由 IR-derived package path 生成 |
 | P5 transformer block | norm/softmax/linear-residual/MLP frontend lowering fixtures、attention QK/AV lowering、transformer textual pipeline 已有 | 这些 fixture 只证明 structured tensor dataflow 覆盖，不是 full schedule planner；transformer package manifest 尚未由 transformer IR 导出；workspace/resident constant metadata 与 IR dataflow 没有自动一致性来源；没有真实 full-block device program |
-| P6 communication | p2p / collective verifier 和历史 StableHLO collective bridge coverage 曾存在；旧 ring lowering / C ABI issue-op unit pass 链已删除 | Direct DTE resource allocator、collective buffer slice/address offset lowering、tensor collective handoff 到 tiled communication materialization，以及真实 package/runtime metadata 均未闭环 |
+| P6 communication | p2p / collective verifier 和历史 StableHLO collective bridge coverage 曾存在；旧 ring lowering / C ABI issue-op unit pass 链已删除 | Direct DTE resource allocator、collective buffer slice/address offset lowering、tensor collective handoff 到 tiled communication materialization，以及真实 launch/resource/package metadata 均未闭环 |
 
 ## 主要根因
 
@@ -66,8 +66,8 @@ group/tiling。旧 PyTorch/XLA post-SPMD export 测试入口已删除；它不�
 ## 纠正原则
 
 - P0-P6 的历史 `done` 只保留为局部进度记录，不再作为设计一致性完成声明。
-- 后续不继续扩展 P7/P8/P9；先重开 P0-P6 设计一致性恢复队列。从 committed instruction IR /
-  runtime DDR metadata / C ABI emission metadata 自动导出 package manifest 是恢复 P3/P4/P5 local compile gate 的一个子任务，
+- 后续不继续扩展 P7/P8/P9；先重开 P0-P6 设计一致性恢复队列。从 committed instruction IR、
+  placement/local-shard contract、launch/resource contract 和 ABI/LLVM lowering artifact 自动导出 package manifest 是恢复 P3/P4/P5 local compile gate 的一个子任务，
   不能被当作 P7 已经可以开始的前提。
 - 每个被恢复为 `done` 的任务必须满足对应设计文档的合同，或在任务名/验收里明确收窄为局部 fixture。
 - 显式 manifest fixture 只能作为 validator/stub tool unit fixture，不能作为 compile pipeline

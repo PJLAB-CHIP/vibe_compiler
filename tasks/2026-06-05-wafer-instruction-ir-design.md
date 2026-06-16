@@ -76,7 +76,7 @@ Pipeline position:
   `wafer.instr.local_drain`，或结构化 legalization failure reason。
 - Downstream consumer:
   R3.2f SPM memory planning、R3.2g DDR memory planning、R3.2h closed-loop candidate driver、
-  R3.5 runtime DDR materialization 和 R3.6 codegen emission。
+  R3.5 launch/resource contract 和 R3.6 ABI/LLVM lowering。
 - User-level driver / named pipeline:
   主线由 R3.2 closed-loop planner 调用；局部 bring-up / candidate evaluation 入口是
   `wafer-lower-tile-region-to-instr` 和 `wafer-lower-groups-to-instr` named pipeline。
@@ -323,8 +323,8 @@ resource effects 至少要表达：
 | CT | SPM memref read/write as operand contract requires | Compute/CT issue |
 | NE | SPM memref read + SPM memref write | Compute/NE issue |
 
-R3.2d 不建模 worker id。`TsmExecute` 的 worker bits、register window 和 packet field 属于 placed
-instruction / codegen emission。
+R3.2d 不建模 worker id。`TsmExecute` 的 worker bits、register window 和 packet field 属于
+committed instruction 后的 ABI/LLVM lowering。
 
 ## 7. ODS-Level Op Contracts
 
@@ -533,10 +533,10 @@ R3.2d verifier checks only instruction legality:
 
 Instruction lowering does **not** verify physical address range, SPM bank conflicts, DDR default arena capacity,
 runtime symbol, packet bit layout or worker register window. Those checks belong to SPM/DDR offset assignment,
-R3.5 runtime DDR materialization and ABI/packet emission.
+R3.5 launch/resource contract, R3.6 ABI/LLVM lowering and R3.8 runtime adapter.
 DDR offset assignment must accept or reject the explicit DDR views, descriptors and compiler-managed DDR `memref.alloc`
-already present in this IR, and must materialize accepted DDR offset facts before R3.5 runtime materialization
-and R3.6 ABI/codegen emission consume them.
+already present in this IR, and must materialize accepted DDR offset facts before R3.5 launch/resource contract
+and R3.6 ABI/LLVM lowering consume them.
 
 ## 11. Example
 

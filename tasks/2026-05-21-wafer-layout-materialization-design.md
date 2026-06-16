@@ -83,8 +83,9 @@ layout planning 有两个恢复层次：
   buffer demand。该层只产出 analysis result 和 debug dump，不 rewrite `wafer.group`，不写
   layout attr，也不生成 `wafer.tile.region`。
 - committed `wafer.tile.region` / instruction-level IR 已经包含 candidate gates 接受的
-  Wafer-tagged memref value 和 `wafer.tile.materialize_layout` op。R3.5/R3.6 只从这些 IR facts
-  派生 runtime/ABI/codegen 参数，不再重新 materialize layout assignment 或 materialization cut。
+  Wafer-tagged memref value 和 `wafer.tile.materialize_layout` op。后续 placement、R3.5
+  launch/resource contract 和 R3.6 ABI/LLVM lowering 只从这些 IR facts 派生 lower-level 参数，
+  不再重新 materialize layout assignment 或 materialization cut。
 
 完整 layout materialization 的输入来自 target-abstract tile-region IR。它由 scheduled
 `wafer.group` lowering 而来，但 layout-sensitive tiled op 已经被绑定为正式的
@@ -732,13 +733,13 @@ pass 名是实现组织，不是架构边界；边界仍以 IR contract 和 veri
    - 为 constant source 生成 read-only DDR demand：resident constant、streaming load 或 staging
      由 DDR planner 根据 capacity、range、alignment、bandwidth 和 reuse 决定。
    - 若同一个 constant 被多个 incompatible consumers 使用，可以 clone / specialize constant use，
-     或保留 runtime `wafer.tile.materialize_layout`；选择由 cost、SPM 和 DDR feasibility 决定。
+     或保留 device-side `wafer.tile.materialize_layout`；选择由 cost、SPM 和 DDR feasibility 决定。
    - 最终 package emission 只序列化当前 IR 已经选定的 constant storage，不创建新的 IR 事实源。
 
    不负责：
 
    - 不选择 tile shape。
-   - 不决定 runtime materialization cut。
+   - 不决定 package/load-time storage materialization cut。
    - 不修改 tensor semantic layout。
 
 4. Runtime / ABI address derivation
@@ -995,7 +996,7 @@ compile-time constants：
 - constant 虽然不是 group external input，但每个 tile-region use 都必须通过显式 load source
   表达，并参与 DDR demand / tiling / bandwidth 计算。
 - 若同一个 constant 被多个 incompatible consumers 共享，V0 可以 clone / specialize constant use，
-  也可以在 consumer edge 做 runtime materialization；选择由 cost、package size、SPM allocation
+  也可以在 consumer edge 做 device-side materialization；选择由 cost、package size、SPM allocation
   和 DDR memory planning 决定。
 - constant storage transform 只是把 conversion 提前到编译期执行，不是新的上层 IR 语义。
 
@@ -1214,11 +1215,12 @@ V0 不做全局最优，但不能只做一次贪心选择。主路径是 determi
    在 accepted IR 上运行 layout materialization cleanup。无条件 fold 直接删除冗余 op；改变 lifetime
    或 boundary layout 的 rewrite 必须重新通过 SPM allocation 和 DDR memory planning。
 
-10. Runtime / ABI handoff
+10. Placement / launch / ABI handoff
 
-   cleanup 后交给 R3.5 runtime materialization 和 R3.6 ABI/codegen。它们从 committed
-   Wafer-tagged memref、accepted offset facts、view relation 和 layout helper 派生 address/range/stride
-   参数。layout planner 不直接生成 LLVM ABI，但必须保证 accepted layout 都能被这个派生过程合法实现。
+   cleanup 后交给 placement/local-shard contract、R3.5 launch/resource contract 和 R3.6 ABI/LLVM
+   lowering。它们从 committed Wafer-tagged memref、accepted offset facts、view relation、placement
+   和 layout helper 派生 address/range/stride 参数。layout planner 不直接生成 LLVM ABI，但必须
+   保证 accepted layout 都能被这个派生过程合法实现。
 
 ## 11. Cost Model
 
@@ -1300,7 +1302,7 @@ physical layout 一致；这些事实不反写进 `wafer.tile.materialize_layout
   path。
 - 跨多个 group 的全局 layout optimization：当 bounded adjacent co-planning 仍无法消除主要 repeated
   materialization，且 profile 显示跨长链 layout 决策成为主成本时引入。
-- 多版本 runtime materialization cache：只有同一 value 在多个 incompatible consumers 间反复转换，
+- 多版本 device-side materialization cache：只有同一 value 在多个 incompatible consumers 间反复转换，
   且 SPM/DDR tradeoff 明确优于 recompute / split group 时引入。
 - PMU conversion latency model：当 board profiling 能稳定区分 `GatherScatter` / TDMA / wrapper path
   的 latency 后替换 V0 byte-based cost。

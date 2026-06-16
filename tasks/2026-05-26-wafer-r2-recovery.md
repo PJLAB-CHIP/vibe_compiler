@@ -118,7 +118,7 @@ parameter name 只用于定位 exporter program 中的 parameter payload，不�
 ## R2.3 Local Compute Normalization Coverage Status
 
 当前 coverage 只说明 local shard structured tensor IR dataflow 可以被识别或 lowering，不说明 group
-boundary、tile shape、multi-stage schedule、SPM residency 或 C ABI emission sequence 已完成。
+boundary、tile shape、multi-stage schedule、SPM residency 或 ABI/LLVM lowering sequence 已完成。
 
 | 子结构 | 当前证据 | 当前结论 | 仍未完成 |
 | --- | --- | --- | --- |

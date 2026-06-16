@@ -2,7 +2,7 @@
 
 日期：2026-05-25
 
-状态：设计草案；范围：committed instruction IR + runtime DDR metadata 到 C ABI / wrapper / packet 的 lowering。
+状态：设计草案；范围：committed instruction IR + placement/resource contract 到 ABI / LLVM / wrapper / packet 的 lowering。
 
 本文定义 committed Wafer instruction program 到 C ABI / wrapper / packet 的 lowering 合同，
 以及 golden packet 测试边界。C ABI 是 lower-level codegen 的稳定调用面，不是上层 IR 语义。
@@ -42,14 +42,15 @@
 ```text
 committed wafer.tile.region / wafer.instr.* IR
   + accepted SPM/DDR offset facts
-  + R3.5 runtime DDR metadata
+  + placement/local-shard contract
+  + R3.5 launch/resource contract
   + wafer.instr.* / tile communication / sync ops
 ```
 
 输出：
 
 ```text
-LLVM dialect / C call sequence or packet emission
+LLVM dialect call sequence / C ABI call sequence or packet emission
   -> wafer_* C ABI functions
   -> public wrapper or runtime helper
   -> hardware packet / CSR / DTE helper
@@ -66,15 +67,17 @@ LLVM dialect / C call sequence or packet emission
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  R3.3/R3.5 产出的 committed `wafer.instr.*` IR、accepted SPM/DDR offset facts、runtime DDR metadata
-  和 launch signature。
+  R3.3 committed `wafer.instr.*` IR、accepted SPM/DDR offset facts、placement/local-shard contract、
+  R3.5 launch/resource contract 和 launch signature。
 - Current stage responsibility:
-  从 committed instruction IR 和 runtime DDR metadata 派生 `wafer_*` C ABI call、LLVM call
-  或 packet builder 输入，固定参数单位、address domain、wait/completion policy 和 ABI version。
+  从 committed instruction IR、accepted offset facts、placement/local-shard contract 和 launch/resource
+  contract 派生 LLVM dialect call、`wafer_*` C ABI call 或 packet builder 输入，固定参数单位、
+  address domain、wait/completion policy 和 ABI version。
 - Output artifact / IR:
-  C ABI call sequence / packet emission metadata / debug dump，以及 golden packet test input。
+  LLVM dialect call sequence、C ABI call sequence / packet emission metadata / debug dump，以及 golden
+  packet test input。
 - Downstream consumer:
-  R3.7 IR-derived package manifest、R3.8 wrapper-facing call contract 和 board/runtime adapter。
+  R3.7 object emission / IR-derived package manifest、R3.8 wrapper-facing call contract 和 board/runtime adapter。
 - User-level driver / named pipeline:
   主线由后端 compile pipeline 调用；不引入专门 ABI IR op family 作为用户级 compile flow。
 - Explicit non-goals:
@@ -129,17 +132,17 @@ V0 family：
 调用 public Tsm wrapper、Kcore runtime helper 或未来 native helper。
 
 R3.6 主线不要求专门的 ABI IR 层。codegen 可以直接从 committed `wafer.instr.*`、accepted
-SPM/DDR offset facts 和 R3.5 runtime DDR metadata 发射 `wafer_*` C shim 调用、LLVM call 或 packet
-builder 输入。
+SPM/DDR offset facts、placement/local-shard contract 和 R3.5 launch/resource contract 发射 LLVM
+dialect call、`wafer_*` C shim 调用或 packet builder 输入。
 如果保留 `wafer.instr.rdma`、`wafer.instr.wdma`、`wafer.instr.gemm`、`wafer.instr.elementwise`、
 `wafer.instr.reduce`、Direct DTE emission helper 这类对象，它们只作为 very-late debug/test dump 或 emission
 helper，不能作为主线架构层，也不能承载 placement、layout 或 instruction selection 决策。
 
-fixed-size unicast `wafer.tile.send` / `recv` / `wait` 在进入 C ABI emission 前应已经 lower 成
-placed Direct DTE instruction form，显式包含 byte count、endpoint、FSM/packet/stream resource、
-token/wait lifetime 和 staging storage。Ring reduce collectives 在进入 C ABI emission 前应先展开为
+fixed-size unicast `wafer.tile.send` / `recv` / `wait` 在进入 ABI/LLVM lowering 前应已经 lower 成
+committed Direct DTE issue/wait form，显式包含 byte count、endpoint、FSM/packet/stream resource、
+token/wait lifetime 和 staging storage。Ring reduce collectives 在进入 ABI/LLVM lowering 前应先展开为
 p2p Direct DTE issue 和明确 `wafer.instr.elementwise` accumulator step。旧 tile_region-to-C-ABI
-pass 已删除；后续 C ABI 层仍不应引入“带 reduction 的 DTE issue”。
+pass 已删除；后续 ABI/LLVM 层仍不应引入“带 reduction 的 DTE issue”。
 
 ## 5. Instruction Facts to Preserve
 
@@ -199,7 +202,7 @@ Golden data 必须来自 register-level spec 和 wrapper behavior，不能来自
 
 当前 V0 unit gate 先用 `Wafer/ABI/TileAbi.h` 的 descriptor builder 固定 tile ABI argument contract：
 RDMA / WDMA 的 DDR lower bound、SPM usable range、byte count、exclusive end range 和
-`issue_only` policy，以及 GEMM 的 M/K/N 参数。这个 gate 覆盖 placed instruction 到 ABI 参数单位和
+`issue_only` policy，以及 GEMM 的 M/K/N 参数。这个 gate 覆盖 committed instruction 到 ABI 参数单位和
 address direction 的映射，但还不是最终 wrapper-to-register bitfield golden；真实 packet field 对照
 在接入 public wrapper 或 C shim 后继续扩展。
 

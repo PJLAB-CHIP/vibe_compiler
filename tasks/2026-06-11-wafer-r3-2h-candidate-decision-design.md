@@ -48,8 +48,8 @@ Pipeline position:
   accepted SPM offset facts 和 accepted DDR offset facts；或 no-candidate / split-needed failure
   reason。
 - Downstream consumer:
-  R3.5 消费 committed main IR 中的 accepted SPM/DDR facts 和当前 IR 可重算的
-  descriptor/view/allocation demand，
+  placement/local-shard contract、R3.5 launch/resource contract 和 R3.6 ABI/LLVM lowering 消费
+  committed main IR 中的 accepted SPM/DDR facts 和当前 IR 可重算的 descriptor/view/allocation demand，
   不重新枚举 candidate 或重做 memory planning。
 - User-level driver / named pipeline:
   `wafer-select-group-tile` pass 和 `wafer-lower-groups-to-selected-instr` named pipeline；

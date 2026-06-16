@@ -54,7 +54,9 @@ scheduled wafer.group tensor body
   -> instruction-level wafer.instr.* IR over unplaced Wafer-tagged memref values
   -> same instruction-level IR after SPM memory planning
   -> same instruction-level IR with accepted DDR planned range facts
-  -> codegen emission to Wafer C ABI / packet / package metadata
+  -> placement / launch-resource contract
+  -> ABI / LLVM lowering to Wafer C ABI / packet builder input
+  -> object/package/runtime adapter
 ```
 
 各层表示：
@@ -90,7 +92,7 @@ Pipeline position:
   instruction-level Wafer IR over unplaced Wafer-tagged memref，或结构化 failure reason。
 - Downstream consumer:
   R3.2f SPM memory planning、R3.2g DDR memory planning、R3.2h closed-loop candidate driver，以及 R3.6
-  codegen emission。tiled DDR load/store view 必须已经在 R3.2e 或 accepted materialization 中显式提供。
+  ABI/LLVM lowering。tiled DDR load/store view 必须已经在 R3.2e 或 accepted materialization 中显式提供。
 - User-level driver / named pipeline:
   主线仍从 `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 进入 R3.1/R3.2；
   R3.2d 可提供局部 dump / lit gate，但不能成为用户级 compile flow。
@@ -149,7 +151,7 @@ transcendental 子集。它应满足：
 - op kind 使用受控 enum 或拆分 op，不通过字符串名字匹配。
 - dtype 组合由 verifier 检查；普通 elementwise 默认 input/output dtype 一致，convert 明确记录
   src/dst dtype pair 和 rounding / zero-point 语义。
-- bool/i1 使用 logical element count，storage bytes 和 bitpack 由 ABI/codegen emission /
+- bool/i1 使用 logical element count，storage bytes 和 bitpack 由 ABI/LLVM lowering /
   lower-level verifier 从 committed IR 派生。
 - layout preference 通常是 flexible：若 producer 已经是 aligned layout，elementwise 可以继承以避免
   materialization；若 consumer 更偏好 compact，也可以在 cut edge 上 materialize。
@@ -189,7 +191,7 @@ recv chunk 与 accumulator 的本地累计步骤；`wafer.tile.reduce` 仍只表
 - output dtype、init value 和 NaN/overflow 等细节如果会影响语义，应保留在 op contract 中，而不是
   留给 wrapper 默认值。当前 tile-region IR lowering 从 scalar-constant `linalg.fill` out
   恢复 `init_value` attr；若 init 是 group boundary scalar，则作为 `wafer.tile.reduce` 的
-  scalar init operand 保留 SSA 关系。R3.6 codegen emission 如果目标 wrapper 仍只接受 issue-time
+  scalar init operand 保留 SSA 关系。R3.6 ABI/LLVM lowering 如果目标 wrapper 仍只接受 issue-time
   `init_value` 参数，必须把动态 init 明确拆成 native reduce + supported scalar combine，或扩展
   wrapper contract，不能在 R3.2c 丢失语义。
 
@@ -330,8 +332,8 @@ Instruction/runtime verifier：
 | instruction legalization / selection | layout-materialized IR | instruction-level `wafer.instr.*` over unplaced Wafer-tagged memref | 将 target-abstract op 改写成 CT/NE/TDMA/RDMA/WDMA 指令形态，列出 queue、effects、temp/psum/staging memref values、alias 和 descriptor attrs；DTE communication 不进入普通 `wafer.instr` path |
 | SPM memory planning | instruction-level IR with unplaced Wafer-tagged memref | same instruction-level IR with planned SPM offset facts | 从 memref use-def 和 instruction effects 收集 demand、liveness，分配 offset/range/bank |
 | DDR memory planning | SPM-planned instruction-level IR with actual DDR tile views, descriptors and compiler-managed DDR `memref.alloc` | same instruction-level IR with accepted DDR offset facts，或结构化失败 | 从 memref view、descriptor、alloc、lifetime 和 target policy 重算 DDR demand；验证 external demand，为 compiler-managed/resident/inter-group demand 规划 accepted offset；验证或拒绝当前 IR 中显式表达的 DDR demand |
-| runtime DDR materialization | committed instruction IR with accepted SPM/DDR offset facts | runtime allocation/import/query/package metadata，或结构化失败 | 从 committed IR 直接派生 runtime DDR demand，验证 runtime object 满足 accepted ranges，不重新决定 layout/SPM/DDR plan |
-| codegen emission | committed instruction IR + runtime DDR metadata | LLVM call / C ABI call / package metadata | 从当前 IR 派生 ABI/packet 参数，生成具体 ABI call 或 packet emission，不回头修改 schedule/layout |
+| launch/resource contract | committed instruction IR with accepted SPM/DDR offset facts + placement/local-shard contract | launch signature、external binding、workspace、resident constant resource contract，或结构化失败 | 从 committed IR 直接派生 launch-visible resource demand，不重新决定 layout/SPM/DDR plan，不 allocate/import/query runtime object |
+| ABI / LLVM lowering | committed instruction IR + launch/resource contract | LLVM dialect call / C ABI call / packet builder input | 从当前 IR 派生 ABI/packet 参数，生成具体 ABI call 或 packet emission，不回头修改 schedule/layout |
 
 如果一个 pass 创建 `wafer.tile.*` compute、movement、layout、SPM 或 sync op，应声明 dependent dialects。pass
 pipeline 只表达 transformation 顺序，不承载隐藏语义。
@@ -372,12 +374,12 @@ local reduce 到 `wafer.tile.reduce` 的 path，保留 reduce dimensions
 slice：只接受可由 `linalg.generic` indexing maps、parallel/reduction iterator types、mul-add
 body 和静态 shape relation 验证的 batch/head 形态，materialize 为带显式 batch/head/m/k/n 维度
 attrs 的 `wafer.tile.gemm`。后续 R3.2d/R3.6 必须把它 lower 成带 `batch_count` 和 M/K/N 的
-instruction-level GEMM 以及对应 C ABI emission。历史 transformer fixed package fixture 已删除；compiler-managed/resident constant metadata、
+instruction-level GEMM 以及对应 ABI/LLVM lowering。历史 transformer fixed package fixture 已删除；compiler-managed/resident constant metadata、
 resource summary 一致性验证和 full block package manifest 必须由后续 IR-derived package gate
 恢复。当前覆盖仍不是通用 elementwise/reduce/GEMM coverage；更复杂 broadcast、relation/logic、convert、多输入/非
 constant-init reduce 和 mask/select 仍按后续泛化 gate 推进。当前 coverage 不能被解释成
 Wafer compute 语义上不支持这些结构；只要硬件 wrapper / structured lowering 能表达，就应补
-compute op、verifier、instruction lowering、ABI emission 或 memory planning gate。
+compute op、verifier、instruction lowering、ABI/LLVM lowering 或 memory planning gate。
 
 V1 或后续扩展：
 
@@ -475,4 +477,4 @@ Accepted layout 后：
 全局文档边界见 `tasks/2026-05-11-wafer-ai-compiler-architecture.md` 第 8 节。本文只维护
 target-abstract compute/movement op 的语义、interface 和 lowering legality；group formation、
 layout assignment、SPM/DDR allocation、communication 和 launch/runtime 不在本文重复定义。
-register-level wrapper / packet 约束只在 runtime/ABI/codegen emission 中消费。
+register-level wrapper / packet 约束只在 launch/resource、ABI/LLVM 或 runtime adapter 边界中消费。

@@ -43,9 +43,18 @@ PyTorch/XLA StableHLO Wafer program directory
   -> wafer-lower-groups-to-selected-instr / candidate-selection + committed materialization
        search shape-driven traversal/reduction refinement frontier, verify same-domain output coverage,
        rerun candidate gates, commit only the selected passing candidate into main IR
-  -> R3.5 launch/runtime DDR materialization
-       runtime allocation/import/query/package metadata derived from committed IR and accepted DDR demand
-  -> R3.6+ C ABI / packet / object / runtime adapter
+  -> placement / local-shard contract
+       accepted logical rank/block -> physical coordinate mapping and launch-visible local shard metadata
+  -> R3.5 launch/resource contract formation
+       launch signature, DDR resource contract, workspace/constant/external binding requirements
+       derived from committed IR, accepted offsets and placement
+  -> R3.6 ABI / LLVM lowering
+       committed `wafer.instr.*`, communication and sync boundary -> LLVM dialect call sequence or
+       `wafer_*` C ABI / packet builder input
+  -> R3.7 object + package manifest assembly
+       object/program id, entrypoint, ABI version, constants, placement and resource metadata
+  -> R3.8 runtime adapter / board launch
+       allocate/import/query/bind runtime objects, launch program, validate completion and errors
 ```
 
 `wafer-compile-stablehlo` 只做 frontend / StableHLO program verifier。
@@ -55,40 +64,43 @@ PyTorch/XLA StableHLO Wafer program directory
 
 ## 当前 Active
 
-**R3.5 launch/runtime DDR materialization**
+**placement / local-shard contract**
 
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  committed main IR；已包含 selected candidate 的 `wafer.tile.region`、`wafer.instr.*`、actual DDR tile
-  views、accepted SPM offset facts 和 accepted DDR offset facts；原 logical `wafer.group` 已删除。
+  R3.3 committed main IR；已包含 selected candidate 的 `wafer.tile.region`、`wafer.instr.*`、actual DDR
+  tile views、accepted SPM offset facts 和 accepted DDR offset facts；同时消费 frontend/SPMD
+  保留的 logical rank、block/local shard facts，以及 target topology / capability / good-tile metadata。
 - Current stage responsibility:
-  从 committed IR 直接重算 runtime DDR demand，并 materialize runtime allocation/import/query/package
-  metadata；验证 runtime object 满足 committed IR-derived DDR views、compiler-managed/resident ranges
-  和 accepted DDR offset facts。不创建独立 placed memref / access descriptor 中间协议。
+  materialize accepted placement map 和 launch-visible local shard/block metadata；验证 logical rank 覆盖、
+  physical tile 可用性、block id/local shard bounds 和 committed IR 的 per-rank boundary 可解释性。
+  该阶段只形成 placement/local-shard contract，不生成 runtime allocation、ABI call、packet、object
+  或 package。
 - Output artifact / IR:
-  runtime DDR materialization boundary / package metadata demand；所有字段都由 committed
-  `wafer.instr.*` operands、`memref.subview`、`wafer.spm.offset`、`wafer.ddr.offset` 和 memref type/layout
-  重算，不复制成第二份长期事实源。
+  accepted placement/local-shard contract；可由 `wafer.placement.*`、launch-visible function/module
+  metadata 或后续 `wafer.launch` boundary 承载。它只保存不能从 local IR 重算的 mapping，不复制
+  memory plan、packet field、runtime handle 或 search trace。
 - Downstream consumer:
-  R3.6+ C ABI / packet / object / runtime adapter。
+  R3.5 launch/resource contract formation、R6 communication lowering、R3.7 package manifest 和 R3.8 runtime adapter。
 - User-level driver / named pipeline:
-  后续应在 committed selected-instr named pipeline 之后追加 runtime DDR materialization；用户不应手工拼
-  candidate artifact、offset fact 和 runtime package metadata。
+  后续应在 committed selected-instr named pipeline 之后追加 placement/local-shard stage；用户不应
+  手工拼 accepted instruction IR、placement fixture 和 package metadata 作为主线 compile flow。
 - Explicit non-goals:
-  不重新做 tile search、layout search、SPM planning 或 DDR planning；不生成 ABI call、packet、
-  object、physical address 或独立 access descriptor IR。
+  不重新做 tile search、layout search、SPM planning 或 DDR planning；不选择 DTE route、packet
+  resource、runtime allocation object、physical address、ABI call 或 object/package 格式。
 - Completion gate:
-  以 named pipeline 重放 R3.1 -> candidate-selection -> committed materialization -> R3.5；
-  R3.5 从 committed IR 和 accepted offset facts 直接推出 runtime DDR allocation/import/query/package
-  demand，并验证这些 demand 与 accepted ranges 一致。
+  以 named pipeline 重放 R3.1 -> candidate-selection -> committed materialization -> placement；
+  emitted placement/local-shard contract 被 R3.5 launch/resource contract 和 R6 communication lowering
+  直接消费，且 verifier 能拒绝 rank 覆盖、bad tile、重复 block/tile 和 local shard 越界。
 ```
 
-R3.4 placed instruction-level realization 取消为独立主线阶段。原因是 committed instruction IR 已经
+R3.4 placed/access descriptor realization 取消为独立主线阶段。原因是 committed instruction IR 已经
 显式包含 instruction operands、DDR tile views、SPM offset facts、DDR offset facts 和 movement
 descriptor attrs；把这些可重算事实再 materialize 成 placed memref / access descriptor 中间层会形成
-重复事实源。后续 ABI/packet emission 如需 address/range/stride 参数，应在对应 emission 阶段从
-committed IR 派生，不通过 R3.4 旁路协议传递。
+重复事实源。后续 launch/resource contract 和 ABI/LLVM lowering 如需 address/range/stride 参数，应在
+对应阶段从 committed IR、accepted offset facts 和 placement/local-shard contract 派生，不通过 R3.4
+旁路协议传递。
 
 ## 已完成主线
 
@@ -112,36 +124,41 @@ committed IR 派生，不通过 R3.4 旁路协议传递。
 
 | ID | 状态 | 原输入 | 取消原因 / 责任归属 |
 | --- | --- | --- | --- |
-| R3.4 | removed | R3.3 committed instruction IR 已经包含可重算 memory facts | 取消独立 placed memref / access descriptor materialization；必要 address/range/demand 检查并入 R3.5 和后续 ABI emission 的派生验证 |
+| R3.4 | removed | R3.3 committed instruction IR 已经包含可重算 memory facts | 取消独立 placed memref / access descriptor materialization；必要 address/range/demand 检查并入 launch/resource contract 和后续 ABI/LLVM lowering 的派生验证 |
 
 ## 后续队列
 
 | ID | 状态 | 输入 | 输出 / 完成 gate |
 | --- | --- | --- | --- |
-| R3.5 | active | R3.3 committed tile-region / `wafer.instr.*` + actual DDR tile views + accepted SPM/DDR offset facts | runtime allocation/import/query/package materialization；验证 runtime object 满足 committed IR-derived DDR offsets/ranges，不重新做 DDR planning，不新增 access descriptor 中间协议 |
-| R3.6-R3.8 | pending | committed instruction IR + R3.5 runtime DDR materialization + launch signature | C ABI / packet emission、IR-derived package manifest、wrapper-facing golden packet |
-| R4.1-R4.5 | pending | placement + local shard + launch/package metadata | rank/block/coord、per-rank slices、writeback、placed package |
+| placement/local-shard | active | R3.3 committed tile-region / `wafer.instr.*` + frontend/SPMD logical rank/local shard facts + target topology/capability | accepted placement map、block id、launch-visible local shard metadata；验证 rank coverage、good/bad tile、block/tile uniqueness 和 local shard bounds |
+| R3.5 | ready | committed instruction IR + accepted SPM/DDR offset facts + placement/local-shard contract | launch signature + DDR resource contract；导出 workspace/resident constant/external binding requirements，不 allocate/import/query runtime object，不生成 ABI/object/package |
+| R6.1-R6.2 | pending | tiled tensor collective + placement/local-rank/buffer facts | materialize tile communication 到 communication / Direct DTE resource / local-drain 边界；结果进入 R3.6 ABI/LLVM lowering |
+| R3.6 | pending | committed instruction IR + launch/resource contract + communication/sync lowering | LLVM dialect call sequence 或 `wafer_*` C ABI / packet builder input；固定参数单位、address domain、wait/completion policy 和 ABI version |
+| R3.7 | pending | R3.6 ABI/LLVM artifact + placement/resource/constant metadata | object/program id、entrypoint、ABI version 和 IR-derived package manifest；manifest roundtrip 不能替代 object/link 最小验证 |
+| R3.8 | pending | R3.7 package + runtime adapter | allocate/import/query/bind runtime objects，launch program，验证 completion、错误传播和 board gate |
 | R5.1-R5.2 | pending | static transformer local shard IR / staged IR gaps | full-block schedule 或拒绝原因；补 mask/select、dynamic-bound policy、constant/weight slice 等 |
-| R6.1-R6.2 | pending | tiled tensor collective + placement/local-rank/buffer facts | materialize tile communication 到 communication / DTE / local-drain 边界 |
-| P7/P8/P9 | later | P0-P6 主链路输出 | LLVM/object、runtime adapter、board/profiling |
+| P9 | later | board/profile 输出 | overlap、cost model 和 PMU calibration |
 
 ## 当前不做
 
 - Serving integration、KV cache / paged attention / prefill-decode 调度。
 - raw DTE non-unicast collective ABI。
-- LLVM dialect / LLVM IR lowering、object emission 或真实 `wafer_*` runtime call emission。
+- 当前 active placement/local-shard 阶段不做 LLVM dialect / LLVM IR lowering、object emission 或真实
+  `wafer_*` runtime call emission；这些分别归 R3.6/R3.7/R3.8。
 - 自定义 LLVM backend 或 ISA intrinsic lowering。
 - 以 importer、runtime path、workload shape 或 parameter 名称作为 IR 合同。
 
 ## 下一步
 
-实现 R3.5 launch/runtime DDR materialization：
+实现 placement / local-shard contract：
 
-1. 从 committed `wafer.tile.region` / `wafer.instr.*`、`memref.subview`、`wafer.ddr.offset` 和
-   `wafer.spm.offset` 直接重算 runtime DDR demand，不引入 placed memref / access descriptor 旁路协议。
-2. 定义 external boundary、compiler-managed DDR allocation、resident constant/inter-group DDR range
-   到 runtime allocation/import/query/package metadata 的 materialization 边界。
-3. 验证 runtime object 满足 accepted DDR offset/range、alignment、capacity 和 view/root relation；失败时
-   给结构化 diagnostic，不重新做 DDR planning。
-4. 补 completion proof：R3.1 -> candidate-selection -> committed materialization -> R3.5 的 named
-   pipeline 输出能被 R3.6 C ABI / packet / object / runtime adapter 直接消费。
+1. 从 frontend/SPMD 保留的 logical rank/local shard facts、target topology/capability 和 committed
+   `wafer.tile.region` / `wafer.instr.*` 重建 accepted placement map，不引入 placed memref /
+   access descriptor 旁路协议。
+2. 定义 block id、physical coordinate、good/bad tile assumption 和 launch-visible local shard metadata
+   的 IR / launch boundary 表示；这些字段只表达 placement 和 shard bounds，不保存 memory plan 或
+   runtime handle。
+3. 验证 rank coverage、tile/block uniqueness、bad tile 过滤、local shard bounds 和 committed boundary
+   可解释性；失败时给结构化 diagnostic，不重新做 group/candidate/memory planning。
+4. 补 completion proof：R3.1 -> candidate-selection -> committed materialization -> placement 的 named
+   pipeline 输出能被 R3.5 launch/resource contract 和 R6 communication lowering 直接消费。

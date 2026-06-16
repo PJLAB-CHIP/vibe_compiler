@@ -63,7 +63,7 @@ partitioned StableHLO + collectives
 | target-abstract comm | `wafer.tile.*` communication ops collective / permute op | 保留 tile-local communication semantic 和 physical group，不选择 raw DTE register |
 | p2p schedule | `wafer.tile.send`、`recv`、`wait`、local compute step | 显式 ring/tree step、buffer slice、byte count、token/effect |
 | lower-level comm | Direct DTE / FSM / sync op | receiver ready、DTE attach/send/wait/release、packet counter、error status |
-| launch/package | `wafer.launch` / runtime metadata | communication plan metadata、resource init、completion source |
+| launch/package | `wafer.launch` / launch-resource metadata | communication plan metadata、resource init、completion source |
 
 Collective algorithm 的选择过程是 analysis / rewrite。若已经展开成 p2p body，就不再保存一个
 重复描述 body 的 global plan attr；若仍保持 collective op，则它只表达尚未展开的 collective
@@ -183,7 +183,7 @@ collectCommunicationBufferDemand(target)
 当前 ODS / verifier 原型中，`wafer.tile.*` communication ops 通过 `WaferResourceEffectInterface`
 暴露 SPM read/write、communication issue/wait 和 byte count；p2p/collective op 同时有 Wafer
 communication resource 的 MLIR memory effect。该路径仍要随 R3.2c 迁移到 memref-backed buffer
-contract。具体 DTE/FSM/packet/stream id 仍只在 placed Direct DTE instruction/resource stage 出现，
+contract。具体 DTE/FSM/packet/stream id 仍只在 communication lowering 的 Direct DTE resource stage 出现，
 不回写到 collective-level op。
 
 通信 staging buffer 是 SPM allocation 的 `BufferDemand(kind = communication_staging)`，不是
@@ -214,8 +214,8 @@ collective 仍应由 unicast p2p schedule 组合表达，而不是在 logical IR
 当前 ODS / verifier 原型中，`wafer.tile.send` / `wafer.tile.recv` 的 p2p verifier 已在存在
 `wafer.placement.map` 时检查 peer 指向 active physical tile，`wafer.tile.wait` 要求至少一个
 async token。旧 `--wafer-lower-tile-region-to-c-abi` pass 已删除；fixed-size unicast p2p 到
-placed Direct DTE instruction form 和 C ABI emission 的 lowering 必须在 R6/R7 从 placed
-instruction-level IR 重新建立。这一层仍不应 materialize raw non-unicast register 字段，也不把 DTE id、
+committed Direct DTE issue/wait form 和 ABI/LLVM emission 的 lowering 必须在 R6/R3.6 从 committed
+instruction-level IR、placement/resource contract 重新建立。这一层仍不应 materialize raw non-unicast register 字段，也不把 DTE id、
 runtime physical address 或 wrapper packet bitfield 暴露成上层 communication IR 语义。
 
 P6.4 起，collective-level `wafer.tile.all_gather` 已进入 IR。该 op 接收 local chunk、gather
@@ -299,7 +299,7 @@ non-unicast helper，它也可以由 placement 后的一组 unicast send/recv/wa
 
 如果当前实现还没有 `wafer.tile.all_to_all` op 或 lowering pass，P2.S2 应保留 StableHLO collective，
 R2.4 应补 Wafer LinalgExt-style tensor collective op；R6 再恢复 tile-local `wafer.tile.*` communication p2p
-schedule、resource allocation 和 package/runtime metadata。
+schedule、resource allocation 和 launch/resource/package metadata。
 
 ## 7. Interaction with Layout, SPM, and DDR
 
@@ -336,8 +336,8 @@ sender DTE wait done / status validation
 resource release
 ```
 
-这个序列可以由 lower-level Wafer ops 表达，再由 placed instruction / launch codegen emission 生成具体
-runtime/C ABI call。
+这个序列可以由 lower-level Wafer ops 表达，再由 committed instruction / launch-resource / ABI-LLVM
+lowering 生成具体 runtime/C ABI call。
 `wafer.tile.send` 不直接携带每个 helper 调用名；helper 选择属于 lowering。
 
 Host runtime dyn TLV D2D/P2P path 是另一条兼容或 host-managed route。若后续需要 fallback，应在
@@ -410,7 +410,7 @@ wafer.tile.wait %send1, %recv1
 - `collective_permute`、ring `all_gather`、`reduce_scatter` / `all_reduce` 的 p2p + local reduce
   lowering 仍依赖后续 placement/local-rank/buffer facts，不是当前主线完成项。
 - Direct DTE send/recv/wait golden path 和 error diagnostic 属于历史 bring-up 证据；Direct DTE
-  instruction form、resource allocation 和 C ABI emission 需要在 R6/R7 从 committed instruction IR
+  issue/wait form、resource allocation 和 ABI/LLVM emission 需要在 R6/R3.6 从 committed instruction IR
   和 accepted placement/resource facts 重新建立。
 
 后续进入条件：

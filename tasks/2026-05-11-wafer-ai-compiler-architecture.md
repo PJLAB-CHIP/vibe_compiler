@@ -43,9 +43,10 @@ source model / exported program / pre-exported StableHLO
   -> SPM memory planning + DDR memory planning inside candidate gates
   -> accepted/rejected/split candidate decision
   -> committed tile-region/instruction boundary
-  -> wafer.launch/runtime DDR materialization from committed IR
-  -> C ABI / packet emission from committed instruction IR + runtime DDR metadata
-  -> RISC-V kcore shared object + package metadata
+  -> placement / local-shard contract
+  -> wafer.launch/resource contract from committed IR + accepted offsets + placement
+  -> ABI / LLVM lowering from committed instruction IR + launch/resource contract
+  -> RISC-V kcore shared object + package manifest
   -> WaferRuntimeAdapter HPGR/KMD launch or legacy TsmRun fallback
 ```
 
@@ -485,7 +486,7 @@ contract、collective lowering 和 verifier 见
 - 选择 HPGR runtime path 或 legacy `TsmRun` fallback，并声明可信 completion source。
 
 `wafer.launch` 不替代 `wafer.tile.region`。前者表达一次 launch / kernel invocation 的外层
-边界、参数和 runtime metadata；后者表达 device-side tile-local execution scope。`wafer.launch`
+边界、参数和 launch/resource metadata；后者表达 device-side tile-local execution scope。`wafer.launch`
 也不回头承载 tensor fusion、traversal selection 或 group planner 的中间计划。
 
 Runtime/package 的 package 内容、HPGR/KMD/legacy `TsmRun` 分层、runtime allocation/import mapping、
@@ -842,8 +843,11 @@ ModelImport/FrontendProgram
   -> DDR memory planning facts
   -> accepted/rejected/split group plan decision
   -> committed wafer.tile.region + accepted instruction boundary
-  -> launch/runtime DDR materialization from committed IR
-  -> codegen emission to C ABI / packet / package metadata
+  -> placement / local-shard contract
+  -> launch/resource contract
+  -> ABI / LLVM lowering
+  -> object + package manifest assembly
+  -> runtime adapter / board launch
 ```
 
 工程边界：
@@ -879,18 +883,20 @@ ModelImport/FrontendProgram
   temp/psum/staging、queue 和 async lifetime。
 - Wafer memory attr 只在 `wafer.tile.region` / SPM bufferization 层出现，不进入
   tensor-level `wafer.group`。
-- 没有独立 placement realization 主线阶段。committed instruction IR 已经通过 operands、memref view、
-  `wafer.spm.offset`、`wafer.ddr.offset` 和 descriptor attrs 携带后段可重算的 memory facts；
-  runtime DDR materialization 和 ABI/packet emission 必须直接从这些 IR facts 派生 lower-level
-  address/range/stride operands，不能再引入 placed memref / access descriptor 旁路协议。
+- 没有独立 placed memref / access descriptor realization 主线阶段。committed instruction IR 已经通过
+  operands、memref view、`wafer.spm.offset`、`wafer.ddr.offset` 和 descriptor attrs 携带后段可重算的
+  memory facts；placement/local-shard contract 只保存 logical rank/block 到 physical coordinate 这类
+  不能从 local IR 重算的 mapping。launch/resource contract 和 ABI/LLVM lowering 必须从 committed IR、
+  accepted offset facts 与 placement/local-shard contract 派生 lower-level address/range/stride operands，
+  不能再引入 placed memref / access descriptor 旁路协议。
 - instruction-level compute / communication lowering 消费 committed instruction IR 中的 SPM/DDR
   value、offset fact 和 view relation，不再做 fusion 决策。
 - `wafer.instr.local_drain` 和后续 sync boundary 提供 local drain、communication wait、group barrier
   等同步抽象，供 compute/comm lowering 复用。
 - `wafer.launch` 是 runtime-level launch boundary，负责参数、metadata 和 host/device ABI
   交接，不替代 tile-local execution region。
-- C ABI / packet emission 只消费 committed instruction IR、accepted offset facts 和 runtime DDR
-  metadata，不回头改 schedule、layout 或 memory plan。
+- ABI/LLVM lowering 只消费 committed instruction IR、accepted offset facts、placement/local-shard
+  contract 和 launch/resource contract，不回头改 schedule、layout 或 memory plan。
 
 V0 先保持统一 `wafer` dialect namespace，但公开 op mnemonic 只保留少量稳定 family：
 `wafer.group`、`wafer.tensor.*`、`wafer.tile.*`、`wafer.instr.*`、`wafer.placement.*` 和
@@ -916,7 +922,7 @@ V0 先保持统一 `wafer` dialect namespace，但公开 op mnemonic 只保留�
 | DDR memory planning | `tasks/2026-05-25-wafer-ddr-memory-planning-design.md` | 草案 | `#wafer.memory<ddr, *>` demand、external view/descriptor validation、compiler-managed/resident/inter-group alloc demand、accepted DDR offset facts、lifetime/reuse、default arena capacity/largest-contiguous/bandwidth | tensor fusion、SPM offset、runtime allocation/import、packet bitfield |
 | Candidate decision / committed materialization | `tasks/2026-06-11-wafer-r3-2h-candidate-decision-design.md`、`tasks/2026-06-11-wafer-committed-candidate-materialization-design.md` | R3.2h/R3.3 V0 已实现 | shape-driven traversal/reduction refinement frontier、same-domain output coverage、matmul/generic reduction split、representative tile classes、candidate gates、fixed target policy + configurable search controls、`tile-search` 选择策略、selected candidate commit 回主 IR | 新 allocator、失败计划 IR、runtime allocation/import、packet bitfield、不同 output domain 或 dynamic reduction 伪支持 |
 | Launch / runtime package | `tasks/2026-05-25-wafer-launch-runtime-package-design.md` | 草案 | `wafer.launch`、HPGR/KMD/legacy Tsm 分层、completion、runtime allocation objects、bootparam/TLV、package metadata | Linalg tiling、group formation、tile-local ordering |
-| C ABI / golden packet | `tasks/2026-05-25-wafer-c-abi-golden-packet-design.md` | 草案 | committed instruction IR + runtime DDR metadata 到 C ABI / packet emission 的参数单位、wait policy、golden packet | 上层 IR formation、layout search 和 SPM memory planning |
+| C ABI / golden packet | `tasks/2026-05-25-wafer-c-abi-golden-packet-design.md` | 草案 | committed instruction IR + placement/resource contract 到 ABI / LLVM / packet emission 的参数单位、wait policy、golden packet | 上层 IR formation、layout search 和 SPM memory planning |
 | Verification plan | `tasks/2026-05-25-wafer-verification-plan-design.md` | 草案 | stage diagnostics、roundtrip、golden packet、runtime shielding、PMU/cost-model gate | 替代各 dialect 语义设计 |
 | Serving integration | 暂不支持 | 延后 | graph capture、prefill/decode、KV cache 管理 | compiler core IR 合同 |
 

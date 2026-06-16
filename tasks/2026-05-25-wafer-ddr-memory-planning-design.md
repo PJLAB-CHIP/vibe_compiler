@@ -3,8 +3,8 @@
 状态：R3.2g 重新收敛为 **compiler-side DDR memory planning**。它不能只是
 DDR access validation；凡是会影响 candidate 是否成立的 DDR byte footprint、lifetime、capacity、
 largest-contiguous 和 bandwidth 约束，都必须在 DDR offset assignment / candidate-selection gate 内决定或拒绝。
-R3.5 只 materialize 已接受的 DDR offset facts 和 IR-derived demand 到 runtime allocation/import/package，
-不重新做 planning。
+R3.5 只把已接受的 DDR offset facts 和 IR-derived demand 汇总成 launch/resource contract，
+不执行 runtime allocation/import/query，也不重新做 planning。
 compiler-managed DDR allocation 由 DDR `memref.alloc` 本身表达；R3.2g 只把
 accepted offset 写入 IR，size、alignment、lifetime、read/write intent 和 external access-end 都从
 当前 IR 重算，不作为长期 attr 字段保存。
@@ -60,8 +60,8 @@ Pipeline position:
 - Downstream consumer:
   candidate-selection 用 DDR offset assignment 成功/失败选择 candidate；
   R3.3 把已通过 candidate gates 的 selected lowering 写回主 IR；
-  R3.5 从 committed IR 和 accepted DDR offset facts 直接 materialize runtime
-  allocation/import/query/package metadata。
+  R3.5 从 committed IR、accepted DDR offset facts 和 placement/local-shard contract 直接导出
+  launch/resource contract。
 - User-level driver / named pipeline:
   局部 pass 是 `wafer-plan-ddr-memory`；
   主线验证入口是从 tile-region materialization、instruction lowering、SPM offset assignment 跑到
@@ -100,15 +100,15 @@ DDR `memref.alloc` 不需要额外 requirement attr 才能参与 planning。alig
 
 ```text
 default_ddr_arena:
-  symbolic_base: physical base 由 R3.5 runtime materialization / R3.6 ABI emission 派生
+  symbolic_base: physical base 由 R3.6 ABI/LLVM lowering 或 R3.8 runtime adapter binding 派生
   capacity_bytes
   largest_contiguous_bytes
   alignment_bytes
   bandwidth_limit_bytes
 ```
 
-R3.2g 在这个 arena 内规划 symbolic offset/range。R3.5 之后才把 symbolic base + offset 映射到
-runtime allocation object 和 physical address。
+R3.2g 在这个 arena 内规划 symbolic offset/range。R3.6/R3.8 之后才把 symbolic base + offset
+映射到 ABI 参数、runtime allocation object 和 physical address。
 
 如果以后确实需要 host-visible/control/special arena，必须先引入明确的 compiler requirement 或
 target policy 输入，并说明 verifier 如何检查。不能把 driver/runtime 名称直接塞成 generic compiler attr。
@@ -139,19 +139,20 @@ wafer.ddr.offset = #wafer.ddr_offset<offset>
 map、名字或 fixture。
 
 External input/output 不由 R3.2g 分配 offset，也不写 external access summary attr。R3.2g 只在当前
-candidate 中验证 descriptor/view/root byte range 和 bandwidth；R3.5 若需要 runtime binding metadata，应从
-committed placed IR / descriptors 重算或在 runtime/launch 层 materialize。
+candidate 中验证 descriptor/view/root byte range 和 bandwidth；R3.5 若需要 launch/resource binding
+metadata，应从 committed instruction IR、accepted offset facts、placement/local-shard contract 和
+descriptors 重算或在 launch boundary materialize。
 
 ## 4. Demand Classes
 
-| class | R3.2g responsibility | R3.5 responsibility |
+| class | R3.2g responsibility | R3.5 launch/resource responsibility |
 | --- | --- | --- |
-| external input | validate view/range/descriptor in current candidate | import/bind runtime object, query physical address, validate size/alignment |
-| external output | validate view/range/descriptor and write use in current candidate | bind output object, query physical address, validate writeback visibility |
-| compiler-managed workspace/temp | plan symbolic offset with lifetime/reuse | allocate runtime object backing accepted offsets/ranges |
-| resident constant | plan read-only range or reject if residency/streaming choice is not explicit | serialize/load backing data and bind physical address |
-| inter-group DDR value | plan range across producer-to-last-consumer lifetime when explicitly represented | materialize backing allocation and package metadata |
-| executable/log/control metadata | not generic tensor DDR planning | runtime/package internal allocation |
+| external input | validate view/range/descriptor in current candidate | derive external binding requirement, shape/dtype/layout/size/alignment contract |
+| external output | validate view/range/descriptor and write use in current candidate | derive output binding/writeback visibility requirement |
+| compiler-managed workspace/temp | plan symbolic offset with lifetime/reuse | summarize workspace bytes/ranges and accepted offset contract |
+| resident constant | plan read-only range or reject if residency/streaming choice is not explicit | summarize resident constant bytes/ranges and backing-data requirement |
+| inter-group DDR value | plan range across producer-to-last-consumer lifetime when explicitly represented | summarize producer/consumer-visible backing allocation requirement |
+| executable/log/control metadata | not generic tensor DDR planning | launch/package internal resource requirement; runtime allocation is R3.8 |
 
 ## 5. Demand Recovery
 
@@ -223,7 +224,7 @@ R3.2g verifies:
 - unsupported dynamic DDR alloc/view or uncomputable physical size is rejected。
 
 R3.2g does not validate final physical address lower bound because physical address is not materialized yet.
-That check belongs to R3.5 runtime materialization and R3.6 ABI/codegen emission.
+That check belongs to R3.6 ABI/LLVM lowering and R3.8 runtime adapter binding.
 
 ## 8. Failure Reasons
 
@@ -269,17 +270,19 @@ layout cut, different output domain coverage, streaming/residency choice and gro
 IR/interface support before they become candidate dimensions. SPM/DDR arena and bandwidth limits are inputs to
 their planning gates, not candidate fields.
 
-### 9.4 R3.5 Launch / Runtime / Package
+### 9.4 R3.5 Launch / Resource Contract
 
-R3.5 consumes accepted DDR offsets and rederives external binding requirements from committed descriptors. It:
+R3.5 consumes accepted DDR offsets, placement/local-shard contract and committed descriptors. It:
 
-- allocates/imports runtime objects,
-- queries physical base/size,
-- validates runtime object capacity/alignment/intent against the committed IR-derived demand,
-- fills package/launch metadata,
-- reports runtime allocation failure without changing compiler planning decisions.
+- rederives external binding requirements from committed IR,
+- summarizes compiler-managed workspace and resident/inter-group DDR ranges,
+- validates that launch-visible resource metadata is consistent with accepted offsets, descriptor ranges and
+  placement/local-shard bounds,
+- emits launch/resource contract for R3.6 ABI/LLVM lowering and R3.7 package manifest.
 
-R3.5 must not redo DDR lifetime/range planning by name or by inspecting high-level tensor semantics.
+R3.5 must not allocate/import/query runtime objects, materialize physical addresses, or redo DDR
+lifetime/range planning by name or by inspecting high-level tensor semantics. Runtime binding and allocation
+failure reporting belong to R3.8 runtime adapter.
 
 ## 10. Example Shape
 

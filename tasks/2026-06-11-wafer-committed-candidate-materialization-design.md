@@ -11,8 +11,8 @@
   `wafer.group` 所在位置。
 - 保留原 parent function、无关函数和 module 级结构。
 - 删除原 `wafer.group`，不把 `*_selected_group_*` 旁路函数或 rejected candidate IR 留在 module。
-- 让 R3.5 直接消费主 IR 中的 committed tile-region / instruction-level boundary 和 accepted
-  offset facts。
+- 让 placement/local-shard contract、R3.5 launch/resource contract 和 R3.6 ABI/LLVM lowering 直接消费
+  主 IR 中的 committed tile-region / instruction-level boundary 和 accepted offset facts。
 
 非目标：
 
@@ -36,7 +36,7 @@ Pipeline position:
   主 module 中 committed `wafer.tile.region` / `wafer.instr.*` / accepted SPM-DDR offset facts；
   原函数名和无关函数保留；不出现 `*_selected_group_*` 旁路函数。
 - Downstream consumer:
-  R3.5 launch/runtime DDR materialization。
+  placement/local-shard contract、R3.5 launch/resource contract 和 R3.6 ABI/LLVM lowering。
 - User-level driver / named pipeline:
   `wafer-select-group-tile` pass 和 `wafer-lower-groups-to-selected-instr` named pipeline。
 - Explicit non-goals:
