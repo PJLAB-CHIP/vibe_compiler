@@ -4,7 +4,7 @@
 
 状态：R2 完成记录
 
-边界结论：R2.2 中 StableHLO collective 直接 bridge 到 `wafer.tile.*` communication 的实现只保留为
+2026-06-01 复查更新：R2.2 中 StableHLO collective 直接 bridge 到 `wafer.tile.*` communication 的实现只保留为
 已删除路线的后段 communication coverage，不再作为 P2.S1、group 或 tiling 的主线完成证明。真实 P2.S1 必须走
 `frontend export -> StableHLO/SDY program directory -> Wafer Shardy propagation -> Wafer-owned XLA SPMD
 partition compiler stage -> partitioned or replicated-local StableHLO`，post-SPMD collective 先进入
@@ -20,27 +20,27 @@ tensor IR 合同记录。
 
 本记录本身不声明 framework-specific PyTorch/JAX capture、完整 Shardy propagation/SPMD partitioner
 pipeline、mask/select/dynamic-shape 全覆盖、placed instruction-level constant slicing、group schedule
-completion、SPM/DDR memory planning 或 runtime/package 闭环完成。P2.F1/P2.S1 分别补上
-source-built PyTorch/XLA capture adapter、真实 `mark_sharding` pre-SPMD program 和 Wafer Shardy
-propagation stage gate；误导性的 Python post-SPMD export 入口已删除，它不是 P2.S1 主链完成证据。
-状态索引见 `tasks/progress.md` 和
+completion、SPM/DDR memory planning 或 runtime/package 闭环完成。2026-05-27 后续 P2.F1/P2.S1
+分别补上 source-built PyTorch/XLA capture adapter、真实 `mark_sharding` pre-SPMD program 和
+Wafer Shardy propagation stage gate；2026-06-01 复查删除了误导性的 Python post-SPMD export
+入口，它不是 P2.S1 主链完成证据。当前状态记录在 `tasks/progress.md` 和
 `tasks/2026-05-25-wafer-shardy-spmd-design.md`。
 
-调度结论：framework-specific capture 和完整 Shardy propagation / SPMD partitioner
+2026-06-01 调度结论：framework-specific capture 和完整 Shardy propagation / SPMD partitioner
 pipeline 不是放弃项，也不应排在 R3 之后。`P2.F1` 已完成 source-built PyTorch/XLA capture
 adapter；`P2.S1` 骨架已接上真实 `mark_sharding` / default-input-seed 到 Wafer Shardy propagation
 的 stage gate，但还没有 Wafer-owned XLA SPMD partition compiler stage。`P2.S2` 必须补这个阶段，
 不能继续把 Python post-SPMD helper 当成主链。后续 group / tile / memory planning gate 必须消费真实
 frontend/SPMD program 来源，而不是继续围绕手写 fixture 自洽。
 
-调度结论：R2.4 之前先补 R2.4-pre pipeline contract。当前 P2.F1/P2.S1
+2026-06-01 调度结论：R2.4 之前先补 R2.4-pre pipeline contract。当前 P2.F1/P2.S1
 已经证明 frontend export 和 Wafer Shardy propagation stage 能跑通；post-SPMD partitioned local
 body 必须由 P2.S2 的 Wafer-owned stage 生成。后续主链路必须通过 `wafer-opt` program pipeline
 表达；库中注册的 named MLIR pipeline 只作为内部构件或局部 debug/unit 覆盖。bin 只负责注册和调用，
 单 pass flag 不能替代主线 compile flow。用户级 compile target 名称统一为
 `wafer`；`tx8` 只保留为硬件/依赖逆向资料中的事实名，不作为 compiler target 字符串。
 
-主线入口：用户级主线统一到 `wafer-opt --program-pipeline=stablehlo-spmd` 和
+2026-06-02/03 清理结论：用户级主线统一到 `wafer-opt --program-pipeline=stablehlo-spmd` 和
 `wafer-opt --program-pipeline=stablehlo-spmd-to-linalg`；局部 named MLIR pipeline 只保留当前真实成立的
 `wafer-propagate-stablehlo-sharding` 和 `wafer-lower-stablehlo-to-linalg`。
 `wafer-lower-linalg-to-cabi`、`wafer-lower-stablehlo-to-cabi`、
@@ -55,7 +55,7 @@ post-linalg Wafer program。旧显式 C ABI issue-op、ring collective、SPM/DDR
 single-tile materialization unit/debug pass 链已删除；R3/R6/R7 后续必须按真实 program chain 和
 新的 IR contract 恢复。
 
-测试覆盖说明：当前 `test/Spmd` 两个 case 只覆盖 default input seed 和
+2026-06-01 pass 边界复查结论：当前 `test/Spmd` 两个 case 只覆盖 default input seed 和
 SDY/Shardy program parse/verify，不覆盖 XLA SPMD partitioner，也不输出 rank-local StableHLO。
 当前 `test/Frontend` 16 个 case 覆盖 StableHLO / Linalg local compute normalization，其中
 softmax、RMSNorm 和 LayerNorm 的输入都是 fine-grained StableHLO staged graph，而不是
@@ -134,17 +134,17 @@ boundary、tile shape、multi-stage schedule、SPM residency 或 C ABI emission 
 
 ## 验证
 
-验证 gate：
+本批次新增或扩大了这些 gate：
 
 - `test/Tools/wafer-compile-stablehlo-reference.test`
 - `test/Spmd/shardy-program-bridge.mlir`
 - `test/Dialect/Wafer/Tile/Comm/invalid-comm-rank-group-size.mlir`
 - 历史 `test/Transforms/ring-all-gather-rank-group.mlir` 已随旧 ring lowering unit pass 链删除。
 
-旧的 SPMD verify flag、P2.S1 私有 attr emitter 和 StableHLO 直降 `wafer.tile.*` communication
-pass/tests 已删除；上述 R2 记录只保留历史背景，不再表示这些旧入口仍存在。
+2026-05-27 后续清理删除了旧的 SPMD verify flag、P2.S1 私有 attr emitter 和 StableHLO
+直降 `wafer.tile.*` communication pass/tests；上述 R2 记录只保留历史背景，不再表示这些旧入口仍存在。
 
-P2.S1 验证 gate：
+2026-05-27 后续 P2.S1 新增或扩大了这些 gate：
 
 - `test/Tools/wafer-pytorch-xla-capture-sharded-program.test`
 - `test/Spmd/default-spmd-input-seed.mlir`

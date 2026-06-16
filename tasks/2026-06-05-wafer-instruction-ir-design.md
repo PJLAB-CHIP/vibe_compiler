@@ -1,9 +1,11 @@
 # Wafer Instruction IR Design
 
-日期：2026-06-05
+日期：2026-06-05；更新：2026-06-10
 
-状态：R3.2d 设计已按 memref-backed buffer contract 收口；instruction lowering 只消费已显式
-materialize 的 DDR `memref.subview`，candidate tile-view producer 属于 R3.2e。
+状态：R3.2d 设计已按 memref-backed buffer contract 重新收口；R3.2c 前置已完成，
+R3.2d.1 instruction op contract、R3.2d.2 DialectConversion、R3.2d.3 named pipeline 接入和
+R3.2d.4 static movement descriptor splitting / packing 已落地；2026-06-10 明确 R3.2d 只消费
+已显式 materialize 的 DDR `memref.subview`，candidate tile-view producer 前移为 R3.2e。
 
 本文定义 R3.2d 的 instruction-level Wafer IR。核心结论：
 
@@ -23,7 +25,7 @@ materialize 的 DDR `memref.subview`，candidate tile-view producer 属于 R3.2e
 memref SSA、Wafer memory attr、op operands、attrs、MemoryEffects 和显式 drain 直接推导 placement
 输入。它不是另一层 buffer IR。
 
-实现边界：
+当前实现状态：
 
 - 仓库代码当前已落地 `wafer.instr.local_drain`，以及
   `wafer.instr.rdma`、`wafer.instr.wdma`、`wafer.instr.gather_scatter`、`wafer.instr.fill`、

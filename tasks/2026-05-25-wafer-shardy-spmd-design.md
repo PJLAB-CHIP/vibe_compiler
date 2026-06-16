@@ -2,7 +2,11 @@
 
 日期：2026-05-25
 
-状态：设计草案；范围：Wafer-owned Shardy propagation / XLA SPMD partition 和 post-SPMD tensor collective handoff。
+状态：设计草案；2026-05-25 独立边界收口；2026-05-27 纠正 P2.S1 主 pipeline、禁止
+`wafer.spmd.*` 私有 sharding 协议，并引入 post-SPMD tensor collective handoff；2026-06-01
+删除误导性的 Python post-SPMD helper，明确 P2.S1/P2.S2/R2.4/local compute 的 pass 接入边界；
+2026-06-02 纠正 frontend / compiler ownership：StableHLO export / verifier tool 不再承载
+Shardy propagation 或 XLA SPMD partition，P2.S2 由 `wafer-opt` program pipeline 承载
 
 本文定义 Wafer compiler 中 Shardy / SPMD 阶段的边界。该阶段负责 global tensor 的逻辑切分、
 sharding propagation、SPMD partition 和 logical collective 语义；不负责 physical tile
@@ -146,7 +150,7 @@ P2.S2 工程 gate 必须把 XLA SPMD partitioner 或等价 local-body partitioni
   只做 StableHLO local compute -> Linalg/Tensor/Arith/Math；它不做 sharding propagation、SPMD
   partition、placement、group、SPM/DDR 或 communication materialization。
 
-实现边界：
+2026-06-02 当前实现口径：
 
 - frontend Python test generator 的职责只到 PyTorch/XLA StableHLO export：未标记图导出 reference
   program directory；用户 sharding 分支用 `mark_sharding` 标记同一个 4096 matmul 图的 `x`、`weight`、`bias`，
@@ -431,9 +435,10 @@ placement、ring/p2p schedule 和 DTE token 仍属于 R3/R6。
 StableHLO -> `wafer.tile.*` communication 插入点；需要分别实现“StableHLO -> tensor collective”和
 “tiled tensor collective -> wafer.tile.* communication”两层。
 
-SDY program bridge 的工程入口：`WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON` 时，`wafer-opt` 和
-frontend verifier tool 显式注册 Shardy / SDY dialect，`wafer-opt` 也注册 SDY passes/pipelines。
-带 `sdy.mesh` / `sdy.sharding` 的 partitioned StableHLO program 可以作为 Wafer 输入被 parse/verify。
+2026-05-26 R2.2 恢复了 SDY program bridge 的工程入口：`WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON`
+时，`wafer-opt` 和 frontend verifier tool 显式注册 Shardy / SDY dialect，`wafer-opt` 也注册
+SDY passes/pipelines。带 `sdy.mesh` / `sdy.sharding` 的 partitioned StableHLO program 可以作为
+Wafer 输入被 parse/verify。
 
 同一批次曾把 StableHLO `replica_groups` 的 logical rank group materialize 到 `wafer.tile.*` communication ops
 `rank_group = array<i64: ...>` attr；该 StableHLO -> `wafer.tile.*` communication bridge 已移除，避免后续误把它当成

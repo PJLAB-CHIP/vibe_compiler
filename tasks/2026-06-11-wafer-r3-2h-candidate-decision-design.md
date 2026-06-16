@@ -393,9 +393,9 @@ candidate-selection completion proof 至少覆盖：
 - 文本一致性：candidate-selection 文档和 progress 不再把资源上限建模成 candidate 字段，也不把 DDR access
   summary/range attr 当成 committed IR fact。
 
-## 10. 实现边界
+## 10. Implementation Status
 
-已落地边界：
+2026-06-16 当前实现：
 
 - `wafer-select-group-tile`：module pass，扫描 `wafer.group`，为每个 group 生成独立 passing
   candidate artifact，并将 selected candidate commit 回原 group 位置。

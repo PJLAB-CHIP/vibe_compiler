@@ -34,7 +34,7 @@
 
 使用公开 Triton/CRT 代码时只取两类信息：一是 public Tsm wrapper 在某个实现中的调用样例和参数单位线索；二是现有实现暴露出的错误抽象、过度同步、allocator/layout/DTE runtime 问题。Wafer 的硬件约束和 ABI 设计以官方文档、public header、Tsm wrapper signature 和本文已固化的 layout/SPM/DTE 规则为准。
 
-结论：指令 wrapper、packet、SPM/DTE/CSR 这些 compiler-facing 接口已经足够支撑 correctness-first 后端；host 侧运行时应以 HPGR/KMD 作为主目标，旧 `Tsm*`/VS runtime 只作为兼容和 DTE TLV 证据。继续大范围反汇编的收益较低，剩余不确定项主要是板端性能/微架构行为。
+当前状态：指令 wrapper、packet、SPM/DTE/CSR 这些 compiler-facing 接口已经足够支撑 correctness-first 后端；host 侧运行时应以 HPGR/KMD 作为主目标，旧 `Tsm*`/VS runtime 只作为兼容和 DTE TLV 证据。继续大范围反汇编的收益较低，剩余不确定项主要是板端性能/微架构行为。
 
 ## 硬件拓扑和性能参数
 

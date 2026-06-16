@@ -2,8 +2,14 @@
 
 日期：2026-05-25
 
-状态：设计草案；范围：memref-backed `wafer.tile.region`、DDR boundary materialization 和
-structured control-flow lowering；candidate DDR tile-view producer 属于 R3.2e。
+状态：设计草案；2026-05-25 独立边界收口；2026-05-27 对齐 tensor collective 到 `wafer.tile.*` communication materialization；
+2026-06-03 R3.2c 对齐 MLIR DialectConversion full conversion；2026-06-04 对齐
+instruction-level Wafer IR 先于 SPM memory planning，并补正式 `group -> tile_region` conversion pass；
+2026-06-05 对齐 memref-backed buffer contract，`Cx/NCx` 改为 Wafer memory attr marker；
+2026-06-05 补齐 R3.2c DDR boundary materialization 和 One-Shot function-boundary pipeline；
+2026-06-05 补 R3.2c `scf.if` / `scf.for` 结构化 control-flow lowering 合同；
+2026-06-08 同步 R3.2c 完成状态和 R3.2d instruction lowering 边界；
+2026-06-10 将 candidate DDR tile-view producer 前移为 R3.2e active 边界
 
 本文定义 `wafer.tile.region` 作为 `wafer.group` lowering 之后的 tile-local execution boundary。
 它组织 tile-local Wafer-tagged memref、movement、layout materialization、target-abstract compute、communication
@@ -25,11 +31,11 @@ placement-derived endpoint 和 communication staging demand 的层级；`wafer.t
 - `tasks/2026-05-25-wafer-communication-dialect-design.md`
 - `tasks/2026-06-05-wafer-instruction-ir-design.md`
 
-已落地：
+当前实现状态口径：
 
 - 仓库代码已有 `wafer.tile.region`、`wafer.tile.load/store`、target-abstract
   compute/layout/move/view/comm op 和 group-to-tile-region conversion。
-- R3.2c 已把 tile-local buffer value 迁移为 memref-backed contract：
+- 2026-06-05 R3.2c 已把 tile-local buffer value 迁移为 memref-backed contract：
   `memref<..., #wafer.memory<space, layout>>`；group boundary tensor 先 materialize 为
   `memref<..., #wafer.memory<ddr, tensor>>`，tile-local value 使用
   `memref<..., #wafer.memory<spm, layout>>`。`tensor.empty` 作为 writable group output 时降为 DDR
@@ -316,7 +322,7 @@ operand 表达真实 tile view；第 5 步 instruction legalization / selection 
 降到 instruction-level IR；第 6-8 步分别完成 SPM planned offset、DDR memory planning
 和 closed-loop candidate driver，不能互相推迟协议补全。
 
-实现边界：
+当前实现状态：
 
 - `--wafer-convert-group-to-tile-region` 是正式 MLIR conversion pass，使用 `Passes.td` 声明和
   DialectConversion legality target，在 supported 子集上重写当前模块；当前输出是

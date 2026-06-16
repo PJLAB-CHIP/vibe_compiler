@@ -2,7 +2,10 @@
 
 日期：2026-05-25
 
-状态：设计草案；范围：target-abstract compute / movement IR、layout/resource interface 和 instruction legality。
+状态：设计草案；2026-05-25 边界收口；2026-06-04 对齐 instruction-level Wafer IR 先于 SPM memory planning；
+2026-06-05 对齐 memref-backed Wafer memory attr 合同；2026-06-08 同步 DDR memory planning 命名；
+2026-06-10 同步 candidate DDR tile-view producer / SPM memory planning 重排；
+2026-06-11 同步 R3.2g DDR memory planning 边界
 
 本文定义 Wafer 后端中 target-abstract compute / movement IR 的边界。它连接
 `wafer.group` 产生的 tile-local tensor program、layout materialization / SPM bufferization，

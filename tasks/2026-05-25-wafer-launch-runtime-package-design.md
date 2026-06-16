@@ -2,7 +2,7 @@
 
 日期：2026-05-25
 
-状态：设计草案；范围：`wafer.launch`、runtime package、host runtime adapter 和 completion contract。
+状态：设计草案；2026-05-25 独立边界收口
 
 本文定义 `wafer.launch`、runtime package、host runtime adapter 和 completion contract。该阶段
 位于 placed instruction-level device program、C ABI / packet emission 之后，负责把 device code、
