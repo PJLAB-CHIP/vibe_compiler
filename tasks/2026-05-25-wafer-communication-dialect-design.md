@@ -2,9 +2,7 @@
 
 日期：2026-05-25
 
-状态：设计草案；2026-05-25 边界收口；2026-05-27 明确 `wafer.tile.*` communication 后移到
-`wafer.tile.region` / SPM materialization 之后；2026-06-08 同步 instruction-level / codegen emission
-边界
+状态：设计草案；范围：`wafer.tile.region` / SPM materialization 之后的 tile communication IR。
 
 本文定义 Wafer 后端的 device-side communication IR。它连接 post-SPMD tensor collective 语义、
 placement 产生的 physical tile mapping、`wafer.tile.region` 中的 SPM buffer，以及后续
@@ -403,9 +401,9 @@ wafer.tile.wait %send1, %recv1
 和 placement realization 推导或显式 SSA value 表达。ring order 只是 V0 候选算法；如果 planner
 接受 tree 或其它算法，IR 也应展开为对应 p2p body，而不是保留一个不可验证的 plan attr。
 
-## 11. Current Implementation and Future Work
+## 11. 实现边界和后续缺口
 
-当前实现：
+已落地：
 
 - dialect / verifier 层有 `wafer.tile.send`、`recv`、`wait`、`all_gather`、`reduce_scatter` 和
   `all_reduce`，以及旧 storage 原型上的 token/effect / byte-count 检查。

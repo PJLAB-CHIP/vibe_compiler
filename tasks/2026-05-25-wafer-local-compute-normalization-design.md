@@ -2,9 +2,8 @@
 
 日期：2026-05-25
 
-状态：设计草案；2026-05-25 独立边界收口；2026-05-27 补 post-SPMD Wafer LinalgExt-style
-tensor collective handoff；2026-06-01 明确 softmax/norm 是 fine-grained StableHLO staged graph，
-本层不承载 SPMD partition
+状态：设计草案；范围：post-SPMD local compute normalization 和 tensor collective handoff，
+不承载 SPMD partition、SPM/DDR 或 runtime package。
 
 本文定义 SPMD 产出的 StableHLO local program 到 `wafer.group` 之前的 local tensor normalization
 边界。输入可以是用户 sharding 经过 partitioner 后的本地 shard 程序，也可以是 no-user-sharding
@@ -467,7 +466,7 @@ Normalization 后必须能检查：
 
 ### 7.1 R2.3 覆盖状态口径
 
-2026-05-26 R2.3 已把当前 local compute normalization 覆盖状态改写为 structured tensor IR 证据，
+R2.3 覆盖状态以 structured tensor IR 证据为准，
 不再把 acceptance pass 视为 schedule completion。当前可引用的 evidence 如下：
 
 | 子结构 | 当前证据 | 结论边界 |

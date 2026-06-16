@@ -91,7 +91,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   group、layout/materialize、SPM、DDR、compute、comm、sync 和 ABI op 可通过接口查询边界值、
   layout requirement 和 resource effect。关键 movement/compute/comm op 也接入 MLIR
   `MemoryEffectOpInterface` 的 Wafer resource。
-- R1.3 的历史 stage-connection gate 已在 2026-06-02 清理中删除；后续 group/tile/storage/C ABI
+- R1.3 的历史 stage-connection gate 已删除；后续 group/tile/storage/C ABI
   连接必须由 R3/R6/R7 消费真实 frontend/SPMD program chain 后重新建立。
 
 缺口：

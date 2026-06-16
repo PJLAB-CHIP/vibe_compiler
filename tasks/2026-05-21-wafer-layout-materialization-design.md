@@ -2,10 +2,7 @@
 
 日期：2026-05-21
 
-状态：设计草案；2026-05-25 边界收口；2026-06-04 对齐 instruction-level Wafer IR 先于
-SPM memory planning；2026-06-05 对齐 memref-backed Wafer memory attr 合同；2026-06-08 同步 DDR memory
-和 instruction-level pipeline 边界；2026-06-10 同步 candidate DDR tile-view producer / R3.2h
-closed-loop 边界
+状态：设计草案；范围：memref-backed Wafer memory attr、candidate planning 和 instruction-level pipeline。
 
 本文定义 Wafer 后端的 physical layout planning 和 layout materialization 边界。它服务于
 `wafer.group` 的 legality search，也服务于 `wafer.tile.region` / SPM bufferization 的真实
@@ -144,7 +141,7 @@ Pipeline position:
   `stablehlo-spmd-to-group` 输出上重放 layout-plan dump。
 ```
 
-2026-06-03 收口状态：R3.2b 已按上述 logical-group analysis 边界完成。当前
+R3.2b 已落地：按上述 logical-group analysis 边界完成。当前
 `GroupLayoutPlan` 消费 R3.2a `GroupTilingDemand` facts 和 group SSA use-def，输出
 boundary layout、per-op layout constraints/assignment、materialization cut、group-result
 materialization demand 和 failure forwarding；它不 rewrite `wafer.group`，不写 layout attr，

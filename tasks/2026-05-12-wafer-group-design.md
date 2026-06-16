@@ -2,10 +2,7 @@
 
 日期：2026-05-12
 
-状态：设计草案；2026-05-25 边界收口；2026-05-27 补 post-SPMD tensor collective 边界；
-2026-06-03 收敛 R3.1 root-seeded logical group scope；2026-06-04 对齐
-instruction-level Wafer IR 先于 SPM memory planning；2026-06-05 对齐 memref-backed Wafer memory attr 合同；
-2026-06-08 同步 DDR memory planning 命名；2026-06-10 前移 candidate DDR tile-view producer 到 R3.2e
+状态：设计草案；范围：logical group、candidate planning 和 committed materialization 链路。
 
 本文只定义 `wafer.group` 的 tensor-level grouping 和 scheduling contract。它回答：
 
@@ -662,7 +659,7 @@ R3.1 pass 构造 logical `wafer.group` 时遵守以下规则：
 
 ### 9.5 R3.1 当前实现边界
 
-2026-06-03 的 R3.1 实现按同一 block 内的 SSA use-def 和
+R3.1 实现按同一 block 内的 SSA use-def 和
 `DestinationStyleOpInterface` 构造 group，不引入新的长期 attribute 或 side table：
 
 1. 从 root/hero seed 出发。当前 root 是 tensor-level DPS `linalg.*`（`linalg.fill`
@@ -845,7 +842,7 @@ Pipeline position:
   failure reason；program pipeline gate 从真实 `stablehlo-spmd-to-group` 输出上重放 demand dump。
 ```
 
-2026-06-03 收口状态：R3.2a 已按上述 analysis-only 边界完成。当前实现通过
+R3.2a 已落地：按上述 analysis-only 边界完成。实现通过
 `GroupTilingDemand` 从 logical `wafer.group` body 的 SSA use-def、DPS ties、Linalg
 iterator/indexing map、accumulator/reduction dims 和 `wafer.tensor.*` interface
 恢复 demand；`--wafer-dump-group-tiling-demand` 只是同一 analysis result 的 debug view，不修改 IR。

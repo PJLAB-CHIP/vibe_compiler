@@ -2,7 +2,7 @@
 
 日期：2026-05-25
 
-状态：设计草案；2026-05-25 独立边界收口；2026-05-27 对齐 post-SPMD tensor collective handoff
+状态：设计草案；范围：logical mesh / rank 到 Wafer physical card/tile cluster 的 placement。
 
 本文定义 logical mesh / rank 到 Wafer physical card/tile cluster 的 placement 边界。Placement
 消费 Shardy / SPMD 与 Wafer LinalgExt-style tensor collective handoff 保留下来的 logical rank /

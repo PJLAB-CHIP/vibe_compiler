@@ -2,7 +2,7 @@
 
 日期：2026-05-26
 
-状态：审计记录；用于纠正 P0-P6 历史 `done` 状态的含义；2026-05-27 补 collective handoff 复查结论
+状态：审计记录；用于纠正 P0-P6 历史 `done` 状态的含义，并记录 collective handoff 复查结论。
 
 ## 结论
 
@@ -17,7 +17,7 @@ group/tile materialization、layout/SPM/DDR、communication 和旧 ABI issue-op 
 tests 已按 IR 层组织；R1.2/R1.3 曾补 interface/resource 查询合同和 local compute stage-connection
 gate；2026-06-02 后历史 stage-connection gate 和旧 unit/debug pass 链已删除。
 
-2026-06-01 复查进一步确认：历史 P2.S1 路线若把 sharding facts 写成 `wafer.spmd.*` 或私有
+主线要求：历史 P2.S1 路线若把 sharding facts 写成 `wafer.spmd.*` 或私有
 sidecar，不是主线 SPMD program contract；历史 StableHLO collective 直降 `wafer.tile.*` communication 的 pass
 只能算已删除的后段 communication coverage，不能作为 group/tiling 输入。正确主线需要
 `frontend export -> StableHLO/SDY -> Wafer Shardy propagation -> Wafer-owned XLA SPMD partitioner

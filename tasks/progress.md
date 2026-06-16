@@ -3,7 +3,7 @@
 更新时间：2026-06-16
 
 本文件记录当前看板、主线 pipeline、关键 IR 状态、完成口径和下一步。设计细节、实现复盘、测试命令
-和长验证说明放在对应 `tasks/` 设计文档、git commit 和测试里；这里不写逐条 worklog。
+和长验证说明放在对应 `tasks/` 设计文档、git commit 和测试里；这里不写逐条过程记录。
 
 ## 状态标记
 
@@ -54,7 +54,7 @@ PyTorch/XLA StableHLO Wafer program directory
 `--wafer-convert-group-to-tile-region` 和 `--wafer-convert-tile-region-to-instr` 是内部或局部测试入口，
 不是用户级编译流程。
 
-## 当前 IR 快照
+## IR 快照
 
 | 层 | 当前代码已落地 | 当前主线边界 |
 | --- | --- | --- |
@@ -95,7 +95,7 @@ Pipeline position:
   demand。
 ```
 
-## 当前边界
+## 当前能力和限制
 
 - R3.2c materialize whole logical boundary 的 DDR memref handle；full tensor use 才 lazy
   `wafer.tile.load` 到 SPM。R3.2e 已接入第一批 producer：external boundary 上的 static

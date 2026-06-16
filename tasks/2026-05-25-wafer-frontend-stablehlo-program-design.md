@@ -2,7 +2,7 @@
 
 日期：2026-05-25
 
-状态：设计草案；2026-05-25 独立边界收口；2026-05-27 明确 P2.F1 capture 和跨阶段消费链
+状态：设计草案；范围：frontend program、StableHLO export/import 和跨阶段 program chain。
 
 本文定义 Wafer compiler 的 model import 和 frontend program 边界。Wafer program 是长期编译对象：
 它包含 MLIR IR、function/signature metadata、parameter/resource payload 和后续 stage materialize
@@ -163,7 +163,7 @@ matcher、手写 StableHLO 文本 emitter 或 pre-exported fixture 冒充 PyTorc
 import，P2.F1 不得标记为完成；测试可以保留依赖隔离或 contract 级覆盖，但主线验收仍必须跑通真实
 PyTorch/XLA adapter -> StableHLO program directory serialization -> Wafer program verifier 链。
 
-2026-05-27 修正实现记录：P2.F1 已完成。`tools/build_pytorch_xla_runtime.py` 从
+P2.F1 已落地：`tools/build_pytorch_xla_runtime.py` 从
 `third_party/pytorch-xla` 源码安装 `torch_xla` 2.5.0，并通过 Bazel override 复用本仓库
 `third_party/xla`、`third_party/llvm-project` 和 importer Python 的 `torch` headers/libs；
 没有使用 prebuilt `torch_xla` wheel。`test/Tools/Inputs/wafer_pytorch_xla_capture.py` 是 test
@@ -294,7 +294,7 @@ PyTorch/XLA 的 `mark_sharding` 或 export 可追踪的等价前端 op。Fronten
 StableHLO / SDY 可解释 program，应诊断为 frontend export / sharding import 问题，而不是在后端
 补第二套描述。
 
-2026-06-02 P2.S1 当前实现使用 source-built PyTorch/XLA lazy SPMD runtime 的 `mark_sharding`
+P2.S1 实现使用 source-built PyTorch/XLA lazy SPMD runtime 的 `mark_sharding`
 生成带 `mhlo.sharding` 的 PyTorch/XLA StableHLO program directory，并交给 Wafer Shardy propagation stage。
 partitioned local body 和 rank-local payload 由 P2.S2 的
 `wafer-opt --program-pipeline=stablehlo-spmd` program pipeline 取得；如果要继续进入 tensor

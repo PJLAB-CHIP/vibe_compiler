@@ -1,11 +1,11 @@
 # Wafer DDR Memory Planning Design
 
-2026-06-11 更新：R3.2g 重新收敛为 **compiler-side DDR memory planning**。它不能只是
+状态：R3.2g 重新收敛为 **compiler-side DDR memory planning**。它不能只是
 DDR access validation；凡是会影响 candidate 是否成立的 DDR byte footprint、lifetime、capacity、
 largest-contiguous 和 bandwidth 约束，都必须在 DDR offset assignment / candidate-selection gate 内决定或拒绝。
 R3.5 只 materialize 已接受的 DDR offset facts 和 IR-derived demand 到 runtime allocation/import/package，
 不重新做 planning。
-同日进一步收敛：compiler-managed DDR allocation 由 DDR `memref.alloc` 本身表达；R3.2g 只把
+compiler-managed DDR allocation 由 DDR `memref.alloc` 本身表达；R3.2g 只把
 accepted offset 写入 IR，size、alignment、lifetime、read/write intent 和 external access-end 都从
 当前 IR 重算，不作为长期 attr 字段保存。
 
