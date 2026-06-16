@@ -76,7 +76,7 @@ Pipeline position:
   `wafer.instr.local_drain`，或结构化 legalization failure reason。
 - Downstream consumer:
   R3.2f SPM memory planning、R3.2g DDR memory planning、R3.2h closed-loop candidate driver、
-  R3.4 placed memref realization 和 R3.6 codegen emission。
+  R3.5 runtime DDR materialization 和 R3.6 codegen emission。
 - User-level driver / named pipeline:
   主线由 R3.2 closed-loop planner 调用；局部 bring-up / candidate evaluation 入口是
   `wafer-lower-tile-region-to-instr` 和 `wafer-lower-groups-to-instr` named pipeline。
@@ -274,8 +274,9 @@ memref 替换原 op result 的 uses。
 - result/temp/psum/staging buffer 由 `memref.alloc` 或 accepted alias/view 创建。
 - metadata-only reshape 由 verifier-legal memref view 表达；physical layout conversion 必须是
   explicit movement。
-- SPM offset、range、bank span 由 R3.2f 写入，或在 R3.4 realization 降成 placed memref /
-  address descriptor。
+- SPM offset、range、bank span 由 R3.2f 写入；后续 runtime/ABI/codegen 阶段必须从这些 facts
+  和当前 memref use-def/view relation 派生 address/range 参数，不能复制成独立 placed/access
+  descriptor 中间协议。
 - RDMA/WDMA 的 DDR side 使用 `memref<..., #wafer.memory<ddr, layout>>`；DDR memory planning stage 负责
   external allocation contract、default arena resource、compiler-managed/resident requirement、planned DDR
   ranges 和 constant residency。
@@ -387,8 +388,8 @@ wafer.instr.gather_scatter source to dest attr-dict
 V0 只定义这一条 TDMA-backed movement op。copy、layout materialization、static slice movement、broadcast
 和 transpose 都要么映射成一条或多条 gather_scatter，要么失败。`wafer.instr.copy` 不作为
 单独 IR op；contiguous copy 是 gather_scatter descriptor 特例。`src_offset` / `dst_offset`
-是 operand buffer 内的字节偏移，用于表达同一 buffer 内的分段 movement；它们不是 R3.2f/R3.4
-负责分配的 physical SPM base address。
+是 operand buffer 内的字节偏移，用于表达同一 buffer 内的分段 movement；它们不是
+`wafer.spm.offset` / `wafer.ddr.offset` 这类 accepted base offset fact。
 
 ### 7.4 Fill / Elementwise / Reduce / Convert
 
@@ -532,10 +533,10 @@ R3.2d verifier checks only instruction legality:
 
 Instruction lowering does **not** verify physical address range, SPM bank conflicts, DDR default arena capacity,
 runtime symbol, packet bit layout or worker register window. Those checks belong to SPM/DDR offset assignment,
-placed realization and ABI/packet emission.
+R3.5 runtime DDR materialization and ABI/packet emission.
 DDR offset assignment must accept or reject the explicit DDR views, descriptors and compiler-managed DDR `memref.alloc`
-already present in this IR, and must materialize accepted DDR offset facts before later placement/runtime
-stages consume them.
+already present in this IR, and must materialize accepted DDR offset facts before R3.5 runtime materialization
+and R3.6 ABI/codegen emission consume them.
 
 ## 11. Example
 

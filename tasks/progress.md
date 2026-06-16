@@ -12,6 +12,7 @@
 - `pending`：依赖前序任务完成。
 - `later`：当前主线之后再做。
 - `done`：实现、测试和文档已按当前 pipeline contract 收口。
+- `removed`：经设计 review 取消为独立主线阶段；必要责任已并入其它可验证边界。
 
 局部 pass、verifier 负例、fixture 或单个 dump gate 通过，不自动等于 `done`。主线完成证明必须能
 重放已完成上游链路，并让当前 stage 输出被下游边界直接消费。
@@ -42,10 +43,8 @@ PyTorch/XLA StableHLO Wafer program directory
   -> wafer-lower-groups-to-selected-instr / candidate-selection + committed materialization
        search shape-driven traversal/reduction refinement frontier, verify same-domain output coverage,
        rerun candidate gates, commit only the selected passing candidate into main IR
-  -> R3.4 placed instruction-level realization
-       placed memref / access descriptor realization from accepted SPM/DDR offset facts
   -> R3.5 launch/runtime DDR materialization
-       runtime allocation/import/query/package metadata from accepted DDR demand
+       runtime allocation/import/query/package metadata derived from committed IR and accepted DDR demand
   -> R3.6+ C ABI / packet / object / runtime adapter
 ```
 
@@ -56,7 +55,7 @@ PyTorch/XLA StableHLO Wafer program directory
 
 ## 当前 Active
 
-**R3.4 placed instruction-level realization**
+**R3.5 launch/runtime DDR materialization**
 
 ```text
 Pipeline position:
@@ -64,25 +63,32 @@ Pipeline position:
   committed main IR；已包含 selected candidate 的 `wafer.tile.region`、`wafer.instr.*`、actual DDR tile
   views、accepted SPM offset facts 和 accepted DDR offset facts；原 logical `wafer.group` 已删除。
 - Current stage responsibility:
-  从 committed IR 中 materialize placed instruction-level realization：把 accepted SPM/DDR offset facts
-  和 memref/view demand 转成 R3.5/R3.6 可消费的 placed memref / access descriptor 边界；不重新决定
-  tile shape、layout、SPM offset 或 DDR offset。
+  从 committed IR 直接重算 runtime DDR demand，并 materialize runtime allocation/import/query/package
+  metadata；验证 runtime object 满足 committed IR-derived DDR views、compiler-managed/resident ranges
+  和 accepted DDR offset facts。不创建独立 placed memref / access descriptor 中间协议。
 - Output artifact / IR:
-  placed instruction-level IR / placed memref / access descriptor boundary；descriptor 只来自 committed IR
-  中可重算的 view、layout、offset 和 intent facts。
+  runtime DDR materialization boundary / package metadata demand；所有字段都由 committed
+  `wafer.instr.*` operands、`memref.subview`、`wafer.spm.offset`、`wafer.ddr.offset` 和 memref type/layout
+  重算，不复制成第二份长期事实源。
 - Downstream consumer:
-  R3.5 launch/runtime DDR materialization；R3.6+ C ABI / packet / object / runtime adapter。
+  R3.6+ C ABI / packet / object / runtime adapter。
 - User-level driver / named pipeline:
-  后续应在 committed selected-instr named pipeline 之后追加 placed realization；用户不应手工拼
-  candidate artifact、offset fact 和 descriptor materialization。
+  后续应在 committed selected-instr named pipeline 之后追加 runtime DDR materialization；用户不应手工拼
+  candidate artifact、offset fact 和 runtime package metadata。
 - Explicit non-goals:
-  不重新做 tile search、layout search、SPM planning 或 DDR planning；不生成 runtime
-  allocation/import、ABI call、packet、object 或 physical address。
+  不重新做 tile search、layout search、SPM planning 或 DDR planning；不生成 ABI call、packet、
+  object、physical address 或独立 access descriptor IR。
 - Completion gate:
-  以 named pipeline 重放 R3.1 -> candidate-selection -> committed materialization 已完成链路，R3.4
-  输出由 committed SPM/DDR facts 生成 placed descriptor boundary，且 R3.5 能直接消费 runtime DDR
-  demand。
+  以 named pipeline 重放 R3.1 -> candidate-selection -> committed materialization -> R3.5；
+  R3.5 从 committed IR 和 accepted offset facts 直接推出 runtime DDR allocation/import/query/package
+  demand，并验证这些 demand 与 accepted ranges 一致。
 ```
+
+R3.4 placed instruction-level realization 取消为独立主线阶段。原因是 committed instruction IR 已经
+显式包含 instruction operands、DDR tile views、SPM offset facts、DDR offset facts 和 movement
+descriptor attrs；把这些可重算事实再 materialize 成 placed memref / access descriptor 中间层会形成
+重复事实源。后续 ABI/packet emission 如需 address/range/stride 参数，应在对应 emission 阶段从
+committed IR 派生，不通过 R3.4 旁路协议传递。
 
 ## 已完成主线
 
@@ -102,13 +108,18 @@ Pipeline position:
 | R3.2h | done | R3.1 group + R3.2a/b facts + candidate gates | `wafer-select-group-tile` / `wafer-lower-groups-to-selected-instr` 从 full traversal/no split 开始搜索 shape-driven traversal/reduction refinement frontier，验证 same-domain multi-output coverage，逐个重放 candidate tile-view materialization、instruction lowering、SPM offset assignment、DDR offset assignment 和 verifier；支持 `tile-search=first-legal|min-estimated-time`，硬件 range/alignment/timing 来自 fixed target policy，搜索空间 option 可覆盖 `tile-search-effort` preset；选择 passing candidate，不把 rejected plan 或 cost breakdown 写入 committed IR；覆盖 elementwise、static slice、large K=1000 matmul、matmul K split、generic reduction split、same-domain multi-output、固定 target SPM range 下的 multi-output `matmul + elementwise`、large-shape traversal tile / K split 手动 heavy case、reduce、`scf.if`、`scf.for`、representatives 和 gate early-exit |
 | R3.3 | done | R3.2h selected candidate evaluation result | selected candidate inline commit 回原 `wafer.group` 位置；原 parent function、无关函数和同函数其它 ops 保留；输出 committed `wafer.tile.region` / `wafer.instr.*` / accepted SPM-DDR offset facts，不生成 `*_selected_group_*` 旁路函数 |
 
+## 已取消主线阶段
+
+| ID | 状态 | 原输入 | 取消原因 / 责任归属 |
+| --- | --- | --- | --- |
+| R3.4 | removed | R3.3 committed instruction IR 已经包含可重算 memory facts | 取消独立 placed memref / access descriptor materialization；必要 address/range/demand 检查并入 R3.5 和后续 ABI emission 的派生验证 |
+
 ## 后续队列
 
 | ID | 状态 | 输入 | 输出 / 完成 gate |
 | --- | --- | --- | --- |
-| R3.4 | active | R3.3 committed tile-region + accepted layout/SPM/DDR facts | placed instruction-level IR / placed memref / access descriptor；不重新决定 tile/layout/memory plan |
-| R3.5 | pending | R3.4 placed/memref-aware IR + accepted DDR offset facts and descriptor/view demand | runtime allocation/import/query/package materialization；验证 runtime object 满足 committed IR-derived DDR offsets/ranges，不重新做 DDR planning |
-| R3.6-R3.8 | pending | placed instruction IR + launch signature | C ABI / packet emission、IR-derived package manifest、wrapper-facing golden packet |
+| R3.5 | active | R3.3 committed tile-region / `wafer.instr.*` + actual DDR tile views + accepted SPM/DDR offset facts | runtime allocation/import/query/package materialization；验证 runtime object 满足 committed IR-derived DDR offsets/ranges，不重新做 DDR planning，不新增 access descriptor 中间协议 |
+| R3.6-R3.8 | pending | committed instruction IR + R3.5 runtime DDR materialization + launch signature | C ABI / packet emission、IR-derived package manifest、wrapper-facing golden packet |
 | R4.1-R4.5 | pending | placement + local shard + launch/package metadata | rank/block/coord、per-rank slices、writeback、placed package |
 | R5.1-R5.2 | pending | static transformer local shard IR / staged IR gaps | full-block schedule 或拒绝原因；补 mask/select、dynamic-bound policy、constant/weight slice 等 |
 | R6.1-R6.2 | pending | tiled tensor collective + placement/local-rank/buffer facts | materialize tile communication 到 communication / DTE / local-drain 边界 |
@@ -124,12 +135,13 @@ Pipeline position:
 
 ## 下一步
 
-实现 R3.4 placed instruction-level realization：
+实现 R3.5 launch/runtime DDR materialization：
 
-1. 定义 committed `wafer.tile.region` / `wafer.instr.*` 中 SPM/DDR offset facts 到 placed memref /
-   access descriptor 的 materialization 边界。
-2. 明确哪些 descriptor 字段由 memref type/layout、`memref.subview`、`wafer.spm.offset` 和
-   `wafer.ddr.offset` 重算，哪些仍留给 R3.5 runtime/launch boundary。
-3. 保证 R3.4 不重新做 tile/layout/SPM/DDR planning，只消费 committed IR 中已经 accepted 的 facts。
-4. 补 completion proof：R3.1 -> candidate-selection -> committed materialization -> R3.4 的 named
-   pipeline 输出能被 R3.5 runtime DDR demand materialization 直接消费。
+1. 从 committed `wafer.tile.region` / `wafer.instr.*`、`memref.subview`、`wafer.ddr.offset` 和
+   `wafer.spm.offset` 直接重算 runtime DDR demand，不引入 placed memref / access descriptor 旁路协议。
+2. 定义 external boundary、compiler-managed DDR allocation、resident constant/inter-group DDR range
+   到 runtime allocation/import/query/package metadata 的 materialization 边界。
+3. 验证 runtime object 满足 accepted DDR offset/range、alignment、capacity 和 view/root relation；失败时
+   给结构化 diagnostic，不重新做 DDR planning。
+4. 补 completion proof：R3.1 -> candidate-selection -> committed materialization -> R3.5 的 named
+   pipeline 输出能被 R3.6 C ABI / packet / object / runtime adapter 直接消费。

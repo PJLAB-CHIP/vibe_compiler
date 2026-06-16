@@ -2,9 +2,9 @@
 
 日期：2026-05-25
 
-状态：设计草案；范围：placed instruction-level IR 到 C ABI / wrapper / packet 的 lowering。
+状态：设计草案；范围：committed instruction IR + runtime DDR metadata 到 C ABI / wrapper / packet 的 lowering。
 
-本文定义 placed instruction-level Wafer device program 到 C ABI / wrapper / packet 的 lowering 合同，
+本文定义 committed Wafer instruction program 到 C ABI / wrapper / packet 的 lowering 合同，
 以及 golden packet 测试边界。C ABI 是 lower-level codegen 的稳定调用面，不是上层 IR 语义。
 上层 `wafer.group`、`wafer.tile.region`、layout、SPM、DDR 和 communication 只需要满足该 ABI
 的 verifier 条件，不能继承历史 wrapper 的名字、默认 wait 策略或 packet bitfield 作为架构边界。
@@ -23,7 +23,7 @@
 目标：
 
 - 定义 `wafer_*` C ABI family 的参数单位、address domain、wait policy 和 error/status contract。
-- 把 placed instruction-level `wafer.instr.*`、tile communication 和 sync boundary 转成明确
+- 把 committed `wafer.instr.*`、tile communication 和 sync boundary 转成明确
   C ABI call 或 packet emission。
 - 通过 wrapper-first lowering 生成硬件任务，避免在主路径手写 raw packet bitfield。
 - 为每个 ABI family 建 golden packet tests，验证 wrapper 参数到 register packet 的映射。
@@ -40,8 +40,9 @@
 输入：
 
 ```text
-placed instruction-level wafer.tile.region
-  + placed memref / access descriptor values
+committed wafer.tile.region / wafer.instr.* IR
+  + accepted SPM/DDR offset facts
+  + R3.5 runtime DDR metadata
   + wafer.instr.* / tile communication / sync ops
 ```
 
@@ -65,11 +66,11 @@ LLVM dialect / C call sequence or packet emission
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  R3.4 产出的 placed instruction-level `wafer.instr.*` IR、placed memref /
-  access descriptor value、accepted DDR planned ranges 已 materialize 后的 descriptor facts 和 launch signature。
+  R3.3/R3.5 产出的 committed `wafer.instr.*` IR、accepted SPM/DDR offset facts、runtime DDR metadata
+  和 launch signature。
 - Current stage responsibility:
-  从 placed instruction-level IR 发射 `wafer_*` C ABI call、LLVM call 或 packet builder 输入，
-  固定参数单位、address domain、wait/completion policy 和 ABI version。
+  从 committed instruction IR 和 runtime DDR metadata 派生 `wafer_*` C ABI call、LLVM call
+  或 packet builder 输入，固定参数单位、address domain、wait/completion policy 和 ABI version。
 - Output artifact / IR:
   C ABI call sequence / packet emission metadata / debug dump，以及 golden packet test input。
 - Downstream consumer:
@@ -79,7 +80,7 @@ Pipeline position:
 - Explicit non-goals:
   不重新选择 group、tile shape、layout、instruction form、SPM memory plan 或 DDR memory plan。
 - Completion gate:
-  至少 RDMA/WDMA/GEMM 的 placed instruction 能生成可审计 ABI call/packet emission，并由 verifier
+  至少 RDMA/WDMA/GEMM 的 committed instruction 能生成可审计 ABI call/packet emission，并由 verifier
   和 golden packet gate 覆盖参数单位、range-end、wait policy 和 wrapper mapping。
 ```
 
@@ -127,8 +128,9 @@ V0 family：
 这些函数名是 compiler-facing ABI family，不要求一一等同底层 public symbol。实现可以在 C shim 内
 调用 public Tsm wrapper、Kcore runtime helper 或未来 native helper。
 
-R3.6 主线不要求专门的 ABI IR 层。codegen 可以直接从 placed `wafer.instr.*` 和
-placed memref / access descriptor 发射 `wafer_*` C shim 调用、LLVM call 或 packet builder 输入。
+R3.6 主线不要求专门的 ABI IR 层。codegen 可以直接从 committed `wafer.instr.*`、accepted
+SPM/DDR offset facts 和 R3.5 runtime DDR metadata 发射 `wafer_*` C shim 调用、LLVM call 或 packet
+builder 输入。
 如果保留 `wafer.instr.rdma`、`wafer.instr.wdma`、`wafer.instr.gemm`、`wafer.instr.elementwise`、
 `wafer.instr.reduce`、Direct DTE emission helper 这类对象，它们只作为 very-late debug/test dump 或 emission
 helper，不能作为主线架构层，也不能承载 placement、layout 或 instruction selection 决策。

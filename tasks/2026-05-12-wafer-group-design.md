@@ -94,7 +94,7 @@ Pipeline position:
   拒绝的 logical group。
 - Downstream consumer:
   R3.2a-g analysis/planning/legalization gates 和 R3.2h closed-loop candidate driver；R3.3 `wafer.tile.region`
-  materialization；R3.4 placed layout/SPM/DDR realization；R3.5 runtime/package materialization；
+  materialization；R3.5 runtime/package materialization；
   R3.6/R3.7 ABI/package stages。
 - User-level driver / named pipeline:
   `wafer-opt --program-pipeline=stablehlo-spmd-to-group`，由该 program
@@ -750,7 +750,7 @@ transformation-local candidate evaluation `wafer.tile.region` IR，用它承载 
 Wafer op、layout materialization、buffer、lifetime 和 effect，再从这层 IR 调用下游 analysis。
 这层 lowered IR 是 planning artifact；只有 passing plan 才能由 R3.3 commit 到主 IR。
 SPM planning、layout assignment、DDR memory planning 和 compute/movement legality 是 group 是否成立的
-决定条件，不是 R3.3/R3.4/R3.5 的后处理。
+决定条件，不是 R3.3 commit 或 R3.5 runtime/package materialization 的后处理。
 
 因此恢复顺序必须分清 planning facts 和 IR materialization：
 
@@ -797,9 +797,9 @@ SPM planning、layout assignment、DDR memory planning 和 compute/movement lega
   R3.2h search space。
 
 R3.3 只把 R3.2h 选中的 passing candidate commit 回主 IR，形成 committed `wafer.tile.region` /
-instruction-level boundary。R3.4/R3.5 只把
-已经通过 candidate gates 的 layout/instruction/SPM/DDR accepted facts 落到可验证 IR、placed descriptor
-或 runtime/package boundary；它们不能成为
+instruction-level boundary。R3.5 只把
+已经通过 candidate gates 的 layout/instruction/SPM/DDR accepted facts 派生为 runtime/package
+boundary；它不能成为
 第一次发现 SPM 放不下、layout 不合法或 DDR demand 不可接受的阶段。若 R3.2a-g gates
 让 R3.2h 不能接受当前 group plan，planner 必须回到 tile shape、layout、internal split、instruction
 选择或 group boundary，而不是落一个 rejected `wafer.tile.region` 等待下游补救。
@@ -1039,7 +1039,7 @@ group planner 层只在 analysis 中建模抽象资源，不把完整 resource p
 
 下游阶段再细化，并由对应子设计负责 verifier / lowering：
 
-- memory buffer、layout materialization 和 placement realization：见 layout / SPM / DDR 文档。
+- memory buffer、layout materialization 和 runtime/ABI address derivation：见 layout / SPM / DDR 文档。
 - target compute 和 local movement：见 `wafer.tile.*` compute 文档。
 - communication buffer、DTE/FSM token/wait 和 collective p2p schedule：见 `wafer.tile.*` communication 文档。
 - host runtime / profiling resource：属于 `wafer.launch` / runtime/package 子设计。

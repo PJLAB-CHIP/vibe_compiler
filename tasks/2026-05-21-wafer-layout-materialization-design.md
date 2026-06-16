@@ -31,8 +31,8 @@ scheduled tile tensor IR
   -> bounded group-to-group boundary co-planning
   -> accepted tile-local memref IR with Wafer physical layout marker
   -> materialization cleanup / canonicalization
-  -> placement realization
-  -> concrete movement / compute lowering
+  -> runtime/ABI address derivation from accepted facts
+  -> concrete movement / compute emission
 ```
 
 `ChannelNorm` / `DechannelNorm` / `GatherScatter` 是真实 data movement，不是 metadata reshape。
@@ -66,7 +66,7 @@ lowering IR 写成三套互不相干的东西：
 | boundary co-planning analysis | 相邻 device-side group boundary 的可行 layout summary 和 selected boundary layout | 否 | 在不引入全局 plan attr 的前提下，减少 producer/consumer 边界上的重复 materialization |
 | accepted tile-local memref IR | `memref<shape x dtype, #wafer.memory<space, layout>>` 和 `wafer.tile.materialize_layout` | 是 | 记录已接受的 address space 和 physical layout marker，以及真实 layout movement 的抽象边 |
 | materialization cleanup | canonicalization pattern 和 layout-aware rewrite | 是，通过 rewrite 当前 IR | 删除冗余 materialization；不保存搜索过程 |
-| placement realization | placed memref / flat backing storage / Wafer access descriptor | 是 | 把 unplaced Wafer-tagged memref 降成目标指令能消费的 address/range/stride representation |
+| runtime/ABI address derivation | ABI/codegen 参数或 lower-level emission metadata | 是，仅作为 very-late derived form | 从 committed Wafer-tagged memref、accepted offset facts、view relation 和 layout helper 派生目标指令需要的 address/range/stride representation；不形成新的主线 IR 事实源 |
 | lowered movement IR | `ChannelNorm` / `DechannelNorm` / `GatherScatter` / TDMA / lower-level effects | 是 | 把 abstract materialization 展开为目标相关 movement、sync 和 byte/range 约束 |
 
 constant storage transform 与这条主线并行：它只处理 compile-time `ConstantLike` value 的
@@ -82,9 +82,9 @@ layout planning 有两个恢复层次：
   layout constraints、layout assignment alternatives、materialization cut 和 materialization
   buffer demand。该层只产出 analysis result 和 debug dump，不 rewrite `wafer.group`，不写
   layout attr，也不生成 `wafer.tile.region`。
-- R3.4 在 committed `wafer.tile.region` / instruction-level IR 层运行。它消费 R3.3 committed
-  main IR，把 layout assignment 和 materialization cut materialize 成
-  Wafer-tagged memref value 和 `wafer.tile.materialize_layout` op。
+- committed `wafer.tile.region` / instruction-level IR 已经包含 candidate gates 接受的
+  Wafer-tagged memref value 和 `wafer.tile.materialize_layout` op。R3.5/R3.6 只从这些 IR facts
+  派生 runtime/ABI/codegen 参数，不再重新 materialize layout assignment 或 materialization cut。
 
 完整 layout materialization 的输入来自 target-abstract tile-region IR。它由 scheduled
 `wafer.group` lowering 而来，但 layout-sensitive tiled op 已经被绑定为正式的
@@ -368,8 +368,8 @@ instruction IR 上，不进入 `wafer.group`。
   transform 或 device-side materialization 后带目标相关 marker；SPM buffer 同样通过这个 marker
   表达 compact 或 aligned family。
 - compile-time constant 在 semantic tensor IR 中仍是 `ConstantLike` value。只有在
-  `wafer.tile.load` / lowering 需要 addressable device storage 时，才产生明确 memref、placed
-  address/range 或 runtime/package metadata。
+  `wafer.tile.load` / lowering 需要 addressable device storage 时，才产生明确 memref、derived
+  address/range 参数或 runtime/package metadata。
 
 DDR planned ranges、runtime allocation mapping、resident constant、capacity 和 bandwidth 不属于
 `#wafer.memory<space, layout>`，见
@@ -441,11 +441,11 @@ computeWaferPhysicalTensorInfo(memrefType)
 `computeWaferPhysicalElementByteOffset` 返回 logical index 到 physical byte offset 的映射。禁止每个
 pass 自己根据字符串或局部约定解释 `cx/ncx`。
 
-Wafer-tagged memref 在 placement 之前仍是 unplaced logical-shape memref：shape 是 logical
+Wafer-tagged memref 在 runtime/ABI/codegen 派生之前仍是 logical-shape memref：shape 是 logical
 shape，element type 是 logical dtype；它不能被 generic memref-to-LLVM lowering 当成
-`product(shape) * elemBytes` 的真实 footprint。placement realization 负责把它转换成 placed
-memref、flat backing storage 或 explicit access descriptor；descriptor 只承载目标指令需要的
-address/range/stride/layout facts。
+`product(shape) * elemBytes` 的真实 footprint。runtime/ABI/codegen 负责从 accepted offset facts、
+memref view relation 和 layout helper 派生目标指令需要的 address/range/stride/layout 参数；
+这些参数不作为新的主线 IR 事实源。
 
 V0 不定义额外的 constant storage encoding attr。constant 的 storage encoding 不作为独立
 layout attr 在 pipeline 中传播；它由当前 `ConstantLike` value、consumer `wafer.tile.load`
@@ -741,25 +741,26 @@ pass 名是实现组织，不是架构边界；边界仍以 IR contract 和 veri
    - 不决定 runtime materialization cut。
    - 不修改 tensor semantic layout。
 
-4. `wafer-realize-placement`
+4. Runtime / ABI address derivation
 
-   运行位置：accepted layout IR 和 cleanup 完成之后，lower-level movement/compute op 需要 placed storage
-   之前。它可以作为 `wafer-spm-bufferize` 的后半段，也可以拆成独立 conversion pass；边界是
-   unplaced Wafer-tagged memref 在这里消失。
+   运行位置：accepted layout IR 和 cleanup 完成之后，lower-level movement/compute emission 需要
+   address/range/stride 参数之前。它不是独立主线 IR 阶段；边界是从 committed IR 和 accepted facts
+   派生 very-late emission 参数。
 
    输入：
 
    - tile-local memref 的 logical shape、dtype 和 `#wafer.memory<space, layout>`。
    - `computeWaferPhysicalTensorInfo` calculator。
    - SPM allocation / range / lifetime result。
-   - target descriptor policy。
+   - target descriptor / emission policy。
 
    行为：
 
-   - compact layout 转成 placed SPM/DDR `memref`。
-   - `Cx/NCx` 转成 placed physical-shape `memref`、flat storage `memref` 或 explicit Wafer access descriptor。
-   - 给 lower-level movement/compute op 绑定 address/range/stride/layout facts。
-   - 删除或替换所有 unplaced `#wafer.memory<spm, *>` memref values。
+   - compact layout 的 address/range 由 committed memref、accepted offset fact 和 compact footprint 派生。
+   - `Cx/NCx` 的 physical extent、padding、flat storage span 和 packet fields 由
+     `computeWaferPhysicalTensorInfo` 派生。
+   - 给 lower-level movement/compute emission 生成 address/range/stride/layout 参数。
+   - 不在主线 IR 中删除或替换 Wafer-tagged memref 以制造第二份 storage 事实源。
 
    不负责：
 
@@ -769,8 +770,8 @@ pass 名是实现组织，不是架构边界；边界仍以 IR contract 和 veri
 
 5. `wafer-lower-layout-materialize`
 
-   运行位置：placement realization 已经给出 placed memref / access descriptor 之后，lower-level
-   movement/compute dialect 之前或过程中。
+   运行位置：committed instruction IR 已经带有 accepted layout/materialization facts 之后，
+   lower-level movement/compute emission 之前或过程中。
 
    输入：
 
@@ -1213,11 +1214,11 @@ V0 不做全局最优，但不能只做一次贪心选择。主路径是 determi
    在 accepted IR 上运行 layout materialization cleanup。无条件 fold 直接删除冗余 op；改变 lifetime
    或 boundary layout 的 rewrite 必须重新通过 SPM allocation 和 DDR memory planning。
 
-10. Placement realization handoff
+10. Runtime / ABI handoff
 
-   cleanup 后交给 `wafer-realize-placement` / `wafer-spm-bufferize` 后半段，把
-   unplaced Wafer-tagged memref 转成 placed `memref`、flat storage 或 access descriptor。layout planner 不直接
-   生成 LLVM ABI，但必须保证 accepted layout 都能被这个 conversion 合法实现。
+   cleanup 后交给 R3.5 runtime materialization 和 R3.6 ABI/codegen。它们从 committed
+   Wafer-tagged memref、accepted offset facts、view relation 和 layout helper 派生 address/range/stride
+   参数。layout planner 不直接生成 LLVM ABI，但必须保证 accepted layout 都能被这个派生过程合法实现。
 
 ## 11. Cost Model
 
@@ -1257,9 +1258,9 @@ layout 相关事实按第 3 节生命周期分层表达：
   - `wafer.tile.materialize_layout` 或等价 explicit data movement op。
   - `wafer.tile.load` 对 `ConstantLike` source 的 use-def，以及 result layout marker。
   - op verifier 可检查的 layout contract。
-- placement realization 层删除 unplaced Wafer-tagged memref，把它转换成 placed `memref`、flat
-  storage `memref` 或 explicit access descriptor。compact layout 应尽量复用标准 memref lowering；
-  Cx/NCx 的 access descriptor 只承载 lower-level instruction 必需的 storage facts。
+- runtime/ABI/codegen 派生层从 committed Wafer-tagged memref 和 accepted offset facts 得到
+  address/range/stride 参数。compact layout 应尽量复用标准 memref lowering；Cx/NCx 的 lower-level
+  storage facts 只作为 very-late emission 参数出现，不作为独立 access descriptor IR 传递。
 - lower-level movement IR 表达具体 instruction/wrapper path、sync/effect 和 byte/range 约束。
 
 不要维护全局 `layout_plan` attr，也不要把 analysis graph 序列化成 side table 给后续 pass 使用。

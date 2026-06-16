@@ -398,7 +398,7 @@ wafer.tile.wait %send1, %recv1
 ```
 
 这个 case 中的 `4096` 只是示例 byte count。真实 byte count 应由 tile slice、dtype、physical layout
-和 placement realization 推导或显式 SSA value 表达。ring order 只是 V0 候选算法；如果 planner
+和 committed IR / accepted facts 推导或显式 SSA value 表达。ring order 只是 V0 候选算法；如果 planner
 接受 tree 或其它算法，IR 也应展开为对应 p2p body，而不是保留一个不可验证的 plan attr。
 
 ## 11. 实现边界和后续缺口
@@ -409,9 +409,9 @@ wafer.tile.wait %send1, %recv1
   `all_reduce`，以及旧 storage 原型上的 token/effect / byte-count 检查。
 - `collective_permute`、ring `all_gather`、`reduce_scatter` / `all_reduce` 的 p2p + local reduce
   lowering 仍依赖后续 placement/local-rank/buffer facts，不是当前主线完成项。
-- Direct DTE send/recv/wait golden path 和 error diagnostic 属于历史 bring-up 证据；placed Direct DTE
-  instruction form、resource allocation 和 C ABI emission 需要在 R6/R7 从 placed instruction-level IR
-  重新建立。
+- Direct DTE send/recv/wait golden path 和 error diagnostic 属于历史 bring-up 证据；Direct DTE
+  instruction form、resource allocation 和 C ABI emission 需要在 R6/R7 从 committed instruction IR
+  和 accepted placement/resource facts 重新建立。
 
 后续进入条件：
 

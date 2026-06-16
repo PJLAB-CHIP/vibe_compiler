@@ -66,8 +66,8 @@ scheduled wafer.group tensor body
 | layout-materialized | 同一类 compute/movement op | `memref<..., #wafer.memory<space, layout>>` | 验证 address space 和 physical layout marker，显式插入 `wafer.tile.materialize_layout` |
 | instruction-level | `wafer.instr.*` | unplaced Wafer-tagged memref SSA value | 选择 CT/NE/TDMA/RDMA/WDMA 指令形态，列出 queue、temp/psum/staging memref values、alias、effect 和 descriptor attrs，不含 SPM offset；DTE 属于 `wafer.tile.*` communication / communication lowering |
 | DDR memory-planned instruction-level | 同一 `wafer.instr.*` | memory-planned Wafer-tagged memref SSA value | DDR view/root range、descriptor、compiler-managed/resident/inter-group planned ranges、lifetime/reuse、default arena capacity/largest-contiguous/bandwidth 已通过 DDR memory planning |
-| placed instruction-level | 同一 `wafer.instr.*` | placed memref、flat storage value 或 access descriptor | 具备 SPM offset/range/bank、DDR access descriptor 或 accepted DDR range realization，可进入 codegen emission |
-| launch/ABI emission | LLVM / C call / package metadata | concrete ABI arg | 调用 Wafer C ABI、发 package metadata、连接 host runtime；不作为主线 IR 层 |
+| runtime/ABI derived form | 同一 `wafer.instr.*` 或 very-late emission metadata | concrete ABI arg / packet field | 从 committed instruction IR、accepted SPM/DDR offset facts、memref view 和 layout helper 派生 address/range/stride 参数；不作为新的主线 IR 层 |
+| launch/ABI emission | LLVM / C call / package metadata | concrete ABI arg | 调用 Wafer C ABI、发 package metadata、连接 host runtime；不作为上层 IR 层 |
 
 因此，`wafer.tile.gemm` 这类 op 在不同阶段可以被 type conversion 改写 operand/result type，
 但它的 semantic contract 仍是同一个：本 tile 内的 GEMM target implementation。若某个阶段需要
@@ -135,7 +135,8 @@ split 决策；内部 reduction 是否需要进一步切分是 op tiling / SPM a
 - 如果存在累加输入，它应是 SSA operand；如果结果需要被后续累加，使用 SSA result 或
   loop-carried value 表达，不把 psum 生命周期复制成全局计划 attr。
 - layout interface 给出 aligned-only 约束。2D 矩阵通常映射到 `Cx` family；具体 C0、padding 和
-  descriptor 由 `computeWaferPhysicalTensorInfo`、SPM memory planning 和 placement realization 计算。
+  descriptor 参数由 `computeWaferPhysicalTensorInfo`、SPM memory planning facts 和 ABI/codegen
+  emission 派生。
 
 V0 不把 bias、scale、sparse、INT8 quant、fused activation 作为默认合同。若后续引入 fused form，
 它们应是可验证 operand/attr，并能 canonicalize 回非 fused form 或明确 lower 到目标 wrapper。
@@ -148,8 +149,8 @@ transcendental 子集。它应满足：
 - op kind 使用受控 enum 或拆分 op，不通过字符串名字匹配。
 - dtype 组合由 verifier 检查；普通 elementwise 默认 input/output dtype 一致，convert 明确记录
   src/dst dtype pair 和 rounding / zero-point 语义。
-- bool/i1 使用 logical element count，storage bytes 和 bitpack 由 placement realization / lower-level
-  verifier 负责。
+- bool/i1 使用 logical element count，storage bytes 和 bitpack 由 ABI/codegen emission /
+  lower-level verifier 从 committed IR 派生。
 - layout preference 通常是 flexible：若 producer 已经是 aligned layout，elementwise 可以继承以避免
   materialization；若 consumer 更偏好 compact，也可以在 cut edge 上 materialize。
 - transformer block 需要的 elementwise 子集必须作为明确 kind 或拆分 op 表达，至少包括
@@ -226,8 +227,8 @@ movement op 的合同：
 - RDMA 方向是 `#wafer.memory<ddr, *> -> #wafer.memory<spm, *>`，WDMA 方向是
   `#wafer.memory<spm, *> -> #wafer.memory<ddr, *>`。TDMA / local movement 只在 tile-local
   memory 或 verifier 允许的 address domain 内工作。
-- stride 和 byte count 的单位在 placed instruction-level IR / access descriptor 层必须明确。上层 tensor stride 是 element stride，
-  lower 到 DMA/TDMA/DTE descriptor 前必须转换成 byte stride。
+- stride 和 byte count 的单位在 `wafer.instr.*` descriptor attrs 和 ABI/packet emission 参数中必须明确。
+  上层 tensor stride 是 element stride，lower 到 DMA/TDMA/DTE descriptor 前必须转换成 byte stride。
 
 ## 4. Interfaces
 
@@ -303,13 +304,13 @@ Accepted layout verifier：
 - loop-carried buffer 的 entry/yield layout 一致，除非 loop body 内有显式 materialization。
 - boundary load/store 的 external layout contract 与 host/runtime 或 package metadata 一致。
 
-Placed instruction-level verifier：
+Instruction/runtime verifier：
 
-- CT、NE、TDMA operand 是 SPM address 或 descriptor；RDMA source 是 DDR、destination 是 SPM；
+- CT、NE、TDMA operand 是 SPM Wafer-tagged memref with accepted offset fact；RDMA source 是 DDR、destination 是 SPM；
   WDMA source 是 SPM、destination 是 DDR。
 - memory-space verifier 必须用统一的 `#wafer.memory<space, layout>` 检查这些 address domains；不能把
   external boundary、DDR descriptor 和 SPM storage 当成几套不相干的空间语义。
-- DDR access descriptor 的 compiler-managed/resident planned range、external allocation、capacity 和 bandwidth 不是本层
+- DDR compiler-managed/resident planned range、external allocation、capacity 和 bandwidth 不是本层
   op attr；本层只通过 memory effects、range、byte count 和 direction contract 把需求暴露给
   DDR memory planner。
 - stride、iteration、byte count、range end、bool bitpack 和 alignment 规则已完成转换和检查。
@@ -329,8 +330,8 @@ Placed instruction-level verifier：
 | instruction legalization / selection | layout-materialized IR | instruction-level `wafer.instr.*` over unplaced Wafer-tagged memref | 将 target-abstract op 改写成 CT/NE/TDMA/RDMA/WDMA 指令形态，列出 queue、effects、temp/psum/staging memref values、alias 和 descriptor attrs；DTE communication 不进入普通 `wafer.instr` path |
 | SPM memory planning | instruction-level IR with unplaced Wafer-tagged memref | same instruction-level IR with planned SPM offset facts | 从 memref use-def 和 instruction effects 收集 demand、liveness，分配 offset/range/bank |
 | DDR memory planning | SPM-planned instruction-level IR with actual DDR tile views, descriptors and compiler-managed DDR `memref.alloc` | same instruction-level IR with accepted DDR offset facts，或结构化失败 | 从 memref view、descriptor、alloc、lifetime 和 target policy 重算 DDR demand；验证 external demand，为 compiler-managed/resident/inter-group demand 规划 accepted offset；验证或拒绝当前 IR 中显式表达的 DDR demand |
-| placement realization | DDR memory-planned instruction-level IR | placed `memref` / flat storage / access descriptor | 复用标准 memref lowering 或生成目标 access descriptor，不重新决定 layout/SPM/DDR plan |
-| codegen emission | placed instruction-level IR | LLVM call / C ABI call / package metadata | 生成具体 ABI call 或 packet emission，不回头修改 schedule/layout |
+| runtime DDR materialization | committed instruction IR with accepted SPM/DDR offset facts | runtime allocation/import/query/package metadata，或结构化失败 | 从 committed IR 直接派生 runtime DDR demand，验证 runtime object 满足 accepted ranges，不重新决定 layout/SPM/DDR plan |
+| codegen emission | committed instruction IR + runtime DDR metadata | LLVM call / C ABI call / package metadata | 从当前 IR 派生 ABI/packet 参数，生成具体 ABI call 或 packet emission，不回头修改 schedule/layout |
 
 如果一个 pass 创建 `wafer.tile.*` compute、movement、layout、SPM 或 sync op，应声明 dependent dialects。pass
 pipeline 只表达 transformation 顺序，不承载隐藏语义。
@@ -474,4 +475,4 @@ Accepted layout 后：
 全局文档边界见 `tasks/2026-05-11-wafer-ai-compiler-architecture.md` 第 8 节。本文只维护
 target-abstract compute/movement op 的语义、interface 和 lowering legality；group formation、
 layout assignment、SPM/DDR allocation、communication 和 launch/runtime 不在本文重复定义。
-register-level wrapper / packet 约束只在 placed instruction-level lowering / codegen emission 后消费。
+register-level wrapper / packet 约束只在 runtime/ABI/codegen emission 中消费。

@@ -5,9 +5,9 @@
 状态：设计草案；范围：`wafer.launch`、runtime package、host runtime adapter 和 completion contract。
 
 本文定义 `wafer.launch`、runtime package、host runtime adapter 和 completion contract。该阶段
-位于 placed instruction-level device program、C ABI / packet emission 之后，负责把 device code、
-runtime metadata、placement、DDR binding、constant storage bytes 和 launch arguments 组织成
-可执行单元。
+消费 committed instruction IR 派生的 C ABI / packet emission、R3.5 runtime DDR metadata 和
+launch signature，负责把 device code、runtime metadata、placement、DDR binding、constant storage
+bytes 和 launch arguments 组织成可执行单元。
 
 本文依赖：
 
@@ -171,7 +171,8 @@ arguments；它不反向定义 tensor semantics，也不包含 runtime handle、
 
 历史 `--emit-single-tile-matmul`、`--emit-multi-tile-no-comm-matmul`、
 `--emit-single-tile-elementwise` 和 `--emit-local-transformer-block` fixed emitter 已删除。后续 package
-gate 必须从当前 `wafer-opt` pipeline 的 placed instruction-level IR / C ABI emission / launch IR 自动导出 manifest；
+gate 必须从当前 `wafer-opt` pipeline 的 committed instruction IR / runtime DDR metadata /
+C ABI emission / launch IR 自动导出 manifest；
 不能恢复独立固定 emitter 作为完成证明。
 
 placement metadata 当前包含：

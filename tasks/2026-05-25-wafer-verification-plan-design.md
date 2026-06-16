@@ -27,8 +27,8 @@ Serving integration 暂不纳入本文通过标准。
 
 - IR parse / print / verifier / conversion / FileCheck 通过。
 - resource planner、golden packet、package serialization 和 dependency/config tests 通过。
-- pipeline 能生成当前阶段的本地编译产物：placed instruction-level IR、C ABI call/packet emission
-  metadata、package manifest 和由 manifest 生成的 C stub；该 C stub 能被当前 C toolchain 做
+- pipeline 能生成当前阶段的本地编译产物：committed instruction IR、runtime DDR metadata、
+  C ABI call/packet emission metadata、package manifest 和由 manifest 生成的 C stub；该 C stub 能被当前 C toolchain 做
   syntax compile。
 - LLVM dialect / LLVM IR lowering、object emission 和真实 `wafer_*` runtime call emission 不属于当前
   local compile / package gate 的通过条件，后续实现时必须作为单独 milestone gate 记录。
@@ -52,7 +52,7 @@ Serving integration 暂不纳入本文通过标准。
 | Layout | tile region | layout assignment、materialization cut、冗余 conversion cleanup 合法 |
 | SPM | tile region + demands | allocation、range/end-address、lifetime、reserved range 合法 |
 | DDR | tile region + launch boundary | external binding、workspace/constant demand、default DDR arena resource/capacity 合法 |
-| Compute / Movement | placed instruction-level IR | wrapper family、layout、dtype、shape、issue/drain 合法 |
+| Compute / Movement | committed instruction IR + accepted offset facts | wrapper family、layout、dtype、shape、issue/drain 合法 |
 | Communication | tile_region / SPM materialization 后的 collective/p2p IR | endpoint、token、DTE/FSM resource、wait policy 合法 |
 | C ABI / golden packet | lower-level Wafer ops | ABI unit/address/wait verified，golden packet 覆盖 wrapper mapping |
 | Launch/runtime | package + adapter | manifest roundtrip、runtime allocation object binding contract、local compile/package、stub shielding 合法；板端 completion 后续有卡环境验证 |

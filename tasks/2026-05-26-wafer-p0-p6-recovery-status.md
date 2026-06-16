@@ -51,7 +51,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   `WaferDialect.cpp` 只保留 dialect/attr/type/op 注册和 `StorageType` verifier。
 - 历史 local integration gate 曾把 `wafer-opt` IR FileCheck 和 fixed manifest/C stub fixture 放在同一
   测试文件里；这些 fixed emitter 和测试拼接已删除，当前 integration 只保留 IR pipeline coverage。
-- 当前 local compile 还没有从 placed instruction-level IR 导出 C ABI emission metadata、
+- 当前 local compile 还没有从 committed instruction IR 和 runtime DDR metadata 导出 C ABI emission metadata、
   IR-derived package manifest、LLVM dialect、LLVM IR、object、真实 `wafer_*` call、runtime adapter
   或板端 completion。
 
@@ -76,7 +76,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   `lib/Wafer/Conversion`；旧聚合 `WaferConversion` pass target 已删除，conversion 按 source/target
   IR contract 建 target。
 - `WaferTransforms` 只注册当前仍成立的 transform pass；旧 C ABI issue-op lowering 和 `WaferConversion`
-  pass target 已删除，后续按 placed instruction-level IR contract 重建。
+  pass target 已删除，后续按 committed instruction IR + runtime metadata contract 重建。
 - R0.3 后 core compiler、frontend/importer、runtime/driver 和 test tools 的 target 可见范围记录在
   `tasks/2026-05-26-wafer-dependency-layering-recovery.md`，并由 `tools/check_deps.py` 检查。
 - Shardy/SDY 公共 dialect 与 import/export/propagation passes 已通过 Wafer 顶层 CMake shim 复用
@@ -99,7 +99,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - 工程能跑不等于 P0-P6 主路径完成；R2 已恢复 frontend program verifier 和 SDY program bridge，
   但 group/resource/package/runtime 主链路仍需后续 R3/P8 恢复。
 - R1.2 恢复的是可查询合同和局部 legality；它还不是完整 planner/resource planning。closed-loop group
-  search、SPM/DDR debug path、placement realization、runtime/package 主链路仍归 R3 之后恢复。
+  search、SPM/DDR debug path、runtime/package 主链路仍归 R3 之后恢复。
 - StableHLO/Shardy dependency 当前主要服务 textual lowering 最小验证 和 SDY program bridge
   dependency boundary；R0.3 依赖栈用 PyTorch/XLA 2.5 的 `WORKSPACE` `xla_hash` 选择 OpenXLA/XLA，再由 XLA
   workspace 选择 LLVM/StableHLO/Shardy base。PyTorch/XLA source 也是后续构建/安装 `torch_xla`
@@ -149,7 +149,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - ODS、op verifier 和 dialect tests 已按 IR 层拆文件；共享 verifier helper 集中在
   `lib/Wafer/IR/Common/OpVerifierUtils.*`。
 - interface/resource/effect 已能作为 planner/verifier 的结构化查询入口，但还没有被 R3 的
-  closed-loop group planner、SPM allocation / DDR memory planning 和 placed instruction-level lowering
+  closed-loop group planner、SPM allocation / DDR memory planning 和 runtime/ABI lowering
   全量消费。
 - Wafer dialect verifier 的孤立负例仍会使用 `builtin.unrealized_conversion_cast` 构造非法边界值；
   这些用例只能证明 verifier 形态。历史 R1.3 stage-connection gate 已删除；communication bridge
@@ -157,8 +157,8 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - R3.2e 已接入 DDR tile-view producer：explicit static boundary slice 和 candidate output tile
   offsets/sizes candidate evaluation lowering 都能 materialize 为 DDR `memref.subview`；R3.2d 已能消费这些
   view 生成 instruction-level RDMA/WDMA descriptor。closed-loop traversal / tile-shape search
-  和 plan accept/reject 仍归 R3.2h；仍没有 placed instruction-level IR、placed memref 或 access
-  descriptor 层，下一步由 R3.2f SPM memory planning 在 R3.2d 的 unplaced Wafer-tagged memref graph
+  和 plan accept/reject 仍归 R3.2h；仍没有独立 placed memref 或 access descriptor
+  层，下一步由 R3.2f SPM memory planning 在 R3.2d 的 unplaced Wafer-tagged memref graph
   上继续恢复。
 
 恢复任务：
@@ -271,9 +271,9 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 
 - group formation、root tile planning、SPM allocation、DDR demand 和 ring collective lowering 的旧
   unit pass 已删除；后续必须从真实 program chain 恢复 closed-loop planner / resource planning。
-- SPM/DDR 仍未基于完整 interface demand、async lifetime、placed instruction-level IR / placed memref / access descriptor、
+- SPM/DDR 仍未基于完整 interface demand、async lifetime、committed instruction IR / accepted offset facts、
   workspace、resident constants、default DDR arena resource、bandwidth 或 runtime binding 建立主线实现。
-- C ABI 仍只有 descriptor builder / stub 工具覆盖，尚未从 placed instruction-level IR 生成真实
+- C ABI 仍只有 descriptor builder / stub 工具覆盖，尚未从 committed instruction IR 生成真实
   `wafer_*` call、LLVM lowering 或 wrapper-to-register golden packet。
 - fixed manifest emitter 已删除；IR-derived package manifest 仍未由当前 `wafer-opt` output 自动导出。
 
@@ -285,15 +285,15 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   DDR memory planning 和 compute/movement legality 接到同一 group planning decision。
 - R3.3：恢复 tile_region materialization contract，只把 accepted group materialize 成
   `wafer.tile.region`。
-- R3.4：恢复 layout/SPM materialization gate，让 layout materialization 和 SPM allocation 由 effect、
-  liveness/range 和 storage lifetime 驱动。
-- R3.5：materialize R3.2h/R3.4 已接受的 DDR planned ranges 和 external binding requirements；
+- R3.4：取消独立 placed/access descriptor materialization 主线；committed instruction IR 已经携带后续
+  可重算的 operands、views、descriptor attrs 和 accepted offset facts。
+- R3.5：materialize R3.3 committed IR 中已接受的 DDR planned ranges 和 external binding requirements；
   legality / range / capacity / bandwidth demand 在 R3.2g 中完成，R3.5 不重新决定 group plan 或 DDR range plan。
-- R3.6：恢复 C ABI / packet emission gate，让 ABI 参数单位和 wait policy 从 placed
-  instruction-level IR 派生；不再保留专门 ABI IR op family 作为主线或 debug layer。
+- R3.6：恢复 C ABI / packet emission gate，让 ABI 参数单位和 wait policy 从 committed instruction IR、
+  accepted offset facts 和 R3.5 runtime metadata 派生；不再保留专门 ABI IR op family 作为主线或 debug layer。
 - R3.7：恢复 package manifest gate，manifest、C stub 和 launch signature 从当前 `wafer-opt`
   输出导出。
-- R3.8：恢复 placed instruction-level IR / C ABI / golden packet 边界，至少让 RDMA/WDMA/GEMM 有真实
+- R3.8：恢复 C ABI / golden packet 边界，至少让 RDMA/WDMA/GEMM 有真实
   wrapper-facing call contract 和 golden packet 对照。
 
 ## P4 Multi-Tile No Communication
@@ -355,7 +355,8 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - 有 rank-4 QK^T / AV contraction lowering、same-shape/permutation-only elementwise、local reduce
   和 batched GEMM issue lowering。
 - 旧 local-transformer fixed manifest / C stub gate 已删除；当前 transformer integration 只覆盖
-  StableHLO -> structured tensor/local compute pipeline，不覆盖 placed instruction-level IR 或 C ABI emission。
+  StableHLO -> structured tensor/local compute pipeline，不覆盖 committed instruction IR、runtime DDR metadata
+  或 C ABI emission。
 
 缺口：
 
@@ -420,7 +421,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 | ID | 状态 | 理由 |
 | --- | --- | --- |
 | P0 | 骨架 | 工程入口存在，源码 ownership、依赖层级边界和 IR layer-based 文件边界已由 R0.2/R0.3/R1.1 恢复；仍不代表 frontend/runtime/package 主路径完成 |
-| P1 | 骨架 | 核心 op/type/verifier 基础实现存在，interface/effect/resource 已恢复；历史 local compute stage-connection gate 已删除，placed instruction-level 主链路和 communication cast bridge 仍未闭环 |
+| P1 | 骨架 | 核心 op/type/verifier 基础实现存在，interface/effect/resource 已恢复；历史 local compute stage-connection gate 已删除，instruction/runtime 主链路和 communication cast bridge 仍未闭环 |
 | P2 | 骨架 | StableHLO textual lowering、frontend program verifier、PyTorch/XLA program directory capture、SDY program bridge、P2.S1 Shardy propagation stage gate、P2.S2 Wafer-owned SPMD partition 和 R2.4 tensor collective handoff 已恢复；dynamic/mask/constant-storage、group/resource/package 和 physical schedule 仍未闭环 |
 | P3 | 骨架 | 旧 single-tile local unit path 已删除；group/resource/C ABI/package 主链路未闭环 |
 | P4 | 骨架 | placement/map 和 multi-tile fixture 可跑，但真实 shard/merge/launch binding 未闭环 |

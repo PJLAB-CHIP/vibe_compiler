@@ -19,7 +19,7 @@ Wafer 工具链接收并保留 logical rank facts，local compute normalization 
 tensor IR 合同记录。
 
 本记录本身不声明 framework-specific PyTorch/JAX capture、完整 Shardy propagation/SPMD partitioner
-pipeline、mask/select/dynamic-shape 全覆盖、placed instruction-level constant slicing、group schedule
+pipeline、mask/select/dynamic-shape 全覆盖、instruction-level constant slicing、group schedule
 completion、SPM/DDR memory planning 或 runtime/package 闭环完成。P2.F1/P2.S1 分别补上
 source-built PyTorch/XLA capture adapter、真实 `mark_sharding` pre-SPMD program 和
 Wafer Shardy propagation stage gate；误导性的 Python post-SPMD export 入口已删除，

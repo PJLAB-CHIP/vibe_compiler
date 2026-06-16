@@ -48,7 +48,7 @@ placement-derived endpoint 和 communication staging demand 的层级；`wafer.t
 目标：
 
 - 给 group 后的 tiled program 一个稳定 region boundary。
-- 把 tensor tile value materialize 成 tile-local memref、descriptor 或 placed instruction-level value。
+- 把 tensor tile value materialize 成 tile-local Wafer-tagged memref 和 instruction operands。
 - 在同一个 region 内表达 load/store、layout materialization、compute、communication、sync 和
   wait/drain ordering。
 - 为 layout planning、SPM allocation 和 DDR memory planning 提供可重算 IR 结构。
@@ -74,8 +74,8 @@ wafer.group
   -> DDR memory planning on memory-planned instruction IR
   -> closed-loop candidate driver for retry/split/commit decision
   -> committed wafer.tile.region
-  -> materialized placed instruction-level IR / placed memref / access descriptor
-  -> codegen emission to C ABI / packet / launch
+  -> launch/runtime DDR materialization from committed IR
+  -> codegen emission to C ABI / packet / launch from committed IR + runtime metadata
 ```
 
 本文区分两种生命周期：
@@ -86,8 +86,9 @@ wafer.group
   tile-region IR，用作 legality/debug/后续 pass bring-up。它仍不是 selected candidate，
   也不是 SPM allocator 的直接输入；rejected tile-region IR 不进入主线 committed IR。
 - committed `wafer.tile.region`：R3.3 只把 candidate-selection 已选中、且已通过 candidate gates
-  的 candidate artifact 写入主 IR。后续 R3.4/R3.5 只 materialize planned
-  layout/SPM/DDR/instruction facts，不重新决定 group 是否可行。
+  的 candidate artifact 写入主 IR。后续 R3.5 只从 committed IR 和 accepted offset facts
+  materialize runtime/package metadata，不重新决定 group 是否可行，也不复制 placed/access descriptor
+  中间协议。
 
 ### 2.1 R3.2c Pipeline Contract
 
@@ -283,7 +284,7 @@ V0 需要以下 op family：
 7. DDR offset assignment：DDR planning 消费 memory-planned instruction-level IR、SPM facts、DDR
    tile-view boundary、DDR `memref.alloc` 和 descriptor demand，规划 compiler-managed/resident/inter-group
    DDR accepted offset facts，并验证 descriptor、view/root range、default arena capacity/largest-contiguous、
-   bandwidth、alignment、overlap 和 fence demand。成功 facts 必须能被 candidate-selection、R3.3、R3.4 和 R3.5 直接消费；
+   bandwidth、alignment、overlap 和 fence demand。成功 facts 必须能被 candidate-selection、R3.3 和 R3.5 直接消费；
    失败时给结构化原因。
 8. candidate-selection driver：candidate-selection 从 full traversal tile/no split 开始搜索
    shape-driven traversal/reduction refinement frontier、同 traversal domain 的 output coverage 和当前支持的
@@ -294,8 +295,10 @@ V0 需要以下 op family：
    丢弃。
 9. committed `wafer.tile.region` materialization：R3.3 只把 candidate-selection 选中的 passing candidate
    inline commit 回原 `wafer.group` 位置，写入主 IR。
-10. placement realization：把 planned unplaced memref 降到 placed memref / address descriptor。
-11. lower-level op lowering：转成 wrapper-friendly Wafer ops，最后进入 C ABI / launch。
+10. runtime DDR materialization：R3.5 从 committed instruction operands、DDR views、SPM/DDR offset
+    facts 和 memref type/layout 直接派生 allocation/import/query/package metadata。
+11. ABI / packet emission：从 committed instruction IR 和 R3.5 runtime metadata 生成 wrapper-friendly
+    call/packet/object 输入；不新增 placed memref / access descriptor 中间协议。
 
 rejected candidate plan 不能落入 IR 后等待下游修复。合法性失败应反馈给 group/layout/candidate
 planner 重新选择 tile shape、internal split、layout、output coverage 或 group boundary。
@@ -353,11 +356,12 @@ launch args / identity lowering 的 IR contract。当前没有 multi-tile no-com
 - `wafer.tile.materialize_layout` 的输入输出 layout relation 合法；同 layout 冗余转换应由 verifier
   拒绝，上游应避免生成这种 no-op conversion。`wafer.tile.reshape` 这类无副作用 view op 可由
   canonicalization 删除同类型 no-op。
-- `#wafer.memory<spm, *>` memref 在 placement realization 前必须经过 SPM allocation；
+- `#wafer.memory<spm, *>` memref 在 runtime/ABI materialization 前必须经过 SPM allocation；
   compiler-managed `#wafer.memory<ddr, *>` alloc 必须有 DDR memory planning 接受的
   `wafer.ddr.offset` fact；external DDR boundary value 的 descriptor/view/root validation 由当前
   instruction-level IR 重算。
-- lower-level op 出现时，其 operand 已经是 placed memref 或 verifier 可解释 descriptor。
+- R3.5/R3.6 lower-level 输入只能从当前 committed IR 和 accepted offset facts 派生；不能要求
+  tile-region 主线额外携带 placed memref 或 access descriptor 旁路事实。
 
 Verifier 不检查 group 是否应该形成；那是 `wafer.group` 和 planner 的职责。
 `wafer.group` / `wafer.tile.region` 这类 region op 的 boundary invariants 放在普通 `verify()`，

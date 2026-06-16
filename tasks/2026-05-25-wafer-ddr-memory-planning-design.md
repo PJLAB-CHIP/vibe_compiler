@@ -60,8 +60,8 @@ Pipeline position:
 - Downstream consumer:
   candidate-selection 用 DDR offset assignment 成功/失败选择 candidate；
   R3.3 把已通过 candidate gates 的 selected lowering 写回主 IR；
-  R3.4 把 accepted DDR offset facts realize 成 placed memref/access descriptor；
-  R3.5 把 accepted DDR demand materialize 到 runtime allocation/import/query/package metadata。
+  R3.5 从 committed IR 和 accepted DDR offset facts 直接 materialize runtime
+  allocation/import/query/package metadata。
 - User-level driver / named pipeline:
   局部 pass 是 `wafer-plan-ddr-memory`；
   主线验证入口是从 tile-region materialization、instruction lowering、SPM offset assignment 跑到
@@ -100,7 +100,7 @@ DDR `memref.alloc` 不需要额外 requirement attr 才能参与 planning。alig
 
 ```text
 default_ddr_arena:
-  symbolic_base: physical base 由 R3.4/R3.5 placed/runtime stage materialize
+  symbolic_base: physical base 由 R3.5 runtime materialization / R3.6 ABI emission 派生
   capacity_bytes
   largest_contiguous_bytes
   alignment_bytes
@@ -223,7 +223,7 @@ R3.2g verifies:
 - unsupported dynamic DDR alloc/view or uncomputable physical size is rejected。
 
 R3.2g does not validate final physical address lower bound because physical address is not materialized yet.
-That check belongs to placed descriptor / ABI/runtime lowering.
+That check belongs to R3.5 runtime materialization and R3.6 ABI/codegen emission.
 
 ## 8. Failure Reasons
 

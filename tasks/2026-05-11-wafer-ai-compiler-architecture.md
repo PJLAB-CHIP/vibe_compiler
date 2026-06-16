@@ -43,9 +43,8 @@ source model / exported program / pre-exported StableHLO
   -> SPM memory planning + DDR memory planning inside candidate gates
   -> accepted/rejected/split candidate decision
   -> committed tile-region/instruction boundary
-  -> placed memref / access descriptor realization
-  -> wafer.launch runtime launch boundary
-  -> C ABI / packet emission from placed instruction IR
+  -> wafer.launch/runtime DDR materialization from committed IR
+  -> C ABI / packet emission from committed instruction IR + runtime DDR metadata
   -> RISC-V kcore shared object + package metadata
   -> WaferRuntimeAdapter HPGR/KMD launch or legacy TsmRun fallback
 ```
@@ -377,8 +376,9 @@ tile-and-fuse 的主文档，本架构文档只规定它在全 pipeline 中的�
   memref graph 上产出 instruction-level `wafer.instr.*` IR；SPM/DDR memory
   planner 只消费 instruction-level IR 的 memref use-def、effect 和 lifetime，
   不从高层 op 名或单个 case 猜 demand。
-- 在 accepted layout、SPM memory planning 和 DDR allocation contract 后，把 unplaced memref 降到 placed
-  memref 或 Wafer descriptor。
+- accepted layout、SPM offset facts 和 DDR offset facts 保持在 committed instruction IR 中；
+  runtime/package 和 ABI/codegen 阶段从这些 facts 派生 address/range/stride 参数，不再经过独立
+  placed memref 或 Wafer descriptor 中间层。
 
 `wafer.tile.region` 不重新做 group formation、root tile search 或 traversal selection，也不表达
 host launch/package ABI。详细合同见 `tasks/2026-05-25-wafer-tile-region-design.md`。
@@ -413,7 +413,7 @@ bufferization 见 `tasks/2026-05-21-wafer-spm-bufferization-design.md`；DDR mem
 compute/movement 层的 verifier 和 lowering 边界，不把某个 wrapper 名、示例 tile shape 或 raw
 packet 字段写成上层 IR 语义。
 
-placed instruction-level Wafer IR 到 C ABI、wrapper 和 golden packet emission 的合同见
+committed instruction IR 到 C ABI、wrapper 和 golden packet emission 的合同见
 `tasks/2026-05-25-wafer-c-abi-golden-packet-design.md`。
 
 ### 3.8 Wafer Communication Dialect Stage
@@ -838,12 +838,12 @@ ModelImport/FrontendProgram
   -> memref-backed wafer.tile.region IR
   -> candidate DDR tile-view materialization
   -> instruction-level wafer.instr.* IR over unplaced Wafer-tagged memref
-  -> placed instruction-level IR with SPM memory planning facts
+  -> instruction-level IR with accepted SPM offset facts
   -> DDR memory planning facts
   -> accepted/rejected/split group plan decision
   -> committed wafer.tile.region + accepted instruction boundary
-  -> placed memref / access descriptor realization
-  -> launch boundary + codegen emission to C ABI / packet / package metadata
+  -> launch/runtime DDR materialization from committed IR
+  -> codegen emission to C ABI / packet / package metadata
 ```
 
 工程边界：
@@ -879,16 +879,18 @@ ModelImport/FrontendProgram
   temp/psum/staging、queue 和 async lifetime。
 - Wafer memory attr 只在 `wafer.tile.region` / SPM bufferization 层出现，不进入
   tensor-level `wafer.group`。
-- placement realization 把 unplaced Wafer-tagged memref 降成 placed memref、flat backing storage
-  或 explicit descriptor；compact layout 优先复用标准 memref/LLVM lowering，Cx/NCx 只把
-  必要的 target storage facts 放入 descriptor。
-- instruction-level compute / communication lowering 消费 placed SPM value 或 descriptor，不再做 fusion
-  决策。
+- 没有独立 placement realization 主线阶段。committed instruction IR 已经通过 operands、memref view、
+  `wafer.spm.offset`、`wafer.ddr.offset` 和 descriptor attrs 携带后段可重算的 memory facts；
+  runtime DDR materialization 和 ABI/packet emission 必须直接从这些 IR facts 派生 lower-level
+  address/range/stride operands，不能再引入 placed memref / access descriptor 旁路协议。
+- instruction-level compute / communication lowering 消费 committed instruction IR 中的 SPM/DDR
+  value、offset fact 和 view relation，不再做 fusion 决策。
 - `wafer.instr.local_drain` 和后续 sync boundary 提供 local drain、communication wait、group barrier
   等同步抽象，供 compute/comm lowering 复用。
 - `wafer.launch` 是 runtime-level launch boundary，负责参数、metadata 和 host/device ABI
   交接，不替代 tile-local execution region。
-- C ABI / packet emission 只消费 placed instruction-level IR，不回头改 schedule、layout 或 placement。
+- C ABI / packet emission 只消费 committed instruction IR、accepted offset facts 和 runtime DDR
+  metadata，不回头改 schedule、layout 或 memory plan。
 
 V0 先保持统一 `wafer` dialect namespace，但公开 op mnemonic 只保留少量稳定 family：
 `wafer.group`、`wafer.tensor.*`、`wafer.tile.*`、`wafer.instr.*`、`wafer.placement.*` 和
@@ -907,14 +909,14 @@ V0 先保持统一 `wafer` dialect namespace，但公开 op mnemonic 只保留�
 | `wafer.group` | `tasks/2026-05-12-wafer-group-design.md` | 草案 | group boundary、traversal schedule、tiled tensor IR、tile-local resource demand | SPM offset、physical layout marker、DTE resource、runtime package |
 | `wafer.tile.region` | `tasks/2026-05-25-wafer-tile-region-design.md` | 草案 | bufferized tile-local execution scope、memory/effect ownership、movement/compute/sync ordering | tensor fusion、traversal selection、host launch/package ABI |
 | Layout materialization | `tasks/2026-05-21-wafer-layout-materialization-design.md` | 草案 | physical layout domain、op layout constraint、constant storage transform、materialization placement/cost | SPM address、packet field、group fusion |
-| SPM bufferization | `tasks/2026-05-21-wafer-spm-bufferization-design.md` | 草案 | `#wafer.memory<spm, *>` demand、liveness、range/alignment、allocation、placement realization input | DDR offset facts、runtime allocation mapping、collective algorithm、host launch |
+| SPM bufferization | `tasks/2026-05-21-wafer-spm-bufferization-design.md` | 草案 | `#wafer.memory<spm, *>` demand、liveness、range/alignment、accepted SPM offset facts | DDR offset facts、runtime allocation mapping、collective algorithm、host launch |
 | Compute / movement | `tasks/2026-05-25-wafer-compute-dialect-design.md` | 草案 | target-abstract compute/move op、layout/resource interface、instruction legality、issue/drain | tensor fusion、global sharding、host package format |
 | Instruction IR | `tasks/2026-06-05-wafer-instruction-ir-design.md` | 草案 | `wafer.instr.*`、Wafer-tagged memref graph、issue family、memref read/write/issue effect | SPM/DDR offset、runtime mapping、raw packet、C ABI call、重复 storage IR |
 | Communication | `tasks/2026-05-25-wafer-communication-dialect-design.md` | 草案 | tile_region / SPM materialization 之后的 collective-level op、p2p schedule、Direct DTE V0、token/effect、sync boundary | compute op legality、SPM allocator internals、SPMD tensor collective handoff |
 | DDR memory planning | `tasks/2026-05-25-wafer-ddr-memory-planning-design.md` | 草案 | `#wafer.memory<ddr, *>` demand、external view/descriptor validation、compiler-managed/resident/inter-group alloc demand、accepted DDR offset facts、lifetime/reuse、default arena capacity/largest-contiguous/bandwidth | tensor fusion、SPM offset、runtime allocation/import、packet bitfield |
 | Candidate decision / committed materialization | `tasks/2026-06-11-wafer-r3-2h-candidate-decision-design.md`、`tasks/2026-06-11-wafer-committed-candidate-materialization-design.md` | R3.2h/R3.3 V0 已实现 | shape-driven traversal/reduction refinement frontier、same-domain output coverage、matmul/generic reduction split、representative tile classes、candidate gates、fixed target policy + configurable search controls、`tile-search` 选择策略、selected candidate commit 回主 IR | 新 allocator、失败计划 IR、runtime allocation/import、packet bitfield、不同 output domain 或 dynamic reduction 伪支持 |
 | Launch / runtime package | `tasks/2026-05-25-wafer-launch-runtime-package-design.md` | 草案 | `wafer.launch`、HPGR/KMD/legacy Tsm 分层、completion、runtime allocation objects、bootparam/TLV、package metadata | Linalg tiling、group formation、tile-local ordering |
-| C ABI / golden packet | `tasks/2026-05-25-wafer-c-abi-golden-packet-design.md` | 草案 | placed instruction-level Wafer IR 到 C ABI / packet emission 的参数单位、wait policy、golden packet | 上层 IR formation、layout search 和 SPM memory planning |
+| C ABI / golden packet | `tasks/2026-05-25-wafer-c-abi-golden-packet-design.md` | 草案 | committed instruction IR + runtime DDR metadata 到 C ABI / packet emission 的参数单位、wait policy、golden packet | 上层 IR formation、layout search 和 SPM memory planning |
 | Verification plan | `tasks/2026-05-25-wafer-verification-plan-design.md` | 草案 | stage diagnostics、roundtrip、golden packet、runtime shielding、PMU/cost-model gate | 替代各 dialect 语义设计 |
 | Serving integration | 暂不支持 | 延后 | graph capture、prefill/decode、KV cache 管理 | compiler core IR 合同 |
 

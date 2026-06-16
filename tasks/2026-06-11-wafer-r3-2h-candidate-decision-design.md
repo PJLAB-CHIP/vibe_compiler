@@ -48,7 +48,7 @@ Pipeline position:
   accepted SPM offset facts 和 accepted DDR offset facts；或 no-candidate / split-needed failure
   reason。
 - Downstream consumer:
-  R3.4/R3.5 消费 committed main IR 中的 accepted SPM/DDR facts 和当前 IR 可重算的
+  R3.5 消费 committed main IR 中的 accepted SPM/DDR facts 和当前 IR 可重算的
   descriptor/view/allocation demand，
   不重新枚举 candidate 或重做 memory planning。
 - User-level driver / named pipeline:

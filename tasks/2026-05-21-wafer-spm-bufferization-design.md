@@ -19,8 +19,8 @@ Wafer-tagged memref / `wafer.instr.*` / effects，不重复定义 instruction op
   构造 allocation input。
 - 对 instruction-level IR 做 SPM memory planning、range/end-address/alignment/bank-span verification 和 failure
   feedback。
-- 为 placement realization 提供 accepted offset；range、lifetime 和 alias 信息由当前 IR 和 helper
-  重算，不作为长期 attr 字段保存。
+- 为 R3.5 runtime materialization 和 R3.6 ABI/codegen 提供 accepted offset fact；range、lifetime
+  和 alias 信息由当前 IR 和 helper 重算，不作为长期 attr 字段保存。
 
 本文不分配 DDR，不选择 physical layout，不决定 group boundary，不选择 compute/communication
 instruction selection，也不生成 runtime package。DDR source/destination range 和 bandwidth 可以作为
@@ -40,8 +40,8 @@ layout materialization
   -> storage requirement collection
   -> liveness/effect analysis
   -> SPM memory planning
-  -> placed instruction/memref realization
-  -> range/end-address verification
+  -> runtime/ABI address-range derivation from accepted facts
+  -> range/end-address verification in downstream consumers
 ```
 
 如果没有合法 allocation，不能生成一个等待下游修复的 scheduled group。planner 应回到 tile shape、
@@ -62,9 +62,10 @@ Pipeline position:
   和 range-end verification。
 - Output artifact / IR:
   same instruction-level IR with offset-only `wafer.spm.offset` planning facts on SPM memref definitions，或结构化
-  allocation failure reason；后续 R3.4 再把 fact materialize 成 placed memref / descriptor。
+  allocation failure reason；后续 R3.5/R3.6 直接从该 fact、memref use-def 和 view relation 派生
+  runtime/ABI address-range 参数，不再经过 placed memref / descriptor 中间层。
 - Downstream consumer:
-  R3.2g DDR memory planning、R3.2h closed-loop candidate driver、R3.4 materialized placed storage IR，
+  R3.2g DDR memory planning、R3.2h closed-loop candidate driver、R3.5 runtime DDR materialization，
   以及 R3.6 codegen emission。
 - User-level driver / named pipeline:
   当前可重放入口是 `wafer-lower-groups-to-memory-planned-instr`，它复用 R3.2c/R3.2d lowering 后追加
@@ -106,9 +107,9 @@ Pipeline position:
 输出：
 
 - `wafer.tile.region` 中带 `#wafer.memory<space, layout>` 的 memref；其中 `#wafer.memory<spm, *>` memref 由本文
-  allocator 分配，`#wafer.memory<ddr, *>` memref/access descriptor 由 DDR memory planner / runtime/package/launch 层提供
+  allocator 分配，`#wafer.memory<ddr, *>` memref ownership 和 accepted range 由 DDR memory planner / runtime/package/launch 层提供
   ownership。
-- placement realization 后的 placed memref、flat backing memref 或 Wafer address descriptor。
+- runtime/ABI/codegen 阶段从 committed IR 和 accepted offset facts 派生的 address/range 参数。
 - movement/materialization/compute/sync op。
 - pass-local allocation summary：offset/range、size、alignment、lifetime、alias group。
 - hardware lowering 需要的 begin/end range 和 dtype storage size。
@@ -378,7 +379,7 @@ logical group + tile/layout proposal
   -> SPM memory planning
   -> planned offsets or failure feedback
   -> commit passing wafer.tile.region with layout/materialization/instruction/SPM facts
-  -> materialize placed instruction/memref IR
+  -> derive runtime/ABI address-range parameters from committed IR and accepted facts
 ```
 
 原因是 layout、SPM、tile shape 和 target-abstract op selection 强耦合。早期如果只看 logical
@@ -390,28 +391,27 @@ op 的粗粒度 effect。
 
 失败的 allocation、offset search trace、cost breakdown 都不进入 IR。
 
-## 11. Placed MemRef Realization
+## 11. Runtime / ABI Handoff
 
 Wafer-tagged memref 是 layout / SPM planning 阶段的 tile-local buffer value。SPM bufferization
-接受 layout assignment 和 allocation 后，必须在 lower-level movement/compute lowering 之前把
-unplaced memref 转换成 placed storage representation。
+接受 layout assignment 和 allocation 后，不再新增独立 placed memref / explicit descriptor IR 层；
+下游 runtime/ABI/codegen 必须从 committed instruction IR 中的 memref use-def、view relation、
+`wafer.spm.offset`、`wafer.ddr.offset` 和 `computeWaferPhysicalTensorInfo(memrefType)` 直接派生
+address/range/stride 参数。
 
-转换规则：
+派生规则：
 
-- compact `Tensor/NTensor`：可保持为 placed SPM memref，或在更低层 lower 成普通 strided/identity
-  memref，尽量复用 MLIR memref、buffer deallocation 和 LLVM conversion。
-- aligned `Cx/NCx`：先用 `computeWaferPhysicalTensorInfo(memrefType)` 展开 physical extent、padding、
-  storage bytes、begin/end range；再 lower 成 placed backing memref、flat storage memref，或
-  descriptor + backing storage。
-- descriptor 只用于普通 `memref` 无法表达、但目标 movement/compute instruction 必须携带的事实，
-  例如 range、logical-to-physical mapping、layout family、stride / packet field。它最终必须 lower
-  成 LLVM dialect 可表达的 struct、pointer 或 integer operands。
+- compact `Tensor/NTensor`：address range 由 accepted base offset、logical shape、dtype 和 compact
+  layout footprint 重算；不写第二份 range attr。
+- aligned `Cx/NCx`：用 `computeWaferPhysicalTensorInfo(memrefType)` 展开 physical extent、padding、
+  storage bytes 和 begin/end range；这些是 verifier/codegen 派生值，不作为新 IR 事实源。
+- 如果目标 movement/compute instruction 需要 range、logical-to-physical mapping、layout family、
+  stride 或 packet field，ABI/packet emission 在 very-late lowering 中从当前 IR 派生对应参数；
+  不能把它们作为 R3.4-style access descriptor 在主线 IR 中传递。
 
-这个阶段不重新选择 layout，也不重新移动 materialization cut。它只消费 accepted
-`#wafer.memory<space, layout>` marker、allocation result 和 `computeWaferPhysicalTensorInfo`，
-把 IR 从 unplaced buffer 层降到 placed storage/effect 层。
-如果某个 Wafer-tagged memref 无法实现成 placed memref-compatible storage 或 explicit descriptor，说明
-前面的 layout/SPM plan 不合法，应返回 planner，而不是让 LLVM lowering 才失败。
+这个 handoff 不重新选择 layout，也不重新移动 materialization cut。若某个 Wafer-tagged memref
+无法由 accepted facts 派生合法 address/range 参数，说明前面的 layout/SPM plan 不合法，应返回
+planner，而不是让 LLVM lowering 才失败。
 
 ## 12. IR 表达
 
@@ -422,12 +422,12 @@ SPM bufferization 后，IR 应显式表达：
 - movement / materialization / compute / sync op。
 - necessary effect / wait / barrier。
 
-placement realization 后，IR 应使用 placed memref、flat backing memref 或 explicit descriptor
-连接 lower-level movement/compute op。physical address、bank/color、worker、queue、packet field
-只在能验证它们的 lower-level IR 出现。
+runtime/ABI materialization 后，physical address、bank/color、worker、queue、packet field
+只在能验证它们的 lower-level IR 或 emission metadata 中出现；主线 instruction IR 不新增
+placed memref、flat backing memref 或 explicit descriptor 事实源。
 `wafer.group` 只消费 feasibility 结论，不携带这些字段。
 
-`#wafer.memory<space, layout>` 在 placed instruction IR 中仍是统一语义：`spm` 表示 tile-local
+`#wafer.memory<space, layout>` 在 committed instruction IR 中仍是统一语义：`spm` 表示 tile-local
 SRAM，`ddr` 表示 device/global DDR address domain。RDMA/WDMA verifier 用 source/destination
 address space 检查方向；DDR memory planning 用 `ddr` 继续关联 view/range、compiler-managed DDR
 planned range、constant storage/residency 和 default arena resource；runtime/package lowering 再把
@@ -505,9 +505,9 @@ SPM / tile-region verifier 至少检查：
 - may-reuse buffers 的 lifetime 不重叠，或由明确 wait/barrier 收口。
 - async buffer 在 drain/wait 前不能复用。
 - host-visible writeback 和 communication boundary 有明确 drain/wait/sync。
-- placement realization 后不存在 unplaced `#wafer.memory<spm, *>` buffer；compact buffer 走合法
-  placed SPM memref，Cx/NCx buffer 的 descriptor 与 `computeWaferPhysicalTensorInfo`、
-  allocation range 和 op verifier 一致。
+- runtime/ABI/codegen 阶段不能要求额外 placed/access descriptor fact；compact 和 Cx/NCx buffer
+  的 address/range/stride 参数必须由 `computeWaferPhysicalTensorInfo`、accepted offset facts、
+  allocation range 和 op verifier 一致推出。
 
 ## 14. 与 Layout / Group 的关系
 
@@ -523,7 +523,7 @@ tile plan
   -> instruction-level wafer.instr.* over unplaced Wafer-tagged memref values
   -> instruction storage / effect demand
   -> SPM memory planning
-  -> placed instruction/memref realization
+  -> runtime/ABI address-range derivation from accepted facts
   -> accepted or failure feedback
 ```
 
