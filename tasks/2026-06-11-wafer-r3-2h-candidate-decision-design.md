@@ -294,8 +294,9 @@ cost breakdown 是 diagnostic，不写入 committed IR。
 
 ## 7. Rough Time Estimation
 
-V0 cost model 使用硬件参数、计算量、DDR 访存量、SPM/local movement 量和 instruction issue
-数量估算时间。参数来自 target policy / pass option；没有板端校准时使用保守默认值。
+V0 cost model 使用 target policy 中的硬件参数、计算量、DDR 访存量、SPM/local movement 量和
+instruction issue 数量估算时间。硬件吞吐、alignment 和 memory range 不作为
+`wafer-select-group-tile` 的 public option；没有板端校准时使用 target policy 的保守默认值。
 
 ```text
 TileTimeConfig:
@@ -383,9 +384,8 @@ candidate-selection completion proof 至少覆盖：
   chain，以及 `scf.for` 中的大 shape elementwise accumulate；输出必须 commit 回原函数，不生成
   selected side artifact。
 - composed multi-output selection：`scf.if` 分支内的 same-domain multi-output group 同时包含
-  `linalg.matmul` 和独立 elementwise root。普通 lit 覆盖人为小 SPM window 下的 stress retry；
-  专用 heavy runner 使用默认硬件 SPM planning range 覆盖 large-shape traversal tiling、K split
-  和三输出多 op 组合。
+  `linalg.matmul` 和独立 elementwise root。普通 lit 覆盖固定 target SPM range 下的 K split；
+  专用 heavy runner 覆盖 large-shape traversal tiling、K split 和三输出多 op 组合。
 - tiled control-flow root gap：当大 shape `scf.if` root 需要 smaller traversal tile 才能满足 SPM
   gate 时，当前 candidate tile-view materializer 仍要求 yielded root 是 linalg root，并返回结构化
   `no_candidate`；这需要后续 output coverage / control-flow tiling interface 扩展，不能用名字或
@@ -395,7 +395,7 @@ candidate-selection completion proof 至少覆盖：
 
 ## 10. Implementation Status
 
-2026-06-15 当前实现：
+2026-06-16 当前实现：
 
 - `wafer-select-group-tile`：module pass，扫描 `wafer.group`，为每个 group 生成独立 passing
   candidate artifact，并将 selected candidate commit 回原 group 位置。
@@ -423,8 +423,9 @@ candidate-selection completion proof 至少覆盖：
   `max-candidates-per-dim` 默认跟随 policy，当前 policy 使用 `0` 表示不裁剪每维 shape-driven
   refinement；`preferred-tile-sizes` 默认使用 policy hint；`max-search-candidates` 和
   `search-beam-width` 默认跟随 policy。显式传入这些 option 会覆盖 policy。budget/beam 只约束已经有
-  passing candidate 之后的优化探索；并行模式只在 `min-estimated-time` 下启用，worker 使用独立
-  MLIRContext 评估 candidate，主线程重新 materialize selected commit artifact。
+  passing candidate 之后的优化探索；`candidate-parallelism` 只在 `tile-search=min-estimated-time`
+  下校验和消费，`first-legal` 不读取该参数。并行模式只在 `min-estimated-time` 下启用，worker 使用
+  独立 MLIRContext 评估 candidate，主线程重新 materialize selected commit artifact。
 - diagnostics：`print-candidate-summary` 输出 selected tile、split、estimated cycles、visited /
   rejected candidate 数和 representative 数；这些是诊断，不写入 committed IR。
 - commit：selected clone 的 lowered function body 按 group inputs/outs 映射 inline 回原

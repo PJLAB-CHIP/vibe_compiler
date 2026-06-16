@@ -1,6 +1,6 @@
 # Wafer Compiler Progress
 
-更新时间：2026-06-11
+更新时间：2026-06-16
 
 本文件记录当前看板、主线 pipeline、关键 IR 状态、完成口径和下一步。设计细节、实现复盘、测试命令
 和长验证说明放在对应 `tasks/` 设计文档、git commit 和测试里；这里不写逐条 worklog。
@@ -124,7 +124,7 @@ Pipeline position:
   loop-carried/backedge lifetime 和 async token 延伸；compiler-managed DDR demand 在 default arena 内做
   pressure-weighted first-fit packing，并覆盖 capacity、largest-contiguous、bandwidth 和 alignment failure。
 - R3.2h/R3.3 已接入 `wafer-select-group-tile` 和 `wafer-lower-groups-to-selected-instr`。候选由实际
-  static traversal shape 生成每维 refinement ladder；search 从 full traversal tile/no split 开始，
+  static traversal shape 生成每维 refinement options；search 从 full traversal tile/no split 开始，
   gate failure 后按当前 root 的容量压力扩展 traversal 或 reduction refinement neighbor。同 traversal
   domain 的多个输出可共享同一个 traversal tile；direct matmul root 和 supported `linalg.generic`
   reduction root 可进入 reduction split refinement。quick SPM bound 只做最小必要 footprint 下界剪枝，
@@ -133,12 +133,15 @@ Pipeline position:
   instruction lowering -> SPM offset assignment -> DDR offset assignment -> verifier
   通过后才接受。`tile-search=first-legal` 返回第一个 passing candidate；
   `tile-search=min-estimated-time` 只在 passing candidates 中按 lowered instruction IR 的粗估时间排序。
+  硬件 SPM/DDR range、alignment 和粗估 timing 由 fixed target policy 提供，不作为
+  `wafer-select-group-tile` public option；搜索空间由 `tile-search-effort` preset 和显式 search
+  option 控制。`candidate-parallelism` 只在 `min-estimated-time` 下校验和消费，`first-legal` 不读取。
   selected candidate 会 inline commit 回原 `wafer.group` 位置，保留原 parent function 和无关函数；
   输出不生成 `*_selected_group_*` 旁路函数。
   大 shape full-tile control-flow 组合已覆盖 `scf.if` 中 matmul + elementwise chain 和 `scf.for`
   中 elementwise accumulate；`scf.if` 分支内 same-domain multi-output 的 `matmul + elementwise`
-  组合已有 small-window stress regression，并由专用 heavy runner 在默认硬件 SPM range 下覆盖
-  large-shape traversal tile、`K` split 和三输出多 op 组合。需要 tiled materialization 的 `scf.if`
+  组合已有固定 target SPM range 下的 lit 覆盖，并由专用 heavy runner 覆盖 large-shape traversal tile、
+  `K` split 和三输出多 op 组合。需要 tiled materialization 的 `scf.if`
   root 当前仍结构化
   `no_candidate`，等待 output coverage / control-flow tiling interface 扩展。
   不同 output domain、partial scatter coverage、复杂 recompute/cut 和 dynamic reduction range 仍需要
@@ -161,7 +164,7 @@ Pipeline position:
 | R3.2e.b | done | R3.1 group + candidate output tile offsets/sizes + R3.2a/R3.2b facts | planner candidate evaluation 中通过 linalg indexing maps 生成 boundary slice proposal；simple full-tensor matmul group 生成 input/output DDR `memref.subview` tile operands，不写回主 IR |
 | R3.2f | done | R3.2e candidate tile-view IR 经 R3.2d legalization 后的 instruction-level IR | `wafer.spm.offset` planning fact 标注 SPM `memref.alloc`；simple tiled elementwise/matmul/storeback 获得非重叠、256B 对齐、range/end 合法 memory plan；Cx/NCx 使用 physical bytes；straight-line、structured `scf.if` / `scf.for` 和 async token wait 的 lifetime/reuse 由 IR dataflow 重算；pressure-weighted offline packing 避免 alloc-event first-fit 碎片化；capacity/alignment/range failure 结构化诊断 |
 | R3.2g | done | R3.2f memory-planned instruction IR + actual DDR tile-view facts + DDR `memref.alloc` / external DDR boundary values | `wafer.ddr.offset` 标注 compiler-managed DDR accepted offset；external DDR access summary 不落主 IR；descriptor/view/root validation 从当前 IR 重算；straight-line、`scf.if`、`scf.for` 和 async token lifetime 支持 offset reuse；capacity、largest-contiguous、bandwidth、alignment 等 failure 结构化诊断 |
-| R3.2h | done | R3.1 group + R3.2a/b facts + candidate gates | `wafer-select-group-tile` / `wafer-lower-groups-to-selected-instr` 从 full traversal/no split 开始搜索 shape-driven traversal/reduction refinement frontier，验证 same-domain multi-output coverage，逐个重放 candidate tile-view materialization、instruction lowering、SPM offset assignment、DDR offset assignment 和 verifier；支持 `tile-search=first-legal|min-estimated-time`；选择 passing candidate，不把 rejected plan 或 cost breakdown 写入 committed IR；覆盖 elementwise、static slice、large K=1000 matmul、matmul K split、generic reduction split、same-domain multi-output、默认硬件 SPM range 下的 multi-output `matmul + elementwise` large-shape traversal tile / K split 手动 heavy case、reduce、`scf.if`、`scf.for`、representatives 和 gate early-exit |
+| R3.2h | done | R3.1 group + R3.2a/b facts + candidate gates | `wafer-select-group-tile` / `wafer-lower-groups-to-selected-instr` 从 full traversal/no split 开始搜索 shape-driven traversal/reduction refinement frontier，验证 same-domain multi-output coverage，逐个重放 candidate tile-view materialization、instruction lowering、SPM offset assignment、DDR offset assignment 和 verifier；支持 `tile-search=first-legal|min-estimated-time`，硬件 range/alignment/timing 来自 fixed target policy，搜索空间 option 可覆盖 `tile-search-effort` preset；选择 passing candidate，不把 rejected plan 或 cost breakdown 写入 committed IR；覆盖 elementwise、static slice、large K=1000 matmul、matmul K split、generic reduction split、same-domain multi-output、固定 target SPM range 下的 multi-output `matmul + elementwise`、large-shape traversal tile / K split 手动 heavy case、reduce、`scf.if`、`scf.for`、representatives 和 gate early-exit |
 | R3.3 | done | R3.2h selected candidate evaluation result | selected candidate inline commit 回原 `wafer.group` 位置；原 parent function、无关函数和同函数其它 ops 保留；输出 committed `wafer.tile.region` / `wafer.instr.*` / accepted SPM-DDR offset facts，不生成 `*_selected_group_*` 旁路函数 |
 
 ## 后续队列

@@ -169,8 +169,8 @@ Partitioned StableHLO collective handoff：
 
 candidate-selection tile search 估算和后续 cost calibration 的边界：
 
-- candidate-selection 可以提供 `tile-search=min-estimated-time`，在 passing candidate 之间用硬件参数、计算量、
-  DDR bytes、SPM/local movement bytes 和 instruction count 做粗估时间排序。
+- candidate-selection 可以提供 `tile-search=min-estimated-time`，在 passing candidate 之间用 target
+  policy 中的硬件参数、计算量、DDR bytes、SPM/local movement bytes 和 instruction count 做粗估时间排序。
 - candidate-selection 的粗估时间只用于合法候选 tie-break；candidate gates 失败的 candidate
   不能被 cost model 接受。
 - issue/drain placement 由 effect/token verifier 证明。
