@@ -51,8 +51,8 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   `WaferDialect.cpp` 只保留 dialect/attr/type/op 注册和 `StorageType` verifier。
 - 历史 local integration gate 曾把 `wafer-opt` IR FileCheck 和 fixed manifest/C stub fixture 放在同一
   测试文件里；这些 fixed emitter 和测试拼接已删除，当前 integration 只保留 IR pipeline coverage。
-- 当前 local compile 还没有从 committed instruction IR、placement/local-shard contract 和 launch/resource
-  contract 导出 ABI/LLVM lowering artifact、IR-derived package manifest、LLVM IR、object、真实 `wafer_*` call、runtime adapter
+- 当前 local compile 还没有从 committed instruction IR、placement/local-shard contract 和按需 resource
+  view 导出 ABI/LLVM lowering artifact、IR-derived package manifest、LLVM IR、object、真实 `wafer_*` call、runtime adapter
   或板端 completion。
 
 ## P0 工程、依赖、组织
@@ -76,7 +76,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   `lib/Wafer/Conversion`；旧聚合 `WaferConversion` pass target 已删除，conversion 按 source/target
   IR contract 建 target。
 - `WaferTransforms` 只注册当前仍成立的 transform pass；旧 C ABI issue-op lowering 和 `WaferConversion`
-  pass target 已删除，后续按 committed instruction IR + placement/resource contract 重建。
+  pass target 已删除，后续按 committed instruction IR + placement/local-shard + resource view analysis 重建。
 - R0.3 后 core compiler、frontend/importer、runtime/driver 和 test tools 的 target 可见范围记录在
   `tasks/2026-05-26-wafer-dependency-layering-recovery.md`，并由 `tools/check_deps.py` 检查。
 - Shardy/SDY 公共 dialect 与 import/export/propagation passes 已通过 Wafer 顶层 CMake shim 复用
@@ -287,14 +287,11 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   `wafer.tile.region`。
 - R3.4：取消独立 placed/access descriptor materialization 主线；committed instruction IR 已经携带后续
   可重算的 operands、views、descriptor attrs 和 accepted offset facts。
-- R3.5：从 R3.3 committed IR、accepted offsets 和 placement/local-shard contract 导出 launch signature
-  与 DDR resource contract；legality / range / capacity / bandwidth demand 在 R3.2g 中完成，R3.5
-  不重新决定 group plan 或 DDR range plan，也不 allocate/import/query runtime object。
 - R3.6：恢复 ABI / LLVM lowering gate，让 ABI 参数单位和 wait policy 从 committed instruction IR、
-  accepted offset facts、placement/local-shard contract 和 R3.5 launch/resource contract 派生；不再保留
-  专门 ABI IR op family 作为主线或 debug layer。
+  accepted offset facts、placement/local-shard contract 和按需 resource view 派生；不再保留专门 ABI
+  IR op family 作为主线或 debug layer。
 - R3.7：恢复 object/package manifest gate，manifest、launch signature、entrypoint、ABI version 和
-  object/program id 从当前 `wafer-opt` 输出导出。
+  object/program id 从当前 `wafer-opt` 输出和同一 resource view analysis 导出。
 - R3.8：恢复 runtime adapter / board gate，至少让 RDMA/WDMA/GEMM 有真实
   wrapper-facing call contract、runtime binding 和 golden packet 对照。
 

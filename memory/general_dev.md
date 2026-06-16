@@ -182,8 +182,9 @@
 - DDR offset assignment 不是 external DMA validation 的别名。compiler-managed DDR demand 由 DDR
   `memref.alloc` 本身表达；accepted fact 写回同一个 alloc 的 `wafer.ddr.offset =
   #wafer.ddr_offset<offset>`。external function argument 不分配 offset，也不写 access summary attr；
-  launch/resource binding requirement 由 R3.5 从 committed instruction IR、accepted offset facts 和
-  placement/local-shard contract 重算；runtime allocation/import/query 属于 runtime adapter。DDR planner
+  launch/resource binding requirement 由 ABI/package/runtime 使用点从 committed instruction IR、
+  accepted offset facts 和 placement/local-shard contract 重算；runtime allocation/import/query 属于
+  runtime adapter。DDR planner
   复用 SPM 同类 structured lifetime dataflow：view-like alias、tile-region
   boundary arg、`scf.if` path condition、`scf.for` iter_args/yield/backedge 和 async token 都从 IR
   结构重算；offset 搜索在 default DDR arena 中做 pressure-weighted first-fit，只有 lifetime 证明不重叠

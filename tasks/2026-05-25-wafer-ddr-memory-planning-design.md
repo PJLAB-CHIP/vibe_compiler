@@ -3,8 +3,9 @@
 状态：R3.2g 重新收敛为 **compiler-side DDR memory planning**。它不能只是
 DDR access validation；凡是会影响 candidate 是否成立的 DDR byte footprint、lifetime、capacity、
 largest-contiguous 和 bandwidth 约束，都必须在 DDR offset assignment / candidate-selection gate 内决定或拒绝。
-R3.5 只把已接受的 DDR offset facts 和 IR-derived demand 汇总成 launch/resource contract，
-不执行 runtime allocation/import/query，也不重新做 planning。
+下游 ABI lowering、package manifest 和 runtime adapter 通过同一 resource view analysis 从已接受的
+DDR offset facts 和 IR-derived demand 按需重算 launch-facing requirements；不执行 runtime
+allocation/import/query，也不重新做 planning。
 compiler-managed DDR allocation 由 DDR `memref.alloc` 本身表达；R3.2g 只把
 accepted offset 写入 IR，size、alignment、lifetime、read/write intent 和 external access-end 都从
 当前 IR 重算，不作为长期 attr 字段保存。
@@ -60,8 +61,8 @@ Pipeline position:
 - Downstream consumer:
   candidate-selection 用 DDR offset assignment 成功/失败选择 candidate；
   R3.3 把已通过 candidate gates 的 selected lowering 写回主 IR；
-  R3.5 从 committed IR、accepted DDR offset facts 和 placement/local-shard contract 直接导出
-  launch/resource contract。
+  R3.6 ABI/LLVM lowering、R3.7 package manifest 和 R3.8 runtime adapter 在使用点从 committed IR、
+  accepted DDR offset facts 和 placement/local-shard contract 直接重算 resource view。
 - User-level driver / named pipeline:
   局部 pass 是 `wafer-plan-ddr-memory`；
   主线验证入口是从 tile-region materialization、instruction lowering、SPM offset assignment 跑到
@@ -139,13 +140,13 @@ wafer.ddr.offset = #wafer.ddr_offset<offset>
 map、名字或 fixture。
 
 External input/output 不由 R3.2g 分配 offset，也不写 external access summary attr。R3.2g 只在当前
-candidate 中验证 descriptor/view/root byte range 和 bandwidth；R3.5 若需要 launch/resource binding
-metadata，应从 committed instruction IR、accepted offset facts、placement/local-shard contract 和
-descriptors 重算或在 launch boundary materialize。
+candidate 中验证 descriptor/view/root byte range 和 bandwidth；ABI/package/runtime 若需要
+launch-facing binding view，应从 committed instruction IR、accepted offset facts、placement/local-shard
+contract 和 descriptors 在使用点重算。
 
 ## 4. Demand Classes
 
-| class | R3.2g responsibility | R3.5 launch/resource responsibility |
+| class | R3.2g responsibility | downstream resource view responsibility |
 | --- | --- | --- |
 | external input | validate view/range/descriptor in current candidate | derive external binding requirement, shape/dtype/layout/size/alignment contract |
 | external output | validate view/range/descriptor and write use in current candidate | derive output binding/writeback visibility requirement |
@@ -270,19 +271,21 @@ layout cut, different output domain coverage, streaming/residency choice and gro
 IR/interface support before they become candidate dimensions. SPM/DDR arena and bandwidth limits are inputs to
 their planning gates, not candidate fields.
 
-### 9.4 R3.5 Launch / Resource Contract
+### 9.4 下游 Resource View
 
-R3.5 consumes accepted DDR offsets, placement/local-shard contract and committed descriptors. It:
+ABI lowering、package manifest emission 和 runtime adapter 需要 resource facts 时，统一从 accepted
+DDR offsets、placement/local-shard contract 和 committed descriptors 重算 view。该 view：
 
-- rederives external binding requirements from committed IR,
-- summarizes compiler-managed workspace and resident/inter-group DDR ranges,
-- validates that launch-visible resource metadata is consistent with accepted offsets, descriptor ranges and
-  placement/local-shard bounds,
-- emits launch/resource contract for R3.6 ABI/LLVM lowering and R3.7 package manifest.
+- 从 committed IR 重算 external binding requirements。
+- 汇总 compiler-managed workspace 和 resident/inter-group DDR ranges。
+- 验证 launch-visible resource metadata 与 accepted offsets、descriptor ranges 和 placement/local-shard
+  bounds 一致。
+- 供 R3.6 ABI/LLVM lowering、R3.7 package manifest 和 R3.8 runtime adapter 使用，但不成为新的 IR
+  artifact。
 
-R3.5 must not allocate/import/query runtime objects, materialize physical addresses, or redo DDR
-lifetime/range planning by name or by inspecting high-level tensor semantics. Runtime binding and allocation
-failure reporting belong to R3.8 runtime adapter.
+该 view 不能 allocate/import/query runtime object，不能 materialize physical address，不能持久化第二份
+metadata fact source，也不能靠名字或高层 tensor 语义重做 DDR lifetime/range planning。Runtime binding
+和 allocation failure reporting 属于 R3.8 runtime adapter。
 
 ## 10. Example Shape
 

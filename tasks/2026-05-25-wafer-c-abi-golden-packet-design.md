@@ -2,7 +2,7 @@
 
 日期：2026-05-25
 
-状态：设计草案；范围：committed instruction IR + placement/resource contract 到 ABI / LLVM / wrapper / packet 的 lowering。
+状态：设计草案；范围：committed instruction IR + placement/local-shard + on-demand resource view 到 ABI / LLVM / wrapper / packet 的 lowering。
 
 本文定义 committed Wafer instruction program 到 C ABI / wrapper / packet 的 lowering 合同，
 以及 golden packet 测试边界。C ABI 是 lower-level codegen 的稳定调用面，不是上层 IR 语义。
@@ -43,7 +43,6 @@
 committed wafer.tile.region / wafer.instr.* IR
   + accepted SPM/DDR offset facts
   + placement/local-shard contract
-  + R3.5 launch/resource contract
   + wafer.instr.* / tile communication / sync ops
 ```
 
@@ -67,12 +66,13 @@ LLVM dialect call sequence / C ABI call sequence or packet emission
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  R3.3 committed `wafer.instr.*` IR、accepted SPM/DDR offset facts、placement/local-shard contract、
-  R3.5 launch/resource contract 和 launch signature。
+  R3.3 committed `wafer.instr.*` IR、accepted SPM/DDR offset facts、placement/local-shard contract
+  和 communication/sync lowering。
 - Current stage responsibility:
-  从 committed instruction IR、accepted offset facts、placement/local-shard contract 和 launch/resource
-  contract 派生 LLVM dialect call、`wafer_*` C ABI call 或 packet builder 输入，固定参数单位、
-  address domain、wait/completion policy 和 ABI version。
+  从 committed instruction IR、accepted offset facts、placement/local-shard contract 和按需重算的
+  resource view 派生 LLVM dialect call、`wafer_*` C ABI call 或 packet builder 输入，固定参数单位、
+  address domain、wait/completion policy 和 ABI version。resource view 是 analysis/verifier 结果，
+  不 materialize 成独立 IR 或 sidecar metadata。
 - Output artifact / IR:
   LLVM dialect call sequence、C ABI call sequence / packet emission metadata / debug dump，以及 golden
   packet test input。
@@ -132,7 +132,7 @@ V0 family：
 调用 public Tsm wrapper、Kcore runtime helper 或未来 native helper。
 
 R3.6 主线不要求专门的 ABI IR 层。codegen 可以直接从 committed `wafer.instr.*`、accepted
-SPM/DDR offset facts、placement/local-shard contract 和 R3.5 launch/resource contract 发射 LLVM
+SPM/DDR offset facts、placement/local-shard contract 和按需重算的 resource view 发射 LLVM
 dialect call、`wafer_*` C shim 调用或 packet builder 输入。
 如果保留 `wafer.instr.rdma`、`wafer.instr.wdma`、`wafer.instr.gemm`、`wafer.instr.elementwise`、
 `wafer.instr.reduce`、Direct DTE emission helper 这类对象，它们只作为 very-late debug/test dump 或 emission

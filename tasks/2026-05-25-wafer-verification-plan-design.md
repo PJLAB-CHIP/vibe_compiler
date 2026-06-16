@@ -29,7 +29,7 @@ Serving integration 暂不纳入本文通过标准。
 - 已完成 resource planner、dependency/config 和已有 tool-unit tests 通过；golden packet、package
   serialization 和 manifest roundtrip 只能证明对应工具或 fixture，不替代主线 compiler output。
 - pipeline 能生成当前阶段的本地编译产物：committed instruction IR 和 accepted SPM/DDR offset facts。
-  placement/local-shard、launch/resource contract、ABI/LLVM lowering、object/package manifest 和 runtime
+  placement/local-shard、ABI/LLVM lowering、object/package manifest 和 runtime
   adapter 是后续独立 gate。
 - LLVM dialect / LLVM IR lowering、object emission 和真实 `wafer_*` runtime call emission 分别属于
   R3.6/R3.7/R3.8 gate，不属于当前 committed-instruction gate 的通过条件。
@@ -52,11 +52,10 @@ Serving integration 暂不纳入本文通过标准。
 | SPM | tile region + demands | allocation、range/end-address、lifetime、reserved range 合法 |
 | DDR | tile region + launch boundary | external binding、workspace/constant demand、default DDR arena resource/capacity 合法 |
 | Placement/local-shard | committed instruction IR + logical rank/local shard facts + topology/capability | accepted placement map 覆盖所有 rank，过滤 bad tile，block/tile 唯一，local shard bounds 合法 |
-| Launch/resource | committed instruction IR + accepted offset facts + placement/local-shard contract | launch signature、external binding、workspace、resident constant 和 control metadata resource contract 可由下游直接消费 |
 | Compute / Movement | committed instruction IR + accepted offset facts | wrapper family、layout、dtype、shape、issue/drain 合法 |
 | Communication | tile_region / SPM materialization 后的 collective/p2p IR | endpoint、token、DTE/FSM resource、wait policy 合法 |
-| ABI / LLVM / golden packet | committed instruction IR + launch/resource contract + communication/sync lowering | LLVM dialect call 或 `wafer_*` C ABI / packet builder input 合法；ABI unit/address/wait verified，golden packet 覆盖 wrapper mapping |
-| Object/package | ABI/LLVM artifact + placement/resource/constant metadata | object/link 最小验证；manifest 记录 object/program id、entrypoint、ABI version 和 IR-derived package metadata |
+| ABI / LLVM / golden packet | committed instruction IR + accepted offsets + placement/local-shard + communication/sync lowering | LLVM dialect call 或 `wafer_*` C ABI / packet builder input 合法；ABI unit/address/wait verified，golden packet 覆盖 wrapper mapping；launch/resource view 从 IR 按需重算，不成为独立 artifact |
+| Object/package | ABI/LLVM artifact + committed IR + placement/local-shard | object/link 最小验证；manifest 记录 object/program id、entrypoint、ABI version 和 IR-derived package metadata；placement/resource/constant metadata 由同一 resource view analysis 生成 |
 | Runtime/board | package + adapter | runtime allocation object binding contract、stub shielding、launch/completion/error propagation 合法；板端 completion 在有卡环境验证 |
 
 Gate 通过只说明进入下一层的输入合法，不说明整个 compiler 已完成。
@@ -142,7 +141,7 @@ Direct DTE p2p：
 - FSM / packet / stream resource 不冲突。
 - 旧 `test/Transforms/comm-local-c-abi-issues.mlir` unit gate 已删除。后续 tile-level p2p 到
   committed Direct DTE issue/wait form 和 ABI/LLVM emission 的 gate 必须由 R6/R3.6 从 committed
-  instruction-level IR、placement/resource contract 恢复。
+  instruction-level IR、placement/local-shard contract 和 resource view analysis 恢复。
 
 Single-card collective：
 

@@ -5,10 +5,10 @@
 状态：设计草案；范围：`wafer.launch`、runtime package、host runtime adapter 和 completion contract。
 
 本文定义 `wafer.launch`、runtime package、host runtime adapter 和 completion contract。该边界
-消费 committed instruction IR、placement/local-shard contract、launch/resource contract 以及 ABI/LLVM
+消费 committed instruction IR、placement/local-shard contract、按需重算的 resource view 以及 ABI/LLVM
 lowering 产物，负责把 device code、resource metadata、placement、DDR binding、constant storage
 bytes 和 launch arguments 组织成可执行单元。runtime allocation/import/query 是 runtime adapter 在
-package load / launch 时执行的绑定动作，不是 R3.5 compiler IR materialization stage。
+package load / launch 时执行的绑定动作，不是独立 compiler IR materialization stage。
 
 本文依赖：
 
@@ -73,7 +73,7 @@ wafer.launch @compiled_kernel(
 Pipeline position:
 - Upstream artifact / IR:
   R3.3 committed `wafer.tile.region` / `wafer.instr.*` IR、accepted SPM/DDR offset facts、
-  placement/local-shard contract、R3.5 launch/resource contract，以及 R3.6 ABI/LLVM lowering 产物。
+  placement/local-shard contract、按需重算的 resource view，以及 R3.6 ABI/LLVM lowering 产物。
 - Current stage responsibility:
   R3.7 组装 object/program id、entrypoint、ABI version、constant bytes、placement metadata 和
   resource binding metadata 到 package manifest；R3.8 runtime adapter 根据该 manifest 执行
@@ -84,7 +84,7 @@ Pipeline position:
 - Downstream consumer:
   HPGR/KMD/legacy runtime launch path、board correctness gate 和 profiling/error propagation gate。
 - User-level driver / named pipeline:
-  package emission 必须接在 committed instruction -> placement/resource -> ABI/LLVM lowering 之后，
+  package emission 必须接在 committed instruction -> placement/local-shard -> ABI/LLVM lowering 之后，
   不以显式 manifest fixture 或 C stub table 作为主线入口。
 - Explicit non-goals:
   不重新做 placement、tile search、layout、SPM/DDR planning、communication schedule 或 ABI lowering；
@@ -104,7 +104,7 @@ Runtime package 是交付给 runtime adapter 的编译产物集合。V0 需要�
 | device code | per-kernel / per-cluster kcore shared object | C ABI / LLVM lowering |
 | launch signature | inputs、outputs、runtime args、shape/dtype/layout | frontend + lowering |
 | placement metadata | cluster、tile mapping、block id、good-tile assumption | placement |
-| DDR memory metadata | external binding contract、workspace demand、resident constant demand | launch/resource contract derived from committed IR + DDR planner facts |
+| DDR memory metadata | external binding contract、workspace demand、resident constant demand | on-demand resource view derived from committed IR + DDR planner facts |
 | SPM summary | per-tile SPM peak、reserved range、allocation summary | SPM bufferization |
 | constant storage bytes | transformed read-only backing data, if needed | constant storage transform |
 | communication metadata | collective/p2p resource summary | communication lowering |
@@ -163,9 +163,10 @@ Runtime package 必须区分：
   DDR planning arena。
 
 KMD/UAPI 的低层分配类别只作为 runtime mapping evidence 使用；R3.2g compiler planning 产出
-accepted DDR planned ranges，R3.5 launch/resource contract 从 committed IR、accepted offsets 和
-placement/local-shard metadata 派生 external binding、workspace、resident constant 和 control metadata
-requirements。runtime adapter 在 package load / launch 时执行 allocate/import/query/bind，并报告
+accepted DDR planned ranges；ABI lowering、package manifest emission 和 runtime adapter 通过同一
+resource view analysis 从 committed IR、accepted offsets 和 placement/local-shard metadata 派生
+external binding、workspace、resident constant 和 control metadata requirements。runtime adapter 在
+package load / launch 时执行 allocate/import/query/bind，并报告
 runtime allocation failure；不能在 runtime/package 层重新决定 DDR range plan。
 
 当前 `tools/wafer_package_manifest.py` 只负责验证和 roundtrip 显式输入的 manifest schema，不再提供
@@ -202,7 +203,7 @@ arguments；它不反向定义 tensor semantics，也不包含 runtime handle、
 历史 `--emit-single-tile-matmul`、`--emit-multi-tile-no-comm-matmul`、
 `--emit-single-tile-elementwise` 和 `--emit-local-transformer-block` fixed emitter 已删除。后续 package
 gate 必须从当前 `wafer-opt` pipeline 的 committed instruction IR、placement/local-shard contract、
-launch/resource contract、ABI/LLVM lowering artifact 和 `wafer.launch` boundary 自动导出 manifest；
+按需重算的 resource view、ABI/LLVM lowering artifact 和 `wafer.launch` boundary 自动导出 manifest；
 不能恢复独立固定 emitter 作为完成证明。
 
 placement metadata 当前包含：

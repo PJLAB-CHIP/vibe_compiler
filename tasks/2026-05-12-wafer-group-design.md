@@ -94,8 +94,7 @@ Pipeline position:
   拒绝的 logical group。
 - Downstream consumer:
   R3.2a-g analysis/planning/legalization gates 和 R3.2h closed-loop candidate driver；R3.3 `wafer.tile.region`
-  materialization；placement/local-shard contract；R3.5 launch/resource contract；
-  R3.6/R3.7 ABI/LLVM/package stages。
+  materialization；placement/local-shard contract；R3.6/R3.7 ABI/LLVM/package stages。
 - User-level driver / named pipeline:
   `wafer-opt --program-pipeline=stablehlo-spmd-to-group`，由该 program
   pipeline 重放 frontend/SPMD/R2.4 后进入 logical group formation gate。局部 MLIR pass
@@ -750,7 +749,7 @@ transformation-local candidate evaluation `wafer.tile.region` IR，用它承载 
 Wafer op、layout materialization、buffer、lifetime 和 effect，再从这层 IR 调用下游 analysis。
 这层 lowered IR 是 planning artifact；只有 passing plan 才能由 R3.3 commit 到主 IR。
 SPM planning、layout assignment、DDR memory planning 和 compute/movement legality 是 group 是否成立的
-决定条件，不是 R3.3 commit 或 R3.5 launch/resource contract 的后处理。
+决定条件，不是 R3.3 commit 或后续 ABI/package resource view 的后处理。
 
 因此恢复顺序必须分清 planning facts 和 IR materialization：
 
@@ -785,7 +784,7 @@ SPM planning、layout assignment、DDR memory planning 和 compute/movement lega
   覆盖 external/compiler-managed/resident/inter-group demand、descriptor、view/root range、accepted
   DDR offset、default arena capacity/largest-contiguous/bandwidth/alignment，以及 op layout/dtype/shape/effect
   合法性；成功即证明当前 candidate 的 DDR demand 已规划并可被下游消费，失败给结构化原因，不能
-  回头改变 instruction semantics，也不能产出等待 R3.5 再补全的 DDR plan。
+  回头改变 instruction semantics，也不能产出等待后续 resource view 再补全的 DDR plan。
 - R3.2h 才能做 candidate-selection driver：从 full traversal tile/no split 开始，搜索
   shape-driven traversal/reduction refinement frontier、同 traversal domain 的 output coverage，以及当前支持的
   reduction/internal split，并逐个运行
@@ -797,9 +796,9 @@ SPM planning、layout assignment、DDR memory planning 和 compute/movement lega
   R3.2h search space。
 
 R3.3 只把 R3.2h 选中的 passing candidate commit 回主 IR，形成 committed `wafer.tile.region` /
-instruction-level boundary。placement 和 R3.5 只把
-已经通过 candidate gates 的 layout/instruction/SPM/DDR accepted facts 派生为 placement/local-shard
-与 launch/resource boundary；它们不能成为
+instruction-level boundary。placement 只保存不能从 local IR 重算的 rank/tile mapping；ABI/package/runtime
+在使用点从已经通过 candidate gates 的 layout/instruction/SPM/DDR accepted facts 重算 resource view；
+它们不能成为
 第一次发现 SPM 放不下、layout 不合法或 DDR demand 不可接受的阶段。若 R3.2a-g gates
 让 R3.2h 不能接受当前 group plan，planner 必须回到 tile shape、layout、internal split、instruction
 选择或 group boundary，而不是落一个 rejected `wafer.tile.region` 等待下游补救。

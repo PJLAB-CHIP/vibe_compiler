@@ -83,8 +83,8 @@ layout planning 有两个恢复层次：
   buffer demand。该层只产出 analysis result 和 debug dump，不 rewrite `wafer.group`，不写
   layout attr，也不生成 `wafer.tile.region`。
 - committed `wafer.tile.region` / instruction-level IR 已经包含 candidate gates 接受的
-  Wafer-tagged memref value 和 `wafer.tile.materialize_layout` op。后续 placement、R3.5
-  launch/resource contract 和 R3.6 ABI/LLVM lowering 只从这些 IR facts 派生 lower-level 参数，
+  Wafer-tagged memref value 和 `wafer.tile.materialize_layout` op。后续 placement、R3.6
+  ABI/LLVM lowering 和 R3.7 package manifest 只从这些 IR facts 派生 lower-level 参数，
   不再重新 materialize layout assignment 或 materialization cut。
 
 完整 layout materialization 的输入来自 target-abstract tile-region IR。它由 scheduled
@@ -1217,10 +1217,10 @@ V0 不做全局最优，但不能只做一次贪心选择。主路径是 determi
 
 10. Placement / launch / ABI handoff
 
-   cleanup 后交给 placement/local-shard contract、R3.5 launch/resource contract 和 R3.6 ABI/LLVM
-   lowering。它们从 committed Wafer-tagged memref、accepted offset facts、view relation、placement
-   和 layout helper 派生 address/range/stride 参数。layout planner 不直接生成 LLVM ABI，但必须
-   保证 accepted layout 都能被这个派生过程合法实现。
+   cleanup 后交给 placement/local-shard contract、R3.6 ABI/LLVM lowering 和 R3.7 package manifest。
+   它们从 committed Wafer-tagged memref、accepted offset facts、view relation、placement、layout
+   helper 和按需 resource view 派生 address/range/stride 参数。layout planner 不直接生成 LLVM ABI，
+   但必须保证 accepted layout 都能被这个派生过程合法实现。
 
 ## 11. Cost Model
 

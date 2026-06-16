@@ -215,7 +215,7 @@ collective 仍应由 unicast p2p schedule 组合表达，而不是在 logical IR
 `wafer.placement.map` 时检查 peer 指向 active physical tile，`wafer.tile.wait` 要求至少一个
 async token。旧 `--wafer-lower-tile-region-to-c-abi` pass 已删除；fixed-size unicast p2p 到
 committed Direct DTE issue/wait form 和 ABI/LLVM emission 的 lowering 必须在 R6/R3.6 从 committed
-instruction-level IR、placement/resource contract 重新建立。这一层仍不应 materialize raw non-unicast register 字段，也不把 DTE id、
+instruction-level IR、placement/local-shard contract 和 resource view analysis 重新建立。这一层仍不应 materialize raw non-unicast register 字段，也不把 DTE id、
 runtime physical address 或 wrapper packet bitfield 暴露成上层 communication IR 语义。
 
 P6.4 起，collective-level `wafer.tile.all_gather` 已进入 IR。该 op 接收 local chunk、gather

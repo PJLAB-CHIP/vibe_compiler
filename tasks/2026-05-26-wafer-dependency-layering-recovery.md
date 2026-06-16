@@ -42,7 +42,7 @@ core compiler target。
 | ABI helper | `WaferABI`、`include/Wafer/ABI`、`lib/Wafer/ABI` | C++ standard library 和项目 ABI headers | MLIR dialect API、StableHLO/Shardy、runtime/driver headers、test tools |
 | Core analysis | `WaferAnalysis`、`include/Wafer/Analysis`、`lib/Wafer/Analysis` | `WaferIR`、MLIR IR/arith/linalg/tensor/support；只保存可从当前 IR 重算的局部 analysis 实现 | StableHLO/Shardy importer API、runtime/driver headers、test tools、conversion ownership |
 | Core transforms | `WaferTransforms`、`lib/Wafer/Transforms` | `WaferIR`、`WaferAnalysis`、Wafer conversion targets、MLIR arith/linalg/tensor/pass/support；`SPMD/` 源文件可在 `WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON` 时 private 使用 Shardy/SDY C++ API | importer framework headers、runtime/driver headers、test tools、C ABI conversion ownership；StableHLO/Shardy 不能成为 public dependency |
-| Conversion | `include/Wafer/Conversion`、`lib/Wafer/Conversion` | `WaferStableHLOToLinalg` private 使用 StableHLO 官方 lowering patterns；`WaferGroupToTileRegion` 使用 `WaferIR` / `WaferAnalysis` 构造下一层 Wafer IR | runtime/driver headers、test tools；StableHLO/Shardy 不能 public 暴露，future ABI/LLVM lowering 按 committed instruction IR + placement/resource contract 重建 |
+| Conversion | `include/Wafer/Conversion`、`lib/Wafer/Conversion` | `WaferStableHLOToLinalg` private 使用 StableHLO 官方 lowering patterns；`WaferGroupToTileRegion` 使用 `WaferIR` / `WaferAnalysis` 构造下一层 Wafer IR | runtime/driver headers、test tools；StableHLO/Shardy 不能 public 暴露，future ABI/LLVM lowering 按 committed instruction IR + placement/local-shard + resource view analysis 重建 |
 | Frontend/importer | `include/Wafer/Frontend`、`tools/wafer-compile-stablehlo` | optional StableHLO / SDY dialect registration、program parsing/verification 依赖；固定版本的 torch / PyTorch/XLA importer Python runtime，后续只允许在 importer 工具中使用 | SPMD partition、SPM/layout/runtime/tool target details |
 | SPMD bridge | `ShardySdy*` CMake shim target、future Shardy/SPMD pass target | Shardy/SDY source dependency、MLIR dialect registration、import/export/propagation pass 编译验证 | physical tile id、DTE algorithm、runtime package |
 | Driver tool | `tools/wafer-opt` | `WaferIR`、`WaferTransforms` / `WaferPipelines`、MLIR tool main；optional StableHLO / SDY registration；P2.S2 可调用 Wafer-owned pinned-XLA helper | importer framework implementation details、runtime/driver headers、frontend-only exporter behavior |
@@ -145,7 +145,7 @@ core compiler target。
   group conservative expansion，不能把 one-root group shell 当作完成。
 - torch-mlir source-tree adapter 的精确 commit 仍属于后续 frontend importer 扩展；R0.3
   已先用 PyTorch/XLA 2.5 源码版本收敛 XLA/LLVM/StableHLO/Shardy 版本来源。
-- R3.7：从当前 ABI/LLVM lowering artifact、launch/resource contract 和 launch IR 自动导出 package manifest。
+- R3.7：从当前 ABI/LLVM lowering artifact、resource view analysis 和 launch IR 自动导出 package manifest。
 - P8：runtime adapter、runtime allocation binding 和 completion source 仍未实现。
 
 ## 验证

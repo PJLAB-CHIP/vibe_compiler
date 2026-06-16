@@ -67,7 +67,7 @@ group/tiling。旧 PyTorch/XLA post-SPMD export 测试入口已删除；它不�
 
 - P0-P6 的历史 `done` 只保留为局部进度记录，不再作为设计一致性完成声明。
 - 后续不继续扩展 P7/P8/P9；先重开 P0-P6 设计一致性恢复队列。从 committed instruction IR、
-  placement/local-shard contract、launch/resource contract 和 ABI/LLVM lowering artifact 自动导出 package manifest 是恢复 P3/P4/P5 local compile gate 的一个子任务，
+  placement/local-shard contract、resource view analysis 和 ABI/LLVM lowering artifact 自动导出 package manifest 是恢复 P3/P4/P5 local compile gate 的一个子任务，
   不能被当作 P7 已经可以开始的前提。
 - 每个被恢复为 `done` 的任务必须满足对应设计文档的合同，或在任务名/验收里明确收窄为局部 fixture。
 - 显式 manifest fixture 只能作为 validator/stub tool unit fixture，不能作为 compile pipeline

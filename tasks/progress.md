@@ -45,12 +45,9 @@ PyTorch/XLA StableHLO Wafer program directory
        rerun candidate gates, commit only the selected passing candidate into main IR
   -> placement / local-shard contract
        accepted logical rank/block -> physical coordinate mapping and launch-visible local shard metadata
-  -> R3.5 launch/resource contract formation
-       launch signature, DDR resource contract, workspace/constant/external binding requirements
-       derived from committed IR, accepted offsets and placement
   -> R3.6 ABI / LLVM lowering
-       committed `wafer.instr.*`, communication and sync boundary -> LLVM dialect call sequence or
-       `wafer_*` C ABI / packet builder input
+       committed `wafer.instr.*`, accepted offsets, placement, communication and sync boundary
+       -> LLVM dialect call sequence or `wafer_*` C ABI / packet builder input
   -> R3.7 object + package manifest assembly
        object/program id, entrypoint, ABI version, constants, placement and resource metadata
   -> R3.8 runtime adapter / board launch
@@ -82,7 +79,7 @@ Pipeline position:
   metadata 或后续 `wafer.launch` boundary 承载。它只保存不能从 local IR 重算的 mapping，不复制
   memory plan、packet field、runtime handle 或 search trace。
 - Downstream consumer:
-  R3.5 launch/resource contract formation、R6 communication lowering、R3.7 package manifest 和 R3.8 runtime adapter。
+  R6 communication lowering、R3.6 ABI/LLVM lowering、R3.7 package manifest 和 R3.8 runtime adapter。
 - User-level driver / named pipeline:
   后续应在 committed selected-instr named pipeline 之后追加 placement/local-shard stage；用户不应
   手工拼 accepted instruction IR、placement fixture 和 package metadata 作为主线 compile flow。
@@ -91,16 +88,17 @@ Pipeline position:
   resource、runtime allocation object、physical address、ABI call 或 object/package 格式。
 - Completion gate:
   以 named pipeline 重放 R3.1 -> candidate-selection -> committed materialization -> placement；
-  emitted placement/local-shard contract 被 R3.5 launch/resource contract 和 R6 communication lowering
-  直接消费，且 verifier 能拒绝 rank 覆盖、bad tile、重复 block/tile 和 local shard 越界。
+  emitted placement/local-shard contract 被 R6 communication lowering、R3.6 ABI/LLVM lowering 和 R3.7
+  package manifest emission 直接消费，且 verifier 能拒绝 rank 覆盖、bad tile、重复 block/tile 和
+  local shard 越界。
 ```
 
 R3.4 placed/access descriptor realization 取消为独立主线阶段。原因是 committed instruction IR 已经
 显式包含 instruction operands、DDR tile views、SPM offset facts、DDR offset facts 和 movement
 descriptor attrs；把这些可重算事实再 materialize 成 placed memref / access descriptor 中间层会形成
-重复事实源。后续 launch/resource contract 和 ABI/LLVM lowering 如需 address/range/stride 参数，应在
-对应阶段从 committed IR、accepted offset facts 和 placement/local-shard contract 派生，不通过 R3.4
-旁路协议传递。
+重复事实源。后续 ABI/LLVM lowering 或 package manifest 如需 launch/resource/address/range/stride
+参数，应在使用点从 committed IR、accepted offset facts 和 placement/local-shard contract 派生，不通过
+R3.4 旁路协议传递。
 
 ## 已完成主线
 
@@ -124,17 +122,17 @@ descriptor attrs；把这些可重算事实再 materialize 成 placed memref / a
 
 | ID | 状态 | 原输入 | 取消原因 / 责任归属 |
 | --- | --- | --- | --- |
-| R3.4 | removed | R3.3 committed instruction IR 已经包含可重算 memory facts | 取消独立 placed memref / access descriptor materialization；必要 address/range/demand 检查并入 launch/resource contract 和后续 ABI/LLVM lowering 的派生验证 |
+| R3.4 | removed | R3.3 committed instruction IR 已经包含可重算 memory facts | 取消独立 placed memref / access descriptor materialization；必要 address/range/demand 检查在 ABI/LLVM lowering、package manifest 和 runtime adapter 使用点从 IR 派生验证 |
+| R3.5 | removed | R3.3 committed instruction IR + accepted offsets + placement/local-shard contract | 取消独立 launch/resource contract materialization；launch signature、external binding、workspace 和 resident constant 等 resource view 由 R3.6/R3.7/R3.8 在使用点通过同一 analysis/verifier 从 IR 重算，不落第二份 metadata |
 
 ## 后续队列
 
 | ID | 状态 | 输入 | 输出 / 完成 gate |
 | --- | --- | --- | --- |
 | placement/local-shard | active | R3.3 committed tile-region / `wafer.instr.*` + frontend/SPMD logical rank/local shard facts + target topology/capability | accepted placement map、block id、launch-visible local shard metadata；验证 rank coverage、good/bad tile、block/tile uniqueness 和 local shard bounds |
-| R3.5 | ready | committed instruction IR + accepted SPM/DDR offset facts + placement/local-shard contract | launch signature + DDR resource contract；导出 workspace/resident constant/external binding requirements，不 allocate/import/query runtime object，不生成 ABI/object/package |
 | R6.1-R6.2 | pending | tiled tensor collective + placement/local-rank/buffer facts | materialize tile communication 到 communication / Direct DTE resource / local-drain 边界；结果进入 R3.6 ABI/LLVM lowering |
-| R3.6 | pending | committed instruction IR + launch/resource contract + communication/sync lowering | LLVM dialect call sequence 或 `wafer_*` C ABI / packet builder input；固定参数单位、address domain、wait/completion policy 和 ABI version |
-| R3.7 | pending | R3.6 ABI/LLVM artifact + placement/resource/constant metadata | object/program id、entrypoint、ABI version 和 IR-derived package manifest；manifest roundtrip 不能替代 object/link 最小验证 |
+| R3.6 | pending | committed instruction IR + accepted SPM/DDR offset facts + placement/local-shard contract + communication/sync lowering | LLVM dialect call sequence 或 `wafer_*` C ABI / packet builder input；按需重算 launch/resource view，固定参数单位、address domain、wait/completion policy 和 ABI version |
+| R3.7 | pending | R3.6 ABI/LLVM artifact + committed IR + placement/local-shard contract | object/program id、entrypoint、ABI version 和 IR-derived package manifest；manifest 的 placement/resource/constant metadata 由同一 resource view analysis 从 IR 重算，manifest roundtrip 不能替代 object/link 最小验证 |
 | R3.8 | pending | R3.7 package + runtime adapter | allocate/import/query/bind runtime objects，launch program，验证 completion、错误传播和 board gate |
 | R5.1-R5.2 | pending | static transformer local shard IR / staged IR gaps | full-block schedule 或拒绝原因；补 mask/select、dynamic-bound policy、constant/weight slice 等 |
 | P9 | later | board/profile 输出 | overlap、cost model 和 PMU calibration |
@@ -161,4 +159,5 @@ descriptor attrs；把这些可重算事实再 materialize 成 placed memref / a
 3. 验证 rank coverage、tile/block uniqueness、bad tile 过滤、local shard bounds 和 committed boundary
    可解释性；失败时给结构化 diagnostic，不重新做 group/candidate/memory planning。
 4. 补 completion proof：R3.1 -> candidate-selection -> committed materialization -> placement 的 named
-   pipeline 输出能被 R3.5 launch/resource contract 和 R6 communication lowering 直接消费。
+   pipeline 输出能被 R6 communication lowering、R3.6 ABI/LLVM lowering 和 R3.7 package manifest emission
+   直接消费。

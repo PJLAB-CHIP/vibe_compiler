@@ -75,8 +75,7 @@ wafer.group
   -> closed-loop candidate driver for retry/split/commit decision
   -> committed wafer.tile.region
   -> placement / local-shard contract
-  -> launch/resource contract from committed IR + accepted offsets + placement
-  -> ABI / LLVM lowering from committed IR + launch/resource contract
+  -> ABI / LLVM lowering from committed IR + accepted offsets + placement
   -> object/package/runtime adapter
 ```
 
@@ -88,8 +87,8 @@ wafer.group
   tile-region IR，用作 legality/debug/后续 pass bring-up。它仍不是 selected candidate，
   也不是 SPM allocator 的直接输入；rejected tile-region IR 不进入主线 committed IR。
 - committed `wafer.tile.region`：R3.3 只把 candidate-selection 已选中、且已通过 candidate gates
-  的 candidate artifact 写入主 IR。后续 placement、R3.5 launch/resource contract 和 R3.6 ABI/LLVM
-  lowering 只从 committed IR、accepted offset facts 和 placement/local-shard contract 派生下游参数，
+  的 candidate artifact 写入主 IR。后续 placement、R3.6 ABI/LLVM lowering 和 R3.7 package manifest
+  只从 committed IR、accepted offset facts 和 placement/local-shard contract 派生下游参数，
   不重新决定 group 是否可行，也不复制 placed/access descriptor 中间协议。
 
 ### 2.1 R3.2c Pipeline Contract
@@ -151,7 +150,7 @@ table 补协议。
 | scalar boundary values | 作为 tile-region block scalar SSA value 传入，供 fill/reduce init 等 scalar operand 使用 | supported for scalar | 只支持 float / integer / index scalar；不生成 storage，不作为长期 side channel。 |
 | `arith.constant` tensor | clone constant 后用 `bufferization.to_memref` materialize 为 read-only DDR source，再 `wafer.tile.load` 到 tensor-layout SPM storage | partial | 只适合 tensor constant；scalar constant 只应在 compute body 或显式 init 语义中消费。需要区分 constant residency / DDR / immediate policy。 |
 | `arith.constant` scalar | clone scalar constant，并作为 `wafer.tile.fill`、`wafer.tile.reduce init_value` 或 elementwise body 推导输入 | supported for scalar constants | scalar 语义通过 SSA value 或 typed attr 进入目标 op；不靠名字或原 op 残留。 |
-| `tensor.empty` | writable group output 的 `tensor.empty` 生成 `#wafer.memory<ddr, tensor>` boundary value；tile-local temporary 的 `tensor.empty` 生成 `#wafer.memory<spm, tensor>` `memref.alloc` | supported as abstract allocation demand | `memref.alloc` 不分配物理 offset/window；DDR boundary / requirement 的 planned range 归 DDR offset assignment，launch/resource contract 归 R3.5；SPM offset/window 归 SPM offset assignment。不能把 arbitrary empty 偷映射成 output alias。 |
+| `tensor.empty` | writable group output 的 `tensor.empty` 生成 `#wafer.memory<ddr, tensor>` boundary value；tile-local temporary 的 `tensor.empty` 生成 `#wafer.memory<spm, tensor>` `memref.alloc` | supported as abstract allocation demand | `memref.alloc` 不分配物理 offset/window；DDR boundary / requirement 的 planned range 归 DDR offset assignment；launch/package 所需 resource view 在使用点从 IR 重算；SPM offset/window 归 SPM offset assignment。不能把 arbitrary empty 偷映射成 output alias。 |
 | `tensor.extract` scalar | 从已 materialized DDR boundary memref 生成 `memref.load`，供动态 scalar init / scalar value 使用 | supported for boundary scalar extract | 只作为 scalar SSA 支持 op；不表示 tile compute；tile-local tensor element read 不能用 generic memref.load 伪装。 |
 | `linalg.fill` | 生成显式 `wafer.tile.fill`，写入 existing storage；fill result 映射为该 initialized buffer | supported for scalar fill | `wafer.tile.fill` 暴露 target-abstract write relation；具体是否 lower 成 CT fill、memset 或 immediate pattern 由 instruction lowering 决定。 |
 | `linalg.matmul` | lhs/rhs materialize 到 `cx`，生成 `wafer.tile.gemm`，结果记录为 `cx` | supported for simple `linalg.matmul` | pattern 应检查 rank、dtype、accumulator/result relation、layout requirement；batch matmul / generic contraction 另列，不应混成 matmul 特判。 |
@@ -287,7 +286,7 @@ V0 需要以下 op family：
    tile-view boundary、DDR `memref.alloc` 和 descriptor demand，规划 compiler-managed/resident/inter-group
    DDR accepted offset facts，并验证 descriptor、view/root range、default arena capacity/largest-contiguous、
    bandwidth、alignment、overlap 和 fence demand。成功 facts 必须能被 candidate-selection、R3.3、placement
-   和 R3.5 launch/resource contract 直接消费；
+   和后续 ABI/package/runtime resource view 直接消费；
    失败时给结构化原因。
 8. candidate-selection driver：candidate-selection 从 full traversal tile/no split 开始搜索
    shape-driven traversal/reduction refinement frontier、同 traversal domain 的 output coverage 和当前支持的
@@ -300,11 +299,8 @@ V0 需要以下 op family：
    inline commit 回原 `wafer.group` 位置，写入主 IR。
 10. placement / local-shard contract：从 committed instruction boundary、logical rank/local shard facts
     和 target capability 生成 accepted placement map 与 launch-visible shard metadata。
-11. launch/resource contract：R3.5 从 committed instruction operands、DDR views、SPM/DDR offset facts、
-    placement 和 memref type/layout 直接派生 launch signature、external binding、workspace/resident
-    constant resource requirements。
-12. ABI / LLVM lowering：R3.6 从 committed instruction IR 和 launch/resource contract 生成
-    wrapper-friendly LLVM call / C ABI call / packet builder 输入；不新增 placed memref / access
+11. ABI / LLVM lowering：R3.6 从 committed instruction IR、accepted offset facts、placement 和按需重算的
+    resource view 生成 wrapper-friendly LLVM call / C ABI call / packet builder 输入；不新增 placed memref / access
     descriptor 中间协议。
 
 rejected candidate plan 不能落入 IR 后等待下游修复。合法性失败应反馈给 group/layout/candidate
@@ -367,9 +363,9 @@ launch args / identity lowering 的 IR contract。当前没有 multi-tile no-com
   compiler-managed `#wafer.memory<ddr, *>` alloc 必须有 DDR memory planning 接受的
   `wafer.ddr.offset` fact；external DDR boundary value 的 descriptor/view/root validation 由当前
   instruction-level IR 重算。
-- placement、R3.5 launch/resource contract 和 R3.6 lower-level 输入只能从当前 committed IR、
-  accepted offset facts 和 placement/local-shard contract 派生；不能要求 tile-region 主线额外携带
-  placed memref 或 access descriptor 旁路事实。
+- placement、R3.6 lower-level 输入和 R3.7 manifest metadata 只能从当前 committed IR、
+  accepted offset facts、placement/local-shard contract 和按需 resource view 派生；不能要求
+  tile-region 主线额外携带 placed memref 或 access descriptor 旁路事实。
 
 Verifier 不检查 group 是否应该形成；那是 `wafer.group` 和 planner 的职责。
 `wafer.group` / `wafer.tile.region` 这类 region op 的 boundary invariants 放在普通 `verify()`，
