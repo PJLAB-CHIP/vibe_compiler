@@ -12,7 +12,6 @@
 - `pending`：依赖前序任务完成。
 - `later`：当前主线之后再做。
 - `done`：实现、测试和文档已按当前 pipeline contract 收口。
-- `removed`：经设计 review 取消为独立主线阶段；必要责任已并入其它可验证边界。
 
 局部 pass、verifier 负例、fixture 或单个 dump gate 通过，不自动等于 `done`。主线完成证明必须能
 重放已完成上游链路，并让当前 stage 输出被下游边界直接消费。
@@ -101,13 +100,6 @@ Pipeline position:
 | Tile-region / instruction lowering | done | logical group -> memref-backed `wafer.tile.region` -> instruction-level `wafer.instr.*` over Wafer-tagged memrefs |
 | DDR tile-view / SPM / DDR planning | done | candidate DDR `memref.subview` tile operands、accepted SPM offset facts、accepted DDR offset facts、structured failure diagnostics |
 | Candidate selection / committed materialization | done | candidate gates rerun before selection；selected candidate committed into main IR；rejected plans and cost traces do not enter IR |
-
-## 已取消主线阶段
-
-| ID | 状态 | 取消原因 / 责任归属 |
-| --- | --- | --- |
-| R3.4 | removed | 取消独立 placed memref / access descriptor materialization；address/range/demand 在 ABI/LLVM lowering、package manifest 和 runtime adapter 使用点从 committed IR 与 accepted offsets 派生验证 |
-| R3.5 | removed | 取消独立 launch/resource contract materialization；launch signature、external binding、workspace 和 resident constant 等 resource view 由 R3.6/R3.7/R3.8 在使用点通过同一 analysis/verifier 从 IR 重算 |
 
 ## 后续队列
 
