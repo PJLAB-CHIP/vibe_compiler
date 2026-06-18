@@ -232,8 +232,8 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - P2.S1：骨架；`test/Tools/Inputs/wafer_pytorch_xla_capture.py` 用 source-built PyTorch/XLA lazy SPMD runtime
   的 `mark_sharding` 生成六种用户 sharding 策略的真实 PyTorch/XLA StableHLO program directory，program directory 继续由
   frontend verifier 和 Wafer Shardy propagation gate 消费。完全没有用户 seed 时，P2.S1 在 SPMD
-  层根据 `wafer.device.mesh` 补默认 function-input sharding seed；默认单卡 16 tile 和 1 tile
-  replicated 只作为 topology/device mesh profile 或 bring-up override 进入。P2.S1 不生成 partitioned StableHLO、rank-local shard payload、
+  层根据 `wafer.device.mesh` 补默认 function-input sharding seed；单卡默认 topology 配置是
+  4x4 / 16 tile，1-rank replicated 只作为调试/对照 device mesh config 进入。P2.S1 不生成 partitioned StableHLO、rank-local shard payload、
   `wafer.spmd.*`、私有 sharding JSON 或名字约定。P2.S2 必须接上 XLA SPMD partitioner 并产出
   partitioned / replicated-local program；R3.1 依赖 P2.F1/P2.S1/P2.S2/R2.4 提供真实
   frontend/SPMD program 来源和 tensor collective handoff。

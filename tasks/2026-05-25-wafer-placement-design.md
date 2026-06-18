@@ -301,8 +301,8 @@ Mesh selection 必须发生在 SPMD 前。V0 推荐使用 valid rectangular subm
 
 Placement / launch projection V0 使用可解释的 deterministic projection，不追求全局最优：
 
-1. 从 `wafer.device.mesh` 读取 logical rank domain 和 rank tile ids；无 mesh 的局部 fixture 才允许
-   bring-up override。
+1. 从 `wafer.device.mesh` 读取 logical rank domain 和 rank tile ids；无 mesh 的局部 fixture 只能
+   显式提供过渡 device mesh config。
 2. 验证 rank tile ids 都存在于 `wafer.target.topology`，且仍 available、无重复、属于同一 selected
    connected mesh。
 3. 按 logical rank 顺序生成同值 `block_id`，并把 block identity 绑定到 launch / outlined function。

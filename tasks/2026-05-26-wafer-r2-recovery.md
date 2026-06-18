@@ -155,8 +155,8 @@ XLA SPMD partition 接力、R2.4 tensor collective handoff、R3 group planner、
 package、runtime 或 board execution。
 
 `test/Spmd/default-spmd-input-seed.mlir` 的输入是手写 StableHLO/SDY module，用来固定 no-user
-default seed policy 的过渡 unit gate：rank count / axes 长期来自 `wafer.device.mesh`；默认单卡
-16 tile 和 `tile-count=1` 只能作为 topology/device mesh profile 或 bring-up override 进入；已有用户
+default seed policy 的过渡 unit gate：rank count / axes 长期来自 `wafer.device.mesh`；单卡默认
+topology 配置是 4x4 / 16 tile，1-rank replicated 只能作为调试/对照 device mesh config 进入；已有用户
 seed 时不覆盖，非法 mesh/rank count 要诊断。它是 P2.S1 default-seed unit gate，不是 P2.S2
 partitioner gate。P2.S2 完成前，
 任何 `test/Spmd` 或 `test/Frontend` 的 FileCheck 都不能替代

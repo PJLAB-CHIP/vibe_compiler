@@ -12,8 +12,9 @@ placement、DTE protocol、SPM buffer、layout materialization 或 runtime launc
 直接绕过 SPMD 去后段补切分。P2.S1 应在 SPMD 层应用 Wafer 默认 sharding policy：该 policy
 消费 SPMD 前已经选择出的 `wafer.device.mesh`，用 mesh rank count / axes 生成 Shardy / SDY
 可解释的 function-input sharding seed；找不到合适切分维度时生成同一 mesh 上的 replicated
-seed。单卡 16 tile 只是 bring-up target topology profile 通常选择出的默认 mesh，不是 SPMD
-阶段写死的常量。后续切图、local body 和通信算子插入仍交给 Shardy / XLA SPMD partitioner。
+seed。单卡默认 topology 配置是 4x4 / 16 tile；这个默认必须通过 topology/device mesh
+materialization 进入 SPMD，不是 SPMD 阶段自己写死的常量。后续切图、local body 和通信算子插入仍交给
+Shardy / XLA SPMD partitioner。
 
 本文依赖：
 
@@ -186,8 +187,9 @@ P2.S2 工程 gate 必须把 XLA SPMD partitioner 或等价 local-body partitioni
 - no-user-sharding 分支当前只在文本 StableHLO/SDY program 中用
   `--wafer-apply-default-spmd-sharding` / `wafer-propagate-stablehlo-sharding` 补 function-input seed；
   P2.S2 再消费该 stage 输出 program。默认 policy 的 rank count / axes 必须来自
-  `wafer.device.mesh`；在 device mesh 尚未落地的 bring-up fixture 中，才允许显式使用单卡 16 tile
-  default profile 作为过渡输入。默认 policy 只标记输入/参数，不给中间 op 或 function result 造约束。
+  `wafer.device.mesh`；在 device mesh 尚未落地的过渡 fixture 中，才允许显式使用单卡默认
+  4x4 / 16 tile topology config 作为输入。默认 policy 只标记输入/参数，不给中间 op 或 function
+  result 造约束。
 - P2.S2 输出的 partitioned program directory 必须由 Wafer-owned compiler stage 保存。`functions/forward.mlir`
   是 local body；`functions/forward.meta` 的 input/output signature 必须匹配 local function boundary；
   `functions/forward.parameter_shards.json` 记录 post-SPMD 后 parameter local argument 到
@@ -336,8 +338,8 @@ Shardy/SDY 可解释的 logical mesh：
 @wafer_default_mesh = <axes and sizes from wafer.device.mesh>
 ```
 
-mesh rank count 和 axes 来自 `wafer.device.mesh`。默认 topology profile 可以在 bring-up 中选择
-单卡 4x4 的 16 rank mesh，调试和对照验证可以显式选择 1 rank replicated mesh。这个 mesh 是
+mesh rank count 和 axes 来自 `wafer.device.mesh`。单卡默认 topology 配置是 4x4 / 16 tile，
+通常选择 16-rank mesh；调试和对照验证可以显式选择 1-rank replicated mesh。这个 mesh 是
 SPMD logical mesh 的来源，不是后段 placement map；physical endpoint、bad/PG tile、links 和 tile
 id encoding 仍由 `wafer.target.topology` / `wafer.device.mesh` 保存，不写入 StableHLO/SDY module。
 
@@ -526,8 +528,8 @@ P2.S2 的完成证明必须至少覆盖：
   metadata 能进入 `wafer.tile.*` communication `rank_group`，但该 最小验证 不能作为 P2.S2、R2.4 或 group/tiling
   完成证明。
 - no-user-sharding P2.F1 program 必须通过默认 policy 生成 function-input sharding seed：rank count
-  和 axes 来自 `wafer.device.mesh`。默认单卡 16 tile 和 `tile-count=1` 只能作为 topology/device mesh
-  profile 或 bring-up override 进入，不作为 SPMD 长期协议字段。
+  和 axes 来自 `wafer.device.mesh`。单卡 4x4 / 16 tile 是默认 topology 配置；1-rank replicated
+  只能作为调试/对照 device mesh config 进入，不作为 SPMD 长期协议字段。
 - 默认 policy 遇到 graph 内任意用户 sharding seed 时必须跳过，不覆盖用户只标了关键 op 后由
   Shardy propagation 推导整图的用法。
 

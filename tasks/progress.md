@@ -173,8 +173,9 @@ R3.4 旁路协议传递。
    remap、PG/bad tile 和跨卡编码。
 2. 定义 `wafer.device.mesh`，从 available connected topology 中选择 valid rectangular submesh，并让
    SPMD / shard binding 引用该 mesh；bad tile 或 disconnected mesh axis 必须在 SPMD 前失败。
-3. 让 SPMD 默认 seed policy 从 `wafer.device.mesh` 读取 rank count / axes；默认单卡 16 tile 只是
-   bring-up topology profile 选择出的 mesh，不是 SPMD 写死常量。
+3. 让 SPMD 默认 seed policy 从 `wafer.device.mesh` 读取 rank count / axes；单卡默认 topology
+   配置是 4x4 / 16 tile，但必须经 topology/device mesh materialization 进入 SPMD，不是 SPMD
+   写死常量。
 4. 将 `wafer.shard.binding` 迁移为引用 `wafer.device.mesh`，rank coverage 对 mesh 校验，不再通过
    `wafer.placement.map` 对齐。
 5. 将当前 `wafer.placement.map` 的 rank count、rank->tile、topology dimensions、bad tile list 和 tile
