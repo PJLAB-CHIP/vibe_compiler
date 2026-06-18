@@ -10,6 +10,13 @@ from pathlib import Path
 
 
 OP_FAMILIES = {
+    "TargetTopology": {
+        "layer": "Target",
+        "td": "TopologyOps.td",
+        "cpp": "TopologyOps.cpp",
+        "mnemonics": ["target.topology"],
+        "tests": "Target/Topology",
+    },
     "Group": {
         "layer": "Tensor",
         "td": "GroupOps.td",
@@ -117,7 +124,7 @@ OP_FAMILIES = {
 }
 
 SUPPORT_TEST_DIRS = {"Common/Attrs"}
-IR_LAYERS = {"Tensor", "Tile", "Resource", "Instr", "Runtime", "Common"}
+IR_LAYERS = {"Target", "Tensor", "Tile", "Resource", "Instr", "Runtime", "Common"}
 CONVERSION_LIBRARIES = {
     "WaferGroupToTileRegion": {
         "include": "include/Wafer/Conversion/WaferGroupToTileRegion/WaferGroupToTileRegion.h",

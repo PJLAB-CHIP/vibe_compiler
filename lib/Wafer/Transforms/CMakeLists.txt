@@ -9,6 +9,7 @@ add_mlir_library(WaferTransforms
   Placement/PlanPlacement.cpp
   SPM/PlanSPMMemory.cpp
   SPMD/ApplyDefaultSpmdSharding.cpp
+  Target/MaterializeTargetTopology.cpp
   Passes.cpp
 
   DEPENDS

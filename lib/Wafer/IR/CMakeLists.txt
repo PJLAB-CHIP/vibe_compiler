@@ -8,6 +8,7 @@ add_mlir_dialect_library(WaferIR
   Resource/ShardOps.cpp
   Resource/SPMOps.cpp
   Runtime/LaunchOps.cpp
+  Target/TopologyOps.cpp
   Tensor/GroupOps.cpp
   Tensor/TensorCollectiveOps.cpp
   Tile/CommOps.cpp

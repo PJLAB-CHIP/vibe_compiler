@@ -160,19 +160,34 @@ default pass materialize。它显式保存 tile nodes、encoded tile ids、可�
 id 规则可以是 `row_major_4d` / `card_major_4d` 这类 codec 名称，但 codec 只说明 mapping 的生成来源；
 IR 合同是显式的 `coord -> tile_id` 表。
 
-概念形式：
+V0 形式：
 
 ```mlir
 wafer.target.topology @target {
   axes = ["card_y", "card_x", "tile_y", "tile_x"],
-  id_encoding = #wafer.tile_id_encoding<row_major_4d>,
+  id_encoding = "row_major_4d",
   tile_coords = array<i64: 0, 0, 0, 0,
                             0, 0, 0, 1>,
   tile_ids = array<i64: 0, 1>,
   available_tile_ids = array<i64: 0, 1>,
+  bad_tile_ids = array<i64>,
+  pg_disabled_tile_ids = array<i64>,
   links = array<i64: 0, 1>
 }
 ```
+
+`wafer.target.topology` 是 module-level symbol op。`axes` 定义每个 tile coord tuple 的 rank 和坐标
+语义；`tile_coords` 按 `tile_ids` 顺序展开，每个 tile 有一个完整 coord tuple。`available_tile_ids`、
+`bad_tile_ids` 和 `pg_disabled_tile_ids` 必须把 `tile_ids` 划分为互斥且完备的 availability sets。
+`links` 按 source/destination encoded tile id pair 展开；它表达 physical connectivity，不表达
+communication schedule、route choice、DTE packet 或 cost-model trace。
+
+实现索引：`--wafer-materialize-target-topology` 可以从默认单卡 `4x4 / 16 tile` config 生成 explicit
+topology，也可以通过选项导入 bad tile、PG-disabled tile 和按 coord 顺序展开的 `tile-id-remap`。
+默认公式只生成 `row_major_4d` provenance；`imported` / runtime capability 这类非默认 provenance
+必须携带 explicit remap，避免只改 codec 名称却继续使用默认公式。该 pass 只是 topology
+materialization 入口；长期用户 compile flow 仍由 `wafer-opt` program pipeline 组织，不要求用户手写
+pass 串。
 
 `wafer.device.mesh` 是 SPMD 可见 mesh，必须在 SPMD partition 前存在。它从
 `wafer.target.topology` 的 available connected component 中选择 rank domain，并记录 logical rank 到
@@ -393,8 +408,10 @@ rank 数超过可用 good tile、tile id 不存在、mesh axis disconnected 或 
 
 V0 支持：
 
-- 默认 target topology materialization，生成显式 coord -> encoded tile id mapping。
-- topology import/rewrite pass 改写 tile id mapping、availability 和 links。
+- 默认 target topology materialization，生成显式 coord -> encoded tile id mapping、availability sets
+  和 connectivity links。
+- topology IR 可表达 remapped tile id、availability 和 links；materialization / import 入口先支持
+  默认 mapping、explicit tile-id remap、bad tile 和 PG-disabled tile。
 - 从 available connected topology 中选择 valid rectangular `wafer.device.mesh`。
 - SPMD 基于 `wafer.device.mesh` 做 sharding propagation 和 parameter shard binding。
 - single-tile placement。

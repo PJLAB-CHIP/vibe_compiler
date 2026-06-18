@@ -5,6 +5,38 @@
 
 include "mlir/Pass/PassBase.td"
 
+def MaterializeTargetTopologyPass
+    : Pass<"wafer-materialize-target-topology", "mlir::ModuleOp"> {
+  let summary = "Materialize explicit Wafer target topology facts";
+  let dependentDialects = ["wafer::WaferDialect"];
+  let options = [
+    Option<"topologyName", "topology-name", "std::string",
+           /*default=*/"\"default\"",
+           "Symbol name for the materialized target topology">,
+    Option<"idEncoding", "id-encoding", "std::string",
+           /*default=*/"\"row_major_4d\"",
+           "Tile id encoding provenance used to generate explicit tile ids">,
+    Option<"cardYCount", "card-y-count", "int64_t", /*default=*/"1",
+           "Number of Wafer card rows in the target topology">,
+    Option<"cardXCount", "card-x-count", "int64_t", /*default=*/"1",
+           "Number of Wafer card columns in the target topology">,
+    Option<"tileYCount", "tile-y-count", "int64_t", /*default=*/"4",
+           "Number of tile rows per card in the target topology">,
+    Option<"tileXCount", "tile-x-count", "int64_t", /*default=*/"4",
+           "Number of tile columns per card in the target topology">,
+    Option<"tileIdRemap", "tile-id-remap", "std::string",
+           /*default=*/"\"\"",
+           "Comma-separated encoded tile ids in coord order; empty uses the "
+           "default row-major 4D codec">,
+    Option<"badTileIds", "bad-tile-ids", "std::string",
+           /*default=*/"\"\"",
+           "Comma-separated encoded tile ids marked unavailable as bad tiles">,
+    Option<"pgDisabledTileIds", "pg-disabled-tile-ids", "std::string",
+           /*default=*/"\"\"",
+           "Comma-separated encoded tile ids marked unavailable by PG state">
+  ];
+}
+
 def FormLogicalGroupsPass
     : Pass<"wafer-form-logical-groups", "mlir::ModuleOp"> {
   let summary = "Form root-seeded tensor-level logical wafer.group ops";
