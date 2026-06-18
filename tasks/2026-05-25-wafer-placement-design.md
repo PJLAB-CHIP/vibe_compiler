@@ -54,10 +54,12 @@ Pipeline position:
   若上游已有显式 local shard facts，则只绑定到 logical rank 并验证 bounds；验证 rank coverage、
   topology membership、availability、connectivity、physical tile uniqueness 和 block id uniqueness。
 - Output artifact / IR:
-  `wafer.placement.map` accepted mapping。它引用 `wafer.device.mesh` 和 `wafer.target.topology`，
-  保存 rank->encoded tile id 与 block id；topology dimensions、bad tile、tile id codec 和 connectivity
-  只属于 target topology / device mesh fact source。local shard 只通过 `wafer.shard.binding` /
-  launch-visible resource view 引用，placement planner 不重新切分 tensor，也不复制 memory plan。
+  长期输出是 `wafer.device.mesh` accepted embedding：它引用 `wafer.target.topology`，保存 logical
+  mesh axes 与 rank->encoded tile id。launch-visible block id 若需要跨阶段保留，应作为薄 launch /
+  block binding 表达，不复制 rank->tile mapping。`wafer.placement.map` 是当前过渡 op，不是最终事实源。
+  topology dimensions、bad tile、tile id codec 和 connectivity 只属于 target topology / device mesh。
+  local shard 只通过 `wafer.shard.binding` / launch-visible resource view 引用，planner 不重新切分
+  tensor，也不复制 memory plan。
 - Downstream consumer:
   communication lowering、ABI/LLVM lowering、package manifest 和 runtime adapter。
 - User-level driver / named pipeline:
@@ -69,8 +71,8 @@ Pipeline position:
 - Completion gate:
   named pipeline 能重放 target topology materialization -> valid device mesh selection -> SPMD partition
   -> group formation -> candidate selection -> committed instruction materialization -> placement；
-  emitted `wafer.placement.map` 被 communication verifier 消费，并为 ABI/package resource view 提供
-  唯一 placement fact source；
+  emitted `wafer.device.mesh` 被 SPMD、communication verifier 和 ABI/package resource view 消费，并
+  成为唯一 rank-domain / rank->tile embedding fact source；
   verifier 能拒绝 rank count、unavailable tile、duplicate tile、duplicate block、out-of-topology、
   disconnected mesh axis 和 rank 数超过可用 tile。
 ```
@@ -91,15 +93,15 @@ partitioned StableHLO / local program
 输出：
 
 ```text
-accepted placement map
+wafer.device.mesh
+  + logical mesh axes
   + logical rank -> encoded physical tile id
-  + target topology / device mesh references
-  + cluster membership
-  + block id metadata
+  + target topology reference
+  + cluster membership / launch block metadata if retained
 ```
 
-accepted placement 如果影响 codegen，必须进入 IR 或 launch metadata；placement search trace、
-rejected maps、score breakdown 是 analysis，不写入长期 IR。
+accepted device mesh 如果影响 codegen，必须进入 IR 或 launch metadata；mesh search trace、
+rejected embeddings、score breakdown 是 analysis，不写入长期 IR。
 
 ## 4. Physical Topology And Tile Id Model
 
@@ -143,15 +145,18 @@ verifier 不分裂成两套语义。
 
 ## 5. IR Representation
 
-target topology、SPMD-visible device mesh、accepted placement 和 boundary shard binding 需要分成
-四个 IR fact source：
+长期 IR 只保留三个事实源，避免 rank domain 和 rank->tile mapping 重复：
 
 ```text
 wafer.target.topology: physical tile graph, encoded tile ids, availability, links, id codec provenance
-wafer.device.mesh:     logical rank domain selected from valid topology before SPMD
+wafer.device.mesh:     SPMD rank domain + accepted logical-rank -> encoded-tile embedding
 wafer.shard.binding:   logical rank -> launch-visible tensor slice
-wafer.placement.map:   logical rank -> encoded physical tile endpoint
 ```
+
+`wafer.placement.map` 是当前过渡实现。长期不再单独保存 rank count、rank->tile、topology dimensions
+或 bad tile table；这些要么属于 `wafer.device.mesh`，要么属于 `wafer.target.topology`。若 launch
+需要 block id，应在 launch outline/function 或薄 launch/block binding 中保存 `block_id_per_rank`，
+但该对象不得再次保存 rank->tile。
 
 `wafer.target.topology` 由 target descriptor、runtime capability snapshot、board profile 或 bring-up
 default pass materialize。它显式保存 tile nodes、encoded tile ids、可用性和 connectivity。默认 tile
@@ -174,8 +179,9 @@ wafer.target.topology @target {
 
 `wafer.device.mesh` 是 SPMD 可见 mesh，必须在 SPMD partition 前存在。它从
 `wafer.target.topology` 的 available connected component 中选择 rank domain，并记录 logical rank 到
-encoded tile id 的 mapping。SPMD 的 sharding propagation、parameter shard metadata 和 tensor
-collective rank groups 都应引用这个 device mesh，而不是假设完整 abstract mesh。
+encoded tile id 的 mapping。SPMD 的 sharding propagation、parameter shard metadata、tensor
+collective rank groups、communication lowering 和 ABI/package resource view 都应引用这个 device
+mesh，而不是假设完整 abstract mesh 或再从 placement op 恢复 rank->tile。
 
 概念形式：
 
@@ -214,33 +220,35 @@ wafer.shard.binding {
 
 数组按 `shard_ranks` 顺序展开。每个 rank 的 slice 维度数必须等于 `global_shape` rank。
 `local_shape` 必须匹配引用的 function argument type。payload 文件仍由 program directory verifier
-校验，不进入 IR；package emission 在使用点从 shard binding、placement map 和 resource view 派生
-manifest metadata。
+校验，不进入 IR；package emission 在使用点从 shard binding、device mesh、薄 launch/block binding
+和 resource view 派生 manifest metadata。
 
-accepted placement 需要在边界 op 上显式表达。推荐结构：
+accepted mesh embedding 需要在边界 op 上显式表达。推荐结构：
 
-- 在 `wafer.launch` 或被 launch outline 的 function 上保存 cluster-level placement mapping。
+- 在 SPMD 前生成 `wafer.device.mesh`，作为 rank domain 和 rank->encoded tile id 的唯一事实源。
 - 在 `wafer.tile.region` lowering 时把 per-tile logical id / block id / encoded tile id 作为
-  region argument、constant-like descriptor 或 launch argument 传入。
-- 在 `wafer.tile.*` communication lowering 时通过 placement mapping 和 topology model 查
+  region argument、constant-like descriptor 或 launch argument 传入；encoded tile id 来自
+  `wafer.device.mesh`。
+- 在 `wafer.tile.*` communication lowering 时通过 device mesh 和 topology model 查
   physical source/destination endpoint；这个查询发生在
   tensor collective 已经经 group/tiling 和 tile_region / SPM materialization 之后。
 
-Placement attr 可以保存结构性 mapping，因为它不能从 local IR 重新推出，且直接影响 codegen。
-但它不能保存搜索过程、cost model 中间分数、失败候选或 SPM/DDR allocation trace。
+Device mesh 可以保存结构性 rank->tile embedding，因为它不能从 local compute IR 重新推出，且直接影响
+SPMD、communication 和 codegen。但它不能保存搜索过程、cost model 中间分数、失败候选或 SPM/DDR
+allocation trace。
 
-概念字段：
+长期概念字段：
 
 ```text
-PlacementMap {
-  device_mesh_ref
+DeviceMesh {
   target_topology_ref
-  logical_rank_to_tile_id
-  block_id_per_rank
+  logical_mesh_axes
+  logical_mesh_shape
+  rank_tile_ids
 }
 ```
 
-如果后续实现发现 attribute 无法表达 verifier 需要的结构，可以拆成专门 placement op /
+如果后续实现发现 attribute 无法表达 verifier 需要的结构，可以拆成专门 topology / mesh op /
 region；但不能退化成名字约定或 side table。
 
 当前已实现的 V0 op 仍把 topology dimensions 和 bad tile ids 临时放在 `wafer.placement.map` 里：
@@ -267,13 +275,14 @@ rank id 表。`bad_tile_ids` 是当前 capability / PG 过滤后的 flat physica
 按 logical rank 顺序记录 launch-visible block identity，必须非负且唯一。local shard metadata 或
 capability reference 后续接到 package/launch metadata，但不能改变 tensor semantics。
 
-该 V0 op 是过渡实现，不是最终合同。收口后 `wafer.placement.map` 应引用 `wafer.device.mesh` 和
-`wafer.target.topology`，保存 `rank_tile_ids` 和 `block_ids`；topology dimensions、bad tile 集合、
-connectivity 和 tile id codec 从 placement map 中移除，统一由 topology / mesh fact verifier 检查。
+该 V0 op 是过渡实现，不是最终合同。收口后 `rank_tile_ids` 只保存在 `wafer.device.mesh`；
+topology dimensions、bad tile 集合、connectivity 和 tile id codec 只保存在 `wafer.target.topology`。
+`wafer.placement.map` 应被删除，或降级为只保存 `block_ids` 的 launch/block binding；它不能再次保存
+rank->tile。
 
 package manifest gate 必须接入 launch-visible placement metadata：target topology / device mesh
-提供 available / excluded encoded tile ids 和 connectivity assumption，placement map 提供 per-rank
-`block_id` 与 encoded endpoint，`local_shards` 进入 IR-derived package metadata。`local_shards` 只引用
+提供 available / excluded encoded tile ids、connectivity assumption 和 per-rank encoded endpoint；
+thin launch/block binding 可提供 per-rank `block_id`；`local_shards` 进入 IR-derived package metadata。`local_shards` 只引用
 launch signature tensor 名称和静态 slice bounds；它不反向修改 tensor IR shape、layout 或 sharding
 semantics。
 
@@ -289,14 +298,14 @@ Mesh selection 必须发生在 SPMD 前。V0 推荐使用 valid rectangular subm
 6. SPMD partition 只消费这个 valid device mesh 进行 sharding propagation 和 parameter shard
    materialization。
 
-Placement V0 使用可解释的 deterministic projection，不追求全局最优：
+Placement / launch projection V0 使用可解释的 deterministic projection，不追求全局最优：
 
 1. 从 `wafer.device.mesh` 读取 logical rank domain 和 rank tile ids；无 mesh 的局部 fixture 才允许
    bring-up override。
 2. 验证 rank tile ids 都存在于 `wafer.target.topology`，且仍 available、无重复、属于同一 selected
    connected mesh。
-3. 按 logical rank 顺序生成同值 `block_id`，并输出 `wafer.placement.map`。
-4. 后续 cost model 可以在同一 `PlacementMap` contract 下替换排序策略，但不能把 rejected maps、
+3. 按 logical rank 顺序生成同值 `block_id`，并把 block identity 绑定到 launch / outlined function。
+4. 后续 cost model 可以在同一 `DeviceMesh` contract 下替换 mesh selection 策略，但不能把 rejected maps、
    cost breakdown 或通信 route 写入 IR。
 
 cost model 可以考虑：
@@ -307,7 +316,8 @@ cost model 可以考虑：
 - good-tile 分布导致的 hole 和 route penalty。
 - logical mesh axis 到 physical graph path 的 shortest-path cost。
 
-这些是候选排序，不是 IR contract。IR contract 只有 accepted placement mapping。
+这些是候选排序，不是 IR contract。IR contract 只有 accepted target topology、device mesh 和
+boundary shard binding。
 
 带洞 mesh 的 V1 算法可以在同一 IR 合同下扩展为 graph-aware logical mesh embedding：
 
@@ -328,7 +338,7 @@ Full co-optimization（SPMD strategy、mesh embedding、placement、communicatio
 | SPMD partition | 由 `wafer.device.mesh` 提供 valid logical mesh 和 rank tile ids | 事后修补 invalid full mesh |
 | `wafer.group` | per-rank local shard / block identity、tensor collective rank group 可解释性 | tile shape、fusion boundary |
 | `wafer.tile.region` | encoded tile id / block id args | SPM offset、layout assignment |
-| `wafer.tile.*` communication | tile_region / SPM materialization 后的 logical endpoint 到 physical endpoint mapping；topology graph 可用于 route/cost | DTE node/FSM/packet allocation |
+| `wafer.tile.*` communication | tile_region / SPM materialization 后的 logical endpoint 到 physical endpoint mapping；device mesh 和 topology graph 可用于 route/cost | DTE node/FSM/packet allocation |
 | `wafer.launch` | cluster membership and launch metadata | runtime allocation mapping、completion source |
 
 Placement 不应把 DTE route 或 runtime launch API 写进上层。Communication lowering 可以基于
@@ -363,18 +373,18 @@ accepted placement 选择 ring/tree/unicast protocol。
 - `shard_offsets` / `shard_sizes` / `shard_strides` 都按 rank-major 展开，长度等于
   `logical_rank_count * global_rank`。
 - 每个 slice 不越过 `global_shape`，`sizes` 不超过 `local_shape`，`strides` 为正。
-- 同一 function argument 不能有多份 shard binding；若 module 中已有 `wafer.placement.map`，
-  device mesh / rank count 必须一致。
+- 同一 function argument 不能有多份 shard binding；若存在 launch/block binding，device mesh /
+  rank count 必须一致。
 
-`wafer.placement.map` 必须检查：
+长期 launch/block binding 必须检查：
 
 - 引用的 `wafer.device.mesh` 和 `wafer.target.topology` 存在且一致。
-- logical rank 数量与 `rank_tile_ids` 数量一致。
-- 每个 mapped tile id 在 target topology 内且 available。
-- mapping 满足 selected mesh 的 launch capability。
+- logical rank 数量与 `block_ids` 数量一致。
+- block id 非负且不重复，除非明确表达 replicated execution。
+- referenced device mesh 满足 launch capability。
 - logical rank group 中的 endpoints 都有 encoded physical tile endpoint。
-- block id / tile id 没有重复冲突，除非明确表达 replicated execution。
-- placement attr 中没有 topology dimensions、bad tile table、tile id codec、SPM offset、DDR address、
+- launch/block binding 中没有 topology dimensions、bad tile table、tile id codec、rank->tile、
+  SPM offset、DDR address、
   DTE packet 或 runtime handle。
 
 Planner 失败也必须报告在正确边界：无法形成 valid device mesh 是 mesh selection / SPMD 前错误；

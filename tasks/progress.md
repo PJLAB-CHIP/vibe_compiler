@@ -47,8 +47,8 @@ PyTorch/XLA StableHLO Wafer program directory
   -> wafer-lower-groups-to-selected-instr / candidate-selection + committed materialization
        search shape-driven traversal/reduction refinement frontier, verify same-domain output coverage,
        rerun candidate gates, commit only the selected passing candidate into main IR
-  -> placement map / local-shard binding
-       accepted logical rank/block -> encoded physical tile endpoint mapping；local-shard metadata 只消费显式 upstream facts
+  -> device mesh / launch-block / local-shard binding
+       valid rank domain -> encoded physical tile endpoint embedding；local-shard metadata 只消费显式 upstream facts
   -> R3.6 ABI / LLVM lowering
        committed `wafer.instr.*`, accepted offsets, placement, communication and sync boundary
        -> LLVM dialect call sequence or `wafer_*` C ABI / packet builder input
@@ -77,20 +77,21 @@ Pipeline position:
   和 DDR demand legality facts。
 - Current stage responsibility:
   在 SPMD 前 materialize / import topology，显式记录 coord -> encoded tile id、availability 和 links；
-  选择 valid `wafer.device.mesh` 作为 SPMD rank domain；placement 只 materialize accepted logical
-  rank / block -> encoded tile id mapping。若上游已有显式 local shard facts，则只绑定并验证 bounds，
-  不重新切分 tensor、不从名字或 payload 恢复 shard。该阶段只形成 topology/device-mesh/placement
-  contract，不生成 runtime allocation、ABI call、packet、object 或 package。
+  选择 valid `wafer.device.mesh` 作为 SPMD rank domain 和唯一 rank->encoded tile embedding。若上游
+  已有显式 local shard facts，则只绑定并验证 bounds，不重新切分 tensor、不从名字或 payload 恢复
+  shard。该阶段只形成 topology/device-mesh/shard-binding contract；launch block id 如需跨阶段保留，
+  只能作为薄 binding，不能复制 rank->tile。不生成 runtime allocation、ABI call、packet、object 或
+  package。
 - Output artifact / IR:
   `wafer.target.topology` explicit physical tile graph；`wafer.device.mesh` selected valid rank domain；
-  `wafer.placement.map` accepted mapping，引用 device mesh / topology 并保存 block id 和 encoded tile id。
-  topology dimensions、bad tile、tile id codec 和 connectivity 不复制到 placement map。local shard
-  只在 `wafer.shard.binding` / 后续 launch-visible resource view 中引用，不复制 memory plan、packet
-  field、runtime handle 或 search trace。
+  `wafer.shard.binding` 引用 device mesh 并表达 boundary tensor slice。`wafer.placement.map` 是当前
+  过渡 op，长期不保存 rank count、rank->tile、topology dimensions、bad tile、tile id codec 或
+  connectivity。local shard 只在 `wafer.shard.binding` / 后续 launch-visible resource view 中引用，
+  不复制 memory plan、packet field、runtime handle 或 search trace。
 - Downstream consumer:
   SPMD 先消费 `wafer.device.mesh`；当前 placement verifier 和 communication verifier 已消费
-  `wafer.placement.map`；后续 communication lowering、ABI/LLVM lowering、package manifest 和 runtime
-  adapter 从同一 topology/device-mesh/placement fact source 派生。
+  `wafer.placement.map` 过渡 op；后续 communication lowering、ABI/LLVM lowering、package manifest 和
+  runtime adapter 从同一 topology/device-mesh/shard-binding fact source 派生。
 - User-level driver / named pipeline:
   `wafer-plan-placement` pass 和 `wafer-lower-groups-to-placement` named pipeline；后者在 committed
   selected-instr boundary 之后追加 placement，用户不应手工拼 accepted instruction IR 和 placement
@@ -101,15 +102,16 @@ Pipeline position:
 - Completion gate:
   named pipeline 重放 target topology materialization -> valid device mesh selection -> SPMD partition
   -> group formation -> candidate selection -> committed instruction materialization -> placement；emitted
-  `wafer.placement.map` 被 communication verifier 直接消费；verifier 能拒绝 rank count、unavailable
-  tile、重复 block/tile、out-of-topology、disconnected mesh axis 和 rank 数超过可用 tile。
+  `wafer.device.mesh` 被 SPMD、communication verifier 和 ABI/package resource view 直接消费；verifier
+  能拒绝 rank count、unavailable tile、重复 block/tile、out-of-topology、disconnected mesh axis 和 rank
+  数超过可用 tile。
 ```
 
 R3.4 placed/access descriptor realization 取消为独立主线阶段。原因是 committed instruction IR 已经
 显式包含 instruction operands、DDR tile views、SPM offset facts、DDR offset facts 和 movement
 descriptor attrs；把这些可重算事实再 materialize 成 placed memref / access descriptor 中间层会形成
 重复事实源。后续 ABI/LLVM lowering 或 package manifest 如需 launch/resource/address/range/stride
-参数，应在使用点从 committed IR、accepted offset facts 和 placement/local-shard contract 派生，不通过
+参数，应在使用点从 committed IR、accepted offset facts 和 topology/device-mesh/local-shard contract 派生，不通过
 R3.4 旁路协议传递。
 
 ## 已完成主线
@@ -135,17 +137,17 @@ R3.4 旁路协议传递。
 | ID | 状态 | 原输入 | 取消原因 / 责任归属 |
 | --- | --- | --- | --- |
 | R3.4 | removed | R3.3 committed instruction IR 已经包含可重算 memory facts | 取消独立 placed memref / access descriptor materialization；必要 address/range/demand 检查在 ABI/LLVM lowering、package manifest 和 runtime adapter 使用点从 IR 派生验证 |
-| R3.5 | removed | R3.3 committed instruction IR + accepted offsets + placement/local-shard contract | 取消独立 launch/resource contract materialization；launch signature、external binding、workspace 和 resident constant 等 resource view 由 R3.6/R3.7/R3.8 在使用点通过同一 analysis/verifier 从 IR 重算，不落第二份 metadata |
+| R3.5 | removed | R3.3 committed instruction IR + accepted offsets + topology/device-mesh/local-shard contract | 取消独立 launch/resource contract materialization；launch signature、external binding、workspace 和 resident constant 等 resource view 由 R3.6/R3.7/R3.8 在使用点通过同一 analysis/verifier 从 IR 重算，不落第二份 metadata |
 
 ## 后续队列
 
 | ID | 状态 | 输入 | 输出 / 完成 gate |
 | --- | --- | --- | --- |
-| topology/device-mesh/placement | active | target descriptor / runtime capability / board profile + requested mesh shape / sharding hints | `wafer.target.topology` explicit tile graph、`wafer.device.mesh` valid SPMD rank domain、tile id codec import/rewrite boundary；placement map 引用 mesh/topology，不再自带 topology dimensions / bad tile table |
-| placement/local-shard cleanup | pending | committed tile-region / `wafer.instr.*` + `wafer.shard.binding` local shard facts + `wafer.device.mesh` + `wafer.target.topology` | accepted placement map、block id 和 encoded tile ids；boundary shard binding verifier 引用 device mesh；删除 rank/topology 作为 pass option 的长期事实源 |
-| R6.1-R6.2 | pending | tiled tensor collective + placement/local-rank/buffer facts | materialize tile communication 到 communication / Direct DTE resource / local-drain 边界；结果进入 R3.6 ABI/LLVM lowering |
-| R3.6 | pending | committed instruction IR + accepted SPM/DDR offset facts + placement/local-shard contract + communication/sync lowering | LLVM dialect call sequence 或 `wafer_*` C ABI / packet builder input；按需重算 launch/resource view，固定参数单位、address domain、wait/completion policy 和 ABI version |
-| R3.7 | pending | R3.6 ABI/LLVM artifact + committed IR + placement/local-shard contract | object/program id、entrypoint、ABI version 和 IR-derived package manifest；manifest 的 placement/resource/constant metadata 由同一 resource view analysis 从 IR 重算，manifest roundtrip 不能替代 object/link 最小验证 |
+| topology/device-mesh/shard-binding | active | target descriptor / runtime capability / board profile + requested mesh shape / sharding hints | `wafer.target.topology` explicit tile graph、`wafer.device.mesh` valid SPMD rank domain + rank->encoded tile id embedding、tile id codec import/rewrite boundary；`wafer.shard.binding` 引用 device mesh |
+| placement-map cleanup | pending | current `wafer.placement.map` transition op + `wafer.device.mesh` + `wafer.target.topology` | 删除 `wafer.placement.map` 的长期 rank->tile / topology 职责；需要 block id 时只保留薄 launch/block binding，且不复制 rank->tile |
+| R6.1-R6.2 | pending | tiled tensor collective + device-mesh/local-rank/buffer facts | materialize tile communication 到 communication / Direct DTE resource / local-drain 边界；结果进入 R3.6 ABI/LLVM lowering |
+| R3.6 | pending | committed instruction IR + accepted SPM/DDR offset facts + topology/device-mesh/local-shard contract + communication/sync lowering | LLVM dialect call sequence 或 `wafer_*` C ABI / packet builder input；按需重算 launch/resource view，固定参数单位、address domain、wait/completion policy 和 ABI version |
+| R3.7 | pending | R3.6 ABI/LLVM artifact + committed IR + topology/device-mesh/local-shard contract | object/program id、entrypoint、ABI version 和 IR-derived package manifest；manifest 的 placement/resource/constant metadata 由同一 resource view analysis 从 IR 重算，manifest roundtrip 不能替代 object/link 最小验证 |
 | R3.8 | pending | R3.7 package + runtime adapter | allocate/import/query/bind runtime objects，launch program，验证 completion、错误传播和 board gate |
 | R5.1-R5.2 | pending | static transformer local shard IR / staged IR gaps | full-block schedule 或拒绝原因；补 mask/select、dynamic-bound policy、constant/weight slice 等 |
 | P9 | later | board/profile 输出 | overlap、cost model 和 PMU calibration |
@@ -154,7 +156,7 @@ R3.4 旁路协议传递。
 
 - Serving integration、KV cache / paged attention / prefill-decode 调度。
 - raw DTE non-unicast collective ABI。
-- 当前 active placement/local-shard 阶段不做 LLVM dialect / LLVM IR lowering、object emission 或真实
+- 当前 active topology/device-mesh/shard-binding 阶段不做 LLVM dialect / LLVM IR lowering、object emission 或真实
   `wafer_*` runtime call emission；这些分别归 R3.6/R3.7/R3.8。
 - 自定义 LLVM backend 或 ISA intrinsic lowering。
 - 以 importer、runtime path、workload shape 或 parameter 名称作为 IR 合同。
@@ -168,9 +170,9 @@ R3.4 旁路协议传递。
    remap、PG/bad tile 和跨卡编码。
 2. 定义 `wafer.device.mesh`，从 available connected topology 中选择 valid rectangular submesh，并让
    SPMD / shard binding 引用该 mesh；bad tile 或 disconnected mesh axis 必须在 SPMD 前失败。
-3. 将 `wafer.placement.map` 改为引用 `wafer.device.mesh` / `wafer.target.topology` 并保存
-   rank->encoded tile id；删除 topology dimensions、bad tile list 和 tile id 编码公式作为 placement
-   map 的长期事实源。
+3. 将当前 `wafer.placement.map` 的 rank count、rank->tile、topology dimensions、bad tile list 和 tile
+   id 编码公式职责迁移到 `wafer.device.mesh` / `wafer.target.topology`；需要 block id 时只保留薄
+   launch/block binding，不复制 rank->tile。
 4. 然后让 communication lowering、ABI/LLVM lowering 和 package manifest 从 topology/device mesh、
-   `wafer.shard.binding`、`wafer.placement.map`、accepted SPM/DDR offset facts 和 committed
+   `wafer.shard.binding`、薄 launch/block binding、accepted SPM/DDR offset facts 和 committed
    instruction IR 派生 launch-visible metadata。
