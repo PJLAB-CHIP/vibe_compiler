@@ -1,5 +1,7 @@
 # Wafer Committed Candidate Materialization Design
 
+> 归档记录：本文保留历史审计、恢复或任务级背景；不作为当前主线架构合同。当前入口见 `tasks/README.md` 和编号设计文档。
+
 本文记录 R3.3 的 committed candidate materialization 边界。它不是新 IR 层，也不是新的 plan
 对象；它只把 candidate-selection 已经选中且通过全部 gates 的 lowering 结果写回主 IR。
 

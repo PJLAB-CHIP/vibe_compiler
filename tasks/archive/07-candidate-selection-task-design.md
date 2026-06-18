@@ -1,5 +1,7 @@
 # Wafer R3.2h Candidate Decision Design
 
+> 归档记录：本文保留历史审计、恢复或任务级背景；不作为当前主线架构合同。当前入口见 `tasks/README.md` 和编号设计文档。
+
 本文以 R3.2h 任务索引记录 candidate-selection 边界。candidate-selection 不是新的 memory
 allocator，也不是把失败计划写进 IR 等后段修复的阶段；它负责枚举 tile/lowering 候选，逐个
 重放 candidate DDR tile-view materialization、instruction lowering、SPM offset assignment、

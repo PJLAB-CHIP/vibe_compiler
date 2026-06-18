@@ -1,7 +1,5 @@
 # Wafer Layout Materialization Design
 
-日期：2026-05-21
-
 状态：设计草案；范围：memref-backed Wafer memory attr、candidate planning 和 instruction-level pipeline。
 
 本文定义 Wafer 后端的 physical layout planning 和 layout materialization 边界。它服务于
@@ -83,8 +81,8 @@ layout planning 有两个恢复层次：
   buffer demand。该层只产出 analysis result 和 debug dump，不 rewrite `wafer.group`，不写
   layout attr，也不生成 `wafer.tile.region`。
 - committed `wafer.tile.region` / instruction-level IR 已经包含 candidate gates 接受的
-  Wafer-tagged memref value 和 `wafer.tile.materialize_layout` op。后续 placement、R3.6
-  ABI/LLVM lowering 和 R3.7 package manifest 只从这些 IR facts 派生 lower-level 参数，
+  Wafer-tagged memref value 和 `wafer.tile.materialize_layout` op。后续 topology/shard-binding、ABI/LLVM
+  ABI/LLVM lowering 和 package manifest 只从这些 IR facts 派生 lower-level 参数，
   不再重新 materialize layout assignment 或 materialization cut。
 
 完整 layout materialization 的输入来自 target-abstract tile-region IR。它由 scheduled
@@ -109,13 +107,12 @@ compute op 尚未 materialize 前，只能使用 `GroupTilingDemand`、structure
 collective interface 和 target policy 构造保守 layout constraints；不能把单个 workload 或 op
 名字序列写成长期协议。
 
-#### 3.1.1 R3.2b Pipeline Contract
+#### 3.1.1 Pipeline Contract
 
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  R3.1 verifier-legal tensor-level logical `wafer.group` op，以及 R3.2a
-  `GroupTilingDemand` analysis result。
+  verifier-legal tensor-level logical `wafer.group` op，以及 `GroupTilingDemand` analysis result。
 - Current stage responsibility:
   从 `GroupTilingDemand` facts、group body SSA use-def、DPS ties、structured op
   semantics 和 tensor collective facts 构造 transformation-local layout planning graph；
@@ -125,13 +122,13 @@ Pipeline position:
   transformation-local `GroupLayoutPlan` analysis result；debug dump pass 可以打印同一结构。
   本阶段不修改 `wafer.group`，不生成 `wafer.tile.region`，不写 layout attr。
 - Downstream consumer:
-  R3.2c group-to-tile-region lowering、R3.2d Wafer instruction legalization / selection、
-  R3.2e candidate DDR tile-view materialization、R3.2f SPM memory planning、
-  R3.2g DDR memory planning + compute/movement legality analysis，
-  以及 R3.2h closed-loop candidate driver。
+  group-to-tile-region lowering、Wafer instruction legalization / selection、
+  candidate DDR tile-view materialization、SPM memory planning、
+  DDR memory planning + compute/movement legality analysis，
+  以及 closed-loop candidate driver。
 - User-level driver / named pipeline:
-  主线仍由 `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 产生 R3.1 group；
-  R3.2b 的局部验证入口是 `wafer-opt --wafer-dump-group-layout-plan`，用于在
+  主线仍由 `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 产生 logical group；
+  layout planning 的局部验证入口是 `wafer-opt --wafer-dump-group-layout-plan`，用于在
   group IR 上 dump analysis 输出。
 - Explicit non-goals:
   不选择最终 closed-loop tile shape、不 select/reject/split group、不分配 SPM、不判断
@@ -331,9 +328,9 @@ V0 只需要三类 op：
    inner width / stride 不同，通常需要至少两段 GatherScatter：full-block 段和 tail-C0 段。
 
 compute/movement op 的具体 interface、op family 和 issue/drain 边界见
-`tasks/2026-05-25-wafer-compute-dialect-design.md`。communication op 不改变 tensor semantic
+`tasks/10-compute-movement.md`。communication op 不改变 tensor semantic
 layout，p2p transfer 默认是 byte-preserving；若 collective/p2p schedule 消费或产生 storage，
-它必须按 `tasks/2026-05-25-wafer-communication-dialect-design.md` 暴露 buffer、layout relation、
+它必须按 `tasks/13-communication.md` 暴露 buffer、layout relation、
 token/effect 和 staging demand。layout planner 只消费这些接口事实，不复制 compute/comm 的
 lowering 计划。
 
@@ -374,7 +371,7 @@ instruction IR 上，不进入 `wafer.group`。
 
 DDR planned ranges、runtime allocation mapping、resident constant、capacity 和 bandwidth 不属于
 `#wafer.memory<space, layout>`，见
-`tasks/2026-05-25-wafer-ddr-memory-planning-design.md`。
+`tasks/12-ddr-memory-planning.md`。
 
 V0 不把以下派生结果写进 `#wafer.memory<space, layout>`：
 
@@ -1217,7 +1214,7 @@ V0 不做全局最优，但不能只做一次贪心选择。主路径是 determi
 
 10. Placement / launch / ABI handoff
 
-   cleanup 后交给 topology/device-mesh/shard-binding contract、R3.6 ABI/LLVM lowering 和 R3.7 package manifest。
+   cleanup 后交给 topology/device-mesh/shard-binding contract、ABI/LLVM lowering 和 package manifest。
    它们从 committed Wafer-tagged memref、accepted offset facts、view relation、placement、layout
    helper 和按需 resource view 派生 address/range/stride 参数。layout planner 不直接生成 LLVM ABI，
    但必须保证 accepted layout 都能被这个派生过程合法实现。

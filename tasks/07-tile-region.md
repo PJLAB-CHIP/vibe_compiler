@@ -1,9 +1,7 @@
 # Wafer Tile Region Design
 
-日期：2026-05-25
-
 状态：设计草案；范围：memref-backed `wafer.tile.region`、DDR boundary materialization 和
-structured control-flow lowering；candidate DDR tile-view producer 属于 R3.2e。
+structured control-flow lowering。
 
 本文定义 `wafer.tile.region` 作为 `wafer.group` lowering 之后的 tile-local execution boundary。
 它组织 tile-local Wafer-tagged memref、movement、layout materialization、target-abstract compute、communication
@@ -17,13 +15,13 @@ placement-derived endpoint 和 communication staging demand 的层级；`wafer.t
 
 本文依赖：
 
-- `tasks/2026-05-12-wafer-group-design.md`
-- `tasks/2026-05-21-wafer-layout-materialization-design.md`
-- `tasks/2026-05-21-wafer-spm-bufferization-design.md`
-- `tasks/2026-05-25-wafer-ddr-memory-planning-design.md`
-- `tasks/2026-05-25-wafer-compute-dialect-design.md`
-- `tasks/2026-05-25-wafer-communication-dialect-design.md`
-- `tasks/2026-06-05-wafer-instruction-ir-design.md`
+- `tasks/06-group.md`
+- `tasks/08-layout-materialization.md`
+- `tasks/09-spm-memory-planning.md`
+- `tasks/12-ddr-memory-planning.md`
+- `tasks/10-compute-movement.md`
+- `tasks/13-communication.md`
+- `tasks/11-instruction-ir.md`
 
 已落地：
 
@@ -86,18 +84,18 @@ wafer.group
   `--wafer-convert-group-to-tile-region` 可以把当前模块中的 supported logical group 重写成
   tile-region IR，用作 legality/debug/后续 pass bring-up。它仍不是 selected candidate，
   也不是 SPM allocator 的直接输入；rejected tile-region IR 不进入主线 committed IR。
-- committed `wafer.tile.region`：R3.3 只把 candidate-selection 已选中、且已通过 candidate gates
-  的 candidate artifact 写入主 IR。后续 placement、R3.6 ABI/LLVM lowering 和 R3.7 package manifest
+- committed `wafer.tile.region`：committed materialization 只把 candidate-selection 已选中、且已通过 candidate gates
+  的 candidate artifact 写入主 IR。后续 placement、ABI/LLVM lowering 和 package manifest
   只从 committed IR、accepted offset facts 和 topology/device-mesh/shard-binding contract 派生下游参数，
   不重新决定 group 是否可行，也不复制 placed/access descriptor 中间协议。
 
-### 2.1 R3.2c Pipeline Contract
+### 2.1 Pipeline Contract
 
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  R3.1 verifier-legal tensor-level logical `wafer.group` op、R3.2a
-  `GroupTilingDemand` analysis result 和 R3.2b `GroupLayoutPlan` analysis result。
+  verifier-legal tensor-level logical `wafer.group` op、`GroupTilingDemand` analysis result 和
+  `GroupLayoutPlan` analysis result。
 - Current stage responsibility:
   通过 MLIR DialectConversion 构造 memref-backed `wafer.tile.region` IR；
   `wafer.group` 是 illegal root，conversion pattern 产出完整 legal `wafer.tile.region`，并用 full
@@ -121,13 +119,13 @@ Pipeline position:
   DDR offset assignment 和 candidate-selection。
 - User-level driver / named pipeline:
   主线仍由 `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 产生 logical group；
-  R3.2c 的主线验证入口是
+  tile-region materialization 的主线验证入口是
   `wafer-opt --pass-pipeline='builtin.module(wafer-lower-groups-to-tile-region)'`。局部验证入口是
   `wafer-opt --wafer-convert-group-to-tile-region` 和 `wafer-opt --wafer-dump-group-to-tile-region`。
 - Explicit non-goals:
   不做 SPM offset allocation、不做 DDR view/range/resource planning、不 select/reject/split
   group、不从 candidate tile shape 生成 temporal DDR tile `memref.subview`、不把 tile-region IR
-  当成 R3.3 committed materialization、不 lower 到 packet/ABI/LLVM。
+  当成 committed materialization、不 lower 到 packet/ABI/LLVM。
 - Completion gate:
   FileCheck、conversion pass、dump pass 和主线 pipeline 覆盖 R2.4/R3.1 已能产出的 Wafer V0 硬件可承载 local
   compute/movement/view family：DDR memref load/store boundary、layout materialization、DDR/SPM
@@ -137,7 +135,7 @@ Pipeline position:
   placement/local-rank / runtime ABI 事实时才允许结构化 failure。
 ```
 
-### 2.2 R3.2c Target Coverage Matrix
+### 2.2 Target Coverage Matrix
 
 本表是 R3.2c memref-backed migration 的完成表，不是“当前代码已全部支持”的声明。R3.2c 只应该转换
 当前 IR 可以验证的 op；缺少 IR 事实或目标 op 的情况必须结构化失败，不能用名字、case 或 side
@@ -285,7 +283,7 @@ V0 需要以下 op family：
 7. DDR offset assignment：DDR planning 消费 memory-planned instruction-level IR、SPM facts、DDR
    tile-view boundary、DDR `memref.alloc` 和 descriptor demand，规划 compiler-managed/resident/inter-group
    DDR accepted offset facts，并验证 descriptor、view/root range、default arena capacity/largest-contiguous、
-   bandwidth、alignment、overlap 和 fence demand。成功 facts 必须能被 candidate-selection、R3.3、placement
+   bandwidth、alignment、overlap 和 fence demand。成功 facts 必须能被 candidate-selection、committed materialization、placement
    和后续 ABI/package/runtime resource view 直接消费；
    失败时给结构化原因。
 8. candidate-selection driver：candidate-selection 从 full traversal tile/no split 开始搜索
@@ -295,12 +293,12 @@ V0 需要以下 op family：
    `tile-search=min-estimated-time` 下遍历 bounded frontier 并只对 passing candidate 做粗估时间排序；选择已通过全部 gates
    的 candidate artifact，或要求 split / retry；rejected candidate IR
    丢弃。
-9. committed `wafer.tile.region` materialization：R3.3 只把 candidate-selection 选中的 passing candidate
+9. committed `wafer.tile.region` materialization：committed materialization 只把 candidate-selection 选中的 passing candidate
    inline commit 回原 `wafer.group` 位置，写入主 IR。
 10. topology/device-mesh/shard-binding contract：从 target topology、valid device mesh、
     committed instruction boundary 和 logical rank/local shard facts 生成 shard binding 与薄
     launch/block binding。
-11. ABI / LLVM lowering：R3.6 从 committed instruction IR、accepted offset facts、
+11. ABI / LLVM lowering：从 committed instruction IR、accepted offset facts、
     topology/device-mesh/shard-binding 和按需重算的 resource view 生成 wrapper-friendly LLVM call /
     C ABI call / packet builder 输入；不新增 placed memref / access descriptor 中间协议。
 
@@ -364,7 +362,7 @@ launch args / identity lowering 的 IR contract。当前没有 multi-tile no-com
   compiler-managed `#wafer.memory<ddr, *>` alloc 必须有 DDR memory planning 接受的
   `wafer.ddr.offset` fact；external DDR boundary value 的 descriptor/view/root validation 由当前
   instruction-level IR 重算。
-- topology/device-mesh/shard-binding、R3.6 lower-level 输入和 R3.7 manifest metadata 只能从当前 committed IR、
+- topology/device-mesh/shard-binding、ABI/LLVM lower-level 输入和 package manifest metadata 只能从当前 committed IR、
   accepted offset facts、topology/device-mesh/shard-binding contract 和按需 resource view 派生；不能要求
   tile-region 主线额外携带 placed memref 或 access descriptor 旁路事实。
 

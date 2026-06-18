@@ -1,5 +1,7 @@
 # Wafer Dependency Layering Recovery
 
+> 归档记录：本文保留历史审计、恢复或任务级背景；不作为当前主线架构合同。当前入口见 `tasks/README.md` 和编号设计文档。
+
 日期：2026-05-26
 
 状态：R0.3 完成记录；范围：依赖栈、Shardy CMake 编译验证目标和 P2.S1 依赖约束。

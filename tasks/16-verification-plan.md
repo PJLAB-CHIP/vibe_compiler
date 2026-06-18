@@ -1,7 +1,5 @@
 # Wafer Verification Plan Design
 
-日期：2026-05-25
-
 状态：设计草案；范围：compiler pipeline 各阶段的验证责任和 completion gate。
 
 本文定义 Wafer compiler 的分阶段验证策略。它不是替代各 dialect 设计的总 verifier，而是把
@@ -32,7 +30,7 @@ Serving integration 暂不纳入本文通过标准。
   topology/device-mesh/shard-binding、ABI/LLVM lowering、object/package manifest 和 runtime
   adapter 是后续独立 gate。
 - LLVM dialect / LLVM IR lowering、object emission 和真实 `wafer_*` runtime call emission 分别属于
-  R3.6/R3.7/R3.8 gate，不属于当前 committed-instruction gate 的通过条件。
+  ABI/package/runtime adapter gate，不属于当前 committed-instruction gate 的通过条件。
 
 当前阶段不把板端 launch、device completion、数值对比或 PMU/profiling 作为通过条件。迁移到带实际
 计算卡服务器后，这些 board run 验证再成为对应 milestone 的新增 gate。
@@ -141,7 +139,7 @@ Direct DTE p2p：
 - DTE wait 与 local compute drain 分离。
 - FSM / packet / stream resource 不冲突。
 - 旧 `test/Transforms/comm-local-c-abi-issues.mlir` unit gate 已删除。后续 tile-level p2p 到
-  committed Direct DTE issue/wait form 和 ABI/LLVM emission 的 gate 必须由 R6/R3.6 从 committed
+  committed Direct DTE issue/wait form 和 ABI/LLVM emission 的 gate 必须由 communication / ABI lowering 从 committed
   instruction-level IR、topology/device-mesh/shard-binding contract 和 resource view analysis 恢复。
 
 Single-card collective：

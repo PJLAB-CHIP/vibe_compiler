@@ -1,7 +1,5 @@
 # Wafer Launch and Runtime Package Design
 
-日期：2026-05-25
-
 状态：设计草案；范围：`wafer.launch`、runtime package、host runtime adapter 和 completion contract。
 
 本文定义 `wafer.launch`、runtime package、host runtime adapter 和 completion contract。该边界
@@ -13,9 +11,9 @@ package load / launch 时执行的绑定动作，不是独立 compiler IR materi
 
 本文依赖：
 
-- `tasks/2026-05-25-wafer-placement-design.md`
-- `tasks/2026-05-25-wafer-ddr-memory-planning-design.md`
-- `tasks/2026-05-25-wafer-c-abi-golden-packet-design.md`
+- `tasks/04-topology-device-mesh-shard-binding.md`
+- `tasks/12-ddr-memory-planning.md`
+- `tasks/14-abi-golden-packet.md`
 - `docs/tx8-deps-reverse-engineering/tx8-interface-contract.md`
 - `docs/tx8-deps-reverse-engineering/firmware-kuiper-runtime-hardware-analysis.md`
 - `docs/tx8-deps-reverse-engineering/tx8-api-struct-contract-annex.md`
@@ -54,7 +52,7 @@ wafer.launch @compiled_kernel(
 }
 ```
 
-概念 view。下面这些字段由 R3.6/R3.7/R3.8 从 committed IR 和 explicit facts 重算，不是
+概念 view。下面这些字段由 ABI/package/runtime adapter 从 committed IR 和 explicit facts 重算，不是
 `wafer.launch` 提前保存的第二份 IR 合同：
 
 - launch signature：user-visible inputs/outputs、shape、dtype、external layout、alias policy。
@@ -74,12 +72,12 @@ wafer.launch @compiled_kernel(
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  R3.3 committed `wafer.tile.region` / `wafer.instr.*` IR、accepted SPM/DDR offset facts、
+  committed `wafer.tile.region` / `wafer.instr.*` IR、accepted SPM/DDR offset facts、
   topology/device-mesh/shard-binding contract、薄 launch/block binding、按需重算的 resource view，
-  以及 R3.6 ABI/LLVM lowering 产物。
+  以及 ABI/LLVM lowering 产物。
 - Current stage responsibility:
-  R3.7 组装 object/program id、entrypoint、ABI version、constant bytes、endpoint metadata 和
-  resource binding metadata 到 package manifest；R3.8 runtime adapter 根据该 manifest 执行
+  package 组装 object/program id、entrypoint、ABI version、constant bytes、endpoint metadata 和
+  resource binding metadata 到 package manifest；runtime adapter 根据该 manifest 执行
   allocate/import/query/bind、launch、completion/error validation。
 - Output artifact / IR:
   IR-derived package manifest、device object reference、runtime adapter binding/launch contract 和
@@ -165,7 +163,7 @@ Runtime package 必须区分：
 - executable/log/control metadata allocation。它们是 runtime/package 内部对象，不是 generic tensor
   DDR planning arena。
 
-KMD/UAPI 的低层分配类别只作为 runtime mapping evidence 使用；R3.2g compiler planning 产出
+KMD/UAPI 的低层分配类别只作为 runtime mapping evidence 使用；DDR memory planning 产出
 accepted DDR planned ranges；ABI lowering、package manifest emission 和 runtime adapter 通过同一
 resource view analysis 从 committed IR、accepted offsets、topology/device-mesh/shard-binding 和薄
 launch/block binding 派生

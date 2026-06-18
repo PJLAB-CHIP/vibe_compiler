@@ -1,31 +1,33 @@
 # Wafer Tasks Design Docs Gap Review
 
+> 归档记录：本文保留历史审计、恢复或任务级背景；不作为当前主线架构合同。当前入口见 `tasks/README.md` 和编号设计文档。
+
 日期：2026-05-13
 
 状态：历史 gap catalog；不作为当前架构合同或子设计状态索引。本文中的旧表示只作为历史 gap 记录。
 
 本文是历史 gap catalog 和检查清单，不是新的架构合同。子设计状态的唯一索引见
-`tasks/2026-05-11-wafer-ai-compiler-architecture.md` 第 8 节。本文中涉及历史 backend、旧 CRT、
+`tasks/01-architecture.md` 第 8 节。本文中涉及历史 backend、旧 CRT、
 runtime 兼容路径或底层 packet 的内容，只用于指出需要在哪个 IR stage、verifier 或 runtime
 boundary 补设计，不能反向污染上层 IR 语义。
 
 本文评审对象：
 
-- `tasks/2026-05-11-wafer-ai-compiler-architecture.md`
-- `tasks/2026-05-12-wafer-group-design.md`
-- `tasks/2026-05-21-wafer-layout-materialization-design.md`
-- `tasks/2026-05-21-wafer-spm-bufferization-design.md`
-- `tasks/2026-05-25-wafer-ddr-memory-planning-design.md`
-- `tasks/2026-05-25-wafer-compute-dialect-design.md`
-- `tasks/2026-05-25-wafer-communication-dialect-design.md`
-- `tasks/2026-05-25-wafer-frontend-stablehlo-program-design.md`
-- `tasks/2026-05-25-wafer-shardy-spmd-design.md`
-- `tasks/2026-05-25-wafer-placement-design.md`
-- `tasks/2026-05-25-wafer-local-compute-normalization-design.md`
-- `tasks/2026-05-25-wafer-tile-region-design.md`
-- `tasks/2026-05-25-wafer-launch-runtime-package-design.md`
-- `tasks/2026-05-25-wafer-c-abi-golden-packet-design.md`
-- `tasks/2026-05-25-wafer-verification-plan-design.md`
+- `tasks/01-architecture.md`
+- `tasks/06-group.md`
+- `tasks/08-layout-materialization.md`
+- `tasks/09-spm-memory-planning.md`
+- `tasks/12-ddr-memory-planning.md`
+- `tasks/10-compute-movement.md`
+- `tasks/13-communication.md`
+- `tasks/02-frontend-stablehlo-program.md`
+- `tasks/03-shardy-spmd.md`
+- `tasks/04-topology-device-mesh-shard-binding.md`
+- `tasks/05-local-compute-normalization.md`
+- `tasks/07-tile-region.md`
+- `tasks/15-launch-runtime-package.md`
+- `tasks/14-abi-golden-packet.md`
+- `tasks/16-verification-plan.md`
 
 评审基准：
 
@@ -89,7 +91,7 @@ host/runtime 的主分层，旧 `Tsm*` 只是兼容和证据层。
 - `TsmMemcpyD2D`、`TsmSend`、`TsmRecv` 是 host runtime dyn TLV + Kcore DTE path，
   不等价于 compiler inline Direct DTE。
 
-承接状态：`tasks/2026-05-25-wafer-launch-runtime-package-design.md` 已把 HPGR 主路径、KMD
+承接状态：`tasks/15-launch-runtime-package.md` 已把 HPGR 主路径、KMD
 底层服务、legacy `TsmRun` fallback、stub shielding、错误传播、completion source 和 bring-up
 fallback 写成 launch/runtime 边界合同。所有 milestone 的通过标准仍必须说明 completion 来自
 HPGR command/module completion、Kcore CSR wait、DTE wait、stream/event wait 或显式 runtime
@@ -100,7 +102,7 @@ sync，不能使用旧 `DeviceSynchronize` 或 KMD compute fence。
 历史缺口是：compiled package 只抽象写了 kcore `.so`、weights、metadata、placement、
 SPM/layout 和 communication plan，没有把 host runtime 实际交付路径写成格式约束。
 
-`tasks/2026-05-25-wafer-launch-runtime-package-design.md` 已承接以下事实：
+`tasks/15-launch-runtime-package.md` 已承接以下事实：
 
 - `D_BootParamHead`，size 56。
 - `D_BootParamDyninfo`，size 72，布局从 `head + 0x38` 开始，顺序是 inputs、
@@ -128,7 +130,7 @@ SPM/layout 和 communication plan，没有把 host runtime 实际交付路径写
 
 承接：`wafer.tile.*` compute 和 `wafer.tile.*` communication 文档已经把 target-abstract op、issue/drain、
 Direct DTE V0 和 wrapper family 的上层边界写清楚。lower-level C ABI / instruction-form 的
-实现级合同已由 `tasks/2026-05-25-wafer-c-abi-golden-packet-design.md` 承接。
+实现级合同已由 `tasks/14-abi-golden-packet.md` 承接。
 
 ABI 设计至少覆盖这些族：
 
@@ -179,14 +181,14 @@ legality；comm 负责 Direct DTE / FSM / token/wait；runtime/package、C ABI �
   option 有明确范围或 V0 禁用策略。
 - raw packet/debug verifier 需要验证 `*_end` 字段，不能只看 base。
 
-`tasks/2026-05-25-wafer-c-abi-golden-packet-design.md` 和
-`tasks/2026-05-25-wafer-verification-plan-design.md` 已把 lower-level Wafer instruction/runtime op、
+`tasks/14-abi-golden-packet.md` 和
+`tasks/16-verification-plan.md` 已把 lower-level Wafer instruction/runtime op、
 ABI/LLVM call、committed instruction IR / topology-device-mesh-resource contract、legality diagnostics 和 wrapper golden packet
 tests 拆到对应层级。
 
 ## 6. Layout 设计已由 layout 子设计承接
 
-承接：`tasks/2026-05-21-wafer-layout-materialization-design.md` 已经定义 semantic layout /
+承接：`tasks/08-layout-materialization.md` 已经定义 semantic layout /
 physical `mem_layout` / constant storage encoding / external layout contract，并把
 `WaferMemLayoutAttr` 收敛为 `Tensor/NTensor/Cx/NCx` family，不保存 C0/storage bytes 等可推导字段。
 
@@ -221,7 +223,7 @@ physical `mem_layout` / constant storage encoding / external layout contract，�
 
 ## 7. SPM planner 已由 SPM 子设计承接
 
-承接：`tasks/2026-05-21-wafer-spm-bufferization-design.md` 已经把 SPM range、reserved range、
+承接：`tasks/09-spm-memory-planning.md` 已经把 SPM range、reserved range、
 layout storage size、bool bitpack、liveness、allocation、failure feedback 和 storage
 storage realization 写成独立设计。`wafer.group` 只消费 feasibility 结果，不保存 offset。
 
@@ -280,7 +282,7 @@ scheduler/PMU 的实现和验证，不应反向变成 `wafer.group` attr。
 
 ## 9. DTE 设计已收敛到 V0 unicast
 
-承接：`tasks/2026-05-25-wafer-communication-dialect-design.md` 已经明确 V0 只使用
+承接：`tasks/13-communication.md` 已经明确 V0 只使用
 fixed-size unicast Direct DTE，并把 raw non-unicast 放到 V1/HardwareVerify。这里的清单继续作为
 实现和测试时的事实检查。
 
@@ -418,7 +420,7 @@ buffer 复用必须有 explicit local drain。
 
 ## 15. 测试体系承接状态
 
-`tasks/2026-05-25-wafer-verification-plan-design.md` 已经定义独立 verification plan。下面保留
+`tasks/16-verification-plan.md` 已经定义独立 verification plan。下面保留
 历史 test catalog，作为后续实现时的检查材料；每个子设计只取自己 IR stage 内的 diagnostics、
 golden tests 和 bring-up tests：
 

@@ -2,7 +2,6 @@
 
 状态：架构设计草案；子设计状态以第 8 节和 `tasks/progress.md` 为准。
 
-日期：2026-05-11
 
 说明：本文使用 **Wafer** 作为目标硬件和软件栈名称。底层公开文档、依赖和已有后端中仍可能出现 TX8/TX81 等历史命名，本文只在引用事实时保留这些名称。
 
@@ -115,7 +114,7 @@ SPM allocator 只分配 `spm` buffer，不代表 IR 里没有 `ddr`。RDMA/WDMA�
 constant load 和 runtime allocation object 都应通过同一套 memory-space / effect / verifier 体系表达
 source/destination address space；差别在于 owner、lifetime 和 lowering 层级不同。DDR 的 default
 arena、external view/descriptor validation、compiler-managed/resident accepted offset facts、constant
-residency 和 bandwidth 设计见 `tasks/2026-05-25-wafer-ddr-memory-planning-design.md`。
+residency 和 bandwidth 设计见 `tasks/12-ddr-memory-planning.md`。
 
 `Tensor_Fmt` 不能作为 compiler layout 模型。layout conversion 是真实 data movement，不是
 metadata reshape；它先在合适层级表达成 `wafer.tile.materialize_layout` 或等价 movement op，再由
@@ -123,7 +122,7 @@ lowering 选择 `ChannelNorm`、`DechannelNorm`、`GatherScatter`、TDMA 或 wra
 `Cx/NCx` materialization 延后到 aligned-only 指令边界；如果 planner 为了复用或减少重复转换选择
 更早 materialize，必须显式承担 SPM footprint 和额外搬运代价。layout materialization 的
 算法、boundary contract 和 cost model 见
-`tasks/2026-05-21-wafer-layout-materialization-design.md`。
+`tasks/08-layout-materialization.md`。
 
 constant 语义同样分层：
 
@@ -187,7 +186,7 @@ V0 策略：
   理由。若硬件可表达但 IR/lowering 未覆盖，必须补 IR contract 或下游恢复任务。
 
 Frontend program 的模型导入、第三方依赖组织、constant/weight、sharding annotation 和验证合同见
-`tasks/2026-05-25-wafer-frontend-stablehlo-program-design.md`。
+`tasks/02-frontend-stablehlo-program.md`。
 
 ### 3.2 Sharding and SPMD Stage
 
@@ -243,7 +242,7 @@ V0 collective 语义：
 后续 communication lowering 可先用 unicast p2p schedule 组合实现。
 
 Shardy / SPMD 的 logical mesh、partition 和 collective 合同见
-`tasks/2026-05-25-wafer-shardy-spmd-design.md`。
+`tasks/03-shardy-spmd.md`。
 
 ### 3.3 Placement Stage
 
@@ -294,7 +293,7 @@ mesh(card_y, card_x, tile_y, tile_x)
   暴露，不能让 SPMD 在无效 abstract mesh 上先切分。
 
 Placement 的 accepted mapping、good-tile/PG metadata、verifier 和与 launch/comm 的接口见
-`tasks/2026-05-25-wafer-placement-design.md`。
+`tasks/04-topology-device-mesh-shard-binding.md`。
 
 ### 3.4 Local Compute Normalization Stage
 
@@ -351,7 +350,7 @@ tensor-level Linalg/Tensor/SCF/Arith/Math local shard program
 
 Local compute normalization 的 StableHLO-to-structured-IR 合同、transformer block 所需
 dot/broadcast/reduce/softmax/norm/RoPE 表达和 verifier 见
-`tasks/2026-05-25-wafer-local-compute-normalization-design.md`。
+`tasks/05-local-compute-normalization.md`。
 
 ### 3.5 Group Scheduling Stage
 
@@ -377,7 +376,7 @@ dot/broadcast/reduce/softmax/norm/RoPE 表达和 verifier 见
 - 不表达 NCC queue、worker id、DTE node id、FSM id、packet id。
 - 不表达 Wafer C ABI call。
 
-`wafer.group` 的详细设计见 `tasks/2026-05-12-wafer-group-design.md`。该文档是 group 语义和
+`wafer.group` 的详细设计见 `tasks/06-group.md`。该文档是 group 语义和
 tile-and-fuse 的主文档，本架构文档只规定它在全 pipeline 中的位置。
 
 ### 3.6 Tile Region, Bufferization and Layout Materialization Stage
@@ -407,10 +406,10 @@ tile-and-fuse 的主文档，本架构文档只规定它在全 pipeline 中的�
   placed memref 或 Wafer descriptor 中间层。
 
 `wafer.tile.region` 不重新做 group formation、root tile search 或 traversal selection，也不表达
-host launch/package ABI。详细合同见 `tasks/2026-05-25-wafer-tile-region-design.md`。
-layout materialization 见 `tasks/2026-05-21-wafer-layout-materialization-design.md`；SPM
-bufferization 见 `tasks/2026-05-21-wafer-spm-bufferization-design.md`；DDR memory planning 见
-`tasks/2026-05-25-wafer-ddr-memory-planning-design.md`。
+host launch/package ABI。详细合同见 `tasks/07-tile-region.md`。
+layout materialization 见 `tasks/08-layout-materialization.md`；SPM
+bufferization 见 `tasks/09-spm-memory-planning.md`；DDR memory planning 见
+`tasks/12-ddr-memory-planning.md`。
 
 ### 3.7 Wafer Instruction Legalization / Selection Stage
 
@@ -435,12 +434,12 @@ bufferization 见 `tasks/2026-05-21-wafer-spm-bufferization-design.md`；DDR mem
 
 `wafer.tile.*` compute / movement 的 IR 生命周期、op family、layout/resource interface、issue/drain
 模型和 lowering 合同见
-`tasks/2026-05-25-wafer-compute-dialect-design.md`。该子设计固定的是 target-abstract
+`tasks/10-compute-movement.md`。该子设计固定的是 target-abstract
 compute/movement 层的 verifier 和 lowering 边界，不把某个 wrapper 名、示例 tile shape 或 raw
 packet 字段写成上层 IR 语义。
 
 committed instruction IR 到 C ABI、wrapper 和 golden packet emission 的合同见
-`tasks/2026-05-25-wafer-c-abi-golden-packet-design.md`。
+`tasks/14-abi-golden-packet.md`。
 
 ### 3.8 Wafer Communication Dialect Stage
 
@@ -487,7 +486,7 @@ Stream/mailbox 兼容路径，则需要把它作为 control/compatibility plane 
 
 `wafer.tile.*` communication 的 collective-level op、point-to-point unicast op、token/effect、Direct DTE V0
 contract、collective lowering 和 verifier 见
-`tasks/2026-05-25-wafer-communication-dialect-design.md`。上游 StableHLO/Shardy collective
+`tasks/13-communication.md`。上游 StableHLO/Shardy collective
 只提供 logical collective 语义；placement、p2p schedule、DTE resource 和 runtime completion
 分别在各自 IR 层级 materialize。
 
@@ -518,8 +517,8 @@ contract、collective lowering 和 verifier 见
 
 Runtime/package 的 package 内容、HPGR/KMD/legacy `TsmRun` 分层、runtime allocation/import mapping、
 legacy bootparam/TLV 和 completion/stub shielding 合同见
-`tasks/2026-05-25-wafer-launch-runtime-package-design.md`。C ABI 到 wrapper/golden packet 的细节见
-`tasks/2026-05-25-wafer-c-abi-golden-packet-design.md`。
+`tasks/15-launch-runtime-package.md`。C ABI 到 wrapper/golden packet 的细节见
+`tasks/14-abi-golden-packet.md`。
 
 ## 4. Milestone 路线
 
@@ -939,22 +938,21 @@ V0 先保持统一 `wafer` dialect namespace，但公开 op mnemonic 只保留�
 
 | 范围 | 主文档 | 状态 | 只负责 | 不负责 |
 | --- | --- | --- | --- | --- |
-| Frontend / StableHLO program | `tasks/2026-05-25-wafer-frontend-stablehlo-program-design.md` | 草案 | model import adapter、输入 program、shape/dtype/dynamic shape、exporter program directory weight metadata、sharding 标记、第三方依赖隔离 | SPM、DTE、runtime completion |
-| Shardy / SPMD | `tasks/2026-05-25-wafer-shardy-spmd-design.md` | 草案 | 消费 valid device mesh、logical mesh、sharding propagation、partition 后 collective 语义 | DTE algorithm、SPM buffer、事后修补 bad tile |
-| Target topology / device mesh / shard binding | `tasks/2026-05-25-wafer-placement-design.md` | 草案 | physical tile graph、encoded tile id、availability/link、valid SPMD rank domain、rank->encoded endpoint、boundary shard slice | Cx/NCx、packet queue、C ABI、tensor 重新切分 |
-| Local compute normalization | `tasks/2026-05-25-wafer-local-compute-normalization-design.md` | 草案 | partitioned StableHLO 到 structured tensor IR、dot/broadcast/reduce/softmax/norm/RoPE staged form、StableHLO collective 到 Wafer LinalgExt-style tensor collective handoff | group scheduling、physical layout、SPM/DDR、tile communication、C ABI |
-| `wafer.group` | `tasks/2026-05-12-wafer-group-design.md` | 草案 | group boundary、traversal schedule、tiled tensor IR、tile-local resource demand | SPM offset、physical layout marker、DTE resource、runtime package |
-| `wafer.tile.region` | `tasks/2026-05-25-wafer-tile-region-design.md` | 草案 | bufferized tile-local execution scope、memory/effect ownership、movement/compute/sync ordering | tensor fusion、traversal selection、host launch/package ABI |
-| Layout materialization | `tasks/2026-05-21-wafer-layout-materialization-design.md` | 草案 | physical layout domain、op layout constraint、constant storage transform、materialization placement/cost | SPM address、packet field、group fusion |
-| SPM bufferization | `tasks/2026-05-21-wafer-spm-bufferization-design.md` | 草案 | `#wafer.memory<spm, *>` demand、liveness、range/alignment、accepted SPM offset facts | DDR offset facts、runtime allocation mapping、collective algorithm、host launch |
-| Compute / movement | `tasks/2026-05-25-wafer-compute-dialect-design.md` | 草案 | target-abstract compute/move op、layout/resource interface、instruction legality、issue/drain | tensor fusion、global sharding、host package format |
-| Instruction IR | `tasks/2026-06-05-wafer-instruction-ir-design.md` | 草案 | `wafer.instr.*`、Wafer-tagged memref graph、issue family、memref read/write/issue effect | SPM/DDR offset、runtime mapping、raw packet、C ABI call、重复 storage IR |
-| Communication | `tasks/2026-05-25-wafer-communication-dialect-design.md` | 草案 | tile_region / SPM materialization 之后的 collective-level op、p2p schedule、Direct DTE V0、token/effect、sync boundary | compute op legality、SPM allocator internals、SPMD tensor collective handoff |
-| DDR memory planning | `tasks/2026-05-25-wafer-ddr-memory-planning-design.md` | 草案 | `#wafer.memory<ddr, *>` demand、external view/descriptor validation、compiler-managed/resident/inter-group alloc demand、accepted DDR offset facts、lifetime/reuse、default arena capacity/largest-contiguous/bandwidth | tensor fusion、SPM offset、runtime allocation/import、packet bitfield |
-| Candidate decision / committed materialization | `tasks/2026-06-11-wafer-r3-2h-candidate-decision-design.md`、`tasks/2026-06-11-wafer-committed-candidate-materialization-design.md` | R3.2h/R3.3 V0 已实现 | shape-driven traversal/reduction refinement frontier、same-domain output coverage、matmul/generic reduction split、representative tile classes、candidate gates、fixed target policy + configurable search controls、`tile-search` 选择策略、selected candidate commit 回主 IR | 新 allocator、失败计划 IR、runtime allocation/import、packet bitfield、不同 output domain 或 dynamic reduction 伪支持 |
-| Launch / runtime package | `tasks/2026-05-25-wafer-launch-runtime-package-design.md` | 草案 | `wafer.launch`、HPGR/KMD/legacy Tsm 分层、completion、runtime allocation objects、bootparam/TLV、package metadata | Linalg tiling、group formation、tile-local ordering |
-| C ABI / golden packet | `tasks/2026-05-25-wafer-c-abi-golden-packet-design.md` | 草案 | committed instruction IR + topology/device-mesh/shard-binding + on-demand resource view 到 ABI / LLVM / packet emission 的参数单位、wait policy、golden packet | 上层 IR formation、layout search 和 SPM memory planning |
-| Verification plan | `tasks/2026-05-25-wafer-verification-plan-design.md` | 草案 | stage diagnostics、roundtrip、golden packet、runtime shielding、PMU/cost-model gate | 替代各 dialect 语义设计 |
+| Frontend / StableHLO program | `tasks/02-frontend-stablehlo-program.md` | 草案 | model import adapter、输入 program、shape/dtype/dynamic shape、exporter program directory weight metadata、sharding 标记、第三方依赖隔离 | SPM、DTE、runtime completion |
+| Shardy / SPMD | `tasks/03-shardy-spmd.md` | 草案 | 消费 valid device mesh、logical mesh、sharding propagation、partition 后 collective 语义 | DTE algorithm、SPM buffer、事后修补 bad tile |
+| Target topology / device mesh / shard binding | `tasks/04-topology-device-mesh-shard-binding.md` | 草案 | physical tile graph、encoded tile id、availability/link、valid SPMD rank domain、rank->encoded endpoint、boundary shard slice | Cx/NCx、packet queue、C ABI、tensor 重新切分 |
+| Local compute normalization | `tasks/05-local-compute-normalization.md` | 草案 | partitioned StableHLO 到 structured tensor IR、dot/broadcast/reduce/softmax/norm/RoPE staged form、StableHLO collective 到 Wafer LinalgExt-style tensor collective handoff | group scheduling、physical layout、SPM/DDR、tile communication、C ABI |
+| `wafer.group` | `tasks/06-group.md` | 草案 | group boundary、traversal schedule、tiled tensor IR、tile-local resource demand | SPM offset、physical layout marker、DTE resource、runtime package |
+| `wafer.tile.region` | `tasks/07-tile-region.md` | 草案 | bufferized tile-local execution scope、memory/effect ownership、movement/compute/sync ordering | tensor fusion、traversal selection、host launch/package ABI |
+| Layout materialization | `tasks/08-layout-materialization.md` | 草案 | physical layout domain、op layout constraint、constant storage transform、materialization placement/cost | SPM address、packet field、group fusion |
+| SPM memory planning | `tasks/09-spm-memory-planning.md` | 草案 | `#wafer.memory<spm, *>` demand、liveness、range/alignment、accepted SPM offset facts | DDR offset facts、runtime allocation mapping、collective algorithm、host launch |
+| Compute / movement | `tasks/10-compute-movement.md` | 草案 | target-abstract compute/move op、layout/resource interface、instruction legality、issue/drain | tensor fusion、global sharding、host package format |
+| Instruction IR | `tasks/11-instruction-ir.md` | 草案 | `wafer.instr.*`、Wafer-tagged memref graph、issue family、memref read/write/issue effect | SPM/DDR offset、runtime mapping、raw packet、C ABI call、重复 storage IR |
+| DDR memory planning | `tasks/12-ddr-memory-planning.md` | 草案 | `#wafer.memory<ddr, *>` demand、external view/descriptor validation、compiler-managed/resident/inter-group alloc demand、accepted DDR offset facts、lifetime/reuse、default arena capacity/largest-contiguous/bandwidth | tensor fusion、SPM offset、runtime allocation/import、packet bitfield |
+| Communication | `tasks/13-communication.md` | 草案 | tile_region / SPM materialization 之后的 collective-level op、p2p schedule、Direct DTE V0、token/effect、sync boundary | compute op legality、SPM allocator internals、SPMD tensor collective handoff |
+| C ABI / golden packet | `tasks/14-abi-golden-packet.md` | 草案 | committed instruction IR + topology/device-mesh/shard-binding + on-demand resource view 到 ABI / LLVM / packet emission 的参数单位、wait policy、golden packet | 上层 IR formation、layout search 和 SPM memory planning |
+| Launch / runtime package | `tasks/15-launch-runtime-package.md` | 草案 | `wafer.launch`、HPGR/KMD/legacy Tsm 分层、completion、runtime allocation objects、bootparam/TLV、package metadata | Linalg tiling、group formation、tile-local ordering |
+| Verification plan | `tasks/16-verification-plan.md` | 草案 | stage diagnostics、roundtrip、golden packet、runtime shielding、PMU/cost-model gate | 替代各 dialect 语义设计 |
 | Serving integration | 暂不支持 | 延后 | graph capture、prefill/decode、KV cache 管理 | compiler core IR 合同 |
 
 跨文档判断规则：如果某个事实不能由当前 IR 层的 op/type/region/effect/verifier 稳定解释，它只能

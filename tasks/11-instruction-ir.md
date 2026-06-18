@@ -1,11 +1,9 @@
 # Wafer Instruction IR Design
 
-日期：2026-06-05
+状态：设计草案；范围：instruction-level Wafer IR、memref-backed buffer contract 和
+instruction legalization。
 
-状态：R3.2d 设计按 memref-backed buffer contract 收口；instruction lowering 只消费已显式
-materialize 的 DDR `memref.subview`，candidate tile-view producer 属于 R3.2e。
-
-本文定义 R3.2d 的 instruction-level Wafer IR。核心结论：
+本文定义 instruction-level Wafer IR。核心结论：
 
 - 只新增 `wafer.instr.*` 硬件指令级 op。
 - instruction-level buffer value 统一使用 MLIR `memref`，不再把 `!wafer.storage` 作为长期 IR
@@ -31,26 +29,26 @@ memref SSA、Wafer memory attr、op operands、attrs、MemoryEffects 和显式 d
   的 ODS、verifier、MemoryEffects、`WaferInstructionOpInterface` 和 lit/unit 覆盖。
 - `wafer.instr.*` op 只读写 Wafer-tagged memref，不产生 buffer result，不携带 SPM offset、
   worker id、raw packet field 或 C ABI 字段。
-- R3.2d.2/R3.2d.4 已实现 target-abstract tile-region op 到这些 instruction op 的
+- 当前实现已支持 target-abstract tile-region op 到这些 instruction op 的
   DialectConversion；静态 `extract_slice`、`insert_slice`、`broadcast` 和 `transpose`
   通过统一 logical-to-physical offset calculator 生成 logical movement segments，并尽量打包成
   三层 stride/iteration `wafer.instr.gather_scatter` descriptor。
-- R3.2c 已产出 memref-backed `wafer.tile.region`，R3.2e 已为 explicit static boundary slice
-  和 candidate output tile offsets/sizes candidate evaluation lowering 接入 DDR `memref.subview` producer；
-  R3.2d 必须基于该 unplaced Wafer-tagged memref graph 做 instruction lowering，不能再引入
+- tile-region lowering 已产出 memref-backed `wafer.tile.region`，candidate materialization 已为
+  explicit static boundary slice 和 candidate output tile offsets/sizes 接入 DDR `memref.subview` producer；
+  instruction lowering 必须基于该 unplaced Wafer-tagged memref graph 做转换，不能再引入
   storage/buffer IR 层。
-- R3.2d 的 RDMA/WDMA lowering 可以消费 DDR `memref.subview` / strided memref view，但不会从
+- RDMA/WDMA lowering 可以消费 DDR `memref.subview` / strided memref view，但不会从
   group tiling plan 自己生成这些 view。closed-loop planner 后续产生的 candidate tile 仍必须先由
-  R3.2e/accepted materialization 显式变成 DDR subview。
-- R3.2c 已支持 `scf.if` / `scf.for` 作为 tile-region 内 structured control-flow。R3.2d 必须递归
+  candidate/accepted materialization 显式变成 DDR subview。
+- tile-region 已支持 `scf.if` / `scf.for` 作为 tile-region 内 structured control-flow。instruction lowering 必须递归
   legalize 这些 region body 内的 executable target-abstract op，并保留 `scf` container；是否选择
-  硬件 branch/loop、predication 或 unroll 不是 R3.2d V0 的职责。
+  硬件 branch/loop、predication 或 unroll 不是 instruction-level IR 的当前职责。
 
 本文依赖：
 
-- `tasks/2026-05-25-wafer-tile-region-design.md`
-- `tasks/2026-05-25-wafer-compute-dialect-design.md`
-- `tasks/2026-05-21-wafer-spm-bufferization-design.md`
+- `tasks/07-tile-region.md`
+- `tasks/10-compute-movement.md`
+- `tasks/09-spm-memory-planning.md`
 - `docs/wafer-hardware-instruction-set-and-programming-model.md`
 - `docs/wafer-register-level-instruction-spec.md`
 
@@ -59,7 +57,7 @@ memref SSA、Wafer memory attr、op operands、attrs、MemoryEffects 和显式 d
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  R3.2c/R3.2e `wafer.tile.region` IR，内部包含带 Wafer memory attr 的 memref values、
+  `wafer.tile.region` IR，内部包含带 Wafer memory attr 的 memref values、
   `memref.alloc` / `memref.subview` / verifier-legal metadata view、
   `wafer.tile.load` / `wafer.tile.store`、
   `wafer.tile.materialize_layout`、`wafer.tile.fill/gemm/elementwise/reduce`、
@@ -75,13 +73,13 @@ Pipeline position:
   memref values with `#wafer.memory<space, layout>` + `wafer.instr.*` +
   `wafer.instr.local_drain`，或结构化 legalization failure reason。
 - Downstream consumer:
-  R3.2f SPM memory planning、R3.2g DDR memory planning、R3.2h closed-loop candidate driver、
-  R3.6 ABI/LLVM lowering、R3.7 package manifest 和 R3.8 runtime adapter。
+  SPM memory planning、DDR memory planning、closed-loop candidate driver、
+  ABI/LLVM lowering、package manifest 和 runtime adapter。
 - User-level driver / named pipeline:
-  主线由 R3.2 closed-loop planner 调用；局部 bring-up / candidate evaluation 入口是
+  主线由 closed-loop planner 调用；局部 bring-up / candidate evaluation 入口是
   `wafer-lower-tile-region-to-instr` 和 `wafer-lower-groups-to-instr` named pipeline。
-  candidate evaluation 调用 R3.2d 时，tiled DDR load/store operand 必须已经由 R3.2e 或 accepted
-  materialization 表达成 tile view；如果仍是 whole-boundary memref，R3.2d 只能生成 whole-boundary
+  candidate evaluation 调用 instruction lowering 时，tiled DDR load/store operand 必须已经由 candidate 或 accepted
+  materialization 表达成 tile view；如果仍是 whole-boundary memref，instruction lowering 只能生成 whole-boundary
   descriptor。
   `--wafer-convert-tile-region-to-instr` 只作为 lit/debug pass 入口。
 - Explicit non-goals:
@@ -89,7 +87,7 @@ Pipeline position:
   DDR planning result、raw register packet field、Tsm wrapper call、C ABI symbol 或 launch ABI。
   DTE、CSR 和 SCALAR 不进入普通 `wafer.instr` issue path。
 - Completion gate:
-  对 R3.2c 已支持的 load/store、静态可证明 layout materialize、fill、GEMM、
+  对 tile-region 已支持的 load/store、静态可证明 layout materialize、fill、GEMM、
   elementwise/relation、reduce、copy 和 metadata view 生成 verifier-legal instruction-level IR
   或标准 memref view，并覆盖 nested `scf.if` / `scf.for` body 递归转换。unsupported hardware
   instruction form，包括当前无法证明的 slice/broadcast/transpose descriptor，必须结构化失败，
@@ -533,10 +531,10 @@ R3.2d verifier checks only instruction legality:
 
 Instruction lowering does **not** verify physical address range, SPM bank conflicts, DDR default arena capacity,
 runtime symbol, packet bit layout or worker register window. Those checks belong to SPM/DDR offset assignment,
-R3.6 ABI/LLVM lowering, R3.7 package manifest and R3.8 runtime adapter.
+ABI/LLVM lowering, package manifest and runtime adapter.
 DDR offset assignment must accept or reject the explicit DDR views, descriptors and compiler-managed DDR `memref.alloc`
-already present in this IR, and must materialize accepted DDR offset facts before R3.6 ABI/LLVM lowering,
-R3.7 package manifest and R3.8 runtime adapter consume them through resource view analysis.
+already present in this IR, and must materialize accepted DDR offset facts before ABI/LLVM lowering,
+package manifest and runtime adapter consume them through resource view analysis.
 
 ## 11. Example
 

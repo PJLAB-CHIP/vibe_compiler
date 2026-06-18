@@ -1,7 +1,5 @@
 # Wafer Local Compute Normalization Design
 
-日期：2026-05-25
-
 状态：设计草案；范围：post-SPMD local compute normalization 和 tensor collective handoff，
 不承载 SPMD partition、SPM/DDR 或 runtime package。
 
@@ -15,10 +13,10 @@ DTE、C ABI 或 runtime package。
 
 本文依赖：
 
-- `tasks/2026-05-25-wafer-frontend-stablehlo-program-design.md`
-- `tasks/2026-05-25-wafer-shardy-spmd-design.md`
-- `tasks/2026-05-12-wafer-group-design.md`
-- `tasks/2026-05-25-wafer-compute-dialect-design.md`
+- `tasks/02-frontend-stablehlo-program.md`
+- `tasks/03-shardy-spmd.md`
+- `tasks/06-group.md`
+- `tasks/10-compute-movement.md`
 - MLIR Linalg / Bufferization / Dialect Conversion 官方文档。
 
 ## 1. 目标和非目标
@@ -426,7 +424,7 @@ intermediate storage 选择固化成 IR 合同。若后续需要 multi-stage sof
 可验证表示；如果该语义能由 StableHLO / structured tensor IR 和 Wafer 硬件能力表达，后续任务应
 扩展 normalized IR、verifier 或 lowering，而不是把当前 pattern 覆盖范围写成长期不支持。
 
-### 6.1 R2.4 StableHLO Conversion Coverage / Practice Matrix
+### 6.1 StableHLO Conversion Coverage / Practice Matrix
 
 R2.4 主线已从本地小 pass 串切换为 StableHLO 官方 Linalg legalization pass：
 `wafer-lower-stablehlo-to-linalg` 先运行 Wafer-owned post-SPMD collective handoff，再运行当前 pin 的
@@ -464,7 +462,7 @@ Normalization 后必须能检查：
   `wafer.tile.*` communication、`storage`、DTE 或 runtime metadata。
 - IR 中没有 Wafer physical memory、layout materialization、DTE、packet 或 runtime launch 事实。
 
-### 7.1 R2.3 覆盖状态口径
+### 7.1 覆盖状态口径
 
 R2.3 覆盖状态以 structured tensor IR 证据为准，
 不再把 acceptance pass 视为 schedule completion。当前可引用的 evidence 如下：

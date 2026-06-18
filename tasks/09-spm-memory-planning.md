@@ -1,6 +1,4 @@
-# Wafer SPM Bufferization Design
-
-日期：2026-05-21
+# Wafer SPM Memory Planning Design
 
 状态：设计草案；范围：instruction-level IR 上的 SPM memory planning。accepted fact 为
 offset-only `wafer.spm.offset`，size / bank span / alignment 由 memref type、layout 和 target policy 重算。
@@ -9,23 +7,23 @@ offset-only `wafer.spm.offset`，size / bank span / alignment 由 memref type、
 `wafer.group` planning 的合法性搜索，也负责把 `wafer.tile.region` 中的 tile-local value
 落到可验证的 memory space、liveness、range 和 effect。
 SPM memory planning 的 instruction-level 输入合同由
-`tasks/2026-06-05-wafer-instruction-ir-design.md` 定义；本文只消费该层暴露的
+`tasks/11-instruction-ir.md` 定义；本文只消费该层暴露的
 Wafer-tagged memref / `wafer.instr.*` / effects，不重复定义 instruction op。
 
 本文只负责 `#wafer.memory<spm, *>` 的 tile-local allocation：
 
-- 消费 R3.2d 产出的 instruction-level `wafer.instr.*` IR 和 unplaced
+- 消费 instruction-level `wafer.instr.*` IR 和 unplaced
   `memref<..., #wafer.memory<spm, layout>>`，并从 memref use-def、effects、queue 和 async policy
   构造 allocation input。
 - 对 instruction-level IR 做 SPM memory planning、range/end-address/alignment/bank-span verification 和 failure
   feedback。
-- 为 R3.6 ABI/LLVM lowering、R3.7 package manifest 和 runtime adapter 的 resource view 提供 accepted offset fact；range、lifetime
+- 为 ABI/LLVM lowering、package manifest 和 runtime adapter 的 resource view 提供 accepted offset fact；range、lifetime
   和 alias 信息由当前 IR 和 helper 重算，不作为长期 attr 字段保存。
 
 本文不分配 DDR，不选择 physical layout，不决定 group boundary，不选择 compute/communication
 instruction selection，也不生成 runtime package。DDR source/destination range 和 bandwidth 可以作为
 legality 或 cost input；DDR default arena resource 的主设计见
-`tasks/2026-05-25-wafer-ddr-memory-planning-design.md`。SPM allocation 的失败 trace、搜索顺序和
+`tasks/12-ddr-memory-planning.md`。SPM allocation 的失败 trace、搜索顺序和
 rejected/candidate offset 都是 analysis，不写进长期 IR。
 
 ## 1. 核心结论
@@ -47,12 +45,12 @@ layout materialization
 如果没有合法 allocation，不能生成一个等待下游修复的 scheduled group。planner 应回到 tile shape、
 internal split、layout assignment、output coverage 或 group boundary 继续搜索。
 
-### 1.1 R3.2f Pipeline Contract
+### 1.1 Pipeline Contract
 
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  R3.2e candidate DDR tile-view materialization 后，经 R3.2d instruction legalization 产出的
+  candidate DDR tile-view materialization 和 instruction legalization 之后的
   instruction-level `wafer.instr.*` IR with actual DDR tile views and unplaced
   `memref<..., #wafer.memory<spm, layout>>` values，以及 accepted layout assignment、
   materialization cut、effect/order 和 target SPM policy。
@@ -62,19 +60,19 @@ Pipeline position:
   和 range-end verification。
 - Output artifact / IR:
   same instruction-level IR with offset-only `wafer.spm.offset` planning facts on SPM memref definitions，或结构化
-  allocation failure reason；后续 R3.6/R3.7/R3.8 直接从该 fact、memref use-def、placement 和 view relation
+  allocation failure reason；后续 ABI/LLVM、package manifest 和 runtime adapter 直接从该 fact、memref use-def、placement 和 view relation
   按需派生 launch/resource 与 ABI address-range 参数，不再经过 placed memref / descriptor 中间层。
 - Downstream consumer:
-  R3.2g DDR memory planning、R3.2h closed-loop candidate driver、R3.6 ABI/LLVM lowering、
-  R3.7 package manifest 和 R3.8 runtime adapter。
+  DDR memory planning、closed-loop candidate driver、ABI/LLVM lowering、
+  package manifest 和 runtime adapter。
 - User-level driver / named pipeline:
-  当前可重放入口是 `wafer-lower-groups-to-memory-planned-instr`，它复用 R3.2c/R3.2d lowering 后追加
+  当前可重放入口是 `wafer-lower-groups-to-memory-planned-instr`，它复用 tile-region / instruction lowering 后追加
   `wafer-plan-spm-memory`。closed-loop planner 后续调用同一 stage；单独 SPM planning pass 只作为
   instruction-level lit/debug 入口。
 - Explicit non-goals:
   不选择 instruction form、不改变 layout assignment、不分配 DDR allocation、不生成 C ABI call 或 packet。
 - Completion gate:
-  对 R3.2d 支持的 storage kinds 给出 deterministic memory plan 或结构化失败；planned storage 的 size、
+  对 instruction lowering 支持的 storage kinds 给出 deterministic memory plan 或结构化失败；planned storage 的 size、
   alignment、range/end、lifetime 和 alias relation 能由 IR/effect/verifier 重算。
 ```
 
@@ -435,7 +433,7 @@ accepted DDR planned ranges 关联到 launch metadata。
 
 不要把 `wafer.tile.region` body 已经表达的执行结构复制成全局 allocation plan attr。
 
-### 12.1 R3.2f Accepted SPM Offset Fact
+### 12.1 Accepted SPM Offset Fact
 
 R3.2f V0 在 instruction-level IR 上使用 `wafer.spm.offset` op attr 表达 SPM memory planning
 接受的 offset/range fact。该 attr 挂在定义 SPM buffer value 的 `memref.alloc` 上，值为
@@ -511,7 +509,7 @@ SPM / tile-region verifier 至少检查：
 
 ## 14. 与 Layout / Group 的关系
 
-全局文档边界见 `tasks/2026-05-11-wafer-ai-compiler-architecture.md` 第 8 节。SPM allocation 只回答
+全局文档边界见 `tasks/01-architecture.md` 第 8 节。SPM allocation 只回答
 tile-region IR 的 `#wafer.memory<spm, *>` placement 是否可行，并把失败原因返回 group/layout planner。
 闭环顺序：
 

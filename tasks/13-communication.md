@@ -1,7 +1,5 @@
 # Wafer Communication Dialect Design
 
-日期：2026-05-25
-
 状态：设计草案；范围：`wafer.tile.region` / SPM materialization 之后的 tile communication IR。
 
 本文定义 Wafer 后端的 device-side communication IR。它连接 post-SPMD tensor collective 语义、
@@ -216,7 +214,7 @@ collective 仍应由 unicast p2p schedule 组合表达，而不是在 logical IR
 `wafer.placement.map` 过渡 op 时检查 peer 指向 active physical tile；长期应改为查询
 `wafer.device.mesh` / `wafer.target.topology`。`wafer.tile.wait` 要求至少一个 async token。旧
 `--wafer-lower-tile-region-to-c-abi` pass 已删除；fixed-size unicast p2p 到 committed Direct DTE
-issue/wait form 和 ABI/LLVM emission 的 lowering 必须在 R6/R3.6 从 committed instruction-level IR、
+issue/wait form 和 ABI/LLVM emission 的 lowering 必须从 committed instruction-level IR、
 topology/device-mesh/shard-binding contract 和 resource view analysis 重新建立。这一层仍不应 materialize raw non-unicast register 字段，也不把 DTE id、
 runtime physical address 或 wrapper packet bitfield 暴露成上层 communication IR 语义。
 
@@ -412,7 +410,7 @@ wafer.tile.wait %send1, %recv1
 - `collective_permute`、ring `all_gather`、`reduce_scatter` / `all_reduce` 的 p2p + local reduce
   lowering 仍依赖后续 placement/local-rank/buffer facts，不是当前主线完成项。
 - Direct DTE send/recv/wait golden path 和 error diagnostic 属于历史 bring-up 证据；Direct DTE
-  issue/wait form、resource allocation 和 ABI/LLVM emission 需要在 R6/R3.6 从 committed instruction IR
+  issue/wait form、resource allocation 和 ABI/LLVM emission 需要从 committed instruction IR
   和 accepted placement/resource facts 重新建立。
 
 后续进入条件：
@@ -426,7 +424,7 @@ wafer.tile.wait %send1, %recv1
 
 ## 12. 与其它文档的关系
 
-全局文档边界见 `tasks/2026-05-11-wafer-ai-compiler-architecture.md` 第 8 节。本文只维护
+全局文档边界见 `tasks/01-architecture.md` 第 8 节。本文只维护
 device-side communication IR、token/effect、Direct DTE V0 和 sync boundary；group search、
 layout assignment、SPM/DDR allocation、compute op legality 和 host runtime D2D/P2P ABI 不在本文
 重复定义。Direct DTE / FSM / wrapper 的 register-level 事实只作为 lower-level lowering 约束。

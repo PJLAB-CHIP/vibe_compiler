@@ -1,7 +1,5 @@
 # Wafer Compute and Movement Dialect Design
 
-日期：2026-05-25
-
 状态：设计草案；范围：target-abstract compute / movement IR、layout/resource interface 和 instruction legality。
 
 本文定义 Wafer 后端中 target-abstract compute / movement IR 的边界。它连接
@@ -11,10 +9,10 @@
 本文中的 `wafer.tile.*` compute 是正式 IR contract。它表达“这个 tile-local op 已经选择了某类
 Wafer 目标实现族，并能提供 layout、effect 和 instruction family legality”。它仍然不表达 raw packet
 bitfield、SPM physical offset、worker window、runtime launch 或 host ABI。最终 SPM memref demand
-不是 target-abstract op 自身的属性，而是 R3.2d 产出的 instruction-level `wafer.instr.*`
-over unplaced Wafer-tagged memref IR 的结果。
+不是 target-abstract op 自身的属性，而是 instruction lowering 产出的 instruction-level
+`wafer.instr.*` over unplaced Wafer-tagged memref IR 的结果。
 instruction-level IR 的具体 op/type/interface 合同见
-`tasks/2026-06-05-wafer-instruction-ir-design.md`；本文不重复维护 `wafer.instr` op 列表。
+`tasks/11-instruction-ir.md`；本文不重复维护 `wafer.instr` op 列表。
 
 本文只负责 target-abstract compute/movement op 的语义、interface、effect、issue/drain 和
 lowering legality。它不重新做 group formation、tile search、layout assignment、SPM/DDR
@@ -76,12 +74,12 @@ scheduled wafer.group tensor body
 的信息无法由当前 IR、type、interface 或 verifier 推出，应扩 op/type/interface，而不是在 pass
 side table 中保留影子计划。
 
-### 2.1 R3.2d Pipeline Contract
+### 2.1 Pipeline Contract
 
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  R3.2c `wafer.tile.region` IR，内部包含 layout-materialized
+  `wafer.tile.region` IR，内部包含 layout-materialized
   Wafer-tagged memref、`wafer.tile.*` compute ops、`wafer.tile.*` movement ops、`wafer.tile.materialize_layout`、
   load/store boundary 和 view/alias relation。
 - Current stage responsibility:
@@ -91,16 +89,16 @@ Pipeline position:
 - Output artifact / IR:
   instruction-level Wafer IR over unplaced Wafer-tagged memref，或结构化 failure reason。
 - Downstream consumer:
-  R3.2f SPM memory planning、R3.2g DDR memory planning、R3.2h closed-loop candidate driver，以及 R3.6
-  ABI/LLVM lowering。tiled DDR load/store view 必须已经在 R3.2e 或 accepted materialization 中显式提供。
+  SPM memory planning、DDR memory planning、closed-loop candidate driver，以及 ABI/LLVM lowering。
+  tiled DDR load/store view 必须已经由 candidate materialization 或 accepted materialization 显式提供。
 - User-level driver / named pipeline:
-  主线仍从 `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 进入 R3.1/R3.2；
-  R3.2d 可提供局部 dump / lit gate，但不能成为用户级 compile flow。
+  主线仍从 `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 进入 logical group / tile-region pipeline；
+  instruction lowering 可提供局部 dump / lit gate，但不能成为用户级 compile flow。
 - Explicit non-goals:
   不决定 group boundary、tile shape、layout assignment、SPM offset、DDR memory planning、ABI call
   symbol 或 packet field。
 - Completion gate:
-  对 R3.2c 已支持的 compute/movement/view family 生成 verifier-legal instruction-level IR；
+  对 tile-region 已支持的 compute/movement/view family 生成 verifier-legal instruction-level IR；
   unsupported hardware instruction form 必须结构化失败，不能让 SPM memory planning 从 target-abstract op
   猜 memref demand。
 ```
@@ -191,7 +189,7 @@ recv chunk 与 accumulator 的本地累计步骤；`wafer.tile.reduce` 仍只表
 - output dtype、init value 和 NaN/overflow 等细节如果会影响语义，应保留在 op contract 中，而不是
   留给 wrapper 默认值。当前 tile-region IR lowering 从 scalar-constant `linalg.fill` out
   恢复 `init_value` attr；若 init 是 group boundary scalar，则作为 `wafer.tile.reduce` 的
-  scalar init operand 保留 SSA 关系。R3.6 ABI/LLVM lowering 如果目标 wrapper 仍只接受 issue-time
+  scalar init operand 保留 SSA 关系。ABI/LLVM lowering 如果目标 wrapper 仍只接受 issue-time
   `init_value` 参数，必须把动态 init 明确拆成 native reduce + supported scalar combine，或扩展
   wrapper contract，不能在 R3.2c 丢失语义。
 
@@ -373,7 +371,7 @@ local reduce 到 `wafer.tile.reduce` 的 path，保留 reduce dimensions
 和 scalar init value。P5.8 后续又补入 attention QK^T / AV 的 rank-4 contraction physical
 slice：只接受可由 `linalg.generic` indexing maps、parallel/reduction iterator types、mul-add
 body 和静态 shape relation 验证的 batch/head 形态，materialize 为带显式 batch/head/m/k/n 维度
-attrs 的 `wafer.tile.gemm`。后续 R3.2d/R3.6 必须把它 lower 成带 `batch_count` 和 M/K/N 的
+attrs 的 `wafer.tile.gemm`。后续 instruction lowering / ABI lowering 必须把它 lower 成带 `batch_count` 和 M/K/N 的
 instruction-level GEMM 以及对应 ABI/LLVM lowering。历史 transformer fixed package fixture 已删除；compiler-managed/resident constant metadata、
 resource summary 一致性验证和 full block package manifest 必须由后续 IR-derived package gate
 恢复。当前覆盖仍不是通用 elementwise/reduce/GEMM coverage；更复杂 broadcast、relation/logic、convert、多输入/非
@@ -474,7 +472,7 @@ Accepted layout 后：
 
 ## 10. 与其它文档的关系
 
-全局文档边界见 `tasks/2026-05-11-wafer-ai-compiler-architecture.md` 第 8 节。本文只维护
+全局文档边界见 `tasks/01-architecture.md` 第 8 节。本文只维护
 target-abstract compute/movement op 的语义、interface 和 lowering legality；group formation、
 layout assignment、SPM/DDR allocation、communication 和 launch/runtime 不在本文重复定义。
 register-level wrapper / packet 约束只在 launch/resource、ABI/LLVM 或 runtime adapter 边界中消费。

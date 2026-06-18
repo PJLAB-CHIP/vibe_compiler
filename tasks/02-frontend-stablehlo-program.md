@@ -1,7 +1,5 @@
 # Wafer Frontend and StableHLO Program Design
 
-日期：2026-05-25
-
 状态：设计草案；范围：frontend program、StableHLO export/import 和跨阶段 program chain。
 
 本文定义 Wafer compiler 的 model import 和 frontend program 边界。Wafer program 是长期编译对象：
@@ -14,9 +12,9 @@ SPM、DDR allocation、layout materialization、DTE、runtime package 或 launch
 
 本文依赖：
 
-- `tasks/2026-05-11-wafer-ai-compiler-architecture.md`
-- `tasks/2026-05-21-wafer-layout-materialization-design.md`
-- `tasks/2026-05-25-wafer-ddr-memory-planning-design.md`
+- `tasks/01-architecture.md`
+- `tasks/08-layout-materialization.md`
+- `tasks/12-ddr-memory-planning.md`
 - `docs/tx8-deps-reverse-engineering/txda-pytorch-runtime-wheel-analysis.md`
 
 ## 1. 目标和非目标
@@ -122,7 +120,7 @@ Model import 必须拒绝或显式诊断：
 - 只能靠 Python 对象名、parameter 名或文件路径恢复的语义关系。
 - importer 依赖的第三方 dialect / attr 没有注册或没有 verifier。
 
-#### 2.1.1 P2.F1 Framework Capture Adapter Contract
+#### 2.1.1 Framework Capture Adapter Contract
 
 P2.F1 在 R3 之前完成，原因是后续 group / tile / resource 链路必须消费真实 frontend program
 来源，而不是继续围绕手写 MLIR fixture 自洽。P2.F1 的产物是工具层三件套，不是新的 Wafer IR：
@@ -170,7 +168,7 @@ P2.F1 已落地：`tools/build_pytorch_xla_runtime.py` 从
 program directory generator，用于产出 PyTorch/XLA StableHLO program directory；lit 最小验证 将该 program directory 继续交给
 `wafer-compile-stablehlo --verify-stablehlo-program`。
 
-#### 2.1.2 P2.F1 主链路 Capture Model
+#### 2.1.2 主链路 Capture Model
 
 P2.F1 的主链路 program 使用 4096 规模的静态 matmul + bias + tanh + residual 模型，避免后续
 R3/R5 的 tiling、SPM/DDR demand、resident constant 和 package gate 退化成 trivial case：

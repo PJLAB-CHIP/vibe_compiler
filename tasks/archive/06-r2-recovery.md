@@ -1,5 +1,7 @@
 # Wafer R2 Frontend / SPMD / Local Compute Recovery
 
+> 归档记录：本文保留历史审计、恢复或任务级背景；不作为当前主线架构合同。当前入口见 `tasks/README.md` 和编号设计文档。
+
 日期：2026-05-26
 
 状态：R2 完成记录
@@ -24,7 +26,7 @@ completion、SPM/DDR memory planning 或 runtime/package 闭环完成。P2.F1/P2
 source-built PyTorch/XLA capture adapter、真实 `mark_sharding` pre-SPMD program 和
 Wafer Shardy propagation stage gate；误导性的 Python post-SPMD export 入口已删除，
 它不是 P2.S1 主链完成证据。状态索引见 `tasks/progress.md` 和
-`tasks/2026-05-25-wafer-shardy-spmd-design.md`。
+`tasks/03-shardy-spmd.md`。
 
 调度结论：framework-specific capture 和完整 Shardy propagation / SPMD partitioner
 pipeline 不是放弃项，也不应排在 R3 之后。`P2.F1` 已完成 source-built PyTorch/XLA capture

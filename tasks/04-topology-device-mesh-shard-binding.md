@@ -1,23 +1,20 @@
-# Wafer Placement Design
+# Wafer Topology, Device Mesh, and Shard Binding Design
 
-日期：2026-05-25
-
-状态：设计草案；范围：target topology、SPMD device mesh 和 logical rank 到 encoded tile endpoint 的
-placement。
+状态：设计草案；范围：target topology、SPMD device mesh、shard binding 和 encoded tile endpoint。
 
 本文定义 target topology、SPMD-visible device mesh 和 logical rank 到 Wafer physical tile endpoint 的
-placement 边界。SPMD 不能在 abstract full mesh 上先切分，再由 placement 后补坏 tile；它必须消费
-已经从 target topology 中选出的 valid device mesh。Placement 只把已经存在的 logical rank /
+映射边界。SPMD 不能在 abstract full mesh 上先切分，再由后段补坏 tile；它必须消费
+已经从 target topology 中选出的 valid device mesh。Shard binding 只把已经存在的 logical rank /
 rank group 事实投影到这个 device mesh 的 encoded tile endpoint，并为 `wafer.group` /
-`wafer.tile.region` / runtime launch 提供物理映射合同。它不负责 tensor tiling、SPM offset、
+`wafer.tile.region` / runtime launch 提供物理端点合同。它不负责 tensor tiling、SPM offset、
 physical layout、DTE algorithm、DDR allocation 或 C ABI。
 
 本文依赖：
 
-- `tasks/2026-05-25-wafer-shardy-spmd-design.md`
-- `tasks/2026-05-12-wafer-group-design.md`
-- `tasks/2026-05-25-wafer-communication-dialect-design.md`
-- `tasks/2026-05-25-wafer-launch-runtime-package-design.md`
+- `tasks/03-shardy-spmd.md`
+- `tasks/06-group.md`
+- `tasks/13-communication.md`
+- `tasks/15-launch-runtime-package.md`
 - `docs/wafer-hardware-instruction-set-and-programming-model.md`
 - `docs/tx8-deps-reverse-engineering/firmware-kuiper-runtime-hardware-analysis.md`
 

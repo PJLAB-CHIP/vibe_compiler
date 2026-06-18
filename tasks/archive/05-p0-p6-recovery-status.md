@@ -1,5 +1,7 @@
 # Wafer P0-P6 Recovery Status
 
+> 归档记录：本文保留历史审计、恢复或任务级背景；不作为当前主线架构合同。当前入口见 `tasks/README.md` 和编号设计文档。
+
 日期：2026-05-26
 
 状态：R0.1 完成记录；用于重写 P0-P6 历史未闭环项状态。
@@ -11,22 +13,22 @@
 
 已重读并用于本轮状态重写的主文档：
 
-- `tasks/2026-05-11-wafer-ai-compiler-architecture.md`
-- `tasks/2026-05-12-wafer-group-design.md`
-- `tasks/2026-05-13-wafer-design-docs-gap-review.md`
-- `tasks/2026-05-21-wafer-layout-materialization-design.md`
-- `tasks/2026-05-21-wafer-spm-bufferization-design.md`
-- `tasks/2026-05-25-wafer-frontend-stablehlo-program-design.md`
-- `tasks/2026-05-25-wafer-shardy-spmd-design.md`
-- `tasks/2026-05-25-wafer-placement-design.md`
-- `tasks/2026-05-25-wafer-local-compute-normalization-design.md`
-- `tasks/2026-05-25-wafer-tile-region-design.md`
-- `tasks/2026-05-25-wafer-compute-dialect-design.md`
-- `tasks/2026-05-25-wafer-communication-dialect-design.md`
-- `tasks/2026-05-25-wafer-ddr-memory-planning-design.md`
-- `tasks/2026-05-25-wafer-c-abi-golden-packet-design.md`
-- `tasks/2026-05-25-wafer-launch-runtime-package-design.md`
-- `tasks/2026-05-25-wafer-verification-plan-design.md`
+- `tasks/01-architecture.md`
+- `tasks/06-group.md`
+- `tasks/archive/01-design-docs-gap-review.md`
+- `tasks/08-layout-materialization.md`
+- `tasks/09-spm-memory-planning.md`
+- `tasks/02-frontend-stablehlo-program.md`
+- `tasks/03-shardy-spmd.md`
+- `tasks/04-topology-device-mesh-shard-binding.md`
+- `tasks/05-local-compute-normalization.md`
+- `tasks/07-tile-region.md`
+- `tasks/10-compute-movement.md`
+- `tasks/13-communication.md`
+- `tasks/12-ddr-memory-planning.md`
+- `tasks/14-abi-golden-packet.md`
+- `tasks/15-launch-runtime-package.md`
+- `tasks/16-verification-plan.md`
 
 涉及硬件、runtime、ABI、memory hierarchy 的状态判断同时参考：
 
@@ -78,7 +80,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - `WaferTransforms` 只注册当前仍成立的 transform pass；旧 C ABI issue-op lowering 和 `WaferConversion`
   pass target 已删除，后续按 committed instruction IR + topology/device-mesh/shard-binding + resource view analysis 重建。
 - R0.3 后 core compiler、frontend/importer、runtime/driver 和 test tools 的 target 可见范围记录在
-  `tasks/2026-05-26-wafer-dependency-layering-recovery.md`，并由 `tools/check_deps.py` 检查。
+  `tasks/archive/03-dependency-layering-recovery.md`，并由 `tools/check_deps.py` 检查。
 - Shardy/SDY 公共 dialect 与 import/export/propagation passes 已通过 Wafer 顶层 CMake shim 复用
   同一套固定版本 LLVM/MLIR/StableHLO 编译到 `shardy-sdy-opt`；不再以 Shardy standalone Bazel
   workspace 作为 Wafer dependency 编译验证。
@@ -113,9 +115,9 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 恢复任务：
 
 - R0.2：已完成源码组织边界恢复；记录见
-  `tasks/2026-05-26-wafer-source-organization-recovery.md`。
+  `tasks/archive/02-source-organization-recovery.md`。
 - R0.3：已完成依赖层级清单、检查和统一 Shardy CMake 编译验证目标；记录见
-  `tasks/2026-05-26-wafer-dependency-layering-recovery.md`。
+  `tasks/archive/03-dependency-layering-recovery.md`。
 - R1.1：已完成 Wafer IR layer-based 文件边界拆分，并由 `tools/check_ir_organization.py` 检查。
 
 ## P1 Wafer IR Skeleton 和 Verifier
@@ -213,13 +215,13 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 
 恢复任务：
 
-- R2.1：已完成；记录见 `tasks/2026-05-26-wafer-r2-recovery.md`，包含 frontend program verifier、
+- R2.1：已完成；记录见 `tasks/archive/06-r2-recovery.md`，包含 frontend program verifier、
   dynamic bound 和 diagnostics。
-- R2.2：已完成；记录见 `tasks/2026-05-26-wafer-r2-recovery.md`，logical mesh/sharding program
+- R2.2：已完成；记录见 `tasks/archive/06-r2-recovery.md`，logical mesh/sharding program
   可进入工具链。StableHLO replica group materialize 为 `wafer.tile.*` communication `rank_group` 的历史实现只作为
   已删除路线覆盖记录，不作为后段 placement/ring 或 group/tiling 输入。
-- R2.3：已完成；记录见 `tasks/2026-05-26-wafer-r2-recovery.md` 和
-  `tasks/2026-05-25-wafer-local-compute-normalization-design.md`，local compute coverage 按
+- R2.3：已完成；记录见 `tasks/archive/06-r2-recovery.md` 和
+  `tasks/05-local-compute-normalization.md`，local compute coverage 按
   op/dataflow contract 重写，不把 acceptance pass 当 schedule completion。
 - P2.F1：已完成；`tools/build_pytorch_xla_runtime.py` 从 `third_party/pytorch-xla` 源码构建/安装
   `torch_xla` 2.5.0，并通过 Bazel override 使用本仓库 `third_party/xla` / `third_party/llvm-project`；

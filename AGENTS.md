@@ -69,8 +69,9 @@
 
 当前常用目录：
 
+- `tasks/README.md`：`tasks/` 文档导航，说明当前编号文档和 archive 边界。
 - `tasks/progress.md`：当前执行看板，记录 active task、blocker 和下一步。
-- `tasks/`：设计草稿、gap review、任务级文档。除 `progress.md` 外，这里的文档是演进中的设计上下文，不自动等于最终结论。
+- `tasks/`：编号设计文档按 compiler pipeline 顺序排列；`tasks/archive/` 只保存历史审计、恢复和任务记录。
 - `docs/`：硬件、runtime、ABI、反向分析资料。
 - `docs/tx8-deps-reverse-engineering/`：依赖、runtime、firmware、接口约束整理。
 - `tools/`：辅助脚本。
@@ -80,9 +81,9 @@
 
 当前可优先阅读的设计上下文：
 
-- `tasks/2026-05-11-wafer-ai-compiler-architecture.md`：整体 Wafer compiler 架构背景。
-- `tasks/2026-05-12-wafer-group-design.md`：group / memory residency / scheduling 相关设计讨论。
-- `tasks/2026-05-13-wafer-design-docs-gap-review.md`：设计缺口和一致性检查。
+- `tasks/01-architecture.md`：整体 Wafer compiler 架构背景。
+- `tasks/06-group.md`：group / memory residency / scheduling 相关设计讨论。
+- `tasks/README.md`：当前 `tasks/` 文档顺序和归档边界。
 - `docs/wafer-hardware-instruction-set-and-programming-model.md`：硬件编程模型。
 - `docs/wafer-register-level-instruction-spec.md`：寄存器级指令信息。
 - `docs/tx8-deps-reverse-engineering/README.md` 和同目录接口文档：runtime / ABI / 依赖事实。

@@ -1,5 +1,7 @@
 # Wafer P0-P6 Design Conformance Audit
 
+> 归档记录：本文保留历史审计、恢复或任务级背景；不作为当前主线架构合同。当前入口见 `tasks/README.md` 和编号设计文档。
+
 日期：2026-05-26
 
 状态：审计记录；用于纠正 P0-P6 历史 `done` 状态的含义，并记录 collective handoff 复查结论。
@@ -11,7 +13,7 @@
 gate 只证明了局部 fixture 可以运行，尚未证明设计文档要求的主路径闭环。
 
 R0.1 审计时，工程组织也没有按
-`tasks/2026-05-11-wafer-ai-compiler-architecture.md` 第 7 节收敛：frontend lowering、
+`tasks/01-architecture.md` 第 7 节收敛：frontend lowering、
 group/tile materialization、layout/SPM/DDR、communication 和旧 ABI issue-op lowering 基本都堆在
 `lib/Wafer/Transforms`。R0.2 已恢复源码 ownership 边界；R1.1 之后 ODS、op verifier 和 dialect
 tests 已按 IR 层组织；R1.2/R1.3 曾补 interface/resource 查询合同和 local compute stage-connection
@@ -78,7 +80,7 @@ group/tiling。旧 PyTorch/XLA post-SPMD export 测试入口已删除；它不�
 ## 优先修复顺序
 
 1. 逐项重读 P0-P6 对应设计文档，把每个历史 `done` 拆成“设计合同 / 当前局部实现 / 缺口 / 恢复任务”；
-   R0.1 结果见 `tasks/2026-05-26-wafer-p0-p6-recovery-status.md`。
+   R0.1 结果见 `tasks/archive/05-p0-p6-recovery-status.md`。
 2. 修正 `tasks/progress.md` 中 P0-P6 的状态，不再让局部 fixture gate 占用设计完成语义。
 3. R0.2 已按架构文档第 7 节恢复源码 ownership 边界；R0.3 已补 core/frontend/runtime/test tooling
    dependency target 可见范围；R1.1/R1.2/R1.3 已补 IR 文件边界、interface/resource 查询和 local

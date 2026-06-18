@@ -1,7 +1,5 @@
 # Wafer C ABI and Golden Packet Design
 
-日期：2026-05-25
-
 状态：设计草案；范围：committed instruction IR + topology/device-mesh/shard-binding + on-demand resource view 到 ABI / LLVM / wrapper / packet 的 lowering。
 
 本文定义 committed Wafer instruction program 到 C ABI / wrapper / packet 的 lowering 合同，
@@ -11,10 +9,10 @@
 
 本文依赖：
 
-- `tasks/2026-05-25-wafer-compute-dialect-design.md`
-- `tasks/2026-05-25-wafer-communication-dialect-design.md`
-- `tasks/2026-05-25-wafer-tile-region-design.md`
-- `tasks/2026-05-25-wafer-launch-runtime-package-design.md`
+- `tasks/10-compute-movement.md`
+- `tasks/13-communication.md`
+- `tasks/07-tile-region.md`
+- `tasks/15-launch-runtime-package.md`
 - `docs/wafer-register-level-instruction-spec.md`
 - `docs/tx8-deps-reverse-engineering/tx8-interface-contract.md`
 
@@ -62,12 +60,12 @@ LLVM dialect call sequence / C ABI call sequence or packet emission
 - DTE / FSM / CSR 不走普通 `TsmExecute` packet path，需要独立 ABI family。
 - raw packet 只用于 debug、bring-up 或 golden test 对照，不作为普通 lowering 输出。
 
-### 2.1 R3.6 Pipeline Contract
+### 2.1 Pipeline Contract
 
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  R3.3 committed `wafer.instr.*` IR、accepted SPM/DDR offset facts、
+  committed `wafer.instr.*` IR、accepted SPM/DDR offset facts、
   topology/device-mesh/shard-binding contract、薄 launch/block binding 和 communication/sync lowering。
 - Current stage responsibility:
   从 committed instruction IR、accepted offset facts、topology/device-mesh/shard-binding contract、
@@ -78,7 +76,7 @@ Pipeline position:
   LLVM dialect call sequence、C ABI call sequence / packet emission metadata / debug dump，以及 golden
   packet test input。
 - Downstream consumer:
-  R3.7 object emission / IR-derived package manifest、R3.8 wrapper-facing call contract 和 board/runtime adapter。
+  object emission / IR-derived package manifest、wrapper-facing call contract 和 board/runtime adapter。
 - User-level driver / named pipeline:
   主线由后端 compile pipeline 调用；不引入专门 ABI IR op family 作为用户级 compile flow。
 - Explicit non-goals:
@@ -132,7 +130,7 @@ V0 family：
 这些函数名是 compiler-facing ABI family，不要求一一等同底层 public symbol。实现可以在 C shim 内
 调用 public Tsm wrapper、Kcore runtime helper 或未来 native helper。
 
-R3.6 主线不要求专门的 ABI IR 层。codegen 可以直接从 committed `wafer.instr.*`、accepted
+ABI/LLVM lowering 主线不要求专门的 ABI IR 层。codegen 可以直接从 committed `wafer.instr.*`、accepted
 SPM/DDR offset facts、topology/device-mesh/shard-binding contract、薄 launch/block binding 和按需重算的 resource view 发射 LLVM
 dialect call、`wafer_*` C shim 调用或 packet builder 输入。
 如果保留 `wafer.instr.rdma`、`wafer.instr.wdma`、`wafer.instr.gemm`、`wafer.instr.elementwise`、

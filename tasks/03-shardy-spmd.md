@@ -1,7 +1,5 @@
 # Wafer Shardy and SPMD Design
 
-日期：2026-05-25
-
 状态：设计草案；范围：Wafer-owned Shardy propagation / XLA SPMD partition 和 post-SPMD tensor collective handoff。
 
 本文定义 Wafer compiler 中 Shardy / SPMD 阶段的边界。该阶段负责 global tensor 的逻辑切分、
@@ -18,10 +16,10 @@ Shardy / XLA SPMD partitioner。
 
 本文依赖：
 
-- `tasks/2026-05-25-wafer-frontend-stablehlo-program-design.md`
-- `tasks/2026-05-25-wafer-placement-design.md`
-- `tasks/2026-05-25-wafer-communication-dialect-design.md`
-- `tasks/2026-05-25-wafer-local-compute-normalization-design.md`
+- `tasks/02-frontend-stablehlo-program.md`
+- `tasks/04-topology-device-mesh-shard-binding.md`
+- `tasks/13-communication.md`
+- `tasks/05-local-compute-normalization.md`
 
 ## 1. 目标和非目标
 
@@ -65,7 +63,7 @@ tile 通过哪个 DTE resource 通信”。当默认 policy 退化为 1 tile 或
 partitioner 可以产生等价的 single-program / replicated-local StableHLO；这仍是 SPMD 层的输出，
 不是后段 placement/group 私自补 sharding。
 
-### 2.1 P2 Shardy Propagation / SPMD Program Contract
+### 2.1 Shardy Propagation / SPMD Program Contract
 
 本节描述 P2 SPMD program 的终态合同；当前实现拆成 P2.S1 Shardy propagation stage 和
 P2.S2 Wafer-owned XLA SPMD partition stage。P2.S2 的用户级入口是
@@ -202,7 +200,7 @@ P2.S2 工程 gate 必须把 XLA SPMD partitioner 或等价 local-body partitioni
   StableHLO `func.func @main` 的 ranked tensor 边界回写到 `forward.meta`。NPY stream 是 frontend /
   partitioned program 的 tensor payload 容器，不是 Wafer runtime/package ABI。
 
-#### 2.1.1 P2.S1 真实图和 sharding 覆盖矩阵
+#### 2.1.1 真实图和 sharding 覆盖矩阵
 
 P2.S1 的 sharding branch 主 gate 继续使用 P2.F1 的真实 4096 matmul 图，不换成小 toy model：
 
@@ -252,7 +250,7 @@ expert sharding、真实 sequence parallel 和非整除 uneven slicing 不进入
 Shardy propagation；P2.S2 再进入 XLA SPMD partitioner。这个 case 不计入上表的用户 sharding
 策略数量，也不能被写成 Wafer 私有 sharding；它是 SPMD 层的默认 seed policy。
 
-#### 2.1.2 P2.S1 执行方法
+#### 2.1.2 执行方法
 
 P2.S1/P2.S2 的 program 生成入口应保持使用同一 4096 matmul source graph，但主线实现路线必须是：
 
