@@ -5,7 +5,8 @@
 状态：设计草案；范围：`wafer.launch`、runtime package、host runtime adapter 和 completion contract。
 
 本文定义 `wafer.launch`、runtime package、host runtime adapter 和 completion contract。该边界
-消费 committed instruction IR、placement/local-shard contract、按需重算的 resource view 以及 ABI/LLVM
+消费 committed instruction IR、topology/device-mesh/shard-binding contract、薄 launch/block binding、
+按需重算的 resource view 以及 ABI/LLVM
 lowering 产物，负责把 device code、resource metadata、placement、DDR binding、constant storage
 bytes 和 launch arguments 组织成可执行单元。runtime allocation/import/query 是 runtime adapter 在
 package load / launch 时执行的绑定动作，不是独立 compiler IR materialization stage。
@@ -49,18 +50,19 @@ wafer.launch @compiled_kernel(
   outputs,
   runtime_args
 ) attributes {
-  placement,
-  resource_requirements,
   package_ref
 }
 ```
 
-概念字段：
+概念 view。下面这些字段由 R3.6/R3.7/R3.8 从 committed IR 和 explicit facts 重算，不是
+`wafer.launch` 提前保存的第二份 IR 合同：
 
 - launch signature：user-visible inputs/outputs、shape、dtype、external layout、alias policy。
-- placement：logical rank / block 到 physical card/tile mapping。
-- resource requirements：SPM summary、DDR workspace demand、resident constant demand、control
-  metadata demand。
+- endpoint view：`wafer.device.mesh` 的 rank->encoded endpoint embedding，薄
+  launch/block binding 的 block id，以及 `wafer.shard.binding` 的 boundary slice。
+- resource requirements：从 committed instruction IR、accepted offsets、communication/sync IR 和
+  shard binding 重算的 SPM summary、DDR workspace demand、resident constant demand、control metadata
+  demand。
 - device code reference：kcore `.so` 或后续可执行代码对象。
 - runtime mode：HPGR 主路径或 legacy fallback。
 
@@ -73,9 +75,10 @@ wafer.launch @compiled_kernel(
 Pipeline position:
 - Upstream artifact / IR:
   R3.3 committed `wafer.tile.region` / `wafer.instr.*` IR、accepted SPM/DDR offset facts、
-  placement/local-shard contract、按需重算的 resource view，以及 R3.6 ABI/LLVM lowering 产物。
+  topology/device-mesh/shard-binding contract、薄 launch/block binding、按需重算的 resource view，
+  以及 R3.6 ABI/LLVM lowering 产物。
 - Current stage responsibility:
-  R3.7 组装 object/program id、entrypoint、ABI version、constant bytes、placement metadata 和
+  R3.7 组装 object/program id、entrypoint、ABI version、constant bytes、endpoint metadata 和
   resource binding metadata 到 package manifest；R3.8 runtime adapter 根据该 manifest 执行
   allocate/import/query/bind、launch、completion/error validation。
 - Output artifact / IR:
@@ -84,7 +87,7 @@ Pipeline position:
 - Downstream consumer:
   HPGR/KMD/legacy runtime launch path、board correctness gate 和 profiling/error propagation gate。
 - User-level driver / named pipeline:
-  package emission 必须接在 committed instruction -> placement/local-shard -> ABI/LLVM lowering 之后，
+  package emission 必须接在 committed instruction -> topology/device-mesh/shard-binding -> ABI/LLVM lowering 之后，
   不以显式 manifest fixture 或 C stub table 作为主线入口。
 - Explicit non-goals:
   不重新做 placement、tile search、layout、SPM/DDR planning、communication schedule 或 ABI lowering；
@@ -103,7 +106,7 @@ Runtime package 是交付给 runtime adapter 的编译产物集合。V0 需要�
 | --- | --- | --- |
 | device code | per-kernel / per-cluster kcore shared object | C ABI / LLVM lowering |
 | launch signature | inputs、outputs、runtime args、shape/dtype/layout | frontend + lowering |
-| placement metadata | cluster、tile mapping、block id、good-tile assumption | placement |
+| endpoint metadata | topology snapshot id、rank endpoint table、block id、availability assumption | `wafer.target.topology` + `wafer.device.mesh` + thin launch/block binding |
 | DDR memory metadata | external binding contract、workspace demand、resident constant demand | on-demand resource view derived from committed IR + DDR planner facts |
 | SPM summary | per-tile SPM peak、reserved range、allocation summary | SPM bufferization |
 | constant storage bytes | transformed read-only backing data, if needed | constant storage transform |
@@ -164,13 +167,14 @@ Runtime package 必须区分：
 
 KMD/UAPI 的低层分配类别只作为 runtime mapping evidence 使用；R3.2g compiler planning 产出
 accepted DDR planned ranges；ABI lowering、package manifest emission 和 runtime adapter 通过同一
-resource view analysis 从 committed IR、accepted offsets 和 placement/local-shard metadata 派生
+resource view analysis 从 committed IR、accepted offsets、topology/device-mesh/shard-binding 和薄
+launch/block binding 派生
 external binding、workspace、resident constant 和 control metadata requirements。runtime adapter 在
 package load / launch 时执行 allocate/import/query/bind，并报告
 runtime allocation failure；不能在 runtime/package 层重新决定 DDR range plan。
 
 当前 `tools/wafer_package_manifest.py` 只负责验证和 roundtrip 显式输入的 manifest schema，不再提供
-固定 package emitter。manifest schema 记录 launch signature、placement metadata、DDR external
+固定 package emitter。manifest schema 记录 launch signature、endpoint metadata、DDR external
 binding bytes、SPM/DDR memory summary、workspace buffer demand、resident constant demand、ABI
 call/packet emission metadata、device-code program id 和 runtime completion source。validator 要求
 `resources.workspace_bytes` 与
@@ -183,7 +187,7 @@ fixture 生成可被 C compiler 做 syntax compile 的 ABI emission table、tile
 workspace buffer table 和 resident constant table；它不代表当前 IR pipeline 已生成 package，也不代表
 真实 device code 已可执行。
 
-P4.4 起，C ABI stub 还从 placement metadata 生成 per-tile launch arg table：
+P4.4 起，C ABI stub 还从 endpoint metadata 生成 per-tile launch arg table：
 
 ```c
 typedef struct {
@@ -196,26 +200,29 @@ typedef struct {
 } wafer_tile_launch_arg_t;
 ```
 
-该表只把已验证的 package placement metadata materialize 成 runtime 可消费的 tile-specific
+该表只把已验证的 package endpoint metadata materialize 成 runtime 可消费的 tile-specific
 arguments；它不反向定义 tensor semantics，也不包含 runtime handle、physical DDR address、SPM offset
 或 DTE packet。
 
 历史 `--emit-single-tile-matmul`、`--emit-multi-tile-no-comm-matmul`、
 `--emit-single-tile-elementwise` 和 `--emit-local-transformer-block` fixed emitter 已删除。后续 package
-gate 必须从当前 `wafer-opt` pipeline 的 committed instruction IR、placement/local-shard contract、
+gate 必须从当前 `wafer-opt` pipeline 的 committed instruction IR、
+topology/device-mesh/shard-binding contract、薄 launch/block binding、
 按需重算的 resource view、ABI/LLVM lowering artifact 和 `wafer.launch` boundary 自动导出 manifest；
 不能恢复独立固定 emitter 作为完成证明。
 
-placement metadata 当前包含：
+package manifest 可以序列化 runtime 需要的 derived endpoint section，但 canonical facts 仍在
+compiler IR 中：
 
-- `logical_rank_count`、target topology dimensions、`good_tile_ids` 和 `bad_tile_ids`。
-- per-rank `logical_rank`、`physical_coord`、`block_id`。
-- per-rank `local_shards`，每个 shard 只记录 launch signature tensor 的 `name`、`offsets` 和
-  `sizes`。
+- topology snapshot / profile id、availability assumption 和 selected mesh id。
+- per-rank `logical_rank`、encoded endpoint、optional physical coord 和 `block_id`。
+- per-rank `local_shards`，每个 shard 引用 launch signature argument 或 result index，并记录
+  `offsets`、`sizes`、`strides`；名称只能用于诊断/显示，不作为绑定协议。
 
-这些字段是 package / launch metadata，不改变 tensor IR 语义。validator 检查 logical rank 覆盖、
-good/bad tile disjoint、mapped tile 必须 good 且不能 bad、physical tile 和 block id 不重复，以及
-local shard bounds 不越过 launch signature tensor shape。
+这些字段是 package / launch metadata，不改变 tensor IR 语义，也不成为 `wafer.device.mesh` /
+`wafer.target.topology` 的第二事实源。validator 检查 manifest rank endpoint table 能由 device mesh
+重算、mapped endpoint 仍 available、block id 不重复，以及 local shard bounds 不越过 launch
+signature tensor shape。
 
 ## 6. Legacy Bootparam and Dyn TLV
 
@@ -260,7 +267,7 @@ V0 验证：
 
 - package manifest schema roundtrip。
 - launch signature 与 compiled function ABI 一致。
-- placement metadata 覆盖所有 launched tile。
+- endpoint metadata 覆盖所有 launched tile。
 - DDR binding contract 与 package resource summary 一致。
 - constant storage bytes 能追溯到 `ConstantLike` value 和 selected storage layout。
 - legacy bootparam / dyn TLV serialization 的 size、offset、TLV header 检查。

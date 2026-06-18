@@ -74,8 +74,8 @@ wafer.group
   -> DDR memory planning on memory-planned instruction IR
   -> closed-loop candidate driver for retry/split/commit decision
   -> committed wafer.tile.region
-  -> placement / local-shard contract
-  -> ABI / LLVM lowering from committed IR + accepted offsets + placement
+  -> topology/device-mesh/shard-binding contract
+  -> ABI / LLVM lowering from committed IR + accepted offsets + topology/device mesh
   -> object/package/runtime adapter
 ```
 
@@ -88,7 +88,7 @@ wafer.group
   也不是 SPM allocator 的直接输入；rejected tile-region IR 不进入主线 committed IR。
 - committed `wafer.tile.region`：R3.3 只把 candidate-selection 已选中、且已通过 candidate gates
   的 candidate artifact 写入主 IR。后续 placement、R3.6 ABI/LLVM lowering 和 R3.7 package manifest
-  只从 committed IR、accepted offset facts 和 placement/local-shard contract 派生下游参数，
+  只从 committed IR、accepted offset facts 和 topology/device-mesh/shard-binding contract 派生下游参数，
   不重新决定 group 是否可行，也不复制 placed/access descriptor 中间协议。
 
 ### 2.1 R3.2c Pipeline Contract
@@ -297,11 +297,12 @@ V0 需要以下 op family：
    丢弃。
 9. committed `wafer.tile.region` materialization：R3.3 只把 candidate-selection 选中的 passing candidate
    inline commit 回原 `wafer.group` 位置，写入主 IR。
-10. placement / local-shard contract：从 committed instruction boundary、logical rank/local shard facts
-    和 target capability 生成 accepted placement map 与 launch-visible shard metadata。
-11. ABI / LLVM lowering：R3.6 从 committed instruction IR、accepted offset facts、placement 和按需重算的
-    resource view 生成 wrapper-friendly LLVM call / C ABI call / packet builder 输入；不新增 placed memref / access
-    descriptor 中间协议。
+10. topology/device-mesh/shard-binding contract：从 target topology、valid device mesh、
+    committed instruction boundary 和 logical rank/local shard facts 生成 shard binding 与薄
+    launch/block binding。
+11. ABI / LLVM lowering：R3.6 从 committed instruction IR、accepted offset facts、
+    topology/device-mesh/shard-binding 和按需重算的 resource view 生成 wrapper-friendly LLVM call /
+    C ABI call / packet builder 输入；不新增 placed memref / access descriptor 中间协议。
 
 rejected candidate plan 不能落入 IR 后等待下游修复。合法性失败应反馈给 group/layout/candidate
 planner 重新选择 tile shape、internal split、layout、output coverage 或 group boundary。
@@ -363,8 +364,8 @@ launch args / identity lowering 的 IR contract。当前没有 multi-tile no-com
   compiler-managed `#wafer.memory<ddr, *>` alloc 必须有 DDR memory planning 接受的
   `wafer.ddr.offset` fact；external DDR boundary value 的 descriptor/view/root validation 由当前
   instruction-level IR 重算。
-- placement、R3.6 lower-level 输入和 R3.7 manifest metadata 只能从当前 committed IR、
-  accepted offset facts、placement/local-shard contract 和按需 resource view 派生；不能要求
+- topology/device-mesh/shard-binding、R3.6 lower-level 输入和 R3.7 manifest metadata 只能从当前 committed IR、
+  accepted offset facts、topology/device-mesh/shard-binding contract 和按需 resource view 派生；不能要求
   tile-region 主线额外携带 placed memref 或 access descriptor 旁路事实。
 
 Verifier 不检查 group 是否应该形成；那是 `wafer.group` 和 planner 的职责。

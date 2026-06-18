@@ -118,7 +118,8 @@ SPM/layout 和 communication plan，没有把 host runtime 实际交付路径写
 - small-BAR 情况 host-visible runtime allocation device address 会加 BAR2 device offset
   `0x1F6000000`。
 - Kcore 每 tile 固定 109MiB firmware slot，Score0/Score1 跟在 16 个 Kcore slot 后。
-- PG/bad-tile 需要进入 placement metadata；不能默认 16 tile 全好。
+- PG/bad-tile 需要进入 `wafer.target.topology` / `wafer.device.mesh` fact source；package metadata
+  只能序列化由这些事实派生的 availability assumption，不能默认 16 tile 全好。
 
 后续实现如果 package format 只停留在抽象 metadata，就无法可靠接 HPGR/KMD 或旧
 `TsmRun` bootparam 路径；这应在 launch/runtime package verifier 中暴露。
@@ -180,7 +181,7 @@ legality；comm 负责 Direct DTE / FSM / token/wait；runtime/package、C ABI �
 
 `tasks/2026-05-25-wafer-c-abi-golden-packet-design.md` 和
 `tasks/2026-05-25-wafer-verification-plan-design.md` 已把 lower-level Wafer instruction/runtime op、
-ABI/LLVM call、committed instruction IR / placement-resource contract、legality diagnostics 和 wrapper golden packet
+ABI/LLVM call、committed instruction IR / topology-device-mesh-resource contract、legality diagnostics 和 wrapper golden packet
 tests 拆到对应层级。
 
 ## 6. Layout 设计已由 layout 子设计承接
@@ -405,7 +406,8 @@ buffer 复用必须有 explicit local drain。
 - single-tile compute：验证 HPGR 或 legacy `TsmRun` bootparam path；不能用 `TsmLaunch` /
   `DeviceSynchronize` 当通过标准。
 - single-tile compute：验证 `serial_mode` 初始化写 0 或读回确认。
-- multi-tile no-communication：验证 tile id / block id / good-tile bitmap 与 placement metadata，
+- multi-tile no-communication：验证 encoded tile endpoint / block id / availability assumption 与
+  topology/device mesh 派生的 launch metadata，
   不依赖 runtime discovery stubs。
 - Direct DTE p2p：验证 DTE unicast helper、FSM monitor、status/error/packet counter update 和
   resource release。

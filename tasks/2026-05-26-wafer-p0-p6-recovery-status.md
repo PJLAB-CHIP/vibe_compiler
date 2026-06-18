@@ -51,7 +51,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   `WaferDialect.cpp` 只保留 dialect/attr/type/op 注册和 `StorageType` verifier。
 - 历史 local integration gate 曾把 `wafer-opt` IR FileCheck 和 fixed manifest/C stub fixture 放在同一
   测试文件里；这些 fixed emitter 和测试拼接已删除，当前 integration 只保留 IR pipeline coverage。
-- 当前 local compile 还没有从 committed instruction IR、placement/local-shard contract 和按需 resource
+- 当前 local compile 还没有从 committed instruction IR、topology/device-mesh/shard-binding contract 和按需 resource
   view 导出 ABI/LLVM lowering artifact、IR-derived package manifest、LLVM IR、object、真实 `wafer_*` call、runtime adapter
   或板端 completion。
 
@@ -76,7 +76,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   `lib/Wafer/Conversion`；旧聚合 `WaferConversion` pass target 已删除，conversion 按 source/target
   IR contract 建 target。
 - `WaferTransforms` 只注册当前仍成立的 transform pass；旧 C ABI issue-op lowering 和 `WaferConversion`
-  pass target 已删除，后续按 committed instruction IR + placement/local-shard + resource view analysis 重建。
+  pass target 已删除，后续按 committed instruction IR + topology/device-mesh/shard-binding + resource view analysis 重建。
 - R0.3 后 core compiler、frontend/importer、runtime/driver 和 test tools 的 target 可见范围记录在
   `tasks/2026-05-26-wafer-dependency-layering-recovery.md`，并由 `tools/check_deps.py` 检查。
 - Shardy/SDY 公共 dialect 与 import/export/propagation passes 已通过 Wafer 顶层 CMake shim 复用
@@ -232,8 +232,8 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - P2.S1：骨架；`test/Tools/Inputs/wafer_pytorch_xla_capture.py` 用 source-built PyTorch/XLA lazy SPMD runtime
   的 `mark_sharding` 生成六种用户 sharding 策略的真实 PyTorch/XLA StableHLO program directory，program directory 继续由
   frontend verifier 和 Wafer Shardy propagation gate 消费。完全没有用户 seed 时，P2.S1 在 SPMD
-  层补默认 single-card function-input sharding seed（默认 16 tile，调试 1 tile，找不到合适切分
-  维度时 replicated）。P2.S1 不生成 partitioned StableHLO、rank-local shard payload、
+  层根据 `wafer.device.mesh` 补默认 function-input sharding seed；默认单卡 16 tile 和 1 tile
+  replicated 只作为 topology/device mesh profile 或 bring-up override 进入。P2.S1 不生成 partitioned StableHLO、rank-local shard payload、
   `wafer.spmd.*`、私有 sharding JSON 或名字约定。P2.S2 必须接上 XLA SPMD partitioner 并产出
   partitioned / replicated-local program；R3.1 依赖 P2.F1/P2.S1/P2.S2/R2.4 提供真实
   frontend/SPMD program 来源和 tensor collective handoff。
@@ -288,7 +288,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - R3.4：取消独立 placed/access descriptor materialization 主线；committed instruction IR 已经携带后续
   可重算的 operands、views、descriptor attrs 和 accepted offset facts。
 - R3.6：恢复 ABI / LLVM lowering gate，让 ABI 参数单位和 wait policy 从 committed instruction IR、
-  accepted offset facts、placement/local-shard contract 和按需 resource view 派生；不再保留专门 ABI
+  accepted offset facts、topology/device-mesh/shard-binding contract 和按需 resource view 派生；不再保留专门 ABI
   IR op family 作为主线或 debug layer。
 - R3.7：恢复 object/package manifest gate，manifest、launch signature、entrypoint、ABI version 和
   object/program id 从当前 `wafer-opt` 输出和同一 resource view analysis 导出。
@@ -311,14 +311,14 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
 - 有 `wafer.placement.map` verifier，检查 rank count、topology bounds、bad tile 和 duplicate tile。
 - `wafer-materialize-multi-tile-no-comm` 已删除；旧实现只是按 placement rank 数 clone whole-tensor
   tile_region，并用最后一个结果替换 group 结果，不能作为 multi-tile no-comm 主线证据。
-- package fixture / C stub 可以生成 per-tile launch arg table 和 placement metadata。
+- package fixture / C stub 可以生成 per-tile launch arg table 和 endpoint metadata。
 
 缺口：
 
 - multi-tile materialization 克隆 whole-tensor load-GEMM-store tile_region；没有真实 shard slicing。
 - group result 用最后一个 tile_region result 替换，没有 per-rank output merge 或 host-side shard readback。
 - block id、physical coord、local shard metadata 没进入 tile_region body 或真实 launch binding。
-- manifest placement metadata 是 fixed 最小验证 fixture，不来自 placement op + lowering 输出。
+- manifest endpoint metadata 是 fixed 最小验证 fixture，不来自 topology/device mesh + lowering 输出。
 - runtime launch completion 仍未实现，不能证明多 tile 并行或 per-tile args 被真实消费。
 
 恢复任务：
@@ -331,7 +331,7 @@ P0-P6 只能保持 `骨架` 状态。当前代码已经证明一些局部 IR、v
   input/output slice，不再 clone whole tensor。
 - R4.4：恢复 per-rank writeback / merge contract，明确 sharded output、host-side readback 或
   output merge 的 IR/package 责任。
-- R4.5：恢复 package / generated program gate，让 placement metadata、local shards、per-rank
+- R4.5：恢复 package / generated program gate，让 endpoint metadata、local shards、per-rank
   launch args 和 issue sequence 从当前 lowering 输出导出。
 
 ## P5 Transformer Local Vertical Slice

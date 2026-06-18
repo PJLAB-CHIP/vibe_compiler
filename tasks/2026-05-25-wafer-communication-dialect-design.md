@@ -5,7 +5,7 @@
 状态：设计草案；范围：`wafer.tile.region` / SPM materialization 之后的 tile communication IR。
 
 本文定义 Wafer 后端的 device-side communication IR。它连接 post-SPMD tensor collective 语义、
-placement 产生的 physical tile mapping、`wafer.tile.region` 中的 SPM buffer，以及后续
+`wafer.device.mesh` / `wafer.target.topology` 产生的 physical endpoint mapping、`wafer.tile.region` 中的 SPM buffer，以及后续
 Direct DTE / sync / runtime lowering。
 
 `wafer.tile.*` communication 的核心任务是把跨 tile 数据交换表达成可验证的 IR：peer、buffer、byte size、token、
@@ -23,8 +23,8 @@ fixed-size unicast Direct DTE，但 logical collective IR 的支持范围不能�
 
 目标：
 
-- 保留 tiled tensor collective 的通信语义，并在 placement 后把 logical rank group 映射到 physical
-  tile group。
+- 保留 tiled tensor collective 的通信语义，并通过 `wafer.device.mesh` / `wafer.target.topology`
+  把 logical rank group 映射到 physical endpoint group。
 - 使用 fixed-size unicast Direct DTE 作为已验证主 data plane，组合 ring/tree/transpose 等
   collective schedule；若后续启用 raw non-unicast DTE，必须先有独立 ABI、resource model 和板端验证。
 - 用 SSA token / effect 表达 outstanding communication 和 wait，服务 SPM liveness、buffer reuse 和
@@ -45,7 +45,7 @@ fixed-size unicast Direct DTE，但 logical collective IR 的支持范围不能�
 partitioned StableHLO + collectives
   -> Wafer LinalgExt-style tensor collective normalization
   -> wafer.group tiling / scheduled tensor collective
-  -> wafer.tile.region + SPM storage values + placement
+  -> wafer.tile.region + SPM storage values + topology/device mesh
   -> target-abstract wafer.tile.* communication collective or permute op
   -> explicit wafer.tile.* communication point-to-point steps
   -> Direct DTE/FSM/sync lowering
@@ -59,7 +59,7 @@ partitioned StableHLO + collectives
 | StableHLO / Shardy | `all_gather`、`reduce_scatter`、`all_reduce`、`collective_permute` | global tensor 和 logical mesh 语义 |
 | Tensor collective handoff | Wafer LinalgExt-style tensor collective ops | DPS/tensor-level collective、tiling/fusion、rank group/axis/combiner verifier |
 | Scheduled group / tile_region | tiled tensor collective + storage values | tile slice、SPM buffer、layout/materialization、communication staging demand |
-| Placement | logical rank 到 card/tile 的 mapping | good-tile/PG、cluster、rank order、physical peer |
+| Topology / device mesh | logical rank 到 encoded physical endpoint 的 mapping | availability、connectivity、rank order、physical peer |
 | target-abstract comm | `wafer.tile.*` communication ops collective / permute op | 保留 tile-local communication semantic 和 physical group，不选择 raw DTE register |
 | p2p schedule | `wafer.tile.send`、`recv`、`wait`、local compute step | 显式 ring/tree step、buffer slice、byte count、token/effect |
 | lower-level comm | Direct DTE / FSM / sync op | receiver ready、DTE attach/send/wait/release、packet counter、error status |
@@ -84,8 +84,8 @@ semantic。
 这些 op 处在 tiled tensor collective / SPM storage 与 explicit p2p schedule 之间。它们应携带：
 
 - source/result storage values。
-- logical group / rank order，来自 upstream tensor collective 和 placement。
-- physical placement reference，来自 placement stage。
+- logical group / rank order，来自 upstream tensor collective 和 device mesh。
+- physical endpoint reference，来自 `wafer.device.mesh` / `wafer.target.topology`。
 - reduction kind 和 dtype 语义，如果 collective 包含 reduce。
 - shape、slice 和 element type。
 
@@ -136,7 +136,7 @@ wafer.tile.wait(token...)
 
 ### 4.1 Peer and Group Representation
 
-physical peer 应来自 placement contract。早期可以用 placement attr 或 index SSA value 表达，但
+physical peer 应来自 topology/device-mesh contract。早期可以用过渡 placement attr 或 index SSA value 表达，但
 长期 verifier 需要能检查：
 
 - peer 是否在当前 cluster / collective group 内。
@@ -144,8 +144,9 @@ physical peer 应来自 placement contract。早期可以用 placement attr 或 
 - rank order 与 collective semantic 是否一致。
 - single-card / cross-card route 是否被当前 target policy 支持。
 
-这些信息不应靠变量名、tile id 常量约定或 side table 恢复。如果 placement facts 需要跨 pass
-保留，应进入 placement IR / attr，而不是 `wafer.tile.*` communication 自己复制一份拓扑计划。
+这些信息不应靠变量名、tile id 常量约定或 side table 恢复。如果 topology/device-mesh facts 需要跨 pass
+保留，应进入 `wafer.target.topology` / `wafer.device.mesh`，而不是 `wafer.tile.*` communication
+自己复制一份拓扑计划。
 
 ### 4.2 Token
 
@@ -212,10 +213,11 @@ raw non-unicast DTE 可以作为 HardwareVerify 主题：需要独立 ABI、reso
 collective 仍应由 unicast p2p schedule 组合表达，而不是在 logical IR 层被拒绝。
 
 当前 ODS / verifier 原型中，`wafer.tile.send` / `wafer.tile.recv` 的 p2p verifier 已在存在
-`wafer.placement.map` 时检查 peer 指向 active physical tile，`wafer.tile.wait` 要求至少一个
-async token。旧 `--wafer-lower-tile-region-to-c-abi` pass 已删除；fixed-size unicast p2p 到
-committed Direct DTE issue/wait form 和 ABI/LLVM emission 的 lowering 必须在 R6/R3.6 从 committed
-instruction-level IR、placement/local-shard contract 和 resource view analysis 重新建立。这一层仍不应 materialize raw non-unicast register 字段，也不把 DTE id、
+`wafer.placement.map` 过渡 op 时检查 peer 指向 active physical tile；长期应改为查询
+`wafer.device.mesh` / `wafer.target.topology`。`wafer.tile.wait` 要求至少一个 async token。旧
+`--wafer-lower-tile-region-to-c-abi` pass 已删除；fixed-size unicast p2p 到 committed Direct DTE
+issue/wait form 和 ABI/LLVM emission 的 lowering 必须在 R6/R3.6 从 committed instruction-level IR、
+topology/device-mesh/shard-binding contract 和 resource view analysis 重新建立。这一层仍不应 materialize raw non-unicast register 字段，也不把 DTE id、
 runtime physical address 或 wrapper packet bitfield 暴露成上层 communication IR 语义。
 
 P6.4 起，collective-level `wafer.tile.all_gather` 已进入 IR。该 op 接收 local chunk、gather

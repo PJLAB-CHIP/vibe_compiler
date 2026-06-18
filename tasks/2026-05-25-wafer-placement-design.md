@@ -72,7 +72,7 @@ Pipeline position:
   named pipeline 能重放 target topology materialization -> valid device mesh selection -> SPMD partition
   -> group formation -> candidate selection -> committed instruction materialization -> placement；
   emitted `wafer.device.mesh` 被 SPMD、communication verifier 和 ABI/package resource view 消费，并
-  成为唯一 rank-domain / rank->tile embedding fact source；
+  成为唯一 rank-domain / rank->encoded endpoint embedding fact source；
   verifier 能拒绝 rank count、unavailable tile、duplicate tile、duplicate block、out-of-topology、
   disconnected mesh axis 和 rank 数超过可用 tile。
 ```
@@ -280,11 +280,12 @@ topology dimensions、bad tile 集合、connectivity 和 tile id codec 只保存
 `wafer.placement.map` 应被删除，或降级为只保存 `block_ids` 的 launch/block binding；它不能再次保存
 rank->tile。
 
-package manifest gate 必须接入 launch-visible placement metadata：target topology / device mesh
+package manifest gate 必须接入 launch-visible endpoint metadata：target topology / device mesh
 提供 available / excluded encoded tile ids、connectivity assumption 和 per-rank encoded endpoint；
-thin launch/block binding 可提供 per-rank `block_id`；`local_shards` 进入 IR-derived package metadata。`local_shards` 只引用
-launch signature tensor 名称和静态 slice bounds；它不反向修改 tensor IR shape、layout 或 sharding
-semantics。
+thin launch/block binding 可提供 per-rank `block_id`；`local_shards` 进入 IR-derived package metadata。
+`local_shards` 应引用 launch signature argument/result index 或等价 ABI slot，并记录静态 slice
+bounds；tensor name 只能用于诊断/显示，不能作为绑定协议。它不反向修改 tensor IR shape、layout
+或 sharding semantics。
 
 ## 6. Placement Algorithm
 

@@ -1217,7 +1217,7 @@ V0 不做全局最优，但不能只做一次贪心选择。主路径是 determi
 
 10. Placement / launch / ABI handoff
 
-   cleanup 后交给 placement/local-shard contract、R3.6 ABI/LLVM lowering 和 R3.7 package manifest。
+   cleanup 后交给 topology/device-mesh/shard-binding contract、R3.6 ABI/LLVM lowering 和 R3.7 package manifest。
    它们从 committed Wafer-tagged memref、accepted offset facts、view relation、placement、layout
    helper 和按需 resource view 派生 address/range/stride 参数。layout planner 不直接生成 LLVM ABI，
    但必须保证 accepted layout 都能被这个派生过程合法实现。

@@ -9,7 +9,7 @@
 `frontend export -> StableHLO/SDY program directory -> Wafer Shardy propagation -> Wafer-owned XLA SPMD
 partition compiler stage -> partitioned or replicated-local StableHLO`，post-SPMD collective 先进入
 Wafer LinalgExt-style tensor collective handoff，再进入 group/tiling。没有用户 sharding 标记时，
-P2.S1 在 SPMD 层补默认 single-card function-input sharding seed；不能绕到 placement/group 后再
+P2.S1 在 SPMD 层根据 `wafer.device.mesh` 补默认 function-input sharding seed；不能绕到 group 后再
 补切分和通信。旧的 Python post-SPMD export 路线已删除，不能替代 Wafer-owned SPMD partition stage。
 
 ## 目标和非目标
@@ -155,8 +155,10 @@ XLA SPMD partition 接力、R2.4 tensor collective handoff、R3 group planner、
 package、runtime 或 board execution。
 
 `test/Spmd/default-spmd-input-seed.mlir` 的输入是手写 StableHLO/SDY module，用来固定 no-user
-default seed policy：默认 `tile-count=16`、调试 `tile-count=1`、已有用户 seed 时不覆盖、非法
-tile count 诊断。它是 P2.S1 default-seed unit gate，不是 P2.S2 partitioner gate。P2.S2 完成前，
+default seed policy 的过渡 unit gate：rank count / axes 长期来自 `wafer.device.mesh`；默认单卡
+16 tile 和 `tile-count=1` 只能作为 topology/device mesh profile 或 bring-up override 进入；已有用户
+seed 时不覆盖，非法 mesh/rank count 要诊断。它是 P2.S1 default-seed unit gate，不是 P2.S2
+partitioner gate。P2.S2 完成前，
 任何 `test/Spmd` 或 `test/Frontend` 的 FileCheck 都不能替代
 `frontend program -> Wafer Shardy propagation -> Wafer-owned XLA SPMD partition -> per-rank program`
 的主链路证明。
@@ -176,7 +178,7 @@ P2.F1 framework capture program
        -> P2.S2 XLA SPMD partitioner compiler stage
        -> partitioned StableHLO / per-rank program verifier
      else:
-       P2.S1 default single-card input sharding seed
+       P2.S1 default input sharding seed from wafer.device.mesh
        -> Shardy propagation
        -> P2.S2 XLA SPMD partitioner compiler stage
        -> partitioned or replicated-local StableHLO / per-rank program verifier
