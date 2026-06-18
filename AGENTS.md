@@ -2,9 +2,9 @@
 
 本文件用于说明在这个仓库里的工作规范。
 
-这个仓库处在 AI compiler / runtime 的早期设计和原型阶段。代码工程可能还没有完整展开，
-但工作标准仍按真实编译器工程执行：设计边界要清楚，IR 语义要可验证，文档不能把临时讨论、
-单个 case、未固定的设计假设或其它项目的实现路径写成长期架构。
+这个仓库处在 Wafer AI compiler / runtime 的设计收敛和实现推进阶段。文档、IR、pass、工具和
+测试会一起演进，但工作标准按真实编译器工程执行：设计边界要清楚，IR 语义要可验证，文档不能
+把临时讨论、单个 case、未固定的设计假设或其它项目的实现路径写成长期架构。
 
 ---
 
@@ -69,7 +69,7 @@
 
 当前常用目录：
 
-- `tasks/README.md`：`tasks/` 文档导航，说明当前编号文档和 archive 边界。
+- `tasks/README.md`：`tasks/` 文档导航，说明当前编号设计文档和 archive 边界。
 - `tasks/progress.md`：当前执行看板，记录 active task、blocker 和下一步。
 - `tasks/`：编号设计文档按 compiler pipeline 顺序排列；`tasks/archive/` 只保存历史审计、恢复和任务记录。
 - `docs/`：硬件、runtime、ABI、反向分析资料。
@@ -81,35 +81,39 @@
 
 当前可优先阅读的设计上下文：
 
-- `tasks/01-architecture.md`：整体 Wafer compiler 架构背景。
-- `tasks/06-group.md`：group / memory residency / scheduling 相关设计讨论。
-- `tasks/README.md`：当前 `tasks/` 文档顺序和归档边界。
+- `tasks/README.md`：当前 `tasks/` 文档顺序、编号设计文档和归档边界。
+- `tasks/progress.md`：当前 active task、主线 pipeline 和下一步队列。
+- `tasks/01-architecture.md`：整体 Wafer compiler 架构、IR 分层和子设计边界索引。
+- 编号 02-16 的当前设计文档：按 `tasks/README.md` 的 pipeline 顺序和任务范围读取。
 - `docs/wafer-hardware-instruction-set-and-programming-model.md`：硬件编程模型。
 - `docs/wafer-register-level-instruction-spec.md`：寄存器级指令信息。
 - `docs/tx8-deps-reverse-engineering/README.md` 和同目录接口文档：runtime / ABI / 依赖事实。
+- `tasks/archive/`：历史审计、恢复和任务记录；只作背景，不作为当前架构合同。
 
 如果文档之间冲突，优先级是：
 
 1. 用户当前明确要求。
 2. 本轮讨论已经收敛的结论。
-3. 最新任务文档和总体架构草案。
-4. 历史资料、原始文档和实验记录。
+3. `tasks/progress.md`、`tasks/README.md` 和当前编号设计文档。
+4. `docs/` 中的硬件、runtime、ABI 事实资料。
+5. `tasks/archive/`、历史资料、原始文档和实验记录。
 
-遇到冲突时，不要悄悄合并；在修改中收敛成一个清晰边界。不要把还在讨论中的设计写进
-`AGENTS.md` 当作长期规范。
+遇到冲突时，不要悄悄合并；在修改中收敛成一个清晰边界。`AGENTS.md` 只保存稳定协作规则和
+仓库导航，不记录当前 active task、短期路线图状态或还在讨论中的 IR 设计选择。
 
 ## 上下文读取
 
 按任务范围读取上下文，不机械全量阅读：
 
 1. 先读 `AGENTS.md`。
-2. 读 `tasks/progress.md`，确认当前 active task、blocker 和下一步。
-3. 读与当前任务直接相关的 `tasks/` 设计文档。
-4. 如果涉及硬件、runtime、ABI 或 memory hierarchy，再读对应 `docs/` 资料。
-5. 如果涉及构建、调试、历史问题或可复用经验，再读 `memory/general_dev.md` 和
+2. 读 `tasks/README.md`，确认当前编号设计文档和 archive 边界。
+3. 读 `tasks/progress.md`，确认当前 active task、blocker、主线 pipeline 和下一步。
+4. 读与当前任务直接相关的编号设计文档；不要把 `tasks/archive/` 当成当前合同。
+5. 如果涉及硬件、runtime、ABI 或 memory hierarchy，再读对应 `docs/` 资料。
+6. 如果涉及构建、调试、历史问题或可复用经验，再读 `memory/general_dev.md` 和
    `memory/bugs.md`。
-6. 如果涉及已有代码或脚本，再读代码；不要只看文档。
-7. 如果涉及 MLIR dialect、pass、interface、verifier、region 或 conversion 设计，优先查
+7. 如果涉及已有代码或脚本，再读代码；不要只看文档。
+8. 如果涉及 MLIR dialect、pass、interface、verifier、region 或 conversion 设计，优先查
    MLIR 官方文档，不用二手博客替代一手资料。
 
 构建和测试入口以当前 CMake / lit 配置以及 `memory/general_dev.md` 的最新记录为准。不要把旧
@@ -156,7 +160,7 @@ Pipeline position:
   位置；不能让用户或 integration test 手动拼一串 pass 当作长期 compile flow。
 - 局部 FileCheck、fixture、negative verifier 或 shape-only dump 只能补覆盖，不能作为主线完成
   证明；主线完成证明必须重放已完成上游链路，并让当前 stage 的输出被下游边界直接消费。
-- 如果直接下游尚未实现但硬件 / ABI 能表达该语义，应记录为下游恢复任务或扩 IR；不能把下游缺口
+- 如果直接下游尚未实现但硬件 / ABI 能表达该语义，应记录为后续任务或扩 IR；不能把下游缺口
   反向写成当前上游不支持，也不能绕到 Python helper、sidecar 或名字约定中补协议。
 
 ### 先设计后编码
@@ -295,8 +299,8 @@ legality、planning、lowering、diagnostic，或删除旧 matcher / fallback / 
 
 ## 不要做的事
 
-- 不要新增第二份总体设计文档，除非用户明确要求。
-- 不要在 IR 外再造长期语义通道：bag、payload、side table、名字约定、临时 wrapper 都不应成为协议。
+- 不要新增第二份总体设计文档，除非用户明确要求；导航索引可以存在，但不能复制或改写架构合同。
+- 不要在 IR 外再造长期语义通道：bag、opaque payload sidecar、side table、名字约定、临时 wrapper 都不应成为协议。
 - 不要让文档和代码长期协议错位。
 - 不要把 analysis pass 写成语义恢复黑箱。
 - 不要把单个 case 的调度结果写成通用架构规则。
