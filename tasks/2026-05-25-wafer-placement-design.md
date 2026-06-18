@@ -2,12 +2,15 @@
 
 日期：2026-05-25
 
-状态：设计草案；范围：logical mesh / rank 到 Wafer physical card/tile cluster 的 placement。
+状态：设计草案；范围：target topology、SPMD device mesh 和 logical rank 到 encoded tile endpoint 的
+placement。
 
-本文定义 logical mesh / rank 到 Wafer physical card/tile cluster 的 placement 边界。Placement
-消费 Shardy / SPMD 与 Wafer LinalgExt-style tensor collective handoff 保留下来的 logical rank /
-rank group 事实，并为 `wafer.group` / `wafer.tile.region` / runtime launch 提供物理映射合同。
-它不负责 tensor tiling、SPM offset、physical layout、DTE algorithm、DDR allocation 或 C ABI。
+本文定义 target topology、SPMD-visible device mesh 和 logical rank 到 Wafer physical tile endpoint 的
+placement 边界。SPMD 不能在 abstract full mesh 上先切分，再由 placement 后补坏 tile；它必须消费
+已经从 target topology 中选出的 valid device mesh。Placement 只把已经存在的 logical rank /
+rank group 事实投影到这个 device mesh 的 encoded tile endpoint，并为 `wafer.group` /
+`wafer.tile.region` / runtime launch 提供物理映射合同。它不负责 tensor tiling、SPM offset、
+physical layout、DTE algorithm、DDR allocation 或 C ABI。
 
 本文依赖：
 
@@ -22,9 +25,9 @@ rank group 事实，并为 `wafer.group` / `wafer.tile.region` / runtime launch 
 
 目标：
 
-- 把 logical rank / block / shard 映射到 physical card/tile coordinate。
-- 吸收 runtime capability、topology、good-tile bitmap、PG/bad-tile metadata 和 card/tile mesh
-  信息。
+- 把 logical rank / block / shard 映射到 encoded physical tile endpoint。
+- 在 SPMD 前 materialize runtime capability、topology、tile id mapping、PG/bad-tile metadata 和
+  physical connectivity，并从中选择 SPMD 可见的 valid device mesh。
 - 为 `wafer.group`、`wafer.tile.region`、后续 `wafer.tile.*` communication materialization 和 `wafer.launch` 提供
   可验证的 physical mapping。
 - 在不能得到合法 placement 时，把原因反馈给 planner 或 compile driver。
@@ -42,17 +45,19 @@ rank group 事实，并为 `wafer.group` / `wafer.tile.region` / runtime launch 
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  committed `wafer.tile.region` / `wafer.instr.*` IR at the selected-instr boundary，
-  with accepted SPM offsets and DDR demand legality facts；frontend/SPMD materialized
-  `wafer.shard.binding` local-shard facts；target topology / capability / good-tile / bad-tile metadata。
+  `wafer.target.topology` materialized from target descriptor / runtime capability / board profile；
+  `wafer.device.mesh` selected from valid connected topology before SPMD；frontend/SPMD materialized
+  `wafer.shard.binding` local-shard facts referencing that mesh；committed `wafer.tile.region` /
+  `wafer.instr.*` IR at the selected-instr boundary with accepted SPM offsets and DDR demand legality facts。
 - Current stage responsibility:
-  选择 logical rank / block 到 physical `(card_y, card_x, tile_y, tile_x)` 的 accepted mapping；
+  验证 selected device mesh 与 topology 仍一致，将 logical rank / block 投影到 encoded physical tile id；
   若上游已有显式 local shard facts，则只绑定到 logical rank 并验证 bounds；验证 rank coverage、
-  topology bounds、bad tile 过滤、physical tile uniqueness 和 block id uniqueness。
+  topology membership、availability、connectivity、physical tile uniqueness 和 block id uniqueness。
 - Output artifact / IR:
-  `wafer.placement.map` accepted mapping。它保存 rank->physical coordinate、block id、topology
-  dimensions 和 bad tile facts；local shard 只通过 `wafer.shard.binding` / launch-visible resource view 引用，
-  placement planner 不重新切分 tensor，也不复制 memory plan。
+  `wafer.placement.map` accepted mapping。它引用 `wafer.device.mesh` 和 `wafer.target.topology`，
+  保存 rank->encoded tile id 与 block id；topology dimensions、bad tile、tile id codec 和 connectivity
+  只属于 target topology / device mesh fact source。local shard 只通过 `wafer.shard.binding` /
+  launch-visible resource view 引用，placement planner 不重新切分 tensor，也不复制 memory plan。
 - Downstream consumer:
   communication lowering、ABI/LLVM lowering、package manifest 和 runtime adapter。
 - User-level driver / named pipeline:
@@ -62,11 +67,12 @@ Pipeline position:
   不重新做 group/candidate/tile shape/layout/SPM/DDR planning；不生成 DTE route、ABI call、packet、
   object、package、runtime handle 或 physical address；不靠 tensor 名字恢复 shard 语义。
 - Completion gate:
-  named pipeline 能重放 group formation -> candidate selection -> committed instruction materialization
-  -> placement；
+  named pipeline 能重放 target topology materialization -> valid device mesh selection -> SPMD partition
+  -> group formation -> candidate selection -> committed instruction materialization -> placement；
   emitted `wafer.placement.map` 被 communication verifier 消费，并为 ABI/package resource view 提供
   唯一 placement fact source；
-  verifier 能拒绝 rank count、bad tile、duplicate tile、duplicate block、out-of-topology 和 rank 数超过可用 tile。
+  verifier 能拒绝 rank count、unavailable tile、duplicate tile、duplicate block、out-of-topology、
+  disconnected mesh axis 和 rank 数超过可用 tile。
 ```
 
 ## 3. 输入和输出
@@ -75,32 +81,35 @@ Pipeline position:
 
 ```text
 partitioned StableHLO / local program
-  + logical mesh / rank groups
+  + wafer.target.topology
+  + wafer.device.mesh
+  + logical mesh / rank groups selected from valid topology
   + tensor collective rank groups / communication hints
   + shard shapes and communication volume hints
-  + target topology and capability
-  + good-tile / PG metadata
 ```
 
 输出：
 
 ```text
 accepted placement map
-  + logical rank -> physical coordinate
+  + logical rank -> encoded physical tile id
+  + target topology / device mesh references
   + cluster membership
   + block id metadata
-  + topology dimensions and bad-tile facts
 ```
 
 accepted placement 如果影响 codegen，必须进入 IR 或 launch metadata；placement search trace、
 rejected maps、score breakdown 是 analysis，不写入长期 IR。
 
-## 4. Physical Coordinate Model
+## 4. Physical Topology And Tile Id Model
 
-Wafer physical topology 使用层级 coordinate，而不是 flat device id：
+Wafer physical topology 是一个多卡、多 tile 组成的 mesh graph。每个 tile node 至少有：
 
 ```text
-card_y, card_x, tile_y, tile_x
+coord:        [card_y, card_x, tile_y, tile_x]
+tile_id:      hardware / runtime / DTE visible encoded endpoint id
+availability: available | bad | pg-disabled
+links:        adjacent encoded tile ids with optional cost
 ```
 
 已知事实：
@@ -111,39 +120,86 @@ card_y, card_x, tile_y, tile_x
 - 32 卡服务器可以抽象成 `4 x 8` card mesh，但实际可用卡、坏卡、PG tile 必须来自 runtime
   capability。
 
+Tile id 编码规则不能散落在 placement planner、verifier、communication lowering 或 ABI lowering
+里。默认规则可以存在，但它只能由 target topology materialization / import pass 使用，用来生成显式
+`coord -> tile_id` mapping；下游必须通过 topology model 查询 mapping，不能手写 row-major /
+card-major 公式。若 driver 返回 remap table、PG 改变可用 tile、跨卡 global id 编码变化，只改
+`wafer.target.topology` 或对应 import/rewrite pass。
+
 Placement 不要求所有程序都用完整 16 tile。cluster 可以是单 tile、单卡子集、单卡全 tile 或
 多卡 mesh。当前实现优先恢复单卡和小规模 multi-tile；跨卡 topology 仍应保持可表达。跨卡 route、
 C2C cost 或 runtime completion 尚未完善时，应形成 placement/runtime 恢复任务，不能反向要求
-SPMD 不产生跨卡 logical mesh 或 rank group。
+SPMD 在无效 mesh 上切分。
 
 单 tile、单卡多 tile 和多卡多 tile 都使用同一个抽象：
 
 ```text
-logical rank -> (card_y, card_x, tile_y, tile_x)
+logical rank -> encoded tile id
+encoded tile id -> topology node coord / links / availability
 ```
 
-单卡只是 `card_y_count = card_x_count = 1`，多卡只是 card 维度大于 1；planner 和 verifier 不
-分裂成两套语义。
+单卡只是 topology 里的可用 card 维度为 1，多卡只是 topology node 覆盖多个 card；planner 和
+verifier 不分裂成两套语义。
 
 ## 5. IR Representation
 
-accepted placement 和 boundary shard binding 需要分成两个 IR fact source：
+target topology、SPMD-visible device mesh、accepted placement 和 boundary shard binding 需要分成
+四个 IR fact source：
 
 ```text
-wafer.shard.binding:  logical rank -> launch-visible tensor slice
-wafer.placement.map:  logical rank -> physical tile coordinate
+wafer.target.topology: physical tile graph, encoded tile ids, availability, links, id codec provenance
+wafer.device.mesh:     logical rank domain selected from valid topology before SPMD
+wafer.shard.binding:   logical rank -> launch-visible tensor slice
+wafer.placement.map:   logical rank -> encoded physical tile endpoint
+```
+
+`wafer.target.topology` 由 target descriptor、runtime capability snapshot、board profile 或 bring-up
+default pass materialize。它显式保存 tile nodes、encoded tile ids、可用性和 connectivity。默认 tile
+id 规则可以是 `row_major_4d` / `card_major_4d` 这类 codec 名称，但 codec 只说明 mapping 的生成来源；
+IR 合同是显式的 `coord -> tile_id` 表。
+
+概念形式：
+
+```mlir
+wafer.target.topology @target {
+  axes = ["card_y", "card_x", "tile_y", "tile_x"],
+  id_encoding = #wafer.tile_id_encoding<row_major_4d>,
+  tile_coords = array<i64: 0, 0, 0, 0,
+                            0, 0, 0, 1>,
+  tile_ids = array<i64: 0, 1>,
+  available_tile_ids = array<i64: 0, 1>,
+  links = array<i64: 0, 1>
+}
+```
+
+`wafer.device.mesh` 是 SPMD 可见 mesh，必须在 SPMD partition 前存在。它从
+`wafer.target.topology` 的 available connected component 中选择 rank domain，并记录 logical rank 到
+encoded tile id 的 mapping。SPMD 的 sharding propagation、parameter shard metadata 和 tensor
+collective rank groups 都应引用这个 device mesh，而不是假设完整 abstract mesh。
+
+概念形式：
+
+```mlir
+wafer.device.mesh @mesh {
+  topology = @target,
+  axis_names = ["x", "y"],
+  axis_sizes = array<i64: 1, 2>,
+  rank_tile_ids = array<i64: 0, 1>
+}
 ```
 
 `wafer.shard.binding` 由 frontend/SPMD program metadata materialize，当前主要来自
 `forward.parameter_shards.json`。它引用 entry function symbol 和 argument index，记录该 launch-visible
 tensor 的 global shape、rank-local shape、logical rank 覆盖和 per-rank static slice
 `offsets/sizes/strides`。它不记录 payload file path、runtime handle、physical tile、SPM/DDR offset
-或 package manifest 字段。
+或 package manifest 字段。长期它还必须引用 `wafer.device.mesh`；`logical_rank_count` 只用于校验
+coverage，不能作为 rank domain 的根事实源。
 
 概念形式：
 
 ```mlir
 wafer.shard.binding {
+  mesh = @mesh,
   kernel = @forward,
   argument_index = 0 : i64,
   logical_rank_count = 2 : i64,
@@ -164,9 +220,10 @@ manifest metadata。
 accepted placement 需要在边界 op 上显式表达。推荐结构：
 
 - 在 `wafer.launch` 或被 launch outline 的 function 上保存 cluster-level placement mapping。
-- 在 `wafer.tile.region` lowering 时把 per-tile logical id / block id / physical coordinate 作为
+- 在 `wafer.tile.region` lowering 时把 per-tile logical id / block id / encoded tile id 作为
   region argument、constant-like descriptor 或 launch argument 传入。
-- 在 `wafer.tile.*` communication lowering 时通过 placement mapping 查 physical source/destination tile；这个查询发生在
+- 在 `wafer.tile.*` communication lowering 时通过 placement mapping 和 topology model 查
+  physical source/destination endpoint；这个查询发生在
   tensor collective 已经经 group/tiling 和 tile_region / SPM materialization 之后。
 
 Placement attr 可以保存结构性 mapping，因为它不能从 local IR 重新推出，且直接影响 codegen。
@@ -176,19 +233,17 @@ Placement attr 可以保存结构性 mapping，因为它不能从 local IR 重�
 
 ```text
 PlacementMap {
-  logical_mesh_axes
-  logical_rank_count
-  physical_cluster
-  logical_rank_to_physical_coord
+  device_mesh_ref
+  target_topology_ref
+  logical_rank_to_tile_id
   block_id_per_rank
-  good_tile_bitmap_or_capability_ref
 }
 ```
 
 如果后续实现发现 attribute 无法表达 verifier 需要的结构，可以拆成专门 placement op /
 region；但不能退化成名字约定或 side table。
 
-当前 V0 采用专门 op 表达最小 accepted mapping：
+当前已实现的 V0 op 仍把 topology dimensions 和 bad tile ids 临时放在 `wafer.placement.map` 里：
 
 ```mlir
 wafer.placement.map {
@@ -208,26 +263,40 @@ wafer.placement.map {
 
 `physical_tile_coords` 按 logical rank 顺序展开，每 4 个整数为
 `card_y, card_x, tile_y, tile_x`。logical rank 本身由数组顺序表达，避免再维护一份重复的
-rank id 表。`bad_tile_ids` 是当前 capability / PG 过滤后的 flat physical tile id 集合；后续
-`block_ids` 按 logical rank 顺序记录 launch-visible block identity，必须非负且唯一。local shard
-metadata 或 capability reference 后续接到 package/launch metadata，但不能改变 tensor semantics。
+rank id 表。`bad_tile_ids` 是当前 capability / PG 过滤后的 flat physical tile id 集合；`block_ids`
+按 logical rank 顺序记录 launch-visible block identity，必须非负且唯一。local shard metadata 或
+capability reference 后续接到 package/launch metadata，但不能改变 tensor semantics。
 
-package manifest gate 必须接入 launch-visible placement metadata：`good_tile_ids` /
-`bad_tile_ids` 表达当前 target capability assumption，per-rank `block_id` 和 `local_shards` 进入
-IR-derived package metadata。`local_shards` 只引用 launch signature tensor 名称和静态 slice bounds；它不反向修改
-tensor IR shape、layout 或 sharding semantics。
+该 V0 op 是过渡实现，不是最终合同。收口后 `wafer.placement.map` 应引用 `wafer.device.mesh` 和
+`wafer.target.topology`，保存 `rank_tile_ids` 和 `block_ids`；topology dimensions、bad tile 集合、
+connectivity 和 tile id codec 从 placement map 中移除，统一由 topology / mesh fact verifier 检查。
+
+package manifest gate 必须接入 launch-visible placement metadata：target topology / device mesh
+提供 available / excluded encoded tile ids 和 connectivity assumption，placement map 提供 per-rank
+`block_id` 与 encoded endpoint，`local_shards` 进入 IR-derived package metadata。`local_shards` 只引用
+launch signature tensor 名称和静态 slice bounds；它不反向修改 tensor IR shape、layout 或 sharding
+semantics。
 
 ## 6. Placement Algorithm
 
-V0 使用可解释的 deterministic placement，不追求全局最优：
+Mesh selection 必须发生在 SPMD 前。V0 推荐使用 valid rectangular submesh 算法：
 
-1. 从 `wafer.shard.binding` 推导 logical rank count；若没有 shard binding，显式 driver option 可作为
-   bring-up fixture override，缺省退回 single-rank。
-2. 从 target capability 构造 card-major / tile-major physical tile sequence，过滤 PG/bad tile。
-3. 检查可用 tile 数不少于 logical rank 数。
-4. V0 deterministic strategy 按 logical rank 顺序取前 N 个 good tiles，并为每个 rank 生成同值
-   `block_id`。该策略已经统一覆盖 single-tile、single-card multi-tile 和 multi-card multi-tile。
-5. 后续 cost model 可以在同一 `PlacementMap` contract 下替换排序策略，但不能把 rejected maps、
+1. 从 `wafer.target.topology` 删除 bad / PG-disabled tile。
+2. 在 available tile graph 上计算 connected components。
+3. 在每个 component 内枚举 contiguous rectangular submesh。
+4. 根据 requested rank count、preferred mesh shape 和 collective hints 选择最大或最接近的 candidate。
+5. 生成 `wafer.device.mesh`，记录 logical mesh axes 和 `rank -> encoded tile id`。
+6. SPMD partition 只消费这个 valid device mesh 进行 sharding propagation 和 parameter shard
+   materialization。
+
+Placement V0 使用可解释的 deterministic projection，不追求全局最优：
+
+1. 从 `wafer.device.mesh` 读取 logical rank domain 和 rank tile ids；无 mesh 的局部 fixture 才允许
+   bring-up override。
+2. 验证 rank tile ids 都存在于 `wafer.target.topology`，且仍 available、无重复、属于同一 selected
+   connected mesh。
+3. 按 logical rank 顺序生成同值 `block_id`，并输出 `wafer.placement.map`。
+4. 后续 cost model 可以在同一 `PlacementMap` contract 下替换排序策略，但不能把 rejected maps、
    cost breakdown 或通信 route 写入 IR。
 
 cost model 可以考虑：
@@ -236,16 +305,30 @@ cost model 可以考虑：
 - collective group 是否可以映射成局部 ring/tree。
 - 每个 physical tile 的 local shard resource pressure。
 - good-tile 分布导致的 hole 和 route penalty。
+- logical mesh axis 到 physical graph path 的 shortest-path cost。
 
 这些是候选排序，不是 IR contract。IR contract 只有 accepted placement mapping。
+
+带洞 mesh 的 V1 算法可以在同一 IR 合同下扩展为 graph-aware logical mesh embedding：
+
+1. 将 available topology 建成带权图 `G=(V,E)`。
+2. 在 connected component 内生成 K-node connected subgraph candidates。
+3. 尝试 logical mesh shape，例如 `[1,N]`、`[2,N/2]`、`[4,N/4]`。
+4. 用 row-major、serpentine、BFS 或 Hilbert-like ordering 建立 rank order。
+5. 对每个 logical axis 计算 collective cost；若 axis 跨 disconnected component，则 cost 为 infinity。
+6. SPMD cost model 用 axis cost 选择 tensor dim -> mesh axis。
+
+Full co-optimization（SPMD strategy、mesh embedding、placement、communication algorithm 同时搜索）
+不作为当前 V0/V1 完成标准。
 
 ## 7. 与其它阶段的接口
 
 | 阶段 | Placement 提供 | Placement 不提供 |
 | --- | --- | --- |
+| SPMD partition | 由 `wafer.device.mesh` 提供 valid logical mesh 和 rank tile ids | 事后修补 invalid full mesh |
 | `wafer.group` | per-rank local shard / block identity、tensor collective rank group 可解释性 | tile shape、fusion boundary |
-| `wafer.tile.region` | physical tile coordinate / block id args | SPM offset、layout assignment |
-| `wafer.tile.*` communication | tile_region / SPM materialization 后的 logical endpoint 到 physical endpoint mapping | DTE node/FSM/packet allocation |
+| `wafer.tile.region` | encoded tile id / block id args | SPM offset、layout assignment |
+| `wafer.tile.*` communication | tile_region / SPM materialization 后的 logical endpoint 到 physical endpoint mapping；topology graph 可用于 route/cost | DTE node/FSM/packet allocation |
 | `wafer.launch` | cluster membership and launch metadata | runtime allocation mapping、completion source |
 
 Placement 不应把 DTE route 或 runtime launch API 写进上层。Communication lowering 可以基于
@@ -253,40 +336,63 @@ accepted placement 选择 ring/tree/unicast protocol。
 
 ## 8. Verifier
 
+`wafer.target.topology` 必须检查：
+
+- 每个 tile node 的 encoded tile id 唯一。
+- tile coordinate rank 与 topology axes 一致。
+- available / bad / PG-disabled 状态不互相冲突。
+- link endpoints 都引用已知 tile id。
+- codec provenance 只用于生成或重建 mapping；verifier 和 lowering 不依赖隐含公式。
+
+`wafer.device.mesh` 必须检查：
+
+- 引用的 target topology 存在。
+- `rank_tile_ids` 数量等于 mesh axis product。
+- 每个 rank tile id 都存在、available 且不重复。
+- mesh axis 上需要通信的 rank pair 在 topology graph 中连通；对 V0 rectangular mesh，rank tile ids
+  还必须构成 contiguous rectangular submesh。
+
 `wafer.shard.binding` 必须检查：
 
 - `kernel` symbol 能解析到 `func.func`。
 - `argument_index` 指向合法 function argument，且该 argument 是 static ranked tensor。
 - `global_shape`、`local_shape` 与 function argument rank / element type 一致；`local_shape` 匹配
   argument type。
-- `logical_rank_count` 为正；`shard_ranks` 覆盖 `0..logical_rank_count-1` 且不重复。
+- `logical_rank_count` 为正，且与引用的 `wafer.device.mesh` rank 数一致；`shard_ranks` 覆盖
+  `0..logical_rank_count-1` 且不重复。
 - `shard_offsets` / `shard_sizes` / `shard_strides` 都按 rank-major 展开，长度等于
   `logical_rank_count * global_rank`。
 - 每个 slice 不越过 `global_shape`，`sizes` 不超过 `local_shape`，`strides` 为正。
 - 同一 function argument 不能有多份 shard binding；若 module 中已有 `wafer.placement.map`，
-  `logical_rank_count` 必须一致。
+  device mesh / rank count 必须一致。
 
 `wafer.placement.map` 必须检查：
 
-- logical rank 数量与 physical coordinate 数量一致。
-- physical coordinate 在 target topology 内。
-- 每个 mapped tile 通过 good-tile / PG validation。
-- mapping 满足 selected cluster 的 launch capability。
-- logical rank group 中的 endpoints 都有 physical coordinate。
+- 引用的 `wafer.device.mesh` 和 `wafer.target.topology` 存在且一致。
+- logical rank 数量与 `rank_tile_ids` 数量一致。
+- 每个 mapped tile id 在 target topology 内且 available。
+- mapping 满足 selected mesh 的 launch capability。
+- logical rank group 中的 endpoints 都有 encoded physical tile endpoint。
 - block id / tile id 没有重复冲突，除非明确表达 replicated execution。
-- placement attr 中没有 SPM offset、DDR address、DTE packet 或 runtime handle。
+- placement attr 中没有 topology dimensions、bad tile table、tile id codec、SPM offset、DDR address、
+  DTE packet 或 runtime handle。
 
-Planner 失败也必须报告为 placement 错误，例如 rank 数超过可用 good tile、topology 维度非法或
-bad tile list 越界；不应该伪装成 downstream SPM、DTE 或 runtime package 错误。
+Planner 失败也必须报告在正确边界：无法形成 valid device mesh 是 mesh selection / SPMD 前错误；
+rank 数超过可用 good tile、tile id 不存在、mesh axis disconnected 或 topology import 冲突不能
+伪装成 downstream SPM、DTE 或 runtime package 错误。
 
 ## 9. V0 范围
 
 V0 支持：
 
+- 默认 target topology materialization，生成显式 coord -> encoded tile id mapping。
+- topology import/rewrite pass 改写 tile id mapping、availability 和 links。
+- 从 available connected topology 中选择 valid rectangular `wafer.device.mesh`。
+- SPMD 基于 `wafer.device.mesh` 做 sharding propagation 和 parameter shard binding。
 - single-tile placement。
 - single-card 2/4/8/16 tile cluster。
 - 多卡多 tile 的 topology-aware deterministic mapping。
-- good-tile bitmap 过滤。
+- good-tile / bad-tile / PG-disabled tile 过滤。
 - block id 与 logical rank 的一一绑定。
 - local shard 绑定/验证只消费已有显式 shard facts；当前 planner 不从 tensor 名字或 payload 恢复
   shard，也不重新切分 tensor。
@@ -296,6 +402,7 @@ V0 支持：
 - 跨卡 collective 最优 placement。
 - runtime 迁移、动态 bad-tile 重映射。
 - serving-level request placement。
+- full SPMD strategy / mesh embedding / communication algorithm co-optimization。
 
 这些不是 logical mesh / rank group 的语义不支持。若上游产出硬件 topology 可表达的跨卡 mesh，
 placement IR 应保留必要 mapping / capability fact；缺少最优策略或 runtime route 时，失败应定位到
