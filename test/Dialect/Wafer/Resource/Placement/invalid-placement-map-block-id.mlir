@@ -2,8 +2,8 @@
 
 module {
   wafer.placement.map
-      {bad_tile_ids = array<i64: 1>,
-       block_ids = array<i64: 0, 1>,
+      {bad_tile_ids = array<i64>,
+       block_ids = array<i64: 0, 0>,
        card_x_count = 1 : i64,
        card_y_count = 1 : i64,
        logical_rank_count = 2 : i64,
@@ -13,4 +13,4 @@ module {
        tile_y_count = 4 : i64}
 }
 
-// CHECK: maps logical rank 1 to bad tile id 1
+// CHECK: maps multiple logical ranks to block id 0

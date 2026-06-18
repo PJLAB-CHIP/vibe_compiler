@@ -21,6 +21,7 @@ void buildPlanDDRMemoryPipeline(mlir::OpPassManager &pm);
 void buildLowerGroupsToMemoryPlannedInstrPipeline(mlir::OpPassManager &pm);
 void buildLowerGroupsToDDRMemoryPlannedInstrPipeline(mlir::OpPassManager &pm);
 void buildLowerGroupsToSelectedInstrPipeline(mlir::OpPassManager &pm);
+void buildLowerGroupsToPlacementPipeline(mlir::OpPassManager &pm);
 
 #ifdef WAFER_ENABLE_SHARDY
 void buildStablehloShardingPropagationPipeline(mlir::OpPassManager &pm,

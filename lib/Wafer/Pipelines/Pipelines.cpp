@@ -37,6 +37,35 @@ static void addStablehloToLinalgBody(mlir::OpPassManager &pm) {
   pm.addPass(createLegalizeStablehloToLinalgPass());
 }
 
+struct PlacementPipelineOptions
+    : public mlir::PassPipelineOptions<PlacementPipelineOptions> {
+  Option<int64_t> logicalRankCount{
+      *this, "logical-rank-count",
+      llvm::cl::desc("number of dense logical ranks to place"),
+      llvm::cl::init(1)};
+  Option<int64_t> cardYCount{
+      *this, "card-y-count",
+      llvm::cl::desc("number of Wafer card rows in the target topology"),
+      llvm::cl::init(1)};
+  Option<int64_t> cardXCount{
+      *this, "card-x-count",
+      llvm::cl::desc("number of Wafer card columns in the target topology"),
+      llvm::cl::init(1)};
+  Option<int64_t> tileYCount{
+      *this, "tile-y-count",
+      llvm::cl::desc("number of tile rows per card in the target topology"),
+      llvm::cl::init(4)};
+  Option<int64_t> tileXCount{
+      *this, "tile-x-count",
+      llvm::cl::desc("number of tile columns per card in the target topology"),
+      llvm::cl::init(4)};
+  Option<std::string> badTileIds{
+      *this, "bad-tile-ids",
+      llvm::cl::desc("comma-separated flat physical tile ids excluded from "
+                     "placement"),
+      llvm::cl::init("")};
+};
+
 } // namespace
 
 void buildStablehloToLinalgPipeline(mlir::OpPassManager &pm) {
@@ -110,6 +139,19 @@ void buildLowerGroupsToSelectedInstrPipeline(mlir::OpPassManager &pm) {
   pm.addPass(createSelectGroupTilePass());
 }
 
+static void buildLowerGroupsToPlacementPipeline(
+    mlir::OpPassManager &pm, const PlacementPipelineOptions &options) {
+  buildLowerGroupsToSelectedInstrPipeline(pm);
+  pm.addPass(createPlanPlacementPass(
+      options.logicalRankCount, options.cardYCount, options.cardXCount,
+      options.tileYCount, options.tileXCount, options.badTileIds));
+}
+
+void buildLowerGroupsToPlacementPipeline(mlir::OpPassManager &pm) {
+  PlacementPipelineOptions options;
+  buildLowerGroupsToPlacementPipeline(pm, options);
+}
+
 #ifdef WAFER_ENABLE_SHARDY
 void buildStablehloShardingPropagationPipeline(mlir::OpPassManager &pm,
                                                int64_t defaultTileCount) {
@@ -160,6 +202,13 @@ void registerWaferPipelines() {
         "instruction-level Wafer IR",
         [](mlir::OpPassManager &pm) {
           buildLowerGroupsToSelectedInstrPipeline(pm);
+        });
+    mlir::PassPipelineRegistration<PlacementPipelineOptions>(
+        "wafer-lower-groups-to-placement",
+        "Select group tile candidates and append accepted physical placement",
+        [](mlir::OpPassManager &pm,
+           const PlacementPipelineOptions &options) {
+          buildLowerGroupsToPlacementPipeline(pm, options);
         });
 #ifdef WAFER_ENABLE_SHARDY
     mlir::PassPipelineRegistration<StablehloShardingPropagationPipelineOptions>(

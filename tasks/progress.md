@@ -1,6 +1,6 @@
 # Wafer Compiler Progress
 
-更新时间：2026-06-16
+更新时间：2026-06-18
 
 本文件记录当前看板、主线 pipeline、完成口径和下一步。设计细节、实现复盘、测试命令
 和长验证说明放在对应 `tasks/` 设计文档、git commit 和测试里；这里不写逐条过程记录。
@@ -43,8 +43,8 @@ PyTorch/XLA StableHLO Wafer program directory
   -> wafer-lower-groups-to-selected-instr / candidate-selection + committed materialization
        search shape-driven traversal/reduction refinement frontier, verify same-domain output coverage,
        rerun candidate gates, commit only the selected passing candidate into main IR
-  -> placement / local-shard contract
-       accepted logical rank/block -> physical coordinate mapping and launch-visible local shard metadata
+  -> placement map / local-shard binding
+       accepted logical rank/block -> physical coordinate mapping；local-shard metadata 只消费显式 upstream facts
   -> R3.6 ABI / LLVM lowering
        committed `wafer.instr.*`, accepted offsets, placement, communication and sync boundary
        -> LLVM dialect call sequence or `wafer_*` C ABI / packet builder input
@@ -66,31 +66,32 @@ PyTorch/XLA StableHLO Wafer program directory
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  R3.3 committed main IR；已包含 selected candidate 的 `wafer.tile.region`、`wafer.instr.*`、actual DDR
-  tile views、accepted SPM offset facts 和 accepted DDR offset facts；同时消费 frontend/SPMD
-  保留的 logical rank、block/local shard facts，以及 target topology / capability / good-tile metadata。
+  committed selected-instr IR；已包含 selected candidate 的 `wafer.tile.region`、`wafer.instr.*`、
+  actual DDR tile views、accepted SPM offset facts 和 DDR demand legality facts；同时消费 explicit
+  logical rank / block / local shard facts，以及 target topology / capability / good-tile metadata。
 - Current stage responsibility:
-  materialize accepted placement map 和 launch-visible local shard/block metadata；验证 logical rank 覆盖、
-  physical tile 可用性、block id/local shard bounds 和 committed IR 的 per-rank boundary 可解释性。
-  该阶段只形成 placement/local-shard contract，不生成 runtime allocation、ABI call、packet、object
-  或 package。
+  materialize accepted logical rank / block -> physical coordinate mapping；若上游已有显式 local shard
+  facts，则只绑定并验证 bounds，不重新切分 tensor、不从名字或 payload 恢复 shard。该阶段只形成
+  placement/local-shard contract，不生成 runtime allocation、ABI call、packet、object 或 package。
 - Output artifact / IR:
-  accepted placement/local-shard contract；可由 `wafer.placement.*`、launch-visible function/module
-  metadata 或后续 `wafer.launch` boundary 承载。它只保存不能从 local IR 重算的 mapping，不复制
-  memory plan、packet field、runtime handle 或 search trace。
+  `wafer.placement.map` accepted mapping；保存 logical rank count、block id、physical coordinate、
+  topology dimensions 和 bad tile facts。local shard 只在已有 explicit shard fact / 后续
+  launch-visible resource view 中引用，不复制 memory plan、packet field、runtime handle 或 search trace。
 - Downstream consumer:
-  R6 communication lowering、R3.6 ABI/LLVM lowering、R3.7 package manifest 和 R3.8 runtime adapter。
+  当前 placement verifier 和 communication verifier 已消费 `wafer.placement.map`；后续 communication
+  lowering、ABI/LLVM lowering、package manifest 和 runtime adapter 从同一 placement fact source 派生。
 - User-level driver / named pipeline:
-  后续应在 committed selected-instr named pipeline 之后追加 placement/local-shard stage；用户不应
-  手工拼 accepted instruction IR、placement fixture 和 package metadata 作为主线 compile flow。
+  `wafer-plan-placement` pass 和 `wafer-lower-groups-to-placement` named pipeline；后者在 committed
+  selected-instr boundary 之后追加 placement，用户不应手工拼 accepted instruction IR 和 placement
+  fixture 作为主线 compile flow。
 - Explicit non-goals:
   不重新做 tile search、layout search、SPM planning 或 DDR planning；不选择 DTE route、packet
   resource、runtime allocation object、physical address、ABI call 或 object/package 格式。
 - Completion gate:
-  以 named pipeline 重放 R3.1 -> candidate-selection -> committed materialization -> placement；
-  emitted placement/local-shard contract 被 R6 communication lowering、R3.6 ABI/LLVM lowering 和 R3.7
-  package manifest emission 直接消费，且 verifier 能拒绝 rank 覆盖、bad tile、重复 block/tile 和
-  local shard 越界。
+  named pipeline 重放 group formation -> candidate selection -> committed instruction materialization
+  -> placement；emitted `wafer.placement.map` 被 communication verifier 直接消费；verifier 能拒绝
+  rank count、bad tile、重复 block/tile、out-of-topology 和 rank 数超过可用 tile。完整 local-shard
+  bounds gate 需要上游先提供显式 shard facts。
 ```
 
 R3.4 placed/access descriptor realization 取消为独立主线阶段。原因是 committed instruction IR 已经
@@ -129,7 +130,7 @@ R3.4 旁路协议传递。
 
 | ID | 状态 | 输入 | 输出 / 完成 gate |
 | --- | --- | --- | --- |
-| placement/local-shard | active | R3.3 committed tile-region / `wafer.instr.*` + frontend/SPMD logical rank/local shard facts + target topology/capability | accepted placement map、block id、launch-visible local shard metadata；验证 rank coverage、good/bad tile、block/tile uniqueness 和 local shard bounds |
+| placement/local-shard | active | committed tile-region / `wafer.instr.*` + explicit logical rank/local shard facts + target topology/capability | V0 accepted placement map、block id、topology dimensions 和 bad tile facts；local-shard bounds gate 等待显式 shard fact IR 接入 |
 | R6.1-R6.2 | pending | tiled tensor collective + placement/local-rank/buffer facts | materialize tile communication 到 communication / Direct DTE resource / local-drain 边界；结果进入 R3.6 ABI/LLVM lowering |
 | R3.6 | pending | committed instruction IR + accepted SPM/DDR offset facts + placement/local-shard contract + communication/sync lowering | LLVM dialect call sequence 或 `wafer_*` C ABI / packet builder input；按需重算 launch/resource view，固定参数单位、address domain、wait/completion policy 和 ABI version |
 | R3.7 | pending | R3.6 ABI/LLVM artifact + committed IR + placement/local-shard contract | object/program id、entrypoint、ABI version 和 IR-derived package manifest；manifest 的 placement/resource/constant metadata 由同一 resource view analysis 从 IR 重算，manifest roundtrip 不能替代 object/link 最小验证 |
@@ -148,16 +149,11 @@ R3.4 旁路协议传递。
 
 ## 下一步
 
-实现 placement / local-shard contract：
+完善 placement / local-shard contract：
 
-1. 从 frontend/SPMD 保留的 logical rank/local shard facts、target topology/capability 和 committed
-   `wafer.tile.region` / `wafer.instr.*` 重建 accepted placement map，不引入 placed memref /
-   access descriptor 旁路协议。
-2. 定义 block id、physical coordinate、good/bad tile assumption 和 launch-visible local shard metadata
-   的 IR / launch boundary 表示；这些字段只表达 placement 和 shard bounds，不保存 memory plan 或
-   runtime handle。
-3. 验证 rank coverage、tile/block uniqueness、bad tile 过滤、local shard bounds 和 committed boundary
-   可解释性；失败时给结构化 diagnostic，不重新做 group/candidate/memory planning。
-4. 补 completion proof：R3.1 -> candidate-selection -> committed materialization -> placement 的 named
-   pipeline 输出能被 R6 communication lowering、R3.6 ABI/LLVM lowering 和 R3.7 package manifest emission
-   直接消费。
+1. 给 frontend/SPMD 或 program metadata 中的 logical rank / local shard facts 建立显式 IR / metadata
+   入口，让 placement planner 从 IR fact 派生 rank count 和 shard bounds，而不是长期依赖 driver option。
+2. 将 explicit local-shard fact 绑定到 `wafer.placement.map` 的 logical rank / block id，并补 bounds
+   verifier；仍不重新切分 tensor、不复制 memory plan。
+3. 让 communication lowering、ABI/LLVM lowering 和 package manifest 从 `wafer.placement.map` 与同一
+   resource view analysis 派生需要的 launch-visible metadata。

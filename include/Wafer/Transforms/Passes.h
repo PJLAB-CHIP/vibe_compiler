@@ -9,6 +9,7 @@
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "llvm/ADT/StringRef.h"
 
 namespace mlir {
 class Pass;
@@ -28,6 +29,10 @@ mlir::LogicalResult planDDRMemoryModule(mlir::ModuleOp moduleOp,
                                         int64_t ddrCapacityBytes,
                                         int64_t ddrLargestContiguousBytes,
                                         int64_t ddrBandwidthLimitBytes);
+std::unique_ptr<mlir::Pass>
+createPlanPlacementPass(int64_t logicalRankCount, int64_t cardYCount,
+                        int64_t cardXCount, int64_t tileYCount,
+                        int64_t tileXCount, llvm::StringRef badTileIds);
 #ifdef WAFER_ENABLE_SHARDY
 std::unique_ptr<mlir::Pass> createApplyDefaultSpmdShardingPass();
 std::unique_ptr<mlir::Pass>

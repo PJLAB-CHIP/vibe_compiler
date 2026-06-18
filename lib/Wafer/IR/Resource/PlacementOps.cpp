@@ -26,6 +26,21 @@ mlir::LogicalResult PlacementMapOp::verify() {
   if (!checkedMul(logicalRankCount, 4, expectedCoordEntries))
     return emitOpError("logical rank count is too large to verify");
 
+  llvm::ArrayRef<int64_t> blockIds = getBlockIdsAttr().asArrayRef();
+  if (static_cast<int64_t>(blockIds.size()) != logicalRankCount)
+    return emitOpError("block ids must contain one entry per logical rank");
+
+  llvm::DenseSet<int64_t> usedBlockIds;
+  for (int64_t rank = 0; rank < logicalRankCount; ++rank) {
+    int64_t blockId = blockIds[rank];
+    if (blockId < 0)
+      return emitOpError("block id for logical rank ")
+             << rank << " must be non-negative";
+    if (!usedBlockIds.insert(blockId).second)
+      return emitOpError("maps multiple logical ranks to block id ")
+             << blockId;
+  }
+
   llvm::ArrayRef<int64_t> coords = getPhysicalTileCoordsAttr().asArrayRef();
   if (static_cast<int64_t>(coords.size()) != expectedCoordEntries)
     return emitOpError("physical tile mapping must contain one 4D coordinate "

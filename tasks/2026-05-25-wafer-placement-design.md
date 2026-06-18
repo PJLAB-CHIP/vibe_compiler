@@ -34,10 +34,42 @@ rank group 事实，并为 `wafer.group` / `wafer.tile.region` / runtime launch 
 - 不做 Linalg tiling、group fusion 或 root tile shape search。
 - 不分配 `#spm` offset、DDR runtime allocation object 或 workspace slice。
 - 不选择 `Cx/NCx` physical layout。
-- 不选择 ring/tree/DTE packet schedule；placement 只提供 physical endpoints 和 topology cost。
+- 不选择 ring/tree/DTE packet schedule；placement 只提供 physical endpoints 和 topology facts。
 - 不把 HPGR/KMD/legacy runtime API 细节写成上层 placement 语义。
 
-## 2. 输入和输出
+## 2. Pipeline Contract
+
+```text
+Pipeline position:
+- Upstream artifact / IR:
+  committed `wafer.tile.region` / `wafer.instr.*` IR at the selected-instr boundary，
+  with accepted SPM offsets and DDR demand legality facts；frontend/SPMD 保留的 logical rank、
+  rank group 和已有 local shard facts；target topology / capability / good-tile / bad-tile metadata。
+- Current stage responsibility:
+  选择 logical rank / block 到 physical `(card_y, card_x, tile_y, tile_x)` 的 accepted mapping；
+  若上游已有显式 local shard facts，则只绑定到 logical rank 并验证 bounds；验证 rank coverage、
+  topology bounds、bad tile 过滤、physical tile uniqueness 和 block id uniqueness。
+- Output artifact / IR:
+  `wafer.placement.map` accepted mapping。它保存 rank->physical coordinate、block id、topology
+  dimensions 和 bad tile facts；local shard 只在已有 shard fact / launch-visible resource view 中引用，
+  placement planner 不重新切分 tensor，也不复制 memory plan。
+- Downstream consumer:
+  communication lowering、ABI/LLVM lowering、package manifest 和 runtime adapter。
+- User-level driver / named pipeline:
+  `wafer-plan-placement` pass 和 `wafer-lower-groups-to-placement` named pipeline。该 pipeline
+  在 committed selected-instr boundary 之后追加 placement；用户不应手工拼 placement fixture 作为主线。
+- Explicit non-goals:
+  不重新做 group/candidate/tile shape/layout/SPM/DDR planning；不生成 DTE route、ABI call、packet、
+  object、package、runtime handle 或 physical address；不靠 tensor 名字恢复 shard 语义。
+- Completion gate:
+  named pipeline 能重放 group formation -> candidate selection -> committed instruction materialization
+  -> placement；
+  emitted `wafer.placement.map` 被 communication verifier 消费，并为 ABI/package resource view 提供
+  唯一 placement fact source；
+  verifier 能拒绝 rank count、bad tile、duplicate tile、duplicate block、out-of-topology 和 rank 数超过可用 tile。
+```
+
+## 3. 输入和输出
 
 输入：
 
@@ -56,14 +88,14 @@ partitioned StableHLO / local program
 accepted placement map
   + logical rank -> physical coordinate
   + cluster membership
-  + local shard / block id metadata
-  + topology cost summary
+  + block id metadata
+  + topology dimensions and bad-tile facts
 ```
 
 accepted placement 如果影响 codegen，必须进入 IR 或 launch metadata；placement search trace、
 rejected maps、score breakdown 是 analysis，不写入长期 IR。
 
-## 3. Physical Coordinate Model
+## 4. Physical Coordinate Model
 
 Wafer physical topology 使用层级 coordinate，而不是 flat device id：
 
@@ -84,7 +116,16 @@ Placement 不要求所有程序都用完整 16 tile。cluster 可以是单 tile�
 C2C cost 或 runtime completion 尚未完善时，应形成 placement/runtime 恢复任务，不能反向要求
 SPMD 不产生跨卡 logical mesh 或 rank group。
 
-## 4. IR Representation
+单 tile、单卡多 tile 和多卡多 tile 都使用同一个抽象：
+
+```text
+logical rank -> (card_y, card_x, tile_y, tile_x)
+```
+
+单卡只是 `card_y_count = card_x_count = 1`，多卡只是 card 维度大于 1；planner 和 verifier 不
+分裂成两套语义。
+
+## 5. IR Representation
 
 accepted placement 需要在边界 op 上显式表达。推荐结构：
 
@@ -118,6 +159,7 @@ region；但不能退化成名字约定或 side table。
 ```mlir
 wafer.placement.map {
   logical_rank_count = 4 : i64,
+  block_ids = array<i64: 0, 1, 2, 3>,
   physical_tile_coords = array<i64: 0, 0, 0, 0,
                                   0, 0, 0, 1,
                                   0, 0, 0, 2,
@@ -133,23 +175,24 @@ wafer.placement.map {
 `physical_tile_coords` 按 logical rank 顺序展开，每 4 个整数为
 `card_y, card_x, tile_y, tile_x`。logical rank 本身由数组顺序表达，避免再维护一份重复的
 rank id 表。`bad_tile_ids` 是当前 capability / PG 过滤后的 flat physical tile id 集合；后续
-P4.2 可以把 block id、local shard metadata 或 capability reference 接到 package/launch
-metadata，但不能改变 tensor semantics。
+`block_ids` 按 logical rank 顺序记录 launch-visible block identity，必须非负且唯一。local shard
+metadata 或 capability reference 后续接到 package/launch metadata，但不能改变 tensor semantics。
 
-P4.2 的 package manifest gate 必须接入 launch-visible placement metadata：`good_tile_ids` /
+package manifest gate 必须接入 launch-visible placement metadata：`good_tile_ids` /
 `bad_tile_ids` 表达当前 target capability assumption，per-rank `block_id` 和 `local_shards` 进入
 IR-derived package metadata。`local_shards` 只引用 launch signature tensor 名称和静态 slice bounds；它不反向修改
 tensor IR shape、layout 或 sharding semantics。
 
-## 5. Placement Algorithm
+## 6. Placement Algorithm
 
 V0 使用可解释的 deterministic placement，不追求全局最优：
 
-1. 从 target capability 构造可用 physical tile set，过滤 PG/bad tile。
-2. 根据 logical mesh axes 和 communication volume 构造候选 cluster shape。
-3. 优先把通信密集 axis 放在卡内 tile mesh。
-4. 对每个候选检查 tile 数、cluster 连通性、rank group endpoint、runtime launch 支持。
-5. 选择 cost 最低的合法候选，输出 accepted placement。
+1. 从 target capability 构造 card-major / tile-major physical tile sequence，过滤 PG/bad tile。
+2. 检查可用 tile 数不少于 logical rank 数。
+3. V0 deterministic strategy 按 logical rank 顺序取前 N 个 good tiles，并为每个 rank 生成同值
+   `block_id`。该策略已经统一覆盖 single-tile、single-card multi-tile 和 multi-card multi-tile。
+4. 后续 cost model 可以在同一 `PlacementMap` contract 下替换排序策略，但不能把 rejected maps、
+   cost breakdown 或通信 route 写入 IR。
 
 cost model 可以考虑：
 
@@ -160,7 +203,7 @@ cost model 可以考虑：
 
 这些是候选排序，不是 IR contract。IR contract 只有 accepted placement mapping。
 
-## 6. 与其它阶段的接口
+## 7. 与其它阶段的接口
 
 | 阶段 | Placement 提供 | Placement 不提供 |
 | --- | --- | --- |
@@ -172,7 +215,7 @@ cost model 可以考虑：
 Placement 不应把 DTE route 或 runtime launch API 写进上层。Communication lowering 可以基于
 accepted placement 选择 ring/tree/unicast protocol。
 
-## 7. Verifier
+## 8. Verifier
 
 必须检查：
 
@@ -184,16 +227,20 @@ accepted placement 选择 ring/tree/unicast protocol。
 - block id / tile id 没有重复冲突，除非明确表达 replicated execution。
 - placement attr 中没有 SPM offset、DDR address、DTE packet 或 runtime handle。
 
-Verifier 失败应报告为 placement 错误，不应该伪装成 downstream SPM、DTE 或 runtime package 错误。
+Planner 失败也必须报告为 placement 错误，例如 rank 数超过可用 good tile、topology 维度非法或
+bad tile list 越界；不应该伪装成 downstream SPM、DTE 或 runtime package 错误。
 
-## 8. V0 范围
+## 9. V0 范围
 
 V0 支持：
 
 - single-tile placement。
 - single-card 2/4/8/16 tile cluster。
-- logical DP / TP axis 到卡内 tile mesh 的简单映射。
+- 多卡多 tile 的 topology-aware deterministic mapping。
 - good-tile bitmap 过滤。
+- block id 与 logical rank 的一一绑定。
+- local shard 绑定/验证只消费已有显式 shard facts；当前 planner 不从 tensor 名字或 payload 恢复
+  shard，也不重新切分 tensor。
 
 当前不作为 placement 基线通过标准：
 
