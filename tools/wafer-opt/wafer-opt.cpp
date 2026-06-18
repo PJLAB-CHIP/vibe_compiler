@@ -58,8 +58,8 @@ void registerWaferOptDialects(mlir::DialectRegistry &registry) {
   wafer::registerAllDialects(registry);
   wafer::registerImporterDialects(registry);
   mlir::arith::registerBufferizableOpInterfaceExternalModels(registry);
-  mlir::bufferization::func_ext::
-      registerBufferizableOpInterfaceExternalModels(registry);
+  mlir::bufferization::func_ext::registerBufferizableOpInterfaceExternalModels(
+      registry);
   mlir::linalg::registerBufferizableOpInterfaceExternalModels(registry);
   mlir::scf::registerBufferizableOpInterfaceExternalModels(registry);
   mlir::tensor::registerBufferizableOpInterfaceExternalModels(registry);
@@ -94,7 +94,7 @@ mlir::OwningOpRef<mlir::ModuleOp> parseAndVerifyStableHLOProgramDir(
   if (mlir::failed(mlir::verify(*module)))
     return {};
 
-  if (mlir::failed(wafer::frontend::verifyStableHLOProgramDir(
+  if (mlir::failed(wafer::frontend::verifyAndMaterializeStableHLOProgramDir(
           *module, programPath, llvm::errs(), result)))
     return {};
 
@@ -400,6 +400,8 @@ int runStableHLOSPMDStage(llvm::StringRef inputProgramDir,
   mlir::OwningOpRef<mlir::ModuleOp> outputModule =
       parseAndVerifyStableHLOProgramDir(outputProgramDir, context, &result);
   if (!outputModule)
+    return 1;
+  if (writeProgramModule(*outputModule, outputProgramDir))
     return 1;
 
   return 0;

@@ -8,8 +8,8 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/DenseSet.h"
-#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 
 #include <cstdint>
@@ -50,8 +50,7 @@ static bool checkedMul(int64_t lhs, int64_t rhs, int64_t &result) {
 
 static std::optional<int64_t>
 getPhysicalTileId(int64_t cardY, int64_t cardX, int64_t tileY, int64_t tileX,
-                  int64_t cardXCount, int64_t tileYCount,
-                  int64_t tileXCount) {
+                  int64_t cardXCount, int64_t tileYCount, int64_t tileXCount) {
   int64_t cardBase = 0;
   if (!checkedMul(cardY, cardXCount, cardBase))
     return std::nullopt;
@@ -108,6 +107,45 @@ parseOptionalI64List(llvm::StringRef text, llvm::StringRef optionName,
   return values;
 }
 
+static mlir::FailureOr<int64_t>
+resolveLogicalRankCount(mlir::ModuleOp moduleOp,
+                        int64_t requestedLogicalRankCount) {
+  if (requestedLogicalRankCount < 0)
+    return moduleOp.emitError()
+           << "placement_failure: logical rank count must be non-negative";
+
+  std::optional<int64_t> shardBindingRankCount;
+  bool inconsistentShardBindings = false;
+  moduleOp.walk([&](ShardBindingOp shardBinding) {
+    int64_t rankCount = shardBinding.getLogicalRankCountAttr().getInt();
+    if (!shardBindingRankCount) {
+      shardBindingRankCount = rankCount;
+      return;
+    }
+    if (*shardBindingRankCount != rankCount)
+      inconsistentShardBindings = true;
+  });
+  if (inconsistentShardBindings)
+    return moduleOp.emitError()
+           << "placement_failure: shard binding logical rank counts differ";
+
+  if (requestedLogicalRankCount > 0) {
+    if (shardBindingRankCount &&
+        requestedLogicalRankCount != *shardBindingRankCount)
+      return moduleOp.emitError()
+             << "placement_failure: requested logical rank count "
+             << requestedLogicalRankCount
+             << " does not match shard binding logical rank count "
+             << *shardBindingRankCount;
+    return requestedLogicalRankCount;
+  }
+
+  if (shardBindingRankCount)
+    return *shardBindingRankCount;
+
+  return 1;
+}
+
 static mlir::LogicalResult
 validatePositiveTopology(mlir::ModuleOp moduleOp, int64_t logicalRankCount,
                          int64_t cardYCount, int64_t cardXCount,
@@ -116,8 +154,7 @@ validatePositiveTopology(mlir::ModuleOp moduleOp, int64_t logicalRankCount,
   if (logicalRankCount <= 0)
     return moduleOp.emitError()
            << "placement_failure: logical rank count must be positive";
-  if (cardYCount <= 0 || cardXCount <= 0 || tileYCount <= 0 ||
-      tileXCount <= 0)
+  if (cardYCount <= 0 || cardXCount <= 0 || tileYCount <= 0 || tileXCount <= 0)
     return moduleOp.emitError()
            << "placement_failure: physical topology dimensions must be "
               "positive";
@@ -159,9 +196,8 @@ computeDeterministicPlacement(mlir::ModuleOp moduleOp, int64_t logicalRankCount,
     for (int64_t cardX = 0; cardX < cardXCount; ++cardX) {
       for (int64_t tileY = 0; tileY < tileYCount; ++tileY) {
         for (int64_t tileX = 0; tileX < tileXCount; ++tileX) {
-          std::optional<int64_t> tileId =
-              getPhysicalTileId(cardY, cardX, tileY, tileX, cardXCount,
-                                tileYCount, tileXCount);
+          std::optional<int64_t> tileId = getPhysicalTileId(
+              cardY, cardX, tileY, tileX, cardXCount, tileYCount, tileXCount);
           if (!tileId) {
             moduleOp.emitError()
                 << "placement_failure: physical tile id is too large";
@@ -176,9 +212,10 @@ computeDeterministicPlacement(mlir::ModuleOp moduleOp, int64_t logicalRankCount,
   }
 
   if (static_cast<int64_t>(goodTiles.size()) < logicalRankCount) {
-    moduleOp.emitError()
-        << "placement_failure: logical rank count " << logicalRankCount
-        << " exceeds available good tile count " << goodTiles.size();
+    moduleOp.emitError() << "placement_failure: logical rank count "
+                         << logicalRankCount
+                         << " exceeds available good tile count "
+                         << goodTiles.size();
     return mlir::failure();
   }
 
@@ -187,10 +224,9 @@ computeDeterministicPlacement(mlir::ModuleOp moduleOp, int64_t logicalRankCount,
 }
 
 static mlir::LogicalResult
-planPlacementModule(mlir::ModuleOp moduleOp, int64_t logicalRankCount,
-                    int64_t cardYCount, int64_t cardXCount,
-                    int64_t tileYCount, int64_t tileXCount,
-                    llvm::StringRef badTileIdsOption) {
+planPlacementModule(mlir::ModuleOp moduleOp, int64_t requestedLogicalRankCount,
+                    int64_t cardYCount, int64_t cardXCount, int64_t tileYCount,
+                    int64_t tileXCount, llvm::StringRef badTileIdsOption) {
   bool hasPlacement = false;
   moduleOp.walk([&](PlacementMapOp) { hasPlacement = true; });
   if (hasPlacement)
@@ -202,8 +238,13 @@ planPlacementModule(mlir::ModuleOp moduleOp, int64_t logicalRankCount,
   if (mlir::failed(parsedBadTileIds))
     return mlir::failure();
 
+  mlir::FailureOr<int64_t> logicalRankCount =
+      resolveLogicalRankCount(moduleOp, requestedLogicalRankCount);
+  if (mlir::failed(logicalRankCount))
+    return mlir::failure();
+
   mlir::FailureOr<llvm::SmallVector<PhysicalCoord, 8>> placement =
-      computeDeterministicPlacement(moduleOp, logicalRankCount, cardYCount,
+      computeDeterministicPlacement(moduleOp, *logicalRankCount, cardYCount,
                                     cardXCount, tileYCount, tileXCount,
                                     *parsedBadTileIds);
   if (mlir::failed(placement))
@@ -211,8 +252,8 @@ planPlacementModule(mlir::ModuleOp moduleOp, int64_t logicalRankCount,
 
   llvm::SmallVector<int64_t, 16> coords;
   llvm::SmallVector<int64_t, 8> blockIds;
-  coords.reserve(static_cast<size_t>(logicalRankCount) * 4);
-  blockIds.reserve(logicalRankCount);
+  coords.reserve(static_cast<size_t>(*logicalRankCount) * 4);
+  blockIds.reserve(*logicalRankCount);
   for (auto [rank, coord] : llvm::enumerate(*placement)) {
     blockIds.push_back(static_cast<int64_t>(rank));
     coords.push_back(coord.cardY);
@@ -224,7 +265,7 @@ planPlacementModule(mlir::ModuleOp moduleOp, int64_t logicalRankCount,
   mlir::OpBuilder builder(moduleOp.getContext());
   builder.setInsertionPointToStart(moduleOp.getBody());
   builder.create<PlacementMapOp>(
-      moduleOp.getLoc(), builder.getI64IntegerAttr(logicalRankCount),
+      moduleOp.getLoc(), builder.getI64IntegerAttr(*logicalRankCount),
       mlir::DenseI64ArrayAttr::get(builder.getContext(), blockIds),
       mlir::DenseI64ArrayAttr::get(builder.getContext(), coords),
       builder.getI64IntegerAttr(cardYCount),
@@ -238,12 +279,11 @@ planPlacementModule(mlir::ModuleOp moduleOp, int64_t logicalRankCount,
 
 struct PlanPlacementPass
     : public impl::PlanPlacementPassBase<PlanPlacementPass> {
-  using impl::PlanPlacementPassBase<
-      PlanPlacementPass>::PlanPlacementPassBase;
+  using impl::PlanPlacementPassBase<PlanPlacementPass>::PlanPlacementPassBase;
 
   PlanPlacementPass(int64_t logicalRankCount, int64_t cardYCount,
-                    int64_t cardXCount, int64_t tileYCount,
-                    int64_t tileXCount, llvm::StringRef badTileIds) {
+                    int64_t cardXCount, int64_t tileYCount, int64_t tileXCount,
+                    llvm::StringRef badTileIds) {
     this->logicalRankCount = logicalRankCount;
     this->cardYCount = cardYCount;
     this->cardXCount = cardXCount;
@@ -253,9 +293,9 @@ struct PlanPlacementPass
   }
 
   void runOnOperation() final {
-    if (mlir::failed(planPlacementModule(
-            getOperation(), logicalRankCount, cardYCount, cardXCount,
-            tileYCount, tileXCount, badTileIds))) {
+    if (mlir::failed(planPlacementModule(getOperation(), logicalRankCount,
+                                         cardYCount, cardXCount, tileYCount,
+                                         tileXCount, badTileIds))) {
       signalPassFailure();
       return;
     }
@@ -268,9 +308,9 @@ std::unique_ptr<mlir::Pass>
 createPlanPlacementPass(int64_t logicalRankCount, int64_t cardYCount,
                         int64_t cardXCount, int64_t tileYCount,
                         int64_t tileXCount, llvm::StringRef badTileIds) {
-  return std::make_unique<PlanPlacementPass>(
-      logicalRankCount, cardYCount, cardXCount, tileYCount, tileXCount,
-      badTileIds);
+  return std::make_unique<PlanPlacementPass>(logicalRankCount, cardYCount,
+                                             cardXCount, tileYCount, tileXCount,
+                                             badTileIds);
 }
 
 } // namespace wafer

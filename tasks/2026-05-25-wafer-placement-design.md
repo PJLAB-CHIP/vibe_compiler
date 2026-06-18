@@ -43,15 +43,15 @@ rank group 事实，并为 `wafer.group` / `wafer.tile.region` / runtime launch 
 Pipeline position:
 - Upstream artifact / IR:
   committed `wafer.tile.region` / `wafer.instr.*` IR at the selected-instr boundary，
-  with accepted SPM offsets and DDR demand legality facts；frontend/SPMD 保留的 logical rank、
-  rank group 和已有 local shard facts；target topology / capability / good-tile / bad-tile metadata。
+  with accepted SPM offsets and DDR demand legality facts；frontend/SPMD materialized
+  `wafer.shard.binding` local-shard facts；target topology / capability / good-tile / bad-tile metadata。
 - Current stage responsibility:
   选择 logical rank / block 到 physical `(card_y, card_x, tile_y, tile_x)` 的 accepted mapping；
   若上游已有显式 local shard facts，则只绑定到 logical rank 并验证 bounds；验证 rank coverage、
   topology bounds、bad tile 过滤、physical tile uniqueness 和 block id uniqueness。
 - Output artifact / IR:
   `wafer.placement.map` accepted mapping。它保存 rank->physical coordinate、block id、topology
-  dimensions 和 bad tile facts；local shard 只在已有 shard fact / launch-visible resource view 中引用，
+  dimensions 和 bad tile facts；local shard 只通过 `wafer.shard.binding` / launch-visible resource view 引用，
   placement planner 不重新切分 tensor，也不复制 memory plan。
 - Downstream consumer:
   communication lowering、ABI/LLVM lowering、package manifest 和 runtime adapter。
@@ -127,6 +127,40 @@ logical rank -> (card_y, card_x, tile_y, tile_x)
 
 ## 5. IR Representation
 
+accepted placement 和 boundary shard binding 需要分成两个 IR fact source：
+
+```text
+wafer.shard.binding:  logical rank -> launch-visible tensor slice
+wafer.placement.map:  logical rank -> physical tile coordinate
+```
+
+`wafer.shard.binding` 由 frontend/SPMD program metadata materialize，当前主要来自
+`forward.parameter_shards.json`。它引用 entry function symbol 和 argument index，记录该 launch-visible
+tensor 的 global shape、rank-local shape、logical rank 覆盖和 per-rank static slice
+`offsets/sizes/strides`。它不记录 payload file path、runtime handle、physical tile、SPM/DDR offset
+或 package manifest 字段。
+
+概念形式：
+
+```mlir
+wafer.shard.binding {
+  kernel = @forward,
+  argument_index = 0 : i64,
+  logical_rank_count = 2 : i64,
+  global_shape = array<i64: 2, 4>,
+  local_shape = array<i64: 1, 4>,
+  shard_ranks = array<i64: 0, 1>,
+  shard_offsets = array<i64: 0, 0, 1, 0>,
+  shard_sizes = array<i64: 1, 4, 1, 4>,
+  shard_strides = array<i64: 1, 1, 1, 1>
+}
+```
+
+数组按 `shard_ranks` 顺序展开。每个 rank 的 slice 维度数必须等于 `global_shape` rank。
+`local_shape` 必须匹配引用的 function argument type。payload 文件仍由 program directory verifier
+校验，不进入 IR；package emission 在使用点从 shard binding、placement map 和 resource view 派生
+manifest metadata。
+
 accepted placement 需要在边界 op 上显式表达。推荐结构：
 
 - 在 `wafer.launch` 或被 launch outline 的 function 上保存 cluster-level placement mapping。
@@ -187,11 +221,13 @@ tensor IR shape、layout 或 sharding semantics。
 
 V0 使用可解释的 deterministic placement，不追求全局最优：
 
-1. 从 target capability 构造 card-major / tile-major physical tile sequence，过滤 PG/bad tile。
-2. 检查可用 tile 数不少于 logical rank 数。
-3. V0 deterministic strategy 按 logical rank 顺序取前 N 个 good tiles，并为每个 rank 生成同值
+1. 从 `wafer.shard.binding` 推导 logical rank count；若没有 shard binding，显式 driver option 可作为
+   bring-up fixture override，缺省退回 single-rank。
+2. 从 target capability 构造 card-major / tile-major physical tile sequence，过滤 PG/bad tile。
+3. 检查可用 tile 数不少于 logical rank 数。
+4. V0 deterministic strategy 按 logical rank 顺序取前 N 个 good tiles，并为每个 rank 生成同值
    `block_id`。该策略已经统一覆盖 single-tile、single-card multi-tile 和 multi-card multi-tile。
-4. 后续 cost model 可以在同一 `PlacementMap` contract 下替换排序策略，但不能把 rejected maps、
+5. 后续 cost model 可以在同一 `PlacementMap` contract 下替换排序策略，但不能把 rejected maps、
    cost breakdown 或通信 route 写入 IR。
 
 cost model 可以考虑：
@@ -217,7 +253,20 @@ accepted placement 选择 ring/tree/unicast protocol。
 
 ## 8. Verifier
 
-必须检查：
+`wafer.shard.binding` 必须检查：
+
+- `kernel` symbol 能解析到 `func.func`。
+- `argument_index` 指向合法 function argument，且该 argument 是 static ranked tensor。
+- `global_shape`、`local_shape` 与 function argument rank / element type 一致；`local_shape` 匹配
+  argument type。
+- `logical_rank_count` 为正；`shard_ranks` 覆盖 `0..logical_rank_count-1` 且不重复。
+- `shard_offsets` / `shard_sizes` / `shard_strides` 都按 rank-major 展开，长度等于
+  `logical_rank_count * global_rank`。
+- 每个 slice 不越过 `global_shape`，`sizes` 不超过 `local_shape`，`strides` 为正。
+- 同一 function argument 不能有多份 shard binding；若 module 中已有 `wafer.placement.map`，
+  `logical_rank_count` 必须一致。
+
+`wafer.placement.map` 必须检查：
 
 - logical rank 数量与 physical coordinate 数量一致。
 - physical coordinate 在 target topology 内。

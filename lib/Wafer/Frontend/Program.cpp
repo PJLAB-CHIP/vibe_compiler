@@ -2,10 +2,14 @@
 
 #include "Wafer/Frontend/Program.h"
 
+#include "Wafer/IR/WaferDialect.h"
+
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Attributes.h"
+#include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Diagnostics.h"
+#include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -46,6 +50,20 @@ struct ProgramMetadata {
   std::vector<ProgramSignature> inputSignatures;
   std::vector<ProgramSignature> outputSignatures;
   std::vector<ProgramInputLocation> inputLocations;
+};
+
+struct VerifiedParameterShard {
+  int64_t rank = -1;
+  std::vector<int64_t> offsets;
+  std::vector<int64_t> sizes;
+  std::vector<int64_t> strides;
+};
+
+struct VerifiedParameterShardBinding {
+  int64_t argumentIndex = -1;
+  std::vector<int64_t> globalShape;
+  std::vector<int64_t> localShape;
+  std::vector<VerifiedParameterShard> shards;
 };
 
 struct NpyPayloadMetadata {
@@ -802,7 +820,8 @@ bool verifyShardEntry(const llvm::json::Object &object,
                       llvm::ArrayRef<int64_t> localShape, Type elementType,
                       llvm::StringRef parameterName, llvm::StringRef programDir,
                       std::vector<bool> &seenRanks,
-                      llvm::raw_ostream &diagnostics) {
+                      llvm::raw_ostream &diagnostics,
+                      VerifiedParameterShard *verifiedShard) {
   int64_t rank = -1;
   int64_t replicaId = -1;
   std::string file;
@@ -864,17 +883,23 @@ bool verifyShardEntry(const llvm::json::Object &object,
     return rejectProgramDirectory(
         "parameter shard path is not a regular file: " + file, diagnostics);
 
-  return verifyNpyTensorPayloadFile(path, file, sizes, elementType,
-                                    diagnostics);
+  if (verifyNpyTensorPayloadFile(path, file, sizes, elementType, diagnostics))
+    return true;
+
+  if (verifiedShard) {
+    verifiedShard->rank = rank;
+    verifiedShard->offsets = std::move(offsets);
+    verifiedShard->sizes = std::move(sizes);
+    verifiedShard->strides = std::move(strides);
+  }
+  return false;
 }
 
-bool verifyParameterShardBinding(const llvm::json::Object &object,
-                                 const ProgramMetadata &meta,
-                                 FunctionType functionType,
-                                 int64_t logicalRankCount,
-                                 std::vector<bool> &seenParameterArgs,
-                                 llvm::StringRef programDir,
-                                 llvm::raw_ostream &diagnostics) {
+bool verifyParameterShardBinding(
+    const llvm::json::Object &object, const ProgramMetadata &meta,
+    FunctionType functionType, int64_t logicalRankCount,
+    std::vector<bool> &seenParameterArgs, llvm::StringRef programDir,
+    llvm::raw_ostream &diagnostics, VerifiedParameterShardBinding *verified) {
   int64_t argumentIndex = -1;
   std::string name;
   std::string dtype;
@@ -941,25 +966,134 @@ bool verifyParameterShardBinding(const llvm::json::Object &object,
                                   diagnostics);
 
   std::vector<bool> seenRanks(logicalRankCount, false);
+  std::vector<VerifiedParameterShard> verifiedShards;
+  verifiedShards.reserve(shards->size());
   for (const llvm::json::Value &value : *shards) {
     const llvm::json::Object *shardObject = value.getAsObject();
     if (!shardObject)
       return rejectProgramDirectory("parameter shard entries must be objects",
                                     diagnostics);
+    VerifiedParameterShard verifiedShard;
     if (verifyShardEntry(*shardObject, logicalRankCount, globalShape,
                          localShape, tensorType.getElementType(), name,
-                         programDir, seenRanks, diagnostics))
+                         programDir, seenRanks, diagnostics, &verifiedShard))
       return true;
+    verifiedShards.push_back(std::move(verifiedShard));
   }
 
   seenParameterArgs[argumentIndex] = true;
+  if (verified) {
+    verified->argumentIndex = argumentIndex;
+    verified->globalShape = std::move(globalShape);
+    verified->localShape = std::move(localShape);
+    llvm::sort(verifiedShards, [](const VerifiedParameterShard &lhs,
+                                  const VerifiedParameterShard &rhs) {
+      return lhs.rank < rhs.rank;
+    });
+    verified->shards = std::move(verifiedShards);
+  }
+  return false;
+}
+
+bool denseArrayEquals(DenseI64ArrayAttr attr, llvm::ArrayRef<int64_t> values) {
+  return llvm::equal(attr.asArrayRef(), values);
+}
+
+void flattenShardSlices(llvm::ArrayRef<VerifiedParameterShard> shards,
+                        std::vector<int64_t> &ranks,
+                        std::vector<int64_t> &offsets,
+                        std::vector<int64_t> &sizes,
+                        std::vector<int64_t> &strides) {
+  for (const VerifiedParameterShard &shard : shards) {
+    ranks.push_back(shard.rank);
+    offsets.insert(offsets.end(), shard.offsets.begin(), shard.offsets.end());
+    sizes.insert(sizes.end(), shard.sizes.begin(), shard.sizes.end());
+    strides.insert(strides.end(), shard.strides.begin(), shard.strides.end());
+  }
+}
+
+bool existingShardBindingMatches(wafer::ShardBindingOp op,
+                                 int64_t logicalRankCount,
+                                 const VerifiedParameterShardBinding &binding,
+                                 llvm::ArrayRef<int64_t> ranks,
+                                 llvm::ArrayRef<int64_t> offsets,
+                                 llvm::ArrayRef<int64_t> sizes,
+                                 llvm::ArrayRef<int64_t> strides) {
+  return op.getLogicalRankCountAttr().getInt() == logicalRankCount &&
+         denseArrayEquals(op.getGlobalShapeAttr(), binding.globalShape) &&
+         denseArrayEquals(op.getLocalShapeAttr(), binding.localShape) &&
+         denseArrayEquals(op.getShardRanksAttr(), ranks) &&
+         denseArrayEquals(op.getShardOffsetsAttr(), offsets) &&
+         denseArrayEquals(op.getShardSizesAttr(), sizes) &&
+         denseArrayEquals(op.getShardStridesAttr(), strides);
+}
+
+bool hasShardBindingOps(ModuleOp module) {
+  bool found = false;
+  module.walk([&](wafer::ShardBindingOp) {
+    found = true;
+    return WalkResult::interrupt();
+  });
+  return found;
+}
+
+bool materializeParameterShardBindingOps(
+    ModuleOp module, func::FuncOp func, int64_t logicalRankCount,
+    llvm::ArrayRef<VerifiedParameterShardBinding> bindings,
+    llvm::raw_ostream &diagnostics, bool createMissingBindings) {
+  OpBuilder builder(module.getContext());
+  builder.setInsertionPointAfter(func);
+  auto kernelAttr = FlatSymbolRefAttr::get(func.getSymNameAttr());
+
+  for (const VerifiedParameterShardBinding &binding : bindings) {
+    std::vector<int64_t> ranks;
+    std::vector<int64_t> offsets;
+    std::vector<int64_t> sizes;
+    std::vector<int64_t> strides;
+    flattenShardSlices(binding.shards, ranks, offsets, sizes, strides);
+
+    wafer::ShardBindingOp existingBinding;
+    module.walk([&](wafer::ShardBindingOp op) {
+      if (op.getKernelAttr() == kernelAttr &&
+          op.getArgumentIndexAttr().getInt() == binding.argumentIndex) {
+        existingBinding = op;
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    });
+
+    if (existingBinding) {
+      if (!existingShardBindingMatches(existingBinding, logicalRankCount,
+                                       binding, ranks, offsets, sizes, strides))
+        return rejectProgramDirectory(
+            "existing shard binding does not match parameter shard metadata",
+            diagnostics);
+      continue;
+    }
+
+    if (!createMissingBindings)
+      continue;
+
+    builder.create<wafer::ShardBindingOp>(
+        module.getLoc(), kernelAttr,
+        builder.getI64IntegerAttr(binding.argumentIndex),
+        builder.getI64IntegerAttr(logicalRankCount),
+        DenseI64ArrayAttr::get(builder.getContext(), binding.globalShape),
+        DenseI64ArrayAttr::get(builder.getContext(), binding.localShape),
+        DenseI64ArrayAttr::get(builder.getContext(), ranks),
+        DenseI64ArrayAttr::get(builder.getContext(), offsets),
+        DenseI64ArrayAttr::get(builder.getContext(), sizes),
+        DenseI64ArrayAttr::get(builder.getContext(), strides));
+  }
+
   return false;
 }
 
 bool verifyParameterShardBindings(
     ModuleOp module, llvm::StringRef programDir, const ProgramMetadata &meta,
-    FunctionType functionType, llvm::raw_ostream &diagnostics,
-    wafer::frontend::FrontendProgramVerificationResult *result) {
+    func::FuncOp func, llvm::raw_ostream &diagnostics,
+    wafer::frontend::FrontendProgramVerificationResult *result,
+    bool materializeShardBindings) {
   std::string path =
       programPath(programDir, {"functions", "forward.parameter_shards.json"});
   if (!fileExists(path)) {
@@ -1005,17 +1139,21 @@ bool verifyParameterShardBindings(
     return rejectProgramDirectory("expected array field 'parameters'",
                                   diagnostics);
 
+  FunctionType functionType = func.getFunctionType();
   std::vector<bool> seenParameterArgs(functionType.getNumInputs(), false);
+  std::vector<VerifiedParameterShardBinding> verifiedBindings;
   unsigned bindingCount = 0;
   for (const llvm::json::Value &value : *parameters) {
     const llvm::json::Object *object = value.getAsObject();
     if (!object)
       return rejectProgramDirectory(
           "parameter shard binding entries must be objects", diagnostics);
+    VerifiedParameterShardBinding verifiedBinding;
     if (verifyParameterShardBinding(*object, meta, functionType,
                                     logicalRankCount, seenParameterArgs,
-                                    programDir, diagnostics))
+                                    programDir, diagnostics, &verifiedBinding))
       return true;
+    verifiedBindings.push_back(std::move(verifiedBinding));
     ++bindingCount;
   }
 
@@ -1028,6 +1166,11 @@ bool verifyParameterShardBindings(
 
   if (result)
     result->programParameterShardBindingCount = bindingCount;
+  if ((materializeShardBindings || hasShardBindingOps(module)) &&
+      materializeParameterShardBindingOps(
+          module, func, logicalRankCount, verifiedBindings, diagnostics,
+          /*createMissingBindings=*/materializeShardBindings))
+    return true;
   return false;
 }
 
@@ -1051,10 +1194,11 @@ LogicalResult verifyFrontendProgram(ModuleOp module,
   return rejected ? failure() : success();
 }
 
-LogicalResult
-verifyStableHLOProgramDir(ModuleOp module, llvm::StringRef programPath,
-                          llvm::raw_ostream &diagnostics,
-                          FrontendProgramVerificationResult *result) {
+static LogicalResult
+verifyStableHLOProgramDirImpl(ModuleOp module, llvm::StringRef programPath,
+                              llvm::raw_ostream &diagnostics,
+                              FrontendProgramVerificationResult *result,
+                              bool materializeShardBindings) {
   if (result)
     *result = FrontendProgramVerificationResult{};
 
@@ -1073,11 +1217,28 @@ verifyStableHLOProgramDir(ModuleOp module, llvm::StringRef programPath,
     FailureOr<func::FuncOp> func = findSingleFunction(module, diagnostics);
     if (failed(func))
       return failure();
-    rejected |= verifyParameterShardBindings(module, programPath, *meta,
-                                             func->getFunctionType(),
-                                             diagnostics, result);
+    rejected |= verifyParameterShardBindings(module, programPath, *meta, *func,
+                                             diagnostics, result,
+                                             materializeShardBindings);
   }
+  if (!rejected && materializeShardBindings && failed(mlir::verify(module)))
+    return failure();
   return rejected ? failure() : success();
+}
+
+LogicalResult
+verifyStableHLOProgramDir(ModuleOp module, llvm::StringRef programPath,
+                          llvm::raw_ostream &diagnostics,
+                          FrontendProgramVerificationResult *result) {
+  return verifyStableHLOProgramDirImpl(module, programPath, diagnostics, result,
+                                       /*materializeShardBindings=*/false);
+}
+
+LogicalResult verifyAndMaterializeStableHLOProgramDir(
+    ModuleOp module, llvm::StringRef programPath,
+    llvm::raw_ostream &diagnostics, FrontendProgramVerificationResult *result) {
+  return verifyStableHLOProgramDirImpl(module, programPath, diagnostics, result,
+                                       /*materializeShardBindings=*/true);
 }
 
 } // namespace wafer::frontend

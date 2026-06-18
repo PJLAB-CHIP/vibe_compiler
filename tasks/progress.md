@@ -68,14 +68,15 @@ Pipeline position:
 - Upstream artifact / IR:
   committed selected-instr IR；已包含 selected candidate 的 `wafer.tile.region`、`wafer.instr.*`、
   actual DDR tile views、accepted SPM offset facts 和 DDR demand legality facts；同时消费 explicit
-  logical rank / block / local shard facts，以及 target topology / capability / good-tile metadata。
+  `wafer.shard.binding` logical rank / local shard facts，以及 target topology / capability / good-tile
+  metadata。
 - Current stage responsibility:
   materialize accepted logical rank / block -> physical coordinate mapping；若上游已有显式 local shard
   facts，则只绑定并验证 bounds，不重新切分 tensor、不从名字或 payload 恢复 shard。该阶段只形成
   placement/local-shard contract，不生成 runtime allocation、ABI call、packet、object 或 package。
 - Output artifact / IR:
   `wafer.placement.map` accepted mapping；保存 logical rank count、block id、physical coordinate、
-  topology dimensions 和 bad tile facts。local shard 只在已有 explicit shard fact / 后续
+  topology dimensions 和 bad tile facts。local shard 只在 `wafer.shard.binding` / 后续
   launch-visible resource view 中引用，不复制 memory plan、packet field、runtime handle 或 search trace。
 - Downstream consumer:
   当前 placement verifier 和 communication verifier 已消费 `wafer.placement.map`；后续 communication
@@ -130,7 +131,7 @@ R3.4 旁路协议传递。
 
 | ID | 状态 | 输入 | 输出 / 完成 gate |
 | --- | --- | --- | --- |
-| placement/local-shard | active | committed tile-region / `wafer.instr.*` + explicit logical rank/local shard facts + target topology/capability | V0 accepted placement map、block id、topology dimensions 和 bad tile facts；local-shard bounds gate 等待显式 shard fact IR 接入 |
+| placement/local-shard | active | committed tile-region / `wafer.instr.*` + `wafer.shard.binding` local shard facts + target topology/capability | accepted placement map、block id、topology dimensions、bad tile facts 和 boundary shard binding verifier；parameter shard metadata materialize 为 IR fact |
 | R6.1-R6.2 | pending | tiled tensor collective + placement/local-rank/buffer facts | materialize tile communication 到 communication / Direct DTE resource / local-drain 边界；结果进入 R3.6 ABI/LLVM lowering |
 | R3.6 | pending | committed instruction IR + accepted SPM/DDR offset facts + placement/local-shard contract + communication/sync lowering | LLVM dialect call sequence 或 `wafer_*` C ABI / packet builder input；按需重算 launch/resource view，固定参数单位、address domain、wait/completion policy 和 ABI version |
 | R3.7 | pending | R3.6 ABI/LLVM artifact + committed IR + placement/local-shard contract | object/program id、entrypoint、ABI version 和 IR-derived package manifest；manifest 的 placement/resource/constant metadata 由同一 resource view analysis 从 IR 重算，manifest roundtrip 不能替代 object/link 最小验证 |
@@ -149,11 +150,12 @@ R3.4 旁路协议传递。
 
 ## 下一步
 
-完善 placement / local-shard contract：
+完成 placement / local-shard contract 的下游消费：
 
-1. 给 frontend/SPMD 或 program metadata 中的 logical rank / local shard facts 建立显式 IR / metadata
-   入口，让 placement planner 从 IR fact 派生 rank count 和 shard bounds，而不是长期依赖 driver option。
-2. 将 explicit local-shard fact 绑定到 `wafer.placement.map` 的 logical rank / block id，并补 bounds
-   verifier；仍不重新切分 tensor、不复制 memory plan。
-3. 让 communication lowering、ABI/LLVM lowering 和 package manifest 从 `wafer.placement.map` 与同一
-   resource view analysis 派生需要的 launch-visible metadata。
+1. 让 communication lowering 从 `wafer.placement.map` 读取 endpoint，同时在需要 launch-visible
+   tensor slice 时通过 `wafer.shard.binding` 查 rank-local slice。
+2. 在 ABI/LLVM lowering 和 package manifest emission 中建立同一 resource view analysis，join
+   `wafer.shard.binding`、`wafer.placement.map`、accepted SPM/DDR offset facts 和 committed
+   instruction IR。
+3. 用真实 program pipeline 证明 `wafer.shard.binding` 与 `wafer.placement.map` 一起进入下游边界；
+   manifest fixture 只能做 schema/unit 覆盖。

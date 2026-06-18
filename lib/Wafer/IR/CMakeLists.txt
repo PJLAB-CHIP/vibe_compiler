@@ -5,6 +5,7 @@ add_mlir_dialect_library(WaferIR
   Instr/InstructionOps.cpp
   Instr/SyncOps.cpp
   Resource/PlacementOps.cpp
+  Resource/ShardOps.cpp
   Resource/SPMOps.cpp
   Runtime/LaunchOps.cpp
   Tensor/GroupOps.cpp
@@ -27,6 +28,7 @@ add_mlir_dialect_library(WaferIR
   MLIRBytecodeOpInterface
   MLIRControlFlowInterfaces
   MLIRDestinationStyleOpInterface
+  MLIRFuncDialect
   MLIRIR
   MLIRSideEffectInterfaces
   MLIRSupport

@@ -6,4 +6,5 @@ add_mlir_library(WaferFrontend
   MLIRFuncDialect
   MLIRIR
   MLIRSupport
+  WaferIR
 )

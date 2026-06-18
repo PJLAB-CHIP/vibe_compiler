@@ -33,6 +33,14 @@
 # MLIR-NOT: wafer.tile.
 # MLIR-NOT: stablehlo.
 # MLIR: linalg.matmul
+# MLIR: wafer.shard.binding
+# MLIR-SAME: argument_index = 0 : i64
+# MLIR-SAME: kernel = @main
+# MLIR-SAME: logical_rank_count = 16 : i64
+# MLIR: wafer.shard.binding
+# MLIR-SAME: argument_index = 1 : i64
+# MLIR-SAME: kernel = @main
+# MLIR-SAME: logical_rank_count = 16 : i64
 
 # SHARDS: "logical_rank_count": 16
 # SHARDS: "parameter_shards_version": 2
@@ -41,3 +49,4 @@
 
 # MATRIX-MLIR: mhlo.spmd_parameters_shardings
 # MATRIX-MLIR: func.func @main
+# MATRIX-MLIR: wafer.shard.binding

@@ -41,8 +41,9 @@ struct PlacementPipelineOptions
     : public mlir::PassPipelineOptions<PlacementPipelineOptions> {
   Option<int64_t> logicalRankCount{
       *this, "logical-rank-count",
-      llvm::cl::desc("number of dense logical ranks to place"),
-      llvm::cl::init(1)};
+      llvm::cl::desc("number of dense logical ranks to place; 0 infers from "
+                     "wafer.shard.binding or falls back to one rank"),
+      llvm::cl::init(0)};
   Option<int64_t> cardYCount{
       *this, "card-y-count",
       llvm::cl::desc("number of Wafer card rows in the target topology"),

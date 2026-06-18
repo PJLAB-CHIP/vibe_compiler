@@ -202,8 +202,9 @@ def PlanPlacementPass
   let dependentDialects = ["wafer::WaferDialect"];
   let options = [
     Option<"logicalRankCount", "logical-rank-count", "int64_t",
-           /*default=*/"1",
-           "Number of dense logical ranks that require physical placement">,
+           /*default=*/"0",
+           "Number of dense logical ranks that require physical placement; "
+           "0 infers from wafer.shard.binding or falls back to one rank">,
     Option<"cardYCount", "card-y-count", "int64_t", /*default=*/"1",
            "Number of Wafer card rows in the target topology">,
     Option<"cardXCount", "card-x-count", "int64_t", /*default=*/"1",
