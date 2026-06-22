@@ -195,7 +195,7 @@
   `memref.alloc` 本身表达；accepted fact 写回同一个 alloc 的 `wafer.ddr.offset =
   #wafer.ddr_offset<offset>`。external function argument 不分配 offset，也不写 access summary attr；
   launch/resource binding requirement 由 ABI/package/runtime 使用点从 committed instruction IR、
-  accepted offset facts、topology/execution-mesh/shard-binding contract 和薄 launch/block binding 重算；runtime allocation/import/query 属于
+  accepted offset facts、topology/execution-mesh/boundary-shards contract 和薄 launch/block binding 重算；runtime allocation/import/query 属于
   runtime adapter。DDR planner
   复用 SPM 同类 structured lifetime dataflow：view-like alias、tile-region
   boundary arg、`scf.if` path condition、`scf.for` iter_args/yield/backedge 和 async token 都从 IR

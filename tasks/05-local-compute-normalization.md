@@ -79,7 +79,7 @@ whole-shape local body 且没有 collective。缺少 collective 不能作为拒�
 只负责 local compute normalization：先把 post-SPMD StableHLO logical collective handoff 成
 `wafer.tensor.*`，再调用当前 pin 的官方 StableHLO-to-Linalg conversion，把 StableHLO
 compute / data movement / constant 转成 `linalg` / `tensor` / `scf` / `arith` / `math` structured IR。
-它不执行 Shardy propagation，不调用 XLA SPMD partitioner，不写 per-rank parameter shard binding，
+它不执行 Shardy propagation，不调用 XLA SPMD partitioner，不写 per-rank parameter shard metadata，
 也不决定 group / tile / SPM / DDR / C ABI。
 
 ## 3. Transformer Block Coverage

@@ -20,7 +20,7 @@
 # PIPELINE: wafer-opt: completed Wafer program pipeline stablehlo-spmd-to-linalg:
 
 # VERIFY: wafer-compile-stablehlo: verified StableHLO program directory parameters: 2
-# VERIFY: wafer-compile-stablehlo: verified StableHLO program directory parameter shard bindings: 2
+# VERIFY: wafer-compile-stablehlo: verified StableHLO program directory parameter boundary shards: 2
 # VERIFY: wafer-compile-stablehlo: verified StableHLO program
 
 # MLIR: mhlo.spmd_parameters_shardings
@@ -29,22 +29,20 @@
 # MLIR-SAME: policy = "all_available"
 # MLIR-SAME: shape = array<i64: 16>
 # MLIR: func.func @main
-# MLIR: tensor<2xf32>
-# MLIR: tensor<32x2xf32>
+# MLIR-SAME: tensor<2xf32>
+# MLIR-SAME: wafer.boundary_shards = @main_arg0_shards
+# MLIR-SAME: tensor<32x2xf32>
+# MLIR-SAME: wafer.boundary_shards = @main_arg1_shards
 # MLIR-NOT: stablehlo.all_gather
 # MLIR: wafer.tensor.all_gather
 # MLIR-SAME: rank_group = array<i64:
 # MLIR-NOT: wafer.tile.
 # MLIR-NOT: stablehlo.
 # MLIR: linalg.matmul
-# MLIR: wafer.shard.binding
-# MLIR-SAME: argument_index = 0 : i64
+# MLIR: wafer.boundary.shards @main_arg0_shards
 # MLIR-SAME: execution_mesh = @default_mesh
-# MLIR-SAME: kernel = @main
-# MLIR: wafer.shard.binding
-# MLIR-SAME: argument_index = 1 : i64
+# MLIR: wafer.boundary.shards @main_arg1_shards
 # MLIR-SAME: execution_mesh = @default_mesh
-# MLIR-SAME: kernel = @main
 
 # SHARDS: "logical_rank_count": 16
 # SHARDS: "parameter_shards_version": 2
@@ -55,4 +53,5 @@
 # MATRIX-MLIR: wafer.target.topology @default
 # MATRIX-MLIR: wafer.execution.mesh @default_mesh
 # MATRIX-MLIR: func.func @main
-# MATRIX-MLIR: wafer.shard.binding
+# MATRIX-MLIR-SAME: wafer.boundary_shards =
+# MATRIX-MLIR: wafer.boundary.shards

@@ -17,7 +17,7 @@ namespace wafer::frontend {
 struct FrontendProgramVerificationResult {
   unsigned programParameterCount = 0;
   unsigned programUserInputCount = 0;
-  unsigned programParameterShardBindingCount = 0;
+  unsigned programParameterBoundaryShardCount = 0;
 };
 
 mlir::LogicalResult

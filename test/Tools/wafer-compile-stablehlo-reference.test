@@ -70,11 +70,11 @@
 # PROGRAM: wafer-compile-stablehlo: verified StableHLO program
 
 # SHARD-PROGRAM: wafer-compile-stablehlo: verified StableHLO program directory parameters: 1
-# SHARD-PROGRAM: wafer-compile-stablehlo: verified StableHLO program directory parameter shard bindings: 1
+# SHARD-PROGRAM: wafer-compile-stablehlo: verified StableHLO program directory parameter boundary shards: 1
 # SHARD-PROGRAM: wafer-compile-stablehlo: verified StableHLO program
 
 # MISSING-SHARDS: wafer-compile-stablehlo: StableHLO program directory metadata rejected
-# MISSING-SHARDS: partitioned StableHLO program directory is missing parameter shard bindings
+# MISSING-SHARDS: partitioned StableHLO program directory is missing parameter boundary shards
 
 # MISSING-SHARD-FILE: wafer-compile-stablehlo: StableHLO program directory metadata rejected
 # MISSING-SHARD-FILE: parameter shard file is missing

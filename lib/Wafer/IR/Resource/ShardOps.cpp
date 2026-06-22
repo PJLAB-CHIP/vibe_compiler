@@ -1,4 +1,4 @@
-//===- ShardOps.cpp - Wafer shard binding verifier implementation --------===//
+//===- ShardOps.cpp - Wafer boundary shard verifier implementation --------===//
 
 #include "Wafer/IR/WaferDialect.h"
 
@@ -7,18 +7,18 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
 
 using namespace wafer;
 using namespace wafer::detail;
 
 static mlir::FailureOr<int64_t>
-getExecutionMeshRankCount(ShardBindingOp binding, mlir::ModuleOp moduleOp) {
-  ExecutionMeshOp meshOp =
-      moduleOp.lookupSymbol<ExecutionMeshOp>(
-          binding.getExecutionMeshAttr().getValue());
+getExecutionMeshRankCount(BoundaryShardsOp shards, mlir::ModuleOp moduleOp) {
+  ExecutionMeshOp meshOp = moduleOp.lookupSymbol<ExecutionMeshOp>(
+      shards.getExecutionMeshAttr().getValue());
   if (!meshOp) {
-    binding.emitOpError("references unknown execution mesh symbol @")
-        << binding.getExecutionMeshAttr().getValue();
+    shards.emitOpError("references unknown execution mesh symbol @")
+        << shards.getExecutionMeshAttr().getValue();
     return mlir::failure();
   }
 
@@ -26,7 +26,7 @@ getExecutionMeshRankCount(ShardBindingOp binding, mlir::ModuleOp moduleOp) {
   for (int64_t dim : meshOp.getShapeAttr().asArrayRef()) {
     int64_t next = 0;
     if (dim <= 0 || !checkedMul(rankCount, dim, next)) {
-      binding.emitOpError("references execution mesh with invalid rank count");
+      shards.emitOpError("references execution mesh with invalid rank count");
       return mlir::failure();
     }
     rankCount = next;
@@ -34,29 +34,51 @@ getExecutionMeshRankCount(ShardBindingOp binding, mlir::ModuleOp moduleOp) {
   return rankCount;
 }
 
-mlir::LogicalResult ShardBindingOp::verify() {
+struct BoundaryShardOwner {
+  mlir::Type type;
+};
+
+static llvm::SmallVector<BoundaryShardOwner>
+collectBoundaryShardOwners(BoundaryShardsOp shards, mlir::ModuleOp moduleOp) {
+  llvm::SmallVector<BoundaryShardOwner> owners;
+  llvm::StringRef symbolName = shards.getSymName();
+  moduleOp.walk([&](mlir::func::FuncOp funcOp) {
+    mlir::FunctionType functionType = funcOp.getFunctionType();
+    for (unsigned index = 0, e = functionType.getNumInputs(); index < e;
+         ++index) {
+      auto attr = mlir::dyn_cast_or_null<mlir::FlatSymbolRefAttr>(
+          funcOp.getArgAttr(index, kWaferBoundaryShardsAttrName));
+      if (attr && attr.getValue() == symbolName)
+        owners.push_back({functionType.getInput(index)});
+    }
+    for (unsigned index = 0, e = functionType.getNumResults(); index < e;
+         ++index) {
+      auto attr = mlir::dyn_cast_or_null<mlir::FlatSymbolRefAttr>(
+          funcOp.getResultAttr(index, kWaferBoundaryShardsAttrName));
+      if (attr && attr.getValue() == symbolName)
+        owners.push_back({functionType.getResult(index)});
+    }
+  });
+  return owners;
+}
+
+mlir::LogicalResult BoundaryShardsOp::verify() {
   mlir::ModuleOp moduleOp = getOperation()->getParentOfType<mlir::ModuleOp>();
   if (!moduleOp)
     return emitOpError("must be nested under a module");
 
-  mlir::func::FuncOp funcOp =
-      moduleOp.lookupSymbol<mlir::func::FuncOp>(getKernelAttr().getValue());
-  if (!funcOp)
-    return emitOpError("references unknown function symbol @")
-           << getKernelAttr().getValue();
+  llvm::SmallVector<BoundaryShardOwner> owners =
+      collectBoundaryShardOwners(*this, moduleOp);
+  if (owners.empty())
+    return emitOpError("must be referenced by one function argument or result "
+                       "via wafer.boundary_shards");
+  if (owners.size() > 1)
+    return emitOpError("is referenced by multiple function boundary values");
 
-  int64_t argumentIndex = getArgumentIndexAttr().getInt();
-  if (argumentIndex < 0 ||
-      argumentIndex >=
-          static_cast<int64_t>(funcOp.getFunctionType().getNumInputs()))
-    return emitOpError("argument_index is outside the referenced function "
-                       "argument list");
-
-  mlir::Type argumentType = funcOp.getFunctionType().getInput(argumentIndex);
-  auto tensorType = mlir::dyn_cast<mlir::RankedTensorType>(argumentType);
+  auto tensorType = mlir::dyn_cast<mlir::RankedTensorType>(owners.front().type);
   if (!tensorType || !tensorType.hasStaticShape())
-    return emitOpError("referenced function argument must be a static ranked "
-                       "tensor");
+    return emitOpError("referenced function boundary value must be a static "
+                       "ranked tensor");
 
   mlir::FailureOr<int64_t> executionMeshRankCount =
       getExecutionMeshRankCount(*this, moduleOp);
@@ -68,16 +90,19 @@ mlir::LogicalResult ShardBindingOp::verify() {
   llvm::ArrayRef<int64_t> localShape = getLocalShapeAttr().asArrayRef();
   int64_t tensorRank = tensorType.getRank();
   if (static_cast<int64_t>(globalShape.size()) != tensorRank)
-    return emitOpError("global_shape rank must match referenced argument rank");
+    return emitOpError(
+        "global_shape rank must match referenced boundary value rank");
   if (static_cast<int64_t>(localShape.size()) != tensorRank)
-    return emitOpError("local_shape rank must match referenced argument rank");
+    return emitOpError(
+        "local_shape rank must match referenced boundary value rank");
 
   for (auto [dim, expected] : llvm::enumerate(tensorType.getShape())) {
     if (expected < 0)
-      return emitOpError("referenced function argument must have static "
+      return emitOpError("referenced function boundary value must have static "
                          "dimensions");
     if (localShape[dim] != expected)
-      return emitOpError("local_shape must match referenced argument type");
+      return emitOpError("local_shape must match referenced boundary value "
+                         "type");
     if (globalShape[dim] < 0 || localShape[dim] < 0)
       return emitOpError("global_shape and local_shape dimensions must be "
                          "non-negative");
@@ -126,18 +151,6 @@ mlir::LogicalResult ShardBindingOp::verify() {
                << rank << " exceeds local shape";
     }
   }
-
-  bool duplicateBinding = false;
-  moduleOp.walk([&](ShardBindingOp binding) {
-    if (binding.getOperation() == getOperation())
-      return;
-    if (binding.getKernelAttr() == getKernelAttr() &&
-        binding.getArgumentIndexAttr().getInt() == argumentIndex)
-      duplicateBinding = true;
-  });
-  if (duplicateBinding)
-    return emitOpError("duplicates shard binding for referenced function "
-                       "argument");
 
   return mlir::success();
 }

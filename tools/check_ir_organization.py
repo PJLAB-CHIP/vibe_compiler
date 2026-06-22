@@ -45,6 +45,13 @@ OP_FAMILIES = {
         "mnemonics": ["tile.load", "tile.store"],
         "tests": "Resource/SPM",
     },
+    "BoundaryShards": {
+        "layer": "Resource",
+        "td": "ShardOps.td",
+        "cpp": "ShardOps.cpp",
+        "mnemonics": ["boundary.shards"],
+        "tests": "Resource/Shard",
+    },
     "Move": {
         "layer": "Tile",
         "td": "MoveOps.td",

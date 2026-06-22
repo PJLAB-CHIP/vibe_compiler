@@ -1,15 +1,13 @@
 // RUN: not wafer-opt %s 2>&1 | FileCheck %s
 
 module {
-  func.func @forward(%arg0: tensor<1x4xf32>) {
+  func.func @forward(%arg0: tensor<1x4xf32> {wafer.boundary_shards = @arg0_shards}) {
     return
   }
 
-  wafer.shard.binding
-      {argument_index = 0 : i64,
-       execution_mesh = @missing_mesh,
+  wafer.boundary.shards @arg0_shards
+      {execution_mesh = @missing_mesh,
        global_shape = array<i64: 1, 4>,
-       kernel = @forward,
        local_shape = array<i64: 1, 4>,
        shard_offsets = array<i64: 0, 0>,
        shard_ranks = array<i64: 0>,

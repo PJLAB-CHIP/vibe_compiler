@@ -81,7 +81,7 @@ layout planning 有两个恢复层次：
   buffer demand。该层只产出 analysis result 和 debug dump，不 rewrite `wafer.group`，不写
   layout attr，也不生成 `wafer.tile.region`。
 - committed `wafer.tile.region` / instruction-level IR 已经包含 candidate gates 接受的
-  Wafer-tagged memref value 和 `wafer.tile.materialize_layout` op。后续 topology/shard-binding、ABI/LLVM
+  Wafer-tagged memref value 和 `wafer.tile.materialize_layout` op。后续 topology/boundary-shards、ABI/LLVM
   ABI/LLVM lowering 和 package manifest 只从这些 IR facts 派生 lower-level 参数，
   不再重新 materialize layout assignment 或 materialization cut。
 
@@ -1214,7 +1214,7 @@ V0 不做全局最优，但不能只做一次贪心选择。主路径是 determi
 
 10. Endpoint / launch / ABI handoff
 
-   cleanup 后交给 topology/execution-mesh/shard-binding contract、ABI/LLVM lowering 和 package manifest。
+   cleanup 后交给 topology/execution-mesh/boundary-shards contract、ABI/LLVM lowering 和 package manifest。
    它们从 committed Wafer-tagged memref、accepted offset facts、view relation、endpoint facts、layout
    helper 和按需 resource view 派生 address/range/stride 参数。layout planner 不直接生成 LLVM ABI，
    但必须保证 accepted layout 都能被这个派生过程合法实现。

@@ -1,22 +1,22 @@
-//===- ShardOps.td - Wafer shard binding operation definitions -*- tablegen -*-===//
+//===- ShardOps.td - Wafer boundary shard operation definitions -*- tablegen -*-===//
 
 #ifndef WAFER_IR_RESOURCE_SHARDOPS_TD
 #define WAFER_IR_RESOURCE_SHARDOPS_TD
 
-def Wafer_ShardBindingOp : Wafer_Op<"shard.binding"> {
-  let summary = "launch-visible tensor shard binding by logical rank";
+def Wafer_BoundaryShardsOp : Wafer_Op<"boundary.shards", [Symbol]> {
+  let summary = "launch-visible tensor boundary shards by logical rank";
   let description = [{
-    `wafer.shard.binding` records how a launch-visible tensor boundary value is
-    sliced across dense logical ranks. It references an entry function symbol
-    and function argument index, then stores per-rank static slice bounds as
-    rank-major arrays. The op is a boundary shard fact: it does not store
+    `wafer.boundary.shards` records how a launch-visible function boundary
+    tensor value is sliced across dense logical ranks. Function argument/result
+    attributes reference this symbol with `wafer.boundary_shards`; ownership is
+    carried by the boundary value, not by a kernel/index side table. The op
+    stores per-rank static slice bounds as rank-major arrays and does not store
     payload file paths, physical endpoint mapping, SPM/DDR offsets, package manifest
     fields, or runtime handles.
   }];
 
   let arguments = (ins
-    FlatSymbolRefAttr:$kernel,
-    I64Attr:$argument_index,
+    SymbolNameAttr:$sym_name,
     FlatSymbolRefAttr:$execution_mesh,
     DenseI64ArrayAttr:$global_shape,
     DenseI64ArrayAttr:$local_shape,
@@ -27,7 +27,7 @@ def Wafer_ShardBindingOp : Wafer_Op<"shard.binding"> {
   );
 
   let hasVerifier = 1;
-  let assemblyFormat = "attr-dict";
+  let assemblyFormat = "$sym_name attr-dict";
 }
 
 #endif // WAFER_IR_RESOURCE_SHARDOPS_TD

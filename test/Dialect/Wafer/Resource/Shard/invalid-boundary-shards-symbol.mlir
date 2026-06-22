@@ -14,16 +14,9 @@ module {
        policy = "explicit",
        endpoints = array<i64: 0, 0, 0, 0>}
 
-  wafer.shard.binding
-      {argument_index = 0 : i64,
-       execution_mesh = @default_mesh,
-       global_shape = array<i64: 2, 4>,
-       kernel = @missing,
-       local_shape = array<i64: 1, 4>,
-       shard_offsets = array<i64: 0, 0>,
-       shard_ranks = array<i64: 0>,
-       shard_sizes = array<i64: 1, 4>,
-       shard_strides = array<i64: 1, 1>}
+  func.func @forward(%arg0: tensor<1x4xf32> {wafer.boundary_shards = @missing_shards}) {
+    return
+  }
 }
 
-// CHECK: references unknown function symbol @missing
+// CHECK: argument #0 attribute 'wafer.boundary_shards' references unknown wafer.boundary.shards symbol @missing_shards

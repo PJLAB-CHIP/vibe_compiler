@@ -67,7 +67,7 @@ PyTorch/XLA 路线的 frontend program 只保留一套 exporter-native 事实源
 | --- | --- | --- |
 | `functions/forward.mlir` | StableHLO IR 主体 | parse / verify 后进入 compiler pipeline |
 | `functions/forward.meta` | PyTorch/XLA 导出的 metadata | 校验 function arg/result 与 parameter / user input / shape / dtype 的关系 |
-| `functions/forward.parameter_shards.json` | post-SPMD parameter shard binding | 仅在 partitioned program directory 中存在；校验 local function parameter 与 rank-local shard payload 的关系 |
+| `functions/forward.parameter_shards.json` | post-SPMD parameter shard metadata | 仅在 partitioned program directory 中存在；校验 local function parameter 与 rank-local shard payload 的关系 |
 | `functions/forward.bytecode` | StableHLO bytecode | 与 program directory 一起保留，当前不作为 Wafer IR 合同 |
 | `data/<parameter>` | PyTorch/XLA 导出的 pre-SPMD weight data | program payload；verifier 检查 NPY stream、shape 和 dtype，后续 SPMD/storage/package stage 继续消费或改写 |
 | `parameter_shards/<parameter>/rank_XXXXX.npy` | post-SPMD rank-local weight shard payload | partitioned program directory 的参数 payload；由 P2.S2 SPMD partition compiler stage 生成，不从 strategy 名或文件名推断 |
@@ -78,7 +78,7 @@ compile JSON。`forward.meta` 是 function boundary
 rank-local shard payload 的绑定关系。offsets、sizes、strides、replica id 和 payload 文件必须来自
 XLA sharding / partitioner 暴露的 shard facts，不能由 Wafer 从 `partition_spec`、strategy 名或
 parameter 名手算。后续 compiler stage 不能通过文件名、parameter 名或 side JSON 猜语义；它们应消费
-IR 中 materialize 的 parameter/resource/ConstantLike/shard-binding 事实。若某个 stage 改变 function
+IR 中 materialize 的 parameter/resource/ConstantLike/boundary-shards 事实。若某个 stage 改变 function
 boundary、parameter shard、constant storage、layout 或 package binding，它必须同步更新同一个 Wafer
 program 的 metadata / payload，并由 verifier 检查一致性。metadata 也不描述 Wafer physical layout、
 runtime allocation resource、DDR address 或 package path，除非后续相应 IR 层已经 materialize 这些事实。

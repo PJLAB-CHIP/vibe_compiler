@@ -18,7 +18,7 @@ local body 和通信算子插入仍交给 Shardy / XLA SPMD partitioner。
 本文依赖：
 
 - `tasks/02-frontend-stablehlo-program.md`
-- `tasks/04-topology-device-mesh-shard-binding.md`
+- `tasks/04-topology-execution-mesh-boundary-shards.md`
 - `tasks/13-communication.md`
 - `tasks/05-local-compute-normalization.md`
 
@@ -140,7 +140,7 @@ P2.S2 工程 gate 必须把 XLA SPMD partitioner 或等价 local-body partitioni
   program pipeline 或等价 library entry：消费经过 Wafer
   sharding propagation stage 的 StableHLO/SDY IR 或 program directory，显式完成 StableHLO/SDY ->
   XLA HLO、XLA SPMD partitioner、partitioned HLO -> StableHLO round trip，再写 post-SPMD local /
-  replicated-local StableHLO program directory 和 rank-local parameter shard binding。该入口不能挂在
+  replicated-local StableHLO program directory 和 rank-local parameter shard metadata。该入口不能挂在
   `wafer-compile-stablehlo` frontend verifier 下。`P2.S1` / `P2.S2` 只能作为任务索引，不能成为
   program directory 目录名、program 类型名或长期协议字段。
 - R2.4 消费 P2.S2 的 partitioned StableHLO collective，并 normalize 到 Wafer LinalgExt-style
@@ -169,7 +169,7 @@ P2.S2 工程 gate 必须把 XLA SPMD partitioner 或等价 local-body partitioni
   partitioned HLO -> StableHLO round trip，并写回 partitioned StableHLO program directory。
   `wafer-opt` staging 必须保留未被 propagation 改写的 program members，只重写 propagated IR；
   helper / writer 在产生 partitioned program 时负责同步更新 local function signature、rank-local
-  parameter payload 和 shard binding metadata。helper 路径由 build-time
+  parameter payload 和 shard metadata。helper 路径由 build-time
   `WAFER_XLA_SPMD_PARTITIONER_HELPER` 配置进入 `wafer-opt`，不是用户级 pipeline flag。
 - 2026-06-01 直接 CMake link 评估结论：当前 build 虽启用 `WAFER_ENABLE_SPMD_PARTITIONER_DEPS`，
   但 CMake target graph 只包含 Wafer / StableHLO / Shardy，没有 XLA `spmd_partitioner`、HLO
@@ -463,7 +463,7 @@ SPMD 消费的 topology / execution mesh 输入是：
 - `wafer.execution.mesh` 引用的 `wafer.target.topology`，用于确认 rank domain 来自 available connected
   topology；SPMD 不直接消费 physical route 或 DTE resource。
 
-SPMD 输出给后续 shard-binding / communication / package 的 facts 是：
+SPMD 输出给后续 boundary-shards / communication / package 的 facts 是：
 
 - local shard shape、dtype、semantic layout。
 - logical rank group / replica group。
@@ -542,7 +542,7 @@ per-rank program
   -> tensor collective normalization if collectives exist
   -> logical group
   -> tile_region materialization
-  -> topology/execution-mesh/shard-binding / communication / memory planning gate
+  -> topology/execution-mesh/boundary-shards / communication / memory planning gate
 ```
 
 手写 `sdy.mesh` / StableHLO collective fixture 只保留为 dialect/verifier/unit 级测试。它不能替代
