@@ -107,13 +107,6 @@ OP_FAMILIES = {
         "mnemonics": ["instr.local_drain"],
         "tests": "Instr/Sync",
     },
-    "Launch": {
-        "layer": "Runtime",
-        "td": "LaunchOps.td",
-        "cpp": "LaunchOps.cpp",
-        "mnemonics": ["launch"],
-        "tests": "Runtime/Launch",
-    },
 }
 
 SUPPORT_TEST_DIRS = {"Common/Attrs"}

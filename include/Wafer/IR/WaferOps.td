@@ -23,6 +23,5 @@ include "Wafer/IR/Tile/CommOps.td"
 include "Wafer/IR/Resource/SPMOps.td"
 include "Wafer/IR/Instr/InstructionOps.td"
 include "Wafer/IR/Instr/SyncOps.td"
-include "Wafer/IR/Runtime/LaunchOps.td"
 
 #endif // WAFER_IR_WAFEROPS_TD

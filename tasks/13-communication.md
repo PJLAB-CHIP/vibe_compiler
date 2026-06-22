@@ -61,7 +61,7 @@ partitioned StableHLO + collectives
 | target-abstract comm | `wafer.tile.*` communication ops collective / permute op | 保留 tile-local communication semantic 和 physical group，不选择 raw DTE register |
 | p2p schedule | `wafer.tile.send`、`recv`、`wait`、local compute step | 显式 ring/tree step、buffer slice、byte count、token/effect |
 | lower-level comm | Direct DTE / FSM / sync op | receiver ready、DTE attach/send/wait/release、packet counter、error status |
-| launch/package | `wafer.launch` / launch-resource metadata | communication plan metadata、resource init、completion source |
+| launch/package | package launch-resource metadata | communication plan metadata、resource init、completion source |
 
 Collective algorithm 的选择过程是 analysis / rewrite。若已经展开成 p2p body，就不再保存一个
 重复描述 body 的 global plan attr；若仍保持 collective op，则它只表达尚未展开的 collective

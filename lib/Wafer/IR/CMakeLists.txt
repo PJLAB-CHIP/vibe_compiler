@@ -5,7 +5,6 @@ add_mlir_dialect_library(WaferIR
   Instr/InstructionOps.cpp
   Instr/SyncOps.cpp
   Resource/SPMOps.cpp
-  Runtime/LaunchOps.cpp
   Target/TopologyOps.cpp
   Tensor/GroupOps.cpp
   Tensor/TensorCollectiveOps.cpp

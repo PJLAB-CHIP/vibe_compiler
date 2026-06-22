@@ -74,8 +74,8 @@ Wafer 是基于 MLIR 的编译器。每一层 IR 只携带自己能稳定解释�
 | Local compute normalization | Linalg, Tensor, SCF, Arith, Math, Wafer LinalgExt-style tensor collective ops | structured loop、indexing map、tile slice、producer/consumer、DPS/in-place、transformer block composite pattern、post-SPMD tensor collective semantics | SPM address、`Cx/NCx` storage、worker id、packet field、tile communication / DTE protocol |
 | Group scheduling | `wafer.group` | fusion boundary、traversal schedule、tiled tensor IR、abstract resource demand | raw register field、DTE node id、physical SPM slot、C ABI call |
 | Tile execution | `wafer.tile.region`, Wafer-tagged `memref`, target-abstract `wafer.tile.*` ops | bufferized tile-local execution scope、memory/liveness、movement/compute/sync ordering、layout contract | tensor fusion decision、host launch/package ABI |
-| Hardware/runtime lowering | `wafer.instr.*`, tile communication lowering, `wafer.launch` | RDMA/WDMA/TDMA/CT/NE/DTE instruction/runtime form、issue/drain abstraction、wait/barrier abstraction | raw packet bitfield unless in debug/raw dialect |
-| Launch / ABI | `wafer.launch`, LLVM dialect, package metadata | host/device launch boundary、concrete `wafer_*` call、runtime adapter、HPGR or legacy launch metadata | tensor-level fusion, sharding decisions |
+| Hardware/runtime lowering | `wafer.instr.*`, tile communication lowering | RDMA/WDMA/TDMA/CT/NE/DTE instruction/runtime form、issue/drain abstraction、wait/barrier abstraction | raw packet bitfield unless in debug/raw dialect |
+| Launch / ABI | LLVM dialect, package metadata | host/device launch boundary、concrete `wafer_*` call、runtime adapter、HPGR or legacy launch metadata | tensor-level fusion, sharding decisions |
 
 IREE 的可借鉴点是层级纪律，不是 dialect taxonomy。Wafer 不复制 Flow/Stream/HAL/VM 分层，也不把
 IREE 的 experimental op 当成硬件无关答案；但采用三个原则：
@@ -495,7 +495,6 @@ contract、collective lowering 和 verifier 见
 
 主体 IR / Dialect：
 
-- `wafer.launch`
 - LLVM dialect / EmitC-like lowering
 - concrete Wafer C ABI call
 - package metadata
@@ -503,7 +502,6 @@ contract、collective lowering 和 verifier 见
 
 职责：
 
-- 引入 `wafer.launch` 作为 runtime-level host/device launch boundary。
 - 把 `wafer.tile.*` compute / `wafer.tile.*` communication lowering 到具体 `wafer_*` C ABI call。
 - 生成 RISC-V kcore device `.so`。
 - 从 committed instruction IR、accepted offsets、topology/execution mesh、program parameter shard
@@ -511,10 +509,9 @@ contract、collective lowering 和 verifier 见
   metadata、communication metadata、constant storage bytes 和 profiling/status metadata。
 - 选择 HPGR runtime path 或 legacy `TsmRun` fallback，并声明可信 completion source。
 
-`wafer.launch` 不替代 `wafer.tile.region`。前者表达一次 launch / kernel invocation 的外层
+Runtime launch metadata 不替代 `wafer.tile.region`。前者表达一次 launch / kernel invocation 的外层
 边界和参数；launch/resource metadata 是 ABI/package/runtime 使用点从 IR 重算的 view，不是独立
-前置 IR 阶段。`wafer.launch` 也不回头承载 tensor fusion、traversal selection 或 group planner
-的中间计划。
+前置 IR 阶段，也不回头承载 tensor fusion、traversal selection 或 group planner 的中间计划。
 
 Runtime/package 的 package 内容、HPGR/KMD/legacy `TsmRun` 分层、runtime allocation/import mapping、
 legacy bootparam/TLV 和 completion/stub shielding 合同见
@@ -698,7 +695,7 @@ WaferRuntimeAdapter cluster launch
 | `wafer.spm` | Wafer memory attr、liveness、Cx/NCx C0 tail/fold、256B padding、bool bitpack、SPM range/reserved-slot diagnostics |
 | `wafer.tile.*` compute | 对已支持 op 建 wrapper golden packet，例如 CT unary/binary、NE GEMM、RDMA/WDMA contiguous end-address、DMA stride byte-unit 和 `iteration - 1` |
 | `wafer.tile.*` communication | Direct DTE unicast send/recv/wait、packet counter update word、FSM resource allocation、raw non-unicast V1 禁用诊断 |
-| `wafer.launch` / Runtime/package | launch verifier、bootparam head/dyninfo layout、dyn TLV serialization roundtrip、HPGR/legacy completion source、stub shielding |
+| Runtime/package | package manifest validator、bootparam head/dyninfo layout、dyn TLV serialization roundtrip、HPGR/legacy completion source、stub shielding |
 | Scheduler / PMU | 只在进入 overlap/cost-model milestone 后添加：serial/parallel mode、SPM bank/page-color conflict、DDR overlap、PMU `exe_time` / `blocking_time` case |
 
 每个能力阶段的测试面只覆盖该阶段实际启用的 dialect op 和 lowering path。例如 single-tile
@@ -734,7 +731,7 @@ memref.alloc : memref<..., #wafer.memory<spm, *>>
 wafer.tile.gemm
 wafer.tile.send
 wafer.instr.local_drain
-wafer.launch
+runtime package metadata
 ```
 
 建议目录：
@@ -760,8 +757,6 @@ include/Wafer/
       SPMOps.td
     Instr/
       SyncOps.td
-    Runtime/
-      LaunchOps.td
   Analysis/
   Transforms/
     Passes.td
@@ -922,15 +917,15 @@ ModelImport/FrontendProgram
   value、offset fact 和 view relation，不再做 fusion 决策。
 - `wafer.instr.local_drain` 和后续 sync boundary 提供 local drain、communication wait、group barrier
   等同步抽象，供 compute/comm lowering 复用。
-- `wafer.launch` 是 runtime-level launch boundary，负责参数、metadata 和 host/device ABI
-  交接，不替代 tile-local execution region。
+- runtime package metadata 是 runtime-level launch boundary，负责参数、metadata 和 host/device ABI
+  交接，不替代 tile-local execution region，也不作为当前 core IR op。
 - ABI/LLVM lowering 只消费 committed instruction IR、accepted offset facts、
   topology/execution-mesh contract、program parameter shard metadata/resource view、薄 launch/block binding，
   不回头改 schedule、layout 或 memory plan。
 
 V0 先保持统一 `wafer` dialect namespace，但公开 op mnemonic 只保留少量稳定 family：
 `wafer.group`、`wafer.tensor.*`、`wafer.tile.*`、`wafer.instr.*`、`wafer.target.*` /
-`wafer.execution.mesh` 和 `wafer.launch`。
+`wafer.execution.mesh`。
 
 ## 8. 子设计边界索引
 
@@ -951,7 +946,7 @@ V0 先保持统一 `wafer` dialect namespace，但公开 op mnemonic 只保留�
 | DDR memory planning | `tasks/12-ddr-memory-planning.md` | 草案 | `#wafer.memory<ddr, *>` demand、external view/descriptor validation、compiler-managed/resident/inter-group alloc demand、accepted DDR offset facts、lifetime/reuse、default arena capacity/largest-contiguous/bandwidth | tensor fusion、SPM offset、runtime allocation/import、packet bitfield |
 | Communication | `tasks/13-communication.md` | 草案 | tile_region / SPM materialization 之后的 collective-level op、p2p schedule、Direct DTE V0、token/effect、sync boundary | compute op legality、SPM allocator internals、SPMD tensor collective handoff |
 | C ABI / golden packet | `tasks/14-abi-golden-packet.md` | 草案 | committed instruction IR + topology/execution-mesh + program shard metadata/resource view 到 ABI / LLVM / packet emission 的参数单位、wait policy、golden packet | 上层 IR formation、layout search 和 SPM memory planning |
-| Launch / runtime package | `tasks/15-launch-runtime-package.md` | 草案 | `wafer.launch`、HPGR/KMD/legacy Tsm 分层、completion、runtime allocation objects、bootparam/TLV、package metadata | Linalg tiling、group formation、tile-local ordering |
+| Launch / runtime package | `tasks/15-launch-runtime-package.md` | 草案 | HPGR/KMD/legacy Tsm 分层、completion、runtime allocation objects、bootparam/TLV、package metadata | Linalg tiling、group formation、tile-local ordering |
 | Verification plan | `tasks/16-verification-plan.md` | 草案 | stage diagnostics、roundtrip、golden packet、runtime shielding、PMU/cost-model gate | 替代各 dialect 语义设计 |
 | Serving integration | 暂不支持 | 延后 | graph capture、prefill/decode、KV cache 管理 | compiler core IR 合同 |
 

@@ -1,8 +1,8 @@
 # Wafer Launch and Runtime Package Design
 
-状态：设计草案；范围：`wafer.launch`、runtime package、host runtime adapter 和 completion contract。
+状态：设计草案；范围：runtime package、host runtime adapter 和 completion contract。
 
-本文定义 `wafer.launch`、runtime package、host runtime adapter 和 completion contract。该边界
+本文定义 runtime package、host runtime adapter 和 completion contract。该边界
 消费 committed instruction IR、topology/execution-mesh contract、program parameter shard metadata、
 薄 launch/block binding、按需重算的 resource view 以及 ABI/LLVM
 lowering 产物，负责把 device code、resource metadata、endpoint binding、DDR binding、constant storage
@@ -22,7 +22,6 @@ package load / launch 时执行的绑定动作，不是独立 compiler IR materi
 
 目标：
 
-- 引入 `wafer.launch` 作为 host/device invocation boundary。
 - 组织 RISC-V kcore device code、launch signature、endpoint/resource metadata、DDR binding
   contract、constant storage bytes 和 optional profiling/control metadata。
 - 明确 HPGR、KMD 和 legacy `TsmRun` fallback 的职责分层。
@@ -40,20 +39,9 @@ package load / launch 时执行的绑定动作，不是独立 compiler IR materi
 
 ## 2. Launch Boundary
 
-`wafer.launch` 表达一次编译后 kernel / model invocation：
-
-```text
-wafer.launch @compiled_kernel(
-  inputs,
-  outputs,
-  runtime_args
-) attributes {
-  package_ref
-}
-```
-
-概念 view。下面这些字段由 ABI/package/runtime adapter 从 committed IR 和 explicit facts 重算，不是
-`wafer.launch` 提前保存的第二份 IR 合同：
+当前不引入单独的 launch IR op。一次编译后 kernel / model invocation 由 package manifest、
+runtime adapter binding contract 和 ABI/LLVM lowering 产物共同表达。下面这些字段由
+ABI/package/runtime adapter 从 committed IR 和 explicit facts 重算，不提前保存成第二份 IR 合同：
 
 - launch signature：user-visible inputs/outputs、shape、dtype、external layout、alias policy。
 - endpoint view：`wafer.execution.mesh` + `wafer.target.topology` 派生的 rank->physical endpoint
@@ -65,7 +53,7 @@ wafer.launch @compiled_kernel(
 - device code reference：kcore `.so` 或后续可执行代码对象。
 - runtime mode：HPGR 主路径或 legacy fallback。
 
-`wafer.launch` 不包含 tensor-level fusion plan，也不组织 tile-local memory effects；这些属于
+Runtime launch metadata 不包含 tensor-level fusion plan，也不组织 tile-local memory effects；这些属于
 `wafer.group` 和 `wafer.tile.region`。
 
 ### 2.1 Pipeline Contract
@@ -194,7 +182,7 @@ manifest 维护第二份 endpoint schema。
 `--emit-single-tile-elementwise` 和 `--emit-local-transformer-block` fixed emitter 已删除。后续 package
 gate 必须从当前 `wafer-opt` pipeline 的 committed instruction IR、
 topology/execution-mesh contract、program parameter shard metadata/resource view、薄 launch/block binding、
-按需重算的 resource view、ABI/LLVM lowering artifact 和 `wafer.launch` boundary 自动导出 manifest；
+按需重算的 resource view 和 ABI/LLVM lowering artifact 自动导出 manifest；
 不能恢复独立固定 emitter 作为完成证明。
 
 package manifest 后续可以序列化 runtime 需要的 derived endpoint section，但 canonical facts 仍在
@@ -220,8 +208,8 @@ bounds 不越过 launch signature tensor shape。
 - 已知 dyn TLV type 包括 final、cfg PMU、kcore cfg、export SPM、disable calc、profiling config、
   dynlib load/run/unload、memcpy D2D、P2P send/recv、group data dump。
 
-这些结构只属于 legacy runtime delivery。它们不改变 `wafer.launch` 的主 IR contract，也不能被
-上游 group/layout/SPM 文档当成语义对象。
+这些结构只属于 legacy runtime delivery。它们不改变 compiler IR contract，也不能被上游
+group/layout/SPM 文档当成语义对象。
 
 ## 7. Completion and Status
 

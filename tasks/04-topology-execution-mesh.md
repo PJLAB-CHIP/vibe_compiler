@@ -24,7 +24,7 @@ package resource view，不在本层 materialize 成核心 IR op 或 function bo
 - 在 SPMD 前 materialize runtime capability、规则 topology、unavailable tile metadata 和 derived
   connectivity，并从中选择 SPMD 可见的 valid execution mesh。
 - 为 `wafer.group`、`wafer.tile.region`、后续 `wafer.tile.*` communication materialization 和
-  `wafer.launch` 提供可验证的 physical mapping。
+  runtime package metadata 提供可验证的 physical mapping。
 - 在不能得到合法 execution mesh 或 endpoint projection 时，把原因反馈给 planner 或 compile driver。
 
 非目标：
@@ -291,7 +291,7 @@ Full co-optimization（SPMD strategy、mesh embedding、endpoint projection、co
 | `wafer.group` | per-rank local shard / block identity、tensor collective rank group 可解释性 | tile shape、fusion boundary |
 | `wafer.tile.region` | endpoint coordinate / block id args | SPM offset、layout assignment |
 | `wafer.tile.*` communication | tile_region / SPM materialization 后的 logical endpoint 到 physical endpoint mapping；execution mesh 和 topology graph 可用于 route/cost | DTE node/FSM/packet allocation |
-| `wafer.launch` | cluster membership and launch metadata | runtime allocation mapping、completion source |
+| runtime package metadata | cluster membership and launch metadata | runtime allocation mapping、completion source |
 
 Topology / execution mesh 不应把 DTE route 或 runtime launch API 写进上层。Communication lowering 可以基于
 accepted endpoint view 选择 ring/tree/unicast protocol。

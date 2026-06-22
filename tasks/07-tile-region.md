@@ -57,8 +57,8 @@ endpoint-derived metadata 和 communication staging demand 的层级；`wafer.ti
 - 不决定哪些 op 可以 group 到一起。
 - 不保存 planner 搜索过程、失败候选、cost model trace 或 shadow schedule。
 - 不把 SPM offset、DDR runtime allocation address、DTE resource 或 C ABI call 提前塞进 tensor/group 层。
-- 不替代 `wafer.launch`。`tile_region` 是 device-side execution scope，`launch` 是 host/device
-  invocation boundary。
+- 不替代 runtime launch metadata。`tile_region` 是 device-side execution scope，runtime package /
+  launch metadata 是 host/device invocation boundary。
 
 ## 2. Stage Position
 

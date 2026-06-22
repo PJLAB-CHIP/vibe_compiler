@@ -63,7 +63,7 @@ schedule 下，让中间值只在 group tile 内部存活。
 | 0. Local tensor compute / collective | 上游 local shard compute 和 post-SPMD tensor collective | `linalg` / `tensor` / `scf` + Wafer LinalgExt-style tensor collective ops | tensor compute、DPS、shape/indexing、tensor-level collective tiling contract | group 边界、tile-local lifetime、physical storage、`wafer.tile.*` communication / DTE protocol |
 | 1. Logical group | fusion planning region | logical-form `wafer.group` | group boundary、body region | tile size、schedule effect、physical allocation、queue、packet |
 | 2. Scheduled group | tiled tensor/control-flow region | scheduled-form `wafer.group` + tiled tensor IR | traversal loop、tiled body、必要的显式 constraint/effect | physical address、worker、DTE node、C ABI |
-| 3+. Downstream | bufferization / hardware / runtime | `wafer.tile.region`、layout/SPM、`wafer.tile.*` compute、`wafer.tile.*` communication、`wafer.launch` | 消费 scheduled group 的 tiled body、resource demand 和 boundary movement | 不回写 tensor-level fusion 语义 |
+| 3+. Downstream | bufferization / hardware / runtime | `wafer.tile.region`、layout/SPM、`wafer.tile.*` compute、`wafer.tile.*` communication、runtime package metadata | 消费 scheduled group 的 tiled body、resource demand 和 boundary movement | 不回写 tensor-level fusion 语义 |
 
 这个分层是本文的主线。后面的 case 会在 group 自己负责的阶段给出对应 IR 草图；下游
 `wafer.tile.region`、layout/SPM、DDR memory planning、compute/movement 和 communication 的 IR 草图分别见
@@ -440,7 +440,7 @@ bufferization、hardware lowering 和 runtime/ABI lowering 能继续工作；它
 IR 的内部表示。
 
 框架层暂定下游 region boundary 命名为 `wafer.tile.region`，用于承载 bufferized
-tile-local execution；runtime-level launch boundary 暂定命名为 `wafer.launch`。这两个 op
+tile-local execution；runtime-level launch boundary 由 package metadata / runtime adapter contract 表达。这两个边界
 的 verifier、effect 和 lowering contract 属于下游子设计，本文只规定 `wafer.group` 到它们
 的交接边界。
 
@@ -536,7 +536,7 @@ logical / scheduled tensor-level `wafer.group` body 第一版应保持保守。�
 - body 中 layout-changing、shape-changing 或 aligned-layout-only op 必须能被 layout
   propagation/verifier 覆盖。
 - body 中不得出现 raw StableHLO collective、lower-level Wafer memory / compute /
-  communication / sync / ABI / launch op、LLVM/runtime call、任意 `memref.*`
+  communication / sync / ABI op、runtime launch metadata、LLVM/runtime call、任意 `memref.*`
   allocation/load/store 或 SPM/storage typed value。若未来某类通信允许进入 group，
   必须先有 tensor-level op/effect 和 verifier 合同，不能直接插 `wafer.tile.*` communication。
 
@@ -564,7 +564,7 @@ formation pass 在每个 `func.func` 的 region/block 内先做局部 op 分类�
   tensor collective interface 的 `wafer.tensor.*`。
 - hard boundary：raw `stablehlo.*` collective、remote load/store、explicit DMA/
   communication、任意 `memref.*` allocation/load/store、`llvm.*`、runtime call、
-  lower-level Wafer memory / compute / communication / sync / ABI / launch op、
+  lower-level Wafer memory / compute / communication / sync / ABI op、runtime launch metadata、
   `wafer.tile.region`、Wafer-tagged memref、DTE token 或 packet-like value。
 - analysis-only input：single-use、use count、producer/consumer reachability、DPS outs、
   indexing maps、shape/rank/dtype、side-effect/memory-effect information。这些只驱动
@@ -1036,7 +1036,7 @@ group planner 层只在 analysis 中建模抽象资源，不把完整 resource p
 - memory buffer、layout materialization 和 runtime/ABI address derivation：见 layout / SPM / DDR 文档。
 - target compute 和 local movement：见 `wafer.tile.*` compute 文档。
 - communication buffer、DTE/FSM token/wait 和 collective p2p schedule：见 `wafer.tile.*` communication 文档。
-- host runtime / profiling resource：属于 `wafer.launch` / runtime/package 子设计。
+- host runtime / profiling resource：属于 runtime/package 子设计。
 
 多 worker、communication resource 和 host-visible boundary 先作为后续优化。若启用，必须在
 下游 IR 中表达清楚 resource ownership、visibility 和 drain/wait 边界。

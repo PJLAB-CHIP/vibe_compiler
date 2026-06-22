@@ -23,7 +23,7 @@
 | 12 | `tasks/12-ddr-memory-planning.md` | DDR memory planning and accepted offset facts |
 | 13 | `tasks/13-communication.md` | tile-local communication IR and Direct DTE boundary |
 | 14 | `tasks/14-abi-golden-packet.md` | C ABI / LLVM / golden packet lowering boundary |
-| 15 | `tasks/15-launch-runtime-package.md` | launch op、runtime package、host runtime adapter |
+| 15 | `tasks/15-launch-runtime-package.md` | runtime package、host runtime adapter |
 | 16 | `tasks/16-verification-plan.md` | staged verification plan and completion gates |
 
 ## 归档文档
