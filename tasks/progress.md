@@ -33,19 +33,20 @@ PyTorch/XLA StableHLO Wafer program directory
        post-SPMD StableHLO collective handoff + StableHLO-to-Linalg
   -> logical group formation
        dependency-preserving logical `wafer.group`
-  -> tile-region / instruction / memory-planned candidate pipeline
+  -> tile-region / communication / instruction / memory-planned candidate pipeline
        memref-backed `wafer.tile.region`
+       -> communication storage materialization
+            tiled tensor collective + SPM storage + local-rank facts
+            -> `wafer.tile.*` communication collective
+       -> p2p communication schedule lowering
+            `wafer.tile.*` communication collective
+            -> `wafer.tile.send` / `recv` / `wait` over unplaced SPM memrefs
        -> candidate DDR tile-view materialization
        -> instruction-level `wafer.instr.*`
-       -> accepted SPM and DDR offset facts
+       -> accepted SPM and DDR offset facts over compute/movement/communication demand
        -> candidate selection and committed materialization
   -> launch-block binding / endpoint projection
        optional per-rank block id；不复制 rank->physical endpoint
-  -> communication mesh consumer
-       tiled tensor collective + SPM storage + local-rank facts
-       -> `wafer.tile.*` communication collective
-       -> p2p `wafer.tile.send` / `recv` / `wait` schedule
-       -> Direct DTE / sync boundary
   -> ABI / LLVM lowering
        committed instruction IR + accepted offsets + topology/execution-mesh
        + program parameter shard metadata/resource view + communication/sync
@@ -74,13 +75,15 @@ Pipeline position:
      materialize 成 verifier-legal `wafer.tile.*` communication collective；只建立 buffer、bytes、
      logical rank group、local_rank 和 token/effect 边界，不选择 ring/tree/p2p schedule。
   2. p2p schedule lowering：消费 `wafer.tile.*` communication collective 和 topology/execution-mesh
-     derived endpoint view，materialize explicit `wafer.tile.send` / `recv` / `wait` schedule；不恢复旧
-     rank->tile side path，不保存 schedule side table。
+     derived endpoint view，materialize explicit `wafer.tile.send` / `recv` / `wait` schedule over
+     unplaced SPM memrefs；不恢复旧 rank->tile side path，不保存 schedule side table。
 - Output artifact / IR:
   第一阶段输出 verifier-legal buffer-level `wafer.tile.*` communication collective；第二阶段输出
-  verifier-legal p2p communication / Direct DTE resource / local-drain 边界。
+  verifier-legal p2p communication / sync boundary，作为 instruction lowering、SPM memory planning 和
+  DDR memory planning 的输入。
 - Downstream consumer:
-  p2p schedule lowering、Direct DTE / sync lowering、ABI/LLVM lowering、package manifest 和 runtime adapter。
+  p2p schedule lowering、instruction lowering、SPM memory planning、DDR memory planning、Direct DTE /
+  sync lowering、ABI/LLVM lowering、package manifest 和 runtime adapter。
 - User-level driver / named pipeline:
   `wafer-opt` program pipeline。局部工具入口只作为实现索引，不能成为长期合同。
 - Explicit non-goals:
@@ -90,8 +93,9 @@ Pipeline position:
 - Completion gate:
   端到端测试能从已完成上游链路中的 `wafer.tensor.*` collective 重放到 buffer-level
   `wafer.tile.*` communication collective；后续 p2p schedule gate 再证明该 collective 被 rewrite 成
-  explicit `send` / `recv` / `wait` 并被 Direct DTE / sync 边界消费。两个 gate 都必须消费
-  execution mesh/topology-derived endpoint view，不依赖独立 rank->tile transition op。
+  explicit `send` / `recv` / `wait`，且这些 communication op 的 buffer lifetime / staging demand 能被
+  SPM memory planning 看到。两个 gate 都必须消费 execution mesh/topology-derived endpoint view，不依赖
+  独立 rank->tile transition op。
 ```
 
 ## 已可依赖的上游边界
@@ -102,8 +106,8 @@ Pipeline position:
 | Target topology / execution mesh | `wafer.target.topology` regular card/tile grid、default single-card 4x4 / 16 tile materialization、`wafer.execution.mesh` all_available rank-domain policy、SPMD default seed consumption、unavailable endpoint verifier |
 | Local compute normalization | Linalg/Tensor/SCF/Arith/Math local compute + verifier-legal `wafer.tensor.*` handoff |
 | Logical group | verifier-legal logical `wafer.group` |
-| Tile-region / instruction lowering | memref-backed `wafer.tile.region` + instruction-level `wafer.instr.*` over Wafer-tagged memrefs |
-| DDR tile-view / SPM / DDR planning | candidate DDR `memref.subview` tile operands、accepted SPM offset facts、accepted DDR offset facts、structured failure diagnostics |
+| Tile-region / instruction lowering | memref-backed `wafer.tile.region` + instruction-level `wafer.instr.*` over Wafer-tagged memrefs；compute/movement 路径可用，communication lowering 正在补入同一 candidate pipeline |
+| DDR tile-view / SPM / DDR planning | candidate DDR `memref.subview` tile operands、accepted SPM offset facts、accepted DDR offset facts、structured failure diagnostics；compute/movement 路径可用，communication staging / token lifetime 必须在 comm lowering 后进入同一 planning gate |
 | Candidate selection / committed materialization | selected candidate committed into main IR；rejected plans and cost traces do not enter IR |
 
 ## 后续队列
@@ -113,8 +117,8 @@ Pipeline position:
 | execution-mesh SPMD integration | done | `wafer.target.topology` + requested logical mesh policy | `wafer.execution.mesh` valid SPMD rank-domain policy + derived/optional endpoint view；SPMD default seed 从 mesh rank count / axes 取数；旧 `tile-count` pass / pipeline fallback 已删除 |
 | program parameter shard verification | done | partitioned StableHLO program + parameter shard metadata + `wafer.execution.mesh` | program verifier 校验 rank coverage、slice bounds、payload shape/dtype 和 execution mesh rank count；core IR 不 materialize per-rank slice table |
 | rank-endpoint cleanup | done | legacy rank->tile transition op / pass / package schema | op、pass、pipeline、comm verifier dependency 和 manifest endpoint schema 已删除；需要 block id 时只保留薄 launch/block binding，且不复制 rank->tile |
-| communication storage materialization | active | tiled `wafer.tensor.*` collective + SPM buffer/local-rank facts + execution mesh rank domain | `wafer.tile.*` communication collective verifier-legal；buffer、bytes、rank_group、local_rank 和 token/effect 边界来自 IR，不选择 p2p schedule |
-| p2p communication schedule lowering | pending | `wafer.tile.*` communication collective + topology/execution-mesh derived endpoint view | explicit `wafer.tile.send` / `recv` / `wait` schedule verifier-legal；peer/route 从 topology/execution mesh 查询，不保存 side table |
+| communication storage materialization | active | tiled `wafer.tensor.*` collective + unplaced SPM buffer/local-rank facts + execution mesh rank domain | `wafer.tile.*` communication collective verifier-legal；buffer、bytes、rank_group、local_rank 和 token/effect 边界来自 IR，不选择 p2p schedule；发生在 SPM memory planning 前 |
+| p2p communication schedule lowering | pending | `wafer.tile.*` communication collective + topology/execution-mesh derived endpoint view | explicit `wafer.tile.send` / `recv` / `wait` schedule verifier-legal；peer/route 从 topology/execution mesh 查询，不保存 side table；结果作为 SPM memory planning 输入 |
 | ABI / LLVM lowering | pending | committed instruction IR + accepted SPM/DDR offset facts + topology/execution-mesh + program parameter shard metadata/resource view + launch-block binding + communication/sync lowering | LLVM dialect call sequence 或 `wafer_*` C ABI / packet builder input；按需重算 launch/resource view，固定参数单位、address domain、wait/completion policy 和 ABI version |
 | object + package manifest | pending | ABI/LLVM artifact + committed IR + topology/execution-mesh + program parameter shard metadata/resource view | object/program id、entrypoint、ABI version 和 IR-derived package manifest；endpoint/resource/constant metadata 由同一 resource view analysis 从 IR 重算 |
 | runtime adapter / board launch | pending | package + runtime adapter | allocate/import/query/bind runtime objects，launch program，验证 completion、错误传播和 board gate |
@@ -134,9 +138,12 @@ Pipeline position:
 
 1. 实现 communication storage materialization：让 `wafer.tensor.*` collective 在 bufferization /
    tile-region / SPM storage 后 materialize 成 `wafer.tile.*` communication collective，并用端到端
-   lit 覆盖该路径。
+   lit 覆盖该路径；该路径必须在 SPM memory planning 前完成。
 2. 实现 p2p communication schedule lowering：让 `wafer.tile.*` communication collective 从
-   topology/execution mesh 派生 peer endpoint view，并 rewrite 成 explicit `send` / `recv` / `wait`。
-3. 再让 ABI/LLVM 和 package manifest 从 topology/execution mesh、program parameter shard metadata /
+   topology/execution mesh 派生 peer endpoint view，并 rewrite 成 explicit `send` / `recv` / `wait`，
+   使 communication staging、buffer lifetime 和 wait token 被 SPM memory planning 消费。
+3. 让 comm-aware candidate 继续通过 instruction lowering、SPM offset assignment 和 DDR offset
+   assignment；Direct DTE resource id / concrete address / ABI emission 只能在 accepted offsets 后派生。
+4. 再让 ABI/LLVM 和 package manifest 从 topology/execution mesh、program parameter shard metadata /
    resource view、薄 launch/block binding、accepted offsets、committed instruction IR 和 communication/sync
    IR 派生 launch-visible metadata。

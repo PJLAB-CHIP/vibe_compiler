@@ -96,7 +96,9 @@ semantic。
 - ring/tree step 列表的影子副本。
 
 当 planner 选择算法后，collective op 应被 rewrite 成 explicit p2p schedule。算法选择可以来自
-cost model，但被接受的结果要进入 IR body，而不是只写进 attr。
+cost model，但被接受的结果要进入 IR body，而不是只写进 attr。只要该 rewrite 会改变
+communication staging、send/recv token lifetime、buffer reuse 或 local-drain demand，就必须在 SPM
+memory planning 之前完成；SPM planner 不能从未展开的 collective 或 pass-local schedule 猜通信内存需求。
 
 ### 3.2 Point-to-Point Ops
 
@@ -278,6 +280,8 @@ cost model 可以选择不同 order，但接受后要 rewrite 成 explicit body�
 
 当前只保留 collective op/verifier 层；直接 materialize p2p schedule 的旧 ring lowering pass 已删除。
 V0 correctness path 仍应先走 fixed-size unicast schedule，raw DTE non-unicast gather 不在 correctness path。
+恢复 p2p schedule lowering 时，该 lowering 必须在 SPM offset assignment 前发生，使 in-flight recv slot、
+double buffer、wait token 和 buffer reuse fence 都进入 SPM lifetime / demand analysis。
 
 ### 6.3 Reduce-Scatter and All-Reduce
 

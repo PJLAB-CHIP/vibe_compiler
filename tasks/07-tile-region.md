@@ -66,6 +66,7 @@ endpoint-derived metadata 和 communication staging demand 的层级；`wafer.ti
 wafer.group
   -> DDR boundary materialization + group-to-tile-region lowered `wafer.tile.region` IR
   -> One-Shot bufferized function boundary for main R3.2c pipeline
+  -> communication storage materialization and p2p schedule over unplaced SPM memrefs
   -> candidate DDR tile-view materialization for planner candidate evaluation
   -> instruction-level wafer.instr.* IR over unplaced Wafer-tagged memref values
   -> SPM memory planning on the same instruction-level IR
@@ -266,6 +267,9 @@ V0 需要以下 op family：
 2. target-abstract op selection：在 tile-region IR 内把 tile-level linalg/tensor compute 绑定到
    `wafer.tile.*` compute / movement op；把 tiled tensor collective 在可表达的 endpoint / buffer /
    communication demand 下 materialize 为 `wafer.tile.*` communication 或 explicit p2p schedule proposal。
+   任何会引入 communication staging buffer、send/recv token lifetime、buffer reuse fence 或 local-drain
+   requirement 的 communication lowering 都必须发生在 SPM offset assignment 之前，使 SPM planner 能从
+   IR/effect/lifetime 看到真实通信需求。
 3. layout assignment：为 op 约束选择 physical layout marker，在 cut edge 插入
    `wafer.tile.materialize_layout`。
 4. candidate DDR tile-view materialization：planner candidate evaluation 消费 candidate traversal /
@@ -275,7 +279,8 @@ V0 需要以下 op family：
    到 boundary slice proposal 的 evaluation materialization。这一步不选择最终 plan，也不把 candidate
    evaluation IR commit 到主 IR。
 5. Wafer instruction legalization / selection：instruction lowering 把 target-abstract executable op 合法化并
-   选择成 instruction-level `wafer.instr.*`，复用现有 Wafer-tagged memref SSA graph。
+   选择成 instruction-level `wafer.instr.*` 或可被 SPM planner 消费的 lower-level communication/sync
+   IR，复用现有 Wafer-tagged memref SSA graph。
    instruction-level IR 需要列出 issue family、read/write/issue effects、descriptor attrs、
    temp/psum/staging memref values、alias/view 关系和 reject reason。
 6. SPM offset assignment：SPM planning 只消费 instruction-level IR with unplaced Wafer-tagged memref values，
