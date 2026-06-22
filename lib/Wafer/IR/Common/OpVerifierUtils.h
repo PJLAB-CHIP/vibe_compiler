@@ -10,6 +10,7 @@
 #include "mlir/IR/Value.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringRef.h"
 
 #include <cstdint>
 #include <optional>
@@ -43,6 +44,15 @@ mlir::LogicalResult verifyLayoutRequirements(
 mlir::LogicalResult
 verifyResourceEffects(mlir::Operation *op,
                       llvm::ArrayRef<wafer::WaferResourceEffect> effects);
+mlir::FailureOr<std::optional<int64_t>>
+getOptionalExecutionMeshRankCount(mlir::Operation *op);
+mlir::LogicalResult
+verifyLogicalRankWithinExecutionMesh(mlir::Operation *op, int64_t rank,
+                                     llvm::StringRef subject);
+mlir::LogicalResult
+verifyLogicalRanksWithinExecutionMesh(mlir::Operation *op,
+                                      llvm::ArrayRef<int64_t> ranks,
+                                      llvm::StringRef subject);
 
 mlir::LogicalResult verifyCommP2P(mlir::Operation *op, mlir::Value buffer,
                                   mlir::IntegerAttr peer,

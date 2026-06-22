@@ -6,13 +6,19 @@
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallSet.h"
+#include "llvm/ADT/Twine.h"
+
+#include <string>
 
 using namespace wafer;
 using namespace wafer::detail;
 
 mlir::LogicalResult CommRecvOp::verify() {
-  return verifyCommP2P(getOperation(), getBuffer(), getPeerAttr(),
-                       getBytesAttr(), getToken().getType());
+  if (mlir::failed(verifyCommP2P(getOperation(), getBuffer(), getPeerAttr(),
+                                 getBytesAttr(), getToken().getType())))
+    return mlir::failure();
+  return verifyLogicalRankWithinExecutionMesh(
+      getOperation(), getPeerAttr().getInt(), "comm peer logical rank");
 }
 
 void CommRecvOp::collectWaferLayoutRequirements(
@@ -45,8 +51,11 @@ mlir::LogicalResult CommRecvOp::verifyWaferResourceEffectContract() {
 }
 
 mlir::LogicalResult CommSendOp::verify() {
-  return verifyCommP2P(getOperation(), getBuffer(), getPeerAttr(),
-                       getBytesAttr(), getToken().getType());
+  if (mlir::failed(verifyCommP2P(getOperation(), getBuffer(), getPeerAttr(),
+                                 getBytesAttr(), getToken().getType())))
+    return mlir::failure();
+  return verifyLogicalRankWithinExecutionMesh(
+      getOperation(), getPeerAttr().getInt(), "comm peer logical rank");
 }
 
 void CommSendOp::collectWaferLayoutRequirements(
@@ -129,6 +138,9 @@ mlir::LogicalResult CommAllGatherOp::verify() {
     if (!seenRanks.insert(rank).second)
       return emitOpError("all_gather rank_group entries must be unique");
   }
+  if (mlir::failed(verifyLogicalRanksWithinExecutionMesh(
+          getOperation(), rankGroup, "all_gather rank_group")))
+    return mlir::failure();
   int64_t bytes = getBytesAttr().getInt();
   if (bytes <= 0)
     return emitOpError("all_gather byte count must be positive");
@@ -233,12 +245,16 @@ static mlir::LogicalResult verifyCommReduceCollective(
       return op->emitOpError(collectiveName)
              << " rank_group entries must be unique";
   }
+  std::string rankGroupSubject =
+      llvm::Twine(collectiveName).concat(" rank_group").str();
+  if (mlir::failed(verifyLogicalRanksWithinExecutionMesh(op, rankGroup,
+                                                         rankGroupSubject)))
+    return mlir::failure();
   int64_t bytes = bytesAttr.getInt();
   if (bytes <= 0)
     return op->emitOpError(collectiveName) << " byte count must be positive";
 
-  std::optional<int64_t> compactBytes =
-      getCompactTensorByteSize(*inputTensor);
+  std::optional<int64_t> compactBytes = getCompactTensorByteSize(*inputTensor);
   if (!compactBytes)
     return op->emitOpError(collectiveName)
            << " compact byte size is not representable";

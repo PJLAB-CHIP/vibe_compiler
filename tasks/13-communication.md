@@ -55,10 +55,10 @@ partitioned StableHLO + collectives
 | 层次 | 表示 | 责任 |
 | --- | --- | --- |
 | StableHLO / Shardy | `all_gather`、`reduce_scatter`、`all_reduce`、`collective_permute` | global tensor 和 logical mesh 语义 |
-| Tensor collective handoff | Wafer LinalgExt-style tensor collective ops | DPS/tensor-level collective、tiling/fusion、rank group/axis/combiner verifier |
+| Tensor collective handoff | Wafer LinalgExt-style tensor collective ops | DPS/tensor-level collective、tiling/fusion、logical rank group / source-target pairs、axis/combiner verifier |
 | Scheduled group / tile_region | tiled tensor collective + storage values | tile slice、SPM buffer、layout/materialization、communication staging demand |
 | Topology / execution mesh | logical rank 到 encoded physical endpoint 的 derived / explicit view | availability、connectivity、rank order、physical peer |
-| target-abstract comm | `wafer.tile.*` communication ops collective / permute op | 保留 tile-local communication semantic 和 physical group，不选择 raw DTE register |
+| target-abstract comm | `wafer.tile.*` communication ops collective / permute op | 保留 tile-local communication semantic、logical group / peer 和 byte/effect 边界；physical endpoint 从 topology/execution mesh 派生，不选择 raw DTE register |
 | p2p schedule | `wafer.tile.send`、`recv`、`wait`、local compute step | 显式 ring/tree step、buffer slice、byte count、token/effect |
 | lower-level comm | Direct DTE / FSM / sync op | receiver ready、DTE attach/send/wait/release、packet counter、error status |
 | launch/package | package launch-resource metadata | communication plan metadata、resource init、completion source |
@@ -83,7 +83,8 @@ semantic。
 
 - source/result storage values。
 - logical group / rank order，来自 upstream tensor collective 和 execution mesh。
-- physical endpoint reference，来自 `wafer.execution.mesh` / `wafer.target.topology` 的 derived view。
+- logical peer / group rank 字段；physical endpoint 在 lowering 使用点从
+  `wafer.execution.mesh` / `wafer.target.topology` 的 derived view 查询。
 - reduction kind 和 dtype 语义，如果 collective 包含 reduce。
 - shape、slice 和 element type。
 
@@ -109,7 +110,8 @@ wafer.tile.wait(token...)
 
 实际 ODS 设计可以把 `send`/`recv` 合并成 `send_recv`，也可以显式拆开；关键合同是：
 
-- peer 来自 execution mesh / target topology 派生的 endpoint view，不通过名字或示例 id 推断。
+- `peer` 是 execution mesh 中的 logical rank，不是 physical tile id 或 runtime endpoint encoding。
+  physical endpoint 由 execution mesh / target topology 派生的 endpoint view 在 lowering 使用点查询。
 - byte count 来自 buffer type、slice 或 explicit size SSA value；V0 Direct DTE 要求 fixed-size。
 - source/destination buffer 的 lifetime 延伸到对应 wait。
 - op 的 effects 明确 read source、write destination，并占用 communication resource class。
@@ -134,8 +136,8 @@ wafer.tile.wait(token...)
 
 ### 4.1 Peer and Group Representation
 
-physical peer 应来自 topology/execution-mesh contract。早期 p2p op 可以用 index SSA value 表达 peer，但
-长期 verifier 需要能检查：
+physical peer 应来自 topology/execution-mesh contract。p2p op 的 `peer` attr 只表达 logical peer
+rank；长期 verifier / lowering 需要能检查：
 
 - peer 是否在当前 cluster / collective group 内。
 - endpoint 是否 available，是否避开 topology 中的 unavailable endpoint。
@@ -145,6 +147,20 @@ physical peer 应来自 topology/execution-mesh contract。早期 p2p op 可以�
 这些信息不应靠变量名、tile id 常量约定或 side table 恢复。如果 topology/execution-mesh facts 需要跨 pass
 保留，应进入 `wafer.target.topology` / `wafer.execution.mesh`，而不是 `wafer.tile.*` communication
 自己复制一份拓扑计划。
+
+当前 tensor collective 和 `wafer.tile.*` communication rank 字段约定为：
+
+- tensor collective `rank_group`：logical execution ranks。
+- tensor `source_target_pairs`：source / target logical execution-rank pairs。
+- tile communication `rank_group`：logical execution ranks。
+- tile communication `local_rank`：group-local index，`rank_group[local_rank]` 才是当前 tile 的
+  logical rank。
+- tile p2p `peer`：logical peer rank。
+
+当 enclosing module 中存在 `wafer.execution.mesh` 时，tensor collective 和 tile communication
+verifier 必须检查 `peer`、`rank_group` 和 `source_target_pairs` 都落在 execution mesh rank domain
+内。若 module 中存在多个 mesh，必须使用 `@default_mesh` 作为 communication rank-domain source；
+physical endpoint availability 和 connectedness 由 execution mesh / target topology verifier 保证。
 
 ### 4.2 Token
 
@@ -210,9 +226,10 @@ raw non-unicast DTE 可以作为 HardwareVerify 主题：需要独立 ABI、reso
 错误语义后才能进入 compiler lowering。在这些证据补齐前，all-gather、all-reduce、all-to-all 等
 collective 仍应由 unicast p2p schedule 组合表达，而不是在 logical IR 层被拒绝。
 
-当前 ODS / verifier 原型中，`wafer.tile.send` / `wafer.tile.recv` 的 p2p verifier 只做局部
-buffer、peer 非负和 byte count 检查；active endpoint / route legality 必须在后续
-`wafer.execution.mesh` / `wafer.target.topology` consumer 中恢复。`wafer.tile.wait` 要求至少一个 async token。旧
+当前 ODS / verifier 原型中，`wafer.tile.send` / `wafer.tile.recv` 的 p2p verifier 检查局部
+buffer、peer 非负、byte count，并在 enclosing module 存在 execution mesh 时检查 peer logical rank
+落在 mesh rank domain 内；active route / Direct DTE protocol legality 仍由后续
+`wafer.execution.mesh` / `wafer.target.topology` consumer 完成。`wafer.tile.wait` 要求至少一个 async token。旧
 `--wafer-lower-tile-region-to-c-abi` pass 已删除；fixed-size unicast p2p 到 committed Direct DTE
 issue/wait form 和 ABI/LLVM emission 的 lowering 必须从 committed instruction-level IR、
 topology/execution-mesh contract 和 resource view analysis 重新建立。这一层仍不应 materialize raw non-unicast register 字段，也不把 DTE id、
@@ -346,8 +363,9 @@ runtime boundary 上显式选择，不能把它混入 compiler inline Direct DTE
 ## 9. Verifier and Diagnostics
 
 Tensor-collective verifier 属于 local compute normalization / group handoff 层；它检查 tensor
-shape、axis、rank group、slot mapping 和 combiner legality。本文的 communication verifier 从
-tile-local `wafer.tile.*` communication 开始。
+shape、axis、logical rank group / source-target pairs、mesh rank-domain、slot mapping 和 combiner
+legality。tile-local communication verifier 继续检查 SPM buffer、byte count、logical peer/group
+和 token/effect 边界。
 
 Collective-level `wafer.tile.*` communication verifier：
 
@@ -359,7 +377,8 @@ Collective-level `wafer.tile.*` communication verifier：
 
 P2P-level verifier：
 
-- peer 是单个 active physical tile；当前 Direct DTE compiler path 只允许 fixed-size unicast。
+- peer 是 logical execution rank；lowering 后的 physical endpoint 是单个 active physical tile。当前
+  Direct DTE compiler path 只允许 fixed-size unicast。
 - send source 和 recv destination 是 SPM tile-local storage 或 lowerable descriptor。
 - 若 selected protocol 使用 `#ddr` endpoint，descriptor 必须满足 DDR memory plan 的 default arena resource、
   planned range、alignment 和 requirement contract。

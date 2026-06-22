@@ -61,8 +61,11 @@ def Wafer_TensorCollectiveAllGatherOp
   let description = [{
     Carries StableHLO all_gather semantics after SPMD partitioning as a
     destination-style tensor op. It preserves logical rank group and gather
-    axis facts for group/tiling, but does not own physical endpoint mapping, SPM
-    buffers, DTE tokens, byte schedules, or runtime handles.
+    axis facts for group/tiling. `rank_group` entries are logical execution
+    ranks in the current `wafer.execution.mesh`; if the enclosing module has an
+    execution mesh, the verifier checks those ranks against the mesh rank
+    domain. The op does not own physical endpoint mapping, SPM buffers, DTE
+    tokens, byte schedules, or runtime handles.
   }];
   let assemblyFormat = [{
     `ins` `(` $inputs `:` type($inputs) `)`
@@ -75,6 +78,12 @@ def Wafer_TensorCollectiveReduceScatterOp
     : Wafer_TensorCollectiveRankGroupOp<"tensor.reduce_scatter",
         [SingleBlockImplicitTerminator<"TensorCollectiveYieldOp">]> {
   let summary = "tensor-level post-SPMD reduce-scatter handoff";
+  let description = [{
+    Carries tensor-level reduce-scatter semantics after SPMD partitioning.
+    `rank_group` entries are logical execution ranks in the current
+    `wafer.execution.mesh`; physical endpoint selection is deferred to
+    topology/execution-mesh consumers.
+  }];
   let regions = (region SizedRegion<1>:$combiner);
   let hasRegionVerifier = 1;
   let assemblyFormat = [{
@@ -88,6 +97,13 @@ def Wafer_TensorCollectiveAllReduceOp
     : Wafer_TensorCollectiveOp<"tensor.all_reduce",
         [SingleBlockImplicitTerminator<"TensorCollectiveYieldOp">]> {
   let summary = "tensor-level post-SPMD all-reduce handoff";
+  let description = [{
+    Carries tensor-level all-reduce semantics after SPMD partitioning.
+    `rank_group` entries are logical execution ranks in the current
+    `wafer.execution.mesh`; the verifier checks the mesh rank domain when an
+    execution mesh is present. Physical routes and endpoints are not encoded in
+    this op.
+  }];
   let arguments = (ins
     Variadic<AnyType>:$inputs,
     Variadic<AnyType>:$outs,
@@ -107,6 +123,12 @@ def Wafer_TensorCollectiveAllReduceOp
 def Wafer_TensorCollectiveAllToAllOp
     : Wafer_TensorCollectiveOp<"tensor.all_to_all"> {
   let summary = "tensor-level post-SPMD all-to-all handoff";
+  let description = [{
+    Carries tensor-level all-to-all semantics after SPMD partitioning.
+    `rank_group` entries are logical execution ranks in the current
+    `wafer.execution.mesh`; physical exchange endpoints are derived later from
+    the execution mesh and target topology.
+  }];
   let arguments = (ins
     Variadic<AnyType>:$inputs,
     Variadic<AnyType>:$outs,
@@ -127,6 +149,12 @@ def Wafer_TensorCollectiveAllToAllOp
 def Wafer_TensorCollectiveCollectivePermuteOp
     : Wafer_TensorCollectiveOp<"tensor.collective_permute"> {
   let summary = "tensor-level post-SPMD collective-permute handoff";
+  let description = [{
+    Carries tensor-level collective-permute semantics after SPMD partitioning.
+    `source_target_pairs` contains source/target logical execution-rank pairs,
+    not physical endpoint encodings. If the enclosing module has an execution
+    mesh, the verifier checks every pair entry against the mesh rank domain.
+  }];
   let arguments = (ins
     Variadic<AnyType>:$inputs,
     Variadic<AnyType>:$outs,

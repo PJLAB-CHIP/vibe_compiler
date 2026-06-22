@@ -79,6 +79,73 @@ bool checkedAdd(int64_t lhs, int64_t rhs, int64_t &result) {
   return true;
 }
 
+mlir::FailureOr<std::optional<int64_t>>
+getOptionalExecutionMeshRankCount(mlir::Operation *op) {
+  mlir::ModuleOp moduleOp = op->getParentOfType<mlir::ModuleOp>();
+  if (!moduleOp)
+    return std::optional<int64_t>();
+
+  ExecutionMeshOp meshOp =
+      moduleOp.lookupSymbol<ExecutionMeshOp>("default_mesh");
+  if (!meshOp) {
+    bool multipleMeshes = false;
+    moduleOp.walk([&](ExecutionMeshOp candidate) {
+      if (!meshOp) {
+        meshOp = candidate;
+        return;
+      }
+      multipleMeshes = true;
+    });
+    if (multipleMeshes)
+      return op->emitOpError(
+          "execution mesh rank validation requires @default_mesh when "
+          "multiple execution meshes exist");
+  }
+  if (!meshOp)
+    return std::optional<int64_t>();
+
+  int64_t rankCount = 1;
+  for (int64_t dim : meshOp.getShapeAttr().asArrayRef()) {
+    if (dim <= 0 || !checkedMul(rankCount, dim, rankCount))
+      return op->emitOpError("execution mesh rank count is invalid");
+  }
+  return std::optional<int64_t>(rankCount);
+}
+
+mlir::LogicalResult
+verifyLogicalRankWithinExecutionMesh(mlir::Operation *op, int64_t rank,
+                                     llvm::StringRef subject) {
+  mlir::FailureOr<std::optional<int64_t>> rankCount =
+      getOptionalExecutionMeshRankCount(op);
+  if (mlir::failed(rankCount))
+    return mlir::failure();
+  if (!*rankCount)
+    return mlir::success();
+  if (rank < 0 || rank >= **rankCount)
+    return op->emitOpError()
+           << subject << " must be within execution mesh rank count";
+  return mlir::success();
+}
+
+mlir::LogicalResult
+verifyLogicalRanksWithinExecutionMesh(mlir::Operation *op,
+                                      llvm::ArrayRef<int64_t> ranks,
+                                      llvm::StringRef subject) {
+  mlir::FailureOr<std::optional<int64_t>> rankCount =
+      getOptionalExecutionMeshRankCount(op);
+  if (mlir::failed(rankCount))
+    return mlir::failure();
+  if (!*rankCount)
+    return mlir::success();
+  for (int64_t rank : ranks) {
+    if (rank < 0 || rank >= **rankCount)
+      return op->emitOpError()
+             << subject
+             << " logical ranks must be within execution mesh rank count";
+  }
+  return mlir::success();
+}
+
 static std::optional<int64_t> getElementBitWidth(mlir::Type elementType) {
   if (auto floatType = mlir::dyn_cast<mlir::FloatType>(elementType))
     return floatType.getWidth();

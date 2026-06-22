@@ -35,7 +35,8 @@ verifyAllowedAttrs(mlir::Operation *op,
     if (!isAllowedAttr(attr, allowedAttrs))
       return op->emitOpError("does not accept attribute '")
              << attr.getName()
-             << "'; tensor collectives must not carry physical endpoint mapping, "
+             << "'; tensor collectives must not carry physical endpoint "
+                "mapping, "
                 "SPM, DTE, byte schedule, or runtime metadata";
   }
   return mlir::success();
@@ -55,7 +56,8 @@ mlir::LogicalResult verifyRankGroup(mlir::Operation *op,
       return op->emitOpError("rank_group entries must be unique");
   }
 
-  return mlir::success();
+  return verifyLogicalRanksWithinExecutionMesh(op, rankGroup,
+                                               "tensor collective rank_group");
 }
 
 mlir::LogicalResult verifyChannelAttrs(mlir::Operation *op,
@@ -285,6 +287,7 @@ verifySourceTargetPairs(mlir::Operation *op,
 
   llvm::SmallSet<int64_t, 8> seenSources;
   llvm::SmallSet<int64_t, 8> seenTargets;
+  llvm::SmallVector<int64_t, 8> logicalRanks;
   for (size_t index = 0; index < pairs.size(); index += 2) {
     int64_t source = pairs[index];
     int64_t target = pairs[index + 1];
@@ -295,8 +298,11 @@ verifySourceTargetPairs(mlir::Operation *op,
       return op->emitOpError("source ranks must be unique");
     if (!seenTargets.insert(target).second)
       return op->emitOpError("target ranks must be unique");
+    logicalRanks.push_back(source);
+    logicalRanks.push_back(target);
   }
-  return mlir::success();
+  return verifyLogicalRanksWithinExecutionMesh(op, logicalRanks,
+                                               "source_target_pairs");
 }
 
 void collectTensorCollectiveTilingDemand(
@@ -668,8 +674,7 @@ mlir::LogicalResult verifyCombinerRegion(mlir::Operation *op,
 
   auto yield = mlir::dyn_cast<TensorCollectiveYieldOp>(block.getTerminator());
   if (!yield)
-    return op->emitOpError(
-        "combiner must terminate with wafer.tensor.yield");
+    return op->emitOpError("combiner must terminate with wafer.tensor.yield");
 
   if (yield.getValues().size() != results.size()) {
     if (results.size() == 1)
