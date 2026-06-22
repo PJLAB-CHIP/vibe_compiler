@@ -71,7 +71,7 @@ func + tensor + linalg + scf + arith + math
 Wafer target facts 只能作为后续 legality / cost input。
 
 no-user-sharding 的默认 seed policy 属于 SPMD 阶段，不属于本阶段。本阶段只消费 SPMD 之后的
-local body；如果默认 policy 选择 `tile-count=1` 或 replicated fallback，本阶段看到的可能是
+local body；如果 execution mesh 是 1-rank explicit override 或默认 seed 退化为 replicated，本阶段看到的可能是
 whole-shape local body 且没有 collective。缺少 collective 不能作为拒绝 local compute lowering 的理由。
 
 本阶段的局部 named MLIR pipeline 是 `wafer-lower-stablehlo-to-linalg`；用户级主线由

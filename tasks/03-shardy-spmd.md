@@ -186,8 +186,9 @@ P2.S2 工程 gate 必须把 XLA SPMD partitioner 或等价 local-body partitioni
 - no-user-sharding 分支当前只在文本 StableHLO/SDY program 中用
   `--wafer-apply-default-spmd-sharding` / `wafer-propagate-stablehlo-sharding` 补 function-input seed；
   P2.S2 再消费该 stage 输出 program。默认 policy 的 rank count / axes 必须来自
-  `wafer.execution.mesh`；在 execution mesh 尚未落地的过渡 fixture 中，才允许显式使用单卡默认
-  4x4 / 16 tile topology config 作为输入。默认 policy 只标记输入/参数，不给中间 op 或 function
+  `wafer.execution.mesh`；局部 pass / named pipeline fixture 必须显式携带
+  `wafer.target.topology` 和 `wafer.execution.mesh`，不能用 pass option 绕过 execution mesh。默认
+  policy 只标记输入/参数，不给中间 op 或 function
   result 造约束。
 - P2.S2 输出的 partitioned program directory 必须由 Wafer-owned compiler stage 保存。`functions/forward.mlir`
   是 local body；`functions/forward.meta` 的 input/output signature 必须匹配 local function boundary；

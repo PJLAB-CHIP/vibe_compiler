@@ -20,18 +20,6 @@
 namespace wafer {
 namespace {
 
-#ifdef WAFER_ENABLE_SHARDY
-struct StablehloShardingPropagationPipelineOptions
-    : public mlir::PassPipelineOptions<
-          StablehloShardingPropagationPipelineOptions> {
-  Option<int64_t> defaultTileCount{
-      *this, "default-tile-count",
-      llvm::cl::desc("logical Wafer tile mesh size for default SPMD input "
-                     "sharding seeds"),
-      llvm::cl::init(16)};
-};
-#endif
-
 static void addStablehloToLinalgBody(mlir::OpPassManager &pm) {
   pm.addPass(createNormalizeStablehloCollectivesPass());
   pm.addPass(createLegalizeStablehloToLinalgPass());
@@ -154,9 +142,8 @@ void buildLowerGroupsToPlacementPipeline(mlir::OpPassManager &pm) {
 }
 
 #ifdef WAFER_ENABLE_SHARDY
-void buildStablehloShardingPropagationPipeline(mlir::OpPassManager &pm,
-                                               int64_t defaultTileCount) {
-  pm.addPass(createApplyDefaultSpmdShardingPass(defaultTileCount));
+void buildStablehloShardingPropagationPipeline(mlir::OpPassManager &pm) {
+  pm.addPass(createApplyDefaultSpmdShardingPass());
   mlir::sdy::addPropagationPipeline(pm);
 }
 #endif
@@ -212,14 +199,12 @@ void registerWaferPipelines() {
           buildLowerGroupsToPlacementPipeline(pm, options);
         });
 #ifdef WAFER_ENABLE_SHARDY
-    mlir::PassPipelineRegistration<StablehloShardingPropagationPipelineOptions>(
+    mlir::PassPipelineRegistration<>(
         "wafer-propagate-stablehlo-sharding",
         "Apply Wafer default StableHLO/SDY sharding seeds when needed and run "
         "Shardy propagation",
-        [](mlir::OpPassManager &pm,
-           const StablehloShardingPropagationPipelineOptions &options) {
-          buildStablehloShardingPropagationPipeline(pm,
-                                                    options.defaultTileCount);
+        [](mlir::OpPassManager &pm) {
+          buildStablehloShardingPropagationPipeline(pm);
         });
 #endif
     return true;

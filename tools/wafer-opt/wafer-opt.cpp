@@ -260,9 +260,9 @@ bool hasExecutionMesh(mlir::ModuleOp module) {
 }
 
 bool ensureTargetTopologyAndExecutionMesh(mlir::ModuleOp module,
-                                          int64_t defaultTileCount) {
-  if (defaultTileCount < 1 || defaultTileCount > 16) {
-    module.emitOpError("default-tile-count must be in [1, 16]");
+                                          int64_t executionMeshRanks) {
+  if (executionMeshRanks < 1 || executionMeshRanks > 16) {
+    module.emitOpError("execution-mesh-ranks must be in [1, 16]");
     return true;
   }
 
@@ -276,10 +276,10 @@ bool ensureTargetTopologyAndExecutionMesh(mlir::ModuleOp module,
   if (!hasExecutionMesh(module)) {
     wafer::MaterializeExecutionMeshPassOptions meshOptions;
     meshOptions.topologyName = topologyName;
-    if (defaultTileCount != 16) {
+    if (executionMeshRanks != 16) {
       meshOptions.policy = "explicit";
-      meshOptions.shape = std::to_string(defaultTileCount);
-      meshOptions.endpoints = buildDefaultExplicitEndpoints(defaultTileCount);
+      meshOptions.shape = std::to_string(executionMeshRanks);
+      meshOptions.endpoints = buildDefaultExplicitEndpoints(executionMeshRanks);
     }
     pm.addPass(wafer::createMaterializeExecutionMeshPass(meshOptions));
   }
@@ -327,7 +327,7 @@ struct WaferProgramPipelineOptions {
   std::string pipelineName;
   std::string inputProgramDir;
   std::string outputProgramDir;
-  int64_t defaultTileCount = 16;
+  int64_t executionMeshRanks = 16;
 };
 
 bool parseIntegerOption(llvm::StringRef optionName, llvm::StringRef value,
@@ -391,22 +391,23 @@ bool parseWaferProgramPipelineOptions(int argc, char **argv,
       continue;
     }
 
-    if (arg == "--default-tile-count") {
+    if (arg == "--execution-mesh-ranks") {
       if (i + 1 >= argc) {
-        llvm::errs() << "wafer-opt: missing --default-tile-count value\n";
+        llvm::errs() << "wafer-opt: missing --execution-mesh-ranks value\n";
         return true;
       }
-      if (parseIntegerOption("--default-tile-count", argv[++i],
-                             options.defaultTileCount))
+      if (parseIntegerOption("--execution-mesh-ranks", argv[++i],
+                             options.executionMeshRanks))
         return true;
       continue;
     }
 
-    constexpr llvm::StringRef defaultTileCountPrefix = "--default-tile-count=";
-    if (arg.starts_with(defaultTileCountPrefix)) {
-      if (parseIntegerOption("--default-tile-count",
-                             arg.drop_front(defaultTileCountPrefix.size()),
-                             options.defaultTileCount))
+    constexpr llvm::StringRef executionMeshRanksPrefix =
+        "--execution-mesh-ranks=";
+    if (arg.starts_with(executionMeshRanksPrefix)) {
+      if (parseIntegerOption("--execution-mesh-ranks",
+                             arg.drop_front(executionMeshRanksPrefix.size()),
+                             options.executionMeshRanks))
         return true;
       continue;
     }
@@ -449,14 +450,15 @@ std::string resolveSpmdPartitionerHelperPath() {
 
 int runStableHLOSPMDStage(llvm::StringRef inputProgramDir,
                           llvm::StringRef outputProgramDir,
-                          llvm::StringRef helperPath, int64_t defaultTileCount,
+                          llvm::StringRef helperPath,
+                          int64_t executionMeshRanks,
                           mlir::MLIRContext &context) {
   mlir::OwningOpRef<mlir::ModuleOp> module =
       parseAndVerifyStableHLOProgramDir(inputProgramDir, context);
   if (!module)
     return 1;
 
-  if (ensureTargetTopologyAndExecutionMesh(*module, defaultTileCount))
+  if (ensureTargetTopologyAndExecutionMesh(*module, executionMeshRanks))
     return 1;
   mlir::FailureOr<int64_t> logicalRankCount =
       getExecutionMeshRankCount(*module);
@@ -464,7 +466,7 @@ int runStableHLOSPMDStage(llvm::StringRef inputProgramDir,
     return 1;
 
   mlir::PassManager pm(&context);
-  wafer::buildStablehloShardingPropagationPipeline(pm, defaultTileCount);
+  wafer::buildStablehloShardingPropagationPipeline(pm);
   if (mlir::failed(pm.run(*module)))
     return 1;
 
@@ -517,7 +519,7 @@ int runStableHLOSPMDStage(llvm::StringRef inputProgramDir,
       parseAndVerifyStableHLOProgramDir(outputProgramDir, context, &result);
   if (!outputModule)
     return 1;
-  if (ensureTargetTopologyAndExecutionMesh(*outputModule, defaultTileCount))
+  if (ensureTargetTopologyAndExecutionMesh(*outputModule, executionMeshRanks))
     return 1;
   if (writeProgramModule(*outputModule, outputProgramDir))
     return 1;
@@ -602,8 +604,8 @@ int runWaferProgramPipeline(int argc, char **argv) {
   }
 
   if (runStableHLOSPMDStage(options.inputProgramDir, options.outputProgramDir,
-                            spmdPartitionerHelperPath, options.defaultTileCount,
-                            context))
+                            spmdPartitionerHelperPath,
+                            options.executionMeshRanks, context))
     return 1;
 
   bool needsLinalgStage = options.pipelineName == "stablehlo-spmd-to-linalg" ||

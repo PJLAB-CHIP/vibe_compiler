@@ -101,7 +101,7 @@ Pipeline position:
 
 | 阶段 | 状态 | 输入 | 输出 / 完成 gate |
 | --- | --- | --- | --- |
-| execution-mesh SPMD integration | done | `wafer.target.topology` + requested logical mesh policy | `wafer.execution.mesh` valid SPMD rank-domain policy + derived/optional endpoint view；SPMD default seed 从 mesh rank count / axes 取数 |
+| execution-mesh SPMD integration | done | `wafer.target.topology` + requested logical mesh policy | `wafer.execution.mesh` valid SPMD rank-domain policy + derived/optional endpoint view；SPMD default seed 从 mesh rank count / axes 取数；旧 `tile-count` pass / pipeline fallback 已删除 |
 | shard-binding migration | active | partitioned StableHLO program + parameter shard metadata + `wafer.execution.mesh` | `wafer.shard.binding` 引用 execution mesh；rank coverage 对 mesh 校验，不再对 `wafer.placement.map` 校验 |
 | placement-map cleanup | pending | current `wafer.placement.map` transition op + `wafer.execution.mesh` + `wafer.target.topology` | 删除 `wafer.placement.map` 的长期 rank->tile / topology 职责；需要 block id 时只保留薄 launch/block binding，且不复制 rank->tile |
 | communication mesh consumer | pending | tiled tensor collective + execution-mesh/local-rank/buffer facts | peer、route legality 和 p2p schedule 从 topology/execution mesh 查询；结果 materialize 到 communication / Direct DTE resource / local-drain 边界 |

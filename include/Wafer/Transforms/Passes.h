@@ -35,8 +35,6 @@ createPlanPlacementPass(int64_t logicalRankCount, int64_t cardYCount,
                         int64_t tileXCount, llvm::StringRef badTileIds);
 #ifdef WAFER_ENABLE_SHARDY
 std::unique_ptr<mlir::Pass> createApplyDefaultSpmdShardingPass();
-std::unique_ptr<mlir::Pass>
-createApplyDefaultSpmdShardingPass(int64_t tileCount);
 #endif
 void registerWaferTransformPasses();
 

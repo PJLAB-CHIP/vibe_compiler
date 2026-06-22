@@ -137,6 +137,9 @@ Card/tile adjacency 由规则 grid 派生，不能以 `links` 边表重复保存
 用于 debug、bring-up、小 workload 对照、资源隔离或非默认 placement。当前实现优先恢复单卡和
 小规模 multi-tile；跨卡 topology 仍应保持可表达。跨卡 route、C2C cost 或 runtime completion
 尚未完善时，应形成 placement/runtime 恢复任务，不能反向要求 SPMD 在无效 mesh 上切分。
+当前 `wafer-opt --program-pipeline=stablehlo-spmd* --execution-mesh-ranks=<n>` 只是 program driver
+侧生成 explicit `wafer.execution.mesh` 的调试入口，不是 SPMD seed pass / named pipeline 的
+`tile-count` 旁路。
 
 单 tile、单卡多 tile 和多卡多 tile 都使用同一个抽象：
 

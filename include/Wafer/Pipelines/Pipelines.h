@@ -24,8 +24,7 @@ void buildLowerGroupsToSelectedInstrPipeline(mlir::OpPassManager &pm);
 void buildLowerGroupsToPlacementPipeline(mlir::OpPassManager &pm);
 
 #ifdef WAFER_ENABLE_SHARDY
-void buildStablehloShardingPropagationPipeline(mlir::OpPassManager &pm,
-                                               int64_t defaultTileCount = 16);
+void buildStablehloShardingPropagationPipeline(mlir::OpPassManager &pm);
 #endif
 
 void registerWaferPipelines();

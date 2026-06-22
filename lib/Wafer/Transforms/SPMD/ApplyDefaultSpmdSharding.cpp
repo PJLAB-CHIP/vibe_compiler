@@ -34,7 +34,6 @@ namespace wafer {
 namespace {
 
 constexpr llvm::StringLiteral kDefaultMeshName = "wafer_default_tile_mesh";
-constexpr llvm::StringLiteral kTileAxisName = "tile";
 
 struct DefaultMeshSpec {
   llvm::SmallVector<std::string, 4> axes;
@@ -81,29 +80,6 @@ getExecutionMeshSpec(mlir::ModuleOp moduleOp, llvm::StringRef meshName) {
     return mlir::failure();
   }
   return spec;
-}
-
-static DefaultMeshSpec getLegacyTileMeshSpec(int64_t tileCount) {
-  DefaultMeshSpec spec;
-  spec.axes.push_back(kTileAxisName.str());
-  spec.shape.push_back(tileCount);
-  spec.rankCount = tileCount;
-  return spec;
-}
-
-static mlir::FailureOr<DefaultMeshSpec>
-getDefaultMeshSpec(mlir::ModuleOp moduleOp, llvm::StringRef meshName,
-                   int64_t fallbackTileCount) {
-  mlir::FailureOr<DefaultMeshSpec> meshSpec =
-      getExecutionMeshSpec(moduleOp, meshName);
-  if (mlir::succeeded(meshSpec))
-    return meshSpec;
-
-  if (fallbackTileCount < 1 || fallbackTileCount > 16) {
-    moduleOp.emitOpError("tile-count must be in [1, 16]");
-    return mlir::failure();
-  }
-  return getLegacyTileMeshSpec(fallbackTileCount);
 }
 
 static bool isFrontendShardingAttr(mlir::NamedAttribute attr) {
@@ -274,20 +250,11 @@ struct ApplyDefaultSpmdShardingPass
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ApplyDefaultSpmdShardingPass)
 
   ApplyDefaultSpmdShardingPass() = default;
-  explicit ApplyDefaultSpmdShardingPass(int64_t tileCount) {
-    this->tileCount = tileCount;
-  }
   ApplyDefaultSpmdShardingPass(const ApplyDefaultSpmdShardingPass &pass)
       : Base(pass) {
-    tileCount = pass.tileCount;
     executionMeshName = pass.executionMeshName;
   }
 
-  mlir::Pass::Option<int64_t> tileCount{
-      *this, "tile-count",
-      llvm::cl::desc("logical Wafer tile mesh size for default SPMD input "
-                     "sharding seeds when no wafer.execution.mesh exists"),
-      llvm::cl::init(16)};
   mlir::Pass::Option<std::string> executionMeshName{
       *this, "execution-mesh",
       llvm::cl::desc("wafer.execution.mesh symbol used for default SPMD input "
@@ -311,8 +278,11 @@ struct ApplyDefaultSpmdShardingPass
   void runOnOperation() final {
     mlir::ModuleOp moduleOp = getOperation();
     mlir::FailureOr<DefaultMeshSpec> meshSpec =
-        getDefaultMeshSpec(moduleOp, executionMeshName, tileCount);
+        getExecutionMeshSpec(moduleOp, executionMeshName);
     if (mlir::failed(meshSpec)) {
+      moduleOp.emitOpError(
+          "requires wafer.execution.mesh for default SPMD input sharding "
+          "seeds");
       signalPassFailure();
       return;
     }
@@ -344,11 +314,6 @@ struct ApplyDefaultSpmdShardingPass
 
 std::unique_ptr<mlir::Pass> createApplyDefaultSpmdShardingPass() {
   return std::make_unique<ApplyDefaultSpmdShardingPass>();
-}
-
-std::unique_ptr<mlir::Pass>
-createApplyDefaultSpmdShardingPass(int64_t tileCount) {
-  return std::make_unique<ApplyDefaultSpmdShardingPass>(tileCount);
 }
 
 #endif // WAFER_ENABLE_SHARDY
