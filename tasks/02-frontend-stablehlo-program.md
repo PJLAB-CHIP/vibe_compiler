@@ -78,7 +78,8 @@ compile JSON。`forward.meta` 是 function boundary
 rank-local shard payload 的绑定关系。offsets、sizes、strides、replica id 和 payload 文件必须来自
 XLA sharding / partitioner 暴露的 shard facts，不能由 Wafer 从 `partition_spec`、strategy 名或
 parameter 名手算。后续 compiler stage 不能通过文件名、parameter 名或 side JSON 猜语义；它们应消费
-IR 中 materialize 的 parameter/resource/ConstantLike/boundary-shards 事实。若某个 stage 改变 function
+已验证的 Wafer program metadata/payload，或 IR 中 materialize 的 parameter/resource/ConstantLike 事实。
+若某个 stage 改变 function
 boundary、parameter shard、constant storage、layout 或 package binding，它必须同步更新同一个 Wafer
 program 的 metadata / payload，并由 verifier 检查一致性。metadata 也不描述 Wafer physical layout、
 runtime allocation resource、DDR address 或 package path，除非后续相应 IR 层已经 materialize 这些事实。

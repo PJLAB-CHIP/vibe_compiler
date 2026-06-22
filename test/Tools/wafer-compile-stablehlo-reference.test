@@ -26,7 +26,7 @@
 # RUN: wafer-compile-stablehlo --verify-stablehlo-program %t.program | FileCheck %s --check-prefix=PROGRAM
 
 # RUN: rm -rf %t.shards.program && mkdir -p %t.shards.program/functions %t.shards.program/parameter_shards/weight
-# RUN: printf '%b' 'module attributes {"mhlo.spmd_parameters_shardings" = ""} {\n  func.func @main(%%arg0: tensor<1x4xf32>) -> tensor<1x4xf32> {\n    return %%arg0 : tensor<1x4xf32>\n  }\n}\n' > %t.shards.program/functions/forward.mlir
+# RUN: printf '%b' 'module attributes {"mhlo.spmd_parameters_shardings" = ""} {\n  wafer.target.topology @default {card_grid = array<i64: 1, 1>, card_interconnect = "mesh", tile_grid = array<i64: 1, 2>, unavailable_tiles = array<i64>}\n  wafer.execution.mesh @default_mesh {topology = @default, axes = ["rank"], shape = array<i64: 2>, policy = "all_available", endpoints = array<i64>}\n  func.func @main(%%arg0: tensor<1x4xf32>) -> tensor<1x4xf32> {\n    return %%arg0 : tensor<1x4xf32>\n  }\n}\n' > %t.shards.program/functions/forward.mlir
 # RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[1,4],"dtype":"float32","dynamic_dims":[]}],"output_signature":[{"shape":[1,4],"dtype":"float32","dynamic_dims":[]}],"input_locations":[{"type_":"parameter","position":-1,"name":"weight"}],"unused_inputs":[]}\n' > %t.shards.program/functions/forward.meta
 # RUN: printf '%b' '{"parameter_shards_version":2,"function":"forward","logical_rank_count":2,"parameters":[{"argument_index":0,"name":"weight","global_shape":[2,4],"local_shape":[1,4],"dtype":"float32","shards":[{"rank":0,"replica_id":0,"file":"parameter_shards/weight/rank_00000.npy","offsets":[0,0],"sizes":[1,4],"strides":[1,1]},{"rank":1,"replica_id":0,"file":"parameter_shards/weight/rank_00001.npy","offsets":[1,0],"sizes":[1,4],"strides":[1,1]}]}]}\n' > %t.shards.program/functions/forward.parameter_shards.json
 # RUN: %python -c 'import numpy as np; from pathlib import Path; np.save(Path("%t.shards.program/parameter_shards/weight/rank_00000.npy"), np.zeros((1, 4), dtype=np.float32)); np.save(Path("%t.shards.program/parameter_shards/weight/rank_00001.npy"), np.zeros((1, 4), dtype=np.float32))'
@@ -70,11 +70,11 @@
 # PROGRAM: wafer-compile-stablehlo: verified StableHLO program
 
 # SHARD-PROGRAM: wafer-compile-stablehlo: verified StableHLO program directory parameters: 1
-# SHARD-PROGRAM: wafer-compile-stablehlo: verified StableHLO program directory parameter boundary shards: 1
+# SHARD-PROGRAM: wafer-compile-stablehlo: verified StableHLO program directory parameter shards: 1
 # SHARD-PROGRAM: wafer-compile-stablehlo: verified StableHLO program
 
 # MISSING-SHARDS: wafer-compile-stablehlo: StableHLO program directory metadata rejected
-# MISSING-SHARDS: partitioned StableHLO program directory is missing parameter boundary shards
+# MISSING-SHARDS: partitioned StableHLO program directory is missing parameter shards
 
 # MISSING-SHARD-FILE: wafer-compile-stablehlo: StableHLO program directory metadata rejected
 # MISSING-SHARD-FILE: parameter shard file is missing

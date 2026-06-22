@@ -92,7 +92,7 @@ Pipeline position:
   拒绝的 logical group。
 - Downstream consumer:
   analysis/planning/legalization gates 和 closed-loop candidate driver；`wafer.tile.region`
-  materialization；topology/execution-mesh/boundary-shards contract；ABI/LLVM/package stages。
+  materialization；topology/execution-mesh contract；ABI/LLVM/package stages。
 - User-level driver / named pipeline:
   `wafer-opt --program-pipeline=stablehlo-spmd-to-group`，由该 program
   pipeline 重放 frontend/SPMD/local-compute-normalization 后进入 logical group formation gate。局部 MLIR pass

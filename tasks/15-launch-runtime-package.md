@@ -3,15 +3,15 @@
 状态：设计草案；范围：`wafer.launch`、runtime package、host runtime adapter 和 completion contract。
 
 本文定义 `wafer.launch`、runtime package、host runtime adapter 和 completion contract。该边界
-消费 committed instruction IR、topology/execution-mesh/boundary-shards contract、薄 launch/block binding、
-按需重算的 resource view 以及 ABI/LLVM
+消费 committed instruction IR、topology/execution-mesh contract、program parameter shard metadata、
+薄 launch/block binding、按需重算的 resource view 以及 ABI/LLVM
 lowering 产物，负责把 device code、resource metadata、endpoint binding、DDR binding、constant storage
 bytes 和 launch arguments 组织成可执行单元。runtime allocation/import/query 是 runtime adapter 在
 package load / launch 时执行的绑定动作，不是独立 compiler IR materialization stage。
 
 本文依赖：
 
-- `tasks/04-topology-execution-mesh-boundary-shards.md`
+- `tasks/04-topology-execution-mesh.md`
 - `tasks/12-ddr-memory-planning.md`
 - `tasks/14-abi-golden-packet.md`
 - `docs/tx8-deps-reverse-engineering/tx8-interface-contract.md`
@@ -58,9 +58,9 @@ wafer.launch @compiled_kernel(
 - launch signature：user-visible inputs/outputs、shape、dtype、external layout、alias policy。
 - endpoint view：`wafer.execution.mesh` + `wafer.target.topology` 派生的 rank->physical endpoint
   view，`explicit` mesh override 中的 endpoint tuples，薄 launch/block binding 的 block id，以及
-  `wafer.boundary.shards` 的 boundary slice。
+  program parameter shard metadata 派生的 launch-visible local shard view。
 - resource requirements：从 committed instruction IR、accepted offsets、communication/sync IR 和
-  boundary shard 重算的 SPM summary、DDR workspace demand、resident constant demand、control metadata
+  program parameter shard metadata/resource view 重算的 SPM summary、DDR workspace demand、resident constant demand、control metadata
   demand。
 - device code reference：kcore `.so` 或后续可执行代码对象。
 - runtime mode：HPGR 主路径或 legacy fallback。
@@ -74,8 +74,8 @@ wafer.launch @compiled_kernel(
 Pipeline position:
 - Upstream artifact / IR:
   committed `wafer.tile.region` / `wafer.instr.*` IR、accepted SPM/DDR offset facts、
-  topology/execution-mesh/boundary-shards contract、薄 launch/block binding、按需重算的 resource view，
-  以及 ABI/LLVM lowering 产物。
+  topology/execution-mesh contract、program parameter shard metadata、薄 launch/block binding、
+  按需重算的 resource view，以及 ABI/LLVM lowering 产物。
 - Current stage responsibility:
   package 组装 object/program id、entrypoint、ABI version、constant bytes、endpoint metadata 和
   resource binding metadata 到 package manifest；runtime adapter 根据该 manifest 执行
@@ -86,7 +86,7 @@ Pipeline position:
 - Downstream consumer:
   HPGR/KMD/legacy runtime launch path、board correctness gate 和 profiling/error propagation gate。
 - User-level driver / named pipeline:
-  package emission 必须接在 committed instruction -> topology/execution-mesh/boundary-shards -> ABI/LLVM lowering 之后，
+  package emission 必须接在 committed instruction -> topology/execution-mesh + program metadata/resource view -> ABI/LLVM lowering 之后，
   不以显式 manifest fixture 或 C stub table 作为主线入口。
 - Explicit non-goals:
   不重新做 endpoint projection、tile search、layout、SPM/DDR planning、communication schedule 或 ABI lowering；
@@ -166,8 +166,8 @@ Runtime package 必须区分：
 
 KMD/UAPI 的低层分配类别只作为 runtime mapping evidence 使用；DDR memory planning 产出
 accepted DDR planned ranges；ABI lowering、package manifest emission 和 runtime adapter 通过同一
-resource view analysis 从 committed IR、accepted offsets、topology/execution-mesh/boundary-shards 和薄
-launch/block binding 派生
+resource view analysis 从 committed IR、accepted offsets、topology/execution-mesh、program parameter
+shard metadata 和薄 launch/block binding 派生
 external binding、workspace、resident constant 和 control metadata requirements。runtime adapter 在
 package load / launch 时执行 allocate/import/query/bind，并报告
 runtime allocation failure；不能在 runtime/package 层重新决定 DDR range plan。
@@ -187,13 +187,13 @@ resident constant table；它不代表当前 IR pipeline 已生成 package，也
 真实 device code 已可执行。
 
 当前 C ABI stub 不再从 manifest 生成 tile-specific launch argument table。endpoint / block metadata 必须由
-后续 topology/execution-mesh/boundary-shards resource view 和薄 launch/block binding 派生，不能由
+后续 topology/execution-mesh、program parameter shard metadata/resource view 和薄 launch/block binding 派生，不能由
 manifest 维护第二份 endpoint schema。
 
 历史 `--emit-single-tile-matmul`、`--emit-multi-tile-no-comm-matmul`、
 `--emit-single-tile-elementwise` 和 `--emit-local-transformer-block` fixed emitter 已删除。后续 package
 gate 必须从当前 `wafer-opt` pipeline 的 committed instruction IR、
-topology/execution-mesh/boundary-shards contract、薄 launch/block binding、
+topology/execution-mesh contract、program parameter shard metadata/resource view、薄 launch/block binding、
 按需重算的 resource view、ABI/LLVM lowering artifact 和 `wafer.launch` boundary 自动导出 manifest；
 不能恢复独立固定 emitter 作为完成证明。
 
@@ -202,7 +202,7 @@ compiler IR 中：
 
 - topology snapshot / profile id、availability assumption 和 selected mesh id。
 - per-rank `logical_rank`、physical endpoint coordinate 和 `block_id`。
-- per-rank launch-visible shard view 来自 `wafer.boundary.shards`；名称只能用于诊断/显示，不作为绑定协议。
+- per-rank launch-visible shard view 来自 program parameter shard metadata/resource view；名称只能用于诊断/显示，不作为绑定协议。
 
 这些字段是 package / launch metadata，不改变 tensor IR 语义，也不成为 `wafer.execution.mesh` /
 `wafer.target.topology` 的第二事实源。validator 检查 manifest rank endpoint table 能由 execution mesh

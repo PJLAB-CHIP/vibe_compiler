@@ -36,7 +36,6 @@
 namespace wafer {
 
 inline constexpr char kWaferCommSlotAttrName[] = "slot";
-inline constexpr char kWaferBoundaryShardsAttrName[] = "wafer.boundary_shards";
 inline constexpr char kWaferSPMOffsetAttrName[] = "wafer.spm.offset";
 inline constexpr char kWaferDDROffsetAttrName[] = "wafer.ddr.offset";
 inline constexpr int64_t kWaferSPMBankLineBytes = 256;

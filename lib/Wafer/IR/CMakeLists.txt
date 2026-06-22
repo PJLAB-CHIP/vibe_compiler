@@ -4,7 +4,6 @@ add_mlir_dialect_library(WaferIR
   Common/OpVerifierUtils.cpp
   Instr/InstructionOps.cpp
   Instr/SyncOps.cpp
-  Resource/ShardOps.cpp
   Resource/SPMOps.cpp
   Runtime/LaunchOps.cpp
   Target/TopologyOps.cpp

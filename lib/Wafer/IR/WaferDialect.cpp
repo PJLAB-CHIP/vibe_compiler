@@ -10,7 +10,6 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/DialectImplementation.h"
-#include "mlir/Interfaces/FunctionInterfaces.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
@@ -35,82 +34,6 @@ using namespace wafer;
 
 #define GET_OP_CLASSES
 #include "Wafer/IR/WaferOps.cpp.inc"
-
-namespace wafer {
-
-static mlir::LogicalResult verifyBoundaryShardsFunctionAttr(
-    mlir::Operation *op, mlir::NamedAttribute attr, mlir::Type valueType,
-    llvm::StringRef valueKind, unsigned valueIndex) {
-  if (attr.getName() != kWaferBoundaryShardsAttrName)
-    return mlir::success();
-
-  auto symbol = mlir::dyn_cast<mlir::FlatSymbolRefAttr>(attr.getValue());
-  if (!symbol)
-    return op->emitOpError() << valueKind << " #" << valueIndex
-                             << " attribute '" << kWaferBoundaryShardsAttrName
-                             << "' must be a flat symbol reference";
-
-  auto moduleOp = op->getParentOfType<mlir::ModuleOp>();
-  if (!moduleOp)
-    return op->emitOpError()
-           << valueKind << " #" << valueIndex << " attribute '"
-           << kWaferBoundaryShardsAttrName << "' requires an enclosing module";
-
-  auto shards = moduleOp.lookupSymbol<BoundaryShardsOp>(symbol.getValue());
-  if (!shards)
-    return op->emitOpError()
-           << valueKind << " #" << valueIndex << " attribute '"
-           << kWaferBoundaryShardsAttrName << "' references unknown "
-           << "wafer.boundary.shards symbol @" << symbol.getValue();
-
-  auto tensorType = mlir::dyn_cast<mlir::RankedTensorType>(valueType);
-  if (!tensorType || !tensorType.hasStaticShape())
-    return op->emitOpError()
-           << valueKind << " #" << valueIndex
-           << " with wafer.boundary_shards must be a static ranked tensor";
-
-  llvm::ArrayRef<int64_t> localShape = shards.getLocalShapeAttr().asArrayRef();
-  if (static_cast<int64_t>(localShape.size()) != tensorType.getRank())
-    return op->emitOpError()
-           << valueKind << " #" << valueIndex
-           << " wafer.boundary_shards local_shape rank must match value rank";
-
-  for (auto [dim, expected] : llvm::enumerate(tensorType.getShape())) {
-    if (localShape[dim] != expected)
-      return op->emitOpError()
-             << valueKind << " #" << valueIndex
-             << " wafer.boundary_shards local_shape must match value type";
-  }
-
-  return mlir::success();
-}
-
-mlir::LogicalResult
-WaferDialect::verifyRegionArgAttribute(mlir::Operation *op,
-                                       unsigned regionIndex, unsigned argIndex,
-                                       mlir::NamedAttribute attr) {
-  auto function = mlir::dyn_cast<mlir::FunctionOpInterface>(op);
-  if (!function)
-    return mlir::success();
-  if (regionIndex != 0 || argIndex >= function.getArgumentTypes().size())
-    return mlir::success();
-  return verifyBoundaryShardsFunctionAttr(
-      op, attr, function.getArgumentTypes()[argIndex], "argument", argIndex);
-}
-
-mlir::LogicalResult WaferDialect::verifyRegionResultAttribute(
-    mlir::Operation *op, unsigned regionIndex, unsigned resultIndex,
-    mlir::NamedAttribute attr) {
-  auto function = mlir::dyn_cast<mlir::FunctionOpInterface>(op);
-  if (!function)
-    return mlir::success();
-  if (regionIndex != 0 || resultIndex >= function.getResultTypes().size())
-    return mlir::success();
-  return verifyBoundaryShardsFunctionAttr(
-      op, attr, function.getResultTypes()[resultIndex], "result", resultIndex);
-}
-
-} // namespace wafer
 
 namespace {
 

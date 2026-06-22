@@ -18,7 +18,7 @@ local body 和通信算子插入仍交给 Shardy / XLA SPMD partitioner。
 本文依赖：
 
 - `tasks/02-frontend-stablehlo-program.md`
-- `tasks/04-topology-execution-mesh-boundary-shards.md`
+- `tasks/04-topology-execution-mesh.md`
 - `tasks/13-communication.md`
 - `tasks/05-local-compute-normalization.md`
 
@@ -463,7 +463,7 @@ SPMD 消费的 topology / execution mesh 输入是：
 - `wafer.execution.mesh` 引用的 `wafer.target.topology`，用于确认 rank domain 来自 available connected
   topology；SPMD 不直接消费 physical route 或 DTE resource。
 
-SPMD 输出给后续 boundary-shards / communication / package 的 facts 是：
+SPMD 输出给后续 program metadata verifier、communication 和 package resource view 的 facts 是：
 
 - local shard shape、dtype、semantic layout。
 - logical rank group / replica group。
@@ -542,7 +542,7 @@ per-rank program
   -> tensor collective normalization if collectives exist
   -> logical group
   -> tile_region materialization
-  -> topology/execution-mesh/boundary-shards / communication / memory planning gate
+  -> topology/execution-mesh + program shard metadata/resource view / communication / memory planning gate
 ```
 
 手写 `sdy.mesh` / StableHLO collective fixture 只保留为 dialect/verifier/unit 级测试。它不能替代

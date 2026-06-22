@@ -6,7 +6,6 @@
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Attributes.h"
-#include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/Verifier.h"
@@ -52,20 +51,6 @@ struct ProgramMetadata {
   std::vector<ProgramSignature> inputSignatures;
   std::vector<ProgramSignature> outputSignatures;
   std::vector<ProgramInputLocation> inputLocations;
-};
-
-struct VerifiedParameterShard {
-  int64_t rank = -1;
-  std::vector<int64_t> offsets;
-  std::vector<int64_t> sizes;
-  std::vector<int64_t> strides;
-};
-
-struct VerifiedParameterBoundaryShard {
-  int64_t argumentIndex = -1;
-  std::vector<int64_t> globalShape;
-  std::vector<int64_t> localShape;
-  std::vector<VerifiedParameterShard> shards;
 };
 
 struct NpyPayloadMetadata {
@@ -831,8 +816,7 @@ bool verifyShardEntry(const llvm::json::Object &object,
                       llvm::ArrayRef<int64_t> localShape, Type elementType,
                       llvm::StringRef parameterName, llvm::StringRef programDir,
                       std::vector<bool> &seenRanks,
-                      llvm::raw_ostream &diagnostics,
-                      VerifiedParameterShard *verifiedShard) {
+                      llvm::raw_ostream &diagnostics) {
   int64_t rank = -1;
   int64_t replicaId = -1;
   std::string file;
@@ -896,21 +880,16 @@ bool verifyShardEntry(const llvm::json::Object &object,
 
   if (verifyNpyTensorPayloadFile(path, file, sizes, elementType, diagnostics))
     return true;
-
-  if (verifiedShard) {
-    verifiedShard->rank = rank;
-    verifiedShard->offsets = std::move(offsets);
-    verifiedShard->sizes = std::move(sizes);
-    verifiedShard->strides = std::move(strides);
-  }
   return false;
 }
 
-bool verifyParameterBoundaryShard(
-    const llvm::json::Object &object, const ProgramMetadata &meta,
-    FunctionType functionType, int64_t logicalRankCount,
-    std::vector<bool> &seenParameterArgs, llvm::StringRef programDir,
-    llvm::raw_ostream &diagnostics, VerifiedParameterBoundaryShard *verified) {
+bool verifyParameterShardMetadata(const llvm::json::Object &object,
+                                  const ProgramMetadata &meta,
+                                  FunctionType functionType,
+                                  int64_t logicalRankCount,
+                                  std::vector<bool> &seenParameterArgs,
+                                  llvm::StringRef programDir,
+                                  llvm::raw_ostream &diagnostics) {
   int64_t argumentIndex = -1;
   std::string name;
   std::string dtype;
@@ -977,101 +956,24 @@ bool verifyParameterBoundaryShard(
                                   diagnostics);
 
   std::vector<bool> seenRanks(logicalRankCount, false);
-  std::vector<VerifiedParameterShard> verifiedShards;
-  verifiedShards.reserve(shards->size());
   for (const llvm::json::Value &value : *shards) {
     const llvm::json::Object *shardObject = value.getAsObject();
     if (!shardObject)
       return rejectProgramDirectory("parameter shard entries must be objects",
                                     diagnostics);
-    VerifiedParameterShard verifiedShard;
     if (verifyShardEntry(*shardObject, logicalRankCount, globalShape,
                          localShape, tensorType.getElementType(), name,
-                         programDir, seenRanks, diagnostics, &verifiedShard))
+                         programDir, seenRanks, diagnostics))
       return true;
-    verifiedShards.push_back(std::move(verifiedShard));
   }
 
   seenParameterArgs[argumentIndex] = true;
-  if (verified) {
-    verified->argumentIndex = argumentIndex;
-    verified->globalShape = std::move(globalShape);
-    verified->localShape = std::move(localShape);
-    llvm::sort(verifiedShards, [](const VerifiedParameterShard &lhs,
-                                  const VerifiedParameterShard &rhs) {
-      return lhs.rank < rhs.rank;
-    });
-    verified->shards = std::move(verifiedShards);
-  }
   return false;
 }
 
-bool denseArrayEquals(DenseI64ArrayAttr attr, llvm::ArrayRef<int64_t> values) {
-  return llvm::equal(attr.asArrayRef(), values);
-}
-
-void flattenShardSlices(llvm::ArrayRef<VerifiedParameterShard> shards,
-                        std::vector<int64_t> &ranks,
-                        std::vector<int64_t> &offsets,
-                        std::vector<int64_t> &sizes,
-                        std::vector<int64_t> &strides) {
-  for (const VerifiedParameterShard &shard : shards) {
-    ranks.push_back(shard.rank);
-    offsets.insert(offsets.end(), shard.offsets.begin(), shard.offsets.end());
-    sizes.insert(sizes.end(), shard.sizes.begin(), shard.sizes.end());
-    strides.insert(strides.end(), shard.strides.begin(), shard.strides.end());
-  }
-}
-
-bool boundaryShardsMatch(wafer::BoundaryShardsOp op,
-                         FlatSymbolRefAttr executionMesh,
-                         const VerifiedParameterBoundaryShard &boundaryShard,
-                         llvm::ArrayRef<int64_t> ranks,
-                         llvm::ArrayRef<int64_t> offsets,
-                         llvm::ArrayRef<int64_t> sizes,
-                         llvm::ArrayRef<int64_t> strides) {
-  return op.getExecutionMeshAttr() == executionMesh &&
-         denseArrayEquals(op.getGlobalShapeAttr(), boundaryShard.globalShape) &&
-         denseArrayEquals(op.getLocalShapeAttr(), boundaryShard.localShape) &&
-         denseArrayEquals(op.getShardRanksAttr(), ranks) &&
-         denseArrayEquals(op.getShardOffsetsAttr(), offsets) &&
-         denseArrayEquals(op.getShardSizesAttr(), sizes) &&
-         denseArrayEquals(op.getShardStridesAttr(), strides);
-}
-
-bool hasBoundaryShardFacts(ModuleOp module) {
-  bool found = false;
-  module.walk([&](wafer::BoundaryShardsOp) {
-    found = true;
-    return WalkResult::interrupt();
-  });
-  if (found)
-    return true;
-
-  module.walk([&](func::FuncOp funcOp) {
-    auto function = cast<FunctionOpInterface>(funcOp.getOperation());
-    for (unsigned index = 0, e = funcOp.getFunctionType().getNumInputs();
-         index < e; ++index) {
-      if (function.getArgAttr(index, wafer::kWaferBoundaryShardsAttrName)) {
-        found = true;
-        return WalkResult::interrupt();
-      }
-    }
-    for (unsigned index = 0, e = funcOp.getFunctionType().getNumResults();
-         index < e; ++index) {
-      if (function.getResultAttr(index, wafer::kWaferBoundaryShardsAttrName)) {
-        found = true;
-        return WalkResult::interrupt();
-      }
-    }
-    return WalkResult::advance();
-  });
-  return found;
-}
-
 FailureOr<wafer::ExecutionMeshOp>
-findBoundaryShardExecutionMesh(ModuleOp module,
-                               llvm::raw_ostream &diagnostics) {
+findParameterShardExecutionMesh(ModuleOp module,
+                                llvm::raw_ostream &diagnostics) {
   if (auto defaultMesh =
           module.lookupSymbol<wafer::ExecutionMeshOp>("default_mesh"))
     return defaultMesh;
@@ -1087,7 +989,7 @@ findBoundaryShardExecutionMesh(ModuleOp module,
   });
   if (multipleMeshes) {
     rejectProgramDirectory(
-        "multiple execution meshes require @default_mesh for boundary shards",
+        "multiple execution meshes require @default_mesh for parameter shards",
         diagnostics);
     return failure();
   }
@@ -1114,100 +1016,17 @@ FailureOr<int64_t> getExecutionMeshRankCount(wafer::ExecutionMeshOp meshOp,
   return rankCount;
 }
 
-std::string makeBoundaryShardsSymbolName(ModuleOp module, StringRef funcName,
-                                         int64_t argumentIndex) {
-  std::string base =
-      (funcName + "_arg" + llvm::Twine(argumentIndex) + "_shards").str();
-  std::string candidate = base;
-  unsigned suffix = 0;
-  while (module.lookupSymbol(candidate)) {
-    candidate = (base + "_" + llvm::Twine(++suffix)).str();
-  }
-  return candidate;
-}
-
-bool materializeParameterBoundaryShards(
-    ModuleOp module, func::FuncOp func, int64_t logicalRankCount,
-    llvm::ArrayRef<VerifiedParameterBoundaryShard> boundaryShards,
-    llvm::raw_ostream &diagnostics, bool createMissingBoundaryShards) {
-  FailureOr<wafer::ExecutionMeshOp> meshOp =
-      findBoundaryShardExecutionMesh(module, diagnostics);
-  if (failed(meshOp))
-    return true;
-  FailureOr<int64_t> meshRankCount =
-      getExecutionMeshRankCount(*meshOp, diagnostics);
-  if (failed(meshRankCount))
-    return true;
-  if (*meshRankCount != logicalRankCount)
-    return rejectProgramDirectory(
-        "parameter shard logical_rank_count does not match execution mesh "
-        "rank count",
-        diagnostics);
-
-  OpBuilder builder(module.getContext());
-  builder.setInsertionPointAfter(func);
-  auto executionMeshAttr =
-      FlatSymbolRefAttr::get(builder.getContext(), meshOp->getSymName());
-  auto function = cast<FunctionOpInterface>(func.getOperation());
-
-  for (const VerifiedParameterBoundaryShard &boundaryShard : boundaryShards) {
-    std::vector<int64_t> ranks;
-    std::vector<int64_t> offsets;
-    std::vector<int64_t> sizes;
-    std::vector<int64_t> strides;
-    flattenShardSlices(boundaryShard.shards, ranks, offsets, sizes, strides);
-
-    auto existingAttr = dyn_cast_or_null<FlatSymbolRefAttr>(function.getArgAttr(
-        boundaryShard.argumentIndex, wafer::kWaferBoundaryShardsAttrName));
-    if (existingAttr) {
-      auto existingShards =
-          module.lookupSymbol<wafer::BoundaryShardsOp>(existingAttr.getValue());
-      if (!existingShards)
-        return rejectProgramDirectory(
-            "existing boundary shard attribute references missing symbol",
-            diagnostics);
-      if (!boundaryShardsMatch(existingShards, executionMeshAttr, boundaryShard,
-                               ranks, offsets, sizes, strides))
-        return rejectProgramDirectory(
-            "existing boundary shards do not match parameter shard metadata",
-            diagnostics);
-      continue;
-    }
-
-    if (!createMissingBoundaryShards)
-      continue;
-
-    std::string symbolName = makeBoundaryShardsSymbolName(
-        module, func.getSymName(), boundaryShard.argumentIndex);
-    function.setArgAttr(
-        boundaryShard.argumentIndex, wafer::kWaferBoundaryShardsAttrName,
-        FlatSymbolRefAttr::get(builder.getContext(), symbolName));
-
-    builder.create<wafer::BoundaryShardsOp>(
-        module.getLoc(), builder.getStringAttr(symbolName), executionMeshAttr,
-        DenseI64ArrayAttr::get(builder.getContext(), boundaryShard.globalShape),
-        DenseI64ArrayAttr::get(builder.getContext(), boundaryShard.localShape),
-        DenseI64ArrayAttr::get(builder.getContext(), ranks),
-        DenseI64ArrayAttr::get(builder.getContext(), offsets),
-        DenseI64ArrayAttr::get(builder.getContext(), sizes),
-        DenseI64ArrayAttr::get(builder.getContext(), strides));
-  }
-
-  return false;
-}
-
-bool verifyParameterBoundaryShards(
+bool verifyParameterShards(
     ModuleOp module, llvm::StringRef programDir, const ProgramMetadata &meta,
     func::FuncOp func, llvm::raw_ostream &diagnostics,
-    wafer::frontend::FrontendProgramVerificationResult *result,
-    bool materializeBoundaryShards) {
+    wafer::frontend::FrontendProgramVerificationResult *result) {
   std::string path =
       programPath(programDir, {"functions", "forward.parameter_shards.json"});
   if (!fileExists(path)) {
     if (hasSpmdParameterShardings(module))
       return rejectProgramDirectory(
           "partitioned StableHLO program directory is missing parameter "
-          "boundary shards",
+          "shards",
           diagnostics);
     return false;
   }
@@ -1241,6 +1060,20 @@ bool verifyParameterBoundaryShards(
     return rejectProgramDirectory("logical_rank_count must be positive",
                                   diagnostics);
 
+  FailureOr<wafer::ExecutionMeshOp> meshOp =
+      findParameterShardExecutionMesh(module, diagnostics);
+  if (failed(meshOp))
+    return true;
+  FailureOr<int64_t> meshRankCount =
+      getExecutionMeshRankCount(*meshOp, diagnostics);
+  if (failed(meshRankCount))
+    return true;
+  if (*meshRankCount != logicalRankCount)
+    return rejectProgramDirectory(
+        "parameter shard logical_rank_count does not match execution mesh "
+        "rank count",
+        diagnostics);
+
   const llvm::json::Array *parameters = root->getArray("parameters");
   if (!parameters)
     return rejectProgramDirectory("expected array field 'parameters'",
@@ -1248,37 +1081,28 @@ bool verifyParameterBoundaryShards(
 
   FunctionType functionType = func.getFunctionType();
   std::vector<bool> seenParameterArgs(functionType.getNumInputs(), false);
-  std::vector<VerifiedParameterBoundaryShard> verifiedBoundaryShards;
-  unsigned boundaryShardCount = 0;
+  unsigned parameterShardCount = 0;
   for (const llvm::json::Value &value : *parameters) {
     const llvm::json::Object *object = value.getAsObject();
     if (!object)
       return rejectProgramDirectory(
           "parameter shard metadata entries must be objects", diagnostics);
-    VerifiedParameterBoundaryShard verifiedBoundaryShard;
-    if (verifyParameterBoundaryShard(
-            *object, meta, functionType, logicalRankCount, seenParameterArgs,
-            programDir, diagnostics, &verifiedBoundaryShard))
+    if (verifyParameterShardMetadata(*object, meta, functionType,
+                                     logicalRankCount, seenParameterArgs,
+                                     programDir, diagnostics))
       return true;
-    verifiedBoundaryShards.push_back(std::move(verifiedBoundaryShard));
-    ++boundaryShardCount;
+    ++parameterShardCount;
   }
 
   for (auto [index, location] : llvm::enumerate(meta.inputLocations)) {
     if (location.type == "parameter" && !seenParameterArgs[index])
       return rejectProgramDirectory(
-          "parameter input is missing boundary shard metadata: " +
-              location.name,
+          "parameter input is missing shard metadata: " + location.name,
           diagnostics);
   }
 
   if (result)
-    result->programParameterBoundaryShardCount = boundaryShardCount;
-  if ((materializeBoundaryShards || hasBoundaryShardFacts(module)) &&
-      materializeParameterBoundaryShards(
-          module, func, logicalRankCount, verifiedBoundaryShards, diagnostics,
-          /*createMissingBoundaryShards=*/materializeBoundaryShards))
-    return true;
+    result->programParameterShardCount = parameterShardCount;
   return false;
 }
 
@@ -1305,8 +1129,7 @@ LogicalResult verifyFrontendProgram(ModuleOp module,
 static LogicalResult
 verifyStableHLOProgramDirImpl(ModuleOp module, llvm::StringRef programPath,
                               llvm::raw_ostream &diagnostics,
-                              FrontendProgramVerificationResult *result,
-                              bool materializeBoundaryShards) {
+                              FrontendProgramVerificationResult *result) {
   if (result)
     *result = FrontendProgramVerificationResult{};
 
@@ -1325,12 +1148,9 @@ verifyStableHLOProgramDirImpl(ModuleOp module, llvm::StringRef programPath,
     FailureOr<func::FuncOp> func = findSingleFunction(module, diagnostics);
     if (failed(func))
       return failure();
-    rejected |= verifyParameterBoundaryShards(module, programPath, *meta, *func,
-                                              diagnostics, result,
-                                              materializeBoundaryShards);
+    rejected |= verifyParameterShards(module, programPath, *meta, *func,
+                                      diagnostics, result);
   }
-  if (!rejected && materializeBoundaryShards && failed(mlir::verify(module)))
-    return failure();
   return rejected ? failure() : success();
 }
 
@@ -1338,15 +1158,15 @@ LogicalResult
 verifyStableHLOProgramDir(ModuleOp module, llvm::StringRef programPath,
                           llvm::raw_ostream &diagnostics,
                           FrontendProgramVerificationResult *result) {
-  return verifyStableHLOProgramDirImpl(module, programPath, diagnostics, result,
-                                       /*materializeBoundaryShards=*/false);
+  return verifyStableHLOProgramDirImpl(module, programPath, diagnostics,
+                                       result);
 }
 
 LogicalResult verifyAndMaterializeStableHLOProgramDir(
     ModuleOp module, llvm::StringRef programPath,
     llvm::raw_ostream &diagnostics, FrontendProgramVerificationResult *result) {
-  return verifyStableHLOProgramDirImpl(module, programPath, diagnostics, result,
-                                       /*materializeBoundaryShards=*/true);
+  return verifyStableHLOProgramDirImpl(module, programPath, diagnostics,
+                                       result);
 }
 
 } // namespace wafer::frontend

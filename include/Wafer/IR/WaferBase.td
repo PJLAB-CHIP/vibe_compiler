@@ -17,8 +17,6 @@ def Wafer_Dialect : Dialect {
   }];
   let useDefaultAttributePrinterParser = 1;
   let useDefaultTypePrinterParser = 0;
-  let hasRegionArgAttrVerify = 1;
-  let hasRegionResultAttrVerify = 1;
 }
 
 class Wafer_Op<string mnemonic, list<Trait> traits = []>
