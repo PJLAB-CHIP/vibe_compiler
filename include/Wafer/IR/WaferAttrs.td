@@ -102,23 +102,6 @@ def Wafer_DDROffsetAttr : AttrDef<Wafer_Dialect, "DDROffset"> {
   let assemblyFormat = "`<` $offset `>`";
 }
 
-def Wafer_PlacementSingleTile : I32EnumAttrCase<"SingleTile", 0, "single_tile">;
-def Wafer_PlacementTileMesh : I32EnumAttrCase<"TileMesh", 1, "tile_mesh">;
-def Wafer_PlacementCardMesh : I32EnumAttrCase<"CardMesh", 2, "card_mesh">;
-def Wafer_Placement : I32EnumAttr<"Placement", "Wafer physical placement scope", [
-  Wafer_PlacementSingleTile,
-  Wafer_PlacementTileMesh,
-  Wafer_PlacementCardMesh
-]> {
-  let cppNamespace = "::wafer";
-  let genSpecializedAttr = 0;
-}
-
-def Wafer_PlacementAttr
-    : EnumAttr<Wafer_Dialect, Wafer_Placement, "placement"> {
-  let assemblyFormat = "`<` $value `>`";
-}
-
 def Wafer_ComputeElementwiseKindAdd : I32EnumAttrCase<"Add", 0, "add">;
 def Wafer_ComputeElementwiseKindSub : I32EnumAttrCase<"Sub", 1, "sub">;
 def Wafer_ComputeElementwiseKindMul : I32EnumAttrCase<"Mul", 2, "mul">;

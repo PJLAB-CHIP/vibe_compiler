@@ -59,7 +59,7 @@ def Wafer_InstrGatherScatterOp : Wafer_InstrDMAOp<"instr.gather_scatter", [
   let description = [{
     `src_offset` and `dst_offset` are byte offsets within the source and
     destination operand buffers. They do not assign physical SPM base addresses;
-    placement still owns the final buffer base/range.
+    SPM memory planning still owns the final buffer base/range.
   }];
   let arguments = (ins
     AnyMemRef:$source,

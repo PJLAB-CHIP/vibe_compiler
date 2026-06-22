@@ -35,7 +35,7 @@ verifyAllowedAttrs(mlir::Operation *op,
     if (!isAllowedAttr(attr, allowedAttrs))
       return op->emitOpError("does not accept attribute '")
              << attr.getName()
-             << "'; tensor collectives must not carry physical placement, "
+             << "'; tensor collectives must not carry physical endpoint mapping, "
                 "SPM, DTE, byte schedule, or runtime metadata";
   }
   return mlir::success();

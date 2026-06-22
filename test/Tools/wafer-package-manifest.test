@@ -1,19 +1,13 @@
 # RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --roundtrip %S/valid-package-manifest.json | FileCheck %s
 # RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --validate %S/valid-package-manifest.json
 # RUN: not %python %wafer_src_root/tools/wafer_package_manifest.py --validate %S/invalid-completion-manifest.json 2>&1 | FileCheck %s --check-prefix=ERR
-# RUN: not %python %wafer_src_root/tools/wafer_package_manifest.py --validate %S/invalid-placement-manifest.json 2>&1 | FileCheck %s --check-prefix=PLACEMENT-ERR
-# RUN: not %python %wafer_src_root/tools/wafer_package_manifest.py --validate %S/invalid-local-shard-manifest.json 2>&1 | FileCheck %s --check-prefix=SHARD-ERR
 # RUN: not %python %wafer_src_root/tools/wafer_package_manifest.py --validate %S/invalid-workspace-manifest.json 2>&1 | FileCheck %s --check-prefix=WORKSPACE-ERR
 # RUN: not %python %wafer_src_root/tools/wafer_package_manifest.py --validate %S/invalid-resident-constant-manifest.json 2>&1 | FileCheck %s --check-prefix=CONST-ERR
 
 # CHECK: "schema_version": 1
 # CHECK: "package_name": "manifest_schema_fixture"
 # CHECK: "completion_source": "hpgr_stream_event"
-# CHECK: "placement": {
-# CHECK: "logical_rank_count": 1
-# CHECK: "good_tile_ids": [
-# CHECK: "block_id": 0
-# CHECK: "local_shards": [
+# CHECK-NOT: {{"place}}{{ment"}}
 # CHECK-NOT: TsmDeviceSynchronize
 # CHECK: "ddr_external_input_bytes": 32
 # CHECK: "ddr_external_output_bytes": 16
@@ -25,7 +19,5 @@
 # CHECK: "wafer.instr.wdma"
 
 # ERR: completion source is a known stub fence
-# PLACEMENT-ERR: maps to tile id 1 that is not marked good
-# SHARD-ERR: local_shards[0] exceeds tensor shape
 # WORKSPACE-ERR: resources.workspace_bytes does not match workspace buffers
 # CONST-ERR: resources.resident_constant_bytes does not match resident constants

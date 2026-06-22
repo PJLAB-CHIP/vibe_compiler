@@ -23,6 +23,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <vector>
@@ -423,6 +424,15 @@ uint64_t rawByteSize(llvm::ArrayRef<int64_t> shape, Type elementType) {
     elements *= static_cast<uint64_t>(dim);
   }
   return elements * (bitWidth / 8);
+}
+
+bool checkedMul(int64_t lhs, int64_t rhs, int64_t &result) {
+  if (lhs < 0 || rhs < 0)
+    return false;
+  if (lhs != 0 && rhs > std::numeric_limits<int64_t>::max() / lhs)
+    return false;
+  result = lhs * rhs;
+  return true;
 }
 
 std::optional<llvm::StringRef> findNpyFieldValue(llvm::StringRef header,
@@ -1013,13 +1023,13 @@ void flattenShardSlices(llvm::ArrayRef<VerifiedParameterShard> shards,
 }
 
 bool existingShardBindingMatches(wafer::ShardBindingOp op,
-                                 int64_t logicalRankCount,
+                                 FlatSymbolRefAttr executionMesh,
                                  const VerifiedParameterShardBinding &binding,
                                  llvm::ArrayRef<int64_t> ranks,
                                  llvm::ArrayRef<int64_t> offsets,
                                  llvm::ArrayRef<int64_t> sizes,
                                  llvm::ArrayRef<int64_t> strides) {
-  return op.getLogicalRankCountAttr().getInt() == logicalRankCount &&
+  return op.getExecutionMeshAttr() == executionMesh &&
          denseArrayEquals(op.getGlobalShapeAttr(), binding.globalShape) &&
          denseArrayEquals(op.getLocalShapeAttr(), binding.localShape) &&
          denseArrayEquals(op.getShardRanksAttr(), ranks) &&
@@ -1037,13 +1047,74 @@ bool hasShardBindingOps(ModuleOp module) {
   return found;
 }
 
+FailureOr<wafer::ExecutionMeshOp>
+findShardBindingExecutionMesh(ModuleOp module, llvm::raw_ostream &diagnostics) {
+  if (auto defaultMesh =
+          module.lookupSymbol<wafer::ExecutionMeshOp>("default_mesh"))
+    return defaultMesh;
+
+  wafer::ExecutionMeshOp foundMesh;
+  bool multipleMeshes = false;
+  module.walk([&](wafer::ExecutionMeshOp meshOp) {
+    if (!foundMesh) {
+      foundMesh = meshOp;
+      return;
+    }
+    multipleMeshes = true;
+  });
+  if (multipleMeshes) {
+    rejectProgramDirectory(
+        "multiple execution meshes require @default_mesh for shard bindings",
+        diagnostics);
+    return failure();
+  }
+  if (!foundMesh) {
+    rejectProgramDirectory("parameter shard bindings require wafer.execution.mesh",
+                           diagnostics);
+    return failure();
+  }
+  return foundMesh;
+}
+
+FailureOr<int64_t>
+getExecutionMeshRankCount(wafer::ExecutionMeshOp meshOp,
+                          llvm::raw_ostream &diagnostics) {
+  int64_t rankCount = 1;
+  for (int64_t dim : meshOp.getShapeAttr().asArrayRef()) {
+    int64_t next = 0;
+    if (dim <= 0 || !checkedMul(rankCount, dim, next)) {
+      rejectProgramDirectory("execution mesh rank count is invalid",
+                             diagnostics);
+      return failure();
+    }
+    rankCount = next;
+  }
+  return rankCount;
+}
+
 bool materializeParameterShardBindingOps(
     ModuleOp module, func::FuncOp func, int64_t logicalRankCount,
     llvm::ArrayRef<VerifiedParameterShardBinding> bindings,
     llvm::raw_ostream &diagnostics, bool createMissingBindings) {
+  FailureOr<wafer::ExecutionMeshOp> meshOp =
+      findShardBindingExecutionMesh(module, diagnostics);
+  if (failed(meshOp))
+    return true;
+  FailureOr<int64_t> meshRankCount =
+      getExecutionMeshRankCount(*meshOp, diagnostics);
+  if (failed(meshRankCount))
+    return true;
+  if (*meshRankCount != logicalRankCount)
+    return rejectProgramDirectory(
+        "parameter shard logical_rank_count does not match execution mesh "
+        "rank count",
+        diagnostics);
+
   OpBuilder builder(module.getContext());
   builder.setInsertionPointAfter(func);
   auto kernelAttr = FlatSymbolRefAttr::get(func.getSymNameAttr());
+  auto executionMeshAttr =
+      FlatSymbolRefAttr::get(builder.getContext(), meshOp->getSymName());
 
   for (const VerifiedParameterShardBinding &binding : bindings) {
     std::vector<int64_t> ranks;
@@ -1063,7 +1134,7 @@ bool materializeParameterShardBindingOps(
     });
 
     if (existingBinding) {
-      if (!existingShardBindingMatches(existingBinding, logicalRankCount,
+      if (!existingShardBindingMatches(existingBinding, executionMeshAttr,
                                        binding, ranks, offsets, sizes, strides))
         return rejectProgramDirectory(
             "existing shard binding does not match parameter shard metadata",
@@ -1077,7 +1148,7 @@ bool materializeParameterShardBindingOps(
     builder.create<wafer::ShardBindingOp>(
         module.getLoc(), kernelAttr,
         builder.getI64IntegerAttr(binding.argumentIndex),
-        builder.getI64IntegerAttr(logicalRankCount),
+        executionMeshAttr,
         DenseI64ArrayAttr::get(builder.getContext(), binding.globalShape),
         DenseI64ArrayAttr::get(builder.getContext(), binding.localShape),
         DenseI64ArrayAttr::get(builder.getContext(), ranks),

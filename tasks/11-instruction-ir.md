@@ -18,7 +18,7 @@ instruction legalization。
   DDR planning result、raw packet 或 C ABI call。
 
 `wafer.instr` 的作用是把 target-abstract tile-region op 变成可执行硬件动作，并让下游能从
-memref SSA、Wafer memory attr、op operands、attrs、MemoryEffects 和显式 drain 直接推导 placement
+memref SSA、Wafer memory attr、op operands、attrs、MemoryEffects 和显式 drain 直接推导 endpoint/resource
 输入。它不是另一层 buffer IR。
 
 实现边界：
@@ -190,7 +190,7 @@ instruction-level IR 中解释它：
 - 对 `#wafer.memory<spm, cx/ncx>`，不能用 generic `memref.load/store/copy/subview` 伪装硬件
   physical indexing；真实 layout conversion、slice movement 和 copy 必须通过
   `wafer.tile.materialize_layout` 或 `wafer.instr.gather_scatter` 等 Wafer op 表达。
-- 在 Wafer placement/realization 前，不能让 generic memref-to-LLVM lowering 按 dense memref
+- 在 Wafer resource projection / realization 前，不能让 generic memref-to-LLVM lowering 按 dense memref
   footprint 处理 `#wafer.memory<spm, cx/ncx>`。
 
 ## 3. IR Boundary
@@ -472,7 +472,7 @@ R3.2d.4 已覆盖 static movement descriptor splitting / packing：
 
 R3.2d V0 剩余明显 coverage gap 是 tile communication：
 
-- `wafer.tile.send/recv/wait/all_gather/reduce_scatter/all_reduce` 依赖 placement、local rank、
+- `wafer.tile.send/recv/wait/all_gather/reduce_scatter/all_reduce` 依赖 endpoint facts、local rank、
   buffer slice、communication staging 和 DTE resource facts。R3.2d 不能从 op 名、rank 常量或
   unplaced memref 推断通信协议；tile communication materialization 应在这些 facts 明确后进入
   R6.1/R6.2 或对应 accepted-plan materialization 阶段。
@@ -506,7 +506,7 @@ diagnostics to the closed-loop planner or debug pass, but rejected instruction I
   runtime ABI call to be legal.
 
 Diagnostics should mention the source op and the missing legality fact, for example:
-`tile.communication lowering requires placement/local-rank facts` or
+`tile.communication lowering requires endpoint/local-rank facts` or
 `tile.broadcast lowering requires static positive iteration shape`.
 
 ## 10. Verifier Contract

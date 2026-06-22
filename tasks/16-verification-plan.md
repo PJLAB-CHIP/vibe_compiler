@@ -3,7 +3,7 @@
 状态：设计草案；范围：compiler pipeline 各阶段的验证责任和 completion gate。
 
 本文定义 Wafer compiler 的分阶段验证策略。它不是替代各 dialect 设计的总 verifier，而是把
-frontend、SPMD、placement、local compute normalization、tensor collective handoff、group、
+frontend、SPMD、topology / execution mesh、local compute normalization、tensor collective handoff、group、
 tile_region、layout、SPM、DDR、compute、communication、C ABI、launch/runtime 的验证责任串成
 可执行的 gate。
 
@@ -127,7 +127,7 @@ Single-tile local compute：
 Multi-tile no communication：
 
 - 主链路 gate 继续消费同一条真实图 program chain，不重新退回手写 tile_region 或显式 manifest fixture。
-- placement 覆盖多个 tile，并使用 good-tile metadata。
+- execution mesh 覆盖多个 available endpoint，并使用 topology unavailable endpoint metadata。
 - 每个 tile 有 block id / local shard metadata。
 - 无 tile 间 DTE 依赖。
 - local package / generated program 能区分 per-tile args；runtime launch 和 completion 后续在有卡环境验证。
@@ -159,7 +159,7 @@ Partitioned StableHLO collective handoff：
   MLIR `TilingInterface`、Wafer tiling demand interface、Wafer tensor collective info interface，
   可被 group/tiling 边界直接消费。slot-crossing 或当前 IR 不可证明的 collective-axis tile 必须显式
   failure，不能被伪装成已 materialize 的 `wafer.tile.*` communication 或 hidden schedule。
-- placement 和 comm lowering 在其实现范围内保留 collective semantics；未实现的硬件可表达
+- endpoint projection 和 comm lowering 在其实现范围内保留 collective semantics；未实现的硬件可表达
   collective 形成 R6/R4 恢复任务，不能反向限制 sharding propagation program export，也不能把 tensor collective
   伪装成已经 materialize 的 `wafer.tile.*` communication。
 - layout/SPM/DDR memory gates 只对本 milestone 已经 materialize 的 movement / buffer demand
@@ -173,7 +173,7 @@ candidate-selection tile search 估算和后续 cost calibration 的边界：
   policy 中的硬件参数、计算量、DDR bytes、SPM/local movement bytes 和 instruction count 做粗估时间排序。
 - candidate-selection 的粗估时间只用于合法候选 tie-break；candidate gates 失败的 candidate
   不能被 cost model 接受。
-- issue/drain placement 由 effect/token verifier 证明。
+- issue/drain ordering 由 effect/token verifier 证明。
 - PMU/profiling 只作为后续 calibration，不作为 IR 语义事实，也不改变 candidate-selection 的合法性边界。
 
 Transformer block vertical slice：
@@ -214,15 +214,15 @@ M8 runtime / board correctness gate：
 
 - runtime adapter 必须区分真实 device completion 和已知 stub path；stub completion 不能作为
   correctness fence。
-- package 中的 tensor、workspace、constant、placement 和 per-tile launch args 必须能绑定到真实
-  runtime allocation / DDR / launch argument。
+- package 中的 tensor、workspace、constant、endpoint/resource metadata 必须能绑定到真实 runtime
+  allocation / DDR / launch argument。
 - 板端 gate 分别覆盖 single-tile compute、多 tile no-comm、p2p、ring collective、partitioned
   collective 和 full local block 的 launch、completion、错误传播和数值对比。
 - profiling 只作为后续 P9 cost model calibration 的输入，不作为 M8 correctness 通过条件。
 
 M9 overlap / cost model / profiling calibration gate：
 
-- issue/drain placement、SPM busy range、DDR range/bandwidth 和 DTE resource pressure 只从当前 IR、
+- issue/drain ordering、SPM busy range、DDR range/bandwidth 和 DTE resource pressure 只从当前 IR、
   resource model 和 PMU calibration 派生，不写入不可验证的 planner trace。
 - PMU/profiling 用于校准 latency、blocking time 和 conflict cost；不反向改变 IR 语义合同。
 
@@ -245,7 +245,7 @@ Wafer 硬件能力表达，就不能把当前 static gate 的覆盖范围写成�
 
 - frontend program 错误回 frontend。
 - sharding / collective group 错误回 Shardy。
-- physical tile 不可用回 placement。
+- physical tile 不可用回 target topology / execution mesh selection。
 - tile shape 或 group 资源不合法回 group planner。
 - layout conversion 过多或不合法回 layout assignment。
 - SPM 放不下回 SPM allocation，建议 repair 但不写入 IR。
@@ -265,7 +265,7 @@ Wafer 硬件能力表达，就不能把当前 static gate 的覆盖范围写成�
 - dependency consistency checks：第三方版本 pin、dialect registration、可选 importer 与后端构建隔离。
 - MLIR textual tests：每个 dialect op/type/attr 的 verifier 正负例。
 - conversion FileCheck：每个 stage 的最小 IR 变化。
-- C/C++ unit tests：storage size calculator、SPM allocator、DDR demand calculator、placement mapping。
+- C/C++ unit tests：storage size calculator、SPM allocator、DDR demand calculator、endpoint resource view。
 - golden packet tests：至少覆盖 single-tile local compute 用到的 wrapper family。
 
 如果某个 milestone 暂时只能做文档验证，必须明确说明还缺 build/test harness 或板端 runtime。

@@ -52,7 +52,7 @@ scheduled wafer.group tensor body
   -> instruction-level wafer.instr.* IR over unplaced Wafer-tagged memref values
   -> same instruction-level IR after SPM memory planning
   -> same instruction-level IR with accepted DDR planned range facts
-  -> placement / launch-resource contract
+  -> endpoint / launch-resource contract
   -> ABI / LLVM lowering to Wafer C ABI / packet builder input
   -> object/package/runtime adapter
 ```
@@ -62,7 +62,7 @@ scheduled wafer.group tensor body
 | 层次 | op 形态 | value 形态 | 责任 |
 | --- | --- | --- | --- |
 | scheduled group | `linalg.*` / `tensor.*` / `scf.*` | tensor SSA value | 表达数学语义、tile-local dataflow 和 traversal，不选硬件实现 |
-| target-abstract compute | `wafer.tile.*` compute ops 和 target-abstract movement op | tensor SSA value 或 Wafer-tagged memref | 选择目标实现族，提供 layout/resource/lowering interface，不绑定具体 storage placement |
+| target-abstract compute | `wafer.tile.*` compute ops 和 target-abstract movement op | tensor SSA value 或 Wafer-tagged memref | 选择目标实现族，提供 layout/resource/lowering interface，不绑定具体 storage allocation |
 | layout-materialized | 同一类 compute/movement op | `memref<..., #wafer.memory<space, layout>>` | 验证 address space 和 physical layout marker，显式插入 `wafer.tile.materialize_layout` |
 | instruction-level | `wafer.instr.*` | unplaced Wafer-tagged memref SSA value | 选择 CT/NE/TDMA/RDMA/WDMA 指令形态，列出 queue、temp/psum/staging memref values、alias、effect 和 descriptor attrs，不含 SPM offset；DTE 属于 `wafer.tile.*` communication / communication lowering |
 | DDR memory-planned instruction-level | 同一 `wafer.instr.*` | memory-planned Wafer-tagged memref SSA value | DDR view/root range、descriptor、compiler-managed/resident/inter-group planned ranges、lifetime/reuse、default arena capacity/largest-contiguous/bandwidth 已通过 DDR memory planning |

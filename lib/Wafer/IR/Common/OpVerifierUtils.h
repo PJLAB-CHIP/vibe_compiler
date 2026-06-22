@@ -26,10 +26,6 @@ bool hasWaferMemorySpace(mlir::Type type, wafer::MemorySpace memorySpace);
 bool hasStaticMismatch(int64_t lhs, int64_t rhs);
 bool checkedMul(int64_t lhs, int64_t rhs, int64_t &result);
 bool checkedAdd(int64_t lhs, int64_t rhs, int64_t &result);
-std::optional<int64_t> getPhysicalTileId(int64_t cardY, int64_t cardX,
-                                         int64_t tileY, int64_t tileX,
-                                         int64_t cardXCount, int64_t tileYCount,
-                                         int64_t tileXCount);
 std::optional<int64_t>
 getCompactTensorByteSize(mlir::RankedTensorType tensorType);
 std::optional<int64_t> getCompactByteSize(mlir::Type type);

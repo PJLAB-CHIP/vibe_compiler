@@ -14,33 +14,34 @@
   ],
   "launch_signature": {
     "inputs": [
-      {"name": "lhs", "shape": [2, 4], "dtype": "f16", "layout": "tensor"},
-      {"name": "rhs", "shape": [2, 4], "dtype": "f16", "layout": "tensor"}
+      {
+        "name": "lhs",
+        "shape": [
+          2,
+          4
+        ],
+        "dtype": "f16",
+        "layout": "tensor"
+      },
+      {
+        "name": "rhs",
+        "shape": [
+          2,
+          4
+        ],
+        "dtype": "f16",
+        "layout": "tensor"
+      }
     ],
     "outputs": [
-      {"name": "out", "shape": [2, 4], "dtype": "f16", "layout": "tensor"}
-    ]
-  },
-  "placement": {
-    "logical_rank_count": 1,
-    "topology": {
-      "card_y_count": 1,
-      "card_x_count": 1,
-      "tile_y_count": 4,
-      "tile_x_count": 4
-    },
-    "good_tile_ids": [0],
-    "bad_tile_ids": [],
-    "ranks": [
       {
-        "logical_rank": 0,
-        "physical_coord": [0, 0, 0, 0],
-        "block_id": 0,
-        "local_shards": [
-          {"name": "lhs", "offsets": [0, 0], "sizes": [2, 4]},
-          {"name": "rhs", "offsets": [0, 0], "sizes": [2, 4]},
-          {"name": "out", "offsets": [0, 0], "sizes": [2, 4]}
-        ]
+        "name": "out",
+        "shape": [
+          2,
+          4
+        ],
+        "dtype": "f16",
+        "layout": "tensor"
       }
     ]
   },
@@ -73,7 +74,10 @@
   "workspace_buffers": [
     {
       "name": "tmp",
-      "shape": [2, 4],
+      "shape": [
+        2,
+        4
+      ],
       "dtype": "f16",
       "layout": "tensor",
       "bytes": 16,
@@ -86,7 +90,10 @@
     {
       "name": "rhs",
       "source": "launch_input",
-      "shape": [2, 4],
+      "shape": [
+        2,
+        4
+      ],
       "dtype": "f16",
       "layout": "tensor",
       "bytes": 16,
@@ -101,10 +108,34 @@
     "resident_constant_bytes": 16
   },
   "instructions": [
-    {"op": "wafer.instr.rdma", "bytes": 16, "wait_policy": "issue_only"},
-    {"op": "wafer.instr.rdma", "bytes": 16, "wait_policy": "issue_only"},
-    {"op": "wafer.instr.elementwise", "kind": "add", "wait_policy": "issue_only"},
-    {"op": "wafer.instr.reduce", "kind": "max", "dimensions": [1], "init_value": -1.0, "wait_policy": "issue_only"},
-    {"op": "wafer.instr.wdma", "bytes": 16, "wait_policy": "issue_only"}
+    {
+      "op": "wafer.instr.rdma",
+      "bytes": 16,
+      "wait_policy": "issue_only"
+    },
+    {
+      "op": "wafer.instr.rdma",
+      "bytes": 16,
+      "wait_policy": "issue_only"
+    },
+    {
+      "op": "wafer.instr.elementwise",
+      "kind": "add",
+      "wait_policy": "issue_only"
+    },
+    {
+      "op": "wafer.instr.reduce",
+      "kind": "max",
+      "dimensions": [
+        1
+      ],
+      "init_value": -1.0,
+      "wait_policy": "issue_only"
+    },
+    {
+      "op": "wafer.instr.wdma",
+      "bytes": 16,
+      "wait_policy": "issue_only"
+    }
   ]
 }

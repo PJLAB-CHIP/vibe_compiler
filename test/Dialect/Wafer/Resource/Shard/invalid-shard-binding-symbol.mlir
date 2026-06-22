@@ -1,12 +1,25 @@
 // RUN: not wafer-opt %s 2>&1 | FileCheck %s
 
 module {
+  wafer.target.topology @default
+      {card_grid = array<i64: 1, 1>,
+       card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 1>,
+       unavailable_tiles = array<i64>}
+
+  wafer.execution.mesh @default_mesh
+      {topology = @default,
+       axes = ["rank"],
+       shape = array<i64: 1>,
+       policy = "explicit",
+       endpoints = array<i64: 0, 0, 0, 0>}
+
   wafer.shard.binding
       {argument_index = 0 : i64,
+       execution_mesh = @default_mesh,
        global_shape = array<i64: 2, 4>,
        kernel = @missing,
        local_shape = array<i64: 1, 4>,
-       logical_rank_count = 1 : i64,
        shard_offsets = array<i64: 0, 0>,
        shard_ranks = array<i64: 0>,
        shard_sizes = array<i64: 1, 4>,

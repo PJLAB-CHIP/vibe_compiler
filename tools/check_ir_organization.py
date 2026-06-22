@@ -65,13 +65,6 @@ OP_FAMILIES = {
         "mnemonics": ["tile.reshape"],
         "tests": "Tile/View",
     },
-    "Placement": {
-        "layer": "Resource",
-        "td": "PlacementOps.td",
-        "cpp": "PlacementOps.cpp",
-        "mnemonics": ["placement.map"],
-        "tests": "Resource/Placement",
-    },
     "Compute": {
         "layer": "Tile",
         "td": "ComputeOps.td",

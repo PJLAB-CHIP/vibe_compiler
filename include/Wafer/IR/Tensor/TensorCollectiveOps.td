@@ -61,7 +61,7 @@ def Wafer_TensorCollectiveAllGatherOp
   let description = [{
     Carries StableHLO all_gather semantics after SPMD partitioning as a
     destination-style tensor op. It preserves logical rank group and gather
-    axis facts for group/tiling, but does not own physical placement, SPM
+    axis facts for group/tiling, but does not own physical endpoint mapping, SPM
     buffers, DTE tokens, byte schedules, or runtime handles.
   }];
   let assemblyFormat = [{

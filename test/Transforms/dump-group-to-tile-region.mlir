@@ -297,7 +297,7 @@ module {
 // CHECK-SAME: permutation = array<i64: 1, 0>
 // CHECK: wafer.tile.store
 // CHECK-LABEL: wafer.group_to_tile_region group @collective_group#0
-// CHECK: failure collective lowering requires placement/local-rank facts
+// CHECK: failure collective lowering requires endpoint/local-rank facts
 // CHECK-LABEL: wafer.group_to_tile_region group @static_slice_support_op#0
 // CHECK: memref.subview
 // CHECK-SAME: [0] [4] [1]

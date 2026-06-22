@@ -34,7 +34,7 @@ SPM、DDR allocation、layout materialization、DTE、runtime package 或 launch
 
 非目标：
 
-- 不选择 physical tile placement。
+- 不选择 physical tile endpoint mapping。
 - 不表达 Wafer memory attr、SPM offset、runtime allocation resource、
   runtime handle 或 device physical address。
 - 不引入 Wafer 私有 tensor constant op。

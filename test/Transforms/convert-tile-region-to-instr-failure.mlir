@@ -16,4 +16,4 @@ func.func @reject_tile_comm(%boundary: memref<4xf16, #wafer.memory<ddr, tensor>>
   return
 }
 
-// CHECK: tile communication lowering requires placement/local-rank facts
+// CHECK: tile communication lowering requires endpoint/local-rank facts

@@ -96,7 +96,7 @@
   或 Wafer 私有 high-level op。`check-wafer` 的大量 lit case 主要来自 Dialect/Transforms/Frontend/
   Pipelines/Integration/Tools，不代表旧 Python post-SPMD helper 仍存在。
 - post-SPMD collective 先进入 Wafer LinalgExt-style tensor collective handoff，和 `linalg` 一起进入
-  group/tiling；`wafer.tile.*` communication 只能在 `wafer.tile.region` / SPM storage values / placement 明确后
+  group/tiling；`wafer.tile.*` communication 只能在 `wafer.tile.region` / SPM storage values / endpoint resource facts 明确后
   materialize。StableHLO collective 直降 `wafer.tile.*` communication 且靠 `unrealized_conversion_cast` 桥 tensor
   和 storage 的 pass/test 已移除；不要在 group 输入侧恢复这种入口。
 - R2.4 tensor collective handoff 的主线验证入口是同一个 Wafer program pipeline：
@@ -180,8 +180,8 @@
   tile offsets/sizes candidate evaluation lowering 的 DDR `memref.subview` producer；instruction lowering
   仍不能根据 whole-boundary shape 自己恢复 subview，closed-loop traversal / tile-shape search 归
   candidate-selection。
-- SPM offset assignment 的 planned offset fact 不属于 `#wafer.memory<spm, layout>` 本身，
-  也不属于 logical `wafer.placement.map`。planning fact 当前挂在 SPM `memref.alloc` 的 `wafer.spm.offset`
+- SPM offset assignment 的 planned offset fact 不属于 `#wafer.memory<spm, layout>` 本身。
+  planning fact 当前挂在 SPM `memref.alloc` 的 `wafer.spm.offset`
   attr 上，值为 `#wafer.spm_offset<offset>`；arena 作用域是单个 `wafer.tile.region`，不同 tile-region
   可以复用相同 offset。`size`、alignment 和 bank span 必须由
   `computeWaferPhysicalTensorInfo(memrefType)`、target policy 和 offset 重算，所以 `Cx/NCx` padding、

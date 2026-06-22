@@ -98,7 +98,7 @@ Pipeline position:
   pipeline 重放 frontend/SPMD/local-compute-normalization 后进入 logical group formation gate。局部 MLIR pass
   只作为实现索引和单元测试入口，不能替代 program pipeline completion gate。
 - Explicit non-goals:
-  不做 physical placement、tile shape search、scheduled loop materialization、
+  不做 physical endpoint mapping、tile shape search、scheduled loop materialization、
   SPM allocation、DDR demand analysis、DTE schedule、`wafer.tile.*` communication materialization、
   C ABI 或 package emission。
 - Completion gate:
@@ -140,7 +140,7 @@ Stage 0 接收上游 lowering 传下来的 local tensor IR。普通 compute 仍�
 `arith` / `math` / `scf` 表达 shape 和计算。SPMD partition 后产生的 StableHLO collective
 应先规整成 Wafer LinalgExt-style tensor collective op：这类 op 是 tensor-level handoff，
 实现 DPS / tiling interface 和 collective verifier，不是 `wafer.tile.*` communication，也不拥有 SPM buffer、
-DTE token 或 physical placement。
+DTE token 或 physical endpoint mapping。
 
 Stage 0 仍没有 group 边界或 tile-local lifetime，也不引入 lower-level Wafer memory /
 compute / communication op。
@@ -299,7 +299,7 @@ group planner 消费 logical group，输出 scheduled group。它做的事包括
 - 调用每个 op 的 tiling interface 计算该 traversal tile 对应的完整 operand demand、
   result slice 和 tile-local resource 需求。
 - 记录 per-op tiling interface 返回的可选 internal split、tile-local
-  temporary/workspace/accumulator liveness 和 consumer placement。
+  temporary/workspace/accumulator liveness 和 consumer location。
 - 用显式 tiled IR、SSA use-def 和控制流表达普通 compute/data dependence。
 - 只有当 drain、wait、barrier、communication 这类约束必须跨阶段保留时，才在能稳定解释
   它的 IR 层 materialize 成明确的 op/effect；planner 的中间计划和 cost/resource
@@ -710,7 +710,7 @@ scheduled group 必须来自一个已经被下游 legality analysis / resource p
 6. 如果找不到合法且成本可接受的 plan，拆分或拒绝该 logical group。
 
 实际 SPM allocation 和 DDR demand/memory planning 都是必要的，因为下游指令、layout 和
-boundary placement 会改变真实需求：
+boundary location 会改变真实需求：
 
 - NE、Reduce、Pool、UnPool 这类 aligned-only 指令要求 operand/result 已经 materialize 成
   aligned physical layout；2D 通常对应 `Cx`，rank 大于 2 通常对应 `NCx`。
@@ -791,7 +791,7 @@ SPM planning、layout assignment、DDR memory planning 和 compute/movement lega
   candidate-selection driver search space。
 
 committed materialization 只把 candidate-selection driver 选中的 passing candidate commit 回主 IR，形成 committed `wafer.tile.region` /
-instruction-level boundary。placement 只保存不能从 local IR 重算的 rank/tile mapping；ABI/package/runtime
+instruction-level boundary。endpoint projection 只保存不能从 local IR 重算的 rank/tile mapping；ABI/package/runtime
 在使用点从已经通过 candidate gates 的 layout/instruction/SPM/DDR accepted facts 重算 resource view；
 它们不能成为
 第一次发现 SPM 放不下、layout 不合法或 DDR demand 不可接受的阶段。若 analysis/acceptance gates
@@ -1114,7 +1114,7 @@ Transform script replay 不能绕过 verifier、layout planning、SPM allocation
 - 下游 resource cost model。
 - group formation。
 - tile size search。
-- multi-tile placement。
+- multi-tile endpoint projection。
 - DTE/FSM communication planning。
 - compute/communication overlap planning。
 - hardware lowering。

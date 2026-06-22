@@ -60,7 +60,7 @@ Pipeline position:
   和 range-end verification。
 - Output artifact / IR:
   same instruction-level IR with offset-only `wafer.spm.offset` planning facts on SPM memref definitions，或结构化
-  allocation failure reason；后续 ABI/LLVM、package manifest 和 runtime adapter 直接从该 fact、memref use-def、placement 和 view relation
+  allocation failure reason；后续 ABI/LLVM、package manifest 和 runtime adapter 直接从该 fact、memref use-def、endpoint facts 和 view relation
   按需派生 launch/resource 与 ABI address-range 参数，不再经过 placed memref / descriptor 中间层。
 - Downstream consumer:
   DDR memory planning、closed-loop candidate driver、ABI/LLVM lowering、
@@ -321,7 +321,7 @@ Interval {
 - lifetime span 长优先。
 - materialization temp 靠后，方便失败时移动 cut。
 
-6. lowest-gap placement：
+6. lowest-gap allocation：
 
 - 找满足 alignment 的最低可用 offset。
 - 不能与 lifetime overlap 的已放置 interval 重叠。
@@ -510,7 +510,7 @@ SPM / tile-region verifier 至少检查：
 ## 14. 与 Layout / Group 的关系
 
 全局文档边界见 `tasks/01-architecture.md` 第 8 节。SPM allocation 只回答
-tile-region IR 的 `#wafer.memory<spm, *>` placement 是否可行，并把失败原因返回 group/layout planner。
+tile-region IR 的 `#wafer.memory<spm, *>` allocation 是否可行，并把失败原因返回 group/layout planner。
 闭环顺序：
 
 ```text
@@ -536,7 +536,7 @@ closed-loop planner，不在 allocator 内部用名字或 case 猜测。
 
 这些机制有价值，但不进入 V0 主路径。进入条件必须明确：
 
-- 多 pool placement：当 ordinary pool、communication staging、runtime-visible buffer 的 reserved
+- 多 pool allocation：当 ordinary pool、communication staging、runtime-visible buffer 的 reserved
   range 和 lifetime 约束稳定后引入；在此之前用单 pool + reserved range 更容易验证。
 - linear scan allocator：当 `wafer.tile.region` 大多是线性 schedule，且 greedy arena 编译成本或
   fragmentation 成为问题时引入。

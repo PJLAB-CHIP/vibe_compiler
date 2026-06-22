@@ -54,7 +54,7 @@ source model / exported program / pre-exported StableHLO
 - Shardy/GSPMD 负责全局张量的逻辑切分和 collective 插入。
 - Wafer compiler 先从 target topology 中 materialize SPMD 可见的 `wafer.execution.mesh`。默认
   `all_available` policy 使用所有 available endpoint；显式 override 才保存 endpoint tuples。
-  SPMD 消费这个 valid mesh 做逻辑切分；后续 placement 只投影已经存在的 logical rank / shard /
+  SPMD 消费这个 valid mesh 做逻辑切分；后续 resource projection 只投影已经存在的 logical rank / shard /
   block facts，不能事后补坏 tile 或重做 sharding。
 - SPMD 后的 StableHLO collective 先规整成 tensor-level collective，和 local compute 一起进入
   group/tiling；到 `wafer.tile.region` / SPM buffer materialize 之后，再 lowering 到 tile
@@ -70,7 +70,7 @@ Wafer 是基于 MLIR 的编译器。每一层 IR 只携带自己能稳定解释�
 | --- | --- | --- | --- |
 | Frontend | StableHLO, func, tensor, arith | 模型语义、shape、dtype、constant/weight program | tile id、SPM、layout materialization、runtime launch |
 | Target topology / execution mesh | `wafer.target.topology`, `wafer.execution.mesh` | regular card/tile grid、card interconnect kind、unavailable endpoint exceptions、SPMD rank-domain policy、optional explicit endpoints | tensor sharding、SPM/DDR offset、runtime allocation、DTE schedule |
-| Sharding | StableHLO + Shardy/SDY | global sharding、logical mesh、collective 语义；logical mesh 形状来自 valid execution mesh | physical tile placement、DTE protocol、SPM buffer |
+| Sharding | StableHLO + Shardy/SDY | global sharding、logical mesh、collective 语义；logical mesh 形状来自 valid execution mesh | physical endpoint mapping、DTE protocol、SPM buffer |
 | Local compute normalization | Linalg, Tensor, SCF, Arith, Math, Wafer LinalgExt-style tensor collective ops | structured loop、indexing map、tile slice、producer/consumer、DPS/in-place、transformer block composite pattern、post-SPMD tensor collective semantics | SPM address、`Cx/NCx` storage、worker id、packet field、tile communication / DTE protocol |
 | Group scheduling | `wafer.group` | fusion boundary、traversal schedule、tiled tensor IR、abstract resource demand | raw register field、DTE node id、physical SPM slot、C ABI call |
 | Tile execution | `wafer.tile.region`, Wafer-tagged `memref`, target-abstract `wafer.tile.*` ops | bufferized tile-local execution scope、memory/liveness、movement/compute/sync ordering、layout contract | tensor fusion decision、host launch/package ABI |
@@ -169,7 +169,7 @@ source model / exported program / pre-exported StableHLO
 
 不负责：
 
-- 不表达 Wafer tile placement。
+- 不表达 Wafer tile endpoint mapping。
 - 不表达 Wafer memory attr、physical layout marker、DTE、NCC queue、worker、wait/drain。
 - 不把 runtime launch 或 package ABI 写进模型 IR。
 
@@ -183,7 +183,7 @@ V0 策略：
   importer facts。
 - v0 先接受静态或有限动态 shape；任意 PyTorch eager 动态行为不是 V0 目标。
 - 支持范围由 exporter program 的合法语义、Wafer 硬件能力和当前 IR contract 决定；当前某个后续
-  lowering / placement / runtime pass 尚未实现，不能反向成为 frontend、SPMD 或 planner 的不支持
+  lowering / endpoint / runtime pass 尚未实现，不能反向成为 frontend、SPMD 或 planner 的不支持
   理由。若硬件可表达但 IR/lowering 未覆盖，必须补 IR contract 或下游恢复任务。
 
 Frontend program 的模型导入、第三方依赖组织、constant/weight、sharding annotation 和验证合同见
@@ -245,7 +245,7 @@ V0 collective 语义：
 Shardy / SPMD 的 logical mesh、partition 和 collective 合同见
 `tasks/03-shardy-spmd.md`。
 
-### 3.3 Placement Stage
+### 3.3 Topology / Execution Mesh Stage
 
 主体 IR / Dialect：
 
@@ -294,7 +294,7 @@ mesh(card_y, card_x, tile_y, tile_x)
 - unavailable tile 或断开的 available component 必须在 SPMD 前通过 topology/execution mesh verifier
   暴露，不能让 SPMD 在无效 abstract mesh 上先切分。
 
-Placement 的 accepted mapping、good-tile/PG metadata、verifier 和与 launch/comm 的接口见
+Topology / execution mesh 的 accepted endpoint view、unavailable endpoint metadata、verifier 和与 launch/comm 的接口见
 `tasks/04-topology-device-mesh-shard-binding.md`。
 
 ### 3.4 Local Compute Normalization Stage
@@ -347,7 +347,7 @@ tensor-level Linalg/Tensor/SCF/Arith/Math local shard program
 - Linalg 是结构化计算表达，不是最终硬件计划。
 - 历史 backend 观察只能作为实现证据或反例，不决定当前 IR 边界。
 - StableHLO collective 不在本阶段直接 lower 成 `wafer.tile.*` communication。需要跨 tile 的通信语义先作为
-  tensor collective 进入 group/tiling；physical communication 在 storage 和 placement 明确后
+  tensor collective 进入 group/tiling；physical communication 在 storage 和 endpoint facts 明确后
   materialize。
 
 Local compute normalization 的 StableHLO-to-structured-IR 合同、transformer block 所需
@@ -489,7 +489,7 @@ Stream/mailbox 兼容路径，则需要把它作为 control/compatibility plane 
 `wafer.tile.*` communication 的 collective-level op、point-to-point unicast op、token/effect、Direct DTE V0
 contract、collective lowering 和 verifier 见
 `tasks/13-communication.md`。上游 StableHLO/Shardy collective
-只提供 logical collective 语义；placement、p2p schedule、DTE resource 和 runtime completion
+只提供 logical collective 语义；endpoint projection、p2p schedule、DTE resource 和 runtime completion
 分别在各自 IR 层级 materialize。
 
 ### 3.9 Launch, LLVM, C ABI, Package, Runtime Stage
@@ -562,18 +562,18 @@ WaferRuntimeAdapter cluster launch
 
 设计重点：
 
-- Placement metadata。
+- Endpoint/resource metadata。
 - `N` 维切分。
 - weights replicated。
 - input/output slice metadata。
-- per-tile args 和 block id。
+- block id 和 local slice binding。
 - host-side output 拼接或按分片读取。
 
 验收标准：
 
 - package metadata 中的 tile endpoint、block id、local slice metadata 和 available/excluded tile
   信息来自 `wafer.target.topology`、`wafer.execution.mesh`、`wafer.shard.binding` 和薄
-  launch/block binding，不维护第二份 placement 事实源。
+  launch/block binding，不维护第二份 endpoint mapping 事实源。
 - 不依赖 `TsmGetDeviceNum/List/Properties` 这类 discovery stub 得到 capability。
 - completion 来自 HPGR command/module/stream completion、legacy `TsmRun` synchronous completion，或 kcore 内显式 CSR local drain 加 host runtime completion。
 
@@ -623,7 +623,7 @@ WaferRuntimeAdapter cluster launch
 
 - 把 SPMD partition 后的 StableHLO collective 规整成 Wafer LinalgExt-style tensor collective，并在
   group/tiling、tile_region/SPM materialization 后 lowering 到 `wafer.tile.*` communication 或 explicit p2p schedule。
-- 对接 group、placement 和 comm planner。
+- 对接 group、endpoint projection 和 comm planner。
 
 范围：
 
@@ -664,7 +664,7 @@ WaferRuntimeAdapter cluster launch
 范围：
 
 - 第一版可以先从单 batch、固定 sequence/head/hidden shape 开始。
-- 可以先不做跨卡 placement、paged KV cache、prefill/decode serving 调度和全模型 pipeline。
+- 可以先不做跨卡 endpoint optimization、paged KV cache、prefill/decode serving 调度和全模型 pipeline。
 - 如果 tensor parallel 需要 collective，必须先满足 p2p、single-card collective 和 partitioned
   StableHLO collective handoff 的 communication gate。
 
@@ -694,7 +694,7 @@ WaferRuntimeAdapter cluster launch
 | Local compute normalization | StableHLO dot/broadcast/reduce/shape op 到 structured tensor IR，softmax/norm/RoPE staged form |
 | `wafer.group` | group formation legality、traversal schedule、tiled tensor IR、tile-local demand diagnostics、Transform dump/replay |
 | `wafer.tile.region` | region verifier、memory/effect ownership、movement/compute/sync ordering、liveness diagnostics |
-| Layout materialization | physical layout propagation、aligned-only op legality、`#wafer.memory<ddr, tensor>` compact external boundary、materialization placement diagnostics |
+| Layout materialization | physical layout propagation、aligned-only op legality、`#wafer.memory<ddr, tensor>` compact external boundary、materialization location diagnostics |
 | DDR memory planning | external DDR view/descriptor validation、compiler-managed/resident/inter-group `memref.alloc` demand、accepted DDR offset facts、lifetime/reuse、default arena capacity、largest-contiguous/bandwidth diagnostics |
 | `wafer.spm` | Wafer memory attr、liveness、Cx/NCx C0 tail/fold、256B padding、bool bitpack、SPM range/reserved-slot diagnostics |
 | `wafer.tile.*` compute | 对已支持 op 建 wrapper golden packet，例如 CT unary/binary、NE GEMM、RDMA/WDMA contiguous end-address、DMA stride byte-unit 和 `iteration - 1` |
@@ -759,7 +759,7 @@ include/Wafer/
       CommOps.td
     Resource/
       SPMOps.td
-      PlacementOps.td
+      ShardOps.td
     Instr/
       SyncOps.td
     Runtime/
@@ -813,7 +813,6 @@ cmake/
 - `WaferSemanticLayoutAttr`
 - `WaferMemoryAttr`
 - `WaferTargetAttr`
-- `WaferPlacementAttr`
 - `WaferTileMappingAttr`
 - common op interfaces，例如 `WaferTilingInterface`、`WaferLayoutOpInterface`、
   `WaferLayoutMaterializationOpInterface`、`WaferResourceEffectInterface`
@@ -932,7 +931,7 @@ ModelImport/FrontendProgram
 
 V0 先保持统一 `wafer` dialect namespace，但公开 op mnemonic 只保留少量稳定 family：
 `wafer.group`、`wafer.tensor.*`、`wafer.tile.*`、`wafer.instr.*`、`wafer.target.*` /
-`wafer.execution.mesh`、过渡 `wafer.placement.*` 和 `wafer.launch`。
+`wafer.execution.mesh` 和 `wafer.launch`。
 
 ## 8. 子设计边界索引
 
@@ -946,7 +945,7 @@ V0 先保持统一 `wafer` dialect namespace，但公开 op mnemonic 只保留�
 | Local compute normalization | `tasks/05-local-compute-normalization.md` | 草案 | partitioned StableHLO 到 structured tensor IR、dot/broadcast/reduce/softmax/norm/RoPE staged form、StableHLO collective 到 Wafer LinalgExt-style tensor collective handoff | group scheduling、physical layout、SPM/DDR、tile communication、C ABI |
 | `wafer.group` | `tasks/06-group.md` | 草案 | group boundary、traversal schedule、tiled tensor IR、tile-local resource demand | SPM offset、physical layout marker、DTE resource、runtime package |
 | `wafer.tile.region` | `tasks/07-tile-region.md` | 草案 | bufferized tile-local execution scope、memory/effect ownership、movement/compute/sync ordering | tensor fusion、traversal selection、host launch/package ABI |
-| Layout materialization | `tasks/08-layout-materialization.md` | 草案 | physical layout domain、op layout constraint、constant storage transform、materialization placement/cost | SPM address、packet field、group fusion |
+| Layout materialization | `tasks/08-layout-materialization.md` | 草案 | physical layout domain、op layout constraint、constant storage transform、materialization location/cost | SPM address、packet field、group fusion |
 | SPM memory planning | `tasks/09-spm-memory-planning.md` | 草案 | `#wafer.memory<spm, *>` demand、liveness、range/alignment、accepted SPM offset facts | DDR offset facts、runtime allocation mapping、collective algorithm、host launch |
 | Compute / movement | `tasks/10-compute-movement.md` | 草案 | target-abstract compute/move op、layout/resource interface、instruction legality、issue/drain | tensor fusion、global sharding、host package format |
 | Instruction IR | `tasks/11-instruction-ir.md` | 草案 | `wafer.instr.*`、Wafer-tagged memref graph、issue family、memref read/write/issue effect | SPM/DDR offset、runtime mapping、raw packet、C ABI call、重复 storage IR |

@@ -818,7 +818,7 @@ LayoutEdge {
 - DPS / in-place tie 形成的 alias group。
 - loop-carried entry / yield value。
 - group input/output 和 host-visible writeback boundary。
-- materialization placement alternative 产生的新 value。
+- materialization location alternative 产生的新 value。
 
 约束来源：
 
@@ -840,7 +840,7 @@ accepted assignment 只通过 rewrite 后的 tile-local memref type、`wafer.til
 `wafer.tile.load` 的 use-def 和 result type 体现。domain frontier、cost breakdown、备选 cut、失败原因
 都属于 diagnostic / debug dump，不能成为下游 pass 依赖的 IR 事实。
 
-### 6.1 Materialization Cut Placement Algorithm
+### 6.1 Materialization Cut Location Algorithm
 
 materialization cut 的核心问题是同时决定两件事：
 
@@ -848,7 +848,7 @@ materialization cut 的核心问题是同时决定两件事：
 layout assignment:
   每个 tile-local SSA value / alias group 选择一个 physical layout label
 
-cut placement:
+cut location:
   如果 producer value 和 consumer operand 的 selected layout 不一致，
   在哪条 materializable edge 上插入 wafer.tile.materialize_layout
 ```
@@ -913,7 +913,7 @@ V0 不默认上 ILP。先用 deterministic greedy 生成一个初始 assignment�
 
 这个 assignment 只产生 layout alternative，不代表已经可 lower。
 
-#### 6.1.4 Cut Placement Rules
+#### 6.1.4 Cut Location Rules
 
 给定 selected layout 后，只在 layout 不一致的 materializable edge 上放 cut。局部规则：
 
@@ -1159,9 +1159,9 @@ V0 不做全局最优，但不能只做一次贪心选择。主路径是 determi
      runtime materialize。
    - 对 host-visible output，只在最终 writeback boundary 前 materialize 回 compact。
 
-4. 插 materialization placement alternative
+4. 插 materialization location alternative
 
-   只在 producer/consumer selected layout 不一致的 edge 上插 alternative。cut placement 使用第
+   只在 producer/consumer selected layout 不一致的 edge 上插 alternative。cut location 使用第
    6.1.4 节的规则。多 use producer 的常见策略：
 
    - 若 consumers 都能接受 aligned，保持 aligned。
@@ -1212,10 +1212,10 @@ V0 不做全局最优，但不能只做一次贪心选择。主路径是 determi
    在 accepted IR 上运行 layout materialization cleanup。无条件 fold 直接删除冗余 op；改变 lifetime
    或 boundary layout 的 rewrite 必须重新通过 SPM allocation 和 DDR memory planning。
 
-10. Placement / launch / ABI handoff
+10. Endpoint / launch / ABI handoff
 
    cleanup 后交给 topology/execution-mesh/shard-binding contract、ABI/LLVM lowering 和 package manifest。
-   它们从 committed Wafer-tagged memref、accepted offset facts、view relation、placement、layout
+   它们从 committed Wafer-tagged memref、accepted offset facts、view relation、endpoint facts、layout
    helper 和按需 resource view 派生 address/range/stride 参数。layout planner 不直接生成 LLVM ABI，
    但必须保证 accepted layout 都能被这个派生过程合法实现。
 

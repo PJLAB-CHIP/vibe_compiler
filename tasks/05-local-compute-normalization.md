@@ -257,7 +257,7 @@ interface 暴露统一的 collective facts 和 tiling contract。R2.4 的落地�
 destination-style tensor op + MLIR `TilingInterface` + `WaferTilingInterface` +
 `WaferTensorCollectiveOpInterface`；它必须让 group / tiling 边界能直接发现 collective 的 tensor
 operand、destination、result、rank group、axis/slot、combiner 和 communication effect。后续
-R3/R6 在 tile shape、SPM buffer 和 placement 明确后，再把 tiled tensor collective materialize
+R3/R6 在 tile shape、SPM buffer 和 endpoint facts 明确后，再把 tiled tensor collective materialize
 到 `wafer.tile.*` communication 或 explicit p2p schedule。
 
 R2.4 V0 interface contract：
@@ -300,7 +300,7 @@ LinalgExt-style tensor collective 层；`tensor_collective` 是 Wafer dialect �
 - `all_to_all`：同时表达 split dimension 和 concat dimension 的 slot 映射；每个 slot 的
   source/destination slice 必须可验证。
 - `collective_permute`：tensor slice shape 不变；source-target pair 是 communication effect 和
-  placement input，不在本层选择 physical peer。
+  endpoint-projection input，不在本层选择 physical peer。
 
 该层输出仍是 tensor IR，可以和 `linalg.matmul`、`linalg.generic`、`linalg.reduce` 等一起进入
 `wafer.group`。例如：
@@ -317,7 +317,7 @@ LinalgExt-style tensor collective 层；`tensor_collective` 是 Wafer dialect �
 %y = linalg.generic ... ins(%red : tensor<...>) ...
 ```
 
-这里的 `wafer.tensor.*` 不拥有 physical placement、SPM buffer 或 DTE resource。到
+这里的 `wafer.tensor.*` 不拥有 physical endpoint mapping、SPM buffer 或 DTE resource。到
 `wafer.tile.region` / SPM materialization 之后，tiled tensor collective 才会变成 `wafer.tile.*` communication ops
 或 explicit p2p schedule。
 

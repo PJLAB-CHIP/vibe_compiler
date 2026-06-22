@@ -1412,7 +1412,7 @@ public:
   matchAndRewrite(OpT op, mlir::PatternRewriter &rewriter) const final {
     return failPattern(rewriter, op, failureReason,
                        "tile communication lowering requires "
-                       "placement/local-rank facts");
+                       "endpoint/local-rank facts");
   }
 
 private:

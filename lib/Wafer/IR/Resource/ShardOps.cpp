@@ -11,6 +11,29 @@
 using namespace wafer;
 using namespace wafer::detail;
 
+static mlir::FailureOr<int64_t>
+getExecutionMeshRankCount(ShardBindingOp binding, mlir::ModuleOp moduleOp) {
+  ExecutionMeshOp meshOp =
+      moduleOp.lookupSymbol<ExecutionMeshOp>(
+          binding.getExecutionMeshAttr().getValue());
+  if (!meshOp) {
+    binding.emitOpError("references unknown execution mesh symbol @")
+        << binding.getExecutionMeshAttr().getValue();
+    return mlir::failure();
+  }
+
+  int64_t rankCount = 1;
+  for (int64_t dim : meshOp.getShapeAttr().asArrayRef()) {
+    int64_t next = 0;
+    if (dim <= 0 || !checkedMul(rankCount, dim, next)) {
+      binding.emitOpError("references execution mesh with invalid rank count");
+      return mlir::failure();
+    }
+    rankCount = next;
+  }
+  return rankCount;
+}
+
 mlir::LogicalResult ShardBindingOp::verify() {
   mlir::ModuleOp moduleOp = getOperation()->getParentOfType<mlir::ModuleOp>();
   if (!moduleOp)
@@ -35,9 +58,11 @@ mlir::LogicalResult ShardBindingOp::verify() {
     return emitOpError("referenced function argument must be a static ranked "
                        "tensor");
 
-  int64_t logicalRankCount = getLogicalRankCountAttr().getInt();
-  if (logicalRankCount <= 0)
-    return emitOpError("logical rank count must be positive");
+  mlir::FailureOr<int64_t> executionMeshRankCount =
+      getExecutionMeshRankCount(*this, moduleOp);
+  if (mlir::failed(executionMeshRankCount))
+    return mlir::failure();
+  int64_t rankCount = *executionMeshRankCount;
 
   llvm::ArrayRef<int64_t> globalShape = getGlobalShapeAttr().asArrayRef();
   llvm::ArrayRef<int64_t> localShape = getLocalShapeAttr().asArrayRef();
@@ -59,11 +84,12 @@ mlir::LogicalResult ShardBindingOp::verify() {
   }
 
   llvm::ArrayRef<int64_t> shardRanks = getShardRanksAttr().asArrayRef();
-  if (static_cast<int64_t>(shardRanks.size()) != logicalRankCount)
-    return emitOpError("shard_ranks must contain one entry per logical rank");
+  if (static_cast<int64_t>(shardRanks.size()) != rankCount)
+    return emitOpError(
+        "shard_ranks must contain one entry per execution mesh rank");
 
   int64_t expectedSliceEntries = 0;
-  if (!checkedMul(logicalRankCount, tensorRank, expectedSliceEntries))
+  if (!checkedMul(rankCount, tensorRank, expectedSliceEntries))
     return emitOpError("shard slice arrays are too large to verify");
 
   llvm::ArrayRef<int64_t> shardOffsets = getShardOffsetsAttr().asArrayRef();
@@ -76,9 +102,9 @@ mlir::LogicalResult ShardBindingOp::verify() {
                        "contain one slice tuple per logical rank");
 
   llvm::DenseSet<int64_t> usedRanks;
-  for (int64_t ordinal = 0; ordinal < logicalRankCount; ++ordinal) {
+  for (int64_t ordinal = 0; ordinal < rankCount; ++ordinal) {
     int64_t rank = shardRanks[ordinal];
-    if (rank < 0 || rank >= logicalRankCount)
+    if (rank < 0 || rank >= rankCount)
       return emitOpError("shard logical rank is out of range");
     if (!usedRanks.insert(rank).second)
       return emitOpError("maps multiple shard slices to logical rank ") << rank;
@@ -112,34 +138,6 @@ mlir::LogicalResult ShardBindingOp::verify() {
   if (duplicateBinding)
     return emitOpError("duplicates shard binding for referenced function "
                        "argument");
-
-  bool shardRankMismatch = false;
-  int64_t existingShardRankCount = 0;
-  moduleOp.walk([&](ShardBindingOp binding) {
-    if (binding.getOperation() == getOperation())
-      return;
-    existingShardRankCount = binding.getLogicalRankCountAttr().getInt();
-    if (existingShardRankCount != logicalRankCount)
-      shardRankMismatch = true;
-  });
-  if (shardRankMismatch)
-    return emitOpError("shard binding logical rank count ")
-           << logicalRankCount
-           << " does not match existing shard binding logical rank count "
-           << existingShardRankCount;
-
-  bool placementRankMismatch = false;
-  int64_t placementRankCount = 0;
-  moduleOp.walk([&](PlacementMapOp placementMap) {
-    placementRankCount = placementMap.getLogicalRankCountAttr().getInt();
-    if (placementRankCount != logicalRankCount)
-      placementRankMismatch = true;
-  });
-  if (placementRankMismatch)
-    return emitOpError("shard binding logical rank count ")
-           << logicalRankCount
-           << " does not match placement map logical rank count "
-           << placementRankCount;
 
   return mlir::success();
 }

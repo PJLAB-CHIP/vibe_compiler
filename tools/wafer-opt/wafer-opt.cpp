@@ -40,6 +40,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
+#include <optional>
 #include <string>
 
 #ifdef WAFER_ENABLE_SHARDY
@@ -79,6 +80,9 @@ bool hasWaferProgramPipelineRequest(int argc, char **argv) {
 }
 
 #if defined(WAFER_ENABLE_STABLEHLO) && defined(WAFER_ENABLE_SHARDY)
+bool ensureTargetTopologyAndExecutionMesh(mlir::ModuleOp module,
+                                          int64_t executionMeshRanks);
+
 mlir::OwningOpRef<mlir::ModuleOp> parseModule(llvm::StringRef filename,
                                               mlir::MLIRContext &context) {
   mlir::ParserConfig config(&context);
@@ -87,7 +91,8 @@ mlir::OwningOpRef<mlir::ModuleOp> parseModule(llvm::StringRef filename,
 
 mlir::OwningOpRef<mlir::ModuleOp> parseAndVerifyStableHLOProgramDir(
     llvm::StringRef programPath, mlir::MLIRContext &context,
-    wafer::frontend::FrontendProgramVerificationResult *result = nullptr) {
+    wafer::frontend::FrontendProgramVerificationResult *result = nullptr,
+    std::optional<int64_t> executionMeshRanks = std::nullopt) {
   llvm::SmallString<256> mlirPath(programPath);
   llvm::sys::path::append(mlirPath, "functions", "forward.mlir");
 
@@ -95,6 +100,10 @@ mlir::OwningOpRef<mlir::ModuleOp> parseAndVerifyStableHLOProgramDir(
   if (!module)
     return {};
   if (mlir::failed(mlir::verify(*module)))
+    return {};
+
+  if (executionMeshRanks &&
+      ensureTargetTopologyAndExecutionMesh(*module, *executionMeshRanks))
     return {};
 
   if (mlir::failed(wafer::frontend::verifyAndMaterializeStableHLOProgramDir(
@@ -516,7 +525,8 @@ int runStableHLOSPMDStage(llvm::StringRef inputProgramDir,
 
   wafer::frontend::FrontendProgramVerificationResult result;
   mlir::OwningOpRef<mlir::ModuleOp> outputModule =
-      parseAndVerifyStableHLOProgramDir(outputProgramDir, context, &result);
+      parseAndVerifyStableHLOProgramDir(outputProgramDir, context, &result,
+                                        executionMeshRanks);
   if (!outputModule)
     return 1;
   if (ensureTargetTopologyAndExecutionMesh(*outputModule, executionMeshRanks))

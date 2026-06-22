@@ -5,7 +5,7 @@
 本文定义 `wafer.launch`、runtime package、host runtime adapter 和 completion contract。该边界
 消费 committed instruction IR、topology/execution-mesh/shard-binding contract、薄 launch/block binding、
 按需重算的 resource view 以及 ABI/LLVM
-lowering 产物，负责把 device code、resource metadata、placement、DDR binding、constant storage
+lowering 产物，负责把 device code、resource metadata、endpoint binding、DDR binding、constant storage
 bytes 和 launch arguments 组织成可执行单元。runtime allocation/import/query 是 runtime adapter 在
 package load / launch 时执行的绑定动作，不是独立 compiler IR materialization stage。
 
@@ -23,7 +23,7 @@ package load / launch 时执行的绑定动作，不是独立 compiler IR materi
 目标：
 
 - 引入 `wafer.launch` 作为 host/device invocation boundary。
-- 组织 RISC-V kcore device code、launch signature、placement、resource metadata、DDR binding
+- 组织 RISC-V kcore device code、launch signature、endpoint/resource metadata、DDR binding
   contract、constant storage bytes 和 optional profiling/control metadata。
 - 明确 HPGR、KMD 和 legacy `TsmRun` fallback 的职责分层。
 - 给 runtime allocation failure、stub shielding、completion source 和 status/profiling 建立可验证
@@ -89,11 +89,11 @@ Pipeline position:
   package emission 必须接在 committed instruction -> topology/execution-mesh/shard-binding -> ABI/LLVM lowering 之后，
   不以显式 manifest fixture 或 C stub table 作为主线入口。
 - Explicit non-goals:
-  不重新做 placement、tile search、layout、SPM/DDR planning、communication schedule 或 ABI lowering；
+  不重新做 endpoint projection、tile search、layout、SPM/DDR planning、communication schedule 或 ABI lowering；
   不把 legacy bootparam/TLV 字段反向提升为 compiler IR 语义。
 - Completion gate:
   manifest 从当前 pipeline 产物自动导出并 roundtrip，记录真实 object/program id、entrypoint、ABI
-  version、placement/resource metadata；runtime adapter gate 能拒绝 stub completion 和不满足 contract
+  version、endpoint/resource metadata；runtime adapter gate 能拒绝 stub completion 和不满足 contract
   的 allocation/binding。
 ```
 
@@ -182,26 +182,13 @@ call/packet emission metadata、device-code program id 和 runtime completion so
 constant 必须引用 launch signature input，且不能引用 output。validator 显式拒绝已知 stub
 completion fence，例如 `TsmDeviceSynchronize` / `TsmLaunch`，因此 package correctness 不能只依赖
 legacy stub path 成功返回。`tools/wafer_emit_c_abi_stub.py` 只作为 tool-unit adapter，从显式 manifest
-fixture 生成可被 C compiler 做 syntax compile 的 ABI emission table、tile launch-arg table、
-workspace buffer table 和 resident constant table；它不代表当前 IR pipeline 已生成 package，也不代表
+fixture 生成可被 C compiler 做 syntax compile 的 ABI emission table、workspace buffer table 和
+resident constant table；它不代表当前 IR pipeline 已生成 package，也不代表
 真实 device code 已可执行。
 
-P4.4 起，C ABI stub 还从 endpoint metadata 生成 per-tile launch arg table：
-
-```c
-typedef struct {
-  uint32_t logical_rank;
-  uint32_t block_id;
-  uint32_t card_y;
-  uint32_t card_x;
-  uint32_t tile_y;
-  uint32_t tile_x;
-} wafer_tile_launch_arg_t;
-```
-
-该表只把已验证的 package endpoint metadata materialize 成 runtime 可消费的 tile-specific
-arguments；它不反向定义 tensor semantics，也不包含 runtime handle、physical DDR address、SPM offset
-或 DTE packet。
+当前 C ABI stub 不再从 manifest 生成 tile-specific launch argument table。endpoint / block metadata 必须由
+后续 topology/execution-mesh/shard-binding resource view 和薄 launch/block binding 派生，不能由
+manifest 维护第二份 endpoint schema。
 
 历史 `--emit-single-tile-matmul`、`--emit-multi-tile-no-comm-matmul`、
 `--emit-single-tile-elementwise` 和 `--emit-local-transformer-block` fixed emitter 已删除。后续 package
@@ -210,13 +197,12 @@ topology/execution-mesh/shard-binding contract、薄 launch/block binding、
 按需重算的 resource view、ABI/LLVM lowering artifact 和 `wafer.launch` boundary 自动导出 manifest；
 不能恢复独立固定 emitter 作为完成证明。
 
-package manifest 可以序列化 runtime 需要的 derived endpoint section，但 canonical facts 仍在
+package manifest 后续可以序列化 runtime 需要的 derived endpoint section，但 canonical facts 仍在
 compiler IR 中：
 
 - topology snapshot / profile id、availability assumption 和 selected mesh id。
 - per-rank `logical_rank`、physical endpoint coordinate 和 `block_id`。
-- per-rank `local_shards`，每个 shard 引用 launch signature argument 或 result index，并记录
-  `offsets`、`sizes`、`strides`；名称只能用于诊断/显示，不作为绑定协议。
+- per-rank launch-visible shard view 来自 `wafer.shard.binding`；名称只能用于诊断/显示，不作为绑定协议。
 
 这些字段是 package / launch metadata，不改变 tensor IR 语义，也不成为 `wafer.execution.mesh` /
 `wafer.target.topology` 的第二事实源。validator 检查 manifest rank endpoint table 能由 execution mesh

@@ -59,19 +59,16 @@ PyTorch/XLA StableHLO Wafer program directory
 
 ## 当前 Active
 
-**shard-binding migration**
+**communication mesh consumer**
 
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  partitioned StableHLO program、parameter shard metadata、`wafer.target.topology` 和
-  `wafer.execution.mesh` valid SPMD rank-domain policy。
+  tiled tensor collective、`wafer.execution.mesh`、`wafer.target.topology`、local-rank/buffer facts。
 - Current stage responsibility:
-  将 `wafer.shard.binding` 迁移为引用 `wafer.execution.mesh`；rank coverage 对 execution mesh
-  校验，不再把 `logical_rank_count` 或 `wafer.placement.map` 当成 rank-domain 根事实源。
+  peer、route legality 和 p2p schedule 从 topology/execution mesh 查询；不恢复旧 rank->tile side path。
 - Output artifact / IR:
-  `wafer.shard.binding` 引用 execution mesh，保存 launch-visible tensor slice；rank domain 和
-  endpoint view 来自 `wafer.execution.mesh` + `wafer.target.topology`。
+  verifier-legal communication / Direct DTE resource / local-drain 边界。
 - Downstream consumer:
   communication verifier、ABI/LLVM lowering、package manifest 和 runtime adapter。
 - User-level driver / named pipeline:
@@ -80,9 +77,8 @@ Pipeline position:
   不执行 Shardy / XLA SPMD partition，不重新切分 tensor，不做 tile shape/layout/SPM/DDR planning，
   不生成 DTE route、ABI call、packet、object、package 或 runtime allocation object。
 - Completion gate:
-  `wafer.shard.binding` verifier 能解析 execution mesh，拒绝 rank coverage mismatch、duplicate rank、
-  out-of-mesh rank 和 local shard bounds 错误；后续 package/resource view 不再从
-  `wafer.placement.map` 恢复 rank domain。
+  communication lowering 消费 execution mesh/topology-derived endpoint view，不再依赖独立 rank->tile
+  transition op。
 ```
 
 ## 已可依赖的上游边界
@@ -102,9 +98,9 @@ Pipeline position:
 | 阶段 | 状态 | 输入 | 输出 / 完成 gate |
 | --- | --- | --- | --- |
 | execution-mesh SPMD integration | done | `wafer.target.topology` + requested logical mesh policy | `wafer.execution.mesh` valid SPMD rank-domain policy + derived/optional endpoint view；SPMD default seed 从 mesh rank count / axes 取数；旧 `tile-count` pass / pipeline fallback 已删除 |
-| shard-binding migration | active | partitioned StableHLO program + parameter shard metadata + `wafer.execution.mesh` | `wafer.shard.binding` 引用 execution mesh；rank coverage 对 mesh 校验，不再对 `wafer.placement.map` 校验 |
-| placement-map cleanup | pending | current `wafer.placement.map` transition op + `wafer.execution.mesh` + `wafer.target.topology` | 删除 `wafer.placement.map` 的长期 rank->tile / topology 职责；需要 block id 时只保留薄 launch/block binding，且不复制 rank->tile |
-| communication mesh consumer | pending | tiled tensor collective + execution-mesh/local-rank/buffer facts | peer、route legality 和 p2p schedule 从 topology/execution mesh 查询；结果 materialize 到 communication / Direct DTE resource / local-drain 边界 |
+| shard-binding migration | done | partitioned StableHLO program + parameter shard metadata + `wafer.execution.mesh` | `wafer.shard.binding` 引用 execution mesh；rank coverage 对 mesh 校验；IR 不再保存独立 rank count |
+| rank-endpoint cleanup | done | legacy rank->tile transition op / pass / package schema | op、pass、pipeline、comm verifier dependency 和 manifest endpoint schema 已删除；需要 block id 时只保留薄 launch/block binding，且不复制 rank->tile |
+| communication mesh consumer | active | tiled tensor collective + execution-mesh/local-rank/buffer facts | peer、route legality 和 p2p schedule 从 topology/execution mesh 查询；结果 materialize 到 communication / Direct DTE resource / local-drain 边界 |
 | ABI / LLVM lowering | pending | committed instruction IR + accepted SPM/DDR offset facts + topology/execution-mesh/shard-binding + launch-block binding + communication/sync lowering | LLVM dialect call sequence 或 `wafer_*` C ABI / packet builder input；按需重算 launch/resource view，固定参数单位、address domain、wait/completion policy 和 ABI version |
 | object + package manifest | pending | ABI/LLVM artifact + committed IR + topology/execution-mesh/shard-binding | object/program id、entrypoint、ABI version 和 IR-derived package manifest；endpoint/resource/constant metadata 由同一 resource view analysis 从 IR 重算 |
 | runtime adapter / board launch | pending | package + runtime adapter | allocate/import/query/bind runtime objects，launch program，验证 completion、错误传播和 board gate |
@@ -122,8 +118,5 @@ Pipeline position:
 
 ## 下一步
 
-1. 将 `wafer.shard.binding` 迁移为引用 `wafer.execution.mesh`。
-2. 清理 `wafer.placement.map`：长期只允许薄 launch/block binding 保留 block id，不复制 rank->tile、
-   topology dimensions、bad tile、codec 或 connectivity。
-3. 让 communication、ABI/LLVM 和 package manifest 从 topology/execution mesh、`wafer.shard.binding`、
+1. 让 communication、ABI/LLVM 和 package manifest 从 topology/execution mesh、`wafer.shard.binding`、
    薄 launch/block binding、accepted offsets 和 committed instruction IR 派生 launch-visible metadata。

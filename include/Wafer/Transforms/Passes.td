@@ -248,28 +248,4 @@ def PlanDDRMemoryPass
   ];
 }
 
-def PlanPlacementPass
-    : Pass<"wafer-plan-placement", "mlir::ModuleOp"> {
-  let summary =
-      "Plan deterministic topology-aware Wafer logical rank placement";
-  let dependentDialects = ["wafer::WaferDialect"];
-  let options = [
-    Option<"logicalRankCount", "logical-rank-count", "int64_t",
-           /*default=*/"0",
-           "Number of dense logical ranks that require physical placement; "
-           "0 infers from wafer.shard.binding or falls back to one rank">,
-    Option<"cardYCount", "card-y", "int64_t", /*default=*/"1",
-           "Number of Wafer card rows in the target topology">,
-    Option<"cardXCount", "card-x", "int64_t", /*default=*/"1",
-           "Number of Wafer card columns in the target topology">,
-    Option<"tileYCount", "tile-y", "int64_t", /*default=*/"4",
-           "Number of tile rows per card in the target topology">,
-    Option<"tileXCount", "tile-x", "int64_t", /*default=*/"4",
-           "Number of tile columns per card in the target topology">,
-    Option<"badTileIds", "bad-tile-ids", "std::string",
-           /*default=*/"\"\"",
-           "Comma-separated flat physical tile ids excluded from placement">
-  ];
-}
-
 #endif // WAFER_TRANSFORMS_PASSES_TD

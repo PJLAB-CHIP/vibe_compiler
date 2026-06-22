@@ -3,8 +3,8 @@
 状态：设计草案；范围：Wafer-owned Shardy propagation / XLA SPMD partition 和 post-SPMD tensor collective handoff。
 
 本文定义 Wafer compiler 中 Shardy / SPMD 阶段的边界。该阶段负责 global tensor 的逻辑切分、
-sharding propagation、SPMD partition 和 logical collective 语义；不负责 physical tile
-placement、DTE protocol、SPM buffer、layout materialization 或 runtime launch。
+sharding propagation、SPMD partition 和 logical collective 语义；不负责 physical endpoint
+mapping、DTE protocol、SPM buffer、layout materialization 或 runtime launch。
 
 没有用户 `mark_sharding` 或其它可解释 sharding seed 的 program 不是 frontend 错误，但也不应
 直接绕过 SPMD 去后段补切分。P2.S1 应在 SPMD 层应用 Wafer 默认 sharding policy：该 policy
@@ -29,13 +29,13 @@ local body 和通信算子插入仍交给 Shardy / XLA SPMD partitioner。
 - 复用 Shardy / SDY 表达 logical mesh、axis、sharding constraint 和 propagation。
 - 从 frontend program 中导入旧 sharding annotation。
 - 生成 partitioned StableHLO local program 和 logical collective ops。
-- 保留 collective group、rank、replica group 和 shard shape 这类后续 placement / comm lowering
+- 保留 collective group、rank、replica group 和 shard shape 这类后续 endpoint / comm lowering
   需要的语义事实。
 
 非目标：
 
 - 不选择 card/tile 物理坐标。
-- 不决定 tile-goodness、PG/bad-tile fallback 或 cluster placement。
+- 不决定 unavailable endpoint fallback 或 cluster endpoint override。
 - 不生成 `wafer.tile.*` communication DTE send/recv、FSM id、stream id、packet id 或 SPM sync slot。
 - 不做 group fusion、SPM allocation、DDR allocation 或 C ABI lowering。
 
@@ -62,7 +62,7 @@ partitioned StableHLO module
 SPMD 输出仍然是逻辑程序。它只说明“哪些 logical rank 之间需要通信”，不说明“哪两个 physical
 tile 通过哪个 DTE resource 通信”。当默认 policy 退化为 1 tile 或 replicated local body 时，
 partitioner 可以产生等价的 single-program / replicated-local StableHLO；这仍是 SPMD 层的输出，
-不是后段 placement/group 私自补 sharding。
+不是后段 endpoint projection / group 私自补 sharding。
 
 ### 2.1 Shardy Propagation / SPMD Program Contract
 
@@ -99,21 +99,21 @@ P2.S2 输出仍然是 logical partitioned program directory：
 
 没有用户 sharding seed 的 P2.F1 program 也进入 SPMD stage，但只允许由默认 policy 根据
 `wafer.execution.mesh` 补 Shardy / SDY 可解释的 function-input sharding seed。不能把“没有用户 sharding metadata”诊断成 P2.S1 verifier
-失败，也不能补 `wafer.spmd.*`、私有 JSON、名字约定或后段 placement fallback。
+失败，也不能补 `wafer.spmd.*`、私有 JSON、名字约定或后段 endpoint fallback。
 
 这些字段必须来自 IR、SDY attr、StableHLO collective metadata 或 importer 已 materialize 的
 exporter metadata。
 不能靠 pass side table、function name、parameter name 或 dump 文件名恢复。
 也不能通过 `wafer.spmd.*` module/function attrs、私有 JSON 或名字约定创造第二套 sharding /
-per-rank 协议。若需要保存不能从 StableHLO/SDY 重新推出、且影响 codegen 的 rank/placement
-事实，应在 placement / launch 边界定义明确 IR 或 metadata，而不是污染 SPMD program。
+per-rank 协议。若需要保存不能从 StableHLO/SDY 重新推出、且影响 codegen 的 rank/endpoint
+事实，应在 resource projection / launch 边界定义明确 IR 或 metadata，而不是污染 SPMD program。
 
-P2.S1 不能以下游当前 lowering、placement 或 runtime 尚未实现为“不支持”依据。若 Shardy/SPMD
+P2.S1 不能以下游当前 lowering、endpoint projection 或 runtime 尚未实现为“不支持”依据。若 Shardy/SPMD
 产出的合法语义能由 Wafer 硬件通信、存储或同步能力表达，但当前 Wafer IR 还没有清楚表示，P2.S1
 必须先补 op / attr / type / verifier contract，或在任务队列中明确把对应下游 lowering 作为恢复项。
 multi replica group、rank selection policy、shard slicing 和 collective metadata 都属于这类事实：
 它们应进入 per-rank program 或后续 handoff IR，而不是被静默退回 single group fixture，也不能
-因为某个 ring / placement pass 暂时未覆盖就被当成 SPMD 不支持。
+因为某个 ring / endpoint projection pass 暂时未覆盖就被当成 SPMD 不支持。
 
 P2.S1 只应拒绝两类输入：exporter / Shardy 产物本身非法或自相矛盾；或者目标硬件 / ABI 证据明确
 无法表达该语义，且无法由已有硬件能力组合实现。诊断必须定位到当前拥有该事实的层级。
@@ -148,7 +148,7 @@ P2.S2 工程 gate 必须把 XLA SPMD partitioner 或等价 local-body partitioni
   直接补 `wafer.tile.*` communication。
 - `wafer-lower-stablehlo-to-linalg` 消费 post-SPMD local body 或 no-sharding replicated local body，
   只做 StableHLO local compute -> Linalg/Tensor/Arith/Math；它不做 sharding propagation、SPMD
-  partition、placement、group、SPM/DDR 或 communication materialization。
+  partition、endpoint mapping、group、SPM/DDR 或 communication materialization。
 
 实现边界：
 
@@ -271,11 +271,11 @@ frontend export 路径必须运行在 P2.F1 同一套 importer Python / source-b
 来自 `third_party/pytorch-xla` 源码构建/安装，并复用本仓库固定的 LLVM/MLIR、StableHLO、Shardy
 和 XLA 版本；不得改用 prebuilt `torch_xla` wheel 或新下载另一套 XLA/LLVM。
 
-logical rank / local rank 的选择属于 partitioner invocation、program export 或后续 placement /
+logical rank / local rank 的选择属于 partitioner invocation、program export 或后续 endpoint /
 launch context。它不能通过 `wafer.spmd.global_rank`、`wafer.spmd.local_rank`、
 `wafer.spmd.rank_group` 这类 Wafer 私有 attr 写回 StableHLO module。rank group 应优先来自
 partitioned StableHLO collective 的 `replica_groups` / `source_target_pairs` / Shardy metadata；
-如果某个 rank selection policy 不能从这些事实重建，先补明确 program/export contract 或 placement
+如果某个 rank selection policy 不能从这些事实重建，先补明确 program/export contract 或 resource projection
 IR，而不是发明 SPMD-side Wafer attr。
 
 每个用户 sharding strategy 的前端模型仍然是同一个 4096 matmul 最小验证 module。forward 中只在
@@ -340,7 +340,7 @@ Shardy/SDY 可解释的 logical mesh：
 
 mesh rank count 和 axes 来自 `wafer.execution.mesh`。单卡默认 topology 配置是 4x4 / 16 tile，
 默认选择 16-rank mesh；调试、bring-up、小 workload 和资源隔离可以显式选择较小 mesh。这个 mesh 是
-SPMD logical mesh 的来源，不是后段 placement map；physical endpoint、unavailable tile 例外和
+SPMD logical mesh 的来源，不是后段 rank->tile map；physical endpoint、unavailable tile 例外和
 card/tile adjacency 仍由 `wafer.target.topology` / `wafer.execution.mesh` 的 derived view 派生，
 不写入 StableHLO/SDY module。
 
@@ -350,11 +350,11 @@ results 下约束。Shardy propagation 负责把 seed 推到内部 value 和结�
 
 - 对每个 ranked tensor function input，选择第一个静态且能被 execution mesh rank count 整除的维度绑定
   mesh axis。多轴 mesh 可先按 deterministic axis order 选择；更复杂的 dim-to-axis cost model 属于
-  后续 SPMD / placement co-design，不改变 IR 合同。
+  后续 SPMD / endpoint co-design，不改变 IR 合同。
 - 如果没有这样的维度，或 rank count 为 1，该 input 在对应 mesh axis 上 replicated。
 - 不依赖 input / parameter 名字；若需要区分 user input、parameter、constant 或 state，必须来自
   frontend 已 materialize 到 IR 的可验证 metadata。
-- 默认 policy 只生成 SDY / StableHLO 可解释的 sharding seed，不生成 `wafer.spmd.*`、placement op、
+- 默认 policy 只生成 SDY / StableHLO 可解释的 sharding seed，不生成 `wafer.spmd.*`、resource-projection op、
   package manifest 或其它后段协议。
 
 这个 policy 的目标是让未显式标记的图默认利用已选择的 valid execution mesh，同时仍把通信插入和
@@ -389,7 +389,7 @@ standalone `shardy-sdy-opt` 可以作为第三方 pipeline 对照，但不是 Wa
 Wafer compiler-owned XLA SPMD partitioner / partitioned StableHLO export gate 配套使用，不能单独作为
 P2.S2 完成证明。
 row / contracting 类 case 需要保留 reduction collective op；如果后续 tensor collective
-normalization、placement 或 ring/resource path 还没有完整消费这些事实，应补对应下游任务，不回头把
+normalization、endpoint projection 或 ring/resource path 还没有完整消费这些事实，应补对应下游任务，不回头把
 该策略从 P2 SPMD program gate 中删掉。
 
 ## 3. Logical Mesh Contract
@@ -410,7 +410,7 @@ V0 关注以下 StableHLO collective 语义：
 
 | collective | SPMD 语义 | 下游 owner |
 | --- | --- | --- |
-| `collective_permute` | logical point-to-point value movement | tensor collective handoff + placement + later `wafer.tile.*` communication |
+| `collective_permute` | logical point-to-point value movement | tensor collective handoff + endpoint projection + later `wafer.tile.*` communication |
 | `all_gather` | shard concat / replication | Wafer LinalgExt-style tensor collective handoff |
 | `reduce_scatter` | reduce + shard distribution | Wafer LinalgExt-style tensor collective handoff |
 | `all_reduce` | all-rank reduction | Wafer LinalgExt-style tensor collective handoff |
@@ -433,14 +433,14 @@ StableHLO logical collective
 
 Shardy / SPMD 只负责第一行之前的 logical collective 生成。StableHLO collective 不应在 group /
 tiling 前直接 lower 成 `wafer.tile.*` communication，因为 `wafer.tile.*` communication 当前属于 tile-local storage / communication
-IR；它需要 SPM buffer、byte count、placement 和 token/effect 语义。
+IR；它需要 SPM buffer、byte count、endpoint 和 token/effect 语义。
 
 R2.4 的用户级 program gate 是 `wafer-opt --program-pipeline=stablehlo-spmd-to-linalg`：该 pipeline
 先执行 P2.S2 `stablehlo-spmd` stage，再在同一个输出 program directory 中把 partitioned /
 replicated-local StableHLO module lowering 到 Linalg/Tensor IR，并把 StableHLO collective normalize 成
 `wafer.tensor.*`。底层 `wafer-lower-stablehlo-to-linalg` named MLIR pipeline 只作为该
 program pipeline 的内部构件和局部 debug/unit 覆盖；slot-aligned tile generation、physical rank
-placement、ring/p2p schedule 和 DTE token 仍属于 R3/R6。
+endpoint projection、ring/p2p schedule 和 DTE token 仍属于 R3/R6。
 
 旧的 StableHLO collective 直降 `wafer.tile.*` communication ops pass 已移除。后续不得恢复 group/tiling 前的
 StableHLO -> `wafer.tile.*` communication 插入点；需要分别实现“StableHLO -> tensor collective”和
@@ -475,7 +475,7 @@ execution mesh 的 derived / explicit endpoint view 一旦影响 codegen，就�
 修改。后续 launch/block binding 只能补 block id 这类 launch identity，不能复制 rank->tile。
 
 SPMD 不应该为了某个 physical tile id 编码重新解释 StableHLO semantics。mesh selection 可以在
-SPMD 前拒绝、重排或拆分 requested logical mesh；SPMD 之后不能再通过 placement 改变 partition
+SPMD 前拒绝、重排或拆分 requested logical mesh；SPMD 之后不能再通过 endpoint projection 改变 partition
 后的数学语义。
 
 ## 6. Pass 合同
@@ -550,6 +550,6 @@ per-rank program
 
 因此，P2.S2 之后每个消费 sharding / per-rank program 的任务完成时，都必须继续使用真实图导出的
 program chain 做端到端 gate。测试不能只构造一个新的手写 per-rank fixture，也不能只检查当前层
-dump；必须证明前序 sharding facts 在本任务边界的 verifier、lowering、placement、communication
+dump；必须证明前序 sharding facts 在本任务边界的 verifier、lowering、endpoint、communication
 或 resource 逻辑中被实际使用。若直接下游尚未支持某个硬件可表达语义，应把缺口落成下游恢复任务
 或补充 IR 表示，而不是修改上游 program 让其避开该语义。

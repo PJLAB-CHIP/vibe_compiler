@@ -10,14 +10,14 @@ def Wafer_ShardBindingOp : Wafer_Op<"shard.binding"> {
     sliced across dense logical ranks. It references an entry function symbol
     and function argument index, then stores per-rank static slice bounds as
     rank-major arrays. The op is a boundary shard fact: it does not store
-    payload file paths, physical placement, SPM/DDR offsets, package manifest
+    payload file paths, physical endpoint mapping, SPM/DDR offsets, package manifest
     fields, or runtime handles.
   }];
 
   let arguments = (ins
     FlatSymbolRefAttr:$kernel,
     I64Attr:$argument_index,
-    I64Attr:$logical_rank_count,
+    FlatSymbolRefAttr:$execution_mesh,
     DenseI64ArrayAttr:$global_shape,
     DenseI64ArrayAttr:$local_shape,
     DenseI64ArrayAttr:$shard_ranks,

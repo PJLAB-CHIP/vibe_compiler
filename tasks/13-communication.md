@@ -109,7 +109,7 @@ wafer.tile.wait(token...)
 
 实际 ODS 设计可以把 `send`/`recv` 合并成 `send_recv`，也可以显式拆开；关键合同是：
 
-- peer 来自 placement，可验证为 active physical tile，不通过名字或示例 id 推断。
+- peer 来自 execution mesh / target topology 派生的 endpoint view，不通过名字或示例 id 推断。
 - byte count 来自 buffer type、slice 或 explicit size SSA value；V0 Direct DTE 要求 fixed-size。
 - source/destination buffer 的 lifetime 延伸到对应 wait。
 - op 的 effects 明确 read source、write destination，并占用 communication resource class。
@@ -134,11 +134,11 @@ wafer.tile.wait(token...)
 
 ### 4.1 Peer and Group Representation
 
-physical peer 应来自 topology/execution-mesh contract。早期可以用过渡 placement attr 或 index SSA value 表达，但
+physical peer 应来自 topology/execution-mesh contract。早期 p2p op 可以用 index SSA value 表达 peer，但
 长期 verifier 需要能检查：
 
 - peer 是否在当前 cluster / collective group 内。
-- tile 是否 active，是否避开 PG/bad-tile。
+- endpoint 是否 available，是否避开 topology 中的 unavailable endpoint。
 - rank order 与 collective semantic 是否一致。
 - single-card / cross-card route 是否被当前 target policy 支持。
 
@@ -162,7 +162,7 @@ getPeerSet()
 getByteCountOrShape()
 getSourceAndDestinationBuffers()
 getCompletionTokens()
-verifyPlacementAndRoute(target)
+verifyEndpointAndRoute(target)
 collectCommunicationBufferDemand(target)
 ```
 
@@ -210,9 +210,9 @@ raw non-unicast DTE 可以作为 HardwareVerify 主题：需要独立 ABI、reso
 错误语义后才能进入 compiler lowering。在这些证据补齐前，all-gather、all-reduce、all-to-all 等
 collective 仍应由 unicast p2p schedule 组合表达，而不是在 logical IR 层被拒绝。
 
-当前 ODS / verifier 原型中，`wafer.tile.send` / `wafer.tile.recv` 的 p2p verifier 已在存在
-`wafer.placement.map` 过渡 op 时检查 peer 指向 active physical tile；长期应改为查询
-`wafer.execution.mesh` / `wafer.target.topology`。`wafer.tile.wait` 要求至少一个 async token。旧
+当前 ODS / verifier 原型中，`wafer.tile.send` / `wafer.tile.recv` 的 p2p verifier 只做局部
+buffer、peer 非负和 byte count 检查；active endpoint / route legality 必须在后续
+`wafer.execution.mesh` / `wafer.target.topology` consumer 中恢复。`wafer.tile.wait` 要求至少一个 async token。旧
 `--wafer-lower-tile-region-to-c-abi` pass 已删除；fixed-size unicast p2p 到 committed Direct DTE
 issue/wait form 和 ABI/LLVM emission 的 lowering 必须从 committed instruction-level IR、
 topology/execution-mesh/shard-binding contract 和 resource view analysis 重新建立。这一层仍不应 materialize raw non-unicast register 字段，也不把 DTE id、
@@ -241,7 +241,7 @@ tiled tensor collective + SPM storage values -> wafer.tile.*
 `collective_permute` 可以直接 lower 成若干 unicast send/recv pair。Verifier 需要检查：
 
 - 每个 source/destination pair 唯一或符合 StableHLO semantic。
-- peer placement active。
+- peer endpoint available。
 - send/recv byte count 与 slice shape 一致。
 - receiver buffer 在 wait 前不被 compute 读取。
 
@@ -256,7 +256,7 @@ for step in 0..group_size-2:
   wait send/recv token before reusing slot according to schedule
 ```
 
-IR 中应能看到每个 step 的 send/recv/wait 和 destination slot。ring order 来自 placement/rank order；
+IR 中应能看到每个 step 的 send/recv/wait 和 destination slot。ring order 来自 execution mesh rank order；
 cost model 可以选择不同 order，但接受后要 rewrite 成 explicit body。
 
 当前只保留 collective op/verifier 层；直接 materialize p2p schedule 的旧 ring lowering pass 已删除。
@@ -289,11 +289,11 @@ sum/max/min reduction body；如果 SPMD 产出其它硬件可表达 reduction k
 ### 6.4 All-to-All
 
 `all_to_all` 是 split / exchange / concatenate 的 logical collective。即使没有专用 raw DTE
-non-unicast helper，它也可以由 placement 后的一组 unicast send/recv/wait 和明确 buffer slice
+non-unicast helper，它也可以由 execution mesh endpoint view 上的一组 unicast send/recv/wait 和明确 buffer slice
 组合表达。IR 必须能看到：
 
 - 每个 rank 发送和接收的 slice shape、dtype、byte count。
-- source/destination logical rank group 和 placement 后 physical peer。
+- source/destination logical rank group 和 topology-derived physical peer。
 - concat / layout relation，或交给 layout/materialization 层解释的 explicit slice result。
 - token/wait 和 buffer lifetime。
 
@@ -352,10 +352,10 @@ tile-local `wafer.tile.*` communication 开始。
 Collective-level `wafer.tile.*` communication verifier：
 
 - collective semantic、rank group、storage shape、slice、dtype 与输入输出一致。
-- physical placement 覆盖 logical group，且 good-tile/PG 条件满足。
+- execution mesh endpoint view 覆盖 logical group，且 unavailable endpoint 条件满足。
 - 对目标硬件 / ABI 证据明确无法表达的 route 或 protocol 给出 diagnostic。当前某个 lowering pass
   未实现的 collective、multi replica group 或 cross-card schedule 不应在 collective-level verifier
-  中被当成语义不支持；应保留 IR fact，并由对应 lowering / placement / runtime 恢复任务补齐。
+  中被当成语义不支持；应保留 IR fact，并由对应 lowering / mesh / runtime 恢复任务补齐。
 
 P2P-level verifier：
 
@@ -408,17 +408,17 @@ wafer.tile.wait %send1, %recv1
 - dialect / verifier 层有 `wafer.tile.send`、`recv`、`wait`、`all_gather`、`reduce_scatter` 和
   `all_reduce`，以及旧 storage 原型上的 token/effect / byte-count 检查。
 - `collective_permute`、ring `all_gather`、`reduce_scatter` / `all_reduce` 的 p2p + local reduce
-  lowering 仍依赖后续 placement/local-rank/buffer facts，不是当前主线完成项。
+  lowering 仍依赖后续 execution-mesh/local-rank/buffer facts，不是当前主线完成项。
 - Direct DTE send/recv/wait golden path 和 error diagnostic 属于历史 bring-up 证据；Direct DTE
   issue/wait form、resource allocation 和 ABI/LLVM emission 需要从 committed instruction IR
-  和 accepted placement/resource facts 重新建立。
+  和 accepted endpoint/resource facts 重新建立。
 
 后续进入条件：
 
 - raw DTE broadcast/shuffle/scatter/gather：需要独立 ABI、resource model 和板端验证；未验证前使用
   unicast p2p schedule 组合 collective。
-- cross-card collective：需要 C2C route、runtime/driver completion 和 placement policy 稳定；logical
-  mesh / rank group 仍可先在 SPMD / placement IR 中表达。
+- cross-card collective：需要 C2C route、runtime/driver completion 和 endpoint policy 稳定；logical
+  mesh / rank group 仍可先在 SPMD / execution mesh IR 中表达。
 - Stream/mailbox fallback：只作为 control/compatibility plane，必须有显式 runtime boundary。
 - compute/comm overlap cost model：需要 PMU case 和 resource conflict verifier 支撑。
 

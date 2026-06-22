@@ -7,7 +7,6 @@
 #include "mlir/IR/AffineMap.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
-#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 
 #include <limits>
@@ -78,33 +77,6 @@ bool checkedAdd(int64_t lhs, int64_t rhs, int64_t &result) {
     return false;
   result = lhs + rhs;
   return true;
-}
-
-std::optional<int64_t> getPhysicalTileId(int64_t cardY, int64_t cardX,
-                                         int64_t tileY, int64_t tileX,
-                                         int64_t cardXCount, int64_t tileYCount,
-                                         int64_t tileXCount) {
-  int64_t cardBase = 0;
-  if (!checkedMul(cardY, cardXCount, cardBase))
-    return std::nullopt;
-  int64_t cardIndex = 0;
-  if (!checkedAdd(cardBase, cardX, cardIndex))
-    return std::nullopt;
-
-  int64_t tileBase = 0;
-  if (!checkedMul(cardIndex, tileYCount, tileBase))
-    return std::nullopt;
-  int64_t tileRow = 0;
-  if (!checkedAdd(tileBase, tileY, tileRow))
-    return std::nullopt;
-
-  int64_t tileIdBase = 0;
-  if (!checkedMul(tileRow, tileXCount, tileIdBase))
-    return std::nullopt;
-  int64_t tileId = 0;
-  if (!checkedAdd(tileIdBase, tileX, tileId))
-    return std::nullopt;
-  return tileId;
 }
 
 static std::optional<int64_t> getElementBitWidth(mlir::Type elementType) {
@@ -273,33 +245,6 @@ mlir::LogicalResult verifyCommP2P(mlir::Operation *op, mlir::Value buffer,
     if (slot.getInt() < 0)
       return op->emitOpError("comm slot must be non-negative");
   }
-
-  mlir::ModuleOp module = op->getParentOfType<mlir::ModuleOp>();
-  if (!module)
-    return mlir::success();
-
-  llvm::DenseSet<int64_t> activeTileIds;
-  module.walk([&](PlacementMapOp placement) {
-    int64_t logicalRankCount = placement.getLogicalRankCountAttr().getInt();
-    int64_t cardXCount = placement.getCardXCountAttr().getInt();
-    int64_t tileYCount = placement.getTileYCountAttr().getInt();
-    int64_t tileXCount = placement.getTileXCountAttr().getInt();
-    llvm::ArrayRef<int64_t> coords =
-        placement.getPhysicalTileCoordsAttr().asArrayRef();
-    if (logicalRankCount <= 0 ||
-        static_cast<int64_t>(coords.size()) != logicalRankCount * 4)
-      return;
-    for (int64_t rank = 0; rank < logicalRankCount; ++rank) {
-      int64_t base = rank * 4;
-      std::optional<int64_t> tileId = getPhysicalTileId(
-          coords[base], coords[base + 1], coords[base + 2], coords[base + 3],
-          cardXCount, tileYCount, tileXCount);
-      if (tileId)
-        activeTileIds.insert(*tileId);
-    }
-  });
-  if (!activeTileIds.empty() && !activeTileIds.contains(peer.getInt()))
-    return op->emitOpError("comm peer must refer to an active placement tile");
 
   return mlir::success();
 }

@@ -135,7 +135,7 @@ SPM/DDR offset facts、topology/execution-mesh/shard-binding contract、薄 laun
 dialect call、`wafer_*` C shim 调用或 packet builder 输入。
 如果保留 `wafer.instr.rdma`、`wafer.instr.wdma`、`wafer.instr.gemm`、`wafer.instr.elementwise`、
 `wafer.instr.reduce`、Direct DTE emission helper 这类对象，它们只作为 very-late debug/test dump 或 emission
-helper，不能作为主线架构层，也不能承载 placement、layout 或 instruction selection 决策。
+helper，不能作为主线架构层，也不能承载 endpoint、layout 或 instruction selection 决策。
 
 fixed-size unicast `wafer.tile.send` / `recv` / `wait` 在进入 ABI/LLVM lowering 前应已经 lower 成
 committed Direct DTE issue/wait form，显式包含 byte count、endpoint、FSM/packet/stream resource、
@@ -172,7 +172,7 @@ V0 区分：
 - group barrier：等待一组 tile / rank 的同步点。
 - synchronous helper：仅用于 bring-up 或明确 synchronous API，函数名必须体现。
 
-上层 scheduler 可以选择 issue/drain placement。C ABI 不应在每个 op 后默认插 hidden wait，
+上层 scheduler 可以选择 issue/drain ordering。C ABI 不应在每个 op 后默认插 hidden wait，
 否则会掩盖 async lifetime 和 overlap legality。
 
 ## 7. Golden Packet Tests

@@ -35,7 +35,7 @@ def Wafer_ExecutionMeshOp : Wafer_Op<"execution.mesh", [Symbol]> {
     topology dimensions, unavailable tile state, or connectivity. The default
     `all_available` policy derives ranks from every available endpoint in the
     referenced topology; the `explicit` policy is an override for debug,
-    resource isolation, small workloads, or non-default rank placement.
+    resource isolation, small workloads, or non-default rank endpoint order.
   }];
 
   let arguments = (ins

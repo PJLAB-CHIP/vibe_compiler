@@ -14,33 +14,34 @@
   ],
   "launch_signature": {
     "inputs": [
-      {"name": "lhs", "shape": [4, 8], "dtype": "f16", "layout": "tensor"},
-      {"name": "rhs", "shape": [8, 16], "dtype": "f16", "layout": "tensor"}
+      {
+        "name": "lhs",
+        "shape": [
+          4,
+          8
+        ],
+        "dtype": "f16",
+        "layout": "tensor"
+      },
+      {
+        "name": "rhs",
+        "shape": [
+          8,
+          16
+        ],
+        "dtype": "f16",
+        "layout": "tensor"
+      }
     ],
     "outputs": [
-      {"name": "out", "shape": [4, 16], "dtype": "f16", "layout": "tensor"}
-    ]
-  },
-  "placement": {
-    "logical_rank_count": 1,
-    "topology": {
-      "card_y_count": 1,
-      "card_x_count": 1,
-      "tile_y_count": 4,
-      "tile_x_count": 4
-    },
-    "good_tile_ids": [0],
-    "bad_tile_ids": [],
-    "ranks": [
       {
-        "logical_rank": 0,
-        "physical_coord": [0, 0, 0, 0],
-        "block_id": 0,
-        "local_shards": [
-          {"name": "lhs", "offsets": [0, 0], "sizes": [4, 8]},
-          {"name": "rhs", "offsets": [0, 0], "sizes": [8, 16]},
-          {"name": "out", "offsets": [0, 0], "sizes": [4, 16]}
-        ]
+        "name": "out",
+        "shape": [
+          4,
+          16
+        ],
+        "dtype": "f16",
+        "layout": "tensor"
       }
     ]
   },
@@ -73,7 +74,10 @@
   "workspace_buffers": [
     {
       "name": "tmp",
-      "shape": [4, 8],
+      "shape": [
+        4,
+        8
+      ],
       "dtype": "f16",
       "layout": "tensor",
       "bytes": 64,
@@ -91,9 +95,27 @@
     "resident_constant_bytes": 0
   },
   "instructions": [
-    {"op": "wafer.instr.rdma", "bytes": 64, "wait_policy": "issue_only"},
-    {"op": "wafer.instr.rdma", "bytes": 256, "wait_policy": "issue_only"},
-    {"op": "wafer.instr.gemm", "m": 4, "k": 8, "n": 16, "wait_policy": "issue_only"},
-    {"op": "wafer.instr.wdma", "bytes": 128, "wait_policy": "issue_only"}
+    {
+      "op": "wafer.instr.rdma",
+      "bytes": 64,
+      "wait_policy": "issue_only"
+    },
+    {
+      "op": "wafer.instr.rdma",
+      "bytes": 256,
+      "wait_policy": "issue_only"
+    },
+    {
+      "op": "wafer.instr.gemm",
+      "m": 4,
+      "k": 8,
+      "n": 16,
+      "wait_policy": "issue_only"
+    },
+    {
+      "op": "wafer.instr.wdma",
+      "bytes": 128,
+      "wait_policy": "issue_only"
+    }
   ]
 }
