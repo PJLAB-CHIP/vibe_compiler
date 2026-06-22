@@ -5,7 +5,7 @@ candidate legality gate。它不能只是 DDR access validation；凡是会影�
 byte footprint、lifetime、capacity、largest-contiguous 和 bandwidth 约束，都必须在 DDR offset
 assignment / candidate-selection gate 内决定或拒绝。
 下游 ABI lowering、package manifest 和 runtime adapter 通过同一 resource view analysis 从已接受的
-DDR offset facts、topology/device-mesh/shard-binding 和 IR-derived demand 按需重算 launch-facing
+DDR offset facts、topology/execution-mesh/shard-binding 和 IR-derived demand 按需重算 launch-facing
 requirements；不执行 runtime
 allocation/import/query，也不重新做 planning。
 compiler-managed DDR allocation 由 DDR `memref.alloc` 本身表达；DDR memory planning 只把 accepted
@@ -64,7 +64,7 @@ Pipeline position:
   candidate-selection 用 DDR offset assignment 成功/失败选择 candidate；
   committed materialization 把已通过 candidate gates 的 selected lowering 写回主 IR；
   ABI/LLVM lowering、package manifest 和 runtime adapter 在使用点从 committed IR、
-  accepted DDR offset facts、topology/device-mesh/shard-binding contract 和薄 launch/block binding
+  accepted DDR offset facts、topology/execution-mesh/shard-binding contract 和薄 launch/block binding
   直接重算 resource view。
 - User-level driver / named pipeline:
   局部 pass 是 `wafer-plan-ddr-memory`；
@@ -145,7 +145,7 @@ map、名字或 fixture。
 External input/output 不由 DDR memory planning 分配 offset，也不写 external access summary attr。DDR memory planning 只在当前
 candidate 中验证 descriptor/view/root byte range 和 bandwidth；ABI/package/runtime 若需要
 launch-facing binding view，应从 committed instruction IR、accepted offset facts、
-topology/device-mesh/shard-binding contract、薄 launch/block binding 和 descriptors 在使用点重算。
+topology/execution-mesh/shard-binding contract、薄 launch/block binding 和 descriptors 在使用点重算。
 
 ## 4. Demand Classes
 
@@ -277,13 +277,13 @@ their planning gates, not candidate fields.
 ### 9.4 下游 Resource View
 
 ABI lowering、package manifest emission 和 runtime adapter 需要 resource facts 时，统一从 accepted
-DDR offsets、topology/device-mesh/shard-binding contract、薄 launch/block binding 和 committed
+DDR offsets、topology/execution-mesh/shard-binding contract、薄 launch/block binding 和 committed
 descriptors 重算 view。该 view：
 
 - 从 committed IR 重算 external binding requirements。
 - 汇总 compiler-managed workspace 和 resident/inter-group DDR ranges。
 - 验证 launch-visible resource metadata 与 accepted offsets、descriptor ranges、
-  topology/device-mesh/shard-binding 和 launch/block metadata 一致。
+  topology/execution-mesh/shard-binding 和 launch/block metadata 一致。
 - 供 ABI/LLVM lowering、package manifest 和 runtime adapter 使用，但不成为新的 IR
   artifact。
 

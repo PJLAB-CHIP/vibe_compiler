@@ -12,7 +12,7 @@
 | 01 | `tasks/01-architecture.md` | 总体 compiler pipeline、IR 分层和子设计边界 |
 | 02 | `tasks/02-frontend-stablehlo-program.md` | frontend program、StableHLO import/export、program directory |
 | 03 | `tasks/03-shardy-spmd.md` | Shardy propagation、SPMD partition、post-SPMD tensor collective handoff |
-| 04 | `tasks/04-topology-device-mesh-shard-binding.md` | target topology、device mesh、shard binding、encoded tile endpoint |
+| 04 | `tasks/04-topology-device-mesh-shard-binding.md` | target topology、execution mesh、shard binding、encoded tile endpoint |
 | 05 | `tasks/05-local-compute-normalization.md` | post-SPMD local compute normalization |
 | 06 | `tasks/06-group.md` | logical group、scheduled group、candidate planning boundary |
 | 07 | `tasks/07-tile-region.md` | memref-backed tile-local execution boundary |

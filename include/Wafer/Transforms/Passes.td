@@ -31,6 +31,33 @@ def MaterializeTargetTopologyPass
   ];
 }
 
+def MaterializeExecutionMeshPass
+    : Pass<"wafer-materialize-execution-mesh", "mlir::ModuleOp"> {
+  let summary = "Materialize Wafer program execution mesh facts";
+  let dependentDialects = ["wafer::WaferDialect"];
+  let options = [
+    Option<"meshName", "mesh-name", "std::string",
+           /*default=*/"\"default_mesh\"",
+           "Symbol name for the materialized execution mesh">,
+    Option<"topologyName", "topology-name", "std::string",
+           /*default=*/"\"default\"",
+           "Referenced target topology symbol name">,
+    Option<"policy", "policy", "std::string",
+           /*default=*/"\"all_available\"",
+           "Execution mesh endpoint policy: all_available or explicit">,
+    Option<"axes", "axes", "std::string",
+           /*default=*/"\"\"",
+           "Comma-separated logical mesh axis names; empty uses rank">,
+    Option<"shape", "shape", "std::string",
+           /*default=*/"\"\"",
+           "Comma-separated logical mesh axis sizes; empty uses rank count">,
+    Option<"endpoints", "endpoints", "std::string",
+           /*default=*/"\"\"",
+           "Comma-separated card_y,card_x,tile_y,tile_x tuples for explicit "
+           "execution endpoints">
+  ];
+}
+
 def FormLogicalGroupsPass
     : Pass<"wafer-form-logical-groups", "mlir::ModuleOp"> {
   let summary = "Form root-seeded tensor-level logical wafer.group ops";

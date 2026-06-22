@@ -49,9 +49,11 @@
 - P2.S1 负责所有 sharding 相关策略。graph 中存在任意用户 sharding seed 时（函数边界或中间
   `sdy.sharding` / `sdy.sharding_constraint` / `sdy.reshard` / manual sharding），默认 policy
   必须跳过，让 Shardy propagation 推完整图。完全没有用户 seed 时，P2.S1 在 SPMD 层补默认
-  function-input sharding seed：rank count / axes 来自 SPMD 前选出的 `wafer.device.mesh`；单卡默认
-  topology 配置是 4x4 / 16 tile，1-rank replicated 只能作为调试/对照 device mesh config 进入。找不到
-  合适输入切分维度时生成同一 mesh 上的 replicated seed。不要把这个默认策略放到 group 后段实现。
+  function-input sharding seed：rank count / axes 来自 SPMD 前选出的 `wafer.execution.mesh`；单卡默认
+  topology 配置是 4x4 / 16 tile。`wafer.execution.mesh` 默认使用 `all_available` policy，用满
+  topology 中所有 available endpoints 且不保存 endpoint table；1-rank 或少 tile mesh 只能作为显式
+  debug/bring-up/资源隔离 override 进入。找不到合适输入切分维度时生成同一 mesh 上的 replicated
+  seed。不要把这个默认策略放到 group 后段实现。
 - P2.S1 不能用手写 `sdy.sharding`、`wafer.spmd.*` attr、私有 JSON 或名字约定冒充 partitioned
   program。正确主链是：frontend Python 只通过 `torch_xla.distributed.spmd.mark_sharding`
   标记 4096 matmul 图并导出带 `mhlo.sharding` 的 PyTorch/XLA StableHLO program directory；随后由
@@ -193,7 +195,7 @@
   `memref.alloc` 本身表达；accepted fact 写回同一个 alloc 的 `wafer.ddr.offset =
   #wafer.ddr_offset<offset>`。external function argument 不分配 offset，也不写 access summary attr；
   launch/resource binding requirement 由 ABI/package/runtime 使用点从 committed instruction IR、
-  accepted offset facts、topology/device-mesh/shard-binding contract 和薄 launch/block binding 重算；runtime allocation/import/query 属于
+  accepted offset facts、topology/execution-mesh/shard-binding contract 和薄 launch/block binding 重算；runtime allocation/import/query 属于
   runtime adapter。DDR planner
   复用 SPM 同类 structured lifetime dataflow：view-like alias、tile-region
   boundary arg、`scf.if` path condition、`scf.for` iter_args/yield/backedge 和 async token 都从 IR

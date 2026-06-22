@@ -3,7 +3,7 @@
 状态：设计草案；范围：`wafer.launch`、runtime package、host runtime adapter 和 completion contract。
 
 本文定义 `wafer.launch`、runtime package、host runtime adapter 和 completion contract。该边界
-消费 committed instruction IR、topology/device-mesh/shard-binding contract、薄 launch/block binding、
+消费 committed instruction IR、topology/execution-mesh/shard-binding contract、薄 launch/block binding、
 按需重算的 resource view 以及 ABI/LLVM
 lowering 产物，负责把 device code、resource metadata、placement、DDR binding、constant storage
 bytes 和 launch arguments 组织成可执行单元。runtime allocation/import/query 是 runtime adapter 在
@@ -56,8 +56,9 @@ wafer.launch @compiled_kernel(
 `wafer.launch` 提前保存的第二份 IR 合同：
 
 - launch signature：user-visible inputs/outputs、shape、dtype、external layout、alias policy。
-- endpoint view：`wafer.device.mesh` 的 rank->physical endpoint embedding，薄
-  launch/block binding 的 block id，以及 `wafer.shard.binding` 的 boundary slice。
+- endpoint view：`wafer.execution.mesh` + `wafer.target.topology` 派生的 rank->physical endpoint
+  view，`explicit` mesh override 中的 endpoint tuples，薄 launch/block binding 的 block id，以及
+  `wafer.shard.binding` 的 boundary slice。
 - resource requirements：从 committed instruction IR、accepted offsets、communication/sync IR 和
   shard binding 重算的 SPM summary、DDR workspace demand、resident constant demand、control metadata
   demand。
@@ -73,7 +74,7 @@ wafer.launch @compiled_kernel(
 Pipeline position:
 - Upstream artifact / IR:
   committed `wafer.tile.region` / `wafer.instr.*` IR、accepted SPM/DDR offset facts、
-  topology/device-mesh/shard-binding contract、薄 launch/block binding、按需重算的 resource view，
+  topology/execution-mesh/shard-binding contract、薄 launch/block binding、按需重算的 resource view，
   以及 ABI/LLVM lowering 产物。
 - Current stage responsibility:
   package 组装 object/program id、entrypoint、ABI version、constant bytes、endpoint metadata 和
@@ -85,7 +86,7 @@ Pipeline position:
 - Downstream consumer:
   HPGR/KMD/legacy runtime launch path、board correctness gate 和 profiling/error propagation gate。
 - User-level driver / named pipeline:
-  package emission 必须接在 committed instruction -> topology/device-mesh/shard-binding -> ABI/LLVM lowering 之后，
+  package emission 必须接在 committed instruction -> topology/execution-mesh/shard-binding -> ABI/LLVM lowering 之后，
   不以显式 manifest fixture 或 C stub table 作为主线入口。
 - Explicit non-goals:
   不重新做 placement、tile search、layout、SPM/DDR planning、communication schedule 或 ABI lowering；
@@ -104,7 +105,7 @@ Runtime package 是交付给 runtime adapter 的编译产物集合。V0 需要�
 | --- | --- | --- |
 | device code | per-kernel / per-cluster kcore shared object | C ABI / LLVM lowering |
 | launch signature | inputs、outputs、runtime args、shape/dtype/layout | frontend + lowering |
-| endpoint metadata | topology snapshot id、rank endpoint table、block id、availability assumption | `wafer.target.topology` + `wafer.device.mesh` + thin launch/block binding |
+| endpoint metadata | topology snapshot id、derived rank endpoint table、block id、availability assumption | `wafer.target.topology` + `wafer.execution.mesh` + thin launch/block binding |
 | DDR memory metadata | external binding contract、workspace demand、resident constant demand | on-demand resource view derived from committed IR + DDR planner facts |
 | SPM summary | per-tile SPM peak、reserved range、allocation summary | SPM bufferization |
 | constant storage bytes | transformed read-only backing data, if needed | constant storage transform |
@@ -165,7 +166,7 @@ Runtime package 必须区分：
 
 KMD/UAPI 的低层分配类别只作为 runtime mapping evidence 使用；DDR memory planning 产出
 accepted DDR planned ranges；ABI lowering、package manifest emission 和 runtime adapter 通过同一
-resource view analysis 从 committed IR、accepted offsets、topology/device-mesh/shard-binding 和薄
+resource view analysis 从 committed IR、accepted offsets、topology/execution-mesh/shard-binding 和薄
 launch/block binding 派生
 external binding、workspace、resident constant 和 control metadata requirements。runtime adapter 在
 package load / launch 时执行 allocate/import/query/bind，并报告
@@ -205,7 +206,7 @@ arguments；它不反向定义 tensor semantics，也不包含 runtime handle、
 历史 `--emit-single-tile-matmul`、`--emit-multi-tile-no-comm-matmul`、
 `--emit-single-tile-elementwise` 和 `--emit-local-transformer-block` fixed emitter 已删除。后续 package
 gate 必须从当前 `wafer-opt` pipeline 的 committed instruction IR、
-topology/device-mesh/shard-binding contract、薄 launch/block binding、
+topology/execution-mesh/shard-binding contract、薄 launch/block binding、
 按需重算的 resource view、ABI/LLVM lowering artifact 和 `wafer.launch` boundary 自动导出 manifest；
 不能恢复独立固定 emitter 作为完成证明。
 
@@ -217,10 +218,10 @@ compiler IR 中：
 - per-rank `local_shards`，每个 shard 引用 launch signature argument 或 result index，并记录
   `offsets`、`sizes`、`strides`；名称只能用于诊断/显示，不作为绑定协议。
 
-这些字段是 package / launch metadata，不改变 tensor IR 语义，也不成为 `wafer.device.mesh` /
-`wafer.target.topology` 的第二事实源。validator 检查 manifest rank endpoint table 能由 device mesh
-重算、mapped endpoint 仍 available、block id 不重复，以及 local shard bounds 不越过 launch
-signature tensor shape。
+这些字段是 package / launch metadata，不改变 tensor IR 语义，也不成为 `wafer.execution.mesh` /
+`wafer.target.topology` 的第二事实源。validator 检查 manifest rank endpoint table 能由 execution mesh
+policy 和 target topology 重算、mapped endpoint 仍 available、block id 不重复，以及 local shard
+bounds 不越过 launch signature tensor shape。
 
 ## 6. Legacy Bootparam and Dyn TLV
 

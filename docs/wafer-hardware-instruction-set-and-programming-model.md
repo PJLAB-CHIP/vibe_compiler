@@ -154,10 +154,11 @@ Kcore 通过 AP 下发的 `offset`、自身 `logic-id`、以及卡内 1D/2D id �
 
 Compiler 侧不能把上述默认 4x4 规则或历史 1D/2D 公式散落到 SPMD、communication、ABI lowering
 或 verifier。它们是 topology import/materialization 的输入证据：`wafer.target.topology` 保存
-规则 card/tile grid、card-level interconnect kind 和 unavailable tile 坐标例外；`wafer.device.mesh`
-保存 SPMD rank domain 到 physical endpoint coordinate 的 accepted embedding。若 runtime/driver
-返回 PG/bad tile 或跨卡 topology 变化，只应改 topology import/rewrite 边界；下游通过
-topology/device mesh 查询 endpoint 和从规则 grid 推导 adjacency。
+规则 card/tile grid、card-level interconnect kind 和 unavailable tile 坐标例外；`wafer.execution.mesh`
+保存 SPMD rank-domain policy、logical axes/shape 和 optional explicit endpoints。默认
+`all_available` endpoint view 从 topology 派生。若 runtime/driver 返回 PG/bad tile 或跨卡 topology
+变化，只应改 topology import/rewrite 边界；下游通过 topology/execution mesh 查询 endpoint 和从规则
+grid 推导 adjacency。
 
 ## 内存、地址和 SPM 约束
 

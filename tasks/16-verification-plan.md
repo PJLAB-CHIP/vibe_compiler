@@ -27,7 +27,7 @@ Serving integration 暂不纳入本文通过标准。
 - 已完成 resource planner、dependency/config 和已有 tool-unit tests 通过；golden packet、package
   serialization 和 manifest roundtrip 只能证明对应工具或 fixture，不替代主线 compiler output。
 - pipeline 能生成当前阶段的本地编译产物：committed instruction IR 和 accepted SPM/DDR offset facts。
-  topology/device-mesh/shard-binding、ABI/LLVM lowering、object/package manifest 和 runtime
+  topology/execution-mesh/shard-binding、ABI/LLVM lowering、object/package manifest 和 runtime
   adapter 是后续独立 gate。
 - LLVM dialect / LLVM IR lowering、object emission 和真实 `wafer_*` runtime call emission 分别属于
   ABI/package/runtime adapter gate，不属于当前 committed-instruction gate 的通过条件。
@@ -40,9 +40,9 @@ Serving integration 暂不纳入本文通过标准。
 | gate | 输入 | 通过条件 |
 | --- | --- | --- |
 | Frontend program | imported Wafer program: StableHLO/MLIR IR + metadata + parameter/resource payload | importer adapter diagnostics、parse/roundtrip、shape/dtype、constant normalization、sharding import source、payload binding、third-party dialect registration 合法 |
-| Target topology / device mesh | target descriptor / runtime capability / board profile | `wafer.target.topology` 规则 card/tile grid、card interconnect kind 和 unavailable endpoint exceptions 合法；`wafer.device.mesh` 是 valid connected rank domain |
-| Shardy propagation | StableHLO + user sharding seed or default no-user input seed + device mesh | logical mesh、SDY sharding seed、propagation 结果合法；不要求 partitioned local body |
-| SPMD partition program | sharding propagation stage 输出的 StableHLO/SDY IR + device mesh | XLA SPMD partitioner 或等价 stage 产出 partitioned/replicated-local StableHLO、rank-local shape、collective group 和 parameter shard binding 合法 |
+| Target topology / execution mesh | target descriptor / runtime capability / board profile | `wafer.target.topology` 规则 card/tile grid、card interconnect kind 和 unavailable endpoint exceptions 合法；`wafer.execution.mesh` 是 valid connected rank-domain policy，endpoint view 可由 topology 派生或由 explicit override 验证 |
+| Shardy propagation | StableHLO + user sharding seed or default no-user input seed + execution mesh | logical mesh、SDY sharding seed、propagation 结果合法；不要求 partitioned local body |
+| SPMD partition program | sharding propagation stage 输出的 StableHLO/SDY IR + execution mesh | XLA SPMD partitioner 或等价 stage 产出 partitioned/replicated-local StableHLO、rank-local shape、collective group 和 parameter shard binding 合法 |
 | Local compute normalization | partitioned or replicated-local StableHLO | Linalg/Tensor/SCF/Arith/Math structured semantics、DPS/indexing relation、fine-grained softmax/norm/RoPE staged form 合法；不执行 SPMD partition |
 | Tensor collective handoff | partitioned StableHLO collective | Wafer LinalgExt-style tensor collective op 合法；rank group、combiner/slice relation、DPS/tiling interface 可验证，且不含 `wafer.tile.*` communication、storage 或 DTE token |
 | `wafer.group` | local compute IR + tensor collective IR | group boundary、tiled SSA、multi-output/domain、resource feedback loop 合法 |
@@ -50,11 +50,11 @@ Serving integration 暂不纳入本文通过标准。
 | Layout | tile region | layout assignment、materialization cut、冗余 conversion cleanup 合法 |
 | SPM | tile region + demands | allocation、range/end-address、lifetime、reserved range 合法 |
 | DDR | tile region + launch boundary | external binding、workspace/constant demand、default DDR arena resource/capacity 合法 |
-| Shard binding / launch-block | committed instruction IR + logical rank/local shard facts + topology/device mesh | `wafer.shard.binding` 引用 device mesh，rank coverage、block id、endpoint availability 和 local shard bounds 合法 |
+| Shard binding / launch-block | committed instruction IR + logical rank/local shard facts + topology/execution mesh | `wafer.shard.binding` 引用 execution mesh，rank coverage、block id、endpoint availability 和 local shard bounds 合法 |
 | Compute / Movement | committed instruction IR + accepted offset facts | wrapper family、layout、dtype、shape、issue/drain 合法 |
 | Communication | tile_region / SPM materialization 后的 collective/p2p IR | endpoint、token、DTE/FSM resource、wait policy 合法 |
-| ABI / LLVM / golden packet | committed instruction IR + accepted offsets + topology/device-mesh/shard-binding + communication/sync lowering | LLVM dialect call 或 `wafer_*` C ABI / packet builder input 合法；ABI unit/address/wait verified，golden packet 覆盖 wrapper mapping；launch/resource view 从 IR 按需重算，不成为独立 artifact |
-| Object/package | ABI/LLVM artifact + committed IR + topology/device-mesh/shard-binding | object/link 最小验证；manifest 记录 object/program id、entrypoint、ABI version 和 IR-derived package metadata；endpoint/resource/constant metadata 由同一 resource view analysis 生成 |
+| ABI / LLVM / golden packet | committed instruction IR + accepted offsets + topology/execution-mesh/shard-binding + communication/sync lowering | LLVM dialect call 或 `wafer_*` C ABI / packet builder input 合法；ABI unit/address/wait verified，golden packet 覆盖 wrapper mapping；launch/resource view 从 IR 按需重算，不成为独立 artifact |
+| Object/package | ABI/LLVM artifact + committed IR + topology/execution-mesh/shard-binding | object/link 最小验证；manifest 记录 object/program id、entrypoint、ABI version 和 IR-derived package metadata；endpoint/resource/constant metadata 由同一 resource view analysis 生成 |
 | Runtime/board | package + adapter | runtime allocation object binding contract、stub shielding、launch/completion/error propagation 合法；板端 completion 在有卡环境验证 |
 
 Gate 通过只说明进入下一层的输入合法，不说明整个 compiler 已完成。
@@ -134,13 +134,13 @@ Multi-tile no communication：
 
 Direct DTE p2p：
 
-- `wafer.tile.*` communication p2p op 的 endpoint 来自 topology/device mesh。
+- `wafer.tile.*` communication p2p op 的 endpoint 来自 topology/execution mesh。
 - fixed-size unicast DTE helper lowering 合法。
 - DTE wait 与 local compute drain 分离。
 - FSM / packet / stream resource 不冲突。
 - 旧 `test/Transforms/comm-local-c-abi-issues.mlir` unit gate 已删除。后续 tile-level p2p 到
   committed Direct DTE issue/wait form 和 ABI/LLVM emission 的 gate 必须由 communication / ABI lowering 从 committed
-  instruction-level IR、topology/device-mesh/shard-binding contract 和 resource view analysis 恢复。
+  instruction-level IR、topology/execution-mesh/shard-binding contract 和 resource view analysis 恢复。
 
 Single-card collective：
 

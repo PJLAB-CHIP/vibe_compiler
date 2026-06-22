@@ -8,11 +8,12 @@ placement、DTE protocol、SPM buffer、layout materialization 或 runtime launc
 
 没有用户 `mark_sharding` 或其它可解释 sharding seed 的 program 不是 frontend 错误，但也不应
 直接绕过 SPMD 去后段补切分。P2.S1 应在 SPMD 层应用 Wafer 默认 sharding policy：该 policy
-消费 SPMD 前已经选择出的 `wafer.device.mesh`，用 mesh rank count / axes 生成 Shardy / SDY
+消费 SPMD 前已经选择出的 `wafer.execution.mesh`，用 mesh rank count / axes 生成 Shardy / SDY
 可解释的 function-input sharding seed；找不到合适切分维度时生成同一 mesh 上的 replicated
-seed。单卡默认 topology 配置是 4x4 / 16 tile；这个默认必须通过 topology/device mesh
-materialization 进入 SPMD，不是 SPMD 阶段自己写死的常量。后续切图、local body 和通信算子插入仍交给
-Shardy / XLA SPMD partitioner。
+seed。单卡默认 topology 配置是 4x4 / 16 tile；这个默认必须通过 topology/execution mesh
+materialization 进入 SPMD，不是 SPMD 阶段自己写死的常量。默认 execution mesh 使用所有 available
+endpoint；显式少用 tile 只能作为 debug、bring-up、小 workload 或资源隔离 override。后续切图、
+local body 和通信算子插入仍交给 Shardy / XLA SPMD partitioner。
 
 本文依赖：
 
@@ -45,7 +46,7 @@ Shardy / XLA SPMD partitioner。
 ```text
 StableHLO module
   + optional user Shardy/SDY annotations or importable sharding attrs
-  + wafer.device.mesh selected from valid target topology
+  + wafer.execution.mesh selected from valid target topology
   + default Wafer mesh policy when user sharding is absent
 ```
 
@@ -76,11 +77,11 @@ directory 是该 program 当前的序列化形式，不是与 MLIR 分离的第�
 ```text
 verified StableHLO / optional SDY program
   -> target topology import/materialization
-  -> valid wafer.device.mesh selection
+  -> valid wafer.execution.mesh selection
   -> if user sharding seed exists:
        sharding import / normalization
      else:
-       default Wafer input sharding seed from wafer.device.mesh
+       default Wafer input sharding seed from wafer.execution.mesh
   -> Shardy propagation
   -> XLA SPMD partitioner / equivalent local-body partitioning service
   -> partitioned StableHLO program
@@ -97,7 +98,7 @@ P2.S2 输出仍然是 logical partitioned program directory：
   `all_to_all` 和 `collective_permute`。
 
 没有用户 sharding seed 的 P2.F1 program 也进入 SPMD stage，但只允许由默认 policy 根据
-`wafer.device.mesh` 补 Shardy / SDY 可解释的 function-input sharding seed。不能把“没有用户 sharding metadata”诊断成 P2.S1 verifier
+`wafer.execution.mesh` 补 Shardy / SDY 可解释的 function-input sharding seed。不能把“没有用户 sharding metadata”诊断成 P2.S1 verifier
 失败，也不能补 `wafer.spmd.*`、私有 JSON、名字约定或后段 placement fallback。
 
 这些字段必须来自 IR、SDY attr、StableHLO collective metadata 或 importer 已 materialize 的
@@ -185,7 +186,7 @@ P2.S2 工程 gate 必须把 XLA SPMD partitioner 或等价 local-body partitioni
 - no-user-sharding 分支当前只在文本 StableHLO/SDY program 中用
   `--wafer-apply-default-spmd-sharding` / `wafer-propagate-stablehlo-sharding` 补 function-input seed；
   P2.S2 再消费该 stage 输出 program。默认 policy 的 rank count / axes 必须来自
-  `wafer.device.mesh`；在 device mesh 尚未落地的过渡 fixture 中，才允许显式使用单卡默认
+  `wafer.execution.mesh`；在 execution mesh 尚未落地的过渡 fixture 中，才允许显式使用单卡默认
   4x4 / 16 tile topology config 作为输入。默认 policy 只标记输入/参数，不给中间 op 或 function
   result 造约束。
 - P2.S2 输出的 partitioned program directory 必须由 Wafer-owned compiler stage 保存。`functions/forward.mlir`
@@ -258,8 +259,8 @@ P2.S1/P2.S2 的 program 生成入口应保持使用同一 4096 matmul source gra
 PyTorch module
   -> optional torch_xla.distributed.spmd.mark_sharding / torch.ops.xla.dynamo_mark_sharding
   -> PyTorch/XLA StableHLO / SDY program       # frontend Python stops here
-  -> target topology / valid device mesh materialization
-  -> if no user sharding seed exists, apply Wafer default function-input seed from device mesh
+  -> target topology / valid execution mesh materialization
+  -> if no user sharding seed exists, apply Wafer default function-input seed from execution mesh
   -> Wafer Shardy propagation
   -> Wafer-owned XLA SPMD partition compiler stage
   -> partitioned StableHLO program
@@ -329,24 +330,24 @@ seed 包括 function argument/result 上的 `sdy.sharding`、中间 value 的 `s
 等价 SDY / StableHLO sharding 表示。用户可能只标记少数关键 op / value，再依赖 Shardy
 propagation 推到整图；默认 policy 不能覆盖、补齐或重解释这些用户 seed。
 
-当 graph 完全没有用户 sharding seed 时，P2.S1 默认 policy 从 `wafer.device.mesh` 创建
+当 graph 完全没有用户 sharding seed 时，P2.S1 默认 policy 从 `wafer.execution.mesh` 创建
 Shardy/SDY 可解释的 logical mesh：
 
 ```text
-@wafer_default_mesh = <axes and sizes from wafer.device.mesh>
+@wafer_default_mesh = <axes and sizes from wafer.execution.mesh>
 ```
 
-mesh rank count 和 axes 来自 `wafer.device.mesh`。单卡默认 topology 配置是 4x4 / 16 tile，
-通常选择 16-rank mesh；调试和对照验证可以显式选择 1-rank replicated mesh。这个 mesh 是
+mesh rank count 和 axes 来自 `wafer.execution.mesh`。单卡默认 topology 配置是 4x4 / 16 tile，
+默认选择 16-rank mesh；调试、bring-up、小 workload 和资源隔离可以显式选择较小 mesh。这个 mesh 是
 SPMD logical mesh 的来源，不是后段 placement map；physical endpoint、unavailable tile 例外和
-card/tile adjacency 仍由 `wafer.target.topology` / `wafer.device.mesh` 保存或从规则 grid 派生，
+card/tile adjacency 仍由 `wafer.target.topology` / `wafer.execution.mesh` 的 derived view 派生，
 不写入 StableHLO/SDY module。
 
 默认 policy 主要标记 function inputs / parameters 的 sharding seed，不主动给中间 op 或 function
 results 下约束。Shardy propagation 负责把 seed 推到内部 value 和结果，XLA SPMD partitioner
 负责产生 local body 和必要 collective / permute。第一版可采用保守 deterministic heuristic：
 
-- 对每个 ranked tensor function input，选择第一个静态且能被 device mesh rank count 整除的维度绑定
+- 对每个 ranked tensor function input，选择第一个静态且能被 execution mesh rank count 整除的维度绑定
   mesh axis。多轴 mesh 可先按 deterministic axis order 选择；更复杂的 dim-to-axis cost model 属于
   后续 SPMD / placement co-design，不改变 IR 合同。
 - 如果没有这样的维度，或 rank count 为 1，该 input 在对应 mesh axis 上 replicated。
@@ -355,7 +356,7 @@ results 下约束。Shardy propagation 负责把 seed 推到内部 value 和结�
 - 默认 policy 只生成 SDY / StableHLO 可解释的 sharding seed，不生成 `wafer.spmd.*`、placement op、
   package manifest 或其它后段协议。
 
-这个 policy 的目标是让未显式标记的图默认利用已选择的 valid device mesh，同时仍把通信插入和
+这个 policy 的目标是让未显式标记的图默认利用已选择的 valid execution mesh，同时仍把通信插入和
 per-rank local body 生成留在 SPMD partitioner 内。找不到合适切分维度时的 replicated seed 不是
 放弃 SPMD；它是明确的 replicated sharding seed，后续仍可通过同一 SPMD pipeline 产出等价 local
 program。
@@ -396,8 +397,8 @@ Logical mesh 是 model-level parallelism 的语义对象：
 
 - mesh axes 表示数据并行、张量并行、pipeline 并行等逻辑维度。
 - rank group 和 replica group 由 sharding propagation / partition 产生。
-- logical rank identity 来自 `wafer.device.mesh` 的 rank domain，但不是 physical tile id。
-- logical mesh 可以大于单卡或跨卡；physical feasibility 由 SPMD 前的 target topology / device mesh
+- logical rank identity 来自 `wafer.execution.mesh` 的 rank domain，但不是 physical tile id。
+- logical mesh 可以大于单卡或跨卡；physical feasibility 由 SPMD 前的 target topology / execution mesh
   selection 和 runtime capability 阶段判断。
 
 如果某个 parallel strategy 只能用 physical tile name 表达，说明它不属于 Shardy / SPMD 阶段。
@@ -453,12 +454,12 @@ frontend verifier tool 显式注册 Shardy / SDY dialect，`wafer-opt` 也注册
 group/tiling 输入。SPMD program stage 的任务是通过真实 partitioner 输出和 program verifier 保留这些事实，
 R2.4/R6 再分别恢复 tensor collective handoff 和 tile-local comm lowering。
 
-## 5. 与 Topology / Device Mesh 的接口
+## 5. 与 Topology / Execution Mesh 的接口
 
-SPMD 消费的 topology / device mesh 输入是：
+SPMD 消费的 topology / execution mesh 输入是：
 
-- valid `wafer.device.mesh` 的 logical mesh shape、axis 和 rank count。
-- `wafer.device.mesh` 引用的 `wafer.target.topology`，用于确认 rank domain 来自 available connected
+- valid `wafer.execution.mesh` 的 logical mesh shape、axis 和 rank count。
+- `wafer.execution.mesh` 引用的 `wafer.target.topology`，用于确认 rank domain 来自 available connected
   topology；SPMD 不直接消费 physical route 或 DTE resource。
 
 SPMD 输出给后续 shard-binding / communication / package 的 facts 是：
@@ -468,9 +469,9 @@ SPMD 输出给后续 shard-binding / communication / package 的 facts 是：
 - collective communication pattern。
 - optional cost hints，例如通信 volume 或 reuse pattern。
 
-device mesh 中的 rank->physical endpoint embedding 一旦影响 codegen，就属于
-`wafer.device.mesh` / launch metadata 派生 view，而不是 Shardy attr 的修改。后续 launch/block
-binding 只能补 block id 这类 launch identity，不能复制 rank->tile。
+execution mesh 的 derived / explicit endpoint view 一旦影响 codegen，就属于
+`wafer.execution.mesh` + `wafer.target.topology` / launch metadata 派生 view，而不是 Shardy attr 的
+修改。后续 launch/block binding 只能补 block id 这类 launch identity，不能复制 rank->tile。
 
 SPMD 不应该为了某个 physical tile id 编码重新解释 StableHLO semantics。mesh selection 可以在
 SPMD 前拒绝、重排或拆分 requested logical mesh；SPMD 之后不能再通过 placement 改变 partition
@@ -484,10 +485,10 @@ SPMD 前拒绝、重排或拆分 requested logical mesh；SPMD 之后不能再�
 | --- | --- | --- |
 | sharding import | StableHLO + old attrs | Shardy/SDY annotations |
 | propagation | partially annotated module | fully propagated or diagnosed module |
-| SPMD partition | annotated global module + valid device mesh | partitioned StableHLO |
+| SPMD partition | annotated global module + valid execution mesh | partitioned StableHLO |
 | per-rank program selection | partitioned StableHLO + rank selection policy | verified local-rank StableHLO program |
 | collective tensor normalization | partitioned StableHLO collective ops | Wafer LinalgExt-style tensor collective IR |
-| communication materialization | tiled tensor collective + storage values + topology/device mesh | `wafer.tile.*` communication collective-level op or explicit p2p schedule |
+| communication materialization | tiled tensor collective + storage values + topology/execution mesh | `wafer.tile.*` communication collective-level op or explicit p2p schedule |
 
 这些 pass 的合法输出不包含 Wafer physical memory space、tile coordinates、DTE resource 或
 runtime package metadata。
@@ -497,7 +498,7 @@ runtime package metadata。
 必须检查：
 
 - 每个 sharded value 的 shard rank、shape、dtype 与 global type 一致。
-- logical mesh axes、rank count 和 rank group 与 `wafer.device.mesh` 可对齐。
+- logical mesh axes、rank count 和 rank group 与 `wafer.execution.mesh` 可对齐。
 - collective 的 replica group、source/target rank 和 value type 一致。
 - partitioned function boundary 不丢失 user-visible input/output 语义。
 - SPMD 输出中没有 physical tile id、SPM offset、DTE resource 或 packet field。
@@ -527,8 +528,8 @@ P2.S2 的完成证明必须至少覆盖：
   metadata 能进入 `wafer.tile.*` communication `rank_group`，但该 最小验证 不能作为 P2.S2、R2.4 或 group/tiling
   完成证明。
 - no-user-sharding P2.F1 program 必须通过默认 policy 生成 function-input sharding seed：rank count
-  和 axes 来自 `wafer.device.mesh`。单卡 4x4 / 16 tile 是默认 topology 配置；1-rank replicated
-  只能作为调试/对照 device mesh config 进入，不作为 SPMD 长期协议字段。
+  和 axes 来自 `wafer.execution.mesh`。单卡 4x4 / 16 tile 是默认 topology 配置；1-rank replicated
+  只能作为显式 debug/bring-up execution mesh override 进入，不作为 SPMD 长期协议字段。
 - 默认 policy 遇到 graph 内任意用户 sharding seed 时必须跳过，不覆盖用户只标了关键 op 后由
   Shardy propagation 推导整图的用法。
 
@@ -540,7 +541,7 @@ per-rank program
   -> tensor collective normalization if collectives exist
   -> logical group
   -> tile_region materialization
-  -> topology/device-mesh/shard-binding / communication / memory planning gate
+  -> topology/execution-mesh/shard-binding / communication / memory planning gate
 ```
 
 手写 `sdy.mesh` / StableHLO collective fixture 只保留为 dialect/verifier/unit 级测试。它不能替代
