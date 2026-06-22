@@ -6,9 +6,10 @@
 # RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[32,16],"dtype":"float32","dynamic_dims":[]},{"shape":[16,8],"dtype":"float32","dynamic_dims":[]}],"output_signature":[{"shape":[32,8],"dtype":"float32","dynamic_dims":[]}],"input_locations":[{"type_":"input_arg","position":0,"name":"lhs"},{"type_":"input_arg","position":1,"name":"rhs"}],"unused_inputs":[]}\n' > %t.input.program/functions/forward.meta
 # RUN: printf 'bytecode member must be preserved\n' > %t.input.program/functions/forward.bytecode
 # RUN: printf 'payload member must be preserved\n' > %t.input.program/data/aux.payload
-# RUN: printf '%b' '#!/usr/bin/env bash\nset -euo pipefail\ninput=""\noutput=""\nwhile [[ $# -gt 0 ]]; do\n  case "$1" in\n    --input-program-dir) input="$2"; shift 2 ;;\n    --output-program-dir) output="$2"; shift 2 ;;\n    --entry-function|--logical-rank-count) shift 2 ;;\n    *) shift ;;\n  esac\ndone\ntest -f "$input/functions/forward.bytecode"\ntest -f "$input/data/aux.payload"\nrm -rf "$output"\nmkdir -p "$output"\ncp -R "$input/." "$output/"\n' > %t.fake-helper
+# RUN: printf '%b' '#!/usr/bin/env bash\nset -euo pipefail\ninput=""\noutput=""\nrank_count=""\nwhile [[ $# -gt 0 ]]; do\n  case "$1" in\n    --input-program-dir) input="$2"; shift 2 ;;\n    --output-program-dir) output="$2"; shift 2 ;;\n    --logical-rank-count) rank_count="$2"; shift 2 ;;\n    --entry-function) shift 2 ;;\n    *) shift ;;\n  esac\ndone\ntest "$rank_count" = "16"\ntest -f "$input/functions/forward.bytecode"\ntest -f "$input/data/aux.payload"\nrm -rf "$output"\nmkdir -p "$output"\ncp -R "$input/." "$output/"\n' > %t.fake-helper
 # RUN: chmod +x %t.fake-helper
 # RUN: env WAFER_XLA_SPMD_PARTITIONER_HELPER=%t.fake-helper wafer-opt --program-pipeline=stablehlo-spmd --input-program-dir %t.input.program --output-program-dir %t.partitioned.program --default-tile-count=16 | FileCheck %s
+# RUN: FileCheck %s --input-file=%t.partitioned.program/functions/forward.mlir --check-prefix=PIPELINE-MLIR
 # RUN: test -f %t.partitioned.program/functions/forward.bytecode
 # RUN: test -f %t.partitioned.program/data/aux.payload
 # RUN: not wafer-opt --program-pipeline=not-a-pipeline --input-program-dir %t.input.program --output-program-dir %t.partitioned.program 2>&1 | FileCheck %s --check-prefix=BAD-PIPELINE
@@ -17,6 +18,9 @@
 # RUN: not wafer-opt --partition-stablehlo-program %t.input.program 2>&1 | FileCheck %s --check-prefix=OLD-PARTITION
 
 # CHECK: wafer-opt: completed Wafer program pipeline stablehlo-spmd:
+
+# PIPELINE-MLIR: wafer.target.topology @default
+# PIPELINE-MLIR: wafer.execution.mesh @default_mesh
 
 # BAD-PIPELINE: wafer-opt: unknown Wafer program pipeline: not-a-pipeline
 

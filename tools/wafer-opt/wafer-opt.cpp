@@ -3,6 +3,7 @@
 #include "Wafer/Frontend/InitImporterDialects.h"
 #include "Wafer/Frontend/Program.h"
 #include "Wafer/InitAll.h"
+#include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Pipelines/Pipelines.h"
 #include "Wafer/Transforms/Passes.h"
 
@@ -29,6 +30,7 @@
 #include "mlir/Transforms/Passes.h"
 
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
@@ -37,6 +39,7 @@
 
 #include <cstdint>
 #include <cstdlib>
+#include <limits>
 #include <string>
 
 #ifdef WAFER_ENABLE_SHARDY
@@ -216,6 +219,110 @@ bool stageProgramWithPropagatedModule(mlir::ModuleOp module,
   return writeProgramModule(module, stagedProgramDir);
 }
 
+bool checkedMul(int64_t lhs, int64_t rhs, int64_t &result) {
+  if (lhs < 0 || rhs < 0)
+    return false;
+  if (lhs != 0 && rhs > std::numeric_limits<int64_t>::max() / lhs)
+    return false;
+  result = lhs * rhs;
+  return true;
+}
+
+std::string buildDefaultExplicitEndpoints(int64_t rankCount) {
+  std::string endpoints;
+  for (int64_t rank = 0; rank < rankCount; ++rank) {
+    if (!endpoints.empty())
+      endpoints += ",";
+    endpoints += "0,0,";
+    endpoints += std::to_string(rank / 4);
+    endpoints += ",";
+    endpoints += std::to_string(rank % 4);
+  }
+  return endpoints;
+}
+
+std::string findTargetTopologyName(mlir::ModuleOp module) {
+  std::string topologyName;
+  module.walk([&](wafer::TargetTopologyOp topologyOp) {
+    if (topologyName.empty())
+      topologyName = topologyOp.getSymName().str();
+  });
+  return topologyName;
+}
+
+bool hasExecutionMesh(mlir::ModuleOp module) {
+  bool found = false;
+  module.walk([&](wafer::ExecutionMeshOp) {
+    found = true;
+    return mlir::WalkResult::interrupt();
+  });
+  return found;
+}
+
+bool ensureTargetTopologyAndExecutionMesh(mlir::ModuleOp module,
+                                          int64_t defaultTileCount) {
+  if (defaultTileCount < 1 || defaultTileCount > 16) {
+    module.emitOpError("default-tile-count must be in [1, 16]");
+    return true;
+  }
+
+  mlir::PassManager pm(module.getContext());
+  std::string topologyName = findTargetTopologyName(module);
+  if (topologyName.empty()) {
+    pm.addPass(wafer::createMaterializeTargetTopologyPass());
+    topologyName = "default";
+  }
+
+  if (!hasExecutionMesh(module)) {
+    wafer::MaterializeExecutionMeshPassOptions meshOptions;
+    meshOptions.topologyName = topologyName;
+    if (defaultTileCount != 16) {
+      meshOptions.policy = "explicit";
+      meshOptions.shape = std::to_string(defaultTileCount);
+      meshOptions.endpoints = buildDefaultExplicitEndpoints(defaultTileCount);
+    }
+    pm.addPass(wafer::createMaterializeExecutionMeshPass(meshOptions));
+  }
+
+  return mlir::failed(pm.run(module));
+}
+
+mlir::FailureOr<int64_t>
+getExecutionMeshRankCount(mlir::ModuleOp module,
+                          llvm::StringRef meshName = "default_mesh") {
+  wafer::ExecutionMeshOp meshOp =
+      module.lookupSymbol<wafer::ExecutionMeshOp>(meshName);
+  if (!meshOp) {
+    module.walk([&](wafer::ExecutionMeshOp candidate) {
+      if (!meshOp)
+        meshOp = candidate;
+    });
+  }
+  if (!meshOp) {
+    module.emitOpError("requires wafer.execution.mesh before SPMD stage");
+    return mlir::failure();
+  }
+
+  int64_t rankCount = 1;
+  for (int64_t dim : meshOp.getShapeAttr().asArrayRef()) {
+    if (!checkedMul(rankCount, dim, rankCount)) {
+      meshOp.emitOpError("rank count is too large");
+      return mlir::failure();
+    }
+  }
+  return rankCount;
+}
+
+void eraseTargetTopologyAndExecutionMesh(mlir::ModuleOp module) {
+  llvm::SmallVector<mlir::Operation *> opsToErase;
+  module.walk([&](mlir::Operation *op) {
+    if (mlir::isa<wafer::TargetTopologyOp, wafer::ExecutionMeshOp>(op))
+      opsToErase.push_back(op);
+  });
+  for (mlir::Operation *op : opsToErase)
+    op->erase();
+}
+
 struct WaferProgramPipelineOptions {
   std::string pipelineName;
   std::string inputProgramDir;
@@ -349,6 +456,13 @@ int runStableHLOSPMDStage(llvm::StringRef inputProgramDir,
   if (!module)
     return 1;
 
+  if (ensureTargetTopologyAndExecutionMesh(*module, defaultTileCount))
+    return 1;
+  mlir::FailureOr<int64_t> logicalRankCount =
+      getExecutionMeshRankCount(*module);
+  if (mlir::failed(logicalRankCount))
+    return 1;
+
   mlir::PassManager pm(&context);
   wafer::buildStablehloShardingPropagationPipeline(pm, defaultTileCount);
   if (mlir::failed(pm.run(*module)))
@@ -369,7 +483,9 @@ int runStableHLOSPMDStage(llvm::StringRef inputProgramDir,
     return 1;
   }
 
-  if (stageProgramWithPropagatedModule(*module, inputProgramDir,
+  mlir::OwningOpRef<mlir::ModuleOp> helperModule = module->clone();
+  eraseTargetTopologyAndExecutionMesh(*helperModule);
+  if (stageProgramWithPropagatedModule(*helperModule, inputProgramDir,
                                        stagedProgramDir)) {
     llvm::sys::fs::remove_directories(stagedProgramDir);
     return 1;
@@ -378,13 +494,13 @@ int runStableHLOSPMDStage(llvm::StringRef inputProgramDir,
   std::string helper = helperPath.str();
   std::string staged = stagedProgramDir.str().str();
   std::string output = outputProgramDir.str();
-  std::string logicalRankCount = std::to_string(defaultTileCount);
+  std::string logicalRankCountArg = std::to_string(*logicalRankCount);
   llvm::SmallVector<llvm::StringRef, 8> args = {
       helper,           "--input-program-dir",
       staged,           "--output-program-dir",
       output,           "--entry-function",
       "forward",        "--logical-rank-count",
-      logicalRankCount,
+      logicalRankCountArg,
   };
   int exitCode = llvm::sys::ExecuteAndWait(helper, args);
   llvm::sys::fs::remove_directories(stagedProgramDir);
@@ -400,6 +516,8 @@ int runStableHLOSPMDStage(llvm::StringRef inputProgramDir,
   mlir::OwningOpRef<mlir::ModuleOp> outputModule =
       parseAndVerifyStableHLOProgramDir(outputProgramDir, context, &result);
   if (!outputModule)
+    return 1;
+  if (ensureTargetTopologyAndExecutionMesh(*outputModule, defaultTileCount))
     return 1;
   if (writeProgramModule(*outputModule, outputProgramDir))
     return 1;

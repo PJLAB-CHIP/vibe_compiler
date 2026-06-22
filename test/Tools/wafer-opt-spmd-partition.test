@@ -24,6 +24,10 @@
 # VERIFY: wafer-compile-stablehlo: verified StableHLO program
 
 # MLIR: mhlo.spmd_parameters_shardings
+# MLIR: wafer.target.topology @default
+# MLIR: wafer.execution.mesh @default_mesh
+# MLIR-SAME: policy = "all_available"
+# MLIR-SAME: shape = array<i64: 16>
 # MLIR: func.func @main
 # MLIR: tensor<2xf32>
 # MLIR: tensor<32x2xf32>
@@ -48,5 +52,7 @@
 # SHARDS: "name": "weight"
 
 # MATRIX-MLIR: mhlo.spmd_parameters_shardings
+# MATRIX-MLIR: wafer.target.topology @default
+# MATRIX-MLIR: wafer.execution.mesh @default_mesh
 # MATRIX-MLIR: func.func @main
 # MATRIX-MLIR: wafer.shard.binding

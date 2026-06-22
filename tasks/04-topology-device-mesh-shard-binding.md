@@ -64,8 +64,10 @@ Pipeline position:
 - Downstream consumer:
   communication lowering、ABI/LLVM lowering、package manifest 和 runtime adapter。
 - User-level driver / named pipeline:
-  `wafer-plan-placement` pass 和 `wafer-lower-groups-to-placement` named pipeline。该 pipeline
-  在 committed selected-instr boundary 之后追加 placement；用户不应手工拼 placement fixture 作为主线。
+  `wafer-opt --program-pipeline=stablehlo-spmd*` 在 SPMD 前 materialize `wafer.target.topology` /
+  `wafer.execution.mesh`，并让默认 SPMD seed 从 execution mesh rank count / axes 取数。
+  `wafer-plan-placement` pass 和 `wafer-lower-groups-to-placement` named pipeline 是后续 placement
+  过渡入口；用户不应手工拼 placement fixture 作为主线。
 - Explicit non-goals:
   不重新做 group/candidate/tile shape/layout/SPM/DDR planning；不生成 DTE route、ABI call、packet、
   object、package、runtime handle 或 physical address；不靠 tensor 名字恢复 shard 语义。
@@ -420,6 +422,8 @@ V0 支持：
   multi-card grid、mesh/torus kind 和 unavailable endpoint coord tuples。
 - 默认从 available connected topology materialize `all_available` `wafer.execution.mesh`。
 - 显式 `explicit` execution mesh override，用于 debug、小 workload、资源隔离或非默认 endpoint placement。
+- `wafer-opt --program-pipeline=stablehlo-spmd*` materialize 默认 `wafer.target.topology` 和
+  `wafer.execution.mesh`，`wafer-apply-default-spmd-sharding` 消费 execution mesh 生成 SDY mesh。
 - SPMD 基于 `wafer.execution.mesh` 做 sharding propagation 和 parameter shard binding。
 - single-tile placement。
 - single-card 2/4/8/16 tile cluster。
