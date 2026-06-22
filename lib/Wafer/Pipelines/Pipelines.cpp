@@ -45,19 +45,19 @@ struct PlacementPipelineOptions
                      "wafer.shard.binding or falls back to one rank"),
       llvm::cl::init(0)};
   Option<int64_t> cardYCount{
-      *this, "card-y-count",
+      *this, "card-y",
       llvm::cl::desc("number of Wafer card rows in the target topology"),
       llvm::cl::init(1)};
   Option<int64_t> cardXCount{
-      *this, "card-x-count",
+      *this, "card-x",
       llvm::cl::desc("number of Wafer card columns in the target topology"),
       llvm::cl::init(1)};
   Option<int64_t> tileYCount{
-      *this, "tile-y-count",
+      *this, "tile-y",
       llvm::cl::desc("number of tile rows per card in the target topology"),
       llvm::cl::init(4)};
   Option<int64_t> tileXCount{
-      *this, "tile-x-count",
+      *this, "tile-x",
       llvm::cl::desc("number of tile columns per card in the target topology"),
       llvm::cl::init(4)};
   Option<std::string> badTileIds{

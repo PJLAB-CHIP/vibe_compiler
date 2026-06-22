@@ -107,9 +107,9 @@ Wafer physical topology 由规则 card grid 和每张卡内规则 tile grid 组�
 tile graph dump，而是规则拓扑加少量例外：
 
 ```text
-card_grid:         [card_y_count, card_x_count]
+card_grid:         [card_rows, card_cols]
 card_interconnect: mesh | torus
-tile_grid:         [tile_y_count, tile_x_count]
+tile_grid:         [tile_rows, tile_cols]
 unavailable_tiles: [card_y, card_x, tile_y, tile_x] tuples
 ```
 

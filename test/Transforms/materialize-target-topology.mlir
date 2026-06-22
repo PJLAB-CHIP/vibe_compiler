@@ -1,6 +1,6 @@
 // RUN: wafer-opt --wafer-materialize-target-topology %s | FileCheck %s
-// RUN: wafer-opt --wafer-materialize-target-topology='card-y-count=4 card-x-count=8 tile-y-count=4 tile-x-count=4 unavailable-tiles=0,0,0,1,0,0,1,0' %s | FileCheck --check-prefix=UNAVAILABLE %s
-// RUN: wafer-opt --wafer-materialize-target-topology='card-y-count=4 card-x-count=8 card-interconnect=torus tile-y-count=4 tile-x-count=4' %s | FileCheck --check-prefix=TORUS %s
+// RUN: wafer-opt --wafer-materialize-target-topology='card-y=4 card-x=8 tile-y=4 tile-x=4 unavailable-tiles=0,0,0,1,0,0,1,0' %s | FileCheck --check-prefix=UNAVAILABLE %s
+// RUN: wafer-opt --wafer-materialize-target-topology='card-y=4 card-x=8 card-interconnect=torus tile-y=4 tile-x=4' %s | FileCheck --check-prefix=TORUS %s
 // RUN: not wafer-opt --wafer-materialize-target-topology='card-interconnect=ring' %s 2>&1 | FileCheck --check-prefix=BAD-INTERCONNECT %s
 // RUN: not wafer-opt --wafer-materialize-target-topology='unavailable-tiles=0,0,0' %s 2>&1 | FileCheck --check-prefix=BAD-UNAVAILABLE %s
 

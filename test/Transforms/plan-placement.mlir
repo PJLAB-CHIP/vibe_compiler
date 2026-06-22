@@ -1,4 +1,4 @@
-// RUN: wafer-opt --wafer-plan-placement='logical-rank-count=6 card-y-count=1 card-x-count=2 tile-y-count=2 tile-x-count=2 bad-tile-ids=1,4' %s | FileCheck %s
+// RUN: wafer-opt --wafer-plan-placement='logical-rank-count=6 card-y=1 card-x=2 tile-y=2 tile-x=2 bad-tile-ids=1,4' %s | FileCheck %s
 
 module {
 }

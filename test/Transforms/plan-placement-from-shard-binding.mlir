@@ -1,4 +1,4 @@
-// RUN: wafer-opt --wafer-plan-placement='card-y-count=1 card-x-count=1 tile-y-count=1 tile-x-count=2' %s | FileCheck %s
+// RUN: wafer-opt --wafer-plan-placement='card-y=1 card-x=1 tile-y=1 tile-x=2' %s | FileCheck %s
 
 module {
   func.func @forward(%arg0: tensor<1x4xf32>) {

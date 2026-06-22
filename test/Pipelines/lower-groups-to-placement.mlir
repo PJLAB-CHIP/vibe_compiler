@@ -1,4 +1,4 @@
-// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-groups-to-placement{logical-rank-count=2 card-y-count=1 card-x-count=1 tile-y-count=1 tile-x-count=2})' %s | FileCheck --implicit-check-not=selected_group %s
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-groups-to-placement{logical-rank-count=2 card-y=1 card-x=1 tile-y=1 tile-x=2})' %s | FileCheck --implicit-check-not=selected_group %s
 
 func.func @pipeline_elementwise(%lhs: tensor<8xf32>, %rhs: tensor<8xf32>,
                                 %out: tensor<8xf32>) -> tensor<8xf32> {
