@@ -2,113 +2,72 @@
 
 #include "Wafer/IR/WaferDialect.h"
 
-#include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/DenseSet.h"
-#include "llvm/ADT/STLExtras.h"
-
 using namespace wafer;
 
 namespace {
 
-static bool isSupportedEncoding(llvm::StringRef encoding) {
-  return encoding == "row_major_4d" || encoding == "card_major_4d" ||
-         encoding == "runtime_capability" || encoding == "imported";
+static bool isSupportedCardInterconnect(llvm::StringRef interconnect) {
+  return interconnect == "mesh" || interconnect == "torus";
 }
 
-static mlir::LogicalResult
-recordAvailability(mlir::Operation *op, llvm::StringRef setName,
-                   llvm::ArrayRef<int64_t> ids,
-                   const llvm::DenseSet<int64_t> &knownTileIds,
-                   llvm::DenseMap<int64_t, llvm::StringRef> &seenAvailability) {
-  llvm::DenseSet<int64_t> seenInSet;
-  for (int64_t id : ids) {
-    if (!knownTileIds.contains(id))
-      return op->emitOpError()
-             << setName << " tile id " << id
-             << " does not reference a known encoded tile id";
-    if (!seenInSet.insert(id).second)
-      return op->emitOpError()
-             << setName << " contains duplicate encoded tile id " << id;
-    auto inserted = seenAvailability.try_emplace(id, setName);
-    if (!inserted.second)
-      return op->emitOpError()
-             << "encoded tile id " << id
-             << " appears in multiple availability sets";
-  }
+static mlir::LogicalResult verifyGrid(mlir::Operation *op,
+                                      llvm::StringRef attrName,
+                                      llvm::ArrayRef<int64_t> grid) {
+  if (grid.size() != 2)
+    return op->emitOpError()
+           << attrName << " must contain row and column counts";
+  if (grid[0] <= 0 || grid[1] <= 0)
+    return op->emitOpError() << attrName << " entries must be positive";
   return mlir::success();
 }
 
 } // namespace
 
 mlir::LogicalResult TargetTopologyOp::verify() {
-  if (!isSupportedEncoding(getIdEncodingAttr().getValue()))
-    return emitOpError("unsupported tile id encoding provenance");
+  llvm::ArrayRef<int64_t> cardGrid = getCardGridAttr().asArrayRef();
+  if (mlir::failed(verifyGrid(getOperation(), "card_grid", cardGrid)))
+    return mlir::failure();
 
-  mlir::ArrayAttr axes = getAxesAttr();
-  if (axes.empty())
-    return emitOpError("axes must not be empty");
+  llvm::StringRef cardInterconnect = getCardInterconnectAttr().getValue();
+  if (!isSupportedCardInterconnect(cardInterconnect))
+    return emitOpError("card_interconnect must be mesh or torus");
 
-  llvm::DenseSet<llvm::StringRef> seenAxes;
-  for (mlir::Attribute axisAttr : axes) {
-    auto axis = mlir::cast<mlir::StringAttr>(axisAttr).getValue();
-    if (axis.empty())
-      return emitOpError("axis name must not be empty");
-    if (!seenAxes.insert(axis).second)
-      return emitOpError("axis name must be unique");
-  }
+  llvm::ArrayRef<int64_t> tileGrid = getTileGridAttr().asArrayRef();
+  if (mlir::failed(verifyGrid(getOperation(), "tile_grid", tileGrid)))
+    return mlir::failure();
 
-  llvm::ArrayRef<int64_t> tileIds = getTileIdsAttr().asArrayRef();
-  if (tileIds.empty())
-    return emitOpError("tile_ids must not be empty");
-
-  llvm::ArrayRef<int64_t> tileCoords = getTileCoordsAttr().asArrayRef();
-  int64_t axisCount = static_cast<int64_t>(axes.size());
-  if (static_cast<int64_t>(tileCoords.size()) !=
-      static_cast<int64_t>(tileIds.size()) * axisCount)
+  llvm::ArrayRef<int64_t> unavailableTiles =
+      getUnavailableTilesAttr().asArrayRef();
+  if (unavailableTiles.size() % 4 != 0)
     return emitOpError(
-        "tile_coords length must equal tile_ids length times axis count");
+        "unavailable_tiles must contain card_y/card_x/tile_y/tile_x tuples");
 
-  llvm::DenseSet<int64_t> knownTileIds;
-  for (int64_t id : tileIds) {
-    if (id < 0)
-      return emitOpError("encoded tile ids must be non-negative");
-    if (!knownTileIds.insert(id).second)
-      return emitOpError("maps multiple tile coordinates to encoded tile id ")
-             << id;
-  }
+  for (size_t index = 0; index < unavailableTiles.size(); index += 4) {
+    int64_t cardY = unavailableTiles[index];
+    int64_t cardX = unavailableTiles[index + 1];
+    int64_t tileY = unavailableTiles[index + 2];
+    int64_t tileX = unavailableTiles[index + 3];
+    if (cardY < 0 || cardY >= cardGrid[0])
+      return emitOpError("unavailable_tiles card_y coordinate ")
+             << cardY << " is outside card_grid";
+    if (cardX < 0 || cardX >= cardGrid[1])
+      return emitOpError("unavailable_tiles card_x coordinate ")
+             << cardX << " is outside card_grid";
+    if (tileY < 0 || tileY >= tileGrid[0])
+      return emitOpError("unavailable_tiles tile_y coordinate ")
+             << tileY << " is outside tile_grid";
+    if (tileX < 0 || tileX >= tileGrid[1])
+      return emitOpError("unavailable_tiles tile_x coordinate ")
+             << tileX << " is outside tile_grid";
 
-  for (auto [index, coord] : llvm::enumerate(tileCoords)) {
-    if (coord < 0)
-      return emitOpError("tile coordinate entry ")
-             << static_cast<int64_t>(index) << " must be non-negative";
-  }
-
-  llvm::DenseMap<int64_t, llvm::StringRef> seenAvailability;
-  if (mlir::failed(recordAvailability(
-          getOperation(), "available", getAvailableTileIdsAttr().asArrayRef(),
-          knownTileIds, seenAvailability)))
-    return mlir::failure();
-  if (mlir::failed(recordAvailability(getOperation(), "bad",
-                                      getBadTileIdsAttr().asArrayRef(),
-                                      knownTileIds, seenAvailability)))
-    return mlir::failure();
-  if (mlir::failed(recordAvailability(
-          getOperation(), "pg-disabled",
-          getPgDisabledTileIdsAttr().asArrayRef(), knownTileIds,
-          seenAvailability)))
-    return mlir::failure();
-
-  if (seenAvailability.size() != knownTileIds.size())
-    return emitOpError("every encoded tile id must appear in exactly one "
-                       "availability set");
-
-  llvm::ArrayRef<int64_t> links = getLinksAttr().asArrayRef();
-  if (links.size() % 2 != 0)
-    return emitOpError("links must contain source/destination tile id pairs");
-  for (int64_t endpoint : links) {
-    if (!knownTileIds.contains(endpoint))
-      return emitOpError("link endpoint ")
-             << endpoint << " does not reference a known encoded tile id";
+    for (size_t priorIndex = 0; priorIndex < index; priorIndex += 4) {
+      if (unavailableTiles[priorIndex] == cardY &&
+          unavailableTiles[priorIndex + 1] == cardX &&
+          unavailableTiles[priorIndex + 2] == tileY &&
+          unavailableTiles[priorIndex + 3] == tileX)
+        return emitOpError(
+            "unavailable_tiles contains duplicate tile coordinate");
+    }
   }
 
   return mlir::success();

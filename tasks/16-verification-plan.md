@@ -40,7 +40,7 @@ Serving integration 暂不纳入本文通过标准。
 | gate | 输入 | 通过条件 |
 | --- | --- | --- |
 | Frontend program | imported Wafer program: StableHLO/MLIR IR + metadata + parameter/resource payload | importer adapter diagnostics、parse/roundtrip、shape/dtype、constant normalization、sharding import source、payload binding、third-party dialect registration 合法 |
-| Target topology / device mesh | target descriptor / runtime capability / board profile | `wafer.target.topology` 显式 tile graph、encoded tile id、availability/link 合法；`wafer.device.mesh` 是 valid connected rank domain |
+| Target topology / device mesh | target descriptor / runtime capability / board profile | `wafer.target.topology` 规则 card/tile grid、card interconnect kind 和 unavailable endpoint exceptions 合法；`wafer.device.mesh` 是 valid connected rank domain |
 | Shardy propagation | StableHLO + user sharding seed or default no-user input seed + device mesh | logical mesh、SDY sharding seed、propagation 结果合法；不要求 partitioned local body |
 | SPMD partition program | sharding propagation stage 输出的 StableHLO/SDY IR + device mesh | XLA SPMD partitioner 或等价 stage 产出 partitioned/replicated-local StableHLO、rank-local shape、collective group 和 parameter shard binding 合法 |
 | Local compute normalization | partitioned or replicated-local StableHLO | Linalg/Tensor/SCF/Arith/Math structured semantics、DPS/indexing relation、fine-grained softmax/norm/RoPE staged form 合法；不执行 SPMD partition |

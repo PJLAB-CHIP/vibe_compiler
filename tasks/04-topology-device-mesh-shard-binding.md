@@ -22,9 +22,9 @@ physical layout、DTE algorithm、DDR allocation 或 C ABI。
 
 目标：
 
-- 把 logical rank / block / shard 映射到 encoded physical tile endpoint。
-- 在 SPMD 前 materialize runtime capability、topology、tile id mapping、PG/bad-tile metadata 和
-  physical connectivity，并从中选择 SPMD 可见的 valid device mesh。
+- 把 logical rank / block / shard 映射到 physical tile endpoint coordinate。
+- 在 SPMD 前 materialize runtime capability、规则 topology、unavailable tile metadata 和
+  derived connectivity，并从中选择 SPMD 可见的 valid device mesh。
 - 为 `wafer.group`、`wafer.tile.region`、后续 `wafer.tile.*` communication materialization 和 `wafer.launch` 提供
   可验证的 physical mapping。
 - 在不能得到合法 placement 时，把原因反馈给 planner 或 compile driver。
@@ -47,14 +47,15 @@ Pipeline position:
   `wafer.shard.binding` local-shard facts referencing that mesh；committed `wafer.tile.region` /
   `wafer.instr.*` IR at the selected-instr boundary with accepted SPM offsets and DDR demand legality facts。
 - Current stage responsibility:
-  验证 selected device mesh 与 topology 仍一致，将 logical rank / block 投影到 encoded physical tile id；
+  验证 selected device mesh 与 topology 仍一致，将 logical rank / block 投影到 physical endpoint coordinate；
   若上游已有显式 local shard facts，则只绑定到 logical rank 并验证 bounds；验证 rank coverage、
   topology membership、availability、connectivity、physical tile uniqueness 和 block id uniqueness。
 - Output artifact / IR:
   长期输出是 `wafer.device.mesh` accepted embedding：它引用 `wafer.target.topology`，保存 logical
-  mesh axes 与 rank->encoded tile id。launch-visible block id 若需要跨阶段保留，应作为薄 launch /
+  mesh axes 与 rank->physical endpoint。launch-visible block id 若需要跨阶段保留，应作为薄 launch /
   block binding 表达，不复制 rank->tile mapping。`wafer.placement.map` 是当前过渡 op，不是最终事实源。
-  topology dimensions、bad tile、tile id codec 和 connectivity 只属于 target topology / device mesh。
+  regular topology dimensions、card interconnect kind、unavailable tile 例外和 connectivity 推导规则只属于
+  target topology / device mesh。
   local shard 只通过 `wafer.shard.binding` / launch-visible resource view 引用，planner 不重新切分
   tensor，也不复制 memory plan。
 - Downstream consumer:
@@ -69,7 +70,7 @@ Pipeline position:
   named pipeline 能重放 target topology materialization -> valid device mesh selection -> SPMD partition
   -> group formation -> candidate selection -> committed instruction materialization -> placement；
   emitted `wafer.device.mesh` 被 SPMD、communication verifier 和 ABI/package resource view 消费，并
-  成为唯一 rank-domain / rank->encoded endpoint embedding fact source；
+  成为唯一 rank-domain / rank->physical endpoint embedding fact source；
   verifier 能拒绝 rank count、unavailable tile、duplicate tile、duplicate block、out-of-topology、
   disconnected mesh axis 和 rank 数超过可用 tile。
 ```
@@ -92,7 +93,7 @@ partitioned StableHLO / local program
 ```text
 wafer.device.mesh
   + logical mesh axes
-  + logical rank -> encoded physical tile id
+  + logical rank -> physical endpoint coordinate
   + target topology reference
   + cluster membership / launch block metadata if retained
 ```
@@ -102,13 +103,14 @@ rejected embeddings、score breakdown 是 analysis，不写入长期 IR。
 
 ## 4. Physical Topology And Tile Id Model
 
-Wafer physical topology 是一个多卡、多 tile 组成的 mesh graph。每个 tile node 至少有：
+Wafer physical topology 由规则 card grid 和每张卡内规则 tile grid 组成。当前目标事实不是任意
+tile graph dump，而是规则拓扑加少量例外：
 
 ```text
-coord:        [card_y, card_x, tile_y, tile_x]
-tile_id:      hardware / runtime / DTE visible encoded endpoint id
-availability: available | bad | pg-disabled
-links:        adjacent encoded tile ids with optional cost
+card_grid:         [card_y_count, card_x_count]
+card_interconnect: mesh | torus
+tile_grid:         [tile_y_count, tile_x_count]
+unavailable_tiles: [card_y, card_x, tile_y, tile_x] tuples
 ```
 
 已知事实：
@@ -119,11 +121,10 @@ links:        adjacent encoded tile ids with optional cost
 - 32 卡服务器可以抽象成 `4 x 8` card mesh，但实际可用卡、坏卡、PG tile 必须来自 runtime
   capability。
 
-Tile id 编码规则不能散落在 placement planner、verifier、communication lowering 或 ABI lowering
-里。默认规则可以存在，但它只能由 target topology materialization / import pass 使用，用来生成显式
-`coord -> tile_id` mapping；下游必须通过 topology model 查询 mapping，不能手写 row-major /
-card-major 公式。若 driver 返回 remap table、PG 改变可用 tile、跨卡 global id 编码变化，只改
-`wafer.target.topology` 或对应 import/rewrite pass。
+Card/tile adjacency 由规则 grid 派生，不能以 `links` 边表重复保存。单卡 tile mesh 使用同 card 内
+`tile_y/tile_x` 四方向邻接；跨卡 C2C 使用 `card_interconnect` 和 `card_grid` 派生 card
+四方向邻接，`mesh` 边界不 wrap，`torus` 边界 wrap。若 driver 返回 PG/bad tile 或跨卡 topology
+变化，只改 `wafer.target.topology` 或对应 import/rewrite pass。
 
 Placement 不要求所有程序都用完整 16 tile。cluster 可以是单 tile、单卡子集、单卡全 tile 或
 多卡 mesh。当前实现优先恢复单卡和小规模 multi-tile；跨卡 topology 仍应保持可表达。跨卡 route、
@@ -133,8 +134,8 @@ SPMD 在无效 mesh 上切分。
 单 tile、单卡多 tile 和多卡多 tile 都使用同一个抽象：
 
 ```text
-logical rank -> encoded tile id
-encoded tile id -> topology node coord / links / availability
+logical rank -> physical endpoint coordinate
+physical endpoint coordinate -> derived adjacency / availability
 ```
 
 单卡只是 topology 里的可用 card 维度为 1，多卡只是 topology node 覆盖多个 card；planner 和
@@ -145,53 +146,45 @@ verifier 不分裂成两套语义。
 长期 IR 只保留三个事实源，避免 rank domain 和 rank->tile mapping 重复：
 
 ```text
-wafer.target.topology: physical tile graph, encoded tile ids, availability, links, id codec provenance
-wafer.device.mesh:     SPMD rank domain + accepted logical-rank -> encoded-tile embedding
+wafer.target.topology: regular card/tile grid + card interconnect kind + unavailable endpoint exceptions
+wafer.device.mesh:     SPMD rank domain + accepted logical-rank -> physical endpoint embedding
 wafer.shard.binding:   logical rank -> launch-visible tensor slice
 ```
 
 `wafer.placement.map` 是当前过渡实现。长期不再单独保存 rank count、rank->tile、topology dimensions
-或 bad tile table；这些要么属于 `wafer.device.mesh`，要么属于 `wafer.target.topology`。若 launch
+或 unavailable tile table；这些要么属于 `wafer.device.mesh`，要么属于 `wafer.target.topology`。若 launch
 需要 block id，应在 launch outline/function 或薄 launch/block binding 中保存 `block_id_per_rank`，
 但该对象不得再次保存 rank->tile。
 
 `wafer.target.topology` 由 target descriptor、runtime capability snapshot、board profile 或 bring-up
-default pass materialize。它显式保存 tile nodes、encoded tile ids、可用性和 connectivity。默认 tile
-id 规则可以是 `row_major_4d` / `card_major_4d` 这类 codec 名称，但 codec 只说明 mapping 的生成来源；
-IR 合同是显式的 `coord -> tile_id` 表。
+default pass materialize。它保存规则 grid 和 unavailable endpoint 例外，不展开所有 tile，也不保存
+tile-id codec、availability partition 或 connectivity links。
 
 V0 形式：
 
 ```mlir
 wafer.target.topology @target {
-  axes = ["card_y", "card_x", "tile_y", "tile_x"],
-  id_encoding = "row_major_4d",
-  tile_coords = array<i64: 0, 0, 0, 0,
-                            0, 0, 0, 1>,
-  tile_ids = array<i64: 0, 1>,
-  available_tile_ids = array<i64: 0, 1>,
-  bad_tile_ids = array<i64>,
-  pg_disabled_tile_ids = array<i64>,
-  links = array<i64: 0, 1>
+  card_grid = array<i64: 4, 8>,
+  card_interconnect = "mesh",
+  tile_grid = array<i64: 4, 4>,
+  unavailable_tiles = array<i64: 0, 0, 0, 1>
 }
 ```
 
-`wafer.target.topology` 是 module-level symbol op。`axes` 定义每个 tile coord tuple 的 rank 和坐标
-语义；`tile_coords` 按 `tile_ids` 顺序展开，每个 tile 有一个完整 coord tuple。`available_tile_ids`、
-`bad_tile_ids` 和 `pg_disabled_tile_ids` 必须把 `tile_ids` 划分为互斥且完备的 availability sets。
-`links` 按 source/destination encoded tile id pair 展开；它表达 physical connectivity，不表达
-communication schedule、route choice、DTE packet 或 cost-model trace。
+`wafer.target.topology` 是 module-level symbol op。`card_grid` 和 `tile_grid` 都是 `[rows, cols]`；
+`card_interconnect` 目前允许 `mesh` / `torus`，默认 target fact 为 `mesh`；`unavailable_tiles` 按
+`card_y, card_x, tile_y, tile_x` 4 元 tuple 展开。没有出现在 `unavailable_tiles` 的规则 endpoint
+默认 available。该 op 不表达 communication schedule、route choice、DTE packet、cost-model trace
+或 runtime endpoint integer encoding。
 
-实现索引：`--wafer-materialize-target-topology` 可以从默认单卡 `4x4 / 16 tile` config 生成 explicit
-topology，也可以通过选项导入 bad tile、PG-disabled tile 和按 coord 顺序展开的 `tile-id-remap`。
-默认公式只生成 `row_major_4d` provenance；`imported` / runtime capability 这类非默认 provenance
-必须携带 explicit remap，避免只改 codec 名称却继续使用默认公式。该 pass 只是 topology
-materialization 入口；长期用户 compile flow 仍由 `wafer-opt` program pipeline 组织，不要求用户手写
-pass 串。
+实现索引：`--wafer-materialize-target-topology` 可以从默认单卡 `4x4 / 16 tile` config 生成规则
+topology，也可以通过选项导入 card grid、card interconnect、tile grid 和 unavailable tile 坐标。
+该 pass 只是 topology materialization 入口；长期用户 compile flow 仍由 `wafer-opt` program
+pipeline 组织，不要求用户手写 pass 串。
 
 `wafer.device.mesh` 是 SPMD 可见 mesh，必须在 SPMD partition 前存在。它从
 `wafer.target.topology` 的 available connected component 中选择 rank domain，并记录 logical rank 到
-encoded tile id 的 mapping。SPMD 的 sharding propagation、parameter shard metadata、tensor
+physical endpoint coordinate 的 mapping。SPMD 的 sharding propagation、parameter shard metadata、tensor
 collective rank groups、communication lowering 和 ABI/package resource view 都应引用这个 device
 mesh，而不是假设完整 abstract mesh 或再从 placement op 恢复 rank->tile。
 
@@ -202,7 +195,8 @@ wafer.device.mesh @mesh {
   topology = @target,
   axis_names = ["x", "y"],
   axis_sizes = array<i64: 1, 2>,
-  rank_tile_ids = array<i64: 0, 1>
+  rank_endpoints = array<i64: 0, 0, 0, 0,
+                              0, 0, 0, 1>
 }
 ```
 
@@ -237,9 +231,9 @@ wafer.shard.binding {
 
 accepted mesh embedding 需要在边界 op 上显式表达。推荐结构：
 
-- 在 SPMD 前生成 `wafer.device.mesh`，作为 rank domain 和 rank->encoded tile id 的唯一事实源。
-- 在 `wafer.tile.region` lowering 时把 per-tile logical id / block id / encoded tile id 作为
-  region argument、constant-like descriptor 或 launch argument 传入；encoded tile id 来自
+- 在 SPMD 前生成 `wafer.device.mesh`，作为 rank domain 和 rank->endpoint coordinate 的唯一事实源。
+- 在 `wafer.tile.region` lowering 时把 per-tile logical id / block id / endpoint coordinate 作为
+  region argument、constant-like descriptor 或 launch argument 传入；endpoint 来自
   `wafer.device.mesh`。
 - 在 `wafer.tile.*` communication lowering 时通过 device mesh 和 topology model 查
   physical source/destination endpoint；这个查询发生在
@@ -256,7 +250,7 @@ DeviceMesh {
   target_topology_ref
   logical_mesh_axes
   logical_mesh_shape
-  rank_tile_ids
+  rank_endpoints
 }
 ```
 
@@ -287,13 +281,13 @@ rank id 表。`bad_tile_ids` 是当前 capability / PG 过滤后的 flat physica
 按 logical rank 顺序记录 launch-visible block identity，必须非负且唯一。local shard metadata 或
 capability reference 后续接到 package/launch metadata，但不能改变 tensor semantics。
 
-该 V0 op 是过渡实现，不是最终合同。收口后 `rank_tile_ids` 只保存在 `wafer.device.mesh`；
-topology dimensions、bad tile 集合、connectivity 和 tile id codec 只保存在 `wafer.target.topology`。
+该 V0 op 是过渡实现，不是最终合同。收口后 rank endpoint embedding 只保存在 `wafer.device.mesh`；
+topology dimensions、unavailable tile 集合和 connectivity 推导规则只保存在 `wafer.target.topology`。
 `wafer.placement.map` 应被删除，或降级为只保存 `block_ids` 的 launch/block binding；它不能再次保存
 rank->tile。
 
 package manifest gate 必须接入 launch-visible endpoint metadata：target topology / device mesh
-提供 available / excluded encoded tile ids、connectivity assumption 和 per-rank encoded endpoint；
+提供 available / excluded endpoint coordinates、connectivity assumption 和 per-rank endpoint；
 thin launch/block binding 可提供 per-rank `block_id`；`local_shards` 进入 IR-derived package metadata。
 `local_shards` 应引用 launch signature argument/result index 或等价 ABI slot，并记录静态 slice
 bounds；tensor name 只能用于诊断/显示，不能作为绑定协议。它不反向修改 tensor IR shape、layout
@@ -303,19 +297,20 @@ bounds；tensor name 只能用于诊断/显示，不能作为绑定协议。它�
 
 Mesh selection 必须发生在 SPMD 前。V0 推荐使用 valid rectangular submesh 算法：
 
-1. 从 `wafer.target.topology` 删除 bad / PG-disabled tile。
-2. 在 available tile graph 上计算 connected components。
+1. 从 `wafer.target.topology` 派生规则 endpoint 集，并删除 `unavailable_tiles`。
+2. 按 `card_interconnect`、`card_grid` 和 `tile_grid` 派生 available endpoint adjacency，再计算
+   connected components。
 3. 在每个 component 内枚举 contiguous rectangular submesh。
 4. 根据 requested rank count、preferred mesh shape 和 collective hints 选择最大或最接近的 candidate。
-5. 生成 `wafer.device.mesh`，记录 logical mesh axes 和 `rank -> encoded tile id`。
+5. 生成 `wafer.device.mesh`，记录 logical mesh axes 和 `rank -> endpoint coordinate`。
 6. SPMD partition 只消费这个 valid device mesh 进行 sharding propagation 和 parameter shard
    materialization。
 
 Placement / launch projection V0 使用可解释的 deterministic projection，不追求全局最优：
 
-1. 从 `wafer.device.mesh` 读取 logical rank domain 和 rank tile ids；无 mesh 的局部 fixture 只能
+1. 从 `wafer.device.mesh` 读取 logical rank domain 和 rank endpoints；无 mesh 的局部 fixture 只能
    显式提供过渡 device mesh config。
-2. 验证 rank tile ids 都存在于 `wafer.target.topology`，且仍 available、无重复、属于同一 selected
+2. 验证 rank endpoints 都存在于 `wafer.target.topology`，且仍 available、无重复、属于同一 selected
    connected mesh。
 3. 按 logical rank 顺序生成同值 `block_id`，并把 block identity 绑定到 launch / outlined function。
 4. 后续 cost model 可以在同一 `DeviceMesh` contract 下替换 mesh selection 策略，但不能把 rejected maps、
@@ -348,9 +343,9 @@ Full co-optimization（SPMD strategy、mesh embedding、placement、communicatio
 
 | 阶段 | Placement 提供 | Placement 不提供 |
 | --- | --- | --- |
-| SPMD partition | 由 `wafer.device.mesh` 提供 valid logical mesh 和 rank tile ids | 事后修补 invalid full mesh |
+| SPMD partition | 由 `wafer.device.mesh` 提供 valid logical mesh 和 rank endpoints | 事后修补 invalid full mesh |
 | `wafer.group` | per-rank local shard / block identity、tensor collective rank group 可解释性 | tile shape、fusion boundary |
-| `wafer.tile.region` | encoded tile id / block id args | SPM offset、layout assignment |
+| `wafer.tile.region` | endpoint coordinate / block id args | SPM offset、layout assignment |
 | `wafer.tile.*` communication | tile_region / SPM materialization 后的 logical endpoint 到 physical endpoint mapping；device mesh 和 topology graph 可用于 route/cost | DTE node/FSM/packet allocation |
 | `wafer.launch` | cluster membership and launch metadata | runtime allocation mapping、completion source |
 
@@ -361,18 +356,17 @@ accepted placement 选择 ring/tree/unicast protocol。
 
 `wafer.target.topology` 必须检查：
 
-- 每个 tile node 的 encoded tile id 唯一。
-- tile coordinate rank 与 topology axes 一致。
-- available / bad / PG-disabled 状态不互相冲突。
-- link endpoints 都引用已知 tile id。
-- codec provenance 只用于生成或重建 mapping；verifier 和 lowering 不依赖隐含公式。
+- `card_grid` 和 `tile_grid` 都是两个正整数。
+- `card_interconnect` 是 `mesh` 或 `torus`。
+- `unavailable_tiles` 按 `card_y/card_x/tile_y/tile_x` 4 元 tuple 展开。
+- 每个 unavailable endpoint 都在 grid 范围内，且没有重复。
 
 `wafer.device.mesh` 必须检查：
 
 - 引用的 target topology 存在。
-- `rank_tile_ids` 数量等于 mesh axis product。
-- 每个 rank tile id 都存在、available 且不重复。
-- mesh axis 上需要通信的 rank pair 在 topology graph 中连通；对 V0 rectangular mesh，rank tile ids
+- `rank_endpoints` 数量等于 mesh axis product。
+- 每个 rank endpoint 都存在、available 且不重复。
+- mesh axis 上需要通信的 rank pair 在 derived topology graph 中连通；对 V0 rectangular mesh，rank endpoints
   还必须构成 contiguous rectangular submesh。
 
 `wafer.shard.binding` 必须检查：
@@ -395,23 +389,23 @@ accepted placement 选择 ring/tree/unicast protocol。
 - logical rank 数量与 `block_ids` 数量一致。
 - block id 非负且不重复，除非明确表达 replicated execution。
 - referenced device mesh 满足 launch capability。
-- logical rank group 中的 endpoints 都有 encoded physical tile endpoint。
-- launch/block binding 中没有 topology dimensions、bad tile table、tile id codec、rank->tile、
+- logical rank group 中的 endpoints 都有 physical tile endpoint。
+- launch/block binding 中没有 topology dimensions、unavailable tile table、tile id codec、rank->tile、
   SPM offset、DDR address、
   DTE packet 或 runtime handle。
 
 Planner 失败也必须报告在正确边界：无法形成 valid device mesh 是 mesh selection / SPMD 前错误；
-rank 数超过可用 good tile、tile id 不存在、mesh axis disconnected 或 topology import 冲突不能
+rank 数超过可用 good tile、endpoint 不存在、mesh axis disconnected 或 topology import 冲突不能
 伪装成 downstream SPM、DTE 或 runtime package 错误。
 
 ## 9. V0 范围
 
 V0 支持：
 
-- 默认 target topology materialization，生成显式 coord -> encoded tile id mapping、availability sets
-  和 connectivity links。
-- topology IR 可表达 remapped tile id、availability 和 links；materialization / import 入口先支持
-  默认 mapping、explicit tile-id remap、bad tile 和 PG-disabled tile。
+- 默认 target topology materialization，生成规则 card/tile grid、card interconnect kind 和
+  unavailable endpoint exceptions。
+- topology IR 可表达 unavailable tile；materialization / import 入口先支持默认 single-card 4x4、
+  multi-card grid、mesh/torus kind 和 unavailable endpoint coord tuples。
 - 从 available connected topology 中选择 valid rectangular `wafer.device.mesh`。
 - SPMD 基于 `wafer.device.mesh` 做 sharding propagation 和 parameter shard binding。
 - single-tile placement。

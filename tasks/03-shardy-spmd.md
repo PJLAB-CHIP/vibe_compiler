@@ -338,8 +338,9 @@ Shardy/SDY 可解释的 logical mesh：
 
 mesh rank count 和 axes 来自 `wafer.device.mesh`。单卡默认 topology 配置是 4x4 / 16 tile，
 通常选择 16-rank mesh；调试和对照验证可以显式选择 1-rank replicated mesh。这个 mesh 是
-SPMD logical mesh 的来源，不是后段 placement map；physical endpoint、bad/PG tile、links 和 tile
-id encoding 仍由 `wafer.target.topology` / `wafer.device.mesh` 保存，不写入 StableHLO/SDY module。
+SPMD logical mesh 的来源，不是后段 placement map；physical endpoint、unavailable tile 例外和
+card/tile adjacency 仍由 `wafer.target.topology` / `wafer.device.mesh` 保存或从规则 grid 派生，
+不写入 StableHLO/SDY module。
 
 默认 policy 主要标记 function inputs / parameters 的 sharding seed，不主动给中间 op 或 function
 results 下约束。Shardy propagation 负责把 seed 推到内部 value 和结果，XLA SPMD partitioner
@@ -467,7 +468,7 @@ SPMD 输出给后续 shard-binding / communication / package 的 facts 是：
 - collective communication pattern。
 - optional cost hints，例如通信 volume 或 reuse pattern。
 
-device mesh 中的 rank->encoded endpoint embedding 一旦影响 codegen，就属于
+device mesh 中的 rank->physical endpoint embedding 一旦影响 codegen，就属于
 `wafer.device.mesh` / launch metadata 派生 view，而不是 Shardy attr 的修改。后续 launch/block
 binding 只能补 block id 这类 launch identity，不能复制 rank->tile。
 

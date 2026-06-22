@@ -153,10 +153,11 @@ C-intrinsic 文档中的规则：
 Kcore 通过 AP 下发的 `offset`、自身 `logic-id`、以及卡内 1D/2D id 规则计算 cluster 内目标 tile 的 logic id。卡内 1D id 由二维 id `(X,Y)` 映射为 `X * 4 + Y`。
 
 Compiler 侧不能把上述默认 4x4 规则或历史 1D/2D 公式散落到 SPMD、communication、ABI lowering
-或 verifier。它们是 topology import/materialization 的输入证据：`wafer.target.topology` 显式保存
-coord -> encoded tile id、availability 和 links，`wafer.device.mesh` 保存 SPMD rank domain 到
-encoded endpoint 的 accepted embedding。若 runtime/driver 返回 remap table、PG/bad tile 或跨卡
-编码变化，只应改 topology import/rewrite 边界；下游通过 topology/device mesh 查询 endpoint。
+或 verifier。它们是 topology import/materialization 的输入证据：`wafer.target.topology` 保存
+规则 card/tile grid、card-level interconnect kind 和 unavailable tile 坐标例外；`wafer.device.mesh`
+保存 SPMD rank domain 到 physical endpoint coordinate 的 accepted embedding。若 runtime/driver
+返回 PG/bad tile 或跨卡 topology 变化，只应改 topology import/rewrite 边界；下游通过
+topology/device mesh 查询 endpoint 和从规则 grid 推导 adjacency。
 
 ## 内存、地址和 SPM 约束
 

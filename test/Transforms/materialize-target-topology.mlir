@@ -1,31 +1,30 @@
 // RUN: wafer-opt --wafer-materialize-target-topology %s | FileCheck %s
-// RUN: wafer-opt --wafer-materialize-target-topology='tile-y-count=1 tile-x-count=2 bad-tile-ids=1 pg-disabled-tile-ids=0' %s | FileCheck --check-prefix=FILTER %s
-// RUN: wafer-opt --wafer-materialize-target-topology='tile-y-count=1 tile-x-count=2 id-encoding=imported tile-id-remap=7,3 bad-tile-ids=3' %s | FileCheck --check-prefix=REMAP %s
-// RUN: not wafer-opt --wafer-materialize-target-topology='id-encoding=imported' %s 2>&1 | FileCheck --check-prefix=BAD-CODEC %s
+// RUN: wafer-opt --wafer-materialize-target-topology='card-y-count=4 card-x-count=8 tile-y-count=4 tile-x-count=4 unavailable-tiles=0,0,0,1,0,0,1,0' %s | FileCheck --check-prefix=UNAVAILABLE %s
+// RUN: wafer-opt --wafer-materialize-target-topology='card-y-count=4 card-x-count=8 card-interconnect=torus tile-y-count=4 tile-x-count=4' %s | FileCheck --check-prefix=TORUS %s
+// RUN: not wafer-opt --wafer-materialize-target-topology='card-interconnect=ring' %s 2>&1 | FileCheck --check-prefix=BAD-INTERCONNECT %s
+// RUN: not wafer-opt --wafer-materialize-target-topology='unavailable-tiles=0,0,0' %s 2>&1 | FileCheck --check-prefix=BAD-UNAVAILABLE %s
 
 module {
 }
 
 // CHECK: wafer.target.topology @default
-// CHECK-SAME: available_tile_ids = array<i64: 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15>
-// CHECK-SAME: axes = ["card_y", "card_x", "tile_y", "tile_x"]
-// CHECK-SAME: bad_tile_ids = array<i64>
-// CHECK-SAME: id_encoding = "row_major_4d"
-// CHECK-SAME: links =
-// CHECK-SAME: pg_disabled_tile_ids = array<i64>
-// CHECK-SAME: tile_ids = array<i64: 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15>
+// CHECK-SAME: card_grid = array<i64: 1, 1>
+// CHECK-SAME: card_interconnect = "mesh"
+// CHECK-SAME: tile_grid = array<i64: 4, 4>
+// CHECK-SAME: unavailable_tiles = array<i64>
+// CHECK-NOT: tile_ids
+// CHECK-NOT: links
 
-// FILTER: wafer.target.topology @default
-// FILTER-SAME: available_tile_ids = array<i64>
-// FILTER-SAME: bad_tile_ids = array<i64: 1>
-// FILTER-SAME: pg_disabled_tile_ids = array<i64: 0>
-// FILTER-SAME: tile_ids = array<i64: 0, 1>
+// UNAVAILABLE: wafer.target.topology @default
+// UNAVAILABLE-SAME: card_grid = array<i64: 4, 8>
+// UNAVAILABLE-SAME: card_interconnect = "mesh"
+// UNAVAILABLE-SAME: tile_grid = array<i64: 4, 4>
+// UNAVAILABLE-SAME: unavailable_tiles = array<i64: 0, 0, 0, 1, 0, 0, 1, 0>
 
-// REMAP: wafer.target.topology @default
-// REMAP-SAME: available_tile_ids = array<i64: 7>
-// REMAP-SAME: bad_tile_ids = array<i64: 3>
-// REMAP-SAME: id_encoding = "imported"
-// REMAP-SAME: links = array<i64: 7, 3>
-// REMAP-SAME: tile_ids = array<i64: 7, 3>
+// TORUS: wafer.target.topology @default
+// TORUS-SAME: card_grid = array<i64: 4, 8>
+// TORUS-SAME: card_interconnect = "torus"
+// TORUS-SAME: tile_grid = array<i64: 4, 4>
 
-// BAD-CODEC: topology_failure: non-default id encoding requires tile-id-remap
+// BAD-INTERCONNECT: topology_failure: card-interconnect must be mesh or torus
+// BAD-UNAVAILABLE: topology_failure: unavailable-tiles must contain card_y/card_x/tile_y/tile_x tuples

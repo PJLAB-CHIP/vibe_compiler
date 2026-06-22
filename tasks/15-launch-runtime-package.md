@@ -56,7 +56,7 @@ wafer.launch @compiled_kernel(
 `wafer.launch` 提前保存的第二份 IR 合同：
 
 - launch signature：user-visible inputs/outputs、shape、dtype、external layout、alias policy。
-- endpoint view：`wafer.device.mesh` 的 rank->encoded endpoint embedding，薄
+- endpoint view：`wafer.device.mesh` 的 rank->physical endpoint embedding，薄
   launch/block binding 的 block id，以及 `wafer.shard.binding` 的 boundary slice。
 - resource requirements：从 committed instruction IR、accepted offsets、communication/sync IR 和
   shard binding 重算的 SPM summary、DDR workspace demand、resident constant demand、control metadata
@@ -213,7 +213,7 @@ package manifest 可以序列化 runtime 需要的 derived endpoint section，�
 compiler IR 中：
 
 - topology snapshot / profile id、availability assumption 和 selected mesh id。
-- per-rank `logical_rank`、encoded endpoint、optional physical coord 和 `block_id`。
+- per-rank `logical_rank`、physical endpoint coordinate 和 `block_id`。
 - per-rank `local_shards`，每个 shard 引用 launch signature argument 或 result index，并记录
   `offsets`、`sizes`、`strides`；名称只能用于诊断/显示，不作为绑定协议。
 

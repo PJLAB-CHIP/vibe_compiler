@@ -68,7 +68,7 @@ Wafer 是基于 MLIR 的编译器。每一层 IR 只携带自己能稳定解释�
 | 阶段 | 主体 Dialect / IR | 允许表达 | 不应提前表达 |
 | --- | --- | --- | --- |
 | Frontend | StableHLO, func, tensor, arith | 模型语义、shape、dtype、constant/weight program | tile id、SPM、layout materialization、runtime launch |
-| Target topology / device mesh | `wafer.target.topology`, `wafer.device.mesh` | physical tile graph、availability、links、encoded tile id mapping、SPMD rank domain | tensor sharding、SPM/DDR offset、runtime allocation、DTE schedule |
+| Target topology / device mesh | `wafer.target.topology`, `wafer.device.mesh` | regular card/tile grid、card interconnect kind、unavailable endpoint exceptions、SPMD rank domain | tensor sharding、SPM/DDR offset、runtime allocation、DTE schedule |
 | Sharding | StableHLO + Shardy/SDY | global sharding、logical mesh、collective 语义；logical mesh 形状来自 valid device mesh | physical tile placement、DTE protocol、SPM buffer |
 | Local compute normalization | Linalg, Tensor, SCF, Arith, Math, Wafer LinalgExt-style tensor collective ops | structured loop、indexing map、tile slice、producer/consumer、DPS/in-place、transformer block composite pattern、post-SPMD tensor collective semantics | SPM address、`Cx/NCx` storage、worker id、packet field、tile communication / DTE protocol |
 | Group scheduling | `wafer.group` | fusion boundary、traversal schedule、tiled tensor IR、abstract resource demand | raw register field、DTE node id、physical SPM slot、C ABI call |
@@ -270,9 +270,10 @@ mesh(card_y, card_x, tile_y, tile_x)
 
 职责：
 
-- 在 SPMD 前 materialize / import target topology，显式保存 encoded tile id、availability 和 links。
+- 在 SPMD 前 materialize / import target topology，保存规则 card/tile grid、card interconnect kind
+  和 unavailable endpoint exceptions。
 - 从 available connected topology 中选择 `wafer.device.mesh`，作为 SPMD rank domain 和唯一
-  rank->encoded tile embedding。
+  rank->physical endpoint embedding。
 - 将 SPMD / frontend 已 materialized 的 shard facts 绑定到 device mesh；只验证 bounds 和 rank
   coverage，不重新切分 tensor。
 - 若 launch 需要 block id，生成薄 launch/block binding；该 binding 不复制 rank->tile。
@@ -285,11 +286,11 @@ mesh(card_y, card_x, tile_y, tile_x)
 
 设计原则：
 
-- 多卡多 tile 和单卡多 tile 使用同一个 topology graph + device mesh 抽象，不在 SPMD 或
+- 多卡多 tile 和单卡多 tile 使用同一个 regular topology + device mesh 抽象，不在 SPMD 或
   communication 层手写另一套 flat mesh。
-- tile id 编码只在 topology import/materialization 或 rewrite pass 中使用；下游通过 topology
-  model 查询 encoded endpoint，不能散落 row-major/card-major 公式。
-- bad tile、PG-disabled tile 或断开的 mesh axis 必须在 SPMD 前通过 topology/device mesh verifier
+- card/tile adjacency 从 `wafer.target.topology` 的 grid 和 interconnect kind 派生；下游通过
+  topology model 查询 endpoint，不能散落 row-major/card-major 公式或维护第二份 link 表。
+- unavailable tile 或断开的 mesh axis 必须在 SPMD 前通过 topology/device mesh verifier
   暴露，不能让 SPMD 在无效 abstract mesh 上先切分。
 
 Placement 的 accepted mapping、good-tile/PG metadata、verifier 和与 launch/comm 的接口见
@@ -688,7 +689,7 @@ WaferRuntimeAdapter cluster launch
 | --- | --- |
 | Frontend / StableHLO program | program parse/roundtrip、shape/dtype/sharding 保留、exporter program directory weight metadata 一致性 |
 | Shardy / SPMD | sharding import/propagation、partition 后 collective 语义、logical mesh roundtrip |
-| Target topology / device mesh / shard binding | topology import、tile id codec rewrite、good-tile/PG metadata、valid device mesh、slice metadata verifier |
+| Target topology / device mesh / shard binding | topology import、unavailable tile metadata、valid device mesh、slice metadata verifier |
 | Local compute normalization | StableHLO dot/broadcast/reduce/shape op 到 structured tensor IR，softmax/norm/RoPE staged form |
 | `wafer.group` | group formation legality、traversal schedule、tiled tensor IR、tile-local demand diagnostics、Transform dump/replay |
 | `wafer.tile.region` | region verifier、memory/effect ownership、movement/compute/sync ordering、liveness diagnostics |
@@ -913,8 +914,8 @@ ModelImport/FrontendProgram
   tensor-level `wafer.group`。
 - 没有独立 placed memref / access descriptor realization 主线阶段。committed instruction IR 已经通过
   operands、memref view、`wafer.spm.offset`、`wafer.ddr.offset` 和 descriptor attrs 携带后段可重算的
-  memory facts；topology/device-mesh/shard-binding contract 只保存 physical topology、SPMD rank
-  domain、rank->encoded endpoint 和 boundary shard slice 这类不能从 local IR 重算的事实。
+  memory facts；topology/device-mesh/shard-binding contract 只保存 regular topology、SPMD rank
+  domain、rank->physical endpoint 和 boundary shard slice 这类不能从 local IR 重算的事实。
   ABI/LLVM lowering、package manifest 和 runtime adapter 如需 launch/resource/address/range/stride
   视图，必须在使用点通过同一 analysis/verifier 从 committed IR、accepted offset facts 与
   topology/device-mesh/shard-binding 派生，不能再引入 placed memref / access descriptor 旁路协议。
@@ -940,7 +941,7 @@ V0 先保持统一 `wafer` dialect namespace，但公开 op mnemonic 只保留�
 | --- | --- | --- | --- | --- |
 | Frontend / StableHLO program | `tasks/02-frontend-stablehlo-program.md` | 草案 | model import adapter、输入 program、shape/dtype/dynamic shape、exporter program directory weight metadata、sharding 标记、第三方依赖隔离 | SPM、DTE、runtime completion |
 | Shardy / SPMD | `tasks/03-shardy-spmd.md` | 草案 | 消费 valid device mesh、logical mesh、sharding propagation、partition 后 collective 语义 | DTE algorithm、SPM buffer、事后修补 bad tile |
-| Target topology / device mesh / shard binding | `tasks/04-topology-device-mesh-shard-binding.md` | 草案 | physical tile graph、encoded tile id、availability/link、valid SPMD rank domain、rank->encoded endpoint、boundary shard slice | Cx/NCx、packet queue、C ABI、tensor 重新切分 |
+| Target topology / device mesh / shard binding | `tasks/04-topology-device-mesh-shard-binding.md` | 草案 | regular card/tile topology、unavailable endpoint exceptions、valid SPMD rank domain、rank->physical endpoint、boundary shard slice | Cx/NCx、packet queue、C ABI、tensor 重新切分 |
 | Local compute normalization | `tasks/05-local-compute-normalization.md` | 草案 | partitioned StableHLO 到 structured tensor IR、dot/broadcast/reduce/softmax/norm/RoPE staged form、StableHLO collective 到 Wafer LinalgExt-style tensor collective handoff | group scheduling、physical layout、SPM/DDR、tile communication、C ABI |
 | `wafer.group` | `tasks/06-group.md` | 草案 | group boundary、traversal schedule、tiled tensor IR、tile-local resource demand | SPM offset、physical layout marker、DTE resource、runtime package |
 | `wafer.tile.region` | `tasks/07-tile-region.md` | 草案 | bufferized tile-local execution scope、memory/effect ownership、movement/compute/sync ordering | tensor fusion、traversal selection、host launch/package ABI |

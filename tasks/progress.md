@@ -22,7 +22,7 @@
 PyTorch/XLA StableHLO Wafer program directory
   -> target-topology materialization
        target descriptor / runtime capability / board profile
-       -> `wafer.target.topology` explicit coord -> encoded tile id, availability, links
+       -> `wafer.target.topology` regular card/tile grid, card interconnect kind, unavailable endpoint exceptions
   -> device-mesh selection
        valid connected topology -> `wafer.device.mesh`
        单卡默认 topology 配置是 4x4 / 16 tile；SPMD 只消费 selected mesh，不写死该常量
@@ -42,7 +42,7 @@ PyTorch/XLA StableHLO Wafer program directory
        -> accepted SPM and DDR offset facts
        -> candidate selection and committed materialization
   -> launch-block binding / endpoint projection
-       optional per-rank block id；不复制 rank->encoded endpoint
+       optional per-rank block id；不复制 rank->physical endpoint
   -> communication mesh consumer
        tiled tensor collective + topology/device mesh -> p2p / Direct DTE / sync boundary
   -> ABI / LLVM lowering
@@ -64,15 +64,15 @@ PyTorch/XLA StableHLO Wafer program directory
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  `wafer.target.topology` explicit physical tile graph；requested logical mesh policy；SPMD default
+  `wafer.target.topology` regular card/tile grid fact；requested logical mesh policy；SPMD default
   seed policy 需要的 logical mesh rank count / axes。
 - Current stage responsibility:
   从 available connected topology 中选择 valid `wafer.device.mesh`，显式记录 logical mesh axes、
-  rank count 和 logical rank -> encoded tile id embedding；bad tile、PG-disabled tile 或 disconnected
+  rank count 和 logical rank -> physical endpoint embedding；unavailable tile 或 disconnected
   mesh axis 必须在 SPMD 前失败。
 - Output artifact / IR:
   `wafer.device.mesh` accepted SPMD rank domain。它引用 `wafer.target.topology`，是 rank domain
-  和 rank->encoded endpoint embedding 的唯一事实源。
+  和 rank->physical endpoint embedding 的唯一事实源。
 - Downstream consumer:
   SPMD default seed policy、`wafer.shard.binding` verifier、communication verifier、ABI/LLVM lowering、
   package manifest 和 runtime adapter。
@@ -92,7 +92,7 @@ Pipeline position:
 | 边界 | 当前可依赖产物 |
 | --- | --- |
 | Frontend / SPMD | StableHLO Wafer program、Shardy propagation、Wafer-owned SPMD partition、rank-local metadata / parameter shard payload |
-| Target topology | `wafer.target.topology` explicit physical tile graph、default single-card 4x4 / 16 tile materialization、availability/link verifier |
+| Target topology | `wafer.target.topology` regular card/tile grid、default single-card 4x4 / 16 tile materialization、unavailable endpoint verifier |
 | Local compute normalization | Linalg/Tensor/SCF/Arith/Math local compute + verifier-legal `wafer.tensor.*` handoff |
 | Logical group | verifier-legal logical `wafer.group` |
 | Tile-region / instruction lowering | memref-backed `wafer.tile.region` + instruction-level `wafer.instr.*` over Wafer-tagged memrefs |
@@ -103,7 +103,7 @@ Pipeline position:
 
 | 阶段 | 状态 | 输入 | 输出 / 完成 gate |
 | --- | --- | --- | --- |
-| device-mesh SPMD integration | active | `wafer.target.topology` + requested logical mesh policy | `wafer.device.mesh` valid SPMD rank domain + rank->encoded tile id embedding；SPMD default seed 从 mesh rank count / axes 取数 |
+| device-mesh SPMD integration | active | `wafer.target.topology` + requested logical mesh policy | `wafer.device.mesh` valid SPMD rank domain + rank->physical endpoint embedding；SPMD default seed 从 mesh rank count / axes 取数 |
 | shard-binding migration | pending | partitioned StableHLO program + parameter shard metadata + `wafer.device.mesh` | `wafer.shard.binding` 引用 device mesh；rank coverage 对 mesh 校验，不再对 `wafer.placement.map` 校验 |
 | placement-map cleanup | pending | current `wafer.placement.map` transition op + `wafer.device.mesh` + `wafer.target.topology` | 删除 `wafer.placement.map` 的长期 rank->tile / topology 职责；需要 block id 时只保留薄 launch/block binding，且不复制 rank->tile |
 | communication mesh consumer | pending | tiled tensor collective + device-mesh/local-rank/buffer facts | peer、route legality 和 p2p schedule 从 topology/device mesh 查询；结果 materialize 到 communication / Direct DTE resource / local-drain 边界 |
