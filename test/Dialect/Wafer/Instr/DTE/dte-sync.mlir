@@ -7,16 +7,16 @@ module {
     %buf = "builtin.unrealized_conversion_cast"()
         : () -> memref<4xf32, #wafer.memory<spm, tensor>>
     wafer.instr.local_drain
-    %send = wafer.tile.send %buf {peer = 1 : i64, bytes = 16 : i64}
+    %send = wafer.instr.dte_send %buf {peer = 1 : i64, bytes = 16 : i64}
         : memref<4xf32, #wafer.memory<spm, tensor>> -> !async.token
-    %recv = wafer.tile.recv %buf {peer = 0 : i64, bytes = 16 : i64}
+    %recv = wafer.instr.dte_recv %buf {peer = 0 : i64, bytes = 16 : i64}
         : memref<4xf32, #wafer.memory<spm, tensor>> -> !async.token
-    wafer.tile.wait %send, %recv : !async.token, !async.token
+    wafer.instr.dte_wait %send, %recv : !async.token, !async.token
     wafer.tile.yield %arg0 : tensor<4xf32>
   }
 }
 
 // CHECK: wafer.instr.local_drain
-// CHECK: wafer.tile.send %{{.+}} {bytes = 16 : i64, peer = 1 : i64}
-// CHECK: wafer.tile.recv %{{.+}} {bytes = 16 : i64, peer = 0 : i64}
-// CHECK: wafer.tile.wait %{{.+}}, %{{.+}} : !async.token, !async.token
+// CHECK: wafer.instr.dte_send %{{.+}} {bytes = 16 : i64, peer = 1 : i64}
+// CHECK: wafer.instr.dte_recv %{{.+}} {bytes = 16 : i64, peer = 0 : i64}
+// CHECK: wafer.instr.dte_wait %{{.+}}, %{{.+}} : !async.token, !async.token

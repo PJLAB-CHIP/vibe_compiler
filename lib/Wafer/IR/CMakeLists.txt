@@ -2,12 +2,13 @@ add_mlir_dialect_library(WaferIR
   WaferDialect.cpp
   WaferInterfaces.cpp
   Common/OpVerifierUtils.cpp
+  Instr/DTEOps.cpp
   Instr/InstructionOps.cpp
   Instr/SyncOps.cpp
+  LinalgExt/CollectiveOps.cpp
   Resource/SPMOps.cpp
   Target/TopologyOps.cpp
   Tensor/GroupOps.cpp
-  Tensor/TensorCollectiveOps.cpp
   Tile/CommOps.cpp
   Tile/ComputeOps.cpp
   Tile/LayoutOps.cpp
@@ -18,6 +19,7 @@ add_mlir_dialect_library(WaferIR
   DEPENDS
   WaferAttrsIncGen
   WaferInterfacesIncGen
+  WaferLinalgExtOpsIncGen
   WaferOpsIncGen
   WaferTypesIncGen
 

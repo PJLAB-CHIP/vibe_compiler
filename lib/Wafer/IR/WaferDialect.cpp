@@ -31,9 +31,13 @@ using namespace wafer;
 #include "Wafer/IR/WaferTypes.cpp.inc"
 
 #include "Wafer/IR/WaferOpsDialect.cpp.inc"
+#include "Wafer/IR/WaferLinalgExtOpsDialect.cpp.inc"
 
 #define GET_OP_CLASSES
 #include "Wafer/IR/WaferOps.cpp.inc"
+
+#define GET_OP_CLASSES
+#include "Wafer/IR/WaferLinalgExtOps.cpp.inc"
 
 namespace {
 
@@ -519,5 +523,12 @@ void WaferDialect::initialize() {
   addOperations<
 #define GET_OP_LIST
 #include "Wafer/IR/WaferOps.cpp.inc"
+      >();
+}
+
+void WaferLinalgExtDialect::initialize() {
+  addOperations<
+#define GET_OP_LIST
+#include "Wafer/IR/WaferLinalgExtOps.cpp.inc"
       >();
 }

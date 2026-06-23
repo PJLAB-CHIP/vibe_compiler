@@ -65,6 +65,7 @@ def FormLogicalGroupsPass
                            "mlir::linalg::LinalgDialect",
                            "mlir::math::MathDialect", "mlir::scf::SCFDialect",
                            "mlir::tensor::TensorDialect", "wafer::WaferDialect",
+                           "wafer::WaferLinalgExtDialect",
   ];
 }
 
@@ -74,6 +75,7 @@ def DumpGroupTilingDemandPass
   let dependentDialects = ["mlir::arith::ArithDialect",
                            "mlir::linalg::LinalgDialect",
                            "mlir::tensor::TensorDialect", "wafer::WaferDialect",
+                           "wafer::WaferLinalgExtDialect",
   ];
 }
 
@@ -83,6 +85,7 @@ def DumpGroupLayoutPlanPass
   let dependentDialects = ["mlir::arith::ArithDialect",
                            "mlir::linalg::LinalgDialect",
                            "mlir::tensor::TensorDialect", "wafer::WaferDialect",
+                           "wafer::WaferLinalgExtDialect",
   ];
 }
 
@@ -97,6 +100,7 @@ def DumpGroupToTileRegionPass
                            "mlir::memref::MemRefDialect",
                            "mlir::scf::SCFDialect",
                            "mlir::tensor::TensorDialect", "wafer::WaferDialect",
+                           "wafer::WaferLinalgExtDialect",
   ];
 }
 
@@ -111,6 +115,7 @@ def DumpCandidateDdrTileViewsPass
                            "mlir::memref::MemRefDialect",
                            "mlir::scf::SCFDialect",
                            "mlir::tensor::TensorDialect", "wafer::WaferDialect",
+                           "wafer::WaferLinalgExtDialect",
   ];
   let options = [
     Option<"candidateTileOffsets", "candidate-tile-offsets", "std::string",
@@ -134,6 +139,7 @@ def SelectGroupTilePass
                            "mlir::memref::MemRefDialect",
                            "mlir::scf::SCFDialect",
                            "mlir::tensor::TensorDialect", "wafer::WaferDialect",
+                           "wafer::WaferLinalgExtDialect",
   ];
   let options = [
     Option<"tileSearch", "tile-search", "std::string",
@@ -174,9 +180,10 @@ def SelectGroupTilePass
 def NormalizeStablehloCollectivesPass
     : Pass<"wafer-normalize-stablehlo-collectives", "mlir::ModuleOp"> {
   let summary =
-      "Normalize post-SPMD StableHLO collectives to Wafer tensor collectives";
+      "Normalize post-SPMD StableHLO collectives to Wafer linalg extension collectives";
   let dependentDialects = ["mlir::arith::ArithDialect",
                            "mlir::tensor::TensorDialect", "wafer::WaferDialect",
+                           "wafer::WaferLinalgExtDialect",
   ];
 }
 
@@ -191,6 +198,7 @@ def ConvertGroupToTileRegionPass
                            "mlir::memref::MemRefDialect",
                            "mlir::scf::SCFDialect",
                            "mlir::tensor::TensorDialect", "wafer::WaferDialect",
+                           "wafer::WaferLinalgExtDialect",
   ];
 }
 

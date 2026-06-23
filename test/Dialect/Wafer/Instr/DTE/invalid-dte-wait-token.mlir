@@ -2,7 +2,7 @@
 
 module {
   %not_token = "builtin.unrealized_conversion_cast"() : () -> tensor<4xf32>
-  wafer.tile.wait %not_token : tensor<4xf32>
+  wafer.instr.dte_wait %not_token : tensor<4xf32>
 }
 
 // CHECK: operand #0 must be variadic of async token type

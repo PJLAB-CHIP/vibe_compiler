@@ -1426,13 +1426,14 @@ static void configureTileRegionToInstrTarget(mlir::ConversionTarget &target) {
   target.addLegalOp<mlir::ModuleOp, TileRegionOp, TileYieldOp, SyncLocalDrainOp,
                     InstrRDMAOp, InstrWDMAOp, InstrGatherScatterOp, InstrFillOp,
                     InstrElementwiseOp, InstrReduceOp, InstrConvertOp,
-                    InstrGemmOp>();
+                    InstrGemmOp, InstrDTESendOp, InstrDTERecvOp,
+                    InstrDTEWaitOp>();
   target.addIllegalOp<StorageLoadOp, StorageStoreOp, LayoutMaterializeOp,
                       ComputeFillOp, ComputeGemmOp, ComputeElementwiseOp,
                       ComputeReduceOp, MoveCopyOp, MoveExtractSliceOp,
                       MoveInsertSliceOp, MoveTransposeOp, MoveBroadcastOp,
-                      ViewReshapeOp, CommSendOp, CommRecvOp, CommWaitOp,
-                      CommAllGatherOp, CommReduceScatterOp, CommAllReduceOp>();
+                      ViewReshapeOp, CommAllGatherOp, CommReduceScatterOp,
+                      CommAllReduceOp>();
   target.markUnknownOpDynamicallyLegal([](mlir::Operation *) { return true; });
 }
 
@@ -1446,10 +1447,7 @@ static void populateTileRegionToInstrPatterns(mlir::RewritePatternSet &patterns,
            ReduceLowering, GemmLowering, ViewReshapeLowering>(context,
                                                               failureReason);
   patterns.add<FillLowering>(context);
-  patterns.add<UnsupportedCommLowering<CommSendOp>,
-               UnsupportedCommLowering<CommRecvOp>,
-               UnsupportedCommLowering<CommWaitOp>,
-               UnsupportedCommLowering<CommAllGatherOp>,
+  patterns.add<UnsupportedCommLowering<CommAllGatherOp>,
                UnsupportedCommLowering<CommReduceScatterOp>,
                UnsupportedCommLowering<CommAllReduceOp>>(context,
                                                          failureReason);

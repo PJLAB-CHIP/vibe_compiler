@@ -12,4 +12,4 @@ module {
   }
 }
 
-// CHECK: failed to normalize StableHLO collective to wafer.tensor handoff
+// CHECK: failed to normalize StableHLO collective to wafer_linalg_ext collective handoff

@@ -77,28 +77,33 @@ OP_FAMILIES = {
         "td": "CommOps.td",
         "cpp": "CommOps.cpp",
         "mnemonics": [
-            "tile.send",
-            "tile.recv",
-            "tile.wait",
             "tile.all_gather",
             "tile.reduce_scatter",
             "tile.all_reduce",
         ],
         "tests": "Tile/Comm",
     },
-    "TensorCollective": {
-        "layer": "Tensor",
-        "td": "TensorCollectiveOps.td",
-        "cpp": "TensorCollectiveOps.cpp",
+    "LinalgExtCollective": {
+        "layer": "LinalgExt",
+        "td": "CollectiveOps.td",
+        "cpp": "CollectiveOps.cpp",
         "mnemonics": [
-            "tensor.all_gather",
-            "tensor.all_reduce",
-            "tensor.reduce_scatter",
-            "tensor.all_to_all",
-            "tensor.collective_permute",
-            "tensor.yield",
+            "collective.all_gather",
+            "collective.all_reduce",
+            "collective.reduce_scatter",
+            "collective.all_to_all",
+            "collective.collective_permute",
+            "collective.yield",
         ],
-        "tests": "Tensor/TensorCollective",
+        "tests": "LinalgExt/Collective",
+        "aggregator": "WaferLinalgExtOps.td",
+    },
+    "DTE": {
+        "layer": "Instr",
+        "td": "DTEOps.td",
+        "cpp": "DTEOps.cpp",
+        "mnemonics": ["instr.dte_send", "instr.dte_recv", "instr.dte_wait"],
+        "tests": "Instr/DTE",
     },
     "Sync": {
         "layer": "Instr",
@@ -110,7 +115,16 @@ OP_FAMILIES = {
 }
 
 SUPPORT_TEST_DIRS = {"Common/Attrs"}
-IR_LAYERS = {"Target", "Tensor", "Tile", "Resource", "Instr", "Runtime", "Common"}
+IR_LAYERS = {
+    "Target",
+    "Tensor",
+    "LinalgExt",
+    "Tile",
+    "Resource",
+    "Instr",
+    "Runtime",
+    "Common",
+}
 CONVERSION_LIBRARIES = {
     "WaferGroupToTileRegion": {
         "include": "include/Wafer/Conversion/WaferGroupToTileRegion/WaferGroupToTileRegion.h",
@@ -144,7 +158,7 @@ FORBIDDEN_IR_STRINGS = (
     "wafer.instr.ct.",
     "wafer.instr.ne.",
     "wafer.instr.tdma.",
-    "wafer.tensor_collective",
+    "wafer.linalg_ext_collective",
     "wafer.tile_region",
     "wafer.tile_yield",
     "wafer.group_yield",
@@ -174,19 +188,24 @@ def check_file(path: Path, errors: list[str]) -> str:
 
 
 def check_main_ops_td(root: Path, errors: list[str]) -> None:
-    main_td = root / "include/Wafer/IR/WaferOps.td"
-    text = check_file(main_td, errors)
-    if not text:
-        return
+    aggregator_texts: dict[str, str] = {}
+    for filename in ("WaferOps.td", "WaferLinalgExtOps.td"):
+        path = root / "include/Wafer/IR" / filename
+        text = check_file(path, errors)
+        if not text:
+            continue
+        aggregator_texts[filename] = text
 
-    direct_defs = re.findall(r"^def Wafer_", text, flags=re.MULTILINE)
-    if direct_defs:
-        fail(errors, "WaferOps.td must aggregate op-family files, not define ops")
+        direct_defs = re.findall(r"^def Wafer_", text, flags=re.MULTILINE)
+        if direct_defs:
+            fail(errors, f"{filename} must aggregate op-family files, not define ops")
 
     for spec in OP_FAMILIES.values():
+        aggregator = spec.get("aggregator", "WaferOps.td")
+        text = aggregator_texts.get(aggregator, "")
         include = f'include "Wafer/IR/{spec["layer"]}/{spec["td"]}"'
         if include not in text:
-            fail(errors, f"WaferOps.td missing {include}")
+            fail(errors, f"{aggregator} missing {include}")
 
 
 def check_op_family_files(root: Path, errors: list[str]) -> None:

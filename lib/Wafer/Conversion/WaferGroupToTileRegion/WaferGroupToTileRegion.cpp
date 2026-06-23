@@ -101,7 +101,7 @@ public:
       return mlir::failure();
 
     for (mlir::Operation &op : group.getBody().front().without_terminator()) {
-      if (mlir::isa<WaferTensorCollectiveOpInterface>(&op))
+      if (mlir::isa<WaferLinalgExtCollectiveOpInterface>(&op))
         return failAndReturn(
             "collective lowering requires endpoint/local-rank facts");
     }
@@ -401,7 +401,7 @@ private:
     mlir::Operation *op = opPlan.op;
     if (opPlan.kind == OpTilingDemandKind::Support)
       return convertSupportOp(op, builder);
-    if (opPlan.kind == OpTilingDemandKind::TensorCollective)
+    if (opPlan.kind == OpTilingDemandKind::LinalgExtCollective)
       return fail("collective lowering requires endpoint/local-rank facts");
 
     if (auto fill = mlir::dyn_cast<mlir::linalg::FillOp>(op))
@@ -477,7 +477,7 @@ private:
 
   mlir::LogicalResult convertNestedOp(mlir::Operation *op,
                                       mlir::OpBuilder &builder) {
-    if (mlir::isa<WaferTensorCollectiveOpInterface>(op))
+    if (mlir::isa<WaferLinalgExtCollectiveOpInterface>(op))
       return fail("collective lowering requires endpoint/local-rank facts");
     if (auto fill = mlir::dyn_cast<mlir::linalg::FillOp>(op))
       return convertFill(fill, builder);

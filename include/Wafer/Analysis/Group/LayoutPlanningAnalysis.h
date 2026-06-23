@@ -50,7 +50,7 @@ struct OpLayoutPlan {
   llvm::SmallVector<LayoutPlanValue, 4> values;
   llvm::SmallVector<TilingDemandAccumulator, 2> accumulators;
   llvm::SmallVector<LayoutMaterializationDemand, 2> materializations;
-  WaferTensorCollectiveInfo collectiveInfo;
+  WaferLinalgExtCollectiveInfo collectiveInfo;
   std::string failureReason;
 };
 

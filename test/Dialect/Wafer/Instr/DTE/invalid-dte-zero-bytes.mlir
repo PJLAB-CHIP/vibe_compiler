@@ -3,8 +3,8 @@
 module {
   %buf = "builtin.unrealized_conversion_cast"()
       : () -> memref<4xf32, #wafer.memory<spm, tensor>>
-  %send = wafer.tile.send %buf {peer = -1 : i64, bytes = 16 : i64}
+  %recv = wafer.instr.dte_recv %buf {peer = 0 : i64, bytes = 0 : i64}
       : memref<4xf32, #wafer.memory<spm, tensor>> -> !async.token
 }
 
-// CHECK: comm peer must be non-negative
+// CHECK: DTE byte count must be positive

@@ -232,7 +232,7 @@ private:
         if (value.relation == LayoutPlanRelation::Broadcast)
           value.layout = MemLayout::Tensor;
       }
-      if (opDemand.kind == OpTilingDemandKind::TensorCollective)
+      if (opDemand.kind == OpTilingDemandKind::LinalgExtCollective)
         value.layout = MemLayout::Tensor;
 
       addMaterializationIfNeeded(opPlan, opDemand, value);
@@ -258,7 +258,7 @@ private:
   }
 
   MemLayout chooseDefaultLayout(const OpTilingDemand &opDemand) const {
-    if (opDemand.kind == OpTilingDemandKind::TensorCollective)
+    if (opDemand.kind == OpTilingDemandKind::LinalgExtCollective)
       return MemLayout::Tensor;
     if (opDemand.kind == OpTilingDemandKind::Linalg &&
         isContractionLike(opDemand))
@@ -316,20 +316,20 @@ static void printRole(LayoutPlanValueRole role, llvm::raw_ostream &os) {
   }
 }
 
-static llvm::StringRef collectiveKindName(WaferTensorCollectiveKind kind) {
+static llvm::StringRef collectiveKindName(WaferLinalgExtCollectiveKind kind) {
   switch (kind) {
-  case WaferTensorCollectiveKind::AllGather:
+  case WaferLinalgExtCollectiveKind::AllGather:
     return "all_gather";
-  case WaferTensorCollectiveKind::ReduceScatter:
+  case WaferLinalgExtCollectiveKind::ReduceScatter:
     return "reduce_scatter";
-  case WaferTensorCollectiveKind::AllReduce:
+  case WaferLinalgExtCollectiveKind::AllReduce:
     return "all_reduce";
-  case WaferTensorCollectiveKind::AllToAll:
+  case WaferLinalgExtCollectiveKind::AllToAll:
     return "all_to_all";
-  case WaferTensorCollectiveKind::CollectivePermute:
+  case WaferLinalgExtCollectiveKind::CollectivePermute:
     return "collective_permute";
   }
-  llvm_unreachable("unknown tensor collective kind");
+  llvm_unreachable("unknown linalg-ext collective kind");
 }
 
 static void printI64List(llvm::ArrayRef<int64_t> values,
@@ -385,7 +385,7 @@ void wafer::dumpGroupLayoutPlan(const GroupLayoutPlan &plan,
       continue;
     }
 
-    if (opPlan.kind == OpTilingDemandKind::TensorCollective) {
+    if (opPlan.kind == OpTilingDemandKind::LinalgExtCollective) {
       os << "    collective kind="
          << collectiveKindName(opPlan.collectiveInfo.kind);
       if (!opPlan.collectiveInfo.rankGroup.empty()) {

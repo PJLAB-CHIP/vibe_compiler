@@ -202,7 +202,7 @@ static mlir::LogicalResult convertCombinerRegion(mlir::Region &sourceRegion,
       return mlir::failure();
     yielded.push_back(converted);
   }
-  nestedBuilder.create<TensorCollectiveYieldOp>(sourceReturn.getLoc(), yielded);
+  nestedBuilder.create<LinalgExtCollectiveYieldOp>(sourceReturn.getLoc(), yielded);
   return mlir::success();
 }
 
@@ -226,7 +226,7 @@ static bool lowerAllGather(mlir::stablehlo::AllGatherOp allGather) {
   if (!outs)
     return false;
 
-  auto lowered = builder.create<TensorCollectiveAllGatherOp>(
+  auto lowered = builder.create<LinalgExtCollectiveAllGatherOp>(
       allGather.getLoc(), allGather->getResultTypes(), allGather.getOperands(),
       *outs, allGather.getAllGatherDimAttr(),
       getRankGroupAttr(builder, *rankGroup),
@@ -247,7 +247,7 @@ static bool lowerAllReduce(mlir::stablehlo::AllReduceOp allReduce) {
   if (!outs)
     return false;
 
-  auto lowered = builder.create<TensorCollectiveAllReduceOp>(
+  auto lowered = builder.create<LinalgExtCollectiveAllReduceOp>(
       allReduce.getLoc(), allReduce->getResultTypes(), allReduce.getOperands(),
       *outs, getRankGroupAttr(builder, *rankGroup),
       getChannelIdAttr(builder, allReduce.getChannelHandleAttr()),
@@ -274,7 +274,7 @@ static bool lowerReduceScatter(mlir::stablehlo::ReduceScatterOp reduceScatter) {
   if (!outs)
     return false;
 
-  auto lowered = builder.create<TensorCollectiveReduceScatterOp>(
+  auto lowered = builder.create<LinalgExtCollectiveReduceScatterOp>(
       reduceScatter.getLoc(), reduceScatter->getResultTypes(),
       reduceScatter->getOperands(), *outs,
       reduceScatter.getScatterDimensionAttr(),
@@ -304,7 +304,7 @@ static bool lowerAllToAll(mlir::stablehlo::AllToAllOp allToAll) {
   if (!outs)
     return false;
 
-  auto lowered = builder.create<TensorCollectiveAllToAllOp>(
+  auto lowered = builder.create<LinalgExtCollectiveAllToAllOp>(
       allToAll.getLoc(), allToAll->getResultTypes(), allToAll.getOperands(),
       *outs, allToAll.getSplitDimensionAttr(),
       allToAll.getConcatDimensionAttr(), allToAll.getSplitCountAttr(),
@@ -344,7 +344,7 @@ lowerCollectivePermute(mlir::stablehlo::CollectivePermuteOp collectivePermute) {
   if (!outs)
     return false;
 
-  auto lowered = builder.create<TensorCollectiveCollectivePermuteOp>(
+  auto lowered = builder.create<LinalgExtCollectiveCollectivePermuteOp>(
       collectivePermute.getLoc(), collectivePermute->getResultTypes(),
       collectivePermute->getOperands(), *outs,
       mlir::DenseI64ArrayAttr::get(builder.getContext(), *sourceTargetPairs),
@@ -399,7 +399,7 @@ struct NormalizeStablehloCollectivesPass
 
       if (!lowered) {
         op->emitError("failed to normalize StableHLO collective to "
-                      "wafer.tensor handoff");
+                      "wafer_linalg_ext collective handoff");
         signalPassFailure();
         return;
       }

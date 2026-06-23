@@ -33,7 +33,7 @@
 # MLIR-SAME: tensor<2xf32>
 # MLIR-SAME: tensor<32x2xf32>
 # MLIR-NOT: stablehlo.all_gather
-# MLIR: wafer.tensor.all_gather
+# MLIR: wafer_linalg_ext.collective.all_gather
 # MLIR-SAME: rank_group = array<i64:
 # MLIR-NOT: wafer.tile.
 # MLIR-NOT: stablehlo.

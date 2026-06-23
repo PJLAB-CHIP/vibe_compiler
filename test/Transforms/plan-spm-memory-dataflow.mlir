@@ -95,12 +95,12 @@ func.func @async_token_extends_source_until_wait(%boundary: memref<128xf16, #waf
     %source = memref.alloc() : memref<128xf16, #wafer.memory<spm, tensor>>
     wafer.instr.fill %source, %zero
         : memref<128xf16, #wafer.memory<spm, tensor>>, f16
-    %token = wafer.tile.send %source {peer = 1 : i64, bytes = 256 : i64}
+    %token = wafer.instr.dte_send %source {peer = 1 : i64, bytes = 256 : i64}
         : memref<128xf16, #wafer.memory<spm, tensor>> -> !async.token
     %before_wait = memref.alloc() : memref<128xf16, #wafer.memory<spm, tensor>>
     wafer.instr.fill %before_wait, %zero
         : memref<128xf16, #wafer.memory<spm, tensor>>, f16
-    wafer.tile.wait %token : !async.token
+    wafer.instr.dte_wait %token : !async.token
     %after_wait = memref.alloc() : memref<128xf16, #wafer.memory<spm, tensor>>
     wafer.instr.fill %after_wait, %zero
         : memref<128xf16, #wafer.memory<spm, tensor>>, f16
@@ -132,7 +132,7 @@ func.func @async_token_extends_source_until_wait(%boundary: memref<128xf16, #waf
 
 // ASYNC-LABEL: func.func @async_token_extends_source_until_wait
 // ASYNC: %[[SOURCE:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>} : memref<128xf16, #wafer.memory<spm, tensor>>
-// ASYNC: wafer.tile.send %[[SOURCE]]
+// ASYNC: wafer.instr.dte_send %[[SOURCE]]
 // ASYNC: %[[BEFORE:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65792>} : memref<128xf16, #wafer.memory<spm, tensor>>
-// ASYNC: wafer.tile.wait
+// ASYNC: wafer.instr.dte_wait
 // ASYNC: %[[AFTER:.+]] = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>} : memref<128xf16, #wafer.memory<spm, tensor>>

@@ -15,7 +15,7 @@ namespace wafer {
 
 enum class MemLayout : uint32_t;
 enum class MemorySpace : uint32_t;
-enum class InstrQueue : uint32_t;
+enum class InstrFamily : uint32_t;
 
 enum class WaferValueRole {
   None,
@@ -35,7 +35,7 @@ struct WaferTilingDemand {
   mlir::Type type;
 };
 
-enum class WaferTensorCollectiveKind {
+enum class WaferLinalgExtCollectiveKind {
   AllGather,
   ReduceScatter,
   AllReduce,
@@ -43,8 +43,8 @@ enum class WaferTensorCollectiveKind {
   CollectivePermute,
 };
 
-struct WaferTensorCollectiveInfo {
-  WaferTensorCollectiveKind kind;
+struct WaferLinalgExtCollectiveInfo {
+  WaferLinalgExtCollectiveKind kind;
   llvm::SmallVector<int64_t, 8> rankGroup;
   llvm::SmallVector<int64_t, 8> sourceTargetPairs;
   int64_t axis = -1;

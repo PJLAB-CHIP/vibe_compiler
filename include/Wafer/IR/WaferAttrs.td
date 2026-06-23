@@ -172,18 +172,20 @@ def Wafer_ComputeReduceKindAttr
   let assemblyFormat = "`<` $value `>`";
 }
 
-def Wafer_InstrQueueCT : I32EnumAttrCase<"CT", 0, "ct">;
-def Wafer_InstrQueueNE : I32EnumAttrCase<"NE", 1, "ne">;
-def Wafer_InstrQueueRDMA : I32EnumAttrCase<"RDMA", 2, "rdma">;
-def Wafer_InstrQueueWDMA : I32EnumAttrCase<"WDMA", 3, "wdma">;
-def Wafer_InstrQueueTDMA : I32EnumAttrCase<"TDMA", 4, "tdma">;
-def Wafer_InstrQueue : I32EnumAttr<"InstrQueue",
-                                   "Wafer instruction issue queue family", [
-  Wafer_InstrQueueCT,
-  Wafer_InstrQueueNE,
-  Wafer_InstrQueueRDMA,
-  Wafer_InstrQueueWDMA,
-  Wafer_InstrQueueTDMA
+def Wafer_InstrFamilyCT : I32EnumAttrCase<"CT", 0, "ct">;
+def Wafer_InstrFamilyNE : I32EnumAttrCase<"NE", 1, "ne">;
+def Wafer_InstrFamilyRDMA : I32EnumAttrCase<"RDMA", 2, "rdma">;
+def Wafer_InstrFamilyWDMA : I32EnumAttrCase<"WDMA", 3, "wdma">;
+def Wafer_InstrFamilyTDMA : I32EnumAttrCase<"TDMA", 4, "tdma">;
+def Wafer_InstrFamilyDTE : I32EnumAttrCase<"DTE", 5, "dte">;
+def Wafer_InstrFamily : I32EnumAttr<"InstrFamily",
+                                    "Wafer hardware instruction family", [
+  Wafer_InstrFamilyCT,
+  Wafer_InstrFamilyNE,
+  Wafer_InstrFamilyRDMA,
+  Wafer_InstrFamilyWDMA,
+  Wafer_InstrFamilyTDMA,
+  Wafer_InstrFamilyDTE
 ]> {
   let cppNamespace = "::wafer";
   let genSpecializedAttr = 0;

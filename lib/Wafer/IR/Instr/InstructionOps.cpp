@@ -287,7 +287,7 @@ mlir::LogicalResult InstrRDMAOp::verify() {
                                   getSrcIterationsAttr(), {}, {});
 }
 
-InstrQueue InstrRDMAOp::getInstructionQueueFamily() { return InstrQueue::RDMA; }
+InstrFamily InstrRDMAOp::getInstructionFamily() { return InstrFamily::RDMA; }
 
 mlir::LogicalResult InstrRDMAOp::verifyInstructionContract() {
   return verify();
@@ -322,7 +322,7 @@ mlir::LogicalResult InstrWDMAOp::verify() {
                                   getDstStridesAttr(), getDstIterationsAttr());
 }
 
-InstrQueue InstrWDMAOp::getInstructionQueueFamily() { return InstrQueue::WDMA; }
+InstrFamily InstrWDMAOp::getInstructionFamily() { return InstrFamily::WDMA; }
 
 mlir::LogicalResult InstrWDMAOp::verifyInstructionContract() {
   return verify();
@@ -372,8 +372,8 @@ mlir::LogicalResult InstrGatherScatterOp::verify() {
   return mlir::success();
 }
 
-InstrQueue InstrGatherScatterOp::getInstructionQueueFamily() {
-  return InstrQueue::TDMA;
+InstrFamily InstrGatherScatterOp::getInstructionFamily() {
+  return InstrFamily::TDMA;
 }
 
 mlir::LogicalResult InstrGatherScatterOp::verifyInstructionContract() {
@@ -409,7 +409,7 @@ mlir::LogicalResult InstrFillOp::verify() {
   return mlir::success();
 }
 
-InstrQueue InstrFillOp::getInstructionQueueFamily() { return InstrQueue::CT; }
+InstrFamily InstrFillOp::getInstructionFamily() { return InstrFamily::CT; }
 
 mlir::LogicalResult InstrFillOp::verifyInstructionContract() {
   return verify();
@@ -446,8 +446,8 @@ mlir::LogicalResult InstrElementwiseOp::verify() {
                                        getInputs(), getDest().getType());
 }
 
-InstrQueue InstrElementwiseOp::getInstructionQueueFamily() {
-  return InstrQueue::CT;
+InstrFamily InstrElementwiseOp::getInstructionFamily() {
+  return InstrFamily::CT;
 }
 
 mlir::LogicalResult InstrElementwiseOp::verifyInstructionContract() {
@@ -486,7 +486,7 @@ mlir::LogicalResult InstrReduceOp::verify() {
                                          getInit());
 }
 
-InstrQueue InstrReduceOp::getInstructionQueueFamily() { return InstrQueue::CT; }
+InstrFamily InstrReduceOp::getInstructionFamily() { return InstrFamily::CT; }
 
 mlir::LogicalResult InstrReduceOp::verifyInstructionContract() {
   return verify();
@@ -526,8 +526,8 @@ mlir::LogicalResult InstrConvertOp::verify() {
   return mlir::success();
 }
 
-InstrQueue InstrConvertOp::getInstructionQueueFamily() {
-  return InstrQueue::CT;
+InstrFamily InstrConvertOp::getInstructionFamily() {
+  return InstrFamily::CT;
 }
 
 mlir::LogicalResult InstrConvertOp::verifyInstructionContract() {
@@ -616,7 +616,7 @@ mlir::LogicalResult InstrGemmOp::verify() {
   return mlir::success();
 }
 
-InstrQueue InstrGemmOp::getInstructionQueueFamily() { return InstrQueue::NE; }
+InstrFamily InstrGemmOp::getInstructionFamily() { return InstrFamily::NE; }
 
 mlir::LogicalResult InstrGemmOp::verifyInstructionContract() {
   return verify();

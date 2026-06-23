@@ -18,7 +18,7 @@ module {
       %input: tensor<2x4xf32>,
       %out: tensor<2x4xf32>) -> tensor<2x4xf32> {
     // CHECK: source_target_pairs logical ranks must be within execution mesh rank count
-    %0 = wafer.tensor.collective_permute
+    %0 = wafer_linalg_ext.collective.collective_permute
         ins(%input : tensor<2x4xf32>)
         outs(%out : tensor<2x4xf32>)
         {source_target_pairs = array<i64: 0, 2>}

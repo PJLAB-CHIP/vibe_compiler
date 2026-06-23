@@ -3,51 +3,6 @@
 #ifndef WAFER_IR_OPS_COMMOPS_TD
 #define WAFER_IR_OPS_COMMOPS_TD
 
-include "mlir/Dialect/Async/IR/AsyncTypes.td"
-
-class Wafer_CommP2POp<string mnemonic> : Wafer_Op<mnemonic, [
-    DeclareOpInterfaceMethods<WaferLayoutOpInterface>,
-    DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
-    MemoryEffects<[MemRead<Wafer_SPMResource>,
-                   MemWrite<Wafer_SPMResource>,
-                   MemWrite<Wafer_CommunicationResource>]>
-  ]> {
-  let description = [{
-    Fixed-size unicast tile communication. `peer` is a logical execution-rank
-    id in the current `wafer.execution.mesh`, not an encoded physical tile id.
-    The physical endpoint is derived from `wafer.execution.mesh` and
-    `wafer.target.topology` at the communication / Direct DTE lowering
-    boundary.
-  }];
-  let arguments = (ins
-    Wafer_AnySPMMemRef:$buffer,
-    I64Attr:$peer,
-    I64Attr:$bytes
-  );
-  let results = (outs Async_TokenType:$token);
-  let hasVerifier = 1;
-  let assemblyFormat =
-      "$buffer attr-dict `:` type($buffer) `->` type($token)";
-}
-
-def Wafer_CommSendOp : Wafer_CommP2POp<"tile.send"> {
-  let summary = "fixed-size unicast p2p send";
-}
-
-def Wafer_CommRecvOp : Wafer_CommP2POp<"tile.recv"> {
-  let summary = "fixed-size unicast p2p receive";
-}
-
-def Wafer_CommWaitOp : Wafer_Op<"tile.wait", [
-    DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
-    MemoryEffects<[MemRead<Wafer_CommunicationResource>]>
-  ]> {
-  let summary = "wait for communication completion tokens";
-  let arguments = (ins Variadic<Async_TokenType>:$tokens);
-  let hasVerifier = 1;
-  let assemblyFormat = "$tokens attr-dict `:` type($tokens)";
-}
-
 def Wafer_CommAllGatherOp : Wafer_Op<"tile.all_gather", [
     DeclareOpInterfaceMethods<WaferLayoutOpInterface>,
     DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
@@ -64,7 +19,7 @@ def Wafer_CommAllGatherOp : Wafer_Op<"tile.all_gather", [
     index into that rank group, and the fixed byte size of one shard. It does
     not choose raw DTE register modes, encode physical endpoints, or hide a
     communication plan side table; lowering rewrites it into explicit
-    `wafer.tile.send` / `recv` / `wait` steps.
+    `wafer.instr.dte_send` / `dte_recv` / `dte_wait` instructions.
   }];
 
   let arguments = (ins

@@ -181,13 +181,13 @@ static mlir::LogicalResult collectLinalgDemand(mlir::linalg::LinalgOp op,
 }
 
 static mlir::LogicalResult
-collectCollectiveDemand(WaferTensorCollectiveOpInterface op, unsigned opIndex,
+collectCollectiveDemand(WaferLinalgExtCollectiveOpInterface op, unsigned opIndex,
                         OpTilingDemand &demand) {
   demand = {};
-  demand.kind = OpTilingDemandKind::TensorCollective;
+  demand.kind = OpTilingDemandKind::LinalgExtCollective;
   demand.op = op.getOperation();
   demand.opIndex = opIndex;
-  op.collectWaferTensorCollectiveInfo(demand.collectiveInfo);
+  op.collectWaferLinalgExtCollectiveInfo(demand.collectiveInfo);
 
   auto mlirTiling = mlir::dyn_cast<mlir::TilingInterface>(op.getOperation());
   if (!mlirTiling) {
@@ -303,20 +303,20 @@ static void printDimList(llvm::ArrayRef<unsigned> dims, llvm::raw_ostream &os) {
   os << "]";
 }
 
-static llvm::StringRef collectiveKindName(WaferTensorCollectiveKind kind) {
+static llvm::StringRef collectiveKindName(WaferLinalgExtCollectiveKind kind) {
   switch (kind) {
-  case WaferTensorCollectiveKind::AllGather:
+  case WaferLinalgExtCollectiveKind::AllGather:
     return "all_gather";
-  case WaferTensorCollectiveKind::ReduceScatter:
+  case WaferLinalgExtCollectiveKind::ReduceScatter:
     return "reduce_scatter";
-  case WaferTensorCollectiveKind::AllReduce:
+  case WaferLinalgExtCollectiveKind::AllReduce:
     return "all_reduce";
-  case WaferTensorCollectiveKind::AllToAll:
+  case WaferLinalgExtCollectiveKind::AllToAll:
     return "all_to_all";
-  case WaferTensorCollectiveKind::CollectivePermute:
+  case WaferLinalgExtCollectiveKind::CollectivePermute:
     return "collective_permute";
   }
-  llvm_unreachable("unknown tensor collective kind");
+  llvm_unreachable("unknown linalg-ext collective kind");
 }
 
 static void printI64List(llvm::ArrayRef<int64_t> values,
@@ -367,7 +367,7 @@ mlir::LogicalResult wafer::collectGroupTilingDemand(GroupOp group,
     if (auto linalgOp = mlir::dyn_cast<mlir::linalg::LinalgOp>(&op))
       result = collectLinalgDemand(linalgOp, opIndex, opDemand);
     else if (auto collective =
-                 mlir::dyn_cast<WaferTensorCollectiveOpInterface>(&op))
+                 mlir::dyn_cast<WaferLinalgExtCollectiveOpInterface>(&op))
       result = collectCollectiveDemand(collective, opIndex, opDemand);
     else if (isSupportOp(&op))
       collectSupportDemand(&op, opIndex, opDemand);
@@ -435,7 +435,7 @@ void wafer::dumpGroupTilingDemand(const GroupTilingDemand &demand,
       os << "\n";
     }
 
-    if (opDemand.kind == OpTilingDemandKind::TensorCollective) {
+    if (opDemand.kind == OpTilingDemandKind::LinalgExtCollective) {
       os << "    collective kind="
          << collectiveKindName(opDemand.collectiveInfo.kind);
       if (!opDemand.collectiveInfo.rankGroup.empty()) {

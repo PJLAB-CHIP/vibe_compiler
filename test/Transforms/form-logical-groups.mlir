@@ -15,10 +15,10 @@ module {
     return %0 : tensor<4x16xf32>
   }
 
-  func.func @tensor_collective_logical_group(
+  func.func @linalg_ext_collective_logical_group(
       %input: tensor<4xf32>,
       %out: tensor<8xf32>) -> tensor<8xf32> {
-    %0 = wafer.tensor.all_gather
+    %0 = wafer_linalg_ext.collective.all_gather
         ins(%input : tensor<4xf32>)
         outs(%out : tensor<8xf32>)
         {axis = 0 : i64, rank_group = array<i64: 0, 1>}
@@ -35,11 +35,11 @@ module {
 // CHECK: wafer.group.yield
 // CHECK: return %[[GROUP]] : tensor<4x16xf32>
 
-// CHECK-LABEL: func.func @tensor_collective_logical_group
+// CHECK-LABEL: func.func @linalg_ext_collective_logical_group
 // CHECK: %[[TCGROUP:.+]] = wafer.group
 // CHECK-SAME: ins(%{{.+}} : tensor<4xf32>)
 // CHECK-SAME: outs(%{{.+}} : tensor<8xf32>)
-// CHECK: wafer.tensor.all_gather
+// CHECK: wafer_linalg_ext.collective.all_gather
 // CHECK-SAME: rank_group = array<i64: 0, 1>
 // CHECK: wafer.group.yield
 // CHECK: return %[[TCGROUP]] : tensor<8xf32>

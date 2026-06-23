@@ -1,18 +1,18 @@
-//===- TensorCollectiveOps.td - Wafer tensor collective ops -*- tablegen -*-===//
+//===- CollectiveOps.td - Wafer linalg extension collectives -*- tablegen -*-===//
 
-#ifndef WAFER_IR_OPS_TENSORCOLLECTIVEOPS_TD
-#define WAFER_IR_OPS_TENSORCOLLECTIVEOPS_TD
+#ifndef WAFER_IR_LINALGEXT_COLLECTIVEOPS_TD
+#define WAFER_IR_LINALGEXT_COLLECTIVEOPS_TD
 
 include "mlir/Interfaces/DestinationStyleOpInterface.td"
 include "mlir/Interfaces/TilingInterface.td"
 
-class Wafer_TensorCollectiveOp<string mnemonic, list<Trait> traits = []>
-    : Wafer_Op<mnemonic, !listconcat([
+class Wafer_LinalgExtCollectiveOp<string mnemonic, list<Trait> traits = []>
+    : WaferLinalgExt_Op<mnemonic, !listconcat([
         AttrSizedOperandSegments,
         DestinationStyleOpInterface,
         TilingInterface,
         DeclareOpInterfaceMethods<WaferTilingInterface>,
-        DeclareOpInterfaceMethods<WaferTensorCollectiveOpInterface>
+        DeclareOpInterfaceMethods<WaferLinalgExtCollectiveOpInterface>
       ], traits)> {
   let arguments = (ins
     Variadic<AnyType>:$inputs,
@@ -42,9 +42,9 @@ class Wafer_TensorCollectiveOp<string mnemonic, list<Trait> traits = []>
   }];
 }
 
-class Wafer_TensorCollectiveRankGroupOp<string mnemonic,
+class Wafer_LinalgExtCollectiveRankGroupOp<string mnemonic,
                                         list<Trait> traits = []>
-    : Wafer_TensorCollectiveOp<mnemonic, traits> {
+    : Wafer_LinalgExtCollectiveOp<mnemonic, traits> {
   let arguments = (ins
     Variadic<AnyType>:$inputs,
     Variadic<AnyType>:$outs,
@@ -55,9 +55,9 @@ class Wafer_TensorCollectiveRankGroupOp<string mnemonic,
   );
 }
 
-def Wafer_TensorCollectiveAllGatherOp
-    : Wafer_TensorCollectiveRankGroupOp<"tensor.all_gather"> {
-  let summary = "tensor-level post-SPMD all-gather handoff";
+def Wafer_LinalgExtCollectiveAllGatherOp
+    : Wafer_LinalgExtCollectiveRankGroupOp<"collective.all_gather"> {
+  let summary = "linalg-extension post-SPMD all-gather handoff";
   let description = [{
     Carries StableHLO all_gather semantics after SPMD partitioning as a
     destination-style tensor op. It preserves logical rank group and gather
@@ -74,12 +74,12 @@ def Wafer_TensorCollectiveAllGatherOp
   }];
 }
 
-def Wafer_TensorCollectiveReduceScatterOp
-    : Wafer_TensorCollectiveRankGroupOp<"tensor.reduce_scatter",
-        [SingleBlockImplicitTerminator<"TensorCollectiveYieldOp">]> {
-  let summary = "tensor-level post-SPMD reduce-scatter handoff";
+def Wafer_LinalgExtCollectiveReduceScatterOp
+    : Wafer_LinalgExtCollectiveRankGroupOp<"collective.reduce_scatter",
+        [SingleBlockImplicitTerminator<"LinalgExtCollectiveYieldOp">]> {
+  let summary = "linalg-extension post-SPMD reduce-scatter handoff";
   let description = [{
-    Carries tensor-level reduce-scatter semantics after SPMD partitioning.
+    Carries linalg-extension reduce-scatter semantics after SPMD partitioning.
     `rank_group` entries are logical execution ranks in the current
     `wafer.execution.mesh`; physical endpoint selection is deferred to
     topology/execution-mesh consumers.
@@ -93,12 +93,12 @@ def Wafer_TensorCollectiveReduceScatterOp
   }];
 }
 
-def Wafer_TensorCollectiveAllReduceOp
-    : Wafer_TensorCollectiveOp<"tensor.all_reduce",
-        [SingleBlockImplicitTerminator<"TensorCollectiveYieldOp">]> {
-  let summary = "tensor-level post-SPMD all-reduce handoff";
+def Wafer_LinalgExtCollectiveAllReduceOp
+    : Wafer_LinalgExtCollectiveOp<"collective.all_reduce",
+        [SingleBlockImplicitTerminator<"LinalgExtCollectiveYieldOp">]> {
+  let summary = "linalg-extension post-SPMD all-reduce handoff";
   let description = [{
-    Carries tensor-level all-reduce semantics after SPMD partitioning.
+    Carries linalg-extension all-reduce semantics after SPMD partitioning.
     `rank_group` entries are logical execution ranks in the current
     `wafer.execution.mesh`; the verifier checks the mesh rank domain when an
     execution mesh is present. Physical routes and endpoints are not encoded in
@@ -120,11 +120,11 @@ def Wafer_TensorCollectiveAllReduceOp
   }];
 }
 
-def Wafer_TensorCollectiveAllToAllOp
-    : Wafer_TensorCollectiveOp<"tensor.all_to_all"> {
-  let summary = "tensor-level post-SPMD all-to-all handoff";
+def Wafer_LinalgExtCollectiveAllToAllOp
+    : Wafer_LinalgExtCollectiveOp<"collective.all_to_all"> {
+  let summary = "linalg-extension post-SPMD all-to-all handoff";
   let description = [{
-    Carries tensor-level all-to-all semantics after SPMD partitioning.
+    Carries linalg-extension all-to-all semantics after SPMD partitioning.
     `rank_group` entries are logical execution ranks in the current
     `wafer.execution.mesh`; physical exchange endpoints are derived later from
     the execution mesh and target topology.
@@ -146,11 +146,11 @@ def Wafer_TensorCollectiveAllToAllOp
   }];
 }
 
-def Wafer_TensorCollectiveCollectivePermuteOp
-    : Wafer_TensorCollectiveOp<"tensor.collective_permute"> {
-  let summary = "tensor-level post-SPMD collective-permute handoff";
+def Wafer_LinalgExtCollectiveCollectivePermuteOp
+    : Wafer_LinalgExtCollectiveOp<"collective.collective_permute"> {
+  let summary = "linalg-extension post-SPMD collective-permute handoff";
   let description = [{
-    Carries tensor-level collective-permute semantics after SPMD partitioning.
+    Carries linalg-extension collective-permute semantics after SPMD partitioning.
     `source_target_pairs` contains source/target logical execution-rank pairs,
     not physical endpoint encodings. If the enclosing module has an execution
     mesh, the verifier checks every pair entry against the mesh rank domain.
@@ -168,17 +168,17 @@ def Wafer_TensorCollectiveCollectivePermuteOp
   }];
 }
 
-def Wafer_TensorCollectiveYieldOp : Wafer_Op<"tensor.yield", [
-    ParentOneOf<["TensorCollectiveAllReduceOp",
-                 "TensorCollectiveReduceScatterOp"]>,
+def Wafer_LinalgExtCollectiveYieldOp : WaferLinalgExt_Op<"collective.yield", [
+    ParentOneOf<["LinalgExtCollectiveAllReduceOp",
+                 "LinalgExtCollectiveReduceScatterOp"]>,
     Pure,
     ReturnLike,
     Terminator
   ]> {
-  let summary = "yield scalar combiner values from a tensor collective body";
+  let summary = "yield scalar combiner values from a linalg-ext collective body";
   let arguments = (ins Variadic<AnyType>:$values);
   let builders = [OpBuilder<(ins), [{ /* nothing to do */ }]>];
   let assemblyFormat = [{ attr-dict ($values^ `:` type($values))? }];
 }
 
-#endif // WAFER_IR_OPS_TENSORCOLLECTIVEOPS_TD
+#endif // WAFER_IR_LINALGEXT_COLLECTIVEOPS_TD

@@ -54,12 +54,12 @@ verifyLogicalRanksWithinExecutionMesh(mlir::Operation *op,
                                       llvm::ArrayRef<int64_t> ranks,
                                       llvm::StringRef subject);
 
-mlir::LogicalResult verifyCommP2P(mlir::Operation *op, mlir::Value buffer,
-                                  mlir::IntegerAttr peer,
-                                  mlir::IntegerAttr bytes,
-                                  mlir::Type tokenType);
-mlir::LogicalResult verifyCommWaitTokens(mlir::Operation *op,
-                                         mlir::OperandRange tokens);
+mlir::LogicalResult verifyDTEP2P(mlir::Operation *op, mlir::Value buffer,
+                                 mlir::IntegerAttr peer,
+                                 mlir::IntegerAttr bytes,
+                                 mlir::Type tokenType);
+mlir::LogicalResult verifyDTEWaitTokens(mlir::Operation *op,
+                                        mlir::OperandRange tokens);
 
 struct BatchedGemmDimAttrs {
   llvm::SmallVector<int64_t, 2> lhsBatchDims;

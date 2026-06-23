@@ -96,13 +96,13 @@ module {
       -> tensor<4xf32> {
     %0 = wafer.group ins(%input : tensor<4xf32>) outs(%out : tensor<4xf32>) {
     ^bb0(%arg0: tensor<4xf32>, %arg1: tensor<4xf32>):
-      %ar = wafer.tensor.all_reduce
+      %ar = wafer_linalg_ext.collective.all_reduce
           ins(%arg0 : tensor<4xf32>)
           outs(%arg1 : tensor<4xf32>)
           {
           ^bb0(%lhs: f32, %rhs: f32):
             %sum = arith.addf %lhs, %rhs : f32
-            wafer.tensor.yield %sum : f32
+            wafer_linalg_ext.collective.yield %sum : f32
           } {rank_group = array<i64: 0, 1>} -> tensor<4xf32>
       wafer.group.yield %ar : tensor<4xf32>
     } : tensor<4xf32>
@@ -130,7 +130,7 @@ module {
 // CHECK-LABEL: wafer.tiling_demand group @two_independent_groups#1
 // CHECK: result_tile #0 type=tensor<8xf32> slice=[d0]
 // CHECK-LABEL: wafer.tiling_demand group @collective_group#0
-// CHECK: op #0 wafer.tensor.all_reduce
+// CHECK: op #0 wafer_linalg_ext.collective.all_reduce
 // CHECK: collective kind=all_reduce rank_group=[0,1]
 // CHECK: input #0 slice=[d0]
 // CHECK: result #0 slice=[d0]

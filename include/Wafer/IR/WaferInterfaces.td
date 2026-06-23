@@ -32,22 +32,23 @@ def WaferTilingInterface : OpInterface<"WaferTilingInterface"> {
   ];
 }
 
-def WaferTensorCollectiveOpInterface
-    : OpInterface<"WaferTensorCollectiveOpInterface"> {
+def WaferLinalgExtCollectiveOpInterface
+    : OpInterface<"WaferLinalgExtCollectiveOpInterface"> {
   let cppNamespace = "::wafer";
   let description = [{
-    Interface for tensor-level collective operations. The returned facts must
-    be derived from operands, results, regions, and attributes already present
-    in IR; planner choices and runtime schedules do not belong here.
+    Interface for Wafer linalg-extension collective operations. The returned
+    facts must be derived from operands, results, regions, and attributes
+    already present in IR; planner choices and runtime schedules do not belong
+    here.
   }];
   let methods = [
     InterfaceMethod<
-      "Collect the tensor collective facts represented by this operation.",
-      "void", "collectWaferTensorCollectiveInfo",
-      (ins "::wafer::WaferTensorCollectiveInfo &":$info)>,
+      "Collect the linalg-extension collective facts represented by this operation.",
+      "void", "collectWaferLinalgExtCollectiveInfo",
+      (ins "::wafer::WaferLinalgExtCollectiveInfo &":$info)>,
     InterfaceMethod<
-      "Verify the tensor collective contract represented by this operation.",
-      "::mlir::LogicalResult", "verifyWaferTensorCollectiveContract",
+      "Verify the linalg-extension collective contract represented by this operation.",
+      "::mlir::LogicalResult", "verifyWaferLinalgExtCollectiveContract",
       (ins)>
   ];
 }
@@ -112,15 +113,15 @@ def WaferInstructionOpInterface : OpInterface<"WaferInstructionOpInterface"> {
   let cppNamespace = "::wafer";
   let description = [{
     Interface for instruction-level Wafer operations. Implementations expose
-    only facts represented by the operation itself: issue queue family and
+    only facts represented by the operation itself: instruction family and
     verifier-checkable instruction contract. Scheduling state, worker id, SPM
     offsets, packet fields, and ABI symbols are intentionally outside this
     interface.
   }];
   let methods = [
     InterfaceMethod<
-      "Return the hardware issue queue family selected by this instruction op.",
-      "::wafer::InstrQueue", "getInstructionQueueFamily", (ins)>,
+      "Return the hardware instruction family selected by this instruction op.",
+      "::wafer::InstrFamily", "getInstructionFamily", (ins)>,
     InterfaceMethod<
       "Verify the instruction contract represented by this operation.",
       "::mlir::LogicalResult", "verifyInstructionContract", (ins)>

@@ -17,8 +17,8 @@ module {
   func.func @invalid_rank_group_out_of_mesh(
       %input: tensor<2x4xf32>,
       %out: tensor<4x4xf32>) -> tensor<4x4xf32> {
-    // CHECK: tensor collective rank_group logical ranks must be within execution mesh rank count
-    %0 = wafer.tensor.all_gather
+    // CHECK: linalg-ext collective rank_group logical ranks must be within execution mesh rank count
+    %0 = wafer_linalg_ext.collective.all_gather
         ins(%input : tensor<2x4xf32>)
         outs(%out : tensor<4x4xf32>)
         {axis = 0 : i64, rank_group = array<i64: 0, 2>}

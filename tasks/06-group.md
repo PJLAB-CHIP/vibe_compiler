@@ -60,7 +60,7 @@ schedule 下，让中间值只在 group tile 内部存活。
 
 | 阶段 | IR 边界 | 主要 IR | 可以表达 | 不提前表达 |
 | --- | --- | --- | --- | --- |
-| 0. Local tensor compute / collective | 上游 local shard compute 和 post-SPMD tensor collective | `linalg` / `tensor` / `scf` + `wafer_linalg_ext.collective.*` ops | tensor compute、DPS、shape/indexing、tensor-level collective tiling contract | group 边界、tile-local lifetime、physical storage、`wafer.tile.*` collective / DTE protocol |
+| 0. Local tensor compute / collective | 上游 local shard compute 和 post-SPMD linalg extension collective | `linalg` / `tensor` / `scf` + `wafer_linalg_ext.collective.*` ops | tensor compute、DPS、shape/indexing、tensor-level collective tiling contract | group 边界、tile-local lifetime、physical storage、`wafer.tile.*` collective / DTE protocol |
 | 1. Logical group | fusion planning region | logical-form `wafer.group` | group boundary、body region | tile size、schedule effect、physical allocation、queue、packet |
 | 2. Scheduled group | tiled tensor/control-flow region | scheduled-form `wafer.group` + tiled tensor IR | traversal loop、tiled body、必要的显式 constraint/effect | physical address、worker、DTE node、C ABI |
 | 3+. Downstream | bufferization / hardware / runtime | `wafer.tile.region`、layout/SPM、`wafer.tile.*` compute/collective、`wafer.instr.*`、runtime package metadata | 消费 scheduled group 的 tiled body、resource demand 和 boundary movement | 不回写 tensor-level fusion 语义 |
@@ -83,10 +83,10 @@ Pipeline position:
 - Upstream artifact / IR:
   `wafer-opt --program-pipeline=stablehlo-spmd-to-linalg` 输出的 rank-local
   `func.func`，body 为 `linalg` / `tensor` / `scf` / `arith` / `math`
-  local compute IR 和 `wafer_linalg_ext.collective.*` tensor collective IR。
+  local compute IR 和 `wafer_linalg_ext.collective.*` linalg extension collective IR。
 - Current stage responsibility:
   按 root/hero op 建立 dependency-preserving logical `wafer.group`，说明哪些
-  tensor SSA value、outs、producer/consumer 和 tensor collective 能进入 group。
+  tensor SSA value、outs、producer/consumer 和 linalg extension collective 能进入 group。
 - Output artifact / IR:
   verifier-legal 的 tensor-level `wafer.group` op；它仍是可被 candidate driver 接受、拆分或
   拒绝的 logical group。
@@ -103,7 +103,7 @@ Pipeline position:
   `wafer.instr.dte_*` schedule materialization、
   C ABI 或 package emission。
 - Completion gate:
-  真实 frontend/SPMD/local-compute-normalization program chain 的 local compute + tensor collective 输出能形成
+  真实 frontend/SPMD/local-compute-normalization program chain 的 local compute + linalg extension collective 输出能形成
   verifier-legal logical `wafer.group`；raw StableHLO collective、`wafer.tile.*` collective、
   `wafer.instr.dte_*`、`wafer.tile.region`、SPM storage、DTE token、C ABI/runtime op 和只靠手写
   fixture 拼出的 group 主线都被拒绝。
@@ -564,7 +564,7 @@ formation pass 在每个 `func.func` 的 region/block 内先做局部 op 分类�
 
 - tensor-level group body：`linalg.*`、`tensor.*`、`arith.*`、`math.*`、
   shape/index op、必要的 `scf`，以及已规整并实现 destination-style / tiling /
-  tensor collective interface 的 `wafer_linalg_ext.collective.*`。
+  linalg extension collective interface 的 `wafer_linalg_ext.collective.*`。
 - hard boundary：raw `stablehlo.*` collective、remote load/store、explicit DMA/
   communication、任意 `memref.*` allocation/load/store、`llvm.*`、runtime call、
   lower-level Wafer memory / compute / communication / sync / ABI op、runtime launch metadata、
@@ -585,7 +585,7 @@ root 优先级是：
 
 - matmul / batch matmul。
 - reduction。
-- 已规整的 tensor collective。
+- 已规整的 linalg extension collective。
 - softmax-like composite。
 - large elementwise chain。
 - dequant + matmul + epilogue。
@@ -695,7 +695,7 @@ scheduled group 必须来自一个已经被下游 legality analysis / resource p
 2. 调用每个 op 的 tiling interface，得到 operand slice、result slice、temporary/workspace/
    accumulator 需求，以及可能的 internal split 候选。
 3. 构造 tile-local execution model：包含预计的 `wafer.tile.region` 边界、
-   tile-local storage、layout materialization、movement、compute、tensor collective 和 sync/effect 需求。
+   tile-local storage、layout materialization、movement、compute、linalg extension collective 和 sync/effect 需求。
 4. 调用下游 legality analysis / resource planning 产出实际 planning result。这里不能只看抽象 size estimate；
    必须跑与下游一致的 layout materialization、SPM allocation 和 DDR demand /
    bandwidth analysis。layout 规则见
@@ -703,7 +703,7 @@ scheduled group 必须来自一个已经被下游 legality analysis / resource p
    `tasks/09-spm-memory-planning.md`，DDR memory 规则见
    `tasks/12-ddr-memory-planning.md`；target-abstract compute/movement
    的 layout/resource/effect contract 见
-   `tasks/10-compute-movement.md`，tensor collective handoff 规则见
+   `tasks/10-compute-movement.md`，linalg extension collective handoff 规则见
    `tasks/05-local-compute-normalization.md`，跨 tile communication 的 token、
    staging buffer 和 wait contract 见
    `tasks/13-communication.md`。
@@ -835,7 +835,7 @@ Pipeline position:
   不选择最终 tile shape、不 select/reject/split group、不做 layout assignment、不分配 SPM、
   不判断 DDR view/range/resource、不 materialize compute/movement/comm op、不生成 package/ABI。
 - Completion gate:
-  FileCheck 覆盖 linalg matmul/broadcast/elementwise、multi-group、tensor collective 和 negative
+  FileCheck 覆盖 linalg matmul/broadcast/elementwise、multi-group、linalg extension collective 和 negative
   failure reason；program pipeline gate 从真实 `stablehlo-spmd-to-group` 输出上重放 demand dump。
 ```
 
@@ -862,7 +862,7 @@ tile，reduction / contraction dims 作为 hidden/internal demand 保留。不�
 自然推出的测试。
 
 `wafer_linalg_ext.collective.*` 必须走 MLIR `TilingInterface` 和
-`WaferTensorCollectiveOpInterface`。shape-preserving collective 可以返回同 shape tile demand；
+`WaferLinalgExtCollectiveOpInterface`。shape-preserving collective 可以返回同 shape tile demand；
 all-gather / reduce-scatter / all-to-all 必须检查 collective axis / slot relation，无法证明
 slot-aligned 时返回 failure，让 candidate-selection driver 回到 tile shape 或 group split。
 
@@ -992,7 +992,7 @@ tile shape 需要同时满足：
 - intermediate storage values 放得下。
 - per-op temporary/workspace/accumulator 放得下。
 - 如果启用额外 buffering，对应 tile-local resource 放得下。
-- tile shape 能匹配下游 bufferization、layout、compute、tensor collective 或 communication
+- tile shape 能匹配下游 bufferization、layout、compute、linalg extension collective 或 communication
   lowering 的约束。
 - 必要的 materialization 路径合法。
 

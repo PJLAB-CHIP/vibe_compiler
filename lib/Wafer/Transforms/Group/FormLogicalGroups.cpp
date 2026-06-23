@@ -51,8 +51,8 @@ static bool hasDuplicateBoundaryValues(mlir::ValueRange inputs,
   return false;
 }
 
-static bool isTensorCollectiveRoot(mlir::Operation *op) {
-  return mlir::isa<WaferTensorCollectiveOpInterface>(op);
+static bool isLinalgExtCollectiveRoot(mlir::Operation *op) {
+  return mlir::isa<WaferLinalgExtCollectiveOpInterface>(op);
 }
 
 static bool isLinalgRoot(mlir::Operation *op) {
@@ -76,13 +76,13 @@ static bool isTensorLevelGroupableDpsOp(mlir::Operation *op) {
   if (!dpsOp.hasPureTensorSemantics())
     return false;
 
-  return mlir::isa<mlir::linalg::LinalgOp>(op) || isTensorCollectiveRoot(op);
+  return mlir::isa<mlir::linalg::LinalgOp>(op) || isLinalgExtCollectiveRoot(op);
 }
 
 static bool isLogicalGroupRoot(mlir::Operation *op) {
   if (!isTensorLevelGroupableDpsOp(op))
     return false;
-  return isLinalgRoot(op) || isTensorCollectiveRoot(op);
+  return isLinalgRoot(op) || isLinalgExtCollectiveRoot(op);
 }
 
 static bool isInternalSupportOp(mlir::Operation *op) {

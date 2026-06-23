@@ -99,9 +99,9 @@
   group/tiling；`wafer.tile.*` communication 只能在 `wafer.tile.region` / SPM storage values / endpoint resource facts 明确后
   materialize。StableHLO collective 直降 `wafer.tile.*` communication 且靠 `unrealized_conversion_cast` 桥 tensor
   和 storage 的 pass/test 已移除；不要在 group 输入侧恢复这种入口。
-- R2.4 tensor collective handoff 的主线验证入口是同一个 Wafer program pipeline：
+- R2.4 linalg extension collective handoff 的主线验证入口是同一个 Wafer program pipeline：
   `wafer-opt --program-pipeline=stablehlo-spmd-to-linalg ...` 必须从真实 PyTorch/XLA sharded
-  program 产出含 `wafer.tensor.*` 的 `functions/forward.mlir`，并保留
+  program 产出含 `wafer_linalg_ext.collective.*` 的 `functions/forward.mlir`，并保留
   `forward.parameter_shards.json` 与 rank-local NPY payload。局部 `test/Frontend` fixture 可以覆盖
   `all_reduce` / `reduce_scatter` / `all_to_all` / `collective_permute`，但不能替代这个 program
   handoff gate。
@@ -110,9 +110,9 @@
   的主线 body 先运行 Wafer collective handoff，再调用当前 StableHLO pin 的官方
   `stablehlo-legalize-to-linalg`；Wafer collective handoff 不能证明时要 `signalPassFailure`，
   不能静默把 raw StableHLO 留给 R3 group。
-- R2.4 `wafer.tensor.*` 不是只靠 op 名字或 pass switch 的 skeleton；五类 collective
+- R2.4 `wafer_linalg_ext.collective.*` 不是只靠 op 名字或 pass switch 的 skeleton；五类 collective
   必须实现 `DestinationStyleOpInterface`、MLIR `TilingInterface`、`WaferTilingInterface` 和
-  `WaferTensorCollectiveOpInterface`。slot-crossing 或动态不可证明的 collective-axis tile 应由
+  `WaferLinalgExtCollectiveOpInterface`。slot-crossing 或动态不可证明的 collective-axis tile 应由
   `TilingInterface` 返回 failure，等待 group planner 拆 slot-aligned tile 或 R6 materialization。
 - R3.2a/R3.2b 是 analysis-only 阶段：`GroupTilingDemand` 和 `GroupLayoutPlan` 可以用
   `--wafer-dump-group-tiling-demand` / `--wafer-dump-group-layout-plan` dump，但不能把 tile demand、

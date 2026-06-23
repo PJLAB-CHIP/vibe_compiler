@@ -24,6 +24,7 @@
 #include "Wafer/IR/WaferAttrs.h.inc"
 
 #include "Wafer/IR/WaferOpsDialect.h.inc"
+#include "Wafer/IR/WaferLinalgExtOpsDialect.h.inc"
 
 #define GET_TYPEDEF_CLASSES
 #include "Wafer/IR/WaferTypes.h.inc"
@@ -32,6 +33,9 @@
 
 #define GET_OP_CLASSES
 #include "Wafer/IR/WaferOps.h.inc"
+
+#define GET_OP_CLASSES
+#include "Wafer/IR/WaferLinalgExtOps.h.inc"
 
 namespace wafer {
 

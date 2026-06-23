@@ -20,7 +20,7 @@ bool isRawStableHLOOp(mlir::Operation *op) {
 bool isAllowedWaferGroupBodyOp(mlir::Operation *op) {
   if (mlir::isa<GroupYieldOp>(op))
     return true;
-  return mlir::isa<WaferTensorCollectiveOpInterface>(op);
+  return mlir::isa<WaferLinalgExtCollectiveOpInterface>(op);
 }
 
 bool isLowerLevelWaferOp(mlir::Operation *op) {

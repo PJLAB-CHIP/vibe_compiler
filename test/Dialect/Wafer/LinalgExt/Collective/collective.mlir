@@ -3,7 +3,7 @@
 func.func @all_gather(
     %input: tensor<2x4xf32>,
     %out: tensor<8x4xf32>) -> tensor<8x4xf32> {
-  %0 = wafer.tensor.all_gather
+  %0 = wafer_linalg_ext.collective.all_gather
       ins(%input : tensor<2x4xf32>)
       outs(%out : tensor<8x4xf32>)
       {axis = 0 : i64, rank_group = array<i64: 0, 1, 2, 3>}
@@ -12,51 +12,51 @@ func.func @all_gather(
 }
 
 // CHECK-LABEL: func.func @all_gather
-// CHECK: wafer.tensor.all_gather
+// CHECK: wafer_linalg_ext.collective.all_gather
 // CHECK-SAME: axis = 0 : i64
 // CHECK-SAME: rank_group = array<i64: 0, 1, 2, 3>
-// CHECK-NOT: wafer.tile.send
+// CHECK-NOT: wafer.instr.dte_send
 
 func.func @all_reduce(
     %input: tensor<4xf32>,
     %out: tensor<4xf32>) -> tensor<4xf32> {
-  %0 = wafer.tensor.all_reduce
+  %0 = wafer_linalg_ext.collective.all_reduce
       ins(%input : tensor<4xf32>)
       outs(%out : tensor<4xf32>)
       {
     ^bb0(%lhs: f32, %rhs: f32):
       %sum = arith.addf %lhs, %rhs : f32
-      wafer.tensor.yield %sum : f32
+      wafer_linalg_ext.collective.yield %sum : f32
     } {rank_group = array<i64: 0, 1>} -> tensor<4xf32>
   return %0 : tensor<4xf32>
 }
 
 // CHECK-LABEL: func.func @all_reduce
-// CHECK: wafer.tensor.all_reduce
-// CHECK: wafer.tensor.yield
-// CHECK-NOT: wafer.tile.send
+// CHECK: wafer_linalg_ext.collective.all_reduce
+// CHECK: wafer_linalg_ext.collective.yield
+// CHECK-NOT: wafer.instr.dte_send
 
 func.func @reduce_scatter(
     %input: tensor<8x4xf32>,
     %out: tensor<2x4xf32>) -> tensor<2x4xf32> {
-  %0 = wafer.tensor.reduce_scatter
+  %0 = wafer_linalg_ext.collective.reduce_scatter
       ins(%input : tensor<8x4xf32>)
       outs(%out : tensor<2x4xf32>)
       {
     ^bb0(%lhs: f32, %rhs: f32):
       %sum = arith.addf %lhs, %rhs : f32
-      wafer.tensor.yield %sum : f32
+      wafer_linalg_ext.collective.yield %sum : f32
     } {axis = 0 : i64, rank_group = array<i64: 0, 1, 2, 3>} -> tensor<2x4xf32>
   return %0 : tensor<2x4xf32>
 }
 
 // CHECK-LABEL: func.func @reduce_scatter
-// CHECK: wafer.tensor.reduce_scatter
+// CHECK: wafer_linalg_ext.collective.reduce_scatter
 
 func.func @all_to_all(
     %input: tensor<8x4xf32>,
     %out: tensor<4x8xf32>) -> tensor<4x8xf32> {
-  %0 = wafer.tensor.all_to_all
+  %0 = wafer_linalg_ext.collective.all_to_all
       ins(%input : tensor<8x4xf32>)
       outs(%out : tensor<4x8xf32>)
       {split_axis = 0 : i64, concat_axis = 1 : i64,
@@ -67,12 +67,12 @@ func.func @all_to_all(
 }
 
 // CHECK-LABEL: func.func @all_to_all
-// CHECK: wafer.tensor.all_to_all
+// CHECK: wafer_linalg_ext.collective.all_to_all
 
 func.func @collective_permute(
     %input: tensor<2x4xf32>,
     %out: tensor<2x4xf32>) -> tensor<2x4xf32> {
-  %0 = wafer.tensor.collective_permute
+  %0 = wafer_linalg_ext.collective.collective_permute
       ins(%input : tensor<2x4xf32>)
       outs(%out : tensor<2x4xf32>)
       {source_target_pairs = array<i64: 0, 1, 1, 0>}
@@ -81,4 +81,4 @@ func.func @collective_permute(
 }
 
 // CHECK-LABEL: func.func @collective_permute
-// CHECK: wafer.tensor.collective_permute
+// CHECK: wafer_linalg_ext.collective.collective_permute

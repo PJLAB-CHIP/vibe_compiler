@@ -5,11 +5,15 @@ func.func @reject_tile_comm(%boundary: memref<4xf16, #wafer.memory<ddr, tensor>>
       : memref<4xf16, #wafer.memory<ddr, tensor>>)
       -> (memref<4xf16, #wafer.memory<ddr, tensor>>) {
   ^bb0(%arg0: memref<4xf16, #wafer.memory<ddr, tensor>>):
-    %buffer = "builtin.unrealized_conversion_cast"()
+    %local = "builtin.unrealized_conversion_cast"()
         : () -> memref<4xf16, #wafer.memory<spm, tensor>>
-    %token = wafer.tile.send %buffer {peer = 1 : i64, bytes = 8 : i64}
-        : memref<4xf16, #wafer.memory<spm, tensor>> -> !async.token
-    wafer.tile.wait %token : !async.token
+    %gather = "builtin.unrealized_conversion_cast"()
+        : () -> memref<8xf16, #wafer.memory<spm, tensor>>
+    wafer.tile.all_gather %local into %gather
+        {local_rank = 0 : i64, group_size = 2 : i64,
+         rank_group = array<i64: 0, 1>, bytes = 8 : i64}
+        : memref<4xf16, #wafer.memory<spm, tensor>>
+       -> memref<8xf16, #wafer.memory<spm, tensor>>
     wafer.tile.yield %arg0
         : memref<4xf16, #wafer.memory<ddr, tensor>>
   }

@@ -291,38 +291,38 @@ verifyResourceEffects(mlir::Operation *op,
   return mlir::success();
 }
 
-mlir::LogicalResult verifyCommP2P(mlir::Operation *op, mlir::Value buffer,
-                                  mlir::IntegerAttr peer,
-                                  mlir::IntegerAttr bytes,
-                                  mlir::Type tokenType) {
+mlir::LogicalResult verifyDTEP2P(mlir::Operation *op, mlir::Value buffer,
+                                 mlir::IntegerAttr peer,
+                                 mlir::IntegerAttr bytes,
+                                 mlir::Type tokenType) {
   if (!getLogicalTensorType(buffer.getType()))
-    return op->emitOpError("comm p2p buffer must be a Wafer buffer");
+    return op->emitOpError("DTE p2p buffer must be a Wafer buffer");
   if (!hasWaferMemorySpace(buffer.getType(), MemorySpace::SPM))
-    return op->emitOpError("comm p2p buffer must use SPM memory space");
+    return op->emitOpError("DTE p2p buffer must use SPM memory space");
   if (!mlir::isa<mlir::async::TokenType>(tokenType))
-    return op->emitOpError("comm p2p result must be an async token");
+    return op->emitOpError("DTE p2p result must be an async token");
   if (peer.getInt() < 0)
-    return op->emitOpError("comm peer must be non-negative");
+    return op->emitOpError("DTE peer must be non-negative");
   if (bytes.getInt() <= 0)
-    return op->emitOpError("comm byte count must be positive");
+    return op->emitOpError("DTE byte count must be positive");
   if (op->hasAttr(kWaferCommSlotAttrName)) {
     auto slot = op->getAttrOfType<mlir::IntegerAttr>(kWaferCommSlotAttrName);
     if (!slot)
-      return op->emitOpError("comm slot must be an integer attr");
+      return op->emitOpError("DTE slot must be an integer attr");
     if (slot.getInt() < 0)
-      return op->emitOpError("comm slot must be non-negative");
+      return op->emitOpError("DTE slot must be non-negative");
   }
 
   return mlir::success();
 }
 
-mlir::LogicalResult verifyCommWaitTokens(mlir::Operation *op,
-                                         mlir::OperandRange tokens) {
+mlir::LogicalResult verifyDTEWaitTokens(mlir::Operation *op,
+                                        mlir::OperandRange tokens) {
   if (tokens.empty())
-    return op->emitOpError("comm wait must have at least one token");
+    return op->emitOpError("DTE wait must have at least one token");
   for (mlir::Value token : tokens) {
     if (!mlir::isa<mlir::async::TokenType>(token.getType()))
-      return op->emitOpError("comm wait operands must be async tokens");
+      return op->emitOpError("DTE wait operands must be async tokens");
   }
   return mlir::success();
 }

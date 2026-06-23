@@ -64,42 +64,33 @@ PyTorch/XLA StableHLO Wafer program directory
 
 ## 当前 Active
 
-**IR naming and communication layer cleanup**
+**Buffer-level communication collective materialization**
 
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  当前仓库中的 post-SPMD collective handoff、tile communication p2p prototype、
-  instruction interface prototype、memref-backed `wafer.tile.region` / SPM storage values、
-  `wafer.execution.mesh` 和 `wafer.target.topology`。
+  `wafer_linalg_ext.collective.*` tensor collective handoff、selected group tile facts、
+  memref-backed `wafer.tile.region` / SPM storage values、`wafer.execution.mesh` 和
+  `wafer.target.topology`。
 - Current stage responsibility:
-  清理三处已收敛的 IR 命名和层级边界：
-  1. 把 tensor-level collective handoff 从 `wafer.tensor.*` 迁移为
-     `wafer_linalg_ext.collective.*`，保持 DPS tensor semantics、combiner region、
-     tiling interface 和 mesh-rank verifier。
-  2. 把 p2p communication prototype 从 `wafer.tile.send` / `recv` / `wait` 迁移为
-     `wafer.instr.dte_send` / `dte_recv` / `dte_wait`。`wafer.tile.*` 只保留
-     buffer-level collective semantic，例如 all-gather / reduce-scatter / all-reduce。
-  3. 把 `InstrQueue` 口径改成 instruction family，加入 `dte` family，明确
-     `wafer.instr.*` 是硬件相关调用层而不是 `TsmExecute`-only queue 层。
+  在 tile-region / SPM storage 层 materialize collective 的 buffer-level 语义：为 tiled tensor
+  collective 生成 verifier-legal `wafer.tile.*` collective op，显式表达 local buffer、
+  temporary/recv buffer、rank_group、local_rank、group_size 和 byte count。
 - Output artifact / IR:
-  文档、ODS/C++、pass、test 和 named pipeline 统一使用新层级：
-  `wafer_linalg_ext.collective.*` -> `wafer.tile.*` collective ->
-  `wafer.instr.dte_*`。旧名在非归档主线文档、代码和测试中不再作为当前合同出现。
+  含 `wafer.tile.all_gather` / `wafer.tile.reduce_scatter` /
+  `wafer.tile.all_reduce` 的 tile-region IR；仍不选择 p2p schedule，不写 SPM/DDR offset。
 - Downstream consumer:
-  buffer-level communication collective materialization、p2p Direct DTE instruction schedule lowering、
-  SPM memory planning、DDR memory planning、ABI/LLVM lowering、package manifest 和 runtime adapter。
+  p2p Direct DTE instruction schedule lowering、SPM memory planning、DDR memory planning、
+  ABI/LLVM lowering、package manifest 和 runtime adapter。
 - User-level driver / named pipeline:
-  `wafer-opt` program pipeline。局部工具入口只作为实现索引，不能成为长期合同。
+  `wafer-opt` program pipeline；局部 pass 只作为实现索引，不能成为长期合同。
 - Explicit non-goals:
-  不执行 Shardy / XLA SPMD partition，不重新切分 tensor，不重新做 tile shape/layout/SPM/DDR planning，
-  不在命名清理阶段实现 collective algorithm、DTE resource allocation、ABI call、packet、object、
+  不实现 p2p DTE schedule，不做 SPM/DDR offset assignment，不生成 ABI call、packet、object、
   package 或 runtime allocation object。
 - Completion gate:
-  构建和相关 lit 通过；`rg` 证明非归档主线代码/测试/文档不再使用
-  `wafer.tensor.*`、`wafer.tile.send` / `recv` / `wait` 或 `InstrQueue` 作为当前合同；
-  end-to-end collective handoff 测试输出 `wafer_linalg_ext.collective.*`，p2p prototype 测试输出
-  `wafer.instr.dte_*`，instruction interface 可区分 `dte` family。
+  从已有 StableHLO / LinalgExt collective handoff 和 group/tile-region 链路重放到
+  verifier-legal `wafer.tile.*` collective；后续 DTE lowering 能直接消费该 IR，相关 lit、
+  unit test 和组织检查通过。
 ```
 
 ## 已可依赖的上游边界
@@ -121,8 +112,8 @@ Pipeline position:
 | execution-mesh SPMD integration | done | `wafer.target.topology` + requested logical mesh policy | `wafer.execution.mesh` valid SPMD rank-domain policy + derived/optional endpoint view；SPMD default seed 从 mesh rank count / axes 取数；旧 `tile-count` pass / pipeline fallback 已删除 |
 | program parameter shard verification | done | partitioned StableHLO program + parameter shard metadata + `wafer.execution.mesh` | program verifier 校验 rank coverage、slice bounds、payload shape/dtype 和 execution mesh rank count；core IR 不 materialize per-rank slice table |
 | rank-endpoint cleanup | done | legacy rank->tile transition op / pass / package schema | op、pass、pipeline、comm verifier dependency 和 manifest endpoint schema 已删除；需要 block id 时只保留薄 launch/block binding，且不复制 rank->tile |
-| IR naming and communication layer cleanup | active | 当前 `wafer.tensor.*`、`wafer.tile.send/recv/wait`、`InstrQueue` prototype + 已收敛设计 | `wafer_linalg_ext.collective.*`、`wafer.instr.dte_*`、instruction family + `dte` 全链路一致；文档、代码、测试和 pipeline 不再保留旧合同 |
-| buffer-level communication collective materialization | pending | tiled `wafer_linalg_ext.collective.*` + unplaced SPM buffer/local-rank facts + execution mesh rank domain | `wafer.tile.*` collective verifier-legal；buffer、bytes、rank_group、local_rank 和 effect 边界来自 IR，不选择 p2p schedule；发生在 SPM memory planning 前 |
+| IR naming and communication layer cleanup | done | 已收敛 naming / instruction-family 设计 | `wafer_linalg_ext.collective.*`、`wafer.instr.dte_*`、instruction family + `dte` 全链路一致；文档、代码、测试和 pipeline 不再保留旧合同 |
+| buffer-level communication collective materialization | active | tiled `wafer_linalg_ext.collective.*` + unplaced SPM buffer/local-rank facts + execution mesh rank domain | `wafer.tile.*` collective verifier-legal；buffer、bytes、rank_group、local_rank 和 effect 边界来自 IR，不选择 p2p schedule；发生在 SPM memory planning 前 |
 | p2p Direct DTE instruction schedule lowering | pending | `wafer.tile.*` collective + topology/execution-mesh derived endpoint view | explicit `wafer.instr.dte_send` / `dte_recv` / `dte_wait` schedule verifier-legal；peer/route 从 topology/execution mesh 查询，不保存 side table；结果作为 SPM memory planning 输入 |
 | comm-aware memory planning gate | pending | instruction-level compute/movement + `wafer.instr.dte_*` over unplaced SPM memrefs | communication staging、token lifetime、local drain / DTE wait 和 buffer reuse 被 SPM planning 消费；accepted SPM/DDR offset facts 覆盖 comm demand |
 | ABI / LLVM lowering | pending | committed instruction IR + accepted SPM/DDR offset facts + topology/execution-mesh + program parameter shard metadata/resource view + launch-block binding + communication/sync lowering | LLVM dialect call sequence 或 `wafer_*` C ABI / packet builder input；按需重算 launch/resource view，固定参数单位、address domain、wait/completion policy 和 ABI version |
@@ -142,18 +133,15 @@ Pipeline position:
 
 ## 下一步
 
-1. 清理 IR 命名和层级：`wafer.tensor.*` -> `wafer_linalg_ext.collective.*`，
-   `wafer.tile.send/recv/wait` -> `wafer.instr.dte_send/dte_recv/dte_wait`，
-   `InstrQueue` -> instruction family + `dte`，并同步文档、代码、测试和 pipeline。
-2. 实现 buffer-level communication collective materialization：让
+1. 实现 buffer-level communication collective materialization：让
    `wafer_linalg_ext.collective.*` 在 bufferization / tile-region / SPM storage 后 materialize 成
    `wafer.tile.*` collective，并用端到端 lit 覆盖该路径；该路径必须在 SPM memory planning 前完成。
-3. 实现 p2p Direct DTE instruction schedule lowering：让 `wafer.tile.*` collective 从
+2. 实现 p2p Direct DTE instruction schedule lowering：让 `wafer.tile.*` collective 从
    topology/execution mesh 派生 peer endpoint view，并 rewrite 成 explicit
    `wafer.instr.dte_send` / `dte_recv` / `dte_wait`，使 communication staging、buffer lifetime 和
    wait token 被 SPM memory planning 消费。
-4. 让 comm-aware candidate 继续通过 SPM offset assignment 和 DDR offset assignment；
+3. 让 comm-aware candidate 继续通过 SPM offset assignment 和 DDR offset assignment；
    Direct DTE resource id / concrete address / ABI emission 只能在 accepted offsets 后派生。
-5. 再让 ABI/LLVM 和 package manifest 从 topology/execution mesh、program parameter shard metadata /
+4. 再让 ABI/LLVM 和 package manifest 从 topology/execution mesh、program parameter shard metadata /
    resource view、薄 launch/block binding、accepted offsets、committed instruction IR 和 communication/sync
    IR 派生 launch-visible metadata。
