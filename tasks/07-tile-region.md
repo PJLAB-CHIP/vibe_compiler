@@ -8,10 +8,10 @@ structured control-flow lowering。
 和 sync/effect op。它不重新做 group formation、traversal selection、root tile search 或 runtime
 launch/package 组织。
 
-SPMD 后的 StableHLO collective 在进入本文之前应已经规整成 Wafer LinalgExt-style tensor collective
+SPMD 后的 StableHLO collective 在进入本文之前应已经规整成 `wafer_linalg_ext.collective.*`
 并参与 group/tiling。`wafer.tile.region` 是这些 tiled tensor collective 第一次拥有 SPM storage、
-endpoint-derived metadata 和 communication staging demand 的层级；`wafer.tile.*` communication ops 不应在这之前
-作为 group 输入出现。
+endpoint-derived metadata 和 communication staging demand 的层级；`wafer.tile.*` collective 和
+`wafer.instr.dte_*` 不应在这之前作为 group 输入出现。
 
 本文依赖：
 
@@ -66,7 +66,8 @@ endpoint-derived metadata 和 communication staging demand 的层级；`wafer.ti
 wafer.group
   -> DDR boundary materialization + group-to-tile-region lowered `wafer.tile.region` IR
   -> One-Shot bufferized function boundary for main R3.2c pipeline
-  -> communication storage materialization and p2p schedule over unplaced SPM memrefs
+  -> buffer-level communication collective materialization over unplaced SPM memrefs
+  -> p2p Direct DTE instruction schedule over unplaced SPM memrefs
   -> candidate DDR tile-view materialization for planner candidate evaluation
   -> instruction-level wafer.instr.* IR over unplaced Wafer-tagged memref values
   -> SPM memory planning on the same instruction-level IR
@@ -161,7 +162,7 @@ table 补协议。
 | `tensor.expand_shape` / `tensor.collapse_shape` | static element-count-preserving reshape lower 到 `wafer.tile.reshape` | supported for static shape-only reshape | `wafer.tile.reshape` 表达 canonical linear element order 保持不变、result multi-index 按新 shape 重新解释的 logical reindex；tile-region 层 op 本身无 write effect，但下游若当前 physical layout 不能 alias 该 logical reindex，必须 materialize 成 explicit movement，不能用 reshape 逃避 physical layout。 |
 | `scf.if` | 保留为 tile-region 内 structured control-flow；condition 使用 scalar SSA，then/else body 递归 lower，tensor result / yield value 以 SPM memref result 穿过 `scf.if` | supported for single-block `scf.if` with supported nested ops | 分支内局部 value 不泄漏；只有 `scf.yield` result 重新进入父 scope。外部 scalar 必须作为 `wafer.group` input 或在 group 内定义，不能绕过 `IsolatedFromAbove`。不在 R3.2c 展开分支或选择硬件 branch 指令。 |
 | `scf.for` | 保留为 tile-region 内 structured loop；lb/ub/step 使用 scalar SSA，iter_args 中的 tensor value 转为 SPM memref loop-carried value，body 递归 lower，`scf.yield` 传回 SPM memref/scalar | supported for single-block `scf.for` with supported nested ops | loop-carried tensor 只表达 tile-local buffer dataflow，不做 unroll、trip-count planning、SPM offset planning 或 hardware loop/branch instruction selection。并行 loop / while / execute_region 不在本阶段放开。 |
-| `wafer.tensor.*` | R3.2a/R3.2b 可收集 demand/layout；R3.2c 当前失败为缺 endpoint/local-rank facts | explicitly deferred | 只有 endpoint/local-rank/buffer facts 进入可验证 IR 后，才能 pattern 化到 `wafer.tile.*` communication ops / `wafer.instr.local_drain` 和后续 sync boundary；不能写死 local rank 或 ring schedule。 |
+| `wafer_linalg_ext.collective.*` | R3.2a/R3.2b 可收集 demand/layout；R3.2c 当前失败为缺 endpoint/local-rank facts | explicitly deferred | 只有 endpoint/local-rank/buffer facts 进入可验证 IR 后，才能 pattern 化到 `wafer.tile.*` collective，再展开成 `wafer.instr.dte_*` / `wafer.instr.local_drain` 和后续 sync boundary；不能写死 local rank 或 ring schedule。 |
 | unknown op inside group | 结构化失败 | unsupported | conversion target 应把 `wafer.group` 设为 illegal；unsupported body op 应导致 conversion failure，而不是留下半转换 group。 |
 
 R3.2c 迁移完成后，supported 子集必须由同一 conversion builder 覆盖，并把 unsupported / deferred
@@ -252,7 +253,8 @@ V0 需要以下 op family：
 | `wafer.tile.store` | 写回 external output / inter-group DDR value | destination range、layout、visibility、effect |
 | `wafer.tile.materialize_layout` | 显式 layout conversion | source/result layout relation、可消除冗余转换 |
 | `wafer.tile.*` compute ops | target-abstract compute | operand/result layout、instruction family legality、workspace/psum demand |
-| `wafer.tile.*` communication ops | tile 间或 collective movement；由 tiled tensor collective + SPM buffer + endpoint view materialize | endpoint、token、fixed byte count、buffer lifetime |
+| `wafer.tile.*` collective ops | buffer-level collective semantic；由 tiled tensor collective + SPM buffer + endpoint view materialize | rank group、local rank、fixed byte count、buffer lifetime |
+| `wafer.instr.dte_*` ops | Direct DTE p2p hardware invocation schedule；由 accepted tile collective algorithm materialize | peer、token、fixed byte count、communication lifetime |
 | `wafer.instr.local_drain` 和后续 sync boundary | local drain、comm wait、barrier | async op completion、effect ordering |
 
 这些 op 的具体算法分别归 layout、SPM、DDR、compute、communication 文档。`tile_region` 只负责
@@ -266,7 +268,7 @@ V0 需要以下 op family：
    transformation-local `wafer.tile.region` IR。
 2. target-abstract op selection：在 tile-region IR 内把 tile-level linalg/tensor compute 绑定到
    `wafer.tile.*` compute / movement op；把 tiled tensor collective 在可表达的 endpoint / buffer /
-   communication demand 下 materialize 为 `wafer.tile.*` communication 或 explicit p2p schedule proposal。
+   communication demand 下 materialize 为 `wafer.tile.*` buffer-level collective。
    任何会引入 communication staging buffer、send/recv token lifetime、buffer reuse fence 或 local-drain
    requirement 的 communication lowering 都必须发生在 SPM offset assignment 之前，使 SPM planner 能从
    IR/effect/lifetime 看到真实通信需求。
@@ -278,10 +280,11 @@ V0 需要以下 op family：
    `tensor.extract_slice`、direct output `tensor.insert_slice` storeback，以及 candidate tile offsets/sizes
    到 boundary slice proposal 的 evaluation materialization。这一步不选择最终 plan，也不把 candidate
    evaluation IR commit 到主 IR。
-5. Wafer instruction legalization / selection：instruction lowering 把 target-abstract executable op 合法化并
-   选择成 instruction-level `wafer.instr.*` 或可被 SPM planner 消费的 lower-level communication/sync
-   IR，复用现有 Wafer-tagged memref SSA graph。
-   instruction-level IR 需要列出 issue family、read/write/issue effects、descriptor attrs、
+5. Wafer instruction legalization / selection：instruction lowering 把 target-abstract executable op
+   合法化并选择成 instruction-level `wafer.instr.*`。p2p Direct DTE schedule lowering 在这一层把
+   accepted `wafer.tile.*` collective algorithm materialize 成 `wafer.instr.dte_send` /
+   `dte_recv` / `dte_wait`，并复用现有 Wafer-tagged memref SSA graph。
+   instruction-level IR 需要列出 instruction family、read/write/effects、descriptor attrs、
    temp/psum/staging memref values、alias/view 关系和 reject reason。
 6. SPM offset assignment：SPM planning 只消费 instruction-level IR with unplaced Wafer-tagged memref values，
    在同一 IR 上填入 offset/end/bank span 和 lifetime/reuse；不能直接从 target-abstract op 猜

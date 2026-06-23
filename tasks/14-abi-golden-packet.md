@@ -127,7 +127,7 @@ V0 family：
 | conversion | `wafer_convert_*` | CT / NE wrapper | source/result dtype、rounding/saturation policy |
 | convolution | `wafer_conv` | NE wrapper | V0 subset only, layout and kernel constraints |
 | Direct DTE | `wafer_dte_send`, `wafer_dte_recv`, `wafer_dte_wait` | Direct DTE / FSM helper | endpoint、byte count、FSM id、packet/stream resource |
-| sync | `wafer_local_wait`, `wafer_group_barrier` | CSR / runtime helper | issue family、token/effect ordering |
+| sync | `wafer_local_wait`, `wafer_group_barrier` | CSR / runtime helper | instruction family、token/effect ordering |
 
 这些函数名是 compiler-facing ABI family，不要求一一等同底层 public symbol。实现可以在 C shim 内
 调用 public Tsm wrapper、Kcore runtime helper 或未来 native helper。
@@ -139,8 +139,8 @@ dialect call、`wafer_*` C shim 调用或 packet builder 输入。
 `wafer.instr.reduce`、Direct DTE emission helper 这类对象，它们只作为 very-late debug/test dump 或 emission
 helper，不能作为主线架构层，也不能承载 endpoint、layout 或 instruction selection 决策。
 
-fixed-size unicast `wafer.tile.send` / `recv` / `wait` 在进入 ABI/LLVM lowering 前应已经 lower 成
-committed Direct DTE issue/wait form，显式包含 byte count、endpoint、FSM/packet/stream resource、
+fixed-size unicast p2p communication 在进入 ABI/LLVM lowering 前应已经 lower 成 committed
+`wafer.instr.dte_send` / `wafer.instr.dte_recv` / `wafer.instr.dte_wait` form，显式包含 byte count、endpoint、FSM/packet/stream resource、
 token/wait lifetime 和 staging storage。Ring reduce collectives 在进入 ABI/LLVM lowering 前应先展开为
 p2p Direct DTE issue 和明确 `wafer.instr.elementwise` accumulator step。旧 tile_region-to-C-ABI
 pass 已删除；后续 ABI/LLVM 层仍不应引入“带 reduction 的 DTE issue”。
@@ -169,7 +169,7 @@ ABI 默认不隐藏 wait。
 V0 区分：
 
 - issue-only：提交硬件任务，返回 token/status。
-- local drain：等待 CT/NE/RDMA/WDMA/TDMA issue queue 或指定 issue family。
+- local drain：等待 CT/NE/RDMA/WDMA/TDMA issue queue 或指定 instruction family。
 - DTE wait：等待 DTE/FSM completion。
 - group barrier：等待一组 tile / rank 的同步点。
 - synchronous helper：仅用于 bring-up 或明确 synchronous API，函数名必须体现。

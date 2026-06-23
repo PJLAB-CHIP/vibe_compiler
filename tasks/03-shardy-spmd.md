@@ -1,6 +1,7 @@
 # Wafer Shardy and SPMD Design
 
-状态：设计草案；范围：Wafer-owned Shardy propagation / XLA SPMD partition 和 post-SPMD tensor collective handoff。
+状态：设计草案；范围：Wafer-owned Shardy propagation / XLA SPMD partition 和 post-SPMD
+`wafer_linalg_ext.collective.*` handoff。
 
 本文定义 Wafer compiler 中 Shardy / SPMD 阶段的边界。该阶段负责 global tensor 的逻辑切分、
 sharding propagation、SPMD partition 和 logical collective 语义；不负责 physical endpoint
@@ -143,9 +144,9 @@ P2.S2 工程 gate 必须把 XLA SPMD partitioner 或等价 local-body partitioni
   replicated-local StableHLO program directory 和 rank-local parameter shard metadata。该入口不能挂在
   `wafer-compile-stablehlo` frontend verifier 下。`P2.S1` / `P2.S2` 只能作为任务索引，不能成为
   program directory 目录名、program 类型名或长期协议字段。
-- R2.4 消费 P2.S2 的 partitioned StableHLO collective，并 normalize 到 Wafer LinalgExt-style
-  tensor collective。它不是 XLA SPMD partitioner，也不能从 P2.S1 的 propagated global module
-  直接补 `wafer.tile.*` communication。
+- R2.4 消费 P2.S2 的 partitioned StableHLO collective，并 normalize 到
+  `wafer_linalg_ext.collective.*`。它不是 XLA SPMD partitioner，也不能从 P2.S1 的
+  propagated global module 直接补 tile-local communication。
 - `wafer-lower-stablehlo-to-linalg` 消费 post-SPMD local body 或 no-sharding replicated local body，
   只做 StableHLO local compute -> Linalg/Tensor/Arith/Math；它不做 sharding propagation、SPMD
   partition、endpoint mapping、group、SPM/DDR 或 communication materialization。
@@ -410,11 +411,11 @@ V0 关注以下 StableHLO collective 语义：
 
 | collective | SPMD 语义 | 下游 owner |
 | --- | --- | --- |
-| `collective_permute` | logical point-to-point value movement | tensor collective handoff + endpoint projection + later `wafer.tile.*` communication |
-| `all_gather` | shard concat / replication | Wafer LinalgExt-style tensor collective handoff |
-| `reduce_scatter` | reduce + shard distribution | Wafer LinalgExt-style tensor collective handoff |
-| `all_reduce` | all-rank reduction | Wafer LinalgExt-style tensor collective handoff |
-| `all_to_all` | split / exchange / concatenate across logical ranks | Wafer LinalgExt-style tensor collective handoff；later `wafer.tile.*` communication p2p schedule |
+| `collective_permute` | logical point-to-point value movement | `wafer_linalg_ext.collective.*` handoff + endpoint projection + later `wafer.tile.*` collective / `wafer.instr.dte_*` schedule |
+| `all_gather` | shard concat / replication | `wafer_linalg_ext.collective.*` handoff |
+| `reduce_scatter` | reduce + shard distribution | `wafer_linalg_ext.collective.*` handoff |
+| `all_reduce` | all-rank reduction | `wafer_linalg_ext.collective.*` handoff |
+| `all_to_all` | split / exchange / concatenate across logical ranks | `wafer_linalg_ext.collective.*` handoff；later `wafer.tile.*` collective / `wafer.instr.dte_*` schedule |
 
 `all_to_all` 的高性能算法可以后于 ring all-gather / all-reduce 实现，但 SPMD program stage 不应因为当前
 communication lowering 未实现该算法而丢失或拒绝它的 logical collective 语义。若硬件 data plane
@@ -425,10 +426,10 @@ Collective handoff 分三步：
 
 ```text
 StableHLO logical collective
-  -> Wafer LinalgExt-style `wafer.tensor.*` op
+  -> `wafer_linalg_ext.collective.*` op
   -> tiled tensor collective inside scheduled group / tile_region materialization
-  -> wafer.tile.* communication collective-level op or explicit p2p schedule
-  -> Direct DTE / sync / wait lower-level op
+  -> `wafer.tile.*` buffer-level collective
+  -> `wafer.instr.dte_send` / `dte_recv` / `dte_wait`
 ```
 
 Shardy / SPMD 只负责第一行之前的 logical collective 生成。StableHLO collective 不应在 group /
@@ -438,13 +439,14 @@ IR；它需要 SPM buffer、byte count、endpoint 和 token/effect 语义。
 R2.4 的用户级 program gate 是 `wafer-opt --program-pipeline=stablehlo-spmd-to-linalg`：该 pipeline
 先执行 P2.S2 `stablehlo-spmd` stage，再在同一个输出 program directory 中把 partitioned /
 replicated-local StableHLO module lowering 到 Linalg/Tensor IR，并把 StableHLO collective normalize 成
-`wafer.tensor.*`。底层 `wafer-lower-stablehlo-to-linalg` named MLIR pipeline 只作为该
+`wafer_linalg_ext.collective.*`。底层 `wafer-lower-stablehlo-to-linalg` named MLIR pipeline 只作为该
 program pipeline 的内部构件和局部 debug/unit 覆盖；slot-aligned tile generation、physical rank
 endpoint projection、ring/p2p schedule 和 DTE token 仍属于 R3/R6。
 
-旧的 StableHLO collective 直降 `wafer.tile.*` communication ops pass 已移除。后续不得恢复 group/tiling 前的
-StableHLO -> `wafer.tile.*` communication 插入点；需要分别实现“StableHLO -> tensor collective”和
-“tiled tensor collective -> wafer.tile.* communication”两层。
+旧的 StableHLO collective 直降 `wafer.tile.*` communication ops pass 已移除。后续不得恢复
+group/tiling 前的 StableHLO -> tile-local communication 插入点；需要分别实现
+“StableHLO -> `wafer_linalg_ext.collective.*`”、“tiled tensor collective -> `wafer.tile.*`
+buffer-level collective”和“`wafer.tile.*` collective -> `wafer.instr.dte_*` schedule”。
 
 SDY program bridge 工程入口：`WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON` 时，`wafer-opt` 和
 frontend verifier tool 显式注册 Shardy / SDY dialect，`wafer-opt` 也注册 SDY passes/pipelines。
@@ -452,8 +454,9 @@ frontend verifier tool 显式注册 Shardy / SDY dialect，`wafer-opt` 也注册
 
 同一批次曾把 StableHLO `replica_groups` 的 logical rank group materialize 到 `wafer.tile.*` communication ops
 `rank_group = array<i64: ...>` attr；该 StableHLO -> `wafer.tile.*` communication bridge 已移除，避免后续误把它当成
-group/tiling 输入。SPMD program stage 的任务是通过真实 partitioner 输出和 program verifier 保留这些事实，
-R2.4/R6 再分别恢复 tensor collective handoff 和 tile-local comm lowering。
+group/tiling 输入。SPMD program stage 的任务是通过真实 partitioner 输出和 program verifier
+保留这些事实，R2.4/R6 再分别恢复 `wafer_linalg_ext.collective.*` handoff、
+`wafer.tile.*` buffer-level collective materialization 和 `wafer.instr.dte_*` schedule lowering。
 
 ## 5. 与 Topology / Execution Mesh 的接口
 
@@ -488,8 +491,8 @@ SPMD 前拒绝、重排或拆分 requested logical mesh；SPMD 之后不能再�
 | propagation | partially annotated module | fully propagated or diagnosed module |
 | SPMD partition | annotated global module + valid execution mesh | partitioned StableHLO |
 | per-rank program selection | partitioned StableHLO + rank selection policy | verified local-rank StableHLO program |
-| collective tensor normalization | partitioned StableHLO collective ops | Wafer LinalgExt-style tensor collective IR |
-| communication materialization | tiled tensor collective + storage values + topology/execution mesh | `wafer.tile.*` communication collective-level op or explicit p2p schedule |
+| collective tensor normalization | partitioned StableHLO collective ops | `wafer_linalg_ext.collective.*` IR |
+| communication materialization | tiled tensor collective + storage values + topology/execution mesh | `wafer.tile.*` buffer-level collective and later `wafer.instr.dte_*` p2p schedule |
 
 这些 pass 的合法输出不包含 Wafer physical memory space、tile coordinates、DTE resource 或
 runtime package metadata。
@@ -518,16 +521,16 @@ P2.S2 的完成证明必须至少覆盖：
 - Shardy propagation 能直接消费每个 strategy 的 `functions/forward.mlir`，并且 XLA SPMD
   partitioner / equivalent service 能产出 partitioned StableHLO 或等价 per-rank StableHLO body。
 - `wafer-opt --program-pipeline=stablehlo-spmd-to-linalg` 能从真实 PyTorch/XLA sharded program
-  继续产出含 `wafer.tensor.*` 的 post-linalg Wafer program，不能要求用户或 lit 手动拼
+  继续产出含 `wafer_linalg_ext.collective.*` 的 post-linalg Wafer program，不能要求用户或 lit 手动拼
   `wafer-lower-stablehlo-to-linalg`。
 - per-rank program 仍通过 frontend boundary verifier 或等价 verifier，不丢 function boundary、
   dynamic bound、program-directory-derived constant facts 和 sharding facts。
 - per-rank program 完整保留 logical collective、replica group / rank group、local rank、local shard
   shape、dtype 和 user-visible input/output shard relation。
-- P2.S2 输出必须完整保留 StableHLO collective 和 metadata，供 R2.4 进入 Wafer LinalgExt-style
-  tensor collective handoff；对当前已有 `wafer.tile.*` communication 表示的 collective，可以保留后段 最小验证 证明
-  metadata 能进入 `wafer.tile.*` communication `rank_group`，但该 最小验证 不能作为 P2.S2、R2.4 或 group/tiling
-  完成证明。
+- P2.S2 输出必须完整保留 StableHLO collective 和 metadata，供 R2.4 进入
+  `wafer_linalg_ext.collective.*` handoff；后段最小验证只能证明 metadata 能进入
+  `wafer.tile.*` buffer-level collective 或 `wafer.instr.dte_*` schedule，不能作为 P2.S2、
+  R2.4 或 group/tiling 完成证明。
 - no-user-sharding P2.F1 program 必须通过默认 policy 生成 function-input sharding seed：rank count
   和 axes 来自 `wafer.execution.mesh`。单卡 4x4 / 16 tile 是默认 topology 配置；1-rank replicated
   只能作为显式 debug/bring-up execution mesh override 进入，不作为 SPMD 长期协议字段。

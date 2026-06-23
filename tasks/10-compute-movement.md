@@ -276,7 +276,7 @@ compute/movement op 应实现或组合 MLIR memory effect / resource effect：
 
 - read effects：input storage、constant load source、DDR source。
 - write effects：output storage、store destination、temporary/workspace。
-- resource effects：CT/NE/RDMA/WDMA/TDMA issue family、worker resource、SPM bank/page/color class。
+- resource effects：CT/NE/RDMA/WDMA/TDMA instruction family、worker resource、SPM bank/page/color class。
 - async policy：op 是否可 lower 成 issue-only，以及哪些 buffer lifetime 必须延伸到 drain/wait。
 
 这些 effect 用于 liveness、SPM reuse、scheduler 和 verifier。它们不等于保存一份全局 issue plan。

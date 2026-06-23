@@ -1,11 +1,11 @@
 # Wafer Instruction IR Design
 
-状态：设计草案；范围：instruction-level Wafer IR、memref-backed buffer contract 和
+状态：设计草案；范围：instruction-level Wafer hardware invocation IR、memref-backed buffer contract 和
 instruction legalization。
 
 本文定义 instruction-level Wafer IR。核心结论：
 
-- 只新增 `wafer.instr.*` 硬件指令级 op。
+- 只新增 `wafer.instr.*` 硬件相关调用级 op，包括 CT/NE/RDMA/WDMA/TDMA 和 Direct DTE。
 - instruction-level buffer value 统一使用 MLIR `memref`，不再把 `!wafer.storage` 作为长期 IR
   合同。
 - Wafer 的 SPM / DDR address domain 和 physical layout marker 放在 memref memory-space attr 中，
@@ -17,7 +17,7 @@ instruction legalization。
 - 不引入 `wafer.physical_view`、`!wafer.physical_memref`、side descriptor value、SPM offset、DDR
   DDR planning result、raw packet 或 C ABI call。
 
-`wafer.instr` 的作用是把 target-abstract tile-region op 变成可执行硬件动作，并让下游能从
+`wafer.instr` 的作用是把 target-abstract tile-region op 变成可执行硬件动作或硬件通信调用，并让下游能从
 memref SSA、Wafer memory attr、op operands、attrs、MemoryEffects 和显式 drain 直接推导 endpoint/resource
 输入。它不是另一层 buffer IR。
 
@@ -29,6 +29,9 @@ memref SSA、Wafer memory attr、op operands、attrs、MemoryEffects 和显式 d
   的 ODS、verifier、MemoryEffects、`WaferInstructionOpInterface` 和 lit/unit 覆盖。
 - `wafer.instr.*` op 只读写 Wafer-tagged memref，不产生 buffer result，不携带 SPM offset、
   worker id、raw packet field 或 C ABI 字段。
+- Direct DTE instruction ops 是当前 active cleanup / lowering 任务的目标：它们应替代旧
+  tile-level p2p prototype，并在 SPM memory planning 前暴露
+  buffer lifetime、peer、byte count 和 async token。
 - 当前实现已支持 target-abstract tile-region op 到这些 instruction op 的
   DialectConversion；静态 `extract_slice`、`insert_slice`、`broadcast` 和 `transpose`
   通过统一 logical-to-physical offset calculator 生成 logical movement segments，并尽量打包成
@@ -62,12 +65,14 @@ Pipeline position:
   `wafer.tile.load` / `wafer.tile.store`、
   `wafer.tile.materialize_layout`、`wafer.tile.fill/gemm/elementwise/reduce`、
   `wafer.tile.copy/extract_slice/insert_slice/transpose/broadcast`、
-  tile-region 内 `scf.if` / `scf.for` structured control-flow 和 `wafer.instr.local_drain`。
+  `wafer.tile.*` buffer-level collective、tile-region 内 `scf.if` / `scf.for`
+  structured control-flow 和 `wafer.instr.local_drain`。
 - Current stage responsibility:
   只做 Wafer instruction legalization / selection：把可执行的 target-abstract op 改写成
   `wafer.instr.*`，并保留 memref SSA graph。对 `scf.if` / `scf.for` 只递归转换其 region body，
-  不改变 control-flow 结构。instruction op 通过 interface 显式暴露 issue family、memref read/write、
-  descriptor attrs 和 issue effect。
+  不改变 control-flow 结构。对 accepted `wafer.tile.*` collective，生成 explicit
+  `wafer.instr.dte_send` / `dte_recv` / `dte_wait` p2p schedule。instruction op 通过
+  interface 显式暴露 instruction family、memref read/write、descriptor attrs 和 effect。
 - Output artifact / IR:
   同一个 `wafer.tile.region` execution scope 内的 instruction-level IR：
   memref values with `#wafer.memory<space, layout>` + `wafer.instr.*` +
@@ -84,8 +89,9 @@ Pipeline position:
   `--wafer-convert-tile-region-to-instr` 只作为 lit/debug pass 入口。
 - Explicit non-goals:
   不新增第二套 storage/buffer IR，不决定 group boundary、tile shape、layout assignment、SPM offset、
-  DDR planning result、raw register packet field、Tsm wrapper call、C ABI symbol 或 launch ABI。
-  DTE、CSR 和 SCALAR 不进入普通 `wafer.instr` issue path。
+  DDR planning result、raw register packet field、DTE/FSM resource id、Tsm wrapper call、C ABI
+  symbol 或 launch ABI。SCALAR 仍是 reserved/stub；CSR helper/sync 若进入主线，必须作为明确
+  instruction/sync family 另行定义，不能混入 CT/NE/RDMA/WDMA/TDMA 或 DTE op。
 - Completion gate:
   对 tile-region 已支持的 load/store、静态可证明 layout materialize、fill、GEMM、
   elementwise/relation、reduce、copy 和 metadata view 生成 verifier-legal instruction-level IR
@@ -225,15 +231,15 @@ R3.2d 不做 memref type conversion。它只把 executable target-abstract op �
 并复用同一批 memref values。physical base address、SPM offset、end address、bank/color、
 worker register window、runtime pointer 和 packet word 都不属于 R3.2d。
 
-## 4. Instruction Ops And Issue Families
+## 4. Instruction Ops And Families
 
-`wafer.instr.*` 的 op mnemonic 表达指令语义，不把 CT/NE/TDMA 这类硬件 issue family 做成
-额外 namespace。Issue family 由 `WaferInstructionOpInterface` 派生；固定 family 的 op 不打印
+`wafer.instr.*` 的 op mnemonic 表达指令语义，不把 CT/NE/TDMA/DTE 这类硬件 family 做成
+额外 namespace。Instruction family 由 `WaferInstructionOpInterface` 派生；固定 family 的 op 不打印
 冗余 attr。只有当同一个 instruction op 在相同 operand/result/attr contract 下确实能合法选择
-多个 issue family 时，才允许引入显式 `issue_family` attr，并由 verifier 保证取值和 op contract
+多个 instruction family 时，才允许引入显式 `instruction_family` attr，并由 verifier 保证取值和 op contract
 一致。
 
-| issue family | V0 op | 来源 | 说明 |
+| instruction family | V0 op | 来源 | 说明 |
 | --- | --- | --- | --- |
 | RDMA | `wafer.instr.rdma` | `wafer.tile.load` | DDR memref -> SPM memref |
 | WDMA | `wafer.instr.wdma` | `wafer.tile.store` | SPM memref -> DDR memref |
@@ -243,6 +249,7 @@ worker register window、runtime pointer 和 packet word 都不属于 R3.2d。
 | CT | `wafer.instr.reduce` | `wafer.tile.reduce` | native local reduce |
 | CT | `wafer.instr.convert` | future convert lowering | dtype conversion |
 | NE | `wafer.instr.gemm` | `wafer.tile.gemm` | tile-local GEMM / batched GEMM |
+| DTE | `wafer.instr.dte_send` / `dte_recv` / `dte_wait` | accepted `wafer.tile.*` collective p2p schedule | fixed-size unicast Direct DTE invocation over unplaced SPM memrefs |
 
 V0 不定义 `wafer.instr.copy`。公开 SPM memcpy helper 本身也是
 `TsmDataMove::GatherScatter` 样例；把 copy 单独做成 instruction op 会把 helper 名字提升为 IR
@@ -255,8 +262,10 @@ inner width / stride 不同，lowering 通常需要至少两段 GatherScatter：
 tail `C0`。如果 full-block 段和 tail 段都无法分别表示为 V0 三层 stride/iteration descriptor，
 R3.2d 必须失败。
 
-`TsmExecute` 普通 issue path 只覆盖 CT/NE/RDMA/WDMA/TDMA。DTE、CSR、SCALAR 走
-tile communication、runtime/MMIO 或专门 sync 边界，不放进普通 `wafer.instr.*` issue path。
+`TsmExecute` 普通 dispatch path 只覆盖 CT/NE/RDMA/WDMA/TDMA。DTE 不走这条 dispatch path，
+但仍属于 `wafer.instr.*` 的硬件通信调用层；后续 ABI/LLVM lowering 负责把 `wafer.instr.dte_*`
+映射到 Direct DTE/FSM helper、runtime-compatible wrapper 或 raw-DTE ABI。SCALAR 当前 reserved/stub；
+CSR/sync helper 不在 V0 ordinary compute path 中。
 
 ## 5. Operand And Result Model
 
@@ -289,37 +298,39 @@ source op verifier 重算。
 
 ```text
 WaferInstructionOpInterface {
-  getInstructionQueueFamily() -> InstrQueue
-  collectInstructionEffects(...) -> memref read/write + queue issue
+  getInstructionFamily() -> InstrFamily
+  collectInstructionEffects(...) -> memref read/write + hardware invocation effect
   verifyInstructionContract()
 }
 ```
 
-`InstrQueue` 是 Wafer enum/interface fact，V0 只包含：
+`InstrFamily` 是 Wafer enum/interface fact，V0 至少包含：
 
-| enum | hardware issue family |
+| enum | hardware invocation family |
 | --- | --- |
 | `ct` | CT / CGRA queue |
 | `ne` | NE queue |
 | `rdma` | RDMA queue |
 | `wdma` | WDMA queue |
 | `tdma` | TDMA queue |
+| `dte` | Direct DTE / FSM communication invocation |
 
 interface 返回的是 op-local facts，不返回 planner side table，也不复制全局 schedule。对
-`rdma`、`wdma`、`gather_scatter`、`fill`、`elementwise`、`reduce`、`convert` 和 `gemm` 这类
-固定 issue family 的 V0 op，`getInstructionQueueFamily()` 由 op class 静态派生，不要求 IR
-打印 `issue_family` attr。后续若出现同一个 op contract 下可选择多个 issue family 的 instruction
+`rdma`、`wdma`、`gather_scatter`、`fill`、`elementwise`、`reduce`、`convert`、`gemm` 和
+`dte_*` 这类固定 family 的 V0 op，`getInstructionFamily()` 由 op class 静态派生，不要求 IR
+打印 `instruction_family` attr。后续若出现同一个 op contract 下可选择多个 family 的 instruction
 op，才在该 op 上增加显式 attr，并把合法取值纳入 verifier。
 
 resource effects 至少要表达：
 
-| queue | buffer effects | issue effect |
+| family | buffer effects | invocation effect |
 | --- | --- | --- |
 | RDMA | DDR memref read + SPM memref write | Movement/RDMA issue |
 | WDMA | SPM memref read + DDR memref write | Movement/WDMA issue |
 | TDMA | SPM memref read + SPM memref write | Movement/TDMA issue |
 | CT | SPM memref read/write as operand contract requires | Compute/CT issue |
 | NE | SPM memref read + SPM memref write | Compute/NE issue |
+| DTE | send reads SPM source, recv writes SPM destination, wait consumes async token | Communication/DTE issue or wait |
 
 R3.2d 不建模 worker id。`TsmExecute` 的 worker bits、register window 和 packet field 属于
 committed instruction 后的 ABI/LLVM lowering。
@@ -407,7 +418,7 @@ wafer.instr.convert source into dest attr-dict : type(source) to type(dest)
 | `wafer.instr.reduce` | `input: SPM memref`, `dest: SPM memref`, optional scalar `init` | none | `kind`, `dimensions` |
 | `wafer.instr.convert` | `source: SPM memref`, `dest: SPM memref` | none | `src_dtype`, `dst_dtype`; future source op only |
 
-`wafer.instr.convert` 作为 instruction op 定义，因为 hardware convert 当前属于 CT issue family；
+`wafer.instr.convert` 作为 instruction op 定义，因为 hardware convert 当前属于 CT instruction family；
 但当前 R3.2c 没有 `wafer.tile.convert` source op。因此 R3.2d V0 需要定义 ODS/verifier，但
 completion 不要求 convert lowering pattern，直到 source op 存在。
 
@@ -456,7 +467,7 @@ V0 mapping：
 | `wafer.tile.transpose` | create destination SPM memref; enumerate the static result domain, invert `permutation` to source logical indices, compute source/result physical byte offsets, coalesce adjacent segments, pack regular segments into up to three stride/iteration levels, emit one or more `wafer.instr.gather_scatter`, and replace result with dest memref |
 | `wafer.tile.reshape` | identity replacement when types are identical; otherwise preserve source/result canonical linear element order and reinterpret result multi-indices through the new shape; compact `tensor/ntensor` reshape lowers to a verifier-legal standard memref view because compact physical bytes already follow that linear order; `Cx/NCx` reshape first compares same-linear-element source/result physical byte offsets with the unified physical layout calculator, materializes a destination memref and emits packed `wafer.instr.gather_scatter` descriptors only when the physical mapping or required footprint changes; structured failure only when the static reshape movement plan cannot be represented by V0 descriptors |
 | `scf.if` / `scf.for` | preserve the structured control-flow op; recursively legalize executable target-abstract ops in each nested region; keep scalar and memref yields explicit |
-| `wafer.tile.send/recv/wait/all_gather/reduce_scatter/all_reduce` | not handled by R3.2d V0 |
+| `wafer.tile.all_gather/reduce_scatter/all_reduce` | pending collective schedule lowering；accepted algorithm rewrites to `wafer.instr.dte_send` / `dte_recv` / `dte_wait` plus explicit local compute where needed |
 
 R3.2d.4 已覆盖 static movement descriptor splitting / packing：
 
@@ -470,12 +481,12 @@ R3.2d.4 已覆盖 static movement descriptor splitting / packing：
   dynamic shape、bit-packed element、超过三层或 helper 无法证明真实 physical offset 的情况仍
   structured failure。
 
-R3.2d V0 剩余明显 coverage gap 是 tile communication：
+R3.2d V0 剩余明显 coverage gap 是 Direct DTE communication instruction lowering：
 
-- `wafer.tile.send/recv/wait/all_gather/reduce_scatter/all_reduce` 依赖 endpoint facts、local rank、
-  buffer slice、communication staging 和 DTE resource facts。R3.2d 不能从 op 名、rank 常量或
-  unplaced memref 推断通信协议；tile communication materialization 应在这些 facts 明确后进入
-  R6.1/R6.2 或对应 accepted-plan materialization 阶段。
+- `wafer.tile.*` collective 依赖 endpoint facts、local rank、buffer slice、communication staging
+  和 Direct DTE resource facts。R3.2d 不能从 op 名、rank 常量或 unplaced memref 推断通信协议；
+  collective materialization 应在这些 facts 明确后进入 R6.1/R6.2 或对应 accepted-plan
+  materialization 阶段，并把 accepted p2p body 表达为 `wafer.instr.dte_*`。
 
 R3.2d may generate multiple instruction ops for a single target-abstract movement op, but it must not write a
 global schedule attr. The instruction sequence is the region body itself.
@@ -502,7 +513,8 @@ diagnostics to the closed-loop planner or debug pass, but rejected instruction I
   legalized under the same instruction conversion rules.
 - NE GEMM dimension attrs cannot be derived from operand/result types and optional batch attrs.
 - reduce `dimensions` cannot map to supported native reduce dimension encoding.
-- any source op that would require DTE/CSR/SCALAR, raw packet fields, SPM offset, DDR planning result or
+- any source op that would require raw DTE resource ids, CSR/SCALAR, raw packet fields, SPM offset,
+  DDR planning result or
   runtime ABI call to be legal.
 
 Diagnostics should mention the source op and the missing legality fact, for example:
@@ -527,7 +539,9 @@ R3.2d verifier checks only instruction legality:
 - NE GEMM and CT reduce require supported aligned layout marker, dtype and rank.
 - relation/elementwise bool storage uses logical `i1`; physical byte size remains derived, not stored.
 - no SPM offset/end/bank attrs before SPM offset assignment.
-- no DTE/CSR/SCALAR ordinary instruction op.
+- no raw DTE resource id, raw DTE register field, CSR helper or SCALAR ordinary instruction op before
+  the corresponding instruction/sync family is defined and verified. Direct DTE p2p must use
+  `wafer.instr.dte_send` / `dte_recv` / `dte_wait`, not ad hoc tile p2p ops or side tables.
 
 Instruction lowering does **not** verify physical address range, SPM bank conflicts, DDR default arena capacity,
 runtime symbol, packet bit layout or worker register window. Those checks belong to SPM/DDR offset assignment,
@@ -624,7 +638,7 @@ R3.2c 已完成的前置：
 
 R3.2d.1 已完成：
 
-1. 增加 `InstrQueue` enum、`WaferInstructionOpInterface` 和 instruction effect helper。
+1. 增加 `InstrFamily` enum、`WaferInstructionOpInterface` 和 instruction effect helper。
 2. 增加 `wafer.instr.rdma`、`wafer.instr.wdma`、
    `wafer.instr.gather_scatter`、`wafer.instr.fill`、
    `wafer.instr.elementwise`、`wafer.instr.reduce`、

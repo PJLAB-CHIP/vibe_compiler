@@ -11,17 +11,17 @@
 | --- | --- | --- |
 | 01 | `tasks/01-architecture.md` | 总体 compiler pipeline、IR 分层和子设计边界 |
 | 02 | `tasks/02-frontend-stablehlo-program.md` | frontend program、StableHLO import/export、program directory |
-| 03 | `tasks/03-shardy-spmd.md` | Shardy propagation、SPMD partition、post-SPMD tensor collective handoff |
+| 03 | `tasks/03-shardy-spmd.md` | Shardy propagation、SPMD partition、post-SPMD `wafer_linalg_ext.collective.*` handoff |
 | 04 | `tasks/04-topology-execution-mesh.md` | target topology、execution mesh、tile endpoint projection |
-| 05 | `tasks/05-local-compute-normalization.md` | post-SPMD local compute normalization |
+| 05 | `tasks/05-local-compute-normalization.md` | post-SPMD local compute normalization and `wafer_linalg_ext.collective.*` handoff |
 | 06 | `tasks/06-group.md` | logical group、scheduled group、candidate planning boundary |
 | 07 | `tasks/07-tile-region.md` | memref-backed tile-local execution boundary |
 | 08 | `tasks/08-layout-materialization.md` | physical layout planning and materialization |
 | 09 | `tasks/09-spm-memory-planning.md` | SPM memory planning and accepted offset facts |
 | 10 | `tasks/10-compute-movement.md` | target-abstract compute / movement IR |
-| 11 | `tasks/11-instruction-ir.md` | instruction-level Wafer IR over Wafer-tagged memrefs |
+| 11 | `tasks/11-instruction-ir.md` | instruction-level Wafer IR over Wafer-tagged memrefs, including Direct DTE invocation ops |
 | 12 | `tasks/12-ddr-memory-planning.md` | DDR memory planning and accepted offset facts |
-| 13 | `tasks/13-communication.md` | tile-local communication IR and Direct DTE boundary |
+| 13 | `tasks/13-communication.md` | tile-local collective IR and Direct DTE instruction schedule boundary |
 | 14 | `tasks/14-abi-golden-packet.md` | C ABI / LLVM / golden packet lowering boundary |
 | 15 | `tasks/15-launch-runtime-package.md` | runtime package、host runtime adapter |
 | 16 | `tasks/16-verification-plan.md` | staged verification plan and completion gates |

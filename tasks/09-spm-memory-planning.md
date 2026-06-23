@@ -96,7 +96,7 @@ Pipeline position:
   Wafer-tagged memref values。
 - layout planner 产生的 physical layout assignment 和 materialization demand。
 - instruction legalization / selection 产生的 concrete memref value、operand/result/temp/workspace/
-  accumulator/psum/staging 分类、issue family、effect event 和 async policy。
+  accumulator/psum/staging 分类、instruction family、effect event 和 async policy。
 - `WaferCommOpInterface` 或后续 communication instruction selection 提供的 source/destination buffer、byte count、
   token/wait 和 staging storage。
 - target policy：SPM range、reserved range、alignment、coloring preference。
@@ -157,7 +157,7 @@ SPM allocator 不按 op 名字猜 buffer，也不把一个 target-abstract op �
 - `wafer.tile.*` compute ops / target-abstract movement op：通过 compute/movement 文档定义的接口枚举或选择
   hardware instruction family，例如 NE GEMM、CT elementwise/reduce、TDMA GatherScatter；SPM
   memcpy 是 GatherScatter 的 contiguous descriptor 特例。
-  instruction-level IR 再报告 operand/result/temp/workspace/accumulator/psum memref demand、issue family
+  instruction-level IR 再报告 operand/result/temp/workspace/accumulator/psum memref demand、instruction family
   和 async lowering policy。
 - `wafer.tile.materialize_layout`：不能只报告“source read / result write”。它必须先选择具体
   materialization instruction lowering，例如可展开成具体 GatherScatter 序列的 ChannelNorm /
@@ -206,7 +206,7 @@ V0 规则：
 
 - synchronous op 的 input live 到该 op read 完；output live 到最后 use。
 - async movement/compute/communication 的 source/destination live 到对应 drain/wait。
-- `wafer.tile.send` 的 source buffer live 到 send completion 或 protocol 允许复用的 wait；`recv`
+- `wafer.instr.dte_send` 的 source buffer live 到 send completion 或 protocol 允许复用的 wait；`dte_recv`
   destination 在 comm wait 前不能被 compute 读取。
 - loop-carried accumulator/psum 跨 backedge live。
 - per-iteration temporary 可以跨 iteration 复用，除非 pipeline/double-buffer 要求保留。
@@ -248,7 +248,7 @@ SPMOffsetResult {
 V0 event model：
 
 - 每个 movement / materialization / compute / sync op 产生 issue/read/write/drain/wait event。
-- communication p2p op 产生 send/recv issue event，`wafer.tile.wait` 或 lower-level DTE/FSM wait
+- communication p2p op 产生 send/recv issue event，`wafer.instr.dte_wait` 或 lower-level DTE/FSM wait
   产生 completion event。
 - synchronous op 可以用单个 read/write event conservative 建模。
 - async op 的 source/destination lifetime 延伸到对应 drain/wait。
@@ -464,7 +464,7 @@ R3.2f V0 的 dataflow 边界：
   覆盖整个 loop subtree；loop body 内没有 yield 出 loop 的 per-iteration temp 只按实际 use 建段，
   可以在 loop 后复用。
 - 产生 `!async.token` 且带 SPM operand 的 issue op 会把对应 SPM refs 挂到 token 上；token 被
-  `wafer.tile.wait` 或后续 drain/wait-like op 消费时，source/destination lifetime 延伸到该 token use。
+  `wafer.instr.dte_wait` 或后续 drain/wait-like op 消费时，source/destination lifetime 延伸到该 token use。
 - rejected/candidate offset、search trace、cost estimate 和 repair suggestion 仍是 analysis，不写入
   IR。
 

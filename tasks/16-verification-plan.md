@@ -44,7 +44,7 @@ Serving integration 暂不纳入本文通过标准。
 | Shardy propagation | StableHLO + user sharding seed or default no-user input seed + execution mesh | logical mesh、SDY sharding seed、propagation 结果合法；不要求 partitioned local body |
 | SPMD partition program | sharding propagation stage 输出的 StableHLO/SDY IR + execution mesh | XLA SPMD partitioner 或等价 stage 产出 partitioned/replicated-local StableHLO、rank-local shape、collective group 和 parameter shard metadata 合法 |
 | Local compute normalization | partitioned or replicated-local StableHLO | Linalg/Tensor/SCF/Arith/Math structured semantics、DPS/indexing relation、fine-grained softmax/norm/RoPE staged form 合法；不执行 SPMD partition |
-| Tensor collective handoff | partitioned StableHLO collective | Wafer LinalgExt-style tensor collective op 合法；rank group、combiner/slice relation、DPS/tiling interface 可验证，且不含 `wafer.tile.*` communication、storage 或 DTE token |
+| Tensor collective handoff | partitioned StableHLO collective | `wafer_linalg_ext.collective.*` op 合法；rank group、combiner/slice relation、DPS/tiling interface 可验证，且不含 `wafer.tile.*` collective、storage 或 DTE token |
 | `wafer.group` | local compute IR + tensor collective IR | group boundary、tiled SSA、multi-output/domain、resource feedback loop 合法 |
 | `wafer.tile.region` | scheduled group | region boundary、effect、load/store、async wait/drain、buffer ownership 合法 |
 | Layout | tile region | layout assignment、materialization cut、冗余 conversion cleanup 合法 |
@@ -52,7 +52,7 @@ Serving integration 暂不纳入本文通过标准。
 | DDR | tile region + launch boundary | external binding、workspace/constant demand、default DDR arena resource/capacity 合法 |
 | Program parameter shards / launch-block | committed instruction IR + logical rank/local shard facts + topology/execution mesh + program metadata | program verifier 校验 rank coverage、payload shape/dtype 和 local shard bounds；launch-block binding 校验 block id 与 endpoint availability 合法 |
 | Compute / Movement | committed instruction IR + accepted offset facts | wrapper family、layout、dtype、shape、issue/drain 合法 |
-| Communication | tile_region / SPM materialization 后的 collective/p2p IR | endpoint、token、DTE/FSM resource、wait policy 合法 |
+| Communication | tile_region / SPM materialization 后的 `wafer.tile.*` collective / `wafer.instr.dte_*` IR | endpoint、token、DTE/FSM resource、wait policy 合法 |
 | ABI / LLVM / golden packet | committed instruction IR + accepted offsets + topology/execution-mesh + program parameter shard metadata/resource view + communication/sync lowering | LLVM dialect call 或 `wafer_*` C ABI / packet builder input 合法；ABI unit/address/wait verified，golden packet 覆盖 wrapper mapping；launch/resource view 从 IR 按需重算，不成为独立 artifact |
 | Object/package | ABI/LLVM artifact + committed IR + topology/execution-mesh + program parameter shard metadata/resource view | object/link 最小验证；manifest 记录 object/program id、entrypoint、ABI version 和 IR-derived package metadata；endpoint/resource/constant metadata 由同一 resource view analysis 生成 |
 | Runtime/board | package + adapter | runtime allocation object binding contract、stub shielding、launch/completion/error propagation 合法；板端 completion 在有卡环境验证 |
@@ -145,27 +145,29 @@ Direct DTE p2p：
 Single-card collective：
 
 - ring all-gather / reduce-scatter / all-reduce 可追溯到 unicast steps。
-- 每步 send/recv/wait token 和 buffer lifetime 合法。
+- 每步 `wafer.instr.dte_send` / `dte_recv` / `dte_wait` token 和 buffer lifetime 合法。
 - raw non-unicast DTE 不作为 correctness path。
 - 旧 `test/Transforms/ring-all-gather*.mlir`、`ring-reduce-scatter.mlir`、`ring-all-reduce.mlir`
-  以及 ring/C ABI issue-op fixtures 已删除。后续 collective gate 必须先经 R2.4 tensor collective
-  handoff，再由 R6 恢复 tiled communication materialization。
+  以及 ring/C ABI issue-op fixtures 已删除。后续 collective gate 必须先经 R2.4
+  `wafer_linalg_ext.collective.*` handoff，再由 R6 恢复 tiled collective materialization 和
+  `wafer.instr.dte_*` schedule lowering。
 
 Partitioned StableHLO collective handoff：
 
 - Shardy / XLA SPMD 输出的 logical collective 能保留为 partitioned StableHLO / SDY metadata，并先
-  经 `wafer-opt --program-pipeline=stablehlo-spmd-to-linalg` normalize 成 Wafer LinalgExt-style
-  `wafer.tensor.*` op；该 op 实现 destination-style tensor operand/result contract 和
+  经 `wafer-opt --program-pipeline=stablehlo-spmd-to-linalg` normalize 成
+  `wafer_linalg_ext.collective.*` op；该 op 实现 destination-style tensor operand/result contract 和
   MLIR `TilingInterface`、Wafer tiling demand interface、Wafer tensor collective info interface，
   可被 group/tiling 边界直接消费。slot-crossing 或当前 IR 不可证明的 collective-axis tile 必须显式
-  failure，不能被伪装成已 materialize 的 `wafer.tile.*` communication 或 hidden schedule。
+  failure，不能被伪装成已 materialized 的 `wafer.tile.*` collective、`wafer.instr.dte_*` 或 hidden schedule。
 - endpoint projection 和 comm lowering 在其实现范围内保留 collective semantics；未实现的硬件可表达
   collective 形成 R6/R4 恢复任务，不能反向限制 sharding propagation program export，也不能把 tensor collective
-  伪装成已经 materialize 的 `wafer.tile.*` communication。
+  伪装成已经 materialized 的 `wafer.tile.*` collective 或 `wafer.instr.dte_*`。
 - layout/SPM/DDR memory gates 只对本 milestone 已经 materialize 的 movement / buffer demand
   负责；尚未 materialize 的 logical collective 不能被伪装成已通过 memory/communication gate。
-- 旧的 StableHLO -> `wafer.tile.*` communication integration 已移除。R2.4 需要补 StableHLO -> tensor
-  collective 的 gate，R6 再验证 tiled tensor collective -> `wafer.tile.*` communication 的 materialization。
+- 旧的 StableHLO -> `wafer.tile.*` communication integration 已移除。R2.4 需要补 StableHLO ->
+  `wafer_linalg_ext.collective.*` 的 gate，R6 再验证 tiled tensor collective ->
+  `wafer.tile.*` collective -> `wafer.instr.dte_*` 的 materialization。
 
 candidate-selection tile search 估算和后续 cost calibration 的边界：
 
@@ -188,7 +190,8 @@ Transformer block vertical slice：
   sqrt/rsqrt/exp、limited broadcast、mask-add 或 compare/select。
 - layout/SPM/DDR feasibility 对所有 accepted groups 通过；constant/weight slices 可追溯到
   `ConstantLike` value 和 `wafer.tile.load`。
-- 若启用 tensor parallel collective，R2.4 tensor collective handoff 以及 p2p/ring/multi-replica
+- 若启用 tensor parallel collective，R2.4 `wafer_linalg_ext.collective.*` handoff、
+  `wafer.tile.*` collective materialization 以及 `wafer.instr.dte_*` p2p/ring/multi-replica
   collective gate 已通过；否则只验证单卡/单 shard local transformer block。
 - 当前无卡开发环境要求 generated program compile；launch/resource metadata 后续应覆盖所有 block
   input/output、resident constants 和 workspace，package/runtime completion 和数值对比在有卡环境验证。
