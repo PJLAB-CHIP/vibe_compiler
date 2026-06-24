@@ -1,11 +1,26 @@
-# Wafer C ABI and Golden Packet Design
+# Wafer C ABI, LLVM Lowering and Golden Packet Design
 
-状态：设计草案；范围：committed instruction IR + topology/execution-mesh + program parameter shard metadata/resource view 到 ABI / LLVM / wrapper / packet 的 lowering。
+状态：设计草案；范围：committed instruction IR + topology/execution-mesh + program parameter shard metadata/resource view 到 scalar C ABI call sequence、LLVM dialect / LLVM IR、wrapper / packet 的 lowering。
 
 本文定义 committed Wafer instruction program 到 C ABI / wrapper / packet 的 lowering 合同，
 以及 golden packet 测试边界。C ABI 是 lower-level codegen 的稳定调用面，不是上层 IR 语义。
 上层 `wafer.group`、`wafer.tile.region`、layout、SPM、DDR 和 communication 只需要满足该 ABI
 的 verifier 条件，不能继承历史 wrapper 的名字、默认 wait 策略或 packet bitfield 作为架构边界。
+
+ABI/LLVM lowering 的主线形态是：
+
+```text
+committed wafer.instr.* + accepted offsets + topology/execution-mesh + resource view
+  -> scalar wafer_* C ABI call sequence in func dialect
+  -> LLVM dialect
+  -> LLVM IR / object input
+  -> package manifest + runtime adapter
+```
+
+`func.call` ABI call sequence 是 compiler-facing ABI boundary 的 MLIR 表示，不是最终 artifact。
+LLVM IR lowering 必须继续发生在它之后。本文不引入 `wafer.abi` dialect，也不允许从
+`wafer.instr.*` 一步直接硬降到 LLVM dialect；Wafer-specific 地址、endpoint、wait/completion 和
+status 规则必须先在 ABI materialization 阶段被消解成标量 C ABI 参数。
 
 本文依赖：
 
@@ -21,8 +36,8 @@
 目标：
 
 - 定义 `wafer_*` C ABI family 的参数单位、address domain、wait policy 和 error/status contract。
-- 把 committed `wafer.instr.*`、tile communication 和 sync boundary 转成明确
-  C ABI call 或 packet emission。
+- 把 committed `wafer.instr.*`、tile communication 和 sync boundary 转成明确的 scalar
+  `func.call` C ABI call sequence，再由标准 MLIR lowering 转成 LLVM dialect / LLVM IR。
 - 通过 wrapper-first lowering 生成硬件任务，避免在主路径手写 raw packet bitfield。
 - 为每个 ABI family 建 golden packet tests，验证 wrapper 参数到 register packet 的映射。
 
@@ -32,6 +47,11 @@
 - 不把 raw packet dialect 当作主 IR。
 - 不定义 host runtime package 格式；package/launch 只消费 C ABI lowering 后的 device code。
 - 不把 legacy Tx81 CRT 函数列表直接提升为 Wafer IR op 列表。
+- 不新增 `wafer.abi` dialect；ABI call sequence 使用 `func.func` / `func.call` 和标量参数表达。
+- 不让 Wafer-tagged memref 直接走标准 memref descriptor C ABI；硬件 wrapper 只接收标量地址、
+  byte count、stride、iteration、status/token 参数。
+- 不从 `wafer.instr.*` 一步直接生成 LLVM dialect；LLVM lowering 只消费已经 materialize 的
+  scalar ABI call sequence。
 
 ## 2. Lowering Boundary
 
@@ -49,7 +69,9 @@ committed wafer.tile.region / wafer.instr.* IR
 输出：
 
 ```text
-LLVM dialect call sequence / C ABI call sequence or packet emission
+scalar func.func / func.call C ABI sequence
+  -> standard func/arith/scf/cf lowering to LLVM dialect
+  -> LLVM IR translation
   -> wafer_* C ABI functions
   -> public wrapper or runtime helper
   -> hardware packet / CSR / DTE helper
@@ -59,7 +81,18 @@ LLVM dialect call sequence / C ABI call sequence or packet emission
 
 - CT / NE / RDMA / WDMA / TDMA 通过 wrapper 或等价 runtime helper。
 - DTE / FSM / CSR 不走普通 `TsmExecute` packet path，需要独立 ABI family。
+- `wafer.instr.local_fence` lower 成本地 visibility fence / wait ABI，不能和 DTE wait 或 group
+  barrier 合并。
 - raw packet 只用于 debug、bring-up 或 golden test 对照，不作为普通 lowering 输出。
+
+MLIR lowering 分两段：
+
+1. **ABI materialization**：Wafer-specific pass 从 committed instruction IR 和 accepted facts 派生
+   scalar `func.call @wafer_*` 序列，并声明需要的 external `func.func private @wafer_*` symbol。
+   这一段负责所有 Wafer 地址域、endpoint、status/token 和 wait/completion 合法性。
+2. **LLVM lowering**：使用标准 MLIR conversion 把 `func` / `arith` / `scf` / `cf` 等 dialect
+   lower 到 LLVM dialect，再翻译到 LLVM IR。此时 IR 中不应再出现 Wafer memref、Wafer layout attr、
+   SPM/DDR planning attr 或 `wafer.instr.*` op。
 
 ### 2.1 Pipeline Contract
 
@@ -71,21 +104,27 @@ Pipeline position:
   和 communication/sync lowering。
 - Current stage responsibility:
   从 committed instruction IR、accepted offset facts、topology/execution-mesh contract、program parameter
-  shard metadata、薄 launch/block binding 和按需重算的 resource view 派生 LLVM dialect call、`wafer_*` C ABI
-  call 或 packet builder 输入，固定参数单位、address domain、wait/completion policy 和 ABI
-  version。resource view 是 analysis/verifier 结果，不 materialize 成独立 IR 或 sidecar metadata。
+  shard metadata、薄 launch/block binding 和按需重算的 resource view 派生 scalar `func.call`
+  `wafer_*` C ABI call sequence，并继续 lower 到 LLVM dialect / LLVM IR。该阶段固定参数单位、
+  address domain、wait/completion policy、status/token convention 和 ABI version。resource view
+  是 analysis/verifier 结果，不 materialize 成独立 IR 或 sidecar metadata。
 - Output artifact / IR:
-  LLVM dialect call sequence、C ABI call sequence / packet emission metadata / debug dump，以及 golden
-  packet test input。
+  scalar C ABI call sequence in func dialect、LLVM dialect module、LLVM IR / object input、packet emission
+  metadata / debug dump，以及 golden packet test input。
 - Downstream consumer:
   object emission / IR-derived package manifest、wrapper-facing call contract 和 board/runtime adapter。
 - User-level driver / named pipeline:
   主线由后端 compile pipeline 调用；不引入专门 ABI IR op family 作为用户级 compile flow。
+  稳定边界名为 `abi-calls` 和 `llvm-lowering`：`wafer-materialize-abi-calls` 只生成 scalar
+  ABI call sequence，`wafer-lower-abi-calls-to-llvm` 只做标准 LLVM dialect lowering，
+  组合 pipeline `wafer-lower-groups-to-abi-calls` / `wafer-lower-groups-to-llvm` 用于端到端 gate。
 - Explicit non-goals:
   不重新选择 group、tile shape、layout、instruction form、SPM memory plan 或 DDR memory plan。
 - Completion gate:
-  至少 RDMA/WDMA/GEMM 的 committed instruction 能生成可审计 ABI call/packet emission，并由 verifier
-  和 golden packet gate 覆盖参数单位、range-end、wait policy 和 wrapper mapping。
+  至少 RDMA/WDMA/GEMM/local_fence 的 committed instruction 能生成可审计 scalar ABI call sequence，
+  并继续 lower 到 LLVM dialect；verifier 和 golden packet gate 覆盖参数单位、range-end、wait policy、
+  status convention 和 wrapper mapping。端到端测试必须证明 group -> selected instruction -> ABI calls
+  -> LLVM dialect 的主线 pipeline 可重放。
 ```
 
 ## 3. ABI Design Rules
@@ -97,7 +136,7 @@ Pipeline position:
 - logical shape / element count 只在硬件 wrapper 需要 logical iteration 时出现，并带 dtype /
   format 信息。
 - every async issue ABI 必须声明 completion mechanism。
-- wait/drain ABI 与 issue ABI 分离，除非函数名明确表示 synchronous。
+- fence/wait ABI 与 issue ABI 分离，除非函数名明确表示 synchronous。
 - source/destination memory space 必须可验证：SPM、DDR、control/status 区域不能混用。
 - return status / diagnostic path 必须明确；不能依赖 silent success。
 
@@ -110,6 +149,60 @@ Pipeline position:
 *_addr       // device address or SPM offset, domain declared by argument
 *_end        // inclusive or exclusive range-end must be specified by ABI contract
 ```
+
+### 3.1 Address and Resource Derivation
+
+ABI lowering 必须在进入 LLVM dialect 之前把 Wafer memory / endpoint / resource 事实全部消解成
+标量 ABI 参数。计算规则如下：
+
+```text
+SPM byte address / offset:
+  accepted wafer.spm.offset on the root SPM allocation
+  + static view byte offset derived from memref view and Wafer physical layout
+  + instruction-local byte offset such as gather/scatter src_offset / dst_offset
+
+external DDR byte address:
+  runtime-provided launch binding base for the corresponding external input/output
+  + static memref subview byte offset
+  + descriptor-local byte offset
+
+compiler-managed DDR byte address:
+  runtime-provided workspace / resident allocation base
+  + accepted wafer.ddr.offset on the compiler-managed DDR allocation
+  + static view byte offset
+  + descriptor-local byte offset
+
+DTE peer / endpoint:
+  logical peer rank in wafer.instr.dte_* op
+  -> wafer.execution.mesh rank-domain endpoint view
+  -> wafer.target.topology physical endpoint / resource class
+```
+
+external DDR function argument 不允许被解释成编译期绝对地址；它只代表 runtime launch binding
+base。`#wafer.ddr_offset` 只适用于 compiler-managed / resident / workspace DDR allocation，不适用于
+external input/output binding。SPM/DDR range-end 必须用 physical storage byte size 和 descriptor
+iteration/stride 重新计算，不能只看 logical tensor shape。
+
+ABI materialization 可以使用 pass-local `ResourceViewAnalysis`，但该 view 只能从当前 IR、
+accepted offset facts、topology/execution-mesh、program parameter shard metadata 和薄 launch/block
+binding 重算；不能作为 sidecar、manifest fixture 或新 IR attr 写回上游。
+
+### 3.2 Status, Token and Ordering Convention
+
+ABI call 不能默认为 `void` 且无副作用。V0 约定：
+
+- issue ABI 返回 `i32 status` 或返回显式 completion token / handle；返回值必须被 status accumulator、
+  wait op 或 region boundary 消费。
+- RDMA/WDMA/GEMM/elementwise/reduce/local_fence 等普通 call 至少返回 `i32 status`。
+- DTE send/recv 返回 DTE completion token / handle；`wafer_dte_wait` 消费 token 并返回 `i32 status`。
+- `wafer.instr.local_fence` materialize 为 `wafer_local_fence` 或等价 local wait ABI；它只收口本地
+  NCC compute/movement visibility，不替代 DTE wait 或 group barrier。
+- LLVM dialect / LLVM IR 中的 `wafer_*` call 必须被视为有 side effect；不能标记成 `readnone` /
+  `readonly` / pure，也不能让 optimizer 跨 wait/fence/barrier 重排。
+
+status accumulator 的初始实现可以是 conservative first-error convention：每次 call 返回 status 后，
+ABI wrapper 通过 `arith.select` / `scf.if` 或 lower-level helper 保留第一个非零错误码。具体
+error code mapping 属于 C ABI contract；上层 IR 只要求 status path 显式存在。
 
 ## 4. ABI Families
 
@@ -127,14 +220,14 @@ V0 family：
 | conversion | `wafer_convert_*` | CT / NE wrapper | source/result dtype、rounding/saturation policy |
 | convolution | `wafer_conv` | NE wrapper | V0 subset only, layout and kernel constraints |
 | Direct DTE | `wafer_dte_send`, `wafer_dte_recv`, `wafer_dte_wait` | Direct DTE / FSM helper | endpoint、byte count、FSM id、packet/stream resource |
-| sync | `wafer_local_wait`, `wafer_group_barrier` | CSR / runtime helper | instruction family、token/effect ordering |
+| sync | `wafer_local_fence`, `wafer_group_barrier` | CSR / runtime helper | instruction family、token/effect ordering |
 
 这些函数名是 compiler-facing ABI family，不要求一一等同底层 public symbol。实现可以在 C shim 内
 调用 public Tsm wrapper、Kcore runtime helper 或未来 native helper。
 
 ABI/LLVM lowering 主线不要求专门的 ABI IR 层。codegen 可以直接从 committed `wafer.instr.*`、accepted
-SPM/DDR offset facts、topology/execution-mesh contract、program parameter shard metadata、薄 launch/block binding 和按需重算的 resource view 发射 LLVM
-dialect call、`wafer_*` C shim 调用或 packet builder 输入。
+SPM/DDR offset facts、topology/execution-mesh contract、program parameter shard metadata、薄 launch/block binding 和按需重算的 resource view 发射 scalar
+`func.call` C shim 调用或 packet builder 输入，并在后续 LLVM lowering 中变成 `llvm.call`。
 如果保留 `wafer.instr.rdma`、`wafer.instr.wdma`、`wafer.instr.gemm`、`wafer.instr.elementwise`、
 `wafer.instr.reduce`、Direct DTE emission helper 这类对象，它们只作为 very-late debug/test dump 或 emission
 helper，不能作为主线架构层，也不能承载 endpoint、layout 或 instruction selection 决策。
@@ -144,6 +237,79 @@ fixed-size unicast p2p communication 在进入 ABI/LLVM lowering 前应已经 lo
 token/wait lifetime 和 staging storage。Ring reduce collectives 在进入 ABI/LLVM lowering 前应先展开为
 p2p Direct DTE issue 和明确 `wafer.instr.elementwise` accumulator step。旧 tile_region-to-C-ABI
 pass 已删除；后续 ABI/LLVM 层仍不应引入“带 reduction 的 DTE issue”。
+
+### 4.1 ABI Call Sequence Shape
+
+ABI materialization 输出普通 MLIR `func` dialect。示例形态：
+
+```mlir
+func.func @forward_wafer_abi(
+    %input0_base: i64,
+    %output0_base: i64,
+    %workspace_base: i64,
+    %resident_base: i64,
+    %block_id: i32) -> i32 {
+  %zero = arith.constant 0 : i32
+  %spm0 = arith.constant 65536 : i32
+  %spm1 = arith.constant 65792 : i32
+  %m = arith.constant 16 : i64
+  %k = arith.constant 32 : i64
+  %n = arith.constant 16 : i64
+  %bytes = arith.constant 256 : i64
+  %tile_view_offset = arith.constant 512 : i64
+  %ddr_src = arith.addi %input0_base, %tile_view_offset : i64
+
+  %s0 = func.call @wafer_rdma(%ddr_src, %spm0, %bytes)
+      : (i64, i32, i64) -> i32
+  %s1 = func.call @wafer_gemm(%spm0, %spm1, %spm0, %m, %k, %n)
+      : (i32, i32, i32, i64, i64, i64) -> i32
+  %s2 = func.call @wafer_local_fence()
+      : () -> i32
+
+  %status = arith.ori %s0, %s1 : i32
+  %final = arith.ori %status, %s2 : i32
+  return %final : i32
+}
+
+func.func private @wafer_rdma(i64, i32, i64) -> i32
+func.func private @wafer_gemm(i32, i32, i32, i64, i64, i64) -> i32
+func.func private @wafer_local_fence() -> i32
+```
+
+示例中的 `arith.ori` 只是说明 status path 必须存在；最终实现可以改用 first-error helper 或
+`scf.if`。ABI call function type 必须是 scalar-only：integer、index-converted integer、float
+constant 或 pointer-sized integer；不能把 Wafer memref descriptor、layout attr、planning attr 或
+opaque side table 传给 C ABI。
+
+### 4.2 LLVM Dialect / LLVM IR Lowering
+
+ABI call sequence 之后才能进入 LLVM lowering。标准顺序为：
+
+```text
+scalar func.call ABI sequence
+  -> canonicalize / cse if needed
+  -> convert-scf-to-cf
+  -> convert-cf-to-llvm
+  -> convert-arith-to-llvm
+  -> convert-func-to-llvm
+  -> reconcile-unrealized-casts
+  -> MLIR LLVM dialect
+  -> translate to LLVM IR
+```
+
+如果 ABI materialization 已经消除了 Wafer memref，则 LLVM type conversion 不需要理解
+`#wafer.memory<...>`。这点是设计约束：任何仍含 Wafer memref、`wafer.spm.offset`、
+`wafer.ddr.offset` 或 `wafer.instr.*` 的 module 都不是合法的 LLVM lowering 输入。
+
+`wafer-lower-abi-calls-to-llvm` 只是标准 MLIR lowering pipeline 的稳定封装；它不能读取
+`wafer.instr.*`，不能重新做地址推导，也不能补 package/resource metadata。`wafer-lower-groups-to-llvm`
+只是组合 pipeline：
+
+```text
+wafer-lower-groups-to-selected-instr
+  -> wafer-materialize-abi-calls
+  -> wafer-lower-abi-calls-to-llvm
+```
 
 ## 5. Instruction Facts to Preserve
 
@@ -169,12 +335,13 @@ ABI 默认不隐藏 wait。
 V0 区分：
 
 - issue-only：提交硬件任务，返回 token/status。
-- local drain：等待 CT/NE/RDMA/WDMA/TDMA issue queue 或指定 instruction family。
+- local fence：等待 CT/NE/RDMA/WDMA/TDMA issue queue 或指定 instruction family；lower-level
+  implementation 可以调用 `TsmWaitfinish` 类 local drain。
 - DTE wait：等待 DTE/FSM completion。
 - group barrier：等待一组 tile / rank 的同步点。
 - synchronous helper：仅用于 bring-up 或明确 synchronous API，函数名必须体现。
 
-上层 scheduler 可以选择 issue/drain ordering。C ABI 不应在每个 op 后默认插 hidden wait，
+上层 scheduler 可以选择 issue/fence/wait ordering。C ABI 不应在每个 op 后默认插 hidden wait，
 否则会掩盖 async lifetime 和 overlap legality。
 
 ## 7. Golden Packet Tests
@@ -203,7 +370,9 @@ Golden data 必须来自 register-level spec 和 wrapper behavior，不能来自
 
 当前 V0 unit gate 先用 `Wafer/ABI/TileAbi.h` 的 descriptor builder 固定 tile ABI argument contract：
 RDMA / WDMA 的 DDR lower bound、SPM usable range、byte count、exclusive end range 和
-`issue_only` policy，以及 GEMM 的 M/K/N 参数。这个 gate 覆盖 committed instruction 到 ABI 参数单位和
+`issue_only` policy，以及 GEMM 的 M/K/N 参数。进入 ABI materialization 后，这个 builder 应扩展为
+call descriptor verifier：覆盖 SPM/DDR view byte offset、stride/iteration、status convention、
+local_fence policy 和 DTE token/wait 参数。这个 gate 覆盖 committed instruction 到 ABI 参数单位和
 address direction 的映射，但还不是最终 wrapper-to-register bitfield golden；真实 packet field 对照
 在接入 public wrapper 或 C shim 后继续扩展。
 
@@ -215,7 +384,10 @@ C ABI verifier 检查：
 - memory space / address domain 合法。
 - source/destination range 包含 end address，并落在 SPM/DDR/descriptor 允许范围内。
 - layout family 满足 ABI family 要求。
-- async issue token 被 wait/drain 或 region boundary 消费。
+- async issue token 被 fence/wait 或 region boundary 消费。
+- ABI materialization 输出中不残留 Wafer memref、`wafer.instr.*`、`wafer.spm.offset` 或
+  `wafer.ddr.offset`；LLVM lowering 输入必须已经是 scalar ABI call sequence。
+- `wafer_*` call 的 status / token result 被显式消费；不能生成未使用的 completion 或 silent success。
 - bool bitpack、256B padding、C0 tail/fold 已计入 storage size。
 - unsupported SCALAR/raw DTE non-unicast path 在 V0 被拒绝。
 

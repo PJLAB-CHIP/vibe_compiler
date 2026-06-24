@@ -52,7 +52,7 @@ PyTorch/XLA StableHLO Wafer program directory
   -> ABI / LLVM lowering
        committed instruction IR + accepted offsets + topology/execution-mesh
        + program parameter shard metadata/resource view + communication/sync
-       -> LLVM dialect call sequence or `wafer_*` C ABI / packet builder input
+       -> scalar `func.call` ABI sequence -> LLVM dialect / LLVM IR
   -> object + package manifest assembly
        object/program id, entrypoint, ABI version, constants, endpoint and resource metadata
   -> runtime adapter / board launch
@@ -74,21 +74,24 @@ Pipeline position:
   communication/sync lowering。
 - Current stage responsibility:
   从 committed instruction IR、accepted offset facts、topology/execution-mesh contract、program
-  parameter shard metadata、薄 launch/block binding 和按需重算的 resource view 派生 LLVM dialect
-  call、`wafer_*` C ABI call 或 packet builder 输入，固定参数单位、address domain、wait/completion
-  policy 和 ABI version。
+  parameter shard metadata、薄 launch/block binding 和按需重算的 resource view 派生 scalar
+  `func.call` `wafer_*` C ABI call sequence，再通过标准 MLIR lowering 生成 LLVM dialect / LLVM IR。
+  该阶段固定参数单位、address domain、wait/completion policy、status/token convention 和 ABI version。
 - Output artifact / IR:
-  LLVM dialect call sequence、C ABI call sequence / packet emission metadata / debug dump，以及 golden
-  packet test input。
+  scalar C ABI call sequence in func dialect、LLVM dialect module、LLVM IR / object input、packet
+  emission metadata / debug dump，以及 golden packet test input。
 - Downstream consumer:
   object emission / IR-derived package manifest、wrapper-facing call contract 和 board/runtime adapter。
 - User-level driver / named pipeline:
   主线由后端 compile pipeline 调用；不引入专门 ABI IR op family 作为用户级 compile flow。
+  稳定边界名为 `abi-calls` 和 `llvm-lowering`。
 - Explicit non-goals:
   不重新选择 group、tile shape、layout、instruction form、SPM memory plan 或 DDR memory plan。
 - Completion gate:
-  至少 RDMA/WDMA/GEMM 的 committed instruction 能生成可审计 ABI call/packet emission，并由 verifier
-  和 golden packet gate 覆盖参数单位、range-end、wait policy 和 wrapper mapping。
+  至少 RDMA/WDMA/GEMM/local_fence 的 committed instruction 能生成可审计 scalar ABI call sequence，
+  并继续 lower 到 LLVM dialect；verifier 和 golden packet gate 覆盖参数单位、range-end、wait policy、
+  status convention 和 wrapper mapping。端到端测试必须证明 group -> selected instruction -> ABI calls
+  -> LLVM dialect 的主线 pipeline 可重放。
 ```
 
 ## 已可依赖的上游边界
@@ -114,7 +117,7 @@ Pipeline position:
 | buffer-level communication collective materialization | done | tiled `wafer.linalg_ext.collective.*` + unplaced SPM buffer/local-rank facts + execution mesh rank domain | top-level single-result `all_gather` / `reduce_scatter` / `all_reduce` materialize 成 verifier-legal `wafer.tile.*` collective；buffer、bytes、rank_group、local_rank 和 effect 边界来自 IR，不选择 p2p schedule；发生在 SPM memory planning 前 |
 | p2p Direct DTE instruction schedule lowering | done | `wafer.tile.*` collective + topology/execution-mesh derived endpoint view | compact SPM all_gather 支持 ring/direct schedule、tensor SPM all_reduce 支持 ring/tree schedule、full-input reduce_scatter 支持 direct schedule；accepted schedule 都生成 explicit `wafer.instr.dte_send` / `dte_recv` / `dte_wait` body，并由 SPM memory planning 消费；peer/route 从 topology/execution mesh 查询，不保存 side table |
 | comm-aware memory planning gate | done | instruction-level compute/movement + `wafer.instr.dte_*` over unplaced SPM memrefs | communication staging、DTE token lifetime、local fence / DTE wait 和 buffer reuse 被 SPM planning 消费；all_gather / reduce_scatter / all_reduce 可经 named pipeline 到 SPM + DDR memory-planned instruction IR |
-| ABI / LLVM lowering | active | committed instruction IR + accepted SPM/DDR offset facts + topology/execution-mesh + program parameter shard metadata/resource view + launch-block binding + communication/sync lowering | LLVM dialect call sequence 或 `wafer_*` C ABI / packet builder input；按需重算 launch/resource view，固定参数单位、address domain、wait/completion policy 和 ABI version |
+| ABI / LLVM lowering | active | committed instruction IR + accepted SPM/DDR offset facts + topology/execution-mesh + program parameter shard metadata/resource view + launch-block binding + communication/sync lowering | scalar `func.call` ABI sequence、LLVM dialect / LLVM IR artifact；按需重算 launch/resource view，固定参数单位、address domain、wait/completion policy、status/token convention 和 ABI version |
 | object + package manifest | pending | ABI/LLVM artifact + committed IR + topology/execution-mesh + program parameter shard metadata/resource view | object/program id、entrypoint、ABI version 和 IR-derived package manifest；endpoint/resource/constant metadata 由同一 resource view analysis 从 IR 重算 |
 | runtime adapter / board launch | pending | package + runtime adapter | allocate/import/query/bind runtime objects，launch program，验证 completion、错误传播和 board gate |
 | transformer staged gaps | pending | static transformer local shard IR / staged IR gaps | full-block schedule 或拒绝原因；补 mask/select、dynamic-bound policy、constant/weight slice 等 |
@@ -124,13 +127,14 @@ Pipeline position:
 
 - Serving integration、KV cache / paged attention / prefill-decode 调度。
 - raw DTE non-unicast collective ABI。
-- LLVM dialect / LLVM IR lowering、object emission 或真实 `wafer_*` runtime call emission；这些归后续
-  ABI、package 和 runtime 边界。
+- object emission、package manifest 自动导出或真实 `wafer_*` runtime call implementation；这些归后续
+  package 和 runtime 边界。
 - 自定义 LLVM backend 或 ISA intrinsic lowering。
 - 以 importer、runtime path、workload shape、parameter 名称或 pass-local side table 作为 IR 合同。
 
 ## 下一步
 
-1. 让 ABI/LLVM 和 package manifest 从 topology/execution mesh、program parameter shard metadata /
-   resource view、薄 launch/block binding、accepted offsets、committed instruction IR 和 communication/sync
-   IR 派生 launch-visible metadata。
+1. 实现 `wafer-materialize-abi-calls`：从 committed instruction IR、accepted offsets、
+   topology/execution mesh、program parameter shard metadata/resource view、薄 launch/block binding 和
+   communication/sync IR 派生 scalar `func.call` ABI sequence。
+2. 接入 `wafer-lower-abi-calls-to-llvm` 和组合 pipeline，使 ABI calls 能继续 lower 到 LLVM dialect。
