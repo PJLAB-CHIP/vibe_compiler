@@ -4,12 +4,19 @@ add_mlir_library(WaferPipelines
   LINK_LIBS PUBLIC
   WaferIR
   WaferTransforms
+  MLIRArithToLLVM
   MLIRBufferizationDialect
   MLIRBufferizationTransforms
+  MLIRControlFlowDialect
+  MLIRControlFlowToLLVM
+  MLIRFuncToLLVM
   MLIRFuncDialect
   MLIRIR
+  MLIRLLVMDialect
   MLIRMemRefDialect
   MLIRPass
+  MLIRReconcileUnrealizedCasts
+  MLIRSCFToControlFlow
   MLIRSupport
 )
 

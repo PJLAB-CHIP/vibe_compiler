@@ -11,10 +11,13 @@ target_link_libraries(wafer-opt
   MLIRAsyncDialect
   MLIRBufferizationDialect
   MLIRBufferizationTransforms
+  MLIRControlFlowDialect
   MLIRFuncDialect
   MLIRFuncInlinerExtension
   MLIRLinalgDialect
   MLIRLinalgTransforms
+  MLIRLLVMDialect
+  MLIRLLVMIRTransforms
   MLIRMathDialect
   MLIRMemRefDialect
   MLIRMlirOptMain

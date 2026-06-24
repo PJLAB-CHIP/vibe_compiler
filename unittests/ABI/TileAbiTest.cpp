@@ -52,6 +52,48 @@ TEST(TileAbiTest, BuildsGemmDescriptor) {
   EXPECT_EQ(descriptor.waitPolicy, wafer::abi::WaitPolicy::IssueOnly);
 }
 
+TEST(TileAbiTest, BuildsStridedDmaDescriptor) {
+  wafer::abi::DmaDescriptor descriptor;
+  std::string error;
+
+  ASSERT_TRUE(wafer::abi::buildRdma(
+      /*ddrSrcAddr=*/0x280000200ULL, /*spmDstOffset=*/65536,
+      /*byteCount=*/512, /*innerBytes=*/64,
+      /*strides=*/{128, 0, 0}, /*iterations=*/{4, 1, 1}, descriptor,
+      &error))
+      << error;
+
+  EXPECT_EQ(descriptor.ddrAddress, 0x280000200ULL);
+  EXPECT_EQ(descriptor.spmOffset, 65536u);
+  EXPECT_EQ(descriptor.byteCount, 512u);
+  EXPECT_EQ(descriptor.innerBytes, 64u);
+  EXPECT_EQ(descriptor.strides[0], 128);
+  EXPECT_EQ(descriptor.iterations[0], 4);
+  EXPECT_EQ(descriptor.waitPolicy, wafer::abi::WaitPolicy::IssueOnly);
+}
+
+TEST(TileAbiTest, RejectsInvalidStridedDmaDescriptor) {
+  wafer::abi::DmaDescriptor descriptor;
+  std::string error;
+
+  EXPECT_FALSE(wafer::abi::buildRdma(
+      /*ddrSrcAddr=*/0x280000000ULL, /*spmDstOffset=*/0,
+      /*byteCount=*/64, /*innerBytes=*/0,
+      /*strides=*/{16, 0, 0}, /*iterations=*/{1, 1, 1}, descriptor,
+      &error));
+  EXPECT_NE(error.find("DMA inner byte count must be positive"),
+            std::string::npos);
+
+  error.clear();
+  EXPECT_FALSE(wafer::abi::buildRdma(
+      /*ddrSrcAddr=*/0x280000000ULL, /*spmDstOffset=*/0,
+      /*byteCount=*/64, /*innerBytes=*/128,
+      /*strides=*/{16, 0, 0}, /*iterations=*/{1, 1, 1}, descriptor,
+      &error));
+  EXPECT_NE(error.find("DMA inner byte count must not exceed byte count"),
+            std::string::npos);
+}
+
 TEST(TileAbiTest, RejectsInvalidDmaRanges) {
   wafer::abi::Dma1DDescriptor descriptor;
   std::string error;

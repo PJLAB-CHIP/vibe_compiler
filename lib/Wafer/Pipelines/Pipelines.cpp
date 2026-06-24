@@ -5,6 +5,11 @@
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Transforms/Passes.h"
 
+#include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
+#include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"
+#include "mlir/Conversion/FuncToLLVM/ConvertFuncToLLVMPass.h"
+#include "mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h"
+#include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 #include "mlir/Dialect/Bufferization/Transforms/OneShotAnalysis.h"
 #include "mlir/Dialect/Bufferization/Transforms/Passes.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -98,6 +103,28 @@ void buildLowerGroupsToSelectedInstrPipeline(mlir::OpPassManager &pm) {
   pm.addPass(createSelectGroupTilePass());
 }
 
+void buildMaterializeABICallsPipeline(mlir::OpPassManager &pm) {
+  pm.addPass(createMaterializeABICallsPass());
+}
+
+void buildLowerGroupsToABICallsPipeline(mlir::OpPassManager &pm) {
+  buildLowerGroupsToDDRMemoryPlannedInstrPipeline(pm);
+  buildMaterializeABICallsPipeline(pm);
+}
+
+void buildLowerABICallsToLLVMPipeline(mlir::OpPassManager &pm) {
+  pm.addPass(mlir::createConvertSCFToCFPass());
+  pm.addPass(mlir::createConvertControlFlowToLLVMPass());
+  pm.addPass(mlir::createArithToLLVMConversionPass());
+  pm.addPass(mlir::createConvertFuncToLLVMPass());
+  pm.addPass(mlir::createReconcileUnrealizedCastsPass());
+}
+
+void buildLowerGroupsToLLVMPipeline(mlir::OpPassManager &pm) {
+  buildLowerGroupsToABICallsPipeline(pm);
+  buildLowerABICallsToLLVMPipeline(pm);
+}
+
 #ifdef WAFER_ENABLE_SHARDY
 void buildStablehloShardingPropagationPipeline(mlir::OpPassManager &pm) {
   pm.addPass(createApplyDefaultSpmdShardingPass());
@@ -148,6 +175,19 @@ void registerWaferPipelines() {
         [](mlir::OpPassManager &pm) {
           buildLowerGroupsToSelectedInstrPipeline(pm);
         });
+    mlir::PassPipelineRegistration<>(
+        "wafer-lower-groups-to-abi-calls",
+        "Lower logical wafer.group ops to scalar Wafer C ABI call IR",
+        [](mlir::OpPassManager &pm) { buildLowerGroupsToABICallsPipeline(pm); });
+    mlir::PassPipelineRegistration<>(
+        "wafer-lower-abi-calls-to-llvm",
+        "Lower scalar Wafer C ABI call IR to LLVM dialect",
+        [](mlir::OpPassManager &pm) { buildLowerABICallsToLLVMPipeline(pm); });
+    mlir::PassPipelineRegistration<>(
+        "wafer-lower-groups-to-llvm",
+        "Lower logical wafer.group ops through scalar Wafer C ABI calls to "
+        "LLVM dialect",
+        [](mlir::OpPassManager &pm) { buildLowerGroupsToLLVMPipeline(pm); });
 #ifdef WAFER_ENABLE_SHARDY
     mlir::PassPipelineRegistration<>(
         "wafer-propagate-stablehlo-sharding",

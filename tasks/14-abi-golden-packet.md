@@ -121,9 +121,9 @@ Pipeline position:
 - Explicit non-goals:
   不重新选择 group、tile shape、layout、instruction form、SPM memory plan 或 DDR memory plan。
 - Completion gate:
-  至少 RDMA/WDMA/GEMM/local_fence 的 committed instruction 能生成可审计 scalar ABI call sequence，
+  至少 RDMA/WDMA/gather_scatter/GEMM/local_fence 的 committed instruction 能生成可审计 scalar ABI call sequence，
   并继续 lower 到 LLVM dialect；verifier 和 golden packet gate 覆盖参数单位、range-end、wait policy、
-  status convention 和 wrapper mapping。端到端测试必须证明 group -> selected instruction -> ABI calls
+  status convention 和 wrapper mapping。端到端测试必须证明 group -> memory-planned instruction -> ABI calls
   -> LLVM dialect 的主线 pipeline 可重放。
 ```
 
@@ -259,8 +259,17 @@ func.func @forward_wafer_abi(
   %tile_view_offset = arith.constant 512 : i64
   %ddr_src = arith.addi %input0_base, %tile_view_offset : i64
 
-  %s0 = func.call @wafer_rdma(%ddr_src, %spm0, %bytes)
-      : (i64, i32, i64) -> i32
+  %inner = arith.constant 256 : i64
+  %stride0 = arith.constant 0 : i64
+  %stride1 = arith.constant 0 : i64
+  %stride2 = arith.constant 0 : i64
+  %iter0 = arith.constant 1 : i64
+  %iter1 = arith.constant 1 : i64
+  %iter2 = arith.constant 1 : i64
+  %s0 = func.call @wafer_rdma(
+      %ddr_src, %spm0, %bytes, %inner,
+      %stride0, %stride1, %stride2, %iter0, %iter1, %iter2)
+      : (i64, i32, i64, i64, i64, i64, i64, i64, i64, i64) -> i32
   %s1 = func.call @wafer_gemm(%spm0, %spm1, %spm0, %m, %k, %n)
       : (i32, i32, i32, i64, i64, i64) -> i32
   %s2 = func.call @wafer_local_fence()
@@ -271,7 +280,7 @@ func.func @forward_wafer_abi(
   return %final : i32
 }
 
-func.func private @wafer_rdma(i64, i32, i64) -> i32
+func.func private @wafer_rdma(i64, i32, i64, i64, i64, i64, i64, i64, i64, i64) -> i32
 func.func private @wafer_gemm(i32, i32, i32, i64, i64, i64) -> i32
 func.func private @wafer_local_fence() -> i32
 ```
@@ -280,6 +289,30 @@ func.func private @wafer_local_fence() -> i32
 `scf.if`。ABI call function type 必须是 scalar-only：integer、index-converted integer、float
 constant 或 pointer-sized integer；不能把 Wafer memref descriptor、layout attr、planning attr 或
 opaque side table 传给 C ABI。
+
+RDMA/WDMA 和 gather/scatter 的 ABI call 必须保留 descriptor 结构，不允许只传总 byte count：
+
+```text
+wafer_rdma(ddr_src_addr: i64, spm_dst_offset: i32,
+           byte_count: i64, inner_bytes: i64,
+           src_stride0_b: i64, src_stride1_b: i64, src_stride2_b: i64,
+           src_iter0: i64, src_iter1: i64, src_iter2: i64) -> i32
+
+wafer_wdma(spm_src_offset: i32, ddr_dst_addr: i64,
+           byte_count: i64, inner_bytes: i64,
+           dst_stride0_b: i64, dst_stride1_b: i64, dst_stride2_b: i64,
+           dst_iter0: i64, dst_iter1: i64, dst_iter2: i64) -> i32
+
+wafer_gather_scatter(spm_src_offset: i32, spm_dst_offset: i32,
+                     byte_count: i64, inner_bytes: i64,
+                     src_stride0_b: i64, src_stride1_b: i64, src_stride2_b: i64,
+                     src_iter0: i64, src_iter1: i64, src_iter2: i64,
+                     dst_stride0_b: i64, dst_stride1_b: i64, dst_stride2_b: i64,
+                     dst_iter0: i64, dst_iter1: i64, dst_iter2: i64) -> i32
+```
+
+`wafer.instr.gather_scatter` 的可选 `src_offset` / `dst_offset` 在 ABI materialization
+阶段折叠进对应 SPM offset；stride 字段保持 byte stride，iteration 字段保持 logical loop count。
 
 ### 4.2 LLVM Dialect / LLVM IR Lowering
 
@@ -306,7 +339,7 @@ scalar func.call ABI sequence
 只是组合 pipeline：
 
 ```text
-wafer-lower-groups-to-selected-instr
+wafer-lower-groups-to-ddr-memory-planned-instr
   -> wafer-materialize-abi-calls
   -> wafer-lower-abi-calls-to-llvm
 ```

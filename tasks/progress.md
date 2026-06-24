@@ -88,9 +88,9 @@ Pipeline position:
 - Explicit non-goals:
   不重新选择 group、tile shape、layout、instruction form、SPM memory plan 或 DDR memory plan。
 - Completion gate:
-  至少 RDMA/WDMA/GEMM/local_fence 的 committed instruction 能生成可审计 scalar ABI call sequence，
+  至少 RDMA/WDMA/gather_scatter/GEMM/local_fence 的 committed instruction 能生成可审计 scalar ABI call sequence，
   并继续 lower 到 LLVM dialect；verifier 和 golden packet gate 覆盖参数单位、range-end、wait policy、
-  status convention 和 wrapper mapping。端到端测试必须证明 group -> selected instruction -> ABI calls
+  status convention 和 wrapper mapping。端到端测试必须证明 group -> memory-planned instruction -> ABI calls
   -> LLVM dialect 的主线 pipeline 可重放。
 ```
 
@@ -117,7 +117,7 @@ Pipeline position:
 | buffer-level communication collective materialization | done | tiled `wafer.linalg_ext.collective.*` + unplaced SPM buffer/local-rank facts + execution mesh rank domain | top-level single-result `all_gather` / `reduce_scatter` / `all_reduce` materialize 成 verifier-legal `wafer.tile.*` collective；buffer、bytes、rank_group、local_rank 和 effect 边界来自 IR，不选择 p2p schedule；发生在 SPM memory planning 前 |
 | p2p Direct DTE instruction schedule lowering | done | `wafer.tile.*` collective + topology/execution-mesh derived endpoint view | compact SPM all_gather 支持 ring/direct schedule、tensor SPM all_reduce 支持 ring/tree schedule、full-input reduce_scatter 支持 direct schedule；accepted schedule 都生成 explicit `wafer.instr.dte_send` / `dte_recv` / `dte_wait` body，并由 SPM memory planning 消费；peer/route 从 topology/execution mesh 查询，不保存 side table |
 | comm-aware memory planning gate | done | instruction-level compute/movement + `wafer.instr.dte_*` over unplaced SPM memrefs | communication staging、DTE token lifetime、local fence / DTE wait 和 buffer reuse 被 SPM planning 消费；all_gather / reduce_scatter / all_reduce 可经 named pipeline 到 SPM + DDR memory-planned instruction IR |
-| ABI / LLVM lowering | active | committed instruction IR + accepted SPM/DDR offset facts + topology/execution-mesh + program parameter shard metadata/resource view + launch-block binding + communication/sync lowering | scalar `func.call` ABI sequence、LLVM dialect / LLVM IR artifact；按需重算 launch/resource view，固定参数单位、address domain、wait/completion policy、status/token convention 和 ABI version |
+| ABI / LLVM lowering | active | committed instruction IR + accepted SPM/DDR offset facts + topology/execution-mesh + program parameter shard metadata/resource view + launch-block binding + communication/sync lowering | RDMA/WDMA/gather_scatter/GEMM/local_fence 的 scalar `func.call` ABI sequence、LLVM dialect artifact；后续 golden packet / wrapper gate 固定 packet 字段、ABI version 和 runtime error convention |
 | object + package manifest | pending | ABI/LLVM artifact + committed IR + topology/execution-mesh + program parameter shard metadata/resource view | object/program id、entrypoint、ABI version 和 IR-derived package manifest；endpoint/resource/constant metadata 由同一 resource view analysis 从 IR 重算 |
 | runtime adapter / board launch | pending | package + runtime adapter | allocate/import/query/bind runtime objects，launch program，验证 completion、错误传播和 board gate |
 | transformer staged gaps | pending | static transformer local shard IR / staged IR gaps | full-block schedule 或拒绝原因；补 mask/select、dynamic-bound policy、constant/weight slice 等 |
@@ -134,7 +134,8 @@ Pipeline position:
 
 ## 下一步
 
-1. 实现 `wafer-materialize-abi-calls`：从 committed instruction IR、accepted offsets、
-   topology/execution mesh、program parameter shard metadata/resource view、薄 launch/block binding 和
-   communication/sync IR 派生 scalar `func.call` ABI sequence。
-2. 接入 `wafer-lower-abi-calls-to-llvm` 和组合 pipeline，使 ABI calls 能继续 lower 到 LLVM dialect。
+1. 固化 `wafer_rdma` / `wafer_wdma` / `wafer_gather_scatter` / `wafer_gemm` /
+   `wafer_local_fence` 的 C shim wrapper 参数验证和 golden packet tests，覆盖 descriptor range-end、
+   wait policy、status convention 和 wrapper/register 字段映射。
+2. 在 object/package 边界消费 LLVM dialect / LLVM IR artifact，补 entrypoint、ABI version 和
+   IR-derived resource metadata。

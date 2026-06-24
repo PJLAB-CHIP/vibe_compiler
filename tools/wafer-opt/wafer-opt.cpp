@@ -10,10 +10,13 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Bufferization/Transforms/FuncBufferizableOpInterfaceImpl.h"
 #include "mlir/Dialect/Func/Extensions/InlinerExtension.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/LLVMIR/Transforms/InlinerInterfaceImpl.h"
 #include "mlir/Dialect/Linalg/Transforms/BufferizableOpInterfaceImpl.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -56,7 +59,8 @@ namespace {
 void registerWaferOptDialects(mlir::DialectRegistry &registry) {
   registry.insert<mlir::arith::ArithDialect,
                   mlir::bufferization::BufferizationDialect,
-                  mlir::func::FuncDialect, mlir::linalg::LinalgDialect,
+                  mlir::cf::ControlFlowDialect, mlir::func::FuncDialect,
+                  mlir::LLVM::LLVMDialect, mlir::linalg::LinalgDialect,
                   mlir::math::MathDialect, mlir::memref::MemRefDialect,
                   mlir::scf::SCFDialect, mlir::tensor::TensorDialect>();
   wafer::registerAllDialects(registry);
@@ -68,6 +72,7 @@ void registerWaferOptDialects(mlir::DialectRegistry &registry) {
   mlir::scf::registerBufferizableOpInterfaceExternalModels(registry);
   mlir::tensor::registerBufferizableOpInterfaceExternalModels(registry);
   mlir::func::registerInlinerExtension(registry);
+  mlir::LLVM::registerInlinerInterface(registry);
 }
 
 bool hasWaferProgramPipelineRequest(int argc, char **argv) {
