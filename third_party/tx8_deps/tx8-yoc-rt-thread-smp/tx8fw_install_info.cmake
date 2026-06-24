@@ -1,0 +1,1 @@
+set(IS_INSTALL_TX8FW ON)

@@ -212,9 +212,9 @@ M7 ABI / LLVM program gate：
   通过 `mlir-translate` 或等价路径生成 LLVM IR。
 - 本地 gate 至少检查 LLVM IR 文本中的 entrypoint、runtime symbol declaration、参数顺序和
   metadata/program 引用；随后用 LLVM `clang++` 做 `.ll -> .o` 和
-  `runtime/wafer_cabi_shim.c -> shim.o`，再用 `tx8_deps` `riscv64-unknown-elf-gcc` 链接 kcore
-  shared object。`.ll` 不能直接交给 GCC，C shim compile 必须带 TX8 include 和 RISC-V newlib
-  sysroot。
+  `runtime/wafer_cabi_shim.c -> shim.o`，再用 repo-vendored `third_party/tx8_deps`
+  `riscv64-unknown-elf-gcc` 链接 kcore shared object。`.ll` 不能直接交给 GCC，C shim compile
+  必须带 TX8 include 和 RISC-V newlib sysroot。
 - package manifest 必须记录真实 LLVM/object program id、entrypoint 和 ABI version；auto-export gate
   必须消费当前 pipeline 产物导出 manifest 并通过 validator；C stub-only program 只允许作为历史局部
   fixture 的验证物，不能替代 default `wafer_*` shim object。

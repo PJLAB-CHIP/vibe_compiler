@@ -1,0 +1,273 @@
+#!/usr/bin/env bash
+
+# Automated setup script for TX8FW SDK distribution bundle archive
+# for POSIX-compliant host operating systems (Linux and macOS)
+
+# Utility functions
+pushd()
+{
+  command pushd "$@" > /dev/null
+}
+
+popd()
+{
+  command popd "$@" > /dev/null
+}
+
+ask_yn()
+{
+  local reply
+
+  while true; do
+    read -r -p "$1 [y/n]? " reply
+
+    case "${reply}" in
+      Y* | y*)  return 0 ;;
+      N* | n*)  return 1 ;;
+      *)        echo "Invalid choice '${reply}'" ;;
+    esac
+  done
+}
+
+assert_rc()
+{
+  if [[ $? != 0 ]]; then
+    echo "$1" 1>&2
+    exit $2
+  fi
+}
+
+# Check if command is available
+check_command()
+{
+  which $1 &> /dev/null
+  if [ $? != 0 ]; then
+    echo "TX8FW SDK setup requires '$1' to be installed and available in the PATH."
+    echo "Please install '$1 and run this script again."
+    exit $2
+  fi
+}
+
+# Check if the current installation is a full SDK with all toolchains
+check_full_sdk()
+{
+  for toolchain in ${toolchains[@]}; do
+    if [ ! -d "${toolchain}" ]; then
+      return 1
+    fi
+  done
+
+  return 0
+}
+
+# Display script usage
+usage()
+{
+  echo "Usage: $(basename $0) [-t <toolchain>] [-i] [-h] [-c]"
+  echo
+  echo "  -t <toolchain>   Install specified toolchain"
+  echo "     all           Install all toolchains"
+  echo "  -c               Register TX8FW SDK CMake package"
+  echo "  -u               Unregister all the TX8FW SDK CMake package"
+  echo
+  echo "Supported Toolchains:"
+  echo
+  for toolchain in ${toolchains[@]}; do
+    echo "  ${toolchain}"
+  done
+  echo
+  echo "If no arguments are specified, the setup script runs in the interactive"
+  echo "mode asking for user inputs."
+}
+
+# Ask for user inputs (interactive mode)
+user_prompt()
+{
+  echo "** NOTE **"
+  echo "You only need to run this script once after extracting the TX8FW SDK"
+  echo "distribution bundle archive."
+  echo
+
+  # Toolchains
+  check_full_sdk
+  if [ $? != 0 ]; then
+    ask_yn "Install toolchains for all targets"
+    if [ $? == 0 ]; then
+      inst_toolchains=(${toolchains[*]})
+    else
+      for toolchain in ${toolchains[@]}; do
+        if [ ! -d "${toolchain}" ]; then
+          ask_yn "Install '${toolchain}' toolchain" && inst_toolchains+=("${toolchain}")
+        fi
+      done
+    fi
+  fi
+
+  # Host Tools
+  ask_yn "Install host tools" && do_install_toolchain="y"
+
+  # Environment Configurations
+  ask_yn "Register TX8FW SDK CMake package" && do_cmake_pkg="y"
+  ask_yn "Unregister TX8FW SDK CMake package" && unregister_cmake_pkg="y"
+
+  echo
+}
+
+# Entry point
+pushd "$(dirname "${BASH_SOURCE[0]}")"
+
+# Initialise toolchain list
+toolchains=(
+  "Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2"
+  )
+declare  -A toolchains_map
+toolchains_map["Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2"]="Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2"
+
+# Initialise list of toolchains to install
+inst_toolchains=()
+
+# Parse arguments
+if [ $# == "0" ]; then
+  interactive="y"
+else
+  while [ "$1" != "" ]; do
+    case $1 in
+      -t)
+        shift
+        if [[ "$1" = "all" ]]; then
+          inst_toolchains=(${toolchains[*]})
+        else
+          if [[ " ${toolchains[*]} " =~ " $1 " ]]; then
+            inst_toolchains+=("$1")
+          else
+            echo "ERROR: Unknown toolchain '$1'"
+            exit 2
+          fi
+        fi
+        do_install_toolchain="y"
+        ;;
+      -c)
+        do_cmake_pkg="y"
+        ;;
+      -u)
+        unregister_cmake_pkg="y"
+        ;;
+      '-?')
+        usage
+        exit 0
+        ;;
+      '-h')
+        usage
+        exit 0
+        ;;
+      *)
+        echo "Invalid argument '$1'"
+        echo
+        usage
+        exit 1
+        ;;
+    esac
+    shift
+  done
+fi
+
+# Read bundle version from file
+version=$(<sdk_version)
+
+# Resolve host type
+case ${OSTYPE} in
+  linux-gnu*)
+    host="linux-${HOSTTYPE}"
+    ;;
+  darwin*)
+    # Bash 3.x on AArch64 Darwin sets HOSTTYPE to 'arm64'
+    if [ "${HOSTTYPE}" = "arm64" ]; then
+      HOSTTYPE="aarch64"
+    fi
+
+    host="macos-${HOSTTYPE}"
+    ;;
+  *)
+    echo "ERROR: Unsupported host operating system"
+    exit 5
+    ;;
+esac
+
+# Resolve release download base URI
+#dl_rel_base="http://www.tsingmicro.com/tx8fw-rtos/sdk-ng/releases/download/v${version}"
+#dl_toolchain_filename='toolchain_${host}_${toolchain}.tar.gz'
+dl_rel_base="http://172.50.1.66:8082/artifactory/tx8-generic-dev/tx81fw-toolchain"
+dl_toolchain_filename='${toolchain}.tar.gz'
+
+# Print banner
+echo "TX8FW SDK ${version} Setup"
+echo
+
+# Check dependencies
+check_command cmake 90
+check_command wget 91
+
+# Ask for user inputs if no argument is specified
+if [ "${interactive}" = "y" ]; then
+  interactive="y"
+  user_prompt
+fi
+
+function Install_toolchains() {
+# Install toolchains
+for item in ${inst_toolchains[@]}; do
+  toolchain=${toolchains_map["${item}"]}
+  eval toolchain_filename="${dl_toolchain_filename}"
+  toolchain_uri="${dl_rel_base}/${toolchain_filename}"
+
+  # Skip if toolchain directory already exists
+  if [ -d "${toolchain}" ]; then
+    continue
+  fi
+
+  echo "Installing '${toolchain}' toolchain ..."
+
+  # Download toolchain archive
+  wget -q --show-progress -N -O "${toolchain_filename}" "${toolchain_uri}"
+  if [ $? != 0 ]; then
+    rm -f "${toolchain_filename}"
+    echo "ERROR: Toolchain download failed"
+    exit 20
+  fi
+
+  # Extract archive
+  tar xf "${toolchain_filename}"
+  assert_rc "ERROR: Toolchain archive extraction failed" 21
+
+  # Remove archive
+  rm -f "${toolchain_filename}"
+
+  echo
+done
+}
+
+if [ "${do_install_toolchain}" = "y" ]; then
+  Install_toolchains
+fi
+
+# Register TX8FW SDK CMake package
+if [ "${do_cmake_pkg}" = "y" ]; then
+  echo "Registering TX8FW SDK CMake package ..."
+  cmake -P cmake/TX8FW_sdk_export.cmake
+  assert_rc "ERROR: CMake package registration failed" 40
+  echo
+fi
+if [ "${unregister_cmake_pkg}" = "y" ]; then
+  echo "Unregistering TX8FW SDK CMake package ..."
+  rm -rf ~/.cmake/packages/TX8FW-sdk/*
+  assert_rc "ERROR: Unregistration CMake package  failed" 40
+  echo
+fi
+
+echo "All done."
+if [ "${interactive}" = "y" ]; then
+  read -n 1 -s -r -p "Press any key to exit ..."
+  echo
+fi
+
+popd

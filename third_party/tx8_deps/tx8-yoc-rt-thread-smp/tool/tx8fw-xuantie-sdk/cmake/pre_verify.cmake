@@ -1,0 +1,60 @@
+if( (NOT DEFINED FOR_SDK_VENDOR) OR
+(NOT DEFINED FOR_SDK_PRODUCT_SERIES))
+    return()
+endif ()
+
+include(${CMAKE_CURRENT_LIST_DIR}/sdk_info.cmake)
+if(NOT SDK_VENDOR STREQUAL FOR_SDK_VENDOR)
+    return()
+endif ()
+if(NOT SDK_PRODUCT_SERIES STREQUAL FOR_SDK_PRODUCT_SERIES)
+    return()
+endif ()
+macro(tx8fw_sdk_package_message)
+    if(NOT TX8FW_FIND_QUIETLY)
+        message(${ARGN})
+    endif()
+endmacro()
+list(LENGTH TX8FW_SDK_PREFER_TOOLCHAIN components_length)
+if(components_length EQUAL 0)
+    if(NOT DEFINED PACKAGE_FIND_VERSION)
+        tx8fw_sdk_package_message(NOTICE "Using TX8FW-sdk for ${FOR_SDK_VENDOR}  ${FOR_SDK_PRODUCT_SERIES} with  default toolchain (${__DEFAULT_tx8_toolchain}).")
+    endif ()
+    set(__choose_tool_chain ${__DEFAULT_tx8_toolchain})
+else()
+    foreach(__component ${TX8FW_SDK_PREFER_TOOLCHAIN})
+        foreach(__toolchain  ${tx8_toolchain_list})
+            if( __toolchain STREQUAL __component)
+                set(__choose_tool_chain ${__toolchain})
+                break()
+            endif ()
+        endforeach()
+        if(DEFINED __choose_tool_chain)
+            break()
+        endif ()
+    endforeach()
+
+    if(DEFINED __choose_tool_chain)
+        if(NOT DEFINED PACKAGE_FIND_VERSION)
+            tx8fw_sdk_package_message(NOTICE "Using TX8FW-sdk for ${FOR_SDK_VENDOR}  ${FOR_SDK_PRODUCT_SERIES} with   toolchain (${__choose_tool_chain}).")
+        endif ()
+    endif ()
+
+endif()
+
+# Clean up temp variables
+
+
+if(NOT SDK_VENDOR STREQUAL FOR_SDK_VENDOR)
+    return()
+endif ()
+if(NOT SDK_PRODUCT_SERIES STREQUAL FOR_SDK_PRODUCT_SERIES)
+    return()
+endif ()
+
+unset(__DEFAULT_tx8_toolchain)
+unset(tx8_toolchain_list)
+unset(SDK_PRODUCT_SERIES)
+unset(SDK_VENDOR)
+
+

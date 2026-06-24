@@ -1,7 +1,7 @@
 # TX8 Deps Reverse Engineering Docs
 
 This directory contains the reverse-engineering outputs for the TX8/Wafer
-hardware stack.  The original base is `/root/dlc_dev/tx8_deps`; later passes
+hardware stack.  The original base is `third_party/tx8_deps`; later passes
 also incorporate `/root/dlc_dev/firmware_kuiper` and the copied
 `torch_txda` wheel where those artifacts clarify host runtime, driver, and
 PyTorch eager integration behavior.

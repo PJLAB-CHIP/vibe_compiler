@@ -17,7 +17,7 @@ runtime, driver, BO/BAR/ATU, PG, C2C, and completion semantics.
 
 Evidence used in this pass:
 
-- Headers: `/root/dlc_dev/tx8_deps/include/instr_def.h`,
+- Headers: `third_party/tx8_deps/include/instr_def.h`,
   `instr_adapter.h`, `instr_adapter_plat.h`, and Kcore headers under
   `tx8-yoc-rt-thread-smp/include/components/oplib_tx81/riscv/riscv/include`.
 - Static disassembly: `libinstr_tx81.a` objects

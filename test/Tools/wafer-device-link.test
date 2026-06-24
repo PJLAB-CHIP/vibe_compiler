@@ -2,16 +2,12 @@
 # RUN:   --llvm-ir %S/Inputs/minimal-wafer-abi.ll \
 # RUN:   --output %t.kernel.so \
 # RUN:   --object-output %t.kernel.o \
-# RUN:   --tx8-deps-root /opt/tx8_deps \
-# RUN:   --wafer-crt-lib-dir /opt/wafer-crt/lib \
 # RUN:   --llvm-clangxx /opt/llvm/bin/clang++ \
 # RUN:   --print-commands | FileCheck %s
 
 # RUN: not %python %wafer_src_root/tools/wafer_device_link.py \
 # RUN:   --llvm-ir %S/Inputs/missing.ll \
 # RUN:   --output %t.kernel.so \
-# RUN:   --tx8-deps-root /opt/tx8_deps \
-# RUN:   --wafer-crt-lib-dir /opt/wafer-crt/lib \
 # RUN:   --llvm-clangxx /opt/llvm/bin/clang++ \
 # RUN:   --print-commands 2>&1 | FileCheck %s --check-prefix=ERR
 
@@ -22,7 +18,7 @@
 # CHECK-SAME: -c
 # CHECK-SAME: -fPIC
 # CHECK-SAME: --target=riscv64-unknown-elf
-# CHECK-SAME: -march=rv64imfdc
+# CHECK-SAME: -march=rv64imafdc
 # CHECK-SAME: -o
 # CHECK-SAME: kernel.o
 
@@ -34,29 +30,31 @@
 # CHECK-SAME: -c
 # CHECK-SAME: -fPIC
 # CHECK-SAME: --target=riscv64-unknown-elf
-# CHECK-SAME: -march=rv64imfdc
+# CHECK-SAME: -march=rv64imafdc
 # CHECK-SAME: -mabi=lp64d
-# CHECK-SAME: --sysroot=/opt/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/riscv64-unknown-elf
+# CHECK-SAME: --sysroot={{[^ ]*}}/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/riscv64-unknown-elf
+# CHECK-SAME: -isystem
+# CHECK-SAME: {{[^ ]*}}/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/riscv64-unknown-elf/include
 # CHECK-SAME: -DUSING_RISCV
 # CHECK-SAME: -DCONFIG_NO_PLATFORM_HOOK_H
-# CHECK-SAME: -I/opt/tx8_deps/include
+# CHECK-SAME: -I{{[^ ]*}}/third_party/tx8_deps/include
 # CHECK-SAME: -o
 # CHECK-SAME: kernel.wafer_cabi_shim.o
 
 # CHECK-LABEL: link:
-# CHECK-SAME: /opt/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-gcc
+# CHECK-SAME: {{[^ ]*}}/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-gcc
 # CHECK-SAME: -shared
-# CHECK-SAME: -march=rv64imfdc
+# CHECK-SAME: -march=rv64imafdc
 # CHECK-SAME: -nostartfiles
 # CHECK-SAME: -Wl,--allow-shlib-undefined
 # CHECK-SAME: -mabi=lp64d
 # CHECK-SAME: -Wl,--no-dynamic-linker
 # CHECK-SAME: kernel.o
 # CHECK-SAME: kernel.wafer_cabi_shim.o
-# CHECK-SAME: -L/opt/wafer-crt/lib
-# CHECK-SAME: -L/opt/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/riscv64-unknown-elf/lib/rv64imfdc/lp64d
-# CHECK-SAME: -L/opt/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/lib/gcc/riscv64-unknown-elf/10.4.0/rv64imfdc/lp64d
-# CHECK-SAME: -L/opt/tx8_deps/lib
+# CHECK-SAME: -L{{[^ ]*}}/third_party/wafer_crt/lib
+# CHECK-SAME: -L{{[^ ]*}}/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/riscv64-unknown-elf/lib/rv64imafdc/lp64d
+# CHECK-SAME: -L{{[^ ]*}}/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/lib/gcc/riscv64-unknown-elf/10.4.0/rv64imafdc/lp64d
+# CHECK-SAME: -L{{[^ ]*}}/third_party/tx8_deps/lib
 # CHECK-SAME: -Wl,--start-group
 # CHECK-SAME: -lcommon_util
 # CHECK-SAME: -linstr_tx81

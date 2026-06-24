@@ -8,3 +8,7 @@
 !xla
 !xla/
 !googletest/
+!tx8_deps/
+!tx8_deps/**
+!wafer_crt/
+!wafer_crt/**

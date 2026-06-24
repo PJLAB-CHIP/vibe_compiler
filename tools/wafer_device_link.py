@@ -14,27 +14,18 @@ import sys
 
 DEFAULT_TOOLCHAIN_DIR = "Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2"
 DEFAULT_GCC_VERSION = "10.4.0"
-DEFAULT_MARCH = "rv64imfdc"
+DEFAULT_MARCH = "rv64imafdc"
 DEFAULT_MABI = "lp64d"
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+DEFAULT_TX8_DEPS_DIR = REPO_ROOT / "third_party" / "tx8_deps"
+DEFAULT_WAFER_CRT_LIB_PATH = REPO_ROOT / "third_party" / "wafer_crt" / "lib"
 DEFAULT_WAFER_SHIM_SOURCE = (
-    pathlib.Path(__file__).resolve().parents[1] / "runtime" / "wafer_cabi_shim.c"
+    REPO_ROOT / "runtime" / "wafer_cabi_shim.c"
 )
 
 
 def fail(message: str) -> None:
     raise ValueError(message)
-
-
-def resolve_required_path(
-    value: str | None, env_name: str, description: str
-) -> pathlib.Path:
-    if value:
-        return pathlib.Path(value)
-    env_value = os.environ.get(env_name)
-    if env_value:
-        return pathlib.Path(env_value)
-    option_name = env_name.lower().replace("_", "-")
-    fail(f"{description} must be provided with --{option_name} or {env_name}")
 
 
 def resolve_clangxx(value: str | None) -> str:
@@ -97,9 +88,6 @@ def resolve_tx8_include_dir(
 ) -> pathlib.Path:
     if value:
         return pathlib.Path(value)
-    env_value = os.environ.get("TX8_INCLUDE_DIR")
-    if env_value:
-        return pathlib.Path(env_value)
     return tx8_deps_root / "include"
 
 
@@ -108,9 +96,6 @@ def resolve_tx8_sysroot(
 ) -> pathlib.Path:
     if value:
         return pathlib.Path(value)
-    env_value = os.environ.get("TX8_SYSROOT")
-    if env_value:
-        return pathlib.Path(env_value)
     return tx8_deps_root / toolchain_dir_name / "riscv64-unknown-elf"
 
 
@@ -123,16 +108,12 @@ def build_commands(args: argparse.Namespace) -> tuple[list[str], list[list[str]]
 
     output = pathlib.Path(args.output)
     object_output = object_output_path(output, args.object_output)
-    tx8_deps_root = resolve_required_path(
-        args.tx8_deps_root, "TX8_DEPS_ROOT", "TX8 deps root"
-    )
+    tx8_deps_root = pathlib.Path(args.tx8_deps_root)
     tx8_include_dir = resolve_tx8_include_dir(tx8_deps_root, args.tx8_include_dir)
     tx8_sysroot = resolve_tx8_sysroot(
         tx8_deps_root, args.toolchain_dir_name, args.tx8_sysroot
     )
-    wafer_crt_lib_dir = resolve_required_path(
-        args.wafer_crt_lib_dir, "WAFER_CRT_LIB_DIR", "Wafer CRT lib dir"
-    )
+    wafer_crt_lib_dir = pathlib.Path(args.wafer_crt_lib_dir)
     toolchain_root = tx8_deps_root / args.toolchain_dir_name
     libc_dir = toolchain_root / "riscv64-unknown-elf" / "lib" / args.march / args.mabi
     libgcc_dir = (
@@ -181,6 +162,8 @@ def build_commands(args: argparse.Namespace) -> tuple[list[str], list[list[str]]
                 f"-march={args.march}",
                 f"-mabi={args.mabi}",
                 f"--sysroot={tx8_sysroot}",
+                "-isystem",
+                str(tx8_sysroot / "include"),
                 "-DUSING_RISCV",
                 "-DCONFIG_NO_PLATFORM_HOOK_H",
                 f"-I{tx8_include_dir}",
@@ -251,15 +234,11 @@ def validate_execute_inputs(
     if not tool_exists(link_cmd[0]):
         fail(f"TX8 RISC-V GCC is not executable: {link_cmd[0]}")
 
-    wafer_crt_lib_dir = resolve_required_path(
-        args.wafer_crt_lib_dir, "WAFER_CRT_LIB_DIR", "Wafer CRT lib dir"
-    )
+    wafer_crt_lib_dir = pathlib.Path(args.wafer_crt_lib_dir)
     if not wafer_crt_lib_dir.is_dir():
         fail(f"Wafer CRT lib dir does not exist: {wafer_crt_lib_dir}")
 
-    tx8_deps_root = resolve_required_path(
-        args.tx8_deps_root, "TX8_DEPS_ROOT", "TX8 deps root"
-    )
+    tx8_deps_root = pathlib.Path(args.tx8_deps_root)
     tx8_lib_dir = tx8_deps_root / "lib"
     if not tx8_lib_dir.is_dir():
         fail(f"TX8 deps lib dir does not exist: {tx8_lib_dir}")
@@ -274,6 +253,8 @@ def validate_execute_inputs(
     )
     if shim_compile_cmds and not tx8_sysroot.is_dir():
         fail(f"TX8 sysroot does not exist: {tx8_sysroot}")
+    if shim_compile_cmds and not (tx8_sysroot / "include").is_dir():
+        fail(f"TX8 sysroot include dir does not exist: {tx8_sysroot / 'include'}")
     toolchain_root = tx8_deps_root / args.toolchain_dir_name
     libc_dir = toolchain_root / "riscv64-unknown-elf" / "lib" / args.march / args.mabi
     if not libc_dir.is_dir():
@@ -320,8 +301,16 @@ def main() -> int:
     parser.add_argument("--llvm-ir", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--object-output")
-    parser.add_argument("--tx8-deps-root")
-    parser.add_argument("--wafer-crt-lib-dir")
+    parser.add_argument(
+        "--tx8-deps-root",
+        default=str(DEFAULT_TX8_DEPS_DIR),
+        help="repo-vendored TX8 dependency root",
+    )
+    parser.add_argument(
+        "--wafer-crt-lib-dir",
+        default=str(DEFAULT_WAFER_CRT_LIB_PATH),
+        help="repo-local Wafer CRT library directory",
+    )
     parser.add_argument("--llvm-clangxx")
     parser.add_argument("--tx8-gcc")
     parser.add_argument("--tx8-include-dir")

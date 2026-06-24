@@ -2,14 +2,6 @@
 
 This annex expands concrete API signatures and C struct shapes from the reversed dependency package. It is generated from current `tx8_deps` headers and `libtx8_runtime.so` symbols, then interpreted with the disassembly notes in `tx8-interface-contract.md`.
 
-Scope note: this annex is a generated/static tx8-deps artifact.  It does not
-try to list the `firmware_kuiper` KMD UAPI structs or HPGR `tx_runtime.h`
-structs; those are summarized in
-`firmware-kuiper-runtime-hardware-analysis.md`.  When interpreting fields such
-as `serial_mode`, DTE mode, `TileMappingTable`, or `TileDteCfg`, use the layer
-notes in `tx8-interface-contract.md`: wrapper/Kcore structs, KMD UAPI structs,
-and HPGR runtime structs are related but not identical contracts.
-
 ## Host Runtime Exported Signatures
 
 - `TsmAsyncRun(TsmDevice*, unsigned long)`

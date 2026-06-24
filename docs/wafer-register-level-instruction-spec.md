@@ -35,12 +35,12 @@ Triton CRT 的作用是帮助理解公开 wrapper 如何被某个 backend 调用
 
 | 优先级 | 来源 | 本文档如何使用 |
 | --- | --- | --- |
-| 1 | `/root/dlc_dev/tx8_deps/include/instr_def.h` | 寄存器结构体、`OP_INSTR_TYPE`、`OP_FUNC_CGRA`、`Data_Format`、CSR/DTE offset |
-| 2 | `/root/dlc_dev/tx8_deps/include/instr_adapter_plat.h` | Tsm wrapper 的 public signature，是 Wafer C ABI 内部可调用的 API 形态 |
-| 3 | `/root/dlc_dev/tx8_deps/include/instr_adapter.h` | 地址边界、辅助定义、`TsmExecute` 入口 |
+| 1 | `third_party/tx8_deps/include/instr_def.h` | 寄存器结构体、`OP_INSTR_TYPE`、`OP_FUNC_CGRA`、`Data_Format`、CSR/DTE offset |
+| 2 | `third_party/tx8_deps/include/instr_adapter_plat.h` | Tsm wrapper 的 public signature，是 Wafer C ABI 内部可调用的 API 形态 |
+| 3 | `third_party/tx8_deps/include/instr_adapter.h` | 地址边界、辅助定义、`TsmExecute` 入口 |
 | 4 | `docs/tx8-deps-reverse-engineering/tx8-interface-contract.md` | 静态反汇编后的 wrapper/runtime/DTE/stream/mailbox/PMU/bootparam 语义；用于修正旧 CRT 线索 |
 | 5 | `docs/tx8-deps-reverse-engineering/firmware-kuiper-runtime-hardware-analysis.md` | HPGR/KMD/UAPI、compute completion、runtime allocation/BAR/ATU、PG、driver DTE/C2C；用于修正 host runtime 和 driver 边界 |
-| 6 | `/root/dlc_dev/tx8_deps/tx8-yoc-rt-thread-smp/include/components/oplib_tx81/riscv/riscv/include/**` 和 `interface/op_fw_sim_if/peripheral/include/*.h` | Kcore DTE/FSM/stream/mailbox/PMU helper 和使用约束 |
+| 6 | `third_party/tx8_deps/tx8-yoc-rt-thread-smp/include/components/oplib_tx81/riscv/riscv/include/**` 和 `interface/op_fw_sim_if/peripheral/include/*.h` | Kcore DTE/FSM/stream/mailbox/PMU helper 和使用约束 |
 | 7 | `/root/dlc_dev/FlagTree/third_party/tsingmicro/crt/lib/Tx81` | 当前 CRT 对 wrapper 的使用方式，只作为公开实现样例、单位线索和反例，不作为 Wafer 最终 ABI 或硬件 spec |
 | 8 | `docs/official_docs/` 下硬件 PDF | 拓扑、SPM、DTE、runtime 背景 |
 
@@ -98,8 +98,8 @@ tx81 dialect op
 | tx81 op 定义 | `/root/dlc_dev/FlagTree/third_party/tsingmicro/include/tsingmicro-tx81/Dialect/IR/Tx81Ops.td` | 观察它如何组织参数；不直接照搬 dialect，也不把其 op set 当硬件 ISA |
 | tx81 -> LLVM call | `/root/dlc_dev/FlagTree/third_party/tsingmicro/lib/Conversion/Tx81ToLLVM/Tx81ToLLVM.cpp` | 观察 op 到 C ABI call 的 lowering 方式；不继承其 ABI 命名和 pass 结构 |
 | Tx81 CRT wrapper | `/root/dlc_dev/FlagTree/third_party/tsingmicro/crt/lib/Tx81/*.c` | 观察 Tsm wrapper 调用顺序、参数单位、wait 策略和问题点；不继承其 wait/allocator/runtime 策略 |
-| Tsm wrapper ABI | `/root/dlc_dev/tx8_deps/include/instr_adapter_plat.h` | Wafer C ABI 内部真正调用的接口 |
-| 发射入口 | `/root/dlc_dev/tx8_deps/include/instr_adapter.h` | `TsmExecute(void *instr)` |
+| Tsm wrapper ABI | `third_party/tx8_deps/include/instr_adapter_plat.h` | Wafer C ABI 内部真正调用的接口 |
+| 发射入口 | `third_party/tx8_deps/include/instr_adapter.h` | `TsmExecute(void *instr)` |
 
 因此可借用的只是“C ABI 内部调用 Tsm wrapper”这个分层事实，以及少量参数单位线索；不能原样复用 Tx81 CRT 命名、参数设计、同步策略、SPM allocation 或 DTE runtime。Wafer backend 应定义自己的 `wafer_*` C ABI，然后按 public Tsm wrapper/header signature 和寄存器字段实现。
 

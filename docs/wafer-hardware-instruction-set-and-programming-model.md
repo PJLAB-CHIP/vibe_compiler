@@ -27,9 +27,9 @@
 | TX8 逆向合同 | `docs/tx8-deps-reverse-engineering/tx8-interface-contract.md` | `tx8_deps` 静态反汇编后的接口语义、MMIO surface、runtime/driver 行为、DTE/stream/mailbox/PMU、bootparam/TLV | 高；当旧公开资料与反汇编口径冲突时，以该合同和 register-level spec 为准 |
 | Firmware Kuiper SDK 逆向 | `docs/tx8-deps-reverse-engineering/firmware-kuiper-runtime-hardware-analysis.md` | HPGR runtime、KMD UAPI、runtime allocation/BAR/ATU、driver DTE/C2C、PG、completion 语义、系统工具、固件加载 | 高；host runtime/driver/地址空间/PG 以该文档和 KMD 源码为准 |
 | TXDA PyTorch wheel 逆向 | `docs/tx8-deps-reverse-engineering/txda-pytorch-runtime-wheel-analysis.md` | PyTorch `PrivateUse1` eager backend、`tx_runtime`/`txdnn` 依赖、stream/event host 语义 | 中；只作为 eager/runtime integration 线索，不作为硬件 ISA 或 SPM layout 依据 |
-| 指令定义 | `/root/dlc_dev/tx8_deps/include/instr_def.h` | register packet、opcode enum、`Data_Format`，以及 `Tensor_Fmt` 等 public enum 的存在性 | 高；具体表格放 register-level spec，`Tensor_Fmt` 不作为 Wafer layout 模型 |
-| C intrinsic adapter | `/root/dlc_dev/tx8_deps/include/instr_adapter_plat.h`, `instr_adapter.h`, `instr_operator.h` | public intrinsic API、地址边界、`TsmExecute` 入口 | 高；具体 wrapper 表放 register-level spec |
-| Kcore/DTE/SPM 头文件 | `/root/dlc_dev/tx8_deps/tx8-yoc-rt-thread-smp/include/components/oplib_tx81/riscv/riscv/include/**` 以及 `interface/op_fw_sim_if/peripheral/include/*.h` | DTE、stream FSM、mailbox、PMU、Kcore SPM 预留区、tile SPM base API | 高 |
+| 指令定义 | `third_party/tx8_deps/include/instr_def.h` | register packet、opcode enum、`Data_Format`，以及 `Tensor_Fmt` 等 public enum 的存在性 | 高；具体表格放 register-level spec，`Tensor_Fmt` 不作为 Wafer layout 模型 |
+| C intrinsic adapter | `third_party/tx8_deps/include/instr_adapter_plat.h`, `instr_adapter.h`, `instr_operator.h` | public intrinsic API、地址边界、`TsmExecute` 入口 | 高；具体 wrapper 表放 register-level spec |
+| Kcore/DTE/SPM 头文件 | `third_party/tx8_deps/tx8-yoc-rt-thread-smp/include/components/oplib_tx81/riscv/riscv/include/**` 以及 `interface/op_fw_sim_if/peripheral/include/*.h` | DTE、stream FSM、mailbox、PMU、Kcore SPM 预留区、tile SPM base API | 高 |
 | Triton backend dialect/lowering/CRT | `/root/dlc_dev/FlagTree/third_party/tsingmicro` | 现有 backend 对 layout、SPM allocation、LLVM call ABI、wrapper 调用方式的线索和反例 | 中低。只能作为公开实现样例，不能视为硬件 spec、golden path 或 Wafer 最终 ABI |
 
 使用公开 Triton/CRT 代码时只取两类信息：一是 public Tsm wrapper 在某个实现中的调用样例和参数单位线索；二是现有实现暴露出的错误抽象、过度同步、allocator/layout/DTE runtime 问题。Wafer 的硬件约束和 ABI 设计以官方文档、public header、Tsm wrapper signature 和本文已固化的 layout/SPM/DTE 规则为准。

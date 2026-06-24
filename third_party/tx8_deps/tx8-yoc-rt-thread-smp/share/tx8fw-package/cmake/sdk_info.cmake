@@ -1,0 +1,2 @@
+set(TX8FW_PRODUCT_SERIES "RTThread")
+

@@ -1,0 +1,62 @@
+
+
+config TEST_K_CONFIG
+    bool "TEST_K_CONFIG"
+
+
+config CPU_XUANTIE_RISCV
+	bool "CPU_XUANTIE_RISCV of xuantie"
+
+config XUANTIE_CPU_NAME
+	string "the cpu name of xuantie"
+	default "unknown"
+
+config CPU_XUANTIE_RISCV
+	bool
+
+config BOARD_XUANTIE_XIAOHUI_C908
+	bool "RISCV64 XUANTIE XIAOHUI FPGA target"
+	select SOC_XUANTIE_RISCV_DUMMY_XIAOHUI
+	select 64BIT
+
+
+config LINKER_USE_RELAX
+	bool "Linker optimization of call addressing"
+	default y
+	help
+	  This option performs global optimizations that become possible when the linker resolves
+	  addressing in the program, such as relaxing address modes and synthesizing new
+	  instructions in the output object file. For ld and lld, this enables `--relax`.
+	  On platforms where this is not supported, `--relax' is accepted, but ignored.
+	  Disabling it can reduce performance, as the linker is no longer able to substiture long /
+	  in-effective jump calls to shorter / more effective instructions.
+
+config 64BIT
+	bool
+	help
+	  This option tells the build system that the target system is
+	  using a 64-bit address space, meaning that pointer and long types
+	  are 64 bits wide. This option is selected by arch/$ARCH/Kconfig,
+	  soc/**/Kconfig, or boards/**/Kconfig and the user should generally
+	  avoid modifying it.
+
+
+config SMP
+	int ""
+	default 1
+
+config NR_CPUS
+	int ""
+	default 2
+
+config UART_BASE_ADDR
+	hex ""
+	default  0x006c0200
+
+config TX81_MHU2
+	bool ""
+	default  n
+
+config TX81_KCORE
+    bool ""
+    default  y

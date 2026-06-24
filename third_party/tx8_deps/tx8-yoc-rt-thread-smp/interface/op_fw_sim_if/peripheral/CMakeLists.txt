@@ -1,0 +1,5 @@
+if(USING_RISCV)
+    target_include_directories(zephyr_interface INTERFACE include)
+else ()
+    target_include_directories(op_fw_interface INTERFACE include)
+endif ()

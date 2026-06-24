@@ -1,6 +1,6 @@
 # TX8 Deps 逆向参考：面向生产级 Compiler 与 Runtime
 
-本文档只把 `/root/dlc_dev/tx8_deps` 本身作为依据：公开头文件、CMake/pkgconfig、linker script、version 文件、`nm`/`readelf`/`objdump` 反汇编和动态库导出符号。之前生成或手写过的 docs 不作为 ground truth；如果本文结论和旧文档冲突，以这里列出的逆向证据为准。
+本文档只把 `third_party/tx8_deps` 本身作为依据：公开头文件、CMake/pkgconfig、linker script、version 文件、`nm`/`readelf`/`objdump` 反汇编和动态库导出符号。之前生成或手写过的 docs 不作为 ground truth；如果本文结论和旧文档冲突，以这里列出的逆向证据为准。
 
 阅读入口已收敛到 [tx8-interface-contract.md](tx8-interface-contract.md)。本文档保留为 tx8-deps-only 的证据底稿和函数级索引，避免在实现时把反汇编来源、符号覆盖、长表格细节塞回主合同。`firmware_kuiper` 的 HPGR/KMD/BO/BAR/ATU/PG/completion 结论不并入本文的 ground-truth 范围，统一看 [firmware-kuiper-runtime-hardware-analysis.md](firmware-kuiper-runtime-hardware-analysis.md)。
 
@@ -1692,7 +1692,7 @@ PMU 计数器由 kcore 侧寄存器窗口和 host 侧 `ProcessProfData`/dyn TLV 
 
 ### 18.14 覆盖审计边界
 
-这份文档的依据是 `/root/dlc_dev/tx8_deps` 中 headers、static/shared libraries 的符号、反汇编、字符串和调用关系；旧文档只作为对照，不作为结论来源。
+这份文档的依据是 `third_party/tx8_deps` 中 headers、static/shared libraries 的符号、反汇编、字符串和调用关系；旧文档只作为对照，不作为结论来源。
 
 机器可重复的符号覆盖矩阵已生成：
 

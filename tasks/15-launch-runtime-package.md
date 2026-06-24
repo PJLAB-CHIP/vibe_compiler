@@ -119,7 +119,7 @@ V0 采用已经可运行的 TX8 RISC-V 两段式工具链 profile：
 LLVM IR (.ll)
   -> LLVM clang++ RISC-V compile
        kernel.o
-  -> tx8_deps riscv64-unknown-elf-gcc link
+  -> repo-vendored tx8_deps riscv64-unknown-elf-gcc link
        kernel.so
 ```
 
@@ -128,7 +128,7 @@ LLVM IR (.ll)
 ```sh
 clang++ kernel.ll -O2 -c -fPIC \
   --target=riscv64-unknown-elf \
-  -march=rv64imfdc \
+  -march=rv64imafdc \
   -o kernel.o
 ```
 
@@ -138,24 +138,25 @@ TX8 public headers 和 RISC-V newlib sysroot；这和 `.ll` 输入不同：
 ```sh
 clang++ -x c runtime/wafer_cabi_shim.c -O2 -c -fPIC \
   --target=riscv64-unknown-elf \
-  -march=rv64imfdc -mabi=lp64d \
-  --sysroot=<tx8-toolchain>/riscv64-unknown-elf \
+  -march=rv64imafdc -mabi=lp64d \
+  --sysroot=third_party/tx8_deps/<tx8-toolchain>/riscv64-unknown-elf \
+  -isystem third_party/tx8_deps/<tx8-toolchain>/riscv64-unknown-elf/include \
   -DUSING_RISCV -DCONFIG_NO_PLATFORM_HOOK_H \
-  -I<tx8-deps-root>/include \
+  -Ithird_party/tx8_deps/include \
   -o kernel.wafer_cabi_shim.o
 ```
 
-第二段用 `tx8_deps` 中的 RISC-V GCC 链接 kcore shared object：
+第二段用 repo-vendored `third_party/tx8_deps` 中的 RISC-V GCC 链接 kcore shared object：
 
 ```sh
-riscv64-unknown-elf-gcc -shared -march=rv64imfdc -O2 \
+riscv64-unknown-elf-gcc -shared -march=rv64imafdc -O2 \
   -nostartfiles -Wl,--allow-shlib-undefined \
   -mabi=lp64d -Wl,--no-dynamic-linker \
   kernel.o kernel.wafer_cabi_shim.o \
-  -L<wafer-crt-lib-dir> \
-  -L<tx8-toolchain>/riscv64-unknown-elf/lib/rv64imfdc/lp64d \
-  -L<tx8-toolchain>/lib/gcc/riscv64-unknown-elf/10.4.0/rv64imfdc/lp64d \
-  -L<tx8-deps-root>/lib \
+  -Lthird_party/wafer_crt/lib \
+  -Lthird_party/tx8_deps/<tx8-toolchain>/riscv64-unknown-elf/lib/rv64imafdc/lp64d \
+  -Lthird_party/tx8_deps/<tx8-toolchain>/lib/gcc/riscv64-unknown-elf/10.4.0/rv64imafdc/lp64d \
+  -Lthird_party/tx8_deps/lib \
   -Wl,--start-group \
   -lcommon_util -linstr_tx81 -llibc_stub -lvr \
   -Wl,--end-group \
@@ -165,10 +166,11 @@ riscv64-unknown-elf-gcc -shared -march=rv64imfdc -O2 \
 ```
 
 这里 `.ll -> .o` 不能交给 GCC；GCC 只负责 final link。`libcommon_util.a`、
-`libinstr_tx81.a` 和 `liblibc_stub.a` 来自 `tx8_deps/lib`；`libvr.a` 属于 Wafer CRT 依赖，需要由
-构建环境显式提供，不假设存在于裸 `tx8_deps` root。V0 profile 固定为 `rv64imfdc/lp64d`，因为这是
-当前可运行路径使用的组合；`-mcpu=c908` 或其它 Xuantie multilib profile 需要单独的 artifact
-兼容性和板端验证后再升级成新 profile。
+`libinstr_tx81.a` 和 `liblibc_stub.a` 来自 repo-vendored `third_party/tx8_deps/lib`；`libvr.a`
+属于 Wafer CRT 依赖，默认从 `third_party/wafer_crt/lib` 查找，不假设存在于裸 `tx8_deps`
+root，也不从外部机器路径隐式查找。V0 profile 固定为 `rv64imafdc/lp64d`，因为这是当前
+vendored Xuantie toolchain 实际提供的 64-bit double-float multilib；`-mcpu=c908` 或其它 Xuantie
+multilib profile 需要单独的 artifact 兼容性和板端验证后再升级成新 profile。
 
 `-Wl,--allow-shlib-undefined` 只允许 kcore shared object 保留 runtime/loader 解析的外部符号；它不是
 证明缺失 `wafer_*` C ABI shim 可以被忽略的信号。当前 device-code gate 默认编译并链接
@@ -329,7 +331,7 @@ Runtime adapter 必须把 stub shielding 做成显式 validation。不能把 “
 
 V0 验证：
 
-- device-code gate 命令形态固定：LLVM `clang++` 负责 `.ll -> .o`，`tx8_deps`
+- device-code gate 命令形态固定：LLVM `clang++` 负责 `.ll -> .o`，repo-vendored `tx8_deps`
   `riscv64-unknown-elf-gcc` 负责 link `kernel.so`，并显式链接 `common_util`、`instr_tx81`、
   `libc_stub` 和 Wafer CRT `vr`。
 - package manifest `device_code` 记录 kcore shared object artifact，不再把 instruction-sequence

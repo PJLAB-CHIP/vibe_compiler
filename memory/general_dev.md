@@ -121,6 +121,13 @@
 - 依赖一致性检查入口是 `tools/check_deps.py`；默认检查固定版本、importer registration hook、
   public source submodule checkout HEAD、importer Python package pin 和 core/frontend/runtime/test
   tool dependency layering。
+- Device-code local link gate 默认不再读取外部 machine-local TX8 deps root。TX8 headers、
+  libs、sysroot 和 Xuantie `riscv64-unknown-elf-gcc` 来自 repo-vendored
+  `third_party/tx8_deps`；Wafer CRT 默认从 `third_party/wafer_crt/lib` 查找 `libvr.a`。当前 vendored
+  Xuantie toolchain 的可用 64-bit double-float multilib 是 `rv64imafdc/lp64d`。
+  用 LLVM `clang++` 编译 `runtime/wafer_cabi_shim.c` 时，`--sysroot` 不会在当前 bare-metal
+  配置下自动加入 newlib C headers，必须显式传
+  `-isystem third_party/tx8_deps/<toolchain>/riscv64-unknown-elf/include`。
 - Wafer IR 文件组织检查入口是 `tools/check_ir_organization.py --root .`；它检查 `WaferOps.td` 只作为
   TableGen 聚合入口、ODS/verifier/test 按 `Tensor`、`Tile`、`Resource`、`Instr`、`Runtime`
   和 `Common` IR 层组织，并检查 `Conversion` 不再被 `WaferTransforms` 直接 owning。

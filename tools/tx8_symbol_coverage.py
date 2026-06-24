@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Iterable
 
 
-TX8_ROOT_DEFAULT = Path("/root/dlc_dev/tx8_deps")
+TX8_ROOT_DEFAULT = Path("third_party/tx8_deps")
 TX8_DOC_DIR = Path("docs/tx8-deps-reverse-engineering")
 DEFAULT_CSV = TX8_DOC_DIR / "tx8-symbol-coverage-matrix.csv"
 DEFAULT_MD = TX8_DOC_DIR / "tx8-symbol-coverage-matrix.md"
@@ -298,7 +298,7 @@ def collect_symbols(root: Path, include_toolchain: bool) -> list[SymbolRow]:
 def write_csv(path: Path, rows: Iterable[SymbolRow]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
+        writer = csv.writer(f, lineterminator="\n")
         writer.writerow(["library", "member", "symbol", "kind", "category", "scope", "note"])
         for row in rows:
             writer.writerow(
@@ -420,7 +420,7 @@ def write_markdown(
         table(["library", "member", "symbol", "scope"], sample_rows(rows, "ABI")),
         "",
     ]
-    path.write_text("\n".join(md) + "\n", encoding="utf-8")
+    path.write_text("\n".join(md).rstrip() + "\n", encoding="utf-8")
 
 
 def parse_args() -> argparse.Namespace:

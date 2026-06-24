@@ -9,7 +9,7 @@ import subprocess
 from pathlib import Path
 
 
-ROOT = Path("/root/dlc_dev/tx8_deps")
+ROOT = Path("third_party/tx8_deps")
 OUT = Path("docs/tx8-deps-reverse-engineering/tx8-api-struct-contract-annex.md")
 
 INSTR_ADAPTER_PLAT = ROOT / "include/instr_adapter_plat.h"
