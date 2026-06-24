@@ -354,12 +354,10 @@ module {
 // CHECK-LABEL: wafer.group_to_tile_region group @collective_reduce_scatter_group#0
 // CHECK: wafer.tile.load
 // CHECK-SAME: memref<8xf32, #wafer.memory<ddr, tensor>>
-// CHECK: wafer.tile.extract_slice
-// CHECK-SAME: offsets = array<i64: 0>
-// CHECK-SAME: sizes = array<i64: 4>
 // CHECK: memref.alloc
 // CHECK-SAME: memref<4xf32, #wafer.memory<spm, tensor>>
 // CHECK: wafer.tile.reduce_scatter <sum>
+// CHECK-SAME: axis = 0 : i64
 // CHECK-SAME: bytes = 16 : i64
 // CHECK-SAME: group_size = 2 : i64
 // CHECK-SAME: local_rank = 0 : i64

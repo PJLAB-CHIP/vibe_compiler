@@ -40,10 +40,8 @@ module {
 // CHECK-SAME: local_rank = 1 : i64
 // CHECK-SAME: rank_group = array<i64: 0, 1>
 // CHECK-LABEL: wafer.group_to_tile_region group @reduce_scatter_rank_one#0
-// CHECK: wafer.tile.extract_slice
-// CHECK-SAME: offsets = array<i64: 4>
-// CHECK-SAME: sizes = array<i64: 4>
 // CHECK: wafer.tile.reduce_scatter <sum>
+// CHECK-SAME: axis = 0 : i64
 // CHECK-SAME: group_size = 2 : i64
 // CHECK-SAME: local_rank = 1 : i64
 // CHECK-SAME: rank_group = array<i64: 0, 1>

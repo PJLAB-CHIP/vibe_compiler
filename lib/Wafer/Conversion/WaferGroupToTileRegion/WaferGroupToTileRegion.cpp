@@ -473,54 +473,6 @@ private:
     return mlir::success();
   }
 
-  mlir::FailureOr<mlir::Value> materializeReduceScatterSlot(
-      LinalgExtCollectiveReduceScatterOp op,
-      const WaferLinalgExtCollectiveInfo &info, int64_t localRank,
-      mlir::Value input, mlir::OpBuilder &builder) {
-    auto inputTensorType =
-        mlir::dyn_cast<mlir::RankedTensorType>(op.getInputs().front().getType());
-    auto resultTensorType =
-        mlir::dyn_cast<mlir::RankedTensorType>(op.getResult(0).getType());
-    if (!inputTensorType || !resultTensorType)
-      return failValue("reduce_scatter tensors must be ranked");
-    if (!info.hasAxis || info.axis < 0 ||
-        info.axis >= resultTensorType.getRank())
-      return failValue("reduce_scatter materialization requires valid axis");
-    if (inputTensorType.getRank() != resultTensorType.getRank())
-      return failValue("reduce_scatter input and result rank mismatch");
-
-    llvm::SmallVector<int64_t, 4> offsets(resultTensorType.getRank(), 0);
-    llvm::SmallVector<int64_t, 4> sizes(resultTensorType.getShape().begin(),
-                                        resultTensorType.getShape().end());
-    llvm::SmallVector<int64_t, 4> strides(resultTensorType.getRank(), 1);
-    for (int64_t dim = 0; dim < resultTensorType.getRank(); ++dim) {
-      int64_t inputDim = inputTensorType.getDimSize(dim);
-      int64_t resultDim = resultTensorType.getDimSize(dim);
-      if (mlir::ShapedType::isDynamic(inputDim) ||
-          mlir::ShapedType::isDynamic(resultDim))
-        return failValue("reduce_scatter materialization requires static "
-                         "tensor shapes");
-      if (dim == info.axis) {
-        int64_t expectedInputDim =
-            resultDim * static_cast<int64_t>(info.rankGroup.size());
-        if (inputDim != expectedInputDim)
-          return failValue("reduce_scatter axis size must equal result axis "
-                           "size times group_size");
-        offsets[dim] = localRank * resultDim;
-        continue;
-      }
-      if (inputDim != resultDim)
-        return failValue("reduce_scatter non-axis dimensions must match");
-    }
-
-    auto slot = builder.create<MoveExtractSliceOp>(
-        op.getLoc(), makeSPMMemRefType(resultTensorType, MemLayout::Tensor),
-        input, mlir::DenseI64ArrayAttr::get(builder.getContext(), offsets),
-        mlir::DenseI64ArrayAttr::get(builder.getContext(), sizes),
-        mlir::DenseI64ArrayAttr::get(builder.getContext(), strides));
-    return slot.getResult();
-  }
-
   mlir::LogicalResult convertReduceScatter(
       LinalgExtCollectiveReduceScatterOp op,
       const WaferLinalgExtCollectiveInfo &info, mlir::OpBuilder &builder) {
@@ -539,23 +491,25 @@ private:
     mlir::FailureOr<int64_t> localRank = getCollectiveLocalRank(info);
     if (mlir::failed(input) || mlir::failed(localRank))
       return mlir::failure();
+    if (!info.hasAxis)
+      return fail("reduce_scatter materialization requires an axis");
 
-    mlir::FailureOr<mlir::Value> localSlot =
-        materializeReduceScatterSlot(op, info, *localRank, *input, builder);
-    if (mlir::failed(localSlot))
-      return mlir::failure();
-
-    auto slotType = mlir::cast<mlir::MemRefType>((*localSlot).getType());
+    auto resultTensorType =
+        mlir::dyn_cast<mlir::RankedTensorType>(op.getResult(0).getType());
+    if (!resultTensorType)
+      return fail("reduce_scatter result must be ranked");
+    auto slotType = makeSPMMemRefType(resultTensorType, MemLayout::Tensor);
     auto recvBuffer =
         builder.create<mlir::memref::AllocOp>(op.getLoc(), slotType);
     mlir::FailureOr<int64_t> bytes =
-        getCompactByteSize(*localSlot, "reduce_scatter local slot");
+        getCompactByteSize(recvBuffer.getResult(), "reduce_scatter local slot");
     if (mlir::failed(bytes))
       return mlir::failure();
 
     auto kindAttr = ComputeReduceKindAttr::get(builder.getContext(), *kind);
     auto result = builder.create<CommReduceScatterOp>(
-        op.getLoc(), slotType, kindAttr, *localSlot, recvBuffer.getResult(),
+        op.getLoc(), slotType, kindAttr, *input, recvBuffer.getResult(),
+        builder.getI64IntegerAttr(info.axis),
         builder.getI64IntegerAttr(*localRank),
         builder.getI64IntegerAttr(static_cast<int64_t>(info.rankGroup.size())),
         mlir::DenseI64ArrayAttr::get(builder.getContext(), info.rankGroup),

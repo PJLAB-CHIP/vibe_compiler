@@ -58,16 +58,39 @@ class Wafer_CommReduceCollectiveOp<string mnemonic> : Wafer_Op<mnemonic, [
       "$kind $input `using` $recv_buffer attr-dict `:` functional-type(operands, results)";
 }
 
-def Wafer_CommReduceScatterOp : Wafer_CommReduceCollectiveOp<"tile.reduce_scatter"> {
-  let summary = "target-abstract fixed-size ring reduce-scatter slot request";
+def Wafer_CommReduceScatterOp : Wafer_Op<"tile.reduce_scatter", [
+    DeclareOpInterfaceMethods<WaferLayoutOpInterface>,
+    DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
+    MemoryEffects<[MemRead<Wafer_SPMResource>,
+                   MemWrite<Wafer_SPMResource>,
+                   MemWrite<Wafer_ComputeResource>,
+                   MemWrite<Wafer_CommunicationResource>]>
+  ]> {
+  let summary = "target-abstract fixed-size reduce-scatter full-input request";
   let description = [{
-    `wafer.tile.reduce_scatter` represents one local scatter slot of a
-    collective reduction. `rank_group` contains logical execution ranks and
-    `local_rank` is the group-local index. Physical endpoints are derived from
-    the execution mesh and target topology during lowering. Lowering must
-    express communication as p2p ring steps and express local accumulation with
-    compute ops; reduction semantics are not hidden in DTE protocol.
+    `wafer.tile.reduce_scatter` represents a rank-local reduce-scatter request
+    over the full local input buffer. The result and `recv_buffer` have the
+    current rank's local scatter-slot shape. `axis` selects the scatter
+    dimension in the full input; along that axis, input size must equal result
+    size times `group_size`. `rank_group` contains logical execution ranks and
+    `local_rank` is the group-local index. Lowering rewrites this op into
+    explicit p2p DTE steps plus local accumulation; reduction semantics are not
+    hidden in DTE protocol.
   }];
+  let arguments = (ins
+    Wafer_ComputeReduceKindAttr:$kind,
+    Wafer_AnySPMMemRef:$input,
+    Wafer_AnySPMMemRef:$recv_buffer,
+    I64Attr:$axis,
+    I64Attr:$local_rank,
+    I64Attr:$group_size,
+    DenseI64ArrayAttr:$rank_group,
+    I64Attr:$bytes
+  );
+  let results = (outs Wafer_AnySPMMemRef:$result);
+  let hasVerifier = 1;
+  let assemblyFormat =
+      "$kind $input `using` $recv_buffer attr-dict `:` functional-type(operands, results)";
 }
 
 def Wafer_CommAllReduceOp : Wafer_CommReduceCollectiveOp<"tile.all_reduce"> {

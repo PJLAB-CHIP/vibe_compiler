@@ -1471,23 +1471,25 @@ inferAllGatherAxis(mlir::PatternRewriter &rewriter, CommAllGatherOp op,
 }
 
 static mlir::FailureOr<mlir::Value>
-createAllGatherSlotView(mlir::PatternRewriter &rewriter, CommAllGatherOp op,
-                        mlir::MemRefType localType, mlir::Value gatherBuffer,
-                        int64_t axis, int64_t slot,
-                        std::string *failureReason) {
+createAxisSlotView(mlir::PatternRewriter &rewriter, mlir::Location loc,
+                   mlir::Operation *op, mlir::MemRefType slotType,
+                   mlir::Value fullBuffer, int64_t axis, int64_t slot,
+                   std::string *failureReason, llvm::StringRef opLabel) {
   llvm::SmallVector<mlir::OpFoldResult> offsets;
   llvm::SmallVector<mlir::OpFoldResult> sizes;
   llvm::SmallVector<mlir::OpFoldResult> strides;
-  offsets.reserve(localType.getRank());
-  sizes.reserve(localType.getRank());
-  strides.reserve(localType.getRank());
+  offsets.reserve(slotType.getRank());
+  sizes.reserve(slotType.getRank());
+  strides.reserve(slotType.getRank());
 
-  for (int64_t dim = 0; dim < localType.getRank(); ++dim) {
-    int64_t size = localType.getDimSize(dim);
+  for (int64_t dim = 0; dim < slotType.getRank(); ++dim) {
+    int64_t size = slotType.getDimSize(dim);
     if (size == mlir::ShapedType::kDynamic)
       return failFailureOr<mlir::Value>(
           rewriter, op, failureReason,
-          "tile.all_gather slot view requires static local shape");
+          llvm::Twine(opLabel)
+              .concat(" slot view requires static local shape")
+              .str());
     int64_t offset = dim == axis ? slot * size : 0;
     offsets.push_back(rewriter.getIndexAttr(offset));
     sizes.push_back(rewriter.getIndexAttr(size));
@@ -1495,8 +1497,7 @@ createAllGatherSlotView(mlir::PatternRewriter &rewriter, CommAllGatherOp op,
   }
 
   return rewriter
-      .create<mlir::memref::SubViewOp>(op.getLoc(), gatherBuffer, offsets,
-                                       sizes, strides)
+      .create<mlir::memref::SubViewOp>(loc, fullBuffer, offsets, sizes, strides)
       .getResult();
 }
 
@@ -1586,10 +1587,9 @@ public:
     auto getSlot = [&](int64_t slot) -> mlir::FailureOr<mlir::Value> {
       if (slots[slot])
         return slots[slot];
-      mlir::FailureOr<mlir::Value> view =
-          createAllGatherSlotView(rewriter, op, localType,
-                                  op.getGatherBuffer(), *axis, slot,
-                                  failureReason);
+      mlir::FailureOr<mlir::Value> view = createAxisSlotView(
+          rewriter, op.getLoc(), op, localType, op.getGatherBuffer(), *axis,
+          slot, failureReason, "tile.all_gather");
       if (mlir::failed(view))
         return mlir::failure();
       slots[slot] = *view;
@@ -1630,6 +1630,149 @@ public:
     }
 
     rewriter.eraseOp(op);
+    return mlir::success();
+  }
+
+private:
+  std::string *failureReason;
+};
+
+class ReduceScatterLowering
+    : public mlir::OpRewritePattern<CommReduceScatterOp> {
+public:
+  ReduceScatterLowering(mlir::MLIRContext *context, std::string *failureReason)
+      : mlir::OpRewritePattern<CommReduceScatterOp>(context),
+        failureReason(failureReason) {}
+
+  mlir::LogicalResult
+  matchAndRewrite(CommReduceScatterOp op,
+                  mlir::PatternRewriter &rewriter) const final {
+    auto inputType = mlir::dyn_cast<mlir::MemRefType>(op.getInput().getType());
+    auto recvType =
+        mlir::dyn_cast<mlir::MemRefType>(op.getRecvBuffer().getType());
+    auto resultType =
+        mlir::dyn_cast<mlir::MemRefType>(op.getResult().getType());
+    if (!inputType || !recvType || !resultType)
+      return failPattern(rewriter, op, failureReason,
+                         "tile.reduce_scatter lowering requires memref "
+                         "buffers");
+    if (recvType != resultType)
+      return failPattern(rewriter, op, failureReason,
+                         "tile.reduce_scatter lowering requires matching "
+                         "recv/result buffer types");
+
+    MemoryAttr inputMemory = wafer::getWaferMemoryAttr(inputType);
+    MemoryAttr recvMemory = wafer::getWaferMemoryAttr(recvType);
+    MemoryAttr resultMemory = wafer::getWaferMemoryAttr(resultType);
+    if (!inputMemory || !recvMemory || !resultMemory ||
+        inputMemory.getSpace() != MemorySpace::SPM ||
+        recvMemory.getSpace() != MemorySpace::SPM ||
+        resultMemory.getSpace() != MemorySpace::SPM ||
+        inputMemory.getLayout() != MemLayout::Tensor ||
+        recvMemory.getLayout() != MemLayout::Tensor ||
+        resultMemory.getLayout() != MemLayout::Tensor)
+      return failPattern(rewriter, op, failureReason,
+                         "tile.reduce_scatter lowering requires tensor SPM "
+                         "buffers");
+
+    int64_t groupSize = op.getGroupSizeAttr().getInt();
+    int64_t localRank = op.getLocalRankAttr().getInt();
+    llvm::ArrayRef<int64_t> rankGroup = op.getRankGroupAttr().asArrayRef();
+    if (groupSize <= 1 || localRank < 0 || localRank >= groupSize ||
+        static_cast<int64_t>(rankGroup.size()) != groupSize)
+      return failPattern(rewriter, op, failureReason,
+                         "tile.reduce_scatter lowering requires valid rank "
+                         "facts");
+
+    int64_t axis = op.getAxisAttr().getInt();
+    if (axis < 0 || axis >= inputType.getRank() ||
+        inputType.getRank() != resultType.getRank())
+      return failPattern(rewriter, op, failureReason,
+                         "tile.reduce_scatter lowering requires valid axis");
+    for (int64_t dim = 0; dim < inputType.getRank(); ++dim) {
+      int64_t inputDim = inputType.getDimSize(dim);
+      int64_t resultDim = resultType.getDimSize(dim);
+      if (inputDim == mlir::ShapedType::kDynamic ||
+          resultDim == mlir::ShapedType::kDynamic)
+        return failPattern(rewriter, op, failureReason,
+                           "tile.reduce_scatter lowering requires static "
+                           "buffer shapes");
+      if (dim == axis) {
+        std::optional<int64_t> expectedInputDim =
+            checkedMulI64(resultDim, groupSize);
+        if (!expectedInputDim || inputDim != *expectedInputDim)
+          return failPattern(rewriter, op, failureReason,
+                             "tile.reduce_scatter input axis size must equal "
+                             "result axis size times group_size");
+        continue;
+      }
+      if (inputDim != resultDim)
+        return failPattern(rewriter, op, failureReason,
+                           "tile.reduce_scatter non-axis dimensions must "
+                           "match");
+    }
+
+    mlir::FailureOr<ComputeElementwiseKindAttr> accumulationKind =
+        getAccumulationElementwiseKind(rewriter, op, op.getKindAttr(),
+                                       failureReason, "tile.reduce_scatter");
+    if (mlir::failed(accumulationKind))
+      return mlir::failure();
+
+    mlir::FailureOr<mlir::Value> accumulator = createDestAlloc(
+        op.getLoc(), op.getResult().getType(), rewriter, op, failureReason);
+    if (mlir::failed(accumulator))
+      return mlir::failure();
+
+    llvm::SmallVector<mlir::Value> inputSlots(groupSize);
+    auto getInputSlot = [&](int64_t slot) -> mlir::FailureOr<mlir::Value> {
+      if (inputSlots[slot])
+        return inputSlots[slot];
+      mlir::FailureOr<mlir::Value> view = createAxisSlotView(
+          rewriter, op.getLoc(), op, resultType, op.getInput(), axis, slot,
+          failureReason, "tile.reduce_scatter");
+      if (mlir::failed(view))
+        return mlir::failure();
+      inputSlots[slot] = *view;
+      return inputSlots[slot];
+    };
+
+    mlir::FailureOr<mlir::Value> localSlot = getInputSlot(localRank);
+    if (mlir::failed(localSlot))
+      return mlir::failure();
+    if (mlir::failed(createContiguousSPMCopy(
+            rewriter, op.getLoc(), op, *localSlot, *accumulator, failureReason,
+            "tile.reduce_scatter accumulator init")))
+      return mlir::failure();
+    rewriter.create<SyncLocalDrainOp>(op.getLoc());
+
+    int64_t bytes = op.getBytesAttr().getInt();
+    for (int64_t distance = 1; distance < groupSize; ++distance) {
+      int64_t sendSlotIndex = (localRank + distance) % groupSize;
+      int64_t recvRankIndex = (localRank + groupSize - distance) % groupSize;
+      mlir::FailureOr<mlir::Value> sendSlot = getInputSlot(sendSlotIndex);
+      if (mlir::failed(sendSlot))
+        return mlir::failure();
+
+      auto send = rewriter.create<InstrDTESendOp>(
+          op.getLoc(), rewriter.getType<mlir::async::TokenType>(), *sendSlot,
+          rewriter.getI64IntegerAttr(rankGroup[sendSlotIndex]),
+          rewriter.getI64IntegerAttr(bytes));
+      auto recv = rewriter.create<InstrDTERecvOp>(
+          op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
+          op.getRecvBuffer(),
+          rewriter.getI64IntegerAttr(rankGroup[recvRankIndex]),
+          rewriter.getI64IntegerAttr(bytes));
+      llvm::SmallVector<mlir::Value, 2> tokens{send.getToken(),
+                                               recv.getToken()};
+      rewriter.create<InstrDTEWaitOp>(op.getLoc(), tokens);
+
+      llvm::SmallVector<mlir::Value, 2> inputs{*accumulator,
+                                               op.getRecvBuffer()};
+      rewriter.create<InstrElementwiseOp>(op.getLoc(), *accumulationKind,
+                                          inputs, *accumulator);
+    }
+
+    rewriter.replaceOp(op, *accumulator);
     return mlir::success();
   }
 
@@ -1736,24 +1879,6 @@ private:
   std::string *failureReason;
 };
 
-template <typename OpT>
-class UnsupportedCommLowering : public mlir::OpRewritePattern<OpT> {
-public:
-  UnsupportedCommLowering(mlir::MLIRContext *context,
-                          std::string *failureReason)
-      : mlir::OpRewritePattern<OpT>(context), failureReason(failureReason) {}
-
-  mlir::LogicalResult
-  matchAndRewrite(OpT op, mlir::PatternRewriter &rewriter) const final {
-    return failPattern(rewriter, op, failureReason,
-                       "tile.reduce_scatter lowering requires explicit "
-                       "scatter-slot p2p schedule support");
-  }
-
-private:
-  std::string *failureReason;
-};
-
 static void configureTileRegionToInstrTarget(mlir::ConversionTarget &target) {
   target.addLegalDialect<mlir::arith::ArithDialect, mlir::async::AsyncDialect,
                          mlir::func::FuncDialect, mlir::memref::MemRefDialect,
@@ -1763,12 +1888,11 @@ static void configureTileRegionToInstrTarget(mlir::ConversionTarget &target) {
                     InstrElementwiseOp, InstrReduceOp, InstrConvertOp,
                     InstrGemmOp, InstrDTESendOp, InstrDTERecvOp,
                     InstrDTEWaitOp>();
-  target.addIllegalOp<StorageLoadOp, StorageStoreOp, LayoutMaterializeOp,
-                      ComputeFillOp, ComputeGemmOp, ComputeElementwiseOp,
-                      ComputeReduceOp, MoveCopyOp, MoveExtractSliceOp,
-                      MoveInsertSliceOp, MoveTransposeOp, MoveBroadcastOp,
-                      ViewReshapeOp, CommAllGatherOp, CommReduceScatterOp,
-                      CommAllReduceOp>();
+  target.addIllegalOp<
+      StorageLoadOp, StorageStoreOp, LayoutMaterializeOp, ComputeFillOp,
+      ComputeGemmOp, ComputeElementwiseOp, ComputeReduceOp, MoveCopyOp,
+      MoveExtractSliceOp, MoveInsertSliceOp, MoveTransposeOp, MoveBroadcastOp,
+      ViewReshapeOp, CommAllGatherOp, CommReduceScatterOp, CommAllReduceOp>();
   target.markUnknownOpDynamicallyLegal([](mlir::Operation *) { return true; });
 }
 
@@ -1783,9 +1907,8 @@ static void populateTileRegionToInstrPatterns(mlir::RewritePatternSet &patterns,
                                                               failureReason);
   patterns.add<FillLowering>(context);
   patterns.add<AllGatherLowering>(context, failureReason);
+  patterns.add<ReduceScatterLowering>(context, failureReason);
   patterns.add<AllReduceLowering>(context, failureReason);
-  patterns.add<UnsupportedCommLowering<CommReduceScatterOp>>(context,
-                                                             failureReason);
 }
 
 struct ConvertTileRegionToInstrPass

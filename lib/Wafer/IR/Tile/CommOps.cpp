@@ -172,10 +172,93 @@ static mlir::LogicalResult verifyCommReduceCollective(
 }
 
 mlir::LogicalResult CommReduceScatterOp::verify() {
-  return verifyCommReduceCollective(
-      getOperation(), "reduce_scatter", getInput(), getRecvBuffer(),
-      getResult().getType(), getLocalRankAttr(), getGroupSizeAttr(),
-      getRankGroupAttr(), getBytesAttr());
+  mlir::Operation *op = getOperation();
+  std::optional<mlir::RankedTensorType> inputTensor =
+      getLogicalTensorType(getInput().getType());
+  std::optional<mlir::RankedTensorType> recvTensor =
+      getLogicalTensorType(getRecvBuffer().getType());
+  std::optional<mlir::RankedTensorType> resultTensor =
+      getLogicalTensorType(getResult().getType());
+  if (!inputTensor || !recvTensor || !resultTensor)
+    return op->emitOpError("reduce_scatter")
+           << " expects Wafer buffer operands and result";
+  if (getRecvBuffer().getType() != getResult().getType())
+    return op->emitOpError("reduce_scatter")
+           << " recv buffer and result types must match";
+  if (!hasWaferMemorySpace(getInput().getType(), MemorySpace::SPM) ||
+      !hasWaferMemorySpace(getRecvBuffer().getType(), MemorySpace::SPM) ||
+      !hasWaferMemorySpace(getResult().getType(), MemorySpace::SPM))
+    return op->emitOpError("reduce_scatter")
+           << " buffers must use SPM memory space";
+
+  int64_t groupSize = getGroupSizeAttr().getInt();
+  if (groupSize <= 1)
+    return op->emitOpError("reduce_scatter")
+           << " group_size must be greater than one";
+  int64_t localRank = getLocalRankAttr().getInt();
+  if (localRank < 0 || localRank >= groupSize)
+    return op->emitOpError("reduce_scatter")
+           << " local_rank must be within the collective group";
+  auto rankGroup = getRankGroupAttr().asArrayRef();
+  if (static_cast<int64_t>(rankGroup.size()) != groupSize)
+    return op->emitOpError("reduce_scatter")
+           << " rank_group size must equal group_size";
+  llvm::SmallSet<int64_t, 8> seenRanks;
+  for (int64_t rank : rankGroup) {
+    if (rank < 0)
+      return op->emitOpError("reduce_scatter")
+             << " rank_group entries must be non-negative";
+    if (!seenRanks.insert(rank).second)
+      return op->emitOpError("reduce_scatter")
+             << " rank_group entries must be unique";
+  }
+  if (mlir::failed(verifyLogicalRanksWithinExecutionMesh(
+          op, rankGroup, "reduce_scatter rank_group")))
+    return mlir::failure();
+
+  int64_t axis = getAxisAttr().getInt();
+  if (axis < 0 || axis >= inputTensor->getRank())
+    return op->emitOpError("reduce_scatter")
+           << " axis must be within the input rank";
+  if (inputTensor->getRank() != resultTensor->getRank())
+    return op->emitOpError("reduce_scatter")
+           << " input and result ranks must match";
+
+  for (int64_t dim = 0; dim < inputTensor->getRank(); ++dim) {
+    int64_t inputDim = inputTensor->getDimSize(dim);
+    int64_t resultDim = resultTensor->getDimSize(dim);
+    if (inputDim == mlir::ShapedType::kDynamic ||
+        resultDim == mlir::ShapedType::kDynamic)
+      return op->emitOpError("reduce_scatter")
+             << " buffer shapes must be static";
+    if (dim == axis) {
+      int64_t expectedInputDim = 0;
+      if (!checkedMul(resultDim, groupSize, expectedInputDim))
+        return op->emitOpError("reduce_scatter")
+               << " input axis size is not representable";
+      if (inputDim != expectedInputDim)
+        return op->emitOpError("reduce_scatter")
+               << " input axis size must equal result axis size times "
+                  "group_size";
+      continue;
+    }
+    if (inputDim != resultDim)
+      return op->emitOpError("reduce_scatter")
+             << " non-axis dimensions must match";
+  }
+
+  int64_t bytes = getBytesAttr().getInt();
+  if (bytes <= 0)
+    return op->emitOpError("reduce_scatter") << " byte count must be positive";
+  std::optional<int64_t> resultBytes = getCompactTensorByteSize(*resultTensor);
+  if (!resultBytes)
+    return op->emitOpError("reduce_scatter")
+           << " result compact byte size is not representable";
+  if (*resultBytes != bytes)
+    return op->emitOpError("reduce_scatter")
+           << " byte count must match result compact byte size";
+
+  return mlir::success();
 }
 
 static void collectCommReduceCollectiveLayoutRequirements(
@@ -223,9 +306,21 @@ static void collectCommReduceCollectiveResourceEffects(
 
 void CommReduceScatterOp::collectWaferResourceEffects(
     llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
-  collectCommReduceCollectiveResourceEffects(getInput(), getRecvBuffer(),
-                                             getResult(),
-                                             getBytesAttr().getInt(), effects);
+  appendResourceEffect(effects, WaferResourceKind::SPM,
+                       WaferResourceAccess::Read, WaferValueRole::Operand, 0,
+                       getCompactByteSizeOrUnknown(getInput().getType()));
+  appendResourceEffect(effects, WaferResourceKind::SPM,
+                       WaferResourceAccess::Read, WaferValueRole::Operand, 1,
+                       getBytesAttr().getInt());
+  appendResourceEffect(effects, WaferResourceKind::SPM,
+                       WaferResourceAccess::Write, WaferValueRole::Result, 0,
+                       getCompactByteSizeOrUnknown(getResult().getType()));
+  appendResourceEffect(effects, WaferResourceKind::Communication,
+                       WaferResourceAccess::Issue, WaferValueRole::None, 0,
+                       getBytesAttr().getInt());
+  appendResourceEffect(effects, WaferResourceKind::Compute,
+                       WaferResourceAccess::Issue, WaferValueRole::None, 0,
+                       getCompactByteSizeOrUnknown(getResult().getType()));
 }
 
 mlir::LogicalResult CommReduceScatterOp::verifyWaferResourceEffectContract() {

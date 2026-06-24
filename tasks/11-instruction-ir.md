@@ -469,7 +469,7 @@ V0 mapping：
 | `scf.if` / `scf.for` | preserve the structured control-flow op; recursively legalize executable target-abstract ops in each nested region; keep scalar and memref yields explicit |
 | `wafer.tile.all_gather` | V0 requires matching `tensor/ntensor` SPM layouts, infers the unique gather axis from compact local/gather buffer shapes, copies the local chunk into the local gather slot with `wafer.instr.gather_scatter`, inserts `wafer.instr.local_drain` before DTE reads that locally-written slot, then emits fixed-size ring `wafer.instr.dte_send` / `dte_recv` / `dte_wait` steps over slot `memref.subview` values |
 | `wafer.tile.all_reduce` | V0 requires matching `tensor` SPM buffers and sum/max/min reduce kind；it creates an accumulator and a forward staging buffer, copies the local input into both with `wafer.instr.gather_scatter`, drains the local copies, then emits fixed-size ring `wafer.instr.dte_send` / `dte_recv` / `dte_wait` steps that forward the most recently received partial and accumulate into the result with `wafer.instr.elementwise` |
-| `wafer.tile.reduce_scatter` | pending scatter-slot dataflow repair；the accepted schedule must know which scatter slot each p2p step sends to which destination rank before it can rewrite to `wafer.instr.dte_send` / `dte_recv` / `dte_wait` plus explicit local accumulation |
+| `wafer.tile.reduce_scatter` | V0 requires a full `tensor` SPM input whose scatter `axis` size is `group_size * result_axis_size`, plus matching local-slot recv/result buffers；it creates a local accumulator from the current rank slot, then emits phase-ordered fixed-size `wafer.instr.dte_send` / `dte_recv` / `dte_wait` steps where phase `d` sends input slot `(local_rank + d) mod group_size` to that slot owner and receives this rank's local-slot contribution from `(local_rank - d) mod group_size`, accumulating each received contribution with `wafer.instr.elementwise` |
 
 R3.2d.4 已覆盖 static movement descriptor splitting / packing：
 
@@ -492,9 +492,10 @@ R3.2d V0 communication coverage：
   `tensor` SPM buffer type 和 sum/max/min reduce kind 均可验证时 materialize fixed-size unicast
   ring schedule。该 lowering 不把 reduction 藏进 DTE side effect；每个 step 都先 wait DTE token，
   再用 `wafer.instr.elementwise` 对 accumulator 和 recv staging buffer 做本地累计。
-- `wafer.tile.reduce_scatter` 仍不能直接 lower。当前 buffer-level op 只携带当前 rank 的 local scatter
-  slot；标准 reduce-scatter schedule 需要表达每个目标 rank 的 scatter slot contribution，否则不同
-  slot 会被错误地互相 reduce。后续应先扩展 / 修正 tile-region 层的数据流表示，再展开 p2p schedule。
+- `wafer.tile.reduce_scatter` 使用 full input + local slot result 表示。tile-region lowering 不再预先把
+  input 截成当前 rank 的 slot；instruction lowering 从 full input 的 per-target slot `memref.subview`
+  直接派生 p2p send source，并在 wait 后显式累计 recv contribution。该 V0 是 phase-ordered
+  all-to-owner unicast schedule，不保存全局 plan attr。
 
 R3.2d may generate multiple instruction ops for a single target-abstract movement op, but it must not write a
 global schedule attr. The instruction sequence is the region body itself.
@@ -526,7 +527,7 @@ diagnostics to the closed-loop planner or debug pass, but rejected instruction I
   runtime ABI call to be legal.
 
 Diagnostics should mention the source op and the missing legality fact, for example:
-`tile.reduce_scatter lowering requires explicit scatter-slot p2p schedule support` or
+`tile.reduce_scatter lowering requires tensor SPM buffers` or
 `tile.broadcast lowering requires static positive iteration shape`.
 
 ## 10. Verifier Contract

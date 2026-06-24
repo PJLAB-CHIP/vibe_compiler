@@ -321,13 +321,13 @@ sum/max/min 本地累计。下一步发送的不是 accumulator，而是刚收�
 accumulated 的 contribution。该 IR 仍只保存 logical peer、buffer view、local drain 和 token/wait，
 不写 physical endpoint、DTE id、SPM offset 或 packet field。
 
-`wafer.tile.reduce_scatter` 当前仍只作为 buffer-level placeholder 保留。现有 group-to-tile-region
-materialization 只按 group-local `local_rank` 从 full input 中 materialize 当前 rank 的 local scatter
-slot；这不足以生成正确 p2p schedule，因为标准 reduce-scatter 需要每个 rank 向目标 rank 发送对应目标
-slot 的 local contribution。直接把这个 local slot op 当成 all-reduce 来 lower 会把不同 scatter slot
-混在一起 reduce。因此 reduce-scatter 的下一步是修正 tile-region 层表示，让 full input / per-target slot
-关系进入 IR；只有 accepted schedule 明确每个 p2p step 的 source slot、dest slot 和 local accumulation
-后，才能 rewrite 成 `wafer.instr.dte_*`。
+`wafer.tile.reduce_scatter` 使用 full input + local slot result 表示。group-to-tile-region materialization
+保留 full input SPM buffer，并让 tile collective 显式携带 scatter `axis`；recv/result buffer 是当前
+rank 的 local slot shape。V0 instruction lowering 使用 phase-ordered all-to-owner unicast schedule：
+phase `d` 中，rank `r` 从 full input 取 slot `(r + d) mod group_size` 发送给该 slot owner，同时从
+rank `(r - d) mod group_size` 接收本 rank local slot 的 contribution，wait 后用
+`wafer.instr.elementwise` 累计到 local accumulator。该 schedule 不把 reduction 藏进 DTE side effect，
+也不保存全局 plan attr；每个 source slot、peer、recv buffer、wait token 和 accumulation 都在 IR body 中。
 P6.6 的早期 StableHLO normalization pass 会把 single-result StableHLO `all_reduce` /
 `reduce_scatter` 直接降到这些 collective-level op；该路径和 all-gather 一样已经退出主线，
 不应作为 tensor group/tiling 输入。主线恢复后，应先由 `wafer.linalg_ext.collective.*`
@@ -470,8 +470,12 @@ wafer.instr.dte_wait %send1, %recv1
   `wafer.instr.local_drain` + `wafer.instr.dte_send` / `wafer.instr.dte_recv` /
   `wafer.instr.dte_wait` + `wafer.instr.elementwise` accumulation，并通过 named pipeline +
   SPM planning lit 覆盖 token/lifetime 消费。
-- `collective_permute`、`all_to_all` 和 `reduce_scatter` 的 p2p lowering 仍依赖后续 buffer slot /
-  token lifetime / per-target scatter-slot 表达，不是当前完成项。
+- tile-region-to-instr 使用 full input + local slot `wafer.tile.reduce_scatter` 表示生成 explicit
+  phase-ordered all-to-owner unicast `wafer.instr.dte_send` / `wafer.instr.dte_recv` /
+  `wafer.instr.dte_wait` + `wafer.instr.elementwise` accumulation，并通过 named pipeline + SPM
+  planning lit 覆盖 token/lifetime 消费。
+- `collective_permute` 和 `all_to_all` 的 p2p lowering 仍依赖后续 buffer slot / token lifetime /
+  per-target slot 表达，不是当前完成项。
 - Direct DTE send/recv/wait golden path 和 error diagnostic 属于历史 bring-up 证据；Direct DTE
   issue/wait form、resource allocation 和 ABI/LLVM emission 需要从 committed instruction IR
   和 accepted endpoint/resource facts 重新建立。

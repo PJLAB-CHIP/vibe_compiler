@@ -215,8 +215,12 @@
 - tile-region-to-instr 的 V0 all-reduce lowering 使用 full-buffer ring reduce：先把 input copy 到
   accumulator 和 forward staging buffer，`local_drain` 后每步 DTE send forward buffer、recv 到 staging
   buffer、wait token，再用 `wafer.instr.elementwise` 做 sum/max/min accumulation；下一步 forward 的是刚收到的
-  partial，不是 accumulator。`reduce_scatter` 不能复用当前 slot-only `wafer.tile.reduce_scatter` 硬套这个逻辑；
-  它需要 full input / per-target scatter-slot contribution 进入 IR 后再 lower。
+  partial，不是 accumulator。
+- tile-region-to-instr 的 V0 reduce-scatter lowering 使用 full input + local slot result 表示：
+  group-to-tile-region 不再预切当前 rank slot，`wafer.tile.reduce_scatter` 显式携带 scatter `axis`，
+  instruction lowering 从 full input 派生 per-target slot `memref.subview`，按 phase-ordered
+  all-to-owner unicast 生成 `wafer.instr.dte_send` / `dte_recv` / `dte_wait`，wait 后用
+  `wafer.instr.elementwise` 把 recv contribution 累计到 local accumulator。
 - 用户级 compiler target 名称统一为 `wafer`，Wafer IR target attr 的唯一主线 spelling 是
   `#wafer.target<wafer>`。`tx8` / `tx81` 只保留在硬件、依赖逆向和外部历史命名事实里，不能作为
   compiler target、pipeline 名称或测试 fixture 的主线命名。
