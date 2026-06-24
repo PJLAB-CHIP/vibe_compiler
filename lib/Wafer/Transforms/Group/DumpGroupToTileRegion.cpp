@@ -50,7 +50,8 @@ struct DumpGroupToTileRegionPass
       mlir::OwningOpRef<mlir::ModuleOp> loweredModule;
       std::string failureReason;
       if (mlir::failed(lowerGroupToTileRegionModule(group, loweredModule,
-                                                    &failureReason))) {
+                                                    &failureReason,
+                                                    logicalRank))) {
         llvm::errs() << "wafer.group_to_tile_region group " << labelOs.str()
                      << "\n";
         llvm::errs() << "  failure "

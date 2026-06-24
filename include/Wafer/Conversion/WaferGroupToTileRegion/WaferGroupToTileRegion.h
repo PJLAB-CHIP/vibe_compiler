@@ -17,14 +17,15 @@ namespace wafer {
 mlir::LogicalResult
 lowerGroupToTileRegionModule(GroupOp group,
                              mlir::OwningOpRef<mlir::ModuleOp> &module,
-                             std::string *failureReason = nullptr);
+                             std::string *failureReason = nullptr,
+                             int64_t currentLogicalRank = 0);
 
 mlir::LogicalResult lowerCandidateGroupToTileRegionModule(
     GroupOp group, llvm::ArrayRef<int64_t> candidateTileOffsets,
     llvm::ArrayRef<int64_t> candidateTileSizes,
     llvm::ArrayRef<int64_t> candidateReductionTileSizes,
     mlir::OwningOpRef<mlir::ModuleOp> &module,
-    std::string *failureReason = nullptr);
+    std::string *failureReason = nullptr, int64_t currentLogicalRank = 0);
 
 void dumpGroupToTileRegionModule(mlir::ModuleOp module,
                                  llvm::StringRef groupLabel,

@@ -213,6 +213,39 @@ module {
     return %0 : tensor<4xf32>
   }
 
+  func.func @collective_all_gather_group(%input: tensor<4xf32>,
+                                         %out: tensor<8xf32>)
+      -> tensor<8xf32> {
+    %0 = wafer.group ins(%input : tensor<4xf32>) outs(%out : tensor<8xf32>) {
+    ^bb0(%arg0: tensor<4xf32>, %arg1: tensor<8xf32>):
+      %ag = wafer.linalg_ext.collective.all_gather
+          ins(%arg0 : tensor<4xf32>)
+          outs(%arg1 : tensor<8xf32>)
+          {axis = 0 : i64, rank_group = array<i64: 0, 1>}
+          -> tensor<8xf32>
+      wafer.group.yield %ag : tensor<8xf32>
+    } : tensor<8xf32>
+    return %0 : tensor<8xf32>
+  }
+
+  func.func @collective_reduce_scatter_group(%input: tensor<8xf32>,
+                                             %out: tensor<4xf32>)
+      -> tensor<4xf32> {
+    %0 = wafer.group ins(%input : tensor<8xf32>) outs(%out : tensor<4xf32>) {
+    ^bb0(%arg0: tensor<8xf32>, %arg1: tensor<4xf32>):
+      %rs = wafer.linalg_ext.collective.reduce_scatter
+          ins(%arg0 : tensor<8xf32>)
+          outs(%arg1 : tensor<4xf32>)
+          {
+          ^bb0(%lhs: f32, %rhs: f32):
+            %sum = arith.addf %lhs, %rhs : f32
+            wafer.linalg_ext.collective.yield %sum : f32
+          } {axis = 0 : i64, rank_group = array<i64: 0, 1>} -> tensor<4xf32>
+      wafer.group.yield %rs : tensor<4xf32>
+    } : tensor<4xf32>
+    return %0 : tensor<4xf32>
+  }
+
   func.func @static_slice_support_op(%input: tensor<8xf32>, %out: tensor<4xf32>)
       -> tensor<4xf32> {
     %0 = wafer.group ins(%input : tensor<8xf32>) outs(%out : tensor<4xf32>) {
@@ -297,7 +330,41 @@ module {
 // CHECK-SAME: permutation = array<i64: 1, 0>
 // CHECK: wafer.tile.store
 // CHECK-LABEL: wafer.group_to_tile_region group @collective_group#0
-// CHECK: failure collective lowering requires endpoint/local-rank facts
+// CHECK: wafer.tile.load
+// CHECK-SAME: memref<4xf32, #wafer.memory<ddr, tensor>>
+// CHECK: memref.alloc
+// CHECK-SAME: memref<4xf32, #wafer.memory<spm, tensor>>
+// CHECK: wafer.tile.all_reduce <sum>
+// CHECK-SAME: bytes = 16 : i64
+// CHECK-SAME: group_size = 2 : i64
+// CHECK-SAME: local_rank = 0 : i64
+// CHECK-SAME: rank_group = array<i64: 0, 1>
+// CHECK: wafer.tile.store
+// CHECK-LABEL: wafer.group_to_tile_region group @collective_all_gather_group#0
+// CHECK: wafer.tile.load
+// CHECK-SAME: memref<4xf32, #wafer.memory<ddr, tensor>>
+// CHECK: memref.alloc
+// CHECK-SAME: memref<8xf32, #wafer.memory<spm, tensor>>
+// CHECK: wafer.tile.all_gather
+// CHECK-SAME: bytes = 16 : i64
+// CHECK-SAME: group_size = 2 : i64
+// CHECK-SAME: local_rank = 0 : i64
+// CHECK-SAME: rank_group = array<i64: 0, 1>
+// CHECK: wafer.tile.store
+// CHECK-LABEL: wafer.group_to_tile_region group @collective_reduce_scatter_group#0
+// CHECK: wafer.tile.load
+// CHECK-SAME: memref<8xf32, #wafer.memory<ddr, tensor>>
+// CHECK: wafer.tile.extract_slice
+// CHECK-SAME: offsets = array<i64: 0>
+// CHECK-SAME: sizes = array<i64: 4>
+// CHECK: memref.alloc
+// CHECK-SAME: memref<4xf32, #wafer.memory<spm, tensor>>
+// CHECK: wafer.tile.reduce_scatter <sum>
+// CHECK-SAME: bytes = 16 : i64
+// CHECK-SAME: group_size = 2 : i64
+// CHECK-SAME: local_rank = 0 : i64
+// CHECK-SAME: rank_group = array<i64: 0, 1>
+// CHECK: wafer.tile.store
 // CHECK-LABEL: wafer.group_to_tile_region group @static_slice_support_op#0
 // CHECK: memref.subview
 // CHECK-SAME: [0] [4] [1]

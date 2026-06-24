@@ -64,33 +64,31 @@ PyTorch/XLA StableHLO Wafer program directory
 
 ## 当前 Active
 
-**Buffer-level communication collective materialization**
+**p2p Direct DTE instruction schedule lowering**
 
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  `wafer.linalg_ext.collective.*` tensor collective handoff、selected group tile facts、
-  memref-backed `wafer.tile.region` / SPM storage values、`wafer.execution.mesh` 和
-  `wafer.target.topology`。
+  `wafer.tile.*` buffer-level collective、memref-backed `wafer.tile.region` / SPM storage values、
+  `wafer.execution.mesh` 和 `wafer.target.topology`。
 - Current stage responsibility:
-  在 tile-region / SPM storage 层 materialize collective 的 buffer-level 语义：为 tiled tensor
-  collective 生成 verifier-legal `wafer.tile.*` collective op，显式表达 local buffer、
-  temporary/recv buffer、rank_group、local_rank、group_size 和 byte count。
+  从 tile collective 的 `rank_group`、`local_rank`、buffer、byte count 和 topology/execution-mesh
+  endpoint view 派生 p2p Direct DTE schedule，并把 schedule 显式 rewrite 成
+  `wafer.instr.dte_send` / `wafer.instr.dte_recv` / `wafer.instr.dte_wait` 与必要的 local reduce/sync IR。
 - Output artifact / IR:
-  含 `wafer.tile.all_gather` / `wafer.tile.reduce_scatter` /
-  `wafer.tile.all_reduce` 的 tile-region IR；仍不选择 p2p schedule，不写 SPM/DDR offset。
+  含 explicit Direct DTE send/recv/wait 和 local reduce/sync 的 instruction-level tile-region IR；
+  仍不写 SPM/DDR offset、DTE resource id、packet field 或 ABI/runtime handle。
 - Downstream consumer:
-  p2p Direct DTE instruction schedule lowering、SPM memory planning、DDR memory planning、
-  ABI/LLVM lowering、package manifest 和 runtime adapter。
+  SPM memory planning、DDR memory planning、ABI/LLVM lowering、package manifest 和 runtime adapter。
 - User-level driver / named pipeline:
   `wafer-opt` program pipeline；局部 pass 只作为实现索引，不能成为长期合同。
 - Explicit non-goals:
-  不实现 p2p DTE schedule，不做 SPM/DDR offset assignment，不生成 ABI call、packet、object、
-  package 或 runtime allocation object。
+  不做 SPM/DDR offset assignment，不生成 ABI call、packet、object、package 或 runtime allocation
+  object；不使用 raw DTE non-unicast helper 作为 correctness path。
 - Completion gate:
-  从已有 StableHLO / LinalgExt collective handoff 和 group/tile-region 链路重放到
-  verifier-legal `wafer.tile.*` collective；后续 DTE lowering 能直接消费该 IR，相关 lit、
-  unit test 和组织检查通过。
+  从已有 StableHLO / LinalgExt collective handoff、group/tile-region 和 `wafer.tile.*` collective
+  链路重放到 verifier-legal `wafer.instr.dte_*` schedule；SPM memory planning 能直接消费通信
+  token/lifetime/buffer demand，相关 lit、unit test 和组织检查通过。
 ```
 
 ## 已可依赖的上游边界
@@ -101,7 +99,7 @@ Pipeline position:
 | Target topology / execution mesh | `wafer.target.topology` regular card/tile grid、default single-card 4x4 / 16 tile materialization、`wafer.execution.mesh` all_available rank-domain policy、SPMD default seed consumption、unavailable endpoint verifier |
 | Local compute normalization | Linalg/Tensor/SCF/Arith/Math local compute + verifier-legal `wafer.linalg_ext.collective.*` handoff |
 | Logical group | verifier-legal logical `wafer.group` |
-| Tile-region / instruction lowering | memref-backed `wafer.tile.region` + instruction-level `wafer.instr.*` over Wafer-tagged memrefs；compute/movement 路径可用，DTE communication instruction form 正在补入同一 candidate pipeline |
+| Tile-region / instruction lowering | memref-backed `wafer.tile.region` + instruction-level `wafer.instr.*` over Wafer-tagged memrefs；compute/movement 路径可用，top-level single-result all_gather / reduce_scatter / all_reduce 已能 materialize 成 `wafer.tile.*` collective；DTE p2p schedule 正在补入同一 candidate pipeline |
 | DDR tile-view / SPM / DDR planning | candidate DDR `memref.subview` tile operands、accepted SPM offset facts、accepted DDR offset facts、structured failure diagnostics；compute/movement 路径可用，communication staging / token lifetime 必须在 comm lowering 后进入同一 planning gate |
 | Candidate selection / committed materialization | selected candidate committed into main IR；rejected plans and cost traces do not enter IR |
 
@@ -113,8 +111,8 @@ Pipeline position:
 | program parameter shard verification | done | partitioned StableHLO program + parameter shard metadata + `wafer.execution.mesh` | program verifier 校验 rank coverage、slice bounds、payload shape/dtype 和 execution mesh rank count；core IR 不 materialize per-rank slice table |
 | rank-endpoint cleanup | done | legacy rank->tile transition op / pass / package schema | op、pass、pipeline、comm verifier dependency 和 manifest endpoint schema 已删除；需要 block id 时只保留薄 launch/block binding，且不复制 rank->tile |
 | IR naming and communication layer cleanup | done | 已收敛 naming / instruction-family 设计 | `wafer.linalg_ext.collective.*`、`wafer.instr.dte_*`、instruction family + `dte` 全链路一致；文档、代码、测试和 pipeline 不再保留旧合同 |
-| buffer-level communication collective materialization | active | tiled `wafer.linalg_ext.collective.*` + unplaced SPM buffer/local-rank facts + execution mesh rank domain | `wafer.tile.*` collective verifier-legal；buffer、bytes、rank_group、local_rank 和 effect 边界来自 IR，不选择 p2p schedule；发生在 SPM memory planning 前 |
-| p2p Direct DTE instruction schedule lowering | pending | `wafer.tile.*` collective + topology/execution-mesh derived endpoint view | explicit `wafer.instr.dte_send` / `dte_recv` / `dte_wait` schedule verifier-legal；peer/route 从 topology/execution mesh 查询，不保存 side table；结果作为 SPM memory planning 输入 |
+| buffer-level communication collective materialization | done | tiled `wafer.linalg_ext.collective.*` + unplaced SPM buffer/local-rank facts + execution mesh rank domain | top-level single-result `all_gather` / `reduce_scatter` / `all_reduce` materialize 成 verifier-legal `wafer.tile.*` collective；buffer、bytes、rank_group、local_rank 和 effect 边界来自 IR，不选择 p2p schedule；发生在 SPM memory planning 前 |
+| p2p Direct DTE instruction schedule lowering | active | `wafer.tile.*` collective + topology/execution-mesh derived endpoint view | explicit `wafer.instr.dte_send` / `dte_recv` / `dte_wait` schedule verifier-legal；peer/route 从 topology/execution mesh 查询，不保存 side table；结果作为 SPM memory planning 输入 |
 | comm-aware memory planning gate | pending | instruction-level compute/movement + `wafer.instr.dte_*` over unplaced SPM memrefs | communication staging、token lifetime、local drain / DTE wait 和 buffer reuse 被 SPM planning 消费；accepted SPM/DDR offset facts 覆盖 comm demand |
 | ABI / LLVM lowering | pending | committed instruction IR + accepted SPM/DDR offset facts + topology/execution-mesh + program parameter shard metadata/resource view + launch-block binding + communication/sync lowering | LLVM dialect call sequence 或 `wafer_*` C ABI / packet builder input；按需重算 launch/resource view，固定参数单位、address domain、wait/completion policy 和 ABI version |
 | object + package manifest | pending | ABI/LLVM artifact + committed IR + topology/execution-mesh + program parameter shard metadata/resource view | object/program id、entrypoint、ABI version 和 IR-derived package manifest；endpoint/resource/constant metadata 由同一 resource view analysis 从 IR 重算 |
@@ -133,15 +131,12 @@ Pipeline position:
 
 ## 下一步
 
-1. 实现 buffer-level communication collective materialization：让
-   `wafer.linalg_ext.collective.*` 在 bufferization / tile-region / SPM storage 后 materialize 成
-   `wafer.tile.*` collective，并用端到端 lit 覆盖该路径；该路径必须在 SPM memory planning 前完成。
-2. 实现 p2p Direct DTE instruction schedule lowering：让 `wafer.tile.*` collective 从
+1. 实现 p2p Direct DTE instruction schedule lowering：让 `wafer.tile.*` collective 从
    topology/execution mesh 派生 peer endpoint view，并 rewrite 成 explicit
    `wafer.instr.dte_send` / `dte_recv` / `dte_wait`，使 communication staging、buffer lifetime 和
    wait token 被 SPM memory planning 消费。
-3. 让 comm-aware candidate 继续通过 SPM offset assignment 和 DDR offset assignment；
+2. 让 comm-aware candidate 继续通过 SPM offset assignment 和 DDR offset assignment；
    Direct DTE resource id / concrete address / ABI emission 只能在 accepted offsets 后派生。
-4. 再让 ABI/LLVM 和 package manifest 从 topology/execution mesh、program parameter shard metadata /
+3. 再让 ABI/LLVM 和 package manifest 从 topology/execution mesh、program parameter shard metadata /
    resource view、薄 launch/block binding、accepted offsets、committed instruction IR 和 communication/sync
    IR 派生 launch-visible metadata。

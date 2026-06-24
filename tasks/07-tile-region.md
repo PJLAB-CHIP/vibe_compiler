@@ -133,9 +133,10 @@ Pipeline position:
   FileCheck、conversion pass、dump pass 和主线 pipeline 覆盖 R2.4/R3.1 已能产出的 Wafer V0 硬件可承载 local
   compute/movement/view family：DDR memref load/store boundary、layout materialization、DDR/SPM
   `memref.alloc`、tile-local allocation、fill、GEMM、elementwise/relation、native reduce、passthrough
-  broadcast/transpose/copy、tensor slice movement、static reshape view、tile-region 内 `scf.if` /
-  `scf.for` 递归 lowering 和 function-boundary One-Shot bufferization。硬件 V0 无承载或当前 IR 缺
-  endpoint/local-rank / runtime ABI 事实时才允许结构化 failure。
+  broadcast/transpose/copy、tensor slice movement、static reshape view、top-level
+  `wafer.linalg_ext.collective.*` 到 `wafer.tile.*` collective materialization、tile-region 内
+  `scf.if` / `scf.for` 递归 lowering 和 function-boundary One-Shot bufferization。硬件 V0 无承载或当前
+  IR 缺 runtime ABI / nested collective 事实时才允许结构化 failure。
 ```
 
 ### 2.2 Target Coverage Matrix
@@ -162,7 +163,8 @@ table 补协议。
 | `tensor.expand_shape` / `tensor.collapse_shape` | static element-count-preserving reshape lower 到 `wafer.tile.reshape` | supported for static shape-only reshape | `wafer.tile.reshape` 表达 canonical linear element order 保持不变、result multi-index 按新 shape 重新解释的 logical reindex；tile-region 层 op 本身无 write effect，但下游若当前 physical layout 不能 alias 该 logical reindex，必须 materialize 成 explicit movement，不能用 reshape 逃避 physical layout。 |
 | `scf.if` | 保留为 tile-region 内 structured control-flow；condition 使用 scalar SSA，then/else body 递归 lower，tensor result / yield value 以 SPM memref result 穿过 `scf.if` | supported for single-block `scf.if` with supported nested ops | 分支内局部 value 不泄漏；只有 `scf.yield` result 重新进入父 scope。外部 scalar 必须作为 `wafer.group` input 或在 group 内定义，不能绕过 `IsolatedFromAbove`。不在 R3.2c 展开分支或选择硬件 branch 指令。 |
 | `scf.for` | 保留为 tile-region 内 structured loop；lb/ub/step 使用 scalar SSA，iter_args 中的 tensor value 转为 SPM memref loop-carried value，body 递归 lower，`scf.yield` 传回 SPM memref/scalar | supported for single-block `scf.for` with supported nested ops | loop-carried tensor 只表达 tile-local buffer dataflow，不做 unroll、trip-count planning、SPM offset planning 或 hardware loop/branch instruction selection。并行 loop / while / execute_region 不在本阶段放开。 |
-| `wafer.linalg_ext.collective.*` | R3.2a/R3.2b 可收集 demand/layout；R3.2c 当前失败为缺 endpoint/local-rank facts | explicitly deferred | 只有 endpoint/local-rank/buffer facts 进入可验证 IR 后，才能 pattern 化到 `wafer.tile.*` collective，再展开成 `wafer.instr.dte_*` / `wafer.instr.local_drain` 和后续 sync boundary；不能写死 local rank 或 ring schedule。 |
+| `wafer.linalg_ext.collective.all_gather` / `reduce_scatter` / `all_reduce` | group-to-tile-region 根据 rank-specialized `logical-rank` materialization context、`rank_group`、SPM buffer shape 和 combiner region 生成 `wafer.tile.all_gather` / `wafer.tile.reduce_scatter` / `wafer.tile.all_reduce` | supported for top-level single-result V0 collectives | `logical-rank` 只用于计算 `rank_group` 内的 group-local `local_rank`，输出 IR 显式保存 `rank_group`、`local_rank`、`group_size` 和 `bytes`；不选择 p2p schedule，不写 endpoint 或 DTE packet。`reduce_scatter` 先 materialize 当前 rank 的 local slot，再生成 fixed-size reduce-scatter collective。 |
+| `wafer.linalg_ext.collective.all_to_all` / `collective_permute` / nested collective | 当前无对应 buffer-level op 或 nested control-flow materialization | explicitly deferred | 需要先补可验证的 buffer slice / peer / token / schedule 表达；不能把 unsupported collective 静默降成名字约定或 pass-local side table。 |
 | unknown op inside group | 结构化失败 | unsupported | conversion target 应把 `wafer.group` 设为 illegal；unsupported body op 应导致 conversion failure，而不是留下半转换 group。 |
 
 R3.2c 迁移完成后，supported 子集必须由同一 conversion builder 覆盖，并把 unsupported / deferred
@@ -336,7 +338,10 @@ operand 表达真实 tile view；第 5 步 instruction legalization / selection 
   DialectConversion legality target，在 supported 子集上重写当前模块；当前输出是
   verifier-legal memref-backed `wafer.tile.region` IR，外层 tensor IR 通过
   `bufferization.to_memref` / `bufferization.to_tensor` bridge 保持局部 pass 可组合。
-  `--wafer-dump-group-to-tile-region` 是同一 builder 的只读 dump 入口，并显式 preserve analyses。
+  `--wafer-convert-group-to-tile-region` 和 `--wafer-dump-group-to-tile-region` 都接受
+  `logical-rank` 选项，表示当前 rank-specialized lowering context；collective lowering 只用它计算
+  group-local `local_rank`，不会把 endpoint view、route 或 schedule 写入 tile collective。dump 入口是同一
+  builder 的只读验证入口，并显式 preserve analyses。
 - `wafer-lower-groups-to-tile-region` 是 R3.2c named pipeline：先运行 group-to-tile-region conversion，
   再运行 MLIR One-Shot Bufferize，并使用 Wafer function argument type converter 把 tensor function
   boundary 转成 `memref<..., #wafer.memory<ddr, tensor>>`。

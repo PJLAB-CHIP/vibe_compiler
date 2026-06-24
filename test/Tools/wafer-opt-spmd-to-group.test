@@ -49,4 +49,14 @@
 # LAYOUT: materialization #5 op #10 result #0 -> group result #0 cx->tensor type=tensor<32x32xf32>
 
 # GROUP-TO-TILE-LABEL: wafer.group_to_tile_region group @main#0
-# GROUP-TO-TILE: failure collective lowering requires endpoint/local-rank facts
+# GROUP-TO-TILE: wafer.tile.all_gather
+# GROUP-TO-TILE-SAME: bytes = 256 : i64
+# GROUP-TO-TILE-SAME: group_size = 16 : i64
+# GROUP-TO-TILE-SAME: local_rank = 0 : i64
+# GROUP-TO-TILE: wafer.tile.gemm
+# GROUP-TO-TILE: wafer.tile.all_gather
+# GROUP-TO-TILE-SAME: bytes = 8 : i64
+# GROUP-TO-TILE-SAME: group_size = 16 : i64
+# GROUP-TO-TILE-SAME: local_rank = 0 : i64
+# GROUP-TO-TILE: wafer.tile.elementwise <add>
+# GROUP-TO-TILE: wafer.tile.store

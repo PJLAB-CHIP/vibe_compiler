@@ -49,13 +49,17 @@ static void setFailureReason(std::string *failureReason,
 
 class TileRegionBodyEmitter {
 public:
-  explicit TileRegionBodyEmitter(std::string *failureReason)
-      : failureReason(failureReason) {}
+  explicit TileRegionBodyEmitter(std::string *failureReason,
+                                 int64_t currentLogicalRank)
+      : failureReason(failureReason), currentLogicalRank(currentLogicalRank) {}
 
   mlir::FailureOr<TileRegionOp>
   emit(GroupOp group, mlir::ValueRange convertedInputs,
        mlir::ValueRange convertedOuts,
        mlir::ConversionPatternRewriter &rewriter) {
+    if (currentLogicalRank < 0)
+      return failAndReturn("logical-rank must be non-negative");
+
     GroupLayoutPlan layoutPlan;
     if (mlir::failed(collectGroupLayoutPlan(group, layoutPlan)))
       return failAndReturn("group-to-tile-region layout planning failed");
@@ -100,12 +104,6 @@ public:
     if (mlir::failed(initializeBoundary(group, tileRegion, rewriter)))
       return mlir::failure();
 
-    for (mlir::Operation &op : group.getBody().front().without_terminator()) {
-      if (mlir::isa<WaferLinalgExtCollectiveOpInterface>(&op))
-        return failAndReturn(
-            "collective lowering requires endpoint/local-rank facts");
-    }
-
     for (OpLayoutPlan &opPlan : layoutPlan.ops) {
       if (mlir::failed(convertOp(opPlan, rewriter)))
         return mlir::failure();
@@ -119,6 +117,7 @@ public:
 
 private:
   std::string *failureReason;
+  int64_t currentLogicalRank = 0;
   llvm::DenseMap<mlir::Value, BufferVersions> buffers;
   llvm::DenseMap<mlir::Value, mlir::Value> scalarValues;
   llvm::DenseMap<mlir::Value, mlir::Attribute> scalarAttrs;
@@ -152,6 +151,11 @@ private:
   }
 
   mlir::FailureOr<mlir::Value> failValue(llvm::StringRef reason) {
+    setFailureReason(failureReason, reason);
+    return mlir::failure();
+  }
+
+  mlir::FailureOr<int64_t> failI64(llvm::StringRef reason) {
     setFailureReason(failureReason, reason);
     return mlir::failure();
   }
@@ -363,6 +367,264 @@ private:
     return materialize.getResult();
   }
 
+  mlir::FailureOr<int64_t> getCompactByteSize(mlir::Value buffer,
+                                              llvm::StringRef subject) {
+    auto memrefType = mlir::dyn_cast<mlir::MemRefType>(buffer.getType());
+    if (!memrefType) {
+      std::string reason = subject.str() + " buffer is not a memref";
+      return failI64(reason);
+    }
+    std::optional<WaferPhysicalTensorInfo> physicalInfo =
+        computeWaferPhysicalTensorInfo(memrefType);
+    if (!physicalInfo || physicalInfo->compactBytes <= 0) {
+      std::string reason =
+          subject.str() + " compact byte size is not representable";
+      return failI64(reason);
+    }
+    return physicalInfo->compactBytes;
+  }
+
+  mlir::FailureOr<int64_t>
+  getCollectiveLocalRank(const WaferLinalgExtCollectiveInfo &info) {
+    if (info.rankGroup.empty())
+      return failI64("collective materialization requires rank_group");
+    for (auto [index, logicalRank] : llvm::enumerate(info.rankGroup)) {
+      if (logicalRank == currentLogicalRank)
+        return static_cast<int64_t>(index);
+    }
+    return failI64("logical-rank is not a member of collective rank_group");
+  }
+
+  std::optional<ComputeReduceKind>
+  inferCollectiveReduceKind(mlir::Region &combiner) {
+    if (!combiner.hasOneBlock()) {
+      (void)fail("collective reduction materialization requires one combiner "
+                 "block");
+      return std::nullopt;
+    }
+    auto yield = mlir::dyn_cast<LinalgExtCollectiveYieldOp>(
+        combiner.front().getTerminator());
+    if (!yield || yield.getValues().size() != 1) {
+      (void)fail("collective reduction materialization requires one yielded "
+                 "combiner value");
+      return std::nullopt;
+    }
+
+    mlir::Operation *def = yield.getValues()[0].getDefiningOp();
+    if (!def) {
+      (void)fail("collective reduction materialization requires structured "
+                 "combiner body");
+      return std::nullopt;
+    }
+    if (mlir::isa<mlir::arith::AddFOp, mlir::arith::AddIOp>(def))
+      return ComputeReduceKind::Sum;
+    if (mlir::isa<mlir::arith::MaximumFOp, mlir::arith::MaxNumFOp,
+                  mlir::arith::MaxSIOp, mlir::arith::MaxUIOp>(def))
+      return ComputeReduceKind::Max;
+    if (mlir::isa<mlir::arith::MinimumFOp, mlir::arith::MinNumFOp,
+                  mlir::arith::MinSIOp, mlir::arith::MinUIOp>(def))
+      return ComputeReduceKind::Min;
+
+    (void)fail("collective reduction materialization requires sum/max/min "
+               "combiner");
+    return std::nullopt;
+  }
+
+  mlir::LogicalResult requireSingleTensorCollective(mlir::Operation *op) {
+    if (op->getNumResults() != 1)
+      return fail("collective materialization supports one result");
+    return mlir::success();
+  }
+
+  mlir::LogicalResult convertAllGather(
+      LinalgExtCollectiveAllGatherOp op,
+      const WaferLinalgExtCollectiveInfo &info, mlir::OpBuilder &builder) {
+    if (mlir::failed(requireSingleTensorCollective(op.getOperation())))
+      return mlir::failure();
+    if (op.getInputs().size() != 1 || op.getOuts().size() != 1)
+      return fail("all_gather materialization supports one input and one out");
+
+    auto resultTensorType =
+        mlir::dyn_cast<mlir::RankedTensorType>(op.getResult(0).getType());
+    if (!resultTensorType)
+      return fail("all_gather result is not a ranked tensor");
+
+    mlir::FailureOr<mlir::Value> localChunk =
+        getOrMaterialize(op.getInputs().front(), MemLayout::Tensor, builder);
+    if (mlir::failed(localChunk))
+      return mlir::failure();
+
+    auto gatherBuffer = builder.create<mlir::memref::AllocOp>(
+        op.getLoc(), makeSPMMemRefType(resultTensorType, MemLayout::Tensor));
+    mlir::FailureOr<int64_t> bytes =
+        getCompactByteSize(*localChunk, "all_gather local chunk");
+    mlir::FailureOr<int64_t> localRank = getCollectiveLocalRank(info);
+    if (mlir::failed(bytes) || mlir::failed(localRank))
+      return mlir::failure();
+
+    mlir::MLIRContext *context = builder.getContext();
+    builder.create<CommAllGatherOp>(
+        op.getLoc(), *localChunk, gatherBuffer.getResult(),
+        builder.getI64IntegerAttr(*localRank),
+        builder.getI64IntegerAttr(static_cast<int64_t>(info.rankGroup.size())),
+        mlir::DenseI64ArrayAttr::get(context, info.rankGroup),
+        builder.getI64IntegerAttr(*bytes));
+    record(op.getResult(0), MemLayout::Tensor, gatherBuffer.getResult());
+    return mlir::success();
+  }
+
+  mlir::FailureOr<mlir::Value> materializeReduceScatterSlot(
+      LinalgExtCollectiveReduceScatterOp op,
+      const WaferLinalgExtCollectiveInfo &info, int64_t localRank,
+      mlir::Value input, mlir::OpBuilder &builder) {
+    auto inputTensorType =
+        mlir::dyn_cast<mlir::RankedTensorType>(op.getInputs().front().getType());
+    auto resultTensorType =
+        mlir::dyn_cast<mlir::RankedTensorType>(op.getResult(0).getType());
+    if (!inputTensorType || !resultTensorType)
+      return failValue("reduce_scatter tensors must be ranked");
+    if (!info.hasAxis || info.axis < 0 ||
+        info.axis >= resultTensorType.getRank())
+      return failValue("reduce_scatter materialization requires valid axis");
+    if (inputTensorType.getRank() != resultTensorType.getRank())
+      return failValue("reduce_scatter input and result rank mismatch");
+
+    llvm::SmallVector<int64_t, 4> offsets(resultTensorType.getRank(), 0);
+    llvm::SmallVector<int64_t, 4> sizes(resultTensorType.getShape().begin(),
+                                        resultTensorType.getShape().end());
+    llvm::SmallVector<int64_t, 4> strides(resultTensorType.getRank(), 1);
+    for (int64_t dim = 0; dim < resultTensorType.getRank(); ++dim) {
+      int64_t inputDim = inputTensorType.getDimSize(dim);
+      int64_t resultDim = resultTensorType.getDimSize(dim);
+      if (mlir::ShapedType::isDynamic(inputDim) ||
+          mlir::ShapedType::isDynamic(resultDim))
+        return failValue("reduce_scatter materialization requires static "
+                         "tensor shapes");
+      if (dim == info.axis) {
+        int64_t expectedInputDim =
+            resultDim * static_cast<int64_t>(info.rankGroup.size());
+        if (inputDim != expectedInputDim)
+          return failValue("reduce_scatter axis size must equal result axis "
+                           "size times group_size");
+        offsets[dim] = localRank * resultDim;
+        continue;
+      }
+      if (inputDim != resultDim)
+        return failValue("reduce_scatter non-axis dimensions must match");
+    }
+
+    auto slot = builder.create<MoveExtractSliceOp>(
+        op.getLoc(), makeSPMMemRefType(resultTensorType, MemLayout::Tensor),
+        input, mlir::DenseI64ArrayAttr::get(builder.getContext(), offsets),
+        mlir::DenseI64ArrayAttr::get(builder.getContext(), sizes),
+        mlir::DenseI64ArrayAttr::get(builder.getContext(), strides));
+    return slot.getResult();
+  }
+
+  mlir::LogicalResult convertReduceScatter(
+      LinalgExtCollectiveReduceScatterOp op,
+      const WaferLinalgExtCollectiveInfo &info, mlir::OpBuilder &builder) {
+    if (mlir::failed(requireSingleTensorCollective(op.getOperation())))
+      return mlir::failure();
+    if (op.getInputs().size() != 1 || op.getOuts().size() != 1)
+      return fail(
+          "reduce_scatter materialization supports one input and one out");
+    std::optional<ComputeReduceKind> kind =
+        inferCollectiveReduceKind(op.getCombiner());
+    if (!kind)
+      return mlir::failure();
+
+    mlir::FailureOr<mlir::Value> input =
+        getOrMaterialize(op.getInputs().front(), MemLayout::Tensor, builder);
+    mlir::FailureOr<int64_t> localRank = getCollectiveLocalRank(info);
+    if (mlir::failed(input) || mlir::failed(localRank))
+      return mlir::failure();
+
+    mlir::FailureOr<mlir::Value> localSlot =
+        materializeReduceScatterSlot(op, info, *localRank, *input, builder);
+    if (mlir::failed(localSlot))
+      return mlir::failure();
+
+    auto slotType = mlir::cast<mlir::MemRefType>((*localSlot).getType());
+    auto recvBuffer =
+        builder.create<mlir::memref::AllocOp>(op.getLoc(), slotType);
+    mlir::FailureOr<int64_t> bytes =
+        getCompactByteSize(*localSlot, "reduce_scatter local slot");
+    if (mlir::failed(bytes))
+      return mlir::failure();
+
+    auto kindAttr = ComputeReduceKindAttr::get(builder.getContext(), *kind);
+    auto result = builder.create<CommReduceScatterOp>(
+        op.getLoc(), slotType, kindAttr, *localSlot, recvBuffer.getResult(),
+        builder.getI64IntegerAttr(*localRank),
+        builder.getI64IntegerAttr(static_cast<int64_t>(info.rankGroup.size())),
+        mlir::DenseI64ArrayAttr::get(builder.getContext(), info.rankGroup),
+        builder.getI64IntegerAttr(*bytes));
+    record(op.getResult(0), MemLayout::Tensor, result.getResult());
+    return mlir::success();
+  }
+
+  mlir::LogicalResult convertAllReduce(
+      LinalgExtCollectiveAllReduceOp op,
+      const WaferLinalgExtCollectiveInfo &info, mlir::OpBuilder &builder) {
+    if (mlir::failed(requireSingleTensorCollective(op.getOperation())))
+      return mlir::failure();
+    if (op.getInputs().size() != 1 || op.getOuts().size() != 1)
+      return fail("all_reduce materialization supports one input and one out");
+    std::optional<ComputeReduceKind> kind =
+        inferCollectiveReduceKind(op.getCombiner());
+    if (!kind)
+      return mlir::failure();
+
+    mlir::FailureOr<mlir::Value> input =
+        getOrMaterialize(op.getInputs().front(), MemLayout::Tensor, builder);
+    mlir::FailureOr<int64_t> localRank = getCollectiveLocalRank(info);
+    if (mlir::failed(input) || mlir::failed(localRank))
+      return mlir::failure();
+
+    auto inputType = mlir::cast<mlir::MemRefType>((*input).getType());
+    auto recvBuffer =
+        builder.create<mlir::memref::AllocOp>(op.getLoc(), inputType);
+    mlir::FailureOr<int64_t> bytes =
+        getCompactByteSize(*input, "all_reduce input");
+    if (mlir::failed(bytes))
+      return mlir::failure();
+
+    auto kindAttr = ComputeReduceKindAttr::get(builder.getContext(), *kind);
+    auto result = builder.create<CommAllReduceOp>(
+        op.getLoc(), inputType, kindAttr, *input, recvBuffer.getResult(),
+        builder.getI64IntegerAttr(*localRank),
+        builder.getI64IntegerAttr(static_cast<int64_t>(info.rankGroup.size())),
+        mlir::DenseI64ArrayAttr::get(builder.getContext(), info.rankGroup),
+        builder.getI64IntegerAttr(*bytes));
+    record(op.getResult(0), MemLayout::Tensor, result.getResult());
+    return mlir::success();
+  }
+
+  mlir::LogicalResult
+  convertLinalgExtCollective(mlir::Operation *op,
+                             const WaferLinalgExtCollectiveInfo &info,
+                             mlir::OpBuilder &builder) {
+    switch (info.kind) {
+    case WaferLinalgExtCollectiveKind::AllGather:
+      return convertAllGather(mlir::cast<LinalgExtCollectiveAllGatherOp>(op),
+                              info, builder);
+    case WaferLinalgExtCollectiveKind::ReduceScatter:
+      return convertReduceScatter(
+          mlir::cast<LinalgExtCollectiveReduceScatterOp>(op), info, builder);
+    case WaferLinalgExtCollectiveKind::AllReduce:
+      return convertAllReduce(mlir::cast<LinalgExtCollectiveAllReduceOp>(op),
+                              info, builder);
+    case WaferLinalgExtCollectiveKind::AllToAll:
+      return fail("all_to_all buffer-level collective materialization is not "
+                  "implemented");
+    case WaferLinalgExtCollectiveKind::CollectivePermute:
+      return fail("collective_permute buffer-level materialization is not "
+                  "implemented");
+    }
+    llvm_unreachable("unknown linalg-ext collective kind");
+  }
+
   mlir::LogicalResult initializeBoundary(GroupOp group, TileRegionOp tileRegion,
                                          mlir::OpBuilder &builder) {
     mlir::Block &groupBlock = group.getBody().front();
@@ -402,7 +664,7 @@ private:
     if (opPlan.kind == OpTilingDemandKind::Support)
       return convertSupportOp(op, builder);
     if (opPlan.kind == OpTilingDemandKind::LinalgExtCollective)
-      return fail("collective lowering requires endpoint/local-rank facts");
+      return convertLinalgExtCollective(op, opPlan.collectiveInfo, builder);
 
     if (auto fill = mlir::dyn_cast<mlir::linalg::FillOp>(op))
       return convertFill(fill, builder);
@@ -478,7 +740,7 @@ private:
   mlir::LogicalResult convertNestedOp(mlir::Operation *op,
                                       mlir::OpBuilder &builder) {
     if (mlir::isa<WaferLinalgExtCollectiveOpInterface>(op))
-      return fail("collective lowering requires endpoint/local-rank facts");
+      return fail("nested collective materialization is not implemented");
     if (auto fill = mlir::dyn_cast<mlir::linalg::FillOp>(op))
       return convertFill(fill, builder);
     if (mlir::isa<mlir::linalg::MatmulOp>(op))
@@ -1335,14 +1597,16 @@ private:
 struct GroupToTileRegionLoweringPattern
     : public mlir::OpConversionPattern<GroupOp> {
   GroupToTileRegionLoweringPattern(mlir::MLIRContext *context,
-                                   std::string *failureReason)
+                                   std::string *failureReason,
+                                   int64_t currentLogicalRank)
       : mlir::OpConversionPattern<GroupOp>(context),
-        failureReason(failureReason) {}
+        failureReason(failureReason),
+        currentLogicalRank(currentLogicalRank) {}
 
   mlir::LogicalResult
   matchAndRewrite(GroupOp group, OpAdaptor adaptor,
                   mlir::ConversionPatternRewriter &rewriter) const final {
-    TileRegionBodyEmitter emitter(failureReason);
+    TileRegionBodyEmitter emitter(failureReason, currentLogicalRank);
     mlir::FailureOr<TileRegionOp> tileRegion =
         emitter.emit(group, adaptor.getInputs(), adaptor.getOuts(), rewriter);
     if (mlir::failed(tileRegion))
@@ -1361,6 +1625,7 @@ struct GroupToTileRegionLoweringPattern
   }
 
   std::string *failureReason;
+  int64_t currentLogicalRank = 0;
 };
 
 static mlir::OwningOpRef<mlir::ModuleOp>
@@ -2079,12 +2344,14 @@ static void configureGroupToTileRegionTarget(mlir::ConversionTarget &target) {
 static mlir::LogicalResult
 convertGroupToTileRegionModuleInPlace(mlir::ModuleOp module,
                                       mlir::MLIRContext *context,
+                                      int64_t currentLogicalRank,
                                       std::string *failureReason) {
   mlir::ConversionTarget target(*context);
   configureGroupToTileRegionTarget(target);
 
   mlir::RewritePatternSet patterns(context);
-  patterns.add<GroupToTileRegionLoweringPattern>(context, failureReason);
+  patterns.add<GroupToTileRegionLoweringPattern>(context, failureReason,
+                                                 currentLogicalRank);
 
   bool conversionSucceeded = false;
   {
@@ -2122,7 +2389,8 @@ struct ConvertGroupToTileRegionPass
 
     std::string failureReason;
     mlir::RewritePatternSet patterns(context);
-    patterns.add<GroupToTileRegionLoweringPattern>(context, &failureReason);
+    patterns.add<GroupToTileRegionLoweringPattern>(context, &failureReason,
+                                                   logicalRank);
 
     if (mlir::succeeded(mlir::applyFullConversion(getOperation(), target,
                                                   std::move(patterns))))
@@ -2141,20 +2409,22 @@ struct ConvertGroupToTileRegionPass
 mlir::LogicalResult
 wafer::lowerGroupToTileRegionModule(GroupOp group,
                                     mlir::OwningOpRef<mlir::ModuleOp> &module,
-                                    std::string *failureReason) {
+                                    std::string *failureReason,
+                                    int64_t currentLogicalRank) {
   if (failureReason)
     failureReason->clear();
 
   module = cloneGroupToStandaloneModule(group);
-  return convertGroupToTileRegionModuleInPlace(*module, group.getContext(),
-                                               failureReason);
+  return convertGroupToTileRegionModuleInPlace(
+      *module, group.getContext(), currentLogicalRank, failureReason);
 }
 
 mlir::LogicalResult wafer::lowerCandidateGroupToTileRegionModule(
     GroupOp group, llvm::ArrayRef<int64_t> candidateTileOffsets,
     llvm::ArrayRef<int64_t> candidateTileSizes,
     llvm::ArrayRef<int64_t> candidateReductionTileSizes,
-    mlir::OwningOpRef<mlir::ModuleOp> &module, std::string *failureReason) {
+    mlir::OwningOpRef<mlir::ModuleOp> &module, std::string *failureReason,
+    int64_t currentLogicalRank) {
   if (failureReason)
     failureReason->clear();
 
@@ -2170,8 +2440,8 @@ mlir::LogicalResult wafer::lowerCandidateGroupToTileRegionModule(
           candidateReductionTileSizes, failureReason)))
     return mlir::failure();
 
-  return convertGroupToTileRegionModuleInPlace(*module, group.getContext(),
-                                               failureReason);
+  return convertGroupToTileRegionModuleInPlace(
+      *module, group.getContext(), currentLogicalRank, failureReason);
 }
 
 void wafer::dumpGroupToTileRegionModule(mlir::ModuleOp module,

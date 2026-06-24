@@ -98,6 +98,11 @@ def DumpGroupToTileRegionPass
                            "mlir::scf::SCFDialect",
                            "mlir::tensor::TensorDialect", "wafer::WaferDialect"
   ];
+  let options = [
+    Option<"logicalRank", "logical-rank", "int64_t", /*default=*/"0",
+           "Current logical execution rank used to materialize group-local "
+           "communication rank facts">
+  ];
 }
 
 def DumpCandidateDdrTileViewsPass
@@ -191,6 +196,11 @@ def ConvertGroupToTileRegionPass
                            "mlir::memref::MemRefDialect",
                            "mlir::scf::SCFDialect",
                            "mlir::tensor::TensorDialect", "wafer::WaferDialect"
+  ];
+  let options = [
+    Option<"logicalRank", "logical-rank", "int64_t", /*default=*/"0",
+           "Current logical execution rank used to materialize group-local "
+           "communication rank facts">
   ];
 }
 

@@ -202,6 +202,11 @@
   结构重算；offset 搜索在 default DDR arena 中做 pressure-weighted first-fit，只有 lifetime 证明不重叠
   时才复用。runtime allocation object、physical address、packet/ABI 字段仍属于 runtime/ABI boundary，
   不能塞进 DDR planning attr。
+- group-to-tile-region 的 buffer-level collective materialization 是 rank-specialized lowering：局部
+  pass / dump 入口用 `logical-rank` 选项表示当前 logical rank，并只用它在 collective `rank_group`
+  内计算 group-local `local_rank`。输出 `wafer.tile.all_gather` / `reduce_scatter` / `all_reduce`
+  显式携带 SPM buffer、`rank_group`、`local_rank`、`group_size` 和 byte count；不在这一步选择 p2p
+  schedule、endpoint 或 DTE packet。
 - 用户级 compiler target 名称统一为 `wafer`，Wafer IR target attr 的唯一主线 spelling 是
   `#wafer.target<wafer>`。`tx8` / `tx81` 只保留在硬件、依赖逆向和外部历史命名事实里，不能作为
   compiler target、pipeline 名称或测试 fixture 的主线命名。

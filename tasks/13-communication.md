@@ -289,8 +289,11 @@ IR 中应能看到每个 step 的 `wafer.instr.dte_send` / `dte_recv` / `dte_wai
 ring order 来自 execution mesh rank order；cost model 可以选择不同 order，但接受后要 rewrite 成
 explicit body。
 
-当前只保留 collective op/verifier 层；直接 materialize p2p schedule 的旧 ring lowering pass 已删除。
-V0 correctness path 仍应先走 fixed-size unicast schedule，raw DTE non-unicast gather 不在 correctness path。
+当前已经能在 rank-specialized group-to-tile-region materialization 中把 top-level single-result
+`wafer.linalg_ext.collective.all_gather` 转成 `wafer.tile.all_gather`，并显式保存 local chunk、
+gather buffer、`rank_group`、group-local `local_rank`、`group_size` 和单 chunk `bytes`。直接
+materialize p2p schedule 的旧 ring lowering pass 已删除；V0 correctness path 仍应先走 fixed-size
+unicast schedule，raw DTE non-unicast gather 不在 correctness path。
 恢复 p2p schedule lowering 时，该 lowering 必须在 SPM offset assignment 前发生，使 in-flight recv slot、
 double buffer、wait token 和 buffer reuse fence 都进入 SPM lifetime / demand analysis。
 
@@ -305,16 +308,19 @@ double buffer、wait token 和 buffer reuse fence 都进入 SPM lifetime / deman
 - 每个 communication step 是 unicast p2p。
 - local reduce 与 recv buffer 的 use-def / wait 顺序明确。
 
-当前只保留 `wafer.tile.reduce_scatter` 和 `wafer.tile.all_reduce` 作为 collective IR / verifier 层。
-旧 ring-reduce collective debug pass 已删除。后续 accepted schedule 仍应显式展开 p2p
+当前已经能在 rank-specialized group-to-tile-region materialization 中把 top-level single-result
+`wafer.linalg_ext.collective.reduce_scatter` / `all_reduce` 转成 `wafer.tile.reduce_scatter` /
+`wafer.tile.all_reduce`。`reduce_scatter` 先按 group-local `local_rank` 从 full input 中 materialize 当前
+scatter slot，再生成 fixed-size tile collective。旧 ring-reduce collective debug pass 已删除。后续
+accepted schedule 仍应显式展开 p2p
 `wafer.instr.dte_*`，并在 wait 后用明确 compute op 对 accumulator 和 recv staging buffer 做本地累计；
 reduction kind、dtype、use-def 和 wait 顺序不能变成 DTE side effect。
 P6.6 的早期 StableHLO normalization pass 会把 single-result StableHLO `all_reduce` /
 `reduce_scatter` 直接降到这些 collective-level op；该路径和 all-gather 一样已经退出主线，
 不应作为 tensor group/tiling 输入。主线恢复后，应先由 `wafer.linalg_ext.collective.*`
 保留 combiner region 和 tile 语义，再在 tile_region / SPM
-materialization 之后生成 `wafer.tile.reduce_scatter` / `wafer.tile.all_reduce`。当前实现只覆盖
-sum/max/min reduction body；如果 SPMD 产出其它硬件可表达 reduction kind，应补充 tensor collective、
+materialization 之后生成 `wafer.tile.reduce_scatter` / `wafer.tile.all_reduce`。当前 materialization
+只覆盖 sum/max/min reduction body；如果 SPMD 产出其它硬件可表达 reduction kind，应补充 tensor collective、
 `wafer.tile.*` collective / `wafer.tile.*` compute / `wafer.instr.dte_*` 表示和 verifier，而不是把当前 lowering 子集当成 communication
 语义边界。
 
@@ -441,11 +447,15 @@ wafer.instr.dte_wait %send1, %recv1
 
 - dialect / verifier 层已有 `wafer.tile.all_gather`、`wafer.tile.reduce_scatter` 和
   `wafer.tile.all_reduce` buffer-level collective 原型。
+- group-to-tile-region 已能把 top-level single-result `wafer.linalg_ext.collective.all_gather`、
+  `reduce_scatter` 和 `all_reduce` materialize 成上述 `wafer.tile.*` collective；`logical-rank`
+  materialization context 只用于计算 `rank_group` 内的 group-local `local_rank`。
 - legacy tile-level p2p prototype 仍需按 `tasks/progress.md` 迁移为
   `wafer.instr.dte_send` / `wafer.instr.dte_recv` / `wafer.instr.dte_wait`，并把 verifier、
   token/effect、mesh-rank 检查和 tests 一起迁移。
-- `collective_permute`、ring `all_gather`、`reduce_scatter` / `all_reduce` 的 p2p + local reduce
-  lowering 仍依赖后续 execution-mesh/local-rank/buffer facts，不是当前主线完成项。
+- `collective_permute`、`all_to_all`、ring `all_gather`、`reduce_scatter` / `all_reduce` 的 p2p + local
+  reduce lowering 仍依赖后续 execution-mesh endpoint view、buffer slot 和 token lifetime facts，不是
+  当前主线完成项。
 - Direct DTE send/recv/wait golden path 和 error diagnostic 属于历史 bring-up 证据；Direct DTE
   issue/wait form、resource allocation 和 ABI/LLVM emission 需要从 committed instruction IR
   和 accepted endpoint/resource facts 重新建立。
