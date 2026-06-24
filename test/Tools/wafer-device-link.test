@@ -26,6 +26,23 @@
 # CHECK-SAME: -o
 # CHECK-SAME: kernel.o
 
+# CHECK-LABEL: shim-compile:
+# CHECK-SAME: /opt/llvm/bin/clang++
+# CHECK-SAME: -x c
+# CHECK-SAME: wafer_cabi_shim.c
+# CHECK-SAME: -O2
+# CHECK-SAME: -c
+# CHECK-SAME: -fPIC
+# CHECK-SAME: --target=riscv64-unknown-elf
+# CHECK-SAME: -march=rv64imfdc
+# CHECK-SAME: -mabi=lp64d
+# CHECK-SAME: --sysroot=/opt/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/riscv64-unknown-elf
+# CHECK-SAME: -DUSING_RISCV
+# CHECK-SAME: -DCONFIG_NO_PLATFORM_HOOK_H
+# CHECK-SAME: -I/opt/tx8_deps/include
+# CHECK-SAME: -o
+# CHECK-SAME: kernel.wafer_cabi_shim.o
+
 # CHECK-LABEL: link:
 # CHECK-SAME: /opt/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-gcc
 # CHECK-SAME: -shared
@@ -35,6 +52,7 @@
 # CHECK-SAME: -mabi=lp64d
 # CHECK-SAME: -Wl,--no-dynamic-linker
 # CHECK-SAME: kernel.o
+# CHECK-SAME: kernel.wafer_cabi_shim.o
 # CHECK-SAME: -L/opt/wafer-crt/lib
 # CHECK-SAME: -L/opt/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/riscv64-unknown-elf/lib/rv64imfdc/lp64d
 # CHECK-SAME: -L/opt/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/lib/gcc/riscv64-unknown-elf/10.4.0/rv64imfdc/lp64d

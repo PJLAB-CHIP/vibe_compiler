@@ -398,6 +398,13 @@ bool buildGemm(int64_t m, int64_t k, int64_t n, GemmDescriptor &descriptor,
   return true;
 }
 
+bool buildLocalFence(LocalFenceDescriptor &descriptor, std::string *error) {
+  descriptor = LocalFenceDescriptor{WaitPolicy::LocalWait};
+  if (error)
+    error->clear();
+  return true;
+}
+
 bool buildRdmaRegisterPacket(const DmaDescriptor &descriptor, DataFormat format,
                              DmaRegisterPacket &packet, std::string *error) {
   return buildDmaRegisterPacket(descriptor, format, /*isRdma=*/true, packet,
@@ -512,6 +519,19 @@ bool buildGemmRegisterPacket(const GemmDescriptor &descriptor,
                               outputFormat,
                               false,
                               descriptor.waitPolicy};
+  if (error)
+    error->clear();
+  return true;
+}
+
+bool buildLocalFenceRegisterCall(const LocalFenceDescriptor &descriptor,
+                                 LocalFenceRegisterCall &call,
+                                 std::string *error) {
+  if (descriptor.waitPolicy != WaitPolicy::LocalWait)
+    return fail(error, "local fence must use local_wait policy");
+
+  call = LocalFenceRegisterCall{/*callsLocalWait=*/true,
+                                /*waitPolicy=*/WaitPolicy::LocalWait};
   if (error)
     error->clear();
   return true;

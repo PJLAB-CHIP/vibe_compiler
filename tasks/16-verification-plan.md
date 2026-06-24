@@ -26,11 +26,11 @@ Serving integration 暂不纳入本文通过标准。
 - IR parse / print / verifier / conversion / FileCheck 通过。
 - 已完成 resource planner、dependency/config 和已有 tool-unit tests 通过；golden packet、package
   serialization 和 manifest roundtrip 只能证明对应工具或 fixture，不替代主线 compiler output。
-- pipeline 能生成当前阶段的本地编译产物：committed instruction IR 和 accepted SPM/DDR offset facts。
-  topology/execution-mesh、program parameter shard metadata/resource view、ABI/LLVM lowering、object/package manifest 和 runtime
-  adapter 是后续独立 gate。
-- LLVM dialect / LLVM IR lowering、TX8 device-code compile/link 和真实 `wafer_*` runtime call
-  implementation 分别属于 ABI、object/package 和 wrapper/runtime adapter gate，不属于当前
+- pipeline 能生成当前阶段的本地编译产物：committed instruction IR、accepted SPM/DDR offset facts、
+  ABI/LLVM artifact、TX8 object/link artifact、default `wafer_*` shim object 和 IR-derived package
+  manifest。runtime adapter / board launch 是后续独立 gate。
+- LLVM dialect / LLVM IR lowering、TX8 device-code compile/link、default `wafer_*` shim object 和
+  package manifest auto-export 分别属于 ABI、object/package 和 wrapper gate，不属于
   committed-instruction gate 的通过条件。
 
 当前阶段不把板端 launch、device completion、数值对比或 PMU/profiling 作为通过条件。迁移到带实际
@@ -55,7 +55,7 @@ Serving integration 暂不纳入本文通过标准。
 | Compute / Movement | committed instruction IR + accepted offset facts | wrapper family、layout、dtype、shape、issue/fence/wait 合法 |
 | Communication | tile_region / SPM materialization 后的 `wafer.tile.*` collective / `wafer.instr.dte_*` IR | endpoint、token、DTE/FSM resource、wait policy 合法 |
 | ABI / LLVM / golden packet | committed instruction IR + accepted offsets + topology/execution-mesh + program parameter shard metadata/resource view + communication/sync lowering | LLVM dialect call 或 `wafer_*` C ABI / packet builder input 合法；ABI unit/address/wait verified，golden packet 覆盖 wrapper mapping；launch/resource view 从 IR 按需重算，不成为独立 artifact |
-| Object/package | ABI/LLVM artifact + committed IR + topology/execution-mesh + program parameter shard metadata/resource view | `.ll -> .o -> kcore .so` device-code compile/link gate 合法；manifest 记录 object/program id、entrypoint、ABI version 和 IR-derived package metadata；package manifest auto-export 从 committed instruction IR、LLVM IR artifact、device artifact 和上游 launch signature metadata 导出并通过 validator；endpoint/resource/constant metadata 由同一 resource view analysis 生成 |
+| Object/package | ABI/LLVM artifact + committed IR + topology/execution-mesh + program parameter shard metadata/resource view | `.ll -> .o`、default `wafer_cabi_shim.c -> shim.o`、`.o + shim.o -> kcore .so` device-code compile/link gate 合法；manifest 记录 object/program id、entrypoint、ABI version 和 IR-derived package metadata；package manifest auto-export 从 committed instruction IR、LLVM IR artifact、device artifact 和上游 launch signature metadata 导出并通过 validator；endpoint/resource/constant metadata 由同一 resource view analysis 生成 |
 | Runtime/board | package + adapter | runtime allocation object binding contract、stub shielding、launch/completion/error propagation 合法；板端 completion 在有卡环境验证 |
 
 Gate 通过只说明进入下一层的输入合法，不说明整个 compiler 已完成。
@@ -211,11 +211,13 @@ M7 ABI / LLVM program gate：
   作为 debug/test dump 或 LLVM call 前置层，并能
   通过 `mlir-translate` 或等价路径生成 LLVM IR。
 - 本地 gate 至少检查 LLVM IR 文本中的 entrypoint、runtime symbol declaration、参数顺序和
-  metadata/program 引用；随后用 LLVM `clang++` 做 `.ll -> .o`，再用 `tx8_deps`
-  `riscv64-unknown-elf-gcc` 链接 kcore shared object。`.ll` 不能直接交给 GCC。
+  metadata/program 引用；随后用 LLVM `clang++` 做 `.ll -> .o` 和
+  `runtime/wafer_cabi_shim.c -> shim.o`，再用 `tx8_deps` `riscv64-unknown-elf-gcc` 链接 kcore
+  shared object。`.ll` 不能直接交给 GCC，C shim compile 必须带 TX8 include 和 RISC-V newlib
+  sysroot。
 - package manifest 必须记录真实 LLVM/object program id、entrypoint 和 ABI version；auto-export gate
   必须消费当前 pipeline 产物导出 manifest 并通过 validator；C stub-only program 只允许作为历史局部
-  fixture 的验证物。
+  fixture 的验证物，不能替代 default `wafer_*` shim object。
 
 M8 runtime / board correctness gate：
 

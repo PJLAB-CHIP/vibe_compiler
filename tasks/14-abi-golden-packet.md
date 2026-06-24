@@ -419,13 +419,35 @@ Golden data 必须来自 register-level spec 和 wrapper behavior，不能来自
 RDMA / WDMA 的 DDR lower bound、SPM usable range、byte count、exclusive end range、`Data_Format`
 到 inner `elem_count` 的转换和 `issue_only` policy，GatherScatter 的 TDMA byte `size`、
 byte stride/iteration、SPM inclusive range-end，以及 GEMM 的 Tsm wrapper M/K/N、SPM offset 和
-format 字段。ABI materialization 必须调用同一个 builder 验证 committed instruction 到 ABI 参数单位、
-address direction、logical iteration 和 wrapper/register packet 字段的映射。
+format 字段。`wafer.instr.local_fence` 的 golden builder 固定为 `local_wait`，对应 lower-level
+`TsmWaitfinish` 类本 tile NCC local wait，不生成普通 `TsmExecute` packet。ABI materialization 必须
+调用同一个 builder 验证 committed instruction 到 ABI 参数单位、address direction、logical iteration、
+local wait policy 和 wrapper/register packet 字段的映射。
 
 该 gate 当前是 wrapper/register-facing golden builder，不把 external `tx8_deps` headers 变成本仓库
-构建依赖，也不把 Triton CRT 的 `__Rdma/__Gemm/__GatherScatter` 签名提升为 Wafer ABI。真实 board
-C shim 接入后，可以把同一组 descriptor 作为 expected source，继续扩展到 public wrapper 调用或
-raw debug packet dump 对照。
+核心 C++ 构建依赖，也不把 Triton CRT 的 `__Rdma/__Gemm/__GatherScatter` 签名提升为 Wafer ABI。
+`runtime/wafer_cabi_shim.c` 的 capture mode 复用同一组 descriptor 作为 expected source；生产 shim
+编译时才包含 TX8 public headers，并调用 public wrapper / local wait。
+
+### 7.1 C ABI Shim Implementation Gate
+
+`runtime/wafer_cabi_shim.c` 是 `wafer_*` compiler-facing C ABI 的 device-side implementation。它只
+消费 scalar ABI 参数，不读取 MLIR、manifest、sidecar 或 `%arg` 名字。生产模式包含 `tx8_deps`
+public headers，并按 register-level spec 调用 public Tsm wrapper：
+
+| ABI | shim implementation |
+| --- | --- |
+| `wafer_rdma` | validate `Data_Format` / logical iterations；`TsmRdma::AddSrcDst` + `ConfigStrideIteration` + `TsmExecute` |
+| `wafer_wdma` | validate `Data_Format` / logical iterations；`TsmWdma::AddSrcDst` + `ConfigStrideIteration` + `TsmExecute` |
+| `wafer_gather_scatter` | validate byte size / logical iterations；`TsmDataMove::GatherScatter` + `TsmExecute` |
+| `wafer_gemm` | validate M/K/N and format；`TsmGemm::{AddInput,ConfigMKN,ConfigBatch,AddOutput,SetPsum,SetTransflag}` + `TsmExecute` |
+| `wafer_local_fence` | `TsmWaitfinish` local wait |
+
+该 shim 不在每个 issue ABI 后隐藏 wait；RDMA、WDMA、GatherScatter 和 GEMM 仍是 issue-only，只有
+`wafer_local_fence` 表达 local wait。`WAFER_CABI_SHIM_CAPTURE` 是 host-side test mode：不包含
+`tx8_deps` headers、不调用硬件 wrapper，只把同一组 ABI 参数编码成 capture packet，用来和
+`Wafer/ABI/TileAbi.h` golden builder 对齐。capture mode 不是 runtime fallback，也不能作为 board
+completion proof。
 
 ## 8. Verifier
 

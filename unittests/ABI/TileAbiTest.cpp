@@ -192,6 +192,21 @@ TEST(TileAbiTest, BuildsGemmRegisterPacketFromWrapperContract) {
   EXPECT_EQ(packet.waitPolicy, wafer::abi::WaitPolicy::IssueOnly);
 }
 
+TEST(TileAbiTest, BuildsLocalFenceRegisterCallFromWaitContract) {
+  wafer::abi::LocalFenceDescriptor descriptor;
+  std::string error;
+
+  ASSERT_TRUE(wafer::abi::buildLocalFence(descriptor, &error)) << error;
+  EXPECT_EQ(descriptor.waitPolicy, wafer::abi::WaitPolicy::LocalWait);
+
+  wafer::abi::LocalFenceRegisterCall call;
+  ASSERT_TRUE(wafer::abi::buildLocalFenceRegisterCall(descriptor, call, &error))
+      << error;
+
+  EXPECT_TRUE(call.callsLocalWait);
+  EXPECT_EQ(call.waitPolicy, wafer::abi::WaitPolicy::LocalWait);
+}
+
 TEST(TileAbiTest, RejectsDmaRegisterPacketWithUnalignedElementCount) {
   wafer::abi::DmaDescriptor descriptor;
   std::string error;

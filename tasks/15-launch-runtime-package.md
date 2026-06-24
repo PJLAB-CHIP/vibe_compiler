@@ -132,13 +132,26 @@ clang++ kernel.ll -O2 -c -fPIC \
   -o kernel.o
 ```
 
+同一 gate 还会把默认 `runtime/wafer_cabi_shim.c` 编译成同 target 的 shim object。这个 C 源需要
+TX8 public headers 和 RISC-V newlib sysroot；这和 `.ll` 输入不同：
+
+```sh
+clang++ -x c runtime/wafer_cabi_shim.c -O2 -c -fPIC \
+  --target=riscv64-unknown-elf \
+  -march=rv64imfdc -mabi=lp64d \
+  --sysroot=<tx8-toolchain>/riscv64-unknown-elf \
+  -DUSING_RISCV -DCONFIG_NO_PLATFORM_HOOK_H \
+  -I<tx8-deps-root>/include \
+  -o kernel.wafer_cabi_shim.o
+```
+
 第二段用 `tx8_deps` 中的 RISC-V GCC 链接 kcore shared object：
 
 ```sh
 riscv64-unknown-elf-gcc -shared -march=rv64imfdc -O2 \
   -nostartfiles -Wl,--allow-shlib-undefined \
   -mabi=lp64d -Wl,--no-dynamic-linker \
-  kernel.o \
+  kernel.o kernel.wafer_cabi_shim.o \
   -L<wafer-crt-lib-dir> \
   -L<tx8-toolchain>/riscv64-unknown-elf/lib/rv64imfdc/lp64d \
   -L<tx8-toolchain>/lib/gcc/riscv64-unknown-elf/10.4.0/rv64imfdc/lp64d \
@@ -158,9 +171,10 @@ riscv64-unknown-elf-gcc -shared -march=rv64imfdc -O2 \
 兼容性和板端验证后再升级成新 profile。
 
 `-Wl,--allow-shlib-undefined` 只允许 kcore shared object 保留 runtime/loader 解析的外部符号；它不是
-证明 `wafer_*` C ABI shim 已实现的信号。当前 device-code gate 需要能接收额外 ABI shim object /
-library；真实 wrapper shim 必须由后续 wrapper implementation gate 提供，并由 golden packet /
-register-facing tests 验证字段映射。
+证明缺失 `wafer_*` C ABI shim 可以被忽略的信号。当前 device-code gate 默认编译并链接
+`runtime/wafer_cabi_shim.c`，该 shim 的 capture/register-facing tests 负责验证 RDMA、WDMA、
+gather_scatter、GEMM 和 local_fence 的字段映射。仍可能存在的 unresolved symbol 必须来自
+runtime/loader 合法解析的外部依赖，而不是 compiler-facing `wafer_*` ABI family。
 
 ## 4. Runtime Layering
 
@@ -238,7 +252,11 @@ resident constant table；它不代表当前 IR pipeline 已生成 package，也
 `tools/wafer_device_link.py` 是 device-code local gate：它消费已有 LLVM IR 文件，生成或打印
 `.ll -> .o -> kernel.so` 两段命令，并可在本地 TX8 依赖齐备时执行该 compile/link。它不从
 `wafer.instr.*` 恢复 package metadata，不生成 manifest，也不代表 runtime launch / board
-completion 已通过。
+completion 已通过。该 tool 默认把 `runtime/wafer_cabi_shim.c` 编译成同 target 的 shim object 并
+加入 final link，使 LLVM IR 中的 `wafer_rdma`、`wafer_wdma`、`wafer_gather_scatter`、`wafer_gemm`
+和 `wafer_local_fence` 不再依赖 unresolved placeholder symbol。shim source 仍只实现
+compiler-facing scalar ABI 到 public Tsm wrapper / local wait 的映射；它不生成 package schema、
+runtime allocation metadata 或 board launch protocol。
 
 `tools/wafer_export_package_manifest.py` 是 package manifest auto-export gate：它消费上游
 program metadata 中的 launch signature JSON、committed instruction MLIR、ABI/LLVM lowering 生成的

@@ -23,6 +23,7 @@ constexpr uint32_t kTdmaGatherScatterOpcode = 135;
 
 enum class WaitPolicy {
   IssueOnly,
+  LocalWait,
 };
 
 enum class DataFormat : uint32_t {
@@ -55,6 +56,10 @@ struct GemmDescriptor {
   int64_t k = 0;
   int64_t n = 0;
   WaitPolicy waitPolicy = WaitPolicy::IssueOnly;
+};
+
+struct LocalFenceDescriptor {
+  WaitPolicy waitPolicy = WaitPolicy::LocalWait;
 };
 
 struct DmaDescriptor {
@@ -142,6 +147,11 @@ struct GemmRegisterPacket {
   WaitPolicy waitPolicy = WaitPolicy::IssueOnly;
 };
 
+struct LocalFenceRegisterCall {
+  bool callsLocalWait = false;
+  WaitPolicy waitPolicy = WaitPolicy::LocalWait;
+};
+
 bool buildRdma1D(uint64_t ddrSrcAddr, uint32_t spmDstOffset, uint64_t bytes,
                  Dma1DDescriptor &descriptor, std::string *error);
 
@@ -170,6 +180,8 @@ bool buildGatherScatter(uint32_t spmSrcOffset, uint32_t spmDstOffset,
 bool buildGemm(int64_t m, int64_t k, int64_t n, GemmDescriptor &descriptor,
                std::string *error);
 
+bool buildLocalFence(LocalFenceDescriptor &descriptor, std::string *error);
+
 bool buildRdmaRegisterPacket(const DmaDescriptor &descriptor, DataFormat format,
                              DmaRegisterPacket &packet, std::string *error);
 
@@ -185,6 +197,10 @@ bool buildGemmRegisterPacket(const GemmDescriptor &descriptor,
                              uint32_t destSpmOffset, DataFormat inputFormat,
                              DataFormat outputFormat,
                              GemmRegisterPacket &packet, std::string *error);
+
+bool buildLocalFenceRegisterCall(const LocalFenceDescriptor &descriptor,
+                                 LocalFenceRegisterCall &call,
+                                 std::string *error);
 
 } // namespace abi
 } // namespace wafer
