@@ -1523,6 +1523,35 @@ createContiguousSPMCopy(mlir::PatternRewriter &rewriter, mlir::Location loc,
   return mlir::success();
 }
 
+static mlir::FailureOr<ComputeElementwiseKindAttr>
+getAccumulationElementwiseKind(mlir::PatternRewriter &rewriter,
+                               mlir::Operation *op,
+                               ComputeReduceKindAttr reduceKind,
+                               std::string *failureReason,
+                               llvm::StringRef opLabel) {
+  ComputeElementwiseKind elementwiseKind;
+  switch (reduceKind.getValue()) {
+  case ComputeReduceKind::Sum:
+    elementwiseKind = ComputeElementwiseKind::Add;
+    break;
+  case ComputeReduceKind::Max:
+    elementwiseKind = ComputeElementwiseKind::Max;
+    break;
+  case ComputeReduceKind::Min:
+    elementwiseKind = ComputeElementwiseKind::Min;
+    break;
+  case ComputeReduceKind::Avg:
+    return failFailureOr<ComputeElementwiseKindAttr>(
+        rewriter, op, failureReason,
+        llvm::Twine(opLabel)
+            .concat(" lowering does not support avg accumulation")
+            .str());
+  }
+
+  return ComputeElementwiseKindAttr::get(rewriter.getContext(),
+                                         elementwiseKind);
+}
+
 class AllGatherLowering : public mlir::OpRewritePattern<CommAllGatherOp> {
 public:
   AllGatherLowering(mlir::MLIRContext *context, std::string *failureReason)
@@ -1608,6 +1637,105 @@ private:
   std::string *failureReason;
 };
 
+class AllReduceLowering : public mlir::OpRewritePattern<CommAllReduceOp> {
+public:
+  AllReduceLowering(mlir::MLIRContext *context, std::string *failureReason)
+      : mlir::OpRewritePattern<CommAllReduceOp>(context),
+        failureReason(failureReason) {}
+
+  mlir::LogicalResult
+  matchAndRewrite(CommAllReduceOp op,
+                  mlir::PatternRewriter &rewriter) const final {
+    auto inputType = mlir::dyn_cast<mlir::MemRefType>(op.getInput().getType());
+    auto recvType =
+        mlir::dyn_cast<mlir::MemRefType>(op.getRecvBuffer().getType());
+    auto resultType =
+        mlir::dyn_cast<mlir::MemRefType>(op.getResult().getType());
+    if (!inputType || !recvType || !resultType)
+      return failPattern(rewriter, op, failureReason,
+                         "tile.all_reduce lowering requires memref buffers");
+    if (inputType != recvType || inputType != resultType)
+      return failPattern(rewriter, op, failureReason,
+                         "tile.all_reduce lowering requires matching buffer "
+                         "types");
+
+    MemoryAttr inputMemory = wafer::getWaferMemoryAttr(inputType);
+    if (!inputMemory || inputMemory.getSpace() != MemorySpace::SPM ||
+        inputMemory.getLayout() != MemLayout::Tensor)
+      return failPattern(rewriter, op, failureReason,
+                         "tile.all_reduce lowering requires tensor SPM "
+                         "buffers");
+
+    int64_t groupSize = op.getGroupSizeAttr().getInt();
+    int64_t localRank = op.getLocalRankAttr().getInt();
+    llvm::ArrayRef<int64_t> rankGroup = op.getRankGroupAttr().asArrayRef();
+    if (groupSize <= 1 || localRank < 0 || localRank >= groupSize ||
+        static_cast<int64_t>(rankGroup.size()) != groupSize)
+      return failPattern(rewriter, op, failureReason,
+                         "tile.all_reduce lowering requires valid rank facts");
+
+    mlir::FailureOr<ComputeElementwiseKindAttr> accumulationKind =
+        getAccumulationElementwiseKind(rewriter, op, op.getKindAttr(),
+                                       failureReason, "tile.all_reduce");
+    if (mlir::failed(accumulationKind))
+      return mlir::failure();
+
+    mlir::FailureOr<mlir::Value> accumulator = createDestAlloc(
+        op.getLoc(), op.getResult().getType(), rewriter, op, failureReason);
+    if (mlir::failed(accumulator))
+      return mlir::failure();
+    auto forwardBuffer =
+        rewriter.create<mlir::memref::AllocOp>(op.getLoc(), inputType);
+
+    if (mlir::failed(createContiguousSPMCopy(
+            rewriter, op.getLoc(), op, op.getInput(), *accumulator,
+            failureReason, "tile.all_reduce accumulator init")))
+      return mlir::failure();
+    if (mlir::failed(createContiguousSPMCopy(
+            rewriter, op.getLoc(), op, op.getInput(), forwardBuffer.getResult(),
+            failureReason, "tile.all_reduce forward init")))
+      return mlir::failure();
+    rewriter.create<SyncLocalDrainOp>(op.getLoc());
+
+    int64_t nextPeer = rankGroup[(localRank + 1) % groupSize];
+    int64_t prevPeer = rankGroup[(localRank + groupSize - 1) % groupSize];
+    int64_t bytes = op.getBytesAttr().getInt();
+    for (int64_t step = 0; step < groupSize - 1; ++step) {
+      auto send = rewriter.create<InstrDTESendOp>(
+          op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
+          forwardBuffer.getResult(), rewriter.getI64IntegerAttr(nextPeer),
+          rewriter.getI64IntegerAttr(bytes));
+      auto recv = rewriter.create<InstrDTERecvOp>(
+          op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
+          op.getRecvBuffer(), rewriter.getI64IntegerAttr(prevPeer),
+          rewriter.getI64IntegerAttr(bytes));
+      llvm::SmallVector<mlir::Value, 2> tokens{send.getToken(),
+                                               recv.getToken()};
+      rewriter.create<InstrDTEWaitOp>(op.getLoc(), tokens);
+
+      llvm::SmallVector<mlir::Value, 2> inputs{*accumulator,
+                                               op.getRecvBuffer()};
+      rewriter.create<InstrElementwiseOp>(op.getLoc(), *accumulationKind,
+                                          inputs, *accumulator);
+
+      if (step + 1 == groupSize - 1)
+        continue;
+      if (mlir::failed(createContiguousSPMCopy(
+              rewriter, op.getLoc(), op, op.getRecvBuffer(),
+              forwardBuffer.getResult(), failureReason,
+              "tile.all_reduce forward copy")))
+        return mlir::failure();
+      rewriter.create<SyncLocalDrainOp>(op.getLoc());
+    }
+
+    rewriter.replaceOp(op, *accumulator);
+    return mlir::success();
+  }
+
+private:
+  std::string *failureReason;
+};
+
 template <typename OpT>
 class UnsupportedCommLowering : public mlir::OpRewritePattern<OpT> {
 public:
@@ -1618,8 +1746,8 @@ public:
   mlir::LogicalResult
   matchAndRewrite(OpT op, mlir::PatternRewriter &rewriter) const final {
     return failPattern(rewriter, op, failureReason,
-                       "tile reduce collective lowering requires p2p reduce "
-                       "schedule support");
+                       "tile.reduce_scatter lowering requires explicit "
+                       "scatter-slot p2p schedule support");
   }
 
 private:
@@ -1655,9 +1783,9 @@ static void populateTileRegionToInstrPatterns(mlir::RewritePatternSet &patterns,
                                                               failureReason);
   patterns.add<FillLowering>(context);
   patterns.add<AllGatherLowering>(context, failureReason);
-  patterns.add<UnsupportedCommLowering<CommReduceScatterOp>,
-               UnsupportedCommLowering<CommAllReduceOp>>(context,
-                                                         failureReason);
+  patterns.add<AllReduceLowering>(context, failureReason);
+  patterns.add<UnsupportedCommLowering<CommReduceScatterOp>>(context,
+                                                             failureReason);
 }
 
 struct ConvertTileRegionToInstrPass

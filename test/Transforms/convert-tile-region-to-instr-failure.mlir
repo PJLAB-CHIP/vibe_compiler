@@ -21,4 +21,4 @@ func.func @reject_reduce_scatter_comm(%boundary: memref<4xf16, #wafer.memory<ddr
   return
 }
 
-// CHECK: tile reduce collective lowering requires p2p reduce schedule support
+// CHECK: tile.reduce_scatter lowering requires explicit scatter-slot p2p schedule support

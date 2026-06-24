@@ -304,7 +304,8 @@ lowering 中将 compact `tensor/ntensor` SPM local/gather buffer 展开为 fixed
 `reduce_scatter` 由 communication step 和 local reduce step 组合。local reduce 使用
 `wafer.tile.reduce` 或其它明确 compute op，不能把 reduction 藏在 DTE protocol 中。
 
-`all_reduce` 可以 lower 成 reduce-scatter + all-gather，也可以在后续引入其它算法。IR 只要求：
+`all_reduce` V0 使用 full-buffer ring reduce。后续仍可以引入 reduce-scatter + all-gather 或其它算法，
+但 accepted schedule 必须满足：
 
 - reduction kind、dtype、init/accumulate 语义可验证。
 - 每个 communication step 是 unicast p2p。
@@ -312,11 +313,21 @@ lowering 中将 compact `tensor/ntensor` SPM local/gather buffer 展开为 fixed
 
 当前已经能在 rank-specialized group-to-tile-region materialization 中把 top-level single-result
 `wafer.linalg_ext.collective.reduce_scatter` / `all_reduce` 转成 `wafer.tile.reduce_scatter` /
-`wafer.tile.all_reduce`。`reduce_scatter` 先按 group-local `local_rank` 从 full input 中 materialize 当前
-scatter slot，再生成 fixed-size tile collective。旧 ring-reduce collective debug pass 已删除。后续
-accepted schedule 仍应显式展开 p2p
-`wafer.instr.dte_*`，并在 wait 后用明确 compute op 对 accumulator 和 recv staging buffer 做本地累计；
-reduction kind、dtype、use-def 和 wait 顺序不能变成 DTE side effect。
+`wafer.tile.all_reduce`。`wafer.tile.all_reduce` 已能在 tile-region-to-instr lowering 中展开成
+fixed-size unicast ring：先把 input 复制到 accumulator 和 forward staging buffer，插入
+`wafer.instr.local_drain`，之后每步 `wafer.instr.dte_send` forward buffer、`dte_recv` 到 recv buffer、
+`dte_wait` completion token，再用 `wafer.instr.elementwise` 对 accumulator 和 recv staging buffer 做
+sum/max/min 本地累计。下一步发送的不是 accumulator，而是刚收到的 partial；否则 ring 会重复累加已经
+accumulated 的 contribution。该 IR 仍只保存 logical peer、buffer view、local drain 和 token/wait，
+不写 physical endpoint、DTE id、SPM offset 或 packet field。
+
+`wafer.tile.reduce_scatter` 当前仍只作为 buffer-level placeholder 保留。现有 group-to-tile-region
+materialization 只按 group-local `local_rank` 从 full input 中 materialize 当前 rank 的 local scatter
+slot；这不足以生成正确 p2p schedule，因为标准 reduce-scatter 需要每个 rank 向目标 rank 发送对应目标
+slot 的 local contribution。直接把这个 local slot op 当成 all-reduce 来 lower 会把不同 scatter slot
+混在一起 reduce。因此 reduce-scatter 的下一步是修正 tile-region 层表示，让 full input / per-target slot
+关系进入 IR；只有 accepted schedule 明确每个 p2p step 的 source slot、dest slot 和 local accumulation
+后，才能 rewrite 成 `wafer.instr.dte_*`。
 P6.6 的早期 StableHLO normalization pass 会把 single-result StableHLO `all_reduce` /
 `reduce_scatter` 直接降到这些 collective-level op；该路径和 all-gather 一样已经退出主线，
 不应作为 tensor group/tiling 输入。主线恢复后，应先由 `wafer.linalg_ext.collective.*`
@@ -455,8 +466,12 @@ wafer.instr.dte_wait %send1, %recv1
 - tile-region-to-instr 已能把 compact `tensor/ntensor` SPM `wafer.tile.all_gather` 展开成 explicit fixed-size ring
   `wafer.instr.local_drain` + `wafer.instr.dte_send` / `wafer.instr.dte_recv` /
   `wafer.instr.dte_wait`，并通过 named pipeline + SPM planning lit 覆盖 token/lifetime 消费。
-- `collective_permute`、`all_to_all`、`reduce_scatter` / `all_reduce` 的 p2p + local reduce lowering
-  仍依赖后续 buffer slot / token lifetime / local accumulation 表达，不是当前完成项。
+- tile-region-to-instr 已能把 `tensor` SPM `wafer.tile.all_reduce` 展开成 explicit fixed-size ring
+  `wafer.instr.local_drain` + `wafer.instr.dte_send` / `wafer.instr.dte_recv` /
+  `wafer.instr.dte_wait` + `wafer.instr.elementwise` accumulation，并通过 named pipeline +
+  SPM planning lit 覆盖 token/lifetime 消费。
+- `collective_permute`、`all_to_all` 和 `reduce_scatter` 的 p2p lowering 仍依赖后续 buffer slot /
+  token lifetime / per-target scatter-slot 表达，不是当前完成项。
 - Direct DTE send/recv/wait golden path 和 error diagnostic 属于历史 bring-up 证据；Direct DTE
   issue/wait form、resource allocation 和 ABI/LLVM emission 需要从 committed instruction IR
   和 accepted endpoint/resource facts 重新建立。

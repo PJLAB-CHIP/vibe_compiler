@@ -468,7 +468,8 @@ V0 mapping：
 | `wafer.tile.reshape` | identity replacement when types are identical; otherwise preserve source/result canonical linear element order and reinterpret result multi-indices through the new shape; compact `tensor/ntensor` reshape lowers to a verifier-legal standard memref view because compact physical bytes already follow that linear order; `Cx/NCx` reshape first compares same-linear-element source/result physical byte offsets with the unified physical layout calculator, materializes a destination memref and emits packed `wafer.instr.gather_scatter` descriptors only when the physical mapping or required footprint changes; structured failure only when the static reshape movement plan cannot be represented by V0 descriptors |
 | `scf.if` / `scf.for` | preserve the structured control-flow op; recursively legalize executable target-abstract ops in each nested region; keep scalar and memref yields explicit |
 | `wafer.tile.all_gather` | V0 requires matching `tensor/ntensor` SPM layouts, infers the unique gather axis from compact local/gather buffer shapes, copies the local chunk into the local gather slot with `wafer.instr.gather_scatter`, inserts `wafer.instr.local_drain` before DTE reads that locally-written slot, then emits fixed-size ring `wafer.instr.dte_send` / `dte_recv` / `dte_wait` steps over slot `memref.subview` values |
-| `wafer.tile.reduce_scatter/all_reduce` | pending p2p reduce schedule lowering；accepted algorithm must rewrite to `wafer.instr.dte_send` / `dte_recv` / `dte_wait` plus explicit local compute where needed |
+| `wafer.tile.all_reduce` | V0 requires matching `tensor` SPM buffers and sum/max/min reduce kind；it creates an accumulator and a forward staging buffer, copies the local input into both with `wafer.instr.gather_scatter`, drains the local copies, then emits fixed-size ring `wafer.instr.dte_send` / `dte_recv` / `dte_wait` steps that forward the most recently received partial and accumulate into the result with `wafer.instr.elementwise` |
+| `wafer.tile.reduce_scatter` | pending scatter-slot dataflow repair；the accepted schedule must know which scatter slot each p2p step sends to which destination rank before it can rewrite to `wafer.instr.dte_send` / `dte_recv` / `dte_wait` plus explicit local accumulation |
 
 R3.2d.4 已覆盖 static movement descriptor splitting / packing：
 
@@ -482,15 +483,18 @@ R3.2d.4 已覆盖 static movement descriptor splitting / packing：
   dynamic shape、bit-packed element、超过三层或 helper 无法证明真实 physical offset 的情况仍
   structured failure。
 
-R3.2d V0 剩余 communication coverage gap 是 reduce collective 的 Direct DTE schedule lowering：
+R3.2d V0 communication coverage：
 
 - `wafer.tile.all_gather` 已能在 `rank_group`、group-local `local_rank`、`group_size`、`bytes`
   和静态 compact `tensor/ntensor` SPM buffer shape 均可验证时 materialize fixed-size unicast ring schedule。该 lowering 只写
   logical peer、slot view、local drain 和 async token/wait，不写 physical endpoint、DTE id、SPM offset 或 packet field。
-- `wafer.tile.reduce_scatter` / `wafer.tile.all_reduce` 仍需要 p2p reduce schedule 和 explicit local
-  accumulation 表达。R3.2d 不能把 reduction 藏进 DTE side effect，也不能从 op 名、rank 常量或
-  unplaced memref 推断通信协议；accepted reduce schedule 必须显式表达为 `wafer.instr.dte_*` +
-  `wafer.instr.elementwise` / local compute body。
+- `wafer.tile.all_reduce` 已能在 `rank_group`、group-local `local_rank`、`group_size`、`bytes`、
+  `tensor` SPM buffer type 和 sum/max/min reduce kind 均可验证时 materialize fixed-size unicast
+  ring schedule。该 lowering 不把 reduction 藏进 DTE side effect；每个 step 都先 wait DTE token，
+  再用 `wafer.instr.elementwise` 对 accumulator 和 recv staging buffer 做本地累计。
+- `wafer.tile.reduce_scatter` 仍不能直接 lower。当前 buffer-level op 只携带当前 rank 的 local scatter
+  slot；标准 reduce-scatter schedule 需要表达每个目标 rank 的 scatter slot contribution，否则不同
+  slot 会被错误地互相 reduce。后续应先扩展 / 修正 tile-region 层的数据流表示，再展开 p2p schedule。
 
 R3.2d may generate multiple instruction ops for a single target-abstract movement op, but it must not write a
 global schedule attr. The instruction sequence is the region body itself.
@@ -522,7 +526,7 @@ diagnostics to the closed-loop planner or debug pass, but rejected instruction I
   runtime ABI call to be legal.
 
 Diagnostics should mention the source op and the missing legality fact, for example:
-`tile reduce collective lowering requires p2p reduce schedule support` or
+`tile.reduce_scatter lowering requires explicit scatter-slot p2p schedule support` or
 `tile.broadcast lowering requires static positive iteration shape`.
 
 ## 10. Verifier Contract
