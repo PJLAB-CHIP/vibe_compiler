@@ -399,7 +399,7 @@ struct NormalizeStablehloCollectivesPass
 
       if (!lowered) {
         op->emitError("failed to normalize StableHLO collective to "
-                      "wafer_linalg_ext collective handoff");
+                      "wafer.linalg_ext collective handoff");
         signalPassFailure();
         return;
       }

@@ -88,15 +88,14 @@ OP_FAMILIES = {
         "td": "CollectiveOps.td",
         "cpp": "CollectiveOps.cpp",
         "mnemonics": [
-            "collective.all_gather",
-            "collective.all_reduce",
-            "collective.reduce_scatter",
-            "collective.all_to_all",
-            "collective.collective_permute",
-            "collective.yield",
+            "linalg_ext.collective.all_gather",
+            "linalg_ext.collective.all_reduce",
+            "linalg_ext.collective.reduce_scatter",
+            "linalg_ext.collective.all_to_all",
+            "linalg_ext.collective.collective_permute",
+            "linalg_ext.collective.yield",
         ],
         "tests": "LinalgExt/Collective",
-        "aggregator": "WaferLinalgExtOps.td",
     },
     "DTE": {
         "layer": "Instr",
@@ -158,6 +157,7 @@ FORBIDDEN_IR_STRINGS = (
     "wafer.instr.ct.",
     "wafer.instr.ne.",
     "wafer.instr.tdma.",
+    "wafer_linalg_ext",
     "wafer.linalg_ext_collective",
     "wafer.tile_region",
     "wafer.tile_yield",
@@ -170,6 +170,8 @@ FORBIDDEN_IR_STRINGS = (
     "DdrExternalBindingOp",
     "DdrBindingKind",
     "AbiWaitPolicy",
+    "WaferLinalgExtDialect",
+    "WaferLinalgExtOps",
 )
 ALLOWED_IR_SPECIALIZATIONS = (
     "wafer.ddr.offset",
@@ -189,7 +191,7 @@ def check_file(path: Path, errors: list[str]) -> str:
 
 def check_main_ops_td(root: Path, errors: list[str]) -> None:
     aggregator_texts: dict[str, str] = {}
-    for filename in ("WaferOps.td", "WaferLinalgExtOps.td"):
+    for filename in ("WaferOps.td",):
         path = root / "include/Wafer/IR" / filename
         text = check_file(path, errors)
         if not text:

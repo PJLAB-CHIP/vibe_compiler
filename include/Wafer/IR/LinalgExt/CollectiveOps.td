@@ -7,7 +7,7 @@ include "mlir/Interfaces/DestinationStyleOpInterface.td"
 include "mlir/Interfaces/TilingInterface.td"
 
 class Wafer_LinalgExtCollectiveOp<string mnemonic, list<Trait> traits = []>
-    : WaferLinalgExt_Op<mnemonic, !listconcat([
+    : Wafer_Op<mnemonic, !listconcat([
         AttrSizedOperandSegments,
         DestinationStyleOpInterface,
         TilingInterface,
@@ -56,7 +56,7 @@ class Wafer_LinalgExtCollectiveRankGroupOp<string mnemonic,
 }
 
 def Wafer_LinalgExtCollectiveAllGatherOp
-    : Wafer_LinalgExtCollectiveRankGroupOp<"collective.all_gather"> {
+    : Wafer_LinalgExtCollectiveRankGroupOp<"linalg_ext.collective.all_gather"> {
   let summary = "linalg-extension post-SPMD all-gather handoff";
   let description = [{
     Carries StableHLO all_gather semantics after SPMD partitioning as a
@@ -75,7 +75,7 @@ def Wafer_LinalgExtCollectiveAllGatherOp
 }
 
 def Wafer_LinalgExtCollectiveReduceScatterOp
-    : Wafer_LinalgExtCollectiveRankGroupOp<"collective.reduce_scatter",
+    : Wafer_LinalgExtCollectiveRankGroupOp<"linalg_ext.collective.reduce_scatter",
         [SingleBlockImplicitTerminator<"LinalgExtCollectiveYieldOp">]> {
   let summary = "linalg-extension post-SPMD reduce-scatter handoff";
   let description = [{
@@ -94,7 +94,7 @@ def Wafer_LinalgExtCollectiveReduceScatterOp
 }
 
 def Wafer_LinalgExtCollectiveAllReduceOp
-    : Wafer_LinalgExtCollectiveOp<"collective.all_reduce",
+    : Wafer_LinalgExtCollectiveOp<"linalg_ext.collective.all_reduce",
         [SingleBlockImplicitTerminator<"LinalgExtCollectiveYieldOp">]> {
   let summary = "linalg-extension post-SPMD all-reduce handoff";
   let description = [{
@@ -121,7 +121,7 @@ def Wafer_LinalgExtCollectiveAllReduceOp
 }
 
 def Wafer_LinalgExtCollectiveAllToAllOp
-    : Wafer_LinalgExtCollectiveOp<"collective.all_to_all"> {
+    : Wafer_LinalgExtCollectiveOp<"linalg_ext.collective.all_to_all"> {
   let summary = "linalg-extension post-SPMD all-to-all handoff";
   let description = [{
     Carries linalg-extension all-to-all semantics after SPMD partitioning.
@@ -147,7 +147,7 @@ def Wafer_LinalgExtCollectiveAllToAllOp
 }
 
 def Wafer_LinalgExtCollectiveCollectivePermuteOp
-    : Wafer_LinalgExtCollectiveOp<"collective.collective_permute"> {
+    : Wafer_LinalgExtCollectiveOp<"linalg_ext.collective.collective_permute"> {
   let summary = "linalg-extension post-SPMD collective-permute handoff";
   let description = [{
     Carries linalg-extension collective-permute semantics after SPMD partitioning.
@@ -168,7 +168,7 @@ def Wafer_LinalgExtCollectiveCollectivePermuteOp
   }];
 }
 
-def Wafer_LinalgExtCollectiveYieldOp : WaferLinalgExt_Op<"collective.yield", [
+def Wafer_LinalgExtCollectiveYieldOp : Wafer_Op<"linalg_ext.collective.yield", [
     ParentOneOf<["LinalgExtCollectiveAllReduceOp",
                  "LinalgExtCollectiveReduceScatterOp"]>,
     Pure,

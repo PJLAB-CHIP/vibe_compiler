@@ -200,13 +200,13 @@ module {
       -> tensor<4xf32> {
     %0 = wafer.group ins(%input : tensor<4xf32>) outs(%out : tensor<4xf32>) {
     ^bb0(%arg0: tensor<4xf32>, %arg1: tensor<4xf32>):
-      %ar = wafer_linalg_ext.collective.all_reduce
+      %ar = wafer.linalg_ext.collective.all_reduce
           ins(%arg0 : tensor<4xf32>)
           outs(%arg1 : tensor<4xf32>)
           {
           ^bb0(%lhs: f32, %rhs: f32):
             %sum = arith.addf %lhs, %rhs : f32
-            wafer_linalg_ext.collective.yield %sum : f32
+            wafer.linalg_ext.collective.yield %sum : f32
           } {rank_group = array<i64: 0, 1>} -> tensor<4xf32>
       wafer.group.yield %ar : tensor<4xf32>
     } : tensor<4xf32>

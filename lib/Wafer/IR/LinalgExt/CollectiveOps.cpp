@@ -674,7 +674,7 @@ mlir::LogicalResult verifyCombinerRegion(mlir::Operation *op,
 
   auto yield = mlir::dyn_cast<LinalgExtCollectiveYieldOp>(block.getTerminator());
   if (!yield)
-    return op->emitOpError("combiner must terminate with wafer_linalg_ext.collective.yield");
+    return op->emitOpError("combiner must terminate with wafer.linalg_ext.collective.yield");
 
   if (yield.getValues().size() != results.size()) {
     if (results.size() == 1)

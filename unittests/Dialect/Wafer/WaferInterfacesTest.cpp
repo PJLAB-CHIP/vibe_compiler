@@ -239,7 +239,7 @@ TEST(WaferInterfacesTest, LayoutResourceAndMemoryEffectsAreQueryable) {
   wafer::registerAllDialects(registry);
 
   mlir::MLIRContext context(registry);
-  context.loadDialect<wafer::WaferDialect, wafer::WaferLinalgExtDialect, mlir::async::AsyncDialect>();
+  context.loadDialect<wafer::WaferDialect, mlir::async::AsyncDialect>();
 
   auto module = mlir::parseSourceString<mlir::ModuleOp>(
       R"mlir(
@@ -387,7 +387,7 @@ TEST(WaferInterfacesTest, TilingAndTileLoadContractsAreQueryable) {
   wafer::registerAllDialects(registry);
 
   mlir::MLIRContext context(registry);
-  context.loadDialect<wafer::WaferDialect, wafer::WaferLinalgExtDialect>();
+  context.loadDialect<wafer::WaferDialect>();
 
   auto module = mlir::parseSourceString<mlir::ModuleOp>(
       R"mlir(
@@ -450,7 +450,7 @@ TEST(WaferInterfacesTest, InstructionInterfacesExposeFamilyAndEffects) {
   registry.insert<mlir::arith::ArithDialect>();
 
   mlir::MLIRContext context(registry);
-  context.loadDialect<wafer::WaferDialect, wafer::WaferLinalgExtDialect, mlir::arith::ArithDialect>();
+  context.loadDialect<wafer::WaferDialect, mlir::arith::ArithDialect>();
 
   auto module = mlir::parseSourceString<mlir::ModuleOp>(
       R"mlir(
@@ -580,7 +580,7 @@ TEST(WaferInterfacesTest, LinalgExtCollectivesExposeLinalgExtStyleContracts) {
   registry.insert<mlir::arith::ArithDialect, mlir::tensor::TensorDialect>();
 
   mlir::MLIRContext context(registry);
-  context.loadDialect<wafer::WaferDialect, wafer::WaferLinalgExtDialect, mlir::arith::ArithDialect,
+  context.loadDialect<wafer::WaferDialect, mlir::arith::ArithDialect,
                       mlir::tensor::TensorDialect>();
 
   auto module = mlir::parseSourceString<mlir::ModuleOp>(
@@ -588,38 +588,38 @@ TEST(WaferInterfacesTest, LinalgExtCollectivesExposeLinalgExtStyleContracts) {
 module {
   %input = "builtin.unrealized_conversion_cast"() : () -> tensor<4xf32>
   %out = "builtin.unrealized_conversion_cast"() : () -> tensor<4xf32>
-  %reduced = wafer_linalg_ext.collective.all_reduce
+  %reduced = wafer.linalg_ext.collective.all_reduce
       ins(%input : tensor<4xf32>)
       outs(%out : tensor<4xf32>)
       {
     ^bb0(%lhs: f32, %rhs: f32):
       %sum = arith.addf %lhs, %rhs : f32
-      wafer_linalg_ext.collective.yield %sum : f32
+      wafer.linalg_ext.collective.yield %sum : f32
       } {channel_id = 7 : i64, rank_group = array<i64: 0, 1>}
       -> tensor<4xf32>
 
   %gathered_out = "builtin.unrealized_conversion_cast"() : () -> tensor<8xf32>
-  %gathered = wafer_linalg_ext.collective.all_gather
+  %gathered = wafer.linalg_ext.collective.all_gather
       ins(%input : tensor<4xf32>)
       outs(%gathered_out : tensor<8xf32>)
       {axis = 0 : i64, channel_id = 9 : i64, rank_group = array<i64: 0, 1>}
       -> tensor<8xf32>
 
   %wide = "builtin.unrealized_conversion_cast"() : () -> tensor<8xf32>
-  %scattered = wafer_linalg_ext.collective.reduce_scatter
+  %scattered = wafer.linalg_ext.collective.reduce_scatter
       ins(%wide : tensor<8xf32>)
       outs(%out : tensor<4xf32>)
       {
     ^bb0(%lhs: f32, %rhs: f32):
       %sum = arith.addf %lhs, %rhs : f32
-      wafer_linalg_ext.collective.yield %sum : f32
+      wafer.linalg_ext.collective.yield %sum : f32
       } {axis = 0 : i64, channel_id = 10 : i64,
          rank_group = array<i64: 0, 1>}
       -> tensor<4xf32>
 
   %matrix = "builtin.unrealized_conversion_cast"() : () -> tensor<4x2xf32>
   %matrix_out = "builtin.unrealized_conversion_cast"() : () -> tensor<2x4xf32>
-  %a2a = wafer_linalg_ext.collective.all_to_all
+  %a2a = wafer.linalg_ext.collective.all_to_all
       ins(%matrix : tensor<4x2xf32>)
       outs(%matrix_out : tensor<2x4xf32>)
       {split_axis = 0 : i64, concat_axis = 1 : i64,
@@ -627,7 +627,7 @@ module {
        rank_group = array<i64: 0, 1>}
       -> tensor<2x4xf32>
 
-  %permuted = wafer_linalg_ext.collective.collective_permute
+  %permuted = wafer.linalg_ext.collective.collective_permute
       ins(%input : tensor<4xf32>)
       outs(%out : tensor<4xf32>)
       {channel_id = 12 : i64, source_target_pairs = array<i64: 0, 1, 1, 0>}
@@ -797,7 +797,7 @@ TEST(WaferInterfacesTest, LinalgExtCollectiveTilingHandlesNonTrivialShapes) {
   registry.insert<mlir::arith::ArithDialect, mlir::tensor::TensorDialect>();
 
   mlir::MLIRContext context(registry);
-  context.loadDialect<wafer::WaferDialect, wafer::WaferLinalgExtDialect, mlir::arith::ArithDialect,
+  context.loadDialect<wafer::WaferDialect, mlir::arith::ArithDialect,
                       mlir::tensor::TensorDialect>();
 
   auto module = mlir::parseSourceString<mlir::ModuleOp>(
@@ -805,19 +805,19 @@ TEST(WaferInterfacesTest, LinalgExtCollectiveTilingHandlesNonTrivialShapes) {
 module {
   %ar_input = "builtin.unrealized_conversion_cast"() : () -> tensor<1024x4096xf32>
   %ar_out = "builtin.unrealized_conversion_cast"() : () -> tensor<1024x4096xf32>
-  %ar = wafer_linalg_ext.collective.all_reduce
+  %ar = wafer.linalg_ext.collective.all_reduce
       ins(%ar_input : tensor<1024x4096xf32>)
       outs(%ar_out : tensor<1024x4096xf32>)
       {
     ^bb0(%lhs: f32, %rhs: f32):
       %sum = arith.addf %lhs, %rhs : f32
-      wafer_linalg_ext.collective.yield %sum : f32
+      wafer.linalg_ext.collective.yield %sum : f32
       } {channel_id = 17 : i64, rank_group = array<i64: 0, 1, 2, 3, 4, 5, 6, 7>}
       -> tensor<1024x4096xf32>
 
   %ag_input = "builtin.unrealized_conversion_cast"() : () -> tensor<64x512xf32>
   %ag_out = "builtin.unrealized_conversion_cast"() : () -> tensor<64x4096xf32>
-  %ag = wafer_linalg_ext.collective.all_gather
+  %ag = wafer.linalg_ext.collective.all_gather
       ins(%ag_input : tensor<64x512xf32>)
       outs(%ag_out : tensor<64x4096xf32>)
       {axis = 1 : i64, channel_id = 18 : i64,
@@ -826,20 +826,20 @@ module {
 
   %rs_input = "builtin.unrealized_conversion_cast"() : () -> tensor<256x4096xf32>
   %rs_out = "builtin.unrealized_conversion_cast"() : () -> tensor<256x1024xf32>
-  %rs = wafer_linalg_ext.collective.reduce_scatter
+  %rs = wafer.linalg_ext.collective.reduce_scatter
       ins(%rs_input : tensor<256x4096xf32>)
       outs(%rs_out : tensor<256x1024xf32>)
       {
     ^bb0(%lhs: f32, %rhs: f32):
       %sum = arith.addf %lhs, %rhs : f32
-      wafer_linalg_ext.collective.yield %sum : f32
+      wafer.linalg_ext.collective.yield %sum : f32
       } {axis = 1 : i64, channel_id = 19 : i64,
          rank_group = array<i64: 0, 1, 2, 3>}
       -> tensor<256x1024xf32>
 
   %a2a_input = "builtin.unrealized_conversion_cast"() : () -> tensor<512x128x64xf32>
   %a2a_out = "builtin.unrealized_conversion_cast"() : () -> tensor<128x512x64xf32>
-  %a2a = wafer_linalg_ext.collective.all_to_all
+  %a2a = wafer.linalg_ext.collective.all_to_all
       ins(%a2a_input : tensor<512x128x64xf32>)
       outs(%a2a_out : tensor<128x512x64xf32>)
       {split_axis = 0 : i64, concat_axis = 1 : i64,
@@ -849,7 +849,7 @@ module {
 
   %cp_input = "builtin.unrealized_conversion_cast"() : () -> tensor<4x1024x4096xf32>
   %cp_out = "builtin.unrealized_conversion_cast"() : () -> tensor<4x1024x4096xf32>
-  %cp = wafer_linalg_ext.collective.collective_permute
+  %cp = wafer.linalg_ext.collective.collective_permute
       ins(%cp_input : tensor<4x1024x4096xf32>)
       outs(%cp_out : tensor<4x1024x4096xf32>)
       {channel_id = 21 : i64,
@@ -939,7 +939,7 @@ TEST(WaferInterfacesTest, LinalgExtCollectiveTilingHandlesDynamicNonAxisShapes) 
   registry.insert<mlir::arith::ArithDialect, mlir::tensor::TensorDialect>();
 
   mlir::MLIRContext context(registry);
-  context.loadDialect<wafer::WaferDialect, wafer::WaferLinalgExtDialect, mlir::arith::ArithDialect,
+  context.loadDialect<wafer::WaferDialect, mlir::arith::ArithDialect,
                       mlir::tensor::TensorDialect>();
 
   auto module = mlir::parseSourceString<mlir::ModuleOp>(
@@ -947,19 +947,19 @@ TEST(WaferInterfacesTest, LinalgExtCollectiveTilingHandlesDynamicNonAxisShapes) 
 module {
   %ar_input = "builtin.unrealized_conversion_cast"() : () -> tensor<?x4096xf32>
   %ar_out = "builtin.unrealized_conversion_cast"() : () -> tensor<?x4096xf32>
-  %ar = wafer_linalg_ext.collective.all_reduce
+  %ar = wafer.linalg_ext.collective.all_reduce
       ins(%ar_input : tensor<?x4096xf32>)
       outs(%ar_out : tensor<?x4096xf32>)
       {
     ^bb0(%lhs: f32, %rhs: f32):
       %sum = arith.addf %lhs, %rhs : f32
-      wafer_linalg_ext.collective.yield %sum : f32
+      wafer.linalg_ext.collective.yield %sum : f32
       } {channel_id = 22 : i64, rank_group = array<i64: 0, 1, 2, 3>}
       -> tensor<?x4096xf32>
 
   %ag_input = "builtin.unrealized_conversion_cast"() : () -> tensor<?x512xf32>
   %ag_out = "builtin.unrealized_conversion_cast"() : () -> tensor<?x2048xf32>
-  %ag = wafer_linalg_ext.collective.all_gather
+  %ag = wafer.linalg_ext.collective.all_gather
       ins(%ag_input : tensor<?x512xf32>)
       outs(%ag_out : tensor<?x2048xf32>)
       {axis = 1 : i64, channel_id = 23 : i64,

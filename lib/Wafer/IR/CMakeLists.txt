@@ -19,7 +19,6 @@ add_mlir_dialect_library(WaferIR
   DEPENDS
   WaferAttrsIncGen
   WaferInterfacesIncGen
-  WaferLinalgExtOpsIncGen
   WaferOpsIncGen
   WaferTypesIncGen
 

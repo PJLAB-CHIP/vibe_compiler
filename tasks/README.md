@@ -11,9 +11,9 @@
 | --- | --- | --- |
 | 01 | `tasks/01-architecture.md` | 总体 compiler pipeline、IR 分层和子设计边界 |
 | 02 | `tasks/02-frontend-stablehlo-program.md` | frontend program、StableHLO import/export、program directory |
-| 03 | `tasks/03-shardy-spmd.md` | Shardy propagation、SPMD partition、post-SPMD `wafer_linalg_ext.collective.*` handoff |
+| 03 | `tasks/03-shardy-spmd.md` | Shardy propagation、SPMD partition、post-SPMD `wafer.linalg_ext.collective.*` handoff |
 | 04 | `tasks/04-topology-execution-mesh.md` | target topology、execution mesh、tile endpoint projection |
-| 05 | `tasks/05-local-compute-normalization.md` | post-SPMD local compute normalization and `wafer_linalg_ext.collective.*` handoff |
+| 05 | `tasks/05-local-compute-normalization.md` | post-SPMD local compute normalization and `wafer.linalg_ext.collective.*` handoff |
 | 06 | `tasks/06-group.md` | logical group、scheduled group、candidate planning boundary |
 | 07 | `tasks/07-tile-region.md` | memref-backed tile-local execution boundary |
 | 08 | `tasks/08-layout-materialization.md` | physical layout planning and materialization |

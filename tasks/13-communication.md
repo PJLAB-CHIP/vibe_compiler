@@ -14,7 +14,7 @@ accepted p2p schedule 进入 `wafer.instr.dte_send` / `dte_recv` / `dte_wait`。
 
 本文只负责 device-side communication IR：tile-local collective-level op、instruction-level p2p
 steps、token/effect、Direct DTE 和 sync boundary。它不定义 Shardy/SPMD partition、
-`wafer_linalg_ext.collective.*` handoff、compute op legality、layout assignment、SPM allocation、
+`wafer.linalg_ext.collective.*` handoff、compute op legality、layout assignment、SPM allocation、
 DDR memory planning、host runtime D2D/P2P ABI 或 raw non-unicast DTE packet。当前已验证 data plane 可以先使用
 fixed-size unicast Direct DTE，但 logical collective IR 的支持范围不能由当前某个 ring lowering pass
 的覆盖范围反向决定；只要硬件通信能力可组合表达，IR 就应保留对应语义事实。
@@ -43,7 +43,7 @@ fixed-size unicast Direct DTE，但 logical collective IR 的支持范围不能�
 
 ```text
 partitioned StableHLO + collectives
-  -> `wafer_linalg_ext.collective.*` normalization
+  -> `wafer.linalg_ext.collective.*` normalization
   -> wafer.group tiling / scheduled tensor collective
   -> wafer.tile.region + SPM storage values + topology/execution mesh
   -> target-abstract `wafer.tile.*` buffer-level collective
@@ -57,7 +57,7 @@ partitioned StableHLO + collectives
 | 层次 | 表示 | 责任 |
 | --- | --- | --- |
 | StableHLO / Shardy | `all_gather`、`reduce_scatter`、`all_reduce`、`collective_permute` | global tensor 和 logical mesh 语义 |
-| Tensor collective handoff | `wafer_linalg_ext.collective.*` ops | DPS/tensor-level collective、tiling/fusion、logical rank group / source-target pairs、axis/combiner verifier |
+| Tensor collective handoff | `wafer.linalg_ext.collective.*` ops | DPS/tensor-level collective、tiling/fusion、logical rank group / source-target pairs、axis/combiner verifier |
 | Scheduled group / tile_region | tiled tensor collective + storage values | tile slice、SPM buffer、layout/materialization、communication staging demand |
 | Topology / execution mesh | logical rank 到 encoded physical endpoint 的 derived / explicit view | availability、connectivity、rank order、physical peer |
 | buffer-level comm | `wafer.tile.*` collective / permute op | 保留 tile-local communication semantic、logical group / byte/effect 边界；physical endpoint 从 topology/execution mesh 派生，不选择 raw DTE register |
@@ -159,8 +159,8 @@ rank；长期 verifier / lowering 需要能检查：
 
 当前 tensor collective、tile collective 和 DTE p2p rank 字段约定为：
 
-- `wafer_linalg_ext.collective.*` `rank_group`：logical execution ranks。
-- `wafer_linalg_ext.collective.*` `source_target_pairs`：source / target logical execution-rank pairs。
+- `wafer.linalg_ext.collective.*` `rank_group`：logical execution ranks。
+- `wafer.linalg_ext.collective.*` `source_target_pairs`：source / target logical execution-rank pairs。
 - `wafer.tile.*` collective `rank_group`：logical execution ranks。
 - `wafer.tile.*` collective `local_rank`：group-local index，`rank_group[local_rank]` 才是当前 tile 的
   logical rank。
@@ -254,7 +254,7 @@ body，并保留 destination slot 供地址 offset / packet 参数 lowering 使�
 group/tiling 前的主线输入，也不应恢复。后续应实现三层：
 
 ```text
-StableHLO collective -> `wafer_linalg_ext.collective.*`
+StableHLO collective -> `wafer.linalg_ext.collective.*`
 tiled tensor collective + SPM storage values -> `wafer.tile.*` collective
 `wafer.tile.*` collective -> `wafer.instr.dte_*` p2p schedule
 ```
@@ -311,7 +311,7 @@ double buffer、wait token 和 buffer reuse fence 都进入 SPM lifetime / deman
 reduction kind、dtype、use-def 和 wait 顺序不能变成 DTE side effect。
 P6.6 的早期 StableHLO normalization pass 会把 single-result StableHLO `all_reduce` /
 `reduce_scatter` 直接降到这些 collective-level op；该路径和 all-gather 一样已经退出主线，
-不应作为 tensor group/tiling 输入。主线恢复后，应先由 `wafer_linalg_ext.collective.*`
+不应作为 tensor group/tiling 输入。主线恢复后，应先由 `wafer.linalg_ext.collective.*`
 保留 combiner region 和 tile 语义，再在 tile_region / SPM
 materialization 之后生成 `wafer.tile.reduce_scatter` / `wafer.tile.all_reduce`。当前实现只覆盖
 sum/max/min reduction body；如果 SPMD 产出其它硬件可表达 reduction kind，应补充 tensor collective、
@@ -330,7 +330,7 @@ non-unicast helper，它也可以由 execution mesh endpoint view 上的一组 `
 - token/wait 和 buffer lifetime。
 
 如果当前实现还没有 `wafer.tile.all_to_all` op 或 lowering pass，P2.S2 应保留 StableHLO collective，
-R2.4 应补 `wafer_linalg_ext.collective.*` op；R6 再恢复 tile-local `wafer.tile.*` collective 和
+R2.4 应补 `wafer.linalg_ext.collective.*` op；R6 再恢复 tile-local `wafer.tile.*` collective 和
 `wafer.instr.dte_*` p2p schedule、resource allocation 和 launch/resource/package metadata。
 
 ## 7. Interaction with Layout, SPM, and DDR

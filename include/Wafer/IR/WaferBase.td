@@ -22,20 +22,4 @@ def Wafer_Dialect : Dialect {
 class Wafer_Op<string mnemonic, list<Trait> traits = []>
     : Op<Wafer_Dialect, mnemonic, traits>;
 
-def WaferLinalgExt_Dialect : Dialect {
-  let name = "wafer_linalg_ext";
-  let cppNamespace = "::wafer";
-  let summary = "Wafer linalg extension dialect";
-  let description = [{
-    The Wafer linalg extension dialect carries destination-style tensor
-    operations that extend the linalg-level structured tensor layer before
-    Wafer group and tile-region materialization. Target-local storage,
-    endpoints, DTE tokens, packet fields, and runtime handles belong to lower
-    Wafer IR layers.
-  }];
-}
-
-class WaferLinalgExt_Op<string mnemonic, list<Trait> traits = []>
-    : Op<WaferLinalgExt_Dialect, mnemonic, traits>;
-
 #endif // WAFER_IR_WAFERBASE_TD

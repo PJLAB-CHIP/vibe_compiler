@@ -18,10 +18,10 @@
 # GROUP-MLIR: func.func @main
 # GROUP-MLIR-NOT: stablehlo.all_gather
 # GROUP-MLIR: wafer.group ins(%{{[^, ]+}}, %{{[^, ]+}}, %{{[^, ]+}} : tensor<32x2xf32>, tensor<32x32xf32>, tensor<2xf32>) outs(%{{[^ ]+}} : tensor<32x32xf32>) {
-# GROUP-MLIR: wafer_linalg_ext.collective.all_gather
+# GROUP-MLIR: wafer.linalg_ext.collective.all_gather
 # GROUP-MLIR-SAME: rank_group = array<i64:
 # GROUP-MLIR: linalg.matmul
-# GROUP-MLIR: wafer_linalg_ext.collective.all_gather
+# GROUP-MLIR: wafer.linalg_ext.collective.all_gather
 # GROUP-MLIR: linalg.generic
 # GROUP-MLIR: arith.addf
 # GROUP-MLIR: wafer.group.yield
@@ -29,22 +29,22 @@
 
 # DEMAND-LABEL: wafer.tiling_demand group @main#0
 # DEMAND: result_tile #0 type=tensor<32x32xf32> slice=[d0,d1]
-# DEMAND: op #1 wafer_linalg_ext.collective.all_gather
+# DEMAND: op #1 wafer.linalg_ext.collective.all_gather
 # DEMAND: collective kind=all_gather rank_group=[
 # DEMAND: op #5 linalg.matmul
 # DEMAND: accumulator result #0 reduction_dims=[d2]
-# DEMAND: op #7 wafer_linalg_ext.collective.all_gather
+# DEMAND: op #7 wafer.linalg_ext.collective.all_gather
 # DEMAND: op #10 linalg.generic
 # DEMAND: input #1 slice=[d0,d1]
 
 # LAYOUT-LABEL: wafer.layout_plan group @main#0
-# LAYOUT: op #1 wafer_linalg_ext.collective.all_gather
+# LAYOUT: op #1 wafer.linalg_ext.collective.all_gather
 # LAYOUT: collective kind=all_gather rank_group=[
 # LAYOUT: result #0 layout=tensor slice=[d0,d1]
 # LAYOUT: op #5 linalg.matmul
 # LAYOUT: input #0 layout=cx slice=[d0,d2]
 # LAYOUT: accumulator result #0 layout=cx reduction_dims=[d2]
-# LAYOUT: op #7 wafer_linalg_ext.collective.all_gather
+# LAYOUT: op #7 wafer.linalg_ext.collective.all_gather
 # LAYOUT: op #10 linalg.generic
 # LAYOUT: materialization #5 op #10 result #0 -> group result #0 cx->tensor type=tensor<32x32xf32>
 

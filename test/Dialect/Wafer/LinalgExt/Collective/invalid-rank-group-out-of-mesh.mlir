@@ -18,7 +18,7 @@ module {
       %input: tensor<2x4xf32>,
       %out: tensor<4x4xf32>) -> tensor<4x4xf32> {
     // CHECK: linalg-ext collective rank_group logical ranks must be within execution mesh rank count
-    %0 = wafer_linalg_ext.collective.all_gather
+    %0 = wafer.linalg_ext.collective.all_gather
         ins(%input : tensor<2x4xf32>)
         outs(%out : tensor<4x4xf32>)
         {axis = 0 : i64, rank_group = array<i64: 0, 2>}

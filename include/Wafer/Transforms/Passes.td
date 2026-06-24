@@ -64,8 +64,7 @@ def FormLogicalGroupsPass
   let dependentDialects = ["mlir::arith::ArithDialect",
                            "mlir::linalg::LinalgDialect",
                            "mlir::math::MathDialect", "mlir::scf::SCFDialect",
-                           "mlir::tensor::TensorDialect", "wafer::WaferDialect",
-                           "wafer::WaferLinalgExtDialect",
+                           "mlir::tensor::TensorDialect", "wafer::WaferDialect"
   ];
 }
 
@@ -74,8 +73,7 @@ def DumpGroupTilingDemandPass
   let summary = "Dump wafer.group tiling demand analysis";
   let dependentDialects = ["mlir::arith::ArithDialect",
                            "mlir::linalg::LinalgDialect",
-                           "mlir::tensor::TensorDialect", "wafer::WaferDialect",
-                           "wafer::WaferLinalgExtDialect",
+                           "mlir::tensor::TensorDialect", "wafer::WaferDialect"
   ];
 }
 
@@ -84,8 +82,7 @@ def DumpGroupLayoutPlanPass
   let summary = "Dump wafer.group layout planning analysis";
   let dependentDialects = ["mlir::arith::ArithDialect",
                            "mlir::linalg::LinalgDialect",
-                           "mlir::tensor::TensorDialect", "wafer::WaferDialect",
-                           "wafer::WaferLinalgExtDialect",
+                           "mlir::tensor::TensorDialect", "wafer::WaferDialect"
   ];
 }
 
@@ -99,8 +96,7 @@ def DumpGroupToTileRegionPass
                            "mlir::linalg::LinalgDialect",
                            "mlir::memref::MemRefDialect",
                            "mlir::scf::SCFDialect",
-                           "mlir::tensor::TensorDialect", "wafer::WaferDialect",
-                           "wafer::WaferLinalgExtDialect",
+                           "mlir::tensor::TensorDialect", "wafer::WaferDialect"
   ];
 }
 
@@ -114,8 +110,7 @@ def DumpCandidateDdrTileViewsPass
                            "mlir::math::MathDialect",
                            "mlir::memref::MemRefDialect",
                            "mlir::scf::SCFDialect",
-                           "mlir::tensor::TensorDialect", "wafer::WaferDialect",
-                           "wafer::WaferLinalgExtDialect",
+                           "mlir::tensor::TensorDialect", "wafer::WaferDialect"
   ];
   let options = [
     Option<"candidateTileOffsets", "candidate-tile-offsets", "std::string",
@@ -138,8 +133,7 @@ def SelectGroupTilePass
                            "mlir::math::MathDialect",
                            "mlir::memref::MemRefDialect",
                            "mlir::scf::SCFDialect",
-                           "mlir::tensor::TensorDialect", "wafer::WaferDialect",
-                           "wafer::WaferLinalgExtDialect",
+                           "mlir::tensor::TensorDialect", "wafer::WaferDialect"
   ];
   let options = [
     Option<"tileSearch", "tile-search", "std::string",
@@ -182,8 +176,7 @@ def NormalizeStablehloCollectivesPass
   let summary =
       "Normalize post-SPMD StableHLO collectives to Wafer linalg extension collectives";
   let dependentDialects = ["mlir::arith::ArithDialect",
-                           "mlir::tensor::TensorDialect", "wafer::WaferDialect",
-                           "wafer::WaferLinalgExtDialect",
+                           "mlir::tensor::TensorDialect", "wafer::WaferDialect"
   ];
 }
 
@@ -197,8 +190,7 @@ def ConvertGroupToTileRegionPass
                            "mlir::math::MathDialect",
                            "mlir::memref::MemRefDialect",
                            "mlir::scf::SCFDialect",
-                           "mlir::tensor::TensorDialect", "wafer::WaferDialect",
-                           "wafer::WaferLinalgExtDialect",
+                           "mlir::tensor::TensorDialect", "wafer::WaferDialect"
   ];
 }
 
@@ -210,7 +202,7 @@ def ConvertTileRegionToInstrPass
                            "mlir::func::FuncDialect",
                            "mlir::memref::MemRefDialect",
                            "mlir::scf::SCFDialect",
-                           "wafer::WaferDialect",
+                           "wafer::WaferDialect"
   ];
 }
 
@@ -219,7 +211,7 @@ def PlanSPMMemoryPass
   let summary =
       "Plan Wafer SPM memref allocations with tile-local byte offsets";
   let dependentDialects = ["mlir::memref::MemRefDialect",
-                           "wafer::WaferDialect",
+                           "wafer::WaferDialect"
   ];
   let options = [
     Option<"spmBase", "spm-base", "int64_t", /*default=*/"65536",
@@ -238,7 +230,7 @@ def PlanDDRMemoryPass
   let dependentDialects = ["mlir::async::AsyncDialect",
                            "mlir::func::FuncDialect",
                            "mlir::memref::MemRefDialect",
-                           "mlir::scf::SCFDialect", "wafer::WaferDialect",
+                           "mlir::scf::SCFDialect", "wafer::WaferDialect"
   ];
   let options = [
     Option<"ddrCapacityBytes", "ddr-capacity-bytes", "int64_t",

@@ -8,7 +8,7 @@ structured control-flow lowering。
 和 sync/effect op。它不重新做 group formation、traversal selection、root tile search 或 runtime
 launch/package 组织。
 
-SPMD 后的 StableHLO collective 在进入本文之前应已经规整成 `wafer_linalg_ext.collective.*`
+SPMD 后的 StableHLO collective 在进入本文之前应已经规整成 `wafer.linalg_ext.collective.*`
 并参与 group/tiling。`wafer.tile.region` 是这些 tiled tensor collective 第一次拥有 SPM storage、
 endpoint-derived metadata 和 communication staging demand 的层级；`wafer.tile.*` collective 和
 `wafer.instr.dte_*` 不应在这之前作为 group 输入出现。
@@ -162,7 +162,7 @@ table 补协议。
 | `tensor.expand_shape` / `tensor.collapse_shape` | static element-count-preserving reshape lower 到 `wafer.tile.reshape` | supported for static shape-only reshape | `wafer.tile.reshape` 表达 canonical linear element order 保持不变、result multi-index 按新 shape 重新解释的 logical reindex；tile-region 层 op 本身无 write effect，但下游若当前 physical layout 不能 alias 该 logical reindex，必须 materialize 成 explicit movement，不能用 reshape 逃避 physical layout。 |
 | `scf.if` | 保留为 tile-region 内 structured control-flow；condition 使用 scalar SSA，then/else body 递归 lower，tensor result / yield value 以 SPM memref result 穿过 `scf.if` | supported for single-block `scf.if` with supported nested ops | 分支内局部 value 不泄漏；只有 `scf.yield` result 重新进入父 scope。外部 scalar 必须作为 `wafer.group` input 或在 group 内定义，不能绕过 `IsolatedFromAbove`。不在 R3.2c 展开分支或选择硬件 branch 指令。 |
 | `scf.for` | 保留为 tile-region 内 structured loop；lb/ub/step 使用 scalar SSA，iter_args 中的 tensor value 转为 SPM memref loop-carried value，body 递归 lower，`scf.yield` 传回 SPM memref/scalar | supported for single-block `scf.for` with supported nested ops | loop-carried tensor 只表达 tile-local buffer dataflow，不做 unroll、trip-count planning、SPM offset planning 或 hardware loop/branch instruction selection。并行 loop / while / execute_region 不在本阶段放开。 |
-| `wafer_linalg_ext.collective.*` | R3.2a/R3.2b 可收集 demand/layout；R3.2c 当前失败为缺 endpoint/local-rank facts | explicitly deferred | 只有 endpoint/local-rank/buffer facts 进入可验证 IR 后，才能 pattern 化到 `wafer.tile.*` collective，再展开成 `wafer.instr.dte_*` / `wafer.instr.local_drain` 和后续 sync boundary；不能写死 local rank 或 ring schedule。 |
+| `wafer.linalg_ext.collective.*` | R3.2a/R3.2b 可收集 demand/layout；R3.2c 当前失败为缺 endpoint/local-rank facts | explicitly deferred | 只有 endpoint/local-rank/buffer facts 进入可验证 IR 后，才能 pattern 化到 `wafer.tile.*` collective，再展开成 `wafer.instr.dte_*` / `wafer.instr.local_drain` 和后续 sync boundary；不能写死 local rank 或 ring schedule。 |
 | unknown op inside group | 结构化失败 | unsupported | conversion target 应把 `wafer.group` 设为 illegal；unsupported body op 应导致 conversion failure，而不是留下半转换 group。 |
 
 R3.2c 迁移完成后，supported 子集必须由同一 conversion builder 覆盖，并把 unsupported / deferred

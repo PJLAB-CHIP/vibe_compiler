@@ -11,8 +11,7 @@
 namespace wafer {
 
 inline void registerAllDialects(mlir::DialectRegistry &registry) {
-  registry.insert<mlir::async::AsyncDialect, wafer::WaferDialect,
-                  wafer::WaferLinalgExtDialect>();
+  registry.insert<mlir::async::AsyncDialect, wafer::WaferDialect>();
 }
 
 } // namespace wafer

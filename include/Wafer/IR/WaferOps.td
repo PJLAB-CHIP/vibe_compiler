@@ -13,6 +13,7 @@ include "mlir/IR/SymbolInterfaces.td"
 
 include "Wafer/IR/Target/TopologyOps.td"
 include "Wafer/IR/Tensor/GroupOps.td"
+include "Wafer/IR/LinalgExt/CollectiveOps.td"
 include "Wafer/IR/Tile/TileRegionOps.td"
 include "Wafer/IR/Tile/LayoutOps.td"
 include "Wafer/IR/Tile/ComputeOps.td"
