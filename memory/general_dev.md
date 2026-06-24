@@ -207,15 +207,20 @@
   内计算 group-local `local_rank`。输出 `wafer.tile.all_gather` / `reduce_scatter` / `all_reduce`
   显式携带 SPM buffer、`rank_group`、`local_rank`、`group_size` 和 byte count；不在这一步选择 p2p
   schedule、endpoint 或 DTE packet。
-- tile-region-to-instr 的 V0 all-gather lowering 使用 fixed-size unicast ring：从
-  `wafer.tile.all_gather` 的 compact `tensor/ntensor` local/gather SPM buffer shape 推导唯一 gather axis，先用
-  `wafer.instr.gather_scatter` 把 local chunk 写入本 rank slot，插入 `wafer.instr.local_drain` 后再对
-  slot `memref.subview` 发射 `wafer.instr.dte_send` / `dte_recv` / `dte_wait`。DTE peer 仍是 logical rank，SPM offset、physical
-  endpoint、DTE id 和 packet field 留给后续 planning / ABI 边界。
-- tile-region-to-instr 的 V0 all-reduce lowering 使用 full-buffer ring reduce：先把 input copy 到
-  accumulator 和 forward staging buffer，`local_drain` 后每步 DTE send forward buffer、recv 到 staging
-  buffer、wait token，再用 `wafer.instr.elementwise` 做 sum/max/min accumulation；下一步 forward 的是刚收到的
-  partial，不是 accumulator。
+- tile-region-to-instr 的 communication schedule selector 是 pass-level rewrite policy，不进入 IR：
+  `all-gather-schedule=auto|ring|direct` 默认 `auto=ring`，`all-reduce-schedule=auto|ring|tree`
+  默认 `auto=ring`，`reduce-scatter-schedule=auto|direct` 默认 `auto=direct`。展开后只保留
+  `wafer.instr.dte_*` / local compute body，不保存 algorithm attr。
+- tile-region-to-instr 的 V0 all-gather lowering 从 `wafer.tile.all_gather` 的 compact `tensor/ntensor`
+  local/gather SPM buffer shape 推导唯一 gather axis。`ring` 先把 local chunk 写入本 rank slot，
+  插入 `wafer.instr.local_drain` 后沿 ring forward slot view；`direct` 每个 phase 发送 local slot
+  给 `(rank+d)`，同时接收 `(rank-d)` 的 chunk 到对应 slot。DTE peer 仍是 logical rank，SPM offset、
+  physical endpoint、DTE id 和 packet field 留给后续 planning / ABI 边界。
+- tile-region-to-instr 的 V0 all-reduce lowering 支持 full-buffer ring reduce 和 binomial tree。
+  `ring` 先把 input copy 到 accumulator 和 forward staging buffer，`local_drain` 后每步 DTE send
+  forward buffer、recv 到 staging buffer、wait token，再用 `wafer.instr.elementwise` 做 sum/max/min
+  accumulation；下一步 forward 的是刚收到的 partial，不是 accumulator。`tree` 先 reduce 到
+  group-local root 0，再 reverse broadcast final accumulator；accumulator 被 DTE 读取前需要 local drain。
 - tile-region-to-instr 的 V0 reduce-scatter lowering 使用 full input + local slot result 表示：
   group-to-tile-region 不再预切当前 rank slot，`wafer.tile.reduce_scatter` 显式携带 scatter `axis`，
   instruction lowering 从 full input 派生 per-target slot `memref.subview`，按 phase-ordered

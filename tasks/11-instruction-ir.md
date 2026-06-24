@@ -467,9 +467,9 @@ V0 mapping：
 | `wafer.tile.transpose` | create destination SPM memref; enumerate the static result domain, invert `permutation` to source logical indices, compute source/result physical byte offsets, coalesce adjacent segments, pack regular segments into up to three stride/iteration levels, emit one or more `wafer.instr.gather_scatter`, and replace result with dest memref |
 | `wafer.tile.reshape` | identity replacement when types are identical; otherwise preserve source/result canonical linear element order and reinterpret result multi-indices through the new shape; compact `tensor/ntensor` reshape lowers to a verifier-legal standard memref view because compact physical bytes already follow that linear order; `Cx/NCx` reshape first compares same-linear-element source/result physical byte offsets with the unified physical layout calculator, materializes a destination memref and emits packed `wafer.instr.gather_scatter` descriptors only when the physical mapping or required footprint changes; structured failure only when the static reshape movement plan cannot be represented by V0 descriptors |
 | `scf.if` / `scf.for` | preserve the structured control-flow op; recursively legalize executable target-abstract ops in each nested region; keep scalar and memref yields explicit |
-| `wafer.tile.all_gather` | V0 requires matching `tensor/ntensor` SPM layouts, infers the unique gather axis from compact local/gather buffer shapes, copies the local chunk into the local gather slot with `wafer.instr.gather_scatter`, inserts `wafer.instr.local_drain` before DTE reads that locally-written slot, then emits fixed-size ring `wafer.instr.dte_send` / `dte_recv` / `dte_wait` steps over slot `memref.subview` values |
-| `wafer.tile.all_reduce` | V0 requires matching `tensor` SPM buffers and sum/max/min reduce kind；it creates an accumulator and a forward staging buffer, copies the local input into both with `wafer.instr.gather_scatter`, drains the local copies, then emits fixed-size ring `wafer.instr.dte_send` / `dte_recv` / `dte_wait` steps that forward the most recently received partial and accumulate into the result with `wafer.instr.elementwise` |
-| `wafer.tile.reduce_scatter` | V0 requires a full `tensor` SPM input whose scatter `axis` size is `group_size * result_axis_size`, plus matching local-slot recv/result buffers；it creates a local accumulator from the current rank slot, then emits phase-ordered fixed-size `wafer.instr.dte_send` / `dte_recv` / `dte_wait` steps where phase `d` sends input slot `(local_rank + d) mod group_size` to that slot owner and receives this rank's local-slot contribution from `(local_rank - d) mod group_size`, accumulating each received contribution with `wafer.instr.elementwise` |
+| `wafer.tile.all_gather` | V0 requires matching `tensor/ntensor` SPM layouts and infers the unique gather axis from compact local/gather buffer shapes. Schedule policy `auto` maps to `ring` by default. `ring` copies the local chunk into the local gather slot, drains, then forwards slot views around the logical ring. `direct` copies the local chunk into the local slot, drains once, then sends that local slot directly to every other logical rank while receiving each peer chunk into that peer's result slot. |
+| `wafer.tile.all_reduce` | V0 requires matching `tensor` SPM buffers and sum/max/min reduce kind. Schedule policy `auto` maps to `ring` by default. `ring` creates an accumulator and forward staging buffer, drains local copies, then forwards the most recently received partial around the logical ring and accumulates with `wafer.instr.elementwise`. `tree` materializes a binomial-tree reduce to group-local root 0, drains accumulator writes before any DTE read of accumulator, then broadcasts the final accumulator down the reverse tree. |
+| `wafer.tile.reduce_scatter` | V0 requires a full `tensor` SPM input whose scatter `axis` size is `group_size * result_axis_size`, plus matching local-slot recv/result buffers. Schedule policy `auto` maps to `direct` by default. `direct` creates a local accumulator from the current rank slot, then emits phase-ordered fixed-size `wafer.instr.dte_send` / `dte_recv` / `dte_wait` steps where phase `d` sends input slot `(local_rank + d) mod group_size` to that slot owner and receives this rank's local-slot contribution from `(local_rank - d) mod group_size`, accumulating each received contribution with `wafer.instr.elementwise`. |
 
 R3.2d.4 已覆盖 static movement descriptor splitting / packing：
 
@@ -486,16 +486,19 @@ R3.2d.4 已覆盖 static movement descriptor splitting / packing：
 R3.2d V0 communication coverage：
 
 - `wafer.tile.all_gather` 已能在 `rank_group`、group-local `local_rank`、`group_size`、`bytes`
-  和静态 compact `tensor/ntensor` SPM buffer shape 均可验证时 materialize fixed-size unicast ring schedule。该 lowering 只写
-  logical peer、slot view、local drain 和 async token/wait，不写 physical endpoint、DTE id、SPM offset 或 packet field。
+  和静态 compact `tensor/ntensor` SPM buffer shape 均可验证时 materialize fixed-size unicast schedule。
+  pass option `all-gather-schedule=auto|ring|direct` 只选择 rewrite policy；accepted result 仍是
+  explicit `wafer.instr.dte_*` body，不保存 schedule attr。`auto` 默认 `ring`。
 - `wafer.tile.all_reduce` 已能在 `rank_group`、group-local `local_rank`、`group_size`、`bytes`、
-  `tensor` SPM buffer type 和 sum/max/min reduce kind 均可验证时 materialize fixed-size unicast
-  ring schedule。该 lowering 不把 reduction 藏进 DTE side effect；每个 step 都先 wait DTE token，
-  再用 `wafer.instr.elementwise` 对 accumulator 和 recv staging buffer 做本地累计。
+  `tensor` SPM buffer type 和 sum/max/min reduce kind 均可验证时 materialize fixed-size unicast schedule。
+  pass option `all-reduce-schedule=auto|ring|tree` 只选择 rewrite policy；`auto` 默认 `ring`。
+  `tree` 使用 group-local root 0 的 binomial reduce + reverse broadcast。reduction 不藏进 DTE side
+  effect；每个 reduce step 都先 wait DTE token，再用 `wafer.instr.elementwise` 做本地累计。
 - `wafer.tile.reduce_scatter` 使用 full input + local slot result 表示。tile-region lowering 不再预先把
   input 截成当前 rank 的 slot；instruction lowering 从 full input 的 per-target slot `memref.subview`
   直接派生 p2p send source，并在 wait 后显式累计 recv contribution。该 V0 是 phase-ordered
-  all-to-owner unicast schedule，不保存全局 plan attr。
+  all-to-owner unicast schedule。pass option `reduce-scatter-schedule=auto|direct` 只选择 rewrite policy；
+  `auto` 默认 `direct`，不保存全局 plan attr。
 
 R3.2d may generate multiple instruction ops for a single target-abstract movement op, but it must not write a
 global schedule attr. The instruction sequence is the region body itself.

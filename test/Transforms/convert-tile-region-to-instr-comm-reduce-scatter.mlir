@@ -1,4 +1,5 @@
 // RUN: wafer-opt --wafer-convert-tile-region-to-instr %s | FileCheck %s
+// RUN: wafer-opt --wafer-convert-tile-region-to-instr='reduce-scatter-schedule=direct' %s | FileCheck %s
 // RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-tile-region-to-instr)' %s | FileCheck %s
 // RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-tile-region-to-instr)' %s \
 // RUN:   | wafer-opt --wafer-plan-spm-memory='spm-base=65536 spm-limit=66560' \

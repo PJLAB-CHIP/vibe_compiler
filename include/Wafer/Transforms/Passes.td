@@ -214,6 +214,17 @@ def ConvertTileRegionToInstrPass
                            "mlir::scf::SCFDialect",
                            "wafer::WaferDialect"
   ];
+  let options = [
+    Option<"allGatherSchedule", "all-gather-schedule", "std::string",
+           /*default=*/"\"auto\"",
+           "All-gather schedule policy: auto, ring or direct">,
+    Option<"allReduceSchedule", "all-reduce-schedule", "std::string",
+           /*default=*/"\"auto\"",
+           "All-reduce schedule policy: auto, ring or tree">,
+    Option<"reduceScatterSchedule", "reduce-scatter-schedule", "std::string",
+           /*default=*/"\"auto\"",
+           "Reduce-scatter schedule policy: auto or direct">
+  ];
 }
 
 def PlanSPMMemoryPass

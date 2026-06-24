@@ -12,8 +12,33 @@
 
 namespace wafer {
 
+enum class AllGatherSchedule {
+  Ring,
+  Direct,
+};
+
+enum class AllReduceSchedule {
+  Ring,
+  Tree,
+};
+
+enum class ReduceScatterSchedule {
+  Direct,
+};
+
+struct TileRegionToInstrOptions {
+  AllGatherSchedule allGatherSchedule = AllGatherSchedule::Ring;
+  AllReduceSchedule allReduceSchedule = AllReduceSchedule::Ring;
+  ReduceScatterSchedule reduceScatterSchedule = ReduceScatterSchedule::Direct;
+};
+
 mlir::LogicalResult
 convertTileRegionToInstrModule(mlir::ModuleOp module,
+                               std::string *failureReason = nullptr);
+
+mlir::LogicalResult
+convertTileRegionToInstrModule(mlir::ModuleOp module,
+                               const TileRegionToInstrOptions &options,
                                std::string *failureReason = nullptr);
 
 } // namespace wafer

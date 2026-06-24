@@ -276,7 +276,11 @@ tiled tensor collective + SPM storage values -> `wafer.tile.*` collective
 
 ### 6.2 All-Gather
 
-V0 主路径是 ring all-gather：
+V0 schedule selector 支持 `auto|ring|direct`，默认 `auto=ring`。schedule 选择是
+tile-region-to-instr rewrite policy，不进入长期 IR；被接受的结果必须完全展开成 explicit
+`wafer.instr.dte_*` body。
+
+`ring` all-gather：
 
 ```text
 for step in 0..group_size-2:
@@ -285,17 +289,30 @@ for step in 0..group_size-2:
   wait send/recv token before reusing slot according to schedule
 ```
 
+`direct` all-gather：
+
+```text
+copy local chunk into local result slot
+local_drain
+for each peer in rank_group except local_rank:
+  send local slot directly to peer
+  recv peer chunk directly into peer result slot
+  wait send/recv token
+```
+
 IR 中应能看到每个 step 的 `wafer.instr.dte_send` / `dte_recv` / `dte_wait` 和 destination slot。
 V0 ring order 来自 collective `rank_group` 顺序，并由 execution mesh / topology 后续验证 peer
 endpoint 可用；cost model 可以选择不同 order，但接受后要 rewrite 成 explicit body。
 
 当前已经能在 rank-specialized group-to-tile-region materialization 中把 top-level single-result
 `wafer.linalg_ext.collective.all_gather` 转成 `wafer.tile.all_gather`，并在 tile-region-to-instr
-lowering 中将 compact `tensor/ntensor` SPM local/gather buffer 展开为 fixed-size unicast ring：先把 local chunk 复制到本 rank gather slot，插入
+lowering 中将 compact `tensor/ntensor` SPM local/gather buffer 按 selector 展开为 fixed-size
+unicast schedule。默认 ring 先把 local chunk 复制到本 rank gather slot，插入
 `wafer.instr.local_drain` 使 DTE 读取本地 movement 结果前有明确可见性边界，再按 `rank_group`
-的邻接顺序发射 `wafer.instr.dte_send` / `dte_recv` / `dte_wait`，每个 recv 写入显式 slot
-`memref.subview`。该 IR 仍只保存 logical peer 和 buffer view，不写 physical endpoint、DTE id、SPM offset
-或 packet field。V0 correctness path 仍不使用 raw DTE non-unicast gather。
+的邻接顺序转发 slot view；direct schedule 则把 local slot 直接发送给每个 peer，并把收到的 peer
+chunk 写入对应 result slot `memref.subview`。该 IR 仍只保存 logical peer 和 buffer view，不写
+physical endpoint、DTE id、SPM offset 或 packet field。V0 correctness path 仍不使用 raw DTE
+non-unicast gather。
 该 lowering 发生在 SPM offset assignment 前，使 in-flight recv slot、wait token 和 buffer reuse fence
 进入 SPM lifetime / demand analysis。
 
@@ -304,8 +321,8 @@ lowering 中将 compact `tensor/ntensor` SPM local/gather buffer 展开为 fixed
 `reduce_scatter` 由 communication step 和 local reduce step 组合。local reduce 使用
 `wafer.tile.reduce` 或其它明确 compute op，不能把 reduction 藏在 DTE protocol 中。
 
-`all_reduce` V0 使用 full-buffer ring reduce。后续仍可以引入 reduce-scatter + all-gather 或其它算法，
-但 accepted schedule 必须满足：
+`all_reduce` V0 schedule selector 支持 `auto|ring|tree`，默认 `auto=ring`。后续仍可以引入
+reduce-scatter + all-gather、recursive doubling 或其它算法，但 accepted schedule 必须满足：
 
 - reduction kind、dtype、init/accumulate 语义可验证。
 - 每个 communication step 是 unicast p2p。
@@ -313,17 +330,25 @@ lowering 中将 compact `tensor/ntensor` SPM local/gather buffer 展开为 fixed
 
 当前已经能在 rank-specialized group-to-tile-region materialization 中把 top-level single-result
 `wafer.linalg_ext.collective.reduce_scatter` / `all_reduce` 转成 `wafer.tile.reduce_scatter` /
-`wafer.tile.all_reduce`。`wafer.tile.all_reduce` 已能在 tile-region-to-instr lowering 中展开成
-fixed-size unicast ring：先把 input 复制到 accumulator 和 forward staging buffer，插入
-`wafer.instr.local_drain`，之后每步 `wafer.instr.dte_send` forward buffer、`dte_recv` 到 recv buffer、
-`dte_wait` completion token，再用 `wafer.instr.elementwise` 对 accumulator 和 recv staging buffer 做
-sum/max/min 本地累计。下一步发送的不是 accumulator，而是刚收到的 partial；否则 ring 会重复累加已经
-accumulated 的 contribution。该 IR 仍只保存 logical peer、buffer view、local drain 和 token/wait，
-不写 physical endpoint、DTE id、SPM offset 或 packet field。
+`wafer.tile.all_reduce`。`wafer.tile.all_reduce` 已能在 tile-region-to-instr lowering 中按 selector
+展开成 fixed-size unicast schedule。默认 ring 先把 input 复制到 accumulator 和 forward staging buffer，
+插入 `wafer.instr.local_drain`，之后每步 `wafer.instr.dte_send` forward buffer、`dte_recv` 到 recv
+buffer、`dte_wait` completion token，再用 `wafer.instr.elementwise` 对 accumulator 和 recv staging
+buffer 做 sum/max/min 本地累计。下一步发送的不是 accumulator，而是刚收到的 partial；否则 ring 会
+重复累加已经 accumulated 的 contribution。该 IR 仍只保存 logical peer、buffer view、local drain
+和 token/wait，不写 physical endpoint、DTE id、SPM offset 或 packet field。
+
+`all_reduce` 的 `tree` schedule 使用 group-local root 0 的 binomial reduce + reverse broadcast。reduce
+phase 中，树子节点把当前 accumulator 发送给父节点后退出 reduce phase；树父节点 recv 子节点 partial、
+wait token 后用 `wafer.instr.elementwise` 累计，并在 accumulator 后续会被 DTE 读取前插入
+`wafer.instr.local_drain`。broadcast phase 按 reverse tree 从 root 发送最终 accumulator；非 root rank
+把 final result recv 到自己的 accumulator。tree schedule 仍只 materialize explicit
+`wafer.instr.dte_send` / `dte_recv` / `dte_wait` 和 local compute，不保存 algorithm attr。
 
 `wafer.tile.reduce_scatter` 使用 full input + local slot result 表示。group-to-tile-region materialization
 保留 full input SPM buffer，并让 tile collective 显式携带 scatter `axis`；recv/result buffer 是当前
-rank 的 local slot shape。V0 instruction lowering 使用 phase-ordered all-to-owner unicast schedule：
+rank 的 local slot shape。V0 schedule selector 支持 `auto|direct`，默认 `auto=direct`。`direct`
+instruction lowering 使用 phase-ordered all-to-owner unicast schedule：
 phase `d` 中，rank `r` 从 full input 取 slot `(r + d) mod group_size` 发送给该 slot owner，同时从
 rank `(r - d) mod group_size` 接收本 rank local slot 的 contribution，wait 后用
 `wafer.instr.elementwise` 累计到 local accumulator。该 schedule 不把 reduction 藏进 DTE side effect，
@@ -463,10 +488,12 @@ wafer.instr.dte_wait %send1, %recv1
 - group-to-tile-region 已能把 top-level single-result `wafer.linalg_ext.collective.all_gather`、
   `reduce_scatter` 和 `all_reduce` materialize 成上述 `wafer.tile.*` collective；`logical-rank`
   materialization context 只用于计算 `rank_group` 内的 group-local `local_rank`。
-- tile-region-to-instr 已能把 compact `tensor/ntensor` SPM `wafer.tile.all_gather` 展开成 explicit fixed-size ring
+- tile-region-to-instr 已能把 compact `tensor/ntensor` SPM `wafer.tile.all_gather` 展开成 explicit fixed-size
+  ring 或 phase-ordered direct
   `wafer.instr.local_drain` + `wafer.instr.dte_send` / `wafer.instr.dte_recv` /
   `wafer.instr.dte_wait`，并通过 named pipeline + SPM planning lit 覆盖 token/lifetime 消费。
-- tile-region-to-instr 已能把 `tensor` SPM `wafer.tile.all_reduce` 展开成 explicit fixed-size ring
+- tile-region-to-instr 已能把 `tensor` SPM `wafer.tile.all_reduce` 展开成 explicit fixed-size ring 或
+  binomial-tree reduce + reverse broadcast
   `wafer.instr.local_drain` + `wafer.instr.dte_send` / `wafer.instr.dte_recv` /
   `wafer.instr.dte_wait` + `wafer.instr.elementwise` accumulation，并通过 named pipeline +
   SPM planning lit 覆盖 token/lifetime 消费。
@@ -474,6 +501,10 @@ wafer.instr.dte_wait %send1, %recv1
   phase-ordered all-to-owner unicast `wafer.instr.dte_send` / `wafer.instr.dte_recv` /
   `wafer.instr.dte_wait` + `wafer.instr.elementwise` accumulation，并通过 named pipeline + SPM
   planning lit 覆盖 token/lifetime 消费。
+- tile-region-to-instr 的 pass option 提供 schedule selector：
+  `all-gather-schedule=auto|ring|direct`、`all-reduce-schedule=auto|ring|tree` 和
+  `reduce-scatter-schedule=auto|direct`。这些 option 只选择 rewrite policy，展开后的 IR 不保存
+  algorithm name。
 - `collective_permute` 和 `all_to_all` 的 p2p lowering 仍依赖后续 buffer slot / token lifetime /
   per-target slot 表达，不是当前完成项。
 - Direct DTE send/recv/wait golden path 和 error diagnostic 属于历史 bring-up 证据；Direct DTE

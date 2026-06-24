@@ -1553,11 +1553,21 @@ getAccumulationElementwiseKind(mlir::PatternRewriter &rewriter,
                                          elementwiseKind);
 }
 
+static int64_t getHighestTreeMask(int64_t groupSize) {
+  int64_t mask = 1;
+  while (mask < groupSize)
+    mask <<= 1;
+  return mask >> 1;
+}
+
+static int64_t getLowestSetBit(int64_t value) { return value & -value; }
+
 class AllGatherLowering : public mlir::OpRewritePattern<CommAllGatherOp> {
 public:
-  AllGatherLowering(mlir::MLIRContext *context, std::string *failureReason)
+  AllGatherLowering(mlir::MLIRContext *context, std::string *failureReason,
+                    AllGatherSchedule schedule)
       : mlir::OpRewritePattern<CommAllGatherOp>(context),
-        failureReason(failureReason) {}
+        failureReason(failureReason), schedule(schedule) {}
 
   mlir::LogicalResult
   matchAndRewrite(CommAllGatherOp op,
@@ -1605,9 +1615,34 @@ public:
       return mlir::failure();
     rewriter.create<SyncLocalDrainOp>(op.getLoc());
 
+    int64_t bytes = op.getBytesAttr().getInt();
+    if (schedule == AllGatherSchedule::Direct) {
+      for (int64_t distance = 1; distance < groupSize; ++distance) {
+        int64_t sendPeerIndex = (localRank + distance) % groupSize;
+        int64_t recvPeerIndex = (localRank + groupSize - distance) % groupSize;
+        mlir::FailureOr<mlir::Value> recvSlot = getSlot(recvPeerIndex);
+        if (mlir::failed(recvSlot))
+          return mlir::failure();
+
+        auto send = rewriter.create<InstrDTESendOp>(
+            op.getLoc(), rewriter.getType<mlir::async::TokenType>(), *localSlot,
+            rewriter.getI64IntegerAttr(rankGroup[sendPeerIndex]),
+            rewriter.getI64IntegerAttr(bytes));
+        auto recv = rewriter.create<InstrDTERecvOp>(
+            op.getLoc(), rewriter.getType<mlir::async::TokenType>(), *recvSlot,
+            rewriter.getI64IntegerAttr(rankGroup[recvPeerIndex]),
+            rewriter.getI64IntegerAttr(bytes));
+        llvm::SmallVector<mlir::Value, 2> tokens{send.getToken(),
+                                                 recv.getToken()};
+        rewriter.create<InstrDTEWaitOp>(op.getLoc(), tokens);
+      }
+
+      rewriter.eraseOp(op);
+      return mlir::success();
+    }
+
     int64_t nextPeer = rankGroup[(localRank + 1) % groupSize];
     int64_t prevPeer = rankGroup[(localRank + groupSize - 1) % groupSize];
-    int64_t bytes = op.getBytesAttr().getInt();
     mlir::Value sendSlot = *localSlot;
     for (int64_t step = 0; step < groupSize - 1; ++step) {
       int64_t recvSlotIndex = (localRank + groupSize - step - 1) % groupSize;
@@ -1635,14 +1670,16 @@ public:
 
 private:
   std::string *failureReason;
+  AllGatherSchedule schedule;
 };
 
 class ReduceScatterLowering
     : public mlir::OpRewritePattern<CommReduceScatterOp> {
 public:
-  ReduceScatterLowering(mlir::MLIRContext *context, std::string *failureReason)
+  ReduceScatterLowering(mlir::MLIRContext *context, std::string *failureReason,
+                        ReduceScatterSchedule schedule)
       : mlir::OpRewritePattern<CommReduceScatterOp>(context),
-        failureReason(failureReason) {}
+        failureReason(failureReason), schedule(schedule) {}
 
   mlir::LogicalResult
   matchAndRewrite(CommReduceScatterOp op,
@@ -1745,6 +1782,11 @@ public:
       return mlir::failure();
     rewriter.create<SyncLocalDrainOp>(op.getLoc());
 
+    switch (schedule) {
+    case ReduceScatterSchedule::Direct:
+      break;
+    }
+
     int64_t bytes = op.getBytesAttr().getInt();
     for (int64_t distance = 1; distance < groupSize; ++distance) {
       int64_t sendSlotIndex = (localRank + distance) % groupSize;
@@ -1778,13 +1820,15 @@ public:
 
 private:
   std::string *failureReason;
+  ReduceScatterSchedule schedule;
 };
 
 class AllReduceLowering : public mlir::OpRewritePattern<CommAllReduceOp> {
 public:
-  AllReduceLowering(mlir::MLIRContext *context, std::string *failureReason)
+  AllReduceLowering(mlir::MLIRContext *context, std::string *failureReason,
+                    AllReduceSchedule schedule)
       : mlir::OpRewritePattern<CommAllReduceOp>(context),
-        failureReason(failureReason) {}
+        failureReason(failureReason), schedule(schedule) {}
 
   mlir::LogicalResult
   matchAndRewrite(CommAllReduceOp op,
@@ -1827,9 +1871,79 @@ public:
         op.getLoc(), op.getResult().getType(), rewriter, op, failureReason);
     if (mlir::failed(accumulator))
       return mlir::failure();
+
+    int64_t bytes = op.getBytesAttr().getInt();
+    if (schedule == AllReduceSchedule::Tree) {
+      if (mlir::failed(createContiguousSPMCopy(
+              rewriter, op.getLoc(), op, op.getInput(), *accumulator,
+              failureReason, "tile.all_reduce accumulator init")))
+        return mlir::failure();
+      rewriter.create<SyncLocalDrainOp>(op.getLoc());
+      for (int64_t mask = 1; mask < groupSize; mask <<= 1) {
+        if ((localRank & mask) != 0) {
+          int64_t parentRank = localRank ^ mask;
+          auto send = rewriter.create<InstrDTESendOp>(
+              op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
+              *accumulator, rewriter.getI64IntegerAttr(rankGroup[parentRank]),
+              rewriter.getI64IntegerAttr(bytes));
+          llvm::SmallVector<mlir::Value, 1> tokens{send.getToken()};
+          rewriter.create<InstrDTEWaitOp>(op.getLoc(), tokens);
+          break;
+        }
+
+        int64_t childRank = localRank | mask;
+        if (childRank >= groupSize)
+          continue;
+        auto recv = rewriter.create<InstrDTERecvOp>(
+            op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
+            op.getRecvBuffer(),
+            rewriter.getI64IntegerAttr(rankGroup[childRank]),
+            rewriter.getI64IntegerAttr(bytes));
+        llvm::SmallVector<mlir::Value, 1> tokens{recv.getToken()};
+        rewriter.create<InstrDTEWaitOp>(op.getLoc(), tokens);
+
+        llvm::SmallVector<mlir::Value, 2> inputs{*accumulator,
+                                                 op.getRecvBuffer()};
+        rewriter.create<InstrElementwiseOp>(op.getLoc(), *accumulationKind,
+                                            inputs, *accumulator);
+        rewriter.create<SyncLocalDrainOp>(op.getLoc());
+      }
+
+      bool hasFinalResult = localRank == 0;
+      int64_t receiveMask = localRank == 0 ? 0 : getLowestSetBit(localRank);
+      for (int64_t mask = getHighestTreeMask(groupSize); mask >= 1;
+           mask >>= 1) {
+        if (!hasFinalResult && receiveMask == mask) {
+          int64_t parentRank = localRank ^ mask;
+          auto recv = rewriter.create<InstrDTERecvOp>(
+              op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
+              *accumulator, rewriter.getI64IntegerAttr(rankGroup[parentRank]),
+              rewriter.getI64IntegerAttr(bytes));
+          llvm::SmallVector<mlir::Value, 1> tokens{recv.getToken()};
+          rewriter.create<InstrDTEWaitOp>(op.getLoc(), tokens);
+          hasFinalResult = true;
+          continue;
+        }
+
+        if (!hasFinalResult || (localRank & mask) != 0)
+          continue;
+        int64_t childRank = localRank | mask;
+        if (childRank >= groupSize || getLowestSetBit(childRank) != mask)
+          continue;
+        auto send = rewriter.create<InstrDTESendOp>(
+            op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
+            *accumulator, rewriter.getI64IntegerAttr(rankGroup[childRank]),
+            rewriter.getI64IntegerAttr(bytes));
+        llvm::SmallVector<mlir::Value, 1> tokens{send.getToken()};
+        rewriter.create<InstrDTEWaitOp>(op.getLoc(), tokens);
+      }
+
+      rewriter.replaceOp(op, *accumulator);
+      return mlir::success();
+    }
+
     auto forwardBuffer =
         rewriter.create<mlir::memref::AllocOp>(op.getLoc(), inputType);
-
     if (mlir::failed(createContiguousSPMCopy(
             rewriter, op.getLoc(), op, op.getInput(), *accumulator,
             failureReason, "tile.all_reduce accumulator init")))
@@ -1842,7 +1956,6 @@ public:
 
     int64_t nextPeer = rankGroup[(localRank + 1) % groupSize];
     int64_t prevPeer = rankGroup[(localRank + groupSize - 1) % groupSize];
-    int64_t bytes = op.getBytesAttr().getInt();
     for (int64_t step = 0; step < groupSize - 1; ++step) {
       auto send = rewriter.create<InstrDTESendOp>(
           op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
@@ -1877,6 +1990,7 @@ public:
 
 private:
   std::string *failureReason;
+  AllReduceSchedule schedule;
 };
 
 static void configureTileRegionToInstrTarget(mlir::ConversionTarget &target) {
@@ -1896,8 +2010,10 @@ static void configureTileRegionToInstrTarget(mlir::ConversionTarget &target) {
   target.markUnknownOpDynamicallyLegal([](mlir::Operation *) { return true; });
 }
 
-static void populateTileRegionToInstrPatterns(mlir::RewritePatternSet &patterns,
-                                              std::string *failureReason) {
+static void
+populateTileRegionToInstrPatterns(mlir::RewritePatternSet &patterns,
+                                  const TileRegionToInstrOptions &options,
+                                  std::string *failureReason) {
   mlir::MLIRContext *context = patterns.getContext();
   patterns
       .add<TileLoadLowering, TileStoreLowering, LayoutMaterializeLowering,
@@ -1906,9 +2022,53 @@ static void populateTileRegionToInstrPatterns(mlir::RewritePatternSet &patterns,
            ReduceLowering, GemmLowering, ViewReshapeLowering>(context,
                                                               failureReason);
   patterns.add<FillLowering>(context);
-  patterns.add<AllGatherLowering>(context, failureReason);
-  patterns.add<ReduceScatterLowering>(context, failureReason);
-  patterns.add<AllReduceLowering>(context, failureReason);
+  patterns.add<AllGatherLowering>(context, failureReason,
+                                  options.allGatherSchedule);
+  patterns.add<ReduceScatterLowering>(context, failureReason,
+                                      options.reduceScatterSchedule);
+  patterns.add<AllReduceLowering>(context, failureReason,
+                                  options.allReduceSchedule);
+}
+
+static mlir::LogicalResult parseTileRegionToInstrOptions(
+    llvm::StringRef allGatherSchedule, llvm::StringRef allReduceSchedule,
+    llvm::StringRef reduceScatterSchedule, TileRegionToInstrOptions &options,
+    std::string *failureReason) {
+  if (allGatherSchedule == "auto" || allGatherSchedule == "ring") {
+    options.allGatherSchedule = AllGatherSchedule::Ring;
+  } else if (allGatherSchedule == "direct") {
+    options.allGatherSchedule = AllGatherSchedule::Direct;
+  } else {
+    setFailureReason(failureReason,
+                     llvm::Twine("unsupported all_gather schedule: ")
+                         .concat(allGatherSchedule)
+                         .str());
+    return mlir::failure();
+  }
+
+  if (allReduceSchedule == "auto" || allReduceSchedule == "ring") {
+    options.allReduceSchedule = AllReduceSchedule::Ring;
+  } else if (allReduceSchedule == "tree") {
+    options.allReduceSchedule = AllReduceSchedule::Tree;
+  } else {
+    setFailureReason(failureReason,
+                     llvm::Twine("unsupported all_reduce schedule: ")
+                         .concat(allReduceSchedule)
+                         .str());
+    return mlir::failure();
+  }
+
+  if (reduceScatterSchedule == "auto" || reduceScatterSchedule == "direct") {
+    options.reduceScatterSchedule = ReduceScatterSchedule::Direct;
+  } else {
+    setFailureReason(failureReason,
+                     llvm::Twine("unsupported reduce_scatter schedule: ")
+                         .concat(reduceScatterSchedule)
+                         .str());
+    return mlir::failure();
+  }
+
+  return mlir::success();
 }
 
 struct ConvertTileRegionToInstrPass
@@ -1919,8 +2079,17 @@ struct ConvertTileRegionToInstrPass
 
   void runOnOperation() final {
     std::string failureReason;
-    if (mlir::succeeded(wafer::convertTileRegionToInstrModule(getOperation(),
-                                                              &failureReason)))
+    TileRegionToInstrOptions options;
+    if (mlir::failed(parseTileRegionToInstrOptions(
+            allGatherSchedule, allReduceSchedule, reduceScatterSchedule,
+            options, &failureReason))) {
+      getOperation().emitError(failureReason);
+      signalPassFailure();
+      return;
+    }
+
+    if (mlir::succeeded(wafer::convertTileRegionToInstrModule(
+            getOperation(), options, &failureReason)))
       return;
 
     if (!failureReason.empty())
@@ -1936,6 +2105,14 @@ struct ConvertTileRegionToInstrPass
 mlir::LogicalResult
 wafer::convertTileRegionToInstrModule(mlir::ModuleOp module,
                                       std::string *failureReason) {
+  return wafer::convertTileRegionToInstrModule(
+      module, TileRegionToInstrOptions{}, failureReason);
+}
+
+mlir::LogicalResult
+wafer::convertTileRegionToInstrModule(mlir::ModuleOp module,
+                                      const TileRegionToInstrOptions &options,
+                                      std::string *failureReason) {
   if (failureReason)
     failureReason->clear();
 
@@ -1944,7 +2121,7 @@ wafer::convertTileRegionToInstrModule(mlir::ModuleOp module,
   configureTileRegionToInstrTarget(target);
 
   mlir::RewritePatternSet patterns(context);
-  populateTileRegionToInstrPatterns(patterns, failureReason);
+  populateTileRegionToInstrPatterns(patterns, options, failureReason);
 
   bool conversionSucceeded = false;
   {
