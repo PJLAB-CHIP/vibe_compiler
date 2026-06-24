@@ -286,16 +286,18 @@ for step in 0..group_size-2:
 ```
 
 IR 中应能看到每个 step 的 `wafer.instr.dte_send` / `dte_recv` / `dte_wait` 和 destination slot。
-ring order 来自 execution mesh rank order；cost model 可以选择不同 order，但接受后要 rewrite 成
-explicit body。
+V0 ring order 来自 collective `rank_group` 顺序，并由 execution mesh / topology 后续验证 peer
+endpoint 可用；cost model 可以选择不同 order，但接受后要 rewrite 成 explicit body。
 
 当前已经能在 rank-specialized group-to-tile-region materialization 中把 top-level single-result
-`wafer.linalg_ext.collective.all_gather` 转成 `wafer.tile.all_gather`，并显式保存 local chunk、
-gather buffer、`rank_group`、group-local `local_rank`、`group_size` 和单 chunk `bytes`。直接
-materialize p2p schedule 的旧 ring lowering pass 已删除；V0 correctness path 仍应先走 fixed-size
-unicast schedule，raw DTE non-unicast gather 不在 correctness path。
-恢复 p2p schedule lowering 时，该 lowering 必须在 SPM offset assignment 前发生，使 in-flight recv slot、
-double buffer、wait token 和 buffer reuse fence 都进入 SPM lifetime / demand analysis。
+`wafer.linalg_ext.collective.all_gather` 转成 `wafer.tile.all_gather`，并在 tile-region-to-instr
+lowering 中将 compact `tensor/ntensor` SPM local/gather buffer 展开为 fixed-size unicast ring：先把 local chunk 复制到本 rank gather slot，插入
+`wafer.instr.local_drain` 使 DTE 读取本地 movement 结果前有明确可见性边界，再按 `rank_group`
+的邻接顺序发射 `wafer.instr.dte_send` / `dte_recv` / `dte_wait`，每个 recv 写入显式 slot
+`memref.subview`。该 IR 仍只保存 logical peer 和 buffer view，不写 physical endpoint、DTE id、SPM offset
+或 packet field。V0 correctness path 仍不使用 raw DTE non-unicast gather。
+该 lowering 发生在 SPM offset assignment 前，使 in-flight recv slot、wait token 和 buffer reuse fence
+进入 SPM lifetime / demand analysis。
 
 ### 6.3 Reduce-Scatter and All-Reduce
 
@@ -450,12 +452,11 @@ wafer.instr.dte_wait %send1, %recv1
 - group-to-tile-region 已能把 top-level single-result `wafer.linalg_ext.collective.all_gather`、
   `reduce_scatter` 和 `all_reduce` materialize 成上述 `wafer.tile.*` collective；`logical-rank`
   materialization context 只用于计算 `rank_group` 内的 group-local `local_rank`。
-- legacy tile-level p2p prototype 仍需按 `tasks/progress.md` 迁移为
-  `wafer.instr.dte_send` / `wafer.instr.dte_recv` / `wafer.instr.dte_wait`，并把 verifier、
-  token/effect、mesh-rank 检查和 tests 一起迁移。
-- `collective_permute`、`all_to_all`、ring `all_gather`、`reduce_scatter` / `all_reduce` 的 p2p + local
-  reduce lowering 仍依赖后续 execution-mesh endpoint view、buffer slot 和 token lifetime facts，不是
-  当前主线完成项。
+- tile-region-to-instr 已能把 compact `tensor/ntensor` SPM `wafer.tile.all_gather` 展开成 explicit fixed-size ring
+  `wafer.instr.local_drain` + `wafer.instr.dte_send` / `wafer.instr.dte_recv` /
+  `wafer.instr.dte_wait`，并通过 named pipeline + SPM planning lit 覆盖 token/lifetime 消费。
+- `collective_permute`、`all_to_all`、`reduce_scatter` / `all_reduce` 的 p2p + local reduce lowering
+  仍依赖后续 buffer slot / token lifetime / local accumulation 表达，不是当前完成项。
 - Direct DTE send/recv/wait golden path 和 error diagnostic 属于历史 bring-up 证据；Direct DTE
   issue/wait form、resource allocation 和 ABI/LLVM emission 需要从 committed instruction IR
   和 accepted endpoint/resource facts 重新建立。

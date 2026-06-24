@@ -207,6 +207,12 @@
   内计算 group-local `local_rank`。输出 `wafer.tile.all_gather` / `reduce_scatter` / `all_reduce`
   显式携带 SPM buffer、`rank_group`、`local_rank`、`group_size` 和 byte count；不在这一步选择 p2p
   schedule、endpoint 或 DTE packet。
+- tile-region-to-instr 的 V0 all-gather lowering 使用 fixed-size unicast ring：从
+  `wafer.tile.all_gather` 的 compact `tensor/ntensor` local/gather SPM buffer shape 推导唯一 gather axis，先用
+  `wafer.instr.gather_scatter` 把 local chunk 写入本 rank slot，插入 `wafer.instr.local_drain` 后再对
+  slot `memref.subview` 发射 `wafer.instr.dte_send` / `dte_recv` / `dte_wait`。DTE peer 仍是 logical rank，SPM offset、physical
+  endpoint、DTE id 和 packet field 留给后续 planning / ABI 边界；reduce_scatter / all_reduce 的 p2p
+  reduce schedule 还不能复用 all-gather 逻辑硬套。
 - 用户级 compiler target 名称统一为 `wafer`，Wafer IR target attr 的唯一主线 spelling 是
   `#wafer.target<wafer>`。`tx8` / `tx81` 只保留在硬件、依赖逆向和外部历史命名事实里，不能作为
   compiler target、pipeline 名称或测试 fixture 的主线命名。
