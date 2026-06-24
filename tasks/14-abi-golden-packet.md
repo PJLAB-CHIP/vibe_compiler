@@ -266,12 +266,13 @@ func.func @forward_wafer_abi(
   %iter0 = arith.constant 1 : i64
   %iter1 = arith.constant 1 : i64
   %iter2 = arith.constant 1 : i64
+  %fmt = arith.constant 2 : i32
   %s0 = func.call @wafer_rdma(
       %ddr_src, %spm0, %bytes, %inner,
-      %stride0, %stride1, %stride2, %iter0, %iter1, %iter2)
-      : (i64, i32, i64, i64, i64, i64, i64, i64, i64, i64) -> i32
-  %s1 = func.call @wafer_gemm(%spm0, %spm1, %spm0, %m, %k, %n)
-      : (i32, i32, i32, i64, i64, i64) -> i32
+      %stride0, %stride1, %stride2, %iter0, %iter1, %iter2, %fmt)
+      : (i64, i32, i64, i64, i64, i64, i64, i64, i64, i64, i32) -> i32
+  %s1 = func.call @wafer_gemm(%spm0, %spm1, %spm0, %m, %k, %n, %fmt)
+      : (i32, i32, i32, i64, i64, i64, i32) -> i32
   %s2 = func.call @wafer_local_fence()
       : () -> i32
 
@@ -280,8 +281,8 @@ func.func @forward_wafer_abi(
   return %final : i32
 }
 
-func.func private @wafer_rdma(i64, i32, i64, i64, i64, i64, i64, i64, i64, i64) -> i32
-func.func private @wafer_gemm(i32, i32, i32, i64, i64, i64) -> i32
+func.func private @wafer_rdma(i64, i32, i64, i64, i64, i64, i64, i64, i64, i64, i32) -> i32
+func.func private @wafer_gemm(i32, i32, i32, i64, i64, i64, i32) -> i32
 func.func private @wafer_local_fence() -> i32
 ```
 
@@ -296,12 +297,18 @@ RDMA/WDMA 和 gather/scatter 的 ABI call 必须保留 descriptor 结构，不�
 wafer_rdma(ddr_src_addr: i64, spm_dst_offset: i32,
            byte_count: i64, inner_bytes: i64,
            src_stride0_b: i64, src_stride1_b: i64, src_stride2_b: i64,
-           src_iter0: i64, src_iter1: i64, src_iter2: i64) -> i32
+           src_iter0: i64, src_iter1: i64, src_iter2: i64,
+           data_format: i32) -> i32
 
 wafer_wdma(spm_src_offset: i32, ddr_dst_addr: i64,
            byte_count: i64, inner_bytes: i64,
            dst_stride0_b: i64, dst_stride1_b: i64, dst_stride2_b: i64,
-           dst_iter0: i64, dst_iter1: i64, dst_iter2: i64) -> i32
+           dst_iter0: i64, dst_iter1: i64, dst_iter2: i64,
+           data_format: i32) -> i32
+
+wafer_gemm(lhs_spm_offset: i32, rhs_spm_offset: i32,
+           dst_spm_offset: i32, m: i64, k: i64, n: i64,
+           data_format: i32) -> i32
 
 wafer_gather_scatter(spm_src_offset: i32, spm_dst_offset: i32,
                      byte_count: i64, inner_bytes: i64,
@@ -313,6 +320,10 @@ wafer_gather_scatter(spm_src_offset: i32, spm_dst_offset: i32,
 
 `wafer.instr.gather_scatter` 的可选 `src_offset` / `dst_offset` 在 ABI materialization
 阶段折叠进对应 SPM offset；stride 字段保持 byte stride，iteration 字段保持 logical loop count。
+`data_format` 使用 `instr_def.h` 的 `Data_Format` 编码，例如 FP16 为 2。RDMA/WDMA 的 C shim
+内部必须用 `data_format` 把 `inner_bytes` 转成 wrapper 需要的 `elem_count`；不能在 shim 中按
+默认 dtype 猜测。GEMM V0 当前要求输入和输出 dtype 相同，因此只传一个 `data_format`；后续若引入
+mixed precision、psum 或 quant，必须扩 ABI，而不是重载该字段含义。
 
 ### 4.2 LLVM Dialect / LLVM IR Lowering
 
@@ -402,12 +413,16 @@ Golden data 必须来自 register-level spec 和 wrapper behavior，不能来自
 悄悄更新 expected。
 
 当前 V0 unit gate 先用 `Wafer/ABI/TileAbi.h` 的 descriptor builder 固定 tile ABI argument contract：
-RDMA / WDMA 的 DDR lower bound、SPM usable range、byte count、exclusive end range 和
-`issue_only` policy，以及 GEMM 的 M/K/N 参数。进入 ABI materialization 后，这个 builder 应扩展为
-call descriptor verifier：覆盖 SPM/DDR view byte offset、stride/iteration、status convention、
-local_fence policy 和 DTE token/wait 参数。这个 gate 覆盖 committed instruction 到 ABI 参数单位和
-address direction 的映射，但还不是最终 wrapper-to-register bitfield golden；真实 packet field 对照
-在接入 public wrapper 或 C shim 后继续扩展。
+RDMA / WDMA 的 DDR lower bound、SPM usable range、byte count、exclusive end range、`Data_Format`
+到 inner `elem_count` 的转换和 `issue_only` policy，GatherScatter 的 TDMA byte `size`、
+byte stride/iteration、SPM inclusive range-end，以及 GEMM 的 Tsm wrapper M/K/N、SPM offset 和
+format 字段。ABI materialization 必须调用同一个 builder 验证 committed instruction 到 ABI 参数单位、
+address direction、logical iteration 和 wrapper/register packet 字段的映射。
+
+该 gate 当前是 wrapper/register-facing golden builder，不把 external `tx8_deps` headers 变成本仓库
+构建依赖，也不把 Triton CRT 的 `__Rdma/__Gemm/__GatherScatter` 签名提升为 Wafer ABI。真实 board
+C shim 接入后，可以把同一组 descriptor 作为 expected source，继续扩展到 public wrapper 调用或
+raw debug packet dump 对照。
 
 ## 8. Verifier
 

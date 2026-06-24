@@ -52,7 +52,7 @@ func.func @abi_rdm_wdm_gemm(
 // CHECK: call @wafer_local_fence
 // CHECK: call @wafer_wdma
 // CHECK: return
-// CHECK-DAG: func.func private @wafer_rdma(i64, i32, i64, i64, i64, i64, i64, i64, i64, i64) -> i32
-// CHECK-DAG: func.func private @wafer_gemm
+// CHECK-DAG: func.func private @wafer_rdma(i64, i32, i64, i64, i64, i64, i64, i64, i64, i64, i32) -> i32
+// CHECK-DAG: func.func private @wafer_gemm(i32, i32, i32, i64, i64, i64, i32) -> i32
 // CHECK-DAG: func.func private @wafer_local_fence
-// CHECK-DAG: func.func private @wafer_wdma(i32, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> i32
+// CHECK-DAG: func.func private @wafer_wdma(i32, i64, i64, i64, i64, i64, i64, i64, i64, i64, i32) -> i32

@@ -134,8 +134,7 @@ Pipeline position:
 
 ## 下一步
 
-1. 固化 `wafer_rdma` / `wafer_wdma` / `wafer_gather_scatter` / `wafer_gemm` /
-   `wafer_local_fence` 的 C shim wrapper 参数验证和 golden packet tests，覆盖 descriptor range-end、
-   wait policy、status convention 和 wrapper/register 字段映射。
-2. 在 object/package 边界消费 LLVM dialect / LLVM IR artifact，补 entrypoint、ABI version 和
+1. 在 object/package 边界消费 LLVM dialect / LLVM IR artifact，补 entrypoint、ABI version 和
    IR-derived resource metadata。
+2. 接入真实 board C shim / public Tsm wrapper compile-link gate，并复用当前 format-aware
+   wrapper/register-facing golden builder 作为 expected source。

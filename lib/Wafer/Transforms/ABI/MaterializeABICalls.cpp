@@ -59,7 +59,8 @@ static mlir::Value getRootViewSource(mlir::Value value) {
     auto viewLike = mlir::dyn_cast<mlir::ViewLikeOpInterface>(def);
     if (!viewLike)
       return value;
-    mlir::Value source = resolveTileRegionBoundaryValue(viewLike.getViewSource());
+    mlir::Value source =
+        resolveTileRegionBoundaryValue(viewLike.getViewSource());
     if (source == value)
       return value;
     value = source;
@@ -72,46 +73,44 @@ static mlir::FailureOr<int64_t> getElementByteWidth(mlir::Operation *op,
   if (auto intType = mlir::dyn_cast<mlir::IntegerType>(type)) {
     unsigned width = intType.getWidth();
     if (width == 0 || width % 8 != 0)
-      return op->emitError()
-             << kFailurePrefix << "memref element type must be byte-addressable";
+      return op->emitError() << kFailurePrefix
+                             << "memref element type must be byte-addressable";
     return static_cast<int64_t>(width / 8);
   }
   if (auto floatType = mlir::dyn_cast<mlir::FloatType>(type)) {
     unsigned width = floatType.getWidth();
     if (width == 0 || width % 8 != 0)
-      return op->emitError()
-             << kFailurePrefix << "memref element type must be byte-addressable";
+      return op->emitError() << kFailurePrefix
+                             << "memref element type must be byte-addressable";
     return static_cast<int64_t>(width / 8);
   }
   if (mlir::isa<mlir::IndexType>(type))
     return int64_t{8};
-  return op->emitError()
-         << kFailurePrefix << "memref element type must be scalar int, float, "
-         << "or index";
+  return op->emitError() << kFailurePrefix
+                         << "memref element type must be scalar int, float, "
+                         << "or index";
 }
 
-static mlir::FailureOr<int64_t>
-getStaticByteOffset(mlir::Operation *op, mlir::MemRefType type,
-                    llvm::StringRef role) {
+static mlir::FailureOr<int64_t> getStaticByteOffset(mlir::Operation *op,
+                                                    mlir::MemRefType type,
+                                                    llvm::StringRef role) {
   llvm::SmallVector<int64_t> strides;
   int64_t offset = 0;
   if (mlir::failed(mlir::getStridesAndOffset(type, strides, offset)) ||
       strides.size() != static_cast<size_t>(type.getRank()))
-    return op->emitError()
-           << kFailurePrefix << role
-           << " view must have static strided layout";
+    return op->emitError() << kFailurePrefix << role
+                           << " view must have static strided layout";
   if (offset == mlir::ShapedType::kDynamic || offset < 0)
-    return op->emitError()
-           << kFailurePrefix << role
-           << " view must have static non-negative byte offset";
+    return op->emitError() << kFailurePrefix << role
+                           << " view must have static non-negative byte offset";
 
   mlir::FailureOr<int64_t> elementBytes =
       getElementByteWidth(op, type.getElementType());
   if (mlir::failed(elementBytes))
     return mlir::failure();
   if (offset > std::numeric_limits<int64_t>::max() / *elementBytes)
-    return op->emitError()
-           << kFailurePrefix << role << " view byte offset overflows int64";
+    return op->emitError() << kFailurePrefix << role
+                           << " view byte offset overflows int64";
   return offset * *elementBytes;
 }
 
@@ -119,35 +118,32 @@ static mlir::FailureOr<int64_t> getSpmOffset(mlir::Operation *op,
                                              mlir::Value value) {
   auto valueType = mlir::dyn_cast<mlir::MemRefType>(value.getType());
   if (!valueType || !isWaferSPMMemRefType(valueType))
-    return op->emitError()
-           << kFailurePrefix << "SPM operand must have Wafer SPM memref type";
+    return op->emitError() << kFailurePrefix
+                           << "SPM operand must have Wafer SPM memref type";
 
   mlir::Value root = getRootViewSource(value);
   mlir::Operation *rootDef = root.getDefiningOp();
   if (!rootDef)
-    return op->emitError()
-           << kFailurePrefix
-           << "SPM memref has no accepted wafer.spm.offset";
+    return op->emitError() << kFailurePrefix
+                           << "SPM memref has no accepted wafer.spm.offset";
   auto offsetAttr =
       rootDef->getAttrOfType<SPMOffsetAttr>(kWaferSPMOffsetAttrName);
   if (!offsetAttr)
-    return op->emitError()
-           << kFailurePrefix
-           << "SPM memref has no accepted wafer.spm.offset";
+    return op->emitError() << kFailurePrefix
+                           << "SPM memref has no accepted wafer.spm.offset";
 
   mlir::FailureOr<int64_t> viewOffset =
       getStaticByteOffset(op, valueType, "SPM");
   if (mlir::failed(viewOffset))
     return mlir::failure();
   int64_t base = offsetAttr.getOffset();
-  if (base < 0 ||
-      *viewOffset > std::numeric_limits<int64_t>::max() - base)
-    return op->emitError()
-           << kFailurePrefix << "SPM byte offset overflows int64";
+  if (base < 0 || *viewOffset > std::numeric_limits<int64_t>::max() - base)
+    return op->emitError() << kFailurePrefix
+                           << "SPM byte offset overflows int64";
   int64_t offset = base + *viewOffset;
   if (offset > std::numeric_limits<uint32_t>::max())
-    return op->emitError()
-           << kFailurePrefix << "SPM byte offset is not representable";
+    return op->emitError() << kFailurePrefix
+                           << "SPM byte offset is not representable";
   return offset;
 }
 
@@ -156,8 +152,8 @@ getDdrAddress(mlir::Operation *op, mlir::Value value,
               const llvm::DenseMap<mlir::Value, mlir::Value> &externalBases) {
   auto valueType = mlir::dyn_cast<mlir::MemRefType>(value.getType());
   if (!valueType || !isWaferDDRMemRefType(valueType))
-    return op->emitError()
-           << kFailurePrefix << "DDR operand must have Wafer DDR memref type";
+    return op->emitError() << kFailurePrefix
+                           << "DDR operand must have Wafer DDR memref type";
 
   mlir::Value root = getRootViewSource(value);
   auto it = externalBases.find(root);
@@ -197,30 +193,66 @@ static mlir::Value createSpmOffsetValue(mlir::OpBuilder &builder,
   return createI32Constant(builder, loc, offset);
 }
 
+static mlir::FailureOr<abi::DataFormat> getDataFormat(mlir::Operation *op,
+                                                      mlir::Type type) {
+  if (mlir::isa<mlir::Float16Type>(type))
+    return abi::DataFormat::FP16;
+  if (mlir::isa<mlir::BFloat16Type>(type))
+    return abi::DataFormat::BF16;
+  if (mlir::isa<mlir::Float32Type>(type))
+    return abi::DataFormat::FP32;
+  if (auto intType = mlir::dyn_cast<mlir::IntegerType>(type)) {
+    switch (intType.getWidth()) {
+    case 1:
+      return abi::DataFormat::BOOL;
+    case 8:
+      return abi::DataFormat::INT8;
+    case 16:
+      return abi::DataFormat::INT16;
+    case 32:
+      return abi::DataFormat::INT32;
+    case 64:
+      return abi::DataFormat::INT64;
+    default:
+      break;
+    }
+  }
+  return op->emitError() << kFailurePrefix
+                         << "memref element type has no TX8 Data_Format";
+}
+
+static mlir::FailureOr<abi::DataFormat> getDataFormat(mlir::Operation *op,
+                                                      mlir::Value value) {
+  auto type = mlir::dyn_cast<mlir::MemRefType>(value.getType());
+  if (!type)
+    return op->emitError() << kFailurePrefix
+                           << "ABI operand must have memref type";
+  return getDataFormat(op, type.getElementType());
+}
+
 static mlir::FailureOr<std::array<int64_t, 3>>
 getDescriptorTriple(mlir::Operation *op, llvm::ArrayRef<int64_t> values,
                     llvm::StringRef role) {
   if (values.size() != 3)
-    return op->emitError()
-           << kFailurePrefix << role << " descriptor must have three values";
+    return op->emitError() << kFailurePrefix << role
+                           << " descriptor must have three values";
   return std::array<int64_t, 3>{values[0], values[1], values[2]};
 }
 
-static mlir::LogicalResult
-validateDmaDescriptor(mlir::Operation *op, DdrAddress ddrAddress,
-                      int64_t spmOffset, uint64_t byteCount,
-                      uint64_t innerBytes, llvm::ArrayRef<int64_t> strides,
-                      llvm::ArrayRef<int64_t> iterations, bool isRdma) {
+static mlir::LogicalResult validateDmaDescriptor(
+    mlir::Operation *op, DdrAddress ddrAddress, int64_t spmOffset,
+    uint64_t byteCount, uint64_t innerBytes, llvm::ArrayRef<int64_t> strides,
+    llvm::ArrayRef<int64_t> iterations, abi::DataFormat format, bool isRdma) {
   if (ddrAddress.byteOffset < 0)
-    return op->emitError()
-           << kFailurePrefix << "DDR byte offset must be non-negative";
+    return op->emitError() << kFailurePrefix
+                           << "DDR byte offset must be non-negative";
   if (static_cast<uint64_t>(ddrAddress.byteOffset) >
       std::numeric_limits<uint64_t>::max() - abi::kDdrLowerBound)
     return op->emitError() << kFailurePrefix << "DDR address overflows";
   if (spmOffset < 0 ||
       spmOffset > static_cast<int64_t>(std::numeric_limits<uint32_t>::max()))
-    return op->emitError()
-           << kFailurePrefix << "SPM byte offset is not representable";
+    return op->emitError() << kFailurePrefix
+                           << "SPM byte offset is not representable";
 
   mlir::FailureOr<std::array<int64_t, 3>> strideArray =
       getDescriptorTriple(op, strides, "DMA stride");
@@ -235,15 +267,70 @@ validateDmaDescriptor(mlir::Operation *op, DdrAddress ddrAddress,
   std::string error;
   uint64_t staticDdrAddress =
       abi::kDdrLowerBound + static_cast<uint64_t>(ddrAddress.byteOffset);
-  bool ok = isRdma ? abi::buildRdma(staticDdrAddress,
-                                    static_cast<uint32_t>(spmOffset),
-                                    byteCount, innerBytes, *strideArray,
-                                    *iterationArray, descriptor, &error)
-                   : abi::buildWdma(static_cast<uint32_t>(spmOffset),
-                                    staticDdrAddress, byteCount, innerBytes,
-                                    *strideArray, *iterationArray, descriptor,
-                                    &error);
+  bool ok =
+      isRdma
+          ? abi::buildRdma(staticDdrAddress, static_cast<uint32_t>(spmOffset),
+                           byteCount, innerBytes, *strideArray, *iterationArray,
+                           descriptor, &error)
+          : abi::buildWdma(static_cast<uint32_t>(spmOffset), staticDdrAddress,
+                           byteCount, innerBytes, *strideArray, *iterationArray,
+                           descriptor, &error);
   if (!ok)
+    return op->emitError() << kFailurePrefix << error;
+
+  abi::DmaRegisterPacket packet;
+  ok = isRdma
+           ? abi::buildRdmaRegisterPacket(descriptor, format, packet, &error)
+           : abi::buildWdmaRegisterPacket(descriptor, format, packet, &error);
+  if (!ok)
+    return op->emitError() << kFailurePrefix << error;
+  return mlir::success();
+}
+
+static mlir::LogicalResult validateGatherScatterDescriptor(
+    mlir::Operation *op, int64_t sourceOffset, int64_t destOffset,
+    uint64_t byteCount, uint64_t innerBytes, llvm::ArrayRef<int64_t> srcStrides,
+    llvm::ArrayRef<int64_t> srcIterations, llvm::ArrayRef<int64_t> dstStrides,
+    llvm::ArrayRef<int64_t> dstIterations) {
+  if (sourceOffset < 0 ||
+      sourceOffset > static_cast<int64_t>(std::numeric_limits<uint32_t>::max()))
+    return op->emitError() << kFailurePrefix
+                           << "gather/scatter source offset is not "
+                           << "representable";
+  if (destOffset < 0 ||
+      destOffset > static_cast<int64_t>(std::numeric_limits<uint32_t>::max()))
+    return op->emitError() << kFailurePrefix
+                           << "gather/scatter dest offset is not "
+                           << "representable";
+
+  mlir::FailureOr<std::array<int64_t, 3>> srcStrideArray =
+      getDescriptorTriple(op, srcStrides, "gather/scatter source stride");
+  if (mlir::failed(srcStrideArray))
+    return mlir::failure();
+  mlir::FailureOr<std::array<int64_t, 3>> srcIterationArray =
+      getDescriptorTriple(op, srcIterations, "gather/scatter source iteration");
+  if (mlir::failed(srcIterationArray))
+    return mlir::failure();
+  mlir::FailureOr<std::array<int64_t, 3>> dstStrideArray =
+      getDescriptorTriple(op, dstStrides, "gather/scatter dest stride");
+  if (mlir::failed(dstStrideArray))
+    return mlir::failure();
+  mlir::FailureOr<std::array<int64_t, 3>> dstIterationArray =
+      getDescriptorTriple(op, dstIterations, "gather/scatter dest iteration");
+  if (mlir::failed(dstIterationArray))
+    return mlir::failure();
+
+  abi::GatherScatterDescriptor descriptor;
+  std::string error;
+  bool ok = abi::buildGatherScatter(
+      static_cast<uint32_t>(sourceOffset), static_cast<uint32_t>(destOffset),
+      byteCount, innerBytes, *srcStrideArray, *srcIterationArray,
+      *dstStrideArray, *dstIterationArray, descriptor, &error);
+  if (!ok)
+    return op->emitError() << kFailurePrefix << error;
+
+  abi::GatherScatterRegisterPacket packet;
+  if (!abi::buildGatherScatterRegisterPacket(descriptor, packet, &error))
     return op->emitError() << kFailurePrefix << error;
   return mlir::success();
 }
@@ -256,16 +343,15 @@ ensureAbiDeclaration(mlir::ModuleOp module, llvm::StringRef name,
       mlir::FunctionType::get(module.getContext(), inputs, results);
   if (auto existing = module.lookupSymbol<mlir::func::FuncOp>(name)) {
     if (existing.getFunctionType() != type)
-      return existing.emitError()
-             << kFailurePrefix << "ABI declaration @" << name
-             << " has incompatible function type";
+      return existing.emitError() << kFailurePrefix << "ABI declaration @"
+                                  << name << " has incompatible function type";
     return mlir::success();
   }
 
   mlir::OpBuilder builder(module.getBodyRegion());
   builder.setInsertionPointToEnd(module.getBody());
-  auto declaration = builder.create<mlir::func::FuncOp>(
-      module.getLoc(), name, type);
+  auto declaration =
+      builder.create<mlir::func::FuncOp>(module.getLoc(), name, type);
   declaration.setPrivate();
   return mlir::success();
 }
@@ -277,17 +363,18 @@ static mlir::LogicalResult ensureAbiDeclarations(mlir::ModuleOp module) {
 
   llvm::SmallVector<mlir::Type> rdmaInputs = {i64, i32, i64, i64};
   rdmaInputs.append(6, i64);
+  rdmaInputs.push_back(i32);
   if (mlir::failed(
           ensureAbiDeclaration(module, "wafer_rdma", rdmaInputs, {i32})))
     return mlir::failure();
   llvm::SmallVector<mlir::Type> wdmaInputs = {i32, i64, i64, i64};
   wdmaInputs.append(6, i64);
+  wdmaInputs.push_back(i32);
   if (mlir::failed(
           ensureAbiDeclaration(module, "wafer_wdma", wdmaInputs, {i32})))
     return mlir::failure();
-  if (mlir::failed(ensureAbiDeclaration(module, "wafer_gemm",
-                                        {i32, i32, i32, i64, i64, i64},
-                                        {i32})))
+  if (mlir::failed(ensureAbiDeclaration(
+          module, "wafer_gemm", {i32, i32, i32, i64, i64, i64, i32}, {i32})))
     return mlir::failure();
   llvm::SmallVector<mlir::Type> gatherScatterInputs = {i32, i32, i64, i64};
   gatherScatterInputs.append(12, i64);
@@ -302,8 +389,7 @@ static mlir::LogicalResult ensureAbiDeclarations(mlir::ModuleOp module) {
 
 static mlir::Value emitAbiCall(mlir::OpBuilder &builder, mlir::Location loc,
                                llvm::StringRef callee,
-                               mlir::ValueRange arguments,
-                               mlir::Value status) {
+                               mlir::ValueRange arguments, mlir::Value status) {
   auto call = builder.create<mlir::func::CallOp>(
       loc, callee, mlir::TypeRange{status.getType()}, arguments);
   return builder.create<mlir::arith::OrIOp>(loc, status, call.getResult(0));
@@ -318,11 +404,9 @@ static bool isWaferInstructionOp(mlir::Operation *op) {
   return op->getName().getStringRef().starts_with("wafer.instr.");
 }
 
-static mlir::LogicalResult
-emitInstructionCall(mlir::Operation *op, mlir::OpBuilder &builder,
-                    mlir::Value &status,
-                    const llvm::DenseMap<mlir::Value, mlir::Value>
-                        &externalBases) {
+static mlir::LogicalResult emitInstructionCall(
+    mlir::Operation *op, mlir::OpBuilder &builder, mlir::Value &status,
+    const llvm::DenseMap<mlir::Value, mlir::Value> &externalBases) {
   mlir::Location loc = op->getLoc();
   auto appendI64Constants = [&](llvm::ArrayRef<int64_t> values,
                                 llvm::SmallVectorImpl<mlir::Value> &arguments) {
@@ -338,17 +422,25 @@ emitInstructionCall(mlir::Operation *op, mlir::OpBuilder &builder,
     mlir::FailureOr<int64_t> spm = getSpmOffset(op, rdma.getDest());
     if (mlir::failed(spm))
       return mlir::failure();
+    mlir::FailureOr<abi::DataFormat> format =
+        getDataFormat(op, rdma.getSource());
+    if (mlir::failed(format))
+      return mlir::failure();
     if (mlir::failed(validateDmaDescriptor(
             op, *ddr, *spm, rdma.getByteCount(), rdma.getInnerBytes(),
-            rdma.getSrcStrides(), rdma.getSrcIterations(), /*isRdma=*/true)))
+            rdma.getSrcStrides(), rdma.getSrcIterations(), *format,
+            /*isRdma=*/true)))
       return mlir::failure();
     mlir::Value ddrValue = createDdrAddressValue(builder, loc, *ddr);
     mlir::Value spmValue = createSpmOffsetValue(builder, loc, *spm);
     llvm::SmallVector<mlir::Value> arguments = {
-        ddrValue, spmValue, createI64Constant(builder, loc, rdma.getByteCount()),
+        ddrValue, spmValue,
+        createI64Constant(builder, loc, rdma.getByteCount()),
         createI64Constant(builder, loc, rdma.getInnerBytes())};
     appendI64Constants(rdma.getSrcStrides(), arguments);
     appendI64Constants(rdma.getSrcIterations(), arguments);
+    arguments.push_back(
+        createI32Constant(builder, loc, static_cast<int64_t>(*format)));
     status = emitAbiCall(builder, loc, "wafer_rdma", arguments, status);
     return mlir::success();
   }
@@ -361,17 +453,25 @@ emitInstructionCall(mlir::Operation *op, mlir::OpBuilder &builder,
         getDdrAddress(op, wdma.getDest(), externalBases);
     if (mlir::failed(ddr))
       return mlir::failure();
+    mlir::FailureOr<abi::DataFormat> format =
+        getDataFormat(op, wdma.getSource());
+    if (mlir::failed(format))
+      return mlir::failure();
     if (mlir::failed(validateDmaDescriptor(
             op, *ddr, *spm, wdma.getByteCount(), wdma.getInnerBytes(),
-            wdma.getDstStrides(), wdma.getDstIterations(), /*isRdma=*/false)))
+            wdma.getDstStrides(), wdma.getDstIterations(), *format,
+            /*isRdma=*/false)))
       return mlir::failure();
     mlir::Value spmValue = createSpmOffsetValue(builder, loc, *spm);
     mlir::Value ddrValue = createDdrAddressValue(builder, loc, *ddr);
     llvm::SmallVector<mlir::Value> arguments = {
-        spmValue, ddrValue, createI64Constant(builder, loc, wdma.getByteCount()),
+        spmValue, ddrValue,
+        createI64Constant(builder, loc, wdma.getByteCount()),
         createI64Constant(builder, loc, wdma.getInnerBytes())};
     appendI64Constants(wdma.getDstStrides(), arguments);
     appendI64Constants(wdma.getDstIterations(), arguments);
+    arguments.push_back(
+        createI32Constant(builder, loc, static_cast<int64_t>(*format)));
     status = emitAbiCall(builder, loc, "wafer_wdma", arguments, status);
     return mlir::success();
   }
@@ -395,8 +495,7 @@ emitInstructionCall(mlir::Operation *op, mlir::OpBuilder &builder,
         return op->emitError()
                << kFailurePrefix << role << " byte offset overflows int64";
       int64_t signedOffset = static_cast<int64_t>(*localOffset);
-      if (base < 0 ||
-          signedOffset > std::numeric_limits<int64_t>::max() - base)
+      if (base < 0 || signedOffset > std::numeric_limits<int64_t>::max() - base)
         return op->emitError()
                << kFailurePrefix << role << " byte offset overflows int64";
       return base + signedOffset;
@@ -410,6 +509,12 @@ emitInstructionCall(mlir::Operation *op, mlir::OpBuilder &builder,
                                  "gather/scatter dest");
     if (mlir::failed(dest))
       return mlir::failure();
+    if (mlir::failed(validateGatherScatterDescriptor(
+            op, *source, *dest, gatherScatter.getByteCount(),
+            gatherScatter.getInnerBytes(), gatherScatter.getSrcStrides(),
+            gatherScatter.getSrcIterations(), gatherScatter.getDstStrides(),
+            gatherScatter.getDstIterations())))
+      return mlir::failure();
 
     llvm::SmallVector<mlir::Value> arguments = {
         createSpmOffsetValue(builder, loc, *source),
@@ -420,8 +525,8 @@ emitInstructionCall(mlir::Operation *op, mlir::OpBuilder &builder,
     appendI64Constants(gatherScatter.getSrcIterations(), arguments);
     appendI64Constants(gatherScatter.getDstStrides(), arguments);
     appendI64Constants(gatherScatter.getDstIterations(), arguments);
-    status = emitAbiCall(builder, loc, "wafer_gather_scatter", arguments,
-                         status);
+    status =
+        emitAbiCall(builder, loc, "wafer_gather_scatter", arguments, status);
     return mlir::success();
   }
 
@@ -435,6 +540,25 @@ emitInstructionCall(mlir::Operation *op, mlir::OpBuilder &builder,
     mlir::FailureOr<int64_t> dest = getSpmOffset(op, gemm.getDest());
     if (mlir::failed(dest))
       return mlir::failure();
+    mlir::FailureOr<abi::DataFormat> inputFormat =
+        getDataFormat(op, gemm.getLhs());
+    if (mlir::failed(inputFormat))
+      return mlir::failure();
+    mlir::FailureOr<abi::DataFormat> outputFormat =
+        getDataFormat(op, gemm.getDest());
+    if (mlir::failed(outputFormat))
+      return mlir::failure();
+    abi::GemmDescriptor descriptor;
+    std::string error;
+    if (!abi::buildGemm(gemm.getM(), gemm.getK(), gemm.getN(), descriptor,
+                        &error))
+      return gemm.emitError() << kFailurePrefix << error;
+    abi::GemmRegisterPacket packet;
+    if (!abi::buildGemmRegisterPacket(
+            descriptor, static_cast<uint32_t>(*lhs),
+            static_cast<uint32_t>(*rhs), static_cast<uint32_t>(*dest),
+            *inputFormat, *outputFormat, packet, &error))
+      return gemm.emitError() << kFailurePrefix << error;
     status = emitAbiCall(
         builder, loc, "wafer_gemm",
         {createSpmOffsetValue(builder, loc, *lhs),
@@ -442,7 +566,8 @@ emitInstructionCall(mlir::Operation *op, mlir::OpBuilder &builder,
          createSpmOffsetValue(builder, loc, *dest),
          createI64Constant(builder, loc, gemm.getM()),
          createI64Constant(builder, loc, gemm.getK()),
-         createI64Constant(builder, loc, gemm.getN())},
+         createI64Constant(builder, loc, gemm.getN()),
+         createI32Constant(builder, loc, static_cast<int64_t>(*inputFormat))},
         status);
     return mlir::success();
   }
@@ -452,9 +577,8 @@ emitInstructionCall(mlir::Operation *op, mlir::OpBuilder &builder,
     return mlir::success();
   }
 
-  return op->emitError()
-         << kFailurePrefix << "unsupported instruction op "
-         << op->getName().getStringRef();
+  return op->emitError() << kFailurePrefix << "unsupported instruction op "
+                         << op->getName().getStringRef();
 }
 
 static bool containsTileRegion(mlir::func::FuncOp func) {
@@ -463,13 +587,12 @@ static bool containsTileRegion(mlir::func::FuncOp func) {
   return found;
 }
 
-static mlir::LogicalResult
-materializeFunction(mlir::ModuleOp module, mlir::func::FuncOp func) {
+static mlir::LogicalResult materializeFunction(mlir::ModuleOp module,
+                                               mlir::func::FuncOp func) {
   std::string abiName = (func.getSymName() + "_abi").str();
   if (module.lookupSymbol(abiName))
-    return func.emitError()
-           << kFailurePrefix << "ABI entry symbol @" << abiName
-           << " already exists";
+    return func.emitError() << kFailurePrefix << "ABI entry symbol @" << abiName
+                            << " already exists";
 
   mlir::MLIRContext *ctx = module.getContext();
   mlir::Type i32 = mlir::IntegerType::get(ctx, 32);
