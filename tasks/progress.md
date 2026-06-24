@@ -65,34 +65,31 @@ PyTorch/XLA StableHLO Wafer program directory
 
 ## 当前 Active
 
-**Package manifest assembly**
+**Wrapper shim / register-facing implementation**
 
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  ABI/LLVM lowering 生成的 LLVM IR artifact、device-code gate 生成的 TX8 kcore shared object、
-  committed `wafer.instr.*` IR、accepted SPM/DDR offset facts、topology/execution-mesh contract、
-  program parameter shard metadata/resource view、薄 launch/block binding 和 communication/sync
-  lowering。
+  scalar `wafer_*` ABI call contract、format-aware wrapper/register-facing golden packet builders、
+  committed instruction IR、accepted offset facts、device-code compile/link gate 和 package manifest。
 - Current stage responsibility:
-  package manifest 记录 object/program id、entrypoint、ABI version、constant bytes、endpoint
-  metadata 和 resource binding metadata；这些 metadata 从 committed IR、accepted facts、topology/
-  execution-mesh、program parameter shard metadata 和按需重算的 resource view 派生。
+  为当前 ABI lowering 已经发出的 `wafer_rdma`、`wafer_wdma`、`wafer_gather_scatter`、
+  `wafer_gemm` 和 `wafer_local_fence` 提供真实 C shim / public Tsm wrapper implementation，
+  并用 register-facing golden builder 校验 wrapper 字段映射。
 - Output artifact / IR:
-  IR-derived package manifest、device object reference、runtime adapter binding/launch contract 和
-  completion-source declaration。
+  可随 device LLVM IR 一起编译/链接的 wrapper shim object/library，以及与 ABI call 参数一致的
+  register-facing golden tests。
 - Downstream consumer:
-  runtime adapter / board launch gate。
+  device-code link gate、package manifest 和 runtime adapter / board launch gate。
 - User-level driver / named pipeline:
-  package emission 必须接在 committed instruction -> ABI/LLVM lowering 之后；局部工具入口只作为
-  device-code compile/link gate，不以显式 manifest fixture 或 C stub table 作为主线入口。
+  wrapper shim 只消费 scalar ABI contract；不引入新的 ABI IR dialect，也不把 C helper table 当作
+  package manifest 或 launch protocol。
 - Explicit non-goals:
   不重新选择 group、tile shape、layout、instruction form、SPM/DDR memory plan、communication
-  schedule 或 ABI lowering；不把 runtime physical address 写回上层 IR。
+  schedule、ABI lowering 或 package schema；不做 board launch/completion correctness。
 - Completion gate:
-  manifest 从当前 pipeline 产物自动导出并 roundtrip，记录真实 object/program id、entrypoint、
-  ABI version、endpoint/resource metadata；runtime adapter gate 能拒绝 stub completion 和不满足
-  contract 的 allocation/binding。
+  当前 `wafer_*` ABI family 的 shim 能参与 `.ll + shim -> .o -> kcore .so` 编译链接；golden packet /
+  register-facing tests 覆盖 RDMA、WDMA、gather_scatter、GEMM 和 local_fence 的字段映射与 wait 语义。
 ```
 
 ## 已可依赖的上游边界
@@ -118,9 +115,10 @@ Pipeline position:
 | buffer-level communication collective materialization | done | tiled `wafer.linalg_ext.collective.*` + unplaced SPM buffer/local-rank facts + execution mesh rank domain | top-level single-result `all_gather` / `reduce_scatter` / `all_reduce` materialize 成 verifier-legal `wafer.tile.*` collective；buffer、bytes、rank_group、local_rank 和 effect 边界来自 IR，不选择 p2p schedule；发生在 SPM memory planning 前 |
 | p2p Direct DTE instruction schedule lowering | done | `wafer.tile.*` collective + topology/execution-mesh derived endpoint view | compact SPM all_gather 支持 ring/direct schedule、tensor SPM all_reduce 支持 ring/tree schedule、full-input reduce_scatter 支持 direct schedule；accepted schedule 都生成 explicit `wafer.instr.dte_send` / `dte_recv` / `dte_wait` body，并由 SPM memory planning 消费；peer/route 从 topology/execution mesh 查询，不保存 side table |
 | comm-aware memory planning gate | done | instruction-level compute/movement + `wafer.instr.dte_*` over unplaced SPM memrefs | communication staging、DTE token lifetime、local fence / DTE wait 和 buffer reuse 被 SPM planning 消费；all_gather / reduce_scatter / all_reduce 可经 named pipeline 到 SPM + DDR memory-planned instruction IR |
-| ABI / LLVM lowering | done | committed instruction IR + accepted SPM/DDR offset facts + topology/execution-mesh + program parameter shard metadata/resource view + launch-block binding + communication/sync lowering | RDMA/WDMA/GEMM/local_fence 的 scalar `func.call` ABI sequence、LLVM dialect artifact；pipeline gate 覆盖 group -> ABI calls -> LLVM dialect |
+| ABI / LLVM lowering | done | committed instruction IR + accepted SPM/DDR offset facts + topology/execution-mesh + program parameter shard metadata/resource view + launch-block binding + communication/sync lowering | RDMA/WDMA/gather_scatter/GEMM/local_fence 的 scalar `func.call` ABI sequence、LLVM dialect artifact；pipeline gate 覆盖 group -> ABI calls -> LLVM dialect |
 | device-code compile/link gate | done | LLVM IR artifact + TX8 deps + Wafer CRT lib dir | LLVM `clang++` `.ll -> .o` 和 `tx8_deps` GCC `.o -> kcore .so` 的命令形态固定；本地 smoke 已证明最小 LLVM IR 可生成 RISC-V relocatable object 和 shared object；manifest validator 要求 `device_code` 记录 `kcore_shared_object` |
-| package manifest auto export | active | ABI/LLVM artifact + kcore shared object + committed IR + topology/execution-mesh + program parameter shard metadata/resource view | object/program id、entrypoint、ABI version 和 IR-derived package manifest；endpoint/resource/constant metadata 由同一 resource view analysis 从 IR 重算 |
+| package manifest auto export | done | ABI/LLVM artifact + kcore shared object + committed IR + launch signature metadata | `tools/wafer_export_package_manifest.py` 从 committed instruction IR、LLVM IR artifact、device artifact 和 signature metadata 导出 manifest；pipeline smoke 覆盖 `wafer-opt` instruction/LLVM outputs -> `mlir-translate` LLVM IR -> manifest validator；schema 要求 program id、entrypoint、ABI version 和 kcore shared object |
+| wrapper shim / register-facing implementation | active | scalar `wafer_*` ABI contract + format-aware golden packet builders + TX8 public wrapper evidence | `wafer_rdma`、`wafer_wdma`、`wafer_gather_scatter`、`wafer_gemm`、`wafer_local_fence` 的 C shim / wrapper implementation；参与 device-code link gate，并由 register-facing golden tests 验证 |
 | runtime adapter / board launch | pending | package + runtime adapter | allocate/import/query/bind runtime objects，launch program，验证 completion、错误传播和 board gate |
 | transformer staged gaps | pending | static transformer local shard IR / staged IR gaps | full-block schedule 或拒绝原因；补 mask/select、dynamic-bound policy、constant/weight slice 等 |
 | overlap / cost calibration | later | board/profile 输出 | overlap、cost model 和 PMU calibration |
@@ -136,6 +134,5 @@ Pipeline position:
 
 ## 下一步
 
-1. 在 package manifest 自动导出中补 entrypoint、ABI version 和 IR-derived resource metadata。
-2. 接入真实 board C shim / public Tsm wrapper implementation gate，并复用当前 format-aware
+1. 接入真实 board C shim / public Tsm wrapper implementation gate，并复用当前 format-aware
    wrapper/register-facing golden builder 作为 expected source。

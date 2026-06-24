@@ -5,6 +5,11 @@
     "mode": "hpgr",
     "completion_source": "hpgr_stream_event"
   },
+  "program": {
+    "id": "invalid_empty_device_code_fixture",
+    "entrypoint": "invalid_empty_device_code_fixture_abi",
+    "abi_version": "wafer-cabi-v0"
+  },
   "device_code": [],
   "launch_signature": {
     "inputs": [

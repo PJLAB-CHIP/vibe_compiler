@@ -5,10 +5,12 @@
 # RUN: not %python %wafer_src_root/tools/wafer_package_manifest.py --validate %S/invalid-resident-constant-manifest.json 2>&1 | FileCheck %s --check-prefix=CONST-ERR
 # RUN: not %python %wafer_src_root/tools/wafer_package_manifest.py --validate %S/invalid-device-code-manifest.json 2>&1 | FileCheck %s --check-prefix=DEVICE-ERR
 # RUN: not %python %wafer_src_root/tools/wafer_package_manifest.py --validate %S/invalid-empty-device-code-manifest.json 2>&1 | FileCheck %s --check-prefix=EMPTY-DEVICE-ERR
+# RUN: not %python %wafer_src_root/tools/wafer_package_manifest.py --validate %S/invalid-program-manifest.json 2>&1 | FileCheck %s --check-prefix=PROGRAM-ERR
 
 # CHECK: "schema_version": 1
 # CHECK: "package_name": "manifest_schema_fixture"
 # CHECK: "completion_source": "hpgr_stream_event"
+# CHECK: "entrypoint": "manifest_schema_fixture_abi"
 # CHECK: "kind": "kcore_shared_object"
 # CHECK: "artifact": "schema_fixture.so"
 # CHECK-NOT: {{"place}}{{ment"}}
@@ -27,3 +29,4 @@
 # CONST-ERR: resources.resident_constant_bytes does not match resident constants
 # DEVICE-ERR: device_code[0].kind must be kcore_shared_object
 # EMPTY-DEVICE-ERR: device_code must be non-empty
+# PROGRAM-ERR: program must be an object

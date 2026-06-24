@@ -218,10 +218,13 @@ external binding、workspace、resident constant 和 control metadata requiremen
 package load / launch 时执行 allocate/import/query/bind，并报告
 runtime allocation failure；不能在 runtime/package 层重新决定 DDR range plan。
 
-当前 `tools/wafer_package_manifest.py` 只负责验证和 roundtrip 显式输入的 manifest schema，不再提供
-固定 package emitter。manifest schema 记录 launch signature、endpoint metadata、DDR external
-binding bytes、SPM/DDR memory summary、workspace buffer demand、resident constant demand、ABI
-call/packet emission metadata、device-code program id 和 runtime completion source。validator 要求
+当前 `tools/wafer_package_manifest.py` 负责验证和 roundtrip package manifest schema。manifest schema
+记录 launch signature、program id、entrypoint、ABI version、device code artifact、endpoint metadata、
+DDR external binding bytes、SPM/DDR memory summary、workspace buffer demand、resident constant demand、
+ABI call/packet emission metadata 和 runtime completion source。validator 要求
+`program.id`、`program.entrypoint` 和 `program.abi_version` 存在，且 `program.abi_version` 是
+当前支持的 `wafer-cabi-v0`；要求 `device_code` 非空，且每个条目都是 kcore shared object artifact。
+validator 要求
 `resources.workspace_bytes` 与
 `workspace_buffers` 的 compact tensor storage bytes 求和一致，要求
 `resources.resident_constant_bytes` 与 `resident_constants` 求和一致；`launch_input` resident
@@ -236,6 +239,13 @@ resident constant table；它不代表当前 IR pipeline 已生成 package，也
 `.ll -> .o -> kernel.so` 两段命令，并可在本地 TX8 依赖齐备时执行该 compile/link。它不从
 `wafer.instr.*` 恢复 package metadata，不生成 manifest，也不代表 runtime launch / board
 completion 已通过。
+
+`tools/wafer_export_package_manifest.py` 是 package manifest auto-export gate：它消费上游
+program metadata 中的 launch signature JSON、committed instruction MLIR、ABI/LLVM lowering 生成的
+LLVM IR 文件和 device-code artifact，输出可被 validator roundtrip 的 manifest。该工具从 LLVM IR
+解析 entrypoint，从 committed instruction MLIR 重算 instruction list、accepted SPM span 和
+DDR external binding byte summary；launch signature 的 user-visible name、shape、dtype 和 layout
+仍来自上游 program metadata，不能从低层 `%arg0` / `%arg1` 或 artifact 文件名猜测。
 
 当前 C ABI stub 不再从 manifest 生成 tile-specific launch argument table。endpoint / block metadata 必须由
 后续 topology/execution-mesh、program parameter shard metadata/resource view 和薄 launch/block binding 派生，不能由
@@ -306,6 +316,9 @@ V0 验证：
   `libc_stub` 和 Wafer CRT `vr`。
 - package manifest `device_code` 记录 kcore shared object artifact，不再把 instruction-sequence
   fixture 当成 runtime package device code。
+- package manifest auto-export 从真实 `wafer-opt` pipeline 产出的 committed instruction IR 和
+  LLVM IR artifact 导出 manifest，并经 `tools/wafer_package_manifest.py --validate` 验证；手写 manifest
+  fixture 只能作为 schema negative / roundtrip 覆盖。
 - package manifest schema roundtrip。
 - launch signature 与 compiled function ABI 一致。
 - endpoint metadata 覆盖所有 launched tile。

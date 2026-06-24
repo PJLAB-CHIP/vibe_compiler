@@ -55,7 +55,7 @@ Serving integration 暂不纳入本文通过标准。
 | Compute / Movement | committed instruction IR + accepted offset facts | wrapper family、layout、dtype、shape、issue/fence/wait 合法 |
 | Communication | tile_region / SPM materialization 后的 `wafer.tile.*` collective / `wafer.instr.dte_*` IR | endpoint、token、DTE/FSM resource、wait policy 合法 |
 | ABI / LLVM / golden packet | committed instruction IR + accepted offsets + topology/execution-mesh + program parameter shard metadata/resource view + communication/sync lowering | LLVM dialect call 或 `wafer_*` C ABI / packet builder input 合法；ABI unit/address/wait verified，golden packet 覆盖 wrapper mapping；launch/resource view 从 IR 按需重算，不成为独立 artifact |
-| Object/package | ABI/LLVM artifact + committed IR + topology/execution-mesh + program parameter shard metadata/resource view | `.ll -> .o -> kcore .so` device-code compile/link gate 合法；manifest 记录 object/program id、entrypoint、ABI version 和 IR-derived package metadata；endpoint/resource/constant metadata 由同一 resource view analysis 生成 |
+| Object/package | ABI/LLVM artifact + committed IR + topology/execution-mesh + program parameter shard metadata/resource view | `.ll -> .o -> kcore .so` device-code compile/link gate 合法；manifest 记录 object/program id、entrypoint、ABI version 和 IR-derived package metadata；package manifest auto-export 从 committed instruction IR、LLVM IR artifact、device artifact 和上游 launch signature metadata 导出并通过 validator；endpoint/resource/constant metadata 由同一 resource view analysis 生成 |
 | Runtime/board | package + adapter | runtime allocation object binding contract、stub shielding、launch/completion/error propagation 合法；板端 completion 在有卡环境验证 |
 
 Gate 通过只说明进入下一层的输入合法，不说明整个 compiler 已完成。
@@ -213,8 +213,9 @@ M7 ABI / LLVM program gate：
 - 本地 gate 至少检查 LLVM IR 文本中的 entrypoint、runtime symbol declaration、参数顺序和
   metadata/program 引用；随后用 LLVM `clang++` 做 `.ll -> .o`，再用 `tx8_deps`
   `riscv64-unknown-elf-gcc` 链接 kcore shared object。`.ll` 不能直接交给 GCC。
-- package manifest 必须记录真实 LLVM/object program id、entrypoint 和 ABI version；C stub-only
-  program 只允许作为 P0-P6 历史局部 fixture 的验证物。
+- package manifest 必须记录真实 LLVM/object program id、entrypoint 和 ABI version；auto-export gate
+  必须消费当前 pipeline 产物导出 manifest 并通过 validator；C stub-only program 只允许作为历史局部
+  fixture 的验证物。
 
 M8 runtime / board correctness gate：
 
@@ -284,4 +285,6 @@ runtime call emission、板端运行、数值正确性、completion 或 profilin
 ABI/LLVM lowering artifact 自动导出。该拼接和 fixed emitter 已删除；当前只能证明 IR lowering 和
 package schema/stub tool-unit 分别可用，不能作为 “package 由当前 lowering 结果生成” 的证据。
 进入 object/package gate 时必须先把 IR-derived manifest emission 作为 gate，并记录 ABI/LLVM artifact、
-object/program id、entrypoint 和 ABI version；之后再推进 runtime call / board gate。
+object/program id、entrypoint 和 ABI version；当前 package manifest auto-export 已能消费 committed
+instruction IR、LLVM IR artifact、device artifact 和 launch signature metadata 导出 manifest，之后再
+推进 runtime call / board gate。

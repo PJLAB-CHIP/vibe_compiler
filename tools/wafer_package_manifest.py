@@ -21,6 +21,10 @@ ALLOWED_DEVICE_CODE_KINDS = {
     "kcore_shared_object",
 }
 
+ALLOWED_ABI_VERSIONS = {
+    "wafer-cabi-v0",
+}
+
 KNOWN_STUB_FENCES = {
     "TsmDeviceSynchronize",
     "TsmLaunch",
@@ -31,9 +35,11 @@ KNOWN_STUB_FENCES = {
 SUPPORTED_INSTRUCTION_OPS = {
     "wafer.instr.rdma",
     "wafer.instr.wdma",
+    "wafer.instr.gather_scatter",
     "wafer.instr.gemm",
     "wafer.instr.elementwise",
     "wafer.instr.reduce",
+    "wafer.instr.local_fence",
 }
 
 SUPPORTED_ELEMENTWISE_KINDS = {
@@ -158,6 +164,21 @@ def validate_device_code(value: Any) -> None:
             fail(f"{name}.artifact must name a kcore shared object")
 
 
+def validate_program(value: Any) -> None:
+    program = require_dict(value, "program")
+    require_non_empty_string(program.get("id"), "program.id")
+    entrypoint = require_non_empty_string(
+        program.get("entrypoint"), "program.entrypoint"
+    )
+    if entrypoint.startswith("@"):
+        fail("program.entrypoint must not include @")
+    abi_version = require_non_empty_string(
+        program.get("abi_version"), "program.abi_version"
+    )
+    if abi_version not in ALLOWED_ABI_VERSIONS:
+        fail("program.abi_version is not supported")
+
+
 def validate_tensor_storage_demand(item: Any, name: str) -> tuple[str, int]:
     demand = require_dict(item, name)
     demand_name = require_non_empty_string(demand.get("name"), f"{name}.name")
@@ -233,6 +254,7 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         fail("completion source is a known stub fence")
     if completion_source not in ALLOWED_COMPLETION_SOURCES:
         fail("completion source is not in the allowed runtime fence set")
+    validate_program(manifest.get("program"))
     validate_device_code(manifest.get("device_code"))
 
     signature = require_dict(manifest.get("launch_signature"), "launch_signature")
@@ -279,10 +301,23 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         mnemonic = require_non_empty_string(item.get("op"), f"instructions[{index}].op")
         if mnemonic not in SUPPORTED_INSTRUCTION_OPS:
             fail(f"instructions[{index}].op is not supported by the package manifest")
-        if item.get("wait_policy") != "issue_only":
+        wait_policy = item.get("wait_policy")
+        if mnemonic == "wafer.instr.local_fence":
+            if wait_policy != "local_wait":
+                fail(f"instructions[{index}].wait_policy must be local_wait")
+            continue
+        if wait_policy != "issue_only":
             fail(f"instructions[{index}].wait_policy must be issue_only")
-        if mnemonic in {"wafer.instr.rdma", "wafer.instr.wdma"}:
+        if mnemonic in {
+            "wafer.instr.rdma",
+            "wafer.instr.wdma",
+            "wafer.instr.gather_scatter",
+        }:
             require_positive_int(item.get("bytes"), f"instructions[{index}].bytes")
+            if "inner_bytes" in item:
+                require_positive_int(
+                    item.get("inner_bytes"), f"instructions[{index}].inner_bytes"
+                )
         elif mnemonic == "wafer.instr.gemm":
             require_positive_int(item.get("m"), f"instructions[{index}].m")
             require_positive_int(item.get("k"), f"instructions[{index}].k")

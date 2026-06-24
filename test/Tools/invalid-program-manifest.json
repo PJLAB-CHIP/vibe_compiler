@@ -1,20 +1,15 @@
 {
   "schema_version": 1,
-  "package_name": "invalid_device_code_fixture",
+  "package_name": "invalid_program_fixture",
   "runtime": {
     "mode": "hpgr",
     "completion_source": "hpgr_stream_event"
   },
-  "program": {
-    "id": "invalid_device_code_fixture",
-    "entrypoint": "invalid_device_code_fixture_abi",
-    "abi_version": "wafer-cabi-v0"
-  },
   "device_code": [
     {
-      "name": "old_issue_sequence",
-      "kind": "instruction_sequence",
-      "artifact": "old_issue_sequence.o"
+      "name": "invalid_program_kernel",
+      "kind": "kcore_shared_object",
+      "artifact": "invalid_program.so"
     }
   ],
   "launch_signature": {

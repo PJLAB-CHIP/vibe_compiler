@@ -1,0 +1,33 @@
+{
+  "inputs": [
+    {
+      "name": "lhs",
+      "shape": [
+        2,
+        4
+      ],
+      "dtype": "f16",
+      "layout": "tensor"
+    },
+    {
+      "name": "rhs",
+      "shape": [
+        2,
+        4
+      ],
+      "dtype": "f16",
+      "layout": "tensor"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "out",
+      "shape": [
+        2,
+        4
+      ],
+      "dtype": "f16",
+      "layout": "tensor"
+    }
+  ]
+}

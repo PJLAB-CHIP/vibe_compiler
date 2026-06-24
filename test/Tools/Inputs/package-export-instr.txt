@@ -1,0 +1,49 @@
+func.func @manifest_export_instr(
+    %lhs: memref<2x4xf16, #wafer.memory<ddr, tensor>>,
+    %rhs: memref<2x4xf16, #wafer.memory<ddr, tensor>>,
+    %out: memref<2x4xf16, #wafer.memory<ddr, tensor>>) {
+  %region = wafer.tile.region(%lhs, %rhs, %out
+      : memref<2x4xf16, #wafer.memory<ddr, tensor>>,
+        memref<2x4xf16, #wafer.memory<ddr, tensor>>,
+        memref<2x4xf16, #wafer.memory<ddr, tensor>>)
+      -> (memref<2x4xf16, #wafer.memory<ddr, tensor>>) {
+  ^bb0(%lhs_arg: memref<2x4xf16, #wafer.memory<ddr, tensor>>,
+       %rhs_arg: memref<2x4xf16, #wafer.memory<ddr, tensor>>,
+       %out_arg: memref<2x4xf16, #wafer.memory<ddr, tensor>>):
+    %lhs_spm = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<2x4xf16, #wafer.memory<spm, tensor>>
+    %rhs_spm = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65792>}
+        : memref<2x4xf16, #wafer.memory<spm, tensor>>
+    %acc = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66048>}
+        : memref<2x4xf16, #wafer.memory<spm, tensor>>
+    wafer.instr.rdma %lhs_arg to %lhs_spm
+        {byte_count = 16 : i64, inner_bytes = 8 : i64,
+         src_iterations = array<i64: 2, 1, 1>,
+         src_strides = array<i64: 8, 0, 0>}
+        : memref<2x4xf16, #wafer.memory<ddr, tensor>>
+       to memref<2x4xf16, #wafer.memory<spm, tensor>>
+    wafer.instr.rdma %rhs_arg to %rhs_spm
+        {byte_count = 16 : i64, inner_bytes = 8 : i64,
+         src_iterations = array<i64: 2, 1, 1>,
+         src_strides = array<i64: 8, 0, 0>}
+        : memref<2x4xf16, #wafer.memory<ddr, tensor>>
+       to memref<2x4xf16, #wafer.memory<spm, tensor>>
+    wafer.instr.gather_scatter %lhs_spm to %acc
+        {byte_count = 16 : i64, inner_bytes = 8 : i64,
+         src_strides = array<i64: 8, 0, 0>,
+         src_iterations = array<i64: 2, 1, 1>,
+         dst_strides = array<i64: 8, 0, 0>,
+         dst_iterations = array<i64: 2, 1, 1>}
+        : memref<2x4xf16, #wafer.memory<spm, tensor>>
+       to memref<2x4xf16, #wafer.memory<spm, tensor>>
+    wafer.instr.local_fence
+    wafer.instr.wdma %acc to %out_arg
+        {byte_count = 16 : i64, dst_iterations = array<i64: 2, 1, 1>,
+         dst_strides = array<i64: 8, 0, 0>, inner_bytes = 8 : i64}
+        : memref<2x4xf16, #wafer.memory<spm, tensor>>
+       to memref<2x4xf16, #wafer.memory<ddr, tensor>>
+    wafer.tile.yield %out_arg
+        : memref<2x4xf16, #wafer.memory<ddr, tensor>>
+  }
+  return
+}

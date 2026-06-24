@@ -5,6 +5,11 @@
     "mode": "hpgr",
     "completion_source": "hpgr_stream_event"
   },
+  "program": {
+    "id": "bad_resident_constant",
+    "entrypoint": "bad_resident_constant_abi",
+    "abi_version": "wafer-cabi-v0"
+  },
   "device_code": [
     {
       "name": "single_matmul",

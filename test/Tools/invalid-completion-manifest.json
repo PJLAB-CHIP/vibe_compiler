@@ -5,6 +5,11 @@
     "mode": "hpgr",
     "completion_source": "TsmDeviceSynchronize"
   },
+  "program": {
+    "id": "bad_completion",
+    "entrypoint": "bad_completion_abi",
+    "abi_version": "wafer-cabi-v0"
+  },
   "device_code": [
     {
       "name": "bad_completion_kernel",

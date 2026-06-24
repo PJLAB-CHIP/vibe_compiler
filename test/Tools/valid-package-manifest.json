@@ -5,6 +5,11 @@
     "mode": "hpgr",
     "completion_source": "hpgr_stream_event"
   },
+  "program": {
+    "id": "manifest_schema_fixture",
+    "entrypoint": "manifest_schema_fixture_abi",
+    "abi_version": "wafer-cabi-v0"
+  },
   "device_code": [
     {
       "name": "schema_fixture_kernel",
