@@ -115,6 +115,11 @@ static std::optional<PathCondition> mergeConditions(PathCondition lhs,
                        lhs.falseBranches | rhs.falseBranches};
 }
 
+static bool conditionImplies(PathCondition lhs, PathCondition rhs) {
+  return (rhs.trueBranches & ~lhs.trueBranches) == 0 &&
+         (rhs.falseBranches & ~lhs.falseBranches) == 0;
+}
+
 static std::optional<PathCondition> withBranch(PathCondition condition,
                                                unsigned branch, bool thenPath) {
   if (branch >= 64)
@@ -123,6 +128,42 @@ static std::optional<PathCondition> withBranch(PathCondition condition,
   PathCondition branchCondition =
       thenPath ? PathCondition{bit, 0} : PathCondition{0, bit};
   return mergeConditions(condition, branchCondition);
+}
+
+static void
+appendConditionDifference(PathCondition base, PathCondition covered,
+                          llvm::SmallVectorImpl<PathCondition> &remaining) {
+  if (!areCompatible(base, covered)) {
+    remaining.push_back(base);
+    return;
+  }
+  if (conditionImplies(base, covered))
+    return;
+
+  PathCondition prefix = base;
+  auto splitBranch = [&](unsigned branch, bool coveredThenPath) {
+    std::optional<PathCondition> outside =
+        withBranch(prefix, branch, !coveredThenPath);
+    if (outside)
+      remaining.push_back(*outside);
+    std::optional<PathCondition> inside =
+        withBranch(prefix, branch, coveredThenPath);
+    if (inside)
+      prefix = *inside;
+  };
+
+  for (unsigned branch = 0; branch < 64; ++branch) {
+    uint64_t bit = uint64_t{1} << branch;
+    if ((covered.trueBranches & bit) == 0 || (base.trueBranches & bit) != 0)
+      continue;
+    splitBranch(branch, /*coveredThenPath=*/true);
+  }
+  for (unsigned branch = 0; branch < 64; ++branch) {
+    uint64_t bit = uint64_t{1} << branch;
+    if ((covered.falseBranches & bit) == 0 || (base.falseBranches & bit) != 0)
+      continue;
+    splitBranch(branch, /*coveredThenPath=*/false);
+  }
 }
 
 static bool segmentsOverlap(const LiveSegment &lhs, const LiveSegment &rhs) {
@@ -325,6 +366,7 @@ struct LifetimeDataflow {
   llvm::MutableArrayRef<SPMDemand> demands;
   llvm::DenseMap<mlir::Value, llvm::SmallVector<RootRef, 2>> valueRefs;
   llvm::DenseMap<mlir::Value, llvm::SmallVector<RootRef, 2>> tokenRefs;
+  llvm::SmallVector<RootRef, 8> pendingLocalWrites;
 
   PathCondition getOperationCondition(mlir::Operation *op) const {
     auto it = events.operationConditions.find(op);
@@ -384,6 +426,75 @@ struct LifetimeDataflow {
       if (hasAsyncTokenType(result))
         tokenRefs[result] = refs;
     }
+  }
+
+  static mlir::Value getEffectValue(mlir::Operation *op,
+                                    const WaferResourceEffect &effect) {
+    switch (effect.role) {
+    case WaferValueRole::Operand:
+      if (effect.index < op->getNumOperands())
+        return op->getOperand(effect.index);
+      return {};
+    case WaferValueRole::Result:
+      if (effect.index < op->getNumResults())
+        return op->getResult(effect.index);
+      return {};
+    case WaferValueRole::None:
+      return {};
+    }
+    llvm_unreachable("unknown Wafer value role");
+  }
+
+  void recordPendingLocalWriteEffects(mlir::Operation *op) {
+    auto effectInterface = mlir::dyn_cast<WaferResourceEffectInterface>(op);
+    if (!effectInterface)
+      return;
+
+    llvm::SmallVector<WaferResourceEffect, 4> effects;
+    effectInterface.collectWaferResourceEffects(effects);
+    bool hasLocalIssue =
+        llvm::any_of(effects, [](const WaferResourceEffect &effect) {
+          return effect.access == WaferResourceAccess::Issue &&
+                 (effect.resource == WaferResourceKind::Compute ||
+                  effect.resource == WaferResourceKind::Movement);
+        });
+    if (!hasLocalIssue)
+      return;
+
+    PathCondition condition = getOperationCondition(op);
+    for (const WaferResourceEffect &effect : effects) {
+      if (effect.resource != WaferResourceKind::SPM ||
+          effect.access != WaferResourceAccess::Write)
+        continue;
+      mlir::Value value = getEffectValue(op, effect);
+      if (!value)
+        continue;
+      llvm::SmallVector<RootRef, 2> refs =
+          getRefsAtUse(value, condition, valueRefs);
+      pendingLocalWrites.append(refs.begin(), refs.end());
+    }
+  }
+
+  void processLocalDrain(mlir::Operation *op) {
+    int64_t event = getOperationEvent(op);
+    PathCondition drainCondition = getOperationCondition(op);
+    llvm::SmallVector<RootRef, 8> remainingWrites;
+    for (RootRef ref : pendingLocalWrites) {
+      std::optional<PathCondition> merged =
+          mergeConditions(ref.condition, drainCondition);
+      if (!merged) {
+        remainingWrites.push_back(ref);
+        continue;
+      }
+      recordDemandUse(demands[ref.demandIndex], event, *merged);
+
+      llvm::SmallVector<PathCondition, 2> remainingConditions;
+      appendConditionDifference(ref.condition, drainCondition,
+                                remainingConditions);
+      for (PathCondition condition : remainingConditions)
+        remainingWrites.push_back(RootRef{ref.demandIndex, condition});
+    }
+    pendingLocalWrites = std::move(remainingWrites);
   }
 
   void mapIfResults(mlir::scf::IfOp ifOp) {
@@ -461,7 +572,9 @@ struct LifetimeDataflow {
     for (mlir::Operation &op : block) {
       recordOperands(&op);
 
-      if (auto forOp = mlir::dyn_cast<mlir::scf::ForOp>(op)) {
+      if (mlir::isa<SyncLocalDrainOp>(op)) {
+        processLocalDrain(&op);
+      } else if (auto forOp = mlir::dyn_cast<mlir::scf::ForOp>(op)) {
         mapForRegionIterArgs(forOp);
         processRegion(forOp.getRegion());
         mapForResultsAndBackedge(forOp);
@@ -476,6 +589,7 @@ struct LifetimeDataflow {
       }
 
       mapAsyncTokenResults(&op);
+      recordPendingLocalWriteEffects(&op);
     }
   }
 };
@@ -557,8 +671,8 @@ collectSPMDemands(TileRegionOp tileRegion, int64_t defaultAlignment,
     return mlir::failure();
 
   llvm::DenseMap<mlir::Value, llvm::SmallVector<RootRef, 2>> tokenRefs;
-  LifetimeDataflow dataflow{events, demands, std::move(valueRefs),
-                            std::move(tokenRefs)};
+  LifetimeDataflow dataflow{
+      events, demands, std::move(valueRefs), std::move(tokenRefs), {}};
   dataflow.processRegion(tileRegion.getBody());
   return mlir::success();
 }

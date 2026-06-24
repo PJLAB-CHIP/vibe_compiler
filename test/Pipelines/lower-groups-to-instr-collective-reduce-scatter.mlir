@@ -1,5 +1,6 @@
 // RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-groups-to-instr)' %s | FileCheck %s
 // RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-groups-to-memory-planned-instr)' %s | FileCheck --check-prefix=PLANNED %s
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-groups-to-ddr-memory-planned-instr)' %s | FileCheck --check-prefix=DDR-PLANNED %s
 
 func.func @collective_reduce_scatter_to_instr(%input: tensor<8xf32>,
                                               %out: tensor<4xf32>)
@@ -46,3 +47,14 @@ func.func @collective_reduce_scatter_to_instr(%input: tensor<8xf32>,
 // PLANNED: wafer.instr.dte_recv
 // PLANNED: wafer.instr.dte_wait
 // PLANNED: wafer.instr.elementwise <add>
+
+// DDR-PLANNED-LABEL: func.func @collective_reduce_scatter_to_instr
+// DDR-PLANNED-NOT: wafer.group
+// DDR-PLANNED-NOT: wafer.tile.reduce_scatter
+// DDR-PLANNED: wafer.spm.offset
+// DDR-PLANNED: wafer.instr.local_drain
+// DDR-PLANNED: wafer.instr.dte_send
+// DDR-PLANNED: wafer.instr.dte_recv
+// DDR-PLANNED: wafer.instr.dte_wait
+// DDR-PLANNED: wafer.instr.elementwise <add>
+// DDR-PLANNED: wafer.instr.wdma

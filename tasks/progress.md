@@ -64,33 +64,31 @@ PyTorch/XLA StableHLO Wafer program directory
 
 ## 当前 Active
 
-**comm-aware memory planning gate**
+**ABI / LLVM lowering**
 
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  instruction-level `wafer.tile.region` IR：compute/movement `wafer.instr.*`、explicit
-  `wafer.instr.dte_send` / `dte_recv` / `dte_wait`、`wafer.instr.local_drain`、unplaced
-  SPM memrefs、candidate DDR tile views，以及 `wafer.execution.mesh` / `wafer.target.topology`。
+  committed `wafer.instr.*` IR、accepted SPM/DDR offset facts、topology/execution-mesh
+  contract、program parameter shard metadata/resource view、薄 launch/block binding 和
+  communication/sync lowering。
 - Current stage responsibility:
-  在已经展开的 instruction IR 上统一处理 compute/movement/communication 的 buffer demand、
-  token lifetime、local drain / DTE wait fence 和 SPM/DDR reuse 约束，并为 passing candidate
-  materialize accepted SPM / DDR offset facts。
+  从 committed instruction IR、accepted offset facts、topology/execution-mesh contract、program
+  parameter shard metadata、薄 launch/block binding 和按需重算的 resource view 派生 LLVM dialect
+  call、`wafer_*` C ABI call 或 packet builder 输入，固定参数单位、address domain、wait/completion
+  policy 和 ABI version。
 - Output artifact / IR:
-  memory-planned instruction-level tile-region IR：SPM/DDR offset facts 与 explicit DTE token/fence
-  use-def 共存；仍不写 DTE resource id、packet field、physical endpoint encoding 或 ABI/runtime handle。
+  LLVM dialect call sequence、C ABI call sequence / packet emission metadata / debug dump，以及 golden
+  packet test input。
 - Downstream consumer:
-  candidate selection / committed materialization、ABI/LLVM lowering、package manifest 和 runtime adapter。
+  object emission / IR-derived package manifest、wrapper-facing call contract 和 board/runtime adapter。
 - User-level driver / named pipeline:
-  `wafer-opt` program pipeline；当前局部回放入口是
-  `wafer-lower-groups-to-ddr-memory-planned-instr`。
+  主线由后端 compile pipeline 调用；不引入专门 ABI IR op family 作为用户级 compile flow。
 - Explicit non-goals:
-  不选择 collective algorithm，不生成 ABI call、packet、object、package、runtime allocation object、
-  physical endpoint encoding 或 DTE resource id。
+  不重新选择 group、tile shape、layout、instruction form、SPM memory plan 或 DDR memory plan。
 - Completion gate:
-  从已有 LinalgExt collective handoff、group/tile-region、explicit DTE schedule 和 compute/movement
-  链路重放到 SPM + DDR memory-planned instruction IR；SPM/DDR planner 能证明通信 staging、wait
-  token、local drain 和 buffer reuse 不冲突，相关 lit、unit test 和组织检查通过。
+  至少 RDMA/WDMA/GEMM 的 committed instruction 能生成可审计 ABI call/packet emission，并由 verifier
+  和 golden packet gate 覆盖参数单位、range-end、wait policy 和 wrapper mapping。
 ```
 
 ## 已可依赖的上游边界
@@ -102,7 +100,7 @@ Pipeline position:
 | Local compute normalization | Linalg/Tensor/SCF/Arith/Math local compute + verifier-legal `wafer.linalg_ext.collective.*` handoff |
 | Logical group | verifier-legal logical `wafer.group` |
 | Tile-region / instruction lowering | memref-backed `wafer.tile.region` + instruction-level `wafer.instr.*` over Wafer-tagged memrefs；compute/movement 路径可用，top-level single-result all_gather / reduce_scatter / all_reduce 已能 materialize 成 `wafer.tile.*` collective；compact SPM all_gather 支持 ring/direct schedule、tensor SPM all_reduce 支持 ring/tree schedule、full-input reduce_scatter 支持 direct schedule，均展开成 explicit `wafer.instr.dte_*` body |
-| DDR tile-view / SPM / DDR planning | candidate DDR `memref.subview` tile operands、accepted SPM offset facts、accepted DDR offset facts、structured failure diagnostics；compute/movement 路径可用，communication staging / token lifetime 必须在 comm lowering 后进入同一 planning gate |
+| DDR tile-view / SPM / DDR planning | candidate DDR `memref.subview` tile operands、accepted SPM offset facts、accepted DDR offset facts、structured failure diagnostics；compute/movement/communication 路径可用，DTE token lifetime、recv/send buffer demand 和 local drain fence 已进入同一 planning gate |
 | Candidate selection / committed materialization | selected candidate committed into main IR；rejected plans and cost traces do not enter IR |
 
 ## 后续队列
@@ -115,8 +113,8 @@ Pipeline position:
 | IR naming and communication layer cleanup | done | 已收敛 naming / instruction-family 设计 | `wafer.linalg_ext.collective.*`、`wafer.instr.dte_*`、instruction family + `dte` 全链路一致；文档、代码、测试和 pipeline 不再保留旧合同 |
 | buffer-level communication collective materialization | done | tiled `wafer.linalg_ext.collective.*` + unplaced SPM buffer/local-rank facts + execution mesh rank domain | top-level single-result `all_gather` / `reduce_scatter` / `all_reduce` materialize 成 verifier-legal `wafer.tile.*` collective；buffer、bytes、rank_group、local_rank 和 effect 边界来自 IR，不选择 p2p schedule；发生在 SPM memory planning 前 |
 | p2p Direct DTE instruction schedule lowering | done | `wafer.tile.*` collective + topology/execution-mesh derived endpoint view | compact SPM all_gather 支持 ring/direct schedule、tensor SPM all_reduce 支持 ring/tree schedule、full-input reduce_scatter 支持 direct schedule；accepted schedule 都生成 explicit `wafer.instr.dte_send` / `dte_recv` / `dte_wait` body，并由 SPM memory planning 消费；peer/route 从 topology/execution mesh 查询，不保存 side table |
-| comm-aware memory planning gate | active | instruction-level compute/movement + `wafer.instr.dte_*` over unplaced SPM memrefs | communication staging、token lifetime、local drain / DTE wait 和 buffer reuse 被 SPM planning 消费；accepted SPM/DDR offset facts 覆盖 comm demand |
-| ABI / LLVM lowering | pending | committed instruction IR + accepted SPM/DDR offset facts + topology/execution-mesh + program parameter shard metadata/resource view + launch-block binding + communication/sync lowering | LLVM dialect call sequence 或 `wafer_*` C ABI / packet builder input；按需重算 launch/resource view，固定参数单位、address domain、wait/completion policy 和 ABI version |
+| comm-aware memory planning gate | done | instruction-level compute/movement + `wafer.instr.dte_*` over unplaced SPM memrefs | communication staging、DTE token lifetime、local drain / DTE wait 和 buffer reuse 被 SPM planning 消费；all_gather / reduce_scatter / all_reduce 可经 named pipeline 到 SPM + DDR memory-planned instruction IR |
+| ABI / LLVM lowering | active | committed instruction IR + accepted SPM/DDR offset facts + topology/execution-mesh + program parameter shard metadata/resource view + launch-block binding + communication/sync lowering | LLVM dialect call sequence 或 `wafer_*` C ABI / packet builder input；按需重算 launch/resource view，固定参数单位、address domain、wait/completion policy 和 ABI version |
 | object + package manifest | pending | ABI/LLVM artifact + committed IR + topology/execution-mesh + program parameter shard metadata/resource view | object/program id、entrypoint、ABI version 和 IR-derived package manifest；endpoint/resource/constant metadata 由同一 resource view analysis 从 IR 重算 |
 | runtime adapter / board launch | pending | package + runtime adapter | allocate/import/query/bind runtime objects，launch program，验证 completion、错误传播和 board gate |
 | transformer staged gaps | pending | static transformer local shard IR / staged IR gaps | full-block schedule 或拒绝原因；补 mask/select、dynamic-bound policy、constant/weight slice 等 |
@@ -133,8 +131,6 @@ Pipeline position:
 
 ## 下一步
 
-1. 让 comm-aware candidate 继续通过 SPM offset assignment 和 DDR offset assignment；
-   Direct DTE resource id / concrete address / ABI emission 只能在 accepted offsets 后派生。
-2. 再让 ABI/LLVM 和 package manifest 从 topology/execution mesh、program parameter shard metadata /
+1. 让 ABI/LLVM 和 package manifest 从 topology/execution mesh、program parameter shard metadata /
    resource view、薄 launch/block binding、accepted offsets、committed instruction IR 和 communication/sync
    IR 派生 launch-visible metadata。

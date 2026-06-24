@@ -205,7 +205,11 @@ lifetime 从 IR 结构和 effect 推出：
 V0 规则：
 
 - synchronous op 的 input live 到该 op read 完；output live 到最后 use。
-- async movement/compute/communication 的 source/destination live 到对应 drain/wait。
+- 本地 compute/movement 写入的 destination 在后续 `wafer.instr.local_drain` 前不能被复用；drain
+  event 将此前未 drain 的本地写 lifetime 延伸到该 drain。
+- DTE communication issue 的 source/destination 通过返回的 `!async.token` 绑定到
+  `wafer.instr.dte_wait`；token 被 wait 消费前，send source 和 recv destination 都不能被复用。
+- 其它 async movement/compute/communication 的 source/destination live 到对应 drain/wait。
 - `wafer.instr.dte_send` 的 source buffer live 到 send completion 或 protocol 允许复用的 wait；`dte_recv`
   destination 在 comm wait 前不能被 compute 读取。
 - loop-carried accumulator/psum 跨 backedge live。
@@ -250,8 +254,10 @@ V0 event model：
 - 每个 movement / materialization / compute / sync op 产生 issue/read/write/drain/wait event。
 - communication p2p op 产生 send/recv issue event，`wafer.instr.dte_wait` 或 lower-level DTE/FSM wait
   产生 completion event。
-- synchronous op 可以用单个 read/write event conservative 建模。
-- async op 的 source/destination lifetime 延伸到对应 drain/wait。
+- synchronous read 可以用单个 read event conservative 建模；本地 compute/movement write 在 drain
+  前按 pending local write 处理。
+- async DTE token 将 issue operand refs 延伸到对应 wait；本地 drain 只收口 compute/movement
+  writes，不替代 DTE wait。
 - loop backedge 让 loop-carried value 跨 iteration live。
 - branch 只有在 control-flow 可证明互斥时共享 lifetime slot。
 
@@ -465,6 +471,10 @@ R3.2f V0 的 dataflow 边界：
   可以在 loop 后复用。
 - 产生 `!async.token` 且带 SPM operand 的 issue op 会把对应 SPM refs 挂到 token 上；token 被
   `wafer.instr.dte_wait` 或后续 drain/wait-like op 消费时，source/destination lifetime 延伸到该 token use。
+- 带 `WaferResourceEffectInterface` 的本地 compute/movement SPM write 会进入 pending local write
+  集合；`wafer.instr.local_drain` 在当前 path condition 下把这些 write 的 lifetime 延伸到 drain
+  event，并清除已被该 drain 覆盖的 pending write。DTE recv 的 destination 不由 local drain 收口，
+  它仍通过 DTE token/wait 收口。
 - rejected/candidate offset、search trace、cost estimate 和 repair suggestion 仍是 analysis，不写入
   IR。
 

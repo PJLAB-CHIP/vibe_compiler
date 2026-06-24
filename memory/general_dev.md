@@ -188,7 +188,9 @@
   C0 tail/fold 和 256B bank alignment 都进入 footprint。当前 V0 对 instruction-level IR 建立可重算的
   region-aware lifetime dataflow：base/view-like alias 共享 root ref，`scf.if` 用互斥 path condition
   判断 branch reuse，`scf.for` 对 iter_args/yield/backedge 延伸 loop-carried lifetime，async issue
-  的 SPM operand 通过 `!async.token` 延伸到 wait/drain use。offset 搜索使用
+  的 SPM operand 通过 `!async.token` 延伸到 wait/drain use；本地 compute/movement SPM write 在
+  `wafer.instr.local_drain` 前不能被复用，DTE send/recv source/destination 则由 `dte_wait` token
+  收口。offset 搜索使用
   pressure-weighted offline packing：physical size 大、conflict pressure 高、lifetime span 长的 demand
   先放置，再在合法 gap 中选最低 offset；搜索 trace、priority weight 和未接受 offset 不写进 IR。
 - DDR offset assignment 不是 external DMA validation 的别名。compiler-managed DDR demand 由 DDR
