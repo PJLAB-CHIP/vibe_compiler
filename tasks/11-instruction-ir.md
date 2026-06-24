@@ -18,12 +18,12 @@ instruction legalization。
   DDR planning result、raw packet 或 C ABI call。
 
 `wafer.instr` 的作用是把 target-abstract tile-region op 变成可执行硬件动作或硬件通信调用，并让下游能从
-memref SSA、Wafer memory attr、op operands、attrs、MemoryEffects 和显式 drain 直接推导 endpoint/resource
+memref SSA、Wafer memory attr、op operands、attrs、MemoryEffects 和显式 fence 直接推导 endpoint/resource
 输入。它不是另一层 buffer IR。
 
 实现边界：
 
-- 仓库代码当前已落地 `wafer.instr.local_drain`，以及
+- 仓库代码当前已落地 `wafer.instr.local_fence`，以及
   `wafer.instr.rdma`、`wafer.instr.wdma`、`wafer.instr.gather_scatter`、`wafer.instr.fill`、
   `wafer.instr.elementwise`、`wafer.instr.reduce`、`wafer.instr.convert` 和 `wafer.instr.gemm`
   的 ODS、verifier、MemoryEffects、`WaferInstructionOpInterface` 和 lit/unit 覆盖。
@@ -66,7 +66,7 @@ Pipeline position:
   `wafer.tile.materialize_layout`、`wafer.tile.fill/gemm/elementwise/reduce`、
   `wafer.tile.copy/extract_slice/insert_slice/transpose/broadcast`、
   `wafer.tile.*` buffer-level collective、tile-region 内 `scf.if` / `scf.for`
-  structured control-flow 和 `wafer.instr.local_drain`。
+  structured control-flow 和 `wafer.instr.local_fence`。
 - Current stage responsibility:
   只做 Wafer instruction legalization / selection：把可执行的 target-abstract op 改写成
   `wafer.instr.*`，并保留 memref SSA graph。对 `scf.if` / `scf.for` 只递归转换其 region body，
@@ -76,7 +76,7 @@ Pipeline position:
 - Output artifact / IR:
   同一个 `wafer.tile.region` execution scope 内的 instruction-level IR：
   memref values with `#wafer.memory<space, layout>` + `wafer.instr.*` +
-  `wafer.instr.local_drain`，或结构化 legalization failure reason。
+  `wafer.instr.local_fence`，或结构化 legalization failure reason。
 - Downstream consumer:
   SPM memory planning、DDR memory planning、closed-loop candidate driver、
   ABI/LLVM lowering、package manifest 和 runtime adapter。
@@ -211,7 +211,7 @@ wafer.tile.materialize_layout
 wafer.tile.fill/gemm/elementwise/reduce
 wafer.tile.copy/extract_slice/insert_slice/transpose/broadcast
 scf.if / scf.for
-wafer.instr.local_drain
+wafer.instr.local_fence
 ```
 
 R3.2d 后：
@@ -224,7 +224,7 @@ wafer.instr.gather_scatter
 wafer.instr.{fill, elementwise, reduce, convert}
 wafer.instr.gemm
 scf.if / scf.for
-wafer.instr.local_drain
+wafer.instr.local_fence
 ```
 
 R3.2d 不做 memref type conversion。它只把 executable target-abstract op 改写成 instruction op，
@@ -444,7 +444,7 @@ R3.2d 应实现为 MLIR DialectConversion：
 - illegal：`wafer.tile.load`、`wafer.tile.store`、`wafer.tile.materialize_layout`、
   `wafer.tile.fill/gemm/elementwise/reduce` 和 tile movement ops。
 - legal：`memref.alloc`、standard memref view ops、`wafer.instr.*`、
-  `wafer.instr.local_drain`、`wafer.tile.region` container、`scf.if` / `scf.for` container
+  `wafer.instr.local_fence`、`wafer.tile.region` container、`scf.if` / `scf.for` container
   和必要 scalar/support op。
 - no type conversion for Wafer tagged memref values。
 - conversion failure 必须结构化返回给 planner；rejected instruction IR 不进入 committed 主线 IR。
@@ -467,8 +467,8 @@ V0 mapping：
 | `wafer.tile.transpose` | create destination SPM memref; enumerate the static result domain, invert `permutation` to source logical indices, compute source/result physical byte offsets, coalesce adjacent segments, pack regular segments into up to three stride/iteration levels, emit one or more `wafer.instr.gather_scatter`, and replace result with dest memref |
 | `wafer.tile.reshape` | identity replacement when types are identical; otherwise preserve source/result canonical linear element order and reinterpret result multi-indices through the new shape; compact `tensor/ntensor` reshape lowers to a verifier-legal standard memref view because compact physical bytes already follow that linear order; `Cx/NCx` reshape first compares same-linear-element source/result physical byte offsets with the unified physical layout calculator, materializes a destination memref and emits packed `wafer.instr.gather_scatter` descriptors only when the physical mapping or required footprint changes; structured failure only when the static reshape movement plan cannot be represented by V0 descriptors |
 | `scf.if` / `scf.for` | preserve the structured control-flow op; recursively legalize executable target-abstract ops in each nested region; keep scalar and memref yields explicit |
-| `wafer.tile.all_gather` | V0 requires matching `tensor/ntensor` SPM layouts and infers the unique gather axis from compact local/gather buffer shapes. Schedule policy `auto` maps to `ring` by default. `ring` copies the local chunk into the local gather slot, drains, then forwards slot views around the logical ring. `direct` copies the local chunk into the local slot, drains once, then sends that local slot directly to every other logical rank while receiving each peer chunk into that peer's result slot. |
-| `wafer.tile.all_reduce` | V0 requires matching `tensor` SPM buffers and sum/max/min reduce kind. Schedule policy `auto` maps to `ring` by default. `ring` creates an accumulator and forward staging buffer, drains local copies, then forwards the most recently received partial around the logical ring and accumulates with `wafer.instr.elementwise`. `tree` materializes a binomial-tree reduce to group-local root 0, drains accumulator writes before any DTE read of accumulator, then broadcasts the final accumulator down the reverse tree. |
+| `wafer.tile.all_gather` | V0 requires matching `tensor/ntensor` SPM layouts and infers the unique gather axis from compact local/gather buffer shapes. Schedule policy `auto` maps to `ring` by default. `ring` copies the local chunk into the local gather slot, fences, then forwards slot views around the logical ring. `direct` copies the local chunk into the local slot, fences once, then sends that local slot directly to every other logical rank while receiving each peer chunk into that peer's result slot. |
+| `wafer.tile.all_reduce` | V0 requires matching `tensor` SPM buffers and sum/max/min reduce kind. Schedule policy `auto` maps to `ring` by default. `ring` creates an accumulator and forward staging buffer, fences local copies, then forwards the most recently received partial around the logical ring and accumulates with `wafer.instr.elementwise`. `tree` materializes a binomial-tree reduce to group-local root 0, fences accumulator writes before any DTE read of accumulator, then broadcasts the final accumulator down the reverse tree. |
 | `wafer.tile.reduce_scatter` | V0 requires a full `tensor` SPM input whose scatter `axis` size is `group_size * result_axis_size`, plus matching local-slot recv/result buffers. Schedule policy `auto` maps to `direct` by default. `direct` creates a local accumulator from the current rank slot, then emits phase-ordered fixed-size `wafer.instr.dte_send` / `dte_recv` / `dte_wait` steps where phase `d` sends input slot `(local_rank + d) mod group_size` to that slot owner and receives this rank's local-slot contribution from `(local_rank - d) mod group_size`, accumulating each received contribution with `wafer.instr.elementwise`. |
 
 R3.2d.4 已覆盖 static movement descriptor splitting / packing：
@@ -628,7 +628,7 @@ wafer.tile.region ... {
       : memref<128x128xf16, #wafer.memory<spm, tensor>>
      to memref<128x128xf16, #wafer.memory<ddr, tensor>>
 
-  wafer.instr.local_drain
+  wafer.instr.local_fence
 }
 ```
 

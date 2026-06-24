@@ -3,11 +3,11 @@
 #ifndef WAFER_IR_OPS_SYNCOPS_TD
 #define WAFER_IR_OPS_SYNCOPS_TD
 
-def Wafer_SyncLocalDrainOp : Wafer_Op<"instr.local_drain", [
+def Wafer_SyncLocalFenceOp : Wafer_Op<"instr.local_fence", [
     DeclareOpInterfaceMethods<WaferResourceEffectInterface>,
     MemoryEffects<[MemWrite<Wafer_SyncResource>]>
   ]> {
-  let summary = "local compute/movement visibility drain";
+  let summary = "local compute/movement visibility fence";
   let assemblyFormat = "attr-dict";
 }
 

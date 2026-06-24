@@ -32,7 +32,7 @@ func.func @collective_all_reduce_to_instr(%input: tensor<4xf32>,
 // CHECK: %[[FORWARD:.+]] = memref.alloc
 // CHECK: wafer.instr.gather_scatter %[[INPUT]] to %[[ACC]]
 // CHECK: wafer.instr.gather_scatter %[[INPUT]] to %[[FORWARD]]
-// CHECK: wafer.instr.local_drain
+// CHECK: wafer.instr.local_fence
 // CHECK: %[[SEND:.+]] = wafer.instr.dte_send %[[FORWARD]]
 // CHECK-SAME: peer = 1 : i64
 // CHECK: %[[RECV:.+]] = wafer.instr.dte_recv %[[RECV_BUF]]
@@ -52,7 +52,7 @@ func.func @collective_all_reduce_to_instr(%input: tensor<4xf32>,
 // DDR-PLANNED-NOT: wafer.group
 // DDR-PLANNED-NOT: wafer.tile.all_reduce
 // DDR-PLANNED: wafer.spm.offset
-// DDR-PLANNED: wafer.instr.local_drain
+// DDR-PLANNED: wafer.instr.local_fence
 // DDR-PLANNED: wafer.instr.dte_send
 // DDR-PLANNED: wafer.instr.dte_recv
 // DDR-PLANNED: wafer.instr.dte_wait

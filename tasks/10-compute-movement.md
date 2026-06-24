@@ -14,7 +14,7 @@ bitfield、SPM physical offset、worker window、runtime launch 或 host ABI。�
 instruction-level IR 的具体 op/type/interface 合同见
 `tasks/11-instruction-ir.md`；本文不重复维护 `wafer.instr` op 列表。
 
-本文只负责 target-abstract compute/movement op 的语义、interface、effect、issue/drain 和
+本文只负责 target-abstract compute/movement op 的语义、interface、effect、issue/fence/wait 和
 lowering legality。它不重新做 group formation、tile search、layout assignment、SPM/DDR
 allocation、communication collective lowering 或 launch/package emission。
 
@@ -30,7 +30,7 @@ allocation、communication collective lowering 或 launch/package emission。
   的约束。
 - 给 hardware lowering 一个稳定 legality target：CT、NE、native reduce、RDMA、WDMA、TDMA
   等 target family 的合法性先在 `wafer.tile.*` compute / movement 层被验证，再进入更低层发射。
-- 保留 issue/drain 优化空间：IR 不在每个 compute/movement op 后隐式插入 wait。
+- 保留 issue/fence/wait 优化空间：IR 不在每个 compute/movement op 后隐式插入 wait。
 
 非目标：
 
@@ -277,13 +277,13 @@ compute/movement op 应实现或组合 MLIR memory effect / resource effect：
 - read effects：input storage、constant load source、DDR source。
 - write effects：output storage、store destination、temporary/workspace。
 - resource effects：CT/NE/RDMA/WDMA/TDMA instruction family、worker resource、SPM bank/page/color class。
-- async policy：op 是否可 lower 成 issue-only，以及哪些 buffer lifetime 必须延伸到 drain/wait。
+- async policy：op 是否可 lower 成 issue-only，以及哪些 buffer lifetime 必须延伸到 fence/wait。
 
 这些 effect 用于 liveness、SPM reuse、scheduler 和 verifier。它们不等于保存一份全局 issue plan。
 
 R1.2 的具体接口是 `collectWaferResourceEffects` / `verifyWaferResourceEffectContract`。它返回结构化
 `WaferResourceEffect`，区分 SPM、DDR、movement、compute、communication 和 sync，以及 read/write/
-issue/wait/drain。关键 movement/compute/comm op 同时接入 MLIR `MemoryEffectOpInterface` 的
+issue/fence/wait。关键 movement/compute/comm op 同时接入 MLIR `MemoryEffectOpInterface` 的
 Wafer resource，供通用 effect 分析查询。
 
 ## 5. Verifier and Legality
@@ -315,7 +315,7 @@ Instruction/runtime verifier：
   DDR memory planner。
 - stride、iteration、byte count、range end、bool bitpack 和 alignment 规则已完成转换和检查。
 - 普通 `TsmExecute` 路径只覆盖 CT、NE、RDMA、WDMA、TDMA；SCALAR、DTE、CSR 不走该 path。
-- local drain 只出现在 Kcore 可见性、host-visible boundary、DTE/stream protocol、group barrier 或 task end
+- local fence 只出现在 Kcore 可见性、host-visible boundary、DTE/stream protocol、group barrier 或 task end
   等需要完成证明的位置。
 
 ## 6. Lowering Passes
@@ -336,7 +336,7 @@ Instruction/runtime verifier：
 如果一个 pass 创建 `wafer.tile.*` compute、movement、layout、SPM 或 sync op，应声明 dependent dialects。pass
 pipeline 只表达 transformation 顺序，不承载隐藏语义。
 
-## 7. Issue / Drain Model
+## 7. Issue / Fence Model
 
 硬件支持 CT、NE、RDMA、WDMA、TDMA 独立提交和依赖检测。编译器 IR 不应继承“每个 helper 后立刻
 wait”的保守 CRT 风格。
@@ -344,11 +344,11 @@ wait”的保守 CRT 风格。
 V0 模型：
 
 - target-abstract compute/movement op 从 SSA 语义看是顺序 op；lowering 可以把它拆成 issue op 和
-  later drain/wait op。
-- instruction legalization / selection 决定哪些 issue / drain / wait event 参与 storage lifetime；
+  later fence/wait op。
+- instruction legalization / selection 决定哪些 issue / fence / wait event 参与 storage lifetime；
   SPM memory planning 通过 instruction effect event 扩展 async op 的 source/destination lifetime。
-- local drain 是显式 sync op，例如 `wafer.instr.local_drain` 或等价 IR；它不是 compute op 的默认后缀。
-- DTE wait、stream wait、group barrier 属于 `wafer.tile.*` communication / `wafer.instr.local_drain` 和后续 sync boundary 的完成边界，不能用 local
+- local fence 是显式 sync op，例如 `wafer.instr.local_fence` 或等价 IR；它不是 compute op 的默认后缀。
+- DTE wait、stream wait、group barrier 属于 `wafer.tile.*` communication / `wafer.instr.local_fence` 和后续 sync boundary 的完成边界，不能用 local
   NCC wait 代替。
 
 这样做允许 single-tile local compute 先走 correctness-first 同步路径，也允许后续逐步打开 overlap，而不改变上层

@@ -1613,7 +1613,7 @@ public:
             rewriter, op.getLoc(), op, op.getLocalChunk(), *localSlot,
             failureReason, "tile.all_gather local slot copy")))
       return mlir::failure();
-    rewriter.create<SyncLocalDrainOp>(op.getLoc());
+    rewriter.create<SyncLocalFenceOp>(op.getLoc());
 
     int64_t bytes = op.getBytesAttr().getInt();
     if (schedule == AllGatherSchedule::Direct) {
@@ -1780,7 +1780,7 @@ public:
             rewriter, op.getLoc(), op, *localSlot, *accumulator, failureReason,
             "tile.reduce_scatter accumulator init")))
       return mlir::failure();
-    rewriter.create<SyncLocalDrainOp>(op.getLoc());
+    rewriter.create<SyncLocalFenceOp>(op.getLoc());
 
     switch (schedule) {
     case ReduceScatterSchedule::Direct:
@@ -1878,7 +1878,7 @@ public:
               rewriter, op.getLoc(), op, op.getInput(), *accumulator,
               failureReason, "tile.all_reduce accumulator init")))
         return mlir::failure();
-      rewriter.create<SyncLocalDrainOp>(op.getLoc());
+      rewriter.create<SyncLocalFenceOp>(op.getLoc());
       for (int64_t mask = 1; mask < groupSize; mask <<= 1) {
         if ((localRank & mask) != 0) {
           int64_t parentRank = localRank ^ mask;
@@ -1906,7 +1906,7 @@ public:
                                                  op.getRecvBuffer()};
         rewriter.create<InstrElementwiseOp>(op.getLoc(), *accumulationKind,
                                             inputs, *accumulator);
-        rewriter.create<SyncLocalDrainOp>(op.getLoc());
+        rewriter.create<SyncLocalFenceOp>(op.getLoc());
       }
 
       bool hasFinalResult = localRank == 0;
@@ -1952,7 +1952,7 @@ public:
             rewriter, op.getLoc(), op, op.getInput(), forwardBuffer.getResult(),
             failureReason, "tile.all_reduce forward init")))
       return mlir::failure();
-    rewriter.create<SyncLocalDrainOp>(op.getLoc());
+    rewriter.create<SyncLocalFenceOp>(op.getLoc());
 
     int64_t nextPeer = rankGroup[(localRank + 1) % groupSize];
     int64_t prevPeer = rankGroup[(localRank + groupSize - 1) % groupSize];
@@ -1981,7 +1981,7 @@ public:
               forwardBuffer.getResult(), failureReason,
               "tile.all_reduce forward copy")))
         return mlir::failure();
-      rewriter.create<SyncLocalDrainOp>(op.getLoc());
+      rewriter.create<SyncLocalFenceOp>(op.getLoc());
     }
 
     rewriter.replaceOp(op, *accumulator);
@@ -1997,7 +1997,7 @@ static void configureTileRegionToInstrTarget(mlir::ConversionTarget &target) {
   target.addLegalDialect<mlir::arith::ArithDialect, mlir::async::AsyncDialect,
                          mlir::func::FuncDialect, mlir::memref::MemRefDialect,
                          mlir::scf::SCFDialect>();
-  target.addLegalOp<mlir::ModuleOp, TileRegionOp, TileYieldOp, SyncLocalDrainOp,
+  target.addLegalOp<mlir::ModuleOp, TileRegionOp, TileYieldOp, SyncLocalFenceOp,
                     InstrRDMAOp, InstrWDMAOp, InstrGatherScatterOp, InstrFillOp,
                     InstrElementwiseOp, InstrReduceOp, InstrConvertOp,
                     InstrGemmOp, InstrDTESendOp, InstrDTERecvOp,

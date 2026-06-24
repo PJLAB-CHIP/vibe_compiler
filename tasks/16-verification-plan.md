@@ -46,12 +46,12 @@ Serving integration 暂不纳入本文通过标准。
 | Local compute normalization | partitioned or replicated-local StableHLO | Linalg/Tensor/SCF/Arith/Math structured semantics、DPS/indexing relation、fine-grained softmax/norm/RoPE staged form 合法；不执行 SPMD partition |
 | Tensor collective handoff | partitioned StableHLO collective | `wafer.linalg_ext.collective.*` op 合法；rank group、combiner/slice relation、DPS/tiling interface 可验证，且不含 `wafer.tile.*` collective、storage 或 DTE token |
 | `wafer.group` | local compute IR + tensor collective IR | group boundary、tiled SSA、multi-output/domain、resource feedback loop 合法 |
-| `wafer.tile.region` | scheduled group | region boundary、effect、load/store、async wait/drain、buffer ownership 合法 |
+| `wafer.tile.region` | scheduled group | region boundary、effect、load/store、async fence/wait、buffer ownership 合法 |
 | Layout | tile region | layout assignment、materialization cut、冗余 conversion cleanup 合法 |
 | SPM | tile region + demands | allocation、range/end-address、lifetime、reserved range 合法 |
 | DDR | tile region + launch boundary | external binding、workspace/constant demand、default DDR arena resource/capacity 合法 |
 | Program parameter shards / launch-block | committed instruction IR + logical rank/local shard facts + topology/execution mesh + program metadata | program verifier 校验 rank coverage、payload shape/dtype 和 local shard bounds；launch-block binding 校验 block id 与 endpoint availability 合法 |
-| Compute / Movement | committed instruction IR + accepted offset facts | wrapper family、layout、dtype、shape、issue/drain 合法 |
+| Compute / Movement | committed instruction IR + accepted offset facts | wrapper family、layout、dtype、shape、issue/fence/wait 合法 |
 | Communication | tile_region / SPM materialization 后的 `wafer.tile.*` collective / `wafer.instr.dte_*` IR | endpoint、token、DTE/FSM resource、wait policy 合法 |
 | ABI / LLVM / golden packet | committed instruction IR + accepted offsets + topology/execution-mesh + program parameter shard metadata/resource view + communication/sync lowering | LLVM dialect call 或 `wafer_*` C ABI / packet builder input 合法；ABI unit/address/wait verified，golden packet 覆盖 wrapper mapping；launch/resource view 从 IR 按需重算，不成为独立 artifact |
 | Object/package | ABI/LLVM artifact + committed IR + topology/execution-mesh + program parameter shard metadata/resource view | object/link 最小验证；manifest 记录 object/program id、entrypoint、ABI version 和 IR-derived package metadata；endpoint/resource/constant metadata 由同一 resource view analysis 生成 |
@@ -175,7 +175,7 @@ candidate-selection tile search 估算和后续 cost calibration 的边界：
   policy 中的硬件参数、计算量、DDR bytes、SPM/local movement bytes 和 instruction count 做粗估时间排序。
 - candidate-selection 的粗估时间只用于合法候选 tie-break；candidate gates 失败的 candidate
   不能被 cost model 接受。
-- issue/drain ordering 由 effect/token verifier 证明。
+- issue/fence/wait ordering 由 effect/token verifier 证明。
 - PMU/profiling 只作为后续 calibration，不作为 IR 语义事实，也不改变 candidate-selection 的合法性边界。
 
 Transformer block vertical slice：
@@ -225,7 +225,7 @@ M8 runtime / board correctness gate：
 
 M9 overlap / cost model / profiling calibration gate：
 
-- issue/drain ordering、SPM busy range、DDR range/bandwidth 和 DTE resource pressure 只从当前 IR、
+- issue/fence/wait ordering、SPM busy range、DDR range/bandwidth 和 DTE resource pressure 只从当前 IR、
   resource model 和 PMU calibration 派生，不写入不可验证的 planner trace。
 - PMU/profiling 用于校准 latency、blocking time 和 conflict cost；不反向改变 IR 语义合同。
 

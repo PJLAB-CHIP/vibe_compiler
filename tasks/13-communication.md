@@ -29,7 +29,7 @@ fixed-size unicast Direct DTE，但 logical collective IR 的支持范围不能�
   collective schedule；若后续启用 raw non-unicast DTE，必须先有独立 ABI、resource model 和板端验证。
 - 用 SSA token / effect 表达 outstanding communication 和 wait，服务 SPM liveness、buffer reuse 和
   compute/communication overlap。
-- 把 local NCC drain、DTE/FSM wait、group barrier 分成不同 sync 边界，避免用一个 wait 语义覆盖所有事。
+- 把 local NCC fence、DTE/FSM wait、group barrier 分成不同 sync 边界，避免用一个 wait 语义覆盖所有事。
 
 非目标：
 
@@ -100,7 +100,7 @@ semantic。
 
 当 planner 选择算法后，collective op 应被 rewrite 成 explicit `wafer.instr.dte_*` p2p schedule。
 算法选择可以来自 cost model，但被接受的结果要进入 IR body，而不是只写进 attr。只要该 rewrite 会改变
-communication staging、send/recv token lifetime、buffer reuse 或 local-drain demand，就必须在 SPM
+communication staging、send/recv token lifetime、buffer reuse 或 local-fence demand，就必须在 SPM
 memory planning 之前完成；SPM planner 不能从未展开的 collective 或 pass-local schedule 猜通信内存需求。
 
 ### 3.2 Direct DTE Instruction Ops
@@ -133,12 +133,13 @@ wafer.instr.dte_wait(token...)
 
 | Sync | 语义 | 使用位置 |
 | --- | --- | --- |
-| local drain | 当前 tile 上 CT/NE/RDMA/WDMA/TDMA 已完成，Kcore 或 DTE 可以观察 SPM | DTE 读取 NCC 产物前、host-visible store 前、task end |
+| local fence | 当前 tile 上 CT/NE/RDMA/WDMA/TDMA 已完成，Kcore 或 DTE 可以观察 SPM | DTE 读取 NCC 产物前、host-visible store 前、task end |
 | comm wait | Direct DTE/FSM/stream communication 完成，dst buffer 可读或 src buffer 可复用 | `wafer.instr.dte_send` / `dte_recv` 后、collective step 边界 |
 | group barrier | group 内参与 tile 都到达某个 control boundary | group boundary、multi-tile phase 切换 |
 
-这三者不能互相替代。`TsmWaitfinish` 类 local drain 不等价于 DTE completion，也不是 multi-tile barrier。
-`wafer.instr.local_drain` 和 `wafer.instr.dte_wait` 分别表达本地 NCC drain 与 DTE completion。
+这三者不能互相替代。`TsmWaitfinish` 类硬件 local drain 可以作为 `wafer.instr.local_fence`
+的 lower-level 实现约束，但不等价于 DTE completion，也不是 multi-tile barrier。
+`wafer.instr.local_fence` 和 `wafer.instr.dte_wait` 分别表达本地 NCC visibility fence 与 DTE completion。
 group barrier 是另一类 sync boundary；collective lowering 只负责在需要通信完成语义时生成或消费这些 sync op。
 
 ## 4. Types, Attrs, and Interfaces
@@ -221,7 +222,7 @@ accepted-offsets 后的 Direct DTE resource stage 出现，不回写到 collecti
   release 都由 lower-level Direct DTE / sync lowering 表达。
 - DTE stride 和 byte count 在 lower-level verifier 中按 byte 建模。
 - DTE resource 是有限资源；DTE id、FSM id、packet id、stream id 必须由 resource allocator 管理。
-- DTE completion 需要显式 wait/status 检查，不能被 host launch completion 或 local NCC drain 代替。
+- DTE completion 需要显式 wait/status 检查，不能被 host launch completion 或 local NCC fence 代替。
 
 当前 compiler-facing Direct DTE contract 禁止：
 
@@ -293,7 +294,7 @@ for step in 0..group_size-2:
 
 ```text
 copy local chunk into local result slot
-local_drain
+local_fence
 for each peer in rank_group except local_rank:
   send local slot directly to peer
   recv peer chunk directly into peer result slot
@@ -308,7 +309,7 @@ endpoint 可用；cost model 可以选择不同 order，但接受后要 rewrite 
 `wafer.linalg_ext.collective.all_gather` 转成 `wafer.tile.all_gather`，并在 tile-region-to-instr
 lowering 中将 compact `tensor/ntensor` SPM local/gather buffer 按 selector 展开为 fixed-size
 unicast schedule。默认 ring 先把 local chunk 复制到本 rank gather slot，插入
-`wafer.instr.local_drain` 使 DTE 读取本地 movement 结果前有明确可见性边界，再按 `rank_group`
+`wafer.instr.local_fence` 使 DTE 读取本地 movement 结果前有明确可见性边界，再按 `rank_group`
 的邻接顺序转发 slot view；direct schedule 则把 local slot 直接发送给每个 peer，并把收到的 peer
 chunk 写入对应 result slot `memref.subview`。该 IR 仍只保存 logical peer 和 buffer view，不写
 physical endpoint、DTE id、SPM offset 或 packet field。V0 correctness path 仍不使用 raw DTE
@@ -332,16 +333,16 @@ reduce-scatter + all-gather、recursive doubling 或其它算法，但 accepted 
 `wafer.linalg_ext.collective.reduce_scatter` / `all_reduce` 转成 `wafer.tile.reduce_scatter` /
 `wafer.tile.all_reduce`。`wafer.tile.all_reduce` 已能在 tile-region-to-instr lowering 中按 selector
 展开成 fixed-size unicast schedule。默认 ring 先把 input 复制到 accumulator 和 forward staging buffer，
-插入 `wafer.instr.local_drain`，之后每步 `wafer.instr.dte_send` forward buffer、`dte_recv` 到 recv
+插入 `wafer.instr.local_fence`，之后每步 `wafer.instr.dte_send` forward buffer、`dte_recv` 到 recv
 buffer、`dte_wait` completion token，再用 `wafer.instr.elementwise` 对 accumulator 和 recv staging
 buffer 做 sum/max/min 本地累计。下一步发送的不是 accumulator，而是刚收到的 partial；否则 ring 会
-重复累加已经 accumulated 的 contribution。该 IR 仍只保存 logical peer、buffer view、local drain
+重复累加已经 accumulated 的 contribution。该 IR 仍只保存 logical peer、buffer view、local fence
 和 token/wait，不写 physical endpoint、DTE id、SPM offset 或 packet field。
 
 `all_reduce` 的 `tree` schedule 使用 group-local root 0 的 binomial reduce + reverse broadcast。reduce
 phase 中，树子节点把当前 accumulator 发送给父节点后退出 reduce phase；树父节点 recv 子节点 partial、
 wait token 后用 `wafer.instr.elementwise` 累计，并在 accumulator 后续会被 DTE 读取前插入
-`wafer.instr.local_drain`。broadcast phase 按 reverse tree 从 root 发送最终 accumulator；非 root rank
+`wafer.instr.local_fence`。broadcast phase 按 reverse tree 从 root 发送最终 accumulator；非 root rank
 把 final result recv 到自己的 accumulator。tree schedule 仍只 materialize explicit
 `wafer.instr.dte_send` / `dte_recv` / `dte_wait` 和 local compute，不保存 algorithm attr。
 
@@ -394,7 +395,7 @@ R2.4 应补 `wafer.linalg_ext.collective.*` op；R6 再恢复 tile-local `wafer.
   对应 source/destination 必须作为 `#wafer.memory<ddr, *>` demand 进入 DDR memory planner。`wafer.tile.*` collective 不保存
   DDR default arena resource、compiler-managed DDR planned range 或 runtime-visible allocation attr；它只通过 buffer type、byte count、effect
   和 token/wait 暴露需求。
-- DTE 读取 NCC 产物前需要 local drain；DTE 写入后 compute 消费前需要 comm wait。两者都应通过
+- DTE 读取 NCC 产物前需要 local fence；DTE 写入后 compute 消费前需要 comm wait。两者都应通过
   effect/token/verifier 检查。
 
 ## 8. Lowering to Direct DTE / Runtime
@@ -449,7 +450,7 @@ Lower-level verifier：
 
 - DTE/FSM/packet/stream resource 不冲突。
 - receiver ready 发生在 send 前，wait/status 检查覆盖 error path。
-- local drain、comm wait、group barrier 顺序满足 memory visibility。
+- local fence、comm wait、group barrier 顺序满足 memory visibility。
 - packet counter / status / completion source 能作为 milestone 验证点。
 
 ## 10. Case Fragment
@@ -490,11 +491,11 @@ wafer.instr.dte_wait %send1, %recv1
   materialization context 只用于计算 `rank_group` 内的 group-local `local_rank`。
 - tile-region-to-instr 已能把 compact `tensor/ntensor` SPM `wafer.tile.all_gather` 展开成 explicit fixed-size
   ring 或 phase-ordered direct
-  `wafer.instr.local_drain` + `wafer.instr.dte_send` / `wafer.instr.dte_recv` /
+  `wafer.instr.local_fence` + `wafer.instr.dte_send` / `wafer.instr.dte_recv` /
   `wafer.instr.dte_wait`，并通过 named pipeline + SPM planning lit 覆盖 token/lifetime 消费。
 - tile-region-to-instr 已能把 `tensor` SPM `wafer.tile.all_reduce` 展开成 explicit fixed-size ring 或
   binomial-tree reduce + reverse broadcast
-  `wafer.instr.local_drain` + `wafer.instr.dte_send` / `wafer.instr.dte_recv` /
+  `wafer.instr.local_fence` + `wafer.instr.dte_send` / `wafer.instr.dte_recv` /
   `wafer.instr.dte_wait` + `wafer.instr.elementwise` accumulation，并通过 named pipeline +
   SPM planning lit 覆盖 token/lifetime 消费。
 - tile-region-to-instr 使用 full input + local slot `wafer.tile.reduce_scatter` 表示生成 explicit

@@ -475,7 +475,7 @@ struct LifetimeDataflow {
     }
   }
 
-  void processLocalDrain(mlir::Operation *op) {
+  void processLocalFence(mlir::Operation *op) {
     int64_t event = getOperationEvent(op);
     PathCondition drainCondition = getOperationCondition(op);
     llvm::SmallVector<RootRef, 8> remainingWrites;
@@ -572,8 +572,8 @@ struct LifetimeDataflow {
     for (mlir::Operation &op : block) {
       recordOperands(&op);
 
-      if (mlir::isa<SyncLocalDrainOp>(op)) {
-        processLocalDrain(&op);
+      if (mlir::isa<SyncLocalFenceOp>(op)) {
+        processLocalFence(&op);
       } else if (auto forOp = mlir::dyn_cast<mlir::scf::ForOp>(op)) {
         mapForRegionIterArgs(forOp);
         processRegion(forOp.getRegion());

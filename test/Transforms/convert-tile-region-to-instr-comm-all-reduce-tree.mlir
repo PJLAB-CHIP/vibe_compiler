@@ -46,12 +46,12 @@ module {
 // CHECK: %[[ACC:.+]] = memref.alloc
 // CHECK: wafer.instr.gather_scatter %[[INPUT]] to %[[ACC]]
 // CHECK-SAME: byte_count = 16 : i64
-// CHECK: wafer.instr.local_drain
+// CHECK: wafer.instr.local_fence
 // CHECK: %[[RECV_CHILD:.+]] = wafer.instr.dte_recv %[[RECV]]
 // CHECK-SAME: peer = 3 : i64
 // CHECK: wafer.instr.dte_wait %[[RECV_CHILD]]
 // CHECK: wafer.instr.elementwise <add> %[[ACC]], %[[RECV]] into %[[ACC]]
-// CHECK: wafer.instr.local_drain
+// CHECK: wafer.instr.local_fence
 // CHECK: %[[SEND_PARENT:.+]] = wafer.instr.dte_send %[[ACC]]
 // CHECK-SAME: peer = 0 : i64
 // CHECK: wafer.instr.dte_wait %[[SEND_PARENT]]

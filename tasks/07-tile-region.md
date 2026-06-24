@@ -48,7 +48,7 @@ endpoint-derived metadata 和 communication staging demand 的层级；`wafer.ti
 - 给 group 后的 tiled program 一个稳定 region boundary。
 - 把 tensor tile value materialize 成 tile-local Wafer-tagged memref 和 instruction operands。
 - 在同一个 region 内表达 load/store、layout materialization、compute、communication、sync 和
-  wait/drain ordering。
+  fence/wait ordering。
 - 为 layout planning、SPM allocation 和 DDR memory planning 提供可重算 IR 结构。
 - 为 lower-level Wafer ops、C ABI 和 launch outline 提供清楚的输入。
 
@@ -201,7 +201,7 @@ wafer.tile.region (...) -> (...) {
   descriptor。
 - external input/output、constant source、inter-group value 的 load/store boundary。
 - tile-local storage ownership、memory space、layout 和 effect。
-- async issue 与对应 wait/drain/barrier。
+- async issue 与对应 fence/wait/barrier。
 
 不应表达：
 
@@ -257,7 +257,7 @@ V0 需要以下 op family：
 | `wafer.tile.*` compute ops | target-abstract compute | operand/result layout、instruction family legality、workspace/psum demand |
 | `wafer.tile.*` collective ops | buffer-level collective semantic；由 tiled tensor collective + SPM buffer + endpoint view materialize | rank group、local rank、fixed byte count、buffer lifetime |
 | `wafer.instr.dte_*` ops | Direct DTE p2p hardware invocation schedule；由 accepted tile collective algorithm materialize | peer、token、fixed byte count、communication lifetime |
-| `wafer.instr.local_drain` 和后续 sync boundary | local drain、comm wait、barrier | async op completion、effect ordering |
+| `wafer.instr.local_fence` 和后续 sync boundary | local fence、comm wait、barrier | async op completion、effect ordering |
 
 这些 op 的具体算法分别归 layout、SPM、DDR、compute、communication 文档。`tile_region` 只负责
 把它们放在一个可验证 execution scope 里。
@@ -271,7 +271,7 @@ V0 需要以下 op family：
 2. target-abstract op selection：在 tile-region IR 内把 tile-level linalg/tensor compute 绑定到
    `wafer.tile.*` compute / movement op；把 tiled tensor collective 在可表达的 endpoint / buffer /
    communication demand 下 materialize 为 `wafer.tile.*` buffer-level collective。
-   任何会引入 communication staging buffer、send/recv token lifetime、buffer reuse fence 或 local-drain
+   任何会引入 communication staging buffer、send/recv token lifetime、buffer reuse fence 或 local-fence
    requirement 的 communication lowering 都必须发生在 SPM offset assignment 之前，使 SPM planner 能从
    IR/effect/lifetime 看到真实通信需求。
 3. layout assignment：为 op 约束选择 physical layout marker，在 cut edge 插入
@@ -368,7 +368,7 @@ launch args / identity lowering 的 IR contract。当前没有 multi-tile no-com
 - region argument/result 和 terminator 类型匹配。
 - region 中没有无法解释的 side table dependency 或名字匹配语义。
 - external load/store boundary 都有明确 memory space、shape、dtype、layout 和 effect。
-- async producer 的 source/destination 在 wait/drain 前不能被非法复用。
+- async producer 的 source/destination 在 fence/wait 前不能被非法复用。
 - `wafer.tile.materialize_layout` 的输入输出 layout relation 合法；同 layout 冗余转换应由 verifier
   拒绝，上游应避免生成这种 no-op conversion。`wafer.tile.reshape` 这类无副作用 view op 可由
   canonicalization 删除同类型 no-op。

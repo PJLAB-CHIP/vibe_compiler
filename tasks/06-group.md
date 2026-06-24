@@ -468,8 +468,8 @@ group 设计只规定交接合同：
   accepted DDR offset facts、constant residency、default arena capacity/largest-contiguous 和 bandwidth；
   见 `tasks/12-ddr-memory-planning.md`。
 - `wafer.tile.*` compute / `wafer.tile.*` collective / `wafer.instr.*` /
-  `wafer.instr.local_drain` 和后续 sync boundary 的 op contract。
-- Wafer C ABI family、wrapper 参数、issue/drain 策略和 package/runtime 格式。
+  `wafer.instr.local_fence` 和后续 sync boundary 的 op contract。
+- Wafer C ABI family、wrapper 参数、issue/fence/wait 策略和 package/runtime 格式。
 
 ## 8. `wafer.group` Op Contract
 
@@ -999,7 +999,7 @@ tile shape 需要同时满足：
 具体 op 的合法 tile shape、internal split、workspace/accumulator 需求由该 op 的 tiling
 interface 和 verifier 提供；planner 只在 group 级合并这些约束并做 search/cost 选择。
 
-### 10.6 Schedule Effects / Issue / Drain
+### 10.6 Schedule Effects / Issue / Fence
 
 scheduled group 不维护全局计划类 attribute。按 MLIR IR 的设计习惯：
 
@@ -1011,7 +1011,7 @@ scheduled group 不维护全局计划类 attribute。按 MLIR IR 的设计习惯
 第一版需要关注的显式约束包括：
 
 - boundary movement：进入下游 bufferization / movement 阶段后用明确 op 表达。
-- local drain：只有 host-visible writeback、group barrier 或硬件可见性要求需要时才插入。
+- local fence：只有 host-visible writeback、group barrier 或硬件可见性要求需要时才插入。
 - communication / communication wait：只有 group 内确实引入跨 tile data movement 或
   collective 时才出现。
 - group barrier：只有调度语义或 runtime boundary 需要跨 tile 同步时才出现。
@@ -1043,7 +1043,7 @@ group planner 层只在 analysis 中建模抽象资源，不把完整 resource p
 - host runtime / profiling resource：属于 runtime/package 子设计。
 
 多 worker、communication resource 和 host-visible boundary 先作为后续优化。若启用，必须在
-下游 IR 中表达清楚 resource ownership、visibility 和 drain/wait 边界。
+下游 IR 中表达清楚 resource ownership、visibility 和 fence/wait 边界。
 
 ### 10.8 Transformer Block Composite Schedules
 

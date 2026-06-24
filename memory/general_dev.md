@@ -188,8 +188,8 @@
   C0 tail/fold 和 256B bank alignment 都进入 footprint。当前 V0 对 instruction-level IR 建立可重算的
   region-aware lifetime dataflow：base/view-like alias 共享 root ref，`scf.if` 用互斥 path condition
   判断 branch reuse，`scf.for` 对 iter_args/yield/backedge 延伸 loop-carried lifetime，async issue
-  的 SPM operand 通过 `!async.token` 延伸到 wait/drain use；本地 compute/movement SPM write 在
-  `wafer.instr.local_drain` 前不能被复用，DTE send/recv source/destination 则由 `dte_wait` token
+  的 SPM operand 通过 `!async.token` 延伸到 wait/fence use；本地 compute/movement SPM write 在
+  `wafer.instr.local_fence` 前不能被复用，DTE send/recv source/destination 则由 `dte_wait` token
   收口。offset 搜索使用
   pressure-weighted offline packing：physical size 大、conflict pressure 高、lifetime span 长的 demand
   先放置，再在合法 gap 中选最低 offset；搜索 trace、priority weight 和未接受 offset 不写进 IR。
@@ -215,14 +215,14 @@
   `wafer.instr.dte_*` / local compute body，不保存 algorithm attr。
 - tile-region-to-instr 的 V0 all-gather lowering 从 `wafer.tile.all_gather` 的 compact `tensor/ntensor`
   local/gather SPM buffer shape 推导唯一 gather axis。`ring` 先把 local chunk 写入本 rank slot，
-  插入 `wafer.instr.local_drain` 后沿 ring forward slot view；`direct` 每个 phase 发送 local slot
+  插入 `wafer.instr.local_fence` 后沿 ring forward slot view；`direct` 每个 phase 发送 local slot
   给 `(rank+d)`，同时接收 `(rank-d)` 的 chunk 到对应 slot。DTE peer 仍是 logical rank，SPM offset、
   physical endpoint、DTE id 和 packet field 留给后续 planning / ABI 边界。
 - tile-region-to-instr 的 V0 all-reduce lowering 支持 full-buffer ring reduce 和 binomial tree。
-  `ring` 先把 input copy 到 accumulator 和 forward staging buffer，`local_drain` 后每步 DTE send
+  `ring` 先把 input copy 到 accumulator 和 forward staging buffer，`local_fence` 后每步 DTE send
   forward buffer、recv 到 staging buffer、wait token，再用 `wafer.instr.elementwise` 做 sum/max/min
   accumulation；下一步 forward 的是刚收到的 partial，不是 accumulator。`tree` 先 reduce 到
-  group-local root 0，再 reverse broadcast final accumulator；accumulator 被 DTE 读取前需要 local drain。
+  group-local root 0，再 reverse broadcast final accumulator；accumulator 被 DTE 读取前需要 local fence。
 - tile-region-to-instr 的 V0 reduce-scatter lowering 使用 full input + local slot result 表示：
   group-to-tile-region 不再预切当前 rank slot，`wafer.tile.reduce_scatter` 显式携带 scatter `axis`，
   instruction lowering 从 full input 派生 per-target slot `memref.subview`，按 phase-ordered

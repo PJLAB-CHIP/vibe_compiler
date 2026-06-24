@@ -327,7 +327,7 @@ V0 只需要三类 op：
    对 `C > block` 且保留 `C0` tail 的 `Cx/NCx` 转换，full C blocks 和 compact tail block 的
    inner width / stride 不同，通常需要至少两段 GatherScatter：full-block 段和 tail-C0 段。
 
-compute/movement op 的具体 interface、op family 和 issue/drain 边界见
+compute/movement op 的具体 interface、op family 和 issue/fence/wait 边界见
 `tasks/10-compute-movement.md`。communication op 不改变 tensor semantic
 layout，p2p transfer 默认是 byte-preserving；若 collective/p2p schedule 消费或产生 storage，
 它必须按 `tasks/13-communication.md` 暴露 buffer、layout relation、
@@ -483,7 +483,7 @@ Verifier 至少检查：
 - 对应 conversion path 存在，且由 shape/dtype/semantic layout/target policy 推出的
   `WaferPhysicalTensorInfo` 合法。
 - op effects 正确表达 read source / write result；若 lowering 变成 async movement，后续 sync
-  verifier 必须能看到 wait/drain。
+  verifier 必须能看到 fence/wait。
 
 `wafer.tile.materialize_layout` 不保存 cost、失败原因、planner 选择理由或备选方案。debug dump 可以
 打印这些信息，但不能让下游依赖。
@@ -781,7 +781,7 @@ pass 名是实现组织，不是架构边界；边界仍以 IR contract 和 veri
    行为：
 
    - 选择 `ChannelNorm`、`DechannelNorm`、`GatherScatter`、TDMA 或 wrapper path。
-   - 生成 lower-level movement op 和必要 wait/drain effect。
+   - 生成 lower-level movement op 和必要 fence/wait effect。
    - 删除已经 lower 的 `wafer.tile.materialize_layout`。
 
    不负责：

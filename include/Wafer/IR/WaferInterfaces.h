@@ -83,7 +83,7 @@ enum class WaferResourceAccess {
   Write,
   Issue,
   Wait,
-  Drain,
+  Fence,
 };
 
 struct WaferResourceEffect {

@@ -200,7 +200,7 @@ DDR memory planning is an analysis + transformation pair:
 3. Collect external DDR access demands from RDMA/WDMA descriptors for validation only；external demand
    summaries remain pass-local analysis。
 4. Compute physical bytes and alignment from memref type, Wafer layout and target policy.
-5. Build lifetime intervals from SSA use-def, region/control-flow and async token/wait/drain effects. Current
+5. Build lifetime intervals from SSA use-def, region/control-flow and async token/fence/wait effects. Current
    scope is one function/candidate artifact; broader inter-group lifetime requires explicit producer/consumer relation.
 6. Build conflict edges for intervals that may overlap in time and require distinct DDR bytes.
 7. Pack allocation demands into default DDR arena using deterministic interval packing. Reuse offset only when

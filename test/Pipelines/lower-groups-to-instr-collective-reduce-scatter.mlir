@@ -31,7 +31,7 @@ func.func @collective_reduce_scatter_to_instr(%input: tensor<8xf32>,
 // CHECK: %[[ACC:.+]] = memref.alloc
 // CHECK: %[[LOCAL_SLOT:.+]] = memref.subview %[[INPUT]][0] [4] [1]
 // CHECK: wafer.instr.gather_scatter %[[LOCAL_SLOT]] to %[[ACC]]
-// CHECK: wafer.instr.local_drain
+// CHECK: wafer.instr.local_fence
 // CHECK: %[[SEND_SLOT:.+]] = memref.subview %[[INPUT]][4] [4] [1]
 // CHECK: %[[SEND:.+]] = wafer.instr.dte_send %[[SEND_SLOT]]
 // CHECK-SAME: peer = 1 : i64
@@ -52,7 +52,7 @@ func.func @collective_reduce_scatter_to_instr(%input: tensor<8xf32>,
 // DDR-PLANNED-NOT: wafer.group
 // DDR-PLANNED-NOT: wafer.tile.reduce_scatter
 // DDR-PLANNED: wafer.spm.offset
-// DDR-PLANNED: wafer.instr.local_drain
+// DDR-PLANNED: wafer.instr.local_fence
 // DDR-PLANNED: wafer.instr.dte_send
 // DDR-PLANNED: wafer.instr.dte_recv
 // DDR-PLANNED: wafer.instr.dte_wait

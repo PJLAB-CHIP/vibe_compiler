@@ -50,7 +50,7 @@ module {
 // CHECK: %[[LOCAL_SLOT:.+]] = memref.subview %[[INPUT]][4] [4] [1]
 // CHECK: wafer.instr.gather_scatter %[[LOCAL_SLOT]] to %[[ACC]]
 // CHECK-SAME: byte_count = 16 : i64
-// CHECK: wafer.instr.local_drain
+// CHECK: wafer.instr.local_fence
 // CHECK: %[[SLOT2:.+]] = memref.subview %[[INPUT]][8] [4] [1]
 // CHECK: %[[SEND0:.+]] = wafer.instr.dte_send %[[SLOT2]]
 // CHECK-SAME: peer = 2 : i64

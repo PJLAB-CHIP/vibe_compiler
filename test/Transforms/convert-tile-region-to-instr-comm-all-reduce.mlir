@@ -50,7 +50,7 @@ module {
 // CHECK-SAME: byte_count = 16 : i64
 // CHECK: wafer.instr.gather_scatter %[[INPUT]] to %[[FORWARD]]
 // CHECK-SAME: byte_count = 16 : i64
-// CHECK: wafer.instr.local_drain
+// CHECK: wafer.instr.local_fence
 // CHECK: %[[SEND0:.+]] = wafer.instr.dte_send %[[FORWARD]]
 // CHECK-SAME: peer = 2 : i64
 // CHECK: %[[RECV0:.+]] = wafer.instr.dte_recv %[[RECV]]
@@ -58,7 +58,7 @@ module {
 // CHECK: wafer.instr.dte_wait %[[SEND0]], %[[RECV0]]
 // CHECK: wafer.instr.elementwise <add> %[[ACC]], %[[RECV]] into %[[ACC]]
 // CHECK: wafer.instr.gather_scatter %[[RECV]] to %[[FORWARD]]
-// CHECK: wafer.instr.local_drain
+// CHECK: wafer.instr.local_fence
 // CHECK: %[[SEND1:.+]] = wafer.instr.dte_send %[[FORWARD]]
 // CHECK-SAME: peer = 2 : i64
 // CHECK: %[[RECV1:.+]] = wafer.instr.dte_recv %[[RECV]]
@@ -66,7 +66,7 @@ module {
 // CHECK: wafer.instr.dte_wait %[[SEND1]], %[[RECV1]]
 // CHECK: wafer.instr.elementwise <add> %[[ACC]], %[[RECV]] into %[[ACC]]
 // CHECK: wafer.instr.gather_scatter %[[RECV]] to %[[FORWARD]]
-// CHECK: wafer.instr.local_drain
+// CHECK: wafer.instr.local_fence
 // CHECK: %[[SEND2:.+]] = wafer.instr.dte_send %[[FORWARD]]
 // CHECK-SAME: peer = 2 : i64
 // CHECK: %[[RECV2:.+]] = wafer.instr.dte_recv %[[RECV]]

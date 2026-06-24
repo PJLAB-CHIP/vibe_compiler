@@ -75,7 +75,7 @@ Wafer 是基于 MLIR 的编译器。每一层 IR 只携带自己能稳定解释�
 | Local compute normalization | Linalg, Tensor, SCF, Arith, Math, `wafer.linalg_ext.collective.*` ops | structured loop、indexing map、tile slice、producer/consumer、DPS/in-place、transformer block composite pattern、post-SPMD tensor collective semantics | SPM address、`Cx/NCx` storage、worker id、packet field、tile communication / DTE protocol |
 | Group scheduling | `wafer.group` | fusion boundary、traversal schedule、tiled tensor IR、abstract resource demand | raw register field、DTE node id、physical SPM slot、C ABI call |
 | Tile execution | `wafer.tile.region`, Wafer-tagged `memref`, target-abstract `wafer.tile.*` ops | bufferized tile-local execution scope、memory/liveness、movement/compute/sync ordering、layout contract | tensor fusion decision、host launch/package ABI |
-| Hardware/runtime lowering | `wafer.instr.*`, tile collective lowering | RDMA/WDMA/TDMA/CT/NE/DTE hardware invocation form、issue/drain/wait abstraction、barrier abstraction | raw packet bitfield unless in debug/raw dialect |
+| Hardware/runtime lowering | `wafer.instr.*`, tile collective lowering | RDMA/WDMA/TDMA/CT/NE/DTE hardware invocation form、issue/fence/wait abstraction、barrier abstraction | raw packet bitfield unless in debug/raw dialect |
 | Launch / ABI | LLVM dialect, package metadata | host/device launch boundary、concrete `wafer_*` call、runtime adapter、HPGR or legacy launch metadata | tensor-level fusion, sharding decisions |
 
 IREE 的可借鉴点是层级纪律，不是 dialect taxonomy。Wafer 不复制 Flow/Stream/HAL/VM 分层，也不把
@@ -171,7 +171,7 @@ source model / exported program / pre-exported StableHLO
 不负责：
 
 - 不表达 Wafer tile endpoint mapping。
-- 不表达 Wafer memory attr、physical layout marker、DTE、NCC queue、worker、wait/drain。
+- 不表达 Wafer memory attr、physical layout marker、DTE、NCC queue、worker、fence/wait。
 - 不把 runtime launch 或 package ABI 写进模型 IR。
 
 V0 策略：
@@ -419,7 +419,7 @@ bufferization 见 `tasks/09-spm-memory-planning.md`；DDR memory planning 见
 
 - target-abstract `wafer.tile.*` compute / movement / boundary ops
 - `wafer.instr.*`
-- `wafer.instr.local_drain`
+- `wafer.instr.local_fence`
 
 职责：
 
@@ -430,12 +430,12 @@ bufferization 见 `tasks/09-spm-memory-planning.md`；DDR memory planning 见
 - 将 target-abstract op lower 到复用 Wafer-tagged memref 的 instruction-level
   `wafer.instr.*` IR，再由 SPM memory planning 在同一 IR 上填入 offset/range/bank；
   这一层不直接手写 raw packet bitfield。
-- 覆盖 CT、NE、RDMA、WDMA、TDMA 和 DTE 的 hardware invocation family、issue/drain/wait
+- 覆盖 CT、NE、RDMA、WDMA、TDMA 和 DTE 的 hardware invocation family、issue/fence/wait
   抽象和 memref read/write/effect。
-- 区分 issue-only op、local drain、host-visible boundary、group barrier。
+- 区分 issue-only op、local fence、host-visible boundary、group barrier。
 - 为 verifier 提供明确的 legality target。
 
-`wafer.tile.*` compute / movement 的 IR 生命周期、op family、layout/resource interface、issue/drain
+`wafer.tile.*` compute / movement 的 IR 生命周期、op family、layout/resource interface、issue/fence
 模型和 lowering 合同见
 `tasks/10-compute-movement.md`。该子设计固定的是 target-abstract
 compute/movement 层的 verifier 和 lowering 边界，不把某个 wrapper 名、示例 tile shape 或 raw
@@ -651,7 +651,7 @@ WaferRuntimeAdapter cluster launch
 
 验收标准：
 
-- overlap 基于 issue/drain、DTE wait、group barrier、SPM bank/page coloring 和 PMU/profiling，不是简单把 op 放进同一个 kcore function。
+- overlap 基于 issue/fence/wait、DTE wait、group barrier、SPM bank/page coloring 和 PMU/profiling，不是简单把 op 放进同一个 kcore function。
 - Scheduler 维护 estimated in-flight SPM bank/page/color set、RDMA/WDMA DDR range、DTE resource set 和 NCC queue state。
 - PMU case 覆盖 serial mode、parallel mode、64KB page coloring、256B compact layout 的 blocking/exe time 对比。
 
@@ -739,7 +739,7 @@ wafer.tile.materialize_layout
 memref.alloc : memref<..., #wafer.memory<spm, *>>
 wafer.tile.gemm
 wafer.instr.dte_send
-wafer.instr.local_drain
+wafer.instr.local_fence
 runtime package metadata
 ```
 
@@ -925,7 +925,7 @@ ModelImport/FrontendProgram
   access descriptor 旁路协议。
 - instruction-level compute / communication lowering 消费 committed instruction IR 中的 SPM/DDR
   value、offset fact 和 view relation，不再做 fusion 决策。
-- `wafer.instr.local_drain` 和后续 sync boundary 提供 local drain、communication wait、group barrier
+- `wafer.instr.local_fence` 和后续 sync boundary 提供 local fence、communication wait、group barrier
   等同步抽象，供 compute/comm lowering 复用。
 - runtime package metadata 是 runtime-level launch boundary，负责参数、metadata 和 host/device ABI
   交接，不替代 tile-local execution region，也不作为当前 core IR op。
@@ -950,7 +950,7 @@ V0 先保持少量稳定 op family：`wafer.group`、`wafer.linalg_ext.collectiv
 | `wafer.tile.region` | `tasks/07-tile-region.md` | 草案 | bufferized tile-local execution scope、memory/effect ownership、movement/compute/sync ordering | tensor fusion、traversal selection、host launch/package ABI |
 | Layout materialization | `tasks/08-layout-materialization.md` | 草案 | physical layout domain、op layout constraint、constant storage transform、materialization location/cost | SPM address、packet field、group fusion |
 | SPM memory planning | `tasks/09-spm-memory-planning.md` | 草案 | `#wafer.memory<spm, *>` demand、liveness、range/alignment、accepted SPM offset facts | DDR offset facts、runtime allocation mapping、collective algorithm、host launch |
-| Compute / movement | `tasks/10-compute-movement.md` | 草案 | target-abstract compute/move op、layout/resource interface、instruction legality、issue/drain | tensor fusion、global sharding、host package format |
+| Compute / movement | `tasks/10-compute-movement.md` | 草案 | target-abstract compute/move op、layout/resource interface、instruction legality、issue/fence/wait | tensor fusion、global sharding、host package format |
 | Instruction IR | `tasks/11-instruction-ir.md` | 草案 | `wafer.instr.*`、Wafer-tagged memref graph、instruction family、memref read/write/effect、Direct DTE invocation form | SPM/DDR offset、runtime mapping、raw packet、C ABI call、重复 storage IR |
 | DDR memory planning | `tasks/12-ddr-memory-planning.md` | 草案 | `#wafer.memory<ddr, *>` demand、external view/descriptor validation、compiler-managed/resident/inter-group alloc demand、accepted DDR offset facts、lifetime/reuse、default arena capacity/largest-contiguous/bandwidth | tensor fusion、SPM offset、runtime allocation/import、packet bitfield |
 | Communication | `tasks/13-communication.md` | 草案 | tile_region / SPM materialization 之后的 buffer-level collective op、p2p Direct DTE instruction schedule、token/effect、sync boundary | compute op legality、SPM allocator internals、SPMD tensor collective handoff |

@@ -100,7 +100,7 @@ Pipeline position:
 - `WaferCommOpInterface` 或后续 communication instruction selection 提供的 source/destination buffer、byte count、
   token/wait 和 staging storage。
 - target policy：SPM range、reserved range、alignment、coloring preference。
-- `wafer.tile.region` 的 control-flow、op effect、drain/wait/barrier。
+- `wafer.tile.region` 的 control-flow、op effect、fence/wait/barrier。
 
 输出：
 
@@ -165,7 +165,7 @@ SPM allocator 不按 op 名字猜 buffer，也不把一个 target-abstract op �
   range 和 queue 行为。
 - `wafer.tile.*` communication ops p2p op：需要 communication instruction lowering 报告 send source、recv destination、
   communication staging buffer、fixed byte count、token/wait lifetime 和 DTE/FSM resource class。
-- `wafer.instr.local_drain` 和后续 sync boundary：报告 local drain、comm wait、group barrier 对 instruction event、buffer lifetime 和
+- `wafer.instr.local_fence` 和后续 sync boundary：报告 local fence、comm wait、group barrier 对 instruction event、buffer lifetime 和
   reuse 的收口。
 
 如果某个 target-abstract op 无法产出可验证 instruction-level IR，不能让 SPM memory planning 用名字或示例
@@ -198,18 +198,18 @@ lifetime 从 IR 结构和 effect 推出：
 - region/control-flow。
 - loop-carried value。
 - op memory effects。
-- async issue + drain/wait。
+- async issue + fence/wait。
 - communication wait / group barrier。
 - host-visible output boundary。
 
 V0 规则：
 
 - synchronous op 的 input live 到该 op read 完；output live 到最后 use。
-- 本地 compute/movement 写入的 destination 在后续 `wafer.instr.local_drain` 前不能被复用；drain
-  event 将此前未 drain 的本地写 lifetime 延伸到该 drain。
+- 本地 compute/movement 写入的 destination 在后续 `wafer.instr.local_fence` 前不能被复用；fence
+  event 将此前未 fenced 的本地写 lifetime 延伸到该 fence。
 - DTE communication issue 的 source/destination 通过返回的 `!async.token` 绑定到
   `wafer.instr.dte_wait`；token 被 wait 消费前，send source 和 recv destination 都不能被复用。
-- 其它 async movement/compute/communication 的 source/destination live 到对应 drain/wait。
+- 其它 async movement/compute/communication 的 source/destination live 到对应 fence/wait。
 - `wafer.instr.dte_send` 的 source buffer live 到 send completion 或 protocol 允许复用的 wait；`dte_recv`
   destination 在 comm wait 前不能被 compute 读取。
 - loop-carried accumulator/psum 跨 backedge live。
@@ -233,7 +233,7 @@ lowering 下放置 `#wafer.memory<spm, *>` memref。它不负责全局寻找最�
 - tiled control-flow / event order。
 - layout assignment 和 selected materialization / compute / movement instruction form。
 - instruction-derived `BufferDemand`。
-- effect / async issue / drain / wait / barrier。
+- effect / async issue / fence / wait / barrier。
 - target range、reserved range、alignment、range-end policy。
 - optional double-buffer / communication staging policy。
 
@@ -251,12 +251,12 @@ SPMOffsetResult {
 
 V0 event model：
 
-- 每个 movement / materialization / compute / sync op 产生 issue/read/write/drain/wait event。
+- 每个 movement / materialization / compute / sync op 产生 issue/read/write/fence/wait event。
 - communication p2p op 产生 send/recv issue event，`wafer.instr.dte_wait` 或 lower-level DTE/FSM wait
   产生 completion event。
-- synchronous read 可以用单个 read event conservative 建模；本地 compute/movement write 在 drain
+- synchronous read 可以用单个 read event conservative 建模；本地 compute/movement write 在 fence
   前按 pending local write 处理。
-- async DTE token 将 issue operand refs 延伸到对应 wait；本地 drain 只收口 compute/movement
+- async DTE token 将 issue operand refs 延伸到对应 wait；本地 fence 只收口 compute/movement
   writes，不替代 DTE wait。
 - loop backedge 让 loop-carried value 跨 iteration live。
 - branch 只有在 control-flow 可证明互斥时共享 lifetime slot。
@@ -470,10 +470,10 @@ R3.2f V0 的 dataflow 边界：
   覆盖整个 loop subtree；loop body 内没有 yield 出 loop 的 per-iteration temp 只按实际 use 建段，
   可以在 loop 后复用。
 - 产生 `!async.token` 且带 SPM operand 的 issue op 会把对应 SPM refs 挂到 token 上；token 被
-  `wafer.instr.dte_wait` 或后续 drain/wait-like op 消费时，source/destination lifetime 延伸到该 token use。
+  `wafer.instr.dte_wait` 或后续 fence/wait-like op 消费时，source/destination lifetime 延伸到该 token use。
 - 带 `WaferResourceEffectInterface` 的本地 compute/movement SPM write 会进入 pending local write
-  集合；`wafer.instr.local_drain` 在当前 path condition 下把这些 write 的 lifetime 延伸到 drain
-  event，并清除已被该 drain 覆盖的 pending write。DTE recv 的 destination 不由 local drain 收口，
+  集合；`wafer.instr.local_fence` 在当前 path condition 下把这些 write 的 lifetime 延伸到 fence
+  event，并清除已被该 fence 覆盖的 pending write。DTE recv 的 destination 不由 local fence 收口，
   它仍通过 DTE token/wait 收口。
 - rejected/candidate offset、search trace、cost estimate 和 repair suggestion 仍是 analysis，不写入
   IR。
@@ -511,8 +511,8 @@ SPM / tile-region verifier 至少检查：
 - op operand/result 的 Wafer memory attr 满足对应 op verifier。
 - must-alias relation 的读写顺序合法。
 - may-reuse buffers 的 lifetime 不重叠，或由明确 wait/barrier 收口。
-- async buffer 在 drain/wait 前不能复用。
-- host-visible writeback 和 communication boundary 有明确 drain/wait/sync。
+- async buffer 在 fence/wait 前不能复用。
+- host-visible writeback 和 communication boundary 有明确 fence/wait/sync。
 - launch/resource、ABI/LLVM 和 runtime adapter 阶段不能要求额外 placed/access descriptor fact；compact 和 Cx/NCx buffer
   的 address/range/stride 参数必须由 `computeWaferPhysicalTensorInfo`、accepted offset facts、
   allocation range 和 op verifier 一致推出。
@@ -539,8 +539,8 @@ layout planner 先尝试移动 materialization cut 或换 flexible layout；SPM 
 再缩 tile、请求 internal split 或拆 group。SPM allocation 消费 instruction-level IR 暴露的 demand
 和 effect；compute implementation 和 communication algorithm 的选择属于 instruction selection /
 closed-loop planner，不在 allocator 内部用名字或 case 猜测。
-- local drain、comm wait、group barrier 是不同 sync event。SPM lifetime 可以把它们都建成 event，
-  但不能把 NCC local drain 当成 DTE completion 或 multi-tile barrier。
+- local fence、comm wait、group barrier 是不同 sync event。SPM lifetime 可以把它们都建成 event，
+  但不能把 NCC local fence 当成 DTE completion 或 multi-tile barrier。
 
 ## 15. 后续扩展
 
@@ -557,7 +557,7 @@ closed-loop planner，不在 allocator 内部用名字或 case 猜测。
 - PMU 驱动 bank conflict model：当 board profiling 能稳定解释 blocking time 和 bank/color 关系后，
   替换 V0 的 color penalty。
 - worker-local / runtime-visible / communication-only pool：当对应 dialect 和 verifier 已能表达
-  ownership、visibility、wait/drain 边界后引入。
+  ownership、visibility、fence/wait 边界后引入。
 
 ## 16. 参考材料
 

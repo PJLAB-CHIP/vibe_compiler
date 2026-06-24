@@ -108,7 +108,7 @@ OP_FAMILIES = {
         "layer": "Instr",
         "td": "SyncOps.td",
         "cpp": "SyncOps.cpp",
-        "mnemonics": ["instr.local_drain"],
+        "mnemonics": ["instr.local_fence"],
         "tests": "Instr/Sync",
     },
 }

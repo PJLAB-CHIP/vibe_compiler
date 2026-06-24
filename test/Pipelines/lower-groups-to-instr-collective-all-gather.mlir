@@ -27,7 +27,7 @@ func.func @collective_all_gather_to_instr(%input: tensor<4xf32>,
 // CHECK: %[[GATHER:.+]] = memref.alloc
 // CHECK: %[[LOCAL_SLOT:.+]] = memref.subview %[[GATHER]][0] [4] [1]
 // CHECK: wafer.instr.gather_scatter %[[INPUT]] to %[[LOCAL_SLOT]]
-// CHECK: wafer.instr.local_drain
+// CHECK: wafer.instr.local_fence
 // CHECK: %[[PEER_SLOT:.+]] = memref.subview %[[GATHER]][4] [4] [1]
 // CHECK: %[[SEND:.+]] = wafer.instr.dte_send %[[LOCAL_SLOT]]
 // CHECK-SAME: peer = 1 : i64
@@ -38,7 +38,7 @@ func.func @collective_all_gather_to_instr(%input: tensor<4xf32>,
 
 // PLANNED-LABEL: func.func @collective_all_gather_to_instr
 // PLANNED: memref.alloc() {wafer.spm.offset = #wafer.spm_offset<
-// PLANNED: wafer.instr.local_drain
+// PLANNED: wafer.instr.local_fence
 // PLANNED: wafer.instr.dte_send
 // PLANNED: wafer.instr.dte_recv
 // PLANNED: wafer.instr.dte_wait
@@ -48,7 +48,7 @@ func.func @collective_all_gather_to_instr(%input: tensor<4xf32>,
 // DDR-PLANNED-NOT: wafer.group
 // DDR-PLANNED-NOT: wafer.tile.all_gather
 // DDR-PLANNED: wafer.spm.offset
-// DDR-PLANNED: wafer.instr.local_drain
+// DDR-PLANNED: wafer.instr.local_fence
 // DDR-PLANNED: wafer.instr.dte_send
 // DDR-PLANNED: wafer.instr.dte_recv
 // DDR-PLANNED: wafer.instr.dte_wait
