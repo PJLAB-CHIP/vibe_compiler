@@ -17,6 +17,10 @@ ALLOWED_COMPLETION_SOURCES = {
     "legacy_tsm_run_sync",
 }
 
+ALLOWED_DEVICE_CODE_KINDS = {
+    "kcore_shared_object",
+}
+
 KNOWN_STUB_FENCES = {
     "TsmDeviceSynchronize",
     "TsmLaunch",
@@ -133,6 +137,27 @@ def validate_tensor(tensor: Any, name: str) -> tuple[str, list[int]]:
     return tensor_name, checked_shape
 
 
+def validate_device_code(value: Any) -> None:
+    device_codes = require_list(value, "device_code")
+    if not device_codes:
+        fail("device_code must be non-empty")
+    seen_names = set()
+    for index, device_code in enumerate(device_codes):
+        name = f"device_code[{index}]"
+        item = require_dict(device_code, name)
+        code_name = require_non_empty_string(item.get("name"), f"{name}.name")
+        if code_name in seen_names:
+            fail("device_code names must be unique")
+        seen_names.add(code_name)
+
+        kind = require_non_empty_string(item.get("kind"), f"{name}.kind")
+        if kind not in ALLOWED_DEVICE_CODE_KINDS:
+            fail(f"{name}.kind must be kcore_shared_object")
+        artifact = require_non_empty_string(item.get("artifact"), f"{name}.artifact")
+        if not artifact.endswith(".so"):
+            fail(f"{name}.artifact must name a kcore shared object")
+
+
 def validate_tensor_storage_demand(item: Any, name: str) -> tuple[str, int]:
     demand = require_dict(item, name)
     demand_name = require_non_empty_string(demand.get("name"), f"{name}.name")
@@ -208,6 +233,7 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         fail("completion source is a known stub fence")
     if completion_source not in ALLOWED_COMPLETION_SOURCES:
         fail("completion source is not in the allowed runtime fence set")
+    validate_device_code(manifest.get("device_code"))
 
     signature = require_dict(manifest.get("launch_signature"), "launch_signature")
     input_tensors = [

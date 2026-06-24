@@ -8,8 +8,8 @@
   "device_code": [
     {
       "name": "single_matmul",
-      "kind": "instruction_sequence",
-      "artifact": "bad_resident_constant.o"
+      "kind": "kcore_shared_object",
+      "artifact": "bad_resident_constant.so"
     }
   ],
   "launch_signature": {

@@ -7,9 +7,9 @@
   },
   "device_code": [
     {
-      "name": "schema_fixture_issue_sequence",
-      "kind": "instruction_sequence",
-      "artifact": "schema_fixture.o"
+      "name": "schema_fixture_kernel",
+      "kind": "kcore_shared_object",
+      "artifact": "schema_fixture.so"
     }
   ],
   "launch_signature": {

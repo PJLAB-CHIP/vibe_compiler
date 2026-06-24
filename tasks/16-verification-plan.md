@@ -29,8 +29,9 @@ Serving integration 暂不纳入本文通过标准。
 - pipeline 能生成当前阶段的本地编译产物：committed instruction IR 和 accepted SPM/DDR offset facts。
   topology/execution-mesh、program parameter shard metadata/resource view、ABI/LLVM lowering、object/package manifest 和 runtime
   adapter 是后续独立 gate。
-- LLVM dialect / LLVM IR lowering、object emission 和真实 `wafer_*` runtime call emission 分别属于
-  ABI/package/runtime adapter gate，不属于当前 committed-instruction gate 的通过条件。
+- LLVM dialect / LLVM IR lowering、TX8 device-code compile/link 和真实 `wafer_*` runtime call
+  implementation 分别属于 ABI、object/package 和 wrapper/runtime adapter gate，不属于当前
+  committed-instruction gate 的通过条件。
 
 当前阶段不把板端 launch、device completion、数值对比或 PMU/profiling 作为通过条件。迁移到带实际
 计算卡服务器后，这些 board run 验证再成为对应 milestone 的新增 gate。
@@ -54,7 +55,7 @@ Serving integration 暂不纳入本文通过标准。
 | Compute / Movement | committed instruction IR + accepted offset facts | wrapper family、layout、dtype、shape、issue/fence/wait 合法 |
 | Communication | tile_region / SPM materialization 后的 `wafer.tile.*` collective / `wafer.instr.dte_*` IR | endpoint、token、DTE/FSM resource、wait policy 合法 |
 | ABI / LLVM / golden packet | committed instruction IR + accepted offsets + topology/execution-mesh + program parameter shard metadata/resource view + communication/sync lowering | LLVM dialect call 或 `wafer_*` C ABI / packet builder input 合法；ABI unit/address/wait verified，golden packet 覆盖 wrapper mapping；launch/resource view 从 IR 按需重算，不成为独立 artifact |
-| Object/package | ABI/LLVM artifact + committed IR + topology/execution-mesh + program parameter shard metadata/resource view | object/link 最小验证；manifest 记录 object/program id、entrypoint、ABI version 和 IR-derived package metadata；endpoint/resource/constant metadata 由同一 resource view analysis 生成 |
+| Object/package | ABI/LLVM artifact + committed IR + topology/execution-mesh + program parameter shard metadata/resource view | `.ll -> .o -> kcore .so` device-code compile/link gate 合法；manifest 记录 object/program id、entrypoint、ABI version 和 IR-derived package metadata；endpoint/resource/constant metadata 由同一 resource view analysis 生成 |
 | Runtime/board | package + adapter | runtime allocation object binding contract、stub shielding、launch/completion/error propagation 合法；板端 completion 在有卡环境验证 |
 
 Gate 通过只说明进入下一层的输入合法，不说明整个 compiler 已完成。
@@ -119,10 +120,11 @@ Single-tile local compute：
   instruction selection、SPM allocation、DDR external/workspace/constant demand 和 C ABI/package
   边界来自真实 program chain。
 - 至少一个 compute/movement ABI family 有 golden packet。
-- 当前无卡开发环境要求 generated program compile；package manifest roundtrip 只能作为 tool-unit
-  schema 覆盖，不能替代 IR-derived package emission。runtime completion 在带实际计算卡服务器上再
-  验证，届时 completion 必须来自 HPGR model/module/stream completion、legacy `TsmRun` synchronous
-  path，或 device-side drain + 可信 host completion。
+- 当前无卡开发环境要求 generated program compile，并在 TX8 依赖可用时通过 `.ll -> .o -> kcore .so`
+  的 device-code compile/link gate；package manifest roundtrip 只能作为 tool-unit schema 覆盖，
+  不能替代 IR-derived package emission。runtime completion 在带实际计算卡服务器上再验证，届时
+  completion 必须来自 HPGR model/module/stream completion、legacy `TsmRun` synchronous path，或
+  device-side drain + 可信 host completion。
 
 Multi-tile no communication：
 
@@ -209,7 +211,8 @@ M7 ABI / LLVM program gate：
   作为 debug/test dump 或 LLVM call 前置层，并能
   通过 `mlir-translate` 或等价路径生成 LLVM IR。
 - 本地 gate 至少检查 LLVM IR 文本中的 entrypoint、runtime symbol declaration、参数顺序和
-  metadata/program 引用；随后用当前 toolchain 做 object 或 link 最小验证。
+  metadata/program 引用；随后用 LLVM `clang++` 做 `.ll -> .o`，再用 `tx8_deps`
+  `riscv64-unknown-elf-gcc` 链接 kcore shared object。`.ll` 不能直接交给 GCC。
 - package manifest 必须记录真实 LLVM/object program id、entrypoint 和 ABI version；C stub-only
   program 只允许作为 P0-P6 历史局部 fixture 的验证物。
 

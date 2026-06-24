@@ -13,7 +13,8 @@ ABI/LLVM lowering 的主线形态是：
 committed wafer.instr.* + accepted offsets + topology/execution-mesh + resource view
   -> scalar wafer_* C ABI call sequence in func dialect
   -> LLVM dialect
-  -> LLVM IR / object input
+  -> LLVM IR artifact
+  -> TX8 device-code compile/link gate
   -> package manifest + runtime adapter
 ```
 
@@ -45,7 +46,8 @@ status 规则必须先在 ABI materialization 阶段被消解成标量 C ABI 参
 
 - 不做 tensor tiling、group formation、layout assignment、SPM allocation 或 DDR allocation。
 - 不把 raw packet dialect 当作主 IR。
-- 不定义 host runtime package 格式；package/launch 只消费 C ABI lowering 后的 device code。
+- 不定义 host runtime package 格式，也不执行 TX8 object/link；package/launch 只消费 C ABI lowering
+  后的 LLVM IR / device code artifact。
 - 不把 legacy Tx81 CRT 函数列表直接提升为 Wafer IR op 列表。
 - 不新增 `wafer.abi` dialect；ABI call sequence 使用 `func.func` / `func.call` 和标量参数表达。
 - 不让 Wafer-tagged memref 直接走标准 memref descriptor C ABI；硬件 wrapper 只接收标量地址、
@@ -109,10 +111,11 @@ Pipeline position:
   address domain、wait/completion policy、status/token convention 和 ABI version。resource view
   是 analysis/verifier 结果，不 materialize 成独立 IR 或 sidecar metadata。
 - Output artifact / IR:
-  scalar C ABI call sequence in func dialect、LLVM dialect module、LLVM IR / object input、packet emission
-  metadata / debug dump，以及 golden packet test input。
+  scalar C ABI call sequence in func dialect、LLVM dialect module、LLVM IR artifact、packet emission
+  metadata / debug dump，以及 golden packet test input。TX8 relocatable object 和 kcore shared object
+  由 package/device-code gate 从该 LLVM IR artifact 继续生成，不由 ABI lowering stage 生成。
 - Downstream consumer:
-  object emission / IR-derived package manifest、wrapper-facing call contract 和 board/runtime adapter。
+  device-code compile/link gate、IR-derived package manifest、wrapper-facing call contract 和 board/runtime adapter。
 - User-level driver / named pipeline:
   主线由后端 compile pipeline 调用；不引入专门 ABI IR op family 作为用户级 compile flow。
   稳定边界名为 `abi-calls` 和 `llvm-lowering`：`wafer-materialize-abi-calls` 只生成 scalar

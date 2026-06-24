@@ -1,17 +1,11 @@
 {
   "schema_version": 1,
-  "package_name": "bad_completion",
+  "package_name": "invalid_empty_device_code_fixture",
   "runtime": {
     "mode": "hpgr",
-    "completion_source": "TsmDeviceSynchronize"
+    "completion_source": "hpgr_stream_event"
   },
-  "device_code": [
-    {
-      "name": "bad_completion_kernel",
-      "kind": "kcore_shared_object",
-      "artifact": "bad_completion.so"
-    }
-  ],
+  "device_code": [],
   "launch_signature": {
     "inputs": [
       {
@@ -57,7 +51,7 @@
   "workspace_buffers": [],
   "resident_constants": [],
   "resources": {
-    "spm_bytes": 128,
+    "spm_bytes": 192,
     "ddr_external_input_bytes": 16,
     "ddr_external_output_bytes": 16,
     "workspace_bytes": 0,

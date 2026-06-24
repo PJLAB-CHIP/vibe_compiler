@@ -3,10 +3,14 @@
 # RUN: not %python %wafer_src_root/tools/wafer_package_manifest.py --validate %S/invalid-completion-manifest.json 2>&1 | FileCheck %s --check-prefix=ERR
 # RUN: not %python %wafer_src_root/tools/wafer_package_manifest.py --validate %S/invalid-workspace-manifest.json 2>&1 | FileCheck %s --check-prefix=WORKSPACE-ERR
 # RUN: not %python %wafer_src_root/tools/wafer_package_manifest.py --validate %S/invalid-resident-constant-manifest.json 2>&1 | FileCheck %s --check-prefix=CONST-ERR
+# RUN: not %python %wafer_src_root/tools/wafer_package_manifest.py --validate %S/invalid-device-code-manifest.json 2>&1 | FileCheck %s --check-prefix=DEVICE-ERR
+# RUN: not %python %wafer_src_root/tools/wafer_package_manifest.py --validate %S/invalid-empty-device-code-manifest.json 2>&1 | FileCheck %s --check-prefix=EMPTY-DEVICE-ERR
 
 # CHECK: "schema_version": 1
 # CHECK: "package_name": "manifest_schema_fixture"
 # CHECK: "completion_source": "hpgr_stream_event"
+# CHECK: "kind": "kcore_shared_object"
+# CHECK: "artifact": "schema_fixture.so"
 # CHECK-NOT: {{"place}}{{ment"}}
 # CHECK-NOT: TsmDeviceSynchronize
 # CHECK: "ddr_external_input_bytes": 32
@@ -21,3 +25,5 @@
 # ERR: completion source is a known stub fence
 # WORKSPACE-ERR: resources.workspace_bytes does not match workspace buffers
 # CONST-ERR: resources.resident_constant_bytes does not match resident constants
+# DEVICE-ERR: device_code[0].kind must be kcore_shared_object
+# EMPTY-DEVICE-ERR: device_code must be non-empty

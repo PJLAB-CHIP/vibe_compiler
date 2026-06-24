@@ -65,12 +65,14 @@ Pipeline position:
   topology/execution-mesh contract、program parameter shard metadata、薄 launch/block binding、
   按需重算的 resource view，以及 ABI/LLVM lowering 产物。
 - Current stage responsibility:
-  package 组装 object/program id、entrypoint、ABI version、constant bytes、endpoint metadata 和
-  resource binding metadata 到 package manifest；runtime adapter 根据该 manifest 执行
-  allocate/import/query/bind、launch、completion/error validation。
+  从 ABI/LLVM lowering 的 LLVM IR artifact 生成 TX8 RISC-V relocatable object 和 kcore shared
+  object，并由 package 组装 object/program id、entrypoint、ABI version、constant bytes、
+  endpoint metadata 和 resource binding metadata 到 package manifest；runtime adapter 根据该
+  manifest 执行 allocate/import/query/bind、launch、completion/error validation。
 - Output artifact / IR:
-  IR-derived package manifest、device object reference、runtime adapter binding/launch contract 和
-  completion-source declaration；不把 runtime handle 或 physical DDR address 写回上层 IR。
+  TX8 RISC-V relocatable object、kcore shared object、IR-derived package manifest、device object
+  reference、runtime adapter binding/launch contract 和 completion-source declaration；不把 runtime
+  handle 或 physical DDR address 写回上层 IR。
 - Downstream consumer:
   HPGR/KMD/legacy runtime launch path、board correctness gate 和 profiling/error propagation gate。
 - User-level driver / named pipeline:
@@ -80,9 +82,10 @@ Pipeline position:
   不重新做 endpoint projection、tile search、layout、SPM/DDR planning、communication schedule 或 ABI lowering；
   不把 legacy bootparam/TLV 字段反向提升为 compiler IR 语义。
 - Completion gate:
-  manifest 从当前 pipeline 产物自动导出并 roundtrip，记录真实 object/program id、entrypoint、ABI
-  version、endpoint/resource metadata；runtime adapter gate 能拒绝 stub completion 和不满足 contract
-  的 allocation/binding。
+  device-code gate 能从 LLVM IR artifact 生成可链接的 TX8 kcore shared object；manifest 从当前
+  pipeline 产物自动导出并 roundtrip，记录真实 object/program id、entrypoint、ABI version、
+  endpoint/resource metadata；runtime adapter gate 能拒绝 stub completion 和不满足 contract 的
+  allocation/binding。
 ```
 
 ## 3. Runtime Package Contents
@@ -91,7 +94,7 @@ Runtime package 是交付给 runtime adapter 的编译产物集合。V0 需要�
 
 | 部分 | 内容 | 来源 |
 | --- | --- | --- |
-| device code | per-kernel / per-cluster kcore shared object | C ABI / LLVM lowering |
+| device code | per-kernel / per-cluster kcore shared object | ABI/LLVM artifact + device-code compile/link gate |
 | launch signature | inputs、outputs、runtime args、shape/dtype/layout | frontend + lowering |
 | endpoint metadata | topology snapshot id、derived rank endpoint table、block id、availability assumption | `wafer.target.topology` + `wafer.execution.mesh` + thin launch/block binding |
 | DDR memory metadata | external binding contract、workspace demand、resident constant demand | on-demand resource view derived from committed IR + DDR planner facts |
@@ -103,6 +106,61 @@ Runtime package 是交付给 runtime adapter 的编译产物集合。V0 需要�
 constant storage bytes 不是新的 IR constant op。它们只是 `ConstantLike` value 经过 storage transform
 后的 package data，并且必须能追溯到原始 constant value、slice relation、dtype、shape 和
 selected storage layout。
+
+### 3.1 Device Code Compile/Link Gate
+
+Device-code gate 消费 ABI/LLVM lowering 生成的 LLVM IR artifact，不消费 `wafer.instr.*`、
+`func.call` ABI IR 或 package manifest fixture。它只负责把 device kernel 编译成 TX8 runtime 可以
+装载的 kcore shared object，并把 artifact id / path 交给 package manifest。
+
+V0 采用已经可运行的 TX8 RISC-V 两段式工具链 profile：
+
+```text
+LLVM IR (.ll)
+  -> LLVM clang++ RISC-V compile
+       kernel.o
+  -> tx8_deps riscv64-unknown-elf-gcc link
+       kernel.so
+```
+
+第一段用 LLVM `clang++` 从 `.ll` 生成 RISC-V relocatable object：
+
+```sh
+clang++ kernel.ll -O2 -c -fPIC \
+  --target=riscv64-unknown-elf \
+  -march=rv64imfdc \
+  -o kernel.o
+```
+
+第二段用 `tx8_deps` 中的 RISC-V GCC 链接 kcore shared object：
+
+```sh
+riscv64-unknown-elf-gcc -shared -march=rv64imfdc -O2 \
+  -nostartfiles -Wl,--allow-shlib-undefined \
+  -mabi=lp64d -Wl,--no-dynamic-linker \
+  kernel.o \
+  -L<wafer-crt-lib-dir> \
+  -L<tx8-toolchain>/riscv64-unknown-elf/lib/rv64imfdc/lp64d \
+  -L<tx8-toolchain>/lib/gcc/riscv64-unknown-elf/10.4.0/rv64imfdc/lp64d \
+  -L<tx8-deps-root>/lib \
+  -Wl,--start-group \
+  -lcommon_util -linstr_tx81 -llibc_stub -lvr \
+  -Wl,--end-group \
+  -lm -Wl,--gc-sections -Wl,--unique=.rodata.name \
+  -lc -lgcc \
+  -o kernel.so
+```
+
+这里 `.ll -> .o` 不能交给 GCC；GCC 只负责 final link。`libcommon_util.a`、
+`libinstr_tx81.a` 和 `liblibc_stub.a` 来自 `tx8_deps/lib`；`libvr.a` 属于 Wafer CRT 依赖，需要由
+构建环境显式提供，不假设存在于裸 `tx8_deps` root。V0 profile 固定为 `rv64imfdc/lp64d`，因为这是
+当前可运行路径使用的组合；`-mcpu=c908` 或其它 Xuantie multilib profile 需要单独的 artifact
+兼容性和板端验证后再升级成新 profile。
+
+`-Wl,--allow-shlib-undefined` 只允许 kcore shared object 保留 runtime/loader 解析的外部符号；它不是
+证明 `wafer_*` C ABI shim 已实现的信号。当前 device-code gate 需要能接收额外 ABI shim object /
+library；真实 wrapper shim 必须由后续 wrapper implementation gate 提供，并由 golden packet /
+register-facing tests 验证字段映射。
 
 ## 4. Runtime Layering
 
@@ -174,6 +232,11 @@ fixture 生成可被 C compiler 做 syntax compile 的 ABI emission table、work
 resident constant table；它不代表当前 IR pipeline 已生成 package，也不代表
 真实 device code 已可执行。
 
+`tools/wafer_device_link.py` 是 device-code local gate：它消费已有 LLVM IR 文件，生成或打印
+`.ll -> .o -> kernel.so` 两段命令，并可在本地 TX8 依赖齐备时执行该 compile/link。它不从
+`wafer.instr.*` 恢复 package metadata，不生成 manifest，也不代表 runtime launch / board
+completion 已通过。
+
 当前 C ABI stub 不再从 manifest 生成 tile-specific launch argument table。endpoint / block metadata 必须由
 后续 topology/execution-mesh、program parameter shard metadata/resource view 和薄 launch/block binding 派生，不能由
 manifest 维护第二份 endpoint schema。
@@ -238,6 +301,11 @@ Runtime adapter 必须把 stub shielding 做成显式 validation。不能把 “
 
 V0 验证：
 
+- device-code gate 命令形态固定：LLVM `clang++` 负责 `.ll -> .o`，`tx8_deps`
+  `riscv64-unknown-elf-gcc` 负责 link `kernel.so`，并显式链接 `common_util`、`instr_tx81`、
+  `libc_stub` 和 Wafer CRT `vr`。
+- package manifest `device_code` 记录 kcore shared object artifact，不再把 instruction-sequence
+  fixture 当成 runtime package device code。
 - package manifest schema roundtrip。
 - launch signature 与 compiled function ABI 一致。
 - endpoint metadata 覆盖所有 launched tile。
