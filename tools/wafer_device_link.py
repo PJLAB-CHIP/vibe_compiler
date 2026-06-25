@@ -53,6 +53,19 @@ def resolve_tx8_gcc(
     )
 
 
+def resolve_tx8_objcopy(
+    tx8_deps_root: pathlib.Path, toolchain_dir_name: str, value: str | None
+) -> str:
+    if value:
+        return value
+    return str(
+        tx8_deps_root
+        / toolchain_dir_name
+        / "bin"
+        / "riscv64-unknown-elf-objcopy"
+    )
+
+
 def object_output_path(output: pathlib.Path, explicit: str | None) -> pathlib.Path:
     if explicit:
         return pathlib.Path(explicit)
@@ -99,7 +112,9 @@ def resolve_tx8_sysroot(
     return tx8_deps_root / toolchain_dir_name / "riscv64-unknown-elf"
 
 
-def build_commands(args: argparse.Namespace) -> tuple[list[str], list[list[str]], list[str]]:
+def build_commands(
+    args: argparse.Namespace,
+) -> tuple[list[str], list[list[str]], list[list[str]], list[str]]:
     llvm_ir = pathlib.Path(args.llvm_ir)
     if not llvm_ir.exists():
         fail(f"LLVM IR input does not exist: {llvm_ir}")
@@ -127,6 +142,9 @@ def build_commands(args: argparse.Namespace) -> tuple[list[str], list[list[str]]
     )
     clangxx = resolve_clangxx(args.llvm_clangxx)
     tx8_gcc = resolve_tx8_gcc(tx8_deps_root, args.toolchain_dir_name, args.tx8_gcc)
+    tx8_objcopy = resolve_tx8_objcopy(
+        tx8_deps_root, args.toolchain_dir_name, args.tx8_objcopy
+    )
 
     compile_cmd = [
         clangxx,
@@ -173,6 +191,18 @@ def build_commands(args: argparse.Namespace) -> tuple[list[str], list[list[str]]
         )
         shim_objects.append(shim_object)
 
+    normalize_cmds: list[list[str]] = []
+    if not args.keep_riscv_attributes:
+        for generated_object in [object_output, *shim_objects]:
+            normalize_cmds.append(
+                [
+                    tx8_objcopy,
+                    "-R",
+                    ".riscv.attributes",
+                    str(generated_object),
+                ]
+            )
+
     link_cmd = [
         tx8_gcc,
         "-shared",
@@ -217,13 +247,14 @@ def build_commands(args: argparse.Namespace) -> tuple[list[str], list[list[str]]
             str(output),
         ]
     )
-    return compile_cmd, shim_compile_cmds, link_cmd
+    return compile_cmd, shim_compile_cmds, normalize_cmds, link_cmd
 
 
 def validate_execute_inputs(
     args: argparse.Namespace,
     compile_cmd: list[str],
     shim_compile_cmds: list[list[str]],
+    normalize_cmds: list[list[str]],
     link_cmd: list[str],
 ) -> None:
     if not tool_exists(compile_cmd[0]):
@@ -231,6 +262,9 @@ def validate_execute_inputs(
     for shim_compile_cmd in shim_compile_cmds:
         if not tool_exists(shim_compile_cmd[0]):
             fail(f"LLVM clang++ is not executable: {shim_compile_cmd[0]}")
+    for normalize_cmd in normalize_cmds:
+        if not tool_exists(normalize_cmd[0]):
+            fail(f"TX8 RISC-V objcopy is not executable: {normalize_cmd[0]}")
     if not tool_exists(link_cmd[0]):
         fail(f"TX8 RISC-V GCC is not executable: {link_cmd[0]}")
 
@@ -282,11 +316,16 @@ def validate_execute_inputs(
 
 
 def print_commands(
-    compile_cmd: list[str], shim_compile_cmds: list[list[str]], link_cmd: list[str]
+    compile_cmd: list[str],
+    shim_compile_cmds: list[list[str]],
+    normalize_cmds: list[list[str]],
+    link_cmd: list[str],
 ) -> None:
     print(f"compile: {shlex.join(compile_cmd)}")
     for shim_compile_cmd in shim_compile_cmds:
         print(f"shim-compile: {shlex.join(shim_compile_cmd)}")
+    for normalize_cmd in normalize_cmds:
+        print(f"normalize: {shlex.join(normalize_cmd)}")
     print(f"link: {shlex.join(link_cmd)}")
 
 
@@ -313,6 +352,7 @@ def main() -> int:
     )
     parser.add_argument("--llvm-clangxx")
     parser.add_argument("--tx8-gcc")
+    parser.add_argument("--tx8-objcopy")
     parser.add_argument("--tx8-include-dir")
     parser.add_argument("--tx8-sysroot")
     parser.add_argument(
@@ -328,6 +368,16 @@ def main() -> int:
     parser.add_argument("--gcc-version", default=DEFAULT_GCC_VERSION)
     parser.add_argument("--march", default=DEFAULT_MARCH)
     parser.add_argument("--mabi", default=DEFAULT_MABI)
+    parser.add_argument(
+        "--keep-riscv-attributes",
+        action="store_true",
+        help=(
+            "keep LLVM-emitted .riscv.attributes in generated objects; by "
+            "default they are removed before the Xuantie GNU ld link because "
+            "LLVM 21 split-extension attributes are not accepted by this "
+            "binutils 2.35 toolchain"
+        ),
+    )
     parser.add_argument("--extra-object", action="append", default=[])
     parser.add_argument("--extra-library-dir", action="append", default=[])
     parser.add_argument("--extra-library", action="append", default=[])
@@ -339,12 +389,14 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    compile_cmd, shim_compile_cmds, link_cmd = build_commands(args)
+    compile_cmd, shim_compile_cmds, normalize_cmds, link_cmd = build_commands(args)
     if args.print_commands:
-        print_commands(compile_cmd, shim_compile_cmds, link_cmd)
+        print_commands(compile_cmd, shim_compile_cmds, normalize_cmds, link_cmd)
         return 0
 
-    validate_execute_inputs(args, compile_cmd, shim_compile_cmds, link_cmd)
+    validate_execute_inputs(
+        args, compile_cmd, shim_compile_cmds, normalize_cmds, link_cmd
+    )
     pathlib.Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     object_output_path(pathlib.Path(args.output), args.object_output).parent.mkdir(
         parents=True, exist_ok=True
@@ -354,6 +406,8 @@ def main() -> int:
     run_command(compile_cmd)
     for shim_compile_cmd in shim_compile_cmds:
         run_command(shim_compile_cmd)
+    for normalize_cmd in normalize_cmds:
+        run_command(normalize_cmd)
     run_command(link_cmd)
     return 0
 

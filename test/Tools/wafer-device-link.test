@@ -41,6 +41,18 @@
 # CHECK-SAME: -o
 # CHECK-SAME: kernel.wafer_cabi_shim.o
 
+# CHECK-LABEL: normalize:
+# CHECK-SAME: {{[^ ]*}}/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-objcopy
+# CHECK-SAME: -R
+# CHECK-SAME: .riscv.attributes
+# CHECK-SAME: kernel.o
+
+# CHECK-LABEL: normalize:
+# CHECK-SAME: {{[^ ]*}}/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-objcopy
+# CHECK-SAME: -R
+# CHECK-SAME: .riscv.attributes
+# CHECK-SAME: kernel.wafer_cabi_shim.o
+
 # CHECK-LABEL: link:
 # CHECK-SAME: {{[^ ]*}}/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-gcc
 # CHECK-SAME: -shared

@@ -113,12 +113,15 @@ Device-code gate 消费 ABI/LLVM lowering 生成的 LLVM IR artifact，不消费
 `func.call` ABI IR 或 package manifest fixture。它只负责把 device kernel 编译成 TX8 runtime 可以
 装载的 kcore shared object，并把 artifact id / path 交给 package manifest。
 
-V0 采用已经可运行的 TX8 RISC-V 两段式工具链 profile：
+V0 采用已经可运行的 TX8 RISC-V compile/link 工具链 profile，并在 final link 前做 object
+metadata normalization：
 
 ```text
 LLVM IR (.ll)
   -> LLVM clang++ RISC-V compile
        kernel.o
+  -> Xuantie GNU ld compatibility normalization
+       kernel.o without LLVM 21 .riscv.attributes metadata
   -> repo-vendored tx8_deps riscv64-unknown-elf-gcc link
        kernel.so
 ```
@@ -146,7 +149,20 @@ clang++ -x c runtime/wafer_cabi_shim.c -O2 -c -fPIC \
   -o kernel.wafer_cabi_shim.o
 ```
 
-第二段用 repo-vendored `third_party/tx8_deps` 中的 RISC-V GCC 链接 kcore shared object：
+进入 Xuantie GNU ld final link 前，gate 会对 LLVM `clang++` 生成的 object 移除
+`.riscv.attributes`：
+
+```sh
+riscv64-unknown-elf-objcopy -R .riscv.attributes kernel.o
+riscv64-unknown-elf-objcopy -R .riscv.attributes kernel.wafer_cabi_shim.o
+```
+
+这是 object artifact 的兼容性 normalization，不是 IR 语义。当前 LLVM 21 会把 `rv64imafdc`
+编码成包含 `zaamo` / `zalrsc` 的 split-extension attribute；vendored Xuantie GNU ld 2.35
+不能解析这个 attribute 字符串。代码段仍按 `-march=rv64imafdc -mabi=lp64d` 生成，final link
+继续由 Xuantie GCC driver 选择对应 multilib。
+
+最后用 repo-vendored `third_party/tx8_deps` 中的 RISC-V GCC 链接 kcore shared object：
 
 ```sh
 riscv64-unknown-elf-gcc -shared -march=rv64imafdc -O2 \
@@ -168,7 +184,8 @@ riscv64-unknown-elf-gcc -shared -march=rv64imafdc -O2 \
 这里 `.ll -> .o` 不能交给 GCC；GCC 只负责 final link。`libcommon_util.a`、
 `libinstr_tx81.a` 和 `liblibc_stub.a` 来自 repo-vendored `third_party/tx8_deps/lib`；`libvr.a`
 属于 Wafer CRT 依赖，默认从 `third_party/wafer_crt/lib` 查找，不假设存在于裸 `tx8_deps`
-root，也不从外部机器路径隐式查找。V0 profile 固定为 `rv64imafdc/lp64d`，因为这是当前
+root，也不从外部机器路径隐式查找；repo-local `libvr.a` 去掉了 debug sections，避免 Xuantie
+GNU ld 2.35 遇到 LLVM RISC-V debug relocation。V0 profile 固定为 `rv64imafdc/lp64d`，因为这是当前
 vendored Xuantie toolchain 实际提供的 64-bit double-float multilib；`-mcpu=c908` 或其它 Xuantie
 multilib profile 需要单独的 artifact 兼容性和板端验证后再升级成新 profile。
 

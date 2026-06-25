@@ -15,7 +15,7 @@ third_party/
   pytorch-xla/           # PyTorch/XLA git submodule; source of truth for the frontend XLA version
   googletest/            # googletest git submodule for unit-test fallback
   tx8_deps/              # vendored TX8 headers, static libraries, RTOS evidence, and Xuantie RISC-V GCC toolchain
-  wafer_crt/             # repo-local Wafer CRT library root; expects lib/libvr.a for execute-mode linking
+  wafer_crt/             # repo-local Wafer CRT library root containing lib/libvr.a
   python/                # fixed-version Python test-tool venv
   python-importer/       # importer Python env with torch and a usable torch_xla runtime
   downloads/             # resumable downloaded archives
@@ -39,7 +39,7 @@ Dependency classes:
 | core compiler | LLVM/MLIR | git submodule under `third_party/llvm-project`; build/install it and pass `MLIR_DIR`/`LLVM_DIR` or use `WAFER_LLVM_INSTALL_DIR` |
 | input dialect / SPMD | StableHLO, Shardy, OpenXLA/XLA | git submodules under `third_party/stablehlo`, `third_party/shardy`, and `third_party/xla`; XLA is selected by the PyTorch/XLA `WORKSPACE` `xla_hash`; LLVM/StableHLO versions match XLA, and Shardy must contain XLA's Shardy base commit while using the same lower stack |
 | frontend importer | PyTorch/XLA source, torch/torchvision, `torch_xla` runtime | `third_party/pytorch-xla` fixes the framework importer source version and may be built/installed to produce the importable `torch_xla` package plus `_XLAC` extension; `requirements-importer.txt` fixes the prebuilt-wheel route when compatible wheels exist; current Wafer core code does not call `torch_xla` |
-| device code link | TX8 deps, Xuantie RISC-V GCC, Wafer CRT | `third_party/tx8_deps` is vendored and is the default root for TX8 headers, `libcommon_util.a`, `libinstr_tx81.a`, `liblibc_stub.a`, sysroot, and `riscv64-unknown-elf-gcc`; `third_party/wafer_crt/lib` is the default Wafer CRT library path and must contain `libvr.a` before execute-mode device linking can complete |
+| device code link | TX8 deps, Xuantie RISC-V GCC, Wafer CRT | `third_party/tx8_deps` is vendored and is the default root for TX8 headers, `libcommon_util.a`, `libinstr_tx81.a`, `liblibc_stub.a`, sysroot, `riscv64-unknown-elf-gcc`, and `riscv64-unknown-elf-objcopy`; `third_party/wafer_crt/lib` is the default Wafer CRT library path and contains a debug-stripped `libvr.a` for execute-mode device linking |
 | future runtime / driver | HPGR SDK, KMD/UAPI headers, legacy Tsm/VS SDK | not vendored yet; CMake exposes explicit opt-in roots |
 | test tools | lit, FileCheck, GTest | Python venv / LLVM tools / `third_party/googletest` |
 

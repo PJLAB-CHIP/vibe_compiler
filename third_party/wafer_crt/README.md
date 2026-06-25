@@ -11,6 +11,9 @@ third_party/wafer_crt/
     libvr.a
 ```
 
-`libvr.a` is not part of the TX8 dependency bundle.  Device-code execute-mode
-linking intentionally fails until the Wafer CRT library is provided here or an
-explicit `--wafer-crt-lib-dir` override is passed for a local debug setup.
+`libvr.a` is not part of the TX8 dependency bundle.  The vendored copy in this
+directory is the default Wafer CRT archive used by device-code execute-mode
+linking.  It is debug-stripped so the vendored Xuantie GNU ld 2.35 does not see
+LLVM-generated RISC-V debug relocations that it cannot decode.  An explicit
+`--wafer-crt-lib-dir` override is still available for local debug setups that
+need a different CRT build.
