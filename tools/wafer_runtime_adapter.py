@@ -67,7 +67,53 @@ class RuntimePlan:
     parameters: list[dict[str, Any]]
     workspace: list[dict[str, Any]]
     resident_constants: list[dict[str, Any]]
-    binding_bytes: dict[str, int]
+
+
+@dataclass(frozen=True)
+class RuntimeBinding:
+    name: str
+    role: str
+    bytes: int
+    lifecycle: tuple[str, ...]
+    read_only: bool
+    host_visible: bool
+    source: str | None = None
+
+
+@dataclass(frozen=True)
+class RuntimeModule:
+    name: str
+    format: str
+    path: str
+
+
+@dataclass(frozen=True)
+class RuntimeLaunchArg:
+    index: int
+    binding: RuntimeBinding
+
+
+@dataclass(frozen=True)
+class RuntimeEntrypoint:
+    name: str
+    executor: str
+    launch_api: str
+    arg_bytes: int
+    launch_args: tuple[RuntimeLaunchArg, ...]
+    module: RuntimeModule | None = None
+    function: str | None = None
+    bpm_state: str | None = None
+    mod_symbol: str | None = None
+
+
+@dataclass(frozen=True)
+class RuntimeSession:
+    package: str
+    runtime_mode: str
+    completion_source: str
+    bindings: tuple[RuntimeBinding, ...]
+    modules: dict[str, RuntimeModule]
+    entrypoint: RuntimeEntrypoint | None = None
 
 
 def fail(message: str) -> None:
@@ -83,13 +129,6 @@ def load_package_metadata(path: pathlib.Path) -> dict[str, Any]:
     return metadata
 
 
-def bytes_from_binding(item: dict[str, Any]) -> int:
-    binding = item.get("binding")
-    if isinstance(binding, dict):
-        return int(binding["bytes"])
-    return int(item["bytes"])
-
-
 def build_runtime_plan(metadata: dict[str, Any]) -> RuntimePlan:
     runtime = metadata["runtime"]
     model = metadata["model"]
@@ -101,9 +140,6 @@ def build_runtime_plan(metadata: dict[str, Any]) -> RuntimePlan:
     parameters = list(interface["parameters"])
     workspace = list(interface["workspace"])
     resident_constants = list(interface["resident_constants"])
-    binding_bytes: dict[str, int] = {}
-    for item in inputs + outputs + parameters + workspace + resident_constants:
-        binding_bytes[item["name"]] = bytes_from_binding(item)
     return RuntimePlan(
         metadata=metadata,
         package=metadata["name"],
@@ -117,7 +153,6 @@ def build_runtime_plan(metadata: dict[str, Any]) -> RuntimePlan:
         parameters=parameters,
         workspace=workspace,
         resident_constants=resident_constants,
-        binding_bytes=binding_bytes,
     )
 
 
@@ -130,6 +165,162 @@ def resident_source_label(item: dict[str, Any]) -> str:
     if source in {"launch_input", "parameter"}:
         return f"{source}:{item['source_binding']}"
     return source
+
+
+def bool_text(value: bool) -> str:
+    return "true" if value else "false"
+
+
+def runtime_binding_plans(plan: RuntimePlan) -> tuple[RuntimeBinding, ...]:
+    bindings: list[RuntimeBinding] = []
+    for item in plan.inputs:
+        binding = item["binding"]
+        bindings.append(
+            RuntimeBinding(
+                name=item["name"],
+                role="input",
+                bytes=int(binding["bytes"]),
+                lifecycle=("import_or_allocate", "query", "bind", "copy_h2d"),
+                read_only=bool(binding["read_only"]),
+                host_visible=bool(binding["host_visible"]),
+            )
+        )
+    for item in plan.outputs:
+        binding = item["binding"]
+        bindings.append(
+            RuntimeBinding(
+                name=item["name"],
+                role="output",
+                bytes=int(binding["bytes"]),
+                lifecycle=("allocate", "query", "bind", "copy_d2h"),
+                read_only=bool(binding["read_only"]),
+                host_visible=bool(binding["host_visible"]),
+            )
+        )
+    for item in plan.parameters:
+        binding = item["binding"]
+        bindings.append(
+            RuntimeBinding(
+                name=item["name"],
+                role="parameter",
+                bytes=int(binding["bytes"]),
+                lifecycle=("import_or_allocate", "query", "bind", "copy_h2d"),
+                read_only=bool(binding["read_only"]),
+                host_visible=bool(binding["host_visible"]),
+            )
+        )
+    for item in plan.workspace:
+        bindings.append(
+            RuntimeBinding(
+                name=item["name"],
+                role="workspace",
+                bytes=int(item["bytes"]),
+                lifecycle=("allocate", "query", "bind"),
+                read_only=False,
+                host_visible=False,
+            )
+        )
+    for item in plan.resident_constants:
+        bindings.append(
+            RuntimeBinding(
+                name=item["name"],
+                role="resident_constant",
+                bytes=int(item["bytes"]),
+                lifecycle=("allocate", "query", "bind", "copy_h2d"),
+                read_only=True,
+                host_visible=False,
+                source=resident_source_label(item),
+            )
+        )
+    return tuple(bindings)
+
+
+def runtime_modules(plan: RuntimePlan) -> dict[str, RuntimeModule]:
+    return {
+        name: RuntimeModule(
+            name=name,
+            format=str(module["format"]),
+            path=str(module["path"]),
+        )
+        for name, module in plan.modules.items()
+    }
+
+
+def launch_api_for_executor(executor: str) -> str:
+    if executor == "tx.module":
+        return "txLaunchKernel"
+    if executor == "tx.cluster":
+        return "txLaunchClusterKernel"
+    if executor == "tx.model":
+        return "txLaunchModel"
+    if executor == "tx.graph":
+        return "txLoadGraph"
+    if executor == "legacy.tsm":
+        return "TsmRun"
+    fail(f"unsupported entrypoint executor: {executor}")
+
+
+def build_runtime_entrypoint(
+    entrypoint: dict[str, Any],
+    modules: dict[str, RuntimeModule],
+    bindings: tuple[RuntimeBinding, ...],
+) -> RuntimeEntrypoint:
+    bindings_by_name = {binding.name: binding for binding in bindings}
+    launch_args = tuple(
+        RuntimeLaunchArg(index=index, binding=bindings_by_name[name])
+        for index, name in enumerate(entrypoint["binding_order"])
+    )
+    arg_bytes = sum(arg.binding.bytes for arg in launch_args)
+    executor = entrypoint["executor"]
+    module: RuntimeModule | None = None
+    function: str | None = None
+    bpm_state: str | None = None
+    mod_symbol: str | None = None
+
+    if executor in {"tx.module", "tx.cluster", "tx.graph"}:
+        module = modules[entrypoint["module"]]
+    if executor in {"tx.module", "tx.cluster"}:
+        function = entrypoint["function"]
+    elif executor == "tx.model":
+        bpm_state = entrypoint["bpm_descriptor"]["state"]
+    elif executor == "tx.graph":
+        mod_symbol = entrypoint["mod_symbol"]
+
+    return RuntimeEntrypoint(
+        name=entrypoint["name"],
+        executor=executor,
+        launch_api=launch_api_for_executor(executor),
+        arg_bytes=arg_bytes,
+        launch_args=launch_args,
+        module=module,
+        function=function,
+        bpm_state=bpm_state,
+        mod_symbol=mod_symbol,
+    )
+
+
+def build_runtime_session(
+    plan: RuntimePlan, entrypoint_name: str | None = None
+) -> RuntimeSession:
+    bindings = runtime_binding_plans(plan)
+    modules = runtime_modules(plan)
+    entrypoint = (
+        build_runtime_entrypoint(
+            select_entrypoint(plan, entrypoint_name),
+            modules,
+            bindings,
+        )
+        if entrypoint_name
+        else None
+    )
+    return RuntimeSession(
+        package=plan.package,
+        runtime_mode=plan.runtime_mode,
+        completion_source=plan.completion_source,
+        bindings=bindings,
+        modules=modules,
+        entrypoint=entrypoint,
+    )
 
 
 def binding_summary_lines(plan: RuntimePlan) -> list[str]:
@@ -203,8 +394,74 @@ def emit_plan_summary(plan: RuntimePlan, backend_name: str) -> list[str]:
     return lines
 
 
-def run_dry_run(plan: RuntimePlan) -> list[str]:
-    return emit_plan_summary(plan, "dry-run")
+def runtime_session_lines(session: RuntimeSession) -> list[str]:
+    lines = [
+        f"session: package={session.package} runtime={session.runtime_mode} "
+        f"completion={session.completion_source}"
+    ]
+    for binding in session.bindings:
+        source = f" source={binding.source}" if binding.source else ""
+        lines.append(
+            f"session_binding: {binding.name} role={binding.role} "
+            f"bytes={binding.bytes} lifecycle={','.join(binding.lifecycle)}"
+            f"{source} read_only={bool_text(binding.read_only)} "
+            f"host_visible={bool_text(binding.host_visible)}"
+        )
+
+    entrypoint = session.entrypoint
+    if entrypoint is None:
+        lines.append(f"completion_plan: wait {session.completion_source}")
+        return lines
+
+    if entrypoint.module is not None:
+        module = entrypoint.module
+        lines.append(
+            f"module_resolve: {module.name} format={module.format} path={module.path}"
+        )
+    for arg in entrypoint.launch_args:
+        binding = arg.binding
+        lines.append(
+            f"launch_arg: {arg.index} {binding.name} "
+            f"role={binding.role} bytes={binding.bytes}"
+        )
+
+    if entrypoint.executor in {"tx.module", "tx.cluster"}:
+        module = entrypoint.module
+        if module is None or entrypoint.function is None:
+            fail(f"{entrypoint.executor} entrypoint is missing module/function")
+        lines.append(
+            f"entrypoint_plan: {entrypoint.name} executor={entrypoint.executor} "
+            f"launch_api={entrypoint.launch_api} module={module.name} "
+            f"function={entrypoint.function} arg_bytes={entrypoint.arg_bytes}"
+        )
+    elif entrypoint.executor == "tx.model":
+        lines.append(
+            f"entrypoint_plan: {entrypoint.name} executor=tx.model "
+            f"launch_api={entrypoint.launch_api} bpm={entrypoint.bpm_state} "
+            f"arg_bytes={entrypoint.arg_bytes}"
+        )
+    elif entrypoint.executor == "tx.graph":
+        module = entrypoint.module
+        if module is None:
+            fail("tx.graph entrypoint is missing module")
+        lines.append(
+            f"entrypoint_plan: {entrypoint.name} executor=tx.graph "
+            f"launch_api={entrypoint.launch_api} module={module.name} "
+            f"mod_symbol={entrypoint.mod_symbol} arg_bytes={entrypoint.arg_bytes}"
+        )
+    else:
+        lines.append(
+            f"entrypoint_plan: {entrypoint.name} executor={entrypoint.executor} "
+            f"launch_api={entrypoint.launch_api} arg_bytes={entrypoint.arg_bytes}"
+        )
+    lines.append(f"completion_plan: wait {session.completion_source}")
+    return lines
+
+
+def run_dry_run(plan: RuntimePlan, entrypoint_name: str | None) -> list[str]:
+    lines = emit_plan_summary(plan, "dry-run")
+    lines.extend(runtime_session_lines(build_runtime_session(plan, entrypoint_name)))
+    return lines
 
 
 def select_entrypoint(plan: RuntimePlan, entrypoint_name: str | None) -> dict[str, Any]:
@@ -213,17 +470,6 @@ def select_entrypoint(plan: RuntimePlan, entrypoint_name: str | None) -> dict[st
     if entrypoint_name not in plan.entrypoints:
         fail(f"entrypoint was not found in package metadata: {entrypoint_name}")
     return plan.entrypoints[entrypoint_name]
-
-
-def binding_order_arg_bytes(plan: RuntimePlan, entrypoint: dict[str, Any]) -> int:
-    return sum(plan.binding_bytes[name] for name in entrypoint["binding_order"])
-
-
-def module_for_entrypoint(plan: RuntimePlan, entrypoint: dict[str, Any]) -> dict[str, Any]:
-    module_name = entrypoint["module"]
-    if module_name not in plan.modules:
-        fail(f"entrypoint module was not found: {module_name}")
-    return plan.modules[module_name]
 
 
 def emit_common_fake_tx_allocations(plan: RuntimePlan) -> list[str]:
@@ -265,27 +511,33 @@ def emit_fake_tx_writebacks(plan: RuntimePlan) -> list[str]:
 def run_fake_tx(
     plan: RuntimePlan, device_id: int, entrypoint_name: str | None
 ) -> list[str]:
-    entrypoint = select_entrypoint(plan, entrypoint_name)
-    executor = entrypoint["executor"]
+    if entrypoint_name is None:
+        fail("--entrypoint is required for this backend")
+    session = build_runtime_session(plan, entrypoint_name)
+    entrypoint = session.entrypoint
+    if entrypoint is None:
+        fail("--entrypoint is required for this backend")
+    executor = entrypoint.executor
     lines = [
         "backend: fake-tx",
-        f"entrypoint: {entrypoint['name']} {executor}",
+        f"entrypoint: {entrypoint.name} {executor}",
         f"txSetDevice device={device_id}",
     ]
     if executor == "tx.model":
-        state = entrypoint["bpm_descriptor"]["state"]
-        if state != "materialized":
+        if entrypoint.bpm_state != "materialized":
             fail(
-                f"tx.model entrypoint {entrypoint['name']} requires a materialized BPM descriptor"
+                f"tx.model entrypoint {entrypoint.name} requires a materialized BPM descriptor"
             )
         lines.append("txLaunchModel bpm_descriptor=materialized")
         lines.append(f"txStreamSynchronize completion_source={plan.completion_source}")
         return lines
 
     if executor == "tx.graph":
-        module = plan.modules[entrypoint["module"]]
+        module = entrypoint.module
+        if module is None:
+            fail("tx.graph entrypoint is missing module")
         lines.append(
-            f"txLoadGraph path={module['path']} mod_symbol={entrypoint['mod_symbol']}"
+            f"txLoadGraph path={module.path} mod_symbol={entrypoint.mod_symbol}"
         )
         lines.append(f"txStreamSynchronize completion_source={plan.completion_source}")
         return lines
@@ -293,17 +545,16 @@ def run_fake_tx(
     if executor not in {"tx.module", "tx.cluster"}:
         fail(f"fake-tx backend does not support entrypoint executor: {executor}")
 
-    module = module_for_entrypoint(plan, entrypoint)
+    module = entrypoint.module
+    if module is None or entrypoint.function is None:
+        fail(f"{executor} entrypoint is missing module/function")
     lines.extend(emit_common_fake_tx_allocations(plan))
-    lines.append(f"txModuleLoad module={module['path']}")
-    lines.append(f"txModuleGetFunction function={entrypoint['function']}")
-    launch_api = (
-        "txLaunchClusterKernel" if executor == "tx.cluster" else "txLaunchKernel"
-    )
+    lines.append(f"txModuleLoad module={module.path}")
+    lines.append(f"txModuleGetFunction function={entrypoint.function}")
     lines.append(
-        f"{launch_api} entrypoint={entrypoint['name']} "
-        f"function={entrypoint['function']} "
-        f"arg_bytes={binding_order_arg_bytes(plan, entrypoint)}"
+        f"{entrypoint.launch_api} entrypoint={entrypoint.name} "
+        f"function={entrypoint.function} "
+        f"arg_bytes={entrypoint.arg_bytes}"
     )
     lines.append(f"txStreamSynchronize completion_source={plan.completion_source}")
     lines.extend(emit_fake_tx_writebacks(plan))
@@ -401,7 +652,7 @@ def main() -> int:
     metadata = load_package_metadata(pathlib.Path(args.package_metadata))
     plan = build_runtime_plan(metadata)
     if args.backend == "dry-run":
-        lines = run_dry_run(plan)
+        lines = run_dry_run(plan, args.entrypoint)
     elif args.backend == "fake-tx":
         lines = run_fake_tx(plan, args.device_id, args.entrypoint)
     else:

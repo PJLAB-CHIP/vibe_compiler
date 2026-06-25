@@ -300,6 +300,33 @@ external binding、workspace、resident constant 和 control metadata requiremen
 package load / launch 时执行 allocate/import/query/bind，并报告
 runtime allocation failure；不能在 runtime/package 层重新决定 DDR range plan。
 
+### 5.1 RuntimeSession Contract
+
+`RuntimeSession` 是 host adapter 从已验证 package metadata 派生的运行期计划，不是新的 compiler IR。
+它的职责是把 package 中的 model bindings、modules、selected entrypoint 和 completion source
+组织成可审计的 provider 调用边界。V0 在无卡环境中只 materialize symbolic session，不保存真实
+runtime handle、physical address、stream handle 或 provider-private object id。
+
+RuntimeSession 包含四类结构化 facts：
+
+- binding plan：每个 model input/output/parameter/workspace/resident constant 的 role、bytes、
+  read-only/host-visible 属性、lifecycle 和 source。lifecycle 使用稳定动作名，例如
+  `import_or_allocate`、`allocate`、`query`、`bind`、`copy_h2d`、`copy_d2h`；它表达 adapter
+  必须做什么，不表达具体 provider handle。
+- module resolution：entrypoint 引用的 package module name、format 和 path。`tx.module` /
+  `tx.cluster` 只能引用 `tx.kcore` module；`tx.graph` 只能引用 `tx.graph` module。
+- entrypoint launch plan：selected entrypoint 的 executor、provider launch API、module/function
+  或 BPM/graph descriptor、binding order 和 launch arg byte sum。launch arg 来自 package
+  `binding_order` 与 binding plan 的 use-def 关系，不能按 tensor 名字重新猜测。
+- completion plan：package metadata 中声明的 stable completion source。adapter 只能选择已通过
+  validator 的 completion source；stub shielding 在 package load 前生效。
+
+Dry-run backend 必须打印 RuntimeSession 的 binding/module/entrypoint/completion plan，作为无卡
+contract test。`fake-tx` backend 只把同一 RuntimeSession 的 `tx.module` / `tx.cluster` launch plan
+展开成伪 TX 调用序列；它不单独重建 binding 顺序。`tx` backend 在无卡环境先做 provider library
+discovery 和 selected entrypoint required symbol check，真实 allocate/import/query/bind 和 launch
+保留给 board gate。
+
 当前 `tools/wafer_package_metadata.py` 负责验证和 roundtrip runtime package metadata schema。schema
 记录 model interface、package name、model ABI、modules、entrypoints、DDR external binding bytes、
 SPM/DDR memory summary、workspace buffer demand、resident constant demand、ABI call/packet emission

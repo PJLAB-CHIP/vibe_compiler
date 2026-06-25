@@ -75,6 +75,33 @@ class WaferRuntimeAdapterTest(unittest.TestCase):
         self.assertIn("completion: wait runtime_stream_wait", result.stdout)
         self.assertNotIn("launch: module_kernel", result.stdout)
 
+    def test_dry_run_describes_selected_runtime_session(self) -> None:
+        result = self.run_adapter(
+            "--package-metadata",
+            str(self.valid_package),
+            "--backend",
+            "dry-run",
+            "--entrypoint",
+            "debug_kernel",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        expected_lines = [
+            "session: package=model_package_sample runtime=tx completion=runtime_stream_wait",
+            "session_binding: lhs role=input bytes=16 lifecycle=import_or_allocate,query,bind,copy_h2d read_only=true host_visible=true",
+            "session_binding: out role=output bytes=16 lifecycle=allocate,query,bind,copy_d2h read_only=false host_visible=true",
+            "session_binding: tmp role=workspace bytes=16 lifecycle=allocate,query,bind read_only=false host_visible=false",
+            "session_binding: rhs_resident role=resident_constant bytes=16 lifecycle=allocate,query,bind,copy_h2d source=launch_input:rhs read_only=true host_visible=false",
+            "module_resolve: kernel format=tx.kcore path=model_package.so",
+            "launch_arg: 0 lhs role=input bytes=16",
+            "launch_arg: 2 out role=output bytes=16",
+            "launch_arg: 4 rhs_resident role=resident_constant bytes=16",
+            "entrypoint_plan: debug_kernel executor=tx.module launch_api=txLaunchKernel module=kernel function=model_package_sample_abi arg_bytes=80",
+            "completion_plan: wait runtime_stream_wait",
+        ]
+        for line in expected_lines:
+            self.assertIn(line, result.stdout)
+
     def test_fake_tx_backend_constructs_tx_call_sequence(self) -> None:
         result = self.run_adapter(
             "--package-metadata",
