@@ -472,92 +472,265 @@ def select_entrypoint(plan: RuntimePlan, entrypoint_name: str | None) -> dict[st
     return plan.entrypoints[entrypoint_name]
 
 
-def emit_common_fake_tx_allocations(plan: RuntimePlan) -> list[str]:
-    lines: list[str] = []
-    for item in plan.inputs:
-        binding = item["binding"]
-        lines.append(f"txMalloc name={item['name']} bytes={binding['bytes']}")
-        lines.append(f"txMemcpyH2D name={item['name']} bytes={binding['bytes']}")
-    for item in plan.parameters:
-        binding = item["binding"]
-        lines.append(f"txMalloc name={item['name']} bytes={binding['bytes']}")
-        lines.append(f"txMemcpyH2D name={item['name']} bytes={binding['bytes']}")
-    for item in plan.outputs:
-        binding = item["binding"]
-        lines.append(f"txMalloc name={item['name']} bytes={binding['bytes']}")
-    for item in plan.workspace:
-        lines.append(f"txMalloc name={item['name']} bytes={item['bytes']}")
-    for item in plan.resident_constants:
-        lines.append(f"txMalloc name={item['name']} bytes={item['bytes']}")
-        source = item["source"]
-        if source == "embedded_constant":
-            lines.append(f"txMemcpyH2D name={item['name']} bytes={item['bytes']}")
-        else:
-            lines.append(
-                f"txMemcpyH2D name={item['name']} bytes={item['bytes']} "
-                f"source={item['source_binding']}"
+def binding_copy_source_suffix(binding: RuntimeBinding) -> str:
+    if binding.source is None or binding.source == "embedded_constant":
+        return ""
+    if ":" in binding.source:
+        return f" source={binding.source.split(':', 1)[1]}"
+    return f" source={binding.source}"
+
+
+class TxRuntimeProvider:
+    name = "tx"
+
+    def set_device(self, device_id: int) -> None:
+        fail(f"{self.name} provider does not implement set_device")
+
+    def allocate_or_import(self, binding: RuntimeBinding) -> None:
+        fail(f"{self.name} provider does not implement allocate_or_import")
+
+    def allocate(self, binding: RuntimeBinding) -> None:
+        fail(f"{self.name} provider does not implement allocate")
+
+    def query(self, binding: RuntimeBinding) -> None:
+        fail(f"{self.name} provider does not implement query")
+
+    def bind(self, binding: RuntimeBinding) -> None:
+        fail(f"{self.name} provider does not implement bind")
+
+    def copy_h2d(self, binding: RuntimeBinding) -> None:
+        fail(f"{self.name} provider does not implement copy_h2d")
+
+    def copy_d2h(self, binding: RuntimeBinding) -> None:
+        fail(f"{self.name} provider does not implement copy_d2h")
+
+    def load_module(self, module: RuntimeModule) -> None:
+        fail(f"{self.name} provider does not implement load_module")
+
+    def get_function(self, entrypoint: RuntimeEntrypoint) -> None:
+        fail(f"{self.name} provider does not implement get_function")
+
+    def launch_kernel(self, entrypoint: RuntimeEntrypoint) -> None:
+        fail(f"{self.name} provider does not implement launch_kernel")
+
+    def launch_cluster_kernel(self, entrypoint: RuntimeEntrypoint) -> None:
+        fail(f"{self.name} provider does not implement launch_cluster_kernel")
+
+    def launch_model(self, entrypoint: RuntimeEntrypoint) -> None:
+        fail(f"{self.name} provider does not implement launch_model")
+
+    def load_graph(self, entrypoint: RuntimeEntrypoint) -> None:
+        fail(f"{self.name} provider does not implement load_graph")
+
+    def wait_completion(self, completion_source: str) -> None:
+        fail(f"{self.name} provider does not implement wait_completion")
+
+
+class FakeTxRuntimeProvider(TxRuntimeProvider):
+    name = "fake-tx"
+
+    def __init__(self) -> None:
+        self.lines = ["provider: fake-tx"]
+
+    def set_device(self, device_id: int) -> None:
+        self.lines.append(f"provider.call: set_device device={device_id}")
+        self.lines.append(f"txSetDevice device={device_id}")
+
+    def allocate_or_import(self, binding: RuntimeBinding) -> None:
+        self.lines.append(
+            "provider.call: allocate_or_import "
+            f"name={binding.name} role={binding.role} bytes={binding.bytes}"
+        )
+        self.lines.append(f"txMalloc name={binding.name} bytes={binding.bytes}")
+
+    def allocate(self, binding: RuntimeBinding) -> None:
+        self.lines.append(
+            "provider.call: allocate "
+            f"name={binding.name} role={binding.role} bytes={binding.bytes}"
+        )
+        self.lines.append(f"txMalloc name={binding.name} bytes={binding.bytes}")
+
+    def query(self, binding: RuntimeBinding) -> None:
+        self.lines.append(f"provider.call: query name={binding.name}")
+
+    def bind(self, binding: RuntimeBinding) -> None:
+        self.lines.append(f"provider.call: bind name={binding.name}")
+
+    def copy_h2d(self, binding: RuntimeBinding) -> None:
+        self.lines.append(
+            f"provider.call: copy_h2d name={binding.name} bytes={binding.bytes}"
+        )
+        self.lines.append(
+            f"txMemcpyH2D name={binding.name} bytes={binding.bytes}"
+            f"{binding_copy_source_suffix(binding)}"
+        )
+
+    def copy_d2h(self, binding: RuntimeBinding) -> None:
+        self.lines.append(
+            f"provider.call: copy_d2h name={binding.name} bytes={binding.bytes}"
+        )
+        self.lines.append(f"txMemcpyD2H name={binding.name} bytes={binding.bytes}")
+
+    def load_module(self, module: RuntimeModule) -> None:
+        self.lines.append(f"provider.call: load_module module={module.path}")
+        self.lines.append(f"txModuleLoad module={module.path}")
+
+    def get_function(self, entrypoint: RuntimeEntrypoint) -> None:
+        if entrypoint.function is None:
+            fail(f"{entrypoint.executor} entrypoint is missing function")
+        self.lines.append(f"provider.call: get_function function={entrypoint.function}")
+        self.lines.append(f"txModuleGetFunction function={entrypoint.function}")
+
+    def launch_kernel(self, entrypoint: RuntimeEntrypoint) -> None:
+        if entrypoint.function is None:
+            fail("tx.module entrypoint is missing function")
+        self.lines.append(
+            "provider.call: launch_kernel "
+            f"entrypoint={entrypoint.name} function={entrypoint.function} "
+            f"arg_bytes={entrypoint.arg_bytes}"
+        )
+        self.lines.append(
+            f"txLaunchKernel entrypoint={entrypoint.name} "
+            f"function={entrypoint.function} arg_bytes={entrypoint.arg_bytes}"
+        )
+
+    def launch_cluster_kernel(self, entrypoint: RuntimeEntrypoint) -> None:
+        if entrypoint.function is None:
+            fail("tx.cluster entrypoint is missing function")
+        self.lines.append(
+            "provider.call: launch_cluster_kernel "
+            f"entrypoint={entrypoint.name} function={entrypoint.function} "
+            f"arg_bytes={entrypoint.arg_bytes}"
+        )
+        self.lines.append(
+            f"txLaunchClusterKernel entrypoint={entrypoint.name} "
+            f"function={entrypoint.function} arg_bytes={entrypoint.arg_bytes}"
+        )
+
+    def launch_model(self, entrypoint: RuntimeEntrypoint) -> None:
+        self.lines.append(
+            "provider.call: launch_model "
+            f"entrypoint={entrypoint.name} bpm={entrypoint.bpm_state} "
+            f"arg_bytes={entrypoint.arg_bytes}"
+        )
+        self.lines.append(f"txLaunchModel bpm_descriptor={entrypoint.bpm_state}")
+
+    def load_graph(self, entrypoint: RuntimeEntrypoint) -> None:
+        module = entrypoint.module
+        if module is None:
+            fail("tx.graph entrypoint is missing module")
+        self.lines.append(
+            f"provider.call: load_graph module={module.path} "
+            f"mod_symbol={entrypoint.mod_symbol}"
+        )
+        self.lines.append(
+            f"txLoadGraph path={module.path} mod_symbol={entrypoint.mod_symbol}"
+        )
+
+    def wait_completion(self, completion_source: str) -> None:
+        self.lines.append(f"provider.call: wait_completion source={completion_source}")
+        self.lines.append(f"txStreamSynchronize completion_source={completion_source}")
+
+
+class CtypesTxRuntimeProvider(TxRuntimeProvider):
+    name = "ctypes"
+
+    def __init__(self, library_path: pathlib.Path) -> None:
+        self.library_path = library_path
+        self.library = ctypes.CDLL(str(library_path))
+
+    def bind_required_symbols(
+        self, symbols: tuple[str, ...], executor: str | None
+    ) -> None:
+        missing = [symbol for symbol in symbols if not hasattr(self.library, symbol)]
+        if not missing:
+            return
+        suffix = ", ".join(missing)
+        if executor is not None:
+            fail(
+                "tx runtime library is missing required symbol(s) "
+                f"for {executor}: {suffix}"
             )
-    return lines
+        fail(f"tx runtime library is missing required symbol(s): {suffix}")
 
 
-def emit_fake_tx_writebacks(plan: RuntimePlan) -> list[str]:
-    lines: list[str] = []
-    for item in plan.outputs:
-        binding = item["binding"]
-        lines.append(f"txMemcpyD2H name={item['name']} bytes={binding['bytes']}")
-    return lines
+def execute_binding_lifecycle(
+    provider: TxRuntimeProvider, binding: RuntimeBinding, *, copy_back: bool
+) -> None:
+    for action in binding.lifecycle:
+        if copy_back != (action == "copy_d2h"):
+            continue
+        if action == "import_or_allocate":
+            provider.allocate_or_import(binding)
+        elif action == "allocate":
+            provider.allocate(binding)
+        elif action == "query":
+            provider.query(binding)
+        elif action == "bind":
+            provider.bind(binding)
+        elif action == "copy_h2d":
+            provider.copy_h2d(binding)
+        elif action == "copy_d2h":
+            provider.copy_d2h(binding)
+        else:
+            fail(f"unsupported runtime binding lifecycle action: {action}")
+
+
+def execute_runtime_session(
+    provider: TxRuntimeProvider, session: RuntimeSession, device_id: int
+) -> None:
+    entrypoint = session.entrypoint
+    if entrypoint is None:
+        fail("--entrypoint is required for this backend")
+
+    provider.set_device(device_id)
+    for binding in session.bindings:
+        execute_binding_lifecycle(provider, binding, copy_back=False)
+
+    executor = entrypoint.executor
+    if executor == "tx.model":
+        if entrypoint.bpm_state != "materialized":
+            fail(
+                f"tx.model entrypoint {entrypoint.name} "
+                "requires a materialized BPM descriptor"
+            )
+        provider.launch_model(entrypoint)
+    elif executor == "tx.graph":
+        provider.load_graph(entrypoint)
+    elif executor in {"tx.module", "tx.cluster"}:
+        module = entrypoint.module
+        if module is None or entrypoint.function is None:
+            fail(f"{executor} entrypoint is missing module/function")
+        provider.load_module(module)
+        provider.get_function(entrypoint)
+        if executor == "tx.module":
+            provider.launch_kernel(entrypoint)
+        else:
+            provider.launch_cluster_kernel(entrypoint)
+    elif executor == "legacy.tsm":
+        fail(f"legacy.tsm entrypoint {entrypoint.name} requires the legacy board gate")
+    else:
+        fail(f"unsupported entrypoint executor: {executor}")
+
+    provider.wait_completion(session.completion_source)
+    for binding in session.bindings:
+        execute_binding_lifecycle(provider, binding, copy_back=True)
 
 
 def run_fake_tx(
     plan: RuntimePlan, device_id: int, entrypoint_name: str | None
 ) -> list[str]:
-    if entrypoint_name is None:
-        fail("--entrypoint is required for this backend")
     session = build_runtime_session(plan, entrypoint_name)
     entrypoint = session.entrypoint
     if entrypoint is None:
         fail("--entrypoint is required for this backend")
-    executor = entrypoint.executor
     lines = [
         "backend: fake-tx",
-        f"entrypoint: {entrypoint.name} {executor}",
-        f"txSetDevice device={device_id}",
+        f"entrypoint: {entrypoint.name} {entrypoint.executor}",
     ]
-    if executor == "tx.model":
-        if entrypoint.bpm_state != "materialized":
-            fail(
-                f"tx.model entrypoint {entrypoint.name} requires a materialized BPM descriptor"
-            )
-        lines.append("txLaunchModel bpm_descriptor=materialized")
-        lines.append(f"txStreamSynchronize completion_source={plan.completion_source}")
-        return lines
-
-    if executor == "tx.graph":
-        module = entrypoint.module
-        if module is None:
-            fail("tx.graph entrypoint is missing module")
-        lines.append(
-            f"txLoadGraph path={module.path} mod_symbol={entrypoint.mod_symbol}"
-        )
-        lines.append(f"txStreamSynchronize completion_source={plan.completion_source}")
-        return lines
-
-    if executor not in {"tx.module", "tx.cluster"}:
-        fail(f"fake-tx backend does not support entrypoint executor: {executor}")
-
-    module = entrypoint.module
-    if module is None or entrypoint.function is None:
-        fail(f"{executor} entrypoint is missing module/function")
-    lines.extend(emit_common_fake_tx_allocations(plan))
-    lines.append(f"txModuleLoad module={module.path}")
-    lines.append(f"txModuleGetFunction function={entrypoint.function}")
-    lines.append(
-        f"{entrypoint.launch_api} entrypoint={entrypoint.name} "
-        f"function={entrypoint.function} "
-        f"arg_bytes={entrypoint.arg_bytes}"
-    )
-    lines.append(f"txStreamSynchronize completion_source={plan.completion_source}")
-    lines.extend(emit_fake_tx_writebacks(plan))
+    provider = FakeTxRuntimeProvider()
+    execute_runtime_session(provider, session, device_id)
+    lines.extend(provider.lines)
     return lines
 
 
@@ -616,24 +789,23 @@ def run_tx_discovery(
     runtime_library: pathlib.Path | None,
 ) -> list[str]:
     entrypoint = select_entrypoint(plan, entrypoint_name) if entrypoint_name else None
+    if entrypoint is not None and entrypoint["executor"] == "legacy.tsm":
+        fail(f"legacy.tsm entrypoint {entrypoint['name']} requires the legacy board gate")
     library_path = find_tx_runtime_library(runtime_root, runtime_library)
-    library = ctypes.CDLL(str(library_path))
-    missing = [
-        symbol
-        for symbol in required_symbols_for_entrypoint(entrypoint)
-        if not hasattr(library, symbol)
-    ]
-    if missing:
-        fail(
-            "tx runtime library is missing required symbol(s): " + ", ".join(missing)
-        )
+    provider = CtypesTxRuntimeProvider(library_path)
+    provider.bind_required_symbols(
+        required_symbols_for_entrypoint(entrypoint),
+        entrypoint["executor"] if entrypoint is not None else None,
+    )
     lines = emit_plan_summary(plan, "tx")
     lines.insert(1, f"tx_runtime_library: {library_path}")
+    lines.insert(2, "tx_runtime_provider: ctypes")
     if entrypoint is not None:
         lines.insert(
-            2, f"selected_entrypoint: {entrypoint['name']} {entrypoint['executor']}"
+            3, f"selected_entrypoint: {entrypoint['name']} {entrypoint['executor']}"
         )
     lines.append("tx_runtime_symbols: ok")
+    lines.append("board_launch_gate: not executed; enable a board environment to launch")
     return lines
 
 
