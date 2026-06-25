@@ -5,13 +5,13 @@
 本文定义 model-level runtime package、host runtime session / adapter 和 completion contract。该边界
 消费 committed instruction IR、topology/execution-mesh contract、program parameter shard metadata、
 薄 launch/block binding、按需重算的 resource view、ABI/LLVM lowering 产物和 kcore executable
-artifacts，负责把模型接口、resource metadata、endpoint policy、DDR binding、constant storage bytes、
-runtime requirements 和 backend launch strategy 组织成可执行 package。
+modules，负责把模型接口、resource metadata、endpoint policy、DDR binding、constant storage bytes、
+runtime requirements 和 entrypoint executor 组织成可执行 package。
 
-`txLaunchKernel` / `txLaunchClusterKernel` 只是 TX backend 的 kernel-level materialization strategy。
+`txLaunchKernel` / `txLaunchClusterKernel` 只是 TX backend 的 kernel-level entrypoint materialization。
 它们不能作为 Wafer package 的主语义。模型级 package 的稳定语义是“executable model +
 typed bindings + runtime session state + completion/error policy”；kernelArg、BPM table、graph
-directory、legacy bootparam 都是 backend strategy 的具体承载方式。
+directory、legacy bootparam 都是 package entrypoint 的具体承载方式。
 
 本文依赖：
 
@@ -26,8 +26,8 @@ directory、legacy bootparam 都是 backend strategy 的具体承载方式。
 
 目标：
 
-- 组织 RISC-V kcore device artifacts、model interface、resource metadata、endpoint policy、DDR binding
-  contract、constant storage bytes、backend strategies 和 optional profiling/control metadata。
+- 组织 RISC-V kcore device modules、model interface、resource metadata、endpoint policy、DDR binding
+  contract、constant storage bytes、package entrypoints 和 optional profiling/control metadata。
 - 明确 `WaferRuntimeAdapter`、`TxRuntimeBackend`、KMD 事实来源和 legacy `TsmRun` fallback
   的职责分层；HPGR / `libhpgr.so` 是当前 `tx_runtime` provider 证据，不作为 Wafer 主抽象名。
 - 给 runtime allocation failure、stub shielding、completion source 和 status/profiling 建立可验证
@@ -45,8 +45,8 @@ directory、legacy bootparam 都是 backend strategy 的具体承载方式。
 
 ## 2. Launch Boundary
 
-当前不引入单独的 launch IR op。一次编译后的 model invocation 由 package manifest、
-runtime session binding contract、backend strategy descriptors 和 ABI/LLVM lowering 产物共同表达。
+当前不引入单独的 launch IR op。一次编译后的 model invocation 由 runtime package metadata、
+runtime session binding contract、entrypoint descriptors 和 ABI/LLVM lowering 产物共同表达。
 下面这些字段由 ABI/package/runtime adapter 从 committed IR 和 explicit facts 重算，不提前保存成
 第二份 IR 合同：
 
@@ -57,9 +57,9 @@ runtime session binding contract、backend strategy descriptors 和 ABI/LLVM low
 - resource requirements：从 committed instruction IR、accepted offsets、communication/sync IR 和
   program parameter shard metadata/resource view 重算的 SPM summary、DDR workspace demand、resident constant demand、control metadata
   demand。
-- artifacts：kcore `.so`、graph directory、未来 BPM/control descriptor 等可执行或控制对象。
-- backend strategy：`tx_model_bpm`、`tx_graph`、`tx_module_kernel`、`tx_cluster_kernel` 或
-  `legacy_tsm_run`。其中 `tx_module_kernel` / `tx_cluster_kernel` 只能作为 kernel-level strategy，
+- modules：kcore `.so`、graph directory、未来 BPM/control descriptor 等可执行或控制对象。
+- entrypoints：`tx.model`、`tx.graph`、`tx.module`、`tx.cluster` 或
+  `legacy.tsm`。其中 `tx.module` / `tx.cluster` 只能作为 kernel-level executor，
   不能被解释成模型级 package 语义。
 - runtime requirements：device selection、PG tile selection policy、stream/event policy、allocation /
   copy policy、completion timeout/error/profiling policy。runtime handle 和 physical address 只属于
@@ -78,13 +78,13 @@ Pipeline position:
   按需重算的 resource view，以及 ABI/LLVM lowering 产物。
 - Current stage responsibility:
   从 ABI/LLVM lowering 的 LLVM IR artifact 生成 TX8 RISC-V relocatable object 和 kcore shared
-  object，并由 package 组装 model id、ABI version、typed model interface、artifacts、resource
-  metadata、endpoint policy、runtime requirements 和 backend strategy descriptors 到 package
-  manifest；runtime adapter 根据该 manifest 创建 runtime session，执行 allocate/import/query/bind、
-  backend materialization、launch 和 completion/error validation。
+  object，并由 package 组装 `name`、`model.abi`、typed model interface、modules、resource
+  metadata、endpoint policy、runtime requirements 和 entrypoint descriptors 到 runtime package
+  metadata；runtime adapter 根据该 metadata 创建 runtime session，执行 allocate/import/query/bind、
+  entrypoint materialization、launch 和 completion/error validation。
 - Output artifact / IR:
-  TX8 RISC-V relocatable object、kcore shared object、IR-derived model package manifest、backend
-  strategy descriptors、runtime adapter binding/launch contract 和 completion-source declaration；
+  TX8 RISC-V relocatable object、kcore shared object、IR-derived runtime package metadata、entrypoint
+  descriptors、runtime adapter binding/launch contract 和 completion-source declaration；
   不把 runtime handle 或 physical DDR address 写回上层 IR。
 - Downstream consumer:
   `TxRuntimeBackend` / KMD-backed provider / legacy runtime launch path、board correctness gate 和
@@ -92,14 +92,14 @@ Pipeline position:
 - User-level driver / named pipeline:
   package emission 必须接在 committed instruction -> topology/execution-mesh +
   program parameter shard metadata/resource view -> ABI/LLVM lowering 之后，
-  不以显式 manifest fixture 或 C stub table 作为主线入口。
+  不以显式 package metadata test input 或 C stub table 作为主线入口。
 - Explicit non-goals:
   不重新做 endpoint projection、tile search、layout、SPM/DDR planning、communication schedule 或 ABI lowering；
   不把 legacy bootparam/TLV 字段反向提升为 compiler IR 语义。
 - Completion gate:
-  device-code gate 能从 LLVM IR artifact 生成可链接的 TX8 kcore shared object；manifest 从当前
-  pipeline 产物自动导出并 roundtrip，记录真实 model id、ABI version、artifacts、model interface、
-  resource metadata 和 backend strategies；endpoint view 当前从 topology/execution-mesh 按需重算，
+  device-code gate 能从 LLVM IR artifact 生成可链接的 TX8 kcore shared object；package metadata 从当前
+  pipeline 产物自动导出并 roundtrip，记录真实 package name、model ABI、modules、model interface、
+  resource metadata 和 entrypoints；endpoint view 当前从 topology/execution-mesh 按需重算，
   不序列化为 schema v2 的第二份事实源。runtime adapter gate 能拒绝 stub completion、未 materialize
   的 model BPM descriptor 和不满足 contract 的 allocation/binding。
 ```
@@ -111,8 +111,8 @@ Runtime package 是交付给 runtime adapter 的编译产物集合。V0 需要�
 | 部分 | 内容 | 来源 |
 | --- | --- | --- |
 | model interface | inputs、outputs、parameters、shape/dtype/layout、binding contract | frontend + lowering |
-| artifacts | kcore shared object、graph directory、未来 BPM/control descriptor | ABI/LLVM artifact + device-code compile/link gate / package assembly |
-| backend strategies | `tx_model_bpm`、`tx_graph`、`tx_module_kernel`、`tx_cluster_kernel`、`legacy_tsm_run` descriptors | package assembly + TX runtime evidence |
+| modules | kcore shared object、graph directory、未来 BPM/control descriptor | ABI/LLVM artifact + device-code compile/link gate / package assembly |
+| entrypoints | `tx.model`、`tx.graph`、`tx.module`、`tx.cluster`、`legacy.tsm` descriptors | package assembly + TX runtime evidence |
 | endpoint policy / future endpoint section | 当前 schema v2 不序列化 rank->endpoint table；后续若 runtime 需要，可加入由 topology/execution-mesh 重算的 derived endpoint section | `wafer.target.topology` + `wafer.execution.mesh` + thin launch/block binding |
 | DDR memory metadata | external binding contract、workspace demand、resident constant demand | on-demand resource view derived from committed IR + DDR planner facts |
 | SPM summary | per-tile SPM peak、reserved range、allocation summary | SPM bufferization |
@@ -127,10 +127,10 @@ selected storage layout。
 ### 3.1 Device Code Compile/Link Gate
 
 Device-code gate 消费 ABI/LLVM lowering 生成的 LLVM IR artifact，不消费 `wafer.instr.*`、
-`func.call` ABI IR 或 package manifest fixture。它只负责把 device kernel 编译成 TX8 runtime 可以
-装载的 kcore shared object，并把 artifact id / path 交给 package manifest。该 artifact 可以被
-`tx_module_kernel` / `tx_cluster_kernel` strategy 直接使用，也可以作为未来 `tx_model_bpm` / `tx_graph`
-materialization 的组成部分；artifact 本身不决定 package 的模型级执行语义。
+`func.call` ABI IR 或 package metadata test input。它只负责把 device kernel 编译成 TX8 runtime 可以
+装载的 kcore shared object，并把 module id / path 交给 package metadata。该 module 可以被
+`tx.module` / `tx.cluster` entrypoint 直接使用，也可以作为未来 `tx.model` / `tx.graph`
+materialization 的组成部分；module 本身不决定 package 的模型级执行语义。
 
 V0 采用已经可运行的 TX8 RISC-V compile/link 工具链 profile，并在 final link 前做 object
 metadata normalization：
@@ -176,7 +176,7 @@ riscv64-unknown-elf-objcopy -R .riscv.attributes kernel.o
 riscv64-unknown-elf-objcopy -R .riscv.attributes kernel.wafer_cabi_shim.o
 ```
 
-这是 object artifact 的兼容性 normalization，不是 IR 语义。当前 LLVM 21 会把 `rv64imafdc`
+这是 object 兼容性 normalization，不是 IR 语义。当前 LLVM 21 会把 `rv64imafdc`
 编码成包含 `zaamo` / `zalrsc` 的 split-extension attribute；vendored Xuantie GNU ld 2.35
 不能解析这个 attribute 字符串。代码段仍按 `-march=rv64imafdc -mabi=lp64d` 生成，final link
 继续由 Xuantie GCC driver 选择对应 multilib。
@@ -206,7 +206,7 @@ riscv64-unknown-elf-gcc -shared -march=rv64imafdc -O2 \
 root，也不从外部机器路径隐式查找；repo-local `libvr.a` 去掉了 debug sections，避免 Xuantie
 GNU ld 2.35 遇到 LLVM RISC-V debug relocation。V0 profile 固定为 `rv64imafdc/lp64d`，因为这是当前
 vendored Xuantie toolchain 实际提供的 64-bit double-float multilib；`-mcpu=c908` 或其它 Xuantie
-multilib profile 需要单独的 artifact 兼容性和板端验证后再升级成新 profile。
+multilib profile 需要单独的 object 兼容性和板端验证后再升级成新 profile。
 
 `-Wl,--allow-shlib-undefined` 只允许 kcore shared object 保留 runtime/loader 解析的外部符号；它不是
 证明缺失 `wafer_*` C ABI shim 可以被忽略的信号。当前 device-code gate 默认编译并链接
@@ -239,28 +239,28 @@ WaferRuntimeAdapter
   info、topology、driver-level DTE ioctl、BAR/ATU 和 firmware loading。
 - Legacy `Tsm*` / VS runtime 是兼容和证据层。
 
-`TxRuntimeBackend` 以 backend strategy 消费 model package，不以某个 TX API 名字作为主合同：
+`TxRuntimeBackend` 以 entrypoint executor 消费 model package，不以某个 TX API 名字作为主合同：
 
 ```text
 ModelPackage
   -> RuntimeSession
        -> device selection / PG tile selection
        -> allocation/import/query/copy binding
-       -> backend strategy materialization
-            -> tx_model_bpm        # model-level path, requires BPM descriptor/table
-            -> tx_graph            # graph asset path
-            -> tx_module_kernel    # kernel-level bring-up/debug strategy
-            -> tx_cluster_kernel   # cluster-kernel bring-up/debug strategy
-            -> legacy_tsm_run      # restricted fallback
+       -> entrypoint materialization
+            -> tx.model        # model-level path, requires BPM descriptor/table
+            -> tx.graph        # graph module path
+            -> tx.module       # kernel-level bring-up/debug entrypoint
+            -> tx.cluster      # cluster-kernel bring-up/debug entrypoint
+            -> legacy.tsm      # restricted fallback
        -> runtime_stream_wait / runtime_command_completion / legacy_model_sync
 ```
 
 `txLaunchModel` / `txLaunchModelSync` 是 TX runtime 的模型级执行面，但当前 compiler package 还没有
-完整 BPM table schema。V0 只能把 `tx_model_bpm` 表达为 descriptor/materialization contract；如果
-manifest 声明的 BPM descriptor 仍是 `descriptor_only`，runtime adapter 必须结构化拒绝真实 launch，
+完整 BPM table schema。V0 只能把 `tx.model` 表达为 descriptor/materialization contract；如果
+package metadata 声明的 BPM descriptor 仍是 `descriptor_only`，runtime adapter 必须结构化拒绝真实 launch，
 不能隐式退化到 `txLaunchKernel`。
 
-`tx_module_kernel` / `tx_cluster_kernel` strategy 需要显式标记为 `debug_or_bringup=true`。它们可以用于
+`tx.module` / `tx.cluster` entrypoint 需要显式标记为 `debug=true`。它们可以用于
 no-card command construction、device-code smoke 和板端 bring-up，但不能作为模型级 package 完成证明。
 
 Legacy fallback：
@@ -276,7 +276,7 @@ Legacy fallback：
 ## 5. Runtime Allocation and DDR Binding
 
 Runtime package 不静态保存最终 physical address；它保存 allocation / binding contract，runtime
-session 在 package load / launch / strategy materialization 时执行：
+session 在 package load / launch / entrypoint materialization 时执行：
 
 - allocate / import runtime allocation object。
 - query physical address、size 和 runtime capability/resource metadata。
@@ -293,24 +293,24 @@ Runtime package 必须区分：
   DDR planning arena。
 
 KMD/UAPI 的低层分配类别只作为 runtime mapping evidence 使用；DDR memory planning 产出
-accepted DDR planned ranges；ABI lowering、package manifest emission 和 runtime adapter 通过同一
+accepted DDR planned ranges；ABI lowering、package metadata emission 和 runtime adapter 通过同一
 resource view analysis 从 committed IR、accepted offsets、topology/execution-mesh、program parameter
 shard metadata 和薄 launch/block binding 派生
 external binding、workspace、resident constant 和 control metadata requirements。runtime adapter 在
 package load / launch 时执行 allocate/import/query/bind，并报告
 runtime allocation failure；不能在 runtime/package 层重新决定 DDR range plan。
 
-当前 `tools/wafer_package_manifest.py` 负责验证和 roundtrip package manifest schema。manifest schema
-记录 model interface、model id、ABI version、artifacts、backend strategies、DDR external binding bytes、
+当前 `tools/wafer_package_metadata.py` 负责验证和 roundtrip runtime package metadata schema。schema
+记录 model interface、package name、model ABI、modules、entrypoints、DDR external binding bytes、
 SPM/DDR memory summary、workspace buffer demand、resident constant demand、ABI call/packet emission
 metadata 和 runtime completion source；当前 schema v2 不维护 rank endpoint table。validator 要求
 `runtime.mode` 是 `tx` 或 `legacy_tsm`；`tx` 使用 `runtime_stream_wait`、
 `runtime_command_completion` 或 `kcore_local_drain` 这类中性 completion source，
-`legacy_tsm` 只允许 `legacy_model_sync`。manifest 不写 `hpgr_*` completion source；实际 provider
+`legacy_tsm` 只允许 `legacy_model_sync`。package metadata 不写 `hpgr_*` completion source；实际 provider
 可以在 adapter 诊断中报告。
-`model.id` 和 `model.abi_version` 存在，且 `model.abi_version` 是当前支持的 `wafer-cabi-v0`；要求
-`artifacts` 非空，且 backend strategy 引用的 artifact 名称必须存在。`tx_module_kernel` 和
-`tx_cluster_kernel` strategy 必须带 `debug_or_bringup=true`，并显式声明 entrypoint、grid/block 和
+`model.id` 和 `model.abi` 存在，且 `model.abi` 是当前支持的 `wafer-cabi-v0`；要求
+`modules` 非空，且 entrypoint 引用的 module 名称必须存在。`tx.module` 和
+`tx.cluster` entrypoint 必须带 `debug=true`，并显式声明 function、grid/block 和
 binding order。
 validator 要求
 `resources.workspace_bytes` 与
@@ -318,49 +318,49 @@ validator 要求
 `resources.resident_constant_bytes` 与 `model.interface.resident_constants` 求和一致；`launch_input`
 resident constant 必须引用 model input，且不能引用 output。validator 显式拒绝已知 stub
 completion fence，例如 `TsmDeviceSynchronize` / `TsmLaunch`，因此 package correctness 不能只依赖
-legacy stub path 成功返回。`tools/wafer_emit_c_abi_stub.py` 只作为 tool-unit adapter，从显式 manifest
-fixture 生成可被 C compiler 做 syntax compile 的 ABI emission table、workspace buffer table 和
+legacy stub path 成功返回。`tools/wafer_emit_c_abi_stub.py` 只作为 tool-unit adapter，从显式 package
+metadata test input 生成可被 C compiler 做 syntax compile 的 ABI emission table、workspace buffer table 和
 resident constant table；它不代表当前 IR pipeline 已生成 package，也不代表
 真实 device code 已可执行。
 
 `tools/wafer_device_link.py` 是 device-code local gate：它消费已有 LLVM IR 文件，生成或打印
 `.ll -> .o -> kernel.so` 两段命令，并可在本地 TX8 依赖齐备时执行该 compile/link。它不从
-`wafer.instr.*` 恢复 package metadata，不生成 manifest，也不代表 runtime launch / board
+`wafer.instr.*` 恢复 package metadata，不生成 package metadata，也不代表 runtime launch / board
 completion 已通过。该 tool 默认把 `runtime/wafer_cabi_shim.c` 编译成同 target 的 shim object 并
 加入 final link，使 LLVM IR 中的 `wafer_rdma`、`wafer_wdma`、`wafer_gather_scatter`、`wafer_gemm`
 和 `wafer_local_fence` 不再依赖 unresolved placeholder symbol。shim source 仍只实现
 compiler-facing scalar ABI 到 public Tsm wrapper / local wait 的映射；它不生成 package schema、
 runtime allocation metadata 或 board launch protocol。
 
-`tools/wafer_export_package_manifest.py` 是 package manifest auto-export gate：它消费上游
+`tools/wafer_export_package_metadata.py` 是 package metadata auto-export gate：它消费上游
 model interface JSON、committed instruction MLIR、ABI/LLVM lowering 生成的 LLVM IR 文件和
-device-code artifact，输出可被 validator roundtrip 的 manifest。该工具从 LLVM IR
-解析 entrypoint，从 committed instruction MLIR 重算 instruction list、accepted SPM span 和
+device-code module，输出可被 validator roundtrip 的 package metadata。该工具从 LLVM IR
+解析 function，从 committed instruction MLIR 重算 instruction list、accepted SPM span 和
 DDR external binding byte summary；`model.interface` 的 user-visible name、shape、dtype 和 layout
-仍来自上游 model interface metadata，不能从低层 `%arg0` / `%arg1` 或 artifact 文件名猜测。
+仍来自上游 model interface metadata，不能从低层 `%arg0` / `%arg1` 或 module 文件名猜测。
 
 `tools/wafer_runtime_adapter.py` 是 no-card runtime adapter contract gate：它消费已经 validate 的
-package manifest，构造 model binding / runtime session / backend strategy plan。`dry-run` backend
-打印模型级 binding、artifacts、runtime requirements 和 strategy descriptors；`fake-tx` backend 只用于
-本地 unit test 验证选定 strategy 的 command construction。若选择 `tx_model_bpm` 但 BPM descriptor
-仍是 `descriptor_only`，fake backend 必须报结构化错误；若选择 `tx_module_kernel`，fake backend
+package metadata，构造 model binding / runtime session / entrypoint plan。`dry-run` backend
+打印模型级 binding、modules、runtime requirements 和 entrypoint descriptors；`fake-tx` backend 只用于
+本地 unit test 验证选定 entrypoint 的 command construction。若选择 `tx.model` 但 BPM descriptor
+仍是 `descriptor_only`，fake backend 必须报结构化错误；若选择 `tx.module`，fake backend
 验证 `txSetDevice`、`txMalloc`、`txMemcpy`、`txModuleLoad`、`txModuleGetFunction`、`txLaunchKernel` 和
-completion wait 的顺序。`tx` backend 在无卡环境只做 runtime library discovery 和 strategy-specific
+completion wait 的顺序。`tx` backend 在无卡环境只做 runtime library discovery 和 entrypoint-specific
 required symbol check。真实板端执行、错误传播和 device-side completion 仍属于 gated board test，
 不进入默认 lit。
 
-当前 C ABI stub 不再从 manifest 生成 tile-specific launch argument table。endpoint / block metadata 必须由
+当前 C ABI stub 不再从 package metadata 生成 tile-specific launch argument table。endpoint / block metadata 必须由
 后续 topology/execution-mesh、program parameter shard metadata/resource view 和薄 launch/block binding 派生，不能由
-manifest 维护第二份 endpoint schema。
+package metadata 维护第二份 endpoint schema。
 
 历史 `--emit-single-tile-matmul`、`--emit-multi-tile-no-comm-matmul`、
 `--emit-single-tile-elementwise` 和 `--emit-local-transformer-block` fixed emitter 已删除。后续 package
 gate 必须从当前 `wafer-opt` pipeline 的 committed instruction IR、
 topology/execution-mesh contract、program parameter shard metadata/resource view、薄 launch/block binding、
-按需重算的 resource view 和 ABI/LLVM lowering artifact 自动导出 manifest；
+按需重算的 resource view 和 ABI/LLVM lowering artifact 自动导出 package metadata；
 不能恢复独立固定 emitter 作为完成证明。
 
-package manifest 后续可以序列化 runtime 需要的 derived endpoint section，但 canonical facts 仍在
+package metadata 后续可以序列化 runtime 需要的 derived endpoint section，但 canonical facts 仍在
 compiler IR 中：
 
 - topology snapshot / profile id、availability assumption 和 selected mesh id。
@@ -369,7 +369,7 @@ compiler IR 中：
 
 这些字段是 package / launch metadata，不改变 tensor IR 语义，也不成为 `wafer.execution.mesh` /
 `wafer.target.topology` 的第二事实源。若后续加入 derived endpoint section，validator 必须检查
-manifest rank endpoint table 能由 execution mesh policy 和 target topology 重算、mapped endpoint
+package metadata rank endpoint table 能由 execution mesh policy 和 target topology 重算、mapped endpoint
 仍 available、block id 不重复，以及 local shard bounds 不越过 `model.interface` tensor shape。
 
 ## 6. Legacy Bootparam and Dyn TLV
@@ -390,7 +390,7 @@ group/layout/SPM 文档当成语义对象。
 
 每个 runtime path 必须声明 completion 来源。
 
-manifest 中允许的稳定 completion source：
+package metadata 中允许的稳定 completion source：
 
 - `runtime_command_completion`：provider 的 command-slot / command-object completion。
 - `runtime_stream_wait`：provider 的 stream/event wait 或等价 runtime wait。
@@ -422,17 +422,17 @@ V0 验证：
 - device-code gate 命令形态固定：LLVM `clang++` 负责 `.ll -> .o`，repo-vendored `tx8_deps`
   `riscv64-unknown-elf-gcc` 负责 link `kernel.so`，并显式链接 `common_util`、`instr_tx81`、
   `libc_stub` 和 Wafer CRT `vr`。
-- package manifest `artifacts` 记录 kcore shared object artifact，不再把 instruction-sequence
-  fixture 当成 runtime package device code；`backend_strategies` 明确区分 model BPM、graph、
+- package metadata `modules` 记录 kcore shared object module，不再把 instruction-sequence
+  test input 当成 runtime package device code；`entrypoints` 明确区分 model BPM、graph、
   kernel bring-up 和 legacy fallback。
-- package manifest auto-export 从真实 `wafer-opt` pipeline 产出的 committed instruction IR 和
-  LLVM IR artifact 导出 manifest，并经 `tools/wafer_package_manifest.py --validate` 验证；手写 manifest
-  fixture 只能作为 schema negative / roundtrip 覆盖。
-- package manifest schema roundtrip。该类 compiler/tool golden 继续用 lit 覆盖。
-- runtime adapter no-card contract 用 Python unittest / ctest 覆盖 dry-run、strategy selection、
+- package metadata auto-export 从真实 `wafer-opt` pipeline 产出的 committed instruction IR 和
+  LLVM IR artifact 导出 package metadata，并经 `tools/wafer_package_metadata.py --validate` 验证；手写 package
+  metadata input 只能作为 schema negative / roundtrip 覆盖。
+- package metadata schema roundtrip。该类 compiler/tool golden 继续用 lit 覆盖。
+- runtime adapter no-card contract 用 Python unittest / ctest 覆盖 dry-run、entrypoint selection、
   fake-tx command construction、BPM descriptor-only rejection、missing tx runtime library diagnostics
   和 stub completion rejection；不放入默认 lit。
-- model interface 与 compiled function ABI / selected backend strategy binding order 一致。
+- model interface 与 compiled function ABI / selected entrypoint binding order 一致。
 - 当前 schema v2 不保存 endpoint table；若后续启用 derived endpoint section，必须覆盖所有
   launched tile 且能从 execution mesh / topology 重算。
 - DDR binding contract 与 package resource summary 一致。

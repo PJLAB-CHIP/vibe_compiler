@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Construct and validate Wafer runtime launch plans from package manifests."""
+"""Construct and validate Wafer runtime launch plans from package metadata."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from typing import Any
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from wafer_package_manifest import validate_manifest  # noqa: E402
+from wafer_package_metadata import validate_package_metadata  # noqa: E402
 
 
 TX_RUNTIME_LIBRARY_NAMES = (
@@ -31,22 +31,22 @@ TX_BASE_REQUIRED_SYMBOLS = (
     "txStreamSynchronize",
 )
 
-TX_STRATEGY_REQUIRED_SYMBOLS = {
-    "tx_module_kernel": (
+TX_ENTRYPOINT_REQUIRED_SYMBOLS = {
+    "tx.module": (
         "txModuleLoad",
         "txModuleGetFunction",
         "txLaunchKernel",
     ),
-    "tx_cluster_kernel": (
+    "tx.cluster": (
         "txModuleLoad",
         "txModuleGetFunction",
         "txLaunchClusterKernel",
     ),
-    "tx_model_bpm": (
+    "tx.model": (
         "txLaunchModel",
         "txLaunchModelSync",
     ),
-    "tx_graph": (
+    "tx.graph": (
         "txLoadGraph",
         "txUnloadGraph",
     ),
@@ -55,13 +55,13 @@ TX_STRATEGY_REQUIRED_SYMBOLS = {
 
 @dataclass(frozen=True)
 class RuntimePlan:
-    manifest: dict[str, Any]
-    package_name: str
+    metadata: dict[str, Any]
+    package: str
     runtime_mode: str
     completion_source: str
     model: dict[str, Any]
-    artifacts: dict[str, dict[str, Any]]
-    strategies: dict[str, dict[str, Any]]
+    modules: dict[str, dict[str, Any]]
+    entrypoints: dict[str, dict[str, Any]]
     inputs: list[dict[str, Any]]
     outputs: list[dict[str, Any]]
     parameters: list[dict[str, Any]]
@@ -74,13 +74,13 @@ def fail(message: str) -> None:
     raise RuntimeError(message)
 
 
-def load_manifest(path: pathlib.Path) -> dict[str, Any]:
+def load_package_metadata(path: pathlib.Path) -> dict[str, Any]:
     with path.open("r", encoding="utf-8") as handle:
-        manifest = json.load(handle)
-    if not isinstance(manifest, dict):
-        fail("manifest must be a JSON object")
-    validate_manifest(manifest)
-    return manifest
+        metadata = json.load(handle)
+    if not isinstance(metadata, dict):
+        fail("metadata must be a JSON object")
+    validate_package_metadata(metadata)
+    return metadata
 
 
 def bytes_from_binding(item: dict[str, Any]) -> int:
@@ -90,12 +90,12 @@ def bytes_from_binding(item: dict[str, Any]) -> int:
     return int(item["bytes"])
 
 
-def build_runtime_plan(manifest: dict[str, Any]) -> RuntimePlan:
-    runtime = manifest["runtime"]
-    model = manifest["model"]
+def build_runtime_plan(metadata: dict[str, Any]) -> RuntimePlan:
+    runtime = metadata["runtime"]
+    model = metadata["model"]
     interface = model["interface"]
-    artifacts = {item["name"]: item for item in manifest["artifacts"]}
-    strategies = {item["name"]: item for item in manifest["backend_strategies"]}
+    modules = {item["name"]: item for item in metadata["modules"]}
+    entrypoints = {item["name"]: item for item in metadata["entrypoints"]}
     inputs = list(interface["inputs"])
     outputs = list(interface["outputs"])
     parameters = list(interface["parameters"])
@@ -105,13 +105,13 @@ def build_runtime_plan(manifest: dict[str, Any]) -> RuntimePlan:
     for item in inputs + outputs + parameters + workspace + resident_constants:
         binding_bytes[item["name"]] = bytes_from_binding(item)
     return RuntimePlan(
-        manifest=manifest,
-        package_name=manifest["package_name"],
+        metadata=metadata,
+        package=metadata["name"],
         runtime_mode=runtime["mode"],
         completion_source=runtime["completion_source"],
         model=model,
-        artifacts=artifacts,
-        strategies=strategies,
+        modules=modules,
+        entrypoints=entrypoints,
         inputs=inputs,
         outputs=outputs,
         parameters=parameters,
@@ -165,40 +165,40 @@ def binding_summary_lines(plan: RuntimePlan) -> list[str]:
     return lines
 
 
-def strategy_summary(strategy: dict[str, Any]) -> str:
-    kind = strategy["kind"]
-    name = strategy["name"]
-    if kind == "tx_model_bpm":
-        state = strategy["bpm_descriptor"]["state"]
-        return f"strategy: {name} {kind} bpm={state}"
-    if kind in {"tx_module_kernel", "tx_cluster_kernel"}:
+def entrypoint_summary(entrypoint: dict[str, Any]) -> str:
+    executor = entrypoint["executor"]
+    name = entrypoint["name"]
+    if executor == "tx.model":
+        state = entrypoint["bpm_descriptor"]["state"]
+        return f"entrypoint: {name} {executor} bpm={state}"
+    if executor in {"tx.module", "tx.cluster"}:
         return (
-            f"strategy: {name} {kind} artifact={strategy['artifact']} "
-            f"entrypoint={strategy['entrypoint']} debug_or_bringup"
+            f"entrypoint: {name} {executor} module={entrypoint['module']} "
+            f"function={entrypoint['function']} debug"
         )
-    if kind == "tx_graph":
+    if executor == "tx.graph":
         return (
-            f"strategy: {name} {kind} graph_artifact={strategy['graph_artifact']} "
-            f"mod_symbol={strategy['mod_symbol']}"
+            f"entrypoint: {name} {executor} module={entrypoint['module']} "
+            f"mod_symbol={entrypoint['mod_symbol']}"
         )
-    return f"strategy: {name} {kind}"
+    return f"entrypoint: {name} {executor}"
 
 
 def emit_plan_summary(plan: RuntimePlan, backend_name: str) -> list[str]:
     lines = [
         f"backend: {backend_name}",
-        f"package: {plan.package_name}",
+        f"package: {plan.package}",
         f"runtime_mode: {plan.runtime_mode}",
         f"completion_source: {plan.completion_source}",
-        f"model: {plan.model['id']} abi={plan.model['abi_version']}",
+        f"model: {plan.model['id']} abi={plan.model['abi']}",
     ]
     lines.extend(binding_summary_lines(plan))
-    for artifact in plan.artifacts.values():
+    for module in plan.modules.values():
         lines.append(
-            f"artifact: {artifact['name']} {artifact['kind']} {artifact['path']}"
+            f"module: {module['name']} {module['format']} {module['path']}"
         )
-    for strategy in plan.strategies.values():
-        lines.append(strategy_summary(strategy))
+    for entrypoint in plan.entrypoints.values():
+        lines.append(entrypoint_summary(entrypoint))
     lines.append(f"completion: wait {plan.completion_source}")
     return lines
 
@@ -207,23 +207,23 @@ def run_dry_run(plan: RuntimePlan) -> list[str]:
     return emit_plan_summary(plan, "dry-run")
 
 
-def select_strategy(plan: RuntimePlan, strategy_name: str | None) -> dict[str, Any]:
-    if strategy_name is None:
-        fail("--strategy is required for this backend")
-    if strategy_name not in plan.strategies:
-        fail(f"strategy was not found in package manifest: {strategy_name}")
-    return plan.strategies[strategy_name]
+def select_entrypoint(plan: RuntimePlan, entrypoint_name: str | None) -> dict[str, Any]:
+    if entrypoint_name is None:
+        fail("--entrypoint is required for this backend")
+    if entrypoint_name not in plan.entrypoints:
+        fail(f"entrypoint was not found in package metadata: {entrypoint_name}")
+    return plan.entrypoints[entrypoint_name]
 
 
-def binding_order_arg_bytes(plan: RuntimePlan, strategy: dict[str, Any]) -> int:
-    return sum(plan.binding_bytes[name] for name in strategy["binding_order"])
+def binding_order_arg_bytes(plan: RuntimePlan, entrypoint: dict[str, Any]) -> int:
+    return sum(plan.binding_bytes[name] for name in entrypoint["binding_order"])
 
 
-def artifact_for_strategy(plan: RuntimePlan, strategy: dict[str, Any]) -> dict[str, Any]:
-    artifact_name = strategy["artifact"]
-    if artifact_name not in plan.artifacts:
-        fail(f"strategy artifact was not found: {artifact_name}")
-    return plan.artifacts[artifact_name]
+def module_for_entrypoint(plan: RuntimePlan, entrypoint: dict[str, Any]) -> dict[str, Any]:
+    module_name = entrypoint["module"]
+    if module_name not in plan.modules:
+        fail(f"entrypoint module was not found: {module_name}")
+    return plan.modules[module_name]
 
 
 def emit_common_fake_tx_allocations(plan: RuntimePlan) -> list[str]:
@@ -262,44 +262,48 @@ def emit_fake_tx_writebacks(plan: RuntimePlan) -> list[str]:
     return lines
 
 
-def run_fake_tx(plan: RuntimePlan, device_id: int, strategy_name: str | None) -> list[str]:
-    strategy = select_strategy(plan, strategy_name)
-    kind = strategy["kind"]
+def run_fake_tx(
+    plan: RuntimePlan, device_id: int, entrypoint_name: str | None
+) -> list[str]:
+    entrypoint = select_entrypoint(plan, entrypoint_name)
+    executor = entrypoint["executor"]
     lines = [
         "backend: fake-tx",
-        f"strategy: {strategy['name']} {kind}",
+        f"entrypoint: {entrypoint['name']} {executor}",
         f"txSetDevice device={device_id}",
     ]
-    if kind == "tx_model_bpm":
-        state = strategy["bpm_descriptor"]["state"]
+    if executor == "tx.model":
+        state = entrypoint["bpm_descriptor"]["state"]
         if state != "materialized":
             fail(
-                f"tx_model_bpm strategy {strategy['name']} requires a materialized BPM descriptor"
+                f"tx.model entrypoint {entrypoint['name']} requires a materialized BPM descriptor"
             )
         lines.append("txLaunchModel bpm_descriptor=materialized")
         lines.append(f"txStreamSynchronize completion_source={plan.completion_source}")
         return lines
 
-    if kind == "tx_graph":
-        artifact = plan.artifacts[strategy["graph_artifact"]]
+    if executor == "tx.graph":
+        module = plan.modules[entrypoint["module"]]
         lines.append(
-            f"txLoadGraph path={artifact['path']} mod_symbol={strategy['mod_symbol']}"
+            f"txLoadGraph path={module['path']} mod_symbol={entrypoint['mod_symbol']}"
         )
         lines.append(f"txStreamSynchronize completion_source={plan.completion_source}")
         return lines
 
-    if kind not in {"tx_module_kernel", "tx_cluster_kernel"}:
-        fail(f"fake-tx backend does not support strategy kind: {kind}")
+    if executor not in {"tx.module", "tx.cluster"}:
+        fail(f"fake-tx backend does not support entrypoint executor: {executor}")
 
-    artifact = artifact_for_strategy(plan, strategy)
+    module = module_for_entrypoint(plan, entrypoint)
     lines.extend(emit_common_fake_tx_allocations(plan))
-    lines.append(f"txModuleLoad artifact={artifact['path']}")
-    lines.append(f"txModuleGetFunction entrypoint={strategy['entrypoint']}")
-    launch_api = "txLaunchClusterKernel" if kind == "tx_cluster_kernel" else "txLaunchKernel"
+    lines.append(f"txModuleLoad module={module['path']}")
+    lines.append(f"txModuleGetFunction function={entrypoint['function']}")
+    launch_api = (
+        "txLaunchClusterKernel" if executor == "tx.cluster" else "txLaunchKernel"
+    )
     lines.append(
-        f"{launch_api} strategy={strategy['name']} "
-        f"entrypoint={strategy['entrypoint']} "
-        f"arg_bytes={binding_order_arg_bytes(plan, strategy)}"
+        f"{launch_api} entrypoint={entrypoint['name']} "
+        f"function={entrypoint['function']} "
+        f"arg_bytes={binding_order_arg_bytes(plan, entrypoint)}"
     )
     lines.append(f"txStreamSynchronize completion_source={plan.completion_source}")
     lines.extend(emit_fake_tx_writebacks(plan))
@@ -346,26 +350,26 @@ def find_tx_runtime_library(
     fail(f"tx runtime library was not found; searched: {searched}")
 
 
-def required_symbols_for_strategy(strategy: dict[str, Any] | None) -> tuple[str, ...]:
-    if strategy is None:
+def required_symbols_for_entrypoint(entrypoint: dict[str, Any] | None) -> tuple[str, ...]:
+    if entrypoint is None:
         return TX_BASE_REQUIRED_SYMBOLS
-    return TX_BASE_REQUIRED_SYMBOLS + TX_STRATEGY_REQUIRED_SYMBOLS.get(
-        strategy["kind"], ()
+    return TX_BASE_REQUIRED_SYMBOLS + TX_ENTRYPOINT_REQUIRED_SYMBOLS.get(
+        entrypoint["executor"], ()
     )
 
 
 def run_tx_discovery(
     plan: RuntimePlan,
-    strategy_name: str | None,
+    entrypoint_name: str | None,
     runtime_root: pathlib.Path | None,
     runtime_library: pathlib.Path | None,
 ) -> list[str]:
-    strategy = select_strategy(plan, strategy_name) if strategy_name else None
+    entrypoint = select_entrypoint(plan, entrypoint_name) if entrypoint_name else None
     library_path = find_tx_runtime_library(runtime_root, runtime_library)
     library = ctypes.CDLL(str(library_path))
     missing = [
         symbol
-        for symbol in required_symbols_for_strategy(strategy)
+        for symbol in required_symbols_for_entrypoint(entrypoint)
         if not hasattr(library, symbol)
     ]
     if missing:
@@ -374,33 +378,35 @@ def run_tx_discovery(
         )
     lines = emit_plan_summary(plan, "tx")
     lines.insert(1, f"tx_runtime_library: {library_path}")
-    if strategy is not None:
-        lines.insert(2, f"selected_strategy: {strategy['name']} {strategy['kind']}")
+    if entrypoint is not None:
+        lines.insert(
+            2, f"selected_entrypoint: {entrypoint['name']} {entrypoint['executor']}"
+        )
     lines.append("tx_runtime_symbols: ok")
     return lines
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--manifest", required=True)
+    parser.add_argument("--package-metadata", required=True)
     parser.add_argument(
         "--backend", choices=("dry-run", "fake-tx", "tx"), required=True
     )
-    parser.add_argument("--strategy")
+    parser.add_argument("--entrypoint")
     parser.add_argument("--device-id", type=int, default=0)
     parser.add_argument("--runtime-root", type=pathlib.Path)
     parser.add_argument("--runtime-library", type=pathlib.Path)
     args = parser.parse_args()
 
-    manifest = load_manifest(pathlib.Path(args.manifest))
-    plan = build_runtime_plan(manifest)
+    metadata = load_package_metadata(pathlib.Path(args.package_metadata))
+    plan = build_runtime_plan(metadata)
     if args.backend == "dry-run":
         lines = run_dry_run(plan)
     elif args.backend == "fake-tx":
-        lines = run_fake_tx(plan, args.device_id, args.strategy)
+        lines = run_fake_tx(plan, args.device_id, args.entrypoint)
     else:
         lines = run_tx_discovery(
-            plan, args.strategy, args.runtime_root, args.runtime_library
+            plan, args.entrypoint, args.runtime_root, args.runtime_library
         )
     sys.stdout.write("\n".join(lines) + "\n")
     return 0

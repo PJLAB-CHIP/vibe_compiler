@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "package_name": "invalid_empty_artifact_fixture",
+  "name": "invalid_module_format",
   "runtime": {
     "mode": "tx",
     "completion_source": "runtime_stream_wait",
@@ -12,13 +12,16 @@
     }
   },
   "model": {
-    "id": "invalid_empty_artifact_fixture",
-    "abi_version": "wafer-cabi-v0",
+    "id": "invalid_module_format",
+    "abi": "wafer-cabi-v0",
     "interface": {
       "inputs": [
         {
           "name": "lhs",
-          "shape": [2, 4],
+          "shape": [
+            2,
+            4
+          ],
           "dtype": "f16",
           "layout": "tensor",
           "binding": {
@@ -33,7 +36,10 @@
       "outputs": [
         {
           "name": "out",
-          "shape": [2, 4],
+          "shape": [
+            2,
+            4
+          ],
           "dtype": "f16",
           "layout": "tensor",
           "binding": {
@@ -57,20 +63,6 @@
       "resident_constant_bytes": 0
     }
   },
-  "artifacts": [],
-  "backend_strategies": [
-    {
-      "name": "debug_kernel",
-      "kind": "tx_module_kernel",
-      "artifact": "missing_kernel",
-      "entrypoint": "invalid_empty_artifact_fixture_abi",
-      "abi_version": "wafer-cabi-v0",
-      "debug_or_bringup": true,
-      "grid": [1, 1, 1],
-      "block": [1, 1, 1],
-      "binding_order": ["lhs", "out"]
-    }
-  ],
   "instructions": [
     {
       "op": "wafer.instr.rdma",
@@ -81,6 +73,36 @@
       "op": "wafer.instr.wdma",
       "bytes": 16,
       "wait_policy": "issue_only"
+    }
+  ],
+  "modules": [
+    {
+      "name": "old_issue_sequence",
+      "format": "instruction_sequence",
+      "path": "old_issue_sequence.o"
+    }
+  ],
+  "entrypoints": [
+    {
+      "name": "debug_kernel",
+      "executor": "tx.module",
+      "module": "old_issue_sequence",
+      "function": "invalid_module_format_abi",
+      "debug": true,
+      "grid": [
+        1,
+        1,
+        1
+      ],
+      "block": [
+        1,
+        1,
+        1
+      ],
+      "binding_order": [
+        "lhs",
+        "out"
+      ]
     }
   ]
 }

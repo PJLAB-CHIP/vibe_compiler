@@ -1,9 +1,9 @@
 {
   "schema_version": 2,
-  "package_name": "bad_completion",
+  "name": "invalid_empty_modules",
   "runtime": {
     "mode": "tx",
-    "completion_source": "TsmDeviceSynchronize",
+    "completion_source": "runtime_stream_wait",
     "requirements": {
       "device_selection": "single_device",
       "tile_selection": "full_or_pg",
@@ -12,13 +12,16 @@
     }
   },
   "model": {
-    "id": "bad_completion",
-    "abi_version": "wafer-cabi-v0",
+    "id": "invalid_empty_modules",
+    "abi": "wafer-cabi-v0",
     "interface": {
       "inputs": [
         {
           "name": "lhs",
-          "shape": [2, 4],
+          "shape": [
+            2,
+            4
+          ],
           "dtype": "f16",
           "layout": "tensor",
           "binding": {
@@ -33,7 +36,10 @@
       "outputs": [
         {
           "name": "out",
-          "shape": [2, 4],
+          "shape": [
+            2,
+            4
+          ],
           "dtype": "f16",
           "layout": "tensor",
           "binding": {
@@ -50,33 +56,13 @@
       "resident_constants": []
     },
     "resources": {
-      "spm_bytes": 128,
+      "spm_bytes": 192,
       "ddr_external_input_bytes": 16,
       "ddr_external_output_bytes": 16,
       "workspace_bytes": 0,
       "resident_constant_bytes": 0
     }
   },
-  "artifacts": [
-    {
-      "name": "bad_completion_kernel",
-      "kind": "kcore_shared_object",
-      "path": "bad_completion.so"
-    }
-  ],
-  "backend_strategies": [
-    {
-      "name": "debug_kernel",
-      "kind": "tx_module_kernel",
-      "artifact": "bad_completion_kernel",
-      "entrypoint": "bad_completion_abi",
-      "abi_version": "wafer-cabi-v0",
-      "debug_or_bringup": true,
-      "grid": [1, 1, 1],
-      "block": [1, 1, 1],
-      "binding_order": ["lhs", "out"]
-    }
-  ],
   "instructions": [
     {
       "op": "wafer.instr.rdma",
@@ -87,6 +73,30 @@
       "op": "wafer.instr.wdma",
       "bytes": 16,
       "wait_policy": "issue_only"
+    }
+  ],
+  "modules": [],
+  "entrypoints": [
+    {
+      "name": "debug_kernel",
+      "executor": "tx.module",
+      "module": "missing_kernel",
+      "function": "invalid_empty_modules_abi",
+      "debug": true,
+      "grid": [
+        1,
+        1,
+        1
+      ],
+      "block": [
+        1,
+        1,
+        1
+      ],
+      "binding_order": [
+        "lhs",
+        "out"
+      ]
     }
   ]
 }

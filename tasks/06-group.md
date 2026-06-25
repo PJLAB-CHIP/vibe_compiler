@@ -106,7 +106,7 @@ Pipeline position:
   真实 frontend/SPMD/local-compute-normalization program chain 的 local compute + linalg extension collective 输出能形成
   verifier-legal logical `wafer.group`；raw StableHLO collective、`wafer.tile.*` collective、
   `wafer.instr.dte_*`、`wafer.tile.region`、SPM storage、DTE token、C ABI/runtime op 和只靠手写
-  fixture 拼出的 group 主线都被拒绝。
+  测试输入拼出的 group 主线都被拒绝。
 ```
 
 ## 3. 典型 Case
@@ -843,7 +843,7 @@ Pipeline position:
 `GroupTilingDemand` 从 logical `wafer.group` body 的 SSA use-def、DPS ties、Linalg
 iterator/indexing map、accumulator/reduction dims 和 `wafer.linalg_ext.collective.*` interface
 恢复 demand；`--wafer-dump-group-tiling-demand` 只是同一 analysis result 的 debug view，不修改 IR。
-completion gate 覆盖手写 group fixture 和真实 `stablehlo-spmd-to-group` program 输出。
+completion gate 覆盖手写 group 测试输入和真实 `stablehlo-spmd-to-group` program 输出。
 
 核心数据结构应表达：
 

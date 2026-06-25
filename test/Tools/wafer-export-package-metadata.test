@@ -1,0 +1,80 @@
+# RUN: %python %wafer_src_root/tools/wafer_export_package_metadata.py \
+# RUN:   --name package_export_sample \
+# RUN:   --model-id package_export_sample \
+# RUN:   --abi wafer-cabi-v0 \
+# RUN:   --model-interface %S/Inputs/package-export-model-interface.json \
+# RUN:   --instruction-ir %S/Inputs/package-export-instr.txt \
+# RUN:   --llvm-ir %S/Inputs/package-export-kernel.ll \
+# RUN:   --module-path package_export_sample.so > %t.json
+# RUN: FileCheck %s < %t.json
+# RUN: %python %wafer_src_root/tools/wafer_package_metadata.py --validate %t.json
+# RUN: %python %wafer_src_root/tools/wafer_package_metadata.py --roundtrip %t.json | FileCheck %s --check-prefix=ROUNDTRIP
+
+# RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-groups-to-ddr-memory-planned-instr)' \
+# RUN:   %wafer_src_root/test/Pipelines/lower-groups-to-llvm.mlir > %t.pipeline-instr.mlir
+# RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-groups-to-llvm)' \
+# RUN:   %wafer_src_root/test/Pipelines/lower-groups-to-llvm.mlir > %t.pipeline-llvm.mlir
+# RUN: mlir-translate --mlir-to-llvmir %t.pipeline-llvm.mlir > %t.pipeline.ll
+# RUN: %python %wafer_src_root/tools/wafer_export_package_metadata.py \
+# RUN:   --name pipeline_package_sample \
+# RUN:   --model-id pipeline_package_sample \
+# RUN:   --abi wafer-cabi-v0 \
+# RUN:   --model-interface %S/Inputs/package-export-pipeline-model-interface.json \
+# RUN:   --instruction-ir %t.pipeline-instr.mlir \
+# RUN:   --llvm-ir %t.pipeline.ll \
+# RUN:   --module-path pipeline_export.so > %t.pipeline.json
+# RUN: %python %wafer_src_root/tools/wafer_package_metadata.py --validate %t.pipeline.json
+# RUN: FileCheck %s --check-prefix=PIPELINE < %t.pipeline.json
+
+# RUN: not %python %wafer_src_root/tools/wafer_export_package_metadata.py \
+# RUN:   --name package_export_sample \
+# RUN:   --model-id package_export_sample \
+# RUN:   --abi wafer-cabi-v0 \
+# RUN:   --model-interface %S/Inputs/package-export-model-interface.json \
+# RUN:   --instruction-ir %S/Inputs/package-export-instr.txt \
+# RUN:   --llvm-ir %S/Inputs/missing-entry.ll \
+# RUN:   --module-path package_export_sample.so 2>&1 | FileCheck %s --check-prefix=ERR
+
+# CHECK: "name": "package_export_sample"
+# CHECK: "runtime": {
+# CHECK: "mode": "tx"
+# CHECK: "completion_source": "runtime_stream_wait"
+# CHECK: "model": {
+# CHECK: "id": "package_export_sample"
+# CHECK: "abi": "wafer-cabi-v0"
+# CHECK: "interface": {
+# CHECK: "name": "lhs"
+# CHECK: "binding": {
+# CHECK: "kind": "external_input"
+# CHECK: "name": "rhs"
+# CHECK: "name": "out"
+# CHECK: "spm_bytes": 528
+# CHECK: "ddr_external_input_bytes": 32
+# CHECK: "ddr_external_output_bytes": 16
+# CHECK: "workspace_bytes": 0
+# CHECK: "resident_constant_bytes": 0
+# CHECK: "modules": [
+# CHECK: "format": "tx.kcore"
+# CHECK: "path": "package_export_sample.so"
+# CHECK: "entrypoints": [
+# CHECK: "executor": "tx.module"
+# CHECK: "function": "package_export_sample_abi"
+# CHECK: "debug": true
+# CHECK: "op": "wafer.instr.rdma"
+# CHECK: "op": "wafer.instr.gather_scatter"
+# CHECK: "wait_policy": "local_wait"
+# CHECK: "op": "wafer.instr.wdma"
+
+# ROUNDTRIP: "function": "package_export_sample_abi"
+# ROUNDTRIP: "wafer.instr.gather_scatter"
+# ROUNDTRIP: "wafer.instr.local_fence"
+
+# PIPELINE: "completion_source": "runtime_stream_wait"
+# PIPELINE: "ddr_external_input_bytes": 192
+# PIPELINE: "ddr_external_output_bytes": 64
+# PIPELINE: "path": "pipeline_export.so"
+# PIPELINE: "function": "boundary_tiled_matmul_group_abi"
+# PIPELINE: "op": "wafer.instr.gemm"
+# PIPELINE: "op": "wafer.instr.wdma"
+
+# ERR: error: LLVM IR input does not exist

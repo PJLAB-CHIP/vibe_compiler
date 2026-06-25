@@ -4,7 +4,7 @@
 candidate legality gate。它不能只是 DDR access validation；凡是会影响 candidate 是否成立的 DDR
 byte footprint、lifetime、capacity、largest-contiguous 和 bandwidth 约束，都必须在 DDR offset
 assignment / candidate-selection gate 内决定或拒绝。
-下游 ABI lowering、package manifest 和 runtime adapter 通过同一 resource view analysis 从已接受的
+下游 ABI lowering、package metadata 和 runtime adapter 通过同一 resource view analysis 从已接受的
 DDR offset facts、topology/execution-mesh、program parameter shard metadata 和 IR-derived demand 按需重算 launch-facing
 requirements；不执行 runtime
 allocation/import/query，也不重新做 planning。
@@ -30,7 +30,7 @@ compiler IR 合同。
   traversal tile / 当前支持的 matmul `K` split candidate repair 或 split。layout 替代候选、
   multi-output coverage 和 general reduction split 需要先有显式 IR/interface 语义。
 - 保持 DDR accepted allocation fact 显式：由 SSA use-def、memref type、view、descriptor 和
-  offset fact 表达，不能靠名字、fixture 或 pass-local side table 复原。
+  offset fact 表达，不能靠名字、测试输入或 pass-local side table 复原。
 
 非目标：
 
@@ -63,7 +63,7 @@ Pipeline position:
 - Downstream consumer:
   candidate-selection 用 DDR offset assignment 成功/失败选择 candidate；
   committed materialization 把已通过 candidate gates 的 selected lowering 写回主 IR；
-  ABI/LLVM lowering、package manifest 和 runtime adapter 在使用点从 committed IR、
+  ABI/LLVM lowering、package metadata 和 runtime adapter 在使用点从 committed IR、
   accepted DDR offset facts、topology/execution-mesh、program parameter shard metadata 和薄 launch/block
   binding 直接重算 resource view。
 - User-level driver / named pipeline:
@@ -140,7 +140,7 @@ wafer.ddr.offset = #wafer.ddr_offset<offset>
 - read/write intent 来自 RDMA/WDMA uses。
 
 下游如果需要 byte range，应从 `offset + physicalBytes(memref type/layout)` 重算，不能依赖 pass-local
-map、名字或 fixture。
+map、名字或测试输入。
 
 External input/output 不由 DDR memory planning 分配 offset，也不写 external access summary attr。DDR memory planning 只在当前
 candidate 中验证 descriptor/view/root byte range 和 bandwidth；ABI/package/runtime 若需要
@@ -277,7 +277,7 @@ their planning gates, not candidate fields.
 
 ### 9.4 下游 Resource View
 
-ABI lowering、package manifest emission 和 runtime adapter 需要 resource facts 时，统一从 accepted
+ABI lowering、package metadata emission 和 runtime adapter 需要 resource facts 时，统一从 accepted
 DDR offsets、topology/execution-mesh、program parameter shard metadata、薄 launch/block binding 和 committed
 descriptors 重算 view。该 view：
 
@@ -285,7 +285,7 @@ descriptors 重算 view。该 view：
 - 汇总 compiler-managed workspace 和 resident/inter-group DDR ranges。
 - 验证 launch-visible resource metadata 与 accepted offsets、descriptor ranges、
   topology/execution-mesh、program parameter shard metadata 和 launch/block metadata 一致。
-- 供 ABI/LLVM lowering、package manifest 和 runtime adapter 使用，但不成为新的 IR
+- 供 ABI/LLVM lowering、package metadata 和 runtime adapter 使用，但不成为新的 IR
   artifact。
 
 该 view 不能 allocate/import/query runtime object，不能 materialize physical address，不能持久化第二份

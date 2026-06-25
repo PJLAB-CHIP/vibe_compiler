@@ -45,7 +45,7 @@ source model / exported program / pre-exported StableHLO
   -> committed tile-region/instruction boundary
   -> execution-mesh / launch-block / program shard metadata resource view
   -> ABI / LLVM lowering from committed instruction IR + accepted offsets + topology/execution mesh
-  -> RISC-V kcore shared object + package manifest
+  -> RISC-V kcore shared object + package metadata
   -> WaferRuntimeAdapter TxRuntimeBackend launch or legacy TsmRun fallback
 ```
 
@@ -86,7 +86,7 @@ IREE 的 experimental op 当成硬件无关答案；但采用三个原则：
 - Stream-like 原则：只有在 async scheduling、resource lifetime、range access 和 wait/completion
   需要跨 stage 保留时，才引入显式 resource / token / effect / range 表示；planner 搜索过程和
   resource estimate 不落 IR。
-- HAL-like 原则：device binding、allocation/import/query、fence/completion、package manifest 是
+- HAL-like 原则：device binding、allocation/import/query、fence/completion、package metadata 是
   runtime boundary 的 late materialization；上层只保留 topology/execution mesh、committed instruction、
   accepted offset 和 program parameter shard metadata 这些不可从 local IR 重算的事实。
 
@@ -179,7 +179,7 @@ V0 策略：
 - 稳定 compiler 入口是 verified Wafer program。
 - 主链路完成证明优先来自真实 framework/exporter 产生的实际图 program，例如 PyTorch/XLA、
   JAX 或其它 exporter 导出的 StableHLO / MLIR。手写 StableHLO 只保留为 pre-exported program
-  fixture、verifier negative test 或局部 lowering bring-up，不能证明 framework-specific capture 已完成。
+  测试输入、verifier negative test 或局部 lowering bring-up，不能证明 framework-specific capture 已完成。
 - 具体 importer API 不是 Wafer 后端合同；后端只消费 verified program 和已 materialize 到 IR 的
   importer facts。
 - v0 先接受静态或有限动态 shape；任意 PyTorch eager 动态行为不是 V0 目标。
@@ -510,14 +510,14 @@ contract、collective lowering 和 verifier 见
 - 把 `wafer.tile.*` compute / `wafer.tile.*` communication lowering 到具体 `wafer_*` C ABI call。
 - 生成 RISC-V kcore device `.so`。
 - 从 committed instruction IR、accepted offsets、topology/execution mesh、program parameter shard
-  metadata/resource view 和 communication/sync IR 重算 model interface、artifact、backend strategy、
+  metadata/resource view 和 communication/sync IR 重算 model interface、modules、entrypoints、
   SPM/layout/DDR memory metadata、communication metadata、constant storage bytes 和 profiling/status
   metadata。
-- 选择 package 中的 backend strategy，走 `TxRuntimeBackend` path 或 legacy `TsmRun` fallback，并声明
+- 选择 package 中的 entrypoint，走 `TxRuntimeBackend` path 或 legacy `TsmRun` fallback，并声明
   可信 completion source。
 
 Runtime package metadata 不替代 `wafer.tile.region`。前者表达模型级 package/session 边界、runtime
-binding 和 backend strategy；kernel launch 只是其中一种 strategy 的低层实现。package/resource
+binding 和 entrypoint；kernel launch 只是其中一种 entrypoint 的低层实现。package/resource
 metadata 是 ABI/package/runtime 使用点从 IR 重算的 view，不是独立前置 IR 阶段，也不回头承载
 tensor fusion、traversal selection 或 group planner 的中间计划。
 
@@ -634,7 +634,7 @@ WaferRuntimeAdapter cluster launch
 范围：
 
 - 主路径从 P2.F1/P2.S1/P2.S2 产生的 verified frontend / per-rank program 开始。
-- 手写 partitioned StableHLO 只作为 collective lowering 的局部 verifier / pattern fixture；它不能替代
+- 手写 partitioned StableHLO 只作为 collective lowering 的局部 verifier / pattern 测试输入；它不能替代
   importer/Shardy 自动导出的 program chain。
 
 验收标准：
@@ -705,7 +705,7 @@ WaferRuntimeAdapter cluster launch
 | `wafer.spm` | Wafer memory attr、liveness、Cx/NCx C0 tail/fold、256B padding、bool bitpack、SPM range/reserved-slot diagnostics |
 | `wafer.tile.*` compute | 对已支持 op 建 wrapper golden packet，例如 CT unary/binary、NE GEMM、RDMA/WDMA contiguous end-address、DMA stride byte-unit 和 `iteration - 1` |
 | `wafer.tile.*` communication | Direct DTE unicast send/recv/wait、packet counter update word、FSM resource allocation、raw non-unicast V1 禁用诊断 |
-| Runtime/package | package manifest validator、bootparam head/dyninfo layout、dyn TLV serialization roundtrip、tx runtime/legacy completion source、stub shielding |
+| Runtime/package | package metadata validator、bootparam head/dyninfo layout、dyn TLV serialization roundtrip、tx runtime/legacy completion source、stub shielding |
 | Scheduler / PMU | 只在进入 overlap/cost-model milestone 后添加：serial/parallel mode、SPM bank/page-color conflict、DDR overlap、PMU `exe_time` / `blocking_time` case |
 
 每个能力阶段的测试面只覆盖该阶段实际启用的 dialect op 和 lowering path。例如 single-tile
@@ -849,7 +849,7 @@ Pass pipeline 建议：
 pass 名、tool flag、test 名和任务号只作为实现索引；架构边界仍由 IR / program contract 和
 verifier/lowering 责任定义。主线 gate 必须通过 `wafer-opt` program pipeline 重放已完成上游链路；
 Wafer named MLIR pipeline 只作为内部构件或局部 debug/unit 覆盖。不能依赖 integration test
-手动拼 pass、Python helper 或手写 fixture 来表示长期 compile flow。
+手动拼 pass、Python helper 或手写测试输入来表示长期 compile flow。
 
 当前用户级 / Integration 主链路不直接暴露下面这些单 pass。2026-06-02 后由 `WaferPipelines`
 注册按 IR 边界命名且真实成立的 pipeline：`wafer-propagate-stablehlo-sharding` 和
@@ -881,7 +881,7 @@ ModelImport/FrontendProgram
   -> committed wafer.tile.region + accepted instruction boundary
   -> topology/execution-mesh + program shard metadata/resource view + launch-block binding
   -> ABI / LLVM lowering
-  -> object + package manifest assembly
+  -> object + package metadata assembly
   -> runtime adapter / board launch
 ```
 
@@ -922,7 +922,7 @@ ModelImport/FrontendProgram
   operands、memref view、`wafer.spm.offset`、`wafer.ddr.offset` 和 descriptor attrs 携带后段可重算的
   memory facts；topology/execution-mesh contract 只保存 regular topology、SPMD rank
   domain policy 和 optional explicit endpoint 这类不能从 local IR 重算的事实。
-  ABI/LLVM lowering、package manifest 和 runtime adapter 如需 launch/resource/address/range/stride
+  ABI/LLVM lowering、package metadata 和 runtime adapter 如需 launch/resource/address/range/stride
   视图，必须在使用点通过同一 analysis/verifier 从 committed IR、accepted offset facts 与
   topology/execution-mesh、program parameter shard metadata/resource view 派生，不能再引入 placed memref /
   access descriptor 旁路协议。

@@ -25,12 +25,12 @@ Serving integration 暂不纳入本文通过标准。
 
 - IR parse / print / verifier / conversion / FileCheck 通过。
 - 已完成 resource planner、dependency/config 和已有 tool-unit tests 通过；golden packet、package
-  serialization 和 manifest roundtrip 只能证明对应工具或 fixture，不替代主线 compiler output。
+  serialization 和 package metadata roundtrip 只能证明对应工具或测试输入，不替代主线 compiler output。
 - pipeline 能生成当前阶段的本地编译产物：committed instruction IR、accepted SPM/DDR offset facts、
   ABI/LLVM artifact、TX8 object/link artifact、default `wafer_*` shim object 和 IR-derived package
-  manifest。runtime adapter / board launch 是后续独立 gate。
+  metadata。runtime adapter / board launch 是后续独立 gate。
 - LLVM dialect / LLVM IR lowering、TX8 device-code compile/link、default `wafer_*` shim object 和
-  package manifest auto-export 分别属于 ABI、object/package 和 wrapper gate，不属于
+  package metadata auto-export 分别属于 ABI、object/package 和 wrapper gate，不属于
   committed-instruction gate 的通过条件。
 
 当前阶段不把板端 launch、device completion、数值对比或 PMU/profiling 作为通过条件。迁移到带实际
@@ -55,7 +55,7 @@ Serving integration 暂不纳入本文通过标准。
 | Compute / Movement | committed instruction IR + accepted offset facts | wrapper family、layout、dtype、shape、issue/fence/wait 合法 |
 | Communication | tile_region / SPM materialization 后的 `wafer.tile.*` collective / `wafer.instr.dte_*` IR | endpoint、token、DTE/FSM resource、wait policy 合法 |
 | ABI / LLVM / golden packet | committed instruction IR + accepted offsets + topology/execution-mesh + program parameter shard metadata/resource view + communication/sync lowering | LLVM dialect call 或 `wafer_*` C ABI / packet builder input 合法；ABI unit/address/wait verified，golden packet 覆盖 wrapper mapping；launch/resource view 从 IR 按需重算，不成为独立 artifact |
-| Object/package | ABI/LLVM artifact + committed IR + topology/execution-mesh + program parameter shard metadata/resource view | `.ll -> .o`、default `wafer_cabi_shim.c -> shim.o`、LLVM object metadata normalization、`.o + shim.o -> kcore .so` device-code compile/link gate 合法；manifest 记录 `model.id`、`model.interface`、`model.resources`、`artifacts` 和 `backend_strategies`；package manifest auto-export 从 committed instruction IR、LLVM IR artifact、device artifact 和 model interface metadata 导出并通过 validator；resource/constant metadata 由同一 resource view analysis 生成 |
+| Object/package | ABI/LLVM artifact + committed IR + topology/execution-mesh + program parameter shard metadata/resource view | `.ll -> .o`、default `wafer_cabi_shim.c -> shim.o`、LLVM object metadata normalization、`.o + shim.o -> kcore .so` device-code compile/link gate 合法；package metadata 记录 `name`、`model.id`、`model.abi`、`model.interface`、`model.resources`、`modules` 和 `entrypoints`；package metadata auto-export 从 committed instruction IR、LLVM IR artifact、module path 和 model interface metadata 导出并通过 validator；resource/constant metadata 由同一 resource view analysis 生成 |
 | Runtime/board | package + adapter | runtime allocation object binding contract、stub shielding、launch/completion/error propagation 合法；板端 completion 在有卡环境验证 |
 
 Gate 通过只说明进入下一层的输入合法，不说明整个 compiler 已完成。
@@ -72,7 +72,7 @@ Gate 通过只说明进入下一层的输入合法，不说明整个 compiler �
 - canonicalization tests：冗余 layout materialization、dead buffer、unused wait/token。
 - resource planner tests：SPM allocation failure feedback、DDR capacity/binding failure。
 - golden packet tests：C ABI 参数到 wrapper/packet field。
-- package serialization tests：manifest、bootparam/TLV fallback、constant bytes metadata。
+- package serialization tests：package metadata、bootparam/TLV fallback、constant bytes metadata。
 - runtime shielding tests：已知 stub path 不能被选为 correctness fence；no-card runtime adapter
   contract 用 Python unittest / ctest 覆盖，不放进默认 lit golden。
 - importer/dependency 最小验证：至少一个 importer path 能产出 verified Wafer program；
@@ -82,7 +82,7 @@ Gate 通过只说明进入下一层的输入合法，不说明整个 compiler �
 P2.F1 之后的任务完成验证还需要一条真实 program chain gate：输入必须来自真实 framework/exporter
 图导出的 program，测试应重放已完成的上游链路，并检查本任务新增的 IR fact、verifier fact、
 resource fact 或 package fact 能在该任务边界正确导出并被直接消费。局部 verifier negative、
-pattern FileCheck、手写 StableHLO/Linalg fixture 和显式 manifest tool-unit fixture 可以保留，但只能补覆盖，不能
+pattern FileCheck、手写 StableHLO/Linalg 测试输入和显式 package metadata tool-unit input 可以保留，但只能补覆盖，不能
 单独作为任务完成证明。若直接下游还没有实现某个硬件可表达语义，完成证明应把缺口记录为下游恢复
 任务，而不是修改上游 program 或 verifier 让该语义消失。
 
@@ -94,10 +94,10 @@ pattern FileCheck、手写 StableHLO/Linalg fixture 和显式 manifest tool-unit
 - downstream consumer：哪个后续 stage 会直接消费该输出。
 - user-level driver / named pipeline：主链路如何由 `wafer-opt` program pipeline 重放；named MLIR
   pipeline 只能作为内部构件或局部覆盖。
-- explicit non-goals：哪些 pass、tool、fixture 或下游缺口不能被算进当前完成证明。
+- explicit non-goals：哪些 pass、tool、测试输入或下游缺口不能被算进当前完成证明。
 - completion gate：哪条命令或测试证明当前 stage 的输出沿真实 program chain 可被消费。
 
-如果验证只能证明某个单 pass、手写 fixture、dump 文件或局部 FileCheck 成立，而不能对应上述
+如果验证只能证明某个单 pass、手写测试输入、dump 文件或局部 FileCheck 成立，而不能对应上述
 contract，它只能作为 unit/debug 覆盖，不能把任务状态推进到主线 `done`。
 
 ## 4. Milestone Gates
@@ -106,7 +106,7 @@ Single-tile local compute：
 
 - 主链路 gate 应消费 P2.F1/P2.S1/P2.S2/R2.4 产出的真实图 program，并继续通过 frontend/local compute /
   tensor collective handoff gate；graph break / fallback 不被当成合法 program。手写 StableHLO/Linalg
-  输入只保留为局部 verifier、lowering pattern 或 bring-up fixture。
+  输入只保留为局部 verifier、lowering pattern 或 bring-up 测试输入。
 - R2.4-pre 之后，主链路 gate 必须通过 `wafer-opt` program pipeline 重放上述链路；单独拼
   `wafer-opt` pass、named MLIR pipeline、`shardy-sdy-opt`、PyTorch/XLA runtime 环境变量和
   verifier tool 只能作为 unit/debug 覆盖。2026-06-02 后，frontend program verifier 入口是
@@ -122,14 +122,14 @@ Single-tile local compute：
   边界来自真实 program chain。
 - 至少一个 compute/movement ABI family 有 golden packet。
 - 当前无卡开发环境要求 generated program compile，并在 TX8 依赖可用时通过 `.ll -> .o -> kcore .so`
-  的 device-code compile/link gate；package manifest roundtrip 只能作为 tool-unit schema 覆盖，
+  的 device-code compile/link gate；package metadata roundtrip 只能作为 tool-unit schema 覆盖，
   不能替代 IR-derived package emission。runtime completion 在带实际计算卡服务器上再验证，届时
   completion 必须来自 tx runtime model/module/stream completion、legacy `TsmRun` synchronous path，或
   device-side drain + 可信 host completion。
 
 Multi-tile no communication：
 
-- 主链路 gate 继续消费同一条真实图 program chain，不重新退回手写 tile_region 或显式 manifest fixture。
+- 主链路 gate 继续消费同一条真实图 program chain，不重新退回手写 tile_region 或显式 package metadata input。
 - execution mesh 覆盖多个 available endpoint，并使用 topology unavailable endpoint metadata。
 - 每个 tile 有 block id / local shard metadata。
 - 无 tile 间 DTE 依赖。
@@ -151,7 +151,7 @@ Single-card collective：
 - 每步 `wafer.instr.dte_send` / `dte_recv` / `dte_wait` token 和 buffer lifetime 合法。
 - raw non-unicast DTE 不作为 correctness path。
 - 旧 `test/Transforms/ring-all-gather*.mlir`、`ring-reduce-scatter.mlir`、`ring-all-reduce.mlir`
-  以及 ring/C ABI issue-op fixtures 已删除。后续 collective gate 必须先经 R2.4
+  以及 ring/C ABI issue-op 测试输入已删除。后续 collective gate 必须先经 R2.4
   `wafer.linalg_ext.collective.*` handoff，再由 R6 恢复 tiled collective materialization 和
   `wafer.instr.dte_*` schedule lowering。
 
@@ -199,9 +199,9 @@ Transformer block vertical slice：
 - 当前无卡开发环境要求 generated program compile；launch/resource metadata 后续应覆盖所有 block
   input/output、resident constants 和 workspace，package/runtime completion 和数值对比在有卡环境验证。
 
-当前 transformer static fixture 只覆盖 frontend/local structured tensor dataflow。旧 full local block
+当前 transformer static 测试输入只覆盖 frontend/local structured tensor dataflow。旧 full local block
 到 group split、single-tile materialization、SPM allocation、DDR binding demand 和 ABI/LLVM lowering
-的 pass 链已删除；workspace buffers、resident constants、launch/resource metadata 和 IR-derived manifest
+的 pass 链已删除；workspace buffers、resident constants、launch/resource metadata 和 IR-derived package metadata
 emission 仍属后续恢复任务。completion、数值对比和 profiling 仍等有卡环境补 gate。
 
 M7 ABI / LLVM program gate：
@@ -216,9 +216,9 @@ M7 ABI / LLVM program gate：
   `runtime/wafer_cabi_shim.c -> shim.o`，再用 repo-vendored `third_party/tx8_deps`
   `riscv64-unknown-elf-gcc` 链接 kcore shared object。`.ll` 不能直接交给 GCC，C shim compile
   必须带 TX8 include 和 RISC-V newlib sysroot。
-- package manifest 必须记录真实模型接口、资源、artifact 和 backend strategy 合同；`tx_module_kernel`
-  只能作为显式 debug/bring-up strategy 记录 entrypoint 和 ABI version。auto-export gate 必须消费当前
-  pipeline 产物导出 manifest 并通过 validator；C stub-only program 只允许作为历史局部 fixture 的
+- package metadata 必须记录真实模型接口、资源、modules 和 entrypoint 合同；`tx.module`
+  只能作为显式 debug/bring-up entrypoint 记录 function 和 binding order。auto-export gate 必须消费当前
+  pipeline 产物导出 package metadata 并通过 validator；C stub-only program 只允许作为历史局部测试输入的
   验证物，不能替代 default `wafer_*` shim object。
 
 M8 runtime / board correctness gate：
@@ -226,7 +226,7 @@ M8 runtime / board correctness gate：
 - runtime adapter 必须区分真实 device completion 和已知 stub path；stub completion 不能作为
   correctness fence。
 - package 中的 tensor、workspace、constant 和 resource metadata 必须能绑定到真实 runtime
-  allocation / DDR / backend strategy launch argument。
+  allocation / DDR / selected entrypoint launch argument。
 - 板端 gate 分别覆盖 single-tile compute、多 tile no-comm、p2p、ring collective、partitioned
   collective 和 full local block 的 launch、completion、错误传播和数值对比。
 - profiling 只作为后续 P9 cost model calibration 的输入，不作为 M8 correctness 通过条件。
@@ -245,8 +245,8 @@ instruction-level elementwise 和 ABI/LLVM lowering。后续 reduce slice 让 sc
 的 instruction-level reduce 和 ABI/LLVM lowering。attention slice 让 QK^T / AV 的 rank-4
 `linalg.generic` contraction materialize 为 batched `wafer.tile.gemm`，并应 lower 到带
 `batch_count`、M/K/N 和 batch/head dimension attrs 的 instruction-level GEMM 和 ABI/LLVM lowering。
-当前 transformer static fixture 覆盖的是 frontend/local structured tensor dataflow，不覆盖
-IR-derived package manifest。当前仍不覆盖 mask/select、dynamic shape 或非 constant-init reduce；
+当前 transformer static 测试输入覆盖的是 frontend/local structured tensor dataflow，不覆盖
+IR-derived package metadata。当前仍不覆盖 mask/select、dynamic shape 或非 constant-init reduce；
 这些是后续 compute/group/resource 恢复项。只要对应语义能由 StableHLO / structured tensor IR 和
 Wafer 硬件能力表达，就不能把当前 static gate 的覆盖范围写成长期不支持。
 
@@ -280,15 +280,15 @@ Wafer 硬件能力表达，就不能把当前 static gate 的覆盖范围写成�
 - golden packet tests：至少覆盖 single-tile local compute 用到的 wrapper family。
 
 如果某个 milestone 暂时只能做文档验证，必须明确说明还缺 build/test harness 或板端 runtime。
-当前没有 local compile gate 能证明 IR pipeline 到 ABI/LLVM lowering。显式 manifest / C stub tool-unit
+当前没有 local compile gate 能证明 IR pipeline 到 ABI/LLVM lowering。显式 package metadata / C stub tool-unit
 coverage 不能替代 IR-derived package emission、LLVM IR lowering、object code emission、真实
 runtime call emission、板端运行、数值正确性、completion 或 profiling 证明。
 
-历史 local integration gate 曾把 `wafer-opt` pipeline 的 IR FileCheck 和 package manifest / C stub
-检查放在同一测试文件内，但 manifest 由 fixed fixture emitter 生成，不是从该次 `wafer-opt` 输出的
+历史 local integration gate 曾把 `wafer-opt` pipeline 的 IR FileCheck 和 package metadata / C stub
+检查放在同一测试文件内，但 package metadata 由 fixed test emitter 生成，不是从该次 `wafer-opt` 输出的
 ABI/LLVM lowering artifact 自动导出。该拼接和 fixed emitter 已删除；当前只能证明 IR lowering 和
 package schema/stub tool-unit 分别可用，不能作为 “package 由当前 lowering 结果生成” 的证据。
-进入 object/package gate 时必须先把 IR-derived manifest emission 作为 gate，并记录 ABI/LLVM artifact、
-model interface、device artifact、model resource metadata 和 backend strategy；当前 package manifest
-auto-export 已能消费 committed instruction IR、LLVM IR artifact、device artifact 和 model interface
-metadata 导出 schema v2 manifest，之后再推进 runtime call / board gate。
+进入 object/package gate 时必须先把 IR-derived package metadata emission 作为 gate，并记录 ABI/LLVM artifact、
+model interface、module path、model resource metadata 和 entrypoints；当前 package metadata
+auto-export 已能消费 committed instruction IR、LLVM IR artifact、module path 和 model interface
+metadata 导出 schema v2 package metadata，之后再推进 runtime call / board gate。

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Emit a compilable C ABI issue sequence from a Wafer package manifest."""
+"""Emit a compilable C ABI issue sequence from Wafer package metadata."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import sys
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from wafer_package_manifest import load_manifest, validate_manifest  # noqa: E402
+from wafer_package_metadata import load_package_metadata, validate_package_metadata  # noqa: E402
 
 
 OP_ENUMS = {
@@ -56,11 +56,11 @@ def format_c_float(value: int | float) -> str:
     return format(float(value), ".9g")
 
 
-def emit_c(manifest: dict) -> str:
-    validate_manifest(manifest)
-    package_ident = c_ident(manifest["package_name"])
-    instructions = manifest["instructions"]
-    interface = manifest["model"]["interface"]
+def emit_c(metadata: dict) -> str:
+    validate_package_metadata(metadata)
+    package_ident = c_ident(metadata["name"])
+    instructions = metadata["instructions"]
+    interface = metadata["model"]["interface"]
     workspace_buffers = interface["workspace"]
     resident_constants = interface["resident_constants"]
 
@@ -210,11 +210,11 @@ def emit_c(manifest: dict) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--manifest", required=True)
+    parser.add_argument("--package-metadata", required=True)
     args = parser.parse_args()
 
-    manifest = load_manifest(args.manifest)
-    sys.stdout.write(emit_c(manifest))
+    metadata = load_package_metadata(args.package_metadata)
+    sys.stdout.write(emit_c(metadata))
     return 0
 
 

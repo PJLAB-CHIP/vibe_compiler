@@ -372,8 +372,8 @@ local reduce 到 `wafer.tile.reduce` 的 path，保留 reduce dimensions
 slice：只接受可由 `linalg.generic` indexing maps、parallel/reduction iterator types、mul-add
 body 和静态 shape relation 验证的 batch/head 形态，materialize 为带显式 batch/head/m/k/n 维度
 attrs 的 `wafer.tile.gemm`。后续 instruction lowering / ABI lowering 必须把它 lower 成带 `batch_count` 和 M/K/N 的
-instruction-level GEMM 以及对应 ABI/LLVM lowering。历史 transformer fixed package fixture 已删除；compiler-managed/resident constant metadata、
-resource summary 一致性验证和 full block package manifest 必须由后续 IR-derived package gate
+instruction-level GEMM 以及对应 ABI/LLVM lowering。历史 transformer fixed package 测试输入已删除；compiler-managed/resident constant metadata、
+resource summary 一致性验证和 full block package metadata 必须由后续 IR-derived package gate
 恢复。当前覆盖仍不是通用 elementwise/reduce/GEMM coverage；更复杂 broadcast、relation/logic、convert、多输入/非
 constant-init reduce 和 mask/select 仍按后续泛化 gate 推进。当前 coverage 不能被解释成
 Wafer compute 语义上不支持这些结构；只要硬件 wrapper / structured lowering 能表达，就应补

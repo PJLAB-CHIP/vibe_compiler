@@ -36,7 +36,7 @@
 - 不要并发运行两个会写同一个 lit output tree 的验证命令，例如同时跑 `ctest --test-dir
   build/wafer-dev` 和 `/root/miniconda3/bin/lit ... build/wafer-dev/test`。部分 `test/Tools` 用固定
   `%t` output 路径，两个 lit 实例会互相清理目录，导致假失败；需要顺序跑。
-- Runtime adapter 测试分层：manifest/exporter 这类 compiler artifact golden 用 lit；no-card
+- Runtime adapter 测试分层：package metadata/exporter 这类 compiler artifact golden 用 lit；no-card
   adapter contract、fake backend call sequence 和 runtime library discovery diagnostics 用 Python
   unittest / ctest；真实板端 launch/completion/error propagation 必须 gated 到有卡环境，不能塞进默认 lit。
 - Shardy 不用 standalone Bazel workspace 作为 Wafer dependency 编译验证；`WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON`
@@ -275,7 +275,7 @@
   `wafer-check-linear-residual-schedule` 或 `wafer-check-mlp-schedule` 这类 case-specific
   transformer acceptance pass。StableHLO->Linalg 只证明 structured tensor lowering；softmax/norm/MLP
   的真实完成证明应来自通用 group formation、tile/materialization、resource verifier 和下游消费。
-- 不要恢复 `tools/wafer_package_manifest.py --emit-*` 这类 fixed package emitter，也不要把
+- 不要恢复 `tools/wafer_package_metadata.py --emit-*` 这类 fixed package emitter，也不要把
   `wafer-compile-stablehlo --emit-static-reference-program` 这类 synthetic program emitter 作为 importer
-  或 package 主线。Manifest validator / C stub generator 只能消费显式 manifest fixture 做 tool-unit
-  覆盖；主线 package manifest 必须由当前 IR / named pipeline 自动导出。
+  或 package 主线。Package metadata validator / C stub generator 只能消费显式 package metadata
+  测试输入做 tool-unit 覆盖；主线 package metadata 必须由当前 IR / named pipeline 自动导出。

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export a Wafer runtime package manifest from compiler artifacts."""
+"""Export Wafer runtime package metadata from compiler modules."""
 
 from __future__ import annotations
 
@@ -16,10 +16,10 @@ from typing import Any
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from wafer_package_manifest import (  # noqa: E402
+from wafer_package_metadata import (  # noqa: E402
     canonical_json,
     compact_tensor_bytes,
-    validate_manifest,
+    validate_package_metadata,
 )
 
 
@@ -136,10 +136,10 @@ def parse_shape_dtype(head: str) -> tuple[list[int], str]:
     shape: list[int] = []
     for piece in pieces[:-1]:
         if piece == "?":
-            fail("dynamic memref dimensions cannot be exported to package manifest")
+            fail("dynamic memref dimensions cannot be exported to package metadata")
         shape.append(int(piece))
     if dtype not in DTYPE_BITS:
-        fail(f"unsupported memref dtype for package manifest export: {dtype}")
+        fail(f"unsupported memref dtype for package metadata export: {dtype}")
     return shape, dtype
 
 
@@ -257,12 +257,12 @@ def parse_memref_type(memref_type: str) -> MemRefInfo:
     )
 
 
-def parse_entrypoint(llvm_ir: str, explicit_entrypoint: str | None) -> str:
-    if explicit_entrypoint:
+def parse_function(llvm_ir: str, explicit_function: str | None) -> str:
+    if explicit_function:
         return (
-            explicit_entrypoint[1:]
-            if explicit_entrypoint.startswith("@")
-            else explicit_entrypoint
+            explicit_function[1:]
+            if explicit_function.startswith("@")
+            else explicit_function
         )
     defined = re.findall(
         r'(?m)^\s*define\b[^@]*@(?:"([^"]+)"|([A-Za-z_.$][A-Za-z0-9_.$]*))\s*\(',
@@ -276,7 +276,7 @@ def parse_entrypoint(llvm_ir: str, explicit_entrypoint: str | None) -> str:
         return abi_names[0]
     if len(names) == 1:
         return names[0]
-    fail("LLVM IR has multiple candidate entrypoints; pass --entrypoint")
+    fail("LLVM IR has multiple candidate functions; pass --function")
 
 
 def parse_int_attr(segment: str, name: str) -> int:
@@ -438,9 +438,9 @@ def binding_order(*groups: list[dict[str, Any]]) -> list[str]:
     return names
 
 
-def artifact_name_from_path(path: str) -> str:
-    artifact = pathlib.Path(path)
-    return artifact.stem
+def module_name_from_path(path: str) -> str:
+    module = pathlib.Path(path)
+    return module.stem
 
 
 def validate_model_interface(
@@ -453,13 +453,13 @@ def validate_model_interface(
     return {"inputs": inputs, "outputs": outputs}
 
 
-def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
+def build_metadata(args: argparse.Namespace) -> dict[str, Any]:
     model_interface = validate_model_interface(
         load_json_object(args.model_interface, "model interface")
     )
     instruction_ir = read_text(args.instruction_ir, "instruction IR")
     llvm_ir = read_text(args.llvm_ir, "LLVM IR")
-    entrypoint = parse_entrypoint(llvm_ir, args.entrypoint)
+    function = parse_function(llvm_ir, args.function)
 
     model_inputs = [
         model_external_tensor(tensor, "input") for tensor in model_interface["inputs"]
@@ -469,11 +469,11 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
     ]
     input_bytes = sum(binding_bytes(tensor) for tensor in model_inputs)
     output_bytes = sum(binding_bytes(tensor) for tensor in model_outputs)
-    artifact_name = artifact_name_from_path(args.device_artifact)
+    module_name = module_name_from_path(args.module_path)
 
-    manifest = {
+    metadata = {
         "schema_version": 2,
-        "package_name": args.package_name,
+        "name": args.name,
         "runtime": {
             "mode": args.runtime_mode,
             "completion_source": args.completion_source,
@@ -486,7 +486,7 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
         },
         "model": {
             "id": args.model_id,
-            "abi_version": args.abi_version,
+            "abi": args.abi,
             "interface": {
                 "inputs": model_inputs,
                 "outputs": model_outputs,
@@ -502,21 +502,20 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
                 "resident_constant_bytes": 0,
             },
         },
-        "artifacts": [
+        "modules": [
             {
-                "name": artifact_name,
-                "kind": "kcore_shared_object",
-                "path": args.device_artifact,
+                "name": module_name,
+                "format": "tx.kcore",
+                "path": args.module_path,
             }
         ],
-        "backend_strategies": [
+        "entrypoints": [
             {
                 "name": "debug_kernel",
-                "kind": "tx_module_kernel",
-                "artifact": artifact_name,
-                "entrypoint": entrypoint,
-                "abi_version": args.abi_version,
-                "debug_or_bringup": True,
+                "executor": "tx.module",
+                "module": module_name,
+                "function": function,
+                "debug": True,
                 "grid": [1, 1, 1],
                 "block": [1, 1, 1],
                 "binding_order": binding_order(model_inputs, model_outputs),
@@ -524,25 +523,25 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
         ],
         "instructions": parse_instructions(instruction_ir),
     }
-    validate_manifest(manifest)
-    return manifest
+    validate_package_metadata(metadata)
+    return metadata
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--package-name", required=True)
+    parser.add_argument("--name", required=True)
     parser.add_argument("--model-id", required=True)
-    parser.add_argument("--abi-version", required=True)
+    parser.add_argument("--abi", required=True)
     parser.add_argument("--model-interface", required=True)
     parser.add_argument("--instruction-ir", required=True)
     parser.add_argument("--llvm-ir", required=True)
-    parser.add_argument("--device-artifact", required=True)
-    parser.add_argument("--entrypoint")
+    parser.add_argument("--module-path", required=True)
+    parser.add_argument("--function")
     parser.add_argument("--runtime-mode", default="tx")
     parser.add_argument("--completion-source", default="runtime_stream_wait")
     args = parser.parse_args()
 
-    sys.stdout.write(canonical_json(build_manifest(args)))
+    sys.stdout.write(canonical_json(build_metadata(args)))
     return 0
 
 

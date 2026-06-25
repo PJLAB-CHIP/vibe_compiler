@@ -73,7 +73,7 @@ P2.S2 Wafer-owned XLA SPMD partition stage。P2.S2 的用户级入口是
 在 Wafer compiler 侧执行 sharding propagation 并调用 pinned-XLA SPMD helper。StableHLO program
 directory 是该 program 当前的序列化形式，不是与 MLIR 分离的第二条编译路径。终态覆盖两类 program：用户显式标记 sharding 的图，
 以及完全没有用户 sharding seed、需要 Wafer 默认 mesh policy 的图。SPMD pipeline 必须消费 P2.F1
-产出的 verified frontend program，而不是只 parse 手写 `sdy.mesh` fixture。主 pipeline 边界是：
+产出的 verified frontend program，而不是只 parse 手写 `sdy.mesh` 测试输入。主 pipeline 边界是：
 
 ```text
 verified StableHLO / optional SDY program
@@ -113,7 +113,7 @@ P2.S1 不能以下游当前 lowering、endpoint projection 或 runtime 尚未实
 产出的合法语义能由 Wafer 硬件通信、存储或同步能力表达，但当前 Wafer IR 还没有清楚表示，P2.S1
 必须先补 op / attr / type / verifier contract，或在任务队列中明确把对应下游 lowering 作为恢复项。
 multi replica group、rank selection policy、shard slicing 和 collective metadata 都属于这类事实：
-它们应进入 per-rank program 或后续 handoff IR，而不是被静默退回 single group fixture，也不能
+它们应进入 per-rank program 或后续 handoff IR，而不是被静默退回 single group 测试输入，也不能
 因为某个 ring / endpoint projection pass 暂时未覆盖就被当成 SPMD 不支持。
 
 P2.S1 只应拒绝两类输入：exporter / Shardy 产物本身非法或自相矛盾；或者目标硬件 / ABI 证据明确
@@ -183,11 +183,11 @@ P2.S2 工程 gate 必须把 XLA SPMD partitioner 或等价 local-body partitioni
   编译。当前 `lib/Wafer/Transforms/SPMD/XlaSpmdPartitionerMain.cpp` 就是这种 Wafer-owned stage
   adapter，`tools/build_xla_spmd_partitioner_helper.py` 只是构建桥。
 - 旧 Python post-SPMD helper 和相关 tests 已删除。P2.S2 的 partitioned StableHLO 主链产物只能由
-  Wafer-owned compiler stage 保存；不允许用 Python helper、手写 sidecar 或 fixture 冒充这个缺口。
+  Wafer-owned compiler stage 保存；不允许用 Python helper、手写 sidecar 或测试输入冒充这个缺口。
 - no-user-sharding 分支当前只在文本 StableHLO/SDY program 中用
   `--wafer-apply-default-spmd-sharding` / `wafer-propagate-stablehlo-sharding` 补 function-input seed；
   P2.S2 再消费该 stage 输出 program。默认 policy 的 rank count / axes 必须来自
-  `wafer.execution.mesh`；局部 pass / named pipeline fixture 必须显式携带
+  `wafer.execution.mesh`；局部 pass / named pipeline 测试输入必须显式携带
   `wafer.target.topology` 和 `wafer.execution.mesh`，不能用 pass option 绕过 execution mesh。默认
   policy 只标记输入/参数，不给中间 op 或 function
   result 造约束。
@@ -296,7 +296,7 @@ program 中补了一份临时描述，既没有证明 XLA SPMD partitioner 产�
 允许保留的临时测试只有两类：
 
 - frontend mark 最小验证：证明 PyTorch/XLA `mark_sharding` 可被当前 capture 路径观察或追踪。
-- SDY / StableHLO dialect unit fixture：证明工具链能 parse / verify / run Shardy propagation。
+- SDY / StableHLO dialect unit 测试输入：证明工具链能 parse / verify / run Shardy propagation。
 
 这些测试都不能标记 P2.S2 完成。P2.S2 完成证明必须消费真实 P2.F1 program 和 Wafer Shardy
 propagation 输出：用户策略消费真实 mark 后的 program；no-user-sharding 策略消费同图未标记
@@ -356,7 +356,7 @@ results 下约束。Shardy propagation 负责把 seed 推到内部 value 和结�
 - 不依赖 input / parameter 名字；若需要区分 user input、parameter、constant 或 state，必须来自
   frontend 已 materialize 到 IR 的可验证 metadata。
 - 默认 policy 只生成 SDY / StableHLO 可解释的 sharding seed，不生成 `wafer.spmd.*`、resource-projection op、
-  package manifest 或其它后段协议。
+  package metadata 或其它后段协议。
 
 这个 policy 的目标是让未显式标记的图默认利用已选择的 valid execution mesh，同时仍把通信插入和
 per-rank local body 生成留在 SPMD partitioner 内。找不到合适切分维度时的 replicated seed 不是
@@ -517,7 +517,7 @@ P2.S2 的完成证明必须至少覆盖：
 - P2.F1 matmul 图在 data / batch、column parallel、row / contracting、2D output、2D contracting +
   output 和 partial replication 策略下都能通过 frontend mark 导出 sharding program；frontend
   export 主图保持 4096 形态，P2.S2 helper / lit gate 可使用同构小尺寸图重放 partition program
-  chain，避免把验证变成 4096 工作集容量测试。主 gate 不以手写 `sdy.sharding` fixture 代替真实导出。
+  chain，避免把验证变成 4096 工作集容量测试。主 gate 不以手写 `sdy.sharding` 测试输入代替真实导出。
 - Shardy propagation 能直接消费每个 strategy 的 `functions/forward.mlir`，并且 XLA SPMD
   partitioner / equivalent service 能产出 partitioned StableHLO 或等价 per-rank StableHLO body。
 - `wafer-opt --program-pipeline=stablehlo-spmd-to-linalg` 能从真实 PyTorch/XLA sharded program
@@ -548,11 +548,11 @@ per-rank program
   -> topology/execution-mesh + program shard metadata/resource view / communication / memory planning gate
 ```
 
-手写 `sdy.mesh` / StableHLO collective fixture 只保留为 dialect/verifier/unit 级测试。它不能替代
+手写 `sdy.mesh` / StableHLO collective 测试输入只保留为 dialect/verifier/unit 级测试。它不能替代
 “verified frontend program -> Wafer Shardy propagation -> Wafer-owned SPMD partition -> per-rank program”的主链路证明。
 
 因此，P2.S2 之后每个消费 sharding / per-rank program 的任务完成时，都必须继续使用真实图导出的
-program chain 做端到端 gate。测试不能只构造一个新的手写 per-rank fixture，也不能只检查当前层
+program chain 做端到端 gate。测试不能只构造一个新的手写 per-rank 测试输入，也不能只检查当前层
 dump；必须证明前序 sharding facts 在本任务边界的 verifier、lowering、endpoint、communication
 或 resource 逻辑中被实际使用。若直接下游尚未支持某个硬件可表达语义，应把缺口落成下游恢复任务
 或补充 IR 表示，而不是修改上游 program 让其避开该语义。

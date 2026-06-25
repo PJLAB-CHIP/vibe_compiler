@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate and roundtrip Wafer runtime package manifests."""
+"""Validate and roundtrip Wafer runtime package metadata."""
 
 from __future__ import annotations
 
@@ -17,10 +17,10 @@ ALLOWED_COMPLETION_SOURCES = {
     "legacy_model_sync",
 }
 
-ALLOWED_ARTIFACT_KINDS = {
-    "bpm_table_descriptor",
-    "graph_directory",
-    "kcore_shared_object",
+ALLOWED_MODULE_FORMATS = {
+    "tx.bpm",
+    "tx.graph",
+    "tx.kcore",
 }
 
 ALLOWED_RUNTIME_MODES = {
@@ -32,12 +32,12 @@ ALLOWED_ABI_VERSIONS = {
     "wafer-cabi-v0",
 }
 
-ALLOWED_BACKEND_STRATEGY_KINDS = {
-    "legacy_tsm_run",
-    "tx_cluster_kernel",
-    "tx_graph",
-    "tx_model_bpm",
-    "tx_module_kernel",
+ALLOWED_ENTRYPOINT_EXECUTORS = {
+    "legacy.tsm",
+    "tx.cluster",
+    "tx.graph",
+    "tx.model",
+    "tx.module",
 }
 
 ALLOWED_BPM_DESCRIPTOR_STATES = {
@@ -84,8 +84,8 @@ SUPPORTED_REDUCE_KINDS = {
 }
 
 
-def canonical_json(manifest: dict[str, Any]) -> str:
-    return json.dumps(manifest, indent=2) + "\n"
+def canonical_json(metadata: dict[str, Any]) -> str:
+    return json.dumps(metadata, indent=2) + "\n"
 
 
 def fail(message: str) -> None:
@@ -108,6 +108,12 @@ def require_non_empty_string(value: Any, name: str) -> str:
     if not isinstance(value, str) or not value:
         fail(f"{name} must be a non-empty string")
     return value
+
+
+def reject_deprecated_keys(item: dict[str, Any], name: str, keys: set[str]) -> None:
+    for key in sorted(keys):
+        if key in item:
+            fail(f"{name}.{key} is deprecated")
 
 
 def require_positive_int(value: Any, name: str) -> int:
@@ -163,24 +169,25 @@ def validate_tensor(tensor: Any, name: str) -> tuple[str, list[int]]:
     return tensor_name, checked_shape
 
 
-def validate_artifacts(value: Any) -> dict[str, dict[str, Any]]:
-    artifacts = require_list(value, "artifacts")
-    if not artifacts:
-        fail("artifacts must be non-empty")
+def validate_modules(value: Any) -> dict[str, dict[str, Any]]:
+    modules = require_list(value, "modules")
+    if not modules:
+        fail("modules must be non-empty")
     by_name: dict[str, dict[str, Any]] = {}
-    for index, artifact in enumerate(artifacts):
-        name = f"artifacts[{index}]"
-        item = require_dict(artifact, name)
-        artifact_name = require_non_empty_string(item.get("name"), f"{name}.name")
-        if artifact_name in by_name:
-            fail("artifact names must be unique")
-        kind = require_non_empty_string(item.get("kind"), f"{name}.kind")
-        if kind not in ALLOWED_ARTIFACT_KINDS:
-            fail(f"{name}.kind is not supported")
+    for index, module in enumerate(modules):
+        name = f"modules[{index}]"
+        item = require_dict(module, name)
+        reject_deprecated_keys(item, name, {"kind"})
+        module_name = require_non_empty_string(item.get("name"), f"{name}.name")
+        if module_name in by_name:
+            fail("module names must be unique")
+        module_format = require_non_empty_string(item.get("format"), f"{name}.format")
+        if module_format not in ALLOWED_MODULE_FORMATS:
+            fail(f"{name}.format is not supported")
         path = require_non_empty_string(item.get("path"), f"{name}.path")
-        if kind == "kcore_shared_object" and not path.endswith(".so"):
+        if module_format == "tx.kcore" and not path.endswith(".so"):
             fail(f"{name}.path must name a kcore shared object")
-        by_name[artifact_name] = item
+        by_name[module_name] = item
     return by_name
 
 
@@ -207,7 +214,9 @@ def validate_runtime(value: Any) -> None:
         "stream_policy",
         "copy_policy",
     ):
-        require_non_empty_string(requirements.get(field), f"runtime.requirements.{field}")
+        require_non_empty_string(
+            requirements.get(field), f"runtime.requirements.{field}"
+        )
 
 
 def validate_tensor_storage_demand(item: Any, name: str) -> tuple[str, int]:
@@ -231,7 +240,9 @@ def validate_tensor_storage_demand(item: Any, name: str) -> tuple[str, int]:
     return demand_name, bytes_value
 
 
-def validate_workspace_buffers(value: Any, name: str = "workspace") -> tuple[int, set[str], dict[str, int]]:
+def validate_workspace_buffers(
+    value: Any, name: str = "workspace"
+) -> tuple[int, set[str], dict[str, int]]:
     total = 0
     seen_names = set()
     binding_bytes: dict[str, int] = {}
@@ -243,7 +254,9 @@ def validate_workspace_buffers(value: Any, name: str = "workspace") -> tuple[int
             fail("workspace buffer names must be unique")
         seen_names.add(buffer_name)
         require_non_empty_string(item.get("producer"), f"{item_name}.producer")
-        require_non_empty_string(item.get("last_consumer"), f"{item_name}.last_consumer")
+        require_non_empty_string(
+            item.get("last_consumer"), f"{item_name}.last_consumer"
+        )
         total += bytes_value
         binding_bytes[buffer_name] = bytes_value
     return total, seen_names, binding_bytes
@@ -281,7 +294,9 @@ def validate_resident_constants(
             if source_binding not in parameter_names:
                 fail(f"{item_name}.source_binding must refer to a model parameter")
         elif source != "embedded_constant":
-            fail(f"{item_name}.source must be launch_input, parameter, or embedded_constant")
+            fail(
+                f"{item_name}.source must be launch_input, parameter, or embedded_constant"
+            )
         if constant_name in output_names:
             fail(f"{item_name}.name must not refer to a model output")
         total += bytes_value
@@ -310,7 +325,10 @@ def validate_external_tensor(
     if bytes_value != expected_bytes:
         fail(f"{name}.binding.bytes must match compact tensor storage size")
     require_positive_int(binding.get("alignment"), f"{name}.binding.alignment")
-    if require_bool(binding.get("read_only"), f"{name}.binding.read_only") != read_only:
+    if (
+        require_bool(binding.get("read_only"), f"{name}.binding.read_only")
+        != read_only
+    ):
         expected = "read-only" if read_only else "writable"
         fail(f"{name}.binding must be {expected}")
     require_bool(binding.get("host_visible"), f"{name}.binding.host_visible")
@@ -327,17 +345,20 @@ def merge_binding(
 
 def validate_model(value: Any) -> tuple[str, str, dict[str, int]]:
     model = require_dict(value, "model")
+    reject_deprecated_keys(model, "model", {"abi_version"})
     model_id = require_non_empty_string(model.get("id"), "model.id")
-    abi_version = require_non_empty_string(model.get("abi_version"), "model.abi_version")
-    if abi_version not in ALLOWED_ABI_VERSIONS:
-        fail("model.abi_version is not supported")
+    abi = require_non_empty_string(model.get("abi"), "model.abi")
+    if abi not in ALLOWED_ABI_VERSIONS:
+        fail("model.abi is not supported")
 
     interface = require_dict(model.get("interface"), "model.interface")
     binding_bytes: dict[str, int] = {}
 
     input_bytes = 0
     input_names: set[str] = set()
-    for index, tensor in enumerate(require_list(interface.get("inputs"), "model.interface.inputs")):
+    for index, tensor in enumerate(
+        require_list(interface.get("inputs"), "model.interface.inputs")
+    ):
         name, bytes_value = validate_external_tensor(
             tensor, f"model.interface.inputs[{index}]", "external_input", True
         )
@@ -347,7 +368,9 @@ def validate_model(value: Any) -> tuple[str, str, dict[str, int]]:
 
     output_bytes = 0
     output_names: set[str] = set()
-    for index, tensor in enumerate(require_list(interface.get("outputs"), "model.interface.outputs")):
+    for index, tensor in enumerate(
+        require_list(interface.get("outputs"), "model.interface.outputs")
+    ):
         name, bytes_value = validate_external_tensor(
             tensor, f"model.interface.outputs[{index}]", "external_output", False
         )
@@ -391,7 +414,9 @@ def validate_model(value: Any) -> tuple[str, str, dict[str, int]]:
         fail("model input and output names must be distinct")
     if (input_names | output_names | parameter_names) & workspace_names:
         fail("workspace names must be distinct from external model bindings")
-    if (input_names | output_names | parameter_names | workspace_names) & resident_names:
+    if (
+        input_names | output_names | parameter_names | workspace_names
+    ) & resident_names:
         fail("resident constant names must be distinct from other model bindings")
 
     resources = require_dict(model.get("resources"), "model.resources")
@@ -410,12 +435,15 @@ def validate_model(value: Any) -> tuple[str, str, dict[str, int]]:
         fail(
             "model.resources.resident_constant_bytes does not match resident constants"
         )
-    if "ddr_parameter_bytes" in resources and resources.get("ddr_parameter_bytes") != parameter_bytes:
+    if (
+        "ddr_parameter_bytes" in resources
+        and resources.get("ddr_parameter_bytes") != parameter_bytes
+    ):
         fail("model.resources.ddr_parameter_bytes does not match model parameters")
     if parameter_bytes and "ddr_parameter_bytes" not in resources:
         fail("model.resources.ddr_parameter_bytes is required when parameters exist")
 
-    return model_id, abi_version, binding_bytes
+    return model_id, abi, binding_bytes
 
 
 def validate_dim3(value: Any, name: str) -> None:
@@ -438,88 +466,107 @@ def validate_binding_order(
             fail(f"{name}[{index}] does not name a model binding")
 
 
-def validate_backend_strategies(
+def validate_entrypoints(
     value: Any,
-    artifacts: dict[str, dict[str, Any]],
-    model_abi_version: str,
+    modules: dict[str, dict[str, Any]],
     binding_bytes: dict[str, int],
     runtime_mode: str,
 ) -> None:
-    strategies = require_list(value, "backend_strategies")
-    if not strategies:
-        fail("backend_strategies must be non-empty")
+    entrypoints = require_list(value, "entrypoints")
+    if not entrypoints:
+        fail("entrypoints must be non-empty")
     seen_names = set()
-    for index, strategy in enumerate(strategies):
-        name = f"backend_strategies[{index}]"
-        item = require_dict(strategy, name)
-        strategy_name = require_non_empty_string(item.get("name"), f"{name}.name")
-        if strategy_name in seen_names:
-            fail("backend strategy names must be unique")
-        seen_names.add(strategy_name)
-        kind = require_non_empty_string(item.get("kind"), f"{name}.kind")
-        if kind not in ALLOWED_BACKEND_STRATEGY_KINDS:
-            fail(f"{name}.kind is not supported")
-        validate_binding_order(item.get("binding_order"), f"{name}.binding_order", binding_bytes)
+    for index, entrypoint in enumerate(entrypoints):
+        name = f"entrypoints[{index}]"
+        item = require_dict(entrypoint, name)
+        reject_deprecated_keys(
+            item,
+            name,
+            {
+                "abi_version",
+                "debug_or_bringup",
+                "entrypoint",
+                "graph_module",
+                "kind",
+            },
+        )
+        entrypoint_name = require_non_empty_string(item.get("name"), f"{name}.name")
+        if entrypoint_name in seen_names:
+            fail("entrypoint names must be unique")
+        seen_names.add(entrypoint_name)
+        executor = require_non_empty_string(item.get("executor"), f"{name}.executor")
+        if executor not in ALLOWED_ENTRYPOINT_EXECUTORS:
+            fail(f"{name}.executor is not supported")
+        validate_binding_order(
+            item.get("binding_order"), f"{name}.binding_order", binding_bytes
+        )
 
-        if kind in {"tx_module_kernel", "tx_cluster_kernel"}:
-            artifact = require_non_empty_string(item.get("artifact"), f"{name}.artifact")
-            if artifact not in artifacts:
-                fail(f"{name}.artifact does not name a package artifact")
-            if artifacts[artifact]["kind"] != "kcore_shared_object":
-                fail(f"{name}.artifact must reference a kcore_shared_object")
-            entrypoint = require_non_empty_string(item.get("entrypoint"), f"{name}.entrypoint")
-            if entrypoint.startswith("@"):
-                fail(f"{name}.entrypoint must not include @")
-            abi_version = require_non_empty_string(item.get("abi_version"), f"{name}.abi_version")
-            if abi_version != model_abi_version:
-                fail(f"{name}.abi_version must match model.abi_version")
-            if require_bool(item.get("debug_or_bringup"), f"{name}.debug_or_bringup") is not True:
-                fail(f"{name}.debug_or_bringup must be true")
+        if executor in {"tx.module", "tx.cluster"}:
+            module = require_non_empty_string(item.get("module"), f"{name}.module")
+            if module not in modules:
+                fail(f"{name}.module does not name a package module")
+            if modules[module]["format"] != "tx.kcore":
+                fail(f"{name}.module must reference a tx.kcore module")
+            function = require_non_empty_string(
+                item.get("function"), f"{name}.function"
+            )
+            if function.startswith("@"):
+                fail(f"{name}.function must not include @")
+            if require_bool(item.get("debug"), f"{name}.debug") is not True:
+                fail(f"{name}.debug must be true")
             validate_dim3(item.get("grid"), f"{name}.grid")
             validate_dim3(item.get("block"), f"{name}.block")
-            if kind == "tx_cluster_kernel":
+            if executor == "tx.cluster":
                 validate_dim3(item.get("cluster"), f"{name}.cluster")
-        elif kind == "tx_model_bpm":
-            descriptor = require_dict(item.get("bpm_descriptor"), f"{name}.bpm_descriptor")
+        elif executor == "tx.model":
+            descriptor = require_dict(
+                item.get("bpm_descriptor"), f"{name}.bpm_descriptor"
+            )
             state = require_non_empty_string(
                 descriptor.get("state"), f"{name}.bpm_descriptor.state"
             )
             if state not in ALLOWED_BPM_DESCRIPTOR_STATES:
                 fail(f"{name}.bpm_descriptor.state is not supported")
-        elif kind == "tx_graph":
-            artifact = require_non_empty_string(item.get("graph_artifact"), f"{name}.graph_artifact")
-            if artifact not in artifacts:
-                fail(f"{name}.graph_artifact does not name a package artifact")
-            if artifacts[artifact]["kind"] != "graph_directory":
-                fail(f"{name}.graph_artifact must reference a graph_directory")
+        elif executor == "tx.graph":
+            module = require_non_empty_string(item.get("module"), f"{name}.module")
+            if module not in modules:
+                fail(f"{name}.module does not name a package module")
+            if modules[module]["format"] != "tx.graph":
+                fail(f"{name}.module must reference a tx.graph module")
             require_non_empty_string(item.get("mod_symbol"), f"{name}.mod_symbol")
-        elif kind == "legacy_tsm_run" and runtime_mode != "legacy_tsm":
-            fail(f"{name}.kind legacy_tsm_run requires legacy_tsm runtime mode")
+        elif executor == "legacy.tsm" and runtime_mode != "legacy_tsm":
+            fail(f"{name}.executor legacy.tsm requires legacy_tsm runtime mode")
 
 
-def validate_manifest(manifest: dict[str, Any]) -> None:
-    if manifest.get("schema_version") != 2:
+def validate_package_metadata(metadata: dict[str, Any]) -> None:
+    if metadata.get("schema_version") != 2:
         fail("schema_version must be 2")
-    require_non_empty_string(manifest.get("package_name"), "package_name")
+    reject_deprecated_keys(
+        metadata,
+        "metadata",
+        {"artifacts", "backend_strategies", "package_name"},
+    )
+    require_non_empty_string(metadata.get("name"), "name")
 
-    validate_runtime(manifest.get("runtime"))
-    runtime_mode = require_dict(manifest.get("runtime"), "runtime")["mode"]
-    _model_id, model_abi_version, binding_bytes = validate_model(manifest.get("model"))
-    artifacts = validate_artifacts(manifest.get("artifacts"))
-    validate_backend_strategies(
-        manifest.get("backend_strategies"),
-        artifacts,
-        model_abi_version,
+    validate_runtime(metadata.get("runtime"))
+    runtime_mode = require_dict(metadata.get("runtime"), "runtime")["mode"]
+    _model_id, _model_abi, binding_bytes = validate_model(metadata.get("model"))
+    modules = validate_modules(metadata.get("modules"))
+    validate_entrypoints(
+        metadata.get("entrypoints"),
+        modules,
         binding_bytes,
         runtime_mode,
     )
 
-    instructions = require_list(manifest.get("instructions"), "instructions")
+    instructions = require_list(metadata.get("instructions"), "instructions")
     for index, op in enumerate(instructions):
         item = require_dict(op, f"instructions[{index}]")
-        mnemonic = require_non_empty_string(item.get("op"), f"instructions[{index}].op")
+        mnemonic = require_non_empty_string(
+            item.get("op"), f"instructions[{index}].op"
+        )
         if mnemonic not in SUPPORTED_INSTRUCTION_OPS:
-            fail(f"instructions[{index}].op is not supported by the package manifest")
+            fail(f"instructions[{index}].op is not supported by the package metadata")
         wait_policy = item.get("wait_policy")
         if mnemonic == "wafer.instr.local_fence":
             if wait_policy != "local_wait":
@@ -546,11 +593,15 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
                     item.get("batch_count"), f"instructions[{index}].batch_count"
                 )
         elif mnemonic == "wafer.instr.elementwise":
-            kind = require_non_empty_string(item.get("kind"), f"instructions[{index}].kind")
+            kind = require_non_empty_string(
+                item.get("kind"), f"instructions[{index}].kind"
+            )
             if kind not in SUPPORTED_ELEMENTWISE_KINDS:
                 fail(f"instructions[{index}].kind is not supported")
         elif mnemonic == "wafer.instr.reduce":
-            kind = require_non_empty_string(item.get("kind"), f"instructions[{index}].kind")
+            kind = require_non_empty_string(
+                item.get("kind"), f"instructions[{index}].kind"
+            )
             if kind not in SUPPORTED_REDUCE_KINDS:
                 fail(f"instructions[{index}].kind is not supported")
             dimensions = require_list(
@@ -559,22 +610,28 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
             if not dimensions:
                 fail(f"instructions[{index}].dimensions must be non-empty")
             if len(dimensions) > 4:
-                fail(f"instructions[{index}].dimensions supports at most four dimensions")
+                fail(
+                    f"instructions[{index}].dimensions supports at most four dimensions"
+                )
             for dim_index, dim in enumerate(dimensions):
                 require_non_negative_int(
                     dim, f"instructions[{index}].dimensions[{dim_index}]"
                 )
-            require_number(item.get("init_value"), f"instructions[{index}].init_value")
+            require_number(
+                item.get("init_value"), f"instructions[{index}].init_value"
+            )
         elif "kind" in item:
-            fail(f"instructions[{index}].kind is only valid for elementwise or reduce ops")
+            fail(
+                f"instructions[{index}].kind is only valid for elementwise or reduce ops"
+            )
 
 
-def load_manifest(path: str) -> dict[str, Any]:
+def load_package_metadata(path: str) -> dict[str, Any]:
     if path == "-":
         text = sys.stdin.read()
     else:
         text = pathlib.Path(path).read_text(encoding="utf-8")
-    return require_dict(json.loads(text), "manifest")
+    return require_dict(json.loads(text), "metadata")
 
 
 def main() -> int:
@@ -584,10 +641,10 @@ def main() -> int:
     mode.add_argument("--validate")
     args = parser.parse_args()
 
-    manifest = load_manifest(args.roundtrip or args.validate)
-    validate_manifest(manifest)
+    metadata = load_package_metadata(args.roundtrip or args.validate)
+    validate_package_metadata(metadata)
     if args.roundtrip:
-        sys.stdout.write(canonical_json(manifest))
+        sys.stdout.write(canonical_json(metadata))
     return 0
 
 

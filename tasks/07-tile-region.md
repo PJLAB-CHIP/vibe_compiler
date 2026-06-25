@@ -87,7 +87,7 @@ wafer.group
   tile-region IR，用作 legality/debug/后续 pass bring-up。它仍不是 selected candidate，
   也不是 SPM allocator 的直接输入；rejected tile-region IR 不进入主线 committed IR。
 - committed `wafer.tile.region`：committed materialization 只把 candidate-selection 已选中、且已通过 candidate gates
-  的 candidate artifact 写入主 IR。后续 endpoint projection、ABI/LLVM lowering 和 package manifest
+  的 candidate artifact 写入主 IR。后续 endpoint projection、ABI/LLVM lowering 和 package metadata
   只从 committed IR、accepted offset facts、topology/execution-mesh 和 program shard metadata/resource view
   派生下游参数，
   不重新决定 group 是否可行，也不复制 placed/access descriptor 中间协议。
@@ -157,7 +157,7 @@ table 补协议。
 | `linalg.fill` | 生成显式 `wafer.tile.fill`，写入 existing storage；fill result 映射为该 initialized buffer | supported for scalar fill | `wafer.tile.fill` 暴露 target-abstract write relation；具体是否 lower 成 CT fill、memset 或 immediate pattern 由 instruction lowering 决定。 |
 | `linalg.matmul` | lhs/rhs materialize 到 `cx`，生成 `wafer.tile.gemm`，结果记录为 `cx` | supported for simple `linalg.matmul` | pattern 应检查 rank、dtype、accumulator/result relation、layout requirement；batch matmul / generic contraction 另列，不应混成 matmul 特判。 |
 | `linalg.generic` simple elementwise / relation | 单 result、单 `linalg.yield`，typed scalar mapper 识别 add/sub/mul/div/min/max/neg/exp/sqrt/rsqrt/tanh 和 cmp eq/ne/lt/le/gt/ge；生成 `wafer.tile.elementwise` 并带原 `indexing_maps` | supported for simple CT family | 不靠 op name string 恢复语义；复杂 region、多 result、select/mask 和 convert 仍需要明确 kind / op contract。 |
-| `linalg.reduce` / reduction-like generic | reduction iterator + scalar combiner lower 到 `wafer.tile.reduce`；input/result materialize 到 aligned `cx`/`ncx`；constant init 用 `init_value`，dynamic init 用 scalar operand | supported for native sum/max/min | `avg` 是 Wafer reduce kind，但当前 R2.4 fixture 尚未产出可直接识别的 avg combiner；`mul` 不伪装 native。 |
+| `linalg.reduce` / reduction-like generic | reduction iterator + scalar combiner lower 到 `wafer.tile.reduce`；input/result materialize 到 aligned `cx`/`ncx`；constant init 用 `init_value`，dynamic init 用 scalar operand | supported for native sum/max/min | `avg` 是 Wafer reduce kind，但当前 R2.4 测试输入尚未产出可直接识别的 avg combiner；`mul` 不伪装 native。 |
 | passthrough `linalg.generic` for broadcast / transpose / copy | 根据 permutation-only indexing map lower 到 `wafer.tile.broadcast`、`wafer.tile.transpose` 或 `wafer.tile.copy` | supported for static permutation maps | 这是 movement，不是 elementwise compute；result map 必须是 identity，动态/非 permutation-only map 结构化失败。 |
 | `tensor.extract_slice` / `tensor.insert_slice` | tile-local source/dest 的 static offsets/sizes/strides lower 到 `wafer.tile.extract_slice` / `wafer.tile.insert_slice`；external boundary source 的 static extract 直接生成 DDR `memref.subview` + `wafer.tile.load`；direct-yield output boundary insert 生成 DDR `memref.subview` + `wafer.tile.store` | supported for static slices，包括 MLIR 合法的 rank-reduced slice | move op verifier 检查 full slice shape、可选 rank reduction、element type、layout/memory space 和 slice range；dynamic slice metadata 需要先扩 IR。direct storeback 只允许写 `outs` boundary 且 yield index 与 output index 一致；非 direct-yield insert 仍保持 updated-dest tensor 语义，走 tile-local insert。 |
 | `tensor.expand_shape` / `tensor.collapse_shape` | static element-count-preserving reshape lower 到 `wafer.tile.reshape` | supported for static shape-only reshape | `wafer.tile.reshape` 表达 canonical linear element order 保持不变、result multi-index 按新 shape 重新解释的 logical reindex；tile-region 层 op 本身无 write effect，但下游若当前 physical layout 不能 alias 该 logical reindex，必须 materialize 成 explicit movement，不能用 reshape 逃避 physical layout。 |
@@ -377,7 +377,7 @@ launch args / identity lowering 的 IR contract。当前没有 multi-tile no-com
   `wafer.ddr.offset` fact；external DDR boundary value 的 descriptor/view/root validation 由当前
   instruction-level IR 重算。
 - topology/execution-mesh、program shard metadata/resource view、ABI/LLVM lower-level 输入和 package
-  manifest metadata 只能从当前 committed IR、accepted offset facts、topology/execution-mesh contract 和
+  package metadata 只能从当前 committed IR、accepted offset facts、topology/execution-mesh contract 和
   按需 resource view 派生；不能要求
   tile-region 主线额外携带 placed memref 或 access descriptor 旁路事实。
 

@@ -89,7 +89,7 @@ runtime allocation resource、DDR address 或 package path，除非后续相应 
 Wafer 后端的稳定入口是 verified Wafer program，不是某个前端框架 API。Model import
 层可以支持 PyTorch、JAX、pre-exported StableHLO 或其它 exporter，但这些路径都必须收敛成同一类
 program。P2.F1 之后，主链路完成证明应来自真实 framework/exporter 产生的实际图 program；手写
-StableHLO 只作为 pre-exported fixture、verifier negative test 或局部 lowering 测试，不证明
+StableHLO 只作为 pre-exported 测试输入、verifier negative test 或局部 lowering 测试，不证明
 framework-specific capture 已完成：
 
 ```text
@@ -124,7 +124,7 @@ Model import 必须拒绝或显式诊断：
 #### 2.1.1 Framework Capture Adapter Contract
 
 P2.F1 在 R3 之前完成，原因是后续 group / tile / resource 链路必须消费真实 frontend program
-来源，而不是继续围绕手写 MLIR fixture 自洽。P2.F1 的产物是工具层三件套，不是新的 Wafer IR：
+来源，而不是继续围绕手写 MLIR 测试输入自洽。P2.F1 的产物是工具层三件套，不是新的 Wafer IR：
 
 ```text
 framework model / exported program
@@ -139,7 +139,7 @@ PyTorch 路线的 framework-specific capture adapter 必须使用 PyTorch/XLA �
 中的 `third_party/pytorch-xla` 是该 runtime 的源码事实源。P2.F1 主路径必须从这个 checkout
 编译/安装出可 import 的 `torch_xla` package 和 `_XLAC` extension；prebuilt `torch_xla` wheel
 不能作为 P2.F1 完成证明，也不能替代源码 build/install gate。P2.F1 不能用手写 ATen graph
-matcher、手写 StableHLO 文本 emitter 或 pre-exported fixture 冒充 PyTorch/XLA capture。
+matcher、手写 StableHLO 文本 emitter 或 pre-exported 测试输入冒充 PyTorch/XLA capture。
 
 每个 framework-specific adapter 必须满足：
 
@@ -198,7 +198,7 @@ class WaferCaptureSmoke4096(torch.nn.Module):
 | output | `4096x4096` | `f32` | 64 MiB |
 
 这个模型的算子数量仍然很少，便于隔离 capture contract；但 tensor/weight 尺寸足以让后续
-group、tiling、SPM/DDR memory 和 package manifest 消费真实规模的 shape/byte facts。
+group、tiling、SPM/DDR memory 和 package metadata 消费真实规模的 shape/byte facts。
 
 约束：
 
@@ -221,7 +221,7 @@ group、tiling、SPM/DDR memory 和 package manifest 消费真实规模的 shape
 | input dialect deps | StableHLO、Shardy / SDY | frontend、SPMD、conversion pipeline | Wafer 低层 runtime / packet contract |
 | model importer deps | torch-xla、torch-mlir、Python exporter、OpenXLA exporter | importer adapter、tooling、import tests | backend pass、Wafer dialect verifier |
 | runtime / driver deps | HPGR、KMD/UAPI、legacy Tsm headers | runtime adapter、C ABI / launch layer | frontend program、group、layout、SPM planner |
-| test / tooling deps | lit、FileCheck、gtest、Python test utilities | test harness、CI scripts | IR 语义或 package manifest |
+| test / tooling deps | lit、FileCheck、gtest、Python test utilities | test harness、CI scripts | IR 语义或 package metadata |
 
 工程上建议：
 
@@ -395,5 +395,5 @@ lowering / program writer 没有使用这些字段，它只能证明局部工具
 
 P2.F1 之后的每个相关任务都要把这条 chain 继续向下延伸：任务完成时必须有一条从真实图 program
 出发的端到端 gate，重放已完成上游阶段，并证明本任务新增语义在本任务边界可验证、可导出或被
-直接消费。手写 program、局部 pattern test 和显式 manifest tool-unit fixture 只能作为补充覆盖。后续 stage 当前
+直接消费。手写 program、局部 pattern test 和显式 package metadata tool-unit input 只能作为补充覆盖。后续 stage 当前
 未实现时，应记录为恢复任务或补 IR contract，不能反向要求 frontend/SPMD program 避开该语义。

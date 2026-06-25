@@ -1,4 +1,4 @@
-func.func @manifest_export_instr(
+func.func @package_export_instr(
     %lhs: memref<2x4xf16, #wafer.memory<ddr, tensor>>,
     %rhs: memref<2x4xf16, #wafer.memory<ddr, tensor>>,
     %out: memref<2x4xf16, #wafer.memory<ddr, tensor>>) {

@@ -15,7 +15,7 @@ committed wafer.instr.* + accepted offsets + topology/execution-mesh + resource 
   -> LLVM dialect
   -> LLVM IR artifact
   -> TX8 device-code compile/link gate
-  -> package manifest + runtime adapter
+  -> package metadata + runtime adapter
 ```
 
 `func.call` ABI call sequence 是 compiler-facing ABI boundary 的 MLIR 表示，不是最终 artifact。
@@ -115,7 +115,7 @@ Pipeline position:
   metadata / debug dump，以及 golden packet test input。TX8 relocatable object 和 kcore shared object
   由 package/device-code gate 从该 LLVM IR artifact 继续生成，不由 ABI lowering stage 生成。
 - Downstream consumer:
-  device-code compile/link gate、IR-derived package manifest、wrapper-facing call contract 和 board/runtime adapter。
+  device-code compile/link gate、IR-derived package metadata、wrapper-facing call contract 和 board/runtime adapter。
 - User-level driver / named pipeline:
   主线由后端 compile pipeline 调用；不引入专门 ABI IR op family 作为用户级 compile flow。
   稳定边界名为 `abi-calls` 和 `llvm-lowering`：`wafer-materialize-abi-calls` 只生成 scalar
@@ -188,7 +188,7 @@ iteration/stride 重新计算，不能只看 logical tensor shape。
 
 ABI materialization 可以使用 pass-local `ResourceViewAnalysis`，但该 view 只能从当前 IR、
 accepted offset facts、topology/execution-mesh、program parameter shard metadata 和薄 launch/block
-binding 重算；不能作为 sidecar、manifest fixture 或新 IR attr 写回上游。
+binding 重算；不能作为 sidecar、package metadata test input 或新 IR attr 写回上游。
 
 ### 3.2 Status, Token and Ordering Convention
 

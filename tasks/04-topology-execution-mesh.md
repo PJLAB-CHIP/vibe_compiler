@@ -57,7 +57,7 @@ Pipeline position:
   `explicit` 才保存 endpoint tuples。launch-visible block id 若需要跨阶段保留，应作为薄 launch /
   block binding 表达，不复制 rank->tile mapping。
 - Downstream consumer:
-  SPMD partition、communication lowering、ABI/LLVM lowering、package manifest 和 runtime adapter。
+  SPMD partition、communication lowering、ABI/LLVM lowering、package metadata 和 runtime adapter。
 - User-level driver / named pipeline:
   `wafer-opt --program-pipeline=stablehlo-spmd*` 在 SPMD 前 materialize `wafer.target.topology` /
   `wafer.execution.mesh`，并让默认 SPMD seed 从 execution mesh rank count / axes 取数。

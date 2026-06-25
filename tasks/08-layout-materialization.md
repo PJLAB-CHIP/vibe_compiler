@@ -82,7 +82,7 @@ layout planning 有两个恢复层次：
   layout attr，也不生成 `wafer.tile.region`。
 - committed `wafer.tile.region` / instruction-level IR 已经包含 candidate gates 接受的
   Wafer-tagged memref value 和 `wafer.tile.materialize_layout` op。后续 topology/execution-mesh、
-  ABI/LLVM lowering 和 package manifest 只从这些 IR facts 派生 lower-level 参数，
+  ABI/LLVM lowering 和 package metadata 只从这些 IR facts 派生 lower-level 参数，
   不再重新 materialize layout assignment 或 materialization cut。
 
 完整 layout materialization 的输入来自 target-abstract tile-region IR。它由 scheduled
@@ -143,7 +143,7 @@ R3.2b 已落地：按上述 logical-group analysis 边界完成。当前
 `GroupLayoutPlan` 消费 R3.2a `GroupTilingDemand` facts 和 group SSA use-def，输出
 boundary layout、per-op layout constraints/assignment、materialization cut、group-result
 materialization demand 和 failure forwarding；它不 rewrite `wafer.group`，不写 layout attr，
-不生成 `wafer.tile.region`。completion gate 覆盖手写 group fixture 和真实
+不生成 `wafer.tile.region`。completion gate 覆盖手写 group 测试输入和真实
 `stablehlo-spmd-to-group` program 输出。
 
 ### 3.2 从 Tensor Value 到 Buffer Value
@@ -1215,7 +1215,7 @@ V0 不做全局最优，但不能只做一次贪心选择。主路径是 determi
 10. Endpoint / launch / ABI handoff
 
    cleanup 后交给 topology/execution-mesh、program parameter shard metadata/resource view、ABI/LLVM
-   lowering 和 package manifest。
+   lowering 和 package metadata。
    它们从 committed Wafer-tagged memref、accepted offset facts、view relation、endpoint facts、layout
    helper 和按需 resource view 派生 address/range/stride 参数。layout planner 不直接生成 LLVM ABI，
    但必须保证 accepted layout 都能被这个派生过程合法实现。

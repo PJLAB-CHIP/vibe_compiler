@@ -23,11 +23,11 @@ class WaferRuntimeAdapterTest(unittest.TestCase):
         args = parse_args()
         cls.repo_root = pathlib.Path(args.repo_root)
         cls.tool = cls.repo_root / "tools" / "wafer_runtime_adapter.py"
-        cls.valid_manifest = (
-            cls.repo_root / "test" / "Tools" / "valid-package-manifest.json"
+        cls.valid_package = (
+            cls.repo_root / "test" / "Tools" / "valid-model-package.json"
         )
-        cls.invalid_completion_manifest = (
-            cls.repo_root / "test" / "Tools" / "invalid-completion-manifest.json"
+        cls.invalid_completion_package = (
+            cls.repo_root / "test" / "Tools" / "invalid-completion-package.json"
         )
 
     def run_adapter(self, *extra_args: str) -> subprocess.CompletedProcess[str]:
@@ -42,15 +42,15 @@ class WaferRuntimeAdapterTest(unittest.TestCase):
 
     def test_dry_run_describes_launch_plan(self) -> None:
         result = self.run_adapter(
-            "--manifest", str(self.valid_manifest), "--backend", "dry-run"
+            "--package-metadata", str(self.valid_package), "--backend", "dry-run"
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("backend: dry-run", result.stdout)
-        self.assertIn("package: manifest_schema_fixture", result.stdout)
+        self.assertIn("package: model_package_sample", result.stdout)
         self.assertIn("runtime_mode: tx", result.stdout)
         self.assertIn("completion_source: runtime_stream_wait", result.stdout)
-        self.assertIn("model: manifest_schema_fixture abi=wafer-cabi-v0", result.stdout)
+        self.assertIn("model: model_package_sample abi=wafer-cabi-v0", result.stdout)
         self.assertIn("binding: input lhs 16 bytes host_visible", result.stdout)
         self.assertIn("binding: input rhs 16 bytes host_visible", result.stdout)
         self.assertIn("binding: output out 16 bytes host_visible", result.stdout)
@@ -60,16 +60,16 @@ class WaferRuntimeAdapterTest(unittest.TestCase):
             result.stdout,
         )
         self.assertIn(
-            "artifact: schema_fixture_kernel kcore_shared_object schema_fixture.so",
+            "module: kernel tx.kcore model_package.so",
             result.stdout,
         )
         self.assertIn(
-            "strategy: model_bpm tx_model_bpm bpm=descriptor_only",
+            "entrypoint: model_bpm tx.model bpm=descriptor_only",
             result.stdout,
         )
         self.assertIn(
-            "strategy: debug_kernel tx_module_kernel artifact=schema_fixture_kernel "
-            "entrypoint=manifest_schema_fixture_abi debug_or_bringup",
+            "entrypoint: debug_kernel tx.module module=kernel "
+            "function=model_package_sample_abi debug",
             result.stdout,
         )
         self.assertIn("completion: wait runtime_stream_wait", result.stdout)
@@ -77,18 +77,18 @@ class WaferRuntimeAdapterTest(unittest.TestCase):
 
     def test_fake_tx_backend_constructs_tx_call_sequence(self) -> None:
         result = self.run_adapter(
-            "--manifest",
-            str(self.valid_manifest),
+            "--package-metadata",
+            str(self.valid_package),
             "--backend",
             "fake-tx",
-            "--strategy",
+            "--entrypoint",
             "debug_kernel",
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
         expected_lines = [
             "backend: fake-tx",
-            "strategy: debug_kernel tx_module_kernel",
+            "entrypoint: debug_kernel tx.module",
             "txSetDevice device=0",
             "txMalloc name=lhs bytes=16",
             "txMemcpyH2D name=lhs bytes=16",
@@ -98,39 +98,39 @@ class WaferRuntimeAdapterTest(unittest.TestCase):
             "txMalloc name=tmp bytes=16",
             "txMalloc name=rhs_resident bytes=16",
             "txMemcpyH2D name=rhs_resident bytes=16 source=rhs",
-            "txModuleLoad artifact=schema_fixture.so",
-            "txModuleGetFunction entrypoint=manifest_schema_fixture_abi",
-            "txLaunchKernel strategy=debug_kernel entrypoint=manifest_schema_fixture_abi arg_bytes=80",
+            "txModuleLoad module=model_package.so",
+            "txModuleGetFunction function=model_package_sample_abi",
+            "txLaunchKernel entrypoint=debug_kernel function=model_package_sample_abi arg_bytes=80",
             "txStreamSynchronize completion_source=runtime_stream_wait",
             "txMemcpyD2H name=out bytes=16",
         ]
         for line in expected_lines:
             self.assertIn(line, result.stdout)
 
-    def test_fake_tx_backend_rejects_descriptor_only_bpm_strategy(self) -> None:
+    def test_fake_tx_backend_rejects_descriptor_only_bpm_entrypoint(self) -> None:
         result = self.run_adapter(
-            "--manifest",
-            str(self.valid_manifest),
+            "--package-metadata",
+            str(self.valid_package),
             "--backend",
             "fake-tx",
-            "--strategy",
+            "--entrypoint",
             "model_bpm",
         )
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(
-            "error: tx_model_bpm strategy model_bpm requires a materialized BPM descriptor",
+            "error: tx.model entrypoint model_bpm requires a materialized BPM descriptor",
             result.stderr,
         )
 
     def test_tx_backend_reports_missing_runtime_library(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             result = self.run_adapter(
-                "--manifest",
-                str(self.valid_manifest),
+                "--package-metadata",
+                str(self.valid_package),
                 "--backend",
                 "tx",
-                "--strategy",
+                "--entrypoint",
                 "debug_kernel",
                 "--runtime-root",
                 str(pathlib.Path(tmp) / "missing-runtime-root"),
@@ -141,8 +141,8 @@ class WaferRuntimeAdapterTest(unittest.TestCase):
 
     def test_stub_completion_is_rejected_before_backend_selection(self) -> None:
         result = self.run_adapter(
-            "--manifest",
-            str(self.invalid_completion_manifest),
+            "--package-metadata",
+            str(self.invalid_completion_package),
             "--backend",
             "dry-run",
         )

@@ -1,12 +1,12 @@
-# RUN: %python %wafer_src_root/tools/wafer_emit_c_abi_stub.py --manifest %S/valid-package-manifest.json > %t.c
+# RUN: %python %wafer_src_root/tools/wafer_emit_c_abi_stub.py --package-metadata %S/valid-model-package.json > %t.c
 # RUN: cc -fsyntax-only %t.c
 # RUN: FileCheck %s < %t.c
 
 # CHECK-NOT: tile_arg_count
-# CHECK: static const wafer_instruction_issue_t k_manifest_schema_fixture_issues[] = {
+# CHECK: static const wafer_instruction_issue_t k_model_package_sample_issues[] = {
 # CHECK: {WAFER_INSTR_ELEMENTWISE, 0u, 0, 0, 0, 0, WAFER_ELEMENTWISE_ADD, WAFER_REDUCE_NONE, 0u, {0, 0, 0, 0}, 0, WAFER_WAIT_ISSUE_ONLY}
 # CHECK: {WAFER_INSTR_REDUCE, 0u, 0, 0, 0, 0, WAFER_ELEMENTWISE_NONE, WAFER_REDUCE_MAX, 1u, {1, 0, 0, 0}, -1, WAFER_WAIT_ISSUE_ONLY}
-# CHECK: static const wafer_workspace_buffer_t k_manifest_schema_fixture_workspace_buffers[] = {
+# CHECK: static const wafer_workspace_buffer_t k_model_package_sample_workspace_buffers[] = {
 # CHECK: {16u, 256u},
-# CHECK: static const wafer_resident_constant_t k_manifest_schema_fixture_resident_constants[] = {
+# CHECK: static const wafer_resident_constant_t k_model_package_sample_resident_constants[] = {
 # CHECK: {16u, 256u},

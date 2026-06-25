@@ -79,7 +79,7 @@ Pipeline position:
   `wafer.instr.local_fence`，或结构化 legalization failure reason。
 - Downstream consumer:
   SPM memory planning、DDR memory planning、closed-loop candidate driver、
-  ABI/LLVM lowering、package manifest 和 runtime adapter。
+  ABI/LLVM lowering、package metadata 和 runtime adapter。
 - User-level driver / named pipeline:
   主线由 closed-loop planner 调用；局部 bring-up / candidate evaluation 入口是
   `wafer-lower-tile-region-to-instr` 和 `wafer-lower-groups-to-instr` named pipeline。
@@ -557,10 +557,10 @@ R3.2d verifier checks only instruction legality:
 
 Instruction lowering does **not** verify physical address range, SPM bank conflicts, DDR default arena capacity,
 runtime symbol, packet bit layout or worker register window. Those checks belong to SPM/DDR offset assignment,
-ABI/LLVM lowering, package manifest and runtime adapter.
+ABI/LLVM lowering, package metadata and runtime adapter.
 DDR offset assignment must accept or reject the explicit DDR views, descriptors and compiler-managed DDR `memref.alloc`
 already present in this IR, and must materialize accepted DDR offset facts before ABI/LLVM lowering,
-package manifest and runtime adapter consume them through resource view analysis.
+package metadata and runtime adapter consume them through resource view analysis.
 
 ## 11. Example
 

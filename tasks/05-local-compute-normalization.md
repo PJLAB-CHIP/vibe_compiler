@@ -185,7 +185,7 @@ wrapper、是否需要拆成多个 target op，由 `wafer.tile.*` compute 负责
 - 消费 linear 结果的 rank-2 / rank-1 broadcast add 作为 bias add。
 - 消费 bias add 结果的 rank-2 / rank-2 add 作为 residual add。
 
-该 validator 已删除；当前只保留 frontend lowering fixture 覆盖 StableHLO 2D linear dot、bias
+该 validator 已删除；当前只保留 frontend lowering 测试输入覆盖 StableHLO 2D linear dot、bias
 broadcast 和 residual add 进入 `linalg.matmul` / `linalg.generic`。不引入 `wafer.linear`
 或 fused residual op，也不把 bias/residual tensor 名写成语义来源。
 
@@ -196,12 +196,12 @@ IR 表达：
 - activation 结果与另一个 rank-2 linear matmul 结果进入 `linalg.elementwise<mul>` gate。
 - gated activation 结果进入 rank-2 down linear `linalg.matmul`。
 
-该 validator 已删除；当前只保留 frontend lowering fixture 覆盖已有 tanh activation 子集。GELU /
+该 validator 已删除；当前只保留 frontend lowering 测试输入覆盖已有 tanh activation 子集。GELU /
 SwiGLU 的其它 decomposition 需要通过通用 structured tensor lowering 和后续 group/materialization
 验证扩展，不能再新增 case-specific schedule validator。当前不引入 `wafer.mlp`、fused activation op
 或名字约定，也不把中间 tile/group split 写成 IR attr。
 
-当前保留 full local transformer block structured IR fixture。该 integration test 在单个函数中
+当前保留 full local transformer block structured IR 测试输入。该 integration test 在单个函数中
 串联：
 
 - rank-4 RMSNorm staged form。
@@ -210,10 +210,10 @@ SwiGLU 的其它 decomposition 需要通过通用 structured tensor lowering 和
 - output linear matmul + bias + residual。
 - MLP gate/up/down linear matmul。
 
-该 fixture 只验证这些 fine-grained StableHLO dataflow 经过 local tensor normalization 后仍能由
+该测试输入只验证这些 fine-grained StableHLO dataflow 经过 local tensor normalization 后仍能由
 `linalg` / `tensor` / `arith` / `math` structured IR 表达；不运行 transformer-specific schedule
 acceptance pass，也不证明 group schedule、SPM residency、compiler-managed intermediate storage 或 package completion。为支持
-该 fixture，当前官方 conversion 会把静态连续维度 reassociation 转成
+该测试输入，当前官方 conversion 会把静态连续维度 reassociation 转成
 `tensor.expand_shape` / `tensor.collapse_shape`，例如
 `tensor<BxHxQxD> -> tensor<(BHQ)xD>`。该批次仍不声称 physical layout、SPM residency、
 compiler-managed intermediate storage 或 DDR memory allocation 已完成；这些事实必须在后续 Wafer group/resource lowering 和
@@ -346,7 +346,7 @@ Pipeline position:
   `stablehlo-spmd-to-linalg` 变成含 verifier-legal `wafer.linalg_ext.collective.*` op 的 Wafer
   program；这些 op 实现 `DestinationStyleOpInterface`、MLIR `TilingInterface`、
   `WaferTilingInterface` 和 `WaferLinalgExtCollectiveOpInterface`，输出可被 group 边界作为
-  tensor-level IR 消费；fixture/FileCheck/gtest 只做补充覆盖。
+  tensor-level IR 消费；测试输入/FileCheck/gtest 只做补充覆盖。
 ```
 
 ## 5. Softmax and Norm Staged Form
@@ -399,7 +399,7 @@ epsilon、scale、bias 都是普通 constant / input value。它们不通过名�
 - 是否存在 `rsqrt` elementwise stage。
 - 是否存在 rank-N / rank-(N-1) broadcast multiply stage。
 
-该 validator 已删除；当前 coverage 只来自 StableHLO -> Linalg lowering fixture。真正 tile shape、
+该 validator 已删除；当前 coverage 只来自 StableHLO -> Linalg lowering 测试输入。真正 tile shape、
 SPM residency 和 group split 仍归后续 group/resource planner，不能再靠 case-specific validator
 冒充 schedule 完成。
 
@@ -445,7 +445,7 @@ pipeline 失败。Wafer 自有逻辑只补官方 conversion 不表达的 post-SP
 Wafer-specific policy。
 
 历史 `wafer-lower-stablehlo-{dot,elementwise,reduce,shape}` / `wafer-normalize-constants` 本地 pass
-入口已删除；frontend fixture 统一通过 `wafer-lower-stablehlo-to-linalg` named pipeline 覆盖。Wafer
+入口已删除；frontend 测试输入统一通过 `wafer-lower-stablehlo-to-linalg` named pipeline 覆盖。Wafer
 不再维护自己的窄版 StableHLO compute lowering。
 
 | source StableHLO family | R2.4 主线处理 | 覆盖状态 | 后续要求 |
@@ -487,7 +487,7 @@ R2.3 覆盖状态以 structured tensor IR 证据为准，
 | softmax | `lower-stablehlo-softmax-staged.mlir` | 证明 fine-grained StableHLO softmax dataflow 可变成 `linalg.reduce` / `linalg.generic` staged IR；不证明 multi-stage intermediate storage 或 group schedule |
 | norm | `lower-stablehlo-norm-staged.mlir` | 证明 fine-grained RMSNorm/LayerNorm dataflow 中 last-dim reduce / rsqrt / broadcast multiply gate；不证明完整 LayerNorm/RMSNorm family |
 | RoPE | `lower-stablehlo-rope-mlp-staged.mlir` | 证明当前 RoPE slice/shape/elementwise staged pattern；sin/cos table storage slicing 未闭环 |
-| MLP | `lower-stablehlo-mlp.mlir`、`lower-stablehlo-local-transformer-block.mlir` | 证明 tanh-gated MLP dataflow fixture 和 full local transformer structured fixture；GELU/SwiGLU/package consistency 未闭环 |
+| MLP | `lower-stablehlo-mlp.mlir`、`lower-stablehlo-local-transformer-block.mlir` | 证明 tanh-gated MLP dataflow 测试输入和 full local transformer structured 测试输入；GELU/SwiGLU/package consistency 未闭环 |
 | shape views | `lower-stablehlo-shape.mlir`、`lower-stablehlo-local-transformer-block.mlir` | 证明 static expand/collapse shape-only relation；dynamic shape view 和 layout materialization 未闭环 |
 | linalg extension collective handoff | R2.4 已恢复 | `stablehlo-spmd-to-linalg` 主线应把 post-SPMD StableHLO logical collective normalize 成 `wafer.linalg_ext.collective.*`；unsupported collective handoff 会 fail；`wafer-lower-stablehlo-to-linalg` 只作为内部/局部 named MLIR pipeline；旧的 StableHLO -> `wafer.tile.*` communication bridge 已移除，不能作为 group/tiling 输入 |
 
