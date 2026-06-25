@@ -510,13 +510,16 @@ contract、collective lowering 和 verifier 见
 - 把 `wafer.tile.*` compute / `wafer.tile.*` communication lowering 到具体 `wafer_*` C ABI call。
 - 生成 RISC-V kcore device `.so`。
 - 从 committed instruction IR、accepted offsets、topology/execution mesh、program parameter shard
-  metadata/resource view 和 communication/sync IR 重算 launch signature、tile endpoint metadata、SPM/layout/DDR memory
-  metadata、communication metadata、constant storage bytes 和 profiling/status metadata。
-- 选择 `TxRuntimeBackend` path 或 legacy `TsmRun` fallback，并声明可信 completion source。
+  metadata/resource view 和 communication/sync IR 重算 model interface、artifact、backend strategy、
+  SPM/layout/DDR memory metadata、communication metadata、constant storage bytes 和 profiling/status
+  metadata。
+- 选择 package 中的 backend strategy，走 `TxRuntimeBackend` path 或 legacy `TsmRun` fallback，并声明
+  可信 completion source。
 
-Runtime launch metadata 不替代 `wafer.tile.region`。前者表达一次 launch / kernel invocation 的外层
-边界和参数；launch/resource metadata 是 ABI/package/runtime 使用点从 IR 重算的 view，不是独立
-前置 IR 阶段，也不回头承载 tensor fusion、traversal selection 或 group planner 的中间计划。
+Runtime package metadata 不替代 `wafer.tile.region`。前者表达模型级 package/session 边界、runtime
+binding 和 backend strategy；kernel launch 只是其中一种 strategy 的低层实现。package/resource
+metadata 是 ABI/package/runtime 使用点从 IR 重算的 view，不是独立前置 IR 阶段，也不回头承载
+tensor fusion、traversal selection 或 group planner 的中间计划。
 
 Runtime/package 的 package 内容、Tx runtime provider / KMD / legacy `TsmRun` 分层、runtime allocation/import mapping、
 legacy bootparam/TLV 和 completion/stub shielding 合同见

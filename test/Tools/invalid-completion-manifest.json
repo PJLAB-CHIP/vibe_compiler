@@ -1,73 +1,82 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "package_name": "bad_completion",
   "runtime": {
     "mode": "tx",
-    "completion_source": "TsmDeviceSynchronize"
+    "completion_source": "TsmDeviceSynchronize",
+    "requirements": {
+      "device_selection": "single_device",
+      "tile_selection": "full_or_pg",
+      "stream_policy": "explicit_or_default",
+      "copy_policy": "explicit_h2d_d2h"
+    }
   },
-  "program": {
+  "model": {
     "id": "bad_completion",
-    "entrypoint": "bad_completion_abi",
-    "abi_version": "wafer-cabi-v0"
+    "abi_version": "wafer-cabi-v0",
+    "interface": {
+      "inputs": [
+        {
+          "name": "lhs",
+          "shape": [2, 4],
+          "dtype": "f16",
+          "layout": "tensor",
+          "binding": {
+            "kind": "external_input",
+            "bytes": 16,
+            "alignment": 256,
+            "read_only": true,
+            "host_visible": true
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "out",
+          "shape": [2, 4],
+          "dtype": "f16",
+          "layout": "tensor",
+          "binding": {
+            "kind": "external_output",
+            "bytes": 16,
+            "alignment": 256,
+            "read_only": false,
+            "host_visible": true
+          }
+        }
+      ],
+      "parameters": [],
+      "workspace": [],
+      "resident_constants": []
+    },
+    "resources": {
+      "spm_bytes": 128,
+      "ddr_external_input_bytes": 16,
+      "ddr_external_output_bytes": 16,
+      "workspace_bytes": 0,
+      "resident_constant_bytes": 0
+    }
   },
-  "device_code": [
+  "artifacts": [
     {
       "name": "bad_completion_kernel",
       "kind": "kcore_shared_object",
-      "artifact": "bad_completion.so"
+      "path": "bad_completion.so"
     }
   ],
-  "launch_signature": {
-    "inputs": [
-      {
-        "name": "lhs",
-        "shape": [
-          2,
-          4
-        ],
-        "dtype": "f16",
-        "layout": "tensor"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "out",
-        "shape": [
-          2,
-          4
-        ],
-        "dtype": "f16",
-        "layout": "tensor"
-      }
-    ]
-  },
-  "ddr_bindings": [
+  "backend_strategies": [
     {
-      "kind": "input",
-      "name": "lhs",
-      "bytes": 16,
-      "alignment": 256,
-      "read_only": true,
-      "host_visible": true
-    },
-    {
-      "kind": "output",
-      "name": "out",
-      "bytes": 16,
-      "alignment": 256,
-      "read_only": false,
-      "host_visible": true
+      "name": "debug_kernel",
+      "kind": "tx_module_kernel",
+      "artifact": "bad_completion_kernel",
+      "entrypoint": "bad_completion_abi",
+      "abi_version": "wafer-cabi-v0",
+      "debug_or_bringup": true,
+      "grid": [1, 1, 1],
+      "block": [1, 1, 1],
+      "binding_order": ["lhs", "out"]
     }
   ],
-  "workspace_buffers": [],
-  "resident_constants": [],
-  "resources": {
-    "spm_bytes": 128,
-    "ddr_external_input_bytes": 16,
-    "ddr_external_output_bytes": 16,
-    "workspace_bytes": 0,
-    "resident_constant_bytes": 0
-  },
   "instructions": [
     {
       "op": "wafer.instr.rdma",

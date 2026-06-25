@@ -1,11 +1,11 @@
 # RUN: %python %wafer_src_root/tools/wafer_export_package_manifest.py \
 # RUN:   --package-name manifest_export_fixture \
-# RUN:   --program-id manifest_export_fixture \
+# RUN:   --model-id manifest_export_fixture \
 # RUN:   --abi-version wafer-cabi-v0 \
-# RUN:   --signature %S/Inputs/package-export-signature.json \
+# RUN:   --model-interface %S/Inputs/package-export-signature.json \
 # RUN:   --instruction-ir %S/Inputs/package-export-instr.txt \
 # RUN:   --llvm-ir %S/Inputs/package-export-kernel.ll \
-# RUN:   --device-code manifest_export_fixture.so > %t.json
+# RUN:   --device-artifact manifest_export_fixture.so > %t.json
 # RUN: FileCheck %s < %t.json
 # RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --validate %t.json
 # RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --roundtrip %t.json | FileCheck %s --check-prefix=ROUNDTRIP
@@ -17,37 +17,35 @@
 # RUN: mlir-translate --mlir-to-llvmir %t.pipeline-llvm.mlir > %t.pipeline.ll
 # RUN: %python %wafer_src_root/tools/wafer_export_package_manifest.py \
 # RUN:   --package-name pipeline_export_fixture \
-# RUN:   --program-id pipeline_export_fixture \
+# RUN:   --model-id pipeline_export_fixture \
 # RUN:   --abi-version wafer-cabi-v0 \
-# RUN:   --signature %S/Inputs/package-export-pipeline-signature.json \
+# RUN:   --model-interface %S/Inputs/package-export-pipeline-signature.json \
 # RUN:   --instruction-ir %t.pipeline-instr.mlir \
 # RUN:   --llvm-ir %t.pipeline.ll \
-# RUN:   --device-code pipeline_export.so > %t.pipeline.json
+# RUN:   --device-artifact pipeline_export.so > %t.pipeline.json
 # RUN: %python %wafer_src_root/tools/wafer_package_manifest.py --validate %t.pipeline.json
 # RUN: FileCheck %s --check-prefix=PIPELINE < %t.pipeline.json
 
 # RUN: not %python %wafer_src_root/tools/wafer_export_package_manifest.py \
 # RUN:   --package-name manifest_export_fixture \
-# RUN:   --program-id manifest_export_fixture \
+# RUN:   --model-id manifest_export_fixture \
 # RUN:   --abi-version wafer-cabi-v0 \
-# RUN:   --signature %S/Inputs/package-export-signature.json \
+# RUN:   --model-interface %S/Inputs/package-export-signature.json \
 # RUN:   --instruction-ir %S/Inputs/package-export-instr.txt \
 # RUN:   --llvm-ir %S/Inputs/missing-entry.ll \
-# RUN:   --device-code manifest_export_fixture.so 2>&1 | FileCheck %s --check-prefix=ERR
+# RUN:   --device-artifact manifest_export_fixture.so 2>&1 | FileCheck %s --check-prefix=ERR
 
 # CHECK: "package_name": "manifest_export_fixture"
 # CHECK: "runtime": {
 # CHECK: "mode": "tx"
 # CHECK: "completion_source": "runtime_stream_wait"
-# CHECK: "program": {
+# CHECK: "model": {
 # CHECK: "id": "manifest_export_fixture"
-# CHECK: "entrypoint": "manifest_export_entry_abi"
 # CHECK: "abi_version": "wafer-cabi-v0"
-# CHECK: "device_code": [
-# CHECK: "kind": "kcore_shared_object"
-# CHECK: "artifact": "manifest_export_fixture.so"
-# CHECK: "launch_signature": {
+# CHECK: "interface": {
 # CHECK: "name": "lhs"
+# CHECK: "binding": {
+# CHECK: "kind": "external_input"
 # CHECK: "name": "rhs"
 # CHECK: "name": "out"
 # CHECK: "spm_bytes": 528
@@ -55,6 +53,13 @@
 # CHECK: "ddr_external_output_bytes": 16
 # CHECK: "workspace_bytes": 0
 # CHECK: "resident_constant_bytes": 0
+# CHECK: "artifacts": [
+# CHECK: "kind": "kcore_shared_object"
+# CHECK: "path": "manifest_export_fixture.so"
+# CHECK: "backend_strategies": [
+# CHECK: "kind": "tx_module_kernel"
+# CHECK: "entrypoint": "manifest_export_entry_abi"
+# CHECK: "debug_or_bringup": true
 # CHECK: "op": "wafer.instr.rdma"
 # CHECK: "op": "wafer.instr.gather_scatter"
 # CHECK: "wait_policy": "local_wait"
@@ -65,10 +70,10 @@
 # ROUNDTRIP: "wafer.instr.local_fence"
 
 # PIPELINE: "completion_source": "runtime_stream_wait"
-# PIPELINE: "entrypoint": "boundary_tiled_matmul_group_abi"
-# PIPELINE: "artifact": "pipeline_export.so"
 # PIPELINE: "ddr_external_input_bytes": 192
 # PIPELINE: "ddr_external_output_bytes": 64
+# PIPELINE: "path": "pipeline_export.so"
+# PIPELINE: "entrypoint": "boundary_tiled_matmul_group_abi"
 # PIPELINE: "op": "wafer.instr.gemm"
 # PIPELINE: "op": "wafer.instr.wdma"
 

@@ -55,9 +55,9 @@ PyTorch/XLA StableHLO Wafer program directory
        -> scalar `func.call` ABI sequence -> LLVM dialect / LLVM IR
   -> device-code compile/link + package manifest assembly
        LLVM IR -> TX8 RISC-V object -> kcore shared object,
-       object/program id, entrypoint, ABI version, constants, endpoint and resource metadata
+       model id, ABI version, artifacts, backend strategies, model interface/resource metadata
   -> runtime adapter / board launch
-       allocate/import/query/bind runtime objects, launch program, validate completion and errors
+       allocate/import/query/bind runtime objects, select backend strategy, validate completion and errors
 ```
 
 `wafer-compile-stablehlo` 只做 frontend / StableHLO program verifier。除 `wafer-opt` program pipeline
@@ -70,13 +70,12 @@ PyTorch/XLA StableHLO Wafer program directory
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  kcore shared object、IR-derived package manifest、program id / entrypoint / ABI version、runtime
-  allocation/resource binding metadata、launch signature、wrapper shim linked device code 和 completion
-  source declaration。
+  kcore shared object、IR-derived package manifest、model id / ABI version、model interface/resource
+  metadata、backend strategy descriptors、wrapper shim linked device code 和 completion source declaration。
 - Current stage responsibility:
-  实现 host runtime adapter 的 package load / allocate-import-query-bind / launch / completion-error
-  validation 边界；稳定抽象是 `WaferRuntimeAdapter` / `TxRuntimeBackend`，HPGR / `libhpgr.so`
-  只是当前 tx runtime provider 事实，legacy fallback 需要 stub shielding。
+  实现 host runtime adapter 的 package load / allocate-import-query-bind / backend strategy selection /
+  launch / completion-error validation 边界；稳定抽象是 `WaferRuntimeAdapter` / `TxRuntimeBackend`，
+  HPGR / `libhpgr.so` 只是当前 tx runtime provider 事实，legacy fallback 需要 stub shielding。
 - Output artifact / IR:
   host-side runtime adapter contract / implementation、package-to-runtime binding tests、stub shielding
   diagnostics 和可在有卡环境执行的 board launch gate。
@@ -89,9 +88,9 @@ Pipeline position:
   不重新选择 group、tile shape、layout、instruction form、SPM/DDR memory plan、communication
   schedule、ABI lowering、wrapper shim 或 package schema；不把 legacy stub success 当 correctness。
 - Completion gate:
-  runtime adapter 能从当前 package 执行 allocate/import/query/bind 和 launch command construction；
-  对 known stub completion source 给出结构化拒绝；有卡环境下验证可信 completion、错误传播和最小
-  board run。
+  runtime adapter 能从当前 package 执行 model binding、artifact resolution 和 selected backend
+  strategy command construction；对 descriptor-only BPM 或 known stub completion source 给出结构化
+  拒绝；有卡环境下验证可信 completion、错误传播和最小 board run。
 ```
 
 ## 已可依赖的上游边界
@@ -118,10 +117,10 @@ Pipeline position:
 | p2p Direct DTE instruction schedule lowering | done | `wafer.tile.*` collective + topology/execution-mesh derived endpoint view | compact SPM all_gather 支持 ring/direct schedule、tensor SPM all_reduce 支持 ring/tree schedule、full-input reduce_scatter 支持 direct schedule；accepted schedule 都生成 explicit `wafer.instr.dte_send` / `dte_recv` / `dte_wait` body，并由 SPM memory planning 消费；peer/route 从 topology/execution mesh 查询，不保存 side table |
 | comm-aware memory planning gate | done | instruction-level compute/movement + `wafer.instr.dte_*` over unplaced SPM memrefs | communication staging、DTE token lifetime、local fence / DTE wait 和 buffer reuse 被 SPM planning 消费；all_gather / reduce_scatter / all_reduce 可经 named pipeline 到 SPM + DDR memory-planned instruction IR |
 | ABI / LLVM lowering | done | committed instruction IR + accepted SPM/DDR offset facts + topology/execution-mesh + program parameter shard metadata/resource view + launch-block binding + communication/sync lowering | RDMA/WDMA/gather_scatter/GEMM/local_fence 的 scalar `func.call` ABI sequence、LLVM dialect artifact；pipeline gate 覆盖 group -> ABI calls -> LLVM dialect |
-| device-code compile/link gate | done | LLVM IR artifact + repo-vendored TX8 deps + repo-local Wafer CRT lib dir | LLVM `clang++` `.ll -> .o`、default `wafer_cabi_shim.c -> shim.o`、LLVM object `.riscv.attributes` normalization 和 repo-vendored `tx8_deps` GCC `.o + shim.o -> kcore .so` 的命令形态固定；本地 smoke 已证明 LLVM IR、shim source、vendored `rv64imafdc/lp64d` multilib、repo-local debug-stripped Wafer CRT `libvr` 和 `riscv64-unknown-elf-objcopy` normalization 可生成 kcore shared object；manifest validator 要求 `device_code` 记录 `kcore_shared_object` |
-| package manifest auto export | done | ABI/LLVM artifact + kcore shared object + committed IR + launch signature metadata | `tools/wafer_export_package_manifest.py` 从 committed instruction IR、LLVM IR artifact、device artifact 和 signature metadata 导出 manifest；pipeline smoke 覆盖 `wafer-opt` instruction/LLVM outputs -> `mlir-translate` LLVM IR -> manifest validator；schema 要求 program id、entrypoint、ABI version 和 kcore shared object |
+| device-code compile/link gate | done | LLVM IR artifact + repo-vendored TX8 deps + repo-local Wafer CRT lib dir | LLVM `clang++` `.ll -> .o`、default `wafer_cabi_shim.c -> shim.o`、LLVM object `.riscv.attributes` normalization 和 repo-vendored `tx8_deps` GCC `.o + shim.o -> kcore .so` 的命令形态固定；本地 smoke 已证明 LLVM IR、shim source、vendored `rv64imafdc/lp64d` multilib、repo-local debug-stripped Wafer CRT `libvr` 和 `riscv64-unknown-elf-objcopy` normalization 可生成 kcore shared object；package manifest 只引用生成的 `kcore_shared_object` artifact，不把 device-code record 作为顶层合同 |
+| package manifest auto export | done | ABI/LLVM artifact + kcore shared object + committed IR + model interface metadata | `tools/wafer_export_package_manifest.py` 从 committed instruction IR、LLVM IR artifact、device artifact 和 model interface metadata 导出 schema v2 manifest；pipeline smoke 覆盖 `wafer-opt` instruction/LLVM outputs -> `mlir-translate` LLVM IR -> manifest validator；schema 要求 `model.id`、`model.interface`、`artifacts` 和 `backend_strategies`，`tx_module_kernel` 只作为 debug/bring-up strategy |
 | wrapper shim / register-facing implementation | done | scalar `wafer_*` ABI contract + format-aware golden packet builders + TX8 public wrapper evidence | `runtime/wafer_cabi_shim.c` 实现 `wafer_rdma`、`wafer_wdma`、`wafer_gather_scatter`、`wafer_gemm`、`wafer_local_fence` 到 public Tsm wrapper / local wait；参与 device-code link gate，并由 capture/register-facing golden tests 验证 |
-| runtime adapter / board launch | active | package + runtime adapter | allocate/import/query/bind runtime objects，launch program，验证 completion、错误传播和 board gate |
+| runtime adapter / board launch | active | model-level package + runtime adapter | allocate/import/query/bind model bindings，resolve artifacts，选择 backend strategy，验证 descriptor-only BPM / stub shielding、completion、错误传播和 board gate |
 | transformer staged gaps | pending | static transformer local shard IR / staged IR gaps | full-block schedule 或拒绝原因；补 mask/select、dynamic-bound policy、constant/weight slice 等 |
 | overlap / cost calibration | later | board/profile 输出 | overlap、cost model 和 PMU calibration |
 

@@ -23,39 +23,51 @@ TX_RUNTIME_LIBRARY_NAMES = (
     "libtx_runtime.so",
 )
 
-TX_REQUIRED_SYMBOLS = (
+TX_BASE_REQUIRED_SYMBOLS = (
     "txSetDevice",
     "txMalloc",
     "txFree",
     "txMemcpy",
-    "txModuleLoad",
-    "txModuleGetFunction",
-    "txLaunchKernel",
     "txStreamSynchronize",
 )
 
+TX_STRATEGY_REQUIRED_SYMBOLS = {
+    "tx_module_kernel": (
+        "txModuleLoad",
+        "txModuleGetFunction",
+        "txLaunchKernel",
+    ),
+    "tx_cluster_kernel": (
+        "txModuleLoad",
+        "txModuleGetFunction",
+        "txLaunchClusterKernel",
+    ),
+    "tx_model_bpm": (
+        "txLaunchModel",
+        "txLaunchModelSync",
+    ),
+    "tx_graph": (
+        "txLoadGraph",
+        "txUnloadGraph",
+    ),
+}
+
 
 @dataclass(frozen=True)
-class LaunchPlan:
+class RuntimePlan:
     manifest: dict[str, Any]
     package_name: str
     runtime_mode: str
     completion_source: str
-    program_id: str
-    entrypoint: str
-    device_codes: list[dict[str, Any]]
-    ddr_bindings: list[dict[str, Any]]
-    workspace_buffers: list[dict[str, Any]]
+    model: dict[str, Any]
+    artifacts: dict[str, dict[str, Any]]
+    strategies: dict[str, dict[str, Any]]
+    inputs: list[dict[str, Any]]
+    outputs: list[dict[str, Any]]
+    parameters: list[dict[str, Any]]
+    workspace: list[dict[str, Any]]
     resident_constants: list[dict[str, Any]]
-
-    @property
-    def launch_arg_bytes(self) -> int:
-        total = 0
-        for item in (
-            self.ddr_bindings + self.workspace_buffers + self.resident_constants
-        ):
-            total += int(item.get("bytes", 0))
-        return total
+    binding_bytes: dict[str, int]
 
 
 def fail(message: str) -> None:
@@ -71,20 +83,41 @@ def load_manifest(path: pathlib.Path) -> dict[str, Any]:
     return manifest
 
 
-def build_launch_plan(manifest: dict[str, Any]) -> LaunchPlan:
+def bytes_from_binding(item: dict[str, Any]) -> int:
+    binding = item.get("binding")
+    if isinstance(binding, dict):
+        return int(binding["bytes"])
+    return int(item["bytes"])
+
+
+def build_runtime_plan(manifest: dict[str, Any]) -> RuntimePlan:
     runtime = manifest["runtime"]
-    program = manifest["program"]
-    return LaunchPlan(
+    model = manifest["model"]
+    interface = model["interface"]
+    artifacts = {item["name"]: item for item in manifest["artifacts"]}
+    strategies = {item["name"]: item for item in manifest["backend_strategies"]}
+    inputs = list(interface["inputs"])
+    outputs = list(interface["outputs"])
+    parameters = list(interface["parameters"])
+    workspace = list(interface["workspace"])
+    resident_constants = list(interface["resident_constants"])
+    binding_bytes: dict[str, int] = {}
+    for item in inputs + outputs + parameters + workspace + resident_constants:
+        binding_bytes[item["name"]] = bytes_from_binding(item)
+    return RuntimePlan(
         manifest=manifest,
         package_name=manifest["package_name"],
         runtime_mode=runtime["mode"],
         completion_source=runtime["completion_source"],
-        program_id=program["id"],
-        entrypoint=program["entrypoint"],
-        device_codes=list(manifest["device_code"]),
-        ddr_bindings=list(manifest["ddr_bindings"]),
-        workspace_buffers=list(manifest["workspace_buffers"]),
-        resident_constants=list(manifest["resident_constants"]),
+        model=model,
+        artifacts=artifacts,
+        strategies=strategies,
+        inputs=inputs,
+        outputs=outputs,
+        parameters=parameters,
+        workspace=workspace,
+        resident_constants=resident_constants,
+        binding_bytes=binding_bytes,
     )
 
 
@@ -92,78 +125,184 @@ def format_bool_flag(value: Any, true_text: str) -> str:
     return true_text if bool(value) else "device_only"
 
 
-def emit_plan_summary(plan: LaunchPlan, backend_name: str) -> list[str]:
+def resident_source_label(item: dict[str, Any]) -> str:
+    source = item["source"]
+    if source in {"launch_input", "parameter"}:
+        return f"{source}:{item['source_binding']}"
+    return source
+
+
+def binding_summary_lines(plan: RuntimePlan) -> list[str]:
+    lines: list[str] = []
+    for item in plan.inputs:
+        binding = item["binding"]
+        lines.append(
+            "binding: input "
+            f"{item['name']} {binding['bytes']} bytes "
+            f"{format_bool_flag(binding.get('host_visible'), 'host_visible')}"
+        )
+    for item in plan.outputs:
+        binding = item["binding"]
+        lines.append(
+            "binding: output "
+            f"{item['name']} {binding['bytes']} bytes "
+            f"{format_bool_flag(binding.get('host_visible'), 'host_visible')}"
+        )
+    for item in plan.parameters:
+        binding = item["binding"]
+        lines.append(
+            "binding: parameter "
+            f"{item['name']} {binding['bytes']} bytes "
+            f"{format_bool_flag(binding.get('host_visible'), 'host_visible')}"
+        )
+    for item in plan.workspace:
+        lines.append(f"binding: workspace {item['name']} {item['bytes']} bytes")
+    for item in plan.resident_constants:
+        lines.append(
+            "binding: resident_constant "
+            f"{item['name']} {item['bytes']} bytes source={resident_source_label(item)}"
+        )
+    return lines
+
+
+def strategy_summary(strategy: dict[str, Any]) -> str:
+    kind = strategy["kind"]
+    name = strategy["name"]
+    if kind == "tx_model_bpm":
+        state = strategy["bpm_descriptor"]["state"]
+        return f"strategy: {name} {kind} bpm={state}"
+    if kind in {"tx_module_kernel", "tx_cluster_kernel"}:
+        return (
+            f"strategy: {name} {kind} artifact={strategy['artifact']} "
+            f"entrypoint={strategy['entrypoint']} debug_or_bringup"
+        )
+    if kind == "tx_graph":
+        return (
+            f"strategy: {name} {kind} graph_artifact={strategy['graph_artifact']} "
+            f"mod_symbol={strategy['mod_symbol']}"
+        )
+    return f"strategy: {name} {kind}"
+
+
+def emit_plan_summary(plan: RuntimePlan, backend_name: str) -> list[str]:
     lines = [
         f"backend: {backend_name}",
         f"package: {plan.package_name}",
         f"runtime_mode: {plan.runtime_mode}",
         f"completion_source: {plan.completion_source}",
+        f"model: {plan.model['id']} abi={plan.model['abi_version']}",
     ]
-    for device_code in plan.device_codes:
+    lines.extend(binding_summary_lines(plan))
+    for artifact in plan.artifacts.values():
         lines.append(
-            "device_code: "
-            f"{device_code['name']} {device_code['kind']} {device_code['artifact']}"
+            f"artifact: {artifact['name']} {artifact['kind']} {artifact['path']}"
         )
-    for binding in plan.ddr_bindings:
-        lines.append(
-            "allocation: "
-            f"{binding['kind']} {binding['name']} {binding['bytes']} bytes "
-            f"{format_bool_flag(binding.get('host_visible'), 'host_visible')}"
-        )
-    for workspace in plan.workspace_buffers:
-        lines.append(
-            f"allocation: workspace {workspace['name']} {workspace['bytes']} bytes"
-        )
-    for constant in plan.resident_constants:
-        lines.append(
-            f"allocation: resident_constant {constant['name']} "
-            f"{constant['bytes']} bytes source={constant['source']}"
-        )
-    lines.append(
-        "launch: module_kernel "
-        f"entrypoint={plan.entrypoint} grid=(1,1,1) block=(1,1,1)"
-    )
+    for strategy in plan.strategies.values():
+        lines.append(strategy_summary(strategy))
     lines.append(f"completion: wait {plan.completion_source}")
     return lines
 
 
-def run_dry_run(plan: LaunchPlan) -> list[str]:
+def run_dry_run(plan: RuntimePlan) -> list[str]:
     return emit_plan_summary(plan, "dry-run")
 
 
-def first_device_code(plan: LaunchPlan) -> dict[str, Any]:
-    if not plan.device_codes:
-        fail("launch plan contains no device code")
-    return plan.device_codes[0]
+def select_strategy(plan: RuntimePlan, strategy_name: str | None) -> dict[str, Any]:
+    if strategy_name is None:
+        fail("--strategy is required for this backend")
+    if strategy_name not in plan.strategies:
+        fail(f"strategy was not found in package manifest: {strategy_name}")
+    return plan.strategies[strategy_name]
 
 
-def run_fake_tx(plan: LaunchPlan, device_id: int) -> list[str]:
-    code = first_device_code(plan)
-    lines = ["backend: fake-tx", f"txSetDevice device={device_id}"]
-    for binding in plan.ddr_bindings:
-        lines.append(f"txMalloc name={binding['name']} bytes={binding['bytes']}")
-        if binding["kind"] == "input":
-            lines.append(f"txMemcpyH2D name={binding['name']} bytes={binding['bytes']}")
-    for workspace in plan.workspace_buffers:
-        lines.append(f"txMalloc name={workspace['name']} bytes={workspace['bytes']}")
-    for constant in plan.resident_constants:
-        if constant["source"] == "embedded_constant":
-            lines.append(f"txMalloc name={constant['name']} bytes={constant['bytes']}")
+def binding_order_arg_bytes(plan: RuntimePlan, strategy: dict[str, Any]) -> int:
+    return sum(plan.binding_bytes[name] for name in strategy["binding_order"])
+
+
+def artifact_for_strategy(plan: RuntimePlan, strategy: dict[str, Any]) -> dict[str, Any]:
+    artifact_name = strategy["artifact"]
+    if artifact_name not in plan.artifacts:
+        fail(f"strategy artifact was not found: {artifact_name}")
+    return plan.artifacts[artifact_name]
+
+
+def emit_common_fake_tx_allocations(plan: RuntimePlan) -> list[str]:
+    lines: list[str] = []
+    for item in plan.inputs:
+        binding = item["binding"]
+        lines.append(f"txMalloc name={item['name']} bytes={binding['bytes']}")
+        lines.append(f"txMemcpyH2D name={item['name']} bytes={binding['bytes']}")
+    for item in plan.parameters:
+        binding = item["binding"]
+        lines.append(f"txMalloc name={item['name']} bytes={binding['bytes']}")
+        lines.append(f"txMemcpyH2D name={item['name']} bytes={binding['bytes']}")
+    for item in plan.outputs:
+        binding = item["binding"]
+        lines.append(f"txMalloc name={item['name']} bytes={binding['bytes']}")
+    for item in plan.workspace:
+        lines.append(f"txMalloc name={item['name']} bytes={item['bytes']}")
+    for item in plan.resident_constants:
+        lines.append(f"txMalloc name={item['name']} bytes={item['bytes']}")
+        source = item["source"]
+        if source == "embedded_constant":
+            lines.append(f"txMemcpyH2D name={item['name']} bytes={item['bytes']}")
+        else:
             lines.append(
-                f"txMemcpyH2D name={constant['name']} bytes={constant['bytes']}"
+                f"txMemcpyH2D name={item['name']} bytes={item['bytes']} "
+                f"source={item['source_binding']}"
             )
-    lines.extend(
-        [
-            f"txModuleLoad artifact={code['artifact']}",
-            f"txModuleGetFunction entrypoint={plan.entrypoint}",
-            f"txLaunchKernel entrypoint={plan.entrypoint} "
-            f"arg_bytes={plan.launch_arg_bytes}",
-            f"txStreamSynchronize completion_source={plan.completion_source}",
-        ]
+    return lines
+
+
+def emit_fake_tx_writebacks(plan: RuntimePlan) -> list[str]:
+    lines: list[str] = []
+    for item in plan.outputs:
+        binding = item["binding"]
+        lines.append(f"txMemcpyD2H name={item['name']} bytes={binding['bytes']}")
+    return lines
+
+
+def run_fake_tx(plan: RuntimePlan, device_id: int, strategy_name: str | None) -> list[str]:
+    strategy = select_strategy(plan, strategy_name)
+    kind = strategy["kind"]
+    lines = [
+        "backend: fake-tx",
+        f"strategy: {strategy['name']} {kind}",
+        f"txSetDevice device={device_id}",
+    ]
+    if kind == "tx_model_bpm":
+        state = strategy["bpm_descriptor"]["state"]
+        if state != "materialized":
+            fail(
+                f"tx_model_bpm strategy {strategy['name']} requires a materialized BPM descriptor"
+            )
+        lines.append("txLaunchModel bpm_descriptor=materialized")
+        lines.append(f"txStreamSynchronize completion_source={plan.completion_source}")
+        return lines
+
+    if kind == "tx_graph":
+        artifact = plan.artifacts[strategy["graph_artifact"]]
+        lines.append(
+            f"txLoadGraph path={artifact['path']} mod_symbol={strategy['mod_symbol']}"
+        )
+        lines.append(f"txStreamSynchronize completion_source={plan.completion_source}")
+        return lines
+
+    if kind not in {"tx_module_kernel", "tx_cluster_kernel"}:
+        fail(f"fake-tx backend does not support strategy kind: {kind}")
+
+    artifact = artifact_for_strategy(plan, strategy)
+    lines.extend(emit_common_fake_tx_allocations(plan))
+    lines.append(f"txModuleLoad artifact={artifact['path']}")
+    lines.append(f"txModuleGetFunction entrypoint={strategy['entrypoint']}")
+    launch_api = "txLaunchClusterKernel" if kind == "tx_cluster_kernel" else "txLaunchKernel"
+    lines.append(
+        f"{launch_api} strategy={strategy['name']} "
+        f"entrypoint={strategy['entrypoint']} "
+        f"arg_bytes={binding_order_arg_bytes(plan, strategy)}"
     )
-    for binding in plan.ddr_bindings:
-        if binding["kind"] == "output":
-            lines.append(f"txMemcpyD2H name={binding['name']} bytes={binding['bytes']}")
+    lines.append(f"txStreamSynchronize completion_source={plan.completion_source}")
+    lines.extend(emit_fake_tx_writebacks(plan))
     return lines
 
 
@@ -207,20 +346,36 @@ def find_tx_runtime_library(
     fail(f"tx runtime library was not found; searched: {searched}")
 
 
+def required_symbols_for_strategy(strategy: dict[str, Any] | None) -> tuple[str, ...]:
+    if strategy is None:
+        return TX_BASE_REQUIRED_SYMBOLS
+    return TX_BASE_REQUIRED_SYMBOLS + TX_STRATEGY_REQUIRED_SYMBOLS.get(
+        strategy["kind"], ()
+    )
+
+
 def run_tx_discovery(
-    plan: LaunchPlan,
+    plan: RuntimePlan,
+    strategy_name: str | None,
     runtime_root: pathlib.Path | None,
     runtime_library: pathlib.Path | None,
 ) -> list[str]:
+    strategy = select_strategy(plan, strategy_name) if strategy_name else None
     library_path = find_tx_runtime_library(runtime_root, runtime_library)
     library = ctypes.CDLL(str(library_path))
-    missing = [symbol for symbol in TX_REQUIRED_SYMBOLS if not hasattr(library, symbol)]
+    missing = [
+        symbol
+        for symbol in required_symbols_for_strategy(strategy)
+        if not hasattr(library, symbol)
+    ]
     if missing:
         fail(
             "tx runtime library is missing required symbol(s): " + ", ".join(missing)
         )
     lines = emit_plan_summary(plan, "tx")
     lines.insert(1, f"tx_runtime_library: {library_path}")
+    if strategy is not None:
+        lines.insert(2, f"selected_strategy: {strategy['name']} {strategy['kind']}")
     lines.append("tx_runtime_symbols: ok")
     return lines
 
@@ -231,19 +386,22 @@ def main() -> int:
     parser.add_argument(
         "--backend", choices=("dry-run", "fake-tx", "tx"), required=True
     )
+    parser.add_argument("--strategy")
     parser.add_argument("--device-id", type=int, default=0)
     parser.add_argument("--runtime-root", type=pathlib.Path)
     parser.add_argument("--runtime-library", type=pathlib.Path)
     args = parser.parse_args()
 
     manifest = load_manifest(pathlib.Path(args.manifest))
-    plan = build_launch_plan(manifest)
+    plan = build_runtime_plan(manifest)
     if args.backend == "dry-run":
         lines = run_dry_run(plan)
     elif args.backend == "fake-tx":
-        lines = run_fake_tx(plan, args.device_id)
+        lines = run_fake_tx(plan, args.device_id, args.strategy)
     else:
-        lines = run_tx_discovery(plan, args.runtime_root, args.runtime_library)
+        lines = run_tx_discovery(
+            plan, args.strategy, args.runtime_root, args.runtime_library
+        )
     sys.stdout.write("\n".join(lines) + "\n")
     return 0
 

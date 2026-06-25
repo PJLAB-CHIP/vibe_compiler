@@ -17,7 +17,9 @@ ALLOWED_COMPLETION_SOURCES = {
     "legacy_model_sync",
 }
 
-ALLOWED_DEVICE_CODE_KINDS = {
+ALLOWED_ARTIFACT_KINDS = {
+    "bpm_table_descriptor",
+    "graph_directory",
     "kcore_shared_object",
 }
 
@@ -28,6 +30,19 @@ ALLOWED_RUNTIME_MODES = {
 
 ALLOWED_ABI_VERSIONS = {
     "wafer-cabi-v0",
+}
+
+ALLOWED_BACKEND_STRATEGY_KINDS = {
+    "legacy_tsm_run",
+    "tx_cluster_kernel",
+    "tx_graph",
+    "tx_model_bpm",
+    "tx_module_kernel",
+}
+
+ALLOWED_BPM_DESCRIPTOR_STATES = {
+    "descriptor_only",
+    "materialized",
 }
 
 KNOWN_STUB_FENCES = {
@@ -148,40 +163,25 @@ def validate_tensor(tensor: Any, name: str) -> tuple[str, list[int]]:
     return tensor_name, checked_shape
 
 
-def validate_device_code(value: Any) -> None:
-    device_codes = require_list(value, "device_code")
-    if not device_codes:
-        fail("device_code must be non-empty")
-    seen_names = set()
-    for index, device_code in enumerate(device_codes):
-        name = f"device_code[{index}]"
-        item = require_dict(device_code, name)
-        code_name = require_non_empty_string(item.get("name"), f"{name}.name")
-        if code_name in seen_names:
-            fail("device_code names must be unique")
-        seen_names.add(code_name)
-
+def validate_artifacts(value: Any) -> dict[str, dict[str, Any]]:
+    artifacts = require_list(value, "artifacts")
+    if not artifacts:
+        fail("artifacts must be non-empty")
+    by_name: dict[str, dict[str, Any]] = {}
+    for index, artifact in enumerate(artifacts):
+        name = f"artifacts[{index}]"
+        item = require_dict(artifact, name)
+        artifact_name = require_non_empty_string(item.get("name"), f"{name}.name")
+        if artifact_name in by_name:
+            fail("artifact names must be unique")
         kind = require_non_empty_string(item.get("kind"), f"{name}.kind")
-        if kind not in ALLOWED_DEVICE_CODE_KINDS:
-            fail(f"{name}.kind must be kcore_shared_object")
-        artifact = require_non_empty_string(item.get("artifact"), f"{name}.artifact")
-        if not artifact.endswith(".so"):
-            fail(f"{name}.artifact must name a kcore shared object")
-
-
-def validate_program(value: Any) -> None:
-    program = require_dict(value, "program")
-    require_non_empty_string(program.get("id"), "program.id")
-    entrypoint = require_non_empty_string(
-        program.get("entrypoint"), "program.entrypoint"
-    )
-    if entrypoint.startswith("@"):
-        fail("program.entrypoint must not include @")
-    abi_version = require_non_empty_string(
-        program.get("abi_version"), "program.abi_version"
-    )
-    if abi_version not in ALLOWED_ABI_VERSIONS:
-        fail("program.abi_version is not supported")
+        if kind not in ALLOWED_ARTIFACT_KINDS:
+            fail(f"{name}.kind is not supported")
+        path = require_non_empty_string(item.get("path"), f"{name}.path")
+        if kind == "kcore_shared_object" and not path.endswith(".so"):
+            fail(f"{name}.path must name a kcore shared object")
+        by_name[artifact_name] = item
+    return by_name
 
 
 def validate_runtime(value: Any) -> None:
@@ -200,6 +200,14 @@ def validate_runtime(value: Any) -> None:
         fail("legacy_model_sync completion source requires legacy_tsm runtime mode")
     if mode == "legacy_tsm" and completion_source != "legacy_model_sync":
         fail("legacy_tsm runtime mode requires legacy_model_sync completion source")
+    requirements = require_dict(runtime.get("requirements"), "runtime.requirements")
+    for field in (
+        "device_selection",
+        "tile_selection",
+        "stream_policy",
+        "copy_policy",
+    ):
+        require_non_empty_string(requirements.get(field), f"runtime.requirements.{field}")
 
 
 def validate_tensor_storage_demand(item: Any, name: str) -> tuple[str, int]:
@@ -223,93 +231,288 @@ def validate_tensor_storage_demand(item: Any, name: str) -> tuple[str, int]:
     return demand_name, bytes_value
 
 
-def validate_workspace_buffers(value: Any) -> int:
+def validate_workspace_buffers(value: Any, name: str = "workspace") -> tuple[int, set[str], dict[str, int]]:
     total = 0
     seen_names = set()
-    for index, workspace in enumerate(require_list(value, "workspace_buffers")):
-        name = f"workspace_buffers[{index}]"
-        item = require_dict(workspace, name)
-        buffer_name, bytes_value = validate_tensor_storage_demand(item, name)
+    binding_bytes: dict[str, int] = {}
+    for index, workspace in enumerate(require_list(value, name)):
+        item_name = f"{name}[{index}]"
+        item = require_dict(workspace, item_name)
+        buffer_name, bytes_value = validate_tensor_storage_demand(item, item_name)
         if buffer_name in seen_names:
             fail("workspace buffer names must be unique")
         seen_names.add(buffer_name)
-        require_non_empty_string(item.get("producer"), f"{name}.producer")
-        require_non_empty_string(item.get("last_consumer"), f"{name}.last_consumer")
+        require_non_empty_string(item.get("producer"), f"{item_name}.producer")
+        require_non_empty_string(item.get("last_consumer"), f"{item_name}.last_consumer")
         total += bytes_value
-    return total
+        binding_bytes[buffer_name] = bytes_value
+    return total, seen_names, binding_bytes
 
 
 def validate_resident_constants(
-    value: Any, input_names: set[str], output_names: set[str]
-) -> int:
+    value: Any,
+    input_names: set[str],
+    output_names: set[str],
+    parameter_names: set[str],
+    name: str = "resident_constants",
+) -> tuple[int, set[str], dict[str, int]]:
     total = 0
     seen_names = set()
-    for index, constant in enumerate(require_list(value, "resident_constants")):
-        name = f"resident_constants[{index}]"
-        item = require_dict(constant, name)
-        constant_name, bytes_value = validate_tensor_storage_demand(item, name)
+    binding_bytes: dict[str, int] = {}
+    for index, constant in enumerate(require_list(value, name)):
+        item_name = f"{name}[{index}]"
+        item = require_dict(constant, item_name)
+        constant_name, bytes_value = validate_tensor_storage_demand(item, item_name)
         if constant_name in seen_names:
             fail("resident constant names must be unique")
         seen_names.add(constant_name)
 
-        source = require_non_empty_string(item.get("source"), f"{name}.source")
+        source = require_non_empty_string(item.get("source"), f"{item_name}.source")
         if source == "launch_input":
-            if constant_name not in input_names:
-                fail(f"{name}.name must refer to a launch input")
+            source_binding = require_non_empty_string(
+                item.get("source_binding"), f"{item_name}.source_binding"
+            )
+            if source_binding not in input_names:
+                fail(f"{item_name}.source_binding must refer to a model input")
+        elif source == "parameter":
+            source_binding = require_non_empty_string(
+                item.get("source_binding"), f"{item_name}.source_binding"
+            )
+            if source_binding not in parameter_names:
+                fail(f"{item_name}.source_binding must refer to a model parameter")
         elif source != "embedded_constant":
-            fail(f"{name}.source must be launch_input or embedded_constant")
+            fail(f"{item_name}.source must be launch_input, parameter, or embedded_constant")
         if constant_name in output_names:
-            fail(f"{name}.name must not refer to a launch output")
+            fail(f"{item_name}.name must not refer to a model output")
         total += bytes_value
-    return total
+        binding_bytes[constant_name] = bytes_value
+    return total, seen_names, binding_bytes
+
+
+def require_bool(value: Any, name: str) -> bool:
+    if not isinstance(value, bool):
+        fail(f"{name} must be boolean")
+    return value
+
+
+def validate_external_tensor(
+    tensor: Any, name: str, binding_kind: str, read_only: bool
+) -> tuple[str, int]:
+    item = require_dict(tensor, name)
+    tensor_name, shape = validate_tensor(item, name)
+    dtype = require_non_empty_string(item.get("dtype"), f"{name}.dtype")
+    binding = require_dict(item.get("binding"), f"{name}.binding")
+    kind = require_non_empty_string(binding.get("kind"), f"{name}.binding.kind")
+    if kind != binding_kind:
+        fail(f"{name}.binding.kind must be {binding_kind}")
+    bytes_value = require_positive_int(binding.get("bytes"), f"{name}.binding.bytes")
+    expected_bytes = compact_tensor_bytes(shape, dtype, name)
+    if bytes_value != expected_bytes:
+        fail(f"{name}.binding.bytes must match compact tensor storage size")
+    require_positive_int(binding.get("alignment"), f"{name}.binding.alignment")
+    if require_bool(binding.get("read_only"), f"{name}.binding.read_only") != read_only:
+        expected = "read-only" if read_only else "writable"
+        fail(f"{name}.binding must be {expected}")
+    require_bool(binding.get("host_visible"), f"{name}.binding.host_visible")
+    return tensor_name, bytes_value
+
+
+def merge_binding(
+    binding_bytes: dict[str, int], name: str, bytes_value: int, description: str
+) -> None:
+    if name in binding_bytes:
+        fail(f"model interface binding name {name} is duplicated in {description}")
+    binding_bytes[name] = bytes_value
+
+
+def validate_model(value: Any) -> tuple[str, str, dict[str, int]]:
+    model = require_dict(value, "model")
+    model_id = require_non_empty_string(model.get("id"), "model.id")
+    abi_version = require_non_empty_string(model.get("abi_version"), "model.abi_version")
+    if abi_version not in ALLOWED_ABI_VERSIONS:
+        fail("model.abi_version is not supported")
+
+    interface = require_dict(model.get("interface"), "model.interface")
+    binding_bytes: dict[str, int] = {}
+
+    input_bytes = 0
+    input_names: set[str] = set()
+    for index, tensor in enumerate(require_list(interface.get("inputs"), "model.interface.inputs")):
+        name, bytes_value = validate_external_tensor(
+            tensor, f"model.interface.inputs[{index}]", "external_input", True
+        )
+        merge_binding(binding_bytes, name, bytes_value, "inputs")
+        input_names.add(name)
+        input_bytes += bytes_value
+
+    output_bytes = 0
+    output_names: set[str] = set()
+    for index, tensor in enumerate(require_list(interface.get("outputs"), "model.interface.outputs")):
+        name, bytes_value = validate_external_tensor(
+            tensor, f"model.interface.outputs[{index}]", "external_output", False
+        )
+        merge_binding(binding_bytes, name, bytes_value, "outputs")
+        output_names.add(name)
+        output_bytes += bytes_value
+
+    parameter_bytes = 0
+    parameter_names: set[str] = set()
+    for index, tensor in enumerate(
+        require_list(interface.get("parameters"), "model.interface.parameters")
+    ):
+        name, bytes_value = validate_external_tensor(
+            tensor, f"model.interface.parameters[{index}]", "parameter", True
+        )
+        merge_binding(binding_bytes, name, bytes_value, "parameters")
+        parameter_names.add(name)
+        parameter_bytes += bytes_value
+
+    workspace_bytes, workspace_names, workspace_binding_bytes = validate_workspace_buffers(
+        interface.get("workspace"), "model.interface.workspace"
+    )
+    for name, bytes_value in workspace_binding_bytes.items():
+        merge_binding(binding_bytes, name, bytes_value, "workspace")
+
+    (
+        resident_constant_bytes,
+        resident_names,
+        resident_binding_bytes,
+    ) = validate_resident_constants(
+        interface.get("resident_constants"),
+        input_names,
+        output_names,
+        parameter_names,
+        "model.interface.resident_constants",
+    )
+    for name, bytes_value in resident_binding_bytes.items():
+        merge_binding(binding_bytes, name, bytes_value, "resident constants")
+
+    if input_names & output_names:
+        fail("model input and output names must be distinct")
+    if (input_names | output_names | parameter_names) & workspace_names:
+        fail("workspace names must be distinct from external model bindings")
+    if (input_names | output_names | parameter_names | workspace_names) & resident_names:
+        fail("resident constant names must be distinct from other model bindings")
+
+    resources = require_dict(model.get("resources"), "model.resources")
+    spm_bytes = require_positive_int(
+        resources.get("spm_bytes"), "model.resources.spm_bytes"
+    )
+    if spm_bytes > 0x2F0000:
+        fail("model.resources.spm_bytes exceeds usable SPM capacity")
+    if resources.get("ddr_external_input_bytes") != input_bytes:
+        fail("model.resources.ddr_external_input_bytes does not match model inputs")
+    if resources.get("ddr_external_output_bytes") != output_bytes:
+        fail("model.resources.ddr_external_output_bytes does not match model outputs")
+    if resources.get("workspace_bytes") != workspace_bytes:
+        fail("model.resources.workspace_bytes does not match workspace buffers")
+    if resources.get("resident_constant_bytes") != resident_constant_bytes:
+        fail(
+            "model.resources.resident_constant_bytes does not match resident constants"
+        )
+    if "ddr_parameter_bytes" in resources and resources.get("ddr_parameter_bytes") != parameter_bytes:
+        fail("model.resources.ddr_parameter_bytes does not match model parameters")
+    if parameter_bytes and "ddr_parameter_bytes" not in resources:
+        fail("model.resources.ddr_parameter_bytes is required when parameters exist")
+
+    return model_id, abi_version, binding_bytes
+
+
+def validate_dim3(value: Any, name: str) -> None:
+    dims = require_list(value, name)
+    if len(dims) != 3:
+        fail(f"{name} must contain three dimensions")
+    for index, dim in enumerate(dims):
+        require_positive_int(dim, f"{name}[{index}]")
+
+
+def validate_binding_order(
+    value: Any, name: str, binding_bytes: dict[str, int]
+) -> None:
+    order = require_list(value, name)
+    if not order:
+        fail(f"{name} must be non-empty")
+    for index, binding_name in enumerate(order):
+        item = require_non_empty_string(binding_name, f"{name}[{index}]")
+        if item not in binding_bytes:
+            fail(f"{name}[{index}] does not name a model binding")
+
+
+def validate_backend_strategies(
+    value: Any,
+    artifacts: dict[str, dict[str, Any]],
+    model_abi_version: str,
+    binding_bytes: dict[str, int],
+    runtime_mode: str,
+) -> None:
+    strategies = require_list(value, "backend_strategies")
+    if not strategies:
+        fail("backend_strategies must be non-empty")
+    seen_names = set()
+    for index, strategy in enumerate(strategies):
+        name = f"backend_strategies[{index}]"
+        item = require_dict(strategy, name)
+        strategy_name = require_non_empty_string(item.get("name"), f"{name}.name")
+        if strategy_name in seen_names:
+            fail("backend strategy names must be unique")
+        seen_names.add(strategy_name)
+        kind = require_non_empty_string(item.get("kind"), f"{name}.kind")
+        if kind not in ALLOWED_BACKEND_STRATEGY_KINDS:
+            fail(f"{name}.kind is not supported")
+        validate_binding_order(item.get("binding_order"), f"{name}.binding_order", binding_bytes)
+
+        if kind in {"tx_module_kernel", "tx_cluster_kernel"}:
+            artifact = require_non_empty_string(item.get("artifact"), f"{name}.artifact")
+            if artifact not in artifacts:
+                fail(f"{name}.artifact does not name a package artifact")
+            if artifacts[artifact]["kind"] != "kcore_shared_object":
+                fail(f"{name}.artifact must reference a kcore_shared_object")
+            entrypoint = require_non_empty_string(item.get("entrypoint"), f"{name}.entrypoint")
+            if entrypoint.startswith("@"):
+                fail(f"{name}.entrypoint must not include @")
+            abi_version = require_non_empty_string(item.get("abi_version"), f"{name}.abi_version")
+            if abi_version != model_abi_version:
+                fail(f"{name}.abi_version must match model.abi_version")
+            if require_bool(item.get("debug_or_bringup"), f"{name}.debug_or_bringup") is not True:
+                fail(f"{name}.debug_or_bringup must be true")
+            validate_dim3(item.get("grid"), f"{name}.grid")
+            validate_dim3(item.get("block"), f"{name}.block")
+            if kind == "tx_cluster_kernel":
+                validate_dim3(item.get("cluster"), f"{name}.cluster")
+        elif kind == "tx_model_bpm":
+            descriptor = require_dict(item.get("bpm_descriptor"), f"{name}.bpm_descriptor")
+            state = require_non_empty_string(
+                descriptor.get("state"), f"{name}.bpm_descriptor.state"
+            )
+            if state not in ALLOWED_BPM_DESCRIPTOR_STATES:
+                fail(f"{name}.bpm_descriptor.state is not supported")
+        elif kind == "tx_graph":
+            artifact = require_non_empty_string(item.get("graph_artifact"), f"{name}.graph_artifact")
+            if artifact not in artifacts:
+                fail(f"{name}.graph_artifact does not name a package artifact")
+            if artifacts[artifact]["kind"] != "graph_directory":
+                fail(f"{name}.graph_artifact must reference a graph_directory")
+            require_non_empty_string(item.get("mod_symbol"), f"{name}.mod_symbol")
+        elif kind == "legacy_tsm_run" and runtime_mode != "legacy_tsm":
+            fail(f"{name}.kind legacy_tsm_run requires legacy_tsm runtime mode")
 
 
 def validate_manifest(manifest: dict[str, Any]) -> None:
-    if manifest.get("schema_version") != 1:
-        fail("schema_version must be 1")
+    if manifest.get("schema_version") != 2:
+        fail("schema_version must be 2")
     require_non_empty_string(manifest.get("package_name"), "package_name")
 
     validate_runtime(manifest.get("runtime"))
-    validate_program(manifest.get("program"))
-    validate_device_code(manifest.get("device_code"))
-
-    signature = require_dict(manifest.get("launch_signature"), "launch_signature")
-    input_tensors = [
-        validate_tensor(item, f"launch_signature.inputs[{index}]")
-        for index, item in enumerate(
-            require_list(signature.get("inputs"), "launch_signature.inputs")
-        )
-    ]
-    output_tensors = [
-        validate_tensor(item, f"launch_signature.outputs[{index}]")
-        for index, item in enumerate(
-            require_list(signature.get("outputs"), "launch_signature.outputs")
-        )
-    ]
-    input_names = {name for name, _ in input_tensors}
-    output_names = {name for name, _ in output_tensors}
-
-    resources = require_dict(manifest.get("resources"), "resources")
-    spm_bytes = require_positive_int(resources.get("spm_bytes"), "resources.spm_bytes")
-    if spm_bytes > 0x2F0000:
-        fail("resources.spm_bytes exceeds usable SPM capacity")
-    workspace_bytes = require_non_negative_int(
-        resources.get("workspace_bytes"), "resources.workspace_bytes"
+    runtime_mode = require_dict(manifest.get("runtime"), "runtime")["mode"]
+    _model_id, model_abi_version, binding_bytes = validate_model(manifest.get("model"))
+    artifacts = validate_artifacts(manifest.get("artifacts"))
+    validate_backend_strategies(
+        manifest.get("backend_strategies"),
+        artifacts,
+        model_abi_version,
+        binding_bytes,
+        runtime_mode,
     )
-    resident_constant_bytes = require_non_negative_int(
-        resources.get("resident_constant_bytes"),
-        "resources.resident_constant_bytes",
-    )
-    workspace_buffer_bytes = validate_workspace_buffers(
-        manifest.get("workspace_buffers")
-    )
-    if workspace_bytes != workspace_buffer_bytes:
-        fail("resources.workspace_bytes does not match workspace buffers")
-    resident_bytes = validate_resident_constants(
-        manifest.get("resident_constants"), input_names, output_names
-    )
-    if resident_constant_bytes != resident_bytes:
-        fail("resources.resident_constant_bytes does not match resident constants")
 
     instructions = require_list(manifest.get("instructions"), "instructions")
     for index, op in enumerate(instructions):
@@ -364,41 +567,6 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
             require_number(item.get("init_value"), f"instructions[{index}].init_value")
         elif "kind" in item:
             fail(f"instructions[{index}].kind is only valid for elementwise or reduce ops")
-
-    input_bytes = 0
-    output_bytes = 0
-    for index, binding in enumerate(
-        require_list(manifest.get("ddr_bindings"), "ddr_bindings")
-    ):
-        item = require_dict(binding, f"ddr_bindings[{index}]")
-        kind = require_non_empty_string(item.get("kind"), f"ddr_bindings[{index}].kind")
-        name = require_non_empty_string(item.get("name"), f"ddr_bindings[{index}].name")
-        bytes_value = require_positive_int(item.get("bytes"), f"ddr_bindings[{index}].bytes")
-        require_positive_int(item.get("alignment"), f"ddr_bindings[{index}].alignment")
-        if not isinstance(item.get("host_visible"), bool):
-            fail(f"ddr_bindings[{index}].host_visible must be boolean")
-        if not isinstance(item.get("read_only"), bool):
-            fail(f"ddr_bindings[{index}].read_only must be boolean")
-
-        if kind == "input":
-            if name not in input_names:
-                fail(f"ddr_bindings[{index}] input name is not in launch signature")
-            if item["read_only"] is not True:
-                fail(f"ddr_bindings[{index}] input must be read-only")
-            input_bytes += bytes_value
-        elif kind == "output":
-            if name not in output_names:
-                fail(f"ddr_bindings[{index}] output name is not in launch signature")
-            if item["read_only"] is not False:
-                fail(f"ddr_bindings[{index}] output must be writable")
-            output_bytes += bytes_value
-        else:
-            fail(f"ddr_bindings[{index}].kind must be input or output")
-
-    if resources.get("ddr_external_input_bytes") != input_bytes:
-        fail("resources.ddr_external_input_bytes does not match DDR bindings")
-    if resources.get("ddr_external_output_bytes") != output_bytes:
-        fail("resources.ddr_external_output_bytes does not match DDR bindings")
 
 
 def load_manifest(path: str) -> dict[str, Any]:

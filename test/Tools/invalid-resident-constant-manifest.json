@@ -1,103 +1,106 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "package_name": "bad_resident_constant",
   "runtime": {
     "mode": "tx",
-    "completion_source": "runtime_stream_wait"
+    "completion_source": "runtime_stream_wait",
+    "requirements": {
+      "device_selection": "single_device",
+      "tile_selection": "full_or_pg",
+      "stream_policy": "explicit_or_default",
+      "copy_policy": "explicit_h2d_d2h"
+    }
   },
-  "program": {
+  "model": {
     "id": "bad_resident_constant",
-    "entrypoint": "bad_resident_constant_abi",
-    "abi_version": "wafer-cabi-v0"
+    "abi_version": "wafer-cabi-v0",
+    "interface": {
+      "inputs": [
+        {
+          "name": "lhs",
+          "shape": [4, 8],
+          "dtype": "f16",
+          "layout": "tensor",
+          "binding": {
+            "kind": "external_input",
+            "bytes": 64,
+            "alignment": 256,
+            "read_only": true,
+            "host_visible": true
+          }
+        },
+        {
+          "name": "rhs",
+          "shape": [8, 16],
+          "dtype": "f16",
+          "layout": "tensor",
+          "binding": {
+            "kind": "external_input",
+            "bytes": 256,
+            "alignment": 256,
+            "read_only": true,
+            "host_visible": true
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "out",
+          "shape": [4, 16],
+          "dtype": "f16",
+          "layout": "tensor",
+          "binding": {
+            "kind": "external_output",
+            "bytes": 128,
+            "alignment": 256,
+            "read_only": false,
+            "host_visible": true
+          }
+        }
+      ],
+      "parameters": [],
+      "workspace": [],
+      "resident_constants": [
+        {
+          "name": "rhs_resident",
+          "source": "launch_input",
+          "source_binding": "rhs",
+          "shape": [8, 16],
+          "dtype": "f16",
+          "layout": "tensor",
+          "bytes": 256,
+          "alignment": 256
+        }
+      ]
+    },
+    "resources": {
+      "spm_bytes": 2816,
+      "ddr_external_input_bytes": 320,
+      "ddr_external_output_bytes": 128,
+      "workspace_bytes": 0,
+      "resident_constant_bytes": 128
+    }
   },
-  "device_code": [
+  "artifacts": [
     {
       "name": "single_matmul",
       "kind": "kcore_shared_object",
-      "artifact": "bad_resident_constant.so"
+      "path": "bad_resident_constant.so"
     }
   ],
-  "launch_signature": {
-    "inputs": [
-      {
-        "name": "lhs",
-        "shape": [
-          4,
-          8
-        ],
-        "dtype": "f16",
-        "layout": "tensor"
-      },
-      {
-        "name": "rhs",
-        "shape": [
-          8,
-          16
-        ],
-        "dtype": "f16",
-        "layout": "tensor"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "out",
-        "shape": [
-          4,
-          16
-        ],
-        "dtype": "f16",
-        "layout": "tensor"
-      }
-    ]
-  },
-  "ddr_bindings": [
+  "backend_strategies": [
     {
-      "kind": "input",
-      "name": "lhs",
-      "bytes": 64,
-      "alignment": 256,
-      "read_only": true,
-      "host_visible": true
-    },
-    {
-      "kind": "input",
-      "name": "rhs",
-      "bytes": 256,
-      "alignment": 256,
-      "read_only": true,
-      "host_visible": true
-    },
-    {
-      "kind": "output",
-      "name": "out",
-      "bytes": 128,
-      "alignment": 256,
-      "read_only": false,
-      "host_visible": true
+      "name": "debug_kernel",
+      "kind": "tx_module_kernel",
+      "artifact": "single_matmul",
+      "entrypoint": "bad_resident_constant_abi",
+      "abi_version": "wafer-cabi-v0",
+      "debug_or_bringup": true,
+      "grid": [1, 1, 1],
+      "block": [1, 1, 1],
+      "binding_order": ["lhs", "rhs", "out", "rhs_resident"]
     }
   ],
-  "workspace_buffers": [],
-  "resident_constants": [
-    {
-      "name": "rhs",
-      "source": "launch_input",
-      "shape": [
-        8,
-        16
-      ],
-      "dtype": "f16",
-      "layout": "tensor",
-      "bytes": 256,
-      "alignment": 256
-    }
-  ],
-  "resources": {
-    "spm_bytes": 2816,
-    "ddr_external_input_bytes": 320,
-    "ddr_external_output_bytes": 128,
-    "workspace_bytes": 0,
-    "resident_constant_bytes": 128
-  },
   "instructions": [
     {
       "op": "wafer.instr.rdma",

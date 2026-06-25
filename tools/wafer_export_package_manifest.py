@@ -401,72 +401,127 @@ def parse_spm_bytes(instruction_ir: str) -> int:
     return max(end for _, end in ranges) - min(start for start, _ in ranges)
 
 
-def tensor_binding(tensor: dict[str, Any], kind: str) -> dict[str, Any]:
+def model_external_tensor(tensor: dict[str, Any], kind: str) -> dict[str, Any]:
     name = tensor.get("name")
     shape = tensor.get("shape")
     dtype = tensor.get("dtype")
-    return {
-        "kind": kind,
-        "name": name,
-        "bytes": compact_tensor_bytes(shape, dtype, f"launch_signature.{kind}.{name}"),
+    binding_kind = "external_input" if kind == "input" else "external_output"
+    item = dict(tensor)
+    item["binding"] = {
+        "kind": binding_kind,
+        "bytes": compact_tensor_bytes(shape, dtype, f"model.interface.{kind}.{name}"),
         "alignment": 256,
         "read_only": kind == "input",
         "host_visible": True,
     }
+    return item
 
 
-def validate_signature(signature: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
-    inputs = signature.get("inputs")
-    outputs = signature.get("outputs")
+def binding_bytes(tensor: dict[str, Any]) -> int:
+    binding = tensor["binding"]
+    if not isinstance(binding, dict):
+        fail("model tensor binding must be an object")
+    value = binding.get("bytes")
+    if not isinstance(value, int):
+        fail("model tensor binding bytes must be an integer")
+    return value
+
+
+def binding_order(*groups: list[dict[str, Any]]) -> list[str]:
+    names: list[str] = []
+    for group in groups:
+        for item in group:
+            name = item.get("name")
+            if not isinstance(name, str) or not name:
+                fail("model binding name must be a non-empty string")
+            names.append(name)
+    return names
+
+
+def artifact_name_from_path(path: str) -> str:
+    artifact = pathlib.Path(path)
+    return artifact.stem
+
+
+def validate_model_interface(
+    model_interface: dict[str, Any],
+) -> dict[str, list[dict[str, Any]]]:
+    inputs = model_interface.get("inputs")
+    outputs = model_interface.get("outputs")
     if not isinstance(inputs, list) or not isinstance(outputs, list):
-        fail("signature must contain inputs and outputs lists")
+        fail("model interface must contain inputs and outputs lists")
     return {"inputs": inputs, "outputs": outputs}
 
 
 def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
-    signature = validate_signature(load_json_object(args.signature, "signature"))
+    model_interface = validate_model_interface(
+        load_json_object(args.model_interface, "model interface")
+    )
     instruction_ir = read_text(args.instruction_ir, "instruction IR")
     llvm_ir = read_text(args.llvm_ir, "LLVM IR")
     entrypoint = parse_entrypoint(llvm_ir, args.entrypoint)
 
-    input_bindings = [tensor_binding(tensor, "input") for tensor in signature["inputs"]]
-    output_bindings = [
-        tensor_binding(tensor, "output") for tensor in signature["outputs"]
+    model_inputs = [
+        model_external_tensor(tensor, "input") for tensor in model_interface["inputs"]
     ]
-    input_bytes = sum(binding["bytes"] for binding in input_bindings)
-    output_bytes = sum(binding["bytes"] for binding in output_bindings)
-    device_code_artifact = pathlib.Path(args.device_code)
+    model_outputs = [
+        model_external_tensor(tensor, "output") for tensor in model_interface["outputs"]
+    ]
+    input_bytes = sum(binding_bytes(tensor) for tensor in model_inputs)
+    output_bytes = sum(binding_bytes(tensor) for tensor in model_outputs)
+    artifact_name = artifact_name_from_path(args.device_artifact)
 
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "package_name": args.package_name,
         "runtime": {
             "mode": args.runtime_mode,
             "completion_source": args.completion_source,
+            "requirements": {
+                "device_selection": "single_device",
+                "tile_selection": "full_or_pg",
+                "stream_policy": "explicit_or_default",
+                "copy_policy": "explicit_h2d_d2h",
+            },
         },
-        "program": {
-            "id": args.program_id,
-            "entrypoint": entrypoint,
+        "model": {
+            "id": args.model_id,
             "abi_version": args.abi_version,
+            "interface": {
+                "inputs": model_inputs,
+                "outputs": model_outputs,
+                "parameters": [],
+                "workspace": [],
+                "resident_constants": [],
+            },
+            "resources": {
+                "spm_bytes": parse_spm_bytes(instruction_ir),
+                "ddr_external_input_bytes": input_bytes,
+                "ddr_external_output_bytes": output_bytes,
+                "workspace_bytes": 0,
+                "resident_constant_bytes": 0,
+            },
         },
-        "device_code": [
+        "artifacts": [
             {
-                "name": device_code_artifact.stem,
+                "name": artifact_name,
                 "kind": "kcore_shared_object",
-                "artifact": args.device_code,
+                "path": args.device_artifact,
             }
         ],
-        "launch_signature": signature,
-        "ddr_bindings": input_bindings + output_bindings,
-        "workspace_buffers": [],
-        "resident_constants": [],
-        "resources": {
-            "spm_bytes": parse_spm_bytes(instruction_ir),
-            "ddr_external_input_bytes": input_bytes,
-            "ddr_external_output_bytes": output_bytes,
-            "workspace_bytes": 0,
-            "resident_constant_bytes": 0,
-        },
+        "backend_strategies": [
+            {
+                "name": "debug_kernel",
+                "kind": "tx_module_kernel",
+                "artifact": artifact_name,
+                "entrypoint": entrypoint,
+                "abi_version": args.abi_version,
+                "debug_or_bringup": True,
+                "grid": [1, 1, 1],
+                "block": [1, 1, 1],
+                "binding_order": binding_order(model_inputs, model_outputs),
+            }
+        ],
         "instructions": parse_instructions(instruction_ir),
     }
     validate_manifest(manifest)
@@ -476,12 +531,12 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--package-name", required=True)
-    parser.add_argument("--program-id", required=True)
+    parser.add_argument("--model-id", required=True)
     parser.add_argument("--abi-version", required=True)
-    parser.add_argument("--signature", required=True)
+    parser.add_argument("--model-interface", required=True)
     parser.add_argument("--instruction-ir", required=True)
     parser.add_argument("--llvm-ir", required=True)
-    parser.add_argument("--device-code", required=True)
+    parser.add_argument("--device-artifact", required=True)
     parser.add_argument("--entrypoint")
     parser.add_argument("--runtime-mode", default="tx")
     parser.add_argument("--completion-source", default="runtime_stream_wait")

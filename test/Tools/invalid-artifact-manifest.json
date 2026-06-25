@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "package_name": "bad_workspace",
+  "package_name": "invalid_artifact_fixture",
   "runtime": {
     "mode": "tx",
     "completion_source": "runtime_stream_wait",
@@ -12,31 +12,18 @@
     }
   },
   "model": {
-    "id": "bad_workspace",
+    "id": "invalid_artifact_fixture",
     "abi_version": "wafer-cabi-v0",
     "interface": {
       "inputs": [
         {
           "name": "lhs",
-          "shape": [4, 8],
+          "shape": [2, 4],
           "dtype": "f16",
           "layout": "tensor",
           "binding": {
             "kind": "external_input",
-            "bytes": 64,
-            "alignment": 256,
-            "read_only": true,
-            "host_visible": true
-          }
-        },
-        {
-          "name": "rhs",
-          "shape": [8, 16],
-          "dtype": "f16",
-          "layout": "tensor",
-          "binding": {
-            "kind": "external_input",
-            "bytes": 256,
+            "bytes": 16,
             "alignment": 256,
             "read_only": true,
             "host_visible": true
@@ -46,12 +33,12 @@
       "outputs": [
         {
           "name": "out",
-          "shape": [4, 16],
+          "shape": [2, 4],
           "dtype": "f16",
           "layout": "tensor",
           "binding": {
             "kind": "external_output",
-            "bytes": 128,
+            "bytes": 16,
             "alignment": 256,
             "read_only": false,
             "host_visible": true
@@ -59,69 +46,46 @@
         }
       ],
       "parameters": [],
-      "workspace": [
-        {
-          "name": "tmp",
-          "shape": [4, 8],
-          "dtype": "f16",
-          "layout": "tensor",
-          "bytes": 64,
-          "alignment": 256,
-          "producer": "matmul",
-          "last_consumer": "store"
-        }
-      ],
+      "workspace": [],
       "resident_constants": []
     },
     "resources": {
-      "spm_bytes": 2816,
-      "ddr_external_input_bytes": 320,
-      "ddr_external_output_bytes": 128,
-      "workspace_bytes": 128,
+      "spm_bytes": 192,
+      "ddr_external_input_bytes": 16,
+      "ddr_external_output_bytes": 16,
+      "workspace_bytes": 0,
       "resident_constant_bytes": 0
     }
   },
   "artifacts": [
     {
-      "name": "single_matmul",
-      "kind": "kcore_shared_object",
-      "path": "bad_workspace.so"
+      "name": "old_issue_sequence",
+      "kind": "instruction_sequence",
+      "path": "old_issue_sequence.o"
     }
   ],
   "backend_strategies": [
     {
       "name": "debug_kernel",
       "kind": "tx_module_kernel",
-      "artifact": "single_matmul",
-      "entrypoint": "bad_workspace_abi",
+      "artifact": "old_issue_sequence",
+      "entrypoint": "invalid_artifact_fixture_abi",
       "abi_version": "wafer-cabi-v0",
       "debug_or_bringup": true,
       "grid": [1, 1, 1],
       "block": [1, 1, 1],
-      "binding_order": ["lhs", "rhs", "out", "tmp"]
+      "binding_order": ["lhs", "out"]
     }
   ],
   "instructions": [
     {
       "op": "wafer.instr.rdma",
-      "bytes": 64,
-      "wait_policy": "issue_only"
-    },
-    {
-      "op": "wafer.instr.rdma",
-      "bytes": 256,
-      "wait_policy": "issue_only"
-    },
-    {
-      "op": "wafer.instr.gemm",
-      "m": 4,
-      "k": 8,
-      "n": 16,
+      "bytes": 16,
       "wait_policy": "issue_only"
     },
     {
       "op": "wafer.instr.wdma",
-      "bytes": 128,
+      "bytes": 16,
       "wait_policy": "issue_only"
     }
   ]

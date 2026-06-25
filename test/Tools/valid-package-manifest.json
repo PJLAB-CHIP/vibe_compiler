@@ -1,117 +1,160 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "package_name": "manifest_schema_fixture",
   "runtime": {
     "mode": "tx",
-    "completion_source": "runtime_stream_wait"
+    "completion_source": "runtime_stream_wait",
+    "requirements": {
+      "device_selection": "single_device",
+      "tile_selection": "full_or_pg",
+      "stream_policy": "explicit_or_default",
+      "copy_policy": "explicit_h2d_d2h"
+    }
   },
-  "program": {
+  "model": {
     "id": "manifest_schema_fixture",
-    "entrypoint": "manifest_schema_fixture_abi",
-    "abi_version": "wafer-cabi-v0"
+    "abi_version": "wafer-cabi-v0",
+    "interface": {
+      "inputs": [
+        {
+          "name": "lhs",
+          "shape": [
+            2,
+            4
+          ],
+          "dtype": "f16",
+          "layout": "tensor",
+          "binding": {
+            "kind": "external_input",
+            "bytes": 16,
+            "alignment": 256,
+            "read_only": true,
+            "host_visible": true
+          }
+        },
+        {
+          "name": "rhs",
+          "shape": [
+            2,
+            4
+          ],
+          "dtype": "f16",
+          "layout": "tensor",
+          "binding": {
+            "kind": "external_input",
+            "bytes": 16,
+            "alignment": 256,
+            "read_only": true,
+            "host_visible": true
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "out",
+          "shape": [
+            2,
+            4
+          ],
+          "dtype": "f16",
+          "layout": "tensor",
+          "binding": {
+            "kind": "external_output",
+            "bytes": 16,
+            "alignment": 256,
+            "read_only": false,
+            "host_visible": true
+          }
+        }
+      ],
+      "parameters": [],
+      "workspace": [
+        {
+          "name": "tmp",
+          "shape": [
+            2,
+            4
+          ],
+          "dtype": "f16",
+          "layout": "tensor",
+          "bytes": 16,
+          "alignment": 256,
+          "producer": "elementwise_add",
+          "last_consumer": "store"
+        }
+      ],
+      "resident_constants": [
+        {
+          "name": "rhs_resident",
+          "source": "launch_input",
+          "source_binding": "rhs",
+          "shape": [
+            2,
+            4
+          ],
+          "dtype": "f16",
+          "layout": "tensor",
+          "bytes": 16,
+          "alignment": 256
+        }
+      ]
+    },
+    "resources": {
+      "spm_bytes": 192,
+      "ddr_external_input_bytes": 32,
+      "ddr_external_output_bytes": 16,
+      "workspace_bytes": 16,
+      "resident_constant_bytes": 16
+    }
   },
-  "device_code": [
+  "artifacts": [
     {
       "name": "schema_fixture_kernel",
       "kind": "kcore_shared_object",
-      "artifact": "schema_fixture.so"
+      "path": "schema_fixture.so"
     }
   ],
-  "launch_signature": {
-    "inputs": [
-      {
-        "name": "lhs",
-        "shape": [
-          2,
-          4
-        ],
-        "dtype": "f16",
-        "layout": "tensor"
+  "backend_strategies": [
+    {
+      "name": "model_bpm",
+      "kind": "tx_model_bpm",
+      "bpm_descriptor": {
+        "state": "descriptor_only"
       },
-      {
-        "name": "rhs",
-        "shape": [
-          2,
-          4
-        ],
-        "dtype": "f16",
-        "layout": "tensor"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "out",
-        "shape": [
-          2,
-          4
-        ],
-        "dtype": "f16",
-        "layout": "tensor"
-      }
-    ]
-  },
-  "ddr_bindings": [
-    {
-      "kind": "input",
-      "name": "lhs",
-      "bytes": 16,
-      "alignment": 256,
-      "read_only": true,
-      "host_visible": true
+      "binding_order": [
+        "lhs",
+        "rhs",
+        "out",
+        "tmp",
+        "rhs_resident"
+      ]
     },
     {
-      "kind": "input",
-      "name": "rhs",
-      "bytes": 16,
-      "alignment": 256,
-      "read_only": true,
-      "host_visible": true
-    },
-    {
-      "kind": "output",
-      "name": "out",
-      "bytes": 16,
-      "alignment": 256,
-      "read_only": false,
-      "host_visible": true
-    }
-  ],
-  "workspace_buffers": [
-    {
-      "name": "tmp",
-      "shape": [
-        2,
-        4
+      "name": "debug_kernel",
+      "kind": "tx_module_kernel",
+      "artifact": "schema_fixture_kernel",
+      "entrypoint": "manifest_schema_fixture_abi",
+      "abi_version": "wafer-cabi-v0",
+      "debug_or_bringup": true,
+      "grid": [
+        1,
+        1,
+        1
       ],
-      "dtype": "f16",
-      "layout": "tensor",
-      "bytes": 16,
-      "alignment": 256,
-      "producer": "elementwise_add",
-      "last_consumer": "store"
-    }
-  ],
-  "resident_constants": [
-    {
-      "name": "rhs",
-      "source": "launch_input",
-      "shape": [
-        2,
-        4
+      "block": [
+        1,
+        1,
+        1
       ],
-      "dtype": "f16",
-      "layout": "tensor",
-      "bytes": 16,
-      "alignment": 256
+      "binding_order": [
+        "lhs",
+        "rhs",
+        "out",
+        "tmp",
+        "rhs_resident"
+      ]
     }
   ],
-  "resources": {
-    "spm_bytes": 192,
-    "ddr_external_input_bytes": 32,
-    "ddr_external_output_bytes": 16,
-    "workspace_bytes": 16,
-    "resident_constant_bytes": 16
-  },
   "instructions": [
     {
       "op": "wafer.instr.rdma",

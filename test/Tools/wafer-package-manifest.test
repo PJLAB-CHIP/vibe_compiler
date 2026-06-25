@@ -3,27 +3,39 @@
 # RUN: not %python %wafer_src_root/tools/wafer_package_manifest.py --validate %S/invalid-completion-manifest.json 2>&1 | FileCheck %s --check-prefix=ERR
 # RUN: not %python %wafer_src_root/tools/wafer_package_manifest.py --validate %S/invalid-workspace-manifest.json 2>&1 | FileCheck %s --check-prefix=WORKSPACE-ERR
 # RUN: not %python %wafer_src_root/tools/wafer_package_manifest.py --validate %S/invalid-resident-constant-manifest.json 2>&1 | FileCheck %s --check-prefix=CONST-ERR
-# RUN: not %python %wafer_src_root/tools/wafer_package_manifest.py --validate %S/invalid-device-code-manifest.json 2>&1 | FileCheck %s --check-prefix=DEVICE-ERR
-# RUN: not %python %wafer_src_root/tools/wafer_package_manifest.py --validate %S/invalid-empty-device-code-manifest.json 2>&1 | FileCheck %s --check-prefix=EMPTY-DEVICE-ERR
+# RUN: not %python %wafer_src_root/tools/wafer_package_manifest.py --validate %S/invalid-artifact-manifest.json 2>&1 | FileCheck %s --check-prefix=ARTIFACT-ERR
+# RUN: not %python %wafer_src_root/tools/wafer_package_manifest.py --validate %S/invalid-empty-artifact-manifest.json 2>&1 | FileCheck %s --check-prefix=EMPTY-ARTIFACT-ERR
 # RUN: not %python %wafer_src_root/tools/wafer_package_manifest.py --validate %S/invalid-program-manifest.json 2>&1 | FileCheck %s --check-prefix=PROGRAM-ERR
 # RUN: sed 's/"completion_source": "runtime_stream_wait"/"completion_source": "legacy_model_sync"/' %S/valid-package-manifest.json > %t.bad-legacy-source.json
 # RUN: not %python %wafer_src_root/tools/wafer_package_manifest.py --validate %t.bad-legacy-source.json 2>&1 | FileCheck %s --check-prefix=LEGACY-SOURCE-ERR
 # RUN: sed 's/"mode": "tx"/"mode": "legacy_tsm"/' %S/valid-package-manifest.json > %t.bad-legacy-mode.json
 # RUN: not %python %wafer_src_root/tools/wafer_package_manifest.py --validate %t.bad-legacy-mode.json 2>&1 | FileCheck %s --check-prefix=LEGACY-MODE-ERR
 
-# CHECK: "schema_version": 1
+# CHECK: "schema_version": 2
 # CHECK: "package_name": "manifest_schema_fixture"
 # CHECK: "mode": "tx"
 # CHECK: "completion_source": "runtime_stream_wait"
-# CHECK: "entrypoint": "manifest_schema_fixture_abi"
-# CHECK: "kind": "kcore_shared_object"
-# CHECK: "artifact": "schema_fixture.so"
-# CHECK-NOT: {{"place}}{{ment"}}
-# CHECK-NOT: TsmDeviceSynchronize
+# CHECK: "model": {
+# CHECK: "id": "manifest_schema_fixture"
+# CHECK: "interface": {
+# CHECK: "binding": {
+# CHECK: "kind": "external_input"
+# CHECK: "source_binding": "rhs"
 # CHECK: "ddr_external_input_bytes": 32
 # CHECK: "ddr_external_output_bytes": 16
 # CHECK: "workspace_bytes": 16
 # CHECK: "resident_constant_bytes": 16
+# CHECK: "artifacts": [
+# CHECK: "kind": "kcore_shared_object"
+# CHECK: "path": "schema_fixture.so"
+# CHECK: "backend_strategies": [
+# CHECK: "kind": "tx_model_bpm"
+# CHECK: "state": "descriptor_only"
+# CHECK: "kind": "tx_module_kernel"
+# CHECK: "entrypoint": "manifest_schema_fixture_abi"
+# CHECK: "debug_or_bringup": true
+# CHECK-NOT: {{"place}}{{ment"}}
+# CHECK-NOT: TsmDeviceSynchronize
 # CHECK: "wafer.instr.rdma"
 # CHECK: "wafer.instr.elementwise"
 # CHECK: "wafer.instr.reduce"
@@ -32,8 +44,8 @@
 # ERR: completion source is a known stub fence
 # WORKSPACE-ERR: resources.workspace_bytes does not match workspace buffers
 # CONST-ERR: resources.resident_constant_bytes does not match resident constants
-# DEVICE-ERR: device_code[0].kind must be kcore_shared_object
-# EMPTY-DEVICE-ERR: device_code must be non-empty
-# PROGRAM-ERR: program must be an object
+# ARTIFACT-ERR: artifacts[0].kind is not supported
+# EMPTY-ARTIFACT-ERR: artifacts must be non-empty
+# PROGRAM-ERR: model must be an object
 # LEGACY-SOURCE-ERR: legacy_model_sync completion source requires legacy_tsm runtime mode
 # LEGACY-MODE-ERR: legacy_tsm runtime mode requires legacy_model_sync completion source

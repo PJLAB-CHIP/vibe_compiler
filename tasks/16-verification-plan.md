@@ -55,7 +55,7 @@ Serving integration 暂不纳入本文通过标准。
 | Compute / Movement | committed instruction IR + accepted offset facts | wrapper family、layout、dtype、shape、issue/fence/wait 合法 |
 | Communication | tile_region / SPM materialization 后的 `wafer.tile.*` collective / `wafer.instr.dte_*` IR | endpoint、token、DTE/FSM resource、wait policy 合法 |
 | ABI / LLVM / golden packet | committed instruction IR + accepted offsets + topology/execution-mesh + program parameter shard metadata/resource view + communication/sync lowering | LLVM dialect call 或 `wafer_*` C ABI / packet builder input 合法；ABI unit/address/wait verified，golden packet 覆盖 wrapper mapping；launch/resource view 从 IR 按需重算，不成为独立 artifact |
-| Object/package | ABI/LLVM artifact + committed IR + topology/execution-mesh + program parameter shard metadata/resource view | `.ll -> .o`、default `wafer_cabi_shim.c -> shim.o`、LLVM object metadata normalization、`.o + shim.o -> kcore .so` device-code compile/link gate 合法；manifest 记录 object/program id、entrypoint、ABI version 和 IR-derived package metadata；package manifest auto-export 从 committed instruction IR、LLVM IR artifact、device artifact 和上游 launch signature metadata 导出并通过 validator；endpoint/resource/constant metadata 由同一 resource view analysis 生成 |
+| Object/package | ABI/LLVM artifact + committed IR + topology/execution-mesh + program parameter shard metadata/resource view | `.ll -> .o`、default `wafer_cabi_shim.c -> shim.o`、LLVM object metadata normalization、`.o + shim.o -> kcore .so` device-code compile/link gate 合法；manifest 记录 `model.id`、`model.interface`、`model.resources`、`artifacts` 和 `backend_strategies`；package manifest auto-export 从 committed instruction IR、LLVM IR artifact、device artifact 和 model interface metadata 导出并通过 validator；resource/constant metadata 由同一 resource view analysis 生成 |
 | Runtime/board | package + adapter | runtime allocation object binding contract、stub shielding、launch/completion/error propagation 合法；板端 completion 在有卡环境验证 |
 
 Gate 通过只说明进入下一层的输入合法，不说明整个 compiler 已完成。
@@ -216,16 +216,17 @@ M7 ABI / LLVM program gate：
   `runtime/wafer_cabi_shim.c -> shim.o`，再用 repo-vendored `third_party/tx8_deps`
   `riscv64-unknown-elf-gcc` 链接 kcore shared object。`.ll` 不能直接交给 GCC，C shim compile
   必须带 TX8 include 和 RISC-V newlib sysroot。
-- package manifest 必须记录真实 LLVM/object program id、entrypoint 和 ABI version；auto-export gate
-  必须消费当前 pipeline 产物导出 manifest 并通过 validator；C stub-only program 只允许作为历史局部
-  fixture 的验证物，不能替代 default `wafer_*` shim object。
+- package manifest 必须记录真实模型接口、资源、artifact 和 backend strategy 合同；`tx_module_kernel`
+  只能作为显式 debug/bring-up strategy 记录 entrypoint 和 ABI version。auto-export gate 必须消费当前
+  pipeline 产物导出 manifest 并通过 validator；C stub-only program 只允许作为历史局部 fixture 的
+  验证物，不能替代 default `wafer_*` shim object。
 
 M8 runtime / board correctness gate：
 
 - runtime adapter 必须区分真实 device completion 和已知 stub path；stub completion 不能作为
   correctness fence。
-- package 中的 tensor、workspace、constant、endpoint/resource metadata 必须能绑定到真实 runtime
-  allocation / DDR / launch argument。
+- package 中的 tensor、workspace、constant 和 resource metadata 必须能绑定到真实 runtime
+  allocation / DDR / backend strategy launch argument。
 - 板端 gate 分别覆盖 single-tile compute、多 tile no-comm、p2p、ring collective、partitioned
   collective 和 full local block 的 launch、completion、错误传播和数值对比。
 - profiling 只作为后续 P9 cost model calibration 的输入，不作为 M8 correctness 通过条件。
@@ -288,6 +289,6 @@ runtime call emission、板端运行、数值正确性、completion 或 profilin
 ABI/LLVM lowering artifact 自动导出。该拼接和 fixed emitter 已删除；当前只能证明 IR lowering 和
 package schema/stub tool-unit 分别可用，不能作为 “package 由当前 lowering 结果生成” 的证据。
 进入 object/package gate 时必须先把 IR-derived manifest emission 作为 gate，并记录 ABI/LLVM artifact、
-object/program id、entrypoint 和 ABI version；当前 package manifest auto-export 已能消费 committed
-instruction IR、LLVM IR artifact、device artifact 和 launch signature metadata 导出 manifest，之后再
-推进 runtime call / board gate。
+model interface、device artifact、model resource metadata 和 backend strategy；当前 package manifest
+auto-export 已能消费 committed instruction IR、LLVM IR artifact、device artifact 和 model interface
+metadata 导出 schema v2 manifest，之后再推进 runtime call / board gate。
