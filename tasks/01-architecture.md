@@ -46,7 +46,7 @@ source model / exported program / pre-exported StableHLO
   -> execution-mesh / launch-block / program shard metadata resource view
   -> ABI / LLVM lowering from committed instruction IR + accepted offsets + topology/execution mesh
   -> RISC-V kcore shared object + package manifest
-  -> WaferRuntimeAdapter HPGR/KMD launch or legacy TsmRun fallback
+  -> WaferRuntimeAdapter TxRuntimeBackend launch or legacy TsmRun fallback
 ```
 
 核心判断：
@@ -76,7 +76,7 @@ Wafer 是基于 MLIR 的编译器。每一层 IR 只携带自己能稳定解释�
 | Group scheduling | `wafer.group` | fusion boundary、traversal schedule、tiled tensor IR、abstract resource demand | raw register field、DTE node id、physical SPM slot、C ABI call |
 | Tile execution | `wafer.tile.region`, Wafer-tagged `memref`, target-abstract `wafer.tile.*` ops | bufferized tile-local execution scope、memory/liveness、movement/compute/sync ordering、layout contract | tensor fusion decision、host launch/package ABI |
 | Hardware/runtime lowering | `wafer.instr.*`, tile collective lowering | RDMA/WDMA/TDMA/CT/NE/DTE hardware invocation form、issue/fence/wait abstraction、barrier abstraction | raw packet bitfield unless in debug/raw dialect |
-| Launch / ABI | LLVM dialect, package metadata | host/device launch boundary、concrete `wafer_*` call、runtime adapter、HPGR or legacy launch metadata | tensor-level fusion, sharding decisions |
+| Launch / ABI | LLVM dialect, package metadata | host/device launch boundary、concrete `wafer_*` call、runtime adapter、tx runtime or legacy launch metadata | tensor-level fusion, sharding decisions |
 
 IREE 的可借鉴点是层级纪律，不是 dialect taxonomy。Wafer 不复制 Flow/Stream/HAL/VM 分层，也不把
 IREE 的 experimental op 当成硬件无关答案；但采用三个原则：
@@ -512,13 +512,13 @@ contract、collective lowering 和 verifier 见
 - 从 committed instruction IR、accepted offsets、topology/execution mesh、program parameter shard
   metadata/resource view 和 communication/sync IR 重算 launch signature、tile endpoint metadata、SPM/layout/DDR memory
   metadata、communication metadata、constant storage bytes 和 profiling/status metadata。
-- 选择 HPGR runtime path 或 legacy `TsmRun` fallback，并声明可信 completion source。
+- 选择 `TxRuntimeBackend` path 或 legacy `TsmRun` fallback，并声明可信 completion source。
 
 Runtime launch metadata 不替代 `wafer.tile.region`。前者表达一次 launch / kernel invocation 的外层
 边界和参数；launch/resource metadata 是 ABI/package/runtime 使用点从 IR 重算的 view，不是独立
 前置 IR 阶段，也不回头承载 tensor fusion、traversal selection 或 group planner 的中间计划。
 
-Runtime/package 的 package 内容、HPGR/KMD/legacy `TsmRun` 分层、runtime allocation/import mapping、
+Runtime/package 的 package 内容、Tx runtime provider / KMD / legacy `TsmRun` 分层、runtime allocation/import mapping、
 legacy bootparam/TLV 和 completion/stub shielding 合同见
 `tasks/15-launch-runtime-package.md`。C ABI 到 wrapper/golden packet 的细节见
 `tasks/14-abi-golden-packet.md`。
@@ -546,7 +546,7 @@ legacy bootparam/TLV 和 completion/stub shielding 合同见
 
 - 至少覆盖 RDMA/WDMA/CT/NE/TDMA 中一个完整 load/compute/store 闭环，并为涉及 wrapper 生成 golden packet。
 - 验证 `TsmExecute` 0..4 分派和 `TsmWaitfinish` local drain；不能用 per-op hard wait 掩盖 issue/drain 语义。
-- 验证 HPGR model/module path 或 legacy `TsmRun` bootparam path；不能用 `TsmLaunch` / `DeviceSynchronize` 当通过标准。
+- 验证 tx runtime module/kernel path 或 legacy `TsmRun` bootparam path；不能用 `TsmLaunch` / `DeviceSynchronize` 当通过标准。
 - Runtime 初始化显式写 `serial_mode=0` 或读回确认。
 
 ### Multi-Tile Data Parallel, No Communication
@@ -576,7 +576,7 @@ WaferRuntimeAdapter cluster launch
   信息来自 `wafer.target.topology`、`wafer.execution.mesh`、program parameter shard metadata/resource
   view 和薄 launch/block binding，不维护第二份 endpoint mapping 事实源。
 - 不依赖 `TsmGetDeviceNum/List/Properties` 这类 discovery stub 得到 capability。
-- completion 来自 HPGR command/module/stream completion、legacy `TsmRun` synchronous completion，或 kcore 内显式 CSR local drain 加 host runtime completion。
+- completion 来自 tx runtime command/module/stream completion、legacy `TsmRun` synchronous completion，或 kcore 内显式 CSR local drain 加 host runtime completion。
 
 ### Direct DTE Point-To-Point
 
@@ -702,7 +702,7 @@ WaferRuntimeAdapter cluster launch
 | `wafer.spm` | Wafer memory attr、liveness、Cx/NCx C0 tail/fold、256B padding、bool bitpack、SPM range/reserved-slot diagnostics |
 | `wafer.tile.*` compute | 对已支持 op 建 wrapper golden packet，例如 CT unary/binary、NE GEMM、RDMA/WDMA contiguous end-address、DMA stride byte-unit 和 `iteration - 1` |
 | `wafer.tile.*` communication | Direct DTE unicast send/recv/wait、packet counter update word、FSM resource allocation、raw non-unicast V1 禁用诊断 |
-| Runtime/package | package manifest validator、bootparam head/dyninfo layout、dyn TLV serialization roundtrip、HPGR/legacy completion source、stub shielding |
+| Runtime/package | package manifest validator、bootparam head/dyninfo layout、dyn TLV serialization roundtrip、tx runtime/legacy completion source、stub shielding |
 | Scheduler / PMU | 只在进入 overlap/cost-model milestone 后添加：serial/parallel mode、SPM bank/page-color conflict、DDR overlap、PMU `exe_time` / `blocking_time` case |
 
 每个能力阶段的测试面只覆盖该阶段实际启用的 dialect op 和 lowering path。例如 single-tile
@@ -955,7 +955,7 @@ V0 先保持少量稳定 op family：`wafer.group`、`wafer.linalg_ext.collectiv
 | DDR memory planning | `tasks/12-ddr-memory-planning.md` | 草案 | `#wafer.memory<ddr, *>` demand、external view/descriptor validation、compiler-managed/resident/inter-group alloc demand、accepted DDR offset facts、lifetime/reuse、default arena capacity/largest-contiguous/bandwidth | tensor fusion、SPM offset、runtime allocation/import、packet bitfield |
 | Communication | `tasks/13-communication.md` | 草案 | tile_region / SPM materialization 之后的 buffer-level collective op、p2p Direct DTE instruction schedule、token/effect、sync boundary | compute op legality、SPM allocator internals、SPMD tensor collective handoff |
 | C ABI / golden packet | `tasks/14-abi-golden-packet.md` | 草案 | committed instruction IR + topology/execution-mesh + program shard metadata/resource view 到 ABI / LLVM / packet emission 的参数单位、wait policy、golden packet | 上层 IR formation、layout search 和 SPM memory planning |
-| Launch / runtime package | `tasks/15-launch-runtime-package.md` | 草案 | HPGR/KMD/legacy Tsm 分层、completion、runtime allocation objects、bootparam/TLV、package metadata | Linalg tiling、group formation、tile-local ordering |
+| Launch / runtime package | `tasks/15-launch-runtime-package.md` | 草案 | Tx runtime provider / KMD / legacy Tsm 分层、completion、runtime allocation objects、bootparam/TLV、package metadata | Linalg tiling、group formation、tile-local ordering |
 | Verification plan | `tasks/16-verification-plan.md` | 草案 | stage diagnostics、roundtrip、golden packet、runtime shielding、PMU/cost-model gate | 替代各 dialect 语义设计 |
 | Serving integration | 暂不支持 | 延后 | graph capture、prefill/decode、KV cache 管理 | compiler core IR 合同 |
 

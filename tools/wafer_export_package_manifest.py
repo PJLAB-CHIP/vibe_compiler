@@ -483,8 +483,8 @@ def main() -> int:
     parser.add_argument("--llvm-ir", required=True)
     parser.add_argument("--device-code", required=True)
     parser.add_argument("--entrypoint")
-    parser.add_argument("--runtime-mode", default="hpgr")
-    parser.add_argument("--completion-source", default="hpgr_stream_event")
+    parser.add_argument("--runtime-mode", default="tx")
+    parser.add_argument("--completion-source", default="runtime_stream_wait")
     args = parser.parse_args()
 
     sys.stdout.write(canonical_json(build_manifest(args)))

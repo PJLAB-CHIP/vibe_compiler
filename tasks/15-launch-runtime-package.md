@@ -24,7 +24,8 @@ package load / launch 时执行的绑定动作，不是独立 compiler IR materi
 
 - 组织 RISC-V kcore device code、launch signature、endpoint/resource metadata、DDR binding
   contract、constant storage bytes 和 optional profiling/control metadata。
-- 明确 HPGR、KMD 和 legacy `TsmRun` fallback 的职责分层。
+- 明确 `WaferRuntimeAdapter`、`TxRuntimeBackend`、KMD 事实来源和 legacy `TsmRun` fallback
+  的职责分层；HPGR / `libhpgr.so` 是当前 `tx_runtime` provider 证据，不作为 Wafer 主抽象名。
 - 给 runtime allocation failure、stub shielding、completion source 和 status/profiling 建立可验证
   合同。
 
@@ -51,7 +52,8 @@ ABI/package/runtime adapter 从 committed IR 和 explicit facts 重算，不提�
   program parameter shard metadata/resource view 重算的 SPM summary、DDR workspace demand、resident constant demand、control metadata
   demand。
 - device code reference：kcore `.so` 或后续可执行代码对象。
-- runtime mode：HPGR 主路径或 legacy fallback。
+- runtime mode：`tx` 主路径或 `legacy_tsm` fallback。manifest 使用中性 completion source，
+  provider 诊断可以报告实际加载的 `libhpgr.so` / `libtx_runtime.so`。
 
 Runtime launch metadata 不包含 tensor-level fusion plan，也不组织 tile-local memory effects；这些属于
 `wafer.group` 和 `wafer.tile.region`。
@@ -74,7 +76,8 @@ Pipeline position:
   reference、runtime adapter binding/launch contract 和 completion-source declaration；不把 runtime
   handle 或 physical DDR address 写回上层 IR。
 - Downstream consumer:
-  HPGR/KMD/legacy runtime launch path、board correctness gate 和 profiling/error propagation gate。
+  `TxRuntimeBackend` / KMD-backed provider / legacy runtime launch path、board correctness gate 和
+  profiling/error propagation gate。
 - User-level driver / named pipeline:
   package emission 必须接在 committed instruction -> topology/execution-mesh + program metadata/resource view -> ABI/LLVM lowering 之后，
   不以显式 manifest fixture 或 C stub table 作为主线入口。
@@ -197,22 +200,42 @@ runtime/loader 合法解析的外部依赖，而不是 compiler-facing `wafer_*`
 
 ## 4. Runtime Layering
 
-主路径分层：
+稳定主路径分层：
 
 ```text
 WaferRuntimeAdapter
-  -> HPGR runtime surface
-  -> KMD/UAPI services for runtime allocation object, topology, device memory and jobs
-  -> device code launch and completion
+  -> WaferRuntimeBackend
+       -> DryRunRuntimeBackend       # no-card contract validation only
+       -> TxRuntimeBackend           # tx_runtime provider discovery and launch
+       -> LegacyTsmCompatibility     # restricted fallback only
+  -> provider / driver facts
+       -> tx_runtime provider such as libhpgr.so
+       -> KMD/UAPI services for runtime allocation object, topology, device memory and jobs
+       -> device code launch and completion
 ```
 
 已知事实：
 
-- HPGR `tx_runtime.h` / `libhpgr.so` 是主 host runtime surface，覆盖 device、memory、stream、
-  event、module、kernel、model、graph、rank、tile、P2P。
+- `tx_runtime.h` 是当前主 host runtime ABI，覆盖 device、memory、stream、event、module、kernel、
+  model、graph、rank、tile、P2P。`libhpgr.so` 是当前可见 provider 名称，不进入 Wafer package
+  schema 或 adapter 类名。
 - KMD/UAPI 负责 `/dev/accel/dev-N`、runtime allocation object、jobs、NPU tile memory、C2C、log、device
   info、topology、driver-level DTE ioctl、BAR/ATU 和 firmware loading。
 - Legacy `Tsm*` / VS runtime 是兼容和证据层。
+
+`TxRuntimeBackend` 的 V0 host path 以 module/kernel 方式消费当前 package 的 kcore shared object：
+
+```text
+kcore shared object bytes
+  -> txModuleLoad
+  -> txModuleGetFunction(program.entrypoint)
+  -> txLaunchKernel / txLaunchClusterKernel
+  -> runtime_stream_wait / runtime_command_completion
+```
+
+`txLaunchModelSync` / bootparam table 路径保留给 `legacy_tsm` fallback 或未来显式
+`model_sync` launch kind。当前 package 没有完整 BPM / bootparam table，因此不把 model-sync 作为
+默认主路径。
 
 Legacy fallback：
 
@@ -255,6 +278,10 @@ runtime allocation failure；不能在 runtime/package 层重新决定 DDR range
 记录 launch signature、program id、entrypoint、ABI version、device code artifact、endpoint metadata、
 DDR external binding bytes、SPM/DDR memory summary、workspace buffer demand、resident constant demand、
 ABI call/packet emission metadata 和 runtime completion source。validator 要求
+`runtime.mode` 是 `tx` 或 `legacy_tsm`；`tx` 使用 `runtime_stream_wait`、
+`runtime_command_completion` 或 `kcore_local_drain` 这类中性 completion source，
+`legacy_tsm` 只允许 `legacy_model_sync`。manifest 不写 `hpgr_*` completion source；实际 provider
+可以在 adapter 诊断中报告。
 `program.id`、`program.entrypoint` 和 `program.abi_version` 存在，且 `program.abi_version` 是
 当前支持的 `wafer-cabi-v0`；要求 `device_code` 非空，且每个条目都是 kcore shared object artifact。
 validator 要求
@@ -283,6 +310,13 @@ LLVM IR 文件和 device-code artifact，输出可被 validator roundtrip 的 ma
 解析 entrypoint，从 committed instruction MLIR 重算 instruction list、accepted SPM span 和
 DDR external binding byte summary；launch signature 的 user-visible name、shape、dtype 和 layout
 仍来自上游 program metadata，不能从低层 `%arg0` / `%arg1` 或 artifact 文件名猜测。
+
+`tools/wafer_runtime_adapter.py` 是 no-card runtime adapter contract gate：它消费已经 validate 的
+package manifest，构造 binding / module-kernel launch plan。`dry-run` backend 只打印 package 到
+runtime 的绑定计划；`fake-tx` backend 只用于本地 unit test 验证 `txSetDevice`、`txMalloc`、
+`txMemcpy`、`txModuleLoad`、`txModuleGetFunction`、`txLaunchKernel` 和 completion wait 的顺序；
+`tx` backend 在无卡环境只做 runtime library discovery 和 required symbol check。真实板端执行、
+错误传播和 device-side completion 仍属于 gated board test，不进入默认 lit。
 
 当前 C ABI stub 不再从 manifest 生成 tile-specific launch argument table。endpoint / block metadata 必须由
 后续 topology/execution-mesh、program parameter shard metadata/resource view 和薄 launch/block binding 派生，不能由
@@ -325,15 +359,21 @@ group/layout/SPM 文档当成语义对象。
 
 每个 runtime path 必须声明 completion 来源。
 
-允许作为 correctness fence 的来源：
+manifest 中允许的稳定 completion source：
 
-- HPGR command-slot completion。
-- HPGR async receive thread / module `completeSignal`。
-- HPGR stream/event wait。
+- `runtime_command_completion`：provider 的 command-slot / command-object completion。
+- `runtime_stream_wait`：provider 的 stream/event wait 或等价 runtime wait。
+- `kcore_local_drain`：Kcore CSR local drain，必须和可信 host runtime completion 组合使用。
+- `legacy_model_sync`：legacy `TsmRun` synchronous path when it reaches `txLaunchModelSync` completion。
+
+这些名字是 Wafer package contract，不绑定 provider 名称。当前 `tx_runtime` / HPGR 证据可映射为：
+
+- command-slot completion、async receive thread / module `completeSignal` -> `runtime_command_completion`。
+- stream/event wait -> `runtime_stream_wait`。
 - Kcore CSR local drain。
 - DTE wait / FSM completion。
 - explicit runtime sync whose implementation is proven non-stub。
-- legacy `TsmRun` synchronous path when it reaches `txLaunchModelSync` completion。
+- legacy `TsmRun` synchronous path -> `legacy_model_sync`。
 
 不能作为 correctness fence：
 
@@ -356,7 +396,9 @@ V0 验证：
 - package manifest auto-export 从真实 `wafer-opt` pipeline 产出的 committed instruction IR 和
   LLVM IR artifact 导出 manifest，并经 `tools/wafer_package_manifest.py --validate` 验证；手写 manifest
   fixture 只能作为 schema negative / roundtrip 覆盖。
-- package manifest schema roundtrip。
+- package manifest schema roundtrip。该类 compiler/tool golden 继续用 lit 覆盖。
+- runtime adapter no-card contract 用 Python unittest / ctest 覆盖 dry-run、fake-tx command
+  construction、missing tx runtime library diagnostics 和 stub completion rejection；不放入默认 lit。
 - launch signature 与 compiled function ABI 一致。
 - endpoint metadata 覆盖所有 launched tile。
 - DDR binding contract 与 package resource summary 一致。

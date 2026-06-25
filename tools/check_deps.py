@@ -192,9 +192,9 @@ def check_cmake_target_visibility() -> None:
         "WAFER_IMPORTER_PYTHON_VENV",
         '${WAFER_DEPS_ROOT}/googletest',
         "WAFER_ENABLE_RUNTIME_DEPS",
-        "WAFER_HPGR_SDK_ROOT",
+        "WAFER_TX_RUNTIME_ROOT",
         "WAFER_KMD_UAPI_ROOT",
-        "WAFER_LEGACY_TSM_SDK_ROOT",
+        "WAFER_LEGACY_TSM_RUNTIME_ROOT",
     ]:
         check_text_contains(
             REPO_ROOT / "cmake" / "third_party" / "WaferThirdParty.cmake",

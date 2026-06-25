@@ -2,8 +2,8 @@
   "schema_version": 1,
   "package_name": "manifest_schema_fixture",
   "runtime": {
-    "mode": "hpgr",
-    "completion_source": "hpgr_stream_event"
+    "mode": "tx",
+    "completion_source": "runtime_stream_wait"
   },
   "program": {
     "id": "manifest_schema_fixture",

@@ -6,10 +6,15 @@
 # RUN: not %python %wafer_src_root/tools/wafer_package_manifest.py --validate %S/invalid-device-code-manifest.json 2>&1 | FileCheck %s --check-prefix=DEVICE-ERR
 # RUN: not %python %wafer_src_root/tools/wafer_package_manifest.py --validate %S/invalid-empty-device-code-manifest.json 2>&1 | FileCheck %s --check-prefix=EMPTY-DEVICE-ERR
 # RUN: not %python %wafer_src_root/tools/wafer_package_manifest.py --validate %S/invalid-program-manifest.json 2>&1 | FileCheck %s --check-prefix=PROGRAM-ERR
+# RUN: sed 's/"completion_source": "runtime_stream_wait"/"completion_source": "legacy_model_sync"/' %S/valid-package-manifest.json > %t.bad-legacy-source.json
+# RUN: not %python %wafer_src_root/tools/wafer_package_manifest.py --validate %t.bad-legacy-source.json 2>&1 | FileCheck %s --check-prefix=LEGACY-SOURCE-ERR
+# RUN: sed 's/"mode": "tx"/"mode": "legacy_tsm"/' %S/valid-package-manifest.json > %t.bad-legacy-mode.json
+# RUN: not %python %wafer_src_root/tools/wafer_package_manifest.py --validate %t.bad-legacy-mode.json 2>&1 | FileCheck %s --check-prefix=LEGACY-MODE-ERR
 
 # CHECK: "schema_version": 1
 # CHECK: "package_name": "manifest_schema_fixture"
-# CHECK: "completion_source": "hpgr_stream_event"
+# CHECK: "mode": "tx"
+# CHECK: "completion_source": "runtime_stream_wait"
 # CHECK: "entrypoint": "manifest_schema_fixture_abi"
 # CHECK: "kind": "kcore_shared_object"
 # CHECK: "artifact": "schema_fixture.so"
@@ -30,3 +35,5 @@
 # DEVICE-ERR: device_code[0].kind must be kcore_shared_object
 # EMPTY-DEVICE-ERR: device_code must be non-empty
 # PROGRAM-ERR: program must be an object
+# LEGACY-SOURCE-ERR: legacy_model_sync completion source requires legacy_tsm runtime mode
+# LEGACY-MODE-ERR: legacy_tsm runtime mode requires legacy_model_sync completion source

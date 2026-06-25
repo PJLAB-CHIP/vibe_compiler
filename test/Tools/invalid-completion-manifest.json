@@ -2,7 +2,7 @@
   "schema_version": 1,
   "package_name": "bad_completion",
   "runtime": {
-    "mode": "hpgr",
+    "mode": "tx",
     "completion_source": "TsmDeviceSynchronize"
   },
   "program": {

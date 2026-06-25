@@ -66,3 +66,9 @@ add_custom_target(check-wafer-lit
 add_test(NAME wafer-lit
   COMMAND ${WAFER_LIT_EXECUTABLE} ${WAFER_LIT_ARGS} ${CMAKE_CURRENT_BINARY_DIR}
 )
+
+add_test(NAME wafer-runtime-adapter-python
+  COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/Runtime/wafer_runtime_adapter_test.py
+    --repo-root ${CMAKE_SOURCE_DIR}
+)

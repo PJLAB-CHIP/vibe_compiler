@@ -75,7 +75,8 @@ Pipeline position:
   source declaration。
 - Current stage responsibility:
   实现 host runtime adapter 的 package load / allocate-import-query-bind / launch / completion-error
-  validation 边界，明确 HPGR 主路径和 legacy fallback shielding。
+  validation 边界；稳定抽象是 `WaferRuntimeAdapter` / `TxRuntimeBackend`，HPGR / `libhpgr.so`
+  只是当前 tx runtime provider 事实，legacy fallback 需要 stub shielding。
 - Output artifact / IR:
   host-side runtime adapter contract / implementation、package-to-runtime binding tests、stub shielding
   diagnostics 和可在有卡环境执行的 board launch gate。

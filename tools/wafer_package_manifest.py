@@ -11,14 +11,19 @@ from typing import Any
 
 
 ALLOWED_COMPLETION_SOURCES = {
-    "hpgr_stream_event",
-    "hpgr_command_slot",
+    "runtime_stream_wait",
+    "runtime_command_completion",
     "kcore_local_drain",
-    "legacy_tsm_run_sync",
+    "legacy_model_sync",
 }
 
 ALLOWED_DEVICE_CODE_KINDS = {
     "kcore_shared_object",
+}
+
+ALLOWED_RUNTIME_MODES = {
+    "tx",
+    "legacy_tsm",
 }
 
 ALLOWED_ABI_VERSIONS = {
@@ -179,6 +184,24 @@ def validate_program(value: Any) -> None:
         fail("program.abi_version is not supported")
 
 
+def validate_runtime(value: Any) -> None:
+    runtime = require_dict(value, "runtime")
+    mode = require_non_empty_string(runtime.get("mode"), "runtime.mode")
+    if mode not in ALLOWED_RUNTIME_MODES:
+        fail("runtime.mode is not supported")
+    completion_source = require_non_empty_string(
+        runtime.get("completion_source"), "runtime.completion_source"
+    )
+    if completion_source in KNOWN_STUB_FENCES:
+        fail("completion source is a known stub fence")
+    if completion_source not in ALLOWED_COMPLETION_SOURCES:
+        fail("completion source is not in the allowed runtime fence set")
+    if completion_source == "legacy_model_sync" and mode != "legacy_tsm":
+        fail("legacy_model_sync completion source requires legacy_tsm runtime mode")
+    if mode == "legacy_tsm" and completion_source != "legacy_model_sync":
+        fail("legacy_tsm runtime mode requires legacy_model_sync completion source")
+
+
 def validate_tensor_storage_demand(item: Any, name: str) -> tuple[str, int]:
     demand = require_dict(item, name)
     demand_name = require_non_empty_string(demand.get("name"), f"{name}.name")
@@ -246,14 +269,7 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         fail("schema_version must be 1")
     require_non_empty_string(manifest.get("package_name"), "package_name")
 
-    runtime = require_dict(manifest.get("runtime"), "runtime")
-    completion_source = require_non_empty_string(
-        runtime.get("completion_source"), "runtime.completion_source"
-    )
-    if completion_source in KNOWN_STUB_FENCES:
-        fail("completion source is a known stub fence")
-    if completion_source not in ALLOWED_COMPLETION_SOURCES:
-        fail("completion source is not in the allowed runtime fence set")
+    validate_runtime(manifest.get("runtime"))
     validate_program(manifest.get("program"))
     validate_device_code(manifest.get("device_code"))
 

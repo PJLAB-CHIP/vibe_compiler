@@ -36,6 +36,9 @@
 - 不要并发运行两个会写同一个 lit output tree 的验证命令，例如同时跑 `ctest --test-dir
   build/wafer-dev` 和 `/root/miniconda3/bin/lit ... build/wafer-dev/test`。部分 `test/Tools` 用固定
   `%t` output 路径，两个 lit 实例会互相清理目录，导致假失败；需要顺序跑。
+- Runtime adapter 测试分层：manifest/exporter 这类 compiler artifact golden 用 lit；no-card
+  adapter contract、fake backend call sequence 和 runtime library discovery diagnostics 用 Python
+  unittest / ctest；真实板端 launch/completion/error propagation 必须 gated 到有卡环境，不能塞进默认 lit。
 - Shardy 不用 standalone Bazel workspace 作为 Wafer dependency 编译验证；`WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON`
   会通过 `cmake/third_party/WaferShardyCMake.cmake` 编译 `wafer-shardy-cmake-gate` / `shardy-sdy-opt`，
   复用同一套固定版本 LLVM/MLIR 和 embedded StableHLO。

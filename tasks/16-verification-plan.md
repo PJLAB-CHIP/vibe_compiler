@@ -73,7 +73,8 @@ Gate 通过只说明进入下一层的输入合法，不说明整个 compiler �
 - resource planner tests：SPM allocation failure feedback、DDR capacity/binding failure。
 - golden packet tests：C ABI 参数到 wrapper/packet field。
 - package serialization tests：manifest、bootparam/TLV fallback、constant bytes metadata。
-- runtime shielding tests：已知 stub path 不能被选为 correctness fence。
+- runtime shielding tests：已知 stub path 不能被选为 correctness fence；no-card runtime adapter
+  contract 用 Python unittest / ctest 覆盖，不放进默认 lit golden。
 - importer/dependency 最小验证：至少一个 importer path 能产出 verified Wafer program；
   后端 textual MLIR tests 不依赖 importer-only Python / framework 包，但不能作为主链路完成证明。
 - board 最小验证：只在 runtime path 和 hardware availability 明确时作为新增 milestone gate。
@@ -123,7 +124,7 @@ Single-tile local compute：
 - 当前无卡开发环境要求 generated program compile，并在 TX8 依赖可用时通过 `.ll -> .o -> kcore .so`
   的 device-code compile/link gate；package manifest roundtrip 只能作为 tool-unit schema 覆盖，
   不能替代 IR-derived package emission。runtime completion 在带实际计算卡服务器上再验证，届时
-  completion 必须来自 HPGR model/module/stream completion、legacy `TsmRun` synchronous path，或
+  completion 必须来自 tx runtime model/module/stream completion、legacy `TsmRun` synchronous path，或
   device-side drain + 可信 host completion。
 
 Multi-tile no communication：

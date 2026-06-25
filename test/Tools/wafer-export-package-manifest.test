@@ -36,6 +36,9 @@
 # RUN:   --device-code manifest_export_fixture.so 2>&1 | FileCheck %s --check-prefix=ERR
 
 # CHECK: "package_name": "manifest_export_fixture"
+# CHECK: "runtime": {
+# CHECK: "mode": "tx"
+# CHECK: "completion_source": "runtime_stream_wait"
 # CHECK: "program": {
 # CHECK: "id": "manifest_export_fixture"
 # CHECK: "entrypoint": "manifest_export_entry_abi"
@@ -61,6 +64,7 @@
 # ROUNDTRIP: "wafer.instr.gather_scatter"
 # ROUNDTRIP: "wafer.instr.local_fence"
 
+# PIPELINE: "completion_source": "runtime_stream_wait"
 # PIPELINE: "entrypoint": "boundary_tiled_matmul_group_abi"
 # PIPELINE: "artifact": "pipeline_export.so"
 # PIPELINE: "ddr_external_input_bytes": 192
