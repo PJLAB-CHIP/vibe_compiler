@@ -93,8 +93,10 @@ Pipeline position:
   runtime adapter 能从当前 package 形成可审计的 RuntimeSession：model binding lifecycle、
   module resolution、selected entrypoint launch args 和 completion plan 均来自 package metadata；
   C++ host runtime 能读取 package metadata、选择 entrypoint、动态加载 tx runtime library 并检查
-  executor-specific required symbols；对 descriptor-only BPM 或 known stub completion source 给出结构化
-  拒绝；有卡环境下验证真实 allocation/import/query/bind、可信 completion、错误传播和最小 board run。
+  executor-specific required symbols；no-card E2E lit 从 `wafer-opt` instruction/LLVM outputs 经 package
+  metadata auto-export / validation 直接进入 `wafer-run`；对 descriptor-only BPM 或 known stub completion
+  source 给出结构化拒绝；有卡环境下验证真实 allocation/import/query/bind、可信 completion、错误传播
+  和最小 board run。
 ```
 
 ## 已可依赖的上游边界
@@ -124,7 +126,7 @@ Pipeline position:
 | device-code compile/link gate | done | LLVM IR artifact + repo-vendored TX8 deps + repo-local Wafer CRT lib dir | LLVM `clang++` `.ll -> .o`、default `wafer_cabi_shim.c -> shim.o`、LLVM object `.riscv.attributes` normalization 和 repo-vendored `tx8_deps` GCC `.o + shim.o -> kcore .so` 的命令形态固定；本地 smoke 已证明 LLVM IR、shim source、vendored `rv64imafdc/lp64d` multilib、repo-local debug-stripped Wafer CRT `libvr` 和 `riscv64-unknown-elf-objcopy` normalization 可生成 kcore shared object；package metadata 只引用生成的 `tx.kcore` module，不把 device-code record 作为顶层合同 |
 | package metadata auto export | done | ABI/LLVM artifact + kcore shared object + committed IR + model interface metadata | `tools/wafer_export_package_metadata.py` 从 committed instruction IR、LLVM IR artifact、module path 和 model interface metadata 导出 schema v2 package metadata；pipeline smoke 覆盖 `wafer-opt` instruction/LLVM outputs -> `mlir-translate` LLVM IR -> package metadata validator；schema 要求 `name`、`model.id`、`model.abi`、`model.interface`、`modules` 和 `entrypoints`，`tx.module` 只作为 debug/bring-up entrypoint |
 | wrapper shim / register-facing implementation | done | scalar `wafer_*` ABI contract + format-aware golden packet builders + TX8 public wrapper evidence | `runtime/wafer_cabi_shim.c` 实现 `wafer_rdma`、`wafer_wdma`、`wafer_gather_scatter`、`wafer_gemm`、`wafer_local_fence` 到 public Tsm wrapper / local wait；参与 device-code link gate，并由 capture/register-facing golden tests 验证 |
-| runtime adapter / board launch | active | model-level package + C++ host runtime | C++ `WaferRuntime` / `wafer-run` 能读取 package metadata、选择 entrypoint、动态加载 tx runtime library 并检查 executor-specific required symbols；Python adapter 只保留 no-card checker；剩余 gate 是有卡环境下真实 allocation/import/query/bind、module load/function lookup、launch、completion 和 error propagation |
+| runtime adapter / board launch | active | model-level package + C++ host runtime | C++ `WaferRuntime` / `wafer-run` 能读取 package metadata、选择 entrypoint、动态加载 tx runtime library 并检查 executor-specific required symbols；no-card E2E 已覆盖 `wafer-opt` -> package metadata auto-export -> `wafer-run`；Python adapter 只保留 no-card checker；剩余 gate 是有卡环境下真实 allocation/import/query/bind、module load/function lookup、launch、completion 和 error propagation |
 | transformer staged gaps | pending | static transformer local shard IR / staged IR gaps | full-block schedule 或拒绝原因；补 mask/select、dynamic-bound policy、constant/weight slice 等 |
 | overlap / cost calibration | later | board/profile 输出 | overlap、cost model 和 PMU calibration |
 

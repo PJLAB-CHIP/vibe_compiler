@@ -1,0 +1,26 @@
+# RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-groups-to-ddr-memory-planned-instr)' \
+# RUN:   %wafer_src_root/test/Pipelines/lower-groups-to-llvm.mlir > %t.instr.mlir
+# RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-groups-to-llvm)' \
+# RUN:   %wafer_src_root/test/Pipelines/lower-groups-to-llvm.mlir > %t.llvm.mlir
+# RUN: mlir-translate --mlir-to-llvmir %t.llvm.mlir > %t.ll
+# RUN: %python %wafer_src_root/tools/wafer_export_package_metadata.py \
+# RUN:   --name no_card_e2e_package \
+# RUN:   --model-id no_card_e2e_package \
+# RUN:   --abi wafer-cabi-v0 \
+# RUN:   --model-interface %wafer_src_root/test/Tools/Inputs/package-export-pipeline-model-interface.json \
+# RUN:   --instruction-ir %t.instr.mlir \
+# RUN:   --llvm-ir %t.ll \
+# RUN:   --module-path %t.kernel.so > %t.package.json
+# RUN: %python %wafer_src_root/tools/wafer_package_metadata.py --validate %t.package.json
+# RUN: clang -shared -fPIC %S/Inputs/fake-tx-runtime.c -o %t.libtxruntime.so
+# RUN: wafer-run --package-metadata %t.package.json \
+# RUN:   --entrypoint debug_kernel --runtime-library %t.libtxruntime.so | FileCheck %s
+
+# CHECK: backend: tx-host
+# CHECK: package: no_card_e2e_package
+# CHECK: runtime_mode: tx
+# CHECK: completion_source: runtime_stream_wait
+# CHECK: selected_entrypoint: debug_kernel tx.module
+# CHECK: tx_runtime_library: {{.*}}libtxruntime.so
+# CHECK: tx_runtime_symbols: ok
+# CHECK: board_launch_gate: not executed

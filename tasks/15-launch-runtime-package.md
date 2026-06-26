@@ -478,6 +478,10 @@ V0 验证：
 - C++ host runtime library 用 unit tests 覆盖 package metadata intake、selected entrypoint lookup、
   executor-specific required symbol gate 和 fake shared-library dynamic loading。该 gate 不执行 board
   launch，也不声明 completion。
+- no-card E2E runtime gate 用 lit 覆盖 `wafer-opt` instruction/LLVM outputs -> `mlir-translate`
+  LLVM IR -> package metadata auto-export / validation -> C++ `wafer-run` -> fake tx runtime shared library
+  required-symbol check。该 gate 证明当前 compiler-generated package 可以进入 runtime 边界，但仍不执行
+  allocation/import/query/bind、module load、launch 或 completion。
 - model interface 与 compiled function ABI / selected entrypoint binding order 一致。
 - 当前 schema v2 不保存 endpoint table；若后续启用 derived endpoint section，必须覆盖所有
   launched tile 且能从 execution mesh / topology 重算。
