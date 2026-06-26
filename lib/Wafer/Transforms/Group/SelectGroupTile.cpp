@@ -18,8 +18,8 @@
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Utils/StructuredOpsUtils.h"
 #include "mlir/IR/BuiltinOps.h"
-#include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/Diagnostics.h"
+#include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
@@ -33,8 +33,8 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <future>
 #include <functional>
+#include <future>
 #include <limits>
 #include <optional>
 #include <string>
@@ -348,8 +348,8 @@ getYieldedRootLinalgOps(GroupOp group) {
 
   llvm::SmallVector<mlir::linalg::LinalgOp, 4> roots;
   for (mlir::Value value : yield.getValues()) {
-    auto root = mlir::dyn_cast_or_null<mlir::linalg::LinalgOp>(
-        value.getDefiningOp());
+    auto root =
+        mlir::dyn_cast_or_null<mlir::linalg::LinalgOp>(value.getDefiningOp());
     if (!root)
       return std::nullopt;
     roots.push_back(root);
@@ -425,8 +425,8 @@ getStaticRootReductionRanges(GroupOp group) {
 
   std::optional<llvm::SmallVector<int64_t, 2>> commonReductionRanges;
   for (mlir::linalg::LinalgOp root : *roots) {
-    if (!mlir::isa<mlir::linalg::MatmulOp, mlir::linalg::GenericOp>(
-            root.getOperation()) ||
+    if (!mlir::isa<mlir::linalg::MatmulOp, mlir::linalg::BatchMatmulOp,
+                   mlir::linalg::GenericOp>(root.getOperation()) ||
         !hasReductionIterator(root))
       continue;
 
@@ -456,8 +456,9 @@ getStaticRootReductionRanges(GroupOp group) {
   return *commonReductionRanges;
 }
 
-static std::optional<int64_t> estimateRootMinimumSPMBytes(
-    mlir::linalg::LinalgOp root, const CandidateSpec &candidate) {
+static std::optional<int64_t>
+estimateRootMinimumSPMBytes(mlir::linalg::LinalgOp root,
+                            const CandidateSpec &candidate) {
   auto resultType =
       mlir::dyn_cast<mlir::RankedTensorType>(root->getResult(0).getType());
   if (!resultType || !resultType.hasStaticShape())
@@ -704,10 +705,10 @@ static std::string joinFailure(llvm::StringRef gate, llvm::StringRef reason,
   return os.str();
 }
 
-static CandidateEvaluation evaluateTileInstance(
-    GroupOp group, llvm::ArrayRef<int64_t> traversalShape,
-    const CandidateSpec &candidate, const TileInstance &tile,
-    const SelectionConfig &config) {
+static CandidateEvaluation
+evaluateTileInstance(GroupOp group, llvm::ArrayRef<int64_t> traversalShape,
+                     const CandidateSpec &candidate, const TileInstance &tile,
+                     const SelectionConfig &config) {
   CandidateEvaluation evaluation;
   mlir::MLIRContext *context = group.getContext();
 
@@ -769,10 +770,10 @@ static CandidateEvaluation evaluateTileInstance(
   diagnostics = takeDiagnostics(
       context,
       [&]() {
-        return planDDRMemoryModule(
-            *evaluation.module, config.ddrAlignmentBytes,
-            config.ddrCapacityBytes, config.ddrLargestContiguousBytes,
-            config.ddrBandwidthLimitBytes);
+        return planDDRMemoryModule(*evaluation.module, config.ddrAlignmentBytes,
+                                   config.ddrCapacityBytes,
+                                   config.ddrLargestContiguousBytes,
+                                   config.ddrBandwidthLimitBytes);
       },
       result);
   if (mlir::failed(result)) {
@@ -844,10 +845,11 @@ static CandidateCheckResult evaluateCandidateOnOriginalGroup(
   return result;
 }
 
-static CandidateCheckResult evaluateCandidateOnStandaloneText(
-    llvm::StringRef standaloneGroupModuleText,
-    llvm::ArrayRef<int64_t> traversalShape, const CandidateSpec &candidate,
-    const SelectionConfig &config) {
+static CandidateCheckResult
+evaluateCandidateOnStandaloneText(llvm::StringRef standaloneGroupModuleText,
+                                  llvm::ArrayRef<int64_t> traversalShape,
+                                  const CandidateSpec &candidate,
+                                  const SelectionConfig &config) {
   CandidateCheckResult result;
   result.spec = candidate;
 
@@ -857,9 +859,8 @@ static CandidateCheckResult evaluateCandidateOnStandaloneText(
   context.loadAllAvailableDialects();
 
   std::string parseFailure;
-  mlir::OwningOpRef<mlir::ModuleOp> module =
-      parseStandaloneGroupModule(standaloneGroupModuleText, context,
-                                 parseFailure);
+  mlir::OwningOpRef<mlir::ModuleOp> module = parseStandaloneGroupModule(
+      standaloneGroupModuleText, context, parseFailure);
   if (!module) {
     result.failureReason = parseFailure;
     return result;
@@ -877,9 +878,8 @@ static CandidateCheckResult evaluateCandidateOnStandaloneText(
   result.representativeCount = static_cast<int64_t>(reps.size());
 
   for (auto [repIndex, rep] : llvm::enumerate(reps)) {
-    CandidateEvaluation evaluation =
-        evaluateTileInstance(parsedGroup, traversalShape, candidate, rep,
-                             config);
+    CandidateEvaluation evaluation = evaluateTileInstance(
+        parsedGroup, traversalShape, candidate, rep, config);
     if (!evaluation.failureReason.empty()) {
       result.failureReason = evaluation.failureReason;
       evaluation.module = mlir::OwningOpRef<mlir::ModuleOp>();
@@ -1030,9 +1030,9 @@ static void addGenericRootPressure(mlir::linalg::LinalgOp root,
     addPressure(traversal, dim, bytes);
 }
 
-static llvm::SmallVector<RefinementDim, 6> rankRefinementDims(
-    GroupOp group, const CandidateSpec &candidate,
-    llvm::ArrayRef<int64_t> reductionRanges) {
+static llvm::SmallVector<RefinementDim, 6>
+rankRefinementDims(GroupOp group, const CandidateSpec &candidate,
+                   llvm::ArrayRef<int64_t> reductionRanges) {
   llvm::SmallVector<int64_t, 4> traversalPressure(candidate.tileSizes.size(),
                                                   1);
   llvm::SmallVector<int64_t, 2> reductionPressure(reductionRanges.size(), 1);
@@ -1058,30 +1058,27 @@ static llvm::SmallVector<RefinementDim, 6> rankRefinementDims(
     dims.push_back(RefinementDim{/*isReduction=*/true,
                                  static_cast<unsigned>(index), pressure});
 
-  llvm::stable_sort(dims, [](const RefinementDim &lhs,
-                             const RefinementDim &rhs) {
-    if (lhs.pressure != rhs.pressure)
-      return lhs.pressure > rhs.pressure;
-    if (lhs.isReduction != rhs.isReduction)
-      return lhs.isReduction;
-    return lhs.index < rhs.index;
-  });
+  llvm::stable_sort(dims,
+                    [](const RefinementDim &lhs, const RefinementDim &rhs) {
+                      if (lhs.pressure != rhs.pressure)
+                        return lhs.pressure > rhs.pressure;
+                      if (lhs.isReduction != rhs.isReduction)
+                        return lhs.isReduction;
+                      return lhs.index < rhs.index;
+                    });
   return dims;
 }
 
-static std::optional<CandidateSpec>
-refineCandidateDim(const CandidateSpec &candidate,
-                   llvm::ArrayRef<int64_t> reductionRanges,
-                   const TileSizeOptions &tileSizeOptions,
-                   const RefinementDim &dim) {
+static std::optional<CandidateSpec> refineCandidateDim(
+    const CandidateSpec &candidate, llvm::ArrayRef<int64_t> reductionRanges,
+    const TileSizeOptions &tileSizeOptions, const RefinementDim &dim) {
   CandidateSpec refined = candidate;
   if (!dim.isReduction) {
     if (dim.index >= refined.tileSizes.size() ||
         dim.index >= tileSizeOptions.traversal.size())
       return std::nullopt;
-    std::optional<size_t> index =
-        findSizeIndex(tileSizeOptions.traversal[dim.index],
-                      refined.tileSizes[dim.index]);
+    std::optional<size_t> index = findSizeIndex(
+        tileSizeOptions.traversal[dim.index], refined.tileSizes[dim.index]);
     if (!index || *index + 1 >= tileSizeOptions.traversal[dim.index].size())
       return std::nullopt;
     refined.tileSizes[dim.index] =
@@ -1106,9 +1103,9 @@ refineCandidateDim(const CandidateSpec &candidate,
   return refined;
 }
 
-static bool enqueueCandidate(
-    const CandidateSpec &candidate, llvm::StringSet<> &seen,
-    llvm::SmallVectorImpl<CandidateWorkItem> &queue) {
+static bool enqueueCandidate(const CandidateSpec &candidate,
+                             llvm::StringSet<> &seen,
+                             llvm::SmallVectorImpl<CandidateWorkItem> &queue) {
   std::string key = getCandidateKey(candidate);
   if (!seen.insert(key).second)
     return false;
@@ -1116,11 +1113,12 @@ static bool enqueueCandidate(
   return true;
 }
 
-static void enqueueRefinements(
-    GroupOp group, const CandidateSpec &candidate,
-    llvm::ArrayRef<int64_t> reductionRanges,
-    const TileSizeOptions &tileSizeOptions, llvm::StringSet<> &seen,
-    llvm::SmallVectorImpl<CandidateWorkItem> &queue, int64_t beamWidth) {
+static void enqueueRefinements(GroupOp group, const CandidateSpec &candidate,
+                               llvm::ArrayRef<int64_t> reductionRanges,
+                               const TileSizeOptions &tileSizeOptions,
+                               llvm::StringSet<> &seen,
+                               llvm::SmallVectorImpl<CandidateWorkItem> &queue,
+                               int64_t beamWidth) {
   llvm::SmallVector<RefinementDim, 6> dims =
       rankRefinementDims(group, candidate, reductionRanges);
 
@@ -1150,8 +1148,9 @@ static void enqueueRefinements(
                                               reductionRanges.end());
         for (auto [dimIndex, value] :
              llvm::enumerate(oneStep[j].reductionSplitSizes))
-          if (value != getCandidateReductionSize(candidate, reductionRanges,
-                                                 static_cast<unsigned>(dimIndex)))
+          if (value !=
+              getCandidateReductionSize(candidate, reductionRanges,
+                                        static_cast<unsigned>(dimIndex)))
             combined.reductionSplitSizes[dimIndex] = value;
       }
       neighbors.push_back(combined);
@@ -1187,9 +1186,9 @@ selectCandidateForGroup(GroupOp group, llvm::StringRef label,
     return mlir::failure();
   }
 
-  TileSizeOptions tileSizeOptions = buildTileSizeOptions(
-      *shape, *reductionRanges, config.preferredTileSizes,
-      config.maxCandidatesPerDim);
+  TileSizeOptions tileSizeOptions =
+      buildTileSizeOptions(*shape, *reductionRanges, config.preferredTileSizes,
+                           config.maxCandidatesPerDim);
 
   std::optional<SelectedCandidate> best;
   int64_t rejectedCount = 0;
@@ -1223,8 +1222,7 @@ selectCandidateForGroup(GroupOp group, llvm::StringRef label,
   auto isRetryableFailure = [](llvm::StringRef failure) {
     return failure.contains("spm-offsets") ||
            failure.contains("capacity_overflow") ||
-           failure.contains("tile-region") ||
-           failure.contains("cheap_bound");
+           failure.contains("tile-region") || failure.contains("cheap_bound");
   };
 
   auto processCheckResult = [&](const CandidateCheckResult &check) {
@@ -1232,9 +1230,8 @@ selectCandidateForGroup(GroupOp group, llvm::StringRef label,
       ++rejectedCount;
       lastFailure = check.failureReason;
       if (isRetryableFailure(lastFailure))
-        enqueueRefinements(group, check.spec, *reductionRanges,
-                           tileSizeOptions, seen, queue,
-                           best ? config.searchBeamWidth : 0);
+        enqueueRefinements(group, check.spec, *reductionRanges, tileSizeOptions,
+                           seen, queue, best ? config.searchBeamWidth : 0);
       return;
     }
 
@@ -1257,14 +1254,12 @@ selectCandidateForGroup(GroupOp group, llvm::StringRef label,
 
     if (config.mode == TileSearchMode::MinEstimatedTime &&
         config.candidateParallelism > 1) {
-      size_t remainingBudget = best
-                                   ? static_cast<size_t>(
-                                         config.maxSearchCandidates -
-                                         visitedCount)
-                                   : std::numeric_limits<size_t>::max();
-      size_t batchSize = std::min<size_t>(
-          {static_cast<size_t>(config.candidateParallelism),
-           queue.size() - queueIndex, remainingBudget});
+      size_t remainingBudget =
+          best ? static_cast<size_t>(config.maxSearchCandidates - visitedCount)
+               : std::numeric_limits<size_t>::max();
+      size_t batchSize =
+          std::min<size_t>({static_cast<size_t>(config.candidateParallelism),
+                            queue.size() - queueIndex, remainingBudget});
       llvm::SmallVector<CandidateCheckResult, 8> results;
       results.resize(batchSize);
       llvm::SmallVector<unsigned, 8> futureSlots;
@@ -1306,8 +1301,7 @@ selectCandidateForGroup(GroupOp group, llvm::StringRef label,
     ++visitedCount;
     if (failsCheapSPMBound(group, candidate, config.spmBase, config.spmLimit)) {
       ++rejectedCount;
-      lastFailure =
-          "cheap_bound: minimum SPM bytes exceed planning window";
+      lastFailure = "cheap_bound: minimum SPM bytes exceed planning window";
       enqueueRefinements(group, candidate, *reductionRanges, tileSizeOptions,
                          seen, queue, best ? config.searchBeamWidth : 0);
       continue;
@@ -1318,8 +1312,8 @@ selectCandidateForGroup(GroupOp group, llvm::StringRef label,
     CandidateEvaluation firstEvaluation;
     bool passed = true;
     for (auto [repIndex, rep] : llvm::enumerate(reps)) {
-      CandidateEvaluation evaluation = evaluateTileInstance(
-          group, *shape, candidate, rep, config);
+      CandidateEvaluation evaluation =
+          evaluateTileInstance(group, *shape, candidate, rep, config);
       if (!evaluation.failureReason.empty()) {
         passed = false;
         ++rejectedCount;
@@ -1368,8 +1362,8 @@ selectCandidateForGroup(GroupOp group, llvm::StringRef label,
     best->candidateCount = visitedCount;
     best->rejectedCount = rejectedCount;
     if (!best->module) {
-      CandidateCheckResult materialized = evaluateCandidateOnOriginalGroup(
-          group, *shape, best->spec, config);
+      CandidateCheckResult materialized =
+          evaluateCandidateOnOriginalGroup(group, *shape, best->spec, config);
       if (!materialized.failureReason.empty()) {
         group.emitError() << "selected candidate rematerialization failed: "
                           << materialized.failureReason;
@@ -1436,7 +1430,8 @@ getStandaloneSelectedFunction(GroupOp group, mlir::ModuleOp selectedModule) {
   return selectedFunc;
 }
 
-static mlir::LogicalResult commitSelectedCandidate(SelectedCandidate &selected) {
+static mlir::LogicalResult
+commitSelectedCandidate(SelectedCandidate &selected) {
   GroupOp group = selected.group;
   if (!group || !selected.module) {
     if (group)
@@ -1526,9 +1521,8 @@ struct SelectGroupTilePass
     }
     std::optional<llvm::SmallVector<int64_t, 8>> parsedPreferred;
     if (!llvm::StringRef(preferredTileSizes).trim().empty()) {
-      mlir::FailureOr<llvm::SmallVector<int64_t, 8>> parsed =
-          parseI64List(preferredTileSizes, "preferred-tile-sizes",
-                       getOperation());
+      mlir::FailureOr<llvm::SmallVector<int64_t, 8>> parsed = parseI64List(
+          preferredTileSizes, "preferred-tile-sizes", getOperation());
       if (mlir::failed(parsed)) {
         signalPassFailure();
         return;

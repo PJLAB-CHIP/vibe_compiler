@@ -287,7 +287,8 @@ Wafer 硬件能力表达，就不能把当前 static gate 的覆盖范围写成�
 - golden packet tests：至少覆盖 single-tile local compute 用到的 wrapper family。
 
 如果某个 milestone 暂时只能做文档验证，必须明确说明还缺 build/test harness 或板端 runtime。
-当前 local gates 已能证明：group / PyTorch smoke 输入可以进入 ABI/LLVM lowering，LLVM dialect
+当前 local gates 已能证明：group / PyTorch smoke / HF Megatron-style transformer block 输入可以进入
+ABI/LLVM lowering，LLVM dialect
 可以翻译成 LLVM IR，default `wafer_cabi_shim.c` 可以随 LLVM object 用 repo-vendored TX8 deps
 链接成 kcore shared object，package metadata auto-export 可以消费 committed instruction IR、LLVM IR
 artifact、module path 和 model interface metadata 导出 schema v2 package metadata，并进入 no-card

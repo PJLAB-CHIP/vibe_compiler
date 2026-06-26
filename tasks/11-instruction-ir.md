@@ -25,13 +25,15 @@ memref SSA、Wafer memory attr、op operands、attrs、MemoryEffects 和显式 f
 
 - 仓库代码当前已落地 `wafer.instr.local_fence`，以及
   `wafer.instr.rdma`、`wafer.instr.wdma`、`wafer.instr.gather_scatter`、`wafer.instr.fill`、
-  `wafer.instr.elementwise`、`wafer.instr.reduce`、`wafer.instr.convert` 和 `wafer.instr.gemm`
+  `wafer.instr.elementwise`、`wafer.instr.reduce`、`wafer.instr.convert`、`wafer.instr.gemm`
+  和 `wafer.instr.dte_send` / `dte_recv` / `dte_wait`
   的 ODS、verifier、MemoryEffects、`WaferInstructionOpInterface` 和 lit/unit 覆盖。
 - `wafer.instr.*` op 只读写 Wafer-tagged memref，不产生 buffer result，不携带 SPM offset、
   worker id、raw packet field 或 C ABI 字段。
-- Direct DTE instruction ops 是当前 active cleanup / lowering 任务的目标：它们应替代旧
-  tile-level p2p prototype，并在 SPM memory planning 前暴露
-  buffer lifetime、peer、byte count 和 async token。
+- Direct DTE instruction ops 已替代旧 tile-level p2p prototype，并在 SPM memory planning 前暴露
+  buffer lifetime、peer、byte count 和 async token。all-gather 的 strided gather slot 通过
+  `wafer.instr.gather_scatter` 与连续 communication buffer 互相 materialize；DTE op 本身只收发
+  连续 SPM buffer。
 - 当前实现已支持 target-abstract tile-region op 到这些 instruction op 的
   DialectConversion；静态 `extract_slice`、`insert_slice`、`broadcast` 和 `transpose`
   通过统一 logical-to-physical offset calculator 生成 logical movement segments，并尽量打包成
@@ -289,7 +291,8 @@ memref 替换原 op result 的 uses。
   ranges 和 constant residency。
 
 R3.2d 只 materialize **unplaced logical descriptor facts**：byte count、stride/iteration、op kind、
-reduction dimensions、GEMM dimensions、elementwise kind 等。这些字段能从当前 IR type、attrs 和
+reduction dimensions、GEMM M/K/N、batched GEMM `batch_count` 和 batch/m/n/k dimension attrs、
+elementwise kind 等。这些字段能从当前 IR type、attrs 和
 source op verifier 重算。
 
 ## 6. Common Instruction Interface

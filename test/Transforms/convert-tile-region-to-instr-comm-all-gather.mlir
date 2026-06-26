@@ -1,7 +1,7 @@
 // RUN: wafer-opt --wafer-convert-tile-region-to-instr %s | FileCheck %s
 // RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-tile-region-to-instr)' %s | FileCheck %s
 // RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-tile-region-to-instr)' %s \
-// RUN:   | wafer-opt --wafer-plan-spm-memory='spm-base=65536 spm-limit=66048' \
+// RUN:   | wafer-opt --wafer-plan-spm-memory='spm-base=65536 spm-limit=66816' \
 // RUN:   | FileCheck --check-prefix=SPM %s
 
 module {
@@ -44,27 +44,36 @@ module {
 // CHECK: %[[LOCAL:.+]] = memref.alloc
 // CHECK: %[[GATHER:.+]] = memref.alloc
 // CHECK: %[[SLOT1:.+]] = memref.subview %[[GATHER]][4] [4] [1]
-// CHECK: wafer.instr.gather_scatter %[[LOCAL]] to %[[SLOT1]]
+// CHECK: %[[LOCAL_COMM:.+]] = memref.alloc
+// CHECK: wafer.instr.gather_scatter %[[LOCAL]] to %[[LOCAL_COMM]]
+// CHECK-SAME: byte_count = 16 : i64
+// CHECK: wafer.instr.gather_scatter %[[LOCAL_COMM]] to %[[SLOT1]]
 // CHECK-SAME: byte_count = 16 : i64
 // CHECK: wafer.instr.local_fence
 // CHECK: %[[SLOT0:.+]] = memref.subview %[[GATHER]][0] [4] [1]
-// CHECK: %[[SEND0:.+]] = wafer.instr.dte_send %[[SLOT1]]
+// CHECK: %[[RECV0_BUF:.+]] = memref.alloc
+// CHECK: %[[SEND0:.+]] = wafer.instr.dte_send %[[LOCAL_COMM]]
 // CHECK-SAME: peer = 2 : i64
-// CHECK: %[[RECV0:.+]] = wafer.instr.dte_recv %[[SLOT0]]
+// CHECK: %[[RECV0:.+]] = wafer.instr.dte_recv %[[RECV0_BUF]]
 // CHECK-SAME: peer = 0 : i64
 // CHECK: wafer.instr.dte_wait %[[SEND0]], %[[RECV0]]
+// CHECK: wafer.instr.gather_scatter %[[RECV0_BUF]] to %[[SLOT0]]
 // CHECK: %[[SLOT3:.+]] = memref.subview %[[GATHER]][12] [4] [1]
-// CHECK: %[[SEND1:.+]] = wafer.instr.dte_send %[[SLOT0]]
+// CHECK: %[[RECV1_BUF:.+]] = memref.alloc
+// CHECK: %[[SEND1:.+]] = wafer.instr.dte_send %[[RECV0_BUF]]
 // CHECK-SAME: peer = 2 : i64
-// CHECK: %[[RECV1:.+]] = wafer.instr.dte_recv %[[SLOT3]]
+// CHECK: %[[RECV1:.+]] = wafer.instr.dte_recv %[[RECV1_BUF]]
 // CHECK-SAME: peer = 0 : i64
 // CHECK: wafer.instr.dte_wait %[[SEND1]], %[[RECV1]]
+// CHECK: wafer.instr.gather_scatter %[[RECV1_BUF]] to %[[SLOT3]]
 // CHECK: %[[SLOT2:.+]] = memref.subview %[[GATHER]][8] [4] [1]
-// CHECK: %[[SEND2:.+]] = wafer.instr.dte_send %[[SLOT3]]
+// CHECK: %[[RECV2_BUF:.+]] = memref.alloc
+// CHECK: %[[SEND2:.+]] = wafer.instr.dte_send %[[RECV1_BUF]]
 // CHECK-SAME: peer = 2 : i64
-// CHECK: %[[RECV2:.+]] = wafer.instr.dte_recv %[[SLOT2]]
+// CHECK: %[[RECV2:.+]] = wafer.instr.dte_recv %[[RECV2_BUF]]
 // CHECK-SAME: peer = 0 : i64
 // CHECK: wafer.instr.dte_wait %[[SEND2]], %[[RECV2]]
+// CHECK: wafer.instr.gather_scatter %[[RECV2_BUF]] to %[[SLOT2]]
 // CHECK-NOT: wafer.tile.all_gather
 
 // SPM-LABEL: func.func @all_gather_ring

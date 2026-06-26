@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import pathlib
 import sys
 from typing import Any
@@ -97,7 +98,7 @@ SUPPORTED_REDUCE_KINDS = {
 
 
 def canonical_json(metadata: dict[str, Any]) -> str:
-    return json.dumps(metadata, indent=2) + "\n"
+    return json.dumps(metadata, indent=2, allow_nan=False) + "\n"
 
 
 def fail(message: str) -> None:
@@ -143,7 +144,28 @@ def require_non_negative_int(value: Any, name: str) -> int:
 def require_number(value: Any, name: str) -> int | float:
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         fail(f"{name} must be a number")
+    if isinstance(value, float) and not math.isfinite(value):
+        fail(f"{name} must be a finite number")
     return value
+
+
+def validate_reduce_init_value(value: Any, name: str) -> None:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        require_number(value, name)
+        return
+
+    item = require_dict(value, name)
+    kind = require_non_empty_string(item.get("kind"), f"{name}.kind")
+    if kind != "non_finite":
+        fail(f"{name}.kind is not supported")
+    encoded = require_non_empty_string(item.get("value"), f"{name}.value")
+    if encoded not in {"-inf", "inf", "nan"}:
+        fail(f"{name}.value is not a supported non-finite value")
+    dtype = require_non_empty_string(item.get("dtype"), f"{name}.dtype")
+    if dtype not in {"f16", "bf16", "f32", "f64"}:
+        fail(f"{name}.dtype is not supported for non-finite reduce init")
+    if "bits" in item:
+        require_non_negative_int(item.get("bits"), f"{name}.bits")
 
 
 DTYPE_BYTES = {
@@ -631,7 +653,7 @@ def validate_package_metadata(metadata: dict[str, Any]) -> None:
                 require_non_negative_int(
                     dim, f"instructions[{index}].dimensions[{dim_index}]"
                 )
-            require_number(
+            validate_reduce_init_value(
                 item.get("init_value"), f"instructions[{index}].init_value"
             )
         elif "kind" in item:

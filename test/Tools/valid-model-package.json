@@ -139,7 +139,12 @@
       "dimensions": [
         1
       ],
-      "init_value": -1.0,
+      "init_value": {
+        "kind": "non_finite",
+        "value": "-inf",
+        "dtype": "f32",
+        "bits": 4286578688
+      },
       "wait_policy": "issue_only"
     },
     {

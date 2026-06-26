@@ -123,6 +123,11 @@ wafer.instr.dte_wait(token...)
 - op 的 effects 明确 read source、write destination，并占用 communication resource class。
 - p2p op 不改变 physical layout；它是 byte-preserving movement。layout conversion 仍由
   `wafer.tile.materialize_layout` 表达。
+- all-gather 等 collective 的 gather slot 如果是 strided view，DTE 不直接收发该 strided slot。
+  lowering 必须先用 local movement / `wafer.instr.gather_scatter` 在 logical slot 和连续
+  communication buffer 之间拷贝，再让 `wafer.instr.dte_send` / `dte_recv` 操作连续 SPM buffer。
+  这样 SPM memory planning 能看到真实 staging demand，也不会把 DTE 协议误当作 layout
+  conversion。
 - op 不携带 physical endpoint encoding、DTE id、FSM id、packet id、stream id 或 raw register mode。
   这些资源只在 accepted offsets 和 endpoint/resource view 明确后由 lower-level allocator / ABI
   lowering 派生。

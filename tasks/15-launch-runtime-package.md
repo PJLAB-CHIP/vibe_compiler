@@ -383,8 +383,12 @@ runtime allocation metadata 或 board launch protocol。
 model interface JSON、committed instruction MLIR、ABI/LLVM lowering 生成的 LLVM IR 文件和
 device-code module，输出可被 validator roundtrip 的 package metadata。该工具从 LLVM IR
 解析 function，从 committed instruction MLIR 重算 instruction list、accepted SPM span 和
-DDR external binding byte summary；`model.interface` 的 user-visible name、shape、dtype 和 layout
-仍来自上游 model interface metadata，不能从低层 `%arg0` / `%arg1` 或 module 文件名猜测。
+DDR external binding byte summary；workspace 只在 selected LLVM ABI function 的 `i64` 参数个数
+比 model input/output binding 多一个时导出，并从 committed instruction IR 中的 compiler-managed
+DDR offsets 重算 byte demand。reduce init value 若是 `inf` / `-inf` / `nan`，package metadata 使用
+标准 JSON 对象编码 non-finite value 和 dtype/bits，不输出 Python 宽松 JSON 的 `Infinity` /
+`NaN` literal。`model.interface` 的 user-visible name、shape、dtype 和 layout 仍来自上游 model
+interface metadata，不能从低层 `%arg0` / `%arg1` 或 module 文件名猜测。
 
 `tools/wafer_runtime_adapter.py` 是 no-card runtime adapter contract gate：它消费已经 validate 的
 package metadata，构造 model binding / runtime session / entrypoint plan。`dry-run` backend
@@ -486,9 +490,10 @@ V0 验证：
   LLVM IR -> package metadata auto-export / validation -> C++ `wafer-run` -> fake tx runtime shared library
   required-symbol check。该 gate 证明当前 compiler-generated package 可以进入 runtime 边界，但仍不执行
   allocation/import/query/bind、module load、launch 或 completion。
-- PyTorch model-level no-card runtime gate 用 `x + x` smoke model 覆盖 PyTorch/XLA capture
-  -> `stablehlo-spmd-to-group` -> group/instr/ABI/LLVM lowering -> `mlir-translate` LLVM IR
-  -> package metadata auto-export / validation -> C++ `wafer-run` fake tx runtime required-symbol gate。
+- PyTorch model-level no-card runtime gate 用 `x + x` smoke model 和 HF Llama tiny config 的
+  Megatron-style transformer block 覆盖 PyTorch/XLA capture -> `stablehlo-spmd-to-group` ->
+  group/instr/ABI/LLVM lowering -> `mlir-translate` LLVM IR -> package metadata auto-export /
+  validation -> C++ `wafer-run` fake tx runtime required-symbol gate。
   该 gate 不执行 board allocation/import/query/bind、module load、launch 或 completion。
 - model interface 与 compiled function ABI / selected entrypoint binding order 一致。
 - 当前 schema v2 不保存 endpoint table；若后续启用 derived endpoint section，必须覆盖所有

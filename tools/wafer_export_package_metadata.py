@@ -8,6 +8,7 @@ import json
 import math
 import pathlib
 import re
+import struct
 import sys
 from dataclasses import dataclass
 from typing import Any
@@ -313,15 +314,77 @@ def parse_kind(segment: str, op_name: str) -> str:
     return match.group(1)
 
 
-def parse_constant_values(text: str) -> dict[str, int | float]:
-    constants: dict[str, int | float] = {}
+def encode_non_finite_float(
+    value: float, dtype: str, bits: int | None = None
+) -> float | dict[str, Any]:
+    if math.isfinite(value):
+        return value
+    if math.isinf(value):
+        encoded_value = "-inf" if value < 0 else "inf"
+    else:
+        encoded_value = "nan"
+    encoded: dict[str, Any] = {
+        "kind": "non_finite",
+        "value": encoded_value,
+        "dtype": dtype,
+    }
+    if bits is not None:
+        encoded["bits"] = bits
+    return encoded
+
+
+def parse_mlir_numeric_literal(raw: str, dtype: str) -> int | float | dict[str, Any]:
+    lower = raw.lower()
+    if lower in {"true", "false"}:
+        return 1 if lower == "true" else 0
+
+    sign = 1
+    digits = raw
+    if lower.startswith("-0x"):
+        sign = -1
+        digits = raw[1:]
+        lower = lower[1:]
+    elif lower.startswith("+0x"):
+        digits = raw[1:]
+        lower = lower[1:]
+
+    if lower.startswith("0x"):
+        bits = int(digits, 16)
+        if dtype == "f16":
+            if sign < 0:
+                fail("signed hexadecimal f16 constants are not supported")
+            value = struct.unpack(">e", bits.to_bytes(2, "big"))[0]
+            return encode_non_finite_float(value, dtype, bits)
+        if dtype == "bf16":
+            if sign < 0:
+                fail("signed hexadecimal bf16 constants are not supported")
+            value = struct.unpack(">f", (bits << 16).to_bytes(4, "big"))[0]
+            return encode_non_finite_float(value, dtype, bits)
+        if dtype == "f32":
+            if sign < 0:
+                fail("signed hexadecimal f32 constants are not supported")
+            value = struct.unpack(">f", bits.to_bytes(4, "big"))[0]
+            return encode_non_finite_float(value, dtype, bits)
+        if dtype == "f64":
+            if sign < 0:
+                fail("signed hexadecimal f64 constants are not supported")
+            value = struct.unpack(">d", bits.to_bytes(8, "big"))[0]
+            return encode_non_finite_float(value, dtype, bits)
+        return sign * bits
+
+    if dtype in {"f16", "bf16", "f32", "f64"} or "." in lower or "e" in lower:
+        return encode_non_finite_float(float(raw), dtype)
+    return int(raw)
+
+
+def parse_constant_values(text: str) -> dict[str, int | float | dict[str, Any]]:
+    constants: dict[str, int | float | dict[str, Any]] = {}
     for match in re.finditer(
-        r"(%[A-Za-z0-9_.$]+)\s*=\s*arith\.constant\s+([^:\s]+)\s*:",
+        r"(%[A-Za-z0-9_.$]+)\s*=\s*arith\.constant\s+([^:\s]+)\s*:\s*([A-Za-z0-9]+)",
         text,
     ):
-        raw = match.group(2)
-        constants[match.group(1)] = (
-            float(raw) if "." in raw or "e" in raw.lower() else int(raw)
+        constants[match.group(1)] = parse_mlir_numeric_literal(
+            match.group(2), match.group(3)
         )
     return constants
 
@@ -372,14 +435,23 @@ def parse_instructions(instruction_ir: str) -> list[dict[str, Any]]:
         elif op_name == "reduce":
             item["kind"] = parse_kind(segment, "reduce")
             item["dimensions"] = parse_array_i64_attr(segment, "dimensions")
-            init_match = re.search(
-                r"wafer\.instr\.reduce\b.*?\sinto\s+%[A-Za-z0-9_.$]+,\s+(%[A-Za-z0-9_.$]+)\s*:",
+            init_attr_match = re.search(
+                r"\binit_value\s*=\s*([^,}\s]+)\s*:\s*([A-Za-z0-9]+)",
                 segment,
-                re.S,
             )
-            if not init_match or init_match.group(1) not in constants:
-                fail("wafer.instr.reduce init value must resolve to arith.constant")
-            item["init_value"] = constants[init_match.group(1)]
+            if init_attr_match:
+                item["init_value"] = parse_mlir_numeric_literal(
+                    init_attr_match.group(1), init_attr_match.group(2)
+                )
+            else:
+                init_match = re.search(
+                    r"wafer\.instr\.reduce\b.*?\sinto\s+%[A-Za-z0-9_.$]+,\s+(%[A-Za-z0-9_.$]+)\s*:",
+                    segment,
+                    re.S,
+                )
+                if not init_match or init_match.group(1) not in constants:
+                    fail("wafer.instr.reduce init value must resolve to arith.constant")
+                item["init_value"] = constants[init_match.group(1)]
         elif op_name == "convert":
             src_dtype = re.search(r"\bsrc_dtype\s*=\s*([A-Za-z0-9]+)", segment)
             dst_dtype = re.search(r"\bdst_dtype\s*=\s*([A-Za-z0-9]+)", segment)
@@ -413,6 +485,26 @@ def parse_spm_bytes(instruction_ir: str) -> int:
     if not ranges:
         fail("instruction IR contains no accepted SPM offset facts")
     return max(end for _, end in ranges) - min(start for start, _ in ranges)
+
+
+def parse_workspace_bytes(instruction_ir: str) -> int:
+    text = strip_mlir_comments(instruction_ir)
+    max_end = 0
+    for match in re.finditer(r"memref\.alloc\(\)", text):
+        segment = text[match.start() : match.start() + 600]
+        offset_match = re.search(
+            r"wafer\.ddr\.offset\s*=\s*#wafer\.ddr_offset<(\d+)>", segment
+        )
+        if not offset_match:
+            continue
+        memref_type = find_memref_type(segment)
+        if not memref_type:
+            fail("DDR allocation with wafer.ddr.offset is missing memref type")
+        info = parse_memref_type(memref_type)
+        if info.space != "ddr":
+            continue
+        max_end = max(max_end, int(offset_match.group(1)) + info.physical_bytes)
+    return max_end
 
 
 def model_external_tensor(tensor: dict[str, Any], kind: str) -> dict[str, Any]:
@@ -467,6 +559,28 @@ def validate_model_interface(
     return {"inputs": inputs, "outputs": outputs}
 
 
+def parse_abi_i64_arg_count(llvm_ir: str, function: str) -> int:
+    name_pattern = rf'(?:"{re.escape(function)}"|{re.escape(function)})'
+    match = re.search(
+        rf"(?ms)^\s*define\b[^@]*@{name_pattern}\s*\((.*?)\)",
+        llvm_ir,
+    )
+    if not match:
+        fail(f"LLVM IR does not define selected function: {function}")
+
+    params = top_level_split(match.group(1))
+    if len(params) == 1 and params[0] == "void":
+        return 0
+
+    count = 0
+    for param in params:
+        tokens = [token.strip(",") for token in param.split()]
+        if "i64" not in tokens:
+            fail(f"ABI function parameter is not an i64 base pointer: {param}")
+        count += 1
+    return count
+
+
 def build_metadata(args: argparse.Namespace) -> dict[str, Any]:
     model_interface = validate_model_interface(
         load_json_object(args.model_interface, "model interface")
@@ -483,6 +597,39 @@ def build_metadata(args: argparse.Namespace) -> dict[str, Any]:
     ]
     input_bytes = sum(binding_bytes(tensor) for tensor in model_inputs)
     output_bytes = sum(binding_bytes(tensor) for tensor in model_outputs)
+    external_abi_args = len(model_inputs) + len(model_outputs)
+    abi_arg_count = parse_abi_i64_arg_count(llvm_ir, function)
+    if abi_arg_count < external_abi_args:
+        fail(
+            "ABI function has fewer i64 arguments than model input/output "
+            f"bindings: {abi_arg_count} < {external_abi_args}"
+        )
+    extra_abi_args = abi_arg_count - external_abi_args
+    if extra_abi_args > 1:
+        fail(
+            "ABI function has unsupported extra i64 arguments after model "
+            f"input/output bindings: {extra_abi_args}"
+        )
+
+    workspace_bytes = 0
+    if extra_abi_args == 1:
+        workspace_bytes = parse_workspace_bytes(instruction_ir)
+        if workspace_bytes == 0:
+            fail("ABI function has workspace argument but instruction IR has no DDR workspace")
+    workspace = []
+    if workspace_bytes:
+        workspace = [
+            {
+                "name": "workspace0",
+                "shape": [workspace_bytes],
+                "dtype": "i8",
+                "layout": "tensor",
+                "bytes": workspace_bytes,
+                "alignment": 64,
+                "producer": "compiler_ddr_workspace",
+                "last_consumer": "compiler_ddr_workspace",
+            }
+        ]
     module_name = module_name_from_path(args.module_path)
 
     metadata = {
@@ -505,14 +652,14 @@ def build_metadata(args: argparse.Namespace) -> dict[str, Any]:
                 "inputs": model_inputs,
                 "outputs": model_outputs,
                 "parameters": [],
-                "workspace": [],
+                "workspace": workspace,
                 "resident_constants": [],
             },
             "resources": {
                 "spm_bytes": parse_spm_bytes(instruction_ir),
                 "ddr_external_input_bytes": input_bytes,
                 "ddr_external_output_bytes": output_bytes,
-                "workspace_bytes": 0,
+                "workspace_bytes": workspace_bytes,
                 "resident_constant_bytes": 0,
             },
         },

@@ -273,8 +273,9 @@ module {
 // CHECK: wafer.tile.gemm
 // CHECK: wafer.tile.materialize_layout
 // CHECK: #wafer.memory<spm, tensor>
+// CHECK: wafer.tile.broadcast
+// CHECK-SAME: dimensions = array<i64: 1>
 // CHECK: wafer.tile.elementwise <add>
-// CHECK-SAME: indexing_maps
 // CHECK: wafer.tile.elementwise <max>
 // CHECK: wafer.tile.store
 // CHECK-SAME: #wafer.memory<ddr, tensor>

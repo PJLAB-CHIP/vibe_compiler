@@ -15,6 +15,7 @@
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Casting.h"
@@ -42,10 +43,60 @@ struct ReturnOutputBinding {
   unsigned abiIndex = 0;
 };
 
+struct WorkspaceRootBinding {
+  mlir::Value root;
+  int64_t offset = 0;
+  int64_t bytes = 0;
+};
+
+struct GemmBatchAttrs {
+  bool enabled = false;
+  int64_t batchCount = 1;
+  llvm::SmallVector<int64_t, 4> lhsBatchDims;
+  llvm::SmallVector<int64_t, 4> rhsBatchDims;
+  llvm::SmallVector<int64_t, 4> resultBatchDims;
+};
+
+static bool hasAnyGemmBatchAttr(mlir::Operation *op) {
+  return op->hasAttr("batch_count") || op->hasAttr("lhs_batch_dims") ||
+         op->hasAttr("rhs_batch_dims") || op->hasAttr("result_batch_dims") ||
+         op->hasAttr("lhs_m_dim") || op->hasAttr("lhs_contracting_dim") ||
+         op->hasAttr("rhs_contracting_dim") || op->hasAttr("rhs_n_dim") ||
+         op->hasAttr("result_m_dim") || op->hasAttr("result_n_dim");
+}
+
+static mlir::FailureOr<int64_t> readRequiredI64Attr(mlir::Operation *op,
+                                                    llvm::StringRef name,
+                                                    llvm::StringRef role) {
+  auto attr = op->getAttrOfType<mlir::IntegerAttr>(name);
+  if (!attr)
+    return op->emitError() << kFailurePrefix << role << " requires " << name
+                           << " attr";
+  return attr.getInt();
+}
+
+static mlir::FailureOr<llvm::SmallVector<int64_t, 4>>
+readRequiredDenseI64Attr(mlir::Operation *op, llvm::StringRef name,
+                         llvm::StringRef role) {
+  auto attr = op->getAttrOfType<mlir::DenseI64ArrayAttr>(name);
+  if (!attr)
+    return op->emitError() << kFailurePrefix << role << " requires " << name
+                           << " attr";
+  return llvm::SmallVector<int64_t, 4>(attr.asArrayRef().begin(),
+                                       attr.asArrayRef().end());
+}
+
 static void appendUnique(llvm::SmallVectorImpl<mlir::Value> &values,
                          mlir::Value value) {
   if (!llvm::is_contained(values, value))
     values.push_back(value);
+}
+
+static bool isOutputAlias(mlir::Value value,
+                          llvm::ArrayRef<ReturnOutputBinding> outputBindings) {
+  return llvm::any_of(outputBindings, [&](const ReturnOutputBinding &binding) {
+    return llvm::is_contained(binding.aliases, value);
+  });
 }
 
 static mlir::Value resolveTileRegionBoundaryValue(mlir::Value value) {
@@ -68,6 +119,23 @@ static mlir::Value resolveTileRegionBoundaryValue(mlir::Value value) {
 static mlir::Value getRootViewSource(mlir::Value value) {
   value = resolveTileRegionBoundaryValue(value);
   while (mlir::Operation *def = value.getDefiningOp()) {
+    if (auto result = mlir::dyn_cast<mlir::OpResult>(value)) {
+      if (auto tileRegion = mlir::dyn_cast<TileRegionOp>(result.getOwner())) {
+        if (!tileRegion.getBody().empty()) {
+          auto yield = mlir::dyn_cast_or_null<TileYieldOp>(
+              tileRegion.getBody().front().getTerminator());
+          if (yield && result.getResultNumber() < yield.getValues().size()) {
+            mlir::Value yielded = resolveTileRegionBoundaryValue(
+                yield.getValues()[result.getResultNumber()]);
+            if (yielded != value) {
+              value = yielded;
+              continue;
+            }
+          }
+        }
+      }
+    }
+
     auto viewLike = mlir::dyn_cast<mlir::ViewLikeOpInterface>(def);
     if (!viewLike)
       return value;
@@ -219,6 +287,121 @@ static mlir::FailureOr<int64_t> getSpmOffset(mlir::Operation *op,
   return offset;
 }
 
+static mlir::FailureOr<GemmBatchAttrs> getGemmBatchAttrs(InstrGemmOp gemm) {
+  GemmBatchAttrs attrs;
+  if (!hasAnyGemmBatchAttr(gemm.getOperation()))
+    return attrs;
+
+  attrs.enabled = true;
+  mlir::FailureOr<int64_t> batchCount =
+      readRequiredI64Attr(gemm.getOperation(), "batch_count", "batched GEMM");
+  mlir::FailureOr<llvm::SmallVector<int64_t, 4>> lhsBatchDims =
+      readRequiredDenseI64Attr(gemm.getOperation(), "lhs_batch_dims",
+                               "batched GEMM");
+  mlir::FailureOr<llvm::SmallVector<int64_t, 4>> rhsBatchDims =
+      readRequiredDenseI64Attr(gemm.getOperation(), "rhs_batch_dims",
+                               "batched GEMM");
+  mlir::FailureOr<llvm::SmallVector<int64_t, 4>> resultBatchDims =
+      readRequiredDenseI64Attr(gemm.getOperation(), "result_batch_dims",
+                               "batched GEMM");
+  if (mlir::failed(batchCount) || mlir::failed(lhsBatchDims) ||
+      mlir::failed(rhsBatchDims) || mlir::failed(resultBatchDims))
+    return mlir::failure();
+  if (*batchCount <= 0)
+    return gemm.emitError()
+           << kFailurePrefix << "batched GEMM batch_count must be positive";
+  if (lhsBatchDims->size() != rhsBatchDims->size() ||
+      lhsBatchDims->size() != resultBatchDims->size())
+    return gemm.emitError()
+           << kFailurePrefix
+           << "batched GEMM batch dimension attrs must have matching lengths";
+
+  attrs.batchCount = *batchCount;
+  attrs.lhsBatchDims = std::move(*lhsBatchDims);
+  attrs.rhsBatchDims = std::move(*rhsBatchDims);
+  attrs.resultBatchDims = std::move(*resultBatchDims);
+  return attrs;
+}
+
+static mlir::FailureOr<llvm::SmallVector<int64_t, 4>>
+getBatchShape(mlir::Operation *op, mlir::MemRefType type,
+              llvm::ArrayRef<int64_t> dims, llvm::StringRef role) {
+  llvm::SmallVector<int64_t, 4> shape;
+  shape.reserve(dims.size());
+  for (int64_t dim : dims) {
+    if (dim < 0 || dim >= type.getRank())
+      return op->emitError()
+             << kFailurePrefix << role << " batch dim is out of range";
+    int64_t size = type.getDimSize(dim);
+    if (mlir::ShapedType::isDynamic(size) || size <= 0)
+      return op->emitError() << kFailurePrefix << role
+                             << " batch dim must have static positive size";
+    shape.push_back(size);
+  }
+  return shape;
+}
+
+static mlir::FailureOr<llvm::SmallVector<int64_t, 4>>
+delinearizeBatchIndex(mlir::Operation *op, int64_t linearIndex,
+                      llvm::ArrayRef<int64_t> batchShape) {
+  llvm::SmallVector<int64_t, 4> indices(batchShape.size(), 0);
+  int64_t remaining = linearIndex;
+  for (int64_t dim = static_cast<int64_t>(batchShape.size()) - 1; dim >= 0;
+       --dim) {
+    int64_t size = batchShape[dim];
+    if (size <= 0)
+      return op->emitError()
+             << kFailurePrefix << "batched GEMM batch shape is invalid";
+    indices[dim] = remaining % size;
+    remaining /= size;
+  }
+  if (remaining != 0)
+    return op->emitError() << kFailurePrefix
+                           << "batched GEMM batch index is out of range";
+  return indices;
+}
+
+static mlir::FailureOr<int64_t>
+getBatchPhysicalByteOffset(mlir::Operation *op, mlir::MemRefType type,
+                           llvm::ArrayRef<int64_t> batchDims,
+                           llvm::ArrayRef<int64_t> batchIndices,
+                           llvm::StringRef role) {
+  if (batchDims.size() != batchIndices.size())
+    return op->emitError()
+           << kFailurePrefix << role
+           << " batch dims and indices must have matching lengths";
+
+  llvm::SmallVector<int64_t, 4> logicalIndices(type.getRank(), 0);
+  for (auto [dim, index] : llvm::zip(batchDims, batchIndices)) {
+    if (dim < 0 || dim >= type.getRank())
+      return op->emitError()
+             << kFailurePrefix << role << " batch dim is out of range";
+    logicalIndices[dim] = index;
+  }
+
+  std::optional<int64_t> offset =
+      wafer::computeWaferPhysicalElementByteOffset(type, logicalIndices);
+  if (!offset)
+    return op->emitError()
+           << kFailurePrefix << role
+           << " batch physical byte offset is not representable";
+  return *offset;
+}
+
+static mlir::FailureOr<int64_t> addSpmByteOffsets(mlir::Operation *op,
+                                                  int64_t base, int64_t delta,
+                                                  llvm::StringRef role) {
+  if (delta < 0 || base < 0 ||
+      delta > std::numeric_limits<int64_t>::max() - base)
+    return op->emitError() << kFailurePrefix << role
+                           << " SPM byte offset overflows int64";
+  int64_t offset = base + delta;
+  if (offset > std::numeric_limits<uint32_t>::max())
+    return op->emitError() << kFailurePrefix << role
+                           << " SPM byte offset is not representable";
+  return offset;
+}
+
 static mlir::FailureOr<DdrAddress>
 getDdrAddress(mlir::Operation *op, mlir::Value value,
               const llvm::DenseMap<mlir::Value, mlir::Value> &externalBases) {
@@ -240,6 +423,50 @@ getDdrAddress(mlir::Operation *op, mlir::Value value,
   if (mlir::failed(viewOffset))
     return mlir::failure();
   return DdrAddress{it->second, *viewOffset};
+}
+
+static mlir::LogicalResult collectWorkspaceRootBindings(
+    mlir::func::FuncOp func, llvm::ArrayRef<ReturnOutputBinding> outputBindings,
+    llvm::SmallVectorImpl<WorkspaceRootBinding> &workspaceRoots,
+    int64_t &workspaceBytes) {
+  workspaceRoots.clear();
+  workspaceBytes = 0;
+
+  mlir::WalkResult result = func.walk([&](mlir::memref::AllocOp alloc) {
+    mlir::Value root = alloc.getResult();
+    auto type = mlir::dyn_cast<mlir::MemRefType>(root.getType());
+    if (!type || !isWaferDDRMemRefType(type) ||
+        isOutputAlias(root, outputBindings))
+      return mlir::WalkResult::advance();
+
+    auto offsetAttr =
+        alloc->getAttrOfType<DDROffsetAttr>(kWaferDDROffsetAttrName);
+    if (!offsetAttr)
+      return mlir::WalkResult::advance();
+
+    std::optional<WaferPhysicalTensorInfo> info =
+        wafer::computeWaferPhysicalTensorInfo(type);
+    if (!info || info->physicalBytes <= 0) {
+      alloc.emitError()
+          << kFailurePrefix
+          << "workspace DDR allocation requires static positive physical size";
+      return mlir::WalkResult::interrupt();
+    }
+    int64_t offset = offsetAttr.getOffset();
+    if (offset < 0 ||
+        info->physicalBytes > std::numeric_limits<int64_t>::max() - offset) {
+      alloc.emitError() << kFailurePrefix
+                        << "workspace DDR allocation range overflows";
+      return mlir::WalkResult::interrupt();
+    }
+    int64_t end = offset + info->physicalBytes;
+    workspaceBytes = std::max(workspaceBytes, end);
+    workspaceRoots.push_back(
+        WorkspaceRootBinding{root, offset, info->physicalBytes});
+    return mlir::WalkResult::advance();
+  });
+
+  return result.wasInterrupted() ? mlir::failure() : mlir::success();
 }
 
 static mlir::Value createI32Constant(mlir::OpBuilder &builder,
@@ -932,14 +1159,14 @@ static mlir::LogicalResult emitInstructionCall(
   }
 
   if (auto gemm = mlir::dyn_cast<InstrGemmOp>(op)) {
-    mlir::FailureOr<int64_t> lhs = getSpmOffset(op, gemm.getLhs());
-    if (mlir::failed(lhs))
+    mlir::FailureOr<int64_t> lhsBase = getSpmOffset(op, gemm.getLhs());
+    if (mlir::failed(lhsBase))
       return mlir::failure();
-    mlir::FailureOr<int64_t> rhs = getSpmOffset(op, gemm.getRhs());
-    if (mlir::failed(rhs))
+    mlir::FailureOr<int64_t> rhsBase = getSpmOffset(op, gemm.getRhs());
+    if (mlir::failed(rhsBase))
       return mlir::failure();
-    mlir::FailureOr<int64_t> dest = getSpmOffset(op, gemm.getDest());
-    if (mlir::failed(dest))
+    mlir::FailureOr<int64_t> destBase = getSpmOffset(op, gemm.getDest());
+    if (mlir::failed(destBase))
       return mlir::failure();
     mlir::FailureOr<abi::DataFormat> inputFormat =
         getDataFormat(op, gemm.getLhs());
@@ -954,22 +1181,73 @@ static mlir::LogicalResult emitInstructionCall(
     if (!abi::buildGemm(gemm.getM(), gemm.getK(), gemm.getN(), descriptor,
                         &error))
       return gemm.emitError() << kFailurePrefix << error;
-    abi::GemmRegisterPacket packet;
-    if (!abi::buildGemmRegisterPacket(
-            descriptor, static_cast<uint32_t>(*lhs),
-            static_cast<uint32_t>(*rhs), static_cast<uint32_t>(*dest),
-            *inputFormat, *outputFormat, packet, &error))
-      return gemm.emitError() << kFailurePrefix << error;
-    status = emitAbiCall(
-        builder, loc, "wafer_gemm",
-        {createSpmOffsetValue(builder, loc, *lhs),
-         createSpmOffsetValue(builder, loc, *rhs),
-         createSpmOffsetValue(builder, loc, *dest),
-         createI64Constant(builder, loc, gemm.getM()),
-         createI64Constant(builder, loc, gemm.getK()),
-         createI64Constant(builder, loc, gemm.getN()),
-         createI32Constant(builder, loc, static_cast<int64_t>(*inputFormat))},
-        status);
+
+    mlir::FailureOr<GemmBatchAttrs> batchAttrs = getGemmBatchAttrs(gemm);
+    if (mlir::failed(batchAttrs))
+      return mlir::failure();
+
+    auto lhsType = mlir::cast<mlir::MemRefType>(gemm.getLhs().getType());
+    auto rhsType = mlir::cast<mlir::MemRefType>(gemm.getRhs().getType());
+    auto destType = mlir::cast<mlir::MemRefType>(gemm.getDest().getType());
+    llvm::SmallVector<int64_t, 4> batchShape;
+    if (batchAttrs->enabled) {
+      mlir::FailureOr<llvm::SmallVector<int64_t, 4>> shape = getBatchShape(
+          op, destType, batchAttrs->resultBatchDims, "GEMM result");
+      if (mlir::failed(shape))
+        return mlir::failure();
+      batchShape = std::move(*shape);
+    }
+
+    for (int64_t batch = 0; batch < batchAttrs->batchCount; ++batch) {
+      int64_t lhs = *lhsBase;
+      int64_t rhs = *rhsBase;
+      int64_t dest = *destBase;
+      if (batchAttrs->enabled) {
+        mlir::FailureOr<llvm::SmallVector<int64_t, 4>> batchIndices =
+            delinearizeBatchIndex(op, batch, batchShape);
+        if (mlir::failed(batchIndices))
+          return mlir::failure();
+        mlir::FailureOr<int64_t> lhsDelta = getBatchPhysicalByteOffset(
+            op, lhsType, batchAttrs->lhsBatchDims, *batchIndices, "GEMM lhs");
+        mlir::FailureOr<int64_t> rhsDelta = getBatchPhysicalByteOffset(
+            op, rhsType, batchAttrs->rhsBatchDims, *batchIndices, "GEMM rhs");
+        mlir::FailureOr<int64_t> destDelta = getBatchPhysicalByteOffset(
+            op, destType, batchAttrs->resultBatchDims, *batchIndices,
+            "GEMM dest");
+        if (mlir::failed(lhsDelta) || mlir::failed(rhsDelta) ||
+            mlir::failed(destDelta))
+          return mlir::failure();
+        mlir::FailureOr<int64_t> lhsOffset =
+            addSpmByteOffsets(op, lhs, *lhsDelta, "GEMM lhs");
+        mlir::FailureOr<int64_t> rhsOffset =
+            addSpmByteOffsets(op, rhs, *rhsDelta, "GEMM rhs");
+        mlir::FailureOr<int64_t> destOffset =
+            addSpmByteOffsets(op, dest, *destDelta, "GEMM dest");
+        if (mlir::failed(lhsOffset) || mlir::failed(rhsOffset) ||
+            mlir::failed(destOffset))
+          return mlir::failure();
+        lhs = *lhsOffset;
+        rhs = *rhsOffset;
+        dest = *destOffset;
+      }
+
+      abi::GemmRegisterPacket packet;
+      if (!abi::buildGemmRegisterPacket(
+              descriptor, static_cast<uint32_t>(lhs),
+              static_cast<uint32_t>(rhs), static_cast<uint32_t>(dest),
+              *inputFormat, *outputFormat, packet, &error))
+        return gemm.emitError() << kFailurePrefix << error;
+      status = emitAbiCall(
+          builder, loc, "wafer_gemm",
+          {createSpmOffsetValue(builder, loc, lhs),
+           createSpmOffsetValue(builder, loc, rhs),
+           createSpmOffsetValue(builder, loc, dest),
+           createI64Constant(builder, loc, gemm.getM()),
+           createI64Constant(builder, loc, gemm.getK()),
+           createI64Constant(builder, loc, gemm.getN()),
+           createI32Constant(builder, loc, static_cast<int64_t>(*inputFormat))},
+          status);
+    }
     return mlir::success();
   }
 
@@ -1093,6 +1371,17 @@ static mlir::LogicalResult materializeFunction(mlir::ModuleOp module,
     }
   }
 
+  llvm::SmallVector<WorkspaceRootBinding> workspaceRoots;
+  int64_t workspaceBytes = 0;
+  if (mlir::failed(collectWorkspaceRootBindings(
+          func, outputBindings, workspaceRoots, workspaceBytes)))
+    return mlir::failure();
+  std::optional<unsigned> workspaceAbiIndex;
+  if (!workspaceRoots.empty()) {
+    workspaceAbiIndex = abiInputTypes.size();
+    abiInputTypes.push_back(i64);
+  }
+
   mlir::FunctionType abiType =
       mlir::FunctionType::get(ctx, abiInputTypes, {i32});
   mlir::OpBuilder moduleBuilder(module.getBodyRegion());
@@ -1109,6 +1398,19 @@ static mlir::LogicalResult materializeFunction(mlir::ModuleOp module,
   for (const ReturnOutputBinding &binding : outputBindings) {
     for (mlir::Value alias : binding.aliases)
       externalBases[alias] = entry->getArgument(binding.abiIndex);
+  }
+  if (workspaceAbiIndex) {
+    mlir::Value workspaceBase = entry->getArgument(*workspaceAbiIndex);
+    for (const WorkspaceRootBinding &binding : workspaceRoots) {
+      if (binding.offset == 0) {
+        externalBases[binding.root] = workspaceBase;
+        continue;
+      }
+      mlir::Value offset =
+          createI64Constant(builder, binding.root.getLoc(), binding.offset);
+      externalBases[binding.root] = builder.create<mlir::arith::AddIOp>(
+          binding.root.getLoc(), workspaceBase, offset);
+    }
   }
 
   mlir::Value status = createI32Constant(builder, func.getLoc(), 0);

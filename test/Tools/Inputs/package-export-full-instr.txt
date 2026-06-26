@@ -22,6 +22,10 @@ func.func @package_export_full_instr(
       {dimensions = array<i64: 1>}
       : memref<1x8xf32, #wafer.memory<spm, cx>>
       into memref<1xf32, #wafer.memory<spm, cx>>
+  wafer.instr.reduce #wafer.reduce_kind<max> %red_src into %red
+      {dimensions = array<i64: 1>, init_value = 0xFF800000 : f32}
+      : memref<1x8xf32, #wafer.memory<spm, cx>>
+      into memref<1xf32, #wafer.memory<spm, cx>>
   wafer.instr.convert %tmp into %converted
       {src_dtype = f32, dst_dtype = i32}
       : memref<8xf32, #wafer.memory<spm, tensor>>

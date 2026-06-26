@@ -16,6 +16,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
+#include "mlir/Transforms/Passes.h"
 #include "llvm/Support/CommandLine.h"
 
 #ifdef WAFER_ENABLE_SHARDY
@@ -113,6 +114,7 @@ void buildLowerGroupsToABICallsPipeline(mlir::OpPassManager &pm) {
 }
 
 void buildLowerABICallsToLLVMPipeline(mlir::OpPassManager &pm) {
+  pm.addPass(mlir::createSymbolDCEPass());
   pm.addPass(createStripTargetMetadataPass());
   pm.addPass(mlir::createConvertSCFToCFPass());
   pm.addPass(mlir::createConvertControlFlowToLLVMPass());

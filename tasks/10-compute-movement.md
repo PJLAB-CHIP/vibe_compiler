@@ -368,13 +368,13 @@ V0 推荐实现顺序：
 并补入 same-shape identity 与 permutation-only limited broadcast elementwise 到
 `wafer.tile.elementwise` 的 target-abstract path；随后补入 sum/max/min
 local reduce 到 `wafer.tile.reduce` 的 path，保留 reduce dimensions
-和 scalar init value。P5.8 后续又补入 attention QK^T / AV 的 rank-4 contraction physical
-slice：只接受可由 `linalg.generic` indexing maps、parallel/reduction iterator types、mul-add
-body 和静态 shape relation 验证的 batch/head 形态，materialize 为带显式 batch/head/m/k/n 维度
-attrs 的 `wafer.tile.gemm`。后续 instruction lowering / ABI lowering 必须把它 lower 成带 `batch_count` 和 M/K/N 的
-instruction-level GEMM 以及对应 ABI/LLVM lowering。历史 transformer fixed package 测试输入已删除；compiler-managed/resident constant metadata、
-resource summary 一致性验证和 full block package metadata 必须由后续 IR-derived package gate
-恢复。当前覆盖仍不是通用 elementwise/reduce/GEMM coverage；更复杂 broadcast、relation/logic、convert、多输入/非
+和 scalar init value。attention QK^T / AV 的 rank-4 contraction physical slice 以及
+`linalg.batch_matmul` 路径已经补入 batched GEMM lowering：只接受可由 structured indexing maps、
+parallel/reduction iterator types、mul-add body 和静态 shape relation 验证的 batch/head 形态，
+materialize 为带显式 `batch_count`、batch/head/m/k/n 维度 attrs 的 `wafer.tile.gemm` /
+`wafer.instr.gemm`，ABI materialization 按 batch physical byte offset 展开为多次 `wafer_gemm`
+调用。历史 transformer fixed package 测试输入已删除；compiler-managed/resident constant metadata、
+resource summary 一致性验证和 full block package metadata 由 IR-derived package gate 恢复。当前覆盖仍不是通用 elementwise/reduce/GEMM coverage；更复杂 broadcast、relation/logic、convert、多输入/非
 constant-init reduce 和 mask/select 仍按后续泛化 gate 推进。当前 coverage 不能被解释成
 Wafer compute 语义上不支持这些结构；只要硬件 wrapper / structured lowering 能表达，就应补
 compute op、verifier、instruction lowering、ABI/LLVM lowering 或 memory planning gate。

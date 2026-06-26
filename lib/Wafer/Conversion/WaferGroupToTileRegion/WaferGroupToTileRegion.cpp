@@ -25,6 +25,8 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 
+#include <limits>
+
 using namespace wafer;
 
 namespace wafer {
@@ -39,6 +41,19 @@ struct BufferVersions {
   mlir::Value nTensor;
   mlir::Value cx;
   mlir::Value nCx;
+};
+
+struct BatchedGemmAttrs {
+  int64_t batchCount = 0;
+  llvm::SmallVector<int64_t, 4> lhsBatchDims;
+  llvm::SmallVector<int64_t, 4> rhsBatchDims;
+  llvm::SmallVector<int64_t, 4> resultBatchDims;
+  int64_t lhsMDim = -1;
+  int64_t lhsContractingDim = -1;
+  int64_t rhsContractingDim = -1;
+  int64_t rhsNDim = -1;
+  int64_t resultMDim = -1;
+  int64_t resultNDim = -1;
 };
 
 static void setFailureReason(std::string *failureReason,
@@ -121,6 +136,7 @@ private:
   llvm::DenseMap<mlir::Value, BufferVersions> buffers;
   llvm::DenseMap<mlir::Value, mlir::Value> scalarValues;
   llvm::DenseMap<mlir::Value, mlir::Attribute> scalarAttrs;
+  llvm::DenseMap<mlir::Value, mlir::Attribute> tensorAttrs;
   llvm::DenseMap<mlir::Value, mlir::Value> externalBuffers;
   llvm::DenseSet<mlir::Value> writableExternalBuffers;
   llvm::DenseMap<mlir::Value, unsigned> externalOutputIndices;
@@ -128,10 +144,16 @@ private:
   llvm::DenseMap<mlir::Value, mlir::Value> fillInitScalars;
   llvm::DenseMap<mlir::Value, mlir::Attribute> fillInitAttrs;
 
+  struct ElementwiseExprValue {
+    mlir::Value buffer;
+    mlir::AffineMap indexingMap;
+  };
+
   struct StateSnapshot {
     llvm::DenseMap<mlir::Value, BufferVersions> buffers;
     llvm::DenseMap<mlir::Value, mlir::Value> scalarValues;
     llvm::DenseMap<mlir::Value, mlir::Attribute> scalarAttrs;
+    llvm::DenseMap<mlir::Value, mlir::Attribute> tensorAttrs;
     llvm::DenseMap<mlir::Value, mlir::Value> externalBuffers;
     llvm::DenseSet<mlir::Value> writableExternalBuffers;
     llvm::DenseMap<mlir::Value, unsigned> externalOutputIndices;
@@ -155,7 +177,18 @@ private:
     return mlir::failure();
   }
 
+  mlir::FailureOr<ElementwiseExprValue>
+  failElementwiseExprValue(llvm::StringRef reason) {
+    setFailureReason(failureReason, reason);
+    return mlir::failure();
+  }
+
   mlir::FailureOr<int64_t> failI64(llvm::StringRef reason) {
+    setFailureReason(failureReason, reason);
+    return mlir::failure();
+  }
+
+  mlir::FailureOr<unsigned> failUnsigned(llvm::StringRef reason) {
     setFailureReason(failureReason, reason);
     return mlir::failure();
   }
@@ -191,6 +224,7 @@ private:
     return {buffers,
             scalarValues,
             scalarAttrs,
+            tensorAttrs,
             externalBuffers,
             writableExternalBuffers,
             externalOutputIndices,
@@ -203,6 +237,7 @@ private:
     buffers = snapshot.buffers;
     scalarValues = snapshot.scalarValues;
     scalarAttrs = snapshot.scalarAttrs;
+    tensorAttrs = snapshot.tensorAttrs;
     externalBuffers = snapshot.externalBuffers;
     writableExternalBuffers = snapshot.writableExternalBuffers;
     externalOutputIndices = snapshot.externalOutputIndices;
@@ -327,6 +362,58 @@ private:
     return {};
   }
 
+  mlir::TypedAttr getScalarSplatAttr(mlir::RankedTensorType tensorType,
+                                     mlir::Attribute attr) const {
+    if (auto typed = mlir::dyn_cast<mlir::TypedAttr>(attr)) {
+      if (typed.getType() == tensorType.getElementType())
+        return typed;
+    }
+
+    auto elements = mlir::dyn_cast<mlir::DenseElementsAttr>(attr);
+    if (!elements || !elements.isSplat() ||
+        elements.getElementType() != tensorType.getElementType())
+      return {};
+
+    mlir::Type elementType = tensorType.getElementType();
+    if (auto floatType = mlir::dyn_cast<mlir::FloatType>(elementType))
+      return mlir::FloatAttr::get(floatType,
+                                  elements.getSplatValue<mlir::APFloat>());
+    if (auto intType = mlir::dyn_cast<mlir::IntegerType>(elementType))
+      return mlir::IntegerAttr::get(intType,
+                                    elements.getSplatValue<mlir::APInt>());
+    return {};
+  }
+
+  mlir::FailureOr<mlir::Value>
+  materializeTensorConstant(mlir::Value original, mlir::Attribute attr,
+                            MemLayout targetLayout, mlir::OpBuilder &builder) {
+    auto tensorType =
+        mlir::dyn_cast<mlir::RankedTensorType>(original.getType());
+    if (!tensorType)
+      return failValue(
+          "constant tensor materialization requires ranked tensor");
+
+    mlir::TypedAttr scalarAttr = getScalarSplatAttr(tensorType, attr);
+    if (!scalarAttr)
+      return failValue("constant tensor materialization requires splat attr");
+
+    auto scalar =
+        builder.create<mlir::arith::ConstantOp>(original.getLoc(), scalarAttr);
+    auto tensorBuffer = builder.create<mlir::memref::AllocOp>(
+        original.getLoc(), makeSPMMemRefType(tensorType, MemLayout::Tensor));
+    builder.create<ComputeFillOp>(original.getLoc(), tensorBuffer.getResult(),
+                                  scalar.getResult());
+    record(original, MemLayout::Tensor, tensorBuffer.getResult());
+    if (targetLayout == MemLayout::Tensor)
+      return tensorBuffer.getResult();
+
+    auto materialized = builder.create<LayoutMaterializeOp>(
+        original.getLoc(), makeSPMMemRefType(tensorType, targetLayout),
+        tensorBuffer.getResult());
+    record(original, targetLayout, materialized.getResult());
+    return materialized.getResult();
+  }
+
   mlir::FailureOr<mlir::Value> getOrMaterialize(mlir::Value original,
                                                 MemLayout targetLayout,
                                                 mlir::OpBuilder &builder) {
@@ -336,6 +423,14 @@ private:
     MemLayout sourceLayout = MemLayout::Tensor;
     mlir::Value source = lookupAny(original, sourceLayout);
     if (!source) {
+      if (auto attrIt = tensorAttrs.find(original);
+          attrIt != tensorAttrs.end()) {
+        mlir::FailureOr<mlir::Value> constant = materializeTensorConstant(
+            original, attrIt->second, targetLayout, builder);
+        if (mlir::succeeded(constant))
+          return *constant;
+      }
+
       auto externalIt = externalBuffers.find(original);
       if (externalIt == externalBuffers.end())
         return failValue("missing buffer for value");
@@ -436,9 +531,9 @@ private:
     return mlir::success();
   }
 
-  mlir::LogicalResult convertAllGather(
-      LinalgExtCollectiveAllGatherOp op,
-      const WaferLinalgExtCollectiveInfo &info, mlir::OpBuilder &builder) {
+  mlir::LogicalResult convertAllGather(LinalgExtCollectiveAllGatherOp op,
+                                       const WaferLinalgExtCollectiveInfo &info,
+                                       mlir::OpBuilder &builder) {
     if (mlir::failed(requireSingleTensorCollective(op.getOperation())))
       return mlir::failure();
     if (op.getInputs().size() != 1 || op.getOuts().size() != 1)
@@ -473,9 +568,10 @@ private:
     return mlir::success();
   }
 
-  mlir::LogicalResult convertReduceScatter(
-      LinalgExtCollectiveReduceScatterOp op,
-      const WaferLinalgExtCollectiveInfo &info, mlir::OpBuilder &builder) {
+  mlir::LogicalResult
+  convertReduceScatter(LinalgExtCollectiveReduceScatterOp op,
+                       const WaferLinalgExtCollectiveInfo &info,
+                       mlir::OpBuilder &builder) {
     if (mlir::failed(requireSingleTensorCollective(op.getOperation())))
       return mlir::failure();
     if (op.getInputs().size() != 1 || op.getOuts().size() != 1)
@@ -518,9 +614,9 @@ private:
     return mlir::success();
   }
 
-  mlir::LogicalResult convertAllReduce(
-      LinalgExtCollectiveAllReduceOp op,
-      const WaferLinalgExtCollectiveInfo &info, mlir::OpBuilder &builder) {
+  mlir::LogicalResult convertAllReduce(LinalgExtCollectiveAllReduceOp op,
+                                       const WaferLinalgExtCollectiveInfo &info,
+                                       mlir::OpBuilder &builder) {
     if (mlir::failed(requireSingleTensorCollective(op.getOperation())))
       return mlir::failure();
     if (op.getInputs().size() != 1 || op.getOuts().size() != 1)
@@ -601,6 +697,11 @@ private:
       externalBuffers[groupArg] = tileArg;
       unsigned argIndex = groupArg.getArgNumber();
       unsigned inputCount = static_cast<unsigned>(group.getInputs().size());
+      if (argIndex < inputCount) {
+        if (auto constant = group.getInputs()[argIndex]
+                                .getDefiningOp<mlir::arith::ConstantOp>())
+          tensorAttrs[groupArg] = constant.getValue();
+      }
       if (argIndex >= inputCount) {
         writableExternalBuffers.insert(groupArg);
         externalOutputIndices[groupArg] = argIndex - inputCount;
@@ -624,6 +725,9 @@ private:
       return convertFill(fill, builder);
     if (mlir::isa<mlir::linalg::MatmulOp>(op))
       return convertMatmul(mlir::cast<mlir::linalg::LinalgOp>(op), builder);
+    if (mlir::isa<mlir::linalg::BatchMatmulOp>(op))
+      return convertBatchMatmul(mlir::cast<mlir::linalg::LinalgOp>(op),
+                                builder);
     if (auto generic = mlir::dyn_cast<mlir::linalg::GenericOp>(op))
       return convertGeneric(generic, builder);
 
@@ -655,6 +759,7 @@ private:
             ddr.getMemref());
         record(originalResult, MemLayout::Tensor, load.getResult());
         externalBuffers[originalResult] = ddr.getMemref();
+        tensorAttrs[originalResult] = constant.getValue();
       }
       return mlir::success();
     }
@@ -699,6 +804,9 @@ private:
       return convertFill(fill, builder);
     if (mlir::isa<mlir::linalg::MatmulOp>(op))
       return convertMatmul(mlir::cast<mlir::linalg::LinalgOp>(op), builder);
+    if (mlir::isa<mlir::linalg::BatchMatmulOp>(op))
+      return convertBatchMatmul(mlir::cast<mlir::linalg::LinalgOp>(op),
+                                builder);
     if (auto generic = mlir::dyn_cast<mlir::linalg::GenericOp>(op))
       return convertGeneric(generic, builder);
     if (mlir::isa<mlir::arith::ConstantOp, mlir::tensor::EmptyOp,
@@ -1101,6 +1209,170 @@ private:
     return mlir::success();
   }
 
+  mlir::FailureOr<unsigned> findOperandDimForLoop(mlir::AffineMap map,
+                                                  unsigned loopDim,
+                                                  llvm::StringRef role) {
+    for (auto [operandDim, expr] : llvm::enumerate(map.getResults())) {
+      auto dimExpr = mlir::dyn_cast<mlir::AffineDimExpr>(expr);
+      if (!dimExpr)
+        return failUnsigned("batch matmul requires projected permutation " +
+                            role.str() + " indexing map");
+      if (dimExpr.getPosition() == loopDim)
+        return static_cast<unsigned>(operandDim);
+    }
+    return failUnsigned("batch matmul indexing map is missing " + role.str() +
+                        " loop dimension");
+  }
+
+  bool mapContainsLoopDim(mlir::AffineMap map, unsigned loopDim) const {
+    for (mlir::AffineExpr expr : map.getResults()) {
+      auto dimExpr = mlir::dyn_cast<mlir::AffineDimExpr>(expr);
+      if (dimExpr && dimExpr.getPosition() == loopDim)
+        return true;
+    }
+    return false;
+  }
+
+  mlir::FailureOr<BatchedGemmAttrs>
+  inferBatchMatmulAttrs(mlir::linalg::LinalgOp op) {
+    llvm::SmallVector<mlir::utils::IteratorType, 4> iteratorTypes =
+        op.getIteratorTypesArray();
+    llvm::SmallVector<unsigned, 1> reductionLoops;
+    for (auto [index, iteratorType] : llvm::enumerate(iteratorTypes)) {
+      if (iteratorType == mlir::utils::IteratorType::reduction)
+        reductionLoops.push_back(static_cast<unsigned>(index));
+    }
+    if (reductionLoops.size() != 1)
+      return mlir::failure();
+
+    llvm::SmallVector<mlir::AffineMap, 4> maps = op.getIndexingMapsArray();
+    if (maps.size() != 3)
+      return mlir::failure();
+    mlir::AffineMap lhsMap = maps[0];
+    mlir::AffineMap rhsMap = maps[1];
+    mlir::AffineMap resultMap = maps[2];
+
+    std::optional<unsigned> mLoop;
+    std::optional<unsigned> nLoop;
+    llvm::SmallVector<unsigned, 4> batchLoops;
+    unsigned reductionLoop = reductionLoops.front();
+    for (unsigned loopDim = 0; loopDim < iteratorTypes.size(); ++loopDim) {
+      if (loopDim == reductionLoop)
+        continue;
+      bool inLhs = mapContainsLoopDim(lhsMap, loopDim);
+      bool inRhs = mapContainsLoopDim(rhsMap, loopDim);
+      bool inResult = mapContainsLoopDim(resultMap, loopDim);
+      if (inLhs && !inRhs && inResult) {
+        if (mLoop)
+          return mlir::failure();
+        mLoop = loopDim;
+        continue;
+      }
+      if (!inLhs && inRhs && inResult) {
+        if (nLoop)
+          return mlir::failure();
+        nLoop = loopDim;
+        continue;
+      }
+      if (inLhs && inRhs && inResult) {
+        batchLoops.push_back(loopDim);
+        continue;
+      }
+      return mlir::failure();
+    }
+    if (!mLoop || !nLoop || batchLoops.empty())
+      return mlir::failure();
+
+    BatchedGemmAttrs attrs;
+    auto lhsMDim = findOperandDimForLoop(lhsMap, *mLoop, "lhs M");
+    auto lhsKDim =
+        findOperandDimForLoop(lhsMap, reductionLoop, "lhs contracting");
+    auto rhsKDim =
+        findOperandDimForLoop(rhsMap, reductionLoop, "rhs contracting");
+    auto rhsNDim = findOperandDimForLoop(rhsMap, *nLoop, "rhs N");
+    auto resultMDim = findOperandDimForLoop(resultMap, *mLoop, "result M");
+    auto resultNDim = findOperandDimForLoop(resultMap, *nLoop, "result N");
+    if (mlir::failed(lhsMDim) || mlir::failed(lhsKDim) ||
+        mlir::failed(rhsKDim) || mlir::failed(rhsNDim) ||
+        mlir::failed(resultMDim) || mlir::failed(resultNDim))
+      return mlir::failure();
+    attrs.lhsMDim = *lhsMDim;
+    attrs.lhsContractingDim = *lhsKDim;
+    attrs.rhsContractingDim = *rhsKDim;
+    attrs.rhsNDim = *rhsNDim;
+    attrs.resultMDim = *resultMDim;
+    attrs.resultNDim = *resultNDim;
+
+    auto resultTensorType =
+        mlir::dyn_cast<mlir::RankedTensorType>(op->getResult(0).getType());
+    if (!resultTensorType || !resultTensorType.hasStaticShape())
+      return mlir::failure();
+
+    attrs.batchCount = 1;
+    for (unsigned batchLoop : batchLoops) {
+      auto lhsBatchDim = findOperandDimForLoop(lhsMap, batchLoop, "lhs batch");
+      auto rhsBatchDim = findOperandDimForLoop(rhsMap, batchLoop, "rhs batch");
+      auto resultBatchDim =
+          findOperandDimForLoop(resultMap, batchLoop, "result batch");
+      if (mlir::failed(lhsBatchDim) || mlir::failed(rhsBatchDim) ||
+          mlir::failed(resultBatchDim))
+        return mlir::failure();
+      attrs.lhsBatchDims.push_back(*lhsBatchDim);
+      attrs.rhsBatchDims.push_back(*rhsBatchDim);
+      attrs.resultBatchDims.push_back(*resultBatchDim);
+      int64_t dimSize = resultTensorType.getDimSize(*resultBatchDim);
+      if (mlir::ShapedType::isDynamic(dimSize) || dimSize <= 0)
+        return mlir::failure();
+      if (attrs.batchCount > std::numeric_limits<int64_t>::max() / dimSize)
+        return mlir::failure();
+      attrs.batchCount *= dimSize;
+    }
+    return attrs;
+  }
+
+  mlir::LogicalResult convertBatchMatmul(mlir::linalg::LinalgOp op,
+                                         mlir::OpBuilder &builder) {
+    if (op.getNumDpsInputs() != 2 || op->getNumResults() != 1)
+      return fail("unsupported batch matmul arity");
+
+    mlir::FailureOr<mlir::Value> lhs =
+        getOrMaterialize(op.getDpsInputs()[0], MemLayout::Cx, builder);
+    mlir::FailureOr<mlir::Value> rhs =
+        getOrMaterialize(op.getDpsInputs()[1], MemLayout::Cx, builder);
+    if (mlir::failed(lhs) || mlir::failed(rhs))
+      return mlir::failure();
+
+    auto resultTensorType =
+        mlir::dyn_cast<mlir::RankedTensorType>(op->getResult(0).getType());
+    if (!resultTensorType)
+      return fail("batch matmul result is not a ranked tensor");
+
+    mlir::FailureOr<BatchedGemmAttrs> attrs = inferBatchMatmulAttrs(op);
+    if (mlir::failed(attrs))
+      return fail("unsupported batch matmul indexing");
+
+    auto gemm = builder.create<ComputeGemmOp>(
+        op->getLoc(), makeSPMMemRefType(resultTensorType, MemLayout::Cx), *lhs,
+        *rhs);
+    gemm->setAttr("batch_count", builder.getI64IntegerAttr(attrs->batchCount));
+    gemm->setAttr("lhs_batch_dims",
+                  builder.getDenseI64ArrayAttr(attrs->lhsBatchDims));
+    gemm->setAttr("lhs_m_dim", builder.getI64IntegerAttr(attrs->lhsMDim));
+    gemm->setAttr("lhs_contracting_dim",
+                  builder.getI64IntegerAttr(attrs->lhsContractingDim));
+    gemm->setAttr("rhs_batch_dims",
+                  builder.getDenseI64ArrayAttr(attrs->rhsBatchDims));
+    gemm->setAttr("rhs_contracting_dim",
+                  builder.getI64IntegerAttr(attrs->rhsContractingDim));
+    gemm->setAttr("rhs_n_dim", builder.getI64IntegerAttr(attrs->rhsNDim));
+    gemm->setAttr("result_batch_dims",
+                  builder.getDenseI64ArrayAttr(attrs->resultBatchDims));
+    gemm->setAttr("result_m_dim", builder.getI64IntegerAttr(attrs->resultMDim));
+    gemm->setAttr("result_n_dim", builder.getI64IntegerAttr(attrs->resultNDim));
+    record(op->getResult(0), MemLayout::Cx, gemm.getResult());
+    return mlir::success();
+  }
+
   std::optional<ComputeElementwiseKind>
   inferElementwiseKind(mlir::linalg::GenericOp generic) {
     auto yield = mlir::dyn_cast<mlir::linalg::YieldOp>(
@@ -1390,6 +1662,392 @@ private:
            map.getNumSymbols() == 0 && map.isIdentity();
   }
 
+  mlir::AffineMap getIdentityMap(mlir::RankedTensorType tensorType) const {
+    return mlir::AffineMap::getMultiDimIdentityMap(tensorType.getRank(),
+                                                   tensorType.getContext());
+  }
+
+  bool isScalarSplatValue(mlir::Attribute attr, double expected) const {
+    if (auto floatAttr = mlir::dyn_cast<mlir::FloatAttr>(attr))
+      return floatAttr.getValueAsDouble() == expected;
+    if (auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(attr))
+      return intAttr.getValue().getSExtValue() ==
+             static_cast<int64_t>(expected);
+    if (auto elements = mlir::dyn_cast<mlir::DenseElementsAttr>(attr)) {
+      if (!elements.isSplat())
+        return false;
+      if (auto floatType =
+              mlir::dyn_cast<mlir::FloatType>(elements.getElementType()))
+        return elements.getSplatValue<mlir::APFloat>().convertToDouble() ==
+               expected;
+      if (auto intType =
+              mlir::dyn_cast<mlir::IntegerType>(elements.getElementType()))
+        return elements.getSplatValue<mlir::APInt>().getSExtValue() ==
+               static_cast<int64_t>(expected);
+    }
+    return false;
+  }
+
+  mlir::Attribute getBlockArgumentConstantAttr(mlir::linalg::GenericOp generic,
+                                               mlir::BlockArgument arg) const {
+    if (arg.getOwner() != generic.getBody() ||
+        arg.getArgNumber() >= generic.getNumDpsInputs())
+      return {};
+    mlir::Value input = generic.getDpsInputs()[arg.getArgNumber()];
+    if (auto constant = input.getDefiningOp<mlir::arith::ConstantOp>())
+      return constant.getValue();
+    if (auto it = tensorAttrs.find(input); it != tensorAttrs.end())
+      return it->second;
+    return {};
+  }
+
+  bool isScalarLikeConstant(mlir::linalg::GenericOp generic, mlir::Value value,
+                            double expected) const {
+    if (auto constant = value.getDefiningOp<mlir::arith::ConstantOp>())
+      return isScalarSplatValue(constant.getValue(), expected);
+    if (auto arg = mlir::dyn_cast<mlir::BlockArgument>(value)) {
+      if (mlir::Attribute attr = getBlockArgumentConstantAttr(generic, arg))
+        return isScalarSplatValue(attr, expected);
+    }
+    return false;
+  }
+
+  mlir::FailureOr<ElementwiseExprValue> getElementwiseExprValue(
+      llvm::DenseMap<mlir::Value, ElementwiseExprValue> &values,
+      mlir::Value value) {
+    auto it = values.find(value);
+    if (it == values.end())
+      return failElementwiseExprValue(
+          "unsupported linalg.generic scalar expression");
+    return it->second;
+  }
+
+  mlir::FailureOr<mlir::Value> materializeElementwiseExprOperand(
+      ElementwiseExprValue exprValue, mlir::RankedTensorType resultTensorType,
+      mlir::Location loc, mlir::OpBuilder &builder) {
+    auto sourceType =
+        mlir::dyn_cast<mlir::MemRefType>(exprValue.buffer.getType());
+    if (!sourceType)
+      return failValue("elementwise expression operand is not an SPM memref");
+    auto operandTensorType = mlir::RankedTensorType::get(
+        resultTensorType.getShape(), sourceType.getElementType());
+    auto operandType = makeSPMMemRefType(operandTensorType, MemLayout::Tensor);
+    if (sourceType == operandType &&
+        isIdentityMap(exprValue.indexingMap, resultTensorType.getRank()))
+      return exprValue.buffer;
+
+    auto sourceTensorType = mlir::RankedTensorType::get(
+        sourceType.getShape(), sourceType.getElementType());
+    if (!exprValue.indexingMap.isProjectedPermutation())
+      return failValue("elementwise expression indexing map must be a "
+                       "projected permutation");
+
+    if (sourceTensorType.getRank() == resultTensorType.getRank()) {
+      llvm::SmallVector<int64_t, 4> permutation(resultTensorType.getRank(), -1);
+      for (auto [sourceDim, expr] :
+           llvm::enumerate(exprValue.indexingMap.getResults())) {
+        auto dimExpr = mlir::dyn_cast<mlir::AffineDimExpr>(expr);
+        if (!dimExpr)
+          return failValue("unsupported elementwise transpose map");
+        unsigned resultDim = dimExpr.getPosition();
+        if (resultDim >= permutation.size())
+          return failValue("elementwise transpose map dim out of range");
+        permutation[resultDim] = static_cast<int64_t>(sourceDim);
+      }
+      if (llvm::any_of(permutation, [](int64_t dim) { return dim < 0; }))
+        return failValue("elementwise transpose map is incomplete");
+      if (sourceType == operandType &&
+          llvm::all_of(llvm::enumerate(permutation), [](auto indexed) {
+            return static_cast<int64_t>(indexed.index()) == indexed.value();
+          }))
+        return exprValue.buffer;
+      return builder
+          .create<MoveTransposeOp>(
+              loc, operandType, exprValue.buffer,
+              mlir::DenseI64ArrayAttr::get(builder.getContext(), permutation))
+          .getResult();
+    }
+
+    if (sourceTensorType.getRank() < resultTensorType.getRank()) {
+      llvm::SmallVector<int64_t, 4> dimensions;
+      for (mlir::AffineExpr expr : exprValue.indexingMap.getResults()) {
+        auto dimExpr = mlir::dyn_cast<mlir::AffineDimExpr>(expr);
+        if (!dimExpr)
+          return failValue("unsupported elementwise broadcast map");
+        dimensions.push_back(dimExpr.getPosition());
+      }
+      return builder
+          .create<MoveBroadcastOp>(
+              loc, operandType, exprValue.buffer,
+              mlir::DenseI64ArrayAttr::get(builder.getContext(), dimensions))
+          .getResult();
+    }
+
+    return failValue("unsupported elementwise expression rank relation");
+  }
+
+  mlir::FailureOr<ElementwiseExprValue>
+  createElementwiseFillExprValue(mlir::arith::ConstantOp constant,
+                                 mlir::RankedTensorType resultTensorType,
+                                 mlir::OpBuilder &builder) {
+    mlir::Operation *cloned = builder.clone(*constant.getOperation());
+    auto alloc = builder.create<mlir::memref::AllocOp>(
+        constant.getLoc(),
+        makeSPMMemRefType(resultTensorType, MemLayout::Tensor));
+    builder.create<ComputeFillOp>(constant.getLoc(), alloc.getResult(),
+                                  cloned->getResult(0));
+    return ElementwiseExprValue{alloc.getResult(),
+                                getIdentityMap(resultTensorType)};
+  }
+
+  mlir::FailureOr<ElementwiseExprValue>
+  createElementwiseOpExprValue(mlir::Location loc, ComputeElementwiseKind kind,
+                               llvm::ArrayRef<ElementwiseExprValue> operands,
+                               mlir::RankedTensorType resultTensorType,
+                               mlir::OpBuilder &builder) {
+    llvm::SmallVector<mlir::Value, 2> materializedInputs;
+    for (ElementwiseExprValue operand : operands) {
+      mlir::FailureOr<mlir::Value> materialized =
+          materializeElementwiseExprOperand(operand, resultTensorType, loc,
+                                            builder);
+      if (mlir::failed(materialized))
+        return mlir::failure();
+      materializedInputs.push_back(*materialized);
+    }
+
+    auto kindAttr = ComputeElementwiseKindAttr::get(builder.getContext(), kind);
+    auto elementwise = builder.create<ComputeElementwiseOp>(
+        loc, makeSPMMemRefType(resultTensorType, MemLayout::Tensor), kindAttr,
+        materializedInputs);
+    return ElementwiseExprValue{elementwise.getResult(),
+                                getIdentityMap(resultTensorType)};
+  }
+
+  mlir::LogicalResult convertElementwiseScalarOp(
+      mlir::linalg::GenericOp generic, mlir::Operation *op,
+      llvm::DenseMap<mlir::Value, ElementwiseExprValue> &values,
+      mlir::RankedTensorType resultTensorType, mlir::OpBuilder &builder) {
+    auto lookup = [&](mlir::Value value) {
+      return getElementwiseExprValue(values, value);
+    };
+    auto createUnary = [&](mlir::Value input,
+                           ComputeElementwiseKind kind) -> mlir::LogicalResult {
+      mlir::FailureOr<ElementwiseExprValue> operand = lookup(input);
+      if (mlir::failed(operand))
+        return mlir::failure();
+      mlir::FailureOr<ElementwiseExprValue> result =
+          createElementwiseOpExprValue(op->getLoc(), kind, {*operand},
+                                       resultTensorType, builder);
+      if (mlir::failed(result))
+        return mlir::failure();
+      values[op->getResult(0)] = *result;
+      return mlir::success();
+    };
+    auto createBinary =
+        [&](mlir::Value lhs, mlir::Value rhs,
+            ComputeElementwiseKind kind) -> mlir::LogicalResult {
+      mlir::FailureOr<ElementwiseExprValue> lhsValue = lookup(lhs);
+      mlir::FailureOr<ElementwiseExprValue> rhsValue = lookup(rhs);
+      if (mlir::failed(lhsValue) || mlir::failed(rhsValue))
+        return mlir::failure();
+      mlir::FailureOr<ElementwiseExprValue> result =
+          createElementwiseOpExprValue(op->getLoc(), kind,
+                                       {*lhsValue, *rhsValue}, resultTensorType,
+                                       builder);
+      if (mlir::failed(result))
+        return mlir::failure();
+      values[op->getResult(0)] = *result;
+      return mlir::success();
+    };
+
+    if (auto constant = mlir::dyn_cast<mlir::arith::ConstantOp>(op)) {
+      if (constant->getNumResults() != 1 || !isScalarType(constant.getType()))
+        return fail("unsupported linalg.generic constant expression");
+      mlir::FailureOr<ElementwiseExprValue> value =
+          createElementwiseFillExprValue(constant, resultTensorType, builder);
+      if (mlir::failed(value))
+        return mlir::failure();
+      values[constant.getResult()] = *value;
+      return mlir::success();
+    }
+
+    if (auto fromElements = mlir::dyn_cast<mlir::tensor::FromElementsOp>(op)) {
+      if (fromElements.getElements().size() != 1 ||
+          fromElements->getNumResults() != 1)
+        return fail("unsupported tensor.from_elements in elementwise body");
+      mlir::FailureOr<ElementwiseExprValue> value =
+          lookup(fromElements.getElements().front());
+      if (mlir::failed(value))
+        return mlir::failure();
+      values[fromElements.getResult()] = *value;
+      return mlir::success();
+    }
+
+    if (auto extract = mlir::dyn_cast<mlir::tensor::ExtractOp>(op)) {
+      if (!extract.getIndices().empty() || extract->getNumResults() != 1)
+        return fail("unsupported tensor.extract in elementwise body");
+      mlir::FailureOr<ElementwiseExprValue> value = lookup(extract.getTensor());
+      if (mlir::failed(value))
+        return mlir::failure();
+      values[extract.getResult()] = *value;
+      return mlir::success();
+    }
+
+    if (auto addf = mlir::dyn_cast<mlir::arith::AddFOp>(op))
+      return createBinary(addf.getLhs(), addf.getRhs(),
+                          ComputeElementwiseKind::Add);
+    if (auto addi = mlir::dyn_cast<mlir::arith::AddIOp>(op))
+      return createBinary(addi.getLhs(), addi.getRhs(),
+                          ComputeElementwiseKind::Add);
+    if (auto subf = mlir::dyn_cast<mlir::arith::SubFOp>(op))
+      return createBinary(subf.getLhs(), subf.getRhs(),
+                          ComputeElementwiseKind::Sub);
+    if (auto subi = mlir::dyn_cast<mlir::arith::SubIOp>(op))
+      return createBinary(subi.getLhs(), subi.getRhs(),
+                          ComputeElementwiseKind::Sub);
+    if (auto mulf = mlir::dyn_cast<mlir::arith::MulFOp>(op))
+      return createBinary(mulf.getLhs(), mulf.getRhs(),
+                          ComputeElementwiseKind::Mul);
+    if (auto muli = mlir::dyn_cast<mlir::arith::MulIOp>(op))
+      return createBinary(muli.getLhs(), muli.getRhs(),
+                          ComputeElementwiseKind::Mul);
+    if (auto divf = mlir::dyn_cast<mlir::arith::DivFOp>(op)) {
+      if (isScalarLikeConstant(generic, divf.getLhs(), 1.0))
+        return createUnary(divf.getRhs(), ComputeElementwiseKind::Recip);
+      return createBinary(divf.getLhs(), divf.getRhs(),
+                          ComputeElementwiseKind::Div);
+    }
+    if (auto divsi = mlir::dyn_cast<mlir::arith::DivSIOp>(op))
+      return createBinary(divsi.getLhs(), divsi.getRhs(),
+                          ComputeElementwiseKind::Div);
+    if (auto divui = mlir::dyn_cast<mlir::arith::DivUIOp>(op))
+      return createBinary(divui.getLhs(), divui.getRhs(),
+                          ComputeElementwiseKind::Div);
+    if (auto maxf = mlir::dyn_cast<mlir::arith::MaximumFOp>(op))
+      return createBinary(maxf.getLhs(), maxf.getRhs(),
+                          ComputeElementwiseKind::Max);
+    if (auto maxnum = mlir::dyn_cast<mlir::arith::MaxNumFOp>(op))
+      return createBinary(maxnum.getLhs(), maxnum.getRhs(),
+                          ComputeElementwiseKind::Max);
+    if (auto maxsi = mlir::dyn_cast<mlir::arith::MaxSIOp>(op))
+      return createBinary(maxsi.getLhs(), maxsi.getRhs(),
+                          ComputeElementwiseKind::Max);
+    if (auto maxui = mlir::dyn_cast<mlir::arith::MaxUIOp>(op))
+      return createBinary(maxui.getLhs(), maxui.getRhs(),
+                          ComputeElementwiseKind::Max);
+    if (auto minf = mlir::dyn_cast<mlir::arith::MinimumFOp>(op))
+      return createBinary(minf.getLhs(), minf.getRhs(),
+                          ComputeElementwiseKind::Min);
+    if (auto minnum = mlir::dyn_cast<mlir::arith::MinNumFOp>(op))
+      return createBinary(minnum.getLhs(), minnum.getRhs(),
+                          ComputeElementwiseKind::Min);
+    if (auto minsi = mlir::dyn_cast<mlir::arith::MinSIOp>(op))
+      return createBinary(minsi.getLhs(), minsi.getRhs(),
+                          ComputeElementwiseKind::Min);
+    if (auto minui = mlir::dyn_cast<mlir::arith::MinUIOp>(op))
+      return createBinary(minui.getLhs(), minui.getRhs(),
+                          ComputeElementwiseKind::Min);
+    if (auto negf = mlir::dyn_cast<mlir::arith::NegFOp>(op))
+      return createUnary(negf.getOperand(), ComputeElementwiseKind::Neg);
+    if (auto exp = mlir::dyn_cast<mlir::math::ExpOp>(op))
+      return createUnary(exp.getOperand(), ComputeElementwiseKind::Exp);
+    if (auto sqrt = mlir::dyn_cast<mlir::math::SqrtOp>(op))
+      return createUnary(sqrt.getOperand(), ComputeElementwiseKind::Sqrt);
+    if (auto rsqrt = mlir::dyn_cast<mlir::math::RsqrtOp>(op))
+      return createUnary(rsqrt.getOperand(), ComputeElementwiseKind::Rsqrt);
+    if (auto tanh = mlir::dyn_cast<mlir::math::TanhOp>(op))
+      return createUnary(tanh.getOperand(), ComputeElementwiseKind::Tanh);
+    if (auto cmpf = mlir::dyn_cast<mlir::arith::CmpFOp>(op)) {
+      std::optional<ComputeElementwiseKind> kind =
+          inferCompareKind(cmpf.getPredicate());
+      if (!kind)
+        return mlir::failure();
+      return createBinary(cmpf.getLhs(), cmpf.getRhs(), *kind);
+    }
+    if (auto cmpi = mlir::dyn_cast<mlir::arith::CmpIOp>(op)) {
+      std::optional<ComputeElementwiseKind> kind =
+          inferCompareKind(cmpi.getPredicate());
+      if (!kind)
+        return mlir::failure();
+      return createBinary(cmpi.getLhs(), cmpi.getRhs(), *kind);
+    }
+    if (auto powf = mlir::dyn_cast<mlir::math::PowFOp>(op)) {
+      if (!isScalarLikeConstant(generic, powf.getRhs(), 2.0))
+        return fail("only powf with exponent 2 is supported in elementwise "
+                    "body");
+      return createBinary(powf.getLhs(), powf.getLhs(),
+                          ComputeElementwiseKind::Mul);
+    }
+
+    return fail("unsupported linalg.generic body op " +
+                op->getName().getStringRef().str());
+  }
+
+  mlir::LogicalResult
+  convertElementwiseGenericExpression(mlir::linalg::GenericOp generic,
+                                      mlir::OpBuilder &builder) {
+    auto resultTensorType =
+        mlir::dyn_cast<mlir::RankedTensorType>(generic->getResult(0).getType());
+    if (!resultTensorType)
+      return fail("generic result is not a ranked tensor");
+
+    llvm::SmallVector<mlir::AffineMap, 4> indexingMaps =
+        generic.getIndexingMapsArray();
+    if (indexingMaps.size() !=
+        generic.getNumDpsInputs() + generic.getNumDpsInits())
+      return fail("elementwise generic indexing map count mismatch");
+    mlir::AffineMap resultMap = indexingMaps.back();
+    if (!isIdentityMap(resultMap, resultTensorType.getRank()))
+      return fail("elementwise generic result map must be identity");
+
+    llvm::DenseMap<mlir::Value, ElementwiseExprValue> values;
+    mlir::Block &body = *generic.getBody();
+    unsigned bodyArgIndex = 0;
+    for (mlir::Value input : generic.getDpsInputs()) {
+      mlir::FailureOr<mlir::Value> buffer =
+          getOrMaterialize(input, MemLayout::Tensor, builder);
+      if (mlir::failed(buffer))
+        return mlir::failure();
+      values[body.getArgument(bodyArgIndex)] =
+          ElementwiseExprValue{*buffer, indexingMaps[bodyArgIndex]};
+      ++bodyArgIndex;
+    }
+    for (mlir::Value init : generic.getDpsInits()) {
+      mlir::BlockArgument bodyArg = body.getArgument(bodyArgIndex);
+      if (bodyArg.use_empty()) {
+        ++bodyArgIndex;
+        continue;
+      }
+      mlir::FailureOr<mlir::Value> buffer =
+          getOrMaterialize(init, MemLayout::Tensor, builder);
+      if (mlir::failed(buffer))
+        return mlir::failure();
+      values[bodyArg] =
+          ElementwiseExprValue{*buffer, indexingMaps[bodyArgIndex]};
+      ++bodyArgIndex;
+    }
+
+    for (mlir::Operation &op : body.without_terminator()) {
+      if (mlir::failed(convertElementwiseScalarOp(generic, &op, values,
+                                                  resultTensorType, builder)))
+        return mlir::failure();
+    }
+
+    auto yield = mlir::dyn_cast<mlir::linalg::YieldOp>(body.getTerminator());
+    if (!yield || yield.getValues().size() != 1)
+      return fail("unsupported linalg.generic yield");
+    mlir::FailureOr<ElementwiseExprValue> yielded =
+        getElementwiseExprValue(values, yield.getValues().front());
+    if (mlir::failed(yielded))
+      return mlir::failure();
+    mlir::FailureOr<mlir::Value> result = materializeElementwiseExprOperand(
+        *yielded, resultTensorType, generic.getLoc(), builder);
+    if (mlir::failed(result))
+      return mlir::failure();
+    record(generic->getResult(0), MemLayout::Tensor, *result);
+    return mlir::success();
+  }
+
   mlir::LogicalResult convertPassthroughGeneric(mlir::linalg::GenericOp generic,
                                                 mlir::OpBuilder &builder) {
     if (generic.getNumDpsInits() != 1 || generic->getNumResults() != 1)
@@ -1422,7 +2080,7 @@ private:
     if (!isIdentityMap(resultMap, resultTensorType.getRank()))
       return fail("passthrough generic result map must be identity");
 
-    mlir::Type resultType =
+    mlir::MemRefType resultType =
         makeSPMMemRefType(resultTensorType, MemLayout::Tensor);
     mlir::Value result;
     if (inputTensorType == resultTensorType &&
@@ -1470,6 +2128,144 @@ private:
     return mlir::success();
   }
 
+  mlir::Value createZeroScalar(mlir::Location loc, mlir::Type type,
+                               mlir::OpBuilder &builder) {
+    if (auto floatType = mlir::dyn_cast<mlir::FloatType>(type)) {
+      auto zero = mlir::FloatAttr::get(
+          floatType, llvm::APFloat::getZero(floatType.getFloatSemantics()));
+      return builder.create<mlir::arith::ConstantOp>(loc, zero).getResult();
+    }
+    if (auto intType = mlir::dyn_cast<mlir::IntegerType>(type)) {
+      auto zero = mlir::IntegerAttr::get(intType, 0);
+      return builder.create<mlir::arith::ConstantOp>(loc, zero).getResult();
+    }
+    if (mlir::isa<mlir::IndexType>(type))
+      return builder.create<mlir::arith::ConstantIndexOp>(loc, 0).getResult();
+    return {};
+  }
+
+  mlir::FailureOr<llvm::SmallVector<mlir::Value, 2>>
+  matchTwoWayConcatGeneric(mlir::linalg::GenericOp generic,
+                           int64_t &concatAxis) {
+    concatAxis = -1;
+    if (generic.getNumDpsInputs() != 0 || generic.getNumDpsInits() != 1 ||
+        generic->getNumResults() != 1)
+      return mlir::failure();
+
+    auto resultTensorType =
+        mlir::dyn_cast<mlir::RankedTensorType>(generic->getResult(0).getType());
+    if (!resultTensorType || !resultTensorType.hasStaticShape())
+      return mlir::failure();
+
+    auto yield = mlir::dyn_cast<mlir::linalg::YieldOp>(
+        generic.getBody()->getTerminator());
+    if (!yield || yield.getValues().size() != 1)
+      return mlir::failure();
+    auto ifOp = yield.getValues().front().getDefiningOp<mlir::scf::IfOp>();
+    if (!ifOp || ifOp->getNumResults() != 1 || !ifOp.thenBlock() ||
+        !ifOp.elseBlock())
+      return mlir::failure();
+
+    auto thenYield =
+        mlir::dyn_cast<mlir::scf::YieldOp>(ifOp.thenBlock()->getTerminator());
+    auto elseYield =
+        mlir::dyn_cast<mlir::scf::YieldOp>(ifOp.elseBlock()->getTerminator());
+    if (!thenYield || !elseYield || thenYield.getResults().size() != 1 ||
+        elseYield.getResults().size() != 1)
+      return mlir::failure();
+    auto firstExtract =
+        thenYield.getResults().front().getDefiningOp<mlir::tensor::ExtractOp>();
+    auto secondExtract =
+        elseYield.getResults().front().getDefiningOp<mlir::tensor::ExtractOp>();
+    if (!firstExtract || !secondExtract)
+      return mlir::failure();
+
+    auto firstType = mlir::dyn_cast<mlir::RankedTensorType>(
+        firstExtract.getTensor().getType());
+    auto secondType = mlir::dyn_cast<mlir::RankedTensorType>(
+        secondExtract.getTensor().getType());
+    if (!firstType || !secondType || !firstType.hasStaticShape() ||
+        !secondType.hasStaticShape() ||
+        firstType.getRank() != resultTensorType.getRank() ||
+        secondType.getRank() != resultTensorType.getRank() ||
+        firstType.getElementType() != resultTensorType.getElementType() ||
+        secondType.getElementType() != resultTensorType.getElementType())
+      return mlir::failure();
+
+    for (int64_t dim = 0; dim < resultTensorType.getRank(); ++dim) {
+      int64_t first = firstType.getDimSize(dim);
+      int64_t second = secondType.getDimSize(dim);
+      int64_t result = resultTensorType.getDimSize(dim);
+      if (first == result && second == result)
+        continue;
+      if (first + second == result && concatAxis < 0) {
+        concatAxis = dim;
+        continue;
+      }
+      return mlir::failure();
+    }
+    if (concatAxis < 0)
+      return mlir::failure();
+
+    return llvm::SmallVector<mlir::Value, 2>{firstExtract.getTensor(),
+                                             secondExtract.getTensor()};
+  }
+
+  mlir::LogicalResult
+  convertTwoWayConcatGeneric(mlir::linalg::GenericOp generic,
+                             llvm::ArrayRef<mlir::Value> concatInputs,
+                             int64_t concatAxis, mlir::OpBuilder &builder) {
+    auto resultTensorType =
+        mlir::dyn_cast<mlir::RankedTensorType>(generic->getResult(0).getType());
+    if (!resultTensorType)
+      return fail("concat generic result is not a ranked tensor");
+    if (concatInputs.size() != 2)
+      return fail("concat generic requires two inputs");
+
+    mlir::FailureOr<mlir::Value> first =
+        getOrMaterialize(concatInputs[0], MemLayout::Tensor, builder);
+    mlir::FailureOr<mlir::Value> second =
+        getOrMaterialize(concatInputs[1], MemLayout::Tensor, builder);
+    if (mlir::failed(first) || mlir::failed(second))
+      return mlir::failure();
+
+    mlir::MemRefType resultType =
+        makeSPMMemRefType(resultTensorType, MemLayout::Tensor);
+    auto seed =
+        builder.create<mlir::memref::AllocOp>(generic.getLoc(), resultType);
+    mlir::Value zero = createZeroScalar(
+        generic.getLoc(), resultTensorType.getElementType(), builder);
+    if (!zero)
+      return fail("concat generic requires numeric element type");
+    builder.create<ComputeFillOp>(generic.getLoc(), seed.getResult(), zero);
+
+    auto firstType = mlir::cast<mlir::MemRefType>((*first).getType());
+    auto secondType = mlir::cast<mlir::MemRefType>((*second).getType());
+    llvm::SmallVector<int64_t, 4> offsets(resultTensorType.getRank(), 0);
+    llvm::SmallVector<int64_t, 4> strides(resultTensorType.getRank(), 1);
+    llvm::SmallVector<int64_t, 4> firstSizes(firstType.getShape().begin(),
+                                             firstType.getShape().end());
+    llvm::SmallVector<int64_t, 4> secondSizes(secondType.getShape().begin(),
+                                              secondType.getShape().end());
+
+    mlir::MLIRContext *context = generic.getContext();
+    auto firstInsert = builder.create<MoveInsertSliceOp>(
+        generic.getLoc(), resultType, *first, seed.getResult(),
+        mlir::DenseI64ArrayAttr::get(context, offsets),
+        mlir::DenseI64ArrayAttr::get(context, firstSizes),
+        mlir::DenseI64ArrayAttr::get(context, strides));
+
+    offsets[concatAxis] = firstType.getDimSize(concatAxis);
+    auto secondInsert = builder.create<MoveInsertSliceOp>(
+        generic.getLoc(), resultType, *second, firstInsert.getResult(),
+        mlir::DenseI64ArrayAttr::get(context, offsets),
+        mlir::DenseI64ArrayAttr::get(context, secondSizes),
+        mlir::DenseI64ArrayAttr::get(context, strides));
+
+    record(generic->getResult(0), MemLayout::Tensor, secondInsert.getResult());
+    return mlir::success();
+  }
+
   mlir::LogicalResult convertGeneric(mlir::linalg::GenericOp generic,
                                      mlir::OpBuilder &builder) {
     if (generic.getNumDpsInits() != 1 || generic->getNumResults() != 1)
@@ -1479,36 +2275,13 @@ private:
       return convertReduceGeneric(generic, builder);
     if (getPassthroughInputIndex(generic))
       return convertPassthroughGeneric(generic, builder);
-
-    std::optional<ComputeElementwiseKind> kind = inferElementwiseKind(generic);
-    if (!kind)
-      return mlir::failure();
-
-    llvm::SmallVector<mlir::Value, 4> inputs;
-    for (mlir::Value input : generic.getDpsInputs()) {
-      mlir::FailureOr<mlir::Value> buffer =
-          getOrMaterialize(input, MemLayout::Tensor, builder);
-      if (mlir::failed(buffer))
-        return mlir::failure();
-      inputs.push_back(*buffer);
-    }
-
-    auto resultTensorType =
-        mlir::dyn_cast<mlir::RankedTensorType>(generic->getResult(0).getType());
-    if (!resultTensorType)
-      return fail("generic result is not a ranked tensor");
-
-    auto kindAttr =
-        ComputeElementwiseKindAttr::get(generic.getContext(), *kind);
-    auto elementwise = builder.create<ComputeElementwiseOp>(
-        generic.getLoc(),
-        makeSPMMemRefType(resultTensorType, MemLayout::Tensor), kindAttr,
-        inputs);
-    if (mlir::Attribute indexingMaps = generic->getAttr("indexing_maps"))
-      elementwise->setAttr("indexing_maps", indexingMaps);
-
-    record(generic->getResult(0), MemLayout::Tensor, elementwise.getResult());
-    return mlir::success();
+    int64_t concatAxis = -1;
+    if (mlir::FailureOr<llvm::SmallVector<mlir::Value, 2>> concatInputs =
+            matchTwoWayConcatGeneric(generic, concatAxis);
+        mlir::succeeded(concatInputs))
+      return convertTwoWayConcatGeneric(generic, *concatInputs, concatAxis,
+                                        builder);
+    return convertElementwiseGenericExpression(generic, builder);
   }
 
   mlir::LogicalResult finishRegion(GroupOp group, TileRegionOp tileRegion,
@@ -1554,8 +2327,7 @@ struct GroupToTileRegionLoweringPattern
                                    std::string *failureReason,
                                    int64_t currentLogicalRank)
       : mlir::OpConversionPattern<GroupOp>(context),
-        failureReason(failureReason),
-        currentLogicalRank(currentLogicalRank) {}
+        failureReason(failureReason), currentLogicalRank(currentLogicalRank) {}
 
   mlir::LogicalResult
   matchAndRewrite(GroupOp group, OpAdaptor adaptor,
@@ -1841,8 +2613,8 @@ static mlir::Value unwrapScalarTensorValue(mlir::Value value) {
 static std::optional<ComputeReduceKind>
 inferCandidateReduceKind(mlir::linalg::GenericOp generic,
                          std::string *failureReason) {
-  auto yield = mlir::dyn_cast<mlir::linalg::YieldOp>(
-      generic.getBody()->getTerminator());
+  auto yield =
+      mlir::dyn_cast<mlir::linalg::YieldOp>(generic.getBody()->getTerminator());
   if (!yield || yield.getValues().size() != 1) {
     setFailureReason(failureReason,
                      "candidate reduction split requires one reduce yield");
@@ -1875,7 +2647,8 @@ inferCandidateReduceKind(mlir::linalg::GenericOp generic,
 static mlir::FailureOr<ComputeReduceKind>
 getCandidateCombineKind(mlir::linalg::LinalgOp root,
                         std::string *failureReason) {
-  if (mlir::isa<mlir::linalg::MatmulOp>(root.getOperation()))
+  if (mlir::isa<mlir::linalg::MatmulOp, mlir::linalg::BatchMatmulOp>(
+          root.getOperation()))
     return ComputeReduceKind::Sum;
   if (auto generic =
           mlir::dyn_cast<mlir::linalg::GenericOp>(root.getOperation())) {
@@ -1888,7 +2661,8 @@ getCandidateCombineKind(mlir::linalg::LinalgOp root,
 
   setFailureReason(
       failureReason,
-      "candidate reduction split requires matmul or generic reduction root");
+      "candidate reduction split requires matmul, batch_matmul, or generic "
+      "reduction root");
   return mlir::failure();
 }
 
@@ -1898,8 +2672,7 @@ getNeutralScalarAttr(mlir::Type elementType, ComputeReduceKind kind,
   if (auto floatType = mlir::dyn_cast<mlir::FloatType>(elementType)) {
     switch (kind) {
     case ComputeReduceKind::Sum:
-      return mlir::cast<mlir::TypedAttr>(
-          mlir::FloatAttr::get(floatType, 0.0));
+      return mlir::cast<mlir::TypedAttr>(mlir::FloatAttr::get(floatType, 0.0));
     case ComputeReduceKind::Max:
       return mlir::cast<mlir::TypedAttr>(mlir::FloatAttr::get(
           floatType, llvm::APFloat::getInf(floatType.getFloatSemantics(),
@@ -1939,19 +2712,17 @@ getNeutralScalarAttr(mlir::Type elementType, ComputeReduceKind kind,
 static mlir::FailureOr<mlir::Value>
 createNeutralInitTensor(mlir::OpBuilder &builder, mlir::Location loc,
                         mlir::RankedTensorType resultType,
-                        ComputeReduceKind kind,
-                        std::string *failureReason) {
-  mlir::FailureOr<mlir::TypedAttr> attr = getNeutralScalarAttr(
-      resultType.getElementType(), kind, failureReason);
+                        ComputeReduceKind kind, std::string *failureReason) {
+  mlir::FailureOr<mlir::TypedAttr> attr =
+      getNeutralScalarAttr(resultType.getElementType(), kind, failureReason);
   if (mlir::failed(attr))
     return mlir::failure();
 
   auto constant = builder.create<mlir::arith::ConstantOp>(loc, *attr);
   auto empty = builder.create<mlir::tensor::EmptyOp>(
       loc, resultType.getShape(), resultType.getElementType());
-  auto fill =
-      builder.create<mlir::linalg::FillOp>(loc, constant.getResult(),
-                                           empty.getResult());
+  auto fill = builder.create<mlir::linalg::FillOp>(loc, constant.getResult(),
+                                                   empty.getResult());
   return fill.getResult(0);
 }
 
@@ -2174,9 +2945,9 @@ static mlir::FailureOr<mlir::Value> materializeCandidateRootTile(
                        "candidate reduction split missing combine kind");
       return mlir::failure();
     }
-    mlir::FailureOr<mlir::Value> combined = createPartialCombine(
-        builder, root.getLoc(), *combineKind, accumulator, partial,
-        outputInitTile, failureReason);
+    mlir::FailureOr<mlir::Value> combined =
+        createPartialCombine(builder, root.getLoc(), *combineKind, accumulator,
+                             partial, outputInitTile, failureReason);
     if (mlir::failed(combined))
       return mlir::failure();
     accumulator = *combined;
@@ -2217,8 +2988,8 @@ static mlir::FailureOr<mlir::Value> materializeCandidateRootTile(
   offsets.reserve(candidateTileOffsets.size());
   sizes.reserve(candidateTileSizes.size());
   strides.reserve(candidateTileSizes.size());
-  for (auto [offset, size] : llvm::zip(candidateTileOffsets,
-                                       candidateTileSizes)) {
+  for (auto [offset, size] :
+       llvm::zip(candidateTileOffsets, candidateTileSizes)) {
     offsets.push_back(builder.getIndexAttr(offset));
     sizes.push_back(builder.getIndexAttr(size));
     strides.push_back(builder.getIndexAttr(1));
@@ -2237,9 +3008,8 @@ static mlir::LogicalResult materializeCandidateTileSlices(
   auto yield =
       mlir::dyn_cast<GroupYieldOp>(group.getBody().front().getTerminator());
   if (!yield || yield.getValues().empty()) {
-    setFailureReason(
-        failureReason,
-        "candidate tile materialization requires group results");
+    setFailureReason(failureReason,
+                     "candidate tile materialization requires group results");
     return mlir::failure();
   }
 
@@ -2260,9 +3030,8 @@ static mlir::LogicalResult materializeCandidateTileSlices(
       for (mlir::OpOperand &use : result.getUses()) {
         if (use.getOwner() == yield.getOperation())
           continue;
-        setFailureReason(
-            failureReason,
-            "candidate multi-output coverage requires independent yielded roots");
+        setFailureReason(failureReason, "candidate multi-output coverage "
+                                        "requires independent yielded roots");
         return mlir::failure();
       }
     }
@@ -2295,11 +3064,9 @@ static void configureGroupToTileRegionTarget(mlir::ConversionTarget &target) {
   target.markUnknownOpDynamicallyLegal([](mlir::Operation *) { return true; });
 }
 
-static mlir::LogicalResult
-convertGroupToTileRegionModuleInPlace(mlir::ModuleOp module,
-                                      mlir::MLIRContext *context,
-                                      int64_t currentLogicalRank,
-                                      std::string *failureReason) {
+static mlir::LogicalResult convertGroupToTileRegionModuleInPlace(
+    mlir::ModuleOp module, mlir::MLIRContext *context,
+    int64_t currentLogicalRank, std::string *failureReason) {
   mlir::ConversionTarget target(*context);
   configureGroupToTileRegionTarget(target);
 
@@ -2360,11 +3127,9 @@ struct ConvertGroupToTileRegionPass
 
 } // namespace
 
-mlir::LogicalResult
-wafer::lowerGroupToTileRegionModule(GroupOp group,
-                                    mlir::OwningOpRef<mlir::ModuleOp> &module,
-                                    std::string *failureReason,
-                                    int64_t currentLogicalRank) {
+mlir::LogicalResult wafer::lowerGroupToTileRegionModule(
+    GroupOp group, mlir::OwningOpRef<mlir::ModuleOp> &module,
+    std::string *failureReason, int64_t currentLogicalRank) {
   if (failureReason)
     failureReason->clear();
 

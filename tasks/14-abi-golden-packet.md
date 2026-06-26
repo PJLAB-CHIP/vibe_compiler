@@ -188,6 +188,13 @@ base。`#wafer.ddr_offset` 只适用于 compiler-managed / resident / workspace 
 external input/output binding。SPM/DDR range-end 必须用 physical storage byte size 和 descriptor
 iteration/stride 重新计算，不能只看 logical tensor shape。
 
+ABI materialization 为所有 external memref function argument 和 returned output binding 生成
+runtime-provided base pointer。若函数体内存在带 accepted `#wafer.ddr_offset` 且不 alias returned
+output binding 的 compiler-managed DDR root allocation，ABI entrypoint 会在 external input/output
+base pointer 之后追加一个 workspace base pointer，并把每个 workspace root 映射为
+`workspace_base + ddr_offset`。package metadata 必须只在 LLVM ABI entrypoint 真的多出这个 workspace
+base pointer 时导出 workspace demand，不能单靠看到 `wafer.ddr.offset` 就生成第二份绑定事实。
+
 ABI materialization 可以使用 pass-local `ResourceViewAnalysis`，但该 view 只能从当前 IR、
 accepted offset facts、topology/execution-mesh、program parameter shard metadata 和薄 launch/block
 binding 重算；不能作为 sidecar、package metadata test input 或新 IR attr 写回上游。
@@ -226,7 +233,7 @@ V0 当前 family 只覆盖已经存在的 committed `wafer.instr.*` op。硬件�
 | elementwise | `wafer_elementwise` | CT arith / transcendental / activation / relation wrapper | kind arity、dtype、element count、relation output format |
 | reduction | `wafer_reduce` | CT reduce wrapper | reduce kind、native C/W/H/N/HW/HWC dim、4D shape、dtype |
 | conversion | `wafer_convert` | CT convert wrapper or same-format TDMA copy | source/result dtype、element count、rounding path |
-| GEMM | `wafer_gemm` | NE GEMM wrapper | layout、M/K/N、dtype |
+| GEMM | `wafer_gemm` | NE GEMM wrapper | layout、M/K/N、dtype；batched GEMM 在 ABI materialization 中按 batch physical byte offset 展开为多次调用 |
 | Direct DTE | `wafer_dte_send`, `wafer_dte_recv`, `wafer_dte_wait` | Direct DTE / FSM helper boundary | logical peer、byte count、async token count |
 | sync | `wafer_local_fence` | local wait helper | instruction family、effect ordering |
 

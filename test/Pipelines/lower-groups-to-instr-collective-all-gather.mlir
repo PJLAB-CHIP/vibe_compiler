@@ -26,14 +26,18 @@ func.func @collective_all_gather_to_instr(%input: tensor<4xf32>,
 // CHECK: wafer.instr.rdma {{%.*}} to %[[INPUT]]
 // CHECK: %[[GATHER:.+]] = memref.alloc
 // CHECK: %[[LOCAL_SLOT:.+]] = memref.subview %[[GATHER]][0] [4] [1]
-// CHECK: wafer.instr.gather_scatter %[[INPUT]] to %[[LOCAL_SLOT]]
+// CHECK: %[[LOCAL_COMM:.+]] = memref.alloc
+// CHECK: wafer.instr.gather_scatter %[[INPUT]] to %[[LOCAL_COMM]]
+// CHECK: wafer.instr.gather_scatter %[[LOCAL_COMM]] to %[[LOCAL_SLOT]]
 // CHECK: wafer.instr.local_fence
 // CHECK: %[[PEER_SLOT:.+]] = memref.subview %[[GATHER]][4] [4] [1]
-// CHECK: %[[SEND:.+]] = wafer.instr.dte_send %[[LOCAL_SLOT]]
+// CHECK: %[[RECV_BUF:.+]] = memref.alloc
+// CHECK: %[[SEND:.+]] = wafer.instr.dte_send %[[LOCAL_COMM]]
 // CHECK-SAME: peer = 1 : i64
-// CHECK: %[[RECV:.+]] = wafer.instr.dte_recv %[[PEER_SLOT]]
+// CHECK: %[[RECV:.+]] = wafer.instr.dte_recv %[[RECV_BUF]]
 // CHECK-SAME: peer = 1 : i64
 // CHECK: wafer.instr.dte_wait %[[SEND]], %[[RECV]]
+// CHECK: wafer.instr.gather_scatter %[[RECV_BUF]] to %[[PEER_SLOT]]
 // CHECK: wafer.instr.wdma %[[GATHER]]
 
 // PLANNED-LABEL: func.func @collective_all_gather_to_instr

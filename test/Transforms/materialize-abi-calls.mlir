@@ -128,6 +128,63 @@ func.func @abi_ct_dte(%input: memref<8xf32, #wafer.memory<ddr, tensor>>)
 // CHECK: call @wafer_dte_wait
 // CHECK: call @wafer_wdma
 // CHECK: return
+
+// -----
+
+func.func @abi_workspace(
+    %input: memref<8xf32, #wafer.memory<ddr, tensor>>,
+    %output: memref<8xf32, #wafer.memory<ddr, tensor>>) {
+  %workspace = memref.alloc() {wafer.ddr.offset = #wafer.ddr_offset<256>}
+      : memref<8xf32, #wafer.memory<ddr, tensor>>
+  %region = wafer.tile.region(%input, %workspace, %output
+      : memref<8xf32, #wafer.memory<ddr, tensor>>,
+        memref<8xf32, #wafer.memory<ddr, tensor>>,
+        memref<8xf32, #wafer.memory<ddr, tensor>>)
+      -> (memref<8xf32, #wafer.memory<ddr, tensor>>) {
+  ^bb0(%in: memref<8xf32, #wafer.memory<ddr, tensor>>,
+       %tmp: memref<8xf32, #wafer.memory<ddr, tensor>>,
+       %out: memref<8xf32, #wafer.memory<ddr, tensor>>):
+    %src = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<8xf32, #wafer.memory<spm, tensor>>
+    %copy = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65664>}
+        : memref<8xf32, #wafer.memory<spm, tensor>>
+    wafer.instr.rdma %in to %src
+        {byte_count = 32 : i64, inner_bytes = 32 : i64,
+         src_iterations = array<i64: 1, 1, 1>,
+         src_strides = array<i64: 0, 0, 0>}
+        : memref<8xf32, #wafer.memory<ddr, tensor>>
+       to memref<8xf32, #wafer.memory<spm, tensor>>
+    wafer.instr.wdma %src to %tmp
+        {byte_count = 32 : i64, dst_iterations = array<i64: 1, 1, 1>,
+         dst_strides = array<i64: 0, 0, 0>, inner_bytes = 32 : i64}
+        : memref<8xf32, #wafer.memory<spm, tensor>>
+       to memref<8xf32, #wafer.memory<ddr, tensor>>
+    wafer.instr.rdma %tmp to %copy
+        {byte_count = 32 : i64, inner_bytes = 32 : i64,
+         src_iterations = array<i64: 1, 1, 1>,
+         src_strides = array<i64: 0, 0, 0>}
+        : memref<8xf32, #wafer.memory<ddr, tensor>>
+       to memref<8xf32, #wafer.memory<spm, tensor>>
+    wafer.instr.wdma %copy to %out
+        {byte_count = 32 : i64, dst_iterations = array<i64: 1, 1, 1>,
+         dst_strides = array<i64: 0, 0, 0>, inner_bytes = 32 : i64}
+        : memref<8xf32, #wafer.memory<spm, tensor>>
+       to memref<8xf32, #wafer.memory<ddr, tensor>>
+    wafer.tile.yield %out
+        : memref<8xf32, #wafer.memory<ddr, tensor>>
+  }
+  return
+}
+
+// CHECK-LABEL: func.func @abi_workspace_abi
+// CHECK-SAME: (%arg0: i64, %arg1: i64, %arg2: i64)
+// CHECK: %[[C256:.+]] = arith.constant 256 : i64
+// CHECK: %[[WORKSPACE:.+]] = arith.addi %arg2, %[[C256]]
+// CHECK: call @wafer_rdma(%arg0
+// CHECK: call @wafer_wdma({{.*}}, %[[WORKSPACE]]
+// CHECK: call @wafer_rdma(%[[WORKSPACE]]
+// CHECK: call @wafer_wdma({{.*}}, %arg1
+// CHECK: return
 // CHECK-DAG: func.func private @wafer_rdma(i64, i32, i64, i64, i64, i64, i64, i64, i64, i64, i32) -> i32
 // CHECK-DAG: func.func private @wafer_gemm(i32, i32, i32, i64, i64, i64, i32) -> i32
 // CHECK-DAG: func.func private @wafer_local_fence

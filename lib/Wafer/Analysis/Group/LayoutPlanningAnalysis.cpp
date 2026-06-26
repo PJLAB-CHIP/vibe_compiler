@@ -55,7 +55,8 @@ static bool isTensorLike(mlir::Type type) {
 
 static bool isContractionLike(const OpTilingDemand &demand) {
   return !demand.accumulators.empty() ||
-         mlir::isa_and_nonnull<mlir::linalg::MatmulOp>(demand.op);
+         mlir::isa_and_nonnull<mlir::linalg::MatmulOp,
+                               mlir::linalg::BatchMatmulOp>(demand.op);
 }
 
 static LayoutPlanRelation relationToResult(const TilingDemandValue &value,
@@ -294,10 +295,9 @@ private:
       std::string label;
       llvm::raw_string_ostream os(label);
       os << "group result #" << index;
-      plan.resultMaterializations.push_back({nextMaterialization++,
-                                             describeValue(value),
-                                             os.str(), value.getType(),
-                                             sourceLayout, MemLayout::Tensor});
+      plan.resultMaterializations.push_back(
+          {nextMaterialization++, describeValue(value), os.str(),
+           value.getType(), sourceLayout, MemLayout::Tensor});
     }
   }
 };

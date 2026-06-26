@@ -483,6 +483,20 @@ static mlir::IntegerAttr getI64Attr(mlir::PatternRewriter &rewriter,
 }
 
 static mlir::FailureOr<int64_t>
+readRequiredI64Attr(mlir::PatternRewriter &rewriter, mlir::Operation *op,
+                    llvm::StringRef name, std::string *failureReason) {
+  auto attr = op->getAttrOfType<mlir::IntegerAttr>(name);
+  if (!attr)
+    return failFailureOr<int64_t>(
+        rewriter, op, failureReason,
+        llvm::Twine("batched tile.gemm lowering requires ")
+            .concat(name)
+            .concat(" attr")
+            .str());
+  return attr.getInt();
+}
+
+static mlir::FailureOr<int64_t>
 getStaticPhysicalBytes(mlir::PatternRewriter &rewriter, mlir::Operation *op,
                        mlir::Type type, std::string *failureReason,
                        llvm::StringRef role) {
@@ -783,8 +797,8 @@ getStaticDim(mlir::PatternRewriter &rewriter, mlir::Operation *op,
 }
 
 static mlir::FailureOr<llvm::SmallVector<int64_t, 3>>
-inferRank2GemmMKN(ComputeGemmOp op, mlir::PatternRewriter &rewriter,
-                  std::string *failureReason) {
+inferGemmMKN(ComputeGemmOp op, mlir::PatternRewriter &rewriter,
+             std::string *failureReason) {
   std::optional<mlir::RankedTensorType> lhs =
       getLogicalTensorTypeFromMemRef(op.getLhs().getType());
   std::optional<mlir::RankedTensorType> rhs =
@@ -795,11 +809,26 @@ inferRank2GemmMKN(ComputeGemmOp op, mlir::PatternRewriter &rewriter,
     return failFailureOr<llvm::SmallVector<int64_t, 3>>(
         rewriter, op, failureReason,
         "tile.gemm lowering requires Wafer memref operands");
-  if (lhs->getRank() != 2 || rhs->getRank() != 2 || result->getRank() != 2)
-    return failFailureOr<llvm::SmallVector<int64_t, 3>>(
-        rewriter, op, failureReason,
-        "batched tile.gemm lowering requires explicit batched instruction "
-        "dims");
+
+  if (lhs->getRank() != 2 || rhs->getRank() != 2 || result->getRank() != 2) {
+    mlir::FailureOr<int64_t> lhsMDim =
+        readRequiredI64Attr(rewriter, op, "lhs_m_dim", failureReason);
+    mlir::FailureOr<int64_t> lhsKDim =
+        readRequiredI64Attr(rewriter, op, "lhs_contracting_dim", failureReason);
+    mlir::FailureOr<int64_t> rhsNDim =
+        readRequiredI64Attr(rewriter, op, "rhs_n_dim", failureReason);
+    if (mlir::failed(lhsMDim) || mlir::failed(lhsKDim) || mlir::failed(rhsNDim))
+      return mlir::failure();
+    mlir::FailureOr<int64_t> m = getStaticDim(
+        rewriter, op, *lhs, *lhsMDim, failureReason, "batched tile.gemm");
+    mlir::FailureOr<int64_t> k = getStaticDim(
+        rewriter, op, *lhs, *lhsKDim, failureReason, "batched tile.gemm");
+    mlir::FailureOr<int64_t> n = getStaticDim(
+        rewriter, op, *rhs, *rhsNDim, failureReason, "batched tile.gemm");
+    if (mlir::failed(m) || mlir::failed(k) || mlir::failed(n))
+      return mlir::failure();
+    return llvm::SmallVector<int64_t, 3>{*m, *k, *n};
+  }
 
   mlir::FailureOr<int64_t> m =
       getStaticDim(rewriter, op, *lhs, 0, failureReason, "rank-2 tile.gemm");
@@ -1268,7 +1297,7 @@ public:
       return mlir::failure();
 
     mlir::FailureOr<llvm::SmallVector<int64_t, 3>> mkn =
-        inferRank2GemmMKN(op, rewriter, failureReason);
+        inferGemmMKN(op, rewriter, failureReason);
     if (mlir::failed(mkn))
       return mlir::failure();
 
@@ -1524,6 +1553,31 @@ createContiguousSPMCopy(mlir::PatternRewriter &rewriter, mlir::Location loc,
   return mlir::success();
 }
 
+static mlir::LogicalResult
+createLogicalSPMCopy(mlir::PatternRewriter &rewriter, mlir::Location loc,
+                     mlir::Operation *op, mlir::Value source, mlir::Value dest,
+                     std::string *failureReason, llvm::StringRef role) {
+  auto sourceType = mlir::dyn_cast<mlir::MemRefType>(source.getType());
+  auto destType = mlir::dyn_cast<mlir::MemRefType>(dest.getType());
+  if (!sourceType || !destType)
+    return failPattern(
+        rewriter, op, failureReason,
+        llvm::Twine(role).concat(" requires memref operands").str());
+  mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>> segments =
+      getStaticLogicalMovementSegments(rewriter, op, sourceType, destType,
+                                       failureReason, role);
+  if (mlir::failed(segments))
+    return mlir::failure();
+  createGatherScatterSegments(rewriter, loc, source, dest, *segments);
+  return mlir::success();
+}
+
+static mlir::MemRefType getContiguousSPMBufferType(mlir::MemRefType type) {
+  return mlir::MemRefType::get(type.getShape(), type.getElementType(),
+                               mlir::MemRefLayoutAttrInterface{},
+                               type.getMemorySpace());
+}
+
 static mlir::FailureOr<ComputeElementwiseKindAttr>
 getAccumulationElementwiseKind(mlir::PatternRewriter &rewriter,
                                mlir::Operation *op,
@@ -1609,8 +1663,17 @@ public:
     mlir::FailureOr<mlir::Value> localSlot = getSlot(localRank);
     if (mlir::failed(localSlot))
       return mlir::failure();
-    if (mlir::failed(createContiguousSPMCopy(
-            rewriter, op.getLoc(), op, op.getLocalChunk(), *localSlot,
+
+    mlir::MemRefType commSlotType = getContiguousSPMBufferType(localType);
+    auto localCommSlot =
+        rewriter.create<mlir::memref::AllocOp>(op.getLoc(), commSlotType);
+    if (mlir::failed(
+            createLogicalSPMCopy(rewriter, op.getLoc(), op, op.getLocalChunk(),
+                                 localCommSlot.getResult(), failureReason,
+                                 "tile.all_gather local contiguous copy")))
+      return mlir::failure();
+    if (mlir::failed(createLogicalSPMCopy(
+            rewriter, op.getLoc(), op, localCommSlot.getResult(), *localSlot,
             failureReason, "tile.all_gather local slot copy")))
       return mlir::failure();
     rewriter.create<SyncLocalFenceOp>(op.getLoc());
@@ -1624,17 +1687,25 @@ public:
         if (mlir::failed(recvSlot))
           return mlir::failure();
 
+        auto recvCommSlot =
+            rewriter.create<mlir::memref::AllocOp>(op.getLoc(), commSlotType);
         auto send = rewriter.create<InstrDTESendOp>(
-            op.getLoc(), rewriter.getType<mlir::async::TokenType>(), *localSlot,
+            op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
+            localCommSlot.getResult(),
             rewriter.getI64IntegerAttr(rankGroup[sendPeerIndex]),
             rewriter.getI64IntegerAttr(bytes));
         auto recv = rewriter.create<InstrDTERecvOp>(
-            op.getLoc(), rewriter.getType<mlir::async::TokenType>(), *recvSlot,
+            op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
+            recvCommSlot.getResult(),
             rewriter.getI64IntegerAttr(rankGroup[recvPeerIndex]),
             rewriter.getI64IntegerAttr(bytes));
         llvm::SmallVector<mlir::Value, 2> tokens{send.getToken(),
                                                  recv.getToken()};
         rewriter.create<InstrDTEWaitOp>(op.getLoc(), tokens);
+        if (mlir::failed(createLogicalSPMCopy(
+                rewriter, op.getLoc(), op, recvCommSlot.getResult(), *recvSlot,
+                failureReason, "tile.all_gather received slot copy")))
+          return mlir::failure();
       }
 
       rewriter.eraseOp(op);
@@ -1643,25 +1714,31 @@ public:
 
     int64_t nextPeer = rankGroup[(localRank + 1) % groupSize];
     int64_t prevPeer = rankGroup[(localRank + groupSize - 1) % groupSize];
-    mlir::Value sendSlot = *localSlot;
+    mlir::Value sendSlot = localCommSlot.getResult();
     for (int64_t step = 0; step < groupSize - 1; ++step) {
       int64_t recvSlotIndex = (localRank + groupSize - step - 1) % groupSize;
       mlir::FailureOr<mlir::Value> recvSlot = getSlot(recvSlotIndex);
       if (mlir::failed(recvSlot))
         return mlir::failure();
 
+      auto recvCommSlot =
+          rewriter.create<mlir::memref::AllocOp>(op.getLoc(), commSlotType);
       auto send = rewriter.create<InstrDTESendOp>(
           op.getLoc(), rewriter.getType<mlir::async::TokenType>(), sendSlot,
           rewriter.getI64IntegerAttr(nextPeer),
           rewriter.getI64IntegerAttr(bytes));
       auto recv = rewriter.create<InstrDTERecvOp>(
-          op.getLoc(), rewriter.getType<mlir::async::TokenType>(), *recvSlot,
-          rewriter.getI64IntegerAttr(prevPeer),
+          op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
+          recvCommSlot.getResult(), rewriter.getI64IntegerAttr(prevPeer),
           rewriter.getI64IntegerAttr(bytes));
       llvm::SmallVector<mlir::Value, 2> tokens{send.getToken(),
                                                recv.getToken()};
       rewriter.create<InstrDTEWaitOp>(op.getLoc(), tokens);
-      sendSlot = *recvSlot;
+      if (mlir::failed(createLogicalSPMCopy(
+              rewriter, op.getLoc(), op, recvCommSlot.getResult(), *recvSlot,
+              failureReason, "tile.all_gather received slot copy")))
+        return mlir::failure();
+      sendSlot = recvCommSlot.getResult();
     }
 
     rewriter.eraseOp(op);

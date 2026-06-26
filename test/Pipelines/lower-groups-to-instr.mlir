@@ -180,6 +180,64 @@ func.func @boundary_tiled_matmul_group(%lhs: tensor<4x8xf16>,
   return %group : tensor<4x8xf16>
 }
 
+func.func @batch_matmul_group(%lhs: tensor<2x4x8xf32>,
+                              %rhs: tensor<2x8x16xf32>,
+                              %out: tensor<2x4x16xf32>)
+    -> tensor<2x4x16xf32> {
+  %group = wafer.group ins(%lhs, %rhs : tensor<2x4x8xf32>, tensor<2x8x16xf32>)
+      outs(%out : tensor<2x4x16xf32>) {
+  ^bb0(%arg0: tensor<2x4x8xf32>, %arg1: tensor<2x8x16xf32>,
+       %arg2: tensor<2x4x16xf32>):
+    %empty = tensor.empty() : tensor<2x4x16xf32>
+    %c0 = arith.constant 0.000000e+00 : f32
+    %init = linalg.fill ins(%c0 : f32)
+        outs(%empty : tensor<2x4x16xf32>) -> tensor<2x4x16xf32>
+    %mm = linalg.batch_matmul
+        ins(%arg0, %arg1 : tensor<2x4x8xf32>, tensor<2x8x16xf32>)
+        outs(%init : tensor<2x4x16xf32>) -> tensor<2x4x16xf32>
+    wafer.group.yield %mm : tensor<2x4x16xf32>
+  } : tensor<2x4x16xf32>
+  return %group : tensor<2x4x16xf32>
+}
+
+func.func @composite_elementwise_group(%input: tensor<2x4xf32>,
+                                       %scale: tensor<4xf32>,
+                                       %out: tensor<2x4xf32>)
+    -> tensor<2x4xf32> {
+  %two = arith.constant dense<2.000000e+00> : tensor<2x4xf32>
+  %group = wafer.group ins(%input, %two, %scale
+      : tensor<2x4xf32>, tensor<2x4xf32>, tensor<4xf32>)
+      outs(%out : tensor<2x4xf32>) {
+  ^bb0(%arg0: tensor<2x4xf32>, %arg1: tensor<2x4xf32>,
+       %arg2: tensor<4xf32>, %arg3: tensor<2x4xf32>):
+    %result = linalg.generic {
+        indexing_maps = [
+          affine_map<(d0, d1) -> (d0, d1)>,
+          affine_map<(d0, d1) -> (d0, d1)>,
+          affine_map<(d0, d1) -> (d1)>,
+          affine_map<(d0, d1) -> (d0, d1)>
+        ],
+        iterator_types = ["parallel", "parallel"]
+      } ins(%arg0, %arg1, %arg2
+          : tensor<2x4xf32>, tensor<2x4xf32>, tensor<4xf32>)
+        outs(%arg3 : tensor<2x4xf32>) {
+      ^bb0(%x: f32, %exp2: f32, %scale_el: f32, %out_el: f32):
+        %squared = math.powf %x, %exp2 : f32
+        %neg = arith.negf %x : f32
+        %exp = math.exp %neg : f32
+        %one = arith.constant 1.000000e+00 : f32
+        %den = arith.addf %exp, %one : f32
+        %sigmoid = arith.divf %one, %den : f32
+        %gated = arith.mulf %x, %sigmoid : f32
+        %scaled = arith.mulf %gated, %scale_el : f32
+        %sum = arith.addf %squared, %scaled : f32
+        linalg.yield %sum : f32
+      } -> tensor<2x4xf32>
+    wafer.group.yield %result : tensor<2x4xf32>
+  } : tensor<2x4xf32>
+  return %group : tensor<2x4xf32>
+}
+
 // CHECK-LABEL: func.func @add_group
 // CHECK-SAME: (%{{[^:]+}}: memref<4xf32, #wafer.memory<ddr, tensor>>, %{{[^:]+}}: memref<4xf32, #wafer.memory<ddr, tensor>>, %{{[^:]+}}: memref<4xf32, #wafer.memory<ddr, tensor>>)
 // CHECK-SAME: -> memref<4xf32, #wafer.memory<ddr, tensor>>
@@ -289,6 +347,38 @@ func.func @boundary_tiled_matmul_group(%lhs: tensor<4x8xf16>,
 // CHECK-SAME: dst_iterations = array<i64: 2, 1, 1>
 // CHECK-SAME: dst_strides = array<i64: 16, 0, 0>
 // CHECK-SAME: inner_bytes = 6 : i64
+
+// CHECK-LABEL: func.func @batch_matmul_group
+// CHECK-NOT: wafer.group
+// CHECK-NOT: linalg.batch_matmul
+// CHECK: wafer.instr.gemm
+// CHECK-SAME: batch_count = 2 : i64
+// CHECK-SAME: k = 8 : i64
+// CHECK-SAME: lhs_batch_dims = array<i64: 0>
+// CHECK-SAME: lhs_contracting_dim = 2 : i64
+// CHECK-SAME: lhs_m_dim = 1 : i64
+// CHECK-SAME: m = 4 : i64
+// CHECK-SAME: n = 16 : i64
+// CHECK-SAME: result_batch_dims = array<i64: 0>
+// CHECK-SAME: result_m_dim = 1 : i64
+// CHECK-SAME: result_n_dim = 2 : i64
+// CHECK-SAME: rhs_batch_dims = array<i64: 0>
+// CHECK-SAME: rhs_contracting_dim = 1 : i64
+// CHECK-SAME: rhs_n_dim = 2 : i64
+
+// CHECK-LABEL: func.func @composite_elementwise_group
+// CHECK-NOT: linalg.generic
+// CHECK-NOT: math.powf
+// CHECK: wafer.instr.elementwise <mul>
+// CHECK: wafer.instr.elementwise <neg>
+// CHECK: wafer.instr.elementwise <exp>
+// CHECK: wafer.instr.fill
+// CHECK: wafer.instr.elementwise <add>
+// CHECK: wafer.instr.elementwise <recip>
+// CHECK: wafer.instr.elementwise <mul>
+// CHECK: wafer.instr.gather_scatter
+// CHECK: wafer.instr.elementwise <mul>
+// CHECK: wafer.instr.elementwise <add>
 
 // PLANNED-LABEL: func.func @boundary_slice_group
 // PLANNED: memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>} : memref<2x3xf16, #wafer.memory<spm, tensor>>

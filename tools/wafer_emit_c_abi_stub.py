@@ -66,7 +66,18 @@ def c_ident(name: str) -> str:
     return ident
 
 
-def format_c_float(value: int | float) -> str:
+def format_c_float(value: int | float | dict) -> str:
+    if isinstance(value, dict):
+        if value.get("kind") != "non_finite":
+            raise ValueError("unsupported structured C float value")
+        encoded = value.get("value")
+        if encoded == "-inf":
+            return "-__builtin_inf()"
+        if encoded == "inf":
+            return "__builtin_inf()"
+        if encoded == "nan":
+            return "__builtin_nan(\"\")"
+        raise ValueError("unsupported non-finite C float value")
     return format(float(value), ".9g")
 
 
