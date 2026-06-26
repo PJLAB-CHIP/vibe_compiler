@@ -694,6 +694,30 @@ bool verifyParameterDataFile(llvm::StringRef programDir,
       tensorType.getElementType(), diagnostics);
 }
 
+bool verifyConstantDataFile(llvm::StringRef programDir,
+                            const ProgramInputLocation &location,
+                            RankedTensorType tensorType,
+                            llvm::raw_ostream &diagnostics) {
+  if (location.position < 0)
+    return rejectProgramDirectory(
+        "constant location has negative position", diagnostics);
+
+  std::string relativePath =
+      (Twine("constants/") + Twine(location.position)).str();
+  std::string path = programPath(programDir, {relativePath});
+  llvm::sys::fs::file_status status;
+  if (std::error_code error = llvm::sys::fs::status(path, status))
+    return rejectProgramDirectory(
+        "constant data file is missing: " + relativePath, diagnostics);
+  if (!llvm::sys::fs::is_regular_file(status))
+    return rejectProgramDirectory(
+        "constant data path is not a regular file: " + relativePath,
+        diagnostics);
+
+  return verifyNpyTensorPayloadFile(path, relativePath, tensorType.getShape(),
+                                    tensorType.getElementType(), diagnostics);
+}
+
 bool hasSpmdParameterShardings(ModuleOp module);
 bool fileExists(llvm::StringRef path);
 
@@ -719,6 +743,7 @@ bool verifyProgramMetadata(
 
   unsigned parameterCount = 0;
   unsigned userInputCount = 0;
+  unsigned constantCount = 0;
   bool rejected = false;
   bool partitioned =
       hasSpmdParameterShardings(module) ||
@@ -737,6 +762,11 @@ bool verifyProgramMetadata(
           rejected |= verifyParameterDataFile(programDir, location, tensorType,
                                               diagnostics);
       }
+    } else if (location.type == "constant") {
+      ++constantCount;
+      if (auto tensorType = dyn_cast<RankedTensorType>(inputType))
+        rejected |= verifyConstantDataFile(programDir, location, tensorType,
+                                           diagnostics);
     } else if (location.type == "input_arg") {
       ++userInputCount;
       if (location.position < 0)
@@ -761,6 +791,7 @@ bool verifyProgramMetadata(
   if (!rejected && result) {
     result->programParameterCount = parameterCount;
     result->programUserInputCount = userInputCount;
+    result->programConstantCount = constantCount;
   }
   return rejected;
 }

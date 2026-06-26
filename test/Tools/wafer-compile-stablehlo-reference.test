@@ -48,6 +48,16 @@
 # RUN: rm %t.missing-data.program/data/weight
 # RUN: not wafer-compile-stablehlo --verify-stablehlo-program %t.missing-data.program 2>&1 | FileCheck %s --check-prefix=PROGRAM-DATA
 
+# RUN: rm -rf %t.constant.program && mkdir -p %t.constant.program/functions %t.constant.program/constants
+# RUN: printf '%b' 'module {\n  func.func @main(%%arg0: tensor<2x4xf32>) -> tensor<2x4xf32> {\n    return %%arg0 : tensor<2x4xf32>\n  }\n}\n' > %t.constant.program/functions/forward.mlir
+# RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[2,4],"dtype":"float32","dynamic_dims":[]}],"output_signature":[{"shape":[2,4],"dtype":"float32","dynamic_dims":[]}],"input_locations":[{"type_":"constant","position":0,"name":""}],"unused_inputs":[]}\n' > %t.constant.program/functions/forward.meta
+# RUN: %python -c 'import numpy as np; from pathlib import Path; p = Path("%t.constant.program/constants/0"); f = p.open("wb"); np.save(f, np.zeros((2, 4), dtype=np.float32)); f.close()'
+# RUN: wafer-compile-stablehlo --verify-stablehlo-program %t.constant.program | FileCheck %s --check-prefix=CONSTANT-PROGRAM
+
+# RUN: rm -rf %t.missing-constant.program && mkdir -p %t.missing-constant.program && cp -R %t.constant.program/. %t.missing-constant.program
+# RUN: rm %t.missing-constant.program/constants/0
+# RUN: not wafer-compile-stablehlo --verify-stablehlo-program %t.missing-constant.program 2>&1 | FileCheck %s --check-prefix=PROGRAM-CONSTANT-DATA
+
 # HELP-NOT: --emit-static-reference-program
 # HELP-NOT: --verify-spmd-program
 # HELP-NOT: --compile-stablehlo-program-to-cabi
@@ -84,3 +94,10 @@
 
 # PROGRAM-DATA: wafer-compile-stablehlo: StableHLO program directory metadata rejected
 # PROGRAM-DATA: parameter data file is missing: weight
+
+# CONSTANT-PROGRAM: wafer-compile-stablehlo: verified StableHLO program directory parameters: 0
+# CONSTANT-PROGRAM: wafer-compile-stablehlo: verified StableHLO program directory constants: 1
+# CONSTANT-PROGRAM: wafer-compile-stablehlo: verified StableHLO program
+
+# PROGRAM-CONSTANT-DATA: wafer-compile-stablehlo: StableHLO program directory metadata rejected
+# PROGRAM-CONSTANT-DATA: constant data file is missing: constants/0

@@ -87,6 +87,11 @@
   P2.S2 helper 需要解析 `.npy` header 才能切片输入参数；P2.S2 输出的 rank-local shard payload 沿用
   NPY stream，路径为 `parameter_shards/<parameter>/rank_XXXXX.npy`。形状和 dtype 由 NPY header 与
   `forward.parameter_shards.json` 共同校验；不要把 NumPy 文件格式升级成 Wafer package/runtime ABI。
+- PyTorch/XLA transformer / RoPE 这类真实图会把 scalar 或 tensor captured constants 放进
+  StableHLO function arguments，并在 metadata 中标成 `input_locations` 的 `type_ = "constant"`、
+  payload `constants/<position>`。Wafer frontend verifier 要校验这些 NPY payload；pinned-XLA
+  helper 输出 post-SPMD program 时也必须复制 constants 目录，否则 `stablehlo-spmd-to-group`
+  会在 program directory verifier 阶段被正确拒绝。
 - Wafer-owned Shardy / SPMD 源码放在 `lib/Wafer/Transforms/SPMD/`。只依赖 MLIR / StableHLO /
   Shardy CMake target 的 pass 编进 `WaferTransforms`；需要直接依赖 XLA HLO service /
   `spmd_partitioner` / generated proto / TSL 的入口也放在同一 Wafer 源码目录，但通过

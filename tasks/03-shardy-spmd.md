@@ -323,6 +323,13 @@ stage 得到 partitioned StableHLO、等价 per-rank StableHLO body，或明确�
   rank-local signature、StableHLO collective、`forward.parameter_shards.json` 和 rank-local NPY stream
   payload。旧 `test/Tools/wafer-compile-stablehlo-spmd-partition.test` 已删除，因为它把 P2.S2 主入口
   错误地挂在 frontend verifier tool 下。
+- `test/Tools/wafer-opt-hf-megatron-transformer-block.test` 覆盖更接近 LLM 的真实 frontend gate：
+  从 HuggingFace Llama config snapshot 构造一个静态 decoder block，使用 PyTorch/XLA
+  `mark_sharding` 在 16-rank 单卡 mesh 上标记 Megatron-style tensor parallel 权重切分，再进入
+  `wafer-opt --program-pipeline=stablehlo-spmd-to-group`。该 gate 证明当前 compiler 能消费
+  attention/RMSNorm/RoPE/SwiGLU 主干、captured constants、parameter shards 和 post-SPMD
+  collectives 到 `wafer.group` 边界；它不声明 group->tile/instr/runtime 对完整 transformer block
+  已经完成。
 
 #### 2.1.3 默认 no-user-sharding policy
 

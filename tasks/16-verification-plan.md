@@ -199,10 +199,14 @@ Transformer block vertical slice：
 - 当前无卡开发环境要求 generated program compile；launch/resource metadata 后续应覆盖所有 block
   input/output、resident constants 和 workspace，package/runtime completion 和数值对比在有卡环境验证。
 
-当前 transformer static 测试输入只覆盖 frontend/local structured tensor dataflow。旧 full local block
-到 group split、single-tile materialization、SPM allocation、DDR binding demand 和 ABI/LLVM lowering
-的 pass 链已删除；workspace buffers、resident constants、launch/resource metadata 和 IR-derived package metadata
-emission 仍属后续恢复任务。completion、数值对比和 profiling 仍等有卡环境补 gate。
+当前 transformer static gate 已覆盖两类边界：手写 StableHLO local structured tensor dataflow，以及
+HuggingFace Llama config snapshot + PyTorch/XLA `mark_sharding` + 16-rank 单卡 mesh 的
+Megatron-style tensor-parallel decoder block 到 `stablehlo-spmd-to-group`。后者证明真实
+frontend/SPMD/group 链路能消费 attention/RMSNorm/RoPE/SwiGLU 主干、captured constants 和
+parameter shard metadata。旧 full local block 到 single-tile materialization、SPM allocation、DDR
+binding demand 和 ABI/LLVM lowering 的 pass 链已删除；workspace buffers、resident constants、
+launch/resource metadata 和 IR-derived package metadata emission 仍属后续恢复任务。completion、
+数值对比和 profiling 仍等有卡环境补 gate。
 
 M7 ABI / LLVM program gate：
 

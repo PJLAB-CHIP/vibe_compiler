@@ -313,13 +313,38 @@ collectBoundaryInputs(llvm::ArrayRef<mlir::Operation *> orderedOps,
 
   inputs.clear();
   for (mlir::Operation *op : orderedOps) {
-    for (mlir::Value operand : op->getOperands()) {
-      if (isSelectedDef(operand, selected))
-        continue;
-      if (!seen.insert(operand).second)
-        continue;
-      inputs.push_back(operand);
-    }
+    op->walk([&](mlir::Operation *nestedOp) {
+      for (mlir::Value operand : nestedOp->getOperands()) {
+        if (isSelectedDef(operand, selected))
+          continue;
+
+        bool definedInsideSelected = false;
+        if (mlir::Operation *def = operand.getDefiningOp()) {
+          for (mlir::Operation *scope = def; scope;
+               scope = scope->getParentOp()) {
+            if (selected.contains(scope)) {
+              definedInsideSelected = true;
+              break;
+            }
+          }
+        } else if (auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(
+                       operand)) {
+          mlir::Operation *parentOp = blockArg.getOwner()->getParentOp();
+          for (mlir::Operation *scope = parentOp; scope;
+               scope = scope->getParentOp()) {
+            if (selected.contains(scope)) {
+              definedInsideSelected = true;
+              break;
+            }
+          }
+        }
+        if (definedInsideSelected)
+          continue;
+        if (!seen.insert(operand).second)
+          continue;
+        inputs.push_back(operand);
+      }
+    });
   }
 }
 

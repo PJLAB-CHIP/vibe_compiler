@@ -264,6 +264,11 @@ tensor rank，dynamic dimension 的 bound 必须为正，static dimension 的 bo
 常量策略：
 
 - Frontend 可以接收 `stablehlo.constant`。
+- PyTorch/XLA StableHLO program directory 可以把 graph-captured scalar/tensor
+  constants 表达成 `input_locations` 中的 `type_ = "constant"`，payload 位于
+  `constants/<position>`。frontend verifier 必须像校验 parameter payload 一样校验该 NPY
+  stream 的 shape/dtype 与对应 function argument 一致；不能把 captured constants 伪装成用户
+  `input_arg` 或 weight parameter。
 - 大 weight 可以作为 StableHLO resource-backed parameter 保留在 exporter program directory 中。
 - 进入 Linalg / Wafer planning 前，常量统一成 `arith.constant` 或其它 MLIR `ConstantLike`
   tensor op。

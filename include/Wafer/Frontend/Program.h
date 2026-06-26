@@ -17,6 +17,7 @@ namespace wafer::frontend {
 struct FrontendProgramVerificationResult {
   unsigned programParameterCount = 0;
   unsigned programUserInputCount = 0;
+  unsigned programConstantCount = 0;
   unsigned programParameterShardCount = 0;
 };
 

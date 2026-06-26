@@ -110,6 +110,11 @@ int verifyStableHLOProgramDir(llvm::StringRef programPath) {
   llvm::outs() << "wafer-compile-stablehlo: verified StableHLO program "
                   "directory parameters: "
                << result.programParameterCount << "\n";
+  if (result.programConstantCount)
+    llvm::outs()
+        << "wafer-compile-stablehlo: verified StableHLO program directory "
+           "constants: "
+        << result.programConstantCount << "\n";
   if (result.programParameterShardCount)
     llvm::outs()
         << "wafer-compile-stablehlo: verified StableHLO program directory "

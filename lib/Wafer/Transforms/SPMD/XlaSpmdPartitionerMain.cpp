@@ -55,6 +55,7 @@ struct Options {
 struct InputLocation {
   std::string type;
   std::string name;
+  int64_t position = -1;
 };
 
 struct TensorSignature {
@@ -248,6 +249,8 @@ absl::StatusOr<ProgramMetadata> parseMeta(const fs::path &path) {
     TF_ASSIGN_OR_RETURN(location.type, jsonString(*object, "type_"));
     if (std::optional<llvm::StringRef> name = object->getString("name"))
       location.name = name->str();
+    if (std::optional<int64_t> position = object->getInteger("position"))
+      location.position = *position;
     meta.inputLocations.push_back(std::move(location));
   }
   return meta;
@@ -675,6 +678,42 @@ materializeParameterShards(const Options &options, const ProgramMetadata &meta,
   return absl::OkStatus();
 }
 
+absl::Status copyConstantPayloads(const Options &options,
+                                  const ProgramMetadata &meta) {
+  std::vector<int64_t> copiedPositions;
+  for (const InputLocation &location : meta.inputLocations) {
+    if (location.type != "constant")
+      continue;
+    if (location.position < 0)
+      return absl::InvalidArgumentError(
+          "constant input location has negative position");
+    if (llvm::is_contained(copiedPositions, location.position))
+      continue;
+
+    fs::path relative =
+        fs::path("constants") / std::to_string(location.position);
+    fs::path source = options.inputProgramDir / relative;
+    fs::path destination = options.outputProgramDir / relative;
+    if (!fs::is_regular_file(source)) {
+      return absl::NotFoundError(
+          absl::StrCat("missing constant data file: ", source.string()));
+    }
+
+    fs::create_directories(destination.parent_path());
+    std::error_code error;
+    fs::copy_file(source, destination, fs::copy_options::overwrite_existing,
+                  error);
+    if (error) {
+      return absl::InternalError(
+          absl::StrCat("failed to copy constant data file: ",
+                       source.string(), " -> ", destination.string(), ": ",
+                       error.message()));
+    }
+    copiedPositions.push_back(location.position);
+  }
+  return absl::OkStatus();
+}
+
 absl::StatusOr<std::unique_ptr<xla::HloModule>>
 stablehloToHloModule(mlir::ModuleOp module, int64_t logicalRankCount) {
   xla::XlaComputation computation;
@@ -803,6 +842,7 @@ absl::Status run(const Options &options) {
   std::vector<ParameterBinding> bindings;
   TF_RETURN_IF_ERROR(materializeParameterShards(
       options, meta, *prePartitionModule, *partitionedModule, bindings));
+  TF_RETURN_IF_ERROR(copyConstantPayloads(options, meta));
 
   TF_RETURN_IF_ERROR(
       writeFile(options.outputProgramDir / "functions" / "forward.mlir",

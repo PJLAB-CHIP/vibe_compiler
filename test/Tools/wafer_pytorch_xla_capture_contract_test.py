@@ -255,5 +255,64 @@ class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
             ],
         )
 
+    def test_hf_megatron_marks_llama_decoder_block_weights(self):
+        fake_spmd = FakeSpmd()
+        mesh = fake_spmd.Mesh(list(range(16)), (16,), ("tensor",))
+        parameters = {
+            "input_layernorm.weight": object(),
+            "post_attention_layernorm.weight": object(),
+            "q_proj.weight": object(),
+            "k_proj.weight": object(),
+            "v_proj.weight": object(),
+            "o_proj.weight": object(),
+            "gate_proj.weight": object(),
+            "up_proj.weight": object(),
+            "down_proj.weight": object(),
+        }
+        module = types.SimpleNamespace(
+            named_parameters=lambda: parameters.items()
+        )
+        input_tensor = object()
+
+        self.tool.apply_hf_megatron_sharding_marks(
+            spmd_module=fake_spmd,
+            mesh=mesh,
+            input_tensor=input_tensor,
+            reference_module=module,
+        )
+
+        self.assertEqual(
+            fake_spmd.mark_calls,
+            [
+                (input_tensor, mesh, (None, None, None)),
+                (parameters["input_layernorm.weight"], mesh, (None,)),
+                (parameters["post_attention_layernorm.weight"], mesh, (None,)),
+                (parameters["q_proj.weight"], mesh, ("tensor", None)),
+                (parameters["k_proj.weight"], mesh, ("tensor", None)),
+                (parameters["v_proj.weight"], mesh, ("tensor", None)),
+                (parameters["o_proj.weight"], mesh, (None, "tensor")),
+                (parameters["gate_proj.weight"], mesh, ("tensor", None)),
+                (parameters["up_proj.weight"], mesh, ("tensor", None)),
+                (parameters["down_proj.weight"], mesh, (None, "tensor")),
+            ],
+        )
+
+    def test_hf_transformer_config_loader_preserves_llama_shape_fields(self):
+        config_path = (
+            REPO_ROOT
+            / "test"
+            / "Tools"
+            / "Inputs"
+            / "hf"
+            / "tiny-random-llama-config.json"
+        )
+
+        config = self.tool.load_hf_transformer_config(config_path)
+
+        self.assertEqual(config["model_type"], "llama")
+        self.assertEqual(config["hidden_size"], 16)
+        self.assertEqual(config["intermediate_size"], 64)
+        self.assertEqual(config["num_attention_heads"], 4)
+
 if __name__ == "__main__":
     unittest.main()
