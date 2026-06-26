@@ -124,7 +124,9 @@ Pipeline position:
 - Explicit non-goals:
   不重新选择 group、tile shape、layout、instruction form、SPM memory plan 或 DDR memory plan。
 - Completion gate:
-  至少 RDMA/WDMA/gather_scatter/GEMM/local_fence 的 committed instruction 能生成可审计 scalar ABI call sequence，
+  当前 ODS 中的 `wafer.instr.*` committed instruction
+  （RDMA、WDMA、gather_scatter、fill、elementwise、reduce、convert、GEMM、DTE send/recv/wait
+  和 local_fence）能生成可审计 scalar ABI call sequence，
   并继续 lower 到 LLVM dialect；verifier 和 golden packet gate 覆盖参数单位、range-end、wait policy、
   status convention 和 wrapper mapping。端到端测试必须证明 group -> memory-planned instruction -> ABI calls
   -> LLVM dialect 的主线 pipeline 可重放。
@@ -196,8 +198,11 @@ ABI call 不能默认为 `void` 且无副作用。V0 约定：
 
 - issue ABI 返回 `i32 status` 或返回显式 completion token / handle；返回值必须被 status accumulator、
   wait op 或 region boundary 消费。
-- RDMA/WDMA/GEMM/elementwise/reduce/local_fence 等普通 call 至少返回 `i32 status`。
-- DTE send/recv 返回 DTE completion token / handle；`wafer_dte_wait` 消费 token 并返回 `i32 status`。
+- RDMA、WDMA、gather_scatter、fill、GEMM、elementwise、reduce、convert 和 local_fence 等普通 call
+  至少返回 `i32 status`。
+- V0 scalar C ABI 里 `wafer_dte_send` / `wafer_dte_recv` 返回 `i32 status`，`wafer_dte_wait`
+  通过 token count 表达已 materialize 的 wait 边界并返回 `i32 status`。IR 层的 async token 生命周期
+  仍由 `wafer.instr.dte_*` use-def / verifier 表达；C ABI 不把 MLIR token object 传给 C。
 - `wafer.instr.local_fence` materialize 为 `wafer_local_fence` 或等价 local wait ABI；它只收口本地
   NCC compute/movement visibility，不替代 DTE wait 或 group barrier。
 - LLVM dialect / LLVM IR 中的 `wafer_*` call 必须被视为有 side effect；不能标记成 `readnone` /
@@ -209,21 +214,21 @@ error code mapping 属于 C ABI contract；上层 IR 只要求 status path 显�
 
 ## 4. ABI Families
 
-V0 family：
+V0 当前 family 只覆盖已经存在的 committed `wafer.instr.*` op。硬件文档中存在但尚无
+`wafer.instr` IR 的 convolution、pool、raw CSR 或非 unicast DTE helper，不在当前 ABI surface
+内；需要时先扩 instruction IR 和 verifier，再扩 ABI。
 
 | family | 典型函数 | backend path | 主要 verifier |
 | --- | --- | --- | --- |
-| DDR load/store | `wafer_rdma`, `wafer_wdma`, `wafer_dma` | RDMA / WDMA / TDMA wrapper | DDR/SPM address domain、byte stride、range-end、iteration |
-| SPM local move | `wafer_memcpy_spm` | TDMA or local helper | SPM range、overlap、alignment |
-| layout conversion | `wafer_channel_norm`, `wafer_dechannel_norm` | ChannelNorm / DechannelNorm wrapper | source/result layout relation、storage bytes |
+| DDR load/store | `wafer_rdma`, `wafer_wdma` | RDMA / WDMA wrapper | DDR/SPM address domain、byte stride、range-end、iteration |
 | gather/scatter | `wafer_gather_scatter` | target movement helper | index dtype、bounds、byte addressing |
-| GEMM | `wafer_gemm` | NE / CT wrapper depending target | layout、M/K/N、psum/accumulator、dtype |
-| reduction | `wafer_reduce_*` | CT / NE reduce wrapper | reduce kind、dims、unit elem count、layout |
-| elementwise | `wafer_elementwise_*` | CT / NE wrapper | broadcast relation、dtype、vector width |
-| conversion | `wafer_convert_*` | CT / NE wrapper | source/result dtype、rounding/saturation policy |
-| convolution | `wafer_conv` | NE wrapper | V0 subset only, layout and kernel constraints |
-| Direct DTE | `wafer_dte_send`, `wafer_dte_recv`, `wafer_dte_wait` | Direct DTE / FSM helper | endpoint、byte count、FSM id、packet/stream resource |
-| sync | `wafer_local_fence`, `wafer_group_barrier` | CSR / runtime helper | instruction family、token/effect ordering |
+| fill | `wafer_fill` | CT peripheral memset wrapper | SPM range、scalar constant bits、dtype format、element count |
+| elementwise | `wafer_elementwise` | CT arith / transcendental / activation / relation wrapper | kind arity、dtype、element count、relation output format |
+| reduction | `wafer_reduce` | CT reduce wrapper | reduce kind、native C/W/H/N/HW/HWC dim、4D shape、dtype |
+| conversion | `wafer_convert` | CT convert wrapper or same-format TDMA copy | source/result dtype、element count、rounding path |
+| GEMM | `wafer_gemm` | NE GEMM wrapper | layout、M/K/N、dtype |
+| Direct DTE | `wafer_dte_send`, `wafer_dte_recv`, `wafer_dte_wait` | Direct DTE / FSM helper boundary | logical peer、byte count、async token count |
+| sync | `wafer_local_fence` | local wait helper | instruction family、effect ordering |
 
 这些函数名是 compiler-facing ABI family，不要求一一等同底层 public symbol。实现可以在 C shim 内
 调用 public Tsm wrapper、Kcore runtime helper 或未来 native helper。
@@ -231,9 +236,9 @@ V0 family：
 ABI/LLVM lowering 主线不要求专门的 ABI IR 层。codegen 可以直接从 committed `wafer.instr.*`、accepted
 SPM/DDR offset facts、topology/execution-mesh contract、program parameter shard metadata、薄 launch/block binding 和按需重算的 resource view 发射 scalar
 `func.call` C shim 调用或 packet builder 输入，并在后续 LLVM lowering 中变成 `llvm.call`。
-如果保留 `wafer.instr.rdma`、`wafer.instr.wdma`、`wafer.instr.gemm`、`wafer.instr.elementwise`、
-`wafer.instr.reduce`、Direct DTE emission helper 这类对象，它们只作为 very-late debug/test dump 或 emission
-helper，不能作为主线架构层，也不能承载 endpoint、layout 或 instruction selection 决策。
+如果保留 `wafer.instr.*` 或 Direct DTE emission helper 这类对象，它们只作为 very-late debug/test
+dump 或 emission helper，不能作为主线架构层，也不能承载 endpoint、layout 或 instruction selection
+决策。
 
 fixed-size unicast p2p communication 在进入 ABI/LLVM lowering 前应已经 lower 成 committed
 `wafer.instr.dte_send` / `wafer.instr.dte_recv` / `wafer.instr.dte_wait` form，显式包含 byte count、endpoint、FSM/packet/stream resource、
@@ -319,6 +324,29 @@ wafer_gather_scatter(spm_src_offset: i32, spm_dst_offset: i32,
                      src_iter0: i64, src_iter1: i64, src_iter2: i64,
                      dst_stride0_b: i64, dst_stride1_b: i64, dst_stride2_b: i64,
                      dst_iter0: i64, dst_iter1: i64, dst_iter2: i64) -> i32
+
+wafer_fill(dst_spm_offset: i32, value_bits: i64,
+           element_count: i64, data_format: i32) -> i32
+
+wafer_elementwise(kind: i32, dst_spm_offset: i32,
+                  src0_spm_offset: i32, src1_spm_offset: i32,
+                  element_count: i64,
+                  input_format: i32, output_format: i32) -> i32
+
+wafer_reduce(kind: i32, src_spm_offset: i32, dst_spm_offset: i32,
+             dim: i32, n: i64, h: i64, w: i64, c: i64,
+             data_format: i32) -> i32
+
+wafer_convert(src_format: i32, dst_format: i32,
+              src_spm_offset: i32, dst_spm_offset: i32,
+              element_count: i64) -> i32
+
+wafer_dte_send(buffer_spm_offset: i32, peer: i32,
+               byte_count: i64) -> i32
+wafer_dte_recv(buffer_spm_offset: i32, peer: i32,
+               byte_count: i64) -> i32
+wafer_dte_wait(token_count: i32) -> i32
+wafer_local_fence() -> i32
 ```
 
 `wafer.instr.gather_scatter` 的可选 `src_offset` / `dst_offset` 在 ABI materialization
@@ -328,6 +356,14 @@ wafer_gather_scatter(spm_src_offset: i32, spm_dst_offset: i32,
 默认 dtype 猜测。GEMM V0 当前要求输入和输出 dtype 相同，因此只传一个 `data_format`；后续若引入
 mixed precision、psum 或 quant，必须扩 ABI，而不是重载该字段含义。
 
+`wafer_fill` 的 `value_bits` 是 scalar constant 的 bit pattern；当前 TX8 memset wrapper 接收
+32-bit value operand，因此 ABI materialization 会拒绝超过 native memset operand 的常量。`wafer_reduce`
+V0 只 materialize 能映射到 native C/W/H/N/HW/HWC 的 reduction dimensions；其它 reduce 形态需要先
+在 instruction lowering 中分解或扩 ABI。`wafer_dte_send` / `wafer_dte_recv` 的 `peer` 是
+`wafer.instr.dte_*` 已验证的 logical execution-rank id；生产 shim 目前没有足够 runtime binding
+把 peer 映射成 board-level remote endpoint / DTE channel，因此非 capture 模式返回
+`WAFER_CABI_STATUS_WRAPPER_UNAVAILABLE`，capture 模式只固定 compiler-facing 参数形态。
+
 ### 4.2 LLVM Dialect / LLVM IR Lowering
 
 ABI call sequence 之后才能进入 LLVM lowering。标准顺序为：
@@ -335,6 +371,7 @@ ABI call sequence 之后才能进入 LLVM lowering。标准顺序为：
 ```text
 scalar func.call ABI sequence
   -> canonicalize / cse if needed
+  -> strip consumed wafer.target.topology / wafer.execution.mesh metadata
   -> convert-scf-to-cf
   -> convert-cf-to-llvm
   -> convert-arith-to-llvm
@@ -347,6 +384,10 @@ scalar func.call ABI sequence
 如果 ABI materialization 已经消除了 Wafer memref，则 LLVM type conversion 不需要理解
 `#wafer.memory<...>`。这点是设计约束：任何仍含 Wafer memref、`wafer.spm.offset`、
 `wafer.ddr.offset` 或 `wafer.instr.*` 的 module 都不是合法的 LLVM lowering 输入。
+`wafer.target.topology` / `wafer.execution.mesh` 是上游 SPMD、communication 和 package/resource
+analysis 的 fact source；到 ABI call sequence 之后只剩已消费 metadata。`wafer-lower-abi-calls-to-llvm`
+会移除这两个 symbol op，并在发现其它 `wafer.*` op 残留时报错，保证输出能被 `mlir-translate
+--mlir-to-llvmir` 直接消费。
 
 `wafer-lower-abi-calls-to-llvm` 只是标准 MLIR lowering pipeline 的稳定封装；它不能读取
 `wafer.instr.*`，不能重新做地址推导，也不能补 package/resource metadata。`wafer-lower-groups-to-llvm`
@@ -440,11 +481,17 @@ public headers，并按 register-level spec 调用 public Tsm wrapper：
 | `wafer_rdma` | validate `Data_Format` / logical iterations；`TsmRdma::AddSrcDst` + `ConfigStrideIteration` + `TsmExecute` |
 | `wafer_wdma` | validate `Data_Format` / logical iterations；`TsmWdma::AddSrcDst` + `ConfigStrideIteration` + `TsmExecute` |
 | `wafer_gather_scatter` | validate byte size / logical iterations；`TsmDataMove::GatherScatter` + `TsmExecute` |
+| `wafer_fill` | validate element count / format / native 32-bit value；`TsmPeripheral::Memset` + `TsmExecute` |
+| `wafer_elementwise` | validate kind arity / dtype；`TsmArith`、`TsmTranscendental`、`TsmActivation` 或 `TsmRelation` + `TsmExecute` |
+| `wafer_reduce` | validate native dim / 4D shape / format；`TsmReduce::{ReduceSum,ReduceAvg,ReduceMax,ReduceMin}` + `TsmExecute` |
+| `wafer_convert` | validate format pair / element count；`TsmConvert::*` + `TsmExecute`，same-format path uses `TsmDataMove::GatherScatter` |
 | `wafer_gemm` | validate M/K/N and format；`TsmGemm::{AddInput,ConfigMKN,ConfigBatch,AddOutput,SetPsum,SetTransflag}` + `TsmExecute` |
+| `wafer_dte_send` / `wafer_dte_recv` / `wafer_dte_wait` | capture-mode parameter contract only；production path returns `WAFER_CABI_STATUS_WRAPPER_UNAVAILABLE` until remote endpoint / DTE channel runtime binding exists |
 | `wafer_local_fence` | `TsmWaitfinish` local wait |
 
-该 shim 不在每个 issue ABI 后隐藏 wait；RDMA、WDMA、GatherScatter 和 GEMM 仍是 issue-only，只有
-`wafer_local_fence` 表达 local wait。`WAFER_CABI_SHIM_CAPTURE` 是 host-side test mode：不包含
+该 shim 不在每个 issue ABI 后隐藏 wait；RDMA、WDMA、GatherScatter、fill、elementwise、reduce、
+convert、GEMM 和 DTE send/recv 仍是 issue-only，只有 `wafer_dte_wait` / `wafer_local_fence`
+表达 wait 边界。`WAFER_CABI_SHIM_CAPTURE` 是 host-side test mode：不包含
 `tx8_deps` headers、不调用硬件 wrapper，只把同一组 ABI 参数编码成 capture packet，用来和
 `Wafer/ABI/TileAbi.h` golden builder 对齐。capture mode 不是 runtime fallback，也不能作为 board
 completion proof。

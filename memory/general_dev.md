@@ -134,6 +134,11 @@
   用 LLVM `clang++` 编译 `runtime/wafer_cabi_shim.c` 时，`--sysroot` 不会在当前 bare-metal
   配置下自动加入 newlib C headers，必须显式传
   `-isystem third_party/tx8_deps/<toolchain>/riscv64-unknown-elf/include`。
+- ABI/LLVM lowering 输出给 `mlir-translate --mlir-to-llvmir` 前不能残留任何 Wafer op。target
+  topology / execution mesh 在 ABI materialization 前是 fact source，但 ABI call sequence 后属于已消费
+  metadata；`wafer-lower-abi-calls-to-llvm` 负责 strip `wafer.target.topology` /
+  `wafer.execution.mesh`，并在发现其它 `wafer.*` op 残留时报错。pipeline 测试应把 target/mesh 放进输入，
+  防止只检查函数体而漏掉 module-level metadata。
 - Wafer IR 文件组织检查入口是 `tools/check_ir_organization.py --root .`；它检查 `WaferOps.td` 只作为
   TableGen 聚合入口、ODS/verifier/test 按 `Tensor`、`Tile`、`Resource`、`Instr`、`Runtime`
   和 `Common` IR 层组织，并检查 `Conversion` 不再被 `WaferTransforms` 直接 owning。

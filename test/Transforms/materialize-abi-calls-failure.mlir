@@ -52,7 +52,7 @@ func.func @dynamic_ddr_offset(
 
 // -----
 
-func.func @unsupported_fill(
+func.func @non_constant_fill(
     %input: memref<2x3xf16, #wafer.memory<ddr, tensor>>,
     %output: memref<2x3xf16, #wafer.memory<ddr, tensor>>) {
   %region = wafer.tile.region(%input, %output
@@ -64,8 +64,9 @@ func.func @unsupported_fill(
     %dest = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
         : memref<2x3xf16, #wafer.memory<spm, tensor>>
     %c0 = arith.constant 0.000000e+00 : f16
-    // expected-error @below {{abi_materialization_failure: unsupported instruction op wafer.instr.fill}}
-    wafer.instr.fill %dest, %c0
+    %value = arith.addf %c0, %c0 : f16
+    // expected-error @below {{abi_materialization_failure: fill value must be an arith.constant scalar}}
+    wafer.instr.fill %dest, %value
         : memref<2x3xf16, #wafer.memory<spm, tensor>>, f16
     wafer.tile.yield %out : memref<2x3xf16, #wafer.memory<ddr, tensor>>
   }

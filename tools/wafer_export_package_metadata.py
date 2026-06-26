@@ -40,9 +40,14 @@ SUPPORTED_INSTRUCTION_OPS = {
     "rdma",
     "wdma",
     "gather_scatter",
+    "fill",
     "gemm",
     "elementwise",
     "reduce",
+    "convert",
+    "dte_send",
+    "dte_recv",
+    "dte_wait",
     "local_fence",
 }
 
@@ -340,9 +345,9 @@ def parse_instructions(instruction_ir: str) -> list[dict[str, Any]]:
         if op_name not in SUPPORTED_INSTRUCTION_OPS:
             fail(f"unsupported package instruction op wafer.instr.{op_name}")
 
-        if op_name == "local_fence":
+        if op_name in {"local_fence", "dte_wait"}:
             instructions.append(
-                {"op": "wafer.instr.local_fence", "wait_policy": "local_wait"}
+                {"op": f"wafer.instr.{op_name}", "wait_policy": "local_wait"}
             )
             continue
 
@@ -353,6 +358,8 @@ def parse_instructions(instruction_ir: str) -> list[dict[str, Any]]:
         if op_name in {"rdma", "wdma", "gather_scatter"}:
             item["bytes"] = parse_int_attr(segment, "byte_count")
             item["inner_bytes"] = parse_int_attr(segment, "inner_bytes")
+        elif op_name in {"dte_send", "dte_recv"}:
+            item["bytes"] = parse_int_attr(segment, "bytes")
         elif op_name == "gemm":
             item["m"] = parse_int_attr(segment, "m")
             item["k"] = parse_int_attr(segment, "k")
@@ -373,6 +380,13 @@ def parse_instructions(instruction_ir: str) -> list[dict[str, Any]]:
             if not init_match or init_match.group(1) not in constants:
                 fail("wafer.instr.reduce init value must resolve to arith.constant")
             item["init_value"] = constants[init_match.group(1)]
+        elif op_name == "convert":
+            src_dtype = re.search(r"\bsrc_dtype\s*=\s*([A-Za-z0-9]+)", segment)
+            dst_dtype = re.search(r"\bdst_dtype\s*=\s*([A-Za-z0-9]+)", segment)
+            if not src_dtype or not dst_dtype:
+                fail("wafer.instr.convert is missing src_dtype/dst_dtype")
+            item["src_dtype"] = src_dtype.group(1)
+            item["dst_dtype"] = dst_dtype.group(1)
         instructions.append(item)
 
     return instructions

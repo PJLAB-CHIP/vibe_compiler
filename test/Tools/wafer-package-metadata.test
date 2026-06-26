@@ -28,8 +28,15 @@
 # CHECK: "workspace_bytes": 16
 # CHECK: "resident_constant_bytes": 16
 # CHECK: "wafer.instr.rdma"
+# CHECK: "wafer.instr.gather_scatter"
+# CHECK: "wafer.instr.fill"
 # CHECK: "wafer.instr.elementwise"
 # CHECK: "wafer.instr.reduce"
+# CHECK: "wafer.instr.convert"
+# CHECK: "wafer.instr.dte_send"
+# CHECK: "wafer.instr.dte_recv"
+# CHECK: "wafer.instr.dte_wait"
+# CHECK: "wafer.instr.local_fence"
 # CHECK: "wafer.instr.wdma"
 # CHECK: "modules": [
 # CHECK: "format": "tx.kcore"

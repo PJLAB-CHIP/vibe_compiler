@@ -11,6 +11,7 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/DenseMap.h"
@@ -35,6 +36,17 @@ struct DdrAddress {
   mlir::Value base;
   int64_t byteOffset = 0;
 };
+
+struct ReturnOutputBinding {
+  llvm::SmallVector<mlir::Value> aliases;
+  unsigned abiIndex = 0;
+};
+
+static void appendUnique(llvm::SmallVectorImpl<mlir::Value> &values,
+                         mlir::Value value) {
+  if (!llvm::is_contained(values, value))
+    values.push_back(value);
+}
 
 static mlir::Value resolveTileRegionBoundaryValue(mlir::Value value) {
   while (auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(value)) {
@@ -66,6 +78,26 @@ static mlir::Value getRootViewSource(mlir::Value value) {
     value = source;
   }
   return value;
+}
+
+static void
+collectReturnedDdrAliases(mlir::Value value,
+                          llvm::SmallVectorImpl<mlir::Value> &aliases) {
+  appendUnique(aliases, getRootViewSource(value));
+
+  auto result = mlir::dyn_cast<mlir::OpResult>(value);
+  if (!result)
+    return;
+  auto tileRegion = mlir::dyn_cast<TileRegionOp>(result.getOwner());
+  if (!tileRegion || tileRegion.getBody().empty())
+    return;
+
+  auto yield = mlir::dyn_cast_or_null<TileYieldOp>(
+      tileRegion.getBody().front().getTerminator());
+  if (!yield || result.getResultNumber() >= yield.getValues().size())
+    return;
+  appendUnique(aliases,
+               getRootViewSource(yield.getValues()[result.getResultNumber()]));
 }
 
 static mlir::FailureOr<int64_t> getElementByteWidth(mlir::Operation *op,
@@ -114,6 +146,46 @@ static mlir::FailureOr<int64_t> getStaticByteOffset(mlir::Operation *op,
   return offset * *elementBytes;
 }
 
+static mlir::FailureOr<int64_t> getStaticElementCount(mlir::Operation *op,
+                                                      mlir::Value value,
+                                                      llvm::StringRef role) {
+  auto type = mlir::dyn_cast<mlir::MemRefType>(value.getType());
+  if (!type)
+    return op->emitError() << kFailurePrefix << role
+                           << " operand must have memref type";
+  if (!type.hasStaticShape())
+    return op->emitError() << kFailurePrefix << role
+                           << " operand must have static shape";
+  int64_t count = 1;
+  for (int64_t dim : type.getShape()) {
+    if (dim < 0 || count > std::numeric_limits<int64_t>::max() / dim)
+      return op->emitError()
+             << kFailurePrefix << role << " element count overflows int64";
+    count *= dim;
+  }
+  return count;
+}
+
+static mlir::FailureOr<std::array<int64_t, 4>>
+getStaticShape4D(mlir::Operation *op, mlir::Value value, llvm::StringRef role) {
+  auto type = mlir::dyn_cast<mlir::MemRefType>(value.getType());
+  if (!type)
+    return op->emitError() << kFailurePrefix << role
+                           << " operand must have memref type";
+  if (!type.hasStaticShape())
+    return op->emitError() << kFailurePrefix << role
+                           << " operand must have static shape";
+  if (type.getRank() > 4)
+    return op->emitError() << kFailurePrefix << role
+                           << " operand rank must be <= 4 for native CT ABI";
+
+  std::array<int64_t, 4> shape = {1, 1, 1, 1};
+  int64_t offset = 4 - type.getRank();
+  for (auto [index, dim] : llvm::enumerate(type.getShape()))
+    shape[offset + index] = dim;
+  return shape;
+}
+
 static mlir::FailureOr<int64_t> getSpmOffset(mlir::Operation *op,
                                              mlir::Value value) {
   auto valueType = mlir::dyn_cast<mlir::MemRefType>(value.getType());
@@ -160,7 +232,8 @@ getDdrAddress(mlir::Operation *op, mlir::Value value,
   if (it == externalBases.end())
     return op->emitError()
            << kFailurePrefix
-           << "DDR operand must resolve to an external function argument";
+           << "DDR operand must resolve to an external function argument or "
+           << "returned output binding";
 
   mlir::FailureOr<int64_t> viewOffset =
       getStaticByteOffset(op, valueType, "DDR");
@@ -228,6 +301,132 @@ static mlir::FailureOr<abi::DataFormat> getDataFormat(mlir::Operation *op,
     return op->emitError() << kFailurePrefix
                            << "ABI operand must have memref type";
   return getDataFormat(op, type.getElementType());
+}
+
+static bool isUnaryElementwiseKind(ComputeElementwiseKind kind) {
+  switch (kind) {
+  case ComputeElementwiseKind::Neg:
+  case ComputeElementwiseKind::Recip:
+  case ComputeElementwiseKind::Sqrt:
+  case ComputeElementwiseKind::Rsqrt:
+  case ComputeElementwiseKind::Exp:
+  case ComputeElementwiseKind::Tanh:
+    return true;
+  default:
+    return false;
+  }
+}
+
+static bool isBinaryElementwiseKind(ComputeElementwiseKind kind) {
+  switch (kind) {
+  case ComputeElementwiseKind::Add:
+  case ComputeElementwiseKind::Sub:
+  case ComputeElementwiseKind::Mul:
+  case ComputeElementwiseKind::Div:
+  case ComputeElementwiseKind::Max:
+  case ComputeElementwiseKind::Min:
+  case ComputeElementwiseKind::Eq:
+  case ComputeElementwiseKind::Ne:
+  case ComputeElementwiseKind::Lt:
+  case ComputeElementwiseKind::Le:
+  case ComputeElementwiseKind::Gt:
+  case ComputeElementwiseKind::Ge:
+    return true;
+  default:
+    return false;
+  }
+}
+
+static mlir::FailureOr<uint64_t> getScalarConstantBits(mlir::Operation *op,
+                                                       mlir::Value value,
+                                                       llvm::StringRef role) {
+  mlir::Attribute attr;
+  if (!mlir::matchPattern(value, mlir::m_Constant(&attr)))
+    return op->emitError() << kFailurePrefix << role
+                           << " must be an arith.constant scalar";
+
+  if (auto integerAttr = mlir::dyn_cast<mlir::IntegerAttr>(attr)) {
+    llvm::APInt intValue = integerAttr.getValue();
+    if (intValue.getBitWidth() > 64)
+      return op->emitError()
+             << kFailurePrefix << role << " constant does not fit in 64 bits";
+    return intValue.getZExtValue();
+  }
+
+  if (auto floatAttr = mlir::dyn_cast<mlir::FloatAttr>(attr)) {
+    llvm::APInt bits = floatAttr.getValue().bitcastToAPInt();
+    if (bits.getBitWidth() > 64)
+      return op->emitError()
+             << kFailurePrefix << role << " constant does not fit in 64 bits";
+    return bits.getZExtValue();
+  }
+
+  return op->emitError() << kFailurePrefix << role
+                         << " must be an integer or float scalar constant";
+}
+
+static mlir::LogicalResult verifyZeroInit(mlir::Operation *op, mlir::Value init,
+                                          llvm::StringRef role) {
+  if (!init)
+    return mlir::success();
+
+  mlir::Attribute attr;
+  if (!mlir::matchPattern(init, mlir::m_Constant(&attr)))
+    return op->emitError() << kFailurePrefix << role
+                           << " init must be an arith.constant scalar";
+  if (auto integerAttr = mlir::dyn_cast<mlir::IntegerAttr>(attr)) {
+    if (!integerAttr.getValue().isZero())
+      return op->emitError() << kFailurePrefix << role
+                             << " init must be zero for native CT reduce ABI";
+    return mlir::success();
+  }
+  if (auto floatAttr = mlir::dyn_cast<mlir::FloatAttr>(attr)) {
+    if (!floatAttr.getValue().isZero())
+      return op->emitError() << kFailurePrefix << role
+                             << " init must be zero for native CT reduce ABI";
+    return mlir::success();
+  }
+  return op->emitError() << kFailurePrefix << role
+                         << " init must be an integer or float scalar constant";
+}
+
+static mlir::FailureOr<int64_t>
+getNativeReduceDim(mlir::Operation *op, int64_t inputRank,
+                   llvm::ArrayRef<int64_t> dimensions) {
+  if (dimensions.empty())
+    return op->emitError() << kFailurePrefix
+                           << "reduce dimensions must be non-empty";
+  for (int64_t dim : dimensions) {
+    if (dim < 0 || dim >= inputRank)
+      return op->emitError()
+             << kFailurePrefix << "reduce dimension is out of range";
+  }
+
+  auto isDims = [&](std::initializer_list<int64_t> expected) {
+    return dimensions.size() == expected.size() &&
+           llvm::equal(dimensions, expected);
+  };
+
+  int64_t c = inputRank - 1;
+  int64_t w = inputRank - 2;
+  int64_t h = inputRank - 3;
+  int64_t n = inputRank - 4;
+  if (isDims({c}))
+    return int64_t{0};
+  if (w >= 0 && isDims({w}))
+    return int64_t{1};
+  if (h >= 0 && isDims({h}))
+    return int64_t{2};
+  if (n >= 0 && isDims({n}))
+    return int64_t{3};
+  if (w >= 0 && isDims({w, c}))
+    return int64_t{4};
+  if (h >= 0 && isDims({h, w, c}))
+    return int64_t{5};
+
+  return op->emitError()
+         << kFailurePrefix
+         << "reduce dimensions must map to native C/W/H/N/HW/HWC dim";
 }
 
 static mlir::FailureOr<std::array<int64_t, 3>>
@@ -381,6 +580,29 @@ static mlir::LogicalResult ensureAbiDeclarations(mlir::ModuleOp module) {
   if (mlir::failed(ensureAbiDeclaration(module, "wafer_gather_scatter",
                                         gatherScatterInputs, {i32})))
     return mlir::failure();
+  if (mlir::failed(ensureAbiDeclaration(module, "wafer_fill",
+                                        {i32, i64, i64, i32}, {i32})))
+    return mlir::failure();
+  if (mlir::failed(ensureAbiDeclaration(module, "wafer_elementwise",
+                                        {i32, i32, i32, i32, i64, i32, i32},
+                                        {i32})))
+    return mlir::failure();
+  if (mlir::failed(ensureAbiDeclaration(
+          module, "wafer_reduce", {i32, i32, i32, i32, i64, i64, i64, i64, i32},
+          {i32})))
+    return mlir::failure();
+  if (mlir::failed(ensureAbiDeclaration(module, "wafer_convert",
+                                        {i32, i32, i32, i32, i64}, {i32})))
+    return mlir::failure();
+  if (mlir::failed(ensureAbiDeclaration(module, "wafer_dte_send",
+                                        {i32, i32, i64}, {i32})))
+    return mlir::failure();
+  if (mlir::failed(ensureAbiDeclaration(module, "wafer_dte_recv",
+                                        {i32, i32, i64}, {i32})))
+    return mlir::failure();
+  if (mlir::failed(
+          ensureAbiDeclaration(module, "wafer_dte_wait", {i32}, {i32})))
+    return mlir::failure();
   if (mlir::failed(
           ensureAbiDeclaration(module, "wafer_local_fence", {}, {i32})))
     return mlir::failure();
@@ -396,7 +618,9 @@ static mlir::Value emitAbiCall(mlir::OpBuilder &builder, mlir::Location loc,
 }
 
 static bool isSupportedAbiInstruction(mlir::Operation *op) {
-  return mlir::isa<InstrRDMAOp, InstrWDMAOp, InstrGatherScatterOp, InstrGemmOp,
+  return mlir::isa<InstrRDMAOp, InstrWDMAOp, InstrGatherScatterOp, InstrFillOp,
+                   InstrElementwiseOp, InstrReduceOp, InstrConvertOp,
+                   InstrGemmOp, InstrDTESendOp, InstrDTERecvOp, InstrDTEWaitOp,
                    SyncLocalFenceOp>(op);
 }
 
@@ -530,6 +754,183 @@ static mlir::LogicalResult emitInstructionCall(
     return mlir::success();
   }
 
+  if (auto fill = mlir::dyn_cast<InstrFillOp>(op)) {
+    mlir::FailureOr<int64_t> dest = getSpmOffset(op, fill.getDest());
+    if (mlir::failed(dest))
+      return mlir::failure();
+    mlir::FailureOr<int64_t> elements =
+        getStaticElementCount(op, fill.getDest(), "fill dest");
+    if (mlir::failed(elements))
+      return mlir::failure();
+    mlir::FailureOr<abi::DataFormat> format = getDataFormat(op, fill.getDest());
+    if (mlir::failed(format))
+      return mlir::failure();
+    mlir::FailureOr<uint64_t> valueBits =
+        getScalarConstantBits(op, fill.getValue(), "fill value");
+    if (mlir::failed(valueBits))
+      return mlir::failure();
+    if (*valueBits > std::numeric_limits<uint32_t>::max())
+      return fill.emitError()
+             << kFailurePrefix
+             << "fill value bits must fit in the native memset operand";
+
+    status = emitAbiCall(
+        builder, loc, "wafer_fill",
+        {createSpmOffsetValue(builder, loc, *dest),
+         createI64Constant(builder, loc, static_cast<int64_t>(*valueBits)),
+         createI64Constant(builder, loc, *elements),
+         createI32Constant(builder, loc, static_cast<int64_t>(*format))},
+        status);
+    return mlir::success();
+  }
+
+  if (auto elementwise = mlir::dyn_cast<InstrElementwiseOp>(op)) {
+    ComputeElementwiseKind kind = elementwise.getKindAttr().getValue();
+    unsigned expectedInputs = isUnaryElementwiseKind(kind) ? 1 : 2;
+    if (!isUnaryElementwiseKind(kind) && !isBinaryElementwiseKind(kind))
+      return elementwise.emitError()
+             << kFailurePrefix << "unsupported elementwise kind";
+    if (elementwise.getInputs().size() != expectedInputs)
+      return elementwise.emitError()
+             << kFailurePrefix << "elementwise input arity does not match kind";
+
+    mlir::FailureOr<int64_t> dest = getSpmOffset(op, elementwise.getDest());
+    if (mlir::failed(dest))
+      return mlir::failure();
+    mlir::FailureOr<int64_t> src0 =
+        getSpmOffset(op, elementwise.getInputs().front());
+    if (mlir::failed(src0))
+      return mlir::failure();
+    int64_t src1Value = 0;
+    if (expectedInputs == 2) {
+      mlir::FailureOr<int64_t> src1 =
+          getSpmOffset(op, elementwise.getInputs()[1]);
+      if (mlir::failed(src1))
+        return mlir::failure();
+      src1Value = *src1;
+    }
+
+    mlir::FailureOr<int64_t> elements =
+        getStaticElementCount(op, elementwise.getDest(), "elementwise dest");
+    if (mlir::failed(elements))
+      return mlir::failure();
+    for (mlir::Value input : elementwise.getInputs()) {
+      mlir::FailureOr<int64_t> inputElements =
+          getStaticElementCount(op, input, "elementwise input");
+      if (mlir::failed(inputElements))
+        return mlir::failure();
+      if (*inputElements != *elements)
+        return elementwise.emitError()
+               << kFailurePrefix
+               << "elementwise input element count must match dest";
+    }
+
+    mlir::FailureOr<abi::DataFormat> inputFormat =
+        getDataFormat(op, elementwise.getInputs().front());
+    if (mlir::failed(inputFormat))
+      return mlir::failure();
+    mlir::FailureOr<abi::DataFormat> outputFormat =
+        getDataFormat(op, elementwise.getDest());
+    if (mlir::failed(outputFormat))
+      return mlir::failure();
+
+    status = emitAbiCall(
+        builder, loc, "wafer_elementwise",
+        {createI32Constant(builder, loc, static_cast<int64_t>(kind)),
+         createSpmOffsetValue(builder, loc, *dest),
+         createSpmOffsetValue(builder, loc, *src0),
+         createSpmOffsetValue(builder, loc, src1Value),
+         createI64Constant(builder, loc, *elements),
+         createI32Constant(builder, loc, static_cast<int64_t>(*inputFormat)),
+         createI32Constant(builder, loc, static_cast<int64_t>(*outputFormat))},
+        status);
+    return mlir::success();
+  }
+
+  if (auto reduce = mlir::dyn_cast<InstrReduceOp>(op)) {
+    auto dimensionsAttr =
+        reduce->getAttrOfType<mlir::DenseI64ArrayAttr>("dimensions");
+    if (!dimensionsAttr)
+      return reduce.emitError()
+             << kFailurePrefix << "reduce requires dimensions attr";
+    if (mlir::failed(verifyZeroInit(op, reduce.getInit(), "reduce")))
+      return mlir::failure();
+
+    mlir::FailureOr<int64_t> source = getSpmOffset(op, reduce.getInput());
+    if (mlir::failed(source))
+      return mlir::failure();
+    mlir::FailureOr<int64_t> dest = getSpmOffset(op, reduce.getDest());
+    if (mlir::failed(dest))
+      return mlir::failure();
+    auto inputType = mlir::cast<mlir::MemRefType>(reduce.getInput().getType());
+    mlir::FailureOr<int64_t> nativeDim = getNativeReduceDim(
+        op, inputType.getRank(), dimensionsAttr.asArrayRef());
+    if (mlir::failed(nativeDim))
+      return mlir::failure();
+    mlir::FailureOr<std::array<int64_t, 4>> shape =
+        getStaticShape4D(op, reduce.getInput(), "reduce input");
+    if (mlir::failed(shape))
+      return mlir::failure();
+    mlir::FailureOr<abi::DataFormat> format =
+        getDataFormat(op, reduce.getInput());
+    if (mlir::failed(format))
+      return mlir::failure();
+
+    status = emitAbiCall(
+        builder, loc, "wafer_reduce",
+        {createI32Constant(builder, loc,
+                           static_cast<int64_t>(reduce.getKind())),
+         createSpmOffsetValue(builder, loc, *source),
+         createSpmOffsetValue(builder, loc, *dest),
+         createI32Constant(builder, loc, *nativeDim),
+         createI64Constant(builder, loc, (*shape)[0]),
+         createI64Constant(builder, loc, (*shape)[1]),
+         createI64Constant(builder, loc, (*shape)[2]),
+         createI64Constant(builder, loc, (*shape)[3]),
+         createI32Constant(builder, loc, static_cast<int64_t>(*format))},
+        status);
+    return mlir::success();
+  }
+
+  if (auto convert = mlir::dyn_cast<InstrConvertOp>(op)) {
+    mlir::FailureOr<int64_t> source = getSpmOffset(op, convert.getSource());
+    if (mlir::failed(source))
+      return mlir::failure();
+    mlir::FailureOr<int64_t> dest = getSpmOffset(op, convert.getDest());
+    if (mlir::failed(dest))
+      return mlir::failure();
+    mlir::FailureOr<int64_t> sourceElements =
+        getStaticElementCount(op, convert.getSource(), "convert source");
+    if (mlir::failed(sourceElements))
+      return mlir::failure();
+    mlir::FailureOr<int64_t> destElements =
+        getStaticElementCount(op, convert.getDest(), "convert dest");
+    if (mlir::failed(destElements))
+      return mlir::failure();
+    if (*sourceElements != *destElements)
+      return convert.emitError()
+             << kFailurePrefix
+             << "convert source element count must match dest";
+    mlir::FailureOr<abi::DataFormat> sourceFormat =
+        getDataFormat(op, convert.getSource());
+    if (mlir::failed(sourceFormat))
+      return mlir::failure();
+    mlir::FailureOr<abi::DataFormat> destFormat =
+        getDataFormat(op, convert.getDest());
+    if (mlir::failed(destFormat))
+      return mlir::failure();
+
+    status = emitAbiCall(
+        builder, loc, "wafer_convert",
+        {createI32Constant(builder, loc, static_cast<int64_t>(*sourceFormat)),
+         createI32Constant(builder, loc, static_cast<int64_t>(*destFormat)),
+         createSpmOffsetValue(builder, loc, *source),
+         createSpmOffsetValue(builder, loc, *dest),
+         createI64Constant(builder, loc, *sourceElements)},
+        status);
+    return mlir::success();
+  }
+
   if (auto gemm = mlir::dyn_cast<InstrGemmOp>(op)) {
     mlir::FailureOr<int64_t> lhs = getSpmOffset(op, gemm.getLhs());
     if (mlir::failed(lhs))
@@ -569,6 +970,43 @@ static mlir::LogicalResult emitInstructionCall(
          createI64Constant(builder, loc, gemm.getN()),
          createI32Constant(builder, loc, static_cast<int64_t>(*inputFormat))},
         status);
+    return mlir::success();
+  }
+
+  if (auto send = mlir::dyn_cast<InstrDTESendOp>(op)) {
+    mlir::FailureOr<int64_t> buffer = getSpmOffset(op, send.getBuffer());
+    if (mlir::failed(buffer))
+      return mlir::failure();
+    if (send.getPeer() > std::numeric_limits<uint32_t>::max())
+      return send.emitError()
+             << kFailurePrefix << "DTE peer is not representable";
+    status = emitAbiCall(builder, loc, "wafer_dte_send",
+                         {createSpmOffsetValue(builder, loc, *buffer),
+                          createI32Constant(builder, loc, send.getPeer()),
+                          createI64Constant(builder, loc, send.getBytes())},
+                         status);
+    return mlir::success();
+  }
+
+  if (auto recv = mlir::dyn_cast<InstrDTERecvOp>(op)) {
+    mlir::FailureOr<int64_t> buffer = getSpmOffset(op, recv.getBuffer());
+    if (mlir::failed(buffer))
+      return mlir::failure();
+    if (recv.getPeer() > std::numeric_limits<uint32_t>::max())
+      return recv.emitError()
+             << kFailurePrefix << "DTE peer is not representable";
+    status = emitAbiCall(builder, loc, "wafer_dte_recv",
+                         {createSpmOffsetValue(builder, loc, *buffer),
+                          createI32Constant(builder, loc, recv.getPeer()),
+                          createI64Constant(builder, loc, recv.getBytes())},
+                         status);
+    return mlir::success();
+  }
+
+  if (auto wait = mlir::dyn_cast<InstrDTEWaitOp>(op)) {
+    status = emitAbiCall(
+        builder, loc, "wafer_dte_wait",
+        {createI32Constant(builder, loc, wait.getTokens().size())}, status);
     return mlir::success();
   }
 
@@ -612,6 +1050,49 @@ static mlir::LogicalResult materializeFunction(mlir::ModuleOp module,
     ddrArgOrdinals.push_back(index);
   }
 
+  llvm::SmallVector<mlir::Value> inputAliases;
+  for (unsigned index : ddrArgOrdinals)
+    appendUnique(inputAliases, func.getArgument(index));
+
+  llvm::SmallVector<ReturnOutputBinding> outputBindings;
+  if (originalType.getNumResults() != 0) {
+    llvm::SmallVector<mlir::func::ReturnOp> returns;
+    func.walk(
+        [&](mlir::func::ReturnOp returnOp) { returns.push_back(returnOp); });
+    if (returns.size() != 1)
+      return func.emitError()
+             << kFailurePrefix
+             << "ABI materialization requires one return op for returned "
+             << "outputs";
+    mlir::func::ReturnOp returnOp = returns.front();
+    if (returnOp.getNumOperands() != originalType.getNumResults())
+      return returnOp.emitError()
+             << kFailurePrefix << "return operand count must match function "
+             << "result count";
+
+    for (auto [index, type] : llvm::enumerate(originalType.getResults())) {
+      if (!isWaferDDRMemRefType(type))
+        return func.emitError()
+               << kFailurePrefix
+               << "ABI materialization currently accepts only returned DDR "
+               << "memrefs";
+
+      llvm::SmallVector<mlir::Value> aliases;
+      collectReturnedDdrAliases(returnOp.getOperand(index), aliases);
+      bool alreadyExternal = llvm::any_of(aliases, [&](mlir::Value alias) {
+        return llvm::is_contained(inputAliases, alias);
+      });
+      if (alreadyExternal)
+        continue;
+
+      ReturnOutputBinding binding;
+      binding.aliases = std::move(aliases);
+      binding.abiIndex = abiInputTypes.size();
+      abiInputTypes.push_back(i64);
+      outputBindings.push_back(std::move(binding));
+    }
+  }
+
   mlir::FunctionType abiType =
       mlir::FunctionType::get(ctx, abiInputTypes, {i32});
   mlir::OpBuilder moduleBuilder(module.getBodyRegion());
@@ -625,6 +1106,10 @@ static mlir::LogicalResult materializeFunction(mlir::ModuleOp module,
   for (auto [abiIndex, originalIndex] : llvm::enumerate(ddrArgOrdinals))
     externalBases[func.getArgument(originalIndex)] =
         entry->getArgument(abiIndex);
+  for (const ReturnOutputBinding &binding : outputBindings) {
+    for (mlir::Value alias : binding.aliases)
+      externalBases[alias] = entry->getArgument(binding.abiIndex);
+  }
 
   mlir::Value status = createI32Constant(builder, func.getLoc(), 0);
 

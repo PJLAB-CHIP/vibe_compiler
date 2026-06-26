@@ -1,0 +1,36 @@
+func.func @package_export_full_instr(
+    %input: memref<8xf32, #wafer.memory<ddr, tensor>>,
+    %output: memref<8xf32, #wafer.memory<ddr, tensor>>) {
+  %zero = arith.constant 0.0 : f32
+  %src = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+      : memref<8xf32, #wafer.memory<spm, tensor>>
+  %tmp = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65792>}
+      : memref<8xf32, #wafer.memory<spm, tensor>>
+  %red_src = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66048>}
+      : memref<1x8xf32, #wafer.memory<spm, cx>>
+  %red = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66304>}
+      : memref<1xf32, #wafer.memory<spm, cx>>
+  %converted = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66560>}
+      : memref<8xi32, #wafer.memory<spm, tensor>>
+  wafer.instr.fill %src, %zero
+      : memref<8xf32, #wafer.memory<spm, tensor>>, f32
+  wafer.instr.elementwise #wafer.elementwise_kind<eq> %src, %tmp into %tmp
+      : memref<8xf32, #wafer.memory<spm, tensor>>,
+        memref<8xf32, #wafer.memory<spm, tensor>>
+      into memref<8xf32, #wafer.memory<spm, tensor>>
+  wafer.instr.reduce #wafer.reduce_kind<avg> %red_src into %red, %zero : f32
+      {dimensions = array<i64: 1>}
+      : memref<1x8xf32, #wafer.memory<spm, cx>>
+      into memref<1xf32, #wafer.memory<spm, cx>>
+  wafer.instr.convert %tmp into %converted
+      {src_dtype = f32, dst_dtype = i32}
+      : memref<8xf32, #wafer.memory<spm, tensor>>
+      to memref<8xi32, #wafer.memory<spm, tensor>>
+  %send = wafer.instr.dte_send %src {peer = 1 : i64, bytes = 32 : i64}
+      : memref<8xf32, #wafer.memory<spm, tensor>> -> !async.token
+  %recv = wafer.instr.dte_recv %tmp {peer = 0 : i64, bytes = 32 : i64}
+      : memref<8xf32, #wafer.memory<spm, tensor>> -> !async.token
+  wafer.instr.dte_wait %send, %recv : !async.token, !async.token
+  wafer.instr.local_fence
+  return
+}

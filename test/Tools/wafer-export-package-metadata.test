@@ -26,6 +26,17 @@
 # RUN: %python %wafer_src_root/tools/wafer_package_metadata.py --validate %t.pipeline.json
 # RUN: FileCheck %s --check-prefix=PIPELINE < %t.pipeline.json
 
+# RUN: %python %wafer_src_root/tools/wafer_export_package_metadata.py \
+# RUN:   --name full_instr_package_sample \
+# RUN:   --model-id full_instr_package_sample \
+# RUN:   --abi wafer-cabi-v0 \
+# RUN:   --model-interface %S/Inputs/package-export-pipeline-model-interface.json \
+# RUN:   --instruction-ir %S/Inputs/package-export-full-instr.txt \
+# RUN:   --llvm-ir %S/Inputs/package-export-kernel.ll \
+# RUN:   --module-path full_instr.so > %t.full-instr.json
+# RUN: %python %wafer_src_root/tools/wafer_package_metadata.py --validate %t.full-instr.json
+# RUN: FileCheck %s --check-prefix=FULL-INSTR < %t.full-instr.json
+
 # RUN: not %python %wafer_src_root/tools/wafer_export_package_metadata.py \
 # RUN:   --name package_export_sample \
 # RUN:   --model-id package_export_sample \
@@ -76,5 +87,22 @@
 # PIPELINE: "function": "boundary_tiled_matmul_group_abi"
 # PIPELINE: "op": "wafer.instr.gemm"
 # PIPELINE: "op": "wafer.instr.wdma"
+
+# FULL-INSTR: "op": "wafer.instr.fill"
+# FULL-INSTR: "op": "wafer.instr.elementwise"
+# FULL-INSTR: "kind": "eq"
+# FULL-INSTR: "op": "wafer.instr.reduce"
+# FULL-INSTR: "kind": "avg"
+# FULL-INSTR: "op": "wafer.instr.convert"
+# FULL-INSTR: "src_dtype": "f32"
+# FULL-INSTR: "dst_dtype": "i32"
+# FULL-INSTR: "op": "wafer.instr.dte_send"
+# FULL-INSTR: "bytes": 32
+# FULL-INSTR: "op": "wafer.instr.dte_recv"
+# FULL-INSTR: "bytes": 32
+# FULL-INSTR: "op": "wafer.instr.dte_wait"
+# FULL-INSTR: "wait_policy": "local_wait"
+# FULL-INSTR: "op": "wafer.instr.local_fence"
+# FULL-INSTR: "wait_policy": "local_wait"
 
 # ERR: error: LLVM IR input does not exist

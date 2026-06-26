@@ -61,6 +61,71 @@ int main(void) {
          issue->payload.gemm.input_format, issue->payload.gemm.output_format,
          issue->payload.gemm.wait_policy);
 
+  printf("fill status=%d\n", wafer_fill(66176, 0, 8, 5));
+  issue = wafer_cabi_get_last_issue();
+  printf("fill kind=%u inter=%u opcode=%u dst=%u value=%llu elements=%u "
+         "fmt=%u wait=%u\n",
+         issue->kind, issue->payload.fill.inter_type,
+         issue->payload.fill.opcode, issue->payload.fill.dst,
+         (unsigned long long)issue->payload.fill.value_bits,
+         issue->payload.fill.elem_count, issue->payload.fill.format,
+         issue->payload.fill.wait_policy);
+
+  printf("elementwise status=%d\n",
+         wafer_elementwise(0, 66560, 66176, 66304, 8, 5, 5));
+  issue = wafer_cabi_get_last_issue();
+  printf("elementwise kind=%u inter=%u opcode=%u op=%u dst=%u src0=%u "
+         "src1=%u elements=%u in_fmt=%u out_fmt=%u wait=%u\n",
+         issue->kind, issue->payload.elementwise.inter_type,
+         issue->payload.elementwise.opcode, issue->payload.elementwise.kind,
+         issue->payload.elementwise.dst, issue->payload.elementwise.src0,
+         issue->payload.elementwise.src1, issue->payload.elementwise.elem_count,
+         issue->payload.elementwise.input_format,
+         issue->payload.elementwise.output_format,
+         issue->payload.elementwise.wait_policy);
+
+  printf("reduce status=%d\n", wafer_reduce(0, 66560, 66688, 0, 1, 1, 1, 8, 5));
+  issue = wafer_cabi_get_last_issue();
+  printf("reduce kind=%u inter=%u opcode=%u op=%u src=%u dst=%u dim=%u "
+         "shape=%ux%ux%ux%u fmt=%u wait=%u\n",
+         issue->kind, issue->payload.reduce.inter_type,
+         issue->payload.reduce.opcode, issue->payload.reduce.kind,
+         issue->payload.reduce.src, issue->payload.reduce.dst,
+         issue->payload.reduce.dim, issue->payload.reduce.n,
+         issue->payload.reduce.h, issue->payload.reduce.w,
+         issue->payload.reduce.c, issue->payload.reduce.format,
+         issue->payload.reduce.wait_policy);
+
+  printf("convert status=%d\n", wafer_convert(5, 4, 66560, 66816, 8));
+  issue = wafer_cabi_get_last_issue();
+  printf("convert kind=%u inter=%u opcode=%u src_fmt=%u dst_fmt=%u src=%u "
+         "dst=%u elements=%u wait=%u\n",
+         issue->kind, issue->payload.convert.inter_type,
+         issue->payload.convert.opcode, issue->payload.convert.src_format,
+         issue->payload.convert.dst_format, issue->payload.convert.src,
+         issue->payload.convert.dst, issue->payload.convert.elem_count,
+         issue->payload.convert.wait_policy);
+
+  printf("dte_send status=%d\n", wafer_dte_send(66560, 1, 32));
+  issue = wafer_cabi_get_last_issue();
+  printf("dte_send kind=%u op=%s buffer=%u peer=%u bytes=%u wait=%u\n",
+         issue->kind, issue->payload.dte.is_send ? "send" : "recv",
+         issue->payload.dte.buffer, issue->payload.dte.peer,
+         issue->payload.dte.bytes, issue->payload.dte.wait_policy);
+
+  printf("dte_recv status=%d\n", wafer_dte_recv(66304, 1, 32));
+  issue = wafer_cabi_get_last_issue();
+  printf("dte_recv kind=%u op=%s buffer=%u peer=%u bytes=%u wait=%u\n",
+         issue->kind, issue->payload.dte.is_send ? "send" : "recv",
+         issue->payload.dte.buffer, issue->payload.dte.peer,
+         issue->payload.dte.bytes, issue->payload.dte.wait_policy);
+
+  printf("dte_wait status=%d\n", wafer_dte_wait(2));
+  issue = wafer_cabi_get_last_issue();
+  printf("dte_wait kind=%u tokens=%u wait=%u\n", issue->kind,
+         issue->payload.dte_wait.token_count,
+         issue->payload.dte_wait.wait_policy);
+
   printf("local_fence status=%d\n", wafer_local_fence());
   issue = wafer_cabi_get_last_issue();
   printf("local_fence kind=%u wait=%u local_wait=%u\n", issue->kind,

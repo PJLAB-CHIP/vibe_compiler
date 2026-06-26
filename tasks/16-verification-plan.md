@@ -220,6 +220,9 @@ M7 ABI / LLVM program gate：
   只能作为显式 debug/bring-up entrypoint 记录 function 和 binding order。auto-export gate 必须消费当前
   pipeline 产物导出 package metadata 并通过 validator；C stub-only program 只允许作为历史局部测试输入的
   验证物，不能替代 default `wafer_*` shim object。
+- 当前 ABI/LLVM gate 覆盖 ODS 中已有的 `wafer.instr.*` 到 scalar `wafer_*` call、LLVM dialect
+  和 LLVM IR translation；`wafer-lower-abi-calls-to-llvm` 会 strip 已消费的 target/execution metadata，
+  并拒绝其它 Wafer op 残留，避免把不可翻译 IR 交给 `mlir-translate`。
 
 M8 runtime / board correctness gate：
 
@@ -280,15 +283,9 @@ Wafer 硬件能力表达，就不能把当前 static gate 的覆盖范围写成�
 - golden packet tests：至少覆盖 single-tile local compute 用到的 wrapper family。
 
 如果某个 milestone 暂时只能做文档验证，必须明确说明还缺 build/test harness 或板端 runtime。
-当前没有 local compile gate 能证明 IR pipeline 到 ABI/LLVM lowering。显式 package metadata / C stub tool-unit
-coverage 不能替代 IR-derived package emission、LLVM IR lowering、object code emission、真实
-runtime call emission、板端运行、数值正确性、completion 或 profiling 证明。
-
-历史 local integration gate 曾把 `wafer-opt` pipeline 的 IR FileCheck 和 package metadata / C stub
-检查放在同一测试文件内，但 package metadata 由 fixed test emitter 生成，不是从该次 `wafer-opt` 输出的
-ABI/LLVM lowering artifact 自动导出。该拼接和 fixed emitter 已删除；当前只能证明 IR lowering 和
-package schema/stub tool-unit 分别可用，不能作为 “package 由当前 lowering 结果生成” 的证据。
-进入 object/package gate 时必须先把 IR-derived package metadata emission 作为 gate，并记录 ABI/LLVM artifact、
-model interface、module path、model resource metadata 和 entrypoints；当前 package metadata
-auto-export 已能消费 committed instruction IR、LLVM IR artifact、module path 和 model interface
-metadata 导出 schema v2 package metadata，之后再推进 runtime call / board gate。
+当前 local gates 已能证明：group / PyTorch smoke 输入可以进入 ABI/LLVM lowering，LLVM dialect
+可以翻译成 LLVM IR，default `wafer_cabi_shim.c` 可以随 LLVM object 用 repo-vendored TX8 deps
+链接成 kcore shared object，package metadata auto-export 可以消费 committed instruction IR、LLVM IR
+artifact、module path 和 model interface metadata 导出 schema v2 package metadata，并进入 no-card
+`wafer-run` required-symbol gate。这些仍不能替代板端 allocation/import/query/bind、真实 launch、
+completion、数值正确性或 profiling 证明。

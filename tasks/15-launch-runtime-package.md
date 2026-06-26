@@ -211,7 +211,10 @@ multilib profile 需要单独的 object 兼容性和板端验证后再升级成�
 `-Wl,--allow-shlib-undefined` 只允许 kcore shared object 保留 runtime/loader 解析的外部符号；它不是
 证明缺失 `wafer_*` C ABI shim 可以被忽略的信号。当前 device-code gate 默认编译并链接
 `runtime/wafer_cabi_shim.c`，该 shim 的 capture/register-facing tests 负责验证 RDMA、WDMA、
-gather_scatter、GEMM 和 local_fence 的字段映射。仍可能存在的 unresolved symbol 必须来自
+gather_scatter、fill、elementwise、reduce、convert、GEMM、DTE send/recv/wait 和 local_fence
+的 compiler-facing ABI 参数映射。DTE send/recv/wait 的生产 wrapper path 目前仍返回
+`WAFER_CABI_STATUS_WRAPPER_UNAVAILABLE`，直到 runtime 提供 remote endpoint / DTE channel binding；
+这不允许变成 unresolved `wafer_*` symbol。仍可能存在的 unresolved symbol 必须来自
 runtime/loader 合法解析的外部依赖，而不是 compiler-facing `wafer_*` ABI family。
 
 ## 4. Runtime Layering
@@ -370,9 +373,10 @@ resident constant table；它不代表当前 IR pipeline 已生成 package，也
 `.ll -> .o -> kernel.so` 两段命令，并可在本地 TX8 依赖齐备时执行该 compile/link。它不从
 `wafer.instr.*` 恢复 package metadata，不生成 package metadata，也不代表 runtime launch / board
 completion 已通过。该 tool 默认把 `runtime/wafer_cabi_shim.c` 编译成同 target 的 shim object 并
-加入 final link，使 LLVM IR 中的 `wafer_rdma`、`wafer_wdma`、`wafer_gather_scatter`、`wafer_gemm`
-和 `wafer_local_fence` 不再依赖 unresolved placeholder symbol。shim source 仍只实现
-compiler-facing scalar ABI 到 public Tsm wrapper / local wait 的映射；它不生成 package schema、
+加入 final link，使 LLVM IR 中当前 `wafer.instr.*` lowering 需要的 `wafer_*` symbol
+（RDMA、WDMA、gather_scatter、fill、elementwise、reduce、convert、GEMM、DTE send/recv/wait
+和 local_fence）不再依赖 unresolved placeholder symbol。shim source 只实现 compiler-facing
+scalar ABI 到 public Tsm wrapper / local wait / DTE boundary status 的映射；它不生成 package schema、
 runtime allocation metadata 或 board launch protocol。
 
 `tools/wafer_export_package_metadata.py` 是 package metadata auto-export gate：它消费上游
@@ -482,9 +486,10 @@ V0 验证：
   LLVM IR -> package metadata auto-export / validation -> C++ `wafer-run` -> fake tx runtime shared library
   required-symbol check。该 gate 证明当前 compiler-generated package 可以进入 runtime 边界，但仍不执行
   allocation/import/query/bind、module load、launch 或 completion。
-- PyTorch model-level no-card runtime gate 当前不能正向完成：`x + x` smoke model 能从 PyTorch/XLA
-  capture 跑到 `stablehlo-spmd-to-group`，但在 ABI lowering 前被 `wafer.instr.elementwise` unsupported
-  diagnostic 拒绝。该 blocker 由 lit 覆盖，防止把 group fixture runtime gate 误报为 PyTorch 端到端。
+- PyTorch model-level no-card runtime gate 用 `x + x` smoke model 覆盖 PyTorch/XLA capture
+  -> `stablehlo-spmd-to-group` -> group/instr/ABI/LLVM lowering -> `mlir-translate` LLVM IR
+  -> package metadata auto-export / validation -> C++ `wafer-run` fake tx runtime required-symbol gate。
+  该 gate 不执行 board allocation/import/query/bind、module load、launch 或 completion。
 - model interface 与 compiled function ABI / selected entrypoint binding order 一致。
 - 当前 schema v2 不保存 endpoint table；若后续启用 derived endpoint section，必须覆盖所有
   launched tile 且能从 execution mesh / topology 重算。

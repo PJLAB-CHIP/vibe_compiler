@@ -11,6 +11,7 @@ add_mlir_library(WaferTransforms
   SPMD/ApplyDefaultSpmdSharding.cpp
   Target/MaterializeExecutionMesh.cpp
   Target/MaterializeTargetTopology.cpp
+  Target/StripTargetMetadata.cpp
   Passes.cpp
 
   DEPENDS

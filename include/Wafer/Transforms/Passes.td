@@ -58,6 +58,13 @@ def MaterializeExecutionMeshPass
   ];
 }
 
+def StripTargetMetadataPass
+    : Pass<"wafer-strip-target-metadata", "mlir::ModuleOp"> {
+  let summary =
+      "Strip consumed Wafer target topology and execution mesh metadata";
+  let dependentDialects = ["wafer::WaferDialect"];
+}
+
 def FormLogicalGroupsPass
     : Pass<"wafer-form-logical-groups", "mlir::ModuleOp"> {
   let summary = "Form root-seeded tensor-level logical wafer.group ops";

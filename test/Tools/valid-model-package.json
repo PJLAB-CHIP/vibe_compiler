@@ -119,6 +119,16 @@
       "wait_policy": "issue_only"
     },
     {
+      "op": "wafer.instr.gather_scatter",
+      "bytes": 16,
+      "inner_bytes": 8,
+      "wait_policy": "issue_only"
+    },
+    {
+      "op": "wafer.instr.fill",
+      "wait_policy": "issue_only"
+    },
+    {
       "op": "wafer.instr.elementwise",
       "kind": "add",
       "wait_policy": "issue_only"
@@ -131,6 +141,30 @@
       ],
       "init_value": -1.0,
       "wait_policy": "issue_only"
+    },
+    {
+      "op": "wafer.instr.convert",
+      "src_dtype": "f16",
+      "dst_dtype": "f32",
+      "wait_policy": "issue_only"
+    },
+    {
+      "op": "wafer.instr.dte_send",
+      "bytes": 16,
+      "wait_policy": "issue_only"
+    },
+    {
+      "op": "wafer.instr.dte_recv",
+      "bytes": 16,
+      "wait_policy": "issue_only"
+    },
+    {
+      "op": "wafer.instr.dte_wait",
+      "wait_policy": "local_wait"
+    },
+    {
+      "op": "wafer.instr.local_fence",
+      "wait_policy": "local_wait"
     },
     {
       "op": "wafer.instr.wdma",

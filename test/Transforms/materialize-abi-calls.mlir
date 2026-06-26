@@ -52,7 +52,90 @@ func.func @abi_rdm_wdm_gemm(
 // CHECK: call @wafer_local_fence
 // CHECK: call @wafer_wdma
 // CHECK: return
+
+// -----
+
+func.func @abi_ct_dte(%input: memref<8xf32, #wafer.memory<ddr, tensor>>)
+    -> memref<8xf32, #wafer.memory<ddr, tensor>> {
+  %output = memref.alloc() {wafer.ddr.offset = #wafer.ddr_offset<0>}
+      : memref<8xf32, #wafer.memory<ddr, tensor>>
+  %region = wafer.tile.region(%input, %output
+      : memref<8xf32, #wafer.memory<ddr, tensor>>,
+        memref<8xf32, #wafer.memory<ddr, tensor>>)
+      -> (memref<8xf32, #wafer.memory<ddr, tensor>>) {
+  ^bb0(%in: memref<8xf32, #wafer.memory<ddr, tensor>>,
+       %out: memref<8xf32, #wafer.memory<ddr, tensor>>):
+    %zero = arith.constant 0.0 : f32
+    %src = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<8xf32, #wafer.memory<spm, tensor>>
+    %fill = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65664>}
+        : memref<8xf32, #wafer.memory<spm, tensor>>
+    %acc = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65792>}
+        : memref<8xf32, #wafer.memory<spm, tensor>>
+    %red_src = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65920>}
+        : memref<1x8xf32, #wafer.memory<spm, cx>>
+    %reduced = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66048>}
+        : memref<1xf32, #wafer.memory<spm, cx>>
+    %converted = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66176>}
+        : memref<8xi32, #wafer.memory<spm, tensor>>
+    wafer.instr.rdma %in to %src
+        {byte_count = 32 : i64, inner_bytes = 32 : i64,
+         src_iterations = array<i64: 1, 1, 1>,
+         src_strides = array<i64: 0, 0, 0>}
+        : memref<8xf32, #wafer.memory<ddr, tensor>>
+       to memref<8xf32, #wafer.memory<spm, tensor>>
+    wafer.instr.fill %fill, %zero
+        : memref<8xf32, #wafer.memory<spm, tensor>>, f32
+    wafer.instr.elementwise #wafer.elementwise_kind<add> %src, %fill into %acc
+        : memref<8xf32, #wafer.memory<spm, tensor>>,
+          memref<8xf32, #wafer.memory<spm, tensor>>
+       into memref<8xf32, #wafer.memory<spm, tensor>>
+    wafer.instr.reduce #wafer.reduce_kind<sum> %red_src into %reduced, %zero : f32
+        {dimensions = array<i64: 1>}
+        : memref<1x8xf32, #wafer.memory<spm, cx>>
+       into memref<1xf32, #wafer.memory<spm, cx>>
+    wafer.instr.convert %acc into %converted
+        {src_dtype = f32, dst_dtype = i32}
+        : memref<8xf32, #wafer.memory<spm, tensor>>
+       to memref<8xi32, #wafer.memory<spm, tensor>>
+    %send = wafer.instr.dte_send %acc {peer = 1 : i64, bytes = 32 : i64}
+        : memref<8xf32, #wafer.memory<spm, tensor>> -> !async.token
+    %recv = wafer.instr.dte_recv %fill {peer = 1 : i64, bytes = 32 : i64}
+        : memref<8xf32, #wafer.memory<spm, tensor>> -> !async.token
+    wafer.instr.dte_wait %send, %recv : !async.token, !async.token
+    wafer.instr.wdma %acc to %out
+        {byte_count = 32 : i64, dst_iterations = array<i64: 1, 1, 1>,
+         dst_strides = array<i64: 0, 0, 0>, inner_bytes = 32 : i64}
+        : memref<8xf32, #wafer.memory<spm, tensor>>
+       to memref<8xf32, #wafer.memory<ddr, tensor>>
+    wafer.tile.yield %out
+        : memref<8xf32, #wafer.memory<ddr, tensor>>
+  }
+  return %region : memref<8xf32, #wafer.memory<ddr, tensor>>
+}
+
+// CHECK-LABEL: func.func @abi_ct_dte_abi
+// CHECK-SAME: (%arg0: i64, %arg1: i64)
+// CHECK-NOT: wafer.instr
+// CHECK-NOT: wafer.tile.region
+// CHECK: call @wafer_rdma
+// CHECK: call @wafer_fill
+// CHECK: call @wafer_elementwise
+// CHECK: call @wafer_reduce
+// CHECK: call @wafer_convert
+// CHECK: call @wafer_dte_send
+// CHECK: call @wafer_dte_recv
+// CHECK: call @wafer_dte_wait
+// CHECK: call @wafer_wdma
+// CHECK: return
 // CHECK-DAG: func.func private @wafer_rdma(i64, i32, i64, i64, i64, i64, i64, i64, i64, i64, i32) -> i32
 // CHECK-DAG: func.func private @wafer_gemm(i32, i32, i32, i64, i64, i64, i32) -> i32
 // CHECK-DAG: func.func private @wafer_local_fence
 // CHECK-DAG: func.func private @wafer_wdma(i32, i64, i64, i64, i64, i64, i64, i64, i64, i64, i32) -> i32
+// CHECK-DAG: func.func private @wafer_fill(i32, i64, i64, i32) -> i32
+// CHECK-DAG: func.func private @wafer_elementwise(i32, i32, i32, i32, i64, i32, i32) -> i32
+// CHECK-DAG: func.func private @wafer_reduce(i32, i32, i32, i32, i64, i64, i64, i64, i32) -> i32
+// CHECK-DAG: func.func private @wafer_convert(i32, i32, i32, i32, i64) -> i32
+// CHECK-DAG: func.func private @wafer_dte_send(i32, i32, i64) -> i32
+// CHECK-DAG: func.func private @wafer_dte_recv(i32, i32, i64) -> i32
+// CHECK-DAG: func.func private @wafer_dte_wait(i32) -> i32

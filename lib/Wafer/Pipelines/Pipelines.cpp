@@ -113,6 +113,7 @@ void buildLowerGroupsToABICallsPipeline(mlir::OpPassManager &pm) {
 }
 
 void buildLowerABICallsToLLVMPipeline(mlir::OpPassManager &pm) {
+  pm.addPass(createStripTargetMetadataPass());
   pm.addPass(mlir::createConvertSCFToCFPass());
   pm.addPass(mlir::createConvertControlFlowToLLVMPass());
   pm.addPass(mlir::createArithToLLVMConversionPass());
@@ -178,7 +179,9 @@ void registerWaferPipelines() {
     mlir::PassPipelineRegistration<>(
         "wafer-lower-groups-to-abi-calls",
         "Lower logical wafer.group ops to scalar Wafer C ABI call IR",
-        [](mlir::OpPassManager &pm) { buildLowerGroupsToABICallsPipeline(pm); });
+        [](mlir::OpPassManager &pm) {
+          buildLowerGroupsToABICallsPipeline(pm);
+        });
     mlir::PassPipelineRegistration<>(
         "wafer-lower-abi-calls-to-llvm",
         "Lower scalar Wafer C ABI call IR to LLVM dialect",

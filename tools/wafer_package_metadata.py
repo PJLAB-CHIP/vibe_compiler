@@ -56,9 +56,14 @@ SUPPORTED_INSTRUCTION_OPS = {
     "wafer.instr.rdma",
     "wafer.instr.wdma",
     "wafer.instr.gather_scatter",
+    "wafer.instr.fill",
     "wafer.instr.gemm",
     "wafer.instr.elementwise",
     "wafer.instr.reduce",
+    "wafer.instr.convert",
+    "wafer.instr.dte_send",
+    "wafer.instr.dte_recv",
+    "wafer.instr.dte_wait",
     "wafer.instr.local_fence",
 }
 
@@ -75,12 +80,19 @@ SUPPORTED_ELEMENTWISE_KINDS = {
     "rsqrt",
     "exp",
     "tanh",
+    "eq",
+    "ne",
+    "lt",
+    "le",
+    "gt",
+    "ge",
 }
 
 SUPPORTED_REDUCE_KINDS = {
     "sum",
     "max",
     "min",
+    "avg",
 }
 
 
@@ -568,7 +580,7 @@ def validate_package_metadata(metadata: dict[str, Any]) -> None:
         if mnemonic not in SUPPORTED_INSTRUCTION_OPS:
             fail(f"instructions[{index}].op is not supported by the package metadata")
         wait_policy = item.get("wait_policy")
-        if mnemonic == "wafer.instr.local_fence":
+        if mnemonic in {"wafer.instr.local_fence", "wafer.instr.dte_wait"}:
             if wait_policy != "local_wait":
                 fail(f"instructions[{index}].wait_policy must be local_wait")
             continue
@@ -578,6 +590,8 @@ def validate_package_metadata(metadata: dict[str, Any]) -> None:
             "wafer.instr.rdma",
             "wafer.instr.wdma",
             "wafer.instr.gather_scatter",
+            "wafer.instr.dte_send",
+            "wafer.instr.dte_recv",
         }:
             require_positive_int(item.get("bytes"), f"instructions[{index}].bytes")
             if "inner_bytes" in item:

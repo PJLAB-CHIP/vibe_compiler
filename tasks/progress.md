@@ -94,9 +94,9 @@ Pipeline position:
   module resolution、selected entrypoint launch args 和 completion plan 均来自 package metadata；
   C++ host runtime 能读取 package metadata、选择 entrypoint、动态加载 tx runtime library 并检查
   executor-specific required symbols；no-card E2E lit 从 `wafer-opt` instruction/LLVM outputs 经 package
-  metadata auto-export / validation 直接进入 `wafer-run`；PyTorch model-level smoke 当前被
-  `wafer.instr.elementwise` ABI materialization blocker 拦在 runtime 前；对 descriptor-only BPM 或 known
-  stub completion source 给出结构化拒绝；有卡环境下验证真实 allocation/import/query/bind、可信
+  metadata auto-export / validation 直接进入 `wafer-run`；PyTorch model-level smoke 已从 PyTorch/XLA
+  capture 走到 group/instr/ABI/LLVM lowering、package metadata auto-export 和 `wafer-run` no-card gate；
+  对 descriptor-only BPM 或 known stub completion source 给出结构化拒绝；有卡环境下验证真实 allocation/import/query/bind、可信
   completion、错误传播和最小 board run。
 ```
 
@@ -123,11 +123,11 @@ Pipeline position:
 | buffer-level communication collective materialization | done | tiled `wafer.linalg_ext.collective.*` + unplaced SPM buffer/local-rank facts + execution mesh rank domain | top-level single-result `all_gather` / `reduce_scatter` / `all_reduce` materialize 成 verifier-legal `wafer.tile.*` collective；buffer、bytes、rank_group、local_rank 和 effect 边界来自 IR，不选择 p2p schedule；发生在 SPM memory planning 前 |
 | p2p Direct DTE instruction schedule lowering | done | `wafer.tile.*` collective + topology/execution-mesh derived endpoint view | compact SPM all_gather 支持 ring/direct schedule、tensor SPM all_reduce 支持 ring/tree schedule、full-input reduce_scatter 支持 direct schedule；accepted schedule 都生成 explicit `wafer.instr.dte_send` / `dte_recv` / `dte_wait` body，并由 SPM memory planning 消费；peer/route 从 topology/execution mesh 查询，不保存 side table |
 | comm-aware memory planning gate | done | instruction-level compute/movement + `wafer.instr.dte_*` over unplaced SPM memrefs | communication staging、DTE token lifetime、local fence / DTE wait 和 buffer reuse 被 SPM planning 消费；all_gather / reduce_scatter / all_reduce 可经 named pipeline 到 SPM + DDR memory-planned instruction IR |
-| ABI / LLVM lowering | done | committed instruction IR + accepted SPM/DDR offset facts + topology/execution-mesh + program parameter shard metadata/resource view + launch-block binding + communication/sync lowering | RDMA/WDMA/gather_scatter/GEMM/local_fence 的 scalar `func.call` ABI sequence、LLVM dialect artifact；pipeline gate 覆盖 group -> ABI calls -> LLVM dialect |
+| ABI / LLVM lowering | done | committed instruction IR + accepted SPM/DDR offset facts + topology/execution-mesh + program parameter shard metadata/resource view + launch-block binding + communication/sync lowering | 当前 ODS `wafer.instr.*` 覆盖 RDMA/WDMA/gather_scatter/fill/elementwise/reduce/convert/GEMM/DTE send/recv/wait/local_fence 的 scalar `func.call` ABI sequence、LLVM dialect artifact；`wafer-lower-abi-calls-to-llvm` strip 已消费的 target/execution metadata 并拒绝其它 Wafer op 残留；pipeline gate 覆盖 group -> ABI calls -> LLVM dialect -> LLVM IR |
 | device-code compile/link gate | done | LLVM IR artifact + repo-vendored TX8 deps + repo-local Wafer CRT lib dir | LLVM `clang++` `.ll -> .o`、default `wafer_cabi_shim.c -> shim.o`、LLVM object `.riscv.attributes` normalization 和 repo-vendored `tx8_deps` GCC `.o + shim.o -> kcore .so` 的命令形态固定；本地 smoke 已证明 LLVM IR、shim source、vendored `rv64imafdc/lp64d` multilib、repo-local debug-stripped Wafer CRT `libvr` 和 `riscv64-unknown-elf-objcopy` normalization 可生成 kcore shared object；package metadata 只引用生成的 `tx.kcore` module，不把 device-code record 作为顶层合同 |
 | package metadata auto export | done | ABI/LLVM artifact + kcore shared object + committed IR + model interface metadata | `tools/wafer_export_package_metadata.py` 从 committed instruction IR、LLVM IR artifact、module path 和 model interface metadata 导出 schema v2 package metadata；pipeline smoke 覆盖 `wafer-opt` instruction/LLVM outputs -> `mlir-translate` LLVM IR -> package metadata validator；schema 要求 `name`、`model.id`、`model.abi`、`model.interface`、`modules` 和 `entrypoints`，`tx.module` 只作为 debug/bring-up entrypoint |
-| wrapper shim / register-facing implementation | done | scalar `wafer_*` ABI contract + format-aware golden packet builders + TX8 public wrapper evidence | `runtime/wafer_cabi_shim.c` 实现 `wafer_rdma`、`wafer_wdma`、`wafer_gather_scatter`、`wafer_gemm`、`wafer_local_fence` 到 public Tsm wrapper / local wait；参与 device-code link gate，并由 capture/register-facing golden tests 验证 |
-| runtime adapter / board launch | active | model-level package + C++ host runtime | C++ `WaferRuntime` / `wafer-run` 能读取 package metadata、选择 entrypoint、动态加载 tx runtime library 并检查 executor-specific required symbols；no-card E2E 已覆盖 group-level `wafer-opt` -> package metadata auto-export -> `wafer-run`；PyTorch model-level smoke 已覆盖到 `stablehlo-spmd-to-group` 并记录 `wafer.instr.elementwise` ABI blocker；Python adapter 只保留 no-card checker；剩余 gate 是补齐 PyTorch model -> ABI/package/runtime 的前置 ABI gaps，以及有卡环境下真实 allocation/import/query/bind、module load/function lookup、launch、completion 和 error propagation |
+| wrapper shim / register-facing implementation | done | scalar `wafer_*` ABI contract + format-aware golden packet builders + TX8 public wrapper evidence | `runtime/wafer_cabi_shim.c` 实现 RDMA/WDMA/gather_scatter/fill/elementwise/reduce/convert/GEMM/local_fence 到 public Tsm wrapper / local wait；DTE send/recv/wait 有 compiler-facing capture/status contract，生产 wrapper path 在缺 remote endpoint / DTE channel runtime binding 时返回 `WRAPPER_UNAVAILABLE`；shim 参与 device-code link gate，并由 capture/register-facing golden tests 验证 |
+| runtime adapter / board launch | active | model-level package + C++ host runtime | C++ `WaferRuntime` / `wafer-run` 能读取 package metadata、选择 entrypoint、动态加载 tx runtime library 并检查 executor-specific required symbols；no-card E2E 已覆盖 group-level `wafer-opt` -> package metadata auto-export -> `wafer-run`；PyTorch model-level smoke 已覆盖 PyTorch/XLA capture -> `stablehlo-spmd-to-group` -> ABI/LLVM/package/runtime no-card gate；Python adapter 只保留 no-card checker；剩余 gate 是有卡环境下真实 allocation/import/query/bind、module load/function lookup、launch、completion 和 error propagation |
 | transformer staged gaps | pending | static transformer local shard IR / staged IR gaps | full-block schedule 或拒绝原因；补 mask/select、dynamic-bound policy、constant/weight slice 等 |
 | overlap / cost calibration | later | board/profile 输出 | overlap、cost model 和 PMU calibration |
 
@@ -141,10 +141,10 @@ Pipeline position:
 
 ## 下一步
 
-1. 补齐 PyTorch model-level no-card runtime gate 的前置 ABI gaps：至少让 `wafer.instr.elementwise`
-   和 PyTorch 常规 return tensor / output binding 形态能 materialize 成 package 可消费的 ABI/LLVM artifact；
-   然后把 `pytorch-no-card-runtime-blocker.test` 改成正向 `wafer-run` gate。
-2. 扩展 C++ host runtime 的有卡 board gate：从当前 package metadata 派生 binding lifecycle，
+1. 扩展 C++ host runtime 的有卡 board gate：从当前 package metadata 派生 binding lifecycle，
    实现真实 set-device、allocation/import/query/bind、H2D/D2H、module load/function lookup、
    selected entrypoint launch、host completion、device-side completion evidence 和 error propagation；
    默认无卡测试继续只验证 metadata intake、runtime library loading 和 required symbol gate。
+2. 继续补 board gate 所需的 DTE production binding：把 logical peer / execution mesh endpoint view
+   映射成 runtime 可提交的 remote endpoint / DTE channel，替换当前 DTE shim 的
+   `WRAPPER_UNAVAILABLE` 生产路径。

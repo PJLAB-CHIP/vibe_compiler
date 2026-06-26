@@ -1,0 +1,45 @@
+# REQUIRES: stablehlo, shardy, pytorch-xla-importer, xla-spmd-helper
+
+# RUN: rm -rf %t.input.program %t.group.program
+# RUN: printf '%b' 'import json\nimport pathlib\nimport sys\nimport torch\nsys.path.insert(0, "%wafer_src_root/test/Tools/Inputs")\nimport wafer_pytorch_xla_capture as capture\nclass AddModel(torch.nn.Module):\n  def forward(self, x):\n    return x + x\ncapture.emit_reference_stablehlo_program(pathlib.Path("%t.input.program"), reference_module_factory=AddModel, size=32)\npathlib.Path("%t.model-interface.json").write_text(json.dumps({"inputs": [{"name": "input0", "shape": [32, 32], "dtype": "f32", "layout": "tensor"}], "outputs": [{"name": "output0", "shape": [32, 32], "dtype": "f32", "layout": "tensor"}]}, indent=2), encoding="utf-8")\n' > %t.capture.py
+# RUN: %importer_python %t.capture.py
+# RUN: wafer-opt --program-pipeline=stablehlo-spmd-to-group \
+# RUN:   --input-program-dir %t.input.program \
+# RUN:   --output-program-dir %t.group.program | FileCheck %s --check-prefix=PIPELINE
+# RUN: FileCheck %s --input-file=%t.group.program/functions/forward.mlir --check-prefix=GROUP
+# RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-groups-to-ddr-memory-planned-instr)' \
+# RUN:   %t.group.program/functions/forward.mlir > %t.instr.mlir
+# RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-groups-to-llvm)' \
+# RUN:   %t.group.program/functions/forward.mlir > %t.llvm.mlir
+# RUN: FileCheck %s --input-file=%t.llvm.mlir --check-prefix=LLVM
+# RUN: mlir-translate --mlir-to-llvmir %t.llvm.mlir > %t.ll
+# RUN: %python %wafer_src_root/tools/wafer_export_package_metadata.py \
+# RUN:   --name pytorch_no_card_package \
+# RUN:   --model-id pytorch_no_card_package \
+# RUN:   --abi wafer-cabi-v0 \
+# RUN:   --model-interface %t.model-interface.json \
+# RUN:   --instruction-ir %t.instr.mlir \
+# RUN:   --llvm-ir %t.ll \
+# RUN:   --module-path %t.kernel.so > %t.package.json
+# RUN: %python %wafer_src_root/tools/wafer_package_metadata.py --validate %t.package.json
+# RUN: clang -shared -fPIC %S/Inputs/fake-tx-runtime.c -o %t.libtxruntime.so
+# RUN: wafer-run --package-metadata %t.package.json \
+# RUN:   --entrypoint debug_kernel --runtime-library %t.libtxruntime.so | FileCheck %s --check-prefix=RUNTIME
+
+# PIPELINE: wafer-opt: completed Wafer program pipeline stablehlo-spmd-to-group:
+
+# GROUP: mhlo.spmd_parameters_shardings
+# GROUP: func.func @main
+# GROUP: wafer.group
+# GROUP: linalg.generic
+# GROUP: arith.addf
+
+# LLVM: llvm.func @main_abi
+# LLVM: llvm.call @wafer_elementwise
+# LLVM: llvm.call @wafer_wdma
+
+# RUNTIME: backend: tx-host
+# RUNTIME: package: pytorch_no_card_package
+# RUNTIME: runtime_mode: tx
+# RUNTIME: selected_entrypoint: debug_kernel tx.module
+# RUNTIME: board_launch_gate: not executed

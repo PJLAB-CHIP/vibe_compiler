@@ -31,8 +31,30 @@ int32_t wafer_gather_scatter(uint32_t spm_src_offset, uint32_t spm_dst_offset,
                              uint64_t dst_iter1, uint64_t dst_iter2);
 
 int32_t wafer_gemm(uint32_t lhs_spm_offset, uint32_t rhs_spm_offset,
-                   uint32_t dst_spm_offset, uint64_t m, uint64_t k,
-                   uint64_t n, uint32_t data_format);
+                   uint32_t dst_spm_offset, uint64_t m, uint64_t k, uint64_t n,
+                   uint32_t data_format);
+
+int32_t wafer_fill(uint32_t dst_spm_offset, uint64_t value_bits,
+                   uint64_t element_count, uint32_t data_format);
+
+int32_t wafer_elementwise(uint32_t elementwise_kind, uint32_t dst_spm_offset,
+                          uint32_t src0_spm_offset, uint32_t src1_spm_offset,
+                          uint64_t element_count, uint32_t input_format,
+                          uint32_t output_format);
+
+int32_t wafer_reduce(uint32_t reduce_kind, uint32_t src_spm_offset,
+                     uint32_t dst_spm_offset, uint32_t dim, uint64_t n,
+                     uint64_t h, uint64_t w, uint64_t c, uint32_t data_format);
+
+int32_t wafer_convert(uint32_t src_format, uint32_t dst_format,
+                      uint32_t src_spm_offset, uint32_t dst_spm_offset,
+                      uint64_t element_count);
+
+int32_t wafer_dte_send(uint32_t buffer_spm_offset, uint32_t peer,
+                       uint64_t byte_count);
+int32_t wafer_dte_recv(uint32_t buffer_spm_offset, uint32_t peer,
+                       uint64_t byte_count);
+int32_t wafer_dte_wait(uint32_t token_count);
 
 int32_t wafer_local_fence(void);
 
@@ -45,6 +67,13 @@ enum {
   WAFER_CABI_CAPTURE_GATHER_SCATTER = 3,
   WAFER_CABI_CAPTURE_GEMM = 4,
   WAFER_CABI_CAPTURE_LOCAL_FENCE = 5,
+  WAFER_CABI_CAPTURE_FILL = 6,
+  WAFER_CABI_CAPTURE_ELEMENTWISE = 7,
+  WAFER_CABI_CAPTURE_REDUCE = 8,
+  WAFER_CABI_CAPTURE_CONVERT = 9,
+  WAFER_CABI_CAPTURE_DTE_SEND = 10,
+  WAFER_CABI_CAPTURE_DTE_RECV = 11,
+  WAFER_CABI_CAPTURE_DTE_WAIT = 12,
 };
 
 enum {
@@ -111,6 +140,68 @@ typedef struct wafer_cabi_gemm_capture {
   uint32_t wait_policy;
 } wafer_cabi_gemm_capture_t;
 
+typedef struct wafer_cabi_fill_capture {
+  uint32_t inter_type;
+  uint32_t opcode;
+  uint32_t dst;
+  uint64_t value_bits;
+  uint32_t elem_count;
+  uint32_t format;
+  uint32_t wait_policy;
+} wafer_cabi_fill_capture_t;
+
+typedef struct wafer_cabi_elementwise_capture {
+  uint32_t inter_type;
+  uint32_t opcode;
+  uint32_t kind;
+  uint32_t dst;
+  uint32_t src0;
+  uint32_t src1;
+  uint32_t elem_count;
+  uint32_t input_format;
+  uint32_t output_format;
+  uint32_t wait_policy;
+} wafer_cabi_elementwise_capture_t;
+
+typedef struct wafer_cabi_reduce_capture {
+  uint32_t inter_type;
+  uint32_t opcode;
+  uint32_t kind;
+  uint32_t src;
+  uint32_t dst;
+  uint32_t dim;
+  uint32_t n;
+  uint32_t h;
+  uint32_t w;
+  uint32_t c;
+  uint32_t format;
+  uint32_t wait_policy;
+} wafer_cabi_reduce_capture_t;
+
+typedef struct wafer_cabi_convert_capture {
+  uint32_t inter_type;
+  uint32_t opcode;
+  uint32_t src_format;
+  uint32_t dst_format;
+  uint32_t src;
+  uint32_t dst;
+  uint32_t elem_count;
+  uint32_t wait_policy;
+} wafer_cabi_convert_capture_t;
+
+typedef struct wafer_cabi_dte_capture {
+  uint32_t is_send;
+  uint32_t buffer;
+  uint32_t peer;
+  uint32_t bytes;
+  uint32_t wait_policy;
+} wafer_cabi_dte_capture_t;
+
+typedef struct wafer_cabi_dte_wait_capture {
+  uint32_t token_count;
+  uint32_t wait_policy;
+} wafer_cabi_dte_wait_capture_t;
+
 typedef struct wafer_cabi_local_fence_capture {
   uint32_t calls_local_wait;
   uint32_t wait_policy;
@@ -123,6 +214,12 @@ typedef struct wafer_cabi_last_issue {
     wafer_cabi_dma_capture_t dma;
     wafer_cabi_gather_scatter_capture_t gather_scatter;
     wafer_cabi_gemm_capture_t gemm;
+    wafer_cabi_fill_capture_t fill;
+    wafer_cabi_elementwise_capture_t elementwise;
+    wafer_cabi_reduce_capture_t reduce;
+    wafer_cabi_convert_capture_t convert;
+    wafer_cabi_dte_capture_t dte;
+    wafer_cabi_dte_wait_capture_t dte_wait;
     wafer_cabi_local_fence_capture_t local_fence;
   } payload;
 } wafer_cabi_last_issue_t;

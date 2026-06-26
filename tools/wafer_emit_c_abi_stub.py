@@ -18,9 +18,16 @@ from wafer_package_metadata import load_package_metadata, validate_package_metad
 OP_ENUMS = {
     "wafer.instr.rdma": "WAFER_INSTR_RDMA",
     "wafer.instr.wdma": "WAFER_INSTR_WDMA",
+    "wafer.instr.gather_scatter": "WAFER_INSTR_GATHER_SCATTER",
+    "wafer.instr.fill": "WAFER_INSTR_FILL",
     "wafer.instr.gemm": "WAFER_INSTR_GEMM",
     "wafer.instr.elementwise": "WAFER_INSTR_ELEMENTWISE",
     "wafer.instr.reduce": "WAFER_INSTR_REDUCE",
+    "wafer.instr.convert": "WAFER_INSTR_CONVERT",
+    "wafer.instr.dte_send": "WAFER_INSTR_DTE_SEND",
+    "wafer.instr.dte_recv": "WAFER_INSTR_DTE_RECV",
+    "wafer.instr.dte_wait": "WAFER_INSTR_DTE_WAIT",
+    "wafer.instr.local_fence": "WAFER_INSTR_LOCAL_FENCE",
 }
 
 ELEMENTWISE_ENUMS = {
@@ -36,12 +43,19 @@ ELEMENTWISE_ENUMS = {
     "rsqrt": "WAFER_ELEMENTWISE_RSQRT",
     "exp": "WAFER_ELEMENTWISE_EXP",
     "tanh": "WAFER_ELEMENTWISE_TANH",
+    "eq": "WAFER_ELEMENTWISE_EQ",
+    "ne": "WAFER_ELEMENTWISE_NE",
+    "lt": "WAFER_ELEMENTWISE_LT",
+    "le": "WAFER_ELEMENTWISE_LE",
+    "gt": "WAFER_ELEMENTWISE_GT",
+    "ge": "WAFER_ELEMENTWISE_GE",
 }
 
 REDUCE_ENUMS = {
     "sum": "WAFER_REDUCE_SUM",
     "max": "WAFER_REDUCE_MAX",
     "min": "WAFER_REDUCE_MIN",
+    "avg": "WAFER_REDUCE_AVG",
 }
 
 
@@ -70,14 +84,22 @@ def emit_c(metadata: dict) -> str:
         "",
         "typedef enum {",
         "  WAFER_WAIT_ISSUE_ONLY = 0,",
+        "  WAFER_WAIT_LOCAL_WAIT = 1,",
         "} wafer_wait_policy_t;",
         "",
         "typedef enum {",
         "  WAFER_INSTR_RDMA = 1,",
         "  WAFER_INSTR_WDMA = 2,",
-        "  WAFER_INSTR_GEMM = 3,",
-        "  WAFER_INSTR_ELEMENTWISE = 4,",
-        "  WAFER_INSTR_REDUCE = 5,",
+        "  WAFER_INSTR_GATHER_SCATTER = 3,",
+        "  WAFER_INSTR_FILL = 4,",
+        "  WAFER_INSTR_ELEMENTWISE = 5,",
+        "  WAFER_INSTR_REDUCE = 6,",
+        "  WAFER_INSTR_CONVERT = 7,",
+        "  WAFER_INSTR_GEMM = 8,",
+        "  WAFER_INSTR_DTE_SEND = 9,",
+        "  WAFER_INSTR_DTE_RECV = 10,",
+        "  WAFER_INSTR_DTE_WAIT = 11,",
+        "  WAFER_INSTR_LOCAL_FENCE = 12,",
         "} wafer_instruction_op_t;",
         "",
         "typedef enum {",
@@ -94,6 +116,12 @@ def emit_c(metadata: dict) -> str:
         "  WAFER_ELEMENTWISE_RSQRT = 10,",
         "  WAFER_ELEMENTWISE_EXP = 11,",
         "  WAFER_ELEMENTWISE_TANH = 12,",
+        "  WAFER_ELEMENTWISE_EQ = 13,",
+        "  WAFER_ELEMENTWISE_NE = 14,",
+        "  WAFER_ELEMENTWISE_LT = 15,",
+        "  WAFER_ELEMENTWISE_LE = 16,",
+        "  WAFER_ELEMENTWISE_GT = 17,",
+        "  WAFER_ELEMENTWISE_GE = 18,",
         "} wafer_elementwise_kind_t;",
         "",
         "typedef enum {",
@@ -101,6 +129,7 @@ def emit_c(metadata: dict) -> str:
         "  WAFER_REDUCE_SUM = 1,",
         "  WAFER_REDUCE_MAX = 2,",
         "  WAFER_REDUCE_MIN = 3,",
+        "  WAFER_REDUCE_AVG = 4,",
         "} wafer_reduce_kind_t;",
         "",
         "typedef struct {",
@@ -152,11 +181,15 @@ def emit_c(metadata: dict) -> str:
             str(dim) for dim in padded_reduce_dimensions
         )
         reduce_init_value = format_c_float(op.get("init_value", 0))
+        wait_policy = {
+            "issue_only": "WAFER_WAIT_ISSUE_ONLY",
+            "local_wait": "WAFER_WAIT_LOCAL_WAIT",
+        }[op.get("wait_policy", "issue_only")]
         lines.append(
             f"  {{{enum_name}, {bytes_value}u, {m}, {k}, {n}, {batch_count}, "
             f"{elementwise_kind}, {reduce_kind}, {len(reduce_dimensions)}u, "
             f"{{{reduce_dimensions_text}}}, {reduce_init_value}, "
-            "WAFER_WAIT_ISSUE_ONLY},"
+            f"{wait_policy}}},"
         )
 
     lines.extend(

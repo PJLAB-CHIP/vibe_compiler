@@ -1,5 +1,12 @@
 // RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-groups-to-llvm)' %s | FileCheck %s
 
+wafer.target.topology @default
+    {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+     tile_grid = array<i64: 1, 2>, unavailable_tiles = array<i64>}
+wafer.execution.mesh @default_mesh
+    {topology = @default, axes = ["rank"], shape = array<i64: 2>,
+     policy = "all_available", endpoints = array<i64>}
+
 func.func @boundary_tiled_matmul_group(%lhs: tensor<4x8xf16>,
                                        %rhs: tensor<8x8xf16>,
                                        %out: tensor<4x8xf16>)
@@ -23,6 +30,8 @@ func.func @boundary_tiled_matmul_group(%lhs: tensor<4x8xf16>,
   return %group : tensor<4x8xf16>
 }
 
+// CHECK-NOT: wafer.target.topology
+// CHECK-NOT: wafer.execution.mesh
 // CHECK-LABEL: llvm.func @boundary_tiled_matmul_group_abi
 // CHECK-NOT: wafer.
 // CHECK-NOT: func.func
