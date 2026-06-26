@@ -1,0 +1,19 @@
+# RUN: clang -shared -fPIC %S/Inputs/fake-tx-runtime.c -o %t.libhpgr.so
+# RUN: wafer-run --package-metadata %S/../Tools/valid-model-package.json \
+# RUN:   --entrypoint debug_kernel --runtime-library %t.libhpgr.so | FileCheck %s
+# RUN: sed '/txLaunchKernel/,$d' %S/Inputs/fake-tx-runtime.c > %t.missing-launch.c
+# RUN: clang -shared -fPIC %t.missing-launch.c -o %t.missing-launch.so
+# RUN: not wafer-run --package-metadata %S/../Tools/valid-model-package.json \
+# RUN:   --entrypoint debug_kernel --runtime-library %t.missing-launch.so 2>&1 \
+# RUN:   | FileCheck %s --check-prefix=MISSING
+
+# CHECK: backend: tx-host
+# CHECK: package: model_package_sample
+# CHECK: runtime_mode: tx
+# CHECK: completion_source: runtime_stream_wait
+# CHECK: selected_entrypoint: debug_kernel tx.module
+# CHECK: tx_runtime_library: {{.*}}libhpgr.so
+# CHECK: tx_runtime_symbols: ok
+# CHECK: board_launch_gate: not executed
+
+# MISSING: error: tx runtime library is missing required symbol(s) for tx.module: txLaunchKernel

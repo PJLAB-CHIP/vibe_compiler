@@ -4,11 +4,15 @@ add_executable(WaferUnitTests
   ABI/TileAbiTest.cpp
   Dialect/Wafer/WaferDialectTest.cpp
   Dialect/Wafer/WaferInterfacesTest.cpp
+  Runtime/HostRuntimeTest.cpp
 )
+add_library(WaferFakeTxRuntime SHARED Runtime/FakeTxRuntime.cpp)
+add_dependencies(WaferUnitTests WaferFakeTxRuntime)
 target_link_libraries(WaferUnitTests
   PRIVATE
   WaferABI
   WaferIR
+  WaferRuntime
   WaferPipelines
   WaferTransforms
   MLIRArithDialect
@@ -21,6 +25,10 @@ target_link_libraries(WaferUnitTests
   MLIRSCFDialect
   MLIRTensorDialect
   GTest::gtest_main
+)
+target_compile_definitions(WaferUnitTests
+  PRIVATE
+  WAFER_FAKE_TX_RUNTIME_PATH="$<TARGET_FILE:WaferFakeTxRuntime>"
 )
 
 if(WAFER_ENABLE_IMPORTER_DEPS)

@@ -323,9 +323,25 @@ RuntimeSession 包含四类结构化 facts：
 
 Dry-run backend 必须打印 RuntimeSession 的 binding/module/entrypoint/completion plan，作为无卡
 contract test。`fake-tx` backend 只把同一 RuntimeSession 的 `tx.module` / `tx.cluster` launch plan
-展开成伪 TX 调用序列；它不单独重建 binding 顺序。`tx` backend 在无卡环境先做 provider library
-discovery 和 selected entrypoint required symbol check，真实 allocate/import/query/bind 和 launch
-保留给 board gate。
+展开成伪 TX 调用序列；它不单独重建 binding 顺序。该 Python 工具只用于 package/no-card 调试，
+不作为真实 host runtime implementation。
+
+### 5.2 C++ Host Runtime Boundary
+
+真实 host runtime 主路径落在 C/C++，不是 Python 脚本。V0 C++ runtime 的第一层职责是：
+
+- 读取已由 package metadata validator 覆盖的 package metadata，构造 host-side package/session facts：
+  package name、runtime mode、completion source、module descriptors 和 selected entrypoint descriptor。
+- 动态发现 HPGR / `tx_runtime` runtime library。默认实现不能在本地 build 时硬链接板端库；无卡和
+  CI 环境只做 `dlopen` / symbol gate。
+- 根据 selected entrypoint 的 executor 检查 required symbols：base device/memory/copy/completion
+  symbols 加上 `tx.module` / `tx.cluster` / `tx.model` / `tx.graph` 的 executor-specific symbols。
+- 在未启用真实 board gate 时明确停止，不执行 fake launch，也不把 symbol 存在解释成 kernel
+  completion。
+
+后续 board gate 才实现真实 `set_device`、allocate/import/query/bind、H2D/D2H、module load/function
+lookup、launch、host completion、device-side completion evidence 和 error propagation。Python
+`tools/wafer_runtime_adapter.py` 继续作为 no-card checker，不再承载 provider 抽象。
 
 当前 `tools/wafer_package_metadata.py` 负责验证和 roundtrip runtime package metadata schema。schema
 记录 model interface、package name、model ABI、modules、entrypoints、DDR external binding bytes、
@@ -373,8 +389,8 @@ package metadata，构造 model binding / runtime session / entrypoint plan。`d
 仍是 `descriptor_only`，fake backend 必须报结构化错误；若选择 `tx.module`，fake backend
 验证 `txSetDevice`、`txMalloc`、`txMemcpy`、`txModuleLoad`、`txModuleGetFunction`、`txLaunchKernel` 和
 completion wait 的顺序。`tx` backend 在无卡环境只做 runtime library discovery 和 entrypoint-specific
-required symbol check。真实板端执行、错误传播和 device-side completion 仍属于 gated board test，
-不进入默认 lit。
+required symbol check。真实 host runtime implementation 由 C++ `WaferRuntime` / `wafer-run` 承载；
+真实板端执行、错误传播和 device-side completion 仍属于 gated board test，不进入默认 lit。
 
 当前 C ABI stub 不再从 package metadata 生成 tile-specific launch argument table。endpoint / block metadata 必须由
 后续 topology/execution-mesh、program parameter shard metadata/resource view 和薄 launch/block binding 派生，不能由
@@ -459,6 +475,9 @@ V0 验证：
 - runtime adapter no-card contract 用 Python unittest / ctest 覆盖 dry-run、entrypoint selection、
   fake-tx command construction、BPM descriptor-only rejection、missing tx runtime library diagnostics
   和 stub completion rejection；不放入默认 lit。
+- C++ host runtime library 用 unit tests 覆盖 package metadata intake、selected entrypoint lookup、
+  executor-specific required symbol gate 和 fake shared-library dynamic loading。该 gate 不执行 board
+  launch，也不声明 completion。
 - model interface 与 compiled function ABI / selected entrypoint binding order 一致。
 - 当前 schema v2 不保存 endpoint table；若后续启用 derived endpoint section，必须覆盖所有
   launched tile 且能从 execution mesh / topology 重算。

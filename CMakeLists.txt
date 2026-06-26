@@ -23,6 +23,7 @@ add_subdirectory(include/Wafer/Transforms)
 add_subdirectory(lib/Wafer)
 add_subdirectory(tools/wafer-opt)
 add_subdirectory(tools/wafer-compile-stablehlo)
+add_subdirectory(tools/wafer-run)
 
 enable_testing()
 add_subdirectory(test)
