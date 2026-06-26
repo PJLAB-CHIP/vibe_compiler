@@ -322,29 +322,10 @@ RuntimeSession 包含四类结构化 facts：
   validator 的 completion source；stub shielding 在 package load 前生效。
 
 Dry-run backend 必须打印 RuntimeSession 的 binding/module/entrypoint/completion plan，作为无卡
-contract test。`fake-tx` backend 通过同一 RuntimeSession 展开 provider call trace，并覆盖
-`tx.module` / `tx.cluster` / materialized `tx.model` / `tx.graph` 的伪 TX 调用序列；它不单独重建
-binding 顺序。`tx` backend 在无卡环境先做 provider library discovery 和 selected entrypoint
-required symbol check，真实 allocate/import/query/bind 和 launch 保留给 board gate。
-
-### 5.2 TxRuntimeProvider Contract
-
-RuntimeSession 的执行面通过 `TxRuntimeProvider` 抽象承载。provider 是 host runtime adapter 层对象，
-不进入 package metadata，不写回 compiler IR，也不持久化 provider-private handle。V0 provider
-接口覆盖：
-
-- device：`set_device`。
-- binding lifecycle：`allocate_or_import`、`allocate`、`query`、`bind`、`copy_h2d`、`copy_d2h`。
-- module/kernel：`load_module`、`get_function`、`launch_kernel`、`launch_cluster_kernel`。
-- model/graph：`launch_model`、`load_graph`。
-- completion：`wait_completion`。
-
-`FakeTxRuntimeProvider` 只记录同一套 provider call trace，用于 no-card unit tests。`CtypesTxRuntimeProvider`
-只负责 `libhpgr.so` / `libtx_runtime.so` discovery、required symbol binding 和 unsupported executor
-diagnostics；默认测试环境不执行真实 board launch。真实 board gate 必须显式启用，并在有卡环境中验证
-allocation、module load/function lookup、launch、host completion、device-side completion wait 和
-error propagation。没有真实 runtime library、缺 symbol、descriptor-only BPM 或 legacy/stub fallback
-都必须以结构化错误停止，不能退化为 fake success。
+contract test。`fake-tx` backend 只把同一 RuntimeSession 的 `tx.module` / `tx.cluster` launch plan
+展开成伪 TX 调用序列；它不单独重建 binding 顺序。`tx` backend 在无卡环境先做 provider library
+discovery 和 selected entrypoint required symbol check，真实 allocate/import/query/bind 和 launch
+保留给 board gate。
 
 当前 `tools/wafer_package_metadata.py` 负责验证和 roundtrip runtime package metadata schema。schema
 记录 model interface、package name、model ABI、modules、entrypoints、DDR external binding bytes、
@@ -387,15 +368,13 @@ DDR external binding byte summary；`model.interface` 的 user-visible name、sh
 
 `tools/wafer_runtime_adapter.py` 是 no-card runtime adapter contract gate：它消费已经 validate 的
 package metadata，构造 model binding / runtime session / entrypoint plan。`dry-run` backend
-打印模型级 binding、modules、runtime requirements 和 entrypoint descriptors；`fake-tx` backend 用于
-本地 unit test 验证同一 RuntimeSession 的 provider lifecycle trace 和 selected executor command
-construction。若选择 `tx.model` 但 BPM descriptor 仍是 `descriptor_only`，fake backend 必须报结构化
-错误；若选择 `legacy.tsm`，必须拒绝并指向 legacy board gate。`fake-tx` 覆盖 `txSetDevice`、
-allocation/import/query/bind、H2D/D2H copy、`txModuleLoad`、`txModuleGetFunction`、
-`txLaunchKernel` / `txLaunchClusterKernel`、materialized `txLaunchModel`、`txLoadGraph` 和 completion
-wait 的顺序。`tx` backend 在无卡环境只做 runtime library discovery 和 entrypoint-specific required
-symbol check，并明确报告 board launch gate 未执行。真实板端执行、错误传播和 device-side completion
-仍属于 gated board test，不进入默认 lit。
+打印模型级 binding、modules、runtime requirements 和 entrypoint descriptors；`fake-tx` backend 只用于
+本地 unit test 验证选定 entrypoint 的 command construction。若选择 `tx.model` 但 BPM descriptor
+仍是 `descriptor_only`，fake backend 必须报结构化错误；若选择 `tx.module`，fake backend
+验证 `txSetDevice`、`txMalloc`、`txMemcpy`、`txModuleLoad`、`txModuleGetFunction`、`txLaunchKernel` 和
+completion wait 的顺序。`tx` backend 在无卡环境只做 runtime library discovery 和 entrypoint-specific
+required symbol check。真实板端执行、错误传播和 device-side completion 仍属于 gated board test，
+不进入默认 lit。
 
 当前 C ABI stub 不再从 package metadata 生成 tile-specific launch argument table。endpoint / block metadata 必须由
 后续 topology/execution-mesh、program parameter shard metadata/resource view 和薄 launch/block binding 派生，不能由
@@ -478,9 +457,8 @@ V0 验证：
   metadata input 只能作为 schema negative / roundtrip 覆盖。
 - package metadata schema roundtrip。该类 compiler/tool golden 继续用 lit 覆盖。
 - runtime adapter no-card contract 用 Python unittest / ctest 覆盖 dry-run、entrypoint selection、
-  fake-tx provider lifecycle / command construction、cluster / graph / materialized model executor、
-  BPM descriptor-only rejection、legacy gate rejection、missing tx runtime library diagnostics、
-  entrypoint-specific missing symbol diagnostics 和 stub completion rejection；不放入默认 lit。
+  fake-tx command construction、BPM descriptor-only rejection、missing tx runtime library diagnostics
+  和 stub completion rejection；不放入默认 lit。
 - model interface 与 compiled function ABI / selected entrypoint binding order 一致。
 - 当前 schema v2 不保存 endpoint table；若后续启用 derived endpoint section，必须覆盖所有
   launched tile 且能从 execution mesh / topology 重算。
