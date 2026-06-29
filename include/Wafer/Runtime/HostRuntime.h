@@ -7,6 +7,8 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
+#include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -37,10 +39,49 @@ struct RuntimeEntrypoint {
   std::vector<std::string> bindingOrder;
 };
 
-struct RuntimePackage {
+struct RuntimeBinding {
   std::string name;
+  std::string role;
+  std::uint64_t bytes = 0;
+  std::vector<std::string> lifecycle;
+  bool readOnly = false;
+  bool hostVisible = false;
+  std::string source;
+};
+
+struct RuntimeLaunchArg {
+  std::size_t index = 0;
+  std::string bindingName;
+  std::string role;
+  std::uint64_t bytes = 0;
+};
+
+struct RuntimeSession {
+  std::string packageName;
   std::string runtimeMode;
   std::string completionSource;
+  std::vector<RuntimeBinding> bindings;
+  std::vector<RuntimeLaunchArg> launchArgs;
+  std::string entrypointName;
+  EntrypointExecutor executor = EntrypointExecutor::TxModule;
+  std::string launchApi;
+  bool hasModule = false;
+  std::string moduleName;
+  std::string moduleFormat;
+  std::string modulePath;
+  std::string function;
+  std::string bpmState;
+  std::string modSymbol;
+  std::uint64_t argBytes = 0;
+};
+
+struct RuntimePackage {
+  std::string name;
+  std::string modelId;
+  std::string modelAbi;
+  std::string runtimeMode;
+  std::string completionSource;
+  std::vector<RuntimeBinding> bindings;
   std::vector<RuntimeModule> modules;
   std::vector<RuntimeEntrypoint> entrypoints;
 
@@ -58,6 +99,14 @@ llvm::Expected<EntrypointExecutor>
 parseEntrypointExecutor(llvm::StringRef executor);
 
 llvm::StringRef stringifyEntrypointExecutor(EntrypointExecutor executor);
+
+llvm::StringRef launchApiForEntrypointExecutor(EntrypointExecutor executor);
+
+llvm::Expected<RuntimeSession>
+buildRuntimeSession(const RuntimePackage &package,
+                    const RuntimeEntrypoint &entrypoint);
+
+llvm::Error validateTxHostRuntimePackage(const RuntimePackage &package);
 
 std::vector<std::string>
 requiredTxRuntimeSymbols(const RuntimeEntrypoint *entrypoint = nullptr);

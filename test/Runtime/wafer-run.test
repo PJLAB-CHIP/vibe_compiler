@@ -1,6 +1,21 @@
 # RUN: clang -shared -fPIC %S/Inputs/fake-tx-runtime.c -o %t.libhpgr.so
 # RUN: wafer-run --package-metadata %S/../Tools/valid-model-package.json \
 # RUN:   --entrypoint debug_kernel --runtime-library %t.libhpgr.so | FileCheck %s
+# RUN: %python -c 'import json, pathlib, sys; data=json.loads(pathlib.Path(sys.argv[1]).read_text()); data["entrypoints"][1]["binding_order"][0] = "missing_binding"; pathlib.Path(sys.argv[2]).write_text(json.dumps(data), encoding="utf-8")' \
+# RUN:   %S/../Tools/valid-model-package.json %t.bad-binding.json
+# RUN: not wafer-run --package-metadata %t.bad-binding.json \
+# RUN:   --entrypoint debug_kernel --runtime-library %t.libhpgr.so 2>&1 \
+# RUN:   | FileCheck %s --check-prefix=BAD-BINDING
+# RUN: not wafer-run --package-metadata %S/../Tools/valid-model-package.json \
+# RUN:   --entrypoint model_bpm --runtime-library %t.libhpgr.so 2>&1 \
+# RUN:   | FileCheck %s --check-prefix=DESCRIPTOR-ONLY
+# RUN: not wafer-run --package-metadata %S/../Tools/invalid-completion-package.json \
+# RUN:   --entrypoint debug_kernel --runtime-library %t.libhpgr.so 2>&1 \
+# RUN:   | FileCheck %s --check-prefix=STUB-COMPLETION
+# RUN: sed 's/"mode": "tx"/"mode": "legacy_tsm"/' %S/../Tools/valid-model-package.json > %t.legacy-mode.json
+# RUN: not wafer-run --package-metadata %t.legacy-mode.json \
+# RUN:   --entrypoint debug_kernel --runtime-library %t.libhpgr.so 2>&1 \
+# RUN:   | FileCheck %s --check-prefix=LEGACY-MODE
 # RUN: sed '/txLaunchKernel/,$d' %S/Inputs/fake-tx-runtime.c > %t.missing-launch.c
 # RUN: clang -shared -fPIC %t.missing-launch.c -o %t.missing-launch.so
 # RUN: not wafer-run --package-metadata %S/../Tools/valid-model-package.json \
@@ -12,8 +27,27 @@
 # CHECK: runtime_mode: tx
 # CHECK: completion_source: runtime_stream_wait
 # CHECK: selected_entrypoint: debug_kernel tx.module
+# CHECK: model: model_package_sample abi=wafer-cabi-v0
+# CHECK: session_binding: lhs role=input bytes=16 lifecycle=import_or_allocate,query,bind,copy_h2d read_only=true host_visible=true
+# CHECK: session_binding: out role=output bytes=16 lifecycle=allocate,query,bind,copy_d2h read_only=false host_visible=true
+# CHECK: session_binding: tmp role=workspace bytes=16 lifecycle=allocate,query,bind read_only=false host_visible=false
+# CHECK: session_binding: rhs_resident role=resident_constant bytes=16 lifecycle=allocate,query,bind,copy_h2d source=launch_input:rhs read_only=true host_visible=false
+# CHECK: module_resolve: kernel format=tx.kcore path=model_package.so
+# CHECK: launch_arg: 0 lhs role=input bytes=16
+# CHECK: launch_arg: 2 out role=output bytes=16
+# CHECK: launch_arg: 4 rhs_resident role=resident_constant bytes=16
+# CHECK: entrypoint_plan: debug_kernel executor=tx.module launch_api=txLaunchKernel module=kernel function=model_package_sample_abi arg_bytes=80
+# CHECK: completion_plan: wait runtime_stream_wait
 # CHECK: tx_runtime_library: {{.*}}libhpgr.so
 # CHECK: tx_runtime_symbols: ok
 # CHECK: board_launch_gate: not executed
+
+# BAD-BINDING: error: entrypoint debug_kernel binding_order[0] does not name a runtime binding: missing_binding
+
+# DESCRIPTOR-ONLY: error: tx.model entrypoint model_bpm requires a materialized BPM descriptor
+
+# STUB-COMPLETION: error: completion source is a known stub fence
+
+# LEGACY-MODE: error: tx-host backend requires runtime.mode tx
 
 # MISSING: error: tx runtime library is missing required symbol(s) for tx.module: txLaunchKernel

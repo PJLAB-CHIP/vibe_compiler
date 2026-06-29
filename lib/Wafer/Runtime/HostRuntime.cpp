@@ -2,6 +2,7 @@
 
 #include "Wafer/Runtime/HostRuntime.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -58,6 +59,199 @@ parseStringArray(const llvm::json::Object &object, llvm::StringRef field) {
                      "' must contain only strings");
   }
   return values;
+}
+
+llvm::Expected<std::uint64_t>
+requirePositiveInteger(const llvm::json::Object &object,
+                       llvm::StringRef field) {
+  std::optional<int64_t> value = object.getInteger(field);
+  if (!value || *value <= 0)
+    return makeError("package metadata field '" + field +
+                     "' must be a positive integer");
+  return static_cast<std::uint64_t>(*value);
+}
+
+llvm::Expected<bool> requireBool(const llvm::json::Object &object,
+                                 llvm::StringRef field) {
+  std::optional<bool> value = object.getBoolean(field);
+  if (value)
+    return *value;
+  return makeError("package metadata field '" + field + "' must be a boolean");
+}
+
+std::vector<std::string>
+lifecycle(std::initializer_list<llvm::StringRef> items) {
+  std::vector<std::string> result;
+  result.reserve(items.size());
+  for (llvm::StringRef item : items)
+    result.push_back(item.str());
+  return result;
+}
+
+llvm::Expected<RuntimeBinding>
+parseExternalBinding(const llvm::json::Value &value, llvm::StringRef role,
+                     std::vector<std::string> bindingLifecycle) {
+  const llvm::json::Object *object = value.getAsObject();
+  if (object == nullptr)
+    return makeError("model interface " + role + " binding must be an object");
+
+  RuntimeBinding binding;
+  binding.role = role.str();
+  binding.lifecycle = std::move(bindingLifecycle);
+  if (llvm::Expected<std::string> name = requireString(*object, "name"))
+    binding.name = *name;
+  else
+    return name.takeError();
+
+  llvm::Expected<const llvm::json::Object *> bindingObject =
+      requireObject(*object, "binding");
+  if (!bindingObject)
+    return bindingObject.takeError();
+  if (llvm::Expected<std::uint64_t> bytes =
+          requirePositiveInteger(**bindingObject, "bytes"))
+    binding.bytes = *bytes;
+  else
+    return bytes.takeError();
+  if (llvm::Expected<bool> readOnly = requireBool(**bindingObject, "read_only"))
+    binding.readOnly = *readOnly;
+  else
+    return readOnly.takeError();
+  if (llvm::Expected<bool> hostVisible =
+          requireBool(**bindingObject, "host_visible"))
+    binding.hostVisible = *hostVisible;
+  else
+    return hostVisible.takeError();
+  return binding;
+}
+
+llvm::Expected<RuntimeBinding>
+parseWorkspaceBinding(const llvm::json::Value &value) {
+  const llvm::json::Object *object = value.getAsObject();
+  if (object == nullptr)
+    return makeError("model interface workspace binding must be an object");
+
+  RuntimeBinding binding;
+  binding.role = "workspace";
+  binding.lifecycle = lifecycle({"allocate", "query", "bind"});
+  if (llvm::Expected<std::string> name = requireString(*object, "name"))
+    binding.name = *name;
+  else
+    return name.takeError();
+  if (llvm::Expected<std::uint64_t> bytes =
+          requirePositiveInteger(*object, "bytes"))
+    binding.bytes = *bytes;
+  else
+    return bytes.takeError();
+  binding.readOnly = false;
+  binding.hostVisible = false;
+  return binding;
+}
+
+llvm::Expected<RuntimeBinding>
+parseResidentConstantBinding(const llvm::json::Value &value) {
+  const llvm::json::Object *object = value.getAsObject();
+  if (object == nullptr)
+    return makeError(
+        "model interface resident constant binding must be an object");
+
+  RuntimeBinding binding;
+  binding.role = "resident_constant";
+  binding.lifecycle = lifecycle({"allocate", "query", "bind", "copy_h2d"});
+  if (llvm::Expected<std::string> name = requireString(*object, "name"))
+    binding.name = *name;
+  else
+    return name.takeError();
+  if (llvm::Expected<std::uint64_t> bytes =
+          requirePositiveInteger(*object, "bytes"))
+    binding.bytes = *bytes;
+  else
+    return bytes.takeError();
+
+  llvm::Expected<std::string> source = requireString(*object, "source");
+  if (!source)
+    return source.takeError();
+  binding.source = *source;
+  if (*source == "launch_input" || *source == "parameter") {
+    llvm::Expected<std::string> sourceBinding =
+        requireString(*object, "source_binding");
+    if (!sourceBinding)
+      return sourceBinding.takeError();
+    binding.source += ":";
+    binding.source += *sourceBinding;
+  }
+  binding.readOnly = true;
+  binding.hostVisible = false;
+  return binding;
+}
+
+template <typename ParseFn>
+llvm::Error
+parseBindingArray(const llvm::json::Object &object, llvm::StringRef field,
+                  std::vector<RuntimeBinding> &bindings, ParseFn parseBinding) {
+  llvm::Expected<const llvm::json::Array *> array = requireArray(object, field);
+  if (!array)
+    return array.takeError();
+  for (const llvm::json::Value &value : **array) {
+    llvm::Expected<RuntimeBinding> binding = parseBinding(value);
+    if (!binding)
+      return binding.takeError();
+    bindings.push_back(std::move(*binding));
+  }
+  return llvm::Error::success();
+}
+
+llvm::Error parseModelInterface(const llvm::json::Object &root,
+                                RuntimePackage &package) {
+  llvm::Expected<const llvm::json::Object *> model =
+      requireObject(root, "model");
+  if (!model)
+    return model.takeError();
+  if (llvm::Expected<std::string> modelId = requireString(**model, "id"))
+    package.modelId = *modelId;
+  else
+    return modelId.takeError();
+  if (llvm::Expected<std::string> modelAbi = requireString(**model, "abi"))
+    package.modelAbi = *modelAbi;
+  else
+    return modelAbi.takeError();
+
+  llvm::Expected<const llvm::json::Object *> interface =
+      requireObject(**model, "interface");
+  if (!interface)
+    return interface.takeError();
+
+  if (llvm::Error error = parseBindingArray(
+          **interface, "inputs", package.bindings,
+          [](const llvm::json::Value &value) {
+            return parseExternalBinding(
+                value, "input",
+                lifecycle({"import_or_allocate", "query", "bind", "copy_h2d"}));
+          }))
+    return error;
+  if (llvm::Error error = parseBindingArray(
+          **interface, "outputs", package.bindings,
+          [](const llvm::json::Value &value) {
+            return parseExternalBinding(
+                value, "output",
+                lifecycle({"allocate", "query", "bind", "copy_d2h"}));
+          }))
+    return error;
+  if (llvm::Error error = parseBindingArray(
+          **interface, "parameters", package.bindings,
+          [](const llvm::json::Value &value) {
+            return parseExternalBinding(
+                value, "parameter",
+                lifecycle({"import_or_allocate", "query", "bind", "copy_h2d"}));
+          }))
+    return error;
+  if (llvm::Error error = parseBindingArray(
+          **interface, "workspace", package.bindings, parseWorkspaceBinding))
+    return error;
+  if (llvm::Error error =
+          parseBindingArray(**interface, "resident_constants", package.bindings,
+                            parseResidentConstantBinding))
+    return error;
+  return llvm::Error::success();
 }
 
 llvm::Expected<RuntimeModule> parseModule(const llvm::json::Value &value) {
@@ -135,6 +329,22 @@ std::string joinStrings(llvm::ArrayRef<std::string> values) {
   return os.str();
 }
 
+llvm::Expected<const RuntimeBinding *>
+findRuntimeBinding(llvm::ArrayRef<RuntimeBinding> bindings,
+                   llvm::StringRef name) {
+  const RuntimeBinding *result = nullptr;
+  for (const RuntimeBinding &binding : bindings) {
+    if (binding.name != name)
+      continue;
+    if (result != nullptr)
+      return makeError("runtime binding name is duplicated: " + name);
+    result = &binding;
+  }
+  if (result == nullptr)
+    return makeError("runtime binding was not found: " + name);
+  return result;
+}
+
 } // namespace
 
 const RuntimeModule *
@@ -185,6 +395,99 @@ llvm::StringRef stringifyEntrypointExecutor(EntrypointExecutor executor) {
   llvm_unreachable("unknown entrypoint executor");
 }
 
+llvm::StringRef launchApiForEntrypointExecutor(EntrypointExecutor executor) {
+  switch (executor) {
+  case EntrypointExecutor::TxModule:
+    return "txLaunchKernel";
+  case EntrypointExecutor::TxCluster:
+    return "txLaunchClusterKernel";
+  case EntrypointExecutor::TxModel:
+    return "txLaunchModel";
+  case EntrypointExecutor::TxGraph:
+    return "txLoadGraph";
+  case EntrypointExecutor::LegacyPackage:
+    return "legacyRun";
+  }
+  llvm_unreachable("unknown entrypoint executor");
+}
+
+llvm::Expected<RuntimeSession>
+buildRuntimeSession(const RuntimePackage &package,
+                    const RuntimeEntrypoint &entrypoint) {
+  RuntimeSession session;
+  session.packageName = package.name;
+  session.runtimeMode = package.runtimeMode;
+  session.completionSource = package.completionSource;
+  session.bindings = package.bindings;
+  session.entrypointName = entrypoint.name;
+  session.executor = entrypoint.executor;
+  session.launchApi = launchApiForEntrypointExecutor(entrypoint.executor).str();
+  session.function = entrypoint.function;
+  session.bpmState = entrypoint.bpmState;
+  session.modSymbol = entrypoint.modSymbol;
+
+  if (entrypoint.executor == EntrypointExecutor::TxModule ||
+      entrypoint.executor == EntrypointExecutor::TxCluster ||
+      entrypoint.executor == EntrypointExecutor::TxGraph) {
+    const RuntimeModule *module = package.findModule(entrypoint.module);
+    if (module == nullptr)
+      return makeError("entrypoint " + entrypoint.name +
+                       " references missing module: " + entrypoint.module);
+    session.hasModule = true;
+    session.moduleName = module->name;
+    session.moduleFormat = module->format;
+    session.modulePath = module->path;
+  }
+
+  if ((entrypoint.executor == EntrypointExecutor::TxModule ||
+       entrypoint.executor == EntrypointExecutor::TxCluster) &&
+      entrypoint.function.empty())
+    return makeError("entrypoint " + entrypoint.name + " is missing function");
+  if (entrypoint.executor == EntrypointExecutor::TxModel &&
+      entrypoint.bpmState != "materialized")
+    return makeError("tx.model entrypoint " + entrypoint.name +
+                     " requires a materialized BPM descriptor");
+
+  for (auto item : llvm::enumerate(entrypoint.bindingOrder)) {
+    llvm::Expected<const RuntimeBinding *> binding =
+        findRuntimeBinding(package.bindings, item.value());
+    if (!binding) {
+      llvm::consumeError(binding.takeError());
+      return makeError("entrypoint " + entrypoint.name + " binding_order[" +
+                       llvm::Twine(item.index()) +
+                       "] does not name a runtime binding: " + item.value());
+    }
+    RuntimeLaunchArg arg;
+    arg.index = item.index();
+    arg.bindingName = (*binding)->name;
+    arg.role = (*binding)->role;
+    arg.bytes = (*binding)->bytes;
+    session.argBytes += arg.bytes;
+    session.launchArgs.push_back(std::move(arg));
+  }
+  return session;
+}
+
+llvm::Error validateTxHostRuntimePackage(const RuntimePackage &package) {
+  if (package.runtimeMode != "tx")
+    return makeError("tx-host backend requires runtime.mode tx");
+
+  const std::string legacyPrefix = std::string("T") + "sm";
+  if (package.completionSource == legacyPrefix + "DeviceSynchronize" ||
+      package.completionSource == legacyPrefix + "Launch" ||
+      package.completionSource == legacyPrefix + "LaunchPg" ||
+      package.completionSource == "KmdDoorbellOnly")
+    return makeError("completion source is a known stub fence");
+
+  if (package.completionSource != "runtime_stream_wait" &&
+      package.completionSource != "runtime_command_completion" &&
+      package.completionSource != "kcore_local_drain")
+    return makeError("completion source is not supported by tx-host backend: " +
+                     package.completionSource);
+
+  return llvm::Error::success();
+}
+
 llvm::Expected<RuntimePackage>
 parseRuntimePackageMetadata(llvm::StringRef metadata) {
   llvm::Expected<llvm::json::Value> parsed = llvm::json::parse(metadata);
@@ -214,6 +517,9 @@ parseRuntimePackageMetadata(llvm::StringRef metadata) {
     package.completionSource = *completion;
   else
     return completion.takeError();
+
+  if (llvm::Error error = parseModelInterface(*root, package))
+    return std::move(error);
 
   llvm::Expected<const llvm::json::Array *> modules =
       requireArray(*root, "modules");

@@ -336,7 +336,10 @@ contract test。`fake-tx` 是 no-card test backend，只把同一 RuntimeSession
 真实 host runtime 主路径落在 C/C++，不是 Python 脚本。V0 C++ runtime 的第一层职责是：
 
 - 读取已由 package metadata validator 覆盖的 package metadata，构造 host-side package/session facts：
-  package name、runtime mode、completion source、module descriptors 和 selected entrypoint descriptor。
+  package name、model ABI、runtime mode、completion source、model binding lifecycle、module descriptors、
+  selected entrypoint descriptor、launch argument order 和 launch argument byte sum。
+- 在 no-card 阶段验证 selected entrypoint 的 `binding_order` 能解析到 model interface binding，
+  拒绝 `descriptor_only` BPM、known stub completion source 和不属于 tx-host 的 runtime mode。
 - 动态发现 HPGR / `tx_runtime` runtime library。默认实现不能在本地 build 时硬链接板端库；无卡和
   CI 环境只做 `dlopen` / symbol gate。
 - 根据 selected entrypoint 的 executor 检查 required symbols：base device/memory/copy/completion
@@ -486,8 +489,9 @@ V0 验证：
 - runtime adapter no-card contract 用 Python unittest / ctest 覆盖 dry-run、entrypoint selection、
   fake-tx command construction、BPM descriptor-only rejection、missing tx runtime library diagnostics
   和 stub completion rejection；不放入默认 lit。
-- C++ host runtime library 用 unit tests 覆盖 package metadata intake、selected entrypoint lookup、
-  executor-specific required symbol gate 和 test shared-library dynamic loading。该 gate 不执行 board
+- C++ host runtime library 用 lit 覆盖 package metadata intake、RuntimeSession binding lifecycle、
+  selected entrypoint lookup、`binding_order` 解析、descriptor-only BPM / stub completion / runtime-mode
+  shielding、executor-specific required symbol gate 和 test shared-library dynamic loading。该 gate 不执行 board
   launch，也不声明 completion。
 - no-card E2E runtime gate 用 lit 覆盖 `wafer-opt` instruction/LLVM outputs -> `mlir-translate`
   LLVM IR -> package metadata auto-export / validation -> C++ `wafer-run` -> test tx runtime shared library
