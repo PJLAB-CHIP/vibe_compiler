@@ -1,6 +1,6 @@
 # Wafer Compiler Progress
 
-更新时间：2026-06-26
+更新时间：2026-06-29
 
 本文件只记录当前看板、主线 pipeline 和下一步顺序。详细设计、复盘、测试命令和长验证说明
 放在对应 `tasks/` 设计文档、git commit 和测试里；这里不维护第二份设计细节。
@@ -34,7 +34,7 @@ PyTorch/XLA StableHLO Wafer program directory
        + StableHLO-to-Linalg
   -> logical group formation
        dependency-preserving logical `wafer.group`
-  -> tile-region / communication / instruction / memory-planned candidate pipeline
+  -> tile-region / communication / instruction / memory-planned pipeline
        memref-backed `wafer.tile.region`
        -> buffer-level communication collective materialization
             tiled `wafer.linalg_ext.collective.*` + SPM storage + local-rank facts
@@ -46,7 +46,7 @@ PyTorch/XLA StableHLO Wafer program directory
        -> candidate DDR tile-view materialization
        -> instruction-level `wafer.instr.*`
        -> accepted SPM and DDR offset facts over compute/movement/communication demand
-       -> candidate selection and committed materialization
+       -> optional closed-loop candidate selection for cases covered by the selector
   -> launch-block binding / endpoint projection
        optional per-rank block id；不复制 rank->physical endpoint
   -> ABI / LLVM lowering
@@ -96,6 +96,8 @@ Pipeline position:
   executor-specific required symbols；no-card E2E lit 从 `wafer-opt` instruction/LLVM outputs 经 package
   metadata auto-export / validation 直接进入 `wafer-run`；PyTorch model-level smoke 已从 PyTorch/XLA
   capture 走到 group/instr/ABI/LLVM lowering、package metadata auto-export 和 `wafer-run` no-card gate；
+  HF gate 走当前 `wafer-lower-groups-to-ddr-memory-planned-instr` / `wafer-lower-groups-to-llvm`
+  路径，不把 `wafer-lower-groups-to-selected-instr` 当作已覆盖的必经阶段；
   对 descriptor-only BPM 或 known stub completion source 给出结构化拒绝；有卡环境下验证真实 allocation/import/query/bind、可信
   completion、错误传播和最小 board run。
 ```
@@ -110,7 +112,7 @@ Pipeline position:
 | Logical group | verifier-legal logical `wafer.group` |
 | Tile-region / instruction lowering | memref-backed `wafer.tile.region` + instruction-level `wafer.instr.*` over Wafer-tagged memrefs；compute/movement 路径可用，top-level single-result all_gather / reduce_scatter / all_reduce 已能 materialize 成 `wafer.tile.*` collective；compact/strided-slot SPM all_gather 支持 ring/direct schedule，DTE 只收发连续 comm buffer，slot 写回由 gather/scatter 表达；tensor SPM all_reduce 支持 ring/tree schedule、full-input reduce_scatter 支持 direct schedule，均展开成 explicit `wafer.instr.dte_*` body |
 | DDR tile-view / SPM / DDR planning | candidate DDR `memref.subview` tile operands、accepted SPM offset facts、accepted DDR offset facts、structured failure diagnostics；compute/movement/communication 路径可用，DTE token lifetime、recv/send buffer demand 和 local fence 已进入同一 planning gate |
-| Candidate selection / committed materialization | selected candidate committed into main IR；rejected plans and cost traces do not enter IR |
+| Candidate selection / committed materialization | selector path 可用于已覆盖 candidate case；rejected plans and cost traces do not enter IR。HF Megatron-style transformer no-card gate 当前不经过 `wafer-lower-groups-to-selected-instr`，不能把 selected-candidate path 当作 HF -> LLVM IR 完成证明 |
 
 ## 后续队列
 
@@ -127,8 +129,9 @@ Pipeline position:
 | device-code compile/link gate | done | LLVM IR artifact + repo-vendored TX8 deps + repo-local Wafer CRT lib dir | LLVM `clang++` `.ll -> .o`、default `wafer_cabi_shim.c -> shim.o`、LLVM object `.riscv.attributes` normalization 和 repo-vendored `tx8_deps` GCC `.o + shim.o -> kcore .so` 的命令形态固定；本地 smoke 已证明 LLVM IR、shim source、vendored `rv64imafdc/lp64d` multilib、repo-local debug-stripped Wafer CRT `libvr` 和 `riscv64-unknown-elf-objcopy` normalization 可生成 kcore shared object；package metadata 只引用生成的 `tx.kcore` module，不把 device-code record 作为顶层合同 |
 | package metadata auto export | done | ABI/LLVM artifact + kcore shared object + committed IR + model interface metadata | `tools/wafer_export_package_metadata.py` 从 committed instruction IR、LLVM IR artifact、module path 和 model interface metadata 导出 schema v2 package metadata；workspace 只在 LLVM ABI entrypoint 比 model input/output 多一个 base pointer 时导出；non-finite reduce init 用标准 JSON 对象编码；pipeline smoke 覆盖 `wafer-opt` instruction/LLVM outputs -> `mlir-translate` LLVM IR -> package metadata validator；schema 要求 `name`、`model.id`、`model.abi`、`model.interface`、`modules` 和 `entrypoints`，`tx.module` 只作为 debug/bring-up entrypoint |
 | wrapper shim / register-facing implementation | done | scalar `wafer_*` ABI contract + format-aware golden packet builders + TX8 public wrapper evidence | `runtime/wafer_cabi_shim.c` 实现 RDMA/WDMA/gather_scatter/fill/elementwise/reduce/convert/GEMM/local_fence 到 public Tsm wrapper / local wait；DTE send/recv/wait 有 compiler-facing capture/status contract，生产 wrapper path 在缺 remote endpoint / DTE channel runtime binding 时返回 `WRAPPER_UNAVAILABLE`；shim 参与 device-code link gate，并由 capture/register-facing golden tests 验证 |
-| runtime adapter / board launch | active | model-level package + C++ host runtime | C++ `WaferRuntime` / `wafer-run` 能读取 package metadata、选择 entrypoint、动态加载 tx runtime library 并检查 executor-specific required symbols；no-card E2E 已覆盖 group-level `wafer-opt` -> package metadata auto-export -> `wafer-run`；PyTorch model-level smoke 和 HF Megatron-style transformer block 已覆盖 PyTorch/XLA capture -> `stablehlo-spmd-to-group` -> instr/ABI/LLVM/package/runtime no-card gate；Python adapter 只保留 no-card checker；剩余 gate 是有卡环境下真实 allocation/import/query/bind、module load/function lookup、launch、completion 和 error propagation |
-| transformer staged gaps | pending | transformer coverage beyond no-card compileability | HF Llama config snapshot + PyTorch/XLA `mark_sharding` + single-card 16-rank Megatron-style tensor parallel 已能到 instr/ABI/LLVM/package/no-card runtime；剩余是 board execution、数值 correctness、动态 shape/bounds、KV cache、mask/select 泛化和 constant/weight residency 的后续覆盖 |
+| runtime adapter / board launch | active | model-level package + C++ host runtime | C++ `WaferRuntime` / `wafer-run` 能读取 package metadata、选择 entrypoint、动态加载 tx runtime library 并检查 executor-specific required symbols；no-card E2E 已覆盖 group-level `wafer-opt` -> package metadata auto-export -> `wafer-run`；PyTorch model-level smoke 和 HF Megatron-style transformer block 已覆盖 PyTorch/XLA capture -> `stablehlo-spmd-to-group` -> direct instr/ABI/LLVM/package/runtime no-card gate；Python adapter 只保留 no-card checker；剩余 gate 是有卡环境下真实 allocation/import/query/bind、module load/function lookup、launch、completion 和 error propagation |
+| HF selected-candidate integration | pending | HF Megatron-style transformer `wafer.group` + closed-loop selector | `wafer-lower-groups-to-selected-instr` 能接受同一 HF group 形态，或主线设计明确把 closed-loop selector 保持为优化/候选路径而非 HF runtime gate；当前已知缺口是 selector 评估某些 candidate 时会在 dynamic `math.powf` exponent legalization 上失败 |
+| transformer staged gaps | pending | transformer coverage beyond no-card compileability | HF Llama config snapshot + PyTorch/XLA `mark_sharding` + single-card 16-rank Megatron-style tensor parallel 已能到 instr/ABI/LLVM/package/no-card runtime；剩余是 board execution、数值 correctness、动态 shape/bounds、KV cache、mask/select 泛化、constant/weight residency，以及是否把 closed-loop selected-candidate path 纳入 HF 主 gate |
 | overlap / cost calibration | later | board/profile 输出 | overlap、cost model 和 PMU calibration |
 
 ## 当前不做
