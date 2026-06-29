@@ -113,7 +113,7 @@ Runtime package 是交付给 runtime adapter 的编译产物集合。V0 需要�
 | model interface | inputs、outputs、parameters、shape/dtype/layout、binding contract | frontend + lowering |
 | modules | kcore shared object、graph directory、未来 BPM/control descriptor | ABI/LLVM artifact + device-code compile/link gate / package assembly |
 | entrypoints | `tx.model`、`tx.graph`、`tx.module`、`tx.cluster`、`legacy.tsm` descriptors | package assembly + TX runtime evidence |
-| endpoint policy / future endpoint section | 当前 schema v2 不序列化 rank->endpoint table；后续若 runtime 需要，可加入由 topology/execution-mesh 重算的 derived endpoint section | `wafer.target.topology` + `wafer.execution.mesh` + thin launch/block binding |
+| endpoint policy / future endpoint section | 当前 schema v2 不序列化 derived endpoint section；后续若 runtime 需要，可加入由 topology/execution-mesh 重算的 section | `wafer.target.topology` + `wafer.execution.mesh` + thin launch/block binding |
 | DDR memory metadata | external binding contract、workspace demand、resident constant demand | on-demand resource view derived from committed IR + DDR planner facts |
 | SPM summary | per-tile SPM peak、reserved range、allocation summary | SPM bufferization |
 | constant storage bytes | transformed read-only backing data, if needed | constant storage transform |
@@ -326,8 +326,9 @@ RuntimeSession 包含四类结构化 facts：
   validator 的 completion source；stub shielding 在 package load 前生效。
 
 Dry-run backend 必须打印 RuntimeSession 的 binding/module/entrypoint/completion plan，作为无卡
-contract test。`fake-tx` backend 只把同一 RuntimeSession 的 `tx.module` / `tx.cluster` launch plan
-展开成伪 TX 调用序列；它不单独重建 binding 顺序。该 Python 工具只用于 package/no-card 调试，
+contract test。`fake-tx` 是 no-card test backend，只把同一 RuntimeSession 的
+`tx.module` / `tx.cluster` launch plan 展开成测试用 TX 调用序列；它不单独重建 binding
+顺序。该 Python 工具只用于 package/no-card 调试，
 不作为真实 host runtime implementation。
 
 ### 5.2 C++ Host Runtime Boundary
@@ -340,7 +341,7 @@ contract test。`fake-tx` backend 只把同一 RuntimeSession 的 `tx.module` / 
   CI 环境只做 `dlopen` / symbol gate。
 - 根据 selected entrypoint 的 executor 检查 required symbols：base device/memory/copy/completion
   symbols 加上 `tx.module` / `tx.cluster` / `tx.model` / `tx.graph` 的 executor-specific symbols。
-- 在未启用真实 board gate 时明确停止，不执行 fake launch，也不把 symbol 存在解释成 kernel
+- 在未启用真实 board gate 时明确停止，不执行 test launch，也不把 symbol 存在解释成 kernel
   completion。
 
 后续 board gate 才实现真实 `set_device`、allocate/import/query/bind、H2D/D2H、module load/function
@@ -395,7 +396,7 @@ interface metadata，不能从低层 `%arg0` / `%arg1` 或 module 文件名猜�
 package metadata，构造 model binding / runtime session / entrypoint plan。`dry-run` backend
 打印模型级 binding、modules、runtime requirements 和 entrypoint descriptors；`fake-tx` backend 只用于
 本地 unit test 验证选定 entrypoint 的 command construction。若选择 `tx.model` 但 BPM descriptor
-仍是 `descriptor_only`，fake backend 必须报结构化错误；若选择 `tx.module`，fake backend
+仍是 `descriptor_only`，test backend 必须报结构化错误；若选择 `tx.module`，test backend
 验证 `txSetDevice`、`txMalloc`、`txMemcpy`、`txModuleLoad`、`txModuleGetFunction`、`txLaunchKernel` 和
 completion wait 的顺序。`tx` backend 在无卡环境只做 runtime library discovery 和 entrypoint-specific
 required symbol check。真实 host runtime implementation 由 C++ `WaferRuntime` / `wafer-run` 承载；
@@ -486,20 +487,20 @@ V0 验证：
   fake-tx command construction、BPM descriptor-only rejection、missing tx runtime library diagnostics
   和 stub completion rejection；不放入默认 lit。
 - C++ host runtime library 用 unit tests 覆盖 package metadata intake、selected entrypoint lookup、
-  executor-specific required symbol gate 和 fake shared-library dynamic loading。该 gate 不执行 board
+  executor-specific required symbol gate 和 test shared-library dynamic loading。该 gate 不执行 board
   launch，也不声明 completion。
 - no-card E2E runtime gate 用 lit 覆盖 `wafer-opt` instruction/LLVM outputs -> `mlir-translate`
-  LLVM IR -> package metadata auto-export / validation -> C++ `wafer-run` -> fake tx runtime shared library
+  LLVM IR -> package metadata auto-export / validation -> C++ `wafer-run` -> test tx runtime shared library
   required-symbol check。该 gate 证明当前 compiler-generated package 可以进入 runtime 边界，但仍不执行
   allocation/import/query/bind、module load、launch 或 completion。
 - PyTorch model-level no-card runtime gate 用 `x + x` smoke model 和 HF Llama tiny config 的
   Megatron-style transformer block 覆盖 PyTorch/XLA capture -> `stablehlo-spmd-to-group` ->
   group/instr/ABI/LLVM lowering -> `mlir-translate` LLVM IR -> package metadata auto-export /
-  validation -> C++ `wafer-run` fake tx runtime required-symbol gate。
+  validation -> C++ `wafer-run` test tx runtime required-symbol gate。
   该 gate 不执行 board allocation/import/query/bind、module load、launch 或 completion。
 - model interface 与 compiled function ABI / selected entrypoint binding order 一致。
-- 当前 schema v2 不保存 endpoint table；若后续启用 derived endpoint section，必须覆盖所有
-  launched tile 且能从 execution mesh / topology 重算。
+- 当前 schema v2 不保存 derived endpoint section；若后续启用该 section，必须覆盖所有 launched tile
+  且能从 execution mesh / topology 重算。
 - DDR binding contract 与 package resource summary 一致。
 - constant storage bytes 能追溯到 `ConstantLike` value 和 selected storage layout。
 - legacy bootparam / dyn TLV serialization 的 size、offset、TLV header 检查。

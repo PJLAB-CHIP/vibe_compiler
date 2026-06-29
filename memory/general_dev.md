@@ -37,7 +37,7 @@
   build/wafer-dev` 和 `/root/miniconda3/bin/lit ... build/wafer-dev/test`。部分 `test/Tools` 用固定
   `%t` output 路径，两个 lit 实例会互相清理目录，导致假失败；需要顺序跑。
 - Runtime adapter 测试分层：package metadata/exporter 这类 compiler artifact golden 用 lit；no-card
-  adapter contract、fake backend call sequence 和 runtime library discovery diagnostics 用 Python
+  adapter contract、`fake-tx` test backend call sequence 和 runtime library discovery diagnostics 用 Python
   unittest / ctest；真实板端 launch/completion/error propagation 必须 gated 到有卡环境，不能塞进默认 lit。
 - Shardy 不用 standalone Bazel workspace 作为 Wafer dependency 编译验证；`WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON`
   会通过 `cmake/third_party/WaferShardyCMake.cmake` 编译 `wafer-shardy-cmake-gate` / `shardy-sdy-opt`，
@@ -54,16 +54,17 @@
   必须跳过，让 Shardy propagation 推完整图。完全没有用户 seed 时，P2.S1 在 SPMD 层补默认
   function-input sharding seed：rank count / axes 来自 SPMD 前选出的 `wafer.execution.mesh`；单卡默认
   topology 配置是 4x4 / 16 tile。`wafer.execution.mesh` 默认使用 `all_available` policy，用满
-  topology 中所有 available endpoints 且不保存 endpoint table；1-rank 或少 tile mesh 只能作为显式
+  topology 中所有 available endpoints 且不保存 endpoint section；1-rank 或少 tile mesh 只能作为显式
   debug/bring-up/资源隔离 override 进入。找不到合适输入切分维度时生成同一 mesh 上的 replicated
   seed。不要把这个默认策略放到 group 后段实现。
 - P2.S1 不能用手写 `sdy.sharding`、`wafer.spmd.*` attr、私有 JSON 或名字约定冒充 partitioned
   program。正确主链是：frontend Python 只通过 `torch_xla.distributed.spmd.mark_sharding`
   标记 4096 matmul 图并导出带 `mhlo.sharding` 的 PyTorch/XLA StableHLO program directory；随后由
-  `wafer-opt --program-pipeline=stablehlo-spmd` 或
-  `wafer-opt --program-pipeline=stablehlo-spmd-to-linalg` 在 Wafer compiler 层接管 default input
-  seed、Shardy propagation 和 XLA SPMD partition，并导出 partitioned StableHLO program 或继续
-  写回 post-linalg Wafer program。旧的私有 sharding attr
+  `wafer-opt --program-pipeline=stablehlo-spmd`、
+  `wafer-opt --program-pipeline=stablehlo-spmd-to-linalg` 或
+  `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 在 Wafer compiler 层接管 default input
+  seed、Shardy propagation 和 XLA SPMD partition，并导出 partitioned StableHLO program，或继续
+  写回 post-linalg / group Wafer program。旧的私有 sharding attr
   emitter、sidecar JSON、单独旧 SPMD verify flag 和 Python post-SPMD
   路线已移除；不要恢复只生成私有 attrs/sidecar、只跑 SDY propagation 冒充完成，或把 Python
   test helper 写成 SPMD / 用户编译入口。
@@ -260,9 +261,10 @@
   必须重放已完成上游 program chain，并证明当前 stage 输出会被下游边界直接消费。
 - 主链路 gate 用 `wafer-opt` program pipeline 重放已完成上游链路，不在 Integration
   里手动拼 pass 串。当前 frontend verifier 入口是
-  `wafer-compile-stablehlo --verify-stablehlo-program`；P2.S2/R2.4 用户级 `wafer-opt` program
-  pipeline 入口是 `--program-pipeline=stablehlo-spmd` 和
-  `--program-pipeline=stablehlo-spmd-to-linalg`；`wafer-compile-stablehlo --propagate-stablehlo-sharding`、
+  `wafer-compile-stablehlo --verify-stablehlo-program`；用户级 `wafer-opt` program
+  pipeline 入口是 `--program-pipeline=stablehlo-spmd`、
+  `--program-pipeline=stablehlo-spmd-to-linalg` 和
+  `--program-pipeline=stablehlo-spmd-to-group`；`wafer-compile-stablehlo --propagate-stablehlo-sharding`、
   `wafer-compile-stablehlo --partition-stablehlo-program` 已删除，因为 Shardy/SPMD 不属于 frontend
   verifier tool；`wafer-compile-stablehlo --compile-stablehlo-program-to-cabi` 也已删除，因为 C ABI/package
   主线由 `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 后接

@@ -23,6 +23,31 @@ local body 和通信算子插入仍交给 Shardy / XLA SPMD partitioner。
 - `tasks/13-communication.md`
 - `tasks/05-local-compute-normalization.md`
 
+Pipeline position:
+
+- Upstream artifact / IR:
+  verified StableHLO Wafer program、optional user Shardy/SDY or imported sharding annotations、
+  `wafer.target.topology` 和已验证的 `wafer.execution.mesh`。
+- Current stage responsibility:
+  在 SPMD 层应用默认或用户 sharding policy，运行 Shardy propagation 和 Wafer-owned SPMD partition，
+  产出 rank-local / replicated-local StableHLO body、logical collective、rank group 和 parameter shard facts。
+- Output artifact / IR:
+  partitioned StableHLO Wafer program directory，包含 local function body、StableHLO logical collective、
+  logical mesh / replica group metadata、rank-local parameter shard metadata 和 payload。
+- Downstream consumer:
+  `stablehlo-spmd-to-linalg` 的 tensor collective handoff 与 StableHLO-to-Linalg normalization，
+  以及 `stablehlo-spmd-to-group` 后续 logical group pipeline。
+- User-level driver / named pipeline:
+  `wafer-opt --program-pipeline=stablehlo-spmd`；继续到 local compute 或 group 时使用
+  `stablehlo-spmd-to-linalg` / `stablehlo-spmd-to-group`。
+- Explicit non-goals:
+  不选择 physical endpoint、DTE packet/FSM、SPM/DDR allocation、layout、group fusion、
+  instruction family、ABI 或 runtime launch；不把 `wafer.spmd.*` attr、文件名或 side table 当成
+  partitioned program。
+- Completion gate:
+  真实 frontend program 经 `stablehlo-spmd` 产生 partitioned / replicated-local StableHLO program，
+  并被 local compute / group gate 继续消费；只运行 Shardy propagation 或只 parse 手写 SDY 输入不算完成。
+
 ## 1. 目标和非目标
 
 目标：

@@ -158,7 +158,7 @@ wafer.execution.mesh:  SPMD rank domain policy + logical mesh axes/shape + optio
 ```
 
 `wafer.execution.mesh` 不复制 topology dimensions、unavailable tile table、tile-id codec 或
-connectivity links。默认 `all_available` policy 不保存 endpoint table；logical rank 到 physical
+connectivity links。默认 `all_available` policy 不保存 endpoint section；logical rank 到 physical
 endpoint 的 view 由 `wafer.target.topology` 的规则 grid、`unavailable_tiles` 和固定 rank order
 在使用点派生。只有 `explicit` policy 保存 endpoint tuples，用于少用 tile 或非默认 rank endpoint order。
 

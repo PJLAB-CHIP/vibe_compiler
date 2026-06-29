@@ -858,14 +858,17 @@ Wafer named MLIR pipeline 只作为内部构件或局部 debug/unit 覆盖。不
 手动拼 pass、Python helper 或手写测试输入来表示长期 compile flow。
 
 当前用户级 / Integration 主链路不直接暴露下面这些单 pass。2026-06-02 后由 `WaferPipelines`
-注册按 IR 边界命名且真实成立的 pipeline：`wafer-propagate-stablehlo-sharding` 和
-`wafer-lower-stablehlo-to-linalg`。
+注册按 IR 边界命名且真实成立的内部 pipeline；用户级 program pipeline 是
+`stablehlo-spmd`、`stablehlo-spmd-to-linalg` 和 `stablehlo-spmd-to-group`。
+内部 `wafer-propagate-stablehlo-sharding` 和 `wafer-lower-stablehlo-to-linalg`
+只作为 program pipeline 的构件或局部验证入口。
 `wafer-propagate-stablehlo-sharding` 组合 Wafer default input seed 和 Shardy propagation，但不冒充
 XLA SPMD partitioner；partitioned / replicated-local StableHLO program directory 必须由 P2.S2 的 Wafer-owned
 SPMD partition compiler stage 消费 sharding propagation stage 输出的 StableHLO/SDY IR 后产出。
 `wafer-compile-stablehlo` 只保留 frontend / StableHLO program verifier；program-level
-P2.S2/R2.4 入口统一在 `wafer-opt --program-pipeline=stablehlo-spmd` 和
-`wafer-opt --program-pipeline=stablehlo-spmd-to-linalg` 下。`wafer-lower-linalg-to-cabi`、`wafer-lower-stablehlo-to-cabi`、
+入口统一在 `wafer-opt --program-pipeline=stablehlo-spmd`、
+`wafer-opt --program-pipeline=stablehlo-spmd-to-linalg` 和
+`wafer-opt --program-pipeline=stablehlo-spmd-to-group` 下。`wafer-lower-linalg-to-cabi`、`wafer-lower-stablehlo-to-cabi`、
 `wafer-lower-tile-communication-to-cabi` 和 `wafer-compile-stablehlo --compile-stablehlo-program-to-cabi`
 已删除；旧 single-tile/C ABI/ring/SPM/DDR unit/debug pass 链也已删除。`tx8` 只保留为底层硬件/
 依赖事实名，不作为 compiler target。下面列表描述长期阶段边界，不是要求用户手动串 pass。
@@ -890,6 +893,11 @@ ModelImport/FrontendProgram
   -> object + package metadata assembly
   -> runtime adapter / board launch
 ```
+
+当前 HF transformer no-card gate 走 `stablehlo-spmd-to-group` 后的 direct group -> instruction/ABI/LLVM/package
+路径，即 `wafer-lower-groups-to-ddr-memory-planned-instr`、`wafer-lower-groups-to-llvm`、
+`mlir-translate` 和 package metadata auto-export。closed-loop selected-candidate path 仍是候选/
+优化路径，不作为该 gate 的已覆盖必经阶段。
 
 工程边界：
 

@@ -19,6 +19,31 @@ DDR memory planning、host runtime D2D/P2P ABI 或 raw non-unicast DTE packet。
 fixed-size unicast Direct DTE，但 logical collective IR 的支持范围不能由当前某个 ring lowering pass
 的覆盖范围反向决定；只要硬件通信能力可组合表达，IR 就应保留对应语义事实。
 
+Pipeline position:
+
+- Upstream artifact / IR:
+  `wafer.linalg_ext.collective.*` 经 group/tile-region lowering 后形成的 SPM storage values、
+  local-rank facts、rank group，以及 `wafer.target.topology` / `wafer.execution.mesh` 派生的 endpoint view。
+- Current stage responsibility:
+  把 buffer-level collective materialize 为 verifier-legal `wafer.tile.*` collective，并在可支持子集上
+  展开成 explicit `wafer.instr.dte_send` / `dte_recv` / `dte_wait` p2p body、token/effect 和 sync boundary。
+- Output artifact / IR:
+  instruction-level communication IR over unplaced Wafer-tagged SPM memrefs；peer/order/byte range 和 wait
+  由 IR body 表达，不保存重复的 communication plan attr。
+- Downstream consumer:
+  SPM memory planning、DDR planning、ABI/LLVM lowering、device-code shim / wrapper 和 runtime package
+  resource view。
+- User-level driver / named pipeline:
+  主线通过 `stablehlo-spmd-to-group` 后的 group -> tile-region -> instruction lowering 重放；
+  communication-specific named pipelines 只作为局部 verifier / lowering 覆盖。
+- Explicit non-goals:
+  不做 Shardy/SPMD partition、tensor collective handoff、compute/movement legality、layout assignment、
+  host runtime D2D/P2P fallback、raw non-unicast DTE ABI 或 board-level route binding。
+- Completion gate:
+  top-level single-result `all_gather`、`reduce_scatter` 和 `all_reduce` 能从真实 group/tile-region
+  path materialize 到 `wafer.tile.*` 并展开成 DTE p2p instruction body，随后被 SPM planning 和
+  ABI/LLVM gate 消费。
+
 ## 1. 设计目标
 
 目标：

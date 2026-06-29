@@ -107,19 +107,19 @@ Single-tile local compute：
 - 主链路 gate 应消费 P2.F1/P2.S1/P2.S2/R2.4 产出的真实图 program，并继续通过 frontend/local compute /
   tensor collective handoff gate；graph break / fallback 不被当成合法 program。手写 StableHLO/Linalg
   输入只保留为局部 verifier、lowering pattern 或 bring-up 测试输入。
-- R2.4-pre 之后，主链路 gate 必须通过 `wafer-opt` program pipeline 重放上述链路；单独拼
+- R2.4-pre 之后，frontend/SPMD/local-compute 主链路 gate 必须通过 `wafer-opt` program pipeline 重放上述链路；单独拼
   `wafer-opt` pass、named MLIR pipeline、`shardy-sdy-opt`、PyTorch/XLA runtime 环境变量和
   verifier tool 只能作为 unit/debug 覆盖。2026-06-02 后，frontend program verifier 入口是
   `wafer-compile-stablehlo --verify-stablehlo-program`；P2.S2/R2.4 `wafer-opt` program pipeline
-  入口是 `--program-pipeline=stablehlo-spmd` 和
-  `--program-pipeline=stablehlo-spmd-to-linalg`；`--compile-stablehlo-program-to-cabi` 已删除。
-  `wafer-opt` named MLIR pipeline 入口保留 `wafer-propagate-stablehlo-sharding` 和
-  `wafer-lower-stablehlo-to-linalg` 作为内部构件/局部覆盖，不作为用户级主链路。
+  入口是 `--program-pipeline=stablehlo-spmd`、`--program-pipeline=stablehlo-spmd-to-linalg`
+  和 `--program-pipeline=stablehlo-spmd-to-group`；`--compile-stablehlo-program-to-cabi` 已删除。
+  下游 group/instr/ABI/LLVM/package gate 消费该 program pipeline 的 group output，并通过
+  `wafer-lower-groups-to-ddr-memory-planned-instr`、`wafer-lower-groups-to-llvm`、`mlir-translate`
+  和 package metadata auto-export 验证当前 compile path。
   旧 C ABI issue op、single-tile materialization、SPM/DDR debug path 和 ring lowering unit/debug pass 链已删除，
-  当前没有 group/tile/storage/C ABI 主链路 compile gate。
-- 后续 R3/R6/R7 gate 必须证明 `wafer.group` 到 `wafer.tile.region` 的 load/compute/store、
-  instruction selection、SPM allocation、DDR external/workspace/constant demand 和 C ABI/package
-  边界来自真实 program chain。
+  不应恢复为用户级 compile flow。当前 HF transformer no-card gate 已证明 `wafer.group` 到
+  direct instruction lowering、SPM/DDR planning、ABI/LLVM 和 package/no-card runtime boundary 来自真实
+  program chain；closed-loop selected-candidate path 和 board correctness 仍是后续 gate。
 - 至少一个 compute/movement ABI family 有 golden packet。
 - 当前无卡开发环境要求 generated program compile，并在 TX8 依赖可用时通过 `.ll -> .o -> kcore .so`
   的 device-code compile/link gate；package metadata roundtrip 只能作为 tool-unit schema 覆盖，

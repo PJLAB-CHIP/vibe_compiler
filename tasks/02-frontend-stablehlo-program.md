@@ -17,6 +17,32 @@ SPM、DDR allocation、layout materialization、DTE、runtime package 或 launch
 - `tasks/12-ddr-memory-planning.md`
 - `docs/tx8-deps-reverse-engineering/txda-pytorch-runtime-wheel-analysis.md`
 
+Pipeline position:
+
+- Upstream artifact / IR:
+  source model、exporter-native program 或 pre-exported StableHLO / MLIR module，以及 importer 能验证的
+  model signature、metadata 和 parameter/resource payload。
+- Current stage responsibility:
+  把上游模型收敛成 verified Wafer program：StableHLO/func/tensor/arith IR、function boundary
+  metadata、parameter/resource payload 和可解释 sharding seed；拒绝 graph break、fallback、
+  不可验证 alias 或只能靠名字恢复的语义。
+- Output artifact / IR:
+  StableHLO Wafer program directory 或等价 verified program object，包含 `functions/forward.mlir`、
+  `functions/forward.meta`、pre-SPMD parameter payload 和必要的 importer diagnostics。
+- Downstream consumer:
+  target topology / execution mesh materialization、Shardy propagation、Wafer-owned SPMD partition、
+  local compute normalization 和后续 group/tile/resource pipeline。
+- User-level driver / named pipeline:
+  frontend verifier 入口是 `wafer-compile-stablehlo --verify-stablehlo-program`；继续编译时由
+  `wafer-opt --program-pipeline=stablehlo-spmd*` 消费同一个 verified program。
+- Explicit non-goals:
+  不选择 physical tile endpoint、layout、SPM/DDR allocation、DTE protocol、runtime package、
+  launch metadata 或 completion source；不生成私有 side JSON 来替代 program metadata。
+- Completion gate:
+  真实 framework/exporter 产生的 program 通过 frontend verifier，并能被 `stablehlo-spmd` 或
+  `stablehlo-spmd-to-linalg` program pipeline 消费；手写 StableHLO 只作为 pre-exported verifier /
+  local lowering 覆盖。
+
 ## 1. 目标和非目标
 
 目标：
@@ -72,7 +98,7 @@ PyTorch/XLA 路线的 frontend program 只保留一套 exporter-native 事实源
 | `data/<parameter>` | PyTorch/XLA 导出的 pre-SPMD weight data | program payload；verifier 检查 NPY stream、shape 和 dtype，后续 SPMD/storage/package stage 继续消费或改写 |
 | `parameter_shards/<parameter>/rank_XXXXX.npy` | post-SPMD rank-local weight shard payload | partitioned program directory 的参数 payload；由 P2.S2 SPMD partition compiler stage 生成，不从 strategy 名或文件名推断 |
 
-除本节定义的 post-SPMD parameter shard manifest 外，不要为同一件事再生成 Wafer 私有伴随 JSON /
+除本节定义的 post-SPMD parameter shard metadata 外，不要为同一件事再生成 Wafer 私有伴随 JSON /
 compile JSON。`forward.meta` 是 function boundary
 事实源；`forward.parameter_shards.json` 只承接 post-SPMD 后 local parameter argument 到
 rank-local shard payload 的绑定关系。offsets、sizes、strides、replica id 和 payload 文件必须来自
