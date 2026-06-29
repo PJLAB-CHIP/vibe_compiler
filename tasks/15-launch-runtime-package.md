@@ -100,8 +100,8 @@ Pipeline position:
   device-code gate 能从 LLVM IR artifact 生成可链接的 TX8 kcore shared object；package metadata 从当前
   pipeline 产物自动导出并 roundtrip，记录真实 package name、model ABI、modules、model interface、
   resource metadata 和 entrypoints；endpoint view 当前从 topology/execution-mesh 按需重算，
-  不序列化为 schema v2 的第二份事实源。runtime adapter gate 能拒绝 stub completion、未 materialize
-  的 model BPM descriptor 和不满足 contract 的 allocation/binding。
+  不序列化为 schema v2 的第二份事实源。runtime adapter gate 能拒绝不受支持的 completion source、
+  未 materialize 的 model BPM descriptor 和不满足 contract 的 allocation/binding。
 ```
 
 ## 3. Runtime Package Contents
@@ -339,7 +339,7 @@ contract test。`fake-tx` 是 no-card test backend，只把同一 RuntimeSession
   package name、model ABI、runtime mode、completion source、model binding lifecycle、module descriptors、
   selected entrypoint descriptor、launch argument order 和 launch argument byte sum。
 - 在 no-card 阶段验证 selected entrypoint 的 `binding_order` 能解析到 model interface binding，
-  拒绝 `descriptor_only` BPM、known stub completion source 和不属于 tx-host 的 runtime mode。
+  拒绝 `descriptor_only` BPM、tx-host 不支持的 completion source 和不属于 tx-host 的 runtime mode。
 - 动态发现 HPGR / `tx_runtime` runtime library。默认实现不能在本地 build 时硬链接板端库；无卡和
   CI 环境只做 `dlopen` / symbol gate。
 - 根据 selected entrypoint 的 executor 检查 required symbols：base device/memory/copy/completion
@@ -490,7 +490,7 @@ V0 验证：
   fake-tx command construction、BPM descriptor-only rejection、missing tx runtime library diagnostics
   和 stub completion rejection；不放入默认 lit。
 - C++ host runtime library 用 lit 覆盖 package metadata intake、RuntimeSession binding lifecycle、
-  selected entrypoint lookup、`binding_order` 解析、descriptor-only BPM / stub completion / runtime-mode
+  selected entrypoint lookup、`binding_order` 解析、descriptor-only BPM / unsupported completion source / runtime-mode
   shielding、executor-specific required symbol gate 和 test shared-library dynamic loading。该 gate 不执行 board
   launch，也不声明 completion。
 - no-card E2E runtime gate 用 lit 覆盖 `wafer-opt` instruction/LLVM outputs -> `mlir-translate`

@@ -41,7 +41,7 @@
   unittest / ctest；真实板端 launch/completion/error propagation 必须 gated 到有卡环境，不能塞进默认 lit。
 - C++ `wafer-run` no-card gate 不只做 `dlopen` / symbol check：它必须从 package metadata 构造
   RuntimeSession binding/module/launch/completion plan，验证 `binding_order`，并在 symbol gate 前拒绝
-  descriptor-only BPM、known stub completion source 和非 tx-host runtime mode。
+  descriptor-only BPM、tx-host 不支持的 completion source 和非 tx-host runtime mode。
 - Shardy 不用 standalone Bazel workspace 作为 Wafer dependency 编译验证；`WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON`
   会通过 `cmake/third_party/WaferShardyCMake.cmake` 编译 `wafer-shardy-cmake-gate` / `shardy-sdy-opt`，
   复用同一套固定版本 LLVM/MLIR 和 embedded StableHLO。

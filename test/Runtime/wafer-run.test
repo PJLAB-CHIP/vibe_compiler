@@ -46,7 +46,7 @@
 
 # DESCRIPTOR-ONLY: error: tx.model entrypoint model_bpm requires a materialized BPM descriptor
 
-# STUB-COMPLETION: error: completion source is a known stub fence
+# STUB-COMPLETION: error: completion source is not supported by tx-host backend: TsmDeviceSynchronize
 
 # LEGACY-MODE: error: tx-host backend requires runtime.mode tx
 

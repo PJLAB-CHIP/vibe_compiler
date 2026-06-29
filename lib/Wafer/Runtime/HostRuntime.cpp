@@ -472,13 +472,6 @@ llvm::Error validateTxHostRuntimePackage(const RuntimePackage &package) {
   if (package.runtimeMode != "tx")
     return makeError("tx-host backend requires runtime.mode tx");
 
-  const std::string legacyPrefix = std::string("T") + "sm";
-  if (package.completionSource == legacyPrefix + "DeviceSynchronize" ||
-      package.completionSource == legacyPrefix + "Launch" ||
-      package.completionSource == legacyPrefix + "LaunchPg" ||
-      package.completionSource == "KmdDoorbellOnly")
-    return makeError("completion source is a known stub fence");
-
   if (package.completionSource != "runtime_stream_wait" &&
       package.completionSource != "runtime_command_completion" &&
       package.completionSource != "kcore_local_drain")
