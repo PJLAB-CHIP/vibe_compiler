@@ -191,8 +191,11 @@ P2.S2 工程 gate 必须把 XLA SPMD partitioner 或等价 local-body partitioni
 - P2.S2 当前由 `wafer-opt --program-pipeline=stablehlo-spmd` program pipeline 加
   pinned-XLA helper/service 实现。`wafer-opt` 先验证输入 program directory，再在 Wafer compiler 侧执行
   default input seed + Shardy propagation，随后把 propagated program directory 交给 helper。helper
-  显式执行 StableHLO/SDY -> XLA HLO、`SpmdPrepare` / `SpmdPartitioner` / `HloVerifier`、
-  partitioned HLO -> StableHLO round trip，并写回 partitioned StableHLO program directory。
+  显式执行 StableHLO/SDY -> XLA HLO、`ShardyXLA` / `SpmdPrepare` / `SpmdPartitioner` /
+  `HloVerifier`、partitioned HLO -> StableHLO round trip，并写回 partitioned StableHLO program
+  directory。helper 会把旧 `mhlo.sharding` / `stablehlo.sharding` 中顺序枚举的
+  `{devices=[...]0,1,...}` canonicalize 成 XLA 当前可稳定消费的 iota sharding 形式；这是
+  frontend sharding attr 兼容处理，不是 Wafer 私有 sharding 协议。
   `wafer-opt` staging 必须保留未被 propagation 改写的 program members，只重写 propagated IR；
   helper / writer 在产生 partitioned program 时负责同步更新 local function signature、rank-local
   parameter payload 和 shard metadata。helper 路径由 build-time
@@ -216,6 +219,11 @@ P2.S2 工程 gate 必须把 XLA SPMD partitioner 或等价 local-body partitioni
   `wafer.target.topology` 和 `wafer.execution.mesh`，不能用 pass option 绕过 execution mesh。默认
   policy 只标记输入/参数，不给中间 op 或 function
   result 造约束。
+- 对 PyTorch/XLA 等 frontend 以 `stablehlo.custom_call @Sharding` / `mhlo.custom_call @Sharding`
+  和旧 `mhlo.sharding` / `stablehlo.sharding` 字符串暴露的 sharding seed，Wafer 默认 seed stage
+  只做受限导入：支持 replicated，或单个 tensor 维度的切分因子等于当前 execution mesh rank
+  count。该导入把 frontend seed 变成 Shardy/SDY 可解释的 tensor sharding；不支持的多维或部分复制
+  形态必须在 SPMD 层给出 diagnostic，不能落到后端靠名字或 side table 修复。
 - P2.S2 输出的 partitioned program directory 必须由 Wafer-owned compiler stage 保存。`functions/forward.mlir`
   是 local body；`functions/forward.meta` 的 input/output signature 必须匹配 local function boundary；
   `functions/forward.parameter_shards.json` 记录 post-SPMD 后 parameter local argument 到
@@ -350,10 +358,11 @@ stage 得到 partitioned StableHLO、等价 per-rank StableHLO body，或明确�
   错误地挂在 frontend verifier tool 下。
 - `test/Tools/wafer-opt-hf-megatron-transformer-block.test` 覆盖更接近 LLM 的真实 frontend gate：
   从 HuggingFace Llama config snapshot 构造一个静态 decoder block，使用 PyTorch/XLA
-  `mark_sharding` 在 16-rank 单卡 mesh 上标记 Megatron-style tensor parallel 权重切分，再进入
-  `wafer-opt --program-pipeline=stablehlo-spmd-to-group`。该 gate 证明当前 compiler 能消费
-  attention/RMSNorm/RoPE/SwiGLU 主干、captured constants、parameter shards 和 post-SPMD
-  collectives 到 `wafer.group` 边界；它本身只验证 frontend/SPMD/group 边界。下游
+  `mark_sharding` 在 16-rank 单卡 mesh 上标记 Megatron-style tensor parallel 权重和 activation
+  tensor-parallel seed，再进入 `wafer-opt --program-pipeline=stablehlo-spmd-to-group`。该 gate
+  证明当前 compiler 能消费 attention/RMSNorm/RoPE/SwiGLU 主干、captured constants、parameter
+  shards 和 post-SPMD collectives 到 `wafer.group` 边界；Megatron row-parallel/contracting 形态
+  必须在 post-SPMD IR 中保留 `all_reduce`，不能退化成只靠 `all_gather` 拼 full tensor。下游
   `test/Runtime/hf-megatron-transformer-no-card-runtime.test` 继续消费同一类 HF transformer program，
   覆盖 group -> direct instr/ABI/LLVM/package/no-card runtime required-symbol gate；真实 board
   execution、数值 correctness 和 selected-candidate closed-loop path 仍由后续 gate 覆盖。

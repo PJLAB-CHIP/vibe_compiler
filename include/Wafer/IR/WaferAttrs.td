@@ -120,6 +120,7 @@ def Wafer_ComputeElementwiseKindLt : I32EnumAttrCase<"Lt", 14, "lt">;
 def Wafer_ComputeElementwiseKindLe : I32EnumAttrCase<"Le", 15, "le">;
 def Wafer_ComputeElementwiseKindGt : I32EnumAttrCase<"Gt", 16, "gt">;
 def Wafer_ComputeElementwiseKindGe : I32EnumAttrCase<"Ge", 17, "ge">;
+def Wafer_ComputeElementwiseKindSelect : I32EnumAttrCase<"Select", 18, "select">;
 def Wafer_ComputeElementwiseKind
     : I32EnumAttr<"ComputeElementwiseKind",
                   "Wafer target-abstract elementwise compute kind", [
@@ -140,7 +141,8 @@ def Wafer_ComputeElementwiseKind
   Wafer_ComputeElementwiseKindLt,
   Wafer_ComputeElementwiseKindLe,
   Wafer_ComputeElementwiseKindGt,
-  Wafer_ComputeElementwiseKindGe
+  Wafer_ComputeElementwiseKindGe,
+  Wafer_ComputeElementwiseKindSelect
 ]> {
   let cppNamespace = "::wafer";
   let genSpecializedAttr = 0;

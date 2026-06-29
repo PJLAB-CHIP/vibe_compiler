@@ -373,13 +373,16 @@ legacy stub path 成功返回。`tools/wafer_emit_c_abi_stub.py` 只作为 tool-
 metadata test input 生成可被 C compiler 做 syntax compile 的 ABI emission table、workspace buffer table 和
 resident constant table；它不代表当前 IR pipeline 已生成 package，也不代表
 真实 device code 已可执行。
+package metadata exporter/validator 只接受当前 instruction/ABI 已知的 operation family。elementwise
+metadata 中 `select` 是已知 kind，但这只证明 package schema 能描述 compiler-generated instruction；
+它不改变 `wafer_select` 生产 shim 仍需要 board wrapper 证据的限制。
 
 `tools/wafer_device_link.py` 是 device-code local gate：它消费已有 LLVM IR 文件，生成或打印
 `.ll -> .o -> kernel.so` 两段命令，并可在本地 TX8 依赖齐备时执行该 compile/link。它不从
 `wafer.instr.*` 恢复 package metadata，不生成 package metadata，也不代表 runtime launch / board
 completion 已通过。该 tool 默认把 `runtime/wafer_cabi_shim.c` 编译成同 target 的 shim object 并
 加入 final link，使 LLVM IR 中当前 `wafer.instr.*` lowering 需要的 `wafer_*` symbol
-（RDMA、WDMA、gather_scatter、fill、elementwise、reduce、convert、GEMM、DTE send/recv/wait
+（RDMA、WDMA、gather_scatter、fill、elementwise、select、reduce、convert、GEMM、DTE send/recv/wait
 和 local_fence）不再依赖 unresolved placeholder symbol。shim source 只实现 compiler-facing
 scalar ABI 到 public Tsm wrapper / local wait / DTE boundary status 的映射；它不生成 package schema、
 runtime allocation metadata 或 board launch protocol。

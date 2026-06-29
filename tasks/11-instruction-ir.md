@@ -28,6 +28,8 @@ memref SSA、Wafer memory attr、op operands、attrs、MemoryEffects 和显式 f
   `wafer.instr.elementwise`、`wafer.instr.reduce`、`wafer.instr.convert`、`wafer.instr.gemm`
   和 `wafer.instr.dte_send` / `dte_recv` / `dte_wait`
   的 ODS、verifier、MemoryEffects、`WaferInstructionOpInterface` 和 lit/unit 覆盖。
+  `wafer.instr.elementwise` 当前包含 unary/binary arithmetic、relation 和 basic 3-input
+  `select` kind；select 的 predicate/value dtype contract 由 common verifier 和 ABI materialization 检查。
 - `wafer.instr.*` op 只读写 Wafer-tagged memref，不产生 buffer result，不携带 SPM offset、
   worker id、raw packet field 或 C ABI 字段。
 - Direct DTE instruction ops 已替代旧 tile-level p2p prototype，并在 SPM memory planning 前暴露

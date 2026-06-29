@@ -42,6 +42,10 @@ int32_t wafer_elementwise(uint32_t elementwise_kind, uint32_t dst_spm_offset,
                           uint64_t element_count, uint32_t input_format,
                           uint32_t output_format);
 
+int32_t wafer_select(uint32_t dst_spm_offset, uint32_t predicate_spm_offset,
+                     uint32_t true_spm_offset, uint32_t false_spm_offset,
+                     uint64_t element_count, uint32_t value_format);
+
 int32_t wafer_reduce(uint32_t reduce_kind, uint32_t src_spm_offset,
                      uint32_t dst_spm_offset, uint32_t dim, uint64_t n,
                      uint64_t h, uint64_t w, uint64_t c, uint32_t data_format);
@@ -157,6 +161,7 @@ typedef struct wafer_cabi_elementwise_capture {
   uint32_t dst;
   uint32_t src0;
   uint32_t src1;
+  uint32_t src2;
   uint32_t elem_count;
   uint32_t input_format;
   uint32_t output_format;

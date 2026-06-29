@@ -646,8 +646,8 @@ resolveDDRView(mlir::Operation *op, mlir::Value ddrValue,
 
   std::optional<WaferPhysicalTensorInfo> viewInfo =
       computeWaferPhysicalTensorInfo(viewType);
-  if (!viewInfo || viewInfo->elementBytes <= 0 || viewInfo->bitPackedElement ||
-      viewInfo->physicalBytes < 0)
+  if (!viewInfo || viewInfo->physicalBytes < 0 ||
+      (!viewInfo->bitPackedElement && viewInfo->elementBytes <= 0))
     return op->emitError() << "unsupported_ddr_view: cannot compute "
                            << descriptor.role << " DDR view physical bytes";
 
@@ -659,18 +659,30 @@ resolveDDRView(mlir::Operation *op, mlir::Value ddrValue,
 
   std::optional<WaferPhysicalTensorInfo> rootInfo =
       computeWaferPhysicalTensorInfo(rootType);
-  if (!rootInfo || rootInfo->elementBytes <= 0 || rootInfo->bitPackedElement ||
-      rootInfo->physicalBytes < 0)
+  if (!rootInfo || rootInfo->physicalBytes < 0 ||
+      (!rootInfo->bitPackedElement && rootInfo->elementBytes <= 0))
     return op->emitError() << "unsupported_ddr_view: cannot compute "
                            << descriptor.role << " DDR root physical bytes";
-  if (viewInfo->elementBytes != rootInfo->elementBytes)
-    return op->emitError() << "unsupported_ddr_view: DDR view and root element "
-                              "byte sizes differ";
 
   int64_t viewOffsetBytes = 0;
-  if (!checkedMul(viewOffsetElements, viewInfo->elementBytes, viewOffsetBytes))
-    return op->emitError()
-           << "range_end_overflow: DDR view byte offset overflows int64";
+  if (viewInfo->bitPackedElement || rootInfo->bitPackedElement) {
+    if (!viewInfo->bitPackedElement || !rootInfo->bitPackedElement)
+      return op->emitError()
+             << "unsupported_ddr_view: DDR view and root bitpacking differ";
+    if (viewOffsetElements != 0)
+      return op->emitError()
+             << "unsupported_ddr_view: bitpacked DDR view must have zero "
+                "element offset";
+  } else {
+    if (viewInfo->elementBytes != rootInfo->elementBytes)
+      return op->emitError()
+             << "unsupported_ddr_view: DDR view and root element byte sizes "
+                "differ";
+    if (!checkedMul(viewOffsetElements, viewInfo->elementBytes,
+                    viewOffsetBytes))
+      return op->emitError()
+             << "range_end_overflow: DDR view byte offset overflows int64";
+  }
 
   if (mlir::failed(verifyDDRRoot(op, root, defaultAlignment)))
     return mlir::failure();

@@ -25,6 +25,26 @@ module {
         -> tensor<8xf32>
     return %0 : tensor<8xf32>
   }
+
+  func.func @collective_with_static_insert_slice_producer(
+      %lhs: tensor<1x1x4x1xf32>,
+      %rhs: tensor<1x1x4x1xf32>,
+      %out: tensor<1x1x4x6xf32>) -> tensor<1x1x4x6xf32> {
+    %zero = arith.constant dense<0.000000e+00> : tensor<1x1x4x6xf32>
+    %insert0 = tensor.insert_slice %lhs into %zero[0, 0, 0, 0] [1, 1, 4, 1] [1, 1, 1, 1]
+        : tensor<1x1x4x1xf32> into tensor<1x1x4x6xf32>
+    %insert1 = tensor.insert_slice %rhs into %insert0[0, 0, 0, 2] [1, 1, 4, 1] [1, 1, 1, 1]
+        : tensor<1x1x4x1xf32> into tensor<1x1x4x6xf32>
+    %0 = wafer.linalg_ext.collective.all_reduce
+        ins(%insert1 : tensor<1x1x4x6xf32>)
+        outs(%out : tensor<1x1x4x6xf32>) {
+    ^bb0(%lhs_scalar: f32, %rhs_scalar: f32):
+      %sum = arith.addf %lhs_scalar, %rhs_scalar : f32
+      wafer.linalg_ext.collective.yield %sum : f32
+    } {rank_group = array<i64: 0, 1>}
+        -> tensor<1x1x4x6xf32>
+    return %0 : tensor<1x1x4x6xf32>
+  }
 }
 
 // CHECK-LABEL: func.func @matmul_logical_group
@@ -43,3 +63,15 @@ module {
 // CHECK-SAME: rank_group = array<i64: 0, 1>
 // CHECK: wafer.group.yield
 // CHECK: return %[[TCGROUP]] : tensor<8xf32>
+
+// CHECK-LABEL: func.func @collective_with_static_insert_slice_producer
+// CHECK: %[[GROUP:.+]] = wafer.group
+// CHECK-SAME: ins(%{{.+}}, %{{.+}} : tensor<1x1x4x1xf32>, tensor<1x1x4x1xf32>)
+// CHECK-SAME: outs(%{{.+}} : tensor<1x1x4x6xf32>)
+// CHECK: arith.constant dense<0.000000e+00> : tensor<1x1x4x6xf32>
+// CHECK: tensor.insert_slice
+// CHECK: tensor.insert_slice
+// CHECK: wafer.linalg_ext.collective.all_reduce
+// CHECK: rank_group = array<i64: 0, 1>
+// CHECK: wafer.group.yield
+// CHECK: return %[[GROUP]] : tensor<1x1x4x6xf32>

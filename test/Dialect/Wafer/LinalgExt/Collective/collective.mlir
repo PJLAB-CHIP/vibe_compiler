@@ -36,6 +36,25 @@ func.func @all_reduce(
 // CHECK: wafer.linalg_ext.collective.yield
 // CHECK-NOT: wafer.instr.dte_send
 
+func.func @all_reduce_rank_groups(
+    %input: tensor<4xf32>,
+    %out: tensor<4xf32>) -> tensor<4xf32> {
+  %0 = wafer.linalg_ext.collective.all_reduce
+      ins(%input : tensor<4xf32>)
+      outs(%out : tensor<4xf32>)
+      {
+    ^bb0(%lhs: f32, %rhs: f32):
+      %sum = arith.addf %lhs, %rhs : f32
+      wafer.linalg_ext.collective.yield %sum : f32
+    } {rank_groups = dense<[[0, 1], [2, 3]]> : tensor<2x2xi64>}
+      -> tensor<4xf32>
+  return %0 : tensor<4xf32>
+}
+
+// CHECK-LABEL: func.func @all_reduce_rank_groups
+// CHECK: wafer.linalg_ext.collective.all_reduce
+// CHECK: rank_groups = dense<{{\[\[}}0, 1], [2, 3]]> : tensor<2x2xi64>
+
 func.func @reduce_scatter(
     %input: tensor<8x4xf32>,
     %out: tensor<2x4xf32>) -> tensor<2x4xf32> {

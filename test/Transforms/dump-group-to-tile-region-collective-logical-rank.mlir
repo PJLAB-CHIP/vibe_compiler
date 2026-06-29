@@ -32,6 +32,25 @@ module {
     } : tensor<4xf32>
     return %0 : tensor<4xf32>
   }
+
+  func.func @all_reduce_rank_groups_rank_one(%input: tensor<4xf32>,
+                                             %out: tensor<4xf32>)
+      -> tensor<4xf32> {
+    %0 = wafer.group ins(%input : tensor<4xf32>) outs(%out : tensor<4xf32>) {
+    ^bb0(%arg0: tensor<4xf32>, %arg1: tensor<4xf32>):
+      %ar = wafer.linalg_ext.collective.all_reduce
+          ins(%arg0 : tensor<4xf32>)
+          outs(%arg1 : tensor<4xf32>)
+          {
+          ^bb0(%lhs: f32, %rhs: f32):
+            %sum = arith.addf %lhs, %rhs : f32
+            wafer.linalg_ext.collective.yield %sum : f32
+          } {rank_groups = dense<[[0, 1], [2, 3]]> : tensor<2x2xi64>}
+          -> tensor<4xf32>
+      wafer.group.yield %ar : tensor<4xf32>
+    } : tensor<4xf32>
+    return %0 : tensor<4xf32>
+  }
 }
 
 // CHECK-LABEL: wafer.group_to_tile_region group @all_gather_rank_one#0
@@ -42,6 +61,11 @@ module {
 // CHECK-LABEL: wafer.group_to_tile_region group @reduce_scatter_rank_one#0
 // CHECK: wafer.tile.reduce_scatter <sum>
 // CHECK-SAME: axis = 0 : i64
+// CHECK-SAME: group_size = 2 : i64
+// CHECK-SAME: local_rank = 1 : i64
+// CHECK-SAME: rank_group = array<i64: 0, 1>
+// CHECK-LABEL: wafer.group_to_tile_region group @all_reduce_rank_groups_rank_one#0
+// CHECK: wafer.tile.all_reduce <sum>
 // CHECK-SAME: group_size = 2 : i64
 // CHECK-SAME: local_rank = 1 : i64
 // CHECK-SAME: rank_group = array<i64: 0, 1>

@@ -162,12 +162,14 @@ transcendental 子集。它应满足：
 `#wafer.memory<spm, tensor>`。普通 arithmetic / activation / transcendental 要求 operand/result element type
 一致；relation kind 要求 operand element type 彼此一致、result element type 为 `i1`。op 由
 `#wafer.elementwise_kind<...>` 记录 add/sub/mul/div/max/min/neg/recip/sqrt/rsqrt/exp/tanh 和
-eq/ne/lt/le/gt/ge。`wafer.tile.elementwise` 可以不带
+eq/ne/lt/le/gt/ge。basic select 使用同一 elementwise op 的 `select` kind，要求 3 个输入：
+predicate 为 `i1` tensor，true/false value 和 result 的 shape、dtype、element count 一致；lowering
+来自可验证的 `arith.select` scalar body，不靠 mask tensor 名字识别。`wafer.tile.elementwise` 可以不带
 `indexing_maps`，此时要求所有 operand/result 逻辑 tensor type 完全一致；也可以携带和
 `linalg.elementwise` 对齐的 permutation-only `indexing_maps`，此时 result map 必须是 identity，
 input map 的每个维度必须映射到 result 的一个维度，静态维度必须一致。这个合同覆盖当前
-same-shape、row/head/vector broadcast 子集；更复杂 broadcast、scalar immediate、dynamic shape、
-logic、select/mask 和 convert 仍按后续 gate 推进。
+same-shape、row/head/vector broadcast 和 basic select 子集；更复杂 broadcast、scalar immediate、
+dynamic shape、logic、fused mask policy 和 convert 仍按后续 gate 推进。
 
 ### 3.3 Reduce
 
@@ -378,7 +380,9 @@ materialize 为带显式 `batch_count`、batch/head/m/k/n 维度 attrs 的 `wafe
 检查覆盖。resident constant/weight residency 的 board/resource 绑定、数值 correctness 和更完整
 resource summary 仍由后续 runtime/board gate 验证。当前覆盖仍不是通用 elementwise/reduce/GEMM
 coverage；更复杂 broadcast、relation/logic、convert、多输入/非 constant-init reduce 和 mask/select
-泛化仍按后续 gate 推进。当前 coverage 不能被解释成 Wafer compute 语义上不支持这些结构；只要硬件
+泛化仍按后续 gate 推进。basic `arith.select` 已作为 3-input elementwise select 覆盖到
+instruction/ABI no-card path，但真实板端 wrapper、dynamic mask 和 fused mask-add 优化仍不属于当前
+完成项。当前 coverage 不能被解释成 Wafer compute 语义上不支持这些结构；只要硬件
 wrapper / structured lowering 能表达，就应补 compute op、verifier、instruction lowering、ABI/LLVM
 lowering 或 memory planning gate。
 
@@ -404,7 +408,7 @@ path 仍是后续 gate。compute/movement 层的最小覆盖包括：
 - elementwise `add/sub/mul/div/max/min/neg/recip/sqrt/rsqrt/exp`。
 - limited broadcast：scalar、vector、head_dim 或 row-wise broadcast 必须能由 type/indexing map
   验证。
-- compare/select 或 mask-add path，用于 causal / padding mask。若直接使用 large negative
+- compare 和 basic select，或 mask-add path，用于 causal / padding mask。若直接使用 large negative
   add-mask，constant 必须走普通 `ConstantLike` / immediate / load 规则。
 - load/store 对 sin/cos RoPE table、norm scale/bias、linear weights 和 MLP weights 的
   constant slice 关系。

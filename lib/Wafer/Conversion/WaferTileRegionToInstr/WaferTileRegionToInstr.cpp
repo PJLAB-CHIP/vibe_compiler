@@ -182,8 +182,29 @@ getStridedTensorDescriptor(mlir::PatternRewriter &rewriter, mlir::Operation *op,
 
   std::optional<WaferPhysicalTensorInfo> info =
       wafer::computeWaferPhysicalTensorInfo(memrefType);
-  if (!info || info->compactBytes <= 0 || info->elementBytes <= 0 ||
-      info->bitPackedElement)
+  if (!info)
+    return failFailureOr<MovementDescriptor>(
+        rewriter, op, failureReason,
+        llvm::Twine(role)
+            .concat(" requires static byte-addressable tensor")
+            .str());
+
+  if (info->bitPackedElement) {
+    if (info->compactBytes <= 0 || info->physicalBytes != info->compactBytes)
+      return failFailureOr<MovementDescriptor>(
+          rewriter, op, failureReason,
+          llvm::Twine(role)
+              .concat(" requires contiguous bitpacked tensor")
+              .str());
+    MovementDescriptor descriptor;
+    descriptor.byteCount = info->compactBytes;
+    descriptor.innerBytes = info->compactBytes;
+    descriptor.strides.assign({0, 0, 0});
+    descriptor.iterations.assign({1, 1, 1});
+    return descriptor;
+  }
+
+  if (info->compactBytes <= 0 || info->elementBytes <= 0)
     return failFailureOr<MovementDescriptor>(
         rewriter, op, failureReason,
         llvm::Twine(role)

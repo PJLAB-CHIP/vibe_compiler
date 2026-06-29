@@ -204,6 +204,14 @@ static mlir::FailureOr<int64_t> getStaticByteOffset(mlir::Operation *op,
     return op->emitError() << kFailurePrefix << role
                            << " view must have static non-negative byte offset";
 
+  if (auto intType = mlir::dyn_cast<mlir::IntegerType>(type.getElementType());
+      intType && intType.getWidth() == 1) {
+    if (offset != 0)
+      return op->emitError() << kFailurePrefix << role
+                             << " bitpacked view must have zero element offset";
+    return int64_t{0};
+  }
+
   mlir::FailureOr<int64_t> elementBytes =
       getElementByteWidth(op, type.getElementType());
   if (mlir::failed(elementBytes))
@@ -564,6 +572,10 @@ static bool isBinaryElementwiseKind(ComputeElementwiseKind kind) {
   }
 }
 
+static bool isSelectElementwiseKind(ComputeElementwiseKind kind) {
+  return kind == ComputeElementwiseKind::Select;
+}
+
 static mlir::FailureOr<uint64_t> getScalarConstantBits(mlir::Operation *op,
                                                        mlir::Value value,
                                                        llvm::StringRef role) {
@@ -814,6 +826,9 @@ static mlir::LogicalResult ensureAbiDeclarations(mlir::ModuleOp module) {
                                         {i32, i32, i32, i32, i64, i32, i32},
                                         {i32})))
     return mlir::failure();
+  if (mlir::failed(ensureAbiDeclaration(module, "wafer_select",
+                                        {i32, i32, i32, i32, i64, i32}, {i32})))
+    return mlir::failure();
   if (mlir::failed(ensureAbiDeclaration(
           module, "wafer_reduce", {i32, i32, i32, i32, i64, i64, i64, i64, i32},
           {i32})))
@@ -1013,6 +1028,69 @@ static mlir::LogicalResult emitInstructionCall(
 
   if (auto elementwise = mlir::dyn_cast<InstrElementwiseOp>(op)) {
     ComputeElementwiseKind kind = elementwise.getKindAttr().getValue();
+    if (isSelectElementwiseKind(kind)) {
+      if (elementwise.getInputs().size() != 3)
+        return elementwise.emitError()
+               << kFailurePrefix << "select input arity must be 3";
+
+      mlir::FailureOr<int64_t> dest = getSpmOffset(op, elementwise.getDest());
+      mlir::FailureOr<int64_t> predicate =
+          getSpmOffset(op, elementwise.getInputs()[0]);
+      mlir::FailureOr<int64_t> trueValue =
+          getSpmOffset(op, elementwise.getInputs()[1]);
+      mlir::FailureOr<int64_t> falseValue =
+          getSpmOffset(op, elementwise.getInputs()[2]);
+      if (mlir::failed(dest) || mlir::failed(predicate) ||
+          mlir::failed(trueValue) || mlir::failed(falseValue))
+        return mlir::failure();
+
+      mlir::FailureOr<int64_t> elements =
+          getStaticElementCount(op, elementwise.getDest(), "select dest");
+      if (mlir::failed(elements))
+        return mlir::failure();
+      for (mlir::Value input : elementwise.getInputs()) {
+        mlir::FailureOr<int64_t> inputElements =
+            getStaticElementCount(op, input, "select input");
+        if (mlir::failed(inputElements))
+          return mlir::failure();
+        if (*inputElements != *elements)
+          return elementwise.emitError()
+                 << kFailurePrefix
+                 << "select input element count must match dest";
+      }
+
+      mlir::FailureOr<abi::DataFormat> predicateFormat =
+          getDataFormat(op, elementwise.getInputs()[0]);
+      mlir::FailureOr<abi::DataFormat> trueFormat =
+          getDataFormat(op, elementwise.getInputs()[1]);
+      mlir::FailureOr<abi::DataFormat> falseFormat =
+          getDataFormat(op, elementwise.getInputs()[2]);
+      mlir::FailureOr<abi::DataFormat> outputFormat =
+          getDataFormat(op, elementwise.getDest());
+      if (mlir::failed(predicateFormat) || mlir::failed(trueFormat) ||
+          mlir::failed(falseFormat) || mlir::failed(outputFormat))
+        return mlir::failure();
+      if (*predicateFormat != abi::DataFormat::BOOL)
+        return elementwise.emitError()
+               << kFailurePrefix << "select predicate format must be bool";
+      if (*trueFormat != *outputFormat || *falseFormat != *outputFormat)
+        return elementwise.emitError()
+               << kFailurePrefix
+               << "select value formats must match output format";
+
+      status =
+          emitAbiCall(builder, loc, "wafer_select",
+                      {createSpmOffsetValue(builder, loc, *dest),
+                       createSpmOffsetValue(builder, loc, *predicate),
+                       createSpmOffsetValue(builder, loc, *trueValue),
+                       createSpmOffsetValue(builder, loc, *falseValue),
+                       createI64Constant(builder, loc, *elements),
+                       createI32Constant(builder, loc,
+                                         static_cast<int64_t>(*outputFormat))},
+                      status);
+      return mlir::success();
+    }
+
     unsigned expectedInputs = isUnaryElementwiseKind(kind) ? 1 : 2;
     if (!isUnaryElementwiseKind(kind) && !isBinaryElementwiseKind(kind))
       return elementwise.emitError()

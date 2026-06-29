@@ -84,6 +84,19 @@ int main(void) {
          issue->payload.elementwise.output_format,
          issue->payload.elementwise.wait_policy);
 
+  printf("select status=%d\n", wafer_select(67072, 67136, 67264, 67392, 8, 5));
+  issue = wafer_cabi_get_last_issue();
+  printf("select kind=%u inter=%u opcode=%u op=%u dst=%u pred=%u true=%u "
+         "false=%u elements=%u pred_fmt=%u out_fmt=%u wait=%u\n",
+         issue->kind, issue->payload.elementwise.inter_type,
+         issue->payload.elementwise.opcode, issue->payload.elementwise.kind,
+         issue->payload.elementwise.dst, issue->payload.elementwise.src0,
+         issue->payload.elementwise.src1, issue->payload.elementwise.src2,
+         issue->payload.elementwise.elem_count,
+         issue->payload.elementwise.input_format,
+         issue->payload.elementwise.output_format,
+         issue->payload.elementwise.wait_policy);
+
   printf("reduce status=%d\n", wafer_reduce(0, 66560, 66688, 0, 1, 1, 1, 8, 5));
   issue = wafer_cabi_get_last_issue();
   printf("reduce kind=%u inter=%u opcode=%u op=%u src=%u dst=%u dim=%u "

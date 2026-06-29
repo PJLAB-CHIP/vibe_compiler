@@ -49,7 +49,8 @@ class Wafer_LinalgExtCollectiveRankGroupOp<string mnemonic,
     Variadic<AnyType>:$inputs,
     Variadic<AnyType>:$outs,
     I64Attr:$axis,
-    DenseI64ArrayAttr:$rank_group,
+    OptionalAttr<DenseI64ArrayAttr>:$rank_group,
+    OptionalAttr<I64ElementsAttr>:$rank_groups,
     OptionalAttr<I64Attr>:$channel_id,
     OptionalAttr<BoolAttr>:$use_global_device_ids
   );
@@ -107,7 +108,8 @@ def Wafer_LinalgExtCollectiveAllReduceOp
   let arguments = (ins
     Variadic<AnyType>:$inputs,
     Variadic<AnyType>:$outs,
-    DenseI64ArrayAttr:$rank_group,
+    OptionalAttr<DenseI64ArrayAttr>:$rank_group,
+    OptionalAttr<I64ElementsAttr>:$rank_groups,
     OptionalAttr<I64Attr>:$channel_id,
     OptionalAttr<BoolAttr>:$use_global_device_ids
   );
@@ -135,7 +137,8 @@ def Wafer_LinalgExtCollectiveAllToAllOp
     I64Attr:$split_axis,
     I64Attr:$concat_axis,
     I64Attr:$split_count,
-    DenseI64ArrayAttr:$rank_group,
+    OptionalAttr<DenseI64ArrayAttr>:$rank_group,
+    OptionalAttr<I64ElementsAttr>:$rank_groups,
     OptionalAttr<I64Attr>:$channel_id,
     OptionalAttr<BoolAttr>:$use_global_device_ids
   );

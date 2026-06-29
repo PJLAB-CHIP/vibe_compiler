@@ -671,14 +671,17 @@ R3.1 实现按同一 block 内的 SSA use-def 和
    DPS tied init 反查对应 `outs`；如果 init 本身由已吸收的 DPS producer 产生，则沿 tied init
    继续追到 group 外部的 destination tensor。
 4. 在 `outs` 固定后，只吸收内部 support op：目前包括只被 selection 内部使用、且不是
-   group `outs` 的 `arith.constant` 和 `tensor.empty`。这样 internal workspace 留在 group body，
-   最终 destination-style output 仍作为显式 `outs`。
+   group `outs` 的 `arith.constant`、`tensor.empty`、静态 `tensor.extract_slice` /
+   `tensor.insert_slice`、`tensor.expand_shape` 和 `tensor.collapse_shape`。这样 internal
+   workspace / static view producer 留在 group body，最终 destination-style output 仍作为显式
+   `outs`。这一规则用于吸收例如 collective 输入前的静态 `insert_slice` producer，避免把
+   group 内部 shape/view 构造误变成外部 DDR boundary。
 5. body 按原 block order clone，并通过 block arguments 显式 remap 外部 `ins` / `outs`。
    pass 只替换 selected values 的 group 外 use；group 内中间 tensor 由 body dataflow 表达。
 
 这个实现仍然故意保守：不跨 block，不吸收 raw StableHLO、lower-level Wafer op、memref/runtime
-op 或 side-effect op；shape-only、cast/dequant 和更宽松的 multi-output/multi-use expansion
-只能在可由 op 语义、type/rank/shape 和 verifier 证明时逐步放开。
+op 或 side-effect op；当前只放开可静态证明的 tensor view / shape support op。cast/dequant 和更宽松的
+multi-output/multi-use expansion 只能在可由 op 语义、type/rank/shape 和 verifier 证明时逐步放开。
 
 ## 10. Group Schedule Planning
 

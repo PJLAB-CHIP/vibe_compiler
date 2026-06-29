@@ -16,6 +16,8 @@
 # CHECK: fill kind=6 inter=4 opcode=179 dst=66176 value=0 elements=8 fmt=5 wait=0
 # CHECK: elementwise status=0
 # CHECK: elementwise kind=7 inter=0 opcode=14 op=0 dst=66560 src0=66176 src1=66304 elements=8 in_fmt=5 out_fmt=5 wait=0
+# CHECK: select status=0
+# CHECK: select kind=7 inter=0 opcode=0 op=18 dst=67072 pred=67136 true=67264 false=67392 elements=8 pred_fmt=7 out_fmt=5 wait=0
 # CHECK: reduce status=0
 # CHECK: reduce kind=8 inter=0 opcode=111 op=0 src=66560 dst=66688 dim=0 shape=1x1x1x8 fmt=5 wait=0
 # CHECK: convert status=0

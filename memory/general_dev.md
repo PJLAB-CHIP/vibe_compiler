@@ -122,10 +122,19 @@
   的主线 body 先运行 Wafer collective handoff，再调用当前 StableHLO pin 的官方
   `stablehlo-legalize-to-linalg`；Wafer collective handoff 不能证明时要 `signalPassFailure`，
   不能静默把 raw StableHLO 留给 R3 group。
+- XLA SPMD partitioner 输出的 rank/mask helper 可能以 residual `stablehlo.partition_id` /
+  `stablehlo.replica_id`、静态 tensor view 常量链和 all-constant integer `linalg.generic`
+  形式出现。R2.4 cleanup 的职责是在 official StableHLO-to-Linalg 前后把这类可静态证明的常量
+  折掉，确保 group 输入没有 raw StableHLO residual；不要把这扩成运行时 shape 计算或 Wafer 私有
+  compute lowering。
 - R2.4 `wafer.linalg_ext.collective.*` 不是只靠 op 名字或 pass switch 的 skeleton；五类 collective
   必须实现 `DestinationStyleOpInterface`、MLIR `TilingInterface`、`WaferTilingInterface` 和
   `WaferLinalgExtCollectiveOpInterface`。slot-crossing 或动态不可证明的 collective-axis tile 应由
   `TilingInterface` 返回 failure，等待 group planner 拆 slot-aligned tile 或 R6 materialization。
+- StableHLO `replica_groups` 有多个 row 时不要压成一个 `rank_group`。`wafer.linalg_ext.collective.*`
+  现在用互斥的 `rank_group` / `rank_groups` 表达单组或多组 logical ranks；rank-specialized
+  tile-region materialization 按当前 logical rank 选择所在 row。这里仍然只保存 logical rank，不保存
+  physical endpoint 或 communication algorithm。
 - R3.2a/R3.2b 是 analysis-only 阶段：`GroupTilingDemand` 和 `GroupLayoutPlan` 可以用
   `--wafer-dump-group-tiling-demand` / `--wafer-dump-group-layout-plan` dump，但不能把 tile demand、
   layout assignment 或 materialization cut 写成 `wafer.group` attr，也不能在这两步生成
@@ -236,6 +245,17 @@
   内计算 group-local `local_rank`。输出 `wafer.tile.all_gather` / `reduce_scatter` / `all_reduce`
   显式携带 SPM buffer、`rank_group`、`local_rank`、`group_size` 和 byte count；不在这一步选择 p2p
   schedule、endpoint 或 DTE packet。
+- group formation 在 `outs` 固定后会吸收 group 内部 static support producers：`arith.constant`、
+  `tensor.empty`、static `tensor.extract_slice` / `tensor.insert_slice`、`tensor.expand_shape` 和
+  `tensor.collapse_shape`。这用于避免 XLA/HF 产生的 static `insert_slice` collective input 被错误
+  作为 group 外部 DDR boundary；不能因此跨 side-effect、memref/runtime 或 raw StableHLO op。
+- basic `arith.select` 已经通过 `wafer.tile.elementwise` / `wafer.instr.elementwise`
+  `#wafer.elementwise_kind<select>` 和 `wafer_select` ABI 进入 no-card gate。`wafer_select` production
+  shim 当前没有已验证 public wrapper，非 capture 模式返回 `WRAPPER_UNAVAILABLE`；不要把 capture test
+  或 no-card package gate 写成板端 select correctness。
+- top-level single-result `wafer.linalg_ext.collective.collective_permute` 现在直接 materialize 成
+  `wafer.instr.dte_send` / `dte_recv` / `dte_wait`、local copy 或 zero-fill；`all_to_all` 仍是后续
+  buffer slot / token lifetime / p2p schedule 恢复项。
 - tile-region-to-instr 的 communication schedule selector 是 pass-level rewrite policy，不进入 IR：
   `all-gather-schedule=auto|ring|direct` 默认 `auto=ring`，`all-reduce-schedule=auto|ring|tree`
   默认 `auto=ring`，`reduce-scatter-schedule=auto|direct` 默认 `auto=direct`。展开后只保留

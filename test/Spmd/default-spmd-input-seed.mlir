@@ -37,6 +37,15 @@ module {
     %0 = sdy.sharding_constraint %x <@user_mesh, [{"tp"}, {}]> : tensor<4096x4096xf32>
     return %0 : tensor<4096x4096xf32>
   }
+
+  func.func @frontend_activation_seed(
+      %x: tensor<1x4x64xf32>) -> tensor<1x4x64xf32> {
+    %0 = stablehlo.custom_call @Sharding(%x)
+        {backend_config = "",
+         mhlo.sharding = "{devices=[1,1,16]0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15}"}
+        : (tensor<1x4x64xf32>) -> tensor<1x4x64xf32>
+    return %0 : tensor<1x4x64xf32>
+  }
 }
 
 // DEFAULT: sdy.mesh @wafer_default_tile_mesh = <["rank"=16]>
@@ -55,3 +64,7 @@ module {
 // DEFAULT-SAME: %{{[^:]+}}: tensor<4096x4096xf32>,
 // DEFAULT-SAME: %{{[^:]+}}: tensor<4096x4096xf32>)
 // DEFAULT: sdy.sharding_constraint
+
+// DEFAULT: func.func @frontend_activation_seed(
+// DEFAULT: sdy.sharding_constraint %{{[^ ]+}} <@wafer_default_tile_mesh, [{}, {}, {"rank"}]>
+// DEFAULT-NOT: stablehlo.custom_call @Sharding

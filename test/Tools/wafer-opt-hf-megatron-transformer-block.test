@@ -20,5 +20,5 @@
 # GROUP: func.func @main
 # GROUP: wafer.group
 # GROUP: linalg.matmul
-# GROUP: wafer.linalg_ext.collective.
+# GROUP: wafer.linalg_ext.collective.all_reduce
 # GROUP-NOT: wafer.tile.

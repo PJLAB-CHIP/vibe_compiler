@@ -16,6 +16,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/ErrorHandling.h"
 
 #ifdef WAFER_ENABLE_SHARDY
 #include "shardy/dialect/sdy/ir/constants.h"
@@ -34,6 +35,10 @@ namespace wafer {
 namespace {
 
 constexpr llvm::StringLiteral kDefaultMeshName = "wafer_default_tile_mesh";
+constexpr llvm::StringLiteral kMhloShardingAttr = "mhlo.sharding";
+constexpr llvm::StringLiteral kStablehloShardingAttr = "stablehlo.sharding";
+constexpr llvm::StringLiteral kCustomCallTargetAttr = "call_target_name";
+constexpr llvm::StringLiteral kShardingCustomCallTarget = "Sharding";
 
 struct DefaultMeshSpec {
   llvm::SmallVector<std::string, 4> axes;
@@ -84,12 +89,26 @@ getExecutionMeshSpec(mlir::ModuleOp moduleOp, llvm::StringRef meshName) {
 
 static bool isFrontendShardingAttr(mlir::NamedAttribute attr) {
   llvm::StringRef name = attr.getName().getValue();
-  if (name == "mhlo.sharding") {
+  if (name == kMhloShardingAttr || name == kStablehloShardingAttr) {
     if (auto stringAttr = mlir::dyn_cast<mlir::StringAttr>(attr.getValue()))
       return !stringAttr.getValue().empty();
     return true;
   }
   return name == "mhlo.spmd_parameters_sharding";
+}
+
+static mlir::StringAttr getFrontendShardingStringAttr(mlir::Operation *op) {
+  if (auto attr = op->getAttrOfType<mlir::StringAttr>(kMhloShardingAttr))
+    return attr;
+  return op->getAttrOfType<mlir::StringAttr>(kStablehloShardingAttr);
+}
+
+static bool isFrontendShardingCustomCall(mlir::Operation *op) {
+  llvm::StringRef opName = op->getName().getStringRef();
+  if (opName != "stablehlo.custom_call" && opName != "mhlo.custom_call")
+    return false;
+  auto target = op->getAttrOfType<mlir::StringAttr>(kCustomCallTargetAttr);
+  return target && target.getValue() == kShardingCustomCallTarget;
 }
 
 static bool hasShardingSeed(mlir::func::FuncOp funcOp) {
@@ -185,6 +204,105 @@ buildDefaultInputSharding(mlir::MLIRContext *context,
                                             dimShardings, replicatedAxes);
 }
 
+static mlir::sdy::TensorShardingAttr
+buildReplicatedSharding(mlir::MLIRContext *context, mlir::RankedTensorType type,
+                        const DefaultMeshSpec &meshSpec) {
+  mlir::sdy::DimensionShardingAttr replicatedDim =
+      mlir::sdy::DimensionShardingAttr::get(context, {}, /*is_closed=*/true);
+  llvm::SmallVector<mlir::sdy::DimensionShardingAttr> dimShardings(
+      type.getRank(), replicatedDim);
+  return mlir::sdy::TensorShardingAttr::get(
+      context, kDefaultMeshName, dimShardings, getAxisRefs(context, meshSpec));
+}
+
+static mlir::FailureOr<llvm::SmallVector<int64_t>>
+parseOldOpShardingDevicesShape(mlir::Operation *op,
+                               llvm::StringRef shardingText) {
+  llvm::StringRef devicesPrefix = "devices=[";
+  size_t devicesBegin = shardingText.find(devicesPrefix);
+  if (devicesBegin == llvm::StringRef::npos)
+    return op->emitError("unsupported frontend sharding custom call attr: ")
+           << shardingText;
+  devicesBegin += devicesPrefix.size();
+
+  size_t devicesEnd = shardingText.find(']', devicesBegin);
+  if (devicesEnd == llvm::StringRef::npos)
+    return op->emitError("malformed frontend sharding devices list: ")
+           << shardingText;
+
+  llvm::SmallVector<int64_t> devicesShape;
+  llvm::SmallVector<llvm::StringRef> pieces;
+  shardingText.slice(devicesBegin, devicesEnd).split(pieces, ',');
+  for (llvm::StringRef piece : pieces) {
+    int64_t value = 0;
+    if (piece.trim().getAsInteger(10, value) || value <= 0)
+      return op->emitError("malformed frontend sharding devices dimension: ")
+             << shardingText;
+    devicesShape.push_back(value);
+  }
+  return devicesShape;
+}
+
+static mlir::FailureOr<mlir::sdy::TensorShardingAttr>
+buildFrontendSharding(mlir::Operation *op, mlir::StringAttr shardingAttr,
+                      mlir::RankedTensorType type,
+                      const DefaultMeshSpec &meshSpec) {
+  mlir::MLIRContext *context = op->getContext();
+  llvm::StringRef shardingText = shardingAttr.getValue().trim();
+  if (shardingText == "{replicated}")
+    return buildReplicatedSharding(context, type, meshSpec);
+
+  mlir::FailureOr<llvm::SmallVector<int64_t>> devicesShape =
+      parseOldOpShardingDevicesShape(op, shardingText);
+  if (mlir::failed(devicesShape))
+    return mlir::failure();
+
+  bool hasLastTileDimReplicate =
+      shardingText.contains("last_tile_dim_replicate");
+  llvm::SmallVector<int64_t> tensorDimFactors = *devicesShape;
+  if (hasLastTileDimReplicate &&
+      tensorDimFactors.size() == static_cast<size_t>(type.getRank() + 1)) {
+    int64_t replicatedFactor = tensorDimFactors.pop_back_val();
+    if (replicatedFactor != 1)
+      return op->emitError(
+                 "unsupported partial-replication frontend sharding: ")
+             << shardingText;
+  }
+  if (tensorDimFactors.size() != static_cast<size_t>(type.getRank()))
+    return op->emitError("frontend sharding rank does not match tensor rank: ")
+           << shardingText;
+
+  llvm::SmallVector<mlir::sdy::AxisRefAttr> meshAxes =
+      getAxisRefs(context, meshSpec);
+  mlir::sdy::DimensionShardingAttr replicatedDim =
+      mlir::sdy::DimensionShardingAttr::get(context, {}, /*is_closed=*/true);
+  llvm::SmallVector<mlir::sdy::DimensionShardingAttr> dimShardings(
+      type.getRank(), replicatedDim);
+
+  std::optional<int64_t> shardedDim;
+  for (auto [index, factor] : llvm::enumerate(tensorDimFactors)) {
+    if (factor == 1)
+      continue;
+    if (factor != meshSpec.rankCount)
+      return op->emitError("frontend sharding factor does not match Wafer "
+                           "execution mesh rank count: ")
+             << shardingText;
+    if (shardedDim)
+      return op->emitError("unsupported multi-dimension frontend sharding: ")
+             << shardingText;
+    shardedDim = static_cast<int64_t>(index);
+  }
+
+  if (!shardedDim)
+    return buildReplicatedSharding(context, type, meshSpec);
+
+  dimShardings[*shardedDim] =
+      mlir::sdy::DimensionShardingAttr::get(context, meshAxes,
+                                            /*is_closed=*/true);
+  return mlir::sdy::TensorShardingAttr::get(
+      context, kDefaultMeshName, dimShardings, /*replicated_axes=*/{});
+}
+
 static bool isCompatibleDefaultMesh(mlir::sdy::MeshOp meshOp,
                                     const DefaultMeshSpec &meshSpec) {
   llvm::ArrayRef<mlir::sdy::MeshAxisAttr> axes = meshOp.getMesh().getAxes();
@@ -198,8 +316,9 @@ static bool isCompatibleDefaultMesh(mlir::sdy::MeshOp meshOp,
   return true;
 }
 
-static mlir::sdy::MeshOp getOrCreateDefaultMesh(mlir::ModuleOp moduleOp,
-                                                const DefaultMeshSpec &meshSpec) {
+static mlir::sdy::MeshOp
+getOrCreateDefaultMesh(mlir::ModuleOp moduleOp,
+                       const DefaultMeshSpec &meshSpec) {
   mlir::SymbolTable symbolTable(moduleOp);
   if (auto existing = symbolTable.lookup<mlir::sdy::MeshOp>(kDefaultMeshName))
     return existing;
@@ -241,6 +360,50 @@ static void applyDefaultInputSeeds(mlir::func::FuncOp funcOp,
   }
 }
 
+static void collectFrontendShardingCustomCalls(
+    mlir::ModuleOp moduleOp, llvm::SmallVectorImpl<mlir::Operation *> &ops) {
+  moduleOp.walk([&](mlir::Operation *op) {
+    if (isFrontendShardingCustomCall(op))
+      ops.push_back(op);
+  });
+}
+
+static mlir::LogicalResult
+normalizeFrontendShardingCustomCalls(mlir::ModuleOp moduleOp,
+                                     const DefaultMeshSpec &meshSpec) {
+  llvm::SmallVector<mlir::Operation *> customCalls;
+  collectFrontendShardingCustomCalls(moduleOp, customCalls);
+
+  for (mlir::Operation *op : customCalls) {
+    if (op->getNumOperands() != 1 || op->getNumResults() != 1)
+      return op->emitError("expected frontend sharding custom call with one "
+                           "operand and one result");
+
+    auto resultType =
+        mlir::dyn_cast<mlir::RankedTensorType>(op->getResult(0).getType());
+    if (!resultType)
+      return op->emitError("expected ranked tensor result on frontend "
+                           "sharding custom call");
+
+    mlir::StringAttr shardingAttr = getFrontendShardingStringAttr(op);
+    if (!shardingAttr)
+      return op->emitError("expected frontend sharding custom call to carry ")
+             << kMhloShardingAttr << " or " << kStablehloShardingAttr;
+
+    mlir::FailureOr<mlir::sdy::TensorShardingAttr> sharding =
+        buildFrontendSharding(op, shardingAttr, resultType, meshSpec);
+    if (mlir::failed(sharding))
+      return mlir::failure();
+
+    mlir::OpBuilder builder(op);
+    auto constraint = builder.create<mlir::sdy::ShardingConstraintOp>(
+        op->getLoc(), op->getOperand(0), *sharding);
+    op->getResult(0).replaceAllUsesWith(constraint.getResult());
+    op->erase();
+  }
+  return mlir::success();
+}
+
 struct ApplyDefaultSpmdShardingPass
     : public mlir::PassWrapper<ApplyDefaultSpmdShardingPass,
                                mlir::OperationPass<mlir::ModuleOp>> {
@@ -271,8 +434,8 @@ struct ApplyDefaultSpmdShardingPass
   }
 
   void getDependentDialects(mlir::DialectRegistry &registry) const final {
-    registry.insert<mlir::func::FuncDialect, mlir::sdy::SdyDialect,
-                    WaferDialect>();
+    registry
+        .insert<mlir::func::FuncDialect, mlir::sdy::SdyDialect, WaferDialect>();
   }
 
   void runOnOperation() final {
@@ -293,7 +456,10 @@ struct ApplyDefaultSpmdShardingPass
         funcs.push_back(funcOp);
     });
 
-    if (funcs.empty())
+    llvm::SmallVector<mlir::Operation *> frontendShardingCustomCalls;
+    collectFrontendShardingCustomCalls(moduleOp, frontendShardingCustomCalls);
+
+    if (funcs.empty() && frontendShardingCustomCalls.empty())
       return;
 
     mlir::sdy::MeshOp meshOp = getOrCreateDefaultMesh(moduleOp, *meshSpec);
@@ -301,6 +467,12 @@ struct ApplyDefaultSpmdShardingPass
       meshOp.emitOpError()
           << "conflicts with default Wafer SPMD mesh derived from "
              "wafer.execution.mesh";
+      signalPassFailure();
+      return;
+    }
+
+    if (mlir::failed(
+            normalizeFrontendShardingCustomCalls(moduleOp, *meshSpec))) {
       signalPassFailure();
       return;
     }

@@ -238,6 +238,33 @@ func.func @composite_elementwise_group(%input: tensor<2x4xf32>,
   return %group : tensor<2x4xf32>
 }
 
+func.func @captured_scalar_elementwise_group(%input: tensor<4xf32>,
+                                             %one: f32,
+                                             %out: tensor<4xf32>)
+    -> tensor<4xf32> {
+  %group = wafer.group ins(%input, %one : tensor<4xf32>, f32)
+      outs(%out : tensor<4xf32>) {
+  ^bb0(%arg0: tensor<4xf32>, %arg1: f32, %arg2: tensor<4xf32>):
+    %result = linalg.generic {
+        indexing_maps = [
+          affine_map<(d0) -> (d0)>,
+          affine_map<(d0) -> (d0)>
+        ],
+        iterator_types = ["parallel"]
+      } ins(%arg0 : tensor<4xf32>)
+        outs(%arg2 : tensor<4xf32>) {
+      ^bb0(%x: f32, %out_el: f32):
+        %neg = arith.negf %x : f32
+        %exp = math.exp %neg : f32
+        %den = arith.addf %exp, %arg1 : f32
+        %sigmoid = arith.divf %arg1, %den : f32
+        linalg.yield %sigmoid : f32
+      } -> tensor<4xf32>
+    wafer.group.yield %result : tensor<4xf32>
+  } : tensor<4xf32>
+  return %group : tensor<4xf32>
+}
+
 // CHECK-LABEL: func.func @add_group
 // CHECK-SAME: (%{{[^:]+}}: memref<4xf32, #wafer.memory<ddr, tensor>>, %{{[^:]+}}: memref<4xf32, #wafer.memory<ddr, tensor>>, %{{[^:]+}}: memref<4xf32, #wafer.memory<ddr, tensor>>)
 // CHECK-SAME: -> memref<4xf32, #wafer.memory<ddr, tensor>>
@@ -379,6 +406,14 @@ func.func @composite_elementwise_group(%input: tensor<2x4xf32>,
 // CHECK: wafer.instr.gather_scatter
 // CHECK: wafer.instr.elementwise <mul>
 // CHECK: wafer.instr.elementwise <add>
+
+// CHECK-LABEL: func.func @captured_scalar_elementwise_group
+// CHECK-NOT: linalg.generic
+// CHECK: wafer.instr.elementwise <neg>
+// CHECK: wafer.instr.elementwise <exp>
+// CHECK: wafer.instr.fill
+// CHECK: wafer.instr.elementwise <add>
+// CHECK: wafer.instr.elementwise <div>
 
 // PLANNED-LABEL: func.func @boundary_slice_group
 // PLANNED: memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>} : memref<2x3xf16, #wafer.memory<spm, tensor>>

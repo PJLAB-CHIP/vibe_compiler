@@ -37,6 +37,7 @@ cc_binary(
         "//xla/service:hlo_verifier",
         "//xla/service/gpu:backend_configs_cc",
         "//xla/service/gpu:backend_configs_cc_impl",
+        "//xla/service/spmd/shardy:shardy_xla_pass",
         "//xla/service/spmd:spmd_partitioner",
         "//xla/service/spmd:spmd_prepare",
         "//xla/stream_executor:stream_executor_impl",

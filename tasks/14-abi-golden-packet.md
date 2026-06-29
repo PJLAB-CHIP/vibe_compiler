@@ -231,6 +231,7 @@ V0 当前 family 只覆盖已经存在的 committed `wafer.instr.*` op。硬件�
 | gather/scatter | `wafer_gather_scatter` | target movement helper | index dtype、bounds、byte addressing |
 | fill | `wafer_fill` | CT peripheral memset wrapper | SPM range、scalar constant bits、dtype format、element count |
 | elementwise | `wafer_elementwise` | CT arith / transcendental / activation / relation wrapper | kind arity、dtype、element count、relation output format |
+| select | `wafer_select` | CT select compiler-facing boundary | bool predicate format、true/false/output dtype、element count |
 | reduction | `wafer_reduce` | CT reduce wrapper | reduce kind、native C/W/H/N/HW/HWC dim、4D shape、dtype |
 | conversion | `wafer_convert` | CT convert wrapper or same-format TDMA copy | source/result dtype、element count、rounding path |
 | GEMM | `wafer_gemm` | NE GEMM wrapper | layout、M/K/N、dtype；batched GEMM 在 ABI materialization 中按 batch physical byte offset 展开为多次调用 |
@@ -340,6 +341,10 @@ wafer_elementwise(kind: i32, dst_spm_offset: i32,
                   element_count: i64,
                   input_format: i32, output_format: i32) -> i32
 
+wafer_select(dst_spm_offset: i32, predicate_spm_offset: i32,
+             true_spm_offset: i32, false_spm_offset: i32,
+             element_count: i64, value_format: i32) -> i32
+
 wafer_reduce(kind: i32, src_spm_offset: i32, dst_spm_offset: i32,
              dim: i32, n: i64, h: i64, w: i64, c: i64,
              data_format: i32) -> i32
@@ -362,6 +367,12 @@ wafer_local_fence() -> i32
 内部必须用 `data_format` 把 `inner_bytes` 转成 wrapper 需要的 `elem_count`；不能在 shim 中按
 默认 dtype 猜测。GEMM V0 当前要求输入和输出 dtype 相同，因此只传一个 `data_format`；后续若引入
 mixed precision、psum 或 quant，必须扩 ABI，而不是重载该字段含义。
+
+`wafer_elementwise` 覆盖 unary/binary arithmetic、activation、transcendental 和 relation。`select`
+单独使用 `wafer_select`，因为它有 3 个输入且 predicate 固定为 bool format，不能塞进
+binary elementwise ABI 后靠 unused operand 或 kind 特判恢复语义。当前 `wafer_select` 的 capture
+mode 会固定 compiler-facing packet shape；生产 shim 在缺少已验证 public select wrapper 时返回
+`WAFER_CABI_STATUS_WRAPPER_UNAVAILABLE`，不能被当作板端 correctness proof。
 
 `wafer_fill` 的 `value_bits` 是 scalar constant 的 bit pattern；当前 TX8 memset wrapper 接收
 32-bit value operand，因此 ABI materialization 会拒绝超过 native memset operand 的常量。`wafer_reduce`
@@ -490,14 +501,15 @@ public headers，并按 register-level spec 调用 public Tsm wrapper：
 | `wafer_gather_scatter` | validate byte size / logical iterations；`TsmDataMove::GatherScatter` + `TsmExecute` |
 | `wafer_fill` | validate element count / format / native 32-bit value；`TsmPeripheral::Memset` + `TsmExecute` |
 | `wafer_elementwise` | validate kind arity / dtype；`TsmArith`、`TsmTranscendental`、`TsmActivation` 或 `TsmRelation` + `TsmExecute` |
+| `wafer_select` | validate bool predicate / value dtype / element count；capture-mode parameter contract only，production path returns `WRAPPER_UNAVAILABLE` until public select wrapper evidence exists |
 | `wafer_reduce` | validate native dim / 4D shape / format；`TsmReduce::{ReduceSum,ReduceAvg,ReduceMax,ReduceMin}` + `TsmExecute` |
 | `wafer_convert` | validate format pair / element count；`TsmConvert::*` + `TsmExecute`，same-format path uses `TsmDataMove::GatherScatter` |
 | `wafer_gemm` | validate M/K/N and format；`TsmGemm::{AddInput,ConfigMKN,ConfigBatch,AddOutput,SetPsum,SetTransflag}` + `TsmExecute` |
 | `wafer_dte_send` / `wafer_dte_recv` / `wafer_dte_wait` | capture-mode parameter contract only；production path returns `WAFER_CABI_STATUS_WRAPPER_UNAVAILABLE` until remote endpoint / DTE channel runtime binding exists |
 | `wafer_local_fence` | `TsmWaitfinish` local wait |
 
-该 shim 不在每个 issue ABI 后隐藏 wait；RDMA、WDMA、GatherScatter、fill、elementwise、reduce、
-convert、GEMM 和 DTE send/recv 仍是 issue-only，只有 `wafer_dte_wait` / `wafer_local_fence`
+该 shim 不在每个 issue ABI 后隐藏 wait；RDMA、WDMA、GatherScatter、fill、elementwise、select、
+reduce、convert、GEMM 和 DTE send/recv 仍是 issue-only，只有 `wafer_dte_wait` / `wafer_local_fence`
 表达 wait 边界。`WAFER_CABI_SHIM_CAPTURE` 是 host-side test mode：不包含
 `tx8_deps` headers、不调用硬件 wrapper，只把同一组 ABI 参数编码成 capture packet，用来和
 `Wafer/ABI/TileAbi.h` golden builder 对齐。capture mode 不是 runtime fallback，也不能作为 board

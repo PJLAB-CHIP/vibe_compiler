@@ -87,6 +87,7 @@ SUPPORTED_ELEMENTWISE_KINDS = {
     "le",
     "gt",
     "ge",
+    "select",
 }
 
 SUPPORTED_REDUCE_KINDS = {

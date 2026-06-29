@@ -338,36 +338,6 @@ void eraseTargetTopologyAndExecutionMesh(mlir::ModuleOp module) {
     op->erase();
 }
 
-bool normalizeSdyConstantsForXlaExport(mlir::ModuleOp module) {
-  llvm::SmallVector<mlir::Operation *> constants;
-  module.walk([&](mlir::Operation *op) {
-    if (op->getName().getStringRef() == "sdy.constant")
-      constants.push_back(op);
-  });
-
-  for (mlir::Operation *op : constants) {
-    mlir::Attribute value = op->getAttr("value");
-    if (!value) {
-      op->emitOpError("requires value attribute before XLA SPMD export");
-      return true;
-    }
-    if (op->getNumResults() != 1) {
-      op->emitOpError("must have exactly one result before XLA SPMD export");
-      return true;
-    }
-
-    mlir::OpBuilder builder(op);
-    mlir::OperationState state(op->getLoc(), "stablehlo.constant");
-    state.addAttribute("value", value);
-    state.addTypes(op->getResultTypes());
-    mlir::Operation *replacement = builder.create(state);
-    op->getResult(0).replaceAllUsesWith(replacement->getResult(0));
-    op->erase();
-  }
-
-  return false;
-}
-
 struct WaferProgramPipelineOptions {
   std::string pipelineName;
   std::string inputProgramDir;
@@ -508,13 +478,6 @@ int runStableHLOSPMDStage(llvm::StringRef inputProgramDir,
   mlir::FailureOr<int64_t> logicalRankCount =
       getExecutionMeshRankCount(*module);
   if (mlir::failed(logicalRankCount))
-    return 1;
-
-  mlir::PassManager pm(&context);
-  wafer::buildStablehloShardingPropagationPipeline(pm);
-  if (mlir::failed(pm.run(*module)))
-    return 1;
-  if (normalizeSdyConstantsForXlaExport(*module))
     return 1;
 
   llvm::SmallString<256> tempPrefix(outputProgramDir);

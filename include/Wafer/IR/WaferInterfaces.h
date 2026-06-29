@@ -46,16 +46,19 @@ enum class WaferLinalgExtCollectiveKind {
 struct WaferLinalgExtCollectiveInfo {
   WaferLinalgExtCollectiveKind kind;
   llvm::SmallVector<int64_t, 8> rankGroup;
+  llvm::SmallVector<int64_t, 8> rankGroups;
   llvm::SmallVector<int64_t, 8> sourceTargetPairs;
   int64_t axis = -1;
   int64_t splitAxis = -1;
   int64_t concatAxis = -1;
   int64_t splitCount = -1;
+  int64_t rankGroupSize = -1;
   int64_t channelId = -1;
   bool hasAxis = false;
   bool hasSplitAxis = false;
   bool hasConcatAxis = false;
   bool hasSplitCount = false;
+  bool hasRankGroups = false;
   bool hasChannelId = false;
   bool useGlobalDeviceIds = false;
   bool hasCombiner = false;

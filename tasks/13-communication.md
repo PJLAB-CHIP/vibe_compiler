@@ -305,6 +305,15 @@ tiled tensor collective + SPM storage values -> `wafer.tile.*` collective
 - send/recv byte count 与 slice shape 一致。
 - receiver buffer 在 wait 前不被 compute 读取。
 
+当前 V0 已在 rank-specialized group-to-tile-region materialization 中覆盖 top-level single-result
+`wafer.linalg_ext.collective.collective_permute`。materialization 根据当前 logical rank 查找
+`source_target_pairs`：当前 rank 是 source 时生成 `wafer.instr.dte_send`，当前 rank 是 target
+时生成 `wafer.instr.dte_recv` + `wafer.instr.dte_wait`，self pair 使用本地 copy；不参与该 pair
+的 rank 用 numeric zero fill 产生 shape-correct result。这个 lowering 直接进入 instruction-level
+DTE op，不额外引入 `wafer.tile.collective_permute`，因为 V0 permute 没有 reduce/slot 拼接算法状态。
+peer 仍是 logical execution rank，physical endpoint / DTE resource / board route 仍由后续
+topology/execution-mesh、ABI/runtime 边界派生。
+
 ### 6.2 All-Gather
 
 V0 schedule selector 支持 `auto|ring|direct`，默认 `auto=ring`。schedule 选择是
@@ -532,12 +541,15 @@ wafer.instr.dte_wait %send1, %recv1
   phase-ordered all-to-owner unicast `wafer.instr.dte_send` / `wafer.instr.dte_recv` /
   `wafer.instr.dte_wait` + `wafer.instr.elementwise` accumulation，并通过 named pipeline + SPM
   planning lit 覆盖 token/lifetime 消费。
+- group-to-tile-region 已能把 top-level single-result `wafer.linalg_ext.collective.collective_permute`
+  materialize 成 direct `wafer.instr.dte_send` / `dte_recv` / `dte_wait` 或本地 copy/zero-fill
+  body；该路径不保存 algorithm attr，也不提前写 physical endpoint。
 - tile-region-to-instr 的 pass option 提供 schedule selector：
   `all-gather-schedule=auto|ring|direct`、`all-reduce-schedule=auto|ring|tree` 和
   `reduce-scatter-schedule=auto|direct`。这些 option 只选择 rewrite policy，展开后的 IR 不保存
   algorithm name。
-- `collective_permute` 和 `all_to_all` 的 p2p lowering 仍依赖后续 buffer slot / token lifetime /
-  per-target slot 表达，不是当前完成项。
+- `all_to_all` 的 p2p lowering 仍依赖后续 buffer slot / token lifetime / per-target slot 表达，
+  不是当前完成项。
 - Direct DTE send/recv/wait golden path 和 error diagnostic 属于历史 bring-up 证据；Direct DTE
   issue/wait form、resource allocation 和 ABI/LLVM emission 需要从 committed instruction IR
   和 accepted endpoint/resource facts 重新建立。

@@ -91,7 +91,24 @@ static bool isInternalSupportOp(mlir::Operation *op) {
   if (op->getNumResults() == 0)
     return false;
 
-  return mlir::isa<mlir::arith::ConstantOp, mlir::tensor::EmptyOp>(op);
+  auto allStatic = [](llvm::ArrayRef<int64_t> values) {
+    return llvm::all_of(values, [](int64_t value) {
+      return !mlir::ShapedType::isDynamic(value);
+    });
+  };
+
+  if (mlir::isa<mlir::arith::ConstantOp, mlir::tensor::EmptyOp,
+                mlir::tensor::ExpandShapeOp, mlir::tensor::CollapseShapeOp>(op))
+    return true;
+  if (auto extract = mlir::dyn_cast<mlir::tensor::ExtractSliceOp>(op))
+    return allStatic(extract.getStaticOffsets()) &&
+           allStatic(extract.getStaticSizes()) &&
+           allStatic(extract.getStaticStrides());
+  if (auto insert = mlir::dyn_cast<mlir::tensor::InsertSliceOp>(op))
+    return allStatic(insert.getStaticOffsets()) &&
+           allStatic(insert.getStaticSizes()) &&
+           allStatic(insert.getStaticStrides());
+  return false;
 }
 
 static bool isSelectedDef(mlir::Value value,
@@ -327,8 +344,8 @@ collectBoundaryInputs(llvm::ArrayRef<mlir::Operation *> orderedOps,
               break;
             }
           }
-        } else if (auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(
-                       operand)) {
+        } else if (auto blockArg =
+                       mlir::dyn_cast<mlir::BlockArgument>(operand)) {
           mlir::Operation *parentOp = blockArg.getOwner()->getParentOp();
           for (mlir::Operation *scope = parentOp; scope;
                scope = scope->getParentOp()) {

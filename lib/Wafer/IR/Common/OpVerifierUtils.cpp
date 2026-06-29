@@ -496,6 +496,8 @@ static unsigned getElementwiseArity(ComputeElementwiseKind kind) {
   case ComputeElementwiseKind::Gt:
   case ComputeElementwiseKind::Ge:
     return 2;
+  case ComputeElementwiseKind::Select:
+    return 3;
   case ComputeElementwiseKind::Neg:
   case ComputeElementwiseKind::Recip:
   case ComputeElementwiseKind::Sqrt:
@@ -519,6 +521,10 @@ static bool isRelationKind(ComputeElementwiseKind kind) {
   default:
     return false;
   }
+}
+
+static bool isSelectKind(ComputeElementwiseKind kind) {
+  return kind == ComputeElementwiseKind::Select;
 }
 
 mlir::LogicalResult verifyElementwiseTileContract(mlir::Operation *op,
@@ -572,7 +578,16 @@ mlir::LogicalResult verifyElementwiseTileContract(mlir::Operation *op,
       return op->emitOpError("elementwise operands must use tensor layout");
     if (!firstInputTensor)
       firstInputTensor = inputTensor;
-    if (isRelationKind(kind)) {
+    if (isSelectKind(kind)) {
+      if (index == 0) {
+        if (!inputTensor->getElementType().isInteger(1))
+          return op->emitOpError("select predicate element type must be i1");
+      } else if (inputTensor->getElementType() !=
+                 resultTensor->getElementType()) {
+        return op->emitOpError("select value operand element types must match "
+                               "result element type");
+      }
+    } else if (isRelationKind(kind)) {
       if (!resultTensor->getElementType().isInteger(1))
         return op->emitOpError("relation result element type must be i1");
       if (index > 0) {
@@ -589,6 +604,12 @@ mlir::LogicalResult verifyElementwiseTileContract(mlir::Operation *op,
       if (inputTensor->getShape() != resultTensor->getShape())
         return op->emitOpError(
             "relation operand shapes must match result shape");
+      continue;
+    }
+    if (!indexingMaps && isSelectKind(kind) && index == 0) {
+      if (inputTensor->getShape() != resultTensor->getShape())
+        return op->emitOpError(
+            "select predicate shape must match result shape");
       continue;
     }
     if (!indexingMaps && inputTensor != resultTensor) {

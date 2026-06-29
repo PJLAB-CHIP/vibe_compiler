@@ -51,6 +51,7 @@ enum {
   WAFER_CABI_ELEMENTWISE_LE = 15,
   WAFER_CABI_ELEMENTWISE_GT = 16,
   WAFER_CABI_ELEMENTWISE_GE = 17,
+  WAFER_CABI_ELEMENTWISE_SELECT = 18,
 };
 
 enum {
@@ -821,6 +822,7 @@ int32_t wafer_elementwise(uint32_t elementwise_kind, uint32_t dst_spm_offset,
                                          dst_spm_offset,
                                          src0_spm_offset,
                                          src1_spm_offset,
+                                         0,
                                          elem_count,
                                          input_format,
                                          output_format,
@@ -1030,6 +1032,48 @@ int32_t wafer_elementwise(uint32_t elementwise_kind, uint32_t dst_spm_offset,
     status = wafer_status_from_u64(TsmExecute(&instr));
   TsmDeleteRelation(relation);
   return status;
+#endif
+}
+
+int32_t wafer_select(uint32_t dst_spm_offset, uint32_t predicate_spm_offset,
+                     uint32_t true_spm_offset, uint32_t false_spm_offset,
+                     uint64_t element_count, uint32_t value_format) {
+  uint32_t predicate_elem_count = 0;
+  uint32_t elem_count = 0;
+  int32_t status = WAFER_CABI_STATUS_OK;
+
+  if (!wafer_validate_element_count(element_count, 7, &predicate_elem_count) ||
+      !wafer_validate_element_count(element_count, value_format, &elem_count) ||
+      predicate_elem_count != elem_count) {
+    status = WAFER_CABI_STATUS_INVALID_ARGUMENT;
+#ifdef WAFER_CABI_SHIM_CAPTURE
+    wafer_capture_status(WAFER_CABI_CAPTURE_ELEMENTWISE, status);
+#endif
+    return status;
+  }
+
+#ifdef WAFER_CABI_SHIM_CAPTURE
+  wafer_capture_status(WAFER_CABI_CAPTURE_ELEMENTWISE, status);
+  wafer_last_issue.payload.elementwise =
+      (wafer_cabi_elementwise_capture_t){WAFER_CABI_INTER_TYPE_CGRA,
+                                         0,
+                                         WAFER_CABI_ELEMENTWISE_SELECT,
+                                         dst_spm_offset,
+                                         predicate_spm_offset,
+                                         true_spm_offset,
+                                         false_spm_offset,
+                                         elem_count,
+                                         7,
+                                         value_format,
+                                         WAFER_CABI_WAIT_ISSUE_ONLY};
+  return status;
+#else
+  (void)dst_spm_offset;
+  (void)predicate_spm_offset;
+  (void)true_spm_offset;
+  (void)false_spm_offset;
+  (void)value_format;
+  return WAFER_CABI_STATUS_WRAPPER_UNAVAILABLE;
 #endif
 }
 

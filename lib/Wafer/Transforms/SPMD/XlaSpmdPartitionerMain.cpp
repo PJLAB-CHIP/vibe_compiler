@@ -1,10 +1,12 @@
 //===- XlaSpmdPartitionerMain.cpp - Wafer XLA SPMD stage helper ----------===//
 
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -15,7 +17,11 @@
 #include "absl/container/inlined_vector.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/match.h"
+#include "absl/strings/numbers.h"
 #include "absl/strings/str_cat.h"
+#include "absl/strings/str_split.h"
+#include "absl/strings/strip.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -32,6 +38,7 @@
 #include "xla/service/hlo_module_config.h"
 #include "xla/service/hlo_pass_pipeline.h"
 #include "xla/service/hlo_verifier.h"
+#include "xla/service/spmd/shardy/shardy_xla_pass.h"
 #include "xla/service/spmd/spmd_partitioner.h"
 #include "xla/service/spmd/spmd_prepare.h"
 #include "xla/shape.h"
@@ -44,6 +51,9 @@
 namespace fs = std::filesystem;
 
 namespace {
+
+constexpr std::string_view kMhloShardingAttr = "mhlo.sharding";
+constexpr std::string_view kStablehloShardingAttr = "stablehlo.sharding";
 
 struct Options {
   fs::path inputProgramDir;
@@ -152,6 +162,121 @@ absl::StatusOr<std::string> readFile(const fs::path &path) {
     return absl::NotFoundError(absl::StrCat("failed to open ", path.string()));
   return std::string(std::istreambuf_iterator<char>(input),
                      std::istreambuf_iterator<char>());
+}
+
+std::optional<std::string>
+canonicalizeSequentialIotaSharding(std::string_view sharding) {
+  std::string_view text = absl::StripAsciiWhitespace(sharding);
+  if (!absl::StartsWith(text, "{devices=[") || !absl::EndsWith(text, "}") ||
+      text.find("<=") != std::string_view::npos) {
+    return std::nullopt;
+  }
+
+  size_t dimsStart = text.find('[');
+  size_t dimsEnd = text.find(']', dimsStart);
+  if (dimsStart == std::string_view::npos ||
+      dimsEnd == std::string_view::npos) {
+    return std::nullopt;
+  }
+
+  std::string_view dimsText =
+      text.substr(dimsStart + 1, dimsEnd - dimsStart - 1);
+  std::vector<int64_t> dims;
+  int64_t deviceCount = 1;
+  for (std::string_view token : absl::StrSplit(dimsText, ',')) {
+    token = absl::StripAsciiWhitespace(token);
+    int64_t dim = 0;
+    if (token.empty() || !absl::SimpleAtoi(token, &dim) || dim <= 0)
+      return std::nullopt;
+    if (deviceCount > std::numeric_limits<int64_t>::max() / dim)
+      return std::nullopt;
+    deviceCount *= dim;
+    dims.push_back(dim);
+  }
+  if (dims.empty())
+    return std::nullopt;
+
+  std::string_view rest = absl::StripAsciiWhitespace(
+      text.substr(dimsEnd + 1, text.size() - dimsEnd - 2));
+  size_t deviceListEnd = 0;
+  while (deviceListEnd < rest.size()) {
+    unsigned char c = static_cast<unsigned char>(rest[deviceListEnd]);
+    if (!std::isdigit(c) && rest[deviceListEnd] != ',' && !std::isspace(c)) {
+      break;
+    }
+    ++deviceListEnd;
+  }
+
+  std::string_view deviceList =
+      absl::StripAsciiWhitespace(rest.substr(0, deviceListEnd));
+  if (deviceList.empty())
+    return std::nullopt;
+
+  std::vector<int64_t> devices;
+  for (std::string_view token : absl::StrSplit(deviceList, ',')) {
+    token = absl::StripAsciiWhitespace(token);
+    int64_t device = 0;
+    if (token.empty() || !absl::SimpleAtoi(token, &device))
+      return std::nullopt;
+    devices.push_back(device);
+  }
+  if (devices.size() != static_cast<size_t>(deviceCount))
+    return std::nullopt;
+  for (auto [index, device] : llvm::enumerate(devices)) {
+    if (device != static_cast<int64_t>(index))
+      return std::nullopt;
+  }
+
+  std::string_view suffix = rest.substr(deviceListEnd);
+  return absl::StrCat("{devices=[", dimsText, "]<=[", deviceCount, "]", suffix,
+                      "}");
+}
+
+void canonicalizeShardingStringAttr(mlir::Operation *op,
+                                    llvm::StringRef attrName) {
+  auto attr = op->getAttrOfType<mlir::StringAttr>(attrName);
+  if (!attr)
+    return;
+  if (std::optional<std::string> normalized =
+          canonicalizeSequentialIotaSharding(attr.getValue().str())) {
+    op->setAttr(attrName, mlir::StringAttr::get(op->getContext(), *normalized));
+  }
+}
+
+void canonicalizeFunctionBoundaryShardingAttrs(mlir::func::FuncOp func,
+                                               llvm::StringRef attrName) {
+  for (int64_t index = 0; index < func.getNumArguments(); ++index) {
+    auto attr = func.getArgAttrOfType<mlir::StringAttr>(index, attrName);
+    if (!attr)
+      continue;
+    if (std::optional<std::string> normalized =
+            canonicalizeSequentialIotaSharding(attr.getValue().str())) {
+      func.setArgAttr(index, attrName,
+                      mlir::StringAttr::get(func.getContext(), *normalized));
+    }
+  }
+
+  for (int64_t index = 0; index < func.getNumResults(); ++index) {
+    auto attr = func.getResultAttrOfType<mlir::StringAttr>(index, attrName);
+    if (!attr)
+      continue;
+    if (std::optional<std::string> normalized =
+            canonicalizeSequentialIotaSharding(attr.getValue().str())) {
+      func.setResultAttr(index, attrName,
+                         mlir::StringAttr::get(func.getContext(), *normalized));
+    }
+  }
+}
+
+void canonicalizeFrontendShardingAttrs(mlir::ModuleOp module) {
+  module.walk([&](mlir::Operation *op) {
+    canonicalizeShardingStringAttr(op, kMhloShardingAttr);
+    canonicalizeShardingStringAttr(op, kStablehloShardingAttr);
+    if (auto func = mlir::dyn_cast<mlir::func::FuncOp>(op)) {
+      canonicalizeFunctionBoundaryShardingAttrs(func, kMhloShardingAttr);
+      canonicalizeFunctionBoundaryShardingAttrs(func, kStablehloShardingAttr);
+    }
+  });
 }
 
 absl::Status writeFile(const fs::path &path, std::string_view content) {
@@ -705,9 +830,8 @@ absl::Status copyConstantPayloads(const Options &options,
                   error);
     if (error) {
       return absl::InternalError(
-          absl::StrCat("failed to copy constant data file: ",
-                       source.string(), " -> ", destination.string(), ": ",
-                       error.message()));
+          absl::StrCat("failed to copy constant data file: ", source.string(),
+                       " -> ", destination.string(), ": ", error.message()));
     }
     copiedPositions.push_back(location.position);
   }
@@ -751,6 +875,7 @@ absl::Status runSpmdPartitioner(xla::HloModule *module,
   xla::HloPassPipeline pipeline("wafer-spmd-partitioning");
   pipeline.AddPass<xla::HloVerifier>(/*layout_sensitive=*/false,
                                      /*allow_mixed_precision=*/false);
+  pipeline.AddPass<xla::sdy::ShardyXLA>();
   pipeline.AddPass<xla::spmd::SpmdPrepare>();
   pipeline.AddPass<xla::spmd::SpmdPartitioner>(
       logicalRankCount, /*num_replicas=*/1, options, collectiveOpsCreator);
@@ -810,6 +935,7 @@ absl::Status run(const Options &options) {
   mlir::MLIRContext inputContext;
   TF_ASSIGN_OR_RETURN(mlir::OwningOpRef<mlir::ModuleOp> inputModule,
                       xla::ParseMlirModuleString(mlirText, inputContext));
+  canonicalizeFrontendShardingAttrs(*inputModule);
   TF_ASSIGN_OR_RETURN(
       std::unique_ptr<xla::HloModule> prePartitionModule,
       stablehloToHloModule(*inputModule, options.logicalRankCount));

@@ -22,6 +22,7 @@ HF_MEGATRON_TP_MESH_SHAPE = (16,)
 HF_MEGATRON_TP_AXIS_NAMES = ("tensor",)
 HF_MEGATRON_INPUT_SPEC = (None, None, None)
 HF_MEGATRON_REPLICATED_VECTOR_SPEC = (None,)
+HF_MEGATRON_ACTIVATION_TP_SPEC = (None, None, "tensor")
 HF_MEGATRON_COLUMN_PARALLEL_WEIGHT_SPEC = ("tensor", None)
 HF_MEGATRON_ROW_PARALLEL_WEIGHT_SPEC = (None, "tensor")
 HF_LLAMA_COLUMN_PARALLEL_WEIGHT_NAMES = frozenset(
@@ -312,6 +313,8 @@ def _make_hf_llama_decoder_block_module(
     class WaferHFLlamaDecoderBlock(torch_module.nn.Module):
         def __init__(self):
             super().__init__()
+            self._wafer_spmd_module = None
+            self._wafer_spmd_mesh = None
             self.input_layernorm = WaferLlamaRMSNorm()
             self.post_attention_layernorm = WaferLlamaRMSNorm()
             self.q_proj = WaferLinearNoBias(hidden_size, hidden_size)
@@ -328,6 +331,17 @@ def _make_hf_llama_decoder_block_module(
                 torch_module.nn.init.normal_(
                     parameter, mean=0.0, std=initializer_range
                 )
+
+        def set_activation_sharding(self, spmd_module, mesh):
+            self._wafer_spmd_module = spmd_module
+            self._wafer_spmd_mesh = mesh
+
+        def _mark_activation_tp(self, tensor):
+            if self._wafer_spmd_module is not None:
+                self._wafer_spmd_module.mark_sharding(
+                    tensor, self._wafer_spmd_mesh, HF_MEGATRON_ACTIVATION_TP_SPEC
+                )
+            return tensor
 
         def _shape_projection(self, x):
             batch, seq, _ = x.shape
@@ -366,13 +380,16 @@ def _make_hf_llama_decoder_block_module(
                 attn_output.transpose(1, 2)
                 .reshape(batch, seq, hidden_size)
             )
+            attn_output = self._mark_activation_tp(attn_output)
             hidden_states = residual + self.o_proj(attn_output)
 
             residual = hidden_states
             normed_states = self.post_attention_layernorm(hidden_states)
-            gated = self.gate_proj(normed_states)
-            up = self.up_proj(normed_states)
-            mlp_output = torch_module.nn.functional.silu(gated) * up
+            gated = self._mark_activation_tp(self.gate_proj(normed_states))
+            up = self._mark_activation_tp(self.up_proj(normed_states))
+            mlp_output = self._mark_activation_tp(
+                torch_module.nn.functional.silu(gated) * up
+            )
             return residual + self.down_proj(mlp_output)
 
     return WaferHFLlamaDecoderBlock()
@@ -698,6 +715,7 @@ def emit_hf_megatron_transformer_block_program(
     )
 
     mesh = create_hf_megatron_mesh(spmd_module)
+    reference_module.set_activation_sharding(spmd_module, mesh)
     apply_hf_megatron_sharding_marks(
         spmd_module=spmd_module,
         mesh=mesh,

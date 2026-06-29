@@ -49,6 +49,7 @@ ELEMENTWISE_ENUMS = {
     "le": "WAFER_ELEMENTWISE_LE",
     "gt": "WAFER_ELEMENTWISE_GT",
     "ge": "WAFER_ELEMENTWISE_GE",
+    "select": "WAFER_ELEMENTWISE_SELECT",
 }
 
 REDUCE_ENUMS = {
@@ -133,6 +134,7 @@ def emit_c(metadata: dict) -> str:
         "  WAFER_ELEMENTWISE_LE = 16,",
         "  WAFER_ELEMENTWISE_GT = 17,",
         "  WAFER_ELEMENTWISE_GE = 18,",
+        "  WAFER_ELEMENTWISE_SELECT = 19,",
         "} wafer_elementwise_kind_t;",
         "",
         "typedef enum {",

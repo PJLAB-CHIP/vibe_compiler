@@ -205,7 +205,9 @@ Megatron-style tensor-parallel decoder block。后者已经从真实 frontend/SP
 direct instruction lowering、SPM/DDR memory planning、ABI/LLVM lowering、`mlir-translate` LLVM IR、
 IR-derived package metadata auto-export / validation 和 `wafer-run` no-card required-symbol gate。
 这证明当前 compiler chain 能消费 attention/RMSNorm/RoPE/SwiGLU 主干、captured constants、
-parameter shard metadata、workspace base pointer 和 DTE shim symbols。它不证明
+parameter shard metadata、basic select/mask dataflow、workspace base pointer 和 DTE shim symbols。
+它也证明 Megatron-style contracting-dimension sharding 在当前 HF gate 中保留并消费 `all_reduce`
+collective，而不是退化成只靠 `all_gather` 重组 full tensor。它不证明
 `wafer-lower-groups-to-selected-instr` closed-loop selector 已覆盖同一 HF group；也不证明真实板端
 allocation/import/query/bind、module load/function lookup、launch/completion、数值对比或 profiling。
 
@@ -246,10 +248,11 @@ M9 overlap / cost model / profiling calibration gate：
 - PMU/profiling 用于校准 latency、blocking time 和 conflict cost；不反向改变 IR 语义合同。
 
 当前实现已经补入 transformer no-card gate 需要的 `linalg.generic` composite elementwise、
-same-shape identity、显式 broadcast/transpose materialization、scalar-constant-init reduce、rank-4
-contraction / `linalg.batch_matmul` 到 batched `wafer.tile.gemm` / `wafer.instr.gemm`，以及 ABI/LLVM
-阶段的 batched GEMM expansion、compiler-managed DDR workspace base pointer 和 non-finite reduce init
-package encoding。当前仍不覆盖真实板端数值 correctness、dynamic shape、KV cache、mask/select 泛化、
+same-shape identity、basic `arith.select`、显式 broadcast/transpose materialization、
+scalar-constant-init reduce、rank-4 contraction / `linalg.batch_matmul` 到 batched
+`wafer.tile.gemm` / `wafer.instr.gemm`、multi replica group collective handoff、direct
+`collective_permute` DTE materialization，以及 ABI/LLVM 阶段的 batched GEMM expansion、
+compiler-managed DDR workspace base pointer 和 non-finite reduce init package encoding。当前仍不覆盖真实板端数值 correctness、dynamic shape、KV cache、mask/select 泛化、
 resident constant/weight residency 和 HF selected-candidate closed-loop path；这些是后续 board/runtime
 或 selector integration gate。只要对应语义能由 StableHLO / structured tensor IR 和 Wafer 硬件能力
 表达，就不能把当前 static/no-card gate 的覆盖范围写成长期不支持。

@@ -91,6 +91,7 @@
 # FULL-INSTR: "op": "wafer.instr.fill"
 # FULL-INSTR: "op": "wafer.instr.elementwise"
 # FULL-INSTR: "kind": "eq"
+# FULL-INSTR: "kind": "select"
 # FULL-INSTR: "op": "wafer.instr.reduce"
 # FULL-INSTR: "kind": "avg"
 # FULL-INSTR: "op": "wafer.instr.reduce"

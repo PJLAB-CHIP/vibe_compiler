@@ -6,6 +6,7 @@
 #include "Wafer/Transforms/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -162,6 +163,11 @@ private:
     llvm::DenseMap<mlir::Value, mlir::Attribute> fillInitAttrs;
   };
 
+  struct SelectedCollectiveRankGroup {
+    llvm::SmallVector<int64_t, 8> ranks;
+    int64_t localRank = -1;
+  };
+
   mlir::LogicalResult fail(llvm::StringRef reason) {
     setFailureReason(failureReason, reason);
     return mlir::failure();
@@ -184,6 +190,12 @@ private:
   }
 
   mlir::FailureOr<int64_t> failI64(llvm::StringRef reason) {
+    setFailureReason(failureReason, reason);
+    return mlir::failure();
+  }
+
+  mlir::FailureOr<SelectedCollectiveRankGroup>
+  failSelectedCollectiveRankGroup(llvm::StringRef reason) {
     setFailureReason(failureReason, reason);
     return mlir::failure();
   }
@@ -479,15 +491,46 @@ private:
     return physicalInfo->compactBytes;
   }
 
-  mlir::FailureOr<int64_t>
-  getCollectiveLocalRank(const WaferLinalgExtCollectiveInfo &info) {
-    if (info.rankGroup.empty())
-      return failI64("collective materialization requires rank_group");
-    for (auto [index, logicalRank] : llvm::enumerate(info.rankGroup)) {
-      if (logicalRank == currentLogicalRank)
-        return static_cast<int64_t>(index);
+  mlir::FailureOr<SelectedCollectiveRankGroup>
+  getCollectiveRankGroup(const WaferLinalgExtCollectiveInfo &info) {
+    auto findLocalRank = [&](llvm::ArrayRef<int64_t> ranks)
+        -> std::optional<SelectedCollectiveRankGroup> {
+      for (auto [index, logicalRank] : llvm::enumerate(ranks)) {
+        if (logicalRank != currentLogicalRank)
+          continue;
+        SelectedCollectiveRankGroup selected;
+        selected.ranks.assign(ranks.begin(), ranks.end());
+        selected.localRank = static_cast<int64_t>(index);
+        return selected;
+      }
+      return std::nullopt;
+    };
+
+    if (!info.rankGroup.empty()) {
+      if (std::optional<SelectedCollectiveRankGroup> selected =
+              findLocalRank(info.rankGroup))
+        return *selected;
+      return failSelectedCollectiveRankGroup(
+          "logical-rank is not a member of collective rank_group");
     }
-    return failI64("logical-rank is not a member of collective rank_group");
+
+    if (!info.hasRankGroups || info.rankGroupSize <= 0)
+      return failSelectedCollectiveRankGroup(
+          "collective materialization requires rank_group or rank_groups");
+    if (info.rankGroups.size() % static_cast<size_t>(info.rankGroupSize) != 0)
+      return failSelectedCollectiveRankGroup(
+          "collective rank_groups are malformed");
+
+    for (size_t offset = 0; offset < info.rankGroups.size();
+         offset += static_cast<size_t>(info.rankGroupSize)) {
+      llvm::ArrayRef<int64_t> ranks(info.rankGroups.data() + offset,
+                                    static_cast<size_t>(info.rankGroupSize));
+      if (std::optional<SelectedCollectiveRankGroup> selected =
+              findLocalRank(ranks))
+        return *selected;
+    }
+    return failSelectedCollectiveRankGroup(
+        "logical-rank is not a member of collective rank_groups");
   }
 
   std::optional<ComputeReduceKind>
@@ -553,16 +596,18 @@ private:
         op.getLoc(), makeSPMMemRefType(resultTensorType, MemLayout::Tensor));
     mlir::FailureOr<int64_t> bytes =
         getCompactByteSize(*localChunk, "all_gather local chunk");
-    mlir::FailureOr<int64_t> localRank = getCollectiveLocalRank(info);
-    if (mlir::failed(bytes) || mlir::failed(localRank))
+    mlir::FailureOr<SelectedCollectiveRankGroup> rankGroup =
+        getCollectiveRankGroup(info);
+    if (mlir::failed(bytes) || mlir::failed(rankGroup))
       return mlir::failure();
 
     mlir::MLIRContext *context = builder.getContext();
     builder.create<CommAllGatherOp>(
         op.getLoc(), *localChunk, gatherBuffer.getResult(),
-        builder.getI64IntegerAttr(*localRank),
-        builder.getI64IntegerAttr(static_cast<int64_t>(info.rankGroup.size())),
-        mlir::DenseI64ArrayAttr::get(context, info.rankGroup),
+        builder.getI64IntegerAttr(rankGroup->localRank),
+        builder.getI64IntegerAttr(
+            static_cast<int64_t>(rankGroup->ranks.size())),
+        mlir::DenseI64ArrayAttr::get(context, rankGroup->ranks),
         builder.getI64IntegerAttr(*bytes));
     record(op.getResult(0), MemLayout::Tensor, gatherBuffer.getResult());
     return mlir::success();
@@ -584,8 +629,9 @@ private:
 
     mlir::FailureOr<mlir::Value> input =
         getOrMaterialize(op.getInputs().front(), MemLayout::Tensor, builder);
-    mlir::FailureOr<int64_t> localRank = getCollectiveLocalRank(info);
-    if (mlir::failed(input) || mlir::failed(localRank))
+    mlir::FailureOr<SelectedCollectiveRankGroup> rankGroup =
+        getCollectiveRankGroup(info);
+    if (mlir::failed(input) || mlir::failed(rankGroup))
       return mlir::failure();
     if (!info.hasAxis)
       return fail("reduce_scatter materialization requires an axis");
@@ -606,9 +652,10 @@ private:
     auto result = builder.create<CommReduceScatterOp>(
         op.getLoc(), slotType, kindAttr, *input, recvBuffer.getResult(),
         builder.getI64IntegerAttr(info.axis),
-        builder.getI64IntegerAttr(*localRank),
-        builder.getI64IntegerAttr(static_cast<int64_t>(info.rankGroup.size())),
-        mlir::DenseI64ArrayAttr::get(builder.getContext(), info.rankGroup),
+        builder.getI64IntegerAttr(rankGroup->localRank),
+        builder.getI64IntegerAttr(
+            static_cast<int64_t>(rankGroup->ranks.size())),
+        mlir::DenseI64ArrayAttr::get(builder.getContext(), rankGroup->ranks),
         builder.getI64IntegerAttr(*bytes));
     record(op.getResult(0), MemLayout::Tensor, result.getResult());
     return mlir::success();
@@ -628,8 +675,9 @@ private:
 
     mlir::FailureOr<mlir::Value> input =
         getOrMaterialize(op.getInputs().front(), MemLayout::Tensor, builder);
-    mlir::FailureOr<int64_t> localRank = getCollectiveLocalRank(info);
-    if (mlir::failed(input) || mlir::failed(localRank))
+    mlir::FailureOr<SelectedCollectiveRankGroup> rankGroup =
+        getCollectiveRankGroup(info);
+    if (mlir::failed(input) || mlir::failed(rankGroup))
       return mlir::failure();
 
     auto inputType = mlir::cast<mlir::MemRefType>((*input).getType());
@@ -643,11 +691,95 @@ private:
     auto kindAttr = ComputeReduceKindAttr::get(builder.getContext(), *kind);
     auto result = builder.create<CommAllReduceOp>(
         op.getLoc(), inputType, kindAttr, *input, recvBuffer.getResult(),
-        builder.getI64IntegerAttr(*localRank),
-        builder.getI64IntegerAttr(static_cast<int64_t>(info.rankGroup.size())),
-        mlir::DenseI64ArrayAttr::get(builder.getContext(), info.rankGroup),
+        builder.getI64IntegerAttr(rankGroup->localRank),
+        builder.getI64IntegerAttr(
+            static_cast<int64_t>(rankGroup->ranks.size())),
+        mlir::DenseI64ArrayAttr::get(builder.getContext(), rankGroup->ranks),
         builder.getI64IntegerAttr(*bytes));
     record(op.getResult(0), MemLayout::Tensor, result.getResult());
+    return mlir::success();
+  }
+
+  mlir::LogicalResult
+  convertCollectivePermute(LinalgExtCollectiveCollectivePermuteOp op,
+                           const WaferLinalgExtCollectiveInfo &info,
+                           mlir::OpBuilder &builder) {
+    if (mlir::failed(requireSingleTensorCollective(op.getOperation())))
+      return mlir::failure();
+    if (op.getInputs().size() != 1 || op.getOuts().size() != 1)
+      return fail(
+          "collective_permute materialization supports one input and one out");
+    if (info.sourceTargetPairs.empty() || info.sourceTargetPairs.size() % 2)
+      return fail("collective_permute materialization requires source/target "
+                  "pairs");
+
+    mlir::FailureOr<mlir::Value> input =
+        getOrMaterialize(op.getInputs().front(), MemLayout::Tensor, builder);
+    if (mlir::failed(input))
+      return mlir::failure();
+
+    auto resultTensorType =
+        mlir::dyn_cast<mlir::RankedTensorType>(op.getResult(0).getType());
+    if (!resultTensorType)
+      return fail("collective_permute result must be ranked");
+    auto resultType = makeSPMMemRefType(resultTensorType, MemLayout::Tensor);
+
+    std::optional<int64_t> sendPeer;
+    std::optional<int64_t> recvPeer;
+    bool localCopy = false;
+    for (size_t index = 0; index < info.sourceTargetPairs.size(); index += 2) {
+      int64_t source = info.sourceTargetPairs[index];
+      int64_t target = info.sourceTargetPairs[index + 1];
+      if (source == currentLogicalRank) {
+        if (target == currentLogicalRank)
+          localCopy = true;
+        else
+          sendPeer = target;
+      }
+      if (target == currentLogicalRank && source != currentLogicalRank)
+        recvPeer = source;
+    }
+
+    mlir::FailureOr<int64_t> bytes =
+        getCompactByteSize(*input, "collective_permute input");
+    if (mlir::failed(bytes))
+      return mlir::failure();
+
+    mlir::Value resultBuffer;
+    if (localCopy) {
+      resultBuffer = builder.create<MoveCopyOp>(op.getLoc(), resultType, *input)
+                         .getResult();
+    } else {
+      auto alloc =
+          builder.create<mlir::memref::AllocOp>(op.getLoc(), resultType);
+      mlir::Value zero = createZeroScalar(
+          op.getLoc(), resultTensorType.getElementType(), builder);
+      if (!zero)
+        return fail(
+            "collective_permute zero-fill requires numeric element type");
+      builder.create<ComputeFillOp>(op.getLoc(), alloc.getResult(), zero);
+      resultBuffer = alloc.getResult();
+    }
+
+    llvm::SmallVector<mlir::Value, 2> tokens;
+    mlir::Type tokenType = builder.getType<mlir::async::TokenType>();
+    if (sendPeer) {
+      auto send = builder.create<InstrDTESendOp>(
+          op.getLoc(), tokenType, *input, builder.getI64IntegerAttr(*sendPeer),
+          builder.getI64IntegerAttr(*bytes));
+      tokens.push_back(send.getToken());
+    }
+    if (recvPeer) {
+      auto recv =
+          builder.create<InstrDTERecvOp>(op.getLoc(), tokenType, resultBuffer,
+                                         builder.getI64IntegerAttr(*recvPeer),
+                                         builder.getI64IntegerAttr(*bytes));
+      tokens.push_back(recv.getToken());
+    }
+    if (!tokens.empty())
+      builder.create<InstrDTEWaitOp>(op.getLoc(), tokens);
+
+    record(op.getResult(0), MemLayout::Tensor, resultBuffer);
     return mlir::success();
   }
 
@@ -669,8 +801,9 @@ private:
       return fail("all_to_all buffer-level collective materialization is not "
                   "implemented");
     case WaferLinalgExtCollectiveKind::CollectivePermute:
-      return fail("collective_permute buffer-level materialization is not "
-                  "implemented");
+      return convertCollectivePermute(
+          mlir::cast<LinalgExtCollectiveCollectivePermuteOp>(op), info,
+          builder);
     }
     llvm_unreachable("unknown linalg-ext collective kind");
   }
@@ -689,6 +822,17 @@ private:
       if (!tensorType) {
         if (mlir::isa<mlir::FloatType, mlir::IntegerType, mlir::IndexType>(
                 groupArg.getType())) {
+          unsigned argIndex = groupArg.getArgNumber();
+          unsigned inputCount = static_cast<unsigned>(group.getInputs().size());
+          if (argIndex < inputCount) {
+            if (auto constant = group.getInputs()[argIndex]
+                                    .getDefiningOp<mlir::arith::ConstantOp>()) {
+              mlir::Operation *cloned = builder.clone(*constant.getOperation());
+              scalarValues[groupArg] = cloned->getResult(0);
+              scalarAttrs[groupArg] = constant.getValue();
+              continue;
+            }
+          }
           scalarValues[groupArg] = tileArg;
           continue;
         }
@@ -740,27 +884,35 @@ private:
       if (constant->getNumResults() == 0)
         return mlir::success();
 
-      mlir::Operation *cloned = builder.clone(*constant.getOperation());
-      for (auto [originalResult, clonedResult] :
-           llvm::zip(constant->getResults(), cloned->getResults())) {
-        auto tensorType =
-            mlir::dyn_cast<mlir::RankedTensorType>(originalResult.getType());
-        if (!tensorType) {
-          scalarValues[originalResult] = clonedResult;
-          scalarAttrs[originalResult] = constant.getValue();
-          continue;
-        }
-
-        auto ddr = builder.create<mlir::bufferization::ToMemrefOp>(
-            constant.getLoc(), makeDDRMemRefType(tensorType), clonedResult,
-            /*read_only=*/true);
-        auto load = builder.create<StorageLoadOp>(
-            constant.getLoc(), makeSPMMemRefType(tensorType, MemLayout::Tensor),
-            ddr.getMemref());
-        record(originalResult, MemLayout::Tensor, load.getResult());
-        externalBuffers[originalResult] = ddr.getMemref();
-        tensorAttrs[originalResult] = constant.getValue();
+      mlir::Value originalResult = constant.getResult();
+      auto tensorType =
+          mlir::dyn_cast<mlir::RankedTensorType>(originalResult.getType());
+      if (!tensorType) {
+        mlir::Operation *cloned = builder.clone(*constant.getOperation());
+        scalarValues[originalResult] = cloned->getResult(0);
+        scalarAttrs[originalResult] = constant.getValue();
+        return mlir::success();
       }
+
+      if (getScalarSplatAttr(tensorType, constant.getValue())) {
+        mlir::FailureOr<mlir::Value> materialized = materializeTensorConstant(
+            originalResult, constant.getValue(), MemLayout::Tensor, builder);
+        if (mlir::failed(materialized))
+          return mlir::failure();
+        tensorAttrs[originalResult] = constant.getValue();
+        return mlir::success();
+      }
+
+      mlir::Operation *cloned = builder.clone(*constant.getOperation());
+      auto ddr = builder.create<mlir::bufferization::ToMemrefOp>(
+          constant.getLoc(), makeDDRMemRefType(tensorType),
+          cloned->getResult(0), /*read_only=*/true);
+      auto load = builder.create<StorageLoadOp>(
+          constant.getLoc(), makeSPMMemRefType(tensorType, MemLayout::Tensor),
+          ddr.getMemref());
+      record(originalResult, MemLayout::Tensor, load.getResult());
+      externalBuffers[originalResult] = ddr.getMemref();
+      tensorAttrs[originalResult] = constant.getValue();
       return mlir::success();
     }
 
@@ -1403,6 +1555,8 @@ private:
     if (mlir::isa<mlir::arith::MinimumFOp, mlir::arith::MinNumFOp,
                   mlir::arith::MinSIOp, mlir::arith::MinUIOp>(def))
       return ComputeElementwiseKind::Min;
+    if (mlir::isa<mlir::arith::SelectOp>(def))
+      return ComputeElementwiseKind::Select;
     if (mlir::isa<mlir::arith::NegFOp>(def))
       return ComputeElementwiseKind::Neg;
     if (mlir::isa<mlir::math::ExpOp>(def))
@@ -1787,15 +1941,17 @@ private:
   }
 
   mlir::FailureOr<ElementwiseExprValue>
-  createElementwiseFillExprValue(mlir::arith::ConstantOp constant,
+  createElementwiseFillExprValue(mlir::Location loc, mlir::Value scalar,
                                  mlir::RankedTensorType resultTensorType,
                                  mlir::OpBuilder &builder) {
-    mlir::Operation *cloned = builder.clone(*constant.getOperation());
+    if (!isScalarType(scalar.getType()))
+      return failElementwiseExprValue(
+          "elementwise scalar splat source must be scalar typed");
+    auto splatTensorType = mlir::RankedTensorType::get(
+        resultTensorType.getShape(), scalar.getType());
     auto alloc = builder.create<mlir::memref::AllocOp>(
-        constant.getLoc(),
-        makeSPMMemRefType(resultTensorType, MemLayout::Tensor));
-    builder.create<ComputeFillOp>(constant.getLoc(), alloc.getResult(),
-                                  cloned->getResult(0));
+        loc, makeSPMMemRefType(splatTensorType, MemLayout::Tensor));
+    builder.create<ComputeFillOp>(loc, alloc.getResult(), scalar);
     return ElementwiseExprValue{alloc.getResult(),
                                 getIdentityMap(resultTensorType)};
   }
@@ -1828,7 +1984,25 @@ private:
       llvm::DenseMap<mlir::Value, ElementwiseExprValue> &values,
       mlir::RankedTensorType resultTensorType, mlir::OpBuilder &builder) {
     auto lookup = [&](mlir::Value value) {
-      return getElementwiseExprValue(values, value);
+      auto it = values.find(value);
+      if (it != values.end())
+        return mlir::FailureOr<ElementwiseExprValue>(it->second);
+
+      if (isScalarType(value.getType())) {
+        mlir::FailureOr<mlir::Value> scalar = getScalarValue(value);
+        if (mlir::failed(scalar))
+          return mlir::FailureOr<ElementwiseExprValue>(mlir::failure());
+        mlir::FailureOr<ElementwiseExprValue> splat =
+            createElementwiseFillExprValue(value.getLoc(), *scalar,
+                                           resultTensorType, builder);
+        if (mlir::failed(splat))
+          return splat;
+        values[value] = *splat;
+        return splat;
+      }
+
+      return failElementwiseExprValue(
+          "unsupported linalg.generic scalar expression");
     };
     auto createUnary = [&](mlir::Value input,
                            ComputeElementwiseKind kind) -> mlir::LogicalResult {
@@ -1859,12 +2033,33 @@ private:
       values[op->getResult(0)] = *result;
       return mlir::success();
     };
+    auto createTernary =
+        [&](mlir::Value first, mlir::Value second, mlir::Value third,
+            ComputeElementwiseKind kind) -> mlir::LogicalResult {
+      mlir::FailureOr<ElementwiseExprValue> firstValue = lookup(first);
+      mlir::FailureOr<ElementwiseExprValue> secondValue = lookup(second);
+      mlir::FailureOr<ElementwiseExprValue> thirdValue = lookup(third);
+      if (mlir::failed(firstValue) || mlir::failed(secondValue) ||
+          mlir::failed(thirdValue))
+        return mlir::failure();
+      mlir::FailureOr<ElementwiseExprValue> result =
+          createElementwiseOpExprValue(op->getLoc(), kind,
+                                       {*firstValue, *secondValue, *thirdValue},
+                                       resultTensorType, builder);
+      if (mlir::failed(result))
+        return mlir::failure();
+      values[op->getResult(0)] = *result;
+      return mlir::success();
+    };
 
     if (auto constant = mlir::dyn_cast<mlir::arith::ConstantOp>(op)) {
       if (constant->getNumResults() != 1 || !isScalarType(constant.getType()))
         return fail("unsupported linalg.generic constant expression");
+      mlir::Operation *cloned = builder.clone(*constant.getOperation());
       mlir::FailureOr<ElementwiseExprValue> value =
-          createElementwiseFillExprValue(constant, resultTensorType, builder);
+          createElementwiseFillExprValue(constant.getLoc(),
+                                         cloned->getResult(0), resultTensorType,
+                                         builder);
       if (mlir::failed(value))
         return mlir::failure();
       values[constant.getResult()] = *value;
@@ -1971,6 +2166,10 @@ private:
         return mlir::failure();
       return createBinary(cmpi.getLhs(), cmpi.getRhs(), *kind);
     }
+    if (auto select = mlir::dyn_cast<mlir::arith::SelectOp>(op))
+      return createTernary(select.getCondition(), select.getTrueValue(),
+                           select.getFalseValue(),
+                           ComputeElementwiseKind::Select);
     if (auto powf = mlir::dyn_cast<mlir::math::PowFOp>(op)) {
       if (!isScalarLikeConstant(generic, powf.getRhs(), 2.0))
         return fail("only powf with exponent 2 is supported in elementwise "
