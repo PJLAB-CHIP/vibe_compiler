@@ -1052,7 +1052,12 @@ Transformer block 里的 softmax、RMSNorm / LayerNorm、RoPE 和 MLP activation
 normalization 展开成 structured tensor IR；group 只处理 staged dataflow、tile-local residency
 和资源闭环。
 
-第一版 transformer block 跑通需要下面的通用调度能力：
+当前 HF Megatron-style transformer no-card gate 已证明一条真实 PyTorch/XLA transformer block 可以经
+group 继续进入 direct instr/ABI/LLVM/package/no-card runtime required-symbol path。下面仍是 group
+层的长期通用调度要求；它们不能被替换成 transformer-specific pass，也不表示
+`wafer-lower-groups-to-selected-instr` closed-loop selector 已覆盖同一 HF case。
+
+Transformer block 跑通需要下面的通用调度能力：
 
 - norm schedule：沿 hidden dimension 做 sum/avg/max 等 reduction，得到 per-token 小结果，再由
   elementwise stage 做 rsqrt、scale、bias 和 residual。若 hidden dimension 不能被一个合法

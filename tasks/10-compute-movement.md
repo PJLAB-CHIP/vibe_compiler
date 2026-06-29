@@ -373,11 +373,14 @@ local reduce 到 `wafer.tile.reduce` 的 path，保留 reduce dimensions
 parallel/reduction iterator types、mul-add body 和静态 shape relation 验证的 batch/head 形态，
 materialize 为带显式 `batch_count`、batch/head/m/k/n 维度 attrs 的 `wafer.tile.gemm` /
 `wafer.instr.gemm`，ABI materialization 按 batch physical byte offset 展开为多次 `wafer_gemm`
-调用。历史 transformer fixed package 测试输入已删除；compiler-managed/resident constant metadata、
-resource summary 一致性验证和 full block package metadata 由 IR-derived package gate 恢复。当前覆盖仍不是通用 elementwise/reduce/GEMM coverage；更复杂 broadcast、relation/logic、convert、多输入/非
-constant-init reduce 和 mask/select 仍按后续泛化 gate 推进。当前 coverage 不能被解释成
-Wafer compute 语义上不支持这些结构；只要硬件 wrapper / structured lowering 能表达，就应补
-compute op、verifier、instruction lowering、ABI/LLVM lowering 或 memory planning gate。
+调用。历史 transformer fixed package 测试输入已删除；HF Megatron-style transformer no-card gate
+现在由 PyTorch/XLA capture、IR-derived package metadata auto-export 和 `wafer-run` no-card required-symbol
+检查覆盖。resident constant/weight residency 的 board/resource 绑定、数值 correctness 和更完整
+resource summary 仍由后续 runtime/board gate 验证。当前覆盖仍不是通用 elementwise/reduce/GEMM
+coverage；更复杂 broadcast、relation/logic、convert、多输入/非 constant-init reduce 和 mask/select
+泛化仍按后续 gate 推进。当前 coverage 不能被解释成 Wafer compute 语义上不支持这些结构；只要硬件
+wrapper / structured lowering 能表达，就应补 compute op、verifier、instruction lowering、ABI/LLVM
+lowering 或 memory planning gate。
 
 V1 或后续扩展：
 
@@ -389,8 +392,10 @@ V1 或后续扩展：
 
 ### 8.1 Transformer Block Minimum Coverage
 
-不能只因为 GEMM、一个 elementwise 和一个 reduce 能跑，就声称 transformer block 支持完成。
-在 transformer block vertical slice 之前，compute/movement 层至少要覆盖：
+不能只因为 GEMM、一个 elementwise 和一个 reduce 能跑，就声称 transformer block 支持完成。当前
+HF no-card compile gate 已覆盖一条真实 PyTorch/XLA transformer block 到 instruction/ABI/LLVM/package
+的路径，但 board execution、数值 correctness、dynamic/KV/mask/select 泛化和 closed-loop selected-candidate
+path 仍是后续 gate。compute/movement 层的最小覆盖包括：
 
 - `wafer.tile.gemm` 的 batch/head 维和 transpose relation，用于 QKV linear matmul、QK^T、
   attention value、output linear matmul 和 MLP。
@@ -404,7 +409,7 @@ V1 或后续扩展：
 - load/store 对 sin/cos RoPE table、norm scale/bias、linear weights 和 MLP weights 的
   constant slice 关系。
 
-不在第一版 transformer block gate 内：
+仍不在当前 HF no-card compile gate 内：
 
 - dropout/random mask。
 - dynamic sequence length 的通用 runtime specialization。

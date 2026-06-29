@@ -328,8 +328,10 @@ stage 得到 partitioned StableHLO、等价 per-rank StableHLO body，或明确�
   `mark_sharding` 在 16-rank 单卡 mesh 上标记 Megatron-style tensor parallel 权重切分，再进入
   `wafer-opt --program-pipeline=stablehlo-spmd-to-group`。该 gate 证明当前 compiler 能消费
   attention/RMSNorm/RoPE/SwiGLU 主干、captured constants、parameter shards 和 post-SPMD
-  collectives 到 `wafer.group` 边界；它不声明 group->tile/instr/runtime 对完整 transformer block
-  已经完成。
+  collectives 到 `wafer.group` 边界；它本身只验证 frontend/SPMD/group 边界。下游
+  `test/Runtime/hf-megatron-transformer-no-card-runtime.test` 继续消费同一类 HF transformer program，
+  覆盖 group -> direct instr/ABI/LLVM/package/no-card runtime required-symbol gate；真实 board
+  execution、数值 correctness 和 selected-candidate closed-loop path 仍由后续 gate 覆盖。
 
 #### 2.1.3 默认 no-user-sharding policy
 

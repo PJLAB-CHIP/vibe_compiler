@@ -72,8 +72,9 @@ wafer.group
   -> instruction-level wafer.instr.* IR over unplaced Wafer-tagged memref values
   -> SPM memory planning on the same instruction-level IR
   -> DDR memory planning on memory-planned instruction IR
-  -> closed-loop candidate driver for retry/split/commit decision
-  -> committed wafer.tile.region
+  -> direct memory-planned instruction IR for current no-card/ABI/runtime gates
+  -> optional closed-loop candidate driver for retry/split/commit decision
+  -> committed selected instruction IR for cases covered by the selector
   -> topology/execution-mesh + program shard metadata/resource view
   -> ABI / LLVM lowering from committed IR + accepted offsets + topology/execution mesh
   -> object/package/runtime adapter
@@ -82,15 +83,16 @@ wafer.group
 本文区分两种生命周期：
 
 - `wafer.tile.region` IR：R3.2c 通过同一套 MLIR DialectConversion builder
-  构造。局部 dump / planner 可以在 transformation-local evaluation IR 中观察 tile-region IR；
-  `--wafer-convert-group-to-tile-region` 可以把当前模块中的 supported logical group 重写成
-  tile-region IR，用作 legality/debug/后续 pass bring-up。它仍不是 selected candidate，
-  也不是 SPM allocator 的直接输入；rejected tile-region IR 不进入主线 committed IR。
+  构造。局部 dump / planner 可以在 transformation-local evaluation IR 中观察 tile-region IR。
+  `wafer-lower-groups-to-ddr-memory-planned-instr` 这类 direct lowering pipeline 会继续把该 IR
+  bufferize、lower 到 instruction IR 并做 SPM/DDR planning，作为当前 no-card/ABI/runtime gate 的输入。
+  closed-loop selector 评估失败的 tile-region IR 仍不进入主线 committed IR。
 - committed `wafer.tile.region`：committed materialization 只把 candidate-selection 已选中、且已通过 candidate gates
   的 candidate artifact 写入主 IR。后续 endpoint projection、ABI/LLVM lowering 和 package metadata
   只从 committed IR、accepted offset facts、topology/execution-mesh 和 program shard metadata/resource view
   派生下游参数，
-  不重新决定 group 是否可行，也不复制 placed/access descriptor 中间协议。
+  不重新决定 group 是否可行，也不复制 placed/access descriptor 中间协议。当前 HF transformer no-card
+  gate 不以该 selected-candidate path 作为完成证明。
 
 ### 2.1 Pipeline Contract
 

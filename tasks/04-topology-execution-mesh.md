@@ -41,10 +41,9 @@ package resource view，不在本层 materialize 成核心 IR op 或 function bo
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  target descriptor / runtime capability / board profile；partitioned StableHLO program directory
-  中已经由 SPMD 产出的 parameter shard metadata / payload；committed `wafer.tile.region` /
-  `wafer.instr.*` IR at the selected-instr boundary with accepted SPM offsets and DDR demand
-  legality facts。
+  target descriptor / runtime capability / board profile；PyTorch/XLA StableHLO program directory
+  或已经 partitioned 的 StableHLO program directory。下游 committed instruction IR、accepted SPM/DDR
+  offset facts 和 package/resource view 都消费本层 fact，但不是本层输入。
 - Current stage responsibility:
   materialize / verify target topology 和 execution mesh rank domain。默认 `all_available` policy
   从 topology 派生所有 available endpoint；显式 override 才保存 endpoint tuples。验证 rank
@@ -66,11 +65,12 @@ Pipeline position:
   object、package、runtime handle 或 physical address；不靠 tensor 名字恢复 shard 语义。
 - Completion gate:
   named pipeline 能重放 target topology materialization -> valid execution mesh selection -> SPMD partition
-  -> group formation -> candidate selection -> committed instruction materialization；emitted
-  `wafer.execution.mesh` 被 SPMD、communication 和 ABI/package resource view 消费；execution mesh
-  成为唯一 rank-domain policy / optional explicit endpoint fact source；verifier 能拒绝 rank count、
-  axis product mismatch、unavailable tile、duplicate explicit tile、out-of-topology、disconnected
-  available component 和 rank 数不等于可用 tile。
+  -> group formation；emitted `wafer.execution.mesh` 被 SPMD、communication、direct memory-planned
+  instruction/ABI lowering 和 package resource view 消费。closed-loop selected-candidate path 可消费
+  同一 topology / mesh fact，但不是 topology/execution-mesh gate 的完成条件。execution mesh 成为唯一
+  rank-domain policy / optional explicit endpoint fact source；verifier 能拒绝 rank count、axis product
+  mismatch、unavailable tile、duplicate explicit tile、out-of-topology、disconnected available component
+  和 rank 数不等于可用 tile。
 ```
 
 ## 3. 输入和输出

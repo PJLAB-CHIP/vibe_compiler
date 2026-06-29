@@ -264,7 +264,8 @@ package metadata 声明的 BPM descriptor 仍是 `descriptor_only`，runtime ada
 不能隐式退化到 `txLaunchKernel`。
 
 `tx.module` / `tx.cluster` entrypoint 需要显式标记为 `debug=true`。它们可以用于
-no-card command construction、device-code smoke 和板端 bring-up，但不能作为模型级 package 完成证明。
+no-card command construction、device-code smoke、HF transformer compile/package intake gate 和板端
+bring-up，但不能作为模型级 board launch / correctness 完成证明。
 
 Legacy fallback：
 
@@ -349,7 +350,7 @@ lookup、launch、host completion、device-side completion evidence 和 error pr
 当前 `tools/wafer_package_metadata.py` 负责验证和 roundtrip runtime package metadata schema。schema
 记录 model interface、package name、model ABI、modules、entrypoints、DDR external binding bytes、
 SPM/DDR memory summary、workspace buffer demand、resident constant demand、ABI call/packet emission
-metadata 和 runtime completion source；当前 schema v2 不维护 rank endpoint table。validator 要求
+metadata 和 runtime completion source；当前 schema v2 不维护 derived endpoint section。validator 要求
 `runtime.mode` 是 `tx` 或 `legacy_tsm`；`tx` 使用 `runtime_stream_wait`、
 `runtime_command_completion` 或 `kcore_local_drain` 这类中性 completion source，
 `legacy_tsm` 只允许 `legacy_model_sync`。package metadata 不写 `hpgr_*` completion source；实际 provider
@@ -405,11 +406,12 @@ required symbol check。真实 host runtime implementation 由 C++ `WaferRuntime
 package metadata 维护第二份 endpoint schema。
 
 历史 `--emit-single-tile-matmul`、`--emit-multi-tile-no-comm-matmul`、
-`--emit-single-tile-elementwise` 和 `--emit-local-transformer-block` fixed emitter 已删除。后续 package
-gate 必须从当前 `wafer-opt` pipeline 的 committed instruction IR、
-topology/execution-mesh contract、program parameter shard metadata/resource view、薄 launch/block binding、
-按需重算的 resource view 和 ABI/LLVM lowering artifact 自动导出 package metadata；
-不能恢复独立固定 emitter 作为完成证明。
+`--emit-single-tile-elementwise` 和 `--emit-local-transformer-block` fixed emitter 已删除。当前 package
+gate 已从 `wafer-opt` pipeline 的 committed instruction IR、LLVM IR artifact、module path 和 model
+interface metadata 自动导出 schema v2 package metadata，并被 no-card E2E 和 HF transformer gate 消费。
+后续若扩展 topology/execution-mesh snapshot、program parameter shard metadata/resource view、薄 launch/block
+binding 或 derived endpoint section，也必须从当前 IR / analysis fact 重算；不能恢复独立固定 emitter
+作为完成证明。
 
 package metadata 后续可以序列化 runtime 需要的 derived endpoint section，但 canonical facts 仍在
 compiler IR 中：
@@ -420,8 +422,8 @@ compiler IR 中：
 
 这些字段是 package / launch metadata，不改变 tensor IR 语义，也不成为 `wafer.execution.mesh` /
 `wafer.target.topology` 的第二事实源。若后续加入 derived endpoint section，validator 必须检查
-package metadata rank endpoint table 能由 execution mesh policy 和 target topology 重算、mapped endpoint
-仍 available、block id 不重复，以及 local shard bounds 不越过 `model.interface` tensor shape。
+该 section 能由 execution mesh policy 和 target topology 重算、mapped endpoint 仍 available、
+block id 不重复，以及 local shard bounds 不越过 `model.interface` tensor shape。
 
 ## 6. Legacy Bootparam and Dyn TLV
 

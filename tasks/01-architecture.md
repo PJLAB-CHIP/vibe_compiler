@@ -673,14 +673,20 @@ WaferRuntimeAdapter cluster launch
 - 可以先不做跨卡 endpoint optimization、paged KV cache、prefill/decode serving 调度和全模型 pipeline。
 - 如果 tensor parallel 需要 collective，必须先满足 p2p、single-card collective 和 partitioned
   StableHLO collective handoff 的 communication gate。
+- 当前 no-card compile gate 已用 HuggingFace Llama tiny config + PyTorch/XLA `mark_sharding`
+  + 单卡 16-rank Megatron-style tensor parallel 覆盖到
+  `stablehlo-spmd-to-group`、direct instruction/ABI/LLVM lowering、package metadata auto-export
+  和 `wafer-run` no-card required-symbol gate。该 gate 不经过
+  `wafer-lower-groups-to-selected-instr` closed-loop selector，也不证明板端 launch 或数值正确性。
 
 验收标准：
 
 - Transformer block 的 StableHLO local shard 能 normalized 到 structured tensor IR，不依赖名字识别。
 - softmax、RMSNorm/LayerNorm、RoPE 和 MLP activation 都展开成可验证 staged tensor IR。
 - group planner 能对 staged reduction/softmax 给出合法 group split 或明确拒绝原因。
-- layout/SPM/DDR feasibility 对所有 accepted groups 通过；constants/weights 通过 `ConstantLike`
-  + `wafer.tile.load` / constant storage transform 路径进入 device storage。
+- layout/SPM/DDR feasibility 对当前 no-card compile gate 中 accepted groups 通过；constants/weights
+  的长期 residency 仍应通过 `ConstantLike` + `wafer.tile.load` / constant storage transform 路径进入
+  device storage，并在 board/resource gate 验证。
 - 所有启用的 compute/movement/communication ABI family 有 verifier 和必要 golden packet 覆盖。
 - Runtime completion 仍使用可信 fence，不使用旧 launch/sync stub。
 

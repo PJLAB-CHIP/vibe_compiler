@@ -199,14 +199,15 @@ Transformer block vertical slice：
 - 当前无卡开发环境要求 generated program compile；launch/resource metadata 后续应覆盖所有 block
   input/output、resident constants 和 workspace，package/runtime completion 和数值对比在有卡环境验证。
 
-当前 transformer static gate 已覆盖两类边界：手写 StableHLO local structured tensor dataflow，以及
-HuggingFace Llama config snapshot + PyTorch/XLA `mark_sharding` + 16-rank 单卡 mesh 的
-Megatron-style tensor-parallel decoder block 到 `stablehlo-spmd-to-group`。后者证明真实
-frontend/SPMD/group 链路能消费 attention/RMSNorm/RoPE/SwiGLU 主干、captured constants 和
-parameter shard metadata。旧 full local block 到 single-tile materialization、SPM allocation、DDR
-binding demand 和 ABI/LLVM lowering 的 pass 链已删除；workspace buffers、resident constants、
-launch/resource metadata 和 IR-derived package metadata emission 仍属后续恢复任务。completion、
-数值对比和 profiling 仍等有卡环境补 gate。
+当前 transformer static/no-card gate 已覆盖两类边界：手写 StableHLO local structured tensor dataflow，
+以及 HuggingFace Llama config snapshot + PyTorch/XLA `mark_sharding` + 16-rank 单卡 mesh 的
+Megatron-style tensor-parallel decoder block。后者已经从真实 frontend/SPMD/group 链路继续走到
+direct instruction lowering、SPM/DDR memory planning、ABI/LLVM lowering、`mlir-translate` LLVM IR、
+IR-derived package metadata auto-export / validation 和 `wafer-run` no-card required-symbol gate。
+这证明当前 compiler chain 能消费 attention/RMSNorm/RoPE/SwiGLU 主干、captured constants、
+parameter shard metadata、workspace base pointer 和 DTE shim symbols。它不证明
+`wafer-lower-groups-to-selected-instr` closed-loop selector 已覆盖同一 HF group；也不证明真实板端
+allocation/import/query/bind、module load/function lookup、launch/completion、数值对比或 profiling。
 
 M7 ABI / LLVM program gate：
 
@@ -244,18 +245,14 @@ M9 overlap / cost model / profiling calibration gate：
   resource model 和 PMU calibration 派生，不写入不可验证的 planner trace。
 - PMU/profiling 用于校准 latency、blocking time 和 conflict cost；不反向改变 IR 语义合同。
 
-当前实现补入了 `linalg.elementwise` 的局部 physical slice：same-shape identity 和
-可由 permutation-only `indexing_maps` 验证的 row/head/vector broadcast 可以形成
-`wafer.group`，materialize 为 `wafer.tile.elementwise`，后续应 lower 到带 `indexing_maps` 的
-instruction-level elementwise 和 ABI/LLVM lowering。后续 reduce slice 让 scalar-constant-init
-`linalg.reduce` materialize 为 `wafer.tile.reduce`，并应 lower 到带 `dimensions` / `init_value`
-的 instruction-level reduce 和 ABI/LLVM lowering。attention slice 让 QK^T / AV 的 rank-4
-`linalg.generic` contraction materialize 为 batched `wafer.tile.gemm`，并应 lower 到带
-`batch_count`、M/K/N 和 batch/head dimension attrs 的 instruction-level GEMM 和 ABI/LLVM lowering。
-当前 transformer static 测试输入覆盖的是 frontend/local structured tensor dataflow，不覆盖
-IR-derived package metadata。当前仍不覆盖 mask/select、dynamic shape 或非 constant-init reduce；
-这些是后续 compute/group/resource 恢复项。只要对应语义能由 StableHLO / structured tensor IR 和
-Wafer 硬件能力表达，就不能把当前 static gate 的覆盖范围写成长期不支持。
+当前实现已经补入 transformer no-card gate 需要的 `linalg.generic` composite elementwise、
+same-shape identity、显式 broadcast/transpose materialization、scalar-constant-init reduce、rank-4
+contraction / `linalg.batch_matmul` 到 batched `wafer.tile.gemm` / `wafer.instr.gemm`，以及 ABI/LLVM
+阶段的 batched GEMM expansion、compiler-managed DDR workspace base pointer 和 non-finite reduce init
+package encoding。当前仍不覆盖真实板端数值 correctness、dynamic shape、KV cache、mask/select 泛化、
+resident constant/weight residency 和 HF selected-candidate closed-loop path；这些是后续 board/runtime
+或 selector integration gate。只要对应语义能由 StableHLO / structured tensor IR 和 Wafer 硬件能力
+表达，就不能把当前 static/no-card gate 的覆盖范围写成长期不支持。
 
 ## 5. Failure Handling
 

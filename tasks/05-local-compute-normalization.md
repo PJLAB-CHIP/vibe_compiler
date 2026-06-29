@@ -478,6 +478,11 @@ Normalization 后必须能检查：
 R2.3 覆盖状态以 structured tensor IR 证据为准，
 不再把 acceptance pass 视为 schedule completion。当前可引用的 evidence 如下：
 
+本表只描述 local compute normalization 层自己的证据。HF Megatron-style transformer no-card runtime
+gate 已在下游覆盖 PyTorch/XLA capture -> group/instr/ABI/LLVM/package/no-card runtime required-symbol
+路径；该 runtime gate 不改变本层对 dynamic shape、mask/select 泛化、layout materialization 和
+board/numeric correctness 的非目标边界。
+
 | 子结构 | 当前证据 | 结论边界 |
 | --- | --- | --- |
 | dot / 2D GEMM | `test/Frontend/lower-stablehlo-dot-to-linalg.mlir`、`stablehlo-to-linalg.mlir`、program gate | 证明 2D dot 可进入 structured matmul，不证明 tile shape / GEMM packet |
@@ -487,7 +492,7 @@ R2.3 覆盖状态以 structured tensor IR 证据为准，
 | softmax | `lower-stablehlo-softmax-staged.mlir` | 证明 fine-grained StableHLO softmax dataflow 可变成 `linalg.reduce` / `linalg.generic` staged IR；不证明 multi-stage intermediate storage 或 group schedule |
 | norm | `lower-stablehlo-norm-staged.mlir` | 证明 fine-grained RMSNorm/LayerNorm dataflow 中 last-dim reduce / rsqrt / broadcast multiply gate；不证明完整 LayerNorm/RMSNorm family |
 | RoPE | `lower-stablehlo-rope-mlp-staged.mlir` | 证明当前 RoPE slice/shape/elementwise staged pattern；sin/cos table storage slicing 未闭环 |
-| MLP | `lower-stablehlo-mlp.mlir`、`lower-stablehlo-local-transformer-block.mlir` | 证明 tanh-gated MLP dataflow 测试输入和 full local transformer structured 测试输入；GELU/SwiGLU/package consistency 未闭环 |
+| MLP | `lower-stablehlo-mlp.mlir`、`lower-stablehlo-local-transformer-block.mlir` | 证明 tanh-gated MLP dataflow 测试输入和 full local transformer structured 测试输入；本层不单独证明 GELU/SwiGLU 下游 package/runtime consistency，后者由 HF no-card gate 覆盖当前 tiny config |
 | shape views | `lower-stablehlo-shape.mlir`、`lower-stablehlo-local-transformer-block.mlir` | 证明 static expand/collapse shape-only relation；dynamic shape view 和 layout materialization 未闭环 |
 | linalg extension collective handoff | R2.4 已恢复 | `stablehlo-spmd-to-linalg` 主线应把 post-SPMD StableHLO logical collective normalize 成 `wafer.linalg_ext.collective.*`；unsupported collective handoff 会 fail；`wafer-lower-stablehlo-to-linalg` 只作为内部/局部 named MLIR pipeline；旧的 StableHLO -> `wafer.tile.*` communication bridge 已移除，不能作为 group/tiling 输入 |
 
