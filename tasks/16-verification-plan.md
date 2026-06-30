@@ -251,7 +251,8 @@ M9 overlap / cost model / profiling calibration gate：
 same-shape identity、basic `arith.select`、显式 broadcast/transpose materialization、
 scalar-constant-init reduce、rank-4 contraction / `linalg.batch_matmul` 到 batched
 `wafer.tile.gemm` / `wafer.instr.gemm`、multi replica group collective handoff、direct
-`collective_permute` DTE materialization，以及 ABI/LLVM 阶段的 batched GEMM expansion、
+`collective_permute` DTE materialization、direct `all_to_all` split/exchange/concat p2p
+materialization，以及 ABI/LLVM 阶段的 batched GEMM expansion、
 compiler-managed DDR workspace base pointer 和 non-finite reduce init package encoding。当前仍不覆盖真实板端数值 correctness、dynamic shape、KV cache、mask/select 泛化、
 resident constant/weight residency 和 HF selected-candidate closed-loop path；这些是后续 board/runtime
 或 selector integration gate。只要对应语义能由 StableHLO / structured tensor IR 和 Wafer 硬件能力

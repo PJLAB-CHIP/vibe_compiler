@@ -224,7 +224,8 @@ partitioned StableHLO + collective ops
 - 处理 global tensor 的逻辑切分。
 - 维护 logical execution mesh 和 collective group 语义；rank count / mesh axes 来自已选择的
   `wafer.execution.mesh`。
-- 输出 `collective_permute`、`all_gather`、`reduce_scatter`、`all_reduce` 等逻辑 collective。
+- 输出 `collective_permute`、`all_gather`、`reduce_scatter`、`all_reduce`、`all_to_all` 等逻辑
+  collective。
 
 不负责：
 
@@ -238,10 +239,11 @@ V0 collective 语义：
 - `all_gather`
 - `reduce_scatter`
 - `all_reduce`
+- `all_to_all`
 
 `all_to_all` 的高性能 lowering 不作为 V0 核心目标；如果 Shardy/SPMD 产出合法 `all_to_all`
-语义，SPMD/per-rank program 仍必须保留 split / exchange / concat、rank group 和 shard relation。
-后续 communication lowering 可先用 unicast p2p schedule 组合实现。
+语义，SPMD/per-rank program 必须保留 split / exchange / concat、rank group 和 shard relation。
+当前 correctness path 先用 unicast p2p schedule 组合实现。
 
 Shardy / SPMD 的 logical mesh、partition 和 collective 合同见
 `tasks/03-shardy-spmd.md`。
@@ -726,7 +728,7 @@ PMU microbench 不应成为 single-tile compute 前置条件。
 
 - 任意 PyTorch 模型无约束 seamless 运行。
 - 复杂 dynamic shape 全覆盖。
-- `all_to_all` 高性能实现；logical program 和 p2p 组合实现路径仍应保留。
+- `all_to_all` 高性能 ring/blocked schedule；logical program 和 direct p2p correctness path 仍应保留。
 - 完整 vLLM/SGLang serving 集成。
 - 自定义 LLVM 后端或真正 ISA intrinsic lowering。
 - 依赖旧 Stream/Score data-plane 作为主通信路径。

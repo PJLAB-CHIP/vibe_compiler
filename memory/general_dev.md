@@ -254,8 +254,11 @@
   shim 当前没有已验证 public wrapper，非 capture 模式返回 `WRAPPER_UNAVAILABLE`；不要把 capture test
   或 no-card package gate 写成板端 select correctness。
 - top-level single-result `wafer.linalg_ext.collective.collective_permute` 现在直接 materialize 成
-  `wafer.instr.dte_send` / `dte_recv` / `dte_wait`、local copy 或 zero-fill；`all_to_all` 仍是后续
-  buffer slot / token lifetime / p2p schedule 恢复项。
+  `wafer.instr.dte_send` / `dte_recv` / `dte_wait`、local copy 或 zero-fill。
+- top-level single-result `wafer.linalg_ext.collective.all_to_all` 的 V0 materialization 要求
+  `split_count == rank_group.size()`，把每个 split slot 先 extract 成连续 SPM comm buffer，DTE 只收发
+  连续 buffer，recv 后再 insert 到 concat result slot；当前没有 ring/blocked schedule selector、
+  raw non-unicast DTE 或 cross-card route binding。
 - tile-region-to-instr 的 communication schedule selector 是 pass-level rewrite policy，不进入 IR：
   `all-gather-schedule=auto|ring|direct` 默认 `auto=ring`，`all-reduce-schedule=auto|ring|tree`
   默认 `auto=ring`，`reduce-scatter-schedule=auto|direct` 默认 `auto=direct`。展开后只保留

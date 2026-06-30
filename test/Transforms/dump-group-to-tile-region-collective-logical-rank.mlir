@@ -51,6 +51,23 @@ module {
     } : tensor<4xf32>
     return %0 : tensor<4xf32>
   }
+
+  func.func @all_to_all_rank_one(%input: tensor<4x4xf32>,
+                                 %out: tensor<2x8xf32>)
+      -> tensor<2x8xf32> {
+    %0 = wafer.group ins(%input : tensor<4x4xf32>)
+        outs(%out : tensor<2x8xf32>) {
+    ^bb0(%arg0: tensor<4x4xf32>, %arg1: tensor<2x8xf32>):
+      %a2a = wafer.linalg_ext.collective.all_to_all
+          ins(%arg0 : tensor<4x4xf32>)
+          outs(%arg1 : tensor<2x8xf32>)
+          {split_axis = 0 : i64, concat_axis = 1 : i64,
+           split_count = 2 : i64, rank_group = array<i64: 0, 1>}
+          -> tensor<2x8xf32>
+      wafer.group.yield %a2a : tensor<2x8xf32>
+    } : tensor<2x8xf32>
+    return %0 : tensor<2x8xf32>
+  }
 }
 
 // CHECK-LABEL: wafer.group_to_tile_region group @all_gather_rank_one#0
@@ -69,3 +86,9 @@ module {
 // CHECK-SAME: group_size = 2 : i64
 // CHECK-SAME: local_rank = 1 : i64
 // CHECK-SAME: rank_group = array<i64: 0, 1>
+// CHECK-LABEL: wafer.group_to_tile_region group @all_to_all_rank_one#0
+// CHECK: wafer.instr.dte_send
+// CHECK-SAME: peer = 0 : i64
+// CHECK: wafer.instr.dte_recv
+// CHECK-SAME: peer = 0 : i64
+// CHECK: wafer.instr.dte_wait

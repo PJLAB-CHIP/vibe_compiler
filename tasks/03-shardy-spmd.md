@@ -454,16 +454,16 @@ V0 关注以下 StableHLO collective 语义：
 
 | collective | SPMD 语义 | 下游 owner |
 | --- | --- | --- |
-| `collective_permute` | logical point-to-point value movement | `wafer.linalg_ext.collective.*` handoff + endpoint projection + later `wafer.tile.*` collective / `wafer.instr.dte_*` schedule |
+| `collective_permute` | logical point-to-point value movement | `wafer.linalg_ext.collective.*` handoff + endpoint projection + direct `wafer.instr.dte_*` materialization |
 | `all_gather` | shard concat / replication | `wafer.linalg_ext.collective.*` handoff |
 | `reduce_scatter` | reduce + shard distribution | `wafer.linalg_ext.collective.*` handoff |
 | `all_reduce` | all-rank reduction | `wafer.linalg_ext.collective.*` handoff |
-| `all_to_all` | split / exchange / concatenate across logical ranks | `wafer.linalg_ext.collective.*` handoff；later `wafer.tile.*` collective / `wafer.instr.dte_*` schedule |
+| `all_to_all` | split / exchange / concatenate across logical ranks | `wafer.linalg_ext.collective.*` handoff；当前 V0 direct `wafer.instr.dte_*` materialization，后续可扩 `wafer.tile.*` schedule |
 
 `all_to_all` 的高性能算法可以后于 ring all-gather / all-reduce 实现，但 SPMD program stage 不应因为当前
-communication lowering 未实现该算法而丢失或拒绝它的 logical collective 语义。若硬件 data plane
-只能通过 unicast Direct DTE 组合实现，per-rank program 仍要保留 split / exchange / concat 的
-rank group、slice 和 dtype 事实，后续 communication lowering 再选择 p2p schedule。
+communication lowering 只有 direct p2p correctness path 而丢失或拒绝它的 logical collective 语义。
+per-rank program 仍要保留 split / exchange / concat 的 rank group、slice 和 dtype 事实，后续
+communication lowering 再选择 p2p schedule 或更高性能算法。
 
 Collective handoff 分三步：
 
@@ -471,7 +471,7 @@ Collective handoff 分三步：
 StableHLO logical collective
   -> `wafer.linalg_ext.collective.*` op
   -> tiled tensor collective inside scheduled group / tile_region materialization
-  -> `wafer.tile.*` buffer-level collective
+  -> `wafer.tile.*` buffer-level collective, or direct instruction body for simple V0 p2p collectives
   -> `wafer.instr.dte_send` / `dte_recv` / `dte_wait`
 ```
 
@@ -489,7 +489,9 @@ endpoint projection、ring/p2p schedule 和 DTE token 仍属于 R3/R6。
 旧的 StableHLO collective 直降 `wafer.tile.*` communication ops pass 已移除。后续不得恢复
 group/tiling 前的 StableHLO -> tile-local communication 插入点；需要分别实现
 “StableHLO -> `wafer.linalg_ext.collective.*`”、“tiled tensor collective -> `wafer.tile.*`
-buffer-level collective”和“`wafer.tile.*` collective -> `wafer.instr.dte_*` schedule”。
+buffer-level collective / direct p2p body”和“buffer-level collective -> `wafer.instr.dte_*`
+schedule”。`collective_permute` 和当前 V0 `all_to_all` 可以不额外引入 `wafer.tile.*` wrapper，
+只要 split/endpoint/token/body 都在 tile-region / instruction IR 中显式表达。
 
 SDY program bridge 工程入口：`WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON` 时，`wafer-opt` 和
 frontend verifier tool 显式注册 Shardy / SDY dialect，`wafer-opt` 也注册 SDY passes/pipelines。
@@ -499,7 +501,8 @@ frontend verifier tool 显式注册 Shardy / SDY dialect，`wafer-opt` 也注册
 `rank_group = array<i64: ...>` attr；该 StableHLO -> `wafer.tile.*` communication bridge 已移除，避免后续误把它当成
 group/tiling 输入。SPMD program stage 的任务是通过真实 partitioner 输出和 program verifier
 保留这些事实，R2.4/R6 再分别恢复 `wafer.linalg_ext.collective.*` handoff、
-`wafer.tile.*` buffer-level collective materialization 和 `wafer.instr.dte_*` schedule lowering。
+`wafer.tile.*` buffer-level collective materialization 或 direct p2p body，以及
+`wafer.instr.dte_*` schedule lowering。
 
 ## 5. 与 Topology / Execution Mesh 的接口
 

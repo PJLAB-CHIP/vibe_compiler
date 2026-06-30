@@ -700,6 +700,168 @@ private:
     return mlir::success();
   }
 
+  mlir::LogicalResult convertAllToAll(LinalgExtCollectiveAllToAllOp op,
+                                      const WaferLinalgExtCollectiveInfo &info,
+                                      mlir::OpBuilder &builder) {
+    if (mlir::failed(requireSingleTensorCollective(op.getOperation())))
+      return mlir::failure();
+    if (op.getInputs().size() != 1 || op.getOuts().size() != 1)
+      return fail("all_to_all materialization supports one input and one out");
+
+    mlir::FailureOr<SelectedCollectiveRankGroup> rankGroup =
+        getCollectiveRankGroup(info);
+    mlir::FailureOr<mlir::Value> input =
+        getOrMaterialize(op.getInputs().front(), MemLayout::Tensor, builder);
+    if (mlir::failed(rankGroup) || mlir::failed(input))
+      return mlir::failure();
+
+    int64_t groupSize = static_cast<int64_t>(rankGroup->ranks.size());
+    if (groupSize <= 0 || info.splitCount != groupSize)
+      return fail(
+          "all_to_all materialization requires split_count to match rank_group "
+          "size");
+    if (!info.hasSplitAxis || !info.hasConcatAxis)
+      return fail("all_to_all materialization requires split and concat axes");
+
+    auto inputTensorType = mlir::dyn_cast<mlir::RankedTensorType>(
+        op.getInputs().front().getType());
+    auto resultTensorType =
+        mlir::dyn_cast<mlir::RankedTensorType>(op.getResult(0).getType());
+    if (!inputTensorType || !resultTensorType)
+      return fail("all_to_all input and result must be ranked tensors");
+    if (!inputTensorType.hasStaticShape() || !resultTensorType.hasStaticShape())
+      return fail("all_to_all materialization requires static shapes");
+
+    int64_t rank = inputTensorType.getRank();
+    int64_t splitAxis = info.splitAxis;
+    int64_t concatAxis = info.concatAxis;
+    if (splitAxis < 0 || splitAxis >= rank || concatAxis < 0 ||
+        concatAxis >= rank || resultTensorType.getRank() != rank)
+      return fail("all_to_all materialization has invalid axes");
+
+    int64_t inputSplitDim = inputTensorType.getDimSize(splitAxis);
+    int64_t inputConcatDim = inputTensorType.getDimSize(concatAxis);
+    if (inputSplitDim <= 0 || inputConcatDim <= 0 ||
+        inputSplitDim % groupSize != 0)
+      return fail("all_to_all materialization requires evenly split static "
+                  "dimensions");
+
+    llvm::SmallVector<int64_t, 4> slotShape(inputTensorType.getShape().begin(),
+                                            inputTensorType.getShape().end());
+    slotShape[splitAxis] = inputSplitDim / groupSize;
+    llvm::SmallVector<int64_t, 4> resultSlotShape(
+        resultTensorType.getShape().begin(), resultTensorType.getShape().end());
+    resultSlotShape[concatAxis] = inputConcatDim;
+    if (slotShape != resultSlotShape)
+      return fail("all_to_all materialization slot shapes do not match");
+
+    auto slotTensorType = mlir::RankedTensorType::get(
+        slotShape, inputTensorType.getElementType());
+    auto slotType = makeSPMMemRefType(slotTensorType, MemLayout::Tensor);
+    auto resultType = makeSPMMemRefType(resultTensorType, MemLayout::Tensor);
+    auto resultAlloc =
+        builder.create<mlir::memref::AllocOp>(op.getLoc(), resultType);
+    mlir::Value resultBuffer = resultAlloc.getResult();
+
+    llvm::SmallVector<int64_t, 4> strides(rank, 1);
+    auto makeSourceOffsets = [&](int64_t targetIndex) {
+      llvm::SmallVector<int64_t, 4> offsets(rank, 0);
+      offsets[splitAxis] = targetIndex * slotShape[splitAxis];
+      return offsets;
+    };
+    auto makeResultOffsets = [&](int64_t sourceIndex) {
+      llvm::SmallVector<int64_t, 4> offsets(rank, 0);
+      offsets[concatAxis] = sourceIndex * inputConcatDim;
+      return offsets;
+    };
+    auto arrayAttr = [&](llvm::ArrayRef<int64_t> values) {
+      return mlir::DenseI64ArrayAttr::get(builder.getContext(), values);
+    };
+
+    std::optional<WaferPhysicalTensorInfo> slotPhysicalInfo =
+        computeWaferPhysicalTensorInfo(slotType);
+    if (!slotPhysicalInfo || slotPhysicalInfo->compactBytes <= 0)
+      return fail("all_to_all slot compact byte size is not representable");
+    int64_t bytes = slotPhysicalInfo->compactBytes;
+
+    struct PendingSend {
+      mlir::Value buffer;
+      int64_t peer = -1;
+    };
+    struct PendingRecv {
+      mlir::Value buffer;
+      int64_t sourceIndex = -1;
+      int64_t peer = -1;
+    };
+    llvm::SmallVector<PendingSend, 4> sends;
+    llvm::SmallVector<PendingRecv, 4> recvs;
+
+    int64_t localRank = rankGroup->localRank;
+    for (int64_t targetIndex = 0; targetIndex < groupSize; ++targetIndex) {
+      llvm::SmallVector<int64_t, 4> sourceOffsets =
+          makeSourceOffsets(targetIndex);
+      auto extract = builder.create<MoveExtractSliceOp>(
+          op.getLoc(), slotType, *input, arrayAttr(sourceOffsets),
+          arrayAttr(slotShape), arrayAttr(strides));
+
+      if (targetIndex == localRank) {
+        llvm::SmallVector<int64_t, 4> resultOffsets =
+            makeResultOffsets(localRank);
+        auto insert = builder.create<MoveInsertSliceOp>(
+            op.getLoc(), resultType, extract.getResult(), resultBuffer,
+            arrayAttr(resultOffsets), arrayAttr(resultSlotShape),
+            arrayAttr(strides));
+        resultBuffer = insert.getResult();
+        continue;
+      }
+
+      sends.push_back({extract.getResult(), rankGroup->ranks[targetIndex]});
+    }
+
+    for (int64_t sourceIndex = 0; sourceIndex < groupSize; ++sourceIndex) {
+      if (sourceIndex == localRank)
+        continue;
+      auto recvBuffer =
+          builder.create<mlir::memref::AllocOp>(op.getLoc(), slotType);
+      recvs.push_back(
+          {recvBuffer.getResult(), sourceIndex, rankGroup->ranks[sourceIndex]});
+    }
+
+    llvm::SmallVector<mlir::Value, 8> tokens;
+    mlir::Type tokenType = builder.getType<mlir::async::TokenType>();
+    if (!sends.empty() || !recvs.empty())
+      builder.create<SyncLocalFenceOp>(op.getLoc());
+    for (const PendingSend &send : sends) {
+      auto dteSend =
+          builder.create<InstrDTESendOp>(op.getLoc(), tokenType, send.buffer,
+                                         builder.getI64IntegerAttr(send.peer),
+                                         builder.getI64IntegerAttr(bytes));
+      tokens.push_back(dteSend.getToken());
+    }
+    for (const PendingRecv &recv : recvs) {
+      auto dteRecv =
+          builder.create<InstrDTERecvOp>(op.getLoc(), tokenType, recv.buffer,
+                                         builder.getI64IntegerAttr(recv.peer),
+                                         builder.getI64IntegerAttr(bytes));
+      tokens.push_back(dteRecv.getToken());
+    }
+    if (!tokens.empty())
+      builder.create<InstrDTEWaitOp>(op.getLoc(), tokens);
+
+    for (const PendingRecv &recv : recvs) {
+      llvm::SmallVector<int64_t, 4> resultOffsets =
+          makeResultOffsets(recv.sourceIndex);
+      auto insert = builder.create<MoveInsertSliceOp>(
+          op.getLoc(), resultType, recv.buffer, resultBuffer,
+          arrayAttr(resultOffsets), arrayAttr(resultSlotShape),
+          arrayAttr(strides));
+      resultBuffer = insert.getResult();
+    }
+
+    record(op.getResult(0), MemLayout::Tensor, resultBuffer);
+    return mlir::success();
+  }
+
   mlir::LogicalResult
   convertCollectivePermute(LinalgExtCollectiveCollectivePermuteOp op,
                            const WaferLinalgExtCollectiveInfo &info,
@@ -798,8 +960,8 @@ private:
       return convertAllReduce(mlir::cast<LinalgExtCollectiveAllReduceOp>(op),
                               info, builder);
     case WaferLinalgExtCollectiveKind::AllToAll:
-      return fail("all_to_all buffer-level collective materialization is not "
-                  "implemented");
+      return convertAllToAll(mlir::cast<LinalgExtCollectiveAllToAllOp>(op),
+                             info, builder);
     case WaferLinalgExtCollectiveKind::CollectivePermute:
       return convertCollectivePermute(
           mlir::cast<LinalgExtCollectiveCollectivePermuteOp>(op), info,

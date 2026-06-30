@@ -71,7 +71,7 @@ partitioned StableHLO + collectives
   -> `wafer.linalg_ext.collective.*` normalization
   -> wafer.group tiling / scheduled tensor collective
   -> wafer.tile.region + SPM storage values + topology/execution mesh
-  -> target-abstract `wafer.tile.*` buffer-level collective
+  -> target-abstract `wafer.tile.*` buffer-level collective, or direct p2p body when no extra collective op is needed
   -> explicit `wafer.instr.dte_*` point-to-point steps
   -> Direct DTE/FSM/sync resource lowering
   -> Wafer C ABI / runtime package metadata
@@ -81,11 +81,11 @@ partitioned StableHLO + collectives
 
 | 层次 | 表示 | 责任 |
 | --- | --- | --- |
-| StableHLO / Shardy | `all_gather`、`reduce_scatter`、`all_reduce`、`collective_permute` | global tensor 和 logical mesh 语义 |
+| StableHLO / Shardy | `all_gather`、`reduce_scatter`、`all_reduce`、`all_to_all`、`collective_permute` | global tensor 和 logical mesh 语义 |
 | Tensor collective handoff | `wafer.linalg_ext.collective.*` ops | DPS/tensor-level collective、tiling/fusion、logical rank group / source-target pairs、axis/combiner verifier |
 | Scheduled group / tile_region | tiled tensor collective + storage values | tile slice、SPM buffer、layout/materialization、communication staging demand |
 | Topology / execution mesh | logical rank 到 encoded physical endpoint 的 derived / explicit view | availability、connectivity、rank order、physical peer |
-| buffer-level comm | `wafer.tile.*` collective / permute op | 保留 tile-local communication semantic、logical group / byte/effect 边界；physical endpoint 从 topology/execution mesh 派生，不选择 raw DTE register |
+| buffer-level comm | `wafer.tile.*` collective op, when the collective semantic needs a separate buffer-level stage | 保留 tile-local communication semantic、logical group / byte/effect 边界；physical endpoint 从 topology/execution mesh 派生，不选择 raw DTE register |
 | p2p schedule | `wafer.instr.dte_send`、`dte_recv`、`dte_wait`、local compute step | 显式 ring/tree step、buffer slice、byte count、token/effect |
 | lower-level comm | Direct DTE / FSM / sync resource lowering | receiver ready、DTE attach/send/wait/release、packet counter、error status |
 | launch/package | package launch-resource metadata | communication plan metadata、resource init、completion source |
@@ -98,13 +98,11 @@ semantic。
 
 ### 3.1 Buffer-Level Collective Ops
 
-建议支持：
+当前 buffer-level collective 主线支持：
 
-- `wafer.tile.collective_permute`
 - `wafer.tile.all_gather`
 - `wafer.tile.reduce_scatter`
 - `wafer.tile.all_reduce`
-- `wafer.tile.all_to_all`
 
 这些 op 处在 tiled tensor collective / SPM storage 与 explicit p2p Direct DTE schedule 之间。
 它们应携带：
@@ -122,6 +120,11 @@ semantic。
 - raw DTE mode、`dst[32]`、`dest_num`。
 - SPM physical offset。
 - ring/tree step 列表的影子副本。
+
+`collective_permute` 和当前 V0 `all_to_all` 没有额外 buffer-level collective op：它们在
+group-to-tile-region materialization 中直接展开成 local movement + `wafer.instr.dte_*` body。后续如果
+需要 ring/blocked all-to-all、跨卡 route 或 non-contiguous descriptor，可以再引入
+`wafer.tile.all_to_all` buffer-level op。
 
 当 planner 选择算法后，collective op 应被 rewrite 成 explicit `wafer.instr.dte_*` p2p schedule。
 算法选择可以来自 cost model，但被接受的结果要进入 IR body，而不是只写进 attr。只要该 rewrite 会改变
@@ -413,9 +416,18 @@ non-unicast helper，它也可以由 execution mesh endpoint view 上的一组 `
 - concat / layout relation，或交给 layout/materialization 层解释的 explicit slice result。
 - token/wait 和 buffer lifetime。
 
-如果当前实现还没有 `wafer.tile.all_to_all` op 或 lowering pass，P2.S2 应保留 StableHLO collective，
-R2.4 应补 `wafer.linalg_ext.collective.*` op；R6 再恢复 tile-local `wafer.tile.*` collective 和
-`wafer.instr.dte_*` p2p schedule、resource allocation 和 launch/resource/package metadata。
+当前 V0 已覆盖 top-level single-result `wafer.linalg_ext.collective.all_to_all` 的 direct p2p
+materialization。rank-specialized group-to-tile-region 要求 `split_count == rank_group.size()`；
+当前 rank 的每个 split slot 先用 local movement materialize 成连续 SPM comm buffer，DTE 只发送
+连续 buffer。self slot 用 local insert 写入 result；remote source rank 的 contribution 先
+`dte_recv` 到连续 recv buffer，`dte_wait` 后再 local insert 到 concat result slot。该路径直接生成
+`wafer.instr.local_fence`、`wafer.instr.dte_send`、`wafer.instr.dte_recv` 和
+`wafer.instr.dte_wait`，不额外引入 `wafer.tile.all_to_all`，也不保存 algorithm attr。
+
+后续若需要 ring/blocked all-to-all、跨卡 route、non-contiguous DTE descriptor 或更复杂 split/concat
+layout，可以再引入 `wafer.tile.all_to_all` buffer-level op 或 schedule selector。当前 V0 correctness
+path 只承诺静态 shape、单 input/out、rank group row 可选中、slot 与 rank order 一一对应的 direct
+unicast schedule。
 
 ## 7. Interaction with Layout, SPM, and DDR
 
@@ -544,12 +556,15 @@ wafer.instr.dte_wait %send1, %recv1
 - group-to-tile-region 已能把 top-level single-result `wafer.linalg_ext.collective.collective_permute`
   materialize 成 direct `wafer.instr.dte_send` / `dte_recv` / `dte_wait` 或本地 copy/zero-fill
   body；该路径不保存 algorithm attr，也不提前写 physical endpoint。
+- group-to-tile-region 已能把 top-level single-result `wafer.linalg_ext.collective.all_to_all`
+  materialize 成 static split/exchange/concat direct p2p body：split slot extract 到连续 SPM comm
+  buffer，remote slot 经 DTE send/recv/wait，recv 后 insert 到 concat result slot。
 - tile-region-to-instr 的 pass option 提供 schedule selector：
   `all-gather-schedule=auto|ring|direct`、`all-reduce-schedule=auto|ring|tree` 和
   `reduce-scatter-schedule=auto|direct`。这些 option 只选择 rewrite policy，展开后的 IR 不保存
   algorithm name。
-- `all_to_all` 的 p2p lowering 仍依赖后续 buffer slot / token lifetime / per-target slot 表达，
-  不是当前完成项。
+- `all_to_all` 当前没有 ring/blocked schedule selector，也没有 raw non-unicast DTE path；这些仍是后续
+  性能/板端扩展。
 - Direct DTE send/recv/wait golden path 和 error diagnostic 属于历史 bring-up 证据；Direct DTE
   issue/wait form、resource allocation 和 ABI/LLVM emission 需要从 committed instruction IR
   和 accepted endpoint/resource facts 重新建立。
