@@ -287,7 +287,6 @@ def check_cmake_target_visibility() -> None:
     cmake_paths = [
         REPO_ROOT / "lib" / "Wafer" / "Analysis" / "CMakeLists.txt",
         REPO_ROOT / "lib" / "Wafer" / "IR" / "CMakeLists.txt",
-        REPO_ROOT / "lib" / "Wafer" / "ABI" / "CMakeLists.txt",
     ]
     for cmake_path in cmake_paths:
         text = cmake_path.read_text(encoding="utf-8")

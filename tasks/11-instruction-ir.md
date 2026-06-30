@@ -15,7 +15,7 @@ instruction legalization。
 - `Cx/NCx` 不使用 MLIR memref layout slot，也不实现为 `MemRefLayoutAttrInterface`。MLIR memref
   layout slot 仍只用于 MLIR 能按 affine / strided 语义解释的普通 layout。
 - 不引入 `wafer.physical_view`、`!wafer.physical_memref`、side descriptor value、SPM offset、DDR
-  DDR planning result、raw packet 或 C ABI call。
+  DDR planning result、raw packet 或 target CRT call。
 
 `wafer.instr` 的作用是把 target-abstract tile-region op 变成可执行硬件动作或硬件通信调用，并让下游能从
 memref SSA、Wafer memory attr、op operands、attrs、MemoryEffects 和显式 fence 直接推导 endpoint/resource
@@ -25,13 +25,15 @@ memref SSA、Wafer memory attr、op operands、attrs、MemoryEffects 和显式 f
 
 - 仓库代码当前已落地 `wafer.instr.local_fence`，以及
   `wafer.instr.rdma`、`wafer.instr.wdma`、`wafer.instr.gather_scatter`、`wafer.instr.fill`、
-  `wafer.instr.elementwise`、`wafer.instr.reduce`、`wafer.instr.convert`、`wafer.instr.gemm`
+  `wafer.instr.elementwise`、`wafer.instr.bit2fp`、`wafer.instr.mask_move`、
+  `wafer.instr.reduce`、`wafer.instr.convert`、`wafer.instr.gemm`
   和 `wafer.instr.dte_send` / `dte_recv` / `dte_wait`
   的 ODS、verifier、MemoryEffects、`WaferInstructionOpInterface` 和 lit/unit 覆盖。
-  `wafer.instr.elementwise` 当前包含 unary/binary arithmetic、relation 和 basic 3-input
-  `select` kind；select 的 predicate/value dtype contract 由 common verifier 和 ABI materialization 检查。
+  `wafer.instr.elementwise` 当前只承载有 CT elementwise wrapper 证据的 unary/binary arithmetic
+  和 relation kind；`select` 不是 target elementwise instruction，instruction lowering 会把
+  floating select 改写成 false-copy + `wafer.instr.bit2fp` + `wafer.instr.mask_move`。
 - `wafer.instr.*` op 只读写 Wafer-tagged memref，不产生 buffer result，不携带 SPM offset、
-  worker id、raw packet field 或 C ABI 字段。
+  worker id、raw packet field 或 compiler-facing ABI 字段。
 - Direct DTE instruction ops 已替代旧 tile-level p2p prototype，并在 SPM memory planning 前暴露
   buffer lifetime、peer、byte count 和 async token。all-gather 的 strided gather slot 通过
   `wafer.instr.gather_scatter` 与连续 communication buffer 互相 materialize；DTE op 本身只收发
@@ -83,7 +85,7 @@ Pipeline position:
   `wafer.instr.local_fence`，或结构化 legalization failure reason。
 - Downstream consumer:
   SPM memory planning、DDR memory planning、closed-loop candidate driver、
-  ABI/LLVM lowering、package metadata 和 runtime adapter。
+  target instruction LLVM lowering、package metadata 和 runtime adapter。
 - User-level driver / named pipeline:
   主线由 closed-loop planner 调用；局部 bring-up / candidate evaluation 入口是
   `wafer-lower-tile-region-to-instr` 和 `wafer-lower-groups-to-instr` named pipeline。
@@ -93,7 +95,7 @@ Pipeline position:
   `--wafer-convert-tile-region-to-instr` 只作为 lit/debug pass 入口。
 - Explicit non-goals:
   不新增第二套 storage/buffer IR，不决定 group boundary、tile shape、layout assignment、SPM offset、
-  DDR planning result、raw register packet field、DTE/FSM resource id、Tsm wrapper call、C ABI
+  DDR planning result、raw register packet field、DTE/FSM resource id、Tsm wrapper call、target CRT
   symbol 或 launch ABI。SCALAR 仍是 reserved/stub；CSR helper/sync 若进入主线，必须作为明确
   instruction/sync family 另行定义，不能混入 CT/NE/RDMA/WDMA/TDMA 或 DTE op。
 - Completion gate:
@@ -267,7 +269,7 @@ tail `C0`。如果 full-block 段和 tail 段都无法分别表示为 V0 三层 
 R3.2d 必须失败。
 
 `TsmExecute` 普通 dispatch path 只覆盖 CT/NE/RDMA/WDMA/TDMA。DTE 不走这条 dispatch path，
-但仍属于 `wafer.instr.*` 的硬件通信调用层；后续 ABI/LLVM lowering 负责把 `wafer.instr.dte_*`
+但仍属于 `wafer.instr.*` 的硬件通信调用层；后续 target LLVM lowering 负责把 `wafer.instr.dte_*`
 映射到 Direct DTE/FSM helper、runtime-compatible wrapper 或 raw-DTE ABI。SCALAR 当前 reserved/stub；
 CSR/sync helper 不在 V0 ordinary compute path 中。
 
@@ -285,7 +287,7 @@ memref 替换原 op result 的 uses。
 - result/temp/psum/staging buffer 由 `memref.alloc` 或 accepted alias/view 创建。
 - metadata-only reshape 由 verifier-legal memref view 表达；physical layout conversion 必须是
   explicit movement。
-- SPM offset、range、bank span 由 R3.2f 写入；后续 runtime/ABI/codegen 阶段必须从这些 facts
+- SPM offset、range、bank span 由 R3.2f 写入；后续 runtime/target-codegen 阶段必须从这些 facts
   和当前 memref use-def/view relation 派生 address/range 参数，不能复制成独立 placed/access
   descriptor 中间协议。
 - RDMA/WDMA 的 DDR side 使用 `memref<..., #wafer.memory<ddr, layout>>`；DDR memory planning stage 负责
@@ -338,7 +340,7 @@ resource effects 至少要表达：
 | DTE | send reads SPM source, recv writes SPM destination, wait consumes async token | Communication/DTE issue or wait |
 
 R3.2d 不建模 worker id。`TsmExecute` 的 worker bits、register window 和 packet field 属于
-committed instruction 后的 ABI/LLVM lowering。
+committed instruction 后的 target LLVM lowering。
 
 ## 7. ODS-Level Op Contracts
 
@@ -562,9 +564,9 @@ R3.2d verifier checks only instruction legality:
 
 Instruction lowering does **not** verify physical address range, SPM bank conflicts, DDR default arena capacity,
 runtime symbol, packet bit layout or worker register window. Those checks belong to SPM/DDR offset assignment,
-ABI/LLVM lowering, package metadata and runtime adapter.
+target LLVM lowering, package metadata and runtime adapter.
 DDR offset assignment must accept or reject the explicit DDR views, descriptors and compiler-managed DDR `memref.alloc`
-already present in this IR, and must materialize accepted DDR offset facts before ABI/LLVM lowering,
+already present in this IR, and must materialize accepted DDR offset facts before target LLVM lowering,
 package metadata and runtime adapter consume them through resource view analysis.
 
 ## 11. Example

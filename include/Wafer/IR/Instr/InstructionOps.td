@@ -104,6 +104,43 @@ def Wafer_InstrElementwiseOp : Wafer_InstrOp<"instr.elementwise", [
       "$kind $inputs `into` $dest attr-dict `:` type($inputs) `into` type($dest)";
 }
 
+def Wafer_InstrBit2FpOp : Wafer_InstrOp<"instr.bit2fp", [
+    MemoryEffects<[MemRead<Wafer_SPMResource>,
+                   MemWrite<Wafer_SPMResource>,
+                   MemWrite<Wafer_ComputeResource>]>
+  ]> {
+  let summary = "instruction-level CT bit-mask to floating mask conversion";
+  let arguments = (ins
+    AnyMemRef:$source,
+    AnyMemRef:$dest
+  );
+  let hasVerifier = 1;
+  let assemblyFormat =
+      "$source `into` $dest attr-dict `:` type($source) `to` type($dest)";
+}
+
+def Wafer_InstrMaskMoveOp : Wafer_InstrOp<"instr.mask_move", [
+    MemoryEffects<[MemRead<Wafer_SPMResource>,
+                   MemWrite<Wafer_SPMResource>,
+                   MemWrite<Wafer_MovementResource>]>
+  ]> {
+  let summary = "instruction-level masked SPM data move";
+  let description = [{
+    When the mask element is true/non-zero, copy the corresponding source
+    element into dest. When the mask element is false/zero, dest keeps the
+    value already present there. This mirrors the TX81 `mask_move` target op
+    and is not a generic ternary select instruction.
+  }];
+  let arguments = (ins
+    AnyMemRef:$source,
+    AnyMemRef:$mask,
+    AnyMemRef:$dest
+  );
+  let hasVerifier = 1;
+  let assemblyFormat =
+      "$source `,` $mask `into` $dest attr-dict `:` type($source) `,` type($mask) `into` type($dest)";
+}
+
 def Wafer_InstrReduceOp : Wafer_InstrOp<"instr.reduce", [
     MemoryEffects<[MemRead<Wafer_SPMResource>,
                    MemWrite<Wafer_SPMResource>,

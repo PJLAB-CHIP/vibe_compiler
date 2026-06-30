@@ -1266,6 +1266,39 @@ public:
     if (mlir::failed(dest))
       return mlir::failure();
 
+    if (op.getKind() == ComputeElementwiseKind::Select) {
+      if (op.getInputs().size() != 3)
+        return failPattern(
+            rewriter, op, failureReason,
+            "target select lowering requires predicate, true and false "
+            "operands");
+      auto destType = mlir::dyn_cast<mlir::MemRefType>((*dest).getType());
+      if (!destType || !mlir::isa<mlir::FloatType>(destType.getElementType()))
+        return failPattern(
+            rewriter, op, failureReason,
+            "target select lowering currently requires floating-point values");
+
+      mlir::FailureOr<MovementDescriptor> falseDescriptor =
+          getContiguousDescriptor(rewriter, op, op.getInputs()[2].getType(),
+                                  failureReason);
+      mlir::FailureOr<MovementDescriptor> destDescriptor =
+          getContiguousDescriptor(rewriter, op, (*dest).getType(),
+                                  failureReason);
+      if (mlir::failed(falseDescriptor) || mlir::failed(destDescriptor))
+        return mlir::failure();
+
+      createGatherScatter(rewriter, op.getLoc(), op.getInputs()[2], *dest,
+                          *falseDescriptor, *destDescriptor);
+      mlir::Value mask =
+          rewriter.create<mlir::memref::AllocOp>(op.getLoc(), destType)
+              .getResult();
+      rewriter.create<InstrBit2FpOp>(op.getLoc(), op.getInputs()[0], mask);
+      rewriter.create<InstrMaskMoveOp>(op.getLoc(), op.getInputs()[1], mask,
+                                       *dest);
+      rewriter.replaceOp(op, *dest);
+      return mlir::success();
+    }
+
     auto instr = rewriter.create<InstrElementwiseOp>(
         op.getLoc(), op.getKindAttr(), op.getInputs(), *dest);
     copyOptionalAttr(op, instr, "indexing_maps");
@@ -2097,8 +2130,9 @@ static void configureTileRegionToInstrTarget(mlir::ConversionTarget &target) {
                          mlir::scf::SCFDialect>();
   target.addLegalOp<mlir::ModuleOp, TileRegionOp, TileYieldOp, SyncLocalFenceOp,
                     InstrRDMAOp, InstrWDMAOp, InstrGatherScatterOp, InstrFillOp,
-                    InstrElementwiseOp, InstrReduceOp, InstrConvertOp,
-                    InstrGemmOp, InstrDTESendOp, InstrDTERecvOp,
+                    InstrElementwiseOp, InstrBit2FpOp, InstrMaskMoveOp,
+                    InstrReduceOp, InstrConvertOp, InstrGemmOp,
+                    InstrDTESendOp, InstrDTERecvOp,
                     InstrDTEWaitOp>();
   target.addIllegalOp<
       StorageLoadOp, StorageStoreOp, LayoutMaterializeOp, ComputeFillOp,

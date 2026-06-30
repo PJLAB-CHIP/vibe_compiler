@@ -1,7 +1,6 @@
 wafer_require_gtest()
 
 add_executable(WaferUnitTests
-  ABI/TileAbiTest.cpp
   Dialect/Wafer/WaferDialectTest.cpp
   Dialect/Wafer/WaferInterfacesTest.cpp
   Runtime/HostRuntimeTest.cpp
@@ -10,7 +9,6 @@ add_library(WaferFakeTxRuntime SHARED Runtime/FakeTxRuntime.cpp)
 add_dependencies(WaferUnitTests WaferFakeTxRuntime)
 target_link_libraries(WaferUnitTests
   PRIVATE
-  WaferABI
   WaferIR
   WaferRuntime
   WaferPipelines

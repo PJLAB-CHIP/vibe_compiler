@@ -1,0 +1,30 @@
+# REQUIRES: stablehlo, shardy, pytorch-xla-importer, xla-spmd-helper
+
+# RUN: rm -rf %t.input.program %t.group.program
+# RUN: env CPU_NUM_DEVICES=16 PJRT_DEVICE=CPU %importer_python \
+# RUN:   %wafer_src_root/test/Tools/Inputs/wafer_pytorch_xla_capture.py \
+# RUN:   --emit-hf-megatron-transformer-block \
+# RUN:   --hf-config-json %wafer_src_root/test/Tools/Inputs/hf/tiny-random-llama-config.json \
+# RUN:   --sequence-length 4 \
+# RUN:   --output-program-dir %t.input.program
+# RUN: wafer-opt --program-pipeline=stablehlo-spmd-to-group \
+# RUN:   --input-program-dir %t.input.program \
+# RUN:   --output-program-dir %t.group.program | FileCheck %s --check-prefix=PIPELINE
+# RUN: FileCheck %s --input-file=%t.group.program/functions/forward.mlir --check-prefix=GROUP
+# RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-groups-to-ddr-memory-planned-instr)' \
+# RUN:   %t.group.program/functions/forward.mlir > %t.instr.mlir
+# RUN: FileCheck %s --input-file=%t.instr.mlir --check-prefix=INSTR
+
+# PIPELINE: wafer-opt: completed Wafer program pipeline stablehlo-spmd-to-group:
+
+# GROUP: mhlo.spmd_parameters_shardings
+# GROUP: func.func @main
+# GROUP: wafer.group
+
+# INSTR-NOT: wafer.group
+# INSTR-NOT: wafer.tile.all_gather
+# INSTR-NOT: wafer.instr.elementwise <select>
+# INSTR: wafer.instr.gemm
+# INSTR: wafer.instr.dte_send
+# INSTR: wafer.instr.dte_recv
+# INSTR: wafer.instr.wdma

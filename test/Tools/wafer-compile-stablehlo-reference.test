@@ -60,7 +60,6 @@
 
 # HELP-NOT: --emit-static-reference-program
 # HELP-NOT: --verify-spmd-program
-# HELP-NOT: --compile-stablehlo-program-to-cabi
 
 # VERIFY: wafer-compile-stablehlo: verified frontend program
 

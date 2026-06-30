@@ -50,7 +50,7 @@ class WaferRuntimeAdapterTest(unittest.TestCase):
         self.assertIn("package: model_package_sample", result.stdout)
         self.assertIn("runtime_mode: tx", result.stdout)
         self.assertIn("completion_source: runtime_stream_wait", result.stdout)
-        self.assertIn("model: model_package_sample abi=wafer-cabi-v0", result.stdout)
+        self.assertIn("model: model_package_sample abi=tx-kernel-v0", result.stdout)
         self.assertIn("binding: input lhs 16 bytes host_visible", result.stdout)
         self.assertIn("binding: input rhs 16 bytes host_visible", result.stdout)
         self.assertIn("binding: output out 16 bytes host_visible", result.stdout)

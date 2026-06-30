@@ -13,7 +13,7 @@ def Wafer_TileRegionOp : Wafer_Op<"tile.region", [
     `wafer.tile.region` is the post-group device-side execution scope for
     tile-local storage values, layout materialization, movement, target-abstract
     compute, communication, and sync/effect ordering. It does not store group
-    planner search state, raw packets, runtime buffer handles, or C ABI calls.
+    planner search state, raw packets, runtime buffer handles, or target CRT calls.
   }];
 
   let arguments = (ins Variadic<AnyType>:$inputs);

@@ -4,7 +4,7 @@
 
 本文定义 Wafer compiler 的分阶段验证策略。它不是替代各 dialect 设计的总 verifier，而是把
 frontend、SPMD、topology / execution mesh、local compute normalization、tensor collective handoff、group、
-tile_region、layout、SPM、DDR、compute、communication、C ABI、launch/runtime 的验证责任串成
+tile_region、layout、SPM、DDR、compute、communication、target CRT、launch/runtime 的验证责任串成
 可执行的 gate。
 
 Serving integration 暂不纳入本文通过标准。
@@ -26,12 +26,13 @@ Serving integration 暂不纳入本文通过标准。
 - IR parse / print / verifier / conversion / FileCheck 通过。
 - 已完成 resource planner、dependency/config 和已有 tool-unit tests 通过；golden packet、package
   serialization 和 package metadata roundtrip 只能证明对应工具或测试输入，不替代主线 compiler output。
-- pipeline 能生成当前阶段的本地编译产物：committed instruction IR、accepted SPM/DDR offset facts、
-  ABI/LLVM artifact、TX8 object/link artifact、default `wafer_*` shim object 和 IR-derived package
-  metadata。runtime adapter / board launch 是后续独立 gate。
-- LLVM dialect / LLVM IR lowering、TX8 device-code compile/link、default `wafer_*` shim object 和
-  package metadata auto-export 分别属于 ABI、object/package 和 wrapper gate，不属于
-  committed-instruction gate 的通过条件。
+- 当前稳定 pipeline 能生成 committed instruction IR、accepted SPM/DDR offset facts，并让无卡
+  PyTorch/HF program chain 走到 memory-planned target-aligned `wafer.instr.*`。package validator 和
+  no-card runtime adapter 只能证明已有 package metadata 的 intake，不替代 compiler-generated
+  LLVM/package 输出。
+- Target LLVM lowering、TX8 device-code compile/link 和 package metadata auto-export 分别属于
+  target LLVM、object/package 和 runtime/package gate，不属于 committed-instruction gate 的通过条件；
+  主线不再默认编译或链接 capture shim。
 
 当前阶段不把板端 launch、device completion、数值对比或 PMU/profiling 作为通过条件。迁移到带实际
 计算卡服务器后，这些 board run 验证再成为对应 milestone 的新增 gate。
@@ -54,8 +55,8 @@ Serving integration 暂不纳入本文通过标准。
 | Program parameter shards / launch-block | committed instruction IR + logical rank/local shard facts + topology/execution mesh + program metadata | program verifier 校验 rank coverage、payload shape/dtype 和 local shard bounds；launch-block binding 校验 block id 与 endpoint availability 合法 |
 | Compute / Movement | committed instruction IR + accepted offset facts | wrapper family、layout、dtype、shape、issue/fence/wait 合法 |
 | Communication | tile_region / SPM materialization 后的 `wafer.tile.*` collective / `wafer.instr.dte_*` IR | endpoint、token、DTE/FSM resource、wait policy 合法 |
-| ABI / LLVM / golden packet | committed instruction IR + accepted offsets + topology/execution-mesh + program parameter shard metadata/resource view + communication/sync lowering | LLVM dialect call 或 `wafer_*` C ABI / packet builder input 合法；ABI unit/address/wait verified，golden packet 覆盖 wrapper mapping；launch/resource view 从 IR 按需重算，不成为独立 artifact |
-| Object/package | ABI/LLVM artifact + committed IR + topology/execution-mesh + program parameter shard metadata/resource view | `.ll -> .o`、default `wafer_cabi_shim.c -> shim.o`、LLVM object metadata normalization、`.o + shim.o -> kcore .so` device-code compile/link gate 合法；package metadata 记录 `name`、`model.id`、`model.abi`、`model.interface`、`model.resources`、`modules` 和 `entrypoints`；package metadata auto-export 从 committed instruction IR、LLVM IR artifact、module path 和 model interface metadata 导出并通过 validator；resource/constant metadata 由同一 resource view analysis 生成 |
+| Target LLVM / golden packet | committed instruction IR + accepted offsets + topology/execution-mesh + program parameter shard metadata/resource view + communication/sync lowering | LLVM dialect call 到 target CRT symbol 合法；address unit、format、wait/completion verified；golden packet 覆盖 target CRT 参数到 wrapper mapping；launch/resource view 从 IR 按需重算，不成为独立 artifact |
+| Object/package | target LLVM artifact + committed IR + topology/execution-mesh + program parameter shard metadata/resource view | `.ll -> .o`、LLVM object metadata normalization、target object + repo-vendored TX8 deps -> kcore shared object 的 device-code compile/link gate 合法；package metadata 记录 `name`、`model.id`、`model.abi`、`model.interface`、`model.resources`、`modules` 和 `entrypoints`；package metadata auto-export 从 committed instruction IR、LLVM IR artifact、module path 和 model interface metadata 导出并通过 validator；resource/constant metadata 由同一 resource view analysis 生成 |
 | Runtime/board | package + adapter | runtime allocation object binding contract、stub shielding、launch/completion/error propagation 合法；板端 completion 在有卡环境验证 |
 
 Gate 通过只说明进入下一层的输入合法，不说明整个 compiler 已完成。
@@ -71,7 +72,7 @@ Gate 通过只说明进入下一层的输入合法，不说明整个 compiler �
 - conversion tests：StableHLO -> structured tensor IR、group -> tile_region、tile_region -> lower-level Wafer op。
 - canonicalization tests：冗余 layout materialization、dead buffer、unused wait/token。
 - resource planner tests：SPM allocation failure feedback、DDR capacity/binding failure。
-- golden packet tests：C ABI 参数到 wrapper/packet field。
+- golden packet tests：target CRT 参数到 wrapper/packet field。
 - package serialization tests：package metadata、bootparam/TLV fallback、constant bytes metadata。
 - runtime shielding tests：已知 stub path 不能被选为 correctness fence；no-card runtime adapter
   contract 用 Python unittest / ctest 覆盖，不放进默认 lit golden。
@@ -107,25 +108,25 @@ Single-tile local compute：
 - 主链路 gate 应消费 P2.F1/P2.S1/P2.S2/R2.4 产出的真实图 program，并继续通过 frontend/local compute /
   tensor collective handoff gate；graph break / fallback 不被当成合法 program。手写 StableHLO/Linalg
   输入只保留为局部 verifier、lowering pattern 或 bring-up 测试输入。
-- R2.4-pre 之后，frontend/SPMD/local-compute 主链路 gate 必须通过 `wafer-opt` program pipeline 重放上述链路；单独拼
+- frontend/SPMD/local-compute 主链路 gate 必须通过 `wafer-opt` program pipeline 重放上述链路；单独拼
   `wafer-opt` pass、named MLIR pipeline、`shardy-sdy-opt`、PyTorch/XLA runtime 环境变量和
   verifier tool 只能作为 unit/debug 覆盖。2026-06-02 后，frontend program verifier 入口是
-  `wafer-compile-stablehlo --verify-stablehlo-program`；P2.S2/R2.4 `wafer-opt` program pipeline
+  `wafer-compile-stablehlo --verify-stablehlo-program`；`wafer-opt` program pipeline
   入口是 `--program-pipeline=stablehlo-spmd`、`--program-pipeline=stablehlo-spmd-to-linalg`
-  和 `--program-pipeline=stablehlo-spmd-to-group`；`--compile-stablehlo-program-to-cabi` 已删除。
-  下游 group/instr/ABI/LLVM/package gate 消费该 program pipeline 的 group output，并通过
-  `wafer-lower-groups-to-ddr-memory-planned-instr`、`wafer-lower-groups-to-llvm`、`mlir-translate`
-  和 package metadata auto-export 验证当前 compile path。
-  旧 C ABI issue op、single-tile materialization、SPM/DDR debug path 和 ring lowering unit/debug pass 链已删除，
+  和 `--program-pipeline=stablehlo-spmd-to-group`；旧 C ABI compile 入口已删除。
+  下游 group/instr gate 消费该 program pipeline 的 group output，并通过
+  `wafer-lower-groups-to-ddr-memory-planned-instr` 验证当前可用 compile path。target LLVM、
+  device-code 和 package auto-export 是后续 gate，不反向算作当前 instruction gate 已完成。
+  旧 target CRT issue op、single-tile materialization、SPM/DDR debug path 和 ring lowering unit/debug pass 链已删除，
   不应恢复为用户级 compile flow。当前 HF transformer no-card gate 已证明 `wafer.group` 到
-  direct instruction lowering、SPM/DDR planning、ABI/LLVM 和 package/no-card runtime boundary 来自真实
-  program chain；closed-loop selected-candidate path 和 board correctness 仍是后续 gate。
-- 至少一个 compute/movement ABI family 有 golden packet。
-- 当前无卡开发环境要求 generated program compile，并在 TX8 依赖可用时通过 `.ll -> .o -> kcore .so`
-  的 device-code compile/link gate；package metadata roundtrip 只能作为 tool-unit schema 覆盖，
-  不能替代 IR-derived package emission。runtime completion 在带实际计算卡服务器上再验证，届时
-  completion 必须来自 tx runtime model/module/stream completion、legacy `TsmRun` synchronous path，或
-  device-side drain + 可信 host completion。
+  direct instruction lowering 和 SPM/DDR planning 来自真实 program chain；closed-loop selected-candidate
+  path、target LLVM/package 和 board correctness 仍是后续 gate。
+- 至少一个 compute/movement target CRT wrapper family 有 golden packet。
+- 当前无卡开发环境要求 generated program 走到 memory-planned instruction IR。target LLVM 完成后，
+  device-code gate 才要求 `.ll -> .o -> kcore .so`；package metadata roundtrip 只能作为 tool-unit
+  schema 覆盖，不能替代 IR-derived package emission。runtime completion 在带实际计算卡服务器上再验证，
+  届时 completion 必须来自 tx runtime model/module/stream completion、legacy `TsmRun` synchronous path，
+  或 device-side drain + 可信 host completion。
 
 Multi-tile no communication：
 
@@ -141,8 +142,8 @@ Direct DTE p2p：
 - fixed-size unicast DTE helper lowering 合法。
 - DTE wait 与 local compute drain 分离。
 - FSM / packet / stream resource 不冲突。
-- 旧 `test/Transforms/comm-local-c-abi-issues.mlir` unit gate 已删除。后续 tile-level p2p 到
-  committed Direct DTE issue/wait form 和 ABI/LLVM emission 的 gate 必须由 communication / ABI lowering 从 committed
+- 旧 communication C issue unit gate 已删除。后续 tile-level p2p 到 committed Direct DTE issue/wait
+  form 和 target LLVM emission 的 gate 必须由 communication / target LLVM lowering 从 committed
   instruction-level IR、topology/execution-mesh contract 和 resource view analysis 恢复。
 
 Single-card collective：
@@ -151,7 +152,7 @@ Single-card collective：
 - 每步 `wafer.instr.dte_send` / `dte_recv` / `dte_wait` token 和 buffer lifetime 合法。
 - raw non-unicast DTE 不作为 correctness path。
 - 旧 `test/Transforms/ring-all-gather*.mlir`、`ring-reduce-scatter.mlir`、`ring-all-reduce.mlir`
-  以及 ring/C ABI issue-op 测试输入已删除。后续 collective gate 必须先经 R2.4
+  以及 ring/target CRT issue-op 测试输入已删除。后续 collective gate 必须先经 R2.4
   `wafer.linalg_ext.collective.*` handoff，再由 R6 恢复 tiled collective materialization 和
   `wafer.instr.dte_*` schedule lowering。
 
@@ -202,34 +203,32 @@ Transformer block vertical slice：
 当前 transformer static/no-card gate 已覆盖两类边界：手写 StableHLO local structured tensor dataflow，
 以及 HuggingFace Llama config snapshot + PyTorch/XLA `mark_sharding` + 16-rank 单卡 mesh 的
 Megatron-style tensor-parallel decoder block。后者已经从真实 frontend/SPMD/group 链路继续走到
-direct instruction lowering、SPM/DDR memory planning、ABI/LLVM lowering、`mlir-translate` LLVM IR、
-IR-derived package metadata auto-export / validation 和 `wafer-run` no-card required-symbol gate。
+direct instruction lowering 和 SPM/DDR memory planning。
 这证明当前 compiler chain 能消费 attention/RMSNorm/RoPE/SwiGLU 主干、captured constants、
-parameter shard metadata、basic select/mask dataflow、workspace base pointer 和 DTE shim symbols。
+parameter shard metadata、basic select/mask dataflow 和 Direct DTE schedule。
 它也证明 Megatron-style contracting-dimension sharding 在当前 HF gate 中保留并消费 `all_reduce`
 collective，而不是退化成只靠 `all_gather` 重组 full tensor。它不证明
-`wafer-lower-groups-to-selected-instr` closed-loop selector 已覆盖同一 HF group；也不证明真实板端
-allocation/import/query/bind、module load/function lookup、launch/completion、数值对比或 profiling。
+`wafer-lower-groups-to-selected-instr` closed-loop selector 已覆盖同一 HF group；也不证明 target LLVM、
+package auto-export、真实板端 allocation/import/query/bind、module load/function lookup、launch/completion、
+数值对比或 profiling。
 
-M7 ABI / LLVM program gate：
+M7 target LLVM program gate：
 
-- committed `wafer.instr.*` 到 LLVM dialect call / `wafer_*` C ABI call contract 必须固定函数名、参数单位、wait/completion
-  责任和 ABI version，不允许把 C stub emission table 当作真实 runtime call。
-- lowering 后应生成 LLVM dialect call 或等价可审计 call IR；不使用专门 ABI IR op family
-  作为 debug/test dump 或 LLVM call 前置层，并能
-  通过 `mlir-translate` 或等价路径生成 LLVM IR。
-- 本地 gate 至少检查 LLVM IR 文本中的 entrypoint、runtime symbol declaration、参数顺序和
-  metadata/program 引用；随后用 LLVM `clang++` 做 `.ll -> .o` 和
-  `runtime/wafer_cabi_shim.c -> shim.o`，再用 repo-vendored `third_party/tx8_deps`
-  `riscv64-unknown-elf-gcc` 链接 kcore shared object。`.ll` 不能直接交给 GCC，C shim compile
-  必须带 TX8 include 和 RISC-V newlib sysroot。
+- committed `wafer.instr.*` 到 LLVM dialect call / target CRT symbol contract 必须固定函数名、参数单位、
+  wait/completion 责任和 model ABI version，不允许把 C stub emission table 当作真实 runtime call。
+- lowering 后应生成 LLVM dialect call 或等价可审计 call IR；不使用专门 ABI IR op family 作为
+  debug/test dump 或 LLVM call 前置层，并能通过 `mlir-translate` 或等价路径生成 LLVM IR。
+- 本地 gate 至少检查 LLVM IR 文本中的 entrypoint、target symbol declaration、参数顺序和
+  metadata/program 引用；随后用 LLVM `clang++` 做 `.ll -> .o`，再用 repo-vendored
+  `third_party/tx8_deps` `riscv64-unknown-elf-gcc` 链接 kcore shared object。`.ll` 不能直接交给 GCC；
+  device link 不默认编译或链接 capture shim。
 - package metadata 必须记录真实模型接口、资源、modules 和 entrypoint 合同；`tx.module`
   只能作为显式 debug/bring-up entrypoint 记录 function 和 binding order。auto-export gate 必须消费当前
-  pipeline 产物导出 package metadata 并通过 validator；C stub-only program 只允许作为历史局部测试输入的
-  验证物，不能替代 default `wafer_*` shim object。
-- 当前 ABI/LLVM gate 覆盖 ODS 中已有的 `wafer.instr.*` 到 scalar `wafer_*` call、LLVM dialect
-  和 LLVM IR translation；`wafer-lower-abi-calls-to-llvm` 会 strip 已消费的 target/execution metadata，
-  并拒绝其它 Wafer op 残留，避免把不可翻译 IR 交给 `mlir-translate`。
+  pipeline 产物导出 package metadata 并通过 validator；C stub-only program 只允许作为历史局部测试输入，
+  不能替代 target LLVM artifact。
+- 当前 target LLVM gate 待实现；完成时必须覆盖 ODS 中已有且标记 supported 的 `wafer.instr.*`
+  到 target CRT call、LLVM dialect 和 LLVM IR translation，并拒绝其它 Wafer op 残留，避免把不可翻译
+  IR 交给 `mlir-translate`。
 
 M8 runtime / board correctness gate：
 
@@ -252,11 +251,11 @@ same-shape identity、basic `arith.select`、显式 broadcast/transpose material
 scalar-constant-init reduce、rank-4 contraction / `linalg.batch_matmul` 到 batched
 `wafer.tile.gemm` / `wafer.instr.gemm`、multi replica group collective handoff、direct
 `collective_permute` DTE materialization、direct `all_to_all` split/exchange/concat p2p
-materialization，以及 ABI/LLVM 阶段的 batched GEMM expansion、
-compiler-managed DDR workspace base pointer 和 non-finite reduce init package encoding。当前仍不覆盖真实板端数值 correctness、dynamic shape、KV cache、mask/select 泛化、
-resident constant/weight residency 和 HF selected-candidate closed-loop path；这些是后续 board/runtime
-或 selector integration gate。只要对应语义能由 StableHLO / structured tensor IR 和 Wafer 硬件能力
-表达，就不能把当前 static/no-card gate 的覆盖范围写成长期不支持。
+materialization，以及 floating select 到 `gather_scatter` false-copy + `bit2fp` + `mask_move`
+target sequence。当前仍不覆盖 target LLVM/package auto-export、真实板端数值 correctness、dynamic shape、
+KV cache、resident constant/weight residency 和 HF selected-candidate closed-loop path；这些是后续
+target LLVM、board/runtime 或 selector integration gate。只要对应语义能由 StableHLO / structured
+tensor IR 和 Wafer 硬件能力表达，就不能把当前 static/no-card gate 的覆盖范围写成长期不支持。
 
 ## 5. Failure Handling
 
@@ -269,7 +268,7 @@ resident constant/weight residency 和 HF selected-candidate closed-loop path；
 - layout conversion 过多或不合法回 layout assignment。
 - SPM 放不下回 SPM allocation，建议 repair 但不写入 IR。
 - DDR allocation / capacity / binding 错误回 DDR planner 或 launch runtime binding。
-- wrapper unit/range 错误回 C ABI verifier。
+- wrapper unit/range 错误回 target CRT verifier。
 - completion source 错误回 launch/runtime adapter。
 
 不要让下游 pass 猜测并修复上游语义错误。
@@ -289,9 +288,7 @@ resident constant/weight residency 和 HF selected-candidate closed-loop path；
 
 如果某个 milestone 暂时只能做文档验证，必须明确说明还缺 build/test harness 或板端 runtime。
 当前 local gates 已能证明：group / PyTorch smoke / HF Megatron-style transformer block 输入可以进入
-ABI/LLVM lowering，LLVM dialect
-可以翻译成 LLVM IR，default `wafer_cabi_shim.c` 可以随 LLVM object 用 repo-vendored TX8 deps
-链接成 kcore shared object，package metadata auto-export 可以消费 committed instruction IR、LLVM IR
-artifact、module path 和 model interface metadata 导出 schema v2 package metadata，并进入 no-card
-`wafer-run` required-symbol gate。这些仍不能替代板端 allocation/import/query/bind、真实 launch、
-completion、数值正确性或 profiling 证明。
+memory-planned target-aligned instruction IR，package metadata validator 和 no-card `wafer-run` 可以消费
+已有 schema v2 package metadata。target LLVM lowering、device-code compile/link 和 package auto-export
+仍是后续 gate；这些 local gates 不能替代板端 allocation/import/query/bind、真实 launch、completion、
+数值正确性或 profiling 证明。

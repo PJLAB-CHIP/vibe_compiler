@@ -1,8 +1,8 @@
 // REQUIRES: stablehlo
-// RUN: not wafer-opt --pass-pipeline='builtin.module(wafer-lower-stablehlo-to-linalg)' %s 2>&1 | FileCheck %s
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-stablehlo-to-linalg)' %s | FileCheck %s
 
 module {
-  func.func @unsupported_replica_group(%input: tensor<4xf32>) -> tensor<8xf32> {
+  func.func @multi_replica_group(%input: tensor<4xf32>) -> tensor<8xf32> {
     %0 = "stablehlo.all_gather"(%input) {
       all_gather_dim = 0 : i64,
       replica_groups = dense<[[0, 1], [2, 3]]> : tensor<2x2xi64>,
@@ -12,4 +12,7 @@ module {
   }
 }
 
-// CHECK: failed to normalize StableHLO collective to wafer.linalg_ext collective handoff
+// CHECK: wafer.linalg_ext.collective.all_gather
+// CHECK-SAME: axis = 0 : i64
+// CHECK-SAME: channel_id = 7 : i64
+// CHECK-SAME: rank_groups = dense<{{.*}}> : tensor<2x2xi64>

@@ -9,7 +9,7 @@
 可 fuse、可验证的 `linalg` / `tensor` / `scf` / `arith` / `math` IR 子集；如果输入包含 post-SPMD
 StableHLO collective，则同时把它规整成 `wafer.linalg_ext.collective.*` ops，使 collective
 能和 local compute 一起进入 group/tiling。它不引入 Wafer physical layout、SPM/DDR allocation、
-DTE、C ABI 或 runtime package。
+DTE、target CRT 或 runtime package。
 
 本文依赖：
 
@@ -39,7 +39,7 @@ DTE、C ABI 或 runtime package。
 
 - 不决定 group boundary、traversal tile shape 或 internal split。
 - 不表达 physical layout marker、Wafer memory attr、SPM offset、DDR runtime allocation object、DTE resource、packet field、
-  worker id 或 C ABI call。
+  worker id 或 target CRT call。
 - 不引入 `wafer.softmax`、`wafer.layer_norm`、`wafer.rope` 这类普通 tensor 语义 op 作为长期
   架构边界。需要 pattern 时使用 rewrite / canonicalization，把它们展开到结构化 IR。
 - 不把 transformer block 的某个 shape、head 数或隐藏维度写成协议。
@@ -80,7 +80,7 @@ whole-shape local body 且没有 collective。缺少 collective 不能作为拒�
 `wafer.linalg_ext.collective.*`，再调用当前 pin 的官方 StableHLO-to-Linalg conversion，把 StableHLO
 compute / data movement / constant 转成 `linalg` / `tensor` / `scf` / `arith` / `math` structured IR。
 它不执行 Shardy propagation，不调用 XLA SPMD partitioner，不写 per-rank parameter shard metadata，
-也不决定 group / tile / SPM / DDR / C ABI。
+也不决定 group / tile / SPM / DDR / target CRT。
 
 ## 3. Transformer Block Coverage
 
@@ -492,7 +492,7 @@ R2.3 覆盖状态以 structured tensor IR 证据为准，
 不再把 acceptance pass 视为 schedule completion。当前可引用的 evidence 如下：
 
 本表只描述 local compute normalization 层自己的证据。HF Megatron-style transformer no-card runtime
-gate 已在下游覆盖 PyTorch/XLA capture -> group/instr/ABI/LLVM/package/no-card runtime required-symbol
+gate 已在下游覆盖 PyTorch/XLA capture -> group/instr/target LLVM/package/no-card runtime required-symbol
 路径；该 runtime gate 不改变本层对 dynamic shape、mask/select 泛化、layout materialization 和
 board/numeric correctness 的非目标边界。
 

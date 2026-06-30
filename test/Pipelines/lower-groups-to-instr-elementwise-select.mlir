@@ -1,5 +1,4 @@
 // RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-groups-to-instr)' %s | FileCheck --check-prefix=INSTR %s
-// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-groups-to-llvm)' %s | FileCheck --check-prefix=LLVM %s
 
 func.func @elementwise_select_to_instr(%pred: tensor<4xi1>,
                                        %true_value: tensor<4xf32>,
@@ -38,9 +37,8 @@ func.func @elementwise_select_to_instr(%pred: tensor<4xi1>,
 // INSTR-NOT: linalg.generic
 // INSTR: wafer.instr.rdma
 // INSTR-SAME: byte_count = 1 : i64
-// INSTR: wafer.instr.elementwise <select>
+// INSTR-NOT: wafer.instr.elementwise <select>
+// INSTR: wafer.instr.gather_scatter
+// INSTR: wafer.instr.bit2fp
+// INSTR: wafer.instr.mask_move
 // INSTR: wafer.instr.wdma
-
-// LLVM-LABEL: llvm.func @elementwise_select_to_instr
-// LLVM: llvm.call @wafer_select
-// LLVM: llvm.func @wafer_select(i32, i32, i32, i32, i64, i32) -> i32

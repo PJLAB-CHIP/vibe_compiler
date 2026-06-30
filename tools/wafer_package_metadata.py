@@ -30,7 +30,7 @@ ALLOWED_RUNTIME_MODES = {
 }
 
 ALLOWED_ABI_VERSIONS = {
-    "wafer-cabi-v0",
+    "tx-kernel-v0",
 }
 
 ALLOWED_ENTRYPOINT_EXECUTORS = {
@@ -60,6 +60,8 @@ SUPPORTED_INSTRUCTION_OPS = {
     "wafer.instr.fill",
     "wafer.instr.gemm",
     "wafer.instr.elementwise",
+    "wafer.instr.bit2fp",
+    "wafer.instr.mask_move",
     "wafer.instr.reduce",
     "wafer.instr.convert",
     "wafer.instr.dte_send",
@@ -87,7 +89,6 @@ SUPPORTED_ELEMENTWISE_KINDS = {
     "le",
     "gt",
     "ge",
-    "select",
 }
 
 SUPPORTED_REDUCE_KINDS = {

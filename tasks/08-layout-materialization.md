@@ -29,7 +29,7 @@ scheduled tile tensor IR
   -> bounded group-to-group boundary co-planning
   -> accepted tile-local memref IR with Wafer physical layout marker
   -> materialization cleanup / canonicalization
-  -> runtime/ABI address derivation from accepted facts
+  -> runtime/target-codegen address derivation from accepted facts
   -> concrete movement / compute emission
 ```
 
@@ -64,7 +64,7 @@ lowering IR 写成三套互不相干的东西：
 | boundary co-planning analysis | 相邻 device-side group boundary 的可行 layout summary 和 selected boundary layout | 否 | 在不引入全局 plan attr 的前提下，减少 producer/consumer 边界上的重复 materialization |
 | accepted tile-local memref IR | `memref<shape x dtype, #wafer.memory<space, layout>>` 和 `wafer.tile.materialize_layout` | 是 | 记录已接受的 address space 和 physical layout marker，以及真实 layout movement 的抽象边 |
 | materialization cleanup | canonicalization pattern 和 layout-aware rewrite | 是，通过 rewrite 当前 IR | 删除冗余 materialization；不保存搜索过程 |
-| runtime/ABI address derivation | ABI/codegen 参数或 lower-level emission metadata | 是，仅作为 very-late derived form | 从 committed Wafer-tagged memref、accepted offset facts、view relation 和 layout helper 派生目标指令需要的 address/range/stride representation；不形成新的主线 IR 事实源 |
+| runtime/target-codegen address derivation | target call/codegen 参数或 lower-level emission metadata | 是，仅作为 very-late derived form | 从 committed Wafer-tagged memref、accepted offset facts、view relation 和 layout helper 派生目标指令需要的 address/range/stride representation；不形成新的主线 IR 事实源 |
 | lowered movement IR | `ChannelNorm` / `DechannelNorm` / `GatherScatter` / TDMA / lower-level effects | 是 | 把 abstract materialization 展开为目标相关 movement、sync 和 byte/range 约束 |
 
 constant storage transform 与这条主线并行：它只处理 compile-time `ConstantLike` value 的
@@ -82,7 +82,7 @@ layout planning 有两个恢复层次：
   layout attr，也不生成 `wafer.tile.region`。
 - committed `wafer.tile.region` / instruction-level IR 已经包含 candidate gates 接受的
   Wafer-tagged memref value 和 `wafer.tile.materialize_layout` op。后续 topology/execution-mesh、
-  ABI/LLVM lowering 和 package metadata 只从这些 IR facts 派生 lower-level 参数，
+  target LLVM lowering 和 package metadata 只从这些 IR facts 派生 lower-level 参数，
   不再重新 materialize layout assignment 或 materialization cut。
 
 完整 layout materialization 的输入来自 target-abstract tile-region IR。它由 scheduled
@@ -439,9 +439,9 @@ computeWaferPhysicalTensorInfo(memrefType)
 `computeWaferPhysicalElementByteOffset` 返回 logical index 到 physical byte offset 的映射。禁止每个
 pass 自己根据字符串或局部约定解释 `cx/ncx`。
 
-Wafer-tagged memref 在 runtime/ABI/codegen 派生之前仍是 logical-shape memref：shape 是 logical
+Wafer-tagged memref 在 runtime/target-codegen 派生之前仍是 logical-shape memref：shape 是 logical
 shape，element type 是 logical dtype；它不能被 generic memref-to-LLVM lowering 当成
-`product(shape) * elemBytes` 的真实 footprint。runtime/ABI/codegen 负责从 accepted offset facts、
+`product(shape) * elemBytes` 的真实 footprint。runtime/target-codegen 负责从 accepted offset facts、
 memref view relation 和 layout helper 派生目标指令需要的 address/range/stride/layout 参数；
 这些参数不作为新的主线 IR 事实源。
 
@@ -1214,7 +1214,7 @@ V0 不做全局最优，但不能只做一次贪心选择。主路径是 determi
 
 10. Endpoint / launch / ABI handoff
 
-   cleanup 后交给 topology/execution-mesh、program parameter shard metadata/resource view、ABI/LLVM
+   cleanup 后交给 topology/execution-mesh、program parameter shard metadata/resource view、target LLVM
    lowering 和 package metadata。
    它们从 committed Wafer-tagged memref、accepted offset facts、view relation、endpoint facts、layout
    helper 和按需 resource view 派生 address/range/stride 参数。layout planner 不直接生成 LLVM ABI，
@@ -1258,7 +1258,7 @@ layout 相关事实按第 3 节生命周期分层表达：
   - `wafer.tile.materialize_layout` 或等价 explicit data movement op。
   - `wafer.tile.load` 对 `ConstantLike` source 的 use-def，以及 result layout marker。
   - op verifier 可检查的 layout contract。
-- runtime/ABI/codegen 派生层从 committed Wafer-tagged memref 和 accepted offset facts 得到
+- runtime/target-codegen 派生层从 committed Wafer-tagged memref 和 accepted offset facts 得到
   address/range/stride 参数。compact layout 应尽量复用标准 memref lowering；Cx/NCx 的 lower-level
   storage facts 只作为 very-late emission 参数出现，不作为独立 access descriptor IR 传递。
 - lower-level movement IR 表达具体 instruction/wrapper path、sync/effect 和 byte/range 约束。

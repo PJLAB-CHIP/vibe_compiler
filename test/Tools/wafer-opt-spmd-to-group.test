@@ -17,46 +17,33 @@
 # GROUP-MLIR-SAME: shape = array<i64: 16>
 # GROUP-MLIR: func.func @main
 # GROUP-MLIR-NOT: stablehlo.all_gather
-# GROUP-MLIR: wafer.group ins(%{{[^, ]+}}, %{{[^, ]+}}, %{{[^, ]+}} : tensor<32x2xf32>, tensor<32x32xf32>, tensor<2xf32>) outs(%{{[^ ]+}} : tensor<32x32xf32>) {
-# GROUP-MLIR: wafer.linalg_ext.collective.all_gather
-# GROUP-MLIR-SAME: rank_group = array<i64:
+# GROUP-MLIR: wafer.group ins(%{{[^, ]+}}, %{{[^, ]+}}, %{{[^, ]+}} : tensor<32x32xf32>, tensor<32x2xf32>, tensor<2xf32>) outs(%{{[^ ]+}} : tensor<32x2xf32>) {
 # GROUP-MLIR: linalg.matmul
-# GROUP-MLIR: wafer.linalg_ext.collective.all_gather
 # GROUP-MLIR: linalg.generic
 # GROUP-MLIR: arith.addf
 # GROUP-MLIR: wafer.group.yield
 # GROUP-MLIR-NOT: wafer.tile.
 
 # DEMAND-LABEL: wafer.tiling_demand group @main#0
-# DEMAND: result_tile #0 type=tensor<32x32xf32> slice=[d0,d1]
-# DEMAND: op #1 wafer.linalg_ext.collective.all_gather
-# DEMAND: collective kind=all_gather rank_group=[
-# DEMAND: op #5 linalg.matmul
+# DEMAND: result_tile #0 type=tensor<32x2xf32> slice=[d0,d1]
+# DEMAND: op #3 linalg.matmul
 # DEMAND: accumulator result #0 reduction_dims=[d2]
-# DEMAND: op #7 wafer.linalg_ext.collective.all_gather
-# DEMAND: op #10 linalg.generic
-# DEMAND: input #1 slice=[d0,d1]
+# DEMAND: op #5 linalg.generic
+# DEMAND: input #0 slice=[d1]
+# DEMAND: op #6 linalg.generic
 
 # LAYOUT-LABEL: wafer.layout_plan group @main#0
-# LAYOUT: op #1 wafer.linalg_ext.collective.all_gather
-# LAYOUT: collective kind=all_gather rank_group=[
-# LAYOUT: result #0 layout=tensor slice=[d0,d1]
-# LAYOUT: op #5 linalg.matmul
+# LAYOUT: op #3 linalg.matmul
 # LAYOUT: input #0 layout=cx slice=[d0,d2]
 # LAYOUT: accumulator result #0 layout=cx reduction_dims=[d2]
-# LAYOUT: op #7 wafer.linalg_ext.collective.all_gather
-# LAYOUT: op #10 linalg.generic
-# LAYOUT: materialization #5 op #10 result #0 -> group result #0 cx->tensor type=tensor<32x32xf32>
+# LAYOUT: op #5 linalg.generic
+# LAYOUT: input #0 layout=tensor slice=[d1] relation=broadcast
+# LAYOUT: op #6 linalg.generic
+# LAYOUT: materialization #5 op #6 result #0 -> group result #0 cx->tensor type=tensor<32x2xf32>
 
 # GROUP-TO-TILE-LABEL: wafer.group_to_tile_region group @main#0
-# GROUP-TO-TILE: wafer.tile.all_gather
-# GROUP-TO-TILE-SAME: bytes = 256 : i64
-# GROUP-TO-TILE-SAME: group_size = 16 : i64
-# GROUP-TO-TILE-SAME: local_rank = 0 : i64
 # GROUP-TO-TILE: wafer.tile.gemm
-# GROUP-TO-TILE: wafer.tile.all_gather
-# GROUP-TO-TILE-SAME: bytes = 8 : i64
-# GROUP-TO-TILE-SAME: group_size = 16 : i64
-# GROUP-TO-TILE-SAME: local_rank = 0 : i64
+# GROUP-TO-TILE: wafer.tile.broadcast
 # GROUP-TO-TILE: wafer.tile.elementwise <add>
+# GROUP-TO-TILE-NOT: wafer.tile.all_gather
 # GROUP-TO-TILE: wafer.tile.store

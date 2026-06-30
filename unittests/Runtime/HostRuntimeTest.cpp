@@ -23,7 +23,7 @@ std::string packageJson() {
     },
     "model": {
       "id": "model_package_sample",
-      "abi": "wafer-cabi-v0",
+      "abi": "tx-kernel-v0",
       "interface": {
         "inputs": [],
         "outputs": [],

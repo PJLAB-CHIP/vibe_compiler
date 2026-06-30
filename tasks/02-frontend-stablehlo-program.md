@@ -246,7 +246,7 @@ group、tiling、SPM/DDR memory 和 package metadata 消费真实规模的 shape
 | core compiler deps | LLVM、MLIR | build system、MLIR pass/IR implementation | design contract 中作为 Wafer 语义名词 |
 | input dialect deps | StableHLO、Shardy / SDY | frontend、SPMD、conversion pipeline | Wafer 低层 runtime / packet contract |
 | model importer deps | torch-xla、torch-mlir、Python exporter、OpenXLA exporter | importer adapter、tooling、import tests | backend pass、Wafer dialect verifier |
-| runtime / driver deps | HPGR、KMD/UAPI、legacy Tsm headers | runtime adapter、C ABI / launch layer | frontend program、group、layout、SPM planner |
+| runtime / driver deps | HPGR、KMD/UAPI、legacy Tsm headers | runtime adapter、target CRT / launch layer | frontend program、group、layout、SPM planner |
 | test / tooling deps | lit、FileCheck、gtest、Python test utilities | test harness、CI scripts | IR 语义或 package metadata |
 
 工程上建议：
@@ -259,7 +259,7 @@ group、tiling、SPM/DDR memory 和 package metadata 消费真实规模的 shape
   toggles；实现代码只依赖目标库，不直接拼路径。
 - `include/Wafer/Frontend` / `lib/Wafer/Frontend` 放 model import adapter 和 program verifier；
   backend pass 只消费 verified MLIR module，不 include importer-only headers。
-- runtime / driver headers 只进入 runtime adapter、C ABI 和 launch/package 层；frontend 和 tensor
+- runtime / driver headers 只进入 runtime adapter、target CRT 和 launch/package 层；frontend 和 tensor
   pipeline 不依赖 runtime headers。
 - 可选 importer 不能成为后端构建的硬依赖。后端 textual MLIR tests 必须能在不安装 PyTorch /
   torch-xla 这类前端依赖时运行。

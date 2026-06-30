@@ -19,9 +19,6 @@ DEFAULT_MABI = "lp64d"
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_TX8_DEPS_DIR = REPO_ROOT / "third_party" / "tx8_deps"
 DEFAULT_WAFER_CRT_LIB_PATH = REPO_ROOT / "third_party" / "wafer_crt" / "lib"
-DEFAULT_WAFER_SHIM_SOURCE = (
-    REPO_ROOT / "runtime" / "wafer_cabi_shim.c"
-)
 
 
 def fail(message: str) -> None:
@@ -74,14 +71,6 @@ def object_output_path(output: pathlib.Path, explicit: str | None) -> pathlib.Pa
     return output.parent / f"{output.name}.o"
 
 
-def shim_object_output_path(output: pathlib.Path, explicit: str | None) -> pathlib.Path:
-    if explicit:
-        return pathlib.Path(explicit)
-    if output.suffix:
-        return output.with_suffix(".wafer_cabi_shim.o")
-    return output.parent / f"{output.name}.wafer_cabi_shim.o"
-
-
 def tool_exists(tool: str) -> bool:
     path = pathlib.Path(tool)
     if path.parent != pathlib.Path(".") or path.is_absolute():
@@ -114,7 +103,7 @@ def resolve_tx8_sysroot(
 
 def build_commands(
     args: argparse.Namespace,
-) -> tuple[list[str], list[list[str]], list[list[str]], list[str]]:
+) -> tuple[list[str], list[list[str]], list[str]]:
     llvm_ir = pathlib.Path(args.llvm_ir)
     if not llvm_ir.exists():
         fail(f"LLVM IR input does not exist: {llvm_ir}")
@@ -124,10 +113,6 @@ def build_commands(
     output = pathlib.Path(args.output)
     object_output = object_output_path(output, args.object_output)
     tx8_deps_root = pathlib.Path(args.tx8_deps_root)
-    tx8_include_dir = resolve_tx8_include_dir(tx8_deps_root, args.tx8_include_dir)
-    tx8_sysroot = resolve_tx8_sysroot(
-        tx8_deps_root, args.toolchain_dir_name, args.tx8_sysroot
-    )
     wafer_crt_lib_dir = pathlib.Path(args.wafer_crt_lib_dir)
     toolchain_root = tx8_deps_root / args.toolchain_dir_name
     libc_dir = toolchain_root / "riscv64-unknown-elf" / "lib" / args.march / args.mabi
@@ -158,50 +143,16 @@ def build_commands(
         str(object_output),
     ]
 
-    shim_compile_cmds: list[list[str]] = []
-    shim_objects: list[pathlib.Path] = []
-    if not args.no_default_wafer_shim:
-        shim_source = pathlib.Path(args.wafer_shim_source)
-        if not shim_source.exists():
-            fail(f"Wafer C ABI shim source does not exist: {shim_source}")
-        if not shim_source.is_file():
-            fail(f"Wafer C ABI shim source is not a file: {shim_source}")
-        shim_object = shim_object_output_path(output, args.wafer_shim_object_output)
-        shim_compile_cmds.append(
-            [
-                clangxx,
-                "-x",
-                "c",
-                str(shim_source),
-                "-O2",
-                "-c",
-                "-fPIC",
-                "--target=riscv64-unknown-elf",
-                f"-march={args.march}",
-                f"-mabi={args.mabi}",
-                f"--sysroot={tx8_sysroot}",
-                "-isystem",
-                str(tx8_sysroot / "include"),
-                "-DUSING_RISCV",
-                "-DCONFIG_NO_PLATFORM_HOOK_H",
-                f"-I{tx8_include_dir}",
-                "-o",
-                str(shim_object),
-            ]
-        )
-        shim_objects.append(shim_object)
-
     normalize_cmds: list[list[str]] = []
     if not args.keep_riscv_attributes:
-        for generated_object in [object_output, *shim_objects]:
-            normalize_cmds.append(
-                [
-                    tx8_objcopy,
-                    "-R",
-                    ".riscv.attributes",
-                    str(generated_object),
-                ]
-            )
+        normalize_cmds.append(
+            [
+                tx8_objcopy,
+                "-R",
+                ".riscv.attributes",
+                str(object_output),
+            ]
+        )
 
     link_cmd = [
         tx8_gcc,
@@ -214,7 +165,6 @@ def build_commands(
         "-Wl,--no-dynamic-linker",
         str(object_output),
     ]
-    link_cmd.extend(str(path) for path in shim_objects)
     link_cmd.extend(str(path) for path in args.extra_object)
     link_cmd.extend(
         [
@@ -247,21 +197,17 @@ def build_commands(
             str(output),
         ]
     )
-    return compile_cmd, shim_compile_cmds, normalize_cmds, link_cmd
+    return compile_cmd, normalize_cmds, link_cmd
 
 
 def validate_execute_inputs(
     args: argparse.Namespace,
     compile_cmd: list[str],
-    shim_compile_cmds: list[list[str]],
     normalize_cmds: list[list[str]],
     link_cmd: list[str],
 ) -> None:
     if not tool_exists(compile_cmd[0]):
         fail(f"LLVM clang++ is not executable: {compile_cmd[0]}")
-    for shim_compile_cmd in shim_compile_cmds:
-        if not tool_exists(shim_compile_cmd[0]):
-            fail(f"LLVM clang++ is not executable: {shim_compile_cmd[0]}")
     for normalize_cmd in normalize_cmds:
         if not tool_exists(normalize_cmd[0]):
             fail(f"TX8 RISC-V objcopy is not executable: {normalize_cmd[0]}")
@@ -279,16 +225,6 @@ def validate_execute_inputs(
     for library in ("common_util", "instr_tx81", "libc_stub"):
         if not library_exists(tx8_lib_dir, library):
             fail(f"TX8 deps library -l{library} does not exist in {tx8_lib_dir}")
-    tx8_include_dir = resolve_tx8_include_dir(tx8_deps_root, args.tx8_include_dir)
-    if shim_compile_cmds and not tx8_include_dir.is_dir():
-        fail(f"TX8 deps include dir does not exist: {tx8_include_dir}")
-    tx8_sysroot = resolve_tx8_sysroot(
-        tx8_deps_root, args.toolchain_dir_name, args.tx8_sysroot
-    )
-    if shim_compile_cmds and not tx8_sysroot.is_dir():
-        fail(f"TX8 sysroot does not exist: {tx8_sysroot}")
-    if shim_compile_cmds and not (tx8_sysroot / "include").is_dir():
-        fail(f"TX8 sysroot include dir does not exist: {tx8_sysroot / 'include'}")
     toolchain_root = tx8_deps_root / args.toolchain_dir_name
     libc_dir = toolchain_root / "riscv64-unknown-elf" / "lib" / args.march / args.mabi
     if not libc_dir.is_dir():
@@ -317,13 +253,10 @@ def validate_execute_inputs(
 
 def print_commands(
     compile_cmd: list[str],
-    shim_compile_cmds: list[list[str]],
     normalize_cmds: list[list[str]],
     link_cmd: list[str],
 ) -> None:
     print(f"compile: {shlex.join(compile_cmd)}")
-    for shim_compile_cmd in shim_compile_cmds:
-        print(f"shim-compile: {shlex.join(shim_compile_cmd)}")
     for normalize_cmd in normalize_cmds:
         print(f"normalize: {shlex.join(normalize_cmd)}")
     print(f"link: {shlex.join(link_cmd)}")
@@ -353,17 +286,6 @@ def main() -> int:
     parser.add_argument("--llvm-clangxx")
     parser.add_argument("--tx8-gcc")
     parser.add_argument("--tx8-objcopy")
-    parser.add_argument("--tx8-include-dir")
-    parser.add_argument("--tx8-sysroot")
-    parser.add_argument(
-        "--wafer-shim-source", default=str(DEFAULT_WAFER_SHIM_SOURCE)
-    )
-    parser.add_argument("--wafer-shim-object-output")
-    parser.add_argument(
-        "--no-default-wafer-shim",
-        action="store_true",
-        help="do not compile and link the default wafer_* C ABI shim",
-    )
     parser.add_argument("--toolchain-dir-name", default=DEFAULT_TOOLCHAIN_DIR)
     parser.add_argument("--gcc-version", default=DEFAULT_GCC_VERSION)
     parser.add_argument("--march", default=DEFAULT_MARCH)
@@ -389,23 +311,19 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    compile_cmd, shim_compile_cmds, normalize_cmds, link_cmd = build_commands(args)
+    compile_cmd, normalize_cmds, link_cmd = build_commands(args)
     if args.print_commands:
-        print_commands(compile_cmd, shim_compile_cmds, normalize_cmds, link_cmd)
+        print_commands(compile_cmd, normalize_cmds, link_cmd)
         return 0
 
     validate_execute_inputs(
-        args, compile_cmd, shim_compile_cmds, normalize_cmds, link_cmd
+        args, compile_cmd, normalize_cmds, link_cmd
     )
     pathlib.Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     object_output_path(pathlib.Path(args.output), args.object_output).parent.mkdir(
         parents=True, exist_ok=True
     )
-    for shim_compile_cmd in shim_compile_cmds:
-        pathlib.Path(shim_compile_cmd[-1]).parent.mkdir(parents=True, exist_ok=True)
     run_command(compile_cmd)
-    for shim_compile_cmd in shim_compile_cmds:
-        run_command(shim_compile_cmd)
     for normalize_cmd in normalize_cmds:
         run_command(normalize_cmd)
     run_command(link_cmd)

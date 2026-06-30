@@ -11,7 +11,7 @@
 - 哪些事实必须留给下游 `wafer.tile.region`、layout materialization、SPM/DDR memory、
   target-abstract compute/comm 和 launch/runtime。
 
-本文不定义 physical layout marker、SPM offset、DDR memory planning、DTE protocol、C ABI、
+本文不定义 physical layout marker、SPM offset、DDR memory planning、DTE protocol、target CRT、
 runtime package 或 target instruction packet。典型 case 只用于展示 IR 形态；case 中的
 op 名、shape、tile size、reduction split 和 multi-output 关系都不是 `wafer.group` 的架构字段。
 
@@ -62,7 +62,7 @@ schedule 下，让中间值只在 group tile 内部存活。
 | --- | --- | --- | --- | --- |
 | 0. Local tensor compute / collective | 上游 local shard compute 和 post-SPMD linalg extension collective | `linalg` / `tensor` / `scf` + `wafer.linalg_ext.collective.*` ops | tensor compute、DPS、shape/indexing、tensor-level collective tiling contract | group 边界、tile-local lifetime、physical storage、`wafer.tile.*` collective / DTE protocol |
 | 1. Logical group | fusion planning region | logical-form `wafer.group` | group boundary、body region | tile size、schedule effect、physical allocation、queue、packet |
-| 2. Scheduled group | tiled tensor/control-flow region | scheduled-form `wafer.group` + tiled tensor IR | traversal loop、tiled body、必要的显式 constraint/effect | physical address、worker、DTE node、C ABI |
+| 2. Scheduled group | tiled tensor/control-flow region | scheduled-form `wafer.group` + tiled tensor IR | traversal loop、tiled body、必要的显式 constraint/effect | physical address、worker、DTE node、target CRT |
 | 3+. Downstream | bufferization / hardware / runtime | `wafer.tile.region`、layout/SPM、`wafer.tile.*` compute/collective、`wafer.instr.*`、runtime package metadata | 消费 scheduled group 的 tiled body、resource demand 和 boundary movement | 不回写 tensor-level fusion 语义 |
 
 这个分层是本文的主线。后面的 case 会在 group 自己负责的阶段给出对应 IR 草图；下游
@@ -92,7 +92,7 @@ Pipeline position:
   拒绝的 logical group。
 - Downstream consumer:
   analysis/planning/legalization gates 和 closed-loop candidate driver；`wafer.tile.region`
-  materialization；topology/execution-mesh contract；ABI/LLVM/package stages。
+  materialization；topology/execution-mesh contract；target LLVM/package stages。
 - User-level driver / named pipeline:
   `wafer-opt --program-pipeline=stablehlo-spmd-to-group`，由该 program
   pipeline 重放 frontend/SPMD/local-compute-normalization 后进入 logical group formation gate。局部 MLIR pass
@@ -101,11 +101,11 @@ Pipeline position:
   不做 physical endpoint mapping、tile shape search、scheduled loop materialization、
   SPM allocation、DDR demand analysis、DTE schedule、`wafer.tile.*` collective materialization、
   `wafer.instr.dte_*` schedule materialization、
-  C ABI 或 package emission。
+  target CRT 或 package emission。
 - Completion gate:
   真实 frontend/SPMD/local-compute-normalization program chain 的 local compute + linalg extension collective 输出能形成
   verifier-legal logical `wafer.group`；raw StableHLO collective、`wafer.tile.*` collective、
-  `wafer.instr.dte_*`、`wafer.tile.region`、SPM storage、DTE token、C ABI/runtime op 和只靠手写
+  `wafer.instr.dte_*`、`wafer.tile.region`、SPM storage、DTE token、target CRT/runtime op 和只靠手写
   测试输入拼出的 group 主线都被拒绝。
 ```
 
@@ -437,7 +437,7 @@ use-def 和 loop-carried state 决定。
 
 scheduled-form `wafer.group` 的输出是 tiled tensor/control-flow IR，以及 planner 在当前
 transformation 中已经证明过的 tile-local demand。它只向下游暴露足够的信息，让后续
-bufferization、hardware lowering 和 runtime/ABI lowering 能继续工作；它不定义这些下游
+bufferization、hardware lowering 和 target LLVM/runtime lowering 能继续工作；它不定义这些下游
 IR 的内部表示。
 
 框架层暂定下游 region boundary 命名为 `wafer.tile.region`，用于承载 bufferized
@@ -469,7 +469,7 @@ group 设计只规定交接合同：
   见 `tasks/12-ddr-memory-planning.md`。
 - `wafer.tile.*` compute / `wafer.tile.*` collective / `wafer.instr.*` /
   `wafer.instr.local_fence` 和后续 sync boundary 的 op contract。
-- Wafer C ABI family、wrapper 参数、issue/fence/wait 策略和 package/runtime 格式。
+- target CRT family、wrapper 参数、issue/fence/wait 策略和 package/runtime 格式。
 
 ## 8. `wafer.group` Op Contract
 
@@ -514,7 +514,7 @@ logical / scheduled tensor-level `wafer.group` body 第一版应保持保守。�
 - 允许已规整的 `wafer.linalg_ext.collective.*` op，前提是该 op 实现 tiling /
   destination-style contract，且 verifier 能检查 rank group、combiner 或 slice relation。
 - 默认不允许 `memref.*` allocation/load/store。
-- 默认不允许 `llvm.*`、runtime call、C ABI call。
+- 默认不允许 `llvm.*`、runtime call、target CRT call。
 - 默认不允许 lower-level Wafer memory / compute / communication / sync dialect op。
 - raw StableHLO collective、remote load/store、explicit DMA/communication 默认是 group boundary。
   未来若允许更多通信进入 group，也必须先表达成明确的 tensor-level op/effect，而不是 group
@@ -765,7 +765,7 @@ SPM planning、layout assignment、DDR memory planning 和 compute/movement lega
 - Group-to-tile-region lowering：消费 tiling demand 和 layout plan，把 logical group 降成
   transformation-local `wafer.tile.region` IR，内部使用 target-abstract `wafer.tile.*` compute /
   `wafer.tile.*` collective / load-store / `wafer.tile.materialize_layout` / sync /
-  Wafer-tagged memref / effect 结构。rejected lowered IR 不写入主 IR，不 lower 到 packet/ABI/LLVM。
+  Wafer-tagged memref / effect 结构。rejected lowered IR 不写入主 IR，不 lower 到 packet/target LLVM。
 - Wafer instruction legalization / selection：在 lowered tile-region IR 上，把 target-abstract
   compute/comm/layout/load-store/move/sync op 合法化并选择成 instruction-level `wafer.instr.*`，
   复用现有 Wafer-tagged memref graph，显式列出 queue、read/write/issue effects、descriptor attrs、
@@ -1039,7 +1039,7 @@ group planner 层只在 analysis 中建模抽象资源，不把完整 resource p
 
 下游阶段再细化，并由对应子设计负责 verifier / lowering：
 
-- memory buffer、layout materialization 和 runtime/ABI address derivation：见 layout / SPM / DDR 文档。
+- memory buffer、layout materialization 和 runtime/target-codegen address derivation：见 layout / SPM / DDR 文档。
 - target compute 和 local movement：见 `wafer.tile.*` compute 文档。
 - communication buffer、DTE/FSM token/wait 和 collective p2p schedule：见
   `tasks/13-communication.md` 和 `tasks/11-instruction-ir.md`。
@@ -1056,7 +1056,7 @@ normalization 展开成 structured tensor IR；group 只处理 staged dataflow�
 和资源闭环。
 
 当前 HF Megatron-style transformer no-card gate 已证明一条真实 PyTorch/XLA transformer block 可以经
-group 继续进入 direct instr/ABI/LLVM/package/no-card runtime required-symbol path。下面仍是 group
+group 继续进入 direct instr/target LLVM/package/no-card runtime required-symbol path。下面仍是 group
 层的长期通用调度要求；它们不能被替换成 transformer-specific pass，也不表示
 `wafer-lower-groups-to-selected-instr` closed-loop selector 已覆盖同一 HF case。
 
@@ -1220,7 +1220,7 @@ recomputation。初期默认不 fuse 大型 multi-use producer。
 形式存在，并只在 group boundary 访问外部 tensor 或通信资源。logical group 表达
 fusion planning boundary；scheduled group 通过 tiled IR 表达 traversal loop 和必要的
 schedule effect；下游阶段再引入 memory space、physical layout、hardware action、
-sync primitive 和 Wafer C ABI。
+sync primitive 和 target CRT。
 
 MLIR 的 Linalg/TilingInterface/SCF tile-and-fuse/Transform dialect 可以提供机制，但
 Wafer 必须自己实现 group planner、cost model、下游约束建模和最终 lowering。

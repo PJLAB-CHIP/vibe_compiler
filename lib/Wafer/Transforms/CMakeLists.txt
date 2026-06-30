@@ -1,5 +1,4 @@
 add_mlir_library(WaferTransforms
-  ABI/MaterializeABICalls.cpp
   Group/DumpCandidateDdrTileViews.cpp
   Group/DumpLayoutPlan.cpp
   Group/DumpTilingDemand.cpp
@@ -18,7 +17,6 @@ add_mlir_library(WaferTransforms
   WaferPassesIncGen
 
   LINK_LIBS PUBLIC
-  WaferABI
   WaferAnalysis
   WaferGroupToTileRegion
   WaferIR

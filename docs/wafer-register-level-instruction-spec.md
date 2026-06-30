@@ -2,19 +2,19 @@
 
 本文档回答两个问题：
 
-1. Wafer compiler backend 应该生成什么样的 runtime/C ABI 调用。
-2. 这些 runtime/C ABI 内部应该如何调用 Tsm wrapper。
+1. Wafer compiler backend 应该生成什么样的 runtime/target CRT 调用。
+2. 这些 runtime/target CRT 内部应该如何调用 Tsm wrapper。
 
 它不是硬件总览，也不是 Triton tx dialect 说明。总览文档负责描述硬件拓扑、SPM、layout 背景、runtime 和现有 backend 线索；本文件负责沉淀 Wafer backend 的发射 ABI、Tsm wrapper 调用约束，以及必要的寄存器/opcode 说明。
 
-核心结论：**后端不直接生成裸寄存器 packet，也不把现有 Triton CRT 原样作为长期 ABI。推荐做一层 Wafer 自己的 C ABI，内部以 public Tsm wrapper/header signature 和寄存器字段为准来发射；Triton/CRT 只作为公开实现样例、参数单位线索和反例来源。**
+核心结论：**后端不直接生成裸寄存器 packet，也不把现有 Triton CRT 原样作为长期 ABI。推荐做一层 Wafer 自己的 target CRT，内部以 public Tsm wrapper/header signature 和寄存器字段为准来发射；Triton/CRT 只作为公开实现样例、参数单位线索和反例来源。**
 
 推荐分层：
 
 ```text
 Wafer compiler lowering
-  -> LLVM call 到 wafer_* C ABI
-  -> wafer_* C ABI 内部创建 Tsm*Instr packet
+  -> LLVM call 到 target CRT symbol（例如 __Gemm / __Bit2Fp / __MaskMove）
+  -> target CRT 内部创建 Tsm*Instr packet
   -> 调用 Tsm wrapper 配置 packet
   -> TsmExecute
   -> 按调度需要 wait 或不 wait
@@ -36,7 +36,7 @@ Triton CRT 的作用是帮助理解公开 wrapper 如何被某个 backend 调用
 | 优先级 | 来源 | 本文档如何使用 |
 | --- | --- | --- |
 | 1 | `third_party/tx8_deps/include/instr_def.h` | 寄存器结构体、`OP_INSTR_TYPE`、`OP_FUNC_CGRA`、`Data_Format`、CSR/DTE offset |
-| 2 | `third_party/tx8_deps/include/instr_adapter_plat.h` | Tsm wrapper 的 public signature，是 Wafer C ABI 内部可调用的 API 形态 |
+| 2 | `third_party/tx8_deps/include/instr_adapter_plat.h` | Tsm wrapper 的 public signature，是 target CRT 内部可调用的 API 形态 |
 | 3 | `third_party/tx8_deps/include/instr_adapter.h` | 地址边界、辅助定义、`TsmExecute` 入口 |
 | 4 | `docs/tx8-deps-reverse-engineering/tx8-interface-contract.md` | 静态反汇编后的 wrapper/runtime/DTE/stream/mailbox/PMU/bootparam 语义；用于修正旧 CRT 线索 |
 | 5 | `docs/tx8-deps-reverse-engineering/firmware-kuiper-runtime-hardware-analysis.md` | HPGR/KMD/UAPI、compute completion、runtime allocation/BAR/ATU、PG、driver DTE/C2C；用于修正 host runtime 和 driver 边界 |
@@ -46,25 +46,25 @@ Triton CRT 的作用是帮助理解公开 wrapper 如何被某个 backend 调用
 
 使用 CRT/Triton 线索时遵循这个优先级：硬件事实以官方文档、`instr_def.h` register 字段、`instr_adapter_plat.h` wrapper signature 和已确认的 layout/SPM/DTE 约束为准；CRT/Triton 只能辅助理解“某个实现怎么调用”，不能覆盖这些事实。遇到 CRT 的 ABI 命名、wait 策略、SPM allocator、layout materialization、DTE runtime 和硬件约束冲突时，以 Wafer 自己的 spec/ABI 为准。
 
-需要注意：V0/V1 后端默认通过 Wafer C ABI 间接调用 Tsm wrapper，把 Tsm wrapper 视为硬件发射入口；不把“自行复刻 wrapper、直接手写所有 bitfield”作为主路线。当前需要沉淀的是 wrapper 的调用约束，例如参数单位、layout 要求、对齐要求、同步语义和哪些字段由 wrapper 自动补齐，而不是复刻 Tx81 CRT 的封装。
+需要注意：V0/V1 后端默认通过 target CRT 间接调用 Tsm wrapper，把 Tsm wrapper 视为硬件发射入口；不把“自行复刻 wrapper、直接手写所有 bitfield”作为主路线。当前需要沉淀的是 wrapper 的调用约束，例如参数单位、layout 要求、对齐要求、同步语义和哪些字段由 wrapper 自动补齐，而不是复刻 Tx81 CRT 的封装。
 
 ## Wafer 后端发射模型
 
-Wafer 后端不应该在 MLIR/LLVM lowering 中直接展开 Tsm struct function pointer，也不应该直接手写所有 register bitfield。更合理的边界是：MLIR/LLVM 只生成稳定的 Wafer C ABI call；C ABI 内部负责创建 packet、调用 Tsm wrapper、发射。
+Wafer 后端不应该在 MLIR/LLVM lowering 中直接展开 Tsm struct function pointer，也不应该直接手写所有 register bitfield。更合理的边界是：MLIR/LLVM 只生成稳定的 target CRT call；target CRT 内部负责创建 packet、调用 Tsm wrapper、发射。
 
 | 层级 | 作用 | 后端需要做什么 |
 | --- | --- | --- |
-| Wafer IR / lowering op | 表达已经完成 tiling/layout/SPM 分配后的硬件动作 | 选择要调用的 Wafer C ABI |
-| Wafer C ABI | 稳定的 compiler/runtime 边界 | 接收地址、shape、stride、format、flags 等参数 |
-| Tsm wrapper | 硬件公开的发射入口 | 在 C ABI 内部配置 `Tsm*Instr` packet |
-| `TsmExecute` | 提交 packet | 由 C ABI 或调度层控制发射 |
+| Wafer IR / lowering op | 表达已经完成 tiling/layout/SPM 分配后的硬件动作 | 选择要调用的 target CRT |
+| target CRT | 稳定的 compiler/runtime 边界 | 接收地址、shape、stride、format、flags 等参数 |
+| Tsm wrapper | 硬件公开的发射入口 | 在 target CRT 内部配置 `Tsm*Instr` packet |
+| `TsmExecute` | 提交 packet | 由 target CRT 或调度层控制发射 |
 | wait/sync | 完成边界和跨域可见性控制 | V0 起区分 issue/drain；普通 NCC 依赖交给硬件，显式 wait 只放在 Kcore/host/DTE/barrier/task end 等边界 |
 
-Wafer C ABI 内部的典型形态：
+target CRT 内部的典型形态：
 
 ```c
-void wafer_add_vv(void *src0, void *src1, void *dst,
-                  uint32_t elem_count, uint32_t rnd_mode, uint32_t fmt) {
+void __AddVV(void *src0, void *src1, void *dst,
+             uint32_t elem_count, uint32_t rnd_mode, uint32_t fmt) {
   TsmArithInstr instr = {I_CGRA, {0}, {0}};
   TsmArith *arith = g_intrinsic()->arith_pointer;
   arith->AddVV(&instr, (uint64_t)src0, (uint64_t)src1, (uint64_t)dst,
@@ -73,7 +73,7 @@ void wafer_add_vv(void *src0, void *src1, void *dst,
 }
 ```
 
-同步不建议埋死在每个 C ABI 里。Wafer C ABI 从 V0 起就应区分 issue 和 drain：主调度路径调用不带默认 wait 的发射函数；local drain、debug sync wrapper 或 host-visible sync 只在 Kcore/host 可见性、DTE/stream protocol、多 tile barrier、task end 等边界使用。这样才能保留硬件 dependency detection 以及 RDMA/WDMA/TDMA/CT/NE 之间的 overlap。
+同步不建议埋死在每个 target CRT 里。target CRT 从 V0 起就应区分 issue 和 drain：主调度路径调用不带默认 wait 的发射函数；local drain、debug sync wrapper 或 host-visible sync 只在 Kcore/host 可见性、DTE/stream protocol、多 tile barrier、task end 等边界使用。这样才能保留硬件 dependency detection 以及 RDMA/WDMA/TDMA/CT/NE 之间的 overlap。
 
 ## Triton CRT 对照路径
 
@@ -96,26 +96,26 @@ tx81 dialect op
 | 层级 | 代码位置 | 本文档如何使用 |
 | --- | --- | --- |
 | tx81 op 定义 | `/root/dlc_dev/FlagTree/third_party/tsingmicro/include/tsingmicro-tx81/Dialect/IR/Tx81Ops.td` | 观察它如何组织参数；不直接照搬 dialect，也不把其 op set 当硬件 ISA |
-| tx81 -> LLVM call | `/root/dlc_dev/FlagTree/third_party/tsingmicro/lib/Conversion/Tx81ToLLVM/Tx81ToLLVM.cpp` | 观察 op 到 C ABI call 的 lowering 方式；不继承其 ABI 命名和 pass 结构 |
+| tx81 -> LLVM call | `/root/dlc_dev/FlagTree/third_party/tsingmicro/lib/Conversion/Tx81ToLLVM/Tx81ToLLVM.cpp` | 观察 op 到 target CRT call 的 lowering 方式；不继承其 ABI 命名和 pass 结构 |
 | Tx81 CRT wrapper | `/root/dlc_dev/FlagTree/third_party/tsingmicro/crt/lib/Tx81/*.c` | 观察 Tsm wrapper 调用顺序、参数单位、wait 策略和问题点；不继承其 wait/allocator/runtime 策略 |
-| Tsm wrapper ABI | `third_party/tx8_deps/include/instr_adapter_plat.h` | Wafer C ABI 内部真正调用的接口 |
+| Tsm wrapper ABI | `third_party/tx8_deps/include/instr_adapter_plat.h` | target CRT 内部真正调用的接口 |
 | 发射入口 | `third_party/tx8_deps/include/instr_adapter.h` | `TsmExecute(void *instr)` |
 
-因此可借用的只是“C ABI 内部调用 Tsm wrapper”这个分层事实，以及少量参数单位线索；不能原样复用 Tx81 CRT 命名、参数设计、同步策略、SPM allocation 或 DTE runtime。Wafer backend 应定义自己的 `wafer_*` C ABI，然后按 public Tsm wrapper/header signature 和寄存器字段实现。
+因此可借用的只是“target CRT 内部调用 Tsm wrapper”这个分层事实，以及少量参数单位线索；不能原样复用 Tx81 CRT 的 pass 结构、同步策略、SPM allocation 或 DTE runtime。Wafer backend 应优先 lower 到有 TX81/TSM wrapper 证据的 target CRT symbol，然后按 public Tsm wrapper/header signature 和寄存器字段实现。
 
-### 推荐 Wafer C ABI 形态
+### 推荐 target CRT 形态
 
-| 类别 | 建议 ABI | 公开实现线索（非 ABI 依据） | 内部调用的 Tsm wrapper |
+| 类别 | target CRT symbol 方向 | 公开实现线索（非 ABI 依据） | 内部调用的 Tsm wrapper |
 | --- | --- | --- | --- |
-| DMA | `wafer_rdma/wafer_wdma/wafer_dma` | contiguous / strided public wrapper helpers | `TsmRdma/TsmWdma` |
-| SPM 内搬运 | `wafer_gather_scatter`、`wafer_memcpy_spm` | `__GatherScatter/__Memcpy` | `TsmDataMove::GatherScatter` |
-| layout 转换 | `wafer_channel_norm/wafer_dechannel_norm` | `__ChannelNorm/__DechannelNorm` | `TsmDataMove::GatherScatter` |
-| elementwise | `wafer_add_vv/wafer_mul_vv/wafer_relu/...` | `__AddVV/__MulVV/__Relu/...` | `TsmArith/TsmActivation/TsmTranscendental` |
-| compare/logic | `wafer_equal_vv/wafer_bool_and/...` | `__EqualVV/__BoolAndV/...` | `TsmRelation/TsmLogic` |
-| convert | `wafer_convert_*` | `__INT8_FP16/__FP32_FP16/...` | `TsmConvert` |
-| GEMM | `wafer_gemm` | `__Gemm` | `TsmGemm` |
-| Conv | `wafer_conv` | `__Conv` 仅提供 wrapper 调用线索 | `TsmConv/TsmDepthwiseConv` |
-| 通信 | `wafer_dte_send/wafer_dte_recv/wafer_dte_wait`，后续可扩展 raw DTE non-unicast ABI | `send.c/recv.c` 仅提供 unicast 样例 | V0 封装 Direct DTE/FSM helper；V1 若需要 non-unicast，Wafer runtime 自行配置 raw DTE registers |
+| DMA | target-specific RDMA/WDMA CRT calls | contiguous / strided public wrapper helpers | `TsmRdma/TsmWdma` |
+| SPM 内搬运 | `__GatherScatter` / `__Memcpy` style calls | `__GatherScatter/__Memcpy` | `TsmDataMove::GatherScatter` |
+| layout 转换 | `__ChannelNorm` / `__DechannelNorm` style calls | `__ChannelNorm/__DechannelNorm` | `TsmDataMove::GatherScatter` |
+| elementwise | `__AddVV` / `__MulVV` / `__Relu` style calls | `__AddVV/__MulVV/__Relu/...` | `TsmArith/TsmActivation/TsmTranscendental` |
+| compare/logic | `__EqualVV` / `__BoolAndV` style calls | `__EqualVV/__BoolAndV/...` | `TsmRelation/TsmLogic` |
+| convert | `__INT8_FP16` / `__FP32_FP16` style calls | `__INT8_FP16/__FP32_FP16/...` | `TsmConvert` |
+| GEMM | `__Gemm` | `__Gemm` | `TsmGemm` |
+| Conv | `__Conv` style calls | `__Conv` 仅提供 wrapper 调用线索 | `TsmConv/TsmDepthwiseConv` |
+| 通信 | Direct DTE/FSM runtime helper calls | `send.c/recv.c` 仅提供 unicast 样例 | V0 封装 Direct DTE/FSM helper；V1 若需要 non-unicast，Wafer runtime 自行配置 raw DTE registers |
 
 ### 公开 CRT 观察到的调用样例
 
@@ -140,10 +140,10 @@ tx81 dialect op
 
 | 结论 | 后端设计含义 |
 | --- | --- |
-| 公开 CRT 展示了“C ABI 内部调用 Tsm wrapper”这条路径存在 | Wafer backend 可以采用同类分层，但必须定义自己的 `wafer_*` C ABI |
+| 公开 CRT 展示了“target CRT 内部调用 Tsm wrapper”这条路径存在 | Wafer backend 可以采用同类分层，但必须直接对齐 target CRT symbol / wrapper 粒度 |
 | Tx81 CRT 命名、参数和 wait 策略不适合作为长期稳定 ABI | 只作为对照样例和反例，不把 `__Rdma/__Gemm/__Conv` 直接暴露为 Wafer compiler contract |
 | CRT 中 packet 初始化形态不能单独判断队列：`TsmDataMoveInstr` 经常先初始化成 `{I_CGRA,{0},{0}}`，但 wrapper 会重写 `inter_type` | `inter_type` 必须以 wrapper 配置后的最终值为准；MLIR 层不直接处理 bitfield |
-| `ENABLE_SYNCHRONOUS_INTRINSIC` 控制部分 op 是否 wait，但 RDMA/WDMA/GatherScatter/Memcpy 等路径中也有硬编码 `TsmWaitfinish()` | Wafer ABI 应从一开始区分 issue/drain；intra-tile 指令依赖交给硬件 parallel queue 的 dependency detection，显式 wait 只用于 drain、Kcore/host 可见性、多 tile barrier 前等边界 |
+| `ENABLE_SYNCHRONOUS_INTRINSIC` 控制部分 op 是否 wait，但 RDMA/WDMA/GatherScatter/Memcpy 等路径中也有硬编码 `TsmWaitfinish()` | Wafer target lowering 应从一开始区分 issue/drain；intra-tile 指令依赖交给硬件 parallel queue 的 dependency detection，显式 wait 只用于 drain、Kcore/host 可见性、多 tile barrier 前等边界 |
 | Kcore 可通过 `get_spm_memory_mapping(offset)` 直接 load/store SPM | 这不是 NCC 指令，不受 NCC dependency detection 管；Kcore 读 NCC 结果前需要 local drain，Kcore 写给 NCC 的 SPM 数据必须在 `TsmExecute` 前完成并受 `volatile`/barrier/fence 约束 |
 | `GatherScatter` 明确使用 byte count 和 byte stride | 对使用 `St_StrideIteration` 的 GatherScatter/strided helper，stride 单位按 byte 建模；不要把这些 stride 当成 element stride |
 | ChannelNorm 当前实际通过 GatherScatter 实现 | `TensorNom/channelnorm opcode 133` 不应作为 V0 主路径 |
@@ -647,7 +647,7 @@ typedef struct TsmNeInstr {
 
 ### Conv V0 lowering 策略
 
-V0 只生成基础 Conv packet，不启用 optional/fused operand。Wafer 后端应直接通过自己的 `wafer_conv` C ABI 调 `TsmConv` wrapper，而不是原样复用 Tx81 CRT 的 `__Conv`。
+V0 只生成基础 Conv packet，不启用 optional/fused operand。Wafer 后端应通过 target-specific Conv CRT call 调 `TsmConv` wrapper，而不是原样复用 Tx81 CRT 的 `__Conv`。
 
 | 项 | V0 lowering 规则 |
 | --- | --- |
@@ -678,7 +678,7 @@ V0 只生成基础 Conv packet，不启用 optional/fused operand。Wafer 后端
 | `SetQuant(instr, q0, q1, zp_left, zp_right)` | `quant_q0=q0`, `quant_q1=q1`, `quant_zp_pre=zp_left`, `quant_reserved=zp_right` |
 | `EnableRelu/EnableLeakyRelu` | activation enable |
 
-GEMM packet 的静态寄存器映射已经足够明确。V0 verifier 还需要单独固化的是 compiler policy：哪些 dtype/psum/batch/transpose/attention graph 组合进入 `wafer_gemm` 主路径，哪些组合拆分或 fallback。
+GEMM packet 的静态寄存器映射已经足够明确。V0 verifier 还需要单独固化的是 compiler policy：哪些 dtype/psum/batch/transpose/attention graph 组合进入 GEMM target CRT 主路径，哪些组合拆分或 fallback。
 
 ### NE lowering 检查项
 
@@ -1180,7 +1180,7 @@ Mailbox TX/RX base 分别是 `0x640000` 和 `0x660000`。Stream wrapper 内部�
 | `tile_sync_by_spm_single_direction(...)`、`tile_ready_*_other_tile_spm(...)` | 使用 `SINGLE_SPM_SYNC_OFFSET = 0x320`，对指定 remote tile SPM slot 做单向 ready/wait | 可由 runtime 组合成 ring/tree/subgroup barrier，但 compiler 不应直接抢占固定 offset |
 | `atomic_barrier_in/out` | 通过 mailbox、master arbitration、RTOS semaphore 实现 | 控制面 barrier，可作为兼容或调试路径；不应作为默认高性能 group barrier |
 
-因此 Wafer C ABI 需要一个稳定的 `wafer_group_barrier(group_id, phase, rank, size, ...)` 抽象。它内部可以在 full-card 情况选择 `hrt_barrier()`，在 subgroup 情况使用 runtime 分配的 Kcore SPM slot 或 ring/tree SPM handshake。compiler 层只依赖 barrier 语义，不直接写相对 `KCORE_SPM_ADDR_BASE` 的 `0x300/0x320/0x3000` 这些保留 offset。
+因此 target CRT 需要一个稳定的 `wafer_group_barrier(group_id, phase, rank, size, ...)` 抽象。它内部可以在 full-card 情况选择 `hrt_barrier()`，在 subgroup 情况使用 runtime 分配的 Kcore SPM slot 或 ring/tree SPM handshake。compiler 层只依赖 barrier 语义，不直接写相对 `KCORE_SPM_ADDR_BASE` 的 `0x300/0x320/0x3000` 这些保留 offset。
 
 ## PMU / profiling register 口径
 
@@ -1283,14 +1283,14 @@ typedef struct D_DynTLV {
 
 | 等级 | wrapper/helper | 公开样例状态 | 对 Wafer backend 的处理 |
 | --- | --- | --- | --- |
-| Tsm 发射入口 | `TsmExecute`、`TsmWaitfinish` | Tx81 CRT 中大量出现 | Wafer C ABI 内部可调用 `TsmExecute`；V0 不继承 CRT 的 per-op hard wait，主路径保留 issue/drain 分离 |
-| wrapper 调用样例 | `TsmRdma/TsmWdma` 的地址、stride/iteration 和 contiguous helper | Tx81 CRT 展示了 contiguous helper 与 strided helper 的调用方式 | 设计 `wafer_rdma/wafer_wdma`；单位和 descriptor 规则以 public wrapper/register 为准，`legalizeMemoryOpAttribute` 只作样例，不直接暴露 Tx81 CRT 名字 |
-| wrapper 调用样例 | `TsmArith`、`TsmRelation`、`TsmLogic`、`TsmTranscendental`、`TsmActivation` | Tx81 CRT 有大量 VV/VS/unary/bool 调用样例 | 设计 `wafer_*` elementwise ABI，内部调用同类 Tsm wrapper；不继承 CRT 的同步策略 |
-| wrapper 调用样例 | `TsmConvert` | Tx81 CRT 有 INT8/INT16/INT32/BF16/FP16/FP32/TF32 普通转换样例 | 设计 `wafer_convert_*`；MXFP 另做 helper，不当作单条 convert 指令 |
+| Tsm 发射入口 | `TsmExecute`、`TsmWaitfinish` | Tx81 CRT 中大量出现 | target CRT 内部可调用 `TsmExecute`；V0 不继承 CRT 的 per-op hard wait，主路径保留 issue/drain 分离 |
+| wrapper 调用样例 | `TsmRdma/TsmWdma` 的地址、stride/iteration 和 contiguous helper | Tx81 CRT 展示了 contiguous helper 与 strided helper 的调用方式 | 单位和 descriptor 规则以 public wrapper/register 为准，`legalizeMemoryOpAttribute` 只作样例，不直接暴露 Tx81 CRT 名字 |
+| wrapper 调用样例 | `TsmArith`、`TsmRelation`、`TsmLogic`、`TsmTranscendental`、`TsmActivation` | Tx81 CRT 有大量 VV/VS/unary/bool 调用样例 | target LLVM lowering 生成对应 `__*` elementwise CRT call，内部调用同类 Tsm wrapper；不继承 CRT 的同步策略 |
+| wrapper 调用样例 | `TsmConvert` | Tx81 CRT 有 INT8/INT16/INT32/BF16/FP16/FP32/TF32 普通转换样例 | target LLVM lowering 生成对应 convert CRT call；MXFP 另做 helper，不当作单条 convert 指令 |
 | wrapper 调用样例 | `TsmDataMove::GatherScatter` | Tx81 CRT 的 `__Memcpy`、`__GatherScatter`、`__ChannelNorm` 都出现过这条路径 | V0 可作为 layout conversion 和 SPM 内搬运主路径；单位按 byte，但具体 Wafer ABI 不继承 CRT 函数形态 |
-| wrapper 调用样例 | `TsmGemm` | Tx81 CRT 有 GEMM wrapper 调用样例；Triton GEMM 通过 channelNorm materialize A/B/C，再传 `M,K,N` 和 `transB=true` | 设计 `wafer_gemm`；verifier 以 `TsmGemm` wrapper、semantic layout 和 Cx/C0 规则为准，Triton 链路只作 sanity check |
+| wrapper 调用样例 | `TsmGemm` | Tx81 CRT 有 GEMM wrapper 调用样例；Triton GEMM 通过 channelNorm materialize A/B/C，再传 `M,K,N` 和 `transB=true` | GEMM lowering 以 `TsmGemm` wrapper、semantic layout 和 Cx/C0 规则为准，Triton 链路只作 sanity check |
 | native wrapper | `TsmReduce` | `tx8_deps` 暴露 `ReduceSum/ReduceAvg/ReduceMax/ReduceMin`；packet `dims` 字段语义为 `0:C, 1:W, 2:H, 3:N, 4:HW, 5:HWC` | V0 按 native TsmReduce 能力建模，不以 Triton 当前 lowering 子集作为上限；`reduce_mul` 另作 composite/helper |
-| wrapper 调用样例 | `TsmConv` | Tx81 CRT 有 Conv wrapper 组合样例；基本 layout 约束来自总览文档：forward `NHWC+HWOI`，BPA `HWIO`，BPW `HWOI`。但 `__Conv` 的 psum format 和 activation 默认行为不符合 Wafer V0 语义 | 只保留基础 `wafer_conv` 设计口径；LLM 主线不投入 Conv optional/fused 特性，不继承 `__Conv` 默认行为 |
+| wrapper 调用样例 | `TsmConv` | Tx81 CRT 有 Conv wrapper 组合样例；基本 layout 约束来自总览文档：forward `NHWC+HWOI`，BPA `HWIO`，BPW `HWOI`。但 `__Conv` 的 psum format 和 activation 默认行为不符合 Wafer V0 语义 | 只保留基础 Conv target lowering 设计口径；LLM 主线不投入 Conv optional/fused 特性，不继承 `__Conv` 默认行为 |
 | V1 候选 | `TsmPool`、`TsmUnPool` | pool/unpool wrapper header 存在 | V1 再纳入；Pool/UnPool 输入输出默认 aligned，semantic layout 为 `NHWC` |
 | V1 候选 | `TsmDataMove::{Transpose, Nchw2nhwc, Nhwc2nchw, Pad, Concat, Img2col, TensorNom}` | public wrapper/header 暴露能力，CRT 只是少量调用样例；`ChannelNorm` 样例更偏向 `GatherScatter` | V1 再纳入；`TensorNom` 不作为 V0 channelnorm 主路径 |
 | V1/V2 候选 | `TsmPeripheral::{Count, ArgMax, ArgMin, Bit2Fp, Bilinear, Lut16, Lut32, RandGen, Factorize, ElemMask}` | public wrapper/header 暴露能力，CRT 只是少量调用样例 | 按模型需求纳入 |

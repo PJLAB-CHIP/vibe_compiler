@@ -13,7 +13,7 @@
   },
   "model": {
     "id": "bad_workspace",
-    "abi": "wafer-cabi-v0",
+    "abi": "tx-kernel-v0",
     "interface": {
       "inputs": [
         {

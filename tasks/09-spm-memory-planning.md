@@ -17,7 +17,7 @@ Wafer-tagged memref / `wafer.instr.*` / effects，不重复定义 instruction op
   构造 allocation input。
 - 对 instruction-level IR 做 SPM memory planning、range/end-address/alignment/bank-span verification 和 failure
   feedback。
-- 为 ABI/LLVM lowering、package metadata 和 runtime adapter 的 resource view 提供 accepted offset fact；range、lifetime
+- 为 target LLVM lowering、package metadata 和 runtime adapter 的 resource view 提供 accepted offset fact；range、lifetime
   和 alias 信息由当前 IR 和 helper 重算，不作为长期 attr 字段保存。
 
 本文不分配 DDR，不选择 physical layout，不决定 group boundary，不选择 compute/communication
@@ -38,7 +38,7 @@ layout materialization
   -> storage requirement collection
   -> liveness/effect analysis
   -> SPM memory planning
-  -> runtime/ABI address-range derivation from accepted facts
+  -> runtime/target-codegen address-range derivation from accepted facts
   -> range/end-address verification in downstream consumers
 ```
 
@@ -60,17 +60,17 @@ Pipeline position:
   和 range-end verification。
 - Output artifact / IR:
   same instruction-level IR with offset-only `wafer.spm.offset` planning facts on SPM memref definitions，或结构化
-  allocation failure reason；后续 ABI/LLVM、package metadata 和 runtime adapter 直接从该 fact、memref use-def、endpoint facts 和 view relation
+  allocation failure reason；后续 target LLVM、package metadata 和 runtime adapter 直接从该 fact、memref use-def、endpoint facts 和 view relation
   按需派生 launch/resource 与 ABI address-range 参数，不再经过 placed memref / descriptor 中间层。
 - Downstream consumer:
-  DDR memory planning、closed-loop candidate driver、ABI/LLVM lowering、
+  DDR memory planning、closed-loop candidate driver、target LLVM lowering、
   package metadata 和 runtime adapter。
 - User-level driver / named pipeline:
   当前可重放入口是 `wafer-lower-groups-to-memory-planned-instr`，它复用 tile-region / instruction lowering 后追加
   `wafer-plan-spm-memory`。closed-loop planner 后续调用同一 stage；单独 SPM planning pass 只作为
   instruction-level lit/debug 入口。
 - Explicit non-goals:
-  不选择 instruction form、不改变 layout assignment、不分配 DDR allocation、不生成 C ABI call 或 packet。
+  不选择 instruction form、不改变 layout assignment、不分配 DDR allocation、不生成 target CRT call 或 packet。
 - Completion gate:
   对 instruction lowering 支持的 storage kinds 给出 deterministic memory plan 或结构化失败；planned storage 的 size、
   alignment、range/end、lifetime 和 alias relation 能由 IR/effect/verifier 重算。
@@ -107,7 +107,7 @@ Pipeline position:
 - `wafer.tile.region` 中带 `#wafer.memory<space, layout>` 的 memref；其中 `#wafer.memory<spm, *>` memref 由本文
   allocator 分配，`#wafer.memory<ddr, *>` memref ownership 和 accepted range 由 DDR memory planner / runtime/package/launch 层提供
   ownership。
-- runtime/ABI/codegen 阶段从 committed IR 和 accepted offset facts 派生的 address/range 参数。
+- runtime/target-codegen 阶段从 committed IR 和 accepted offset facts 派生的 address/range 参数。
 - movement/materialization/compute/sync op。
 - pass-local allocation summary：offset/range、size、alignment、lifetime、alias group。
 - hardware lowering 需要的 begin/end range 和 dtype storage size。
@@ -383,7 +383,7 @@ logical group + tile/layout proposal
   -> SPM memory planning
   -> planned offsets or failure feedback
   -> commit passing wafer.tile.region with layout/materialization/instruction/SPM facts
-  -> derive runtime/ABI address-range parameters from committed IR and accepted facts
+  -> derive runtime/target-codegen address-range parameters from committed IR and accepted facts
 ```
 
 原因是 layout、SPM、tile shape 和 target-abstract op selection 强耦合。早期如果只看 logical
@@ -399,7 +399,7 @@ op 的粗粒度 effect。
 
 Wafer-tagged memref 是 layout / SPM planning 阶段的 tile-local buffer value。SPM bufferization
 接受 layout assignment 和 allocation 后，不再新增独立 placed memref / explicit descriptor IR 层；
-下游 runtime/ABI/codegen 必须从 committed instruction IR 中的 memref use-def、view relation、
+下游 runtime/target-codegen 必须从 committed instruction IR 中的 memref use-def、view relation、
 `wafer.spm.offset`、`wafer.ddr.offset` 和 `computeWaferPhysicalTensorInfo(memrefType)` 直接派生
 address/range/stride 参数。
 
@@ -426,7 +426,7 @@ SPM bufferization 后，IR 应显式表达：
 - movement / materialization / compute / sync op。
 - necessary effect / wait / barrier。
 
-runtime/ABI materialization 后，physical address、bank/color、worker、queue、packet field
+runtime/target-codegen materialization 后，physical address、bank/color、worker、queue、packet field
 只在能验证它们的 lower-level IR 或 emission metadata 中出现；主线 instruction IR 不新增
 placed memref、flat backing memref 或 explicit descriptor 事实源。
 `wafer.group` 只消费 feasibility 结论，不携带这些字段。
@@ -513,7 +513,7 @@ SPM / tile-region verifier 至少检查：
 - may-reuse buffers 的 lifetime 不重叠，或由明确 wait/barrier 收口。
 - async buffer 在 fence/wait 前不能复用。
 - host-visible writeback 和 communication boundary 有明确 fence/wait/sync。
-- launch/resource、ABI/LLVM 和 runtime adapter 阶段不能要求额外 placed/access descriptor fact；compact 和 Cx/NCx buffer
+- launch/resource、target LLVM 和 runtime adapter 阶段不能要求额外 placed/access descriptor fact；compact 和 Cx/NCx buffer
   的 address/range/stride 参数必须由 `computeWaferPhysicalTensorInfo`、accepted offset facts、
   allocation range 和 op verifier 一致推出。
 
@@ -531,7 +531,7 @@ tile plan
   -> instruction-level wafer.instr.* over unplaced Wafer-tagged memref values
   -> instruction storage / effect demand
   -> SPM memory planning
-  -> runtime/ABI address-range derivation from accepted facts
+  -> runtime/target-codegen address-range derivation from accepted facts
   -> accepted or failure feedback
 ```
 

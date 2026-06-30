@@ -1,0 +1,24 @@
+# REQUIRES: stablehlo, shardy, pytorch-xla-importer, xla-spmd-helper
+
+# RUN: rm -rf %t.input.program %t.group.program
+# RUN: printf '%b' 'import pathlib\nimport sys\nimport torch\nsys.path.insert(0, "%wafer_src_root/test/Tools/Inputs")\nimport wafer_pytorch_xla_capture as capture\nclass AddModel(torch.nn.Module):\n  def forward(self, x):\n    return x + x\ncapture.emit_reference_stablehlo_program(pathlib.Path("%t.input.program"), reference_module_factory=AddModel, size=32)\n' > %t.capture.py
+# RUN: %importer_python %t.capture.py
+# RUN: wafer-opt --program-pipeline=stablehlo-spmd-to-group \
+# RUN:   --input-program-dir %t.input.program \
+# RUN:   --output-program-dir %t.group.program | FileCheck %s --check-prefix=PIPELINE
+# RUN: FileCheck %s --input-file=%t.group.program/functions/forward.mlir --check-prefix=GROUP
+# RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-groups-to-ddr-memory-planned-instr)' \
+# RUN:   %t.group.program/functions/forward.mlir > %t.instr.mlir
+# RUN: FileCheck %s --input-file=%t.instr.mlir --check-prefix=INSTR
+
+# PIPELINE: wafer-opt: completed Wafer program pipeline stablehlo-spmd-to-group:
+
+# GROUP: mhlo.spmd_parameters_shardings
+# GROUP: func.func @main
+# GROUP: wafer.group
+# GROUP: linalg.generic
+# GROUP: arith.addf
+
+# INSTR-NOT: wafer.group
+# INSTR: wafer.instr.elementwise <add>
+# INSTR: wafer.instr.wdma

@@ -1,7 +1,7 @@
 # RUN: %python %wafer_src_root/tools/wafer_export_package_metadata.py \
 # RUN:   --name package_export_sample \
 # RUN:   --model-id package_export_sample \
-# RUN:   --abi wafer-cabi-v0 \
+# RUN:   --abi tx-kernel-v0 \
 # RUN:   --model-interface %S/Inputs/package-export-model-interface.json \
 # RUN:   --instruction-ir %S/Inputs/package-export-instr.txt \
 # RUN:   --llvm-ir %S/Inputs/package-export-kernel.ll \
@@ -10,26 +10,10 @@
 # RUN: %python %wafer_src_root/tools/wafer_package_metadata.py --validate %t.json
 # RUN: %python %wafer_src_root/tools/wafer_package_metadata.py --roundtrip %t.json | FileCheck %s --check-prefix=ROUNDTRIP
 
-# RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-groups-to-ddr-memory-planned-instr)' \
-# RUN:   %wafer_src_root/test/Pipelines/lower-groups-to-llvm.mlir > %t.pipeline-instr.mlir
-# RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-groups-to-llvm)' \
-# RUN:   %wafer_src_root/test/Pipelines/lower-groups-to-llvm.mlir > %t.pipeline-llvm.mlir
-# RUN: mlir-translate --mlir-to-llvmir %t.pipeline-llvm.mlir > %t.pipeline.ll
-# RUN: %python %wafer_src_root/tools/wafer_export_package_metadata.py \
-# RUN:   --name pipeline_package_sample \
-# RUN:   --model-id pipeline_package_sample \
-# RUN:   --abi wafer-cabi-v0 \
-# RUN:   --model-interface %S/Inputs/package-export-pipeline-model-interface.json \
-# RUN:   --instruction-ir %t.pipeline-instr.mlir \
-# RUN:   --llvm-ir %t.pipeline.ll \
-# RUN:   --module-path pipeline_export.so > %t.pipeline.json
-# RUN: %python %wafer_src_root/tools/wafer_package_metadata.py --validate %t.pipeline.json
-# RUN: FileCheck %s --check-prefix=PIPELINE < %t.pipeline.json
-
 # RUN: %python %wafer_src_root/tools/wafer_export_package_metadata.py \
 # RUN:   --name full_instr_package_sample \
 # RUN:   --model-id full_instr_package_sample \
-# RUN:   --abi wafer-cabi-v0 \
+# RUN:   --abi tx-kernel-v0 \
 # RUN:   --model-interface %S/Inputs/package-export-pipeline-model-interface.json \
 # RUN:   --instruction-ir %S/Inputs/package-export-full-instr.txt \
 # RUN:   --llvm-ir %S/Inputs/package-export-kernel.ll \
@@ -40,7 +24,7 @@
 # RUN: not %python %wafer_src_root/tools/wafer_export_package_metadata.py \
 # RUN:   --name package_export_sample \
 # RUN:   --model-id package_export_sample \
-# RUN:   --abi wafer-cabi-v0 \
+# RUN:   --abi tx-kernel-v0 \
 # RUN:   --model-interface %S/Inputs/package-export-model-interface.json \
 # RUN:   --instruction-ir %S/Inputs/package-export-instr.txt \
 # RUN:   --llvm-ir %S/Inputs/missing-entry.ll \
@@ -52,7 +36,7 @@
 # CHECK: "completion_source": "runtime_stream_wait"
 # CHECK: "model": {
 # CHECK: "id": "package_export_sample"
-# CHECK: "abi": "wafer-cabi-v0"
+# CHECK: "abi": "tx-kernel-v0"
 # CHECK: "interface": {
 # CHECK: "name": "lhs"
 # CHECK: "binding": {
@@ -80,18 +64,11 @@
 # ROUNDTRIP: "wafer.instr.gather_scatter"
 # ROUNDTRIP: "wafer.instr.local_fence"
 
-# PIPELINE: "completion_source": "runtime_stream_wait"
-# PIPELINE: "ddr_external_input_bytes": 192
-# PIPELINE: "ddr_external_output_bytes": 64
-# PIPELINE: "path": "pipeline_export.so"
-# PIPELINE: "function": "boundary_tiled_matmul_group_abi"
-# PIPELINE: "op": "wafer.instr.gemm"
-# PIPELINE: "op": "wafer.instr.wdma"
-
 # FULL-INSTR: "op": "wafer.instr.fill"
 # FULL-INSTR: "op": "wafer.instr.elementwise"
 # FULL-INSTR: "kind": "eq"
-# FULL-INSTR: "kind": "select"
+# FULL-INSTR: "op": "wafer.instr.bit2fp"
+# FULL-INSTR: "op": "wafer.instr.mask_move"
 # FULL-INSTR: "op": "wafer.instr.reduce"
 # FULL-INSTR: "kind": "avg"
 # FULL-INSTR: "op": "wafer.instr.reduce"

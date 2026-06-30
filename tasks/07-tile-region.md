@@ -50,13 +50,13 @@ endpoint-derived metadata 和 communication staging demand 的层级；`wafer.ti
 - 在同一个 region 内表达 load/store、layout materialization、compute、communication、sync 和
   fence/wait ordering。
 - 为 layout planning、SPM allocation 和 DDR memory planning 提供可重算 IR 结构。
-- 为 lower-level Wafer ops、C ABI 和 launch outline 提供清楚的输入。
+- 为 lower-level Wafer ops、target CRT 和 launch outline 提供清楚的输入。
 
 非目标：
 
 - 不决定哪些 op 可以 group 到一起。
 - 不保存 planner 搜索过程、失败候选、cost model trace 或 shadow schedule。
-- 不把 SPM offset、DDR runtime allocation address、DTE resource 或 C ABI call 提前塞进 tensor/group 层。
+- 不把 SPM offset、DDR runtime allocation address、DTE resource 或 target CRT call 提前塞进 tensor/group 层。
 - 不替代 runtime launch metadata。`tile_region` 是 device-side execution scope，runtime package /
   launch metadata 是 host/device invocation boundary。
 
@@ -72,11 +72,11 @@ wafer.group
   -> instruction-level wafer.instr.* IR over unplaced Wafer-tagged memref values
   -> SPM memory planning on the same instruction-level IR
   -> DDR memory planning on memory-planned instruction IR
-  -> direct memory-planned instruction IR for current no-card/ABI/runtime gates
+  -> direct memory-planned instruction IR for current no-card/target LLVM gates
   -> optional closed-loop candidate driver for retry/split/commit decision
   -> committed selected instruction IR for cases covered by the selector
   -> topology/execution-mesh + program shard metadata/resource view
-  -> ABI / LLVM lowering from committed IR + accepted offsets + topology/execution mesh
+  -> target instruction LLVM lowering from committed IR + accepted offsets + topology/execution mesh
   -> object/package/runtime adapter
 ```
 
@@ -88,7 +88,7 @@ wafer.group
   bufferize、lower 到 instruction IR 并做 SPM/DDR planning，作为当前 no-card/ABI/runtime gate 的输入。
   closed-loop selector 评估失败的 tile-region IR 仍不进入主线 committed IR。
 - committed `wafer.tile.region`：committed materialization 只把 candidate-selection 已选中、且已通过 candidate gates
-  的 candidate artifact 写入主 IR。后续 endpoint projection、ABI/LLVM lowering 和 package metadata
+  的 candidate artifact 写入主 IR。后续 endpoint projection、target LLVM lowering 和 package metadata
   只从 committed IR、accepted offset facts、topology/execution-mesh 和 program shard metadata/resource view
   派生下游参数，
   不重新决定 group 是否可行，也不复制 placed/access descriptor 中间协议。当前 HF transformer no-card
@@ -130,7 +130,7 @@ Pipeline position:
 - Explicit non-goals:
   不做 SPM offset allocation、不做 DDR view/range/resource planning、不 select/reject/split
   group、不从 candidate tile shape 生成 temporal DDR tile `memref.subview`、不把 tile-region IR
-  当成 committed materialization、不 lower 到 packet/ABI/LLVM。
+  当成 committed materialization、不 lower 到 packet/target LLVM。
 - Completion gate:
   FileCheck、conversion pass、dump pass 和主线 pipeline 覆盖 R2.4/R3.1 已能产出的 Wafer V0 硬件可承载 local
   compute/movement/view family：DDR memref load/store boundary、layout materialization、DDR/SPM
@@ -183,7 +183,7 @@ op”。正确边界是：
 - abstract tile-region 阶段只允许 verifier 可解释的 Wafer-tagged `memref.alloc`、metadata view 和
   Wafer movement/compute op；不允许 generic `memref.load/store/copy` 作为语义逃逸。
 - resource projection / realization 后允许 verifier 可解释的 placed `memref` / descriptor / lower-level Wafer op。
-- LLVM call、runtime call、C ABI call 不属于 `tile_region` 主体，应在 launch / ABI lowering 后
+- LLVM call、runtime call、target CRT call 不属于 `tile_region` 主体，应在 target LLVM / launch lowering 后
   出现。
 
 ## 3. Op Contract
@@ -312,9 +312,9 @@ V0 需要以下 op family：
    inline commit 回原 `wafer.group` 位置，写入主 IR。
 10. topology/execution-mesh handoff：从 target topology、valid execution mesh、committed instruction
     boundary 和 logical rank/local shard facts 派生薄 launch/block binding 与 resource view。
-11. ABI / LLVM lowering：从 committed instruction IR、accepted offset facts、
+11. target instruction LLVM lowering：从 committed instruction IR、accepted offset facts、
     topology/execution-mesh、program parameter shard metadata 和按需重算的 resource view 生成
-    wrapper-friendly LLVM call / C ABI call / packet builder 输入；不新增 placed memref / access descriptor
+    wrapper-friendly LLVM call / target CRT call / packet builder 输入；不新增 placed memref / access descriptor
     中间协议。
 
 rejected candidate plan 不能落入 IR 后等待下游修复。合法性失败应反馈给 group/layout/candidate
@@ -376,11 +376,11 @@ launch args / identity lowering 的 IR contract。当前没有 multi-tile no-com
 - `wafer.tile.materialize_layout` 的输入输出 layout relation 合法；同 layout 冗余转换应由 verifier
   拒绝，上游应避免生成这种 no-op conversion。`wafer.tile.reshape` 这类无副作用 view op 可由
   canonicalization 删除同类型 no-op。
-- `#wafer.memory<spm, *>` memref 在 runtime/ABI materialization 前必须经过 SPM allocation；
+- `#wafer.memory<spm, *>` memref 在 runtime/target-codegen materialization 前必须经过 SPM allocation；
   compiler-managed `#wafer.memory<ddr, *>` alloc 必须有 DDR memory planning 接受的
   `wafer.ddr.offset` fact；external DDR boundary value 的 descriptor/view/root validation 由当前
   instruction-level IR 重算。
-- topology/execution-mesh、program shard metadata/resource view、ABI/LLVM lower-level 输入和 package
+- topology/execution-mesh、program shard metadata/resource view、target LLVM lower-level 输入和 package
   package metadata 只能从当前 committed IR、accepted offset facts、topology/execution-mesh contract 和
   按需 resource view 派生；不能要求
   tile-region 主线额外携带 placed memref 或 access descriptor 旁路事实。

@@ -31,7 +31,7 @@ Pipeline position:
   instruction-level communication IR over unplaced Wafer-tagged SPM memrefs；peer/order/byte range 和 wait
   由 IR body 表达，不保存重复的 communication plan attr。
 - Downstream consumer:
-  SPM memory planning、DDR planning、ABI/LLVM lowering、device-code shim / wrapper 和 runtime package
+  SPM memory planning、DDR planning、target LLVM lowering、device-code target CRT wrapper 和 runtime package
   resource view。
 - User-level driver / named pipeline:
   主线通过 `stablehlo-spmd-to-group` 后的 group -> tile-region -> instruction lowering 重放；
@@ -42,7 +42,7 @@ Pipeline position:
 - Completion gate:
   top-level single-result `all_gather`、`reduce_scatter` 和 `all_reduce` 能从真实 group/tile-region
   path materialize 到 `wafer.tile.*` 并展开成 DTE p2p instruction body，随后被 SPM planning 和
-  ABI/LLVM gate 消费。
+  target LLVM gate 消费。
 
 ## 1. 设计目标
 
@@ -74,7 +74,7 @@ partitioned StableHLO + collectives
   -> target-abstract `wafer.tile.*` buffer-level collective, or direct p2p body when no extra collective op is needed
   -> explicit `wafer.instr.dte_*` point-to-point steps
   -> Direct DTE/FSM/sync resource lowering
-  -> Wafer C ABI / runtime package metadata
+  -> target CRT / runtime package metadata
 ```
 
 各层职责：
@@ -274,7 +274,7 @@ collective 仍应由 unicast p2p schedule 组合表达，而不是在 logical IR
 active route / Direct DTE protocol legality 仍由后续 `wafer.execution.mesh` /
 `wafer.target.topology` consumer 完成。`wafer.instr.dte_wait` 要求至少一个 async token。
 旧 tile-region-to-C-ABI debug pass 已删除；fixed-size unicast p2p 到 committed Direct DTE
-issue/wait form 和 ABI/LLVM emission 的 lowering 必须从 committed instruction-level IR、
+issue/wait form 和 target LLVM emission 的 lowering 必须从 committed instruction-level IR、
 topology/execution-mesh contract 和 resource view analysis 重新建立。这一层仍不应 materialize raw
 non-unicast register 字段，也不把 DTE id、runtime physical address 或 wrapper packet bitfield
 暴露成上层 communication IR 语义。
@@ -465,7 +465,7 @@ resource release
 ```
 
 这个序列可以由 lower-level Wafer ops 表达，再由 committed instruction / launch-resource / ABI-LLVM
-lowering 生成具体 runtime/C ABI call。
+lowering 生成具体 runtime/target CRT call。
 `wafer.instr.dte_send` / `dte_recv` 不直接携带每个 helper 调用名；helper 选择属于 lowering。
 
 Host runtime dyn TLV D2D/P2P path 是另一条兼容或 host-managed route。若后续需要 fallback，应在
@@ -566,7 +566,7 @@ wafer.instr.dte_wait %send1, %recv1
 - `all_to_all` 当前没有 ring/blocked schedule selector，也没有 raw non-unicast DTE path；这些仍是后续
   性能/板端扩展。
 - Direct DTE send/recv/wait golden path 和 error diagnostic 属于历史 bring-up 证据；Direct DTE
-  issue/wait form、resource allocation 和 ABI/LLVM emission 需要从 committed instruction IR
+  issue/wait form、resource allocation 和 target LLVM emission 需要从 committed instruction IR
   和 accepted endpoint/resource facts 重新建立。
 
 后续进入条件：

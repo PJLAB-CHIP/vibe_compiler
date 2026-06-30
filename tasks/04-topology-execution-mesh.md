@@ -56,17 +56,17 @@ Pipeline position:
   `explicit` 才保存 endpoint tuples。launch-visible block id 若需要跨阶段保留，应作为薄 launch /
   block binding 表达，不复制 rank->tile mapping。
 - Downstream consumer:
-  SPMD partition、communication lowering、ABI/LLVM lowering、package metadata 和 runtime adapter。
+  SPMD partition、communication lowering、target LLVM lowering、package metadata 和 runtime adapter。
 - User-level driver / named pipeline:
   `wafer-opt --program-pipeline=stablehlo-spmd*` 在 SPMD 前 materialize `wafer.target.topology` /
   `wafer.execution.mesh`，并让默认 SPMD seed 从 execution mesh rank count / axes 取数。
 - Explicit non-goals:
-  不重新做 group/candidate/tile shape/layout/SPM/DDR planning；不生成 DTE route、ABI call、packet、
+  不重新做 group/candidate/tile shape/layout/SPM/DDR planning；不生成 DTE route、target call、packet、
   object、package、runtime handle 或 physical address；不靠 tensor 名字恢复 shard 语义。
 - Completion gate:
   named pipeline 能重放 target topology materialization -> valid execution mesh selection -> SPMD partition
   -> group formation；emitted `wafer.execution.mesh` 被 SPMD、communication、direct memory-planned
-  instruction/ABI lowering 和 package resource view 消费。closed-loop selected-candidate path 可消费
+  instruction/target LLVM lowering 和 package resource view 消费。closed-loop selected-candidate path 可消费
   同一 topology / mesh fact，但不是 topology/execution-mesh gate 的完成条件。execution mesh 成为唯一
   rank-domain policy / optional explicit endpoint fact source；verifier 能拒绝 rank count、axis product
   mismatch、unavailable tile、duplicate explicit tile、out-of-topology、disconnected available component

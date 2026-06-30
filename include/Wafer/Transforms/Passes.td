@@ -276,15 +276,4 @@ def PlanDDRMemoryPass
   ];
 }
 
-def MaterializeABICallsPass
-    : Pass<"wafer-materialize-abi-calls", "mlir::ModuleOp"> {
-  let summary =
-      "Materialize scalar wafer_* C ABI call sequences from committed instruction IR";
-  let dependentDialects = ["mlir::arith::ArithDialect",
-                           "mlir::func::FuncDialect",
-                           "mlir::memref::MemRefDialect",
-                           "wafer::WaferDialect"
-  ];
-}
-
 #endif // WAFER_TRANSFORMS_PASSES_TD

@@ -27,7 +27,7 @@
 # CHECK: runtime_mode: tx
 # CHECK: completion_source: runtime_stream_wait
 # CHECK: selected_entrypoint: debug_kernel tx.module
-# CHECK: model: model_package_sample abi=wafer-cabi-v0
+# CHECK: model: model_package_sample abi=tx-kernel-v0
 # CHECK: session_binding: lhs role=input bytes=16 lifecycle=import_or_allocate,query,bind,copy_h2d read_only=true host_visible=true
 # CHECK: session_binding: out role=output bytes=16 lifecycle=allocate,query,bind,copy_d2h read_only=false host_visible=true
 # CHECK: session_binding: tmp role=workspace bytes=16 lifecycle=allocate,query,bind read_only=false host_visible=false

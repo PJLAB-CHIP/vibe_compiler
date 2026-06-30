@@ -171,6 +171,19 @@ static mlir::LogicalResult verifySameElementType(mlir::Operation *op,
   return mlir::success();
 }
 
+static mlir::LogicalResult verifySameShape(mlir::Operation *op,
+                                           mlir::RankedTensorType lhs,
+                                           mlir::RankedTensorType rhs,
+                                           llvm::StringRef message) {
+  if (lhs.getRank() != rhs.getRank())
+    return op->emitOpError() << message;
+  for (auto [lhsDim, rhsDim] : llvm::zip(lhs.getShape(), rhs.getShape())) {
+    if (hasStaticMismatch(lhsDim, rhsDim))
+      return op->emitOpError() << message;
+  }
+  return mlir::success();
+}
+
 static mlir::LogicalResult verifyInstructionReduceContract(mlir::Operation *op,
                                                            mlir::Value input,
                                                            mlir::Value dest,
@@ -435,6 +448,10 @@ mlir::LogicalResult InstrElementwiseOp::verify() {
   if (mlir::failed(verifyNoEmptyVariadicInputs(getOperation(), getInputs(),
                                                "elementwise")))
     return mlir::failure();
+  if (getKind() == ComputeElementwiseKind::Select)
+    return emitOpError(
+        "select is not a target elementwise instruction; lower it to "
+        "bit2fp/mask_move sequence before instruction IR");
   if (mlir::failed(
           verifySPMMemRef(getOperation(), getDest().getType(), "dest")))
     return mlir::failure();
@@ -472,6 +489,115 @@ void InstrElementwiseOp::collectWaferResourceEffects(
 
 mlir::LogicalResult InstrElementwiseOp::verifyWaferResourceEffectContract() {
   llvm::SmallVector<WaferResourceEffect, 8> effects;
+  collectWaferResourceEffects(effects);
+  return verifyResourceEffects(getOperation(), effects);
+}
+
+mlir::LogicalResult InstrBit2FpOp::verify() {
+  if (mlir::failed(
+          verifySPMMemRef(getOperation(), getSource().getType(), "source")) ||
+      mlir::failed(verifySPMMemRef(getOperation(), getDest().getType(), "dest")))
+    return mlir::failure();
+
+  std::optional<mlir::RankedTensorType> sourceTensor =
+      getLogicalTensorType(getSource().getType());
+  std::optional<mlir::RankedTensorType> destTensor =
+      getLogicalTensorType(getDest().getType());
+  if (!sourceTensor || !destTensor)
+    return emitOpError("bit2fp expects ranked Wafer memrefs");
+  if (!sourceTensor->getElementType().isInteger(1))
+    return emitOpError("bit2fp source element type must be i1");
+  if (!mlir::isa<mlir::FloatType>(destTensor->getElementType()))
+    return emitOpError("bit2fp dest element type must be floating point");
+  return verifySameShape(getOperation(), *sourceTensor, *destTensor,
+                         "bit2fp source and dest shapes must match");
+}
+
+InstrFamily InstrBit2FpOp::getInstructionFamily() { return InstrFamily::CT; }
+
+mlir::LogicalResult InstrBit2FpOp::verifyInstructionContract() {
+  return verify();
+}
+
+void InstrBit2FpOp::collectWaferResourceEffects(
+    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
+  appendResourceEffect(effects, WaferResourceKind::SPM,
+                       WaferResourceAccess::Read, WaferValueRole::Operand, 0,
+                       getCompactByteSizeOrUnknown(getSource().getType()));
+  appendResourceEffect(effects, WaferResourceKind::SPM,
+                       WaferResourceAccess::Write, WaferValueRole::Operand, 1,
+                       getCompactByteSizeOrUnknown(getDest().getType()));
+  appendInstructionIssueEffect(
+      effects, WaferResourceKind::Compute,
+      getCompactByteSizeOrUnknown(getDest().getType()));
+}
+
+mlir::LogicalResult InstrBit2FpOp::verifyWaferResourceEffectContract() {
+  llvm::SmallVector<WaferResourceEffect, 3> effects;
+  collectWaferResourceEffects(effects);
+  return verifyResourceEffects(getOperation(), effects);
+}
+
+mlir::LogicalResult InstrMaskMoveOp::verify() {
+  if (mlir::failed(
+          verifySPMMemRef(getOperation(), getSource().getType(), "source")) ||
+      mlir::failed(verifySPMMemRef(getOperation(), getMask().getType(),
+                                   "mask")) ||
+      mlir::failed(verifySPMMemRef(getOperation(), getDest().getType(), "dest")))
+    return mlir::failure();
+
+  std::optional<mlir::RankedTensorType> sourceTensor =
+      getLogicalTensorType(getSource().getType());
+  std::optional<mlir::RankedTensorType> maskTensor =
+      getLogicalTensorType(getMask().getType());
+  std::optional<mlir::RankedTensorType> destTensor =
+      getLogicalTensorType(getDest().getType());
+  if (!sourceTensor || !maskTensor || !destTensor)
+    return emitOpError("mask_move expects ranked Wafer memrefs");
+  if (mlir::failed(verifySameShape(getOperation(), *sourceTensor, *destTensor,
+                                   "mask_move source and dest shapes must "
+                                   "match")) ||
+      mlir::failed(verifySameElementType(
+          getOperation(), *sourceTensor, *destTensor,
+          "mask_move source and dest element types must match")) ||
+      mlir::failed(verifySameShape(getOperation(), *maskTensor, *destTensor,
+                                   "mask_move mask and dest shapes must match")))
+    return mlir::failure();
+  if (maskTensor->getElementType() != sourceTensor->getElementType())
+    return emitOpError(
+        "mask_move mask element type must match source element type after "
+        "bit2fp conversion");
+  if (!mlir::isa<mlir::FloatType>(maskTensor->getElementType()))
+    return emitOpError("mask_move mask element type must be floating point");
+  return mlir::success();
+}
+
+InstrFamily InstrMaskMoveOp::getInstructionFamily() {
+  return InstrFamily::TDMA;
+}
+
+mlir::LogicalResult InstrMaskMoveOp::verifyInstructionContract() {
+  return verify();
+}
+
+void InstrMaskMoveOp::collectWaferResourceEffects(
+    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
+  appendResourceEffect(effects, WaferResourceKind::SPM,
+                       WaferResourceAccess::Read, WaferValueRole::Operand, 0,
+                       getCompactByteSizeOrUnknown(getSource().getType()));
+  appendResourceEffect(effects, WaferResourceKind::SPM,
+                       WaferResourceAccess::Read, WaferValueRole::Operand, 1,
+                       getCompactByteSizeOrUnknown(getMask().getType()));
+  appendResourceEffect(effects, WaferResourceKind::SPM,
+                       WaferResourceAccess::Write, WaferValueRole::Operand, 2,
+                       getCompactByteSizeOrUnknown(getDest().getType()));
+  appendInstructionIssueEffect(
+      effects, WaferResourceKind::Movement,
+      getCompactByteSizeOrUnknown(getDest().getType()));
+}
+
+mlir::LogicalResult InstrMaskMoveOp::verifyWaferResourceEffectContract() {
+  llvm::SmallVector<WaferResourceEffect, 4> effects;
   collectWaferResourceEffects(effects);
   return verifyResourceEffects(getOperation(), effects);
 }

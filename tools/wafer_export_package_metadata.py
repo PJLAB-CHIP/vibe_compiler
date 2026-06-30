@@ -44,6 +44,8 @@ SUPPORTED_INSTRUCTION_OPS = {
     "fill",
     "gemm",
     "elementwise",
+    "bit2fp",
+    "mask_move",
     "reduce",
     "convert",
     "dte_send",
@@ -432,6 +434,8 @@ def parse_instructions(instruction_ir: str) -> list[dict[str, Any]]:
                 item["batch_count"] = batch_count
         elif op_name == "elementwise":
             item["kind"] = parse_kind(segment, "elementwise")
+            if item["kind"] == "select":
+                fail("wafer.instr.elementwise select is not target-aligned")
         elif op_name == "reduce":
             item["kind"] = parse_kind(segment, "reduce")
             item["dimensions"] = parse_array_i64_attr(segment, "dimensions")

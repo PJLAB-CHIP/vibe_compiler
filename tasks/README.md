@@ -22,7 +22,7 @@
 | 11 | `tasks/11-instruction-ir.md` | instruction-level Wafer IR over Wafer-tagged memrefs, including Direct DTE invocation ops |
 | 12 | `tasks/12-ddr-memory-planning.md` | DDR memory planning and accepted offset facts |
 | 13 | `tasks/13-communication.md` | tile-local collective IR and Direct DTE instruction schedule boundary |
-| 14 | `tasks/14-abi-golden-packet.md` | C ABI / LLVM / golden packet lowering boundary |
+| 14 | `tasks/14-target-llvm-golden-packet.md` | target instruction LLVM lowering and golden packet boundary |
 | 15 | `tasks/15-launch-runtime-package.md` | runtime package、host runtime adapter |
 | 16 | `tasks/16-verification-plan.md` | staged verification plan and completion gates |
 

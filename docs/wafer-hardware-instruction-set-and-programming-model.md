@@ -2,7 +2,7 @@
 
 本文档只整理 Wafer 硬件公开资料中的拓扑、运行时编程模型、SPM/DDR/DTE 资源、layout 背景和后端设计需要长期固化的硬件约束。文档中的 `TX8`、`TX81`、`TsingMicro` 仅指源代码和原始文档中的既有名称；后续 compiler 设计统一使用 Wafer 命名。
 
-具体指令 spec 不在本文档维护。`inter_type`、opcode、register packet 字段、Tsm wrapper 参数、Tx81 CRT 如何调用 wrapper、以及 Wafer C ABI 发射规范，统一放在 [wafer-register-level-instruction-spec.md](/root/dlc_dev/vibe_compiler/docs/wafer-register-level-instruction-spec.md:1)。
+具体指令 spec 不在本文档维护。`inter_type`、opcode、register packet 字段、Tsm wrapper 参数、Tx81 CRT 如何调用 wrapper、以及 target CRT 发射规范，统一放在 [wafer-register-level-instruction-spec.md](/root/dlc_dev/vibe_compiler/docs/wafer-register-level-instruction-spec.md:1)。
 
 ## 文档边界
 
@@ -14,7 +14,7 @@
 后端实现时的查阅顺序：
 
 1. 设计 tiling、SPM 分配、layout、multi-tile 调度时先看本文档。
-2. 写 lowering、runtime C ABI、wrapper 调用、verifier 指令字段时看 register-level spec。
+2. 写 lowering、runtime target CRT、wrapper 调用、verifier 指令字段时看 register-level spec。
 3. 遇到本文档和 register-level spec 对指令细节描述冲突时，以 register-level spec 为准。
 
 ## 信息来源和可信度
@@ -152,7 +152,7 @@ C-intrinsic 文档中的规则：
 
 Kcore 通过 AP 下发的 `offset`、自身 `logic-id`、以及卡内 1D/2D id 规则计算 cluster 内目标 tile 的 logic id。卡内 1D id 由二维 id `(X,Y)` 映射为 `X * 4 + Y`。
 
-Compiler 侧不能把上述默认 4x4 规则或历史 1D/2D 公式散落到 SPMD、communication、ABI lowering
+Compiler 侧不能把上述默认 4x4 规则或历史 1D/2D 公式散落到 SPMD、communication、target LLVM lowering
 或 verifier。它们是 topology import/materialization 的输入证据：`wafer.target.topology` 保存
 规则 card/tile grid、card-level interconnect kind 和 unavailable tile 坐标例外；`wafer.execution.mesh`
 保存 SPMD rank-domain policy、logical axes/shape 和 optional explicit endpoints。默认
@@ -363,7 +363,7 @@ Weight layout 转换口径：
 | INT8 quant | V0 不使用，不配置 quant fields |
 | fused relu / leaky relu | V0 不使用，不打开 fused activation；需要 activation 时后续单独发 CT activation op |
 
-Triton Tx81 CRT 的 `__Conv` 只能作为 wrapper 调用线索，不能原样作为 Wafer V0 Conv ABI：它当前 `SetPsum(..., dstFmt)`，而 V0 策略要求 psum 跟 input feature 的 dtype/layout 一致；同时它在 `enLeakyRelu=false` 时会默认 `EnableRelu`，不符合“无 fused activation”的 V0 语义。Wafer C ABI 应直接调用 `TsmConv` wrapper，并显式关闭/不配置这些可选路径。
+Triton Tx81 CRT 的 `__Conv` 只能作为 wrapper 调用线索，不能原样作为 Wafer V0 Conv ABI：它当前 `SetPsum(..., dstFmt)`，而 V0 策略要求 psum 跟 input feature 的 dtype/layout 一致；同时它在 `enLeakyRelu=false` 时会默认 `EnableRelu`，不符合“无 fused activation”的 V0 语义。target CRT 应直接调用 `TsmConv` wrapper，并显式关闭/不配置这些可选路径。
 
 ### Cx/NCx alignment 计算
 
@@ -521,13 +521,15 @@ Wafer compiler 的长期边界不应该是 Triton Tx81 CRT，也不应该是在 
 
 ```text
 Wafer compiler lowering
-  -> wafer_* C ABI
-  -> C ABI 内部调用 Tsm wrapper
+  -> target CRT symbols such as __Gemm / __Bit2Fp / __MaskMove
+  -> target CRT 内部调用 Tsm wrapper
   -> TsmExecute
-  -> wait/async 由 ABI 或调度层控制
+  -> wait/async 由 instruction lowering 或调度层控制
 ```
 
-本文档只记录这个边界。具体 `wafer_*` ABI 形态、Tsm wrapper 调用顺序、opcode/register 字段和 sync/async 拆分建议，见 register-level spec。这里的 `wafer_*` ABI 是 Wafer 自己的 compiler/runtime 边界，不继承 Tx81 CRT 的函数命名、参数列表、默认 wait 策略或 allocator 策略。
+本文档只记录这个边界。具体 target CRT symbol、Tsm wrapper 调用顺序、opcode/register 字段和
+sync/async 拆分建议，见 register-level spec。Wafer compiler 不再引入 compiler-facing helper
+ABI 层；`wafer.instr.*` 直接 lower 到有 TX81/TSM wrapper 证据的 target CRT 调用。
 
 ## 多 tile 通信和 Direct DTE
 
@@ -622,7 +624,7 @@ Stream、mailbox 和 CSR 的具体 wrapper/API 表放在 register-level spec。�
 
 以下只保留硬件/指令/运行时公开能力层面仍需确认的事实。layout、SPM tensor 可用地址范围、base address 对齐、CT dtype 规则、Reduce native wrapper 能力、`TsmWaitfinish` NCC local wait 语义、`hrt_barrier()` full-card barrier 口径、RDMA/WDMA/TDMA/CT/NE 可 overlap 的独立部件口径、parallel mode 下硬件依赖检测语义已经在前文固化，不再列为待确认。实现时仍需要由 runtime 显式设置或检查 `serial_mode=0`，这属于初始化责任，不是指令语义待确认项。
 
-`Wafer C ABI`、`wafer_group_barrier(...)` 的具体函数签名和 runtime 分配策略属于后续 compiler/runtime 设计项，不属于本节的硬件指令确认项。
+`target CRT`、`wafer_group_barrier(...)` 的具体函数签名和 runtime 分配策略属于后续 compiler/runtime 设计项，不属于本节的硬件指令确认项。
 
 | 项 | 当前可见信息 | 影响 |
 | --- | --- | --- |

@@ -14,15 +14,19 @@ func.func @package_export_full_instr(
       : memref<8xi32, #wafer.memory<spm, tensor>>
   %pred = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66816>}
       : memref<8xi1, #wafer.memory<spm, tensor>>
+  %mask = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<67072>}
+      : memref<8xf32, #wafer.memory<spm, tensor>>
   wafer.instr.fill %src, %zero
       : memref<8xf32, #wafer.memory<spm, tensor>>, f32
   wafer.instr.elementwise #wafer.elementwise_kind<eq> %src, %tmp into %tmp
       : memref<8xf32, #wafer.memory<spm, tensor>>,
         memref<8xf32, #wafer.memory<spm, tensor>>
       into memref<8xf32, #wafer.memory<spm, tensor>>
-  wafer.instr.elementwise #wafer.elementwise_kind<select> %pred, %src, %tmp into %tmp
-      : memref<8xi1, #wafer.memory<spm, tensor>>,
-        memref<8xf32, #wafer.memory<spm, tensor>>,
+  wafer.instr.bit2fp %pred into %mask
+      : memref<8xi1, #wafer.memory<spm, tensor>>
+      to memref<8xf32, #wafer.memory<spm, tensor>>
+  wafer.instr.mask_move %src, %mask into %tmp
+      : memref<8xf32, #wafer.memory<spm, tensor>>,
         memref<8xf32, #wafer.memory<spm, tensor>>
       into memref<8xf32, #wafer.memory<spm, tensor>>
   wafer.instr.reduce #wafer.reduce_kind<avg> %red_src into %red, %zero : f32
