@@ -98,6 +98,45 @@ SUPPORTED_REDUCE_KINDS = {
     "avg",
 }
 
+SUPPORTED_CONVERT_KINDS = {
+    "int8_fp16",
+    "int8_bf16",
+    "int8_fp32",
+    "int8_tf32",
+    "int16_fp16",
+    "int16_bf16",
+    "int16_fp32",
+    "int16_tf32",
+    "int32_fp16",
+    "int32_bf16",
+    "int32_fp32",
+    "int32_tf32",
+    "bf16_int8",
+    "bf16_int16",
+    "bf16_int32",
+    "bf16_fp16",
+    "bf16_fp32",
+    "bf16_tf32",
+    "fp16_int8",
+    "fp16_int16",
+    "fp16_int32",
+    "fp16_bf16",
+    "fp16_fp32",
+    "fp16_tf32",
+    "fp32_int8",
+    "fp32_int16",
+    "fp32_int32",
+    "fp32_fp16",
+    "fp32_bf16",
+    "fp32_tf32",
+    "tf32_int8",
+    "tf32_int16",
+    "tf32_int32",
+    "tf32_fp16",
+    "tf32_bf16",
+    "tf32_fp32",
+}
+
 
 def canonical_json(metadata: dict[str, Any]) -> str:
     return json.dumps(metadata, indent=2, allow_nan=False) + "\n"
@@ -658,9 +697,18 @@ def validate_package_metadata(metadata: dict[str, Any]) -> None:
             validate_reduce_init_value(
                 item.get("init_value"), f"instructions[{index}].init_value"
             )
+        elif mnemonic == "wafer.instr.convert":
+            for deprecated_field in ("src_dtype", "dst_dtype"):
+                if deprecated_field in item:
+                    fail(f"instructions[{index}].{deprecated_field} is deprecated")
+            kind = require_non_empty_string(
+                item.get("kind"), f"instructions[{index}].kind"
+            )
+            if kind not in SUPPORTED_CONVERT_KINDS:
+                fail(f"instructions[{index}].kind is not supported")
         elif "kind" in item:
             fail(
-                f"instructions[{index}].kind is only valid for elementwise or reduce ops"
+                f"instructions[{index}].kind is only valid for elementwise, reduce, or convert ops"
             )
 
 

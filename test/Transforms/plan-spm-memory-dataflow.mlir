@@ -65,7 +65,7 @@ func.func @loop_carried_result_conflicts_with_body_use(
     %looped = scf.for %i = %l to %u step %s iter_args(%iter = %init)
         -> (memref<128xf16, #wafer.memory<spm, tensor>>) {
       %next = memref.alloc() : memref<128xf16, #wafer.memory<spm, tensor>>
-      wafer.instr.elementwise #wafer.elementwise_kind<add> %iter, %iter into %next
+      wafer.instr.elementwise #wafer.instr_elementwise_kind<add> %iter, %iter into %next
           {indexing_maps = [
             affine_map<(d0) -> (d0)>,
             affine_map<(d0) -> (d0)>,

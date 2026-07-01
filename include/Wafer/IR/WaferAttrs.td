@@ -174,6 +174,162 @@ def Wafer_ComputeReduceKindAttr
   let assemblyFormat = "`<` $value `>`";
 }
 
+def Wafer_InstrElementwiseKindAdd : I32EnumAttrCase<"Add", 0, "add">;
+def Wafer_InstrElementwiseKindSub : I32EnumAttrCase<"Sub", 1, "sub">;
+def Wafer_InstrElementwiseKindMul : I32EnumAttrCase<"Mul", 2, "mul">;
+def Wafer_InstrElementwiseKindDiv : I32EnumAttrCase<"Div", 3, "div">;
+def Wafer_InstrElementwiseKindMax : I32EnumAttrCase<"Max", 4, "max">;
+def Wafer_InstrElementwiseKindMin : I32EnumAttrCase<"Min", 5, "min">;
+def Wafer_InstrElementwiseKindNeg : I32EnumAttrCase<"Neg", 6, "neg">;
+def Wafer_InstrElementwiseKindRecip : I32EnumAttrCase<"Recip", 7, "recip">;
+def Wafer_InstrElementwiseKindSqrt : I32EnumAttrCase<"Sqrt", 8, "sqrt">;
+def Wafer_InstrElementwiseKindRsqrt : I32EnumAttrCase<"Rsqrt", 9, "rsqrt">;
+def Wafer_InstrElementwiseKindExp : I32EnumAttrCase<"Exp", 10, "exp">;
+def Wafer_InstrElementwiseKindTanh : I32EnumAttrCase<"Tanh", 11, "tanh">;
+def Wafer_InstrElementwiseKindEq : I32EnumAttrCase<"Eq", 12, "eq">;
+def Wafer_InstrElementwiseKindNe : I32EnumAttrCase<"Ne", 13, "ne">;
+def Wafer_InstrElementwiseKindLt : I32EnumAttrCase<"Lt", 14, "lt">;
+def Wafer_InstrElementwiseKindLe : I32EnumAttrCase<"Le", 15, "le">;
+def Wafer_InstrElementwiseKindGt : I32EnumAttrCase<"Gt", 16, "gt">;
+def Wafer_InstrElementwiseKindGe : I32EnumAttrCase<"Ge", 17, "ge">;
+def Wafer_InstrElementwiseKind
+    : I32EnumAttr<"InstrElementwiseKind",
+                  "Wafer instruction CT elementwise target kind", [
+  Wafer_InstrElementwiseKindAdd,
+  Wafer_InstrElementwiseKindSub,
+  Wafer_InstrElementwiseKindMul,
+  Wafer_InstrElementwiseKindDiv,
+  Wafer_InstrElementwiseKindMax,
+  Wafer_InstrElementwiseKindMin,
+  Wafer_InstrElementwiseKindNeg,
+  Wafer_InstrElementwiseKindRecip,
+  Wafer_InstrElementwiseKindSqrt,
+  Wafer_InstrElementwiseKindRsqrt,
+  Wafer_InstrElementwiseKindExp,
+  Wafer_InstrElementwiseKindTanh,
+  Wafer_InstrElementwiseKindEq,
+  Wafer_InstrElementwiseKindNe,
+  Wafer_InstrElementwiseKindLt,
+  Wafer_InstrElementwiseKindLe,
+  Wafer_InstrElementwiseKindGt,
+  Wafer_InstrElementwiseKindGe
+]> {
+  let cppNamespace = "::wafer";
+  let genSpecializedAttr = 0;
+}
+
+def Wafer_InstrElementwiseKindAttr
+    : EnumAttr<Wafer_Dialect, Wafer_InstrElementwiseKind,
+               "instr_elementwise_kind"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
+def Wafer_InstrReduceKindSum : I32EnumAttrCase<"Sum", 0, "sum">;
+def Wafer_InstrReduceKindMax : I32EnumAttrCase<"Max", 1, "max">;
+def Wafer_InstrReduceKindMin : I32EnumAttrCase<"Min", 2, "min">;
+def Wafer_InstrReduceKindAvg : I32EnumAttrCase<"Avg", 3, "avg">;
+def Wafer_InstrReduceKind
+    : I32EnumAttr<"InstrReduceKind",
+                  "Wafer instruction CT reduce target kind", [
+  Wafer_InstrReduceKindSum,
+  Wafer_InstrReduceKindMax,
+  Wafer_InstrReduceKindMin,
+  Wafer_InstrReduceKindAvg
+]> {
+  let cppNamespace = "::wafer";
+  let genSpecializedAttr = 0;
+}
+
+def Wafer_InstrReduceKindAttr
+    : EnumAttr<Wafer_Dialect, Wafer_InstrReduceKind, "instr_reduce_kind"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
+def Wafer_InstrConvertKindInt8Fp16 : I32EnumAttrCase<"Int8Fp16", 139, "int8_fp16">;
+def Wafer_InstrConvertKindInt8Bf16 : I32EnumAttrCase<"Int8Bf16", 140, "int8_bf16">;
+def Wafer_InstrConvertKindInt8Fp32 : I32EnumAttrCase<"Int8Fp32", 141, "int8_fp32">;
+def Wafer_InstrConvertKindInt8Tf32 : I32EnumAttrCase<"Int8Tf32", 142, "int8_tf32">;
+def Wafer_InstrConvertKindInt16Fp16 : I32EnumAttrCase<"Int16Fp16", 143, "int16_fp16">;
+def Wafer_InstrConvertKindInt16Bf16 : I32EnumAttrCase<"Int16Bf16", 144, "int16_bf16">;
+def Wafer_InstrConvertKindInt16Fp32 : I32EnumAttrCase<"Int16Fp32", 145, "int16_fp32">;
+def Wafer_InstrConvertKindInt16Tf32 : I32EnumAttrCase<"Int16Tf32", 146, "int16_tf32">;
+def Wafer_InstrConvertKindInt32Fp16 : I32EnumAttrCase<"Int32Fp16", 147, "int32_fp16">;
+def Wafer_InstrConvertKindInt32Bf16 : I32EnumAttrCase<"Int32Bf16", 148, "int32_bf16">;
+def Wafer_InstrConvertKindInt32Fp32 : I32EnumAttrCase<"Int32Fp32", 149, "int32_fp32">;
+def Wafer_InstrConvertKindInt32Tf32 : I32EnumAttrCase<"Int32Tf32", 150, "int32_tf32">;
+def Wafer_InstrConvertKindBf16Int8 : I32EnumAttrCase<"Bf16Int8", 151, "bf16_int8">;
+def Wafer_InstrConvertKindBf16Int16 : I32EnumAttrCase<"Bf16Int16", 152, "bf16_int16">;
+def Wafer_InstrConvertKindBf16Int32 : I32EnumAttrCase<"Bf16Int32", 153, "bf16_int32">;
+def Wafer_InstrConvertKindBf16Fp16 : I32EnumAttrCase<"Bf16Fp16", 154, "bf16_fp16">;
+def Wafer_InstrConvertKindBf16Fp32 : I32EnumAttrCase<"Bf16Fp32", 155, "bf16_fp32">;
+def Wafer_InstrConvertKindBf16Tf32 : I32EnumAttrCase<"Bf16Tf32", 156, "bf16_tf32">;
+def Wafer_InstrConvertKindFp16Int8 : I32EnumAttrCase<"Fp16Int8", 157, "fp16_int8">;
+def Wafer_InstrConvertKindFp16Int16 : I32EnumAttrCase<"Fp16Int16", 158, "fp16_int16">;
+def Wafer_InstrConvertKindFp16Int32 : I32EnumAttrCase<"Fp16Int32", 159, "fp16_int32">;
+def Wafer_InstrConvertKindFp16Bf16 : I32EnumAttrCase<"Fp16Bf16", 160, "fp16_bf16">;
+def Wafer_InstrConvertKindFp16Fp32 : I32EnumAttrCase<"Fp16Fp32", 161, "fp16_fp32">;
+def Wafer_InstrConvertKindFp16Tf32 : I32EnumAttrCase<"Fp16Tf32", 162, "fp16_tf32">;
+def Wafer_InstrConvertKindFp32Int8 : I32EnumAttrCase<"Fp32Int8", 163, "fp32_int8">;
+def Wafer_InstrConvertKindFp32Int16 : I32EnumAttrCase<"Fp32Int16", 164, "fp32_int16">;
+def Wafer_InstrConvertKindFp32Int32 : I32EnumAttrCase<"Fp32Int32", 165, "fp32_int32">;
+def Wafer_InstrConvertKindFp32Fp16 : I32EnumAttrCase<"Fp32Fp16", 166, "fp32_fp16">;
+def Wafer_InstrConvertKindFp32Bf16 : I32EnumAttrCase<"Fp32Bf16", 167, "fp32_bf16">;
+def Wafer_InstrConvertKindFp32Tf32 : I32EnumAttrCase<"Fp32Tf32", 168, "fp32_tf32">;
+def Wafer_InstrConvertKindTf32Int8 : I32EnumAttrCase<"Tf32Int8", 169, "tf32_int8">;
+def Wafer_InstrConvertKindTf32Int16 : I32EnumAttrCase<"Tf32Int16", 170, "tf32_int16">;
+def Wafer_InstrConvertKindTf32Int32 : I32EnumAttrCase<"Tf32Int32", 171, "tf32_int32">;
+def Wafer_InstrConvertKindTf32Fp16 : I32EnumAttrCase<"Tf32Fp16", 172, "tf32_fp16">;
+def Wafer_InstrConvertKindTf32Bf16 : I32EnumAttrCase<"Tf32Bf16", 173, "tf32_bf16">;
+def Wafer_InstrConvertKindTf32Fp32 : I32EnumAttrCase<"Tf32Fp32", 174, "tf32_fp32">;
+def Wafer_InstrConvertKind
+    : I32EnumAttr<"InstrConvertKind",
+                  "Wafer instruction CT convert target kind", [
+  Wafer_InstrConvertKindInt8Fp16,
+  Wafer_InstrConvertKindInt8Bf16,
+  Wafer_InstrConvertKindInt8Fp32,
+  Wafer_InstrConvertKindInt8Tf32,
+  Wafer_InstrConvertKindInt16Fp16,
+  Wafer_InstrConvertKindInt16Bf16,
+  Wafer_InstrConvertKindInt16Fp32,
+  Wafer_InstrConvertKindInt16Tf32,
+  Wafer_InstrConvertKindInt32Fp16,
+  Wafer_InstrConvertKindInt32Bf16,
+  Wafer_InstrConvertKindInt32Fp32,
+  Wafer_InstrConvertKindInt32Tf32,
+  Wafer_InstrConvertKindBf16Int8,
+  Wafer_InstrConvertKindBf16Int16,
+  Wafer_InstrConvertKindBf16Int32,
+  Wafer_InstrConvertKindBf16Fp16,
+  Wafer_InstrConvertKindBf16Fp32,
+  Wafer_InstrConvertKindBf16Tf32,
+  Wafer_InstrConvertKindFp16Int8,
+  Wafer_InstrConvertKindFp16Int16,
+  Wafer_InstrConvertKindFp16Int32,
+  Wafer_InstrConvertKindFp16Bf16,
+  Wafer_InstrConvertKindFp16Fp32,
+  Wafer_InstrConvertKindFp16Tf32,
+  Wafer_InstrConvertKindFp32Int8,
+  Wafer_InstrConvertKindFp32Int16,
+  Wafer_InstrConvertKindFp32Int32,
+  Wafer_InstrConvertKindFp32Fp16,
+  Wafer_InstrConvertKindFp32Bf16,
+  Wafer_InstrConvertKindFp32Tf32,
+  Wafer_InstrConvertKindTf32Int8,
+  Wafer_InstrConvertKindTf32Int16,
+  Wafer_InstrConvertKindTf32Int32,
+  Wafer_InstrConvertKindTf32Fp16,
+  Wafer_InstrConvertKindTf32Bf16,
+  Wafer_InstrConvertKindTf32Fp32
+]> {
+  let cppNamespace = "::wafer";
+  let genSpecializedAttr = 0;
+}
+
+def Wafer_InstrConvertKindAttr
+    : EnumAttr<Wafer_Dialect, Wafer_InstrConvertKind, "instr_convert_kind"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
 def Wafer_InstrFamilyCT : I32EnumAttrCase<"CT", 0, "ct">;
 def Wafer_InstrFamilyNE : I32EnumAttrCase<"NE", 1, "ne">;
 def Wafer_InstrFamilyRDMA : I32EnumAttrCase<"RDMA", 2, "rdma">;

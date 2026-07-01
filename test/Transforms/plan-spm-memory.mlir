@@ -20,7 +20,7 @@ func.func @place_instruction_spm(%input: memref<2x3xf16, #wafer.memory<ddr, tens
        to memref<2x3xf16, #wafer.memory<spm, tensor>>
 
     %elementwise = memref.alloc() : memref<2x3xf16, #wafer.memory<spm, tensor>>
-    wafer.instr.elementwise #wafer.elementwise_kind<add> %loaded, %loaded into %elementwise
+    wafer.instr.elementwise #wafer.instr_elementwise_kind<add> %loaded, %loaded into %elementwise
         {indexing_maps = [#map, #map, #map]}
         : memref<2x3xf16, #wafer.memory<spm, tensor>>,
           memref<2x3xf16, #wafer.memory<spm, tensor>>

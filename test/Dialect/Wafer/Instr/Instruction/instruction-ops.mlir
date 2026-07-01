@@ -9,6 +9,8 @@ module {
       : () -> memref<4x8xf16, #wafer.memory<ddr, tensor>>
   %tensor = "builtin.unrealized_conversion_cast"()
       : () -> memref<4x8xf16, #wafer.memory<spm, tensor>>
+  %converted = "builtin.unrealized_conversion_cast"()
+      : () -> memref<4x8xf32, #wafer.memory<spm, tensor>>
   %cx = "builtin.unrealized_conversion_cast"()
       : () -> memref<4x8xf16, #wafer.memory<spm, cx>>
   %reduce_out = "builtin.unrealized_conversion_cast"()
@@ -50,21 +52,20 @@ module {
   wafer.instr.fill %tensor, %f16
       : memref<4x8xf16, #wafer.memory<spm, tensor>>, f16
 
-  wafer.instr.elementwise #wafer.elementwise_kind<add> %tensor, %tensor into %tensor
+  wafer.instr.elementwise #wafer.instr_elementwise_kind<add> %tensor, %tensor into %tensor
       {indexing_maps = [#map, #map, #map]}
       : memref<4x8xf16, #wafer.memory<spm, tensor>>,
         memref<4x8xf16, #wafer.memory<spm, tensor>>
     into memref<4x8xf16, #wafer.memory<spm, tensor>>
 
-  wafer.instr.reduce #wafer.reduce_kind<sum> %cx into %reduce_out, %f16 : f16
+  wafer.instr.reduce #wafer.instr_reduce_kind<sum> %cx into %reduce_out, %f16 : f16
       {dimensions = array<i64: 1>}
       : memref<4x8xf16, #wafer.memory<spm, cx>>
     into memref<4xf16, #wafer.memory<spm, cx>>
 
-  wafer.instr.convert %tensor into %cx
-      {src_dtype = f16, dst_dtype = f16}
+  wafer.instr.convert #wafer.instr_convert_kind<fp16_fp32> %tensor into %converted
       : memref<4x8xf16, #wafer.memory<spm, tensor>>
-     to memref<4x8xf16, #wafer.memory<spm, cx>>
+     to memref<4x8xf32, #wafer.memory<spm, tensor>>
 
   wafer.instr.gemm %lhs, %rhs into %gemm_out
       {m = 4 : i64, k = 8 : i64, n = 16 : i64}
@@ -92,9 +93,7 @@ module {
 // CHECK-SAME: indexing_maps
 // CHECK: wafer.instr.reduce <sum>
 // CHECK-SAME: dimensions = array<i64: 1>
-// CHECK: wafer.instr.convert
-// CHECK-SAME: dst_dtype = f16
-// CHECK-SAME: src_dtype = f16
+// CHECK: wafer.instr.convert <fp16_fp32>
 // CHECK: wafer.instr.gemm
 // CHECK-SAME: m = 4 : i64
 // CHECK: wafer.instr.wdma

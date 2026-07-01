@@ -1239,6 +1239,16 @@ private:
   std::string *failureReason;
 };
 
+static mlir::FailureOr<InstrElementwiseKindAttr>
+getInstrElementwiseKindAttr(mlir::PatternRewriter &rewriter,
+                            mlir::Operation *op,
+                            ComputeElementwiseKindAttr computeKind,
+                            std::string *failureReason);
+
+static InstrReduceKindAttr
+getInstrReduceKindAttr(mlir::PatternRewriter &rewriter,
+                       ComputeReduceKindAttr computeKind);
+
 class FillLowering : public mlir::OpRewritePattern<ComputeFillOp> {
 public:
   using mlir::OpRewritePattern<ComputeFillOp>::OpRewritePattern;
@@ -1299,8 +1309,14 @@ public:
       return mlir::success();
     }
 
+    mlir::FailureOr<InstrElementwiseKindAttr> instrKind =
+        getInstrElementwiseKindAttr(rewriter, op, op.getKindAttr(),
+                                    failureReason);
+    if (mlir::failed(instrKind))
+      return mlir::failure();
+
     auto instr = rewriter.create<InstrElementwiseOp>(
-        op.getLoc(), op.getKindAttr(), op.getInputs(), *dest);
+        op.getLoc(), *instrKind, op.getInputs(), *dest);
     copyOptionalAttr(op, instr, "indexing_maps");
     rewriter.replaceOp(op, *dest);
     return mlir::success();
@@ -1325,7 +1341,8 @@ public:
       return mlir::failure();
 
     auto instr = rewriter.create<InstrReduceOp>(
-        op.getLoc(), op.getKindAttr(), op.getInput(), *dest, op.getInit());
+        op.getLoc(), getInstrReduceKindAttr(rewriter, op.getKindAttr()),
+        op.getInput(), *dest, op.getInit());
     copyOptionalAttr(op, instr, "dimensions");
     copyOptionalAttr(op, instr, "init_value");
     rewriter.replaceOp(op, *dest);
@@ -1632,33 +1649,123 @@ static mlir::MemRefType getContiguousSPMBufferType(mlir::MemRefType type) {
                                type.getMemorySpace());
 }
 
-static mlir::FailureOr<ComputeElementwiseKindAttr>
+static mlir::FailureOr<InstrElementwiseKindAttr>
+getInstrElementwiseKindAttr(mlir::PatternRewriter &rewriter,
+                            mlir::Operation *op,
+                            ComputeElementwiseKindAttr computeKind,
+                            std::string *failureReason) {
+  InstrElementwiseKind instrKind;
+  switch (computeKind.getValue()) {
+  case ComputeElementwiseKind::Add:
+    instrKind = InstrElementwiseKind::Add;
+    break;
+  case ComputeElementwiseKind::Sub:
+    instrKind = InstrElementwiseKind::Sub;
+    break;
+  case ComputeElementwiseKind::Mul:
+    instrKind = InstrElementwiseKind::Mul;
+    break;
+  case ComputeElementwiseKind::Div:
+    instrKind = InstrElementwiseKind::Div;
+    break;
+  case ComputeElementwiseKind::Max:
+    instrKind = InstrElementwiseKind::Max;
+    break;
+  case ComputeElementwiseKind::Min:
+    instrKind = InstrElementwiseKind::Min;
+    break;
+  case ComputeElementwiseKind::Neg:
+    instrKind = InstrElementwiseKind::Neg;
+    break;
+  case ComputeElementwiseKind::Recip:
+    instrKind = InstrElementwiseKind::Recip;
+    break;
+  case ComputeElementwiseKind::Sqrt:
+    instrKind = InstrElementwiseKind::Sqrt;
+    break;
+  case ComputeElementwiseKind::Rsqrt:
+    instrKind = InstrElementwiseKind::Rsqrt;
+    break;
+  case ComputeElementwiseKind::Exp:
+    instrKind = InstrElementwiseKind::Exp;
+    break;
+  case ComputeElementwiseKind::Tanh:
+    instrKind = InstrElementwiseKind::Tanh;
+    break;
+  case ComputeElementwiseKind::Eq:
+    instrKind = InstrElementwiseKind::Eq;
+    break;
+  case ComputeElementwiseKind::Ne:
+    instrKind = InstrElementwiseKind::Ne;
+    break;
+  case ComputeElementwiseKind::Lt:
+    instrKind = InstrElementwiseKind::Lt;
+    break;
+  case ComputeElementwiseKind::Le:
+    instrKind = InstrElementwiseKind::Le;
+    break;
+  case ComputeElementwiseKind::Gt:
+    instrKind = InstrElementwiseKind::Gt;
+    break;
+  case ComputeElementwiseKind::Ge:
+    instrKind = InstrElementwiseKind::Ge;
+    break;
+  case ComputeElementwiseKind::Select:
+    return failFailureOr<InstrElementwiseKindAttr>(
+        rewriter, op, failureReason,
+        "tile.elementwise select must lower to target movement sequence before "
+        "instruction elementwise");
+  }
+  return InstrElementwiseKindAttr::get(rewriter.getContext(), instrKind);
+}
+
+static InstrReduceKindAttr
+getInstrReduceKindAttr(mlir::PatternRewriter &rewriter,
+                       ComputeReduceKindAttr computeKind) {
+  InstrReduceKind instrKind;
+  switch (computeKind.getValue()) {
+  case ComputeReduceKind::Sum:
+    instrKind = InstrReduceKind::Sum;
+    break;
+  case ComputeReduceKind::Max:
+    instrKind = InstrReduceKind::Max;
+    break;
+  case ComputeReduceKind::Min:
+    instrKind = InstrReduceKind::Min;
+    break;
+  case ComputeReduceKind::Avg:
+    instrKind = InstrReduceKind::Avg;
+    break;
+  }
+  return InstrReduceKindAttr::get(rewriter.getContext(), instrKind);
+}
+
+static mlir::FailureOr<InstrElementwiseKindAttr>
 getAccumulationElementwiseKind(mlir::PatternRewriter &rewriter,
                                mlir::Operation *op,
                                ComputeReduceKindAttr reduceKind,
                                std::string *failureReason,
                                llvm::StringRef opLabel) {
-  ComputeElementwiseKind elementwiseKind;
+  InstrElementwiseKind elementwiseKind;
   switch (reduceKind.getValue()) {
   case ComputeReduceKind::Sum:
-    elementwiseKind = ComputeElementwiseKind::Add;
+    elementwiseKind = InstrElementwiseKind::Add;
     break;
   case ComputeReduceKind::Max:
-    elementwiseKind = ComputeElementwiseKind::Max;
+    elementwiseKind = InstrElementwiseKind::Max;
     break;
   case ComputeReduceKind::Min:
-    elementwiseKind = ComputeElementwiseKind::Min;
+    elementwiseKind = InstrElementwiseKind::Min;
     break;
   case ComputeReduceKind::Avg:
-    return failFailureOr<ComputeElementwiseKindAttr>(
+    return failFailureOr<InstrElementwiseKindAttr>(
         rewriter, op, failureReason,
         llvm::Twine(opLabel)
             .concat(" lowering does not support avg accumulation")
             .str());
   }
 
-  return ComputeElementwiseKindAttr::get(rewriter.getContext(),
-                                         elementwiseKind);
+  return InstrElementwiseKindAttr::get(rewriter.getContext(), elementwiseKind);
 }
 
 static int64_t getHighestTreeMask(int64_t groupSize) {
@@ -1880,7 +1987,7 @@ public:
                            "match");
     }
 
-    mlir::FailureOr<ComputeElementwiseKindAttr> accumulationKind =
+    mlir::FailureOr<InstrElementwiseKindAttr> accumulationKind =
         getAccumulationElementwiseKind(rewriter, op, op.getKindAttr(),
                                        failureReason, "tile.reduce_scatter");
     if (mlir::failed(accumulationKind))
@@ -1992,7 +2099,7 @@ public:
       return failPattern(rewriter, op, failureReason,
                          "tile.all_reduce lowering requires valid rank facts");
 
-    mlir::FailureOr<ComputeElementwiseKindAttr> accumulationKind =
+    mlir::FailureOr<InstrElementwiseKindAttr> accumulationKind =
         getAccumulationElementwiseKind(rewriter, op, op.getKindAttr(),
                                        failureReason, "tile.all_reduce");
     if (mlir::failed(accumulationKind))

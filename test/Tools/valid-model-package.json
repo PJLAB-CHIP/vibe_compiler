@@ -149,8 +149,7 @@
     },
     {
       "op": "wafer.instr.convert",
-      "src_dtype": "f16",
-      "dst_dtype": "f32",
+      "kind": "fp16_fp32",
       "wait_policy": "issue_only"
     },
     {

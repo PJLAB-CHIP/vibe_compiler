@@ -308,7 +308,7 @@ def parse_array_i64_attr(segment: str, name: str) -> list[int]:
 
 def parse_kind(segment: str, op_name: str) -> str:
     match = re.search(
-        rf"wafer\.instr\.{op_name}\s+(?:#wafer\.[a-z_]+<|<)([a-z_]+)>",
+        rf"wafer\.instr\.{op_name}\s+(?:#wafer\.[a-z_]+<|<)([a-z0-9_]+)>",
         segment,
     )
     if not match:
@@ -457,12 +457,7 @@ def parse_instructions(instruction_ir: str) -> list[dict[str, Any]]:
                     fail("wafer.instr.reduce init value must resolve to arith.constant")
                 item["init_value"] = constants[init_match.group(1)]
         elif op_name == "convert":
-            src_dtype = re.search(r"\bsrc_dtype\s*=\s*([A-Za-z0-9]+)", segment)
-            dst_dtype = re.search(r"\bdst_dtype\s*=\s*([A-Za-z0-9]+)", segment)
-            if not src_dtype or not dst_dtype:
-                fail("wafer.instr.convert is missing src_dtype/dst_dtype")
-            item["src_dtype"] = src_dtype.group(1)
-            item["dst_dtype"] = dst_dtype.group(1)
+            item["kind"] = parse_kind(segment, "convert")
         instructions.append(item)
 
     return instructions

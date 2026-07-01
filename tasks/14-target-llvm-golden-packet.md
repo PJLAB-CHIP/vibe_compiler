@@ -102,11 +102,11 @@ Pipeline position:
 | `wafer.instr.rdma` / `wdma` | TSM RDMA/WDMA wrapper；target CRT 应接收 DDR/SPM pointer/offset、shape/stride、format | pending target LLVM |
 | `wafer.instr.gather_scatter` | `TsmDataMove::GatherScatter` / TX81 gather-scatter CRT evidence | pending target LLVM |
 | `wafer.instr.fill` | `TsmPeripheral::Memset` evidence | pending target LLVM |
-| `wafer.instr.elementwise` | CT arith/relation/activation/transcendental wrapper families；仅保留非-select kind | pending target LLVM / further split audit |
+| `wafer.instr.elementwise` | `#wafer.instr_elementwise_kind` CT arith/relation/activation/transcendental target wrapper families；select 不在该 enum 中 | pending target LLVM |
 | `wafer.instr.bit2fp` | Triton/TX81 `mk.bit2fp -> tx81.bit2fp -> __Bit2Fp` | IR added, LLVM pending |
 | `wafer.instr.mask_move` | Triton/TX81 `mk.mask_move -> tx81.mask_move -> __MaskMove` | IR added, LLVM pending |
-| `wafer.instr.reduce` | `TsmReduce` wrapper families | pending target LLVM |
-| `wafer.instr.convert` | `TsmConvert` wrapper families；same-format copy may lower through movement | pending target LLVM |
+| `wafer.instr.reduce` | `#wafer.instr_reduce_kind` target wrapper families | pending target LLVM |
+| `wafer.instr.convert` | `#wafer.instr_convert_kind` opcode 139..174 dtype pair；same-format copy must lower through movement, not convert | pending target LLVM |
 | `wafer.instr.gemm` | `TsmGemm` wrapper / `__Gemm` style CRT evidence | pending target LLVM |
 | `wafer.instr.dte_send` / `dte_recv` / `dte_wait` | Direct DTE/FSM runtime binding evidence still incomplete | partial IR done, production lowering pending |
 | `wafer.instr.local_fence` | `TsmWaitfinish` / local drain evidence | pending target LLVM |

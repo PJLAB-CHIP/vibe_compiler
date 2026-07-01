@@ -18,7 +18,7 @@ func.func @package_export_full_instr(
       : memref<8xf32, #wafer.memory<spm, tensor>>
   wafer.instr.fill %src, %zero
       : memref<8xf32, #wafer.memory<spm, tensor>>, f32
-  wafer.instr.elementwise #wafer.elementwise_kind<eq> %src, %tmp into %tmp
+  wafer.instr.elementwise #wafer.instr_elementwise_kind<eq> %src, %tmp into %tmp
       : memref<8xf32, #wafer.memory<spm, tensor>>,
         memref<8xf32, #wafer.memory<spm, tensor>>
       into memref<8xf32, #wafer.memory<spm, tensor>>
@@ -29,16 +29,15 @@ func.func @package_export_full_instr(
       : memref<8xf32, #wafer.memory<spm, tensor>>,
         memref<8xf32, #wafer.memory<spm, tensor>>
       into memref<8xf32, #wafer.memory<spm, tensor>>
-  wafer.instr.reduce #wafer.reduce_kind<avg> %red_src into %red, %zero : f32
+  wafer.instr.reduce #wafer.instr_reduce_kind<avg> %red_src into %red, %zero : f32
       {dimensions = array<i64: 1>}
       : memref<1x8xf32, #wafer.memory<spm, cx>>
       into memref<1xf32, #wafer.memory<spm, cx>>
-  wafer.instr.reduce #wafer.reduce_kind<max> %red_src into %red
+  wafer.instr.reduce #wafer.instr_reduce_kind<max> %red_src into %red
       {dimensions = array<i64: 1>, init_value = 0xFF800000 : f32}
       : memref<1x8xf32, #wafer.memory<spm, cx>>
       into memref<1xf32, #wafer.memory<spm, cx>>
-  wafer.instr.convert %tmp into %converted
-      {src_dtype = f32, dst_dtype = i32}
+  wafer.instr.convert #wafer.instr_convert_kind<fp32_int32> %tmp into %converted
       : memref<8xf32, #wafer.memory<spm, tensor>>
       to memref<8xi32, #wafer.memory<spm, tensor>>
   %send = wafer.instr.dte_send %src {peer = 1 : i64, bytes = 32 : i64}

@@ -95,7 +95,7 @@ def Wafer_InstrElementwiseOp : Wafer_InstrOp<"instr.elementwise", [
   ]> {
   let summary = "instruction-level CT elementwise compute";
   let arguments = (ins
-    Wafer_ComputeElementwiseKindAttr:$kind,
+    Wafer_InstrElementwiseKindAttr:$kind,
     Variadic<AnyMemRef>:$inputs,
     AnyMemRef:$dest
   );
@@ -148,7 +148,7 @@ def Wafer_InstrReduceOp : Wafer_InstrOp<"instr.reduce", [
   ]> {
   let summary = "instruction-level CT local reduce";
   let arguments = (ins
-    Wafer_ComputeReduceKindAttr:$kind,
+    Wafer_InstrReduceKindAttr:$kind,
     AnyMemRef:$input,
     AnyMemRef:$dest,
     Optional<AnyType>:$init
@@ -165,14 +165,13 @@ def Wafer_InstrConvertOp : Wafer_InstrOp<"instr.convert", [
   ]> {
   let summary = "instruction-level CT dtype conversion";
   let arguments = (ins
+    Wafer_InstrConvertKindAttr:$kind,
     AnyMemRef:$source,
-    AnyMemRef:$dest,
-    TypeAttr:$src_dtype,
-    TypeAttr:$dst_dtype
+    AnyMemRef:$dest
   );
   let hasVerifier = 1;
   let assemblyFormat =
-      "$source `into` $dest attr-dict `:` type($source) `to` type($dest)";
+      "$kind $source `into` $dest attr-dict `:` type($source) `to` type($dest)";
 }
 
 def Wafer_InstrGemmOp : Wafer_InstrOp<"instr.gemm", [

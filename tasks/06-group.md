@@ -92,7 +92,8 @@ Pipeline position:
   拒绝的 logical group。
 - Downstream consumer:
   analysis/planning/legalization gates 和 closed-loop candidate driver；`wafer.tile.region`
-  materialization；topology/execution-mesh contract；target LLVM/package stages。
+  materialization；topology/execution-mesh contract；instruction lowering 和 memory planning；后续
+  target LLVM/package stages 只能消费下游 committed instruction artifact，不能直接消费 logical group。
 - User-level driver / named pipeline:
   `wafer-opt --program-pipeline=stablehlo-spmd-to-group`，由该 program
   pipeline 重放 frontend/SPMD/local-compute-normalization 后进入 logical group formation gate。局部 MLIR pass
@@ -1055,10 +1056,10 @@ Transformer block 里的 softmax、RMSNorm / LayerNorm、RoPE 和 MLP activation
 normalization 展开成 structured tensor IR；group 只处理 staged dataflow、tile-local residency
 和资源闭环。
 
-当前 HF Megatron-style transformer no-card gate 已证明一条真实 PyTorch/XLA transformer block 可以经
-group 继续进入 direct instr/target LLVM/package/no-card runtime required-symbol path。下面仍是 group
-层的长期通用调度要求；它们不能被替换成 transformer-specific pass，也不表示
-`wafer-lower-groups-to-selected-instr` closed-loop selector 已覆盖同一 HF case。
+当前 HF Megatron-style transformer gate 已证明一条真实 PyTorch/XLA transformer block 可以经
+group 继续进入 memory-planned instruction IR。target LLVM、package/no-card runtime required-symbol
+path 和 board correctness 仍是后续边界。下面仍是 group 层的长期通用调度要求；它们不能被替换成
+transformer-specific pass，也不表示 `wafer-lower-groups-to-selected-instr` closed-loop selector 已覆盖同一 HF case。
 
 Transformer block 跑通需要下面的通用调度能力：
 

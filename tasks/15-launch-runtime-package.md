@@ -353,7 +353,8 @@ resident constant 必须引用 model input，且不能引用 output。validator 
 completion fence，例如 `TsmDeviceSynchronize` / `TsmLaunch`，因此 package correctness 不能只依赖
 legacy stub path 成功返回。package metadata exporter/validator 只接受当前 target instruction 已知的
 operation family；`select` 不再是 `wafer.instr.elementwise` metadata kind，而是在 instruction lowering
-中变成 `bit2fp` / `mask_move` target sequence。
+中变成 `bit2fp` / `mask_move` target sequence。`wafer.instr.convert` metadata 记录
+`#wafer.instr_convert_kind` 对应的 target pair，不接受 `src_dtype` / `dst_dtype` 作为自由字段。
 
 `tools/wafer_device_link.py` 是 device-code local gate：它消费已有 LLVM IR 文件，生成或打印
 `.ll -> .o -> kernel.so` 两段命令，并可在本地 TX8 依赖齐备时执行该 compile/link。它不从
@@ -388,8 +389,9 @@ package metadata 维护第二份 endpoint schema。
 
 历史 `--emit-single-tile-matmul`、`--emit-multi-tile-no-comm-matmul`、
 `--emit-single-tile-elementwise` 和 `--emit-local-transformer-block` fixed emitter 已删除。当前 package
-gate 已从 `wafer-opt` pipeline 的 committed instruction IR、LLVM IR artifact、module path 和 model
-interface metadata 自动导出 schema v2 package metadata，并被 no-card E2E 和 HF transformer gate 消费。
+metadata 工具可从已有 committed instruction IR、已有 LLVM IR artifact、module path 和 model
+interface metadata 自动导出 schema v2 package metadata；在 compiler-generated target LLVM artifact
+完成前，这仍是局部 package 工具 gate，不是主线 no-card E2E 或 HF transformer package gate。
 后续若扩展 topology/execution-mesh snapshot、program parameter shard metadata/resource view、薄 launch/block
 binding 或 derived endpoint section，也必须从当前 IR / analysis fact 重算；不能恢复独立固定 emitter
 作为完成证明。
@@ -470,15 +472,12 @@ V0 验证：
   selected entrypoint lookup、`binding_order` 解析、descriptor-only BPM / unsupported completion source / runtime-mode
   shielding、executor-specific required symbol gate 和 test shared-library dynamic loading。该 gate 不执行 board
   launch，也不声明 completion。
-- no-card E2E runtime gate 用 lit 覆盖 `wafer-opt` instruction/LLVM outputs -> `mlir-translate`
-  LLVM IR -> package metadata auto-export / validation -> C++ `wafer-run` -> test tx runtime shared library
-  required-symbol check。该 gate 证明当前 compiler-generated package 可以进入 runtime 边界，但仍不执行
-  allocation/import/query/bind、module load、launch 或 completion。
-- PyTorch model-level no-card runtime gate 用 `x + x` smoke model 和 HF Llama tiny config 的
-  Megatron-style transformer block 覆盖 PyTorch/XLA capture -> `stablehlo-spmd-to-group` ->
-  group/instr/target LLVM lowering -> `mlir-translate` LLVM IR -> package metadata auto-export /
-  validation -> C++ `wafer-run` test tx runtime required-symbol gate。
-  该 gate 不执行 board allocation/import/query/bind、module load、launch 或 completion。
+- no-card E2E runtime gate 当前只覆盖已有 package metadata / LLVM input 的 intake、validation 和
+  C++ `wafer-run` required-symbol check。compiler-generated package gate 要等 target LLVM lowering
+  产出真实 LLVM artifact 后恢复；恢复前不能把 package 工具测试当作主线完成证明。
+- PyTorch model-level gate 当前覆盖 `x + x` smoke model 和 HF Llama tiny config 的 Megatron-style
+  transformer block 到 group / memory-planned instruction IR。group/instr -> target LLVM ->
+  package metadata auto-export -> `wafer-run` required-symbol gate 是后续边界。
 - model interface 与 compiled function ABI / selected entrypoint binding order 一致。
 - 当前 schema v2 不保存 derived endpoint section；若后续启用该 section，必须覆盖所有 launched tile
   且能从 execution mesh / topology 重算。

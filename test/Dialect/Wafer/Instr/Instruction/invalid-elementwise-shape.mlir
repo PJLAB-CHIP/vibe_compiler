@@ -7,7 +7,7 @@ module {
       : () -> memref<4x7xf16, #wafer.memory<spm, tensor>>
   %dst = "builtin.unrealized_conversion_cast"()
       : () -> memref<4x8xf16, #wafer.memory<spm, tensor>>
-  wafer.instr.elementwise #wafer.elementwise_kind<add> %lhs, %rhs into %dst
+  wafer.instr.elementwise #wafer.instr_elementwise_kind<add> %lhs, %rhs into %dst
       : memref<4x8xf16, #wafer.memory<spm, tensor>>,
         memref<4x7xf16, #wafer.memory<spm, tensor>>
     into memref<4x8xf16, #wafer.memory<spm, tensor>>

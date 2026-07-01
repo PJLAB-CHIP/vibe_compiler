@@ -5,7 +5,7 @@ module {
       : () -> memref<4x8xf16, #wafer.memory<spm, cx>>
   %dst = "builtin.unrealized_conversion_cast"()
       : () -> memref<4xf16, #wafer.memory<spm, cx>>
-  wafer.instr.reduce #wafer.reduce_kind<sum> %input into %dst
+  wafer.instr.reduce #wafer.instr_reduce_kind<sum> %input into %dst
       {dimensions = array<i64: 2>}
       : memref<4x8xf16, #wafer.memory<spm, cx>>
     into memref<4xf16, #wafer.memory<spm, cx>>

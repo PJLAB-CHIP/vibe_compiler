@@ -67,7 +67,7 @@ scheduled wafer.group tensor body
 | instruction-level | `wafer.instr.*` | unplaced Wafer-tagged memref SSA value | 选择 CT/NE/TDMA/RDMA/WDMA 指令形态，列出 queue、temp/psum/staging memref values、alias、effect 和 descriptor attrs，不含 SPM offset；DTE 属于 `wafer.tile.*` communication / communication lowering |
 | DDR memory-planned instruction-level | 同一 `wafer.instr.*` | memory-planned Wafer-tagged memref SSA value | DDR view/root range、descriptor、compiler-managed/resident/inter-group planned ranges、lifetime/reuse、default arena capacity/largest-contiguous/bandwidth 已通过 DDR memory planning |
 | runtime/target-codegen derived form | 同一 `wafer.instr.*` 或 very-late emission metadata | concrete target call arg / packet field | 从 committed instruction IR、accepted SPM/DDR offset facts、memref view 和 layout helper 派生 address/range/stride 参数；不作为新的主线 IR 层 |
-| launch/ABI emission | LLVM / C call / package metadata | concrete ABI arg | 调用 target CRT、发 package metadata、连接 host runtime；不作为上层 IR 层 |
+| target code / package emission | LLVM / target CRT call / package metadata | concrete target call arg | 调用 target CRT、发 package metadata、连接 host runtime；不作为上层 IR 层 |
 
 因此，`wafer.tile.gemm` 这类 op 在不同阶段可以被 type conversion 改写 operand/result type，
 但它的 semantic contract 仍是同一个：本 tile 内的 GEMM target implementation。若某个阶段需要
@@ -329,7 +329,7 @@ Instruction/runtime verifier：
 | select Wafer compute implementation | tiled `linalg` / tensor / SCF | target-abstract `wafer.tile.*` compute / movement op | 选择本 tile 实现族，保留数学语义，建立 layout/resource interface |
 | layout materialization | target-abstract Wafer op | layout-materialized Wafer-tagged memref + materialization edge | 基于 op interface 做 layout assignment 和真实 movement cut |
 | candidate DDR tile-view materialization | candidate target-abstract tile-region IR + explicit static boundary slice fact 或 candidate output tile offsets/sizes | same candidate evaluation tile-region IR with DDR `memref.subview` tile operands | 覆盖 external boundary extract、direct output insert storeback，以及单结果 destination-style linalg root 的 candidate tile offsets/sizes 到 boundary slice proposal；closed-loop traversal / tile-shape search 仍由 planner 后续产生 facts；不从名字或 whole-boundary shape 猜 DMA |
-| instruction legalization / selection | layout-materialized IR | instruction-level `wafer.instr.*` over unplaced Wafer-tagged memref | 将 target-abstract op 改写成 CT/NE/TDMA/RDMA/WDMA 指令形态，列出 queue、effects、temp/psum/staging memref values、alias 和 descriptor attrs；DTE communication 不进入普通 `wafer.instr` path |
+| instruction legalization / selection | layout-materialized IR | instruction-level `wafer.instr.*` over unplaced Wafer-tagged memref | 将 target-abstract op 改写成 CT/NE/TDMA/RDMA/WDMA 指令形态或 Direct DTE/FSM instruction op，列出 queue/family、effects、temp/psum/staging memref values、alias 和 descriptor attrs；DTE 不走普通 `TsmExecute` dispatch path |
 | SPM memory planning | instruction-level IR with unplaced Wafer-tagged memref | same instruction-level IR with planned SPM offset facts | 从 memref use-def 和 instruction effects 收集 demand、liveness，分配 offset/range/bank |
 | DDR memory planning | SPM-planned instruction-level IR with actual DDR tile views, descriptors and compiler-managed DDR `memref.alloc` | same instruction-level IR with accepted DDR offset facts，或结构化失败 | 从 memref view、descriptor、alloc、lifetime 和 target policy 重算 DDR demand；验证 external demand，为 compiler-managed/resident/inter-group demand 规划 accepted offset；验证或拒绝当前 IR 中显式表达的 DDR demand |
 | resource view analysis | committed instruction IR with accepted SPM/DDR offset facts + topology/execution-mesh contract + program parameter shard metadata + optional launch/block binding | model interface binding、external binding、workspace、resident constant resource view，或结构化失败 | 从 committed IR 按需派生 package-visible resource demand，不落第二份 metadata，不重新决定 layout/SPM/DDR plan，不 allocate/import/query runtime object |
@@ -380,8 +380,9 @@ materialize 为带显式 `batch_count`、batch/head/m/k/n 维度 attrs 的 `wafe
 resident constant/weight residency 的 board/resource 绑定、数值 correctness 和更完整
 resource summary 仍由后续 target/runtime/board gate 验证。当前覆盖仍不是通用 elementwise/reduce/GEMM
 coverage；更复杂 broadcast、relation/logic、convert、多输入/非 constant-init reduce 和 mask/select
-泛化仍按后续 gate 推进。basic `arith.select` 已作为 3-input elementwise select 覆盖到
-instruction/ABI no-card path，但真实板端 wrapper、dynamic mask 和 fused mask-add 优化仍不属于当前
+泛化仍按后续 gate 推进。basic `arith.select` 已在 instruction lowering 中改写成 false-copy
+`gather_scatter` + `bit2fp` + `mask_move`，不进入 `wafer.instr.elementwise` target kind；真实板端
+wrapper、dynamic mask 和 fused mask-add 优化仍不属于当前
 完成项。当前 coverage 不能被解释成 Wafer compute 语义上不支持这些结构；只要硬件
 wrapper / structured lowering 能表达，就应补 compute op、verifier、instruction lowering、target LLVM
 lowering 或 memory planning gate。
@@ -397,9 +398,9 @@ V1 或后续扩展：
 ### 8.1 Transformer Block Minimum Coverage
 
 不能只因为 GEMM、一个 elementwise 和一个 reduce 能跑，就声称 transformer block 支持完成。当前
-HF no-card compile gate 已覆盖一条真实 PyTorch/XLA transformer block 到 instruction/target LLVM/package
-的路径，但 board execution、数值 correctness、dynamic/KV/mask/select 泛化和 closed-loop selected-candidate
-path 仍是后续 gate。compute/movement 层的最小覆盖包括：
+HF no-card compile gate 已覆盖真实 PyTorch/XLA transformer block 到 memory-planned instruction IR
+的路径；target LLVM、package auto-export、board execution、数值 correctness、dynamic/KV/mask/select
+泛化和 closed-loop selected-candidate path 仍是后续 gate。compute/movement 层的最小覆盖包括：
 
 - `wafer.tile.gemm` 的 batch/head 维和 transpose relation，用于 QKV linear matmul、QK^T、
   attention value、output linear matmul 和 MLP。
@@ -435,11 +436,11 @@ Target-abstract tile-region：
 
 %mm = wafer.tile.gemm %a_tile, %b_tile
     : (tensor<64x256xf16>, tensor<256x64xf16>) -> tensor<64x64xf16>
-%act = wafer.tile.elementwise %mm {kind = #wafer.elementwise_kind<relu>}
+%act = wafer.tile.elementwise #wafer.elementwise_kind<tanh> %mm
     : tensor<64x64xf16> -> tensor<64x64xf16>
 %row_sum = wafer.tile.reduce #wafer.reduce_kind<sum> %act
     {dimensions = array<i64: 1>, init_value = 0.000000e+00 : f16}
-    : tensor<64x64xf16> -> tensor<64xf32>
+    : tensor<64x64xf16> -> tensor<64xf16>
 ```
 
 Accepted layout 后：
@@ -464,14 +465,20 @@ Accepted layout 后：
        memref<256x64xf16, #wafer.memory<spm, cx>>)
    -> memref<64x64xf16, #wafer.memory<spm, cx>>
 
-%act = wafer.tile.elementwise %mm {kind = #wafer.elementwise_kind<relu>}
+%mm_tensor = wafer.tile.materialize_layout %mm
     : memref<64x64xf16, #wafer.memory<spm, cx>>
+   -> memref<64x64xf16, #wafer.memory<spm, tensor>>
+%act = wafer.tile.elementwise #wafer.elementwise_kind<tanh> %mm_tensor
+    : memref<64x64xf16, #wafer.memory<spm, tensor>>
+   -> memref<64x64xf16, #wafer.memory<spm, tensor>>
+%act_cx = wafer.tile.materialize_layout %act
+    : memref<64x64xf16, #wafer.memory<spm, tensor>>
    -> memref<64x64xf16, #wafer.memory<spm, cx>>
 
-%row_sum = wafer.tile.reduce #wafer.reduce_kind<sum> %act
+%row_sum = wafer.tile.reduce #wafer.reduce_kind<sum> %act_cx
     {dimensions = array<i64: 1>, init_value = 0.000000e+00 : f16}
     : memref<64x64xf16, #wafer.memory<spm, cx>>
-   -> memref<64xf32, #wafer.memory<spm, tensor>>
+   -> memref<64xf16, #wafer.memory<spm, cx>>
 ```
 
 这个例子里 `wafer.tile.gemm` 需要 aligned layout，elementwise 继承 producer layout，reduce

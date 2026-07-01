@@ -491,16 +491,16 @@ Normalization 后必须能检查：
 R2.3 覆盖状态以 structured tensor IR 证据为准，
 不再把 acceptance pass 视为 schedule completion。当前可引用的 evidence 如下：
 
-本表只描述 local compute normalization 层自己的证据。HF Megatron-style transformer no-card runtime
-gate 已在下游覆盖 PyTorch/XLA capture -> group/instr/target LLVM/package/no-card runtime required-symbol
-路径；该 runtime gate 不改变本层对 dynamic shape、mask/select 泛化、layout materialization 和
-board/numeric correctness 的非目标边界。
+本表只描述 local compute normalization 层自己的证据。HF Megatron-style transformer gate
+已在下游覆盖 PyTorch/XLA capture -> group -> memory-planned instruction IR 路径；target LLVM、
+package/no-card runtime required-symbol、board/numeric correctness 仍是后续边界。该下游 gate 不改变
+本层对 dynamic shape、mask/select 泛化和 layout materialization 的非目标边界。
 
 | 子结构 | 当前证据 | 结论边界 |
 | --- | --- | --- |
 | dot / 2D GEMM | `test/Frontend/lower-stablehlo-dot-to-linalg.mlir`、`stablehlo-to-linalg.mlir`、program gate | 证明 2D dot 可进入 structured matmul，不证明 tile shape / GEMM packet |
 | attention QK^T / AV | `lower-stablehlo-attention-score.mlir`、`lower-stablehlo-attention-value.mlir`、`lower-stablehlo-attention-softmax-value.mlir` | rank-4 attention dot 由官方 conversion 转成 linalg generic contraction；是否能 schedule 仍归后续 planner |
-| elementwise / broadcast | `lower-stablehlo-elementwise.mlir`、`lower-stablehlo-official-linalg-coverage.mlir`、`lower-stablehlo-linear-residual.mlir`，以及下游 `lower-groups-to-instr-elementwise-select.mlir` | 证明本地 legacy 子集和官方 pointwise conversion 都可产生 structured tensor IR；basic `arith.select` 已能进入 select elementwise instruction/ABI no-card path；dynamic mask 泛化、board numeric correctness 和 fused mask optimization 仍未闭环 |
+| elementwise / broadcast | `lower-stablehlo-elementwise.mlir`、`lower-stablehlo-official-linalg-coverage.mlir`、`lower-stablehlo-linear-residual.mlir`，以及下游 `lower-groups-to-instr-elementwise-select.mlir` | 证明本地 legacy 子集和官方 pointwise conversion 都可产生 structured tensor IR；basic `arith.select` 会在 instruction lowering 中改写成 target movement sequence，不作为 `wafer.instr.elementwise` kind；dynamic mask 泛化、board numeric correctness 和 fused mask optimization 仍未闭环 |
 | reduce | `lower-stablehlo-reduce.mlir`、norm/softmax staged tests | 证明细粒度 StableHLO reduce 可进入 structured reduction IR；backend numeric policy 和 resource legality 未闭环 |
 | softmax | `lower-stablehlo-softmax-staged.mlir` | 证明 fine-grained StableHLO softmax dataflow 可变成 `linalg.reduce` / `linalg.generic` staged IR；不证明 multi-stage intermediate storage 或 group schedule |
 | norm | `lower-stablehlo-norm-staged.mlir` | 证明 fine-grained RMSNorm/LayerNorm dataflow 中 last-dim reduce / rsqrt / broadcast multiply gate；不证明完整 LayerNorm/RMSNorm family |

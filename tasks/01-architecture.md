@@ -677,11 +677,11 @@ WaferRuntimeAdapter cluster launch
   StableHLO collective handoff 的 communication gate。
 - 当前 no-card compile gate 已用 HuggingFace Llama tiny config + PyTorch/XLA `mark_sharding`
   + 单卡 16-rank Megatron-style tensor parallel 覆盖到
-  `stablehlo-spmd-to-group`、direct instruction/target LLVM lowering、package metadata auto-export
-  和 `wafer-run` no-card required-symbol gate。该 gate 的 Megatron contracting-dimension sharding
-  保留并消费 `all_reduce` collective，basic `arith.select` 也进入 instruction/ABI no-card path。
-  该 gate 不经过
-  `wafer-lower-groups-to-selected-instr` closed-loop selector，也不证明板端 launch 或数值正确性。
+  `stablehlo-spmd-to-group` 和 memory-planned instruction IR。该 gate 的 Megatron
+  contracting-dimension sharding 保留并消费 `all_reduce` collective，basic `arith.select`
+  在 instruction lowering 中改写成 `gather_scatter` + `bit2fp` + `mask_move` target sequence。
+  target LLVM lowering、package metadata auto-export、`wafer-run` no-card required-symbol gate、
+  `wafer-lower-groups-to-selected-instr` closed-loop selector、板端 launch 和数值正确性仍是后续边界。
 
 验收标准：
 

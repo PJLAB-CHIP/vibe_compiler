@@ -7,6 +7,8 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 
+#include <utility>
+
 using namespace wafer;
 using namespace wafer::detail;
 
@@ -272,6 +274,159 @@ static mlir::Type getMemRefElementType(mlir::Type type) {
   return {};
 }
 
+static ComputeElementwiseKind
+toComputeElementwiseKind(InstrElementwiseKind kind) {
+  switch (kind) {
+  case InstrElementwiseKind::Add:
+    return ComputeElementwiseKind::Add;
+  case InstrElementwiseKind::Sub:
+    return ComputeElementwiseKind::Sub;
+  case InstrElementwiseKind::Mul:
+    return ComputeElementwiseKind::Mul;
+  case InstrElementwiseKind::Div:
+    return ComputeElementwiseKind::Div;
+  case InstrElementwiseKind::Max:
+    return ComputeElementwiseKind::Max;
+  case InstrElementwiseKind::Min:
+    return ComputeElementwiseKind::Min;
+  case InstrElementwiseKind::Neg:
+    return ComputeElementwiseKind::Neg;
+  case InstrElementwiseKind::Recip:
+    return ComputeElementwiseKind::Recip;
+  case InstrElementwiseKind::Sqrt:
+    return ComputeElementwiseKind::Sqrt;
+  case InstrElementwiseKind::Rsqrt:
+    return ComputeElementwiseKind::Rsqrt;
+  case InstrElementwiseKind::Exp:
+    return ComputeElementwiseKind::Exp;
+  case InstrElementwiseKind::Tanh:
+    return ComputeElementwiseKind::Tanh;
+  case InstrElementwiseKind::Eq:
+    return ComputeElementwiseKind::Eq;
+  case InstrElementwiseKind::Ne:
+    return ComputeElementwiseKind::Ne;
+  case InstrElementwiseKind::Lt:
+    return ComputeElementwiseKind::Lt;
+  case InstrElementwiseKind::Le:
+    return ComputeElementwiseKind::Le;
+  case InstrElementwiseKind::Gt:
+    return ComputeElementwiseKind::Gt;
+  case InstrElementwiseKind::Ge:
+    return ComputeElementwiseKind::Ge;
+  }
+  llvm_unreachable("unknown instruction elementwise kind");
+}
+
+enum class ConvertTypeTag { Int8, Int16, Int32, Bf16, Fp16, Fp32, Tf32 };
+
+static mlir::Type getConvertType(mlir::MLIRContext *context,
+                                 ConvertTypeTag tag) {
+  switch (tag) {
+  case ConvertTypeTag::Int8:
+    return mlir::IntegerType::get(context, 8);
+  case ConvertTypeTag::Int16:
+    return mlir::IntegerType::get(context, 16);
+  case ConvertTypeTag::Int32:
+    return mlir::IntegerType::get(context, 32);
+  case ConvertTypeTag::Bf16:
+    return mlir::BFloat16Type::get(context);
+  case ConvertTypeTag::Fp16:
+    return mlir::Float16Type::get(context);
+  case ConvertTypeTag::Fp32:
+    return mlir::Float32Type::get(context);
+  case ConvertTypeTag::Tf32:
+    return mlir::FloatTF32Type::get(context);
+  }
+  llvm_unreachable("unknown convert type tag");
+}
+
+static std::pair<mlir::Type, mlir::Type>
+getInstrConvertTypePair(mlir::MLIRContext *context, InstrConvertKind kind) {
+  auto i8 = getConvertType(context, ConvertTypeTag::Int8);
+  auto i16 = getConvertType(context, ConvertTypeTag::Int16);
+  auto i32 = getConvertType(context, ConvertTypeTag::Int32);
+  auto bf16 = getConvertType(context, ConvertTypeTag::Bf16);
+  auto fp16 = getConvertType(context, ConvertTypeTag::Fp16);
+  auto fp32 = getConvertType(context, ConvertTypeTag::Fp32);
+  auto tf32 = getConvertType(context, ConvertTypeTag::Tf32);
+
+  switch (kind) {
+  case InstrConvertKind::Int8Fp16:
+    return {i8, fp16};
+  case InstrConvertKind::Int8Bf16:
+    return {i8, bf16};
+  case InstrConvertKind::Int8Fp32:
+    return {i8, fp32};
+  case InstrConvertKind::Int8Tf32:
+    return {i8, tf32};
+  case InstrConvertKind::Int16Fp16:
+    return {i16, fp16};
+  case InstrConvertKind::Int16Bf16:
+    return {i16, bf16};
+  case InstrConvertKind::Int16Fp32:
+    return {i16, fp32};
+  case InstrConvertKind::Int16Tf32:
+    return {i16, tf32};
+  case InstrConvertKind::Int32Fp16:
+    return {i32, fp16};
+  case InstrConvertKind::Int32Bf16:
+    return {i32, bf16};
+  case InstrConvertKind::Int32Fp32:
+    return {i32, fp32};
+  case InstrConvertKind::Int32Tf32:
+    return {i32, tf32};
+  case InstrConvertKind::Bf16Int8:
+    return {bf16, i8};
+  case InstrConvertKind::Bf16Int16:
+    return {bf16, i16};
+  case InstrConvertKind::Bf16Int32:
+    return {bf16, i32};
+  case InstrConvertKind::Bf16Fp16:
+    return {bf16, fp16};
+  case InstrConvertKind::Bf16Fp32:
+    return {bf16, fp32};
+  case InstrConvertKind::Bf16Tf32:
+    return {bf16, tf32};
+  case InstrConvertKind::Fp16Int8:
+    return {fp16, i8};
+  case InstrConvertKind::Fp16Int16:
+    return {fp16, i16};
+  case InstrConvertKind::Fp16Int32:
+    return {fp16, i32};
+  case InstrConvertKind::Fp16Bf16:
+    return {fp16, bf16};
+  case InstrConvertKind::Fp16Fp32:
+    return {fp16, fp32};
+  case InstrConvertKind::Fp16Tf32:
+    return {fp16, tf32};
+  case InstrConvertKind::Fp32Int8:
+    return {fp32, i8};
+  case InstrConvertKind::Fp32Int16:
+    return {fp32, i16};
+  case InstrConvertKind::Fp32Int32:
+    return {fp32, i32};
+  case InstrConvertKind::Fp32Fp16:
+    return {fp32, fp16};
+  case InstrConvertKind::Fp32Bf16:
+    return {fp32, bf16};
+  case InstrConvertKind::Fp32Tf32:
+    return {fp32, tf32};
+  case InstrConvertKind::Tf32Int8:
+    return {tf32, i8};
+  case InstrConvertKind::Tf32Int16:
+    return {tf32, i16};
+  case InstrConvertKind::Tf32Int32:
+    return {tf32, i32};
+  case InstrConvertKind::Tf32Fp16:
+    return {tf32, fp16};
+  case InstrConvertKind::Tf32Bf16:
+    return {tf32, bf16};
+  case InstrConvertKind::Tf32Fp32:
+    return {tf32, fp32};
+  }
+  llvm_unreachable("unknown instruction convert kind");
+}
+
 static void appendInstructionIssueEffect(
     llvm::SmallVectorImpl<WaferResourceEffect> &effects,
     WaferResourceKind resource, int64_t bytes) {
@@ -448,10 +603,6 @@ mlir::LogicalResult InstrElementwiseOp::verify() {
   if (mlir::failed(verifyNoEmptyVariadicInputs(getOperation(), getInputs(),
                                                "elementwise")))
     return mlir::failure();
-  if (getKind() == ComputeElementwiseKind::Select)
-    return emitOpError(
-        "select is not a target elementwise instruction; lower it to "
-        "bit2fp/mask_move sequence before instruction IR");
   if (mlir::failed(
           verifySPMMemRef(getOperation(), getDest().getType(), "dest")))
     return mlir::failure();
@@ -459,8 +610,9 @@ mlir::LogicalResult InstrElementwiseOp::verify() {
     if (mlir::failed(verifySPMMemRef(getOperation(), input.getType(), "input")))
       return mlir::failure();
   }
-  return verifyElementwiseTileContract(getOperation(), getKindAttr().getValue(),
-                                       getInputs(), getDest().getType());
+  return verifyElementwiseTileContract(
+      getOperation(), toComputeElementwiseKind(getKindAttr().getValue()),
+      getInputs(), getDest().getType());
 }
 
 InstrFamily InstrElementwiseOp::getInstructionFamily() {
@@ -645,10 +797,14 @@ mlir::LogicalResult InstrConvertOp::verify() {
     return mlir::failure();
   mlir::Type srcElement = getMemRefElementType(getSource().getType());
   mlir::Type dstElement = getMemRefElementType(getDest().getType());
-  if (getSrcDtype() != srcElement)
-    return emitOpError("src_dtype must match source element type");
-  if (getDstDtype() != dstElement)
-    return emitOpError("dst_dtype must match dest element type");
+  auto [expectedSrc, expectedDst] =
+      getInstrConvertTypePair(getContext(), getKindAttr().getValue());
+  if (srcElement != expectedSrc)
+    return emitOpError("convert kind source type does not match source "
+                       "element type");
+  if (dstElement != expectedDst)
+    return emitOpError(
+        "convert kind destination type does not match dest element type");
   return mlir::success();
 }
 
