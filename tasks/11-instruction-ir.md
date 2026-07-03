@@ -33,11 +33,13 @@ memref SSA、Wafer memory attr、op operands、attrs、MemoryEffects 和显式 f
 - 仓库代码当前已落地 `wafer.instr.local_fence`，以及
   `wafer.instr.rdma`、`wafer.instr.wdma`、`wafer.instr.gather_scatter`、`wafer.instr.fill`、
   `wafer.instr.elementwise`、`wafer.instr.bit2fp`、`wafer.instr.mask_move`、
-  `wafer.instr.reduce`、`wafer.instr.convert`、`wafer.instr.gemm`
+  `wafer.instr.reduce`、`wafer.instr.convert`、`wafer.instr.gemm`、`wafer.instr.conv`、
+  `wafer.instr.pool`、`wafer.instr.unpool`、`wafer.instr.tdma_data_move`、
+  `wafer.instr.peripheral`
   和 `wafer.instr.dte_send` / `dte_recv` / `dte_wait`
   的 ODS、verifier、MemoryEffects、`WaferInstructionOpInterface` 和 lit/unit 覆盖。
-  `wafer.instr.elementwise` 当前只承载有 CT elementwise wrapper 证据的 unary/binary arithmetic、
-  activation/transcendental 和 relation target kind；`select` 不存在于
+  `wafer.instr.elementwise` 当前承载有 CT elementwise wrapper 证据的 unary/binary arithmetic、
+  relation、logic、activation 和 transcendental target kind；`select` 不存在于
   `#wafer.instr_elementwise_kind`。instruction lowering 会把 floating select 改写成 false-copy
   `wafer.instr.gather_scatter` + `wafer.instr.bit2fp` + `wafer.instr.mask_move`。
   `wafer.instr.convert` 使用 opcode-aligned `#wafer.instr_convert_kind<...>`，覆盖硬件
@@ -239,7 +241,10 @@ memref.alloc / verifier-legal metadata views
 wafer.instr.rdma / wafer.instr.wdma
 wafer.instr.gather_scatter
 wafer.instr.{fill, elementwise, bit2fp, mask_move, reduce, convert}
-wafer.instr.gemm
+wafer.instr.gemm / wafer.instr.conv
+wafer.instr.pool / wafer.instr.unpool
+wafer.instr.tdma_data_move
+wafer.instr.peripheral
 scf.if / scf.for
 wafer.instr.local_fence
 ```
@@ -271,6 +276,10 @@ instr-level target kind。
 | CT | `wafer.instr.reduce` | `wafer.tile.reduce` | `#wafer.instr_reduce_kind` target kind |
 | CT | `wafer.instr.convert` | future convert lowering | `#wafer.instr_convert_kind` opcode-aligned dtype pair |
 | NE | `wafer.instr.gemm` | `wafer.tile.gemm` | tile-local GEMM / batched GEMM |
+| NE | `wafer.instr.conv` | future conv lowering / imported target op | basic Conv / Depthwise / BackwardConv packet fields |
+| CT | `wafer.instr.pool` / `wafer.instr.unpool` | future pool/unpool lowering / imported target op | pool/unpool descriptor with indexed-output arity |
+| TDMA | `wafer.instr.tdma_data_move` | future structured data-move lowering / imported target op | mirror / transpose / rotate / NCHW-NHWC / pad / TensorNom / img2col |
+| CT | `wafer.instr.peripheral` | future peripheral lowering / imported target op | count / arg / factorize / bilinear / LUT / random / element-mask target kind |
 | DTE | `wafer.instr.dte_send` / `dte_recv` / `dte_wait` | accepted `wafer.tile.*` collective p2p schedule | fixed-size unicast Direct DTE invocation over unplaced SPM memrefs |
 
 ### 4.1 Instruction Coverage Matrix
@@ -284,7 +293,7 @@ instr-level target kind。
 | RDMA / WDMA contiguous 和三层 stride descriptor | `wafer.instr.rdma` / `wafer.instr.wdma` | V0 native instr | target LLVM lowering 必须生成 target CRT call；descriptor 保持 byte-level `inner_bytes`、stride 和 iteration |
 | TDMA `TsmDataMove::GatherScatter` | `wafer.instr.gather_scatter` | V0 native instr | layout materialization、SPM copy 和可静态证明的 slice/transpose/broadcast movement 都展开为一条或多条 gather/scatter；无法压成 V0 descriptor 时结构化失败 |
 | `TsmPeripheral::Memset` / scalar fill | `wafer.instr.fill` | V0 native instr | 仅表达填充 destination SPM memref；不把 peripheral writeback/count 语义塞进 fill |
-| CT arithmetic / relation / activation / selected transcendental | `wafer.instr.elementwise` + `#wafer.instr_elementwise_kind` | V0 native instr | 只覆盖当前 enum 中的 target kind；broadcast、scalar immediate、loop/VuV 和 rounding mode 是 target lowering 内部选择或后续扩展，不改变该 IR 合同 |
+| CT arithmetic / relation / logic / activation / selected transcendental | `wafer.instr.elementwise` + `#wafer.instr_elementwise_kind` | V0 native instr | 覆盖当前 enum 中的 target kind；broadcast、scalar immediate、bitpacked bool loop/VuV 和 rounding mode 是 target lowering 内部选择或后续扩展，不改变该 IR 合同 |
 | semantic select | 无单条 select op | V0 composite lowering | 必须展开为 false-copy `gather_scatter` + `bit2fp` + `mask_move`；`wafer.instr.elementwise <select>` 非法 |
 | CT reduce `sum/avg/max/min` | `wafer.instr.reduce` + `#wafer.instr_reduce_kind` | V0 native instr | 按 native `TsmReduce` 能力建模；`dims`、aligned physical layout 和 dtype 合法性由 verifier / target lowering 检查 |
 | CT convert opcode 139..174 | `wafer.instr.convert` + `#wafer.instr_convert_kind<src_dst>` | V0 native instr | dtype pair 由 kind 唯一决定；same-format copy 必须走 movement，不允许伪造成 convert |
@@ -294,11 +303,12 @@ instr-level target kind。
 | SPM memcpy helper / copy | 无单独 copy op | V0 composite lowering | copy 是 `gather_scatter` 的 descriptor 特例；不引入 `wafer.instr.copy` |
 | ChannelNorm / DechannelNorm / Tensor-Normalization | 无单条 op | V0 composite lowering | 作为 layout materialization algorithm 展开为 gather/scatter 序列；native TensorNom opcode 133 不作为 V0 主路径 |
 | tile collectives `all_gather/all_reduce/reduce_scatter/all_to_all/collective_permute` | 无 collective instr op | V0 composite lowering | 先在 tile collective / schedule 层选 ring、tree 或 direct p2p，再 lower 成 DTE send/recv/wait + local movement/compute |
-| `TsmConv` / `TsmDepthwiseConv` / backward conv | 无 `wafer.instr.conv` | future native instr | register-level 规则存在，但 LLM 主线当前不消费；需要单独 op、layout verifier、optional operand policy 和 target lowering gate 后才能纳入 |
-| `TsmPool` / `TsmUnPool` | 无 `wafer.instr.pool/unpool` | future native instr | 需要 NHWC semantic layout、aligned physical layout、pad/kernel/stride verifier；不能复用 reduce 或 movement op 表达 |
-| TDMA mirror/transpose/rotate/NCHW-NHWC/pad/img2col/concat/native TensorNom | 当前只通过 gather/scatter 表达可证明子集 | future native instr or composite | 若作为单条硬件 op 纳入，必须新增明确 op 或 kind，并证明 wrapper 参数、layout 和 verifier；否则继续展开为 gather/scatter 或失败 |
-| full CT logic / bitpacked bool loop variants | 当前 `elementwise` 只覆盖已有 enum 子集 | future extension | 需要区分 value bool、bitpacked bool、VuV/VuVLoop、scalar immediate 和 output storage；不能靠 `elementwise` 名称吞掉所有 opcode |
-| Peripheral count/argmax/argmin/factorize/bilinear/lut/rand/elem_mask | 仅 `bit2fp` 已有单独 op，`fill` 覆盖 memset-like fill | future native instr or unsupported | writeback、多输出、随机/概率语义和 LUT operand 需要单独 IR contract；未定义前 target lowering 必须报 unsupported |
+| `TsmConv` / `TsmDepthwiseConv` / backward conv | `wafer.instr.conv` + `#wafer.instr_conv_kind` | V0 native instr; target LLVM pending | IR 覆盖基础 Conv/Depthwise/BackwardConv packet fields；bias、scale、sparse、INT8 quant、fused activation 和 psum policy 仍需后续扩展 |
+| `TsmPool` / `TsmUnPool` | `wafer.instr.pool` / `wafer.instr.unpool` | V0 native instr; target LLVM pending | 明确 NHWC descriptor、pad/kernel/stride 和 indexed output arity；不能复用 reduce 或 movement op 表达 |
+| TDMA mirror/transpose/rotate/NCHW-NHWC/pad/img2col/native TensorNom | `wafer.instr.tdma_data_move` + `#wafer.instr_data_move_kind` | V0 native instr; target LLVM pending | 单条 TDMA data-move op 表达 wrapper-level structured movement；普通 copy/layout segment 仍优先使用 `gather_scatter` |
+| TDMA concat / maskgather variants | 无单独 op | future native instr or composite | `concat` 属于 CT packet，maskgather variants 需要 bool/index operand policy；未定义前不能复用 `tdma_data_move` |
+| bitpacked bool loop / VuV / scalar immediate variants | 当前 `elementwise` 只覆盖 opcode family kind，不单独建模 variant | future extension | 需要区分 value bool、bitpacked bool、VuV/VuVLoop、scalar immediate 和 output storage；不能靠 `elementwise` 名称吞掉所有 variant |
+| Peripheral count/argmax/argmin/factorize/bilinear/lut/rand/elem_mask | `wafer.instr.peripheral` + `#wafer.instr_peripheral_kind` | V0 native instr; target LLVM pending | IR 明确 kind、input/output arity 和 elem_count；bitcount opcode 176 仍因缺 public wrapper 不纳入 |
 | raw DTE non-unicast / stream / mailbox | 无 | future communication ABI | 需要独立 communication ABI 和板端验证；V0 collective 不直接生成 raw non-unicast DTE packet |
 | SCALAR / CSR ordinary execution | 无 | not compiler instr IR in V0 | `TsmExecute` 普通 dispatch 不覆盖 SCALAR/CSR；CSR wait/sync 只能通过明确 sync/runtime ABI 进入 |
 
@@ -503,6 +513,57 @@ V0 要求三个 SPM memref operand 都使用 aligned layout marker：rank <= 2 �
 `#wafer.memory<spm, cx>`，rank > 2 使用 `#wafer.memory<spm, ncx>`。Fused bias、activation、
 quant、psum accumulation policy 和 sparse / INT8 variants 不属于 R3.2d V0。
 
+### 7.6 Conv / Pool / UnPool
+
+```text
+wafer.instr.conv #wafer.instr_conv_kind<kind> input, weight into dest attr-dict
+    : type(input), type(weight) into type(dest)
+wafer.instr.pool #wafer.instr_pool_kind<kind> input into dests attr-dict
+    : type(input) into type(dests)
+wafer.instr.unpool #wafer.instr_unpool_kind<kind> input, index into dest attr-dict
+    : type(input), type(index) into type(dest)
+```
+
+| op | operands | result | required attrs |
+| --- | --- | --- | --- |
+| `wafer.instr.conv` | `input: aligned SPM memref`, `weight: aligned SPM memref`, `dest: aligned SPM memref` | none | `kind: #wafer.instr_conv_kind`, `input_shape`, `weight_shape`, `output_shape`, `pads`, `unpads`, `kernel_strides`, `dilations` |
+| `wafer.instr.pool` | `input: aligned SPM memref`, `dests: Variadic<aligned SPM memref>` | none | `kind: #wafer.instr_pool_kind`, `source_shape`, `dest_shape`, `pads`, `kernel_strides` |
+| `wafer.instr.unpool` | `input: aligned SPM memref`, `index: aligned SPM memref<i32>`, `dest: aligned SPM memref` | none | `kind: #wafer.instr_unpool_kind`, `source_shape`, `dest_shape`, `kernel_strides` |
+
+`wafer.instr.conv` 覆盖基础 Conv / Depthwise / BackwardConv packet family。V0 IR 只表达
+feature、weight、dest 和基础 geometry descriptor；bias、scale、activation、sparse、INT8 quant
+和 psum policy 不能作为隐式 default 藏在 target lowering 里，后续需要扩 operand / attr 后才合法。
+
+`wafer.instr.pool` / `wafer.instr.unpool` 覆盖 CT Pool/UnPool wrapper family。普通 pool kind 只有
+一个 value dest；`indexedmax` / `indexedmin` 必须有 value dest 和 i32 index dest。UnPool 的 index
+operand 必须是 i32 SPM memref。shape、pad、stride attr 都是 wrapper-level descriptor 字段，不是
+tile-level semantic layout 描述；source lowering 需要先把 feature layout materialize 到对应 aligned
+SPM layout。
+
+### 7.7 Structured TDMA DataMove / Peripheral
+
+```text
+wafer.instr.tdma_data_move #wafer.instr_data_move_kind<kind> source into dest attr-dict
+    : type(source) to type(dest)
+wafer.instr.peripheral #wafer.instr_peripheral_kind<kind> inputs into dests attr-dict
+    : type(inputs) into type(dests)
+```
+
+| op | operands | result | required attrs |
+| --- | --- | --- | --- |
+| `wafer.instr.tdma_data_move` | `source: SPM memref`, `dest: SPM memref` | none | `kind: #wafer.instr_data_move_kind`, `source_shape`, `dest_shape`; optional `permutation`, `pads`, `kernel_strides` |
+| `wafer.instr.peripheral` | `inputs: Variadic<SPM memref>`, `dests: Variadic<SPM memref>` | none | `kind: #wafer.instr_peripheral_kind`, `elem_count` |
+
+`wafer.instr.tdma_data_move` 表达 wrapper-level TDMA structured movement，例如 mirror、transpose、
+rotate、NCHW/NHWC、pad、TensorNom 和 img2col。普通 copy、layout segment movement、static slice /
+broadcast / transpose 的可证明 byte movement 仍优先展开成 `wafer.instr.gather_scatter`，不伪装成
+structured wrapper。
+
+`wafer.instr.peripheral` 覆盖 count、argmax、argmin、factorize、bilinear、lut16、lut32、
+rand_gen 和 elem_mask。kind 决定 input/dest arity；argmax/argmin 的第一个 dest 是 value，
+第二个 dest 必须是 i32 index。opcode 176 `bitcount` 只有 enum 证据、没有 public wrapper 证据，
+不进入当前 IR kind。
+
 ## 8. Lowering Rules
 
 R3.2d 应实现为 MLIR DialectConversion：
@@ -621,6 +682,17 @@ R3.2d verifier checks only instruction legality:
 - `wafer.instr.convert` uses `#wafer.instr_convert_kind` only；source/dest dtype is derived from the
   convert kind and checked against memref element types. It does not accept free-form `src_dtype` /
   `dst_dtype` attrs as instruction semantics.
+- `wafer.instr.conv` requires aligned SPM input/weight/dest memrefs, matching element types, rank-4
+  positive shape descriptors, rank-4 non-negative pads/unpads, rank-4 positive kernel strides and rank-2
+  positive dilations.
+- `wafer.instr.pool` / `wafer.instr.unpool` require aligned SPM operands, matching value element type,
+  rank-4 positive source/dest shape descriptors and positive stride descriptors. Indexed pool and unpool
+  index buffers must use i32 element type.
+- `wafer.instr.tdma_data_move` requires SPM source/dest memrefs with matching element type, rank-4
+  positive source/dest descriptors, and kind-specific optional descriptor attrs when present. Optional
+  `permutation` must be a true permutation of dimensions `0..3`.
+- `wafer.instr.peripheral` verifies kind-specific input/dest arity and positive `elem_count`; arg
+  peripheral ops require a same-dtype value dest plus an i32 index dest.
 - no SPM offset/end/bank attrs before SPM offset assignment.
 - no raw DTE resource id, raw DTE register field, CSR helper or SCALAR ordinary instruction op before
   the corresponding instruction/sync family is defined and verified. Direct DTE p2p must use
@@ -725,7 +797,9 @@ R3.2d.1 已完成：
 2. 增加 `wafer.instr.rdma`、`wafer.instr.wdma`、
    `wafer.instr.gather_scatter`、`wafer.instr.fill`、
    `wafer.instr.elementwise`、`wafer.instr.reduce`、
-   `wafer.instr.convert` 和 `wafer.instr.gemm` ODS。
+   `wafer.instr.convert`、`wafer.instr.gemm`、`wafer.instr.conv`、
+   `wafer.instr.pool`、`wafer.instr.unpool`、`wafer.instr.tdma_data_move`
+   和 `wafer.instr.peripheral` ODS。
 3. 为每个 op 实现 verifier、MemoryEffects、instruction interface 和 positive/negative lit tests。
 4. `wafer.instr.elementwise`、`wafer.instr.reduce` 和 `wafer.instr.convert` 已切到
    instr-specific target kind attrs；旧 tile-level `Compute*Kind` attr 不能再作为 instruction op

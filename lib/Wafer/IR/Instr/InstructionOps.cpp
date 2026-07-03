@@ -7,6 +7,7 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 
+#include <optional>
 #include <utility>
 
 using namespace wafer;
@@ -65,6 +66,41 @@ static mlir::LogicalResult verifyDescriptorArray(mlir::Operation *op,
       return op->emitOpError() << name << " entries must be positive";
     if (!positive && value < 0)
       return op->emitOpError() << name << " entries must be non-negative";
+  }
+  return mlir::success();
+}
+
+static mlir::LogicalResult verifyI64Array(mlir::Operation *op,
+                                          mlir::DenseI64ArrayAttr attr,
+                                          llvm::StringRef name,
+                                          int64_t expectedSize,
+                                          bool positive) {
+  if (attr.size() != expectedSize)
+    return op->emitOpError()
+           << name << " must contain exactly " << expectedSize << " entries";
+  for (int64_t value : attr.asArrayRef()) {
+    if (positive && value <= 0)
+      return op->emitOpError() << name << " entries must be positive";
+    if (!positive && value < 0)
+      return op->emitOpError() << name << " entries must be non-negative";
+  }
+  return mlir::success();
+}
+
+static mlir::LogicalResult
+verifyPermutationI64Array(mlir::Operation *op, mlir::DenseI64ArrayAttr attr,
+                          llvm::StringRef name) {
+  if (mlir::failed(verifyI64Array(op, attr, name, 4, /*positive=*/false)))
+    return mlir::failure();
+  bool seen[4] = {false, false, false, false};
+  for (int64_t value : attr.asArrayRef()) {
+    if (value >= 4)
+      return op->emitOpError()
+             << name << " entries must be in the range [0, 3]";
+    if (seen[value])
+      return op->emitOpError()
+             << name << " entries must form a permutation";
+    seen[value] = true;
   }
   return mlir::success();
 }
@@ -161,6 +197,17 @@ static mlir::LogicalResult verifyAlignedSPMGemmMemRef(mlir::Operation *op,
   std::optional<MemLayout> layout = getWaferLayout(type);
   if (!layout || !isAlignedGemmLayout(*layout))
     return op->emitOpError("lhs, rhs and dest must use aligned SPM layouts");
+  return mlir::success();
+}
+
+static mlir::LogicalResult verifyAlignedSPMMemRef(mlir::Operation *op,
+                                                  mlir::Type type,
+                                                  llvm::StringRef role) {
+  if (mlir::failed(verifySPMMemRef(op, type, role)))
+    return mlir::failure();
+  std::optional<MemLayout> layout = getWaferLayout(type);
+  if (!layout || !isAlignedGemmLayout(*layout))
+    return op->emitOpError() << role << " must use cx/ncx SPM layout";
   return mlir::success();
 }
 
@@ -274,7 +321,7 @@ static mlir::Type getMemRefElementType(mlir::Type type) {
   return {};
 }
 
-static ComputeElementwiseKind
+static std::optional<ComputeElementwiseKind>
 toComputeElementwiseKind(InstrElementwiseKind kind) {
   switch (kind) {
   case InstrElementwiseKind::Add:
@@ -313,8 +360,127 @@ toComputeElementwiseKind(InstrElementwiseKind kind) {
     return ComputeElementwiseKind::Gt;
   case InstrElementwiseKind::Ge:
     return ComputeElementwiseKind::Ge;
+  case InstrElementwiseKind::Abs:
+  case InstrElementwiseKind::Square:
+  case InstrElementwiseKind::Log2:
+  case InstrElementwiseKind::Ln:
+  case InstrElementwiseKind::Pow2:
+  case InstrElementwiseKind::ExpLp:
+  case InstrElementwiseKind::Sin:
+  case InstrElementwiseKind::Cos:
+  case InstrElementwiseKind::Sigmoid:
+  case InstrElementwiseKind::Relu:
+  case InstrElementwiseKind::SatRelu:
+  case InstrElementwiseKind::LeakyRelu:
+  case InstrElementwiseKind::Softplus:
+  case InstrElementwiseKind::LogicNot:
+  case InstrElementwiseKind::LogicAnd:
+  case InstrElementwiseKind::LogicOr:
+  case InstrElementwiseKind::LogicXor:
+    return std::nullopt;
   }
   llvm_unreachable("unknown instruction elementwise kind");
+}
+
+static bool isInstrRelationKind(InstrElementwiseKind kind) {
+  switch (kind) {
+  case InstrElementwiseKind::Eq:
+  case InstrElementwiseKind::Ne:
+  case InstrElementwiseKind::Lt:
+  case InstrElementwiseKind::Le:
+  case InstrElementwiseKind::Gt:
+  case InstrElementwiseKind::Ge:
+    return true;
+  default:
+    return false;
+  }
+}
+
+static unsigned getInstrElementwiseArity(InstrElementwiseKind kind) {
+  switch (kind) {
+  case InstrElementwiseKind::Abs:
+  case InstrElementwiseKind::Recip:
+  case InstrElementwiseKind::Square:
+  case InstrElementwiseKind::Sqrt:
+  case InstrElementwiseKind::Rsqrt:
+  case InstrElementwiseKind::Neg:
+  case InstrElementwiseKind::LogicNot:
+  case InstrElementwiseKind::Log2:
+  case InstrElementwiseKind::Ln:
+  case InstrElementwiseKind::Pow2:
+  case InstrElementwiseKind::Exp:
+  case InstrElementwiseKind::ExpLp:
+  case InstrElementwiseKind::Sin:
+  case InstrElementwiseKind::Cos:
+  case InstrElementwiseKind::Tanh:
+  case InstrElementwiseKind::Sigmoid:
+  case InstrElementwiseKind::Relu:
+  case InstrElementwiseKind::SatRelu:
+  case InstrElementwiseKind::LeakyRelu:
+  case InstrElementwiseKind::Softplus:
+    return 1;
+  case InstrElementwiseKind::Max:
+  case InstrElementwiseKind::Min:
+  case InstrElementwiseKind::Add:
+  case InstrElementwiseKind::Sub:
+  case InstrElementwiseKind::Mul:
+  case InstrElementwiseKind::Div:
+  case InstrElementwiseKind::Eq:
+  case InstrElementwiseKind::Ne:
+  case InstrElementwiseKind::Ge:
+  case InstrElementwiseKind::Gt:
+  case InstrElementwiseKind::Le:
+  case InstrElementwiseKind::Lt:
+  case InstrElementwiseKind::LogicAnd:
+  case InstrElementwiseKind::LogicOr:
+  case InstrElementwiseKind::LogicXor:
+    return 2;
+  }
+  llvm_unreachable("unknown instruction elementwise kind");
+}
+
+static mlir::LogicalResult
+verifySimpleInstrElementwiseContract(mlir::Operation *op,
+                                     InstrElementwiseKind kind,
+                                     mlir::ValueRange inputs,
+                                     mlir::Type destType) {
+  std::optional<mlir::RankedTensorType> destTensor =
+      getLogicalTensorType(destType);
+  if (!destTensor)
+    return op->emitOpError("expects Wafer buffer dest");
+
+  unsigned expectedArity = getInstrElementwiseArity(kind);
+  if (inputs.size() != expectedArity)
+    return op->emitOpError("elementwise kind expects ")
+           << expectedArity << " operand(s), got " << inputs.size();
+
+  std::optional<mlir::RankedTensorType> firstInputTensor;
+  for (mlir::Value input : inputs) {
+    std::optional<mlir::RankedTensorType> inputTensor =
+        getLogicalTensorType(input.getType());
+    if (!inputTensor)
+      return op->emitOpError("expects Wafer buffer operands");
+    if (!firstInputTensor)
+      firstInputTensor = inputTensor;
+    if (mlir::failed(verifySameShape(
+            op, *inputTensor, *destTensor,
+            "elementwise operand shapes must match dest shape")))
+      return mlir::failure();
+    if (isInstrRelationKind(kind)) {
+      if (!destTensor->getElementType().isInteger(1))
+        return op->emitOpError("relation dest element type must be i1");
+      if (inputTensor->getElementType() !=
+          firstInputTensor->getElementType())
+        return op->emitOpError(
+            "relation operand element types must match each other");
+      continue;
+    }
+    if (mlir::failed(verifySameElementType(
+            op, *inputTensor, *destTensor,
+            "elementwise operand element types must match dest element type")))
+      return mlir::failure();
+  }
+  return mlir::success();
 }
 
 enum class ConvertTypeTag { Int8, Int16, Int32, Bf16, Fp16, Fp32, Tf32 };
@@ -610,9 +776,15 @@ mlir::LogicalResult InstrElementwiseOp::verify() {
     if (mlir::failed(verifySPMMemRef(getOperation(), input.getType(), "input")))
       return mlir::failure();
   }
-  return verifyElementwiseTileContract(
-      getOperation(), toComputeElementwiseKind(getKindAttr().getValue()),
-      getInputs(), getDest().getType());
+  std::optional<ComputeElementwiseKind> computeKind =
+      toComputeElementwiseKind(getKindAttr().getValue());
+  if (computeKind) {
+    return verifyElementwiseTileContract(getOperation(), *computeKind,
+                                         getInputs(), getDest().getType());
+  }
+  return verifySimpleInstrElementwiseContract(
+      getOperation(), getKindAttr().getValue(), getInputs(),
+      getDest().getType());
 }
 
 InstrFamily InstrElementwiseOp::getInstructionFamily() {
@@ -921,6 +1093,363 @@ void InstrGemmOp::collectWaferResourceEffects(
 }
 
 mlir::LogicalResult InstrGemmOp::verifyWaferResourceEffectContract() {
+  llvm::SmallVector<WaferResourceEffect, 8> effects;
+  collectWaferResourceEffects(effects);
+  return verifyResourceEffects(getOperation(), effects);
+}
+
+mlir::LogicalResult InstrConvOp::verify() {
+  if (mlir::failed(verifyAlignedSPMMemRef(getOperation(),
+                                          getInput().getType(), "input")) ||
+      mlir::failed(verifyAlignedSPMMemRef(getOperation(),
+                                          getWeight().getType(), "weight")) ||
+      mlir::failed(verifyAlignedSPMMemRef(getOperation(),
+                                          getDest().getType(), "dest")))
+    return mlir::failure();
+
+  std::optional<mlir::RankedTensorType> inputTensor =
+      getLogicalTensorType(getInput().getType());
+  std::optional<mlir::RankedTensorType> weightTensor =
+      getLogicalTensorType(getWeight().getType());
+  std::optional<mlir::RankedTensorType> destTensor =
+      getLogicalTensorType(getDest().getType());
+  if (mlir::failed(verifySameElementType(
+          getOperation(), *inputTensor, *weightTensor,
+          "conv input and weight element types must match")) ||
+      mlir::failed(verifySameElementType(
+          getOperation(), *inputTensor, *destTensor,
+          "conv input and dest element types must match")) ||
+      mlir::failed(verifyI64Array(getOperation(), getInputShapeAttr(),
+                                  "input_shape", 4, /*positive=*/true)) ||
+      mlir::failed(verifyI64Array(getOperation(), getWeightShapeAttr(),
+                                  "weight_shape", 4, /*positive=*/true)) ||
+      mlir::failed(verifyI64Array(getOperation(), getOutputShapeAttr(),
+                                  "output_shape", 4, /*positive=*/true)) ||
+      mlir::failed(verifyI64Array(getOperation(), getPadsAttr(), "pads", 4,
+                                  /*positive=*/false)) ||
+      mlir::failed(verifyI64Array(getOperation(), getUnpadsAttr(), "unpads",
+                                  4, /*positive=*/false)) ||
+      mlir::failed(verifyI64Array(getOperation(), getKernelStridesAttr(),
+                                  "kernel_strides", 4,
+                                  /*positive=*/true)) ||
+      mlir::failed(verifyI64Array(getOperation(), getDilationsAttr(),
+                                  "dilations", 2, /*positive=*/true)))
+    return mlir::failure();
+  return mlir::success();
+}
+
+InstrFamily InstrConvOp::getInstructionFamily() { return InstrFamily::NE; }
+
+mlir::LogicalResult InstrConvOp::verifyInstructionContract() {
+  return verify();
+}
+
+void InstrConvOp::collectWaferResourceEffects(
+    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
+  appendResourceEffect(effects, WaferResourceKind::SPM,
+                       WaferResourceAccess::Read, WaferValueRole::Operand, 0,
+                       getCompactByteSizeOrUnknown(getInput().getType()));
+  appendResourceEffect(effects, WaferResourceKind::SPM,
+                       WaferResourceAccess::Read, WaferValueRole::Operand, 1,
+                       getCompactByteSizeOrUnknown(getWeight().getType()));
+  appendResourceEffect(effects, WaferResourceKind::SPM,
+                       WaferResourceAccess::Write, WaferValueRole::Operand, 2,
+                       getCompactByteSizeOrUnknown(getDest().getType()));
+  appendInstructionIssueEffect(
+      effects, WaferResourceKind::Compute,
+      getCompactByteSizeOrUnknown(getDest().getType()));
+}
+
+mlir::LogicalResult InstrConvOp::verifyWaferResourceEffectContract() {
+  llvm::SmallVector<WaferResourceEffect, 8> effects;
+  collectWaferResourceEffects(effects);
+  return verifyResourceEffects(getOperation(), effects);
+}
+
+static bool isIndexedPoolKind(InstrPoolKind kind) {
+  return kind == InstrPoolKind::IndexedMax || kind == InstrPoolKind::IndexedMin;
+}
+
+mlir::LogicalResult InstrPoolOp::verify() {
+  if (mlir::failed(verifyAlignedSPMMemRef(getOperation(),
+                                          getInput().getType(), "input")) ||
+      mlir::failed(verifyI64Array(getOperation(), getSourceShapeAttr(),
+                                  "source_shape", 4, /*positive=*/true)) ||
+      mlir::failed(verifyI64Array(getOperation(), getDestShapeAttr(),
+                                  "dest_shape", 4, /*positive=*/true)) ||
+      mlir::failed(verifyI64Array(getOperation(), getPadsAttr(), "pads", 4,
+                                  /*positive=*/false)) ||
+      mlir::failed(verifyI64Array(getOperation(), getKernelStridesAttr(),
+                                  "kernel_strides", 4,
+                                  /*positive=*/true)))
+    return mlir::failure();
+
+  bool indexed = isIndexedPoolKind(getKindAttr().getValue());
+  size_t expectedDests = indexed ? 2 : 1;
+  if (getDests().size() != expectedDests)
+    return emitOpError() << "pool kind expects " << expectedDests
+                         << " dest operand(s)";
+
+  std::optional<mlir::RankedTensorType> inputTensor =
+      getLogicalTensorType(getInput().getType());
+  for (auto [index, dest] : llvm::enumerate(getDests())) {
+    if (mlir::failed(verifyAlignedSPMMemRef(getOperation(), dest.getType(),
+                                            "dest")))
+      return mlir::failure();
+    std::optional<mlir::RankedTensorType> destTensor =
+        getLogicalTensorType(dest.getType());
+    if (index == 0) {
+      if (mlir::failed(verifySameElementType(
+              getOperation(), *inputTensor, *destTensor,
+              "pool value dest element type must match input element type")))
+        return mlir::failure();
+      continue;
+    }
+    if (!destTensor->getElementType().isInteger(32))
+      return emitOpError("indexed pool index dest element type must be i32");
+  }
+  return mlir::success();
+}
+
+InstrFamily InstrPoolOp::getInstructionFamily() { return InstrFamily::CT; }
+
+mlir::LogicalResult InstrPoolOp::verifyInstructionContract() {
+  return verify();
+}
+
+void InstrPoolOp::collectWaferResourceEffects(
+    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
+  appendResourceEffect(effects, WaferResourceKind::SPM,
+                       WaferResourceAccess::Read, WaferValueRole::Operand, 0,
+                       getCompactByteSizeOrUnknown(getInput().getType()));
+  for (auto [index, dest] : llvm::enumerate(getDests())) {
+    appendResourceEffect(effects, WaferResourceKind::SPM,
+                         WaferResourceAccess::Write, WaferValueRole::Operand,
+                         index + 1,
+                         getCompactByteSizeOrUnknown(dest.getType()));
+  }
+  appendInstructionIssueEffect(
+      effects, WaferResourceKind::Compute,
+      getCompactByteSizeOrUnknown(getDests().front().getType()));
+}
+
+mlir::LogicalResult InstrPoolOp::verifyWaferResourceEffectContract() {
+  llvm::SmallVector<WaferResourceEffect, 8> effects;
+  collectWaferResourceEffects(effects);
+  return verifyResourceEffects(getOperation(), effects);
+}
+
+mlir::LogicalResult InstrUnpoolOp::verify() {
+  if (mlir::failed(verifyAlignedSPMMemRef(getOperation(),
+                                          getInput().getType(), "input")) ||
+      mlir::failed(verifyAlignedSPMMemRef(getOperation(),
+                                          getIndex().getType(), "index")) ||
+      mlir::failed(verifyAlignedSPMMemRef(getOperation(),
+                                          getDest().getType(), "dest")) ||
+      mlir::failed(verifyI64Array(getOperation(), getSourceShapeAttr(),
+                                  "source_shape", 4, /*positive=*/true)) ||
+      mlir::failed(verifyI64Array(getOperation(), getDestShapeAttr(),
+                                  "dest_shape", 4, /*positive=*/true)) ||
+      mlir::failed(verifyI64Array(getOperation(), getKernelStridesAttr(),
+                                  "kernel_strides", 4,
+                                  /*positive=*/true)))
+    return mlir::failure();
+
+  std::optional<mlir::RankedTensorType> inputTensor =
+      getLogicalTensorType(getInput().getType());
+  std::optional<mlir::RankedTensorType> indexTensor =
+      getLogicalTensorType(getIndex().getType());
+  std::optional<mlir::RankedTensorType> destTensor =
+      getLogicalTensorType(getDest().getType());
+  if (mlir::failed(verifySameElementType(
+          getOperation(), *inputTensor, *destTensor,
+          "unpool input and dest element types must match")))
+    return mlir::failure();
+  if (!indexTensor->getElementType().isInteger(32))
+    return emitOpError("unpool index element type must be i32");
+  return mlir::success();
+}
+
+InstrFamily InstrUnpoolOp::getInstructionFamily() { return InstrFamily::CT; }
+
+mlir::LogicalResult InstrUnpoolOp::verifyInstructionContract() {
+  return verify();
+}
+
+void InstrUnpoolOp::collectWaferResourceEffects(
+    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
+  appendResourceEffect(effects, WaferResourceKind::SPM,
+                       WaferResourceAccess::Read, WaferValueRole::Operand, 0,
+                       getCompactByteSizeOrUnknown(getInput().getType()));
+  appendResourceEffect(effects, WaferResourceKind::SPM,
+                       WaferResourceAccess::Read, WaferValueRole::Operand, 1,
+                       getCompactByteSizeOrUnknown(getIndex().getType()));
+  appendResourceEffect(effects, WaferResourceKind::SPM,
+                       WaferResourceAccess::Write, WaferValueRole::Operand, 2,
+                       getCompactByteSizeOrUnknown(getDest().getType()));
+  appendInstructionIssueEffect(
+      effects, WaferResourceKind::Compute,
+      getCompactByteSizeOrUnknown(getDest().getType()));
+}
+
+mlir::LogicalResult InstrUnpoolOp::verifyWaferResourceEffectContract() {
+  llvm::SmallVector<WaferResourceEffect, 8> effects;
+  collectWaferResourceEffects(effects);
+  return verifyResourceEffects(getOperation(), effects);
+}
+
+mlir::LogicalResult InstrTDMADataMoveOp::verify() {
+  if (mlir::failed(
+          verifySPMMemRef(getOperation(), getSource().getType(), "source")) ||
+      mlir::failed(verifySPMMemRef(getOperation(), getDest().getType(),
+                                   "dest")) ||
+      mlir::failed(verifyI64Array(getOperation(), getSourceShapeAttr(),
+                                  "source_shape", 4, /*positive=*/true)) ||
+      mlir::failed(verifyI64Array(getOperation(), getDestShapeAttr(),
+                                  "dest_shape", 4, /*positive=*/true)))
+    return mlir::failure();
+  if (getPermutationAttr() &&
+      mlir::failed(verifyPermutationI64Array(getOperation(),
+                                             getPermutationAttr(),
+                                             "permutation")))
+    return mlir::failure();
+  if (getPadsAttr() &&
+      mlir::failed(verifyI64Array(getOperation(), getPadsAttr(), "pads", 4,
+                                  /*positive=*/false)))
+    return mlir::failure();
+  if (getKernelStridesAttr() &&
+      mlir::failed(verifyI64Array(getOperation(), getKernelStridesAttr(),
+                                  "kernel_strides", 4,
+                                  /*positive=*/true)))
+    return mlir::failure();
+
+  std::optional<mlir::RankedTensorType> sourceTensor =
+      getLogicalTensorType(getSource().getType());
+  std::optional<mlir::RankedTensorType> destTensor =
+      getLogicalTensorType(getDest().getType());
+  return verifySameElementType(getOperation(), *sourceTensor, *destTensor,
+                               "tdma_data_move source and dest element types "
+                               "must match");
+}
+
+InstrFamily InstrTDMADataMoveOp::getInstructionFamily() {
+  return InstrFamily::TDMA;
+}
+
+mlir::LogicalResult InstrTDMADataMoveOp::verifyInstructionContract() {
+  return verify();
+}
+
+void InstrTDMADataMoveOp::collectWaferResourceEffects(
+    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
+  appendResourceEffect(effects, WaferResourceKind::SPM,
+                       WaferResourceAccess::Read, WaferValueRole::Operand, 0,
+                       getCompactByteSizeOrUnknown(getSource().getType()));
+  appendResourceEffect(effects, WaferResourceKind::SPM,
+                       WaferResourceAccess::Write, WaferValueRole::Operand, 1,
+                       getCompactByteSizeOrUnknown(getDest().getType()));
+  appendInstructionIssueEffect(
+      effects, WaferResourceKind::Movement,
+      getCompactByteSizeOrUnknown(getDest().getType()));
+}
+
+mlir::LogicalResult
+InstrTDMADataMoveOp::verifyWaferResourceEffectContract() {
+  llvm::SmallVector<WaferResourceEffect, 4> effects;
+  collectWaferResourceEffects(effects);
+  return verifyResourceEffects(getOperation(), effects);
+}
+
+static std::pair<size_t, size_t>
+getPeripheralArity(InstrPeripheralKind kind) {
+  switch (kind) {
+  case InstrPeripheralKind::Count:
+    return {1, 1};
+  case InstrPeripheralKind::ArgMax:
+  case InstrPeripheralKind::ArgMin:
+    return {1, 2};
+  case InstrPeripheralKind::Factorize:
+    return {1, 3};
+  case InstrPeripheralKind::Bilinear:
+    return {1, 1};
+  case InstrPeripheralKind::Lut16:
+  case InstrPeripheralKind::Lut32:
+    return {2, 1};
+  case InstrPeripheralKind::RandGen:
+    return {2, 3};
+  case InstrPeripheralKind::ElemMask:
+    return {2, 1};
+  }
+  llvm_unreachable("unknown peripheral kind");
+}
+
+mlir::LogicalResult InstrPeripheralOp::verify() {
+  if (mlir::failed(verifyPositiveI64Attr(getOperation(), getElemCountAttr(),
+                                         "elem_count")))
+    return mlir::failure();
+
+  auto [expectedInputs, expectedDests] =
+      getPeripheralArity(getKindAttr().getValue());
+  if (getInputs().size() != expectedInputs)
+    return emitOpError() << "peripheral kind expects " << expectedInputs
+                         << " input operand(s)";
+  if (getDests().size() != expectedDests)
+    return emitOpError() << "peripheral kind expects " << expectedDests
+                         << " dest operand(s)";
+
+  for (mlir::Value input : getInputs()) {
+    if (mlir::failed(verifySPMMemRef(getOperation(), input.getType(),
+                                     "input")))
+      return mlir::failure();
+  }
+  for (mlir::Value dest : getDests()) {
+    if (mlir::failed(verifySPMMemRef(getOperation(), dest.getType(), "dest")))
+      return mlir::failure();
+  }
+
+  if (getKindAttr().getValue() == InstrPeripheralKind::ArgMax ||
+      getKindAttr().getValue() == InstrPeripheralKind::ArgMin) {
+    std::optional<mlir::RankedTensorType> inputTensor =
+        getLogicalTensorType(getInputs().front().getType());
+    std::optional<mlir::RankedTensorType> valueTensor =
+        getLogicalTensorType(getDests().front().getType());
+    std::optional<mlir::RankedTensorType> indexTensor =
+        getLogicalTensorType(getDests()[1].getType());
+    if (inputTensor->getElementType() != valueTensor->getElementType())
+      return emitOpError(
+          "arg peripheral value dest element type must match input");
+    if (!indexTensor->getElementType().isInteger(32))
+      return emitOpError("arg peripheral index dest element type must be i32");
+  }
+  return mlir::success();
+}
+
+InstrFamily InstrPeripheralOp::getInstructionFamily() {
+  return InstrFamily::CT;
+}
+
+mlir::LogicalResult InstrPeripheralOp::verifyInstructionContract() {
+  return verify();
+}
+
+void InstrPeripheralOp::collectWaferResourceEffects(
+    llvm::SmallVectorImpl<WaferResourceEffect> &effects) {
+  for (auto [index, input] : llvm::enumerate(getInputs())) {
+    appendResourceEffect(effects, WaferResourceKind::SPM,
+                         WaferResourceAccess::Read, WaferValueRole::Operand,
+                         index, getCompactByteSizeOrUnknown(input.getType()));
+  }
+  for (auto [index, dest] : llvm::enumerate(getDests())) {
+    appendResourceEffect(effects, WaferResourceKind::SPM,
+                         WaferResourceAccess::Write, WaferValueRole::Operand,
+                         getInputs().size() + index,
+                         getCompactByteSizeOrUnknown(dest.getType()));
+  }
+  appendInstructionIssueEffect(effects, WaferResourceKind::Compute,
+                               getElemCountAttr().getInt());
+}
+
+mlir::LogicalResult InstrPeripheralOp::verifyWaferResourceEffectContract() {
   llvm::SmallVector<WaferResourceEffect, 8> effects;
   collectWaferResourceEffects(effects);
   return verifyResourceEffects(getOperation(), effects);

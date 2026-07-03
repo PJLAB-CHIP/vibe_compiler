@@ -174,45 +174,79 @@ def Wafer_ComputeReduceKindAttr
   let assemblyFormat = "`<` $value `>`";
 }
 
-def Wafer_InstrElementwiseKindAdd : I32EnumAttrCase<"Add", 0, "add">;
-def Wafer_InstrElementwiseKindSub : I32EnumAttrCase<"Sub", 1, "sub">;
-def Wafer_InstrElementwiseKindMul : I32EnumAttrCase<"Mul", 2, "mul">;
-def Wafer_InstrElementwiseKindDiv : I32EnumAttrCase<"Div", 3, "div">;
-def Wafer_InstrElementwiseKindMax : I32EnumAttrCase<"Max", 4, "max">;
-def Wafer_InstrElementwiseKindMin : I32EnumAttrCase<"Min", 5, "min">;
-def Wafer_InstrElementwiseKindNeg : I32EnumAttrCase<"Neg", 6, "neg">;
-def Wafer_InstrElementwiseKindRecip : I32EnumAttrCase<"Recip", 7, "recip">;
-def Wafer_InstrElementwiseKindSqrt : I32EnumAttrCase<"Sqrt", 8, "sqrt">;
-def Wafer_InstrElementwiseKindRsqrt : I32EnumAttrCase<"Rsqrt", 9, "rsqrt">;
-def Wafer_InstrElementwiseKindExp : I32EnumAttrCase<"Exp", 10, "exp">;
-def Wafer_InstrElementwiseKindTanh : I32EnumAttrCase<"Tanh", 11, "tanh">;
-def Wafer_InstrElementwiseKindEq : I32EnumAttrCase<"Eq", 12, "eq">;
-def Wafer_InstrElementwiseKindNe : I32EnumAttrCase<"Ne", 13, "ne">;
-def Wafer_InstrElementwiseKindLt : I32EnumAttrCase<"Lt", 14, "lt">;
-def Wafer_InstrElementwiseKindLe : I32EnumAttrCase<"Le", 15, "le">;
-def Wafer_InstrElementwiseKindGt : I32EnumAttrCase<"Gt", 16, "gt">;
-def Wafer_InstrElementwiseKindGe : I32EnumAttrCase<"Ge", 17, "ge">;
+def Wafer_InstrElementwiseKindAbs : I32EnumAttrCase<"Abs", 0, "abs">;
+def Wafer_InstrElementwiseKindRecip : I32EnumAttrCase<"Recip", 1, "recip">;
+def Wafer_InstrElementwiseKindSquare : I32EnumAttrCase<"Square", 2, "square">;
+def Wafer_InstrElementwiseKindSqrt : I32EnumAttrCase<"Sqrt", 3, "sqrt">;
+def Wafer_InstrElementwiseKindRsqrt : I32EnumAttrCase<"Rsqrt", 4, "rsqrt">;
+def Wafer_InstrElementwiseKindNeg : I32EnumAttrCase<"Neg", 5, "neg">;
+def Wafer_InstrElementwiseKindMax : I32EnumAttrCase<"Max", 6, "max">;
+def Wafer_InstrElementwiseKindMin : I32EnumAttrCase<"Min", 10, "min">;
+def Wafer_InstrElementwiseKindAdd : I32EnumAttrCase<"Add", 14, "add">;
+def Wafer_InstrElementwiseKindSub : I32EnumAttrCase<"Sub", 18, "sub">;
+def Wafer_InstrElementwiseKindMul : I32EnumAttrCase<"Mul", 22, "mul">;
+def Wafer_InstrElementwiseKindDiv : I32EnumAttrCase<"Div", 26, "div">;
+def Wafer_InstrElementwiseKindEq : I32EnumAttrCase<"Eq", 30, "eq">;
+def Wafer_InstrElementwiseKindNe : I32EnumAttrCase<"Ne", 38, "ne">;
+def Wafer_InstrElementwiseKindGe : I32EnumAttrCase<"Ge", 46, "ge">;
+def Wafer_InstrElementwiseKindGt : I32EnumAttrCase<"Gt", 54, "gt">;
+def Wafer_InstrElementwiseKindLe : I32EnumAttrCase<"Le", 62, "le">;
+def Wafer_InstrElementwiseKindLt : I32EnumAttrCase<"Lt", 70, "lt">;
+def Wafer_InstrElementwiseKindLogicNot : I32EnumAttrCase<"LogicNot", 78, "logic_not">;
+def Wafer_InstrElementwiseKindLogicAnd : I32EnumAttrCase<"LogicAnd", 79, "logic_and">;
+def Wafer_InstrElementwiseKindLogicOr : I32EnumAttrCase<"LogicOr", 80, "logic_or">;
+def Wafer_InstrElementwiseKindLogicXor : I32EnumAttrCase<"LogicXor", 81, "logic_xor">;
+def Wafer_InstrElementwiseKindLog2 : I32EnumAttrCase<"Log2", 98, "log2">;
+def Wafer_InstrElementwiseKindLn : I32EnumAttrCase<"Ln", 99, "ln">;
+def Wafer_InstrElementwiseKindPow2 : I32EnumAttrCase<"Pow2", 100, "pow2">;
+def Wafer_InstrElementwiseKindExp : I32EnumAttrCase<"Exp", 101, "exp">;
+def Wafer_InstrElementwiseKindExpLp : I32EnumAttrCase<"ExpLp", 102, "exp_lp">;
+def Wafer_InstrElementwiseKindSin : I32EnumAttrCase<"Sin", 103, "sin">;
+def Wafer_InstrElementwiseKindCos : I32EnumAttrCase<"Cos", 104, "cos">;
+def Wafer_InstrElementwiseKindTanh : I32EnumAttrCase<"Tanh", 105, "tanh">;
+def Wafer_InstrElementwiseKindSigmoid : I32EnumAttrCase<"Sigmoid", 106, "sigmoid">;
+def Wafer_InstrElementwiseKindRelu : I32EnumAttrCase<"Relu", 107, "relu">;
+def Wafer_InstrElementwiseKindSatRelu : I32EnumAttrCase<"SatRelu", 108, "satrelu">;
+def Wafer_InstrElementwiseKindLeakyRelu : I32EnumAttrCase<"LeakyRelu", 109, "leakyrelu">;
+def Wafer_InstrElementwiseKindSoftplus : I32EnumAttrCase<"Softplus", 110, "softplus">;
 def Wafer_InstrElementwiseKind
     : I32EnumAttr<"InstrElementwiseKind",
                   "Wafer instruction CT elementwise target kind", [
+  Wafer_InstrElementwiseKindAbs,
+  Wafer_InstrElementwiseKindRecip,
+  Wafer_InstrElementwiseKindSquare,
+  Wafer_InstrElementwiseKindSqrt,
+  Wafer_InstrElementwiseKindRsqrt,
+  Wafer_InstrElementwiseKindNeg,
+  Wafer_InstrElementwiseKindMax,
+  Wafer_InstrElementwiseKindMin,
   Wafer_InstrElementwiseKindAdd,
   Wafer_InstrElementwiseKindSub,
   Wafer_InstrElementwiseKindMul,
   Wafer_InstrElementwiseKindDiv,
-  Wafer_InstrElementwiseKindMax,
-  Wafer_InstrElementwiseKindMin,
-  Wafer_InstrElementwiseKindNeg,
-  Wafer_InstrElementwiseKindRecip,
-  Wafer_InstrElementwiseKindSqrt,
-  Wafer_InstrElementwiseKindRsqrt,
-  Wafer_InstrElementwiseKindExp,
-  Wafer_InstrElementwiseKindTanh,
   Wafer_InstrElementwiseKindEq,
   Wafer_InstrElementwiseKindNe,
-  Wafer_InstrElementwiseKindLt,
-  Wafer_InstrElementwiseKindLe,
+  Wafer_InstrElementwiseKindGe,
   Wafer_InstrElementwiseKindGt,
-  Wafer_InstrElementwiseKindGe
+  Wafer_InstrElementwiseKindLe,
+  Wafer_InstrElementwiseKindLt,
+  Wafer_InstrElementwiseKindLogicNot,
+  Wafer_InstrElementwiseKindLogicAnd,
+  Wafer_InstrElementwiseKindLogicOr,
+  Wafer_InstrElementwiseKindLogicXor,
+  Wafer_InstrElementwiseKindLog2,
+  Wafer_InstrElementwiseKindLn,
+  Wafer_InstrElementwiseKindPow2,
+  Wafer_InstrElementwiseKindExp,
+  Wafer_InstrElementwiseKindExpLp,
+  Wafer_InstrElementwiseKindSin,
+  Wafer_InstrElementwiseKindCos,
+  Wafer_InstrElementwiseKindTanh,
+  Wafer_InstrElementwiseKindSigmoid,
+  Wafer_InstrElementwiseKindRelu,
+  Wafer_InstrElementwiseKindSatRelu,
+  Wafer_InstrElementwiseKindLeakyRelu,
+  Wafer_InstrElementwiseKindSoftplus
 ]> {
   let cppNamespace = "::wafer";
   let genSpecializedAttr = 0;
@@ -327,6 +361,133 @@ def Wafer_InstrConvertKind
 
 def Wafer_InstrConvertKindAttr
     : EnumAttr<Wafer_Dialect, Wafer_InstrConvertKind, "instr_convert_kind"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
+def Wafer_InstrConvKindConv : I32EnumAttrCase<"Conv", 0, "conv">;
+def Wafer_InstrConvKindDepthwise : I32EnumAttrCase<"Depthwise", 1, "depthwise">;
+def Wafer_InstrConvKindBackwardConv : I32EnumAttrCase<"BackwardConv", 2, "backward_conv">;
+def Wafer_InstrConvKind : I32EnumAttr<"InstrConvKind",
+                                      "Wafer instruction NE conv target kind", [
+  Wafer_InstrConvKindConv,
+  Wafer_InstrConvKindDepthwise,
+  Wafer_InstrConvKindBackwardConv
+]> {
+  let cppNamespace = "::wafer";
+  let genSpecializedAttr = 0;
+}
+
+def Wafer_InstrConvKindAttr
+    : EnumAttr<Wafer_Dialect, Wafer_InstrConvKind, "instr_conv_kind"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
+def Wafer_InstrPoolKindAvg : I32EnumAttrCase<"Avg", 115, "avg">;
+def Wafer_InstrPoolKindSum : I32EnumAttrCase<"Sum", 116, "sum">;
+def Wafer_InstrPoolKindMax : I32EnumAttrCase<"Max", 117, "max">;
+def Wafer_InstrPoolKindIndexedMax : I32EnumAttrCase<"IndexedMax", 118, "indexedmax">;
+def Wafer_InstrPoolKindMin : I32EnumAttrCase<"Min", 119, "min">;
+def Wafer_InstrPoolKindIndexedMin : I32EnumAttrCase<"IndexedMin", 120, "indexedmin">;
+def Wafer_InstrPoolKind : I32EnumAttr<"InstrPoolKind",
+                                      "Wafer instruction CT pool target kind", [
+  Wafer_InstrPoolKindAvg,
+  Wafer_InstrPoolKindSum,
+  Wafer_InstrPoolKindMax,
+  Wafer_InstrPoolKindIndexedMax,
+  Wafer_InstrPoolKindMin,
+  Wafer_InstrPoolKindIndexedMin
+]> {
+  let cppNamespace = "::wafer";
+  let genSpecializedAttr = 0;
+}
+
+def Wafer_InstrPoolKindAttr
+    : EnumAttr<Wafer_Dialect, Wafer_InstrPoolKind, "instr_pool_kind"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
+def Wafer_InstrUnpoolKindUnpool : I32EnumAttrCase<"Unpool", 121, "unpool">;
+def Wafer_InstrUnpoolKindAvg : I32EnumAttrCase<"Avg", 122, "avg">;
+def Wafer_InstrUnpoolKindMask : I32EnumAttrCase<"Mask", 123, "mask">;
+def Wafer_InstrUnpoolKind
+    : I32EnumAttr<"InstrUnpoolKind",
+                  "Wafer instruction CT unpool target kind", [
+  Wafer_InstrUnpoolKindUnpool,
+  Wafer_InstrUnpoolKindAvg,
+  Wafer_InstrUnpoolKindMask
+]> {
+  let cppNamespace = "::wafer";
+  let genSpecializedAttr = 0;
+}
+
+def Wafer_InstrUnpoolKindAttr
+    : EnumAttr<Wafer_Dialect, Wafer_InstrUnpoolKind, "instr_unpool_kind"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
+def Wafer_InstrDataMoveKindMirror : I32EnumAttrCase<"Mirror", 124, "mirror">;
+def Wafer_InstrDataMoveKindTranspose : I32EnumAttrCase<"Transpose", 125, "transpose">;
+def Wafer_InstrDataMoveKindRotate90 : I32EnumAttrCase<"Rotate90", 126, "rotate90">;
+def Wafer_InstrDataMoveKindRotate180 : I32EnumAttrCase<"Rotate180", 127, "rotate180">;
+def Wafer_InstrDataMoveKindRotate270 : I32EnumAttrCase<"Rotate270", 128, "rotate270">;
+def Wafer_InstrDataMoveKindNchw2Nhwc : I32EnumAttrCase<"Nchw2Nhwc", 129, "nchw2nhwc">;
+def Wafer_InstrDataMoveKindNhwc2Nchw : I32EnumAttrCase<"Nhwc2Nchw", 130, "nhwc2nchw">;
+def Wafer_InstrDataMoveKindPad : I32EnumAttrCase<"Pad", 132, "pad">;
+def Wafer_InstrDataMoveKindTensorNom : I32EnumAttrCase<"TensorNom", 133, "tensor_nom">;
+def Wafer_InstrDataMoveKindImg2Col : I32EnumAttrCase<"Img2Col", 138, "img2col">;
+def Wafer_InstrDataMoveKind
+    : I32EnumAttr<"InstrDataMoveKind",
+                  "Wafer instruction TDMA data-move target kind", [
+  Wafer_InstrDataMoveKindMirror,
+  Wafer_InstrDataMoveKindTranspose,
+  Wafer_InstrDataMoveKindRotate90,
+  Wafer_InstrDataMoveKindRotate180,
+  Wafer_InstrDataMoveKindRotate270,
+  Wafer_InstrDataMoveKindNchw2Nhwc,
+  Wafer_InstrDataMoveKindNhwc2Nchw,
+  Wafer_InstrDataMoveKindPad,
+  Wafer_InstrDataMoveKindTensorNom,
+  Wafer_InstrDataMoveKindImg2Col
+]> {
+  let cppNamespace = "::wafer";
+  let genSpecializedAttr = 0;
+}
+
+def Wafer_InstrDataMoveKindAttr
+    : EnumAttr<Wafer_Dialect, Wafer_InstrDataMoveKind,
+               "instr_data_move_kind"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
+def Wafer_InstrPeripheralKindCount : I32EnumAttrCase<"Count", 175, "count">;
+def Wafer_InstrPeripheralKindArgMax : I32EnumAttrCase<"ArgMax", 177, "argmax">;
+def Wafer_InstrPeripheralKindArgMin : I32EnumAttrCase<"ArgMin", 178, "argmin">;
+def Wafer_InstrPeripheralKindFactorize : I32EnumAttrCase<"Factorize", 180, "factorize">;
+def Wafer_InstrPeripheralKindBilinear : I32EnumAttrCase<"Bilinear", 182, "bilinear">;
+def Wafer_InstrPeripheralKindLut16 : I32EnumAttrCase<"Lut16", 183, "lut16">;
+def Wafer_InstrPeripheralKindLut32 : I32EnumAttrCase<"Lut32", 184, "lut32">;
+def Wafer_InstrPeripheralKindRandGen : I32EnumAttrCase<"RandGen", 185, "rand_gen">;
+def Wafer_InstrPeripheralKindElemMask : I32EnumAttrCase<"ElemMask", 186, "elem_mask">;
+def Wafer_InstrPeripheralKind
+    : I32EnumAttr<"InstrPeripheralKind",
+                  "Wafer instruction CT peripheral target kind", [
+  Wafer_InstrPeripheralKindCount,
+  Wafer_InstrPeripheralKindArgMax,
+  Wafer_InstrPeripheralKindArgMin,
+  Wafer_InstrPeripheralKindFactorize,
+  Wafer_InstrPeripheralKindBilinear,
+  Wafer_InstrPeripheralKindLut16,
+  Wafer_InstrPeripheralKindLut32,
+  Wafer_InstrPeripheralKindRandGen,
+  Wafer_InstrPeripheralKindElemMask
+]> {
+  let cppNamespace = "::wafer";
+  let genSpecializedAttr = 0;
+}
+
+def Wafer_InstrPeripheralKindAttr
+    : EnumAttr<Wafer_Dialect, Wafer_InstrPeripheralKind,
+               "instr_peripheral_kind"> {
   let assemblyFormat = "`<` $value `>`";
 }
 

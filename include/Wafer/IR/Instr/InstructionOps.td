@@ -203,4 +203,107 @@ def Wafer_InstrGemmOp : Wafer_InstrOp<"instr.gemm", [
       "$lhs `,` $rhs `into` $dest attr-dict `:` type($lhs) `,` type($rhs) `into` type($dest)";
 }
 
+def Wafer_InstrConvOp : Wafer_InstrOp<"instr.conv", [
+    MemoryEffects<[MemRead<Wafer_SPMResource>,
+                   MemWrite<Wafer_SPMResource>,
+                   MemWrite<Wafer_ComputeResource>]>
+  ]> {
+  let summary = "instruction-level NE convolution";
+  let arguments = (ins
+    Wafer_InstrConvKindAttr:$kind,
+    AnyMemRef:$input,
+    AnyMemRef:$weight,
+    AnyMemRef:$dest,
+    DenseI64ArrayAttr:$input_shape,
+    DenseI64ArrayAttr:$weight_shape,
+    DenseI64ArrayAttr:$output_shape,
+    DenseI64ArrayAttr:$pads,
+    DenseI64ArrayAttr:$unpads,
+    DenseI64ArrayAttr:$kernel_strides,
+    DenseI64ArrayAttr:$dilations
+  );
+  let hasVerifier = 1;
+  let assemblyFormat =
+      "$kind $input `,` $weight `into` $dest attr-dict `:` type($input) `,` type($weight) `into` type($dest)";
+}
+
+def Wafer_InstrPoolOp : Wafer_InstrOp<"instr.pool", [
+    MemoryEffects<[MemRead<Wafer_SPMResource>,
+                   MemWrite<Wafer_SPMResource>,
+                   MemWrite<Wafer_ComputeResource>]>
+  ]> {
+  let summary = "instruction-level CT pool";
+  let arguments = (ins
+    Wafer_InstrPoolKindAttr:$kind,
+    AnyMemRef:$input,
+    Variadic<AnyMemRef>:$dests,
+    DenseI64ArrayAttr:$source_shape,
+    DenseI64ArrayAttr:$dest_shape,
+    DenseI64ArrayAttr:$pads,
+    DenseI64ArrayAttr:$kernel_strides
+  );
+  let hasVerifier = 1;
+  let assemblyFormat =
+      "$kind $input `into` $dests attr-dict `:` type($input) `into` type($dests)";
+}
+
+def Wafer_InstrUnpoolOp : Wafer_InstrOp<"instr.unpool", [
+    MemoryEffects<[MemRead<Wafer_SPMResource>,
+                   MemWrite<Wafer_SPMResource>,
+                   MemWrite<Wafer_ComputeResource>]>
+  ]> {
+  let summary = "instruction-level CT unpool";
+  let arguments = (ins
+    Wafer_InstrUnpoolKindAttr:$kind,
+    AnyMemRef:$input,
+    AnyMemRef:$index,
+    AnyMemRef:$dest,
+    DenseI64ArrayAttr:$source_shape,
+    DenseI64ArrayAttr:$dest_shape,
+    DenseI64ArrayAttr:$kernel_strides
+  );
+  let hasVerifier = 1;
+  let assemblyFormat =
+      "$kind $input `,` $index `into` $dest attr-dict `:` type($input) `,` type($index) `into` type($dest)";
+}
+
+def Wafer_InstrTDMADataMoveOp : Wafer_InstrOp<"instr.tdma_data_move", [
+    MemoryEffects<[MemRead<Wafer_SPMResource>,
+                   MemWrite<Wafer_SPMResource>,
+                   MemWrite<Wafer_MovementResource>]>
+  ]> {
+  let summary = "instruction-level TDMA structured data movement";
+  let arguments = (ins
+    Wafer_InstrDataMoveKindAttr:$kind,
+    AnyMemRef:$source,
+    AnyMemRef:$dest,
+    DenseI64ArrayAttr:$source_shape,
+    DenseI64ArrayAttr:$dest_shape,
+    OptionalAttr<DenseI64ArrayAttr>:$permutation,
+    OptionalAttr<DenseI64ArrayAttr>:$pads,
+    OptionalAttr<DenseI64ArrayAttr>:$kernel_strides
+  );
+  let hasVerifier = 1;
+  let assemblyFormat =
+      "$kind $source `into` $dest attr-dict `:` type($source) `to` type($dest)";
+}
+
+def Wafer_InstrPeripheralOp : Wafer_InstrOp<"instr.peripheral", [
+    AttrSizedOperandSegments,
+    MemoryEffects<[MemRead<Wafer_SPMResource>,
+                   MemWrite<Wafer_SPMResource>,
+                   MemWrite<Wafer_ComputeResource>]>
+  ]> {
+  let summary = "instruction-level CT peripheral operation";
+  let arguments = (ins
+    Wafer_InstrPeripheralKindAttr:$kind,
+    Variadic<AnyMemRef>:$inputs,
+    Variadic<AnyMemRef>:$dests,
+    I64Attr:$elem_count
+  );
+  let hasVerifier = 1;
+  let assemblyFormat =
+      "$kind $inputs `into` $dests attr-dict `:` type($inputs) `into` type($dests)";
+}
+
 #endif // WAFER_IR_INSTR_INSTRUCTIONOPS_TD

@@ -48,6 +48,11 @@ SUPPORTED_INSTRUCTION_OPS = {
     "mask_move",
     "reduce",
     "convert",
+    "conv",
+    "pool",
+    "unpool",
+    "tdma_data_move",
+    "peripheral",
     "dte_send",
     "dte_recv",
     "dte_wait",
@@ -306,6 +311,13 @@ def parse_array_i64_attr(segment: str, name: str) -> list[int]:
     return [int(item.strip()) for item in match.group(1).split(",") if item.strip()]
 
 
+def parse_optional_array_i64_attr(segment: str, name: str) -> list[int] | None:
+    match = re.search(rf"\b{name}\s*=\s*array<i64:\s*([^>]*)>", segment)
+    if not match:
+        return None
+    return [int(item.strip()) for item in match.group(1).split(",") if item.strip()]
+
+
 def parse_kind(segment: str, op_name: str) -> str:
     match = re.search(
         rf"wafer\.instr\.{op_name}\s+(?:#wafer\.[a-z_]+<|<)([a-z0-9_]+)>",
@@ -458,6 +470,43 @@ def parse_instructions(instruction_ir: str) -> list[dict[str, Any]]:
                 item["init_value"] = constants[init_match.group(1)]
         elif op_name == "convert":
             item["kind"] = parse_kind(segment, "convert")
+        elif op_name == "conv":
+            item["kind"] = parse_kind(segment, "conv")
+            item["input_shape"] = parse_array_i64_attr(segment, "input_shape")
+            item["weight_shape"] = parse_array_i64_attr(segment, "weight_shape")
+            item["output_shape"] = parse_array_i64_attr(segment, "output_shape")
+            item["pads"] = parse_array_i64_attr(segment, "pads")
+            item["unpads"] = parse_array_i64_attr(segment, "unpads")
+            item["kernel_strides"] = parse_array_i64_attr(
+                segment, "kernel_strides"
+            )
+            item["dilations"] = parse_array_i64_attr(segment, "dilations")
+        elif op_name == "pool":
+            item["kind"] = parse_kind(segment, "pool")
+            item["source_shape"] = parse_array_i64_attr(segment, "source_shape")
+            item["dest_shape"] = parse_array_i64_attr(segment, "dest_shape")
+            item["pads"] = parse_array_i64_attr(segment, "pads")
+            item["kernel_strides"] = parse_array_i64_attr(
+                segment, "kernel_strides"
+            )
+        elif op_name == "unpool":
+            item["kind"] = parse_kind(segment, "unpool")
+            item["source_shape"] = parse_array_i64_attr(segment, "source_shape")
+            item["dest_shape"] = parse_array_i64_attr(segment, "dest_shape")
+            item["kernel_strides"] = parse_array_i64_attr(
+                segment, "kernel_strides"
+            )
+        elif op_name == "tdma_data_move":
+            item["kind"] = parse_kind(segment, "tdma_data_move")
+            item["source_shape"] = parse_array_i64_attr(segment, "source_shape")
+            item["dest_shape"] = parse_array_i64_attr(segment, "dest_shape")
+            for optional_attr in ("permutation", "pads", "kernel_strides"):
+                optional_values = parse_optional_array_i64_attr(segment, optional_attr)
+                if optional_values is not None:
+                    item[optional_attr] = optional_values
+        elif op_name == "peripheral":
+            item["kind"] = parse_kind(segment, "peripheral")
+            item["elem_count"] = parse_int_attr(segment, "elem_count")
         instructions.append(item)
 
     return instructions

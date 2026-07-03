@@ -88,7 +88,7 @@ Pipeline position:
 | Logical group | done | `wafer.group` boundary and group body verifier；group tests覆盖真实 PyTorch/XLA program chain |
 | Buffer-level collective materialization | done | top-level single-result all_gather / reduce_scatter / all_reduce materialize 成 `wafer.tile.*` collective；不在这一层选择 p2p schedule |
 | Direct DTE schedule lowering | done | compact all_gather 支持 ring/direct；tensor all_reduce 支持 ring/tree；full-input reduce_scatter 支持 direct；collective_permute 和 all_to_all 支持 direct p2p materialization |
-| Tile-region / instr lowering | done | compute/movement/communication lowering 到 `wafer.instr.*` over Wafer-tagged memrefs；instruction ops 使用 instr-specific target kind attrs；floating select lower 成 false-copy `gather_scatter` + `bit2fp` + `mask_move`，不生成 `wafer.instr.elementwise <select>`；convert kind 对齐硬件 opcode pair |
+| Tile-region / instr lowering | done | compute/movement/communication lowering 到 `wafer.instr.*` over Wafer-tagged memrefs；instruction ops 使用 instr-specific target kind attrs；floating select lower 成 false-copy `gather_scatter` + `bit2fp` + `mask_move`，不生成 `wafer.instr.elementwise <select>`；convert kind 对齐硬件 opcode pair；Conv/Pool/UnPool/structured TDMA/peripheral 已有明确 IR op、kind、verifier 和 package metadata intake |
 | SPM / DDR memory planning | done | accepted SPM offset facts、accepted DDR offset facts、DTE token lifetime、recv/send buffer demand 和 local fence 进入同一 planning gate |
 | Old helper ABI removal | done | 旧 helper ABI library、materialization pass、helper pipelines、runtime capture shim 和 C stub emitter 已删除；旧 helper ABI 不再是 IR 或 pipeline 合同 |
 
@@ -123,9 +123,9 @@ Pipeline position:
 
 ## 下一步
 
-1. 实现 target instruction LLVM lowering pass：只把 `tasks/11` coverage matrix 标记为
-   V0 native instr/sync 的 RDMA/WDMA/gather_scatter/fill/GEMM/
-   `#wafer.instr_elementwise_kind` / `#wafer.instr_reduce_kind` / `#wafer.instr_convert_kind`
-   子集，以及 bit2fp/mask_move/local_fence 纳入 production lowering。
+1. 实现 target instruction LLVM lowering pass：按 `tasks/11` coverage matrix 的 V0 native instr/sync
+   覆盖 RDMA/WDMA/gather_scatter/fill/elementwise/reduce/convert/GEMM/Conv/Pool/UnPool/
+   structured TDMA data-move/peripheral/DTE/local_fence。没有 target CRT / wrapper 证据的 kind 必须
+   结构化 diagnostic，不能 fallback 到旧 helper ABI 或 ad hoc call。
 2. 补 target lowering lit：`wafer.instr.* -> llvm.call @__*`，并用 `mlir-translate` 验证 LLVM IR 输出。
 3. 再恢复 device-code/package 主线 gate：只消费 compiler-generated target LLVM artifact，不引入旧 helper ABI/shim。

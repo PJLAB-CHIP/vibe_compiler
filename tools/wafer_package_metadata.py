@@ -64,6 +64,11 @@ SUPPORTED_INSTRUCTION_OPS = {
     "wafer.instr.mask_move",
     "wafer.instr.reduce",
     "wafer.instr.convert",
+    "wafer.instr.conv",
+    "wafer.instr.pool",
+    "wafer.instr.unpool",
+    "wafer.instr.tdma_data_move",
+    "wafer.instr.peripheral",
     "wafer.instr.dte_send",
     "wafer.instr.dte_recv",
     "wafer.instr.dte_wait",
@@ -72,6 +77,7 @@ SUPPORTED_INSTRUCTION_OPS = {
 
 SUPPORTED_ELEMENTWISE_KINDS = {
     "add",
+    "abs",
     "sub",
     "mul",
     "div",
@@ -79,16 +85,32 @@ SUPPORTED_ELEMENTWISE_KINDS = {
     "min",
     "neg",
     "recip",
+    "square",
     "sqrt",
     "rsqrt",
+    "log2",
+    "ln",
+    "pow2",
     "exp",
+    "exp_lp",
+    "sin",
+    "cos",
     "tanh",
+    "sigmoid",
+    "relu",
+    "satrelu",
+    "leakyrelu",
+    "softplus",
     "eq",
     "ne",
     "lt",
     "le",
     "gt",
     "ge",
+    "logic_not",
+    "logic_and",
+    "logic_or",
+    "logic_xor",
 }
 
 SUPPORTED_REDUCE_KINDS = {
@@ -137,6 +159,52 @@ SUPPORTED_CONVERT_KINDS = {
     "tf32_fp32",
 }
 
+SUPPORTED_CONV_KINDS = {
+    "conv",
+    "depthwise",
+    "backward_conv",
+}
+
+SUPPORTED_POOL_KINDS = {
+    "avg",
+    "sum",
+    "max",
+    "indexedmax",
+    "min",
+    "indexedmin",
+}
+
+SUPPORTED_UNPOOL_KINDS = {
+    "unpool",
+    "avg",
+    "mask",
+}
+
+SUPPORTED_DATA_MOVE_KINDS = {
+    "mirror",
+    "transpose",
+    "rotate90",
+    "rotate180",
+    "rotate270",
+    "nchw2nhwc",
+    "nhwc2nchw",
+    "pad",
+    "tensor_nom",
+    "img2col",
+}
+
+SUPPORTED_PERIPHERAL_KINDS = {
+    "count",
+    "argmax",
+    "argmin",
+    "factorize",
+    "bilinear",
+    "lut16",
+    "lut32",
+    "rand_gen",
+    "elem_mask",
+}
+
 
 def canonical_json(metadata: dict[str, Any]) -> str:
     return json.dumps(metadata, indent=2, allow_nan=False) + "\n"
@@ -180,6 +248,27 @@ def require_non_negative_int(value: Any, name: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
         fail(f"{name} must be a non-negative integer")
     return value
+
+
+def require_int_list(
+    value: Any, name: str, expected_length: int, *, positive: bool
+) -> list[int]:
+    values = require_list(value, name)
+    if len(values) != expected_length:
+        fail(f"{name} must contain exactly {expected_length} entries")
+    for index, item in enumerate(values):
+        if positive:
+            require_positive_int(item, f"{name}[{index}]")
+        else:
+            require_non_negative_int(item, f"{name}[{index}]")
+    return values
+
+
+def require_permutation_list(value: Any, name: str, expected_length: int) -> list[int]:
+    values = require_int_list(value, name, expected_length, positive=False)
+    if sorted(values) != list(range(expected_length)):
+        fail(f"{name} must be a permutation of 0..{expected_length - 1}")
+    return values
 
 
 def require_number(value: Any, name: str) -> int | float:
@@ -706,9 +795,152 @@ def validate_package_metadata(metadata: dict[str, Any]) -> None:
             )
             if kind not in SUPPORTED_CONVERT_KINDS:
                 fail(f"instructions[{index}].kind is not supported")
+        elif mnemonic == "wafer.instr.conv":
+            kind = require_non_empty_string(
+                item.get("kind"), f"instructions[{index}].kind"
+            )
+            if kind not in SUPPORTED_CONV_KINDS:
+                fail(f"instructions[{index}].kind is not supported")
+            require_int_list(
+                item.get("input_shape"),
+                f"instructions[{index}].input_shape",
+                4,
+                positive=True,
+            )
+            require_int_list(
+                item.get("weight_shape"),
+                f"instructions[{index}].weight_shape",
+                4,
+                positive=True,
+            )
+            require_int_list(
+                item.get("output_shape"),
+                f"instructions[{index}].output_shape",
+                4,
+                positive=True,
+            )
+            require_int_list(
+                item.get("pads"), f"instructions[{index}].pads", 4, positive=False
+            )
+            require_int_list(
+                item.get("unpads"),
+                f"instructions[{index}].unpads",
+                4,
+                positive=False,
+            )
+            require_int_list(
+                item.get("kernel_strides"),
+                f"instructions[{index}].kernel_strides",
+                4,
+                positive=True,
+            )
+            require_int_list(
+                item.get("dilations"),
+                f"instructions[{index}].dilations",
+                2,
+                positive=True,
+            )
+        elif mnemonic == "wafer.instr.pool":
+            kind = require_non_empty_string(
+                item.get("kind"), f"instructions[{index}].kind"
+            )
+            if kind not in SUPPORTED_POOL_KINDS:
+                fail(f"instructions[{index}].kind is not supported")
+            require_int_list(
+                item.get("source_shape"),
+                f"instructions[{index}].source_shape",
+                4,
+                positive=True,
+            )
+            require_int_list(
+                item.get("dest_shape"),
+                f"instructions[{index}].dest_shape",
+                4,
+                positive=True,
+            )
+            require_int_list(
+                item.get("pads"), f"instructions[{index}].pads", 4, positive=False
+            )
+            require_int_list(
+                item.get("kernel_strides"),
+                f"instructions[{index}].kernel_strides",
+                4,
+                positive=True,
+            )
+        elif mnemonic == "wafer.instr.unpool":
+            kind = require_non_empty_string(
+                item.get("kind"), f"instructions[{index}].kind"
+            )
+            if kind not in SUPPORTED_UNPOOL_KINDS:
+                fail(f"instructions[{index}].kind is not supported")
+            require_int_list(
+                item.get("source_shape"),
+                f"instructions[{index}].source_shape",
+                4,
+                positive=True,
+            )
+            require_int_list(
+                item.get("dest_shape"),
+                f"instructions[{index}].dest_shape",
+                4,
+                positive=True,
+            )
+            require_int_list(
+                item.get("kernel_strides"),
+                f"instructions[{index}].kernel_strides",
+                4,
+                positive=True,
+            )
+        elif mnemonic == "wafer.instr.tdma_data_move":
+            kind = require_non_empty_string(
+                item.get("kind"), f"instructions[{index}].kind"
+            )
+            if kind not in SUPPORTED_DATA_MOVE_KINDS:
+                fail(f"instructions[{index}].kind is not supported")
+            require_int_list(
+                item.get("source_shape"),
+                f"instructions[{index}].source_shape",
+                4,
+                positive=True,
+            )
+            require_int_list(
+                item.get("dest_shape"),
+                f"instructions[{index}].dest_shape",
+                4,
+                positive=True,
+            )
+            if "permutation" in item:
+                require_permutation_list(
+                    item.get("permutation"),
+                    f"instructions[{index}].permutation",
+                    4,
+                )
+            if "pads" in item:
+                require_int_list(
+                    item.get("pads"),
+                    f"instructions[{index}].pads",
+                    4,
+                    positive=False,
+                )
+            if "kernel_strides" in item:
+                require_int_list(
+                    item.get("kernel_strides"),
+                    f"instructions[{index}].kernel_strides",
+                    4,
+                    positive=True,
+                )
+        elif mnemonic == "wafer.instr.peripheral":
+            kind = require_non_empty_string(
+                item.get("kind"), f"instructions[{index}].kind"
+            )
+            if kind not in SUPPORTED_PERIPHERAL_KINDS:
+                fail(f"instructions[{index}].kind is not supported")
+            require_positive_int(
+                item.get("elem_count"), f"instructions[{index}].elem_count"
+            )
         elif "kind" in item:
             fail(
-                f"instructions[{index}].kind is only valid for elementwise, reduce, or convert ops"
+                f"instructions[{index}].kind is not valid for this op"
             )
 
 

@@ -112,13 +112,18 @@ Pipeline position:
 | `wafer.instr.reduce` | `#wafer.instr_reduce_kind` target wrapper families | pending target LLVM |
 | `wafer.instr.convert` | `#wafer.instr_convert_kind` opcode 139..174 dtype pair；same-format copy must lower through movement, not convert | pending target LLVM |
 | `wafer.instr.gemm` | `TsmGemm` wrapper / `__Gemm` style CRT evidence | pending target LLVM |
+| `wafer.instr.conv` | `#wafer.instr_conv_kind` NE Conv/Depthwise/BackwardConv target wrapper families；optional/fused operands are not implicit | IR added, LLVM pending |
+| `wafer.instr.pool` / `unpool` | `#wafer.instr_pool_kind` / `#wafer.instr_unpool_kind` CT Pool/UnPool wrapper families | IR added, LLVM pending |
+| `wafer.instr.tdma_data_move` | `#wafer.instr_data_move_kind` TDMA structured movement wrappers; ordinary copy still uses gather/scatter | IR added, LLVM pending |
+| `wafer.instr.peripheral` | `#wafer.instr_peripheral_kind` for count/arg/factorize/bilinear/LUT/rand/elem_mask; bitcount remains unsupported | IR added, LLVM pending |
 | `wafer.instr.dte_send` / `dte_recv` / `dte_wait` | Direct DTE/FSM runtime binding evidence still incomplete | partial IR done, production lowering pending |
 | `wafer.instr.local_fence` | `TsmWaitfinish` / local drain evidence | pending target LLVM |
 
-不在 V0 native coverage 中的硬件能力不属于本 stage 的默认 lowering surface。Conv/Depthwise、Pool/UnPool、
-native TensorNom、raw DTE non-unicast、Peripheral writeback/multi-output/random/LUT 类 op 需要先在
-instruction IR 中新增明确 op / kind / verifier，并更新 coverage matrix；target LLVM lowering 不能
-用 `wafer.instr.elementwise`、`gather_scatter` 或 ad hoc CRT call 隐式覆盖这些语义。
+不在 V0 native coverage 中的硬件能力不属于本 stage 的默认 lowering surface。concat、maskgather
+variants、raw DTE non-unicast、SCALAR/CSR ordinary execution、Peripheral bitcount 和 Conv optional/fused
+operand policy 等能力需要先在 instruction IR 中新增或扩展明确 op / kind / verifier，并更新 coverage
+matrix；target LLVM lowering 不能用 `wafer.instr.elementwise`、`gather_scatter` 或 ad hoc CRT call
+隐式覆盖这些语义。
 
 `wafer.instr.elementwise <select>` 非法。tile semantic select 需要在 instruction lowering 中改写成目标
 序列：

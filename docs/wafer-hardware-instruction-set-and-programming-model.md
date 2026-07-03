@@ -634,4 +634,8 @@ Stream、mailbox 和 CSR 的具体 wrapper/API 表放在 register-level spec。�
 | PMU counter 准确性 | DTE/SPM/NCC PMU register 和 TLV shape 已知，但 counter unit、wrap edge、event correlation 需要实测 | 影响 profiling/cost model，不作为 V0 correctness blocker |
 | latency/throughput/resource conflict | 目前公开资料足够做 legality verifier，并已确认独立部件可 overlap；NCC ready 条件包含 SPM bank 冲突和 RDMA/WDMA DDR overlap，但 LSU 内部、NoC、SPM bank、DDR 的具体竞争成本没有完整性能表 | 不阻塞 V0 correctness；影响后续 cost model、tiling 选择和并发调度 |
 
-后置扩展项：Conv optional/fused operand、Pool/UnPool、Peripheral、DataMove 更多几何变换等不属于 LLM V0 主线。SPM bank conflict 和非 1024-bit 内部对齐访问会影响 queue ready、stall 和性能，但不作为单条指令 legality blocker。
+后置扩展项：Conv optional/fused operand、TDMA concat/maskgather variants、Peripheral bitcount、
+raw DTE non-unicast 和 SCALAR/CSR ordinary execution 等不属于 LLM V0 主线。基础 Conv、
+Pool/UnPool、structured TDMA DataMove 和 public-wrapper Peripheral 已进入 compiler instruction IR
+覆盖；target LLVM wrapper lowering 和板端行为仍按对应任务 gate 验证。SPM bank conflict 和非
+1024-bit 内部对齐访问会影响 queue ready、stall 和性能，但不作为单条指令 legality blocker。
