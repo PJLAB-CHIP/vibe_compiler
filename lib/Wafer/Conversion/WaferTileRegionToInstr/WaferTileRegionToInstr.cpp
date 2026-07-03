@@ -14,6 +14,7 @@
 #include "mlir/Transforms/DialectConversion.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/ErrorHandling.h"
 
 #include <algorithm>
 #include <limits>
@@ -52,6 +53,9 @@ struct DescriptorLoop {
   int64_t strideBytes = 0;
   int64_t iterations = 1;
 };
+
+constexpr int64_t kNchw2NhwcPermutation[] = {0, 2, 3, 1};
+constexpr int64_t kNhwc2NchwPermutation[] = {0, 3, 1, 2};
 
 static std::optional<int64_t>
 getStaticPositiveElementCount(llvm::ArrayRef<int64_t> shape) {
@@ -875,6 +879,100 @@ getStaticLogicalMovementSegments(mlir::PatternRewriter &rewriter,
   return segments;
 }
 
+static bool requiresGatherScatterMaterialization(InstrDataMoveKind kind) {
+  switch (kind) {
+  case InstrDataMoveKind::Mirror:
+  case InstrDataMoveKind::Transpose:
+  case InstrDataMoveKind::Rotate90:
+  case InstrDataMoveKind::Rotate180:
+  case InstrDataMoveKind::Rotate270:
+  case InstrDataMoveKind::Nchw2Nhwc:
+  case InstrDataMoveKind::Nhwc2Nchw:
+  case InstrDataMoveKind::TensorNom:
+    return true;
+  case InstrDataMoveKind::Pad:
+  case InstrDataMoveKind::Img2Col:
+    return false;
+  }
+  llvm_unreachable("unknown instr data move kind");
+}
+
+static mlir::LogicalResult
+verifyStaticShapeAttrMatchesMemRef(mlir::PatternRewriter &rewriter,
+                                   mlir::Operation *op,
+                                   mlir::MemRefType type,
+                                   mlir::DenseI64ArrayAttr shapeAttr,
+                                   llvm::StringRef role,
+                                   std::string *failureReason,
+                                   llvm::StringRef opLabel) {
+  if (type.getRank() != static_cast<int64_t>(shapeAttr.size()))
+    return failPattern(
+        rewriter, op, failureReason,
+        llvm::Twine(opLabel)
+            .concat(" requires ")
+            .concat(role)
+            .concat("_shape rank to match the ")
+            .concat(role)
+            .concat(" memref rank")
+            .str());
+  for (auto [dim, attrSize] : llvm::enumerate(shapeAttr.asArrayRef())) {
+    int64_t memrefSize = type.getDimSize(dim);
+    if (memrefSize == mlir::ShapedType::kDynamic || memrefSize != attrSize)
+      return failPattern(
+          rewriter, op, failureReason,
+          llvm::Twine(opLabel)
+              .concat(" requires static ")
+              .concat(role)
+              .concat(" memref shape to match ")
+              .concat(role)
+              .concat("_shape")
+              .str());
+  }
+  return mlir::success();
+}
+
+static mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>>
+getPermutationDataMoveSegments(mlir::PatternRewriter &rewriter,
+                               InstrTDMADataMoveOp op,
+                               mlir::MemRefType sourceType,
+                               mlir::MemRefType destType,
+                               llvm::ArrayRef<int64_t> permutation,
+                               std::string *failureReason,
+                               llvm::StringRef opLabel) {
+  if (sourceType.getRank() != destType.getRank() ||
+      sourceType.getRank() != static_cast<int64_t>(permutation.size()))
+    return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
+        rewriter, op, failureReason,
+        llvm::Twine(opLabel).concat(" requires rank-compatible operands").str());
+  for (auto [destDim, sourceDim] : llvm::enumerate(permutation)) {
+    int64_t sourceSize = sourceType.getDimSize(sourceDim);
+    int64_t destSize = destType.getDimSize(destDim);
+    if (sourceSize == mlir::ShapedType::kDynamic ||
+        destSize == mlir::ShapedType::kDynamic || sourceSize != destSize)
+      return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
+          rewriter, op, failureReason,
+          llvm::Twine(opLabel)
+              .concat(" requires permutation-compatible static shapes")
+              .str());
+  }
+
+  auto sourceIndexFn = [&](llvm::ArrayRef<int64_t> destIndices)
+      -> mlir::FailureOr<llvm::SmallVector<int64_t>> {
+    llvm::SmallVector<int64_t> sourceIndices(sourceType.getRank(), 0);
+    for (auto [destDim, sourceDim] : llvm::enumerate(permutation))
+      sourceIndices[sourceDim] = destIndices[destDim];
+    return sourceIndices;
+  };
+  auto destIndexFn = [](llvm::ArrayRef<int64_t> destIndices)
+      -> mlir::FailureOr<llvm::SmallVector<int64_t>> {
+    return llvm::SmallVector<int64_t>(destIndices.begin(), destIndices.end());
+  };
+
+  return getStaticMappedMovementSegments(rewriter, op, sourceType, destType,
+                                         destType.getShape(), sourceIndexFn,
+                                         destIndexFn, failureReason, opLabel);
+}
+
 static bool
 isMetadataOnlyLogicalMovement(mlir::MemRefType sourceType,
                               mlir::MemRefType destType,
@@ -1268,6 +1366,95 @@ public:
   }
 
 private:
+  std::string *failureReason;
+};
+
+class InstrTDMADataMoveLowering
+    : public mlir::OpRewritePattern<InstrTDMADataMoveOp> {
+public:
+  InstrTDMADataMoveLowering(mlir::MLIRContext *context,
+                            std::string *failureReason)
+      : mlir::OpRewritePattern<InstrTDMADataMoveOp>(context),
+        failureReason(failureReason) {}
+
+  mlir::LogicalResult
+  matchAndRewrite(InstrTDMADataMoveOp op,
+                  mlir::PatternRewriter &rewriter) const final {
+    InstrDataMoveKind kind = op.getKindAttr().getValue();
+    if (!requiresGatherScatterMaterialization(kind))
+      return mlir::failure();
+
+    auto sourceType =
+        mlir::dyn_cast<mlir::MemRefType>(op.getSource().getType());
+    auto destType = mlir::dyn_cast<mlir::MemRefType>(op.getDest().getType());
+    if (!sourceType || !destType)
+      return failPattern(rewriter, op, failureReason,
+                         "tdma_data_move lowering requires memref operands");
+    if (mlir::failed(verifyStaticShapeAttrMatchesMemRef(
+            rewriter, op, sourceType, op.getSourceShapeAttr(), "source",
+            failureReason, "tdma_data_move lowering")) ||
+        mlir::failed(verifyStaticShapeAttrMatchesMemRef(
+            rewriter, op, destType, op.getDestShapeAttr(), "dest",
+            failureReason, "tdma_data_move lowering")))
+      return mlir::failure();
+
+    mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>> segments =
+        lowerToSegments(op, sourceType, destType, kind, rewriter);
+    if (mlir::failed(segments))
+      return mlir::failure();
+
+    createGatherScatterSegments(rewriter, op.getLoc(), op.getSource(),
+                                op.getDest(), *segments);
+    rewriter.eraseOp(op);
+    return mlir::success();
+  }
+
+private:
+  mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>>
+  lowerToSegments(InstrTDMADataMoveOp op, mlir::MemRefType sourceType,
+                  mlir::MemRefType destType, InstrDataMoveKind kind,
+                  mlir::PatternRewriter &rewriter) const {
+    switch (kind) {
+    case InstrDataMoveKind::Transpose:
+      if (!op.getPermutationAttr())
+        return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
+            rewriter, op, failureReason,
+            "tdma_data_move transpose lowering requires permutation attr");
+      return getPermutationDataMoveSegments(
+          rewriter, op, sourceType, destType,
+          op.getPermutationAttr().asArrayRef(), failureReason,
+          "tdma_data_move transpose lowering");
+    case InstrDataMoveKind::Nchw2Nhwc:
+      return getPermutationDataMoveSegments(
+          rewriter, op, sourceType, destType,
+          llvm::ArrayRef<int64_t>(kNchw2NhwcPermutation), failureReason,
+          "tdma_data_move nchw2nhwc lowering");
+    case InstrDataMoveKind::Nhwc2Nchw:
+      return getPermutationDataMoveSegments(
+          rewriter, op, sourceType, destType,
+          llvm::ArrayRef<int64_t>(kNhwc2NchwPermutation), failureReason,
+          "tdma_data_move nhwc2nchw lowering");
+    case InstrDataMoveKind::TensorNom:
+      return getStaticLogicalMovementSegments(
+          rewriter, op, sourceType, destType, failureReason,
+          "tdma_data_move tensor_nom lowering");
+    case InstrDataMoveKind::Mirror:
+    case InstrDataMoveKind::Rotate90:
+    case InstrDataMoveKind::Rotate180:
+    case InstrDataMoveKind::Rotate270:
+      return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
+          rewriter, op, failureReason,
+          "tdma_data_move mirror/rotate lowering requires explicit "
+          "axis-orientation semantics before gather_scatter materialization");
+    case InstrDataMoveKind::Pad:
+    case InstrDataMoveKind::Img2Col:
+      return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
+          rewriter, op, failureReason,
+          "tdma_data_move pad/img2col remains a native instruction");
+    }
+    llvm_unreachable("unknown instr data move kind");
+  }
+
   std::string *failureReason;
 };
 
@@ -2331,6 +2518,11 @@ static void configureTileRegionToInstrTarget(mlir::ConversionTarget &target) {
                     InstrElementwiseOp, InstrBit2FpOp, InstrMaskMoveOp,
                     InstrReduceOp, InstrConvertOp, InstrGemmOp, InstrDTESendOp,
                     InstrDTERecvOp, InstrDTEWaitOp>();
+  target.addDynamicallyLegalOp<InstrTDMADataMoveOp>(
+      [](InstrTDMADataMoveOp op) {
+        return !requiresGatherScatterMaterialization(
+            op.getKindAttr().getValue());
+      });
   target.addIllegalOp<
       StorageLoadOp, StorageStoreOp, LayoutMaterializeOp, ComputeFillOp,
       ComputeGemmOp, ComputeElementwiseOp, ComputeReduceOp, MoveCopyOp,
@@ -2347,9 +2539,9 @@ populateTileRegionToInstrPatterns(mlir::RewritePatternSet &patterns,
   patterns
       .add<TileLoadLowering, TileStoreLowering, LayoutMaterializeLowering,
            TileCopyLowering, MoveExtractSliceLowering, MoveInsertSliceLowering,
-           MoveTransposeLowering, MoveBroadcastLowering, ElementwiseLowering,
-           ReduceLowering, GemmLowering, ViewReshapeLowering>(context,
-                                                              failureReason);
+           MoveTransposeLowering, InstrTDMADataMoveLowering,
+           MoveBroadcastLowering, ElementwiseLowering, ReduceLowering,
+           GemmLowering, ViewReshapeLowering>(context, failureReason);
   patterns.add<FillLowering>(context);
   patterns.add<AllGatherLowering>(context, failureReason,
                                   options.allGatherSchedule);

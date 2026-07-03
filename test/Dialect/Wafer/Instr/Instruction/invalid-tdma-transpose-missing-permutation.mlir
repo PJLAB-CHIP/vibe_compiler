@@ -8,10 +8,9 @@ module {
 
   wafer.instr.tdma_data_move #wafer.instr_data_move_kind<transpose> %src into %dst
       {source_shape = array<i64: 1, 8, 8, 64>,
-       dest_shape = array<i64: 1, 8, 64, 8>,
-       permutation = array<i64: 0, 1, 3, 2>}
+       dest_shape = array<i64: 1, 8, 64, 8>}
       : memref<1x8x8x64xf16, #wafer.memory<spm, tensor>>
      to memref<1x8x64x8xf16, #wafer.memory<spm, tensor>>
 }
 
-// CHECK: error: 'wafer.instr.tdma_data_move' op transpose-like data_move kind reached instruction IR; tile movement lowering must materialize it before instruction IR
+// CHECK: error: 'wafer.instr.tdma_data_move' op transpose data_move requires permutation attr

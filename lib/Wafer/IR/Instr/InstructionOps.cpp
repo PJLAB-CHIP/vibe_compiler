@@ -1460,16 +1460,30 @@ mlir::LogicalResult InstrTDMADataMoveOp::verify() {
 
   switch (getKindAttr().getValue()) {
   case InstrDataMoveKind::Mirror:
-  case InstrDataMoveKind::Transpose:
   case InstrDataMoveKind::Rotate90:
   case InstrDataMoveKind::Rotate180:
   case InstrDataMoveKind::Rotate270:
   case InstrDataMoveKind::Nchw2Nhwc:
   case InstrDataMoveKind::Nhwc2Nchw:
   case InstrDataMoveKind::TensorNom:
-    return emitOpError("transpose-like data_move kind reached instruction IR; "
-                       "tile movement lowering must materialize it before "
-                       "instruction IR");
+    if (getPermutationAttr())
+      return emitOpError(
+          "non-parameterized data_move must not have permutation attr");
+    if (getPadsAttr())
+      return emitOpError("non-parameterized data_move must not have pads attr");
+    if (getKernelStridesAttr())
+      return emitOpError(
+          "non-parameterized data_move must not have kernel_strides attr");
+    break;
+  case InstrDataMoveKind::Transpose:
+    if (!getPermutationAttr())
+      return emitOpError("transpose data_move requires permutation attr");
+    if (getPadsAttr())
+      return emitOpError("transpose data_move must not have pads attr");
+    if (getKernelStridesAttr())
+      return emitOpError(
+          "transpose data_move must not have kernel_strides attr");
+    break;
   case InstrDataMoveKind::Pad:
     if (!getPadsAttr())
       return emitOpError("pad data_move requires pads attr");
