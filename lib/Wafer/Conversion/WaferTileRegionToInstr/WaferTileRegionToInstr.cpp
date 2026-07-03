@@ -1450,7 +1450,8 @@ private:
     case InstrDataMoveKind::Img2Col:
       return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
           rewriter, op, failureReason,
-          "tdma_data_move pad/img2col remains a native instruction");
+          "tdma_data_move pad/img2col remains in the production target "
+          "surface");
     }
     llvm_unreachable("unknown instr data move kind");
   }

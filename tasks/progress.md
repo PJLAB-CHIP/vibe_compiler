@@ -89,7 +89,7 @@ Pipeline position:
 | Logical group | done | `wafer.group` boundary and group body verifier；group tests覆盖真实 PyTorch/XLA program chain |
 | Buffer-level collective materialization | done | top-level single-result all_gather / reduce_scatter / all_reduce materialize 成 `wafer.tile.*` collective；不在这一层选择 p2p schedule |
 | Direct DTE schedule lowering | done | compact all_gather 支持 ring/direct；tensor all_reduce 支持 ring/tree；full-input reduce_scatter 支持 direct；collective_permute 和 all_to_all 支持 direct p2p materialization |
-| Tile-region / instr lowering | done | compute/movement/communication lowering 到 `wafer.instr.*` over Wafer-tagged memrefs；instruction ops 使用 instr-specific target kind attrs；floating select lower 成 false-copy `gather_scatter` + `bit2fp` + `mask_move`，不生成 `wafer.instr.elementwise <select>`；reduce tile `dimensions` materialize 成 native `dim` code；convert kind 对齐硬件 opcode pair 并检查 zero-point/rounding/plain signature group；Conv/Pool/UnPool/pad-img2col TDMA/peripheral 已有明确 IR op、kind、kind-specific verifier 和 package metadata intake；transform-like TDMA movement 在 instr lowering 内 materialize 成 `gather_scatter`，native wrapper path 不是 target/package production surface |
+| Tile-region / instr lowering | done | compute/movement/communication lowering 到 `wafer.instr.*` over Wafer-tagged memrefs；instruction ops 使用 instr-specific target kind attrs；floating select lower 成 false-copy `gather_scatter` + `bit2fp` + `mask_move`，不生成 `wafer.instr.elementwise <select>`；reduce tile `dimensions` materialize 成 native `dim` code；convert kind 对齐硬件 opcode pair 并检查 zero-point/rounding/plain signature group；Conv/Pool/UnPool/pad-img2col TDMA/peripheral 已有明确 IR op、kind、kind-specific verifier 和 package metadata intake；transform-like TDMA movement 在 instr lowering 内 materialize 成 `gather_scatter`，TX8 wrapper path 不是 target/package production surface |
 | SPM / DDR memory planning | done | accepted SPM offset facts、accepted DDR offset facts、DTE token lifetime、recv/send buffer demand 和 local fence 进入同一 planning gate |
 | Old helper ABI removal | done | 旧 helper ABI library、materialization pass、helper pipelines、runtime capture shim 和 C stub emitter 已删除；旧 helper ABI 不再是 IR 或 pipeline 合同 |
 
@@ -105,7 +105,7 @@ Pipeline position:
 
 | 阶段 | 状态 | 输入 | 输出 / 完成 gate |
 | --- | --- | --- | --- |
-| target instruction LLVM lowering | active | memory-planned `wafer.instr.*` + accepted offsets + topology/execution-mesh + resource view + `tasks/11` coverage matrix 中的 V0 native instr/sync subset | V0 native `wafer.instr.* -> llvm.call @wafer_tx81_*`，`mlir-translate` 能输出 LLVM IR；future/unsupported coverage 不允许通过泛 op 隐式进入 lowering，unsupported op 结构化失败 |
+| target instruction LLVM lowering | active | memory-planned `wafer.instr.*` + accepted offsets + topology/execution-mesh + resource view + `tasks/11` coverage matrix 中的 V0 production target surface | V0 production target `wafer.instr.* -> llvm.call @wafer_tx81_*`，`mlir-translate` 能输出 LLVM IR；future/unsupported coverage 不允许通过泛 op 隐式进入 lowering，unsupported op 结构化失败 |
 | device-code compile/link gate | pending | compiler-generated LLVM IR + repo-vendored TX8 deps + repo-local Wafer CRT lib dir | LLVM `clang++` `.ll -> .o`、object metadata normalization、repo-vendored GCC `.o -> kcore .so`；不默认编译/链接 capture shim |
 | package metadata auto-export mainline | pending | compiler-generated LLVM artifact + kcore shared object + committed IR + model interface metadata | package metadata 从真实 target LLVM artifact 和 committed IR 导出并 roundtrip；workspace 只在 target entrypoint 需要额外 workspace base pointer 时导出 |
 | runtime adapter / board launch | pending | model-level package + C++ host runtime + board/runtime provider | allocation/import/query/bind、module load/function lookup、launch、completion 和 error propagation 在有卡环境验证 |
@@ -124,7 +124,7 @@ Pipeline position:
 
 ## 下一步
 
-1. 实现 target instruction LLVM lowering pass：按 `tasks/11` coverage matrix 的 V0 native instr/sync
+1. 实现 target instruction LLVM lowering pass：按 `tasks/11` coverage matrix 的 V0 production target surface
    覆盖 RDMA/WDMA/gather_scatter/fill/elementwise/reduce/convert/GEMM/Conv/Pool/UnPool/
    pad-img2col TDMA data-move/peripheral/DTE/local_fence。transpose-like DataMove 必须已由 compiler
    lowering materialize。没有 target CRT / wrapper 证据的 kind 必须

@@ -184,7 +184,7 @@ recv chunk 与 accumulator 的本地累计步骤；`wafer.tile.reduce` 仍只表
 
 - reduce dimensions 是 op 语义的一部分。若从 `linalg.reduce` lowering 而来，维度来自 structured
   op；进入 `wafer.tile.reduce` 后仍应能被 verifier 和 printer 明确看到。
-- V0 native reduce 只承诺 `sum`、`avg`、`max`、`min`。其它 reduction 可以在上游保持 structured
+- V0 production target reduce 只承诺 `sum`、`avg`、`max`、`min`。其它 reduction 可以在上游保持 structured
   loop，或 lower 成多个 supported compute op。
 - native reduce 属于 aligned-only op，verifier 要求 rank <= 2 使用 `Cx`，rank > 2 使用 `NCx`；
   这来自硬件指令集的 Reduce operand/result physical layout 约束，不是 planner 偏好。

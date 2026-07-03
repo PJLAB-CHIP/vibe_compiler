@@ -97,7 +97,7 @@ Pipeline position:
   检查。
 - lowering 可以找到 Wafer-owned target CRT symbol 方案或明确记录 unsupported diagnostic。
 - coverage 必须来自 `tasks/11-instruction-ir.md` 的 instruction coverage matrix。只有标为
-  `V0 native instr` 或 `V0 native sync` 的 op 是 target LLVM lowering 的 production 输入；
+  `V0 production target op` 或 `V0 production target sync` 的 op 是 target LLVM lowering 的 production 输入；
   `V0 composite lowering` 必须已经在 instruction lowering 前展开，`future` / `unsupported`
   不能通过现有泛 op 隐式进入 LLVM lowering。
 
@@ -151,14 +151,14 @@ family 下参数不同的 kind；若 public wrapper signature 不一致，要么
 | `pool` | `wafer_tx81_pool` / indexed variants | normal pool vs indexed pool dest arity differs | input address、value dest、optional index dest for indexed max/min、source/dest shape、pads、strides、format |
 | `unpool` | `wafer_tx81_unpool` / `wafer_tx81_unpool_avg` / mask/indexed variant | `Unpool/UnpoolIdx` take scalar `uint32_t index`; `UnpoolAvg` does not | input/dest addresses、source/dest shape、strides、optional scalar `index` according to kind |
 | `tdma_data_move` pad/img2col | `wafer_tx81_tdma_pad` / `wafer_tx81_tdma_img2col` | pad and img2col signatures differ | pad requires `pads`; img2col requires `pads` + `kernel_strides`; both forbid unrelated attrs |
-| transpose-like TDMA transform group | no production Wafer symbol in V0 | mirror/transpose/rotate/NCHW-NHWC/TensorNom wrappers exist but are not default lowering surface | instr lowering must materialize these movements before target LLVM/package export; future native enablement requires board/golden coverage and an explicit target-surface update |
+| transpose-like TDMA transform group | no production Wafer symbol in V0 | mirror/transpose/rotate/NCHW-NHWC/TensorNom wrappers exist but are not default lowering surface | instr lowering must materialize these movements before target LLVM/package export; future target enablement requires board/golden coverage and an explicit target-surface update |
 | `peripheral` arg/factorize/rand | `wafer_tx81_peripheral_*` | arity differs by kind | verifier fixes input/dest arity; arg index dest must be i32 |
 | `peripheral` bilinear/LUT/elem_mask | separate Wafer symbols or descriptor variants | bilinear uses shape attrs; LUT uses `lut_elem_count`; elem_mask uses scale/probability/rounding | required/forbidden attrs already checked by IR/package validator |
 | `peripheral count` | no production symbol | public wrapper writeback is not represented as normal dest buffer | verifier rejects until IR gains explicit writeback/result semantics |
 | Direct DTE | `wafer_tx81_dte_send` / `wafer_tx81_dte_recv` / wait helper | Direct DTE/FSM helper, not `TsmExecute` | logical peer and bytes from IR; endpoint/channel binding from execution mesh/topology/runtime |
 | local fence | `wafer_tx81_local_fence` | local wait/drain helper | no hidden multi-tile barrier semantics |
 
-不在 V0 native coverage 中的硬件能力不属于本 stage 的默认 lowering surface。concat、maskgather
+不在 V0 production target surface 中的硬件能力不属于本 stage 的默认 lowering surface。concat、maskgather
 variants、raw DTE non-unicast、SCALAR/CSR ordinary execution、Peripheral bitcount 和 Conv optional/fused
 operand policy 等能力需要先在 instruction IR 中新增或扩展明确 op / kind / verifier，并更新 coverage
 matrix；target LLVM lowering 不能用 `wafer.instr.elementwise`、`gather_scatter` 或 ad hoc CRT call
