@@ -637,6 +637,7 @@ Stream、mailbox 和 CSR 的具体 wrapper/API 表放在 register-level spec。�
 
 后置扩展项：Conv optional/fused operand、TDMA concat/maskgather variants、Peripheral bitcount、
 raw DTE non-unicast 和 SCALAR/CSR ordinary execution 等不属于 LLM V0 主线。基础 Conv、
-Pool/UnPool、structured TDMA DataMove 和 public-wrapper Peripheral 已进入 compiler instruction IR
-覆盖；target LLVM wrapper lowering 和板端行为仍按对应任务 gate 验证。SPM bank conflict 和非
+Pool/UnPool、TDMA pad/img2col 和 public-wrapper Peripheral 已进入 compiler instruction IR
+覆盖；transpose-like DataMove 和 TensorNom 主路径仍通过 GatherScatter materialize 或结构化失败。
+target LLVM wrapper lowering 和板端行为仍按对应任务 gate 验证。SPM bank conflict 和非
 1024-bit 内部对齐访问会影响 queue ready、stall 和性能，但不作为单条指令 legality blocker。

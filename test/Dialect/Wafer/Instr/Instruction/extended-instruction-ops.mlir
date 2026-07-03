@@ -14,7 +14,7 @@ module {
   %tensor = "builtin.unrealized_conversion_cast"()
       : () -> memref<1x8x8x64xf16, #wafer.memory<spm, tensor>>
   %moved = "builtin.unrealized_conversion_cast"()
-      : () -> memref<1x8x64x8xf16, #wafer.memory<spm, tensor>>
+      : () -> memref<1x8x8x64xf16, #wafer.memory<spm, tensor>>
   %arg_value = "builtin.unrealized_conversion_cast"()
       : () -> memref<1xf16, #wafer.memory<spm, tensor>>
   %arg_index = "builtin.unrealized_conversion_cast"()
@@ -49,12 +49,12 @@ module {
       : memref<1x4x4x64xf16, #wafer.memory<spm, ncx>>
     into memref<1x8x8x64xf16, #wafer.memory<spm, ncx>>
 
-  wafer.instr.tdma_data_move #wafer.instr_data_move_kind<transpose> %tensor into %moved
+  wafer.instr.tdma_data_move #wafer.instr_data_move_kind<pad> %tensor into %moved
       {source_shape = array<i64: 1, 8, 8, 64>,
-       dest_shape = array<i64: 1, 8, 64, 8>,
-       permutation = array<i64: 0, 1, 3, 2>}
+       dest_shape = array<i64: 1, 8, 8, 64>,
+       pads = array<i64: 0, 0, 0, 0>}
       : memref<1x8x8x64xf16, #wafer.memory<spm, tensor>>
-     to memref<1x8x64x8xf16, #wafer.memory<spm, tensor>>
+     to memref<1x8x8x64xf16, #wafer.memory<spm, tensor>>
 
   wafer.instr.peripheral #wafer.instr_peripheral_kind<argmax> %tensor into %arg_value, %arg_index
       {elem_count = 4096 : i64}
@@ -67,6 +67,6 @@ module {
 // CHECK-SAME: kernel_strides = array<i64: 3, 3, 1, 1>
 // CHECK: wafer.instr.pool <indexedmax>
 // CHECK: wafer.instr.unpool <mask>
-// CHECK: wafer.instr.tdma_data_move <transpose>
-// CHECK-SAME: permutation = array<i64: 0, 1, 3, 2>
+// CHECK: wafer.instr.tdma_data_move <pad>
+// CHECK-SAME: pads = array<i64: 0, 0, 0, 0>
 // CHECK: wafer.instr.peripheral <argmax>

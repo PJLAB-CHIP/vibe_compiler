@@ -280,7 +280,7 @@ instr-level target kind。
 | NE | `wafer.instr.gemm` | `wafer.tile.gemm` | tile-local GEMM / batched GEMM |
 | NE | `wafer.instr.conv` | future conv lowering / imported target op | basic Conv / Depthwise / BackwardConv packet fields |
 | CT | `wafer.instr.pool` / `wafer.instr.unpool` | future pool/unpool lowering / imported target op | pool indexed-output arity and unpool scalar-index descriptor |
-| TDMA | `wafer.instr.tdma_data_move` | future structured data-move lowering / imported target op | mirror / transpose / rotate / NCHW-NHWC / pad / TensorNom / img2col |
+| TDMA | `wafer.instr.tdma_data_move` | future structured data-move lowering / imported target op | V0 production 只允许 pad / img2col；mirror / transpose / rotate / NCHW-NHWC / TensorNom 这类 transpose-like movement 必须走 gather_scatter 或后续板端验证后再开启 |
 | CT | `wafer.instr.peripheral` | future peripheral lowering / imported target op | arg / factorize / bilinear / LUT / random / element-mask target kind; count remains rejected until writeback is represented |
 | DTE | `wafer.instr.dte_send` / `dte_recv` / `dte_wait` | accepted `wafer.tile.*` collective p2p schedule | fixed-size unicast Direct DTE invocation over unplaced SPM memrefs |
 
@@ -307,7 +307,8 @@ instr-level target kind。
 | tile collectives `all_gather/all_reduce/reduce_scatter/all_to_all/collective_permute` | 无 collective instr op | V0 composite lowering | 先在 tile collective / schedule 层选 ring、tree 或 direct p2p，再 lower 成 DTE send/recv/wait + local movement/compute |
 | `TsmConv` / `TsmDepthwiseConv` / backward conv | `wafer.instr.conv` + `#wafer.instr_conv_kind` | V0 native instr; target LLVM pending | IR 覆盖基础 Conv/Depthwise/BackwardConv packet fields；bias、scale、sparse、INT8 quant、fused activation 和 psum policy 仍需后续扩展 |
 | `TsmPool` / `TsmUnPool` | `wafer.instr.pool` / `wafer.instr.unpool` | V0 native instr; target LLVM pending | 明确 NHWC descriptor、pad/kernel/stride 和 indexed output arity；不能复用 reduce 或 movement op 表达 |
-| TDMA mirror/transpose/rotate/NCHW-NHWC/pad/img2col/native TensorNom | `wafer.instr.tdma_data_move` + `#wafer.instr_data_move_kind` | V0 native instr; target LLVM pending | 单条 TDMA data-move op 表达 wrapper-level structured movement；普通 copy/layout segment 仍优先使用 `gather_scatter` |
+| TDMA pad / img2col | `wafer.instr.tdma_data_move` + `#wafer.instr_data_move_kind` | V0 native instr; target LLVM pending | 单条 TDMA data-move op 表达 wrapper-level pad/img2col；普通 copy/layout segment 仍优先使用 `gather_scatter` |
+| TDMA mirror / transpose / rotate / NCHW-NHWC / native TensorNom | 无 production op；enum 保留但 verifier/package 拒绝 | V0 composite lowering or future native instr | V0 全部展开为 `gather_scatter` 或结构化失败。硬件 wrapper 存在，但公开资料/现有后端对 transpose-like path 的限制和问题较多，不能作为默认 target LLVM lowering surface |
 | TDMA concat / maskgather variants | 无单独 op | future native instr or composite | `concat` 属于 CT packet，maskgather variants 需要 bool/index operand policy；未定义前不能复用 `tdma_data_move` |
 | bitpacked bool loop / VuV / scalar immediate variants | 当前 `elementwise` 只覆盖 opcode family kind，不单独建模 variant | future extension | 需要区分 value bool、bitpacked bool、VuV/VuVLoop、scalar immediate 和 output storage；不能靠 `elementwise` 名称吞掉所有 variant |
 | Peripheral count/argmax/argmin/factorize/bilinear/lut/rand/elem_mask | `wafer.instr.peripheral` + `#wafer.instr_peripheral_kind` | V0 native instr; target LLVM pending | IR 明确 kind、input/output arity 和 elem_count；bitcount opcode 176 仍因缺 public wrapper 不纳入 |
@@ -555,13 +556,14 @@ wafer.instr.peripheral #wafer.instr_peripheral_kind<kind> inputs into dests attr
 
 | op | operands | result | required attrs |
 | --- | --- | --- | --- |
-| `wafer.instr.tdma_data_move` | `source: SPM memref`, `dest: SPM memref` | none | `kind: #wafer.instr_data_move_kind`, `source_shape`, `dest_shape`; `transpose` requires `permutation`; `pad` requires `pads`; `img2col` requires `pads` and `kernel_strides`; other current kinds forbid these extra attrs |
+| `wafer.instr.tdma_data_move` | `source: SPM memref`, `dest: SPM memref` | none | `kind: #wafer.instr_data_move_kind`, `source_shape`, `dest_shape`; V0 production allows only `pad` with `pads` and `img2col` with `pads` + `kernel_strides` |
 | `wafer.instr.peripheral` | `inputs: Variadic<SPM memref>`, `dests: Variadic<SPM memref>` | none | `kind: #wafer.instr_peripheral_kind`, `elem_count`; kind-specific attrs for bilinear/LUT/elem_mask |
 
-`wafer.instr.tdma_data_move` 表达 wrapper-level TDMA structured movement，例如 mirror、transpose、
-rotate、NCHW/NHWC、pad、TensorNom 和 img2col。普通 copy、layout segment movement、static slice /
-broadcast / transpose 的可证明 byte movement 仍优先展开成 `wafer.instr.gather_scatter`，不伪装成
-structured wrapper。
+`wafer.instr.tdma_data_move` 的 V0 production surface 只表达 wrapper-level `pad` / `img2col`。
+mirror、transpose、rotate、NCHW/NHWC 和 TensorNom 这类 transpose-like DataMove kind 虽然有
+public wrapper/header 证据，但 V0 不把它们作为 native lowering surface；普通 copy、layout segment
+movement、static slice / broadcast / transpose 的可证明 byte movement 必须展开成
+`wafer.instr.gather_scatter`，无法表达时结构化失败。
 
 `wafer.instr.peripheral` 覆盖 argmax、argmin、factorize、bilinear、lut16、lut32、rand_gen 和
 elem_mask 的 public wrapper 形态。kind 决定 input/dest arity；argmax/argmin 的第一个 dest 是
@@ -696,9 +698,10 @@ R3.2d verifier checks only instruction legality:
   rank-4 positive source/dest shape descriptors and positive stride descriptors. Indexed pool index dest
   must use i32 element type. Unpool `unpool` / `mask` require scalar uint32 `index`; `avg` forbids it.
 - `wafer.instr.tdma_data_move` requires SPM source/dest memrefs with matching element type, rank-4
-  positive source/dest descriptors, and kind-specific descriptor attrs. `transpose` requires
-  `permutation`; `pad` requires `pads`; `img2col` requires `pads` and `kernel_strides`; other current
-  kinds forbid these attrs. `permutation` must be a true permutation of dimensions `0..3`.
+  positive source/dest descriptors, and kind-specific descriptor attrs. V0 production only allows
+  `pad` with `pads` and `img2col` with `pads` + `kernel_strides`; transpose-like kinds
+  `mirror/transpose/rotate*/nchw2nhwc/nhwc2nchw/tensor_nom` are verifier-illegal and must be represented
+  by `gather_scatter` lowering or future native extension.
 - `wafer.instr.peripheral` verifies kind-specific input/dest arity and positive `elem_count`; arg
   peripheral ops require a same-dtype value dest plus an i32 index dest. `bilinear` requires
   source/dest shape attrs; LUT kinds require `lut_elem_count`; `elem_mask` requires `scale`,
@@ -818,9 +821,10 @@ R3.2d.1 已完成：
    `wafer.instr.reduce` 使用 native reduce `dim` code；tile reduce semantic `dimensions` 只在
    tile 层保留，并在 lowering 中 materialize 成 `dim`。
 5. `wafer.instr.unpool` 已改成 wrapper-aligned scalar `index` attr；`mask` / `unpool` 需要
-   uint32 `index`，`avg` 禁止携带。`wafer.instr.tdma_data_move` 和 `wafer.instr.peripheral`
-   verifier 按 kind-specific wrapper signature 检查 required/forbidden attrs；`count` peripheral
-   因 writeback 未被当前 IR 表示而结构化拒绝。
+   uint32 `index`，`avg` 禁止携带。`wafer.instr.tdma_data_move` verifier 只允许 V0 production
+   `pad` / `img2col`，并拒绝 transpose-like kind；`wafer.instr.peripheral` verifier 按
+   kind-specific wrapper signature 检查 required/forbidden attrs；`count` peripheral 因 writeback
+   未被当前 IR 表示而结构化拒绝。
 
 R3.2d.2 已完成：
 

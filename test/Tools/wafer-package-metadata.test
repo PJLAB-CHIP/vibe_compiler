@@ -18,6 +18,8 @@
 # RUN: not %python %wafer_src_root/tools/wafer_package_metadata.py --validate %t.deprecated-reduce-dimensions.json 2>&1 | FileCheck %s --check-prefix=REDUCE-DIM-ERR
 # RUN: %python -c 'import json, sys; data = json.load(open(sys.argv[1])); next(i for i in data["instructions"] if i["op"] == "wafer.instr.convert")["kind"] = "fp32_fp16"; json.dump(data, open(sys.argv[2], "w"))' %S/valid-model-package.json %t.missing-convert-rounding.json
 # RUN: not %python %wafer_src_root/tools/wafer_package_metadata.py --validate %t.missing-convert-rounding.json 2>&1 | FileCheck %s --check-prefix=CONVERT-ROUNDING-ERR
+# RUN: %python -c 'import json, sys; data = json.load(open(sys.argv[1])); data["instructions"].insert(0, {"op": "wafer.instr.tdma_data_move", "kind": "transpose", "wait_policy": "issue_only", "source_shape": [1, 8, 8, 64], "dest_shape": [1, 8, 64, 8], "permutation": [0, 1, 3, 2]}); json.dump(data, open(sys.argv[2], "w"))' %S/valid-model-package.json %t.unsupported-tdma-transpose.json
+# RUN: not %python %wafer_src_root/tools/wafer_package_metadata.py --validate %t.unsupported-tdma-transpose.json 2>&1 | FileCheck %s --check-prefix=TDMA-TRANSPOSE-ERR
 
 # CHECK: "schema_version": 2
 # CHECK: "name": "model_package_sample"
@@ -68,3 +70,4 @@
 # CONVERT-DTYPE-ERR: instructions[{{[0-9]+}}].src_dtype is deprecated
 # REDUCE-DIM-ERR: instructions[{{[0-9]+}}].dimensions is deprecated
 # CONVERT-ROUNDING-ERR: instructions[{{[0-9]+}}].rounding_mode must be a non-negative integer
+# TDMA-TRANSPOSE-ERR: instructions[{{[0-9]+}}].kind is not V0 production legal; use gather_scatter lowering

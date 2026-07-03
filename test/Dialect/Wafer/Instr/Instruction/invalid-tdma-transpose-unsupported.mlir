@@ -6,13 +6,12 @@ module {
   %dst = "builtin.unrealized_conversion_cast"()
       : () -> memref<1x8x64x8xf16, #wafer.memory<spm, tensor>>
 
-  wafer.instr.tdma_data_move #wafer.instr_data_move_kind<pad> %src into %dst
+  wafer.instr.tdma_data_move #wafer.instr_data_move_kind<transpose> %src into %dst
       {source_shape = array<i64: 1, 8, 8, 64>,
        dest_shape = array<i64: 1, 8, 64, 8>,
-       pads = array<i64: 0, 0, 0, 0>,
        permutation = array<i64: 0, 1, 3, 2>}
       : memref<1x8x8x64xf16, #wafer.memory<spm, tensor>>
      to memref<1x8x64x8xf16, #wafer.memory<spm, tensor>>
 }
 
-// CHECK: error: 'wafer.instr.tdma_data_move' op pad data_move must not have permutation attr
+// CHECK: error: 'wafer.instr.tdma_data_move' op transpose-like data_move kind is not V0 production legal; use gather_scatter lowering

@@ -226,6 +226,17 @@ SUPPORTED_DATA_MOVE_KINDS = {
     "img2col",
 }
 
+TRANSPOSE_LIKE_DATA_MOVE_KINDS = {
+    "mirror",
+    "transpose",
+    "rotate90",
+    "rotate180",
+    "rotate270",
+    "nchw2nhwc",
+    "nhwc2nchw",
+    "tensor_nom",
+}
+
 SUPPORTED_PERIPHERAL_KINDS = {
     "count",
     "argmax",
@@ -1006,13 +1017,10 @@ def validate_package_metadata(metadata: dict[str, Any]) -> None:
                     4,
                     positive=True,
                 )
-            if kind == "transpose":
-                if not has_permutation:
-                    fail(f"instructions[{index}].permutation is required for transpose")
-                reject_keys(
-                    item,
-                    f"instructions[{index}]",
-                    {"pads", "kernel_strides"},
+            if kind in TRANSPOSE_LIKE_DATA_MOVE_KINDS:
+                fail(
+                    f"instructions[{index}].kind is not V0 production legal; "
+                    "use gather_scatter lowering"
                 )
             elif kind == "pad":
                 if not has_pads:

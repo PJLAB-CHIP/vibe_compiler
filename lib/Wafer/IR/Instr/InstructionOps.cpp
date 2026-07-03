@@ -1459,15 +1459,23 @@ mlir::LogicalResult InstrTDMADataMoveOp::verify() {
     return mlir::failure();
 
   switch (getKindAttr().getValue()) {
+  case InstrDataMoveKind::Mirror:
   case InstrDataMoveKind::Transpose:
-    if (!getPermutationAttr())
-      return emitOpError("transpose data_move requires permutation attr");
-    break;
+  case InstrDataMoveKind::Rotate90:
+  case InstrDataMoveKind::Rotate180:
+  case InstrDataMoveKind::Rotate270:
+  case InstrDataMoveKind::Nchw2Nhwc:
+  case InstrDataMoveKind::Nhwc2Nchw:
+  case InstrDataMoveKind::TensorNom:
+    return emitOpError("transpose-like data_move kind is not V0 production "
+                       "legal; use gather_scatter lowering");
   case InstrDataMoveKind::Pad:
     if (!getPadsAttr())
       return emitOpError("pad data_move requires pads attr");
     if (getPermutationAttr())
       return emitOpError("pad data_move must not have permutation attr");
+    if (getKernelStridesAttr())
+      return emitOpError("pad data_move must not have kernel_strides attr");
     break;
   case InstrDataMoveKind::Img2Col:
     if (!getPadsAttr())
@@ -1476,20 +1484,6 @@ mlir::LogicalResult InstrTDMADataMoveOp::verify() {
       return emitOpError("img2col data_move requires kernel_strides attr");
     if (getPermutationAttr())
       return emitOpError("img2col data_move must not have permutation attr");
-    break;
-  case InstrDataMoveKind::Mirror:
-  case InstrDataMoveKind::Rotate90:
-  case InstrDataMoveKind::Rotate180:
-  case InstrDataMoveKind::Rotate270:
-  case InstrDataMoveKind::Nchw2Nhwc:
-  case InstrDataMoveKind::Nhwc2Nchw:
-  case InstrDataMoveKind::TensorNom:
-    if (getPermutationAttr())
-      return emitOpError("data_move kind must not have permutation attr");
-    if (getPadsAttr())
-      return emitOpError("data_move kind must not have pads attr");
-    if (getKernelStridesAttr())
-      return emitOpError("data_move kind must not have kernel_strides attr");
     break;
   }
 
