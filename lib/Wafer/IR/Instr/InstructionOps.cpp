@@ -7,6 +7,8 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 
+#include <initializer_list>
+#include <limits>
 #include <optional>
 #include <utility>
 
@@ -48,8 +50,9 @@ static mlir::LogicalResult verifyPositiveI64Attr(mlir::Operation *op,
   return mlir::success();
 }
 
-static mlir::LogicalResult verifyNonNegativeOptionalI64Attr(
-    mlir::Operation *op, mlir::IntegerAttr attr, llvm::StringRef name) {
+static mlir::LogicalResult
+verifyNonNegativeOptionalI64Attr(mlir::Operation *op, mlir::IntegerAttr attr,
+                                 llvm::StringRef name) {
   if (attr && attr.getInt() < 0)
     return op->emitOpError() << name << " must be non-negative";
   return mlir::success();
@@ -73,8 +76,7 @@ static mlir::LogicalResult verifyDescriptorArray(mlir::Operation *op,
 static mlir::LogicalResult verifyI64Array(mlir::Operation *op,
                                           mlir::DenseI64ArrayAttr attr,
                                           llvm::StringRef name,
-                                          int64_t expectedSize,
-                                          bool positive) {
+                                          int64_t expectedSize, bool positive) {
   if (attr.size() != expectedSize)
     return op->emitOpError()
            << name << " must contain exactly " << expectedSize << " entries";
@@ -98,8 +100,7 @@ verifyPermutationI64Array(mlir::Operation *op, mlir::DenseI64ArrayAttr attr,
       return op->emitOpError()
              << name << " entries must be in the range [0, 3]";
     if (seen[value])
-      return op->emitOpError()
-             << name << " entries must form a permutation";
+      return op->emitOpError() << name << " entries must form a permutation";
     seen[value] = true;
   }
   return mlir::success();
@@ -109,10 +110,11 @@ static int64_t getOptionalI64AttrValue(mlir::IntegerAttr attr) {
   return attr ? attr.getInt() : 0;
 }
 
-static mlir::FailureOr<int64_t> getMovementDescriptorEnd(
-    mlir::Operation *op, int64_t offset, int64_t innerBytes,
-    mlir::DenseI64ArrayAttr strides, mlir::DenseI64ArrayAttr iterations,
-    llvm::StringRef role) {
+static mlir::FailureOr<int64_t>
+getMovementDescriptorEnd(mlir::Operation *op, int64_t offset,
+                         int64_t innerBytes, mlir::DenseI64ArrayAttr strides,
+                         mlir::DenseI64ArrayAttr iterations,
+                         llvm::StringRef role) {
   int64_t end = 0;
   if (!checkedAdd(offset, innerBytes, end))
     return op->emitOpError()
@@ -124,8 +126,7 @@ static mlir::FailureOr<int64_t> getMovementDescriptorEnd(
   for (auto [stride, iteration] :
        llvm::zip(strides.asArrayRef(), iterations.asArrayRef())) {
     int64_t span = 0;
-    if (!checkedMul(stride, iteration - 1, span) ||
-        !checkedAdd(end, span, end))
+    if (!checkedMul(stride, iteration - 1, span) || !checkedAdd(end, span, end))
       return op->emitOpError()
              << role << " descriptor byte range overflows int64";
   }
@@ -233,10 +234,10 @@ static mlir::LogicalResult verifySameShape(mlir::Operation *op,
   return mlir::success();
 }
 
-static mlir::LogicalResult verifyInstructionReduceContract(mlir::Operation *op,
-                                                           mlir::Value input,
-                                                           mlir::Value dest,
-                                                           mlir::Value init) {
+static mlir::LogicalResult
+verifyInstructionReduceContract(mlir::Operation *op, mlir::Value input,
+                                mlir::Value dest, mlir::Value init,
+                                mlir::IntegerAttr dimAttr) {
   std::optional<mlir::RankedTensorType> inputTensor =
       getLogicalTensorType(input.getType());
   std::optional<mlir::RankedTensorType> destTensor =
@@ -266,22 +267,68 @@ static mlir::LogicalResult verifyInstructionReduceContract(mlir::Operation *op,
     return op->emitOpError(
         "reduce input element type must match dest element type");
 
-  auto dimensions = op->getAttrOfType<mlir::DenseI64ArrayAttr>("dimensions");
-  if (!dimensions)
-    return op->emitOpError("requires reduce dimensions attr");
-  llvm::ArrayRef<int64_t> dims = dimensions.asArrayRef();
+  if (!dimAttr)
+    return op->emitOpError("requires target reduce dim attr");
+  int64_t targetDim = dimAttr.getInt();
+  if (targetDim < 0 || targetDim > 5)
+    return op->emitOpError("reduce dim must be a target code in [0, 5]");
+
+  int64_t rank = inputTensor->getRank();
+  if (rank <= 0 || rank > 4)
+    return op->emitOpError("reduce input rank must be in [1, 4]");
+
+  auto fromTrailingDim = [&](int64_t trailingIndex) -> std::optional<int64_t> {
+    if (trailingIndex >= rank)
+      return std::nullopt;
+    return rank - 1 - trailingIndex;
+  };
+
+  llvm::SmallVector<int64_t, 3> dims;
+  switch (targetDim) {
+  case 0: { // C
+    if (auto dim = fromTrailingDim(0))
+      dims.push_back(*dim);
+    break;
+  }
+  case 1: { // W
+    if (auto dim = fromTrailingDim(1))
+      dims.push_back(*dim);
+    break;
+  }
+  case 2: { // H
+    if (auto dim = fromTrailingDim(2))
+      dims.push_back(*dim);
+    break;
+  }
+  case 3: { // N
+    if (auto dim = fromTrailingDim(3))
+      dims.push_back(*dim);
+    break;
+  }
+  case 4: { // HW
+    auto h = fromTrailingDim(2);
+    auto w = fromTrailingDim(1);
+    if (h && w)
+      dims.append({*h, *w});
+    break;
+  }
+  case 5: { // HWC
+    auto h = fromTrailingDim(2);
+    auto w = fromTrailingDim(1);
+    auto c = fromTrailingDim(0);
+    if (h && w && c)
+      dims.append({*h, *w, *c});
+    break;
+  }
+  }
+
   if (dims.empty())
-    return op->emitOpError("reduce dimensions must be non-empty");
-  if (static_cast<int64_t>(dims.size()) > inputTensor->getRank())
-    return op->emitOpError("reduce dimensions cannot exceed input tensor rank");
+    return op->emitOpError("reduce dim is not valid for input rank");
 
   llvm::DenseSet<int64_t> reducedDims;
   for (int64_t dim : dims) {
-    if (dim < 0 || dim >= inputTensor->getRank())
-      return op->emitOpError(
-          "reduce dimensions must be within input tensor rank");
     if (!reducedDims.insert(dim).second)
-      return op->emitOpError("reduce dimensions must be unique");
+      return op->emitOpError("reduce dim maps to duplicate logical dims");
   }
 
   if (destTensor->getRank() !=
@@ -439,11 +486,9 @@ static unsigned getInstrElementwiseArity(InstrElementwiseKind kind) {
   llvm_unreachable("unknown instruction elementwise kind");
 }
 
-static mlir::LogicalResult
-verifySimpleInstrElementwiseContract(mlir::Operation *op,
-                                     InstrElementwiseKind kind,
-                                     mlir::ValueRange inputs,
-                                     mlir::Type destType) {
+static mlir::LogicalResult verifySimpleInstrElementwiseContract(
+    mlir::Operation *op, InstrElementwiseKind kind, mlir::ValueRange inputs,
+    mlir::Type destType) {
   std::optional<mlir::RankedTensorType> destTensor =
       getLogicalTensorType(destType);
   if (!destTensor)
@@ -469,8 +514,7 @@ verifySimpleInstrElementwiseContract(mlir::Operation *op,
     if (isInstrRelationKind(kind)) {
       if (!destTensor->getElementType().isInteger(1))
         return op->emitOpError("relation dest element type must be i1");
-      if (inputTensor->getElementType() !=
-          firstInputTensor->getElementType())
+      if (inputTensor->getElementType() != firstInputTensor->getElementType())
         return op->emitOpError(
             "relation operand element types must match each other");
       continue;
@@ -591,6 +635,71 @@ getInstrConvertTypePair(mlir::MLIRContext *context, InstrConvertKind kind) {
     return {tf32, fp32};
   }
   llvm_unreachable("unknown instruction convert kind");
+}
+
+static bool requiresZeroPoint(InstrConvertKind kind) {
+  switch (kind) {
+  case InstrConvertKind::Int8Fp16:
+  case InstrConvertKind::Int8Bf16:
+  case InstrConvertKind::Int8Fp32:
+  case InstrConvertKind::Int8Tf32:
+    return true;
+  default:
+    return false;
+  }
+}
+
+static bool requiresRoundingMode(InstrConvertKind kind) {
+  switch (kind) {
+  case InstrConvertKind::Int16Bf16:
+  case InstrConvertKind::Int16Fp32:
+  case InstrConvertKind::Int16Tf32:
+  case InstrConvertKind::Int32Fp16:
+  case InstrConvertKind::Int32Bf16:
+  case InstrConvertKind::Int32Fp32:
+  case InstrConvertKind::Int32Tf32:
+  case InstrConvertKind::Bf16Int16:
+  case InstrConvertKind::Bf16Int32:
+  case InstrConvertKind::Fp16Int8:
+  case InstrConvertKind::Fp16Int16:
+  case InstrConvertKind::Fp16Int32:
+  case InstrConvertKind::Fp16Bf16:
+  case InstrConvertKind::Fp32Int8:
+  case InstrConvertKind::Fp32Int16:
+  case InstrConvertKind::Fp32Int32:
+  case InstrConvertKind::Fp32Fp16:
+  case InstrConvertKind::Fp32Bf16:
+  case InstrConvertKind::Fp32Tf32:
+  case InstrConvertKind::Tf32Int8:
+  case InstrConvertKind::Tf32Int16:
+  case InstrConvertKind::Tf32Int32:
+  case InstrConvertKind::Tf32Bf16:
+    return true;
+  default:
+    return false;
+  }
+}
+
+static mlir::LogicalResult verifyOptionalUInt32Attr(mlir::Operation *op,
+                                                    mlir::IntegerAttr attr,
+                                                    llvm::StringRef name) {
+  if (!attr)
+    return mlir::success();
+  int64_t value = attr.getInt();
+  if (value < 0 || value > std::numeric_limits<uint32_t>::max())
+    return op->emitOpError() << name << " must fit uint32_t";
+  return mlir::success();
+}
+
+static mlir::LogicalResult verifyOptionalRoundingMode(mlir::Operation *op,
+                                                      mlir::IntegerAttr attr,
+                                                      llvm::StringRef name) {
+  if (!attr)
+    return mlir::success();
+  int64_t value = attr.getInt();
+  if (value < 0 || value > 4)
+    return op->emitOpError() << name << " must be a RND_MODE value in [0, 4]";
+  return mlir::success();
 }
 
 static void appendInstructionIssueEffect(
@@ -782,9 +891,9 @@ mlir::LogicalResult InstrElementwiseOp::verify() {
     return verifyElementwiseTileContract(getOperation(), *computeKind,
                                          getInputs(), getDest().getType());
   }
-  return verifySimpleInstrElementwiseContract(
-      getOperation(), getKindAttr().getValue(), getInputs(),
-      getDest().getType());
+  return verifySimpleInstrElementwiseContract(getOperation(),
+                                              getKindAttr().getValue(),
+                                              getInputs(), getDest().getType());
 }
 
 InstrFamily InstrElementwiseOp::getInstructionFamily() {
@@ -820,7 +929,8 @@ mlir::LogicalResult InstrElementwiseOp::verifyWaferResourceEffectContract() {
 mlir::LogicalResult InstrBit2FpOp::verify() {
   if (mlir::failed(
           verifySPMMemRef(getOperation(), getSource().getType(), "source")) ||
-      mlir::failed(verifySPMMemRef(getOperation(), getDest().getType(), "dest")))
+      mlir::failed(
+          verifySPMMemRef(getOperation(), getDest().getType(), "dest")))
     return mlir::failure();
 
   std::optional<mlir::RankedTensorType> sourceTensor =
@@ -865,9 +975,10 @@ mlir::LogicalResult InstrBit2FpOp::verifyWaferResourceEffectContract() {
 mlir::LogicalResult InstrMaskMoveOp::verify() {
   if (mlir::failed(
           verifySPMMemRef(getOperation(), getSource().getType(), "source")) ||
-      mlir::failed(verifySPMMemRef(getOperation(), getMask().getType(),
-                                   "mask")) ||
-      mlir::failed(verifySPMMemRef(getOperation(), getDest().getType(), "dest")))
+      mlir::failed(
+          verifySPMMemRef(getOperation(), getMask().getType(), "mask")) ||
+      mlir::failed(
+          verifySPMMemRef(getOperation(), getDest().getType(), "dest")))
     return mlir::failure();
 
   std::optional<mlir::RankedTensorType> sourceTensor =
@@ -884,8 +995,9 @@ mlir::LogicalResult InstrMaskMoveOp::verify() {
       mlir::failed(verifySameElementType(
           getOperation(), *sourceTensor, *destTensor,
           "mask_move source and dest element types must match")) ||
-      mlir::failed(verifySameShape(getOperation(), *maskTensor, *destTensor,
-                                   "mask_move mask and dest shapes must match")))
+      mlir::failed(
+          verifySameShape(getOperation(), *maskTensor, *destTensor,
+                          "mask_move mask and dest shapes must match")))
     return mlir::failure();
   if (maskTensor->getElementType() != sourceTensor->getElementType())
     return emitOpError(
@@ -933,7 +1045,7 @@ mlir::LogicalResult InstrReduceOp::verify() {
           verifySPMMemRef(getOperation(), getDest().getType(), "dest")))
     return mlir::failure();
   return verifyInstructionReduceContract(getOperation(), getInput(), getDest(),
-                                         getInit());
+                                         getInit(), getDimAttr());
 }
 
 InstrFamily InstrReduceOp::getInstructionFamily() { return InstrFamily::CT; }
@@ -977,12 +1089,34 @@ mlir::LogicalResult InstrConvertOp::verify() {
   if (dstElement != expectedDst)
     return emitOpError(
         "convert kind destination type does not match dest element type");
+  InstrConvertKind kind = getKindAttr().getValue();
+  mlir::IntegerAttr zeroPoint =
+      getOperation()->getAttrOfType<mlir::IntegerAttr>("zero_point");
+  mlir::IntegerAttr roundingMode =
+      getOperation()->getAttrOfType<mlir::IntegerAttr>("rounding_mode");
+  if (requiresZeroPoint(kind)) {
+    if (!zeroPoint)
+      return emitOpError("convert kind requires zero_point attr");
+    if (roundingMode)
+      return emitOpError("zero-point convert must not have rounding_mode attr");
+  } else if (zeroPoint) {
+    return emitOpError("convert kind must not have zero_point attr");
+  }
+  if (requiresRoundingMode(kind)) {
+    if (!roundingMode)
+      return emitOpError("convert kind requires rounding_mode attr");
+  } else if (roundingMode) {
+    return emitOpError("convert kind must not have rounding_mode attr");
+  }
+  if (mlir::failed(
+          verifyOptionalUInt32Attr(getOperation(), zeroPoint, "zero_point")) ||
+      mlir::failed(verifyOptionalRoundingMode(getOperation(), roundingMode,
+                                              "rounding_mode")))
+    return mlir::failure();
   return mlir::success();
 }
 
-InstrFamily InstrConvertOp::getInstructionFamily() {
-  return InstrFamily::CT;
-}
+InstrFamily InstrConvertOp::getInstructionFamily() { return InstrFamily::CT; }
 
 mlir::LogicalResult InstrConvertOp::verifyInstructionContract() {
   return verify();
@@ -1099,12 +1233,12 @@ mlir::LogicalResult InstrGemmOp::verifyWaferResourceEffectContract() {
 }
 
 mlir::LogicalResult InstrConvOp::verify() {
-  if (mlir::failed(verifyAlignedSPMMemRef(getOperation(),
-                                          getInput().getType(), "input")) ||
-      mlir::failed(verifyAlignedSPMMemRef(getOperation(),
-                                          getWeight().getType(), "weight")) ||
-      mlir::failed(verifyAlignedSPMMemRef(getOperation(),
-                                          getDest().getType(), "dest")))
+  if (mlir::failed(verifyAlignedSPMMemRef(getOperation(), getInput().getType(),
+                                          "input")) ||
+      mlir::failed(verifyAlignedSPMMemRef(getOperation(), getWeight().getType(),
+                                          "weight")) ||
+      mlir::failed(
+          verifyAlignedSPMMemRef(getOperation(), getDest().getType(), "dest")))
     return mlir::failure();
 
   std::optional<mlir::RankedTensorType> inputTensor =
@@ -1127,8 +1261,8 @@ mlir::LogicalResult InstrConvOp::verify() {
                                   "output_shape", 4, /*positive=*/true)) ||
       mlir::failed(verifyI64Array(getOperation(), getPadsAttr(), "pads", 4,
                                   /*positive=*/false)) ||
-      mlir::failed(verifyI64Array(getOperation(), getUnpadsAttr(), "unpads",
-                                  4, /*positive=*/false)) ||
+      mlir::failed(verifyI64Array(getOperation(), getUnpadsAttr(), "unpads", 4,
+                                  /*positive=*/false)) ||
       mlir::failed(verifyI64Array(getOperation(), getKernelStridesAttr(),
                                   "kernel_strides", 4,
                                   /*positive=*/true)) ||
@@ -1171,8 +1305,8 @@ static bool isIndexedPoolKind(InstrPoolKind kind) {
 }
 
 mlir::LogicalResult InstrPoolOp::verify() {
-  if (mlir::failed(verifyAlignedSPMMemRef(getOperation(),
-                                          getInput().getType(), "input")) ||
+  if (mlir::failed(verifyAlignedSPMMemRef(getOperation(), getInput().getType(),
+                                          "input")) ||
       mlir::failed(verifyI64Array(getOperation(), getSourceShapeAttr(),
                                   "source_shape", 4, /*positive=*/true)) ||
       mlir::failed(verifyI64Array(getOperation(), getDestShapeAttr(),
@@ -1193,8 +1327,8 @@ mlir::LogicalResult InstrPoolOp::verify() {
   std::optional<mlir::RankedTensorType> inputTensor =
       getLogicalTensorType(getInput().getType());
   for (auto [index, dest] : llvm::enumerate(getDests())) {
-    if (mlir::failed(verifyAlignedSPMMemRef(getOperation(), dest.getType(),
-                                            "dest")))
+    if (mlir::failed(
+            verifyAlignedSPMMemRef(getOperation(), dest.getType(), "dest")))
       return mlir::failure();
     std::optional<mlir::RankedTensorType> destTensor =
         getLogicalTensorType(dest.getType());
@@ -1240,12 +1374,10 @@ mlir::LogicalResult InstrPoolOp::verifyWaferResourceEffectContract() {
 }
 
 mlir::LogicalResult InstrUnpoolOp::verify() {
-  if (mlir::failed(verifyAlignedSPMMemRef(getOperation(),
-                                          getInput().getType(), "input")) ||
-      mlir::failed(verifyAlignedSPMMemRef(getOperation(),
-                                          getIndex().getType(), "index")) ||
-      mlir::failed(verifyAlignedSPMMemRef(getOperation(),
-                                          getDest().getType(), "dest")) ||
+  if (mlir::failed(verifyAlignedSPMMemRef(getOperation(), getInput().getType(),
+                                          "input")) ||
+      mlir::failed(verifyAlignedSPMMemRef(getOperation(), getDest().getType(),
+                                          "dest")) ||
       mlir::failed(verifyI64Array(getOperation(), getSourceShapeAttr(),
                                   "source_shape", 4, /*positive=*/true)) ||
       mlir::failed(verifyI64Array(getOperation(), getDestShapeAttr(),
@@ -1257,16 +1389,23 @@ mlir::LogicalResult InstrUnpoolOp::verify() {
 
   std::optional<mlir::RankedTensorType> inputTensor =
       getLogicalTensorType(getInput().getType());
-  std::optional<mlir::RankedTensorType> indexTensor =
-      getLogicalTensorType(getIndex().getType());
   std::optional<mlir::RankedTensorType> destTensor =
       getLogicalTensorType(getDest().getType());
   if (mlir::failed(verifySameElementType(
           getOperation(), *inputTensor, *destTensor,
           "unpool input and dest element types must match")))
     return mlir::failure();
-  if (!indexTensor->getElementType().isInteger(32))
-    return emitOpError("unpool index element type must be i32");
+  mlir::IntegerAttr index =
+      getOperation()->getAttrOfType<mlir::IntegerAttr>("index");
+  if (getKindAttr().getValue() == InstrUnpoolKind::Avg) {
+    if (index)
+      return emitOpError("avg unpool must not have index attr");
+  } else {
+    if (!index)
+      return emitOpError("unpool kind requires scalar index attr");
+    if (mlir::failed(verifyOptionalUInt32Attr(getOperation(), index, "index")))
+      return mlir::failure();
+  }
   return mlir::success();
 }
 
@@ -1282,10 +1421,7 @@ void InstrUnpoolOp::collectWaferResourceEffects(
                        WaferResourceAccess::Read, WaferValueRole::Operand, 0,
                        getCompactByteSizeOrUnknown(getInput().getType()));
   appendResourceEffect(effects, WaferResourceKind::SPM,
-                       WaferResourceAccess::Read, WaferValueRole::Operand, 1,
-                       getCompactByteSizeOrUnknown(getIndex().getType()));
-  appendResourceEffect(effects, WaferResourceKind::SPM,
-                       WaferResourceAccess::Write, WaferValueRole::Operand, 2,
+                       WaferResourceAccess::Write, WaferValueRole::Operand, 1,
                        getCompactByteSizeOrUnknown(getDest().getType()));
   appendInstructionIssueEffect(
       effects, WaferResourceKind::Compute,
@@ -1301,17 +1437,16 @@ mlir::LogicalResult InstrUnpoolOp::verifyWaferResourceEffectContract() {
 mlir::LogicalResult InstrTDMADataMoveOp::verify() {
   if (mlir::failed(
           verifySPMMemRef(getOperation(), getSource().getType(), "source")) ||
-      mlir::failed(verifySPMMemRef(getOperation(), getDest().getType(),
-                                   "dest")) ||
+      mlir::failed(
+          verifySPMMemRef(getOperation(), getDest().getType(), "dest")) ||
       mlir::failed(verifyI64Array(getOperation(), getSourceShapeAttr(),
                                   "source_shape", 4, /*positive=*/true)) ||
       mlir::failed(verifyI64Array(getOperation(), getDestShapeAttr(),
                                   "dest_shape", 4, /*positive=*/true)))
     return mlir::failure();
   if (getPermutationAttr() &&
-      mlir::failed(verifyPermutationI64Array(getOperation(),
-                                             getPermutationAttr(),
-                                             "permutation")))
+      mlir::failed(verifyPermutationI64Array(
+          getOperation(), getPermutationAttr(), "permutation")))
     return mlir::failure();
   if (getPadsAttr() &&
       mlir::failed(verifyI64Array(getOperation(), getPadsAttr(), "pads", 4,
@@ -1322,6 +1457,41 @@ mlir::LogicalResult InstrTDMADataMoveOp::verify() {
                                   "kernel_strides", 4,
                                   /*positive=*/true)))
     return mlir::failure();
+
+  switch (getKindAttr().getValue()) {
+  case InstrDataMoveKind::Transpose:
+    if (!getPermutationAttr())
+      return emitOpError("transpose data_move requires permutation attr");
+    break;
+  case InstrDataMoveKind::Pad:
+    if (!getPadsAttr())
+      return emitOpError("pad data_move requires pads attr");
+    if (getPermutationAttr())
+      return emitOpError("pad data_move must not have permutation attr");
+    break;
+  case InstrDataMoveKind::Img2Col:
+    if (!getPadsAttr())
+      return emitOpError("img2col data_move requires pads attr");
+    if (!getKernelStridesAttr())
+      return emitOpError("img2col data_move requires kernel_strides attr");
+    if (getPermutationAttr())
+      return emitOpError("img2col data_move must not have permutation attr");
+    break;
+  case InstrDataMoveKind::Mirror:
+  case InstrDataMoveKind::Rotate90:
+  case InstrDataMoveKind::Rotate180:
+  case InstrDataMoveKind::Rotate270:
+  case InstrDataMoveKind::Nchw2Nhwc:
+  case InstrDataMoveKind::Nhwc2Nchw:
+  case InstrDataMoveKind::TensorNom:
+    if (getPermutationAttr())
+      return emitOpError("data_move kind must not have permutation attr");
+    if (getPadsAttr())
+      return emitOpError("data_move kind must not have pads attr");
+    if (getKernelStridesAttr())
+      return emitOpError("data_move kind must not have kernel_strides attr");
+    break;
+  }
 
   std::optional<mlir::RankedTensorType> sourceTensor =
       getLogicalTensorType(getSource().getType());
@@ -1353,18 +1523,16 @@ void InstrTDMADataMoveOp::collectWaferResourceEffects(
       getCompactByteSizeOrUnknown(getDest().getType()));
 }
 
-mlir::LogicalResult
-InstrTDMADataMoveOp::verifyWaferResourceEffectContract() {
+mlir::LogicalResult InstrTDMADataMoveOp::verifyWaferResourceEffectContract() {
   llvm::SmallVector<WaferResourceEffect, 4> effects;
   collectWaferResourceEffects(effects);
   return verifyResourceEffects(getOperation(), effects);
 }
 
-static std::pair<size_t, size_t>
-getPeripheralArity(InstrPeripheralKind kind) {
+static std::pair<size_t, size_t> getPeripheralArity(InstrPeripheralKind kind) {
   switch (kind) {
   case InstrPeripheralKind::Count:
-    return {1, 1};
+    return {1, 0};
   case InstrPeripheralKind::ArgMax:
   case InstrPeripheralKind::ArgMin:
     return {1, 2};
@@ -1378,9 +1546,36 @@ getPeripheralArity(InstrPeripheralKind kind) {
   case InstrPeripheralKind::RandGen:
     return {2, 3};
   case InstrPeripheralKind::ElemMask:
-    return {2, 1};
+    return {1, 1};
   }
   llvm_unreachable("unknown peripheral kind");
+}
+
+static mlir::LogicalResult verifyPeripheralShapeAttr(mlir::Operation *op,
+                                                     llvm::StringRef name) {
+  auto attr = op->getAttrOfType<mlir::DenseI64ArrayAttr>(name);
+  if (!attr)
+    return op->emitOpError() << "peripheral kind requires " << name << " attr";
+  return verifyI64Array(op, attr, name, 4, /*positive=*/true);
+}
+
+static mlir::LogicalResult verifyRequiredUInt32Attr(mlir::Operation *op,
+                                                    llvm::StringRef name) {
+  auto attr = op->getAttrOfType<mlir::IntegerAttr>(name);
+  if (!attr)
+    return op->emitOpError() << "peripheral kind requires " << name << " attr";
+  return verifyOptionalUInt32Attr(op, attr, name);
+}
+
+static mlir::LogicalResult
+verifyForbiddenPeripheralAttrs(mlir::Operation *op,
+                               std::initializer_list<llvm::StringRef> names) {
+  for (llvm::StringRef name : names) {
+    if (op->hasAttr(name))
+      return op->emitOpError()
+             << "peripheral kind must not have " << name << " attr";
+  }
+  return mlir::success();
 }
 
 mlir::LogicalResult InstrPeripheralOp::verify() {
@@ -1398,8 +1593,7 @@ mlir::LogicalResult InstrPeripheralOp::verify() {
                          << " dest operand(s)";
 
   for (mlir::Value input : getInputs()) {
-    if (mlir::failed(verifySPMMemRef(getOperation(), input.getType(),
-                                     "input")))
+    if (mlir::failed(verifySPMMemRef(getOperation(), input.getType(), "input")))
       return mlir::failure();
   }
   for (mlir::Value dest : getDests()) {
@@ -1420,6 +1614,46 @@ mlir::LogicalResult InstrPeripheralOp::verify() {
           "arg peripheral value dest element type must match input");
     if (!indexTensor->getElementType().isInteger(32))
       return emitOpError("arg peripheral index dest element type must be i32");
+  }
+  switch (getKindAttr().getValue()) {
+  case InstrPeripheralKind::Count:
+    return emitOpError(
+        "count peripheral writeback is not represented in instruction IR");
+  case InstrPeripheralKind::ArgMax:
+  case InstrPeripheralKind::ArgMin:
+  case InstrPeripheralKind::Factorize:
+  case InstrPeripheralKind::RandGen:
+    return verifyForbiddenPeripheralAttrs(
+        getOperation(), {"source_shape", "dest_shape", "lut_elem_count",
+                         "scale", "probability", "rounding_mode"});
+  case InstrPeripheralKind::Bilinear:
+    if (mlir::failed(
+            verifyPeripheralShapeAttr(getOperation(), "source_shape")) ||
+        mlir::failed(verifyPeripheralShapeAttr(getOperation(), "dest_shape")))
+      return mlir::failure();
+    return verifyForbiddenPeripheralAttrs(
+        getOperation(),
+        {"lut_elem_count", "scale", "probability", "rounding_mode"});
+  case InstrPeripheralKind::Lut16:
+  case InstrPeripheralKind::Lut32:
+    if (mlir::failed(
+            verifyRequiredUInt32Attr(getOperation(), "lut_elem_count")))
+      return mlir::failure();
+    return verifyForbiddenPeripheralAttrs(
+        getOperation(), {"source_shape", "dest_shape", "scale", "probability",
+                         "rounding_mode"});
+  case InstrPeripheralKind::ElemMask:
+    if (mlir::failed(verifyRequiredUInt32Attr(getOperation(), "scale")) ||
+        mlir::failed(verifyRequiredUInt32Attr(getOperation(), "probability")) ||
+        mlir::failed(verifyOptionalRoundingMode(
+            getOperation(),
+            getOperation()->getAttrOfType<mlir::IntegerAttr>("rounding_mode"),
+            "rounding_mode")))
+      return mlir::failure();
+    if (!getOperation()->hasAttr("rounding_mode"))
+      return emitOpError("peripheral kind requires rounding_mode attr");
+    return verifyForbiddenPeripheralAttrs(
+        getOperation(), {"source_shape", "dest_shape", "lut_elem_count"});
   }
   return mlir::success();
 }

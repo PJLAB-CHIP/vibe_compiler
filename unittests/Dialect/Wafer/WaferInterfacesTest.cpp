@@ -496,7 +496,7 @@ module {
         memref<4x8xf16, #wafer.memory<spm, tensor>>
     into memref<4x8xf16, #wafer.memory<spm, tensor>>
   wafer.instr.reduce #wafer.instr_reduce_kind<sum> %cx into %reduce_out, %f16 : f16
-      {dimensions = array<i64: 1>}
+      {dim = 0 : i64}
       : memref<4x8xf16, #wafer.memory<spm, cx>>
     into memref<4xf16, #wafer.memory<spm, cx>>
   wafer.instr.convert #wafer.instr_convert_kind<fp16_fp32> %tensor into %converted

@@ -159,6 +159,39 @@ SUPPORTED_CONVERT_KINDS = {
     "tf32_fp32",
 }
 
+ZERO_POINT_CONVERT_KINDS = {
+    "int8_fp16",
+    "int8_bf16",
+    "int8_fp32",
+    "int8_tf32",
+}
+
+ROUNDING_CONVERT_KINDS = {
+    "int16_bf16",
+    "int16_fp32",
+    "int16_tf32",
+    "int32_fp16",
+    "int32_bf16",
+    "int32_fp32",
+    "int32_tf32",
+    "bf16_int16",
+    "bf16_int32",
+    "fp16_int8",
+    "fp16_int16",
+    "fp16_int32",
+    "fp16_bf16",
+    "fp32_int8",
+    "fp32_int16",
+    "fp32_int32",
+    "fp32_fp16",
+    "fp32_bf16",
+    "fp32_tf32",
+    "tf32_int8",
+    "tf32_int16",
+    "tf32_int32",
+    "tf32_bf16",
+}
+
 SUPPORTED_CONV_KINDS = {
     "conv",
     "depthwise",
@@ -205,6 +238,8 @@ SUPPORTED_PERIPHERAL_KINDS = {
     "elem_mask",
 }
 
+UINT32_MAX = 0xFFFFFFFF
+
 
 def canonical_json(metadata: dict[str, Any]) -> str:
     return json.dumps(metadata, indent=2, allow_nan=False) + "\n"
@@ -248,6 +283,26 @@ def require_non_negative_int(value: Any, name: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
         fail(f"{name} must be a non-negative integer")
     return value
+
+
+def require_uint32(value: Any, name: str) -> int:
+    item = require_non_negative_int(value, name)
+    if item > UINT32_MAX:
+        fail(f"{name} must fit in uint32")
+    return item
+
+
+def require_rounding_mode(value: Any, name: str) -> int:
+    item = require_non_negative_int(value, name)
+    if item > 4:
+        fail(f"{name} must be in target rounding mode range 0..4")
+    return item
+
+
+def reject_keys(item: dict[str, Any], name: str, keys: set[str]) -> None:
+    for key in sorted(keys):
+        if key in item:
+            fail(f"{name}.{key} is not valid here")
 
 
 def require_int_list(
@@ -770,19 +825,13 @@ def validate_package_metadata(metadata: dict[str, Any]) -> None:
             )
             if kind not in SUPPORTED_REDUCE_KINDS:
                 fail(f"instructions[{index}].kind is not supported")
-            dimensions = require_list(
-                item.get("dimensions"), f"instructions[{index}].dimensions"
+            if "dimensions" in item:
+                fail(f"instructions[{index}].dimensions is deprecated")
+            dim = require_non_negative_int(
+                item.get("dim"), f"instructions[{index}].dim"
             )
-            if not dimensions:
-                fail(f"instructions[{index}].dimensions must be non-empty")
-            if len(dimensions) > 4:
-                fail(
-                    f"instructions[{index}].dimensions supports at most four dimensions"
-                )
-            for dim_index, dim in enumerate(dimensions):
-                require_non_negative_int(
-                    dim, f"instructions[{index}].dimensions[{dim_index}]"
-                )
+            if dim > 5:
+                fail(f"instructions[{index}].dim must be in target reduce dim range 0..5")
             validate_reduce_init_value(
                 item.get("init_value"), f"instructions[{index}].init_value"
             )
@@ -795,6 +844,27 @@ def validate_package_metadata(metadata: dict[str, Any]) -> None:
             )
             if kind not in SUPPORTED_CONVERT_KINDS:
                 fail(f"instructions[{index}].kind is not supported")
+            has_zero_point = "zero_point" in item
+            has_rounding_mode = "rounding_mode" in item
+            if kind in ZERO_POINT_CONVERT_KINDS:
+                require_uint32(
+                    item.get("zero_point"),
+                    f"instructions[{index}].zero_point",
+                )
+                if has_rounding_mode:
+                    fail(
+                        f"instructions[{index}].rounding_mode is not valid for zero-point convert"
+                    )
+            elif has_zero_point:
+                fail(f"instructions[{index}].zero_point is not valid for this convert")
+
+            if kind in ROUNDING_CONVERT_KINDS:
+                require_rounding_mode(
+                    item.get("rounding_mode"),
+                    f"instructions[{index}].rounding_mode",
+                )
+            elif has_rounding_mode and kind not in ZERO_POINT_CONVERT_KINDS:
+                fail(f"instructions[{index}].rounding_mode is not valid for this convert")
         elif mnemonic == "wafer.instr.conv":
             kind = require_non_empty_string(
                 item.get("kind"), f"instructions[{index}].kind"
@@ -891,6 +961,10 @@ def validate_package_metadata(metadata: dict[str, Any]) -> None:
                 4,
                 positive=True,
             )
+            if kind == "avg":
+                reject_keys(item, f"instructions[{index}]", {"index"})
+            else:
+                require_uint32(item.get("index"), f"instructions[{index}].index")
         elif mnemonic == "wafer.instr.tdma_data_move":
             kind = require_non_empty_string(
                 item.get("kind"), f"instructions[{index}].kind"
@@ -909,25 +983,58 @@ def validate_package_metadata(metadata: dict[str, Any]) -> None:
                 4,
                 positive=True,
             )
-            if "permutation" in item:
+            has_permutation = "permutation" in item
+            has_pads = "pads" in item
+            has_kernel_strides = "kernel_strides" in item
+            if has_permutation:
                 require_permutation_list(
                     item.get("permutation"),
                     f"instructions[{index}].permutation",
                     4,
                 )
-            if "pads" in item:
+            if has_pads:
                 require_int_list(
                     item.get("pads"),
                     f"instructions[{index}].pads",
                     4,
                     positive=False,
                 )
-            if "kernel_strides" in item:
+            if has_kernel_strides:
                 require_int_list(
                     item.get("kernel_strides"),
                     f"instructions[{index}].kernel_strides",
                     4,
                     positive=True,
+                )
+            if kind == "transpose":
+                if not has_permutation:
+                    fail(f"instructions[{index}].permutation is required for transpose")
+                reject_keys(
+                    item,
+                    f"instructions[{index}]",
+                    {"pads", "kernel_strides"},
+                )
+            elif kind == "pad":
+                if not has_pads:
+                    fail(f"instructions[{index}].pads is required for pad")
+                reject_keys(
+                    item,
+                    f"instructions[{index}]",
+                    {"permutation", "kernel_strides"},
+                )
+            elif kind == "img2col":
+                if not has_pads:
+                    fail(f"instructions[{index}].pads is required for img2col")
+                if not has_kernel_strides:
+                    fail(
+                        f"instructions[{index}].kernel_strides is required for img2col"
+                    )
+                reject_keys(item, f"instructions[{index}]", {"permutation"})
+            else:
+                reject_keys(
+                    item,
+                    f"instructions[{index}]",
+                    {"permutation", "pads", "kernel_strides"},
                 )
         elif mnemonic == "wafer.instr.peripheral":
             kind = require_non_empty_string(
@@ -938,6 +1045,65 @@ def validate_package_metadata(metadata: dict[str, Any]) -> None:
             require_positive_int(
                 item.get("elem_count"), f"instructions[{index}].elem_count"
             )
+            if kind == "count":
+                fail(
+                    f"instructions[{index}].kind count writeback is not represented"
+                )
+            if kind in {"argmax", "argmin", "factorize", "rand_gen"}:
+                reject_keys(
+                    item,
+                    f"instructions[{index}]",
+                    {
+                        "source_shape",
+                        "dest_shape",
+                        "lut_elem_count",
+                        "scale",
+                        "probability",
+                        "rounding_mode",
+                    },
+                )
+            elif kind == "bilinear":
+                require_int_list(
+                    item.get("source_shape"),
+                    f"instructions[{index}].source_shape",
+                    4,
+                    positive=True,
+                )
+                require_int_list(
+                    item.get("dest_shape"),
+                    f"instructions[{index}].dest_shape",
+                    4,
+                    positive=True,
+                )
+                reject_keys(
+                    item,
+                    f"instructions[{index}]",
+                    {"lut_elem_count", "scale", "probability", "rounding_mode"},
+                )
+            elif kind in {"lut16", "lut32"}:
+                require_uint32(
+                    item.get("lut_elem_count"),
+                    f"instructions[{index}].lut_elem_count",
+                )
+                reject_keys(
+                    item,
+                    f"instructions[{index}]",
+                    {"source_shape", "dest_shape", "scale", "probability", "rounding_mode"},
+                )
+            elif kind == "elem_mask":
+                require_uint32(item.get("scale"), f"instructions[{index}].scale")
+                require_uint32(
+                    item.get("probability"), f"instructions[{index}].probability"
+                )
+                require_rounding_mode(
+                    item.get("rounding_mode"),
+                    f"instructions[{index}].rounding_mode",
+                )
+                reject_keys(
+                    item,
+                    f"instructions[{index}]",
+                    {"source_shape", "dest_shape", "lut_elem_count"},
+                )
         elif "kind" in item:
             fail(
                 f"instructions[{index}].kind is not valid for this op"

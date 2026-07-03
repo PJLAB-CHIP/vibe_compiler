@@ -11,6 +11,8 @@ module {
       : () -> memref<4x8xf16, #wafer.memory<spm, tensor>>
   %converted = "builtin.unrealized_conversion_cast"()
       : () -> memref<4x8xf32, #wafer.memory<spm, tensor>>
+  %i8_tensor = "builtin.unrealized_conversion_cast"()
+      : () -> memref<4x8xi8, #wafer.memory<spm, tensor>>
   %cx = "builtin.unrealized_conversion_cast"()
       : () -> memref<4x8xf16, #wafer.memory<spm, cx>>
   %reduce_out = "builtin.unrealized_conversion_cast"()
@@ -59,13 +61,23 @@ module {
     into memref<4x8xf16, #wafer.memory<spm, tensor>>
 
   wafer.instr.reduce #wafer.instr_reduce_kind<sum> %cx into %reduce_out, %f16 : f16
-      {dimensions = array<i64: 1>}
+      {dim = 0 : i64}
       : memref<4x8xf16, #wafer.memory<spm, cx>>
     into memref<4xf16, #wafer.memory<spm, cx>>
 
   wafer.instr.convert #wafer.instr_convert_kind<fp16_fp32> %tensor into %converted
       : memref<4x8xf16, #wafer.memory<spm, tensor>>
      to memref<4x8xf32, #wafer.memory<spm, tensor>>
+
+  wafer.instr.convert #wafer.instr_convert_kind<fp32_fp16> %converted into %tensor
+      {rounding_mode = 0 : i64}
+      : memref<4x8xf32, #wafer.memory<spm, tensor>>
+     to memref<4x8xf16, #wafer.memory<spm, tensor>>
+
+  wafer.instr.convert #wafer.instr_convert_kind<int8_fp16> %i8_tensor into %tensor
+      {zero_point = 0 : i64}
+      : memref<4x8xi8, #wafer.memory<spm, tensor>>
+     to memref<4x8xf16, #wafer.memory<spm, tensor>>
 
   wafer.instr.gemm %lhs, %rhs into %gemm_out
       {m = 4 : i64, k = 8 : i64, n = 16 : i64}
@@ -92,8 +104,12 @@ module {
 // CHECK: wafer.instr.elementwise <add>
 // CHECK-SAME: indexing_maps
 // CHECK: wafer.instr.reduce <sum>
-// CHECK-SAME: dimensions = array<i64: 1>
+// CHECK-SAME: dim = 0 : i64
 // CHECK: wafer.instr.convert <fp16_fp32>
+// CHECK: wafer.instr.convert <fp32_fp16>
+// CHECK-SAME: rounding_mode = 0 : i64
+// CHECK: wafer.instr.convert <int8_fp16>
+// CHECK-SAME: zero_point = 0 : i64
 // CHECK: wafer.instr.gemm
 // CHECK-SAME: m = 4 : i64
 // CHECK: wafer.instr.wdma

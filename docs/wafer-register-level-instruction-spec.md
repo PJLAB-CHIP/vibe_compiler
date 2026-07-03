@@ -7,13 +7,13 @@
 
 它不是硬件总览，也不是 Triton tx dialect 说明。总览文档负责描述硬件拓扑、SPM、layout 背景、runtime 和现有 backend 线索；本文件负责沉淀 Wafer backend 的发射 ABI、Tsm wrapper 调用约束，以及必要的寄存器/opcode 说明。
 
-核心结论：**后端不直接生成裸寄存器 packet，也不把现有 Triton CRT 原样作为长期 ABI。推荐做一层 Wafer 自己的 target CRT，内部以 public Tsm wrapper/header signature 和寄存器字段为准来发射；Triton/CRT 只作为公开实现样例、参数单位线索和反例来源。**
+核心结论：**后端不直接生成裸寄存器 packet，也不把现有 Triton CRT 原样作为长期 ABI。推荐做一层 Wafer 自己的 target CRT，LLVM lowering 只调用 Wafer-owned target CRT symbols，例如 `wafer_tx81_gemm` / `wafer_tx81_bit2fp`；target CRT 内部以 public Tsm wrapper/header signature 和寄存器字段为准来发射；Triton/CRT `__*` 只作为公开实现样例、参数单位线索和反例来源。**
 
 推荐分层：
 
 ```text
 Wafer compiler lowering
-  -> LLVM call 到 target CRT symbol（例如 __Gemm / __Bit2Fp / __MaskMove）
+  -> LLVM call 到 Wafer-owned target CRT symbol（例如 wafer_tx81_gemm / wafer_tx81_bit2fp / wafer_tx81_mask_move）
   -> target CRT 内部创建 Tsm*Instr packet
   -> 调用 Tsm wrapper 配置 packet
   -> TsmExecute
@@ -54,7 +54,7 @@ Wafer 后端不应该在 MLIR/LLVM lowering 中直接展开 Tsm struct function 
 
 | 层级 | 作用 | 后端需要做什么 |
 | --- | --- | --- |
-| Wafer IR / lowering op | 表达已经完成 tiling/layout/SPM 分配后的硬件动作 | 选择要调用的 target CRT |
+| Wafer IR / lowering op | 表达已经完成 tiling/layout/SPM 分配后的硬件动作 | 选择要调用的 Wafer-owned target CRT symbol |
 | target CRT | 稳定的 compiler/runtime 边界 | 接收地址、shape、stride、format、flags 等参数 |
 | Tsm wrapper | 硬件公开的发射入口 | 在 target CRT 内部配置 `Tsm*Instr` packet |
 | `TsmExecute` | 提交 packet | 由 target CRT 或调度层控制发射 |
@@ -101,7 +101,7 @@ tx81 dialect op
 | Tsm wrapper ABI | `third_party/tx8_deps/include/instr_adapter_plat.h` | target CRT 内部真正调用的接口 |
 | 发射入口 | `third_party/tx8_deps/include/instr_adapter.h` | `TsmExecute(void *instr)` |
 
-因此可借用的只是“target CRT 内部调用 Tsm wrapper”这个分层事实，以及少量参数单位线索；不能原样复用 Tx81 CRT 的 pass 结构、同步策略、SPM allocation 或 DTE runtime。Wafer backend 应优先 lower 到有 TX81/TSM wrapper 证据的 target CRT symbol，然后按 public Tsm wrapper/header signature 和寄存器字段实现。
+因此可借用的只是“target CRT 内部调用 Tsm wrapper”这个分层事实，以及少量参数单位线索；不能原样复用 Tx81 CRT 的 pass 结构、同步策略、SPM allocation、DTE runtime 或 `__*` ABI 名称。Wafer backend 应优先 lower 到有 TX81/TSM wrapper 证据的 Wafer-owned target CRT symbol，然后按 public Tsm wrapper/header signature 和寄存器字段实现。
 
 ### 推荐 target CRT 形态
 
@@ -113,7 +113,7 @@ tx81 dialect op
 | elementwise | `__AddVV` / `__MulVV` / `__Relu` style calls | `__AddVV/__MulVV/__Relu/...` | `TsmArith/TsmActivation/TsmTranscendental` |
 | compare/logic | `__EqualVV` / `__BoolAndV` style calls | `__EqualVV/__BoolAndV/...` | `TsmRelation/TsmLogic` |
 | convert | `__INT8_FP16` / `__FP32_FP16` style calls | `__INT8_FP16/__FP32_FP16/...` | `TsmConvert` |
-| GEMM | `__Gemm` | `__Gemm` | `TsmGemm` |
+| GEMM | Wafer-owned GEMM CRT symbol; `__Gemm` only as evidence | `__Gemm` | `TsmGemm` |
 | Conv | `__Conv` style calls | `__Conv` 仅提供 wrapper 调用线索 | `TsmConv/TsmDepthwiseConv` |
 | 通信 | Direct DTE/FSM runtime helper calls | `send.c/recv.c` 仅提供 unicast 样例 | V0 封装 Direct DTE/FSM helper；V1 若需要 non-unicast，Wafer runtime 自行配置 raw DTE registers |
 

@@ -521,15 +521,16 @@ Wafer compiler 的长期边界不应该是 Triton Tx81 CRT，也不应该是在 
 
 ```text
 Wafer compiler lowering
-  -> target CRT symbols such as __Gemm / __Bit2Fp / __MaskMove
+  -> Wafer-owned target CRT symbols such as wafer_tx81_gemm / wafer_tx81_bit2fp / wafer_tx81_mask_move
   -> target CRT 内部调用 Tsm wrapper
   -> TsmExecute
   -> wait/async 由 instruction lowering 或调度层控制
 ```
 
-本文档只记录这个边界。具体 target CRT symbol、Tsm wrapper 调用顺序、opcode/register 字段和
-sync/async 拆分建议，见 register-level spec。Wafer compiler 不再引入 compiler-facing helper
-ABI 层；`wafer.instr.*` 直接 lower 到有 TX81/TSM wrapper 证据的 target CRT 调用。
+本文档只记录这个边界。具体 Wafer-owned target CRT symbol、Tsm wrapper 调用顺序、opcode/register
+字段和 sync/async 拆分建议，见 register-level spec。TX81/Triton `__*` 名字只作为实现证据和参数单位
+参考，不作为 Wafer compiler lowering ABI。Wafer compiler 不再引入 compiler-facing helper ABI 层；
+`wafer.instr.*` 直接 lower 到有 TX81/TSM wrapper 证据的 Wafer target CRT 调用。
 
 ## 多 tile 通信和 Direct DTE
 

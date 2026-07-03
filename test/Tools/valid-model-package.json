@@ -136,9 +136,7 @@
     {
       "op": "wafer.instr.reduce",
       "kind": "max",
-      "dimensions": [
-        1
-      ],
+      "dim": 0,
       "init_value": {
         "kind": "non_finite",
         "value": "-inf",

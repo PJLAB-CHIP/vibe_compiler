@@ -151,7 +151,8 @@ def Wafer_InstrReduceOp : Wafer_InstrOp<"instr.reduce", [
     Wafer_InstrReduceKindAttr:$kind,
     AnyMemRef:$input,
     AnyMemRef:$dest,
-    Optional<AnyType>:$init
+    Optional<AnyType>:$init,
+    I64Attr:$dim
   );
   let hasVerifier = 1;
   let assemblyFormat =
@@ -167,7 +168,9 @@ def Wafer_InstrConvertOp : Wafer_InstrOp<"instr.convert", [
   let arguments = (ins
     Wafer_InstrConvertKindAttr:$kind,
     AnyMemRef:$source,
-    AnyMemRef:$dest
+    AnyMemRef:$dest,
+    OptionalAttr<I64Attr>:$zero_point,
+    OptionalAttr<I64Attr>:$rounding_mode
   );
   let hasVerifier = 1;
   let assemblyFormat =
@@ -256,15 +259,15 @@ def Wafer_InstrUnpoolOp : Wafer_InstrOp<"instr.unpool", [
   let arguments = (ins
     Wafer_InstrUnpoolKindAttr:$kind,
     AnyMemRef:$input,
-    AnyMemRef:$index,
     AnyMemRef:$dest,
+    OptionalAttr<I64Attr>:$index,
     DenseI64ArrayAttr:$source_shape,
     DenseI64ArrayAttr:$dest_shape,
     DenseI64ArrayAttr:$kernel_strides
   );
   let hasVerifier = 1;
   let assemblyFormat =
-      "$kind $input `,` $index `into` $dest attr-dict `:` type($input) `,` type($index) `into` type($dest)";
+      "$kind $input `into` $dest attr-dict `:` type($input) `into` type($dest)";
 }
 
 def Wafer_InstrTDMADataMoveOp : Wafer_InstrOp<"instr.tdma_data_move", [
@@ -299,7 +302,13 @@ def Wafer_InstrPeripheralOp : Wafer_InstrOp<"instr.peripheral", [
     Wafer_InstrPeripheralKindAttr:$kind,
     Variadic<AnyMemRef>:$inputs,
     Variadic<AnyMemRef>:$dests,
-    I64Attr:$elem_count
+    I64Attr:$elem_count,
+    OptionalAttr<DenseI64ArrayAttr>:$source_shape,
+    OptionalAttr<DenseI64ArrayAttr>:$dest_shape,
+    OptionalAttr<I64Attr>:$lut_elem_count,
+    OptionalAttr<I64Attr>:$scale,
+    OptionalAttr<I64Attr>:$probability,
+    OptionalAttr<I64Attr>:$rounding_mode
   );
   let hasVerifier = 1;
   let assemblyFormat =

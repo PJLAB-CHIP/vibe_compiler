@@ -147,7 +147,7 @@ func.func @gemm_reduce_and_reshape(
 // CHECK-SAME: m = 4 : i64
 // CHECK-SAME: n = 64 : i64
 // CHECK: wafer.instr.reduce <sum>
-// CHECK-SAME: dimensions = array<i64: 0>
+// CHECK-SAME: dim = 1 : i64
 // CHECK-NOT: wafer.tile.reshape
 // CHECK: wafer.instr.wdma
 

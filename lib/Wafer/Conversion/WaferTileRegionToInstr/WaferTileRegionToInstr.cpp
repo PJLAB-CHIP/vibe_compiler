@@ -134,6 +134,92 @@ getLogicalTensorTypeFromMemRef(mlir::Type type) {
                                      memrefType.getElementType());
 }
 
+static llvm::SmallVector<int64_t, 3>
+getTargetReduceLogicalDims(int64_t targetDim, int64_t rank) {
+  auto fromTrailingDim = [&](int64_t trailingIndex) -> std::optional<int64_t> {
+    if (trailingIndex >= rank)
+      return std::nullopt;
+    return rank - 1 - trailingIndex;
+  };
+
+  llvm::SmallVector<int64_t, 3> dims;
+  switch (targetDim) {
+  case 0:
+    if (auto dim = fromTrailingDim(0))
+      dims.push_back(*dim);
+    break;
+  case 1:
+    if (auto dim = fromTrailingDim(1))
+      dims.push_back(*dim);
+    break;
+  case 2:
+    if (auto dim = fromTrailingDim(2))
+      dims.push_back(*dim);
+    break;
+  case 3:
+    if (auto dim = fromTrailingDim(3))
+      dims.push_back(*dim);
+    break;
+  case 4: {
+    auto h = fromTrailingDim(2);
+    auto w = fromTrailingDim(1);
+    if (h && w)
+      dims.append({*h, *w});
+    break;
+  }
+  case 5: {
+    auto h = fromTrailingDim(2);
+    auto w = fromTrailingDim(1);
+    auto c = fromTrailingDim(0);
+    if (h && w && c)
+      dims.append({*h, *w, *c});
+    break;
+  }
+  default:
+    break;
+  }
+  return dims;
+}
+
+static bool sameDimSet(llvm::ArrayRef<int64_t> lhs,
+                       llvm::ArrayRef<int64_t> rhs) {
+  llvm::SmallVector<int64_t, 4> sortedLhs(lhs.begin(), lhs.end());
+  llvm::SmallVector<int64_t, 4> sortedRhs(rhs.begin(), rhs.end());
+  llvm::sort(sortedLhs);
+  llvm::sort(sortedRhs);
+  return sortedLhs == sortedRhs;
+}
+
+static mlir::FailureOr<int64_t>
+getTargetReduceDimCode(mlir::PatternRewriter &rewriter, mlir::Operation *op,
+                       mlir::Type inputType, llvm::ArrayRef<int64_t> dims,
+                       std::string *failureReason) {
+  std::optional<mlir::RankedTensorType> inputTensor =
+      getLogicalTensorTypeFromMemRef(inputType);
+  if (!inputTensor)
+    return failFailureOr<int64_t>(
+        rewriter, op, failureReason,
+        "reduce lowering requires ranked memref input");
+  int64_t rank = inputTensor->getRank();
+  if (rank <= 0 || rank > 4)
+    return failFailureOr<int64_t>(
+        rewriter, op, failureReason,
+        "reduce lowering supports input ranks in [1, 4]");
+  if (dims.empty())
+    return failFailureOr<int64_t>(
+        rewriter, op, failureReason,
+        "reduce lowering requires non-empty dimensions");
+  for (int64_t targetDim = 0; targetDim <= 5; ++targetDim) {
+    llvm::SmallVector<int64_t, 3> targetDims =
+        getTargetReduceLogicalDims(targetDim, rank);
+    if (!targetDims.empty() && sameDimSet(dims, targetDims))
+      return targetDim;
+  }
+  return failFailureOr<int64_t>(
+      rewriter, op, failureReason,
+      "reduce dimensions do not map to a TX8 target reduce dim code");
+}
+
 static mlir::FailureOr<mlir::Value>
 createDestAlloc(mlir::Location loc, mlir::Type type,
                 mlir::PatternRewriter &rewriter, mlir::Operation *op,
@@ -1239,11 +1325,9 @@ private:
   std::string *failureReason;
 };
 
-static mlir::FailureOr<InstrElementwiseKindAttr>
-getInstrElementwiseKindAttr(mlir::PatternRewriter &rewriter,
-                            mlir::Operation *op,
-                            ComputeElementwiseKindAttr computeKind,
-                            std::string *failureReason);
+static mlir::FailureOr<InstrElementwiseKindAttr> getInstrElementwiseKindAttr(
+    mlir::PatternRewriter &rewriter, mlir::Operation *op,
+    ComputeElementwiseKindAttr computeKind, std::string *failureReason);
 
 static InstrReduceKindAttr
 getInstrReduceKindAttr(mlir::PatternRewriter &rewriter,
@@ -1315,8 +1399,8 @@ public:
     if (mlir::failed(instrKind))
       return mlir::failure();
 
-    auto instr = rewriter.create<InstrElementwiseOp>(
-        op.getLoc(), *instrKind, op.getInputs(), *dest);
+    auto instr = rewriter.create<InstrElementwiseOp>(op.getLoc(), *instrKind,
+                                                     op.getInputs(), *dest);
     copyOptionalAttr(op, instr, "indexing_maps");
     rewriter.replaceOp(op, *dest);
     return mlir::success();
@@ -1340,10 +1424,21 @@ public:
     if (mlir::failed(dest))
       return mlir::failure();
 
+    auto dimensionsAttr =
+        op->getAttrOfType<mlir::DenseI64ArrayAttr>("dimensions");
+    if (!dimensionsAttr)
+      return failPattern(rewriter, op, failureReason,
+                         "tile.reduce lowering requires dimensions attr");
+
+    mlir::FailureOr<int64_t> dim =
+        getTargetReduceDimCode(rewriter, op, op.getInput().getType(),
+                               dimensionsAttr.asArrayRef(), failureReason);
+    if (mlir::failed(dim))
+      return mlir::failure();
+
     auto instr = rewriter.create<InstrReduceOp>(
         op.getLoc(), getInstrReduceKindAttr(rewriter, op.getKindAttr()),
-        op.getInput(), *dest, op.getInit());
-    copyOptionalAttr(op, instr, "dimensions");
+        op.getInput(), *dest, op.getInit(), rewriter.getI64IntegerAttr(*dim));
     copyOptionalAttr(op, instr, "init_value");
     rewriter.replaceOp(op, *dest);
     return mlir::success();
@@ -1649,11 +1744,9 @@ static mlir::MemRefType getContiguousSPMBufferType(mlir::MemRefType type) {
                                type.getMemorySpace());
 }
 
-static mlir::FailureOr<InstrElementwiseKindAttr>
-getInstrElementwiseKindAttr(mlir::PatternRewriter &rewriter,
-                            mlir::Operation *op,
-                            ComputeElementwiseKindAttr computeKind,
-                            std::string *failureReason) {
+static mlir::FailureOr<InstrElementwiseKindAttr> getInstrElementwiseKindAttr(
+    mlir::PatternRewriter &rewriter, mlir::Operation *op,
+    ComputeElementwiseKindAttr computeKind, std::string *failureReason) {
   InstrElementwiseKind instrKind;
   switch (computeKind.getValue()) {
   case ComputeElementwiseKind::Add:
@@ -1740,12 +1833,10 @@ getInstrReduceKindAttr(mlir::PatternRewriter &rewriter,
   return InstrReduceKindAttr::get(rewriter.getContext(), instrKind);
 }
 
-static mlir::FailureOr<InstrElementwiseKindAttr>
-getAccumulationElementwiseKind(mlir::PatternRewriter &rewriter,
-                               mlir::Operation *op,
-                               ComputeReduceKindAttr reduceKind,
-                               std::string *failureReason,
-                               llvm::StringRef opLabel) {
+static mlir::FailureOr<InstrElementwiseKindAttr> getAccumulationElementwiseKind(
+    mlir::PatternRewriter &rewriter, mlir::Operation *op,
+    ComputeReduceKindAttr reduceKind, std::string *failureReason,
+    llvm::StringRef opLabel) {
   InstrElementwiseKind elementwiseKind;
   switch (reduceKind.getValue()) {
   case ComputeReduceKind::Sum:
@@ -2238,9 +2329,8 @@ static void configureTileRegionToInstrTarget(mlir::ConversionTarget &target) {
   target.addLegalOp<mlir::ModuleOp, TileRegionOp, TileYieldOp, SyncLocalFenceOp,
                     InstrRDMAOp, InstrWDMAOp, InstrGatherScatterOp, InstrFillOp,
                     InstrElementwiseOp, InstrBit2FpOp, InstrMaskMoveOp,
-                    InstrReduceOp, InstrConvertOp, InstrGemmOp,
-                    InstrDTESendOp, InstrDTERecvOp,
-                    InstrDTEWaitOp>();
+                    InstrReduceOp, InstrConvertOp, InstrGemmOp, InstrDTESendOp,
+                    InstrDTERecvOp, InstrDTEWaitOp>();
   target.addIllegalOp<
       StorageLoadOp, StorageStoreOp, LayoutMaterializeOp, ComputeFillOp,
       ComputeGemmOp, ComputeElementwiseOp, ComputeReduceOp, MoveCopyOp,

@@ -14,6 +14,10 @@
 # RUN: not %python %wafer_src_root/tools/wafer_package_metadata.py --validate %t.deprecated-top-level.json 2>&1 | FileCheck %s --check-prefix=DEPRECATED-ERR
 # RUN: %python -c 'import json, sys; data = json.load(open(sys.argv[1])); next(i for i in data["instructions"] if i["op"] == "wafer.instr.convert")["src_dtype"] = "f16"; json.dump(data, open(sys.argv[2], "w"))' %S/valid-model-package.json %t.deprecated-convert-dtype.json
 # RUN: not %python %wafer_src_root/tools/wafer_package_metadata.py --validate %t.deprecated-convert-dtype.json 2>&1 | FileCheck %s --check-prefix=CONVERT-DTYPE-ERR
+# RUN: %python -c 'import json, sys; data = json.load(open(sys.argv[1])); item = next(i for i in data["instructions"] if i["op"] == "wafer.instr.reduce"); item["dimensions"] = [0]; del item["dim"]; json.dump(data, open(sys.argv[2], "w"))' %S/valid-model-package.json %t.deprecated-reduce-dimensions.json
+# RUN: not %python %wafer_src_root/tools/wafer_package_metadata.py --validate %t.deprecated-reduce-dimensions.json 2>&1 | FileCheck %s --check-prefix=REDUCE-DIM-ERR
+# RUN: %python -c 'import json, sys; data = json.load(open(sys.argv[1])); next(i for i in data["instructions"] if i["op"] == "wafer.instr.convert")["kind"] = "fp32_fp16"; json.dump(data, open(sys.argv[2], "w"))' %S/valid-model-package.json %t.missing-convert-rounding.json
+# RUN: not %python %wafer_src_root/tools/wafer_package_metadata.py --validate %t.missing-convert-rounding.json 2>&1 | FileCheck %s --check-prefix=CONVERT-ROUNDING-ERR
 
 # CHECK: "schema_version": 2
 # CHECK: "name": "model_package_sample"
@@ -62,3 +66,5 @@
 # LEGACY-MODE-ERR: legacy_tsm runtime mode requires legacy_model_sync completion source
 # DEPRECATED-ERR: metadata.package_name is deprecated
 # CONVERT-DTYPE-ERR: instructions[{{[0-9]+}}].src_dtype is deprecated
+# REDUCE-DIM-ERR: instructions[{{[0-9]+}}].dimensions is deprecated
+# CONVERT-ROUNDING-ERR: instructions[{{[0-9]+}}].rounding_mode must be a non-negative integer

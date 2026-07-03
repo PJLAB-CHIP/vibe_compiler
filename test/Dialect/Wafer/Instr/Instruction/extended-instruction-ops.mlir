@@ -41,12 +41,12 @@ module {
     into memref<1x4x4x64xf16, #wafer.memory<spm, ncx>>,
          memref<1x4x4x64xi32, #wafer.memory<spm, ncx>>
 
-  wafer.instr.unpool #wafer.instr_unpool_kind<mask> %pool_out, %pool_idx into %act
+  wafer.instr.unpool #wafer.instr_unpool_kind<mask> %pool_out into %act
       {source_shape = array<i64: 1, 4, 4, 64>,
        dest_shape = array<i64: 1, 8, 8, 64>,
-       kernel_strides = array<i64: 2, 2, 2, 2>}
-      : memref<1x4x4x64xf16, #wafer.memory<spm, ncx>>,
-        memref<1x4x4x64xi32, #wafer.memory<spm, ncx>>
+       kernel_strides = array<i64: 2, 2, 2, 2>,
+       index = 0 : i64}
+      : memref<1x4x4x64xf16, #wafer.memory<spm, ncx>>
     into memref<1x8x8x64xf16, #wafer.memory<spm, ncx>>
 
   wafer.instr.tdma_data_move #wafer.instr_data_move_kind<transpose> %tensor into %moved

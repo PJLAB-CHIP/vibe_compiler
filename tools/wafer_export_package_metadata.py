@@ -450,7 +450,7 @@ def parse_instructions(instruction_ir: str) -> list[dict[str, Any]]:
                 fail("wafer.instr.elementwise select is not target-aligned")
         elif op_name == "reduce":
             item["kind"] = parse_kind(segment, "reduce")
-            item["dimensions"] = parse_array_i64_attr(segment, "dimensions")
+            item["dim"] = parse_int_attr(segment, "dim")
             init_attr_match = re.search(
                 r"\binit_value\s*=\s*([^,}\s]+)\s*:\s*([A-Za-z0-9]+)",
                 segment,
@@ -470,6 +470,10 @@ def parse_instructions(instruction_ir: str) -> list[dict[str, Any]]:
                 item["init_value"] = constants[init_match.group(1)]
         elif op_name == "convert":
             item["kind"] = parse_kind(segment, "convert")
+            for optional_attr in ("zero_point", "rounding_mode"):
+                optional_value = parse_optional_int_attr(segment, optional_attr)
+                if optional_value is not None:
+                    item[optional_attr] = optional_value
         elif op_name == "conv":
             item["kind"] = parse_kind(segment, "conv")
             item["input_shape"] = parse_array_i64_attr(segment, "input_shape")
@@ -496,6 +500,9 @@ def parse_instructions(instruction_ir: str) -> list[dict[str, Any]]:
             item["kernel_strides"] = parse_array_i64_attr(
                 segment, "kernel_strides"
             )
+            index = parse_optional_int_attr(segment, "index")
+            if index is not None:
+                item["index"] = index
         elif op_name == "tdma_data_move":
             item["kind"] = parse_kind(segment, "tdma_data_move")
             item["source_shape"] = parse_array_i64_attr(segment, "source_shape")
@@ -507,6 +514,19 @@ def parse_instructions(instruction_ir: str) -> list[dict[str, Any]]:
         elif op_name == "peripheral":
             item["kind"] = parse_kind(segment, "peripheral")
             item["elem_count"] = parse_int_attr(segment, "elem_count")
+            for optional_attr in ("source_shape", "dest_shape"):
+                optional_values = parse_optional_array_i64_attr(segment, optional_attr)
+                if optional_values is not None:
+                    item[optional_attr] = optional_values
+            for optional_attr in (
+                "lut_elem_count",
+                "scale",
+                "probability",
+                "rounding_mode",
+            ):
+                optional_value = parse_optional_int_attr(segment, optional_attr)
+                if optional_value is not None:
+                    item[optional_attr] = optional_value
         instructions.append(item)
 
     return instructions
