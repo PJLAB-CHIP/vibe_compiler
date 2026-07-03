@@ -280,7 +280,7 @@ instr-level target kind。
 | NE | `wafer.instr.gemm` | `wafer.tile.gemm` | tile-local GEMM / batched GEMM |
 | NE | `wafer.instr.conv` | future conv lowering / imported target op | basic Conv / Depthwise / BackwardConv packet fields |
 | CT | `wafer.instr.pool` / `wafer.instr.unpool` | future pool/unpool lowering / imported target op | pool indexed-output arity and unpool scalar-index descriptor |
-| TDMA | `wafer.instr.tdma_data_move` | future structured data-move lowering / imported target op | V0 production 只允许 pad / img2col；mirror / transpose / rotate / NCHW-NHWC / TensorNom 这类 transpose-like movement 必须走 gather_scatter 或后续板端验证后再开启 |
+| TDMA | `wafer.instr.tdma_data_move` | future structured data-move lowering / imported target op | V0 production 只允许 pad / img2col；mirror / transpose / rotate / NCHW-NHWC / TensorNom 这类 transpose-like movement 必须由 compiler lowering 在 instruction IR 前 materialize 成 gather_scatter，或在后续板端验证后再开启 native path |
 | CT | `wafer.instr.peripheral` | future peripheral lowering / imported target op | arg / factorize / bilinear / LUT / random / element-mask target kind; count remains rejected until writeback is represented |
 | DTE | `wafer.instr.dte_send` / `dte_recv` / `dte_wait` | accepted `wafer.tile.*` collective p2p schedule | fixed-size unicast Direct DTE invocation over unplaced SPM memrefs |
 
@@ -308,7 +308,7 @@ instr-level target kind。
 | `TsmConv` / `TsmDepthwiseConv` / backward conv | `wafer.instr.conv` + `#wafer.instr_conv_kind` | V0 native instr; target LLVM pending | IR 覆盖基础 Conv/Depthwise/BackwardConv packet fields；bias、scale、sparse、INT8 quant、fused activation 和 psum policy 仍需后续扩展 |
 | `TsmPool` / `TsmUnPool` | `wafer.instr.pool` / `wafer.instr.unpool` | V0 native instr; target LLVM pending | 明确 NHWC descriptor、pad/kernel/stride 和 indexed output arity；不能复用 reduce 或 movement op 表达 |
 | TDMA pad / img2col | `wafer.instr.tdma_data_move` + `#wafer.instr_data_move_kind` | V0 native instr; target LLVM pending | 单条 TDMA data-move op 表达 wrapper-level pad/img2col；普通 copy/layout segment 仍优先使用 `gather_scatter` |
-| TDMA mirror / transpose / rotate / NCHW-NHWC / native TensorNom | 无 production op；enum 保留但 verifier/package 拒绝 | V0 composite lowering or future native instr | V0 全部展开为 `gather_scatter` 或结构化失败。硬件 wrapper 存在，但公开资料/现有后端对 transpose-like path 的限制和问题较多，不能作为默认 target LLVM lowering surface |
+| TDMA mirror / transpose / rotate / NCHW-NHWC / native TensorNom | 无 production op；enum 保留但 verifier/package 拒绝 | V0 composite lowering or future native instr | V0 由 compiler lowering 展开为 `gather_scatter` 或结构化失败。硬件 wrapper 存在，但公开资料/现有后端对 transpose-like path 的限制和问题较多，不能作为默认 target LLVM lowering surface |
 | TDMA concat / maskgather variants | 无单独 op | future native instr or composite | `concat` 属于 CT packet，maskgather variants 需要 bool/index operand policy；未定义前不能复用 `tdma_data_move` |
 | bitpacked bool loop / VuV / scalar immediate variants | 当前 `elementwise` 只覆盖 opcode family kind，不单独建模 variant | future extension | 需要区分 value bool、bitpacked bool、VuV/VuVLoop、scalar immediate 和 output storage；不能靠 `elementwise` 名称吞掉所有 variant |
 | Peripheral count/argmax/argmin/factorize/bilinear/lut/rand/elem_mask | `wafer.instr.peripheral` + `#wafer.instr_peripheral_kind` | V0 native instr; target LLVM pending | IR 明确 kind、input/output arity 和 elem_count；bitcount opcode 176 仍因缺 public wrapper 不纳入 |
@@ -562,8 +562,8 @@ wafer.instr.peripheral #wafer.instr_peripheral_kind<kind> inputs into dests attr
 `wafer.instr.tdma_data_move` 的 V0 production surface 只表达 wrapper-level `pad` / `img2col`。
 mirror、transpose、rotate、NCHW/NHWC 和 TensorNom 这类 transpose-like DataMove kind 虽然有
 public wrapper/header 证据，但 V0 不把它们作为 native lowering surface；普通 copy、layout segment
-movement、static slice / broadcast / transpose 的可证明 byte movement 必须展开成
-`wafer.instr.gather_scatter`，无法表达时结构化失败。
+movement、static slice / broadcast / transpose 的可证明 byte movement 由 compiler lowering 展开成
+`wafer.instr.gather_scatter`，无法表达时由 lowering 结构化失败。
 
 `wafer.instr.peripheral` 覆盖 argmax、argmin、factorize、bilinear、lut16、lut32、rand_gen 和
 elem_mask 的 public wrapper 形态。kind 决定 input/dest arity；argmax/argmin 的第一个 dest 是

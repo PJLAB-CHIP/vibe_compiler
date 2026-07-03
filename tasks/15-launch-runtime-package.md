@@ -356,9 +356,9 @@ operation family；`select` 不再是 `wafer.instr.elementwise` metadata kind，
 中变成 `bit2fp` / `mask_move` target sequence。`wafer.instr.convert` metadata 记录
 `#wafer.instr_convert_kind` 对应的 target pair，不接受 `src_dtype` / `dst_dtype` 作为自由字段。
 Conv、Pool、UnPool、TDMA pad/img2col 和 Peripheral metadata 只接受对应 instr-level target
-kind attr、shape descriptor 和 kind-specific arity 字段；transpose-like TDMA movement 必须已经
-lower 成 gather_scatter 或被拒绝。package metadata 不能把这些硬件 wrapper family 降级成 opaque
-ABI call 或忽略掉。
+kind attr、shape descriptor 和 kind-specific arity 字段；如果出现 transpose-like TDMA movement，
+说明 compiler lowering 在 package export 前没有完成 materialization，应作为 compiler pipeline
+错误拒绝。package metadata 不能把这些硬件 wrapper family 降级成 opaque ABI call 或忽略掉。
 
 `tools/wafer_device_link.py` 是 device-code local gate：它消费已有 LLVM IR 文件，生成或打印
 `.ll -> .o -> kernel.so` 两段命令，并可在本地 TX8 依赖齐备时执行该 compile/link。它不从

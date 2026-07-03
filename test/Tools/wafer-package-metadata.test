@@ -70,4 +70,4 @@
 # CONVERT-DTYPE-ERR: instructions[{{[0-9]+}}].src_dtype is deprecated
 # REDUCE-DIM-ERR: instructions[{{[0-9]+}}].dimensions is deprecated
 # CONVERT-ROUNDING-ERR: instructions[{{[0-9]+}}].rounding_mode must be a non-negative integer
-# TDMA-TRANSPOSE-ERR: instructions[{{[0-9]+}}].kind is not V0 production legal; use gather_scatter lowering
+# TDMA-TRANSPOSE-ERR: instructions[{{[0-9]+}}].kind reached package metadata; compiler output must materialize transpose-like movement before export

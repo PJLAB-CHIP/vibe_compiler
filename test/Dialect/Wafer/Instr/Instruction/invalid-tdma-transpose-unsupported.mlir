@@ -14,4 +14,4 @@ module {
      to memref<1x8x64x8xf16, #wafer.memory<spm, tensor>>
 }
 
-// CHECK: error: 'wafer.instr.tdma_data_move' op transpose-like data_move kind is not V0 production legal; use gather_scatter lowering
+// CHECK: error: 'wafer.instr.tdma_data_move' op transpose-like data_move kind reached instruction IR; tile movement lowering must materialize it before instruction IR

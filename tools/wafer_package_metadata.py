@@ -1019,8 +1019,9 @@ def validate_package_metadata(metadata: dict[str, Any]) -> None:
                 )
             if kind in TRANSPOSE_LIKE_DATA_MOVE_KINDS:
                 fail(
-                    f"instructions[{index}].kind is not V0 production legal; "
-                    "use gather_scatter lowering"
+                    f"instructions[{index}].kind reached package metadata; "
+                    "compiler output must materialize transpose-like movement "
+                    "before export"
                 )
             elif kind == "pad":
                 if not has_pads:

@@ -1467,8 +1467,9 @@ mlir::LogicalResult InstrTDMADataMoveOp::verify() {
   case InstrDataMoveKind::Nchw2Nhwc:
   case InstrDataMoveKind::Nhwc2Nchw:
   case InstrDataMoveKind::TensorNom:
-    return emitOpError("transpose-like data_move kind is not V0 production "
-                       "legal; use gather_scatter lowering");
+    return emitOpError("transpose-like data_move kind reached instruction IR; "
+                       "tile movement lowering must materialize it before "
+                       "instruction IR");
   case InstrDataMoveKind::Pad:
     if (!getPadsAttr())
       return emitOpError("pad data_move requires pads attr");
