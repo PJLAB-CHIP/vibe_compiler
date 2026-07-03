@@ -94,6 +94,10 @@ Pipeline position:
 - op family、dtype/layout、shape/stride、byte count、wait/completion 和 resource effects 能由 verifier
   检查。
 - lowering 可以找到 target CRT symbol 或明确记录 unsupported diagnostic。
+- coverage 必须来自 `tasks/11-instruction-ir.md` 的 instruction coverage matrix。只有标为
+  `V0 native instr` 或 `V0 native sync` 的 op 是 target LLVM lowering 的 production 输入；
+  `V0 composite lowering` 必须已经在 instruction lowering 前展开，`future` / `unsupported`
+  不能通过现有泛 op 隐式进入 LLVM lowering。
 
 当前状态：
 
@@ -110,6 +114,11 @@ Pipeline position:
 | `wafer.instr.gemm` | `TsmGemm` wrapper / `__Gemm` style CRT evidence | pending target LLVM |
 | `wafer.instr.dte_send` / `dte_recv` / `dte_wait` | Direct DTE/FSM runtime binding evidence still incomplete | partial IR done, production lowering pending |
 | `wafer.instr.local_fence` | `TsmWaitfinish` / local drain evidence | pending target LLVM |
+
+不在 V0 native coverage 中的硬件能力不属于本 stage 的默认 lowering surface。Conv/Depthwise、Pool/UnPool、
+native TensorNom、raw DTE non-unicast、Peripheral writeback/multi-output/random/LUT 类 op 需要先在
+instruction IR 中新增明确 op / kind / verifier，并更新 coverage matrix；target LLVM lowering 不能
+用 `wafer.instr.elementwise`、`gather_scatter` 或 ad hoc CRT call 隐式覆盖这些语义。
 
 `wafer.instr.elementwise <select>` 非法。tile semantic select 需要在 instruction lowering 中改写成目标
 序列：

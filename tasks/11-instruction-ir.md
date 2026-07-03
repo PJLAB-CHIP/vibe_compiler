@@ -5,7 +5,10 @@ instruction legalization。
 
 本文定义 instruction-level Wafer IR。核心结论：
 
-- 只新增 `wafer.instr.*` 硬件相关调用级 op，包括 CT/NE/RDMA/WDMA/TDMA 和 Direct DTE。
+- `wafer.instr.*` 是当前 compiler pipeline 需要的 target-aligned instruction subset，不是完整
+  硬件 ISA、Tsm wrapper 或 opcode 全量镜像。每个进入该层的 op 必须能被 verifier 解释，并且在
+  target LLVM lowering 中要么 lower 到明确 target CRT / DTE helper，要么结构化失败。
+- 只新增 `wafer.instr.*` 硬件相关调用级 op，包括 CT/NE/RDMA/WDMA/TDMA 和 Direct DTE 的 V0 子集。
 - `wafer.instr.*` 不再直接复用 tile 层 `Compute*Kind`。tile 层的
   `#wafer.elementwise_kind` / `#wafer.reduce_kind` 表示 target-abstract compute semantics；
   instruction 层使用 `#wafer.instr_elementwise_kind`、`#wafer.instr_reduce_kind` 和
@@ -269,6 +272,35 @@ instr-level target kind。
 | CT | `wafer.instr.convert` | future convert lowering | `#wafer.instr_convert_kind` opcode-aligned dtype pair |
 | NE | `wafer.instr.gemm` | `wafer.tile.gemm` | tile-local GEMM / batched GEMM |
 | DTE | `wafer.instr.dte_send` / `dte_recv` / `dte_wait` | accepted `wafer.tile.*` collective p2p schedule | fixed-size unicast Direct DTE invocation over unplaced SPM memrefs |
+
+### 4.1 Instruction Coverage Matrix
+
+`wafer.instr` coverage 按 compiler IR 合同分层，而不是按硬件 opcode 数量分层。target LLVM lowering
+只能把 **V0 native instr** 当作必须支持的 production lowering 输入；其它类别不能隐式进入现有
+泛 op 或 lowering fallback。
+
+| 硬件 / wrapper 能力 | 当前 `wafer.instr` 表示 | coverage tier | 处理规则 |
+| --- | --- | --- | --- |
+| RDMA / WDMA contiguous 和三层 stride descriptor | `wafer.instr.rdma` / `wafer.instr.wdma` | V0 native instr | target LLVM lowering 必须生成 target CRT call；descriptor 保持 byte-level `inner_bytes`、stride 和 iteration |
+| TDMA `TsmDataMove::GatherScatter` | `wafer.instr.gather_scatter` | V0 native instr | layout materialization、SPM copy 和可静态证明的 slice/transpose/broadcast movement 都展开为一条或多条 gather/scatter；无法压成 V0 descriptor 时结构化失败 |
+| `TsmPeripheral::Memset` / scalar fill | `wafer.instr.fill` | V0 native instr | 仅表达填充 destination SPM memref；不把 peripheral writeback/count 语义塞进 fill |
+| CT arithmetic / relation / activation / selected transcendental | `wafer.instr.elementwise` + `#wafer.instr_elementwise_kind` | V0 native instr | 只覆盖当前 enum 中的 target kind；broadcast、scalar immediate、loop/VuV 和 rounding mode 是 target lowering 内部选择或后续扩展，不改变该 IR 合同 |
+| semantic select | 无单条 select op | V0 composite lowering | 必须展开为 false-copy `gather_scatter` + `bit2fp` + `mask_move`；`wafer.instr.elementwise <select>` 非法 |
+| CT reduce `sum/avg/max/min` | `wafer.instr.reduce` + `#wafer.instr_reduce_kind` | V0 native instr | 按 native `TsmReduce` 能力建模；`dims`、aligned physical layout 和 dtype 合法性由 verifier / target lowering 检查 |
+| CT convert opcode 139..174 | `wafer.instr.convert` + `#wafer.instr_convert_kind<src_dst>` | V0 native instr | dtype pair 由 kind 唯一决定；same-format copy 必须走 movement，不允许伪造成 convert |
+| NE GEMM | `wafer.instr.gemm` | V0 native instr | 只表达 GEMM / batched GEMM 主路径参数；bias、scale、quant、fused activation 和复杂 psum policy 不能被隐式打开 |
+| Direct DTE fixed-size unicast | `wafer.instr.dte_send` / `dte_recv` / `dte_wait` | V0 native instr；production binding pending | IR 表达 logical peer、bytes 和 async token；target lowering 再把 execution mesh endpoint 映射到 Direct DTE/FSM helper 或 runtime-compatible ABI |
+| local NCC drain / visibility fence | `wafer.instr.local_fence` | V0 native sync | target lowering 映射到 local wait/drain；不是 multi-tile barrier |
+| SPM memcpy helper / copy | 无单独 copy op | V0 composite lowering | copy 是 `gather_scatter` 的 descriptor 特例；不引入 `wafer.instr.copy` |
+| ChannelNorm / DechannelNorm / Tensor-Normalization | 无单条 op | V0 composite lowering | 作为 layout materialization algorithm 展开为 gather/scatter 序列；native TensorNom opcode 133 不作为 V0 主路径 |
+| tile collectives `all_gather/all_reduce/reduce_scatter/all_to_all/collective_permute` | 无 collective instr op | V0 composite lowering | 先在 tile collective / schedule 层选 ring、tree 或 direct p2p，再 lower 成 DTE send/recv/wait + local movement/compute |
+| `TsmConv` / `TsmDepthwiseConv` / backward conv | 无 `wafer.instr.conv` | future native instr | register-level 规则存在，但 LLM 主线当前不消费；需要单独 op、layout verifier、optional operand policy 和 target lowering gate 后才能纳入 |
+| `TsmPool` / `TsmUnPool` | 无 `wafer.instr.pool/unpool` | future native instr | 需要 NHWC semantic layout、aligned physical layout、pad/kernel/stride verifier；不能复用 reduce 或 movement op 表达 |
+| TDMA mirror/transpose/rotate/NCHW-NHWC/pad/img2col/concat/native TensorNom | 当前只通过 gather/scatter 表达可证明子集 | future native instr or composite | 若作为单条硬件 op 纳入，必须新增明确 op 或 kind，并证明 wrapper 参数、layout 和 verifier；否则继续展开为 gather/scatter 或失败 |
+| full CT logic / bitpacked bool loop variants | 当前 `elementwise` 只覆盖已有 enum 子集 | future extension | 需要区分 value bool、bitpacked bool、VuV/VuVLoop、scalar immediate 和 output storage；不能靠 `elementwise` 名称吞掉所有 opcode |
+| Peripheral count/argmax/argmin/factorize/bilinear/lut/rand/elem_mask | 仅 `bit2fp` 已有单独 op，`fill` 覆盖 memset-like fill | future native instr or unsupported | writeback、多输出、随机/概率语义和 LUT operand 需要单独 IR contract；未定义前 target lowering 必须报 unsupported |
+| raw DTE non-unicast / stream / mailbox | 无 | future communication ABI | 需要独立 communication ABI 和板端验证；V0 collective 不直接生成 raw non-unicast DTE packet |
+| SCALAR / CSR ordinary execution | 无 | not compiler instr IR in V0 | `TsmExecute` 普通 dispatch 不覆盖 SCALAR/CSR；CSR wait/sync 只能通过明确 sync/runtime ABI 进入 |
 
 V0 不定义 `wafer.instr.copy`。公开 SPM memcpy helper 本身也是
 `TsmDataMove::GatherScatter` 样例；把 copy 单独做成 instruction op 会把 helper 名字提升为 IR

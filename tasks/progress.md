@@ -104,7 +104,7 @@ Pipeline position:
 
 | 阶段 | 状态 | 输入 | 输出 / 完成 gate |
 | --- | --- | --- | --- |
-| target instruction LLVM lowering | active | memory-planned `wafer.instr.*` + accepted offsets + topology/execution-mesh + resource view | `wafer.instr.* -> llvm.call @__*`，`mlir-translate` 能输出 LLVM IR；unsupported op 结构化失败 |
+| target instruction LLVM lowering | active | memory-planned `wafer.instr.*` + accepted offsets + topology/execution-mesh + resource view + `tasks/11` coverage matrix 中的 V0 native instr/sync subset | V0 native `wafer.instr.* -> llvm.call @__*`，`mlir-translate` 能输出 LLVM IR；future/unsupported coverage 不允许通过泛 op 隐式进入 lowering，unsupported op 结构化失败 |
 | device-code compile/link gate | pending | compiler-generated LLVM IR + repo-vendored TX8 deps + repo-local Wafer CRT lib dir | LLVM `clang++` `.ll -> .o`、object metadata normalization、repo-vendored GCC `.o -> kcore .so`；不默认编译/链接 capture shim |
 | package metadata auto-export mainline | pending | compiler-generated LLVM artifact + kcore shared object + committed IR + model interface metadata | package metadata 从真实 target LLVM artifact 和 committed IR 导出并 roundtrip；workspace 只在 target entrypoint 需要额外 workspace base pointer 时导出 |
 | runtime adapter / board launch | pending | model-level package + C++ host runtime + board/runtime provider | allocation/import/query/bind、module load/function lookup、launch、completion 和 error propagation 在有卡环境验证 |
@@ -123,8 +123,9 @@ Pipeline position:
 
 ## 下一步
 
-1. 实现 target instruction LLVM lowering pass：先覆盖 RDMA/WDMA/gather_scatter/fill/GEMM/
-   `#wafer.instr_elementwise_kind` / `#wafer.instr_reduce_kind` / `#wafer.instr_convert_kind` 中有
-   TX81/TSM wrapper 证据的子集，以及 bit2fp/mask_move/local_fence。
+1. 实现 target instruction LLVM lowering pass：只把 `tasks/11` coverage matrix 标记为
+   V0 native instr/sync 的 RDMA/WDMA/gather_scatter/fill/GEMM/
+   `#wafer.instr_elementwise_kind` / `#wafer.instr_reduce_kind` / `#wafer.instr_convert_kind`
+   子集，以及 bit2fp/mask_move/local_fence 纳入 production lowering。
 2. 补 target lowering lit：`wafer.instr.* -> llvm.call @__*`，并用 `mlir-translate` 验证 LLVM IR 输出。
 3. 再恢复 device-code/package 主线 gate：只消费 compiler-generated target LLVM artifact，不引入旧 helper ABI/shim。
