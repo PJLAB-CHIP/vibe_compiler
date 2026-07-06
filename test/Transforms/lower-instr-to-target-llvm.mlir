@@ -1,0 +1,203 @@
+// RUN: wafer-opt --wafer-lower-instr-to-target-llvm %s | FileCheck %s
+// RUN: wafer-opt --wafer-lower-instr-to-target-llvm %s | mlir-translate --mlir-to-llvmir | FileCheck --check-prefix=LLVMIR %s
+
+module {
+  wafer.target.topology @default
+      {card_grid = array<i64: 1, 1>,
+       card_interconnect = "mesh",
+       tile_grid = array<i64: 4, 4>,
+       unavailable_tiles = array<i64>}
+
+  wafer.execution.mesh @default_mesh
+       {topology = @default,
+       axes = ["rank"],
+       shape = array<i64: 16>,
+       policy = "all_available",
+       endpoints = array<i64>}
+
+  func.func @target_instr_kernel(
+      %input: memref<4x8xf16, #wafer.memory<ddr, tensor>>,
+      %output: memref<4x8xf16, #wafer.memory<ddr, tensor>>) {
+    %input_tile = memref.subview %input[1, 2] [2, 3] [1, 1]
+        : memref<4x8xf16, #wafer.memory<ddr, tensor>>
+       to memref<2x3xf16, strided<[8, 1], offset: 10>, #wafer.memory<ddr, tensor>>
+    %output_tile = memref.subview %output[1, 2] [2, 3] [1, 1]
+        : memref<4x8xf16, #wafer.memory<ddr, tensor>>
+       to memref<2x3xf16, strided<[8, 1], offset: 10>, #wafer.memory<ddr, tensor>>
+
+    %loaded = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    %cx = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65792>}
+        : memref<2x3xf16, #wafer.memory<spm, cx>>
+    %gemm_rhs = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66048>}
+        : memref<3x4xf16, #wafer.memory<spm, cx>>
+    %gemm_out = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66304>}
+        : memref<2x4xf16, #wafer.memory<spm, cx>>
+    %i32_fill = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66560>}
+        : memref<16xi32, #wafer.memory<spm, tensor>>
+    %mask_i1 = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66816>}
+        : memref<2x3xi1, #wafer.memory<spm, tensor>>
+    %mask_fp = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<67072>}
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    %convert_out = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<67328>}
+        : memref<2x3xf32, #wafer.memory<spm, tensor>>
+    %reduce_out = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<67584>}
+        : memref<2xf16, #wafer.memory<spm, cx>>
+    %pad_out = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<67840>}
+        : memref<1x1x2x3xf16, #wafer.memory<spm, tensor>>
+    %arg_value = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<68096>}
+        : memref<1xf16, #wafer.memory<spm, tensor>>
+    %arg_index = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<68352>}
+        : memref<1xi32, #wafer.memory<spm, tensor>>
+    %conv_act = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<68608>}
+        : memref<1x8x8x64xf16, #wafer.memory<spm, ncx>>
+    %conv_weight = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<131072>}
+        : memref<3x3x64x64xf16, #wafer.memory<spm, ncx>>
+    %conv_out = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<262144>}
+        : memref<1x8x8x64xf16, #wafer.memory<spm, ncx>>
+    %pool_out = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<327680>}
+        : memref<1x4x4x64xf16, #wafer.memory<spm, ncx>>
+    %pool_idx = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<344064>}
+        : memref<1x4x4x64xi32, #wafer.memory<spm, ncx>>
+    %img2col_out = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<360448>}
+        : memref<1x1x2x3xf16, #wafer.memory<spm, tensor>>
+    %fill_value = arith.constant 7 : i32
+
+    wafer.instr.rdma %input_tile to %loaded
+        {byte_count = 12 : i64, inner_bytes = 6 : i64,
+         src_strides = array<i64: 16, 0, 0>,
+         src_iterations = array<i64: 2, 1, 1>}
+        : memref<2x3xf16, strided<[8, 1], offset: 10>, #wafer.memory<ddr, tensor>>
+       to memref<2x3xf16, #wafer.memory<spm, tensor>>
+    wafer.instr.gather_scatter %loaded to %cx
+        {byte_count = 8 : i64, inner_bytes = 4 : i64,
+         src_offset = 2 : i64, dst_offset = 4 : i64,
+         src_strides = array<i64: 4, 0, 0>,
+         src_iterations = array<i64: 2, 1, 1>,
+         dst_strides = array<i64: 4, 0, 0>,
+         dst_iterations = array<i64: 2, 1, 1>}
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>
+       to memref<2x3xf16, #wafer.memory<spm, cx>>
+    wafer.instr.fill %i32_fill, %fill_value
+        : memref<16xi32, #wafer.memory<spm, tensor>>, i32
+    wafer.instr.elementwise #wafer.instr_elementwise_kind<add> %loaded, %loaded into %loaded
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>,
+          memref<2x3xf16, #wafer.memory<spm, tensor>>
+      into memref<2x3xf16, #wafer.memory<spm, tensor>>
+    wafer.instr.bit2fp %mask_i1 into %mask_fp
+        : memref<2x3xi1, #wafer.memory<spm, tensor>>
+       to memref<2x3xf16, #wafer.memory<spm, tensor>>
+    wafer.instr.mask_move %loaded, %mask_fp into %loaded
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>,
+          memref<2x3xf16, #wafer.memory<spm, tensor>>
+      into memref<2x3xf16, #wafer.memory<spm, tensor>>
+    wafer.instr.reduce #wafer.instr_reduce_kind<sum> %cx into %reduce_out
+        {dim = 0 : i64}
+        : memref<2x3xf16, #wafer.memory<spm, cx>>
+      into memref<2xf16, #wafer.memory<spm, cx>>
+    wafer.instr.convert #wafer.instr_convert_kind<fp16_fp32> %loaded into %convert_out
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>
+       to memref<2x3xf32, #wafer.memory<spm, tensor>>
+    wafer.instr.gemm %cx, %gemm_rhs into %gemm_out
+        {m = 2 : i64, k = 3 : i64, n = 4 : i64}
+        : memref<2x3xf16, #wafer.memory<spm, cx>>,
+          memref<3x4xf16, #wafer.memory<spm, cx>>
+      into memref<2x4xf16, #wafer.memory<spm, cx>>
+    wafer.instr.conv #wafer.instr_conv_kind<conv> %conv_act, %conv_weight into %conv_out
+        {input_shape = array<i64: 1, 8, 8, 64>,
+         weight_shape = array<i64: 3, 3, 64, 64>,
+         output_shape = array<i64: 1, 8, 8, 64>,
+         pads = array<i64: 1, 1, 1, 1>,
+         unpads = array<i64: 0, 0, 0, 0>,
+         kernel_strides = array<i64: 3, 3, 1, 1>,
+         dilations = array<i64: 1, 1>}
+        : memref<1x8x8x64xf16, #wafer.memory<spm, ncx>>,
+          memref<3x3x64x64xf16, #wafer.memory<spm, ncx>>
+      into memref<1x8x8x64xf16, #wafer.memory<spm, ncx>>
+    wafer.instr.pool #wafer.instr_pool_kind<indexedmax> %conv_act into %pool_out, %pool_idx
+        {source_shape = array<i64: 1, 8, 8, 64>,
+         dest_shape = array<i64: 1, 4, 4, 64>,
+         pads = array<i64: 0, 0, 0, 0>,
+         kernel_strides = array<i64: 2, 2, 2, 2>}
+        : memref<1x8x8x64xf16, #wafer.memory<spm, ncx>>
+      into memref<1x4x4x64xf16, #wafer.memory<spm, ncx>>,
+           memref<1x4x4x64xi32, #wafer.memory<spm, ncx>>
+    wafer.instr.unpool #wafer.instr_unpool_kind<mask> %pool_out into %conv_act
+        {source_shape = array<i64: 1, 4, 4, 64>,
+         dest_shape = array<i64: 1, 8, 8, 64>,
+         kernel_strides = array<i64: 2, 2, 2, 2>,
+         index = 0 : i64}
+        : memref<1x4x4x64xf16, #wafer.memory<spm, ncx>>
+      into memref<1x8x8x64xf16, #wafer.memory<spm, ncx>>
+    wafer.instr.tdma_data_move #wafer.instr_data_move_kind<pad> %loaded into %pad_out
+        {source_shape = array<i64: 1, 1, 2, 3>,
+         dest_shape = array<i64: 1, 1, 2, 3>,
+         pads = array<i64: 0, 0, 0, 0>}
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>
+       to memref<1x1x2x3xf16, #wafer.memory<spm, tensor>>
+    wafer.instr.tdma_data_move #wafer.instr_data_move_kind<img2col> %loaded into %img2col_out
+        {source_shape = array<i64: 1, 1, 2, 3>,
+         dest_shape = array<i64: 1, 1, 2, 3>,
+         pads = array<i64: 0, 0, 0, 0>,
+         kernel_strides = array<i64: 1, 1, 1, 1>}
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>
+       to memref<1x1x2x3xf16, #wafer.memory<spm, tensor>>
+    wafer.instr.peripheral #wafer.instr_peripheral_kind<argmax> %loaded into %arg_value, %arg_index
+        {elem_count = 6 : i64}
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>
+      into memref<1xf16, #wafer.memory<spm, tensor>>,
+           memref<1xi32, #wafer.memory<spm, tensor>>
+    %send = wafer.instr.dte_send %loaded {peer = 1 : i64, bytes = 12 : i64}
+        : memref<2x3xf16, #wafer.memory<spm, tensor>> -> !async.token
+    %recv = wafer.instr.dte_recv %loaded {peer = 0 : i64, bytes = 12 : i64}
+        : memref<2x3xf16, #wafer.memory<spm, tensor>> -> !async.token
+    wafer.instr.dte_wait %send, %recv : !async.token, !async.token
+    wafer.instr.wdma %loaded to %output_tile
+        {byte_count = 12 : i64, inner_bytes = 6 : i64,
+         dst_strides = array<i64: 16, 0, 0>,
+         dst_iterations = array<i64: 2, 1, 1>}
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>
+       to memref<2x3xf16, strided<[8, 1], offset: 10>, #wafer.memory<ddr, tensor>>
+    wafer.instr.local_fence
+    return
+  }
+}
+
+// CHECK-LABEL: llvm.func @target_instr_kernel
+// CHECK-SAME: (%[[DDR_IN:[a-zA-Z0-9_]+]]: i64, %[[DDR_OUT:[a-zA-Z0-9_]+]]: i64)
+// CHECK-NOT: wafer.
+// CHECK-NOT: memref.
+// CHECK-NOT: func.func
+// CHECK: %[[IN_OFF:.+]] = llvm.mlir.constant(20 : i64) : i64
+// CHECK: %[[IN_ADDR:.+]] = llvm.add %[[DDR_IN]], %[[IN_OFF]] : i64
+// CHECK: llvm.call @wafer_tx81_rdma(%[[IN_ADDR]]
+// CHECK: llvm.call @wafer_tx81_gather_scatter
+// CHECK: llvm.call @wafer_tx81_memset
+// CHECK: llvm.call @wafer_tx81_elementwise_add
+// CHECK: llvm.call @wafer_tx81_bit2fp
+// CHECK: llvm.call @wafer_tx81_mask_move
+// CHECK: llvm.call @wafer_tx81_reduce_sum
+// CHECK: llvm.call @wafer_tx81_convert_fp16_fp32
+// CHECK: llvm.call @wafer_tx81_gemm
+// CHECK: llvm.call @wafer_tx81_conv
+// CHECK: llvm.call @wafer_tx81_pool_indexedmax
+// CHECK: llvm.call @wafer_tx81_unpool_mask
+// CHECK: llvm.call @wafer_tx81_tdma_pad
+// CHECK: llvm.call @wafer_tx81_tdma_img2col
+// CHECK: llvm.call @wafer_tx81_peripheral_argmax
+// CHECK: llvm.call @wafer_tx81_dte_send
+// CHECK: llvm.call @wafer_tx81_dte_recv
+// CHECK: llvm.call @wafer_tx81_dte_wait
+// CHECK: %[[OUT_OFF:.+]] = llvm.mlir.constant(20 : i64) : i64
+// CHECK: %[[OUT_ADDR:.+]] = llvm.add %[[DDR_OUT]], %[[OUT_OFF]] : i64
+// CHECK: llvm.call @wafer_tx81_wdma({{.*}}%[[OUT_ADDR]]
+// CHECK: llvm.call @wafer_tx81_local_fence
+// CHECK: llvm.return
+
+// LLVMIR-LABEL: define void @target_instr_kernel(i64 %{{.*}}, i64 %{{.*}})
+// LLVMIR: call void (...) @wafer_tx81_rdma
+// LLVMIR: call void (...) @wafer_tx81_gather_scatter
+// LLVMIR: call void (...) @wafer_tx81_gemm
+// LLVMIR: call void (...) @wafer_tx81_conv
+// LLVMIR: call void (...) @wafer_tx81_tdma_img2col
+// LLVMIR: call void (...) @wafer_tx81_wdma

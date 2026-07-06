@@ -1,7 +1,8 @@
 # Wafer Target LLVM Lowering and Golden Packet Design
 
-状态：设计草案；范围：memory-planned target-aligned `wafer.instr.*` 到 target CRT call、LLVM dialect /
-LLVM IR 和 wrapper/register golden packet 的 lowering。
+状态：实现中；target LLVM lowering pass 已落地，Wafer CRT implementation、device-code link gate 和
+wrapper/register golden packet 仍待完成。范围：memory-planned target-aligned `wafer.instr.*` 到
+target CRT call、LLVM dialect / LLVM IR 和 wrapper/register golden packet 的 lowering。
 
 本文取代旧 compiler-facing helper ABI 设计。当前结论是：`wafer.instr.*` 必须对齐目标指令、
 TX81 target op 或 public TSM wrapper 的可 lower 粒度；LLVM lowering 生成 **Wafer-owned target
@@ -76,8 +77,9 @@ Pipeline position:
   device-code compile/link gate、IR-derived package metadata、wrapper-facing call contract 和
   board/runtime adapter。
 - User-level driver / named pipeline:
-  当前稳定主线仍是 `wafer-lower-groups-to-ddr-memory-planned-instr`。target LLVM lowering 完成后，
-  再引入语义命名的 program pipeline；不恢复旧 ABI/LLVM pipeline 名称。
+  局部 pass 入口是 `--wafer-lower-instr-to-target-llvm`；group 边界 named pipeline 是
+  `wafer-lower-groups-to-target-llvm`。真实 HF program pipeline 升级到 target LLVM 前，后续
+  device-code/package gate 只能消费 compiler-generated target LLVM artifact，不恢复旧 ABI/LLVM pipeline 名称。
 - Explicit non-goals:
   不重新做 frontend/SPMD/group/tile/layout/SPM/DDR/communication planning；不把 helper ABI、
   capture shim 或 C stub emission 作为中间层。
@@ -105,21 +107,21 @@ Pipeline position:
 
 | Wafer instr | target evidence / lowering direction | 状态 |
 | --- | --- | --- |
-| `wafer.instr.rdma` / `wdma` | TSM RDMA/WDMA wrapper；target CRT 应接收 DDR/SPM pointer/offset、shape/stride、format | pending target LLVM |
-| `wafer.instr.gather_scatter` | `TsmDataMove::GatherScatter` / TX81 gather-scatter CRT evidence | pending target LLVM |
-| `wafer.instr.fill` | `TsmPeripheral::Memset` evidence | pending target LLVM |
-| `wafer.instr.elementwise` | `#wafer.instr_elementwise_kind` CT arith/relation/activation/transcendental target wrapper families；select 不在该 enum 中 | pending target LLVM |
-| `wafer.instr.bit2fp` | Triton/TX81 `mk.bit2fp -> tx81.bit2fp -> __Bit2Fp` as evidence; Wafer lowering emits Wafer-owned CRT symbol | IR added, LLVM pending |
-| `wafer.instr.mask_move` | Triton/TX81 `mk.mask_move -> tx81.mask_move -> __MaskMove` as evidence; header/CRT mask parameter mismatch must be resolved in Wafer CRT | IR added, LLVM pending |
-| `wafer.instr.reduce` | `#wafer.instr_reduce_kind` target wrapper families plus native `dim` code | pending target LLVM |
-| `wafer.instr.convert` | `#wafer.instr_convert_kind` opcode 139..174 dtype pair plus zero-point/rounding/plain signature groups；same-format copy must lower through movement, not convert | pending target LLVM |
-| `wafer.instr.gemm` | `TsmGemm` wrapper / `__Gemm` style CRT evidence; Wafer-owned symbol must not expose Tx81 ABI verbatim | pending target LLVM |
-| `wafer.instr.conv` | `#wafer.instr_conv_kind` NE Conv/Depthwise/BackwardConv target wrapper families；optional/fused operands are not implicit | IR added, LLVM pending |
-| `wafer.instr.pool` / `unpool` | `#wafer.instr_pool_kind` / `#wafer.instr_unpool_kind` CT Pool/UnPool wrapper families; unpool scalar index is wrapper-aligned | IR added, LLVM pending |
-| `wafer.instr.tdma_data_move` | V0 production only covers pad/img2col wrappers; ordinary copy and transform-like movement use gather/scatter | IR added, LLVM pending |
-| `wafer.instr.peripheral` | `#wafer.instr_peripheral_kind` for arg/factorize/bilinear/LUT/rand/elem_mask; count writeback and bitcount remain unsupported | IR added, LLVM pending |
-| `wafer.instr.dte_send` / `dte_recv` / `dte_wait` | Direct DTE/FSM runtime binding evidence still incomplete | partial IR done, production lowering pending |
-| `wafer.instr.local_fence` | `TsmWaitfinish` / local drain evidence | pending target LLVM |
+| `wafer.instr.rdma` / `wdma` | TSM RDMA/WDMA wrapper；target CRT 接收 DDR/SPM pointer/offset、shape/stride、format | LLVM call emitted；CRT/golden packet pending |
+| `wafer.instr.gather_scatter` | `TsmDataMove::GatherScatter` / TX81 gather-scatter CRT evidence | LLVM call emitted；CRT/golden packet pending |
+| `wafer.instr.fill` | `TsmPeripheral::Memset` evidence | LLVM call emitted；CRT/golden packet pending |
+| `wafer.instr.elementwise` | `#wafer.instr_elementwise_kind` CT arith/relation/activation/transcendental target wrapper families；select 不在该 enum 中 | per-kind LLVM call emitted；CRT/golden packet pending |
+| `wafer.instr.bit2fp` | Triton/TX81 `mk.bit2fp -> tx81.bit2fp -> __Bit2Fp` as evidence; Wafer lowering emits Wafer-owned CRT symbol | LLVM call emitted；CRT/golden packet pending |
+| `wafer.instr.mask_move` | Triton/TX81 `mk.mask_move -> tx81.mask_move -> __MaskMove` as evidence; header/CRT mask parameter mismatch must be resolved in Wafer CRT | LLVM call emitted；CRT/golden packet pending |
+| `wafer.instr.reduce` | `#wafer.instr_reduce_kind` target wrapper families plus native `dim` code | per-kind LLVM call emitted；CRT/golden packet pending |
+| `wafer.instr.convert` | `#wafer.instr_convert_kind` opcode 139..174 dtype pair plus zero-point/rounding/plain signature groups；same-format copy must lower through movement, not convert | per-kind LLVM call emitted；CRT/golden packet pending |
+| `wafer.instr.gemm` | `TsmGemm` wrapper / `__Gemm` style CRT evidence; Wafer-owned symbol must not expose Tx81 ABI verbatim | LLVM call emitted；CRT/golden packet pending |
+| `wafer.instr.conv` | `#wafer.instr_conv_kind` NE Conv/Depthwise/BackwardConv target wrapper families；optional/fused operands are not implicit | per-kind-family LLVM call emitted；CRT/golden packet pending |
+| `wafer.instr.pool` / `unpool` | `#wafer.instr_pool_kind` / `#wafer.instr_unpool_kind` CT Pool/UnPool wrapper families; unpool scalar index is wrapper-aligned | per-kind LLVM call emitted；CRT/golden packet pending |
+| `wafer.instr.tdma_data_move` | V0 production only covers pad/img2col wrappers; ordinary copy and transform-like movement use gather/scatter | pad/img2col LLVM call emitted；transform-like kind 结构化失败 |
+| `wafer.instr.peripheral` | `#wafer.instr_peripheral_kind` for arg/factorize/bilinear/LUT/rand/elem_mask; count writeback and bitcount remain unsupported | per-kind LLVM call emitted；CRT/golden packet pending |
+| `wafer.instr.dte_send` / `dte_recv` / `dte_wait` | Direct DTE/FSM runtime binding evidence still incomplete | LLVM call emitted for logical peer/bytes；runtime endpoint/channel binding pending |
+| `wafer.instr.local_fence` | `TsmWaitfinish` / local drain evidence | LLVM call emitted；CRT/golden packet pending |
 
 Target LLVM lowering 输出必须调用 Wafer-owned target CRT symbols。`__*` 符号可以出现在 Wafer CRT
 内部实现、golden packet test 或 TX81/Triton 对照说明中，但不能作为 compiler IR lowering 的长期
@@ -177,7 +179,22 @@ true_value + mask -> dest               // wafer.instr.mask_move
 
 ## 4. LLVM Call Shape
 
-LLVM lowering 直接声明/调用 Wafer-owned target CRT symbol。示例形态：
+LLVM lowering 直接声明/调用 Wafer-owned target CRT symbol。当前 pass 在 LLVM dialect 中生成 vararg
+声明和 `llvm.call`：
+
+```mlir
+llvm.func @wafer_tx81_gemm(...)
+llvm.call @wafer_tx81_gemm(%lhs, %rhs, %dest, %m, %k, %n, %batch, %fmt)
+    vararg(!llvm.func<void (...)>) : (...) -> ()
+```
+
+这里的 vararg 是当前 compiler-side field stream 的 LLVM 表达形态，用于避免在 IR lowering 层把
+rank、optional field 和 kind-specific descriptor 过早固化成 C prototype。它不是 compiler-facing
+万能 helper ABI：symbol 仍按 Wafer target action / kind family 拆分，参数仍从当前 IR、accepted offset
+facts 和 verifier-checked attrs 派生。后续 Wafer CRT 头文件、implementation 和 golden packet test
+可以把这些 field stream 固定成 typed wrapper 或 descriptor struct，但不能反向恢复旧 helper ABI。
+
+示例形态：
 
 ```mlir
 // before
@@ -253,8 +270,11 @@ Golden packet / wrapper tests 验证的是 target CRT implementation 对 public 
 
 ## 7. 当前缺口
 
-- `wafer.instr.* -> LLVM call @wafer_tx81_*` pass 尚未实现。
-- Wafer-owned target CRT symbol coverage 需要逐个 op 对齐 repo-local TX81/public TSM wrapper 和硬件文档。
+- Wafer-owned target CRT implementation / typed wrapper contract 仍需逐个 op 对齐 repo-local
+  TX81/public TSM wrapper 和硬件文档；当前 LLVM lowering 只生成 Wafer-owned symbol declarations/calls。
+- Golden packet tests 仍待补，用来验证 Wafer CRT 参数到 public TSM wrapper/register packet 的映射。
+- Device-code compile/link gate 仍待补：compiler-generated `.ll -> .o -> kcore .so`，链接 repo-local
+  Wafer CRT 和 repo-vendored TX8 deps，不经过 capture shim。
 - Direct DTE production lowering 还缺 runtime endpoint / DTE channel binding。
-- package auto-export 当前只能消费已有 LLVM IR；恢复 compiler-generated package gate 要等 target LLVM
-  lowering 完成。
+- package auto-export 当前只能消费已有 LLVM IR；恢复 compiler-generated package gate 要等 device-code
+  compile/link gate 和 resource metadata export 衔接完成。

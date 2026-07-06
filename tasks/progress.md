@@ -1,6 +1,6 @@
 # Wafer Compiler Progress
 
-更新时间：2026-07-03
+更新时间：2026-07-06
 
 本文件只记录当前事实状态、active task 和下一步顺序。详细设计放在编号 `tasks/` 文档中；
 历史恢复、审计和已废弃路径不在这里展开。
@@ -44,38 +44,41 @@ PyTorch/XLA StableHLO Wafer program directory
        memory-planned `wafer.instr.*`
 ```
 
-当前主线不产出 compiler-generated LLVM IR、TX8 object、kcore shared object 或 IR-derived package。
+当前真实 PyTorch/HF program chain 仍不产出 compiler-generated LLVM IR、TX8 object、kcore shared object
+或 IR-derived package。Target LLVM lowering 已有局部和 group named-pipeline gate：手写
+memory-planned `wafer.instr.*` 可降到 LLVM dialect / LLVM IR，手写 `wafer.group` 可通过
+`wafer-lower-groups-to-target-llvm` 到 target CRT call 形态；这还不等价于 HF program chain 已经跑到
+target LLVM。
 `wafer-run`、package validator 和 `wafer_device_link.py` 只证明已有 package / LLVM input 的局部工具边界。
 
 ## 当前 Active
 
-**Target instruction LLVM lowering**
+**Device-code compile/link gate**
 
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  memory-planned target-aligned `wafer.instr.*`，accepted SPM/DDR offset facts，
-  topology/execution-mesh，program parameter shard metadata/resource view，以及已 materialize 的
-  Direct DTE schedule。
+  compiler-generated LLVM dialect / LLVM IR artifact，target CRT symbol declarations/calls，
+  repo-vendored TX8 deps，repo-local Wafer CRT implementation，以及 committed instruction IR /
+  resource view 供 metadata normalization 使用。
 - Current stage responsibility:
-  把 supported `wafer.instr.*` 降到 Wafer-owned target CRT symbol call（例如
-  `wafer_tx81_gemm`、`wafer_tx81_bit2fp`、`wafer_tx81_mask_move`）和 LLVM dialect / LLVM IR。
-  TX81/Triton `__*` 符号只作为 CRT 实现证据，不作为 compiler lowering ABI。参数必须从当前 IR、accepted offset facts、
-  topology/execution-mesh 和 resource view 派生；不经过 compiler-facing helper ABI、capture shim、
-  C stub 表或名字约定。
+  用 LLVM toolchain 把 compiler-generated `.ll` 编成 RISC-V relocatable object，再用 repo-vendored
+  GCC / TX8 deps 链接 kcore shared object；同时固定 object metadata normalization 和 required-symbol
+  检查。`.ll -> .o` 不能交给 GCC，device link 不默认编译或链接 capture shim。
 - Output artifact / IR:
-  verifier-legal LLVM dialect module / LLVM IR artifact，包含 target CRT symbol declarations/calls。
+  device object、kcore shared object、可供 package auto-export 消费的 module/resource metadata。
 - Downstream consumer:
-  device-code compile/link gate、IR-derived package metadata auto-export、runtime adapter / board gate。
+  IR-derived package metadata auto-export、runtime adapter / board gate。
 - User-level driver / named pipeline:
-  当前稳定主线仍到 `wafer-lower-groups-to-ddr-memory-planned-instr`。target LLVM lowering 完成后，
-  再引入语义命名的 program pipeline；不恢复旧 helper ABI/LLVM pipelines。
+  当前 target LLVM 输入由 `wafer-lower-groups-to-target-llvm` 或
+  `--wafer-lower-instr-to-target-llvm` 产出；真实 program pipeline 升级到 target LLVM 前，device-code
+  gate 只能证明 compiler-generated LLVM artifact 的本地编译/链接边界。
 - Explicit non-goals:
-  不重新做 frontend/SPMD/group/tile/layout/SPM/DDR/communication planning；不恢复旧 C ABI/shim；
-  不把 package metadata input 当 production lowering。
+  不重新做 target LLVM lowering，不恢复旧 helper ABI/shim，不做 package auto-export，不宣称 board launch
+  或数值 correctness。
 - Completion gate:
-  supported `wafer.instr.*` 能生成 LLVM dialect / LLVM IR，并能由 `mlir-translate` 输出 LLVM IR；
-  unsupported target op 给结构化 diagnostic。输出中不得残留 Wafer op。
+  至少一个 compiler-generated target LLVM artifact 完成 `.ll -> .o -> kcore .so`，链接 repo-local Wafer
+  CRT 和 repo-vendored TX8 deps，通过 required-symbol / object metadata 检查；没有 capture shim 依赖。
 ```
 
 ## 已完成边界
@@ -91,6 +94,7 @@ Pipeline position:
 | Direct DTE schedule lowering | done | compact all_gather 支持 ring/direct；tensor all_reduce 支持 ring/tree；full-input reduce_scatter 支持 direct；collective_permute 和 all_to_all 支持 direct p2p materialization |
 | Tile-region / instr lowering | done | compute/movement/communication lowering 到 `wafer.instr.*` over Wafer-tagged memrefs；instruction ops 使用 instr-specific target kind attrs；floating select lower 成 false-copy `gather_scatter` + `bit2fp` + `mask_move`，不生成 `wafer.instr.elementwise <select>`；reduce tile `dimensions` materialize 成 native `dim` code；convert kind 对齐硬件 opcode pair 并检查 zero-point/rounding/plain signature group；Conv/Pool/UnPool/pad-img2col TDMA/peripheral 已有明确 IR op、kind、kind-specific verifier 和 package metadata intake；transform-like TDMA movement 在 instr lowering 内 materialize 成 `gather_scatter`，TX8 wrapper path 不是 target/package production surface |
 | SPM / DDR memory planning | done | accepted SPM offset facts、accepted DDR offset facts、DTE token lifetime、recv/send buffer demand 和 local fence 进入同一 planning gate |
+| Target instruction LLVM lowering | done | `--wafer-lower-instr-to-target-llvm` 将 V0 production `wafer.instr.*` 降到 LLVM dialect `llvm.call @wafer_tx81_*`，输出可经 `mlir-translate` 成 LLVM IR；`wafer-lower-groups-to-target-llvm` 已证明手写 group 可一路到 target LLVM；transform-like TDMA target path 结构化失败；Wafer CRT/golden packet/device-link 仍是后续 gate |
 | Old helper ABI removal | done | 旧 helper ABI library、materialization pass、helper pipelines、runtime capture shim 和 C stub emitter 已删除；旧 helper ABI 不再是 IR 或 pipeline 合同 |
 
 ## 局部工具边界
@@ -105,8 +109,8 @@ Pipeline position:
 
 | 阶段 | 状态 | 输入 | 输出 / 完成 gate |
 | --- | --- | --- | --- |
-| target instruction LLVM lowering | active | memory-planned `wafer.instr.*` + accepted offsets + topology/execution-mesh + resource view + `tasks/11` coverage matrix 中的 V0 production target surface | V0 production target `wafer.instr.* -> llvm.call @wafer_tx81_*`，`mlir-translate` 能输出 LLVM IR；future/unsupported coverage 不允许通过泛 op 隐式进入 lowering，unsupported op 结构化失败 |
-| device-code compile/link gate | pending | compiler-generated LLVM IR + repo-vendored TX8 deps + repo-local Wafer CRT lib dir | LLVM `clang++` `.ll -> .o`、object metadata normalization、repo-vendored GCC `.o -> kcore .so`；不默认编译/链接 capture shim |
+| target instruction LLVM lowering | done | memory-planned `wafer.instr.*` + accepted offsets + topology/execution-mesh + resource view + `tasks/11` coverage matrix 中的 V0 production target surface | V0 production target `wafer.instr.* -> llvm.call @wafer_tx81_*`，`mlir-translate` 能输出 LLVM IR；future/unsupported coverage 不允许通过泛 op 隐式进入 lowering，unsupported op 结构化失败 |
+| device-code compile/link gate | active | compiler-generated LLVM IR + repo-vendored TX8 deps + repo-local Wafer CRT lib dir | LLVM `clang++` `.ll -> .o`、object metadata normalization、repo-vendored GCC `.o -> kcore .so`；不默认编译/链接 capture shim |
 | package metadata auto-export mainline | pending | compiler-generated LLVM artifact + kcore shared object + committed IR + model interface metadata | package metadata 从真实 target LLVM artifact 和 committed IR 导出并 roundtrip；workspace 只在 target entrypoint 需要额外 workspace base pointer 时导出 |
 | runtime adapter / board launch | pending | model-level package + C++ host runtime + board/runtime provider | allocation/import/query/bind、module load/function lookup、launch、completion 和 error propagation 在有卡环境验证 |
 | HF selected-candidate integration | pending | HF Megatron-style transformer `wafer.group` + closed-loop selector | selected-candidate path 能接受同一 HF group 形态，或明确保持为优化/候选路径而非 HF runtime gate |
@@ -124,10 +128,9 @@ Pipeline position:
 
 ## 下一步
 
-1. 实现 target instruction LLVM lowering pass：按 `tasks/11` coverage matrix 的 V0 production target surface
-   覆盖 RDMA/WDMA/gather_scatter/fill/elementwise/reduce/convert/GEMM/Conv/Pool/UnPool/
-   pad-img2col TDMA data-move/peripheral/DTE/local_fence。transform-like DataMove 必须已由 compiler
-   lowering materialize。没有 target CRT / wrapper 证据的 kind 必须
-   结构化 diagnostic，不能 fallback 到旧 helper ABI 或 ad hoc call。
-2. 补 target lowering lit：`wafer.instr.* -> llvm.call @wafer_tx81_*`，并用 `mlir-translate` 验证 LLVM IR 输出。
-3. 再恢复 device-code/package 主线 gate：只消费 compiler-generated target LLVM artifact，不引入旧 helper ABI/shim。
+1. 实现 device-code compile/link gate：消费 compiler-generated target LLVM artifact，用 LLVM toolchain
+   生成 RISC-V object，再用 repo-vendored GCC / TX8 deps 链接 kcore shared object；不引入旧 helper ABI/shim。
+2. 补 object / link lit 或 ctest：验证 `.ll -> .o -> .so` 命令、required-symbol gate、object metadata
+   normalization 和 repo-local CRT 依赖。
+3. 再恢复 package metadata auto-export 主线 gate：只消费 compiler-generated target LLVM artifact 和 committed
+   instruction IR，不使用手写 package metadata input 冒充 compiler 输出。

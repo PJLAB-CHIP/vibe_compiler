@@ -374,9 +374,11 @@ local reduce 到 `wafer.tile.reduce` 的 path，保留 reduce dimensions
 `linalg.batch_matmul` 路径已经补入 batched GEMM lowering：只接受可由 structured indexing maps、
 parallel/reduction iterator types、mul-add body 和静态 shape relation 验证的 batch/head 形态，
 materialize 为带显式 `batch_count`、batch/head/m/k/n 维度 attrs 的 `wafer.tile.gemm` /
-`wafer.instr.gemm`。target LLVM lowering 后续需要按 batch physical byte offset 展开 target CRT calls。
+`wafer.instr.gemm`。target LLVM lowering 已能把 batched GEMM instr 降到 target CRT call；后续 CRT/golden
+packet 仍需按 batch physical byte offset 固定 wrapper/packet 映射。
 历史 transformer fixed package 测试输入已删除；HF Megatron-style transformer no-card gate
-现在由 PyTorch/XLA capture 到 memory-planned instruction IR 的链路覆盖。target LLVM/package auto-export、
+现在由 PyTorch/XLA capture 到 memory-planned instruction IR 的链路覆盖。HF program-chain target LLVM
+integration、package auto-export、
 resident constant/weight residency 的 board/resource 绑定、数值 correctness 和更完整
 resource summary 仍由后续 target/runtime/board gate 验证。当前覆盖仍不是通用 elementwise/reduce/GEMM
 coverage；更复杂 broadcast、relation/logic、convert、多输入/非 constant-init reduce 和 mask/select
@@ -399,8 +401,8 @@ V1 或后续扩展：
 
 不能只因为 GEMM、一个 elementwise 和一个 reduce 能跑，就声称 transformer block 支持完成。当前
 HF no-card compile gate 已覆盖真实 PyTorch/XLA transformer block 到 memory-planned instruction IR
-的路径；target LLVM、package auto-export、board execution、数值 correctness、dynamic/KV/mask/select
-泛化和 closed-loop selected-candidate path 仍是后续 gate。compute/movement 层的最小覆盖包括：
+的路径；HF program-chain target LLVM integration、package auto-export、board execution、数值 correctness、
+dynamic/KV/mask/select 泛化和 closed-loop selected-candidate path 仍是后续 gate。compute/movement 层的最小覆盖包括：
 
 - `wafer.tile.gemm` 的 batch/head 维和 transpose relation，用于 QKV linear matmul、QK^T、
   attention value、output linear matmul 和 MLP。

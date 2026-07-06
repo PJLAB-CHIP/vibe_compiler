@@ -10,6 +10,7 @@ add_mlir_library(WaferTransforms
   SPMD/ApplyDefaultSpmdSharding.cpp
   Target/MaterializeExecutionMesh.cpp
   Target/MaterializeTargetTopology.cpp
+  Target/LowerInstrToTargetLLVM.cpp
   Target/StripTargetMetadata.cpp
   Passes.cpp
 
@@ -28,6 +29,7 @@ add_mlir_library(WaferTransforms
   MLIRFuncDialect
   MLIRIR
   MLIRLinalgDialect
+  MLIRLLVMDialect
   MLIRMathDialect
   MLIRMemRefDialect
   MLIRPass

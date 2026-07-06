@@ -99,6 +99,11 @@ void buildLowerGroupsToDDRMemoryPlannedInstrPipeline(mlir::OpPassManager &pm) {
   buildPlanDDRMemoryPipeline(pm);
 }
 
+void buildLowerGroupsToTargetLLVMPipeline(mlir::OpPassManager &pm) {
+  buildLowerGroupsToDDRMemoryPlannedInstrPipeline(pm);
+  pm.addPass(createLowerInstrToTargetLLVMPass());
+}
+
 void buildLowerGroupsToSelectedInstrPipeline(mlir::OpPassManager &pm) {
   pm.addPass(createSelectGroupTilePass());
 }
@@ -145,6 +150,13 @@ void registerWaferPipelines() {
         "instruction-level Wafer IR",
         [](mlir::OpPassManager &pm) {
           buildLowerGroupsToDDRMemoryPlannedInstrPipeline(pm);
+        });
+    mlir::PassPipelineRegistration<>(
+        "wafer-lower-groups-to-target-llvm",
+        "Lower logical wafer.group ops through memory-planned instruction IR "
+        "to target LLVM CRT calls",
+        [](mlir::OpPassManager &pm) {
+          buildLowerGroupsToTargetLLVMPipeline(pm);
         });
     mlir::PassPipelineRegistration<>(
         "wafer-lower-groups-to-selected-instr",

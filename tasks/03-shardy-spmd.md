@@ -364,8 +364,9 @@ stage 得到 partitioned StableHLO、等价 per-rank StableHLO body，或明确�
   shards 和 post-SPMD collectives 到 `wafer.group` 边界；Megatron row-parallel/contracting 形态
   必须在 post-SPMD IR 中保留 `all_reduce`，不能退化成只靠 `all_gather` 拼 full tensor。下游
   下游 HF transformer gate 继续消费同一类 HF transformer program，当前覆盖到 group ->
-  memory-planned instruction IR；target LLVM、package/no-card runtime required-symbol gate、真实 board
-  execution、数值 correctness 和 selected-candidate closed-loop path 仍由后续 gate 覆盖。
+  memory-planned instruction IR；target LLVM lowering 已有 hand-written instr/group gate，HF program-chain
+  target LLVM integration、package/no-card runtime required-symbol gate、真实 board execution、数值 correctness
+  和 selected-candidate closed-loop path 仍由后续 gate 覆盖。
 
 #### 2.1.3 默认 no-user-sharding policy
 

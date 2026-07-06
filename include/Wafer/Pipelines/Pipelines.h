@@ -20,6 +20,7 @@ void buildPlanSPMMemoryPipeline(mlir::OpPassManager &pm);
 void buildPlanDDRMemoryPipeline(mlir::OpPassManager &pm);
 void buildLowerGroupsToMemoryPlannedInstrPipeline(mlir::OpPassManager &pm);
 void buildLowerGroupsToDDRMemoryPlannedInstrPipeline(mlir::OpPassManager &pm);
+void buildLowerGroupsToTargetLLVMPipeline(mlir::OpPassManager &pm);
 void buildLowerGroupsToSelectedInstrPipeline(mlir::OpPassManager &pm);
 
 #ifdef WAFER_ENABLE_SHARDY

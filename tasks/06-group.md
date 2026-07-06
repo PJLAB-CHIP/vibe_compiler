@@ -1057,8 +1057,9 @@ normalization 展开成 structured tensor IR；group 只处理 staged dataflow�
 和资源闭环。
 
 当前 HF Megatron-style transformer gate 已证明一条真实 PyTorch/XLA transformer block 可以经
-group 继续进入 memory-planned instruction IR。target LLVM、package/no-card runtime required-symbol
-path 和 board correctness 仍是后续边界。下面仍是 group 层的长期通用调度要求；它们不能被替换成
+group 继续进入 memory-planned instruction IR。target LLVM lowering 已有 hand-written instr/group gate；
+HF program-chain target LLVM integration、package/no-card runtime required-symbol path 和 board correctness
+仍是后续边界。下面仍是 group 层的长期通用调度要求；它们不能被替换成
 transformer-specific pass，也不表示 `wafer-lower-groups-to-selected-instr` closed-loop selector 已覆盖同一 HF case。
 
 Transformer block 跑通需要下面的通用调度能力：

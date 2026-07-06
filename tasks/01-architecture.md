@@ -184,7 +184,7 @@ V0 策略：
   importer facts。
 - v0 先接受静态或有限动态 shape；任意 PyTorch eager 动态行为不是 V0 目标。
 - 支持范围由 exporter program 的合法语义、Wafer 硬件能力和当前 IR contract 决定；当前某个后续
-  lowering / endpoint / runtime pass 尚未实现，不能反向成为 frontend、SPMD 或 planner 的不支持
+  lowering / endpoint / runtime 边界存在实现缺口，不能反向成为 frontend、SPMD 或 planner 的不支持
   理由。若硬件可表达但 IR/lowering 未覆盖，必须补 IR contract 或下游恢复任务。
 
 Frontend program 的模型导入、第三方依赖组织、constant/weight、sharding annotation 和验证合同见
@@ -898,8 +898,9 @@ ModelImport/FrontendProgram
 ```
 
 当前 HF transformer no-card gate 走 `stablehlo-spmd-to-group` 后的 direct group -> instruction 路径，
-即 `wafer-lower-groups-to-ddr-memory-planned-instr`。target LLVM、device-code 和 package auto-export
-仍是后续 gate；closed-loop selected-candidate path 仍是候选/优化路径，不作为该 gate 的已覆盖必经阶段。
+即 `wafer-lower-groups-to-ddr-memory-planned-instr`。target LLVM lowering 已有 hand-written instr 和
+hand-written group named-pipeline gate，但 HF program chain 到 target LLVM、device-code 和 package
+auto-export 仍是后续 gate；closed-loop selected-candidate path 仍是候选/优化路径，不作为该 gate 的已覆盖必经阶段。
 
 工程边界：
 

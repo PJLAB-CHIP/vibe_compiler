@@ -65,6 +65,14 @@ def StripTargetMetadataPass
   let dependentDialects = ["wafer::WaferDialect"];
 }
 
+def LowerInstrToTargetLLVMPass
+    : Pass<"wafer-lower-instr-to-target-llvm", "mlir::ModuleOp"> {
+  let summary =
+      "Lower memory-planned wafer.instr ops to target LLVM CRT calls";
+  let dependentDialects = ["mlir::LLVM::LLVMDialect",
+                           "wafer::WaferDialect"];
+}
+
 def FormLogicalGroupsPass
     : Pass<"wafer-form-logical-groups", "mlir::ModuleOp"> {
   let summary = "Form root-seeded tensor-level logical wafer.group ops";

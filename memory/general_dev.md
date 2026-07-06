@@ -292,11 +292,12 @@
   `wafer-compile-stablehlo --partition-stablehlo-program` 已删除，因为 Shardy/SPMD 不属于 frontend
 	  verifier tool；旧 C ABI compile 入口也已删除。当前稳定后端主线由
 	  `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 后接
-	  `wafer-lower-groups-to-ddr-memory-planned-instr` 负责，target LLVM/package auto-export 是下一 gate。
+	  `wafer-lower-groups-to-ddr-memory-planned-instr` 负责；target LLVM lowering 已有局部/group gate，
+	  HF program-chain target LLVM integration、device-code 和 package auto-export 是下一批 gate。
 	  旧显式 target CRT issue-op、ring collective、SPM/DDR debug path 和 single-tile
 	  materialization pass 链已删除；不要恢复成用户级 compile flow。当前 HF transformer no-card gate
-	  已覆盖真实 frontend/SPMD program 到 memory-planned instruction IR；真实 target LLVM/package、
-	  board allocation/launch/completion、数值 correctness 和 HF selected-candidate closed-loop path 仍是后续 gate。
+	  已覆盖真实 frontend/SPMD program 到 memory-planned instruction IR；真实 HF target LLVM integration、
+	  package、board allocation/launch/completion、数值 correctness 和 HF selected-candidate closed-loop path 仍是后续 gate。
 - ODS op 如果引入 `RecursiveMemoryEffects`、`ReturnLike` 等 interface trait，公开 dialect 头要
   include 对应 C++ interface header，`WaferIR` 也要显式 link 对应 MLIR interface target。
 - ODS op 如果直接使用 MLIR `TilingInterface` 这类 upstream op interface，避免让 TableGen 在
