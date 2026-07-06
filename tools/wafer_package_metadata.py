@@ -226,7 +226,7 @@ SUPPORTED_DATA_MOVE_KINDS = {
     "img2col",
 }
 
-TRANSPOSE_LIKE_DATA_MOVE_KINDS = {
+TRANSFORM_DATA_MOVE_KINDS = {
     "mirror",
     "transpose",
     "rotate90",
@@ -334,6 +334,19 @@ def require_permutation_list(value: Any, name: str, expected_length: int) -> lis
     values = require_int_list(value, name, expected_length, positive=False)
     if sorted(values) != list(range(expected_length)):
         fail(f"{name} must be a permutation of 0..{expected_length - 1}")
+    return values
+
+
+def require_axes_list(value: Any, name: str) -> list[int]:
+    values = require_list(value, name)
+    if not values:
+        fail(f"{name} must contain at least one entry")
+    for index, item in enumerate(values):
+        require_non_negative_int(item, f"{name}[{index}]")
+        if item > 3:
+            fail(f"{name}[{index}] must be in the range 0..3")
+    if len(set(values)) != len(values):
+        fail(f"{name} entries must be unique")
     return values
 
 
@@ -995,6 +1008,7 @@ def validate_package_metadata(metadata: dict[str, Any]) -> None:
                 positive=True,
             )
             has_permutation = "permutation" in item
+            has_axes = "axes" in item
             has_pads = "pads" in item
             has_kernel_strides = "kernel_strides" in item
             if has_permutation:
@@ -1003,6 +1017,8 @@ def validate_package_metadata(metadata: dict[str, Any]) -> None:
                     f"instructions[{index}].permutation",
                     4,
                 )
+            if has_axes:
+                require_axes_list(item.get("axes"), f"instructions[{index}].axes")
             if has_pads:
                 require_int_list(
                     item.get("pads"),
@@ -1017,10 +1033,10 @@ def validate_package_metadata(metadata: dict[str, Any]) -> None:
                     4,
                     positive=True,
                 )
-            if kind in TRANSPOSE_LIKE_DATA_MOVE_KINDS:
+            if kind in TRANSFORM_DATA_MOVE_KINDS:
                 fail(
                     f"instructions[{index}].kind reached package metadata; "
-                    "compiler output must materialize transpose-like movement "
+                    "compiler output must materialize transform-like movement "
                     "before export"
                 )
             elif kind == "pad":
@@ -1029,7 +1045,7 @@ def validate_package_metadata(metadata: dict[str, Any]) -> None:
                 reject_keys(
                     item,
                     f"instructions[{index}]",
-                    {"permutation", "kernel_strides"},
+                    {"permutation", "axes", "kernel_strides"},
                 )
             elif kind == "img2col":
                 if not has_pads:
@@ -1038,12 +1054,12 @@ def validate_package_metadata(metadata: dict[str, Any]) -> None:
                     fail(
                         f"instructions[{index}].kernel_strides is required for img2col"
                     )
-                reject_keys(item, f"instructions[{index}]", {"permutation"})
+                reject_keys(item, f"instructions[{index}]", {"permutation", "axes"})
             else:
                 reject_keys(
                     item,
                     f"instructions[{index}]",
-                    {"permutation", "pads", "kernel_strides"},
+                    {"permutation", "axes", "pads", "kernel_strides"},
                 )
         elif mnemonic == "wafer.instr.peripheral":
             kind = require_non_empty_string(

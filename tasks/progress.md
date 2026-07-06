@@ -126,7 +126,7 @@ Pipeline position:
 
 1. 实现 target instruction LLVM lowering pass：按 `tasks/11` coverage matrix 的 V0 production target surface
    覆盖 RDMA/WDMA/gather_scatter/fill/elementwise/reduce/convert/GEMM/Conv/Pool/UnPool/
-   pad-img2col TDMA data-move/peripheral/DTE/local_fence。transpose-like DataMove 必须已由 compiler
+   pad-img2col TDMA data-move/peripheral/DTE/local_fence。transform-like DataMove 必须已由 compiler
    lowering materialize。没有 target CRT / wrapper 证据的 kind 必须
    结构化 diagnostic，不能 fallback 到旧 helper ABI 或 ad hoc call。
 2. 补 target lowering lit：`wafer.instr.* -> llvm.call @wafer_tx81_*`，并用 `mlir-translate` 验证 LLVM IR 输出。

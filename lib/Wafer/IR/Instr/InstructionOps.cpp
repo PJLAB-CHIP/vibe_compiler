@@ -106,6 +106,40 @@ verifyPermutationI64Array(mlir::Operation *op, mlir::DenseI64ArrayAttr attr,
   return mlir::success();
 }
 
+static mlir::LogicalResult verifyAxesI64Array(mlir::Operation *op,
+                                              mlir::DenseI64ArrayAttr attr,
+                                              llvm::StringRef name,
+                                              int64_t expectedSize) {
+  if (expectedSize > 0 && attr.size() != expectedSize)
+    return op->emitOpError()
+           << name << " must contain exactly " << expectedSize << " entries";
+  if (expectedSize < 0 && attr.empty())
+    return op->emitOpError() << name << " must contain at least one entry";
+
+  bool seen[4] = {false, false, false, false};
+  for (int64_t value : attr.asArrayRef()) {
+    if (value < 0 || value >= 4)
+      return op->emitOpError()
+             << name << " entries must be in the range [0, 3]";
+    if (seen[value])
+      return op->emitOpError() << name << " entries must be unique";
+    seen[value] = true;
+  }
+  return mlir::success();
+}
+
+static mlir::LogicalResult
+verifyAxesWithinRank(mlir::Operation *op, mlir::DenseI64ArrayAttr attr,
+                     llvm::StringRef name, int64_t sourceRank,
+                     int64_t destRank) {
+  for (int64_t value : attr.asArrayRef()) {
+    if (value >= sourceRank || value >= destRank)
+      return op->emitOpError()
+             << name << " entries must be within source/dest tensor rank";
+  }
+  return mlir::success();
+}
+
 static int64_t getOptionalI64AttrValue(mlir::IntegerAttr attr) {
   return attr ? attr.getInt() : 0;
 }
@@ -1444,9 +1478,23 @@ mlir::LogicalResult InstrTDMADataMoveOp::verify() {
       mlir::failed(verifyI64Array(getOperation(), getDestShapeAttr(),
                                   "dest_shape", 4, /*positive=*/true)))
     return mlir::failure();
+
+  std::optional<mlir::RankedTensorType> sourceTensor =
+      getLogicalTensorType(getSource().getType());
+  std::optional<mlir::RankedTensorType> destTensor =
+      getLogicalTensorType(getDest().getType());
   if (getPermutationAttr() &&
       mlir::failed(verifyPermutationI64Array(
           getOperation(), getPermutationAttr(), "permutation")))
+    return mlir::failure();
+  if (getAxesAttr() &&
+      mlir::failed(verifyAxesI64Array(getOperation(), getAxesAttr(), "axes",
+                                      /*expectedSize=*/-1)))
+    return mlir::failure();
+  if (getAxesAttr() &&
+      mlir::failed(verifyAxesWithinRank(getOperation(), getAxesAttr(), "axes",
+                                        sourceTensor->getRank(),
+                                        destTensor->getRank())))
     return mlir::failure();
   if (getPadsAttr() &&
       mlir::failed(verifyI64Array(getOperation(), getPadsAttr(), "pads", 4,
@@ -1460,9 +1508,34 @@ mlir::LogicalResult InstrTDMADataMoveOp::verify() {
 
   switch (getKindAttr().getValue()) {
   case InstrDataMoveKind::Mirror:
+    if (sourceTensor->getRank() != destTensor->getRank())
+      return emitOpError("mirror data_move requires rank-compatible operands");
+    if (!getAxesAttr())
+      return emitOpError("mirror data_move requires axes attr");
+    if (getPermutationAttr())
+      return emitOpError("mirror data_move must not have permutation attr");
+    if (getPadsAttr())
+      return emitOpError("mirror data_move must not have pads attr");
+    if (getKernelStridesAttr())
+      return emitOpError("mirror data_move must not have kernel_strides attr");
+    break;
   case InstrDataMoveKind::Rotate90:
   case InstrDataMoveKind::Rotate180:
   case InstrDataMoveKind::Rotate270:
+    if (sourceTensor->getRank() != destTensor->getRank())
+      return emitOpError("rotate data_move requires rank-compatible operands");
+    if (!getAxesAttr())
+      return emitOpError("rotate data_move requires axes attr");
+    if (mlir::failed(verifyAxesI64Array(getOperation(), getAxesAttr(), "axes",
+                                        /*expectedSize=*/2)))
+      return mlir::failure();
+    if (getPermutationAttr())
+      return emitOpError("rotate data_move must not have permutation attr");
+    if (getPadsAttr())
+      return emitOpError("rotate data_move must not have pads attr");
+    if (getKernelStridesAttr())
+      return emitOpError("rotate data_move must not have kernel_strides attr");
+    break;
   case InstrDataMoveKind::Nchw2Nhwc:
   case InstrDataMoveKind::Nhwc2Nchw:
   case InstrDataMoveKind::TensorNom:
@@ -1474,10 +1547,14 @@ mlir::LogicalResult InstrTDMADataMoveOp::verify() {
     if (getKernelStridesAttr())
       return emitOpError(
           "non-parameterized data_move must not have kernel_strides attr");
+    if (getAxesAttr())
+      return emitOpError("non-parameterized data_move must not have axes attr");
     break;
   case InstrDataMoveKind::Transpose:
     if (!getPermutationAttr())
       return emitOpError("transpose data_move requires permutation attr");
+    if (getAxesAttr())
+      return emitOpError("transpose data_move must not have axes attr");
     if (getPadsAttr())
       return emitOpError("transpose data_move must not have pads attr");
     if (getKernelStridesAttr())
@@ -1491,6 +1568,8 @@ mlir::LogicalResult InstrTDMADataMoveOp::verify() {
       return emitOpError("pad data_move must not have permutation attr");
     if (getKernelStridesAttr())
       return emitOpError("pad data_move must not have kernel_strides attr");
+    if (getAxesAttr())
+      return emitOpError("pad data_move must not have axes attr");
     break;
   case InstrDataMoveKind::Img2Col:
     if (!getPadsAttr())
@@ -1499,13 +1578,11 @@ mlir::LogicalResult InstrTDMADataMoveOp::verify() {
       return emitOpError("img2col data_move requires kernel_strides attr");
     if (getPermutationAttr())
       return emitOpError("img2col data_move must not have permutation attr");
+    if (getAxesAttr())
+      return emitOpError("img2col data_move must not have axes attr");
     break;
   }
 
-  std::optional<mlir::RankedTensorType> sourceTensor =
-      getLogicalTensorType(getSource().getType());
-  std::optional<mlir::RankedTensorType> destTensor =
-      getLogicalTensorType(getDest().getType());
   return verifySameElementType(getOperation(), *sourceTensor, *destTensor,
                                "tdma_data_move source and dest element types "
                                "must match");

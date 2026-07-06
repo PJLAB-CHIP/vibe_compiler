@@ -507,7 +507,7 @@ def parse_instructions(instruction_ir: str) -> list[dict[str, Any]]:
             item["kind"] = parse_kind(segment, "tdma_data_move")
             item["source_shape"] = parse_array_i64_attr(segment, "source_shape")
             item["dest_shape"] = parse_array_i64_attr(segment, "dest_shape")
-            for optional_attr in ("permutation", "pads", "kernel_strides"):
+            for optional_attr in ("permutation", "axes", "pads", "kernel_strides"):
                 optional_values = parse_optional_array_i64_attr(segment, optional_attr)
                 if optional_values is not None:
                     item[optional_attr] = optional_values

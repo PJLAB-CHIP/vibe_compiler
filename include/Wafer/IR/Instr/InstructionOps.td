@@ -283,6 +283,7 @@ def Wafer_InstrTDMADataMoveOp : Wafer_InstrOp<"instr.tdma_data_move", [
     DenseI64ArrayAttr:$source_shape,
     DenseI64ArrayAttr:$dest_shape,
     OptionalAttr<DenseI64ArrayAttr>:$permutation,
+    OptionalAttr<DenseI64ArrayAttr>:$axes,
     OptionalAttr<DenseI64ArrayAttr>:$pads,
     OptionalAttr<DenseI64ArrayAttr>:$kernel_strides
   );

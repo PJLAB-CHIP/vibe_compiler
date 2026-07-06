@@ -973,6 +973,131 @@ getPermutationDataMoveSegments(mlir::PatternRewriter &rewriter,
                                          destIndexFn, failureReason, opLabel);
 }
 
+static mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>>
+getMirrorDataMoveSegments(mlir::PatternRewriter &rewriter,
+                          InstrTDMADataMoveOp op,
+                          mlir::MemRefType sourceType,
+                          mlir::MemRefType destType,
+                          llvm::ArrayRef<int64_t> axes,
+                          std::string *failureReason,
+                          llvm::StringRef opLabel) {
+  if (sourceType.getRank() != destType.getRank())
+    return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
+        rewriter, op, failureReason,
+        llvm::Twine(opLabel).concat(" requires rank-compatible operands").str());
+  for (int64_t dim = 0; dim < sourceType.getRank(); ++dim) {
+    int64_t sourceSize = sourceType.getDimSize(dim);
+    int64_t destSize = destType.getDimSize(dim);
+    if (sourceSize == mlir::ShapedType::kDynamic ||
+        destSize == mlir::ShapedType::kDynamic || sourceSize != destSize)
+      return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
+          rewriter, op, failureReason,
+          llvm::Twine(opLabel)
+              .concat(" requires equal static source/dest shapes")
+              .str());
+  }
+
+  llvm::SmallDenseSet<int64_t, 4> mirroredAxes;
+  mirroredAxes.insert(axes.begin(), axes.end());
+  auto sourceIndexFn = [&](llvm::ArrayRef<int64_t> destIndices)
+      -> mlir::FailureOr<llvm::SmallVector<int64_t>> {
+    llvm::SmallVector<int64_t> sourceIndices(destIndices.begin(),
+                                             destIndices.end());
+    for (int64_t axis : mirroredAxes)
+      sourceIndices[axis] = sourceType.getDimSize(axis) - 1 - destIndices[axis];
+    return sourceIndices;
+  };
+  auto destIndexFn = [](llvm::ArrayRef<int64_t> destIndices)
+      -> mlir::FailureOr<llvm::SmallVector<int64_t>> {
+    return llvm::SmallVector<int64_t>(destIndices.begin(), destIndices.end());
+  };
+
+  return getStaticMappedMovementSegments(rewriter, op, sourceType, destType,
+                                         destType.getShape(), sourceIndexFn,
+                                         destIndexFn, failureReason, opLabel);
+}
+
+static mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>>
+getRotateDataMoveSegments(mlir::PatternRewriter &rewriter,
+                          InstrTDMADataMoveOp op,
+                          mlir::MemRefType sourceType,
+                          mlir::MemRefType destType,
+                          InstrDataMoveKind kind,
+                          llvm::ArrayRef<int64_t> axes,
+                          std::string *failureReason,
+                          llvm::StringRef opLabel) {
+  if (sourceType.getRank() != destType.getRank() || axes.size() != 2)
+    return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
+        rewriter, op, failureReason,
+        llvm::Twine(opLabel).concat(" requires rank-compatible operands").str());
+  int64_t axis0 = axes[0];
+  int64_t axis1 = axes[1];
+  for (int64_t dim = 0; dim < sourceType.getRank(); ++dim) {
+    int64_t sourceSize = sourceType.getDimSize(dim);
+    int64_t destSize = destType.getDimSize(dim);
+    if (sourceSize == mlir::ShapedType::kDynamic ||
+        destSize == mlir::ShapedType::kDynamic)
+      return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
+          rewriter, op, failureReason,
+          llvm::Twine(opLabel).concat(" requires static shapes").str());
+    if (dim != axis0 && dim != axis1 && sourceSize != destSize)
+      return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
+          rewriter, op, failureReason,
+          llvm::Twine(opLabel)
+              .concat(" requires non-rotated dimensions to match")
+              .str());
+  }
+
+  int64_t sourceAxis0Size = sourceType.getDimSize(axis0);
+  int64_t sourceAxis1Size = sourceType.getDimSize(axis1);
+  int64_t destAxis0Size = destType.getDimSize(axis0);
+  int64_t destAxis1Size = destType.getDimSize(axis1);
+  if (kind == InstrDataMoveKind::Rotate180) {
+    if (sourceAxis0Size != destAxis0Size || sourceAxis1Size != destAxis1Size)
+      return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
+          rewriter, op, failureReason,
+          llvm::Twine(opLabel)
+              .concat(" requires equal rotated-axis shapes")
+              .str());
+  } else if (sourceAxis0Size != destAxis1Size ||
+             sourceAxis1Size != destAxis0Size) {
+    return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
+        rewriter, op, failureReason,
+        llvm::Twine(opLabel).concat(" requires swapped rotated-axis shapes").str());
+  }
+
+  auto sourceIndexFn = [&](llvm::ArrayRef<int64_t> destIndices)
+      -> mlir::FailureOr<llvm::SmallVector<int64_t>> {
+    llvm::SmallVector<int64_t> sourceIndices(destIndices.begin(),
+                                             destIndices.end());
+    switch (kind) {
+    case InstrDataMoveKind::Rotate90:
+      sourceIndices[axis0] = sourceAxis0Size - 1 - destIndices[axis1];
+      sourceIndices[axis1] = destIndices[axis0];
+      break;
+    case InstrDataMoveKind::Rotate180:
+      sourceIndices[axis0] = sourceAxis0Size - 1 - destIndices[axis0];
+      sourceIndices[axis1] = sourceAxis1Size - 1 - destIndices[axis1];
+      break;
+    case InstrDataMoveKind::Rotate270:
+      sourceIndices[axis0] = destIndices[axis1];
+      sourceIndices[axis1] = sourceAxis1Size - 1 - destIndices[axis0];
+      break;
+    default:
+      llvm_unreachable("expected rotate data_move kind");
+    }
+    return sourceIndices;
+  };
+  auto destIndexFn = [](llvm::ArrayRef<int64_t> destIndices)
+      -> mlir::FailureOr<llvm::SmallVector<int64_t>> {
+    return llvm::SmallVector<int64_t>(destIndices.begin(), destIndices.end());
+  };
+
+  return getStaticMappedMovementSegments(rewriter, op, sourceType, destType,
+                                         destType.getShape(), sourceIndexFn,
+                                         destIndexFn, failureReason, opLabel);
+}
+
 static bool
 isMetadataOnlyLogicalMovement(mlir::MemRefType sourceType,
                               mlir::MemRefType destType,
@@ -1439,13 +1564,25 @@ private:
           rewriter, op, sourceType, destType, failureReason,
           "tdma_data_move tensor_nom lowering");
     case InstrDataMoveKind::Mirror:
+      if (!op.getAxesAttr())
+        return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
+            rewriter, op, failureReason,
+            "tdma_data_move mirror lowering requires axes attr");
+      return getMirrorDataMoveSegments(rewriter, op, sourceType, destType,
+                                       op.getAxesAttr().asArrayRef(),
+                                       failureReason,
+                                       "tdma_data_move mirror lowering");
     case InstrDataMoveKind::Rotate90:
     case InstrDataMoveKind::Rotate180:
     case InstrDataMoveKind::Rotate270:
-      return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
-          rewriter, op, failureReason,
-          "tdma_data_move mirror/rotate lowering requires explicit "
-          "axis-orientation semantics before gather_scatter materialization");
+      if (!op.getAxesAttr())
+        return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
+            rewriter, op, failureReason,
+            "tdma_data_move rotate lowering requires axes attr");
+      return getRotateDataMoveSegments(rewriter, op, sourceType, destType, kind,
+                                       op.getAxesAttr().asArrayRef(),
+                                       failureReason,
+                                       "tdma_data_move rotate lowering");
     case InstrDataMoveKind::Pad:
     case InstrDataMoveKind::Img2Col:
       return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(

@@ -308,7 +308,7 @@ instr-level target kind。
 | `TsmConv` / `TsmDepthwiseConv` / backward conv | `wafer.instr.conv` + `#wafer.instr_conv_kind` | V0 production target op; target LLVM pending | IR 覆盖基础 Conv/Depthwise/BackwardConv packet fields；bias、scale、sparse、INT8 quant、fused activation 和 psum policy 仍需后续扩展 |
 | `TsmPool` / `TsmUnPool` | `wafer.instr.pool` / `wafer.instr.unpool` | V0 production target op; target LLVM pending | 明确 NHWC descriptor、pad/kernel/stride 和 indexed output arity；不能复用 reduce 或 movement op 表达 |
 | TDMA pad / img2col | `wafer.instr.tdma_data_move` + `#wafer.instr_data_move_kind` | V0 production target op; target LLVM pending | 单条 TDMA data-move op 表达 wrapper-level pad/img2col；普通 copy/layout segment 仍优先使用 `gather_scatter` |
-| TDMA mirror / transpose / rotate / NCHW-NHWC / TensorNom | 无 production target op；enum 保留用于 imported/pre-lowering IR | V0 composite lowering or future target extension | V0 由 compiler lowering 展开为 `gather_scatter` 或结构化失败。当前 `transpose`、`nchw2nhwc`、`nhwc2nchw` 和 `tensor_nom` 可由静态 shape/layout materialize；`mirror/rotate` 因 axis/orientation 语义还没有显式 IR 字段，不能静默猜测。package / target export 如果仍看到这些 kind，说明 pipeline 漏了 materialization，应拒绝 |
+| TDMA mirror / transpose / rotate / NCHW-NHWC / TensorNom | 无 production target op；enum 保留用于 imported/pre-lowering IR | V0 composite lowering or future target extension | V0 由 compiler lowering 展开为 `gather_scatter` 或结构化失败。`transpose` 使用 `permutation`，`mirror` 使用一个或多个 `axes`，`rotate90/180/270` 使用有序二元 `axes` 表示旋转平面，NCHW/NHWC 使用固定 4D layout permutation，`tensor_nom` 使用 logical-linear 到 physical-layout materialization。package / target export 如果仍看到这些 kind，说明 pipeline 漏了 materialization，应拒绝 |
 | TDMA concat / maskgather variants | 无单独 op | future target extension or composite | `concat` 属于 CT packet，maskgather variants 需要 bool/index operand policy；未定义前不能复用 `tdma_data_move` |
 | bitpacked bool loop / VuV / scalar immediate variants | 当前 `elementwise` 只覆盖 opcode family kind，不单独建模 variant | future extension | 需要区分 value bool、bitpacked bool、VuV/VuVLoop、scalar immediate 和 output storage；不能靠 `elementwise` 名称吞掉所有 variant |
 | Peripheral count/argmax/argmin/factorize/bilinear/lut/rand/elem_mask | `wafer.instr.peripheral` + `#wafer.instr_peripheral_kind` | V0 production target op; target LLVM pending | IR 明确 kind、input/output arity 和 elem_count；bitcount opcode 176 仍因缺 public wrapper 不纳入 |
@@ -556,14 +556,17 @@ wafer.instr.peripheral #wafer.instr_peripheral_kind<kind> inputs into dests attr
 
 | op | operands | result | required attrs |
 | --- | --- | --- | --- |
-| `wafer.instr.tdma_data_move` | `source: SPM memref`, `dest: SPM memref` | none | `kind: #wafer.instr_data_move_kind`, `source_shape`, `dest_shape`; V0 production allows only `pad` with `pads` and `img2col` with `pads` + `kernel_strides` |
+| `wafer.instr.tdma_data_move` | `source: SPM memref`, `dest: SPM memref` | none | `kind: #wafer.instr_data_move_kind`, `source_shape`, `dest_shape`; pre-lowering transform attrs are `permutation` for transpose and `axes` for mirror/rotate; V0 production target allows only `pad` with `pads` and `img2col` with `pads` + `kernel_strides` |
 | `wafer.instr.peripheral` | `inputs: Variadic<SPM memref>`, `dests: Variadic<SPM memref>` | none | `kind: #wafer.instr_peripheral_kind`, `elem_count`; kind-specific attrs for bilinear/LUT/elem_mask |
 
 `wafer.instr.tdma_data_move` 的 V0 production surface 只表达 wrapper-level `pad` / `img2col`。
-mirror、transpose、rotate、NCHW/NHWC 和 TensorNom 这类 transpose-like DataMove kind 虽然有
+mirror、transpose、rotate、NCHW/NHWC 和 TensorNom 这类 transform-like DataMove kind 虽然有
 public wrapper/header 证据，但 V0 不把它们作为 production target surface；普通 copy、layout segment
-movement、static slice / broadcast / transpose 的可证明 byte movement 由 compiler lowering 展开成
-`wafer.instr.gather_scatter`，无法表达时由 lowering 结构化失败。
+movement、static slice / broadcast / transpose / mirror / rotate 的可证明 byte movement 由 compiler
+lowering 展开成 `wafer.instr.gather_scatter`，无法表达时由 lowering 结构化失败。`mirror`
+的 `axes` 是被翻转的 logical axis 集合；`rotate90/180/270` 的 `axes = [a, b]` 是有序旋转平面，
+`rotate90` 表示在该平面上的 clockwise quarter turn，`rotate270` 表示反向 quarter turn，
+`rotate180` 保持 shape 不交换但翻转两个轴。
 
 `wafer.instr.peripheral` 覆盖 argmax、argmin、factorize、bilinear、lut16、lut32、rand_gen 和
 elem_mask 的 public wrapper 形态。kind 决定 input/dest arity；argmax/argmin 的第一个 dest 是
@@ -702,7 +705,10 @@ R3.2d verifier checks only instruction legality:
   accepts `pad` with `pads` and `img2col` with `pads` + `kernel_strides`. Transform-like kinds
   `mirror/transpose/rotate*/nchw2nhwc/nhwc2nchw/tensor_nom` are verifier-legal only as explicit
   pre-lowering/imported IR and must be materialized to `gather_scatter` before target LLVM or package
-  export; they are not production target lowering input unless a future target path is explicitly enabled.
+  export. `transpose` requires `permutation`; `mirror` requires non-empty unique `axes`; rotate kinds
+  require exactly two unique `axes`; `axes` entries must be within the source/dest logical tensor rank,
+  and mirror/rotate operands must be rank-compatible. Unrelated attrs are rejected per kind. These kinds are not
+  production target lowering input unless a future target path is explicitly enabled.
 - `wafer.instr.peripheral` verifies kind-specific input/dest arity and positive `elem_count`; arg
   peripheral ops require a same-dtype value dest plus an i32 index dest. `bilinear` requires
   source/dest shape attrs; LUT kinds require `lut_elem_count`; `elem_mask` requires `scale`,
@@ -824,7 +830,8 @@ R3.2d.1 已完成：
 5. `wafer.instr.unpool` 已改成 wrapper-aligned scalar `index` attr；`mask` / `unpool` 需要
    uint32 `index`，`avg` 禁止携带。`wafer.instr.tdma_data_move` verifier 按 kind 检查字段组合：
    `pad` / `img2col` 是 V0 production target input，transform-like kind 只允许作为 pre-lowering/imported
-   instr IR，并由 `--wafer-convert-tile-region-to-instr` 在 target/package 边界前 materialize；
+   instr IR；`transpose`、`mirror`、`rotate*`、NCHW/NHWC 和 TensorNom 由
+   `--wafer-convert-tile-region-to-instr` 在 target/package 边界前 materialize；
    `wafer.instr.peripheral` verifier 按
    kind-specific wrapper signature 检查 required/forbidden attrs；`count` peripheral 因 writeback
    未被当前 IR 表示而结构化拒绝。

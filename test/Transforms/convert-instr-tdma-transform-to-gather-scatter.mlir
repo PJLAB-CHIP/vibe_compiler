@@ -73,3 +73,79 @@ func.func @instr_tdma_tensor_nom_materializes(
 // CHECK-NOT: wafer.instr.tdma_data_move
 // CHECK: wafer.instr.gather_scatter %[[TENSOR_SRC]] to %[[CX_DST]]
 // CHECK-NOT: wafer.instr.tdma_data_move
+
+func.func @instr_tdma_mirror_materializes(
+    %src: memref<1x1x2x3xf16, #wafer.memory<spm, tensor>>,
+    %dst: memref<1x1x2x3xf16, #wafer.memory<spm, tensor>>) {
+  wafer.instr.tdma_data_move #wafer.instr_data_move_kind<mirror> %src into %dst
+      {source_shape = array<i64: 1, 1, 2, 3>,
+       dest_shape = array<i64: 1, 1, 2, 3>,
+       axes = array<i64: 3>}
+      : memref<1x1x2x3xf16, #wafer.memory<spm, tensor>>
+     to memref<1x1x2x3xf16, #wafer.memory<spm, tensor>>
+  return
+}
+
+// CHECK-LABEL: func.func @instr_tdma_mirror_materializes
+// CHECK-SAME: %[[MIRROR_SRC:[a-zA-Z0-9_]+]]: memref<1x1x2x3xf16, #wafer.memory<spm, tensor>>
+// CHECK-SAME: %[[MIRROR_DST:[a-zA-Z0-9_]+]]: memref<1x1x2x3xf16, #wafer.memory<spm, tensor>>
+// CHECK-NOT: wafer.instr.tdma_data_move
+// CHECK: wafer.instr.gather_scatter %[[MIRROR_SRC]] to %[[MIRROR_DST]]
+// CHECK-NOT: wafer.instr.tdma_data_move
+
+func.func @instr_tdma_rotate90_materializes(
+    %src: memref<1x1x2x3xf16, #wafer.memory<spm, tensor>>,
+    %dst: memref<1x1x3x2xf16, #wafer.memory<spm, tensor>>) {
+  wafer.instr.tdma_data_move #wafer.instr_data_move_kind<rotate90> %src into %dst
+      {source_shape = array<i64: 1, 1, 2, 3>,
+       dest_shape = array<i64: 1, 1, 3, 2>,
+       axes = array<i64: 2, 3>}
+      : memref<1x1x2x3xf16, #wafer.memory<spm, tensor>>
+     to memref<1x1x3x2xf16, #wafer.memory<spm, tensor>>
+  return
+}
+
+// CHECK-LABEL: func.func @instr_tdma_rotate90_materializes
+// CHECK-SAME: %[[ROTATE_SRC:[a-zA-Z0-9_]+]]: memref<1x1x2x3xf16, #wafer.memory<spm, tensor>>
+// CHECK-SAME: %[[ROTATE_DST:[a-zA-Z0-9_]+]]: memref<1x1x3x2xf16, #wafer.memory<spm, tensor>>
+// CHECK-NOT: wafer.instr.tdma_data_move
+// CHECK: wafer.instr.gather_scatter %[[ROTATE_SRC]] to %[[ROTATE_DST]]
+// CHECK-NOT: wafer.instr.tdma_data_move
+
+func.func @instr_tdma_rotate180_materializes(
+    %src: memref<1x1x2x3xf16, #wafer.memory<spm, tensor>>,
+    %dst: memref<1x1x2x3xf16, #wafer.memory<spm, tensor>>) {
+  wafer.instr.tdma_data_move #wafer.instr_data_move_kind<rotate180> %src into %dst
+      {source_shape = array<i64: 1, 1, 2, 3>,
+       dest_shape = array<i64: 1, 1, 2, 3>,
+       axes = array<i64: 2, 3>}
+      : memref<1x1x2x3xf16, #wafer.memory<spm, tensor>>
+     to memref<1x1x2x3xf16, #wafer.memory<spm, tensor>>
+  return
+}
+
+// CHECK-LABEL: func.func @instr_tdma_rotate180_materializes
+// CHECK-SAME: %[[ROTATE180_SRC:[a-zA-Z0-9_]+]]: memref<1x1x2x3xf16, #wafer.memory<spm, tensor>>
+// CHECK-SAME: %[[ROTATE180_DST:[a-zA-Z0-9_]+]]: memref<1x1x2x3xf16, #wafer.memory<spm, tensor>>
+// CHECK-NOT: wafer.instr.tdma_data_move
+// CHECK: wafer.instr.gather_scatter %[[ROTATE180_SRC]] to %[[ROTATE180_DST]]
+// CHECK-NOT: wafer.instr.tdma_data_move
+
+func.func @instr_tdma_rotate270_materializes(
+    %src: memref<1x1x2x3xf16, #wafer.memory<spm, tensor>>,
+    %dst: memref<1x1x3x2xf16, #wafer.memory<spm, tensor>>) {
+  wafer.instr.tdma_data_move #wafer.instr_data_move_kind<rotate270> %src into %dst
+      {source_shape = array<i64: 1, 1, 2, 3>,
+       dest_shape = array<i64: 1, 1, 3, 2>,
+       axes = array<i64: 2, 3>}
+      : memref<1x1x2x3xf16, #wafer.memory<spm, tensor>>
+     to memref<1x1x3x2xf16, #wafer.memory<spm, tensor>>
+  return
+}
+
+// CHECK-LABEL: func.func @instr_tdma_rotate270_materializes
+// CHECK-SAME: %[[ROTATE270_SRC:[a-zA-Z0-9_]+]]: memref<1x1x2x3xf16, #wafer.memory<spm, tensor>>
+// CHECK-SAME: %[[ROTATE270_DST:[a-zA-Z0-9_]+]]: memref<1x1x3x2xf16, #wafer.memory<spm, tensor>>
+// CHECK-NOT: wafer.instr.tdma_data_move
+// CHECK: wafer.instr.gather_scatter %[[ROTATE270_SRC]] to %[[ROTATE270_DST]]
+// CHECK-NOT: wafer.instr.tdma_data_move

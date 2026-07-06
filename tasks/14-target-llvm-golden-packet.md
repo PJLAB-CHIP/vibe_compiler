@@ -116,7 +116,7 @@ Pipeline position:
 | `wafer.instr.gemm` | `TsmGemm` wrapper / `__Gemm` style CRT evidence; Wafer-owned symbol must not expose Tx81 ABI verbatim | pending target LLVM |
 | `wafer.instr.conv` | `#wafer.instr_conv_kind` NE Conv/Depthwise/BackwardConv target wrapper families；optional/fused operands are not implicit | IR added, LLVM pending |
 | `wafer.instr.pool` / `unpool` | `#wafer.instr_pool_kind` / `#wafer.instr_unpool_kind` CT Pool/UnPool wrapper families; unpool scalar index is wrapper-aligned | IR added, LLVM pending |
-| `wafer.instr.tdma_data_move` | V0 production only covers pad/img2col wrappers; ordinary copy and transpose-like movement use gather/scatter | IR added, LLVM pending |
+| `wafer.instr.tdma_data_move` | V0 production only covers pad/img2col wrappers; ordinary copy and transform-like movement use gather/scatter | IR added, LLVM pending |
 | `wafer.instr.peripheral` | `#wafer.instr_peripheral_kind` for arg/factorize/bilinear/LUT/rand/elem_mask; count writeback and bitcount remain unsupported | IR added, LLVM pending |
 | `wafer.instr.dte_send` / `dte_recv` / `dte_wait` | Direct DTE/FSM runtime binding evidence still incomplete | partial IR done, production lowering pending |
 | `wafer.instr.local_fence` | `TsmWaitfinish` / local drain evidence | pending target LLVM |
@@ -151,7 +151,7 @@ family 下参数不同的 kind；若 public wrapper signature 不一致，要么
 | `pool` | `wafer_tx81_pool` / indexed variants | normal pool vs indexed pool dest arity differs | input address、value dest、optional index dest for indexed max/min、source/dest shape、pads、strides、format |
 | `unpool` | `wafer_tx81_unpool` / `wafer_tx81_unpool_avg` / mask/indexed variant | `Unpool/UnpoolIdx` take scalar `uint32_t index`; `UnpoolAvg` does not | input/dest addresses、source/dest shape、strides、optional scalar `index` according to kind |
 | `tdma_data_move` pad/img2col | `wafer_tx81_tdma_pad` / `wafer_tx81_tdma_img2col` | pad and img2col signatures differ | pad requires `pads`; img2col requires `pads` + `kernel_strides`; both forbid unrelated attrs |
-| transpose-like TDMA transform group | no production Wafer symbol in V0 | mirror/transpose/rotate/NCHW-NHWC/TensorNom wrappers exist but are not default lowering surface | instr lowering must materialize these movements before target LLVM/package export; future target enablement requires board/golden coverage and an explicit target-surface update |
+| transform-like TDMA group | no production Wafer symbol in V0 | mirror/transpose/rotate/NCHW-NHWC/TensorNom wrappers exist but are not default lowering surface | instr lowering must materialize these movements before target LLVM/package export; transpose uses `permutation`, mirror/rotate use `axes`; future target enablement requires board/golden coverage and an explicit target-surface update |
 | `peripheral` arg/factorize/rand | `wafer_tx81_peripheral_*` | arity differs by kind | verifier fixes input/dest arity; arg index dest must be i32 |
 | `peripheral` bilinear/LUT/elem_mask | separate Wafer symbols or descriptor variants | bilinear uses shape attrs; LUT uses `lut_elem_count`; elem_mask uses scale/probability/rounding | required/forbidden attrs already checked by IR/package validator |
 | `peripheral count` | no production symbol | public wrapper writeback is not represented as normal dest buffer | verifier rejects until IR gains explicit writeback/result semantics |
