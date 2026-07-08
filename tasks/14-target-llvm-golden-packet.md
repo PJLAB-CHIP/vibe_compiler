@@ -1,7 +1,8 @@
 # Wafer Target LLVM Lowering and Golden Packet Design
 
-状态：实现中；target LLVM call-emission pass 和 Q1 symbol surface audit 已落地，Wafer CRT
-implementation、device-code link gate 和 wrapper/register golden packet 仍待完成。范围：
+状态：实现中；target LLVM call-emission pass 和 Q1 symbol surface audit 已落地；下一步把 Wafer CRT
+implementation、device-code link gate 和 wrapper/register golden packet 合并为一个 target CRT closure
+milestone。范围：
 memory-planned target-aligned `wafer.instr.*` 到 target CRT call、LLVM dialect / LLVM IR 和
 wrapper/register golden packet 的 lowering。
 
@@ -290,8 +291,10 @@ Pipeline position:
 - Current stage responsibility:
   在 repo-local Wafer CRT 中定义 Q1 确认的 production `wafer_tx81_*` symbols；每个 symbol 直接
   创建 public `Tsm*Instr` 所需对象，调用 public TSM wrapper，再执行 `TsmExecute` 或等价 public
-  helper。ABI-incomplete Direct DTE symbols 不属于当前 Q2 production closure。该层不调用
-  TX81/Triton `__*` ABI，不恢复 capture shim，不写空实现。
+  helper。ABI-incomplete Direct DTE symbols 不属于当前 Q2-Q3 production closure。该层不调用
+  TX81/Triton `__*` ABI，不恢复 capture shim，不写空实现。CRT implementation、wrapper/golden
+  coverage 和 device-code required-symbol gate 必须作为同一个 closure 验证，不能拆成可单独报 done
+  的最小单元。
 - Output artifact / IR:
   Wafer CRT RISC-V object / archive、kcore shared object、required-symbol report、可供 package
   metadata auto-export 记录的 module path。
@@ -305,9 +308,10 @@ Pipeline position:
   `--allow-shlib-undefined` 放过 Wafer-owned symbol；不新增 helper ABI dialect；不在 CRT 内重新做
   layout/search/SPM/DDR planning。
 - Completion gate:
-  Q1 production closure 中的所有 `wafer_tx81_*` symbols 都有 repo-local definition；positive device-code
-  gate 不包含 ABI-incomplete Direct DTE calls；final kcore `.so` 中不得残留 undefined production
-  `wafer_tx81_*`；lit/ctest 覆盖成功闭合和缺失 symbol 失败两条路径。
+  Q1 production closure 中的所有 `wafer_tx81_*` symbols 都有 repo-local definition、typed signature
+  和 wrapper/golden 覆盖，或被 verifier / lowering 明确拒绝并移出 production closure；positive
+  device-code gate 不包含 ABI-incomplete Direct DTE calls；final kcore `.so` 中不得残留 undefined
+  production `wafer_tx81_*`；lit/ctest 覆盖成功闭合和缺失 symbol 失败两条路径。
 ```
 
 ### 7.2 文件和所有权
@@ -343,7 +347,7 @@ bring-up 形态；symbol-closure gate 必须把它替换为 fixed function type�
 - 每个 function 返回 `void`。错误检查属于 verifier / target lowering / device link gate；CRT 内部不通过
   silent return 表示 unsupported。
 
-### 7.4 Q1 symbol surface audit
+### 7.4 Q1 symbol surface audit and coverage closure
 
 Q1 审计结果以 `LowerInstrToTargetLLVM.cpp` 的 symbol 构造规则、`WaferAttrs.td` 的 enum spelling 和
 instruction verifier 的合法输入为事实源：
@@ -356,12 +360,23 @@ instruction verifier 的合法输入为事实源：
   表示；因此 `wafer_tx81_peripheral_count` 不是当前 production closure。
 - `wafer.instr.dte_send` / `dte_recv` / `dte_wait` 当前 call-emission 能生成
   `wafer_tx81_dte_*`，但只传 logical peer / bytes / token count，缺 endpoint、channel、
-  remote FSM 和 receive-buffer binding。Q1 将 Direct DTE 从当前 Q2 production CRT closure 排除；
+  remote FSM 和 receive-buffer binding。Q1 将 Direct DTE 从当前 Q2-Q3 production CRT closure 排除；
   后续必须先扩 IR / ABI / lowering，再把 DTE 加回 production closure。不能用空 CRT stub 或
-  success return 让 Q3 required-symbol gate 通过。
+  success return 让 Q2-Q3 required-symbol gate 通过。
 
-以下 symbol 是当前 Q2 要实现的 production CRT closure。实现完成前，任何列在这里的 symbol 都不能在
-final `.so` 中保持 undefined。
+以下 symbol 是当前 Q2-Q3 要实现并链接闭合的 production CRT closure。实现完成前，任何列在这里的
+symbol 都不能在 final `.so` 中保持 undefined。
+
+全面指令覆盖 gate：
+
+- coverage 以 `tasks/11-instruction-ir.md` 的 production coverage matrix 和本节 production symbol
+  closure 为全集，不能只覆盖当前 fixture 或某个代表性 workload 调到的子集。
+- 每个 production symbol 都必须在 signature registry、`wafer_tx81_crt.h`、LLVM lowering declaration、
+  repo-local CRT implementation 和 required-symbol scan 中可追踪。
+- wrapper/golden test 可以按 family 复用 fixture，但必须枚举该 family 的全部 production kind /
+  signature variant，并校验参数单位、shape/stride、format、wait/completion 责任。
+- 如果 public wrapper / ABI evidence 不能支撑某个 symbol，不能用空 CRT 实现补齐；必须先收紧
+  verifier / lowering，将该 symbol 从 production closure 移除或标为结构化 unsupported。
 
 基础 memory / TDMA / sync：
 
@@ -519,7 +534,7 @@ wafer_tx81_peripheral_elem_mask
 | `peripheral_*` | 创建 peripheral packet；按 kind 调 public wrapper；count/arg/factorize/bilinear/LUT/rand/elem_mask 的输入输出 arity 由 fixed ABI 和 verifier 共同保证 |
 | `local_fence` | 只调用 `TsmWaitfinish` 或等价 local drain helper；不携带 multi-tile barrier 语义 |
 
-当前 call-emission 仍可能生成但不属于 Q2 production closure 的 ABI-incomplete symbols：
+当前 call-emission 仍可能生成但不属于 Q2-Q3 production closure 的 ABI-incomplete symbols：
 
 ```text
 wafer_tx81_dte_send
@@ -534,7 +549,7 @@ Direct DTE 不能通过 `TsmExecute` 发射。`direct_dte_send_async` 需要 `Di
 `stride_iterations[3]` 和 `dte_node`。因此当前 call-emission 只传
 `buffer, peer, bytes` 的 shape 不足以作为完整 production DTE ABI。
 
-`wafer_tx81_dte_send`、`wafer_tx81_dte_recv` 和 `wafer_tx81_dte_wait` 不进入当前 Q2 production
+`wafer_tx81_dte_send`、`wafer_tx81_dte_recv` 和 `wafer_tx81_dte_wait` 不进入当前 Q2-Q3 production
 CRT closure。要重新纳入 production closure，必须先改 ABI / lowering：
 
 - `wafer.instr.dte_*` lowering 必须从 topology/execution-mesh/runtime binding 派生 `tile_this`、
@@ -573,12 +588,13 @@ CRT 全量实现的验证分四层：
 | 层 | 验证 |
 | --- | --- |
 | Header/signature | generated or checked symbol registry 确认 `LowerInstrToTargetLLVM.cpp` emitted signature 与 `wafer_tx81_crt.h` 一致 |
-| CRT unit/golden | 每个 wrapper family 至少有 packet field capture 或 public wrapper call trace；Conv/Pool/Peripheral 需要 kind-specific golden |
-| Device link | `.ll -> .o -> kcore .so` 实际执行，final `.so` 无 undefined `wafer_tx81_*` |
+| CRT unit/golden | production symbol closure 全覆盖；每个 symbol 有 packet field capture、public wrapper call trace 或结构化 unsupported 证据；按 family 共享 fixture 时必须枚举每个 production kind / signature variant；Conv/Pool/UnPool/Peripheral 需要 kind-specific golden |
+| Device link | `.ll -> .o -> kcore .so` 实际执行，final `.so` 无 undefined `wafer_tx81_*`；negative test 证明 `wafer_tx81_missing` 会被 required-symbol gate 拒绝 |
 | Pipeline integration | `wafer-lower-groups-to-target-llvm` output 能进入 device link；HF program-chain target LLVM integration 是下一层 gate，不用手写 package metadata 代替 |
 
-完成后，`tasks/progress.md` 中 Q2/Q3 才能从 target CRT implementation / device-code required-symbol
-gate 推进到 Q4 package metadata auto-export。只实现 header、只生成 object、或只靠
+完成后，`tasks/progress.md` 中 Q2-Q3 才能从 target CRT implementation / device-code required-symbol
+closure 推进到 Q4 package metadata auto-export。只实现 header、只生成 object、只覆盖一个代表性
+instruction family、或只靠
 `--allow-shlib-undefined` 得到 `.so` 都不算完成。
 
 ## 8. 当前缺口
@@ -587,10 +603,10 @@ gate 推进到 Q4 package metadata auto-export。只实现 header、只生成 ob
   TX81/public TSM wrapper 和硬件文档；当前 LLVM lowering 只生成 Wafer-owned symbol declarations/calls。
 - Golden packet tests 仍待补，用来验证 Wafer CRT 参数到 public TSM wrapper/register packet 的映射。
 - Device-code compile/link helper 已能对已有 / compiler-generated LLVM IR 执行 `.ll -> .o -> kcore .so`
-  和 object metadata normalization；任务队列中的 Q2/Q3 仍需补 repo-local Wafer CRT implementation /
-  golden coverage 和 required-symbol closure，不能让 production `wafer_tx81_*` 以未解释 undefined symbol
-  形式残留，也不能经过 capture shim。
+  和 object metadata normalization；任务队列中的 Q2-Q3 仍需补 repo-local Wafer CRT implementation、
+  全量 production instruction wrapper/golden coverage 和 required-symbol closure，不能让 production
+  `wafer_tx81_*` 以未解释 undefined symbol 形式残留，也不能经过 capture shim。
 - Direct DTE call-emission surface 已审计为 ABI-incomplete；production lowering 还缺 runtime endpoint /
-  DTE channel binding，当前从 Q2 production CRT closure 排除。
+  DTE channel binding，当前从 Q2-Q3 production CRT closure 排除。
 - package auto-export 当前只能消费已有 LLVM IR；恢复 compiler-generated package gate 要等 device-code
   compile/link gate 和 resource metadata export 衔接完成。

@@ -77,7 +77,7 @@
 
 - Q1 已按 `LowerInstrToTargetLLVM.cpp`、`WaferAttrs.td` enum spelling 和 instruction verifier
   审计 symbol surface。
-- `tasks/14` 明确区分 Q2 production CRT closure 与 ABI-incomplete Direct DTE call-emission surface。
+- `tasks/14` 明确区分 Q2-Q3 production CRT closure 与 ABI-incomplete Direct DTE call-emission surface。
 - `wafer.instr.peripheral <count>` 由 verifier 拒绝，`wafer_tx81_peripheral_count` 不属于当前
   production closure。
 
@@ -87,7 +87,7 @@
 - 只证明某个单独 `.ll` 能过 `mlir-translate`。
 - 把 Direct DTE endpoint/channel 缺口藏进 CRT stub。
 
-### Q2. Repo-local Wafer CRT implementation and wrapper golden coverage
+### Q2-Q3. Target CRT implementation, wrapper coverage, and device-code symbol closure
 
 状态：`doing`
 
@@ -98,17 +98,31 @@
 
 要做什么：
 
-- 实现 repo-local Wafer CRT source，定义 Q1 确认的 production `wafer_tx81_*` symbols；不包括 Q1
-  标为 ABI-incomplete、需要先扩 IR / ABI / lowering 的 Direct DTE symbols。
+- 把 repo-local Wafer CRT source、typed ABI、wrapper/golden packet coverage 和 device-code required-symbol
+  gate 作为同一个 target CRT closure 交付；不再把 CRT implementation 和 link closure 分成两个可单独
+  报 done 的最小单元。
+- 实现 Q1 确认的 production `wafer_tx81_*` symbol closure；不包括 Q1 标为 ABI-incomplete、需要先扩
+  IR / ABI / lowering 的 Direct DTE symbols。
 - 每个 production symbol 直接调用 public TSM wrapper 或等价 public helper；不要恢复旧 helper ABI、
-  capture shim、Direct DTE 空实现或 C stub table。
-- 补 wrapper/golden packet 覆盖，验证 CRT 参数到 public wrapper / register packet 的映射。
+  capture shim、Direct DTE 空实现、旧 `libvr.a` symbol alias 或 C stub table。
+- `tools/wafer_device_link.py` 必须编译 repo-local Wafer CRT object，并和 compiler-generated target
+  object、repo-vendored TX8 deps 一起链接 kcore `.so`；final `.so` 需要 required-symbol scan。
 
 完成要求：
 
-- production `wafer_tx81_*` symbols 有 repo-local CRT 定义或被 verifier / lowering 明确拒绝。
-- 至少覆盖当前主线需要的 compute / movement wrapper family 的 typed wrapper mapping。
-- golden packet 测试能定位参数单位、format、shape/stride、wait/completion 等映射错误。
+- Q1 production closure 中每个 `wafer_tx81_*` symbol 都在同一 signature registry / header /
+  lowering / CRT implementation / symbol check 中可追踪；没有可验证 wrapper / ABI 依据的 symbol 必须被
+  verifier / lowering 明确拒绝并移出 production closure，不能保留 undefined 或空实现。
+- 指令覆盖按 `tasks/11-instruction-ir.md` 的 production coverage matrix 全面闭合：基础 movement/sync、
+  elementwise 全 kind、reduce 全 kind、convert 全 dtype pair、conv/depthwise/backward conv、pool/unpool
+  全 production kind、peripheral production kind 都必须有 wrapper mapping 或结构化 unsupported 规则。
+- golden packet / wrapper tests 覆盖 production symbol closure，而不是只覆盖一个代表性 case；允许按
+  family 共享 fixture，但 fixture 必须枚举并校验该 family 的每个 production kind / signature variant。
+- positive case：compiler-generated target LLVM artifact 能完成
+  `.ll -> target object -> Wafer CRT object -> kcore .so`。
+- negative case：故意引用 `wafer_tx81_missing` 时，即使 linker 允许 undefined，required-symbol gate
+  也必须失败。
+- 验证命令进入 lit / ctest 或等价主线测试入口，并确认不是 skipped / unsupported。
 
 不算完成：
 
@@ -116,48 +130,13 @@
 - 依赖 `--allow-shlib-undefined` 掩盖 Wafer-owned symbol 缺失。
 - 用空函数、日志函数或 success return 伪装未完成的 target support。
 
-### Q3. Device-code compile/link required-symbol gate
-
-状态：`blocked`
-
-阻塞条件：
-
-- 依赖 Q2 产出 repo-local Wafer CRT source/object 和 production symbol closure。
-
-设计文档：
-
-- `tasks/14-target-llvm-golden-packet.md` 第 7.7 节
-- `tasks/15-launch-runtime-package.md` 第 3、10 节
-- `tasks/16-verification-plan.md` 的 Object/package gate
-
-要做什么：
-
-- 更新 `tools/wafer_device_link.py`：LLVM toolchain 负责 `.ll -> target object`，TX8 GCC 只负责链接。
-- 编译 Q2 的 Wafer CRT source 得到 CRT object，并和 compiler-generated target object、repo-vendored
-  TX8 deps 一起链接 kcore `.so`。
-- 对 final `.so` 执行 required-symbol scan，拒绝未解释的 Wafer-owned `wafer_tx81_*` undefined symbol。
-- 覆盖 object metadata normalization，不把 capture shim 放进默认 device link。
-
-完成要求：
-
-- positive case：compiler-generated target LLVM artifact 能完成
-  `.ll -> target object -> Wafer CRT object -> kcore .so`。
-- negative case：故意引用 `wafer_tx81_missing` 时，link 后 required-symbol gate 必须失败。
-- 验证命令进入 lit / ctest 或等价主线测试入口，并确认不是 skipped / unsupported。
-
-不算完成：
-
-- 只链接手写 `.ll`。
-- 只检查 linker exit code 而不扫描 undefined Wafer-owned symbols。
-- 把 runtime/loader 合法外部符号和 Wafer-owned CRT 缺失混为一类。
-
 ### Q4. Package metadata auto-export mainline
 
 状态：`blocked`
 
 阻塞条件：
 
-- 依赖 Q3 产出 kcore shared object 和 link / symbol closure facts。
+- 依赖 Q2-Q3 产出 kcore shared object 和 link / symbol closure facts。
 
 设计文档：
 
@@ -191,7 +170,7 @@
 
 阻塞条件：
 
-- 依赖 Q0 已完成的 call emission，以及 Q1-Q3 明确 target LLVM artifact 后续能进入 device-code gate。
+- 依赖 Q0 已完成的 call emission，以及 Q1、Q2-Q3 明确 target LLVM artifact 后续能进入 device-code gate。
 
 设计文档：
 
@@ -208,7 +187,7 @@
 完成要求：
 
 - 至少一个真实 program-chain case 产出 compiler-generated target LLVM artifact。
-- 该 artifact 可直接进入 Q3 device-code gate。
+- 该 artifact 可直接进入 Q2-Q3 device-code gate。
 - 验证记录说明上游 artifact、当前输出和下游 consumer。
 
 不算完成：

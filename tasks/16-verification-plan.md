@@ -124,8 +124,10 @@ Single-tile local compute：
   不应恢复为用户级 compile flow。当前 HF transformer no-card gate 已证明 `wafer.group` 到
   direct instruction lowering 和 SPM/DDR planning 来自真实 program chain；closed-loop selected-candidate
   path、HF target LLVM integration、package 和 board correctness 仍是后续 gate。
-- target CRT / wrapper gate 仍要求至少一个 compute/movement target CRT wrapper family 有 golden packet；
-  当前 no-card instruction gate 不以此作为已完成条件。
+- target CRT / wrapper gate 要求 Q1 production closure 全覆盖：每个 `wafer_tx81_*` production symbol
+  都必须有 typed signature、repo-local CRT definition、wrapper/golden evidence 和 device-link
+  required-symbol closure，或被 verifier / lowering 明确拒绝并移出 production closure。只覆盖一个
+  compute/movement 代表 family 不能把 CRT gate 报成完成；当前 no-card instruction gate 不以此作为已完成条件。
 - 当前无卡开发环境要求 generated program 走到 memory-planned instruction IR。target LLVM call emission
   已有局部/group gate；device-code symbol-closure gate 才要求 `.ll -> .o -> kcore .so` 且 `wafer_tx81_*`
   不以未解释 undefined 形式残留；package metadata roundtrip 只能作为 tool-unit
@@ -239,6 +241,11 @@ M7 target LLVM call-emission and device-code gate：
 - 剩余缺口是 Wafer CRT typed wrapper/golden packet、device-code required-symbol closure、
   package metadata auto-export，以及真实 HF program chain 到 target LLVM 的 integration gate；这些不能用
   hand-written LLVM/package input 或允许 undefined 的 `.so` 代替。
+- Wafer CRT typed wrapper/golden packet 和 device-code required-symbol closure 是同一个 target CRT
+  closure milestone：production instruction coverage 必须覆盖基础 movement/sync、elementwise 全 kind、
+  reduce 全 kind、convert 全 dtype pair、conv/depthwise/backward conv、pool/unpool 全 production kind
+  和 peripheral production kind。family-level tests 只有在枚举并校验该 family 全部 production
+  signature variants 时，才能算作全面覆盖。
 
 M8 runtime / board correctness gate：
 
