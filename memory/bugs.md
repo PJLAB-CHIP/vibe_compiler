@@ -68,3 +68,16 @@
   `memref.subview` + tile store，避免误写 read-only input 或破坏 updated-dest tensor 语义。
   Candidate tile offsets/sizes 也必须先在 planner candidate evaluation 中生成同类 tensor slice proposal，
   再进入 DDR `memref.subview` producer；不能让 R3.2d 从 full boundary descriptor 反推切片。
+
+## 2026-07-08 progress / memory 误导 target CRT 任务判断
+
+- 现象：回答下一步任务时，把旧 `tasks/progress.md` 状态叙事和旧 `memory/general_dev.md` 中的
+  `libvr.a` device-link 经验当成当前设计事实，转而纠结 `third_party/wafer_crt/lib/libvr.a`
+  里是否定义 `wafer_tx81_*`，没有先按任务队列和编号设计文档确认边界。
+- 根因：把 progress 当成设计合同，把过时 memory 当成稳定事实；没有优先读取
+  `tasks/README.md`、`tasks/progress.md` 任务队列和 `tasks/14` / `tasks/15` 的当前 pipeline contract。
+- 修复模式：`tasks/progress.md` 只作为任务队列；当前架构合同以编号设计文档为准。遇到 target CRT /
+  device-code gate 时，先按 `tasks/14` 核对 Wafer-owned `wafer_tx81_*` surface、repo-local Wafer CRT
+  source/object 和 required-symbol closure；不要从 `libvr.a`、TX81 `__*` symbol、手写 LLVM input 或
+  package fixture 反推 production compiler boundary。发现 memory 与编号设计文档冲突时，必须在同一
+  批改动里修正 memory。

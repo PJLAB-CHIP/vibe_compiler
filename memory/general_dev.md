@@ -1,5 +1,8 @@
 ## Wafer compiler local build harness
 
+- `tasks/progress.md` 是任务队列，不是设计合同。确定下一步时先定位队列项，再读该项指向的编号
+  设计文档；不要从旧 progress 叙事、单个工具现状或历史 memory 反推出当前架构边界。若
+  `memory/` 与编号设计文档或任务队列冲突，同步修 memory。
 - 第三方依赖的固定版本集中在 `cmake/third_party/WaferDependencyVersions.cmake`；不要把 LLVM、StableHLO、
   Shardy、OpenXLA/XLA、PyTorch/XLA、torch-mlir、lit 或 gtest 版本散落到源码里。
 - 用 `python3 tools/bootstrap_deps.py --python` 把固定版本 Python 测试工具安装到
@@ -144,13 +147,15 @@
   tool dependency layering。
 - Device-code local link gate 默认不再读取外部 machine-local TX8 deps root。TX8 headers、
   libs、sysroot 和 Xuantie `riscv64-unknown-elf-gcc` 来自 repo-vendored
-  `third_party/tx8_deps`；Wafer CRT 默认从 `third_party/wafer_crt/lib` 查找 `libvr.a`。当前 vendored
-  Xuantie toolchain 的可用 64-bit double-float multilib 是 `rv64imafdc/lp64d`。
+  `third_party/tx8_deps`；Wafer-owned `wafer_tx81_*` symbols 必须来自 `tasks/14` 定义的
+  repo-local Wafer CRT source/object，不能从 `third_party/wafer_crt/lib/libvr.a` 或 TX81 `__*`
+  symbol 反推出 compiler target CRT closure。当前 vendored Xuantie toolchain 的可用 64-bit
+  double-float multilib 是 `rv64imafdc/lp64d`。
   LLVM 21 生成的 RISC-V object 在进入 Xuantie GNU ld 2.35 前需要用 vendored
   `riscv64-unknown-elf-objcopy -R .riscv.attributes` 做 metadata normalization；repo-local
-  `libvr.a` 是 debug-stripped archive，避免旧 linker 读取 LLVM RISC-V debug relocations。
-  设备链接不再默认编译或链接 capture shim；LLVM object 之外的 target CRT symbol 必须来自
-  repo-local TX81/Wafer CRT 或合法 runtime/loader 外部依赖。`tools/wafer_device_link.py` 能执行
+  Wafer CRT source/object 和 target object 一起进入 link gate。设备链接不再默认编译或链接
+  capture shim；LLVM object 之外的 target CRT symbol 必须来自 repo-local Wafer CRT 或明确合法的
+  runtime/loader 外部依赖。`tools/wafer_device_link.py` 能执行
   `.ll -> .o -> kcore .so` 不等于主线 gate 完成；required-symbol 检查必须拒绝未解释的
   `wafer_tx81_*` undefined symbol。
 - target LLVM call emission 输出给 `mlir-translate --mlir-to-llvmir` 前不能残留任何 Wafer op。target
