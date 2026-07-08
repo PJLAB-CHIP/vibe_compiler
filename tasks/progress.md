@@ -2,7 +2,7 @@
 
 更新时间：2026-07-08
 
-本文件只记录当前事实状态、active task 和下一步顺序，不复制编号设计文档里的长期合同。
+本文件只记录当前事实、队列状态和下一步顺序，不复制编号设计文档里的长期合同。
 详细设计以 `tasks/14-target-llvm-golden-packet.md` 和
 `tasks/15-launch-runtime-package.md` 为准。
 
@@ -46,36 +46,6 @@ PyTorch/XLA StableHLO Wafer program directory
   artifact、TX8 object、kcore shared object 或 IR-derived package。
 - Direct DTE target path 仍缺 runtime endpoint / channel binding；在 ABI/lowering 补齐前，不能把
   `wafer_tx81_dte_*` 当作可闭合的 production CRT wrapper。
-
-## 当前 Active
-
-**Wafer-owned target CRT implementation + device-code link gate**
-
-Pipeline position:
-
-- Upstream artifact / IR:
-  带有 `wafer_tx81_*` 调用的 compiler-generated LLVM dialect / LLVM IR artifact、repo-vendored
-  TX8 deps、repo-local Wafer CRT source，以及后续 metadata export 需要的 committed instruction IR /
-  resource view。
-- Current stage responsibility:
-  按 `tasks/14` 定义的 production target surface 实现 repo-local Wafer CRT symbols，把 CRT source
-  编译成 device object，与 compiler-generated target object 和 TX8 deps 一起链接，并拒绝 final `.so`
-  中仍残留 undefined Wafer-owned `wafer_tx81_*` symbol 的结果。
-- Output artifact / IR:
-  device object、Wafer CRT object、kcore shared object，以及 package auto-export 可消费的 link /
-  metadata facts。
-- Downstream consumer:
-  IR-derived package metadata auto-export、runtime adapter / board gate。
-- User-level driver / named pipeline:
-  当前 target LLVM 输入来自 `--wafer-lower-instr-to-target-llvm` 或
-  `wafer-lower-groups-to-target-llvm`；真实 HF program-chain target LLVM integration 仍是后续 gate。
-- Explicit non-goals:
-  不恢复旧 helper ABI，不使用 capture shim，不把 C stub table 当 production lowering，不宣称 package
-  auto-export、board launch 或 numeric correctness。
-- Completion gate:
-  至少一个 compiler-generated target LLVM artifact 完成
-  `.ll -> target object -> Wafer CRT object -> kcore .so`；required-symbol scan 会拒绝 undefined
-  `wafer_tx81_*`；object metadata normalization 实际执行；不经过 capture shim。
 
 ## 已证明边界
 
