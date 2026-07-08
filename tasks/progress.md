@@ -136,10 +136,10 @@ Pipeline position:
 
 ## 下一步
 
-1. 收口 device-code compile/link and target CRT symbol closure gate：消费 compiler-generated target LLVM
-   artifact，用 LLVM toolchain 生成 RISC-V object，再用 repo-vendored GCC / TX8 deps 链接 kcore shared
-   object；补 required-symbol 检查，确保 `wafer_tx81_*` 不以未解释 undefined 形式残留；不引入旧
-   helper ABI/shim。
+1. 按 `tasks/14-target-llvm-golden-packet.md` 的 Wafer CRT 全量实现设计收口 target CRT symbol
+   closure：为当前 `LowerInstrToTargetLLVM.cpp` 可能 emit 的全部 `wafer_tx81_*` 定义 repo-local
+   Wafer CRT implementation，直接调用 public `Tsm*` wrapper / Direct DTE helper；不调用 TX81/Triton
+   `__*` ABI，不写 stub，不靠 `--allow-shlib-undefined` 放过 Wafer-owned symbol。
 2. 补 object / link lit 或 ctest：验证 `.ll -> .o -> .so` 实际执行、required-symbol gate、object
    metadata normalization 和 repo-local CRT 依赖。
 3. 再恢复 package metadata auto-export 主线 gate：只消费 compiler-generated target LLVM artifact 和 committed
