@@ -1,8 +1,9 @@
 # Wafer Target LLVM Lowering and Golden Packet Design
 
-状态：实现中；target LLVM call-emission pass 已落地，Wafer CRT implementation、device-code link gate 和
-wrapper/register golden packet 仍待完成。范围：memory-planned target-aligned `wafer.instr.*` 到
-target CRT call、LLVM dialect / LLVM IR 和 wrapper/register golden packet 的 lowering。
+状态：实现中；target LLVM call-emission pass 和 Q1 symbol surface audit 已落地，Wafer CRT
+implementation、device-code link gate 和 wrapper/register golden packet 仍待完成。范围：
+memory-planned target-aligned `wafer.instr.*` 到 target CRT call、LLVM dialect / LLVM IR 和
+wrapper/register golden packet 的 lowering。
 
 本文取代旧 compiler-facing helper ABI 设计。当前结论是：`wafer.instr.*` 必须对齐目标指令、
 TX81 target op 或 public TSM wrapper 的可 lower 粒度；LLVM lowering 生成 **Wafer-owned target
@@ -124,7 +125,7 @@ Pipeline position:
 | `wafer.instr.pool` / `unpool` | `#wafer.instr_pool_kind` / `#wafer.instr_unpool_kind` CT Pool/UnPool wrapper families; unpool scalar index is wrapper-aligned | per-kind LLVM call emitted；CRT/golden packet pending |
 | `wafer.instr.tdma_data_move` | V0 production only covers pad/img2col wrappers; ordinary copy and transform-like movement use gather/scatter | pad/img2col LLVM call emitted；transform-like kind 结构化失败 |
 | `wafer.instr.peripheral` | `#wafer.instr_peripheral_kind` for arg/factorize/bilinear/LUT/rand/elem_mask; count writeback and bitcount remain unsupported | per-kind LLVM call emitted；CRT/golden packet pending |
-| `wafer.instr.dte_send` / `dte_recv` / `dte_wait` | Direct DTE/FSM runtime binding evidence still incomplete | LLVM call emitted for logical peer/bytes；runtime endpoint/channel binding pending |
+| `wafer.instr.dte_send` / `dte_recv` / `dte_wait` | Direct DTE/FSM runtime binding evidence still incomplete | call-emission can produce logical peer/bytes calls；excluded from current production CRT closure until ABI / runtime endpoint binding is fixed |
 | `wafer.instr.local_fence` | `TsmWaitfinish` / local drain evidence | LLVM call emitted；CRT/golden packet pending |
 
 Target LLVM call emission 输出必须调用 Wafer-owned target CRT symbols。`__*` 符号可以出现在 Wafer CRT
@@ -161,7 +162,7 @@ family 下参数不同的 kind；若 public wrapper signature 不一致，要么
 | `peripheral` arg/factorize/rand | `wafer_tx81_peripheral_*` | arity differs by kind | verifier fixes input/dest arity; arg index dest must be i32 |
 | `peripheral` bilinear/LUT/elem_mask | separate Wafer symbols or descriptor variants | bilinear uses shape attrs; LUT uses `lut_elem_count`; elem_mask uses scale/probability/rounding | required/forbidden attrs already checked by IR/package validator |
 | `peripheral count` | no production symbol | public wrapper writeback is not represented as normal dest buffer | verifier rejects until IR gains explicit writeback/result semantics |
-| Direct DTE | `wafer_tx81_dte_send` / `wafer_tx81_dte_recv` / wait helper | Direct DTE/FSM helper, not `TsmExecute` | logical peer and bytes from IR; endpoint/channel binding from execution mesh/topology/runtime |
+| Direct DTE | `wafer_tx81_dte_send` / `wafer_tx81_dte_recv` / wait helper | Direct DTE/FSM helper, not `TsmExecute` | current call-emission passes only logical peer and bytes; Q1 excludes these calls from production CRT closure until endpoint/channel binding is expressible |
 | local fence | `wafer_tx81_local_fence` | local wait/drain helper | no hidden multi-tile barrier semantics |
 
 不在 V0 production target surface 中的硬件能力不属于本 stage 的默认 lowering surface。concat、maskgather
@@ -287,10 +288,10 @@ Pipeline position:
   accepted SPM/DDR offset facts、topology/execution-mesh、program parameter shard metadata/resource view
   已在 LLVM call 参数中 materialize。
 - Current stage responsibility:
-  在 repo-local Wafer CRT 中定义所有 compiler-emitted `wafer_tx81_*` symbols；每个 symbol 直接
-  创建 public `Tsm*Instr` / Direct DTE helper 所需对象，调用 public TSM wrapper 或 Direct DTE/FSM
-  helper，再执行 `TsmExecute` 或对应 DTE API。该层不调用 TX81/Triton `__*` ABI，不恢复 capture shim，
-  不写空实现。
+  在 repo-local Wafer CRT 中定义 Q1 确认的 production `wafer_tx81_*` symbols；每个 symbol 直接
+  创建 public `Tsm*Instr` 所需对象，调用 public TSM wrapper，再执行 `TsmExecute` 或等价 public
+  helper。ABI-incomplete Direct DTE symbols 不属于当前 Q2 production closure。该层不调用
+  TX81/Triton `__*` ABI，不恢复 capture shim，不写空实现。
 - Output artifact / IR:
   Wafer CRT RISC-V object / archive、kcore shared object、required-symbol report、可供 package
   metadata auto-export 记录的 module path。
@@ -304,8 +305,9 @@ Pipeline position:
   `--allow-shlib-undefined` 放过 Wafer-owned symbol；不新增 helper ABI dialect；不在 CRT 内重新做
   layout/search/SPM/DDR planning。
 - Completion gate:
-  当前 compiler 可能 emit 的所有 `wafer_tx81_*` symbols 都有 repo-local definition；final kcore `.so`
-  中不得残留 undefined `wafer_tx81_*`；lit/ctest 覆盖成功闭合和缺失 symbol 失败两条路径。
+  Q1 production closure 中的所有 `wafer_tx81_*` symbols 都有 repo-local definition；positive device-code
+  gate 不包含 ABI-incomplete Direct DTE calls；final kcore `.so` 中不得残留 undefined production
+  `wafer_tx81_*`；lit/ctest 覆盖成功闭合和缺失 symbol 失败两条路径。
 ```
 
 ### 7.2 文件和所有权
@@ -316,7 +318,7 @@ Wafer CRT 是 compiler target boundary，不放进 `third_party/wafer_crt/lib/li
 | 文件 | 职责 |
 | --- | --- |
 | `runtime/wafer_crt/include/wafer_tx81_crt.h` | 唯一的 `wafer_tx81_*` C ABI prototype 定义；compiler lowering 和 CRT implementation 共同引用 |
-| `runtime/wafer_crt/src/wafer_tx81_crt.c` | 定义所有 compiler-emitted `wafer_tx81_*` symbols；直接调用 `instr_adapter_plat.h` / `instr_adapter.h` / Direct DTE helper |
+| `runtime/wafer_crt/src/wafer_tx81_crt.c` | 定义 Q1 production closure 中的 `wafer_tx81_*` symbols；直接调用 `instr_adapter_plat.h` / `instr_adapter.h` public wrapper |
 | `lib/Wafer/Transforms/Target/LowerInstrToTargetLLVM.cpp` | 使用同一 symbol/signature registry 生成 fixed LLVM function declaration；不再长期依赖 `void (...)` vararg |
 | `tools/wafer_device_link.py` | 编译 Wafer CRT source/object，链接 target LLVM object、Wafer CRT object、repo-vendored TX8 deps，并做 required-symbol 检查 |
 | `test/Tools/` | 覆盖 `.ll -> .o -> kcore .so`、Wafer CRT object link、undefined `wafer_tx81_*` failure |
@@ -341,10 +343,25 @@ bring-up 形态；symbol-closure gate 必须把它替换为 fixed function type�
 - 每个 function 返回 `void`。错误检查属于 verifier / target lowering / device link gate；CRT 内部不通过
   silent return 表示 unsupported。
 
-### 7.4 必须闭合的 symbol set
+### 7.4 Q1 symbol surface audit
 
-以下 symbol 是 current compiler-emitted set。实现完成前，任何列在这里的 symbol 都不能在 final `.so`
-中保持 undefined。
+Q1 审计结果以 `LowerInstrToTargetLLVM.cpp` 的 symbol 构造规则、`WaferAttrs.td` 的 enum spelling 和
+instruction verifier 的合法输入为事实源：
+
+- 固定 symbol 由 `makeTargetSymbol("<base>")` 构造。
+- per-kind symbol 由 `makeTargetSymbol("<base>", kind)` 构造，suffix 使用 ODS enum spelling。
+- `wafer.instr.tdma_data_move` 只有 `pad` / `img2col` 进入 target LLVM；mirror、transpose、
+  rotate、NCHW/NHWC 和 tensor_nom 在 target LLVM lowering 中结构化失败。
+- `wafer.instr.peripheral <count>` 在 verifier 中被拒绝，因为 count writeback 还没有 instruction IR
+  表示；因此 `wafer_tx81_peripheral_count` 不是当前 production closure。
+- `wafer.instr.dte_send` / `dte_recv` / `dte_wait` 当前 call-emission 能生成
+  `wafer_tx81_dte_*`，但只传 logical peer / bytes / token count，缺 endpoint、channel、
+  remote FSM 和 receive-buffer binding。Q1 将 Direct DTE 从当前 Q2 production CRT closure 排除；
+  后续必须先扩 IR / ABI / lowering，再把 DTE 加回 production closure。不能用空 CRT stub 或
+  success return 让 Q3 required-symbol gate 通过。
+
+以下 symbol 是当前 Q2 要实现的 production CRT closure。实现完成前，任何列在这里的 symbol 都不能在
+final `.so` 中保持 undefined。
 
 基础 memory / TDMA / sync：
 
@@ -358,9 +375,6 @@ wafer_tx81_mask_move
 wafer_tx81_gemm
 wafer_tx81_tdma_pad
 wafer_tx81_tdma_img2col
-wafer_tx81_dte_send
-wafer_tx81_dte_recv
-wafer_tx81_dte_wait
 wafer_tx81_local_fence
 ```
 
@@ -469,7 +483,6 @@ wafer_tx81_pool_indexedmin
 wafer_tx81_unpool_unpool
 wafer_tx81_unpool_avg
 wafer_tx81_unpool_mask
-wafer_tx81_peripheral_count
 wafer_tx81_peripheral_argmax
 wafer_tx81_peripheral_argmin
 wafer_tx81_peripheral_factorize
@@ -506,6 +519,14 @@ wafer_tx81_peripheral_elem_mask
 | `peripheral_*` | 创建 peripheral packet；按 kind 调 public wrapper；count/arg/factorize/bilinear/LUT/rand/elem_mask 的输入输出 arity 由 fixed ABI 和 verifier 共同保证 |
 | `local_fence` | 只调用 `TsmWaitfinish` 或等价 local drain helper；不携带 multi-tile barrier 语义 |
 
+当前 call-emission 仍可能生成但不属于 Q2 production closure 的 ABI-incomplete symbols：
+
+```text
+wafer_tx81_dte_send
+wafer_tx81_dte_recv
+wafer_tx81_dte_wait
+```
+
 ### 7.6 DTE ABI
 
 Direct DTE 不能通过 `TsmExecute` 发射。`direct_dte_send_async` 需要 `DirectDTESendInfo`，字段包括
@@ -513,8 +534,8 @@ Direct DTE 不能通过 `TsmExecute` 发射。`direct_dte_send_async` 需要 `Di
 `stride_iterations[3]` 和 `dte_node`。因此当前 call-emission 只传
 `buffer, peer, bytes` 的 shape 不足以作为完整 production DTE ABI。
 
-全量 symbol closure 仍必须定义 `wafer_tx81_dte_send`、`wafer_tx81_dte_recv` 和
-`wafer_tx81_dte_wait`，但实现前要先改 ABI / lowering：
+`wafer_tx81_dte_send`、`wafer_tx81_dte_recv` 和 `wafer_tx81_dte_wait` 不进入当前 Q2 production
+CRT closure。要重新纳入 production closure，必须先改 ABI / lowering：
 
 - `wafer.instr.dte_*` lowering 必须从 topology/execution-mesh/runtime binding 派生 `tile_this`、
   `dst_tile`、`remote_fsm_id`、mode 和远端 receive buffer / FSM monitor binding。
@@ -556,9 +577,9 @@ CRT 全量实现的验证分四层：
 | Device link | `.ll -> .o -> kcore .so` 实际执行，final `.so` 无 undefined `wafer_tx81_*` |
 | Pipeline integration | `wafer-lower-groups-to-target-llvm` output 能进入 device link；HF program-chain target LLVM integration 是下一层 gate，不用手写 package metadata 代替 |
 
-完成后，`tasks/progress.md` 中 Q1/Q2/Q3 才能从 target CRT surface / implementation /
-device-code required-symbol gate 推进到 Q4 package metadata auto-export。只实现 header、只生成 object、
-或只靠 `--allow-shlib-undefined` 得到 `.so` 都不算完成。
+完成后，`tasks/progress.md` 中 Q2/Q3 才能从 target CRT implementation / device-code required-symbol
+gate 推进到 Q4 package metadata auto-export。只实现 header、只生成 object、或只靠
+`--allow-shlib-undefined` 得到 `.so` 都不算完成。
 
 ## 8. 当前缺口
 
@@ -566,9 +587,10 @@ device-code required-symbol gate 推进到 Q4 package metadata auto-export。只
   TX81/public TSM wrapper 和硬件文档；当前 LLVM lowering 只生成 Wafer-owned symbol declarations/calls。
 - Golden packet tests 仍待补，用来验证 Wafer CRT 参数到 public TSM wrapper/register packet 的映射。
 - Device-code compile/link helper 已能对已有 / compiler-generated LLVM IR 执行 `.ll -> .o -> kcore .so`
-  和 object metadata normalization；任务队列中的 Q1/Q2/Q3 仍需补 symbol surface audit、
-  repo-local Wafer CRT implementation / golden coverage 和 required-symbol closure，不能让
-  `wafer_tx81_*` 以未解释 undefined symbol 形式残留，也不能经过 capture shim。
-- Direct DTE production lowering 还缺 runtime endpoint / DTE channel binding。
+  和 object metadata normalization；任务队列中的 Q2/Q3 仍需补 repo-local Wafer CRT implementation /
+  golden coverage 和 required-symbol closure，不能让 production `wafer_tx81_*` 以未解释 undefined symbol
+  形式残留，也不能经过 capture shim。
+- Direct DTE call-emission surface 已审计为 ABI-incomplete；production lowering 还缺 runtime endpoint /
+  DTE channel binding，当前从 Q2 production CRT closure 排除。
 - package auto-export 当前只能消费已有 LLVM IR；恢复 compiler-generated package gate 要等 device-code
   compile/link gate 和 resource metadata export 衔接完成。

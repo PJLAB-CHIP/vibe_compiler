@@ -52,7 +52,7 @@
 
 ### Q1. Wafer CRT symbol surface audit
 
-状态：`doing`
+状态：`done`
 
 设计文档：
 
@@ -73,6 +73,14 @@
 - 每个 compiler-emitted production `wafer_tx81_*` 都有明确实现路径或明确的结构化 unsupported 规则。
 - 后续实现任务可以只按该设计文档施工，不需要从旧路径、库名、示例名或手写 case 反推语义。
 
+验证记录：
+
+- Q1 已按 `LowerInstrToTargetLLVM.cpp`、`WaferAttrs.td` enum spelling 和 instruction verifier
+  审计 symbol surface。
+- `tasks/14` 明确区分 Q2 production CRT closure 与 ABI-incomplete Direct DTE call-emission surface。
+- `wafer.instr.peripheral <count>` 由 verifier 拒绝，`wafer_tx81_peripheral_count` 不属于当前
+  production closure。
+
 不算完成：
 
 - 只列出某个库里已有的 `__*` 或 wrapper 名称。
@@ -81,7 +89,7 @@
 
 ### Q2. Repo-local Wafer CRT implementation and wrapper golden coverage
 
-状态：`next`
+状态：`doing`
 
 设计文档：
 
@@ -90,9 +98,10 @@
 
 要做什么：
 
-- 实现 repo-local Wafer CRT source，定义 Q1 确认的 production `wafer_tx81_*` symbols。
-- 每个 symbol 直接调用 public TSM wrapper 或已设计完成的 Direct DTE helper；不要恢复旧 helper ABI、
-  capture shim 或 C stub table。
+- 实现 repo-local Wafer CRT source，定义 Q1 确认的 production `wafer_tx81_*` symbols；不包括 Q1
+  标为 ABI-incomplete、需要先扩 IR / ABI / lowering 的 Direct DTE symbols。
+- 每个 production symbol 直接调用 public TSM wrapper 或等价 public helper；不要恢复旧 helper ABI、
+  capture shim、Direct DTE 空实现或 C stub table。
 - 补 wrapper/golden packet 覆盖，验证 CRT 参数到 public wrapper / register packet 的映射。
 
 完成要求：
