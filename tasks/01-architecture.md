@@ -513,7 +513,7 @@ contract、collective lowering 和 verifier 见
 - 从 `wafer.instr.*` 生成 LLVM dialect / LLVM IR 中的 Wafer-owned target CRT call
   declarations/calls。
 - 在 device-code gate 中用 LLVM clang 和 repo-vendored TX8 deps 生成 RISC-V kcore device `.so`，
-  并通过 required-symbol 检查证明 `wafer_tx81_*` 由 repo-local Wafer CRT 或明确合法外部依赖解析。
+  并通过 required-symbol 检查证明 `wafer_tx81_*` 由 repo-local Wafer CRT source/object 或明确合法外部依赖解析。
 - 从 committed instruction IR、accepted offsets、topology/execution mesh、program parameter shard
   metadata/resource view 和 communication/sync IR 重算 model interface、modules、entrypoints、
   SPM/layout/DDR memory metadata、communication metadata、constant storage bytes 和 profiling/status

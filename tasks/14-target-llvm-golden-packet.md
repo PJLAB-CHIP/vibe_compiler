@@ -555,8 +555,9 @@ CRT 全量实现的验证分四层：
 | Device link | `.ll -> .o -> kcore .so` 实际执行，final `.so` 无 undefined `wafer_tx81_*` |
 | Pipeline integration | `wafer-lower-groups-to-target-llvm` output 能进入 device link；HF program-chain target LLVM integration 是下一层 gate，不用手写 package metadata 代替 |
 
-完成后才能把 `tasks/progress.md` 中 active gate 从 target CRT symbol closure 推进到 package metadata
-auto-export。只实现 header、只生成 object、或只靠 `--allow-shlib-undefined` 得到 `.so` 都不算完成。
+完成后，`tasks/progress.md` 中 Q1/Q2/Q3 才能从 target CRT surface / implementation /
+device-code required-symbol gate 推进到 Q4 package metadata auto-export。只实现 header、只生成 object、
+或只靠 `--allow-shlib-undefined` 得到 `.so` 都不算完成。
 
 ## 8. 当前缺口
 
@@ -564,8 +565,9 @@ auto-export。只实现 header、只生成 object、或只靠 `--allow-shlib-und
   TX81/public TSM wrapper 和硬件文档；当前 LLVM lowering 只生成 Wafer-owned symbol declarations/calls。
 - Golden packet tests 仍待补，用来验证 Wafer CRT 参数到 public TSM wrapper/register packet 的映射。
 - Device-code compile/link helper 已能对已有 / compiler-generated LLVM IR 执行 `.ll -> .o -> kcore .so`
-  和 object metadata normalization；active gate 仍缺 required-symbol closure，不能让 `wafer_tx81_*`
-  以未解释 undefined symbol 形式残留，也不能经过 capture shim。
+  和 object metadata normalization；任务队列中的 Q1/Q2/Q3 仍需补 symbol surface audit、
+  repo-local Wafer CRT implementation / golden coverage 和 required-symbol closure，不能让
+  `wafer_tx81_*` 以未解释 undefined symbol 形式残留，也不能经过 capture shim。
 - Direct DTE production lowering 还缺 runtime endpoint / DTE channel binding。
 - package auto-export 当前只能消费已有 LLVM IR；恢复 compiler-generated package gate 要等 device-code
   compile/link gate 和 resource metadata export 衔接完成。

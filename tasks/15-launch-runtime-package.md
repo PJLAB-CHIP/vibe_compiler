@@ -135,8 +135,9 @@ materialization 的组成部分；module 本身不决定 package 的模型级执
 
 当前必须区分两个事实：`tools/wafer_device_link.py` 已能对已有 / compiler-generated LLVM IR 执行
 `.ll -> .o -> kcore .so` 的本地 compile/link；但主线 device-code gate 还没有完成，直到
-required-symbol 检查证明 `wafer_tx81_*` 这类 Wafer-owned target CRT symbol 由 repo-local Wafer CRT
-或明确合法外部依赖解析。单纯因为 `--allow-shlib-undefined` 生成 `.so` 不能作为完成证明。
+required-symbol 检查证明 `wafer_tx81_*` 这类 Wafer-owned target CRT symbol 由 repo-local
+Wafer CRT source/object 或明确合法外部依赖解析。单纯因为 `--allow-shlib-undefined` 生成 `.so`
+不能作为完成证明。
 
 V0 采用已经可运行的 TX8 RISC-V compile/link 工具链 profile，并在 final link 前做 object
 metadata normalization：
@@ -179,12 +180,12 @@ riscv64-unknown-elf-gcc -shared -march=rv64imafdc -O2 \
   -nostartfiles -Wl,--allow-shlib-undefined \
   -mabi=lp64d -Wl,--no-dynamic-linker \
   kernel.o \
-  -Lthird_party/wafer_crt/lib \
+  runtime/wafer_crt/wafer_tx81_crt.o \
   -Lthird_party/tx8_deps/<tx8-toolchain>/riscv64-unknown-elf/lib/rv64imafdc/lp64d \
   -Lthird_party/tx8_deps/<tx8-toolchain>/lib/gcc/riscv64-unknown-elf/10.4.0/rv64imafdc/lp64d \
   -Lthird_party/tx8_deps/lib \
   -Wl,--start-group \
-  -lcommon_util -linstr_tx81 -llibc_stub -lvr \
+  -lcommon_util -linstr_tx81 -llibc_stub \
   -Wl,--end-group \
   -lm -Wl,--gc-sections -Wl,--unique=.rodata.name \
   -lc -lgcc \
@@ -192,16 +193,17 @@ riscv64-unknown-elf-gcc -shared -march=rv64imafdc -O2 \
 ```
 
 这里 `.ll -> .o` 不能交给 GCC；GCC 只负责 final link。`libcommon_util.a`、
-`libinstr_tx81.a` 和 `liblibc_stub.a` 来自 repo-vendored `third_party/tx8_deps/lib`；`libvr.a`
-属于 Wafer CRT 依赖，默认从 `third_party/wafer_crt/lib` 查找，不假设存在于裸 `tx8_deps`
-root，也不从外部机器路径隐式查找；repo-local `libvr.a` 去掉了 debug sections，避免 Xuantie
-GNU ld 2.35 遇到 LLVM RISC-V debug relocation。V0 profile 固定为 `rv64imafdc/lp64d`，因为这是当前
-vendored Xuantie toolchain 实际提供的 64-bit double-float multilib；`-mcpu=c908` 或其它 Xuantie
-multilib profile 需要单独的 object 兼容性和板端验证后再升级成新 profile。
+`libinstr_tx81.a` 和 `liblibc_stub.a` 来自 repo-vendored `third_party/tx8_deps/lib`；Wafer-owned
+`wafer_tx81_*` symbol closure 来自 repo-local Wafer CRT source/object，而不是
+`third_party/wafer_crt/lib/libvr.a` 或 TX81/Triton `__*` symbol。若某个 public wrapper 仍需要
+lower-level archive 作为实现依赖，必须作为显式底层依赖进入 link，但不能成为 Wafer compiler
+target CRT ABI 的事实源。V0 profile 固定为 `rv64imafdc/lp64d`，因为这是当前 vendored Xuantie
+toolchain 实际提供的 64-bit double-float multilib；`-mcpu=c908` 或其它 Xuantie multilib profile
+需要单独的 object 兼容性和板端验证后再升级成新 profile。
 
 `-Wl,--allow-shlib-undefined` 只允许 kcore shared object 保留 runtime/loader 解析的外部符号；它不是
 证明缺失 target CRT symbol 可以被忽略的信号。当前 device-code gate 不再默认编译或链接
-capture shim；LLVM IR 中出现的 target CRT symbol 必须来自 repo-local TX81/Wafer CRT
+capture shim；LLVM IR 中出现的 target CRT symbol 必须来自 repo-local Wafer CRT source/object
 或明确由 runtime/loader 解析。仍可能存在的 unresolved symbol 必须来自合法外部依赖，不能来自
 已删除的 helper ABI 层。required-symbol gate 必须把未解释的 `wafer_tx81_*` undefined symbol 当作
 失败，而不是把链接器成功返回当作 target support 完成。
@@ -370,8 +372,9 @@ kind attr、shape descriptor 和 kind-specific arity 字段；如果出现 trans
 `tools/wafer_device_link.py` 是 device-code local gate：它消费已有 LLVM IR 文件，生成或打印
 `.ll -> .o -> kernel.so` 两段命令，并可在本地 TX8 依赖齐备时执行该 compile/link。它不从
 `wafer.instr.*` 恢复 package metadata，不生成 package metadata，也不代表 runtime launch / board
-completion 已通过。该 tool 只链接 kernel object、用户显式传入的 extra object 和 repo-vendored
-TX8/CRT 依赖；它不默认编译或链接 capture shim。主线 gate 还必须在该 tool 或相邻测试中检查
+completion 已通过。该 tool 应编译 repo-local Wafer CRT source/object，并链接 kernel object、
+Wafer CRT object、用户显式传入的 extra object 和 repo-vendored TX8 deps；它不默认编译或链接 capture shim。
+主线 gate 还必须在该 tool 或相邻测试中检查
 unresolved symbol 清单，拒绝未解释的 `wafer_tx81_*` target CRT symbol。
 
 `tools/wafer_export_package_metadata.py` 是 package metadata auto-export gate：它消费上游
@@ -468,8 +471,8 @@ Runtime adapter 必须把 stub shielding 做成显式 validation。不能把 “
 V0 验证：
 
 - device-code gate 命令形态固定：LLVM `clang++` 负责 `.ll -> .o`，repo-vendored `tx8_deps`
-  `riscv64-unknown-elf-gcc` 负责 link `kernel.so`，并显式链接 `common_util`、`instr_tx81`、
-  `libc_stub` 和 Wafer CRT `vr`。
+  `riscv64-unknown-elf-gcc` 负责 link `kernel.so`，并显式链接 repo-local Wafer CRT object、
+  `common_util`、`instr_tx81` 和 `libc_stub` 等 TX8 deps。
 - package metadata `modules` 记录 kcore shared object module，不再把 instruction-sequence
   test input 当成 runtime package device code；`entrypoints` 明确区分 model BPM、graph、
   kernel bring-up 和 legacy fallback。

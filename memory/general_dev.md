@@ -154,8 +154,8 @@
   LLVM 21 生成的 RISC-V object 在进入 Xuantie GNU ld 2.35 前需要用 vendored
   `riscv64-unknown-elf-objcopy -R .riscv.attributes` 做 metadata normalization；repo-local
   Wafer CRT source/object 和 target object 一起进入 link gate。设备链接不再默认编译或链接
-  capture shim；LLVM object 之外的 target CRT symbol 必须来自 repo-local Wafer CRT 或明确合法的
-  runtime/loader 外部依赖。`tools/wafer_device_link.py` 能执行
+  capture shim；LLVM object 之外的 target CRT symbol 必须来自 repo-local Wafer CRT source/object
+  或明确合法的 runtime/loader 外部依赖。`tools/wafer_device_link.py` 能执行
   `.ll -> .o -> kcore .so` 不等于主线 gate 完成；required-symbol 检查必须拒绝未解释的
   `wafer_tx81_*` undefined symbol。
 - target LLVM call emission 输出给 `mlir-translate --mlir-to-llvmir` 前不能残留任何 Wafer op。target

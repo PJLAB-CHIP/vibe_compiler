@@ -1,7 +1,7 @@
 # Wafer Compiler Task Documents
 
-本文只做 `tasks/` 文档导航，不声明新的架构合同。当前设计边界以编号文档和
-`tasks/01-architecture.md` 第 8 节为准；执行状态以 `tasks/progress.md` 为准。
+本文只做 `tasks/` 文档导航，不声明新的架构合同，也不作为任务状态的主要事实源。
+当前设计边界以编号设计文档为准；执行状态和下一步以 `tasks/progress.md` 任务队列为准。
 
 ## 当前设计文档
 
