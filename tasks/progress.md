@@ -1,102 +1,321 @@
-# Wafer Compiler Progress
+# Wafer Compiler Task Queue
 
 更新时间：2026-07-08
 
-本文件只记录当前事实、队列状态和下一步顺序，不复制编号设计文档里的长期合同。
-详细设计以 `tasks/14-target-llvm-golden-packet.md` 和
-`tasks/15-launch-runtime-package.md` 为准。
+本文件只做任务队列管控，不声明新的架构合同，不复制编号设计文档里的长期设计。
+架构、IR 边界、pipeline contract 和 completion gate 以对应编号设计文档为准。
 
-## 状态标记
+## 队列规则
 
-- `done`：当前代码和测试已经证明该边界可作为下游输入。
-- `active`：当前优先推进的边界。
-- `partial`：有局部工具或 IR 子集可用，但不能当作主线完成证明。
-- `pending`：依赖前序边界完成。
-- `later`：当前主线之后再做。
+- 每个非纯文本任务必须有对应编号设计文档；没有设计文档或设计文档缺 pipeline contract 时，
+  先补设计文档，再进入实现。
+- 每个任务必须写清楚要做什么、完成要求和不算完成的情况；不能只写 pass 名、脚本名或临时阶段号。
+- `done` 只能表示该任务的完成要求已经被验证；局部 FileCheck、手写 fixture、已有 package metadata
+  input 或工具 roundtrip 只能作为补充覆盖，不能替代主线完成要求。
+- 如果实现事实和编号设计文档冲突，先更新编号设计文档，再改代码或队列状态。
+- `tasks/archive/` 只作背景，不作为当前任务的设计依据。
 
-局部 FileCheck、工具 roundtrip、已有 package intake 或手写 LLVM input 只证明对应局部边界；
-不能替代 compiler 从真实 program chain 产出下游 artifact。
+## 状态
 
-## 当前事实
+- `doing`：当前正在推进，下一轮工作必须优先处理。
+- `next`：`doing` 完成后立即进入。
+- `blocked`：需要先补设计、ABI、IR 或外部环境。
+- `done`：完成要求已满足并验证。
+- `later`：当前主线之后再排期。
 
-当前无卡环境中，真实 program chain 已验证到 memory-planned target-aligned instruction IR：
+## 任务队列
 
-```text
-PyTorch/XLA StableHLO Wafer program directory
-  -> target topology / execution mesh
-  -> Shardy propagation + Wafer-owned SPMD partition
-  -> local compute normalization
-  -> logical group formation
-  -> tile-region / communication / instruction lowering
-  -> SPM + DDR memory planning
-       memory-planned `wafer.instr.*`
-```
+### Q0. Target LLVM call emission
 
-已完成但需要分层理解的事实：
+状态：`done`
 
-- `wafer.instr.*` IR / verifier / legalization 已覆盖当前 V0 instruction subset。
-- Target LLVM call emission 已完成：`wafer.instr.*` 可降到 LLVM dialect / LLVM IR 中的
-  `llvm.call @wafer_tx81_*`，unsupported target op 会结构化失败。
-- 上述事实只证明 call emission，不证明 Wafer CRT implementation、register packet golden、
-  device-code link required-symbol gate、package auto-export 或 board launch 已完成。
+设计文档：
 
-尚未完成的主线事实：
+- `tasks/14-target-llvm-golden-packet.md`
+- `tasks/16-verification-plan.md`
 
-- 真实 PyTorch/HF program chain 还没有产出可作为 package 主线输入的 compiler-generated target LLVM
-  artifact、TX8 object、kcore shared object 或 IR-derived package。
-- Direct DTE target path 仍缺 runtime endpoint / channel binding；在 ABI/lowering 补齐前，不能把
-  `wafer_tx81_dte_*` 当作可闭合的 production CRT wrapper。
+要做什么：
 
-## 已证明边界
+- 作为后续任务输入保留：memory-planned `wafer.instr.*` 可以 lowering 到 LLVM dialect / LLVM IR
+  中的 Wafer-owned `wafer_tx81_*` calls。
+- 不再在本队列中展开 call-emission 本身，除非后续任务发现 symbol surface 或 ABI 需要回改设计。
 
-| 边界 | 状态 | 当前事实 |
-| --- | --- | --- |
-| Frontend through SPM/DDR planned instruction IR | done | 真实 program chain 已到 memory-planned `wafer.instr.*`。 |
-| Target LLVM call emission | done | V0 production `wafer.instr.* -> llvm.call @wafer_tx81_*`；不包含 CRT implementation 和 link closure。 |
-| Old helper ABI removal | done | helper ABI library、helper pipelines、runtime capture shim 和 C stub emitter 已从主线合同删除。 |
+完成要求：
 
-## 局部工具边界
+- `--wafer-lower-instr-to-target-llvm` 和 `wafer-lower-groups-to-target-llvm` 的输出不残留 Wafer ops。
+- unsupported target op 结构化失败。
+- 该完成只覆盖 call emission，不覆盖 CRT implementation、device link、package export 或 board launch。
 
-这些边界可用于构造 active gate，但不能单独作为主线完成证明：
+不算完成：
 
-- Package schema / no-card runtime intake：已有 package metadata 和 `wafer-run` validation 可用；
-  不证明 compiler-generated package export。
-- Device-code link helper：现有 tooling 还必须接入 repo-local Wafer CRT source/object，并执行
-  required-symbol gate。
-- Package metadata helper：需要等待 active gate 产出 target LLVM、kcore shared object 和
-  committed IR 输入；在此之前不算 mainline auto-export。
+- 手写 LLVM IR、package metadata fixture 或 C stub table 不能替代 compiler-generated target LLVM artifact。
 
-## 队列
+### Q1. Wafer CRT symbol surface audit
 
-| 阶段 | 状态 | 完成 gate |
-| --- | --- | --- |
-| target instruction LLVM call emission | done | LLVM dialect / LLVM IR emit Wafer-owned target CRT calls，并拒绝 unsupported target ops。 |
-| Wafer-owned CRT implementation | active | repo-local CRT source 定义 `tasks/14` 中 production `wafer_tx81_*` surface；DTE binding 不完整时不能用占位实现伪装闭合。 |
-| device-code compile/link gate | active | device link 编译 target object + Wafer CRT object，链接 kcore `.so`，并拒绝 undefined `wafer_tx81_*`。 |
-| package metadata auto-export mainline | pending | export 消费 compiler-generated target LLVM artifact、kcore shared object 和 committed instruction IR。 |
-| runtime adapter / board launch | pending | 在 board/runtime provider 上验证 allocation/import/query/bind、module load/function lookup、launch、completion 和 error propagation。 |
-| HF selected-candidate integration | pending | selected-candidate path 接受同一 HF group 形态，或明确保持为 runtime gate 外的优化路径。 |
-| transformer staged gaps | pending | target LLVM、board execution、numeric correctness、dynamic shape/bounds、KV cache 和 resident constants。 |
-| overlap / cost calibration | later | 用 board/profile 输出校准 overlap 和 cost model。 |
+状态：`doing`
 
-## 当前不做
+设计文档：
 
-- Serving integration、KV cache / paged attention / prefill-decode 调度。
-- raw DTE non-unicast collective target lowering。
-- target LLVM / runtime / board gate 前的模型数值 correctness 和 profiling/cost calibration。
-- 自定义 LLVM backend 或 ISA intrinsic lowering。
-- 把 importer name、runtime path、workload shape、parameter name、pass-local side table、capture shim、
-  package metadata fixture 或 compiler-facing helper ABI 当成 IR contract。
+- `tasks/14-target-llvm-golden-packet.md` 第 4、7 节
+- `tasks/16-verification-plan.md` 的 M7 target LLVM / device-code gate
 
-## 下一步
+要做什么：
 
-1. 实现 repo-local Wafer CRT source，覆盖 `tasks/14` 定义的 production `wafer_tx81_*` surface。
-   ABI 尚未 production-ready 的 symbol，尤其 Direct DTE，必须显式标出，不能用空实现伪装 target support。
-2. 更新 device-code link gate：`tools/wafer_device_link.py` 编译 Wafer CRT source 得到 CRT object，
-   再和 compiler-generated target object、repo-vendored TX8 deps 一起链接，并扫描 final `.so` 中的
-   undefined Wafer-owned symbols。
-3. 补验证：positive compiler-generated / group target LLVM case 能到 kcore `.so`；negative
-   `wafer_tx81_missing` case 会在 link 后被 required-symbol gate 拒绝，而不是被
-   `--allow-shlib-undefined` 掩盖。
-4. CRT source/object link closure 通过后，再恢复 package metadata auto-export；输入只能是
-   compiler-generated target LLVM artifact、kcore shared object 和 committed instruction IR。
+- 从 target LLVM lowering 当前会 emit 的 `wafer_tx81_*` calls 建立 symbol 清单。
+- 对照 `tasks/14` 的 production target surface，确认每个 symbol 的 prototype、参数单位、wrapper
+  family、wait/completion 责任和 unsupported/future 边界。
+- 对 Direct DTE 这类 ABI / runtime binding 未闭合的 symbol，明确是补 IR / ABI 设计，还是从当前
+  production closure 中排除；不能把空实现或假成功写进 CRT。
+
+完成要求：
+
+- `tasks/14` 中的 symbol/prototype/wrapper surface 与实际 lowering 输出一致。
+- 每个 compiler-emitted production `wafer_tx81_*` 都有明确实现路径或明确的结构化 unsupported 规则。
+- 后续实现任务可以只按该设计文档施工，不需要从旧路径、库名、示例名或手写 case 反推语义。
+
+不算完成：
+
+- 只列出某个库里已有的 `__*` 或 wrapper 名称。
+- 只证明某个单独 `.ll` 能过 `mlir-translate`。
+- 把 Direct DTE endpoint/channel 缺口藏进 CRT stub。
+
+### Q2. Repo-local Wafer CRT implementation and wrapper golden coverage
+
+状态：`next`
+
+设计文档：
+
+- `tasks/14-target-llvm-golden-packet.md` 第 7 节
+- `tasks/16-verification-plan.md`
+
+要做什么：
+
+- 实现 repo-local Wafer CRT source，定义 Q1 确认的 production `wafer_tx81_*` symbols。
+- 每个 symbol 直接调用 public TSM wrapper 或已设计完成的 Direct DTE helper；不要恢复旧 helper ABI、
+  capture shim 或 C stub table。
+- 补 wrapper/golden packet 覆盖，验证 CRT 参数到 public wrapper / register packet 的映射。
+
+完成要求：
+
+- production `wafer_tx81_*` symbols 有 repo-local CRT 定义或被 verifier / lowering 明确拒绝。
+- 至少覆盖当前主线需要的 compute / movement wrapper family 的 typed wrapper mapping。
+- golden packet 测试能定位参数单位、format、shape/stride、wait/completion 等映射错误。
+
+不算完成：
+
+- 只让符号表存在但不验证参数映射。
+- 依赖 `--allow-shlib-undefined` 掩盖 Wafer-owned symbol 缺失。
+- 用空函数、日志函数或 success return 伪装未完成的 target support。
+
+### Q3. Device-code compile/link required-symbol gate
+
+状态：`blocked`
+
+阻塞条件：
+
+- 依赖 Q2 产出 repo-local Wafer CRT source/object 和 production symbol closure。
+
+设计文档：
+
+- `tasks/14-target-llvm-golden-packet.md` 第 7.7 节
+- `tasks/15-launch-runtime-package.md` 第 3、10 节
+- `tasks/16-verification-plan.md` 的 Object/package gate
+
+要做什么：
+
+- 更新 `tools/wafer_device_link.py`：LLVM toolchain 负责 `.ll -> target object`，TX8 GCC 只负责链接。
+- 编译 Q2 的 Wafer CRT source 得到 CRT object，并和 compiler-generated target object、repo-vendored
+  TX8 deps 一起链接 kcore `.so`。
+- 对 final `.so` 执行 required-symbol scan，拒绝未解释的 Wafer-owned `wafer_tx81_*` undefined symbol。
+- 覆盖 object metadata normalization，不把 capture shim 放进默认 device link。
+
+完成要求：
+
+- positive case：compiler-generated target LLVM artifact 能完成
+  `.ll -> target object -> Wafer CRT object -> kcore .so`。
+- negative case：故意引用 `wafer_tx81_missing` 时，link 后 required-symbol gate 必须失败。
+- 验证命令进入 lit / ctest 或等价主线测试入口，并确认不是 skipped / unsupported。
+
+不算完成：
+
+- 只链接手写 `.ll`。
+- 只检查 linker exit code 而不扫描 undefined Wafer-owned symbols。
+- 把 runtime/loader 合法外部符号和 Wafer-owned CRT 缺失混为一类。
+
+### Q4. Package metadata auto-export mainline
+
+状态：`blocked`
+
+阻塞条件：
+
+- 依赖 Q3 产出 kcore shared object 和 link / symbol closure facts。
+
+设计文档：
+
+- `tasks/15-launch-runtime-package.md`
+- `tasks/16-verification-plan.md` 的 Object/package gate
+
+要做什么：
+
+- 恢复 package metadata auto-export 主线：消费 compiler-generated target LLVM artifact、kcore shared
+  object、committed instruction IR 和 model interface metadata。
+- 从 committed IR / resource view 重算 modules、entrypoints、DDR/resource summary、model interface 和
+  runtime requirements。
+- 让导出的 package metadata 通过 validator roundtrip。
+
+完成要求：
+
+- package metadata 由当前 pipeline artifact 自动导出；手写 package metadata 只能作为 schema
+  negative / roundtrip 覆盖。
+- `modules` 引用真实 kcore shared object。
+- model ABI、model interface、resource metadata、entrypoints 和 completion source 通过 validator。
+
+不算完成：
+
+- schema roundtrip 只覆盖手写 JSON / YAML。
+- 从文件名、参数名或 package fixture 猜测模型接口。
+- package metadata 反向维护第二份 endpoint 或 memory planning 事实。
+
+### Q5. Real program-chain target LLVM integration
+
+状态：`blocked`
+
+阻塞条件：
+
+- 依赖 Q0 已完成的 call emission，以及 Q1-Q3 明确 target LLVM artifact 后续能进入 device-code gate。
+
+设计文档：
+
+- `tasks/01-architecture.md`
+- `tasks/14-target-llvm-golden-packet.md`
+- `tasks/16-verification-plan.md`
+
+要做什么：
+
+- 把真实 PyTorch/HF program chain 从 memory-planned `wafer.instr.*` 继续接到 target LLVM artifact。
+- 用户级入口必须重放已完成上游链路，不能要求用户长期手动拼 pass 或手写 group fixture。
+- 保留 hand-written tests 作为补充覆盖，但主线 gate 必须消费真实 program-chain 产物。
+
+完成要求：
+
+- 至少一个真实 program-chain case 产出 compiler-generated target LLVM artifact。
+- 该 artifact 可直接进入 Q3 device-code gate。
+- 验证记录说明上游 artifact、当前输出和下游 consumer。
+
+不算完成：
+
+- 手写 `wafer.group` 或手写 memory-planned `wafer.instr.*` 单独通过。
+- 只 dump LLVM dialect 文本但不证明 artifact 会被下游消费。
+
+### Q6. Runtime package adapter and board launch gate
+
+状态：`blocked`
+
+阻塞条件：
+
+- 依赖 Q4 产出 IR-derived package metadata。
+- 板端 launch / completion 还依赖有卡环境和可信 completion source。
+
+设计文档：
+
+- `tasks/15-launch-runtime-package.md`
+- `tasks/16-verification-plan.md` 的 Runtime/board gate
+
+要做什么：
+
+- 让 runtime adapter 消费 validated package metadata，构造 allocation/import/query/bind、module
+  resolution、entrypoint selection 和 completion plan。
+- 在无卡环境保留 dry-run / shielding / package intake 测试。
+- 在有卡环境验证 module load、function lookup、launch、completion 和 error propagation。
+
+完成要求：
+
+- no-card gate 能拒绝 unsupported completion source 和未 materialize 的 entrypoint。
+- board gate 使用可信 runtime completion，不把已知 stub path 成功返回当 correctness fence。
+- 错误传播、resource binding 和 module resolution 都有可复现验证。
+
+不算完成：
+
+- 只验证 package metadata schema。
+- 只证明 shared library 能被 host 加载。
+- 用 provider 名称或某个 TX API 调用替代 Wafer package / runtime contract。
+
+### Q7. HF selected-candidate integration
+
+状态：`later`
+
+设计文档：
+
+- `tasks/06-group.md`
+- `tasks/11-instruction-ir.md`
+- `tasks/16-verification-plan.md`
+
+要做什么：
+
+- 让 selected-candidate path 接受当前 HF Megatron-style transformer group 形态。
+- 如果 selected-candidate 仍只是优化路径，明确它不阻塞 runtime gate。
+
+完成要求：
+
+- 同一 HF group 形态能进入 selected-candidate path，或设计文档明确说明它只作为后续优化。
+- candidate legality failure 必须能定位到 IR / verifier / resource facts。
+
+不算完成：
+
+- 只在手写小 case 上证明 candidate selector 可运行。
+- 把 planner 的估算结果写成 IR contract。
+
+### Q8. Transformer staged gaps
+
+状态：`later`
+
+设计文档：
+
+- `tasks/05-local-compute-normalization.md`
+- `tasks/06-group.md`
+- `tasks/11-instruction-ir.md`
+- `tasks/12-ddr-memory-planning.md`
+- `tasks/15-launch-runtime-package.md`
+- `tasks/16-verification-plan.md`
+
+要做什么：
+
+- 补 transformer vertical slice 后续缺口：target LLVM integration、board execution、numeric correctness、
+  dynamic shape / bounds、KV cache、resident constant / weight residency。
+- 每个子项进入实现前必须拆成独立任务，并指向对应编号设计文档。
+
+完成要求：
+
+- 每个子任务有真实 program-chain gate 或明确的 board/runtime gate。
+- numeric correctness 和 profiling 只在 target LLVM / package / board gate 之后作为完成要求。
+
+不算完成：
+
+- 只用 shape-only dump 或局部 FileCheck 宣称 transformer 主线完成。
+- 把单个 workload shape 固化成长期协议。
+
+### Q9. Overlap and cost calibration
+
+状态：`later`
+
+设计文档：
+
+- `tasks/06-group.md`
+- `tasks/09-spm-memory-planning.md`
+- `tasks/12-ddr-memory-planning.md`
+- `tasks/16-verification-plan.md`
+
+要做什么：
+
+- 基于 board/profile 输出校准 overlap、cost model 和 PMU 反馈。
+- 只把 calibration 结果用于 planner/cost input，不写成不可验证的 IR 语义事实。
+
+完成要求：
+
+- 有 board/profile 数据来源、复现实验命令和校准前后对比。
+- cost model 改动不破坏 legality gate；失败 candidate 不能因估算收益被接受。
+
+不算完成：
+
+- 无 profile 数据的静态调参。
+- 把 issue 顺序、planner 搜索过程或估算时间写入长期 IR contract。
