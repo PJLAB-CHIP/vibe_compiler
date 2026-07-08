@@ -24,8 +24,8 @@ Wafer AI compiler / runtime 处在设计收敛和实现推进阶段。文档、I
 每次进入执行阶段，按下面顺序推进。它是硬约束，不是收尾建议。
 
 1. 看 `git status`，识别已有改动；不得回滚用户或其它工具的无关改动。
-2. 按任务范围读取上下文：`AGENTS.md`、`tasks/README.md`、`tasks/progress.md` 任务队列、
-   相关编号设计文档，必要时读 `docs/`、`memory/` 和代码。
+2. 按任务范围读取上下文：`AGENTS.md`、`tasks/progress.md` 任务队列和相关编号设计文档；
+   找不到编号文档或需要确认 archive 边界时再查 `tasks/README.md`，必要时读 `docs/`、`memory/` 和代码。
 3. 以 `tasks/progress.md` 任务队列作为执行管控入口；当前工作必须能落到一个队列项，或者先更新
    队列和对应设计文档。
 4. 非小修、非纯文本错别字任务必须先确认或补齐对应编号设计文档和 pipeline contract，再写代码。
@@ -47,7 +47,7 @@ Wafer AI compiler / runtime 处在设计收敛和实现推进阶段。文档、I
 
 常用目录：
 
-- `tasks/README.md`：编号设计文档导航和 archive 边界。
+- `tasks/README.md`：编号设计文档导航和 archive 边界；不是任务状态或设计合同的主要依据。
 - `tasks/progress.md`：任务队列，记录每步任务的状态、对应设计文档、要做什么、完成要求和不算完成。
 - `tasks/`：当前编号设计文档，按 compiler pipeline 语义顺序排列。
 - `tasks/archive/`：历史审计、恢复和任务记录，只作背景，不作为当前架构合同。
@@ -60,16 +60,16 @@ Wafer AI compiler / runtime 处在设计收敛和实现推进阶段。文档、I
 优先读取：
 
 1. `AGENTS.md`。
-2. `tasks/README.md`。
-3. `tasks/progress.md`。
-4. 与当前任务直接相关的编号设计文档。
+2. `tasks/progress.md`。
+3. 与当前任务直接相关的编号设计文档。
+4. 找不到相关编号文档、需要确认文档编号或 archive 边界时，查 `tasks/README.md`。
 5. 涉及硬件、runtime、ABI 或 memory hierarchy 时，读对应 `docs/` 资料。
 6. 涉及构建、调试、历史问题或可复用经验时，读 `memory/general_dev.md` 和 `memory/bugs.md`。
 7. 涉及已有代码或脚本时，读代码；不要只看文档。
 8. 涉及 MLIR dialect、pass、interface、verifier、region 或 conversion 设计时，优先查 MLIR 官方文档。
 
-设计和事实冲突时，优先级为：用户当前要求，本轮已收敛结论，`tasks/progress.md` /
-`tasks/README.md` / 当前编号设计文档，`docs/` 事实资料，最后才是 archive 和历史资料。该冲突优先级
+设计和事实冲突时，优先级为：用户当前要求，本轮已收敛结论，`tasks/progress.md` 和当前编号设计文档，
+`docs/` 事实资料，最后才是 `tasks/README.md`、archive 和历史资料。该冲突优先级
 不降低本文件流程约束。遇到冲突时不要悄悄合并，要在修改中收敛成清晰边界。
 
 构建和测试入口以当前 CMake / lit 配置以及 `memory/general_dev.md` 最新记录为准。不要把旧 build
