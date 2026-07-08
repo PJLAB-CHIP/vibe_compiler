@@ -152,7 +152,7 @@ C-intrinsic 文档中的规则：
 
 Kcore 通过 AP 下发的 `offset`、自身 `logic-id`、以及卡内 1D/2D id 规则计算 cluster 内目标 tile 的 logic id。卡内 1D id 由二维 id `(X,Y)` 映射为 `X * 4 + Y`。
 
-Compiler 侧不能把上述默认 4x4 规则或历史 1D/2D 公式散落到 SPMD、communication、target LLVM lowering
+Compiler 侧不能把上述默认 4x4 规则或历史 1D/2D 公式散落到 SPMD、communication、target LLVM call emission
 或 verifier。它们是 topology import/materialization 的输入证据：`wafer.target.topology` 保存
 规则 card/tile grid、card-level interconnect kind 和 unavailable tile 坐标例外；`wafer.execution.mesh`
 保存 SPMD rank-domain policy、logical axes/shape 和 optional explicit endpoints。默认
@@ -639,5 +639,5 @@ Stream、mailbox 和 CSR 的具体 wrapper/API 表放在 register-level spec。�
 raw DTE non-unicast 和 SCALAR/CSR ordinary execution 等不属于 LLM V0 主线。基础 Conv、
 Pool/UnPool、TDMA pad/img2col 和 public-wrapper Peripheral 已进入 compiler instruction IR
 覆盖；transform-like DataMove 和 TensorNom 主路径仍通过 GatherScatter materialize 或结构化失败。
-target LLVM wrapper lowering 和板端行为仍按对应任务 gate 验证。SPM bank conflict 和非
+target LLVM call emission、Wafer CRT wrapper 和板端行为仍按对应任务 gate 验证。SPM bank conflict 和非
 1024-bit 内部对齐访问会影响 queue ready、stall 和性能，但不作为单条指令 legality blocker。

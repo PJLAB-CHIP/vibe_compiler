@@ -44,8 +44,9 @@ source model / exported program / pre-exported StableHLO
   -> accepted/rejected/split candidate decision
   -> committed tile-region/instruction boundary
   -> execution-mesh / launch-block / program shard metadata resource view
-  -> target instruction LLVM lowering from committed instruction IR + accepted offsets + topology/execution mesh
-  -> RISC-V kcore shared object + package metadata
+  -> target instruction LLVM call emission from committed instruction IR + accepted offsets + topology/execution mesh
+  -> device-code compile/link + target CRT symbol closure
+  -> IR-derived package metadata auto-export
   -> WaferRuntimeAdapter TxRuntimeBackend launch or legacy TsmRun fallback
 ```
 
@@ -443,7 +444,7 @@ bufferization 见 `tasks/09-spm-memory-planning.md`；DDR memory planning 见
 compute/movement 层的 verifier 和 lowering 边界，不把某个 wrapper 名、示例 tile shape 或 raw
 packet 字段写成上层 IR 语义。
 
-committed instruction IR 到 target CRT、wrapper 和 golden packet emission 的合同见
+committed instruction IR 到 target LLVM call emission、target CRT wrapper 和 golden packet 的合同见
 `tasks/14-target-llvm-golden-packet.md`。
 
 ### 3.8 Wafer Communication Stage
@@ -509,8 +510,10 @@ contract、collective lowering 和 verifier 见
 
 职责：
 
-- 把 `wafer.instr.*` lowering 到具体 target CRT call。
-- 生成 RISC-V kcore device `.so`。
+- 从 `wafer.instr.*` 生成 LLVM dialect / LLVM IR 中的 Wafer-owned target CRT call
+  declarations/calls。
+- 在 device-code gate 中用 LLVM clang 和 repo-vendored TX8 deps 生成 RISC-V kcore device `.so`，
+  并通过 required-symbol 检查证明 `wafer_tx81_*` 由 repo-local Wafer CRT 或明确合法外部依赖解析。
 - 从 committed instruction IR、accepted offsets、topology/execution mesh、program parameter shard
   metadata/resource view 和 communication/sync IR 重算 model interface、modules、entrypoints、
   SPM/layout/DDR memory metadata、communication metadata、constant storage bytes 和 profiling/status
@@ -680,7 +683,7 @@ WaferRuntimeAdapter cluster launch
   `stablehlo-spmd-to-group` 和 memory-planned instruction IR。该 gate 的 Megatron
   contracting-dimension sharding 保留并消费 `all_reduce` collective，basic `arith.select`
   在 instruction lowering 中改写成 `gather_scatter` + `bit2fp` + `mask_move` target sequence。
-  target LLVM lowering、package metadata auto-export、`wafer-run` no-card required-symbol gate、
+  target LLVM call emission、target CRT symbol closure、package metadata auto-export、`wafer-run` no-card required-symbol gate、
   `wafer-lower-groups-to-selected-instr` closed-loop selector、板端 launch 和数值正确性仍是后续边界。
 
 验收标准：
@@ -892,15 +895,17 @@ ModelImport/FrontendProgram
   -> accepted/rejected/split group plan decision
   -> committed wafer.tile.region + accepted instruction boundary
   -> topology/execution-mesh + program shard metadata/resource view + launch-block binding
-  -> target instruction LLVM lowering
-  -> object + package metadata assembly
+  -> target instruction LLVM call emission
+  -> device-code compile/link + target CRT symbol closure
+  -> package metadata auto-export
   -> runtime adapter / board launch
 ```
 
 当前 HF transformer no-card gate 走 `stablehlo-spmd-to-group` 后的 direct group -> instruction 路径，
-即 `wafer-lower-groups-to-ddr-memory-planned-instr`。target LLVM lowering 已有 hand-written instr 和
-hand-written group named-pipeline gate，但 HF program chain 到 target LLVM、device-code 和 package
-auto-export 仍是后续 gate；closed-loop selected-candidate path 仍是候选/优化路径，不作为该 gate 的已覆盖必经阶段。
+即 `wafer-lower-groups-to-ddr-memory-planned-instr`。target LLVM call emission 已有 hand-written instr 和
+hand-written group named-pipeline gate，但 HF program chain 到 target LLVM、target CRT symbol closure、
+device-code 和 package auto-export 仍是后续 gate；closed-loop selected-candidate path 仍是候选/优化路径，
+不作为该 gate 的已覆盖必经阶段。
 
 工程边界：
 
@@ -939,7 +944,7 @@ auto-export 仍是后续 gate；closed-loop selected-candidate path 仍是候选
   operands、memref view、`wafer.spm.offset`、`wafer.ddr.offset` 和 descriptor attrs 携带后段可重算的
   memory facts；topology/execution-mesh contract 只保存 regular topology、SPMD rank
   domain policy 和 optional explicit endpoint 这类不能从 local IR 重算的事实。
-  target LLVM lowering、package metadata 和 runtime adapter 如需 launch/resource/address/range/stride
+  target LLVM call emission、package metadata 和 runtime adapter 如需 launch/resource/address/range/stride
   视图，必须在使用点通过同一 analysis/verifier 从 committed IR、accepted offset facts 与
   topology/execution-mesh、program parameter shard metadata/resource view 派生，不能再引入 placed memref /
   access descriptor 旁路协议。
@@ -949,7 +954,7 @@ auto-export 仍是后续 gate；closed-loop selected-candidate path 仍是候选
   等同步抽象，供 compute/comm lowering 复用。
 - runtime package metadata 是 runtime-level launch boundary，负责参数、metadata 和 host/device ABI
   交接，不替代 tile-local execution region，也不作为当前 core IR op。
-- target LLVM lowering 只消费 committed instruction IR、accepted offset facts、
+- target LLVM call emission 只消费 committed instruction IR、accepted offset facts、
   topology/execution-mesh contract、program parameter shard metadata/resource view、薄 launch/block binding，
   不回头改 schedule、layout 或 memory plan。
 
@@ -974,7 +979,7 @@ V0 先保持少量稳定 op family：`wafer.group`、`wafer.linalg_ext.collectiv
 | Instruction IR | `tasks/11-instruction-ir.md` | 草案 | `wafer.instr.*`、Wafer-tagged memref graph、instruction family、memref read/write/effect、Direct DTE invocation form | SPM/DDR offset、runtime mapping、raw packet、target CRT call、重复 storage IR |
 | DDR memory planning | `tasks/12-ddr-memory-planning.md` | 草案 | `#wafer.memory<ddr, *>` demand、external view/descriptor validation、compiler-managed/resident/inter-group alloc demand、accepted DDR offset facts、lifetime/reuse、default arena capacity/largest-contiguous/bandwidth | tensor fusion、SPM offset、runtime allocation/import、packet bitfield |
 | Communication | `tasks/13-communication.md` | 草案 | tile_region / SPM materialization 之后的 buffer-level collective op、p2p Direct DTE instruction schedule、token/effect、sync boundary | compute op legality、SPM allocator internals、SPMD tensor collective handoff |
-| target LLVM / golden packet | `tasks/14-target-llvm-golden-packet.md` | 草案 | committed instruction IR + topology/execution-mesh + program shard metadata/resource view 到 target CRT calls / LLVM / packet emission 的参数单位、wait policy、golden packet | 上层 IR formation、layout search 和 SPM memory planning |
+| target LLVM call emission / golden packet | `tasks/14-target-llvm-golden-packet.md` | 实现中 | committed instruction IR + topology/execution-mesh + program shard metadata/resource view 到 Wafer-owned target CRT call emission、wrapper/packet 参数单位、wait policy、golden packet | 上层 IR formation、layout search、SPM memory planning、device-code symbol closure |
 | Launch / runtime package | `tasks/15-launch-runtime-package.md` | 草案 | Tx runtime provider / KMD / legacy Tsm 分层、completion、runtime allocation objects、bootparam/TLV、package metadata | Linalg tiling、group formation、tile-local ordering |
 | Verification plan | `tasks/16-verification-plan.md` | 草案 | stage diagnostics、roundtrip、golden packet、runtime shielding、PMU/cost-model gate | 替代各 dialect 语义设计 |
 | Serving integration | 暂不支持 | 延后 | graph capture、prefill/decode、KV cache 管理 | compiler core IR 合同 |

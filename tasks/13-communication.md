@@ -31,7 +31,7 @@ Pipeline position:
   instruction-level communication IR over unplaced Wafer-tagged SPM memrefs；peer/order/byte range 和 wait
   由 IR body 表达，不保存重复的 communication plan attr。
 - Downstream consumer:
-  SPM memory planning、DDR planning、target LLVM lowering、device-code target CRT wrapper 和 runtime package
+  SPM memory planning、DDR planning、target LLVM call emission、device-code target CRT wrapper 和 runtime package
   resource view。
 - User-level driver / named pipeline:
   主线通过 `stablehlo-spmd-to-group` 后的 group -> tile-region -> instruction lowering 重放；

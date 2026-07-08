@@ -1,6 +1,6 @@
 # Wafer Target LLVM Lowering and Golden Packet Design
 
-状态：实现中；target LLVM lowering pass 已落地，Wafer CRT implementation、device-code link gate 和
+状态：实现中；target LLVM call-emission pass 已落地，Wafer CRT implementation、device-code link gate 和
 wrapper/register golden packet 仍待完成。范围：memory-planned target-aligned `wafer.instr.*` 到
 target CRT call、LLVM dialect / LLVM IR 和 wrapper/register golden packet 的 lowering。
 
@@ -69,7 +69,9 @@ Pipeline position:
 - Current stage responsibility:
   从 target-aligned instruction IR 和 accepted facts 派生 Wafer-owned target CRT calls，并继续 lower 到 LLVM
   dialect / LLVM IR。该阶段消费 Wafer memory attr、SPM/DDR offset、DTE peer/token、layout/format
-  和 resource view；不读取 pass-local side table，不发明 compiler-facing ABI wrapper。
+  和 resource view；不读取 pass-local side table，不发明 compiler-facing ABI wrapper。当前已落地的是
+  call emission：生成 `wafer_tx81_*` declarations/calls 并保证 unsupported target op 结构化失败；
+  这不证明对应 repo-local Wafer CRT symbol 已定义或 packet mapping 已 golden。
 - Output artifact / IR:
   LLVM dialect module、LLVM IR artifact、Wafer target CRT symbol declarations/calls、debug/golden-packet
   输入。TX8 relocatable object 和 kcore shared object 由 device-code gate 从 LLVM IR 继续生成。
@@ -84,9 +86,10 @@ Pipeline position:
   不重新做 frontend/SPMD/group/tile/layout/SPM/DDR/communication planning；不把 helper ABI、
   capture shim 或 C stub emission 作为中间层。
 - Completion gate:
-  supported `wafer.instr.*` 生成 verifier-legal LLVM dialect / LLVM IR，并能由 `mlir-translate`
-  输出 LLVM IR；unsupported target op 结构化失败。device-code gate 只链接 target LLVM object 和
-  TX8/CRT 依赖，不默认链接 capture shim。
+  call-emission 子 gate 要求 supported `wafer.instr.*` 生成 verifier-legal LLVM dialect / LLVM IR，并能由
+  `mlir-translate` 输出 LLVM IR；unsupported target op 结构化失败。完整 target CRT / golden boundary
+  还要求 Wafer-owned CRT symbol 有 typed wrapper 合同和 packet golden coverage。device-code gate 只链接
+  target LLVM object 和 TX8/CRT 依赖，不默认链接 capture shim，并负责 required-symbol closure。
 ```
 
 ## 3. Instruction Legality
@@ -99,7 +102,7 @@ Pipeline position:
   检查。
 - lowering 可以找到 Wafer-owned target CRT symbol 方案或明确记录 unsupported diagnostic。
 - coverage 必须来自 `tasks/11-instruction-ir.md` 的 instruction coverage matrix。只有标为
-  `V0 production target op` 或 `V0 production target sync` 的 op 是 target LLVM lowering 的 production 输入；
+  `V0 production target op` 或 `V0 production target sync` 的 op 是 target LLVM call emission 的 production 输入；
   `V0 composite lowering` 必须已经在 instruction lowering 前展开，`future` / `unsupported`
   不能通过现有泛 op 隐式进入 LLVM lowering。
 
@@ -123,7 +126,7 @@ Pipeline position:
 | `wafer.instr.dte_send` / `dte_recv` / `dte_wait` | Direct DTE/FSM runtime binding evidence still incomplete | LLVM call emitted for logical peer/bytes；runtime endpoint/channel binding pending |
 | `wafer.instr.local_fence` | `TsmWaitfinish` / local drain evidence | LLVM call emitted；CRT/golden packet pending |
 
-Target LLVM lowering 输出必须调用 Wafer-owned target CRT symbols。`__*` 符号可以出现在 Wafer CRT
+Target LLVM call emission 输出必须调用 Wafer-owned target CRT symbols。`__*` 符号可以出现在 Wafer CRT
 内部实现、golden packet test 或 TX81/Triton 对照说明中，但不能作为 compiler IR lowering 的长期
 ABI 名称。
 
@@ -163,7 +166,7 @@ family 下参数不同的 kind；若 public wrapper signature 不一致，要么
 不在 V0 production target surface 中的硬件能力不属于本 stage 的默认 lowering surface。concat、maskgather
 variants、raw DTE non-unicast、SCALAR/CSR ordinary execution、Peripheral bitcount 和 Conv optional/fused
 operand policy 等能力需要先在 instruction IR 中新增或扩展明确 op / kind / verifier，并更新 coverage
-matrix；target LLVM lowering 不能用 `wafer.instr.elementwise`、`gather_scatter` 或 ad hoc CRT call
+matrix；target LLVM call emission 不能用 `wafer.instr.elementwise`、`gather_scatter` 或 ad hoc CRT call
 隐式覆盖这些语义。
 
 `wafer.instr.elementwise <select>` 非法。tile semantic select 需要在 instruction lowering 中改写成目标
@@ -273,8 +276,9 @@ Golden packet / wrapper tests 验证的是 target CRT implementation 对 public 
 - Wafer-owned target CRT implementation / typed wrapper contract 仍需逐个 op 对齐 repo-local
   TX81/public TSM wrapper 和硬件文档；当前 LLVM lowering 只生成 Wafer-owned symbol declarations/calls。
 - Golden packet tests 仍待补，用来验证 Wafer CRT 参数到 public TSM wrapper/register packet 的映射。
-- Device-code compile/link gate 仍待补：compiler-generated `.ll -> .o -> kcore .so`，链接 repo-local
-  Wafer CRT 和 repo-vendored TX8 deps，不经过 capture shim。
+- Device-code compile/link helper 已能对已有 / compiler-generated LLVM IR 执行 `.ll -> .o -> kcore .so`
+  和 object metadata normalization；active gate 仍缺 required-symbol closure，不能让 `wafer_tx81_*`
+  以未解释 undefined symbol 形式残留，也不能经过 capture shim。
 - Direct DTE production lowering 还缺 runtime endpoint / DTE channel binding。
 - package auto-export 当前只能消费已有 LLVM IR；恢复 compiler-generated package gate 要等 device-code
   compile/link gate 和 resource metadata export 衔接完成。

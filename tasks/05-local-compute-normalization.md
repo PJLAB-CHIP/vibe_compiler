@@ -492,8 +492,9 @@ R2.3 覆盖状态以 structured tensor IR 证据为准，
 不再把 acceptance pass 视为 schedule completion。当前可引用的 evidence 如下：
 
 本表只描述 local compute normalization 层自己的证据。HF Megatron-style transformer gate
-已在下游覆盖 PyTorch/XLA capture -> group -> memory-planned instruction IR 路径；target LLVM、
-package/no-card runtime required-symbol、board/numeric correctness 仍是后续边界。该下游 gate 不改变
+已在下游覆盖 PyTorch/XLA capture -> group -> memory-planned instruction IR 路径；target LLVM call
+emission、target CRT symbol closure、package/no-card runtime required-symbol、board/numeric correctness
+仍是后续边界。该下游 gate 不改变
 本层对 dynamic shape、mask/select 泛化和 layout materialization 的非目标边界。
 
 | 子结构 | 当前证据 | 结论边界 |

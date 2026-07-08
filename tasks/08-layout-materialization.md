@@ -82,7 +82,7 @@ layout planning 有两个恢复层次：
   layout attr，也不生成 `wafer.tile.region`。
 - committed `wafer.tile.region` / instruction-level IR 已经包含 candidate gates 接受的
   Wafer-tagged memref value 和 `wafer.tile.materialize_layout` op。后续 topology/execution-mesh、
-  target LLVM lowering 和 package metadata 只从这些 IR facts 派生 lower-level 参数，
+  target LLVM call emission 和 package metadata 只从这些 IR facts 派生 lower-level 参数，
   不再重新 materialize layout assignment 或 materialization cut。
 
 完整 layout materialization 的输入来自 target-abstract tile-region IR。它由 scheduled

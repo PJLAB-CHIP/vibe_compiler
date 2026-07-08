@@ -150,9 +150,11 @@
   `riscv64-unknown-elf-objcopy -R .riscv.attributes` 做 metadata normalization；repo-local
   `libvr.a` 是 debug-stripped archive，避免旧 linker 读取 LLVM RISC-V debug relocations。
   设备链接不再默认编译或链接 capture shim；LLVM object 之外的 target CRT symbol 必须来自
-  repo-local TX81/Wafer CRT 或合法 runtime/loader 外部依赖。
-- target LLVM lowering 输出给 `mlir-translate --mlir-to-llvmir` 前不能残留任何 Wafer op。target
-  topology / execution mesh 在 target LLVM lowering 前是 fact source；lowering 完成后这些 metadata
+  repo-local TX81/Wafer CRT 或合法 runtime/loader 外部依赖。`tools/wafer_device_link.py` 能执行
+  `.ll -> .o -> kcore .so` 不等于主线 gate 完成；required-symbol 检查必须拒绝未解释的
+  `wafer_tx81_*` undefined symbol。
+- target LLVM call emission 输出给 `mlir-translate --mlir-to-llvmir` 前不能残留任何 Wafer op。target
+  topology / execution mesh 在 target LLVM call emission 前是 fact source；lowering 完成后这些 metadata
   应被消费或剥离，并在发现其它 `wafer.*` op 残留时报错。pipeline 测试应把 target/mesh 放进输入，
   防止只检查函数体而漏掉 module-level metadata。
 - Wafer IR 文件组织检查入口是 `tools/check_ir_organization.py --root .`；它检查 `WaferOps.td` 只作为
@@ -290,14 +292,14 @@
   `--program-pipeline=stablehlo-spmd-to-linalg` 和
   `--program-pipeline=stablehlo-spmd-to-group`；`wafer-compile-stablehlo --propagate-stablehlo-sharding`、
   `wafer-compile-stablehlo --partition-stablehlo-program` 已删除，因为 Shardy/SPMD 不属于 frontend
-	  verifier tool；旧 C ABI compile 入口也已删除。当前稳定后端主线由
-	  `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 后接
-	  `wafer-lower-groups-to-ddr-memory-planned-instr` 负责；target LLVM lowering 已有局部/group gate，
-	  HF program-chain target LLVM integration、device-code 和 package auto-export 是下一批 gate。
-	  旧显式 target CRT issue-op、ring collective、SPM/DDR debug path 和 single-tile
-	  materialization pass 链已删除；不要恢复成用户级 compile flow。当前 HF transformer no-card gate
-	  已覆盖真实 frontend/SPMD program 到 memory-planned instruction IR；真实 HF target LLVM integration、
-	  package、board allocation/launch/completion、数值 correctness 和 HF selected-candidate closed-loop path 仍是后续 gate。
+  verifier tool；旧 C ABI compile 入口也已删除。当前稳定后端主线由
+  `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 后接
+  `wafer-lower-groups-to-ddr-memory-planned-instr` 负责；target LLVM call emission 已有局部/group gate，
+  HF program-chain target LLVM integration、target CRT symbol closure、device-code 和 package auto-export 是下一批 gate。
+  旧显式 target CRT issue-op、ring collective、SPM/DDR debug path 和 single-tile
+  materialization pass 链已删除；不要恢复成用户级 compile flow。当前 HF transformer no-card gate
+  已覆盖真实 frontend/SPMD program 到 memory-planned instruction IR；真实 HF target LLVM integration、
+  package、board allocation/launch/completion、数值 correctness 和 HF selected-candidate closed-loop path 仍是后续 gate。
 - ODS op 如果引入 `RecursiveMemoryEffects`、`ReturnLike` 等 interface trait，公开 dialect 头要
   include 对应 C++ interface header，`WaferIR` 也要显式 link 对应 MLIR interface target。
 - ODS op 如果直接使用 MLIR `TilingInterface` 这类 upstream op interface，避免让 TableGen 在

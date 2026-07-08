@@ -7,7 +7,7 @@ instruction legalization。
 
 - `wafer.instr.*` 是当前 compiler pipeline 需要的 target-aligned instruction subset，不是完整
   硬件 ISA、Tsm wrapper 或 opcode 全量镜像。每个进入该层的 op 必须能被 verifier 解释，并且在
-  target LLVM lowering 中要么 lower 到明确 target CRT / DTE helper，要么结构化失败。
+  target LLVM call emission 中要么 lower 到明确 target CRT / DTE helper call，要么结构化失败。
 - 只新增 `wafer.instr.*` 硬件相关调用级 op，包括 CT/NE/RDMA/WDMA/TDMA 和 Direct DTE 的 V0 子集。
 - `wafer.instr.*` 不再直接复用 tile 层 `Compute*Kind`。tile 层的
   `#wafer.elementwise_kind` / `#wafer.reduce_kind` 表示 target-abstract compute semantics；
@@ -100,7 +100,7 @@ Pipeline position:
   `wafer.instr.local_fence`，或结构化 legalization failure reason。
 - Downstream consumer:
   SPM memory planning、DDR memory planning、closed-loop candidate driver、
-  target instruction LLVM lowering、package metadata 和 runtime adapter。
+  target instruction LLVM call emission、package metadata 和 runtime adapter。
 - User-level driver / named pipeline:
   主线由 closed-loop planner 调用；局部 bring-up / candidate evaluation 入口是
   `wafer-lower-tile-region-to-instr` 和 `wafer-lower-groups-to-instr` named pipeline。
@@ -286,13 +286,18 @@ instr-level target kind。
 
 ### 4.1 Instruction Coverage Matrix
 
-`wafer.instr` coverage 按 compiler IR 合同分层，而不是按硬件 opcode 数量分层。target LLVM lowering
+`wafer.instr` coverage 按 compiler IR 合同分层，而不是按硬件 opcode 数量分层。target LLVM call emission
 只能把 **V0 production target surface** 当作必须支持的 production lowering 输入；其它类别不能隐式进入现有
 泛 op 或 lowering fallback。
 
+这里的 `V0 production target op` 只说明 instruction IR / verifier / target LLVM call-emission 层必须识别
+该 op，并生成 Wafer-owned `wafer_tx81_*` call 或结构化失败。它不说明 repo-local Wafer CRT wrapper
+已经定义该 symbol，也不说明 register packet golden、device-code required-symbol gate 或板端执行已经通过；
+这些分别属于 `tasks/14` 的 CRT/golden boundary 和 `tasks/15` 的 device-code/package boundary。
+
 | 硬件 / wrapper 能力 | 当前 `wafer.instr` 表示 | coverage tier | 处理规则 |
 | --- | --- | --- | --- |
-| RDMA / WDMA contiguous 和三层 stride descriptor | `wafer.instr.rdma` / `wafer.instr.wdma` | V0 production target op | target LLVM lowering 必须生成 target CRT call；descriptor 保持 byte-level `inner_bytes`、stride 和 iteration |
+| RDMA / WDMA contiguous 和三层 stride descriptor | `wafer.instr.rdma` / `wafer.instr.wdma` | V0 production target op | target LLVM call emission 必须生成 target CRT call；descriptor 保持 byte-level `inner_bytes`、stride 和 iteration |
 | TDMA `TsmDataMove::GatherScatter` | `wafer.instr.gather_scatter` | V0 production target op | layout materialization、SPM copy 和可静态证明的 slice/transpose/broadcast movement 都展开为一条或多条 gather/scatter；无法压成 V0 descriptor 时结构化失败 |
 | `TsmPeripheral::Memset` / scalar fill | `wafer.instr.fill` | V0 production target op | 仅表达填充 destination SPM memref；不把 peripheral writeback/count 语义塞进 fill |
 | CT arithmetic / relation / logic / activation / selected transcendental | `wafer.instr.elementwise` + `#wafer.instr_elementwise_kind` | V0 production target op | 覆盖当前 enum 中的 target kind；broadcast、scalar immediate、bitpacked bool loop/VuV 和 rounding mode 是 target lowering 内部选择或后续扩展，不改变该 IR 合同 |
@@ -300,8 +305,8 @@ instr-level target kind。
 | CT reduce `sum/avg/max/min` | `wafer.instr.reduce` + `#wafer.instr_reduce_kind` + target `dim` code | V0 production target op | tile 层 reduce `dimensions` 在 instruction lowering 中 materialize 为 native `TsmReduce` dim code：`0:C`、`1:W`、`2:H`、`3:N`、`4:HW`、`5:HWC`；aligned physical layout、rank 和 dtype 合法性由 verifier / target lowering 检查 |
 | CT convert opcode 139..174 | `wafer.instr.convert` + `#wafer.instr_convert_kind<src_dst>` + kind-specific attrs | V0 production target op | dtype pair 由 kind 唯一决定；INT8->FP 要求 `zero_point`，rounding wrapper 要求 `rounding_mode`，plain wrapper 不允许额外转换参数；same-format copy 必须走 movement，不允许伪造成 convert |
 | NE GEMM | `wafer.instr.gemm` | V0 production target op | 只表达 GEMM / batched GEMM 主路径参数；bias、scale、quant、fused activation 和复杂 psum policy 不能被隐式打开 |
-| Direct DTE fixed-size unicast | `wafer.instr.dte_send` / `dte_recv` / `dte_wait` | V0 production target op；LLVM call emitted；production binding pending | IR 表达 logical peer、bytes 和 async token；target LLVM lowering 生成 Wafer CRT send/recv/wait call，runtime endpoint/channel binding 仍由后续 device/runtime gate 固定 |
-| local NCC drain / visibility fence | `wafer.instr.local_fence` | V0 production target sync；LLVM call emitted | target LLVM lowering 映射到 local wait/drain Wafer CRT call；不是 multi-tile barrier |
+| Direct DTE fixed-size unicast | `wafer.instr.dte_send` / `dte_recv` / `dte_wait` | V0 production target op；LLVM call emitted；production binding pending | IR 表达 logical peer、bytes 和 async token；target LLVM call emission 生成 Wafer CRT send/recv/wait call，runtime endpoint/channel binding 仍由后续 device/runtime gate 固定 |
+| local NCC drain / visibility fence | `wafer.instr.local_fence` | V0 production target sync；LLVM call emitted | target LLVM call emission 映射到 local wait/drain Wafer CRT call；不是 multi-tile barrier |
 | SPM memcpy helper / copy | 无单独 copy op | V0 composite lowering | copy 是 `gather_scatter` 的 descriptor 特例；不引入 `wafer.instr.copy` |
 | ChannelNorm / DechannelNorm / Tensor-Normalization | 无单条 op | V0 composite lowering | 作为 layout materialization algorithm 展开为 gather/scatter 序列；native TensorNom opcode 133 不作为 V0 主路径 |
 | tile collectives `all_gather/all_reduce/reduce_scatter/all_to_all/collective_permute` | 无 collective instr op | V0 composite lowering | 先在 tile collective / schedule 层选 ring、tree 或 direct p2p，再 lower 成 DTE send/recv/wait + local movement/compute |
@@ -327,7 +332,7 @@ tail `C0`。如果 full-block 段和 tail 段都无法分别表示为 V0 三层 
 R3.2d 必须失败。
 
 `TsmExecute` 普通 dispatch path 只覆盖 CT/NE/RDMA/WDMA/TDMA。DTE 不走这条 dispatch path，
-但仍属于 `wafer.instr.*` 的硬件通信调用层；后续 target LLVM lowering 负责把 `wafer.instr.dte_*`
+但仍属于 `wafer.instr.*` 的硬件通信调用层；后续 target LLVM call emission 负责把 `wafer.instr.dte_*`
 映射到 Direct DTE/FSM helper、runtime-compatible wrapper 或 raw-DTE ABI。SCALAR 当前 reserved/stub；
 CSR/sync helper 不在 V0 ordinary compute path 中。
 
@@ -398,7 +403,7 @@ resource effects 至少要表达：
 | DTE | send reads SPM source, recv writes SPM destination, wait consumes async token | Communication/DTE issue or wait |
 
 R3.2d 不建模 worker id。`TsmExecute` 的 worker bits、register window 和 packet field 属于
-committed instruction 后的 target LLVM lowering。
+committed instruction 后的 target LLVM call emission。
 
 ## 7. ODS-Level Op Contracts
 
@@ -720,9 +725,9 @@ R3.2d verifier checks only instruction legality:
 
 Instruction lowering does **not** verify physical address range, SPM bank conflicts, DDR default arena capacity,
 runtime symbol, packet bit layout or worker register window. Those checks belong to SPM/DDR offset assignment,
-target LLVM lowering, package metadata and runtime adapter.
+target LLVM call emission, package metadata and runtime adapter.
 DDR offset assignment must accept or reject the explicit DDR views, descriptors and compiler-managed DDR `memref.alloc`
-already present in this IR, and must materialize accepted DDR offset facts before target LLVM lowering,
+already present in this IR, and must materialize accepted DDR offset facts before target LLVM call emission,
 package metadata and runtime adapter consume them through resource view analysis.
 
 ## 11. Example

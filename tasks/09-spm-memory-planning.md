@@ -17,7 +17,7 @@ Wafer-tagged memref / `wafer.instr.*` / effects，不重复定义 instruction op
   构造 allocation input。
 - 对 instruction-level IR 做 SPM memory planning、range/end-address/alignment/bank-span verification 和 failure
   feedback。
-- 为 target LLVM lowering、package metadata 和 runtime adapter 的 resource view 提供 accepted offset fact；range、lifetime
+- 为 target LLVM call emission、package metadata 和 runtime adapter 的 resource view 提供 accepted offset fact；range、lifetime
   和 alias 信息由当前 IR 和 helper 重算，不作为长期 attr 字段保存。
 
 本文不分配 DDR，不选择 physical layout，不决定 group boundary，不选择 compute/communication
@@ -63,7 +63,7 @@ Pipeline position:
   allocation failure reason；后续 target LLVM、package metadata 和 runtime adapter 直接从该 fact、memref use-def、endpoint facts 和 view relation
   按需派生 launch/resource 与 ABI address-range 参数，不再经过 placed memref / descriptor 中间层。
 - Downstream consumer:
-  DDR memory planning、closed-loop candidate driver、target LLVM lowering、
+  DDR memory planning、closed-loop candidate driver、target LLVM call emission、
   package metadata 和 runtime adapter。
 - User-level driver / named pipeline:
   当前可重放入口是 `wafer-lower-groups-to-memory-planned-instr`，它复用 tile-region / instruction lowering 后追加

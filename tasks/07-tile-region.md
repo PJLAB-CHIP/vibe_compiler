@@ -72,12 +72,12 @@ wafer.group
   -> instruction-level wafer.instr.* IR over unplaced Wafer-tagged memref values
   -> SPM memory planning on the same instruction-level IR
   -> DDR memory planning on memory-planned instruction IR
-  -> direct memory-planned instruction IR for current no-card/target LLVM gates
+  -> direct memory-planned instruction IR for current no-card/target LLVM call-emission gates
   -> optional closed-loop candidate driver for retry/split/commit decision
   -> committed selected instruction IR for cases covered by the selector
   -> topology/execution-mesh + program shard metadata/resource view
-  -> target instruction LLVM lowering from committed IR + accepted offsets + topology/execution mesh
-  -> object/package/runtime adapter
+  -> target instruction LLVM call emission from committed IR + accepted offsets + topology/execution mesh
+  -> device-code symbol closure / package / runtime adapter
 ```
 
 本文区分两种生命周期：
@@ -88,7 +88,7 @@ wafer.group
   bufferize、lower 到 instruction IR 并做 SPM/DDR planning，作为当前 no-card/ABI/runtime gate 的输入。
   closed-loop selector 评估失败的 tile-region IR 仍不进入主线 committed IR。
 - committed `wafer.tile.region`：committed materialization 只把 candidate-selection 已选中、且已通过 candidate gates
-  的 candidate artifact 写入主 IR。后续 endpoint projection、target LLVM lowering 和 package metadata
+  的 candidate artifact 写入主 IR。后续 endpoint projection、target LLVM call emission 和 package metadata
   只从 committed IR、accepted offset facts、topology/execution-mesh 和 program shard metadata/resource view
   派生下游参数，
   不重新决定 group 是否可行，也不复制 placed/access descriptor 中间协议。当前 HF transformer no-card
@@ -312,7 +312,7 @@ V0 需要以下 op family：
    inline commit 回原 `wafer.group` 位置，写入主 IR。
 10. topology/execution-mesh handoff：从 target topology、valid execution mesh、committed instruction
     boundary 和 logical rank/local shard facts 派生薄 launch/block binding 与 resource view。
-11. target instruction LLVM lowering：从 committed instruction IR、accepted offset facts、
+11. target instruction LLVM call emission：从 committed instruction IR、accepted offset facts、
     topology/execution-mesh、program parameter shard metadata 和按需重算的 resource view 生成
     wrapper-friendly LLVM call / target CRT call / packet builder 输入；不新增 placed memref / access descriptor
     中间协议。

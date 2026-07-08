@@ -48,7 +48,7 @@ PyTorch/XLA StableHLO Wafer program directory
 或 IR-derived package。Instruction 支持必须分层理解：
 
 - `wafer.instr.*` IR / verifier / tile-region legalization 已能表达当前 V0 instruction subset。
-- Target LLVM lowering 已有局部和 group named-pipeline gate：手写 memory-planned `wafer.instr.*`
+- Target LLVM call emission 已有局部和 group named-pipeline gate：手写 memory-planned `wafer.instr.*`
   可降到 LLVM dialect / LLVM IR，手写 `wafer.group` 可通过 `wafer-lower-groups-to-target-llvm`
   到 Wafer-owned target CRT call 形态。
 - 这仍只是 **LLVM call emission**，不等价于 Wafer target CRT wrapper 已实现、register packet
@@ -81,7 +81,7 @@ Pipeline position:
   `--wafer-lower-instr-to-target-llvm` 产出；真实 program pipeline 升级到 target LLVM 前，device-code
   gate 只能证明 compiler-generated LLVM artifact 的本地编译/链接边界。
 - Explicit non-goals:
-  不重新做 target LLVM lowering，不恢复旧 helper ABI/shim，不做 package auto-export，不宣称 board launch
+  不重新做 target LLVM call emission，不恢复旧 helper ABI/shim，不做 package auto-export，不宣称 board launch
   或数值 correctness。
 - Completion gate:
   至少一个 compiler-generated target LLVM artifact 完成 `.ll -> .o -> kcore .so`，链接 repo-local Wafer
