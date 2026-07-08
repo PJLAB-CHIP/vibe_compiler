@@ -113,21 +113,21 @@ Pipeline position:
 
 | Wafer instr | target evidence / lowering direction | 状态 |
 | --- | --- | --- |
-| `wafer.instr.rdma` / `wdma` | TSM RDMA/WDMA wrapper；target CRT 接收 DDR/SPM pointer/offset、shape/stride、format | LLVM call emitted；CRT/golden packet pending |
-| `wafer.instr.gather_scatter` | `TsmDataMove::GatherScatter` / TX81 gather-scatter CRT evidence | LLVM call emitted；CRT/golden packet pending |
-| `wafer.instr.fill` | `TsmPeripheral::Memset` evidence | LLVM call emitted；CRT/golden packet pending |
-| `wafer.instr.elementwise` | `#wafer.instr_elementwise_kind` CT arith/relation/activation/transcendental target wrapper families；select 不在该 enum 中 | per-kind LLVM call emitted；CRT/golden packet pending |
-| `wafer.instr.bit2fp` | Triton/TX81 `mk.bit2fp -> tx81.bit2fp -> __Bit2Fp` as evidence; Wafer lowering emits Wafer-owned CRT symbol | LLVM call emitted；CRT/golden packet pending |
-| `wafer.instr.mask_move` | Triton/TX81 `mk.mask_move -> tx81.mask_move -> __MaskMove` as evidence; header/CRT mask parameter mismatch must be resolved in Wafer CRT | LLVM call emitted；CRT/golden packet pending |
-| `wafer.instr.reduce` | `#wafer.instr_reduce_kind` target wrapper families plus native `dim` code | per-kind LLVM call emitted；CRT/golden packet pending |
-| `wafer.instr.convert` | `#wafer.instr_convert_kind` opcode 139..174 dtype pair plus zero-point/rounding/plain signature groups；same-format copy must lower through movement, not convert | per-kind LLVM call emitted；CRT/golden packet pending |
-| `wafer.instr.gemm` | `TsmGemm` wrapper / `__Gemm` style CRT evidence; Wafer-owned symbol must not expose Tx81 ABI verbatim | LLVM call emitted；CRT/golden packet pending |
-| `wafer.instr.conv` | `#wafer.instr_conv_kind` NE Conv/Depthwise/BackwardConv target wrapper families；optional/fused operands are not implicit | per-kind-family LLVM call emitted；CRT/golden packet pending |
-| `wafer.instr.pool` / `unpool` | `#wafer.instr_pool_kind` / `#wafer.instr_unpool_kind` CT Pool/UnPool wrapper families; unpool scalar index is wrapper-aligned | per-kind LLVM call emitted；CRT/golden packet pending |
+| `wafer.instr.rdma` / `wdma` | TSM RDMA/WDMA wrapper；target CRT 接收 DDR/SPM pointer/offset、shape/stride、format | typed LLVM call emitted；repo-local CRT / device-link gate covered |
+| `wafer.instr.gather_scatter` | `TsmDataMove::GatherScatter` / TX81 gather-scatter CRT evidence | typed LLVM call emitted；repo-local CRT / device-link gate covered |
+| `wafer.instr.fill` | `TsmPeripheral::Memset` evidence | typed LLVM call emitted；repo-local CRT / device-link gate covered |
+| `wafer.instr.elementwise` | `#wafer.instr_elementwise_kind` CT arith/relation/activation/transcendental target wrapper families；select 不在该 enum 中 | per-kind typed LLVM call emitted；repo-local CRT / device-link gate covered |
+| `wafer.instr.bit2fp` | Triton/TX81 `mk.bit2fp -> tx81.bit2fp -> __Bit2Fp` as evidence; Wafer lowering emits Wafer-owned CRT symbol | typed LLVM call emitted；repo-local CRT / device-link gate covered |
+| `wafer.instr.mask_move` | Triton/TX81 `mk.mask_move -> tx81.mask_move -> __MaskMove` as evidence; Wafer CRT explicitly adapts SPM mask address to wrapper `uint32_t` mask field | typed LLVM call emitted；repo-local CRT / device-link gate covered |
+| `wafer.instr.reduce` | `#wafer.instr_reduce_kind` target wrapper families plus native `dim` code | per-kind typed LLVM call emitted；repo-local CRT / device-link gate covered |
+| `wafer.instr.convert` | `#wafer.instr_convert_kind` opcode 139..174 dtype pair plus zero-point/rounding/plain signature groups；same-format copy must lower through movement, not convert | per-kind typed LLVM call emitted；repo-local CRT / device-link gate covered |
+| `wafer.instr.gemm` | `TsmGemm` wrapper / `__Gemm` style CRT evidence; Wafer-owned symbol must not expose Tx81 ABI verbatim | typed LLVM call emitted；repo-local CRT / device-link gate covered |
+| `wafer.instr.conv` | `#wafer.instr_conv_kind` NE Conv/Depthwise/BackwardConv target wrapper families；optional/fused operands are not implicit | per-kind-family typed LLVM call emitted；repo-local CRT / device-link gate covered |
+| `wafer.instr.pool` / `unpool` | `#wafer.instr_pool_kind` / `#wafer.instr_unpool_kind` CT Pool/UnPool wrapper families; unpool scalar index is wrapper-aligned | per-kind typed LLVM call emitted；repo-local CRT / device-link gate covered |
 | `wafer.instr.tdma_data_move` | V0 production only covers pad/img2col wrappers; ordinary copy and transform-like movement use gather/scatter | pad/img2col LLVM call emitted；transform-like kind 结构化失败 |
-| `wafer.instr.peripheral` | `#wafer.instr_peripheral_kind` for arg/factorize/bilinear/LUT/rand/elem_mask; count writeback and bitcount remain unsupported | per-kind LLVM call emitted；CRT/golden packet pending |
+| `wafer.instr.peripheral` | `#wafer.instr_peripheral_kind` for arg/factorize/bilinear/LUT/rand/elem_mask; count writeback and bitcount remain unsupported | per-kind typed LLVM call emitted；repo-local CRT / device-link gate covered |
 | `wafer.instr.dte_send` / `dte_recv` / `dte_wait` | Direct DTE/FSM runtime binding evidence still incomplete | call-emission can produce logical peer/bytes calls；excluded from current production CRT closure until ABI / runtime endpoint binding is fixed |
-| `wafer.instr.local_fence` | `TsmWaitfinish` / local drain evidence | LLVM call emitted；CRT/golden packet pending |
+| `wafer.instr.local_fence` | `TsmWaitfinish` / local drain evidence | typed LLVM call emitted；repo-local CRT / device-link gate covered |
 
 Target LLVM call emission 输出必须调用 Wafer-owned target CRT symbols。`__*` 符号可以出现在 Wafer CRT
 内部实现、golden packet test 或 TX81/Triton 对照说明中，但不能作为 compiler IR lowering 的长期
@@ -146,7 +146,7 @@ family 下参数不同的 kind；若 public wrapper signature 不一致，要么
 | `fill` | `wafer_tx81_memset` | `TsmPeripheral::Memset` | SPM dest address、scalar value、element count/format；不表达 peripheral count/writeback |
 | elementwise arith unary | `wafer_tx81_ew_unary` or per-kind symbols | `TsmArith` unary wrapper | source、dest、element count、format；无 rounding |
 | elementwise arith VV | `wafer_tx81_ew_arith_vv` or per-kind symbols | `TsmArith::*VV` | two sources、dest、element count、rounding/reserved mode、format；VS/VuV/Loop 不是当前 IR 形态 |
-| relation / logic | `wafer_tx81_relation_*` / `wafer_tx81_logic_*` | value/bool variants differ | source arity、dest storage、element count、format；bitpacked bool/VuV/Loop 需要后续扩 IR，不能由当前 generic elementwise 隐式选择 |
+| relation / logic | `wafer_tx81_relation_*` / `wafer_tx81_logic_*` | value/bool variants differ | source arity、dest storage、element count、format；relation 的 `format` 来自 input element type，不能用 `i1` dest format 替代；bitpacked bool/VuV/Loop 需要后续扩 IR，不能由当前 generic elementwise 隐式选择 |
 | activation / transcendental | `wafer_tx81_activation_*` / `wafer_tx81_trans_*` | unary wrappers | source、dest、element count、format；kind 决定 wrapper |
 | `bit2fp` | `wafer_tx81_bit2fp` | TX81 `__Bit2Fp` evidence | i1/bool source、FP dest、element count、format |
 | `mask_move` | `wafer_tx81_mask_move` | TX81 `__MaskMove` evidence; header/CRT mask parameter differs | source、mask、dest、element count、format；Wafer CRT must settle mask address width explicitly |
@@ -160,8 +160,8 @@ family 下参数不同的 kind；若 public wrapper signature 不一致，要么
 | `unpool` | `wafer_tx81_unpool` / `wafer_tx81_unpool_avg` / mask/indexed variant | `Unpool/UnpoolIdx` take scalar `uint32_t index`; `UnpoolAvg` does not | input/dest addresses、source/dest shape、strides、optional scalar `index` according to kind |
 | `tdma_data_move` pad/img2col | `wafer_tx81_tdma_pad` / `wafer_tx81_tdma_img2col` | pad and img2col signatures differ | pad requires `pads`; img2col requires `pads` + `kernel_strides`; both forbid unrelated attrs |
 | transform-like TDMA group | no production Wafer symbol in V0 | mirror/transpose/rotate/NCHW-NHWC/TensorNom wrappers exist but are not default lowering surface | instr lowering must materialize these movements before target LLVM/package export; transpose uses `permutation`, mirror/rotate use `axes`; future target enablement requires board/golden coverage and an explicit target-surface update |
-| `peripheral` arg/factorize/rand | `wafer_tx81_peripheral_*` | arity differs by kind | verifier fixes input/dest arity; arg index dest must be i32 |
-| `peripheral` bilinear/LUT/elem_mask | separate Wafer symbols or descriptor variants | bilinear uses shape attrs; LUT uses `lut_elem_count`; elem_mask uses scale/probability/rounding | required/forbidden attrs already checked by IR/package validator |
+| `peripheral` arg/factorize/rand | `wafer_tx81_peripheral_*` | arity differs by kind | verifier fixes input/dest arity; `format` comes from first input; arg index dest must be i32 |
+| `peripheral` bilinear/LUT/elem_mask | separate Wafer symbols or descriptor variants | bilinear uses shape attrs; LUT uses `lut_elem_count`; elem_mask uses scale/probability/rounding | fixed ABI includes first-input `format`; required/forbidden attrs already checked by IR/package validator；bilinear scale is derived from source/dest shape |
 | `peripheral count` | no production symbol | public wrapper writeback is not represented as normal dest buffer | verifier rejects until IR gains explicit writeback/result semantics |
 | Direct DTE | `wafer_tx81_dte_send` / `wafer_tx81_dte_recv` / wait helper | Direct DTE/FSM helper, not `TsmExecute` | current call-emission passes only logical peer and bytes; Q1 excludes these calls from production CRT closure until endpoint/channel binding is expressible |
 | local fence | `wafer_tx81_local_fence` | local wait/drain helper | no hidden multi-tile barrier semantics |
@@ -185,20 +185,19 @@ true_value + mask -> dest               // wafer.instr.mask_move
 
 ## 4. LLVM Call Shape
 
-LLVM lowering 直接声明/调用 Wafer-owned target CRT symbol。当前 pass 在 LLVM dialect 中生成 vararg
-声明和 `llvm.call`：
+LLVM lowering 直接声明/调用 Wafer-owned target CRT symbol。target LLVM pass 在 LLVM dialect 中生成
+fixed function declaration 和 typed `llvm.call`；地址统一为 `i64`，descriptor / enum / shape /
+stride / iteration / format 字段统一为 `i32`：
 
 ```mlir
-llvm.func @wafer_tx81_gemm(...)
+llvm.func @wafer_tx81_gemm(!llvm.i64, !llvm.i64, !llvm.i64, !llvm.i32,
+                           !llvm.i32, !llvm.i32, !llvm.i32, !llvm.i32)
 llvm.call @wafer_tx81_gemm(%lhs, %rhs, %dest, %m, %k, %n, %batch, %fmt)
-    vararg(!llvm.func<void (...)>) : (...) -> ()
 ```
 
-这里的 vararg 是当前 compiler-side field stream 的 LLVM 表达形态，用于避免在 IR lowering 层把
-rank、optional field 和 kind-specific descriptor 过早固化成 C prototype。它不是 compiler-facing
-万能 helper ABI：symbol 仍按 Wafer target action / kind family 拆分，参数仍从当前 IR、accepted offset
-facts 和 verifier-checked attrs 派生。后续 Wafer CRT 头文件、implementation 和 golden packet test
-可以把这些 field stream 固定成 typed wrapper 或 descriptor struct，但不能反向恢复旧 helper ABI。
+这不是 compiler-facing 万能 helper ABI：symbol 仍按 Wafer target action / kind family 拆分，
+参数仍从当前 IR、accepted offset facts 和 verifier-checked attrs 派生。`wafer_tx81_crt.h`
+是 C ABI 的显式 prototype 表；lowering、repo-local CRT source 和 device link gate 必须保持一致。
 
 示例形态：
 
@@ -327,14 +326,14 @@ Wafer CRT 是 compiler target boundary，不放进 `third_party/wafer_crt/lib/li
 | `tools/wafer_device_link.py` | 编译 Wafer CRT source/object，链接 target LLVM object、Wafer CRT object、repo-vendored TX8 deps，并做 required-symbol 检查 |
 | `test/Tools/` | 覆盖 `.ll -> .o -> kcore .so`、Wafer CRT object link、undefined `wafer_tx81_*` failure |
 
-`third_party/wafer_crt/lib/libvr.a` 仍可作为已有 TX8/Triton CRT evidence archive 或底层依赖参与链接，
-但 Wafer-owned symbol 不从这个 archive 的 `__*` 名字继承 ABI，也不通过 alias/wrapper 调用 `__*`
-完成主线发射。需要用到的底层能力应通过 public TSM wrapper 或 Direct DTE helper 调用。
+`third_party/wafer_crt/lib/libvr.a` 只可作为历史 TX8/Triton CRT evidence archive 参考；device link
+不链接 `-lvr`，Wafer-owned symbol 不从这个 archive 的 `__*` 名字继承 ABI，也不通过 alias/wrapper
+调用 `__*` 完成主线发射。需要用到的底层能力应通过 public TSM wrapper 或 Direct DTE helper 调用。
 
 ### 7.3 ABI 规则
 
-`wafer_tx81_*` 使用固定 C prototype。当前 target LLVM pass 生成 vararg declaration 只是 call-emission
-bring-up 形态；symbol-closure gate 必须把它替换为 fixed function type。ABI 规则：
+`wafer_tx81_*` 使用固定 C prototype；target LLVM pass 必须生成 fixed function type，不允许回退到
+`void (...)` vararg declaration。ABI 规则：
 
 - 所有地址参数用 `uint64_t` byte address。
 - 所有 element count、byte count、format、kind、dim、shape、stride、iteration 用 `uint32_t`。
@@ -343,7 +342,9 @@ bring-up 形态；symbol-closure gate 必须把它替换为 fixed function type�
 - rank-4 shape 在 ABI 中统一按 `n, h, w, c` 展开；weight shape、pad、unpad、stride、dilation 也按固定
   field 顺序展开，不传裸 pointer 到 compiler-owned temporary array。
 - ordinary compute/move symbol 只 issue，不默认 wait；显式 drain 只在 `wafer_tx81_local_fence`、
-  DTE wait 或后续 runtime-visible completion boundary 中发生。
+  DTE wait 或后续 runtime-visible completion boundary 中发生。例外是 public wrapper 只提供
+  writeback register 结果、没有普通 dest buffer 的 `peripheral_argmax/argmin`：CRT 必须等待本地完成后
+  把 writeback value/index 写入 ABI dest。
 - 每个 function 返回 `void`。错误检查属于 verifier / target lowering / device link gate；CRT 内部不通过
   silent return 表示 unsupported。
 
@@ -519,19 +520,19 @@ wafer_tx81_peripheral_elem_mask
 | `gather_scatter` | 创建 `TsmDataMoveInstr` 和两个 `St_StrideIteration[3]`；调用 `TsmDataMove::GatherScatter`；`inner_bytes`、stride 都保持 byte unit |
 | `memset` | 创建 peripheral packet；调用 `TsmPeripheral::Memset`；shape/stride 在 compiler 已经规整成 contiguous element count |
 | arith unary/binary | 创建 `TsmArithInstr`；`abs/recip/square/sqrt/rsqrt/neg` 调 unary wrapper；`max/min/add/sub/mul/div` 调 `*VV` wrapper；当前 compiler 不生成 scalar-immediate VS/VuV ABI |
-| relation | 创建 `TsmRelationInstr`；`eq/ne/ge/gt/le/lt` 调 value/bool relation wrapper；bool storage 选择必须由 destination dtype/format 显式决定 |
+| relation | 创建 `TsmRelationInstr`；`eq/ne/ge/gt/le/lt` 调 value/bool relation wrapper；wrapper `format` 来自 input dtype，bool storage 由 destination dtype 决定 |
 | logic | 创建 `TsmLogicInstr`；`logic_not/and/or/xor` 调 value 或 bool wrapper；若当前 IR 无法区分 bitpacked bool 与 value bool，必须先固定 dtype/format rule |
 | transcendental / activation | 创建 `TsmArithInstr` 或 `TsmActivationInstr`；`log2/ln/pow2/exp/exp_lp/sin/cos` 调 `TsmTranscendental`，`tanh/sigmoid/relu/satrelu/leakyrelu/softplus` 调 `TsmActivation` |
 | `reduce_*` | 创建 `TsmReduceInstr` 和 `Data_Shape{n,h,w,c}`；按 kind 调 `ReduceSum/ReduceMax/ReduceMin/ReduceAvg`；`dim` 使用 native `0:C, 1:W, 2:H, 3:N, 4:HW, 5:HWC` |
 | `convert_*` | 创建 `TsmConvertInstr`；按 dtype pair 调具体 `TsmConvert` wrapper；zero-point group 必须消费 `zero_point`，rounding group 必须消费 `rounding_mode`，plain group 禁止使用额外参数 |
 | `bit2fp` | 使用 public bit-to-float / mask conversion wrapper；source bool storage 和 destination FP format 必须由 ABI 参数固定 |
-| `mask_move` | 使用 `TsmMaskDataMove::MaskMove` 或等价 public wrapper；当前 `TsmMaskDataMove` mask 参数是 `uint32_t`，若 Wafer IR 提供的是 mask address，必须在 ABI 中明确 mask scalar/address policy，不能沿用歧义 |
+| `mask_move` | 使用 `TsmMaskDataMove::MaskMove`；Wafer ABI 传 SPM mask address，CRT 将其按当前 TX8 SPM address width 适配到 public wrapper 的 `uint32_t mask` 参数 |
 | `gemm` | 创建 `TsmNeInstr`；调用 `TsmGemm::AddInput`、`ConfigMKN`、`ConfigBatch`、`SetTransflag`、`AddOutput`；bias/scale/activation/quant/psum disabled，除非 IR 后续显式扩展 |
 | `conv` / `depthwise_conv` / `backward_conv` | 创建 `TsmNeInstr`；调用 `TsmConv` 或 `TsmDepthwiseConv` wrapper；只启用基础 NHWC/HWOI shape、pads/unpads/strides/dilations；bias/scale/sparse/quant/fused activation disabled |
 | `pool_*` | 创建 `TsmPoolInstr`；按 kind 调 `AvgPool/SumPool/MaxPool/MinPool/IndexdMaxPool/IndexdMinPool`；indexed variant 必须有 value dest 和 index dest |
 | `unpool_*` | 创建 `TsmUnPoolInstr`；按 kind 调 `Unpool/UnpoolAvg/UnpoolIdx`；scalar `index` 由 ABI 显式传入，不能用名字或 side table 恢复 |
 | `tdma_pad` / `tdma_img2col` | 创建 `TsmDataMoveInstr`；调用 `Pad` / `Img2col`；source/dest shape、pad、kernel stride 由 fixed ABI field 提供 |
-| `peripheral_*` | 创建 peripheral packet；按 kind 调 public wrapper；count/arg/factorize/bilinear/LUT/rand/elem_mask 的输入输出 arity 由 fixed ABI 和 verifier 共同保证 |
+| `peripheral_*` | 创建 peripheral packet；按 kind 调 public wrapper；count/arg/factorize/bilinear/LUT/rand/elem_mask 的输入输出 arity、format 和 kind-specific attrs 由 fixed ABI 和 verifier 共同保证；argmax/argmin 需要等待 public writeback 后写入 value/index dest |
 | `local_fence` | 只调用 `TsmWaitfinish` 或等价 local drain helper；不携带 multi-tile barrier 语义 |
 
 当前 call-emission 仍可能生成但不属于 Q2-Q3 production closure 的 ABI-incomplete symbols：
@@ -587,25 +588,24 @@ CRT 全量实现的验证分四层：
 
 | 层 | 验证 |
 | --- | --- |
-| Header/signature | generated or checked symbol registry 确认 `LowerInstrToTargetLLVM.cpp` emitted signature 与 `wafer_tx81_crt.h` 一致 |
-| CRT unit/golden | production symbol closure 全覆盖；每个 symbol 有 packet field capture、public wrapper call trace 或结构化 unsupported 证据；按 family 共享 fixture 时必须枚举每个 production kind / signature variant；Conv/Pool/UnPool/Peripheral 需要 kind-specific golden |
+| Header/signature | checked symbol registry 确认 Q2-Q3 production closure 中 105 个 `wafer_tx81_*` 都有 `wafer_tx81_crt.h` prototype、repo-local CRT implementation reference 和 lowering family marker |
+| CRT object | TX8 GCC 编译 `runtime/wafer_crt/src/wafer_tx81_crt.c`，`nm --defined-only` 确认 object 定义 105 个 production `wafer_tx81_*`，且不定义 Direct DTE symbols |
 | Device link | `.ll -> .o -> kcore .so` 实际执行，final `.so` 无 undefined `wafer_tx81_*`；negative test 证明 `wafer_tx81_missing` 会被 required-symbol gate 拒绝 |
 | Pipeline integration | `wafer-lower-groups-to-target-llvm` output 能进入 device link；HF program-chain target LLVM integration 是下一层 gate，不用手写 package metadata 代替 |
 
-完成后，`tasks/progress.md` 中 Q2-Q3 才能从 target CRT implementation / device-code required-symbol
-closure 推进到 Q4 package metadata auto-export。只实现 header、只生成 object、只覆盖一个代表性
-instruction family、或只靠
-`--allow-shlib-undefined` 得到 `.so` 都不算完成。
+Q2-Q3 target CRT implementation / device-code required-symbol closure 完成后，`tasks/progress.md`
+可以推进到 Q4 package metadata auto-export。只实现 header、只生成 object、只覆盖一个代表性
+instruction family、或只靠 `--allow-shlib-undefined` 得到 `.so` 都不算完成。
 
 ## 8. 当前缺口
 
-- Wafer-owned target CRT implementation / typed wrapper contract 仍需逐个 op 对齐 repo-local
-  TX81/public TSM wrapper 和硬件文档；当前 LLVM lowering 只生成 Wafer-owned symbol declarations/calls。
-- Golden packet tests 仍待补，用来验证 Wafer CRT 参数到 public TSM wrapper/register packet 的映射。
+- Wafer-owned target CRT implementation、typed wrapper contract、CRT object definition check 和
+  device-code required-symbol closure 已覆盖 Q2-Q3 production closure 中的 105 个 symbols。
+- 更细的 register-packet field golden capture 可作为后续硬化项；不能反向替代当前 fixed ABI /
+  repo-local CRT / required-symbol gate，也不能把 opaque `libvr.a` alias 恢复为主线。
 - Device-code compile/link helper 已能对已有 / compiler-generated LLVM IR 执行 `.ll -> .o -> kcore .so`
-  和 object metadata normalization；任务队列中的 Q2-Q3 仍需补 repo-local Wafer CRT implementation、
-  全量 production instruction wrapper/golden coverage 和 required-symbol closure，不能让 production
-  `wafer_tx81_*` 以未解释 undefined symbol 形式残留，也不能经过 capture shim。
+  和 object metadata normalization；production `wafer_tx81_*` 不能以未解释 undefined symbol 形式残留，
+  也不能经过 capture shim。
 - Direct DTE call-emission surface 已审计为 ABI-incomplete；production lowering 还缺 runtime endpoint /
   DTE channel binding，当前从 Q2-Q3 production CRT closure 排除。
 - package auto-export 当前只能消费已有 LLVM IR；恢复 compiler-generated package gate 要等 device-code

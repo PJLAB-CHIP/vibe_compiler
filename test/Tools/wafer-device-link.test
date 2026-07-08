@@ -3,13 +3,20 @@
 # RUN:   --output %t.kernel.so \
 # RUN:   --object-output %t.kernel.o \
 # RUN:   --llvm-clangxx /opt/llvm/bin/clang++ \
-# RUN:   --print-commands | FileCheck %s --implicit-check-not=shim-compile --implicit-check-not=capture-shim
+# RUN:   --print-commands | FileCheck %s --implicit-check-not=shim-compile --implicit-check-not=capture-shim --implicit-check-not=third_party/wafer_crt/lib --implicit-check-not=-lvr
 
 # RUN: not %python %wafer_src_root/tools/wafer_device_link.py \
 # RUN:   --llvm-ir %S/Inputs/missing.ll \
 # RUN:   --output %t.kernel.so \
 # RUN:   --llvm-clangxx /opt/llvm/bin/clang++ \
 # RUN:   --print-commands 2>&1 | FileCheck %s --check-prefix=ERR
+
+# RUN: not %python %wafer_src_root/tools/wafer_device_link.py \
+# RUN:   --llvm-ir %S/Inputs/missing-wafer-symbol.ll \
+# RUN:   --output %t.missing-symbol.so \
+# RUN:   --object-output %t.missing-symbol.o \
+# RUN:   --crt-object-output %t.missing-symbol.crt.o \
+# RUN:   2>&1 | FileCheck %s --check-prefix=UNDEF
 
 # CHECK-LABEL: compile:
 # CHECK-SAME: /opt/llvm/bin/clang++
@@ -28,6 +35,27 @@
 # CHECK-SAME: .riscv.attributes
 # CHECK-SAME: kernel.o
 
+# CHECK-LABEL: compile-crt:
+# CHECK-SAME: {{[^ ]*}}/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-gcc
+# CHECK-SAME: runtime/wafer_crt/src/wafer_tx81_crt.c
+# CHECK-SAME: -O2
+# CHECK-SAME: -c
+# CHECK-SAME: -fPIC
+# CHECK-SAME: -DCONFIG_NO_PLATFORM_HOOK_H
+# CHECK-SAME: -DUSING_RISCV
+# CHECK-SAME: -I{{[^ ]*}}/runtime/wafer_crt/include
+# CHECK-SAME: -I{{[^ ]*}}/third_party/tx8_deps/include
+# CHECK-SAME: -march=rv64imafdc
+# CHECK-SAME: -mabi=lp64d
+# CHECK-SAME: -o
+# CHECK-SAME: kernel.wafer_crt.o
+
+# CHECK-LABEL: normalize-crt:
+# CHECK-SAME: {{[^ ]*}}/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-objcopy
+# CHECK-SAME: -R
+# CHECK-SAME: .riscv.attributes
+# CHECK-SAME: kernel.wafer_crt.o
+
 # CHECK-LABEL: link:
 # CHECK-SAME: {{[^ ]*}}/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-gcc
 # CHECK-SAME: -shared
@@ -37,7 +65,7 @@
 # CHECK-SAME: -mabi=lp64d
 # CHECK-SAME: -Wl,--no-dynamic-linker
 # CHECK-SAME: kernel.o
-# CHECK-SAME: -L{{[^ ]*}}/third_party/wafer_crt/lib
+# CHECK-SAME: kernel.wafer_crt.o
 # CHECK-SAME: -L{{[^ ]*}}/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/riscv64-unknown-elf/lib/rv64imafdc/lp64d
 # CHECK-SAME: -L{{[^ ]*}}/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/lib/gcc/riscv64-unknown-elf/10.4.0/rv64imafdc/lp64d
 # CHECK-SAME: -L{{[^ ]*}}/third_party/tx8_deps/lib
@@ -45,7 +73,6 @@
 # CHECK-SAME: -lcommon_util
 # CHECK-SAME: -linstr_tx81
 # CHECK-SAME: -llibc_stub
-# CHECK-SAME: -lvr
 # CHECK-SAME: -Wl,--end-group
 # CHECK-SAME: -lm
 # CHECK-SAME: -Wl,--gc-sections
@@ -55,4 +82,11 @@
 # CHECK-SAME: -o
 # CHECK-SAME: kernel.so
 
+# CHECK-LABEL: required-symbol-scan:
+# CHECK-SAME: {{[^ ]*}}/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-nm
+# CHECK-SAME: -u
+# CHECK-SAME: kernel.so
+
 # ERR: error: LLVM IR input does not exist
+
+# UNDEF: error: undefined Wafer target CRT symbols remain after link: wafer_tx81_missing

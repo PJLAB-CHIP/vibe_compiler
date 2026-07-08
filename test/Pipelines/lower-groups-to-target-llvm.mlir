@@ -37,7 +37,11 @@ func.func @boundary_tiled_matmul_group(%lhs: tensor<4x8xf16>,
 // CHECK: llvm.call @wafer_tx81_wdma
 // CHECK: llvm.return
 
+// LLVMIR-DAG: declare void @wafer_tx81_rdma(i64, i64, i32, i32, i32, i32, i32, i32, i32, i32, i32)
+// LLVMIR-DAG: declare void @wafer_tx81_gemm(i64, i64, i64, i32, i32, i32, i32, i32)
+// LLVMIR-DAG: declare void @wafer_tx81_wdma(i64, i64, i32, i32, i32, i32, i32, i32, i32, i32, i32)
 // LLVMIR-LABEL: define void @boundary_tiled_matmul_group(i64 %{{.*}}, i64 %{{.*}}, i64 %{{.*}})
-// LLVMIR: call void (...) @wafer_tx81_rdma
-// LLVMIR: call void (...) @wafer_tx81_gemm
-// LLVMIR: call void (...) @wafer_tx81_wdma
+// LLVMIR-NOT: call void (...)
+// LLVMIR: call void @wafer_tx81_rdma(i64
+// LLVMIR: call void @wafer_tx81_gemm(i64
+// LLVMIR: call void @wafer_tx81_wdma(i64

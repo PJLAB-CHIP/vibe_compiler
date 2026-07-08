@@ -89,7 +89,7 @@
 
 ### Q2-Q3. Target CRT implementation, wrapper coverage, and device-code symbol closure
 
-状态：`doing`
+状态：`done`
 
 设计文档：
 
@@ -124,6 +124,18 @@
   也必须失败。
 - 验证命令进入 lit / ctest 或等价主线测试入口，并确认不是 skipped / unsupported。
 
+验证记录：
+
+- `runtime/wafer_crt/include/wafer_tx81_crt.h` 和 `runtime/wafer_crt/src/wafer_tx81_crt.c`
+  定义 Q1 production closure 中 105 个 `wafer_tx81_*` symbols；Direct DTE symbols 不进入
+  production CRT。
+- `--wafer-lower-instr-to-target-llvm` 和 `wafer-lower-groups-to-target-llvm` 已改为 fixed LLVM
+  function type / typed call，不再生成 `void (...)` vararg CRT calls。
+- `tools/wafer_device_link.py` 编译 repo-local Wafer CRT object，链接 target object + CRT object +
+  repo-vendored TX8 deps，并在 link 后用 required-symbol scan 拒绝 undefined `wafer_tx81_*`。
+- lit 覆盖 CRT symbol closure、TX8 GCC 编译 CRT object、object defined-symbol 表、typed target LLVM
+  lowering、device-link dry-run 合同和 `wafer_tx81_missing` negative gate。
+
 不算完成：
 
 - 只让符号表存在但不验证参数映射。
@@ -132,11 +144,12 @@
 
 ### Q4. Package metadata auto-export mainline
 
-状态：`blocked`
+状态：`next`
 
-阻塞条件：
+前置状态：
 
-- 依赖 Q2-Q3 产出 kcore shared object 和 link / symbol closure facts。
+- Q2-Q3 已产出 kcore shared object link / symbol closure facts；下一步恢复 package metadata
+  auto-export 主线。
 
 设计文档：
 
@@ -166,11 +179,12 @@
 
 ### Q5. Real program-chain target LLVM integration
 
-状态：`blocked`
+状态：`later`
 
-阻塞条件：
+排期说明：
 
-- 依赖 Q0 已完成的 call emission，以及 Q1、Q2-Q3 明确 target LLVM artifact 后续能进入 device-code gate。
+- Q0/Q1/Q2-Q3 前置已完成；当前队列先推进 Q4 package metadata auto-export，再恢复真实
+  PyTorch/HF program chain 到 target LLVM artifact 的主线 integration。
 
 设计文档：
 

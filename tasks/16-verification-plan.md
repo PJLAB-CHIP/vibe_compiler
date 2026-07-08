@@ -33,8 +33,8 @@ Serving integration 暂不纳入本文通过标准。
 - Target LLVM call emission、target CRT/golden、TX8 device-code compile/link symbol closure 和 package
   metadata auto-export 分别属于 target LLVM、target CRT、object/package 和 runtime/package gate，
   不属于 committed-instruction gate 的通过条件。当前 target LLVM call emission 已有 hand-written
-  instruction 和 group named-pipeline gate；Wafer CRT wrapper/golden、device-code required-symbol closure
-  与 package auto-export 仍待恢复，主线不再默认编译或链接 capture shim。
+  instruction 和 group named-pipeline gate；Wafer CRT typed wrapper、device-code required-symbol closure
+  已有本地 gate；package auto-export 仍待恢复，主线不再默认编译或链接 capture shim。
 
 当前阶段不把板端 launch、device completion、数值对比或 PMU/profiling 作为通过条件。迁移到带实际
 计算卡服务器后，这些 board run 验证再成为对应 milestone 的新增 gate。
@@ -238,14 +238,13 @@ M7 target LLVM call-emission and device-code gate：
   只能作为显式 debug/bring-up entrypoint 记录 function 和 binding order。auto-export gate 必须消费当前
   pipeline 产物导出 package metadata 并通过 validator；C stub-only program 只允许作为历史局部测试输入，
   不能替代 target LLVM artifact。
-- 剩余缺口是 Wafer CRT typed wrapper/golden packet、device-code required-symbol closure、
-  package metadata auto-export，以及真实 HF program chain 到 target LLVM 的 integration gate；这些不能用
+- 剩余缺口是 package metadata auto-export，以及真实 HF program chain 到 target LLVM 的 integration gate；这些不能用
   hand-written LLVM/package input 或允许 undefined 的 `.so` 代替。
-- Wafer CRT typed wrapper/golden packet 和 device-code required-symbol closure 是同一个 target CRT
-  closure milestone：production instruction coverage 必须覆盖基础 movement/sync、elementwise 全 kind、
+- Wafer CRT typed wrapper 和 device-code required-symbol closure 已作为同一个 target CRT closure
+  milestone 收口：production instruction coverage 覆盖基础 movement/sync、elementwise 全 kind、
   reduce 全 kind、convert 全 dtype pair、conv/depthwise/backward conv、pool/unpool 全 production kind
-  和 peripheral production kind。family-level tests 只有在枚举并校验该 family 全部 production
-  signature variants 时，才能算作全面覆盖。
+  和 peripheral production kind；local gate 会编译 repo-local CRT object，检查 105 个 production
+  symbol definitions，并在 link 后拒绝残留 undefined `wafer_tx81_*`。
 
 M8 runtime / board correctness gate：
 

@@ -18,7 +18,8 @@ DEFAULT_MARCH = "rv64imafdc"
 DEFAULT_MABI = "lp64d"
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_TX8_DEPS_DIR = REPO_ROOT / "third_party" / "tx8_deps"
-DEFAULT_WAFER_CRT_LIB_PATH = REPO_ROOT / "third_party" / "wafer_crt" / "lib"
+DEFAULT_WAFER_CRT_SOURCE = REPO_ROOT / "runtime" / "wafer_crt" / "src" / "wafer_tx81_crt.c"
+DEFAULT_WAFER_CRT_INCLUDE_DIR = REPO_ROOT / "runtime" / "wafer_crt" / "include"
 
 
 def fail(message: str) -> None:
@@ -63,12 +64,33 @@ def resolve_tx8_objcopy(
     )
 
 
+def resolve_tx8_nm(
+    tx8_deps_root: pathlib.Path, toolchain_dir_name: str, value: str | None
+) -> str:
+    if value:
+        return value
+    return str(
+        tx8_deps_root
+        / toolchain_dir_name
+        / "bin"
+        / "riscv64-unknown-elf-nm"
+    )
+
+
 def object_output_path(output: pathlib.Path, explicit: str | None) -> pathlib.Path:
     if explicit:
         return pathlib.Path(explicit)
     if output.suffix:
         return output.with_suffix(".o")
     return output.parent / f"{output.name}.o"
+
+
+def crt_object_output_path(output: pathlib.Path, explicit: str | None) -> pathlib.Path:
+    if explicit:
+        return pathlib.Path(explicit)
+    if output.suffix:
+        return output.with_suffix(".wafer_crt.o")
+    return output.parent / f"{output.name}.wafer_crt.o"
 
 
 def tool_exists(tool: str) -> bool:
@@ -103,7 +125,7 @@ def resolve_tx8_sysroot(
 
 def build_commands(
     args: argparse.Namespace,
-) -> tuple[list[str], list[list[str]], list[str]]:
+) -> tuple[list[str], list[list[str]], list[str], list[list[str]], list[str], list[str]]:
     llvm_ir = pathlib.Path(args.llvm_ir)
     if not llvm_ir.exists():
         fail(f"LLVM IR input does not exist: {llvm_ir}")
@@ -112,8 +134,11 @@ def build_commands(
 
     output = pathlib.Path(args.output)
     object_output = object_output_path(output, args.object_output)
+    crt_object_output = crt_object_output_path(output, args.crt_object_output)
     tx8_deps_root = pathlib.Path(args.tx8_deps_root)
-    wafer_crt_lib_dir = pathlib.Path(args.wafer_crt_lib_dir)
+    wafer_crt_source = pathlib.Path(args.wafer_crt_source)
+    wafer_crt_include_dir = pathlib.Path(args.wafer_crt_include_dir)
+    tx8_include_dir = resolve_tx8_include_dir(tx8_deps_root, args.tx8_include_dir)
     toolchain_root = tx8_deps_root / args.toolchain_dir_name
     libc_dir = toolchain_root / "riscv64-unknown-elf" / "lib" / args.march / args.mabi
     libgcc_dir = (
@@ -130,6 +155,7 @@ def build_commands(
     tx8_objcopy = resolve_tx8_objcopy(
         tx8_deps_root, args.toolchain_dir_name, args.tx8_objcopy
     )
+    tx8_nm = resolve_tx8_nm(tx8_deps_root, args.toolchain_dir_name, args.tx8_nm)
 
     compile_cmd = [
         clangxx,
@@ -154,6 +180,33 @@ def build_commands(
             ]
         )
 
+    compile_crt_cmd = [
+        tx8_gcc,
+        str(wafer_crt_source),
+        "-O2",
+        "-c",
+        "-fPIC",
+        "-DCONFIG_NO_PLATFORM_HOOK_H",
+        "-DUSING_RISCV",
+        f"-I{wafer_crt_include_dir}",
+        f"-I{tx8_include_dir}",
+        f"-march={args.march}",
+        f"-mabi={args.mabi}",
+        "-o",
+        str(crt_object_output),
+    ]
+
+    normalize_crt_cmds: list[list[str]] = []
+    if not args.keep_riscv_attributes:
+        normalize_crt_cmds.append(
+            [
+                tx8_objcopy,
+                "-R",
+                ".riscv.attributes",
+                str(crt_object_output),
+            ]
+        )
+
     link_cmd = [
         tx8_gcc,
         "-shared",
@@ -164,11 +217,11 @@ def build_commands(
         f"-mabi={args.mabi}",
         "-Wl,--no-dynamic-linker",
         str(object_output),
+        str(crt_object_output),
     ]
     link_cmd.extend(str(path) for path in args.extra_object)
     link_cmd.extend(
         [
-            f"-L{wafer_crt_lib_dir}",
             f"-L{libc_dir}",
             f"-L{libgcc_dir}",
             f"-L{tx8_deps_root / 'lib'}",
@@ -181,7 +234,6 @@ def build_commands(
             "-lcommon_util",
             "-linstr_tx81",
             "-llibc_stub",
-            "-lvr",
         ]
     )
     link_cmd.extend(f"-l{library}" for library in args.extra_library)
@@ -197,26 +249,52 @@ def build_commands(
             str(output),
         ]
     )
-    return compile_cmd, normalize_cmds, link_cmd
+    required_symbol_scan_cmd = [tx8_nm, "-u", str(output)]
+    return (
+        compile_cmd,
+        normalize_cmds,
+        compile_crt_cmd,
+        normalize_crt_cmds,
+        link_cmd,
+        required_symbol_scan_cmd,
+    )
 
 
 def validate_execute_inputs(
     args: argparse.Namespace,
     compile_cmd: list[str],
     normalize_cmds: list[list[str]],
+    compile_crt_cmd: list[str],
+    normalize_crt_cmds: list[list[str]],
     link_cmd: list[str],
+    required_symbol_scan_cmd: list[str],
 ) -> None:
     if not tool_exists(compile_cmd[0]):
         fail(f"LLVM clang++ is not executable: {compile_cmd[0]}")
     for normalize_cmd in normalize_cmds:
         if not tool_exists(normalize_cmd[0]):
             fail(f"TX8 RISC-V objcopy is not executable: {normalize_cmd[0]}")
+    if not tool_exists(compile_crt_cmd[0]):
+        fail(f"TX8 RISC-V GCC is not executable: {compile_crt_cmd[0]}")
+    for normalize_cmd in normalize_crt_cmds:
+        if not tool_exists(normalize_cmd[0]):
+            fail(f"TX8 RISC-V objcopy is not executable: {normalize_cmd[0]}")
     if not tool_exists(link_cmd[0]):
         fail(f"TX8 RISC-V GCC is not executable: {link_cmd[0]}")
+    if not tool_exists(required_symbol_scan_cmd[0]):
+        fail(f"TX8 RISC-V nm is not executable: {required_symbol_scan_cmd[0]}")
 
-    wafer_crt_lib_dir = pathlib.Path(args.wafer_crt_lib_dir)
-    if not wafer_crt_lib_dir.is_dir():
-        fail(f"Wafer CRT lib dir does not exist: {wafer_crt_lib_dir}")
+    wafer_crt_source = pathlib.Path(args.wafer_crt_source)
+    if not wafer_crt_source.is_file():
+        fail(f"Wafer CRT source does not exist: {wafer_crt_source}")
+    wafer_crt_include_dir = pathlib.Path(args.wafer_crt_include_dir)
+    if not wafer_crt_include_dir.is_dir():
+        fail(f"Wafer CRT include dir does not exist: {wafer_crt_include_dir}")
+    tx8_include_dir = resolve_tx8_include_dir(
+        pathlib.Path(args.tx8_deps_root), args.tx8_include_dir
+    )
+    if not tx8_include_dir.is_dir():
+        fail(f"TX8 deps include dir does not exist: {tx8_include_dir}")
 
     tx8_deps_root = pathlib.Path(args.tx8_deps_root)
     tx8_lib_dir = tx8_deps_root / "lib"
@@ -240,8 +318,6 @@ def validate_execute_inputs(
     )
     if not libgcc_dir.is_dir():
         fail(f"TX8 libgcc multilib dir does not exist: {libgcc_dir}")
-    if not library_exists(wafer_crt_lib_dir, "vr"):
-        fail(f"Wafer CRT library -lvr does not exist in {wafer_crt_lib_dir}")
 
     for path in args.extra_object:
         if not pathlib.Path(path).is_file():
@@ -254,16 +330,45 @@ def validate_execute_inputs(
 def print_commands(
     compile_cmd: list[str],
     normalize_cmds: list[list[str]],
+    compile_crt_cmd: list[str],
+    normalize_crt_cmds: list[list[str]],
     link_cmd: list[str],
+    required_symbol_scan_cmd: list[str],
 ) -> None:
     print(f"compile: {shlex.join(compile_cmd)}")
     for normalize_cmd in normalize_cmds:
         print(f"normalize: {shlex.join(normalize_cmd)}")
+    print(f"compile-crt: {shlex.join(compile_crt_cmd)}")
+    for normalize_cmd in normalize_crt_cmds:
+        print(f"normalize-crt: {shlex.join(normalize_cmd)}")
     print(f"link: {shlex.join(link_cmd)}")
+    print(f"required-symbol-scan: {shlex.join(required_symbol_scan_cmd)}")
 
 
 def run_command(command: list[str]) -> None:
     subprocess.run(command, check=True)
+
+
+def run_required_symbol_scan(command: list[str]) -> None:
+    completed = subprocess.run(
+        command,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    missing = sorted(
+        {
+            line.split()[-1]
+            for line in completed.stdout.splitlines()
+            if line.split() and line.split()[-1].startswith("wafer_tx81_")
+        }
+    )
+    if missing:
+        fail(
+            "undefined Wafer target CRT symbols remain after link: "
+            + ", ".join(missing)
+        )
 
 
 def main() -> int:
@@ -279,17 +384,25 @@ def main() -> int:
         help="repo-vendored TX8 dependency root",
     )
     parser.add_argument(
-        "--wafer-crt-lib-dir",
-        default=str(DEFAULT_WAFER_CRT_LIB_PATH),
-        help="repo-local Wafer CRT library directory",
+        "--wafer-crt-source",
+        default=str(DEFAULT_WAFER_CRT_SOURCE),
+        help="repo-local Wafer CRT C source",
     )
+    parser.add_argument(
+        "--wafer-crt-include-dir",
+        default=str(DEFAULT_WAFER_CRT_INCLUDE_DIR),
+        help="repo-local Wafer CRT include directory",
+    )
+    parser.add_argument("--tx8-include-dir")
     parser.add_argument("--llvm-clangxx")
     parser.add_argument("--tx8-gcc")
     parser.add_argument("--tx8-objcopy")
+    parser.add_argument("--tx8-nm")
     parser.add_argument("--toolchain-dir-name", default=DEFAULT_TOOLCHAIN_DIR)
     parser.add_argument("--gcc-version", default=DEFAULT_GCC_VERSION)
     parser.add_argument("--march", default=DEFAULT_MARCH)
     parser.add_argument("--mabi", default=DEFAULT_MABI)
+    parser.add_argument("--crt-object-output")
     parser.add_argument(
         "--keep-riscv-attributes",
         action="store_true",
@@ -311,22 +424,49 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    compile_cmd, normalize_cmds, link_cmd = build_commands(args)
+    (
+        compile_cmd,
+        normalize_cmds,
+        compile_crt_cmd,
+        normalize_crt_cmds,
+        link_cmd,
+        required_symbol_scan_cmd,
+    ) = build_commands(args)
     if args.print_commands:
-        print_commands(compile_cmd, normalize_cmds, link_cmd)
+        print_commands(
+            compile_cmd,
+            normalize_cmds,
+            compile_crt_cmd,
+            normalize_crt_cmds,
+            link_cmd,
+            required_symbol_scan_cmd,
+        )
         return 0
 
     validate_execute_inputs(
-        args, compile_cmd, normalize_cmds, link_cmd
+        args,
+        compile_cmd,
+        normalize_cmds,
+        compile_crt_cmd,
+        normalize_crt_cmds,
+        link_cmd,
+        required_symbol_scan_cmd,
     )
     pathlib.Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     object_output_path(pathlib.Path(args.output), args.object_output).parent.mkdir(
         parents=True, exist_ok=True
     )
+    crt_object_output_path(
+        pathlib.Path(args.output), args.crt_object_output
+    ).parent.mkdir(parents=True, exist_ok=True)
     run_command(compile_cmd)
     for normalize_cmd in normalize_cmds:
         run_command(normalize_cmd)
+    run_command(compile_crt_cmd)
+    for normalize_cmd in normalize_crt_cmds:
+        run_command(normalize_cmd)
     run_command(link_cmd)
+    run_required_symbol_scan(required_symbol_scan_cmd)
     return 0
 
 

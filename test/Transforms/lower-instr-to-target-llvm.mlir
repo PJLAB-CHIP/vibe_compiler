@@ -194,10 +194,19 @@ module {
 // CHECK: llvm.call @wafer_tx81_local_fence
 // CHECK: llvm.return
 
+// LLVMIR-DAG: declare void @wafer_tx81_rdma(i64, i64, i32, i32, i32, i32, i32, i32, i32, i32, i32)
+// LLVMIR-DAG: declare void @wafer_tx81_gather_scatter(i64, i64, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32)
+// LLVMIR-DAG: declare void @wafer_tx81_gemm(i64, i64, i64, i32, i32, i32, i32, i32)
+// LLVMIR-DAG: declare void @wafer_tx81_conv(i64, i64, i64, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32)
+// LLVMIR-DAG: declare void @wafer_tx81_tdma_img2col(i64, i64, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32)
+// LLVMIR-DAG: declare void @wafer_tx81_wdma(i64, i64, i32, i32, i32, i32, i32, i32, i32, i32, i32)
 // LLVMIR-LABEL: define void @target_instr_kernel(i64 %{{.*}}, i64 %{{.*}})
-// LLVMIR: call void (...) @wafer_tx81_rdma
-// LLVMIR: call void (...) @wafer_tx81_gather_scatter
-// LLVMIR: call void (...) @wafer_tx81_gemm
-// LLVMIR: call void (...) @wafer_tx81_conv
-// LLVMIR: call void (...) @wafer_tx81_tdma_img2col
-// LLVMIR: call void (...) @wafer_tx81_wdma
+// LLVMIR-NOT: call void (...)
+// LLVMIR: call void @wafer_tx81_rdma(i64 %{{.*}}, i64 65536, i32 12, i32 6, i32 16, i32 0, i32 0, i32 2, i32 1, i32 1, i32 2)
+// LLVMIR: call void @wafer_tx81_gather_scatter(i64 65538, i64 65796, i32 8, i32 4, i32 4, i32 0, i32 0, i32 2, i32 1, i32 1, i32 4, i32 0, i32 0, i32 2, i32 1, i32 1)
+// LLVMIR: call void @wafer_tx81_gemm(i64 65792, i64 66048, i64 66304, i32 2, i32 3, i32 4, i32 1, i32 2)
+// LLVMIR: call void @wafer_tx81_conv(i64 68608, i64 131072, i64 262144,
+// LLVMIR-SAME: i32 0, i32 1, i32 8, i32 8, i32 64,
+// LLVMIR: call void @wafer_tx81_tdma_img2col(i64 65536, i64 360448,
+// LLVMIR-SAME: i32 1, i32 1, i32 2, i32 3,
+// LLVMIR: call void @wafer_tx81_wdma(i64 65536, i64 %{{.*}}, i32 12, i32 6, i32 16, i32 0, i32 0, i32 2, i32 1, i32 1, i32 2)

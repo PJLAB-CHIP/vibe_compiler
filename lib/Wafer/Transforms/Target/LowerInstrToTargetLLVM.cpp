@@ -17,7 +17,7 @@
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
-#include "llvm/ADT/StringSet.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/ADT/TypeSwitch.h"
 
@@ -41,6 +41,10 @@ struct LoweredFunction {
   mlir::func::FuncOp source;
   mlir::LLVM::LLVMFuncOp lowered;
   std::string symbolName;
+};
+
+struct CalleeSignature {
+  mlir::LLVM::LLVMFunctionType type;
 };
 
 static bool checkedAdd(int64_t lhs, int64_t rhs, int64_t &result) {
@@ -306,38 +310,76 @@ static llvm::SmallString<64> makeConvSymbol(InstrConvKind kind) {
   llvm_unreachable("unknown InstrConvKind");
 }
 
+static bool isTargetRelationElementwiseKind(InstrElementwiseKind kind) {
+  switch (kind) {
+  case InstrElementwiseKind::Eq:
+  case InstrElementwiseKind::Ne:
+  case InstrElementwiseKind::Ge:
+  case InstrElementwiseKind::Gt:
+  case InstrElementwiseKind::Le:
+  case InstrElementwiseKind::Lt:
+    return true;
+  default:
+    return false;
+  }
+}
+
 struct FunctionLowering {
   mlir::ModuleOp moduleOp;
   mlir::OpBuilder builder;
   mlir::MLIRContext *context;
   mlir::Type i64Type;
+  mlir::Type i32Type;
   mlir::Type voidType;
-  mlir::LLVM::LLVMFunctionType varArgVoidFunctionType;
   llvm::DenseMap<mlir::Value, mlir::Value> ddrArguments;
-  llvm::StringSet<> &usedCallees;
+  llvm::StringMap<CalleeSignature> &usedCallees;
 
-  FunctionLowering(mlir::ModuleOp moduleOp, llvm::StringSet<> &used)
+  FunctionLowering(mlir::ModuleOp moduleOp,
+                   llvm::StringMap<CalleeSignature> &used)
       : moduleOp(moduleOp), builder(moduleOp.getContext()),
         context(moduleOp.getContext()),
         i64Type(mlir::IntegerType::get(moduleOp.getContext(), 64)),
+        i32Type(mlir::IntegerType::get(moduleOp.getContext(), 32)),
         voidType(mlir::LLVM::LLVMVoidType::get(moduleOp.getContext())),
-        varArgVoidFunctionType(mlir::LLVM::LLVMFunctionType::get(
-            voidType, llvm::ArrayRef<mlir::Type>(), /*isVarArg=*/true)),
         usedCallees(used) {}
 
-  mlir::Value constant(mlir::Location loc, int64_t value) {
+  mlir::Value constantI64(mlir::Location loc, int64_t value) {
     return builder.create<mlir::LLVM::ConstantOp>(loc, i64Type, value);
   }
 
-  void appendConstant(mlir::Location loc,
-                      llvm::SmallVectorImpl<mlir::Value> &out, int64_t value) {
-    out.push_back(constant(loc, value));
+  mlir::Value constantI32(mlir::Location loc, int64_t value) {
+    return builder.create<mlir::LLVM::ConstantOp>(loc, i32Type, value);
   }
 
-  void appendArray(mlir::Location loc, llvm::SmallVectorImpl<mlir::Value> &out,
-                   llvm::ArrayRef<int64_t> values) {
+  void appendI32(mlir::Location loc, llvm::SmallVectorImpl<mlir::Value> &out,
+                 int64_t value) {
+    out.push_back(constantI32(loc, value));
+  }
+
+  void appendArrayI32(mlir::Location loc,
+                      llvm::SmallVectorImpl<mlir::Value> &out,
+                      llvm::ArrayRef<int64_t> values) {
     for (int64_t value : values)
-      appendConstant(loc, out, value);
+      appendI32(loc, out, value);
+  }
+
+  mlir::FailureOr<llvm::SmallVector<int64_t, 4>>
+  getNHWCShape(mlir::Operation *op, mlir::MemRefType type,
+               llvm::StringRef role) {
+    if (!type.hasStaticShape())
+      return op->emitError()
+             << "unsupported_target_shape: " << role
+             << " memref must have static shape for target LLVM lowering";
+    if (type.getRank() > 4)
+      return op->emitError()
+             << "unsupported_target_shape: " << role
+             << " memref rank must be <= 4 for fixed target CRT shape ABI";
+
+    llvm::SmallVector<int64_t, 4> shape(4, 1);
+    int64_t offset = 4 - type.getRank();
+    for (auto [index, dim] : llvm::enumerate(type.getShape()))
+      shape[offset + index] = dim;
+    return shape;
   }
 
   mlir::FailureOr<AddressValue>
@@ -352,10 +394,10 @@ struct FunctionLowering {
 
   mlir::Value materializeAddress(mlir::Location loc, AddressValue address) {
     if (!address.dynamicBase)
-      return constant(loc, address.staticOffset);
+      return constantI64(loc, address.staticOffset);
     if (address.staticOffset == 0)
       return address.dynamicBase;
-    mlir::Value offset = constant(loc, address.staticOffset);
+    mlir::Value offset = constantI64(loc, address.staticOffset);
     return builder.create<mlir::LLVM::AddOp>(loc, address.dynamicBase, offset);
   }
 
@@ -437,16 +479,19 @@ struct FunctionLowering {
 
   void emitCall(mlir::Location loc, llvm::StringRef symbol,
                 mlir::ValueRange args) {
-    usedCallees.insert(symbol);
+    llvm::SmallVector<mlir::Type, 16> argTypes;
+    for (mlir::Value arg : args)
+      argTypes.push_back(arg.getType());
+    mlir::LLVM::LLVMFunctionType functionType =
+        mlir::LLVM::LLVMFunctionType::get(voidType, argTypes,
+                                          /*isVarArg=*/false);
+    auto [it, inserted] =
+        usedCallees.try_emplace(symbol, CalleeSignature{functionType});
+    if (!inserted && it->second.type != functionType)
+      llvm_unreachable("same target CRT symbol emitted with incompatible signature");
     builder.create<mlir::LLVM::CallOp>(
-        loc, mlir::TypeRange(), mlir::TypeAttr::get(varArgVoidFunctionType),
-        mlir::FlatSymbolRefAttr::get(context, symbol), args,
-        mlir::LLVM::FastmathFlags::none, mlir::DenseI32ArrayAttr(),
-        mlir::LLVM::cconv::CConv::C,
-        mlir::LLVM::tailcallkind::TailCallKind::None,
-        mlir::LLVM::MemoryEffectsAttr(), mlir::UnitAttr(), mlir::UnitAttr(),
-        mlir::UnitAttr(), mlir::ArrayAttr(), mlir::ArrayAttr(),
-        mlir::ArrayAttr(), mlir::ArrayAttr());
+        loc, mlir::TypeRange(), mlir::FlatSymbolRefAttr::get(context, symbol),
+        args);
   }
 
   mlir::FailureOr<mlir::LLVM::LLVMFuncOp>
@@ -530,13 +575,13 @@ struct FunctionLowering {
       return mlir::failure();
     args.push_back(*source);
     args.push_back(*dest);
-    appendConstant(op.getLoc(), args,
+    appendI32(op.getLoc(), args,
                    getIntegerAttrValue(op.getByteCountAttr()));
-    appendConstant(op.getLoc(), args,
+    appendI32(op.getLoc(), args,
                    getIntegerAttrValue(op.getInnerBytesAttr()));
-    appendArray(op.getLoc(), args, op.getSrcStrides());
-    appendArray(op.getLoc(), args, op.getSrcIterations());
-    appendConstant(op.getLoc(), args, *fmt);
+    appendArrayI32(op.getLoc(), args, op.getSrcStrides());
+    appendArrayI32(op.getLoc(), args, op.getSrcIterations());
+    appendI32(op.getLoc(), args, *fmt);
     emitCall(op.getLoc(), makeTargetSymbol("rdma"), args);
     return mlir::success();
   }
@@ -553,13 +598,13 @@ struct FunctionLowering {
       return mlir::failure();
     args.push_back(*source);
     args.push_back(*dest);
-    appendConstant(op.getLoc(), args,
+    appendI32(op.getLoc(), args,
                    getIntegerAttrValue(op.getByteCountAttr()));
-    appendConstant(op.getLoc(), args,
+    appendI32(op.getLoc(), args,
                    getIntegerAttrValue(op.getInnerBytesAttr()));
-    appendArray(op.getLoc(), args, op.getDstStrides());
-    appendArray(op.getLoc(), args, op.getDstIterations());
-    appendConstant(op.getLoc(), args, *fmt);
+    appendArrayI32(op.getLoc(), args, op.getDstStrides());
+    appendArrayI32(op.getLoc(), args, op.getDstIterations());
+    appendI32(op.getLoc(), args, *fmt);
     emitCall(op.getLoc(), makeTargetSymbol("wdma"), args);
     return mlir::success();
   }
@@ -581,14 +626,14 @@ struct FunctionLowering {
     llvm::SmallVector<mlir::Value, 20> args;
     args.push_back(materializeAddress(op.getLoc(), *source));
     args.push_back(materializeAddress(op.getLoc(), *dest));
-    appendConstant(op.getLoc(), args,
+    appendI32(op.getLoc(), args,
                    getIntegerAttrValue(op.getByteCountAttr()));
-    appendConstant(op.getLoc(), args,
+    appendI32(op.getLoc(), args,
                    getIntegerAttrValue(op.getInnerBytesAttr()));
-    appendArray(op.getLoc(), args, op.getSrcStrides());
-    appendArray(op.getLoc(), args, op.getSrcIterations());
-    appendArray(op.getLoc(), args, op.getDstStrides());
-    appendArray(op.getLoc(), args, op.getDstIterations());
+    appendArrayI32(op.getLoc(), args, op.getSrcStrides());
+    appendArrayI32(op.getLoc(), args, op.getSrcIterations());
+    appendArrayI32(op.getLoc(), args, op.getDstStrides());
+    appendArrayI32(op.getLoc(), args, op.getDstIterations());
     emitCall(op.getLoc(), makeTargetSymbol("gather_scatter"), args);
     return mlir::success();
   }
@@ -607,9 +652,9 @@ struct FunctionLowering {
         mlir::failed(fmt))
       return mlir::failure();
     args.push_back(*dest);
-    appendConstant(op.getLoc(), args, *scalar);
-    appendConstant(op.getLoc(), args, *elements);
-    appendConstant(op.getLoc(), args, *fmt);
+    appendI32(op.getLoc(), args, *scalar);
+    appendI32(op.getLoc(), args, *elements);
+    appendI32(op.getLoc(), args, *fmt);
     emitCall(op.getLoc(), makeTargetSymbol("memset"), args);
     return mlir::success();
   }
@@ -628,13 +673,16 @@ struct FunctionLowering {
     auto destType = mlir::cast<mlir::MemRefType>(op.getDest().getType());
     mlir::FailureOr<int64_t> elements =
         getStaticElementCount(op, destType, "elementwise dest");
+    mlir::Value formatValue =
+        isTargetRelationElementwiseKind(op.getKind()) ? op.getInputs().front()
+                                                      : op.getDest();
     mlir::FailureOr<int64_t> fmt =
-        getDataFormatCode(op, destType.getElementType(), "elementwise dest");
+        getDataFormatCode(op, formatValue, "elementwise format");
     if (mlir::failed(dest) || mlir::failed(elements) || mlir::failed(fmt))
       return mlir::failure();
     args.push_back(*dest);
-    appendConstant(op.getLoc(), args, *elements);
-    appendConstant(op.getLoc(), args, *fmt);
+    appendI32(op.getLoc(), args, *elements);
+    appendI32(op.getLoc(), args, *fmt);
     emitCall(op.getLoc(), makeTargetSymbol("elementwise", op.getKind()), args);
     return mlir::success();
   }
@@ -655,8 +703,8 @@ struct FunctionLowering {
       return mlir::failure();
     args.push_back(*source);
     args.push_back(*dest);
-    appendConstant(op.getLoc(), args, *elements);
-    appendConstant(op.getLoc(), args, *fmt);
+    appendI32(op.getLoc(), args, *elements);
+    appendI32(op.getLoc(), args, *fmt);
     emitCall(op.getLoc(), makeTargetSymbol("bit2fp"), args);
     return mlir::success();
   }
@@ -680,8 +728,8 @@ struct FunctionLowering {
     args.push_back(*source);
     args.push_back(*mask);
     args.push_back(*dest);
-    appendConstant(op.getLoc(), args, *elements);
-    appendConstant(op.getLoc(), args, *fmt);
+    appendI32(op.getLoc(), args, *elements);
+    appendI32(op.getLoc(), args, *fmt);
     emitCall(op.getLoc(), makeTargetSymbol("mask_move"), args);
     return mlir::success();
   }
@@ -695,14 +743,16 @@ struct FunctionLowering {
     auto inputType = mlir::cast<mlir::MemRefType>(op.getInput().getType());
     mlir::FailureOr<int64_t> fmt =
         getDataFormatCode(op, inputType.getElementType(), "reduce input");
-    if (mlir::failed(input) || mlir::failed(dest) || mlir::failed(fmt))
+    mlir::FailureOr<llvm::SmallVector<int64_t, 4>> shape =
+        getNHWCShape(op, inputType, "reduce input");
+    if (mlir::failed(input) || mlir::failed(dest) || mlir::failed(fmt) ||
+        mlir::failed(shape))
       return mlir::failure();
     args.push_back(*input);
     args.push_back(*dest);
-    appendConstant(op.getLoc(), args, getIntegerAttrValue(op.getDimAttr()));
-    appendConstant(op.getLoc(), args, inputType.getRank());
-    appendArray(op.getLoc(), args, inputType.getShape());
-    appendConstant(op.getLoc(), args, *fmt);
+    appendI32(op.getLoc(), args, getIntegerAttrValue(op.getDimAttr()));
+    appendArrayI32(op.getLoc(), args, *shape);
+    appendI32(op.getLoc(), args, *fmt);
     emitCall(op.getLoc(), makeTargetSymbol("reduce", op.getKind()), args);
     return mlir::success();
   }
@@ -720,10 +770,10 @@ struct FunctionLowering {
       return mlir::failure();
     args.push_back(*source);
     args.push_back(*dest);
-    appendConstant(op.getLoc(), args, *elements);
-    appendConstant(op.getLoc(), args,
+    appendI32(op.getLoc(), args, *elements);
+    appendI32(op.getLoc(), args,
                    getOptionalIntegerAttrValue(op.getZeroPointAttr(), -1));
-    appendConstant(op.getLoc(), args,
+    appendI32(op.getLoc(), args,
                    getOptionalIntegerAttrValue(op.getRoundingModeAttr(), -1));
     emitCall(op.getLoc(), makeTargetSymbol("convert", op.getKind()), args);
     return mlir::success();
@@ -745,12 +795,12 @@ struct FunctionLowering {
     args.push_back(*lhs);
     args.push_back(*rhs);
     args.push_back(*dest);
-    appendConstant(op.getLoc(), args, getIntegerAttrValue(op.getMAttr()));
-    appendConstant(op.getLoc(), args, getIntegerAttrValue(op.getKAttr()));
-    appendConstant(op.getLoc(), args, getIntegerAttrValue(op.getNAttr()));
-    appendConstant(op.getLoc(), args,
+    appendI32(op.getLoc(), args, getIntegerAttrValue(op.getMAttr()));
+    appendI32(op.getLoc(), args, getIntegerAttrValue(op.getKAttr()));
+    appendI32(op.getLoc(), args, getIntegerAttrValue(op.getNAttr()));
+    appendI32(op.getLoc(), args,
                    getOptionalIntegerAttrValue(op.getBatchCountAttr(), 1));
-    appendConstant(op.getLoc(), args, *fmt);
+    appendI32(op.getLoc(), args, *fmt);
     emitCall(op.getLoc(), makeTargetSymbol("gemm"), args);
     return mlir::success();
   }
@@ -771,15 +821,15 @@ struct FunctionLowering {
     args.push_back(*input);
     args.push_back(*weight);
     args.push_back(*dest);
-    appendConstant(op.getLoc(), args, static_cast<int64_t>(op.getKind()));
-    appendArray(op.getLoc(), args, op.getInputShape());
-    appendArray(op.getLoc(), args, op.getWeightShape());
-    appendArray(op.getLoc(), args, op.getOutputShape());
-    appendArray(op.getLoc(), args, op.getPads());
-    appendArray(op.getLoc(), args, op.getUnpads());
-    appendArray(op.getLoc(), args, op.getKernelStrides());
-    appendArray(op.getLoc(), args, op.getDilations());
-    appendConstant(op.getLoc(), args, *fmt);
+    appendI32(op.getLoc(), args, static_cast<int64_t>(op.getKind()));
+    appendArrayI32(op.getLoc(), args, op.getInputShape());
+    appendArrayI32(op.getLoc(), args, op.getWeightShape());
+    appendArrayI32(op.getLoc(), args, op.getOutputShape());
+    appendArrayI32(op.getLoc(), args, op.getPads());
+    appendArrayI32(op.getLoc(), args, op.getUnpads());
+    appendArrayI32(op.getLoc(), args, op.getKernelStrides());
+    appendArrayI32(op.getLoc(), args, op.getDilations());
+    appendI32(op.getLoc(), args, *fmt);
     emitCall(op.getLoc(), makeConvSymbol(op.getKind()), args);
     return mlir::success();
   }
@@ -800,12 +850,12 @@ struct FunctionLowering {
         return mlir::failure();
       args.push_back(*dest);
     }
-    appendConstant(op.getLoc(), args, static_cast<int64_t>(op.getKind()));
-    appendArray(op.getLoc(), args, op.getSourceShape());
-    appendArray(op.getLoc(), args, op.getDestShape());
-    appendArray(op.getLoc(), args, op.getPads());
-    appendArray(op.getLoc(), args, op.getKernelStrides());
-    appendConstant(op.getLoc(), args, *fmt);
+    appendI32(op.getLoc(), args, static_cast<int64_t>(op.getKind()));
+    appendArrayI32(op.getLoc(), args, op.getSourceShape());
+    appendArrayI32(op.getLoc(), args, op.getDestShape());
+    appendArrayI32(op.getLoc(), args, op.getPads());
+    appendArrayI32(op.getLoc(), args, op.getKernelStrides());
+    appendI32(op.getLoc(), args, *fmt);
     emitCall(op.getLoc(), makeTargetSymbol("pool", op.getKind()), args);
     return mlir::success();
   }
@@ -822,13 +872,13 @@ struct FunctionLowering {
       return mlir::failure();
     args.push_back(*input);
     args.push_back(*dest);
-    appendConstant(op.getLoc(), args, static_cast<int64_t>(op.getKind()));
-    appendConstant(op.getLoc(), args,
+    appendI32(op.getLoc(), args, static_cast<int64_t>(op.getKind()));
+    appendI32(op.getLoc(), args,
                    getOptionalIntegerAttrValue(op.getIndexAttr(), -1));
-    appendArray(op.getLoc(), args, op.getSourceShape());
-    appendArray(op.getLoc(), args, op.getDestShape());
-    appendArray(op.getLoc(), args, op.getKernelStrides());
-    appendConstant(op.getLoc(), args, *fmt);
+    appendArrayI32(op.getLoc(), args, op.getSourceShape());
+    appendArrayI32(op.getLoc(), args, op.getDestShape());
+    appendArrayI32(op.getLoc(), args, op.getKernelStrides());
+    appendI32(op.getLoc(), args, *fmt);
     emitCall(op.getLoc(), makeTargetSymbol("unpool", op.getKind()), args);
     return mlir::success();
   }
@@ -868,13 +918,13 @@ struct FunctionLowering {
       return mlir::failure();
     args.push_back(*source);
     args.push_back(*dest);
-    appendArray(op.getLoc(), args, op.getSourceShape());
-    appendArray(op.getLoc(), args, op.getDestShape());
+    appendArrayI32(op.getLoc(), args, op.getSourceShape());
+    appendArrayI32(op.getLoc(), args, op.getDestShape());
     if (op.getPads())
-      appendArray(op.getLoc(), args, *op.getPads());
+      appendArrayI32(op.getLoc(), args, *op.getPads());
     if (op.getKernelStrides())
-      appendArray(op.getLoc(), args, *op.getKernelStrides());
-    appendConstant(op.getLoc(), args, *fmt);
+      appendArrayI32(op.getLoc(), args, *op.getKernelStrides());
+    appendI32(op.getLoc(), args, *fmt);
 
     if (op.getKind() == InstrDataMoveKind::Pad) {
       emitCall(op.getLoc(), makeTargetSymbol("tdma_pad"), args);
@@ -903,20 +953,25 @@ struct FunctionLowering {
         return mlir::failure();
       args.push_back(*address);
     }
-    appendConstant(op.getLoc(), args, static_cast<int64_t>(op.getKind()));
-    appendConstant(op.getLoc(), args,
+    mlir::FailureOr<int64_t> fmt =
+        getDataFormatCode(op, op.getInputs().front(), "peripheral input");
+    if (mlir::failed(fmt))
+      return mlir::failure();
+    appendI32(op.getLoc(), args, static_cast<int64_t>(op.getKind()));
+    appendI32(op.getLoc(), args,
                    getIntegerAttrValue(op.getElemCountAttr()));
+    appendI32(op.getLoc(), args, *fmt);
     if (op.getSourceShape())
-      appendArray(op.getLoc(), args, *op.getSourceShape());
+      appendArrayI32(op.getLoc(), args, *op.getSourceShape());
     if (op.getDestShape())
-      appendArray(op.getLoc(), args, *op.getDestShape());
-    appendConstant(op.getLoc(), args,
+      appendArrayI32(op.getLoc(), args, *op.getDestShape());
+    appendI32(op.getLoc(), args,
                    getOptionalIntegerAttrValue(op.getLutElemCountAttr(), -1));
-    appendConstant(op.getLoc(), args,
+    appendI32(op.getLoc(), args,
                    getOptionalIntegerAttrValue(op.getScaleAttr(), -1));
-    appendConstant(op.getLoc(), args,
+    appendI32(op.getLoc(), args,
                    getOptionalIntegerAttrValue(op.getProbabilityAttr(), -1));
-    appendConstant(op.getLoc(), args,
+    appendI32(op.getLoc(), args,
                    getOptionalIntegerAttrValue(op.getRoundingModeAttr(), -1));
 
     emitCall(op.getLoc(), makeTargetSymbol("peripheral", op.getKind()), args);
@@ -930,8 +985,8 @@ struct FunctionLowering {
     if (mlir::failed(buffer))
       return mlir::failure();
     args.push_back(*buffer);
-    appendConstant(op.getLoc(), args, getIntegerAttrValue(op.getPeerAttr()));
-    appendConstant(op.getLoc(), args, getIntegerAttrValue(op.getBytesAttr()));
+    appendI32(op.getLoc(), args, getIntegerAttrValue(op.getPeerAttr()));
+    appendI32(op.getLoc(), args, getIntegerAttrValue(op.getBytesAttr()));
     emitCall(op.getLoc(), makeTargetSymbol("dte_send"), args);
     return mlir::success();
   }
@@ -943,15 +998,15 @@ struct FunctionLowering {
     if (mlir::failed(buffer))
       return mlir::failure();
     args.push_back(*buffer);
-    appendConstant(op.getLoc(), args, getIntegerAttrValue(op.getPeerAttr()));
-    appendConstant(op.getLoc(), args, getIntegerAttrValue(op.getBytesAttr()));
+    appendI32(op.getLoc(), args, getIntegerAttrValue(op.getPeerAttr()));
+    appendI32(op.getLoc(), args, getIntegerAttrValue(op.getBytesAttr()));
     emitCall(op.getLoc(), makeTargetSymbol("dte_recv"), args);
     return mlir::success();
   }
 
   mlir::LogicalResult lowerDTEWait(InstrDTEWaitOp op) {
     llvm::SmallVector<mlir::Value, 1> args;
-    appendConstant(op.getLoc(), args, op.getTokens().size());
+    appendI32(op.getLoc(), args, op.getTokens().size());
     emitCall(op.getLoc(), makeTargetSymbol("dte_wait"), args);
     return mlir::success();
   }
@@ -1037,25 +1092,23 @@ static void eraseTargetMetadata(mlir::ModuleOp moduleOp) {
 }
 
 static void declareCallees(mlir::ModuleOp moduleOp,
-                           const llvm::StringSet<> &calleeNames) {
+                           const llvm::StringMap<CalleeSignature> &callees) {
   mlir::OpBuilder builder(moduleOp.getContext());
   builder.setInsertionPointToStart(moduleOp.getBody());
 
-  mlir::Type voidType = mlir::LLVM::LLVMVoidType::get(moduleOp.getContext());
-  mlir::LLVM::LLVMFunctionType functionType =
-      mlir::LLVM::LLVMFunctionType::get(voidType, llvm::ArrayRef<mlir::Type>(),
-                                        /*isVarArg=*/true);
-
   llvm::SmallVector<llvm::StringRef, 32> sortedNames;
-  for (const auto &entry : calleeNames)
+  for (const auto &entry : callees)
     sortedNames.push_back(entry.getKey());
   llvm::sort(sortedNames);
 
   for (llvm::StringRef name : sortedNames) {
     if (moduleOp.lookupSymbol(name))
       continue;
+    auto found = callees.find(name);
+    assert(found != callees.end() && "callee name must have a signature");
+    const CalleeSignature &signature = found->second;
     builder.create<mlir::LLVM::LLVMFuncOp>(moduleOp.getLoc(), name,
-                                           functionType);
+                                           signature.type);
   }
 }
 
@@ -1070,7 +1123,7 @@ struct LowerInstrToTargetLLVMPass
     moduleOp.walk(
         [&](mlir::func::FuncOp funcOp) { functions.push_back(funcOp); });
 
-    llvm::StringSet<> usedCallees;
+    llvm::StringMap<CalleeSignature> usedCallees;
     llvm::SmallVector<LoweredFunction, 4> loweredFunctions;
     for (mlir::func::FuncOp funcOp : functions) {
       FunctionLowering lowering(moduleOp, usedCallees);
