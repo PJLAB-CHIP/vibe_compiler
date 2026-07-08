@@ -248,7 +248,7 @@ accepted-offsets 后的 Direct DTE resource stage 出现，不回写到 collecti
 
 ## 5. Direct DTE Contract
 
-当前已验证的 compiler inline data plane 是 fixed-size unicast Direct DTE：
+compiler inline data plane 的 V0 contract 是 fixed-size unicast Direct DTE：
 
 - `DirectDTESendInfo` 风格 helper 只有一个 `dst_addr`、`dst_tile`、`remote_fsm_id`。
 - receiver readiness、FSM monitor init/receive、DTE attach、send async/sync、wait done/status/error、
@@ -257,7 +257,7 @@ accepted-offsets 后的 Direct DTE resource stage 出现，不回写到 collecti
 - DTE resource 是有限资源；DTE id、FSM id、packet id、stream id 必须由 resource allocator 管理。
 - DTE completion 需要显式 wait/status 检查，不能被 host launch completion 或 local NCC fence 代替。
 
-当前 compiler-facing Direct DTE contract 禁止：
+V0 compiler-facing Direct DTE contract 禁止：
 
 - raw DTE broadcast / shuffle / scatter / gather 作为 collective 主路径。
 - 使用 raw `dst[32]` / `dest_num` 字段伪装成 public helper 支持的多目的地发送。
@@ -268,10 +268,10 @@ raw non-unicast DTE 可以作为 HardwareVerify 主题：需要独立 ABI、reso
 错误语义后才能进入 compiler lowering。在这些证据补齐前，all-gather、all-reduce、all-to-all 等
 collective 仍应由 unicast p2p schedule 组合表达，而不是在 logical IR 层被拒绝。
 
-当前 active cleanup 的目标是让 p2p verifier 挂在 `wafer.instr.dte_send` /
-`wafer.instr.dte_recv` / `wafer.instr.dte_wait` 上：检查局部 buffer、peer 非负、byte count，
+P2P verifier 挂在 `wafer.instr.dte_send` / `wafer.instr.dte_recv` /
+`wafer.instr.dte_wait` 上：检查局部 buffer、peer 非负、byte count，
 并在 enclosing module 存在 execution mesh 时检查 peer logical rank 落在 mesh rank domain 内；
-active route / Direct DTE protocol legality 仍由后续 `wafer.execution.mesh` /
+route / Direct DTE protocol legality 仍由后续 `wafer.execution.mesh` /
 `wafer.target.topology` consumer 完成。`wafer.instr.dte_wait` 要求至少一个 async token。
 旧 tile-region-to-C-ABI debug pass 已删除；fixed-size unicast p2p 到 committed Direct DTE
 issue/wait form 和 target LLVM emission 的 lowering 必须从 committed instruction-level IR、
@@ -488,7 +488,7 @@ Collective-level `wafer.tile.*` communication verifier：
 
 P2P-level verifier：
 
-- peer 是 logical execution rank；lowering 后的 physical endpoint 是单个 active physical tile。当前
+- peer 是 logical execution rank；lowering 后的 physical endpoint 是单个 enabled physical tile。V0
   Direct DTE compiler path 只允许 fixed-size unicast。
 - send source 和 recv destination 是 SPM tile-local storage 或 lowerable descriptor。
 - 若 selected protocol 使用 `#ddr` endpoint，descriptor 必须满足 DDR memory plan 的 default arena resource、

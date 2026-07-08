@@ -1,6 +1,6 @@
 # Wafer AI Compiler Architecture Design
 
-状态：架构设计草案；子设计状态以第 8 节和 `tasks/progress.md` 为准。
+状态：架构设计草案；子设计边界索引见第 8 节，执行状态以 `tasks/progress.md` 任务队列为准。
 
 
 说明：本文使用 **Wafer** 作为目标硬件和软件栈名称。底层公开文档、依赖和已有后端中仍可能出现 TX8/TX81 等历史命名，本文只在引用事实时保留这些名称。

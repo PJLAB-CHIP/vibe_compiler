@@ -58,7 +58,7 @@ Serving integration 暂不纳入本文通过标准。
 | Compute / Movement | committed instruction IR + accepted offset facts | wrapper family、layout、dtype、shape、issue/fence/wait 合法 |
 | Communication | tile_region / SPM materialization 后的 `wafer.tile.*` collective / `wafer.instr.dte_*` IR | endpoint、token、DTE/FSM resource、wait policy 合法 |
 | Target LLVM call emission / golden packet | committed instruction IR + accepted offsets + topology/execution-mesh + program parameter shard metadata/resource view + communication/sync lowering | LLVM dialect call 到 Wafer-owned target CRT symbol 合法；address unit、format、wait/completion verified；golden packet 覆盖 target CRT 参数到 wrapper mapping；call emission 通过不代表 CRT symbol closure 已通过；launch/resource view 从 IR 按需重算，不成为独立 artifact |
-| Object/package | target LLVM artifact + committed IR + topology/execution-mesh + program parameter shard metadata/resource view | `.ll -> .o`、LLVM object metadata normalization、target object + repo-vendored TX8 deps -> kcore shared object 的 device-code compile/link gate 合法；required-symbol gate 拒绝未解释的 `wafer_tx81_*` undefined symbol；package metadata 记录 `name`、`model.id`、`model.abi`、`model.interface`、`model.resources`、`modules` 和 `entrypoints`；package metadata auto-export 从 committed instruction IR、LLVM IR artifact、module path 和 model interface metadata 导出并通过 validator；resource/constant metadata 由同一 resource view analysis 生成 |
+| Object/package | target LLVM artifact + committed IR + topology/execution-mesh + program parameter shard metadata/resource view | `.ll -> .o`、LLVM object metadata normalization、target object + Wafer CRT object + repo-vendored TX8 deps -> kcore shared object 的 device-code compile/link gate 合法；required-symbol gate 拒绝未解释的 `wafer_tx81_*` undefined symbol；package metadata 记录 `name`、`model.id`、`model.abi`、`model.interface`、`model.resources`、`modules` 和 `entrypoints`；package metadata auto-export 从 committed instruction IR、LLVM IR artifact、module path 和 model interface metadata 导出并通过 validator；resource/constant metadata 由同一 resource view analysis 生成 |
 | Runtime/board | package + adapter | runtime allocation object binding contract、stub shielding、launch/completion/error propagation 合法；板端 completion 在有卡环境验证 |
 
 Gate 通过只说明进入下一层的输入合法，不说明整个 compiler 已完成。
@@ -229,9 +229,9 @@ M7 target LLVM call-emission and device-code gate：
   memref result 只允许作为可追到函数 DDR 参数的返回 alias 被丢弃，最终 device kernel ABI 为 void。
 - 本地 call-emission gate 至少检查 LLVM IR 文本中的 entrypoint、target symbol declaration、参数顺序和
   metadata/program 引用；device-code gate 随后用 LLVM `clang++` 做 `.ll -> .o`，再用 repo-vendored
-  `third_party/tx8_deps` `riscv64-unknown-elf-gcc` 链接 kcore shared object。`.ll` 不能直接交给 GCC；
-  device link 不默认编译或链接 capture shim，并必须通过 required-symbol 检查拒绝未解释的
-  `wafer_tx81_*` undefined symbol。
+  `third_party/tx8_deps` `riscv64-unknown-elf-gcc` 链接 target object、Wafer CRT object 和 TX8 deps
+  得到 kcore shared object。`.ll` 不能直接交给 GCC；device link 不默认编译或链接 capture shim，
+  并必须通过 required-symbol 检查拒绝未解释的 `wafer_tx81_*` undefined symbol。
 - package metadata 必须记录真实模型接口、资源、modules 和 entrypoint 合同；`tx.module`
   只能作为显式 debug/bring-up entrypoint 记录 function 和 binding order。auto-export gate 必须消费当前
   pipeline 产物导出 package metadata 并通过 validator；C stub-only program 只允许作为历史局部测试输入，

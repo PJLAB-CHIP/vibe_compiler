@@ -89,7 +89,8 @@ Pipeline position:
   call-emission 子 gate 要求 supported `wafer.instr.*` 生成 verifier-legal LLVM dialect / LLVM IR，并能由
   `mlir-translate` 输出 LLVM IR；unsupported target op 结构化失败。完整 target CRT / golden boundary
   还要求 Wafer-owned CRT symbol 有 typed wrapper 合同和 packet golden coverage。device-code gate 只链接
-  target LLVM object 和 TX8/CRT 依赖，不默认链接 capture shim，并负责 required-symbol closure。
+  target LLVM object、Wafer CRT object 和 repo-vendored TX8 deps，不默认链接 capture shim，并负责
+  required-symbol closure。
 ```
 
 ## 3. Instruction Legality
