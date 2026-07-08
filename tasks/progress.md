@@ -68,10 +68,11 @@ Pipeline position:
   resource view 供 metadata normalization 使用。
 - Current stage responsibility:
   用 LLVM toolchain 把 compiler-generated `.ll` 编成 RISC-V relocatable object，再用 repo-vendored
-  GCC / TX8 deps 链接 kcore shared object；同时固定 object metadata normalization 和 required-symbol
-  检查。`wafer_tx81_*` 这类 Wafer-owned target CRT symbol 必须由 repo-local Wafer CRT 提供，或被明确
-  记录为 runtime/loader 合法外部符号；不能只靠 `--allow-shlib-undefined` 把缺失 wrapper 当成成功。
-  `.ll -> .o` 不能交给 GCC，device link 不默认编译或链接 capture shim。
+  GCC / TX8 deps 链接 kcore shared object；同时固定 repo-local Wafer CRT source/object、
+  object metadata normalization 和 required-symbol 检查。`wafer_tx81_*` 这类 Wafer-owned target CRT
+  symbol 必须由 repo-local Wafer CRT implementation 定义，或被明确记录为 runtime/loader 合法外部符号；
+  不能只靠 `--allow-shlib-undefined` 把缺失 wrapper 当成成功。`.ll -> .o` 不能交给 GCC，device link
+  不默认编译或链接 capture shim。
 - Output artifact / IR:
   device object、kcore shared object、可供 package auto-export 消费的 module/resource metadata。
 - Downstream consumer:
@@ -84,9 +85,9 @@ Pipeline position:
   不重新做 target LLVM call emission，不恢复旧 helper ABI/shim，不做 package auto-export，不宣称 board launch
   或数值 correctness。
 - Completion gate:
-  至少一个 compiler-generated target LLVM artifact 完成 `.ll -> .o -> kcore .so`，链接 repo-local Wafer
-  CRT 和 repo-vendored TX8 deps，通过 required-symbol / object metadata 检查；`wafer_tx81_*`
-  target CRT symbol 不得以未解释 undefined 形式残留；没有 capture shim 依赖。
+  至少一个 compiler-generated target LLVM artifact 完成 `.ll -> .o -> kcore .so`，链接由 repo-local
+  Wafer CRT source 生成的 CRT object 和 repo-vendored TX8 deps，通过 required-symbol / object metadata
+  检查；`wafer_tx81_*` target CRT symbol 不得以未解释 undefined 形式残留；没有 capture shim 依赖。
 ```
 
 ## 已完成边界
@@ -110,7 +111,7 @@ Pipeline position:
 | 边界 | 状态 | 说明 |
 | --- | --- | --- |
 | Package schema / no-card runtime intake | partial | schema v2 validator、`model.abi = tx-kernel-v0`、`wafer-run` required-symbol gate 可用；只消费已有 package metadata，不证明 compiler 能从 instr 生成 package |
-| Device-code link helper | partial | `tools/wafer_device_link.py` 可消费已有 LLVM IR，生成/打印 `.ll -> .o -> kernel.so` 命令，并执行 LLVM clang / objcopy normalization / vendored GCC link；当前仍需要 required-symbol gate 来拒绝未解释的 `wafer_tx81_*` undefined symbol；不从 `wafer.instr.*` 生成 LLVM，不默认编译或链接 capture shim |
+| Device-code link helper | partial | `tools/wafer_device_link.py` 目前只是 device-code gate 的工具骨架：可消费已有 LLVM IR 并组织 LLVM clang / objcopy normalization / vendored GCC link；它还必须接入 repo-local Wafer CRT source/object，并用 required-symbol gate 拒绝未解释的 `wafer_tx81_*` undefined symbol；不从 `wafer.instr.*` 生成 LLVM，不默认编译或链接 capture shim |
 | Package metadata auto-export | partial | 工具可消费已有 LLVM IR + committed IR + model interface metadata；compiler-generated target LLVM gate 完成前不算主线完成 |
 
 ## 后续队列
@@ -118,7 +119,7 @@ Pipeline position:
 | 阶段 | 状态 | 输入 | 输出 / 完成 gate |
 | --- | --- | --- | --- |
 | target instruction LLVM call emission | done | memory-planned `wafer.instr.*` + accepted offsets + topology/execution-mesh + resource view + `tasks/11` coverage matrix 中的 V0 production target surface | V0 production target `wafer.instr.* -> llvm.call @wafer_tx81_*`，`mlir-translate` 能输出 LLVM IR；future/unsupported coverage 不允许通过泛 op 隐式进入 lowering，unsupported op 结构化失败；不包含 CRT wrapper / packet / link symbol closure |
-| device-code compile/link and target CRT symbol closure gate | active | compiler-generated LLVM IR + repo-vendored TX8 deps + repo-local Wafer CRT lib dir | LLVM `clang++` `.ll -> .o`、object metadata normalization、repo-vendored GCC `.o -> kcore .so`、required-symbol 检查证明 `wafer_tx81_*` 由 repo-local CRT 或明确合法外部解析；不默认编译/链接 capture shim |
+| device-code compile/link and target CRT symbol closure gate | active | compiler-generated LLVM IR + repo-vendored TX8 deps + repo-local Wafer CRT source/object | LLVM `clang++` `.ll -> .o`、Wafer CRT source -> CRT object、object metadata normalization、repo-vendored GCC `.o + CRT object -> kcore .so`、required-symbol 检查证明 `wafer_tx81_*` 由 repo-local CRT implementation 或明确合法外部解析；不默认编译/链接 capture shim |
 | package metadata auto-export mainline | pending | compiler-generated LLVM artifact + kcore shared object + committed IR + model interface metadata | package metadata 从真实 target LLVM artifact 和 committed IR 导出并 roundtrip；workspace 只在 target entrypoint 需要额外 workspace base pointer 时导出 |
 | runtime adapter / board launch | pending | model-level package + C++ host runtime + board/runtime provider | allocation/import/query/bind、module load/function lookup、launch、completion 和 error propagation 在有卡环境验证 |
 | HF selected-candidate integration | pending | HF Megatron-style transformer `wafer.group` + closed-loop selector | selected-candidate path 能接受同一 HF group 形态，或明确保持为优化/候选路径而非 HF runtime gate |
@@ -140,7 +141,10 @@ Pipeline position:
    closure：为当前 `LowerInstrToTargetLLVM.cpp` 可能 emit 的全部 `wafer_tx81_*` 定义 repo-local
    Wafer CRT implementation，直接调用 public `Tsm*` wrapper / Direct DTE helper；不调用 TX81/Triton
    `__*` ABI，不写 stub，不靠 `--allow-shlib-undefined` 放过 Wafer-owned symbol。
-2. 补 object / link lit 或 ctest：验证 `.ll -> .o -> .so` 实际执行、required-symbol gate、object
-   metadata normalization 和 repo-local CRT 依赖。
-3. 再恢复 package metadata auto-export 主线 gate：只消费 compiler-generated target LLVM artifact 和 committed
-   instruction IR，不使用手写 package metadata input 冒充 compiler 输出。
+2. 接入 device-code link gate：`tools/wafer_device_link.py` 必须按 `tasks/14` 编译 repo-local Wafer CRT
+   source 生成 CRT object，再链接 compiler-generated target object 和 repo-vendored TX8 deps；lit / ctest
+   需要验证 `.ll -> .o -> CRT object -> .so` 实际执行、object metadata normalization、required-symbol
+   gate，以及 intentionally missing `wafer_tx81_missing` 会被拒绝。
+3. CRT source/object link gate 通过后，再恢复 package metadata auto-export 主线 gate：只消费
+   compiler-generated target LLVM artifact、kcore shared object 和 committed instruction IR，不使用手写
+   package metadata input 冒充 compiler 输出。
