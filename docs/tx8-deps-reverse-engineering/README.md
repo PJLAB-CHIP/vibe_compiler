@@ -14,6 +14,7 @@ PyTorch eager integration behavior.
 | [firmware-kuiper-runtime-hardware-analysis.md](firmware-kuiper-runtime-hardware-analysis.md) | Full SDK, HPGR runtime, KMD/UAPI, BO/BAR/ATU, DTE/C2C, PG, completion semantics, system tools, and host/driver evidence from `firmware_kuiper`. |
 | [tx8-deps-reverse-engineering-reference.md](tx8-deps-reverse-engineering-reference.md) | Ground-truth reference derived from `tx8_deps` headers, build files, symbols, and disassembly.  It intentionally remains a tx8-deps-only evidence ledger. |
 | [tx8-api-struct-contract-annex.md](tx8-api-struct-contract-annex.md) | Generated host/Kcore signatures, enums, wrapper structs, and packet structs. |
+| [tx81-dlcompiler-crt-source-audit.md](tx81-dlcompiler-crt-source-audit.md) | Evidence audit of the old DLCompiler `third_party/wafer/crt/lib/Tx81` source that produced the historical `libvr.a`: full function inventory, wrapper-call findings, and boundaries for what Wafer CRT should or should not inherit. |
 | [txda-pytorch-runtime-wheel-analysis.md](txda-pytorch-runtime-wheel-analysis.md) | Static analysis of the copied `torch_txda` PyTorch runtime wheel: `PrivateUse1` backend registration, CUDA compatibility patches, tx_runtime/txdnn dependencies, stream/event semantics, eager op coverage, and implications for Wafer runtime layering. |
 | [tx8-symbol-coverage-matrix.md](tx8-symbol-coverage-matrix.md) | Human-readable symbol coverage summary. |
 | [tx8-symbol-coverage-matrix.csv](tx8-symbol-coverage-matrix.csv) | Full generated symbol coverage matrix. |
