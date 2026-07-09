@@ -1,6 +1,6 @@
 # Wafer Compiler Task Queue
 
-更新时间：2026-07-08
+更新时间：2026-07-09
 
 本文件只做任务队列管控，不声明新的架构合同，不复制编号设计文档里的长期设计。
 架构、IR 边界、pipeline contract 和 completion gate 以对应编号设计文档为准。
@@ -177,14 +177,55 @@
 - 直接把 `__Count`、`__Gelu*`、MXFP、layout helper 或 DTE helper 搬进 CRT。
 - 只写某个新 `wafer_tx81_*` prototype / stub，但没有 IR、verifier、lowering 和 tests。
 
-### Q4. Package metadata auto-export mainline
+### Q3.6. Target CRT writeback scalar batch
 
 状态：`next`
 
 前置状态：
 
-- Q2-Q3 已产出 kcore shared object link / symbol closure facts；下一步恢复 package metadata
-  auto-export 主线。
+- Q3.5 已把旧 TX81 CRT extended surface 分级，`count.c::__Count` 属于 `promote-now`。
+- `wafer_tx81_peripheral_argmax/argmin` 已采用 SPM offset writeback policy，可作为同类 writeback
+  scalar result 的 CRT 侧模式。
+
+设计文档：
+
+- `tasks/11-instruction-ir.md`
+- `tasks/14-target-llvm-golden-packet.md` 第 8 节
+- `docs/tx8-deps-reverse-engineering/tx81-extended-crt-surface-triage.md`
+
+要做什么：
+
+- 以 writeback scalar result 为一个完整 family，先支持 `count`，不要只补单个 CRT 函数。
+- 扩 instruction IR / verifier，让 peripheral count 有明确 result/writeback ABI、result dtype 和
+  output arity；不能把 count 伪装成普通 dest-buffer peripheral。
+- 扩 target LLVM typed call emission，生成 Wafer-owned `wafer_tx81_peripheral_count` fixed prototype。
+- 扩 repo-local Wafer CRT：调用 `TsmPeripheral::Count`，等待 writeback register 完成后，通过
+  `get_spm_memory_mapping` 把 scalar 写回 SPM offset。
+- 更新 `wafer_tx81_crt.h`、symbol closure checker、conformance checker、device-link required-symbol
+  gate 和 positive / negative lit。
+- 同步 `tasks/11`、`tasks/14`、reverse-engineering matrix 和本任务队列。
+
+完成要求：
+
+- `count` 从 verifier unsupported 变成明确合法的 writeback scalar instruction form。
+- target LLVM artifact、CRT object 和 final kcore `.so` 都闭合 `wafer_tx81_peripheral_count`。
+- negative tests 覆盖错误 arity、错误 result dtype / memory space 或缺失 writeback result 的结构化失败。
+- focused checker / lit 和 full lit 都通过，且不是靠 skipped / unsupported。
+
+不算完成：
+
+- 只添加 `wafer_tx81_peripheral_count` header/source stub。
+- 只复制旧 `__Count`，但没有 IR/verifier/lowering/device-link gate。
+- 把 count 放进普通 peripheral dest-buffer ABI，绕过 writeback register result 语义。
+
+### Q4. Package metadata auto-export mainline
+
+状态：`later`
+
+前置状态：
+
+- Q2-Q3 已产出 kcore shared object link / symbol closure facts。
+- 当前先推进 Q3.6 writeback scalar batch，完成后再恢复 package metadata auto-export 主线。
 
 设计文档：
 
