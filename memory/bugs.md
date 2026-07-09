@@ -72,7 +72,7 @@
 ## 2026-07-08 progress / memory 误导 target CRT 任务判断
 
 - 现象：回答下一步任务时，把旧 `tasks/progress.md` 状态叙事和旧 `memory/general_dev.md` 中的
-  `libvr.a` device-link 经验当成当前设计事实，转而纠结 `third_party/wafer_crt/lib/libvr.a`
+  `libvr.a` device-link 经验当成当前设计事实，转而纠结旧 `libvr.a` archive
   里是否定义 `wafer_tx81_*`，没有先按任务队列和编号设计文档确认边界。
 - 根因：把 progress 当成设计合同，把过时 memory 当成稳定事实；没有优先读取
   `tasks/README.md`、`tasks/progress.md` 任务队列和 `tasks/14` / `tasks/15` 的当前 pipeline contract。

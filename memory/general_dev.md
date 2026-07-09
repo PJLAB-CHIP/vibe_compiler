@@ -148,7 +148,7 @@
 - Device-code local link gate 默认不再读取外部 machine-local TX8 deps root。TX8 headers、
   libs、sysroot 和 Xuantie `riscv64-unknown-elf-gcc` 来自 repo-vendored
   `third_party/tx8_deps`；Wafer-owned `wafer_tx81_*` symbols 必须来自 `tasks/14` 定义的
-  repo-local Wafer CRT source/object，不能从 `third_party/wafer_crt/lib/libvr.a` 或 TX81 `__*`
+  repo-local Wafer CRT source/object，不能从旧 `libvr.a` archive 或 TX81 `__*`
   symbol 反推出 compiler target CRT closure。当前 vendored Xuantie toolchain 的可用 64-bit
   double-float multilib 是 `rv64imafdc/lp64d`。
   LLVM 21 生成的 RISC-V object 在进入 Xuantie GNU ld 2.35 前需要用 vendored

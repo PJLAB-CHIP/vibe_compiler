@@ -315,8 +315,8 @@ Pipeline position:
 
 ### 7.2 文件和所有权
 
-Wafer CRT 是 compiler target boundary，不放进 `third_party/wafer_crt/lib/libvr.a` 里作为 opaque
-二进制补丁。源代码放在 repo-local runtime 目录，由 device link gate 显式编译：
+Wafer CRT 是 compiler target boundary，不放进 opaque third-party archive 里作为二进制补丁。
+源代码放在 repo-local runtime 目录，由 device link gate 显式编译：
 
 | 文件 | 职责 |
 | --- | --- |
@@ -326,9 +326,9 @@ Wafer CRT 是 compiler target boundary，不放进 `third_party/wafer_crt/lib/li
 | `tools/wafer_device_link.py` | 编译 Wafer CRT source/object，链接 target LLVM object、Wafer CRT object、repo-vendored TX8 deps，并做 required-symbol 检查 |
 | `test/Tools/` | 覆盖 `.ll -> .o -> kcore .so`、Wafer CRT object link、undefined `wafer_tx81_*` failure |
 
-`third_party/wafer_crt/lib/libvr.a` 只可作为历史 TX8/Triton CRT evidence archive 参考；device link
-不链接 `-lvr`，Wafer-owned symbol 不从这个 archive 的 `__*` 名字继承 ABI，也不通过 alias/wrapper
-调用 `__*` 完成主线发射。需要用到的底层能力应通过 public TSM wrapper 或 Direct DTE helper 调用。
+旧 `libvr.a` archive 已从当前 dependency tree 删除；device link 不链接 `-lvr`，Wafer-owned symbol
+不从旧 TX81/Triton CRT 的 `__*` 名字继承 ABI，也不通过 alias/wrapper 调用 `__*` 完成主线发射。
+需要用到的底层能力应通过 public TSM wrapper 或 Direct DTE helper 调用。
 
 ### 7.3 ABI 规则
 

@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - Work in the current checkout; do not create a worktree unless explicitly requested.
-- Do not use `third_party/wafer_crt/lib/libvr.a` as the Wafer-owned CRT implementation.
+- Do not use the old `libvr.a` archive as the Wafer-owned CRT implementation.
 - Do not add Direct DTE empty implementations; Direct DTE remains outside the production CRT closure.
 - Production coverage must include every Q1 production `wafer_tx81_*` symbol, or the symbol must be structurally rejected and removed from the production closure.
 - No production code without a failing test first.
@@ -132,7 +132,7 @@ Expected after implementation: PASS.
 
 - [x] **Step 1: Write failing tool expectations**
 
-Update `wafer-device-link.test` to expect a CRT compile command, no `third_party/wafer_crt/lib`, no `-lvr`, and a required-symbol scan command.
+Update `wafer-device-link.test` to expect a CRT compile command, no old Wafer CRT library directory, no `-lvr`, and a required-symbol scan command.
 
 - [x] **Step 2: Implement linker changes**
 

@@ -194,8 +194,8 @@ riscv64-unknown-elf-gcc -shared -march=rv64imafdc -O2 \
 
 这里 `.ll -> .o` 不能交给 GCC；GCC 只负责 final link。`libcommon_util.a`、
 `libinstr_tx81.a` 和 `liblibc_stub.a` 来自 repo-vendored `third_party/tx8_deps/lib`；Wafer-owned
-`wafer_tx81_*` symbol closure 来自 repo-local Wafer CRT source/object，而不是
-`third_party/wafer_crt/lib/libvr.a` 或 TX81/Triton `__*` symbol。若某个 public wrapper 仍需要
+`wafer_tx81_*` symbol closure 来自 repo-local Wafer CRT source/object，而不是旧 `libvr.a` archive
+或 TX81/Triton `__*` symbol。若某个 public wrapper 仍需要
 lower-level archive 作为实现依赖，必须作为显式底层依赖进入 link，但不能成为 Wafer compiler
 target CRT ABI 的事实源。V0 profile 固定为 `rv64imafdc/lp64d`，因为这是当前 vendored Xuantie
 toolchain 实际提供的 64-bit double-float multilib；`-mcpu=c908` 或其它 Xuantie multilib profile
