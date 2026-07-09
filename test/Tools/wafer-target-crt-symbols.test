@@ -1,4 +1,5 @@
 # RUN: %python %wafer_src_root/tools/check_target_crt_symbols.py --repo-root %wafer_src_root
+# RUN: %python %wafer_src_root/tools/check_target_crt_conformance.py --repo-root %wafer_src_root
 # RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-gcc \
 # RUN:   -O2 -c -fPIC -DCONFIG_NO_PLATFORM_HOOK_H -DUSING_RISCV \
 # RUN:   -I%wafer_src_root/runtime/wafer_crt/include \

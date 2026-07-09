@@ -9,6 +9,8 @@
 
 #include "instr_adapter.h"
 
+extern int8_t *get_spm_memory_mapping(uint64_t offset);
+
 static Data_Format wafer_format(uint32_t format) {
   return (Data_Format)format;
 }
@@ -78,6 +80,10 @@ static void wafer_execute_ne(TsmNeInstr *instr) { (void)TsmExecute(instr); }
 static void wafer_execute_rdma(TsmRdmaInstr *instr) { (void)TsmExecute(instr); }
 static void wafer_execute_wdma(TsmWdmaInstr *instr) { (void)TsmExecute(instr); }
 static void wafer_execute_td(TsmDataMoveInstr *instr) { (void)TsmExecute(instr); }
+
+static uint64_t wafer_spm_mapped_addr(uint64_t offset) {
+  return (uint64_t)(uintptr_t)get_spm_memory_mapping(offset);
+}
 
 static void wafer_store_u32(uint64_t addr, uint32_t value) {
   *(volatile uint32_t *)(uintptr_t)addr = value;
@@ -658,8 +664,10 @@ void wafer_tx81_tdma_img2col(uint64_t src, uint64_t dst, uint32_t src_n,
 static void wafer_arg_writeback(uint64_t value_dst, uint64_t index_dst,
                                 uint32_t format, TsmPeripheralInstr *instr) {
   (void)TsmWaitfinish();
-  wafer_store_value(value_dst, format, instr->param.wb_data0);
-  wafer_store_u32(index_dst, (uint32_t)instr->param.wb_data1);
+  wafer_store_value(wafer_spm_mapped_addr(value_dst), format,
+                    instr->param.wb_data0);
+  wafer_store_u32(wafer_spm_mapped_addr(index_dst),
+                  (uint32_t)instr->param.wb_data1);
 }
 
 void wafer_tx81_peripheral_argmax(

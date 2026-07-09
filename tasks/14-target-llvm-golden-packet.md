@@ -344,7 +344,8 @@ Wafer CRT 是 compiler target boundary，不放进 opaque third-party archive �
 - ordinary compute/move symbol 只 issue，不默认 wait；显式 drain 只在 `wafer_tx81_local_fence`、
   DTE wait 或后续 runtime-visible completion boundary 中发生。例外是 public wrapper 只提供
   writeback register 结果、没有普通 dest buffer 的 `peripheral_argmax/argmin`：CRT 必须等待本地完成后
-  把 writeback value/index 写入 ABI dest。
+  把 writeback value/index 写入 ABI dest。argmax/argmin value/index ABI destinations are SPM offsets；
+  CRT maps them with `get_spm_memory_mapping` before writing，不能把它们当 host/mapped pointer 传入。
 - 每个 function 返回 `void`。错误检查属于 verifier / target lowering / device link gate；CRT 内部不通过
   silent return 表示 unsupported。
 
@@ -532,7 +533,7 @@ wafer_tx81_peripheral_elem_mask
 | `pool_*` | 创建 `TsmPoolInstr`；按 kind 调 `AvgPool/SumPool/MaxPool/MinPool/IndexdMaxPool/IndexdMinPool`；indexed variant 必须有 value dest 和 index dest |
 | `unpool_*` | 创建 `TsmUnPoolInstr`；按 kind 调 `Unpool/UnpoolAvg/UnpoolIdx`；scalar `index` 由 ABI 显式传入，不能用名字或 side table 恢复 |
 | `tdma_pad` / `tdma_img2col` | 创建 `TsmDataMoveInstr`；调用 `Pad` / `Img2col`；source/dest shape、pad、kernel stride 由 fixed ABI field 提供 |
-| `peripheral_*` | 创建 peripheral packet；按 kind 调 public wrapper；count/arg/factorize/bilinear/LUT/rand/elem_mask 的输入输出 arity、format 和 kind-specific attrs 由 fixed ABI 和 verifier 共同保证；argmax/argmin 需要等待 public writeback 后写入 value/index dest |
+| `peripheral_*` | 创建 peripheral packet；按 kind 调 public wrapper；count/arg/factorize/bilinear/LUT/rand/elem_mask 的输入输出 arity、format 和 kind-specific attrs 由 fixed ABI 和 verifier 共同保证；argmax/argmin 需要等待 public writeback 后，把 `value_dst` / `index_dst` 作为 SPM offset 经 `get_spm_memory_mapping` 映射后写入 |
 | `local_fence` | 只调用 `TsmWaitfinish` 或等价 local drain helper；不携带 multi-tile barrier 语义 |
 
 当前 call-emission 仍可能生成但不属于 Q2-Q3 production closure 的 ABI-incomplete symbols：

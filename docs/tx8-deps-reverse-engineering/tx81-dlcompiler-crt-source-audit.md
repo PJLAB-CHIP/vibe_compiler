@@ -51,11 +51,9 @@
 
 ## High-Priority Follow-Up Checks
 
-1. **SPM writeback mapping**：当前 `wafer_tx81_peripheral_argmax/argmin` 通过
-   `wafer_store_value` / `wafer_store_u32` 直接把 ABI dest 当 CPU pointer 写。旧源码和硬件文档都说明
-   Kcore 直接 load/store SPM offset 时应走 `get_spm_memory_mapping(offset)` 或等价 mapping。
-   如果 Wafer ABI 传入的是 SPM offset，这里应改成 mapped store；如果传入的是 mapped pointer，
-   设计文档和 lowering 示例必须明确。
+1. **SPM writeback mapping**：本批已把 `wafer_tx81_peripheral_argmax/argmin` 的
+   `value_dst` / `index_dst` 收敛为 SPM offset ABI。CRT 等待 public writeback 完成后，通过
+   `get_spm_memory_mapping(offset)` 映射 SPM offset，再写入 `wb_data0` value 和 `wb_data1` index。
 2. **MaskMove address width**：`instr_adapter_plat.h` 的 `TsmMaskDataMove::MaskMove` 第三个参数是
    `uint32_t mask`。当前 ABI 传 `uint64_t mask` 再截断，必须明确该字段是 mask offset/field，
    不是 generic 64-bit SPM address。
