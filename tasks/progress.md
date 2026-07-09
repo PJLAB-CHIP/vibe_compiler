@@ -142,6 +142,41 @@
 - 依赖 `--allow-shlib-undefined` 掩盖 Wafer-owned symbol 缺失。
 - 用空函数、日志函数或 success return 伪装未完成的 target support。
 
+### Q3.5. Target CRT extended surface staging
+
+状态：`done`
+
+设计文档：
+
+- `tasks/14-target-llvm-golden-packet.md` 第 8 节
+- `docs/tx8-deps-reverse-engineering/tx81-extended-crt-surface-triage.md`
+
+要做什么：
+
+- 把旧 DLCompiler TX81 CRT source 中未进入当前 105-symbol production closure 的函数一次性分级，
+  避免后续按单个旧函数零散复制 CRT helper。
+- 明确 `promote-now`、`needs-composite-ir`、`needs-layout-ir`、`needs-dte-abi`、
+  `reject-permanently` 和 `already-covered` 的进入条件。
+- 为后续扩展任务写清楚必须同时闭合 instruction IR、verifier、target LLVM ABI、repo-local CRT、
+  conformance/symbol checker 和 device-link tests。
+
+完成要求：
+
+- `tasks/14` 有 extended target CRT surface pipeline contract、分级状态和实现批次顺序。
+- evidence matrix 覆盖 count、scalar-immediate wrappers、GELU、reduce_mul、MXFP、layout/materialization
+  helpers、Direct DTE helpers 和 runtime compatibility/stub。
+- 明确不能只加 CRT 函数或复制旧 `__*` helper 就声称 production support。
+
+验证记录：
+
+- `tx81-extended-crt-surface-triage.md` 已接入 reverse-engineering README。
+- `tasks/14` 当前缺口已改为引用 extended surface staging，不再只列 Direct DTE 缺口。
+
+不算完成：
+
+- 直接把 `__Count`、`__Gelu*`、MXFP、layout helper 或 DTE helper 搬进 CRT。
+- 只写某个新 `wafer_tx81_*` prototype / stub，但没有 IR、verifier、lowering 和 tests。
+
 ### Q4. Package metadata auto-export mainline
 
 状态：`next`

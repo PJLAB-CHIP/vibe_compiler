@@ -1,8 +1,9 @@
 # Wafer Target LLVM Lowering and Golden Packet Design
 
-状态：实现中；target LLVM call-emission pass 和 Q1 symbol surface audit 已落地；下一步把 Wafer CRT
-implementation、device-code link gate 和 wrapper/register golden packet 合并为一个 target CRT closure
-milestone。范围：
+状态：production target CRT closure 已落地；target LLVM call-emission、repo-local Wafer CRT
+implementation、device-code link gate 和 required-symbol closure 已覆盖当前 105 个 production
+`wafer_tx81_*` symbols。扩展 surface 只按第 8 节 staged matrix 推进，不能从旧 CRT source 逐个复制。
+范围：
 memory-planned target-aligned `wafer.instr.*` 到 target CRT call、LLVM dialect / LLVM IR 和
 wrapper/register golden packet 的 lowering。
 
@@ -598,7 +599,84 @@ Q2-Q3 target CRT implementation / device-code required-symbol closure 完成后�
 可以推进到 Q4 package metadata auto-export。只实现 header、只生成 object、只覆盖一个代表性
 instruction family、或只靠 `--allow-shlib-undefined` 得到 `.so` 都不算完成。
 
-## 8. 当前缺口
+## 8. Extended Target CRT Surface Staging
+
+本节只定义旧 TX81 CRT source 中未进入当前 production closure 的能力如何分级、何时可以进入
+Wafer target CRT。它不直接扩大 Q2-Q3 的 105 个 production `wafer_tx81_*` symbols，也不把旧
+`__*` ABI 作为兼容目标。
+
+### 8.1 Pipeline Contract
+
+```text
+Pipeline position:
+- Upstream artifact / IR:
+  旧 TX81 CRT source audit、当前 `wafer.instr.*` production coverage matrix、target LLVM call ABI
+  和 repo-local Wafer CRT conformance gate。
+- Current stage responsibility:
+  把旧 source 中未进入 production CRT 的函数按 IR / ABI 缺口分级，决定哪些可以扩展 instruction
+  IR 后进入 production，哪些必须先成为 composite/layout/DTE IR，哪些永久不属于 compiler ABI。
+- Output artifact / IR:
+  extended surface staging matrix、后续 instruction IR / target LLVM / CRT implementation 任务边界，
+  以及每类能力的 completion gate。
+- Downstream consumer:
+  `tasks/11-instruction-ir.md` 的 op/kind/verifier 扩展、`LowerInstrToTargetLLVM.cpp` typed call
+  emission、repo-local Wafer CRT implementation、device-link required-symbol gate 和 package/runtime gate。
+- User-level driver / named pipeline:
+  仍然通过 `wafer-lower-groups-to-target-llvm` 和 `--wafer-lower-instr-to-target-llvm` 重放主线；
+  extended surface 不能引入要求用户手动调用旧 CRT helper 的长期流程。
+- Explicit non-goals:
+  不恢复 `libvr.a`，不暴露 `__Count` / `__Gelu*` / `__Send` 等旧 ABI 名称，不在 CRT 内隐藏
+  scheduler、scratch allocator、layout planner 或 DTE endpoint binder。
+- Completion gate:
+  每个 promoted family 必须同时更新 instruction IR/verifier、target LLVM typed ABI、CRT symbol
+  implementation、conformance checker、device-link required-symbol gate 和 positive/negative lit；
+  只添加 CRT 函数、只添加 header prototype、或只复制旧 helper 都不算完成。
+```
+
+### 8.2 Staging Status
+
+| status | meaning | production entry rule |
+| --- | --- | --- |
+| `already-covered` | 旧 source 的有用语义已经被当前 production `wafer_tx81_*` 或 verifier 规则覆盖 | 不新增 symbol；只保留 checker / doc gate |
+| `promote-now` | public wrapper 语义清楚，缺口主要是显式 IR kind/result ABI 和 verifier | 下一实现批次可以扩 `wafer.instr.*`、target LLVM ABI、CRT 和 tests 一起推进 |
+| `needs-composite-ir` | 旧 helper 依赖多条 wrapper issue、software loop、scratch buffer、SPM mapping 或显式 completion | 先设计 composite instruction / region / lowering sequence；不能先塞进 CRT helper |
+| `needs-layout-ir` | 旧 helper 本质是 layout/materialization/movement 规划 | 先用 layout/materialization IR 和 gather/scatter descriptor 表达；CRT 只接收已合法化 movement |
+| `needs-dte-abi` | 旧 helper 依赖 endpoint、channel、remote FSM、tile topology 或 sync slot binding | 先扩 DTE instruction ABI 和 runtime binding；不能用空 send/recv 函数补符号 |
+| `reject-permanently` | link/runtime compatibility、assert/print/math stub 或旧工程 glue | 不进入 Wafer IR、target LLVM ABI 或 production CRT |
+
+### 8.3 Extended Surface Matrix
+
+| old source family | status | required design before production |
+| --- | --- | --- |
+| `count.c::__Count` | `promote-now` | 增加 explicit scalar writeback peripheral IR/ABI；value destination 是 SPM offset，CRT wait 后 mapping 写回，和 argmax/argmin 共用 writeback policy |
+| arith/relation scalar-immediate `*VS` forms | `promote-now` | 增加显式 scalar-immediate instruction kind 或 operand form；verifier 区分 VV/VS，不从 operand 名字或 old ABI 恢复 |
+| GELU helpers `__GeluNone` / `__GeluTanh` / `op_gelu_*` | `needs-composite-ir` | 表达 approximation mode、dtype conversion policy、scratch buffer、wrapper issue order 和 completion；优先 lower 成已有 convert/arith/activation sequence |
+| `reduce_mul` | `needs-composite-ir` | 若无 native public reduce-mul wrapper 证据，必须表达初始化、multiply reduction order、temporary storage 和 numeric policy |
+| MXFP convert / scale helpers | `needs-composite-ir` | 先引入 dtype/type 或 explicit packed-format contract；表达 software SPM loads/stores、scale decode、scratch 和 completion |
+| channelnorm/dechannelnorm、concat、transpose、mirror、rotate、NCHW/NHWC、tensornorm | `needs-layout-ir` | 先在 layout/materialization 层表达 permutation/axis/padding/segment movement；target CRT 只接收已合法化 gather/scatter 或专门 TDMA symbol |
+| Direct DTE `send` / `recv` / atomic barrier helpers | `needs-dte-abi` | 表达 local/remote tile、channel、FSM id、receive buffer、sync slot 和 completion token；旧 4x4 ring prototype 不能成为 ABI |
+| `common.c`、`empty.c`、`assert.c`、`print.c`、software `powf` glue | `reject-permanently` | 只属于旧 runtime/link compatibility；Wafer 需要这类能力时应走 toolchain/runtime 标准库或明确 diagnostics |
+
+### 8.4 Implementation Ordering
+
+后续不能按“发现一个旧函数就补一个 CRT symbol”的方式推进。实现批次必须按 surface family 闭环：
+
+1. **Writeback scalar batch**：`count` 和未来同类 writeback peripheral result。完成条件是 IR/verifier、
+   target LLVM ABI、mapped SPM writeback CRT、checker、device-link 和 negative arity tests 同时更新。
+2. **Scalar-immediate wrapper batch**：arith/relation `VS` 等显式 scalar-immediate forms。完成条件是
+   instruction IR 能表达 scalar operand，target LLVM fixed ABI 不复用 VV symbol，不引入旧 `__*` 名称。
+3. **Layout/materialization batch**：transpose/mirror/rotate/NCHW-NHWC/channelnorm/concat 等先统一走
+   layout/materialization IR 和 gather/scatter descriptor legality；只有 public TDMA wrapper 比
+   gather/scatter 更能表达且 verifier 能检查时，才新增 target CRT symbol。
+4. **Composite compute batch**：GELU/MXFP/reduce-mul 必须先有 composite IR 或 explicit lowering sequence，
+   以及 scratch/order/completion gate；CRT 不做隐藏 planner。
+5. **Direct DTE batch**：补 endpoint/channel/FSM/runtime binding 后再恢复 production `wafer_tx81_dte_*`
+   closure。
+
+每个批次完成后都要更新本节、`tasks/11-instruction-ir.md`、conformance matrix、symbol checker 和
+device-link tests；不能只更新其中一层。
+
+## 9. 当前缺口
 
 - Wafer-owned target CRT implementation、typed wrapper contract、CRT object definition check 和
   device-code required-symbol closure 已覆盖 Q2-Q3 production closure 中的 105 个 symbols。
@@ -607,7 +685,8 @@ instruction family、或只靠 `--allow-shlib-undefined` 得到 `.so` 都不算�
 - Device-code compile/link helper 已能对已有 / compiler-generated LLVM IR 执行 `.ll -> .o -> kcore .so`
   和 object metadata normalization；production `wafer_tx81_*` 不能以未解释 undefined symbol 形式残留，
   也不能经过 capture shim。
-- Direct DTE call-emission surface 已审计为 ABI-incomplete；production lowering 还缺 runtime endpoint /
-  DTE channel binding，当前从 Q2-Q3 production CRT closure 排除。
+- Extended target CRT surface 已按 `already-covered`、`promote-now`、`needs-composite-ir`、
+  `needs-layout-ir`、`needs-dte-abi` 和 `reject-permanently` 分级；后续不能只补 CRT 函数，必须按
+  surface family 闭环 IR、ABI、CRT、checker 和 device-link gate。
 - package auto-export 当前只能消费已有 LLVM IR；恢复 compiler-generated package gate 要等 device-code
   compile/link gate 和 resource metadata export 衔接完成。
