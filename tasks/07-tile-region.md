@@ -410,7 +410,7 @@ launch args / identity lowering 的 IR contract。当前没有 multi-tile no-com
 - `wafer.tile.materialize_layout` 的输入输出 layout relation 合法；同 layout 冗余转换应由 verifier
   拒绝，上游应避免生成这种 no-op conversion。`wafer.tile.reshape` 这类无副作用 view op 可由
   canonicalization 删除同类型 no-op。
-- `#wafer.memory<spm, *>` memref 在 runtime/target-codegen materialization 前必须经过 SPM allocation；
+- `#wafer.memory<spm, *>` memref在executable commit/target-codegen前必须经过whole-entry SPM allocation；
   compiler-managed `#wafer.memory<ddr, *>` alloc 必须有 DDR memory planning 接受的
   `wafer.ddr.offset` fact；external DDR boundary value 的 descriptor/view/root validation 由当前
   instruction-level IR 重算。

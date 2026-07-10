@@ -320,7 +320,9 @@ instr-level target kind。
 | CT reduce `sum/avg/max/min` | `wafer.instr.reduce` + `#wafer.instr_reduce_kind` + target `dim` code | V0 production target op | tile 层 reduce `dimensions` 在 instruction lowering 中 materialize 为 native `TsmReduce` dim code：`0:C`、`1:W`、`2:H`、`3:N`、`4:HW`、`5:HWC`；aligned physical layout、rank 和 dtype 合法性由 verifier / target lowering 检查 |
 | CT convert opcode 139..174 | `wafer.instr.convert` + `#wafer.instr_convert_kind<src_dst>` + kind-specific attrs | V0 production target op | dtype pair 由 kind 唯一决定；INT8->FP 要求 `zero_point`，rounding wrapper 要求 `rounding_mode`，plain wrapper 不允许额外转换参数；same-format copy 必须走 movement，不允许伪造成 convert |
 | NE GEMM | `wafer.instr.gemm` | V0 production target op | 只表达 GEMM / batched GEMM 主路径参数；bias、scale、quant、fused activation 和复杂 psum policy 不能被隐式打开 |
-| Direct DTE fixed-size unicast | `wafer.instr.dte_send` / `dte_recv` / `dte_wait` | V0 candidate instruction form；现有 logical-peer LLVM call emission 仅为不完整 bring-up evidence | IR 表达 logical peer、bytes 和 async token；whole-entry memory planning 后必须完成 physical transport acceptance。只有 pinned concrete binding 或 compiler-verified relocatable typed slots 随 variant commit 后，target LLVM 才是 production；RuntimeSession 只机械填已验证 template，不补做 endpoint/channel planning |
+| NE affine INT8 GEMM | `wafer.instr.quantized_gemm` | typed production extension；未完成capability/CRT/golden前target-illegal | exact M/K/N/batch/format、q0/q1、left/right zero point、typed scale operands/mode和matched capability；不复用plain GEMM flag |
+| MXFP/FP8 packed decode | `wafer.instr.mxfp_decode` | explicit-composite production extension；未完成scratch/completion/CRT gate前target-illegal | packed source + block scale + destination + scratch；decode到BF16/FP16，不能冒充CT convert或native FP8 GEMM |
+| Direct DTE fixed-size unicast | `wafer.instr.dte_send` / `dte_recv` / `dte_wait` | V0 candidate instruction form；现有 logical-peer LLVM call emission 仅为不完整 bring-up evidence | IR 表达entry-local typed `TransportActionId`、logical peer、bytes 和 async token；ID按static entry structured op/block order确定性生成，不来自op name/SSA print name。whole-entry memory planning 后必须完成 physical transport acceptance，并在candidate clone的uncommitted `wafer.executable.transport`中绑定该ID。只有complete concrete members以及由其证明的pinned projection或compiler-verified relocatable typed slots随 variant commit 后，target LLVM 才是 production；RuntimeSession 只机械填已验证 template，不补做 endpoint/channel planning |
 | local NCC drain / visibility fence | `wafer.instr.local_fence` | V0 production target sync；LLVM call emitted | target LLVM call emission 映射到 local wait/drain Wafer CRT call；不是 multi-tile barrier |
 | SPM memcpy helper / copy | 无单独 copy op | V0 composite lowering | copy 是 `gather_scatter` 的 descriptor 特例；不引入 `wafer.instr.copy` |
 | ChannelNorm / DechannelNorm / Tensor-Normalization | 无单条 op | V0 composite lowering | 作为 layout materialization algorithm 展开为 gather/scatter 序列；native TensorNom opcode 133 不作为 V0 主路径 |
@@ -365,9 +367,9 @@ memref 替换原 op result 的 uses。
 - result/temp/psum/staging buffer 由 `memref.alloc` 或 accepted alias/view 创建。
 - metadata-only reshape 由 verifier-legal memref view 表达；physical layout conversion 必须是
   explicit movement。
-- SPM offset、range、bank span 由 R3.2f 写入；后续 runtime/target-codegen 阶段必须从这些 facts
-  和当前 memref use-def/view relation 派生 address/range 参数，不能复制成独立 placed/access
-  descriptor 中间协议。
+- SPM offset、range、bank span由R3.2f写入；后续target-codegen必须从这些facts、committed executable
+  bindings和当前memref use-def/view relation派生address/range参数，不能复制成独立placed/access descriptor
+  中间协议。RuntimeSession只实例化KAD resource base/control slots，不读取instruction memref或SPM plan。
 - RDMA/WDMA 的 DDR side 使用 `memref<..., #wafer.memory<ddr, layout>>`；DDR memory planning stage 负责
   external allocation contract、declared arena/placement-domain resource、compiler-managed/resident requirement、planned DDR
   ranges 和 constant residency。
@@ -544,6 +546,38 @@ V0 要求三个 SPM memref operand 都使用 aligned layout marker：rank <= 2 �
 `#wafer.memory<spm, cx>`，rank > 2 使用 `#wafer.memory<spm, ncx>`。Fused bias、activation、
 quant、psum accumulation policy 和 sparse / INT8 variants 不属于 R3.2d V0。
 
+#### 7.5.1 Low-Precision Instructions
+
+```text
+wafer.instr.quantized_gemm lhs, rhs (, scale_p, scale_n)? into dest attr-dict
+wafer.instr.mxfp_decode packed, scale, scratch into dest attr-dict
+```
+
+`wafer.instr.quantized_gemm`只由verified `wafer.tile.quantized_gemm`和matched native
+`LowPrecisionComputeCapabilityV1`产生。operands/effects显式覆盖lhs/rhs/dest及enabled scale buffers；attrs固定M/K/N、
+left/right batch、transpose、input/output target format、q0/q1、left/right zero point、closed scale mode和typed
+`QuantStorageAbiProfileId` ref。q0/q1和zero point必须在target证明范围内，accumulator/result/saturation relation必须与
+上游descriptor一致。首个signed-i8 profile只允许mathematical zero point `[0,127]`并checked转换为同值raw field；
+negative zp、128..255或two's-complement reinterpretation必须由另一个有golden/board证据的capability显式开放，不能
+static_cast。首个native profile的destination是INT8且output zero point固定为0；i32仅为internal accumulator，f16
+结果必须由后续显式dequant/convert op产生。bias、activation、sparse、implicit psum、其它output zero point或
+capability未声明的granularity非法。
+V1 command中的rounding/saturation是profile固定implicit hardware policy的冗余防错编码，不是caller-selectable
+packet field；CRT只接受与profile常量完全相等的值。首个planned native profile还要求`scale_mode=none`和两个scale
+operands absent；axis scale在exact formula/indexing/table dtype证据形成新profile前target-illegal。
+`wafer.instr.convert`的single-source zero-point不是该op的替代品。
+
+`wafer.instr.mxfp_decode`显式记录registered FP8 encoding、packed/scale/destination storage descriptor、element count、
+block shape/count、tail和NaN/Inf/subnormal/overflow policy；operands是packed source、E8M0或profile允许的typed scale、
+BF16/FP16 destination和exact scratch memref。它的MemoryEffects必须包含source/scale/scratch read、scratch/destination
+write和composite issue/local-completion；decode completion支配任何destination consumer，scratch/destination在该
+completion前不可复用。TX81首发只允许profile证明的32-value block/software decode+scale组合；其它block/encoding
+结构化失败。
+
+两种op都不得保存wrapper symbol或旧`__*` helper名。target LLVM只按typed profile选择Wafer-owned fixed ABI；在
+profile、geometry、SPM range、CRT conformance、golden packet/device-link任一gate完成前，这些op可以用于
+parser/verifier negative/plan测试，但必须在production target legality中失败。
+
 ### 7.6 Conv / Pool / UnPool
 
 ```text
@@ -719,6 +753,10 @@ R3.2d verifier checks only instruction legality:
   planning、target/package lowering 复用该 verifier。每次 narrowing 都必须证明源值在目标字段范围内；
   silent i64-to-i32 或 size-to-packet-field truncation 非法。
 - NE GEMM and CT reduce require supported aligned layout marker, dtype and rank.
+- `quantized_gemm`要求exact matched low-precision capability/profile、signed INT8 storage、legal q/zp/scale mode、
+  scale operand range和accumulator/saturation proof；plain GEMM不能携带这些fields。
+- `mxfp_decode`要求packed/scale/destination/scratch types与block/element/tail policy一致，packed capacity和scale
+  count exact，decode/local-completion支配consumer与scratch reuse；不能使用native FP8 format假设。
 - relation/elementwise bool storage uses logical `i1`; physical byte size remains derived, not stored.
 - `wafer.instr.elementwise` / `wafer.instr.reduce` use instr-level target kind attrs only；generic
   `#wafer.elementwise_kind` / `#wafer.reduce_kind` on instruction ops is verifier-illegal.
@@ -770,6 +808,19 @@ geometry/range/narrowing verifier，target LLVM/package 不能成为首次发现
 DDR offset assignment必须接受或拒绝当前IR中的explicit DDR views/descriptors/compiler-managed
 `memref.alloc`。随后pre-commit `ExecutableResourceView`把accepted facts materialize为typed executable
 resources/entry bindings；target只派生address/range，package/runtime不得从instruction IR重新恢复resource语义。
+
+library分层固定为：`WaferIR`只拥有target-independent `InstructionGeometry`、checked arithmetic和structured
+root/view/access derivation，不包含`VerifiedTargetCompilationContext`、target field width或conversion request；独立
+`WaferTargetLegality`单向依赖`WaferIR + WaferCompilerIdentity + WaferABI`，拥有target limits、allocation view和narrowing
+proof。Whole和`WaferInstrToTargetLLVM`都依赖`WaferTargetLegality`，反向依赖禁止。
+
+shared target verifier不以post-commit conversion request作为唯一allocation输入。它只接受private-construction、
+generation-bound `VerifiedPhysicalAllocationView`：candidate adapter由whole-variant transaction内部从当前clone、fresh
+`ExecutableResourceView`、accepted offsets/transport/projection和exact target context构造；committed adapter由sealed
+executable的`VerifiedTargetConversionRequest`重放相同root/view/slot/capacity relation。caller不能传raw range map、resolver
+callback或已构造的ResourceView。candidate view只允许形成transformation-local `VerifiedCandidateTargetPreflight`，不能产出
+LLVM/KAD/artifact；commit函数内部重新构造并验证，不接受caller proof。post-commit target conversion必须再次从committed
+facts重跑同一geometry core，不能复用candidate analysis或把commit前result当artifact authority。
 
 ## 11. Example
 
@@ -922,3 +973,7 @@ R3.2d.4 已完成：
    或等价 source op 出现后再接入 completion gate。
 14. dynamic DDR view、超过三层的 RDMA/WDMA descriptor packing、以及非 tensor-layout DDR 边界等
     source op 出现后再接入；当前不能靠名字或 shape 猜测出缺失的 strided boundary facts。
+15. 按7.5.1实现`wafer.instr.quantized_gemm` ODS/interface/verifier/effects、tile lowering和native capability gate；
+    未完成target CRT/golden/device-link前保持production target-illegal。
+16. 实现`wafer.instr.mxfp_decode`及packed/scale/scratch/completion合同，lower到显式software decode + scale
+    composite；不得把legacy helper或普通convert当完成证明。

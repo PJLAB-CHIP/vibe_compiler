@@ -25,9 +25,35 @@
 
 ## 任务队列
 
-当前没有`doing`。唯一`next`是Q0 Target LLVM semantic correctness；Q11已把distributed executable、
-atomic commit、resource/event、target artifact、package/runtime长期合同回写编号设计文档。Q0-Q0.4的
-实现仍先于extended CRT surface，不能因设计已收敛而把实现gate误标为完成。
+当前没有`doing`；唯一`next`是Q0 Target LLVM semantic correctness。Q11已把typed model/distributed handoff、
+distributed executable、atomic commit、resource/event、transport/projection、WCRE/KAD、target artifact、
+package/runtime长期合同回写编号设计文档；Q12已完成七份实施计划的依赖、owner、生命周期、分层、复杂负载gate和
+fresh verification收口。Q0-Q0.4的实现仍先于extended CRT surface，不能因设计和计划已收敛而把实现gate误标为完成。
+
+### 实施计划索引
+
+实施计划只拆解文件、测试、提交和依赖顺序，不声明新 IR/ABI 合同。实现过程中若发现计划与编号设计
+冲突，以编号设计为准并先修设计 owner，再继续施工。
+
+| 顺序 | 实施计划 | 队列范围 |
+| --- | --- | --- |
+| 1（可并行） | `docs/superpowers/plans/2026-07-10-target-correctness-foundation.md` Task 1 | Q0临时fail-closed containment；不是正式correctness完成 |
+| 2 | `docs/superpowers/plans/2026-07-10-target-artifact-set.md` shared foundation | cross-plan Proto/WCRE/schema/value/closure/runtime-safe command ABI/context前置 |
+| 3 | `docs/superpowers/plans/2026-07-10-package-runtime.md` Task 0 | 唯一outer `ProgramOutputTransaction`/delivery owner与runtime-neutral host verification ledger |
+| 4 | `docs/superpowers/plans/2026-07-10-typed-program-distributed-identity.md` | Q0.2 typed model/distributed/candidate handoff |
+| 5 | `docs/superpowers/plans/2026-07-10-target-correctness-foundation.md` Task 4 | Q0.1 structural geometry + target legality core |
+| 6 | `docs/superpowers/plans/2026-07-10-whole-variant-executable.md` | Q0.3, Q0.4 complete planning + atomic executable attach |
+| 7 | `docs/superpowers/plans/2026-07-10-target-correctness-foundation.md` Tasks 2, 3, 5 | Q0 sealed post-commit conversion + complete geometry families |
+| 8 | `docs/superpowers/plans/2026-07-10-target-artifact-set.md` post-commit path | KAD cross-check/command families/ELF/atomic target-set，Q4前置 |
+| 9 | `docs/superpowers/plans/2026-07-10-package-runtime.md` remaining tasks | Q4, Q6 package/delivery/loader/shared runtime services |
+| 10 | `docs/superpowers/plans/2026-07-10-real-model-board-gates.md` | Q5, Q7, Q8, Q9 real/scale/board/calibration gates |
+
+总依赖、跨计划接口和review checkpoint见
+`docs/superpowers/plans/2026-07-10-wafer-long-horizon-implementation-roadmap.md`。
+其中target-artifact计划的共享Proto/WCRE/schema/runtime-safe values/static closure/command ABI value/context基础在typed
+identity前执行；同一计划的KAD builder/command-family activation/ELF/artifact-set publication只消费committed
+executable和correctness conversion。这个拆分用于解除identity依赖，不允许candidate digest在commit前进入cache或
+外部artifact。
 
 ### 当前队列表
 
@@ -42,14 +68,15 @@ atomic commit、resource/event、target artifact、package/runtime长期合同�
 | Q2-Q3 | `done` | Target CRT implementation, wrapper coverage, and device-code symbol closure | repo-local CRT 定义 105 个 production symbols；device link 编译 CRT object 并 required-symbol scan；`wafer_tx81_missing` negative gate 已覆盖。 | `tasks/14-target-llvm-golden-packet.md`, `tasks/16-verification-plan.md` |
 | Q3.5 | `done` | Target CRT extended surface staging | 旧 TX81 CRT source 未进入 production closure 的能力已分级；后续不能逐个复制旧 helper。 | `tasks/14-target-llvm-golden-packet.md`, `docs/tx8-deps-reverse-engineering/tx81-extended-crt-surface-triage.md` |
 | Q3.6 | `later` | Target CRT writeback scalar batch | 在 target lowering、instruction geometry 和 package ABI 的 P0 correctness closure 后再恢复；新增 surface 不能扩大当前错误 lowering 的适用面。 | `tasks/11-instruction-ir.md`, `tasks/14-target-llvm-golden-packet.md`, `docs/tx8-deps-reverse-engineering/tx81-extended-crt-surface-triage.md` |
-| Q4 | `blocked` | Typed package ABI and auto-export mainline | 长期设计已收敛，仍阻塞于Q0.2-Q0.4实现；落地SlotId->ResourceId、complete TargetArtifactSet、ProjectionSet和single C++ verifier后，只从committed executable派生manifest。 | `tasks/15-launch-runtime-package.md`, `tasks/16-verification-plan.md` |
+| Q4 | `blocked` | Typed package ABI and auto-export mainline | 长期设计已收敛，仍阻塞于Q0.2-Q0.4实现；落地`SlotId -> (ResourceId, StateSlotVersionRole)`、complete TargetArtifactSet、ProjectionSet和single C++ verifier后，只从committed executable派生manifest。 | `tasks/15-launch-runtime-package.md`, `tasks/16-verification-plan.md` |
 | Q5 | `later` | Real program-chain target LLVM integration | 真实 PyTorch/HF program chain 接到 target LLVM artifact；主线 gate 必须消费真实 program-chain 产物。 | `tasks/01-architecture.md`, `tasks/14-target-llvm-golden-packet.md`, `tasks/16-verification-plan.md` |
 | Q6 | `blocked` | Runtime package adapter and board launch gate | 阻塞于 Q4 的 IR-derived package metadata，以及有卡环境和可信 completion source。 | `tasks/15-launch-runtime-package.md`, `tasks/16-verification-plan.md` |
 | Q7 | `later` | HF mandatory-commit integration | 让当前 HF Megatron-style transformer group 进入 mandatory candidate selection/commit；direct path 只作候选和回归基线，不能被定义成跳过 commit 的 production 例外。 | `tasks/01-architecture.md`, `tasks/06-group.md`, `tasks/11-instruction-ir.md`, `tasks/16-verification-plan.md` |
 | Q8 | `later` | Transformer staged gaps | target LLVM integration、board execution、numeric correctness、dynamic shape/bounds、KV cache、resident weights 等后续子任务。 | `tasks/05-local-compute-normalization.md`, `tasks/06-group.md`, `tasks/11-instruction-ir.md`, `tasks/12-ddr-memory-planning.md`, `tasks/15-launch-runtime-package.md`, `tasks/16-verification-plan.md` |
 | Q9 | `later` | Overlap and cost calibration | 基于 board/profile 数据校准 overlap、cost model 和 PMU 反馈；不写成 IR 语义事实。 | `tasks/06-group.md`, `tasks/09-spm-memory-planning.md`, `tasks/12-ddr-memory-planning.md`, `tasks/16-verification-plan.md` |
 | Q10 | `done` | System design and implementation review | 已从复杂大模型和多卡长期目标完成跨 pipeline 审计；报告记录 P0/P1 风险、压力矩阵、长期边界和整改 gate，不新增架构合同或 compiler stage。 | `tasks/01-architecture.md`, `tasks/16-verification-plan.md`, `tasks/archive/09-system-design-implementation-review.md` |
-| Q11 | `done` | Long-horizon IR/ABI design convergence | 已按hybrid distributed executable、whole-variant atomic commit、typed resources/events、orthogonal target/shape/rank axes、atomic TargetArtifactSet、Protobuf PackageManifest/RuntimeSession系统更新`tasks/01-16`，并闭合rank、arena、transport/projection、state failure、segmented MoE和artifact identity owner。 | `tasks/01-architecture.md`, `tasks/02-frontend-stablehlo-program.md`, `tasks/03-shardy-spmd.md`, `tasks/04-topology-execution-mesh.md`, `tasks/05-local-compute-normalization.md`, `tasks/06-group.md`, `tasks/07-tile-region.md`, `tasks/08-layout-materialization.md`, `tasks/09-spm-memory-planning.md`, `tasks/10-compute-movement.md`, `tasks/11-instruction-ir.md`, `tasks/12-ddr-memory-planning.md`, `tasks/13-communication.md`, `tasks/14-target-llvm-golden-packet.md`, `tasks/15-launch-runtime-package.md`, `tasks/16-verification-plan.md` |
+| Q11 | `done` | Long-horizon IR/ABI design convergence | 已按typed model/distributed handoff、hybrid distributed executable、whole-variant atomic commit、typed resources/events、orthogonal target/shape/rank axes、concrete transport candidate与final projection分工、WCRE semantic identity、mandatory ELF ABI note、atomic TargetArtifactSet、Protobuf PackageManifest/RuntimeSession系统更新`tasks/01-16`，并闭合rank、arena、state failure和segmented MoE owner。 | `tasks/01-architecture.md`, `tasks/02-frontend-stablehlo-program.md`, `tasks/03-shardy-spmd.md`, `tasks/04-topology-execution-mesh.md`, `tasks/05-local-compute-normalization.md`, `tasks/06-group.md`, `tasks/07-tile-region.md`, `tasks/08-layout-materialization.md`, `tasks/09-spm-memory-planning.md`, `tasks/10-compute-movement.md`, `tasks/11-instruction-ir.md`, `tasks/12-ddr-memory-planning.md`, `tasks/13-communication.md`, `tasks/14-target-llvm-golden-packet.md`, `tasks/15-launch-runtime-package.md`, `tasks/16-verification-plan.md` |
+| Q12 | `done` | Long-horizon implementation plan decomposition | 已把编号设计拆成六份可执行子计划和一份依赖路线图，并闭合cross-plan API owner、MLIR/context/backing/session生命周期、无环metadata/runtime bootstrap、sealed provider authority、两阶段state migration、真实文件顺序和有界复杂模型gate；fresh静态检查、构建、CTest、lit（204 pass、1 intentional unsupported）与独立终审通过。 | `tasks/01-architecture.md`, `tasks/02-frontend-stablehlo-program.md`, `tasks/03-shardy-spmd.md`, `tasks/04-topology-execution-mesh.md`, `tasks/05-local-compute-normalization.md`, `tasks/06-group.md`, `tasks/07-tile-region.md`, `tasks/08-layout-materialization.md`, `tasks/09-spm-memory-planning.md`, `tasks/10-compute-movement.md`, `tasks/11-instruction-ir.md`, `tasks/12-ddr-memory-planning.md`, `tasks/13-communication.md`, `tasks/14-target-llvm-golden-packet.md`, `tasks/15-launch-runtime-package.md`, `tasks/16-verification-plan.md` |
 
 ### 任务完成门槛表
 
@@ -72,3 +99,4 @@ atomic commit、resource/event、target artifact、package/runtime长期合同�
 | Q9 | 有 board/profile 数据来源、复现实验命令和校准前后对比；cost model 改动不破坏 legality gate。 | 无 profile 数据静态调参；把 issue 顺序、planner 搜索过程或估算时间写入长期 IR contract。 |
 | Q10 | 报告覆盖总体目标、复杂大模型 workload 压力矩阵、全 pipeline contract、文档与实现一致性、IR/pass 边界、runtime/ABI、测试真实性和路线优先级；至少评估 dynamic batch/sequence、KV cache、MoE、TP/PP/EP/DP、多卡通信、resident weights、量化、多变体和 async overlap，并为每个主要结论给出文件/行号或本轮命令证据，明确事实、推断、限制和可验证整改门槛。 | 只复述现有设计；只证明最小闭环；只列风格问题；把历史审计报告当成第二份架构合同；未运行新鲜验证就判断 gate 成立。 |
 | Q11 | 编号文档共同定义verified program -> target environment/mesh/arenas -> distributed program -> candidate planning -> whole-variant atomic commit -> typed executable/static rank programs -> atomic TargetArtifactSet/KAD -> PackageManifest -> RuntimeSession；target/shape/rank axes正交，resource/transport/projection/completion/error owner唯一，并覆盖state、segmented MoE和multi-card gates。 | 新增第二份总体设计；只在审计报告写建议；保留direct production bypass、per-group commit、默认rank0、flat JSON双validator、shadow schedule/scalar completion、runtime replanning或最小静态case终态。 |
+| Q12 | 路线图和六份子计划覆盖Q0-Q9仍需实现的完整依赖链；每项给出真实文件边界、输入/输出artifact、先失败测试、focused验证、原子提交和下游接入点；共享基础只有一个owner，计划内容不重定义编号合同。 | 只有高层阶段名或工期估计；按单个case/shape安排实现；并行计划重复创建digest/proto/resource/transport owner；把计划写成新架构合同；没有主线vertical gate。 |

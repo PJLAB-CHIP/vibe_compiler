@@ -36,6 +36,8 @@ DTE、target CRT 或 runtime package。
 - 为 `wafer.group` planner 和 per-op tiling interface 提供稳定输入。
 - 保留 typed parameter和persistent state的SSA read/update/alias relation、symbolic bounds及component
   boundary；state不能退化成无身份temporary，也不能通过名字识别。
+- 保留registered MLIR Quant/StableHLO uniform quantized types/ops和FP8 types，并规范化成shared typed
+  quantization semantics；不能把scale/zero-point/block encoding降成dtype string或名字metadata。
 
 非目标：
 
@@ -58,6 +60,7 @@ StableHLO local program
     or replicated / single-tile local body from default SPMD policy
   + ConstantLike tensor values
   + typed immutable parameter / persistent-state boundary
+  + registered uniform-quantized / FP8 types and typed scale/zero-point resources when present
   + optional StableHLO logical collective ops produced by SPMD partitioning
 ```
 
@@ -123,6 +126,32 @@ StableHLO op semantics、types、indexing maps、SSA use-def 和 verifier 可证
 `linalg.batch_matmul` 或 `linalg.generic`，只要 indexing map 和 iterator type 可由 verifier
 检查。QK^T 不应该靠 `rhs` 名字识别 transpose；transpose relation 来自 dot dimension numbers
 或显式 `transpose` / indexing map。
+
+#### 4.1.1 Quantization Semantic Contract
+
+本层优先保留pinned StableHLO/MLIR Quant已有的`!quant.uniform`/per-axis types、
+`stablehlo.uniform_quantize/dequantize`和registered FP8 element types。Wafer IR verifier将它们规范化为closed
+semantic union `QuantizationDescriptor = none | AffineQuantDescriptor | BlockScaledFloatDescriptor`：
+
+- `AffineQuantDescriptor`记录storage/expressed/accumulator/result type、`per_tensor | per_axis | per_group`
+  granularity、typed axis/group size、scale与zero-point的immutable attr或SSA/resource refs、rounding、saturation和
+  requantization policy。能由MLIR Quant type唯一表达的字段不复制到第二attr；interface只提供统一view。
+- `BlockScaledFloatDescriptor`记录FP element encoding（至少区分E4M3、E4M3FN、E4M3FNUZ、E5M2及后续versioned
+  values）、expressed/accumulator/result type、block axes/shape、scale element encoding/layout、NaN/Inf/subnormal/
+  overflow/tail policy和typed scale resource。StableHLO FP8 type本身不足以表达block scale relation时才使用Wafer
+  typed attr/op补充，不能使用JSON或free-form encoding string。
+
+descriptor只表达数学值与量化关系，不拥有bit packing、byte order、bank alignment或artifact chunking；这些属于
+`tasks/08`的`StorageEncodingDescriptor`。verifier检查scale/zero-point type与数量、axis/rank、group/block整除或
+显式tail、zero-point storage range、accumulator overflow bound以及result/requant relation。local normalization必须
+保留这些typed事实到tile selection；不能先dequantize成普通float而丢失候选，也不能把unsupported target组合当作
+semantic-invalid。target legality由后续capability决定。
+
+这里的union是IR层规范，不新增一套public `Wafer/IR/Quantization.h` C++ value struct。能由registered MLIR
+Quant/float8 type表达的事实留在type；额外block-scale relation使用Wafer ODS attr/interface并由同一verifier读取。
+跨compiler/package/runtime的可交付表示由`tasks/14`的`semantic_identity.proto` nested message及runtime-safe
+`WaferABI::QuantizationDescriptor`唯一拥有，`WaferCompilerIdentity` adapter只从verified IR投影/反验。WaferIR、
+package和runtime不得复制同名字段集合或各写一套verifier。
 
 当前 R2.4 主线通过官方 StableHLO-to-Linalg conversion 支持 attention score 的 QK^T 形态：
 
@@ -364,7 +393,8 @@ Pipeline position:
   `DestinationStyleOpInterface`、MLIR `TilingInterface`、
   `WaferTilingInterface` 和 `WaferLinalgExtCollectiveOpInterface`，输出可被 group 边界作为
   tensor-level IR 消费；复杂负载gate还必须让typed MPMD/MoE edge形成
-  `segmented_all_to_all`的SSA counts/displacements/capacity contract。测试输入/FileCheck/gtest只做补充覆盖。
+  `segmented_all_to_all`的SSA counts/displacements/capacity contract，并让registered affine quant/FP8 source
+  roundtrip到shared `QuantizationDescriptor`而不丢scale/zero-point/block policy。测试输入/FileCheck/gtest只做补充覆盖。
 ```
 
 当前 handoff 支持 `rank_group` 和 `rank_groups` 两种互斥表示。`rank_group` 表示当前 op 唯一
@@ -518,6 +548,7 @@ emission、target CRT symbol closure、package/no-card runtime required-symbol�
 | 子结构 | 当前证据 | 结论边界 |
 | --- | --- | --- |
 | dot / 2D GEMM | `test/Frontend/lower-stablehlo-dot-to-linalg.mlir`、`stablehlo-to-linalg.mlir`、program gate | 证明 2D dot 可进入 structured matmul，不证明 tile shape / GEMM packet |
+| affine / block-scaled low precision | source-backed或忠实StableHLO registered quantized/FP8 types + uniform quantize/dequantize | 证明semantic descriptor、scale/zp/block relation保留；target support、packing、CRT和numeric gate属于后续阶段 |
 | attention QK^T / AV | `lower-stablehlo-attention-score.mlir`、`lower-stablehlo-attention-value.mlir`、`lower-stablehlo-attention-softmax-value.mlir` | rank-4 attention dot 由官方 conversion 转成 linalg generic contraction；是否能 schedule 仍归后续 planner |
 | elementwise / broadcast | `lower-stablehlo-elementwise.mlir`、`lower-stablehlo-official-linalg-coverage.mlir`、`lower-stablehlo-linear-residual.mlir`，以及下游 `lower-groups-to-instr-elementwise-select.mlir` | 证明本地 legacy 子集和官方 pointwise conversion 都可产生 structured tensor IR；basic `arith.select` 会在 instruction lowering 中改写成 target movement sequence，不作为 `wafer.instr.elementwise` kind；dynamic mask 泛化、board numeric correctness 和 fused mask optimization 仍未闭环 |
 | reduce | `lower-stablehlo-reduce.mlir`、norm/softmax staged tests | 证明细粒度 StableHLO reduce 可进入 structured reduction IR；backend numeric policy 和 resource legality 未闭环 |

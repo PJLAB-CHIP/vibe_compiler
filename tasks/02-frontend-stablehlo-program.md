@@ -22,23 +22,24 @@ Pipeline position:
 
 - Upstream artifact / IR:
   source model、exporter-native program 或 pre-exported StableHLO / MLIR module，以及 importer 能验证的
-  model signature、metadata 和 parameter/resource payload。
+  model signature、ordered model entrypoint records、metadata 和 parameter/resource payload。
 - Current stage responsibility:
-  把上游模型收敛成 verified Wafer program：StableHLO/func/tensor/arith IR、typed input/output、
+  把上游模型收敛成 verified Wafer program：StableHLO/func/tensor/arith IR、typed model entrypoints和input/output、
   immutable parameter、persistent mutable state、显式 alias/mutation、symbolic shape constraint、
-  parameter/resource payload 和可解释 sharding seed；拒绝 graph break、fallback、未建模副作用、
+  exporter-native structured program members/edges、parameter/resource payload 和可解释 sharding seed；拒绝 graph break、fallback、未建模副作用、
   不可验证 alias 或只能靠名字恢复的语义。
 - Output artifact / IR:
   StableHLO Wafer program directory 或等价 verified program object，包含 `functions/forward.mlir`、
   `functions/forward.meta`、typed model ABI、symbolic shape constraint、pre-SPMD parameter/state
-  resource payload 和必要的 importer diagnostics。
+  resource payload、同module内的typed model program graph和必要的 importer diagnostics。
 - Downstream consumer:
   target environment / topology / execution mesh materialization、Shardy propagation、Wafer-owned SPMD partition、
   local compute normalization 和后续 group/tile/resource pipeline。
 - User-level driver / named pipeline:
   frontend verifier 入口是 `wafer-compile-stablehlo --verify-stablehlo-program`；继续编译时由
-  `wafer-opt --program-pipeline=stablehlo-to-executable` 或等价 production driver 消费同一个 verified
-  program；当前 `stablehlo-spmd*` pipelines 是该 driver 的内部/分阶段 debug 入口。
+  `wafer-opt --program-pipeline=stablehlo-to-executable` 选择production driver mode，内部调用
+  `runStablehloToExecutableCompilation(CompilationRequest, ProgramOutputTransaction &)`消费同一个verified
+  program和move-only owners；当前`stablehlo-spmd*`与IR-only transform pipelines只是该driver的内部/分阶段debug入口。
 - Explicit non-goals:
   不选择 physical tile endpoint、layout、SPM/DDR allocation、DTE protocol、runtime package、
   launch metadata 或 completion source；不决定 state/KV 的 DDR address、page placement、session handle
@@ -61,6 +62,8 @@ Pipeline position:
 - 区分 immutable parameter 与 persistent mutable state，保留 resource identity、access、lifetime 和
   显式 alias/mutation；KV cache、page table 或其它 serving state 复用同一通用资源合同。
 - 保留或规范化上游 sharding annotation，使 Shardy / SDY 阶段可以接管。
+- 将exporter-native multi-program/MPMD structure规范化为同一MLIR module中的typed program member/edge graph；
+  不用函数名、额外JSON或payload path恢复PP stage、expert、router或state edge。
 - 统一 constant / weight 的 frontend 表达，使后续 Linalg / Wafer planning 只消费
   `arith.constant` 或其它 `ConstantLike` tensor value。
 - 在 frontend 边界发现 program 错误，而不是让后端用名字或 runtime fallback 猜测。
@@ -285,6 +288,33 @@ program verifier 负责保证进入 Wafer pipeline 的 IR 仍满足本文合同�
 
 ## 3. IR 合同
 
+### 3.0 Frontend Admission and Source Limits
+
+program/frontend boundary接收validated nonidentity `FrontendAdmissionLimits`，字段全部positive checked且0不表示
+unbounded。至少限制program index/metadata/JSON depth与bytes、single/total MLIR module/function source bytes、MLIR
+tokens/nesting、ops/regions/blocks/values/types/attrs/symbols、model entrypoints/resources/dims/constraints/aliases/state
+groups/invocation fields/program members/edges、payload refs、single/total declared payload bytes、locator/string和NPY/
+tensor header bytes、simultaneous source leases/FD、parse workers、peak clone bytes及diagnostic bytes。
+
+root/index/metadata先在`VerifiedProgramSource` capability下用checked counters验证，再打开function/payload。不能先按
+untrusted repeated count reserve。无法在in-process MLIR parser逐token强制nesting/memory的untrusted textual/bytecode
+输入必须进入sandboxed `FrontendParseWorker`，受wall/CPU/RSS/address-space/process/output limits约束；parent只接收
+bounded parsed bytecode/diagnostic并再次运行structural counters。timeout、output bomb、crash或limit失败kill/reap worker，
+不返回partial module。trusted in-process replay仍必须先满足同一byte/structure limits，不能形成绕过。
+
+`VerifiedProgramSource`公开面只提供immutable `SourceArtifactRef` metadata，不提供`acquire/open/read`。它私有保留root
+capability、expected refs和source-access coordinator。frontend parse只能经`detail::FrontendSourceAccess`，immutable artifact
+materialization只能经`detail::ArtifactMaterializationSourceAccess`；两者都先从同一source coordinator与各自stage/outer
+transaction budget做多维all-or-none reservation，再move-consumenon-forgeable read/work lease执行beneath/no-follow open。
+返回的`SourceArtifactLease`持有reader/FD reservation和exact handle到销毁，parse/materialization work lease持有worker/
+simultaneously-read-or-transformed bytes/buffer reservation到操作结束。lease绑定source owner、stage owner和generation，不能
+公开构造、复制、拆分、提前release或跨stage/ref使用。这样frontend limits仍是source全局上界，而Whole materialization的
+更小并发/byte/outer limits不能被持有source的其它代码绕过。
+
+limits只决定当前compiler service是否接纳完整program；不得删function/member/resource、截断graph/payload或改变ID。
+充分limits、不同worker/buffer值必须产生相同verified IR/ModelInterfaceSemanticId；超限时source module、outer output
+transaction和content store trusted index不变。
+
 ### 3.1 Function Boundary
 
 Frontend function signature 是用户可见语义边界：
@@ -330,6 +360,155 @@ alias/mutation 必须形成可验证关系：被写资源、返回 alias、read-
 不能暗中覆盖 input，immutable parameter 不能出现在 write set，persistent state 的 alias target 必须属于
 同一 resource identity 或由明确 view relation 连接。后续 SPMD 可以为 parameter/state 生成 logical shard，
 但 frontend 不选择 rank、endpoint、DDR arena、resident placement 或 runtime allocation object。
+
+#### 3.2.1 V1 Typed Model Interface Handoff
+
+当前 `forward.meta` / `input_locations` 可以作为import source，但其字符串type/name和文件位置不能继续
+成为group、distributed、executable或package的语义输入。Frontend verifier在program import transaction内
+必须把已验证事实materialize为最小typed model handoff；原始metadata/payload locator只保留为loader/source
+evidence。V1对象为：
+
+| object | 必须字段/关系 | 不拥有 |
+| --- | --- | --- |
+| `wafer.model.interface` | stable model/interface symbol、ordered `wafer.model.entrypoint` refs、resource/shape-constraint/alias symbols、一个program-graph ref | sharding、physical layout、runtime session |
+| `wafer.model.entrypoint` | model-interface-local nonzero API ordinal、canonical function/program-member root refs、ordered user-visible input/output ResourceId refs、persistent state-group access/update contract、nonidentity diagnostic alias | static kernel EntryId、module/function symbol作用户ABI、runtime-selected graph |
+| `wafer.model.program_graph` | nonempty ordered member records和typed cross-member edge records；singleton model也显式materialize | SPMD partition、physical stage placement、microbatch schedule |
+| `wafer.model.program_member` | model-interface-scoped nonzero `ModelProgramMemberId`、one or more `func.func` refs、ordered typed local ports、source-kind evidence | function name作身份、logical mesh coordinate、expert/stage placement |
+| `wafer.model.program_edge` | source/destination member+port、`tensor/state/control/segmented_dispatch/segmented_combine` enum、semantic type/DimId、必要ResourceId/alias-update relation和bounded segmented capacity | physical transport、runtime queue、buffer name |
+| `wafer.model.resource` | stable `ResourceId`、`external_input`/`external_output`/`immutable_parameter`/`persistent_state` enum、semantic tensor type、typed access/lifetime、boundary port kind+ordinal、shape `DimId` refs、initializer/import policy | parameter name作身份、rank shard、DDR arena/address |
+| `wafer.model.shape_constraints` | stable `DimId` declarations；positive lower bound、finite upper bound、equality和positive divisibility clauses组成的typed conjunction | arbitrary script、target capability、actual runtime value |
+| `wafer.model.invocation_policy_integer` | model-interface local nonzero ordinal、checked `uint64` lower/upper、required或typed default、nonidentity diagnostic name | runtime actual value、string lookup、schedule body |
+| `wafer.model.alias` | source/destination ResourceId或function port、read/write/update enum、view relation和跨invocation visibility | API-name-derived inplace、physical overlap |
+| `wafer.model.state_group` | model-interface-scoped nonzero `uint32 StateConsistencyGroupId`、nonempty canonical persistent-state ResourceId members和group update relation | physical version、copy/COW policy、runtime lease |
+| payload binding | resource ref、content digest、byte size、encoding和program-container artifact locator | locator/path作content identity、target packing/layout |
+
+`wafer.model.interface`是module-level symbol-table owner；function signature仍唯一拥有SSA value order/type，
+model entrypoint按自己的ordered port refs选择用户可见API，model resource用entrypoint API ordinal、port kind和
+port ordinal绑定对应function/program root boundary，不复制function type。ResourceId、role、access、
+lifetime和alias/update不能分散在多套arg string attrs中。简单
+`wafer.frontend.dynamic_bounds`在materialization时规范化到同一shape-constraint set；成功后下游只读
+`DimId`和typed clauses，不能同时把旧bounds attr当第二事实源。
+
+model entrypoint先以model-interface-local API ordinal及完整root/IO/state contract进入model WCRE preimage，待
+`ModelInterfaceSemanticId`完成后公开为typed composite
+`ModelEntrypointId = (ModelInterfaceSemanticId, nonzero uint32 api_ordinal)`。entrypoint records按exporter声明的
+用户API semantic order从1连续编号；function/member symbol和diagnostic alias只作可解析ref/显示，不参与ID。
+single-function模型仍必须materialize一个entrypoint。root ref必须指向同module已验证的function或
+`wafer.model.program_member`，其reachable graph、boundary ports、state read/update set和declared resources闭合；
+重复/unknown ordinal、空root、IO/state contract不匹配或只能靠`forward`/`decode`等名字恢复均失败。
+
+invocation-policy integer先以model-interface-local ordinal进入model WCRE preimage，待
+`ModelInterfaceSemanticId`完成后公开为typed composite
+`InvocationPolicyFieldId = (ModelInterfaceSemanticId, nonzero uint32 field_ordinal)`，避免semantic digest自包含。
+fields按declaration semantic order从1连续编号；`lower <= upper`，default若存在必须在bounds内，required field不能
+同时依赖隐式default。diagnostic name不参与identity或lookup。`ShapeGuardRef`和`BoundedCountExpr`只能引用该typed ID；
+纯compiler固定值使用expression constant，不能伪造caller field。frontend source必须显式materialize declaration，
+不能让后段从CLI string或ExecutionSchedulePolicy临时新增。
+
+V1 exporter bridge不是program-directory sidecar：Shardy MPMD能稳定表达的输入先通过registered dialect adapter
+规范化；当前pinned surface不能表达时，exporter/importer必须在同一MLIR module中materialize上述registered
+`wafer.model.program_*` ops并由普通parser/printer/verifier承载。`forward.meta`、新JSON、function-name regex或
+Python-only object都不能成为member/edge协议。`ModelProgramMemberId`按exporter声明的ordered semantic member list
+从1连续编号；function symbol只作可解析ref，rename不改变ID。单函数模型生成一个singleton member和空edge set。
+
+PP exporter graph用member/typed tensor-state edges表达stage数学dataflow，不记录microbatch queue；EP/MoE graph显式
+表达router、dispatch、expert、combine members及segmented dispatch/combine edges，edge引用count/payload ports、expert
+domain和finite capacity bound。actual token counts/displacements仍是SSA data。缺member port、edge type/shape/resource
+relation或bounded capacity时frontend失败，不能由后续按expert/stage函数名补齐。
+
+V1 stable ID不从parameter/function名字、payload path或metadata map iteration order生成。import transaction先按
+exporter声明的ordered entry list建立zero-based `entry_ordinal`，再按verified function boundary建立model-local结构键：
+
+```text
+LocalBoundaryResourceKey =
+  (entry_ordinal, boundary_kind = argument | result, boundary_ordinal, model_role)
+LocalInternalResourceKey =
+  (entry_ordinal, structural_owner_ordinal, model_role)
+LocalDimKey = (tagged local resource key, tensor_dimension_ordinal)
+```
+
+identity构造必须是无自引用的两阶段transaction。第一阶段的model-interface WCRE只编码上述local keys、local
+dim keys、local entrypoint/policy ordinals及它们之间的typed relation，绝不把尚未存在的public ResourceId/DimId塞回
+preimage；完整program graph、types/constraints、alias/state relation、initializer policy和immutable payload content
+共同形成`ModelInterfaceSemanticId`。第二阶段才计算public IDs：record 13/14和domain
+`wafer.model-boundary-resource.v1`/`wafer.model-internal-resource.v1`的preimage都是
+`(ModelInterfaceSemanticId, tagged local resource key)`；record 15/domain `wafer.model-dimension.v1`的preimage是
+`(ModelInterfaceSemanticId, public ResourceId, tensor_dimension_ordinal)`。同一logical resource的argument/result alias只生成一个canonical
+`ResourceId`，其它boundary通过`wafer.model.alias`引用它；canonical origin按explicit alias/update relation选择，
+不能靠名字相同合并。`structural_owner_ordinal`只用于没有function boundary port的verified initializer/state owner，
+由其在`wafer.model.interface` region内的registered op/block structural order确定。immutable payload bytes、shape、
+dtype和initializer policy进入model-interface semantic identity，因此V1有意让任何这类semantic model变化产生新的
+owner，并连带产生新的ModelEntrypointId、InvocationPolicyFieldId、ResourceId和DimId。这是fail-closed的model-version
+隔离：两个结构完全相同但payload/program不同的模型不能在全局package/cache/state registry中共享bare IDs。需要跨
+model version保留state时必须运行显式、typed old/new state migration并建立新registry snapshot；不能依赖ID碰巧稳定、
+参数名相同或复用StateNamespaceId。entry插入/reorder同样属于model interface变化并需要显式迁移。
+
+第二阶段完成后，frontend verifier必须从public IDs反查唯一owner/local key并重放第一阶段全部relation；same owner+
+local key只能产生一个ID，同一typed ID若对应不同record hard fail。不同`ModelInterfaceSemanticId`即使拥有完全相同的
+local keys也必须产生不同ResourceId/DimId，禁止任何全局bare-key builder入口。
+
+`forward.meta`/`input_locations` importer只能用记录与function argument/result ordinal的已验证对应关系选择
+`boundary_kind/ordinal/role`；metadata中的name/path仅作diagnostic/locator。若exporter无法无歧义提供ordered
+boundary、role、alias或internal owner relation，import必须失败，而不是回退到名字匹配。materializer和verifier
+共享同一ID builder；rename-only输入必须生成相同IDs，改变port ordinal、role、alias origin或dimension ordinal必须
+按上述规则改变ID或relation。
+
+immutable payload的content digest覆盖payload exact bytes；path只用于在program container内定位并在load时
+复核digest。persistent state没有immutable content digest，但必须有initializer/import policy、stable identity、
+access/lifetime和alias/update。state failure consistency仍由executable/runtime policy选择，frontend不提前
+写physical version/poison状态。
+
+`StateConsistencyGroupId`不是semantic digest，也不从exporter group name或metadata map顺序产生。importer先
+normalization全部persistent resource和alias/update relation，再以
+`(canonical sorted member ResourceId list, typed group update relation)`排序group records，从1开始连续编号；该
+nonzero `uint32`只在同一`ModelInterfaceSemanticId`内解释。typed group update relation至少区分只读成员、可能更新成员
+以及必须共同publish的relation，不能保存runtime version、copy strategy或provider page handle。改变member set或update
+relation会改变model-interface semantic identity并可能重编号后续groups；rename/path变化不改变它。exporter未声明
+group时只允许为没有跨resource原子关系的state生成显式singleton group，不能把相关page table/backing或shards拆成
+独立singleton来规避原子性。
+
+handoff verifier必须证明：invocation-policy field ordinal连续唯一、bounds/default合法；program graph nonempty、member ID连续且function/port refs闭合；每个cross-member edge
+source/destination、type/DimId、resource/alias-update和segmented capacity合法，普通single-function call不能偷偷跨
+member替代edge；每个entry argument/result恰好绑定一个合法port/resource role；ordinal连续且
+无重复；shape clauses与rank/static dims一致；immutable resource只读且payload shape/dtype/bytes/digest一致；
+persistent state的write/update/return alias全部显式；普通output不暗中覆盖input；所有ResourceId、DimId和
+alias refs闭合。每个persistent state恰好属于一个显式state group；page table/backing、KV shards或其它必须一致
+publish的资源必须属于同一group，singleton也materialize group record。group ID连续、canonical且update relation
+覆盖全部write/alias；member overlap、empty、mixed non-state、同组成员跨不相容lifetime scope或遗漏共同publish relation
+均失败。handoff中出现rank、endpoint、
+SPM/DDR、runtime handle或从name恢复role必须失败。
+
+frontend handoff的C++ owner必须是move-only、non-aggregate `MaterializedFrontendProgram`：它共同拥有frontend-private创建并完成
+dialect/interface注册的`MLIRContext` owner、该context中的已验证module、`VerifiedProgramSource` root capability、model semantic
+identity、module generation和outer canonical-encoding owner token；成员析构顺序必须保证module/所有clone在context之前销毁。
+唯一compiler-private materializer内部创建context并完成parse/materialization，production callable不接受独立`MLIRContext &`、
+caller context factory或context replacement。`OwningOpRef<ModuleOp>`本身不能被当作context lifetime proof。
+public API只暴露不含MLIR operation/block/value handle的immutable `VerifiedModelProgramView`，其中是typed entrypoint/member/
+edge/resource/state-group/invocation-field关系及semantic IDs；不得返回可变`ModelInterfaceOp`或module handle。parallel policy
+factory只能消费该immutable view，不能借caller提供的op。后续`CompilationRequest`必须move-consume整个owner，并在第一次
+candidate clone/staging前从私有module重放handoff verifier、module generation和`ModelInterfaceSemanticId`；proof创建后的
+任意rewrite、跨owner token或semantic mismatch都失败，不能让旧view授权已变化IR。
+
+`CompilationRequest`只能通过compiler-private access一次move出non-aggregate `ExecutableCompilationInput`。该owner共同持有
+frontend MLIR context、`OwningOpRef<ModuleOp>`、完整`VerifiedProgramSource`/source coordinator、frontend/whole admission limits、canonical owner和
+all-and-only canonical `VerifiedTargetCompilationContextRegistry`、`VerifiedTargetProgramMaterializationPlan`及verified parallel/
+SPMD policies；第一次candidate clone后仍必须保留source coordinator到全部immutable
+artifact materialization与outer transaction attachment结束。`beginExecutableCandidateTransaction`只消费该input和同owner
+`ProgramOutputTransaction`，不能接raw `ModuleOp`后让request/source提前析构。raw module adapter只允许test target使用，且
+没有payload materialization或publish权限。
+
+target context registry从`CompilationRequest`经candidate winner、`CommittedExecutableProgram`到lower executable commitment始终
+沿同一move-only owner链转移；commit/attach API不另接context vector，因此不存在commit后重新配对或只保留owner-token的窗口。
+
+direct driver seal input后必须立即建立candidate transaction并clone完整source module；target environment/mesh materialization、
+parallel/SPMD和所有IR-local transform只修改transaction-owned working clone。`ExecutableCompilationInput`中的source module/root
+coordinator保持immutable reference owner，用于失败对照、重新clone和payload读取；任何pre-clone mutating pipeline都非法。
+
+production完整编译由直接orchestrator
+`runStablehloToExecutableCompilation(CompilationRequest, ProgramOutputTransaction &)`唯一持有这些move-only
+owners并驱动candidate、payload、target/package attachment和commit。`buildStablehloToExecutableTransformPipeline(OpPassManager &)`
+若存在，只表达当前IR上的局部transform segment，不携带source、transaction、target context、payload或commit权限；不能把纯
+`OpPassManager`冒充用户级production driver，也不能要求用户手工拼pass补齐所有权。
 
 ### 3.3 Constant And Immutable Parameter
 
@@ -402,6 +581,7 @@ tool / pass 名字不是架构边界，但实现上至少需要以下职责：
 | dependency/config validate | build manifest + dialect registry | importer/backend capability diagnostics |
 | program import | exported model / StableHLO | Wafer program: MLIR module + typed model ABI + symbolic constraint + parameter/state resource payload |
 | program verify | Wafer program | diagnostics |
+| structured program normalization | exporter-native/Shardy MPMD member graph或same-module `wafer.model.program_*` | verified model program members、ports和typed tensor/state/control/segmented edges |
 | sharding import normalization | old sharding attrs | Shardy-consumable annotations |
 | resource normalization | exporter signature / resource payload | typed input/output、immutable parameter、persistent state、alias/effect relation |
 | constant normalization | StableHLO constants / immutable parameter payload | `arith.constant` / `ConstantLike` / immutable resource binding |
@@ -443,6 +623,10 @@ V0 验证项：
 - function signature 的 role、shape、rank、dtype、symbolic bound 和跨 boundary constraint 检查。
 - typed input/output、immutable parameter、persistent mutable state、显式 alias/mutation positive/negative
   verifier；至少覆盖一个跨 invocation KV-like state resource，而不把 KV 名字或 physical page 当协议。
+- invocation-policy integer declaration/typed ID覆盖required/default、bounds、rename invariance、duplicate/missing/
+  out-of-range default；compiler-fixed microbatch count必须编码expression constant而非伪造field。
+- source-backed structured program graph覆盖singleton、PP two-member和router/heterogeneous-expert/combine；rename
+  function/symbol不改变member/edge relation，missing/overlap port、unbounded segmented edge和name-only graph失败。
 - `stablehlo.constant` / exporter program payload 到 `arith.constant` / `ConstantLike` 的 normalization 检查。
 - sharding annotation import 后仍能被 Shardy verifier 接受。
 - dependency configuration test：LLVM / MLIR / StableHLO / Shardy dialect 能显式注册；可选 importer
@@ -462,7 +646,7 @@ framework capture program
   -> frontend verifier
   -> target environment / topology / valid execution mesh
   -> if no user sharding seed exists, P2.S1 adds a mesh-derived Shardy seed
-  -> Shardy propagation / SPMD partitioner / MPMD component formation
+  -> typed parallel component formation -> per-component Shardy propagation / SPMD partitioner
   -> verified distributed program
        + typed component ABI
        + partition/replica coordinates and rank classes

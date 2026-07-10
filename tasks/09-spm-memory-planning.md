@@ -41,7 +41,7 @@ layout materialization
   -> liveness/effect analysis
   -> whole-entry SPM memory planning + shared physical geometry/range verification
   -> candidate target-ABI address/range/narrowing preflight before commit
-  -> runtime/target-codegen derivation from the same committed facts
+  -> target-codegen derivation from the same committed facts; runtime only binds declared KAD slots
 ```
 
 如果没有合法 allocation，不能生成一个等待下游修复的 scheduled group，也不能保留已通过的
@@ -67,11 +67,17 @@ Pipeline position:
 - Output artifact / IR:
   仅存在于 complete passing variant clone 中的 same instruction-level IR with offset-only
   `wafer.spm.offset` planning facts on SPM memref definitions，或结构化 allocation failure reason；
-  后续 target LLVM、package metadata 和 runtime adapter 直接从该 fact、memref use-def、endpoint facts 和 view relation
-  按需派生 launch/resource 与 ABI address-range 参数，不再经过 placed memref / descriptor 中间层。
+  后续pre-commit `ExecutableResourceView`从该fact、candidate typed resource records、memref use-def、
+  arena/endpoint facts和view relation重算并补全resource range；atomic commit提升同一
+  `wafer.executable.resource` records。target LLVM只从
+  committed instruction IR + executable entry/resource bindings派生ABI address-range参数；package和
+  runtime只消费committed executable/manifest，不直接读raw offset facts。本层不新增placed
+  memref或影子descriptor中间层。
 - Downstream consumer:
   whole-entry DDR memory planning、physical transport acceptance、launch projection 和 closed-loop
-  whole-variant candidate driver；atomic commit 后才由 target LLVM、package 和 runtime adapter 消费。
+  whole-variant candidate driver和pre-commit `ExecutableResourceView`；atomic commit后target LLVM消费
+  committed IR/resource bindings，package只消费committed executable + complete `TargetArtifactSet`，
+  runtime只消费validated manifest。
 - User-level driver / named pipeline:
   production 主线由 `wafer-opt --program-pipeline=stablehlo-to-executable` 或等价 driver 的 whole-variant
   candidate loop 调用本 stage；`wafer-lower-groups-to-memory-planned-instr` 和 `wafer-plan-spm-memory` 只作
@@ -119,9 +125,10 @@ Pipeline position:
 输出：
 
 - `wafer.tile.region` 中带 `#wafer.memory<space, layout>` 的 memref；其中 `#wafer.memory<spm, *>` memref 由本文
-  allocator 分配，`#wafer.memory<ddr, *>` memref ownership 和 accepted range 由 DDR memory planner / runtime/package/launch 层提供
-  ownership。
-- runtime/target-codegen 阶段从 committed IR 和 accepted offset facts 派生的 address/range 参数。
+  allocator 分配，`#wafer.memory<ddr, *>` memref ownership和accepted range由DDR memory planner负责；
+  resource role/scope/entry binding在atomic executable commit时materialize。
+- target-codegen从committed IR、typed executable bindings和accepted offset facts派生address/range参数；
+  RuntimeSession只为KAD slots实例化已验证resource base/handle，不读取或重算SPM plan。
 - movement/materialization/compute/sync op。
 - pass-local allocation summary：offset/range、size、alignment、lifetime、alias group。
 - hardware lowering 需要的 begin/end range 和 dtype storage size。
@@ -412,7 +419,9 @@ complete static rank variant clone + group/tile/layout proposals
   -> planned offsets for the complete variant or failure feedback
   -> run DDR/instruction/transport/target gates
   -> atomically commit all rank programs and eliminate all wafer.group, or commit nothing
-  -> derive runtime/target-codegen address-range parameters from committed IR and accepted facts
+  -> validate/complete candidate typed resources and materialize entry bindings from ExecutableResourceView
+  -> target codegen derives address-range parameters from committed IR + executable bindings
+  -> package/runtime consume committed executable/manifest only
 ```
 
 原因是 layout、SPM、tile shape 和 target-abstract op selection 强耦合。早期如果只看 logical
@@ -428,10 +437,16 @@ selection 和 SPM memory planning 都应在 transformation-local whole-variant c
 ## 11. Runtime / ABI Handoff
 
 Wafer-tagged memref 是 layout / SPM planning 阶段的 tile-local buffer value。SPM bufferization
-接受 layout assignment 和 allocation 后，不再新增独立 placed memref / explicit descriptor IR 层；
-下游 runtime/target-codegen 必须从 committed instruction IR 中的 memref use-def、view relation、
-`wafer.spm.offset`、`wafer.ddr.offset` 和 `computeWaferPhysicalTensorInfo(memrefType)` 直接派生
-address/range/stride 参数。
+接受 layout assignment 和 allocation 后，不再新增独立 placed memref / explicit descriptor IR 层。
+pre-commit `ExecutableResourceView`从candidate typed resource records和instruction IR中的memref use-def、view relation、
+`wafer.spm.offset`、`wafer.ddr.offset`、arena/placement和
+`computeWaferPhysicalTensorInfo(memrefType)`重算resource role/range/scope/alias与entry slot需求，
+composer验证policy与plan一致、补全range/capacity并materialize entry bindings，再在atomic commit中提升同一
+typed executable records；不能在此新造state consistency、arena/residency policy或ResourceId。
+
+target-codegen之后只能结合committed instruction IR与这些executable bindings派生address/range/
+stride参数。package从committed executable序列化runtime-observable resource fields，RuntimeSession只实例化
+typed bindings。package/runtime不得再扫描raw memref/offset恢复resource role、scope、alias或lifetime。
 
 派生规则：
 
@@ -456,16 +471,17 @@ SPM bufferization 后，IR 应显式表达：
 - movement / materialization / compute / sync op。
 - necessary effect / wait / barrier。
 
-runtime/target-codegen materialization 后，physical address、bank/color、worker、queue、packet field
-只在能验证它们的 lower-level IR 或 emission metadata 中出现；主线 instruction IR 不新增
+target-codegen materialization后，bank/color、worker、queue、packet field只在能验证它们的lower-level IR或
+conversion-local value中出现；runtime physical base/handle只存在RuntimeSession。主线instruction IR不新增
 placed memref、flat backing memref 或 explicit descriptor 事实源。
 `wafer.group` 只消费 feasibility 结论，不携带这些字段。
 
 `#wafer.memory<space, layout>` 在 committed instruction IR 中仍是统一语义：`spm` 表示 tile-local
 SRAM，`ddr` 表示 device/global DDR address domain。RDMA/WDMA verifier 用 source/destination
 address space 检查方向；DDR memory planning 用 `ddr` 继续关联 view/range、compiler-managed DDR
-planned range、constant storage/residency 和 declared arena resource；runtime/package lowering 再把
-accepted DDR planned ranges 关联到 launch metadata。
+planned range、constant storage/residency 和 declared arena resource。pre-commit `ExecutableResourceView`
+验证并补全同一candidate `ResourceRealization`的accepted range/arena relation；commit后package/runtime只消费
+该唯一owner，不在launch metadata中再次关联或恢复range。
 
 不要把 `wafer.tile.region` body 已经表达的执行结构复制成全局 allocation plan attr。
 
@@ -569,7 +585,7 @@ whole-variant candidate plan
   -> instruction-level wafer.instr.* over unplaced Wafer-tagged memref values
   -> instruction storage / effect demand
   -> whole-entry SPM memory planning and terminal completion verification
-  -> runtime/target-codegen address-range derivation from accepted facts
+  -> target-codegen address-range derivation from committed bindings and accepted facts
   -> complete variant accepted or failure feedback; no partial commit
 ```
 

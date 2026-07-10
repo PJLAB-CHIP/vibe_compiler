@@ -23,8 +23,23 @@
 | 12 | `tasks/12-ddr-memory-planning.md` | typed arena/placement 下 whole-entry IO/weight/state/workspace DDR planning 和 accepted offsets |
 | 13 | `tasks/13-communication.md` | logical/segmented collective materialization、post-memory physical transport acceptance 和 completion boundary |
 | 14 | `tasks/14-target-llvm-golden-packet.md` | structure-preserving target LLVM、Slot-based Kernel ABI、双 fingerprint 和 atomic TargetArtifactSet |
-| 15 | `tasks/15-launch-runtime-package.md` | Protobuf PackageManifest、orthogonal target/shape selection、typed resources/registry、RuntimeSession 和 completion DAG |
+| 15 | `tasks/15-launch-runtime-package.md` | Protobuf PackageManifest、typed metadata/runtime bootstrap、shared service registry、RuntimeSession、state migration 和 completion DAG |
 | 16 | `tasks/16-verification-plan.md` | atomic commit、复杂大模型、target/package/runtime 和 board completion gates |
+
+## 实施计划导航
+
+当前实施集由一份路线图和六份子计划组成，共七份文件：
+
+- `docs/superpowers/plans/2026-07-10-wafer-long-horizon-implementation-roadmap.md`
+- `docs/superpowers/plans/2026-07-10-target-artifact-set.md`
+- `docs/superpowers/plans/2026-07-10-typed-program-distributed-identity.md`
+- `docs/superpowers/plans/2026-07-10-whole-variant-executable.md`
+- `docs/superpowers/plans/2026-07-10-target-correctness-foundation.md`
+- `docs/superpowers/plans/2026-07-10-package-runtime.md`
+- `docs/superpowers/plans/2026-07-10-real-model-board-gates.md`
+
+路线图编排依赖和review checkpoint，子计划只拆解施工文件、测试和提交。它们都不是编号设计文档，
+也不能覆盖`tasks/01-16`的IR/ABI合同；动态执行状态仍只看`tasks/progress.md`。
 
 ## 归档文档
 

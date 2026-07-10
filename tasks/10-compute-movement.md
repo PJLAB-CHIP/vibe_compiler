@@ -70,8 +70,9 @@ whole-variant candidate clone with scheduled wafer.group templates
 | layout-materialized | 同一类 compute/movement op | `memref<..., #wafer.memory<space, layout>>` | 验证 address space 和 physical layout marker，显式插入 `wafer.tile.materialize_layout` |
 | instruction-level rank program | structured control flow 中的 `wafer.instr.*` | unplaced Wafer-tagged memref SSA value | 覆盖完整 rank traversal，选择 CT/NE/TDMA/RDMA/WDMA 指令形态，列出 queue、temp/psum/staging、alias、effect、token/completion 和 descriptor attrs，不含 SPM offset；DTE 由 communication lowering 物化 |
 | DDR memory-planned instruction-level | 同一 `wafer.instr.*` | memory-planned Wafer-tagged memref SSA value | DDR view/root range、descriptor、compiler-managed/resident/inter-group planned ranges、lifetime/reuse、declared arena/placement-domain capacity/largest-contiguous/bandwidth 已通过 DDR memory planning |
-| runtime/target-codegen derived form | 同一 `wafer.instr.*` 或 very-late emission metadata | concrete target call arg / packet field | 从 committed instruction IR、accepted SPM/DDR offset facts、memref view 和 layout helper 派生 address/range/stride 参数；不作为新的主线 IR 层 |
-| target code / package emission | LLVM / target CRT call / package metadata | concrete target call arg | 调用 target CRT、发 package metadata、连接 host runtime；不作为上层 IR 层 |
+| target-codegen derived form | 同一 `wafer.instr.*` 或 conversion-local value | concrete target call arg / packet field | 从 committed instruction IR、typed executable bindings、accepted SPM/DDR offset facts、memref view 和 layout helper 派生 address/range/stride 参数；不作为新的主线 IR 层 |
+| target code emission | LLVM / target CRT call | concrete target call arg | 调用target CRT并生成KAD-checked function boundary；不作为上层IR层 |
+| package emission | committed executable + complete `TargetArtifactSet` | validated `PackageManifest` | 序列化typed resources/entry/KAD/artifact refs；不读取target call arg、raw instruction IR或lowering metadata |
 
 因此，`wafer.tile.gemm` 这类 op 在不同阶段可以被 type conversion 改写 operand/result type，
 但它的 semantic contract 仍是同一个：本 tile 内的 GEMM target implementation。若某个阶段需要
@@ -114,7 +115,8 @@ Pipeline position:
   verifier-legal instruction-level IR；每个 issue 都能由 async token/wait 或显式 local fence 收口，
   每条函数退出 path 的 pending event set 为空；
   unsupported hardware instruction form 必须结构化失败，不能让 SPM memory planning 从 target-abstract op
-  猜 memref demand。任一 rank/group 失败都丢弃整个 clone，不能形成部分 committed program；最终
+  猜 memref demand。low-precision candidate必须先匹配typed target capability并显式materialize native quant或
+  decode/scratch/completion路径。任一 rank/group 失败都丢弃整个 clone，不能形成部分 committed program；最终
   executable rank class 只能由 whole-variant commit 在完整 programs/gates 上决定。
 ```
 
@@ -125,6 +127,8 @@ V0 先覆盖能形成单 tile compute 闭环和后续 collective 原型所需的
 | 家族 | 建议 op | 语义 | 目标实现族 |
 | --- | --- | --- | --- |
 | matrix contraction | `wafer.tile.gemm` | tile-local matrix multiply / contraction；M/K/N、transpose、batch 语义来自 op contract 和 operand/result type | NE GEMM |
+| affine quantized contraction | `wafer.tile.quantized_gemm` | tile-local integer contraction + typed affine input/output/requant relation | capability-selected native NE quant GEMM或显式composite |
+| block-scaled decode | `wafer.tile.block_scaled_decode` | packed FP8/FP4 + scale blocks解码为typed BF16/FP16/other expressed buffer | explicit composite decode；不是native FP8 GEMM |
 | elementwise / relation / logic / activation | `wafer.tile.elementwise` | 同 shape 或 verifier 可证明的 broadcast / scalar form；具体 kind 是语义 enum，不用名字匹配 | CT family |
 | dtype conversion | `wafer.tile.convert` 或 `elementwise` convert kind | 明确 src/dst dtype pair、rounding mode 或 zero-point 语义 | CT convert |
 | local reduction | `wafer.tile.reduce` | tile-local reduce；reduce dimensions 是语义字段，因为仅靠 input/output shape 可能无法唯一恢复 | native reduce 或 fallback compute sequence |
@@ -153,8 +157,36 @@ split 决策；内部 reduction 是否需要进一步切分是 op tiling / SPM a
   descriptor 参数由 `computeWaferPhysicalTensorInfo`、SPM memory planning facts 和 ABI/codegen
   emission 派生。
 
-V0 不把 bias、scale、sparse、INT8 quant、fused activation 作为默认合同。若后续引入 fused form，
-它们应是可验证 operand/attr，并能 canonicalize 回非 fused form 或明确 lower 到目标 wrapper。
+plain `wafer.tile.gemm`不把bias、scale、sparse、quant或fused activation作为隐式合同。low-precision路径使用
+下面的专门typed ops；不能给plain GEMM翻一个flag或复用convert zero-point attr。
+
+#### 3.1.1 Low-Precision Compute
+
+`wafer.tile.quantized_gemm`消费lhs/rhs、optional typed scale/zero-point resources、optional explicit accumulation input
+和result destination，并引用`tasks/05`的`AffineQuantDescriptor`。rank/indexing maps仍唯一决定M/K/N/batch；descriptor
+明确storage/expressed/accumulator/result、granularity/axis/group、rounding/saturation/requant。verifier必须能把每个
+scale/zp operand与logical axis/slice一一对应，并证明accumulator bound或显式saturation。
+
+target selection只有在`LowPrecisionComputeCapabilityV1`逐字段匹配时才能选择`native`。TX81首个native subset只允许
+硬件/adapter证据覆盖的signed INT8 contraction、explicit q0/q1 shift和mathematical left/right zero points `[0,127]`，
+checked映射到同值raw `uint8` command field，以及capability明确允许的
+capability-proven INT8 result。首个planned native profile固定`scale_mode = none`；标准affine scale先用显式
+requant/dequant composite。`SetPositiveAxisScale/SetNegativeAxisScale`只有在packet+board numeric给出exact公式、axis
+indexing和table dtype后才能由新capability开放；不能把未知surface冒充per-axis/per-group scale。`i32`只是hardware
+internal accumulator，不等于native f16 result；模型需要
+f16时必须显式`quantized_gemm -> i8 temporary -> dequantize/convert`或选择完整composite。bias、activation、sparse、
+hidden psum和unsupported per-axis/group form仍拆成显式ops或拒绝。generic affine
+descriptor比首个hardware subset更宽是有意设计，不得把当前wrapper限制反写成semantic enum。
+
+`wafer.tile.block_scaled_decode`消费packed source、typed scale resource、destination和必要scratch，引用
+`BlockScaledFloatDescriptor`与`StorageEncodingDescriptor`，显式记录element/block count及tail policy。TX81 FP8的首个
+合法路径是E4M3/E4M3FN/E5M2 packed storage经过`explicit_composite` decode到BF16/FP16，再由普通GEMM消费；target
+没有native FP8 `Data_Format`时禁止直接选择native FP8 GEMM。decode write completion必须支配后续GEMM read，scratch/
+destination在local completion前不可复用。
+
+candidate selection可以比较native和explicit-composite等已合法实现，但capability legality先于cost。unknown encoding、
+scale/block/tail mismatch、packed capacity错误或无匹配capability返回结构化failure；不能自动dequantize并丢失descriptor，
+也不能调用legacy `__FP8*` helper name作为IR协议。
 
 ### 3.2 Elementwise / Convert
 
@@ -309,6 +341,8 @@ Target-abstract verifier：
 
 - operand/result type、rank、shape、dtype 与 op semantic fields 一致。
 - reduce dimensions、GEMM M/K/N、broadcast 或 scalar form 可由 IR 明确证明。
+- low-precision op的QuantizationDescriptor、StorageEncodingDescriptor、scale/zp/block/tail、accumulator/result、
+  rounding/saturation和matched capability完整；plain GEMM/convert不能携带quantized-GEMM或MXFP hidden fields。
 - op 不携带 raw packet field、worker id、SPM offset、DTE resource id 或 target CRT symbol。
 - layout-sensitive op 必须实现 `WaferLayoutOpInterface`。
 - 不允许通过名字匹配恢复 operand role。
@@ -350,7 +384,7 @@ Instruction/runtime verifier：
 | instruction legalization / selection | complete rank traversal with layout-materialized tile-local scopes | complete static rank instruction program over unplaced Wafer-tagged memref | 将所有 target-abstract op 改写成 CT/NE/TDMA/RDMA/WDMA 或 Direct DTE/FSM instruction op，列出 queue/family、effects、temp/psum/staging、alias、descriptor 和 completion relation；DTE 不走普通 `TsmExecute` dispatch path |
 | SPM memory planning | complete rank instruction programs with unplaced Wafer-tagged memref | same programs with whole-entry planned SPM offset facts | 从完整 structured control flow、跨 group memref use-def、instruction effects/tokens 收集 demand/liveness，分配 offset/range/bank并验证 terminal completion |
 | DDR memory planning | whole-entry SPM-planned instruction programs with actual DDR tile views/descriptors/allocs | same complete variant with accepted DDR offset facts，或结构化失败 | 在 variant-set lifetime 下重算 DDR demand；验证 external demand，为 compiler-managed/resident/inter-group demand 规划 accepted offset；跨 group lifetime 是 mandatory gate |
-| pre-commit `ExecutableResourceView` analysis/materialization | candidate instruction IR + accepted SPM/DDR offsets + typed program resources + transport/projection | transformation-local resource view，commit时materialize为`wafer.executable.resource`和entry slot bindings，或结构化失败 | 不落旁路metadata，不重新决定layout/SPM/DDR，不allocate/import/query runtime object |
+| pre-commit `ExecutableResourceView` analysis/completion | candidate instruction IR + accepted SPM/DDR offsets + candidate typed executable resources + transport/projection | transformation-local resource view，验证/补全同一resource records并在commit时materialize entry slot bindings，或结构化失败 | 不新造ResourceId/policy，不落旁路metadata，不重新决定layout/SPM/DDR，不allocate/import/query runtime object |
 | target instruction LLVM call emission | committed instruction IR + typed executable resources/entry bindings + accepted offsets + committed projection | LLVM dialect call / target CRT call / packet builder input | 只派生target address/range/descriptor参数，不恢复resource role/scope/alias/lifetime，不回头修改schedule/layout；CRT symbol closure属于device-code gate |
 
 如果一个 pass 创建 `wafer.tile.*` compute、movement、layout、SPM 或 sync op，应声明 dependent dialects。pass
@@ -421,6 +455,7 @@ V1 或后续扩展：
 - 更复杂 broadcast、masked op、dynamic shape。
 - raw packet builder 和 wrapper-golden 双路径测试。
 - PMU/cost-model 驱动的 issue overlap。
+- typed affine INT8 native GEMM与block-scaled FP8 explicit decode按3.1.1实施；它们不是fused epilogue捷径。
 
 ### 8.1 Transformer Block Minimum Coverage
 

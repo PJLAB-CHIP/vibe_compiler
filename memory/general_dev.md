@@ -222,35 +222,21 @@
   tile offsets/sizes candidate evaluation lowering 的 DDR `memref.subview` producer；instruction lowering
   仍不能根据 whole-boundary shape 自己恢复 subview，closed-loop traversal / tile-shape search 归
   candidate-selection。
-- SPM offset assignment 的 planned offset fact 不属于 `#wafer.memory<spm, layout>` 本身。
-  planning fact 当前挂在 SPM `memref.alloc` 的 `wafer.spm.offset`
-  attr 上，值为 `#wafer.spm_offset<offset>`；arena 作用域是单个 `wafer.tile.region`，不同 tile-region
-  可以复用相同 offset。`size`、alignment 和 bank span 必须由
-  `computeWaferPhysicalTensorInfo(memrefType)`、target policy 和 offset 重算，所以 `Cx/NCx` padding、
-  C0 tail/fold 和 256B bank alignment 都进入 footprint。当前 V0 对 instruction-level IR 建立可重算的
-  region-aware lifetime dataflow：base/view-like alias 共享 root ref，`scf.if` 用互斥 path condition
-  判断 branch reuse，`scf.for` 对 iter_args/yield/backedge 延伸 loop-carried lifetime，async issue
-  的 SPM operand 通过 `!async.token` 延伸到 wait/fence use；本地 compute/movement SPM write 在
-  `wafer.instr.local_fence` 前不能被复用，DTE send/recv source/destination 则由 `dte_wait` token
-  收口。offset 搜索使用
-  pressure-weighted offline packing：physical size 大、conflict pressure 高、lifetime span 长的 demand
-  先放置，再在合法 gap 中选最低 offset；搜索 trace、priority weight 和未接受 offset 不写进 IR。
-- DDR offset assignment 不是 external DMA validation 的别名。compiler-managed DDR demand 由 DDR
-  `memref.alloc` 本身表达；accepted fact 写回同一个 alloc 的 `wafer.ddr.offset =
-  #wafer.ddr_offset<offset>`。external function argument 不分配 offset，也不写 access summary attr；
-  launch/resource binding requirement 由 ABI/package/runtime 使用点从 committed instruction IR、
-  accepted offset facts、topology/execution-mesh contract、program parameter shard metadata 和薄 launch/block binding 重算；runtime allocation/import/query 属于
-  runtime adapter。DDR planner
-  复用 SPM 同类 structured lifetime dataflow：view-like alias、tile-region
-  boundary arg、`scf.if` path condition、`scf.for` iter_args/yield/backedge 和 async token 都从 IR
-  结构重算；offset 搜索在 default DDR arena 中做 pressure-weighted first-fit，只有 lifetime 证明不重叠
-  时才复用。runtime allocation object、physical address、packet/ABI 字段仍属于 runtime/ABI boundary，
-  不能塞进 DDR planning attr。
-- group-to-tile-region 的 buffer-level collective materialization 是 rank-specialized lowering：局部
-  pass / dump 入口用 `logical-rank` 选项表示当前 logical rank，并只用它在 collective `rank_group`
-  内计算 group-local `local_rank`。输出 `wafer.tile.all_gather` / `reduce_scatter` / `all_reduce`
-  显式携带 SPM buffer、`rank_group`、`local_rank`、`group_size` 和 byte count；不在这一步选择 p2p
-  schedule、endpoint 或 DTE packet。
+- SPM/DDR accepted offsets不属于layout本身。完整静态rank entry上的planning analysis从当前IR重算
+  alias、branch、loop-carried和async completion lifetime；只有whole-entry legality通过后，planner才在
+  candidate clone materialize accepted offsets，atomic executable commit只提升已验证facts。当前per-`wafer.tile.region` SPM
+  planner与default-arena DDR实现只能作迁移输入，不能证明跨group复用或长期resource owner。physical
+  size、alignment和bank span统一从shared geometry helper推导；runtime object、physical address和
+  packet字段不得写回planning IR。
+- `ExecutableResourceView`是commit transformation内可失效、可重算的analysis view，不是side table或
+  package输入。它验证/补全同一candidate `wafer.executable.resource` records，commit只提升records并
+  materialize entry-use bindings；target、package和
+  runtime只消费committed typed records，不从raw instruction IR、打印文本、文件名或参数名重建资源。
+- group-to-tile-region 的buffer-level collective materialization必须从enclosing typed distributed
+  instance/candidate entry取得partition和replica coordinates。局部pass选项只可用于明确的replay测试，
+  production driver不得使用default rank 0或CLI option承载rank语义。这个边界仍只产生logical buffer
+  schedule；endpoint/channel/FSM由post-memory transport acceptance处理，final pinned/relocatable
+  binding由launch projection拥有。
 - group formation 在 `outs` 固定后会吸收 group 内部 static support producers：`arith.constant`、
   `tensor.empty`、static `tensor.extract_slice` / `tensor.insert_slice`、`tensor.expand_shape` 和
   `tensor.collapse_shape`。这用于避免 XLA/HF 产生的 static `insert_slice` collective input 被错误
@@ -291,7 +277,7 @@
   responsibility、output artifact / IR、downstream consumer、user-level driver / named pipeline、
   explicit non-goals 和 completion gate。只说明某个 pass / tool / test 的局部功能不够；完成证明
   必须重放已完成上游 program chain，并证明当前 stage 输出会被下游边界直接消费。
-- 主链路 gate 用 `wafer-opt` program pipeline 重放已完成上游链路，不在 Integration
+- 主链路 gate 用 `wafer-opt` owner-aware program driver重放已完成上游链路，不在 Integration
   里手动拼 pass 串。当前 frontend verifier 入口是
   `wafer-compile-stablehlo --verify-stablehlo-program`；用户级 `wafer-opt` program
   pipeline 入口是 `--program-pipeline=stablehlo-spmd`、
@@ -300,7 +286,7 @@
   `wafer-compile-stablehlo --partition-stablehlo-program` 已删除，因为 Shardy/SPMD 不属于 frontend
   verifier tool；旧 C ABI compile 入口也已删除。现有`stablehlo-spmd*`、group-to-instruction/memory和target
   LLVM pipelines只作stage replay/regression；它们尚未组成production driver。长期用户入口是
-  `wafer-opt --program-pipeline=stablehlo-to-executable`或等价driver，必须包含whole-variant atomic commit；
+  `wafer-opt --program-pipeline=stablehlo-to-executable`选择的direct driver，必须包含whole-variant atomic commit；
   HF program-chain target LLVM integration、typed executable、complete TargetArtifactSet和package auto-export仍待实现。
   旧显式 target CRT issue-op、ring collective、SPM/DDR debug path 和 single-tile
   materialization pass 链已删除；不要恢复成用户级 compile flow。当前 HF transformer no-card gate
@@ -326,3 +312,38 @@
   或 package 主线。Package metadata validator / C stub generator 只能消费显式 package metadata
   测试输入做tool-unit覆盖；主线PackageManifest必须只由committed typed executable和complete
   `TargetArtifactSet`自动导出，不能从raw IR、单个module或旁路resource view恢复。
+- deterministic Protobuf serialization不是跨实现canonical encoding。KAD、target/environment、artifact
+  set和PackageManifest的semantic identity统一走`tasks/14`定义的WCRE V1与domain-separated SHA-256；
+  exact delivered Protobuf bytes另算blob content digest。实现时先验证blob digest，再parse/reject identity
+  unknown fields，随后重算semantic ID；Python binding只能做debug/migration，唯一semantic verifier在C++。
+- Kernel ABI只通过mandatory ELF `.note.wafer.abi`交付。note注入后必须read back并复核descriptor、
+  semantic digest、target ABI和exports，最后才对完整ELF bytes计算module content digest；不要再增加
+  exported descriptor symbol或让package扫描未验证的单module/staging目录。
+- runtime-safe format/artifact库需要共享runtime容量时，由上层service context私有签发低层owner的
+  non-forgeable operational capability，并在回到runtime时重验owner/generation binding；低层库不得接收
+  Runtime manager/context或反向include/link Runtime。capability只能reserve/release资源，不能构造semantic proof。
+- sealed request若要长期持有一组move-only proof，factory必须按值接收move-owned container并显式转移所有权；
+  `ArrayRef`/span只适合借用，不能用来实现retain，也不能靠隐式复制绕过non-copyable owner合同。
+- 完整compiler driver若要持有`VerifiedProgramSource`、outer transaction、target context和payload authority，不能伪装成
+  纯`OpPassManager` named pipeline。CLI option可以选择direct driver mode；named MLIR pipeline只保留IR-local transform。
+  source/context从`CompilationRequest`seal进move-only compilation input，再沿winner/committed attachment owner链转移，
+  commit后另接vector会留下重新配对窗口。`OwningOpRef<ModuleOp>`不拥有`MLIRContext`；frontend handoff必须把private context和
+  module一起move-own，且module/clone先于context析构，production materializer/direct driver不再另接`MLIRContext &`。
+- package/runtime bootstrap先生成owner-backed metadata和完全不可open的unbound source descriptor；metadata session销毁后
+  proof仍可pure preflight。只有preflight得到exact capacity domains并取得service context后，one-way bind才生成open-capable
+  runtime source。不要让metadata loader提前依赖Runtime，也不要让runtime session替代metadata semantic proof。
+- 不同语义层的verification session应使用不可互转typed capabilities，但process FD/reader/worker/bytes必须计入同一个
+  runtime-neutral host physical ledger；runtime actual I/O还要联合service child和invocation capacity。多ledger reservation用
+  固定owner顺序nonblocking prepare/rollback，不能等待时持有partial额度。
+- 多provider runtime用canonical per-domain capability sets；每个domain内部mechanism capabilities绑定同一provider generation，
+  deployment authority和durable state service可以有独立verified owner并显式join。production executor只消费registry-owned
+  capabilities，不接caller backend或可签semantic proof的fake。provider、authenticated inventory、authority和state capability必须
+  在registry前move-seal成一个bootstrap owner，不能先出relation proof再把原值分开重配；lower host budget只独立计费，不参与provider
+  semantic trust join。
+- migration wire只保存ABI层scope selector/shared IDs，runtime先用metadata构造sealed semantic request并派生durable scope keys。
+  dynamic old backing placement不能从manifest或environment猜测：deployment registry必须以这些sealed keys签发无authority、
+  无backing handle的`VerifiedStatePlacementInventory`，pure preflight再与environment和typed domain policy join出exact domains。
+  domain policy只用authenticated inventory bootstrap同时签发、可在inventory move后保留的typed constraint catalog refs，不接raw
+  provider/device ID或重复allowed-set/priority事实源。
+  取得context、bind heterogeneous artifact sets后，exact-context registry snapshot重验catalog/provider/backing generation，最后才形成
+  execution plan；否则会出现为求domains先拿complete-domain authority或把dynamic placement复制成第二事实源的bootstrap环。

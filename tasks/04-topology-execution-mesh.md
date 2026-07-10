@@ -72,7 +72,7 @@ Pipeline position:
 - Downstream consumer:
   Shardy MPMD / SPMD partition 和 post-SPMD launch/transport projection。
 - User-level driver / named pipeline:
-  production 主线由 `wafer-opt --program-pipeline=stablehlo-to-executable` 或等价 driver 在 SPMD 前
+  production 主线由 `wafer-opt --program-pipeline=stablehlo-to-executable` 选择的direct owner-aware driver在SPMD前
   materialize environment/topology/mesh；现有 `stablehlo-spmd*` pipelines 是内部/分阶段 debug 入口，
   default Shardy seed 从 execution mesh rank count / axes/roles 取数。
 - Explicit non-goals:
@@ -80,11 +80,28 @@ Pipeline position:
   object、package、runtime handle 或 physical address；不形成 post-SPMD block/transport binding；不靠
   tensor/axis 名字恢复 shard 或 parallel role。
 - Completion gate:
-  named pipeline 能重放 target descriptor/capability/topology import -> environment fingerprint -> valid
+  production driver能重放 target descriptor/capability/topology import -> environment fingerprint -> valid
   execution mesh -> distributed program。environment/mesh 成为唯一 pre-SPMD legality/rank-domain source；
   verifier 拒绝 capability/ABI mismatch、rank count/axis product mismatch、unavailable/duplicate/out-of-topology
   endpoint、disconnected component 和 calibration 被当作 legality 的输入。
 ```
+
+production bootstrap不能要求caller从`MaterializedFrontendProgram`取出raw module，也不能让`OpPassManager`携带
+`VerifiedTargetCompilationContext`。在任何IR mutation前，compiler-private factory从exact
+`VerifiedTargetCompilationContextRegistry`、verified frontend的immutable model/mesh request view、
+`TopologyAdmissionLimits`和outer canonical owner构造move-only、non-aggregate
+`VerifiedTargetProgramMaterializationPlan`。该plan保存all-and-only target requirement join、environment/topology/mesh IDs、
+axis roles/shape/endpoint policy、checked expansion bounds及registry/canonical generation，但不含MLIR handle、pass callback、
+runtime provider或可序列化sidecar。missing/extra/cross-paired context、非法topology/mesh或limit失败在module mutation前结束。
+
+`ParallelizationPolicy`只从immutable model-program view与上述plan的immutable mesh projection构造。随后
+`CompilationRequest::create`按值move-own整个frontend owner、exact context registry、materialization plan、policy和limits。
+production direct driver先把request seal为`ExecutableCompilationInput`并立即创建candidate transaction完整clone；随后
+non-installed private access只在working clone中materialize`wafer.target.environment/topology/execution.mesh`，source owner保持
+immutable。working clone和source module始终由同一frontend-owned `MLIRContext`支撑，materializer/pass不能接caller replacement
+context。driver从新IR重算fingerprints/roles/coverage并与plan逐项比较，再进入parallel/
+SPMD；plan不作为跳过IR verifier的authority。registered materialization pass只允许对已显式提供typed test/replay input的IR工作，
+或验证/规范化已经materialized的IR；它不能接context registry、source/output authority或提交production artifact。
 
 ### 2.2 Post-SPMD Launch And Transport Projection
 
@@ -127,7 +144,8 @@ Pipeline position:
 
 ```text
 pre-SPMD:
-  target descriptor + target capability snapshot + topology snapshot + optional calibration profile
+  target descriptor + target capability snapshot + topology snapshot + non-null VerifiedCalibrationProfileSet
+  (canonical empty set means no calibration evidence)
   verified frontend program + requested logical axes/roles
 
 post-SPMD:
@@ -227,6 +245,31 @@ mesh/candidate 排序，但不能使 capability-illegal program 变合法，也�
 若 calibration 改变最终选择，accepted plan/projection digest 已反映选择结果；package 可以保存 calibration
 digest 作为 provenance，但不能把它当 required capability。
 
+calibration的durable input固定为versioned generated `CalibrationProfile` message，不是report JSON或board日志目录。
+V1 profile包含schema/protocol version、exact `TargetEnvironmentFingerprint`、provider/driver/firmware/toolchain和
+clock/power policy provenance、correctness-evidence content digests，以及typed observations。每条observation key由
+instruction/transport family enum、typed geometry/layout/dtype/topology bucket和measurement protocol组成；value保存
+integer cycles/bytes/count samples、warmup/repetition policy和integer summary，不用op/function/file name或native float。
+unknown version/field、environment mismatch、failed correctness、mixed policy、样本不足、overflow或重复key必须失败。
+
+profile delivery bytes有exact content digest，但没有compiler semantic ID，也不进入legality/cache compatibility。
+build/parse必须显式接收validated nonidentity `CalibrationProfileLimits`，至少限制single/total delivery bytes、provenance/
+string/evidence-digest fields、observation records、samples per observation、total samples、nested records、scratch/spill/
+buffer bytes和workers；所有字段positive checked且0不表示unbounded。producer先count/measure完整generated message并checked
+reserve，再把pinned deterministic delivery bytes流式写入owner-backed immutable backing并计算content digest，不能为大量PMU/
+raw samples构造整份`SmallVector<uint8_t>`。runtime-safe loader只接收绑定expected digest/size的
+`abi::ImmutableByteBackingRef`和limits，先流式验证exact bytes，再bounded parse并构造不可变
+`VerifiedCalibrationProfile`；production没有raw `ArrayRef`/path/default-limits overload，bounded inline adapter仅供测试。
+multi-target compile把0..N个profiles规范化为immutable
+`VerifiedCalibrationProfileSet`：按exact `TargetEnvironmentFingerprint` canonical排序且每environment最多一条；
+duplicate、profile内部environment与key不符、stale/target-context mismatch失败。production `CompilationRequest`只
+接收non-null shared immutable set；empty set是唯一“无profile”表示，null、optional+empty双重absence、path/JSON/raw message
+都拒绝；single profile只是factory convenience。每次cost query必须携带exact
+`VerifiedTargetCompilationContext`并只取同fingerprint entry，missing entry使用analytic fallback，不能借用其它target。
+BoardEvidence只有在对应numeric/completion gate成功后才能通过
+publisher生成profile bytes；报告工具只从verified profile导出diagnostic JSON，JSON没有import路径。缺失或key
+out-of-domain时cost analysis使用documented conservative analytic estimate，不能修改verifier结果。
+
 ### 5.1 `wafer.target.environment`
 
 `wafer.target.environment` 是 module-level symbol op，保存 compiler 能解释和验证的 target legality snapshot：
@@ -236,7 +279,10 @@ digest 作为 provenance，但不能把它当 required capability。
 - typed DDR arena declarations：每个stable `DdrArenaId`记录memory domain、capacity、largest-contiguous、
   alignment、address width、bandwidth limit、allowed placement-domain kinds和runtime binding ABI；这些字段
   进入environment fingerprint。
-- supported dtype、physical layout、instruction/packet/DTE limits、required runtime mode/feature。
+- supported dtype、physical layout、instruction/packet/DTE limits、required runtime mode/feature。Direct DTE
+  capability必须typed记录allowed/reserved block到channel映射、FSM/stream/packet范围、是否支持exact block
+  selection、nonblocking send/recv status和finite target-cycle wait；缺少任一项时inline production Direct DTE
+  必须标为unsupported。
 - compiler 必须规避的 errata/feature flags。
 - 由canonical field encoding派生的`TargetEnvironmentFingerprint`；它覆盖target ABI/capability/arena
   declarations，不覆盖deployment topology/projection，且不是用户任意字符串。
@@ -244,6 +290,33 @@ digest 作为 provenance，但不能把它当 required capability。
 这些字段应优先评估 MLIR DLTI target system/device spec 和当前 Wafer attr 是否能承载；只有不能稳定表达、
 验证或 lowering 的 Wafer-specific capability 才进入私有 op。environment 不保存 endpoint availability、
 rank mapping、calibration score、runtime handle 或 provider symbol。
+
+low-precision legality由environment中的versioned `LowPrecisionComputeCapabilityV1` records拥有，而不是
+`supported dtype`字符串或cost model。每条canonical record键至少包含：
+
+- op family（如affine quantized GEMM、block-scaled decode）、input/storage/expressed/accumulator/result typed formats；
+- affine granularity/axis/group size、mathematical zero-point range、raw command-field encoding/range与shift范围，
+  或block axes/shape/scale encoding及tail/NaN/Inf/subnormal policy；
+- rounding/saturation/requantization、packing/order/alignment和scale/zero-point address-space requirements；
+- `native`或`explicit_composite` implementation mode，以及exact target CRT/command ABI profile version。
+
+record使用closed enum/typed integers和nonempty canonical sets，不能保存wrapper name或free-form
+`quantStorageAbi`。candidate legality必须逐字段匹配一个record；missing/ambiguous capability在layout/packing和target
+lowering前失败。calibration可以比较已合法路径成本，不能生成capability或把unsupported descriptor变合法。
+
+target build profile拥有versioned `QuantStorageAbiProfileRegistryV1`，保存profile schema version和可从environment
+capability + accepted `StorageEncodingDescriptor`构造的verified profiles。每个`QuantStorageAbiProfileV1`固定semantic/
+storage descriptor schema versions、selected capability record、packing ABI、KAD geometry rule、固定implicit
+rounding/saturation pair及Wafer CRT command ABI versions，并以typed `QuantStorageAbiProfileId`引用。instruction/resource/
+KAD只能引用registry中逐字段匹配的profile；profile不是target-wide singular choice。
+
+每个closure unit从实际instruction/KAD/resource refs重算canonical、duplicate-free、possibly-empty
+`usedQuantStorageProfiles` evidence；不同used-set本身不形成module partition bucket。packing只按module-wide
+environment/toolchain/projection/ABI compatibility和编号14固定的partition policy决定兼容units，final module再从全部
+实际refs求唯一canonical profile union并纳入该module的`TargetArtifactFingerprint`。一个module可以使用多个profiles，
+不含low-precision op时union必须显式为空。unused registry profile不进入unit或module used set，caller不能手填或删减。
+未知version、任一profile字段变化、environment capability不包含profile或used-set mismatch都必须改变对应
+identity/fingerprint或拒绝，不能退化成string/digest-only旁路。
 
 概念形式：
 
@@ -359,6 +432,12 @@ facts 一起通过 whole-variant atomic commit 后，才成为 executable/packag
 - typed input/output/immutable parameter/persistent state binding；persistent state 保留 alias/mutation/lifetime。
 - communication owner 已接受的 channel/FSM/node/remote-buffer/event/completion assignment。
 
+communication owner的candidate record必须遵守`tasks/13`：每个`TransportActionId`的allowed
+member都是完整concrete assignment，typed `RelocationSchema`只标注哪些已验证字段可由
+control/status slot填充。projection不接受只有slot而没有有限concrete allowed bindings的
+transport record，也不在此重新分配channel/FSM。projection从完整members中构造最终
+pinned/relocatable union，因而mode、member priority、`ProjectionSetId`和digest只有一个owner。
+
 projection mode：
 
 - `pinned`：code 或 transport assignment 嵌入 endpoint/resource fact；environment/topology/mesh/projection
@@ -371,6 +450,9 @@ projection mode：
 
 relocatable 只减少 code cache duplication，不放松 distributed/memory/transport legality。若 exact endpoint、
 transport id 或 rank-specific control 已进入 code，artifact 必须标为 pinned，cache key 包含相应 digest。
+`ProjectionSetId`与projection digest按`tasks/14`的WCRE V1、
+`wafer.projection-set.v1` domain和SHA-256计算；输入是已验证typed record，不是printed
+MLIR、Protobuf raw bytes、member path或runtime-selected handle。
 
 ## 6. Mesh Selection And Launch/Transport Projection
 
@@ -401,8 +483,10 @@ communication transport acceptance 之后、whole-variant atomic commit 之前�
    从 execution mesh/topology 派生 endpoint view。
 2. 验证每个 execution instance 恰好映射一个 available endpoint、component entrypoint 和 typed resource
    binding；同一 physical endpoint 不承载两个同时执行 instance，除非显式 time-multiplex contract 存在。
-3. 消费 communication owner 的 accepted transport assignment，验证 endpoint、channel/FSM/node、remote
-   buffer、event/completion 与 instance/resource coverage，不在本层重新选择 ring/tree/route。
+3. 消费 communication owner在candidate clone中materialize的uncommitted
+   `wafer.executable.transport`，验证每个action的concrete members、relocation schema、endpoint、
+   channel/FSM/node、remote buffer、event/completion与instance/resource coverage，不在本层重新
+   选择ring/tree/route或从side table恢复facts。
 4. rank-parametric code 使用 typed partition/replica/relocation binding；per-rank-static code 的
    specialization coordinate 必须与 projection record 完全一致。
 5. 根据 code/transport 是否嵌入 physical fact 标记 pinned 或 relocatable，计算 projection digest，并把
@@ -447,6 +531,15 @@ distributed variant/transport/projection，搜索过程仍不进入 IR。
 Environment / topology / execution mesh 不把 DTE route 或 runtime launch API 写进上层。Communication
 lowering 可以基于 accepted endpoint view 选择 protocol/resource；只有 accepted assignment 进入 projection。
 
+### 7.1 Topology and Projection Admission Limits
+
+environment/topology/mesh/projection import接收validated nonidentity `TopologyAdmissionLimits`，至少限制environment
+records、devices/endpoints/links/PGs/arenas/capabilities、mesh axes/coordinates、projection candidates/members、finite
+template allowed bindings、DTE channel/FSM/control slots、canonical sort scratch、input/derived bytes、workers和diagnostics。
+所有count/product在coordinate/member expansion前checked；finite template不能先全展开再检查。充分limits不改变
+environment/topology/mesh/projection identity、member priority或binding；超限无partial target/mesh/projection IR。limits
+不得把pinned降为relocatable、删endpoint或选择binding prefix。
+
 ## 8. Verifier
 
 `wafer.target.environment` 必须检查：
@@ -454,6 +547,9 @@ lowering 可以基于 accepted endpoint view 选择 protocol/resource；只有 a
 - target family、revision、device/CRT ABI 和 required capability fields 完整且使用 typed enum/field，
   不接受 opaque string bag。
 - capacity/alignment/resource/packet limit 为正且相互一致；required feature 与 errata 不冲突。
+- DTE block/channel、FSM/stream和packet范围闭合且reserved resource不可分配；声称production inline Direct DTE
+  时必须同时具备exact block selection、nonblocking send/recv status和finite-cycle wait capability，且这些字段
+  全部进入environment fingerprint。
 - `DdrArenaId`唯一，arena capacity/largest-contiguous/alignment/address width/allowed placement domains合法，
   runtime binding ABI与target revision兼容；environment fingerprint覆盖完整arena declarations。
 - capability fingerprint 与 canonical field encoding 一致；不得由输入 metadata 任意指定。

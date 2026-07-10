@@ -52,7 +52,8 @@ source model / exported program / pre-exported StableHLO
 - distributed program 显式保存 component/stage、partition/replica coordinate、`dp/tp/pp/ep` axes、rank
   group 和 shard relation。flat logical rank 只是 mesh coordinate 的可派生 ordinal，不能代替这些身份。
 - 长期交付采用 hybrid executable set：上层保留 rank-parametric distributed semantics，commit 后产生
-  static rank program；只有 local IR、ABI、memory plan 和 transport template 等价时多个 ranks 才共享
+  static rank program；只有 local IR、ABI、resource realization、memory plan、transport template和completion
+  exports等价时多个 ranks 才共享
   rank class。首版可以保守退化为每 rank 一个 class，不能默认 rank 0。
 - SPMD 后的 StableHLO collective 先规整成 `wafer.linalg_ext.collective.*` tensor-level
   collective，和 local compute 一起进入 group/tiling；到 `wafer.tile.region` / SPM buffer
@@ -87,9 +88,10 @@ Pipeline position:
   RuntimeSession materialization、module/weight cache、persistent-state registry、typed launch、completion
   和 error aggregation。
 - User-level driver / named pipeline:
-  当前 program pipeline 是分阶段调试入口；主线完成前必须提供单一
-  `wafer-opt --program-pipeline=stablehlo-to-executable` 或等价 compile driver，内部调用同一 named
-  pipelines，不能要求用户手工拼 pass。
+  当前 program pipeline 是分阶段调试入口；主线必须由
+  `wafer-opt --program-pipeline=stablehlo-to-executable` 选择单一direct compile-driver mode，调用
+  `runStablehloToExecutableCompilation(CompilationRequest, ProgramOutputTransaction &)`并持有
+  move-only source/transaction owners。named MLIR pipelines只作IR-local构件，不能要求用户手工拼pass。
 - Explicit non-goals:
   runtime 不重新做 sharding、rank placement、candidate/layout/memory/transport planning；PackageManifest
   不复制 instruction schedule；低层 instruction 不承担任意 dynamic-shape dispatch。
@@ -106,9 +108,9 @@ Wafer 是基于 MLIR 的编译器。每一层 IR 只携带自己能稳定解释�
 
 | 阶段 | 主体 Dialect / IR | 允许表达 | 不应提前表达 |
 | --- | --- | --- | --- |
-| Verified program | StableHLO, func, tensor, typed program metadata | 模型语义、symbolic bounds、typed IO、immutable parameter、persistent mutable state/alias | rank placement、SPM/DDR offset、runtime handle |
+| Verified program | StableHLO, func, tensor, `wafer.model.*` typed handoff | 模型语义、symbolic bounds、typed IO、immutable parameter、persistent mutable state/alias | rank placement、SPM/DDR offset、runtime handle |
 | Target environment / mesh | `wafer.target.environment`, `wafer.target.topology`, `wafer.execution.mesh` | target capability、topology snapshot、logical rank domain、prevalidated endpoint policy | tensor sharding、candidate plan、物理地址 |
-| Distributed program | StableHLO + Shardy/SDY/MPMD | component/stage、partition/replica coordinate、`dp/tp/pp/ep` axes、collective/shard relation | physical transport、SPM buffer、target packet |
+| Distributed program | StableHLO + Shardy/SDY + `wafer.distributed.*` typed handoff | component/stage、partition/replica coordinate、`dp/tp/pp/ep` axes、collective/shard relation | physical transport、SPM buffer、target packet |
 | Local tensor program | Linalg, Tensor, SCF, Arith, Math, `wafer.linalg_ext.collective.*` | component/rank-local structured compute、state use-def、tensor collective | physical layout、endpoint/channel、package ABI |
 | Candidate planning | logical/candidate `wafer.group`, `wafer.tile.region`, target-abstract Wafer ops | bounded traversal/layout/instruction/memory/transport/event proposals | accepted executable/package事实 |
 | Executable composition | `wafer.executable`, `wafer.executable.variant`, static rank `func.func`, typed resources | coherent variant guard、rank class/entry、accepted layout/offset/transport/completion、完整 traversal | planner trace、rejected candidate、runtime handle |
@@ -281,7 +283,8 @@ Topology / target environment / execution mesh 的详细合同见
 主体 IR / Dialect：
 
 - `stablehlo`
-- Shardy / SDY / MPMD component representation
+- Shardy / SDY sharding representation
+- `wafer.distributed.*` typed component/instance/class/resource-shard handoff
 - collective ops in partitioned StableHLO
 
 输入：
@@ -308,8 +311,10 @@ sharding import / seed
 - component/rank-local StableHLO body、logical rank groups、collectives 和 parameter/state shard relation。
 - bounded dynamic shape symbols，作为后续 coherent distributed variant guard输入。
 
-长期优先复用 Shardy MPMD/SDY 的稳定表示；当前 pin 不具备所需接口时先升级依赖或使用薄 adapter，
-不建立平行的 Wafer 私有 MPMD 事实源。
+长期优先复用Shardy MPMD/SDY的稳定表示；当前pin没有可完整表达component、
+canonical instance、resource shard和hybrid prerequisite class的typed object，因此`tasks/03`固定
+一个最小`wafer.distributed.*` handoff。它引用而不复制StableHLO/SDY body；若未来上游
+提供等价对象，只允许规范化到该handoff或整体替换，不允许平行事实源。
 
 hybrid rank合同：rank-parametric distributed semantics可以保留 partition/replica SSA；per-rank constant
 specialization只能由显式 specialization record产生。后续 rank class共享需要 executable verifier证明
@@ -560,8 +565,9 @@ contract、collective lowering 和 verifier 见
 - 一个 executable拥有完整 model/program executable set；variant显式携带`ShapeGuardRef`并引用正交的
   `TargetVariantId`和`ProjectionSetId`。shape guard、target artifact compatibility和rank mapping不能压成
   一个自由字符串variant key。
-- rank mapping显式保存 `component + dp/tp/pp/ep coordinate -> rank class + entrypoint + resource/transport
-  binding`。多个 ranks只有在 local IR、ABI、memory plan和transport template完全等价时才共享class。
+- rank mapping显式保存 `component + dp/tp/pp/ep coordinate -> rank class + kernel entry + resource/transport
+  binding`。多个 ranks只有在 local IR、ABI、可观察resource realization、memory plan、transport template和
+  completion exports完全等价时才共享class。
 - typed resources区分 external IO、immutable weight、persistent state、transient workspace和control
   table；entry ABI slots与 `func.func` signature精确双射。
 - shape guard在全distributed program上选择一次；target兼容性先按environment/fingerprint过滤；rank mapping
@@ -574,44 +580,269 @@ contract、collective lowering 和 verifier 见
 | 对象 | 必须拥有的字段/关系 | 不拥有 |
 | --- | --- | --- |
 | `wafer.executable` | program semantic digest、model interface ref、resource/variant symbols、typed target-variant records和accepted projection-set records | runtime session、selected actual shape、provider handle |
-| `wafer.executable.resource` | stable `ResourceId`、typed role、dtype/layout/shape bounds/capacity、access、alignment、`DdrArenaId`/placement domain、lifetime scope、alias/update relation；immutable resource含content digest，persistent state的consistency enum只能是`atomic_version`或`in_place_poison_on_failure` | physical address、allocator handle、名字推断role |
+| `wafer.executable.resource` | stable logical `ResourceId`、typed role、semantic dtype/shape bounds、access、lifetime scope、alias/update relation；immutable resource含content digest，persistent state恰好引用一个executable state group；拥有typed realization records | physical address、allocator handle、名字推断role、per-resource state publish policy、把target/shape/rank压成自由variant key |
+| `wafer.executable.state_group` | model `StateConsistencyGroupId`投影、完整persistent member set、group scope、axis-covered `StateGroupRealization`、entry slot version relation | runtime version、registry lease、provider copy/COW handle |
 | `wafer.executable.variant` | `ExecutableVariantId`、structured `ShapeGuardRef`、`TargetVariantId`、`ProjectionSetId`、完整rank coverage、entry graph、typed completion nodes/edges和terminal policy | rejected candidate、planner trace、per-rank guard |
+| `wafer.executable.invocation` | 一个typed `ModelEntrypointId`、该variant内canonical initial entry-template roots、required external IO/state-group contract和terminal output/state/completion roots | 用户字符串lookup、kernel symbol、runtime-selected subgraph、instruction schedule |
 | `wafer.executable.rank` | canonical component/partition/replica/`dp/tp/pp/ep` coordinate、committed `RankClassId`、entry/resource/transport refs | default rank、文件名约定、重新分片 |
-| `wafer.executable.entry` | stable `EntryId`、static function symbol/semantic digest、ordered `SlotId -> ResourceId` bindings、stage/component refs、canonical execution-instance coverage、entry dependency和`CompletionExportId -> completion node` refs | LLVM文本解析结果、自由`binding_order`、内部instruction list |
+| `wafer.executable.entry` | stable `EntryId`、static function symbol/semantic digest、ordered `SlotId -> (ResourceId, StateSlotVersionRole)` bindings、stage/component refs、canonical execution-instance coverage、entry dependency和`CompletionExportId -> completion node` refs | LLVM文本解析结果、自由`binding_order`、内部instruction list |
 | `wafer.executable.transport` | accepted transport/projection ref、issue/wait/status/error/completion refs和control resource slots | duplicated p2p algorithm body、runtime route search |
+
+`ExecutableResourceRole`的V1 enum唯一集合是`external_input`、`external_output`、
+`immutable_parameter`、`persistent_state`、`workspace`、`staging`、`control`、`status`。前四种从
+`wafer.model.resource`同名role逐项投影；后四种只能由compiler在首次materialize对应launch-visible root时创建。
+`immutable_weight`、`resident_constant`等称呼只可作为诊断用途：模型参数和compiler-materialized只读常量都使用
+`immutable_parameter`，由origin/content relation区分。residency、streaming、packing、arena和target-specific
+storage只属于`ResourceRealization`，不能通过新增role或role拼写承载。
 
 `ShapeGuardRef` 是 typed AST，只能引用已声明 `DimId`、state-capacity或显式invocation-policy fields并使用
 有界比较和布尔组合；不能执行任意脚本。completion DAG由variant拥有typed node/edge records，entry/
 transport只导出或引用node，因此package不是entry graph或completion语义的首个事实源。
+
+PP/microbatch不是runtime shadow schedule。variant可以拥有finite `EntryGraphIterationDomain` records；每个record
+包含variant-local nonzero `uint32 IterationDomainId`、typed kind、`BoundedCountExpr`和compile-time `max_count`。
+`BoundedCountExpr`只引用model `DimId` actual value或显式invocation-policy integer field，使用checked nonnegative
+constant/add/mul/ceildiv/min/max；verifier从ShapeGuard和policy bounds证明结果在`[1,max_count]`且所有中间值不溢出。
+任意脚本、provider query或runtime-selected schedule不合法。
+
+`BoundedCountExpr` operands/intermediates使用checked `uint64`，但declared `max_count`、最终actual count和runtime
+iteration index的wire/value type固定为`uint32`：`1 <= max_count <= UINT32_MAX`，actual在`[1,max_count]`，iteration在
+`[0, actual-1]`。compiler在materialize domain前必须显式narrow proof；不能让大于UINT32_MAX的policy先通过再在package
+或runtime截断。
+
+一次用户级调用必须先选择frontend声明的typed `ModelEntrypointId`。它标识prefill、decode、score或其它
+模型API语义，不是static device kernel `EntryId`。每个committed variant必须用
+`wafer.executable.invocation`把支持的model entrypoint映射到现有entry/completion template的root和terminal
+集合；映射只能引用同一variant已提交的graph，不能复制graph或让runtime按function/module symbol裁剪子图。
+同一model entrypoint在不同variant可映射到不同static entries，但必须保持frontend声明的IO、state-group
+access/update和terminal contract。manifest/runtime逐项保留该映射；diagnostic alias只可在verified、唯一的
+alias table中解析成ID，不能成为请求或cache identity。
+
+这里的invocation-policy field必须是frontend `wafer.model.invocation_policy_integer`声明并公开的typed
+`InvocationPolicyFieldId`；expression、manifest和InvocationRequest都引用该ID，不使用name/string。compiler固定count
+直接使用constant。`ExecutionSchedulePolicy`只能从已声明fields/DimIds构造候选expression，不能新增runtime输入通道。
+
+entry/completion template node显式声明singleton或一个iteration domain；edge记录source/destination node和
+`iteration_delta`，V1只允许0或+1。RuntimeSession在shape/target/variant选择后对count expression求值一次，实例化
+`(NodeId, iteration)`；越界edge省略，`EntryInstanceId`包含同一iteration key。template verifier要求delta=0子图
+acyclic、任一template cycle总delta严格为正、expanded bounds内每个output/state terminal iteration可达，并验证
+resource reuse/PP stage edge。package序列化domain和edge template，不展开成固定case列表；runtime只机械实例化，
+不重新选择microbatch count/order。V1 PP gate至少使用两个microbatches并覆盖stage overlap与中途failure。
+
+稀疏MoE的data-dependent skip不能靠runtime临时route或静态graph无条件搬运全部expert weights。variant可拥有finite
+`wafer.executable.activation_predicate` records；V1 predicate是closed `bounded_count_nonzero`，只引用一个compiler-
+declared segmented count/control ResourceId、typed expert/member ordinal、checked element offset/type/capacity和支配它的
+count-phase completion node。variant graph node的activation是`always`或`(ActivationPredicateId, true|false)`；显式
+`predicate_evaluate`在count completion后求值，`conditional_join`把active terminal或false skip合并为普通success edge。
+任意脚本、host callback、名字/expert string、provider query或runtime-chosen predicate非法。
+
+compiler用typed `ModelProgramMemberId -> ComponentId -> expert entry/window/module`关系形成finite expert waves和
+predicate-controlled weight-copy/module-first-use/entry/data nodes。predicate false时这些nodes机械成为
+`skipped_success`，不得open blob、load module、copy weight或submit expert；combine只依赖conditional join和typed actual
+count。V1 conditional region不得直接写persistent state或产生user-visible terminal output，state/output只能在
+always-active combine/terminal阶段提交。resource/window reuse同时被active terminal和skip join支配。
+
+每个wave声明compiler-planned bounded capacity envelope和最大同时active member count；initial runtime reservation保留
+最大simultaneously-live wave envelope而不是所有expert backing之和，predicate求值后只把该预留pool绑定到actual active
+members，不能因容量不足选择更少expert或改变wave。bounded expert resident cache可以命中exact预编译binding，但
+miss/eviction不改变entry/window DAG。manifest/runtime按finite predicate/wave records机械执行；不支持的provider仍在
+side effect前拒绝。这样总expert weights可超resident arena，只要每个静态wave envelope合法。
+
+### 3.9.1 Stable ID Ownership
+
+跨阶段ID不共享一个opaque bytes规则。V1表示、scope和创建点固定如下；package保留这些typed表示，不能把
+scoped integer伪装成global digest：
+
+| ID | V1 representation / scope | canonical key and creation point | invariance / verifier |
+| --- | --- | --- | --- |
+| model `ResourceId` / `DimId` | 32-byte semantic digest | `tasks/02` two-phase `(ModelInterfaceSemanticId, tagged local structural key)`；frontend import transaction | rename/path invariant；不同model owner即使local key相同也不同；program/payload semantic change有意换owner/IDs并需显式state migration |
+| `ModelEntrypointId` | typed composite `(ModelInterfaceSemanticId, nonzero uint32 api_ordinal)` | frontend先用local ordinal和完整API record计算model digest，再materialize public scoped ID | function/symbol/diagnostic alias rename invariant；IO/state/root contract或semantic order变化按规则改变，self-digest禁止 |
+| `InvocationPolicyFieldId` | typed composite `(ModelInterfaceSemanticId, nonzero uint32 field_ordinal)` | frontend先用local ordinal计算model digest，再materialize public scoped ID | bounds/default进入model identity；diagnostic name不参与，self-digest禁止 |
+| `ModelProgramMemberId` | nonzero `uint32` scoped to one `ModelInterfaceSemanticId` | frontend按exporter-declared semantic member order materialize | function/symbol rename invariant；missing/duplicate/noncanonical order失败 |
+| `StateConsistencyGroupId` | nonzero `uint32` scoped to one `ModelInterfaceSemanticId` | frontend import transaction；state groups按canonical member `ResourceId` list和typed update relation排序后编号 | 不从group name生成；empty/overlap/noncanonical编号失败 |
+| `ComponentId` | nonzero `uint32` scoped to one distributed program | `tasks/03` parallel component formation按explicit ordered component records编号；distributed assembly原样保留 | 不从member/function/expert name生成；graph rewrite必须重建program identity |
+| `ExecutionInstanceId` | typed composite `(DistributedProgramSemanticId, local key)`，local key=`(ComponentId, partition_coordinate, replica_coordinate)` | distributed verifier先对local keys计算program digest，再materialize scoped public IDs；digest preimage不自含digest | 不含flat rank/name；tuple逐字段比较 |
+| `DdrArenaId` | nonzero `uint32` scoped to `TargetEnvironmentFingerprint` | typed target descriptor authoring/import | environment内唯一并进入fingerprint；不从arena name分配 |
+| `TargetVariantId` | 32-byte semantic digest | target requirement WCRE：source environment compatibility、target ABI和required capabilities | 不含module/path；同digest必须逐字段等价 |
+| `ExecutableVariantId` | 32-byte semantic digest | candidate creation时对`(DistributedProgramSemanticId, normalized ShapeGuardRef, TargetVariantId)`编码 | final projection是正交ref，不回写ID；同axes只允许一个committed owner |
+| `EntryId` | 32-byte semantic digest | candidate entry创建时对`(DistributedProgramSemanticId, ComponentId, logical entry ordinal, optional per-rank-static ExecutionInstanceId)`编码 | function/symbol rename invariant；不含target/shape/rank-class/module |
+| compiler-created executable `ResourceId` | 32-byte semantic digest | first-root rewrite对`(EntryId, scope, role, structural root ordinal)`编码 | 同声明幂等；名字、SSA和physical address不参与 |
+| `ResourceRealizationRecordKey` | typed composite `(ResourceId, TargetVariantId, ExecutableVariantId, canonical nonempty RankClassId coverage set, canonical nonempty ProjectionSetId coverage set)` | atomic commit把candidate execution-instance/projection coverage规范化后创建 | 同一resource的final axes coverage唯一；无wildcard/pending，duplicate key失败；不能与runtime singular lookup key互换 |
+| `RankClassId` | typed composite `(ExecutableVariantId, uint32 class_ordinal)` | atomic commit；class按covered `ExecutionInstanceId` canonical bytes list排序后编号 | 只细分一个prerequisite class；local program、ABI、ordered slot ResourceId/state role、shard/content/artifact/storage/capacity/arena/scope、memory、transport和completion不完全等价必须拆分；duplicate member set失败 |
+| `CompletionNodeId` | typed composite `(ExecutableVariantId, uint64 node_ordinal)` | completion graph materialization；按`kind, scope, owner EntryId/TransportActionId, resource/version/phase key, static graph occurrence key`排序 | occurrence来自owner region/block/op或entry-graph structural ordinal，允许多个同kind节点但不含runtime iteration/provider/name；重复完整key或非canonical编号失败 |
+| `IterationDomainId` | nonzero `uint32` scoped to one `ExecutableVariantId` | iteration domains按typed kind/count-expression canonical bytes排序 | 不含runtime actual count/name；重复domain record失败 |
+| `ActivationPredicateId` | typed composite `(ExecutableVariantId, uint64 predicate_ordinal)` | activation predicates按kind、count ResourceId/expert ordinal/offset/type/capacity/producer completion canonical tuple排序 | 不含runtime count/name/provider；duplicate key、unbounded read或producer不支配失败 |
+| `StreamWindowId` | typed composite `(ResourceRealizationRecordKey, nonzero uint32 window_ordinal)` | atomic commit时把同一realization windows按source byte range、logical coverage、staging resource/range和consumer set的canonical tuple排序 | 不含runtime issue order/provider handle；coverage overlap/hole或重复tuple失败 |
+| `SlotId` | `uint32` scoped to one kernel ABI | candidate entry ABI sequence：function boundary ordinal在前，compiler-created slots按`role, ResourceId` canonical order追加 | ordered slots连续、无重复；KAD和LLVM parameter一一对应 |
+| `CompletionExportId` | `uint32` scoped to one kernel ABI | exported completion nodes按`CompletionNodeId` canonical order编号 | 连续、无重复且每项绑定一个DAG node |
+| `TransportActionId` / `TransportBindingMemberId` | entry-local `uint64` / action-local `uint32` | `tasks/13` structural op order / canonical complete-member order | 必须与owner EntryId/action一起解释 |
+| `ProjectionSetId`、KAD/artifact/executable/model/distributed semantic IDs | typed SHA-256 digest | `tasks/14` schema-driven WCRE owner | algorithm+32 raw bytes；unknown field/collision-by-non-equivalent-record失败 |
+| `InvocationId`、`EntryInstanceId`、`ScopeInstanceId`、`ResourceVersionId`、`StateGroupVersionId` | runtime-only typed value/composite | `tasks/15` session/registry | 不序列化进manifest，不从provider handle/path推断 |
+
+digest collision不是“择一继续”：同一typed digest解析到两个不同verified canonical records时，compiler/package/
+runtime都必须hard fail并报告owner IDs。component/logical-entry/structural-root ordinal来自owner IR中显式ordered
+registered records，不来自symbol-table hash iteration；改变该语义顺序会改变相应owner identity，不能静默重编号并
+声称兼容。
 
 `TargetVariantId`由`wafer.executable`内唯一typed target-requirement record拥有，记录target ABI、required
 capabilities和environment compatibility；device-code gate生成的完整module set按该ID发布。
 `ProjectionSetId`由`tasks/04-topology-execution-mesh.md`定义的accepted launch projection set拥有并随variant
 原子提交。`wafer.executable.variant`只引用这两个owner，不复制target/projection字段。
 
-candidate clone在任何rank-specialized lowering前先建立typed、uncommitted `wafer.executable.rank/entry`
-records，逐个引用distributed canonical coordinate、component、execution mesh和static local function；此时
-每个rank可保守视为独立provisional class，尚无final `RankClassId`。production passes只从这些SymbolRef取
-rank identity。atomic commit验证完整program/ABI/memory/transport等价后才写入final `RankClassId`并提升同一
-records；CLI rank option不能参与production identity。
+同一logical resource在不同target、static shape variant或rank class上可以有不同storage layout、capacity、
+packing和arena placement；这些事实不能覆盖写回全局`ResourceId`记录，也不能让runtime从selected module猜测。
+`wafer.executable.resource`因此拥有一组typed `ResourceRealization` records：每条显式引用
+`TargetVariantId`、`ExecutableVariantId`、candidate阶段的canonical `ExecutionInstanceId` coverage、commit后的
+`RankClassId` coverage和必要`ProjectionSetId`，并记录storage
+descriptor、static capacity、alignment、`DdrArenaId`/placement domain、scope、shard/packing以及accepted range
+relation。某个轴若共享，使用显式coverage set表达，不能用缺字段、wildcard字符串或合成variant key表示。
+candidate verifier按typed key做canonical relational join，final rank classes形成后只能把已证明完全等价的coverage
+规范化为对应`RankClassId` refs，不能提前猜class或跨prerequisite class合并。commit verifier必须证明每个被entry slot使用的
+`(ResourceId, TargetVariantId, ExecutableVariantId, RankClassId, ProjectionSetId)` tuple恰好命中一个realization；
+overlap、hole或跨distributed prerequisite class错误共享都失败。RuntimeSession在target/projection/shape选择和
+committed rank mapping完成后只查该唯一record，不重新选layout/arena/capacity。
+
+这里的“证明每个tuple”不允许物化target/executable/rank/projection自由笛卡尔积。variant已经绑定唯一target和
+projection refs；verifier按`(ResourceId, TargetVariantId, ExecutableVariantId, ProjectionSetId)`建立canonical sorted
+索引，由entry slot uses产生required `RankClassId` set，再对realization coverage做sorted-set sweep/merge join，证明
+exact disjoint union。state group/window/transport沿typed owner keys做同类merge join。算法临时存储与操作数受实际
+records/refs和sort上界约束，不受不存在的axis product约束；runtime仍只对selected tuple做singular lookup。
+
+immutable resource realization的residency是typed union，V1只允许：
+
+- `resident`：声明完整backing bytes和一个覆盖全部consumer lifetime的read-only allocation；runtime只有在同一
+  verified source完成exact-byte校验和完整初始化后才发布resident lease。
+- `streamed_windows`：声明nonempty canonical `StreamWindow` records。每个window用`StreamWindowId`绑定source
+  artifact byte range及chunk digest coverage、logical tensor slice、一个compiler-created `staging` ResourceId及其
+  destination range、consumer `EntryId/SlotId` set和copy-completion node。entry KAD只绑定实际staging resource，
+  source immutable parameter与staging的关系由同一window record拥有，不能把两者伪装成同一ResourceId。
+
+candidate lifecycle额外允许`streamed_pending`和`streamed_planned`。前者只表示resource policy已选择streaming但
+当前group/tile/instruction slice和DDR lifetime尚未完成；DDR planning将其替换为nonempty planned windows、staging
+resources和completion edges。`streamed_planned`的window只引用clone-local provisional source relation及checked logical/
+physical ranges，尚无final content/chunk digest；immutable artifact materialization把non-forgeable bytes/chunk proof和
+transaction-private staged blob绑定到candidate transaction，但IR仍保持`streamed_planned`。只有atomic commit先形成
+final RankClass/realization key/window ID、重验同transaction proof并重写completion refs时，才一次替换成可交付
+`streamed_windows`。target/package/runtime不得消费前两种状态，commit verifier拒绝任何published pending/planned residency。
+它们不是自动fallback：任一步无法形成合法graph/bytes时，整个candidate失败或回到上游枚举另一个resident/tiling
+candidate。
+
+streamed plan必须在candidate clone内显式materialize `resource_copy_issue/resource_copy_complete` completion nodes，
+并用edges证明copy完成支配每个consumer、最后一个consumer完成支配staging range reuse。single/double/multi-buffer
+都由有限staging resource/range和edge关系表达；runtime只能机械实例化copy和entry nodes，不能选择window大小、
+重排consumer或临时分配全量weight backing。所有window destination的并集不得超过声明的bounded staging capacity，
+source logical coverage必须精确覆盖对应consumer reads。若一个entry仍隐式要求大于window的完整backing，compiler必须
+先在group/op tiling和instruction IR中显式形成合法slice、partial accumulation及completion；否则该streaming candidate
+失败，runtime不得把隐藏K-split或expert schedule补成旁路。resident与streamed realization对同一axis tuple互斥。
+candidate window在commit前只用clone-local symbol relation和provisional canonical order引用owner realization；final
+`RankClassId` coverage形成后，atomic commit创建`ResourceRealizationRecordKey`和`StreamWindowId`并在同一transaction重写
+completion refs。candidate/provisional window ID不能序列化或进入cache。
+
+persistent state policy由`wafer.executable.state_group`唯一拥有，不能在member resource上复制。每个
+`StateGroupRealization`使用与resource realization相同的target/executable/rank/projection coverage axes，列出该tuple
+下完整member realization refs、统一group scope，并选择：
+
+- `atomic_version`，同时选择`full_copy`或`page_cow` snapshot materialization，携带每个member的typed bounded
+  update footprint以及snapshot-ready/publish completion refs；
+- `in_place_poison_on_failure`，携带exclusive group-epoch acquire、publish/poison completion refs。
+
+`StateSlotVersionRole`的V1 enum是`none/current/candidate/in_place`，并与slot access正交验证：非state只能是
+`none`；`current`只读已发布group snapshot；`candidate`读写尚未发布但snapshot-ready的atomic candidate；`in_place`
+只用于持有exclusive group epoch的in-place policy。一个entry不能把同组不同member绑定到不相容version role，且
+任何candidate/in-place write都必须被对应group publish或poison terminal覆盖。runtime按该role绑定exact version，
+不能根据entry名、read/write flags或调用顺序猜当前/新版本。
+
+projection coverage在candidate lifecycle中使用typed union：`pending_projection`或非空
+`ProjectionSetId` set。`pending_projection`只允许在launch projection尚未materialize的candidate clone中，明确表示
+“尚未形成coverage proof”，不是wildcard/default，也不能被transport、target、package或runtime消费。launch
+projection成功后必须在同一clone把每条pending realization替换为完整、显式的ProjectionSetId coverage；即使
+realization在所有sets间共享，也要列出当前executable内全部compatible set IDs。commit verifier拒绝任何pending、
+空set、overlap或hole，manifest只序列化final set coverage。
+
+candidate clone在任何rank-specialized lowering前先建立typed、uncommitted
+`wafer.executable.resource/rank/entry` records。resource record从model/distributed `ResourceId`投影model
+role/type/access/lifetime/alias/update和state-group ref；candidate state-group及resource realization records显式携带当前
+target/shape/rank/projection coverage下的arena/placement、residency/streaming、storage、capacity和scope policy，
+此时不伪造accepted offset/range。rank/entry逐个引用distributed canonical
+coordinate、component、execution mesh和static local function；此时每个rank可保守视为独立provisional
+class，尚无final `RankClassId`。production passes只从这些SymbolRef取rank/resource identity。layout/
+instruction materialization引入launch-visible workspace、cross-entry/resident staging或control/status root时，
+必须在同一candidate clone创建typed resource record并用owner EntryId/scope、role和structural root ordinal形成
+稳定composite identity；不能从
+SSA/symbol name生成。atomic commit验证完整program/ABI/memory/transport等价后才写入final `RankClassId`并
+提升同一records；CLI rank/resource option不能参与production identity。
+
+candidate executable不是fixture前置条件。production builder消费verified distributed program、显式typed target
+requirements、normalized bounded ShapeGuard集合和resource policy，在一次rewrite中创建唯一executable root、
+target-requirement owners、target/shape正交candidate variants及其rank/entry/resource records；它按3.9.1生成
+`TargetVariantId`/`ExecutableVariantId`/`EntryId`。任何pass发现“第一个existing variant”、使用default target/guard
+或要求用户预先手写candidate都不是主线入口。
+
+只在entry内部存在、可由static function use-def/offset重算且不进入KAD slot的tile-local SPM temp/psum/staging
+不创建`wafer.executable.resource`；其唯一owner仍是committed instruction function。是否创建resource由
+launch/runtime可见性和跨entry/instance identity决定，不能按memref名字或“所有alloc都建resource”的规则扩大。
+
+首次引入launch-visible workspace、跨entry/resident staging、control或status root的transformation同时拥有resource
+declaration责任。所有这些transformation调用同一个typed candidate-resource builder；builder消费
+`(owner EntryId, structural root ordinal, ExecutableResourceRole, semantic type/access/scope)`，在candidate variant
+symbol table中create-or-verify同一`wafer.executable.resource`和当前coverage的candidate realization。state member还
+必须create-or-verify同一executable state-group projection。builder只允许
+完全相同声明幂等复用，role/type/scope不一致或同一root产生多个ResourceId必须失败。后续ResourceView、memory
+planner和commit只能验证/补全同一record的storage/range/coverage，不能成为缺失resource的late creator。
 
 本文把这个clone-local生命周期称为`CandidateExecutionEntry`；它不是新增op或可序列化artifact，而是
 uncommitted `wafer.executable.rank/entry` record的状态。target/package pipeline必须拒绝candidate record。
 atomic commit保持`ExecutionInstanceId`不变并把同一record提升为`ExecutableEntry`，同时补final
-`RankClassId`；失败clone中的identity不能泄漏到cache/manifest。
+nonempty canonical `RankClassId` coverage；一个rank-parametric EntryId可以覆盖多个final classes，不能复制同一
+EntryId record来伪装singular class。失败clone中的identity不能泄漏到cache/manifest。
+
+uncommitted/committed lifecycle使用enclosing executable variant上的typed
+`CommitState = candidate | committed`表达，不使用临时string attr或op name变体。candidate state下的
+resource/rank/entry/transport/projection records只存在whole-variant clone；target LLVM、artifact cache、package和
+runtime verifier必须拒绝它们。physical transport acceptance的唯一跨transformation表示是同一
+candidate variant中的`wafer.executable.transport`；它通过entry-local `TransportActionId`引用
+instruction body，保存完整concrete binding members和typed relocation schema，不拥有final
+projection mode/digest。launch projection是`ProjectionSetId`、pinned/relocatable union和digest的唯一owner。
+
+committed executable、static function、projection和target artifact identity统一使用`tasks/14`的
+WCRE V1 + domain-separated SHA-256。identity hash从typed IR的compiler-owned structural projection产生；
+不对printed MLIR、raw Protobuf deterministic bytes、文件名或pass-local object hash计算长期ID。
 
 pre-commit `ExecutableResourceView`是从candidate static entries、frontend resource declarations、accepted
 SPM/DDR offsets、arena/placement、transport和projection重算的transformation-local analysis。executable
-composer在atomic commit中把它materialize为`wafer.executable.resource`和entry `SlotId -> ResourceId`
-bindings；失败则整个candidate丢弃。commit后target只能从这些typed owners和memref/view关系派生具体
+composer用它验证并补全同一candidate `wafer.executable.resource` realization records的capacity/range/accepted placement，
+同时materialize entry `SlotId -> (ResourceId, StateSlotVersionRole)` bindings、stream windows和state-group refs，再随
+atomic commit把这些records一起提升为committed；
+它不得在最后一刻发明state/arena/residency policy或新ResourceId。失败则整个candidate丢弃。commit后target
+只能从这些typed owners和memref/view关系派生具体
 address/range/descriptor，PackageManifest只序列化runtime-observable fields，RuntimeSession只实例化typed
 bindings；三者都不得重新恢复resource role、scope、alias/update或lifetime。
 
+immutable resource的accepted storage/residency/window plan还必须在commit前经过`tasks/08`的
+`MaterializedImmutableArtifact` gate。`ProgramOutputTransaction`同时拥有candidate clone和private
+content-addressed payload staging；whole commit只seal并attach committed executable、typed `ArtifactRef` index和exact
+blobs到同一outer transaction，不产生trusted visibility。target artifact set和package若属于当前driver completion
+scope继续attach；只有全部scope gates通过后由统一delivery-root rename或单一`ProgramDeliveryCommitRecord`执行一次
+publish。显式executable-only scope可以在该边界提交，但full driver不能提前publish。IR attachment成功但payload缺失、
+payload先泄漏为可发现ArtifactRef、package回原source path重建bytes或后段失败却留下trusted partial root都非法；失败
+必须保持原IR/output trusted index不变，未引用immutable orphan只允许GC。
+
 Executable verifier至少检查：所有ID唯一且引用闭合；resource use-def、slot/signature、access、alias/update、
-lifetime和state consistency合法；shape guards priority/fallback确定；每个canonical execution instance恰好覆盖；
+lifetime、state-group coverage/slot-version/snapshot policy合法；streaming window、staging range、copy-consumer
+completion和bounded residency合法；shape guards priority/fallback确定；每个canonical execution instance恰好覆盖；
 entry graph和completion DAG无非法cycle且每个user-visible output可达terminal success；transport/projection引用
-完整；最终rank class内local program、typed ABI、final memory plan、transport template和completion exports等价。
+完整；最终rank class内local program、typed ABI、ordered slot resource/state-role、distributed shard/content、
+artifact/storage/capacity/arena/scope realization、final memory plan、transport template和completion exports等价。
+V1不支持在同一class内隐含per-`ExecutionInstanceId`的parameter/state realization映射；若任一上述可观察事实
+不同就继续拆class。相同static `EntryId`和device module仍可被多个classes引用，不需要为class复制代码。
 distributed rank class只提供必要条件，commit只能继续拆分，不能合并上游已判不等价的instances。
+
+whole-stage production input不是裸`ModuleOp`。`CompilationRequest`通过private access一次move出
+`ExecutableCompilationInput`，共同拥有module、`VerifiedProgramSource` coordinator、admission limits、canonical owner和完整
+target contexts；它还必须拥有该module/working clones所依赖的frontend `MLIRContext`，不能把`OwningOpRef`误当context owner或接受
+caller在request后另传context。candidate transaction保留该owner直到payload materialization及outer attachment结束。raw module只能进入无payload/
+无commit权限的test adapter。完整driver直接持有input和`ProgramOutputTransaction`，不能把source或publication authority塞进
+pass-local analysis、全局表或`OpPassManager`。
 
 不负责：
 
@@ -637,8 +868,8 @@ distributed rank class只提供必要条件，commit只能继续拆分，不能�
   前失败，不能recursive walk后平铺。
 - 在 device-code gate 中用 LLVM clang 和 repo-vendored TX8 deps 生成 RISC-V kcore device `.so`，
   并通过 required-symbol 检查证明 `wafer_tx81_*` 由 repo-local Wafer CRT source/object 或明确合法外部依赖解析。
-- 从 `wafer.executable.entry` 和 lowered function生成 ordered typed `KernelAbiDescriptor`；descriptor hash
-  同时进入ELF note/export和manifest，package不解析LLVM文本猜ABI。
+- 从 `wafer.executable.entry` 和 lowered function生成 ordered typed `KernelAbiDescriptor`；descriptor
+  semantic digest同时进入`.note.wafer.abi`和manifest，package不解析LLVM文本猜ABI。
 - 从committed executable和complete TargetArtifactSet派生immutable PackageManifest：environment/artifact
   fingerprints、artifact digest、orthogonal target/shape selection、committed rank graph、typed resources、
   entry graph、endpoint template和completion DAG；不复制instruction
@@ -722,8 +953,8 @@ WaferRuntimeAdapter cluster launch
 验收标准：
 
 - package metadata 中的 tile endpoint、block id、local slice metadata 和 available/excluded tile
-  信息来自 `wafer.target.topology`、`wafer.execution.mesh`、program parameter shard metadata/resource
-  view 和薄 launch/block binding，不维护第二份 endpoint mapping 事实源。
+  信息只从committed topology/mesh、projection、resource realization和entry/transport records序列化；不扫描
+  program shard metadata或薄launch binding恢复，也不维护第二份endpoint mapping事实源。
 - 不依赖 `TsmGetDeviceNum/List/Properties` 这类 discovery stub 得到 capability。
 - completion 来自 tx runtime command/module/stream completion、legacy `TsmRun` synchronous completion，或 kcore 内显式 CSR local drain 加 host runtime completion。
 
@@ -743,8 +974,10 @@ WaferRuntimeAdapter cluster launch
 
 验收标准：
 
-- 覆盖 `direct_dte_send_async`、FSM monitor receive、DTE wait/status/error 和 packet counter update。
-- DTE resource allocator 管理 high-performance node、normal node、FSM id、packet id、stream id、remote tile 和 release。
+- 覆盖tasks/14 typed DTE command的exact block/channel/FSM/stream/endpoint lowering、nonblocking send/recv status、
+  finite-cycle wait、status/error和release；vendor helper只作实现证据，不是compiler ABI。
+- accepted transport在compile time分配exact DTE block/channel/FSM/packet/stream和remote tile；target CRT只实例化
+  该binding并管理opaque context/release，不从provider pool动态搜索新assignment。
 - Direct DTE wait 与 local fence / local wait 明确分离。
 
 ### Direct DTE Collective Library
@@ -1037,8 +1270,9 @@ Pass pipeline 建议：
 - completion gate。
 
 pass 名、tool flag、test 名和任务号只作为实现索引；架构边界仍由 IR / program contract 和
-verifier/lowering 责任定义。主线 gate 必须通过 `wafer-opt` program pipeline 重放已完成上游链路；
-Wafer named MLIR pipeline 只作为内部构件或局部 debug/unit 覆盖。不能依赖 integration test
+verifier/lowering 责任定义。主线 gate 必须通过 `wafer-opt` direct program-driver mode重放已完成上游链路；
+Wafer named MLIR pipeline 只作为内部IR-local构件或局部 debug/unit 覆盖。`OpPassManager`不能携带
+`VerifiedProgramSource`、`ProgramOutputTransaction`、target context、payload或commit authority。不能依赖 integration test
 手动拼 pass、Python helper 或手写测试输入来表示长期 compile flow。
 
 当前用户级 / Integration 调试入口不直接暴露下面这些单 pass。2026-06-02 后由 `WaferPipelines`
@@ -1054,9 +1288,11 @@ SPMD/MPMD distributed-program stage消费sharding propagation输出的StableHLO/
 `wafer-opt --program-pipeline=stablehlo-spmd-to-linalg` 和
 `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 下。旧 C ABI lowering/compile 入口已删除；
 旧 single-tile/target CRT/ring/SPM/DDR unit/debug pass 链也已删除。`tx8` 只保留为底层硬件/
-依赖事实名，不作为 compiler target。上述入口尚未形成完整production compiler driver；长期必须新增
-单一 `stablehlo-to-executable` program pipeline或等价driver。下面列表描述该长期边界，不是要求用户
-手动串 pass。
+依赖事实名，不作为 compiler target。上述入口尚未形成完整production compiler driver；长期必须新增单一
+`runStablehloToExecutableCompilation(CompilationRequest, ProgramOutputTransaction &)` direct driver；
+`--program-pipeline=stablehlo-to-executable`只是选择该driver mode，不把它注册成可脱离owners运行的纯MLIR
+named pipeline。`buildStablehloToExecutableTransformPipeline(OpPassManager &)`若保留，只包含IR-local transform segment。
+下面列表描述该长期边界，不是要求用户手动串pass。
 
 ```text
 ModelImport/FrontendProgram

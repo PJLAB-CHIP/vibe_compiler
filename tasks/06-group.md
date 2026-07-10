@@ -786,6 +786,53 @@ boundary location 会改变真实需求：
 候选 tile shape 和 cost breakdown 都是 analysis，不写入 `wafer.group` attribute。IR 里只保留
 whole-variant commit 后的完整 rank programs；logical/scheduled group、失败候选和代表 tile 都不保留。
 
+#### Candidate Search Resource Bounds
+
+大模型的target x shape x rank x group x layout x tile/internal-split组合必须由validated
+`CandidateSearchLimits`约束。它是`CompilationRequest`/build provenance，不进入group/executable语义或artifact
+fingerprint；所有字段为positive checked integers，至少包含：
+
+- maximum global variant tuples、total candidate tuples和per-variant candidates；
+- per-entry traversal/tile/internal-split alternatives、per-value/per-entry layout alternatives；
+- simultaneous evaluation clones、estimated live clone bytes和parallel workers；
+- per-entry/component candidate fragments、constraint solver states、compatible-join operations、learned nogood
+  count/bytes和full-clone evaluations；
+- immutable artifact materialization attempts、total transformed/read/written bytes和deduplicated recipe entries；
+- iteration-domain/count-expression nodes/depth和expanded template上界；
+- retained structured rejection diagnostics及每类sample上限。
+
+driver不能物化全局笛卡尔积或为每个局部组合立即clone/重跑整个模型。它先按typed
+target/shape/entry/component/group/layout/tile keys为每个entry/component建立transformation-local
+`CandidateFragment`：只包含候选decision literals、边界layout/resource/state/transport/artifact demand summary、
+legality/cost lower bound和可重放builder；不包含committed IR、bytes或外部cache identity。constraint propagation按
+shared typed keys做compatible merge join，提前消除资源/shape/layout/transport不相容，并可记录当前compile-call内的
+canonical nogood。fragment/memo/nogood只服务本次analysis，可失效、可重算，不序列化进IR/artifact/sidecar。
+
+solver以canonical decision order增量形成完整compatible assignments；fragment totals、join product和solver state用
+checked arithmetic，overflow直接`search_budget_exhausted`。只有完整assignment才创建一个whole-variant clone并重放
+所有transforms/gates；fragment summary绝不是legality proof，compose后仍全量reverify。limits确定唯一canonical
+evaluated prefix，worker
+parallelism和completion order只能改变吞吐，不能改变被评估集合或winner。`first-legal`仍选择prefix内首个complete
+passing candidate；`min-estimated-time`只在同一完整prefix的passing candidates中用deterministic score/tie-break选择，
+不得声称全frontier最优。若prefix无passing candidate且unvisited frontier存在，结果是
+`search_budget_exhausted`而不是program illegal；只有完整finite frontier都失败才报告no legal candidate。
+
+每个clone创建前用operation/value/region/resource counts做checked byte estimate并取得live-clone budget token；actual
+tracked usage超过token或simultaneous clone limit时取消该evaluation、销毁clone并返回budget failure，不能提交较小的
+partial rank/group。diagnostic overflow只保留canonical samples和aggregate counts，不影响候选结果。limit boundary、
+product overflow、parallelism 1/N byte-identical output和budget failure source/output transaction不变都必须测试。
+另用至少1000 entries、每entry少量稀疏alternatives的合成gate证明不分配naive product、late failure通过nogood/
+constraint propagation有界回溯，临时内存受fragment/state byte limits控制。
+
+immutable payload bytes不在每个passing structural candidate内重复生成。candidate先形成nonserialized、
+non-forgeable `ImmutableArtifactMaterializationPlan`，精确绑定source capability/digest、logical slice、accepted
+quant/storage encoding、checked output byte count、固定chunk recipe和residency/windows。structural/target gates及
+deterministic scoring结束后，driver按winner order只对当前选定complete candidate执行byte materialization；同一recipe
+在outer transaction内按typed recipe key复用已完成staged blob。source digest/IO failure是source-global fatal；仅该
+candidate encoding/coverage失败时才在materialization attempt/byte limits内尝试下一个canonical passing candidate。
+`min-estimated-time`不得为了评分先pack全部passing candidates。任一最终选择仍必须经过byte proof、final ResourceView和
+atomic commit；budget耗尽不退回未materialized candidate。
+
 ### 10.1.1 Planning Inputs 和 Materialization 依赖
 
 analysis/acceptance 的核心不是先把 rejected group plan 写进主 IR 再让下游修复，而是在生成 committed
@@ -846,8 +893,9 @@ committed materialization 只接受 candidate-selection driver 选中的 complet
 logical/scheduled `wafer.group`。任何 group、rank、event、transport 或 verifier gate 失败都丢弃 clone，
 主 IR 不发生部分修改。physical transport acceptance 和 endpoint projection 必须在同一 candidate clone
 中先完成并通过 cross-rank/global verifier，再随 variant 原子提交；projection 只保存不能从 local IR
-重算的 rank/tile mapping。pre-commit `ExecutableResourceView` analysis从passing candidate facts重算typed
-resources并由composer随variant materialize；commit后target/package/runtime只消费typed executable owners，
+重算的 rank/tile mapping。pre-commit `ExecutableResourceView` analysis从passing candidate facts和同一clone的
+uncommitted typed resource records重算resource/slot relation，验证并补全records后随commit提升；group不保存
+resource summary、state/arena policy或package binding。commit后target/package/runtime只消费typed executable owners，
 不能再次恢复resource role/alias/lifetime。它们也不能成为
 第一次发现 SPM 放不下、layout 不合法或 DDR demand 不可接受的阶段。若 analysis/acceptance gates
 让 candidate-selection driver 不能接受当前 variant，planner 必须回到 tile shape、layout、internal split、instruction
@@ -1088,7 +1136,8 @@ group planner 层只在 analysis 中建模抽象资源，不把完整 resource p
 
 下游阶段再细化，并由对应子设计负责 verifier / lowering：
 
-- memory buffer、layout materialization 和 runtime/target-codegen address derivation：见 layout / SPM / DDR 文档。
+- memory buffer、layout materialization和target-codegen address derivation：见layout/SPM/DDR文档；runtime只
+  消费committed executable/manifest bindings，不读取group或raw memref。
 - target compute 和 local movement：见 `wafer.tile.*` compute 文档。
 - communication buffer、DTE/FSM token/wait 和 collective p2p schedule：见
   `tasks/13-communication.md` 和 `tasks/11-instruction-ir.md`。
@@ -1254,6 +1303,13 @@ recomputation。初期默认不 fuse 大型 multi-use producer。
   实现不能重新打开 late committed group 协议。
 - cost model 的首批 bandwidth/latency/engine 参数来自带 provenance 的 calibration profile，只排序已经
   legality-passing 的 candidates；参数集合和 PMU case 随板端证据迭代，不进入 IR 语义。
+- multi-target compilation通过immutable `VerifiedCalibrationProfileSet`接收profiles；它是按exact
+  `TargetEnvironmentFingerprint` canonical排序的0-or-1 map，duplicate environment、record声明环境与key不一致、
+  stale profile或与`VerifiedTargetCompilationContext`不匹配失败。single profile只作为factory convenience并规范化到
+  set。某target无profile时明确使用analytic conservative fallback，绝不能借用其它environment或隐式first profile。
+  group/layout/communication cost analysis通过显式`(VerifiedTargetCompilationContext, profile set view)` lookup接收
+  `tasks/04`验证后的profile；API不能接收profile path、report JSON、mutable global singleton或raw Protobuf。每次
+  lookup使用typed target+cost key并返回observation或conservative estimate，legality必须在lookup前独立通过。
 - per-op inner-loop、accumulator 和 workspace 继续由 tiling interface、显式 memref/effect 和 typed
   resource demand 表达；新增 form 必须先补 verifier 和 whole-entry lifetime gate。
 - convolution、staged softmax/reduction、Transform dialect replay 和 compute/communication overlap 按各自

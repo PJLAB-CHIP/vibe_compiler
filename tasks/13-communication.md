@@ -72,9 +72,12 @@ Pipeline position:
   receiver-ready、completion/status/error 和 release；形成有限、逐项验证的transport binding members，
   标记`requires_pinned`或relocation eligibility/slot schema，并做cross-rank protocol matching。
 - Output artifact / IR:
-  candidate clone中的stage-accepted transport binding set/eligibility fact，进入target-lowerable IR或
-  compiler-generated typed descriptor；它不复制 collective/p2p schedule，且在 whole-variant atomic commit
-  前不是独立committed artifact，也不拥有final projection mode、`ProjectionSetId`或projection digest。
+  candidate clone中的uncommitted `wafer.executable.transport` records。它们是physical transport
+  candidate fact的唯一持久表示：引用instruction body中的`TransportActionId`，保存完整
+  concrete binding members、typed relocation schema和completion/status/error refs，但不复制collective/
+  p2p schedule。它们只存在whole-variant evaluation clone内，不生成side table或独立descriptor；
+  atomic commit前不是committed artifact，也不拥有final projection mode、`ProjectionSetId`或
+  projection digest。
 - Downstream consumer:
   launch/transport projection、whole-variant executable verifier/atomic commit；commit 后由 target LLVM、
   `KernelAbiDescriptor`、device module和`PackageManifest`中的committed transport/resource records消费。
@@ -359,31 +362,48 @@ tiled tensor collective + SPM storage values -> `wafer.tile.*` collective
 ### 5.1 Accepted Physical Transport
 
 `wafer.instr.dte_*` body 结束 logical schedule 选择；whole-entry SPM/DDR offsets 固定后，它必须经过
-transport acceptance，才能进入 launch projection 和 whole-variant commit。accepted physical transport
-不是第二份 collective schedule，而是对
-body 中每个 logical issue/wait 的 target binding。每个 accepted transport step 至少包含：
+transport acceptance，才能进入 launch projection 和 whole-variant commit。instruction body中每个
+logical issue/wait在candidate entry内拥有稳定、entry-local的`TransportActionId`；ID是从该static
+entry的structured op/block order确定性分配的typed integer，不使用op name、SSA print name或
+pointer identity。accepted physical transport不是第二份collective schedule，而是对这些
+actions的target binding。每个accepted transport record至少包含：
 
 - 对应的 logical rank、peer、buffer slice、byte range 和 SSA completion dependency。
-- local / remote endpoint和binding member id；member记录从execution mesh/target topology派生的确定坐标。
-  若code/transport必须内嵌该坐标则标记`requires_pinned`；否则记录relocation eligibility和typed
-  endpoint-table/control slot schema。final projection mode/fingerprint不属于本层。
-- DTE channel、local FSM、remote FSM、packet/stream resource class和 receiver buffer 的 storage、offset、
-  capacity、alignment、ownership及 lifetime。每个transport binding member的concrete值或typed slot值都必须在
-  compile time完成assignment并进入target-lowerable IR/typed descriptor；RuntimeSession只实例化selected
-  member的typed provider handles/control table，不产生新的channel/FSM/transport assignment。
+- 一个或多个有限binding member；每个member都必须是完整concrete assignment，包含local /
+  remote endpoint、exact DTE block及其channel、local/remote FSM、packet/stream resource class、receiver storage/offset/
+  capacity/alignment/ownership/lifetime、status/error source和release relation，并有稳定
+  `TransportBindingMemberId`。不允许一个member用“concrete或slot”二选一的半完整表示。
+- 若target code可通过control/status slots读取部分binding fields，record额外保存唯一
+  `RelocationSchema`：每个typed slot明确字段kind、width、owner action/member和allowed value set，
+  并引用上述已完整验证的concrete members。`RelocationSchema`说明哪些已验证字段
+  可被机械填slot，不生成新endpoint/route/resource candidate。
+- 若任一个code/transport field不可relocate，record标记`requires_pinned`。这只是launch
+  projection的legality input；final mode/fingerprint不属于本层。RuntimeSession只实例化
+  selected member的typed provider handles/control table，不产生新的channel/FSM/transport assignment。
 - issue、receiver-ready、completion wait、status/error observe 和 release 关系。success completion、timeout、
   transport error 和 peer failure 必须能区分，不能把 `async.token` 被消费解释成隐含成功。
 
-Transport acceptance输出可以同时包含`requires_pinned` member和relocation-eligible members；launch
-projection根据code embedding和完整rank/resource coverage选择其一并构造`tasks/04`的typed union。若选择
-relocatable，target ABI必须显式接收endpoint table、channel/FSM assignment或等价control slots；本层提供
-已验证member/slot facts，但不生成projection set或runtime selection policy。
+`TransportActionId`是entry-local `uint64_t` structural ordinal；package/wire中必须与owner `EntryId`一起解释，
+不能包装成全局opaque ID。`TransportBindingMemberId`是action-local `uint32_t`：先拒绝重复complete assignment，
+再按完整member的typed numeric/ID field tuple做lexicographic canonical ordering并分配zero-based ordinal。排序tuple
+不含diagnostic name、provider handle或ID自身。relocatable projection、package和runtime都保留该ordinal；选择
+allowed member不重编号。这样ID只定位已验证assignment，不成为另一份route/resource事实源。
 
-Transport acceptance verifier 必须从当前 execution mesh、target topology、accepted SPM/DDR offsets 和
-resource effects 重算这些 facts。此时结果只是 candidate clone 内的 stage-accepted fact；只有整个
-variant 原子 commit 后，package 才可以序列化 compiler-generated descriptor 供 runtime 消费，
-但不能从 logical rank、名字或 module path 再次恢复 transport，也不能保存一份与 p2p body平行的
-algorithm step list。
+Transport acceptance可同时证明`requires_pinned`和relocation-eligible actions，但每个allowed
+member始终是完整concrete assignment。launch projection唯一决定最终mode：若选择pinned，
+则选中一个完整member vector并绑定所有digest；若选择relocatable，则从已验证members和
+`RelocationSchema`构造`ConcreteRecordSet`或可完全展开为同一members的
+`FiniteTemplateSet.allowed_bindings`。target ABI显式接收endpoint/control/status slots；本层不生成
+projection set、`ProjectionSetId`或runtime selection policy。
+
+Transport acceptance verifier 必须从当前execution mesh、target topology、accepted SPM/DDR offsets、
+resource effects和instruction action refs重算这些facts，并把结果materialize为candidate clone内的
+uncommitted `wafer.executable.transport`。下一个pass若需跨transformation消费，只能读这个
+typed IR record；不保留analysis side table或opaque descriptor。只有whole-variant atomic commit后，
+package才可序列化committed transport/projection records供runtime消费。package/runtime不能从
+logical rank、名字或module path再次恢复transport，也不能保存一份与p2p body平行的
+algorithm step list。target/package pipeline必须拒绝仍处于candidate state或缺少final
+`ProjectionSetId`引用的transport record。
 
 ## 6. Collective Lowering
 
@@ -541,6 +561,14 @@ SPM planner必须看到count/control buffer、每个recv capacity和data-phase l
 逐peer匹配count/data phase、capacity、endpoint/channel/FSM和status。任何overflow、peer count mismatch或
 partial failure都拒绝整个variant或按persistent-state policy失败，不能截断token或静默丢弃expert payload。
 
+若上游typed MoE graph声明expert按需activation，count phase还必须产出launch-visible、bounded、typed count/control
+ResourceId和`count_phase_complete` completion；每个expert count element的offset/type/capacity与
+`ModelProgramMemberId/ComponentId` relation显式可验证。communication层不自行创建predicate或跳过peer；whole-variant
+completion formation消费这些facts，按`tasks/01`建立`ActivationPredicateId`、finite expert waves以及predicate-controlled
+copy/entry/data nodes。count producer completion必须支配predicate evaluate，predicate/conditional join再支配data issue、
+combine和staging reuse。没有typed count owner或bound时只能使用always-active static wave，不能按expert name/zero buffer
+启用稀疏路径。
+
 ## 7. Interaction with Layout, SPM, and DDR
 
 通信本身通常是 byte-preserving movement，不做 semantic layout conversion。
@@ -588,7 +616,9 @@ Target/package 边界只导出 runtime 可观察的 transport requirements 和 c
 - async issue 对应的 device/DTE completion、local drain 和 host command completion保持不同节点；runtime
   completion DAG引用这些节点，不把它们压成一个 scalar completion source。
 - status/error slot、timeout policy 和 peer/rank failure domain由 package声明、RuntimeSession实例化；
-  provider-private handle 和 physical address不进入 package。
+  provider-private handle 和 physical address不进入 package。target CRT只写local
+  pending/success/timeout/transport-error；`peer_failure`由RuntimeSession在其它rank/stage failure被completion
+  DAG观察后合成到同一typed outcome surface，不能要求没有peer-status evidence的device helper猜测。
 
 Host runtime dyn TLV D2D/P2P path 是另一条兼容或 host-managed route。若后续需要 fallback，应在
 runtime boundary 上显式选择，不能把它混入 compiler inline Direct DTE p2p schedule。

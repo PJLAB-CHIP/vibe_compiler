@@ -29,11 +29,12 @@ Pipeline position:
 
 - Upstream artifact / IR:
   verified StableHLO Wafer program with typed model ABI / symbolic constraints、optional user Shardy/SDY
-  or imported sharding annotations、`wafer.target.environment`、`wafer.target.topology` 和已验证的
-  `wafer.execution.mesh`。
+  or imported sharding annotations、typed `wafer.model.program_graph`、explicit `ParallelizationPolicy`、
+  `wafer.target.environment`、`wafer.target.topology` 和已验证的`wafer.execution.mesh`。
 - Current stage responsibility:
-  在 SPMD 层应用默认或用户 sharding policy，运行 Shardy propagation 和 Wafer-owned SPMD partition，
-  优先复用 Shardy MPMD/SDY 表示形成 distributed program：显式 component graph、`dp/tp/pp/ep`
+  先把exporter-native graph、可用Shardy MPMD或typed formation policy规范化成verified
+  `wafer.parallel.program`，再对每个component应用默认或用户 sharding policy，运行 Shardy propagation 和
+  Wafer-owned SPMD partition，形成 distributed program：显式 component graph、`dp/tp/pp/ep`
   logical coordinate、partition/replica identity、target-independent rank class、logical collective 和
   parameter/state shard relation，并保留一个全局 coherent symbolic-shape variant。
 - Output artifact / IR:
@@ -52,10 +53,11 @@ Pipeline position:
   class；不把 `wafer.spmd.*` attr、pass option、文件名或 side table 当成 distributed program，也不提供
   默认 rank 0。
 - Completion gate:
-  真实 frontend program 经 `stablehlo-spmd` 产生 verified distributed program，并被 local compute / group
+  真实 frontend program 经structured component formation和`stablehlo-spmd`产生 verified distributed program，并被 local compute / group
   gate 继续消费。gate 必须证明每个 component 的 partition/replica coordinate、rank-class coverage、typed
   parameter/state shard、logical collective 和全局 variant 一致；至少覆盖一个 rank-parametric class 和一个
-  必须 static split 的 class。默认 rank 0、只运行 Shardy propagation 或只 parse 手写 SDY 输入不算完成。
+  必须 static split 的 class；source-backed PP=2和heterogeneous expert graph必须从typed model/parallel graph进入
+  distributed handoff。默认 rank 0、只运行 Shardy propagation、手写distributed fixture或按function name形成component不算完成。
 
 ## 1. 目标和非目标
 
@@ -84,6 +86,7 @@ Pipeline position:
 ```text
 StableHLO module
   + typed model ABI / symbolic shape constraint / parameter and state resources
+  + typed model program members/edges + explicit ParallelizationPolicy
   + optional user Shardy/SDY annotations or importable sharding attrs
   + wafer.target.environment selected for legality
   + wafer.execution.mesh selected from valid target environment / topology
@@ -325,10 +328,10 @@ PyTorch module
   -> optional torch_xla.distributed.spmd.mark_sharding / torch.ops.xla.dynamo_mark_sharding
   -> PyTorch/XLA StableHLO / SDY program       # frontend Python stops here
   -> target environment / topology / valid execution mesh materialization
+  -> typed model program graph + ParallelizationPolicy -> verified wafer.parallel.program
   -> if no user sharding seed exists, apply Wafer default function-input seed from execution mesh
-  -> Wafer Shardy propagation
-  -> Shardy MPMD component formation when required
-  -> Wafer-owned XLA SPMD partition compiler stage
+  -> per-component Wafer Shardy propagation
+  -> per-component Wafer-owned XLA SPMD partition compiler stage
   -> distributed StableHLO program assembly and rank-class verification
 ```
 
@@ -473,6 +476,61 @@ row / contracting 类 case 需要保留 reduction collective op；如果后续 t
 normalization、endpoint projection 或 ring/resource path 还没有完整消费这些事实，应补对应下游任务，不回头把
 该策略从 P2 SPMD program gate 中删掉。
 
+### 2.2 Structured Parallel Program Formation
+
+Shardy MPMD若在pinned版本能完整表达member、port、edge和participant relation，adapter应直接规范化它；当前缺少
+完整对象时，V1使用同一Wafer dialect中的transformation-local `wafer.parallel.*` IR，而不是JSON、名字约定或
+手写distributed fixture。它位于verified model program与SPMD partition之间，失败时丢弃完整clone，不作为package
+或runtime artifact。
+
+| object | 必须字段/关系 | 不拥有 |
+| --- | --- | --- |
+| `wafer.parallel.program` | model-interface/program-graph ref、execution-mesh ref、typed `ParallelizationPolicy`、ordered component/edge symbol table | physical endpoint、runtime schedule、distributed digest |
+| `wafer.parallel.component` | nonzero program-scoped `ComponentId`、source `ModelProgramMemberId` set或compiler-formed source region refs、ordered typed local ABI ports、`LogicalParticipantPredicate` | function/expert/stage name identity、flat default rank |
+| `wafer.parallel.edge` | source/destination component+port、tensor/state/control/segmented enum、semantic type/DimId、必要ResourceId/alias-update、participant relation | transport route、buffer、microbatch queue |
+| `LogicalParticipantPredicate` | typed `dp/tp/pp/ep` axis-role enum上的checked coordinate equality/range/set和replica relation | axis-name string、physical tile、runtime callback |
+
+`ParallelizationPolicy`是versioned closed typed record，至少区分`preserve_exporter_members`、
+`pipeline_partition`、`expert_partition`及其显式组合，并记录source member refs、legal cut/op-interface criteria、stage或
+expert domain、participant predicates和resource/state placement constraints。policy可以驱动compiler从一个member
+形成多个components，但只能按registered op semantics、SSA use-def、typed resource effect和显式cut constraints；任意
+Python callback、function/op name regex和opaque partition payload非法。policy只属于CompilationRequest/build
+provenance和formation transaction；distributed IR/semantic identity只保存materialized components、source mapping、
+participant predicates、typed edges和其它下游必须验证的结果。不同policy得到逐字段等价的semantic graph时identity
+相同；若某个policy choice改变可观察语义，必须materialize成明确output enum/relation，不能复制整份search/cut policy。
+
+formation在一个transaction中构造完整graph，再按explicit ordered component records分配`ComponentId = 1..N`。
+exporter member ID与ComponentId不是同一scope：一个member可被合法切成多个components，一个component也可在policy
+允许时组合多个members；mapping必须显式。distributed assembly原样保留ComponentId。rename/permutation只要typed
+member/edge semantic order不变就不改变formation；改变cut、participant或edge会改变distributed identity。
+
+PP formation显式产生stage components和stage tensor/state/control edges；microbatch count/issue schedule仍由后续
+entry iteration domain与completion DAG拥有。EP formation显式产生router、dispatch、one-or-more expert、combine
+components；segmented edges携带count/payload ports、expert domain、finite per-peer/destination capacity和count-before-data
+relation，actual counts/displacements保留SSA。异构expert必须形成不同component或local ABI class，不能用expert函数名
+或buffer名恢复。
+
+formation verifier要求component/port/edge refs闭合，所有model members和required outputs有exact coverage，普通call
+不能跨component逃逸typed edge，persistent `ResourceId`/state-group/alias-update relation不丢失，participant predicates
+在selected execution mesh上nonempty且无非法overlap。之后每个component独立运行Shardy propagation/SPMD partition，
+最终assembly验证cross-component edge两端的local shard、collective/segmented语义和global variant一致。任一步失败不
+保留partial component或per-rank output。
+
+### 2.3 Formation and SPMD Operational Limits
+
+parallel/distributed formation接收validated nonidentity `DistributedFormationLimits`，至少限制model members/edges/
+ports、parallel components/edges/predicates、mesh coordinates、distributed instances/classes/shards/variants、high-fanout
+edge refs、checked instance products、simultaneous clones/workers、peak IR/analysis bytes和diagnostics。formation先从
+typed model graph/mesh做checked count/product preflight，再在一个clone中materialize；不能先展开全部coordinates再检查。
+充分limits不改变ComponentId、DistributedProgramSemanticId、ExecutionInstanceId、class/shard或edge order；超限无
+partial component/distributed IR。
+
+external Shardy/XLA helper还接收`SpmdExecutionLimits`：single/total input/output bytes、output functions/ops/regions/
+blocks/values/types/attrs、shard records/instances、workers、wall/CPU/RSS/address-space/process count、stdout/stderr和
+kill/reap deadline。helper在sandbox process group中运行，bounded sink防output bomb；timeout/cancel/crash/limit失败
+kill/reap并删除partial output。parent先按output bytes限制读取，再重跑structural counters和typed verifier；不得因helper
+成功退出跳过。limits只做operational admission，不能改变partition algorithm/options、选择rank prefix或重写sharding。
+
 ## 3. Distributed Program Contract
 
 `distributed program` 是 SPMD/MPMD 之后、physical placement 之前的长期逻辑 artifact。它可以继续使用
@@ -487,6 +545,12 @@ dialect。只有上游 IR 无法稳定表达而下游 legality 必须消费的 c
 ```text
 (distributed_program, component, partition_coordinate, replica_coordinate)
 ```
+
+其中`ComponentId`是nonzero `uint32`、scoped to one distributed program：由`wafer.parallel.program` formation按
+显式ordered component records从1分配，distributed assembly必须原样保留，不从symbol/function name或hash-map iteration得到。program identity
+preimage只编码local instance key `(ComponentId, partition_coordinate, replica_coordinate)`，避免把尚未计算的
+distributed-program digest自包含；完整program verifier/identity成功后，public `ExecutionInstanceId`才表示为
+`(DistributedProgramSemanticId, local instance key)`。package/runtime保留该typed composite，不能只保存flat rank。
 
 - `partition_coordinate` 是 `wafer.execution.mesh` 上参与 tensor partition 的多轴坐标。
 - `replica_coordinate` 区分相同 partition program 的复制实例；不能因为当前 XLA helper 使用
@@ -550,6 +614,43 @@ distributed program 可以包含多个 guardable variant proposal，但一次 di
 distributed variant 至少绑定 program semantic digest、symbolic guard、component graph、mesh shape 和全部
 rank-class coverage。target capability/topology variant 由 `tasks/04-topology-execution-mesh.md` 继续选择；
 runtime 只能从 compiler 已验证的完整 distributed variant 中选择，不能重新分片或补 component。
+
+### 3.5 V1 Typed Distributed Handoff
+
+当前pinned Shardy/SDY能表达mesh/sharding/propagation，但没有可被Wafer后端长期直接消费的
+MPMD component、canonical execution instance、resource shard和hybrid prerequisite class完整对象。
+因此V1在SPMD partition后引入一个最小Wafer-owned typed handoff；它只补上游无法稳定表达
+而下游legality必须消费的relation，不复制StableHLO/SDY body或sharding plan。若后续pinned
+Shardy提供等价typed object，importer可将其规范化到同一verifier contract，但不能让两套
+component/rank identity并存。
+
+V1 handoff对象为：
+
+| object | 必须字段/关系 | 不拥有 |
+| --- | --- | --- |
+| `wafer.distributed.program` | stable program symbol、verified model-interface ref、execution-mesh ref、component/instance/class/resource-shard/variant symbol table | local op body副本、physical placement、runtime handle |
+| `wafer.distributed.component` | program-local nonzero `uint32 ComponentId`、parallel source mapping、diagnostic symbol、one or more local `func.func` refs、typed local ABI ref、participant predicate、typed component-edge refs | function/symbol-name-derived identity、endpoint、microbatch queue |
+| `wafer.distributed.instance` | local key=`ComponentId + typed partition_coordinate + replica_coordinate`、execution-mesh ref；完整program digest验证后与其组成public `ExecutionInstanceId` | flat rank作为第二事实源、self-referential program digest、default rank |
+| `wafer.distributed.class` | stable prerequisite-class symbol、唯一component ref、`rank_parametric`/`per_rank_static` enum、covered instance refs、local function/specialization refs、typed ABI/resource/collective-role equivalence proof inputs | final target-dependent `RankClassId`、code cache merge |
+| `wafer.distributed.resource_shard` | frontend `ResourceId` ref、instance/class coverage、logical offsets/sizes/strides、dtype/shape、content/shard identity、alias/update relation | payload path作身份、DDR arena/offset、resident handle |
+| `wafer.distributed.edge` | source/destination component+port、tensor/state/control enum、type/shape constraint、resource identity/update relation | physical transport、stage issue schedule |
+| `wafer.distributed.variant` | typed global shape-guard proposal、program semantic source ref、complete component/instance/class coverage | target capability predicate、projection、rank-local guard |
+
+`wafer.distributed.program`是symbol table container；component-local StableHLO/Linalg body仍由被引用的
+`func.func`唯一持有，不嵌回handoff op。`partition_coordinate`的维度与`wafer.execution.mesh`
+axis/role一一对应，`replica_coordinate`始终显式存在，即使当前replica count为1。flat
+logical rank只是在给定mesh order下从coordinate派生的debug ordinal，不写入另一个identity field。
+
+program-directory `forward.parameter_shards.json`和`rank_XXXXX.npy`只是当前loader/payload locator。
+distributed assembly必须在进入group/candidate之前把其中的typed shard relation、content identity和
+coverage验证并materialize为上述IR；下游不再parse JSON、匹配`rank_XXXXX`或默认rank 0。
+payload locator可留在program container的artifact table，但locator不进入resource/instance identity。
+
+handoff verifier必须检查：所有symbol/ref闭合；every required canonical instance恰好覆盖一次；
+class只覆盖同一component并满足本节3.3等价条件；rank-parametric function保留partition/
+replica SSA/ABI；per-rank-static specialization只覆盖一个canonical coordinate；resource shard与frontend
+resource/type/payload完全一致；variant coverage不留hole且所有component引用同一global guard。
+任一physical endpoint、SPM/DDR offset、transport resource、planner trace或runtime field出现都必须失败。
 
 ## 4. Logical Mesh Contract
 
@@ -663,7 +764,7 @@ SPMD 前拒绝、重排或拆分 requested logical mesh；SPMD 之后不能再�
 | --- | --- | --- |
 | sharding import | StableHLO + old attrs | Shardy/SDY annotations |
 | propagation | partially annotated module | fully propagated or diagnosed module |
-| MPMD formation/import | verified program + Shardy MPMD/SDY | component graph + typed cross-component edges |
+| structured component formation/import | verified model program graph + Shardy MPMD/SDY + typed policy + execution mesh | verified `wafer.parallel.program` with components、participant predicates和typed cross-component edges |
 | SPMD partition | annotated component + valid execution mesh | component-local partitioned StableHLO |
 | distributed program assembly | component-local bodies + mesh/shard/group facts | verified components + canonical coordinates + coherent shape-guard proposal |
 | logical rank-class formation | distributed program | target-independent rank-parametric/per-rank-static eligibility and full coverage |
@@ -678,6 +779,8 @@ runtime package metadata。
 必须检查：
 
 - 每个 sharded value 的 shard rank、shape、dtype 与 global type 一致。
+- parallel formation policy/version可识别，model-member coverage、component IDs、source mapping、local ABI ports、
+  participant predicates和cross-component edges完整；名字、JSON或default component不能参与恢复。
 - typed component ABI、symbolic constraint、parameter/state shard、alias/mutation 与 frontend model ABI 一致。
 - logical mesh axes/roles、partition/replica coordinate、rank group 和 component coverage 与
   `wafer.execution.mesh` 可对齐；每个 required execution instance 恰好由一个 component/rank class 覆盖。
@@ -705,8 +808,10 @@ P2.S2 的完成证明必须至少覆盖：
 - Shardy propagation 能直接消费每个 strategy 的 `functions/forward.mlir`，并且 XLA SPMD
   partitioner / equivalent service 能产出 component-local partitioned StableHLO body，并由 distributed
   program assembly 建立完整 execution-instance coverage。
-- 至少一个 MPMD case 通过 Shardy MPMD/SDY 或等价 structured representation 形成两个 typed component，
-  证明 PP/stage identity 不从 function 名恢复；至少一个 `dp x tp` case 保留多轴 coordinate 和 groups。
+- source-backed PP=2 case从framework/exporter typed model members进入`wafer.parallel.program`并形成两个stage
+  components；heterogeneous expert case形成router/dispatch/expert/combine graph和bounded segmented edges。两者证明
+  identity/edge不从function或buffer名恢复，missing/overlap edge/participant negatives在partition前失败；至少一个
+  `dp x tp` case保留多轴coordinate和groups。
 - `wafer-opt --program-pipeline=stablehlo-spmd-to-linalg` 能从真实 PyTorch/XLA sharded program
   逐 component 继续产出含 `wafer.linalg_ext.collective.*` 的 post-linalg distributed Wafer program，不能要求用户或 lit 手动拼
   `wafer-lower-stablehlo-to-linalg`。
