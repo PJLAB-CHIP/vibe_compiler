@@ -1,8 +1,10 @@
 # Wafer Target LLVM Lowering and Golden Packet Design
 
-状态：production target CRT closure 已落地；target LLVM call-emission、repo-local Wafer CRT
-implementation、device-code link gate 和 required-symbol closure 已覆盖当前 105 个 production
-`wafer_tx81_*` symbols。扩展 surface 只按第 8 节 staged matrix 推进，不能从旧 CRT source 逐个复制。
+状态：production target CRT implementation、device-code link gate 和 required-symbol closure 已覆盖当前
+105 个 production `wafer_tx81_*` symbols；straight-line target LLVM call emission 已落地。2026-07-10
+系统审计确认当前 lowering 会把 nested structured control flow 平铺到单一 LLVM entry block，因此
+target LLVM semantic correctness 已重新打开；修复或 fail-closed 前，call-emission 子 gate 不算完成。
+扩展 surface 只按第 8 节 staged matrix 推进，不能从旧 CRT source 逐个复制。
 范围：
 memory-planned target-aligned `wafer.instr.*` 到 target CRT call、LLVM dialect / LLVM IR 和
 wrapper/register golden packet 的 lowering。
@@ -66,15 +68,16 @@ wafer.tile.* semantic/buffer op
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  memory-planned `wafer.tile.region` / `wafer.instr.*` IR、accepted SPM/DDR offset facts、
+  memory-planned target-aligned `wafer.instr.*` IR、accepted SPM/DDR offset facts、
   topology/execution-mesh contract、program parameter shard metadata/resource view、薄 launch/block binding
   和 communication/sync lowering。
 - Current stage responsibility:
   从 target-aligned instruction IR 和 accepted facts 派生 Wafer-owned target CRT calls，并继续 lower 到 LLVM
   dialect / LLVM IR。该阶段消费 Wafer memory attr、SPM/DDR offset、DTE peer/token、layout/format
-  和 resource view；不读取 pass-local side table，不发明 compiler-facing ABI wrapper。当前已落地的是
-  call emission：生成 `wafer_tx81_*` declarations/calls 并保证 unsupported target op 结构化失败；
-  这不证明对应 repo-local Wafer CRT symbol 已定义或 packet mapping 已 golden。
+  和 resource view；不读取 pass-local side table，不发明 compiler-facing ABI wrapper。leaf instruction
+  必须在原 control-flow / block 位置改写；标准 SCF/CF/function 容器通过结构保持 conversion 继续降低，
+  尚未支持的 region、multiblock 和 call 必须在任何 mutation 前结构化失败。当前只落地 straight-line
+  call emission；它生成 `wafer_tx81_*` declarations/calls，但尚未满足 structured-control correctness。
 - Output artifact / IR:
   LLVM dialect module、LLVM IR artifact、Wafer target CRT symbol declarations/calls、debug/golden-packet
   输入。TX8 relocatable object 和 kcore shared object 由 device-code gate 从 LLVM IR 继续生成。
@@ -90,7 +93,9 @@ Pipeline position:
   capture shim 或 C stub emission 作为中间层。
 - Completion gate:
   call-emission 子 gate 要求 supported `wafer.instr.*` 生成 verifier-legal LLVM dialect / LLVM IR，并能由
-  `mlir-translate` 输出 LLVM IR；unsupported target op 结构化失败。完整 target CRT / golden boundary
+  `mlir-translate` 输出 LLVM IR；SCF/CF/function 的分支、循环、block 和 call 语义必须保持，尚未支持的
+  容器在 mutation 前结构化失败。至少用 false branch、不同 loop trip count、nested branch 和 function
+  call 证明语义，不只检查 emitted call 数量。完整 target CRT / golden boundary
   还要求 Wafer-owned CRT symbol 有 typed wrapper 合同和 packet golden coverage。device-code gate 只链接
   target LLVM object、Wafer CRT object 和 repo-vendored TX8 deps，不默认链接 capture shim，并负责
   required-symbol closure。
@@ -104,6 +109,8 @@ Pipeline position:
 - operand/result buffer 是 Wafer-tagged memref，SPM/DDR domain 可从 type 和 accepted offset facts 推出。
 - op family、dtype/layout、shape/stride、byte count、wait/completion 和 resource effects 能由 verifier
   检查。
+- leaf instruction 所在的 region/block/call 结构属于 target lowering 已证明可保持的 subset；否则在
+  生成任何 LLVM function/call 前拒绝，不能用 recursive walk 丢弃容器语义。
 - lowering 可以找到 Wafer-owned target CRT symbol 方案或明确记录 unsupported diagnostic。
 - coverage 必须来自 `tasks/11-instruction-ir.md` 的 instruction coverage matrix。只有标为
   `V0 production target op` 或 `V0 production target sync` 的 op 是 target LLVM call emission 的 production 输入；
@@ -595,9 +602,10 @@ CRT 全量实现的验证分四层：
 | Device link | `.ll -> .o -> kcore .so` 实际执行，final `.so` 无 undefined `wafer_tx81_*`；negative test 证明 `wafer_tx81_missing` 会被 required-symbol gate 拒绝 |
 | Pipeline integration | `wafer-lower-groups-to-target-llvm` output 能进入 device link；HF program-chain target LLVM integration 是下一层 gate，不用手写 package metadata 代替 |
 
-Q2-Q3 target CRT implementation / device-code required-symbol closure 完成后，`tasks/progress.md`
-可以推进到 Q4 package metadata auto-export。只实现 header、只生成 object、只覆盖一个代表性
-instruction family、或只靠 `--allow-shlib-undefined` 得到 `.so` 都不算完成。
+Q2-Q3 target CRT implementation / device-code required-symbol closure 通过只证明 symbol surface 闭合。
+`tasks/progress.md` 还必须优先关闭 target LLVM structured-control correctness、instruction geometry/range
+和 exact package entrypoint ABI，才能恢复 Q4 package metadata auto-export。只实现 header、只生成
+object、只覆盖一个代表性 instruction family、或只靠 `--allow-shlib-undefined` 得到 `.so` 都不算完成。
 
 ## 8. Extended Target CRT Surface Staging
 

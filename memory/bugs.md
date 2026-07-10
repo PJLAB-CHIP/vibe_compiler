@@ -81,3 +81,34 @@
   repo-local Wafer CRT source/object 和 required-symbol closure；不要从 `libvr.a`、TX81 `__*` symbol、
   手写 LLVM input 或 package fixture 反推 production compiler boundary。发现 memory 与编号设计文档
   冲突时，必须在同一批改动里修正 memory。
+
+## 2026-07-10 target lowering 不能用 recursive walk 平铺 region 内指令
+
+- 现象：target LLVM lowering 对含 `scf.if` / `scf.for` 的 instruction function 做 recursive walk，把所有
+  `wafer.instr.*` call 依次追加到单一 LLVM entry block；两个条件分支都会执行，循环 body 只执行一次。
+- 根因：把“找到需要改写的 op”误当成“保留它所在的程序结构”。recursive walk 只保留遍历顺序，
+  不保留 region、block、branch、loop trip count 或 call graph 语义。
+- 修复模式：target conversion 必须在原结构位置改写 leaf op，再通过标准 SCF/CF/function conversion
+  lowering 容器；用 full conversion/legality 证明无非法 op。未实现结构保持前，应在任何 mutation 前
+  拒绝 nested region、multiblock 和 call，不能生成近似程序。
+
+## 2026-07-10 package binding order 必须和 entrypoint signature 精确双射
+
+- 现象：metadata exporter 能识别额外 workspace 参数并创建 workspace resource，但 `binding_order` 只含
+  model input/output；Python/C++ runtime 都按该列表组装实参。validator 只检查名字存在，因此漏项和
+  重复项都能通过。
+- 根因：resource inventory、entrypoint signature 和 runtime argument order 是三份独立事实；exporter
+  又从 LLVM 文本参数数量推断 workspace，没有一份 typed ABI 同时拥有它们。
+- 修复模式：compiler artifact 导出 exact ordered typed entrypoint ABI；validator 证明参数数量、顺序、
+  唯一性、resource kind、access、size/alignment 与 signature 一一对应；runtime 只消费该 ABI。完成前
+  对 workspace-bearing package fail closed。
+
+## 2026-07-10 instruction descriptor 必须在 integer narrowing 前证明完整 geometry
+
+- 现象：RDMA/WDMA 可接受超出 memref physical range 的 `byte_count`，convert source/destination element
+  count 可不一致，部分 i64 shape/attribute 在 target lowering 或 CRT 中静默截断到 i32/uint16。
+- 根因：verifier 只检查字段局部为正，没有把 memref type/layout、physical interval、descriptor
+  iteration/count 和 target integer width 组成一个关系；lowering/CRT 各自做未经证明的转换。
+- 修复模式：共享 typed geometry/descriptor validator，从 IR 类型和 layout 推导访问区间，证明
+  `byte_count`、`inner_bytes`、iterations、element count 等关系及全部 narrowing 上界。能派生的字段不
+  重复存储；必须存储时 verifier 证明相等，lowering 不再替 verifier 猜测或截断。

@@ -42,3 +42,4 @@ docs、`tasks/progress.md` 和本轮已收敛设计结论为准。
 | `tasks/archive/06-r2-recovery.md` | 历史 recovery 记录 |
 | `tasks/archive/07-candidate-selection-task-design.md` | 已收口的 candidate-selection 任务记录 |
 | `tasks/archive/08-committed-candidate-materialization-task-design.md` | 已收口的 committed-materialization 任务记录 |
+| `tasks/archive/09-system-design-implementation-review.md` | 2026-07-10 系统设计与实现审计；只作风险和整改依据，不是架构合同 |

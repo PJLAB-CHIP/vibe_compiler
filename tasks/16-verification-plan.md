@@ -26,14 +26,16 @@ Serving integration 暂不纳入本文通过标准。
 - IR parse / print / verifier / conversion / FileCheck 通过。
 - 已完成 resource planner、dependency/config 和已有 tool-unit tests 通过；golden packet、package
   serialization 和 package metadata roundtrip 只能证明对应工具或测试输入，不替代主线 compiler output。
-- 当前稳定 pipeline 能生成 committed instruction IR、accepted SPM/DDR offset facts，并让无卡
-  PyTorch/HF program chain 走到 memory-planned target-aligned `wafer.instr.*`。package validator 和
+- 当前 direct pipeline 能生成 memory-planned target-aligned instruction IR 和 accepted SPM/DDR offset
+  facts，并让无卡 PyTorch/HF program chain 走到该边界；它没有经过 selected-candidate commit，不能称为
+  committed artifact。package validator 和
   no-card runtime adapter 只能证明已有 package metadata 的 intake，不替代 compiler-generated
   LLVM/package 输出。
 - Target LLVM call emission、target CRT/golden、TX8 device-code compile/link symbol closure 和 package
   metadata auto-export 分别属于 target LLVM、target CRT、object/package 和 runtime/package gate，
-  不属于 committed-instruction gate 的通过条件。当前 target LLVM call emission 已有 hand-written
-  instruction 和 group named-pipeline gate；Wafer CRT typed wrapper、device-code required-symbol closure
+  不属于 committed-instruction gate 的通过条件。当前 target LLVM straight-line call emission 已有
+  hand-written instruction 和 group named-pipeline gate，但 structured control flow 会被错误平铺，因而
+  semantic correctness gate 已重新打开。Wafer CRT typed wrapper、device-code required-symbol closure
   已有本地 gate；package auto-export 仍待恢复，主线不再默认编译或链接 capture shim。
 
 当前阶段不把板端 launch、device completion、数值对比或 PMU/profiling 作为通过条件。迁移到带实际
@@ -52,12 +54,12 @@ Serving integration 暂不纳入本文通过标准。
 | `wafer.group` | local compute IR + tensor collective IR | group boundary、tiled SSA、multi-output/domain、resource feedback loop 合法 |
 | `wafer.tile.region` | scheduled group | region boundary、effect、load/store、async fence/wait、buffer ownership 合法 |
 | Layout | tile region | layout assignment、materialization cut、冗余 conversion cleanup 合法 |
-| SPM | tile region + demands | allocation、range/end-address、lifetime、reserved range 合法 |
-| DDR | tile region + launch boundary | external binding、workspace/constant demand、default DDR arena resource/capacity 合法 |
+| SPM | target-abstract / target-aligned instruction IR + resource effects | allocation、range/end-address、lifetime、reserved range 和 issue/completion 边界合法 |
+| DDR | SPM-planned instruction IR + launch/resource boundary | external binding、workspace/constant demand、default DDR arena resource/capacity 合法 |
 | Program parameter shards / launch-block | committed instruction IR + logical rank/local shard facts + topology/execution mesh + program metadata | program verifier 校验 rank coverage、payload shape/dtype 和 local shard bounds；launch-block binding 校验 block id 与 endpoint availability 合法 |
 | Compute / Movement | committed instruction IR + accepted offset facts | wrapper family、layout、dtype、shape、issue/fence/wait 合法 |
 | Communication | tile_region / SPM materialization 后的 `wafer.tile.*` collective / `wafer.instr.dte_*` IR | endpoint、token、DTE/FSM resource、wait policy 合法 |
-| Target LLVM call emission / golden packet | committed instruction IR + accepted offsets + topology/execution-mesh + program parameter shard metadata/resource view + communication/sync lowering | LLVM dialect call 到 Wafer-owned target CRT symbol 合法；address unit、format、wait/completion verified；golden packet 覆盖 target CRT 参数到 wrapper mapping；call emission 通过不代表 CRT symbol closure 已通过；launch/resource view 从 IR 按需重算，不成为独立 artifact |
+| Target LLVM call emission / golden packet | committed instruction IR + accepted offsets + topology/execution-mesh + program parameter shard metadata/resource view + communication/sync lowering | LLVM dialect call 到 Wafer-owned target CRT symbol 合法；SCF/CF/function 结构语义保持，unsupported container 在 mutation 前失败；address unit、format、wait/completion verified；golden packet 覆盖 target CRT 参数到 wrapper mapping；call emission 通过不代表 CRT symbol closure 已通过；launch/resource view 从 IR 按需重算，不成为独立 artifact |
 | Object/package | target LLVM artifact + committed IR + topology/execution-mesh + program parameter shard metadata/resource view | `.ll -> .o`、LLVM object metadata normalization、target object + Wafer CRT object + repo-vendored TX8 deps -> kcore shared object 的 device-code compile/link gate 合法；required-symbol gate 拒绝未解释的 `wafer_tx81_*` undefined symbol；package metadata 记录 `name`、`model.id`、`model.abi`、`model.interface`、`model.resources`、`modules` 和 `entrypoints`；package metadata auto-export 从 committed instruction IR、LLVM IR artifact、module path 和 model interface metadata 导出并通过 validator；resource/constant metadata 由同一 resource view analysis 生成 |
 | Runtime/board | package + adapter | runtime allocation object binding contract、stub shielding、launch/completion/error propagation 合法；板端 completion 在有卡环境验证 |
 
@@ -229,6 +231,8 @@ M7 target LLVM call-emission and device-code gate：
   memory-planned `wafer.instr.*` 和手写 `wafer.group` named pipeline 可生成 LLVM dialect
   `llvm.call @wafer_tx81_*` 并通过 LLVM IR translation；输出中不得残留 Wafer op。函数级 DDR
   memref result 只允许作为可追到函数 DDR 参数的返回 alias 被丢弃，最终 device kernel ABI 为 void。
+  该实现目前只证明 straight-line call emission；structured control flow 会被平铺，修复或 preflight
+  fail-closed 前不能把本 gate 标为完成。
 - 本地 call-emission gate 至少检查 LLVM IR 文本中的 entrypoint、target symbol declaration、参数顺序和
   metadata/program 引用；device-code gate 随后用 LLVM `clang++` 做 `.ll -> .o`，再用 repo-vendored
   `third_party/tx8_deps` `riscv64-unknown-elf-gcc` 链接 target object、Wafer CRT object 和 TX8 deps
@@ -306,6 +310,7 @@ tensor IR 和 Wafer 硬件能力表达，就不能把当前 static/no-card gate 
 如果某个 milestone 暂时只能做文档验证，必须明确说明还缺 build/test harness 或板端 runtime。
 当前 local gates 已能证明：group / PyTorch smoke / HF Megatron-style transformer block 输入可以进入
 memory-planned target-aligned instruction IR，package metadata validator 和 no-card `wafer-run` 可以消费
-已有 schema v2 package metadata。target LLVM call emission、device-code compile/link 和 package auto-export
-仍是后续 gate；这些 local gates 不能替代板端 allocation/import/query/bind、真实 launch、completion、
-数值正确性或 profiling 证明。
+已有 schema v2 package metadata。target LLVM straight-line call emission 和 device-code symbol closure 有
+局部 gate，但 structured-control semantics、真实 program-chain target LLVM、package auto-export 仍是后续
+gate；这些 local gates 不能替代板端 allocation/import/query/bind、真实 launch、completion、数值正确性
+或 profiling 证明。
