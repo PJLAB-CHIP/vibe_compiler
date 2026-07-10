@@ -1,12 +1,12 @@
 # Wafer Tile Region Design
 
-状态：设计草案；范围：memref-backed `wafer.tile.region`、DDR boundary materialization 和
+状态：本轮长期边界合同已收敛；实现状态以`tasks/progress.md`为准。范围：memref-backed `wafer.tile.region`、DDR boundary materialization 和
 structured control-flow lowering。
 
-本文定义 `wafer.tile.region` 作为 `wafer.group` lowering 之后的 tile-local execution boundary。
+本文定义 `wafer.tile.region` 作为 `wafer.group` lowering 之后、完整 traversal 内部的 tile-local execution scope。
 它组织 tile-local Wafer-tagged memref、movement、layout materialization、target-abstract compute、communication
 和 sync/effect op。它不重新做 group formation、traversal selection、root tile search 或 runtime
-launch/package 组织。
+launch/package 组织，也不把单个 tile region 提升为完整 executable 或可独立提交的 per-group artifact。
 
 SPMD 后的 StableHLO collective 在进入本文之前应已经规整成 `wafer.linalg_ext.collective.*`
 并参与 group/tiling。`wafer.tile.region` 是这些 tiled tensor collective 第一次拥有 SPM storage、
@@ -56,6 +56,8 @@ endpoint-derived metadata 和 communication staging demand 的层级；`wafer.ti
 
 - 不决定哪些 op 可以 group 到一起。
 - 不保存 planner 搜索过程、失败候选、cost model trace 或 shadow schedule。
+- 不把 representative first/tail tile、单个 `wafer.tile.region` 或单个 group 的通过结果当成
+  完整 traversal/variant completion proof。
 - 不把 SPM offset、DDR runtime allocation address、DTE resource 或 target CRT call 提前塞进 tensor/group 层。
 - 不替代 runtime launch metadata。`tile_region` 是 device-side execution scope，runtime package /
   launch metadata 是 host/device invocation boundary。
@@ -63,20 +65,20 @@ endpoint-derived metadata 和 communication staging demand 的层级；`wafer.ti
 ## 2. Stage Position
 
 ```text
-wafer.group
-  -> DDR boundary materialization + group-to-tile-region lowered `wafer.tile.region` IR
+complete static rank variant clone with candidate/template wafer.group
+  -> full traversal materialization; each traversal iteration owns tile-local `wafer.tile.region` scope
   -> One-Shot bufferized function boundary for main R3.2c pipeline
   -> buffer-level communication collective materialization over unplaced SPM memrefs
   -> p2p Direct DTE instruction schedule over unplaced SPM memrefs
   -> candidate DDR tile-view materialization for planner candidate evaluation
   -> instruction-level wafer.instr.* IR over unplaced Wafer-tagged memref values
-  -> SPM memory planning on the same instruction-level IR
-  -> DDR memory planning on memory-planned instruction IR
-  -> direct memory-planned instruction IR for current no-card/target LLVM call-emission gates
-  -> optional closed-loop candidate driver for retry/split/commit decision
-  -> committed selected instruction IR for cases covered by the selector
-  -> topology/execution-mesh + program shard metadata/resource view
-  -> target instruction LLVM call emission from committed IR + accepted offsets + topology/execution mesh
+  -> whole-entry SPM memory planning on complete rank programs
+  -> whole-entry/variant-set DDR memory planning on memory-planned instruction IR
+  -> event completion and physical geometry/range/narrowing gates
+  -> physical transport acceptance + launch projection + target-entry ABI preflight
+  -> closed-loop candidate driver for whole-variant retry/split/commit decision
+  -> atomic commit of complete static rank instruction programs; no wafer.group remains
+  -> target instruction LLVM call emission from committed IR + accepted offsets + committed projection
   -> device-code symbol closure / package / runtime adapter
 ```
 
@@ -84,25 +86,36 @@ wafer.group
 
 - `wafer.tile.region` IR：R3.2c 通过同一套 MLIR DialectConversion builder
   构造。局部 dump / planner 可以在 transformation-local evaluation IR 中观察 tile-region IR。
-  `wafer-lower-groups-to-ddr-memory-planned-instr` 这类 direct lowering pipeline 会继续把该 IR
-  bufferize、lower 到 instruction IR 并做 SPM/DDR planning，作为当前 no-card/ABI/runtime gate 的输入。
+  `wafer-lower-groups-to-ddr-memory-planned-instr` 这类 direct lowering pipeline 可以继续把该 IR
+  bufferize、lower 到 instruction IR 并做 SPM/DDR planning，但只作为局部 replay/debug 入口；它不能
+  让 `DirectFullShape` 或单 group 结果绕过 whole-variant selector 后直接进入 target/package completion gate。
   closed-loop selector 评估失败的 tile-region IR 仍不进入主线 committed IR。
-- committed `wafer.tile.region`：committed materialization 只把 candidate-selection 已选中、且已通过 candidate gates
-  的 candidate artifact 写入主 IR。后续 endpoint projection、target LLVM call emission 和 package metadata
-  只从 committed IR、accepted offset facts、topology/execution-mesh 和 program shard metadata/resource view
-  派生下游参数，
+- committed static rank program：`wafer.tile.region` 只作为完整 traversal 内的局部 scope 存在。
+  committed materialization 只把 candidate-selection 已选中、且整个 static rank variant set 已通过 gates
+  的 complete candidate clone 原子写入主 IR，同时消解所有 `wafer.group`。clone 在提交前已经包含
+  stage-accepted transport 和 launch projection；它们与 static rank entries 一起原子提交。后续 target
+  LLVM call emission只从committed IR、typed executable resources/entry bindings、accepted offsets和
+  committed projection派生address/range/descriptor；package只序列化committed typed owners，
   不重新决定 group 是否可行，也不复制 placed/access descriptor 中间协议。当前 HF transformer no-card
   gate 不以该 selected-candidate path 作为完成证明。
+  module-level executable/variant symbol 可以引用这些 static rank entry symbols，但不复制 function body
+  中的 traversal/tile/instruction schedule；package 仍是 derived artifact，不是第二份 code owner。
+
+candidate clone在进入本文前必须已为每个distributed canonical coordinate建立`tasks/01`定义的typed
+`CandidateExecutionEntry`（即uncommitted `wafer.executable.rank/entry` record）；tile-region lowering通过
+显式SymbolRef取得rank/component/mesh identity。
+final `RankClassId`仍到whole-variant commit才决定，不能因为candidate已有rank record而提前归并。
 
 ### 2.1 Pipeline Contract
 
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  verifier-legal tensor-level logical `wafer.group` op、`GroupTilingDemand` analysis result 和
-  `GroupLayoutPlan` analysis result。
+  transformation-local complete static rank variant clone，其中包含 verifier-legal tensor-level
+  logical/scheduled candidate `wafer.group`、`GroupTilingDemand` 和 early `GroupLayoutPlan` proposals。
 - Current stage responsibility:
-  通过 MLIR DialectConversion 构造 memref-backed `wafer.tile.region` IR；
+  为 clone 中每个 rank entry、每个 candidate group 物化完整 traversal，并通过 MLIR DialectConversion
+  在每个 traversal iteration 内构造 memref-backed `wafer.tile.region` IR；
   `wafer.group` 是 illegal root，conversion pattern 产出完整 legal `wafer.tile.region`，并用 full
   conversion 保证 converted region 内不残留 logical group / linalg / tensor allocation op；
   把 logical group tensor boundary materialize 成 `#wafer.memory<ddr, tensor>` memref，再映射成
@@ -114,23 +127,26 @@ Pipeline position:
   named pipeline 在 conversion 后运行 MLIR One-Shot Bufferize，把外层函数 tensor signature 和
   return boundary 转成 `#wafer.memory<ddr, tensor>` memref signature。
 - Output artifact / IR:
-  verifier-legal memref-backed `wafer.tile.region` IR 或结构化 failure reason。局部 conversion
+  对完整 traversal 有覆盖的 verifier-legal memref-backed `wafer.tile.region` candidate IR，或结构化
+  failure reason。局部 conversion
   pass 可以把 supported group 重写成 tile-region IR，并保留 tensor/memref bridge 以便接在 tensor-level
   IR 上独立调试；named pipeline 输出函数边界已 One-Shot bufferized 的 DDR memref IR。candidate evaluation
-  entry 返回 tile-region IR 用于 dump、verification 和后续 planning analysis。rejected tile-region IR
-  不写入主线 accepted IR。
+  entry 返回 tile-region IR 用于 dump、verification 和后续 planning analysis。任何 rank/group/traversal
+  失败时整个 candidate clone 都不写入主线 accepted IR。
 - Downstream consumer:
   candidate DDR tile-view materialization、instruction lowering、SPM offset assignment、
-  DDR offset assignment 和 candidate-selection。
+  DDR offset assignment、event/transport verification 和 whole-variant candidate-selection。
 - User-level driver / named pipeline:
-  主线仍由 `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 产生 logical group；
-  tile-region materialization 的主线验证入口是
-  `wafer-opt --pass-pipeline='builtin.module(wafer-lower-groups-to-tile-region)'`。局部验证入口是
-  `wafer-opt --wafer-convert-group-to-tile-region` 和 `wafer-opt --wafer-dump-group-to-tile-region`。
+  production 主线由 `wafer-opt --program-pipeline=stablehlo-to-executable` 或等价 driver 调用本 stage；
+  `stablehlo-spmd-to-group`、`wafer-lower-groups-to-tile-region`、
+  `--wafer-convert-group-to-tile-region` 和 `--wafer-dump-group-to-tile-region` 都是 stage replay / debug
+  入口，不能独立形成 production artifact。
 - Explicit non-goals:
   不做 SPM offset allocation、不做 DDR view/range/resource planning、不 select/reject/split
   group、不从 candidate tile shape 生成 temporal DDR tile `memref.subview`、不把 tile-region IR
-  当成 committed materialization、不 lower 到 packet/target LLVM。
+  当成 whole executable 或独立 committed materialization、不 lower 到 packet/target LLVM；不允许
+  `DirectFullShape` 绕过正常 gates，也不允许 representative tile/rank 成为提交依据。distributed
+  rank equivalence 只作为上游候选前提，本 stage 不据此创建 executable rank class 或跳过 rank entry。
 - Completion gate:
   FileCheck、conversion pass、dump pass 和主线 pipeline 覆盖 R2.4/R3.1 已能产出的 Wafer V0 硬件可承载 local
   compute/movement/view family：DDR memref load/store boundary、layout materialization、DDR/SPM
@@ -138,7 +154,12 @@ Pipeline position:
   broadcast/transpose/copy、tensor slice movement、static reshape view、top-level
   `wafer.linalg_ext.collective.*` 到 `wafer.tile.*` collective materialization、tile-region 内
   `scf.if` / `scf.for` 递归 lowering 和 function-boundary One-Shot bufferization。硬件 V0 无承载或当前
-  IR 缺 runtime ABI / nested collective 事实时才允许结构化 failure。
+  IR 缺 runtime ABI / nested collective 事实时才允许结构化 failure。主线 completion 还要求在同一
+  candidate clone 中覆盖所有 rank/group 的完整 traversal，后续全 entry layout/SPM/DDR、instruction、
+  event、transport 和 target gates 全部通过，并以一次 atomic commit 消解所有 `wafer.group`；局部 pass、
+  单tile dump或representative tile/rank通过不构成completion。final executable classes必须是每个唯一
+  distributed prerequisite class内部的partition refinement：whole-variant commit从完整rank programs继续
+  拆分，但绝不跨prerequisite classes合并；机器码可共享也不改变语义class边界。
 ```
 
 ### 2.2 Target Coverage Matrix
@@ -154,7 +175,7 @@ table 补协议。
 | scalar boundary values | 作为 tile-region block scalar SSA value 传入，供 fill/reduce init 等 scalar operand 使用 | supported for scalar | 只支持 float / integer / index scalar；不生成 storage，不作为长期 side channel。 |
 | `arith.constant` tensor | clone constant 后用 `bufferization.to_memref` materialize 为 read-only DDR source，再 `wafer.tile.load` 到 tensor-layout SPM storage | partial | 只适合 tensor constant；scalar constant 只应在 compute body 或显式 init 语义中消费。需要区分 constant residency / DDR / immediate policy。 |
 | `arith.constant` scalar | clone scalar constant，并作为 `wafer.tile.fill`、`wafer.tile.reduce init_value` 或 elementwise body 推导输入 | supported for scalar constants | scalar 语义通过 SSA value 或 typed attr 进入目标 op；不靠名字或原 op 残留。 |
-| `tensor.empty` | writable group output 的 `tensor.empty` 生成 `#wafer.memory<ddr, tensor>` boundary value；tile-local temporary 的 `tensor.empty` 生成 `#wafer.memory<spm, tensor>` `memref.alloc` | supported as abstract allocation demand | `memref.alloc` 不分配物理 offset/window；DDR boundary / requirement 的 planned range 归 DDR offset assignment；launch/package 所需 resource view 在使用点从 IR 重算；SPM offset/window 归 SPM offset assignment。不能把 arbitrary empty 偷映射成 output alias。 |
+| `tensor.empty` | writable group output 的 `tensor.empty` 生成 `#wafer.memory<ddr, tensor>` boundary value；tile-local temporary 的 `tensor.empty` 生成 `#wafer.memory<spm, tensor>` `memref.alloc` | supported as abstract allocation demand | `memref.alloc` 不分配物理 offset/window；DDR boundary / requirement 的 planned range 归 DDR offset assignment；pre-commit `ExecutableResourceView`据此形成typed resource，package不再从raw IR恢复；SPM offset/window 归 SPM offset assignment。不能把 arbitrary empty 偷映射成 output alias。 |
 | `tensor.extract` scalar | 从已 materialized DDR boundary memref 生成 `memref.load`，供动态 scalar init / scalar value 使用 | supported for boundary scalar extract | 只作为 scalar SSA 支持 op；不表示 tile compute；tile-local tensor element read 不能用 generic memref.load 伪装。 |
 | `linalg.fill` | 生成显式 `wafer.tile.fill`，写入 existing storage；fill result 映射为该 initialized buffer | supported for scalar fill | `wafer.tile.fill` 暴露 target-abstract write relation；具体是否 lower 成 CT fill、memset 或 immediate pattern 由 instruction lowering 决定。 |
 | `linalg.matmul` | lhs/rhs materialize 到 `cx`，生成 `wafer.tile.gemm`，结果记录为 `cx` | supported for simple `linalg.matmul` | pattern 应检查 rank、dtype、accumulator/result relation、layout requirement；batch matmul / generic contraction 另列，不应混成 matmul 特判。 |
@@ -168,8 +189,13 @@ table 补协议。
 | `wafer.linalg_ext.collective.all_gather` / `reduce_scatter` / `all_reduce` | group-to-tile-region 根据 rank-specialized `logical-rank` materialization context、`rank_group`、SPM buffer shape 和 combiner region 生成 `wafer.tile.all_gather` / `wafer.tile.reduce_scatter` / `wafer.tile.all_reduce` | supported for top-level single-result V0 collectives | `logical-rank` 只用于计算 `rank_group` 内的 group-local `local_rank`，输出 IR 显式保存 `rank_group`、`local_rank`、`group_size` 和 `bytes`；不选择 p2p schedule，不写 endpoint 或 DTE packet。`reduce_scatter` materialization 保留 full input SPM buffer，并让 `wafer.tile.reduce_scatter` 显式携带 scatter `axis`；recv/result buffer 是当前 rank 的 local slot shape。 |
 | `wafer.linalg_ext.collective.collective_permute` | rank-specialized materialization 根据 source/target pair 和当前 logical rank 生成直接 DTE send/recv/wait；非本 rank result 由 numeric zero fill 表达，自发自收用 local copy | supported for top-level single-result V0 permute | 只覆盖 shape-preserving single input/output permute；peer 仍是 logical rank，physical endpoint / DTE resource 留给后续边界。 |
 | `wafer.linalg_ext.collective.all_to_all` | rank-specialized materialization 要求 `split_count == rank_group.size()`，把 split slot extract 成连续 SPM comm buffer，按 rank order direct DTE send/recv，再把 recv slot insert 到 concat result slot | supported for top-level single-result V0 all-to-all | 当前不引入 `wafer.tile.all_to_all`，也不保存 algorithm attr；只覆盖静态 shape、单输入/单输出、single rank-group row 可选中的 V0 direct p2p path。 |
+| `wafer.linalg_ext.collective.segmented_all_to_all` | materialize为`wafer.tile.segmented_all_to_all`，保留SSA counts/displacements、static capacities、count-exchange和data-phase token | long-term contract fixed；implementation pending | V0可先选择`padded_fixed_capacity` policy；不得把ragged route伪装成equal-split all-to-all或按当前token count创建variant/rank class。完整verifier/lowering见`tasks/13-communication.md`。 |
 | nested collective | 当前无 nested control-flow materialization | explicitly deferred | 需要先补可验证的 nested buffer slice / peer / token / schedule 表达；不能把 unsupported collective 静默降成名字约定或 pass-local side table。 |
 | unknown op inside group | 结构化失败 | unsupported | conversion target 应把 `wafer.group` 设为 illegal；unsupported body op 应导致 conversion failure，而不是留下半转换 group。 |
+
+表中的 `rank_group` 只表示 collective membership，`logical-rank` / `local_rank` 只表示该 schedule 的
+显式参与者身份；它们都不是 distributed rank class 或 executable rank class。distributed class 的
+target-independent equivalence 由上游定义，最终 executable class 由 whole-variant commit 决定。
 
 R3.2c 迁移完成后，supported 子集必须由同一 conversion builder 覆盖，并把 unsupported / deferred
 子集的 failure gate 固定下来。扩展 coverage 时每新增一类 op 都要同时补：IR 语义、verifier、
@@ -192,7 +218,7 @@ op”。正确边界是：
 
 ```text
 wafer.tile.region (...) -> (...) {
-  ^bb0(%tile_id, %block_id, %region_args...):
+  ^bb0(%traversal_indices..., %region_args...):
     ...
     wafer.tile.yield ...
 }
@@ -200,9 +226,10 @@ wafer.tile.region (...) -> (...) {
 
 必须表达：
 
-- region argument / result 与 group outputs 或 launch boundary 的 SSA 关系。
-- per-tile identity，例如 logical rank、block id、physical tile coordinate 或 endpoint-derived
-  descriptor。
+- region argument / result 与 group outputs 或 enclosing static-rank function boundary 的 SSA 关系。
+- 当前 traversal iteration 的逻辑 indices；static execution identity 由 enclosing executable rank/entry
+  mapping 提供，不在 region 内复制。block id、physical coordinate 和 endpoint descriptor 只属于
+  launch projection / accepted transport。
 - external input/output、constant source、inter-group value 的 load/store boundary。
 - tile-local storage ownership、memory space、layout 和 effect。
 - async issue 与对应 fence/wait/barrier。
@@ -270,16 +297,17 @@ V0 需要以下 op family：
 
 实现上可以分多步，但每一步只改写当前 IR：
 
-1. `wafer.group` lowering：R3.2c 把 logical group + R3.2a/R3.2b facts 转成
-   transformation-local `wafer.tile.region` IR。
+1. `wafer.group` lowering：R3.2c 在 whole-variant clone 中把所有 logical groups + R3.2a/R3.2b facts
+   转成完整 traversal 内的 transformation-local `wafer.tile.region` scopes。
 2. target-abstract op selection：在 tile-region IR 内把 tile-level linalg/tensor compute 绑定到
    `wafer.tile.*` compute / movement op；把 tiled tensor collective 在可表达的 endpoint / buffer /
    communication demand 下 materialize 为 `wafer.tile.*` buffer-level collective。
    任何会引入 communication staging buffer、send/recv token lifetime、buffer reuse fence 或 local-fence
    requirement 的 communication lowering 都必须发生在 SPM offset assignment 之前，使 SPM planner 能从
    IR/effect/lifetime 看到真实通信需求。
-3. layout assignment：为 op 约束选择 physical layout marker，在 cut edge 插入
-   `wafer.tile.materialize_layout`。
+3. layout assignment：把 early group layout proposal 作为候选输入，在完整 rank-entry boundary、
+   lifetime 和 resource context 中选择 final candidate physical layout marker，并在 cut edge 插入
+   `wafer.tile.materialize_layout`；committed memref type / explicit movement 才是提交后的唯一 owner。
 4. candidate DDR tile-view materialization：planner candidate evaluation 消费 candidate traversal /
    tile shape / boundary slice proposal，把 full DDR boundary memref 改写成 `memref.subview` /
    strided DDR tile operands，供 `wafer.tile.load/store` 读写实际 tile。当前已接入 explicit static
@@ -292,32 +320,34 @@ V0 需要以下 op family：
    `dte_recv` / `dte_wait`，并复用现有 Wafer-tagged memref SSA graph。
    instruction-level IR 需要列出 instruction family、read/write/effects、descriptor attrs、
    temp/psum/staging memref values、alias/view 关系和 reject reason。
-6. SPM offset assignment：SPM planning 只消费 instruction-level IR with unplaced Wafer-tagged memref values，
-   在同一 IR 上填入 offset/end/bank span 和 lifetime/reuse；不能直接从 target-abstract op 猜
-   memref demand。
-7. DDR offset assignment：DDR planning 消费 memory-planned instruction-level IR、SPM facts、DDR
+6. SPM offset assignment：SPM planning 只消费所有 complete rank entries 的 instruction-level IR with
+   unplaced Wafer-tagged memref values，在完整 structured control flow 和跨 group lifetime 上填入
+   offset/end/bank span 和 lifetime/reuse；不能直接从 target-abstract op 猜 memref demand。
+7. DDR offset assignment：DDR planning 消费 whole-variant memory-planned instruction-level IR、SPM facts、DDR
    tile-view boundary、DDR `memref.alloc` 和 descriptor demand，规划 compiler-managed/resident/inter-group
-   DDR accepted offset facts，并验证 descriptor、view/root range、default arena capacity/largest-contiguous、
-   bandwidth、alignment、overlap 和 fence demand。成功 facts 必须能被 candidate-selection、committed materialization、endpoint projection
-   和后续 ABI/package/runtime resource view 直接消费；
+   DDR accepted offset facts，并验证 descriptor、view/root range、declared arena capacity/largest-contiguous、
+   bandwidth、alignment、跨 group overlap 和 completion demand。成功facts必须能被candidate-selection、
+   `ExecutableResourceView`、endpoint projection和committed materialization直接消费；
    失败时给结构化原因。
-8. candidate-selection driver：candidate-selection 从 full traversal tile/no split 开始搜索
+8. candidate driver枚举：把 `DirectFullShape` 作为普通第一个候选，再搜索
    shape-driven traversal/reduction refinement frontier、同 traversal domain 的 output coverage 和当前支持的
-   reduction/internal split 候选，逐个运行
-   candidate gates；默认选择第一个 passing candidate，或在
-   `tile-search=min-estimated-time` 下遍历 bounded frontier 并只对 passing candidate 做粗估时间排序；选择已通过全部 gates
-   的 candidate artifact，或要求 split / retry；rejected candidate IR
-   丢弃。
-9. committed `wafer.tile.region` materialization：committed materialization 只把 candidate-selection 选中的 passing candidate
-   inline commit 回原 `wafer.group` 位置，写入主 IR。
-10. topology/execution-mesh handoff：从 target topology、valid execution mesh、committed instruction
-    boundary 和 logical rank/local shard facts 派生薄 launch/block binding 与 resource view。
-11. target instruction LLVM call emission：从 committed instruction IR、accepted offset facts、
-    topology/execution-mesh、program parameter shard metadata 和按需重算的 resource view 生成
+   reduction/internal split候选。每个候选先运行前述layout/instruction/SPM/DDR gates，再运行下一步的
+   transport/projection/ABI gates；在下一步完成前不得标记passing。first/tail representative tile只做cheap
+   prefilter，不能替代完整traversal gates；rejected candidate clone整体丢弃。
+9. physical transport / launch projection：在 accepted SPM/DDR range 上完成 cross-rank transport
+   acceptance，为每个 canonical execution instance 形成 pinned 或有限 relocatable projection，并执行
+   target-entry ABI preflight；这些仍是 candidate facts。
+10. candidate selection / whole-variant atomic commit：默认`first-legal`选择第一个通过步骤1-9全部gates的
+   candidate；`min-estimated-time`只在complete passing candidates之间排序。committed materialization把
+   选中的static rank variant set一次性替换进主IR。所有 rank entry 都包含完整 traversal 和其中的
+   tile-local `wafer.tile.region` scopes，所有 logical/scheduled `wafer.group` 同时消解；任何 gate 失败时
+   主 IR 不发生部分修改；accepted transport/projection 与 rank entries 同时提交。
+11. target instruction LLVM call emission：从committed instruction IR、typed executable resources/entry
+    bindings、accepted offset facts和committed projection生成
     wrapper-friendly LLVM call / target CRT call / packet builder 输入；不新增 placed memref / access descriptor
     中间协议。
 
-rejected candidate plan 不能落入 IR 后等待下游修复。合法性失败应反馈给 group/layout/candidate
+rejected candidate plan 不能落入主 IR 后等待下游修复。合法性失败应反馈给 group/layout/candidate
 planner 重新选择 tile shape、internal split、layout、output coverage 或 group boundary。
 
 `scf.if` / `scf.for` 在 R3.2c 中是 tile-region 内的结构化 control-flow container，不是
@@ -342,8 +372,10 @@ operand 表达真实 tile view；第 5 步 instruction legalization / selection 
   DialectConversion legality target，在 supported 子集上重写当前模块；当前输出是
   verifier-legal memref-backed `wafer.tile.region` IR，外层 tensor IR 通过
   `bufferization.to_memref` / `bufferization.to_tensor` bridge 保持局部 pass 可组合。
-  `--wafer-convert-group-to-tile-region` 和 `--wafer-dump-group-to-tile-region` 都接受
-  `logical-rank` 选项，表示当前 rank-specialized lowering context；collective lowering 只用它计算
+  `--wafer-convert-group-to-tile-region` 和 `--wafer-dump-group-to-tile-region` 当前都接受显式
+  `logical-rank` 选项，且不得提供默认值；它只用于unit/debug构造rank-specialized context。production
+  driver必须从candidate `wafer.executable.rank/entry` SymbolRef读取canonical identity，禁止使用该CLI option。
+  collective lowering只用显式debug value或typed production identity计算
   group-local `local_rank`，不会把 endpoint view、route 或 schedule 写入 tile collective。dump 入口是同一
   builder 的只读验证入口，并显式 preserve analyses。
 - `wafer-lower-groups-to-tile-region` 是 R3.2c named pipeline：先运行 group-to-tile-region conversion，
@@ -373,6 +405,8 @@ launch args / identity lowering 的 IR contract。当前没有 multi-tile no-com
 - region 中没有无法解释的 side table dependency 或名字匹配语义。
 - external load/store boundary 都有明确 memory space、shape、dtype、layout 和 effect。
 - async producer 的 source/destination 在 fence/wait 前不能被非法复用。
+- region 是完整 traversal 中的局部 scope；它的 iteration offsets/sizes、boundary subview 和 yield/writeback
+  必须与外层 structured control flow 一致。单独的 first/tail representative region 不能满足 coverage gate。
 - `wafer.tile.materialize_layout` 的输入输出 layout relation 合法；同 layout 冗余转换应由 verifier
   拒绝，上游应避免生成这种 no-op conversion。`wafer.tile.reshape` 这类无副作用 view op 可由
   canonicalization 删除同类型 no-op。
@@ -380,10 +414,15 @@ launch args / identity lowering 的 IR contract。当前没有 multi-tile no-com
   compiler-managed `#wafer.memory<ddr, *>` alloc 必须有 DDR memory planning 接受的
   `wafer.ddr.offset` fact；external DDR boundary value 的 descriptor/view/root validation 由当前
   instruction-level IR 重算。
-- topology/execution-mesh、program shard metadata/resource view、target LLVM lower-level 输入和 package
-  package metadata 只能从当前 committed IR、accepted offset facts、topology/execution-mesh contract 和
-  按需 resource view 派生；不能要求
+- pre-commit `ExecutableResourceView`必须从当前candidate IR、program shard/resource declarations、accepted
+  offsets和projection重算并在commit时materialize为typed executable resources/entry bindings；post-commit
+  target只派生lower-level address/range，package只序列化typed owners。不能要求
   tile-region 主线额外携带 placed memref 或 access descriptor 旁路事实。
+
+whole-variant verifier 另行检查 committed program 不残留 `wafer.group`，所有 static rank entries 和
+原 group outputs 都有完整 coverage，最终 layout 和全 entry SPM/DDR facts 唯一，所有 async issue 均有
+显式 completion/terminal drain，跨 rank transport 成对，且 shared physical geometry/range/narrowing
+合同通过。任一失败都使整个 candidate 不可提交。
 
 Verifier 不检查 group 是否应该形成；那是 `wafer.group` 和 planner 的职责。
 `wafer.group` / `wafer.tile.region` 这类 region op 的 boundary invariants 放在普通 `verify()`，

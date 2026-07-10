@@ -6,8 +6,11 @@
 target LLVM semantic correctness 已重新打开；修复或 fail-closed 前，call-emission 子 gate 不算完成。
 扩展 surface 只按第 8 节 staged matrix 推进，不能从旧 CRT source 逐个复制。
 范围：
-memory-planned target-aligned `wafer.instr.*` 到 target CRT call、LLVM dialect / LLVM IR 和
-wrapper/register golden packet 的 lowering。
+memory-planned target-aligned `wafer.instr.*` 到 target CRT call、structured LLVM dialect / LLVM IR、
+compiler-generated `KernelAbiDescriptor`、environment/artifact fingerprints、device module 和 wrapper/register golden
+packet 的 lowering。
+
+本轮长期target/ABI/artifact-set边界已收敛；上述状态只描述当前实现证据和缺口，不降低本文合同。
 
 本文取代旧 compiler-facing helper ABI 设计。当前结论是：`wafer.instr.*` 必须对齐目标指令、
 TX81 target op 或 public TSM wrapper 的可 lower 粒度；LLVM lowering 生成 **Wafer-owned target
@@ -43,23 +46,33 @@ wafer.tile.* semantic/buffer op
 - `tasks/15-launch-runtime-package.md`
 - `docs/wafer-register-level-instruction-spec.md`
 - `docs/tx8-deps-reverse-engineering/tx8-interface-contract.md`
+- MLIR Dialect Conversion: https://mlir.llvm.org/docs/DialectConversion/
+- MLIR LLVM IR target: https://mlir.llvm.org/docs/TargetLLVMIR/
 
 ## 1. 目标和非目标
 
 目标：
 
 - 定义 `wafer.instr.*` 到 Wafer-owned target CRT / LLVM call 的 lowering 边界。
+- 使用 dialect conversion 保持 function、block、branch、loop 和 call 语义；unsupported structured
+  container 在 mutation 前 fail-closed，不以 recursive walk 平铺 leaf instruction。
 - 固定地址单位、SPM/DDR offset 消费、format、shape/stride、wait/completion 和 status 责任。
+- 由 instruction verifier、target lowering preflight 和 ABI descriptor generation 共用 geometry legality，
+  统一检查 shape/count/stride/iteration/range/narrowing，不能在 LLVM constant 或 CRT cast 时静默截断。
 - 要求每个可 lower 的 `wafer.instr.*` 都有明确 public TSM wrapper、Direct DTE helper 或 TX81/CRT
   证据；证据不能直接替代 Wafer-owned symbol 合同。
 - 通过 golden packet / wrapper tests 验证 target CRT 参数到 TSM wrapper/register packet 的映射。
+- 由 compiler 生成精确 kernel entrypoint ABI descriptor；final ELF、package manifest 和 runtime
+  只消费该 descriptor/hash，不从 LLVM 文本、参数名或 module path 猜 ABI。
 
 非目标：
 
 - 不恢复 compiler-facing helper ABI family。
 - 不新增 `wafer.abi` dialect。
-- 不把 capture shim、C stub 表格或 package metadata input 当 production lowering。
+- 不把 capture shim、C stub 表格或 hand-written package/JSON input 当 production lowering。
 - 不重新选择 group、tile shape、layout、SPM/DDR memory plan 或 communication schedule。
+- 不让 package exporter 解析 LLVM 文本重建 function ABI，不维护与 compiler function/resource view
+  平行的 binding-order 或 geometry 事实源。
 - 不把 Tx81 CRT 的所有符号原样提升为 Wafer IR 或 Wafer target ABI；Wafer IR 只表达当前 pipeline
   需要且 verifier 能检查的目标动作。
 
@@ -68,37 +81,41 @@ wafer.tile.* semantic/buffer op
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  memory-planned target-aligned `wafer.instr.*` IR、accepted SPM/DDR offset facts、
-  topology/execution-mesh contract、program parameter shard metadata/resource view、薄 launch/block binding
-  和 communication/sync lowering。
+  whole-variant atomic commit后的`wafer.executable.entry/resource/transport`、committed projection，以及对应
+  static rank function中的memory-planned target-aligned `wafer.instr.*` IR和accepted SPM/DDR offsets。
 - Current stage responsibility:
   从 target-aligned instruction IR 和 accepted facts 派生 Wafer-owned target CRT calls，并继续 lower 到 LLVM
-  dialect / LLVM IR。该阶段消费 Wafer memory attr、SPM/DDR offset、DTE peer/token、layout/format
-  和 resource view；不读取 pass-local side table，不发明 compiler-facing ABI wrapper。leaf instruction
-  必须在原 control-flow / block 位置改写；标准 SCF/CF/function 容器通过结构保持 conversion 继续降低，
-  尚未支持的 region、multiblock 和 call 必须在任何 mutation 前结构化失败。当前只落地 straight-line
-  call emission；它生成 `wafer_tx81_*` declarations/calls，但尚未满足 structured-control correctness。
+  dialect / LLVM IR。该阶段消费Wafer memory attr、SPM/DDR offset、DTE peer/token、layout/format和typed
+  executable bindings；不读取pass-local side table，不发明compiler-facing ABI wrapper。先以shared geometry
+  legality 和 full-module conversion target 做无 mutation preflight，再在原 control-flow / block 位置改写
+  leaf instruction；标准 SCF/CF/function 容器通过 dialect conversion 保持结构，尚未支持的 region、
+  multiblock或call结构化失败。该阶段同时从converted function boundary、typed executable entry/resource/
+  transport/projection refs生成`KernelAbiDescriptor`，不解析已打印LLVM IR。
 - Output artifact / IR:
-  LLVM dialect module、LLVM IR artifact、Wafer target CRT symbol declarations/calls、debug/golden-packet
-  输入。TX8 relocatable object 和 kcore shared object 由 device-code gate 从 LLVM IR 继续生成。
+  LLVM dialect module、LLVM IR artifact、Wafer target CRT symbol declarations/calls、canonical
+  `KernelAbiDescriptor`及其hash、`TargetEnvironmentFingerprint`、`TargetArtifactFingerprint`和debug/golden-packet输入。TX8 relocatable object、
+  带 ABI descriptor note/export 的 kcore shared object、module digest 和 symbol report 由 device-code gate
+  从这些 compiler-generated artifacts 继续生成。
 - Downstream consumer:
-  device-code compile/link gate、IR-derived package metadata、wrapper-facing call contract 和
+  device-code compile/link gate、IR-derived `PackageManifest` assembly、wrapper-facing call contract 和
   board/runtime adapter。
 - User-level driver / named pipeline:
-  局部 pass 入口是 `--wafer-lower-instr-to-target-llvm`；group 边界 named pipeline 是
-  `wafer-lower-groups-to-target-llvm`。真实 HF program pipeline 升级到 target LLVM 前，后续
-  device-code/package gate 只能消费 compiler-generated target LLVM artifact，不恢复旧 ABI/LLVM pipeline 名称。
+  production主线由`wafer-opt --program-pipeline=stablehlo-to-executable`或等价driver消费committed
+  executable；局部pass `--wafer-lower-instr-to-target-llvm`和group named pipeline
+  `wafer-lower-groups-to-target-llvm`只作debug/regression索引，不能绕过atomic commit。
 - Explicit non-goals:
   不重新做 frontend/SPMD/group/tile/layout/SPM/DDR/communication planning；不把 helper ABI、
-  capture shim 或 C stub emission 作为中间层。
+  capture shim 或 C stub emission 作为中间层；不从 LLVM 文本、symbol spelling 或参数数量恢复 kernel
+  ABI；不把 physical runtime handle 写入 descriptor。
 - Completion gate:
   call-emission 子 gate 要求 supported `wafer.instr.*` 生成 verifier-legal LLVM dialect / LLVM IR，并能由
   `mlir-translate` 输出 LLVM IR；SCF/CF/function 的分支、循环、block 和 call 语义必须保持，尚未支持的
   容器在 mutation 前结构化失败。至少用 false branch、不同 loop trip count、nested branch 和 function
-  call 证明语义，不只检查 emitted call 数量。完整 target CRT / golden boundary
-  还要求 Wafer-owned CRT symbol 有 typed wrapper 合同和 packet golden coverage。device-code gate 只链接
-  target LLVM object、Wafer CRT object 和 repo-vendored TX8 deps，不默认链接 capture shim，并负责
-  required-symbol closure。
+  call 证明语义，不只检查 emitted call 数量；geometry 边界值和越界值必须在 shared legality 中分别通过
+  和 fail-closed。完整 target CRT / golden boundary 还要求 Wafer-owned CRT symbol 有 typed wrapper 合同
+  和 packet golden coverage。device-code gate 只链接 target LLVM object、Wafer CRT object 和 repo-vendored
+  TX8 deps，不默认链接 capture shim，并负责 required-symbol closure、ELF descriptor/hash、target
+  fingerprint 和 module digest 验证；package manifest引用的 descriptor hash必须与 ELF note/export一致。
 ```
 
 ## 3. Instruction Legality
@@ -109,6 +126,8 @@ Pipeline position:
 - operand/result buffer 是 Wafer-tagged memref，SPM/DDR domain 可从 type 和 accepted offset facts 推出。
 - op family、dtype/layout、shape/stride、byte count、wait/completion 和 resource effects 能由 verifier
   检查。
+- 所有进入固定 `i32` / wrapper field 的 geometry 都通过 shared legality：数值范围、element-size
+  整除、descriptor coverage 和 target field width 明确；lowering 不能依赖 integer attr 构造或 C cast截断。
 - leaf instruction 所在的 region/block/call 结构属于 target lowering 已证明可保持的 subset；否则在
   生成任何 LLVM function/call 前拒绝，不能用 recursive walk 丢弃容器语义。
 - lowering 可以找到 Wafer-owned target CRT symbol 方案或明确记录 unsupported diagnostic。
@@ -234,6 +253,66 @@ llvm.call @wafer_tx81_mask_move(%src_addr, %dst_addr, %elem_count, %mask_addr, %
 TSM wrapper 证据验证。TX81 `__*` 名字不是 compiler lowering contract；没有证据的 op 不能 silent
 fallback 到 fake ABI 或万能 helper。
 
+### 4.1 Kernel ABI Descriptor
+
+Target CRT call ABI 和 model kernel entrypoint ABI 是两个不同合同。`wafer_tx81_crt.h` 约束 module 内部
+call；compiler-generated `KernelAbiDescriptor` 约束 runtime 调用 module entrypoint。descriptor 必须由
+`wafer.executable.entry`、converted function boundary和同一 typed resource/launch view直接生成，至少包含：
+
+- kernel ABI schema/version、stable entry ABI id、LLVM symbol和return type。executable variant、shape guard、
+  rank/stage class和endpoint mapping由executable/package entry graph关联，不进入函数调用ABI本体。
+- ordered argument slots；每个slot使用ABI-local稳定`SlotId`并记录role、LLVM scalar/pointer
+  representation、address space、access、alignment、shape/capacity relation和alias contract。具体
+  `ResourceId`由`wafer.executable.entry`的`SlotId -> ResourceId` binding提供，不进入descriptor hash；参数
+  顺序是descriptor的typed sequence，不另存可独立修改的`binding_order`。
+- external IO、immutable weight、persistent state、workspace和 relocatable endpoint/control/status resource
+  slots；不存在的 role 不生成占位参数，存在的 slot 必须与 LLVM function parameter 一一对应。
+- pinned transport projection hash或relocatable transport control slots，以及ABI-local
+  `CompletionExportId`/typed device completion-error exports。executable entry必须把每个export一一绑定到
+  variant completion DAG node；descriptor不复制instruction list或communication schedule。
+- `TargetEnvironmentFingerprint` dependency、必要projection/relocation ABI dependency和descriptor canonical hash。
+
+`KernelAbiDescriptor` identity只取决于函数调用合同、typed `SlotId`s、completion exports和必要target ABI /
+transport dependency；不以`ExecutableVariantId`或`RankClassId`加盐。因此ABI相同的shape variants或ranks可
+共享descriptor/module；若pinned transport进入code，projection hash属于必要target dependency并自然导致
+artifact分裂，relocatable artifact则通过typed control slots保持共享。
+
+Descriptor generation 和 LLVM function conversion 必须在同一 compiler transaction 中完成：conversion
+失败时不产生 descriptor；descriptor verifier 失败时不输出 LLVM/module artifact。禁止 package tool 用
+regex统计 `i64` 参数、用参数名猜 role，或从手写 LLVM IR 补造 ABI。
+
+单function transaction不是发布边界。一个`TargetVariantId`引用的全部rank-class modules必须先写入staging
+artifact set，逐个完成structure-preserving conversion、device link、required-symbol、ELF ABI descriptor/
+hash、environment/artifact fingerprints和module digest验证，再原子发布完整`TargetArtifactSet`。任一module失败则该set
+整体不可见，PackageManifest不得引用已成功的子集。content-addressed cache可以保留独立verified blob，
+但cache存在不等于variant artifact set已accepted。
+
+`TargetArtifactSet` root绑定source `wafer.executable` program semantic digest和`TargetVariantId`；稳定
+`TargetArtifactSetId`/root digest由canonical ordered member map、environment/artifact fingerprints和全部member
+digests计算。每个member显式映射
+`EntryId + static-function semantic digest -> module id + entry symbol + KernelAbiDescriptor hash + covered
+RankClassIds`。相同ABI不能授权替换不同code digest或其它executable的module。set verifier还必须检查每个
+`CompletionExportId`与executable entry/DAG引用一一闭合。
+
+Device-code gate 将 canonical descriptor/hash写入 final ELF 的 Wafer ABI note和/或只读 exported
+descriptor symbol，并从包含该 descriptor 的 final ELF 计算 module digest。`PackageManifest` 记录同一
+descriptor hash、environment/artifact fingerprints和module digest；loader在module load和launch前逐项比对。
+manifest自身不嵌回 ELF，因此 module digest、descriptor hash和 manifest引用之间没有循环依赖。
+
+### 4.2 Shared Geometry Legality
+
+所有会进入 LLVM `i32`、CRT `uint32_t`、TX81 `uint16_t` shape field、address offset或 byte descriptor 的
+geometry 使用一个共享 legality contract。instruction verifier、target lowering preflight、
+`KernelAbiDescriptor` verifier和 golden tests必须复用同一字段范围与单位定义，至少检查：
+
+- static/dynamic dimension和 variant bound满足 target field width，乘积与 byte-size计算不溢出。
+- byte count、inner bytes、element bytes、stride/iteration和 descriptor coverage一致且需要时整除。
+- SPM/DDR address、offset、alignment和 end address在 accepted allocation内。
+- rank/stage launch geometry、transport buffer capacity和 kernel slot shape/capacity relation一致。
+
+超范围 geometry 只能在 target legality或 variant guard处被拒绝，不能通过 LLVM integer constant
+截断、C cast、default format或 runtime best-effort继续执行。
+
 ## 5. Address and Resource Derivation
 
 Target lowering 必须在进入 LLVM dialect 前把 Wafer memory / endpoint / resource 事实消解成标量参数：
@@ -257,12 +336,32 @@ compiler-managed DDR byte address:
 
 DTE peer / endpoint:
   logical peer rank in wafer.instr.dte_* op
-  -> wafer.execution.mesh rank-domain endpoint view
-  -> wafer.target.topology physical endpoint / runtime DTE channel
+  -> tasks/13 accepted physical transport
+  -> pinned physical endpoint/channel/FSM/receiver buffer
+     or relocatable endpoint/control/status ABI slots
 ```
 
 external DDR function argument 不允许被解释成编译期绝对地址；它只代表 runtime launch binding base。
 `#wafer.ddr_offset` 只适用于 compiler-managed / resident / workspace DDR allocation。
+
+### 5.1 Environment, Artifact Fingerprints, and Module Identity
+
+两个fingerprint不能混用：
+
+- `TargetEnvironmentFingerprint`由`tasks/04`的target capability/ABI/arena declarations产生，用于
+  `TargetVariantId` compatibility；它不包含deployment topology、availability或projection。
+- `TargetArtifactFingerprint`是module/artifact cache identity，覆盖`TargetEnvironmentFingerprint`、target
+  triple、ISA/extensions、MABI、kernel ABI schema、Wafer CRT/symbol-set、quant/storage ABI、toolchain/
+  device-link profile和codegen dependencies。pinned code把`ProjectionSetId`/projection digest及必要
+  topology assumption纳入artifact fingerprint；relocatable code只纳入relocation slot ABI/schema，不把运行时
+  选择的member伪装成target environment。
+
+Runtime先按environment fingerprint过滤target axis，再独立选择committed projection；artifact fingerprint
+只验证所选module与该组合兼容，不参与shape guard或rank-class选择。
+
+Final link 之后计算 module digest，并验证 ELF machine、ISA/MABI、exports、undefined-symbol policy和 ABI
+descriptor note/export。environment/artifact fingerprints、descriptor hash和module digest都是object/package stage的
+typed输出；module path只用于定位文件，不能承担 identity或 compatibility语义。
 
 ## 6. Golden Packet Boundary
 
@@ -292,9 +391,10 @@ opcode、所有 TSM wrapper 或未来未进入 `wafer.instr.*` coverage matrix �
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  target LLVM call-emission 生成的 LLVM IR artifact，调用 `wafer_tx81_*` Wafer-owned target CRT symbols；
-  accepted SPM/DDR offset facts、topology/execution-mesh、program parameter shard metadata/resource view
-  已在 LLVM call 参数中 materialize。
+  target LLVM call-emission 生成的 LLVM IR artifact和 `KernelAbiDescriptor`，调用 `wafer_tx81_*`
+  Wafer-owned target CRT symbols；
+  typed executable resources/entry bindings、accepted offsets和committed projection已在LLVM call参数中
+  materialize；CRT本层不恢复resource semantics。
 - Current stage responsibility:
   在 repo-local Wafer CRT 中定义 Q1 确认的 production `wafer_tx81_*` symbols；每个 symbol 直接
   创建 public `Tsm*Instr` 所需对象，调用 public TSM wrapper，再执行 `TsmExecute` 或等价 public
@@ -303,22 +403,25 @@ Pipeline position:
   coverage 和 device-code required-symbol gate 必须作为同一个 closure 验证，不能拆成可单独报 done
   的最小单元。
 - Output artifact / IR:
-  Wafer CRT RISC-V object / archive、kcore shared object、required-symbol report、可供 package
-  metadata auto-export 记录的 module path。
+  Wafer CRT RISC-V object / archive、带 ABI descriptor note/export 的 kcore shared object、
+  required-symbol/ELF ABI report、environment/artifact fingerprints、descriptor hash和module digest。module path只是
+  artifact locator，不是 package identity或 ABI source。
 - Downstream consumer:
-  device-code compile/link symbol-closure gate、IR-derived package metadata、runtime adapter / board gate。
+  device-code compile/link symbol-closure gate、IR-derived `PackageManifest`、runtime adapter / board gate。
 - User-level driver / named pipeline:
-  `wafer-lower-groups-to-target-llvm` 或 `--wafer-lower-instr-to-target-llvm` 产出 LLVM IR；
-  `tools/wafer_device_link.py` 编译 LLVM IR 和 Wafer CRT source/object，并链接 repo-vendored TX8 deps。
+  production由`stablehlo-to-executable`或等价driver的target-artifact stage执行；
+  `wafer-lower-groups-to-target-llvm`、`--wafer-lower-instr-to-target-llvm`和
+  `tools/wafer_device_link.py`是其内部构件/分阶段debug入口。
 - Explicit non-goals:
   不把 `__Gemm`、`__AddVV` 等 TX81/Triton CRT symbol 改成 Wafer compiler ABI；不通过
   `--allow-shlib-undefined` 放过 Wafer-owned symbol；不新增 helper ABI dialect；不在 CRT 内重新做
-  layout/search/SPM/DDR planning。
+  layout/search/SPM/DDR planning；不从 linked symbol、LLVM文本或 module path反推 kernel argument role。
 - Completion gate:
   Q1 production closure 中的所有 `wafer_tx81_*` symbols 都有 repo-local definition、typed signature
   和 wrapper/golden 覆盖，或被 verifier / lowering 明确拒绝并移出 production closure；positive
   device-code gate 不包含 ABI-incomplete Direct DTE calls；final kcore `.so` 中不得残留 undefined
-  production `wafer_tx81_*`；lit/ctest 覆盖成功闭合和缺失 symbol 失败两条路径。
+  production `wafer_tx81_*`；ELF descriptor hash与compiler descriptor一致，environment/artifact fingerprints和module
+  digest可由 package直接消费；lit/ctest 覆盖成功闭合、缺失 symbol和 descriptor mismatch失败路径。
 ```
 
 ### 7.2 文件和所有权
@@ -562,11 +665,13 @@ Direct DTE 不能通过 `TsmExecute` 发射。`direct_dte_send_async` 需要 `Di
 `wafer_tx81_dte_send`、`wafer_tx81_dte_recv` 和 `wafer_tx81_dte_wait` 不进入当前 Q2-Q3 production
 CRT closure。要重新纳入 production closure，必须先改 ABI / lowering：
 
-- `wafer.instr.dte_*` lowering 必须从 topology/execution-mesh/runtime binding 派生 `tile_this`、
-  `dst_tile`、`remote_fsm_id`、mode 和远端 receive buffer / FSM monitor binding。
+- `wafer.instr.dte_*` lowering 必须消费 `tasks/13` 的 accepted physical transport，而不是重新从 logical
+  peer 猜测 endpoint。pinned 模式 materialize `tile_this`、`dst_tile`、channel/FSM和 receiver buffer；
+  relocatable 模式通过 `KernelAbiDescriptor` 暴露 endpoint/control/status slots。
 - `wafer_tx81_dte_recv` 负责初始化或更新 local FSM monitor，使 peer send 有明确 remote destination。
 - `wafer_tx81_dte_send` 负责 attach/config/send Direct DTE node，不允许假设 remote dst address 等于 local source。
-- `wafer_tx81_dte_wait` 只等待由 send/recv 建立的 DTE/FSM completion，不做 local NCC drain。
+- `wafer_tx81_dte_wait` 只等待由 send/recv 建立的 DTE/FSM completion，不做 local NCC drain，并把
+  success、timeout、transport error和 peer failure映射到 descriptor声明的 status/error surface。
 
 如果这些字段尚未能从 IR/runtime binding materialize，DTE lowering 不能继续作为 production target path
 进入 device-code symbol-closure gate；必须先扩 ABI 或扩 IR，而不是在 CRT 中写空成功函数。
@@ -577,19 +682,25 @@ CRT closure。要重新纳入 production closure，必须先改 ABI / lowering�
 
 ```text
 compiler-generated target LLVM IR
+  + compiler-generated KernelAbiDescriptor / environment and artifact fingerprints
   -> LLVM clang++ .ll -> target object
   -> TX8 GCC compile runtime/wafer_crt/src/wafer_tx81_crt.c -> wafer CRT object
   -> repo-vendored GCC link target object + wafer CRT object + TX8 deps -> kcore .so
-  -> readelf/nm required-symbol scan
+  -> embed/verify ABI descriptor note/export
+  -> readelf/nm required-symbol and target ABI scan
+  -> module digest
 ```
 
 required-symbol scan 的规则：
 
 - final `.so` 中任何 undefined `wafer_tx81_*` 都是失败。
-- `--allow-shlib-undefined` 只允许 runtime/loader 解析的非 Wafer-owned symbol。
+- 其它 undefined symbol 只能来自按 target/runtime ABI version列出的显式 allowlist；
+  `--allow-shlib-undefined` 本身不是合法性证明。
 - 测试必须覆盖一个 intentionally missing `wafer_tx81_missing`，证明链接器返回成功也会被 gate 拒绝。
 - 成功测试必须从 compiler-generated LLVM IR 或 `wafer-lower-groups-to-target-llvm` output 进入 device link，
-  不能只用手写 package metadata input。
+  不能只用手写 package/JSON input。
+- final ELF的descriptor bytes/hash、environment/artifact fingerprints必须与compiler输出一致；module digest在descriptor
+  写入后计算，并作为 package assembly的输入。
 
 ### 7.8 Verification
 
@@ -600,11 +711,12 @@ CRT 全量实现的验证分四层：
 | Header/signature | checked symbol registry 确认 Q2-Q3 production closure 中 105 个 `wafer_tx81_*` 都有 `wafer_tx81_crt.h` prototype、repo-local CRT implementation reference 和 lowering family marker |
 | CRT object | TX8 GCC 编译 `runtime/wafer_crt/src/wafer_tx81_crt.c`，`nm --defined-only` 确认 object 定义 105 个 production `wafer_tx81_*`，且不定义 Direct DTE symbols |
 | Device link | `.ll -> .o -> kcore .so` 实际执行，final `.so` 无 undefined `wafer_tx81_*`；negative test 证明 `wafer_tx81_missing` 会被 required-symbol gate 拒绝 |
-| Pipeline integration | `wafer-lower-groups-to-target-llvm` output 能进入 device link；HF program-chain target LLVM integration 是下一层 gate，不用手写 package metadata 代替 |
+| Kernel ABI / ELF identity | compiler-generated `KernelAbiDescriptor` 与 LLVM function type一一对应；ELF note/export和package引用使用同一descriptor hash，environment/artifact fingerprints匹配，module digest覆盖final ELF |
+| Pipeline integration | `wafer-lower-groups-to-target-llvm` output和 descriptor能进入 device link；HF program-chain target LLVM integration 是下一层 gate，不用手写 package/JSON 代替 |
 
 Q2-Q3 target CRT implementation / device-code required-symbol closure 通过只证明 symbol surface 闭合。
 `tasks/progress.md` 还必须优先关闭 target LLVM structured-control correctness、instruction geometry/range
-和 exact package entrypoint ABI，才能恢复 Q4 package metadata auto-export。只实现 header、只生成
+和 exact package entrypoint ABI，才能恢复 Q4 typed `PackageManifest` assembly。只实现 header、只生成
 object、只覆盖一个代表性 instruction family、或只靠 `--allow-shlib-undefined` 得到 `.so` 都不算完成。
 
 ## 8. Extended Target CRT Surface Staging
@@ -630,8 +742,9 @@ Pipeline position:
   `tasks/11-instruction-ir.md` 的 op/kind/verifier 扩展、`LowerInstrToTargetLLVM.cpp` typed call
   emission、repo-local Wafer CRT implementation、device-link required-symbol gate 和 package/runtime gate。
 - User-level driver / named pipeline:
-  仍然通过 `wafer-lower-groups-to-target-llvm` 和 `--wafer-lower-instr-to-target-llvm` 重放主线；
-  extended surface 不能引入要求用户手动调用旧 CRT helper 的长期流程。
+  仍由`stablehlo-to-executable`或等价production driver消费；局部
+  `wafer-lower-groups-to-target-llvm`和`--wafer-lower-instr-to-target-llvm`只重放stage，extended surface
+  不能引入要求用户手动调用旧CRT helper的长期流程。
 - Explicit non-goals:
   不恢复 `libvr.a`，不暴露 `__Count` / `__Gelu*` / `__Send` 等旧 ABI 名称，不在 CRT 内隐藏
   scheduler、scratch allocator、layout planner 或 DTE endpoint binder。
@@ -693,8 +806,13 @@ device-link tests；不能只更新其中一层。
 - Device-code compile/link helper 已能对已有 / compiler-generated LLVM IR 执行 `.ll -> .o -> kcore .so`
   和 object metadata normalization；production `wafer_tx81_*` 不能以未解释 undefined symbol 形式残留，
   也不能经过 capture shim。
+- Structured control conversion、shared geometry legality和 compiler-generated `KernelAbiDescriptor`尚未
+  完成；在 false branch/loop/call语义、边界范围和 descriptor-to-ELF一致性 gate通过前，straight-line
+  call emission不能升级为完整 target artifact合同。
+- `TargetEnvironmentFingerprint`、`TargetArtifactFingerprint`、ELF ABI descriptor note/export和final module digest必须成为device-code稳定输出；
+  package auto-export不能继续解析 LLVM文本、参数数量或 module path恢复 ABI。
 - Extended target CRT surface 已按 `already-covered`、`promote-now`、`needs-composite-ir`、
   `needs-layout-ir`、`needs-dte-abi` 和 `reject-permanently` 分级；后续不能只补 CRT 函数，必须按
   surface family 闭环 IR、ABI、CRT、checker 和 device-link gate。
-- package auto-export 当前只能消费已有 LLVM IR；恢复 compiler-generated package gate 要等 device-code
-  compile/link gate 和 resource metadata export 衔接完成。
+- package assembly后续只消费committed executable和原子发布的complete `TargetArtifactSet`；恢复
+  compiler-generated package gate要等device-code compile/link gate与这些artifact衔接完成。

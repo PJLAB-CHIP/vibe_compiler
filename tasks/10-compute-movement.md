@@ -1,10 +1,11 @@
 # Wafer Compute and Movement Dialect Design
 
-状态：设计草案；范围：target-abstract compute / movement IR、layout/resource interface 和 instruction legality。
+状态：本轮长期边界合同已收敛；实现状态以`tasks/progress.md`为准。范围：target-abstract compute / movement IR、layout/resource interface 和 instruction legality。
 
 本文定义 Wafer 后端中 target-abstract compute / movement IR 的边界。它连接
-`wafer.group` 产生的 tile-local tensor program、layout materialization / SPM bufferization，
-以及后续 instruction / target CRT lowering。
+`wafer.group` candidate/template 产生的完整 traversal 内 tile-local tensor scopes、layout
+materialization / whole-entry SPM/DDR planning，以及后续 complete static rank instruction program /
+target CRT lowering。
 
 本文中的 `wafer.tile.*` compute 是正式 IR contract。它表达“这个 tile-local op 已经选择了某类
 Wafer 目标实现族，并能提供 layout、effect 和 instruction family legality”。它仍然不表达 raw packet
@@ -38,6 +39,8 @@ allocation、communication collective lowering 或 launch/package emission。
 - 不把 `linalg` op 名字、某个 workload、某个 internal split 或某个 target CRT helper 固化成架构边界。
 - 不在本层表达 Direct DTE / collective；跨 tile data plane 属于 `wafer.tile.*` communication。
 - 不直接生成裸寄存器 packet；raw packet/debug dialect 只属于更低层验证或调试路径。
+- 不把单个 group、单个 tile-region 或 representative first/tail tile 的 instruction lowering
+  当作 committed program；不为 `DirectFullShape` 设置 bypass/fallback 语义。
 
 ## 2. IR 生命周期
 
@@ -45,13 +48,14 @@ allocation、communication collective lowering 或 launch/package emission。
 之前进入 IR，然后随类型和 storage 表示逐步 lower：
 
 ```text
-scheduled wafer.group tensor body
-  -> target-abstract tile_region IR with wafer.tile.* compute / movement ops
+whole-variant candidate clone with scheduled wafer.group templates
+  -> complete rank traversal with tile-local tile_region IR and wafer.tile.* compute / movement ops
   -> layout materialization and Wafer-tagged memref values
   -> candidate DDR tile-view materialization
   -> instruction-level wafer.instr.* IR over unplaced Wafer-tagged memref values
   -> same instruction-level IR after SPM memory planning
   -> same instruction-level IR with accepted DDR planned range facts
+  -> whole-variant completion/transport/target verification and atomic commit
   -> endpoint / launch-resource contract
   -> target instruction LLVM call emission to target CRT / packet builder input
   -> object/package/runtime adapter
@@ -61,11 +65,11 @@ scheduled wafer.group tensor body
 
 | 层次 | op 形态 | value 形态 | 责任 |
 | --- | --- | --- | --- |
-| scheduled group | `linalg.*` / `tensor.*` / `scf.*` | tensor SSA value | 表达数学语义、tile-local dataflow 和 traversal，不选硬件实现 |
+| scheduled candidate/template | `linalg.*` / `tensor.*` / `scf.*` | tensor SSA value | 在 evaluation clone 中表达数学语义、完整 traversal 和 tile-local dataflow，不选硬件实现，不进入 committed executable |
 | target-abstract compute | `wafer.tile.*` compute ops 和 target-abstract movement op | tensor SSA value 或 Wafer-tagged memref | 选择目标实现族，提供 layout/resource/lowering interface，不绑定具体 storage allocation |
 | layout-materialized | 同一类 compute/movement op | `memref<..., #wafer.memory<space, layout>>` | 验证 address space 和 physical layout marker，显式插入 `wafer.tile.materialize_layout` |
-| instruction-level | `wafer.instr.*` | unplaced Wafer-tagged memref SSA value | 选择 CT/NE/TDMA/RDMA/WDMA 指令形态，列出 queue、temp/psum/staging memref values、alias、effect 和 descriptor attrs，不含 SPM offset；DTE 属于 `wafer.tile.*` communication / communication lowering |
-| DDR memory-planned instruction-level | 同一 `wafer.instr.*` | memory-planned Wafer-tagged memref SSA value | DDR view/root range、descriptor、compiler-managed/resident/inter-group planned ranges、lifetime/reuse、default arena capacity/largest-contiguous/bandwidth 已通过 DDR memory planning |
+| instruction-level rank program | structured control flow 中的 `wafer.instr.*` | unplaced Wafer-tagged memref SSA value | 覆盖完整 rank traversal，选择 CT/NE/TDMA/RDMA/WDMA 指令形态，列出 queue、temp/psum/staging、alias、effect、token/completion 和 descriptor attrs，不含 SPM offset；DTE 由 communication lowering 物化 |
+| DDR memory-planned instruction-level | 同一 `wafer.instr.*` | memory-planned Wafer-tagged memref SSA value | DDR view/root range、descriptor、compiler-managed/resident/inter-group planned ranges、lifetime/reuse、declared arena/placement-domain capacity/largest-contiguous/bandwidth 已通过 DDR memory planning |
 | runtime/target-codegen derived form | 同一 `wafer.instr.*` 或 very-late emission metadata | concrete target call arg / packet field | 从 committed instruction IR、accepted SPM/DDR offset facts、memref view 和 layout helper 派生 address/range/stride 参数；不作为新的主线 IR 层 |
 | target code / package emission | LLVM / target CRT call / package metadata | concrete target call arg | 调用 target CRT、发 package metadata、连接 host runtime；不作为上层 IR 层 |
 
@@ -79,28 +83,39 @@ side table 中保留影子计划。
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  `wafer.tile.region` IR，内部包含 layout-materialized
+  whole-variant evaluation clone 中每个 static rank entry 的完整 traversal；其中局部
+  `wafer.tile.region` IR 包含 layout-materialized
   Wafer-tagged memref、`wafer.tile.*` compute ops、`wafer.tile.*` movement ops、`wafer.tile.materialize_layout`、
   load/store boundary 和 view/alias relation。
 - Current stage responsibility:
-  对 target-abstract compute/movement/layout/load/store op 做 Wafer instruction legalization /
+  在所有 rank entries 的完整 structured control flow 上，对 target-abstract
+  compute/movement/layout/load/store op 做 Wafer instruction legalization /
   selection，改写或构造 instruction-level `wafer.instr.*`，复用现有 Wafer-tagged memref
-  SSA graph，并显式生成 queue/effect、temp/psum/staging、alias/view 和 descriptor attrs。
+  SSA graph，并显式生成 queue/effect、temp/psum/staging、alias/view、async token/completion relation 和
+  descriptor attrs。
 - Output artifact / IR:
-  instruction-level Wafer IR over unplaced Wafer-tagged memref，或结构化 failure reason。
+  只存在于 candidate clone 中、覆盖每个 static rank 完整 traversal 的 instruction-level Wafer
+  structured programs over unplaced Wafer-tagged memref，或结构化 failure reason。
 - Downstream consumer:
-  SPM memory planning、DDR memory planning、closed-loop candidate driver，以及 target LLVM call emission。
+  whole-entry SPM/DDR memory planning、event/transport/target verification、closed-loop whole-variant
+  candidate driver，以及 atomic commit 后的 target LLVM call emission。
   tiled DDR load/store view 必须已经由 candidate materialization 或 accepted materialization 显式提供。
 - User-level driver / named pipeline:
-  主线仍从 `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 进入 logical group / tile-region pipeline；
-  instruction lowering 可提供局部 dump / lit gate，但不能成为用户级 compile flow。
+  production 主线由 `wafer-opt --program-pipeline=stablehlo-to-executable` 或等价 driver 的 whole-variant
+  candidate-selection/commit pipeline 物化完整 rank programs；`stablehlo-spmd-to-group` 和 instruction
+  lowering 的局部 dump/lit/direct pipeline 只验证本 stage，不能成为用户级 completion flow。
 - Explicit non-goals:
   不决定 group boundary、tile shape、layout assignment、SPM offset、DDR memory planning、ABI call
-  symbol 或 packet field。
+  symbol 或 packet field；不按 tile/group 部分提交，不把 hardware `busytable` 当作 IR completion，
+  不从 representative tile/rank 或 distributed rank equivalence 推断完整 rank program 合法，也不在
+  instruction selection stage 创建最终 executable rank class。
 - Completion gate:
-  对 tile-region 已支持的 compute/movement/view family 生成 verifier-legal instruction-level IR；
+  对每个 static rank entry 的完整 traversal 中所有 tile-region compute/movement/view family 生成
+  verifier-legal instruction-level IR；每个 issue 都能由 async token/wait 或显式 local fence 收口，
+  每条函数退出 path 的 pending event set 为空；
   unsupported hardware instruction form 必须结构化失败，不能让 SPM memory planning 从 target-abstract op
-  猜 memref demand。
+  猜 memref demand。任一 rank/group 失败都丢弃整个 clone，不能形成部分 committed program；最终
+  executable rank class 只能由 whole-variant commit 在完整 programs/gates 上决定。
 ```
 
 ## 3. Op 家族
@@ -316,6 +331,9 @@ Instruction/runtime verifier：
   op attr；本层只通过 memory effects、range、byte count 和 direction contract 把需求暴露给
   DDR memory planner。
 - stride、iteration、byte count、range end、bool bitpack 和 alignment 规则已完成转换和检查。
+- logical shape 到 physical footprint、view/root/descriptor range、offset arithmetic 和 target ABI field
+  narrowing 必须通过 shared physical geometry/range/narrowing verifier；所有 consumer 复用同一 helper，
+  禁止 silent i64-to-i32 truncation。
 - 普通 `TsmExecute` 路径只覆盖 CT、NE、RDMA、WDMA、TDMA；SCALAR、DTE、CSR 不走该 path。
 - local fence 只出现在 Kcore 可见性、host-visible boundary、DTE/stream protocol、group barrier 或 task end
   等需要完成证明的位置。
@@ -329,11 +347,11 @@ Instruction/runtime verifier：
 | select Wafer compute implementation | tiled `linalg` / tensor / SCF | target-abstract `wafer.tile.*` compute / movement op | 选择本 tile 实现族，保留数学语义，建立 layout/resource interface |
 | layout materialization | target-abstract Wafer op | layout-materialized Wafer-tagged memref + materialization edge | 基于 op interface 做 layout assignment 和真实 movement cut |
 | candidate DDR tile-view materialization | candidate target-abstract tile-region IR + explicit static boundary slice fact 或 candidate output tile offsets/sizes | same candidate evaluation tile-region IR with DDR `memref.subview` tile operands | 覆盖 external boundary extract、direct output insert storeback，以及单结果 destination-style linalg root 的 candidate tile offsets/sizes 到 boundary slice proposal；closed-loop traversal / tile-shape search 仍由 planner 后续产生 facts；不从名字或 whole-boundary shape 猜 DMA |
-| instruction legalization / selection | layout-materialized IR | instruction-level `wafer.instr.*` over unplaced Wafer-tagged memref | 将 target-abstract op 改写成 CT/NE/TDMA/RDMA/WDMA 指令形态或 Direct DTE/FSM instruction op，列出 queue/family、effects、temp/psum/staging memref values、alias 和 descriptor attrs；DTE 不走普通 `TsmExecute` dispatch path |
-| SPM memory planning | instruction-level IR with unplaced Wafer-tagged memref | same instruction-level IR with planned SPM offset facts | 从 memref use-def 和 instruction effects 收集 demand、liveness，分配 offset/range/bank |
-| DDR memory planning | SPM-planned instruction-level IR with actual DDR tile views, descriptors and compiler-managed DDR `memref.alloc` | same instruction-level IR with accepted DDR offset facts，或结构化失败 | 从 memref view、descriptor、alloc、lifetime 和 target policy 重算 DDR demand；验证 external demand，为 compiler-managed/resident/inter-group demand 规划 accepted offset；验证或拒绝当前 IR 中显式表达的 DDR demand |
-| resource view analysis | committed instruction IR with accepted SPM/DDR offset facts + topology/execution-mesh contract + program parameter shard metadata + optional launch/block binding | model interface binding、external binding、workspace、resident constant resource view，或结构化失败 | 从 committed IR 按需派生 package-visible resource demand，不落第二份 metadata，不重新决定 layout/SPM/DDR plan，不 allocate/import/query runtime object |
-| target instruction LLVM call emission | committed instruction IR + accepted offsets + topology/execution-mesh + program parameter shard metadata/resource view + launch/block binding | LLVM dialect call / target CRT call / packet builder input | 从当前 IR 派生 target call / packet 参数，生成 Wafer-owned target CRT call 或 packet emission input，不回头修改 schedule/layout；CRT symbol closure 属于 device-code gate |
+| instruction legalization / selection | complete rank traversal with layout-materialized tile-local scopes | complete static rank instruction program over unplaced Wafer-tagged memref | 将所有 target-abstract op 改写成 CT/NE/TDMA/RDMA/WDMA 或 Direct DTE/FSM instruction op，列出 queue/family、effects、temp/psum/staging、alias、descriptor 和 completion relation；DTE 不走普通 `TsmExecute` dispatch path |
+| SPM memory planning | complete rank instruction programs with unplaced Wafer-tagged memref | same programs with whole-entry planned SPM offset facts | 从完整 structured control flow、跨 group memref use-def、instruction effects/tokens 收集 demand/liveness，分配 offset/range/bank并验证 terminal completion |
+| DDR memory planning | whole-entry SPM-planned instruction programs with actual DDR tile views/descriptors/allocs | same complete variant with accepted DDR offset facts，或结构化失败 | 在 variant-set lifetime 下重算 DDR demand；验证 external demand，为 compiler-managed/resident/inter-group demand 规划 accepted offset；跨 group lifetime 是 mandatory gate |
+| pre-commit `ExecutableResourceView` analysis/materialization | candidate instruction IR + accepted SPM/DDR offsets + typed program resources + transport/projection | transformation-local resource view，commit时materialize为`wafer.executable.resource`和entry slot bindings，或结构化失败 | 不落旁路metadata，不重新决定layout/SPM/DDR，不allocate/import/query runtime object |
+| target instruction LLVM call emission | committed instruction IR + typed executable resources/entry bindings + accepted offsets + committed projection | LLVM dialect call / target CRT call / packet builder input | 只派生target address/range/descriptor参数，不恢复resource role/scope/alias/lifetime，不回头修改schedule/layout；CRT symbol closure属于device-code gate |
 
 如果一个 pass 创建 `wafer.tile.*` compute、movement、layout、SPM 或 sync op，应声明 dependent dialects。pass
 pipeline 只表达 transformation 顺序，不承载隐藏语义。
@@ -349,12 +367,18 @@ V0 模型：
   later fence/wait op。
 - instruction legalization / selection 决定哪些 issue / fence / wait event 参与 storage lifetime；
   SPM memory planning 通过 instruction effect event 扩展 async op 的 source/destination lifetime。
+- 每个可能异步的 issue 必须返回可追踪的 `!async.token`，或明确进入由后续
+  `wafer.instr.local_fence` 收口的 pending local-effect set；不能仅靠 op 顺序或 queue 名推断完成。
 - local fence 是显式 sync op，例如 `wafer.instr.local_fence` 或等价 IR；它不是 compute op 的默认后缀。
 - DTE wait、stream wait、group barrier 属于 `wafer.tile.*` communication / `wafer.instr.local_fence` 和后续 sync boundary 的完成边界，不能用 local
   NCC wait 代替。
+- `wafer.tile.region`、原 group boundary 和 loop iteration 不自动完成 pending issue；每条 static rank
+  function exit path 必须有 terminal drain/wait/fence，verifier 要求 pending set 为空。
+- `busytable` 是 target capability：用于限制 queue/in-flight concurrency、判定某些 overlap 是否可行并
+  参与 cost model。它不是 IR event、wait 或 lifetime proof，不能替代 token/effect/fence contract。
 
-这样做允许 single-tile local compute 先走 correctness-first 同步路径，也允许后续逐步打开 overlap，而不改变上层
-compute op 语义。
+这样做允许 tile-local compute scope 先走 correctness-first 同步路径，也允许后续逐步打开 overlap，
+而不改变上层 compute op 语义；无论选择哪种 overlap，提交门槛仍是完整 rank program 的 terminal completion。
 
 ## 8. V0 Coverage
 

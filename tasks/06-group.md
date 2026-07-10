@@ -1,13 +1,15 @@
 # Wafer Group Design
 
-状态：设计草案；范围：logical group、candidate planning 和 committed materialization 链路。
+状态：本轮长期边界合同已收敛；实现状态以`tasks/progress.md`为准。范围：logical group、candidate/template planning 和 whole-variant atomic commit 链路。
 
-本文只定义 `wafer.group` 的 tensor-level grouping 和 scheduling contract。它回答：
+本文只定义 `wafer.group` 的 tensor-level grouping 和候选 scheduling contract。它回答：
 
 - logical group 和 scheduled group 如何表达 tiled tensor dataflow、traversal schedule、
   per-op operand/result slice 和 abstract resource demand。
 - group planner 如何用 layout/SPM/DDR/compute/comm 的 planning / legality 结果闭环搜索 tile shape、
   internal split 和 group boundary。
+- 为什么 logical/scheduled `wafer.group` 只存在于 transformation-local candidate/template，
+  以及整个 static rank variant set 通过全部 gates 后如何一次性消解这些 group。
 - 哪些事实必须留给下游 `wafer.tile.region`、layout materialization、SPM/DDR memory、
   target-abstract compute/comm 和 launch/runtime。
 
@@ -51,6 +53,29 @@ wafer.group = tile-local residency group + tile schedule boundary + fusion plann
 的容器。`wafer.group` 的职责是把 producer 和 consumer 拉到同一个外层 tile
 schedule 下，让中间值只在 group tile 内部存活。
 
+`wafer.group` 也不是 committed executable 的长期边界。logical group 和 scheduled group 都只在
+候选/template 中存在；candidate driver 必须在完整 static rank variant set 的 clone 上物化所有
+rank entry、所有 group 的完整 traversal，并在 layout、SPM、DDR、instruction、event、transport 和
+target ABI gates 全部通过后原子替换主 IR。任一 gate 失败都丢弃整个 clone，不允许提交部分 group、
+部分 rank 或 representative tile。
+
+committed variant 可以由 module-level executable/variant symbol 引用各 static rank entry symbol，但
+每个 `func.func` body 才是该 rank program 的 code owner；module/package metadata 不复制 group、
+traversal 或 instruction schedule，避免形成第二份执行真值。
+
+distributed 层可以提供只基于 distributed semantics 建立的 rank equivalence prerequisite，供候选枚举
+去重或排序；它不是 executable rank class，也不能让下游跳过某个 rank。candidate clone 仍要为每个
+static logical rank 建立完整 entry 并通过 gates。最终 executable rank class 只由 whole-variant commit
+根据完整 rank programs、final layout/SPM/DDR、event、transport 和 target binding 共同决定；group、
+representative rank 或早期 equivalence 都无权提交该事实。commit 可以因 target facts 继续拆分
+distributed class，但不能重新合并 distributed 层已经判定不等价的 ranks。
+
+atomic commit 同时写入 `tasks/01-architecture.md` 定义的 typed executable objects：resource use-def/
+alias/lifetime、ordered entry slots、rank coverage、stage-accepted transport/projection refs、entry dependency
+和completion DAG必须在替换主 IR 前全部闭合。group planner不创建这些事实的package副本；它只把
+passing clone交给executable composer，由composer成为最终 `RankClassId`、entry graph和completion graph
+owner。
+
 ## 2. Pipeline 和 IR 边界
 
 `wafer.group` 位于 local tensor IR 之后、bufferization / memory planning 之前。硬件事实
@@ -62,8 +87,9 @@ schedule 下，让中间值只在 group tile 内部存活。
 | --- | --- | --- | --- | --- |
 | 0. Local tensor compute / collective | 上游 local shard compute 和 post-SPMD linalg extension collective | `linalg` / `tensor` / `scf` + `wafer.linalg_ext.collective.*` ops | tensor compute、DPS、shape/indexing、tensor-level collective tiling contract | group 边界、tile-local lifetime、physical storage、`wafer.tile.*` collective / DTE protocol |
 | 1. Logical group | fusion planning region | logical-form `wafer.group` | group boundary、body region | tile size、schedule effect、physical allocation、queue、packet |
-| 2. Scheduled group | tiled tensor/control-flow region | scheduled-form `wafer.group` + tiled tensor IR | traversal loop、tiled body、必要的显式 constraint/effect | physical address、worker、DTE node、target CRT |
-| 3+. Downstream | bufferization / hardware / runtime | `wafer.tile.region`、layout/SPM、`wafer.tile.*` compute/collective、`wafer.instr.*`、runtime package metadata | 消费 scheduled group 的 tiled body、resource demand 和 boundary movement | 不回写 tensor-level fusion 语义 |
+| 2. Scheduled candidate/template | transformation-local tiled tensor/control-flow region | scheduled-form `wafer.group` + tiled tensor IR | 完整 traversal loop、tiled body、必要的显式 constraint/effect；只用于候选验证 | committed executable、physical address、worker、DTE node、target CRT |
+| 3. Committed static variant set | 完整 per-rank executable program | 不再含 `wafer.group` 的 `wafer.tile.region` / `wafer.instr.*` structured program + accepted layout/SPM/DDR facts | 所有 rank entry、所有原 group coverage、显式 completion/transport 和可验证 target facts | 不保留候选/template、代表 tile 或重复 schedule 真值 |
+| 4+. Downstream | target lowering / package / runtime | committed instruction program、topology/execution-mesh、derived package metadata | 只消费 whole-variant atomic commit 的结果 | 不回写 tensor-level fusion 语义，不补做 candidate legality |
 
 这个分层是本文的主线。后面的 case 会在 group 自己负责的阶段给出对应 IR 草图；下游
 `wafer.tile.region`、layout/SPM、DDR memory planning、compute/movement 和 communication 的 IR 草图分别见
@@ -95,9 +121,9 @@ Pipeline position:
   materialization；topology/execution-mesh contract；instruction lowering 和 memory planning；后续
   target LLVM/package stages 只能消费下游 committed instruction artifact，不能直接消费 logical group。
 - User-level driver / named pipeline:
-  `wafer-opt --program-pipeline=stablehlo-spmd-to-group`，由该 program
-  pipeline 重放 frontend/SPMD/local-compute-normalization 后进入 logical group formation gate。局部 MLIR pass
-  只作为实现索引和单元测试入口，不能替代 program pipeline completion gate。
+  production 主线由 `wafer-opt --program-pipeline=stablehlo-to-executable` 或等价 driver 重放
+  frontend/SPMD/local-compute-normalization 并进入 logical group formation；当前
+  `stablehlo-spmd-to-group` 和局部 MLIR pass 只作为 stage replay、实现索引和单元测试入口。
 - Explicit non-goals:
   不做 physical endpoint mapping、tile shape search、scheduled loop materialization、
   SPM allocation、DDR demand analysis、DTE schedule、`wafer.tile.*` collective materialization、
@@ -109,6 +135,11 @@ Pipeline position:
   `wafer.instr.dte_*`、`wafer.tile.region`、SPM storage、DTE token、target CRT/runtime op 和只靠手写
   测试输入拼出的 group 主线都被拒绝。
 ```
+
+该 formation gate 只证明 logical group 可作为候选输入，不代表 executable 已提交。主线的最终完成门槛是：
+完整 static rank variant set 在同一个 transformation-local clone 中消解全部 logical/scheduled group，
+每个 rank entry 的完整 traversal、最终 layout、全 entry SPM/DDR plan、显式 event completion、跨 rank
+transport matching 和 shared physical geometry/range/narrowing verifier 同时通过；否则主 IR 保持不变。
 
 ## 3. 典型 Case
 
@@ -293,9 +324,9 @@ legality 和 cost hint 为输入，形成 logical group。logical group 只回�
 fusion planning boundary。logical group 不携带 tile size、physical allocation、physical layout、
 DMA、queue、worker、packet 或 runtime call。
 
-## 6. Stage 2：Scheduled `wafer.group`
+## 6. Stage 2：Scheduled Candidate `wafer.group`
 
-group planner 消费 logical group，输出 scheduled group。它做的事包括：
+group planner 消费 logical group，输出 transformation-local scheduled candidate/template。它做的事包括：
 
 - 选择 traversal anchor 和 traversal tile shape。
 - 调用每个 op 的 tiling interface 计算该 traversal tile 对应的完整 operand demand、
@@ -307,8 +338,10 @@ group planner 消费 logical group，输出 scheduled group。它做的事包括
   它的 IR 层 materialize 成明确的 op/effect；planner 的中间计划和 cost/resource
   estimate 不作为 `wafer.group` attribute 保存。
 
-scheduled group 仍是 tensor-level 或接近 tensor-level 的 IR。它通过 IR 结构表达已经做出的
-tiling/scheduling 决策；仍不指定物理地址、硬件 queue、packet 或 runtime call。
+scheduled group 仍是 tensor-level 或接近 tensor-level 的 IR。它通过 IR 结构表达候选
+tiling/scheduling 决策；仍不指定物理地址、硬件 queue、packet 或 runtime call，也绝不作为
+committed executable 保留下来。candidate 接受时，完整 traversal 被 lower 到 rank entry 的
+structured tile/instruction program，原 scheduled group 同时消解。
 
 下面的 IR 是本文 case 的一种 scheduled 形态。对 matmul 来说，group planner 只确定
 traversal tile 是 `64x64`；给定这个 traversal tile，matmul 的 tiling interface 计算完整
@@ -436,17 +469,17 @@ use-def 和 loop-carried state 决定。
 
 ## 7. 下游交接边界
 
-scheduled-form `wafer.group` 的输出是 tiled tensor/control-flow IR，以及 planner 在当前
-transformation 中已经证明过的 tile-local demand。它只向下游暴露足够的信息，让后续
+scheduled-form `wafer.group` 的输出是 candidate/template tiled tensor/control-flow IR，以及 planner 在当前
+transformation 中推导的 tile-local demand。它只在 whole-variant evaluation clone 中向下游暴露足够的信息，让后续
 bufferization、hardware lowering 和 target LLVM/runtime lowering 能继续工作；它不定义这些下游
-IR 的内部表示。
+IR 的内部表示，也不单独形成可提交的 per-group artifact。
 
 框架层暂定下游 region boundary 命名为 `wafer.tile.region`，用于承载 bufferized
 tile-local execution；runtime-level launch boundary 由 package metadata / runtime adapter contract 表达。这两个边界
 的 verifier、effect 和 lowering contract 属于下游子设计，本文只规定 `wafer.group` 到它们
 的交接边界。
 
-group 设计只规定交接合同：
+group 设计只规定候选交接合同：
 
 - tiled body 中哪些 value 是 tile-local producer / consumer / output。
 - 每个 op 的 tiling interface 能提供 operand slice、result slice、temporary/workspace/
@@ -458,6 +491,9 @@ group 设计只规定交接合同：
   由明确的 movement / communication op 表达。
 - 如果需要跨阶段保留 drain、wait、barrier 或 communication 约束，必须在能解释它们的 IR
   层 materialize 成明确 op/effect。
+- downstream 必须在完整 static rank entry 的 traversal 中消费所有 group candidate；只有整个
+  variant set 的 layout、SPM/DDR、instruction、event、transport 和 target verifier 同时通过时，
+  才能一次性提交无 `wafer.group` 的 executable。
 
 以下内容不属于本文的 `wafer.group` 语义，应放到独立子设计或对应下游文档：
 
@@ -466,7 +502,7 @@ group 设计只规定交接合同：
 - physical memory planning、SPM allocator、reserved resource policy、range/alignment/coloring；
   见 `tasks/09-spm-memory-planning.md`。
 - DDR external view/descriptor validation、compiler-managed/resident/inter-group DDR allocation demand、
-  accepted DDR offset facts、constant residency、default arena capacity/largest-contiguous 和 bandwidth；
+  accepted DDR offset facts、constant residency、declared arena capacity/largest-contiguous 和 bandwidth；
   见 `tasks/12-ddr-memory-planning.md`。
 - `wafer.tile.*` compute / `wafer.tile.*` collective / `wafer.instr.*` /
   `wafer.instr.local_fence` 和后续 sync boundary 的 op contract。
@@ -686,14 +722,15 @@ multi-output/multi-use expansion 只能在可由 op 语义、type/rank/shape 和
 
 ## 10. Group Schedule Planning
 
-group planner 输入 logical group，输出 scheduled group。
+group planner 输入 logical group，输出 whole-variant evaluation clone 中的 scheduled candidate/template。
 
 ### 10.1 Closed-Loop Planning
 
 group planning 不是单向地先固定 group 再交给下游碰运气。logical group 只是未提交的 planning boundary；
-scheduled group 必须来自一个已经被下游 legality analysis / resource planning 接受的 plan。
+scheduled group 只是待 whole-variant gates 验证的 template，不能因单个 group 或代表 tile 通过就被提交。
 
-对每个 logical group，planner 应在 transformation 内部做闭环搜索：
+planner 可以为每个 logical group 枚举局部选择，但必须在同一个完整 static rank variant set clone 中
+做闭环搜索和最终接受：
 
 1. 选择 traversal domain / traversal tile shape / output 覆盖策略。
 2. 调用每个 op 的 tiling interface，得到 operand slice、result slice、temporary/workspace/
@@ -711,10 +748,13 @@ scheduled group 必须来自一个已经被下游 legality analysis / resource p
    `tasks/05-local-compute-normalization.md`，跨 tile communication 的 token、
    staging buffer 和 wait contract 见
    `tasks/13-communication.md`。
-5. 按 `tile-search` 策略选择 passing plan：默认 `first-legal` 选择第一个通过全部 gates 的
-   plan；`min-estimated-time` 只在 passing plan 之间用粗估时间排序。如果不合法，回到 tile
-   shape、internal split、output coverage 或 group boundary 继续搜索。
-6. 如果找不到合法且成本可接受的 plan，拆分或拒绝该 logical group。
+5. 把所有 rank entry、所有 group 的完整 traversal 物化到同一个 evaluation clone，运行全 entry
+   layout/SPM/DDR、instruction、event、transport、physical geometry/range/narrowing 和 target ABI gates。
+6. 按 `tile-search` 策略选择 passing variant：默认 `first-legal` 选择第一个通过全部 gates 的
+   complete variant；`min-estimated-time` 只在 complete passing variants 之间用粗估时间排序。
+   如果不合法，丢弃整个 clone，再回到 tile shape、internal split、output coverage、layout 或 group boundary。
+7. 如果找不到合法且成本可接受的 complete variant，拆分 executable 或返回结构化失败；不得保留
+   已通过的部分 group/rank 结果。
 
 实际 SPM allocation 和 DDR demand/memory planning 都是必要的，因为下游指令、layout 和
 boundary location 会改变真实需求：
@@ -732,7 +772,7 @@ boundary location 会改变真实需求：
   load/store 根据 source 和 destination layout assignment 选择 movement 实现，不是 `wafer.group`
   的 layout root。
 - DDR 不是无限外部内存：external view/descriptor validation、compiler-managed DDR `memref.alloc`、
-  resident constant、default arena capacity/largest-contiguous、bandwidth pressure 和 alignment 都可能
+  resident constant、declared arena instance capacity/largest-contiguous、bandwidth pressure 和 alignment 都可能
   让候选 plan 失败，失败后 planner 需要回到 group boundary、layout cut、streaming/residency
   policy 或 executable split。
 - Cx/NCx 的 C0 tail/fold、256B line/layout padding、bool bitpack、psum/workspace/double
@@ -744,15 +784,15 @@ boundary location 会改变真实需求：
 
 这些分析可以作为 planner 内部 analysis 或 group-to-tile-region lowering 实现，但搜索过程、失败的 allocation、
 候选 tile shape 和 cost breakdown 都是 analysis，不写入 `wafer.group` attribute。IR 里只保留
-被接受的 scheduled structure；若没有 plan 被接受，就不生成这个 scheduled group。
+whole-variant commit 后的完整 rank programs；logical/scheduled group、失败候选和代表 tile 都不保留。
 
 ### 10.1.1 Planning Inputs 和 Materialization 依赖
 
-analysis/acceptance 的核心不是先把 rejected group plan 写进主 IR 再让下游修复，而是在生成 accepted
-scheduled structure 之前完成 layout/resource/legalization planning。实现上可以构造
-transformation-local candidate evaluation `wafer.tile.region` IR，用它承载 target-abstract
+analysis/acceptance 的核心不是先把 rejected group plan 写进主 IR 再让下游修复，而是在生成 committed
+static variant set 之前完成 layout/resource/legalization planning。实现上必须构造完整
+transformation-local candidate variant clone，其中的 `wafer.tile.region` IR 承载 target-abstract
 Wafer op、layout materialization、buffer、lifetime 和 effect，再从这层 IR 调用下游 analysis。
-这层 lowered IR 是 planning artifact；只有 passing plan 才能由 committed materialization 写回主 IR。
+这层 lowered IR 是 planning artifact；只有 complete passing variant 才能由一次 atomic rewrite 写回主 IR。
 SPM planning、layout assignment、DDR memory planning 和 compute/movement legality 是 group 是否成立的
 决定条件，不是 committed materialization 或后续 ABI/package resource view 的后处理。
 
@@ -784,35 +824,42 @@ SPM planning、layout assignment、DDR memory planning 和 compute/movement lega
 - DDR memory planning 和 compute/movement legality analysis：消费 memory-planned instruction-level IR、
   SPM facts、external DDR tile views、DDR `memref.alloc` 和 descriptor demand，覆盖
   external/compiler-managed/resident/inter-group demand、descriptor、view/root range、accepted DDR offset、
-  default arena capacity/largest-contiguous/bandwidth/alignment，以及 op layout/dtype/shape/effect 合法性；
+  declared arena/placement-domain capacity/largest-contiguous/bandwidth/alignment，以及 op layout/dtype/shape/effect 合法性；
   成功即证明当前 candidate 的 DDR demand 已规划并可被下游消费，失败给结构化原因，不能回头改变
   instruction semantics，也不能产出等待后续 resource view 再补全的 DDR plan。
-- Candidate-selection driver：从 full traversal tile/no split 开始，搜索
+- Candidate-selection driver：把 `DirectFullShape` 作为普通的第一个候选，并与所有 tiled candidates 走
+  完全相同的 layout/SPM/DDR/instruction/event/transport/target gates；它不是 fallback、bypass 或默认提交路径。
+  driver 随后搜索
   shape-driven traversal/reduction refinement frontier、同 traversal domain 的 output coverage，以及当前支持的
   reduction/internal split，并逐个运行
   candidate tile-view materialization、instruction lowering、SPM offset assignment、DDR offset assignment
   和 verifier gates；默认选择第一个 passing candidate，或在
   `tile-search=min-estimated-time` 下遍历 bounded frontier 并只对 passing candidate 做粗估时间排序，
-  输出 passing candidate artifact、rejected reason 或 split decision。layout 替代候选、不同 output domain、
+  第一/尾 tile 等 representative tile 只允许作为便宜的前置筛选，不能替代完整 traversal 物化、
+  lifetime/event/transport 验证或形成 committed artifact。driver 输出 complete passing variant、
+  rejected reason 或 executable split decision。layout 替代候选、不同 output domain、
   partial scatter/recompute coverage 和 dynamic reduction range 要等对应 interface/IR 语义明确后再进入
   candidate-selection driver search space。
 
-committed materialization 只把 candidate-selection driver 选中的 passing candidate commit 回主 IR，形成 committed `wafer.tile.region` /
-instruction-level boundary。endpoint projection 只保存不能从 local IR 重算的 rank/tile mapping；ABI/package/runtime
-在使用点从已经通过 candidate gates 的 layout/instruction/SPM/DDR accepted facts 重算 resource view；
-它们不能成为
+committed materialization 只接受 candidate-selection driver 选中的 complete passing variant：在一次事务中
+用所有 static rank entries 的完整 structured tile/instruction programs 替换主 IR，并同时消解所有
+logical/scheduled `wafer.group`。任何 group、rank、event、transport 或 verifier gate 失败都丢弃 clone，
+主 IR 不发生部分修改。physical transport acceptance 和 endpoint projection 必须在同一 candidate clone
+中先完成并通过 cross-rank/global verifier，再随 variant 原子提交；projection 只保存不能从 local IR
+重算的 rank/tile mapping。pre-commit `ExecutableResourceView` analysis从passing candidate facts重算typed
+resources并由composer随variant materialize；commit后target/package/runtime只消费typed executable owners，
+不能再次恢复resource role/alias/lifetime。它们也不能成为
 第一次发现 SPM 放不下、layout 不合法或 DDR demand 不可接受的阶段。若 analysis/acceptance gates
-让 candidate-selection driver 不能接受当前 group plan，planner 必须回到 tile shape、layout、internal split、instruction
-选择或 group boundary，而不是落一个 rejected `wafer.tile.region` 等待下游补救。
+让 candidate-selection driver 不能接受当前 variant，planner 必须回到 tile shape、layout、internal split、instruction
+选择或 group boundary，而不是落一个 rejected/per-group `wafer.tile.region` 等待下游补救。
 
 ### 10.1.2 Op Tiling Demand Analysis
 
 Op tiling demand analysis 的边界是 analysis，不是 scheduled IR materialization。它消费已经形成的
 logical `wafer.group`，在给定 target-abstract traversal / output tile proposal 时，从每个
-op 的结构化语义恢复 tile-level demand graph。第一版可以用 full-result tile 作为默认候选来
-验证语义恢复；后续 candidate-selection driver planner 会用同一 analysis 查询不同 tile shape。
-
-Pipeline position:
+op 的结构化语义恢复 tile-level demand graph。`DirectFullShape` 是普通候选；analysis 可以用它
+验证语义恢复，但它不拥有 fallback/default commit 语义，也不能单独证明 complete variant 可执行。
+candidate-selection driver 会用同一 analysis 查询其它 tile shape。
 
 ```text
 Pipeline position:
@@ -832,9 +879,9 @@ Pipeline position:
   SPM memory planning、DDR memory planning + compute/movement legality analysis，
   以及 closed-loop candidate driver。
 - User-level driver / named pipeline:
-  主线仍由 `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 产生 logical group；
-  局部验证入口是 `wafer-opt --wafer-dump-group-tiling-demand`，用于在同一
-  group IR 上 dump analysis 输出。它是调试/测试入口，不是长期 compile flow。
+  production 主线由 `wafer-opt --program-pipeline=stablehlo-to-executable` 或等价 driver 调用该
+  analysis；`stablehlo-spmd-to-group` 和 `--wafer-dump-group-tiling-demand` 只在同一 group IR 上做
+  stage replay / debug，不是长期 compile flow。
 - Explicit non-goals:
   不选择最终 tile shape、不 select/reject/split group、不做 layout assignment、不分配 SPM、
   不判断 DDR view/range/resource、不 materialize compute/movement/comm op、不生成 package/ABI。
@@ -852,8 +899,8 @@ completion gate 覆盖手写 group 测试输入和真实 `stablehlo-spmd-to-grou
 核心数据结构应表达：
 
 - group boundary values：input、out、result 和 body block argument 的对应关系。
-- traversal / result tile：第一版至少能表达 full-result tile；后续可替换为 planner 传入的
-  offsets/sizes。
+- traversal / result tile：能表达 `DirectFullShape` 和 planner 传入的其它 static offsets/sizes；
+  任一单 tile demand 都只是 candidate fact，不能替代完整 traversal coverage。
 - per-op demand：operand slice、output slice、result slice、iterator role、internal/reduction
   dims、temporary/workspace/accumulator 需求和 movement/collective demand。
 - structured failure：unsupported op、非 ranked tensor、无法投影的 indexing map、collective tile
@@ -925,7 +972,8 @@ candidate-selection driver 可以把多个 R3.1 logical groups 作为 co-schedul
 - 如果 feasibility 或 cost 不成立，planner 保持多个 groups，或按 output domain /
   producer cut / schedule cut 规则拆分。
 - packing 决策、失败原因、cost breakdown 和搜索顺序都是 transformation-local analysis，不写回
-  `wafer.group` attribute；IR 只保留被接受的 scheduled structure。
+  `wafer.group` attribute；candidate clone 可以保留待验证的 scheduled template，主 IR 只保留
+  whole-variant atomic commit 后已经消解 group 的完整 rank programs。
 
 因此，candidate-selection driver 的默认安全行为仍是分别调度 R3.1 connected groups；multi-root packing 只是有
 可证明收益和可行性时的优化路径。
@@ -1095,7 +1143,7 @@ memory space 和 data movement 的 IR 层落成明确 op。layout materializatio
 constant storage transform 和最小化 layout change 的策略见
 `tasks/08-layout-materialization.md`；SPM allocation 见
 `tasks/09-spm-memory-planning.md`；DDR external view/descriptor validation、
-compiler-managed DDR allocation demand、resident constant、accepted DDR offset facts、default arena 和
+compiler-managed DDR allocation demand、resident constant、accepted DDR offset facts、declared arenas 和
 bandwidth cost 见
 `tasks/12-ddr-memory-planning.md`；layout-sensitive compute/movement op
 如何向 planner 暴露 hard constraint 和 preference，见
@@ -1110,14 +1158,15 @@ planner 的替代品。
 短期推荐：
 
 ```text
-group planner 在当前 transformation 中生成 accepted schedule。
+group planner 在当前 transformation-local clone 中生成 candidate schedule。
 planner 可以导出等价 Transform script，用于复现、调试和调参。
-Transform script replay 不能绕过 verifier、layout planning、SPM allocation 或 DDR memory planning。
+Transform script replay 仍只产生 candidate/template；它不能绕过完整 traversal materialization、
+whole-entry layout/SPM/DDR、instruction/event/transport/target verifier 或 whole-variant atomic commit。
 ```
 
 可用场景：
 
-- 导出 accepted traversal、tile size 和 fused producer/consumer set。
+- 导出候选 traversal、tile size 和 fused producer/consumer set。
 - replay 某个 group 的 tile/fuse 过程。
 - 做不同 tile size/group boundary 的 A/B 实验。
 - 支持手工覆盖 schedule。
@@ -1199,16 +1248,16 @@ recomputation。初期默认不 fuse 大型 multi-use producer。
 合法性可能迫使 group 拆分或调整 tile shape。group formation 不能只基于图结构；planner
 需要把这些下游约束作为 legality/cost input，但不把下游表示写进 `wafer.group`。
 
-## 16. 待继续讨论的问题
+## 16. 后续工程项（不改变当前合同）
 
-- `wafer.group` 是否长期保留到 late pipeline，还是在下游 bufferization 前后消解为更低层 IR。
-- group planner 的 cost model 第一版需要哪些硬件参数。
-- per-op inner-loop tiling 和 accumulator/workspace buffer 的最终 IR 表达。
-- convolution 是否作为后续阶段再投入完整 lowering。
-- softmax/reduction staged schedule 的最小 transformer block pattern 需要通过 IR tests 和
-  tile-region lowering tests 固化。
-- Transform dialect schedule dump 的格式和 replay 入口。
-- compute/communication overlap 的第一版 cost model 需要哪些硬件参数和 PMU case。
+- logical/scheduled `wafer.group` 已确定只存在于 candidate clone，whole-variant commit 前必须消解；后续
+  实现不能重新打开 late committed group 协议。
+- cost model 的首批 bandwidth/latency/engine 参数来自带 provenance 的 calibration profile，只排序已经
+  legality-passing 的 candidates；参数集合和 PMU case 随板端证据迭代，不进入 IR 语义。
+- per-op inner-loop、accumulator 和 workspace 继续由 tiling interface、显式 memref/effect 和 typed
+  resource demand 表达；新增 form 必须先补 verifier 和 whole-entry lifetime gate。
+- convolution、staged softmax/reduction、Transform dialect replay 和 compute/communication overlap 按各自
+  lowering/verification任务扩展；它们不能改变 candidate-only group 和 atomic commit 边界。
 
 ## 17. 当前结论
 

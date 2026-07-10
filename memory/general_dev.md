@@ -43,7 +43,8 @@
   adapter contract、`fake-tx` test backend call sequence 和 runtime library discovery diagnostics 用 Python
   unittest / ctest；真实板端 launch/completion/error propagation 必须 gated 到有卡环境，不能塞进默认 lit。
 - C++ `wafer-run` no-card gate 不只做 `dlopen` / symbol check：它必须从 package metadata 构造
-  RuntimeSession binding/module/launch/completion plan，验证 `binding_order`，并在 symbol gate 前拒绝
+  RuntimeSession binding/module/launch/completion plan，验证KAD `SlotId -> executable ResourceId -> scoped
+  instance`和`CompletionExportId`双射，并在 symbol gate 前拒绝
   descriptor-only BPM、tx-host 不支持的 completion source 和非 tx-host runtime mode。
 - Shardy 不用 standalone Bazel workspace 作为 Wafer dependency 编译验证；`WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON`
   会通过 `cmake/third_party/WaferShardyCMake.cmake` 编译 `wafer-shardy-cmake-gate` / `shardy-sdy-opt`，
@@ -286,8 +287,8 @@
 - 用户级 compiler target 名称统一为 `wafer`，Wafer IR target attr 的唯一主线 spelling 是
   `#wafer.target<wafer>`。`tx8` / `tx81` 只保留在硬件、依赖逆向和外部历史命名事实里，不能作为
   compiler target、pipeline 名称或测试 fixture 的主线命名。
-- 非小修主线任务动实现前必须先写清楚 pipeline contract：upstream program / IR、current stage
-  responsibility、output program / IR、downstream consumer、user-level driver / named pipeline、
+- 非小修主线任务动实现前必须先写清楚 pipeline contract：upstream artifact / IR、current stage
+  responsibility、output artifact / IR、downstream consumer、user-level driver / named pipeline、
   explicit non-goals 和 completion gate。只说明某个 pass / tool / test 的局部功能不够；完成证明
   必须重放已完成上游 program chain，并证明当前 stage 输出会被下游边界直接消费。
 - 主链路 gate 用 `wafer-opt` program pipeline 重放已完成上游链路，不在 Integration
@@ -297,10 +298,10 @@
   `--program-pipeline=stablehlo-spmd-to-linalg` 和
   `--program-pipeline=stablehlo-spmd-to-group`；`wafer-compile-stablehlo --propagate-stablehlo-sharding`、
   `wafer-compile-stablehlo --partition-stablehlo-program` 已删除，因为 Shardy/SPMD 不属于 frontend
-  verifier tool；旧 C ABI compile 入口也已删除。当前稳定后端主线由
-  `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 后接
-  `wafer-lower-groups-to-ddr-memory-planned-instr` 负责；target LLVM call emission 已有局部/group gate，
-  HF program-chain target LLVM integration、target CRT symbol closure、device-code 和 package auto-export 是下一批 gate。
+  verifier tool；旧 C ABI compile 入口也已删除。现有`stablehlo-spmd*`、group-to-instruction/memory和target
+  LLVM pipelines只作stage replay/regression；它们尚未组成production driver。长期用户入口是
+  `wafer-opt --program-pipeline=stablehlo-to-executable`或等价driver，必须包含whole-variant atomic commit；
+  HF program-chain target LLVM integration、typed executable、complete TargetArtifactSet和package auto-export仍待实现。
   旧显式 target CRT issue-op、ring collective、SPM/DDR debug path 和 single-tile
   materialization pass 链已删除；不要恢复成用户级 compile flow。当前 HF transformer no-card gate
   已覆盖真实 frontend/SPMD program 到 memory-planned instruction IR；真实 HF target LLVM integration、
@@ -323,4 +324,5 @@
 - 不要恢复 `tools/wafer_package_metadata.py --emit-*` 这类 fixed package emitter，也不要把
   `wafer-compile-stablehlo --emit-static-reference-program` 这类 synthetic program emitter 作为 importer
   或 package 主线。Package metadata validator / C stub generator 只能消费显式 package metadata
-  测试输入做 tool-unit 覆盖；主线 package metadata 必须由当前 IR / named pipeline 自动导出。
+  测试输入做tool-unit覆盖；主线PackageManifest必须只由committed typed executable和complete
+  `TargetArtifactSet`自动导出，不能从raw IR、单个module或旁路resource view恢复。

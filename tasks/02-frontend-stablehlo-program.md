@@ -1,9 +1,9 @@
 # Wafer Frontend and StableHLO Program Design
 
-状态：设计草案；范围：frontend program、StableHLO export/import 和跨阶段 program chain。
+状态：本轮长期边界合同已收敛；实现状态以`tasks/progress.md`为准。范围：frontend program、StableHLO export/import 和跨阶段 program chain。
 
 本文定义 Wafer compiler 的 model import 和 frontend program 边界。Wafer program 是长期编译对象：
-它包含 MLIR IR、function/signature metadata、parameter/resource payload 和后续 stage materialize
+它包含 MLIR IR、typed model ABI、function/signature metadata、parameter/resource payload 和后续 stage materialize
 出来的 storage/package facts。StableHLO program directory 只是当前 importer/exporter 的序列化形式，
 `functions/forward.mlir` 是 program 的 IR 成员，`forward.meta`、`data/<parameter>` 和
 post-SPMD shard payload 是同一个 program 的数据成员。Frontend 负责把上游模型表达成可验证的
@@ -16,6 +16,7 @@ SPM、DDR allocation、layout materialization、DTE、runtime package 或 launch
 - `tasks/08-layout-materialization.md`
 - `tasks/12-ddr-memory-planning.md`
 - `docs/tx8-deps-reverse-engineering/txda-pytorch-runtime-wheel-analysis.md`
+- StableHLO dynamism: <https://openxla.org/stablehlo/dynamism>
 
 Pipeline position:
 
@@ -23,25 +24,31 @@ Pipeline position:
   source model、exporter-native program 或 pre-exported StableHLO / MLIR module，以及 importer 能验证的
   model signature、metadata 和 parameter/resource payload。
 - Current stage responsibility:
-  把上游模型收敛成 verified Wafer program：StableHLO/func/tensor/arith IR、function boundary
-  metadata、parameter/resource payload 和可解释 sharding seed；拒绝 graph break、fallback、
+  把上游模型收敛成 verified Wafer program：StableHLO/func/tensor/arith IR、typed input/output、
+  immutable parameter、persistent mutable state、显式 alias/mutation、symbolic shape constraint、
+  parameter/resource payload 和可解释 sharding seed；拒绝 graph break、fallback、未建模副作用、
   不可验证 alias 或只能靠名字恢复的语义。
 - Output artifact / IR:
   StableHLO Wafer program directory 或等价 verified program object，包含 `functions/forward.mlir`、
-  `functions/forward.meta`、pre-SPMD parameter payload 和必要的 importer diagnostics。
+  `functions/forward.meta`、typed model ABI、symbolic shape constraint、pre-SPMD parameter/state
+  resource payload 和必要的 importer diagnostics。
 - Downstream consumer:
-  target topology / execution mesh materialization、Shardy propagation、Wafer-owned SPMD partition、
+  target environment / topology / execution mesh materialization、Shardy propagation、Wafer-owned SPMD partition、
   local compute normalization 和后续 group/tile/resource pipeline。
 - User-level driver / named pipeline:
   frontend verifier 入口是 `wafer-compile-stablehlo --verify-stablehlo-program`；继续编译时由
-  `wafer-opt --program-pipeline=stablehlo-spmd*` 消费同一个 verified program。
+  `wafer-opt --program-pipeline=stablehlo-to-executable` 或等价 production driver 消费同一个 verified
+  program；当前 `stablehlo-spmd*` pipelines 是该 driver 的内部/分阶段 debug 入口。
 - Explicit non-goals:
   不选择 physical tile endpoint、layout、SPM/DDR allocation、DTE protocol、runtime package、
-  launch metadata 或 completion source；不生成私有 side JSON 来替代 program metadata。
+  launch metadata 或 completion source；不决定 state/KV 的 DDR address、page placement、session handle
+  或 cache eviction；不生成私有 side JSON 来替代 program metadata。
 - Completion gate:
-  真实 framework/exporter 产生的 program 通过 frontend verifier，并能被 `stablehlo-spmd` 或
-  `stablehlo-spmd-to-linalg` program pipeline 消费；手写 StableHLO 只作为 pre-exported verifier /
-  local lowering 覆盖。
+  真实 framework/exporter 产生的 program 通过 frontend verifier；typed input/output、immutable
+  parameter、persistent mutable state、alias/mutation 和 symbolic bound 能由同一 verified program
+  表达并被 `stablehlo-spmd` 或 `stablehlo-spmd-to-linalg` program pipeline 消费。至少一个 stateful
+  case 证明跨 invocation state 不是普通 input/output，非法 alias、越界 actual shape 和未声明 mutation
+  在进入 SPMD 前失败；手写 StableHLO 只作为 pre-exported verifier / local lowering 覆盖。
 
 ## 1. 目标和非目标
 
@@ -49,8 +56,10 @@ Pipeline position:
 
 - 接收上游 exporter / importer 生成的 StableHLO / MLIR module；具体 importer 是工程适配层，
   不是 Wafer IR contract。
-- 保留模型语义、function signature、rank、shape、dtype、dynamic shape 约束和用户可见
-  input/output 关系。
+- 保留模型语义、function signature、rank、shape、dtype、symbolic dynamic shape constraint 和用户可见
+  typed input/output 关系。
+- 区分 immutable parameter 与 persistent mutable state，保留 resource identity、access、lifetime 和
+  显式 alias/mutation；KV cache、page table 或其它 serving state 复用同一通用资源合同。
 - 保留或规范化上游 sharding annotation，使 Shardy / SDY 阶段可以接管。
 - 统一 constant / weight 的 frontend 表达，使后续 Linalg / Wafer planning 只消费
   `arith.constant` 或其它 `ConstantLike` tensor value。
@@ -63,6 +72,7 @@ Pipeline position:
 - 不选择 physical tile endpoint mapping。
 - 不表达 Wafer memory attr、SPM offset、runtime allocation resource、
   runtime handle 或 device physical address。
+- 不决定 persistent state 的设备 placement、page allocator、session 调度、eviction 或 runtime handle。
 - 不引入 Wafer 私有 tensor constant op。
 - 不选择 `Tensor/Cx/NCx` physical memory layout。
 - 不生成 `wafer.group`、`wafer.tile.region`、`wafer.tile.*` compute、`wafer.tile.*` communication 或 runtime launch metadata。
@@ -83,8 +93,8 @@ source model / exported program / pre-exported StableHLO
 ```text
 Wafer program:
   IR: StableHLO + func + tensor + arith module
-  metadata: verified exporter signature / input locations / optional sharding facts
-  payload: ConstantLike tensor values or resource-backed parameter/constant payload
+  metadata: typed model ABI / symbolic shape constraints / optional sharding facts
+  payload: ConstantLike values, immutable parameter payload, or persistent state initializer/resource binding
 ```
 
 PyTorch/XLA 路线的 frontend program 只保留一套 exporter-native 事实源：
@@ -92,21 +102,22 @@ PyTorch/XLA 路线的 frontend program 只保留一套 exporter-native 事实源
 | 信息 | 归属 | import 边界责任 |
 | --- | --- | --- |
 | `functions/forward.mlir` | StableHLO IR 主体 | parse / verify 后进入 compiler pipeline |
-| `functions/forward.meta` | PyTorch/XLA 导出的 metadata | 校验 function arg/result 与 parameter / user input / shape / dtype 的关系 |
-| `functions/forward.parameter_shards.json` | post-SPMD parameter shard metadata | 仅在 partitioned program directory 中存在；校验 local function parameter 与 rank-local shard payload 的关系 |
+| `functions/forward.meta` | PyTorch/XLA 导出的 metadata | 校验 function arg/result 与 typed input/output、immutable parameter、persistent state、shape symbol、dtype 和 alias/mutation 的关系 |
+| `functions/forward.parameter_shards.json` | post-SPMD parameter/state shard metadata | 仅在 distributed program serialization 中存在；校验 component/rank class local parameter/state resource 与 logical shard payload 的关系 |
 | `functions/forward.bytecode` | StableHLO bytecode | 与 program directory 一起保留，当前不作为 Wafer IR 合同 |
 | `data/<parameter>` | PyTorch/XLA 导出的 pre-SPMD weight data | program payload；verifier 检查 NPY stream、shape 和 dtype，后续 SPMD/storage/package stage 继续消费或改写 |
-| `parameter_shards/<parameter>/rank_XXXXX.npy` | post-SPMD rank-local weight shard payload | partitioned program directory 的参数 payload；由 P2.S2 SPMD partition compiler stage 生成，不从 strategy 名或文件名推断 |
+| `parameter_shards/<payload-key>/rank_XXXXX.npy` | post-SPMD logical shard payload serialization | distributed program 的 immutable parameter 或 materialized state initializer payload；由 P2.S2 SPMD partition compiler stage 生成，目录项和文件名都不是 resource/rank 语义 |
 
 除本节定义的 post-SPMD parameter shard metadata 外，不要为同一件事再生成 Wafer 私有伴随 JSON /
-compile JSON。`forward.meta` 是 function boundary
-事实源；`forward.parameter_shards.json` 只承接 post-SPMD 后 local parameter argument 到
-rank-local shard payload 的绑定关系。offsets、sizes、strides、replica id 和 payload 文件必须来自
+compile JSON。`forward.meta` 是 typed function/resource boundary
+事实源；`forward.parameter_shards.json` 只承接 post-SPMD 后 distributed component 的 local parameter/state
+resource 到 logical shard payload 的绑定关系。offsets、sizes、strides、partition/replica coordinate 和
+payload 文件必须来自
 XLA sharding / partitioner 暴露的 shard facts，不能由 Wafer 从 `partition_spec`、strategy 名或
 parameter 名手算。后续 compiler stage 不能通过文件名、parameter 名或 side JSON 猜语义；它们应消费
 已验证的 Wafer program metadata/payload，或 IR 中 materialize 的 parameter/resource/ConstantLike 事实。
 若某个 stage 改变 function
-boundary、parameter shard、constant storage、layout 或 package binding，它必须同步更新同一个 Wafer
+boundary、parameter/state shard、constant storage、layout 或 package binding，它必须同步更新同一个 Wafer
 program 的 metadata / payload，并由 verifier 检查一致性。metadata 也不描述 Wafer physical layout、
 runtime allocation resource、DDR address 或 package path，除非后续相应 IR 层已经 materialize 这些事实。
 
@@ -129,7 +140,7 @@ importer 可以返回工程层面的 import result，例如：
 
 - MLIR module。
 - exporter-native metadata / weight data directory。
-- input/output signature 和 bounded dynamic shape policy。
+- typed input/output/parameter/state signature、alias/mutation relation 和 symbolic bounded shape policy。
 - sharding import source。
 - diagnostics。
 
@@ -142,7 +153,8 @@ package binding 时，必须通过 Wafer program writer 同步更新 payload/met
 Model import 必须拒绝或显式诊断：
 
 - graph break、eager fallback、host callback 或无法导出的 side effect。
-- training-only state、随机数语义、mutable state 或不可验证 alias。
+- training-only state、随机数语义、未声明 mutation、没有稳定 resource identity/lifetime 的 mutable state
+  或不可验证 alias。满足本文 typed persistent state 合同的 mutable resource 不是拒绝项。
 - 无法界定容量的 dynamic shape。
 - 只能靠 Python 对象名、parameter 名或文件路径恢复的语义关系。
 - importer 依赖的第三方 dialect / attr 没有注册或没有 verifier。
@@ -171,11 +183,13 @@ matcher、手写 StableHLO 文本 emitter 或 pre-exported 测试输入冒充 Py
 
 - 只把框架 API、Python path、module name、parameter name、version workaround 留在 adapter 日志、
   source map 或诊断中；这些信息不能成为后端 IR 或 lowering 分支条件。
-- graph break、eager fallback、host callback、mutable state、training-only state 和不可验证 alias
-  必须变成 frontend verifier 可拒绝的诊断，不能 silent fallback 到 host/runtime path。
-- dynamic shape 必须产出可验证 bounded policy。V0 可以继续使用
-  `wafer.frontend.dynamic_bounds`，也可以来自 exporter metadata；进入后端前必须 materialize 成
-  verifier 能检查的 function boundary fact。
+- graph break、eager fallback、host callback、training-only state、未声明 mutation 和不可验证 alias
+  必须变成 frontend verifier 可拒绝的诊断，不能 silent fallback 到 host/runtime path。框架 state 只有在
+  adapter 能导出稳定 resource identity、typed access/lifetime 和显式 alias/mutation 时才可作为
+  persistent mutable state 进入 program。
+- dynamic shape 必须产出可验证 symbolic bounded policy。当前简单 upper-bound serialization 可以继续使用
+  `wafer.frontend.dynamic_bounds`，但共享 shape symbol、跨参数相等关系、下界或整除约束必须收敛到同一
+  structured shape constraint set；进入后端前必须 materialize 成 verifier 能检查的 function boundary fact。
 - weight / constant 必须来自 exporter program metadata / payload，并在进入后端前 materialize 成明确的
   IR 事实、resource binding 或 `ConstantLike` value。PyTorch/XLA parameter 名只用于在 program directory
   data 目录中定位 exporter 自己保存的文件，不能成为后端 lowering 分支条件。
@@ -231,9 +245,10 @@ group、tiling、SPM/DDR memory 和 package metadata 消费真实规模的 shape
 - 4096 主链路 program 可以由测试脚本或 adapter 生成，但不能把 64 MiB weight 直接提交进 git
   test file。
 - pre-SPMD 大 weight 必须使用 PyTorch/XLA program directory 的 `forward.meta` 和 `data/<parameter>`；partitioned
-  program 必须使用 `forward.parameter_shards.json` 和 `parameter_shards/<parameter>/rank_XXXXX.npy`
-  表达 rank-local payload。测试验证 function argument / parameter location / shape / dtype /
-  data payload 或 shard payload 的 NPY stream header 与 tensor 边界绑定关系。
+  program 必须使用 `forward.parameter_shards.json` 和 `parameter_shards/<payload-key>/rank_XXXXX.npy`
+  序列化 distributed program 的 logical shard payload。测试验证 component resource / logical coordinate /
+  parameter location / shape / dtype / data payload 或 shard payload 的 NPY stream header 与 typed ABI
+  绑定关系；`rank_XXXXX` 只作文件索引。
 - 小 shape MLIR 仍可用于 graph break、eager fallback、dynamic bound 等快速负例；
   这些测试不能替代 4096 主链路 program 的完成证明。
 
@@ -274,18 +289,49 @@ program verifier 负责保证进入 Wafer pipeline 的 IR 仍满足本文合同�
 
 Frontend function signature 是用户可见语义边界：
 
-- argument/result order 由 StableHLO / exported program 决定。
-- shape、rank、dtype 必须可从 type 或明确的 shape constraint 推出。
-- dynamic shape 必须有后续阶段可验证的 bounded policy；V0 可以拒绝无法静态界定容量的
-  dynamic program。
-- input/output alias 只有在 frontend program 明确表达时才进入后续 IR；不能通过名字推断。
+- argument/result order 和 model ABI role 由 StableHLO / exported program 的 verified signature 决定。
+- 每个 boundary value 必须是 typed input、typed output、immutable parameter 或 persistent mutable state
+  之一；compiler-generated workspace/transient 不属于 frontend model ABI。
+- shape、rank、dtype 必须可从 type 或明确的 symbolic shape constraint 推出。
+- dynamic shape 必须有后续 specialization/guard 可验证的 bounded policy；无法静态界定容量或 guard
+  关系的 dynamic program 在 frontend 失败。
+- input/output/state alias 和 mutation 只有在 frontend program 明确表达时才进入后续 IR；不能通过名字、
+  参数顺序或 in-place API 名推断。
 
-R2.1 V0 用 function argument/result attr
-`wafer.frontend.dynamic_bounds = [d0, d1, ...]` 表达 bounded dynamic shape。attr rank 必须匹配
-tensor rank，dynamic dimension 的 bound 必须为正，static dimension 的 bound 必须等于 type 中
-的静态维度。缺失 bound 或非法 bound 在 frontend verifier 中报错，不进入后端 lowering。
+R2.1 当前简单 serialization 用 function argument/result attr
+`wafer.frontend.dynamic_bounds = [d0, d1, ...]` 表达每维 upper bound。attr rank 必须匹配 tensor rank，
+dynamic dimension 的 bound 必须为正，static dimension 的 bound 必须等于 type 中的静态维度。
+长期 program contract 是一份 structured symbolic shape constraint set：每个 dynamic dimension 引用稳定
+shape symbol，并可表达正下界、有限上界、跨 boundary 相等关系和后续 specialization 所需的整除约束。
+简单 attr 与 structured constraint 不能成为两份事实源；writer 必须规范化为同一 constraint set，
+actual runtime size 只在 executable guard / launch binding 中提供。缺失 bound、冲突 constraint 或越界
+actual size 都必须在对应 verifier/guard 失败，不能让低层 instruction 接受无法证明的 symbolic descriptor。
 
-### 3.2 Constant and Weight
+### 3.2 Typed Model ABI And Stateful Resource
+
+Frontend model ABI 只描述模型级语义资源，不描述物理存储。四类稳定 role 是：
+
+| role | 语义 | 必须保留的事实 |
+| --- | --- | --- |
+| typed input | 每次 invocation 由调用方提供的只读或显式可变输入 | type、shape symbol/constraint、access、user-visible order |
+| typed output | 每次 invocation 产生的结果 | type、shape symbol/constraint、producer、user-visible order |
+| immutable parameter | 跨 invocation 不变的模型参数或常量资源 | semantic type、content identity、initializer/payload binding、read-only access |
+| persistent mutable state | 跨 invocation/session 保留并可更新的模型状态 | resource identity、type/constraint、read/write access、lifetime scope、initializer/import policy、alias/mutation relation |
+
+KV cache、paged KV backing、page table、running statistics 或其它 serving state 都使用
+`persistent mutable state` 合同。KV 只是 resource 的用途，不引入 `wafer.kv_cache` frontend op，也不把
+physical page size/alignment、DDR address、physical page id、session handle 或 eviction policy 写进 frontend
+IR；logical page capacity、index dtype 和 shape bound 仍由 resource type/constraint 表达。若 page table
+和 data backing 是两个可独立绑定的资源，它们必须有两个 typed resource identity 和显式 relation；不能藏在
+opaque payload 中。
+
+alias/mutation 必须形成可验证关系：被写资源、返回 alias、read-after-write value 和跨 invocation 可见性
+必须能从 SSA、function boundary alias/effect interface 或 structured program metadata 推出。普通 output
+不能暗中覆盖 input，immutable parameter 不能出现在 write set，persistent state 的 alias target 必须属于
+同一 resource identity 或由明确 view relation 连接。后续 SPMD 可以为 parameter/state 生成 logical shard，
+但 frontend 不选择 rank、endpoint、DDR arena、resident placement 或 runtime allocation object。
+
+### 3.3 Constant And Immutable Parameter
 
 常量策略：
 
@@ -295,7 +341,8 @@ tensor rank，dynamic dimension 的 bound 必须为正，static dimension 的 bo
   `constants/<position>`。frontend verifier 必须像校验 parameter payload 一样校验该 NPY
   stream 的 shape/dtype 与对应 function argument 一致；不能把 captured constants 伪装成用户
   `input_arg` 或 weight parameter。
-- 大 weight 可以作为 StableHLO resource-backed parameter 保留在 exporter program directory 中。
+- 大 weight 可以作为 immutable resource-backed parameter 保留在 exporter program directory 中，并携带
+  与文件名无关的 content identity。
 - 进入 Linalg / Wafer planning 前，常量统一成 `arith.constant` 或其它 MLIR `ConstantLike`
   tensor op。
 - Wafer 不定义 `wafer.constant` 或 `constant_ref` 作为普通 tensor 常量的替代。
@@ -305,7 +352,7 @@ packed backing data，它由 constant storage transform 直接改写 backing dat
 只读 DDR demand。它仍然来源于同一个 `ConstantLike` value，不通过新的 Wafer constant op
 重建语义。
 
-### 3.3 Sharding Annotation
+### 3.4 Sharding Annotation
 
 Frontend 只保存上游显式 sharding 事实：
 
@@ -326,7 +373,7 @@ StableHLO / SDY 可解释 program，应诊断为 frontend export / sharding impo
 
 P2.S1 实现使用 source-built PyTorch/XLA lazy SPMD runtime 的 `mark_sharding`
 生成带 `mhlo.sharding` 的 PyTorch/XLA StableHLO program directory，并交给 Wafer Shardy propagation stage。
-partitioned local body 和 rank-local payload 由 P2.S2 的
+distributed local component 和 logical shard payload 由 P2.S2 的
 `wafer-opt --program-pipeline=stablehlo-spmd` program pipeline 取得；如果要继续进入 tensor
 collective handoff，则使用同一 driver 下的 `--program-pipeline=stablehlo-spmd-to-linalg`。
 `wafer-compile-stablehlo` frontend verifier 只校验 program metadata / payload /
@@ -334,10 +381,11 @@ function boundary，不执行 Shardy propagation、XLA SPMD partition，也不�
 
 Frontend 不把 sharding annotation 转成 physical card/tile id，也不提前选择 DTE route。
 
-### 3.4 External Tensor Layout
+### 3.5 External Tensor Layout
 
-用户输入输出默认按 host-visible compact tensor boundary 看待。这个结论只影响 frontend
-signature 和 runtime binding contract，不等于已经分配 DDR。
+用户输入输出默认按 host-visible compact tensor boundary 看待；immutable parameter 和 persistent state
+是否 host-visible 由 typed ABI access/import policy 决定。这个结论只影响 frontend signature 和 runtime
+binding contract，不等于已经分配 DDR。
 
 例外必须显式表达：
 
@@ -352,10 +400,11 @@ tool / pass 名字不是架构边界，但实现上至少需要以下职责：
 | 职责 | 输入 | 输出 |
 | --- | --- | --- |
 | dependency/config validate | build manifest + dialect registry | importer/backend capability diagnostics |
-| program import | exported model / StableHLO | Wafer program: MLIR module + exporter metadata + parameter/resource payload |
+| program import | exported model / StableHLO | Wafer program: MLIR module + typed model ABI + symbolic constraint + parameter/state resource payload |
 | program verify | Wafer program | diagnostics |
 | sharding import normalization | old sharding attrs | Shardy-consumable annotations |
-| constant normalization | StableHLO constants / program parameter/resource payload | `arith.constant` / `ConstantLike` / resource binding |
+| resource normalization | exporter signature / resource payload | typed input/output、immutable parameter、persistent state、alias/effect relation |
+| constant normalization | StableHLO constants / immutable parameter payload | `arith.constant` / `ConstantLike` / immutable resource binding |
 | frontend cleanup | frontend-only metadata | 后端可消费的 StableHLO module |
 
 这些 pass 不能创建 Wafer low-level op，也不能把 runtime path、runtime allocation resource、SPM address 或
@@ -371,7 +420,9 @@ Frontend 应在这些场景直接报错：
 
 - model import 出现 graph break、host fallback 或无法导出的 op。
 - exporter metadata 中的 shape、dtype 或 parameter data payload size 与 IR value 不一致。
-- dynamic shape 没有 V0 可接受的 bound。
+- model ABI role 缺失/重复、immutable parameter 出现在 write set、persistent state 缺 resource identity /
+  lifetime/access，或 alias/mutation relation 无法由 typed boundary 验证。
+- dynamic shape 没有有限 symbolic bound、constraint 自相矛盾，或共享 symbol 的 boundary dimensions 不一致。
 - sharding annotation 无法被 Shardy import。
 - program 依赖 TXDA eager CPU fallback 才能运行。
 - program metadata 只有名字关系，没有 type / shape / resource key 可验证关系。
@@ -389,7 +440,9 @@ V0 验证项：
 - model import 最小验证：至少一个真实 framework/exporter 静态图能导出到 verified Wafer program，
   并且 graph break / fallback 会被诊断。
 - StableHLO parse / printer roundtrip。
-- function signature 的 shape、rank、dtype、dynamic bound 检查。
+- function signature 的 role、shape、rank、dtype、symbolic bound 和跨 boundary constraint 检查。
+- typed input/output、immutable parameter、persistent mutable state、显式 alias/mutation positive/negative
+  verifier；至少覆盖一个跨 invocation KV-like state resource，而不把 KV 名字或 physical page 当协议。
 - `stablehlo.constant` / exporter program payload 到 `arith.constant` / `ConstantLike` 的 normalization 检查。
 - sharding annotation import 后仍能被 Shardy verifier 接受。
 - dependency configuration test：LLVM / MLIR / StableHLO / Shardy dialect 能显式注册；可选 importer
@@ -407,13 +460,14 @@ P2.F1 之后的验证不能停在 program dump。后续主线 gate 必须逐步�
 ```text
 framework capture program
   -> frontend verifier
-  -> if user sharding seed exists:
-       Shardy propagation / SPMD partitioner
-       -> partitioned StableHLO / per-rank program verifier
-     else:
-       P2.S1 default input sharding seed
-       -> Shardy propagation / SPMD partitioner
-       -> partitioned or replicated-local StableHLO / per-rank program verifier
+  -> target environment / topology / valid execution mesh
+  -> if no user sharding seed exists, P2.S1 adds a mesh-derived Shardy seed
+  -> Shardy propagation / SPMD partitioner / MPMD component formation
+  -> verified distributed program
+       + typed component ABI
+       + partition/replica coordinates and rank classes
+       + parameter/state logical shard relation
+       + one globally coherent symbolic-shape variant
   -> StableHLO / local compute normalization
   -> tensor collective normalization if collectives exist
   -> wafer.group logical group

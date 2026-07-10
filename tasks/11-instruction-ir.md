@@ -1,6 +1,6 @@
 # Wafer Instruction IR Design
 
-状态：设计草案；范围：instruction-level Wafer hardware invocation IR、memref-backed buffer contract 和
+状态：本轮长期边界合同已收敛；实现状态以`tasks/progress.md`为准。范围：instruction-level Wafer hardware invocation IR、memref-backed buffer contract 和
 instruction legalization。
 
 本文定义 instruction-level Wafer IR。核心结论：
@@ -23,8 +23,11 @@ instruction legalization。
   layout slot 仍只用于 MLIR 能按 affine / strided 语义解释的普通 layout。
 - 不引入 `wafer.physical_view`、`!wafer.physical_memref`、side descriptor value、SPM offset、DDR
   DDR planning result、raw packet 或 target CRT call。
+- committed instruction artifact 不是单个 `wafer.tile.region`、group、tile 或 representative sample，
+  而是每个 logical rank 一份覆盖完整 static traversal 的 structured instruction program；这些 rank
+  programs 只能作为完整 variant set 原子提交。
 
-`wafer.instr` 的作用是把 target-abstract tile-region op 变成可执行硬件动作或硬件通信调用，并让下游能从
+`wafer.instr` 的作用是把完整 rank traversal 中的 target-abstract tile-region scopes 变成可执行硬件动作或硬件通信调用，并让下游能从
 memref SSA、Wafer memory attr、op operands、attrs、MemoryEffects 和显式 fence 直接推导 endpoint/resource
 输入。它不是另一层 buffer IR。
 
@@ -80,7 +83,8 @@ memref SSA、Wafer memory attr、op operands、attrs、MemoryEffects 和显式 f
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  `wafer.tile.region` IR，内部包含带 Wafer memory attr 的 memref values、
+  whole-variant evaluation clone 中每个 static rank entry 的完整 structured traversal；其中局部
+  `wafer.tile.region` scopes 包含带 Wafer memory attr 的 memref values、
   `memref.alloc` / `memref.subview` / verifier-legal metadata view、
   `wafer.tile.load` / `wafer.tile.store`、
   `wafer.tile.materialize_layout`、`wafer.tile.fill/gemm/elementwise/reduce`、
@@ -88,37 +92,48 @@ Pipeline position:
   `wafer.tile.*` buffer-level collective、tile-region 内 `scf.if` / `scf.for`
   structured control-flow 和 `wafer.instr.local_fence`。
 - Current stage responsibility:
-  只做 Wafer instruction legalization / selection：把可执行的 target-abstract op 改写成
+  只做 Wafer instruction legalization / selection：递归覆盖所有 rank entries 的完整 traversal，
+  把每个可执行 target-abstract op 改写成
   `wafer.instr.*`，把 tile-level `Compute*Kind` 选择成 instr-level target kind，并保留 memref SSA
   graph。对 `scf.if` / `scf.for` 只递归转换其 region body，
   不改变 control-flow 结构。对 accepted `wafer.tile.*` collective，生成 explicit
   `wafer.instr.dte_send` / `dte_recv` / `dte_wait` p2p schedule。instruction op 通过
-  interface 显式暴露 instruction family、memref read/write、descriptor attrs 和 effect。
+  interface 显式暴露 instruction family、memref read/write、descriptor attrs、issue effect 和 completion relation。
 - Output artifact / IR:
-  同一个 `wafer.tile.region` execution scope 内的 instruction-level IR：
-  memref values with `#wafer.memory<space, layout>` + `wafer.instr.*` +
-  `wafer.instr.local_fence`，或结构化 legalization failure reason。
+  candidate clone 中每个 static rank 一份完整 instruction-level structured program：
+  control flow + tile-local `wafer.tile.region` scopes + memref values with
+  `#wafer.memory<space, layout>` + `wafer.instr.*` + explicit token/wait/fence；或结构化
+  legalization failure reason。单个 scope/group/tile 不是可提交 artifact。
 - Downstream consumer:
-  SPM memory planning、DDR memory planning、closed-loop candidate driver、
-  target instruction LLVM call emission、package metadata 和 runtime adapter。
+  whole-entry SPM/DDR memory planning、event/physical-transport/launch-projection/target-entry verification 和
+  closed-loop whole-variant candidate driver；atomic commit 后才由 target LLVM、package 和 runtime 消费。
 - User-level driver / named pipeline:
-  主线由 closed-loop planner 调用；局部 bring-up / candidate evaluation 入口是
+  production 主线由 `wafer-opt --program-pipeline=stablehlo-to-executable` 或等价 driver 内的 closed-loop
+  planner 调用；局部 bring-up / candidate evaluation 入口是
   `wafer-lower-tile-region-to-instr` 和 `wafer-lower-groups-to-instr` named pipeline。
   candidate evaluation 调用 instruction lowering 时，tiled DDR load/store operand 必须已经由 candidate 或 accepted
   materialization 表达成 tile view；如果仍是 whole-boundary memref，instruction lowering 只能生成 whole-boundary
   descriptor。
-  `--wafer-convert-tile-region-to-instr` 只作为 lit/debug pass 入口。
+  `--wafer-convert-tile-region-to-instr` 只作为 lit/debug pass 入口。这些局部/direct 入口都不能把
+  `DirectFullShape`、单 group 或单 tile-region 结果直接送入 committed target/package flow；用户级
+  completion 必须经过 whole-variant candidate-selection/commit pipeline。
 - Explicit non-goals:
   不新增第二套 storage/buffer IR，不决定 group boundary、tile shape、layout assignment、SPM offset、
   DDR planning result、raw register packet field、DTE/FSM resource id、Tsm wrapper call、target CRT
   symbol 或 launch ABI。SCALAR 仍是 reserved/stub；CSR helper/sync 若进入主线，必须作为明确
   instruction/sync family 另行定义，不能混入 CT/NE/RDMA/WDMA/TDMA 或 DTE op。
+  本层也不按 group/rank 部分提交，不允许 `DirectFullShape` 或 representative tile 绕过完整 gates，
+  不把 hardware `busytable` 解释为 completion event，也不把 distributed rank equivalence 直接提升为
+  executable rank class。
 - Completion gate:
-  对 tile-region 已支持的 load/store、静态可证明 layout materialize、fill、GEMM、
+  对每个 static rank entry 的完整 traversal 中已支持的 load/store、静态可证明 layout materialize、fill、GEMM、
   elementwise/relation、reduce、copy 和 metadata view 生成 verifier-legal instruction-level IR
   或标准 memref view，并覆盖 nested `scf.if` / `scf.for` body 递归转换。unsupported hardware
   instruction form，包括当前无法证明的 slice/broadcast/transpose descriptor，必须结构化失败，
-  不能让 SPM memory planning 从 target-abstract op 猜 demand。
+  不能让 SPM memory planning 从 target-abstract op 猜 demand。每个 issue 必须由 explicit async
+  token/wait 或 local fence 完成，每条 exit path terminal drain 后 pending set 为空；variant-set gate
+  还要证明所有 transport 匹配和 shared physical geometry/range/narrowing contract。任一 rank/group
+  失败都丢弃整个 clone。
 ```
 
 ## 2. Wafer MemRef Contract
@@ -305,7 +320,7 @@ instr-level target kind。
 | CT reduce `sum/avg/max/min` | `wafer.instr.reduce` + `#wafer.instr_reduce_kind` + target `dim` code | V0 production target op | tile 层 reduce `dimensions` 在 instruction lowering 中 materialize 为 native `TsmReduce` dim code：`0:C`、`1:W`、`2:H`、`3:N`、`4:HW`、`5:HWC`；aligned physical layout、rank 和 dtype 合法性由 verifier / target lowering 检查 |
 | CT convert opcode 139..174 | `wafer.instr.convert` + `#wafer.instr_convert_kind<src_dst>` + kind-specific attrs | V0 production target op | dtype pair 由 kind 唯一决定；INT8->FP 要求 `zero_point`，rounding wrapper 要求 `rounding_mode`，plain wrapper 不允许额外转换参数；same-format copy 必须走 movement，不允许伪造成 convert |
 | NE GEMM | `wafer.instr.gemm` | V0 production target op | 只表达 GEMM / batched GEMM 主路径参数；bias、scale、quant、fused activation 和复杂 psum policy 不能被隐式打开 |
-| Direct DTE fixed-size unicast | `wafer.instr.dte_send` / `dte_recv` / `dte_wait` | V0 production target op；LLVM call emitted；production binding pending | IR 表达 logical peer、bytes 和 async token；target LLVM call emission 生成 Wafer CRT send/recv/wait call，runtime endpoint/channel binding 仍由后续 device/runtime gate 固定 |
+| Direct DTE fixed-size unicast | `wafer.instr.dte_send` / `dte_recv` / `dte_wait` | V0 candidate instruction form；现有 logical-peer LLVM call emission 仅为不完整 bring-up evidence | IR 表达 logical peer、bytes 和 async token；whole-entry memory planning 后必须完成 physical transport acceptance。只有 pinned concrete binding 或 compiler-verified relocatable typed slots 随 variant commit 后，target LLVM 才是 production；RuntimeSession 只机械填已验证 template，不补做 endpoint/channel planning |
 | local NCC drain / visibility fence | `wafer.instr.local_fence` | V0 production target sync；LLVM call emitted | target LLVM call emission 映射到 local wait/drain Wafer CRT call；不是 multi-tile barrier |
 | SPM memcpy helper / copy | 无单独 copy op | V0 composite lowering | copy 是 `gather_scatter` 的 descriptor 特例；不引入 `wafer.instr.copy` |
 | ChannelNorm / DechannelNorm / Tensor-Normalization | 无单条 op | V0 composite lowering | 作为 layout materialization algorithm 展开为 gather/scatter 序列；native TensorNom opcode 133 不作为 V0 主路径 |
@@ -354,7 +369,7 @@ memref 替换原 op result 的 uses。
   和当前 memref use-def/view relation 派生 address/range 参数，不能复制成独立 placed/access
   descriptor 中间协议。
 - RDMA/WDMA 的 DDR side 使用 `memref<..., #wafer.memory<ddr, layout>>`；DDR memory planning stage 负责
-  external allocation contract、default arena resource、compiler-managed/resident requirement、planned DDR
+  external allocation contract、declared arena/placement-domain resource、compiler-managed/resident requirement、planned DDR
   ranges 和 constant residency。
 
 R3.2d 只 materialize **unplaced logical descriptor facts**：byte count、stride/iteration、op kind、
@@ -401,6 +416,12 @@ resource effects 至少要表达：
 | CT | SPM memref read/write as operand contract requires | Compute/CT issue |
 | NE | SPM memref read + SPM memref write | Compute/NE issue |
 | DTE | send reads SPM source, recv writes SPM destination, wait consumes async token | Communication/DTE issue or wait |
+
+completion 是 instruction program 的显式数据流合同：DTE issue 返回 `!async.token` 并由匹配 wait
+消费；可能异步的 local compute/movement issue 要么返回 token，要么进入
+`wafer.instr.local_fence` 明确收口的 pending effect set。`busytable` 只能作为 target capability /
+legality / cost input，不能替代 token、wait/fence、effects 或 terminal drain。每条 function exit
+path 都必须证明没有未消费 token、pending local write 或未完成 recv。
 
 R3.2d 不建模 worker id。`TsmExecute` 的 worker bits、register window 和 packet field 属于
 committed instruction 后的 target LLVM call emission。
@@ -651,7 +672,9 @@ scoping rules, but it does not lower them to hardware branch/loop instructions.
 ## 9. Failure Contract
 
 R3.2d failure is a legalization result, not an IR artifact. A rejected legalization attempt may carry
-diagnostics to the closed-loop planner or debug pass, but rejected instruction IR is discarded.
+diagnostics to the closed-loop planner or debug pass, but rejected instruction IR is discarded。任一 rank、
+group、traversal scope 或后续 whole-entry gate 失败时，complete variant clone 整体丢弃；不能提交已
+legalize 的其它 instruction fragments。
 
 必须结构化失败的情况：
 
@@ -691,6 +714,10 @@ R3.2d verifier checks only instruction legality:
 - descriptor byte counts are consistent with compact tensor payload size or statically described
   slice/broadcast/transpose domain as applicable. Cx/NCx padding span is derived from
   `computeWaferPhysicalTensorInfo(memrefType)` and target policy, not copied into `byte_count`.
+- logical shape 到 physical footprint、view/root/descriptor range、offset arithmetic 和 target field
+  narrowing 都通过同一个 shared physical geometry/range/narrowing verifier；instruction、SPM/DDR
+  planning、target/package lowering 复用该 verifier。每次 narrowing 都必须证明源值在目标字段范围内；
+  silent i64-to-i32 或 size-to-packet-field truncation 非法。
 - NE GEMM and CT reduce require supported aligned layout marker, dtype and rank.
 - relation/elementwise bool storage uses logical `i1`; physical byte size remains derived, not stored.
 - `wafer.instr.elementwise` / `wafer.instr.reduce` use instr-level target kind attrs only；generic
@@ -722,13 +749,27 @@ R3.2d verifier checks only instruction legality:
 - no raw DTE resource id, raw DTE register field, CSR helper or SCALAR ordinary instruction op before
   the corresponding instruction/sync family is defined and verified. Direct DTE p2p must use
   `wafer.instr.dte_send` / `dte_recv` / `dte_wait`, not ad hoc tile p2p ops or side tables.
+- 每个 issue 都有可验证 completion relation；每个 complete rank program 的 exit 在显式 terminal
+  drain/wait/fence 后 pending-event set 为空。`busytable` state 不能作为 completion proof。
 
-Instruction lowering does **not** verify physical address range, SPM bank conflicts, DDR default arena capacity,
-runtime symbol, packet bit layout or worker register window. Those checks belong to SPM/DDR offset assignment,
-target LLVM call emission, package metadata and runtime adapter.
-DDR offset assignment must accept or reject the explicit DDR views, descriptors and compiler-managed DDR `memref.alloc`
-already present in this IR, and must materialize accepted DDR offset facts before target LLVM call emission,
-package metadata and runtime adapter consume them through resource view analysis.
+variant-set verifier 还检查 committed instruction programs 覆盖所有 static rank entries 和完整 traversal，
+不含 logical/scheduled `wafer.group`，只使用一套 final layout/SPM/DDR facts，并匹配所有跨 rank
+transport send/recv/token relation。无法从 local IR 推导的 endpoint/channel/FSM facts 只在 late target
+binding boundary 显式 materialize，然后作为 variant-set relation 验证，不能从名字或隐藏 side table 推断。
+module-level executable/variant symbol 可以引用 per-rank `func.func` entry symbols，但 function body 是
+instruction/control-flow 的唯一 code owner；symbol 或 package metadata 不能复制完整 instruction sequence。
+distributed 层给出的 rank equivalence 只是一项候选前提。variant-set verifier 必须在每个完整 entry
+的 instruction、layout/SPM/DDR、event、transport 和 target binding 均通过后，才由 atomic commit
+决定最终 executable rank class；该 class 不允许用 representative rank 替代未验证 entry，可以继续
+拆分 distributed class，但不能合并 distributed 层已经分开的非等价 ranks。
+
+Instruction op-local lowering 不分配 physical address range、不解决 SPM bank conflict、不选择 DDR arena
+placement，也不绑定 runtime symbol、packet bit 或 worker window。这些值属于 SPM/DDR planning 和 late
+target binding；但所有 consumer 都必须在 whole-variant commit 前调用同一个 shared physical
+geometry/range/narrowing verifier，target LLVM/package 不能成为首次发现 overflow 或 silent narrowing 的阶段。
+DDR offset assignment必须接受或拒绝当前IR中的explicit DDR views/descriptors/compiler-managed
+`memref.alloc`。随后pre-commit `ExecutableResourceView`把accepted facts materialize为typed executable
+resources/entry bindings；target只派生address/range，package/runtime不得从instruction IR重新恢复resource语义。
 
 ## 11. Example
 
@@ -806,6 +847,10 @@ wafer.tile.region ... {
 `computeWaferPhysicalTensorInfo`、SPM memory planning 和 later realization 处理。
 
 ## 12. Implementation Work
+
+本节“已完成”只记录 op-local ODS、conversion 和局部 pipeline coverage，不是 committed executable
+completion proof。完整 traversal、whole-entry SPM/DDR、terminal event closure、transport/target binding、
+executable rank class 和 whole-variant atomic commit 仍必须按第 1、9、10 节合同统一验收。
 
 R3.2c 已完成的前置：
 

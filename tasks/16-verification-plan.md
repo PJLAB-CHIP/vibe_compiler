@@ -1,316 +1,210 @@
 # Wafer Verification Plan Design
 
-状态：设计草案；范围：compiler pipeline 各阶段的验证责任和 completion gate。
+状态：长期验证合同已收敛；当前实现只通过部分局部 gate，不能据此宣称 executable、package 或复杂
+大模型主线完成。
 
-本文定义 Wafer compiler 的分阶段验证策略。它不是替代各 dialect 设计的总 verifier，而是把
-frontend、SPMD、topology / execution mesh、local compute normalization、tensor collective handoff、group、
-tile_region、layout、SPM、DDR、compute、communication、target CRT、launch/runtime 的验证责任串成
-可执行的 gate。
+本文把 verified program、target environment、distributed program、candidate planning、whole-variant
+atomic commit、static rank program、target module、PackageManifest 和 RuntimeSession 串成一条可执行的
+验证链。各 dialect/op 的局部语义仍由对应编号设计文档定义；本文只定义跨阶段证据如何组成完成证明。
 
-Serving integration 暂不纳入本文通过标准。
+## 1. Pipeline Contract
 
-## 1. 原则
+```text
+Pipeline position:
+- Upstream artifact / IR:
+  tasks/02-15 定义的 verified program、target environment/topology/mesh、distributed program、candidate
+  IR、committed executable set、target module/Kernel ABI descriptor 和 PackageManifest。
+- Current stage responsibility:
+  为每个 artifact 边界定义 parser/verifier、conversion、planning、atomic commit、target/package/runtime
+  和真实 program-chain gates；证明失败不会生成部分 accepted artifact或污染persistent state。
+- Output artifact / IR:
+  stage-local diagnostics、variant/commit reports、module/manifest validation result、RuntimeSession
+  completion/error result、numeric comparison和可复现的CI/board evidence。
+- Downstream consumer:
+  tasks/progress.md 状态推进、release/package acceptance、board deployment和性能校准。
+- User-level driver / named pipeline:
+  局部named pipelines只作构件；主线完成证明必须通过
+  `wafer-opt --program-pipeline=stablehlo-to-executable` 或等价单一driver重放完整上游链路，再进入
+  device link、manifest和RuntimeSession gate。
+- Explicit non-goals:
+  不用手写fixture、单pass FileCheck、schema roundtrip、symbol count或最小静态block代替主线；不把
+  unsupported/skipped test算作通过；无板环境不声明board numeric/completion成立。
+- Completion gate:
+  真实exported model覆盖至少两个shape variants、persistent-state prefill/decode、TP+DP、PP+DP或EP
+  distributed graph中的两个组合并行case；全部经过mandatory atomic commit、target LLVM、actual device
+  link、ELF/Kernel ABI/manifest验证和RuntimeSession。板端gate进一步证明numeric、multi-rank completion、
+  timeout/error aggregation和state consistency。
+```
 
-- 每个 IR 层验证自己能解释的语义，不提前验证下游 raw detail。
-- analysis 可以失败并反馈 planner，但失败候选不写进 IR。
-- 影响 codegen 的 planned/verifiable fact 必须能从 IR / type / op / attr / region / effect 中验证。
-- pass pipeline 只定义 transformation 顺序，不承载隐藏语义。
-- 支持范围由目标硬件能力、runtime/ABI 证据和当前 IR contract 决定，不由某个下游 lowering pass
-  的当前覆盖范围反向决定。如果上游产出的是合法语义，且硬件/通信/存储模型可表达，而下游还没
-  实现，就补 IR contract、verifier 或对应下游恢复任务；不能把实现缺口写成上游不支持。
-- 当前无卡开发环境先以 local compile / package gate 为准；板端 runtime success 必须等实际计算卡
-  环境中验证，并且必须有可信 completion source，不能用已知 stub API 当 correctness fence。
+## 2. 验证原则
 
-当前已完成阶段的通过标准是：
+- 每层只验证自己拥有的事实；下游实现缺口不能反向删除合法上游语义。
+- 影响codegen的事实必须存在于当前IR/type/op/region/effect/symbol中，或由它们确定性重算。
+- `ShapeGuardRef`与`TargetVariantId`/`ProjectionSetId`正交；`RankClassId` mapping由commit固定，不是第三个
+  runtime guard。所有ranks对一次invocation使用同一coherent target/shape tuple。
+- candidate可局部失败并反馈planner；只有完整variant-set全部通过才允许原子commit。
+- `DirectFullShape`与tiled方案走同一candidate和global legality gates，不存在production bypass。
+- RuntimeSession只验证、选择预编译variant/projection、绑定、launch和complete，不重新规划。
+- package/module/ABI只有一个typed事实源；JSON debug view、文件名、参数名和LLVM文本不是协议。
+- local regression通过只说明该边界可继续推进，不等于整个compiler/runtime完成。
+- 性能profile只校准cost；legality、numeric和failure语义不依赖profile结果。
 
-- IR parse / print / verifier / conversion / FileCheck 通过。
-- 已完成 resource planner、dependency/config 和已有 tool-unit tests 通过；golden packet、package
-  serialization 和 package metadata roundtrip 只能证明对应工具或测试输入，不替代主线 compiler output。
-- 当前 direct pipeline 能生成 memory-planned target-aligned instruction IR 和 accepted SPM/DDR offset
-  facts，并让无卡 PyTorch/HF program chain 走到该边界；它没有经过 selected-candidate commit，不能称为
-  committed artifact。package validator 和
-  no-card runtime adapter 只能证明已有 package metadata 的 intake，不替代 compiler-generated
-  LLVM/package 输出。
-- Target LLVM call emission、target CRT/golden、TX8 device-code compile/link symbol closure 和 package
-  metadata auto-export 分别属于 target LLVM、target CRT、object/package 和 runtime/package gate，
-  不属于 committed-instruction gate 的通过条件。当前 target LLVM straight-line call emission 已有
-  hand-written instruction 和 group named-pipeline gate，但 structured control flow 会被错误平铺，因而
-  semantic correctness gate 已重新打开。Wafer CRT typed wrapper、device-code required-symbol closure
-  已有本地 gate；package auto-export 仍待恢复，主线不再默认编译或链接 capture shim。
+## 3. Stage Gates
 
-当前阶段不把板端 launch、device completion、数值对比或 PMU/profiling 作为通过条件。迁移到带实际
-计算卡服务器后，这些 board run 验证再成为对应 milestone 的新增 gate。
+| Gate | 输入 | 必须证明 | 主要 negative evidence |
+| --- | --- | --- | --- |
+| Verified program | imported StableHLO/program payload | model semantics、dtype/rank、symbolic bounds、typed IO/immutable parameter/persistent state、alias/update、content identity | unbounded dimension、payload mismatch、非法alias、从名字恢复state |
+| Target environment | target descriptor/runtime capability/board profile | revision、triple/ABI、memory/engine/DTE/dtype/layout/packet limits、errata、capability fingerprint | missing capability、ABI mismatch、unknown required feature |
+| Topology/mesh | target environment + deployment snapshot | topology digest、available endpoints、logical axes/shape、rank domain、connectivity、projection policy | duplicate/unavailable/disconnected endpoint、axis product mismatch |
+| Distributed program | verified program + execution mesh | component/stage、partition/replica、`dp/tp/pp/ep` coordinate、rank groups、collectives、parameter/state shard relation | default rank 0、rank coverage hole、per-rank independent guard、name-derived stage |
+| Local tensor program | component/rank-local StableHLO | structured compute、DPS/indexing、state SSA、tensor collective、bounded shape symbols | raw StableHLO残留、state identity丢失、lower-level memory/transport泄漏 |
+| Logical group | local tensor program | fusion boundary、tensor-level body、recursive region legality、tiling/resource demand | nested lower-level op、unsupported region、名字matcher |
+| Candidate traversal | logical groups + bounded policy frontier | complete domain/output/reduction coverage；`DirectFullShape`和tiled方案同等进入 | representative-only tile、tail/reduction缺口、hidden fallback |
+| Candidate tile/layout | complete traversal clone | tile-local scope、layout proposal、explicit movement、constant/weight storage proposal | metadata-only layout cast、elementwise枚举爆炸、重复accepted assignment |
+| Instruction legality | candidate target-abstract IR | op family、canonical mapping、physical range、byte/count/iteration relation、target integer width | OOB、convert count mismatch、GEMM mapping丢失、overflow/非整除 |
+| Whole-entry SPM | complete static rank entry | cross-group/event-aware lifetime、range/alignment/reserved area、pending completion closure | region-local reuse越界、未证明busytable、pending write at exit |
+| Whole-entry DDR | complete static rank entry + typed resources | external/persistent/transient demand、cross-group lifetime、capacity/alignment/bandwidth、accepted offsets | single-group plan冒充global、resident/state identity丢失、view OOB |
+| Transport | all memory-planned candidate rank entries + topology/mesh | send/recv peer、bytes、phase、endpoint/channel/FSM/exact recv range、token/status一一匹配，输出 stage-accepted transport | unbound logical peer、phase/bytes mismatch、offset缺失、DTE wait/status缺失 |
+| Launch projection | distributed coverage + candidate entries/resources + stage-accepted transport | 每个 component/partition/replica 映射唯一；pinned fingerprint 或有限 relocatable template 完整 | coverage hole、stale topology、resource/transport collision、runtime有搜索自由度 |
+| Executable variant | all candidate facts | typed ShapeGuardRef、target/projection refs、CandidateExecutionEntry到ExecutableEntry identity保持、rank coverage、final class为单一distributed prerequisite class的partition refinement、entry/resource/transport refs、whole-variant atomicity | partial commit、跨prerequisite class合并、candidate entry泄漏、per-rank guard、logical group/pending event残留 |
+| Target LLVM | committed static rank functions | structure-preserving SCF/CF/function conversion、typed CRT calls、无非法Wafer op | recursive flatten、mutation后失败、undefined target op |
+| Kernel ABI/ELF | one target variant的全部modules + executable entries | ordered slots、type/role/access/address-space/alignment、descriptor hash、ELF target/exports/module digest；`TargetArtifactSetId`/root digest绑定source executable和EntryId/function-digest/member map，全部rank-class modules验证后原子发布 | slot漏/重/错序、manifest/ELF hash mismatch、wrong ISA/ABI、跨executable同ABI错换module、单module link失败后partial set可见 |
+| PackageManifest | committed executable + target artifacts | Protobuf schema、orthogonal target/shape selection、committed rank graph、typed resources、entry/completion graph、artifact digests | shadow instruction list、LLVM regex ABI、unknown module、guard overlap/hole |
+| RuntimeSession | manifest + actual target/topology + invocation | coherent target/shape tuple、rank projection、weight/state/workspace lifecycle、`DdrArenaId + scope` allocation/base-range gate、exact binding、completion/error aggregation | target mismatch、endpoint unavailable、arena/scope mismatch、base+span overflow、state misuse、local drain冒充global completion |
+| Board/numeric | RuntimeSession + actual hardware | result correctness、multi-rank progress、timeout/status、state update/poison policy、cleanup | silent hang、partial output accepted、failed state reused |
 
-## 2. Stage Gates
+任何gate通过只证明其输出可被下一层消费。不能把target symbol closure、package parse或module load分别
+提升成端到端完成。
 
-| gate | 输入 | 通过条件 |
-| --- | --- | --- |
-| Frontend program | imported Wafer program: StableHLO/MLIR IR + metadata + parameter/resource payload | importer adapter diagnostics、parse/roundtrip、shape/dtype、constant normalization、sharding import source、payload binding、third-party dialect registration 合法 |
-| Target topology / execution mesh | target descriptor / runtime capability / board profile | `wafer.target.topology` 规则 card/tile grid、card interconnect kind 和 unavailable endpoint exceptions 合法；`wafer.execution.mesh` 是 valid connected rank-domain policy，endpoint view 可由 topology 派生或由 explicit override 验证 |
-| Shardy propagation | StableHLO + user sharding seed or default no-user input seed + execution mesh | logical mesh、SDY sharding seed、propagation 结果合法；不要求 partitioned local body |
-| SPMD partition program | sharding propagation stage 输出的 StableHLO/SDY IR + execution mesh | XLA SPMD partitioner 或等价 stage 产出 partitioned/replicated-local StableHLO、rank-local shape、collective group 和 parameter shard metadata 合法 |
-| Local compute normalization | partitioned or replicated-local StableHLO | Linalg/Tensor/SCF/Arith/Math structured semantics、DPS/indexing relation、fine-grained softmax/norm/RoPE staged form 合法；不执行 SPMD partition |
-| Tensor collective handoff | partitioned StableHLO collective | `wafer.linalg_ext.collective.*` op 合法；rank group、combiner/slice relation、DPS/tiling interface 可验证，且不含 `wafer.tile.*` collective、storage 或 DTE token |
-| `wafer.group` | local compute IR + tensor collective IR | group boundary、tiled SSA、multi-output/domain、resource feedback loop 合法 |
-| `wafer.tile.region` | scheduled group | region boundary、effect、load/store、async fence/wait、buffer ownership 合法 |
-| Layout | tile region | layout assignment、materialization cut、冗余 conversion cleanup 合法 |
-| SPM | target-abstract / target-aligned instruction IR + resource effects | allocation、range/end-address、lifetime、reserved range 和 issue/completion 边界合法 |
-| DDR | SPM-planned instruction IR + launch/resource boundary | external binding、workspace/constant demand、default DDR arena resource/capacity 合法 |
-| Program parameter shards / launch-block | committed instruction IR + logical rank/local shard facts + topology/execution mesh + program metadata | program verifier 校验 rank coverage、payload shape/dtype 和 local shard bounds；launch-block binding 校验 block id 与 endpoint availability 合法 |
-| Compute / Movement | committed instruction IR + accepted offset facts | wrapper family、layout、dtype、shape、issue/fence/wait 合法 |
-| Communication | tile_region / SPM materialization 后的 `wafer.tile.*` collective / `wafer.instr.dte_*` IR | endpoint、token、DTE/FSM resource、wait policy 合法 |
-| Target LLVM call emission / golden packet | committed instruction IR + accepted offsets + topology/execution-mesh + program parameter shard metadata/resource view + communication/sync lowering | LLVM dialect call 到 Wafer-owned target CRT symbol 合法；SCF/CF/function 结构语义保持，unsupported container 在 mutation 前失败；address unit、format、wait/completion verified；golden packet 覆盖 target CRT 参数到 wrapper mapping；call emission 通过不代表 CRT symbol closure 已通过；launch/resource view 从 IR 按需重算，不成为独立 artifact |
-| Object/package | target LLVM artifact + committed IR + topology/execution-mesh + program parameter shard metadata/resource view | `.ll -> .o`、LLVM object metadata normalization、target object + Wafer CRT object + repo-vendored TX8 deps -> kcore shared object 的 device-code compile/link gate 合法；required-symbol gate 拒绝未解释的 `wafer_tx81_*` undefined symbol；package metadata 记录 `name`、`model.id`、`model.abi`、`model.interface`、`model.resources`、`modules` 和 `entrypoints`；package metadata auto-export 从 committed instruction IR、LLVM IR artifact、module path 和 model interface metadata 导出并通过 validator；resource/constant metadata 由同一 resource view analysis 生成 |
-| Runtime/board | package + adapter | runtime allocation object binding contract、stub shielding、launch/completion/error propagation 合法；板端 completion 在有卡环境验证 |
+## 4. Test Taxonomy
 
-Gate 通过只说明进入下一层的输入合法，不说明整个 compiler 已完成。
+### 4.1 IR and Symbol Tests
 
-## 3. Test Taxonomy
+- parser/printer/bytecode roundtrip覆盖target environment、distributed/executable/resource/entry/transport对象。
+- verifier negative tests覆盖symbol refs、region/body、rank coordinate、guard、resource alias和entry slots。
+- recursive region tests覆盖`scf.if`、`scf.for`、loop-carried state和nested collective。
+- canonicalization只能删除可重算冗余，不得删除resource/state/rank/transport identity。
 
-需要的测试类型：
+### 4.2 Conversion and Candidate Tests
 
-- parser/printer roundtrip：dialect syntax、attr/type、region。
-- verifier negative tests：非法 shape、layout、memory space、address range、wait policy。
-- dependency/config tests：LLVM / MLIR / StableHLO / Shardy dialect registration、可选 importer 开关、
-  runtime header 隔离和版本 pin 检查。
-- conversion tests：StableHLO -> structured tensor IR、group -> tile_region、tile_region -> lower-level Wafer op。
-- canonicalization tests：冗余 layout materialization、dead buffer、unused wait/token。
-- resource planner tests：SPM allocation failure feedback、DDR capacity/binding failure。
-- golden packet tests：target CRT 参数到 wrapper/packet field。
-- package serialization tests：package metadata、bootparam/TLV fallback、constant bytes metadata。
-- runtime shielding tests：已知 stub path 不能被选为 correctness fence；no-card runtime adapter
-  contract 用 Python unittest / ctest 覆盖，不放进默认 lit golden。
-- importer/dependency 最小验证：至少一个 importer path 能产出 verified Wafer program；
-  后端 textual MLIR tests 不依赖 importer-only Python / framework 包，但不能作为主链路完成证明。
-- board 最小验证：只在 runtime path 和 hardware availability 明确时作为新增 milestone gate。
+- 每个conversion先有unsupported/failure test，再增加positive pattern。
+- candidate测试包含full-shape、tiled、tail、reduction split和多output完整coverage。
+- 任一candidate失败时主IR byte-for-byte保持未commit状态；diagnostic定位到owner和candidate事实。
+- full variant clone至少注入一个rank-specific failure，证明不会留下其它ranks的部分commit。
 
-P2.F1 之后的任务完成验证还需要一条真实 program chain gate：输入必须来自真实 framework/exporter
-图导出的 program，测试应重放已完成的上游链路，并检查本任务新增的 IR fact、verifier fact、
-resource fact 或 package fact 能在该任务边界正确导出并被直接消费。局部 verifier negative、
-pattern FileCheck、手写 StableHLO/Linalg 测试输入和显式 package metadata tool-unit input 可以保留，但只能补覆盖，不能
-单独作为任务完成证明。若直接下游还没有实现某个硬件可表达语义，完成证明应把缺口记录为下游恢复
-任务，而不是修改上游 program 或 verifier 让该语义消失。
+### 4.3 Resource, Geometry and Event Tests
 
-每个主线 gate 在新增或标记完成前，必须先给出 pipeline contract，并在验证记录中逐项对应：
+- SPM/DDR按完整rank entry测试cross-group overlap、branch/loop lifetime、alias/view root和persistent资源。
+- DMA/compute descriptor测试physical end、element-size整除、iteration product和所有ABI narrowing上界。
+- issue/event测试local compute、RDMA/WDMA/TDMA、DTE分别等待；hardware busytable只有在target/runtime
+  capability gate确认后才能缩短显式lifetime。
+- function return前仍有影响visible resource的pending event必须失败或导出明确entry completion。
 
-- upstream program / IR：该 gate 消费哪个已完成阶段的产物。
-- current stage responsibility：当前 gate 只验证或 materialize 哪一层语义。
-- output program / IR：通过后产生或确认的 program / IR contract。
-- downstream consumer：哪个后续 stage 会直接消费该输出。
-- user-level driver / named pipeline：主链路如何由 `wafer-opt` program pipeline 重放；named MLIR
-  pipeline 只能作为内部构件或局部覆盖。
-- explicit non-goals：哪些 pass、tool、测试输入或下游缺口不能被算进当前完成证明。
-- completion gate：哪条命令或测试证明当前 stage 的输出沿真实 program chain 可被消费。
+### 4.4 Target and Artifact Tests
 
-如果验证只能证明某个单 pass、手写测试输入、dump 文件或局部 FileCheck 成立，而不能对应上述
-contract，它只能作为 unit/debug 覆盖，不能把任务状态推进到主线 `done`。
+- target lowering语义测试覆盖false branch、不同loop trip count、nested branch和function call，不能只数calls。
+- actual positive链路必须执行`committed executable -> target LLVM -> LLVM IR -> target object -> CRT object
+  -> final kcore .so`；`--print-commands`不算执行。
+- final ELF检查machine/ISA/MABI/attributes/exports，undefined symbols只允许正式loader ABI allowlist。
+- Kernel ABI descriptor在compiler object、ELF note/export和manifest三方hash一致。
 
-## 4. Milestone Gates
+### 4.5 Manifest and Runtime Tests
 
-Single-tile local compute：
+- Protobufgenerated C++/Python类型来自同一schema；semantic verifier只有一份C++实现。
+- JSON只测试从canonical object导出/导回debug view，不单独定义字段合法性。
+- entry slot完整、唯一、顺序、resource kind/access/alias与function/ELF ABI严格双射。
+- `CompletionExportId`与executable DAG leaf一一绑定；缺失、重复或绑定到错误entry/rank必须失败。
+- guard测试覆盖priority、互斥/重叠、coverage、fallback、all-rank coherent selection。
+- no-card session至少执行两次decode invocation：weight和persistent state handle复用，workspace互相隔离。
+- endpoint测试覆盖pinned strict match和relocatable预编译union；negative cases覆盖environment/mesh/
+  `ProjectionSetId` digest mismatch、relocation slot type/count/owner错误、allowed-binding/member digest错误，
+  runtime不得生成新route/binding。
+- segmented exchange测试覆盖count phase支配data phase、per-peer counts/displacements/capacity、send/recv总量、
+  overflow和partial-peer failure；equal-split all-to-all不能替代该gate。
+- completion DAG测试覆盖host command、local drain、DTE/collective wait、stage barrier、timeout和rank failure join。
 
-- 主链路 gate 应消费 P2.F1/P2.S1/P2.S2/R2.4 产出的真实图 program，并继续通过 frontend/local compute /
-  tensor collective handoff gate；graph break / fallback 不被当成合法 program。手写 StableHLO/Linalg
-  输入只保留为局部 verifier、lowering pattern 或 bring-up 测试输入。
-- frontend/SPMD/local-compute 主链路 gate 必须通过 `wafer-opt` program pipeline 重放上述链路；单独拼
-  `wafer-opt` pass、named MLIR pipeline、`shardy-sdy-opt`、PyTorch/XLA runtime 环境变量和
-  verifier tool 只能作为 unit/debug 覆盖。2026-06-02 后，frontend program verifier 入口是
-  `wafer-compile-stablehlo --verify-stablehlo-program`；`wafer-opt` program pipeline
-  入口是 `--program-pipeline=stablehlo-spmd`、`--program-pipeline=stablehlo-spmd-to-linalg`
-  和 `--program-pipeline=stablehlo-spmd-to-group`；旧 C ABI compile 入口已删除。
-  下游 group/instr gate 消费该 program pipeline 的 group output，并通过
-  `wafer-lower-groups-to-ddr-memory-planned-instr` 验证当前可用 compile path。target LLVM call emission
-  已有 hand-written instr 和 group named-pipeline gate；HF program-chain target LLVM integration、
-  target CRT symbol closure、device-code 和 package auto-export 是后续 gate，不反向算作当前 instruction gate 已完成。
-  旧 target CRT issue op、single-tile materialization、SPM/DDR debug path 和 ring lowering unit/debug pass 链已删除，
-  不应恢复为用户级 compile flow。当前 HF transformer no-card gate 已证明 `wafer.group` 到
-  direct instruction lowering 和 SPM/DDR planning 来自真实 program chain；closed-loop selected-candidate
-  path、HF target LLVM integration、package 和 board correctness 仍是后续 gate。
-- target CRT / wrapper gate 要求 Q1 production closure 全覆盖：每个 `wafer_tx81_*` production symbol
-  都必须有 typed signature、repo-local CRT definition、wrapper/golden evidence 和 device-link
-  required-symbol closure，或被 verifier / lowering 明确拒绝并移出 production closure。只覆盖一个
-  compute/movement 代表 family 不能把 CRT gate 报成完成；当前 no-card instruction gate 不以此作为已完成条件。
-- 当前无卡开发环境要求 generated program 走到 memory-planned instruction IR。target LLVM call emission
-  已有局部/group gate；device-code symbol-closure gate 才要求 `.ll -> .o -> kcore .so` 且 `wafer_tx81_*`
-  不以未解释 undefined 形式残留；package metadata roundtrip 只能作为 tool-unit
-  schema 覆盖，不能替代 IR-derived package emission。runtime completion 在带实际计算卡服务器上再验证，
-  届时 completion 必须来自 tx runtime model/module/stream completion、legacy `TsmRun` synchronous path，
-  或 device-side drain + 可信 host completion。
+### 4.6 Real Program and Board Tests
 
-Multi-tile no communication：
+- importer/framework gate必须使用真实或忠实exported model，不用手写`wafer.group`替代。
+- static tiny block保留为regression，不作为LLM completion证明。
+- board numeric使用独立reference，比较prefill及连续decode；只检查shape或module load不算numeric。
+- multi-rank board gate注入单rank timeout/error，确认其它rank停止、资源清理和state consistency策略。
+- performance/profile只在correctness gate之后运行，并记录target/profile provenance。
 
-- 主链路 gate 继续消费同一条真实图 program chain，不重新退回手写 tile_region 或显式 package metadata input。
-- execution mesh 覆盖多个 available endpoint，并使用 topology unavailable endpoint metadata。
-- 每个 tile 有 block id / local shard metadata。
-- 无 tile 间 DTE 依赖。
-- local package / generated program 能区分 per-tile args；runtime launch 和 completion 后续在有卡环境验证。
+## 5. Mandatory Vertical Gates
 
-Direct DTE p2p：
+### 5.1 Static Compiler Regression
 
-- `wafer.tile.*` communication p2p op 的 endpoint 来自 topology/execution mesh。
-- fixed-size unicast DTE helper lowering 合法。
-- DTE wait 与 local compute drain 分离。
-- FSM / packet / stream resource 不冲突。
-- 旧 communication C issue unit gate 已删除。后续 tile-level p2p 到 committed Direct DTE issue/wait
-  form 和 target LLVM emission 的 gate 必须由 communication / target LLVM call emission 从 committed
-  instruction-level IR、topology/execution-mesh contract 和 resource view analysis 恢复。
+输入可以是小型static transformer block，但必须经过真实frontend/distributed program和mandatory atomic
+commit，到target LLVM、actual device link和manifest validation。它只证明基础编译链，不证明state、
+dynamic variants或multi-card。
 
-Single-card collective：
+### 5.2 Bounded Dynamic Variant Gate
 
-- ring all-gather / reduce-scatter / all-reduce 可追溯到 unicast steps。
-- 每步 `wafer.instr.dte_send` / `dte_recv` / `dte_wait` token 和 buffer lifetime 合法。
-- raw non-unicast DTE 不作为 correctness path。
-- 旧 `test/Transforms/ring-all-gather*.mlir`、`ring-reduce-scatter.mlir`、`ring-all-reduce.mlir`
-  以及 ring/target CRT issue-op 测试输入已删除。后续 collective gate 必须先经 R2.4
-  `wafer.linalg_ext.collective.*` handoff，再由 R6 恢复 tiled collective materialization 和
-  `wafer.instr.dte_*` schedule lowering。
+- 同一verified program含至少两个bounded dynamic dimensions和两个static executable variants。
+- actual dimensions命中确定variant；所有ranks选择一致；越界/无覆盖shape在allocation前拒绝。
+- target instruction和memory plan保持static，不把dynamic fallback推给runtime。
 
-Partitioned StableHLO collective handoff：
+### 5.3 Stateful Prefill / Decode Gate
 
-- Shardy / XLA SPMD 输出的 logical collective 能保留为 partitioned StableHLO / SDY metadata，并先
-  经 `wafer-opt --program-pipeline=stablehlo-spmd-to-linalg` normalize 成
-  `wafer.linalg_ext.collective.*` op；该 op 实现 destination-style tensor operand/result contract 和
-  MLIR `TilingInterface`、Wafer tiling demand interface、Wafer tensor collective info interface，
-  可被 group/tiling 边界直接消费。slot-crossing 或当前 IR 不可证明的 collective-axis tile 必须显式
-  failure，不能被伪装成已 materialized 的 `wafer.tile.*` collective、`wafer.instr.dte_*` 或 hidden schedule。
-- endpoint projection 和 comm lowering 在其实现范围内保留 collective semantics；未实现的硬件可表达
-  collective 形成 R6/R4 恢复任务，不能反向限制 sharding propagation program export，也不能把 tensor collective
-  伪装成已经 materialized 的 `wafer.tile.*` collective 或 `wafer.instr.dte_*`。
-- layout/SPM/DDR memory gates 只对本 milestone 已经 materialize 的 movement / buffer demand
-  负责；尚未 materialize 的 logical collective 不能被伪装成已通过 memory/communication gate。
-- 旧的 StableHLO -> `wafer.tile.*` communication integration 已移除。R2.4 需要补 StableHLO ->
-  `wafer.linalg_ext.collective.*` 的 gate，R6 再验证 tiled tensor collective ->
-  `wafer.tile.*` collective -> `wafer.instr.dte_*` 的 materialization。
+- immutable weight、persistent paged state、workspace和user IO使用不同resource kinds。
+- prefill后连续两次decode读取并更新同一state；weight handle复用，workspace不复用到下一invocation。
+- `atomic_version`失败不切换新版本；`in_place_poison_on_failure`失败后session拒绝继续使用该state。
+- 销毁并重建RuntimeSession后，PersistentStateRegistry仍保留current `ResourceVersionId`或poison状态；
+  不能通过新session绕过失败。
 
-candidate-selection tile search 估算和后续 cost calibration 的边界：
+### 5.4 Composite Parallel Gate
 
-- candidate-selection 可以提供 `tile-search=min-estimated-time`，在 passing candidate 之间用 target
-  policy 中的硬件参数、计算量、DDR bytes、SPM/local movement bytes 和 instruction count 做粗估时间排序。
-- candidate-selection 的粗估时间只用于合法候选 tie-break；candidate gates 失败的 candidate
-  不能被 cost model 接受。
-- issue/fence/wait ordering 由 effect/token verifier 证明。
-- PMU/profiling 只作为后续 calibration，不作为 IR 语义事实，也不改变 candidate-selection 的合法性边界。
+- 至少覆盖TP+DP和PP+DP；EP/MoE gate进一步覆盖ragged token route、all-to-all-v等价语义和expert
+  weight placement。
+- EP/MoE negative gate覆盖count/displacement越界、peer总量不匹配、count phase未完成即issue data和
+  expert destination capacity overflow。
+- component/stage、partition/replica、`dp/tp/pp/ep` coordinate分别验证；flat rank只作ordinal。
+- rank class共享和拆分均有case；uneven shard或不同transport计划不得错误共享。
 
-Transformer block vertical slice：
+### 5.5 Multi-Card Transport and Completion Gate
 
-- StableHLO local shard 能 normalized 到 structured tensor IR，覆盖 dot_general、batch/head
-  matmul、broadcast、reduction、reshape/transpose/slice，以及由 fine-grained StableHLO op 链表达的
-  softmax、RMSNorm / LayerNorm、RoPE 和 MLP activation；这里没有 `stablehlo.softmax`、
-  `stablehlo.norm`、`wafer.softmax` 或 `wafer.norm` 高层 op 合同。
-- `wafer.group` 对 norm、softmax、attention value 和 MLP 给出 accepted group schedule，或给出
-  verifier 可定位的拆分原因。
-- compute coverage 包含 GEMM、reduce max/sum、elementwise add/sub/mul/div/max/min/neg/recip/
-  sqrt/rsqrt/exp、limited broadcast、mask-add 或 compare/select。
-- layout/SPM/DDR feasibility 对所有 accepted groups 通过；constant/weight slices 可追溯到
-  `ConstantLike` value 和 `wafer.tile.load`。
-- 若启用 tensor parallel collective，R2.4 `wafer.linalg_ext.collective.*` handoff、
-  `wafer.tile.*` collective materialization 以及 `wafer.instr.dte_*` p2p/ring/multi-replica
-  collective gate 已通过；否则只验证单卡/单 shard local transformer block。
-- 当前无卡开发环境要求 generated program compile；launch/resource metadata 后续应覆盖所有 block
-  input/output、resident constants 和 workspace，package/runtime completion 和数值对比在有卡环境验证。
+- endpoint/channel/FSM/recv-buffer assignment在candidate中完成验证，并与rank entries/projection随
+  executable原子提交；RuntimeSession只消费committed结果。
+- pinned projection严格匹配topology digest；relocatable只从manifest的`ConcreteRecordSet`或
+  `FiniteTemplateSet.allowed_bindings`按确定性优先级选择。
+- projection negative gate覆盖environment/mesh/projection/member digests和relocation slot type/count/owner；
+  segmented transport逐peer匹配count/data phase和completion/error。
+- board报告host completion、device local drain、DTE/collective wait和rank aggregation，不用单一字符串代替。
 
-当前 transformer static/no-card gate 已覆盖两类边界：手写 StableHLO local structured tensor dataflow，
-以及 HuggingFace Llama config snapshot + PyTorch/XLA `mark_sharding` + 16-rank 单卡 mesh 的
-Megatron-style tensor-parallel decoder block。后者已经从真实 frontend/SPMD/group 链路继续走到
-direct instruction lowering 和 SPM/DDR memory planning。
-这证明当前 compiler chain 能消费 attention/RMSNorm/RoPE/SwiGLU 主干、captured constants、
-parameter shard metadata、basic select/mask dataflow 和 Direct DTE schedule。
-它也证明 Megatron-style contracting-dimension sharding 在当前 HF gate 中保留并消费 `all_reduce`
-collective，而不是退化成只靠 `all_gather` 重组 full tensor。它不证明
-`wafer-lower-groups-to-selected-instr` closed-loop selector 已覆盖同一 HF group；也不证明 target LLVM、
-package auto-export、真实板端 allocation/import/query/bind、module load/function lookup、launch/completion、
-数值对比或 profiling。
+### 5.6 Quantized / Mixed-Precision Gate
 
-M7 target LLVM call-emission and device-code gate：
+- quant/storage descriptor、scale/zero-point、accumulator/result dtype和target capability guard均typed。
+- reference numeric覆盖至少一种integer和一种FP8/低精度variant；unsupported target不会落到错误wrapper。
 
-- committed `wafer.instr.*` 到 LLVM dialect call / target CRT symbol contract 必须固定函数名、参数单位、
-  wait/completion 责任和 model ABI version，不允许把 C stub emission table 当作真实 runtime call。
-- lowering 后应生成 LLVM dialect call 或等价可审计 call IR；不使用专门 ABI IR op family 作为
-  debug/test dump 或 LLVM call 前置层，并能通过 `mlir-translate` 或等价路径生成 LLVM IR。
-- 当前已实现 `--wafer-lower-instr-to-target-llvm` 和 `wafer-lower-groups-to-target-llvm`：手写
-  memory-planned `wafer.instr.*` 和手写 `wafer.group` named pipeline 可生成 LLVM dialect
-  `llvm.call @wafer_tx81_*` 并通过 LLVM IR translation；输出中不得残留 Wafer op。函数级 DDR
-  memref result 只允许作为可追到函数 DDR 参数的返回 alias 被丢弃，最终 device kernel ABI 为 void。
-  该实现目前只证明 straight-line call emission；structured control flow 会被平铺，修复或 preflight
-  fail-closed 前不能把本 gate 标为完成。
-- 本地 call-emission gate 至少检查 LLVM IR 文本中的 entrypoint、target symbol declaration、参数顺序和
-  metadata/program 引用；device-code gate 随后用 LLVM `clang++` 做 `.ll -> .o`，再用 repo-vendored
-  `third_party/tx8_deps` `riscv64-unknown-elf-gcc` 链接 target object、Wafer CRT object 和 TX8 deps
-  得到 kcore shared object。`.ll` 不能直接交给 GCC；device link 不默认编译或链接 capture shim，
-  并必须通过 required-symbol 检查拒绝未解释的 `wafer_tx81_*` undefined symbol。
-- package metadata 必须记录真实模型接口、资源、modules 和 entrypoint 合同；`tx.module`
-  只能作为显式 debug/bring-up entrypoint 记录 function 和 binding order。auto-export gate 必须消费当前
-  pipeline 产物导出 package metadata 并通过 validator；C stub-only program 只允许作为历史局部测试输入，
-  不能替代 target LLVM artifact。
-- 剩余缺口是 package metadata auto-export，以及真实 HF program chain 到 target LLVM 的 integration gate；这些不能用
-  hand-written LLVM/package input 或允许 undefined 的 `.so` 代替。
-- Wafer CRT typed wrapper 和 device-code required-symbol closure 已作为同一个 target CRT closure
-  milestone 收口：production instruction coverage 覆盖基础 movement/sync、elementwise 全 kind、
-  reduce 全 kind、convert 全 dtype pair、conv/depthwise/backward conv、pool/unpool 全 production kind
-  和 peripheral production kind；local gate 会编译 repo-local CRT object，检查 105 个 production
-  symbol definitions，并在 link 后拒绝残留 undefined `wafer_tx81_*`。
+## 6. Failure and State Consistency
 
-M8 runtime / board correctness gate：
+- verifier/conversion失败在mutation前结束；若conversion需要clone，失败只删除clone。
+- local candidate failure可继续搜索；complete executable variant candidate失败不能保留其它rank的accepted facts。
+- package/runtime校验失败发生在module load、allocation或launch之前；部分已创建handle按反序清理。
+- launch后timeout/error停止后继entry，等待可安全回收的events，聚合rank/stage状态。
+- `atomic_version` state只在completion DAG全部成功后发布；旧版本在失败时继续有效。
+- `in_place_poison_on_failure` state发生任何不可回滚写入后若失败，必须poison并拒绝后续invocation。
+- diagnostics包含artifact/variant/component/rank/entry/resource稳定ID；名字只用于显示。
 
-- runtime adapter 必须区分真实 device completion 和已知 stub path；stub completion 不能作为
-  correctness fence。
-- package 中的 tensor、workspace、constant 和 resource metadata 必须能绑定到真实 runtime
-  allocation / DDR / selected entrypoint launch argument。
-- 板端 gate 分别覆盖 single-tile compute、多 tile no-comm、p2p、ring collective、partitioned
-  collective 和 full local block 的 launch、completion、错误传播和数值对比。
-- profiling 只作为后续 P9 cost model calibration 的输入，不作为 M8 correctness 通过条件。
+## 7. CI and Reproducibility Gate
 
-M9 overlap / cost model / profiling calibration gate：
+- 默认CI实际运行lit、C++ unit、Python/generated-binding tests和semantic verifier，不只构建test target。
+- CI报告unsupported/skipped清单；mainline依赖不能被静默skip。
+- dependency payload使用commit/hash lock；target toolchain profile、CRT ABI和symbol-set version进入fingerprint。
+- device positive/negative link在干净环境执行；final ELF保留或等价验证RISC-V attributes。
+- PackageManifest、ELF modules、weights和其它payload都有digest；tx8依赖有license/SBOM/digest manifest。
+- board环境和无板环境分开报告，不能用no-card结果替代board numeric/completion。
 
-- issue/fence/wait ordering、SPM busy range、DDR range/bandwidth 和 DTE resource pressure 只从当前 IR、
-  resource model 和 PMU calibration 派生，不写入不可验证的 planner trace。
-- PMU/profiling 用于校准 latency、blocking time 和 conflict cost；不反向改变 IR 语义合同。
+## 8. 当前证据和限制
 
-当前实现已经补入 transformer no-card gate 需要的 `linalg.generic` composite elementwise、
-same-shape identity、basic `arith.select`、显式 broadcast/transpose materialization、
-scalar-constant-init reduce、rank-4 contraction / `linalg.batch_matmul` 到 batched
-`wafer.tile.gemm` / `wafer.instr.gemm`、multi replica group collective handoff、direct
-`collective_permute` DTE materialization、direct `all_to_all` split/exchange/concat p2p
-materialization，以及 floating select 到 `gather_scatter` false-copy + `bit2fp` + `mask_move`
-target sequence。当前仍不覆盖 HF program-chain target LLVM integration、package auto-export、
-真实板端数值 correctness、dynamic shape、KV cache、resident constant/weight residency 和
-HF selected-candidate closed-loop path；这些是后续 target LLVM integration、board/runtime 或 selector gate。
-只要对应语义能由 StableHLO / structured
-tensor IR 和 Wafer 硬件能力表达，就不能把当前 static/no-card gate 的覆盖范围写成长期不支持。
+当前lit/ctest、IR organization、dependency consistency、target CRT conformance和105-symbol closure是有效
+局部证据；actual hand-written positive device link也证明工具链可链接。但以下事实使新主线尚未完成：
 
-## 5. Failure Handling
+- target LLVM仍需修复structured-control flattening。
+- rank identity、whole-variant commit、whole-entry memory/event和physical transport尚未实现。
+- Kernel ABI descriptor、Protobuf PackageManifest和新的RuntimeSession尚未实现。
+- 当前HF case是static custom block，未覆盖stateful decode、real MPMD、manifest或board numeric。
 
-验证失败要回到拥有该事实的阶段：
-
-- frontend program 错误回 frontend。
-- sharding / collective group 错误回 Shardy。
-- physical tile 不可用回 target topology / execution mesh selection。
-- tile shape 或 group 资源不合法回 group planner。
-- layout conversion 过多或不合法回 layout assignment。
-- SPM 放不下回 SPM allocation，建议 repair 但不写入 IR。
-- DDR allocation / capacity / binding 错误回 DDR planner 或 launch runtime binding。
-- wrapper unit/range 错误回 target CRT verifier。
-- completion source 错误回 launch/runtime adapter。
-
-不要让下游 pass 猜测并修复上游语义错误。
-也不要让下游实现缺口反向变成上游语义拒绝；实现缺口应回到拥有该 lowering / resource / runtime
-责任的任务队列。
-
-## 6. V0 Minimal CI
-
-早期仓库可能没有完整构建系统，但文档和 IR 设计仍应给出最小验证方向：
-
-- `rg` consistency checks：禁用旧字段、未成文状态、stub completion、private constant op。
-- dependency consistency checks：第三方版本 pin、dialect registration、可选 importer 与后端构建隔离。
-- MLIR textual tests：每个 dialect op/type/attr 的 verifier 正负例。
-- conversion FileCheck：每个 stage 的最小 IR 变化。
-- C/C++ unit tests：storage size calculator、SPM allocator、DDR demand calculator、endpoint resource view。
-- golden packet tests：至少覆盖 single-tile local compute 用到的 wrapper family。
-
-如果某个 milestone 暂时只能做文档验证，必须明确说明还缺 build/test harness 或板端 runtime。
-当前 local gates 已能证明：group / PyTorch smoke / HF Megatron-style transformer block 输入可以进入
-memory-planned target-aligned instruction IR，package metadata validator 和 no-card `wafer-run` 可以消费
-已有 schema v2 package metadata。target LLVM straight-line call emission 和 device-code symbol closure 有
-局部 gate，但 structured-control semantics、真实 program-chain target LLVM、package auto-export 仍是后续
-gate；这些 local gates 不能替代板端 allocation/import/query/bind、真实 launch、completion、数值正确性
-或 profiling 证明。
+因此，设计文档收敛不改变上述实现状态。只有本文件相应vertical gate得到新鲜执行证据后，任务队列
+才能把实现项标记为`done`。

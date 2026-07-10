@@ -1,6 +1,6 @@
 # Wafer AI Compiler Architecture Design
 
-状态：架构设计草案；子设计边界索引见第 8 节，执行状态以 `tasks/progress.md` 任务队列为准。
+状态：本轮长期架构边界合同已收敛；子设计边界索引见第8节，实现状态以`tasks/progress.md`任务队列为准。
 
 
 说明：本文使用 **Wafer** 作为目标硬件和软件栈名称。底层公开文档、依赖和已有后端中仍可能出现 TX8/TX81 等历史命名，本文只在引用事实时保留这些名称。
@@ -29,40 +29,76 @@ backend、某个 importer 或 runtime wrapper 反推整套架构：
 ```text
 source model / exported program / pre-exported StableHLO
   -> frontend importer adapter
-  -> verified StableHLO + sharding
-  -> target-topology / execution-mesh materialization
-  -> Shardy/SDY import and propagation
-  -> SPMD partition
-  -> partitioned StableHLO + collectives
-  -> Linalg/Tensor/SCF local compute IR + `wafer.linalg_ext.collective.*`
-  -> constant normalization to arith/ConstantLike tensor values
-  -> wafer.group scheduling IR
-  -> wafer.tile.region bufferized tile-local execution IR
-  -> candidate DDR tile-view materialization
-  -> wafer.instr.* instruction-level IR over Wafer-tagged memref
-  -> SPM memory planning + DDR memory planning inside candidate gates
-  -> accepted/rejected/split candidate decision
-  -> committed tile-region/instruction boundary
-  -> execution-mesh / launch-block / program shard metadata resource view
-  -> target instruction LLVM call emission from committed instruction IR + accepted offsets + topology/execution mesh
-  -> device-code compile/link + target CRT symbol closure
-  -> IR-derived package metadata auto-export
-  -> WaferRuntimeAdapter TxRuntimeBackend launch or legacy TsmRun fallback
+  -> verified program: StableHLO + typed IO/parameter/persistent-state ABI + symbolic bounds
+  -> target environment / topology / execution-mesh selection
+  -> Shardy/SDY propagation + SPMD/MPMD distributed program
+  -> component-local Linalg/Tensor/SCF compute + tensor collectives
+  -> logical group and bounded candidate planning
+  -> complete traversal/layout/instruction/SPM/DDR/transport/event proposals in a variant clone
+  -> whole-variant legality gate across every component and logical rank
+  -> atomic commit to `wafer.executable` / static `wafer.executable.variant`
+  -> rank-class mapping + static rank `func.func` programs + typed resources/transport/completion
+  -> target LLVM + compiler-generated Kernel ABI descriptors
+  -> device-code compile/link + ELF descriptor/module digest/environment and artifact fingerprints
+  -> Protobuf PackageManifest assembly
+  -> RuntimeSession validates, selects one coherent variant, binds resources/endpoints, launches and completes
 ```
 
 核心判断：
 
 - Shardy/GSPMD 负责全局张量的逻辑切分和 collective 插入。
-- Wafer compiler 先从 target topology 中 materialize SPMD 可见的 `wafer.execution.mesh`。默认
-  `all_available` policy 使用所有 available endpoint；显式 override 才保存 endpoint tuples。
-  SPMD 消费这个 valid mesh 做逻辑切分；后续 resource projection 只投影已经存在的 logical rank / shard /
-  block facts，不能事后补坏 tile 或重做 sharding。
+- `wafer.target.environment` 拥有 target legality capability；`wafer.target.topology` / execution mesh
+  拥有部署 rank domain。calibration profile 只影响 cost 和 candidate 选择，不是程序语义。
+- distributed program 显式保存 component/stage、partition/replica coordinate、`dp/tp/pp/ep` axes、rank
+  group 和 shard relation。flat logical rank 只是 mesh coordinate 的可派生 ordinal，不能代替这些身份。
+- 长期交付采用 hybrid executable set：上层保留 rank-parametric distributed semantics，commit 后产生
+  static rank program；只有 local IR、ABI、memory plan 和 transport template 等价时多个 ranks 才共享
+  rank class。首版可以保守退化为每 rank 一个 class，不能默认 rank 0。
 - SPMD 后的 StableHLO collective 先规整成 `wafer.linalg_ext.collective.*` tensor-level
   collective，和 local compute 一起进入 group/tiling；到 `wafer.tile.region` / SPM buffer
   materialize 之后，再 lowering 到 buffer-level `wafer.tile.*` collective 和 instruction-level
   Direct DTE/FSM/SPM-sync 协议。
+- `wafer.group`、layout、memory 和 transport 结果在 candidate clone 中只是 proposal。只有完整 static
+  distributed variant 的 traversal、layout、SPM/DDR、transport、completion 和 target ABI 同时通过，
+  才原子 commit；`DirectFullShape` 是普通 candidate policy，不是 production bypass。
+- dynamic batch/sequence、KV/persistent state、target variant 和 rank class 在上层/executable 层表达；
+  target instruction program 可以继续静态。所有 ranks 必须选择同一个 coherent distributed variant。
+- PackageManifest 是 committed executable 的不可变交付表示，不复制 instruction schedule；RuntimeSession
+  只做 capability 校验、variant/template 选择、typed binding、launch、completion 和 error aggregation，
+  不重新做 sharding、placement、memory 或 transport planning。
 - Wafer 后端不以 LLVM target intrinsic 为核心抽象；V0/V1 通过 target CRT 调用 public Tsm wrapper / Kcore runtime，下发 NE/CT/LSU/DTE 等硬件任务。
 - 硬件事实可以作为 pass 的 legality/cost input，但必须在合适 IR 层级 materialize，不能污染上层语义 IR。
+
+### 1.1 Pipeline Contract
+
+```text
+Pipeline position:
+- Upstream artifact / IR:
+  verified program、typed model/resource ABI、symbolic shape bounds、target environment、topology snapshot
+  和 deployment policy。
+- Current stage responsibility:
+  依次形成 distributed program，执行 bounded candidate planning，在完整 distributed variant clone 上验证
+  traversal/layout/instruction/SPM/DDR/transport/event/target ABI，并原子 commit executable set；随后只从
+  committed facts 生成 target modules、Kernel ABI descriptors 和 PackageManifest。
+- Output artifact / IR:
+  `wafer.executable` set、static `wafer.executable.variant`、rank-class/static-rank entrypoints、typed
+  resources/transport/completion、target modules、Kernel ABI descriptors 和 Protobuf PackageManifest。
+- Downstream consumer:
+  RuntimeSession materialization、module/weight cache、persistent-state registry、typed launch、completion
+  和 error aggregation。
+- User-level driver / named pipeline:
+  当前 program pipeline 是分阶段调试入口；主线完成前必须提供单一
+  `wafer-opt --program-pipeline=stablehlo-to-executable` 或等价 compile driver，内部调用同一 named
+  pipelines，不能要求用户手工拼 pass。
+- Explicit non-goals:
+  runtime 不重新做 sharding、rank placement、candidate/layout/memory/transport planning；PackageManifest
+  不复制 instruction schedule；低层 instruction 不承担任意 dynamic-shape dispatch。
+- Completion gate:
+  真实 exported model 至少覆盖 coherent multi-rank variant、两组 shape guards、persistent state 和
+  target/package ABI；输出经过 mandatory atomic commit、target LLVM、实际 device link、manifest
+  semantic validation 和 no-card session materialization。板端 gate 再证明 numeric、completion 和
+  failure aggregation。
+```
 
 ## 2. IR 分层总原则
 
@@ -70,14 +106,14 @@ Wafer 是基于 MLIR 的编译器。每一层 IR 只携带自己能稳定解释�
 
 | 阶段 | 主体 Dialect / IR | 允许表达 | 不应提前表达 |
 | --- | --- | --- | --- |
-| Frontend | StableHLO, func, tensor, arith | 模型语义、shape、dtype、constant/weight program | tile id、SPM、layout materialization、runtime launch |
-| Target topology / execution mesh | `wafer.target.topology`, `wafer.execution.mesh` | regular card/tile grid、card interconnect kind、unavailable endpoint exceptions、SPMD rank-domain policy、optional explicit endpoints | tensor sharding、SPM/DDR offset、runtime allocation、DTE schedule |
-| Sharding | StableHLO + Shardy/SDY | global sharding、logical mesh、collective 语义；logical mesh 形状来自 valid execution mesh | physical endpoint mapping、DTE protocol、SPM buffer |
-| Local compute normalization | Linalg, Tensor, SCF, Arith, Math, `wafer.linalg_ext.collective.*` ops | structured loop、indexing map、tile slice、producer/consumer、DPS/in-place、transformer block composite pattern、post-SPMD tensor collective semantics | SPM address、`Cx/NCx` storage、worker id、packet field、tile communication / DTE protocol |
-| Group scheduling | `wafer.group` | fusion boundary、traversal schedule、tiled tensor IR、abstract resource demand | raw register field、DTE node id、physical SPM slot、target CRT call |
-| Tile execution | `wafer.tile.region`, Wafer-tagged `memref`, target-abstract `wafer.tile.*` ops | bufferized tile-local execution scope、memory/liveness、movement/compute/sync ordering、layout contract | tensor fusion decision、host launch/package ABI |
-| Hardware/runtime lowering | `wafer.instr.*`, tile collective lowering | RDMA/WDMA/TDMA/CT/NE/DTE hardware invocation form、issue/fence/wait abstraction、barrier abstraction | raw packet bitfield unless in debug/raw dialect |
-| Launch / target LLVM | LLVM dialect, package metadata | host/device launch boundary、target CRT calls、runtime adapter、tx runtime or legacy launch metadata | tensor-level fusion, sharding decisions |
+| Verified program | StableHLO, func, tensor, typed program metadata | 模型语义、symbolic bounds、typed IO、immutable parameter、persistent mutable state/alias | rank placement、SPM/DDR offset、runtime handle |
+| Target environment / mesh | `wafer.target.environment`, `wafer.target.topology`, `wafer.execution.mesh` | target capability、topology snapshot、logical rank domain、prevalidated endpoint policy | tensor sharding、candidate plan、物理地址 |
+| Distributed program | StableHLO + Shardy/SDY/MPMD | component/stage、partition/replica coordinate、`dp/tp/pp/ep` axes、collective/shard relation | physical transport、SPM buffer、target packet |
+| Local tensor program | Linalg, Tensor, SCF, Arith, Math, `wafer.linalg_ext.collective.*` | component/rank-local structured compute、state use-def、tensor collective | physical layout、endpoint/channel、package ABI |
+| Candidate planning | logical/candidate `wafer.group`, `wafer.tile.region`, target-abstract Wafer ops | bounded traversal/layout/instruction/memory/transport/event proposals | accepted executable/package事实 |
+| Executable composition | `wafer.executable`, `wafer.executable.variant`, static rank `func.func`, typed resources | coherent variant guard、rank class/entry、accepted layout/offset/transport/completion、完整 traversal | planner trace、rejected candidate、runtime handle |
+| Target code | `wafer.instr.*`, LLVM dialect, Kernel ABI descriptor, ELF module | 静态 rank program、target CRT calls、module ABI/fingerprint | sharding/search、package shadow schedule |
+| Package/runtime | Protobuf PackageManifest + RuntimeSession | immutable artifacts/entry graph/resources/completion template；actual handles/selected variant | 重新规划 placement/memory/transport、物理地址序列化 |
 
 IREE 的可借鉴点是层级纪律，不是 dialect taxonomy。Wafer 不复制 Flow/Stream/HAL/VM 分层，也不把
 IREE 的 experimental op 当成硬件无关答案；但采用三个原则：
@@ -88,8 +124,8 @@ IREE 的 experimental op 当成硬件无关答案；但采用三个原则：
   需要跨 stage 保留时，才引入显式 resource / token / effect / range 表示；planner 搜索过程和
   resource estimate 不落 IR。
 - HAL-like 原则：device binding、allocation/import/query、fence/completion、package metadata 是
-  runtime boundary 的 late materialization；上层只保留 topology/execution mesh、committed instruction、
-  accepted offset 和 program parameter shard metadata 这些不可从 local IR 重算的事实。
+  runtime boundary 的 late materialization；上层只保留 target environment、distributed identity、
+  committed executable/resource/transport/event 和 accepted offset 这些不可从 local IR 重算的事实。
 
 两条 layout 线必须分开：
 
@@ -136,6 +172,8 @@ constant 语义同样分层：
   通过 `wafer.tile.load` 从 device-addressable storage 读入；constant storage transform / load
   lowering 直接改写 backing data/resource 或生成 packed storage，并把 read-only DDR demand 交给
   DDR memory planner。
+- immutable parameter 在 executable/package 层拥有稳定 resource id、content digest、shard relation、
+  storage encoding/quant descriptor 和 residency scope；文件路径和 SSA 名只用于序列化/诊断。
 - 能被目标 op 合法 fold 成 immediate、attribute 或 fill pattern 的 scalar/splat/small constants
   不产生 DDR demand；需要作为 tensor tile data 读取的 constants 才进入 load/DDR 路径。
 - Weight 切分由 consumer op 的 tiling/indexing relation 推出；constant storage transform 可以选择
@@ -164,9 +202,13 @@ source model / exported program / pre-exported StableHLO
 
 职责：
 
-- 保留模型语义、dtype、rank、shape 和有限动态 shape 信息。
+- 保留模型语义、dtype、rank、symbolic shape 和 verified bounds。
+- 为 user IO、immutable parameter、persistent mutable state 建立稳定 value/resource identity；显式保存
+  access、alias/update relation 和跨 invocation 语义。paged state 是通用 persistent-state descriptor，
+  KV cache 只是其中一个 consumer。
 - 保留或导入用户/框架侧 sharding 标记。
-- 决定 weight 表达方式：StableHLO constant 或 exporter-native Wafer program metadata/payload。
+- 决定 weight 表达方式和 content identity：StableHLO constant 或 exporter-native program
+  metadata/payload；shard、packing/quant 和 residency 在后续层决定。
 - freeze weights 的逻辑保持硬件无关，命名和实现不绑定 Wafer。
 
 不负责：
@@ -174,6 +216,7 @@ source model / exported program / pre-exported StableHLO
 - 不表达 Wafer tile endpoint mapping。
 - 不表达 Wafer memory attr、physical layout marker、DTE、NCC queue、worker、fence/wait。
 - 不把 runtime launch 或 package ABI 写进模型 IR。
+- 不从参数名、文件名或模型层名识别 state/KV/weight role。
 
 V0 策略：
 
@@ -183,7 +226,8 @@ V0 策略：
   测试输入、verifier negative test 或局部 lowering bring-up，不能证明 framework-specific capture 已完成。
 - 具体 importer API 不是 Wafer 后端合同；后端只消费 verified program 和已 materialize 到 IR 的
   importer facts。
-- v0 先接受静态或有限动态 shape；任意 PyTorch eager 动态行为不是 V0 目标。
+- 先接受静态或 bounded dynamic shape；bounds进入 executable variant guard，不直接变成任意动态
+  target instruction descriptor。任意 PyTorch eager 动态行为不是 compiler core 合同。
 - 支持范围由 exporter program 的合法语义、Wafer 硬件能力和当前 IR contract 决定；当前某个后续
   lowering / endpoint / runtime 边界存在实现缺口，不能反向成为 frontend、SPMD 或 planner 的不支持
   理由。若硬件可表达但 IR/lowering 未覆盖，必须补 IR contract 或下游恢复任务。
@@ -191,114 +235,90 @@ V0 策略：
 Frontend program 的模型导入、第三方依赖组织、constant/weight、sharding annotation 和验证合同见
 `tasks/02-frontend-stablehlo-program.md`。
 
-### 3.2 Sharding and SPMD Stage
+### 3.2 Target Environment / Topology / Execution Mesh Stage
+
+主体 IR / Dialect：
+
+- `wafer.target.environment`
+- `wafer.target.topology`
+- `wafer.execution.mesh`
+- MLIR DLTI 可稳定承载的通用 target/data-layout facts
+
+输入：
+
+```text
+verified program requirements
+  + compiler target descriptor / runtime capability snapshot / board profile
+  + optional deployment isolation policy
+```
+
+职责：
+
+- 在 SPMD 前 materialize target legality environment：revision、triple/ABI、memory/engine/DTE limits、
+  dtype/layout/packet capability、errata 和 compatibility fingerprint。
+- 保存部署 topology snapshot、unavailable endpoint 和 topology digest；从中选择带 `dp/tp/pp/ep`
+  axes 的 logical execution mesh/rank domain。
+- 区分 capability fingerprint、topology snapshot digest 和 calibration provenance。前两者影响 legality、
+  deployment variant 和 cache identity；calibration 只影响 cost/selection。
+- 为后续 pinned projection 或 compiler-generated relocatable projection template提供唯一 topology事实源。
+
+不负责：
+
+- 不做 tensor sharding、rank-local program selection、candidate/layout/SPM/DDR/transport planning。
+- 不在 pre-SPMD stage 保存最终 per-rank entrypoint、channel/FSM 或 runtime handle。
+- 不把硬件 profile估算值写成 IR 语义。
+
+post-SPMD launch/transport projection 属于 executable composition：它把已经存在的 component/rank
+coordinate绑定到 accepted rank class、entrypoint、endpoint和transport resource。`pinned` variant编码
+完整 projection并绑定 topology digest；`relocatable` variant只能选择 compiler生成的有限 templates或
+确定性 control-table binding，runtime不能重新搜索 placement/route。
+
+Topology / target environment / execution mesh 的详细合同见
+`tasks/04-topology-execution-mesh.md`。
+
+### 3.3 Sharding, SPMD and MPMD Distributed Program Stage
 
 主体 IR / Dialect：
 
 - `stablehlo`
-- Shardy / SDY
+- Shardy / SDY / MPMD component representation
 - collective ops in partitioned StableHLO
 
 输入：
 
 ```text
-StableHLO + old mhlo.sharding / OpSharding + wafer.execution.mesh
+verified StableHLO + typed resource/state ABI + sharding seeds
+  + wafer.target.environment
+  + wafer.execution.mesh
 ```
 
 处理：
 
 ```text
-old sharding attrs
-  -> Shardy/SDY import
-  -> sharding propagation
-  -> SPMD partition
+sharding import / seed
+  -> Shardy/SDY propagation
+  -> SPMD partition and MPMD component formation
+  -> verified distributed program
 ```
 
-输出：
+输出必须显式表示：
 
-```text
-partitioned StableHLO + collective ops
-```
+- MPMD component/stage identity 和 stage/value dependency。
+- partition coordinate、replica coordinate、`dp/tp/pp/ep` mesh coordinate 和可派生 flat rank。
+- component/rank-local StableHLO body、logical rank groups、collectives 和 parameter/state shard relation。
+- bounded dynamic shape symbols，作为后续 coherent distributed variant guard输入。
 
-职责：
+长期优先复用 Shardy MPMD/SDY 的稳定表示；当前 pin 不具备所需接口时先升级依赖或使用薄 adapter，
+不建立平行的 Wafer 私有 MPMD 事实源。
 
-- 处理 global tensor 的逻辑切分。
-- 维护 logical execution mesh 和 collective group 语义；rank count / mesh axes 来自已选择的
-  `wafer.execution.mesh`。
-- 输出 `collective_permute`、`all_gather`、`reduce_scatter`、`all_reduce`、`all_to_all` 等逻辑
-  collective。
+hybrid rank合同：rank-parametric distributed semantics可以保留 partition/replica SSA；per-rank constant
+specialization只能由显式 specialization record产生。后续 rank class共享需要 executable verifier证明
+local IR、static shape、ABI、memory plan和transport template等价；不允许 pass option或默认 0承担身份。
 
-不负责：
+所有 ranks必须选择同一个 coherent shape/target distributed variant；不能由每个 rank在 runtime独立
+判断 guard。该层不选择 physical endpoint、DTE algorithm、FSM/channel、SPM sync slot或target packet。
 
-- 不选择 physical tile id / block id。
-- 不选择 DTE algorithm、FSM id、packet id 或 SPM sync slot。
-- 不把 collective 直接降到 hardware data-plane。
-
-V0 collective 语义：
-
-- `collective_permute`
-- `all_gather`
-- `reduce_scatter`
-- `all_reduce`
-- `all_to_all`
-
-`all_to_all` 的高性能 lowering 不作为 V0 核心目标；如果 Shardy/SPMD 产出合法 `all_to_all`
-语义，SPMD/per-rank program 必须保留 split / exchange / concat、rank group 和 shard relation。
-当前 correctness path 先用 unicast p2p schedule 组合实现。
-
-Shardy / SPMD 的 logical mesh、partition 和 collective 合同见
-`tasks/03-shardy-spmd.md`。
-
-### 3.3 Topology / Execution Mesh Stage
-
-主体 IR / Dialect：
-
-- `wafer.target.topology`
-- `wafer.execution.mesh`
-- thin launch/block binding if block id must survive across stages
-
-Wafer runtime 看到的是物理层级 mesh：
-
-```text
-mesh(card_y, card_x, tile_y, tile_x)
-```
-
-已知参数：
-
-- 单卡 `4 x 4 = 16 tile`
-- 单 tile SRAM `3MB`
-- 单卡 SRAM `48MB`
-- 卡内 tile 间 NoC 每方向收发各约 `128GB/s`
-- 卡间 C2C 每方向收发各约 `25GB/s`
-- 32 卡服务器可视为 `4 x 8` card mesh
-
-职责：
-
-- 在 SPMD 前 materialize / import target topology，保存规则 card/tile grid、card interconnect kind
-  和 unavailable endpoint exceptions。
-- 从 target topology 中 materialize `wafer.execution.mesh`，作为 SPMD rank-domain policy 和
-  optional explicit endpoint fact source；默认 rank->endpoint view 从 topology 派生。
-- 将 SPMD / frontend 已 materialized 的 shard facts 绑定到 execution mesh；只验证 bounds 和 rank
-  coverage，不重新切分 tensor。
-- 若 launch 需要 block id，生成薄 launch/block binding；该 binding 不复制 rank->tile。
-
-不负责：
-
-- 不分配 SPM address。
-- 不生成 DTE protocol 或 runtime package。
-- 不改变 tensor compute 语义。
-
-设计原则：
-
-- 多卡多 tile 和单卡多 tile 使用同一个 regular topology + execution mesh 抽象，不在 SPMD 或
-  communication 层手写另一套 flat mesh。
-- card/tile adjacency 从 `wafer.target.topology` 的 grid 和 interconnect kind 派生；下游通过
-  topology model 查询 endpoint，不能散落 row-major/card-major 公式或维护第二份 link 表。
-- unavailable tile 或断开的 available component 必须在 SPMD 前通过 topology/execution mesh verifier
-  暴露，不能让 SPMD 在无效 abstract mesh 上先切分。
-
-Topology / execution mesh 的 accepted endpoint view、unavailable endpoint metadata、verifier 和与
-launch/comm 的接口见 `tasks/04-topology-execution-mesh.md`。
+Shardy / distributed program 的详细合同见 `tasks/03-shardy-spmd.md`。
 
 ### 3.4 Local Compute Normalization Stage
 
@@ -314,7 +334,9 @@ launch/comm 的接口见 `tasks/04-topology-execution-mesh.md`。
 输入：
 
 ```text
-partitioned StableHLO compute ops + logical collective ops
+distributed component/rank-local StableHLO compute ops
+  + logical collective ops
+  + typed parameter/state boundary
 ```
 
 输出：
@@ -322,6 +344,7 @@ partitioned StableHLO compute ops + logical collective ops
 ```text
 tensor-level Linalg/Tensor/SCF/Arith/Math local shard program
   + tensor-level collective ops
+  + explicit parameter/state SSA use-def and alias/update relation
 ```
 
 职责：
@@ -334,6 +357,8 @@ tensor-level Linalg/Tensor/SCF/Arith/Math local shard program
   tensor op；大 tensor / weight 可以使用 resource-backed elements attr，但不引入 Wafer 私有
   tensor constant op。
 - 保留 indexing map、iterator type、DPS operand/result 绑定关系。
+- 保留 persistent state 的 SSA read/update/alias语义和 component boundary；不把 state降成普通无身份
+  temporary，也不从 buffer名恢复 role。
 - 为 tiling、fusion、bufferization 提供可分析结构。
 - 维护 semantic layout、dtype、rank、shape，但不引入 Wafer memory attr 或 physical layout marker。
 
@@ -368,11 +393,14 @@ dot/broadcast/reduce/softmax/norm/RoPE 表达和 verifier 见
 
 职责：
 
-- 表达 fusion boundary、traversal schedule、tiled tensor IR 和 tile-local resource demand。
+- logical `wafer.group` 表达 fusion boundary和structured tiling demand；scheduled form只允许存在于
+  candidate/template clone，表达待验证 traversal proposal，不是 accepted stage。
 - 把 producer/consumer 拉进同一个 tile schedule，而不是逐 op materialize full tensor。
 - 通过 IR 结构、SSA use-def 和必要的 op/effect 表达 schedule 后仍需要保留的约束。
 - 为后续 `wafer.tile.region` 构造提供 tile-local storage、communication staging need、sync need、
   compute/DMA/communication pressure 等 analysis 输入。
+- `DirectFullShape`、tiled traversal和split方案属于同一个 bounded candidate frontier，必须走相同
+  layout/instruction/SPM/DDR/transport/event gates。
 
 不负责：
 
@@ -380,6 +408,8 @@ dot/broadcast/reduce/softmax/norm/RoPE 表达和 verifier 见
 - 不表达 `Cx/NCx` storage。
 - 不表达 NCC queue、worker id、DTE node id、FSM id、packet id。
 - 不表达 target CRT call。
+- 不单独 commit representative tile、per-group memory plan或scheduled group；只有完整 distributed
+  variant通过后才有 accepted executable。
 
 `wafer.group` 的详细设计见 `tasks/06-group.md`。该文档是 group 语义和
 tile-and-fuse 的主文档，本架构文档只规定它在全 pipeline 中的位置。
@@ -397,8 +427,9 @@ tile-and-fuse 的主文档，本架构文档只规定它在全 pipeline 中的�
 
 职责：
 
-- 引入 `wafer.tile.region` 作为 `wafer.group` lowering 之后的 tile-local execution scope。
-- 把 accepted tiled SSA graph materialize 成 tile-local storage、movement、layout conversion、
+- 在 candidate clone 的完整 traversal 中引入 `wafer.tile.region` 作为一次 tile-local execution scope；
+  它不是独立 executable，也不能单独提交 representative tile。
+- 把 candidate tiled SSA graph materialize 成 tile-local storage、movement、layout conversion、
   target-abstract compute、communication 和 sync/effect op。
 - 在 planner candidate evaluation 中根据 candidate tile shape 把 DDR boundary materialize 成显式
   `memref.subview` tile view，让 RDMA/WDMA descriptor 从 IR view 推出。
@@ -406,12 +437,12 @@ tile-and-fuse 的主文档，本架构文档只规定它在全 pipeline 中的�
   memref graph 上产出 instruction-level `wafer.instr.*` IR；SPM/DDR memory
   planner 只消费 instruction-level IR 的 memref use-def、effect 和 lifetime，
   不从高层 op 名或单个 case 猜 demand。
-- accepted layout、SPM offset facts 和 DDR offset facts 保持在 committed instruction IR 中；
-  runtime/package 和 ABI/codegen 阶段从这些 facts 派生 address/range/stride 参数，不再经过独立
-  placed memref 或 Wafer descriptor 中间层。
+- group-level layout/SPM/DDR结果只是 feasibility proposal；最终 layout/materialization、SPM/DDR offsets
+  和跨 group lifetime必须在完整 static rank entry 上重算并验证，成功后才进入 committed variant。
 
 `wafer.tile.region` 不重新做 group formation、root tile search 或 traversal selection，也不表达
-host launch/package ABI。详细合同见 `tasks/07-tile-region.md`。
+host launch/package ABI；candidate region不能被 package/target pipeline直接消费。详细合同见
+`tasks/07-tile-region.md`。
 layout materialization 见 `tasks/08-layout-materialization.md`；SPM
 bufferization 见 `tasks/09-spm-memory-planning.md`；DDR memory planning 见
 `tasks/12-ddr-memory-planning.md`。
@@ -435,8 +466,16 @@ bufferization 见 `tasks/09-spm-memory-planning.md`；DDR memory planning 见
   这一层不直接手写 raw packet bitfield。
 - 覆盖 CT、NE、RDMA、WDMA、TDMA 和 DTE 的 hardware invocation family、issue/fence/wait
   抽象和 memref read/write/effect。
-- 区分 issue-only op、local fence、host-visible boundary、group barrier。
+- issue op通过 `async.token` / typed effect暴露 completion domain；wait/fence不能混淆 local NCC、DTE、
+  host command和multi-rank barrier。hardware busytable只有被 target environment/runtime验证后才能作为
+  legality input。
+- shared geometry verifier从 memref/layout推导 physical interval，证明 byte/count/iteration、shape、
+  canonical GEMM mapping和所有 target integer narrowing；lowering不能补猜未验证字段。
 - 为 verifier 提供明确的 legality target。
+
+这里产出的 instruction IR在 candidate clone中仍是 proposal。只有完整 traversal、whole-entry
+memory/event和variant-set transport/ABI全部通过后，static rank program才成为 committed instruction
+artifact。
 
 `wafer.tile.*` compute / movement 的 IR 生命周期、op family、layout/resource interface、issue/fence
 模型和 lowering 合同见
@@ -444,7 +483,7 @@ bufferization 见 `tasks/09-spm-memory-planning.md`；DDR memory planning 见
 compute/movement 层的 verifier 和 lowering 边界，不把某个 wrapper 名、示例 tile shape 或 raw
 packet 字段写成上层 IR 语义。
 
-committed instruction IR 到 target LLVM call emission、target CRT wrapper 和 golden packet 的合同见
+committed static rank instruction program到target LLVM call emission、target CRT wrapper和golden packet的合同见
 `tasks/14-target-llvm-golden-packet.md`。
 
 ### 3.8 Wafer Communication Stage
@@ -458,9 +497,15 @@ committed instruction IR 到 target LLVM call emission、target CRT wrapper 和 
 
 - 把 tile_region / SPM materialization 之后的 tiled tensor collective lowering 到
   buffer-level `wafer.tile.*` collective。
-- 在 p2p schedule lowering 阶段选择 Direct DTE unicast protocol、ring/tree collective、
-  FSM monitor 和 SPM sync/counter，并把 accepted p2p body materialize 成 instruction-level
-  `wafer.instr.dte_*` ops。
+- 在 candidate p2p schedule lowering 阶段选择 Direct DTE unicast protocol、ring/tree collective、
+  sync/effect 边界，并把 p2p body materialize 成 instruction-level `wafer.instr.dte_*` ops；这些 logical
+  communication facts和staging demand先由whole-entry SPM/DDR/event planning消费。
+- accepted SPM/DDR offsets形成后、atomic commit前，physical transport acceptance再固定 logical peer对应的
+  endpoint、channel/FSM、receive buffer exact range、phase和completion。该结果在candidate clone中只是
+  stage-accepted fact，只有variant-set cross-rank verifier和global gate通过后才成为committed transport。
+- 在 target LLVM前形成launch projection并验证全部component/rank/resource/transport coverage。
+  `pinned` projection直接绑定 topology digest；relocatable template只保留 compiler预验证的 control-table
+  slots和有限投影选择，不把 route planning交给 runtime。
 - 区分 compiler inline Direct DTE path 与 host runtime dyn TLV D2D/P2P path。
 
 V0 主路径：
@@ -499,32 +544,111 @@ contract、collective lowering 和 verifier 见
 只提供 logical collective 语义；endpoint projection、p2p schedule、DTE resource 和 runtime completion
 分别在各自 IR 层级 materialize。
 
-### 3.9 Launch, LLVM, target CRT, Package, Runtime Stage
+### 3.9 Executable Composition and Whole-Variant Atomic Commit Stage
 
 主体 IR / Dialect：
 
-- LLVM dialect / EmitC-like lowering
+- `wafer.executable`
+- `wafer.executable.variant`
+- `wafer.executable.resource`
+- `wafer.executable.rank` / `wafer.executable.entry`
+- `wafer.executable.transport`
+- static rank `func.func` + committed `wafer.instr.*`
+
+职责：
+
+- 一个 executable拥有完整 model/program executable set；variant显式携带`ShapeGuardRef`并引用正交的
+  `TargetVariantId`和`ProjectionSetId`。shape guard、target artifact compatibility和rank mapping不能压成
+  一个自由字符串variant key。
+- rank mapping显式保存 `component + dp/tp/pp/ep coordinate -> rank class + entrypoint + resource/transport
+  binding`。多个 ranks只有在 local IR、ABI、memory plan和transport template完全等价时才共享class。
+- typed resources区分 external IO、immutable weight、persistent state、transient workspace和control
+  table；entry ABI slots与 `func.func` signature精确双射。
+- shape guard在全distributed program上选择一次；target兼容性先按environment/fingerprint过滤；rank mapping
+  是commit后固定事实，不是每个rank独立选择的第三套runtime guard。target/shape/rank-class维度正交。
+- 整个 variant clone同时通过完整domain coverage、layout、whole-entry SPM/DDR、transport/event closure、
+  instruction/target ABI和cross-rank protocol验证后，才原子替换主 IR。
+
+最小 typed executable 合同：
+
+| 对象 | 必须拥有的字段/关系 | 不拥有 |
+| --- | --- | --- |
+| `wafer.executable` | program semantic digest、model interface ref、resource/variant symbols、typed target-variant records和accepted projection-set records | runtime session、selected actual shape、provider handle |
+| `wafer.executable.resource` | stable `ResourceId`、typed role、dtype/layout/shape bounds/capacity、access、alignment、`DdrArenaId`/placement domain、lifetime scope、alias/update relation；immutable resource含content digest，persistent state的consistency enum只能是`atomic_version`或`in_place_poison_on_failure` | physical address、allocator handle、名字推断role |
+| `wafer.executable.variant` | `ExecutableVariantId`、structured `ShapeGuardRef`、`TargetVariantId`、`ProjectionSetId`、完整rank coverage、entry graph、typed completion nodes/edges和terminal policy | rejected candidate、planner trace、per-rank guard |
+| `wafer.executable.rank` | canonical component/partition/replica/`dp/tp/pp/ep` coordinate、committed `RankClassId`、entry/resource/transport refs | default rank、文件名约定、重新分片 |
+| `wafer.executable.entry` | stable `EntryId`、static function symbol/semantic digest、ordered `SlotId -> ResourceId` bindings、stage/component refs、canonical execution-instance coverage、entry dependency和`CompletionExportId -> completion node` refs | LLVM文本解析结果、自由`binding_order`、内部instruction list |
+| `wafer.executable.transport` | accepted transport/projection ref、issue/wait/status/error/completion refs和control resource slots | duplicated p2p algorithm body、runtime route search |
+
+`ShapeGuardRef` 是 typed AST，只能引用已声明 `DimId`、state-capacity或显式invocation-policy fields并使用
+有界比较和布尔组合；不能执行任意脚本。completion DAG由variant拥有typed node/edge records，entry/
+transport只导出或引用node，因此package不是entry graph或completion语义的首个事实源。
+
+`TargetVariantId`由`wafer.executable`内唯一typed target-requirement record拥有，记录target ABI、required
+capabilities和environment compatibility；device-code gate生成的完整module set按该ID发布。
+`ProjectionSetId`由`tasks/04-topology-execution-mesh.md`定义的accepted launch projection set拥有并随variant
+原子提交。`wafer.executable.variant`只引用这两个owner，不复制target/projection字段。
+
+candidate clone在任何rank-specialized lowering前先建立typed、uncommitted `wafer.executable.rank/entry`
+records，逐个引用distributed canonical coordinate、component、execution mesh和static local function；此时
+每个rank可保守视为独立provisional class，尚无final `RankClassId`。production passes只从这些SymbolRef取
+rank identity。atomic commit验证完整program/ABI/memory/transport等价后才写入final `RankClassId`并提升同一
+records；CLI rank option不能参与production identity。
+
+本文把这个clone-local生命周期称为`CandidateExecutionEntry`；它不是新增op或可序列化artifact，而是
+uncommitted `wafer.executable.rank/entry` record的状态。target/package pipeline必须拒绝candidate record。
+atomic commit保持`ExecutionInstanceId`不变并把同一record提升为`ExecutableEntry`，同时补final
+`RankClassId`；失败clone中的identity不能泄漏到cache/manifest。
+
+pre-commit `ExecutableResourceView`是从candidate static entries、frontend resource declarations、accepted
+SPM/DDR offsets、arena/placement、transport和projection重算的transformation-local analysis。executable
+composer在atomic commit中把它materialize为`wafer.executable.resource`和entry `SlotId -> ResourceId`
+bindings；失败则整个candidate丢弃。commit后target只能从这些typed owners和memref/view关系派生具体
+address/range/descriptor，PackageManifest只序列化runtime-observable fields，RuntimeSession只实例化typed
+bindings；三者都不得重新恢复resource role、scope、alias/update或lifetime。
+
+Executable verifier至少检查：所有ID唯一且引用闭合；resource use-def、slot/signature、access、alias/update、
+lifetime和state consistency合法；shape guards priority/fallback确定；每个canonical execution instance恰好覆盖；
+entry graph和completion DAG无非法cycle且每个user-visible output可达terminal success；transport/projection引用
+完整；最终rank class内local program、typed ABI、final memory plan、transport template和completion exports等价。
+distributed rank class只提供必要条件，commit只能继续拆分，不能合并上游已判不等价的instances。
+
+不负责：
+
+- 不保存 planner trace、rejected candidate、duplicated schedule、runtime handle或物理地址。
+- 不允许 logical/scheduled group、representative-only tile、pending event或unbound transport进入 committed
+  executable。
+- 不把 package schema当作 executable事实源。
+
+### 3.10 Target LLVM, Kernel ABI, Package and Runtime Stage
+
+主体 IR / Dialect：
+
+- LLVM dialect
 - concrete target CRT call
-- package metadata
-- WaferRuntimeAdapter
+- compiler-generated Kernel ABI descriptor + ELF module
+- Protobuf PackageManifest
+- RuntimeSession
 
 职责：
 
 - 从 `wafer.instr.*` 生成 LLVM dialect / LLVM IR 中的 Wafer-owned target CRT call
-  declarations/calls。
+  declarations/calls；leaf instruction在原SCF/CF/function结构位置转换，unsupported container在mutation
+  前失败，不能recursive walk后平铺。
 - 在 device-code gate 中用 LLVM clang 和 repo-vendored TX8 deps 生成 RISC-V kcore device `.so`，
   并通过 required-symbol 检查证明 `wafer_tx81_*` 由 repo-local Wafer CRT source/object 或明确合法外部依赖解析。
-- 从 committed instruction IR、accepted offsets、topology/execution mesh、program parameter shard
-  metadata/resource view 和 communication/sync IR 重算 model interface、modules、entrypoints、
-  SPM/layout/DDR memory metadata、communication metadata、constant storage bytes 和 profiling/status
-  metadata。
-- 选择 package 中的 entrypoint，走 `TxRuntimeBackend` path 或 legacy `TsmRun` fallback，并声明
-  可信 completion source。
+- 从 `wafer.executable.entry` 和 lowered function生成 ordered typed `KernelAbiDescriptor`；descriptor hash
+  同时进入ELF note/export和manifest，package不解析LLVM文本猜ABI。
+- 从committed executable和complete TargetArtifactSet派生immutable PackageManifest：environment/artifact
+  fingerprints、artifact digest、orthogonal target/shape selection、committed rank graph、typed resources、
+  entry graph、endpoint template和completion DAG；不复制instruction
+  list。
+- RuntimeSession校验manifest/module/target/topology，选择一个coherent variant，绑定module/weight/state/
+  workspace/endpoint，执行entry graph并聚合completion/error；不序列化地址，不重新规划。
 
-Runtime package metadata 不替代 `wafer.tile.region`。前者表达模型级 package/session 边界、runtime
-binding 和 entrypoint；kernel launch 只是其中一种 entrypoint 的低层实现。package/resource
-metadata 是 ABI/package/runtime 使用点从 IR 重算的 view，不是独立前置 IR 阶段，也不回头承载
-tensor fusion、traversal selection 或 group planner 的中间计划。
+PackageManifest 不替代 committed executable。前者是不可变交付表示；实际 allocation/module/stream/
+event/state handles只属于RuntimeSession。旧package v2只允许由离线converter进入新semantic verifier，
+不能让runtime长期维护双合同。
 
 Runtime/package 的 package 内容、Tx runtime provider / KMD / legacy `TsmRun` 分层、runtime allocation/import mapping、
 legacy bootparam/TLV 和 completion/stub shielding 合同见
@@ -534,7 +658,24 @@ legacy bootparam/TLV 和 completion/stub shielding 合同见
 ## 4. Milestone 路线
 
 本节按语义能力描述路线。历史 milestone 代号只作为外部记录索引，不能进入代码、pass、IR、
-测试或任务命名；后续实现应按 IR 层、通信能力和验证合同推进。
+测试或任务命名；后续实现应按 IR 层、通信能力和验证合同推进。下面的 single-tile、p2p 和 static
+transformer 都只是递增验证切片，不能定义长期架构或单独证明 compiler/runtime 完成。长期 gate 必须
+最终覆盖 bounded dynamic variants、persistent state、组合并行、多卡 transport 和真实 package/runtime。
+
+### Long-Horizon LLM Completion Boundary
+
+最终系统完成证明至少包含：
+
+- 同一 verified program 形成两个以上 coherent static shape variants，越界 shape 在 launch 前拒绝。
+- prefill 与连续 decode共享 immutable weights和persistent paged state，workspace按 invocation隔离；
+  state失败遵守 `atomic_version` 或 `in_place_poison_on_failure` 策略。
+- TP+DP、PP+DP和EP/MoE distributed program保留component/coordinate/ragged route语义，并原子commit
+  全部ranks；单rank失败能聚合并阻止错误state继续使用。
+- pinned和relocatable endpoint variant都经过target/topology/transport验证，runtime只选择预编译
+  projection/template。
+- INT8/FP8或其它mixed-precision variant显式携带quant/storage descriptor和target capability guard。
+- 真实model chain经过mandatory atomic commit、target LLVM、actual device link、Kernel ABI/ELF校验、
+  Protobuf manifest和no-card/board RuntimeSession；不靠手写fixture或shadow schedule。
 
 ### Single-Tile Compute
 
@@ -638,7 +779,7 @@ WaferRuntimeAdapter cluster launch
 
 范围：
 
-- 主路径从 P2.F1/P2.S1/P2.S2 产生的 verified frontend / per-rank program 开始。
+- 主路径从真实frontend形成的verified distributed program和static rank candidates开始。
 - 手写 partitioned StableHLO 只作为 collective lowering 的局部 verifier / pattern 测试输入；它不能替代
   importer/Shardy 自动导出的 program chain。
 
@@ -648,7 +789,8 @@ WaferRuntimeAdapter cluster launch
   shard shape；tensor collective op 不携带 SPM buffer、DTE token 或 runtime handle。
 - 在 tile_region / SPM materialization 后生成的 collective IR 明确区分 compiler inline Direct DTE
   protocol 与 host runtime dyn TLV D2D/P2P path。
-- package metadata 能表达每个 collective 的 communication plan、SPM communication buffer 和 completion source。
+- committed executable 保留每个 collective 对应的 accepted transport/resource/event；PackageManifest只
+  引用entry、resource和跨entry completion边界，不复制device communication schedule。
 
 ### Compute And Communication Mixed Scheduling
 
@@ -663,19 +805,18 @@ WaferRuntimeAdapter cluster launch
 - Scheduler 维护 estimated in-flight SPM bank/page/color set、RDMA/WDMA DDR range、DTE resource set 和 NCC queue state。
 - PMU case 覆盖 serial mode、parallel mode、64KB page coloring、256B compact layout 的 blocking/exe time 对比。
 
-### Transformer Block Vertical Slice
+### Static Transformer Regression Slice
 
 目标：
 
-- 在静态 shape、无 serving/KV cache 要求的前提下，跑通一个 transformer block 的 local shard
-  或单卡 cluster 版本。
+- 以静态 shape、无 persistent state 的 transformer block 验证 local shard / single-card cluster
+  基础能力；它是 regression slice，不是长期完成边界。
 - 覆盖 norm、QKV linear matmul、RoPE、attention score、mask/scale、softmax、attention value、
   output linear matmul、residual 和 MLP。
 
 范围：
 
-- 第一版可以先从单 batch、固定 sequence/head/hidden shape 开始。
-- 可以先不做跨卡 endpoint optimization、paged KV cache、prefill/decode serving 调度和全模型 pipeline。
+- regression 可以从单 batch、固定 sequence/head/hidden shape 开始，但不得把这些参数固化到协议。
 - 如果 tensor parallel 需要 collective，必须先满足 p2p、single-card collective 和 partitioned
   StableHLO collective handoff 的 communication gate。
 - 当前 no-card compile gate 已用 HuggingFace Llama tiny config + PyTorch/XLA `mark_sharding`
@@ -683,8 +824,8 @@ WaferRuntimeAdapter cluster launch
   `stablehlo-spmd-to-group` 和 memory-planned instruction IR。该 gate 的 Megatron
   contracting-dimension sharding 保留并消费 `all_reduce` collective，basic `arith.select`
   在 instruction lowering 中改写成 `gather_scatter` + `bit2fp` + `mask_move` target sequence。
-  target LLVM call emission、target CRT symbol closure、package metadata auto-export、`wafer-run` no-card required-symbol gate、
-  `wafer-lower-groups-to-selected-instr` closed-loop selector、板端 launch 和数值正确性仍是后续边界。
+  该历史 case 只作为 importer/SPMD/group回归。mandatory commit、target LLVM、Kernel ABI/manifest、
+  RuntimeSession、板端launch和数值正确性必须由后续真实chain gate证明。
 
 验收标准：
 
@@ -697,6 +838,39 @@ WaferRuntimeAdapter cluster launch
 - 所有启用的 compute/movement/communication ABI family 有 verifier 和必要 golden packet 覆盖。
 - Runtime completion 仍使用可信 fence，不使用旧 launch/sync stub。
 
+### Stateful Prefill / Decode Variants
+
+目标：
+
+- 同一 model/program 形成至少一个 prefill variant 和两个不同 sequence/batch guard 的 decode variants。
+- immutable weights由session cache复用；persistent paged state在连续invocations间保持identity和update/
+  alias；workspace只活到当前invocation结束。
+
+验收标准：
+
+- frontend/distributed program不从 `kv` 名字恢复state；resource role、bounds、page geometry和update relation
+  均为typed事实。
+- 所有ranks对actual dimensions选择同一个distributed variant；不存在per-rank独立guard。
+- no-card gate证明weight/state handle复用和workspace隔离；board numeric gate证明prefill后连续decode读取并
+  更新同一state。
+- timeout/partial-rank failure按`atomic_version`保留旧版本，或按`in_place_poison_on_failure`持久标记原state
+  不可复用；不能出现第三种隐式policy。
+
+### Composite Parallel and MoE Variants
+
+目标：
+
+- 覆盖TP+DP、PP+DP和EP/MoE component graph；PP micro-batch和stage dependency来自entry graph
+  template，EP token route/all-to-all-v保留ragged runtime data语义。
+
+验收标准：
+
+- `dp/tp/pp/ep` coordinate、component/stage、partition/replica和rank groups可分别验证；flat rank不承担
+  多重语义。
+- rank class共享由local IR/ABI/memory/transport等价证明；uneven shard或异构expert自动拆class。
+- executable-set cross-rank verifier证明send/recv phase、bytes、buffer和transport assignment匹配。
+- RuntimeSession只绑定manifest中的rank/entry/projection，不生成pipeline schedule或collective route。
+
 ## 5. 测试和 Verifier 合同
 
 测试和 verifier 跟 IR 分层一样，也按 IR stage 增量建立。不是每个子设计进入实现前都要
@@ -707,18 +881,18 @@ WaferRuntimeAdapter cluster launch
 
 | 范围 | 阶段内验证 |
 | --- | --- |
-| Frontend / StableHLO program | program parse/roundtrip、shape/dtype/sharding 保留、exporter program directory weight metadata 一致性 |
-| Shardy / SPMD | sharding import/propagation、partition 后 collective 语义、logical mesh roundtrip |
-| Target topology / execution mesh / program parameter shards | topology import、unavailable tile metadata、valid execution mesh、program parameter shard metadata verifier |
-| Local compute normalization | StableHLO dot/broadcast/reduce/shape op 到 structured tensor IR，softmax/norm/RoPE staged form |
-| `wafer.group` | group formation legality、traversal schedule、tiled tensor IR、tile-local demand diagnostics、Transform dump/replay |
-| `wafer.tile.region` | region verifier、memory/effect ownership、movement/compute/sync ordering、liveness diagnostics |
-| Layout materialization | physical layout propagation、aligned-only op legality、`#wafer.memory<ddr, tensor>` compact external boundary、materialization location diagnostics |
-| DDR memory planning | external DDR view/descriptor validation、compiler-managed/resident/inter-group `memref.alloc` demand、accepted DDR offset facts、lifetime/reuse、default arena capacity、largest-contiguous/bandwidth diagnostics |
-| `wafer.spm` | Wafer memory attr、liveness、Cx/NCx C0 tail/fold、256B padding、bool bitpack、SPM range/reserved-slot diagnostics |
+| Verified program | program parse/roundtrip、symbolic bounds、typed IO/parameter/state、alias/update、payload/content identity |
+| Target environment / topology / mesh | capability/ABI、topology digest、unavailable endpoints、logical axes/rank domain、pinned/relocatable policy |
+| Distributed program | Shardy/SDY/MPMD propagation、component/stage、partition/replica/`dp/tp/pp/ep` coordinate、collective/shard relation |
+| Local compute normalization | StableHLO dot/broadcast/reduce/shape/state use-def 到 structured tensor IR，softmax/norm/RoPE staged form |
+| Candidate group / tile | group formation、bounded traversal proposal、完整domain coverage、candidate-only tile-region、failure attribution |
+| Layout materialization | proposal与accepted assignment分离、physical layout、aligned-only legality、constant/weight storage encoding |
+| Whole-entry SPM / DDR | physical range、cross-group lifetime/reuse、persistent/transient demand、capacity、pending event和accepted offsets |
 | `wafer.tile.*` compute | 对已支持 op 建 wrapper golden packet，例如 CT unary/binary、NE GEMM、RDMA/WDMA contiguous end-address、DMA stride byte-unit 和 `iteration - 1` |
-| `wafer.tile.*` communication | Direct DTE unicast send/recv/wait、packet counter update word、FSM resource allocation、raw non-unicast V1 禁用诊断 |
-| Runtime/package | package metadata validator、bootparam head/dyninfo layout、dyn TLV serialization roundtrip、tx runtime/legacy completion source、stub shielding |
+| Communication / transport | logical collective、Direct DTE send/recv/wait、endpoint/channel/FSM/recv buffer、cross-rank match、completion/error |
+| Atomic executable commit | global guard、rank coverage/class equivalence、whole-entry memory/event、all-rank rollback、无logical group/pending event/unbound transport |
+| Target/Kernel ABI | structure-preserving conversion、geometry/narrowing、ordered slots、ELF descriptor/hash、module digest/fingerprint |
+| Manifest/RuntimeSession | Protobuf semantic verifier、orthogonal target/shape selection、committed rank mapping、typed bindings、weight/state/workspace lifecycle、completion DAG、failure aggregation |
 | Scheduler / PMU | 只在进入 overlap/cost-model milestone 后添加：serial/parallel mode、SPM bank/page-color conflict、DDR overlap、PMU `exe_time` / `blocking_time` case |
 
 每个能力阶段的测试面只覆盖该阶段实际启用的 dialect op 和 lowering path。例如 single-tile
@@ -730,15 +904,18 @@ PMU microbench 不应成为 single-tile compute 前置条件。
 以下内容不作为 v0 目标：
 
 - 任意 PyTorch 模型无约束 seamless 运行。
-- 复杂 dynamic shape 全覆盖。
+- unbounded dynamic shape、运行时JIT低层instruction或任意eager控制流全覆盖；bounded shape guard和
+  static variants仍是core合同。
 - `all_to_all` 高性能 ring/blocked schedule；logical program 和 direct p2p correctness path 仍应保留。
-- 完整 vLLM/SGLang serving 集成。
+- 完整 vLLM/SGLang请求调度、prefix cache和调度策略集成；persistent paged state、prefill/decode
+  variants及typed runtime ABI仍属于compiler/runtime core合同。
 - 自定义 LLVM 后端或真正 ISA intrinsic lowering。
 - 依赖旧 Stream/Score data-plane 作为主通信路径。
 - 直接以历史 backend 为唯一架构来源。
 - raw DTE broadcast/shuffle/scatter 作为 V0 collective 主路径。
 - KMD compute fence、旧 `DeviceSynchronize` 或 launch stub 作为 correctness completion。
 - Conv optional/fused 特性；V0 只保留基础规则和后续验证入口。
+- runtime临时重做sharding、candidate/layout/memory、rank placement或transport route。
 
 ## 7. MLIR 工程组织
 
@@ -864,48 +1041,42 @@ verifier/lowering 责任定义。主线 gate 必须通过 `wafer-opt` program pi
 Wafer named MLIR pipeline 只作为内部构件或局部 debug/unit 覆盖。不能依赖 integration test
 手动拼 pass、Python helper 或手写测试输入来表示长期 compile flow。
 
-当前用户级 / Integration 主链路不直接暴露下面这些单 pass。2026-06-02 后由 `WaferPipelines`
+当前用户级 / Integration 调试入口不直接暴露下面这些单 pass。2026-06-02 后由 `WaferPipelines`
 注册按 IR 边界命名且真实成立的内部 pipeline；用户级 program pipeline 是
 `stablehlo-spmd`、`stablehlo-spmd-to-linalg` 和 `stablehlo-spmd-to-group`。
 内部 `wafer-propagate-stablehlo-sharding` 和 `wafer-lower-stablehlo-to-linalg`
 只作为 program pipeline 的构件或局部验证入口。
 `wafer-propagate-stablehlo-sharding` 组合 Wafer default input seed 和 Shardy propagation，但不冒充
-XLA SPMD partitioner；partitioned / replicated-local StableHLO program directory 必须由 P2.S2 的 Wafer-owned
-SPMD partition compiler stage 消费 sharding propagation stage 输出的 StableHLO/SDY IR 后产出。
+XLA SPMD partitioner；partitioned / replicated-local StableHLO program directory 必须由Wafer-owned
+SPMD/MPMD distributed-program stage消费sharding propagation输出的StableHLO/SDY IR后产出。
 `wafer-compile-stablehlo` 只保留 frontend / StableHLO program verifier；program-level
 入口统一在 `wafer-opt --program-pipeline=stablehlo-spmd`、
 `wafer-opt --program-pipeline=stablehlo-spmd-to-linalg` 和
 `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 下。旧 C ABI lowering/compile 入口已删除；
 旧 single-tile/target CRT/ring/SPM/DDR unit/debug pass 链也已删除。`tx8` 只保留为底层硬件/
-依赖事实名，不作为 compiler target。下面列表描述长期阶段边界，不是要求用户手动串 pass。
+依赖事实名，不作为 compiler target。上述入口尚未形成完整production compiler driver；长期必须新增
+单一 `stablehlo-to-executable` program pipeline或等价driver。下面列表描述该长期边界，不是要求用户
+手动串 pass。
 
 ```text
 ModelImport/FrontendProgram
-  -> StableHLO/Shardy program
-  -> target topology + valid execution mesh
-  -> Shardy propagation + Wafer-owned SPMD partition output
-  -> partitioned or replicated-local StableHLO
-  -> Linalg/Tensor/SCF local compute + `wafer.linalg_ext.collective.*` handoff
-  -> logical wafer.group IR
-  -> memref-backed wafer.tile.region IR
-  -> candidate DDR tile-view materialization
-  -> instruction-level wafer.instr.* IR over unplaced Wafer-tagged memref
-  -> instruction-level IR with accepted SPM offset facts
-  -> DDR memory planning facts
-  -> accepted/rejected/split group plan decision
-  -> committed wafer.tile.region + accepted instruction boundary
-  -> topology/execution-mesh + program shard metadata/resource view + launch-block binding
-  -> target instruction LLVM call emission
-  -> device-code compile/link + target CRT symbol closure
-  -> package metadata auto-export
-  -> runtime adapter / board launch
+  -> verified program + typed resources/state + bounds
+  -> target environment/topology + valid execution mesh
+  -> Shardy/SDY SPMD/MPMD distributed program
+  -> component/rank-local structured tensor program
+  -> logical group + bounded candidate frontier
+  -> complete variant clones with traversal/layout/instruction/SPM/DDR/transport/event proposals
+  -> whole-variant atomic commit
+  -> executable set + static variants/rank programs/resources/transport/completion
+  -> structure-preserving target LLVM + Kernel ABI descriptors
+  -> device modules + ELF descriptors/digests/fingerprint
+  -> Protobuf PackageManifest
+  -> RuntimeSession materialization / no-card or board execution
 ```
 
 当前 HF transformer no-card gate 走 `stablehlo-spmd-to-group` 后的 direct group -> instruction 路径，
-即 `wafer-lower-groups-to-ddr-memory-planned-instr`。target LLVM call emission 已有 hand-written instr 和
-hand-written group named-pipeline gate，但 HF program chain 到 target LLVM、target CRT symbol closure、
-device-code 和 package auto-export 仍是后续 gate；closed-loop selected-candidate path 仍是候选/优化路径，
-不作为该 gate 的已覆盖必经阶段。
+只证明历史 regression slice；它没有经过 mandatory whole-variant commit，不能作为production主线或
+长期完成证明。`DirectFullShape`在新合同中必须变成同一candidate driver内的普通policy并通过全部gate。
 
 工程边界：
 
@@ -940,26 +1111,20 @@ device-code 和 package auto-export 仍是后续 gate；closed-loop selected-can
   IR 才表达 concrete storage values、temp/psum/staging、instruction family 和 async lifetime。
 - Wafer memory attr 只在 `wafer.tile.region` / SPM bufferization 层出现，不进入
   tensor-level `wafer.group`。
-- 没有独立 placed memref / access descriptor realization 主线阶段。committed instruction IR 已经通过
-  operands、memref view、`wafer.spm.offset`、`wafer.ddr.offset` 和 descriptor attrs 携带后段可重算的
-  memory facts；topology/execution-mesh contract 只保存 regular topology、SPMD rank
-  domain policy 和 optional explicit endpoint 这类不能从 local IR 重算的事实。
-  target LLVM call emission、package metadata 和 runtime adapter 如需 launch/resource/address/range/stride
-  视图，必须在使用点通过同一 analysis/verifier 从 committed IR、accepted offset facts 与
-  topology/execution-mesh、program parameter shard metadata/resource view 派生，不能再引入 placed memref /
-  access descriptor 旁路协议。
-- instruction-level compute / communication lowering 消费 committed instruction IR 中的 SPM/DDR
-  value、offset fact 和 view relation，不再做 fusion 决策。
-- `wafer.instr.local_fence` 和后续 sync boundary 提供 local fence、communication wait、group barrier
-  等同步抽象，供 compute/comm lowering 复用。
-- runtime package metadata 是 runtime-level launch boundary，负责参数、metadata 和 host/device ABI
-  交接，不替代 tile-local execution region，也不作为当前 core IR op。
-- target LLVM call emission 只消费 committed instruction IR、accepted offset facts、
-  topology/execution-mesh contract、program parameter shard metadata/resource view、薄 launch/block binding，
-  不回头改 schedule、layout 或 memory plan。
+- 没有独立 placed-memref sidecar阶段。committed static rank program通过operands、memref views、accepted
+  SPM/DDR offsets、typed resources和transport refs携带不可重算事实；size/range/stride仍从当前IR重算。
+- instruction-level compute/communication lowering只消费committed rank program，不再做fusion、rank
+  placement、layout/memory或transport选择。
+- `async.token` + producing/wait op interface表达device completion；host/stage/rank aggregation由executable
+  completion template表达。local fence、DTE wait和multi-rank barrier不能互相替代。
+- `wafer.executable`是compiler内唯一committed composition边界；PackageManifest是其不可变派生产物，
+  RuntimeSession是非序列化实例。三者不能互相复制schedule或承担对方的规划责任。
+- target LLVM只消费committed static rank function、entry ABI、accepted offsets/transport和target
+  environment，不回头改schedule/layout/memory。Kernel ABI descriptor由compiler结构化生成而非文本解析。
 
-V0 先保持少量稳定 op family：`wafer.group`、`wafer.linalg_ext.collective.*`、
-`wafer.tile.*`、`wafer.instr.*`、`wafer.target.*` / `wafer.execution.mesh`。
+稳定 op family包括：`wafer.group`、`wafer.linalg_ext.collective.*`、`wafer.tile.*`、`wafer.instr.*`、
+`wafer.target.*` / `wafer.execution.mesh`，以及最小 `wafer.executable*` composition ops。新增对象必须
+直接服务legality、lowering、diagnostic或删除旧side channel。
 
 ## 8. 子设计边界索引
 
@@ -967,22 +1132,23 @@ V0 先保持少量稳定 op family：`wafer.group`、`wafer.linalg_ext.collectiv
 
 | 范围 | 主文档 | 状态 | 只负责 | 不负责 |
 | --- | --- | --- | --- | --- |
-| Frontend / StableHLO program | `tasks/02-frontend-stablehlo-program.md` | 草案 | model import adapter、输入 program、shape/dtype/dynamic shape、exporter program directory weight metadata、sharding 标记、第三方依赖隔离 | SPM、DTE、runtime completion |
-| Shardy / SPMD | `tasks/03-shardy-spmd.md` | 草案 | 消费 valid execution mesh、logical mesh、sharding propagation、partition 后 collective 语义 | DTE algorithm、SPM buffer、事后修补 bad tile |
-| Target topology / execution mesh | `tasks/04-topology-execution-mesh.md` | 草案 | regular card/tile topology、unavailable endpoint exceptions、valid SPMD rank-domain policy、derived/optional endpoint view | Cx/NCx、packet queue、target CRT、tensor 重新切分 |
-| Local compute normalization | `tasks/05-local-compute-normalization.md` | 草案 | partitioned StableHLO 到 structured tensor IR、dot/broadcast/reduce/softmax/norm/RoPE staged form、StableHLO collective 到 `wafer.linalg_ext.collective.*` handoff | group scheduling、physical layout、SPM/DDR、tile communication、target CRT |
-| `wafer.group` | `tasks/06-group.md` | 草案 | group boundary、traversal schedule、tiled tensor IR、tile-local resource demand | SPM offset、physical layout marker、DTE resource、runtime package |
-| `wafer.tile.region` | `tasks/07-tile-region.md` | 草案 | bufferized tile-local execution scope、memory/effect ownership、movement/compute/sync ordering | tensor fusion、traversal selection、host launch/package ABI |
-| Layout materialization | `tasks/08-layout-materialization.md` | 草案 | physical layout domain、op layout constraint、constant storage transform、materialization location/cost | SPM address、packet field、group fusion |
-| SPM memory planning | `tasks/09-spm-memory-planning.md` | 草案 | `#wafer.memory<spm, *>` demand、liveness、range/alignment、accepted SPM offset facts | DDR offset facts、runtime allocation mapping、collective algorithm、host launch |
-| Compute / movement | `tasks/10-compute-movement.md` | 草案 | target-abstract compute/move op、layout/resource interface、instruction legality、issue/fence/wait | tensor fusion、global sharding、host package format |
-| Instruction IR | `tasks/11-instruction-ir.md` | 草案 | `wafer.instr.*`、Wafer-tagged memref graph、instruction family、memref read/write/effect、Direct DTE invocation form | SPM/DDR offset、runtime mapping、raw packet、target CRT call、重复 storage IR |
-| DDR memory planning | `tasks/12-ddr-memory-planning.md` | 草案 | `#wafer.memory<ddr, *>` demand、external view/descriptor validation、compiler-managed/resident/inter-group alloc demand、accepted DDR offset facts、lifetime/reuse、default arena capacity/largest-contiguous/bandwidth | tensor fusion、SPM offset、runtime allocation/import、packet bitfield |
-| Communication | `tasks/13-communication.md` | 草案 | tile_region / SPM materialization 之后的 buffer-level collective op、p2p Direct DTE instruction schedule、token/effect、sync boundary | compute op legality、SPM allocator internals、SPMD tensor collective handoff |
-| target LLVM call emission / golden packet | `tasks/14-target-llvm-golden-packet.md` | 实现中 | committed instruction IR + topology/execution-mesh + program shard metadata/resource view 到 Wafer-owned target CRT call emission、wrapper/packet 参数单位、wait policy、golden packet | 上层 IR formation、layout search、SPM memory planning、device-code symbol closure |
-| Launch / runtime package | `tasks/15-launch-runtime-package.md` | 草案 | Tx runtime provider / KMD / legacy Tsm 分层、completion、runtime allocation objects、bootparam/TLV、package metadata | Linalg tiling、group formation、tile-local ordering |
+| Frontend / verified program | `tasks/02-frontend-stablehlo-program.md` | 草案 | model semantics、symbolic bounds、typed IO/parameter/persistent state、alias/update、payload identity | rank placement、SPM/DTE、runtime handle |
+| Target environment / topology / mesh | `tasks/04-topology-execution-mesh.md` | 草案 | capability/ABI fingerprint、topology snapshot、logical mesh、pinned/relocatable projection policy | sharding、candidate/memory/route search |
+| Distributed program | `tasks/03-shardy-spmd.md` | 草案 | Shardy/SDY/MPMD、component/stage、partition/replica/parallel coordinates、collective/shard relation | physical transport、SPM、default rank |
+| Local compute normalization | `tasks/05-local-compute-normalization.md` | 草案 | component/rank-local structured tensor IR、state use-def、collective handoff | group/candidate、physical layout、target/runtime |
+| Candidate group planning | `tasks/06-group.md` | 草案 | logical group、bounded candidate schedule/direct-full-shape policy、failure attribution | accepted executable、SPM offset、package |
+| Candidate tile scope | `tasks/07-tile-region.md` | 草案 | complete traversal内tile-local scope、buffer/effect/movement/compute/sync proposal | 独立commit、host package |
+| Layout materialization | `tasks/08-layout-materialization.md` | 草案 | proposal/accepted assignment边界、physical layout、weight storage encoding/materialization | runtime placement、packet field |
+| SPM memory planning | `tasks/09-spm-memory-planning.md` | 草案 | whole-rank-entry liveness/event、range/alignment、accepted offsets | DDR、runtime handle、collective algorithm |
+| Compute / movement | `tasks/10-compute-movement.md` | 草案 | target-abstract ops、layout/resource/effect、issue/token/fence/wait、shared legality | fusion、sharding、package schema |
+| Static rank instruction program | `tasks/11-instruction-ir.md` | 草案 | complete `wafer.instr.*` rank function、geometry/range/narrowing、event closure | runtime mapping、raw packet、shadow schedule |
+| DDR memory planning | `tasks/12-ddr-memory-planning.md` | 草案 | whole-entry external/persistent/transient demand、cross-group lifetime、accepted offsets/capacity | runtime handles、packet bits |
+| Communication / transport | `tasks/13-communication.md` | 草案 | logical collective到accepted endpoint/channel/FSM/buffer/token/error transport | tensor sharding、runtime route planning |
+| Executable composition | 本文 + `tasks/06-group.md` | 草案 | global guards、rank classes/entries、typed resources/transport/completion、whole-variant atomic commit | rejected trace、runtime handle、schedule duplication |
+| target LLVM / Kernel ABI | `tasks/14-target-llvm-golden-packet.md` | 实现中 | structure-preserving conversion、Kernel ABI descriptor、ELF/module fingerprint、CRT/golden | candidate search、package text inference |
+| Manifest / RuntimeSession | `tasks/15-launch-runtime-package.md` | 草案 | Protobuf manifest、typed bindings/state/workspace、entry/completion graph、session materialization | compiler replanning、instruction schedule |
 | Verification plan | `tasks/16-verification-plan.md` | 草案 | stage diagnostics、roundtrip、golden packet、runtime shielding、PMU/cost-model gate | 替代各 dialect 语义设计 |
-| Serving integration | 暂不支持 | 延后 | graph capture、prefill/decode、KV cache 管理 | compiler core IR 合同 |
+| Serving product integration | 外部后续设计 | 延后 | request scheduling、prefix cache、admission/batching policy | core persistent-state/variant/resource ABI |
 
 跨文档判断规则：如果某个事实不能由当前 IR 层的 op/type/region/effect/verifier 稳定解释，它只能
 作为 analysis/cost input 引用，不能提前写成该层 IR 语义。
@@ -991,18 +1157,19 @@ Transformer block 落地时的文档阅读顺序是：
 
 ```text
 Frontend program
-  -> Target topology / execution mesh
-  -> Shardy / SPMD
+  -> Target environment / topology / execution mesh
+  -> Shardy / SPMD / MPMD distributed program
   -> Local compute normalization + `wafer.linalg_ext.collective.*` handoff
-  -> wafer.group
-  -> wafer.tile.region
-  -> Layout / Instruction / SPM / DDR
-  -> Compute / Communication
-  -> target CRT / Launch runtime package
+  -> logical group / candidate tile region
+  -> Layout / Instruction / SPM / DDR / Transport proposals
+  -> Whole-variant atomic commit / executable set
+  -> target LLVM / Kernel ABI / ELF module
+  -> PackageManifest / RuntimeSession
   -> Verification plan
 ```
 
-Serving integration、KV cache、prefill/decode 调度不在当前 core compiler 跑通目标内。
+完整 serving request scheduler不属于core compiler；bounded prefill/decode variants、persistent paged state、
+typed resource ABI和RuntimeSession lifecycle属于core compiler/runtime合同。
 
 ## 9. 参考材料
 

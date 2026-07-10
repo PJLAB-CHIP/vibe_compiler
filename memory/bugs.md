@@ -92,16 +92,17 @@
   lowering 容器；用 full conversion/legality 证明无非法 op。未实现结构保持前，应在任何 mutation 前
   拒绝 nested region、multiblock 和 call，不能生成近似程序。
 
-## 2026-07-10 package binding order 必须和 entrypoint signature 精确双射
+## 2026-07-10 package slot binding 必须和 entrypoint signature 精确双射
 
 - 现象：metadata exporter 能识别额外 workspace 参数并创建 workspace resource，但 `binding_order` 只含
   model input/output；Python/C++ runtime 都按该列表组装实参。validator 只检查名字存在，因此漏项和
   重复项都能通过。
 - 根因：resource inventory、entrypoint signature 和 runtime argument order 是三份独立事实；exporter
   又从 LLVM 文本参数数量推断 workspace，没有一份 typed ABI 同时拥有它们。
-- 修复模式：compiler artifact 导出 exact ordered typed entrypoint ABI；validator 证明参数数量、顺序、
-  唯一性、resource kind、access、size/alignment 与 signature 一一对应；runtime 只消费该 ABI。完成前
-  对 workspace-bearing package fail closed。
+- 修复模式：`KernelAbiDescriptor`导出ABI-local ordered `SlotId`；committed executable entry唯一拥有
+  `SlotId -> ResourceId`，RuntimeSession再按`(ResourceId, ScopeInstanceId)`解析真实handle。validator证明
+  slot数量/顺序/类型/access/alignment、entry binding、scoped instance和completion export一一对应；package
+  不保留自由`binding_order`。完成前对workspace-bearing package fail closed。
 
 ## 2026-07-10 instruction descriptor 必须在 integer narrowing 前证明完整 geometry
 

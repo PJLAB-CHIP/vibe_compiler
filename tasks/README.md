@@ -9,22 +9,22 @@
 
 | 编号 | 文档 | 范围 |
 | --- | --- | --- |
-| 01 | `tasks/01-architecture.md` | 总体 compiler pipeline、IR 分层和子设计边界 |
-| 02 | `tasks/02-frontend-stablehlo-program.md` | frontend program、StableHLO import/export、program directory |
-| 03 | `tasks/03-shardy-spmd.md` | Shardy propagation、SPMD partition、post-SPMD `wafer.linalg_ext.collective.*` handoff |
-| 04 | `tasks/04-topology-execution-mesh.md` | target topology、execution mesh、tile endpoint projection |
-| 05 | `tasks/05-local-compute-normalization.md` | post-SPMD local compute normalization and `wafer.linalg_ext.collective.*` handoff |
-| 06 | `tasks/06-group.md` | logical group、scheduled group、candidate planning boundary |
-| 07 | `tasks/07-tile-region.md` | memref-backed tile-local execution boundary |
-| 08 | `tasks/08-layout-materialization.md` | physical layout planning and materialization |
-| 09 | `tasks/09-spm-memory-planning.md` | SPM memory planning and accepted offset facts |
-| 10 | `tasks/10-compute-movement.md` | target-abstract compute / movement IR |
-| 11 | `tasks/11-instruction-ir.md` | instruction-level Wafer IR over Wafer-tagged memrefs, including Direct DTE invocation ops |
-| 12 | `tasks/12-ddr-memory-planning.md` | DDR memory planning and accepted offset facts |
-| 13 | `tasks/13-communication.md` | tile-local collective IR and Direct DTE instruction schedule boundary |
-| 14 | `tasks/14-target-llvm-golden-packet.md` | target instruction LLVM call emission、target CRT wrapper and golden packet boundary |
-| 15 | `tasks/15-launch-runtime-package.md` | runtime package、host runtime adapter |
-| 16 | `tasks/16-verification-plan.md` | staged verification plan and completion gates |
+| 01 | `tasks/01-architecture.md` | verified program 到 typed distributed executable、atomic target artifact set 和 RuntimeSession 的总体边界 |
+| 02 | `tasks/02-frontend-stablehlo-program.md` | StableHLO program、symbolic bounds、typed IO/parameter/persistent state |
+| 03 | `tasks/03-shardy-spmd.md` | Shardy/SDY/MPMD distributed program、parallel coordinates、rank identity/class prerequisites |
+| 04 | `tasks/04-topology-execution-mesh.md` | target environment/DDR arenas、topology/mesh、唯一 pinned/relocatable projection owner |
+| 05 | `tasks/05-local-compute-normalization.md` | component/rank-local structured compute、state use-def、equal/segmented tensor collective handoff |
+| 06 | `tasks/06-group.md` | logical group、candidate-only schedule 和 whole-variant atomic commit boundary |
+| 07 | `tasks/07-tile-region.md` | complete traversal 内 candidate tile-local execution scope |
+| 08 | `tasks/08-layout-materialization.md` | layout proposal、global accepted assignment 和 storage materialization |
+| 09 | `tasks/09-spm-memory-planning.md` | whole-rank-entry SPM lifetime/event planning 和 accepted offsets |
+| 10 | `tasks/10-compute-movement.md` | target-abstract compute/movement、resource effects 和 issue/token/fence/wait |
+| 11 | `tasks/11-instruction-ir.md` | complete static rank instruction program、geometry/range/narrowing legality |
+| 12 | `tasks/12-ddr-memory-planning.md` | typed arena/placement 下 whole-entry IO/weight/state/workspace DDR planning 和 accepted offsets |
+| 13 | `tasks/13-communication.md` | logical/segmented collective materialization、post-memory physical transport acceptance 和 completion boundary |
+| 14 | `tasks/14-target-llvm-golden-packet.md` | structure-preserving target LLVM、Slot-based Kernel ABI、双 fingerprint 和 atomic TargetArtifactSet |
+| 15 | `tasks/15-launch-runtime-package.md` | Protobuf PackageManifest、orthogonal target/shape selection、typed resources/registry、RuntimeSession 和 completion DAG |
+| 16 | `tasks/16-verification-plan.md` | atomic commit、复杂大模型、target/package/runtime 和 board completion gates |
 
 ## 归档文档
 
