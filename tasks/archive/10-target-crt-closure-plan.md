@@ -2,7 +2,7 @@
 
 > **Historical plan:** This completed initial CRT closure is superseded as an execution entry. Do not replay its
 > document-parsing or header-owned-membership steps. Current work is controlled by `tasks/progress.md`, the numbered
-> target design, and the 2026-07-10 long-horizon roadmap.
+> target design, and `tasks/plans/implementation-roadmap.md`.
 
 > **Historical checklist note:** Checkbox state and command blocks below preserve the original execution record. They are
 > not an active task list; do not execute or update this plan. Use the current queue and roadmap named above.

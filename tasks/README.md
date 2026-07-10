@@ -51,13 +51,13 @@
 
 当前实施集由一份路线图和六份子计划组成，共七份文件：
 
-- `docs/superpowers/plans/2026-07-10-wafer-long-horizon-implementation-roadmap.md`
-- `docs/superpowers/plans/2026-07-10-target-artifact-set.md`
-- `docs/superpowers/plans/2026-07-10-typed-program-distributed-identity.md`
-- `docs/superpowers/plans/2026-07-10-whole-variant-executable.md`
-- `docs/superpowers/plans/2026-07-10-target-correctness-foundation.md`
-- `docs/superpowers/plans/2026-07-10-package-runtime.md`
-- `docs/superpowers/plans/2026-07-10-real-model-board-gates.md`
+- `tasks/plans/implementation-roadmap.md`
+- `tasks/plans/target-artifact-set.md`
+- `tasks/plans/typed-program-distributed-identity.md`
+- `tasks/plans/whole-variant-executable.md`
+- `tasks/plans/target-correctness-foundation.md`
+- `tasks/plans/package-runtime.md`
+- `tasks/plans/real-model-board-gates.md`
 
 路线图编排依赖和review checkpoint，子计划只拆解施工文件、测试和提交。它们都不是编号设计文档，
 也不能覆盖`tasks/01-16`的IR/ABI合同；动态执行状态仍只看`tasks/progress.md`。
@@ -79,3 +79,5 @@ docs、`tasks/progress.md` 和本轮已收敛设计结论为准。
 | `tasks/archive/07-candidate-selection-task-design.md` | 已收口的 candidate-selection 任务记录 |
 | `tasks/archive/08-committed-candidate-materialization-task-design.md` | 已收口的 committed-materialization 任务记录 |
 | `tasks/archive/09-system-design-implementation-review.md` | 2026-07-10 系统设计与实现审计；只作风险和整改依据，不是架构合同 |
+| `tasks/archive/10-target-crt-closure-plan.md` | 已完成并被当前路线替代的 CRT closure 实施记录 |
+| `tasks/archive/11-target-crt-conformance-plan.md` | 已完成并被当前路线替代的 CRT conformance 实施记录 |

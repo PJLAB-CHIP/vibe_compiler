@@ -1,6 +1,6 @@
 # Target Artifact Set Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **执行约束：** 任务状态和直接前置以 `tasks/progress.md` 为准；本文 checkbox 只拆解实现步骤，不是独立状态源。
 
 **Goal:** 从 staged committed `wafer.executable` 生成、验证并向同一 `ProgramOutputTransaction` 附着可由 package 直接消费的 complete `TargetArtifactSet`，闭合 WCRE semantic identity、static-function identity、Kernel ABI Descriptor、target LLVM、Direct DTE ABI、mandatory ELF ABI note、双 fingerprint、final module content digest 和多 member 交付。
 
@@ -3437,10 +3437,10 @@ The noninstalled Artifact-owned `TargetArtifactSetInternal.h` defines the exact 
   rg -n "TargetArtifactSet|note.wafer.abi|computeSemanticDigest|computeContentDigest|encodeIdentityMessage" \
     include lib tools test
   rg -n "quantStorageAbi|fixedArguments|clangPath|DeviceLinkConfiguration|full stable ASCII symbol path|one note per expected entry" \
-    include lib tools test tasks docs/superpowers/plans
-  rg -n "TargetArtifactSetDeliveryRoot" schema include lib docs/superpowers/plans
+    include lib tools test tasks/plans
+  rg -n "TargetArtifactSetDeliveryRoot" schema include lib tasks/plans
   rg -n "loadAndVerifyTargetArtifactSet\\(|diagnosticLocator|moduleLocator|rootLocator|acquireReadLease\\(\\) const|ConvertedTargetEntryView" \
-    include lib tools test docs/superpowers/plans
+    include lib tools test tasks/plans
   python3 tools/check_ir_organization.py --root .
   python3 tools/check_deps.py
   python3 tools/check_target_dependency_layers.py

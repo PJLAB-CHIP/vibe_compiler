@@ -1,6 +1,6 @@
 # Whole-Variant Executable Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **执行约束：** 任务状态和直接前置以 `tasks/progress.md` 为准；本文 checkbox 只拆解实现步骤，不是独立状态源。
 
 **Goal:** 将所有 distributed execution instances 的完整 traversal、layout、instruction、SPM/DDR、completion、transport 和 launch projection 在同一个候选事务中闭合，并只在全 variant 验证通过后原子生成 committed `wafer.executable`。
 
@@ -1331,7 +1331,7 @@ mlir::LogicalResult acceptPhysicalTransports(
 - Create: `test/Transforms/materialize-launch-projection.mlir`
 - Create: `test/Transforms/materialize-launch-projection-failure.mlir`
 
-**Cross-plan prerequisite:** Before this task, execute the shared identity foundation from `docs/superpowers/plans/2026-07-10-target-artifact-set.md` that creates runtime-safe `WaferABI`, generated identity schemas, schema-driven encoding, `WaferCompilerIdentity` support and the static-function encoder. The rest of the target-artifact plan remains downstream of committed executable. This task adds projection/executable adapters to that one compiler target; it must not call raw WCRE fields or create another encoder.
+**Cross-plan prerequisite:** Before this task, execute the shared identity foundation from `tasks/plans/target-artifact-set.md` that creates runtime-safe `WaferABI`, generated identity schemas, schema-driven encoding, `WaferCompilerIdentity` support and the static-function encoder. The rest of the target-artifact plan remains downstream of committed executable. This task adds projection/executable adapters to that one compiler target; it must not call raw WCRE fields or create another encoder.
 
 **Interfaces:**
 - Consumes: complete candidate entries/resources, distributed prerequisite classes/instances, environment/topology/mesh

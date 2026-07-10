@@ -1,6 +1,6 @@
 # Package and Runtime Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **执行约束：** 任务状态和直接前置以 `tasks/progress.md` 为准；本文 checkbox 只拆解实现步骤，不是独立状态源。
 
 **Goal:** 从 committed `wafer.executable` 和 complete `TargetArtifactSet` 生成唯一 typed Protobuf package，把它作为同一 `compiler::ProgramOutputTransaction` 的私有 root 附着并通过单一 program delivery commit 可见，再由单一 C++ semantic verifier 和非序列化 `RuntimeSession` 完成 no-card 选择、资源实例化、状态一致性与 completion DAG 执行。
 

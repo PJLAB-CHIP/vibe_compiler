@@ -1,6 +1,6 @@
 # Typed Program and Distributed Identity Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **执行约束：** 任务状态和直接前置以 `tasks/progress.md` 为准；本文 checkbox 只拆解实现步骤，不是独立状态源。
 
 **Goal:** 把 program directory、target snapshot 和 SPMD 输出规范化成 typed model/distributed/candidate identity，并删除 default rank 0 与名字/sidecar 语义通道。
 

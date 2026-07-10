@@ -1,7 +1,7 @@
 # Wafer Long-Horizon Implementation Roadmap
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or
-> superpowers:executing-plans. Follow the dependency phases below, not the numeric order of sections in individual plans.
+> **执行约束：** 任务状态和直接前置以 `tasks/progress.md` 为准；按本文依赖阶段推进，不按各子计划的
+> section 编号推断执行顺序。
 
 **Goal:** 把`tasks/01-16`已收敛合同拆成可独立评审、可验证、无pre/post-commit循环的完整实施序列，并覆盖未来复杂大模型、
 多target、多进程共享runtime、长decode、稀疏MoE和100GB级逻辑payload/state负载。
@@ -102,16 +102,16 @@ the remaining real-model/runtime/board gates wait for their explicit queue prere
 
 | Phase | Plan | Scope and completion output |
 | --- | --- | --- |
-| containment | [Target Correctness Foundation](2026-07-10-target-correctness-foundation.md) Task 1 | immediate no-mutation rejection for old flattening path; temporary only |
-| corpus preparation | [Real Model and Board Gates](2026-07-10-real-model-board-gates.md) Task 1 | source-backed program/payload fixtures and independent references only; no production gate advancement |
-| shared target | [Target Artifact Set](2026-07-10-target-artifact-set.md) shared tasks | bounded WCRE/schema/IDs/KAD values, runtime-safe command ABI/value, static closure/external registry, target compilation context registry; no artifact publication |
-| outer owner | [Package and Runtime](2026-07-10-package-runtime.md) Task 0 | unique `ProgramOutputTransaction`, runtime-neutral host verification ledger, typed metadata sessions, owner/session generations, staging tokens/views and trusted delivery reader |
-| typed handoff | [Typed Program and Distributed Identity](2026-07-10-typed-program-distributed-identity.md) | model APIs/resources/state/quant, target/mesh, MPMD/SPMD, canonical instances and candidate source relations |
-| pre-commit legality | [Target Correctness Foundation](2026-07-10-target-correctness-foundation.md) Task 4 + [Whole-Variant Executable](2026-07-10-whole-variant-executable.md) | split structural/target geometry libraries, candidate adapter, complete planning, selected artifacts and atomic executable attach; Task 14 plus Q5.C closes Q7 mandatory HF commit integration |
-| committed conversion | [Target Correctness Foundation](2026-07-10-target-correctness-foundation.md) Tasks 2/3/5 | MLIR-aware command-view base, sealed EntryCore/CloneDependency requests, structure semantics, registered calls and complete committed geometry coverage |
-| target delivery | [Target Artifact Set](2026-07-10-target-artifact-set.md) post-commit tasks | post-conversion KAD cross-check, command-family activation, target build session/staging, deterministic module packing, verified ELF/KAD and complete target-set attachment |
-| package/runtime | [Package and Runtime](2026-07-10-package-runtime.md) remaining tasks | package build session, single publication, two-phase metadata/runtime bootstrap, registry-owned provider capabilities, rolling execution/state/capacity |
-| workload evidence | [Real Model and Board Gates](2026-07-10-real-model-board-gates.md) | Q5 static mainline, Q6.B board launch, split Q8.N no-card/scale and Q8.B board/numeric evidence, then Q9 calibration; Q7 evidence is replayed rather than rescheduled here |
+| containment | [Target Correctness Foundation](target-correctness-foundation.md) Task 1 | immediate no-mutation rejection for old flattening path; temporary only |
+| corpus preparation | [Real Model and Board Gates](real-model-board-gates.md) Task 1 | source-backed program/payload fixtures and independent references only; no production gate advancement |
+| shared target | [Target Artifact Set](target-artifact-set.md) shared tasks | bounded WCRE/schema/IDs/KAD values, runtime-safe command ABI/value, static closure/external registry, target compilation context registry; no artifact publication |
+| outer owner | [Package and Runtime](package-runtime.md) Task 0 | unique `ProgramOutputTransaction`, runtime-neutral host verification ledger, typed metadata sessions, owner/session generations, staging tokens/views and trusted delivery reader |
+| typed handoff | [Typed Program and Distributed Identity](typed-program-distributed-identity.md) | model APIs/resources/state/quant, target/mesh, MPMD/SPMD, canonical instances and candidate source relations |
+| pre-commit legality | [Target Correctness Foundation](target-correctness-foundation.md) Task 4 + [Whole-Variant Executable](whole-variant-executable.md) | split structural/target geometry libraries, candidate adapter, complete planning, selected artifacts and atomic executable attach; Task 14 plus Q5.C closes Q7 mandatory HF commit integration |
+| committed conversion | [Target Correctness Foundation](target-correctness-foundation.md) Tasks 2/3/5 | MLIR-aware command-view base, sealed EntryCore/CloneDependency requests, structure semantics, registered calls and complete committed geometry coverage |
+| target delivery | [Target Artifact Set](target-artifact-set.md) post-commit tasks | post-conversion KAD cross-check, command-family activation, target build session/staging, deterministic module packing, verified ELF/KAD and complete target-set attachment |
+| package/runtime | [Package and Runtime](package-runtime.md) remaining tasks | package build session, single publication, two-phase metadata/runtime bootstrap, registry-owned provider capabilities, rolling execution/state/capacity |
+| workload evidence | [Real Model and Board Gates](real-model-board-gates.md) | Q5 static mainline, Q6.B board launch, split Q8.N no-card/scale and Q8.B board/numeric evidence, then Q9 calibration; Q7 evidence is replayed rather than rescheduled here |
 
 ## Stable Cross-Plan Interfaces
 

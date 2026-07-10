@@ -10,8 +10,9 @@
 - `docs/`中的hardware/register/reverse-engineering资料只拥有source-backed evidence。production IR、ABI、transport、
   package/runtime policy只由对应编号设计文档拥有；编号合同更新后要搜索supporting docs中的“负责”“主目标”
   “后续自定义ABI”“当前已覆盖/仍待”等规范性或动态措辞，防止形成第二事实源。
-- `docs/superpowers/plans/`中只有被`tasks/progress.md`当前实施计划索引引用的计划是执行入口；已完成且被新
-  路线替代的计划要在文件顶部标成historical/superseded，保留审计过程但不得据此恢复旧owner或旁路协议。
+- `tasks/plans/`中只有被`tasks/progress.md`当前实施计划索引引用的计划是执行入口；已完成且被新路线
+  替代的计划移入`tasks/archive/`并在文件顶部标成historical/superseded，保留审计过程但不得据此恢复
+  旧owner或旁路协议。实施计划不能依赖某个agent skill或工具目录才能解释和执行。
 - 第三方依赖的固定版本集中在 `cmake/third_party/WaferDependencyVersions.cmake`；不要把 LLVM、StableHLO、
   Shardy、OpenXLA/XLA、PyTorch/XLA、torch-mlir、lit 或 gtest 版本散落到源码里。
 - 用 `python3 tools/bootstrap_deps.py --python` 把固定版本 Python 测试工具安装到

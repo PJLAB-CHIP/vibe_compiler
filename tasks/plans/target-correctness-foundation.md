@@ -1,8 +1,7 @@
 # Target Correctness Foundation Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or
-> superpowers:executing-plans to implement this plan in the dependency order below. Every implementation task starts with a
-> failing test and ends with a separate commit.
+> **执行约束：** 任务状态和直接前置以 `tasks/progress.md` 为准；本文只拆解实现步骤，每项仍需先建立
+> 失败测试，再完成实现和独立验证。
 
 **Goal:** 消除 target LLVM recursive flatten silent miscompile，建立不可伪造的 entry-core/clone-dependency conversion
 request，并让 instruction verifier、whole-executable preflight、target lowering 和 KAD 共用同一 physical geometry与

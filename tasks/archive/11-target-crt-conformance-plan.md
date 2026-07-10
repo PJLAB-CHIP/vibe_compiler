@@ -2,11 +2,12 @@
 
 > **Historical plan:** This completed conformance batch is superseded as an execution entry. Do not extend or treat its
 > legacy supporting-document marker check as a current status/ABI owner; its removal is separately tracked by Q13.T.
-> Current work is controlled by `tasks/progress.md`, the numbered target design, and the 2026-07-10 long-horizon roadmap.
+> Current work is controlled by `tasks/progress.md`, the numbered target design, and
+> `tasks/plans/implementation-roadmap.md`.
 
-> **Historical checklist note:** Checkbox state and command blocks below preserve the original planning snapshot. In
-> particular, unchecked boxes do not indicate current work. Do not execute or update this plan; use the current queue and
-> roadmap named above.
+> **Historical checklist note:** Checkbox state and command intent below preserve the original planning snapshot;
+> repository-local self-references follow the archive path. Unchecked boxes do not indicate current work. Do not execute
+> or update this plan; use the current queue and roadmap named above.
 
 **Goal:** Turn the old DLCompiler TX81 CRT source audit into a current Wafer CRT conformance gate, then fix the highest-confidence mismatch in argmax/argmin writeback.
 
@@ -248,7 +249,7 @@ Run:
 
 ```bash
 git status --short
-git add docs/superpowers/plans/2026-07-09-target-crt-conformance.md \
+git add tasks/archive/11-target-crt-conformance-plan.md \
   docs/tx8-deps-reverse-engineering/README.md \
   docs/tx8-deps-reverse-engineering/tx81-current-crt-conformance-matrix.md \
   docs/tx8-deps-reverse-engineering/tx81-dlcompiler-crt-source-audit.md \

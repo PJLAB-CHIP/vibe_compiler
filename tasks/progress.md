@@ -40,20 +40,20 @@ target、package、runtime、numeric或board gate。Q11/Q12/Q13只表示设计�
 
 | 依赖位置 | 实施计划 | 队列范围 |
 | --- | --- | --- |
-| ready（可并行） | `docs/superpowers/plans/2026-07-10-target-correctness-foundation.md` Task 1 | Q0.C临时fail-closed containment；不是正式correctness完成 |
-| ready（可并行） | `docs/superpowers/plans/2026-07-10-target-artifact-set.md` shared foundation | Q0.F cross-plan Proto/WCRE/schema/value/closure/runtime-safe command ABI/context前置 |
-| ready（可并行） | `docs/superpowers/plans/2026-07-10-real-model-board-gates.md` Task 1 | Q5.C只准备source-backed corpus/payload/reference；不推进任何production gate |
-| after Q0.F | `docs/superpowers/plans/2026-07-10-package-runtime.md` Task 0 | Q0.O唯一outer `ProgramOutputTransaction`/delivery owner与runtime-neutral host verification ledger |
-| after Q0.O | `docs/superpowers/plans/2026-07-10-typed-program-distributed-identity.md` | Q0.2 typed model/distributed/candidate handoff |
-| after Q0.2 | `docs/superpowers/plans/2026-07-10-target-correctness-foundation.md` Task 4 | Q0.1 structural geometry + target legality core |
-| after Q0.1 | `docs/superpowers/plans/2026-07-10-whole-variant-executable.md` | Q0.3、Q0.4 complete planning/commit；Task 14结合Q5.C闭合Q7 mandatory HF commit integration |
-| after Q0.3/Q0.4 | `docs/superpowers/plans/2026-07-10-target-correctness-foundation.md` Tasks 2, 3, 5 | Q0.L sealed post-commit conversion + complete geometry families，可与已解阻塞的Q7并行 |
-| after Q0.L | `docs/superpowers/plans/2026-07-10-target-artifact-set.md` post-commit path | Q0.A KAD cross-check/command families/ELF/atomic target-set，随后关闭Q0集成gate并解锁Q4 |
-| after Q0/Q4 | `docs/superpowers/plans/2026-07-10-package-runtime.md` remaining tasks | Q4、Q6.N package/delivery/loader/shared runtime services |
-| after Q5 prerequisites | `docs/superpowers/plans/2026-07-10-real-model-board-gates.md` | Q5、Q6.B、Q8.N、Q8.B、Q9 real/scale/board/calibration gates；Q7只在此重放证据 |
+| ready（可并行） | `tasks/plans/target-correctness-foundation.md` Task 1 | Q0.C临时fail-closed containment；不是正式correctness完成 |
+| ready（可并行） | `tasks/plans/target-artifact-set.md` shared foundation | Q0.F cross-plan Proto/WCRE/schema/value/closure/runtime-safe command ABI/context前置 |
+| ready（可并行） | `tasks/plans/real-model-board-gates.md` Task 1 | Q5.C只准备source-backed corpus/payload/reference；不推进任何production gate |
+| after Q0.F | `tasks/plans/package-runtime.md` Task 0 | Q0.O唯一outer `ProgramOutputTransaction`/delivery owner与runtime-neutral host verification ledger |
+| after Q0.O | `tasks/plans/typed-program-distributed-identity.md` | Q0.2 typed model/distributed/candidate handoff |
+| after Q0.2 | `tasks/plans/target-correctness-foundation.md` Task 4 | Q0.1 structural geometry + target legality core |
+| after Q0.1 | `tasks/plans/whole-variant-executable.md` | Q0.3、Q0.4 complete planning/commit；Task 14结合Q5.C闭合Q7 mandatory HF commit integration |
+| after Q0.3/Q0.4 | `tasks/plans/target-correctness-foundation.md` Tasks 2, 3, 5 | Q0.L sealed post-commit conversion + complete geometry families，可与已解阻塞的Q7并行 |
+| after Q0.L | `tasks/plans/target-artifact-set.md` post-commit path | Q0.A KAD cross-check/command families/ELF/atomic target-set，随后关闭Q0集成gate并解锁Q4 |
+| after Q0/Q4 | `tasks/plans/package-runtime.md` remaining tasks | Q4、Q6.N package/delivery/loader/shared runtime services |
+| after Q5 prerequisites | `tasks/plans/real-model-board-gates.md` | Q5、Q6.B、Q8.N、Q8.B、Q9 real/scale/board/calibration gates；Q7只在此重放证据 |
 
 总依赖、跨计划接口和review checkpoint见
-`docs/superpowers/plans/2026-07-10-wafer-long-horizon-implementation-roadmap.md`。
+`tasks/plans/implementation-roadmap.md`。
 其中target-artifact计划的共享Proto/WCRE/schema/runtime-safe values/static closure/command ABI value/context基础在typed
 identity前执行；同一计划的KAD builder/command-family activation/ELF/artifact-set publication只消费committed
 executable和correctness conversion。这个拆分用于解除identity依赖，不允许candidate digest在commit前进入cache或
@@ -109,7 +109,7 @@ executable和correctness conversion。这个拆分用于解除identity依赖，�
 | Q10 | `system-review` | 已从复杂大模型和多卡长期目标完成跨pipeline审计。 | 01、16、`tasks/archive/09-system-design-implementation-review.md` |
 | Q11 | `design-convergence` | 编号设计已收敛typed identity、atomic commit、resource/event、transport/projection、target set和package/runtime owners。 | 01-16 |
 | Q12 | `plan-decomposition` | 已把编号设计拆成六份实施子计划和一份依赖路线图。 | 01-16 |
-| Q13 | `documentation-consistency` | 已收口稳定编号语义、semantic key、直接依赖与外部gate、Q7/Q8计划映射、supporting evidence owner和historical计划；遗留tool工作隔离为Q13.T/Q13.W。 | `tasks/README.md`, `tasks/progress.md`及本轮supporting docs |
+| Q13 | `documentation-consistency` | 已收口稳定编号语义、semantic key、直接依赖与外部gate、Q7/Q8计划映射、supporting evidence owner和historical计划；当前计划已归入`tasks/plans/`并解除agent skill目录耦合；遗留tool工作隔离为Q13.T/Q13.W。 | `tasks/README.md`, `tasks/progress.md`及本轮supporting docs |
 
 ### 任务完成门槛表
 
@@ -142,6 +142,6 @@ executable和correctness conversion。这个拆分用于解除identity依赖，�
 | Q10 | 报告覆盖总体目标、复杂大模型 workload 压力矩阵、全 pipeline contract、文档与实现一致性、IR/pass 边界、runtime/ABI、测试真实性和路线优先级；至少评估 dynamic batch/sequence、KV cache、MoE、TP/PP/EP/DP、多卡通信、resident weights、量化、多变体和 async overlap，并为每个主要结论给出文件/行号或本轮命令证据，明确事实、推断、限制和可验证整改门槛。 | 只复述现有设计；只证明最小闭环；只列风格问题；把历史审计报告当成第二份架构合同；未运行新鲜验证就判断 gate 成立。 |
 | Q11 | 编号文档共同定义verified program -> target environment/mesh/arenas -> distributed program -> candidate planning -> whole-variant atomic commit -> typed executable/static rank programs -> atomic TargetArtifactSet/KAD -> PackageManifest -> RuntimeSession；target/shape/rank axes正交，resource/transport/projection/completion/error owner唯一，并覆盖state、segmented MoE和multi-card gates。 | 新增第二份总体设计；只在审计报告写建议；保留direct production bypass、per-group commit、默认rank0、flat JSON双validator、shadow schedule/scalar completion、runtime replanning或最小静态case终态。 |
 | Q12 | 路线图和六份子计划覆盖Q0-Q9仍需实现的完整依赖链；每项给出真实文件边界、输入/输出artifact、先失败测试、focused验证、原子提交和下游接入点；共享基础只有一个owner，计划内容不重定义编号合同。 | 只有高层阶段名或工期估计；按单个case/shape安排实现；并行计划重复创建digest/proto/resource/transport owner；把计划写成新架构合同；没有主线vertical gate。 |
-| Q13 | `tasks/README.md`明确稳定编号与pipeline owner导航边界；`progress`用semantic key、直接前置、外部gate和拓扑分组表达队列；Q7/Q8计划映射无冲突；supporting docs明确source-backed evidence边界，遗留的Markdown checker耦合和tool workflow冲突分别隔离到Q13.T/Q13.W；旧计划显式superseded；Markdown table/link/fence、文本残留、DAG和`git diff --check`通过。 | 修改code/tool或IR/ABI；把Q13设为production artifact前置；隐瞒supporting-doc machine coupling或tool默认冲突；保留第二ABI/DTE/provider owner、隐式依赖、开发机绝对路径或未验证的Markdown链接/表格。 |
+| Q13 | `tasks/README.md`明确稳定编号与pipeline owner导航边界；`progress`用semantic key、直接前置、外部gate和拓扑分组表达队列；Q7/Q8计划映射无冲突；当前实施计划位于`tasks/plans/`且不依赖agent skill或工具目录；supporting docs明确source-backed evidence边界，遗留的Markdown checker耦合和tool workflow冲突分别隔离到Q13.T/Q13.W；旧计划移入archive并显式superseded；Markdown table/link/fence、文本残留、DAG和`git diff --check`通过。 | 修改code/tool或IR/ABI；把Q13设为production artifact前置；隐瞒supporting-doc machine coupling或tool默认冲突；保留第二ABI/DTE/provider owner、隐式依赖、开发机绝对路径或未验证的Markdown链接/表格。 |
 | Q13.T | 先在14/16固定非Markdown expected-set owner和checker contract；实现后conformance checker不再读取supporting docs，修改evidence措辞不会改变gate结果，positive/negative checker tests覆盖缺失和额外分类。 | 直接引入未收敛registry/ABI；继续从Markdown恢复production membership或状态；只删checker断言而没有替代事实源和negative test。 |
 | Q13.W | bootstrap创建路径、PyTorch/XLA build默认解释器和CMake workflow一致；空LLVM prebuilt URL返回稳定结构化诊断；device-link help不硬编码与集中pin冲突的LLVM版本；对应tool tests通过。 | 只改memory掩盖工具默认冲突；改pin或target profile；把开发机路径写成长期默认。 |

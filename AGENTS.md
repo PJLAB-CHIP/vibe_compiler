@@ -50,6 +50,7 @@ Wafer AI compiler / runtime 处在设计收敛和实现推进阶段。文档、I
 - `tasks/README.md`：编号设计文档导航和 archive 边界；不是任务状态或设计合同的主要依据。
 - `tasks/progress.md`：任务队列，记录每步任务的状态、对应设计文档、要做什么、完成要求和不算完成。
 - `tasks/`：当前编号设计文档，按 compiler pipeline 语义顺序排列。
+- `tasks/plans/`：当前实施计划，只拆解施工步骤和依赖 checkpoint；状态仍以 `tasks/progress.md` 为准。
 - `tasks/archive/`：历史审计、恢复和任务记录，只作背景，不作为当前架构合同。
 - `docs/`：硬件、runtime、ABI、反向分析资料。
 - `docs/tx8-deps-reverse-engineering/`：依赖、runtime、firmware、接口约束。
@@ -159,6 +160,8 @@ Pipeline position:
 ## 文档规则
 
 - 当前文档默认中文。
+- 当前实施计划统一放在 `tasks/plans/`，历史计划移入 `tasks/archive/`；不得按 agent、skill 或临时工具名
+  建立主线文档目录，也不得要求某个 skill 才能解释或执行计划。
 - 先讲边界和通用方法，再给 case；case 后说明哪些只是示例，不是协议。
 - 主线任务文档遵守 pipeline contract 和长期命名规则；实现入口只能作为索引，不能替代 artifact / IR 合同。
 - 不把其它项目路径、环境变量、测试入口、动态任务状态或 runtime 路线写成当前项目主线。

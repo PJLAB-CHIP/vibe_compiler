@@ -1,6 +1,6 @@
 # Real Model and Board Gates Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **执行约束：** 任务状态和直接前置以 `tasks/progress.md` 为准；本文 checkbox 只拆解实现步骤，不是独立状态源。
 
 **Goal:** 用真实导出模型、独立数值参考和明确的 no-card/board 证据，验证从 typed program 到 RuntimeSession 的完整主线，并用通过 correctness gate 的 profile 数据校准复杂大模型规划。
 
