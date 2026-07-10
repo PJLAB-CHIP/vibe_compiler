@@ -709,7 +709,7 @@ LLVM IR (.ll)
   -> LLVM clang++ RISC-V compile
        kernel.o
   -> Xuantie GNU ld compatibility normalization
-       kernel.o without LLVM 21 .riscv.attributes metadata
+       kernel.o without incompatible .riscv.attributes metadata
   -> repo-vendored tx8_deps riscv64-unknown-elf-gcc link
        kernel.so
 ```
@@ -730,10 +730,10 @@ clang++ kernel.ll -O2 -c -fPIC \
 riscv64-unknown-elf-objcopy -R .riscv.attributes kernel.o
 ```
 
-这是 object 兼容性 normalization，不是 IR 语义。当前 LLVM 21 会把 `rv64imafdc`
-编码成包含 `zaamo` / `zalrsc` 的 split-extension attribute；vendored Xuantie GNU ld 2.35
-不能解析这个 attribute 字符串。代码段仍按 `-march=rv64imafdc -mabi=lp64d` 生成，final link
-继续由 Xuantie GCC driver 选择对应 multilib。
+这是 object 兼容性 normalization，不是 IR 语义。pinned LLVM工具链生成的object可包含把
+`rv64imafdc`展开为`zaamo`/`zalrsc`的split-extension attribute，而vendored Xuantie GNU ld 2.35
+不能解析该attribute字符串。代码段仍按`-march=rv64imafdc -mabi=lp64d`生成，final link继续由
+Xuantie GCC driver选择对应multilib；LLVM版本事实只从集中dependency pin读取，不在本合同重复固定。
 
 最后用 repo-vendored `third_party/tx8_deps` 中的 RISC-V GCC 链接 kcore shared object：
 

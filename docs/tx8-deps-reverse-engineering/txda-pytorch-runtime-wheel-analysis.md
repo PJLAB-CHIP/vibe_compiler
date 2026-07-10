@@ -1,14 +1,14 @@
 # torch_txda PyTorch Runtime Wheel Analysis
 
-This note records the static reverse engineering results for:
-
-```text
-/root/dlc_dev/torch_txda-0.1.0+20251230.71a1e5a6-cp310-cp310-manylinux2014_x86_64.whl
-```
-
-The wheel was extracted to `/tmp/torch_txda_wheel_analysis` for inspection. The
-analysis used Python sources, bundled headers, ELF dynamic dependencies, symbol
+This note records static reverse-engineering results for an external,
+non-vendored `torch_txda` wheel snapshot. The audit checkout and extraction
+locations are provenance, not stable repository paths. The analysis used Python
+sources, bundled headers, ELF dynamic dependencies, symbol
 tables, strings, and targeted disassembly of runtime/copy/stream/event paths.
+
+This file is an eager/runtime evidence ledger, not a Wafer package, provider,
+completion, or compiler-lowering contract. Those owners are the numbered design
+documents linked from this directory's README.
 
 The artifact metadata says:
 
@@ -37,8 +37,8 @@ PyTorch Python compatibility layer
 This wheel is not the same layer as the low-level TX8 compiler runtime described
 in `tx8-interface-contract.md`. It does not expose `TsmRun`, bootparam/dyn TLV
 serialization, Kcore firmware loading, NCC packet wrappers, or direct DTE
-programming APIs. Those remain the compiler/runtime contract recovered from
-`tx8_deps`.
+programming APIs. Evidence for those mechanisms remains in the `tx8_deps`
+ledgers; Wafer contracts remain in the numbered designs.
 
 The useful new signal is that the vendor PyTorch runtime has a CUDA-like
 `tx_runtime`/`txdnn` API layer above the lower TX8 runtime:
@@ -53,10 +53,9 @@ The useful new signal is that the vendor PyTorch runtime has a CUDA-like
 - descriptor/op APIs: `txCreateTensorDescriptor`, `txSetTensorDescriptor`,
   `txDestroyTensorDescriptor`, and many `txdnn*` eager tensor kernels
 
-That layer is useful for a PyTorch integration shim, eager bring-up, and host
-memory management comparison. It should not replace the Wafer compiler package
-launch path unless the missing `tx_runtime` headers/libraries later expose a
-compatible compiled-model API.
+That layer provides evidence for a PyTorch integration shim, eager bring-up,
+and host memory management comparison. The wheel alone does not prove a
+compatible compiled-package launch path.
 
 ## 2. Wheel Contents
 
@@ -105,7 +104,7 @@ Its RUNPATH is:
 ```
 
 After the later `firmware_kuiper` pass, `libhpgr.so` and `tx_runtime.h` were
-found under `/root/dlc_dev/firmware_kuiper/kuiper`.  `libtxdnn.so` and
+found in that external SDK snapshot. `libtxdnn.so` and
 `txdnn.h` are still not present in the workspace.  The conclusions below remain
 static ABI/behavior findings, not board-executed validation.
 
@@ -249,12 +248,13 @@ Native event API:
 | `synchronize()` | calls `txEventSynchronize`. |
 | destructor | switches to the event device and calls `txEventDestroy`. |
 
-Design implication: these are useful for PyTorch eager stream ordering and host
-queue dependencies. They do not express NCC packet ordering, Direct DTE receive
-completion, Kcore mailbox completion, or `serial_mode`/SPM bank constraints.
-Wafer's compiler runtime still needs explicit NCC/DTE/Kcore issue/drain rules.
+These APIs establish PyTorch eager stream ordering and host queue dependency
+behavior. They do not by themselves demonstrate NCC packet ordering, Direct DTE
+receive completion, Kcore mailbox completion, or `serial_mode` / SPM bank
+constraints; this wheel therefore cannot be used as evidence for those Wafer
+completion semantics.
 
-## 8. txdnn Descriptor and Dtype Contract
+## 8. Observed txdnn Descriptor and Dtype Interface
 
 `txda_init.h` maps PyTorch dtypes to `txdnn` dtypes:
 
@@ -289,11 +289,10 @@ txSetTensorDescriptor(
 A scalar non-empty tensor is represented with shape `{1}`. The descriptor passes
 raw PyTorch shape and stride arrays while tagging layout as `NHWC`.
 
-This is a high-level eager tensor descriptor convention. It is not evidence that
-low-level TX8 SPM tensor layouts are NHWC. The Wafer SPM planner should continue
-to use the register-level Cx/NCx/SPM layout constraints recovered from
-`tx8_deps`; `txdnn` descriptors are only relevant to a PyTorch eager runtime
-interop layer.
+This records only a high-level eager tensor descriptor convention. It does not
+establish low-level TX8 SPM physical layout or prove NHWC / Cx / NCx mapping.
+Register-level evidence must be evaluated separately; this wheel cannot resolve
+Wafer SPM layout semantics.
 
 ## 9. Native Operator Coverage
 
@@ -374,53 +373,44 @@ Do not conflate these layers:
 | Host TX8 runtime | `tx8_deps` `libtx8_runtime.so` | device memory, bootparam, dyn TLV, `TsmRun`, D2D/P2P via Kcore programs, profiling. |
 | Kcore/NCC/DTE layer | `tx8_deps` static libs and headers | instruction wrappers, Direct DTE, stream FSM/mailbox, PMU, reserved SPM. |
 | KMD/driver | `firmware_kuiper` decrypted driver payload | BO/job/NPU/DTE/C2C/log/info/topology UAPI, BAR/ATU windows, PG maps, and firmware loading. |
-| Wafer compiler runtime | our design | stable C ABI, SPM planner, package format, explicit issue/drain, verifier and golden tests. |
+| Wafer compiler/runtime | numbered design documents | This wheel does not define its ABI, planning, package, or completion objects. |
 
-New design constraints implied by this wheel:
+Evidence limitations relevant to the numbered designs:
 
 - A PyTorch frontend can plausibly expose `torch.txda` through PyTorch
   `PrivateUse1`, but that is separate from the compiled package ABI.
-- `torch_txda` stream/event semantics are host queue semantics. They should not
-  be used as a proof that NCC/CT/NE/DTE tasks have safe SPM reuse or bank-safe
+- `torch_txda` stream/event semantics are host queue semantics. They do not
+  prove that NCC/CT/NE/DTE tasks have safe SPM reuse or bank-safe
   parallelism.
-- `torch.txda.synchronize()` maps to `txDeviceSynchronize`, which is too coarse
-  for normal compiled program scheduling. It is useful for debugging and host
-  boundary fences only.  It should not be confused with HPGR model command-slot
+- `torch.txda.synchronize()` maps to `txDeviceSynchronize`; this observation
+  does not establish its granularity or equivalence to HPGR model command-slot
   completion or KMD compute fences.
-- The wheel's Python device init/cleanup hooks are no-ops, so initialization and
-  teardown must be owned by the lower runtime adapter or deployment system.
-- `txdnn` descriptor layout should not drive Wafer SPM layout. It is an eager
-  tensor-library contract.
-- The distributed runtime expects `flagcx` when CUDA/NCCL code is migrated.
-  Wafer multi-card runtime design should keep a separate collective backend
-  boundary rather than baking NCCL semantics into compiler IR.
-- Environment-controlled CPU fallback is present; compiled Wafer correctness
-  tests should avoid silently passing through CPU fallback unless the test
-  explicitly opts into it.
+- The wheel's Python device init/cleanup hooks are no-ops, so this layer does
+  not prove initialization or teardown ownership.
+- `txdnn` descriptor layout is an eager tensor-library contract and does not
+  prove Wafer SPM layout.
+- The distributed runtime expects `flagcx` when CUDA/NCCL code is migrated;
+  the Wafer collective boundary is owned by its numbered communication/runtime designs.
+- Environment-controlled CPU fallback is present; verification policy belongs
+  to the numbered verification design.
 
 ## 12. What This Adds to Our Runtime Picture
 
-The wheel confirms that there are at least two host-facing runtime surfaces in
+The wheel and adjacent evidence confirm at least three host-facing runtime surfaces in
 the TX8/TXDA ecosystem:
 
 1. A compiled-model/runtime surface recovered from `tx8_deps`
    (`TsmRun`, bootparam, dyn TLV, Kcore DTE, profiling).
-2. A primary HPGR host runtime surface recovered from `firmware_kuiper`
+2. The largest HPGR host runtime surface observed in `firmware_kuiper`
    (`tx_runtime.h`, `libhpgr.so`, model/module/kernel/graph launch, streams,
    events, device memory).
 3. A PyTorch eager surface recovered here (`PrivateUse1`, `tx_runtime`,
    `txdnn`, `txops`, streams/events, CUDA monkey patches).
 
-For Wafer, the practical split should be:
-
-- compiler package execution can target HPGR/`tx_runtime` when that SDK is
-  available; the old `TsmRun`/bootparam/dyn-TLV/Kcore path remains compatibility
-  and reverse-engineering evidence;
-- PyTorch user-facing integration can use a `torch.txda` compatibility module or
-  a similar `PrivateUse1` path;
-- tests should explicitly state which layer is under test: PyTorch eager op,
-  runtime allocation/copy, compiled package launch, Kcore instruction wrapper,
-  or hardware register protocol.
+The three surfaces are evidence inputs, not provider-selection policy. PyTorch
+integration, compiled-package execution, collective binding, and layer-specific
+verification remain with the numbered frontend, runtime, communication, and
+verification designs.
 
 ## 13. Remaining Gaps
 

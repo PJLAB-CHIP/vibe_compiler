@@ -1,6 +1,12 @@
 # Target CRT Conformance Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Historical plan:** This completed conformance batch is superseded as an execution entry. Do not extend or treat its
+> legacy supporting-document marker check as a current status/ABI owner; its removal is separately tracked by Q13.T.
+> Current work is controlled by `tasks/progress.md`, the numbered target design, and the 2026-07-10 long-horizon roadmap.
+
+> **Historical checklist note:** Checkbox state and command blocks below preserve the original planning snapshot. In
+> particular, unchecked boxes do not indicate current work. Do not execute or update this plan; use the current queue and
+> roadmap named above.
 
 **Goal:** Turn the old DLCompiler TX81 CRT source audit into a current Wafer CRT conformance gate, then fix the highest-confidence mismatch in argmax/argmin writeback.
 
@@ -111,7 +117,7 @@ Add this RUN line to `test/Tools/wafer-target-crt-symbols.test` before the compi
 Run:
 
 ```bash
-/root/miniconda3/bin/lit -sv build/wafer-dev/test/Tools/wafer-target-crt-symbols.test
+<configured-lit> -sv build/wafer-dev/test/Tools/wafer-target-crt-symbols.test
 ```
 
 Expected: FAIL because `tools/check_target_crt_conformance.py` does not exist yet.
@@ -136,7 +142,7 @@ old __* ABI symbols and composite helper names are absent from runtime CRT sourc
 Run:
 
 ```bash
-/root/miniconda3/bin/lit -sv build/wafer-dev/test/Tools/wafer-target-crt-symbols.test
+<configured-lit> -sv build/wafer-dev/test/Tools/wafer-target-crt-symbols.test
 ```
 
 Expected: PASS.
@@ -221,7 +227,7 @@ Expected: no output, exit 0.
 Run:
 
 ```bash
-/root/miniconda3/bin/lit -sv build/wafer-dev/test/Tools/wafer-target-crt-symbols.test
+<configured-lit> -sv build/wafer-dev/test/Tools/wafer-target-crt-symbols.test
 ```
 
 Expected: PASS.
@@ -231,7 +237,7 @@ Expected: PASS.
 Run:
 
 ```bash
-/root/miniconda3/bin/lit -sv --show-unsupported build/wafer-dev/test
+<configured-lit> -sv --show-unsupported build/wafer-dev/test
 ```
 
 Expected: all supported tests pass; unsupported list is reported explicitly.

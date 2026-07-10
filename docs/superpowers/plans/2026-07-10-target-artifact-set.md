@@ -75,7 +75,7 @@ Pipeline position:
 - [ ] **Step 2: Run the failing dependency test**
 
   ```bash
-  /root/miniconda3/bin/lit -sv build/wafer-dev/test/Tools/check-deps.test
+  <configured-lit> -sv build/wafer-dev/test/Tools/check-deps.test
   ```
 
   Expected before implementation: missing `WAFER_PROTOBUF_*` pin and helper diagnostics.
@@ -124,7 +124,7 @@ Pipeline position:
   python3 tools/check_deps.py
   cmake -S . -B build/wafer-dev -G Ninja
   cmake --build build/wafer-dev --target protoc -- -j128
-  /root/miniconda3/bin/lit -sv build/wafer-dev/test/Tools/check-deps.test
+  <configured-lit> -sv build/wafer-dev/test/Tools/check-deps.test
   ```
 
   Expected: exact version line, dependency checks exit 0, and pinned protoc target builds.
@@ -475,7 +475,7 @@ llvm::Expected<CanonicalRecordResult> streamCanonicalRecord(
   ```bash
   cmake --build build/wafer-dev --target WaferUnitTests WaferWCREProcessProbe -- -j128
   ctest --test-dir build/wafer-dev -R '^WaferUnitTests$' --output-on-failure
-  /root/miniconda3/bin/lit -sv build/wafer-dev/test/ABI/wcre-cross-process.test
+  <configured-lit> -sv build/wafer-dev/test/ABI/wcre-cross-process.test
   ```
 
   Expected: all WCRE value/golden/domain tests and the 100K/1M bounded-memory cases pass in supported processes.
@@ -868,7 +868,7 @@ llvm::Expected<StorageEncodingDescriptor> verifyStorageEncodingDescriptor(
   ```bash
   cmake --build build/wafer-dev --target WaferSemanticIdentityProto WaferUnitTests wafer-artifact-inspect -- -j128
   ctest --test-dir build/wafer-dev -R '^WaferUnitTests$' --output-on-failure
-  /root/miniconda3/bin/lit -sv build/wafer-dev/test/Tools/wafer-semantic-identity-schema.test
+  <configured-lit> -sv build/wafer-dev/test/Tools/wafer-semantic-identity-schema.test
   ```
 
 - [ ] **Step 7: Commit**
@@ -1120,7 +1120,7 @@ llvm::Error verifyParsedProtoMatchesPreflight(
   ```bash
   cmake --build build/wafer-dev --target WaferKernelAbiProto WaferUnitTests wafer-artifact-inspect -- -j128
   ctest --test-dir build/wafer-dev -R '^WaferUnitTests$' --output-on-failure
-  /root/miniconda3/bin/lit -sv build/wafer-dev/test/Tools/wafer-kernel-abi.test
+  <configured-lit> -sv build/wafer-dev/test/Tools/wafer-kernel-abi.test
   git add schema/wafer/kernel_abi.proto schema/CMakeLists.txt \
     include/Wafer/ABI/ArtifactAdmissionLimits.h \
     include/Wafer/ABI/KernelAbiTypes.h include/Wafer/ABI/KernelAbiDescriptor.h \
@@ -1524,8 +1524,8 @@ buildAndVerifyKernelAbiDescriptor(
   ```bash
   cmake --build build/wafer-dev --target WaferCompilerKernelAbiAdapter WaferUnitTests wafer-artifact-inspect -- -j128
   ctest --test-dir build/wafer-dev -R '^WaferUnitTests$' --output-on-failure
-  /root/miniconda3/bin/lit -sv build/wafer-dev/test/Tools/wafer-kernel-abi-from-executable.test
-  /root/miniconda3/bin/lit -sv build/wafer-dev/test/Tools/check-target-dependency-layers.test
+  <configured-lit> -sv build/wafer-dev/test/Tools/wafer-kernel-abi-from-executable.test
+  <configured-lit> -sv build/wafer-dev/test/Tools/check-target-dependency-layers.test
   python3 tools/check_target_dependency_layers.py
   git add include/Wafer/Compiler/KernelAbiBuilder.h \
     lib/Wafer/Compiler/KernelAbiBuilder.cpp lib/Wafer/Compiler/CMakeLists.txt \
@@ -1838,7 +1838,7 @@ mlir::FailureOr<VerifiedTargetCoverage> verifyTargetCoverage(
   ```bash
   cmake --build build/wafer-dev --target WaferUnitTests wafer-opt -- -j128
   ctest --test-dir build/wafer-dev -R '^WaferUnitTests$' --output-on-failure
-  /root/miniconda3/bin/lit -sv \
+  <configured-lit> -sv \
     build/wafer-dev/test/Tools/wafer-target-coverage-preflight.test
   git add include/Wafer/Target/TargetArtifactBuildLimits.h \
     include/Wafer/Target/TargetArtifactBuildSession.h \
@@ -1958,7 +1958,7 @@ Dependency direction is a testable contract: `WaferTargetLegality -> WaferIR/Waf
   ```bash
   cmake --build build/wafer-dev --target WaferUnitTests wafer-opt -- -j128
   ctest --test-dir build/wafer-dev -R '^WaferUnitTests$' --output-on-failure
-  /root/miniconda3/bin/lit -sv build/wafer-dev/test \
+  <configured-lit> -sv build/wafer-dev/test \
     --filter='LowPrecision|lower-low-precision-to-target-llvm|wafer-target-crt-symbols|wafer-device-link'
   python3 tools/check_target_crt_symbols.py
   python3 tools/check_target_crt_conformance.py
@@ -2098,7 +2098,7 @@ Dependency direction is a testable contract: `WaferTargetLegality -> WaferIR/Waf
 
   ```bash
   cmake --build build/wafer-dev --target wafer-opt -- -j128
-  /root/miniconda3/bin/lit -sv build/wafer-dev/test \
+  <configured-lit> -sv build/wafer-dev/test \
     --filter='lower-accepted-dte-to-target-llvm|wafer-target-crt-symbols|wafer-device-link'
   python3 tools/check_target_crt_symbols.py
   python3 tools/check_target_crt_conformance.py
@@ -2280,7 +2280,7 @@ mlir::FailureOr<PreparedTargetCoverage> prepareTargetCoverage(
   ```bash
   cmake --build build/wafer-dev --target WaferUnitTests wafer-opt -- -j128
   ctest --test-dir build/wafer-dev -R '^WaferUnitTests$' --output-on-failure
-  /root/miniconda3/bin/lit -sv \
+  <configured-lit> -sv \
     build/wafer-dev/test/Tools/wafer-prelink-closure-unit.test
   git add include/Wafer/Target/TargetModuleTransaction.h \
     lib/Wafer/Target/TargetModuleTransaction.cpp \
@@ -2567,7 +2567,7 @@ readAndVerifyWaferAbiNotes(
   ```bash
   cmake --build build/wafer-dev --target WaferUnitTests wafer-artifact-inspect -- -j128
   ctest --test-dir build/wafer-dev -R '^WaferUnitTests$' --output-on-failure
-  /root/miniconda3/bin/lit -sv build/wafer-dev/test/Tools/wafer-elf-abi-note.test
+  <configured-lit> -sv build/wafer-dev/test/Tools/wafer-elf-abi-note.test
   git add include/Wafer/Artifact/ArtifactMetadataVerificationSession.h \
     include/Wafer/Artifact/RuntimeArtifactVerificationSession.h \
     include/Wafer/Artifact/ElfAbiNote.h \
@@ -2810,7 +2810,7 @@ mlir::FailureOr<VerifiedTargetModules> packLinkAndVerifyTargetCoverage(
   ```bash
   cmake --build build/wafer-dev --target WaferUnitTests wafer-artifact-inspect wafer-opt -- -j128
   ctest --test-dir build/wafer-dev -R '^WaferUnitTests$' --output-on-failure
-  /root/miniconda3/bin/lit -sv build/wafer-dev/test \
+  <configured-lit> -sv build/wafer-dev/test \
     --filter='wafer-device-link(-verified-module)?\.test'
   ```
 
@@ -3307,8 +3307,8 @@ The noninstalled Artifact-owned `TargetArtifactSetInternal.h` defines the exact 
   ```bash
   cmake --build build/wafer-dev --target WaferTargetArtifactSetProto WaferUnitTests wafer-artifact-inspect -- -j128
   ctest --test-dir build/wafer-dev -R '^WaferUnitTests$' --output-on-failure
-  /root/miniconda3/bin/lit -sv build/wafer-dev/test/Tools/wafer-target-artifact-set.test
-  /root/miniconda3/bin/lit -sv build/wafer-dev/test/Tools/check-target-dependency-layers.test
+  <configured-lit> -sv build/wafer-dev/test/Tools/wafer-target-artifact-set.test
+  <configured-lit> -sv build/wafer-dev/test/Tools/check-target-dependency-layers.test
   python3 tools/check_target_dependency_layers.py
   ```
 
@@ -3399,7 +3399,7 @@ The noninstalled Artifact-owned `TargetArtifactSetInternal.h` defines the exact 
 
   ```bash
   cmake --build build/wafer-dev --target wafer-opt wafer-artifact-inspect -- -j128
-  /root/miniconda3/bin/lit -sv --show-unsupported \
+  <configured-lit> -sv --show-unsupported \
     build/wafer-dev/test/Tools/wafer-opt-target-artifact-set.test
   ```
 
@@ -3453,7 +3453,7 @@ The noninstalled Artifact-owned `TargetArtifactSetInternal.h` defines the exact 
   ```bash
   cmake --build build/wafer-dev --target check-wafer -- -j128
   ctest --test-dir build/wafer-dev --output-on-failure
-  /root/miniconda3/bin/lit -sv --show-unsupported build/wafer-dev/test
+  <configured-lit> -sv --show-unsupported build/wafer-dev/test
   git diff --check
   ```
 

@@ -1,10 +1,8 @@
 # Firmware Kuiper Hardware SDK Reverse Engineering
 
-This note records the reverse-engineering pass over:
-
-```text
-/root/dlc_dev/firmware_kuiper
-```
+This note records a reverse-engineering pass over an external, non-vendored
+`firmware_kuiper` SDK snapshot. The audit checkout location is provenance, not
+a stable repository path.
 
 The conclusion is that `firmware_kuiper` is a full Kuiper hardware SDK, not a
 Triton-only runtime package.  It contains host runtime, driver/firmware
@@ -12,7 +10,9 @@ installers, boot firmware, endpoint Linux payloads, system-management APIs,
 validation tools, C2C/discovery tooling, DTE/SPM diagnostics, CCL/FlagCX,
 multimedia/CV libraries, profiler tooling, and model/kernel sample data.
 
-This is the canonical document for SDK/KMD/HPGR evidence.  The tx8-deps-only
+This is the canonical evidence ledger for the audited SDK/KMD/HPGR snapshot,
+not a Wafer IR, ABI, provider-selection, or runtime-policy owner. Those contracts
+belong to the numbered design documents linked from this directory's README. The tx8-deps-only
 instruction/Kcore evidence remains in `tx8-interface-contract.md` and
 `tx8-deps-reverse-engineering-reference.md`; the PyTorch eager layer is handled
 separately in `txda-pytorch-runtime-wheel-analysis.md`.
@@ -42,8 +42,8 @@ Top-level SDK layout:
 | path | contents | main use |
 | --- | --- | --- |
 | `firmware/*.run` | Makeself installers for driver, firmware, runtime, validation suite, CCL, FlagCX, multimedia, profiler. | Deployment and board firmware provenance. |
-| `/tmp/firmware_kuiper_driver_payload_extract/main` | Decrypted driver payload: KMD source, UAPI, tools, headers/libs, services, dynamic firmware. | Driver ioctl, BO, job, DTE, C2C, MHU, firmware-loading ground truth. |
-| `kuiper/include/tx_runtime.h` | Public HPGR runtime C ABI. | Primary host runtime ABI. |
+| decrypted driver payload | KMD source, UAPI, tools, headers/libs, services, dynamic firmware. | Driver ioctl, BO, job, DTE, C2C, MHU, firmware-loading evidence. |
+| `kuiper/include/tx_runtime.h` | Public HPGR runtime C ABI. | Largest host runtime surface observed in this snapshot; provider ownership remains external to this document. |
 | `kuiper/lib/libhpgr.so` | Implements `tx_runtime.h`. | Device, memory, stream/event, model, module, kernel, graph, rank, tile, P2P. |
 | `kuiper/lib/libvs_runtime.so` | Legacy/VS `Tsm*` compatibility runtime; depends on `libhpgr.so`. | Bridge semantics and DTE TLV evidence. |
 | `kuiper/include/tsmml*.h`, `kuiper/lib/libtsmml.so` | System-management API. | Device/topology/C2C/power/thermal/PCIe/process state. |
@@ -83,14 +83,8 @@ The `.run` files are Makeself installers.  The package roles are:
 
 The outer driver package contains `driver_payload.tar.gz.enc` and
 `npu_driver_install.sh`.  Despite the suffix, `npu_driver_install.sh` is an
-ELF64 x86-64 PIE executable, not a shell script.  The encrypted payload has been
-decrypted/extracted to:
-
-```text
-/tmp/firmware_kuiper_driver_payload_extract/main
-```
-
-That payload contains KMD source, public UAPI, unit tests, host tools,
+ELF64 x86-64 PIE executable, not a shell script. The encrypted payload was
+decrypted and extracted during the audit. It contains KMD source, public UAPI, unit tests, host tools,
 systemd services, TSMML headers/libs, dynamic AP/Kcore/Score firmware, and
 driver installer logic.  Therefore driver behavior in this document is not only
 inferred from user-space tools; several core pieces are UAPI/source-confirmed.
@@ -224,11 +218,8 @@ over PCIe/BAR/MHU-mediated control, switch rootfs, and then write SPI flash.
 
 ### 3.6 Driver KMD and UAPI
 
-The decrypted driver payload contains the main UAPI at:
-
-```text
-/tmp/firmware_kuiper_driver_payload_extract/main/src/refine/uapi/tsm_uapi.h
-```
+The decrypted driver payload contains the main UAPI at
+`src/refine/uapi/tsm_uapi.h` relative to that payload.
 
 It also contains KMD sources under `src/refine`, legacy/low-level NPU sources
 under `src/txnpu`, and VPU/G2D sources under `src/txvpu`.
@@ -348,10 +339,9 @@ fence from the DMA scheduler path.
 Compute jobs use KCQ and MHU doorbells.  The source currently contains a
 critical compatibility note: due to missing AP firmware interrupt support for
 compute-done notification, KMD directly signals the compute done fence after
-kicking the doorbell.  That means a user-space runtime must not blindly treat
-the KMD compute fence as proof that device-side model/kernel work has completed
-unless HPGR/AP/Kcore protocol adds its own completion check.  This is one of
-the most important correctness hazards recovered from the driver source.
+kicking the doorbell. The fence therefore does not by itself prove device-side
+model/kernel completion in this snapshot; production mapping belongs to the
+numbered runtime and verification designs.
 
 The queue path is more specific than a generic "submit and fence" model:
 
@@ -540,8 +530,9 @@ latency/bandwidth, and MAC management.
 
 ## 4. Hardware Topology and Numbering Spaces
 
-The SDK exposes multiple numbering spaces.  They must not be collapsed into one
-integer domain.
+The SDK exposes multiple numbering spaces with different fields and lookup
+paths; the snapshot does not prove that they are interchangeable. Typed identity
+and joins belong to the numbered topology/runtime designs.
 
 | space | evidence | meaning |
 | --- | --- | --- |
@@ -657,7 +648,7 @@ same 109 MiB per-tile slot size, allocates an `NPU_BIN` buffer for
 sends a model-manager command containing both the engine device map and the bin
 map memory information.
 
-## 5. HPGR `tx_runtime.h` Contract
+## 5. Observed HPGR `tx_runtime.h` Interface
 
 `tx_runtime.h` is the public CUDA-like host runtime ABI in this SDK.  It covers
 device management, memory, stream/event, model/module/kernel/graph, rank, tile
@@ -760,7 +751,7 @@ Supported behavior:
 | `txMemcpyAsync` | H2D, D2H, D2D queued on stream; H2H rejected. |
 | `txMemcpyBatch`, `txMemcpyBatchAsync` | H2D/D2H only; D2D/H2H rejected. |
 | `txMemGetInfo` | Calls driver memory-info path for current device. |
-| `txSend`, `txRecv` | Runtime P2P API; peer info is documented as `phyTilex << 8 | phyTiley`. |
+| `txSend`, `txRecv` | Runtime P2P API; peer info is documented as `phyTilex << 8 \| phyTiley`. |
 
 Binary-confirmed limits in this build:
 
@@ -813,10 +804,10 @@ Disassembly separates HPGR completion semantics from the KMD compute fence:
 | stream finish | Stream finish waits on the last queued command's event/completion object rather than trusting the KMD compute fence alone. |
 
 The sync model-manager wait has no recovered timeout in this build; it sleeps in
-short intervals while polling the slot completion bit.  This strengthens the
-runtime design rule: HPGR's own command protocol is the authoritative
-host-visible model completion path, while the KMD compute fence is only a submit
-compatibility artifact in this driver snapshot.
+short intervals while polling the slot completion bit. This proves that HPGR's
+command protocol and the KMD compute fence are distinct mechanisms in this
+snapshot; it does not make either one the Wafer terminal-completion owner.
+Production mapping belongs to the numbered runtime and verification designs.
 
 `txNpuKcPowerOn` and `txNpuKcPowerOff` are deprecated and stub-success in this
 build.
@@ -835,8 +826,8 @@ start of the runtime object; `Runtime::IsTriton()` reads it directly.
 - `false`: many hardware implementation methods return failure `1` or no-op
   success.
 
-This flag should be documented as a runtime backend selector, not as proof that
-the SDK should be understood through Triton alone.
+This flag is an observed compatibility-mode selector; it does not prove a Wafer
+provider/backend selection rule or make Triton the SDK's organizing model.
 
 ### 6.2 Bridged vs Stubbed Calls
 
@@ -1240,8 +1231,8 @@ Confirmed parallel-related facts:
 | --- | --- |
 | `serial_mode` is an instruction field. | `tx8_deps` instruction definitions comment bit 0 as serial mode: `1` means all instructions enter one queue without inter-instruction parallelism; `0` means parallel mode. |
 | CT/NE/RDMA/WDMA packets carry SPM range metadata. | `tx8_deps` instruction structs include `src_end`, `dst_end`, or equivalent end-address fields describing each operand's SPM storage range. |
-| The scheduler has enough metadata to detect data/address hazards. | Existing Wafer docs and `tx8_deps` packet fields show source/destination begin/end ranges rather than only base pointers. |
-| `tsmvs -mode serial|parallel` exists for PCIe perf tests. | `tsmvs_ut.sh`, `tsmvs` strings/disassembly. |
+| Packets expose range metadata that could participate in hazard detection. | `tx8_deps` packet fields show source/destination begin/end ranges rather than only base pointers; exact scheduler use still needs lower-level or board proof. |
+| `tsmvs -mode serial\|parallel` exists for PCIe perf tests. | `tsmvs_ut.sh`, `tsmvs` strings/disassembly. |
 | `parallel` PCIe perf path creates pthread workers; `serial` calls the test directly. | `TsmvsPcieTestV2::TestEntry` disassembly. |
 | HPGR stream queues order commands in the same stream. | `libhpgr.so` stream/event command objects. |
 | VS D2D/P2P parallelizes bulk copies across tile DTE lanes. | `TileDteCfg` TLV generation. |
@@ -1275,7 +1266,7 @@ The 64 KiB value does appear indirectly as `16 * 4 KiB` in the VS D2D tiling
 scheme.  That is an internal aggregate DTE stride, not proof by itself that all
 parallel SPM addresses must be 64 KiB aligned.
 
-### 12.3 Best Current Interpretation
+### 12.3 Explicitly Non-Binding Interpretation
 
 The compiler-side line:
 
@@ -1283,11 +1274,11 @@ The compiler-side line:
 uint32_t alignSize = space_->strategy.isParallel ? 64 * 1024 : 256;
 ```
 
-is likely an allocator/scheduler policy, not a public HPGR ABI.  The most
-plausible hardware explanation is now:
+is likely a historical allocator/scheduler policy, not a public HPGR ABI. The
+following explanation is an inference only and does not define Wafer policy:
 
 - serial/single-engine accesses can use the lower 256-byte alignment already
-  common in TX8 instruction, layout, and DDR2DDR efficiency contracts;
+  visible in TX8 instruction/layout evidence and DDR2DDR efficiency conventions;
 - `serial_mode=0` lets the device-side scheduler consider multiple independent
   CT/NE/RDMA/WDMA/DTE operations at once instead of forcing all instructions
   through one serialized queue;
@@ -1302,24 +1293,22 @@ plausible hardware explanation is now:
   with this interpretation, but it is not sufficient proof of the physical bank
   function.
 
-That is still an inference.  The static SDK evidence does not yet prove the SPM
-bank mapping.  Until board tests or lower-level RTL/driver registers prove the
-exact mapping, Wafer should treat 64 KiB as a conservative compiler policy for
-parallel schedules, not as a fully recovered hardware ABI.
+That is still an inference. The static SDK evidence does not prove the SPM bank
+mapping or establish 64 KiB as a hardware ABI. Allocation and scheduling policy
+remain with the numbered memory-planning and verification designs.
 
-### 12.4 Practical Scheduling Rule for Now
+### 12.4 Evidence Needed for Scheduling Policy
 
-For production safety, use:
+This snapshot provides the following inputs and gaps; it does not define a
+production scheduling rule:
 
-- 256-byte alignment for serial single-engine CT/NE/RDMA/WDMA paths where the
-  existing TX8 contract already requires it;
-- 64 KiB alignment for any buffer region that may be touched by parallel
-  CT/NE/DMA/DTE work until board tests prove a weaker rule;
-- no overlapping live SPM intervals across concurrently issued engines unless
-  a verifier can prove read-only sharing or explicit producer/consumer sync;
-- explicit stream/event/DTE/FSM/CSR waits at engine boundaries;
+- 256-byte alignment appears in instruction, layout, and DDR2DDR evidence;
+- 64 KiB appears as a historical allocation-color heuristic, not a recovered
+  physical bank mapping;
+- packet ranges, busy tables, stream/event/DTE/FSM/CSR mechanisms are distinct
+  observations and cannot by themselves prove a Wafer completion contract;
 - a board-test matrix that sweeps low SPM address bits and records
-  CT/NE/DTE/SPM PMU counters to identify actual bank conflicts.
+  CT/NE/DTE/SPM PMU counters is still needed to identify actual bank conflicts.
 
 ## 13. Coverage and Remaining Gaps
 
@@ -1341,32 +1330,23 @@ Current static coverage:
 | FlagCX | Medium: symbols and strings. | No public header in this SDK. |
 | Multimedia/CV | High at public ABI level. | Hardware limits and performance require board tests. |
 | Profiler | Medium: CLI/libs/docs visible. | Device-side event fidelity requires board tests. |
-| SPM bank / `serial_mode=0` | Medium for existence of parallel mode, operand range metadata, and likely bank-resource hazard; low for exact physical bank mapping. | Need board sweep or lower RTL/firmware evidence to turn 64 KiB from compiler policy into exact hardware ABI. |
+| SPM bank / `serial_mode=0` | Medium for existence of parallel mode, operand range metadata, and likely bank-resource hazard; low for exact physical bank mapping. | Need board sweep or lower RTL/firmware evidence before any 64 KiB heuristic can be treated as calibrated policy or hardware ABI. |
 | `txdnn` eager op layer | Not covered by this SDK. | `libtxdnn.so` / `txdnn.h` are still absent here. |
 
-Main design implications:
+Evidence handoff to the numbered designs:
 
-1. Treat Kuiper as a layered hardware SDK: HPGR runtime, TSMML/system tools,
-   validation suite, firmware/driver, CCL/FlagCX, multimedia/CV, profiler.
-2. Keep device id, mesh id, rank, PCI BDF, tile index, tile coordinate, and C2C
-   direction as separate typed identifiers.
-3. Use HPGR `tx_runtime.h` as the public host runtime target when available.
-4. Model memory as typed domains: host pinned/userptr, local NPU DRAM,
-   visible BAR, visible-extended BAR, log pool, NPU binary pool, SPM, and
-   firmware-reserved regions.
-5. Treat KMD compute fences with caution in this driver snapshot: source shows
-   compute done fences are directly signaled after MHU doorbell kick because AP
-   firmware compute-done interrupt support is missing.
-6. Use `libvs_runtime.so` as compatibility and DTE TLV evidence, but do not
-   rely on its stubbed `Tsm*` sync/launch calls.
-7. Use TSMML for topology, product, C2C, PCIe, power, temperature, clock, and
-   health discovery.
-8. Keep CCL/FlagCX behind a collective runtime layer.  They use TX runtime
-   streams and memory, but they are not the compiler instruction-lowering
-   contract.
-9. Keep multimedia/CV and profiler documented as SDK surfaces, not as Wafer's
-   model execution core.
-10. For parallel instruction issue, keep three layers separate: `serial_mode=0`
-   enables non-serialized scheduling, packet begin/end ranges protect address
-   dependencies, and 64 KiB SPM coloring is a conservative bank-conflict
-   avoidance policy until the exact bank mapping is proven.
+- The snapshot contains distinct HPGR, TSMML/system, validation,
+  firmware/driver, CCL/FlagCX, multimedia/CV, and profiler surfaces.
+- KMD source in this snapshot signals compute fences after the MHU doorbell
+  because AP compute-done interrupt support is absent; this is not terminal
+  model completion proof.
+- `libvs_runtime.so` contains useful compatibility and DTE TLV evidence, while
+  several `Tsm*` sync/launch calls are stubs.
+- `serial_mode=0`, packet ranges, and the historical 64 KiB coloring heuristic
+  are separate facts with different confidence levels.
+
+Topology/identifier, memory-domain, transport, provider, completion, and
+calibration decisions belong respectively to the numbered topology, memory,
+communication, runtime, and verification documents. This evidence ledger does
+not select HPGR, TSMML, CCL/FlagCX, or any other surface as a Wafer architecture
+owner.

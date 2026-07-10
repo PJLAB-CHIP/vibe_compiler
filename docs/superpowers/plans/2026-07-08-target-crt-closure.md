@@ -1,6 +1,11 @@
 # Target CRT Closure Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Historical plan:** This completed initial CRT closure is superseded as an execution entry. Do not replay its
+> document-parsing or header-owned-membership steps. Current work is controlled by `tasks/progress.md`, the numbered
+> target design, and the 2026-07-10 long-horizon roadmap.
+
+> **Historical checklist note:** Checkbox state and command blocks below preserve the original execution record. They are
+> not an active task list; do not execute or update this plan. Use the current queue and roadmap named above.
 
 **Goal:** Close Q2-Q3 by making Wafer-owned `wafer_tx81_*` symbols typed, repo-local, linkable, and covered by production symbol checks.
 
@@ -50,7 +55,7 @@ The checker reads `tasks/14-target-llvm-golden-packet.md` production symbol bloc
 Run:
 
 ```bash
-/root/miniconda3/bin/lit -sv build/wafer-dev/test/Tools/wafer-target-crt-symbols.test
+<configured-lit> -sv build/wafer-dev/test/Tools/wafer-target-crt-symbols.test
 ```
 
 Expected after Task 1 implementation but before CRT files: still FAIL for missing CRT files.
@@ -84,7 +89,7 @@ Replace the vararg call helper with signature-aware callee declaration. Use `i64
 Run:
 
 ```bash
-/root/miniconda3/bin/lit -sv build/wafer-dev/test/Transforms/lower-instr-to-target-llvm.mlir
+<configured-lit> -sv build/wafer-dev/test/Transforms/lower-instr-to-target-llvm.mlir
 ```
 
 Expected after implementation: PASS.
@@ -114,7 +119,7 @@ Each CRT function builds the public `Tsm*Instr` packet, calls the relevant publi
 Run:
 
 ```bash
-/root/miniconda3/bin/lit -sv build/wafer-dev/test/Tools/wafer-target-crt-symbols.test
+<configured-lit> -sv build/wafer-dev/test/Tools/wafer-target-crt-symbols.test
 ```
 
 Expected after implementation: PASS.
@@ -143,7 +148,7 @@ Compile `runtime/wafer_crt/src/wafer_tx81_crt.c` with TX8 GCC and include both `
 Run:
 
 ```bash
-/root/miniconda3/bin/lit -sv build/wafer-dev/test/Tools/wafer-device-link.test
+<configured-lit> -sv build/wafer-dev/test/Tools/wafer-device-link.test
 ```
 
 Expected after implementation: PASS.
@@ -164,9 +169,9 @@ Expected after implementation: PASS.
 Run:
 
 ```bash
-/root/miniconda3/bin/lit -sv build/wafer-dev/test/Tools/wafer-target-crt-symbols.test
-/root/miniconda3/bin/lit -sv build/wafer-dev/test/Transforms/lower-instr-to-target-llvm.mlir
-/root/miniconda3/bin/lit -sv build/wafer-dev/test/Tools/wafer-device-link.test
+<configured-lit> -sv build/wafer-dev/test/Tools/wafer-target-crt-symbols.test
+<configured-lit> -sv build/wafer-dev/test/Transforms/lower-instr-to-target-llvm.mlir
+<configured-lit> -sv build/wafer-dev/test/Tools/wafer-device-link.test
 ```
 
 - [x] **Step 2: Run broader lit**
@@ -174,7 +179,7 @@ Run:
 Run:
 
 ```bash
-/root/miniconda3/bin/lit -sv --show-unsupported build/wafer-dev/test
+<configured-lit> -sv --show-unsupported build/wafer-dev/test
 ```
 
 - [x] **Step 3: Update task status**

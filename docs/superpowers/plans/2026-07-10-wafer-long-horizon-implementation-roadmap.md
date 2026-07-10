@@ -33,6 +33,7 @@ lit/CTest/GTest、C++ runtime/provider adapters。
   `eager_active_set|graph_liveness`；long-running release只由typed symbolic terminal rules驱动，不展开百万iteration图。
 - 所有限制值positive checked，0不表示unbounded；充分limits/worker变化不得改变semantic output。
 - 每项先写失败测试，再实现并运行fresh gate，再独立commit。unsupported/skipped、partial publish或局部FileCheck不算主线完成。
+- 各计划命令中的`<configured-lit>`表示当前build的`CMakeCache.txt`中`LLVM_EXTERNAL_LIT`值；不得写开发机绝对路径。
 - task/stage编号只能出现在计划/队列，不能进入pass/op/type/artifact/CLI/build target/diagnostic长期名称。
 
 ## Baseline
@@ -46,6 +47,8 @@ package和真实RuntimeSession仍按`tasks/progress.md`推进。本文不把旧�
 
 ```text
 Target Correctness Task 1 temporary fail-closed hotfix (parallel containment only)
+
+Source-backed corpus/reference preparation (Q5.C, parallel fixture-only work)
 
 Target Artifact shared foundation
   Proto/WCRE/schema/value types, canonical context, static closure,
@@ -67,7 +70,9 @@ Target Correctness Task 4
 Whole-Variant plan
   ExecutableCompilationInput owner -> candidate allocation-view adapter -> complete planning/preflight
   -> selected bytes -> fresh commit preflight -> atomic executable attach
-        |
+        |\
+        | +--> Q7 HF mandatory-commit integration (after Q5.C corpus preparation)
+        |      replays the same production driver and may proceed beside committed conversion
         v
 Target Correctness Tasks 2/3/5
   compiler command-view base + sealed conversion request
@@ -89,22 +94,24 @@ Package/Runtime remaining tasks
 Real-model, large-scale, board and calibration gates
 ```
 
-Source-backed corpus/reference preparation may run beside the early phases. It cannot claim compiler/target/package/runtime/board
-completion before the corresponding producer chain exists.
+Source-backed corpus/reference preparation is the explicit fixture-only Q5.C queue item and may run beside the early phases.
+It advances no production gate by itself. Q7 becomes ready only after its Whole-Variant prerequisites and Q5.C are complete;
+the remaining real-model/runtime/board gates wait for their explicit queue prerequisites.
 
 ## Plan Index
 
 | Phase | Plan | Scope and completion output |
 | --- | --- | --- |
 | containment | [Target Correctness Foundation](2026-07-10-target-correctness-foundation.md) Task 1 | immediate no-mutation rejection for old flattening path; temporary only |
+| corpus preparation | [Real Model and Board Gates](2026-07-10-real-model-board-gates.md) Task 1 | source-backed program/payload fixtures and independent references only; no production gate advancement |
 | shared target | [Target Artifact Set](2026-07-10-target-artifact-set.md) shared tasks | bounded WCRE/schema/IDs/KAD values, runtime-safe command ABI/value, static closure/external registry, target compilation context registry; no artifact publication |
 | outer owner | [Package and Runtime](2026-07-10-package-runtime.md) Task 0 | unique `ProgramOutputTransaction`, runtime-neutral host verification ledger, typed metadata sessions, owner/session generations, staging tokens/views and trusted delivery reader |
 | typed handoff | [Typed Program and Distributed Identity](2026-07-10-typed-program-distributed-identity.md) | model APIs/resources/state/quant, target/mesh, MPMD/SPMD, canonical instances and candidate source relations |
-| pre-commit legality | [Target Correctness Foundation](2026-07-10-target-correctness-foundation.md) Task 4 + [Whole-Variant Executable](2026-07-10-whole-variant-executable.md) | split structural/target geometry libraries, candidate adapter, complete planning, selected artifacts and atomic executable attach |
+| pre-commit legality | [Target Correctness Foundation](2026-07-10-target-correctness-foundation.md) Task 4 + [Whole-Variant Executable](2026-07-10-whole-variant-executable.md) | split structural/target geometry libraries, candidate adapter, complete planning, selected artifacts and atomic executable attach; Task 14 plus Q5.C closes Q7 mandatory HF commit integration |
 | committed conversion | [Target Correctness Foundation](2026-07-10-target-correctness-foundation.md) Tasks 2/3/5 | MLIR-aware command-view base, sealed EntryCore/CloneDependency requests, structure semantics, registered calls and complete committed geometry coverage |
 | target delivery | [Target Artifact Set](2026-07-10-target-artifact-set.md) post-commit tasks | post-conversion KAD cross-check, command-family activation, target build session/staging, deterministic module packing, verified ELF/KAD and complete target-set attachment |
 | package/runtime | [Package and Runtime](2026-07-10-package-runtime.md) remaining tasks | package build session, single publication, two-phase metadata/runtime bootstrap, registry-owned provider capabilities, rolling execution/state/capacity |
-| workload evidence | [Real Model and Board Gates](2026-07-10-real-model-board-gates.md) | real small numeric gates plus 10k/1000/1M/100GB-class scale evidence, multi-card and calibration set |
+| workload evidence | [Real Model and Board Gates](2026-07-10-real-model-board-gates.md) | Q5 static mainline, Q6.B board launch, split Q8.N no-card/scale and Q8.B board/numeric evidence, then Q9 calibration; Q7 evidence is replayed rather than rescheduled here |
 
 ## Stable Cross-Plan Interfaces
 
@@ -190,7 +197,7 @@ python3 tools/check_ir_organization.py --root .
 python3 tools/check_deps.py
 cmake --build build/wafer-dev --target check-wafer -- -j128
 ctest --test-dir build/wafer-dev --output-on-failure
-/root/miniconda3/bin/lit -sv --show-unsupported build/wafer-dev/test
+<configured-lit> -sv --show-unsupported build/wafer-dev/test
 ```
 
 For scale and board checkpoints also run their explicitly configured builds/labels:
@@ -206,11 +213,13 @@ Review unsupported/skipped output. A gate is incomplete if its required feature 
 
 Start the temporary correctness hotfix and target shared foundation independently. After shared target types land, implement the
 outer delivery foundation, then typed identity. Land the split geometry libraries before Whole candidate planning; finish and
-attach the executable before starting sealed conversion/artifact emission. Package/runtime follows complete target attachments.
+attach the executable before starting sealed conversion/artifact emission. If Q5.C is complete, Q7 may replay the same production
+driver beside committed conversion; it does not wait for package/runtime. Package/runtime follows complete target attachments.
 Within package/runtime, land the lower host ledger and typed metadata loaders before any RuntimeSession API; then implement pure
 exact-domain preflight, registry context acquisition and one-way bind in that order. Migration lands its pure semantic request,
 side-effect-free deployment placement inventory and pure exact-domain preflight before exact context, artifact bind, final registry
 snapshot and execution-plan work. Provider adapters only implement low-level per-domain capability sets.
-Large corpus/reference fixtures may be prepared early, but scale/board/profile queue states advance only with fresh evidence.
+Large corpus/reference fixtures may be prepared early only through Q5.C; completing it alone does not advance Q5/Q7/Q8.N/Q8.B or any
+scale/board/profile queue state. Those states advance only after their producer dependencies and fresh gates pass.
 Each independently reviewable task is one commit; update`tasks/progress.md` only after the corresponding checkpoint is genuinely
 met, not after scaffold, parser roundtrip or partial stage success.

@@ -14,7 +14,8 @@ capabilities；repo-owned final executor分别验证failure semantics与真实nu
 
 ## Global Constraints
 
-- 设计 owner：`tasks/01-16`；本文只编排 Q5/Q7/Q8/Q9 的实现和证据，不声明新的 IR、KAD、package 或 provider ABI。
+- 设计 owner：`tasks/01-16`；本文编排Q5、Q6.B、Q8.N、Q8.B和Q9的实现与证据，并重放Whole-Variant
+  计划已经闭合的Q7证据；不声明新的IR、KAD、package或provider ABI。
 - 测试模型必须从框架或忠实 exporter 进入 verified program；手写 `wafer.group`、instruction IR、LLVM IR 或 manifest不能证明 vertical gate。
 - 每个 corpus case明确 source revision/config、seed、dtype、shape/bounds、payload digest和reference算法；路径和参数名只作测试定位。
 - compiler artifact必须经过 mandatory whole-variant commit、真实 device link、ELF/KAD/fingerprint验证和 manifest semantic verifier。
@@ -28,6 +29,28 @@ capabilities；repo-owned final executor分别验证failure semantics与真实nu
   ambiguity/unknown在variant selection和provider side effect前失败。
 - 大模型scale gate把真实byte-integrity路径与逻辑容量/并发压力分开：较小真实payload必须完整hash/copy，70B/100GB-class
   accounting可使用明确test-only sparse/CAS/provider capability，但不能据此声称真实100GB numeric或cryptographic吞吐已通过。
+
+## Queue Mapping And Execution Order
+
+Task编号是本计划内的稳定work-package标识，执行必须遵循下列依赖，而不是按章节数字猜顺序：
+
+```text
+Task 1 (Q5.C corpus, early and fixture-only)
+  -> Whole-Variant Task 14 (Q7 mandatory HF commit gate)
+  -> Task 2 (Q5 static production mainline)
+       |\
+       | +-> Task 7 static-board checkpoint (Q6.B)
+       v
+     Tasks 3-6 + Task 9 scale gate (Q8.N)
+       -> Task 7 complex-board checkpoint (Q8.B; also requires Q6.B)
+       -> Q8 aggregate
+       -> Task 8 profile calibration (Q9)
+       -> Task 10 closure
+```
+
+Task 7因此有两个独立状态边界：static board evidence可以在Q5后关闭Q6.B；dynamic/stateful/parallel/quant/
+migration等complex board evidence必须等待Q8.N，才能关闭Q8.B。Task 8即使在本文中出现在Task 9之前，也不能在
+Q8 aggregate之前执行。
 
 ---
 
@@ -89,7 +112,7 @@ class CaseEvidence:
 - [ ] **Step 4: Run and commit**
 
 ```bash
-/root/miniconda3/bin/lit -sv build/wafer-dev/test/Integration/model-corpus-contract.test
+<configured-lit> -sv build/wafer-dev/test/Integration/model-corpus-contract.test
 python3 test/Tools/wafer_pytorch_xla_capture_contract_test.py
 git add test/Integration test/Tools/Inputs/wafer_pytorch_xla_capture.py \
   test/Tools/wafer_pytorch_xla_capture_contract_test.py
@@ -97,6 +120,8 @@ git commit -m "Add source-backed model integration corpus"
 ```
 
 ### Task 2: Static Transformer Mainline Gate
+
+Queue mapping: consumes Q5.C, Q7 and the completed compiler/target/package/runtime prerequisites; advances Q5 only.
 
 **Files:**
 - Create: `test/Integration/static-transformer-mainline.test`
@@ -158,7 +183,7 @@ Add `wafer-mainline-integration` only when importer, SPMD helper, target toolcha
 
 ```bash
 cmake --build build/wafer-dev --target wafer-opt wafer-run -- -j128
-/root/miniconda3/bin/lit -sv build/wafer-dev/test/Integration/static-transformer-mainline.test
+<configured-lit> -sv build/wafer-dev/test/Integration/static-transformer-mainline.test
 ctest --test-dir build/wafer-dev -L wafer-integration --output-on-failure
 git add test/Integration/static-transformer-mainline.test tools/wafer_verify_integration_artifacts.py \
   test/lit.cfg.py test/lit.site.cfg.py.in test/CMakeLists.txt
@@ -166,6 +191,9 @@ git commit -m "Gate the static transformer production mainline"
 ```
 
 ### Task 3: Bounded Dynamic Variant Selection Gate
+
+Queue mapping: contributes the dynamic-selection portion of Q8.N; it does not advance Q8.N until Tasks 4-6 and Task 9
+also satisfy their no-card/scale gates.
 
 **Files:**
 - Create: `test/Integration/bounded-dynamic-variants.test`
@@ -194,7 +222,7 @@ Inspect each selected entry and reject dynamic dimensions in target instruction 
 ```bash
 cmake --build build/wafer-dev --target WaferUnitTests wafer-run -- -j128
 ctest --test-dir build/wafer-dev -R '^WaferUnitTests$' --output-on-failure
-/root/miniconda3/bin/lit -sv build/wafer-dev/test/Integration/bounded-dynamic-variants.test
+<configured-lit> -sv build/wafer-dev/test/Integration/bounded-dynamic-variants.test
 git add test/Integration/bounded-dynamic-variants.test \
   test/Integration/Inputs/wafer_model_corpus.py \
   unittests/Runtime/DynamicVariantIntegrationTest.cpp unittests/CMakeLists.txt
@@ -202,6 +230,8 @@ git commit -m "Validate bounded dynamic executable selection"
 ```
 
 ### Task 4: Stateful Prefill and Decode Gate
+
+Queue mapping: contributes stateful/KV/migration no-card evidence to Q8.N; numeric state evidence remains Q8.B.
 
 **Files:**
 - Create: `test/Integration/stateful-prefill-decode.test`
@@ -259,7 +289,7 @@ exclusive in-place lease, poison/reset and failure ordering; they must not repor
 ```bash
 cmake --build build/wafer-dev --target WaferUnitTests wafer-run -- -j128
 ctest --test-dir build/wafer-dev -R '^WaferUnitTests$' --output-on-failure
-/root/miniconda3/bin/lit -sv build/wafer-dev/test/Integration/stateful-prefill-decode.test
+<configured-lit> -sv build/wafer-dev/test/Integration/stateful-prefill-decode.test
 git add test/Integration/stateful-prefill-decode.test \
   test/Integration/Inputs/wafer_reference.py \
   unittests/Runtime/StatefulExecutionIntegrationTest.cpp unittests/CMakeLists.txt
@@ -267,6 +297,8 @@ git commit -m "Gate stateful prefill and decode execution"
 ```
 
 ### Task 5: Composite Parallel and Segmented MoE Gates
+
+Queue mapping: contributes parallel/MoE no-card evidence to Q8.N; multi-card numeric/completion evidence remains Q8.B.
 
 **Files:**
 - Create: `test/Integration/composite-parallel-transformer.test`
@@ -307,7 +339,7 @@ issued peer/stage work reaches cancel or safe terminal wait without deadlock.
 ```bash
 cmake --build build/wafer-dev --target WaferUnitTests wafer-run -- -j128
 ctest --test-dir build/wafer-dev -R '^WaferUnitTests$' --output-on-failure
-/root/miniconda3/bin/lit -sv \
+<configured-lit> -sv \
   build/wafer-dev/test/Integration/composite-parallel-transformer.test \
   build/wafer-dev/test/Integration/segmented-moe.test
 git add test/Integration/composite-parallel-transformer.test \
@@ -317,6 +349,8 @@ git commit -m "Gate composite parallel and segmented MoE execution"
 ```
 
 ### Task 6: Quantized and Mixed-Precision Gate
+
+Queue mapping: contributes quantized/FP8 selection and descriptor evidence to Q8.N; hardware numeric evidence remains Q8.B.
 
 **Files:**
 - Create: `test/Integration/quantized-mixed-precision.test`
@@ -354,14 +388,17 @@ not infer quantization from dtype strings or function names.
 ```bash
 cmake --build build/wafer-dev --target WaferUnitTests wafer-run -- -j128
 ctest --test-dir build/wafer-dev -R '^WaferUnitTests$' --output-on-failure
-/root/miniconda3/bin/lit -sv build/wafer-dev/test/Integration/quantized-mixed-precision.test
+<configured-lit> -sv build/wafer-dev/test/Integration/quantized-mixed-precision.test
 git add test/Integration/quantized-mixed-precision.test \
   test/Integration/Inputs/wafer_reference.py \
   unittests/Runtime/TargetCapabilitySelectionTest.cpp unittests/CMakeLists.txt
 git commit -m "Gate quantized and mixed precision variants"
 ```
 
-### Task 7: Explicit Board Execution Suite
+### Task 7: Split Static And Complex Board Execution Suite
+
+Queue mapping: the static-transformer checkpoint advances Q6.B after Q5. The complex checkpoint advances Q8.B only after
+Q6.B and Q8.N (including Task 9) are complete; one checkpoint cannot mark the other done.
 
 **Files:**
 - Create: `test/Board/CMakeLists.txt`
@@ -373,9 +410,11 @@ git commit -m "Gate quantized and mixed precision variants"
 - Modify: `tools/wafer-run/wafer-run.cpp`
 
 **Interfaces:**
-- Consumes: validated packages from Tasks 2-6, registry-produced verified environment inventory and canonical per-domain Tx/KMD
-  capability sets; no caller backend/context/manager.
-- Produces: board numeric/completion/failure evidence bound to package, environment, firmware/runtime and test input digests.
+- Consumes: Task 2's validated static package for Q6.B; Tasks 3-6 plus Task 9's completed Q8.N evidence for the later Q8.B
+  checkpoint; registry-produced verified environment inventory and canonical per-domain Tx/KMD capability sets; no caller
+  backend/context/manager.
+- Produces: separately recorded Q6.B static board evidence and Q8.B complex numeric/completion/failure evidence, each bound
+  to package, environment, firmware/runtime and test input digests.
 
 - [ ] **Step 1: Register board tests only in board builds**
 
@@ -385,10 +424,11 @@ Add `WAFER_ENABLE_BOARD_TESTS` and a required configure-time board inventory fil
 
 `BoardEvidence` records package manifest ID/blob digest, TargetArtifactSet ID, environment/topology/projection fingerprints, provider/driver/firmware versions, board IDs, invocation/reference digests, per-entry timestamps, typed completion results and numeric metrics. It is a test result artifact, never a compiler/runtime input.
 
-- [ ] **Step 3: Execute single-card numeric/state cases**
+- [ ] **Step 3: Execute the Q6.B static checkpoint, then gated single-card complex cases**
 
-Run static, both dynamic shapes, stateful prefill/two-decode, a small full-copy/page-COW state migration, and quantized/FP8
-cases on actual hardware. For INT8, compare both native integer output and the explicit converted/dequantized FP16 output.
+Run the static transformer first; its complete allocation/load/copy/entry/completion/error path and full-output comparison
+close Q6.B independently. Run both dynamic shapes, stateful prefill/two-decode, a small full-copy/page-COW state migration,
+and quantized/FP8 cases only after Q8.N is complete; these contribute to Q8.B. For INT8, compare both native integer output and the explicit converted/dequantized FP16 output.
 Copy full outputs/state back and compare with the independent references prepared by earlier tasks. Confirm allocation/copy/
 module/entry/completion/cleanup calls execute rather than stopping after symbol discovery, and verify the runtime-selected
 realization tuple matches the package record for every bound resource.
@@ -424,6 +464,9 @@ git commit -m "Add explicit board numeric and completion gates"
 
 ### Task 8: Profile Evidence and Cost Calibration
 
+Queue mapping: advances Q9 only after Q8.N, Q8.B and the Q8 aggregate gate are complete. It must not run merely because
+the static Q6.B checkpoint has board evidence.
+
 **Files:**
 - Create: `schema/wafer/calibration_profile.proto`
 - Modify: `schema/CMakeLists.txt`
@@ -450,7 +493,8 @@ git commit -m "Add explicit board numeric and completion gates"
 - Create: `test/Integration/calibration-profile-loading.test`
 
 **Interfaces:**
-- Consumes: successful board evidence with target/profile provenance and PMU/timing measurements.
+- Consumes: completed Q8 aggregate, Task 7's complex-board evidence and Task 9's scale evidence, with target/profile
+  provenance and PMU/timing measurements.
 - Produces: deterministic versioned profile delivery bytes, immutable verified cost observations and explicit planner scoring
   input; legality remains independent.
 
@@ -589,6 +633,8 @@ git commit -m "Calibrate planner costs from verified board profiles"
 
 ### Task 9: Large-Model Scale, Stress, and Bounded-Memory Gate
 
+Queue mapping: together with Tasks 3-6, advances Q8.N. It produces no Q6.B/Q8.B numeric or board evidence.
+
 **Files:**
 - Create: `test/Scale/CMakeLists.txt`
 - Create: `test/Scale/LargeModelFixture.h`
@@ -604,7 +650,7 @@ git commit -m "Calibrate planner costs from verified board profiles"
 **Interfaces:**
 - Consumes: production frontend/identity/planner/output/package/runtime APIs plus explicitly test-only sparse/CAS/provider/
   durable-store capabilities that cannot construct semantic proofs.
-- Produces: quantified peak-memory, count/limit, FD, transaction atomicity, rolling-graph, reservation and migration evidence.
+- Produces: Q8.N's quantified peak-memory, count/limit, FD, transaction atomicity, rolling-graph, reservation and migration evidence.
   It does not claim full 70B numeric correctness or physical 100GB transfer throughput.
 
 - [ ] **Step 1: Register an honest scale profile**
@@ -670,7 +716,7 @@ git commit -m "Calibrate planner costs from verified board profiles"
   cmake -S . -B build/wafer-scale -G Ninja -DWAFER_ENABLE_SCALE_TESTS=ON
   cmake --build build/wafer-scale --target WaferUnitTests check-wafer -- -j128
   ctest --test-dir build/wafer-scale -L wafer-scale --output-on-failure
-  /root/miniconda3/bin/lit -sv --show-unsupported build/wafer-scale/test/Scale
+  <configured-lit> -sv --show-unsupported build/wafer-scale/test/Scale
   git add CMakeLists.txt test/Scale test/CMakeLists.txt \
     unittests/Compiler/LargeModelPlanningTest.cpp \
     unittests/Runtime/LargeModelRuntimeTest.cpp \
@@ -686,9 +732,10 @@ git commit -m "Calibrate planner costs from verified board profiles"
 - Modify: `memory/general_dev.md`
 
 **Interfaces:**
-- Consumes: completed static/dynamic/stateful/composite/MoE/quant no-card gates, configured large-model scale gates and
-  separately executed board/profile suites.
-- Produces: reproducible verification report and evidence-backed Q5/Q7/Q8/Q9 status.
+- Consumes: completed Q5/Q7, Tasks 3-6 plus Task 9 Q8.N evidence, separately completed Task 7 Q6.B/Q8.B checkpoints,
+  Q8 aggregate and the final Task 8 Q9 profile suite.
+- Produces: reproducible verification report and evidence-backed Q5/Q6.B/Q8.N/Q8.B/Q8/Q9 status, plus a replay check
+  that Q7 remains closed through the same production driver.
 
 - [ ] **Step 1: Run compiler/no-card gates from a clean build**
 
@@ -697,7 +744,7 @@ python3 tools/check_ir_organization.py --root .
 python3 tools/check_deps.py
 cmake --build build/wafer-dev --target check-wafer -- -j128
 ctest --test-dir build/wafer-dev -L wafer-integration --output-on-failure
-/root/miniconda3/bin/lit -sv --show-unsupported build/wafer-dev/test
+<configured-lit> -sv --show-unsupported build/wafer-dev/test
 ctest --test-dir build/wafer-scale -L wafer-scale --output-on-failure
 ```
 

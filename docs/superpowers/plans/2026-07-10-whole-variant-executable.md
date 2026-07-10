@@ -277,7 +277,7 @@ analyzeTraversalCoverage(ExecutableEntryOp entry);
 
   ```bash
   cmake --build build/wafer-dev --target wafer-opt -- -j128
-  /root/miniconda3/bin/lit -sv build/wafer-dev/test \
+  <configured-lit> -sv build/wafer-dev/test \
     --filter='Transforms/materialize-entry-traversals(-failure)?\.mlir'
   ```
 
@@ -299,7 +299,7 @@ analyzeTraversalCoverage(ExecutableEntryOp entry);
 
   ```bash
   cmake --build build/wafer-dev --target wafer-opt -- -j128
-  /root/miniconda3/bin/lit -sv build/wafer-dev/test \
+  <configured-lit> -sv build/wafer-dev/test \
     --filter='Transforms/materialize-entry-traversals(-failure)?\.mlir|Transforms/convert-group-to-tile-region\.mlir|Transforms/select-group-tile-(multi-output|reduction-split|tiled-control-flow-gap)\.mlir'
   git add include/Wafer/Analysis/TraversalCoverageAnalysis.h \
     lib/Wafer/Analysis/TraversalCoverageAnalysis.cpp \
@@ -586,7 +586,7 @@ mlir::FailureOr<WholeEntryLayoutResult> applyEntryLayoutAlternative(
 - [ ] **Step 2: Run and confirm the early plan is not enough**
 
   ```bash
-  /root/miniconda3/bin/lit -sv build/wafer-dev/test \
+  <configured-lit> -sv build/wafer-dev/test \
     --filter='Transforms/finalize-entry-layouts(-failure)?\.mlir|Transforms/dump-group-layout-plan\.mlir'
   ```
 
@@ -608,7 +608,7 @@ mlir::FailureOr<WholeEntryLayoutResult> applyEntryLayoutAlternative(
 
   ```bash
   cmake --build build/wafer-dev --target wafer-opt -- -j128
-  /root/miniconda3/bin/lit -sv build/wafer-dev/test \
+  <configured-lit> -sv build/wafer-dev/test \
     --filter='Transforms/finalize-entry-layouts(-failure)?\.mlir|Transforms/convert-tile-region-to-instr-layout-materialize\.mlir|Dialect/Wafer/Tile/Layout/'
   git add include/Wafer/Analysis/Layout/WholeEntryLayoutAnalysis.h \
     lib/Wafer/Analysis/Layout/WholeEntryLayoutAnalysis.cpp \
@@ -680,7 +680,7 @@ Task 5; it must dominate GEMM read and scratch reuse.
 - [ ] **Step 5: Run and commit**
 
 ```bash
-/root/miniconda3/bin/lit -sv build/wafer-dev/test \
+<configured-lit> -sv build/wafer-dev/test \
   --filter='Transforms/select-low-precision-implementation.*\.mlir|Dialect/Wafer/Instr/.*low-precision.*\.mlir'
 git add include/Wafer/Analysis/LowPrecisionLegality.h lib/Wafer/Analysis/LowPrecisionLegality.cpp \
   include/Wafer/IR/WaferAttrs.td include/Wafer/IR/WaferInterfaces.td lib/Wafer/IR/WaferInterfaces.cpp \
@@ -847,7 +847,7 @@ mlir::LogicalResult materializeCompletionGraph(
 
   ```bash
   cmake --build build/wafer-dev --target wafer-opt -- -j128
-  /root/miniconda3/bin/lit -sv build/wafer-dev/test \
+  <configured-lit> -sv build/wafer-dev/test \
     --filter='Dialect/Wafer/Executable/(invalid-)?completion-graph\.mlir|Transforms/materialize-(completion-graph|iterated-entry-graph)\.mlir'
   ```
 
@@ -884,7 +884,7 @@ mlir::LogicalResult materializeCompletionGraph(
 
   ```bash
   cmake --build build/wafer-dev --target wafer-opt -- -j128
-  /root/miniconda3/bin/lit -sv build/wafer-dev/test \
+  <configured-lit> -sv build/wafer-dev/test \
     --filter='Dialect/Wafer/Executable/(invalid-)?completion-graph\.mlir|Transforms/materialize-(completion-graph|iterated-entry-graph)\.mlir'
   git add include/Wafer/IR/Executable/ExecutableOps.td \
     lib/Wafer/IR/Executable/ExecutableOps.cpp lib/Wafer/IR/CMakeLists.txt \
@@ -932,7 +932,7 @@ planEntrySPMMemory(ExecutableEntryOp entry,
 - [ ] **Step 2: Confirm current tile-region planner scope is too small**
 
   ```bash
-  /root/miniconda3/bin/lit -sv build/wafer-dev/test \
+  <configured-lit> -sv build/wafer-dev/test \
     --filter='Transforms/plan-entry-spm-memory.*\.mlir'
   ```
 
@@ -952,7 +952,7 @@ planEntrySPMMemory(ExecutableEntryOp entry,
 
   ```bash
   cmake --build build/wafer-dev --target wafer-opt -- -j128
-  /root/miniconda3/bin/lit -sv build/wafer-dev/test \
+  <configured-lit> -sv build/wafer-dev/test \
     --filter='Transforms/plan-(entry-)?spm-memory.*\.mlir'
   git add include/Wafer/Transforms/SPM/EntrySPMPlanning.h \
     lib/Wafer/Transforms/SPM/EntrySPMPlanning.cpp \
@@ -1020,7 +1020,7 @@ mlir::LogicalResult verifyVariantDDRResources(
 - [ ] **Step 2: Run and expose the implicit single-arena assumption**
 
   ```bash
-  /root/miniconda3/bin/lit -sv build/wafer-dev/test \
+  <configured-lit> -sv build/wafer-dev/test \
     --filter='Transforms/plan-entry-ddr-memory.*\.mlir'
   ```
 
@@ -1052,7 +1052,7 @@ mlir::LogicalResult verifyVariantDDRResources(
 
   ```bash
   cmake --build build/wafer-dev --target wafer-opt -- -j128
-  /root/miniconda3/bin/lit -sv build/wafer-dev/test \
+  <configured-lit> -sv build/wafer-dev/test \
     --filter='Transforms/plan-(entry-)?ddr-memory.*\.mlir'
   git add include/Wafer/Transforms/DDR/EntryDDRPlanning.h \
     lib/Wafer/Transforms/DDR/EntryDDRPlanning.cpp \
@@ -1160,7 +1160,7 @@ commit. Any failure rolls back proof entries and staged objects.
 ```bash
 cmake --build build/wafer-dev --target WaferUnitTests wafer-opt -- -j128
 ctest --test-dir build/wafer-dev -R '^WaferUnitTests$' --output-on-failure
-/root/miniconda3/bin/lit -sv build/wafer-dev/test/Integration/immutable-artifact-transaction.test
+<configured-lit> -sv build/wafer-dev/test/Integration/immutable-artifact-transaction.test
 git add include/Wafer/Compiler/ImmutableArtifactMaterialization.h \
   lib/Wafer/Compiler/ImmutableArtifactMaterialization.cpp \
   lib/Wafer/Compiler/ImmutableArtifactMaterializationInternal.h \
@@ -1207,7 +1207,7 @@ git commit -m "Materialize immutable executable artifacts atomically"
 
   ```bash
   cmake --build build/wafer-dev --target wafer-opt -- -j128
-  /root/miniconda3/bin/lit -sv build/wafer-dev/test \
+  <configured-lit> -sv build/wafer-dev/test \
     --filter='Dialect/Wafer/(LinalgExt/Collective|Tile/Comm)/(invalid-)?segmented-all-to-all\.mlir'
   ```
 
@@ -1229,7 +1229,7 @@ git commit -m "Materialize immutable executable artifacts atomically"
 
   ```bash
   cmake --build build/wafer-dev --target wafer-opt -- -j128
-  /root/miniconda3/bin/lit -sv build/wafer-dev/test \
+  <configured-lit> -sv build/wafer-dev/test \
     --filter='segmented-all-to-all'
   git add include/Wafer/IR/LinalgExt/CollectiveOps.td \
     lib/Wafer/IR/LinalgExt/CollectiveOps.cpp \
@@ -1299,7 +1299,7 @@ mlir::LogicalResult acceptPhysicalTransports(
 
   ```bash
   cmake --build build/wafer-dev --target wafer-opt -- -j128
-  /root/miniconda3/bin/lit -sv build/wafer-dev/test \
+  <configured-lit> -sv build/wafer-dev/test \
     --filter='Dialect/Wafer/Executable/(invalid-)?transport\.mlir|Transforms/accept-physical-transport(-failure)?\.mlir'
   git add include/Wafer/IR/Instr/DTEOps.td lib/Wafer/IR/Instr/DTEOps.cpp \
     include/Wafer/IR/Executable/ExecutableOps.td \
@@ -1371,7 +1371,7 @@ mlir::LogicalResult materializeLaunchProjection(
 
   ```bash
   cmake --build build/wafer-dev --target wafer-opt -- -j128
-  /root/miniconda3/bin/lit -sv build/wafer-dev/test \
+  <configured-lit> -sv build/wafer-dev/test \
     --filter='Dialect/Wafer/Executable/(invalid-)?launch-projection\.mlir|Transforms/materialize-launch-projection(-failure)?\.mlir'
   ```
 
@@ -1397,7 +1397,7 @@ mlir::LogicalResult materializeLaunchProjection(
 
   ```bash
   cmake --build build/wafer-dev --target wafer-opt -- -j128
-  /root/miniconda3/bin/lit -sv build/wafer-dev/test \
+  <configured-lit> -sv build/wafer-dev/test \
     --filter='Dialect/Wafer/Executable/(invalid-)?launch-projection\.mlir|Transforms/materialize-launch-projection(-failure)?\.mlir'
   git add include/Wafer/IR/Executable/ExecutableOps.td \
     lib/Wafer/IR/Executable/ExecutableOps.cpp \
@@ -1616,7 +1616,7 @@ selectExecutableCandidates(
 
   ```bash
   cmake --build build/wafer-dev --target wafer-opt WaferUnitTests -- -j128
-  /root/miniconda3/bin/lit -sv build/wafer-dev/test \
+  <configured-lit> -sv build/wafer-dev/test \
     --filter='Transforms/select-(executable-variant|group-tile).*\.mlir|Integration/immutable-artifact-transaction\.test'
   ctest --test-dir build/wafer-dev -R '^WaferUnitTests$' --output-on-failure
   git add lib/Wafer/Transforms/Executable/SelectExecutableVariant.cpp \
@@ -1724,7 +1724,7 @@ reinterpret that storage.
 
   ```bash
   cmake --build build/wafer-dev --target wafer-opt WaferUnitTests -- -j128
-  /root/miniconda3/bin/lit -sv build/wafer-dev/test \
+  <configured-lit> -sv build/wafer-dev/test \
     --filter='Dialect/Wafer/Executable/(invalid-)?committed-executable\.mlir'
   ctest --test-dir build/wafer-dev -R '^WaferUnitTests$' --output-on-failure
   ```
@@ -1788,7 +1788,7 @@ reinterpret that storage.
 
   ```bash
   cmake --build build/wafer-dev --target wafer-opt WaferUnitTests -- -j128
-  /root/miniconda3/bin/lit -sv build/wafer-dev/test \
+  <configured-lit> -sv build/wafer-dev/test \
     --filter='Dialect/Wafer/Executable/(invalid-)?committed-executable\.mlir'
   ctest --test-dir build/wafer-dev -R '^WaferUnitTests$' --output-on-failure
   git add include/Wafer/IR/Executable/ExecutableVerification.h \
@@ -1811,6 +1811,10 @@ reinterpret that storage.
 
 ### Task 14: `stablehlo-to-executable` Production Driver
 
+Queue mapping: after Q0.3/Q0.4 and the independent Q5.C corpus are complete, this task's production-driver integration
+closes Q7's mandatory HF commit path. Q7 may then proceed beside Q0.L; it does not wait for target artifact, package or
+runtime work. Later real-model plans replay this evidence but do not create a second commit path.
+
 **Files:**
 - Modify: `include/Wafer/Pipelines/Pipelines.h`
 - Modify: `lib/Wafer/Pipelines/Pipelines.cpp`
@@ -1822,6 +1826,7 @@ reinterpret that storage.
 - Modify: `lib/Wafer/Compiler/ExecutableCompilationInput.cpp`
 - Modify: `include/Wafer/Transforms/Passes.td`
 - Create: `test/Integration/stablehlo-to-executable.test`
+- Create: `test/Integration/stablehlo-to-executable-hf-commit.test`
 - Create: `test/Integration/stablehlo-to-executable-atomic-failure.test`
 - Create: `test/Integration/stablehlo-to-executable-segmented.test`
 - Modify: `test/CMakeLists.txt`
@@ -1829,8 +1834,9 @@ reinterpret that storage.
 - Modify: `memory/general_dev.md`
 
 **Interfaces:**
-- Consumes: verified program directory, target descriptor/topology input, configured real SPMD helper and one outer output
-  transaction; internally replays typed frontend/distributed identity and Tasks 1-13 while retaining every move-only owner.
+- Consumes: verified program directory, target descriptor/topology input, configured real SPMD helper, one outer output
+  transaction and, for the Q7 gate, Q5.C's source-backed `static_transformer` HF case; internally replays
+  typed frontend/distributed identity and Tasks 1-13 while retaining every move-only owner.
 - Produces: a staged executable token in one program-delivery transaction; the CLI's explicit executable-only scope may then
   commit one delivery root. There is no direct group-to-instr production bypass.
 
@@ -1879,7 +1885,7 @@ re-pair a request with another context.
 The factory rejects a null `calibrationProfiles`; callers always pass a verified shared set, with the canonical empty set as the
 only representation of no calibration input.
 
-- [ ] **Step 1: Add a real two-instance vertical test**
+- [ ] **Step 1: Add real two-instance and Q7 HF mandatory-commit vertical tests**
 
   Use the existing framework capture and real XLA SPMD helper, not a hand-written group fixture. Run:
 
@@ -1893,6 +1899,14 @@ only representation of no calibration input.
   ModelEntrypointId invocation mappings, at least two canonical instances, accepted offsets and typed entry slots. Check no
   `wafer.group`, candidate state, default rank, unbound transport, pending/provisional window ref, planner trace or pass-only
   rank attr remains.
+
+  In `stablehlo-to-executable-hf-commit.test`, generate Q5.C's `static_transformer` case through
+  `test/Integration/Inputs/wafer_model_corpus.py`, then invoke the same production driver. Assert the HF/Megatron-style
+  group reaches candidate selection and one whole-variant atomic commit; both the tiled candidate and
+  `DirectFullShape` baseline are ordinary candidates under the same legality/commit sequence. Reject any debug/direct path
+  that publishes group, instruction or executable output without the final committed token. Check a candidate-legality
+  failure reports typed model/variant/entry/resource facts and leaves no staged executable. This test is Q7's completion
+  proof and cannot be replaced by a hand-written group fixture.
 
 - [ ] **Step 2: Add production atomic failure coverage**
 
@@ -1911,7 +1925,7 @@ only representation of no calibration input.
 
   ```bash
   cmake --build build/wafer-dev --target wafer-opt -- -j128
-  /root/miniconda3/bin/lit -sv --show-unsupported build/wafer-dev/test \
+  <configured-lit> -sv --show-unsupported build/wafer-dev/test \
     --filter='Integration/stablehlo-to-executable.*\.test'
   ```
 
@@ -1967,18 +1981,22 @@ only representation of no calibration input.
 
   ```bash
   cmake --build build/wafer-dev --target check-wafer WaferUnitTests -- -j128
-  /root/miniconda3/bin/lit -sv --show-unsupported build/wafer-dev/test \
+  <configured-lit> -sv --show-unsupported build/wafer-dev/test \
     --filter='Integration/stablehlo-to-executable.*\.test|Tools/wafer-opt-(spmd|distributed-program).*\.test|Dialect/Wafer/Executable/|Transforms/(materialize-entry-traversals|finalize-entry-layouts|plan-entry-(spm|ddr)-memory|accept-physical-transport|materialize-launch-projection).*\.mlir'
   ctest --test-dir build/wafer-dev -R '^WaferUnitTests$' --output-on-failure
   python3 tools/check_ir_organization.py --root .
   git diff --check
   ```
 
-  Completion requires the three integration tests to execute; `unsupported`/skipped is not passing evidence.
+  Completion requires all four integration tests, including `stablehlo-to-executable-hf-commit.test`, to execute;
+  `unsupported`/skipped is not passing evidence.
 
 - [ ] **Step 9: Update queue/memory and commit**
 
-  Record the canonical program replay command in `memory/general_dev.md`. Mark Q0.3/Q0.4 done in `tasks/progress.md` only when all supported gates above execute and pass; include the exact fresh command evidence and leave board/runtime completion claims to their downstream plans.
+  Record the canonical program replay command in `memory/general_dev.md`. Mark Q0.3/Q0.4 done only when their supported
+  gates execute and pass. Mark Q7 done separately only when Q5.C is complete and the HF mandatory-commit test above executes
+  and passes with the required candidate/commit/failure assertions. Include exact fresh command evidence and leave
+  target-artifact/package/runtime/board completion claims to downstream plans.
 
   ```bash
   git add include/Wafer/Pipelines/Pipelines.h lib/Wafer/Pipelines \
@@ -1999,14 +2017,15 @@ python3 tools/check_ir_organization.py --root .
 python3 tools/check_deps.py
 cmake --build build/wafer-dev --target check-wafer WaferUnitTests -- -j128
 ctest --test-dir build/wafer-dev --output-on-failure
-/root/miniconda3/bin/lit -sv --show-unsupported build/wafer-dev/test
+<configured-lit> -sv --show-unsupported build/wafer-dev/test
 git diff --check
 ```
 
 Expected:
 
 - IR/dependency checks exit 0 and C++ unit tests pass.
-- all supported lit tests pass; the three `stablehlo-to-executable` tests are listed as executed, not unsupported.
+- all supported lit tests pass; all four `stablehlo-to-executable` tests, including the HF Q7 gate, are listed as executed,
+  not unsupported.
 - atomic failure tests leave source IR/output program unpublished.
 - committed executable verification finds no logical group, candidate state, pending completion, unbound transport/projection/resource or cross-prerequisite rank class.
 - target-artifact/package/runtime/board tests remain downstream evidence and are not claimed by this plan.

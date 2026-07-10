@@ -1,10 +1,10 @@
-# TX8 Deps 逆向参考：面向生产级 Compiler 与 Runtime
+# TX8 Deps 逆向证据参考
 
-本文档只把 `third_party/tx8_deps` 本身作为依据：公开头文件、CMake/pkgconfig、linker script、version 文件、`nm`/`readelf`/`objdump` 反汇编和动态库导出符号。之前生成或手写过的 docs 不作为 ground truth；如果本文结论和旧文档冲突，以这里列出的逆向证据为准。
+本文档只把`third_party/tx8_deps`本身作为证据来源：公开头文件、CMake/pkgconfig、linker script、version文件、`nm`/`readelf`/`objdump`反汇编和动态库导出符号。它是该snapshot的证据底稿，不是Wafer IR/ABI/runtime合同；production边界只看本目录README指向的编号设计。
 
-阅读入口已收敛到 [tx8-interface-contract.md](tx8-interface-contract.md)。本文档保留为 tx8-deps-only 的证据底稿和函数级索引，避免在实现时把反汇编来源、符号覆盖、长表格细节塞回主合同。`firmware_kuiper` 的 HPGR/KMD/BO/BAR/ATU/PG/completion 结论不并入本文的 ground-truth 范围，统一看 [firmware-kuiper-runtime-hardware-analysis.md](firmware-kuiper-runtime-hardware-analysis.md)。
+阅读入口已收敛到[tx8-interface-contract.md](tx8-interface-contract.md)。本文档保留tx8-deps-only函数级索引；`firmware_kuiper`的HPGR/KMD/BO/BAR/ATU/PG/completion证据不并入本文范围，统一看[firmware-kuiper-runtime-hardware-analysis.md](firmware-kuiper-runtime-hardware-analysis.md)。
 
-目标是把整个依赖包拆成可实现 production compiler/runtime 的工程契约，覆盖 ABI、寄存器、指令包、内存图、同步、DTE/MHU、profiling、工具链、host runtime、Kcore runtime、验证和 bring-up 风险。
+目标是保存ABI、寄存器、指令包、内存图、同步、DTE/MHU、profiling、工具链、host runtime、Kcore runtime和bring-up风险的可追溯证据，供编号设计消费。
 
 ## 1. 覆盖范围与证据等级
 
@@ -16,15 +16,15 @@
 |---|---|---|
 | A | 公开头文件、CMake/pkgconfig、linker script、version 文件 | ABI、寄存器偏移、内存地址、构建参数、可直接依赖的接口 |
 | B | `nm`/`objdump`/`strings` 对静态库和动态库的逆向 | 行为确认、符号存在性、调用关系、默认实现 |
-| C | 从符号命名、头文件注释和二进制行为交叉归纳 | compiler/runtime 的推荐抽象、尚需硬件实测的 cost model |
+| C | 从符号命名、头文件注释和二进制行为交叉归纳 | 尚未证实的 compiler/runtime 解释或 cost hypothesis |
 
-生产实现应把 A 级信息作为硬约束，把 B 级信息作为兼容性验证，把 C 级信息作为初版设计假设并配套硬件回归。本文不引用旧 docs 来补洞；仍有疑问的点标成“需继续反汇编/硬件验证”。
+A/B/C只描述证据强度：A可作为编号设计的直接输入，B需要兼容性/实现交叉验证，C仍需硬件回归。该分级本身不授予production acceptance。
 
 ## 2. 依赖包全局结构
 
 | 路径 | 内容 | 对 compiler/runtime 的意义 |
 |---|---|---|
-| `Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/` | RISC-V bare-metal/newlib 工具链，含 GCC、binutils、newlib、libstdc++、multilib、specs | 编译 Kcore/固件侧代码的唯一可信工具链来源 |
+| `Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/` | RISC-V bare-metal/newlib 工具链，含 GCC、binutils、newlib、libstdc++、multilib、specs | snapshot内可观察的Kcore/firmware toolchain provenance |
 | `include/` | `instr_*`、`lib_log.h` 等 public TX8/NCC 接口 | 指令包 ABI、Tsm wrapper ABI、寄存器偏移、数据类型枚举、日志接口 |
 | `lib/` | `libinstr_tx81.a`、`libcommon_util.a`、`liblibc_stub.a` | NCC 指令发射、layout/tensor 工具、libc stub |
 | `chip_out/kcore_fw.bin` | Kcore 固件二进制 | runtime 启动/加载的固件 payload |
@@ -74,7 +74,7 @@
 
 - compile：`-ffunction-sections -fdata-sections -Wall -fPIC -MMD -MP`，并启用多组 `CONFIG_*` 宏。
 - link：`-Wl,--no-dynamic-linker -nostartfiles -lc -lm -Wl,--gc-sections -Wl,--build-id=none`。
-- 生产 runtime 不应假设 Linux process ABI；Kcore 侧是 `riscv64-unknown-elf` + newlib/libc stub + RT-Thread 环境。
+- Kcore侧是`riscv64-unknown-elf` + newlib/libc stub + RT-Thread环境，不是Linux process ABI证据。
 
 ### 3.1 Linker Script 内存模型
 
@@ -91,7 +91,8 @@
 
 ## 4. 硬件架构抽象
 
-从 SDK 头文件、构建宏、host runtime 符号和 Kcore 反汇编归纳，TX8/Wafer 的 compiler 视角硬件由三层组成：
+从 SDK 头文件、构建宏、host runtime 符号和 Kcore 反汇编可以观察到三层 vendor
+call stack；该分组不是 Wafer compiler architecture：
 
 1. Host/AP runtime：负责设备枚举、固件加载、DDR 分配、H2D/D2H/D2D 拷贝、kernel launch、cluster launch、profiling。
 2. Kcore/RT-Thread：每 tile 的控制核/运行时环境，运行 RISC-V C908 代码，执行调度、同步、SPM/DTE/MHU/PMU 操作。
@@ -99,12 +100,12 @@
 
 核心硬件资源：
 
-| 资源 | 已知信息 | 实现含义 |
+| 资源 | 已知信息 | 证据含义 |
 |---|---|---|
 | Tile topology | `profiling_tool/include/hrt_profiler.h` 给出 `TILE_MAX_NUM=16`；SPM `hrt_barrier` 和 host `MLCommonBase` 也围绕 16 tile 建模 | cluster launch、tile id map、跨 tile sync 以 16 tile 为上限；2D/row length 由 Kcore 保留区和 runtime 填充 |
 | Kcore CPU | C908，64-bit，RT-Thread SMP `NR_CPUS=2` | Kcore 代码是 RISC-V ELF/newlib 目标 |
-| SPM | 每 tile 约 3MB；Kcore 保留最后 64KB | compiler allocator 必须避开保留区 |
-| DDR/local tile heap | 多种 memory layout，local tile heap 单 tile 32MB 或 256MB | runtime 需要按 `CONFIG_TX81_MEMORY_LAYOUT` 或设备探测选择地址图 |
+| SPM | 每tile约3MB；Kcore代码使用最后64KB | 为编号memory owner提供reservation证据 |
+| DDR/local tile heap | 多种memory layout，local tile heap单tile 32MB或256MB | snapshot行为受`CONFIG_TX81_MEMORY_LAYOUT`或设备配置影响 |
 | NCC register base | `NCC_ADDR=0x01000000` | Tsm wrapper 的 MMIO 基址 |
 | PMU | NCC PMU base `0x590000`，DTE PMU base `0x400000` | 性能计数读取和 profiling 关联 |
 | SCONF | base `0x500000` | Kcore/system control register |
@@ -120,7 +121,9 @@
 - `SPM_UPPER_BOUND = 0x2EFFFF`
 - `DDR_LOWER_BOUND = 0x280000000`
 
-这给出 Tsm/NCC 指令参数校验的最低公共边界。生产 compiler 应把 SPM 地址分配限制在 `0x00000..0x2EFFFF` 以内，并结合 Kcore 保留区再收紧。
+这给出 Tsm/NCC wrapper 可观察的 SPM 地址上界；它与 Kcore 保留区共同作为
+`tasks/09` allocation 和 `tasks/11` instruction legality 的输入，本文不定义
+production allocation 区间。
 
 ### 5.2 Kcore SPM 映射
 
@@ -161,11 +164,11 @@
 | `0x4000` | perf time space |
 | `0x7C00..0x7FFF` | GDB status/request/response |
 
-实现规则：
+观察到的reservation关系：
 
-- 通用 SPM tensor allocator 不应使用 `0x2F0000..0x2FFFFF`。
-- 多 tile barrier、direct DTE、profiling、kernel block id 共享保留区，runtime 必须避免互相覆盖。
-- 跨 tile 写对方 SPM 应优先使用 SDK 提供的 `tile_ready_write_other_tile_spm` / `tile_ready_read_other_tile_spm` / `tile_sync_by_spm*`，不要直接硬编码远端地址映射。
+- Kcore/runtime代码使用`0x2F0000..0x2FFFFF`，该区间不能作为普通tensor可用性的正面证据。
+- 多tile barrier、direct DTE、profiling、kernel block id在snapshot中共享保留区，具体typed reservation由编号memory/runtime设计拥有。
+- SDK提供`tile_ready_write_other_tile_spm`/`tile_ready_read_other_tile_spm`/`tile_sync_by_spm*`作为跨tile访问机制；它们不定义Wafer ABI。
 
 ### 5.3 Local Tile Heap 与 DDR Layout
 
@@ -201,11 +204,11 @@ SDK 还定义：
 - `SPM_HEAP_ADDRESS = SPM_BASE_ADDRESS + SPM_HEAP_OFFS`
 - `configTOTAL_SPM_HEAP_SIZE = 3MB - 32KB - 0x400`
 
-生产 runtime 应在设备初始化时读取/携带 memory layout id，并把 host-visible device pointer、tile-local pointer、SPM offset 三者在类型系统中区分开。
+该snapshot存在memory layout id以及host-visible device pointer、tile-local pointer、SPM offset等不同地址形态；Wafer的typed domain合同由编号设计拥有。
 
 ## 6. 指令包 ABI 与寄存器模型
 
-`include/instr_def.h` 是指令/寄存器 ABI 的主源；寄存器偏移、packet struct、CT opcode、NE 约束、DTE/CSR/PMU 字段均从该文件和 `libinstr_tx81.a` 反汇编得到。这里列出 compiler 必须内建的顶层契约。
+`include/instr_def.h`是该dependency snapshot中指令/寄存器证据的主要来源；寄存器偏移、packet struct、CT opcode、NE约束、DTE/CSR/PMU字段由该文件和`libinstr_tx81.a`反汇编交叉得到。Wafer是否内建及如何表示只看编号设计。
 
 ### 6.1 指令类型
 
@@ -228,9 +231,10 @@ SDK 还定义：
 - 只接受类型 `0..4`，通过跳表分发到 CT、NE、RDMA、WDMA、TDMA。
 - `inter_type > 4` 时直接返回 `1`，不会发射 SCALAR/DTE/CSR。
 - 返回值是被调 `__execute_*` 的 32-bit 零扩展结果。
-- 它本身不是 barrier，也不轮询 CSR；需要显式调用 `TsmWaitfinish`、`TsmWaitfinish_bywork`、SPM barrier、direct DTE wait 或 host/device sync。
+- 它本身不是 barrier，也不轮询 CSR；`TsmWaitfinish`、SPM barrier、direct DTE wait 和
+  host/device sync 是分离的可观察机制，typed completion 关系由 `tasks/13`/`tasks/15` 定义。
 
-因此生产后端不能把 `I_SCALAR/I_DTE/I_CSR` 交给 `TsmExecute` 期待自动生效。SCALAR 在此库里有 `__execute_sc` 符号，但该实现只把传入 struct 前 12 字节清零并返回，没有 MMIO 写。DTE/CSR 必须走专用 Kcore/DTE/CSR API。
+因此该snapshot不证明`I_SCALAR/I_DTE/I_CSR`能由`TsmExecute`发射。SCALAR在此库里有`__execute_sc`符号，但实现只把传入struct前12字节清零并返回，没有MMIO写；DTE/CSR另有专用Kcore/DTE/CSR API证据。
 
 worker 寄存器窗口：
 
@@ -321,7 +325,7 @@ CSR 行为：
 | `bank_align_elem(dtype)` | 返回 `256 / dtype_size`，只对 1/2/4/8 byte size 有效；invalid size 返回 0 |
 | `get_chip_aligned_ck(C,dtype,...)` | INT8/UINT8 使用 128-lane C block，其他 dtype 使用 64-lane C block；余数按 `1..4=>4`、`5..8=>8`、`9..16=>16`、`17..32=>32`、`33..64=>64`、INT8/UINT8 `65..128=>128` 对齐 |
 | `get_CxC0` / `_i64` | 先 `shift_div` 得到 Cx，再处理余数 C0；INT8/UINT8 余数阈值 64，其他有效 dtype 余数阈值 32；非零余数继续走 `get_cx_align_base` |
-| `is_cx_layout(layout)` | layout 33 返回 1；layout 35 返回 0；其他 layout 返回 2。这个返回值不是普通 bool，生产代码不能写成 `== true` 的假设 |
+| `is_cx_layout(layout)` | layout 33返回1；layout 35返回0；其他layout返回2。这个返回值不是普通bool |
 | `dtype2string` | 字符串表包含 `NONE/INT8/FP16/BF16/INT32/UINT32/FP32/TF32/BOOL/UINT8/UINT16/INT64/UINT64/INT16`，顺序与 switch/reloc 相关，不能替代 enum |
 | `layout2string` | 字符串表包含 `Tensor`、`NTensor`、`Cx`、`NCx`、`Tuple` |
 
@@ -330,14 +334,15 @@ CSR 行为：
 - 输入 shape 会复制到输出 descriptor，随后写 rank、layout、dtype/alignment 相关字段。
 - layout 0 和 34 走普通 dense tensor 路径，element count 是各维乘积。
 - layout 33 和 35 会先对最后一维 C 调 `get_aligned_ck`，再乘其它维，并按 `bank_align_elem` 向 256B bank 对齐。
-- `_i64` 版本使用 64-bit shape/计数路径；大 tensor 或 host 侧 shape planner 不应只用 32-bit 版本。
-- 末尾字节数计算是 `elem_count * get_dtype_size(dtype)`，但 BOOL 在 header 注释中是 1 bit/element，库函数 size 表按 1 byte 处理；生产 compiler 必须为 CT bool 输出额外建 bitpack 规则，不能只照搬 size table。
+- `_i64`版本使用64-bit shape/计数路径；32-bit版本本身不能证明大tensor范围安全。
+- 末尾字节数计算是`elem_count * get_dtype_size(dtype)`，但BOOL在header注释中是1 bit/element，库函数size表按1 byte处理；该矛盾是编号dtype/legality设计的输入证据。
 
-production compiler 应在 IR 中同时携带 logical shape、physical layout、dtype、scope、alignment、bank alignment 和 bitpacked bool 属性，并用 `libcommon_util.a` 输出做 golden test。
+哪些 layout/dtype 事实进入 Wafer 表示及如何验证，由 `tasks/08`/`tasks/11` 定义；本文不指定 IR 字段集合。
 
 ## 7. 指令族行为摘要
 
-CT opcode 0..186 来自 `include/instr_def.h` 的 `OP_FUNC_CGRA`，不是外部文档。compiler 后端应把 TX8 NCC 指令族建模为以下可调度资源。
+CT opcode 0..186 来自 `include/instr_def.h` 的 `OP_FUNC_CGRA`，不是外部文档。下表只按
+header enum 汇总可观察的指令族；production instruction/resource model 由 `tasks/11` 定义。
 
 CT opcode 覆盖表：
 
@@ -387,7 +392,8 @@ CT 覆盖大多数 elementwise 和数据整理类操作：
 
 - `TsmExecute` 只发射，不等待。
 - 同一 worker 的 ibcounter/taskstatus 是最基本的完成依据。
-- 跨 worker、跨 tile 或 DTE/NCC 混合 pipeline 需要显式 CSR wait、SPM barrier、direct sync 或 runtime stream 语义。
+- CSR wait、SPM barrier、direct sync 和 runtime stream 是静态可见的不同同步机制；跨
+  worker、跨 tile 或 DTE/NCC 的 typed dependency/completion 关系由 `tasks/13`/`tasks/15` 定义。
 - bool tensor 为 bitpacked；关系/逻辑指令的输出 byte size 不能按普通 1-byte bool 估算。
 
 `__execute_ct` 反汇编确认的寄存器写序列：
@@ -419,11 +425,11 @@ wrapper API 支持：
 - op type、sparse、padding/unpadding、kernel stride、dilation、quant、relu/leakyrelu。
 - GEMM 支持 M/K/N、batch、transpose、psum、quant、bias、scale、activation。
 
-实现建议：
+实现差异证据：
 
-- Conv/GEMM lowering 应优先走 `TsmConv` / `TsmDepthwiseConv` / `TsmGemm` wrapper，避免初版直接拼 NE packet bitfield。
-- quant 公式在 `instr_def.h` 注释中给出；int8 路径必须把 scale、bias、round mode、relu saturation 明确进入 IR。
-- psum buffer、bias/scale buffer 的 scope 和 alignment 应由 verifier 统一校验。
+- `TsmConv`/`TsmDepthwiseConv`/`TsmGemm` wrapper与raw NE packet bitfield是两种不同证据层。
+- quant公式在`instr_def.h`注释中给出，涉及scale、bias、round mode和relu saturation字段。
+- psum、bias和scale buffer暴露独立address/scope/alignment关系；IR与verifier owner为编号设计。
 
 `__execute_ne` 反汇编确认的行为：
 
@@ -455,14 +461,10 @@ wrapper API 支持：
 - control word 包含 opcode、src0_format，并设置 bit 12 为 `cmd_valid`。
 - 发射后调用 debug hook，然后 `memset(instr,0,128)` 清 packet。
 
-`St_StrideIteration` 有 3 级 stride/iteration。production DMA lowering 应统一表达为：
-
-- base src/dst address
-- contiguous length
-- 0..3 维 stride/iteration
-- source/destination scope
-- alignment 和 bank conflict 属性
-- optional remote tile / channel / user id
+`St_StrideIteration` 静态暴露 3 级 stride/iteration。DMA packet/wrapper 中可观察到
+src/dst base、连续 element count、三组 byte stride/logical iteration、format 和 range-end
+字段；remote tile/channel/user id 则来自后面的 DTE helper/register，不是同一个 DMA
+descriptor。production representation 和 command acceptance 只看 `tasks/11`/`tasks/14`。
 
 DTE raw register path：
 
@@ -484,10 +486,11 @@ direct DTE helper：
 
 - DTE-RDMA id 2，DTE-WDMA id 3，DTE-DDR2DDR id 2。
 - DTE id 0 被 score 保留；DTE id 1..3 可用。
-- 高性能路径建议使用 DTE id 2。
+- `mod_kuiper_dte_alloc(1)` 的反汇编只尝试 DTE id 2；这是 historical
+  `is_high_performance` 分支行为，不定义 Wafer 的 DTE id 选择策略。
 - DDR2DDR 约束：`read_outstanding * axi_read_burst_length <= 12`。
 - 256B aligned read/write address 更高效。
-- `direct_dte_attach` / `direct_dte_release` / `direct_dte_send_async` / `direct_dte_wait_done` / `direct_dte_send_sync` 是 Kcore 侧可复用 ABI。
+- `direct_dte_attach` / `direct_dte_release` / `direct_dte_send_async` / `direct_dte_wait_done` / `direct_dte_send_sync` 是snapshot中可观察的Kcore entrypoints。
 
 二进制逆向确认：
 
@@ -512,16 +515,20 @@ SCALAR 指令窗口存在，但当前 `libinstr_tx81.a` 的 `__execute_sc` 反�
 - `sw zero,8(a0)`
 - `ret`
 
-也就是清除 `SC_Param` 的控制/参数字段，没有写 `GR_SCALAR_CONTROL_ADDR=0x6A0`、`GR_SCALAR_SRC_ADDR=0x6B0`、`GR_SCALAR_DST_ADDR=0x6C0`。当前依赖包给出的可执行事实是：SCALAR 只能作为保留后端资源，生产 compiler 应优先落地 CT/NE/DMA/DTE/CSR；若要启用 SCALAR，必须另取包含真实 scalar kernel 的二进制样本或通过硬件实测建立寄存器协议。
+也就是清除`SC_Param`的控制/参数字段，没有写`GR_SCALAR_CONTROL_ADDR=0x6A0`、
+`GR_SCALAR_SRC_ADDR=0x6B0`、`GR_SCALAR_DST_ADDR=0x6C0`。当前依赖包只证明
+SCALAR symbol是stub；production acceptance归`tasks/11`/`tasks/14`，真实kernel和
+板端寄存器证明归`tasks/16`。
 
-CSR 是所有异步指令的最低完成接口：
+CSR helper 暴露 NCC worker/task 的 local completion，不覆盖 DTE、Stream 或 multi-tile
+arrival：
 
 - `TsmWaitfinish()`：本 NCC 当前 worker/默认 worker 完成等待。
 - `TsmWaitfinish_bywork(workerid)`：指定 worker。
 - `TsmGetCsrTaskstatus()` / `_bywork`：完成状态。
 - `TsmGetCsrIbcounter()` / `_bywork`：in-buffer counter。
 
-生产调度器应将 wait/barrier 作为显式 IR op，不能把 wrapper 调用当作天然同步。
+这些API证明local wait/status与wrapper issue是不同机制；显式IR和completion合同由编号设计拥有。
 
 ## 8. Public Tsm Wrapper ABI
 
@@ -549,12 +556,6 @@ CSR 是所有异步指令的最低完成接口：
 | `TsmStream` | online/offline/wait/req/push/pop/wait_finish |
 | CSR wrappers | waitfinish、taskstatus、ibcounter |
 
-compiler backend 的最低风险策略：
-
-1. 先把 high-level op lowering 成 wrapper call graph，而不是直接生成 raw MMIO store。
-2. wrapper packet 生命周期由 `TsmNew*`/`TsmDelete*` 管理，kernel body 只保留 C ABI 和 wrapper 调用。
-3. 对性能关键的 CT/DMA 内核，在 wrapper 路径验证通过后，再引入 raw packet builder，并用 `libinstr_tx81.a` 的行为做 golden comparison。
-
 wrapper setter 的反汇编样本说明它们是 packet builder，而不是硬件发射：
 
 - `__set_conv_type` 写 `ctrl.type`、`ctrl.cmd_valid` 相关 byte，并把 `inter_type` 设为 NE。
@@ -565,9 +566,11 @@ wrapper setter 的反汇编样本说明它们是 packet builder，而不是硬�
 - `__enable_relu` 写 halfword `0x0100` 到 packet 中 relu/lrelu 相关位置；`__enable_leakyrelu` 写 `1`，disable 函数清对应 byte。
 - `__set_psum` 只设置 packet 中 psum enable、format、address。
 
-这意味着 production 后端可以安全地把 wrapper 调用当成可审计的“构包 IR”，然后把 `TsmExecute`/wait 作为单独的发射和同步 IR。不要把 `TsmNew*` 返回的对象看成持有硬件状态；它只是函数指针表。
+这些 setter 只证明 wrapper 对象是函数指针表，method 调用修改 packet，`TsmExecute`
+另行触发硬件发射；它们不能证明 Wafer 需要 wrapper-call IR、raw packet IR 或特定对象
+lifecycle。production instruction/command 边界只看 `tasks/11`/`tasks/14`。
 
-## 9. Layout、Tensor Descriptor 与 ABI 建议
+## 9. Public Tensor Descriptor 证据
 
 public headers 的基本 shape：
 
@@ -596,26 +599,11 @@ typedef struct {
 } St_StrideIteration;
 ```
 
-生产 compiler/runtime 建议定义统一 C ABI descriptor：
-
-```c
-typedef struct {
-    uint64_t addr;
-    uint64_t bytes;
-    uint32_t n, h, w, c;
-    uint32_t dtype;      // Data_Format
-    uint32_t layout;     // TENSOR/Cx/NTENSOR/NCx/...
-    uint32_t scope;      // local tile DDR/SPM/RTOS/...
-    uint32_t align_bytes;
-    uint32_t flags;      // bitpacked bool, read-only, psum, remote, etc.
-} tx8_tensor_desc_t;
-```
-
-这是推荐 ABI，不是 vendor header 中的既有 struct。好处是：
-
-- host runtime、Kcore launcher、compiler-generated kernel 可以共享同一稳定调用边界。
-- lowering 阶段可从 descriptor 派生 `Data_Shape`、`St_Elem_Shape`、DMA stride iteration 和 wrapper dtype/layout 参数。
-- verifier 可以集中检查 SPM 上限、Kcore 保留区、DDR lower bound、Cx block、256B alignment、bool bitpack、layout/shape 一致性。
+这些 public struct 只证明 NHWC 16-bit shape lane、element-count 字段和三层
+stride/iteration 的 vendor call shape。它们没有统一表达 address domain、byte extent、
+semantic/physical layout、resource role、ownership 或 completion，因而不能从本节推出新的
+shared tensor C ABI。对应 layout、memory、instruction 和 command 表示分别由
+`tasks/08`、`tasks/09`、`tasks/11`、`tasks/14` 定义。
 
 ## 10. Host Runtime 动态 API
 
@@ -681,11 +669,11 @@ profiling：
 - `TsmProcessProfData`
 - boot param helper 类和 profiling decorators。
 
-runtime 实现建议：
+runtime evidence boundary：
 
-- 把 vendor runtime 动态库作为 bring-up backend，先实现 thin adapter。
-- 自研 runtime 可按同等能力拆为 device、memory、module、launch、stream/signal、profiling、power/tile-map 七个子系统。
-- 没有 header 的 API 不能直接作为稳定 ABI 暴露给用户；应包装成项目内明确版本化接口。
+- vendor runtime动态库提供bring-up/provider证据，不证明Wafer adapter形态。
+- 观察到device、memory、module、launch、stream/signal、profiling、power/tile-map等能力类别。
+- 没有public header的API缺少稳定C ABI证据；是否封装和版本化由编号runtime设计拥有。
 
 ## 11. Kcore RT-Thread Runtime 接口
 
@@ -716,7 +704,8 @@ Kcore 程序模型：
 - kernel body 是 RISC-V C/C++ 代码，调用 Tsm wrapper 发射 NCC 指令。
 - 多 tile kernel 通过 runtime 分配 tile id、row length、SPM reserved slots 和 barrier state。
 - 使用 block/grid 语义的 kernel 可以读取 pid/block dim 保留区。
-- 需要长时间轮询的 wait 应考虑 RT-Thread 调度和 watchdog/power 状态，不应把所有同步都写成不可抢占 busy loop。
+- 部分 wait helper 是无 timeout 的 busy loop；静态库没有证明其与 RT-Thread 调度、
+  watchdog 或 power state 的组合行为。wait/completion policy 和对应验证归 `tasks/15`/`tasks/16`。
 
 ## 12. MHU、日志与 profiling
 
@@ -747,7 +736,9 @@ message header：
 - send/recv register structs。
 - access/stat bits。
 
-runtime 应把 MHU 作为低频控制通道，而不是 bulk data path；bulk tensor data 应走 DDR/SPM/DMA/DTE。
+MHU header/strings 暴露 command/payload 消息通道，而 DMA/DTE wrapper 暴露 bulk byte transfer；
+静态证据不定义两者在 Wafer runtime 中的流量分工，transport/provider owner 见
+`tasks/13`/`tasks/15`。
 
 ### 12.2 日志
 
@@ -780,7 +771,8 @@ API：
 - `tsm_ep_log`
 - `tsm_ep_log_init`
 
-生产 runtime 需要给 kernel printf/logging 设置配额，避免 ringbuffer 写满影响性能路径。
+日志区是固定大小 ringbuffer；静态证据没有证明写满后的 backpressure、drop 或性能行为。
+quota、diagnostic 和 failure policy 由 `tasks/15`/`tasks/16` 定义。
 
 ### 12.3 Profiling
 
@@ -798,11 +790,9 @@ API：
 - `lib/libtx8_profiling.so`
 - `lib/libtx8_profiling.a`
 
-compiler/runtime 集成点：
-
-- launch 前后插入 profiling start/stop。
-- 统一记录 graph name、chip id、tile id、kernel id、worker id。
-- 将 PMU 计数、runtime timeline、DTE channel event 关联到 compiler IR op id。
+静态 API 暴露 profiling start/stop、graph name、chip id 和 PMU record；Kcore/PMU 路径还
+暴露 tile/worker/channel 相关字段。当前 evidence 中没有稳定 compiler IR op id 或统一
+correlation schema；profiling identity、timeline correlation 和 calibration 归 `tasks/16`。
 
 ## 13. 二进制库逆向结论
 
@@ -873,16 +863,16 @@ compiler/runtime 集成点：
 - `common_tensor_info_generate`
 - `common_tensor_info_generate_i64`
 
-实现建议：
+静态限制：
 
-- 编译器 shape/layout verifier 应尽量复刻这些函数语义，并用库函数输出做 golden tests。
-- `common_tensor_info_generate_i64` 对大 tensor 更安全；生产实现不应只用 32-bit element count。
-- `get_dma_reg_dtype` 会把 dtype `>7` 映射成 0，DMA lowering 对 UINT/INT64 必须显式处理，不能把 enum 直接下发。
-- `is_cx_layout` 返回值非 bool，必须照反汇编语义 golden-test。
+- 这些helper输出可作为编号shape/layout verifier的交叉证据。
+- `common_tensor_info_generate_i64`使用64-bit element count；32-bit版本不证明大tensor安全。
+- `get_dma_reg_dtype`会把dtype`>7`映射成0，不能证明UINT/INT64 DMA直接映射。
+- `is_cx_layout`返回值不是bool；调用方不能从函数名恢复返回语义。
 
 ### 13.3 `libkcorert.a`
 
-该库是 Kcore runtime 的主体。对自研 runtime 最有价值的是：
+该库是 Kcore runtime 的主体。可观察 evidence categories 包括：
 
 - RTOS primitives。
 - SPM/barrier/direct DTE/MHU/PMU/profiling/logging 符号。
@@ -899,23 +889,28 @@ compiler/runtime 集成点：
 
 ### 13.4 `libtx8_runtime.so` 与 `libtx8_profiling.so`
 
-`libtx8_runtime.so` 暴露 host 侧 device/memory/module/launch/copy/profiling/power/tile-map API。`libtx8_profiling.so` 暴露 `TsmProcessProfData` 和 boot param helper。由于缺少完整 public headers，生产使用应通过 adapter 隔离 ABI，并在版本升级时重新跑 symbol diff。
+`libtx8_runtime.so` 暴露 host 侧 device/memory/module/launch/copy/profiling/power/tile-map API。
+`libtx8_profiling.so` 暴露 `TsmProcessProfData` 和 boot param helper。缺少完整 public header
+意味着这些 C++ symbols 本身不能证明稳定 host ABI；provider adapter、versioning 和
+conformance policy 由 `tasks/15`/`tasks/16` 定义。
 
-## 14. 设计建议归档说明
+## 14. Evidence Handoff
 
-本文档现在只保留 tx8-deps-only 的证据底稿和函数级索引。原先放在这里的
-compiler IR、verifier、lowering、runtime 子系统、ABI 边界、bring-up 测试和生产
-边界建议，已经拆到更合适的规范文档中：
+本文档只保留 tx8-deps-only 证据底稿和函数级索引。设计与实现状态不由本目录
+hardware/reverse 文档维护；对应唯一 owner 如下：
 
-| 原内容 | 当前维护位置 |
+| 设计边界 | 唯一编号 owner |
 | --- | --- |
-| IR/layout/SPM/worker/tile 设计口径 | `wafer-hardware-instruction-set-and-programming-model.md` |
-| wrapper 发射、CSR wait、Direct DTE、host runtime 边界 | `wafer-register-level-instruction-spec.md` |
-| 实现合同、verifier rule、golden-test target、remaining hardware validation | `tx8-interface-contract.md` |
-| HPGR/KMD/BO/BAR/ATU/PG/completion 生产边界 | `firmware-kuiper-runtime-hardware-analysis.md` |
+| layout / physical organization | `tasks/08-layout-materialization.md` |
+| SPM reservation / allocation | `tasks/09-spm-memory-planning.md` |
+| instruction IR / geometry / legality | `tasks/11-instruction-ir.md` |
+| physical transport / communication completion | `tasks/13-communication.md` |
+| target command / CRT / artifact ABI | `tasks/14-target-llvm-golden-packet.md` |
+| package / provider / runtime completion | `tasks/15-launch-runtime-package.md` |
+| board / profile / conformance gates | `tasks/16-verification-plan.md` |
 
-这样 reference 不再重复设计建议；需要追溯证据时继续看本文后续的源文件映射和
-函数/API 级索引。
+两份 root hardware/register 文档和本目录其它文档均只作 evidence summary/ledger，
+不能替代上表合同。需要追溯事实时继续看本文后续的源文件映射和函数/API 级索引。
 
 ## 15. 源文件到实现事实映射
 
@@ -954,21 +949,15 @@ compiler IR、verifier、lowering、runtime 子系统、ABI 边界、bring-up �
 | `profiling_tool/lib/libtx8_profiling.so` | profiling host symbol |
 | `profiling_tool/examples/engtest_example/libtx8_runtime.so` | host runtime device/memory/launch API symbols |
 
-## 16. 最小可落地路线（归档摘要）
+## 16. Archived Route Boundary
 
-原路线不再在本文展开，避免和 Wafer 设计文档重复。保留三阶段摘要用于追溯，具体约束和实现细节以 Wafer 主文档为准。
-
-| 阶段 | 摘要 | 当前维护位置 |
-|---|---|---|
-| compiler wrapper-first | TX8 target descriptor、`common_util` layout/alignment、Kcore C wrapper kernel、CT/NE/DMA/CSR 基础 lowering、SPM/DDR allocator 与 verifier | `../wafer-hardware-instruction-set-and-programming-model.md`、`../wafer-register-level-instruction-spec.md`、`tx8-interface-contract.md` |
-| runtime adapter | vendor runtime backend、device/memory/copy/module/launch/sync、profiling/log ringbuffer、single-tile 和 cluster tile-map launch | `tx8-interface-contract.md`、`firmware-kuiper-runtime-hardware-analysis.md`、`txda-pytorch-runtime-wheel-analysis.md` |
-| raw-register optimization | wrapper golden comparison、direct DTE pipeline、NE conv/GEMM/quant/psum fuse、multi-worker/multi-tile sync、PMU cost model | `../wafer-register-level-instruction-spec.md`、`tx8-interface-contract.md`、`firmware-kuiper-runtime-hardware-analysis.md` |
-
-路线前提仍然是遵守本文已经固化的 ABI、地址、layout、sync 和 verification 证据边界：先保持与 `tx8_deps` wrapper 兼容，再逐步把可验证路径下沉到 raw-register 实现。
+旧版三阶段实施路线不再保留在 evidence reference 中。本文件不定义任何交付顺序；
+当前任务状态只看 `tasks/progress.md`，实现边界和 completion gate 只看对应编号设计文档。
 
 ## 17. 覆盖审计矩阵
 
-这张表把“生产级 compiler/runtime 需要覆盖的方面”逐项映射到本文依据，便于后续实现时防止漏项。
+这张表只索引本文件已经收集的 evidence area 与来源，不定义 production
+compiler/runtime coverage 或完成状态。
 
 | 方面 | 本文覆盖 | 证据 |
 |---|---|---|
@@ -986,11 +975,12 @@ compiler IR、verifier、lowering、runtime 子系统、ABI 边界、bring-up �
 | dtype/layout | `Data_Format`、dtype size table、DMA dtype mapping、Cx/NCx alignment、tensor info generate | `instr_def.h`、`common_func.c.o`、`common_tensor.c.o` 反汇编 |
 | 同步 | CSR wait、SPM sync、direct sync magic、hrt barrier、stream mailbox | `instr_adapter.c.o`、`tx81_spm.h`、`stream_rt.h`、`riscv_api.c.o` |
 | MHU/log/profiling | MHU base/payload/header、ringbuffer log、profiling API、PMU counters | `kcore_mhu.h`、`mhu2.h`、`lib_log.h`、`hrt_profiler.h`、`libtx8_profiling.so` |
-| Compiler 设计 | IR、verifier、lowering、scheduler、ABI、golden tests | 由上述 ABI/反汇编约束推导 |
-| Runtime 设计 | device/memory/module/launcher/sync/profiler/diagnostics/compat layer | host runtime 符号 + Kcore runtime 逆向推导 |
-| 生产边界 | SCALAR stub、host C++ ABI 稳定性、DTE 多播 corner、cost model/power 时序 | 逆向已确定的保留项和必须硬件实测项 |
+| Compiler evidence inputs | packet/layout/dtype/sync facts | 编号IR/verifier/lowering/scheduler/ABI设计消费 |
+| Runtime evidence inputs | device/memory/module/launcher/sync/profiler/diagnostics surface | 编号runtime/provider设计消费 |
+| 未闭合证据 | SCALAR stub、host C++ ABI稳定性、DTE多播corner、cost model/power时序 | 需要额外header、binary或板端实测 |
 
-当前文档仍不假装解决两类问题：板上性能 cost model 和没有 public header 的 host C++ ABI 稳定性。这两类需要硬件 profiling、symbol diff、ABI adapter 和回归测试闭环。
+本文件仍缺两类静态证据：板上性能行为，以及没有 public header 的 host C++ ABI
+稳定性。对应 provider/conformance 与 board/profile gate 由 `tasks/15`/`tasks/16` 定义。
 
 ## 18. 函数/API 级逆向索引
 
@@ -1031,19 +1021,19 @@ compiler IR、verifier、lowering、runtime 子系统、ABI 边界、bring-up �
 | 函数 | dispatch/行为 | 反汇编依据 |
 |---|---|---|
 | `TsmExecute(void *instr)` | 读取 `*(uint8_t *)instr` 作为 `inter_type`，仅处理 `0..4`：`I_CGRA -> __execute_ct`、`I_NEUR -> __execute_ne`、`I_RDMA -> __execute_rdma`、`I_WDMA -> __execute_wdma`、`I_TDMA -> __execute_td`；没有 dispatch 到 `I_SCALAR/I_DTE/I_CSR` | jump table + `OP_INSTR_TYPE` |
-| `__execute_ct(TsmArithInstr*)` | 根据 `inter_type[9:8]` 算 worker bank 偏移 `worker%3 << 20`，写 CT 参数寄存器窗口，最后把 `opcode | src0_format<<8 | rnd_mode<<12 | cmd_valid(bit16)` 写到 `0x01000000 + worker_offset + GR_CT_CONTROL_ADDR`；执行后调 `debug_ct_info`，对部分写回型 opcode 检查 `wb_data0/1` | `srd` 写 `0x01000000 + 0x0..0x190`，`bseti 0x10` |
+| `__execute_ct(TsmArithInstr*)` | 根据 `inter_type[9:8]` 算 worker bank 偏移 `worker%3 << 20`，写 CT 参数寄存器窗口，最后把 `opcode \| src0_format<<8 \| rnd_mode<<12 \| cmd_valid(bit16)` 写到 `0x01000000 + worker_offset + GR_CT_CONTROL_ADDR`；执行后调 `debug_ct_info`，对部分写回型 opcode 检查 `wb_data0/1` | `srd` 写 `0x01000000 + 0x0..0x190`，`bseti 0x10` |
 | `__execute_ne(TsmNeInstr*)` | 先用 `common_tensor_info_generate/get_aligned_ck/get_dtype_size/bank_align_elem` 计算 `*_end`，再写 NE 参数窗口 `0x200..0x3e0`；control 打包含 `sparse_en/inpsum_format/output_format/input_format/inpsum_en/lrelu/relu/scale/bias/dilation/type`，最后设置 `cmd_valid(bit20)` | `__execute_ne` 长函数，`bseti 0x14` |
 | `__execute_rdma(TsmRdmaInstr*)` | 写 RDMA src/dst、stride/iteration、elem_count、format、src_end/dst_end 到 `0x410..0x490`，最后向 `GR_RD_CONTROL_ADDR=0x400` 写 `1`；末尾清零 packet 前 56 字节左右 | `__execute_rdma` writes + zero stores |
 | `__execute_wdma(TsmWdmaInstr*)` | 同 RDMA，但寄存器窗口是 `0x4b0..0x530`，control `0x4a0` | `__execute_wdma` writes |
-| `__execute_td(TsmDataMoveInstr*)` | 写 TDMA `src0/src1/dst/dims/src0_tfr/dst_tfr/pdr/swr/elem_count/stride-iteration/end` 到 `0x550..0x660`，control 打包 `opcode | src0_format<<8 | cmd_valid(bit12)`；执行后 `debug_td_info`，随后 `memset(instr,0,128)` | `__execute_td` writes + `bseti 0xc` |
+| `__execute_td(TsmDataMoveInstr*)` | 写 TDMA `src0/src1/dst/dims/src0_tfr/dst_tfr/pdr/swr/elem_count/stride-iteration/end` 到 `0x550..0x660`，control 打包 `opcode \| src0_format<<8 \| cmd_valid(bit12)`；执行后 `debug_td_info`，随后 `memset(instr,0,128)` | `__execute_td` writes + `bseti 0xc` |
 | `__execute_sc(SC_Param*)` | 存在全局符号，但没有实质发射路径；`TsmExecute` 不会到达 | symbol + dispatch table |
 | `TsmWaitfinish/TsmWaitfinish_bywork` | 轮询 CSR task done；`bywork` 使用 worker offset | CSR helper disassembly |
 | `TsmGetCsrTaskstatus/TsmGetCsrTaskstatus_bywork` | 读取 CSR `ib_status` 中 task done 位 | CSR helper disassembly |
 | `TsmGetCsrIbcounter` | 读取 CSR `ib_status[7:0]` | CSR helper disassembly |
 
-### 18.3 packet 字段偏移：wrapper 写字段时必须对齐这些 offset
+### 18.3 packet 字段偏移证据
 
-这些 offset 是反汇编 store offset 与 `instr_def.h` 结构布局一致得到的，编译器如果自己构 packet 必须按这个布局写。
+这些offset由反汇编store offset与`instr_def.h`结构布局交叉得到；它们描述该snapshot中raw packet的字节布局，不独立授权Wafer直接构packet。
 
 | packet | offset | 字段 |
 |---|---:|---|
@@ -1081,7 +1071,7 @@ compiler IR、verifier、lowering、runtime 子系统、ABI 边界、bring-up �
 
 | 单元 | offset | 字段/语义 |
 |---|---:|---|
-| CT | `0x000` | control：`opcode | src0_format<<8 | rnd_mode<<12 | cmd_valid(bit16)` |
+| CT | `0x000` | control：`opcode \| src0_format<<8 \| rnd_mode<<12 \| cmd_valid(bit16)` |
 | CT | `0x010/0x020/0x030/0x040/0x050` | `src0/src1/dst0/dst1/dst2` |
 | CT | `0x060` | `dims` |
 | CT | `0x070/0x080/0x090/0x0a0` | `src0_tfr/dst_tfr/pdr/swr` |
@@ -1104,7 +1094,7 @@ compiler IR、verifier、lowering、runtime 子系统、ABI 边界、bring-up �
 | WDMA | `0x4b0/0x4c0` | `src/dst` |
 | WDMA | `0x4d0/0x4e0/0x4f0` | stride-iteration 0/1/2 |
 | WDMA | `0x500/0x510/0x520/0x530` | `elem_count/format/src_end/dst_end` |
-| TDMA | `0x540` | control：`opcode | src0_format<<8 | cmd_valid(bit12)` |
+| TDMA | `0x540` | control：`opcode \| src0_format<<8 \| cmd_valid(bit12)` |
 | TDMA | `0x550/0x560/0x570/0x580` | `src0/src1/dst/dims` |
 | TDMA | `0x590/0x5a0/0x5b0/0x5c0/0x5d0` | `src0_tfr/dst_tfr/pdr/swr/elem_count` |
 | TDMA | `0x5e0/0x5f0/0x600` | source stride-iteration 0/1/2 |
@@ -1370,7 +1360,9 @@ CT wrapper 的反汇编模式高度一致：先写 `inter_type=I_CGRA`、`ctrl.o
 - `TsmRelation::LessThen*` 拼写是 `Then`，不是 `Than`；内部符号/enum 使用 `lt`。
 - `TsmPeripheral::Memset` 的参数类型是 `TsmDataMoveInstr*`，内部符号 `__peripheral_memset` 走 TDMA-like packet，不是普通 CT packet。
 - `TsmDataMove::TensorNom` 对应 enum `channelnorm=133`。
-- opcode `176 bitcount` 在 enum 中存在，但 public `TsmPeripheral` 没有直接的 `Bitcount` 方法；需要 raw CT packet 或确认是否由 `Count` 覆盖。
+- opcode `176 bitcount` 在 enum 中存在，但 public `TsmPeripheral` 没有直接的 `Bitcount`
+  方法；当前证据不能证明它由 `Count` 覆盖或已具备 public command path，acceptance 归
+  `tasks/11`/`tasks/14`，raw packet/board 证明归 `tasks/16`。
 
 ### 18.7 `libcommon_util.a` 函数级清单
 
@@ -1387,7 +1379,7 @@ CT wrapper 的反汇编模式高度一致：先写 `inter_type=I_CGRA`、`ctrl.o
 | random/mask | `gen_random_layout`、`gen_random_number`、`get_rand_value`、`rand_gen`、`add_mask`、`get_casual_mask` |
 | IO/checksum/log | `dump_data_to_file`、`save_array_data`、`print_array_data*`、`get_file_size`、`calculate_checksum*`、`cal_crc8/16/32`、`init_CRC32_table`、`init_log_config`、`logPrint`、`oplib_*_log_*`、`get_current_groupId`、`set_current_groupId` |
 
-这些函数不是硬件 ABI，但影响 compiler 的 golden/reference、layout verifier 和 end-address 计算。特别是 `common_tensor_info_generate`、`get_aligned_ck`、`get_dtype_size` 被 `__execute_ne` 直接调用，不能用手写猜测替代。
+这些函数不是硬件ABI，但提供golden/reference、layout和end-address交叉证据。特别是`common_tensor_info_generate`、`get_aligned_ck`、`get_dtype_size`被`__execute_ne`直接调用；编号设计决定如何消费和验证这些事实。
 
 ### 18.8 Host runtime API：外部函数与真实转发层
 
@@ -1549,7 +1541,9 @@ decorator 层不是 ground truth，只能说明 host ABI 如何包装真实实�
 | MHU/power | `tx81_mhu_init`、`tx81_mhu_init_process`、`init_mhu_monitor`、`init_mhu_poweroff_task`、`mhu_calc_payload_addr`、`mhu_recv_check_state`、`mhu_recv_read_payload`、`mhu_send_cmd_without_payload`、`mod_mhu_send_msg`、`mhu_power_off_self` |
 | log/profile/TLV | `tx8_log_init`、`monitor_write_log`、`kcore_write_log`、`tsm_ep_log`、`tsm_ep_log_init`、`__cyg_profile_func_enter/exit`、`tlv_box_*`、`tlv_get_*` |
 
-关键边界：Kcore 中 RTThread kernel、VFS、POSIX 和 board device 对象是运行环境依赖，不能当作 TX8 instruction/runtime ABI；它们需要符号完整性检查，但不需要 compiler 后端逐函数建模。
+关键边界：Kcore 中 RTThread kernel、VFS、POSIX 和 board device 对象是运行环境依赖；
+当前证据没有把它们连接到 TX8 instruction packet 或 stable host runtime ABI。package
+symbol closure 和 environment validation 分别由 `tasks/14`/`tasks/15`/`tasks/16` 定义。
 
 ### 18.10 Kcore DTE 函数级语义
 
@@ -1565,13 +1559,13 @@ decorator 层不是 ground truth，只能说明 host ABI 如何包装真实实�
 | `mode_kuiper_dte_dst_config_t` | 包含 `dst_addr`、`sct_dte_block_user_id_s dst_id`、`uint16_t dst_tile`。 |
 | `dte_cfg_user_id_s` | `stream_id` bit0:5，`early_comp` bit6，`tgt_npu` bit7，`switch_ddr` bit8，`rv_n` bit9，`packet_id` bit10:14，`stream_txn` bit15。 |
 | DTE mode register union | mode bit0；`mem_bypass` bit4；`sg_flag` bit8；`dim_flag` bit16；`out_slice_flag` bit24。 |
-| packet count update word | `mod_kuiper_dte_auto_update_packet_cnt` 生成 `1 | (packet_id << 4) | (stream_id << 12)`；如果目标 user id 的 bit8/remote 标志置位，则写远端 tile 的 packet counter MMIO，否则写本地 `0x670000`。 |
+| packet count update word | `mod_kuiper_dte_auto_update_packet_cnt` 生成 `1 \| (packet_id << 4) \| (stream_id << 12)`；如果目标 user id 的 bit8/remote 标志置位，则写远端 tile 的 packet counter MMIO，否则写本地 `0x670000`。 |
 
 #### 18.10.2 DTE raw driver
 
 | 函数 | 反汇编语义 |
 |---|---|
-| `kuiper_dte_init_reg(dte_idx, fsm_id, mode)` | 寄存器 base 为 `(0x2000 + dte_idx) << 9`；offset 20 写 mode/control，`RDMA/WDMA` 写 3，其他写 0；offset 16 写 `(fsm_id & 63) | 0x240`，再置 bit15；当 `fsm_id > 32` 时再置 bit7。 |
+| `kuiper_dte_init_reg(dte_idx, fsm_id, mode)` | 寄存器 base 为 `(0x2000 + dte_idx) << 9`；offset 20 写 mode/control，`RDMA/WDMA` 写 3，其他写 0；offset 16 写 `(fsm_id & 63) \| 0x240`，再置 bit15；当 `fsm_id > 32` 时再置 bit7。 |
 | `kuiper_dte_set_src_mode(dte, src, len, shuffle_cfg)` | base 同上；有 shuffle cfg 时循环 3 维写 source stride 到 `base+32+8*i`，写 `iteration-1` 到 `base+36+8*i`，iteration 为 0 时写 0；写 64 位 src 到 offset 0，len 到 offset 24，offset 28 写 0；返回 0。 |
 | `kuiper_dte_set_dst_info(dte, dst, shuffle_cfg)` | 写 64 位 dst 到 offset 8；有 shuffle cfg 时写 dest stride/iteration 到 `base+480/+484` 并置 mode bit24；无 cfg 时清 bit24；返回 0。 |
 | `kuiper_dte_trig_send(dte)` | 向 `base+56` 写 1，返回 0。 |
@@ -1584,7 +1578,7 @@ decorator 层不是 ground truth，只能说明 host ABI 如何包装真实实�
 | `mod_kuiper_dte_config_src_and_dst(node, tile_logic_id, src, dst, len, shuffle_cfg)` | `node == NULL` 返回 -11。`node->mode == RDMA(4)` 时 source 侧传入 shuffle cfg，否则 source shuffle 为 null。目的地址会 OR `((uint64_t)tile_logic_id << 40)`。`node->mode == WDMA(5)` 时 dest 侧传入 shuffle cfg，否则 dest shuffle 为 null。该函数本身不展开 broadcast/scatter 多目的逻辑，多目的由 node 的 `dst_cfg[]` 和自动 packet count 更新处理。 |
 | `mod_kuiper_dte_trig_send(node)` | 设置 `node->state = 3`，调用 `kuiper_dte_trig_send(node->dte_index)` 并返回其结果。 |
 | `mod_kuiper_dte_check_send_status(node)` | 未 init 返回 -16；调用 `kuiper_dte_check_dma_done`，若返回 0 则调用 `mod_kuiper_dte_auto_update_packet_cnt(node)`；最终返回原 DMA status。 |
-| `mod_kuiper_dte_auto_update_packet_cnt(node)` | `dst_cnt == 0` 直接返回。循环 `dst_cfg`，跳过 `stream_id > 31` 的目标；按 `1 | packet_id<<4 | stream_id<<12` 写 packet counter。remote 目标使用 `dst_tile` 计算远端 MMIO base：`0x670000 + ((dst_tile + 0x10000) << 23)`。 |
+| `mod_kuiper_dte_auto_update_packet_cnt(node)` | `dst_cnt == 0` 直接返回。循环 `dst_cfg`，跳过 `stream_id > 31` 的目标；按 `1 \| packet_id<<4 \| stream_id<<12` 写 packet counter。remote 目标使用 `dst_tile` 计算远端 MMIO base：`0x670000 + ((dst_tile + 0x10000) << 23)`。 |
 | `mod_kuiper_dte_release(node)` | 清 DMA 状态，增加 free count，并通过 bitmap 标记 DTE 节点可复用。 |
 
 ### 18.11 Kcore stream FSM 与 mailbox payload
@@ -1604,7 +1598,7 @@ decorator 层不是 ground truth，只能说明 host ABI 如何包装真实实�
 
 | 函数 | 反汇编语义 |
 |---|---|
-| `kuiper_streamfsm_alloc(locate, fsm_id, addr, packet_len, packet_cnt, stream_id)` | 校验 `locate <= 1`、`fsm_id <= 3`，否则返回 null。`locate == 0` 时实际 stream slot 为 `fsm_id + 32`，否则为 `fsm_id`。写 node stream id，写 `STREAM_CFG[stream] = (packet_len & 0xffffff) | (((packet_cnt - 1) & 31) << 24) | 0x80000000`，写 64 位 base addr，标记 online，返回 node。 |
+| `kuiper_streamfsm_alloc(locate, fsm_id, addr, packet_len, packet_cnt, stream_id)` | 校验 `locate <= 1`、`fsm_id <= 3`，否则返回 null。`locate == 0` 时实际 stream slot 为 `fsm_id + 32`，否则为 `fsm_id`。写 node stream id，写 `STREAM_CFG[stream] = (packet_len & 0xffffff) \| (((packet_cnt - 1) & 31) << 24) \| 0x80000000`，写 64 位 base addr，标记 online，返回 node。 |
 | `set_kuiper_streamfsm_addr(fsm_id, addr)` | 校验 `fsm_id <= 3`，读取 node 中的 stream id 并重写 `STREAM_BASE_ADDR`。 |
 | `kuiper_streamfsm_check_packet_ready(stream)` | 读取 `PACKET_STA[stream]`。 |
 | `kuiper_streamfsm_clear_packet_status(stream, packet)` | 向 `PACKET_STA[stream]` 写 `1 << packet`。 |
@@ -1625,7 +1619,7 @@ decorator 层不是 ground truth，只能说明 host ABI 如何包装真实实�
 
 | 函数 | 反汇编语义 |
 |---|---|
-| `GenPayloadInternal` | `payload[0] = (stream_id << 32) | (op_type << 24) | (core_id << 16) | tile_xy`，其中 `tile_xy = tile_id % chip_num | ((tile_id / chip_num) << 8)`；`payload[1] = stream_addr`；`payload[2] = preload_packet_count`；`payload[3] = 0`。`stream_type` 参数未参与 payload 构造。 |
+| `GenPayloadInternal` | `payload[0] = (stream_id << 32) \| (op_type << 24) \| (core_id << 16) \| tile_xy`，其中 `tile_xy = tile_id % chip_num \| ((tile_id / chip_num) << 8)`；`payload[1] = stream_addr`；`payload[2] = preload_packet_count`；`payload[3] = 0`。`stream_type` 参数未参与 payload 构造。 |
 | `SendMailbox` | 根据全局 chip 维度把 tile id 转为远端 tile 坐标；构造带 remote flag 的 mailbox header，remote 时 flag 为 2，payload length 为 8；调用 mailbox acquire/send/release 并返回 mailbox 发送结果。 |
 | `OnlineStream/OnlineStreamPreload/OfflineStream/WaitStream/ReqStream/PushStream/PopStream` | 都是 `GenPayload*` 生成 payload 后调用 `SendMailbox`；差异只在 op type 和 preload packet count。 |
 
@@ -1696,7 +1690,7 @@ PMU 计数器由 kcore 侧寄存器窗口和 host 侧 `ProcessProfData`/dyn TLV 
 
 机器可重复的符号覆盖矩阵已生成：
 
-- 统一实现契约：[tx8-interface-contract.md](tx8-interface-contract.md)
+- recovered-interface evidence ledger：[tx8-interface-contract.md](tx8-interface-contract.md)
 - API/结构体附录：[tx8-api-struct-contract-annex.md](tx8-api-struct-contract-annex.md)
 - 人读摘要：[tx8-symbol-coverage-matrix.md](tx8-symbol-coverage-matrix.md)
 - 全量 CSV：[tx8-symbol-coverage-matrix.csv](tx8-symbol-coverage-matrix.csv)
@@ -1708,4 +1702,4 @@ PMU 计数器由 kcore 侧寄存器窗口和 host 侧 `ProcessProfData`/dyn TLV 
 | compile/model | `TsmCompile`、`TsmGraphCompile`、`TsmCompileMultiGraph`、script builder、JSON parser、model binary loader。 |
 | instruction/MMIO | CT/NE/DMA/TDMA/PMU register offset、opcode、wrapper 函数和 raw `libinstr_tx81.a` 发射路径。 |
 | kcore runtime | DTE、stream FSM、mailbox payload、bootparam/TLV、PMU/profiling、SPM/barrier/sync 关键 ABI。 |
-| 明确保留 | RTThread kernel、VFS、POSIX、board driver 是运行环境依赖；本文只记录它们作为 TX8 runtime 的依赖边界，不把它们建模成 compiler instruction ABI。SCALAR 在当前库里只有 stub 级寄存器清零行为，compiler 后端应把它视为保留资源，直到获得可执行 scalar kernel 样本或寄存器协议实测。 |
+| 明确保留 | RTThread kernel、VFS、POSIX、board driver 是运行环境依赖；当前证据没有把它们连接到 TX8 instruction packet。SCALAR 在当前库里只有 stub 级寄存器清零行为，不能证明可执行 scalar path；production acceptance 归 `tasks/11`/`tasks/14`，板端证明归 `tasks/16`。 |

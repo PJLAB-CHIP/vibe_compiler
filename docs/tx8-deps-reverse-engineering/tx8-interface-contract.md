@@ -1,19 +1,23 @@
-# TX8 Interface, Runtime, and Hardware Contract
+# TX8 Recovered Interface, Runtime, and Hardware Evidence
 
-This is the canonical implementer-facing contract for the reversed TX8
-dependency package. It records what each compiler-facing API family writes into
-instruction packets, what each instruction class is allowed to contain, what the
+This is the canonical recovered-interface evidence ledger for the audited TX8
+dependency package. It records what each public wrapper/API family writes into
+instruction packets, which field relations appear in each instruction class, what the
 TX8 hardware-facing register interfaces mean, and how the host runtime drives
 device memory, bootparams, dyn data, topology, launch, and profiling.
 
-Runtime is treated as a first-class host/driver layer. Backend branch names
-recovered from the binary are implementation gates, not the organizing model for
-the reverse engineering. Raw tx8-deps evidence and broader dependency notes
+It is not a Wafer IR, ABI, transport, provider, or runtime-policy owner. The
+numbered design documents linked from this directory's README decide which
+recovered facts enter production and how they are represented and verified.
+
+This ledger records host/runtime APIs as a distinct evidence layer. Backend
+branch names recovered from the binary are implementation gates rather than an
+architecture taxonomy. Raw tx8-deps evidence and broader dependency notes
 remain in `tx8-deps-reverse-engineering-reference.md`; generated signatures and
 struct shapes remain in `tx8-api-struct-contract-annex.md`. Full SDK/KMD/HPGR
 evidence from `firmware_kuiper` is summarized in
-`firmware-kuiper-runtime-hardware-analysis.md` and should be used for host
-runtime, driver, BO/BAR/ATU, PG, C2C, and completion semantics.
+`firmware-kuiper-runtime-hardware-analysis.md`; it contains the corresponding
+host runtime, driver, BO/BAR/ATU, PG, C2C, and completion evidence.
 
 Evidence used in this pass:
 
@@ -33,42 +37,43 @@ Evidence used in this pass:
 
 The old gap was not mostly about missing C/C++ symbol names. The generated
 annex already lists signatures and packet structs. The real gap was semantic:
-argument-to-field behavior, verifier rules, register meanings, host runtime API
-semantics, and stub versus real driver behavior. This file closes that layer for
-compiler-facing and runtime-facing paths.
+argument-to-field behavior, observed field bounds, register meanings, host runtime
+API semantics, and stub versus real driver behavior. This file records that
+evidence without deciding Wafer compiler or runtime acceptance.
 
 | area | static semantic status | remaining non-static work |
 |---|---|---|
 | `libinstr_tx81.a` wrapper APIs | Covered by function-family rules below and packet/register maps. | Hardware error behavior for invalid packets still needs board tests. |
 | `TsmExecute` dispatch | Covered: only instruction types 0..4 dispatch. | None for dispatch itself. |
 | CT/NE/RDMA/WDMA/TDMA packet layout | Covered from header offsets and execute disassembly. | Exact arithmetic corner cases, NaN/overflow flags, and timing require hardware. |
-| SCALAR | Covered as reserved/stub. | Needs a real scalar sample before compiler lowering. |
+| SCALAR | `__execute_sc` is observed as a clearing stub with no register emission. | The snapshot does not establish an executable scalar path; acceptance belongs to `tasks/11` and `tasks/14`. |
 | Kcore DTE/stream/mailbox | Register protocol and payload format covered. | Multi-destination DTE policies, mailbox failure recovery, and timing need board tests. |
 | PMU/profiling | Register and TLV shape covered. | Counter units, wrap edge cases, and event accuracy need board tests. |
-| Host runtime / driver layer | Exported `Tsm*` signatures, implemented/stub behavior, bootparam/dyn-data paths, launch/copy/topology/profiling calls covered; HPGR/KMD pass clarifies primary `tx_runtime` ABI, BO/BAR/ATU, KMD UAPI, PG, and completion semantics. | Closed driver availability, target-specific launch success, board services, and hardware error propagation need target validation. |
+| Host runtime / driver layer | Exported `Tsm*` signatures, implemented/stub behavior, bootparam/dyn-data paths, launch/copy/topology/profiling calls covered; HPGR/KMD pass adds the largest observed `tx_runtime` surface, BO/BAR/ATU, KMD UAPI, PG, and completion mechanisms. | Provider selection and runtime semantics belong to `tasks/15`; target validation belongs to `tasks/16`. |
 
 Symbol coverage remains measured by `tx8-symbol-coverage-matrix.csv`. The
-important practical result is that all compiler-facing instruction families now
-have a documented packet contract and verifier rule set. The remaining
+important practical result is that the observed instruction families have
+documented packet fields and static constraints. Production verifier rules are
+owned by the numbered instruction/target designs. The remaining
 `HardwareVerify` rows are hardware-observable state, timing, PMU, MHU, power, or
 closed device-driver paths.
 
 ### Interface Semantics Inventory
 
-The reverse-engineered interface surface is split into several layers. All are
-in scope; none of them should be inferred from a backend name alone.
+The reverse-engineered interface surface is split into several layers. Backend
+names alone do not establish relationships between those layers.
 
 | layer | interface family | semantics recovered here |
 |---|---|---|
-| Instruction wrapper API | `TsmElemWise`, CT relation/logic/reduce/convert/peripheral helpers | Function family, opcode range, address-versus-scalar operand role, dtype storage size, bool packing, end-field policy, writeback behavior, and verifier constraints. |
+| Instruction wrapper API | `TsmElemWise`, CT relation/logic/reduce/convert/peripheral helpers | Function family, opcode range, address-versus-scalar operand role, dtype storage size, bool packing, end-field behavior, writeback behavior, and observed field bounds. |
 | Instruction wrapper API | `TsmConv`, `TsmDepthWiseConv`, `TsmGemm` | Argument-to-field mapping for input/weight/output/psum/bias/scale/sparse/quant/pad/stride/dilation/GEMM MKN/batch/trans flags, plus shape and quant bounds. |
 | Instruction wrapper API | `TsmRdma`, `TsmWdma`, `TsmDataMove`, `TsmPeripheral` | DDR/SPM direction, stride and iteration units, `iteration-1` encoding, TDMA opcodes, byte-oriented memset/gatherscatter semantics, and register window offsets. |
-| CSR/reserved API | CSR helpers and `I_SCALAR` | CSR status bit meanings and worker addressing are recovered; scalar packet execution is a stub and must stay reserved. |
+| CSR/reserved API | CSR helpers and `I_SCALAR` | CSR status bit meanings and worker addressing are recovered; scalar packet execution is a stub with no observed register emission. Production acceptance belongs to `tasks/11` and `tasks/14`. |
 | Kcore hardware API | DTE | Register fields, mode/user_id bits, high-level modes, source/destination setup, shuffle stride encoding, trigger, done/error return codes, and packet-counter update format. |
 | Kcore hardware API | Stream FSM and mailbox | Stream config layout, packet counters, online/offline/request/push/pop payloads, mailbox TX/RX window protocol, payload register count, and observed status handling. |
-| Profiling API | PMU helpers and host profiling dyn data | DTE/SPM/NCC PMU bases and record types, stable 64-bit read policy where present, host `D_PROF_CFG` control path, and remaining hardware validation items. |
+| Profiling API | PMU helpers and host profiling dyn data | DTE/SPM/NCC PMU bases and record types, observed high-low-high 64-bit read pattern, host `D_PROF_CFG` control path, and remaining hardware validation items. |
 | Host runtime API | `Tsm*` runtime exports | Device selection, memory allocation/free, H2D/D2H/D2D/P2P copies, bootparam launch, kernel load/unload, tile topology, power hooks, profiling, return code semantics, and stub boundaries. |
-| HPGR/KMD API | `tx_runtime.h`, KMD UAPI | CUDA-like device/memory/stream/event/model/module API, command completion, BO pools, job/DTE/C2C ioctl contracts, PG tile map, and BAR/ATU address-space ownership. |
+| HPGR/KMD API | `tx_runtime.h`, KMD UAPI | CUDA-like device/memory/stream/event/model/module API, command completion, BO pools, job/DTE/C2C ioctl surfaces, PG tile map, and BAR/ATU address-space handling. |
 
 Interface units are explicit in the relevant sections: tensor element counts for
 CT/NE logical work, packed bytes for bool storage, byte strides for DMA/TDMA/DTE
@@ -78,14 +83,15 @@ runtime bootparams and dyn-data buffers.
 ## 2. TX8 Hardware Surface Map
 
 The hardware surface recovered from headers and object code is broader than the
-host runtime, but the runtime remains the host-side owner of device memory,
-bootparams, dyn TLVs, and launch. The table below is the address-level map used
-by the Kcore and instruction libraries.
+host runtime. In this snapshot, host runtime APIs perform device-memory,
+bootparam, dyn-TLV, and launch operations; Wafer provider and resource ownership
+is defined by `tasks/15`. The table below is the address-level map used by the
+Kcore and instruction libraries.
 
 | block | base | recovered semantic status |
 |---|---:|---|
-| L1 SPM | `0x000000` | Tensor/local SRAM for NCC and Kcore. Size is `0x300000`; compiler must reserve `0x2f0000..0x2fffff` for Kcore/runtime. |
-| NCC instruction MMIO | `0x01000000` | CT/NE/RDMA/WDMA/TDMA register windows, three worker windows spaced by `0x100000`; fully mapped for compiler-emitted packets. |
+| L1 SPM | `0x000000` | Tensor/local SRAM for NCC and Kcore. Size is `0x300000`; Kcore/runtime code uses `0x2f0000..0x2fffff`. |
+| NCC instruction MMIO | `0x01000000` | CT/NE/RDMA/WDMA/TDMA register windows, with three observed worker windows spaced by `0x100000`. |
 | DTE | `0x400000` | Kcore DMA engine. Four blocks, block stride `0x200`; source/destination/mode/status semantics recovered. |
 | SCONFIG | `0x500000` | System config base known from map; no compiler-facing bit protocol recovered beyond dependency boundary. |
 | SPM PMU | `0x580000` | SPM performance counters used by Kcore PMU helpers. |
@@ -106,28 +112,31 @@ by the Kcore and instruction libraries.
 | External DDR | `0x8000000000` | External DDR mapping. |
 | L1SPM weak/strong-order aliases | `0x30400000`, `0x30800000` | Uncached weak/strong-order SPM aliases. |
 
-For production compiler purposes the hardware is split into these contracts:
+The recovered evidence is grouped into these layers; production contracts remain in numbered designs:
 
-- NCC instruction contract: `TsmExecute` packet types 0..4 and the CT/NE/DMA/TDMA
+- NCC instruction evidence: `TsmExecute` packet types 0..4 and the CT/NE/DMA/TDMA
   register windows.
-- Kcore movement/stream contract: DTE, stream FSM, mailbox, and packet counter
+- Kcore movement/stream evidence: DTE, stream FSM, mailbox, and packet counter
   update registers.
-- Profiling contract: NCC, DTE, and SPM PMU record formats and register bases.
+- Profiling evidence: NCC, DTE, and SPM PMU record formats and register bases.
 - Board/runtime dependency boundary: MHU, power/CRG, TMNOC, and system config
   bases are identified, but their bit-level behavior is not compiler-facing yet.
+
+Instruction, transport, target, provider, and verification acceptance is owned
+by `tasks/11`, `tasks/13`, `tasks/14`, `tasks/15`, and `tasks/16`, respectively.
 
 ## 3. Common Instruction Model
 
 All instruction packets start with `uint32_t inter_type`. Low bits select the
 functional unit; bits 8..9 encode worker selection for NCC register windows.
 
-| value | type | compiler status |
+| value | type | observed `TsmExecute` status |
 |---:|---|---|
-| 0 | `I_CGRA` / CT | valid |
-| 1 | `I_NEUR` / NE | valid |
-| 2 | `I_RDMA` | valid |
-| 3 | `I_WDMA` | valid |
-| 4 | `I_TDMA` | valid |
+| 0 | `I_CGRA` / CT | dispatched |
+| 1 | `I_NEUR` / NE | dispatched |
+| 2 | `I_RDMA` | dispatched |
+| 3 | `I_WDMA` | dispatched |
+| 4 | `I_TDMA` | dispatched |
 | 5 | `I_SCALAR` | reserved/stub |
 | 6 | `I_DTE` | not dispatched by `TsmExecute` |
 | 7 | `I_CSR` | not dispatched by `TsmExecute` |
@@ -139,18 +148,14 @@ to the NCC base `0x01000000`.
 
 `TsmExecute(void *instr)` reads `*(uint8_t *)instr` and dispatches only values
 0..4. Values greater than 4 return `1` without running scalar, DTE, or CSR
-execution. Production lowering must not emit `I_SCALAR`, `I_DTE`, or `I_CSR`
-through `TsmExecute`.
+execution. The snapshot therefore provides no `TsmExecute` execution evidence
+for `I_SCALAR`, `I_DTE`, or `I_CSR`; production acceptance and emission are
+owned by `tasks/11` and `tasks/14`.
 
-### Compiler Entry Strategy and Wrapper Lifecycle
+### Observed Wrapper Object Lifecycle
 
-The safe first backend should generate Kcore C/C++ that calls the vendor wrapper
-API. Raw register emission is possible, but wrapper-first gives packet
-compatibility and lets golden tests compare raw builder packets against vendor
-packets.
-
-Wrapper objects are C structs of function pointers, not ABI-stable C++ classes.
-Treat constructors/destructors as factory functions around those tables:
+Wrapper objects in the snapshot are C structs of function pointers rather than
+C++ classes. The recovered factory/table lifecycle has this call shape:
 
 ```c
 TsmArith *arith = TsmNewArith();
@@ -161,9 +166,10 @@ TsmWaitfinish();
 TsmDeleteArith(arith);
 ```
 
-The same lifecycle applies to `TsmConv`, `TsmDepthwiseConv`, `TsmGemm`,
+The same lifecycle appears for `TsmConv`, `TsmDepthwiseConv`, `TsmGemm`,
 `TsmRdma`, `TsmWdma`, `TsmDataMove`, `TsmPeripheral`, and the CT-family wrapper
-tables listed in the generated annex.
+tables listed in the generated annex. Production entry strategy and CRT usage
+are owned by `tasks/14`.
 
 ### Data Formats
 
@@ -183,9 +189,11 @@ tables listed in the generated annex.
 | `Fmt_INT64` | 11 | 8 |
 | `Fmt_UINT64` | 12 | 8 |
 
-Bool paths are special. The wrappers either compute packed byte counts directly
-or rewrite DMA format to byte format when moving packed bool storage. A verifier
-must treat `elem_count` as logical elements and storage as packed bytes.
+Bool paths are special in the recovered wrappers: they either compute packed
+byte counts directly or rewrite DMA format to byte format when moving packed
+bool storage. Here `elem_count` denotes logical elements while storage uses
+packed bytes. Representation and verifier acceptance are owned by `tasks/11`
+and `tasks/14`.
 
 ### Address Domains
 
@@ -198,14 +206,15 @@ define:
 | Kcore reserved SPM | `0x002f0000..0x002fffff` |
 | DDR | `>= 0x280000000` |
 
-CT, NE, and TDMA operands are SPM addresses. RDMA source is DDR and destination
-is SPM. WDMA source is SPM and destination is DDR. The compiler must reserve the
-Kcore SPM window and must not allocate user tensors there.
+CT, NE, and TDMA wrapper operands are SPM addresses. RDMA source is DDR and destination
+is SPM. WDMA source is SPM and destination is DDR. Kcore code marks the final
+SPM window as reserved; allocator legality is owned by the numbered memory designs.
 
 ### Instruction Packet Struct Offsets
 
-The generated annex gives the C struct shapes. These byte offsets are the ABI
-facts that raw packet builders and wrapper-golden tests must match.
+The generated annex gives the C struct shapes. These byte offsets are recovered
+C-layout facts; production ABI acceptance and golden coverage are owned by
+`tasks/14` and `tasks/16`.
 
 `CT_Param`:
 
@@ -348,7 +357,7 @@ families:
 | `V_V` | `AbsVV`, `SqrtVV`, `Relu` | `inter_type=I_CGRA`, one SPM source in `src0`, one SPM output in `dst0`, `elem_count`, `src0_format`, opcode, `src0_end`, `dst0_end`. |
 | `V_VV` | `AddVV`, `SubVV`, relation `EqualVV` | `src0`, `src1`, `dst0`, `elem_count`, format, rounding if supported, all three end fields. |
 | `V_VS` | `AddVS`, `MaxVS`, relation scalar variants | `src0` is SPM, `src1` stores the immediate scalar value, not an address; `src1_end` is not an operand range. |
-| `V_VuV` | `AddVuV`, relation/logic unit-vector variants | `src0` uses `elem_count`; `src1` is a short/unit vector using `unit_elem_count`; `unit_elem_count` must be `1..64`. |
+| `V_VuV` | `AddVuV`, relation/logic unit-vector variants | `src0` uses `elem_count`; `src1` is a short/unit vector using `unit_elem_count`; the documented `unit_elem_count` range is `1..64`. |
 | `V_VuVLoop` | loop unit-vector variants | Also writes `full_elem_count` and `full_unit_elem_count`; end fields are computed from full counts. |
 | bool relation/logical | `BoolEqualVV`, `BoolAndV` | Output format is bit-packed bool. `elem_count` is logical bool count; storage is `ceil(elem_count/8)`. |
 | tensor shape ops | pool, reduce, unpool, pad-like CT ops | Write `src0_tfr`, `dst_tfr`, `pdr`, `swr`, and `dims` as applicable. Shapes are packed as NHWC 16-bit lanes. |
@@ -375,19 +384,20 @@ non-writeback execution. For opcodes 175..178, it preserves `wb_data0/1` by
 polling register offsets `0x130` and `0x140` when the corresponding fields are
 nonzero, then stores the low 32 bits back into the packet fields.
 
-### CT Verifier Rules
+### Observed CT Field Relations and Bounds
 
-- `cmd_valid` must be set by wrappers or raw builder before execution.
-- `opcode` must be a known opcode in the CT opcode table.
-- `src0_format` must be a known `Data_Format`; bool requires packed sizing.
-- `unit_elem_count` must be `1..64` when used.
-- `rnd_mode` must be `0..4` for functions that expose rounding.
-- `dims` must be one of the documented dimensions for the operation. Reduce
-  supports `C=0`, `W=1`, `H=2`, and `HW=4`.
-- All SPM operands and computed `*_end` fields must remain in usable SPM and
-  outside the reserved Kcore window.
-- Scalar variants must validate the scalar immediate width according to source
-  format; do not treat `src1` as a pointer.
+- Wrapper paths set `cmd_valid` and select opcodes from the recovered CT table.
+- `src0_format` uses `Data_Format`; bool helpers compute packed storage sizes.
+- The documented unit-vector range is `1..64`, and the exposed rounding enum is
+  `0..4`.
+- The packet dimension encoding exposes `C=0`, `W=1`, `H=2`, `N=3`, `HW=4`,
+  and `HWC=5`. This is the full observed packet enum; operation-specific Reduce
+  acceptance belongs to `tasks/11` and `tasks/14`.
+- Wrapper helpers derive SPM operand end fields and distinguish scalar immediates
+  in `src1` from address operands.
+
+These relations are evidence inputs, not a verifier contract. Production
+legality and packet emission remain owned by `tasks/11` and `tasks/14`.
 
 ## 5. NE Semantics
 
@@ -468,10 +478,14 @@ NE register offsets:
 shape helpers (`common_tensor_info_generate`, `get_aligned_ck`,
 `get_chip_aligned_ck`, `bank_align_elem`, and `get_dtype_size`) and writes
 `srca_end`, `srcw_end`, `psum_end`, `bias_end`, `scale_p_end`, `scale_n_end`,
-`out_end`, and `sparse_end`. Raw builders must either reproduce the same end
-calculation or call the wrapper API and execute helper.
+`out_end`, and `sparse_end`. This is the observed wrapper execution path;
+production end-field derivation and any direct packet emission are owned by
+`tasks/11` and `tasks/14`.
 
-### NE Constraints
+### Observed NE Field Bounds
+
+Headers and wrapper implementations expose the following field ranges and
+relations. Their production legality is owned by `tasks/11` and `tasks/14`.
 
 - `type` values: `0=conv`, `1=depthwise conv`, `2=backward conv`, `3=gemm`.
 - `tfr_0` / `tfr_1` pack `n,h,w,c` as 16-bit lanes. `n/h/w` range is
@@ -481,8 +495,8 @@ calculation or call the wrapper API and execute helper.
 - Dilation lanes are `1..1023`.
 - GEMM `M/N` are 16-bit; `K` range is `1..16384`; batches are `1..4096`.
 - Quant zero-points are `0..255`; quant shifts are `0..31`.
-- All enabled optional operands (`psum`, `bias`, scales, sparse index) require
-  valid SPM ranges and end fields.
+- Enabled optional operands (`psum`, `bias`, scales, sparse index) participate in
+  the wrapper's SPM end-field calculations.
 
 ## 6. RDMA and WDMA Semantics
 
@@ -519,15 +533,18 @@ control `0x4a0`, `src` `0x4b0`, `dst` `0x4c0`, stride pairs `0x4d0..0x4f0`,
 `__execute_rdma` and `__execute_wdma` write all parameters first, write
 `cmd_valid=1` last, then clear 72 bytes of the instruction object.
 
-DMA verifier rules:
+Observed DMA field conventions:
 
-- RDMA `src` must be DDR and `dst` must be SPM.
-- WDMA `src` must be SPM and `dst` must be DDR.
-- `elem_count > 0`.
-- Logical iterations must be nonzero before wrapper conversion to `iteration-1`.
-- Strides are bytes, not elements.
-- `Fmt_BOOL` is packed; wrappers convert byte counts with
-  `ceil(elem_count/8)` and may store byte format for the actual transfer.
+- RDMA wrapper paths encode DDR source and SPM destination; WDMA paths encode
+  SPM source and DDR destination.
+- Wrapper helpers use positive element counts and encode each nonzero logical
+  iteration as `iteration-1`.
+- Strides are bytes rather than elements.
+- `Fmt_BOOL` is packed; wrappers compute byte counts with
+  `ceil(elem_count/8)` and can store byte format for the transfer.
+
+Production DMA legality and unit conversion are owned by `tasks/11` and
+`tasks/14`.
 
 ## 7. TDMA and DataMove Semantics
 
@@ -583,98 +600,33 @@ TDMA register offsets:
 opcode `179`, destination address in the TD packet, the fill value, byte
 strides, and TD end fields. The header says `si.stride` is byte size; `elem_count`
 is nominal element count, while TD packet comments say memset/gatherscatter use
-byte number. Production lowering should convert the user element count to byte
-count consistently before raw packet construction, or call the wrapper.
+byte number. This is unit evidence rather than a lowering rule; conversion and
+packet acceptance are owned by `tasks/11` and `tasks/14`.
 
 `GatherScatter` writes `elem_count=size` in bytes, copies source and destination
 stride/iteration triples, and computes only `src0_end` and `dst_end`;
 `src1_end` is zero.
 
-TDMA verifier rules:
+Observed TDMA field relations:
 
-- All TDMA data operands are SPM addresses.
-- Shapes are packed NHWC 16-bit lanes.
-- `src0_tfr`, `dst_tfr`, `pdr`, `swr`, `dims`, and end fields must match the
-  selected opcode.
+- Recovered TDMA wrapper data operands use SPM addresses.
+- Shapes are packed as NHWC 16-bit lanes.
+- Opcode-specific wrapper paths populate subsets of `src0_tfr`, `dst_tfr`,
+  `pdr`, `swr`, `dims`, and end fields.
 - Stride/iteration fields use byte strides and logical iteration counts.
-- For byte-oriented TDMA operations (`Memset`, `GatherScatter`), treat
-  `elem_count` as byte count in the final packet.
+- `Memset` and `GatherScatter` packet comments and helpers use byte-oriented
+  counts.
 
-## 8. Production Wrapper Recipes
+Production opcode legality and byte-count interpretation are owned by
+`tasks/11` and `tasks/14`.
 
-These examples preserve the concrete call shape from the removed standalone
-production contract. They are examples of the wrapper-first path, not a
-replacement for the per-field semantics above.
+## 8. Wrapper Call-Shape Evidence Boundary
 
-Conv/depthwise:
-
-```c
-TsmConv *conv = TsmNewConv();
-TsmNeInstr instr = {0};
-conv->AddInput(&instr, x_spm, (Data_Shape){n,h,w,c}, Fmt_FP16);
-conv->AddWeight(&instr, w_spm, (Data_Shape){kx,ky,f,c}, Fmt_FP16);
-conv->AddBias(&instr, bias_en, bias_spm);
-conv->AddOutput(&instr, out_spm, (Data_Shape){n,oh,ow,f}, Fmt_FP16);
-conv->SetOpType(&instr, 0);
-conv->SetPads(&instr, top, bottom, left, right);
-conv->SetKernelStrides(&instr, kx, ky, sx, sy);
-conv->SetDilations(&instr, dx, dy);
-conv->SetQuant(&instr, q0, q1, zp_pre, zp_cur);
-TsmExecute(&instr);
-TsmWaitfinish();
-TsmDeleteConv(conv);
-```
-
-GEMM:
-
-```c
-TsmGemm *gemm = TsmNewGemm();
-TsmNeInstr instr = {0};
-gemm->AddInput(&instr, left_spm, right_spm, Fmt_FP16);
-gemm->ConfigMKN(&instr, M, K, N);
-gemm->ConfigBatch(&instr, left_batch, right_batch);
-gemm->AddOutput(&instr, out_spm, Fmt_FP16);
-gemm->SetTransflag(&instr, left_trans, right_trans);
-gemm->SetPsum(&instr, psum_en, psum_spm, Fmt_FP16);
-TsmExecute(&instr);
-TsmWaitfinish();
-TsmDeleteGemm(gemm);
-```
-
-RDMA/WDMA pseudo sequence:
-
-```text
-TsmRdma *rdma = TsmNewRdma();
-TsmRdmaInstr rdma_instr = {0};
-rdma_configure_contiguous(rdma, &rdma_instr, ddr_src, spm_dst, elem_count, Fmt_FP16);
-TsmExecute(&rdma_instr);
-TsmWaitfinish();
-TsmDeleteRdma(rdma);
-
-TsmWdma *wdma = TsmNewWdma();
-TsmWdmaInstr wdma_instr = {0};
-wdma_configure_contiguous(wdma, &wdma_instr, spm_src, ddr_dst, elem_count, Fmt_FP16);
-TsmExecute(&wdma_instr);
-TsmWaitfinish();
-TsmDeleteWdma(wdma);
-```
-
-For 3D DMA, call `AddSrcDst` first and then `ConfigStrideIteration`; stride
-arguments are bytes and iteration arguments are logical counts before the wrapper
-stores `iteration - 1`.
-
-CT wrapper families follow these call shapes:
-
-| family | API shape | notes |
-|---|---|---|
-| unary vector | `OpVV(instr, src, dst, elem_count, fmt)` | uses `src0`, `dst0`, `elem_count` |
-| binary vector | `OpVV(instr, src0, src1, dst, elem_count, rnd, fmt)` | uses `src0`, `src1`, `dst0` |
-| vector-scalar | `OpVS(instr, src0, const_value, dst, elem_count, rnd, fmt)` | scalar immediate goes through the `src1` field path |
-| unit vector | `OpVuV(instr, src0, src1, dst, elem_count, unit_elem_count, rnd, fmt)` | `unit_elem_count <= 64` |
-| loop unit vector | `OpVuVLoop(instr, src0, src1, dst, elem_count, unit_elem_count, full_elem, full_unit_elem, rnd, fmt)` | fills full count fields |
-| reduce | `Reduce*(instr, src, dst, dim, shape, fmt)` | `dim` must be `0/1/2/4` |
-| pool/unpool | `Pool*(instr, src, src_shape, dst, pad, swr_shape, fmt)` | uses CT tensor transform registers |
-| convert | `SRC_DST(instr, src, dst, elem_count, optional rnd/zp)` | function name encodes source/destination format |
+Sections 3 through 7 and the generated annex record factory/table lifecycles,
+argument order, and argument-to-field mappings observed in the snapshot. They do
+not prescribe a production wrapper-first entry strategy, direct packet builder,
+wait placement, or golden-test suite. Those choices and their verification are
+owned by `tasks/11`, `tasks/14`, and `tasks/16`.
 
 ## 9. CSR and SCALAR
 
@@ -702,7 +654,8 @@ Exception bit groups are `SCALAR [7:0]`, `CT [15:8]`, `NE [23:16]`,
 
 `__execute_sc(SC_Param *)` only clears the first 12 bytes of the packet and
 returns. There is no scalar register emission in the current `libinstr_tx81.a`;
-SCALAR must remain reserved.
+the snapshot therefore provides no executable SCALAR evidence. Production
+acceptance is owned by `tasks/11` and `tasks/14`.
 
 ## 10. Kcore DTE Semantics
 
@@ -766,12 +719,12 @@ DTE mode bits:
 | 6 | DDR-to-DDR U2U |
 | 7 | DDR-to-DDR shuffle |
 
-Layering rule: this software mode enum is broader than the KMD register helper
+Evidence boundary: this software mode enum is broader than the KMD register helper
 path.  KMD declares a driver enum with `gather=4`, but its register path writes
 a 2-bit `mode` field and only dispatches unicast/scatter/broadcast/shuffle.
-Compiler-facing code should not treat KMD `gather=4` as a confirmed raw
-register mode.  Raw non-unicast communication still needs a Wafer ABI and board
-tests.
+The snapshot therefore does not prove KMD `gather=4` as a raw register mode.
+Raw non-unicast acceptance belongs to the numbered communication/target designs
+and board gates.
 
 ### DTE APIs
 
@@ -952,7 +905,7 @@ PMU record types:
 | 9 | `NCC_SCALAR` |
 | 10 | `NCC_USER_TIME` |
 
-The static contract covers register locations and record shape. Actual counter
+The static evidence covers register locations and record shape. Actual counter
 units, saturation, wrap timing, and correlation with workloads are still
 `HardwareVerify`.
 
@@ -972,26 +925,26 @@ SPM PMU records:
 - `pmu_spm_lsu_all_*` reads SPM paths tagged in comments as RDMA port 0 and WDMA
   port 6.
 - `pmu_spm_dte_all_*` reads SPM global, xbar, and DTE-related ports.
-- The helper comments distinguish start/end records; the static contract is
+- The helper comments distinguish start/end records; the static evidence covers
   register layout, not timing accuracy.
 
-## 13. Host Runtime and Device Driver Semantics
+## 13. Observed Host Runtime and Device Driver Surfaces
 
 The public `Tsm*` functions dispatch through
 `Runtime::GetInstance()->_Api()`. The concrete hardware implementation is
 `RuntimeApiImplHw`; it is wrapped by logging/error/profiling decorators in some
-paths. This layer is important because it owns device memory, host-to-device
-copies, bootparam construction, dyn TLV transport, module launch, tile topology,
-P2P/D2D setup, and profiling control. It sits above the NCC/DTE/stream/mailbox
-hardware contracts rather than replacing them.
+paths. The snapshot routes device memory, host-to-device copies, bootparam
+construction, dyn TLV transport, module launch, tile topology, P2P/D2D setup,
+and profiling control through this layer. Wafer provider, resource, launch, and
+completion ownership remains in `tasks/15`, with acceptance gates in `tasks/16`.
 
 After the `firmware_kuiper` pass, the host/runtime split is:
 
-| layer | current contract |
+| layer | snapshot evidence |
 |---|---|
-| HPGR `tx_runtime` | Primary CUDA-like host ABI in the SDK: device, memory, stream/event, module/kernel/model/graph, rank/tile, and P2P.  Model-manager sync/async paths wait on command-slot completion; module launch polls a device-written `completeSignal`; stream finish waits on the queued command completion object. |
-| KMD UAPI | Owns `/dev/accel/dev-N` BO/job/NPU/DTE/C2C/log/info/topology ioctl families, BAR/ATU windows, BO pools, PG tile maps, and firmware loading.  Current compute-job fence is directly signaled after MHU doorbell kick and is not proof of device-side compute completion. |
-| VS/old `Tsm*` | Compatibility layer over HPGR plus DTE TLV evidence.  Several launch/sync/discovery paths are stub/no-op in the recovered build. |
+| HPGR `tx_runtime` | Broad CUDA-like API surface observed in this SDK snapshot: device, memory, stream/event, module/kernel/model/graph, rank/tile, and P2P. Model-manager sync/async paths wait on command-slot completion; module launch polls a device-written `completeSignal`; stream finish waits on the queued command completion object. |
+| KMD UAPI | Exposes `/dev/accel/dev-N` BO/job/NPU/DTE/C2C/log/info/topology ioctl families, BAR/ATU windows, BO pools, PG tile maps, and firmware loading. The observed compute-job fence is directly signaled after MHU doorbell kick and does not prove device-side compute completion. |
+| VS/old `Tsm*` | Compatibility-layer and DTE-TLV evidence. Several launch/sync/discovery paths are stub/no-op in the recovered build. |
 
 The binary exposes a boolean backend gate in `Runtime::IsTriton()`. In this
 document that branch is called the active `tx*` driver backend. The symbol name
@@ -1008,19 +961,19 @@ compiler target, or instruction semantic category.
 | `TsmDeviceFree` | Active `tx*` backend calls `txFree(ptr)`; tx error returns `1`. In inactive backend mode it returns `0`. |
 | `TsmMemcpyH2D` | Active `tx*` backend calls `txMemcpy(dst,src,size,1)`; tx error returns `1`. In inactive backend mode it returns `0`. |
 | `TsmMemcpyD2H` | Active `tx*` backend calls `txMemcpy(host_dst,dev_src,size,2)`; tx error returns `1`. In inactive backend mode it returns `0`. |
-| `TsmMemcpyOffsetH2D`, `TsmMemcpyOffsetD2H` | Stub-like offset helpers in hardware impl; do not rely on them for required copies. |
+| `TsmMemcpyOffsetH2D`, `TsmMemcpyOffsetD2H` | Stub-like offset helpers in the recovered hardware implementation; no required-copy side effect was observed. |
 | `TsmMemcpyD2D` | Builds a `D_MEMCPY_D2D` dyn TLV and launches a Kcore DTE copy program. Uses 16 tile configs and 4 KiB chunking in recovered implementation. |
-| `TsmRun` | Converts bootparam device pointer through `Runtime::GetPhyAddr`; active `tx*` backend calls `txLaunchModelSync(phy_bootparam)` and returns `1` on tx error. In inactive backend mode it returns `0`.  HPGR native model/module completion is the higher-priority completion evidence when available. |
+| `TsmRun` | Converts the bootparam device pointer through `Runtime::GetPhyAddr`; the active `tx*` backend calls `txLaunchModelSync(phy_bootparam)` and returns `1` on tx error. In inactive backend mode it returns `0`. HPGR model/module completion is a separate observed mechanism, not a Wafer completion-policy owner. |
 | `TsmAsyncRun` | Stub returns `0`. |
-| `TsmLaunch`, `TsmLaunchPg` | Stub returns `0` in `RuntimeApiImplHw`; do not use as proof of execution. |
-| `TsmDeviceSynchronize`, `TsmInitDevice`, `TsmReleaseDevice` | Stub/success-return paths; not a true fence unless board validation proves target-specific behavior. |
+| `TsmLaunch`, `TsmLaunchPg` | `RuntimeApiImplHw` returns `0` without an observed launch side effect; the return value alone is not execution evidence. |
+| `TsmDeviceSynchronize`, `TsmInitDevice`, `TsmReleaseDevice` | Stub/success-return paths with no device-completion proof in this snapshot. |
 | `TsmGetTileInfo` | Calls `txGetDeviceAllTileInfo(device_id,temp)` and copies 16 records of 12 bytes into `TsmTileTotalInfo`; tx error returns `1`. |
 | `TsmSetTileInfo` | Copies 8 selected tile records and calls `txSetDeviceSelectedTileInfo`; tx error returns `1`. |
 | `TsmProcessProfData` | Builds profiling dyn TLV, runs bootparam, then dumps profiling data depending on action. |
-| `TsmSend` / `TsmRecv` | Dispatch to txccl send/recv implementation; exact transport success requires runtime target. |
+| `TsmSend` / `TsmRecv` | Dispatch to the txccl send/recv implementation; target-specific transport success is not established by static evidence. |
 | `TsmNpuPowerOn` / `TsmNpuPowerOff` | Implemented host calls but hardware/power sequencing remains board-validated. |
 
-Minimal host runtime flow:
+Observed host-runtime call shape:
 
 ```cpp
 TsmInitRuntime(true);
@@ -1034,8 +987,7 @@ TsmDeviceMalloc(dev, d_in, input_size);
 TsmDeviceMalloc(dev, d_out, output_size);
 TsmMemcpyH2D(d_in, host_input, input_size);
 
-// Use compiled/loaded model path or explicit bootparam path here.
-// TsmRun expects a device bootparam address, not a host model object.
+// Recovered TsmRun takes a device bootparam address, not a host model object.
 
 TsmMemcpyD2H(host_output, d_out, output_size);
 TsmDeviceFree(d_in);
@@ -1065,21 +1017,26 @@ Recovered compile/load behavior:
 - `TsmCompileMultiGraph` and `TsmGraphCompile` use `/tileN/kcore_fw.so`.
 - `TsmGraphCompile` assumes 16 tiles.
 
-Runtime verifier rules:
+Snapshot limitations and design ownership:
 
-- Do not use `GetDeviceNum/List/Properties` as hardware discovery on this build.
-- Treat `DeviceSynchronize`, `Launch`, `LaunchPg`, and `AsyncRun` as unsafe
-  stubs for correctness or fencing.
-- Treat KMD compute fences as submit fences in this driver snapshot; use HPGR
-  command completion, stream/event completion, Kcore CSR waits, DTE waits, or
-  explicit runtime sync for device-side completion.
-- Require an active `tx*` device backend for real `DeviceMalloc`, `MemcpyH2D`,
-  `MemcpyD2H`, and `Run`.
-- Keep a narrow adapter boundary around host runtime calls because public host
-  headers are incomplete in `tx8_deps`; HPGR public headers from
-  `firmware_kuiper` are the higher-priority host ABI when available.
+- `GetDeviceNum/List/Properties` return without populating discovery data in the
+  recovered build.
+- `DeviceSynchronize`, `Launch`, `LaunchPg`, and `AsyncRun` have stub or
+  success-return paths without completion evidence.
+- The observed KMD compute fence is signaled after submission. HPGR command
+  completion, stream/event completion, Kcore CSR waits, DTE waits, and explicit
+  sync are distinct snapshot mechanisms; this file assigns none of them Wafer
+  completion priority.
+- `DeviceMalloc`, `MemcpyH2D`, `MemcpyD2H`, and `Run` reach their observed tx
+  operations only when the snapshot's active `tx*` backend gate is enabled.
+- Public host headers in `tx8_deps` are incomplete; the `firmware_kuiper` HPGR
+  headers provide additional API evidence without establishing Wafer ABI
+  precedence.
 
-## 14. Device Bootparam and Dynamic TLV Contract
+Provider selection, adapter boundaries, completion semantics, and board/runtime
+acceptance are owned by `tasks/15` and `tasks/16`.
+
+## 14. Observed Device Bootparam and Dynamic TLV Layout
 
 Device bootparam head:
 
@@ -1111,7 +1068,7 @@ typedef struct D_BootParamDyninfo {
 } D_BootParamDyninfo; // size 72
 ```
 
-Layout rules:
+Observed layout:
 
 - bootparam head starts at the bootparam buffer base.
 - dyninfo begins at `head + 0x38`.
@@ -1151,38 +1108,20 @@ Known payloads are defined in the generated annex: terminate, kcore config,
 profiling config, group data dump, `D_DteCfgList`, `TileMappingTable`,
 `D_DynTLV_Cfgpmu`, and related runtime structs.
 
-## 15. Production Verifier Checklist
+## 15. Evidence-to-Design Handoff
 
-Minimum checks before emitting or accepting a TX8 instruction packet:
+This evidence ledger does not define a minimum production verifier checklist,
+packet acceptance set, compiler entry strategy, runtime provider policy, or
+golden-test suite. The recovered facts above feed these numbered owners:
 
-- Reject `TsmExecute` packet types outside `0..4`.
-- Reject SCALAR, DTE, and CSR as executable instruction packets.
-- Enforce SPM/DDR domains per operand role.
-- Exclude `0x2f0000..0x2fffff` from compiler SPM allocation.
-- Validate every dtype and packed bool byte count.
-- Recompute or verify every `*_end` field.
-- Validate CT opcodes, rounding mode, dimensions, and unit-vector counts.
-- Validate NE type, shape, pad, unpad, stride, dilation, quant, batch, and GEMM
-  ranges.
-- Validate DMA direction, nonzero element count, byte strides, and nonzero
-  logical iterations.
-- Validate TDMA opcode-specific fields, byte-oriented element counts, and shape
-  packing.
-- Reject stream packet count above 32 and packet size above `0x800000`.
-- Treat host runtime stubs as no-ops unless a board-specific integration test
-  proves otherwise.
-
-Minimum golden tests:
-
-- wrapper-generated CT packet versus raw builder for one unary, one binary, one
-  unit-vector, and one loop-vector op.
-- wrapper-generated NE conv and GEMM packet field offsets.
-- RDMA/WDMA contiguous end-address calculation.
-- TDMA transpose, pad, and gatherscatter packet fields.
-- bootparam head and dyninfo layout.
-- TLV serialization parse/roundtrip.
-- DTE packet counter update word.
-- stream FSM payload word and packet config word.
+- `tasks/09` and `tasks/11`: memory reservations, operand ranges, instruction
+  legality, shape/unit relations, and completion-relevant instruction facts.
+- `tasks/13`: accepted physical transport and stream/DTE relations.
+- `tasks/14`: target command ABI, CRT surface, packet emission, and target
+  artifact checks.
+- `tasks/15`: package, provider, resource, launch, and runtime completion
+  semantics.
+- `tasks/16`: negative, integration, board, and hardware-validation gates.
 
 ## 16. Remaining Hardware Validation
 
@@ -1196,5 +1135,6 @@ These are intentionally not claimed as statically complete:
   errors.
 - Raw DTE multi-destination broadcast/scatter/shuffle policies outside the
   documented unicast/RDMA/WDMA helper path.
-- Exact SPM bank mapping and 64 KiB parallel allocator coloring; current docs
-  treat 64 KiB as a conservative policy, not a proven hard ABI.
+- Exact SPM bank mapping and 64 KiB parallel allocator coloring; the snapshot
+  does not prove a 64 KiB hard ABI. Allocation policy belongs to `tasks/09`, and
+  hardware validation belongs to `tasks/16`.

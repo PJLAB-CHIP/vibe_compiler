@@ -5,7 +5,9 @@
 
 ## 当前设计文档
 
-编号按 compiler pipeline 的语义顺序排列，不按创建日期排列。
+编号是稳定的文档导航和contract-owner标识，按compiler pipeline语义大致分组，不按创建日期排列。
+它不表示严格的transform拓扑、实施优先级或任务依赖；一个owner文档可以覆盖pipeline中的多个位置。
+实际执行顺序只读取`tasks/progress.md`中的状态和直接前置。
 
 | 编号 | 文档 | 范围 |
 | --- | --- | --- |
@@ -25,6 +27,25 @@
 | 14 | `tasks/14-target-llvm-golden-packet.md` | structure-preserving target LLVM、Slot-based Kernel ABI、双 fingerprint 和 atomic TargetArtifactSet |
 | 15 | `tasks/15-launch-runtime-package.md` | Protobuf PackageManifest、typed metadata/runtime bootstrap、shared service registry、RuntimeSession、state migration 和 completion DAG |
 | 16 | `tasks/16-verification-plan.md` | atomic commit、复杂大模型、target/package/runtime 和 board completion gates |
+
+### Pipeline Owner 索引
+
+下表只帮助定位边界owner，不复制设计合同，也不把跨阶段owner强行线性化：
+
+| Pipeline boundary | Owner文档 |
+| --- | --- |
+| verified frontend program、typed IO/parameter/state | 02 |
+| pre-SPMD target environment、topology和execution mesh | 04 |
+| Shardy/SPMD/MPMD distributed program和rank identity | 03 |
+| component/rank-local compute normalization | 05 |
+| candidate group、tile traversal和layout assignment | 06、07、08 |
+| target-abstract compute/movement和instruction legality | 10、11 |
+| accepted SPM/DDR allocation、lifetime和offset | 09、12 |
+| physical transport、projection和completion relation | 13；projection identity同时由04约束 |
+| whole-variant candidate commit和typed executable | 06；资源/lifetime边界由09、12、13共同约束 |
+| target LLVM、KAD、ELF和atomic TargetArtifactSet | 14 |
+| PackageManifest、launch、RuntimeSession和state migration | 15 |
+| 横跨上述边界的completion evidence | 16 |
 
 ## 实施计划导航
 

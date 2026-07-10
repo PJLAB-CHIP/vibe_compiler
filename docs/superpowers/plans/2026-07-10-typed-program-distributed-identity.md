@@ -204,7 +204,7 @@ missing record. Use numeric port/member/field ordinals; names are diagnostic onl
 
 ```bash
 cmake --build build/wafer-dev --target wafer-opt -- -j128
-/root/miniconda3/bin/lit -sv build/wafer-dev/test/Dialect/Wafer/Model
+<configured-lit> -sv build/wafer-dev/test/Dialect/Wafer/Model
 python3 tools/check_ir_organization.py --root .
 git add include/Wafer/IR lib/Wafer/IR \
   include/Wafer/Compiler/ModelIdentityBuilder.h include/Wafer/IR/WaferInterfaces.td \
@@ -413,7 +413,7 @@ the move-owned `ExecutableCompilationInput`.
 - [ ] **Step 5: Run frontend matrix**
 
 ```bash
-/root/miniconda3/bin/lit -sv build/wafer-dev/test \
+<configured-lit> -sv build/wafer-dev/test \
   --filter='Tools/wafer-compile-stablehlo-(reference|stateful)\.test|Tools/wafer-pytorch-xla-capture-.*\.test'
 ```
 
@@ -567,7 +567,7 @@ first-topology/`@default_mesh` discovery; no pass or global stores toolchain/con
 - [ ] **Step 5: Run target tests**
 
 ```bash
-/root/miniconda3/bin/lit -sv build/wafer-dev/test \
+<configured-lit> -sv build/wafer-dev/test \
   --filter='Dialect/Wafer/Target/(Environment|Topology)/|Transforms/materialize-(target-environment|target-topology|execution-mesh)\.mlir'
 ```
 
@@ -676,7 +676,7 @@ failure.
 - [ ] **Step 5: Run and commit**
 
 ```bash
-/root/miniconda3/bin/lit -sv build/wafer-dev/test/Dialect/Wafer/Parallel \
+<configured-lit> -sv build/wafer-dev/test/Dialect/Wafer/Parallel \
   build/wafer-dev/test/Integration/source-backed-mpmd-formation.test
 git add include/Wafer/IR/Parallel lib/Wafer/IR/Parallel \
   include/Wafer/Planning lib/Wafer/Planning lib/Wafer/Transforms/SPMD \
@@ -751,7 +751,7 @@ edge semantics to require a different digest.
 
 ```bash
 cmake --build build/wafer-dev --target wafer-opt -- -j128
-/root/miniconda3/bin/lit -sv build/wafer-dev/test/Dialect/Wafer/Distributed
+<configured-lit> -sv build/wafer-dev/test/Dialect/Wafer/Distributed
 git add include/Wafer/IR/Distributed lib/Wafer/IR/Distributed \
   include/Wafer/Compiler/DistributedIdentityBuilder.h \
   lib/Wafer/Compiler/DistributedIdentityBuilder.cpp lib/Wafer/Compiler/CMakeLists.txt \
@@ -878,7 +878,7 @@ partition options/result/DistributedProgramSemanticId.
 - [ ] **Step 5: Run real SPMD gates**
 
 ```bash
-/root/miniconda3/bin/lit -sv --show-unsupported build/wafer-dev/test \
+<configured-lit> -sv --show-unsupported build/wafer-dev/test \
   --filter='Tools/wafer-opt-(spmd-partition|distributed-program)\.test|Spmd/'
 ```
 
@@ -1048,7 +1048,7 @@ Expected: no production rank identity comes from a default or pass option; any r
 - [ ] **Step 6: Run and commit**
 
 ```bash
-/root/miniconda3/bin/lit -sv \
+<configured-lit> -sv \
   build/wafer-dev/test/Dialect/Wafer/Executable \
   build/wafer-dev/test/Transforms/materialize-candidate-entries.mlir \
   build/wafer-dev/test/Transforms/convert-group-to-tile-region.mlir \
@@ -1092,7 +1092,7 @@ Run real capture -> frontend materialization -> SPMD -> distributed assembly -> 
 
 ```bash
 cmake --build build/wafer-dev --target check-wafer -- -j128
-/root/miniconda3/bin/lit -sv --show-unsupported build/wafer-dev/test \
+<configured-lit> -sv --show-unsupported build/wafer-dev/test \
   --filter='Integration/typed-distributed-identity\.test|Tools/wafer-opt-(spmd-partition|distributed-program)\.test|Dialect/Wafer/(Model|Distributed|Executable)/'
 ```
 

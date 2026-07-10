@@ -1,53 +1,63 @@
-# TX81 Current CRT Conformance Matrix
+# TX81 CRT Static Evidence Matrix
 
-本文把旧 DLCompiler TX81 CRT source audit 转成当前 Wafer CRT 的生产面合规矩阵。
-它不是新的 ABI source；当前 ABI 仍以 `tasks/14-target-llvm-golden-packet.md`、
-`runtime/wafer_crt/include/wafer_tx81_crt.h` 和 `runtime/wafer_crt/src/wafer_tx81_crt.c`
-为准。
+本文把旧DLCompiler TX81 CRT source audit与repo-local Wafer CRT实现做静态对照。它只记录
+source-backed evidence，不拥有production membership、prototype/signature、IR、ABI、lowering或
+runtime policy。当前IR / ABI和production closure合同查看`tasks/14-target-llvm-golden-packet.md`，
+prototype与repo-local实现分别查看`runtime/wafer_crt/include/wafer_tx81_crt.h`和
+`runtime/wafer_crt/src/wafer_tx81_crt.c`；闭合状态查看`tools/check_target_crt_symbols.py`与
+`tasks/progress.md`。
 
 ## Scope
 
-- Current production surface：`runtime/wafer_crt/include/wafer_tx81_crt.h` 和
-  `runtime/wafer_crt/src/wafer_tx81_crt.c` 中的 105 个 `wafer_tx81_*` symbols。
-- Evidence source：旧 DLCompiler `third_party/wafer/crt/lib/Tx81` source audit。
-- 目标：记录每个 production CRT family 如何借鉴旧 source、只借鉴 public TX8 header，或明确排除
-  旧 helper / ABI。
+- Evidence source：旧 DLCompiler `lib/Tx81` source snapshot与public TX8 headers。
+- Repo-local observation：`runtime/wafer_crt/src/wafer_tx81_crt.c`中可直接读取的wrapper调用、
+  参数处理、wait/writeback和optional-feature配置。
+- 本表不因旧helper存在而授权新symbol，也不定义某个family的production状态。
 
-## Pipeline Position
+## Static Matrix
+
+| family | old-source / public-header evidence | repo-local implementation observation |
+| --- | --- | --- |
+| RDMA / WDMA | `__Rdma4d`, `__Wdma4d` call `AddSrcDst` and `ConfigStrideIteration`; old generic helpers also contain a vectorize fallback | Wafer CRT calls the two public wrapper methods and converts `inner_bytes` to element count |
+| GatherScatter | `__GatherScatter` and `__Memcpy` expose source/destination stride-iteration ordering | Wafer CRT passes byte `inner_bytes` and separate source/destination descriptors to `GatherScatter` |
+| Memset / Bit2Fp / MaskMove | old direct helpers and public wrapper declarations expose these operations; the public MaskMove field is `uint32_t` | Wafer CRT calls the public wrappers and narrows the mask argument at the wrapper boundary |
+| Elementwise arithmetic / relation / logic | `arith.c`, `relation.c`, `logic.c` and unary files contain VV, VS, bool and value wrapper variants | Wafer CRT source defines per-kind wrapper calls; relation/logic macros branch on `Fmt_BOOL` |
+| Convert | old dtype conversion files separate zero-point, rounding and plain wrapper forms | Wafer CRT source has corresponding zero-point, rounding and plain macro groups |
+| Reduce | old source contains sum/avg/max/min direct wrappers and a composite reduce-mul path | Wafer CRT source contains direct sum/avg/max/min wrapper definitions; no reduce-mul definition is observed |
+| GEMM | `__Gemm` records input/config/output calls and optional feature setters | Wafer CRT explicitly sets psum, bias, scale, quant and activation fields to disabled values around the GEMM call |
+| Conv / Depthwise / BackwardConv | old `__Conv` and public headers expose NHWC/HWOI fields; old `__Conv` may enable ReLU by default | Wafer CRT uses explicit shape/pad/stride fields and explicitly disables optional/fused features |
+| Pool / Unpool | no matching old source file was found; public headers expose wrapper entry points | Wafer CRT contains public-wrapper calls for pool and unpool families |
+| TDMA pad / img2col | `__Pad` and `__Img2col` expose direct wrapper parameters; other old files contain additional transform helpers | Wafer CRT contains pad and img2col definitions; the other transform helper names are absent |
+| Peripheral argmax / argmin | `__ArgMax`, `__ArgMin` and the SPM mapping helper show register writeback followed by mapped SPM stores | Wafer CRT waits, maps value/index destinations and stores the two writeback fields |
+| Peripheral factorize / elem-mask | no matching old source file was found; public headers expose the wrapper entry points | Wafer CRT contains public-wrapper calls for both operations |
+| Peripheral bilinear / LUT / random | `__Bilinear`, `__Lut16`, `__Lut32` and `__RandGen` provide direct wrapper evidence | Wafer CRT contains the corresponding public-wrapper calls; bilinear scale is computed from shapes |
+| Count / Direct DTE / composite helpers | old source contains `__Count`, `__Send`, an empty `__Recv`, GELU, MXFP, reduce-mul and layout helpers | these helper names are not observed in the repo-local CRT source snapshot; the old source alone does not establish reusable Wafer IR / ABI or completion semantics |
+
+## Evidence Limits
+
+- Static source matching can show wrapper call order and field handling; it cannot establish compiler legality,
+  instruction coverage, target ABI acceptance or runtime completion.
+- Missing old source does not imply missing hardware capability, and an old helper name does not imply a reusable
+  Wafer target symbol.
+- Production closure contract、header prototype、repo-local implementation和closure result分别以编号设计、
+  public header/source、checker与任务队列为准。
+
+## Legacy Checker Compatibility
+
+`tools/check_target_crt_conformance.py`当前仍做presence-only的历史文本检查。下面的token只为保持现有
+gate可重放，不是状态、分类协议或ABI source；解除该耦合已由`tasks/progress.md`中的
+`supporting-doc-tool-decoupling`单独排期。
+
+- `direct-wrapper-derived`
+- `public-header-derived`
+- `intentionally-excluded`
+- `mismatch-fixed-this-batch`
 
 Pipeline position:
-- Upstream artifact / IR: memory-planned `wafer.instr.*` with accepted SPM/DDR offset facts.
-- Current stage responsibility: lower fixed instruction ABI calls to Wafer-owned target CRT functions and issue public TX8 wrappers.
-- Output artifact / IR: target LLVM / device object linked with repo-local Wafer CRT object.
-- Downstream consumer: `tools/wafer_device_link.py` and package metadata/runtime launch stages.
-- User-level driver / named pipeline: `--wafer-lower-instr-to-target-llvm`, `wafer-lower-groups-to-target-llvm`, and device-link lit tools.
-- Explicit non-goals: old `__*` ABI, `libvr.a`, Direct DTE prototype helpers, composite GELU/MXFP/reduce-mul helpers.
-- Completion gate: conformance checker, CRT symbol checker, focused lit tests, and full lit regression.
-
-## Matrix
-
-| CRT family | Current status | Old-source evidence used | Required conformance rule |
-| --- | --- | --- | --- |
-| RDMA / WDMA | direct-wrapper-derived | `__Rdma4d`, `__Wdma4d` | use `AddSrcDst` then `ConfigStrideIteration`; convert `inner_bytes` to element count; do not import old vectorize fallback |
-| GatherScatter | direct-wrapper-derived | `__GatherScatter`, `__Memcpy` | preserve byte `inner_bytes` and source/dest stride-iteration order |
-| Memset / Bit2Fp / MaskMove | direct-wrapper-derived | `__Memset`, `__Bit2Fp`, `__MaskMove` | use public wrappers; mask is `uint32_t` field/offset, not a generic 64-bit pointer |
-| Elementwise arithmetic / relation / logic | direct-wrapper-derived | `arith.c`, `relation.c`, `logic.c`, unary activation/transcendental files | use fixed per-kind symbols; relation/logic bool branch only for `Fmt_BOOL`; no VS/VuV production ABI |
-| Convert | direct-wrapper-derived | dtype conversion files | INT8 source uses zero point, FP/INT narrowing uses rounding, plain wrappers ignore extra ABI fields |
-| Reduce | direct-wrapper-derived | `__ReduceSum/Avg/Max/Min` | native production reduce is sum/avg/max/min only; reduce-mul remains excluded |
-| GEMM | direct-wrapper-derived | `__Gemm` | issue wrapper sequence and explicitly disable psum/bias/scale/quant/fused activation |
-| Conv / Depthwise / BackwardConv | mixed: conv old source plus public headers | `__Conv`, public wrapper headers | preserve NHWC/HWOI field order and explicitly disable optional/fused features; old default ReLU is a negative example |
-| Pool / Unpool | public-header-derived | no old source file | keep current public wrapper mapping; do not infer old source evidence |
-| TDMA pad/img2col | direct-wrapper-derived | `__Pad`, `__Img2col` | use only V0 production TDMA surface; transform-like TDMA wrappers remain excluded |
-| Peripheral argmax/argmin | mismatch-fixed-this-batch | `__ArgMax`, `__ArgMin`, SPM mapping helper | wait for writeback registers, map SPM offset destinations, then store value/index |
-| Peripheral factorize/elem_mask | public-header-derived | no old source file | keep as public-header-derived only |
-| Peripheral bilinear/LUT/rand | direct-wrapper-derived | `__Bilinear`, `__Lut16`, `__Lut32`, `__RandGen` | use public wrappers with fixed ABI fields; bilinear scale is derived from shapes |
-| Count / Direct DTE / composite helpers | intentionally-excluded | `__Count`, `__Send`, `__Recv`, GELU/MXFP/reduce_mul/channelnorm/etc. | no production CRT symbol until IR/ABI represents result, scratch, ordering, endpoint/channel, and completion semantics |
-
-## Current Fix Status
-
-- `mismatch-fixed-this-batch`: argmax/argmin writeback destinations are SPM offsets, and CRT maps them before
-  Kcore stores.
-- `needs-test`: DMA byte/element conversion, MaskMove mask width, fused-feature disablement and convert
-  grouping are enforced by the static conformance checker and focused lit test.
-- `intentionally-excluded`: old source helpers remain out of production CRT unless instruction IR, verifier,
-  lowering, CRT and device-link tests are extended together.
+- Upstream artifact / IR: none; this file consumes source snapshots as evidence.
+- Current stage responsibility: preserve an auditable static evidence comparison.
+- Output artifact / IR: none.
+- Downstream consumer: legacy presence-only conformance check; no compiler or runtime consumer.
+- User-level driver / named pipeline: none.
+- Explicit non-goals: owning production membership, IR, ABI, lowering, package or runtime policy.
+- Completion gate: evidence statements remain source-backed and current contracts remain in numbered designs.

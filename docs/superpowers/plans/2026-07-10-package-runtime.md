@@ -50,7 +50,30 @@ Pipeline position:
 ## Global Constraints
 
 - 设计 owner：`tasks/01-architecture.md`、`tasks/04-topology-execution-mesh.md`、`tasks/12-ddr-memory-planning.md`、`tasks/14-target-llvm-golden-packet.md`、`tasks/15-launch-runtime-package.md`、`tasks/16-verification-plan.md`。
-- 前置接口由 target artifact 计划提供：`WaferProtoSupport`、`WaferABI`、`WaferTargetArtifactSetProto`、non-interchangeable `PackageManifestId`/`ModelInterfaceSemanticId`/`TopologySnapshotId`/artifact/KAD/target ID wrappers、`wafer::abi::ContentDigest`、owner-backed `abi::ImmutableByteBackingRef`/`abi::VerifiedTargetArtifactModuleView`、validated `abi::ArtifactAdmissionLimits`、内部canonical identity core、`wafer::abi::computeContentDigest`、`wafer::artifact::TrustedTargetArtifactSetDeliveryRef`、runtime-neutral `artifact::ArtifactMetadataVerificationRegistry`/`artifact::ArtifactMetadataVerificationSession`、`llvm::Expected<artifact::LoadedTargetArtifactSetMetadata> artifact::loadAndVerifyTargetArtifactSetMetadata(const artifact::TrustedTargetArtifactSetDeliveryRef &, artifact::ArtifactMetadataVerificationSession &)`、runtime-neutral non-forgeable `artifact::ArtifactVerificationBudgetCapability`、`artifact::RuntimeArtifactVerificationSession`唯一three-move-owned-input factory、runtime-private all-or-none `bindTargetArtifactSetsForRuntime`和compiler-only executable relation verifier。Standalone metadata只返回owner-backed record、KAD facts和不可open的`UnboundTargetModuleSourceDescriptor`；exact-domain bind后才产生`BoundTargetModuleSource`，其same-handle lease封成ABI backing后调用shared streaming verifier。package不含/不伪造target delivery root，而从embedded locator-free record取得exact module view并在runtime bind后从bundle root的`BoundBlobSource`取得bytes。`artifact::buildLoadedTargetElfContract(moduleView)`不接delivery/member array/context，`artifact::verifyTargetElf(backing, contract, limits, encoding)`绑定exact backing。`schema/wafer/target_artifact_set.proto`分别拥有locator-free `TargetArtifactSetVerifiedRecord`与delivery-only `TargetArtifactSetDeliveryRoot`；PackageManifest只能复用前者，bundle-local locator只属于`PackageBundleIndex`。trusted target delivery ref只来自verified ProgramDelivery standalone target root，不能由package index/module source或待验证root自声明。本计划不重复实现、重声明或重新解释这些对象，也不在public API暴露generic `SemanticDigest`转换；`WaferArtifact`不得include/link `WaferRuntime`。
+- Task 0只在target artifact shared Tasks 1-5完成后执行，并且只消费其`WaferProtoSupport`、`WaferABI`、
+  shared semantic/content digest value、bounded canonical encoding context和host/deployment基础；它不消费
+  `WaferTargetArtifactSetProto`、target-set loader、committed executable或任何post-commit artifact proof。
+- 除Task 0外，本计划其余package/runtime任务的前置接口由target artifact post-commit Tasks 6-14提供：
+  `WaferTargetArtifactSetProto`、non-interchangeable `PackageManifestId`/`ModelInterfaceSemanticId`/
+  `TopologySnapshotId`/artifact/KAD/target ID wrappers、`wafer::abi::ContentDigest`、owner-backed
+  `abi::ImmutableByteBackingRef`/`abi::VerifiedTargetArtifactModuleView`、validated
+  `abi::ArtifactAdmissionLimits`、内部canonical identity core、`wafer::abi::computeContentDigest`、
+  `wafer::artifact::TrustedTargetArtifactSetDeliveryRef`、runtime-neutral
+  `artifact::ArtifactMetadataVerificationRegistry`/`artifact::ArtifactMetadataVerificationSession`、
+  `artifact::loadAndVerifyTargetArtifactSetMetadata(...)`、runtime-neutral non-forgeable
+  `artifact::ArtifactVerificationBudgetCapability`、`artifact::RuntimeArtifactVerificationSession`唯一
+  three-move-owned-input factory、runtime-private all-or-none `bindTargetArtifactSetsForRuntime`和compiler-only
+  executable relation verifier。Standalone metadata只返回owner-backed record、KAD facts和不可open的
+  `UnboundTargetModuleSourceDescriptor`；exact-domain bind后才产生`BoundTargetModuleSource`，其same-handle lease
+  封成ABI backing后调用shared streaming verifier。package不含/不伪造target delivery root，而从embedded
+  locator-free record取得exact module view并在runtime bind后从bundle root的`BoundBlobSource`取得bytes。
+  `artifact::buildLoadedTargetElfContract(moduleView)`不接delivery/member array/context，
+  `artifact::verifyTargetElf(backing, contract, limits, encoding)`绑定exact backing。
+  `schema/wafer/target_artifact_set.proto`分别拥有locator-free `TargetArtifactSetVerifiedRecord`与delivery-only
+  `TargetArtifactSetDeliveryRoot`；PackageManifest只能复用前者，bundle-local locator只属于`PackageBundleIndex`。
+  trusted target delivery ref只来自verified ProgramDelivery standalone target root，不能由package index/module source
+  或待验证root自声明。本计划不重复实现、重声明或重新解释这些对象，也不在public API暴露generic
+  `SemanticDigest`转换；`WaferArtifact`不得include/link `WaferRuntime`。
 - `WaferABI`是compiler/package/runtime共享、可序列化structural ID C++ value type和generated-message conversion的唯一owner。Package必须复用其tagged `abi::ResourceId` union、`ModelEntrypointId = (ModelInterfaceSemanticId, nonzero api ordinal)`及distributed/target/executable scoped IDs，不得声明同名raw bytes/string/integer wrapper。Runtime-only `InvocationId`/`EntryInstanceId`/transient `ScopeInstanceId`/durable `PersistentStateScopeKey`/state version/namespace strong types固定由`include/Wafer/Runtime/RuntimeIdentity.h`拥有且没有Protobuf conversion。
 - Protobuf 版本固定为 3.21.9；package schema必须消费共享codegen target并验证版本一致，不新增第二份dependency pin、protoc发现路径或Python schema。
 - `schema/wafer/package_manifest.proto`是package field number和shared WCRE field-option的唯一声明；实现/测试不得另存一张手写编号表或record-specific排序表。
@@ -118,7 +141,10 @@ Pipeline position:
 
 ### Task 0: Outer Program Delivery Foundation
 
-> This task is a prerequisite for the whole-variant, target-artifact, package-manifest and runtime tasks. Execute it before whole-variant Task 1; later tasks consume this owner and must not create a partial `compiler::ProgramOutputTransaction` or duplicate delivery codec.
+> Execute this task after target-artifact shared Tasks 1-5 and before whole-variant Task 1. It is a prerequisite for
+> whole-variant work, target-artifact post-commit Tasks 6-14, package-manifest work and runtime work; it is not a
+> prerequisite of target-artifact shared Tasks 1-5. Later tasks consume this owner and must not create a partial
+> `compiler::ProgramOutputTransaction` or duplicate delivery codec.
 
 **Files:**
 - Create: `schema/wafer/program_delivery.proto`
@@ -1073,7 +1099,7 @@ Run:
 cmake --build build/wafer-dev --target WaferPackageProto WaferUnitTests -- -j128
 build/wafer-dev/bin/WaferUnitTests \
   --gtest_filter='PackageManifestSchemaTest.*'
-/root/miniconda3/bin/lit -sv \
+<configured-lit> -sv \
   build/wafer-dev/test/Tools/package-manifest-generated-binding.test
 ```
 
@@ -1977,7 +2003,7 @@ Run:
 ```bash
 cmake --build build/wafer-dev --target wafer-package-convert WaferUnitTests -- -j128
 build/wafer-dev/bin/WaferUnitTests --gtest_filter='V2PackageConverterTest.*'
-/root/miniconda3/bin/lit -sv \
+<configured-lit> -sv \
   build/wafer-dev/test/Tools/wafer-package-convert.test \
   build/wafer-dev/test/Tools/wafer-package-metadata.test \
   build/wafer-dev/test/Tools/wafer-export-package-metadata.test
@@ -4724,7 +4750,7 @@ The no-card integration builds two genuinely different model-interface identitie
 cmake --build build/wafer-dev --target WaferUnitTests wafer-run -- -j128
 build/wafer-dev/bin/WaferUnitTests \
   --gtest_filter='StateMigrationPlanTest.*:StateMigrationDeliveryTest.*:StateMigrationTest.*'
-/root/miniconda3/bin/lit -sv \
+<configured-lit> -sv \
   build/wafer-dev/test/Integration/state-migration-no-card.test
 python3 tools/check_deps.py
 ```
@@ -4861,7 +4887,7 @@ Run:
 
 ```bash
 cmake --build build/wafer-dev --target wafer-opt wafer-run -- -j128
-/root/miniconda3/bin/lit -sv \
+<configured-lit> -sv \
   build/wafer-dev/test/Runtime/wafer-run.test \
   build/wafer-dev/test/Integration/package-runtime-no-card.test \
   build/wafer-dev/test/Integration/package-runtime-stateful-streaming-no-card.test \
@@ -4911,7 +4937,7 @@ Run sequentially:
 ```bash
 cmake --build build/wafer-dev --target check-wafer -- -j128
 ctest --test-dir build/wafer-dev --output-on-failure
-/root/miniconda3/bin/lit -sv --show-unsupported build/wafer-dev/test
+<configured-lit> -sv --show-unsupported build/wafer-dev/test
 python3 tools/check_ir_organization.py --root .
 python3 tools/check_deps.py
 git diff --check

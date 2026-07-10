@@ -102,7 +102,7 @@ KAD/artifact relation; an isolated conversion-library test cannot close the queu
 
   ```bash
   cmake --build build/wafer-dev --target wafer-opt WaferUnitTests -- -j128
-  /root/miniconda3/bin/lit -sv build/wafer-dev/test/Transforms/lower-instr-to-target-llvm-failure.mlir
+  <configured-lit> -sv build/wafer-dev/test/Transforms/lower-instr-to-target-llvm-failure.mlir
   ctest --test-dir build/wafer-dev -R '^WaferUnitTests$' --output-on-failure
   ```
 
@@ -396,7 +396,7 @@ letting a raw command aggregate enter conversion.
 
   ```bash
   cmake --build build/wafer-dev --target wafer-opt -- -j128
-  /root/miniconda3/bin/lit -sv \
+  <configured-lit> -sv \
     build/wafer-dev/test/Transforms/lower-instr-to-target-llvm.mlir \
     build/wafer-dev/test/Transforms/lower-instr-to-target-llvm-failure.mlir \
     build/wafer-dev/test/Transforms/lower-instr-to-target-llvm-control-flow.mlir
@@ -601,7 +601,7 @@ class is compiled into the unit-test target.
 
   ```bash
   cmake --build build/wafer-dev --target check-wafer -- -j128
-  /root/miniconda3/bin/lit -sv \
+  <configured-lit> -sv \
     build/wafer-dev/test/Dialect/Wafer/Instr \
     build/wafer-dev/test/Transforms/lower-instr-to-target-llvm-narrowing.mlir \
     build/wafer-dev/test/Transforms/lower-instr-to-target-llvm-control-flow.mlir
@@ -625,7 +625,7 @@ class is compiled into the unit-test target.
   python3 tools/check_deps.py
   cmake --build build/wafer-dev --target check-wafer -- -j128
   ctest --test-dir build/wafer-dev --output-on-failure
-  /root/miniconda3/bin/lit -sv --show-unsupported build/wafer-dev/test
+  <configured-lit> -sv --show-unsupported build/wafer-dev/test
   ```
 
   Confirm structure/geometry/semantic execution tests actually ran and were not unsupported.

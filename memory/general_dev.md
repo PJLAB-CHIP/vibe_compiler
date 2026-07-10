@@ -3,6 +3,15 @@
 - `tasks/progress.md` 是任务队列，不是设计合同。确定下一步时先定位队列项，再读该项指向的编号
   设计文档；不要从旧 progress 叙事、单个工具现状或历史 memory 反推出当前架构边界。若
   `memory/` 与编号设计文档或任务队列冲突，同步修 memory。
+- 当实施路线在一个umbrella任务中穿插shared foundation、owner bootstrap、正式producer和下游consumer时，
+  每个可独立调度边界都要有queue row和显式`blocked by`；不能把整个umbrella标成单一`next`，再让执行者
+  从长计划正文猜状态迁移。需要下游直接消费才能证明完成的producer，拆成implementation row、consumer row和
+  integrated completion row，避免隐式循环或提前`done`。
+- `docs/`中的hardware/register/reverse-engineering资料只拥有source-backed evidence。production IR、ABI、transport、
+  package/runtime policy只由对应编号设计文档拥有；编号合同更新后要搜索supporting docs中的“负责”“主目标”
+  “后续自定义ABI”“当前已覆盖/仍待”等规范性或动态措辞，防止形成第二事实源。
+- `docs/superpowers/plans/`中只有被`tasks/progress.md`当前实施计划索引引用的计划是执行入口；已完成且被新
+  路线替代的计划要在文件顶部标成historical/superseded，保留审计过程但不得据此恢复旧owner或旁路协议。
 - 第三方依赖的固定版本集中在 `cmake/third_party/WaferDependencyVersions.cmake`；不要把 LLVM、StableHLO、
   Shardy、OpenXLA/XLA、PyTorch/XLA、torch-mlir、lit 或 gtest 版本散落到源码里。
 - 用 `python3 tools/bootstrap_deps.py --python` 把固定版本 Python 测试工具安装到
@@ -11,33 +20,36 @@
   Shardy 和 OpenXLA/XLA source submodules 到 `third_party/<name>`；PyTorch/XLA 的 `WORKSPACE`
   `xla_hash` 决定 frontend 要匹配的 XLA 版本，顶层 `third_party/xla` 必须与它一致；不要 full clone
   上游历史作为默认 bootstrap。
-- `third_party/pytorch-xla` 是 PyTorch/XLA 源码事实源；P2.F1 的可运行 `torch_xla` 必须由该 checkout
+- `third_party/pytorch-xla` 是PyTorch/XLA源码事实源；framework importer使用的可运行`torch_xla`必须由该checkout
   编译/安装得到，并让 importer Python 环境通过 `import torch_xla` 和顶层 `import _XLAC`。
-  prebuilt `torch_xla` wheel 不能作为 P2.F1 完成证明。
+  prebuilt `torch_xla` wheel不能作为source-build完成证明。
 - `python3 tools/bootstrap_deps.py --importer-python` 只准备 PyTorch/XLA 源码构建需要的 importer
   Python packages；`torch_xla` runtime 必须随后从 `third_party/pytorch-xla` 源码用该 Python 编译/安装。
-- `tools/build_pytorch_xla_runtime.py --jobs 8` 是当前 `torch_xla` 源码构建入口；它调用
+- `tools/build_pytorch_xla_runtime.py --python third_party/python-importer/bin/python --jobs 8`是当前
+  `torch_xla`源码构建入口。`bootstrap_deps.py --importer-python`创建`third_party/python-importer`，而build
+  script仍有`python-importer-py311`历史默认值，所以在Q13.W收口前必须显式传`--python`。该入口调用
   `third_party/pytorch-xla`，并用 Bazel override 固定到本仓库 `third_party/xla` /
   `third_party/llvm-project` 和 importer Python 的 `torch` headers/libs。这个步骤可以生成本地
   editable install，但不能替换成 prebuilt `torch_xla` wheel。
-- 用 `python3 tools/bootstrap_deps.py --llvm` 下载固定版本 LLVM/MLIR 预编译包；脚本会检查远端
-  Content-Length，并把未完成下载保存在 `.part` 后续续传，避免把半包当成可解包 archive。
-- 在固定版本 LLVM/MLIR 预编译包下载完成前，本地 bring-up 可以显式 override：
+- 当前依赖栈没有pinned LLVM/MLIR prebuilt URL。用`python3 tools/bootstrap_deps.py --llvm-source`
+  同步`WaferDependencyVersions.cmake`固定的llvm-project commit，再独立build/install；当前不要使用
+  `--llvm`，也不能把它写成可用的prebuilt bootstrap入口。
+- 本地bring-up只有在明确接受非固定工具链风险时才可显式override：
   `cmake -S . -B build/wafer-bootstrap -GNinja -DMLIR_DIR=<mlir-cmake-dir> -DLLVM_DIR=<llvm-cmake-dir>
   -DPython3_EXECUTABLE=$PWD/third_party/python/bin/python -DWAFER_ALLOW_UNPINNED_LLVM=ON`。
-- 当前统一依赖验证使用固定版本 LLVM/MLIR install 配置，默认 build dir 使用中性的
-  `build/wafer-dev`，不要把阶段名、任务号或某个 frontend 依赖名写进长期 build 目录约定：
-  `cmake -S . -B build/wafer-dev -GNinja -DMLIR_DIR=$PWD/build/third_party/llvm-install/f0b3287297aeeddcf030e3c1b08d05a69ad465aa/lib/cmake/mlir -DLLVM_DIR=$PWD/build/third_party/llvm-install/f0b3287297aeeddcf030e3c1b08d05a69ad465aa/lib/cmake/llvm -DWAFER_ENABLE_IMPORTER_DEPS=ON -DWAFER_ENABLE_FRAMEWORK_IMPORTER_DEPS=ON -DWAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON -DWAFER_IMPORTER_PYTHON_EXECUTABLE=$PWD/third_party/python-importer-py311/bin/python`，
+- 当前统一依赖验证使用上述source-built pinned LLVM/MLIR install。默认build dir使用中性的
+  `build/wafer-dev`，不要把阶段名、任务号或某个frontend依赖名写进长期build目录约定：
+  `cmake -S . -B build/wafer-dev -GNinja -DMLIR_DIR=<pinned-llvm-install>/lib/cmake/mlir -DLLVM_DIR=<pinned-llvm-install>/lib/cmake/llvm -DWAFER_ENABLE_IMPORTER_DEPS=ON -DWAFER_ENABLE_FRAMEWORK_IMPORTER_DEPS=ON -DWAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON -DWAFER_IMPORTER_PYTHON_EXECUTABLE=$PWD/third_party/python-importer-py311/bin/python`，
   然后跑 `cmake --build build/wafer-dev --target check-wafer -- -j128` 和
   `ctest --test-dir build/wafer-dev --output-on-failure`。
-- `ctest` 通过不等于关键 program / E2E gate 被执行。涉及 frontend/SPMD/program pipeline 或声称
-  主链路跑通时，还要跑
-  `/root/miniconda3/bin/lit -sv --show-unsupported build/wafer-dev/test`，确认相关 `REQUIRES` 测试没有
-  被 `unsupported` 跳过；必要时查 `build/wafer-dev/CMakeCache.txt` 中对应 feature/helper 是否为空。
+- `ctest`通过不等于关键program/E2E gate被执行。涉及frontend/SPMD/program pipeline或声称
+  主链路跑通时，先跑`cmake --build build/wafer-dev --target check-wafer-lit -- -j128`；需要审计
+  unsupported清单时，使用`build/wafer-dev/CMakeCache.txt`中配置的`LLVM_EXTERNAL_LIT`执行
+  `-sv --show-unsupported build/wafer-dev/test`，不要硬编码开发机Python路径。
   对当前 SPMD program gate，`wafer-opt-spmd-partition.test` 和 `wafer-opt-spmd-to-group.test` 必须在
   配置了 `WAFER_XLA_SPMD_PARTITIONER_HELPER` 后实际执行，不能用 `ctest passed` 代替。
-- 不要并发运行两个会写同一个 lit output tree 的验证命令，例如同时跑 `ctest --test-dir
-  build/wafer-dev` 和 `/root/miniconda3/bin/lit ... build/wafer-dev/test`。部分 `test/Tools` 用固定
+- 不要并发运行两个会写同一个lit output tree的验证命令，例如同时跑`ctest --test-dir
+  build/wafer-dev`和configured lit的`... build/wafer-dev/test`。部分`test/Tools`用固定
   `%t` output 路径，两个 lit 实例会互相清理目录，导致假失败；需要顺序跑。
 - Runtime adapter 测试分层：package metadata/exporter 这类 compiler artifact golden 用 lit；no-card
   adapter contract、`fake-tx` test backend call sequence 和 runtime library discovery diagnostics 用 Python
@@ -56,15 +68,15 @@
   `wafer-compile-stablehlo --verify-frontend-program <mlir>`；PyTorch/XLA capture 主链路用
   `wafer-compile-stablehlo --verify-stablehlo-program <program-dir>` 校验 `functions/forward.mlir`、
   `functions/forward.meta` 和 `data/<parameter>`，不要再为同一关系生成 Wafer 私有伴随 JSON。
-- P2.S1 负责所有 sharding 相关策略。graph 中存在任意用户 sharding seed 时（函数边界或中间
+- default-sharding policy stage负责所有sharding相关策略。graph中存在任意用户sharding seed时（函数边界或中间
   `sdy.sharding` / `sdy.sharding_constraint` / `sdy.reshard` / manual sharding），默认 policy
-  必须跳过，让 Shardy propagation 推完整图。完全没有用户 seed 时，P2.S1 在 SPMD 层补默认
+  必须跳过，让Shardy propagation推完整图。完全没有用户seed时，该stage在SPMD层补默认
   function-input sharding seed：rank count / axes 来自 SPMD 前选出的 `wafer.execution.mesh`；单卡默认
   topology 配置是 4x4 / 16 tile。`wafer.execution.mesh` 默认使用 `all_available` policy，用满
   topology 中所有 available endpoints 且不保存 endpoint section；1-rank 或少 tile mesh 只能作为显式
   debug/bring-up/资源隔离 override 进入。找不到合适输入切分维度时生成同一 mesh 上的 replicated
   seed。不要把这个默认策略放到 group 后段实现。
-- P2.S1 不能用手写 `sdy.sharding`、`wafer.spmd.*` attr、私有 JSON 或名字约定冒充 partitioned
+- default-sharding/SPMD chain不能用手写`sdy.sharding`、`wafer.spmd.*` attr、私有JSON或名字约定冒充partitioned
   program。正确主链是：frontend Python 只通过 `torch_xla.distributed.spmd.mark_sharding`
   标记 4096 matmul 图并导出带 `mhlo.sharding` 的 PyTorch/XLA StableHLO program directory；随后由
   `wafer-opt --program-pipeline=stablehlo-spmd`、
@@ -75,24 +87,24 @@
   emitter、sidecar JSON、单独旧 SPMD verify flag 和 Python post-SPMD
   路线已移除；不要恢复只生成私有 attrs/sidecar、只跑 SDY propagation 冒充完成，或把 Python
   test helper 写成 SPMD / 用户编译入口。
-- P2.S1 当前测试 program 入口：
+- default-sharding当前测试program入口：
   `test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-reference-program` 默认生成 4096 reference
   program directory；需要把真实 PyTorch/XLA export program 接到本地 compile gate 时，可以用 `--size <n>` 生成
   小尺寸同构图，避免让 single-tile bring-up 被 4096 工作集容量卡住。
   `test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-sharded-program --sharding-strategy=<name>` 生成
-  pre-partition mark program。post-SPMD partitioned program 只能由 P2.S2 的 Wafer-owned SPMD
+  pre-partition mark program。post-SPMD partitioned program只能由Wafer-owned SPMD
   partition stage 产生。
-- P2.S2 pinned-XLA helper 构建入口是 `tools/build_xla_spmd_partitioner_helper.py`；它在
+- pinned-XLA SPMD partition helper构建入口是`tools/build_xla_spmd_partitioner_helper.py`；它在
   `build/xla-spmd-helper/workspace` 生成围绕 `third_party/xla` 的 Bazel overlay，默认用 clang 构建
   `//xla/wafer_tools:wafer_xla_spmd_partitioner`，产物复制到
   `build/xla-spmd-helper/wafer_xla_spmd_partitioner`。本地把 helper 接进 `wafer-opt` build / lit：
   `cmake -S . -B build/wafer-dev -DWAFER_XLA_SPMD_PARTITIONER_HELPER=$PWD/build/xla-spmd-helper/wafer_xla_spmd_partitioner`。
   之后用户级 `wafer-opt --program-pipeline=stablehlo-spmd*` 命令不再传 helper 路径；`wafer-opt`
   从 build-time `WAFER_XLA_SPMD_PARTITIONER_HELPER` 解析 helper。`cmake --build
-  build/wafer-dev --target check-wafer-lit` 会运行真实 P2.S2 partition program gate；没有配置
+  build/wafer-dev --target check-wafer-lit`会运行真实SPMD partition program gate；没有配置
   helper 时该 gate 通过 `REQUIRES: xla-spmd-helper` 自动 unsupported。
 - PyTorch/XLA StableHLO program directory 的 `data/<parameter>` 由 upstream exporter 用 `np.save` 写入，因此
-  P2.S2 helper 需要解析 `.npy` header 才能切片输入参数；P2.S2 输出的 rank-local shard payload 沿用
+  partition helper需要解析`.npy` header才能切片输入参数；其输出的rank-local shard payload沿用
   NPY stream，路径为 `parameter_shards/<parameter>/rank_XXXXX.npy`。形状和 dtype 由 NPY header 与
   `forward.parameter_shards.json` 共同校验；不要把 NumPy 文件格式升级成 Wafer package/runtime ABI。
 - PyTorch/XLA transformer / RoPE 这类真实图会把 scalar 或 tensor captured constants 放进
@@ -105,7 +117,7 @@
   `spmd_partitioner` / generated proto / TSL 的入口也放在同一 Wafer 源码目录，但通过
   `tools/build_xla_spmd_partitioner_helper.py` symlink 到 pinned XLA Bazel overlay 编译。不要把这类
   pipeline stage 源码放进 `tools/` 或 `third_party/xla`。
-- `test/Spmd` 目前只覆盖 P2.S1 default input seed 和 SDY/Shardy program parse/verify，不覆盖
+- `test/Spmd`目前只覆盖default input seed和SDY/Shardy program parse/verify，不覆盖
   XLA SPMD partitioner，也不输出 rank-local StableHLO。`test/Frontend` 覆盖 StableHLO/Linalg local
   compute normalization；softmax、RMSNorm、LayerNorm 输入是 fine-grained StableHLO staged graph
   （reduce、broadcast、elementwise、shape ops），不是 `stablehlo.softmax` / `stablehlo.norm`
@@ -115,31 +127,31 @@
   group/tiling；`wafer.tile.*` communication 只能在 `wafer.tile.region` / SPM storage values / endpoint resource facts 明确后
   materialize。StableHLO collective 直降 `wafer.tile.*` communication 且靠 `unrealized_conversion_cast` 桥 tensor
   和 storage 的 pass/test 已移除；不要在 group 输入侧恢复这种入口。
-- R2.4 linalg extension collective handoff 的主线验证入口是同一个 Wafer program pipeline：
+- linalg extension collective handoff的主线验证入口是同一个Wafer program pipeline：
   `wafer-opt --program-pipeline=stablehlo-spmd-to-linalg ...` 必须从真实 PyTorch/XLA sharded
   program 产出含 `wafer.linalg_ext.collective.*` 的 `functions/forward.mlir`，并保留
   `forward.parameter_shards.json` 与 rank-local NPY payload。局部 `test/Frontend` fixture 可以覆盖
   `all_reduce` / `reduce_scatter` / `all_to_all` / `collective_permute`，但不能替代这个 program
   handoff gate。
-- R2.4 local compute 主线不要恢复本地 `wafer-lower-stablehlo-{dot,elementwise,reduce,shape}` 或
+- local compute normalization主线不要恢复本地`wafer-lower-stablehlo-{dot,elementwise,reduce,shape}`或
   `wafer-normalize-constants` 窄子集；这些旧 pass 入口已经删除。`wafer-lower-stablehlo-to-linalg`
   的主线 body 先运行 Wafer collective handoff，再调用当前 StableHLO pin 的官方
   `stablehlo-legalize-to-linalg`；Wafer collective handoff 不能证明时要 `signalPassFailure`，
-  不能静默把 raw StableHLO 留给 R3 group。
+  不能静默把raw StableHLO留给logical group formation。
 - XLA SPMD partitioner 输出的 rank/mask helper 可能以 residual `stablehlo.partition_id` /
   `stablehlo.replica_id`、静态 tensor view 常量链和 all-constant integer `linalg.generic`
-  形式出现。R2.4 cleanup 的职责是在 official StableHLO-to-Linalg 前后把这类可静态证明的常量
+  形式出现。local compute cleanup的职责是在official StableHLO-to-Linalg前后把这类可静态证明的常量
   折掉，确保 group 输入没有 raw StableHLO residual；不要把这扩成运行时 shape 计算或 Wafer 私有
   compute lowering。
-- R2.4 `wafer.linalg_ext.collective.*` 不是只靠 op 名字或 pass switch 的 skeleton；五类 collective
+- `wafer.linalg_ext.collective.*`不是只靠op名字或pass switch的skeleton；五类collective
   必须实现 `DestinationStyleOpInterface`、MLIR `TilingInterface`、`WaferTilingInterface` 和
   `WaferLinalgExtCollectiveOpInterface`。slot-crossing 或动态不可证明的 collective-axis tile 应由
-  `TilingInterface` 返回 failure，等待 group planner 拆 slot-aligned tile 或 R6 materialization。
+  `TilingInterface`返回failure，等待group planner拆slot-aligned tile或tile communication materialization。
 - StableHLO `replica_groups` 有多个 row 时不要压成一个 `rank_group`。`wafer.linalg_ext.collective.*`
   现在用互斥的 `rank_group` / `rank_groups` 表达单组或多组 logical ranks；rank-specialized
   tile-region materialization 按当前 logical rank 选择所在 row。这里仍然只保存 logical rank，不保存
   physical endpoint 或 communication algorithm。
-- R3.2a/R3.2b 是 analysis-only 阶段：`GroupTilingDemand` 和 `GroupLayoutPlan` 可以用
+- group tiling-demand和layout-plan是analysis-only边界：`GroupTilingDemand`和`GroupLayoutPlan`可以用
   `--wafer-dump-group-tiling-demand` / `--wafer-dump-group-layout-plan` dump，但不能把 tile demand、
   layout assignment 或 materialization cut 写成 `wafer.group` attr，也不能在这两步生成
   `wafer.tile.region`。主线 completion gate 要在真实 `stablehlo-spmd-to-group` 输出上重放这些 dump。
@@ -148,11 +160,11 @@
   tool dependency layering。
 - Device-code local link gate 默认不再读取外部 machine-local TX8 deps root。TX8 headers、
   libs、sysroot 和 Xuantie `riscv64-unknown-elf-gcc` 来自 repo-vendored
-  `third_party/tx8_deps`；Wafer-owned `wafer_tx81_*` symbols 必须来自 `tasks/14` 定义的
-  repo-local Wafer CRT source/object，不能从旧 `libvr.a` archive 或 TX81 `__*`
+  `third_party/tx8_deps`；Wafer-owned `wafer_tx81_*`边界由target LLVM编号设计、repo-local public CRT header
+  和source/object共同约束；不能从旧`libvr.a`archive或TX81`__*`
   symbol 反推出 compiler target CRT closure。当前 vendored Xuantie toolchain 的可用 64-bit
   double-float multilib 是 `rv64imafdc/lp64d`。
-  LLVM 21 生成的 RISC-V object 在进入 Xuantie GNU ld 2.35 前需要用 vendored
+  compiler-generated RISC-V object 在进入 Xuantie GNU ld 2.35 前需要用 vendored
   `riscv64-unknown-elf-objcopy -R .riscv.attributes` 做 metadata normalization；repo-local
   Wafer CRT source/object 和 target object 一起进入 link gate。设备链接不再默认编译或链接
   capture shim；LLVM object 之外的 target CRT symbol 必须来自 repo-local Wafer CRT source/object
@@ -180,7 +192,7 @@
   这类标准 pass，注册 `mlir::registerTransformsPasses()` 并链接 `MLIRTransforms`，不要假设
   `MlirOptMain` 会自动注册。
 - 历史 stage-connection 测试和 `tools/check_stage_connection_tests.py` 已删除；后续 group/tile/storage
-  连接必须由真实 frontend/SPMD program chain 和 R3/R6/R7 contract 恢复，不能重建手写 fixture 链来冒充主线。
+  连接必须由真实frontend/SPMD program chain和当前group/tile/storage编号合同恢复，不能重建手写fixture链来冒充主线。
 - 任务支持范围按硬件能力、runtime/ABI 证据和当前 IR contract 判断，不能按“当前下游 pass 尚未
   实现”反向裁剪上游语义。若 frontend/SPMD/planner 产出合法且硬件可表达的事实，而 IR/lowering
   还没覆盖，应补 IR contract、verifier 或下游恢复任务；不能把实现缺口写成上游不支持。
@@ -313,7 +325,7 @@
   测试输入做tool-unit覆盖；主线PackageManifest必须只由committed typed executable和complete
   `TargetArtifactSet`自动导出，不能从raw IR、单个module或旁路resource view恢复。
 - deterministic Protobuf serialization不是跨实现canonical encoding。KAD、target/environment、artifact
-  set和PackageManifest的semantic identity统一走`tasks/14`定义的WCRE V1与domain-separated SHA-256；
+  set和PackageManifest的semantic identity统一走WCRE V1与domain-separated SHA-256；
   exact delivered Protobuf bytes另算blob content digest。实现时先验证blob digest，再parse/reject identity
   unknown fields，随后重算semantic ID；Python binding只能做debug/migration，唯一semantic verifier在C++。
 - Kernel ABI只通过mandatory ELF `.note.wafer.abi`交付。note注入后必须read back并复核descriptor、
