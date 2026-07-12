@@ -99,6 +99,29 @@ struct ParameterBinding {
   std::vector<ParameterShard> shards;
 };
 
+struct DistributedRank {
+  int64_t rank = 0;
+  int64_t replicaId = 0;
+  std::vector<int64_t> offsets;
+  std::vector<int64_t> sizes;
+  std::vector<int64_t> strides;
+};
+
+struct DistributedBoundaryBinding {
+  int64_t index = 0;
+  std::string dtype;
+  std::string distribution;
+  std::vector<int64_t> globalShape;
+  std::vector<int64_t> localShape;
+  std::vector<DistributedRank> ranks;
+};
+
+struct DistributedBoundary {
+  int64_t logicalRankCount = 0;
+  std::vector<DistributedBoundaryBinding> inputs;
+  std::vector<DistributedBoundaryBinding> outputs;
+};
+
 struct TensorPayload {
   std::vector<uint8_t> bytes;
   size_t dataOffset = 0;
@@ -152,6 +175,9 @@ absl::StatusOr<Options> parseOptions(int argc, char **argv) {
     return absl::InvalidArgumentError("missing --output-program-dir");
   if (options.entryFunction.empty())
     return absl::InvalidArgumentError("missing --entry-function");
+  if (options.entryFunction != "forward")
+    return absl::InvalidArgumentError(
+        "--entry-function must be the canonical entry 'forward'");
   if (options.logicalRankCount <= 0)
     return absl::InvalidArgumentError("--logical-rank-count must be positive");
   return options;
@@ -402,11 +428,55 @@ signaturesToJson(const std::vector<TensorSignature> &signatures) {
   return array;
 }
 
+llvm::json::Object distributedRankToJson(const DistributedRank &rank) {
+  return llvm::json::Object{
+      {"rank", rank.rank},
+      {"replica_id", rank.replicaId},
+      {"offsets", shapeToJson(rank.offsets)},
+      {"sizes", shapeToJson(rank.sizes)},
+      {"strides", shapeToJson(rank.strides)},
+  };
+}
+
+llvm::json::Object
+distributedBindingToJson(const DistributedBoundaryBinding &binding,
+                         llvm::StringRef indexField) {
+  llvm::json::Array ranks;
+  for (const DistributedRank &rank : binding.ranks)
+    ranks.push_back(distributedRankToJson(rank));
+  return llvm::json::Object{
+      {indexField, binding.index},
+      {"distribution", binding.distribution},
+      {"global_shape", shapeToJson(binding.globalShape)},
+      {"local_shape", shapeToJson(binding.localShape)},
+      {"dtype", binding.dtype},
+      {"ranks", std::move(ranks)},
+  };
+}
+
+llvm::json::Object
+distributedBoundaryToJson(const DistributedBoundary &boundary) {
+  llvm::json::Array inputs;
+  for (const DistributedBoundaryBinding &binding : boundary.inputs)
+    inputs.push_back(distributedBindingToJson(binding, "argument_index"));
+  llvm::json::Array outputs;
+  for (const DistributedBoundaryBinding &binding : boundary.outputs)
+    outputs.push_back(distributedBindingToJson(binding, "result_index"));
+  return llvm::json::Object{
+      {"version", 1},
+      {"logical_rank_count", boundary.logicalRankCount},
+      {"inputs", std::move(inputs)},
+      {"outputs", std::move(outputs)},
+  };
+}
+
 std::string metaToString(ProgramMetadata meta,
                          std::vector<TensorSignature> inputSignatures,
-                         std::vector<TensorSignature> outputSignatures) {
+                         std::vector<TensorSignature> outputSignatures,
+                         DistributedBoundary boundary) {
   meta.root["input_signature"] = signaturesToJson(inputSignatures);
   meta.root["output_signature"] = signaturesToJson(outputSignatures);
+  meta.root["distributed_boundary"] = distributedBoundaryToJson(boundary);
   return llvm::formatv("{0:2}", llvm::json::Value(std::move(meta.root))).str() +
          "\n";
 }
@@ -700,6 +770,192 @@ ParameterShard shardForRank(const xla::Shape &globalShape,
   return shard;
 }
 
+absl::StatusOr<DistributedBoundaryBinding> makeDistributedBoundaryBinding(
+    int64_t index, std::string dtype, const xla::Shape &globalShape,
+    const xla::Shape &localShape, const xla::HloSharding &sharding,
+    int64_t logicalRankCount) {
+  if (!globalShape.IsArray() || !localShape.IsArray())
+    return absl::InvalidArgumentError(
+        "distributed function boundary must contain array shapes");
+  if (sharding.IsTuple())
+    return absl::InvalidArgumentError(
+        "distributed tensor boundary has tuple sharding");
+  if (sharding.IsManual() || sharding.IsManualSubgroup() ||
+      sharding.IsUnknown() || sharding.IsShardGroup())
+    return absl::InvalidArgumentError(
+        "manual, unknown, and shard-group boundary shardings are unsupported");
+  if (sharding.HasPartialReplication())
+    return absl::InvalidArgumentError(
+        "partial replication at the function boundary is unsupported");
+  if (sharding.IsTileMaximal() && !sharding.IsReplicated())
+    return absl::InvalidArgumentError(
+        "single-device sharding at the function boundary is unsupported");
+  TF_RETURN_IF_ERROR(sharding.Validate(globalShape, logicalRankCount));
+
+  DistributedBoundaryBinding binding;
+  binding.index = index;
+  binding.dtype = std::move(dtype);
+  binding.globalShape = shapeDims(globalShape);
+  binding.localShape = shapeDims(localShape);
+  bool replicated = sharding.IsReplicated();
+  binding.distribution = replicated ? "replicated" : "partitioned";
+
+  if (!replicated) {
+    if (!sharding.IsTiled())
+      return absl::InvalidArgumentError(
+          "function boundary sharding is neither replicated nor tiled");
+    if (sharding.TotalNumTiles() != logicalRankCount)
+      return absl::InvalidArgumentError(absl::StrCat(
+          "partitioned function boundary does not cover every logical rank: ",
+          sharding.ToString()));
+    for (int64_t rank = 0; rank < logicalRankCount; ++rank) {
+      if (!sharding.UsesDevice(rank))
+        return absl::InvalidArgumentError(absl::StrCat(
+            "partitioned function boundary rank domain is not exact: ",
+            sharding.ToString()));
+    }
+  }
+
+  std::vector<int64_t> maxSizes(globalShape.rank(), 0);
+  binding.ranks.reserve(logicalRankCount);
+  for (int64_t rank = 0; rank < logicalRankCount; ++rank) {
+    DistributedRank rankBinding;
+    rankBinding.rank = rank;
+    rankBinding.replicaId = replicated ? rank : 0;
+    rankBinding.strides = ones(globalShape.rank());
+    if (replicated) {
+      rankBinding.offsets = zeros(globalShape.rank());
+      rankBinding.sizes = binding.globalShape;
+    } else {
+      rankBinding.offsets = sharding.TileOffsetForDevice(globalShape, rank);
+      std::vector<int64_t> limits =
+          sharding.TileLimitForDevice(globalShape, rank);
+      for (auto [offset, limit] : llvm::zip(rankBinding.offsets, limits))
+        rankBinding.sizes.push_back(limit - offset);
+    }
+    if (rankBinding.sizes.size() != binding.localShape.size())
+      return absl::InvalidArgumentError(
+          "distributed slice rank differs from local tensor rank");
+    for (auto [dim, size] : llvm::enumerate(rankBinding.sizes)) {
+      if (size < 0 || size > binding.localShape[dim])
+        return absl::InvalidArgumentError(
+            "distributed slice does not fit the local tensor shape");
+      maxSizes[dim] = std::max(maxSizes[dim], size);
+    }
+    binding.ranks.push_back(std::move(rankBinding));
+  }
+
+  if (replicated) {
+    if (binding.globalShape != binding.localShape)
+      return absl::InvalidArgumentError(
+          "replicated boundary tensor changed shape during SPMD partitioning");
+  } else if (maxSizes != binding.localShape) {
+    return absl::InvalidArgumentError(
+        "partitioned boundary slices do not explain the local tensor shape");
+  }
+  return binding;
+}
+
+absl::StatusOr<const xla::Shape *>
+resultShape(const xla::Shape &rootShape, size_t resultCount, size_t index) {
+  if (resultCount == 1 && !rootShape.IsTuple())
+    return &rootShape;
+  if (!rootShape.IsTuple() ||
+      rootShape.tuple_shapes_size() != static_cast<int64_t>(resultCount) ||
+      index >= resultCount || rootShape.tuple_shapes(index).IsTuple())
+    return absl::InvalidArgumentError(
+        "HLO result shape does not match the flat program boundary");
+  return &rootShape.tuple_shapes(index);
+}
+
+absl::StatusOr<xla::HloSharding> resultSharding(const xla::HloInstruction &root,
+                                                size_t resultCount,
+                                                size_t index) {
+  if (!root.has_sharding())
+    return xla::HloSharding::Replicate();
+  const xla::HloSharding &sharding = root.sharding();
+  if (resultCount == 1 && !root.shape().IsTuple()) {
+    if (sharding.IsTuple())
+      return absl::InvalidArgumentError(
+          "non-tuple HLO result has tuple sharding");
+    return sharding;
+  }
+  if (!root.shape().IsTuple())
+    return absl::InvalidArgumentError(
+        "multiple program results require a tuple HLO root");
+  if (sharding.IsTuple())
+    return sharding.GetSubSharding(root.shape(), {static_cast<int64_t>(index)});
+  if (sharding.IsReplicated())
+    return xla::HloSharding::Replicate();
+  return absl::InvalidArgumentError(
+      "tuple HLO result has a non-tuple non-replicated sharding");
+}
+
+absl::StatusOr<DistributedBoundary> buildDistributedBoundary(
+    const ProgramMetadata &meta, const xla::HloModule &distributedModule,
+    const xla::HloModule &partitionedModule, int64_t logicalRankCount) {
+  const xla::HloComputation *distributedEntry =
+      distributedModule.entry_computation();
+  const xla::HloComputation *partitionedEntry =
+      partitionedModule.entry_computation();
+  if (!distributedEntry || !partitionedEntry)
+    return absl::InvalidArgumentError(
+        "HLO module is missing entry computation");
+  if (distributedEntry->num_parameters() !=
+          static_cast<int64_t>(meta.inputLocations.size()) ||
+      partitionedEntry->num_parameters() !=
+          static_cast<int64_t>(meta.inputLocations.size()))
+    return absl::InvalidArgumentError(
+        "HLO parameters do not match program directory metadata");
+
+  DistributedBoundary boundary;
+  boundary.logicalRankCount = logicalRankCount;
+  for (size_t index = 0; index < meta.inputLocations.size(); ++index) {
+    if (meta.inputLocations[index].type != "input_arg")
+      continue;
+    const xla::HloInstruction *globalParameter =
+        distributedEntry->parameter_instruction(index);
+    const xla::HloInstruction *localParameter =
+        partitionedEntry->parameter_instruction(index);
+    if (!globalParameter || !localParameter)
+      return absl::InvalidArgumentError(
+          "HLO input_arg parameter instruction is missing");
+    xla::HloSharding sharding = globalParameter->has_sharding()
+                                    ? globalParameter->sharding()
+                                    : xla::HloSharding::Replicate();
+    TF_ASSIGN_OR_RETURN(DistributedBoundaryBinding binding,
+                        makeDistributedBoundaryBinding(
+                            static_cast<int64_t>(index),
+                            meta.inputSignatures[index].dtype,
+                            globalParameter->shape(), localParameter->shape(),
+                            sharding, logicalRankCount));
+    boundary.inputs.push_back(std::move(binding));
+  }
+
+  const xla::HloInstruction *globalRoot = distributedEntry->root_instruction();
+  const xla::HloInstruction *localRoot = partitionedEntry->root_instruction();
+  if (!globalRoot || !localRoot)
+    return absl::InvalidArgumentError("HLO entry root is missing");
+  for (size_t index = 0; index < meta.outputSignatures.size(); ++index) {
+    TF_ASSIGN_OR_RETURN(
+        const xla::Shape *globalShape,
+        resultShape(globalRoot->shape(), meta.outputSignatures.size(), index));
+    TF_ASSIGN_OR_RETURN(
+        const xla::Shape *localShape,
+        resultShape(localRoot->shape(), meta.outputSignatures.size(), index));
+    TF_ASSIGN_OR_RETURN(
+        xla::HloSharding sharding,
+        resultSharding(*globalRoot, meta.outputSignatures.size(), index));
+    TF_ASSIGN_OR_RETURN(DistributedBoundaryBinding binding,
+                        makeDistributedBoundaryBinding(
+                            static_cast<int64_t>(index),
+                            meta.outputSignatures[index].dtype, *globalShape,
+                            *localShape, sharding, logicalRankCount));
+    boundary.outputs.push_back(std::move(binding));
+  }
+  return boundary;
+}
+
 llvm::json::Object shardToJson(const ParameterShard &shard) {
   return llvm::json::Object{
       {"rank", shard.rank},
@@ -879,6 +1135,18 @@ stablehloToHloModule(mlir::ModuleOp module, int64_t logicalRankCount) {
   return xla::HloModule::CreateFromProto(computation.proto(), config);
 }
 
+absl::Status prepareSpmdPartitioning(xla::HloModule *module) {
+  xla::HloPassPipeline pipeline("wafer-sharding-propagation");
+  pipeline.AddPass<xla::HloVerifier>(/*layout_sensitive=*/false,
+                                     /*allow_mixed_precision=*/false);
+  pipeline.AddPass<xla::sdy::ShardyXLA>();
+  pipeline.AddPass<xla::spmd::SpmdPrepare>();
+  pipeline.AddPass<xla::HloVerifier>(/*layout_sensitive=*/false,
+                                     /*allow_mixed_precision=*/false);
+  TF_RETURN_IF_ERROR(pipeline.Run(module).status());
+  return absl::OkStatus();
+}
+
 absl::Status runSpmdPartitioner(xla::HloModule *module,
                                 int64_t logicalRankCount) {
   xla::spmd::SpmdPartitionerOptions options;
@@ -888,10 +1156,6 @@ absl::Status runSpmdPartitioner(xla::HloModule *module,
                                                 /*num_replicas=*/1);
 
   xla::HloPassPipeline pipeline("wafer-spmd-partitioning");
-  pipeline.AddPass<xla::HloVerifier>(/*layout_sensitive=*/false,
-                                     /*allow_mixed_precision=*/false);
-  pipeline.AddPass<xla::sdy::ShardyXLA>();
-  pipeline.AddPass<xla::spmd::SpmdPrepare>();
   pipeline.AddPass<xla::spmd::SpmdPartitioner>(
       logicalRankCount, /*num_replicas=*/1, options, collectiveOpsCreator);
   pipeline.AddPass<xla::HloVerifier>(/*layout_sensitive=*/false,
@@ -943,6 +1207,10 @@ absl::Status run(const Options &options) {
   TF_ASSIGN_OR_RETURN(
       ProgramMetadata meta,
       parseMeta(options.inputProgramDir / "functions" / "forward.meta"));
+  std::optional<llvm::StringRef> metadataName = meta.root.getString("name");
+  if (!metadataName || *metadataName != options.entryFunction)
+    return absl::InvalidArgumentError(
+        "program metadata name must match the canonical entry 'forward'");
   TF_ASSIGN_OR_RETURN(
       std::string mlirText,
       readFile(options.inputProgramDir / "functions" / "forward.mlir"));
@@ -955,8 +1223,12 @@ absl::Status run(const Options &options) {
       std::unique_ptr<xla::HloModule> prePartitionModule,
       stablehloToHloModule(*inputModule, options.logicalRankCount));
 
+  std::unique_ptr<xla::HloModule> distributedModule =
+      prePartitionModule->Clone();
+  TF_RETURN_IF_ERROR(prepareSpmdPartitioning(distributedModule.get()));
+
   std::vector<std::string> parameterShardings;
-  const xla::HloComputation *preEntry = prePartitionModule->entry_computation();
+  const xla::HloComputation *preEntry = distributedModule->entry_computation();
   for (int64_t index = 0; index < preEntry->num_parameters(); ++index) {
     const xla::HloInstruction *parameter =
         preEntry->parameter_instruction(index);
@@ -966,7 +1238,7 @@ absl::Status run(const Options &options) {
   }
 
   std::unique_ptr<xla::HloModule> partitionedModule =
-      prePartitionModule->Clone();
+      distributedModule->Clone();
   TF_RETURN_IF_ERROR(
       runSpmdPartitioner(partitionedModule.get(), options.logicalRankCount));
   mlir::MLIRContext outputContext;
@@ -979,10 +1251,14 @@ absl::Status run(const Options &options) {
                       inputSignaturesFromFunc(mainFunc, meta));
   TF_ASSIGN_OR_RETURN(std::vector<TensorSignature> outputSignatures,
                       outputSignaturesFromFunc(mainFunc, meta));
+  TF_ASSIGN_OR_RETURN(DistributedBoundary distributedBoundary,
+                      buildDistributedBoundary(meta, *distributedModule,
+                                               *partitionedModule,
+                                               options.logicalRankCount));
 
   std::vector<ParameterBinding> bindings;
   TF_RETURN_IF_ERROR(materializeParameterShards(
-      options, meta, *prePartitionModule, *partitionedModule, bindings));
+      options, meta, *distributedModule, *partitionedModule, bindings));
   TF_RETURN_IF_ERROR(copyConstantPayloads(options, meta));
 
   TF_RETURN_IF_ERROR(
@@ -991,7 +1267,8 @@ absl::Status run(const Options &options) {
   TF_RETURN_IF_ERROR(
       writeFile(options.outputProgramDir / "functions" / "forward.meta",
                 metaToString(std::move(meta), std::move(inputSignatures),
-                             std::move(outputSignatures))));
+                             std::move(outputSignatures),
+                             std::move(distributedBoundary))));
   TF_RETURN_IF_ERROR(writeFile(
       options.outputProgramDir / "functions" / "forward.parameter_shards.json",
       bindingsToJson(options.entryFunction, options.logicalRankCount,

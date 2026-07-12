@@ -116,13 +116,16 @@ Pipeline position:
   target-entry verification 和
   closed-loop whole-variant candidate driver；atomic commit 后才由 target LLVM、package 和 runtime 消费。
 - User-level driver / named pipeline:
-  production 主线由 `wafer-opt --program-pipeline=stablehlo-to-executable` 或等价 driver 内的 closed-loop
-  planner 调用；局部 bring-up / candidate evaluation 入口是
+  Q16以后由同一
+  `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16}`内的closed-loop
+  planner调用。当前Q15只产出verified grouped program directory，不执行instruction lowering；
+  `wafer-opt`只处理显式IR，局部bring-up / candidate evaluation入口是
   `wafer-lower-tile-region-to-instr` 和 `wafer-lower-groups-to-instr` named pipeline。
   candidate evaluation 调用 instruction lowering 时，tiled DDR load/store operand 必须已经由 candidate 或 accepted
   materialization 表达成 tile view；如果仍是 whole-boundary memref，instruction lowering 只能生成 whole-boundary
   descriptor。
-  `--wafer-convert-tile-region-to-instr` 只作为 lit/debug pass 入口。这些局部/direct 入口都不能把
+  `--wafer-convert-tile-region-to-instr` 只作为 lit/debug pass 入口。这些局部/direct入口都不是用户
+  stop-stage，也不能把
   `DirectFullShape`、单 group 或单 tile-region 结果直接送入 committed target/package flow；用户级
   completion 必须经过 whole-variant candidate-selection/commit pipeline。
 - Explicit non-goals:
@@ -131,8 +134,8 @@ Pipeline position:
   symbol 或 launch ABI。SCALAR 仍是 reserved/stub；CSR helper/sync 若进入主线，必须作为明确
   instruction/sync family 另行定义，不能混入 CT/NE/RDMA/WDMA/TDMA 或 DTE op。
   本层也不按 group/rank 部分提交，不允许 `DirectFullShape` 或 representative tile 绕过完整 gates，
-  不把 hardware `busytable` 解释为 completion event，也不把 distributed rank equivalence 直接提升为
-  executable rank class。
+  不把 hardware `busytable` 解释为 completion event，也不依据presumed rank equivalence省略或合并
+  显式rank records。
 - Completion gate:
   对每个 static rank entry 的完整 traversal 中已支持的 load/store、静态可证明 layout materialize、fill、GEMM、
   elementwise/relation、reduce、copy 和 metadata view 生成 verifier-legal instruction-level IR
@@ -387,7 +390,7 @@ memref 替换原 op result 的 uses。
   explicit movement。
 - SPM offset、range、bank span由R3.2f写入；后续target-codegen必须从这些facts、committed executable
   bindings和当前memref use-def/view relation派生address/range参数，不能复制成独立placed/access descriptor
-  中间协议。RuntimeSession只实例化KAD resource base/control slots，不读取instruction memref或SPM plan。
+  中间协议。后续runtime只实例化verified manifest声明的resource/ABI slots，不读取instruction memref或SPM plan。
 - RDMA/WDMA 的 DDR side 使用 `memref<..., #wafer.memory<ddr, layout>>`；DDR memory planning stage 负责
   external allocation contract、declared arena/placement-domain resource、compiler-managed/resident requirement、planned DDR
   ranges 和 constant residency。
@@ -836,33 +839,31 @@ transport send/recv/token relation。无法从 local IR 推导的 endpoint/chann
 binding boundary 显式 materialize，然后作为 variant-set relation 验证，不能从名字或隐藏 side table 推断。
 module-level executable/variant symbol 可以引用 per-rank `func.func` entry symbols，但 function body 是
 instruction/control-flow 的唯一 code owner；symbol 或 package metadata 不能复制完整 instruction sequence。
-distributed 层给出的 rank equivalence 只是一项候选前提。variant-set verifier 必须在每个完整 entry
-的 instruction、layout/SPM/DDR、event、transport 和 target binding 均通过后，才由 atomic commit
-决定最终 executable rank class；该 class 不允许用 representative rank 替代未验证 entry，可以继续
-拆分 distributed class，但不能合并 distributed 层已经分开的非等价 ranks。
+任何上游rank-equivalence提示都不能替代验证。Q16必须在每个完整entry的instruction、layout/SPM/DDR、
+event、transport和target binding均通过后，才由atomic commit构造all-and-only typed C++ rank records；
+representative rank或byte-identical module不能替代未验证entry。
 
 Instruction op-local lowering 不分配 physical address range、不解决 SPM bank conflict、不选择 DDR arena
 placement，也不绑定 runtime symbol、packet bit 或 worker window。这些值属于 SPM/DDR planning 和 late
 target binding；但所有 consumer 都必须在 whole-variant commit 前调用同一个 shared physical
 geometry/range/narrowing verifier，target LLVM/package 不能成为首次发现 overflow 或 silent narrowing 的阶段。
 DDR offset assignment必须接受或拒绝当前IR中的explicit DDR views/descriptors/compiler-managed
-`memref.alloc`。随后pre-commit `ExecutableResourceView`把accepted facts materialize为typed executable
-resources/entry bindings；target只派生address/range，package/runtime不得从instruction IR重新恢复resource语义。
+`memref.alloc`。Q16 commit前从accepted IR的use-def/type/effect/offset直接校验resource/entry/completion facts，
+并materialize typed C++ rank record；target只派生address/range，package/runtime不得从instruction IR重新恢复resource语义。
 `wafer.ddr.offset`是arena-relative fact，不是absolute device address；当前没有explicit arena base binding的
 compiler-managed DDR `memref.alloc`在target conversion中必须以`unsupported_target_address`拒绝，不能把offset
 直接常量化成地址。
 
-library分层固定为：`WaferIR`只拥有target-independent `InstructionGeometry`、checked arithmetic和structured
-root/view/access derivation，不包含`VerifiedTargetCompilationContext`、target field width或conversion request；独立
-`WaferTargetLegality`单向依赖`WaferIR + WaferCompilerIdentity + WaferABI`，拥有target limits、allocation view和narrowing
-proof。Whole和`WaferInstrToTargetLLVM`都依赖`WaferTargetLegality`，反向依赖禁止。
+当前shared physical geometry事实由Wafer IR中的`computeWaferPhysicalTensorInfo`及instruction verifier拥有；
+target lowering直接复用这些facts并在clone preflight中补target field-width/range checks。仓库没有独立
+identity/ABI/target-legality library或conversion-request对象，不能把讨论中的分层写成现状。若后续真实consumer要求
+拆库，依赖仍须保持IR geometry → target legality → lowering单向。
 
-shared target verifier不以post-commit conversion request作为唯一allocation输入。它只接受private-construction、
-generation-bound `VerifiedPhysicalAllocationView`：candidate adapter由whole-variant transaction内部从当前clone、fresh
-`ExecutableResourceView`、accepted offsets/transport/projection和exact target context构造；committed adapter由sealed
-executable的`VerifiedTargetConversionRequest`重放相同root/view/slot/capacity relation。caller不能传raw range map、resolver
-callback或已构造的ResourceView。candidate view只允许形成transformation-local `VerifiedCandidateTargetPreflight`，不能产出
-LLVM/KAD/artifact；commit函数内部重新构造并验证，不接受caller proof。post-commit target conversion必须再次从committed
+shared target verifier不以post-commit conversion request作为唯一allocation输入。candidate preflight必须由
+whole-variant transaction内部从当前clone、accepted offsets/transport/projection和exact target context重算
+root/view/slot/capacity relation；caller不能传raw range map、resolver callback或旁路resource view。
+candidate preflight只形成transformation-local validation result，不能产出LLVM/ABI/artifact；commit函数内部重新
+构造并验证，不接受caller proof。post-commit target conversion必须再次从committed
 facts重跑同一geometry core，不能复用candidate analysis或把commit前result当artifact authority。
 
 ## 11. Example
@@ -943,8 +944,8 @@ wafer.tile.region ... {
 ## 12. Implementation Work
 
 本节“已完成”只记录 op-local ODS、conversion 和局部 pipeline coverage，不是 committed executable
-completion proof。完整 traversal、per-region SPM/whole-entry DDR、terminal event closure、transport/target binding、
-executable rank class 和 whole-variant atomic commit 仍必须按第 1、9、10 节合同统一验收。
+completion proof。完整traversal、per-region SPM/whole-entry DDR、terminal event closure、transport/target binding、
+all-rank typed bundle和whole-variant atomic commit仍必须按第1、9、10节合同统一验收。
 
 R3.2c 已完成的前置：
 

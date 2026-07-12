@@ -56,27 +56,57 @@ unsupported），CTest 3/3通过；CRT conformance与104-symbol closure checker�
 
 完成：control-flow、partial traversal、OOB/narrowing、premature reuse定向negative tests全部通过且失败无mutation。
 
-## Checkpoint 3: Typed Compile And Bundle
+## Checkpoint 3: Typed Grouped-Program Driver
 
-状态：进行中，当前先实施Q15 typed compile request和用户driver，再进入Q16 per-rank bundle。
+状态：已完成，对应Q15。`check-wafer`新鲜执行28个C++ unit和229个lit（228 pass、1个feature-inverse
+unsupported），CTest 3/3通过；dependency、IR organization、CRT conformance和104-symbol closure checks通过。
 
-- 定义最小`CompilationRequest`、`ExecutionConfig`、`RankExecutable`和`ExecutableBundle` C++ value。
-- 新增`wafer-compile`，让`wafer-opt`退出program directory I/O和最终publication。
-- rank-count=1和16都创建显式isolated rank clones；所有rank通过后才形成accepted bundle。
-- device link只写staging路径；undefined symbol/ELF/digest验证后随bundle发布。
+- 定义最小move-only `CompilationRequest`和factory-only `ExecutionConfig`；rank-count无默认值且只接受1或16。
+- 新增`wafer-compile`，让`wafer-opt`退出program-directory I/O、stage selector和final publication。
+- 在transaction-owned source snapshot和唯一staging中完成frontend admission、exact topology/mesh、
+  pinned helper SPMD、post-SPMD metadata/payload验证、local normalization和logical group formation。
+- 保留helper未typed rewrite的non-IR program members；final directory重新parse/verify后才no-replace发布。
 
-完成：任一rank或late target失败时final root不存在或旧版本byte-identical；rank 0/1 peer/shard可区分。
+完成：真实configured helper的mandatory cases实际执行；helper/pass/readback/publication任一失败不改变source或
+既有final且无staging残留。输出只到verified grouped program，不声称per-rank bundle或target artifact。
 
-## Checkpoint 4: Manifest And No-Card Runtime
+## Checkpoint 4: Per-Rank Executable Bundle
+
+状态：进行中，对应Q16。
+
+- 直接消费Q15 verified grouped program；rank-count=1/16分别建立all-and-only isolated rank clones。
+- rank通过typed API显式传入；所有rank执行相同group candidate、full traversal、layout、instruction、
+  SPM/DDR、completion、transport/resource validation。
+- 每个passing clone形成typed C++ `RankExecutable`；全部rank及resource/completion coverage验证后才构造
+  atomic `ExecutableBundle`。
+- 禁止默认rank 0、代表rank、filename identity或未实现的executable dialect。
+
+完成：rank 0/1的local slice与peer可区分；任一rank或late legality failure不形成partial bundle，旧final不变。
+
+## Checkpoint 5: Target Artifact Bundle
+
+状态：blocked by Q0、Q16，对应Q17。
+
+- 只消费Q16 atomic `ExecutableBundle`，对每个rank执行target conversion、object/CRT/device link。
+- device link只写transaction staging；验证all-and-only module set、required/undefined symbols、entry symbol、
+  module format、ABI摘要和content digest。
+- 全部rank readback通过后一次发布typed `TargetArtifactBundle`；manifest由下一checkpoint另行构造。
+
+完成：任一compile/link/symbol/digest/publication late failure无final `.so`或partial rank set，Q16 bundle保持不变。
+
+## Checkpoint 6: Manifest And No-Card Runtime
+
+状态：blocked by Q17，对应Q18。
 
 - 建立唯一C++ typed `PackageManifest`、semantic verifier和canonical JSON parser/serializer。
-- 用typed slot/resource双射表示ABI；拒绝missing/duplicate/wrong-role binding。
+- 用typed slot/resource双射表示ABI；all-and-only关联Q16 ranks/resources/completion与Q17 modules/entries/digests。
 - 删除production instruction/LLVM文本解析和package instruction schedule。
 - runtime只消费verified manifest形成typed preflight/session plan；Python只作薄CLI或历史converter。
 
-完成：Python/C++不再有不同acceptance；schema version、unknown field、bogus format和重复slot均fail closed。
+完成：Python/C++不再有不同acceptance；schema version、unknown field、bogus format和重复slot均fail closed；
+manifest/package late failure不发布partial package。
 
-## Checkpoint 5: Reference Execution And Vertical Gates
+## Checkpoint 7: Reference Execution And Vertical Gates
 
 - 单rankexecutor先覆盖linear/MLP所需RDMA/WDMA、GEMM、elementwise和accepted offsets。
 - 多rankexecutor加入DTE send/recv/wait和tiny Llama所需instruction子集，并检测peer mismatch/deadlock。
@@ -85,7 +115,7 @@ unsupported），CTest 3/3通过；CRT conformance与104-symbol closure checker�
 
 完成：三条gate均只经`wafer-compile`，reference结果与CPU比较；board test未运行时不声称board/numeric完成。
 
-## Checkpoint 6: Structural Cleanup
+## Checkpoint 8: Structural Cleanup
 
 - 按稳定职责拆candidate generation/materialization/legality/cost/commit。
 - 按leaf family拆group-to-tile和tile-to-instr implementation；按package/runtime/provider拆runtime。

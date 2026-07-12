@@ -3,14 +3,14 @@
 # RUN: rm -rf %t.input.program %t.group.program
 # RUN: env CPU_NUM_DEVICES=16 PJRT_DEVICE=CPU %importer_python %wafer_src_root/test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-hf-megatron-transformer-block --hf-config-json %wafer_src_root/test/Tools/Inputs/hf/tiny-random-llama-config.json --sequence-length 4 --output-program-dir %t.input.program
 # RUN: FileCheck %s --input-file=%t.input.program/functions/forward.mlir --check-prefix=INPUT
-# RUN: wafer-opt --program-pipeline=stablehlo-spmd-to-group --input-program-dir %t.input.program --output-program-dir %t.group.program | FileCheck %s --check-prefix=PIPELINE
+# RUN: wafer-compile --input-program-dir %t.input.program --output-program-dir %t.group.program --execution-ranks=16 | FileCheck %s --check-prefix=PIPELINE
 # RUN: FileCheck %s --input-file=%t.group.program/functions/forward.mlir --check-prefix=GROUP
 
 # INPUT: func.func @main
 # INPUT: mhlo.sharding = "{devices=
 # INPUT: mhlo.sharding = "{replicated}"
 
-# PIPELINE: wafer-opt: completed Wafer program pipeline stablehlo-spmd-to-group:
+# PIPELINE: wafer-compile: compiled grouped program with execution-ranks=16:
 
 # GROUP: mhlo.spmd_parameters_shardings
 # GROUP: wafer.target.topology @default

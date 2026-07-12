@@ -57,6 +57,44 @@ Pipeline position:
 
 ## 3. IR 和 Artifact 分层
 
+### 3.1 Q15 typed compile boundary
+
+```text
+Pipeline position:
+- Upstream artifact / IR:
+  exporter产生且尚未SPMD partition的StableHLO program directory，以及用户显式选择的单卡rank-count。
+- Current stage responsibility:
+  用typed CompilationRequest接管program orchestration；先在transaction-owned输入快照上完成frontend admission，
+  再建立与ExecutionConfig完全一致的topology/mesh，把pre-SPMD StableHLO和显式frontend sharding交给
+  pinned XLA helper，由helper内部完成Shardy propagation/XLA SPMD；随后执行StableHLO-to-Linalg和
+  logical group formation。wafer-opt只保留IR-local parse/pass/pipeline调试。
+- Output artifact / IR:
+  Q15阶段输出经重新读取和验证的grouped program directory；它是Q16 per-rank clone的直接上游，
+  不是ExecutableBundle、package或完成的target artifact。
+- Downstream consumer:
+  Q16在同一用户driver内对全部logical rank建立isolated clone并形成RankExecutable[]。
+- User-level driver / named pipeline:
+  wafer-compile --input-program-dir=... --output-program-dir=... --execution-ranks={1|16}；不暴露pass名称或stop-stage。
+- Explicit non-goals:
+  Q15不定义per-rank executable、manifest、runtime binding或board执行，也不把helper路径、输出路径、
+  pipeline名称、logical rank和pass option写入CompilationRequest。
+- Completion gate:
+  ExecutionConfig无默认rank且只接受1或16；已有topology/mesh必须唯一并与请求逐字段一致；任一admission、
+  helper或pass失败都不修改source和既有final output；旧wafer-opt program-directory参数被拒绝。
+```
+
+`ExecutionConfig`是factory-only C++ value，当前唯一可配置语义是单卡execution rank-count；固定1×1 card、
+4×4 tile topology和rank到endpoint的row-major关系由它派生，不能再从CLI默认值或已有IR“取第一个”恢复。
+`CompilationRequest`是move-only C++ value，只持有source program locator和validated `ExecutionConfig`。
+compiler在读取前把source复制到transaction-owned snapshot，后续parser、verifier和XLA helper都只消费该snapshot。
+output root和build-time helper属于orchestration，不属于program语义；Q16接入后，Q15的grouped directory将留在同一
+bundle transaction内，不形成第二条production pipeline。
+
+当前pinned XLA helper自身拥有StableHLO→Shardy→XLA SPMD的可接受输入/输出边界；compiler不得先把
+`sdy.constant`、`sdy.reshard`或其它SDY中间op写给只接受StableHLO的helper。Wafer的Shardy named pipeline继续用于
+显式IR-local传播调试，不是production helper前置stage。无用户sharding时当前correctness基线允许helper选择replicated
+partition；默认性能切分policy必须等有可验证的StableHLO↔SDY export bridge后再进入production，不能靠残留SDY attrs冒充。
+
 | Stage | 当前/近期表示 | 责任 | 明确不负责 |
 | --- | --- | --- | --- |
 | Verified program | StableHLO、func、tensor、program directory metadata/payload | model语义、shape/dtype、输入输出、parameter shard admission | rank placement、SPM/DDR offset、runtime handle |

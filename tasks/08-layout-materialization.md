@@ -68,7 +68,7 @@ lowering IR 写成三套互不相干的东西：
 | whole-entry layout finalization | complete static rank variant clone 上的 layout/resource/lifetime co-planning | analysis 只改 candidate clone；atomic commit 后才进入主 IR | 同时验证所有 group boundary、SPM/DDR footprint、movement 和完整 traversal lifetime |
 | committed tile-local memref IR | `memref<shape x dtype, #wafer.memory<space, layout>>` 和 `wafer.tile.materialize_layout` | 是 | 最终 layout 的单一 owner；记录已接受的 address space/physical layout marker 和真实 movement edge |
 | materialization cleanup | canonicalization pattern 和 layout-aware rewrite | 是，通过 rewrite 当前 IR | 删除冗余 materialization；不保存搜索过程 |
-| target-codegen address derivation | target call/codegen参数或conversion-local value | 是，仅作为 very-late derived form | 从committed Wafer-tagged memref、typed executable bindings、accepted offset facts、view relation和layout helper派生目标指令需要的address/range/stride representation；不形成新的主线IR事实源，runtime只实例化KAD resource slots |
+| target-codegen address derivation | target call/codegen参数或conversion-local value | 是，仅作为 very-late derived form | 从committed Wafer-tagged memref、typed executable bindings、accepted offset facts、view relation和layout helper派生目标指令需要的address/range/stride representation；不形成新的主线IR事实源，runtime只实例化verified manifest ABI slots |
 | lowered movement IR | `ChannelNorm` / `DechannelNorm` / `GatherScatter` / TDMA / lower-level effects | 是 | 把 abstract materialization 展开为目标相关 movement、sync 和 byte/range 约束 |
 
 constant storage transform 与这条主线并行：它只处理 compile-time `ConstantLike` value 的
@@ -132,16 +132,19 @@ Pipeline position:
   DDR memory planning + compute/movement legality analysis，
   以及 closed-loop candidate driver。
 - User-level driver / named pipeline:
-  production 主线由 `wafer-opt --program-pipeline=stablehlo-to-executable` 或等价 driver 调用 early
-  layout analysis；`stablehlo-spmd-to-group` 和 `--wafer-dump-group-layout-plan` 只用于 stage replay / debug。
+  Q16以后由同一
+  `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16}`在whole-variant
+  candidate flow内部调用early layout analysis。当前Q15只产出verified grouped program directory；
+  `wafer-opt`和`--wafer-dump-group-layout-plan`只处理显式group IR，用于IR-local debug/test，
+  不提供用户stop-stage。
 - Explicit non-goals:
   不选择最终 closed-loop tile shape、不 select/reject/split group、不分配 SPM、不判断
   DDR view/range/resource、不 materialize compute/movement/comm op、不生成 package/ABI；不把
   `GroupLayoutPlan`、boundary summary 或 group-local passing result 当作最终 layout owner。
 - Completion gate:
   FileCheck 覆盖 linalg matmul/broadcast/elementwise、multi-group、tensor collective、
-  materialization demand 和 unsupported tiling failure；program pipeline gate 能在真实
-  `stablehlo-spmd-to-group` 输出上重放 layout-plan dump。该 gate 只证明 early proposal 可重算，
+  materialization demand 和 unsupported tiling failure；Q16 integrated gate能在Q15 verified grouped
+  program输入上重放layout-plan analysis。该gate只证明early proposal可重算，
   不证明 executable layout 已完成；最终 completion 见下节 whole-variant finalization contract。
 ```
 
@@ -149,8 +152,8 @@ R3.2b 已落地：按上述 logical-group analysis 边界完成。当前
 `GroupLayoutPlan` 消费 R3.2a `GroupTilingDemand` facts 和 group SSA use-def，输出
 boundary layout、per-op layout constraints/assignment、materialization cut、group-result
 materialization demand 和 failure forwarding；它不 rewrite `wafer.group`，不写 layout attr，
-不生成 `wafer.tile.region`。completion gate 覆盖手写 group 测试输入和真实
-`stablehlo-spmd-to-group` program 输出。
+不生成 `wafer.tile.region`。局部completion gate覆盖手写group测试输入；Q16 integrated gate必须消费
+Q15 verified grouped program输出。
 
 #### 3.1.2 Whole-Variant Layout Finalization Contract
 
@@ -170,17 +173,18 @@ Pipeline position:
   whole-entry SPM/DDR planning、complete instruction/event/transport verification、launch projection、
   whole-variant atomic commit；commit 后才由 target lowering 和 package derivation 消费。
 - User-level driver / named pipeline:
-  `stablehlo-to-executable` direct production driver 内的 whole-variant candidate-selection/commit fixed coordinator；局部
-  layout pass/dump 只用于实现验证，不能单独提交。
+  Q16以后由同一`wafer-compile`内部的whole-variant candidate-selection/commit fixed coordinator调用；
+  当前Q15不执行layout finalization。`wafer-opt`的局部layout pass/dump只处理显式IR，用于实现验证，
+  不能单独提交或作为用户stop-stage。
 - Explicit non-goals:
   不保存 early proposal/constraint graph，不按 group 分批提交，不让 package/runtime 重选 layout，
   不用 representative tile/rank 或 `DirectFullShape` 特判绕过完整 traversal/resource gates；不因
-  distributed rank equivalence 相同就提前共享 final layout 或创建 executable rank class。
+  presumed rank equivalence相同就跳过任一显式rank clone的layout验证。
 - Completion gate:
   每个 static rank entry 的所有 tile-local value 和跨 group boundary 都有唯一可 lower layout；
   full traversal 下的 materialization lifetime 已进入 SPM/DDR plan；shared physical geometry/range/narrowing
   verifier 证明 physical footprint、descriptor range 和 ABI width；任一 rank/group 失败则整个 clone
-  不提交。layout 只为 whole-variant commit 决定最终 executable rank class 提供验证事实，不拥有该 class。
+  不提交。layout只提供每rank accepted IR中的验证事实，不拥有bundle identity或rank去重语义。
 ```
 
 ### 3.2 从 Tensor Value 到 Buffer Value
@@ -410,22 +414,20 @@ DDR planned ranges、runtime allocation mapping、resident constant、capacity �
 `#wafer.memory<space, layout>`，见
 `tasks/12-ddr-memory-planning.md`。
 
-低精度数学语义也不塞进memory-space attr。`tasks/05`的IR quant types/attrs说明logical value与
-scale/zero-point/block relation；本层另定义versioned closed IR `StorageEncodingDescriptor` attr说明physical bytes：
+低精度数学语义也不塞进memory-space attr。仓库当前没有quant type/attr或`StorageEncodingDescriptor`；
+以下只列未来typed storage encoding必须回答的最小问题，不是已实现IR合同：
 
 - element storage encoding/bit width/signedness或registered FP8 encoding；
 - byte order、bit/nibble packing order、block axes/shape、scale/zero-point table packing与typed source relation；
 - required alignment、row/block padding、tail encoding和exact packed byte-count rule。
 
-descriptor不拥有accumulator/result数学语义、target support、residency或artifact locator。`none/raw`也是显式variant，
-不能以missing field表示。相同logical quant descriptor可以在不同target realization选择不同storage encoding；选择进入
-`ResourceRealization`和artifact fingerprint，不能覆盖写回frontend type。unknown version/enum、bit overlap、scale count/
-axis mismatch、packed byte overflow或无法round-trip logical coverage必须失败。
+未来descriptor不拥有accumulator/result数学语义、target support、residency或artifact locator。相同logical quant
+descriptor可以在不同target realization选择不同storage encoding，但不能覆盖写回frontend type。unknown
+version/enum、bit overlap、scale count/axis mismatch、packed byte overflow或无法round-trip logical coverage必须失败。
 
-IR层只用ODS attr/interface承载该storage record，不新增public `Wafer/IR/StorageEncoding.h`同名C++ struct。
-可交付的nested descriptor schema和immutable verified C++ value由`tasks/14`的`semantic_identity.proto`与
-runtime-safe `WaferABI::StorageEncodingDescriptor`唯一拥有；`WaferCompilerIdentity` adapter从本attr投影并反验。
-KAD/package/runtime只import/reuse该ABI owner，不链接WaferIR/MLIR或复制packing字段。
+若真实producer/consumer出现，IR层优先用ODS attr/interface承载storage record；Q16/Q17/Q18再从accepted IR投影到
+唯一typed C++ bundle/ABI/manifest model及canonical JSON。当前不预设Proto、identity adapter或另一套ABI schema，
+package/runtime也不得复制packing字段形成第二事实源。
 
 V0 不把以下派生结果写进 `#wafer.memory<space, layout>`：
 
@@ -497,7 +499,7 @@ Wafer-tagged memref 在target-codegen派生之前仍是logical-shape memref：sh
 shape，element type 是 logical dtype；它不能被 generic memref-to-LLVM lowering 当成
 `product(shape) * elemBytes` 的真实footprint。target-codegen从committed executable bindings、accepted
 offset facts、memref view relation和layout helper派生目标指令需要的address/range/stride/layout参数；
-RuntimeSession只绑定KAD声明的resource base/control slots，不解释layout或重算footprint；
+RuntimeSession只绑定verified manifest声明的resource/ABI slots，不解释layout或重算footprint；
 这些参数不作为新的主线 IR 事实源。
 
 V0 不定义额外的 constant storage encoding attr。constant 的 storage encoding 不作为独立
@@ -624,88 +626,22 @@ SPM layout，并在必要 edge 上插入 `wafer.tile.materialize_layout`，不�
 payload 改成另一种 physical byte order。packing 必须发生在 layout 已经被 `wafer.tile.load`
 result type、storage-level type 或等价 verifier contract 约束之后；否则就是把数学值和存储表示混在一起。
 
-#### 5.1.4 Immutable Artifact Materialization
+#### 5.1.4 Immutable Payload Boundary
 
-accepted layout/packing不能只留下metadata让package重新处理source path。whole-variant clone在layout、consumer
-slice及DDR `streamed_planned` window/staging/completion通过后先构造nonserialized
-`ImmutableArtifactMaterializationPlan`：它精确绑定source ref/digest、logical slices、quant/storage descriptor、checked
-output byte counts、固定chunk recipe、resident/window coverage及transaction-local recipe key，但不读/写payload bytes。
-candidate legality/cost search只消费该plan。structural/target gates完成并按deterministic policy选择complete candidate
-后、atomic commit前才运行compiler-owned immutable artifact materialization，消费：
+layout stage只决定accepted IR中的storage encoding与必要movement，当前不定义artifact registry、lease、
+content-addressed store、chunk policy或package transaction对象。若selected layout要求compiler在后续生成
+reordered/packed immutable payload，Q16必须先把下列事实保留在accepted rank IR或由其直接可重算的typed
+C++ rank record中：
 
-```text
-verified program source ref/shard + `SourceArtifactLease` + structured tensor reader
-  + verified IR quant facts + accepted IR StorageEncodingDescriptor
-  + ResourceRealization candidate + resident or streamed_planned window coverage
-```
+- source parameter/shard与logical slice的typed relation；
+- accepted storage encoding、checked physical byte count和完整coverage；
+- 消费该payload的memref use-def、offset/range和completion relation。
 
-产出non-forgeable `MaterializedImmutableArtifact`，包含source `ResourceId`、candidate realization ref、storage
-descriptor、logical coverage、exact byte size/content digest、canonical nonoverlapping chunk table和candidate-private
-content-addressed blob handles。它不是第二套resource语义；commit后同一事实以typed `ArtifactRef`进入resource
-realization/program output，临时C++ proof object销毁。
-
-source ref不能退化为先前校验过的path。compiler program loader持有nonserialized `VerifiedProgramSource`：已打开的
-program/content root capability、validated relative locator、metadata声明的expected exact size/content digest和
-structured tensor encoding；source没有public acquire/open/read。materializer只能通过transaction-private
-`ArtifactMaterializationSourceAccess`，用同owner `ArtifactMaterializationReadLease`/work lease同时占用source coordinator、
-`ImmutableArtifactMaterializationLimits`和outer transaction budgets，再做beneath/no-follow capability-relative open并获得
-move-only `SourceArtifactLease`。opened lease持有reader/FD额度，work lease持有worker/read-transform bytes/buffer额度；在同一
-opened object上完成type/stat、structured header、positioned reads、full source digest和
-before/after stat一致性检查；不能校验后按path重开。source在验证后被替换、截断、增长或并发mutation时当前candidate
-失败，不能让model resource identity与packed output bytes错配。root capability/lease是compiler input proof，不进入IR、
-manifest或cache identity。
-
-materializer使用structured NPY/tensor/resource reader和checked multidimensional indexing生成raw/reordered/packed bytes；
-scale/zero-point/block table同样通过typed resource/descriptor读取，不按文件名或参数顺序匹配。resident backing要求
-exact full logical coverage；streamed backing按accepted logical windows生成canonical chunks并逐window验证source
-slice、packed byte range、chunk digest和staging consumer relation。若packing需要尚未显式存在的compute/K split，返回
-candidate failure而不是改写数学程序。
-
-canonical chunk table固定为`ArtifactChunkingPolicyV1`：每个output blob从offset 0开始按
-`4 * 1024 * 1024` bytes划分，最后一段为checked tail；records按offset递增且无hole/overlap，每段记录exact
-SHA-256。window只引用与source byte range相交的完整canonical chunk ordinals；window overlap不改变table，shared
-chunk可在同一acquisition内去重验证。transform可以用任意更小的bounded IO buffer增量生成/哈希，IO buffer大小、
-worker count和producer callback切片不得改变blob bytes、digest或chunk table。policy version随ArtifactRef交付，V1
-不能由planner/runtime option改chunk size。
-
-materialization只对candidate driver当前选定的完整candidate运行。`first-legal`和`min-estimated-time`都先完成
-IR/geometry/resource/target gates及deterministic ordering，不得为评分反复读取/packing同一大权重。outer transaction可按
-`(source content digest, logical coverage, quant/storage descriptor, ArtifactChunkingPolicyV1)`的typed recipe key复用
-已经完整生成并验证的staged blob/chunks；key collision对不同plan hard fail。source missing/digest/TOCTOU/IO错误对所有
-引用该source的candidates是global failure；仅candidate-specific encoding/coverage materialization失败时，driver才可在
-validated attempt/read/write byte limits内尝试下一个canonical passing candidate。limit耗尽返回budget failure，不发布
-未materialized winner。
-
-生成必须支持bounded streaming read/transform/write/hash，不把完整大模型packed payload常驻RAM。bytes先写入
-outer `ProgramOutputTransaction`拥有的private content-addressed staging；`MaterializedImmutableArtifact`只保存在
-`ExecutableCandidateTransaction`的immutable proof map，并绑定同一staged blob handles。candidate IR继续保持
-`streamed_planned`和clone-local provisional window refs；proof不是跨pass side table协议，也不能脱离其transaction
-消费。candidate失败、digest/chunk/coverage错误或publication
-failure只删除本transaction对象。whole executable全部gates通过后只把sealed committed IR、payload index和blobs
-attach到同一outer transaction，仍不对外可见；后续target-artifact/package stage若属于当前driver completion scope，
-继续向该transaction attach完整set/bundle/reference。只有outer driver在声明的全部gates通过后执行一次原子publish。
-显式executable-only driver可选择较小scope并在该边界publish，但production full driver不能先publish program再另开
-target/package transaction。content-addressed store可以内部去重已完整写入的bytes，但在final index/reference publish
-前不得产生可发现ArtifactRef/lease；不得先发布payload再提交部分IR，也不得让rejected candidate bytes进入shared index。
-
-outer transaction的final visibility owner是单一`ProgramDeliveryCommitRecord`或统一delivery-root rename，不能对
-`--output-program-dir`、target roots和`--output-package-dir`分别声称POSIX原子。若部署使用多个目录/object stores，
-各阶段只写immutable content roots；最后在一个可信deployment namespace中atomic create/CAS一条commit record，绑定
-completion scope、executable root、全部target-set roots和package bundle reference。loader只接受从该trusted record
-可达且digest匹配的roots。crash留下的unreferenced immutable roots允许GC，但永远不可被发现为accepted program/package。
-
-package assembly只通过同一outer transaction最新`PackageAssemblyInputView`创建的
-`PackageArtifactBuildSession`访问payload。session内部private `BoundArtifactBlobSource`按committed `ArtifactRef`取得
-same-handle opened lease并复核exact bytes/digest/chunks；没有installed/public `ArtifactBlobReader`或custom callback。
-missing/extra blob、wrong digest/size/chunk、storage descriptor mismatch、stale attachment generation或依赖原始source path
-重建都失败。content digest标识物理bytes，model/executable semantic identity仍由各自typed WCRE owner计算，二者不能互换。
-
-成功时materializer不提前创建final `ArtifactRef`、`ResourceRealizationRecordKey`或`StreamWindowId`。atomic commit
-先形成final RankClass/projection axes，再从candidate IR和同transaction proof map重验source/descriptor/coverage/
-staged blob，创建final realization key/window IDs，把resident或`streamed_planned`一次改写成带exact ArtifactRef/
-chunk refs的`resident`或`streamed_windows`，最后seal并attach committed IR、artifact index和blobs到outer
-transaction。final publication由所选driver completion scope唯一执行；失败不留下
-half-finalized realization或published payload。
+真正的payload变换只能由出现了typed target/package consumer的后续stage在compiler-owned staging内执行；
+输出bytes、digest、coverage和encoding全部验证后才能随固定completion boundary原子发布。candidate search
+不读取或发布payload；失败candidate不留下可发现成员。package不得根据source path、参数名或raw instruction
+文本重新packing。当前Q15只发布verified grouped program，不进入该边界；Q16也不能在没有已实现consumer时
+预建另一套artifact identity或side table协议。
 
 ### 5.2 Interfaces
 
@@ -1363,8 +1299,9 @@ V0 不做全局最优，但不能只做一次贪心选择。主路径是 determi
 
 10. Resource / endpoint / launch / ABI handoff
 
-   cleanup和memory/event gates通过后，pre-commit `ExecutableResourceView`、physical transport、launch
-   projection和target-entry ABI preflight在同一candidate clone中闭合，再atomic commit typed executable。
+   cleanup和memory/event gates通过后，从candidate IR直接重算resource/entry/completion facts，并与physical
+   transport、launch projection和target-entry ABI preflight在同一candidate clone中闭合，再由Q16 atomic
+   commit typed C++ rank records。
    post-commit target从committed memref、typed entry/resources、accepted offsets、view relation、projection和
    layout helper派生address/range/stride；package只序列化typed owners。layout planner不直接生成LLVM ABI，
    但必须保证accepted layout都能被这个派生过程合法实现。
@@ -1410,7 +1347,7 @@ layout 相关事实按第 3 节生命周期分层表达：
 - target-codegen派生层从committed Wafer-tagged memref、typed executable bindings和accepted offset facts得到
   address/range/stride 参数。compact layout 应尽量复用标准 memref lowering；Cx/NCx 的 lower-level
   storage facts只作为very-late emission参数出现，不作为独立access descriptor IR传递；runtime不消费
-  memref/layout helper，只实例化manifest/KAD slots。
+  memref/layout helper，只实例化verified manifest slots。
 - lower-level movement IR 表达具体 instruction/wrapper path、sync/effect 和 byte/range 约束。
 
 不要维护全局 `layout_plan` attr，也不要把 analysis graph 序列化成 side table 给后续 pass 使用。
@@ -1428,12 +1365,11 @@ layout verifier 至少检查：
 - materialization source/destination layout 不同，且 conversion path 可 lower。
 - host-visible dynamic input/output 满足 `#wafer.memory<ddr, tensor>` compact external layout contract。
 - compile-time constant source 可以被 `wafer.tile.load` lowering 成 result layout 要求的 storage。
-- `StorageEncodingDescriptor` version/packing/block/tail/alignment与QuantizationDescriptor、logical shape和
-  physical byte count一致；scale/zero-point table coverage无hole/overlap。
-- 每个accepted immutable realization拥有同transaction的`MaterializedImmutableArtifact`，resident full coverage或
-  streamed window/chunk coverage、digest和descriptor逐项匹配；`ArtifactChunkingPolicyV1`固定边界、tail和digest
-  可重放，改变IO buffer/worker count不改变结果；source lease的expected size/digest与同一opened bytes匹配；
-  rejected candidate没有published blob。
+- 若未来引入typed storage/quant descriptors，其version/packing/block/tail/alignment必须与logical shape和
+  physical byte count一致，scale/zero-point table coverage无hole/overlap；当前gate不得假定这些对象存在。
+- 若后续consumer要求immutable payload transform，accepted rank record必须能从当前IR重算source、encoding、
+  physical byte count和完整coverage；变换输出的bytes/digest必须在compiler-owned staging内逐项复核，
+  rejected candidate不得留下published payload。具体chunk/cache/lease policy不属于当前layout合同。
 - loop-carried value 的 entry/yield layout 一致，除非 loop body 中有明确 materialization。
 - device-side group boundary 的 producer value 和 consumer value physical layout 一致；如果不一致，
   boundary edge 上必须有明确且可 lower 的 `wafer.tile.materialize_layout`。

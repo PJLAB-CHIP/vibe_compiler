@@ -43,6 +43,7 @@ STABLEHLO_API_NEEDLES = [
 
 STABLEHLO_API_ALLOWED_PREFIXES = [
     "include/Wafer/Frontend",
+    "lib/Wafer/Compiler",
     "lib/Wafer/Conversion/StableHLOToLinalg",
     "tools/wafer-opt",
     "tools/wafer-compile-stablehlo",
@@ -56,6 +57,7 @@ SHARDY_API_NEEDLES = [
 SHARDY_API_ALLOWED_PREFIXES = [
     "include/Wafer/Frontend",
     "include/Wafer/Pipelines",
+    "lib/Wafer/Compiler",
     "lib/Wafer/Pipelines",
     "lib/Wafer/Transforms/SPMD",
     "tools/wafer-opt",
@@ -304,6 +306,7 @@ def check_cmake_target_visibility() -> None:
 
     for cmake_path in [
         REPO_ROOT / "lib" / "Wafer" / "CMakeLists.txt",
+        REPO_ROOT / "lib" / "Wafer" / "Compiler" / "CMakeLists.txt",
         REPO_ROOT / "lib" / "Wafer" / "Pipelines" / "CMakeLists.txt",
         REPO_ROOT / "tools" / "wafer-opt" / "CMakeLists.txt",
     ]:
@@ -311,19 +314,93 @@ def check_cmake_target_visibility() -> None:
         if "WaferConversion" in text:
             raise RuntimeError(f"{rel(cmake_path)} still links removed WaferConversion")
 
-    check_text_contains(
-        REPO_ROOT / "tools" / "wafer-opt" / "CMakeLists.txt",
-        "target_link_libraries(wafer-opt PRIVATE StablehloRegister)",
-    )
+    wafer_opt_source_path = REPO_ROOT / "tools" / "wafer-opt" / "wafer-opt.cpp"
     for needle in [
-        "WaferFrontend",
-        "MLIRParser",
-        "MLIRPass",
+        "mlir::MlirOptMain",
+        "mlir::stablehlo::registerAllDialects(registry)",
+        "mlir::sdy::registerAllDialects(registry)",
+        "mlir::sdy::registerAllSdyPassesAndPipelines()",
+    ]:
+        check_text_contains(wafer_opt_source_path, needle)
+    wafer_opt_source = wafer_opt_source_path.read_text(encoding="utf-8")
+    for needle in [
+        "Wafer/Frontend",
+        "--program-pipeline",
+        "--input-program-dir",
+        "--output-program-dir",
+        "WAFER_XLA_SPMD_PARTITIONER_HELPER",
+        "llvm/Support/FileSystem.h",
+        "llvm/Support/Program.h",
+        "ExecuteAndWait",
+    ]:
+        if needle in wafer_opt_source:
+            raise RuntimeError(
+                f"tools/wafer-opt/wafer-opt.cpp owns program orchestration via {needle!r}"
+            )
+
+    wafer_opt_cmake_path = REPO_ROOT / "tools" / "wafer-opt" / "CMakeLists.txt"
+    for needle in [
+        "MLIRMlirOptMain",
+        "target_link_libraries(wafer-opt PRIVATE StablehloRegister)",
         "WAFER_ENABLE_SPMD_PARTITIONER_DEPS",
         "WAFER_ENABLE_SHARDY=1",
         "target_link_libraries(wafer-opt PRIVATE ShardySdyRegister ShardySdyTransforms)",
     ]:
-        check_text_contains(REPO_ROOT / "tools" / "wafer-opt" / "CMakeLists.txt", needle)
+        check_text_contains(wafer_opt_cmake_path, needle)
+    wafer_opt_cmake = wafer_opt_cmake_path.read_text(encoding="utf-8")
+    for needle in [
+        "WaferFrontend",
+        "MLIRParser",
+        "MLIRPass",
+        "WAFER_XLA_SPMD_PARTITIONER_HELPER",
+    ]:
+        if needle in wafer_opt_cmake:
+            raise RuntimeError(
+                f"tools/wafer-opt/CMakeLists.txt owns program orchestration via {needle!r}"
+            )
+
+    compiler_cmake_path = (
+        REPO_ROOT / "lib" / "Wafer" / "Compiler" / "CMakeLists.txt"
+    )
+    for needle in [
+        "WaferCompiler",
+        "WaferFrontend",
+        "WaferPipelines",
+        "WaferTransforms",
+        "WAFER_ENABLE_IMPORTER_DEPS",
+        "StablehloRegister",
+        "WAFER_ENABLE_SPMD_PARTITIONER_DEPS",
+        "ShardySdyRegister",
+    ]:
+        check_text_contains(compiler_cmake_path, needle)
+    compiler_cmake = compiler_cmake_path.read_text(encoding="utf-8")
+    for needle in [*RUNTIME_DRIVER_NEEDLES, *TEST_TOOLING_NEEDLES]:
+        if needle in compiler_cmake:
+            raise RuntimeError(
+                f"lib/Wafer/Compiler/CMakeLists.txt leaks {needle!r}"
+            )
+
+    compiler_tool_cmake_path = (
+        REPO_ROOT / "tools" / "wafer-compile" / "CMakeLists.txt"
+    )
+    for needle in ["WaferCompiler", "LLVMSupport"]:
+        check_text_contains(compiler_tool_cmake_path, needle)
+    compiler_tool_cmake = compiler_tool_cmake_path.read_text(encoding="utf-8")
+    for needle in [
+        "WaferFrontend",
+        "WaferPipelines",
+        "WaferTransforms",
+        "Stablehlo",
+        "Shardy",
+        *RUNTIME_DRIVER_NEEDLES,
+        *TEST_TOOLING_NEEDLES,
+    ]:
+        if needle in compiler_tool_cmake:
+            raise RuntimeError(
+                "wafer-compile must delegate compiler implementation ownership "
+                f"to WaferCompiler, but directly links {needle!r}"
+            )
+
     check_text_contains(
         REPO_ROOT / "tools" / "wafer-compile-stablehlo" / "CMakeLists.txt",
         "StablehloRegister",
@@ -331,11 +408,24 @@ def check_cmake_target_visibility() -> None:
     stablehlo_tool_cmake = (
         REPO_ROOT / "tools" / "wafer-compile-stablehlo" / "CMakeLists.txt"
     ).read_text(encoding="utf-8")
-    if "WaferPipelines" in stablehlo_tool_cmake:
-        raise RuntimeError(
-            "wafer-compile-stablehlo is a frontend verifier tool and must not "
-            "link WaferPipelines"
-        )
+    for needle in ["WaferCompiler", "WaferPipelines", "WaferTransforms"]:
+        if needle in stablehlo_tool_cmake:
+            raise RuntimeError(
+                "wafer-compile-stablehlo is a frontend verifier tool and must not "
+                f"link {needle}"
+            )
+    stablehlo_tool_source = (
+        REPO_ROOT
+        / "tools"
+        / "wafer-compile-stablehlo"
+        / "wafer-compile-stablehlo.cpp"
+    ).read_text(encoding="utf-8")
+    for needle in ["Wafer/Compiler", "Wafer/Pipelines", "Wafer/Transforms"]:
+        if needle in stablehlo_tool_source:
+            raise RuntimeError(
+                "wafer-compile-stablehlo must remain a frontend verifier, but "
+                f"its source includes {needle!r}"
+            )
     for needle in [
         "WAFER_ENABLE_SHARDY=1",
         "target_link_libraries(wafer-compile-stablehlo PRIVATE ShardySdyRegister)",
@@ -368,12 +458,14 @@ def check_dependency_layering() -> None:
     production_roots = [
         REPO_ROOT / "include" / "Wafer",
         REPO_ROOT / "lib" / "Wafer",
+        REPO_ROOT / "tools" / "wafer-compile",
         REPO_ROOT / "tools" / "wafer-opt",
         REPO_ROOT / "tools" / "wafer-compile-stablehlo",
     ]
     compiler_library_roots = [
         REPO_ROOT / "include" / "Wafer",
         REPO_ROOT / "lib" / "Wafer",
+        REPO_ROOT / "tools" / "wafer-compile",
     ]
     check_forbidden_needles(
         label="StableHLO",
@@ -540,8 +632,6 @@ def main() -> int:
         REPO_ROOT / "cmake" / "third_party" / "WaferThirdParty.cmake",
         "WAFER_ENABLE_IMPORTER_DEPS",
     )
-    check_text_contains(REPO_ROOT / "tools" / "wafer-opt" / "wafer-opt.cpp",
-                        "registerImporterDialects")
     check_dependency_layering()
     check_openxla_stack_pins(versions)
     check_framework_source_alignment(versions)

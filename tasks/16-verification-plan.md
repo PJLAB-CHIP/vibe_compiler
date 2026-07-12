@@ -21,8 +21,9 @@ Pipeline position:
 - Explicit non-goals:
   不用FileCheck/JSON/symbol/no-card/reference冒充更下游证据；不因board不可用跳过compiler correctness。
 - Completion gate:
-  各owner独立验收：Q0闭合conversion/legality/formal traversal/completion/atomic negative；Q17闭合all-rank
-  target staging/publication；Q19闭合独立reference numeric；Q20/Q21依次闭合rank-count=1/16
+  各owner独立验收：Q0闭合conversion/legality/formal traversal/completion/atomic negative；Q15闭合typed
+  request到verified grouped program；Q16闭合all-rank static executable bundle；Q17闭合all-rank target
+  staging/publication；Q18闭合typed manifest/package/no-card runtime；Q19闭合独立reference numeric；Q20/Q21依次闭合rank-count=1/16
   linear/MLP和16-rank tiny Llama纵向链。后续gate不能反向成为Q0前置，board未执行时保持明确external gate。
 ```
 
@@ -117,19 +118,46 @@ transport/address/shape和任何late failure都必须保持source byte-identical
 - missing/wrong-engine fence不能释放resource；
 - terminal pending event或无法证明的loop-carried token使candidate clone失败且不产生accepted target IR。
 
-## 5. Q15/Q16 Compile And Bundle Gates
+## 5. Q15 Typed Driver And Grouped Program Gates
 
-- rank-count仅接受明确supported values；rank未提供不默认0；
-- rank 0/1 local slice、collective peer、entry和artifact identity不同；
-- 16 ranks all-and-only coverage，无duplicate/missing rank；
-- 每rank compile在isolated clone，失败不污染其它rank/source；
-- 任一rank/candidate/target failure不形成accepted bundle；
-- old final output在failed rebuild后byte-identical；
-- `wafer-opt` IR-local pipeline不能被当作用户级bundle completion。
+Request/API：
 
-direct full-shape和tiled candidate都必须经过同一legality/commit；不允许绕过selector的平行production path。
+- `ExecutionConfig`没有默认值，只接受明确single-card rank-count 1或16；0、其它rank和缺失CLI参数拒绝；
+- `CompilationRequest`move-own source locator和config；caller string变化不改变已创建request；
+- output root、helper path、pass/pipeline名、logical rank和candidate policy不进入request语义；
+- `wafer-opt`拒绝旧program-directory/stage selector参数，只保留显式IR调试。
 
-## 6. Q17 Target Module And Publication Gates
+Artifact chain：
+
+- 在parse前建立完整source snapshot；source symlink member、output逃逸source、existing output和unsafe path拒绝；
+- exact single-card topology/mesh只允许唯一module-top-level facts，rank 1/16逐字段一致；duplicate、nested、
+  mismatch拒绝；
+- pinned helper真实执行，非零exit、missing/非regular marker、no-op/partial output、residual SDY op/type/attr拒绝；
+- helper必须产出`forward.mlir`/`forward.meta`和post-SPMD marker；原program非IR成员在无typed rewrite时原字节保留；
+- post-SPMD metadata的logical rank、replicated/partitioned coverage和NPY payload重新验证；
+- StableHLO-to-Linalg与logical group formation后写出、重新parse并verify，最终无raw StableHLO/SDY；
+- 只发布verified grouped program directory；它不是RankExecutable、ExecutableBundle或target artifact。
+
+Atomicity：helper、metadata、normalization、group、write/readback或publication任一late failure都清理唯一staging；
+source与既有final byte-identical。marker目录、helper-output symlink和publication race必须fail closed，不能只靠
+先exists-check再覆盖rename。
+
+Q15 mandatory cases必须使用真实configured helper；mock helper只补failure injection。缺helper时相关test可以
+unsupported，但Q15完成记录必须确认mandatory真实helper cases实际执行。
+
+## 6. Q16 Per-Rank Executable Bundle Gates
+
+- 直接消费Q15重新读取验证过的grouped program，不另造手写group主线；
+- rank-count=1创建exact一个rank clone；rank-count=16创建logicalRank 0..15 all-and-only clones；
+- 每rankcompile在isolated module clone，显式传rank，不使用默认0、filename或rank-0 named pipeline；
+- rank 0/1 local slice、collective peer、entry/resource/completion事实可区分；
+- direct full-shape和tiled candidate经过相同generation/materialization/legality/ranking/complete-commit；
+- accepted rank artifact覆盖完整traversal，且无`wafer.group`残留；
+- 任一rank/candidate/SPM/DDR/geometry/completion failure不形成`RankExecutable[]`或partial bundle；
+- all-and-only rank/resource/completion验证后才构造atomic `ExecutableBundle`，failed rebuild保持旧final不变；
+- debug FileCheck、手写group、single rank pass或某rank成功不构成Q16 completion。
+
+## 7. Q17 Target Module And Publication Gates
 
 - compiler-generated target LLVM→object→CRT object→kcore module positive；
 - typed fixed call signatures，无vararg；
@@ -138,19 +166,20 @@ direct full-shape和tiled candidate都必须经过同一legality/commit；不允
 - entry symbol、module format、content digest readback；
 - compile/link/symbol/readback/digest/rename每个late failure注入；
 - failure后无final `.so`、object或partial rank set可见；
-- manifest引用all-and-only staged modules，digest一致。
+- typed `TargetArtifactBundle`记录all-and-only staged modules、rank/entry/ABI摘要与digest，readback一致；
+- Q17不以manifest/runtime为完成前置，Q18必须把Q17 bundle作为整体输入。
 
 手写LLVM和dry-run只补tool coverage，不能替代真实program产生的module。
 
-## 7. Q18 Manifest And Runtime Gates
+## 8. Q18 Manifest And Runtime Gates
 
-### 7.1 Typed Manifest
+### 8.1 Typed Manifest
 
 - canonical serialize/parse byte-identical；
 - unknown/deprecated field、wrong schema version、bad numeric/path/limits；
 - duplicate/missing ResourceId/ModuleId/EntryId；
 - duplicate/gapped/missing slot和wrong resource role/access/type/bytes/alignment；
-- parameter/workspace/state遗漏；
+- 当前parameter/workspace遗漏；
 - rank/module/entry domain mismatch；
 - missing/extra payload和digest mismatch；
 - completion missing/cycle/uncovered effect；
@@ -158,7 +187,7 @@ direct full-shape和tiled candidate都必须经过同一legality/commit；不允
 
 Python wrapper和C++必须走同一verifier；不能再有不同acceptance。
 
-### 7.2 No-Card Runtime
+### 8.2 No-Card Runtime
 
 - entry selection和invocation binding all-and-only；
 - module/resource/completion resolution确定性；
@@ -167,7 +196,7 @@ Python wrapper和C++必须走同一verifier；不能再有不同acceptance。
 - metadata buffer释放后verified typed value仍可安全使用；
 - no-card输出明确标记未执行board。
 
-### 7.3 Fake Provider
+### 8.3 Fake Provider
 
 实际记录并执行：
 
@@ -185,7 +214,7 @@ set-device/context
 每一步注入失败；未满足依赖的descendant不调用；已经获取的资源逆序cleanup；typed error保留stage/rank/entry。
 wait timeout/error使dependent runtime state poison，禁止后续copyback/publication并进入同一cleanup合同。
 
-## 8. Q19 Reference Executor Gates
+## 9. Q19 Reference Executor Gates
 
 executor输入必须是accepted rank instruction/memory facts，不得读取planner trace或重新选择candidate。
 
@@ -207,9 +236,9 @@ executor输入必须是accepted rank instruction/memory facts，不得读取plan
 
 比较完整输出tensor，不只比较shape/digest。tolerance按dtype/op定义并记录；整数/bitwise要求exact。
 
-## 9. Q20/Q21 Vertical Workload Gates
+## 10. Q20/Q21 Vertical Workload Gates
 
-### 9.1 Source-Backed Corpus
+### 10.1 Source-Backed Corpus
 
 每个case记录：
 
@@ -232,7 +261,7 @@ expected和canonical exporter digest由spec固定。CPU oracle是独立NumPy运�
 lit分别证明CPU-only reference逐文件byte-identical、真实exporter两次canonical-equivalent和两个program通过
 frontend verifier。这只完成Q5.C admission，不完成本节Gate A/B/C。
 
-### 9.2 Q20 Gate A: Single-Tile Linear/MLP
+### 10.2 Q20 Gate A: Single-Tile Linear/MLP
 
 真实exported linear-residual/MLP只经`wafer-compile --execution-ranks=1`产生：
 
@@ -242,7 +271,7 @@ frontend verifier。这只完成Q5.C admission，不完成本节Gate A/B/C。
 - no-card/fake-provider plan；
 - reference output与CPU一致。
 
-### 9.3 Q20 Gate B: Single-Card 16-Rank Linear/MLP
+### 10.3 Q20 Gate B: Single-Card 16-Rank Linear/MLP
 
 同类模型只经`--execution-ranks=16`，增加：
 
@@ -251,14 +280,14 @@ frontend verifier。这只完成Q5.C admission，不完成本节Gate A/B/C。
 - coherent resource/transport/completion relation；
 - 多rankreference与CPU global output一致。
 
-### 9.4 Q21 Gate C: Single-Card Tiny Llama
+### 10.4 Q21 Gate C: Single-Card Tiny Llama
 
 现有tiny-random Llama config的decoder block经同一16-rank path。必须经过mandatory candidate/commit，不能用
 手工group/instr或绕过selector的pass chain。完整attention/MLP/residual输出与独立CPU reference比较。
 
 失败若来自尚未支持op/geometry/transport，必须定位到IR/verifier事实并保持bundle未发布。
 
-## 10. Board Gate
+## 11. Board Gate
 
 configured board suite消费Gate C同一verified package，不允许另造fixture或provider-specific plan。必须实际执行：
 
@@ -271,7 +300,7 @@ configured board suite消费Gate C同一verified package，不允许另造fixtur
 board不可用、test unsupported/skipped或只到symbol discovery时，Q6.B保持later/blocked。任何no-card/reference
 结果都不能改变该状态。
 
-## 11. CI And Reproducibility
+## 12. CI And Reproducibility
 
 - pinned LLVM/StableHLO/Shardy/XLA/PyTorch-XLA依赖和实际feature写入构建记录；
 - target toolchain/CRT依赖有revision/digest/license/SBOM来源；

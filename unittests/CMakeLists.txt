@@ -1,6 +1,7 @@
 wafer_require_gtest()
 
 add_executable(WaferUnitTests
+  Compiler/CompilationTest.cpp
   Conversion/WaferGroupToTileRegionTest.cpp
   Dialect/Wafer/WaferDialectTest.cpp
   Dialect/Wafer/WaferInterfacesTest.cpp
@@ -10,6 +11,7 @@ add_library(WaferFakeTxRuntime SHARED Runtime/FakeTxRuntime.cpp)
 add_dependencies(WaferUnitTests WaferFakeTxRuntime)
 target_link_libraries(WaferUnitTests
   PRIVATE
+  WaferCompiler
   WaferIR
   WaferRuntime
   WaferPipelines

@@ -43,8 +43,8 @@ Q14 architecture-baseline
 | Q14 | `architecture-baseline` | `done` | — | 已固化实现事实和P0/P1风险，归档旧长计划，并把01/14/15/16与队列收缩到单卡纵向边界；active DAG不再依赖不存在对象。 | 01、14、15、16 |
 | Q0 | `target-correctness` | `done` | — | module-clone full conversion、complete traversal、exact named/generic payload与tensor SSA preservation、physical geometry/ABI narrowing、per-store/per-region completion及target fail-closed边界已闭合；`check-wafer`新鲜执行25个C++ unit和225个lit（224 pass、1个feature-inverse unsupported），CTest 3/3通过。4096个output-tile/reduction-chunk静态materialization实例预算只是unrolled实现的编译资源保护。 | 06、07、09、11、14、16 |
 | Q5.C | `workload-corpus` | `done` | — | 已固定真实PyTorch/XLA exporter生成的linear-residual MLP与tiny Llama source/config/seed/dtype/shape/payload/reference/program digest；独立NumPy CPU oracle、framework交叉检查和重复export canonical-equivalence已通过；未推进compiler/runtime/board gate。 | 02、16 |
-| Q15 | `compiler-driver` | `doing` | Q0 | 定义最小typed `CompilationRequest`/`ExecutionConfig`并新增`wafer-compile`；`wafer-opt`恢复为IR调试入口。 | 01、02、16 |
-| Q16 | `executable-bundle` | `blocked` | Q15 | 对rank-count=1/16创建显式per-rank static clones，完整验证后形成`RankExecutable[]`和atomic `ExecutableBundle`；禁止默认rank 0。 | 03、04、06、09、12、13、16 |
+| Q15 | `compiler-driver` | `done` | Q0 | 最小typed request/config、source snapshot、pinned helper、typed distributed boundary、parameter shards、local normalization、complete logical groups、readback和no-replace publication已闭合；`check-wafer`新鲜执行28个C++ unit和229个lit（228 pass、1个feature-inverse unsupported），CTest 3/3通过。 | 01、02、03、04、05、06、16 |
+| Q16 | `executable-bundle` | `doing` | Q15 | 对rank-count=1/16创建显式per-rank static clones，完整验证后形成`RankExecutable[]`和atomic `ExecutableBundle`；禁止默认rank 0。 | 03、04、06、09、12、13、16 |
 | Q17 | `target-artifact-bundle` | `blocked` | Q0、Q16 | device link只写transaction staging；所有rank module、必要digest和ABI检查通过后一次发布，无partial `.so`。 | 14、16 |
 | Q18 | `manifest-runtime` | `blocked` | Q17 | 用唯一C++ typed manifest/canonical JSON和slot-resource双射替代文本恢复及双validator；no-card runtime只消费verified manifest。 | 15、16 |
 | Q19 | `reference-executor` | `blocked` | Q16 | 实现linear/MLP所需单rank instruction semantics，再扩DTE多rank子集；明确不模拟target packet timing或board completion。 | 10、11、13、16 |
@@ -97,13 +97,39 @@ cache、segmented MoE、70B/100GB stress和完整ELF ABI-note体系。需要恢�
 - conversion只改module clone；任一失败原module/output byte-identical，无partial mutation或accepted target IR。
 - Q0 completion不要求all-rank module publication或reference numeric；分别由Q17和Q19拥有。
 
-### Q15-Q18 compile / bundle / manifest
+### Q15 `compiler-driver`
 
-- 单一用户driver消费真实program，而非要求用户手拼program mode和pass pipeline。
-- rank 0/1 slice、peer和artifact identity可区分；16 ranks all-and-only coverage。
-- target late failure不留下final module或partial bundle。
-- manifest slot与resource一一对应；package不含instruction schedule，runtime不重做planning。
-- Python/C++不再有独立schema acceptance。
+- `ExecutionConfig`无默认rank，只接受显式single-card rank-count 1或16；`CompilationRequest`move-own source locator。
+- 单一`wafer-compile`消费真实pre-SPMD program；source snapshot、helper output、non-IR members、topology/mesh、
+  `distributed_boundary`、parameter shards、local normalization和logical groups逐层验证。
+- 任一helper/pass/readback/publication失败都清理staging并保持source/既有output byte-identical；成功只发布重新读取
+  验证的grouped program directory，不冒充per-rank bundle或target artifact。
+- `wafer-opt`只保留显式IR debug/test，不暴露program mode、stage selector或stop-stage。
+
+### Q16 `executable-bundle`
+
+- 直接消费Q15 verified grouped program，rank-count=1/16分别创建all-and-only isolated static rank clones；rank作为
+  typed API参数显式传入，不使用默认0、文件名或不存在的executable dialect。
+- 每rank完成full traversal、layout、instruction、SPM/DDR、completion和transport/resource验证；rank 0/1的slice、
+  peer和artifact identity可区分，byte-identical module也不能替代未验证entry。
+- 任一rank失败不形成`RankExecutable[]`；全部rank及resource/completion facts通过后才原子形成typed C++
+  `ExecutableBundle`。
+
+### Q17 `target-artifact-bundle`
+
+- 只消费Q16 atomic bundle；每rank target conversion/device link只写transaction staging。
+- all-and-only modules、entry symbol、undefined-symbol closure、format、ABI摘要和content digest全部readback通过后，
+  一次发布typed `TargetArtifactBundle`；late failure无final `.so`或partial rank set。
+- Q17不构造manifest，也不以runtime/no-card为完成前置。
+
+### Q18 `manifest-runtime`
+
+- 唯一C++ typed manifest model拥有schema和semantic verifier，canonical JSON只是delivery form；Python不拥有第二套
+  acceptance。
+- manifest all-and-only关联Q16 ranks/resources/slots/completion与Q17 modules/entries/digests；package不含instruction
+  schedule，runtime不重做planning。
+- package assembly/readback/publication任一失败不发布partial package；no-card runtime只消费verified manifest，
+  且不冒充provider或board execution。
 
 ### Q19-Q21 reference / vertical
 

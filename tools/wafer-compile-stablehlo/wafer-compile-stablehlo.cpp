@@ -38,6 +38,15 @@ void printHelp() {
 #endif
 }
 
+void printVerifierDiagnostics(llvm::StringRef diagnostics) {
+  while (!diagnostics.empty()) {
+    auto [line, remaining] = diagnostics.split('\n');
+    if (!line.empty())
+      llvm::errs() << "wafer-compile-stablehlo: " << line << "\n";
+    diagnostics = remaining;
+  }
+}
+
 #ifdef WAFER_ENABLE_STABLEHLO
 mlir::OwningOpRef<mlir::ModuleOp> parseModule(llvm::StringRef filename,
                                               mlir::MLIRContext &context) {
@@ -67,16 +76,22 @@ int verifyFrontendProgramFile(llvm::StringRef filename) {
     return 1;
 
   wafer::frontend::FrontendProgramVerificationResult result;
-  if (mlir::failed(wafer::frontend::verifyFrontendProgram(*module, llvm::errs(),
-                                                          &result)))
+  std::string verifierDiagnostics;
+  llvm::raw_string_ostream verifierStream(verifierDiagnostics);
+  if (mlir::failed(wafer::frontend::verifyFrontendProgram(
+          *module, verifierStream, &result))) {
+    verifierStream.flush();
+    printVerifierDiagnostics(verifierDiagnostics);
     return 1;
+  }
 
   llvm::outs() << "wafer-compile-stablehlo: verified frontend program\n";
   return 0;
 }
 
-mlir::OwningOpRef<mlir::ModuleOp> parseAndVerifyStableHLOProgramDir(
+mlir::OwningOpRef<mlir::ModuleOp> parseAndVerifyProgramDirectory(
     llvm::StringRef programPath, mlir::MLIRContext &context,
+    llvm::raw_ostream &diagnostics,
     wafer::frontend::FrontendProgramVerificationResult *result = nullptr) {
   llvm::SmallString<256> mlirPath(programPath);
   llvm::sys::path::append(mlirPath, "functions", "forward.mlir");
@@ -87,14 +102,14 @@ mlir::OwningOpRef<mlir::ModuleOp> parseAndVerifyStableHLOProgramDir(
   if (mlir::failed(mlir::verify(*module)))
     return {};
 
-  if (mlir::failed(wafer::frontend::verifyStableHLOProgramDir(
-          *module, programPath, llvm::errs(), result)))
+  if (mlir::failed(wafer::frontend::verifyProgramDirectory(
+          *module, programPath, diagnostics, result)))
     return {};
 
   return module;
 }
 
-int verifyStableHLOProgramDir(llvm::StringRef programPath) {
+int verifyProgramDirectoryCommand(llvm::StringRef programPath) {
   mlir::DialectRegistry registry;
   registerToolDialects(registry);
 
@@ -102,10 +117,15 @@ int verifyStableHLOProgramDir(llvm::StringRef programPath) {
   context.loadAllAvailableDialects();
 
   wafer::frontend::FrontendProgramVerificationResult result;
-  mlir::OwningOpRef<mlir::ModuleOp> module =
-      parseAndVerifyStableHLOProgramDir(programPath, context, &result);
-  if (!module)
+  std::string verifierDiagnostics;
+  llvm::raw_string_ostream verifierStream(verifierDiagnostics);
+  mlir::OwningOpRef<mlir::ModuleOp> module = parseAndVerifyProgramDirectory(
+      programPath, context, verifierStream, &result);
+  if (!module) {
+    verifierStream.flush();
+    printVerifierDiagnostics(verifierDiagnostics);
     return 1;
+  }
 
   llvm::outs() << "wafer-compile-stablehlo: verified StableHLO program "
                   "directory parameters: "
@@ -197,7 +217,7 @@ int main(int argc, char **argv) {
   if (!verifyFilename.empty())
     return verifyFrontendProgramFile(verifyFilename);
   if (!programPath.empty())
-    return verifyStableHLOProgramDir(programPath);
+    return verifyProgramDirectoryCommand(programPath);
   llvm::errs() << "wafer-compile-stablehlo: unknown or incomplete arguments\n";
   printHelp();
   return 1;

@@ -24,8 +24,8 @@ Wafer-tagged memref / `wafer.instr.*` / effects，不重复定义 instruction op
   构造 allocation input。
 - 对 instruction-level IR 做 SPM memory planning、range/end-address/alignment/bank-span verification 和 failure
   feedback。
-- 为pre-commit `ExecutableResourceView`提供accepted offset fact；range/lifetime/alias在candidate IR中重算并
-  参与typed executable materialization，不作为独立attr。post-commit target/package/runtime不从SPM IR重新
+- 为Q16 commit前的typed rank-record validation提供accepted offset fact；range/lifetime/alias在candidate IR中
+  重算并参与typed C++ bundle materialization，不作为独立attr。post-commit target/package/runtime不从SPM IR重新
   恢复resource semantics。
 
 本文不分配 DDR，不选择 physical layout，不决定 group boundary，不选择 compute/communication
@@ -47,7 +47,7 @@ layout materialization
   -> liveness/effect analysis
   -> per-isolated-tile-region SPM memory planning + shared physical geometry/range verification
   -> candidate target-ABI address/range/narrowing preflight before commit
-  -> target-codegen derivation from the same committed facts; runtime only binds declared KAD slots
+  -> target-codegen derivation from the same committed facts; runtime only binds verified manifest ABI slots
 ```
 
 如果没有合法 allocation，不能生成一个等待下游修复的 scheduled group，也不能保留已通过的
@@ -72,27 +72,28 @@ Pipeline position:
 - Output artifact / IR:
   仅存在于 complete passing variant clone 中的 same instruction-level IR with offset-only
   `wafer.spm.offset` planning facts on SPM memref definitions，或结构化 allocation failure reason；
-  后续pre-commit `ExecutableResourceView`从该fact、candidate typed resource records、memref use-def、
-  arena/endpoint facts和view relation重算并补全resource range；atomic commit提升同一
-  `wafer.executable.resource` records。target LLVM只从
-  committed instruction IR + executable entry/resource bindings派生ABI address-range参数；package和
+  Q16 commit前从该fact、memref use-def、arena/endpoint facts和view relation直接重算并补全resource range，
+  验证后写入typed C++ `RankExecutable` record。target LLVM只从committed instruction IR和该record中
+  IR-derived entry/resource facts派生ABI address-range参数；package和
   runtime只消费committed executable/manifest，不直接读raw offset facts。本层不新增placed
   memref或影子descriptor中间层。
 - Downstream consumer:
   whole-entry DDR memory planning、physical transport acceptance、launch projection 和 closed-loop
-  whole-variant candidate driver和pre-commit `ExecutableResourceView`；atomic commit后target LLVM消费
+  whole-variant candidate driver及Q16 typed rank-record validation；atomic commit后target LLVM消费
   committed IR/resource bindings，package只消费committed executable + Q17 verified staged target module
   records，runtime只消费validated manifest。
 - User-level driver / named pipeline:
-  production 主线由 `wafer-opt --program-pipeline=stablehlo-to-executable` 或等价 driver 的 whole-variant
-  candidate loop 调用本 stage；`wafer-lower-groups-to-memory-planned-instr` 和 `wafer-plan-spm-memory` 只作
-  instruction-level replay/lit/debug，不能把 `DirectFullShape` 或单 group 结果直接提交。
+  Q16以后由同一
+  `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16}`的whole-variant
+  candidate loop调用本stage。当前Q15只产出verified grouped program directory，不执行SPM planning；
+  `wafer-opt`、`wafer-lower-groups-to-memory-planned-instr`和`wafer-plan-spm-memory`只处理显式IR，
+  用于instruction-level replay/lit/debug，不能成为用户stop-stage，也不能把`DirectFullShape`或单group结果直接提交。
 - Explicit non-goals:
   不选择 instruction form、不改变 layout assignment、不分配 DDR allocation、不生成 target CRT call 或 packet；
   不把任一 region 的 offset 独立提交，不跨 isolated region 复用 SPM range，也不把 hardware `busytable`
   当作 completion/lifetime 语义；`DirectFullShape` 与其它 tiled candidates 运行同一 per-region planning 和
-  whole-variant gate，不设 bypass；不依据 distributed rank equivalence 复用/跳过 rank plan 或提前创建
-  executable rank class。跨 region whole-entry allocation 只是在现有 isolation 合同改变后才有意义的优化。
+  whole-variant gate，不设 bypass；不依据presumed rank equivalence复用或跳过任何rank plan。跨region
+  whole-entry allocation只是在现有isolation合同改变后才有意义的优化。
 - Completion gate:
   对每个合法 `wafer.tile.region` 给出 deterministic memory plan；planned storage 的 size、alignment、
   range/end、lifetime 和 alias relation 能由 region-local IR/effect/verifier 重算，每个 async issue 都由
@@ -135,7 +136,7 @@ Pipeline position:
   allocator 分配，`#wafer.memory<ddr, *>` memref ownership和accepted range由DDR memory planner负责；
   resource role/scope/entry binding在atomic executable commit时materialize。
 - target-codegen从committed IR、typed executable bindings和accepted offset facts派生address/range参数；
-  RuntimeSession只为KAD slots实例化已验证resource base/handle，不读取或重算SPM plan。
+  RuntimeSession只为verified manifest slots实例化resource base/handle，不读取或重算SPM plan。
 - movement/materialization/compute/sync op。
 - pass-local allocation summary：offset/range、size、alignment、lifetime、alias group。
 - hardware lowering 需要的 begin/end range 和 dtype storage size。
@@ -428,7 +429,7 @@ complete static rank variant clone + group/tile/layout proposals
   -> planned offsets for the complete variant or failure feedback
   -> run DDR/instruction/transport/target gates
   -> atomically commit all rank programs and eliminate all wafer.group, or commit nothing
-  -> validate/complete candidate typed resources and materialize entry bindings from ExecutableResourceView
+  -> validate candidate IR-derived resources/completion and materialize typed C++ rank records
   -> target codegen derives address-range parameters from committed IR + executable bindings
   -> package/runtime consume committed executable/manifest only
 ```
@@ -448,11 +449,11 @@ all-region atomic acceptance，不把这些隔离的 lifetime 合并成影子 wh
 
 Wafer-tagged memref 是 layout / SPM planning 阶段的 tile-local buffer value。SPM bufferization
 接受 layout assignment 和 allocation 后，不再新增独立 placed memref / explicit descriptor IR 层。
-pre-commit `ExecutableResourceView`从candidate typed resource records和instruction IR中的memref use-def、view relation、
+Q16 commit前的rank-record validation从instruction IR中的memref use-def、view relation、
 `wafer.spm.offset`、`wafer.ddr.offset`、arena/placement和
 `computeWaferPhysicalTensorInfo(memrefType)`重算resource role/range/scope/alias与entry slot需求，
-composer验证policy与plan一致、补全range/capacity并materialize entry bindings，再在atomic commit中提升同一
-typed executable records；不能在此新造state consistency、arena/residency policy或ResourceId。
+验证plan一致性、补全range/capacity并materialize typed C++ entry bindings，再随all-rank atomic commit写入bundle；
+不能在此新造state consistency、arena/residency policy或ResourceId。
 
 target-codegen之后只能结合committed instruction IR与这些executable bindings派生address/range/
 stride参数。package从committed executable序列化runtime-observable resource fields，RuntimeSession只实例化
@@ -489,8 +490,8 @@ placed memref、flat backing memref 或 explicit descriptor 事实源。
 `#wafer.memory<space, layout>` 在 committed instruction IR 中仍是统一语义：`spm` 表示 tile-local
 SRAM，`ddr` 表示 device/global DDR address domain。RDMA/WDMA verifier 用 source/destination
 address space 检查方向；DDR memory planning 用 `ddr` 继续关联 view/range、compiler-managed DDR
-planned range、constant storage/residency 和 declared arena resource。pre-commit `ExecutableResourceView`
-验证并补全同一candidate `ResourceRealization`的accepted range/arena relation；commit后package/runtime只消费
+planned range、constant storage/residency 和 declared arena resource。Q16 commit前从同一candidate IR验证并补全
+accepted range/arena relation；commit后package/runtime只消费
 该唯一owner，不在launch metadata中再次关联或恢复range。
 
 不要把 `wafer.tile.region` body 已经表达的执行结构复制成全局 allocation plan attr。

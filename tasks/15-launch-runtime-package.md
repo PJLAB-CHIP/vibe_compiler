@@ -1,7 +1,8 @@
 # Wafer Typed Manifest、RuntimeSession 和 Launch Boundary
 
-状态：2026-07-12按当前package/runtime事实重基线。近期wire form固定为typed C++ model的canonical JSON，
-不是Protobuf。实现状态看`tasks/progress.md`。
+状态：2026-07-12按当前package/runtime事实重基线。本文定义Q18待实现合同；近期wire form固定为typed C++
+model的canonical JSON，不是Protobuf。Q18尚未完成，不能把本文value sketch写成已存在API。实现状态看
+`tasks/progress.md`。
 
 ## 1. 目标和非目标
 
@@ -12,7 +13,7 @@
 - canonical JSON只承担delivery，不复制另一套语义；
 - no-card RuntimeSession做pure preflight和确定性launch plan；
 - 为后续真实provider保留allocation/load/submit/completion/cleanup接口；
-- package和target modules由同一transaction原子发布。
+- Q18 package从完整Q17 TargetArtifactBundle组装，并在自己的transaction内原子发布manifest及package成员。
 
 非目标：
 
@@ -28,22 +29,25 @@
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  atomic ExecutableBundle；每rank verified target module、entry symbol/content digest；typed resources、ABI slots和
-  terminal completion facts。
+  Q16 atomic ExecutableBundle中的typed resources、ABI slots和terminal completion facts；Q17 atomic
+  TargetArtifactBundle中的all-and-only rank modules、entry symbol/content digest和ABI摘要。
 - Current stage responsibility:
-  从typed bundle构造PackageManifest，执行唯一C++semantic verification，序列化canonical JSON；runtime解析并
-  验证同一model，结合invocation bindings/provider environment形成RuntimeSession plan。
+  关联Q16/Q17 typed bundles并构造PackageManifest，执行唯一C++semantic verification，序列化canonical JSON；
+  在Q18 staging内复制/附着并复核package members后原子发布；runtime解析并验证同一model，结合invocation
+  bindings/provider environment形成RuntimeSession plan。
 - Output artifact / IR:
   VerifiedPackageManifest、canonical package JSON、no-card RuntimeSessionPlan；board环境下才形成live session/result。
 - Downstream consumer:
   wafer-run/no-card inspection、reference/board integration、target module loader和invocation API。
 - User-level driver / named pipeline:
-  wafer-compile自动生成manifest并随bundle发布；wafer-run只消费已验证package，不接受raw compiler IR。
+  Q18接入后由wafer-compile自动生成manifest和package；wafer-run只消费已验证package，不接受raw compiler IR。
+  当前Q15/Q16/Q17不能以手写manifest或独立package tool冒充Q18完成。
 - Explicit non-goals:
   不复制instruction schedule，不解析printer text，不允许Python/C++双validator，不在runtime重新planning。
 - Completion gate:
   manifest all-and-only覆盖bundle ranks/modules/entries/resources/slots；canonical roundtrip稳定；invalid package在
-  load/allocate前失败；任一manifest/publication late failure不发布partial bundle。
+  load/allocate前失败；任一manifest/package publication late failure不发布partial Q18 package，且不改变已验证
+  Q17 target artifact bundle。
 ```
 
 ## 3. Current Prototype And Required Replacement
@@ -135,7 +139,7 @@ manifest明确不含：
 - 每个entry引用存在且rank匹配的module；
 - module relative path不能逃逸package root，digest与实际file一致；
 - slots从0开始连续、无重复，每个resource按正确role/access/type/bytes/alignment绑定；
-- input/output/parameter/workspace/state没有遗漏或多绑；
+- 当前input/output/parameter/workspace没有遗漏或多绑；
 - entry ABI摘要与slot列表一致；
 - terminal completion存在，并覆盖entry所有异步side effect；
 - unknown/deprecated field和无法解释的extension被拒绝。
@@ -163,13 +167,14 @@ Python不得继续拥有enum、cross-field legality或production runtime plan。
 
 ## 7. Compiler Assembly And Atomic Delivery
 
-manifest只从accepted `ExecutableBundle`构造，不能接受独立instruction/LLVM text/model-interface JSON作为并列
-输入。assembly按typed rank/module/resource/slot/completion遍历，不扫描staging目录猜成员。
+manifest只从相互一致的accepted Q16 `ExecutableBundle`和Q17 `TargetArtifactBundle`构造，不能接受独立
+instruction/LLVM text/model-interface JSON作为并列输入。assembly按typed rank/module/resource/slot/completion
+遍历，不扫描staging目录猜成员，也不从Q17 module filename恢复rank或entry。
 
 delivery transaction拥有：
 
 - final root及同parent staging root；
-- staged target modules和其它payload；
+- 从Q17 typed records复制/附着并重新核对的target modules和其它payload；
 - typed manifest；
 - size/file/record limits；
 - commit/abort state。
@@ -177,15 +182,15 @@ delivery transaction拥有：
 流程：
 
 1. 创建同filesystem staging root；
-2. 写入/验证所有rank modules和payload；
+2. 从Q17 bundle复制/附着所有rank modules和payload，重新验证path/digest/all-and-only coverage；
 3. 构造并验证manifest；
 4. serialization后重新parse/verify；
 5. 验证manifest all-and-only引用staged files和digest；
 6. fsync/必要durability步骤；
 7. 单次rename或平台等价原子替换final root。
 
-任一失败abort并清理staging；已有final root不变。不得先发布module再补manifest，也不得late failure后留下
-final `.so`。
+任一失败abort并清理Q18 staging；已有Q18 final root和Q17 artifact bundle均不变。不得在Q18 package root中
+先暴露module再补manifest，也不得late failure后留下partial package。
 
 ## 8. Runtime Layering
 
@@ -215,7 +220,7 @@ Expected<InvocationResult>
 executeInvocation(RuntimeSession &session);
 ```
 
-`InvocationBindings`按ResourceId绑定user buffer/parameter/state，不按名字猜role。preflight检查all-and-only、bytes、
+`InvocationBindings`按ResourceId绑定user buffer/parameter，不按名字猜role。preflight检查all-and-only、bytes、
 alignment、mutability、host visibility和alias限制。
 
 ## 9. No-Card And Board Evidence
@@ -249,7 +254,7 @@ board gate另行证明：
 
 - unknown schema version/field、bogus ABI/module format；
 - duplicate/missing IDs和slots、slot gap、wrong role/access/type/bytes/alignment；
-- parameter/workspace/state遗漏，重复`lhs`等alias错误；
+- parameter/workspace遗漏，重复resource alias错误；
 - path traversal、digest mismatch、missing/extra file；
 - rank/module/entry domain不完整；
 - completion missing/cycle/uncovered side effect；

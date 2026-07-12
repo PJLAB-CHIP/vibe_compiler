@@ -94,17 +94,14 @@ complete static rank variant clone with candidate/template wafer.group
   committed materialization 只把 candidate-selection 已选中、且整个 static rank variant set 已通过 gates
   的 complete candidate clone 原子写入主 IR，同时消解所有 `wafer.group`。clone 在提交前已经包含
   stage-accepted transport 和 launch projection；它们与 static rank entries 一起原子提交。后续 target
-  LLVM call emission只从committed IR、typed executable resources/entry bindings、accepted offsets和
-  committed projection派生address/range/descriptor；package只序列化committed typed owners，
-  不重新决定 group 是否可行，也不复制 placed/access descriptor 中间协议。当前 HF transformer no-card
-  gate 不以该 selected-candidate path 作为完成证明。
-  module-level executable/variant symbol 可以引用这些 static rank entry symbols，但不复制 function body
-  中的 traversal/tile/instruction schedule；package 仍是 derived artifact，不是第二份 code owner。
+  LLVM call emission只从committed IR、accepted offsets和经当前IR验证的entry/resource/completion facts派生
+  address/range/descriptor；后续typed C++ bundle承接这些事实，package不重新决定group是否可行，也不复制
+  placed/access descriptor中间协议。当前HF/Llama-style program gate只到verified logical groups，尚未证明
+  selected-candidate、tile-region或instruction路径。
 
-candidate clone在进入本文前必须已为每个distributed canonical coordinate建立`tasks/01`定义的typed
-`CandidateExecutionEntry`（即uncommitted `wafer.executable.rank/entry` record）；tile-region lowering通过
-显式SymbolRef取得rank/component/mesh identity。
-final `RankClassId`仍到whole-variant commit才决定，不能因为candidate已有rank record而提前归并。
+Q16 driver在进入本文前为每个logical rank建立isolated module clone，并把rank作为显式typed C++调用参数传给
+tile-region lowering。当前没有executable dialect、candidate rank op或代表rank归并协议；rank identity不能从
+SymbolRef、文件名、pass默认值或代表rank恢复。
 
 ### 2.1 Pipeline Contract
 
@@ -137,29 +134,30 @@ Pipeline position:
   candidate DDR tile-view materialization、instruction lowering、SPM offset assignment、
   DDR offset assignment、event/transport verification 和 whole-variant candidate-selection。
 - User-level driver / named pipeline:
-  production 主线由 `wafer-opt --program-pipeline=stablehlo-to-executable` 或等价 driver 调用本 stage；
-  `stablehlo-spmd-to-group`、`wafer-lower-groups-to-tile-region`、
-  `--wafer-convert-group-to-tile-region` 和 `--wafer-dump-group-to-tile-region` 都是 stage replay / debug
-  入口，不能独立形成 production artifact。
+  Q16以后由同一
+  `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16}`在全部显式
+  per-rank clone的whole-variant candidate flow内调用本stage。当前Q15只产出verified grouped program
+  directory，不执行tile-region lowering；`wafer-opt`、`wafer-lower-groups-to-tile-region`、
+  `--wafer-convert-group-to-tile-region`和`--wafer-dump-group-to-tile-region`只处理显式IR，用于
+  IR-local debug/test，不能独立形成production artifact或用户stop-stage。
 - Explicit non-goals:
   不做 SPM offset allocation、不做 DDR view/range/resource planning、不 select/reject/split
   group、不从 candidate tile shape 生成 temporal DDR tile `memref.subview`、不把 tile-region IR
   当成 whole executable 或独立 committed materialization、不 lower 到 packet/target LLVM；不允许
-  `DirectFullShape` 绕过正常 gates，也不允许 representative tile/rank 成为提交依据。distributed
-  rank equivalence 只作为上游候选前提，本 stage 不据此创建 executable rank class 或跳过 rank entry。
+  `DirectFullShape` 绕过正常 gates，也不允许 representative tile/rank 成为提交依据；本stage不得基于
+  presumed rank equivalence跳过任何显式rank clone。
 - Completion gate:
-  FileCheck、conversion pass、dump pass 和主线 pipeline 覆盖 R2.4/R3.1 已能产出的 Wafer V0 硬件可承载 local
+  FileCheck、conversion pass和dump pass覆盖R2.4/R3.1已能产出的Wafer V0硬件可承载local
   compute/movement/view family：DDR memref load/store boundary、layout materialization、DDR/SPM
   `memref.alloc`、tile-local allocation、fill、GEMM、elementwise/relation、native reduce、passthrough
   broadcast/transpose/copy、tensor slice movement、static reshape view、top-level
   `wafer.linalg_ext.collective.*` 到 `wafer.tile.*` collective materialization、tile-region 内
   `scf.if` / `scf.for` 递归 lowering 和 function-boundary One-Shot bufferization。硬件 V0 无承载或当前
-  IR 缺 runtime ABI / nested collective 事实时才允许结构化 failure。主线 completion 还要求在同一
-  candidate clone 中覆盖所有 rank/group 的完整 traversal，后续全 entry layout/SPM/DDR、instruction、
+  IR 缺 runtime ABI / nested collective 事实时才允许结构化 failure。Q16 integrated completion还要求从
+  Q15 verified grouped program出发，在同一candidate clone中覆盖所有rank/group的完整traversal，后续全entry layout/SPM/DDR、instruction、
   event、transport 和 target gates 全部通过，并以一次 atomic commit 消解所有 `wafer.group`；局部 pass、
-  单tile dump或representative tile/rank通过不构成completion。final executable classes必须是每个唯一
-  distributed prerequisite class内部的partition refinement：whole-variant commit从完整rank programs继续
-  拆分，但绝不跨prerequisite classes合并；机器码可共享也不改变语义class边界。
+  单tile dump或representative tile/rank通过不构成completion。即使两个rank最终module byte-identical，
+  Q16 bundle也必须保留两个已分别验证的rank records，不能据此省略entry。
 ```
 
 ### 2.2 Target Coverage Matrix
@@ -175,7 +173,7 @@ table 补协议。
 | scalar boundary values | 作为 tile-region block scalar SSA value 传入，供 fill/reduce init 等 scalar operand 使用 | supported for scalar | 只支持 float / integer / index scalar；不生成 storage，不作为长期 side channel。 |
 | `arith.constant` tensor | clone constant 后用 `bufferization.to_memref` materialize 为 read-only DDR source，再 `wafer.tile.load` 到 tensor-layout SPM storage | partial | 只适合 tensor constant；scalar constant 只应在 compute body 或显式 init 语义中消费。需要区分 constant residency / DDR / immediate policy。 |
 | `arith.constant` scalar | clone scalar constant，并作为 `wafer.tile.fill`、`wafer.tile.reduce init_value` 或 elementwise body 推导输入 | supported for scalar constants | scalar 语义通过 SSA value 或 typed attr 进入目标 op；不靠名字或原 op 残留。 |
-| `tensor.empty` | writable group output 的 `tensor.empty` 生成 `#wafer.memory<ddr, tensor>` boundary value；tile-local temporary 的 `tensor.empty` 生成 `#wafer.memory<spm, tensor>` `memref.alloc` | supported as abstract allocation demand | `memref.alloc` 不分配物理 offset/window；DDR boundary / requirement 的 planned range 归 DDR offset assignment；pre-commit `ExecutableResourceView`据此形成typed resource，package不再从raw IR恢复；SPM offset/window 归 SPM offset assignment。不能把 arbitrary empty 偷映射成 output alias。 |
+| `tensor.empty` | writable group output 的 `tensor.empty` 生成 `#wafer.memory<ddr, tensor>` boundary value；tile-local temporary 的 `tensor.empty` 生成 `#wafer.memory<spm, tensor>` `memref.alloc` | supported as abstract allocation demand | `memref.alloc` 不分配物理 offset/window；DDR boundary / requirement 的 planned range 归 DDR offset assignment；Q16从accepted IR的use-def、effect和offset校验resource事实后写入typed C++ rank record，package不再从raw IR恢复；SPM offset/window 归 SPM offset assignment。不能把 arbitrary empty 偷映射成 output alias。 |
 | `tensor.extract` scalar | 从已 materialized DDR boundary memref 生成 `memref.load`，供动态 scalar init / scalar value 使用 | supported for boundary scalar extract | 只作为 scalar SSA 支持 op；不表示 tile compute；tile-local tensor element read 不能用 generic memref.load 伪装。 |
 | `linalg.fill` | canonical scalar payload生成fresh SPM result和显式`wafer.tile.fill`，不原地改写DPS init；仅当结果只作为overwrite-only GEMM的已证明identity init时可只传播metadata | supported for exact scalar fill | tensor SSA旧init必须保持不变；named payload必须精确yield fill value。具体CT fill/memset/immediate选择归instruction lowering。 |
 | `linalg.matmul` | exact multiply-accumulate payload、一个DPS init且init可证明为`+0`时，lhs/rhs materialize到`cx`并生成overwrite-only `wafer.tile.gemm` | supported for exact simple `linalg.matmul` | 非零、`-0.0`、未知init、额外payload、错误wiring、fastmath/overflow flag均不能被当前GEMM合同静默丢弃；batch matmul执行同一identity/payload gate。 |
@@ -189,13 +187,12 @@ table 补协议。
 | `wafer.linalg_ext.collective.all_gather` / `reduce_scatter` / `all_reduce` | group-to-tile-region 根据 rank-specialized `logical-rank` materialization context、`rank_group`、SPM buffer shape 和 combiner region 生成 `wafer.tile.all_gather` / `wafer.tile.reduce_scatter` / `wafer.tile.all_reduce` | supported for top-level single-result V0 collectives | `logical-rank` 只用于计算 `rank_group` 内的 group-local `local_rank`，输出 IR 显式保存 `rank_group`、`local_rank`、`group_size` 和 `bytes`；不选择 p2p schedule，不写 endpoint 或 DTE packet。`reduce_scatter` materialization 保留 full input SPM buffer，并让 `wafer.tile.reduce_scatter` 显式携带 scatter `axis`；recv/result buffer 是当前 rank 的 local slot shape。 |
 | `wafer.linalg_ext.collective.collective_permute` | rank-specialized materialization 根据 source/target pair 和当前 logical rank 生成直接 DTE send/recv/wait；非本 rank result 由 numeric zero fill 表达，自发自收用 local copy | supported for top-level single-result V0 permute | 只覆盖 shape-preserving single input/output permute；peer 仍是 logical rank，physical endpoint / DTE resource 留给后续边界。 |
 | `wafer.linalg_ext.collective.all_to_all` | rank-specialized materialization 要求 `split_count == rank_group.size()`，把 split slot extract 成连续 SPM comm buffer，按 rank order direct DTE send/recv，再把 recv slot insert 到 concat result slot | supported for top-level single-result V0 all-to-all | 当前不引入 `wafer.tile.all_to_all`，也不保存 algorithm attr；只覆盖静态 shape、单输入/单输出、single rank-group row 可选中的 V0 direct p2p path。 |
-| `wafer.linalg_ext.collective.segmented_all_to_all` | materialize为`wafer.tile.segmented_all_to_all`，保留SSA counts/displacements、static capacities、count-exchange和data-phase token | long-term contract fixed；implementation pending | V0可先选择`padded_fixed_capacity` policy；不得把ragged route伪装成equal-split all-to-all或按当前token count创建variant/rank class。完整verifier/lowering见`tasks/13-communication.md`。 |
+| `wafer.linalg_ext.collective.segmented_all_to_all` | materialize为`wafer.tile.segmented_all_to_all`，保留SSA counts/displacements、static capacities、count-exchange和data-phase token | long-term contract fixed；implementation pending | V0可先选择`padded_fixed_capacity` policy；不得把ragged route伪装成equal-split all-to-all或按当前token count增删rank artifact。完整verifier/lowering见`tasks/13-communication.md`。 |
 | nested collective | 当前无 nested control-flow materialization | explicitly deferred | 需要先补可验证的 nested buffer slice / peer / token / schedule 表达；不能把 unsupported collective 静默降成名字约定或 pass-local side table。 |
 | unknown op inside group | 结构化失败 | unsupported | conversion target 应把 `wafer.group` 设为 illegal；unsupported body op 应导致 conversion failure，而不是留下半转换 group。 |
 
-表中的 `rank_group` 只表示 collective membership，`logical-rank` / `local_rank` 只表示该 schedule 的
-显式参与者身份；它们都不是 distributed rank class 或 executable rank class。distributed class 的
-target-independent equivalence 由上游定义，最终 executable class 由 whole-variant commit 决定。
+表中的 `rank_group` 只表示collective membership，`logical-rank` / `local_rank`只表示该schedule的显式参与者
+身份；它们不允许承担bundle identity、去重或省略rank entry的语义。
 
 R3.2c 迁移完成后，supported 子集必须由同一 conversion builder 覆盖，并把 unsupported / deferred
 子集的 failure gate 固定下来。扩展 coverage 时每新增一类 op 都要同时补：IR 语义、verifier、
@@ -327,7 +324,7 @@ V0 需要以下 op family：
    tile-view boundary、DDR `memref.alloc` 和 descriptor demand，规划 compiler-managed/resident/inter-group
    DDR accepted offset facts，并验证 descriptor、view/root range、declared arena capacity/largest-contiguous、
    bandwidth、alignment、跨 group overlap 和 completion demand。成功facts必须能被candidate-selection、
-   `ExecutableResourceView`、endpoint projection和committed materialization直接消费；
+   endpoint projection以及Q16 typed rank-record validation直接消费；
    失败时给结构化原因。
 8. candidate driver枚举：把 `DirectFullShape` 作为普通第一个候选，再搜索
    shape-driven traversal/reduction refinement frontier、同 traversal domain 的 output coverage 和当前支持的
@@ -342,8 +339,8 @@ V0 需要以下 op family：
    选中的static rank variant set一次性替换进主IR。所有 rank entry 都包含完整 traversal 和其中的
    tile-local `wafer.tile.region` scopes，所有 logical/scheduled `wafer.group` 同时消解；任何 gate 失败时
    主 IR 不发生部分修改；accepted transport/projection 与 rank entries 同时提交。
-11. target instruction LLVM call emission：从committed instruction IR、typed executable resources/entry
-    bindings、accepted offset facts和committed projection生成
+11. target instruction LLVM call emission：从committed instruction IR、Q16 typed rank record中由IR验证的
+    resource/entry facts、accepted offset facts和committed projection生成
     wrapper-friendly LLVM call / target CRT call / packet builder 输入；不新增 placed memref / access descriptor
     中间协议。
 
@@ -374,8 +371,8 @@ operand 表达真实 tile view；第 5 步 instruction legalization / selection 
   `bufferization.to_memref` / `bufferization.to_tensor` bridge 保持局部 pass 可组合。
   `--wafer-convert-group-to-tile-region` 和 `--wafer-dump-group-to-tile-region` 当前都接受显式
   `logical-rank` 选项，且不得提供默认值；它只用于unit/debug构造rank-specialized context。production
-  driver必须从candidate `wafer.executable.rank/entry` SymbolRef读取canonical identity，禁止使用该CLI option。
-  collective lowering只用显式debug value或typed production identity计算
+  driver必须把当前rank作为typed C++ API参数显式传入，禁止使用该CLI option或不存在的IR symbol作为production
+  identity。collective lowering只用显式debug value或typed production rank计算
   group-local `local_rank`，不会把 endpoint view、route 或 schedule 写入 tile collective。dump 入口是同一
   builder 的只读验证入口，并显式 preserve analyses。
 - `wafer-lower-groups-to-tile-region` 是 R3.2c named pipeline：先运行 group-to-tile-region conversion，
@@ -414,9 +411,9 @@ launch args / identity lowering 的 IR contract。当前没有 multi-tile no-com
   compiler-managed `#wafer.memory<ddr, *>` alloc 必须有 DDR memory planning 接受的
   `wafer.ddr.offset` fact；external DDR boundary value 的 descriptor/view/root validation 由当前
   instruction-level IR 重算。
-- pre-commit `ExecutableResourceView`必须从当前candidate IR、program shard/resource declarations、accepted
-  offsets和projection重算并在commit时materialize为typed executable resources/entry bindings；post-commit
-  target只派生lower-level address/range，package只序列化typed owners。不能要求
+- Q16 commit前必须从当前candidate IR、program shard declarations、accepted offsets和projection重算并验证
+  resource/entry/completion facts，再materialize为typed C++ `RankExecutable` record；post-commit target只派生
+  lower-level address/range，package只序列化typed owners。不能要求
   tile-region 主线额外携带 placed memref 或 access descriptor 旁路事实。
 
 whole-variant verifier 另行检查 committed program 不残留 `wafer.group`，所有 static rank entries 和

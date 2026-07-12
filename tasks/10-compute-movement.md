@@ -72,8 +72,8 @@ whole-variant candidate clone with scheduled wafer.group templates
 | instruction-level rank program | structured control flow 中的 `wafer.instr.*` | unplaced Wafer-tagged memref SSA value | 覆盖完整 rank traversal，选择 CT/NE/TDMA/RDMA/WDMA 指令形态，列出 queue、temp/psum/staging、alias、effect、token/completion 和 descriptor attrs，不含 SPM offset；DTE 由 communication lowering 物化 |
 | DDR memory-planned instruction-level | 同一 `wafer.instr.*` | memory-planned Wafer-tagged memref SSA value | DDR view/root range、descriptor、compiler-managed/resident/inter-group planned ranges、lifetime/reuse、declared arena/placement-domain capacity/largest-contiguous/bandwidth 已通过 DDR memory planning |
 | target-codegen derived form | 同一 `wafer.instr.*` 或 conversion-local value | concrete target call arg / packet field | 从 committed instruction IR、typed executable bindings、accepted SPM/DDR offset facts、memref view 和 layout helper 派生 address/range/stride 参数；不作为新的主线 IR 层 |
-| target code emission | LLVM / target CRT call | concrete target call arg | 调用target CRT并生成KAD-checked function boundary；不作为上层IR层 |
-| package emission | committed executable + complete `TargetArtifactSet` | validated `PackageManifest` | 序列化typed resources/entry/KAD/artifact refs；不读取target call arg、raw instruction IR或lowering metadata |
+| target code emission | LLVM / target CRT call | concrete target call arg | 调用target CRT并生成Q17验证的typed ABI摘要/function boundary；不作为上层IR层 |
+| package emission | Q16 `ExecutableBundle` + Q17 verified `TargetArtifactBundle` | validated Q18 typed manifest | 序列化typed resources/entry/module/ABI facts；不读取target call arg、raw instruction IR或lowering metadata |
 
 因此，`wafer.tile.gemm` 这类 op 在不同阶段可以被 type conversion 改写 operand/result type，
 但它的 semantic contract 仍是同一个：本 tile 内的 GEMM target implementation。若某个阶段需要
@@ -103,27 +103,30 @@ Pipeline position:
   candidate driver，以及 atomic commit 后的 target LLVM call emission。
   tiled DDR load/store view 必须已经由 candidate materialization 或 accepted materialization 显式提供。
 - User-level driver / named pipeline:
-  production 主线由 `wafer-opt --program-pipeline=stablehlo-to-executable` 或等价 driver 的 whole-variant
-  candidate-selection/commit pipeline 物化完整 rank programs；`stablehlo-spmd-to-group` 和 instruction
-  lowering 的局部 dump/lit/direct pipeline 只验证本 stage，不能成为用户级 completion flow。
+  Q16以后由同一
+  `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16}`的whole-variant
+  candidate-selection/commit flow物化完整rank programs。当前Q15只产出verified grouped program directory，
+  不执行instruction legalization；`wafer-opt`和instruction lowering的局部dump/lit/named pipeline只处理
+  显式IR，用于验证本stage，不能成为用户stop-stage或completion flow。
 - Explicit non-goals:
   不决定 group boundary、tile shape、layout assignment、SPM offset、DDR memory planning、ABI call
   symbol 或 packet field；不按 tile/group 部分提交，不把 hardware `busytable` 当作 IR completion，
-  不从 representative tile/rank 或 distributed rank equivalence 推断完整 rank program 合法，也不在
-  instruction selection stage 创建最终 executable rank class。
+  不从 representative tile/rank 或presumed rank equivalence推断完整rank program合法，也不在
+  instruction selection stage省略或合并显式rank records。
 - Completion gate:
   对每个 static rank entry 的完整 traversal 中所有 tile-region compute/movement/view family 生成
   verifier-legal instruction-level IR；每个 issue 都能由 async token/wait 或显式 local fence 收口，
   每条函数退出 path 的 pending event set 为空；
   unsupported hardware instruction form 必须结构化失败，不能让 SPM memory planning 从 target-abstract op
-  猜 memref demand。low-precision candidate必须先匹配typed target capability并显式materialize native quant或
-  decode/scratch/completion路径。任一 rank/group 失败都丢弃整个 clone，不能形成部分 committed program；最终
-  executable rank class 只能由 whole-variant commit 在完整 programs/gates 上决定。
+  猜memref demand。当前没有typed low-precision capability/ops，相关candidate必须fail closed；未来放开时才要求
+  显式materialize native quant或decode/scratch/completion路径。任一rank/group失败都丢弃整个clone，不能形成部分committed program；Q16
+  只有在所有rank programs/gates通过后才能构造all-and-only typed C++ bundle。
 ```
 
 ## 3. Op 家族
 
-V0 先覆盖能形成单 tile compute 闭环和后续 collective 原型所需的最小集合。
+V0先覆盖能形成单tile compute闭环和后续collective原型所需的最小集合。表中的affine quantized与block-scaled
+两行是future extension sketch，当前没有对应op/descriptor/capability implementation，不属于active支持面。
 
 | 家族 | 建议 op | 语义 | 目标实现族 |
 | --- | --- | --- | --- |
@@ -162,6 +165,10 @@ plain `wafer.tile.gemm`不把bias、scale、sparse、quant或fused activation作
 下面的专门typed ops；不能给plain GEMM翻一个flag或复用convert zero-point attr。
 
 #### 3.1.1 Low-Precision Compute
+
+本小节是future extension约束，不是当前IR支持面：仓库尚无下述quantized/block-scaled ops、descriptor或
+capability model，active linear/MLP/Llama gate也不能以本节声明为完成证据。恢复时必须先由真实IR producer与
+target consumer共同固定最小typed contract，并补ODS/verifier/lowering/tests。
 
 `wafer.tile.quantized_gemm`消费lhs/rhs、optional typed scale/zero-point resources、optional explicit accumulation input
 和result destination，并引用`tasks/05`的`AffineQuantDescriptor`。rank/indexing maps仍唯一决定M/K/N/batch；descriptor
@@ -385,7 +392,7 @@ Instruction/runtime verifier：
 | instruction legalization / selection | complete rank traversal with layout-materialized tile-local scopes | complete static rank instruction program over unplaced Wafer-tagged memref | 将所有 target-abstract op 改写成 CT/NE/TDMA/RDMA/WDMA 或 Direct DTE/FSM instruction op，列出 queue/family、effects、temp/psum/staging、alias、descriptor 和 completion relation；DTE 不走普通 `TsmExecute` dispatch path |
 | SPM memory planning | complete rank instruction programs with unplaced Wafer-tagged memref | same programs with whole-entry planned SPM offset facts | 从完整 structured control flow、跨 group memref use-def、instruction effects/tokens 收集 demand/liveness，分配 offset/range/bank并验证 terminal completion |
 | DDR memory planning | whole-entry SPM-planned instruction programs with actual DDR tile views/descriptors/allocs | same complete variant with accepted DDR offset facts，或结构化失败 | 在 variant-set lifetime 下重算 DDR demand；验证 external demand，为 compiler-managed/resident/inter-group demand 规划 accepted offset；跨 group lifetime 是 mandatory gate |
-| pre-commit `ExecutableResourceView` analysis/completion | candidate instruction IR + accepted SPM/DDR offsets + candidate typed executable resources + transport/projection | transformation-local resource view，验证/补全同一resource records并在commit时materialize entry slot bindings，或结构化失败 | 不新造ResourceId/policy，不落旁路metadata，不重新决定layout/SPM/DDR，不allocate/import/query runtime object |
+| Q16 rank-record validation | candidate instruction IR + accepted SPM/DDR offsets + transport/projection | 从当前IR use-def/type/effect/offset直接重算resource/entry/completion facts，验证后materialize typed C++ rank record，或结构化失败 | 不新造IR dialect/side table/policy，不重新决定layout/SPM/DDR，不allocate/import/query runtime object |
 | target instruction LLVM call emission | committed instruction IR + typed executable resources/entry bindings + accepted offsets + committed projection | LLVM dialect call / target CRT call / packet builder input | 只派生target address/range/descriptor参数，不恢复resource role/scope/alias/lifetime，不回头修改schedule/layout；CRT symbol closure属于device-code gate |
 
 如果一个 pass 创建 `wafer.tile.*` compute、movement、layout、SPM 或 sync op，应声明 dependent dialects。pass
@@ -436,11 +443,9 @@ materialize 为带显式 `batch_count`、batch/head/m/k/n 维度 attrs 的 `wafe
 `wafer.instr.gemm`。target LLVM call emission 已能把 batched GEMM instr 降到 `wafer_tx81_gemm`
 call 形态；后续 CRT/golden packet 仍需按 batch physical byte offset 固定 wrapper/packet 映射，
 device-code required-symbol gate 仍需证明该 Wafer-owned symbol 被 repo-local CRT 或合法外部依赖解析。
-历史 transformer fixed package 测试输入已删除；HF Megatron-style transformer no-card gate
-现在由 PyTorch/XLA capture 到 memory-planned instruction IR 的链路覆盖。HF program-chain target LLVM
-integration、package auto-export、
-resident constant/weight residency 的 board/resource 绑定、数值 correctness 和更完整
-resource summary 仍由后续 target/runtime/board gate 验证。当前覆盖仍不是通用 elementwise/reduce/GEMM
+历史transformer fixed package测试输入已删除。当前HF/Llama-style真实program gate只覆盖PyTorch/XLA capture、
+SPMD helper和logical group handoff；per-rank selected candidate、memory-planned instruction、target LLVM、package、
+runtime、board binding和数值correctness均尚未由该纵向链证明。当前局部IR覆盖仍不是通用elementwise/reduce/GEMM
 coverage；更复杂 broadcast、relation/logic、convert、多输入/非 constant-init reduce 和 mask/select
 泛化仍按后续 gate 推进。basic `arith.select` 已在 instruction lowering 中改写成 false-copy
 `gather_scatter` + `bit2fp` + `mask_move`，不进入 `wafer.instr.elementwise` target kind；真实板端
@@ -460,10 +465,10 @@ V1 或后续扩展：
 
 ### 8.1 Transformer Block Minimum Coverage
 
-不能只因为 GEMM、一个 elementwise 和一个 reduce 能跑，就声称 transformer block 支持完成。当前
-HF no-card compile gate 已覆盖真实 PyTorch/XLA transformer block 到 memory-planned instruction IR
-的路径；HF program-chain target LLVM integration、package auto-export、board execution、数值 correctness、
-dynamic/KV/mask/select 泛化和 closed-loop selected-candidate path 仍是后续 gate。compute/movement 层的最小覆盖包括：
+不能只因为GEMM、一个elementwise和一个reduce的局部IR测试能跑，就声称transformer block支持完成。当前
+HF/Llama-style program gate只到verified logical groups；本节列出的compute/movement family仍需由Q16
+per-rank closed-loop直接消费该grouped artifact后才能形成纵向证据。target LLVM、package、board execution、
+数值correctness、dynamic/KV/mask/select泛化仍是后续gate。compute/movement层的最小覆盖包括：
 
 - `wafer.tile.gemm` 的 batch/head 维和 transpose relation，用于 QKV linear matmul、QK^T、
   attention value、output linear matmul 和 MLP。
@@ -477,7 +482,7 @@ dynamic/KV/mask/select 泛化和 closed-loop selected-candidate path 仍是后�
 - load/store 对 sin/cos RoPE table、norm scale/bias、linear weights 和 MLP weights 的
   constant slice 关系。
 
-仍不在当前 HF no-card compile gate 内：
+仍不在当前HF/Llama-style grouped-program gate内：
 
 - dropout/random mask。
 - dynamic sequence length 的通用 runtime specialization。

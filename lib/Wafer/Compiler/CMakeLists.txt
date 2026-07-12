@@ -1,0 +1,46 @@
+add_mlir_library(WaferCompiler
+  Compilation.cpp
+
+  LINK_LIBS PUBLIC
+  LLVMSupport
+  WaferFrontend
+  WaferIR
+  WaferPipelines
+  WaferTransforms
+  MLIRArithDialect
+  MLIRArithTransforms
+  MLIRBufferizationDialect
+  MLIRBufferizationTransforms
+  MLIRControlFlowDialect
+  MLIRFuncDialect
+  MLIRFuncInlinerExtension
+  MLIRIR
+  MLIRLinalgDialect
+  MLIRLinalgTransforms
+  MLIRLLVMDialect
+  MLIRLLVMIRTransforms
+  MLIRMathDialect
+  MLIRMemRefDialect
+  MLIRParser
+  MLIRPass
+  MLIRSCFDialect
+  MLIRSCFTransforms
+  MLIRSupport
+  MLIRTensorDialect
+  MLIRTensorTransforms
+  MLIRTransforms
+)
+
+if(WAFER_ENABLE_IMPORTER_DEPS)
+  target_compile_definitions(obj.WaferCompiler PRIVATE WAFER_ENABLE_STABLEHLO=1)
+  target_compile_definitions(WaferCompiler PRIVATE WAFER_ENABLE_STABLEHLO=1)
+  target_link_libraries(obj.WaferCompiler PRIVATE StablehloRegister)
+  target_link_libraries(WaferCompiler PRIVATE StablehloRegister)
+endif()
+
+if(WAFER_ENABLE_SPMD_PARTITIONER_DEPS)
+  target_compile_definitions(obj.WaferCompiler PRIVATE WAFER_ENABLE_SHARDY=1)
+  target_compile_definitions(WaferCompiler PRIVATE WAFER_ENABLE_SHARDY=1)
+  target_link_libraries(obj.WaferCompiler PRIVATE ShardySdyRegister)
+  target_link_libraries(WaferCompiler PRIVATE ShardySdyRegister)
+endif()

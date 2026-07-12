@@ -64,9 +64,7 @@ static bool isLinalgRoot(mlir::Operation *op) {
   return !mlir::isa<mlir::linalg::FillOp>(op);
 }
 
-static bool isTensorLevelGroupableDpsOp(mlir::Operation *op) {
-  if (op->getParentOfType<GroupOp>())
-    return false;
+static bool isEligibleTensorLevelDpsOp(mlir::Operation *op) {
   if (!hasTensorResults(op))
     return false;
 
@@ -79,10 +77,18 @@ static bool isTensorLevelGroupableDpsOp(mlir::Operation *op) {
   return mlir::isa<mlir::linalg::LinalgOp>(op) || isLinalgExtCollectiveRoot(op);
 }
 
-static bool isLogicalGroupRoot(mlir::Operation *op) {
-  if (!isTensorLevelGroupableDpsOp(op))
+static bool isTensorLevelGroupableDpsOp(mlir::Operation *op) {
+  return !op->getParentOfType<GroupOp>() && isEligibleTensorLevelDpsOp(op);
+}
+
+static bool isEligibleLogicalGroupRoot(mlir::Operation *op) {
+  if (!isEligibleTensorLevelDpsOp(op))
     return false;
   return isLinalgRoot(op) || isLinalgExtCollectiveRoot(op);
+}
+
+static bool isLogicalGroupRoot(mlir::Operation *op) {
+  return !op->getParentOfType<GroupOp>() && isEligibleLogicalGroupRoot(op);
 }
 
 static bool isInternalSupportOp(mlir::Operation *op) {
@@ -373,14 +379,27 @@ struct LogicalGroupSelection {
   llvm::SmallVector<mlir::Value> yieldedValues;
 };
 
+enum class GroupSelectionFailure {
+  None,
+  MissingExternalResult,
+  MissingTensorDestination,
+  DuplicateBoundary,
+};
+
 static bool buildLogicalGroupSelection(mlir::Operation *root,
-                                       LogicalGroupSelection &selection) {
+                                       LogicalGroupSelection &selection,
+                                       GroupSelectionFailure &failure) {
+  failure = GroupSelectionFailure::None;
   expandLogicalGroupSelection(root, selection.selected);
   orderSelectedOps(root->getBlock(), selection.selected, selection.orderedOps);
 
   if (!collectYieldedValuesAndOuts(selection.orderedOps, selection.selected,
-                                   selection.yieldedValues, selection.outs))
+                                   selection.yieldedValues, selection.outs)) {
+    failure = selection.yieldedValues.empty()
+                  ? GroupSelectionFailure::MissingExternalResult
+                  : GroupSelectionFailure::MissingTensorDestination;
     return false;
+  }
 
   absorbInternalSupportOps(root->getBlock(), selection.selected,
                            selection.outs);
@@ -388,18 +407,37 @@ static bool buildLogicalGroupSelection(mlir::Operation *root,
   collectBoundaryInputs(selection.orderedOps, selection.selected,
                         selection.outs, selection.inputs);
 
-  if (hasDuplicateBoundaryValues(selection.inputs, selection.outs))
+  if (hasDuplicateBoundaryValues(selection.inputs, selection.outs)) {
+    failure = GroupSelectionFailure::DuplicateBoundary;
     return false;
+  }
 
   return true;
+}
+
+static llvm::StringRef
+getGroupSelectionFailureMessage(GroupSelectionFailure failure) {
+  switch (failure) {
+  case GroupSelectionFailure::MissingExternalResult:
+    return "selected root has no result used outside the logical group";
+  case GroupSelectionFailure::MissingTensorDestination:
+    return "an externally used result has no external tensor destination";
+  case GroupSelectionFailure::DuplicateBoundary:
+    return "computed logical-group boundary contains duplicate SSA values";
+  case GroupSelectionFailure::None:
+    return "logical-group selection failed";
+  }
+  llvm_unreachable("unknown logical-group selection failure");
 }
 
 static mlir::LogicalResult
 formGroupForRoot(mlir::Operation *root,
                  llvm::DenseSet<mlir::Operation *> &consumed) {
   LogicalGroupSelection selection;
-  if (!buildLogicalGroupSelection(root, selection))
-    return mlir::success();
+  GroupSelectionFailure failure;
+  if (!buildLogicalGroupSelection(root, selection, failure))
+    return root->emitOpError("cannot form required logical wafer.group: ")
+           << getGroupSelectionFailureMessage(failure);
 
   for (mlir::Operation *op : selection.selected)
     consumed.insert(op);
@@ -475,6 +513,17 @@ struct FormLogicalGroupsPass
         return;
       }
     }
+
+    mlir::WalkResult completeness =
+        getOperation().walk([&](mlir::Operation *op) {
+          if (!isEligibleLogicalGroupRoot(op) || op->getParentOfType<GroupOp>())
+            return mlir::WalkResult::advance();
+          op->emitOpError(
+              "eligible tensor-level root remains outside wafer.group");
+          return mlir::WalkResult::interrupt();
+        });
+    if (completeness.wasInterrupted())
+      signalPassFailure();
   }
 };
 

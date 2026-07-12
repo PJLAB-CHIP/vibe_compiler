@@ -1,43 +1,27 @@
 # REQUIRES: stablehlo, shardy
 
-# RUN: rm -rf %t.input.program %t.partitioned.program %t.passthrough-helper
-# RUN: mkdir -p %t.input.program/functions %t.input.program/data
+# RUN: rm -rf %t.input.program %t.outputs %t.mock-spmd-helper
+# RUN: mkdir -p %t.input.program/functions %t.input.program/data %t.outputs
 # RUN: printf '%b' 'module {\n  func.func @main(%%lhs: tensor<32x16xf32> {mhlo.sharding = "{devices=[16,1]0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15}"}, %%rhs: tensor<16x8xf32>) -> tensor<32x8xf32> {\n    %%c = stablehlo.constant dense<1.000000e+00> : tensor<32x16xf32>\n    %%add = stablehlo.add %%lhs, %%c : tensor<32x16xf32>\n    %%0 = "stablehlo.dot_general"(%%add, %%rhs) {\n      dot_dimension_numbers = #stablehlo.dot<lhs_contracting_dimensions = [1], rhs_contracting_dimensions = [0]>,\n      precision_config = [#stablehlo<precision DEFAULT>, #stablehlo<precision DEFAULT>]\n    } : (tensor<32x16xf32>, tensor<16x8xf32>) -> tensor<32x8xf32>\n    return %%0 : tensor<32x8xf32>\n  }\n}\n' > %t.input.program/functions/forward.mlir
 # RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[32,16],"dtype":"float32","dynamic_dims":[]},{"shape":[16,8],"dtype":"float32","dynamic_dims":[]}],"output_signature":[{"shape":[32,8],"dtype":"float32","dynamic_dims":[]}],"input_locations":[{"type_":"input_arg","position":0,"name":"lhs"},{"type_":"input_arg","position":1,"name":"rhs"}],"unused_inputs":[]}\n' > %t.input.program/functions/forward.meta
 # RUN: printf 'bytecode member must be preserved\n' > %t.input.program/functions/forward.bytecode
 # RUN: printf 'payload member must be preserved\n' > %t.input.program/data/aux.payload
-# RUN: printf '%b' '#!/usr/bin/env bash\nset -euo pipefail\ninput=""\noutput=""\nrank_count=""\nwhile [[ $# -gt 0 ]]; do\n  case "$1" in\n    --input-program-dir) input="$2"; shift 2 ;;\n    --output-program-dir) output="$2"; shift 2 ;;\n    --logical-rank-count) rank_count="$2"; shift 2 ;;\n    --entry-function) shift 2 ;;\n    *) shift ;;\n  esac\ndone\nexpected="${EXPECTED_RANK_COUNT:-16}"\ntest "$rank_count" = "$expected"\ntest -f "$input/functions/forward.bytecode"\ntest -f "$input/data/aux.payload"\nrm -rf "$output"\nmkdir -p "$output"\ncp -R "$input/." "$output/"\n' > %t.passthrough-helper
-# RUN: chmod +x %t.passthrough-helper
-# RUN: env WAFER_XLA_SPMD_PARTITIONER_HELPER=%t.passthrough-helper wafer-opt --program-pipeline=stablehlo-spmd --input-program-dir %t.input.program --output-program-dir %t.partitioned.program | FileCheck %s
-# RUN: FileCheck %s --input-file=%t.partitioned.program/functions/forward.mlir --check-prefix=PIPELINE-MLIR
-# RUN: rm -rf %t.partitioned8.program
-# RUN: env EXPECTED_RANK_COUNT=8 WAFER_XLA_SPMD_PARTITIONER_HELPER=%t.passthrough-helper wafer-opt --program-pipeline=stablehlo-spmd --input-program-dir %t.input.program --output-program-dir %t.partitioned8.program --execution-mesh-ranks=8 | FileCheck %s --check-prefix=RANK8
-# RUN: FileCheck %s --input-file=%t.partitioned8.program/functions/forward.mlir --check-prefix=RANK8-MLIR
-# RUN: test -f %t.partitioned.program/functions/forward.bytecode
-# RUN: test -f %t.partitioned.program/data/aux.payload
-# RUN: not wafer-opt --program-pipeline=not-a-pipeline --input-program-dir %t.input.program --output-program-dir %t.partitioned.program 2>&1 | FileCheck %s --check-prefix=BAD-PIPELINE
-# RUN: not env WAFER_XLA_SPMD_PARTITIONER_HELPER= wafer-opt --program-pipeline=stablehlo-spmd --input-program-dir %t.input.program --output-program-dir %t.partitioned.program 2>&1 | FileCheck %s --check-prefix=NO-HELPER
-# RUN: not wafer-opt --program-pipeline=stablehlo-spmd --input-program-dir %t.input.program --output-program-dir %t.partitioned.program --xla-spmd-partitioner-helper %t.passthrough-helper 2>&1 | FileCheck %s --check-prefix=OLD-HELPER-FLAG
-# RUN: not wafer-opt --program-pipeline=stablehlo-spmd --input-program-dir %t.input.program --output-program-dir %t.partitioned.program --default-tile-count=16 2>&1 | FileCheck %s --check-prefix=OLD-TILE-COUNT
-# RUN: not wafer-opt --partition-stablehlo-program %t.input.program 2>&1 | FileCheck %s --check-prefix=OLD-PARTITION
+# RUN: printf '%b' '#!/usr/bin/env bash\nset -euo pipefail\ninput=""\noutput=""\nrank_count=""\nwhile [[ $# -gt 0 ]]; do\n  case "$1" in\n    --input-program-dir) input="$2"; shift 2 ;;\n    --output-program-dir) output="$2"; shift 2 ;;\n    --logical-rank-count) rank_count="$2"; shift 2 ;;\n    --entry-function) shift 2 ;;\n    *) shift ;;\n  esac\ndone\nexpected="${EXPECTED_RANK_COUNT:-16}"\ntest "$rank_count" = "$expected"\ntest -f "$input/functions/forward.bytecode"\ntest -f "$input/data/aux.payload"\nrm -rf "$output"\nmkdir -p "$output"\ncp -R "$input/." "$output/"\nmodule="$output/functions/forward.mlir"\nsed -i "s/sdy[.]constant/stablehlo.constant/g" "$module"\nsed -i "0,/^module {/s//module attributes {\\\"mhlo.spmd_parameters_shardings\\\" = \\\"\\\"} {/" "$module"\necho "{\\\"parameter_shards_version\\\":3,\\\"function\\\":\\\"forward\\\",\\\"logical_rank_count\\\":$rank_count,\\\"parameters\\\":[]}" > "$output/functions/forward.parameter_shards.json"\n' > %t.mock-spmd-helper
+# RUN: printf '%b' 'python3 - "$output/functions/forward.meta" "$rank_count" <<PY\nimport json\nimport sys\npath = sys.argv[1]\nrank_count = int(sys.argv[2])\nwith open(path) as stream:\n    meta = json.load(stream)\ndef binding(index_field, index, shape):\n    ranks = [{"rank": rank, "replica_id": rank, "offsets": [0] * len(shape), "sizes": shape, "strides": [1] * len(shape)} for rank in range(rank_count)]\n    return {index_field: index, "distribution": "replicated", "global_shape": shape, "local_shape": shape, "dtype": "float32", "ranks": ranks}\nmeta["distributed_boundary"] = {"version": 1, "logical_rank_count": rank_count, "inputs": [binding("argument_index", 0, [32, 16]), binding("argument_index", 1, [16, 8])], "outputs": [binding("result_index", 0, [32, 8])]}\nwith open(path, "w") as stream:\n    json.dump(meta, stream)\nPY\n' >> %t.mock-spmd-helper
+# RUN: chmod +x %t.mock-spmd-helper
+# RUN: env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.mock-spmd-helper %wafer_compile_test --input-program-dir %t.input.program --output-program-dir %t.outputs/group.program --execution-ranks=16 | FileCheck %s
+# RUN: FileCheck %s --input-file=%t.outputs/group.program/functions/forward.mlir --check-prefix=PIPELINE-MLIR
+# RUN: cmp %t.input.program/functions/forward.bytecode %t.outputs/group.program/functions/forward.bytecode
+# RUN: cmp %t.input.program/data/aux.payload %t.outputs/group.program/data/aux.payload
+# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.mock-spmd-helper %wafer_compile_test --input-program-dir %t.input.program --output-program-dir %t.outputs/rank8.program --execution-ranks=8 2>&1 | FileCheck %s --check-prefix=RANK8
+# RUN: test ! -e %t.outputs/rank8.program
+# RUN: bash -c 'test -z "$(find "%t.outputs" -maxdepth 1 -name ".wafer-compile-staging-*" -print -quit)"'
 
-# CHECK: wafer-opt: completed Wafer program pipeline stablehlo-spmd:
-# RANK8: wafer-opt: completed Wafer program pipeline stablehlo-spmd:
+# CHECK: wafer-compile: compiled grouped program with execution-ranks=16:
+# RANK8: wafer-compile: execution-ranks must be exactly 1 or 16 for the single-card compiler
 
 # PIPELINE-MLIR: wafer.target.topology @default
 # PIPELINE-MLIR: wafer.execution.mesh @default_mesh
 # PIPELINE-MLIR-NOT: sdy.constant
-# PIPELINE-MLIR: stablehlo.constant
-# RANK8-MLIR: wafer.execution.mesh @default_mesh
-# RANK8-MLIR-SAME: policy = "explicit"
-# RANK8-MLIR-SAME: shape = array<i64: 8>
-
-# BAD-PIPELINE: wafer-opt: unknown Wafer program pipeline: not-a-pipeline
-
-# NO-HELPER: wafer-opt: no XLA SPMD partitioner helper configured
-
-# OLD-HELPER-FLAG: wafer-opt: unknown program pipeline argument: --xla-spmd-partitioner-helper
-
-# OLD-TILE-COUNT: wafer-opt: unknown program pipeline argument: --default-tile-count=16
-
-# OLD-PARTITION: Unknown command line argument '--partition-stablehlo-program'
+# PIPELINE-MLIR: wafer.group
+# PIPELINE-MLIR: linalg.matmul

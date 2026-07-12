@@ -1,0 +1,34 @@
+# RUN: not wafer-compile --output-program-dir %t.output --execution-ranks=16 2>&1 | FileCheck %s --check-prefix=MISSING-INPUT
+# RUN: not wafer-compile --input-program-dir %t.input --execution-ranks=16 2>&1 | FileCheck %s --check-prefix=MISSING-OUTPUT
+# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output 2>&1 | FileCheck %s --check-prefix=MISSING-RANKS
+# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --execution-ranks=not-an-integer 2>&1 | FileCheck %s --check-prefix=INVALID-RANKS
+# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --execution-ranks=18446744073709551616 2>&1 | FileCheck %s --check-prefix=OVERFLOW-RANKS
+# RUN: not wafer-compile --input-program-dir %t.input --input-program-dir %t.input --output-program-dir %t.output --execution-ranks=16 2>&1 | FileCheck %s --check-prefix=DUPLICATE-INPUT
+# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --output-program-dir %t.output --execution-ranks=16 2>&1 | FileCheck %s --check-prefix=DUPLICATE-OUTPUT
+# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --execution-ranks=16 --execution-ranks=16 2>&1 | FileCheck %s --check-prefix=DUPLICATE-RANKS
+# RUN: rm -rf %t.input %t.no-helper-output
+# RUN: mkdir -p %t.input
+# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER= %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.no-helper-output --execution-ranks=16 2>&1 | FileCheck %s --check-prefix=NO-HELPER
+# RUN: test ! -e %t.no-helper-output
+# RUN: not wafer-compile --program-pipeline=stablehlo-spmd-to-group 2>&1 | FileCheck %s --check-prefix=OLD-PROGRAM-PIPELINE
+# RUN: not wafer-compile --stop-stage=group 2>&1 | FileCheck %s --check-prefix=OLD-STOP-STAGE
+# RUN: not wafer-compile --execution-mesh-ranks=16 2>&1 | FileCheck %s --check-prefix=OLD-MESH-RANKS
+# RUN: not wafer-compile --xla-spmd-partitioner-helper=%t.helper 2>&1 | FileCheck %s --check-prefix=OLD-HELPER
+# RUN: not wafer-compile --default-tile-count=16 2>&1 | FileCheck %s --check-prefix=OLD-TILE-COUNT
+# RUN: not wafer-compile --partition-stablehlo-program 2>&1 | FileCheck %s --check-prefix=OLD-PARTITION
+
+# MISSING-INPUT: wafer-compile: missing required --input-program-dir
+# MISSING-OUTPUT: wafer-compile: missing required --output-program-dir
+# MISSING-RANKS: wafer-compile: missing required --execution-ranks
+# INVALID-RANKS: wafer-compile: invalid --execution-ranks value: not-an-integer
+# OVERFLOW-RANKS: wafer-compile: invalid --execution-ranks value: 18446744073709551616
+# DUPLICATE-INPUT: wafer-compile: duplicate option: --input-program-dir
+# DUPLICATE-OUTPUT: wafer-compile: duplicate option: --output-program-dir
+# DUPLICATE-RANKS: wafer-compile: duplicate option: --execution-ranks
+# NO-HELPER: wafer-compile: no XLA SPMD partitioner helper configured
+# OLD-PROGRAM-PIPELINE: wafer-compile: unknown argument: --program-pipeline=stablehlo-spmd-to-group
+# OLD-STOP-STAGE: wafer-compile: unknown argument: --stop-stage=group
+# OLD-MESH-RANKS: wafer-compile: unknown argument: --execution-mesh-ranks=16
+# OLD-HELPER: wafer-compile: unknown argument: --xla-spmd-partitioner-helper={{.*}}
+# OLD-TILE-COUNT: wafer-compile: unknown argument: --default-tile-count=16
+# OLD-PARTITION: wafer-compile: unknown argument: --partition-stablehlo-program

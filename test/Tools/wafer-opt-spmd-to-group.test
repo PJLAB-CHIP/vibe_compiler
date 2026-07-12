@@ -2,13 +2,13 @@
 
 # RUN: rm -rf %t.input.program %t.group.program
 # RUN: env CPU_NUM_DEVICES=16 PJRT_DEVICE=CPU %importer_python %wafer_src_root/test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-sharded-program --sharding-strategy column --size 32 --output-program-dir %t.input.program
-# RUN: wafer-opt --program-pipeline=stablehlo-spmd-to-group --input-program-dir %t.input.program --output-program-dir %t.group.program | FileCheck %s --check-prefix=PIPELINE
+# RUN: wafer-compile --input-program-dir %t.input.program --output-program-dir %t.group.program --execution-ranks=16 | FileCheck %s --check-prefix=PIPELINE
 # RUN: FileCheck %s --input-file=%t.group.program/functions/forward.mlir --check-prefix=GROUP-MLIR
 # RUN: wafer-opt --wafer-dump-group-tiling-demand %t.group.program/functions/forward.mlir 2>&1 | FileCheck %s --check-prefix=DEMAND
 # RUN: wafer-opt --wafer-dump-group-layout-plan %t.group.program/functions/forward.mlir 2>&1 | FileCheck %s --check-prefix=LAYOUT
 # RUN: wafer-opt --wafer-dump-group-to-tile-region='logical-rank=0' %t.group.program/functions/forward.mlir 2>&1 | FileCheck %s --check-prefix=GROUP-TO-TILE
 
-# PIPELINE: wafer-opt: completed Wafer program pipeline stablehlo-spmd-to-group:
+# PIPELINE: wafer-compile: compiled grouped program with execution-ranks=16:
 
 # GROUP-MLIR: mhlo.spmd_parameters_shardings
 # GROUP-MLIR: wafer.target.topology @default

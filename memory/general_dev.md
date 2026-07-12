@@ -47,44 +47,41 @@
   主链路跑通时，先跑`cmake --build build/wafer-dev --target check-wafer-lit -- -j128`；需要审计
   unsupported清单时，使用`build/wafer-dev/CMakeCache.txt`中配置的`LLVM_EXTERNAL_LIT`执行
   `-sv --show-unsupported build/wafer-dev/test`，不要硬编码开发机Python路径。
-  对当前 SPMD program gate，`wafer-opt-spmd-partition.test` 和 `wafer-opt-spmd-to-group.test` 必须在
-  配置了 `WAFER_XLA_SPMD_PARTITIONER_HELPER` 后实际执行，不能用 `ctest passed` 代替。
+  grouped-program production gate必须执行统一`wafer-compile`到verified grouped program；沿用历史文件名的
+  `wafer-opt-spmd-partition.test`和`wafer-opt-spmd-to-group.test`已经改为调用该driver，必须在配置了
+  `WAFER_XLA_SPMD_PARTITIONER_HELPER`后实际执行，不能只用`ctest passed`宣称完成。
 - 不要并发运行两个会写同一个lit output tree的验证命令，例如同时跑`ctest --test-dir
   build/wafer-dev`和configured lit的`... build/wafer-dev/test`。部分`test/Tools`用固定
   `%t` output 路径，两个 lit 实例会互相清理目录，导致假失败；需要顺序跑。
 - Runtime adapter 测试分层：package metadata/exporter 这类 compiler artifact golden 用 lit；no-card
   adapter contract、`fake-tx` test backend call sequence 和 runtime library discovery diagnostics 用 Python
   unittest / ctest；真实板端 launch/completion/error propagation 必须 gated 到有卡环境，不能塞进默认 lit。
-- C++ `wafer-run` no-card gate 不只做 `dlopen` / symbol check：它必须从 package metadata 构造
-  RuntimeSession binding/module/launch/completion plan，验证KAD `SlotId -> executable ResourceId -> scoped
-  instance`和`CompletionExportId`双射，并在 symbol gate 前拒绝
-  descriptor-only BPM、tx-host 不支持的 completion source 和非 tx-host runtime mode。
+- C++ `wafer-run`当前只是独立prototype，不能冒充typed manifest/no-card gate。正式no-card preflight必须从
+  verified manifest构造binding/module/launch/completion plan，验证ABI slot与resource的一一对应，并在任何
+  allocation/load side effect前拒绝unsupported completion或runtime mode；不能从旧自由字符串或instruction文本恢复。
 - Shardy 不用 standalone Bazel workspace 作为 Wafer dependency 编译验证；`WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON`
   会通过 `cmake/third_party/WaferShardyCMake.cmake` 编译 `wafer-shardy-cmake-gate` / `shardy-sdy-opt`，
   复用同一套固定版本 LLVM/MLIR 和 embedded StableHLO。
-- `WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON` 时，`wafer-opt` 和 `wafer-compile-stablehlo`
-  会注册 SDY dialect；新增 SDY program gate 要用 `REQUIRES: shardy`，
+- `WAFER_ENABLE_SPMD_PARTITIONER_DEPS=ON` 时，`wafer-compile`、`wafer-opt` 和
+  `wafer-compile-stablehlo` 会注册 SDY dialect；新增 SDY program gate 要用 `REQUIRES: shardy`，
   避免关闭 Shardy 时让后端 textual tests 硬依赖 `sdy`。
 - frontend program verifier 入口是
   `wafer-compile-stablehlo --verify-frontend-program <mlir>`；PyTorch/XLA capture 主链路用
   `wafer-compile-stablehlo --verify-stablehlo-program <program-dir>` 校验 `functions/forward.mlir`、
   `functions/forward.meta` 和 `data/<parameter>`，不要再为同一关系生成 Wafer 私有伴随 JSON。
-- default-sharding policy stage负责所有sharding相关策略。graph中存在任意用户sharding seed时（函数边界或中间
-  `sdy.sharding` / `sdy.sharding_constraint` / `sdy.reshard` / manual sharding），默认 policy
-  必须跳过，让Shardy propagation推完整图。完全没有用户seed时，该stage在SPMD层补默认
-  function-input sharding seed：rank count / axes 来自 SPMD 前选出的 `wafer.execution.mesh`；单卡默认
-  topology 配置是 4x4 / 16 tile。`wafer.execution.mesh` 默认使用 `all_available` policy，用满
-  topology 中所有 available endpoints 且不保存 endpoint section；1-rank 或少 tile mesh 只能作为显式
-  debug/bring-up/资源隔离 override 进入。找不到合适输入切分维度时生成同一 mesh 上的 replicated
-  seed。不要把这个默认策略放到 group 后段实现。
+- production SPMD由pinned XLA helper内部完成Shardy/XLA propagation；`wafer-compile`不能先把
+  `sdy.constant`、`sdy.reshard`或其它SDY中间op写给只接StableHLO的helper。graph已有用户`mhlo.sharding`
+  时由helper消费；无用户seed时当前采用replicated correctness基线。基于execution mesh自动补split seed的
+  named pipeline只作IR-local调试，等有完整SDY→StableHLO bridge后才能进入production。单卡execution rank
+  没有默认值，用户必须显式选择1或16。
 - default-sharding/SPMD chain不能用手写`sdy.sharding`、`wafer.spmd.*` attr、私有JSON或名字约定冒充partitioned
   program。正确主链是：frontend Python 只通过 `torch_xla.distributed.spmd.mark_sharding`
   标记 4096 matmul 图并导出带 `mhlo.sharding` 的 PyTorch/XLA StableHLO program directory；随后由
-  `wafer-opt --program-pipeline=stablehlo-spmd`、
-  `wafer-opt --program-pipeline=stablehlo-spmd-to-linalg` 或
-  `wafer-opt --program-pipeline=stablehlo-spmd-to-group` 在 Wafer compiler 层接管 default input
-  seed、Shardy propagation 和 XLA SPMD partition，并导出 partitioned StableHLO program，或继续
-  写回 post-linalg / group Wafer program。旧的私有 sharding attr
+  `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16}` 在 Wafer compiler
+  层接管 target/mesh，并由pinned helper内部完成Shardy/XLA SPMD partition，再执行local normalization
+  和 logical group formation。当前typed grouped-program driver的输出只到重新读取并验证过的
+  grouped program directory；不公开
+  program stage selector 或 stop-stage。旧的私有 sharding attr
   emitter、sidecar JSON、单独旧 SPMD verify flag 和 Python post-SPMD
   路线已移除；不要恢复只生成私有 attrs/sidecar、只跑 SDY propagation 冒充完成，或把 Python
   test helper 写成 SPMD / 用户编译入口。
@@ -98,12 +95,15 @@
 - pinned-XLA SPMD partition helper构建入口是`tools/build_xla_spmd_partitioner_helper.py`；它在
   `build/xla-spmd-helper/workspace` 生成围绕 `third_party/xla` 的 Bazel overlay，默认用 clang 构建
   `//xla/wafer_tools:wafer_xla_spmd_partitioner`，产物复制到
-  `build/xla-spmd-helper/wafer_xla_spmd_partitioner`。本地把 helper 接进 `wafer-opt` build / lit：
+  `build/xla-spmd-helper/wafer_xla_spmd_partitioner`。本地把 helper 接进 compiler build / lit：
   `cmake -S . -B build/wafer-dev -DWAFER_XLA_SPMD_PARTITIONER_HELPER=$PWD/build/xla-spmd-helper/wafer_xla_spmd_partitioner`。
-  之后用户级 `wafer-opt --program-pipeline=stablehlo-spmd*` 命令不再传 helper 路径；`wafer-opt`
-  从 build-time `WAFER_XLA_SPMD_PARTITIONER_HELPER` 解析 helper。`cmake --build
-  build/wafer-dev --target check-wafer-lit`会运行真实SPMD partition program gate；没有配置
-  helper 时该 gate 通过 `REQUIRES: xla-spmd-helper` 自动 unsupported。
+  production `wafer-compile` 不接收 helper 路径；driver 从 build-time
+  `WAFER_XLA_SPMD_PARTITIONER_HELPER` 解析 helper。`wafer-opt` 只处理显式 MLIR 的IR-local debug/test，
+  不拥有 program-directory orchestration。`cmake --build
+  build/wafer-dev --target check-wafer-lit`会运行真实SPMD-to-group driver gate；没有配置
+  helper 时该 gate 通过 `REQUIRES: xla-spmd-helper` 自动 unsupported。只有启用unit tests的build可用显式
+  `WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER`做failure-injection override；production binary忽略该环境变量，
+  不能把ambient runtime environment变成helper选择协议。
 - PyTorch/XLA StableHLO program directory 的 `data/<parameter>` 由 upstream exporter 用 `np.save` 写入，因此
   partition helper需要解析`.npy` header才能切片输入参数；其输出的rank-local shard payload沿用
   NPY stream，路径为 `parameter_shards/<parameter>/rank_XXXXX.npy`。形状和 dtype 由 NPY header 与
@@ -132,9 +132,8 @@
   group/tiling；`wafer.tile.*` communication 只能在 `wafer.tile.region` / SPM storage values / endpoint resource facts 明确后
   materialize。StableHLO collective 直降 `wafer.tile.*` communication 且靠 `unrealized_conversion_cast` 桥 tensor
   和 storage 的 pass/test 已移除；不要在 group 输入侧恢复这种入口。
-- linalg extension collective handoff的主线验证入口是同一个Wafer program pipeline：
-  `wafer-opt --program-pipeline=stablehlo-spmd-to-linalg ...` 必须从真实 PyTorch/XLA sharded
-  program 产出含 `wafer.linalg_ext.collective.*` 的 `functions/forward.mlir`，并保留
+- linalg extension collective handoff的主线验证入口是同一个`wafer-compile` driver：它必须从真实
+  PyTorch/XLA sharded program 产出含 `wafer.linalg_ext.collective.*` 的 `functions/forward.mlir`，并保留
   `forward.parameter_shards.json` 与 rank-local NPY payload。局部 `test/Frontend` fixture 可以覆盖
   `all_reduce` / `reduce_scatter` / `all_to_all` / `collective_permute`，但不能替代这个 program
   handoff gate。
@@ -159,7 +158,8 @@
 - group tiling-demand和layout-plan是analysis-only边界：`GroupTilingDemand`和`GroupLayoutPlan`可以用
   `--wafer-dump-group-tiling-demand` / `--wafer-dump-group-layout-plan` dump，但不能把 tile demand、
   layout assignment 或 materialization cut 写成 `wafer.group` attr，也不能在这两步生成
-  `wafer.tile.region`。主线 completion gate 要在真实 `stablehlo-spmd-to-group` 输出上重放这些 dump。
+  `wafer.tile.region`。per-rank bundle integrated gate要从typed driver产生并重新验证的grouped program输入
+  重放这些analysis。
 - 依赖一致性检查入口是 `tools/check_deps.py`；默认检查固定版本、importer registration hook、
   public source submodule checkout HEAD、importer Python package pin 和 core/frontend/runtime/test
   tool dependency layering。
@@ -197,7 +197,7 @@
 - 长期 op/type 协议优先放 ODS type constraints 和 verifier，不靠手写字符串诊断补类型合法性；
   `!wafer.storage`、ranked tensor boundary 和 async token 这类类型要在 ODS 里约束，并在公开
   dialect header / CMake link 中显式包含对应 MLIR type 依赖。
-- `wafer-opt` 需要显式注册要暴露的 MLIR pass families；如果测试或用户入口依赖 canonicalizer/CSE
+- `wafer-opt` 需要显式注册要暴露的 MLIR pass families；如果显式IR debug/test依赖 canonicalizer/CSE
   这类标准 pass，注册 `mlir::registerTransformsPasses()` 并链接 `MLIRTransforms`，不要假设
   `MlirOptMain` 会自动注册。
 - 历史 stage-connection 测试和 `tools/check_stage_connection_tests.py` 已删除；后续 group/tile/storage
@@ -279,9 +279,9 @@
   output-tile/reduction-chunk materialization实例上限只防止
   unrolled IR导致编译时间/内存失控，不能写成硬件容量、IR/workload legality或16-tile topology限制；长期应
   用compact loop表示替代静态materialization，而不是把预算扩成架构常量。
-- executable/resource handoff必须来自accepted IR和typed bundle，不从raw instruction文本、文件名或参数名
-  重建。近期没有`ExecutableResourceView`或`wafer.executable.resource`实现；若未来引入，只能是当前IR可重算的
-  analysis或有明确consumer的typed value，不能成为side table/package旁路。
+- executable/resource handoff必须来自accepted IR和typed C++ bundle，不从raw instruction文本、文件名或参数名
+  重建。当前没有executable dialect或独立resource-view协议；resource/entry/completion事实必须从accepted IR
+  use-def、type、effect和offset直接校验后进入bundle，不能成为side table或package旁路。
 - group-to-tile-region 的buffer-level collective materialization必须从enclosing typed distributed
   instance/candidate entry取得partition和replica coordinates。局部pass选项只可用于明确的replay测试，
   production driver不得使用default rank 0或CLI option承载rank语义。这个边界仍只产生logical buffer
@@ -334,18 +334,21 @@
   必须重放已完成上游 program chain，并证明当前 stage 输出会被下游边界直接消费。
 - 主链路gate应由独立`wafer-compile` owner-aware program driver重放已完成上游链路，不在Integration
   里手动拼 pass 串。当前 frontend verifier 入口是
-  `wafer-compile-stablehlo --verify-stablehlo-program`；用户级 `wafer-opt` program
-  pipeline 入口是 `--program-pipeline=stablehlo-spmd`、
-  `--program-pipeline=stablehlo-spmd-to-linalg` 和
-  `--program-pipeline=stablehlo-spmd-to-group`；`wafer-compile-stablehlo --propagate-stablehlo-sharding`、
+  `wafer-compile-stablehlo --verify-stablehlo-program`；production compile入口统一为
+  `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16}`。
+  当前typed grouped-program boundary只负责从frontend admission推进到重新读取并验证过的grouped program
+  directory，不生成
+  per-rank executable、bundle、manifest或runtime artifact，也不暴露stop-stage。
+  `wafer-compile-stablehlo --propagate-stablehlo-sharding`、
   `wafer-compile-stablehlo --partition-stablehlo-program` 已删除，因为 Shardy/SPMD 不属于 frontend
-  verifier tool；旧 C ABI compile 入口也已删除。现有`stablehlo-spmd*`、group-to-instruction/memory和target
-  LLVM pipelines只作stage replay/regression；它们尚未组成production driver。近期用户入口目标是独立
-  `wafer-compile`，包含显式per-rank clones、完整entry legality和atomic executable bundle；该入口仍待实现。
+  verifier tool；旧 C ABI compile 入口也已删除。`wafer-opt`和现有named MLIR pipelines只处理显式IR，
+  用于IR-local debug/regression，不拥有program-directory I/O，也不构成用户可选stage。显式per-rank clones、
+  完整entry legality和atomic executable bundle由后续per-rank bundle boundary扩展同一`wafer-compile`
+  transaction，不能反写成grouped-program boundary已经实现的能力。
   旧显式 target CRT issue-op、ring collective、SPM/DDR debug path 和 single-tile
-  materialization pass 链已删除；不要恢复成用户级 compile flow。当前 HF transformer no-card gate
-  已覆盖真实 frontend/SPMD program 到 memory-planned instruction IR；真实 HF target LLVM integration、
-  package、board allocation/launch/completion、数值 correctness 和 HF selected-candidate closed-loop path 仍是后续 gate。
+  materialization pass 链已删除；不要恢复成用户级 compile flow。当前HF/Llama-style真实program gate只证明
+  frontend/SPMD到重新验证的logical group handoff；per-rank candidate、memory-planned instruction、target LLVM、
+  package、runtime、board execution和数值correctness都仍是后续独立gate。
 - ODS op 如果引入 `RecursiveMemoryEffects`、`ReturnLike` 等 interface trait，公开 dialect 头要
   include 对应 C++ interface header，`WaferIR` 也要显式 link 对应 MLIR interface target。
 - ODS op 如果直接使用 MLIR `TilingInterface` 这类 upstream op interface，避免让 TableGen 在
@@ -365,8 +368,8 @@
   `wafer-compile-stablehlo --emit-static-reference-program` 这类 synthetic program emitter 作为 importer
   或package主线。主线typed manifest必须只由accepted executable bundle和verified target modules构造，
   不能从raw IR、单个module、printer text或旁路resource view恢复。
-- 近期package wire使用唯一C++ typed model的canonical JSON，不使用Protobuf/WCRE。Python只可作薄CLI或显式
-  legacy converter；唯一semantic verifier在C++，package不复制instruction schedule。
+- 近期package wire使用唯一C++ typed model的canonical JSON，不预设另一套schema/registry基础设施。Python只可作
+  薄CLI或显式legacy converter；唯一semantic verifier在C++，package不复制instruction schedule。
 - Kernel ABI近期由typed slot/resource双射和rank/module/entry digest表达；ELF note或跨进程descriptor等真实
   loader/cache consumer出现后再扩展，不能先建设global identity registry。
 - 完整compiler driver不能伪装成纯`OpPassManager` named pipeline。`wafer-compile`拥有source、explicit rank

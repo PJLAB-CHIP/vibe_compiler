@@ -15,7 +15,7 @@ link和近期staged target module合同。实现状态看`tasks/progress.md`。
 - 在lowering前闭合physical geometry、address和ABI narrowing；
 - 编译repo-local CRT并link rank-local kcore module；
 - 在transaction staging内完成symbol、format、entry和digest验证；
-- 所有rank modules和manifest通过后一次发布bundle。
+- Q17只在所有rank target modules通过后一次发布`TargetArtifactBundle`；manifest由Q18另行构造。
 
 非目标：
 
@@ -31,20 +31,22 @@ link和近期staged target module合同。实现状态看`tasks/progress.md`。
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  显式rank的完整static entry；memory-planned wafer.instr/SCF/CF/func IR；accepted SPM/DDR offsets、
+  Q16 atomic `ExecutableBundle`中的显式rank static entries；memory-planned wafer.instr/SCF/CF/func IR；accepted SPM/DDR offsets、
   verified physical geometry和completion relation。DDR函数边界来自typed external binding；仅有
   arena-relative `wafer.ddr.offset`但没有explicit arena base的compiler-managed allocation不构成target address。
 - Current stage responsibility:
   Q0负责preflight全部target legality、在原控制流位置lower instruction leaf到typed LLVM CRT calls，并以
   module clone + full conversion保证失败无source mutation。Q17负责把每个已验证rank-local LLVM module编译/
-  link到transaction staging，并验证symbol、entry、format和digest后做all-rank publication。
+  link到Q17 transaction staging，并验证symbol、entry、format、digest及all-and-only rank coverage后发布
+  target artifact bundle。
 - Output artifact / IR:
   Q0输出单个entry/rank的fully legal LLVM module；Q17输出每rank一个verified staged target module：rank、
-  entry symbol、relative delivery path、content digest和必要ABI摘要。
+  entry symbol、relative delivery path、content digest和必要ABI摘要；all-rank typed records组成atomic
+  `TargetArtifactBundle`。
 - Downstream consumer:
-  ExecutableBundle原子commit、typed PackageManifest和runtime module loader。
+  Q18 typed PackageManifest/package transaction；runtime module loader只通过Q18 verified package消费这些modules。
 - User-level driver / named pipeline:
-  production由wafer-compile以显式logical rank自动调用selected-instruction builder；
+  production由同一wafer-compile在Q16完成all-rank bundle后自动进入Q17；
   `wafer-lower-groups-to-target-llvm`只作显式rank-0的debug replay，固定执行完整candidate selection/commit、
   function-boundary bufferization，再消费accepted instruction artifact进入target conversion。单pass和direct
   group-to-instr named pipelines只用于局部测试，不能组成绕过selector的平行target主线。
@@ -53,8 +55,9 @@ Pipeline position:
 - Completion gate:
   Q0：control-flow/direct-call语义保持，全部当前production family geometry/narrowing通过，unsupported
   transport/address/shape fail closed，full conversion后无illegal op，任一失败source module byte-identical。
-  Q17：真实program的all-and-only rank modules在同一transaction验证后发布；late failure无final output，
-  device link required/allowed symbol gate通过。Q0不以all-rank publication或reference numeric为完成前置。
+  Q17：真实program的all-and-only rank modules在同一transaction验证后形成并发布target artifact bundle；
+  late failure无final output，device link required/allowed symbol gate通过。Q17不要求manifest或runtime，Q0也不以
+  all-rank publication或reference numeric为完成前置。
 ```
 
 selector提交时已经完成tile-region/instruction materialization以及SPM/DDR planning；target入口只在其后补齐
@@ -136,7 +139,7 @@ function名字或package fixture恢复。
 - target revision/ABI version；
 - module content digest。
 
-function result不得隐式成为未绑定buffer。输出、parameter、workspace和state都必须在slot-resource双射中出现；
+function result不得隐式成为未绑定buffer。当前输出、parameter和workspace都必须在slot-resource双射中出现；
 return只表达已绑定resource的完成语义，不创建runtime allocation。
 
 近期可以用typed C++ value承载Kernel ABI摘要，不要求新增IR op或wire schema。若下游需要稳定跨进程KAD，
@@ -183,14 +186,16 @@ TargetLinkRequest
   -> VerifiedStagedTargetModule
 ```
 
-`VerifiedStagedTargetModule`至少携带rank、entry、staging-relative path、content digest和ABI摘要。只有外层
-ExecutableBundle全部rank和manifest验证后才能commit到final root。
+`VerifiedStagedTargetModule`至少携带rank、entry、staging-relative path、content digest和ABI摘要。Q17从Q16
+`ExecutableBundle`取得required rank domain；只有all-and-only modules、entry、digest和ABI摘要通过后，才构造
+最小typed `TargetArtifactBundle`并commit到Q17 final root。manifest不是该commit的前置。
 
 当前`wafer_device_link.py`已经把compile、CRT compile、link和undefined-symbol scan全部放进final
 `.so`同parent的temporary staging root，并把final `.so`最后发布；失败会保留已有final bytes且不留下
-staging/debug object。显式请求的object/CRT object在成功路径上各自atomic replace，但它们还不是与
-`.so`、其它rank和manifest一起提交的bundle成员。Q17必须由外层transaction接管这些staged payload，
-不能把单文件“最后发布”误当成多文件bundle原子性。
+staging/debug object。显式请求的object/CRT object在成功路径上各自atomic replace，但它们还不是all-rank
+artifact bundle。Q17必须由外层transaction把link输出重定向到自己的staging root并接管typed members；
+不能把单文件“最后发布”误当成Q17多文件bundle原子性。Q18随后把已验证Q17 bundle作为整体输入，不补救
+缺rank或未验证module。
 
 失败规则：
 

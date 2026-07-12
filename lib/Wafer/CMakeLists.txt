@@ -1,4 +1,5 @@
 add_subdirectory(Frontend)
+add_subdirectory(Compiler)
 add_subdirectory(IR)
 add_subdirectory(Analysis)
 add_subdirectory(Conversion)

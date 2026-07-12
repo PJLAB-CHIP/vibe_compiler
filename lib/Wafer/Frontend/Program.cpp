@@ -47,11 +47,36 @@ struct ProgramInputLocation {
   std::string name;
 };
 
+struct DistributedBoundaryRank {
+  int64_t rank = -1;
+  int64_t replicaId = -1;
+  std::vector<int64_t> offsets;
+  std::vector<int64_t> sizes;
+  std::vector<int64_t> strides;
+};
+
+struct DistributedBoundaryBinding {
+  int64_t index = -1;
+  std::string distribution;
+  std::vector<int64_t> globalShape;
+  std::vector<int64_t> localShape;
+  std::string dtype;
+  std::vector<DistributedBoundaryRank> ranks;
+};
+
+struct DistributedBoundary {
+  int64_t version = 0;
+  int64_t logicalRankCount = 0;
+  std::vector<DistributedBoundaryBinding> inputs;
+  std::vector<DistributedBoundaryBinding> outputs;
+};
+
 struct ProgramMetadata {
   std::string name;
   std::vector<ProgramSignature> inputSignatures;
   std::vector<ProgramSignature> outputSignatures;
   std::vector<ProgramInputLocation> inputLocations;
+  std::optional<DistributedBoundary> distributedBoundary;
 };
 
 struct NpyPayloadMetadata {
@@ -63,15 +88,13 @@ struct NpyPayloadMetadata {
 };
 
 bool reject(llvm::raw_ostream &diagnostics, llvm::StringRef message) {
-  diagnostics << "wafer-compile-stablehlo: " << message << "\n";
+  diagnostics << message << "\n";
   return true;
 }
 
 bool rejectProgramDirectory(llvm::StringRef reason,
                             llvm::raw_ostream &diagnostics) {
-  diagnostics << "wafer-compile-stablehlo: StableHLO program directory "
-                 "metadata rejected: "
-              << reason << "\n";
+  diagnostics << "program directory metadata rejected: " << reason << "\n";
   return true;
 }
 
@@ -86,7 +109,7 @@ bool rejectImportMarker(ModuleOp module, llvm::StringRef attrName,
       boolMarker && !boolMarker.getValue())
     return false;
 
-  diagnostics << "wafer-compile-stablehlo: " << message << " rejected";
+  diagnostics << message << " rejected";
   if (auto stringMarker = dyn_cast<StringAttr>(marker))
     diagnostics << ": " << stringMarker.getValue();
   else
@@ -108,7 +131,7 @@ DictionaryAttr getFunctionResultAttrs(func::FuncOp func, unsigned index) {
 bool rejectUnboundedDynamicShape(func::FuncOp func, llvm::StringRef kind,
                                  unsigned index, Type type,
                                  llvm::raw_ostream &diagnostics) {
-  diagnostics << "wafer-compile-stablehlo: unbounded dynamic shape rejected "
+  diagnostics << "unbounded dynamic shape rejected "
               << "in func.func @" << func.getSymName();
   if (!kind.empty())
     diagnostics << " " << kind << " " << index;
@@ -119,7 +142,7 @@ bool rejectUnboundedDynamicShape(func::FuncOp func, llvm::StringRef kind,
 bool rejectInvalidDynamicBound(func::FuncOp func, llvm::StringRef kind,
                                unsigned index, llvm::StringRef reason,
                                llvm::raw_ostream &diagnostics) {
-  diagnostics << "wafer-compile-stablehlo: invalid dynamic bound rejected "
+  diagnostics << "invalid dynamic bound rejected "
               << "in func.func @" << func.getSymName() << " " << kind << " "
               << index << ": " << reason << "\n";
   return true;
@@ -316,6 +339,112 @@ parseInputLocations(const llvm::json::Object &root,
   return locations;
 }
 
+FailureOr<DistributedBoundaryRank>
+parseDistributedBoundaryRank(const llvm::json::Value &value,
+                             llvm::raw_ostream &diagnostics) {
+  const llvm::json::Object *object = value.getAsObject();
+  if (!object) {
+    rejectProgramDirectory("distributed boundary rank entries must be objects",
+                           diagnostics);
+    return failure();
+  }
+
+  DistributedBoundaryRank rank;
+  if (readIntegerField(*object, "rank", rank.rank, diagnostics) ||
+      readIntegerField(*object, "replica_id", rank.replicaId, diagnostics) ||
+      readIntegerArrayField(*object, "offsets", rank.offsets, diagnostics) ||
+      readIntegerArrayField(*object, "sizes", rank.sizes, diagnostics) ||
+      readIntegerArrayField(*object, "strides", rank.strides, diagnostics,
+                            /*requirePositive=*/true))
+    return failure();
+  return rank;
+}
+
+FailureOr<DistributedBoundaryBinding>
+parseDistributedBoundaryBinding(const llvm::json::Value &value,
+                                llvm::StringRef indexField,
+                                llvm::raw_ostream &diagnostics) {
+  const llvm::json::Object *object = value.getAsObject();
+  if (!object) {
+    rejectProgramDirectory("distributed boundary entries must be objects",
+                           diagnostics);
+    return failure();
+  }
+
+  DistributedBoundaryBinding binding;
+  if (readIntegerField(*object, indexField, binding.index, diagnostics) ||
+      readStringField(*object, "distribution", binding.distribution,
+                      diagnostics) ||
+      readIntegerArrayField(*object, "global_shape", binding.globalShape,
+                            diagnostics) ||
+      readIntegerArrayField(*object, "local_shape", binding.localShape,
+                            diagnostics) ||
+      readStringField(*object, "dtype", binding.dtype, diagnostics))
+    return failure();
+
+  const llvm::json::Array *ranks = object->getArray("ranks");
+  if (!ranks) {
+    rejectProgramDirectory(
+        "expected array field 'ranks' in distributed boundary", diagnostics);
+    return failure();
+  }
+  binding.ranks.reserve(ranks->size());
+  for (const llvm::json::Value &rankValue : *ranks) {
+    FailureOr<DistributedBoundaryRank> rank =
+        parseDistributedBoundaryRank(rankValue, diagnostics);
+    if (failed(rank))
+      return failure();
+    binding.ranks.push_back(std::move(*rank));
+  }
+  return binding;
+}
+
+FailureOr<std::vector<DistributedBoundaryBinding>>
+parseDistributedBoundaryBindings(const llvm::json::Object &object,
+                                 llvm::StringRef field,
+                                 llvm::StringRef indexField,
+                                 llvm::raw_ostream &diagnostics) {
+  const llvm::json::Array *bindings = object.getArray(field);
+  if (!bindings) {
+    rejectProgramDirectory("expected array field '" + field.str() +
+                               "' in distributed boundary",
+                           diagnostics);
+    return failure();
+  }
+
+  std::vector<DistributedBoundaryBinding> result;
+  result.reserve(bindings->size());
+  for (const llvm::json::Value &value : *bindings) {
+    FailureOr<DistributedBoundaryBinding> binding =
+        parseDistributedBoundaryBinding(value, indexField, diagnostics);
+    if (failed(binding))
+      return failure();
+    result.push_back(std::move(*binding));
+  }
+  return result;
+}
+
+FailureOr<DistributedBoundary>
+parseDistributedBoundary(const llvm::json::Object &object,
+                         llvm::raw_ostream &diagnostics) {
+  DistributedBoundary boundary;
+  if (readIntegerField(object, "version", boundary.version, diagnostics) ||
+      readIntegerField(object, "logical_rank_count", boundary.logicalRankCount,
+                       diagnostics))
+    return failure();
+  FailureOr<std::vector<DistributedBoundaryBinding>> inputs =
+      parseDistributedBoundaryBindings(object, "inputs", "argument_index",
+                                       diagnostics);
+  FailureOr<std::vector<DistributedBoundaryBinding>> outputs =
+      parseDistributedBoundaryBindings(object, "outputs", "result_index",
+                                       diagnostics);
+  if (failed(inputs) || failed(outputs))
+    return failure();
+  boundary.inputs = std::move(*inputs);
+  boundary.outputs = std::move(*outputs);
+  return boundary;
+}
+
 FailureOr<ProgramMetadata>
 parseProgramMetadata(llvm::StringRef metaPath, llvm::raw_ostream &diagnostics) {
   auto bufferOrError = llvm::MemoryBuffer::getFile(metaPath);
@@ -355,6 +484,20 @@ parseProgramMetadata(llvm::StringRef metaPath, llvm::raw_ostream &diagnostics) {
   meta.inputSignatures = std::move(*inputs);
   meta.outputSignatures = std::move(*outputs);
   meta.inputLocations = std::move(*locations);
+  if (const llvm::json::Value *boundaryValue =
+          root->get("distributed_boundary")) {
+    const llvm::json::Object *boundaryObject = boundaryValue->getAsObject();
+    if (!boundaryObject) {
+      rejectProgramDirectory("distributed_boundary must be an object",
+                             diagnostics);
+      return failure();
+    }
+    FailureOr<DistributedBoundary> boundary =
+        parseDistributedBoundary(*boundaryObject, diagnostics);
+    if (failed(boundary))
+      return failure();
+    meta.distributedBoundary = std::move(*boundary);
+  }
   return meta;
 }
 
@@ -392,25 +535,39 @@ std::string normalizeProgramDtype(llvm::StringRef dtype) {
   return dtype.str();
 }
 
-uint64_t rawByteSize(RankedTensorType type) {
-  unsigned bitWidth = type.getElementTypeBitWidth();
-  if (bitWidth % 8 != 0)
-    return 0;
-  return static_cast<uint64_t>(type.getNumElements()) * (bitWidth / 8);
+bool checkedMulUint64(uint64_t lhs, uint64_t rhs, uint64_t &result) {
+  if (lhs != 0 && rhs > std::numeric_limits<uint64_t>::max() / lhs)
+    return false;
+  result = lhs * rhs;
+  return true;
 }
 
-uint64_t rawByteSize(llvm::ArrayRef<int64_t> shape, Type elementType) {
-  unsigned bitWidth =
-      mlir::getElementTypeOrSelf(elementType).getIntOrFloatBitWidth();
-  if (bitWidth % 8 != 0)
-    return 0;
+std::optional<uint64_t> checkedRawByteSize(llvm::ArrayRef<int64_t> shape,
+                                           Type elementType) {
+  elementType = mlir::getElementTypeOrSelf(elementType);
+  if (dtypeString(elementType).empty())
+    return std::nullopt;
+
+  unsigned bitWidth = elementType.getIntOrFloatBitWidth();
+  if (bitWidth == 0 || bitWidth % 8 != 0)
+    return std::nullopt;
+
+  // A rank-zero tensor is a scalar and therefore has one element. A static
+  // zero dimension makes the tensor empty; zero is a representable byte size,
+  // not an overflow sentinel.
   uint64_t elements = 1;
   for (int64_t dim : shape) {
-    if (dim < 0)
-      return 0;
-    elements *= static_cast<uint64_t>(dim);
+    uint64_t next = 0;
+    if (dim < 0 ||
+        !checkedMulUint64(elements, static_cast<uint64_t>(dim), next))
+      return std::nullopt;
+    elements = next;
   }
-  return elements * (bitWidth / 8);
+
+  uint64_t bytes = 0;
+  if (!checkedMulUint64(elements, bitWidth / 8, bytes))
+    return std::nullopt;
+  return bytes;
 }
 
 bool checkedMul(int64_t lhs, int64_t rhs, int64_t &result) {
@@ -611,13 +768,14 @@ bool verifyNpyTensorPayloadFile(llvm::StringRef path,
         ("npy payload dtype does not match tensor: " + displayName).str(),
         diagnostics);
 
-  uint64_t expectedRawBytes = rawByteSize(expectedShape, elementType);
-  if (expectedRawBytes == 0)
+  std::optional<uint64_t> expectedRawBytes =
+      checkedRawByteSize(expectedShape, elementType);
+  if (!expectedRawBytes)
     return rejectProgramDirectory(
         ("npy tensor byte size is not representable: " + displayName).str(),
         diagnostics);
   if (metadata->dataOffset > metadata->fileSize ||
-      expectedRawBytes > metadata->fileSize - metadata->dataOffset)
+      *expectedRawBytes > metadata->fileSize - metadata->dataOffset)
     return rejectProgramDirectory(
         ("npy payload file is smaller than tensor payload: " + displayName)
             .str(),
@@ -686,6 +844,12 @@ bool verifyParameterDataFile(llvm::StringRef programDir,
   if (location.name.empty())
     return rejectProgramDirectory("parameter location name must be non-empty",
                                   diagnostics);
+  llvm::StringRef name(location.name);
+  if (llvm::sys::path::is_absolute(name) || name == "." || name == ".." ||
+      name.contains('/') || name.contains('\\'))
+    return rejectProgramDirectory(
+        "parameter location name must be a safe single path component",
+        diagnostics);
 
   std::string path = programPath(programDir, {"data", location.name});
   llvm::sys::fs::file_status status;
@@ -707,8 +871,8 @@ bool verifyConstantDataFile(llvm::StringRef programDir,
                             RankedTensorType tensorType,
                             llvm::raw_ostream &diagnostics) {
   if (location.position < 0)
-    return rejectProgramDirectory(
-        "constant location has negative position", diagnostics);
+    return rejectProgramDirectory("constant location has negative position",
+                                  diagnostics);
 
   std::string relativePath =
       (Twine("constants/") + Twine(location.position)).str();
@@ -718,9 +882,9 @@ bool verifyConstantDataFile(llvm::StringRef programDir,
     return rejectProgramDirectory(
         "constant data file is missing: " + relativePath, diagnostics);
   if (!llvm::sys::fs::is_regular_file(status))
-    return rejectProgramDirectory(
-        "constant data path is not a regular file: " + relativePath,
-        diagnostics);
+    return rejectProgramDirectory("constant data path is not a regular file: " +
+                                      relativePath,
+                                  diagnostics);
 
   return verifyNpyTensorPayloadFile(path, relativePath, tensorType.getShape(),
                                     tensorType.getElementType(), diagnostics);
@@ -733,6 +897,9 @@ bool verifyProgramMetadata(
     ModuleOp module, llvm::StringRef programDir, const ProgramMetadata &meta,
     llvm::raw_ostream &diagnostics,
     wafer::frontend::FrontendProgramVerificationResult *result) {
+  if (meta.name != "forward")
+    return rejectProgramDirectory("program metadata name must be 'forward'",
+                                  diagnostics);
   FailureOr<func::FuncOp> func = findSingleFunction(module, diagnostics);
   if (failed(func))
     return true;
@@ -752,6 +919,7 @@ bool verifyProgramMetadata(
   unsigned parameterCount = 0;
   unsigned userInputCount = 0;
   unsigned constantCount = 0;
+  llvm::SmallVector<int64_t, 8> userInputPositions;
   bool rejected = false;
   bool partitioned =
       hasSpmdParameterShardings(module) ||
@@ -783,6 +951,8 @@ bool verifyProgramMetadata(
              Twine(index))
                 .str(),
             diagnostics);
+      else
+        userInputPositions.push_back(location.position);
     } else {
       rejected |= rejectProgramDirectory(
           ("unsupported input location type '" + location.type +
@@ -795,6 +965,16 @@ bool verifyProgramMetadata(
   for (auto [index, signature] : llvm::enumerate(meta.outputSignatures))
     rejected |= verifySignature(functionType.getResult(index), signature,
                                 "function result", index, diagnostics);
+
+  llvm::sort(userInputPositions);
+  for (auto [expected, position] : llvm::enumerate(userInputPositions)) {
+    if (position != static_cast<int64_t>(expected)) {
+      rejected |= rejectProgramDirectory(
+          "input_arg positions must be unique and contiguous from zero",
+          diagnostics);
+      break;
+    }
+  }
 
   if (!rejected && result) {
     result->programParameterCount = parameterCount;
@@ -1066,6 +1246,10 @@ bool verifyParameterShardMetadata(const llvm::json::Object &object,
   if (name != location.name)
     return rejectProgramDirectory(
         "parameter shard name does not match input location", diagnostics);
+  if (seenParameterArgs[argumentIndex])
+    return rejectProgramDirectory(
+        "duplicate parameter shard metadata record for parameter argument",
+        diagnostics);
 
   Type inputType = functionType.getInput(argumentIndex);
   auto tensorType = dyn_cast<RankedTensorType>(inputType);
@@ -1088,9 +1272,9 @@ bool verifyParameterShardMetadata(const llvm::json::Object &object,
         "argument type",
         diagnostics);
 
-  uint64_t expectedGlobalBytes =
-      rawByteSize(globalShape, tensorType.getElementType());
-  if (expectedGlobalBytes == 0)
+  std::optional<uint64_t> expectedGlobalBytes =
+      checkedRawByteSize(globalShape, tensorType.getElementType());
+  if (!expectedGlobalBytes)
     return rejectProgramDirectory(
         "parameter shard global tensor byte size is not "
         "representable",
@@ -1135,31 +1319,29 @@ bool verifyParameterShardMetadata(const llvm::json::Object &object,
 FailureOr<wafer::ExecutionMeshOp>
 findParameterShardExecutionMesh(ModuleOp module,
                                 llvm::raw_ostream &diagnostics) {
-  if (auto defaultMesh =
-          module.lookupSymbol<wafer::ExecutionMeshOp>("default_mesh"))
-    return defaultMesh;
-
-  wafer::ExecutionMeshOp foundMesh;
-  bool multipleMeshes = false;
-  module.walk([&](wafer::ExecutionMeshOp meshOp) {
-    if (!foundMesh) {
-      foundMesh = meshOp;
-      return;
+  SmallVector<wafer::ExecutionMeshOp, 2> meshes;
+  for (wafer::ExecutionMeshOp mesh : module.getOps<wafer::ExecutionMeshOp>())
+    meshes.push_back(mesh);
+  bool nestedMesh = false;
+  module.walk([&](wafer::ExecutionMeshOp mesh) {
+    if (mesh->getParentOp() != module.getOperation()) {
+      nestedMesh = true;
+      return WalkResult::interrupt();
     }
-    multipleMeshes = true;
+    return WalkResult::advance();
   });
-  if (multipleMeshes) {
+  if (nestedMesh) {
     rejectProgramDirectory(
-        "multiple execution meshes require @default_mesh for parameter shards",
+        "post-SPMD execution mesh must be a direct module member", diagnostics);
+    return failure();
+  }
+  if (meshes.size() != 1) {
+    rejectProgramDirectory(
+        "post-SPMD metadata requires exactly one wafer.execution.mesh",
         diagnostics);
     return failure();
   }
-  if (!foundMesh) {
-    rejectProgramDirectory(
-        "parameter shard metadata requires wafer.execution.mesh", diagnostics);
-    return failure();
-  }
-  return foundMesh;
+  return meshes.front();
 }
 
 FailureOr<int64_t> getExecutionMeshRankCount(wafer::ExecutionMeshOp meshOp,
@@ -1175,6 +1357,294 @@ FailureOr<int64_t> getExecutionMeshRankCount(wafer::ExecutionMeshOp meshOp,
     rankCount = next;
   }
   return rankCount;
+}
+
+bool verifyDistributedBoundaryCoverage(
+    llvm::ArrayRef<DistributedBoundaryRank> ranks,
+    llvm::ArrayRef<int64_t> globalShape, llvm::StringRef distribution,
+    llvm::raw_ostream &diagnostics) {
+  if (distribution == "replicated") {
+    for (const DistributedBoundaryRank &rank : ranks) {
+      if (!llvm::all_of(rank.offsets,
+                        [](int64_t offset) { return offset == 0; }) ||
+          !llvm::equal(rank.sizes, globalShape))
+        return rejectProgramDirectory(
+            "replicated distributed boundary rank must cover the full global "
+            "tensor",
+            diagnostics);
+    }
+    return false;
+  }
+  if (distribution != "partitioned")
+    return rejectProgramDirectory(
+        "distributed boundary distribution must be 'replicated' or "
+        "'partitioned'",
+        diagnostics);
+
+  uint64_t globalElements = 1;
+  for (int64_t dim : globalShape) {
+    uint64_t next = 0;
+    if (!checkedMulUint64(globalElements, static_cast<uint64_t>(dim), next))
+      return rejectProgramDirectory(
+          "distributed boundary global coverage size overflows uint64",
+          diagnostics);
+    globalElements = next;
+  }
+
+  uint64_t coveredElements = 0;
+  for (const DistributedBoundaryRank &rank : ranks) {
+    uint64_t rankElements = 1;
+    for (int64_t size : rank.sizes) {
+      uint64_t next = 0;
+      if (!checkedMulUint64(rankElements, static_cast<uint64_t>(size), next))
+        return rejectProgramDirectory(
+            "distributed boundary rank coverage size overflows uint64",
+            diagnostics);
+      rankElements = next;
+    }
+    if (rankElements > std::numeric_limits<uint64_t>::max() - coveredElements)
+      return rejectProgramDirectory(
+          "distributed boundary coverage size overflows uint64", diagnostics);
+    coveredElements += rankElements;
+  }
+
+  for (size_t lhsIndex = 0; lhsIndex < ranks.size(); ++lhsIndex) {
+    for (size_t rhsIndex = lhsIndex + 1; rhsIndex < ranks.size(); ++rhsIndex) {
+      const DistributedBoundaryRank &lhs = ranks[lhsIndex];
+      const DistributedBoundaryRank &rhs = ranks[rhsIndex];
+      bool overlaps = true;
+      for (size_t dim = 0; dim < globalShape.size(); ++dim) {
+        int64_t lhsEnd = lhs.offsets[dim] + lhs.sizes[dim];
+        int64_t rhsEnd = rhs.offsets[dim] + rhs.sizes[dim];
+        if (lhsEnd <= rhs.offsets[dim] || rhsEnd <= lhs.offsets[dim]) {
+          overlaps = false;
+          break;
+        }
+      }
+      if (overlaps)
+        return rejectProgramDirectory(
+            "distributed boundary rank slices overlap", diagnostics);
+    }
+  }
+  if (coveredElements != globalElements)
+    return rejectProgramDirectory(
+        "distributed boundary rank slices do not cover the global tensor",
+        diagnostics);
+  return false;
+}
+
+bool verifyDistributedBoundaryBinding(const DistributedBoundaryBinding &binding,
+                                      RankedTensorType tensorType,
+                                      const ProgramSignature &signature,
+                                      int64_t logicalRankCount,
+                                      llvm::raw_ostream &diagnostics) {
+  if (!tensorType.hasStaticShape())
+    return rejectProgramDirectory(
+        "distributed boundary must refer to a static ranked tensor",
+        diagnostics);
+  if (!llvm::equal(binding.localShape, tensorType.getShape()) ||
+      !llvm::equal(binding.localShape, signature.shape))
+    return rejectProgramDirectory(
+        "distributed boundary local_shape does not match module and metadata",
+        diagnostics);
+  if (binding.globalShape.size() != static_cast<size_t>(tensorType.getRank()))
+    return rejectProgramDirectory(
+        "distributed boundary global_shape rank does not match local tensor",
+        diagnostics);
+
+  std::string elementDtype = dtypeString(tensorType.getElementType());
+  if (elementDtype.empty() ||
+      normalizeProgramDtype(binding.dtype) != elementDtype ||
+      normalizeProgramDtype(signature.dtype) != elementDtype)
+    return rejectProgramDirectory(
+        "distributed boundary dtype does not match module and metadata",
+        diagnostics);
+  if (binding.distribution != "replicated" &&
+      binding.distribution != "partitioned")
+    return rejectProgramDirectory(
+        "distributed boundary distribution must be 'replicated' or "
+        "'partitioned'",
+        diagnostics);
+  if (binding.ranks.size() != static_cast<size_t>(logicalRankCount))
+    return rejectProgramDirectory(
+        "distributed boundary rank count does not match logical_rank_count",
+        diagnostics);
+
+  std::vector<bool> seenRanks(logicalRankCount, false);
+  std::vector<bool> seenReplicaIds(logicalRankCount, false);
+  std::vector<int64_t> maximumSizes(binding.globalShape.size(), 0);
+  for (const DistributedBoundaryRank &rank : binding.ranks) {
+    if (rank.rank < 0 || rank.rank >= logicalRankCount)
+      return rejectProgramDirectory("distributed boundary rank is out of range",
+                                    diagnostics);
+    if (seenRanks[rank.rank])
+      return rejectProgramDirectory("duplicate distributed boundary rank",
+                                    diagnostics);
+    seenRanks[rank.rank] = true;
+
+    if (binding.distribution == "partitioned") {
+      if (rank.replicaId != 0)
+        return rejectProgramDirectory(
+            "partitioned distributed boundary replica_id must be 0",
+            diagnostics);
+    } else {
+      if (rank.replicaId < 0 || rank.replicaId >= logicalRankCount)
+        return rejectProgramDirectory(
+            "replicated distributed boundary replica_id is out of range",
+            diagnostics);
+      if (seenReplicaIds[rank.replicaId])
+        return rejectProgramDirectory(
+            "duplicate replicated distributed boundary replica_id",
+            diagnostics);
+      seenReplicaIds[rank.replicaId] = true;
+    }
+
+    size_t tensorRank = binding.globalShape.size();
+    if (rank.offsets.size() != tensorRank || rank.sizes.size() != tensorRank ||
+        rank.strides.size() != tensorRank)
+      return rejectProgramDirectory(
+          "distributed boundary slice rank does not match tensor rank",
+          diagnostics);
+    for (auto [dim, offset] : llvm::enumerate(rank.offsets)) {
+      int64_t size = rank.sizes[dim];
+      if (offset > binding.globalShape[dim] ||
+          size > binding.globalShape[dim] - offset)
+        return rejectProgramDirectory(
+            "distributed boundary slice exceeds global_shape", diagnostics);
+      if (size > binding.localShape[dim])
+        return rejectProgramDirectory(
+            "distributed boundary slice exceeds local_shape", diagnostics);
+      if (rank.strides[dim] != 1)
+        return rejectProgramDirectory("distributed boundary stride must be 1",
+                                      diagnostics);
+      maximumSizes[dim] = std::max(maximumSizes[dim], size);
+    }
+  }
+
+  if (llvm::any_of(seenRanks, [](bool seen) { return !seen; }))
+    return rejectProgramDirectory(
+        "distributed boundary logical rank domain is incomplete", diagnostics);
+  if (binding.distribution == "replicated") {
+    if (binding.globalShape != binding.localShape)
+      return rejectProgramDirectory(
+          "replicated distributed boundary global_shape and local_shape must "
+          "match",
+          diagnostics);
+    if (llvm::any_of(seenReplicaIds, [](bool seen) { return !seen; }))
+      return rejectProgramDirectory(
+          "replicated distributed boundary replica_id domain is incomplete",
+          diagnostics);
+  } else if (maximumSizes != binding.localShape) {
+    return rejectProgramDirectory(
+        "partitioned distributed boundary slices do not explain local_shape",
+        diagnostics);
+  }
+  return verifyDistributedBoundaryCoverage(binding.ranks, binding.globalShape,
+                                           binding.distribution, diagnostics);
+}
+
+bool verifyDistributedBoundary(ModuleOp module, const ProgramMetadata &meta,
+                               func::FuncOp func, bool postSpmdMarker,
+                               llvm::raw_ostream &diagnostics) {
+  if (!postSpmdMarker) {
+    if (meta.distributedBoundary)
+      return rejectProgramDirectory(
+          "distributed_boundary requires a post-SPMD marker", diagnostics);
+    return false;
+  }
+  if (!meta.distributedBoundary)
+    return rejectProgramDirectory(
+        "post-SPMD program directory is missing distributed_boundary",
+        diagnostics);
+
+  const DistributedBoundary &boundary = *meta.distributedBoundary;
+  if (boundary.version != 1)
+    return rejectProgramDirectory("unsupported distributed_boundary version",
+                                  diagnostics);
+  if (boundary.logicalRankCount != 1 && boundary.logicalRankCount != 16)
+    return rejectProgramDirectory(
+        "distributed_boundary logical_rank_count must be 1 or 16", diagnostics);
+
+  FailureOr<wafer::ExecutionMeshOp> mesh =
+      findParameterShardExecutionMesh(module, diagnostics);
+  if (failed(mesh))
+    return true;
+  FailureOr<int64_t> meshRankCount =
+      getExecutionMeshRankCount(*mesh, diagnostics);
+  if (failed(meshRankCount))
+    return true;
+  if (*meshRankCount != boundary.logicalRankCount)
+    return rejectProgramDirectory(
+        "distributed_boundary logical_rank_count does not match execution "
+        "mesh rank count",
+        diagnostics);
+
+  FunctionType functionType = func.getFunctionType();
+  size_t expectedInputCount = llvm::count_if(
+      meta.inputLocations, [](const ProgramInputLocation &location) {
+        return location.type == "input_arg";
+      });
+  if (boundary.inputs.size() != expectedInputCount)
+    return rejectProgramDirectory(
+        "distributed_boundary inputs do not exactly cover input_arg "
+        "locations",
+        diagnostics);
+  if (boundary.outputs.size() != functionType.getNumResults())
+    return rejectProgramDirectory(
+        "distributed_boundary outputs do not exactly cover function results",
+        diagnostics);
+
+  std::vector<bool> seenInputs(functionType.getNumInputs(), false);
+  for (const DistributedBoundaryBinding &binding : boundary.inputs) {
+    if (binding.index < 0 ||
+        binding.index >= static_cast<int64_t>(functionType.getNumInputs()))
+      return rejectProgramDirectory(
+          "distributed boundary argument_index is out of range", diagnostics);
+    if (meta.inputLocations[binding.index].type != "input_arg")
+      return rejectProgramDirectory(
+          "distributed boundary argument_index does not refer to input_arg",
+          diagnostics);
+    if (seenInputs[binding.index])
+      return rejectProgramDirectory(
+          "duplicate distributed boundary argument_index", diagnostics);
+    seenInputs[binding.index] = true;
+    auto tensorType =
+        dyn_cast<RankedTensorType>(functionType.getInput(binding.index));
+    if (!tensorType ||
+        verifyDistributedBoundaryBinding(
+            binding, tensorType, meta.inputSignatures[binding.index],
+            boundary.logicalRankCount, diagnostics))
+      return true;
+  }
+  for (auto [index, location] : llvm::enumerate(meta.inputLocations)) {
+    if (location.type == "input_arg" && !seenInputs[index])
+      return rejectProgramDirectory(
+          "input_arg is missing distributed boundary metadata", diagnostics);
+  }
+
+  std::vector<bool> seenOutputs(functionType.getNumResults(), false);
+  for (const DistributedBoundaryBinding &binding : boundary.outputs) {
+    if (binding.index < 0 ||
+        binding.index >= static_cast<int64_t>(functionType.getNumResults()))
+      return rejectProgramDirectory(
+          "distributed boundary result_index is out of range", diagnostics);
+    if (seenOutputs[binding.index])
+      return rejectProgramDirectory(
+          "duplicate distributed boundary result_index", diagnostics);
+    seenOutputs[binding.index] = true;
+    auto tensorType =
+        dyn_cast<RankedTensorType>(functionType.getResult(binding.index));
+    if (!tensorType ||
+        verifyDistributedBoundaryBinding(
+            binding, tensorType, meta.outputSignatures[binding.index],
+            boundary.logicalRankCount, diagnostics))
+      return true;
+  }
+  if (llvm::any_of(seenOutputs, [](bool seen) { return !seen; }))
+    return rejectProgramDirectory(
+        "function result is missing distributed boundary metadata",
+        diagnostics);
+  return false;
 }
 
 bool verifyParameterShards(
@@ -1288,9 +1758,9 @@ LogicalResult verifyFrontendProgram(ModuleOp module,
 }
 
 static LogicalResult
-verifyStableHLOProgramDirImpl(ModuleOp module, llvm::StringRef programPath,
-                              llvm::raw_ostream &diagnostics,
-                              FrontendProgramVerificationResult *result) {
+verifyProgramDirectoryImpl(ModuleOp module, llvm::StringRef programPath,
+                           llvm::raw_ostream &diagnostics,
+                           FrontendProgramVerificationResult *result) {
   if (result)
     *result = FrontendProgramVerificationResult{};
 
@@ -1309,25 +1779,24 @@ verifyStableHLOProgramDirImpl(ModuleOp module, llvm::StringRef programPath,
     FailureOr<func::FuncOp> func = findSingleFunction(module, diagnostics);
     if (failed(func))
       return failure();
-    rejected |= verifyParameterShards(module, programPath, *meta, *func,
-                                      diagnostics, result);
+    bool postSpmdMarker =
+        hasSpmdParameterShardings(module) ||
+        fileExists(::programPath(
+            programPath, {"functions", "forward.parameter_shards.json"}));
+    rejected |= verifyDistributedBoundary(module, *meta, *func, postSpmdMarker,
+                                          diagnostics);
+    if (!rejected)
+      rejected |= verifyParameterShards(module, programPath, *meta, *func,
+                                        diagnostics, result);
   }
   return rejected ? failure() : success();
 }
 
 LogicalResult
-verifyStableHLOProgramDir(ModuleOp module, llvm::StringRef programPath,
-                          llvm::raw_ostream &diagnostics,
-                          FrontendProgramVerificationResult *result) {
-  return verifyStableHLOProgramDirImpl(module, programPath, diagnostics,
-                                       result);
-}
-
-LogicalResult verifyAndMaterializeStableHLOProgramDir(
-    ModuleOp module, llvm::StringRef programPath,
-    llvm::raw_ostream &diagnostics, FrontendProgramVerificationResult *result) {
-  return verifyStableHLOProgramDirImpl(module, programPath, diagnostics,
-                                       result);
+verifyProgramDirectory(ModuleOp module, llvm::StringRef programPath,
+                       llvm::raw_ostream &diagnostics,
+                       FrontendProgramVerificationResult *result) {
+  return verifyProgramDirectoryImpl(module, programPath, diagnostics, result);
 }
 
 } // namespace wafer::frontend

@@ -26,14 +26,9 @@ verifyFrontendProgram(mlir::ModuleOp module, llvm::raw_ostream &diagnostics,
                       FrontendProgramVerificationResult *result = nullptr);
 
 mlir::LogicalResult
-verifyStableHLOProgramDir(mlir::ModuleOp module, llvm::StringRef programDir,
-                          llvm::raw_ostream &diagnostics,
-                          FrontendProgramVerificationResult *result = nullptr);
-
-mlir::LogicalResult verifyAndMaterializeStableHLOProgramDir(
-    mlir::ModuleOp module, llvm::StringRef programDir,
-    llvm::raw_ostream &diagnostics,
-    FrontendProgramVerificationResult *result = nullptr);
+verifyProgramDirectory(mlir::ModuleOp module, llvm::StringRef programDir,
+                       llvm::raw_ostream &diagnostics,
+                       FrontendProgramVerificationResult *result = nullptr);
 
 } // namespace wafer::frontend
 
