@@ -1,11 +1,12 @@
 # Wafer Shardy and SPMD Design
 
-状态：本轮长期边界合同已收敛；实现状态以`tasks/progress.md`为准。范围：Wafer-owned Shardy propagation / XLA SPMD partition、distributed program / MPMD
-component formation 和 post-SPMD `wafer.linalg_ext.collective.*` handoff。
+状态：2026-07-12重基线；当前合同覆盖Shardy propagation、XLA SPMD helper、显式per-rank specialization和
+post-SPMD `wafer.linalg_ext.collective.*` handoff。MPMD、distributed dialect和hybrid rank class延后。
+实现状态以`tasks/progress.md`为准。
 
-本文定义 Wafer compiler 中 Shardy / SPMD 阶段的边界。该阶段负责 global tensor 的逻辑切分、
-sharding propagation、SPMD partition、MPMD component、logical rank identity/class 和 logical collective
-语义；不负责 physical endpoint
+本文定义Wafer compiler中当前Shardy/SPMD阶段的边界。该阶段负责global tensor的逻辑切分、
+sharding propagation、SPMD partition、显式logical rank和logical collective语义；MPMD component和
+rank class只保留为后续讨论，不属于近期合同。该阶段不负责physical endpoint
 mapping、DTE protocol、SPM buffer、layout materialization 或 runtime launch。
 
 没有用户 `mark_sharding` 或其它可解释 sharding seed 的 program 不是 frontend 错误，但也不应

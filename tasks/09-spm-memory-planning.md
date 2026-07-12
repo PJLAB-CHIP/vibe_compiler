@@ -1,6 +1,7 @@
 # Wafer SPM Memory Planning Design
 
-状态：本轮长期边界合同已收敛；实现状态以`tasks/progress.md`为准。范围：instruction-level IR 上的 SPM memory planning。accepted fact 为
+状态：2026-07-12重基线；当前合同覆盖instruction IR上的SPM lifetime/range planning；async issue的全部
+read/write resource必须活到可信completion，当前实现仍需修复。实现状态以`tasks/progress.md`为准。accepted fact 为
 offset-only `wafer.spm.offset`，size / bank span / alignment 由 memref type、layout 和 target policy 重算。
 
 本文定义 Wafer SPM bufferization、tile-local allocation 和 storage verification。它服务于

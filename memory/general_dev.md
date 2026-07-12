@@ -241,10 +241,9 @@
   planner与default-arena DDR实现只能作迁移输入，不能证明跨group复用或长期resource owner。physical
   size、alignment和bank span统一从shared geometry helper推导；runtime object、physical address和
   packet字段不得写回planning IR。
-- `ExecutableResourceView`是commit transformation内可失效、可重算的analysis view，不是side table或
-  package输入。它验证/补全同一candidate `wafer.executable.resource` records，commit只提升records并
-  materialize entry-use bindings；target、package和
-  runtime只消费committed typed records，不从raw instruction IR、打印文本、文件名或参数名重建资源。
+- executable/resource handoff必须来自accepted IR和typed bundle，不从raw instruction文本、文件名或参数名
+  重建。近期没有`ExecutableResourceView`或`wafer.executable.resource`实现；若未来引入，只能是当前IR可重算的
+  analysis或有明确consumer的typed value，不能成为side table/package旁路。
 - group-to-tile-region 的buffer-level collective materialization必须从enclosing typed distributed
   instance/candidate entry取得partition和replica coordinates。局部pass选项只可用于明确的replay测试，
   production driver不得使用default rank 0或CLI option承载rank语义。这个边界仍只产生logical buffer
@@ -290,7 +289,7 @@
   responsibility、output artifact / IR、downstream consumer、user-level driver / named pipeline、
   explicit non-goals 和 completion gate。只说明某个 pass / tool / test 的局部功能不够；完成证明
   必须重放已完成上游 program chain，并证明当前 stage 输出会被下游边界直接消费。
-- 主链路 gate 用 `wafer-opt` owner-aware program driver重放已完成上游链路，不在 Integration
+- 主链路gate应由独立`wafer-compile` owner-aware program driver重放已完成上游链路，不在Integration
   里手动拼 pass 串。当前 frontend verifier 入口是
   `wafer-compile-stablehlo --verify-stablehlo-program`；用户级 `wafer-opt` program
   pipeline 入口是 `--program-pipeline=stablehlo-spmd`、
@@ -298,9 +297,8 @@
   `--program-pipeline=stablehlo-spmd-to-group`；`wafer-compile-stablehlo --propagate-stablehlo-sharding`、
   `wafer-compile-stablehlo --partition-stablehlo-program` 已删除，因为 Shardy/SPMD 不属于 frontend
   verifier tool；旧 C ABI compile 入口也已删除。现有`stablehlo-spmd*`、group-to-instruction/memory和target
-  LLVM pipelines只作stage replay/regression；它们尚未组成production driver。长期用户入口是
-  `wafer-opt --program-pipeline=stablehlo-to-executable`选择的direct driver，必须包含whole-variant atomic commit；
-  HF program-chain target LLVM integration、typed executable、complete TargetArtifactSet和package auto-export仍待实现。
+  LLVM pipelines只作stage replay/regression；它们尚未组成production driver。近期用户入口目标是独立
+  `wafer-compile`，包含显式per-rank clones、完整entry legality和atomic executable bundle；该入口仍待实现。
   旧显式 target CRT issue-op、ring collective、SPM/DDR debug path 和 single-tile
   materialization pass 链已删除；不要恢复成用户级 compile flow。当前 HF transformer no-card gate
   已覆盖真实 frontend/SPMD program 到 memory-planned instruction IR；真实 HF target LLVM integration、
@@ -320,43 +318,15 @@
   `wafer-check-linear-residual-schedule` 或 `wafer-check-mlp-schedule` 这类 case-specific
   transformer acceptance pass。StableHLO->Linalg 只证明 structured tensor lowering；softmax/norm/MLP
   的真实完成证明应来自通用 group formation、tile/materialization、resource verifier 和下游消费。
-- 不要恢复 `tools/wafer_package_metadata.py --emit-*` 这类 fixed package emitter，也不要把
+- 不要恢复 `tools/wafer_package_metadata.py --emit-*` 这类fixed package emitter，也不要把
   `wafer-compile-stablehlo --emit-static-reference-program` 这类 synthetic program emitter 作为 importer
-  或 package 主线。Package metadata validator / C stub generator 只能消费显式 package metadata
-  测试输入做tool-unit覆盖；主线PackageManifest必须只由committed typed executable和complete
-  `TargetArtifactSet`自动导出，不能从raw IR、单个module或旁路resource view恢复。
-- deterministic Protobuf serialization不是跨实现canonical encoding。KAD、target/environment、artifact
-  set和PackageManifest的semantic identity统一走WCRE V1与domain-separated SHA-256；
-  exact delivered Protobuf bytes另算blob content digest。实现时先验证blob digest，再parse/reject identity
-  unknown fields，随后重算semantic ID；Python binding只能做debug/migration，唯一semantic verifier在C++。
-- Kernel ABI只通过mandatory ELF `.note.wafer.abi`交付。note注入后必须read back并复核descriptor、
-  semantic digest、target ABI和exports，最后才对完整ELF bytes计算module content digest；不要再增加
-  exported descriptor symbol或让package扫描未验证的单module/staging目录。
-- runtime-safe format/artifact库需要共享runtime容量时，由上层service context私有签发低层owner的
-  non-forgeable operational capability，并在回到runtime时重验owner/generation binding；低层库不得接收
-  Runtime manager/context或反向include/link Runtime。capability只能reserve/release资源，不能构造semantic proof。
-- sealed request若要长期持有一组move-only proof，factory必须按值接收move-owned container并显式转移所有权；
-  `ArrayRef`/span只适合借用，不能用来实现retain，也不能靠隐式复制绕过non-copyable owner合同。
-- 完整compiler driver若要持有`VerifiedProgramSource`、outer transaction、target context和payload authority，不能伪装成
-  纯`OpPassManager` named pipeline。CLI option可以选择direct driver mode；named MLIR pipeline只保留IR-local transform。
-  source/context从`CompilationRequest`seal进move-only compilation input，再沿winner/committed attachment owner链转移，
-  commit后另接vector会留下重新配对窗口。`OwningOpRef<ModuleOp>`不拥有`MLIRContext`；frontend handoff必须把private context和
-  module一起move-own，且module/clone先于context析构，production materializer/direct driver不再另接`MLIRContext &`。
-- package/runtime bootstrap先生成owner-backed metadata和完全不可open的unbound source descriptor；metadata session销毁后
-  proof仍可pure preflight。只有preflight得到exact capacity domains并取得service context后，one-way bind才生成open-capable
-  runtime source。不要让metadata loader提前依赖Runtime，也不要让runtime session替代metadata semantic proof。
-- 不同语义层的verification session应使用不可互转typed capabilities，但process FD/reader/worker/bytes必须计入同一个
-  runtime-neutral host physical ledger；runtime actual I/O还要联合service child和invocation capacity。多ledger reservation用
-  固定owner顺序nonblocking prepare/rollback，不能等待时持有partial额度。
-- 多provider runtime用canonical per-domain capability sets；每个domain内部mechanism capabilities绑定同一provider generation，
-  deployment authority和durable state service可以有独立verified owner并显式join。production executor只消费registry-owned
-  capabilities，不接caller backend或可签semantic proof的fake。provider、authenticated inventory、authority和state capability必须
-  在registry前move-seal成一个bootstrap owner，不能先出relation proof再把原值分开重配；lower host budget只独立计费，不参与provider
-  semantic trust join。
-- migration wire只保存ABI层scope selector/shared IDs，runtime先用metadata构造sealed semantic request并派生durable scope keys。
-  dynamic old backing placement不能从manifest或environment猜测：deployment registry必须以这些sealed keys签发无authority、
-  无backing handle的`VerifiedStatePlacementInventory`，pure preflight再与environment和typed domain policy join出exact domains。
-  domain policy只用authenticated inventory bootstrap同时签发、可在inventory move后保留的typed constraint catalog refs，不接raw
-  provider/device ID或重复allowed-set/priority事实源。
-  取得context、bind heterogeneous artifact sets后，exact-context registry snapshot重验catalog/provider/backing generation，最后才形成
-  execution plan；否则会出现为求domains先拿complete-domain authority或把dynamic placement复制成第二事实源的bootstrap环。
+  或package主线。主线typed manifest必须只由accepted executable bundle和verified target modules构造，
+  不能从raw IR、单个module、printer text或旁路resource view恢复。
+- 近期package wire使用唯一C++ typed model的canonical JSON，不使用Protobuf/WCRE。Python只可作薄CLI或显式
+  legacy converter；唯一semantic verifier在C++，package不复制instruction schedule。
+- Kernel ABI近期由typed slot/resource双射和rank/module/entry digest表达；ELF note或跨进程descriptor等真实
+  loader/cache consumer出现后再扩展，不能先建设global identity registry。
+- 完整compiler driver不能伪装成纯`OpPassManager` named pipeline。`wafer-compile`拥有source、explicit rank
+  clones、target staging和atomic publication；named MLIR pipeline只保留IR-local transform。
+- package parsing/semantic verification、pure RuntimeSession preflight和provider execution是三层边界。no-card
+  preflight不分配、不加载、不发命令；fake/board provider实际调用必须分别记录failure suppression和cleanup。

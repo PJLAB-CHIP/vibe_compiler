@@ -1,12 +1,13 @@
 # Wafer DDR Memory Planning Design
 
-状态：本轮长期边界合同已收敛；实现状态以`tasks/progress.md`为准。范围：compiler-side DDR memory planning、accepted DDR offset facts 和
-whole-variant candidate legality gate。它不能只是 DDR access validation；凡是会影响 candidate 是否成立的 DDR
+状态：2026-07-12重基线；当前合同覆盖default-arena DDR demand/range validation和accepted offsets。
+multi-arena、state/streaming weight和ExecutableResourceView延后。实现状态以`tasks/progress.md`为准。
+它不能只是 DDR access validation；凡是会影响 candidate 是否成立的 DDR
 byte footprint、lifetime、capacity、largest-contiguous 和 bandwidth 约束，都必须在 DDR offset
 assignment / candidate-selection gate 内决定或拒绝。
-pre-commit `ExecutableResourceView` analysis从accepted DDR facts、typed program resources、arena/placement、
-transport/projection和IR demand重算launch-facing requirements，并在atomic commit时materialize为typed
-executable resources/entry bindings。post-commit target只派生address/range，package/runtime不重新恢复role/
+未来若引入`ExecutableResourceView`，只能从accepted DDR facts和当前IR demand重算launch-facing
+requirements，并在bundle commit时形成typed resource/entry bindings；当前实现不得假定该对象存在。
+post-commit target只派生address/range，package/runtime不重新恢复role/
 alias/lifetime；本stage不执行runtime allocation/import/query，也不重新做planning。
 compiler-managed DDR allocation 由 DDR `memref.alloc` 本身表达；DDR memory planning 只把 accepted
 offset 写入 IR，size、alignment、lifetime、read/write intent 和 external access-end 都从当前 IR 重算，

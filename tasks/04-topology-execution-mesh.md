@@ -1,12 +1,13 @@
 # Wafer Target Environment, Topology and Execution Mesh Design
 
-状态：本轮长期边界合同已收敛；实现状态以`tasks/progress.md`为准。范围：target environment、target topology、SPMD execution mesh 和 post-SPMD
-launch/transport projection。
+状态：2026-07-12重基线；当前合同覆盖`wafer.target.topology`和`wafer.execution.mesh`。
+未实现target environment、arena registry、pinned/relocatable projection和calibration只作后续扩展。
+实现状态以`tasks/progress.md`为准。
 
-本文定义 compile-time target legality environment、deployment topology snapshot、SPMD-visible execution
-mesh，以及 distributed execution instance 到 Wafer physical tile/transport binding 的投影边界。SPMD 不能
-在 abstract full mesh 上先切分，再由后段补坏 tile；它必须消费已经由 target environment 验证并从
-topology 中选出的 valid execution mesh。post-SPMD projection 只能绑定已存在的 distributed component /
+本文当前定义deployment topology和SPMD-visible execution mesh。target legality environment及
+distributed execution到physical transport的投影是后续扩展，不属于近期实现合同。SPMD不能
+在abstract full mesh上先切分，再由后段补坏tile；它必须消费从topology选出的valid execution mesh。
+未来post-SPMD projection只能绑定已存在的distributed component /
 partition/replica/rank-class 事实，不能重新切分 tensor 或默认到 rank 0。
 
 本文在pre-commit projection中提到的rank class仅指distributed层的target-independent prerequisite class。

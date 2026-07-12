@@ -1,10 +1,11 @@
 # Wafer Frontend and StableHLO Program Design
 
-状态：本轮长期边界合同已收敛；实现状态以`tasks/progress.md`为准。范围：frontend program、StableHLO export/import 和跨阶段 program chain。
+状态：2026-07-12重基线；当前合同只覆盖StableHLO program directory、metadata/payload和frontend admission。
+typed model/state/resource对象是后续扩展，未实现内容不得作为当前pipeline事实。实现状态以`tasks/progress.md`为准。
 
-本文定义 Wafer compiler 的 model import 和 frontend program 边界。Wafer program 是长期编译对象：
-它包含 MLIR IR、typed model ABI、function/signature metadata、parameter/resource payload 和后续 stage materialize
-出来的 storage/package facts。StableHLO program directory 只是当前 importer/exporter 的序列化形式，
+本文定义Wafer compiler的model import和frontend program边界。当前可验证编译对象是StableHLO program
+directory：它包含MLIR IR、function/signature metadata和parameter payload/shard facts。typed model/state ABI
+及后续storage/package对象是未来可能从该边界演进的表示，不属于当前实现事实。StableHLO program directory是当前importer/exporter的序列化形式，
 `functions/forward.mlir` 是 program 的 IR 成员，`forward.meta`、`data/<parameter>` 和
 post-SPMD shard payload 是同一个 program 的数据成员。Frontend 负责把上游模型表达成可验证的
 Wafer program，并保留 exporter 自带的 graph、meta 和 weight data 关系；它不表达 Wafer tile、

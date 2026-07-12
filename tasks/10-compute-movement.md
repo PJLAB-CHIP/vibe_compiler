@@ -1,6 +1,7 @@
 # Wafer Compute and Movement Dialect Design
 
-状态：本轮长期边界合同已收敛；实现状态以`tasks/progress.md`为准。范围：target-abstract compute / movement IR、layout/resource interface 和 instruction legality。
+状态：2026-07-12重基线；当前合同覆盖target-abstract compute/movement IR、layout/resource interface和
+instruction legality；实现状态以`tasks/progress.md`为准。
 
 本文定义 Wafer 后端中 target-abstract compute / movement IR 的边界。它连接
 `wafer.group` candidate/template 产生的完整 traversal 内 tile-local tensor scopes、layout

@@ -1,6 +1,7 @@
 # Wafer Group Design
 
-状态：本轮长期边界合同已收敛；实现状态以`tasks/progress.md`为准。范围：logical group、candidate/template planning 和 whole-variant atomic commit 链路。
+状态：2026-07-12重基线；当前合同覆盖logical group、candidate proposal、完整traversal materialization和
+per-rank bundle commit。不存在的`wafer.executable`/whole-variant dialect对象延后。实现状态以`tasks/progress.md`为准。
 
 本文只定义 `wafer.group` 的 tensor-level grouping 和候选 scheduling contract。它回答：
 

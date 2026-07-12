@@ -1,9 +1,9 @@
 # Wafer Local Compute Normalization Design
 
-状态：本轮长期边界合同已收敛；实现状态以`tasks/progress.md`为准。范围：post-SPMD local compute normalization 和 linalg extension collective handoff，
-不承载 SPMD partition、SPM/DDR 或 runtime package。
+状态：2026-07-12重基线；当前合同聚焦post-SPMD local compute normalization和linalg extension collective handoff，
+不承载SPMD partition、SPM/DDR或runtime package。实现状态以`tasks/progress.md`为准。
 
-本文定义 distributed program 中一个 component/rank-local StableHLO body 到 `wafer.group` 之前的 local
+本文定义一个rank-local StableHLO body到`wafer.group`之前的local
 tensor normalization 边界。输入可以是用户 sharding 经过 partitioner 后的本地 shard 程序，也可以是
 no-user-sharding默认 policy产生的 replicated / single-rank local body。该阶段负责把本地 compute规整到可 tile、
 可 fuse、可验证的 `linalg` / `tensor` / `scf` / `arith` / `math` IR 子集；如果输入包含 post-SPMD

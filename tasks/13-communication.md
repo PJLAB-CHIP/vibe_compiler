@@ -1,7 +1,8 @@
 # Wafer Communication Dialect Design
 
-状态：本轮长期边界合同已收敛；实现状态以`tasks/progress.md`为准。范围：`wafer.tile.region` / SPM materialization 之后的 buffer-level collective IR、
-instruction-level Direct DTE p2p schedule 和 accepted physical transport。
+状态：2026-07-12重基线；当前合同覆盖buffer-level collective到instruction-level Direct DTE p2p和明确
+completion。segmented/MoE、post-memory physical transport registry和multi-card route延后。实现状态以
+`tasks/progress.md`为准。
 
 本文定义 Wafer 后端从 logical collective 到 accepted physical transport 的 device-side communication
 边界。它连接 post-SPMD tensor collective 语义、`wafer.execution.mesh` /

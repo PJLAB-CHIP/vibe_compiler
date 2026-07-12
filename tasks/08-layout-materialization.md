@@ -1,6 +1,7 @@
 # Wafer Layout Materialization Design
 
-状态：本轮长期边界合同已收敛；实现状态以`tasks/progress.md`为准。范围：memref-backed Wafer memory attr、candidate planning 和 instruction-level pipeline。
+状态：2026-07-12重基线；当前合同覆盖Wafer memory/layout attr、candidate-local proposal和真实storage
+materialization。global variant solver/identity延后。实现状态以`tasks/progress.md`为准。
 
 本文定义 Wafer 后端的 physical layout planning 和 layout materialization 边界。它服务于
 `wafer.group` candidate/template 的 legality search，也服务于完整 static rank variant set 中

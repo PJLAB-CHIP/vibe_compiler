@@ -1,7 +1,8 @@
 # Wafer Instruction IR Design
 
-状态：本轮长期边界合同已收敛；实现状态以`tasks/progress.md`为准。范围：instruction-level Wafer hardware invocation IR、memref-backed buffer contract 和
-instruction legalization。
+状态：2026-07-12重基线；当前合同覆盖instruction-level hardware invocation IR、memref buffer和shared
+physical geometry/ABI legality。现有geometry verifier尚不闭合，不能按文档目标宣称完成。实现状态以
+`tasks/progress.md`为准。
 
 本文定义 instruction-level Wafer IR。核心结论：
 

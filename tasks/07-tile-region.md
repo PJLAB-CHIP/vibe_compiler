@@ -1,7 +1,7 @@
 # Wafer Tile Region Design
 
-状态：本轮长期边界合同已收敛；实现状态以`tasks/progress.md`为准。范围：memref-backed `wafer.tile.region`、DDR boundary materialization 和
-structured control-flow lowering。
+状态：2026-07-12重基线；当前合同聚焦memref-backed `wafer.tile.region`、DDR boundary materialization和
+完整traversal内的structured control-flow lowering；实现状态以`tasks/progress.md`为准。
 
 本文定义 `wafer.tile.region` 作为 `wafer.group` lowering 之后、完整 traversal 内部的 tile-local execution scope。
 它组织 tile-local Wafer-tagged memref、movement、layout materialization、target-abstract compute、communication
