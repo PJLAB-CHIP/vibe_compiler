@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check Wafer target CRT conformance against the TX81 source audit."""
+"""Check Wafer target CRT conformance from compiler and CRT code facts."""
 
 from __future__ import annotations
 
@@ -72,17 +72,6 @@ def require_macro_body(text: str, name: str) -> str:
     return text[start:next_macro]
 
 
-def check_matrix(matrix_text: str) -> None:
-    for marker in [
-        "direct-wrapper-derived",
-        "public-header-derived",
-        "intentionally-excluded",
-        "mismatch-fixed-this-batch",
-        "Pipeline position:",
-    ]:
-        require_contains(matrix_text, marker, "conformance matrix")
-
-
 def check_no_old_abi_or_helpers(source_text: str) -> None:
     forbidden = [
         "__Gemm",
@@ -133,13 +122,51 @@ def check_gather_scatter_and_mask(source_text: str) -> None:
     require_contains(mask_move, "(uint32_t)mask", "MaskMove public mask width")
 
 
-def check_arg_writeback(source_text: str) -> None:
+def check_arg_writeback(
+    source_text: str, instruction_ops_text: str, lowering_text: str
+) -> None:
+    require_pattern(
+        instruction_ops_text,
+        r"case\s+InstrPeripheralKind::ArgMax:\s*"
+        r"case\s+InstrPeripheralKind::ArgMin:\s*return\s+\{1,\s*2\};",
+        "argmax/argmin instruction value/index destinations",
+    )
+    require_pattern(
+        instruction_ops_text,
+        r"for\s*\(mlir::Value\s+dest\s*:\s*getDests\(\)\)\s*\{.*?"
+        r"verifySPMMemRef\(getOperation\(\),\s*dest\.getType\(\),\s*"
+        r'"dest"\)',
+        "peripheral instruction SPM destination verification",
+    )
+    require_pattern(
+        lowering_text,
+        r"mlir::LogicalResult\s+lowerPeripheral\(InstrPeripheralOp\s+op\)\s*"
+        r"\{.*?for\s*\(mlir::Value\s+destValue\s*:\s*op\.getDests\(\)\)"
+        r"\s*\{.*?materializeAddress\(op,\s*destValue,\s*"
+        r'"peripheral dest"\).*?args\.push_back\(\*address\);',
+        "peripheral target destination lowering",
+    )
+    require_pattern(
+        lowering_text,
+        r"resolveAddress\(mlir::Operation\s*\*op,\s*mlir::Value\s+value,\s*"
+        r"llvm::StringRef\s+role\)\s*\{.*?"
+        r"if\s*\(isWaferSPMMemRefType\(rootType\)\)\s*\{.*?"
+        r"getAttrOfType<SPMOffsetAttr>\(kWaferSPMOffsetAttrName\).*?"
+        r"address\.staticOffset\s*=\s*offset\.getOffset\(\);",
+        "target SPM offset address lowering",
+    )
     require_contains(
         source_text,
         "extern int8_t *get_spm_memory_mapping(uint64_t offset);",
         "SPM mapping declaration",
     )
-    require_contains(source_text, "wafer_spm_mapped_addr", "SPM mapping helper")
+    require_pattern(
+        source_text,
+        r"static\s+uint64_t\s+wafer_spm_mapped_addr\(uint64_t\s+offset\)\s*"
+        r"\{\s*return\s+\(uint64_t\)\(uintptr_t\)"
+        r"get_spm_memory_mapping\(offset\);\s*\}",
+        "SPM mapping helper",
+    )
     body = function_body(source_text, "wafer_arg_writeback")
     require_contains(body, "TsmWaitfinish()", "argmax/argmin writeback wait")
     require_pattern(
@@ -152,6 +179,15 @@ def check_arg_writeback(source_text: str) -> None:
         r"wafer_store_u32\s*\(\s*wafer_spm_mapped_addr\s*\(\s*index_dst\s*\)\s*,\s*\(uint32_t\)instr->param\.wb_data1\s*\)",
         "argmax/argmin index mapped store",
     )
+    for symbol in [
+        "wafer_tx81_peripheral_argmax",
+        "wafer_tx81_peripheral_argmin",
+    ]:
+        require_contains(
+            function_body(source_text, symbol),
+            "wafer_arg_writeback(value_dst, index_dst, format, &instr);",
+            f"{symbol} mapped writeback",
+        )
 
 
 def check_relation_logic_convert(source_text: str) -> None:
@@ -227,19 +263,6 @@ def check_gemm_conv(source_text: str) -> None:
         require_contains(conv, needle, "Conv optional/fused feature disablement")
 
 
-def check_design_contract(design_text: str) -> None:
-    require_contains(
-        design_text,
-        "argmax/argmin value/index ABI destinations are SPM offsets",
-        "tasks/14 argmax/argmin SPM offset contract",
-    )
-    require_contains(
-        design_text,
-        "CRT maps them with `get_spm_memory_mapping` before writing",
-        "tasks/14 argmax/argmin SPM mapping contract",
-    )
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", default=".")
@@ -247,23 +270,30 @@ def main() -> int:
 
     repo_root = pathlib.Path(args.repo_root).resolve()
     source_text = read_text(repo_root / "runtime" / "wafer_crt" / "src" / "wafer_tx81_crt.c")
-    design_text = read_text(repo_root / "tasks" / "14-target-llvm-golden-packet.md")
-    matrix_text = read_text(
+    instruction_ops_text = read_text(
         repo_root
-        / "docs"
-        / "tx8-deps-reverse-engineering"
-        / "tx81-current-crt-conformance-matrix.md"
+        / "lib"
+        / "Wafer"
+        / "IR"
+        / "Instr"
+        / "InstructionOps.cpp"
+    )
+    lowering_text = read_text(
+        repo_root
+        / "lib"
+        / "Wafer"
+        / "Transforms"
+        / "Target"
+        / "LowerInstrToTargetLLVM.cpp"
     )
 
-    check_matrix(matrix_text)
     check_no_old_abi_or_helpers(source_text)
     check_dma(source_text)
     check_gather_scatter_and_mask(source_text)
-    check_arg_writeback(source_text)
+    check_arg_writeback(source_text, instruction_ops_text, lowering_text)
     check_relation_logic_convert(source_text)
     check_gemm_conv(source_text)
-    check_design_contract(design_text)
-    print("checked Wafer target CRT conformance rules")
+    print("checked Wafer target CRT conformance rules from compiler and CRT code")
     return 0
 
 

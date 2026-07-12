@@ -176,6 +176,10 @@
   或明确合法的 runtime/loader 外部依赖。`tools/wafer_device_link.py` 能执行
   `.ll -> .o -> kcore .so` 不等于主线 gate 完成；required-symbol 检查必须拒绝未解释的
   `wafer_tx81_*` undefined symbol。
+- `tools/check_target_crt_symbols.py`从target lowering的literal symbol family和`WaferAttrs.td` enum
+  spelling推导production surface，再与CRT header/source和编译对象`nm`做exact closure；
+  `check_target_crt_conformance.py`从instruction verifier、target address lowering和CRT实现交叉证明关系。
+  两者都不能解析`tasks/`或supporting Markdown marker作为expected ABI事实源。
 - target LLVM call emission 输出给 `mlir-translate --mlir-to-llvmir` 前不能残留任何 Wafer op。target
   topology / execution mesh 在 target LLVM call emission 前是 fact source；lowering 完成后这些 metadata
   应被消费或剥离，并在发现其它 `wafer.*` op 残留时报错。pipeline 测试应把 target/mesh 放进输入，

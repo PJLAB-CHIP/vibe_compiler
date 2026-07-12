@@ -61,7 +61,6 @@ containment，不能标记正式 target correctness 完成。
 | Q6.B | `runtime-board` | `later` | Q21 + configured board | 实际allocation/load/copy/launch/transport/completion/error和完整输出数值比较；未实际执行时保持later/blocked。 | 15、16 |
 | Q9 | `cost-calibration` | `later` | Q6.B + profile environment | 只用owner-backed board/profile evidence校准合法候选排序；不影响语义合法性。 | 06、16 |
 | Q3.6 | `crt-writeback-scalar` | `later` | Q0、Q17 | count writeback需要明确result/ABI后再恢复，不能只加CRT stub。 | 11、14 |
-| Q13.T | `supporting-doc-tool-decoupling` | `later` | — | conformance checker改用代码/结构化事实源，不顺带改变CRT ABI。 | 14、16 |
 | Q13.W | `tool-workflow-consistency` | `later` | — | 对齐bootstrap/importer build诊断和tool help，不改变IR/ABI。 | 01、16 |
 
 以下能力不在近期 active DAG：新model/distributed/parallel/executable dialect、MPMD/hybrid rank-class、跨卡
@@ -110,6 +109,7 @@ cache、segmented MoE、70B/100GB stress和完整ELF ABI-note体系。需要恢�
 | Q1 | `crt-surface-audit` | 当前compiler-emitted production CRT symbol/prototype surface已审计。 | instruction geometry、numeric correctness |
 | Q2-Q3 | `crt-device-symbol-closure` | repo-local CRT 105个production symbol和required-Wafer-symbol device link gate已闭合。 | atomic publication、全部undefined ABI、board execution |
 | Q3.5 | `crt-extended-evidence` | 历史TX81 CRT扩展surface已分级。 | extended surface已支持 |
+| Q13.T | `supporting-doc-tool-decoupling` | symbol surface从target lowering和Wafer enum registry推导，arg writeback conformance从instruction verifier、target address lowering和CRT代码交叉证明；checker不再解析tasks/docs marker。 | checker证明packet/numeric/board correctness |
 | Q10-Q13 | `historical-design-governance` | 历史系统审计、设计收敛、计划拆解和文档一致性工作已完成。 | 对应production对象已实现；其长计划已被本轮重基线取代 |
 
 ## 实施计划索引

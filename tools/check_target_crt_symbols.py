@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Check Wafer target CRT symbol closure.
+"""Check Wafer target CRT symbol closure from production code facts.
 
-The current target CRT contract is declared in tasks/14 and materialized by the
-repo-local CRT header/source. This checker intentionally treats Direct DTE as
-outside the production CRT closure until the ABI is extended.
+The compiler lowering owns the set of target symbol families, Wafer TableGen
+enums own dynamic symbol suffixes, and the repo-local CRT header/source must
+exactly implement the resulting production surface. Direct DTE remains a
+lowering-only surface until its production CRT ABI is implemented.
 """
 
 from __future__ import annotations
@@ -15,37 +16,43 @@ import sys
 
 
 SYMBOL_RE = re.compile(r"\bwafer_tx81_[A-Za-z0-9_]+\b")
+SOURCE_SYMBOL_RE = re.compile(
+    r"\b(wafer_tx81_[A-Za-z0-9_]+)\b(?=\s*[\(,])"
+)
 PROTOTYPE_RE = re.compile(
     r"\bvoid\s+(wafer_tx81_[A-Za-z0-9_]+)\s*\(([^;{}]*)\)\s*;",
     re.MULTILINE | re.DOTALL,
 )
+STATIC_TARGET_SYMBOL_RE = re.compile(
+    r'\bmakeTargetSymbol\(\s*"([a-z0-9_]+)"\s*\)'
+)
+DYNAMIC_TARGET_SYMBOL_RE = re.compile(
+    r'\bmakeTargetSymbol\(\s*"([a-z0-9_]+)"\s*,'
+)
+ENUM_CASE_RE = re.compile(
+    r'\bdef\s+(Wafer_[A-Za-z0-9_]+)\s*:\s*I32EnumAttrCase<'
+    r'\s*"[^"]+"\s*,\s*-?[0-9]+\s*,\s*"([a-z0-9_]+)"\s*>\s*;',
+    re.MULTILINE | re.DOTALL,
+)
 
-EXCLUDED_SYMBOLS = {
+DYNAMIC_SYMBOL_ENUMS = {
+    "elementwise": "InstrElementwiseKind",
+    "reduce": "InstrReduceKind",
+    "convert": "InstrConvertKind",
+    "pool": "InstrPoolKind",
+    "unpool": "InstrUnpoolKind",
+    "peripheral": "InstrPeripheralKind",
+}
+
+LOWERING_ONLY_SYMBOLS = {
     "wafer_tx81_dte_send",
     "wafer_tx81_dte_recv",
     "wafer_tx81_dte_wait",
 }
 
-LOWERING_FAMILY_MARKERS = {
-    "wafer_tx81_rdma": 'makeTargetSymbol("rdma")',
-    "wafer_tx81_wdma": 'makeTargetSymbol("wdma")',
-    "wafer_tx81_gather_scatter": 'makeTargetSymbol("gather_scatter")',
-    "wafer_tx81_memset": 'makeTargetSymbol("memset")',
-    "wafer_tx81_bit2fp": 'makeTargetSymbol("bit2fp")',
-    "wafer_tx81_mask_move": 'makeTargetSymbol("mask_move")',
-    "wafer_tx81_gemm": 'makeTargetSymbol("gemm")',
-    "wafer_tx81_tdma_pad": 'makeTargetSymbol("tdma_pad")',
-    "wafer_tx81_tdma_img2col": 'makeTargetSymbol("tdma_img2col")',
-    "wafer_tx81_local_fence": 'makeTargetSymbol("local_fence")',
-    "wafer_tx81_elementwise_": 'makeTargetSymbol("elementwise",',
-    "wafer_tx81_reduce_": 'makeTargetSymbol("reduce",',
-    "wafer_tx81_convert_": 'makeTargetSymbol("convert",',
-    "wafer_tx81_pool_": 'makeTargetSymbol("pool",',
-    "wafer_tx81_unpool_": 'makeTargetSymbol("unpool",',
-    "wafer_tx81_peripheral_": 'makeTargetSymbol("peripheral",',
-    "wafer_tx81_conv": "makeConvSymbol",
-    "wafer_tx81_depthwise_conv": "makeConvSymbol",
-    "wafer_tx81_backward_conv": "makeConvSymbol",
+VERIFIER_REJECTED_SYMBOLS = {
+    "wafer_tx81_peripheral_count":
+        "count peripheral writeback is not represented in instruction IR",
 }
 
 
@@ -59,24 +66,77 @@ def read_text(path: pathlib.Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def production_symbols_from_design(design_text: str) -> set[str]:
+def parse_enum_spellings(attrs_text: str, enum_name: str) -> set[str]:
     match = re.search(
-        r"以下 symbol 是当前 Q2-Q3 要实现并链接闭合的 production CRT closure"
-        r".*?### 7\.5 Wrapper mapping",
-        design_text,
+        rf'\bI32EnumAttr<\s*"{re.escape(enum_name)}"\s*,.*?'
+        r'\[(.*?)\]\s*>\s*\{',
+        attrs_text,
         re.DOTALL,
     )
     if not match:
-        fail("cannot find Q2-Q3 production CRT closure block in tasks/14")
-    symbols = {
-        line.strip()
-        for line in match.group(0).splitlines()
-        if SYMBOL_RE.fullmatch(line.strip())
-    }
-    symbols -= EXCLUDED_SYMBOLS
-    if not symbols:
-        fail("no production wafer_tx81_* symbols found in tasks/14")
+        fail(f"cannot find TableGen enum {enum_name}")
+
+    case_spellings = dict(ENUM_CASE_RE.findall(attrs_text))
+    case_names = re.findall(r"\bWafer_[A-Za-z0-9_]+\b", match.group(1))
+    missing_cases = sorted(set(case_names) - set(case_spellings))
+    if missing_cases:
+        fail(
+            f"TableGen enum {enum_name} references unresolved cases: "
+            + ", ".join(missing_cases)
+        )
+    spellings = {case_spellings[name] for name in case_names}
+    if not spellings:
+        fail(f"TableGen enum {enum_name} has no cases")
+    if len(spellings) != len(case_names):
+        fail(f"TableGen enum {enum_name} has duplicate symbol spellings")
+    return spellings
+
+
+def potential_symbols_from_lowering(
+    lowering_text: str, attrs_text: str
+) -> set[str]:
+    static_bases = set(STATIC_TARGET_SYMBOL_RE.findall(lowering_text))
+    dynamic_bases = set(DYNAMIC_TARGET_SYMBOL_RE.findall(lowering_text))
+    if not static_bases:
+        fail("no literal makeTargetSymbol calls found in target lowering")
+
+    unknown_dynamic = sorted(dynamic_bases - set(DYNAMIC_SYMBOL_ENUMS))
+    stale_registry = sorted(set(DYNAMIC_SYMBOL_ENUMS) - dynamic_bases)
+    if unknown_dynamic:
+        fail(
+            "dynamic target symbol families have no enum registry: "
+            + ", ".join(unknown_dynamic)
+        )
+    if stale_registry:
+        fail(
+            "dynamic target symbol enum registry has no lowering call: "
+            + ", ".join(stale_registry)
+        )
+
+    symbols = {f"wafer_tx81_{base}" for base in static_bases}
+    for base, enum_name in DYNAMIC_SYMBOL_ENUMS.items():
+        symbols.update(
+            f"wafer_tx81_{base}_{spelling}"
+            for spelling in parse_enum_spellings(attrs_text, enum_name)
+        )
     return symbols
+
+
+def production_symbols_from_code(
+    lowering_text: str, attrs_text: str, instruction_ops_text: str
+) -> set[str]:
+    potential_symbols = potential_symbols_from_lowering(lowering_text, attrs_text)
+    non_production_symbols = LOWERING_ONLY_SYMBOLS | set(VERIFIER_REJECTED_SYMBOLS)
+    stale_exclusions = sorted(non_production_symbols - potential_symbols)
+    if stale_exclusions:
+        fail(
+            "non-production target symbol registry is stale: "
+            + ", ".join(stale_exclusions)
+        )
+    for symbol, verifier_marker in VERIFIER_REJECTED_SYMBOLS.items():
+        if verifier_marker not in instruction_ops_text:
+            fail(f"{symbol} is not proven unreachable by the instruction verifier")
+    return potential_symbols - non_production_symbols
 
 
 def parse_prototypes(header_text: str) -> dict[str, str]:
@@ -89,37 +149,21 @@ def parse_prototypes(header_text: str) -> dict[str, str]:
     return prototypes
 
 
-def check_no_excluded_symbols(path: pathlib.Path, text: str) -> None:
-    present = sorted(EXCLUDED_SYMBOLS & set(SYMBOL_RE.findall(text)))
+def check_no_non_production_symbols(path: pathlib.Path, text: str) -> None:
+    non_production_symbols = LOWERING_ONLY_SYMBOLS | set(VERIFIER_REJECTED_SYMBOLS)
+    present = sorted(non_production_symbols & set(SYMBOL_RE.findall(text)))
     if present:
-        fail(f"{path} contains ABI-incomplete Direct DTE symbols: {', '.join(present)}")
-
-
-def check_lowering_markers(symbols: set[str], lowering_text: str) -> None:
-    missing_markers: list[str] = []
-    for symbol in sorted(symbols):
-        marker = None
-        for prefix, candidate in LOWERING_FAMILY_MARKERS.items():
-            if symbol == prefix or symbol.startswith(prefix):
-                marker = candidate
-                break
-        if marker is None:
-            missing_markers.append(f"{symbol}: no lowering marker rule")
-            continue
-        if marker not in lowering_text:
-            missing_markers.append(f"{symbol}: missing {marker}")
-    if missing_markers:
-        fail("lowering is missing production CRT symbol families:\n  " + "\n  ".join(missing_markers))
+        fail(f"{path} contains non-production CRT symbols: {', '.join(present)}")
 
 
 def check_defined_symbols(symbols: set[str], nm_text: str) -> None:
     defined_symbols = set(SYMBOL_RE.findall(nm_text))
     missing = sorted(symbols - defined_symbols)
-    excluded = sorted(EXCLUDED_SYMBOLS & defined_symbols)
+    extra = sorted(defined_symbols - symbols)
     if missing:
         fail("missing CRT object definitions: " + ", ".join(missing))
-    if excluded:
-        fail("CRT object defines ABI-incomplete Direct DTE symbols: " + ", ".join(excluded))
+    if extra:
+        fail("extra CRT object definitions outside production closure: " + ", ".join(extra))
 
 
 def main() -> int:
@@ -133,29 +177,39 @@ def main() -> int:
     args = parser.parse_args()
 
     repo_root = pathlib.Path(args.repo_root).resolve()
-    design_path = repo_root / "tasks" / "14-target-llvm-golden-packet.md"
     header_path = repo_root / "runtime" / "wafer_crt" / "include" / "wafer_tx81_crt.h"
     source_path = repo_root / "runtime" / "wafer_crt" / "src" / "wafer_tx81_crt.c"
+    attrs_path = repo_root / "include" / "Wafer" / "IR" / "WaferAttrs.td"
+    instruction_ops_path = (
+        repo_root / "lib" / "Wafer" / "IR" / "Instr" / "InstructionOps.cpp"
+    )
     lowering_path = (
         repo_root / "lib" / "Wafer" / "Transforms" / "Target" / "LowerInstrToTargetLLVM.cpp"
     )
 
-    design_text = read_text(design_path)
     header_text = read_text(header_path)
     source_text = read_text(source_path)
+    attrs_text = read_text(attrs_path)
+    instruction_ops_text = read_text(instruction_ops_path)
     lowering_text = read_text(lowering_path)
 
-    production_symbols = production_symbols_from_design(design_text)
+    production_symbols = production_symbols_from_code(
+        lowering_text, attrs_text, instruction_ops_text
+    )
     prototypes = parse_prototypes(header_text)
-    source_symbols = set(SYMBOL_RE.findall(source_text))
+    # Macro-generated CRT definitions keep their concrete public symbol as a
+    # source token.  Header exactness plus the compiled-object nm gate below
+    # distinguish a real definition from an accidental source-only mention.
+    source_symbols = set(SOURCE_SYMBOL_RE.findall(source_text))
 
-    check_no_excluded_symbols(header_path, header_text)
-    check_no_excluded_symbols(source_path, source_text)
+    check_no_non_production_symbols(header_path, header_text)
+    check_no_non_production_symbols(source_path, source_text)
 
     header_symbols = set(prototypes)
     missing_header = sorted(production_symbols - header_symbols)
-    extra_header = sorted((header_symbols - production_symbols) - EXCLUDED_SYMBOLS)
+    extra_header = sorted(header_symbols - production_symbols)
     missing_source = sorted(production_symbols - source_symbols)
+    extra_source = sorted(source_symbols - production_symbols)
 
     errors: list[str] = []
     if missing_header:
@@ -163,16 +217,18 @@ def main() -> int:
     if extra_header:
         errors.append("extra CRT header prototypes outside production closure: " + ", ".join(extra_header))
     if missing_source:
-        errors.append("missing CRT source symbol references: " + ", ".join(missing_source))
-    if len(production_symbols) != 105:
-        errors.append(f"production closure symbol count is {len(production_symbols)}, expected 105")
+        errors.append("missing CRT source definitions: " + ", ".join(missing_source))
+    if extra_source:
+        errors.append("extra CRT source definitions outside production closure: " + ", ".join(extra_source))
     if errors:
         fail("\n".join(errors))
 
-    check_lowering_markers(production_symbols, lowering_text)
     if args.defined_symbols_stdin:
         check_defined_symbols(production_symbols, sys.stdin.read())
-    print(f"checked {len(production_symbols)} production wafer_tx81_* CRT symbols")
+    print(
+        f"checked {len(production_symbols)} production wafer_tx81_* CRT symbols "
+        "from target lowering and Wafer enum registry"
+    )
     return 0
 
 

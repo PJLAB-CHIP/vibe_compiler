@@ -1,5 +1,5 @@
-# RUN: %python %wafer_src_root/tools/check_target_crt_symbols.py --repo-root %wafer_src_root
-# RUN: %python %wafer_src_root/tools/check_target_crt_conformance.py --repo-root %wafer_src_root
+# RUN: %python %wafer_src_root/tools/check_target_crt_symbols.py --repo-root %wafer_src_root | FileCheck --check-prefix=SURFACE %s
+# RUN: %python %wafer_src_root/tools/check_target_crt_conformance.py --repo-root %wafer_src_root | FileCheck --check-prefix=CONFORMANCE %s
 # RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-gcc \
 # RUN:   -O2 -c -fPIC -DCONFIG_NO_PLATFORM_HOOK_H -DUSING_RISCV \
 # RUN:   -I%wafer_src_root/runtime/wafer_crt/include \
@@ -8,3 +8,6 @@
 # RUN: %wafer_src_root/third_party/tx8_deps/Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2/bin/riscv64-unknown-elf-nm \
 # RUN:   -g --defined-only %t.crt.o | %python %wafer_src_root/tools/check_target_crt_symbols.py \
 # RUN:   --repo-root %wafer_src_root --defined-symbols-stdin
+
+# SURFACE: checked 105 production wafer_tx81_* CRT symbols from target lowering and Wafer enum registry
+# CONFORMANCE: checked Wafer target CRT conformance rules from compiler and CRT code
