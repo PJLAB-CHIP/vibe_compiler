@@ -264,6 +264,11 @@ P2.S2 工程 gate 必须把 XLA SPMD partitioner 或等价 local-body partitioni
   storage/package materialization 消费。binding 的 offsets、sizes、strides、partition/replica coordinate、
   component 和 rank-class coverage 必须来自 XLA/Shardy/exporter-native shard facts，不由 Wafer 从
   `partition_spec`、strategy 名、文件名或 parameter 名手算。
+- 当前单 component serialization 使用 parameter-shard schema v3；每个 parameter binding 必须显式声明
+  `distribution = replicated | partitioned`。`partitioned` 的 rank slices 必须在 global tensor 上无重叠且
+  精确覆盖一次；`replicated` 的每个 rank 必须绑定完整 global tensor、使用完整 replica-id domain，且
+  NPY payload byte-identical。当前 schema 不表达 partial replication，helper 必须在导出时结构化失败，
+  不能把重复 offsets 当成普通 partition 或靠 verifier 猜测。
 - 当前 helper 对参数 payload 支持 row-major raw tensor 和 NumPy `.npy` v1/v2 输入，按 XLA
   `HloSharding::TileOffsetForDevice` / `TileLimitForDevice` 为每个 logical coordinate materialize local
   payload，并按 PyTorch/XLA program directory 权重格式写成 NPY stream；component-local function signature 从 post-SPMD

@@ -108,6 +108,10 @@
   partition helper需要解析`.npy` header才能切片输入参数；其输出的rank-local shard payload沿用
   NPY stream，路径为 `parameter_shards/<parameter>/rank_XXXXX.npy`。形状和 dtype 由 NPY header 与
   `forward.parameter_shards.json` 共同校验；不要把 NumPy 文件格式升级成 Wafer package/runtime ABI。
+- `forward.parameter_shards.json` schema v3 的 parameter binding 必须显式写
+  `distribution = replicated | partitioned`。partitioned slices 做无重叠精确覆盖检查；replicated slices
+  必须覆盖完整 global tensor、replica-id domain 完整且 NPY byte-identical。当前 helper 遇到 partial
+  replication 直接失败；不要用重复 offset 或 `replica_id = 0` 暗示复制关系。
 - PyTorch/XLA transformer / RoPE 这类真实图会把 scalar 或 tensor captured constants 放进
   StableHLO function arguments，并在 metadata 中标成 `input_locations` 的 `type_ = "constant"`、
   payload `constants/<position>`。Wafer frontend verifier 要校验这些 NPY payload；pinned-XLA

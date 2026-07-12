@@ -28,9 +28,29 @@
 # RUN: rm -rf %t.shards.program && mkdir -p %t.shards.program/functions %t.shards.program/parameter_shards/weight
 # RUN: printf '%b' 'module attributes {"mhlo.spmd_parameters_shardings" = ""} {\n  wafer.target.topology @default {card_grid = array<i64: 1, 1>, card_interconnect = "mesh", tile_grid = array<i64: 1, 2>, unavailable_tiles = array<i64>}\n  wafer.execution.mesh @default_mesh {topology = @default, axes = ["rank"], shape = array<i64: 2>, policy = "all_available", endpoints = array<i64>}\n  func.func @main(%%arg0: tensor<1x4xf32>) -> tensor<1x4xf32> {\n    return %%arg0 : tensor<1x4xf32>\n  }\n}\n' > %t.shards.program/functions/forward.mlir
 # RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[1,4],"dtype":"float32","dynamic_dims":[]}],"output_signature":[{"shape":[1,4],"dtype":"float32","dynamic_dims":[]}],"input_locations":[{"type_":"parameter","position":-1,"name":"weight"}],"unused_inputs":[]}\n' > %t.shards.program/functions/forward.meta
-# RUN: printf '%b' '{"parameter_shards_version":2,"function":"forward","logical_rank_count":2,"parameters":[{"argument_index":0,"name":"weight","global_shape":[2,4],"local_shape":[1,4],"dtype":"float32","shards":[{"rank":0,"replica_id":0,"file":"parameter_shards/weight/rank_00000.npy","offsets":[0,0],"sizes":[1,4],"strides":[1,1]},{"rank":1,"replica_id":0,"file":"parameter_shards/weight/rank_00001.npy","offsets":[1,0],"sizes":[1,4],"strides":[1,1]}]}]}\n' > %t.shards.program/functions/forward.parameter_shards.json
+# RUN: printf '%b' '{"parameter_shards_version":3,"function":"forward","logical_rank_count":2,"parameters":[{"argument_index":0,"name":"weight","distribution":"partitioned","global_shape":[2,4],"local_shape":[1,4],"dtype":"float32","shards":[{"rank":0,"replica_id":0,"file":"parameter_shards/weight/rank_00000.npy","offsets":[0,0],"sizes":[1,4],"strides":[1,1]},{"rank":1,"replica_id":0,"file":"parameter_shards/weight/rank_00001.npy","offsets":[1,0],"sizes":[1,4],"strides":[1,1]}]}]}\n' > %t.shards.program/functions/forward.parameter_shards.json
 # RUN: %python -c 'import numpy as np; from pathlib import Path; np.save(Path("%t.shards.program/parameter_shards/weight/rank_00000.npy"), np.zeros((1, 4), dtype=np.float32)); np.save(Path("%t.shards.program/parameter_shards/weight/rank_00001.npy"), np.zeros((1, 4), dtype=np.float32))'
 # RUN: wafer-compile-stablehlo --verify-stablehlo-program %t.shards.program | FileCheck %s --check-prefix=SHARD-PROGRAM
+
+# RUN: rm -rf %t.overlap-shards.program && mkdir -p %t.overlap-shards.program && cp -R %t.shards.program/. %t.overlap-shards.program
+# RUN: %python -c 'import json, pathlib; p=pathlib.Path("%t.overlap-shards.program/functions/forward.parameter_shards.json"); d=json.loads(p.read_text()); d["parameters"][0]["shards"][1]["offsets"]=[0,0]; p.write_text(json.dumps(d))'
+# RUN: not wafer-compile-stablehlo --verify-stablehlo-program %t.overlap-shards.program 2>&1 | FileCheck %s --check-prefix=OVERLAP-SHARDS
+
+# RUN: rm -rf %t.gap-shards.program && mkdir -p %t.gap-shards.program && cp -R %t.shards.program/. %t.gap-shards.program
+# RUN: %python -c 'import json, pathlib, numpy as np; root=pathlib.Path("%t.gap-shards.program"); p=root/"functions/forward.parameter_shards.json"; d=json.loads(p.read_text()); d["parameters"][0]["shards"][1]["sizes"]=[1,3]; p.write_text(json.dumps(d)); np.save(root/"parameter_shards/weight/rank_00001.npy", np.zeros((1,3), dtype=np.float32))'
+# RUN: not wafer-compile-stablehlo --verify-stablehlo-program %t.gap-shards.program 2>&1 | FileCheck %s --check-prefix=GAP-SHARDS
+
+# RUN: rm -rf %t.replica-shards.program && mkdir -p %t.replica-shards.program && cp -R %t.shards.program/. %t.replica-shards.program
+# RUN: %python -c 'import json, pathlib; p=pathlib.Path("%t.replica-shards.program/functions/forward.parameter_shards.json"); d=json.loads(p.read_text()); d["parameters"][0]["shards"][1]["replica_id"]=1; p.write_text(json.dumps(d))'
+# RUN: not wafer-compile-stablehlo --verify-stablehlo-program %t.replica-shards.program 2>&1 | FileCheck %s --check-prefix=REPLICA-SHARDS
+
+# RUN: rm -rf %t.replicated.program && mkdir -p %t.replicated.program && cp -R %t.shards.program/. %t.replicated.program
+# RUN: %python -c 'import json, pathlib; p=pathlib.Path("%t.replicated.program/functions/forward.parameter_shards.json"); d=json.loads(p.read_text()); x=d["parameters"][0]; x["distribution"]="replicated"; x["global_shape"]=[1,4]; x["shards"][1]["replica_id"]=1; x["shards"][1]["offsets"]=[0,0]; p.write_text(json.dumps(d))'
+# RUN: wafer-compile-stablehlo --verify-stablehlo-program %t.replicated.program | FileCheck %s --check-prefix=REPLICATED
+
+# RUN: rm -rf %t.mismatched-replica.program && mkdir -p %t.mismatched-replica.program && cp -R %t.replicated.program/. %t.mismatched-replica.program
+# RUN: %python -c 'import numpy as np; from pathlib import Path; np.save(Path("%t.mismatched-replica.program/parameter_shards/weight/rank_00001.npy"), np.ones((1,4), dtype=np.float32))'
+# RUN: not wafer-compile-stablehlo --verify-stablehlo-program %t.mismatched-replica.program 2>&1 | FileCheck %s --check-prefix=MISMATCHED-REPLICA
 
 # RUN: rm -rf %t.missing-shards.program && mkdir -p %t.missing-shards.program && cp -R %t.shards.program/. %t.missing-shards.program
 # RUN: rm %t.missing-shards.program/functions/forward.parameter_shards.json
@@ -81,6 +101,17 @@
 # SHARD-PROGRAM: wafer-compile-stablehlo: verified StableHLO program directory parameters: 1
 # SHARD-PROGRAM: wafer-compile-stablehlo: verified StableHLO program directory parameter shards: 1
 # SHARD-PROGRAM: wafer-compile-stablehlo: verified StableHLO program
+
+# OVERLAP-SHARDS: parameter shard slices overlap
+
+# GAP-SHARDS: parameter shard slices do not cover the global tensor
+
+# REPLICA-SHARDS: partitioned parameter shard replica_id must be 0
+
+# REPLICATED: wafer-compile-stablehlo: verified StableHLO program directory parameter shards: 1
+# REPLICATED: wafer-compile-stablehlo: verified StableHLO program
+
+# MISMATCHED-REPLICA: replicated parameter shard payloads must be byte-identical
 
 # MISSING-SHARDS: wafer-compile-stablehlo: StableHLO program directory metadata rejected
 # MISSING-SHARDS: partitioned StableHLO program directory is missing parameter shards

@@ -93,6 +93,7 @@ struct ParameterBinding {
   int64_t argumentIndex = 0;
   std::string name;
   std::string dtype;
+  std::string distribution;
   std::vector<int64_t> globalShape;
   std::vector<int64_t> localShape;
   std::vector<ParameterShard> shards;
@@ -681,11 +682,12 @@ ParameterShard shardForRank(const xla::Shape &globalShape,
                             std::string file) {
   ParameterShard shard;
   shard.rank = rank;
-  shard.replicaId = 0;
+  bool replicated = !sharding || sharding->IsReplicated();
+  shard.replicaId = replicated ? rank : 0;
   shard.file = std::move(file);
   shard.strides = ones(globalShape.rank());
 
-  if (!sharding || sharding->IsReplicated()) {
+  if (replicated) {
     shard.offsets = zeros(globalShape.rank());
     shard.sizes = shapeDims(globalShape);
     return shard;
@@ -716,6 +718,7 @@ llvm::json::Object bindingToJson(const ParameterBinding &binding) {
   return llvm::json::Object{
       {"argument_index", binding.argumentIndex},
       {"name", binding.name},
+      {"distribution", binding.distribution},
       {"global_shape", shapeToJson(binding.globalShape)},
       {"local_shape", shapeToJson(binding.localShape)},
       {"dtype", binding.dtype},
@@ -730,7 +733,7 @@ std::string bindingsToJson(const std::string &functionName,
   for (const ParameterBinding &binding : bindings)
     parameters.push_back(bindingToJson(binding));
   llvm::json::Object root{
-      {"parameter_shards_version", 2},
+      {"parameter_shards_version", 3},
       {"function", functionName},
       {"logical_rank_count", logicalRankCount},
       {"parameters", std::move(parameters)},
@@ -773,6 +776,18 @@ materializeParameterShards(const Options &options, const ProgramMetadata &meta,
 
     const xla::HloSharding *sharding =
         preParam->has_sharding() ? &preParam->sharding() : nullptr;
+    if (sharding && sharding->HasPartialReplication())
+      return absl::InvalidArgumentError(absl::StrCat(
+          "parameter '", binding.name,
+          "' uses partial replication, which parameter shard schema v3 does "
+          "not encode"));
+    if (sharding && sharding->IsTileMaximal() && !sharding->IsReplicated())
+      return absl::InvalidArgumentError(absl::StrCat(
+          "parameter '", binding.name,
+          "' uses single-device sharding, which parameter shard schema v3 "
+          "does not encode"));
+    binding.distribution =
+        (!sharding || sharding->IsReplicated()) ? "replicated" : "partitioned";
     TF_ASSIGN_OR_RETURN(
         TensorPayload payload,
         readTensorPayload(options.inputProgramDir / "data" / location.name));

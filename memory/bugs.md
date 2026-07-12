@@ -103,3 +103,15 @@
 - 修复模式：共享 typed geometry/descriptor validator，从 IR 类型和 layout 推导访问区间，证明
   `byte_count`、`inner_bytes`、iterations、element count 等关系及全部 narrowing 上界。能派生的字段不
   重复存储；必须存储时 verifier 证明相等，lowering 不再替 verifier 猜测或截断。
+
+## 2026-07-12 parameter shard overlap 不能脱离 replication relation 判断
+
+- 现象：给 post-SPMD parameter slices 增加全局无重叠覆盖检查后，真实 data/row sharding gate 把合法的
+  replicated weight/bias 报成 overlap；旧 metadata 中这些 rank 都是相同 offsets/sizes 且
+  `replica_id = 0`，无法区分“错误重复切片”和“有意复制”。
+- 根因：artifact 记录了 slice 几何，却没有记录 partition/replication relation；verifier 若放过 overlap
+  会漏掉错误，若一律拒绝又会误杀合法复制。`replica_id` 的默认数值不能替代关系类型。
+- 修复模式：producer 和 verifier 同批升级 schema。每个 parameter 显式声明 `replicated` 或
+  `partitioned`；partitioned 证明 slices 无重叠且精确覆盖 global tensor，replicated 证明每 rank 都是完整
+  tensor、replica-id domain 完整且 payload 一致。当前 schema 无法表达 partial replication 时在 producer
+  端失败，不把 subgroup 缺口降级成默认复制。

@@ -120,6 +120,9 @@ payload 文件必须来自
 XLA sharding / partitioner 暴露的 shard facts，不能由 Wafer 从 `partition_spec`、strategy 名或
 parameter 名手算。后续 compiler stage 不能通过文件名、parameter 名或 side JSON 猜语义；它们应消费
 已验证的 Wafer program metadata/payload，或 IR 中 materialize 的 parameter/resource/ConstantLike 事实。
+当前 parameter-shard schema v3 要求每个 parameter 显式声明 `replicated` 或 `partitioned`：前者证明
+所有 rank 的完整 payload 一致，后者证明 slices 对 global tensor 无重叠且精确覆盖。没有显式 subgroup
+relation 的 partial replication 必须拒绝，不能从重复 offsets 推测。
 若某个 stage 改变 function
 boundary、parameter/state shard、constant storage、layout 或 package binding，它必须同步更新同一个 Wafer
 program 的 metadata / payload，并由 verifier 检查一致性。metadata 也不描述 Wafer physical layout、

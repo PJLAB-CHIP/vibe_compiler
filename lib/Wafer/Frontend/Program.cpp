@@ -24,6 +24,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -418,6 +419,13 @@ bool checkedMul(int64_t lhs, int64_t rhs, int64_t &result) {
   if (lhs != 0 && rhs > std::numeric_limits<int64_t>::max() / lhs)
     return false;
   result = lhs * rhs;
+  return true;
+}
+
+bool checkedAdd(int64_t lhs, int64_t rhs, int64_t &result) {
+  if (lhs < 0 || rhs < 0 || rhs > std::numeric_limits<int64_t>::max() - lhs)
+    return false;
+  result = lhs + rhs;
   return true;
 }
 
@@ -841,12 +849,23 @@ bool isSafeRelativePath(llvm::StringRef path) {
          !path.contains("..");
 }
 
+struct ParameterShardSlice {
+  int64_t rank = -1;
+  int64_t replicaId = -1;
+  std::vector<int64_t> offsets;
+  std::vector<int64_t> sizes;
+  std::string path;
+};
+
 bool verifyShardEntry(const llvm::json::Object &object,
                       int64_t logicalRankCount,
                       llvm::ArrayRef<int64_t> globalShape,
                       llvm::ArrayRef<int64_t> localShape, Type elementType,
                       llvm::StringRef parameterName, llvm::StringRef programDir,
+                      llvm::StringRef distribution,
                       std::vector<bool> &seenRanks,
+                      std::vector<bool> &seenReplicaIds,
+                      std::vector<ParameterShardSlice> &verifiedSlices,
                       llvm::raw_ostream &diagnostics) {
   int64_t rank = -1;
   int64_t replicaId = -1;
@@ -874,6 +893,18 @@ bool verifyShardEntry(const llvm::json::Object &object,
   if (replicaId < 0)
     return rejectProgramDirectory(
         "parameter shard replica_id must be non-negative", diagnostics);
+  if (distribution == "partitioned" && replicaId != 0)
+    return rejectProgramDirectory(
+        "partitioned parameter shard replica_id must be 0", diagnostics);
+  if (distribution == "replicated") {
+    if (replicaId >= logicalRankCount)
+      return rejectProgramDirectory(
+          "replicated parameter shard replica_id is out of range", diagnostics);
+    if (seenReplicaIds[replicaId])
+      return rejectProgramDirectory(
+          "duplicate replicated parameter shard replica_id", diagnostics);
+    seenReplicaIds[replicaId] = true;
+  }
 
   size_t rankSize = globalShape.size();
   if (offsets.size() != rankSize || sizes.size() != rankSize ||
@@ -889,6 +920,10 @@ bool verifyShardEntry(const llvm::json::Object &object,
     if (dim < localShape.size() && size > localShape[dim])
       return rejectProgramDirectory(
           "parameter shard size exceeds local tensor shape", diagnostics);
+    if (strides[dim] != 1)
+      return rejectProgramDirectory(
+          "parameter shard stride must be 1 for coverage verification",
+          diagnostics);
   }
 
   if (!isSafeRelativePath(file))
@@ -911,6 +946,87 @@ bool verifyShardEntry(const llvm::json::Object &object,
 
   if (verifyNpyTensorPayloadFile(path, file, sizes, elementType, diagnostics))
     return true;
+  verifiedSlices.push_back(ParameterShardSlice{
+      rank, replicaId, std::move(offsets), std::move(sizes), std::move(path)});
+  return false;
+}
+
+bool verifyParameterShardCoverage(llvm::ArrayRef<ParameterShardSlice> slices,
+                                  llvm::ArrayRef<int64_t> globalShape,
+                                  llvm::StringRef distribution,
+                                  llvm::raw_ostream &diagnostics) {
+  if (distribution == "replicated") {
+    std::unique_ptr<llvm::MemoryBuffer> canonicalPayload;
+    for (const ParameterShardSlice &slice : slices) {
+      if (!llvm::all_of(slice.offsets,
+                        [](int64_t offset) { return offset == 0; }) ||
+          !llvm::equal(slice.sizes, globalShape))
+        return rejectProgramDirectory(
+            "replicated parameter shard must contain the full global tensor",
+            diagnostics);
+
+      auto payload = llvm::MemoryBuffer::getFile(slice.path);
+      if (!payload)
+        return rejectProgramDirectory(
+            "failed to reread replicated parameter shard payload", diagnostics);
+      if (!canonicalPayload) {
+        canonicalPayload = std::move(*payload);
+      } else if (canonicalPayload->getBuffer() != (*payload)->getBuffer()) {
+        return rejectProgramDirectory(
+            "replicated parameter shard payloads must be byte-identical",
+            diagnostics);
+      }
+    }
+    return false;
+  }
+
+  if (distribution != "partitioned")
+    return rejectProgramDirectory(
+        "parameter shard distribution must be 'replicated' or 'partitioned'",
+        diagnostics);
+
+  int64_t globalElements = 1;
+  for (int64_t dim : globalShape) {
+    if (!checkedMul(globalElements, dim, globalElements))
+      return rejectProgramDirectory(
+          "parameter shard global coverage size overflows int64", diagnostics);
+  }
+
+  int64_t coveredElements = 0;
+  for (const ParameterShardSlice &slice : slices) {
+    int64_t sliceElements = 1;
+    for (int64_t size : slice.sizes) {
+      if (!checkedMul(sliceElements, size, sliceElements))
+        return rejectProgramDirectory(
+            "parameter shard coverage size overflows int64", diagnostics);
+    }
+    if (!checkedAdd(coveredElements, sliceElements, coveredElements))
+      return rejectProgramDirectory(
+          "parameter shard coverage size overflows int64", diagnostics);
+  }
+
+  for (size_t lhsIndex = 0; lhsIndex < slices.size(); ++lhsIndex) {
+    for (size_t rhsIndex = lhsIndex + 1; rhsIndex < slices.size(); ++rhsIndex) {
+      const ParameterShardSlice &lhs = slices[lhsIndex];
+      const ParameterShardSlice &rhs = slices[rhsIndex];
+      bool overlaps = true;
+      for (size_t dim = 0; dim < globalShape.size(); ++dim) {
+        int64_t lhsEnd = lhs.offsets[dim] + lhs.sizes[dim];
+        int64_t rhsEnd = rhs.offsets[dim] + rhs.sizes[dim];
+        if (lhsEnd <= rhs.offsets[dim] || rhsEnd <= lhs.offsets[dim]) {
+          overlaps = false;
+          break;
+        }
+      }
+      if (overlaps)
+        return rejectProgramDirectory("parameter shard slices overlap",
+                                      diagnostics);
+    }
+  }
+
+  if (coveredElements != globalElements)
+    return rejectProgramDirectory(
+        "parameter shard slices do not cover the global tensor", diagnostics);
   return false;
 }
 
@@ -924,12 +1040,14 @@ bool verifyParameterShardMetadata(const llvm::json::Object &object,
   int64_t argumentIndex = -1;
   std::string name;
   std::string dtype;
+  std::string distribution;
   std::vector<int64_t> globalShape;
   std::vector<int64_t> localShape;
 
   if (readIntegerField(object, "argument_index", argumentIndex, diagnostics) ||
       readStringField(object, "name", name, diagnostics) ||
       readStringField(object, "dtype", dtype, diagnostics) ||
+      readStringField(object, "distribution", distribution, diagnostics) ||
       readIntegerArrayField(object, "global_shape", globalShape, diagnostics) ||
       readIntegerArrayField(object, "local_shape", localShape, diagnostics))
     return true;
@@ -987,6 +1105,9 @@ bool verifyParameterShardMetadata(const llvm::json::Object &object,
                                   diagnostics);
 
   std::vector<bool> seenRanks(logicalRankCount, false);
+  std::vector<bool> seenReplicaIds(logicalRankCount, false);
+  std::vector<ParameterShardSlice> verifiedSlices;
+  verifiedSlices.reserve(shards->size());
   for (const llvm::json::Value &value : *shards) {
     const llvm::json::Object *shardObject = value.getAsObject();
     if (!shardObject)
@@ -994,9 +1115,18 @@ bool verifyParameterShardMetadata(const llvm::json::Object &object,
                                     diagnostics);
     if (verifyShardEntry(*shardObject, logicalRankCount, globalShape,
                          localShape, tensorType.getElementType(), name,
-                         programDir, seenRanks, diagnostics))
+                         programDir, distribution, seenRanks, seenReplicaIds,
+                         verifiedSlices, diagnostics))
       return true;
   }
+  if (distribution == "replicated" &&
+      llvm::any_of(seenReplicaIds, [](bool seen) { return !seen; }))
+    return rejectProgramDirectory(
+        "replicated parameter shard replica_id domain is incomplete",
+        diagnostics);
+  if (verifyParameterShardCoverage(verifiedSlices, globalShape, distribution,
+                                   diagnostics))
+    return true;
 
   seenParameterArgs[argumentIndex] = true;
   return false;
@@ -1080,7 +1210,7 @@ bool verifyParameterShards(
       readIntegerField(*root, "logical_rank_count", logicalRankCount,
                        diagnostics))
     return true;
-  if (version != 2)
+  if (version != 3)
     return rejectProgramDirectory(
         "unsupported parameter shard metadata version", diagnostics);
   if (function != meta.name)

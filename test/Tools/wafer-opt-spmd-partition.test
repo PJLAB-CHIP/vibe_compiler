@@ -44,7 +44,8 @@
 # NO-BOUNDARY-IR-NOT: wafer.boundary.shards
 
 # SHARDS: "logical_rank_count": 16
-# SHARDS: "parameter_shards_version": 2
+# SHARDS: "parameter_shards_version": 3
+# SHARDS: "distribution":
 # SHARDS: "name": "bias"
 # SHARDS: "name": "weight"
 
