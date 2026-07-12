@@ -1215,6 +1215,11 @@ public:
 
     createWDMA(rewriter, op.getLoc(), op.getSource(), op.getDest(),
                *descriptor);
+    // A tile store is the last local-engine use of the tile-local source in
+    // the current schedule.  Make that completion boundary explicit so SPM
+    // planning can end the source lifetime before the next traversal tile.
+    // The terminal fence remains a safety net for paths without a store.
+    rewriter.create<SyncLocalFenceOp>(op.getLoc());
     rewriter.eraseOp(op);
     return mlir::success();
   }
@@ -2730,6 +2735,34 @@ static mlir::LogicalResult parseTileRegionToInstrOptions(
   return mlir::success();
 }
 
+static mlir::LogicalResult
+materializeTerminalLocalFences(mlir::ModuleOp module) {
+  mlir::WalkResult result = module.walk([&](TileRegionOp tileRegion) {
+    if (!tileRegion.getBody().hasOneBlock()) {
+      tileRegion.emitError()
+          << "instruction_completion_failure: terminal local completion "
+             "requires a single-block wafer.tile.region";
+      return mlir::WalkResult::interrupt();
+    }
+
+    mlir::Block &body = tileRegion.getBody().front();
+    mlir::Operation *terminator = body.getTerminator();
+    if (!terminator) {
+      tileRegion.emitError()
+          << "instruction_completion_failure: wafer.tile.region has no "
+             "terminator for terminal local completion";
+      return mlir::WalkResult::interrupt();
+    }
+    if (mlir::isa_and_nonnull<SyncLocalFenceOp>(terminator->getPrevNode()))
+      return mlir::WalkResult::advance();
+
+    mlir::OpBuilder builder(terminator);
+    builder.create<SyncLocalFenceOp>(terminator->getLoc());
+    return mlir::WalkResult::advance();
+  });
+  return result.wasInterrupted() ? mlir::failure() : mlir::success();
+}
+
 struct ConvertTileRegionToInstrPass
     : public wafer::impl::ConvertTileRegionToInstrPassBase<
           ConvertTileRegionToInstrPass> {
@@ -2796,5 +2829,5 @@ wafer::convertTileRegionToInstrModule(mlir::ModuleOp module,
                        "tile-region to instruction conversion failed");
     return mlir::failure();
   }
-  return mlir::success();
+  return materializeTerminalLocalFences(module);
 }

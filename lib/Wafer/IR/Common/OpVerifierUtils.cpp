@@ -303,14 +303,37 @@ mlir::LogicalResult verifyDTEP2P(mlir::Operation *op, mlir::Value buffer,
     return op->emitOpError("DTE p2p result must be an async token");
   if (peer.getInt() < 0)
     return op->emitOpError("DTE peer must be non-negative");
+  if (static_cast<uint64_t>(peer.getInt()) >
+      std::numeric_limits<uint32_t>::max())
+    return op->emitOpError("target_abi_narrowing: DTE peer must fit uint32_t");
   if (bytes.getInt() <= 0)
     return op->emitOpError("DTE byte count must be positive");
+  if (static_cast<uint64_t>(bytes.getInt()) >
+      std::numeric_limits<uint32_t>::max())
+    return op->emitOpError(
+        "target_abi_narrowing: DTE byte count must fit uint32_t");
+  auto memrefType = mlir::dyn_cast<mlir::MemRefType>(buffer.getType());
+  std::optional<wafer::WaferPhysicalTensorInfo> info =
+      memrefType ? wafer::computeWaferPhysicalTensorInfo(memrefType)
+                 : std::nullopt;
+  if (!info || info->physicalBytes < 0)
+    return op->emitOpError(
+        "target_geometry_mismatch: DTE buffer physical byte size must be "
+        "statically known");
+  if (bytes.getInt() > info->physicalBytes)
+    return op->emitOpError(
+        "target_geometry_mismatch: DTE byte count exceeds buffer physical "
+        "byte size");
   if (op->hasAttr(kWaferCommSlotAttrName)) {
     auto slot = op->getAttrOfType<mlir::IntegerAttr>(kWaferCommSlotAttrName);
     if (!slot)
       return op->emitOpError("DTE slot must be an integer attr");
     if (slot.getInt() < 0)
       return op->emitOpError("DTE slot must be non-negative");
+    if (static_cast<uint64_t>(slot.getInt()) >
+        std::numeric_limits<uint32_t>::max())
+      return op->emitOpError(
+          "target_abi_narrowing: DTE slot must fit uint32_t");
   }
 
   return mlir::success();

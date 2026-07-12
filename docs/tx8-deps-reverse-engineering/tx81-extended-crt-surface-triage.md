@@ -59,7 +59,8 @@ layout、shape、memory-space 或 descriptor 语义。
 | --- | --- | --- |
 | direct VV arithmetic / relation / logic / activation / transcendental / convert / native reduce | 存在直接 public wrapper 和 per-method 参数线索 | 不能单独证明当前 symbol membership、signature 或 verifier closure |
 | GEMM / Conv / RDMA / WDMA / GatherScatter / Pad / Img2col / Bilinear / LUT / RandGen | 存在 wrapper issue order、shape、stride、format 或 feature 参数线索 | 不能单独证明 Wafer legality、packet ABI 或 completion semantics |
-| Pool / Unpool / factorize / elem-mask | 旧 source snapshot 中未观察到对应实现 | 缺失旧 source 不能证明当前仓库不支持，也不能证明应新增实现 |
+| Pool / Unpool / elem-mask | 旧 source snapshot 中未观察到对应实现 | 缺失旧 source 不能证明当前仓库不支持，也不能证明应新增实现 |
+| factorize | 旧 source snapshot 中未观察到对应实现；当前repo-local CRT header/source也不含对应symbol | public header中的旧wrapper入口不足以形成精确semantic profile；当前compiler target lowering显式拒绝该kind，不能把enum或历史名称当作production支持 |
 | `common.c` | `main`, `get_app_version`, `nvram_get_val` 等 link / runtime compatibility symbols | 没有 target compiler ABI 证据 |
 | `empty.c` | math / assert placeholder symbols | 没有硬件 command 或 compiler lowering 证据 |
 | `assert.c`, `print.c` | diagnostic / runtime glue | 没有 target compiler ABI 证据 |
@@ -76,3 +77,7 @@ layout、shape、memory-space 或 descriptor 语义。
 - 当前任务状态读取 `tasks/progress.md`。
 
 任何长期 IR / ABI 选择都需要在对应编号设计文档中收敛；本文件中的缺失证据不是设计提案。
+
+当前repo-local target boundary还显式拒绝未绑定physical endpoint/slot的Direct DTE，以及只有
+arena-relative offset而没有explicit arena base binding的compiler-managed DDR allocation。这些fail-closed
+边界来自当前compiler事实，不由旧helper evidence放宽。

@@ -1,4 +1,4 @@
-// RUN: wafer-opt --wafer-select-group-tile='print-candidate-summary' %s 2>&1 | FileCheck --implicit-check-not=selected_group --check-prefixes=SUMMARY,IR %s
+// RUN: wafer-opt --wafer-select-group-tile='logical-rank=0 print-candidate-summary' %s 2>&1 | FileCheck --implicit-check-not=selected_group --check-prefixes=SUMMARY,IR %s
 
 func.func @elementwise_small(%lhs: tensor<4xf32>, %rhs: tensor<4xf32>,
                              %out: tensor<4xf32>) -> tensor<4xf32> {
@@ -59,9 +59,12 @@ func.func @large_matmul_last_dim_1000(%lhs: tensor<257x1000xf16>,
       outs(%out : tensor<257x129xf16>) {
   ^bb0(%arg0: tensor<257x1000xf16>, %arg1: tensor<1000x129xf16>,
        %arg2: tensor<257x129xf16>):
+    %zero = arith.constant 0.0 : f16
+    %init = linalg.fill ins(%zero : f16)
+        outs(%arg2 : tensor<257x129xf16>) -> tensor<257x129xf16>
     %mm = linalg.matmul
         ins(%arg0, %arg1 : tensor<257x1000xf16>, tensor<1000x129xf16>)
-        outs(%arg2 : tensor<257x129xf16>) -> tensor<257x129xf16>
+        outs(%init : tensor<257x129xf16>) -> tensor<257x129xf16>
     wafer.group.yield %mm : tensor<257x129xf16>
   } : tensor<257x129xf16>
   return %group : tensor<257x129xf16>

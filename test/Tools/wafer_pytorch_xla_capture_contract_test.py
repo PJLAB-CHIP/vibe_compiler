@@ -314,5 +314,67 @@ class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
         self.assertEqual(config["intermediate_size"], 64)
         self.assertEqual(config["num_attention_heads"], 4)
 
+    def test_workload_corpus_spec_fixes_source_and_payload_facts(self):
+        spec = self.tool.load_workload_corpus_spec(
+            self.tool.DEFAULT_WORKLOAD_CORPUS_SPEC
+        )
+
+        self.assertEqual(spec["corpus_id"], "wafer-single-card-vertical-v1")
+        self.assertEqual(
+            spec["source"]["framework"],
+            {
+                "name": "PyTorch",
+                "version": "2.5.0+cpu",
+                "git_revision": "32f585d9346e316e554c8d9bf7548af9f62141fc",
+            },
+        )
+        self.assertEqual(
+            spec["source"]["exporter"]["git_revision"],
+            "396608c7105b3763874fe3800dfabdfa2b38a28a",
+        )
+        self.assertEqual(
+            [case["id"] for case in spec["cases"]],
+            ["linear-residual-mlp-f32", "tiny-llama-decoder-f32"],
+        )
+        for case in spec["cases"]:
+            self.assertEqual(case["dtype"], "float32")
+            self.assertEqual(case["seed"], 20260712)
+            self.assertEqual(
+                case["source_revision"], case["digests"]["source_config"]
+            )
+            for digest in case["digests"].values():
+                self.assertRegex(digest, r"^sha256:[0-9a-f]{64}$")
+
+    def test_cpu_reference_is_independent_and_byte_reproducible(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            first = pathlib.Path(tmp) / "first"
+            second = pathlib.Path(tmp) / "second"
+
+            self.tool.emit_workload_cpu_reference(
+                self.tool.DEFAULT_WORKLOAD_CORPUS_SPEC,
+                "tiny-llama-decoder-f32",
+                first,
+            )
+            self.tool.emit_workload_cpu_reference(
+                self.tool.DEFAULT_WORKLOAD_CORPUS_SPEC,
+                "tiny-llama-decoder-f32",
+                second,
+            )
+
+            first_files = sorted(
+                path.relative_to(first) for path in first.rglob("*") if path.is_file()
+            )
+            second_files = sorted(
+                path.relative_to(second)
+                for path in second.rglob("*")
+                if path.is_file()
+            )
+            self.assertEqual(first_files, second_files)
+            for relative in first_files:
+                self.assertEqual(
+                    (first / relative).read_bytes(), (second / relative).read_bytes()
+                )
+            self.assertEqual(self.fake_torch.export_calls, [])
+
 if __name__ == "__main__":
     unittest.main()

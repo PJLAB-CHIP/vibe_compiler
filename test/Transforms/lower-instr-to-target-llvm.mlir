@@ -147,11 +147,6 @@ module {
         : memref<2x3xf16, #wafer.memory<spm, tensor>>
       into memref<1xf16, #wafer.memory<spm, tensor>>,
            memref<1xi32, #wafer.memory<spm, tensor>>
-    %send = wafer.instr.dte_send %loaded {peer = 1 : i64, bytes = 12 : i64}
-        : memref<2x3xf16, #wafer.memory<spm, tensor>> -> !async.token
-    %recv = wafer.instr.dte_recv %loaded {peer = 0 : i64, bytes = 12 : i64}
-        : memref<2x3xf16, #wafer.memory<spm, tensor>> -> !async.token
-    wafer.instr.dte_wait %send, %recv : !async.token, !async.token
     wafer.instr.wdma %loaded to %output_tile
         {byte_count = 12 : i64, inner_bytes = 6 : i64,
          dst_strides = array<i64: 16, 0, 0>,
@@ -170,6 +165,8 @@ module {
 // CHECK-NOT: func.func
 // CHECK: %[[IN_OFF:.+]] = llvm.mlir.constant(20 : i64) : i64
 // CHECK: %[[IN_ADDR:.+]] = llvm.add %[[DDR_IN]], %[[IN_OFF]] : i64
+// CHECK: %[[OUT_OFF:.+]] = llvm.mlir.constant(20 : i64) : i64
+// CHECK: %[[OUT_ADDR:.+]] = llvm.add %[[DDR_OUT]], %[[OUT_OFF]] : i64
 // CHECK: llvm.call @wafer_tx81_rdma(%[[IN_ADDR]]
 // CHECK: llvm.call @wafer_tx81_gather_scatter
 // CHECK: llvm.call @wafer_tx81_memset
@@ -185,11 +182,6 @@ module {
 // CHECK: llvm.call @wafer_tx81_tdma_pad
 // CHECK: llvm.call @wafer_tx81_tdma_img2col
 // CHECK: llvm.call @wafer_tx81_peripheral_argmax
-// CHECK: llvm.call @wafer_tx81_dte_send
-// CHECK: llvm.call @wafer_tx81_dte_recv
-// CHECK: llvm.call @wafer_tx81_dte_wait
-// CHECK: %[[OUT_OFF:.+]] = llvm.mlir.constant(20 : i64) : i64
-// CHECK: %[[OUT_ADDR:.+]] = llvm.add %[[DDR_OUT]], %[[OUT_OFF]] : i64
 // CHECK: llvm.call @wafer_tx81_wdma({{.*}}%[[OUT_ADDR]]
 // CHECK: llvm.call @wafer_tx81_local_fence
 // CHECK: llvm.return
@@ -197,6 +189,7 @@ module {
 // LLVMIR-DAG: declare void @wafer_tx81_rdma(i64, i64, i32, i32, i32, i32, i32, i32, i32, i32, i32)
 // LLVMIR-DAG: declare void @wafer_tx81_gather_scatter(i64, i64, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32)
 // LLVMIR-DAG: declare void @wafer_tx81_gemm(i64, i64, i64, i32, i32, i32, i32, i32)
+// LLVMIR-DAG: declare void @wafer_tx81_mask_move(i64, i32, i64, i32, i32)
 // LLVMIR-DAG: declare void @wafer_tx81_conv(i64, i64, i64, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32)
 // LLVMIR-DAG: declare void @wafer_tx81_tdma_img2col(i64, i64, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32)
 // LLVMIR-DAG: declare void @wafer_tx81_wdma(i64, i64, i32, i32, i32, i32, i32, i32, i32, i32, i32)

@@ -562,6 +562,10 @@ logical / scheduled tensor-level `wafer.group` body 第一版应保持保守。�
 
 `wafer.group` 的通用 verifier 至少检查：
 
+- `ins`可以为空但custom assembly必须可parse/print round-trip；`outs/results`至少一个。
+- `ins + outs`中的SSA value必须全局唯一，不能让同一tensor value同时充当只读input和writable out，
+  也不能重复out。不同SSA在最终物理binding上的no-alias要求由typed driver/KAD合同继续闭合，不能靠
+  名字或参数位置推断。
 - `results.size == outs.size`，且每个 result type 与对应 `outs` type 兼容。
 - region block argument 数量、顺序和类型与 `ins + outs` 一致。
 - body 不隐式引用 group 外部 SSA value；外部依赖必须显式列在 `ins` 或 `outs`。
@@ -575,7 +579,7 @@ logical / scheduled tensor-level `wafer.group` body 第一版应保持保守。�
   queue、packet field、CSR、runtime allocation object/TLV 等低层对象。
 - body 中 layout-changing、shape-changing 或 aligned-layout-only op 必须能被 layout
   propagation/verifier 覆盖。
-- body 中不得出现 raw StableHLO collective、lower-level Wafer memory / compute /
+- body合法性必须递归检查nested region，而不只看group顶层op。body 中不得出现 raw StableHLO collective、lower-level Wafer memory / compute /
   communication / sync / ABI op、runtime launch metadata、LLVM/runtime call、任意 `memref.*`
   allocation/load/store 或 SPM/storage typed value。若未来某类通信允许进入 group，
   必须先有 tensor-level op/effect 和 verifier 合同，不能直接插 `wafer.tile.*` collective 或
@@ -889,6 +893,22 @@ SPM planning、layout assignment、DDR memory planning 和 compute/movement lega
   partial scatter/recompute coverage 和 dynamic reduction range 要等对应 interface/IR 语义明确后再进入
   candidate-selection driver search space。
 
+当前实现已经把 representative evaluation 与可提交 artifact 分开：第一/尾 tile 只做便宜的
+prefilter 和统计；候选接受与 commit 都重新调用 complete-traversal materialization。该实现对每个
+static result domain 枚举 Cartesian output tiles，显式包含非整除 tail，并对每个 output tile
+物化全部 reduction chunks；任一 tile/chunk 或下游 gate 失败都拒绝候选。multi-output 当前只支持
+equal static result shape、互不依赖且各自直接 yielded 的 single-result Linalg roots；tensor
+producer chain、不同 output domain 和不能由 SSA 结构证明的 output chain 会 fail closed，只有
+`DirectFullShape` 候选允许走保持完整 group body 的保守路径。上述判定不读取 op/value 名称。
+
+完整 traversal 当前以静态展开的 tile/chunk sequence 表达，这是 bounded single-card correctness
+基线，不是 scalable traversal loop 的终态。动态 shape、大 traversal 的 compact loop materialization、
+跨 output domain schedule 和 producer-chain tile-and-fuse 仍需后续扩 IR/interface；在此之前不能把
+representative module 或未访问 frontier 当成完整 program。selector 在 module clone 中评估并消解
+全部 group，最后验证 clone 后一次发布，因此后出现的 group 失败不会把前面 group 的选择写入原模块。
+这里的事务边界仍是一个当前 module；Q16 的全部 static rank clones 与 bundle 事务在 executable
+driver 层另行闭合。
+
 committed materialization 只接受 candidate-selection driver 选中的 complete passing variant：在一次事务中
 用所有 static rank entries 的完整 structured tile/instruction programs 替换主 IR，并同时消解所有
 logical/scheduled `wafer.group`。任何 group、rank、event、transport 或 verifier gate 失败都丢弃 clone，
@@ -969,6 +989,9 @@ slot-aligned 时返回 failure，让 candidate-selection driver 回到 tile shap
 `tensor.empty` 在该层是 destination/init storage placeholder，不是可执行 compute demand。
 `linalg.fill` 是 init/write demand；若它初始化后续 reduction / contraction output，对应 value
 可以被后续 SPM/layout analysis 视为 accumulator/psum live range 的起点。
+named `linalg.fill` / `matmul` / `batch_matmul`的payload也必须结构匹配canonical scalar语义；仅按
+op class或shape接受自定义region会擦除wiring或effect。任何whole-op fast path都必须证明被删除的
+payload没有额外operation/effect。
 
 layout 文档中的 Wafer-tagged memref / `wafer.tile.materialize_layout` 不是 `wafer.group` 的另一套
 上游 IR。它们是 scheduled group 中同一批 tiled tensor SSA value 在 `wafer.tile.region` 层的

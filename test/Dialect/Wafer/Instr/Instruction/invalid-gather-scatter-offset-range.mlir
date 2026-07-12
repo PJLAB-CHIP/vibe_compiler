@@ -16,4 +16,4 @@ module {
      to memref<4x8xf16, #wafer.memory<spm, cx>>
 }
 
-// CHECK: error: 'wafer.instr.gather_scatter' op source descriptor byte range exceeds physical byte size
+// CHECK: error: 'wafer.instr.gather_scatter' op target_geometry_mismatch: source descriptor byte range exceeds physical byte size

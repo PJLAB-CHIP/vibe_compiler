@@ -45,6 +45,9 @@ Pipeline position:
 
 ## Checkpoint 2: Target Correctness
 
+状态：已完成。`check-wafer`新鲜执行25个C++ unit和225个lit（224 pass、1个feature-inverse
+unsupported），CTest 3/3通过；CRT conformance与104-symbol closure checker通过。
+
 - target lowering在mutation前preflight，并在clone上执行；临时拒绝尚不能结构保持的nested/multiblock/call。
 - 建立共享physical geometry与ABI narrowing检查，先覆盖RDMA/WDMA、DTE、convert、GEMM和shape-bearing family。
 - 修复async issue的read/write resource lifetime；无completion proof不复用。
@@ -54,6 +57,8 @@ Pipeline position:
 完成：control-flow、partial traversal、OOB/narrowing、premature reuse定向negative tests全部通过且失败无mutation。
 
 ## Checkpoint 3: Typed Compile And Bundle
+
+状态：进行中，当前先实施Q15 typed compile request和用户driver，再进入Q16 per-rank bundle。
 
 - 定义最小`CompilationRequest`、`ExecutionConfig`、`RankExecutable`和`ExecutableBundle` C++ value。
 - 新增`wafer-compile`，让`wafer-opt`退出program directory I/O和最终publication。

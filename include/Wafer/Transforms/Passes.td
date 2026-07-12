@@ -114,9 +114,9 @@ def DumpGroupToTileRegionPass
                            "mlir::tensor::TensorDialect", "wafer::WaferDialect"
   ];
   let options = [
-    Option<"logicalRank", "logical-rank", "int64_t", /*default=*/"0",
-           "Current logical execution rank used to materialize group-local "
-           "communication rank facts">
+    Option<"logicalRank", "logical-rank", "int64_t", /*default=*/"-1",
+           "Explicit logical execution rank used to materialize group-local "
+           "communication rank facts; required for modules containing groups">
   ];
 }
 
@@ -133,6 +133,9 @@ def DumpCandidateDdrTileViewsPass
                            "mlir::tensor::TensorDialect", "wafer::WaferDialect"
   ];
   let options = [
+    Option<"logicalRank", "logical-rank", "int64_t", /*default=*/"-1",
+           "Explicit logical execution rank used to materialize candidate "
+           "communication facts; required for modules containing groups">,
     Option<"candidateTileOffsets", "candidate-tile-offsets", "std::string",
            /*default=*/"\"\"",
            "Comma-separated candidate output tile offsets">,
@@ -156,6 +159,9 @@ def SelectGroupTilePass
                            "mlir::tensor::TensorDialect", "wafer::WaferDialect"
   ];
   let options = [
+    Option<"logicalRank", "logical-rank", "int64_t", /*default=*/"-1",
+           "Explicit logical execution rank used to materialize group-local "
+           "communication facts; required for modules containing groups">,
     Option<"tileSearch", "tile-search", "std::string",
            /*default=*/"\"first-legal\"",
            "Tile candidate search mode: first-legal or min-estimated-time">,
@@ -213,9 +219,9 @@ def ConvertGroupToTileRegionPass
                            "mlir::tensor::TensorDialect", "wafer::WaferDialect"
   ];
   let options = [
-    Option<"logicalRank", "logical-rank", "int64_t", /*default=*/"0",
-           "Current logical execution rank used to materialize group-local "
-           "communication rank facts">
+    Option<"logicalRank", "logical-rank", "int64_t", /*default=*/"-1",
+           "Explicit logical execution rank used to materialize group-local "
+           "communication rank facts; required for modules containing groups">
   ];
 }
 

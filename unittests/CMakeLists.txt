@@ -1,6 +1,7 @@
 wafer_require_gtest()
 
 add_executable(WaferUnitTests
+  Conversion/WaferGroupToTileRegionTest.cpp
   Dialect/Wafer/WaferDialectTest.cpp
   Dialect/Wafer/WaferInterfacesTest.cpp
   Runtime/HostRuntimeTest.cpp
@@ -35,3 +36,9 @@ if(WAFER_ENABLE_IMPORTER_DEPS)
 endif()
 
 add_test(NAME WaferUnitTests COMMAND WaferUnitTests)
+
+add_custom_target(check-wafer-unit
+  COMMAND $<TARGET_FILE:WaferUnitTests>
+  DEPENDS WaferUnitTests
+  USES_TERMINAL
+)

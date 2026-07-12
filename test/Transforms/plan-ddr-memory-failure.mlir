@@ -13,7 +13,7 @@ func.func @descriptor_payload_mismatch(
        %out: memref<2x3xf16, #wafer.memory<ddr, tensor>>):
     %loaded = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
         : memref<2x3xf16, #wafer.memory<spm, tensor>>
-    // expected-error @below {{descriptor_payload_mismatch}}
+    // expected-error @below {{source descriptor payload must equal byte_count}}
     wafer.instr.rdma %in to %loaded
         {byte_count = 16 : i64, inner_bytes = 6 : i64,
          src_iterations = array<i64: 2, 1, 1>,
@@ -38,7 +38,7 @@ func.func @descriptor_exceeds_root_range(
        %out: memref<2x3xf16, #wafer.memory<ddr, tensor>>):
     %loaded = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
         : memref<2x3xf16, #wafer.memory<spm, tensor>>
-    // expected-error @below {{ddr_range_overflow}}
+    // expected-error @below {{source descriptor byte range exceeds physical byte size}}
     wafer.instr.rdma %in to %loaded
         {byte_count = 12 : i64, inner_bytes = 6 : i64,
          src_iterations = array<i64: 2, 1, 1>,

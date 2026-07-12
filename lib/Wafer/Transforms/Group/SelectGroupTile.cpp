@@ -65,10 +65,23 @@ struct CandidateStats {
   int64_t instrCount = 0;
 };
 
+enum class CandidateArtifactSource {
+  RepresentativeTile,
+  CompleteTileInstance,
+  CompleteTraversalAPI,
+  FullGroupFallback,
+};
+
+static bool isCompleteArtifactSource(CandidateArtifactSource source) {
+  return source != CandidateArtifactSource::RepresentativeTile;
+}
+
 struct CandidateEvaluation {
   mlir::OwningOpRef<mlir::ModuleOp> module;
   CandidateStats stats;
   std::string failureReason;
+  CandidateArtifactSource artifactSource =
+      CandidateArtifactSource::RepresentativeTile;
 };
 
 struct SelectedCandidate {
@@ -81,6 +94,8 @@ struct SelectedCandidate {
   int64_t rejectedCount = 0;
   int64_t representativeCount = 0;
   mlir::OwningOpRef<mlir::ModuleOp> module;
+  CandidateArtifactSource artifactSource =
+      CandidateArtifactSource::RepresentativeTile;
 };
 
 struct CandidateWorkItem {
@@ -106,6 +121,7 @@ struct SelectionConfig {
         assumeDdrComputeOverlap(policy.timing.assumeDdrComputeOverlap) {}
 
   TileSearchMode mode = TileSearchMode::FirstLegal;
+  int64_t logicalRank = -1;
   llvm::SmallVector<int64_t, 8> preferredTileSizes;
   int64_t maxCandidatesPerDim = 0;
   int64_t maxSearchCandidates = 0;
@@ -130,6 +146,9 @@ struct CandidateCheckResult {
   CandidateStats stats;
   std::string failureReason;
   int64_t representativeCount = 0;
+  mlir::OwningOpRef<mlir::ModuleOp> module;
+  CandidateArtifactSource artifactSource =
+      CandidateArtifactSource::RepresentativeTile;
 };
 
 static std::string getNearestSymbolName(mlir::Operation *op) {
@@ -523,6 +542,44 @@ static bool failsCheapSPMBound(GroupOp group, const CandidateSpec &candidate,
   return *lowerBoundBytes > (spmLimit - spmBase);
 }
 
+static std::optional<std::string>
+getCheapTargetGeometryFailure(GroupOp group, const CandidateSpec &candidate,
+                              llvm::ArrayRef<int64_t> reductionRanges) {
+  std::optional<llvm::SmallVector<mlir::linalg::LinalgOp, 4>> roots =
+      getYieldedRootLinalgOps(group);
+  if (!roots)
+    return std::nullopt;
+
+  constexpr int64_t maxTargetDimension = std::numeric_limits<uint16_t>::max();
+  auto exceedsTargetDimension = [&](llvm::ArrayRef<int64_t> dimensions) {
+    return llvm::any_of(dimensions, [&](int64_t dimension) {
+      return dimension > maxTargetDimension;
+    });
+  };
+
+  for (mlir::linalg::LinalgOp root : *roots) {
+    bool isGemm =
+        mlir::isa<mlir::linalg::MatmulOp, mlir::linalg::BatchMatmulOp>(
+            root.getOperation());
+    bool isReduction = hasReductionIterator(root);
+    if (!isGemm && !isReduction)
+      continue;
+
+    if (exceedsTargetDimension(candidate.tileSizes))
+      return "target_abi_narrowing: candidate traversal dimension must fit "
+             "uint16_t";
+
+    llvm::ArrayRef<int64_t> reductionSizes =
+        candidate.reductionSplitSizes.empty()
+            ? reductionRanges
+            : llvm::ArrayRef<int64_t>(candidate.reductionSplitSizes);
+    if (exceedsTargetDimension(reductionSizes))
+      return "target_abi_narrowing: candidate reduction dimension must fit "
+             "uint16_t";
+  }
+  return std::nullopt;
+}
+
 static void addUnique(llvm::SmallVectorImpl<int64_t> &values, int64_t value,
                       int64_t dim) {
   if (value <= 0 || value > dim)
@@ -705,44 +762,25 @@ static std::string joinFailure(llvm::StringRef gate, llvm::StringRef reason,
   return os.str();
 }
 
-static CandidateEvaluation
-evaluateTileInstance(GroupOp group, llvm::ArrayRef<int64_t> traversalShape,
-                     const CandidateSpec &candidate, const TileInstance &tile,
-                     const SelectionConfig &config) {
-  CandidateEvaluation evaluation;
-  mlir::MLIRContext *context = group.getContext();
+static std::string joinInstructionFailure(llvm::StringRef gate,
+                                          llvm::StringRef reason,
+                                          llvm::StringRef diagnostics) {
+  llvm::StringRef detail = reason.empty() ? diagnostics.trim() : reason.trim();
+  constexpr llvm::StringLiteral targetNarrowingKey = "target_abi_narrowing:";
+  size_t keyOffset = detail.find(targetNarrowingKey);
+  if (keyOffset != llvm::StringRef::npos)
+    return detail.drop_front(keyOffset).split('\n').first.str();
+  return joinFailure(gate, reason, diagnostics);
+}
 
+static CandidateEvaluation
+finishCandidateEvaluation(CandidateEvaluation evaluation,
+                          const SelectionConfig &config) {
+  mlir::MLIRContext *context = evaluation.module->getContext();
   std::string failureReason;
   mlir::LogicalResult result = mlir::success();
-  std::string diagnostics = takeDiagnostics(
-      context,
-      [&]() {
-        return lowerCandidateGroupToTileRegionModule(
-            group, tile.offsets, tile.sizes, candidate.reductionSplitSizes,
-            evaluation.module, &failureReason);
-      },
-      result);
-
-  if (mlir::failed(result) && candidate.reductionSplitSizes.empty() &&
-      isFullFirstTile(traversalShape, tile)) {
-    failureReason.clear();
-    diagnostics = takeDiagnostics(
-        context,
-        [&]() {
-          return lowerGroupToTileRegionModule(group, evaluation.module,
-                                              &failureReason);
-        },
-        result);
-  }
-
-  if (mlir::failed(result)) {
-    evaluation.failureReason =
-        joinFailure("tile-region", failureReason, diagnostics);
-    return evaluation;
-  }
-
   failureReason.clear();
-  diagnostics = takeDiagnostics(
+  std::string diagnostics = takeDiagnostics(
       context,
       [&]() {
         return convertTileRegionToInstrModule(*evaluation.module,
@@ -751,7 +789,7 @@ evaluateTileInstance(GroupOp group, llvm::ArrayRef<int64_t> traversalShape,
       result);
   if (mlir::failed(result)) {
     evaluation.failureReason =
-        joinFailure("instr-lowering", failureReason, diagnostics);
+        joinInstructionFailure("instr-lowering", failureReason, diagnostics);
     return evaluation;
   }
 
@@ -784,12 +822,109 @@ evaluateTileInstance(GroupOp group, llvm::ArrayRef<int64_t> traversalShape,
   diagnostics = takeDiagnostics(
       context, [&]() { return mlir::verify(*evaluation.module); }, result);
   if (mlir::failed(result)) {
-    evaluation.failureReason = joinFailure("verifier", "", diagnostics);
+    evaluation.failureReason =
+        joinInstructionFailure("verifier", "", diagnostics);
     return evaluation;
   }
 
   evaluation.stats = estimateStats(*evaluation.module);
   return evaluation;
+}
+
+static CandidateEvaluation
+evaluateTileInstance(GroupOp group, llvm::ArrayRef<int64_t> traversalShape,
+                     const CandidateSpec &candidate, const TileInstance &tile,
+                     const SelectionConfig &config) {
+  CandidateEvaluation evaluation;
+  mlir::MLIRContext *context = group.getContext();
+
+  std::string failureReason;
+  mlir::LogicalResult result = mlir::success();
+  std::string diagnostics = takeDiagnostics(
+      context,
+      [&]() {
+        return lowerCandidateGroupToTileRegionModule(
+            group, tile.offsets, tile.sizes, candidate.reductionSplitSizes,
+            evaluation.module, &failureReason, config.logicalRank);
+      },
+      result);
+
+  bool usedFullGroupFallback = false;
+  if (mlir::failed(result) && candidate.reductionSplitSizes.empty() &&
+      isFullFirstTile(traversalShape, tile)) {
+    failureReason.clear();
+    diagnostics = takeDiagnostics(
+        context,
+        [&]() {
+          return lowerGroupToTileRegionModule(
+              group, evaluation.module, &failureReason, config.logicalRank);
+        },
+        result);
+    usedFullGroupFallback = mlir::succeeded(result);
+  }
+
+  if (mlir::failed(result)) {
+    evaluation.failureReason =
+        joinFailure("tile-region", failureReason, diagnostics);
+    return evaluation;
+  }
+
+  if (isFullFirstTile(traversalShape, tile)) {
+    evaluation.artifactSource =
+        usedFullGroupFallback ? CandidateArtifactSource::FullGroupFallback
+                              : CandidateArtifactSource::CompleteTileInstance;
+  }
+  return finishCandidateEvaluation(std::move(evaluation), config);
+}
+
+static bool canUseFullGroupFallback(const CandidateSpec &candidate,
+                                    llvm::ArrayRef<int64_t> traversalShape) {
+  return candidate.reductionSplitSizes.empty() &&
+         candidate.tileSizes.size() == traversalShape.size() &&
+         std::equal(candidate.tileSizes.begin(), candidate.tileSizes.end(),
+                    traversalShape.begin(), traversalShape.end());
+}
+
+static CandidateEvaluation
+evaluateCompleteCandidate(GroupOp group, llvm::ArrayRef<int64_t> traversalShape,
+                          const CandidateSpec &candidate,
+                          const SelectionConfig &config) {
+  CandidateEvaluation evaluation;
+  mlir::MLIRContext *context = group.getContext();
+
+  std::string failureReason;
+  mlir::LogicalResult result = mlir::success();
+  std::string diagnostics = takeDiagnostics(
+      context,
+      [&]() {
+        return lowerCompleteCandidateGroupToTileRegionModule(
+            group, candidate.tileSizes, candidate.reductionSplitSizes,
+            evaluation.module, &failureReason, config.logicalRank);
+      },
+      result);
+  evaluation.artifactSource = CandidateArtifactSource::CompleteTraversalAPI;
+
+  if (mlir::failed(result) &&
+      canUseFullGroupFallback(candidate, traversalShape)) {
+    failureReason.clear();
+    diagnostics = takeDiagnostics(
+        context,
+        [&]() {
+          return lowerGroupToTileRegionModule(
+              group, evaluation.module, &failureReason, config.logicalRank);
+        },
+        result);
+    if (mlir::succeeded(result))
+      evaluation.artifactSource = CandidateArtifactSource::FullGroupFallback;
+  }
+
+  if (mlir::failed(result)) {
+    evaluation.failureReason =
+        joinFailure("complete-tile-region", failureReason, diagnostics);
+    return evaluation;
+  }
+
+  return finishCandidateEvaluation(std::move(evaluation), config);
 }
 
 static void
@@ -823,15 +958,17 @@ parseStandaloneGroupModule(llvm::StringRef standaloneGroupModuleText,
   return module;
 }
 
-static CandidateCheckResult evaluateCandidateOnOriginalGroup(
-    GroupOp group, llvm::ArrayRef<int64_t> traversalShape,
-    const CandidateSpec &candidate, const SelectionConfig &config) {
+static CandidateCheckResult
+evaluateCandidate(GroupOp group, llvm::ArrayRef<int64_t> traversalShape,
+                  const CandidateSpec &candidate, const SelectionConfig &config,
+                  bool retainAcceptedModule) {
   CandidateCheckResult result;
   result.spec = candidate;
   llvm::SmallVector<TileInstance, 8> reps =
       buildRepresentativeTiles(traversalShape, candidate.tileSizes);
   result.representativeCount = static_cast<int64_t>(reps.size());
 
+  CandidateEvaluation acceptedEvaluation;
   for (auto [repIndex, rep] : llvm::enumerate(reps)) {
     CandidateEvaluation evaluation =
         evaluateTileInstance(group, traversalShape, candidate, rep, config);
@@ -841,8 +978,36 @@ static CandidateCheckResult evaluateCandidateOnOriginalGroup(
     }
     if (repIndex == 0)
       result.stats = evaluation.stats;
+    if (isCompleteArtifactSource(evaluation.artifactSource))
+      acceptedEvaluation = std::move(evaluation);
   }
+
+  if (!acceptedEvaluation.module) {
+    acceptedEvaluation =
+        evaluateCompleteCandidate(group, traversalShape, candidate, config);
+    if (!acceptedEvaluation.failureReason.empty()) {
+      result.failureReason = acceptedEvaluation.failureReason;
+      return result;
+    }
+  }
+
+  if (!isCompleteArtifactSource(acceptedEvaluation.artifactSource)) {
+    result.failureReason =
+        "complete-artifact: accepted candidate has representative-only "
+        "provenance";
+    return result;
+  }
+  result.artifactSource = acceptedEvaluation.artifactSource;
+  if (retainAcceptedModule)
+    result.module = std::move(acceptedEvaluation.module);
   return result;
+}
+
+static CandidateCheckResult evaluateCandidateOnOriginalGroup(
+    GroupOp group, llvm::ArrayRef<int64_t> traversalShape,
+    const CandidateSpec &candidate, const SelectionConfig &config) {
+  return evaluateCandidate(group, traversalShape, candidate, config,
+                           /*retainAcceptedModule=*/true);
 }
 
 static CandidateCheckResult
@@ -873,24 +1038,8 @@ evaluateCandidateOnStandaloneText(llvm::StringRef standaloneGroupModuleText,
     return result;
   }
 
-  llvm::SmallVector<TileInstance, 8> reps =
-      buildRepresentativeTiles(traversalShape, candidate.tileSizes);
-  result.representativeCount = static_cast<int64_t>(reps.size());
-
-  for (auto [repIndex, rep] : llvm::enumerate(reps)) {
-    CandidateEvaluation evaluation = evaluateTileInstance(
-        parsedGroup, traversalShape, candidate, rep, config);
-    if (!evaluation.failureReason.empty()) {
-      result.failureReason = evaluation.failureReason;
-      evaluation.module = mlir::OwningOpRef<mlir::ModuleOp>();
-      return result;
-    }
-    if (repIndex == 0) {
-      result.stats = evaluation.stats;
-      evaluation.module = mlir::OwningOpRef<mlir::ModuleOp>();
-    }
-  }
-  return result;
+  return evaluateCandidate(parsedGroup, traversalShape, candidate, config,
+                           /*retainAcceptedModule=*/false);
 }
 
 static int64_t computeTileCount(llvm::ArrayRef<int64_t> traversalShape,
@@ -1201,7 +1350,7 @@ selectCandidateForGroup(GroupOp group, llvm::StringRef label,
   initial.tileSizes.assign(shape->begin(), shape->end());
   enqueueCandidate(initial, seen, queue);
 
-  auto buildSelected = [&](const CandidateCheckResult &check,
+  auto buildSelected = [&](CandidateCheckResult &check,
                            int64_t currentVisited) {
     SelectedCandidate selected;
     selected.label = label.str();
@@ -1216,28 +1365,54 @@ selectCandidateForGroup(GroupOp group, llvm::StringRef label,
     selected.candidateCount = currentVisited;
     selected.rejectedCount = rejectedCount;
     selected.representativeCount = check.representativeCount;
+    selected.module = std::move(check.module);
+    selected.artifactSource = check.artifactSource;
     return selected;
   };
 
   auto isRetryableFailure = [](llvm::StringRef failure) {
-    return failure.contains("spm-offsets") ||
+    return failure.starts_with("cheap_bound:") ||
            failure.contains("capacity_overflow") ||
-           failure.contains("tile-region") || failure.contains("cheap_bound");
+           failure.starts_with("tile-bounds:") ||
+           failure.starts_with("tile-demand:") ||
+           failure.starts_with("target_abi_narrowing:");
   };
 
-  auto processCheckResult = [&](const CandidateCheckResult &check) {
+  auto rejectCandidate = [&](const CandidateSpec &candidate,
+                             llvm::StringRef failure) {
+    ++rejectedCount;
+    lastFailure = failure.str();
+    if (isRetryableFailure(lastFailure))
+      enqueueRefinements(group, candidate, *reductionRanges, tileSizeOptions,
+                         seen, queue, best ? config.searchBeamWidth : 0);
+  };
+
+  auto processCheckResult = [&](CandidateCheckResult &check) {
     if (!check.failureReason.empty()) {
-      ++rejectedCount;
-      lastFailure = check.failureReason;
-      if (isRetryableFailure(lastFailure))
-        enqueueRefinements(group, check.spec, *reductionRanges, tileSizeOptions,
-                           seen, queue, best ? config.searchBeamWidth : 0);
+      rejectCandidate(check.spec, check.failureReason);
+      return;
+    }
+    if (!isCompleteArtifactSource(check.artifactSource)) {
+      rejectCandidate(
+          check.spec,
+          "complete-artifact: candidate passed without complete provenance");
       return;
     }
 
     SelectedCandidate selected = buildSelected(check, visitedCount);
-    if (isBetterCandidate(selected, best ? &*best : nullptr))
+    if (isBetterCandidate(selected, best ? &*best : nullptr)) {
+      if (!selected.module) {
+        CandidateEvaluation accepted =
+            evaluateCompleteCandidate(group, *shape, selected.spec, config);
+        if (!accepted.failureReason.empty()) {
+          rejectCandidate(selected.spec, accepted.failureReason);
+          return;
+        }
+        selected.module = std::move(accepted.module);
+        selected.artifactSource = accepted.artifactSource;
+      }
       best = std::move(selected);
+    }
     enqueueRefinements(group, check.spec, *reductionRanges, tileSizeOptions,
                        seen, queue, config.searchBeamWidth);
   };
@@ -1268,6 +1443,14 @@ selectCandidateForGroup(GroupOp group, llvm::StringRef label,
       for (size_t batchOffset = 0; batchOffset < batchSize; ++batchOffset) {
         const CandidateSpec candidate = queue[queueIndex + batchOffset].spec;
         ++visitedCount;
+        if (std::optional<std::string> failure = getCheapTargetGeometryFailure(
+                group, candidate, *reductionRanges)) {
+          CandidateCheckResult result;
+          result.spec = candidate;
+          result.failureReason = std::move(*failure);
+          results[batchOffset] = std::move(result);
+          continue;
+        }
         if (failsCheapSPMBound(group, candidate, config.spmBase,
                                config.spmLimit)) {
           CandidateCheckResult result;
@@ -1291,7 +1474,7 @@ selectCandidateForGroup(GroupOp group, llvm::StringRef label,
         results[slot] = futures[futureIndex].get();
 
       queueIndex += batchSize;
-      for (const CandidateCheckResult &result : results)
+      for (CandidateCheckResult &result : results)
         processCheckResult(result);
       continue;
     }
@@ -1299,55 +1482,30 @@ selectCandidateForGroup(GroupOp group, llvm::StringRef label,
     const CandidateSpec &candidate = queue[queueIndex].spec;
     ++queueIndex;
     ++visitedCount;
+    if (std::optional<std::string> failure =
+            getCheapTargetGeometryFailure(group, candidate, *reductionRanges)) {
+      rejectCandidate(candidate, *failure);
+      continue;
+    }
     if (failsCheapSPMBound(group, candidate, config.spmBase, config.spmLimit)) {
-      ++rejectedCount;
-      lastFailure = "cheap_bound: minimum SPM bytes exceed planning window";
-      enqueueRefinements(group, candidate, *reductionRanges, tileSizeOptions,
-                         seen, queue, best ? config.searchBeamWidth : 0);
+      rejectCandidate(candidate,
+                      "cheap_bound: minimum SPM bytes exceed planning window");
       continue;
     }
-    llvm::SmallVector<TileInstance, 8> reps =
-        buildRepresentativeTiles(*shape, candidate.tileSizes);
-
-    CandidateEvaluation firstEvaluation;
-    bool passed = true;
-    for (auto [repIndex, rep] : llvm::enumerate(reps)) {
-      CandidateEvaluation evaluation =
-          evaluateTileInstance(group, *shape, candidate, rep, config);
-      if (!evaluation.failureReason.empty()) {
-        passed = false;
-        ++rejectedCount;
-        lastFailure = evaluation.failureReason;
-        break;
-      }
-      if (repIndex == 0)
-        firstEvaluation = std::move(evaluation);
+    CandidateCheckResult check =
+        evaluateCandidateOnOriginalGroup(group, *shape, candidate, config);
+    if (!check.failureReason.empty()) {
+      rejectCandidate(candidate, check.failureReason);
+      continue;
     }
-
-    if (!passed) {
-      if (llvm::StringRef(lastFailure).contains("spm-offsets") ||
-          llvm::StringRef(lastFailure).contains("capacity_overflow") ||
-          llvm::StringRef(lastFailure).contains("tile-region") ||
-          llvm::StringRef(lastFailure).contains("cheap_bound"))
-        enqueueRefinements(group, candidate, *reductionRanges, tileSizeOptions,
-                           seen, queue, best ? config.searchBeamWidth : 0);
+    if (!isCompleteArtifactSource(check.artifactSource) || !check.module) {
+      rejectCandidate(
+          candidate,
+          "complete-artifact: candidate passed without accepted module");
       continue;
     }
 
-    SelectedCandidate selected;
-    selected.label = label.str();
-    selected.group = group;
-    selected.spec = candidate;
-    selected.stats = firstEvaluation.stats;
-    selected.estimatedCycles = estimateCycles(
-        selected.stats, computeTileCount(*shape, candidate.tileSizes),
-        config.computeOpsPerCycle, config.ddrBytesPerCycle,
-        config.spmBytesPerCycle, config.instrIssueCycles,
-        config.assumeDdrComputeOverlap);
-    selected.candidateCount = visitedCount;
-    selected.rejectedCount = rejectedCount;
-    selected.representativeCount = static_cast<int64_t>(reps.size());
-    selected.module = std::move(firstEvaluation.module);
+    SelectedCandidate selected = buildSelected(check, visitedCount);
 
     if (config.mode == TileSearchMode::FirstLegal)
       return selected;
@@ -1361,31 +1519,16 @@ selectCandidateForGroup(GroupOp group, llvm::StringRef label,
   if (best) {
     best->candidateCount = visitedCount;
     best->rejectedCount = rejectedCount;
-    if (!best->module) {
-      CandidateCheckResult materialized =
-          evaluateCandidateOnOriginalGroup(group, *shape, best->spec, config);
-      if (!materialized.failureReason.empty()) {
-        group.emitError() << "selected candidate rematerialization failed: "
-                          << materialized.failureReason;
+    if (!best->module || !isCompleteArtifactSource(best->artifactSource)) {
+      CandidateEvaluation accepted =
+          evaluateCompleteCandidate(group, *shape, best->spec, config);
+      if (!accepted.failureReason.empty()) {
+        group.emitError() << "selected candidate complete artifact failed: "
+                          << accepted.failureReason;
         return mlir::failure();
       }
-      TileInstance firstTile =
-          buildRepresentativeTiles(*shape, best->spec.tileSizes).front();
-      CandidateEvaluation firstEvaluation =
-          evaluateTileInstance(group, *shape, best->spec, firstTile, config);
-      if (!firstEvaluation.failureReason.empty()) {
-        group.emitError() << "selected candidate commit artifact failed: "
-                          << firstEvaluation.failureReason;
-        return mlir::failure();
-      }
-      best->stats = firstEvaluation.stats;
-      best->estimatedCycles = estimateCycles(
-          best->stats, computeTileCount(*shape, best->spec.tileSizes),
-          config.computeOpsPerCycle, config.ddrBytesPerCycle,
-          config.spmBytesPerCycle, config.instrIssueCycles,
-          config.assumeDdrComputeOverlap);
-      best->representativeCount = materialized.representativeCount;
-      best->module = std::move(firstEvaluation.module);
+      best->module = std::move(accepted.module);
+      best->artifactSource = accepted.artifactSource;
     }
     return std::move(*best);
   }
@@ -1431,13 +1574,36 @@ getStandaloneSelectedFunction(GroupOp group, mlir::ModuleOp selectedModule) {
 }
 
 static mlir::LogicalResult
-commitSelectedCandidate(SelectedCandidate &selected) {
+commitSelectedCandidate(SelectedCandidate &selected,
+                        const SelectionConfig &config) {
   GroupOp group = selected.group;
-  if (!group || !selected.module) {
+  if (!group || !selected.module ||
+      !isCompleteArtifactSource(selected.artifactSource)) {
     if (group)
-      group.emitError() << "selected candidate commit missing lowered module";
+      group.emitError()
+          << "selected candidate commit missing complete accepted artifact";
     return mlir::failure();
   }
+
+  mlir::FailureOr<llvm::SmallVector<int64_t, 4>> traversalShape =
+      getStaticTraversalShape(group);
+  if (mlir::failed(traversalShape)) {
+    group.emitError() << "selected candidate commit has no static traversal "
+                         "shape";
+    return mlir::failure();
+  }
+
+  CandidateEvaluation commitProof =
+      evaluateCompleteCandidate(group, *traversalShape, selected.spec, config);
+  if (!commitProof.failureReason.empty() || !commitProof.module ||
+      !isCompleteArtifactSource(commitProof.artifactSource)) {
+    group.emitError() << "selected candidate complete artifact proof failed"
+                      << (commitProof.failureReason.empty() ? "" : ": ")
+                      << commitProof.failureReason;
+    return mlir::failure();
+  }
+  selected.module = std::move(commitProof.module);
+  selected.artifactSource = commitProof.artifactSource;
 
   mlir::FailureOr<mlir::func::FuncOp> selectedFunc =
       getStandaloneSelectedFunction(group, *selected.module);
@@ -1550,6 +1716,7 @@ struct SelectGroupTilePass
     WaferTargetPolicy targetPolicy = getDefaultWaferTargetPolicy(*parsedEffort);
     SelectionConfig config(targetPolicy);
     config.mode = *parsedMode;
+    config.logicalRank = logicalRank;
     if (parsedPreferred && parsedPreferred->empty()) {
       getOperation()->emitError()
           << "invalid_tile_search_config: preferred-tile-sizes cannot be empty "
@@ -1568,10 +1735,19 @@ struct SelectGroupTilePass
     if (config.mode == TileSearchMode::MinEstimatedTime)
       config.candidateParallelism = candidateParallelism;
 
+    mlir::OwningOpRef<mlir::ModuleOp> stagedModule =
+        mlir::cast<mlir::ModuleOp>(getOperation()->clone());
     llvm::SmallVector<GroupOp, 8> groups;
-    getOperation().walk([&](GroupOp group) { groups.push_back(group); });
+    stagedModule->walk([&](GroupOp group) { groups.push_back(group); });
     if (groups.empty()) {
       markAllAnalysesPreserved();
+      return;
+    }
+    if (config.logicalRank < 0) {
+      getOperation()->emitError()
+          << "missing_logical_rank: tile selection requires an explicit "
+             "non-negative logical-rank";
+      signalPassFailure();
       return;
     }
 
@@ -1590,24 +1766,29 @@ struct SelectGroupTilePass
         signalPassFailure();
         return;
       }
-      if (printCandidateSummary)
-        printSelectedSummary(*selected, config.mode);
       selectedCandidates.push_back(std::move(*selected));
     }
 
     for (SelectedCandidate &selected : selectedCandidates) {
-      if (mlir::failed(commitSelectedCandidate(selected))) {
+      if (mlir::failed(commitSelectedCandidate(selected, config))) {
         signalPassFailure();
         return;
       }
     }
 
-    if (mlir::failed(mlir::verify(getOperation()))) {
-      getOperation()->emitError()
+    if (mlir::failed(mlir::verify(*stagedModule))) {
+      stagedModule->emitError()
           << "selected candidate commit produced invalid IR";
       signalPassFailure();
       return;
     }
+
+    if (printCandidateSummary)
+      for (const SelectedCandidate &selected : selectedCandidates)
+        printSelectedSummary(selected, config.mode);
+
+    getOperation()->setAttrs((*stagedModule)->getAttrs());
+    getOperation().getBodyRegion().takeBody(stagedModule->getBodyRegion());
   }
 };
 

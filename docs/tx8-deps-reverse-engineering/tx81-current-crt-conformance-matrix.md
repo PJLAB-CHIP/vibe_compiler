@@ -10,17 +10,19 @@ prototype与repo-local实现分别查看`runtime/wafer_crt/include/wafer_tx81_cr
 ## Scope
 
 - Evidence source：旧 DLCompiler `lib/Tx81` source snapshot与public TX8 headers。
-- Repo-local observation：`runtime/wafer_crt/src/wafer_tx81_crt.c`中可直接读取的wrapper调用、
-  参数处理、wait/writeback和optional-feature配置。
+- Repo-local observation：compiler target lowering以及`runtime/wafer_crt` public header/source中可直接
+  读取的legality、ABI、wrapper调用、参数处理、wait/writeback和optional-feature配置。
 - 本表不因旧helper存在而授权新symbol，也不定义某个family的production状态。
+- 当前symbol checker从target lowering和Wafer enum registry推导出104个production symbol；这是当前
+  实现的可重放观察，closure事实源仍是checker，不由本表另建清单。
 
 ## Static Matrix
 
 | family | old-source / public-header evidence | repo-local implementation observation |
 | --- | --- | --- |
-| RDMA / WDMA | `__Rdma4d`, `__Wdma4d` call `AddSrcDst` and `ConfigStrideIteration`; old generic helpers also contain a vectorize fallback | Wafer CRT calls the two public wrapper methods and converts `inner_bytes` to element count |
+| RDMA / WDMA | `__Rdma4d`, `__Wdma4d` call `AddSrcDst` and `ConfigStrideIteration`; old generic helpers also contain a vectorize fallback | Wafer compiler/CRT用checked conversion把`inner_bytes`转为element count：bitpacked BOOL要求`inner_bytes <= UINT32_MAX / 8`并计算`bytes * 8`，其它format要求可被element byte width整除；不满足时fail closed，不做截断除法或溢出乘法 |
 | GatherScatter | `__GatherScatter` and `__Memcpy` expose source/destination stride-iteration ordering | Wafer CRT passes byte `inner_bytes` and separate source/destination descriptors to `GatherScatter` |
-| Memset / Bit2Fp / MaskMove | old direct helpers and public wrapper declarations expose these operations; the public MaskMove field is `uint32_t` | Wafer CRT calls the public wrappers and narrows the mask argument at the wrapper boundary |
+| Memset / Bit2Fp / MaskMove | old direct helpers and public wrapper declarations expose these operations; the public MaskMove field is `uint32_t` | Wafer CRT header/source都以`uint32_t mask`调用public wrapper，不含隐藏cast；compiler lowering证明mask来自已规划SPM allocation、view/range不越界且完整physical address range适配`uint32_t`后才发i32参数 |
 | Elementwise arithmetic / relation / logic | `arith.c`, `relation.c`, `logic.c` and unary files contain VV, VS, bool and value wrapper variants | Wafer CRT source defines per-kind wrapper calls; relation/logic macros branch on `Fmt_BOOL` |
 | Convert | old dtype conversion files separate zero-point, rounding and plain wrapper forms | Wafer CRT source has corresponding zero-point, rounding and plain macro groups |
 | Reduce | old source contains sum/avg/max/min direct wrappers and a composite reduce-mul path | Wafer CRT source contains direct sum/avg/max/min wrapper definitions; no reduce-mul definition is observed |
@@ -29,9 +31,15 @@ prototype与repo-local实现分别查看`runtime/wafer_crt/include/wafer_tx81_cr
 | Pool / Unpool | no matching old source file was found; public headers expose wrapper entry points | Wafer CRT contains public-wrapper calls for pool and unpool families |
 | TDMA pad / img2col | `__Pad` and `__Img2col` expose direct wrapper parameters; other old files contain additional transform helpers | Wafer CRT contains pad and img2col definitions; the other transform helper names are absent |
 | Peripheral argmax / argmin | `__ArgMax`, `__ArgMin` and the SPM mapping helper show register writeback followed by mapped SPM stores | Wafer CRT waits, maps value/index destinations and stores the two writeback fields |
-| Peripheral factorize / elem-mask | no matching old source file was found; public headers expose the wrapper entry points | Wafer CRT contains public-wrapper calls for both operations |
+| Peripheral factorize | no matching old source file was found; public headers expose the wrapper entry point | repo-local CRT header/source不含factorize symbol；compiler target lowering将该IR kind显式判为`unsupported_target_operation`，不能进入production closure |
+| Peripheral elem-mask | no matching old source file was found; public headers expose the wrapper entry point | Wafer CRT contains the corresponding public-wrapper call |
 | Peripheral bilinear / LUT / random | `__Bilinear`, `__Lut16`, `__Lut32` and `__RandGen` provide direct wrapper evidence | Wafer CRT contains the corresponding public-wrapper calls; bilinear scale is computed from shapes |
 | Count / Direct DTE / composite helpers | old source contains `__Count`, `__Send`, an empty `__Recv`, GELU, MXFP, reduce-mul and layout helpers | these helper names are not observed in the repo-local CRT source snapshot; the old source alone does not establish reusable Wafer IR / ABI or completion semantics |
+
+Direct DTE当前没有physical endpoint/slot和target CRT closure，target conversion在call emission前将
+`wafer.instr.dte_*`判为`unsupported_target_transport`。同样，只有arena-relative offset、没有explicit
+arena base binding的compiler-managed DDR allocation会判为`unsupported_target_address`；两者都不能由
+runtime或CRT补做语义恢复。
 
 ## Evidence Limits
 

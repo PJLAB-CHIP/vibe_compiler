@@ -3,8 +3,9 @@
 
 module {
   %source = "builtin.unrealized_conversion_cast"() : () -> tensor<4xf32>
+  %dest = "builtin.unrealized_conversion_cast"() : () -> tensor<4xf32>
   %0 = wafer.group ins(%source : tensor<4xf32>)
-                    outs(%source : tensor<4xf32>) {
+                    outs(%dest : tensor<4xf32>) {
   ^bb0(%in: tensor<4xf32>, %out: tensor<4xf32>):
     %sum = stablehlo.add %in, %in : tensor<4xf32>
     wafer.group.yield %sum : tensor<4xf32>

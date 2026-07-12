@@ -3,8 +3,8 @@
 
 The compiler lowering owns the set of target symbol families, Wafer TableGen
 enums own dynamic symbol suffixes, and the repo-local CRT header/source must
-exactly implement the resulting production surface. Direct DTE remains a
-lowering-only surface until its production CRT ABI is implemented.
+exactly implement the resulting production surface. Target-illegal operations
+must not appear in the lowering-derived symbol registry.
 """
 
 from __future__ import annotations
@@ -44,10 +44,8 @@ DYNAMIC_SYMBOL_ENUMS = {
     "peripheral": "InstrPeripheralKind",
 }
 
-LOWERING_ONLY_SYMBOLS = {
-    "wafer_tx81_dte_send",
-    "wafer_tx81_dte_recv",
-    "wafer_tx81_dte_wait",
+TARGET_ILLEGAL_SYMBOLS = {
+    "wafer_tx81_peripheral_factorize": "peripheral factorize lacks a",
 }
 
 VERIFIER_REJECTED_SYMBOLS = {
@@ -126,7 +124,9 @@ def production_symbols_from_code(
     lowering_text: str, attrs_text: str, instruction_ops_text: str
 ) -> set[str]:
     potential_symbols = potential_symbols_from_lowering(lowering_text, attrs_text)
-    non_production_symbols = LOWERING_ONLY_SYMBOLS | set(VERIFIER_REJECTED_SYMBOLS)
+    non_production_symbols = set(TARGET_ILLEGAL_SYMBOLS) | set(
+        VERIFIER_REJECTED_SYMBOLS
+    )
     stale_exclusions = sorted(non_production_symbols - potential_symbols)
     if stale_exclusions:
         fail(
@@ -136,6 +136,9 @@ def production_symbols_from_code(
     for symbol, verifier_marker in VERIFIER_REJECTED_SYMBOLS.items():
         if verifier_marker not in instruction_ops_text:
             fail(f"{symbol} is not proven unreachable by the instruction verifier")
+    for symbol, target_marker in TARGET_ILLEGAL_SYMBOLS.items():
+        if target_marker not in lowering_text:
+            fail(f"{symbol} is not proven unreachable by target lowering")
     return potential_symbols - non_production_symbols
 
 
@@ -150,7 +153,9 @@ def parse_prototypes(header_text: str) -> dict[str, str]:
 
 
 def check_no_non_production_symbols(path: pathlib.Path, text: str) -> None:
-    non_production_symbols = LOWERING_ONLY_SYMBOLS | set(VERIFIER_REJECTED_SYMBOLS)
+    non_production_symbols = set(TARGET_ILLEGAL_SYMBOLS) | set(
+        VERIFIER_REJECTED_SYMBOLS
+    )
     present = sorted(non_production_symbols & set(SYMBOL_RE.findall(text)))
     if present:
         fail(f"{path} contains non-production CRT symbols: {', '.join(present)}")

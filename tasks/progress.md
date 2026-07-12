@@ -41,9 +41,9 @@ Q14 architecture-baseline
 | Tracking ID | Semantic key | 状态 | 直接前置 | 当前动作 / 完成要求 | 设计 owner |
 | --- | --- | --- | --- | --- | --- |
 | Q14 | `architecture-baseline` | `done` | — | 已固化实现事实和P0/P1风险，归档旧长计划，并把01/14/15/16与队列收缩到单卡纵向边界；active DAG不再依赖不存在对象。 | 01、14、15、16 |
-| Q0 | `target-correctness` | `doing` | — | 先做无mutation的structure fail-closed、完整traversal containment、shared geometry/narrowing和async resource lifetime；正式完成还需structure-preserving conversion和完整traversal commit。 | 06、09、11、14、16 |
-| Q5.C | `workload-corpus` | `next` | — | 准备真实exporter生成的linear/MLP与tiny Llama输入、固定config/seed/dtype/shape/digest和独立CPU reference；不推进compiler/runtime/board gate。 | 02、16 |
-| Q15 | `compiler-driver` | `blocked` | Q0 | 定义最小typed `CompilationRequest`/`ExecutionConfig`并新增`wafer-compile`；`wafer-opt`恢复为IR调试入口。 | 01、02、16 |
+| Q0 | `target-correctness` | `done` | — | module-clone full conversion、complete traversal、exact named/generic payload与tensor SSA preservation、physical geometry/ABI narrowing、per-store/per-region completion及target fail-closed边界已闭合；`check-wafer`新鲜执行25个C++ unit和225个lit（224 pass、1个feature-inverse unsupported），CTest 3/3通过。4096个output-tile/reduction-chunk静态materialization实例预算只是unrolled实现的编译资源保护。 | 06、07、09、11、14、16 |
+| Q5.C | `workload-corpus` | `done` | — | 已固定真实PyTorch/XLA exporter生成的linear-residual MLP与tiny Llama source/config/seed/dtype/shape/payload/reference/program digest；独立NumPy CPU oracle、framework交叉检查和重复export canonical-equivalence已通过；未推进compiler/runtime/board gate。 | 02、16 |
+| Q15 | `compiler-driver` | `doing` | Q0 | 定义最小typed `CompilationRequest`/`ExecutionConfig`并新增`wafer-compile`；`wafer-opt`恢复为IR调试入口。 | 01、02、16 |
 | Q16 | `executable-bundle` | `blocked` | Q15 | 对rank-count=1/16创建显式per-rank static clones，完整验证后形成`RankExecutable[]`和atomic `ExecutableBundle`；禁止默认rank 0。 | 03、04、06、09、12、13、16 |
 | Q17 | `target-artifact-bundle` | `blocked` | Q0、Q16 | device link只写transaction staging；所有rank module、必要digest和ABI检查通过后一次发布，无partial `.so`。 | 14、16 |
 | Q18 | `manifest-runtime` | `blocked` | Q17 | 用唯一C++ typed manifest/canonical JSON和slot-resource双射替代文本恢复及双validator；no-card runtime只消费verified manifest。 | 15、16 |
@@ -51,8 +51,9 @@ Q14 architecture-baseline
 | Q20 | `single-card-linear-mlp` | `blocked` | Q5.C、Q18、Q19 | 同一driver分别以rank-count=1和16生成完整bundle、manifest和runtime trace，并由reference executor与CPU reference比较。 | 01、16 |
 | Q21 | `single-card-tiny-llama` | `blocked` | Q20 | tiny Llama decoder block经同一16-rank candidate/bundle/package/reference路径；不接受手工group/instr或绕过selector的平行主线。 | 01、05、06、10、11、13、16 |
 
-Q0 与 Q5.C 在 Q14 完成后可并行；其它任务严格按直接前置解锁。Q0 的临时 broad rejection只作
-containment，不能标记正式 target correctness 完成。
+Q0 与 Q5.C 在 Q14 完成后可并行；其它任务严格按直接前置解锁。Q0只拥有单entry/rank的formal
+conversion、legality、complete traversal、completion和atomic source gate；不依赖Q17 all-rank target
+publication、Q19 reference numeric或Q20/Q21 workload vertical，后者也不能反向作为Q0完成证明。
 
 ## Later / External Gates
 
@@ -80,11 +81,21 @@ cache、segmented MoE、70B/100GB stress和完整ELF ABI-note体系。需要恢�
 
 ### Q0 `target-correctness`
 
-- candidate accepted output覆盖完整traversal，无gap/overlap；抽样module不能直接commit。
-- false branch、loop、CFG和call在正式conversion中结构保持；临时阶段必须mutation前结构化拒绝。
-- RDMA/WDMA/DTE/convert/GEMM/shape-bearing family的physical range、descriptor relation和ABI narrowing闭合。
-- async issue的全部read/write resource活到可信completion；reuse tests覆盖fence前后。
-- 任一失败原module/output byte-identical，无partial mutation或artifact。
+- candidate accepted output覆盖完整traversal，无gap/overlap；reduction必须证明yielded exact combiner同时连接
+  reduced value和accumulator。当前静态materialization用checked ceil-div/product，并对output-tile/
+  reduction-chunk展开设4096实例编译预算；
+  overflow/超限fail closed，但该预算不是硬件、IR、workload或16-tile topology语义，长期由compact loop替代。
+- false branch、loop、CFG和direct call在正式conversion中结构保持；indirect/recursive/unknown call fail closed，
+  full conversion后不得残留illegal op。
+- RDMA/WDMA/gather/convert/GEMM和当前supported shape-bearing family的physical range、descriptor relation、
+  element-width relation、capacity和ABI narrowing闭合；未定义shape profile fail closed。
+- Direct DTE在physical endpoint/slot/CRT完成前target-illegal；compiler-managed DDR只有arena-relative offset而无
+  explicit arena base binding时target-illegal；mask ABI显式为uint32。
+- async issue的全部read/write resource按path和engine活到可信completion；每个isolated
+  `wafer.tile.region` exit pending set为空，local fence不能代替DTE wait，反之亦然。whole-entry cross-region
+  SPM reuse只作后续优化。
+- conversion只改module clone；任一失败原module/output byte-identical，无partial mutation或accepted target IR。
+- Q0 completion不要求all-rank module publication或reference numeric；分别由Q17和Q19拥有。
 
 ### Q15-Q18 compile / bundle / manifest
 
@@ -107,7 +118,7 @@ cache、segmented MoE、70B/100GB stress和完整ELF ABI-note体系。需要恢�
 | Tracking ID | Semantic key | 已验证结果 | 明确不代表 |
 | --- | --- | --- | --- |
 | Q1 | `crt-surface-audit` | 当前compiler-emitted production CRT symbol/prototype surface已审计。 | instruction geometry、numeric correctness |
-| Q2-Q3 | `crt-device-symbol-closure` | repo-local CRT 105个production symbol和required-Wafer-symbol device link gate已闭合。 | atomic publication、全部undefined ABI、board execution |
+| Q2-Q3 | `crt-device-symbol-closure` | repo-local CRT 104个production symbol和required-Wafer-symbol device link gate已闭合。 | atomic publication、全部undefined ABI、board execution |
 | Q3.5 | `crt-extended-evidence` | 历史TX81 CRT扩展surface已分级。 | extended surface已支持 |
 | Q13.T | `supporting-doc-tool-decoupling` | symbol surface从target lowering和Wafer enum registry推导，arg writeback conformance从instruction verifier、target address lowering和CRT代码交叉证明；checker不再解析tasks/docs marker。 | checker证明packet/numeric/board correctness |
 | Q10-Q13 | `historical-design-governance` | 历史系统审计、设计收敛、计划拆解和文档一致性工作已完成。 | 对应production对象已实现；其长计划已被本轮重基线取代 |

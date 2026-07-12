@@ -151,8 +151,8 @@ getMovementDescriptorEnd(mlir::Operation *op, int64_t offset,
                          llvm::StringRef role) {
   int64_t end = 0;
   if (!checkedAdd(offset, innerBytes, end))
-    return op->emitOpError()
-           << role << " descriptor byte range overflows int64";
+    return op->emitOpError() << "target_range_overflow: " << role
+                             << " descriptor byte range overflows int64";
 
   if (!strides || !iterations)
     return end;
@@ -161,8 +161,8 @@ getMovementDescriptorEnd(mlir::Operation *op, int64_t offset,
        llvm::zip(strides.asArrayRef(), iterations.asArrayRef())) {
     int64_t span = 0;
     if (!checkedMul(stride, iteration - 1, span) || !checkedAdd(end, span, end))
-      return op->emitOpError()
-             << role << " descriptor byte range overflows int64";
+      return op->emitOpError() << "target_range_overflow: " << role
+                               << " descriptor byte range overflows int64";
   }
   return end;
 }
@@ -178,7 +178,8 @@ static mlir::LogicalResult verifyDescriptorWithinPhysicalRange(
   std::optional<WaferPhysicalTensorInfo> info =
       wafer::computeWaferPhysicalTensorInfo(memrefType);
   if (!info || info->physicalBytes < 0)
-    return mlir::success();
+    return op->emitOpError() << "target_geometry_mismatch: " << role
+                             << " physical byte size must be statically known";
 
   mlir::FailureOr<int64_t> end = getMovementDescriptorEnd(
       op, getOptionalI64AttrValue(offsetAttr), innerBytesAttr.getInt(), strides,
@@ -187,7 +188,8 @@ static mlir::LogicalResult verifyDescriptorWithinPhysicalRange(
     return mlir::failure();
   if (*end > info->physicalBytes)
     return op->emitOpError()
-           << role << " descriptor byte range exceeds physical byte size";
+           << "target_geometry_mismatch: " << role
+           << " descriptor byte range exceeds physical byte size";
   return mlir::success();
 }
 
@@ -201,6 +203,14 @@ static mlir::LogicalResult verifyMovementDescriptor(
     return mlir::failure();
   if (innerBytes.getInt() > byteCount.getInt())
     return op->emitOpError("inner_bytes must not exceed byte_count");
+  if (static_cast<bool>(srcStrides) != static_cast<bool>(srcIterations))
+    return op->emitOpError(
+        "src_strides and src_iterations must either both be present or both "
+        "be absent");
+  if (static_cast<bool>(dstStrides) != static_cast<bool>(dstIterations))
+    return op->emitOpError(
+        "dst_strides and dst_iterations must either both be present or both "
+        "be absent");
   if (srcStrides &&
       mlir::failed(verifyDescriptorArray(op, srcStrides, "src_strides",
                                          /*positive=*/false)))
@@ -217,6 +227,430 @@ static mlir::LogicalResult verifyMovementDescriptor(
       mlir::failed(verifyDescriptorArray(op, dstIterations, "dst_iterations",
                                          /*positive=*/true)))
     return mlir::failure();
+
+  auto verifyPayload = [&](mlir::DenseI64ArrayAttr iterations,
+                           llvm::StringRef role) -> mlir::LogicalResult {
+    if (!iterations)
+      return mlir::success();
+    int64_t payloadBytes = innerBytes.getInt();
+    for (int64_t iteration : iterations.asArrayRef()) {
+      if (!checkedMul(payloadBytes, iteration, payloadBytes))
+        return op->emitOpError()
+               << "target_range_overflow: " << role
+               << " descriptor payload byte count overflows int64";
+    }
+    if (payloadBytes != byteCount.getInt())
+      return op->emitOpError() << "target_geometry_mismatch: " << role
+                               << " descriptor payload must equal byte_count";
+    return mlir::success();
+  };
+
+  if (mlir::failed(verifyPayload(srcIterations, "source")) ||
+      mlir::failed(verifyPayload(dstIterations, "destination")))
+    return mlir::failure();
+  return mlir::success();
+}
+
+static mlir::LogicalResult
+verifyBytesWithinPhysicalRange(mlir::Operation *op, mlir::Type type,
+                               int64_t bytes, llvm::StringRef role) {
+  auto memrefType = mlir::dyn_cast<mlir::MemRefType>(type);
+  if (!memrefType)
+    return mlir::success();
+  std::optional<WaferPhysicalTensorInfo> info =
+      wafer::computeWaferPhysicalTensorInfo(memrefType);
+  if (!info || info->physicalBytes < 0)
+    return op->emitOpError() << "target_geometry_mismatch: " << role
+                             << " physical byte size must be statically known";
+  if (bytes > info->physicalBytes)
+    return op->emitOpError() << "target_geometry_mismatch: " << role
+                             << " byte count exceeds physical byte size";
+  return mlir::success();
+}
+
+static mlir::LogicalResult
+verifyStaticElementCountEqual(mlir::Operation *op, mlir::Type lhsType,
+                              mlir::Type rhsType, llvm::StringRef message) {
+  std::optional<mlir::RankedTensorType> lhs = getLogicalTensorType(lhsType);
+  std::optional<mlir::RankedTensorType> rhs = getLogicalTensorType(rhsType);
+  if (!lhs || !rhs || !lhs->hasStaticShape() || !rhs->hasStaticShape())
+    return op->emitOpError(
+        "target_geometry_mismatch: instruction element counts must be "
+        "statically known");
+  if (lhs->getNumElements() != rhs->getNumElements())
+    return op->emitOpError() << "target_geometry_mismatch: " << message;
+  return mlir::success();
+}
+
+static mlir::LogicalResult
+verifyStaticElementCountMatches(mlir::Operation *op, mlir::Type type,
+                                int64_t expected, llvm::StringRef role) {
+  std::optional<mlir::RankedTensorType> tensor = getLogicalTensorType(type);
+  if (!tensor || !tensor->hasStaticShape())
+    return op->emitOpError() << "target_geometry_mismatch: " << role
+                             << " element count must be statically known";
+  if (expected < 0 || tensor->getNumElements() != expected)
+    return op->emitOpError() << "target_geometry_mismatch: " << role
+                             << " element count must equal elem_count";
+  return mlir::success();
+}
+
+static mlir::LogicalResult verifyUInt32Value(mlir::Operation *op, int64_t value,
+                                             llvm::StringRef name) {
+  if (value < 0 ||
+      static_cast<uint64_t>(value) > std::numeric_limits<uint32_t>::max())
+    return op->emitOpError()
+           << "target_abi_narrowing: " << name << " must fit uint32_t";
+  return mlir::success();
+}
+
+static mlir::LogicalResult verifyUInt16Value(mlir::Operation *op, int64_t value,
+                                             llvm::StringRef name) {
+  if (value < 0 ||
+      static_cast<uint64_t>(value) > std::numeric_limits<uint16_t>::max())
+    return op->emitOpError()
+           << "target_abi_narrowing: " << name << " must fit uint16_t";
+  return mlir::success();
+}
+
+static mlir::LogicalResult verifyUInt32Array(mlir::Operation *op,
+                                             mlir::DenseI64ArrayAttr values,
+                                             llvm::StringRef name) {
+  if (!values)
+    return mlir::success();
+  for (int64_t value : values.asArrayRef())
+    if (mlir::failed(verifyUInt32Value(op, value, name)))
+      return mlir::failure();
+  return mlir::success();
+}
+
+static mlir::LogicalResult verifyUInt16Array(mlir::Operation *op,
+                                             mlir::DenseI64ArrayAttr values,
+                                             llvm::StringRef name) {
+  if (!values)
+    return mlir::success();
+  for (int64_t value : values.asArrayRef()) {
+    if (value < 0 ||
+        static_cast<uint64_t>(value) > std::numeric_limits<uint16_t>::max())
+      return op->emitOpError() << "target_abi_narrowing: " << name
+                               << " entries must fit uint16_t";
+  }
+  return mlir::success();
+}
+
+static mlir::LogicalResult
+verifyStaticElementCountFitsUInt32(mlir::Operation *op, mlir::Type type,
+                                   llvm::StringRef role) {
+  std::optional<mlir::RankedTensorType> tensor = getLogicalTensorType(type);
+  if (!tensor || !tensor->hasStaticShape())
+    return op->emitOpError() << "target_geometry_mismatch: " << role
+                             << " element count must be statically known";
+
+  uint64_t elements = 1;
+  for (int64_t dim : tensor->getShape()) {
+    if (elements != 0 && static_cast<uint64_t>(dim) >
+                             std::numeric_limits<uint32_t>::max() / elements)
+      return op->emitOpError() << "target_abi_narrowing: " << role
+                               << " element count must fit uint32_t";
+    elements *= static_cast<uint64_t>(dim);
+  }
+  return mlir::success();
+}
+
+static mlir::LogicalResult verifyStaticShapeFitsUInt16(mlir::Operation *op,
+                                                       mlir::Type type,
+                                                       llvm::StringRef role) {
+  std::optional<mlir::RankedTensorType> tensor = getLogicalTensorType(type);
+  if (!tensor || !tensor->hasStaticShape() || tensor->getRank() > 4)
+    return op->emitOpError() << "target_geometry_mismatch: " << role
+                             << " shape must be static with rank at most 4";
+  for (int64_t dim : tensor->getShape()) {
+    if (mlir::failed(verifyUInt16Value(op, dim, role)))
+      return mlir::failure();
+  }
+  return mlir::success();
+}
+
+static mlir::LogicalResult
+verifyShapeAttrMatchesBuffer(mlir::Operation *op, mlir::Type type,
+                             mlir::DenseI64ArrayAttr shape,
+                             llvm::StringRef name) {
+  std::optional<mlir::RankedTensorType> tensor = getLogicalTensorType(type);
+  if (!tensor || !tensor->hasStaticShape() || tensor->getRank() > 4)
+    return op->emitOpError()
+           << "target_geometry_mismatch: " << name
+           << " requires a static Wafer buffer of rank at most 4";
+  if (!shape || shape.size() != 4)
+    return op->emitOpError() << "target_geometry_mismatch: " << name
+                             << " must contain exactly 4 entries";
+  int64_t leadingOnes = 4 - tensor->getRank();
+  for (int64_t index = 0; index < 4; ++index) {
+    int64_t expected =
+        index < leadingOnes ? 1 : tensor->getDimSize(index - leadingOnes);
+    if (shape.asArrayRef()[index] != expected)
+      return op->emitOpError() << "target_geometry_mismatch: " << name
+                               << " must match the logical buffer shape";
+  }
+  return verifyUInt16Array(op, shape, name);
+}
+
+static mlir::FailureOr<int64_t>
+computeWindowedOutputDim(mlir::Operation *op, int64_t input, int64_t kernel,
+                         int64_t stride, int64_t dilation, int64_t padBefore,
+                         int64_t padAfter, int64_t unpadBefore,
+                         int64_t unpadAfter, llvm::StringRef role) {
+  int64_t padded = 0;
+  int64_t effectiveKernel = 0;
+  int64_t dilatedSpan = 0;
+  if (!checkedAdd(input, padBefore, padded) ||
+      !checkedAdd(padded, padAfter, padded) ||
+      !checkedMul(kernel - 1, dilation, dilatedSpan) ||
+      !checkedAdd(dilatedSpan, 1, effectiveKernel))
+    return op->emitOpError()
+           << "target_range_overflow: " << role << " geometry overflows int64";
+  if (stride <= 0 || padded < effectiveKernel)
+    return op->emitOpError() << "target_geometry_mismatch: " << role
+                             << " kernel exceeds the padded input";
+
+  int64_t output = (padded - effectiveKernel) / stride + 1;
+  int64_t totalUnpad = 0;
+  if (!checkedAdd(unpadBefore, unpadAfter, totalUnpad) || output <= totalUnpad)
+    return op->emitOpError() << "target_geometry_mismatch: " << role
+                             << " unpadding removes the complete output";
+  return output - totalUnpad;
+}
+
+static mlir::LogicalResult verifyConvShapeRelation(
+    mlir::Operation *op, InstrConvKind kind, mlir::DenseI64ArrayAttr inputShape,
+    mlir::DenseI64ArrayAttr weightShape, mlir::DenseI64ArrayAttr outputShape,
+    mlir::DenseI64ArrayAttr pads, mlir::DenseI64ArrayAttr unpads,
+    mlir::DenseI64ArrayAttr kernelStrides, mlir::DenseI64ArrayAttr dilations) {
+  if (kind != InstrConvKind::Conv)
+    return op->emitOpError(
+        "unsupported_target_geometry: only the ordinary convolution output "
+        "relation is defined by the current instruction contract");
+
+  llvm::ArrayRef<int64_t> input = inputShape.asArrayRef();
+  llvm::ArrayRef<int64_t> weight = weightShape.asArrayRef();
+  llvm::ArrayRef<int64_t> output = outputShape.asArrayRef();
+  llvm::ArrayRef<int64_t> pad = pads.asArrayRef();
+  llvm::ArrayRef<int64_t> unpad = unpads.asArrayRef();
+  llvm::ArrayRef<int64_t> kernelStride = kernelStrides.asArrayRef();
+  llvm::ArrayRef<int64_t> dilation = dilations.asArrayRef();
+
+  if (kernelStride[0] != weight[0] || kernelStride[1] != weight[1])
+    return op->emitOpError(
+        "target_geometry_mismatch: convolution kernel dimensions must match "
+        "the weight shape");
+  if (output[0] != input[0])
+    return op->emitOpError(
+        "target_geometry_mismatch: convolution batch dimensions must match");
+  if (input[3] != weight[2])
+    return op->emitOpError(
+        "target_geometry_mismatch: convolution input channels must match the "
+        "weight input channels");
+
+  int64_t expectedChannels = weight[3];
+  if (output[3] != expectedChannels)
+    return op->emitOpError(
+        "target_geometry_mismatch: convolution output channels do not match "
+        "the weight relation");
+
+  mlir::FailureOr<int64_t> expectedH = computeWindowedOutputDim(
+      op, input[1], kernelStride[0], kernelStride[2], dilation[0], pad[0],
+      pad[1], unpad[0], unpad[1], "convolution height");
+  mlir::FailureOr<int64_t> expectedW = computeWindowedOutputDim(
+      op, input[2], kernelStride[1], kernelStride[3], dilation[1], pad[2],
+      pad[3], unpad[2], unpad[3], "convolution width");
+  if (mlir::failed(expectedH) || mlir::failed(expectedW))
+    return mlir::failure();
+  if (output[1] != *expectedH || output[2] != *expectedW)
+    return op->emitOpError(
+        "target_geometry_mismatch: convolution output spatial shape does not "
+        "match input/kernel/stride/dilation/pad/unpad");
+  return mlir::success();
+}
+
+static mlir::LogicalResult verifyPoolShapeRelation(
+    mlir::Operation *op, mlir::DenseI64ArrayAttr sourceShape,
+    mlir::DenseI64ArrayAttr destShape, mlir::DenseI64ArrayAttr pads,
+    mlir::DenseI64ArrayAttr kernelStrides) {
+  llvm::ArrayRef<int64_t> source = sourceShape.asArrayRef();
+  llvm::ArrayRef<int64_t> dest = destShape.asArrayRef();
+  llvm::ArrayRef<int64_t> pad = pads.asArrayRef();
+  llvm::ArrayRef<int64_t> kernelStride = kernelStrides.asArrayRef();
+  if (dest[0] != source[0] || dest[3] != source[3])
+    return op->emitOpError(
+        "target_geometry_mismatch: pool batch and channel dimensions must "
+        "match");
+  mlir::FailureOr<int64_t> expectedH = computeWindowedOutputDim(
+      op, source[1], kernelStride[0], kernelStride[2], /*dilation=*/1, pad[0],
+      pad[1], /*unpadBefore=*/0, /*unpadAfter=*/0, "pool height");
+  mlir::FailureOr<int64_t> expectedW = computeWindowedOutputDim(
+      op, source[2], kernelStride[1], kernelStride[3], /*dilation=*/1, pad[2],
+      pad[3], /*unpadBefore=*/0, /*unpadAfter=*/0, "pool width");
+  if (mlir::failed(expectedH) || mlir::failed(expectedW))
+    return mlir::failure();
+  if (dest[1] != *expectedH || dest[2] != *expectedW)
+    return op->emitOpError(
+        "target_geometry_mismatch: pool destination spatial shape does not "
+        "match source/kernel/stride/pad");
+  return mlir::success();
+}
+
+static mlir::LogicalResult verifyUnpoolShapeRelation(
+    mlir::Operation *op, mlir::DenseI64ArrayAttr sourceShape,
+    mlir::DenseI64ArrayAttr destShape, mlir::DenseI64ArrayAttr kernelStrides) {
+  llvm::ArrayRef<int64_t> source = sourceShape.asArrayRef();
+  llvm::ArrayRef<int64_t> dest = destShape.asArrayRef();
+  llvm::ArrayRef<int64_t> kernelStride = kernelStrides.asArrayRef();
+  if (dest[0] != source[0] || dest[3] != source[3])
+    return op->emitOpError(
+        "target_geometry_mismatch: unpool batch and channel dimensions must "
+        "match");
+  int64_t expectedH = 0;
+  int64_t expectedW = 0;
+  int64_t scaledH = 0;
+  int64_t scaledW = 0;
+  if (!checkedMul(source[1] - 1, kernelStride[2], scaledH) ||
+      !checkedAdd(scaledH, kernelStride[0], expectedH) ||
+      !checkedMul(source[2] - 1, kernelStride[3], scaledW) ||
+      !checkedAdd(scaledW, kernelStride[1], expectedW))
+    return op->emitOpError(
+        "target_range_overflow: unpool spatial geometry overflows int64");
+  if (dest[1] != expectedH || dest[2] != expectedW)
+    return op->emitOpError(
+        "target_geometry_mismatch: unpool destination spatial shape does not "
+        "match source/kernel/stride");
+  return mlir::success();
+}
+
+static mlir::LogicalResult
+verifyPadShapeRelation(mlir::Operation *op, mlir::DenseI64ArrayAttr sourceShape,
+                       mlir::DenseI64ArrayAttr destShape,
+                       mlir::DenseI64ArrayAttr pads) {
+  llvm::ArrayRef<int64_t> source = sourceShape.asArrayRef();
+  llvm::ArrayRef<int64_t> dest = destShape.asArrayRef();
+  llvm::ArrayRef<int64_t> pad = pads.asArrayRef();
+  int64_t expectedH = 0;
+  int64_t expectedW = 0;
+  if (!checkedAdd(source[1], pad[0], expectedH) ||
+      !checkedAdd(expectedH, pad[1], expectedH) ||
+      !checkedAdd(source[2], pad[2], expectedW) ||
+      !checkedAdd(expectedW, pad[3], expectedW))
+    return op->emitOpError(
+        "target_range_overflow: pad destination shape overflows int64");
+  if (dest[0] != source[0] || dest[1] != expectedH || dest[2] != expectedW ||
+      dest[3] != source[3])
+    return op->emitOpError(
+        "target_geometry_mismatch: pad destination shape does not match "
+        "source and pads");
+  return mlir::success();
+}
+
+static mlir::LogicalResult verifyImg2ColShapeRelation(
+    mlir::Operation *op, mlir::DenseI64ArrayAttr sourceShape,
+    mlir::DenseI64ArrayAttr destShape, mlir::DenseI64ArrayAttr pads,
+    mlir::DenseI64ArrayAttr kernelStrides) {
+  llvm::ArrayRef<int64_t> source = sourceShape.asArrayRef();
+  llvm::ArrayRef<int64_t> dest = destShape.asArrayRef();
+  llvm::ArrayRef<int64_t> pad = pads.asArrayRef();
+  llvm::ArrayRef<int64_t> kernelStride = kernelStrides.asArrayRef();
+  mlir::FailureOr<int64_t> expectedH = computeWindowedOutputDim(
+      op, source[1], kernelStride[0], kernelStride[2], /*dilation=*/1, pad[0],
+      pad[1], /*unpadBefore=*/0, /*unpadAfter=*/0, "img2col height");
+  mlir::FailureOr<int64_t> expectedW = computeWindowedOutputDim(
+      op, source[2], kernelStride[1], kernelStride[3], /*dilation=*/1, pad[2],
+      pad[3], /*unpadBefore=*/0, /*unpadAfter=*/0, "img2col width");
+  int64_t expectedC = 0;
+  int64_t kernelElements = 0;
+  if (mlir::failed(expectedH) || mlir::failed(expectedW))
+    return mlir::failure();
+  if (!checkedMul(kernelStride[0], kernelStride[1], kernelElements) ||
+      !checkedMul(source[3], kernelElements, expectedC))
+    return op->emitOpError(
+        "target_range_overflow: img2col destination channels overflow int64");
+  if (dest[0] != source[0] || dest[1] != *expectedH || dest[2] != *expectedW ||
+      dest[3] != expectedC)
+    return op->emitOpError(
+        "target_geometry_mismatch: img2col destination shape does not match "
+        "source/kernel/stride/pad");
+  return mlir::success();
+}
+
+static mlir::LogicalResult verifyMovementDescriptorTargetWidths(
+    mlir::Operation *op, mlir::IntegerAttr byteCount,
+    mlir::IntegerAttr innerBytes, mlir::DenseI64ArrayAttr strides,
+    mlir::DenseI64ArrayAttr iterations) {
+  if (mlir::failed(verifyUInt32Value(op, byteCount.getInt(), "byte_count")) ||
+      mlir::failed(verifyUInt32Value(op, innerBytes.getInt(), "inner_bytes")) ||
+      mlir::failed(verifyUInt32Array(op, strides, "descriptor stride")) ||
+      mlir::failed(verifyUInt32Array(op, iterations, "descriptor iteration")))
+    return mlir::failure();
+  return mlir::success();
+}
+
+static std::optional<int64_t> getTargetElementStorageBytes(mlir::Type type) {
+  if (auto integerType = mlir::dyn_cast<mlir::IntegerType>(type)) {
+    switch (integerType.getWidth()) {
+    case 1:
+    case 8:
+      return 1;
+    case 16:
+      return 2;
+    case 32:
+      return 4;
+    case 64:
+      return 8;
+    default:
+      return std::nullopt;
+    }
+  }
+  if (mlir::isa<mlir::Float16Type, mlir::BFloat16Type>(type))
+    return 2;
+  if (mlir::isa<mlir::Float32Type>(type))
+    return 4;
+  return std::nullopt;
+}
+
+static mlir::LogicalResult
+verifyMovementElementContract(mlir::Operation *op, mlir::Type sourceType,
+                              mlir::Type destType, mlir::IntegerAttr innerBytes,
+                              bool targetFormatCarriesElementType) {
+  std::optional<mlir::RankedTensorType> source =
+      getLogicalTensorType(sourceType);
+  std::optional<mlir::RankedTensorType> dest = getLogicalTensorType(destType);
+  if (!source || !dest)
+    return op->emitOpError(
+        "target_geometry_mismatch: movement operands must be ranked Wafer "
+        "buffers");
+  if (source->getElementType() != dest->getElementType())
+    return op->emitOpError(
+        "target_geometry_mismatch: movement source and destination element "
+        "types must match");
+  if (!targetFormatCarriesElementType)
+    return mlir::success();
+
+  if (source->getElementType().isInteger(1)) {
+    constexpr int64_t maxBoolInnerBytes =
+        static_cast<int64_t>(std::numeric_limits<uint32_t>::max() / 8U);
+    if (innerBytes.getInt() > maxBoolInnerBytes)
+      return op->emitOpError(
+          "target_abi_narrowing: bitpacked BOOL inner_bytes cannot be "
+          "converted to a uint32_t logical element count");
+    return mlir::success();
+  }
+
+  std::optional<int64_t> elementBytes =
+      getTargetElementStorageBytes(source->getElementType());
+  if (!elementBytes)
+    return op->emitOpError(
+        "target_abi_narrowing: movement element type is not encodable by the "
+        "target data-format ABI");
+  if (innerBytes.getInt() % *elementBytes != 0)
+    return op->emitOpError(
+        "target_geometry_mismatch: inner_bytes must be divisible by the "
+        "target element byte width");
   return mlir::success();
 }
 
@@ -721,7 +1155,8 @@ static mlir::LogicalResult verifyOptionalUInt32Attr(mlir::Operation *op,
     return mlir::success();
   int64_t value = attr.getInt();
   if (value < 0 || value > std::numeric_limits<uint32_t>::max())
-    return op->emitOpError() << name << " must fit uint32_t";
+    return op->emitOpError()
+           << "target_abi_narrowing: " << name << " must fit uint32_t";
   return mlir::success();
 }
 
@@ -759,9 +1194,23 @@ mlir::LogicalResult InstrRDMAOp::verify() {
       mlir::failed(
           verifySPMMemRef(getOperation(), getDest().getType(), "dest")))
     return mlir::failure();
-  return verifyMovementDescriptor(getOperation(), getByteCountAttr(),
-                                  getInnerBytesAttr(), getSrcStridesAttr(),
-                                  getSrcIterationsAttr(), {}, {});
+  if (mlir::failed(verifyMovementDescriptor(
+          getOperation(), getByteCountAttr(), getInnerBytesAttr(),
+          getSrcStridesAttr(), getSrcIterationsAttr(), {}, {})) ||
+      mlir::failed(verifyMovementElementContract(
+          getOperation(), getSource().getType(), getDest().getType(),
+          getInnerBytesAttr(), /*targetFormatCarriesElementType=*/true)) ||
+      mlir::failed(verifyMovementDescriptorTargetWidths(
+          getOperation(), getByteCountAttr(), getInnerBytesAttr(),
+          getSrcStridesAttr(), getSrcIterationsAttr())) ||
+      mlir::failed(verifyDescriptorWithinPhysicalRange(
+          getOperation(), getSource().getType(), {}, getInnerBytesAttr(),
+          getSrcStridesAttr(), getSrcIterationsAttr(), "source")) ||
+      mlir::failed(verifyBytesWithinPhysicalRange(
+          getOperation(), getDest().getType(), getByteCountAttr().getInt(),
+          "destination")))
+    return mlir::failure();
+  return mlir::success();
 }
 
 InstrFamily InstrRDMAOp::getInstructionFamily() { return InstrFamily::RDMA; }
@@ -794,9 +1243,23 @@ mlir::LogicalResult InstrWDMAOp::verify() {
       mlir::failed(
           verifyDDRMemRef(getOperation(), getDest().getType(), "dest")))
     return mlir::failure();
-  return verifyMovementDescriptor(getOperation(), getByteCountAttr(),
-                                  getInnerBytesAttr(), {}, {},
-                                  getDstStridesAttr(), getDstIterationsAttr());
+  if (mlir::failed(verifyMovementDescriptor(
+          getOperation(), getByteCountAttr(), getInnerBytesAttr(), {}, {},
+          getDstStridesAttr(), getDstIterationsAttr())) ||
+      mlir::failed(verifyMovementElementContract(
+          getOperation(), getSource().getType(), getDest().getType(),
+          getInnerBytesAttr(), /*targetFormatCarriesElementType=*/true)) ||
+      mlir::failed(verifyMovementDescriptorTargetWidths(
+          getOperation(), getByteCountAttr(), getInnerBytesAttr(),
+          getDstStridesAttr(), getDstIterationsAttr())) ||
+      mlir::failed(verifyBytesWithinPhysicalRange(
+          getOperation(), getSource().getType(), getByteCountAttr().getInt(),
+          "source")) ||
+      mlir::failed(verifyDescriptorWithinPhysicalRange(
+          getOperation(), getDest().getType(), {}, getInnerBytesAttr(),
+          getDstStridesAttr(), getDstIterationsAttr(), "destination")))
+    return mlir::failure();
+  return mlir::success();
 }
 
 InstrFamily InstrWDMAOp::getInstructionFamily() { return InstrFamily::WDMA; }
@@ -837,6 +1300,15 @@ mlir::LogicalResult InstrGatherScatterOp::verify() {
           getOperation(), getByteCountAttr(), getInnerBytesAttr(),
           getSrcStridesAttr(), getSrcIterationsAttr(), getDstStridesAttr(),
           getDstIterationsAttr())) ||
+      mlir::failed(verifyMovementElementContract(
+          getOperation(), getSource().getType(), getDest().getType(),
+          getInnerBytesAttr(), /*targetFormatCarriesElementType=*/false)) ||
+      mlir::failed(verifyMovementDescriptorTargetWidths(
+          getOperation(), getByteCountAttr(), getInnerBytesAttr(),
+          getSrcStridesAttr(), getSrcIterationsAttr())) ||
+      mlir::failed(verifyMovementDescriptorTargetWidths(
+          getOperation(), getByteCountAttr(), getInnerBytesAttr(),
+          getDstStridesAttr(), getDstIterationsAttr())) ||
       mlir::failed(verifyDescriptorWithinPhysicalRange(
           getOperation(), getSource().getType(), getSrcOffsetAttr(),
           getInnerBytesAttr(), getSrcStridesAttr(), getSrcIterationsAttr(),
@@ -883,7 +1355,23 @@ mlir::LogicalResult InstrFillOp::verify() {
     return mlir::failure();
   if (getValue().getType() != destTensor->getElementType())
     return emitOpError("fill value type must match dest element type");
-  return mlir::success();
+  unsigned scalarWidth = 0;
+  if (auto integerType =
+          mlir::dyn_cast<mlir::IntegerType>(destTensor->getElementType()))
+    scalarWidth = integerType.getWidth();
+  else if (auto floatType =
+               mlir::dyn_cast<mlir::FloatType>(destTensor->getElementType()))
+    scalarWidth = floatType.getWidth();
+  else
+    return emitOpError(
+        "target_abi_narrowing: fill value type must be a target-encodable "
+        "integer or float");
+  if (scalarWidth > 32)
+    return emitOpError(
+        "target_abi_narrowing: fill value type exceeds the uint32_t target "
+        "scalar ABI");
+  return verifyStaticElementCountFitsUInt32(getOperation(), getDest().getType(),
+                                            "fill dest");
 }
 
 InstrFamily InstrFillOp::getInstructionFamily() { return InstrFamily::CT; }
@@ -921,13 +1409,17 @@ mlir::LogicalResult InstrElementwiseOp::verify() {
   }
   std::optional<ComputeElementwiseKind> computeKind =
       toComputeElementwiseKind(getKindAttr().getValue());
-  if (computeKind) {
-    return verifyElementwiseTileContract(getOperation(), *computeKind,
-                                         getInputs(), getDest().getType());
-  }
-  return verifySimpleInstrElementwiseContract(getOperation(),
-                                              getKindAttr().getValue(),
-                                              getInputs(), getDest().getType());
+  mlir::LogicalResult contract =
+      computeKind
+          ? verifyElementwiseTileContract(getOperation(), *computeKind,
+                                          getInputs(), getDest().getType())
+          : verifySimpleInstrElementwiseContract(
+                getOperation(), getKindAttr().getValue(), getInputs(),
+                getDest().getType());
+  if (mlir::failed(contract))
+    return mlir::failure();
+  return verifyStaticElementCountFitsUInt32(getOperation(), getDest().getType(),
+                                            "elementwise dest");
 }
 
 InstrFamily InstrElementwiseOp::getInstructionFamily() {
@@ -977,8 +1469,11 @@ mlir::LogicalResult InstrBit2FpOp::verify() {
     return emitOpError("bit2fp source element type must be i1");
   if (!mlir::isa<mlir::FloatType>(destTensor->getElementType()))
     return emitOpError("bit2fp dest element type must be floating point");
-  return verifySameShape(getOperation(), *sourceTensor, *destTensor,
-                         "bit2fp source and dest shapes must match");
+  if (mlir::failed(verifySameShape(getOperation(), *sourceTensor, *destTensor,
+                                   "bit2fp source and dest shapes must match")))
+    return mlir::failure();
+  return verifyStaticElementCountFitsUInt32(getOperation(), getDest().getType(),
+                                            "bit2fp dest");
 }
 
 InstrFamily InstrBit2FpOp::getInstructionFamily() { return InstrFamily::CT; }
@@ -1039,7 +1534,8 @@ mlir::LogicalResult InstrMaskMoveOp::verify() {
         "bit2fp conversion");
   if (!mlir::isa<mlir::FloatType>(maskTensor->getElementType()))
     return emitOpError("mask_move mask element type must be floating point");
-  return mlir::success();
+  return verifyStaticElementCountFitsUInt32(getOperation(), getDest().getType(),
+                                            "mask_move dest");
 }
 
 InstrFamily InstrMaskMoveOp::getInstructionFamily() {
@@ -1078,8 +1574,11 @@ mlir::LogicalResult InstrReduceOp::verify() {
       mlir::failed(
           verifySPMMemRef(getOperation(), getDest().getType(), "dest")))
     return mlir::failure();
-  return verifyInstructionReduceContract(getOperation(), getInput(), getDest(),
-                                         getInit(), getDimAttr());
+  if (mlir::failed(verifyInstructionReduceContract(
+          getOperation(), getInput(), getDest(), getInit(), getDimAttr())))
+    return mlir::failure();
+  return verifyStaticShapeFitsUInt16(getOperation(), getInput().getType(),
+                                     "reduce input shape dimension");
 }
 
 InstrFamily InstrReduceOp::getInstructionFamily() { return InstrFamily::CT; }
@@ -1142,10 +1641,15 @@ mlir::LogicalResult InstrConvertOp::verify() {
   } else if (roundingMode) {
     return emitOpError("convert kind must not have rounding_mode attr");
   }
-  if (mlir::failed(
+  if (mlir::failed(verifyStaticElementCountEqual(
+          getOperation(), getSource().getType(), getDest().getType(),
+          "convert source and destination element counts must match")) ||
+      mlir::failed(
           verifyOptionalUInt32Attr(getOperation(), zeroPoint, "zero_point")) ||
       mlir::failed(verifyOptionalRoundingMode(getOperation(), roundingMode,
-                                              "rounding_mode")))
+                                              "rounding_mode")) ||
+      mlir::failed(verifyStaticElementCountFitsUInt32(
+          getOperation(), getDest().getType(), "convert dest")))
     return mlir::failure();
   return mlir::success();
 }
@@ -1203,6 +1707,10 @@ mlir::LogicalResult InstrGemmOp::verify() {
   int64_t n = getNAttr().getInt();
   if (m <= 0 || k <= 0 || n <= 0)
     return emitOpError("m, k and n must be positive");
+  if (mlir::failed(verifyUInt16Value(getOperation(), m, "m")) ||
+      mlir::failed(verifyUInt16Value(getOperation(), k, "k")) ||
+      mlir::failed(verifyUInt16Value(getOperation(), n, "n")))
+    return mlir::failure();
 
   if (lhsTensor->getRank() == 2 && rhsTensor->getRank() == 2 &&
       destTensor->getRank() == 2) {
@@ -1235,6 +1743,28 @@ mlir::LogicalResult InstrGemmOp::verify() {
                             : mlir::ShapedType::kDynamic,
                         n))
     return emitOpError("m/k/n attrs must match batched GEMM dimensions");
+  if (mlir::failed(
+          verifyUInt16Value(getOperation(), attrs.batchCount, "batch_count")))
+    return mlir::failure();
+  for (size_t index = 0; index < attrs.lhsBatchDims.size(); ++index) {
+    int64_t expected = static_cast<int64_t>(index);
+    if (attrs.lhsBatchDims[index] != expected ||
+        attrs.rhsBatchDims[index] != expected ||
+        attrs.resultBatchDims[index] != expected)
+      return emitOpError(
+          "target_geometry_mismatch: target GEMM ABI requires leading "
+          "canonical batch dimensions");
+  }
+  int64_t matrixRankBase = lhsTensor->getRank() - 2;
+  if (attrs.lhsMDim != matrixRankBase ||
+      attrs.lhsContractingDim != matrixRankBase + 1 ||
+      attrs.rhsContractingDim != matrixRankBase ||
+      attrs.rhsNDim != matrixRankBase + 1 ||
+      attrs.resultMDim != matrixRankBase ||
+      attrs.resultNDim != matrixRankBase + 1)
+    return emitOpError(
+        "target_geometry_mismatch: target GEMM ABI requires canonical trailing "
+        "M/K/N dimensions");
   return mlir::success();
 }
 
@@ -1303,6 +1833,27 @@ mlir::LogicalResult InstrConvOp::verify() {
       mlir::failed(verifyI64Array(getOperation(), getDilationsAttr(),
                                   "dilations", 2, /*positive=*/true)))
     return mlir::failure();
+  if (mlir::failed(
+          verifyShapeAttrMatchesBuffer(getOperation(), getInput().getType(),
+                                       getInputShapeAttr(), "input_shape")) ||
+      mlir::failed(
+          verifyShapeAttrMatchesBuffer(getOperation(), getWeight().getType(),
+                                       getWeightShapeAttr(), "weight_shape")) ||
+      mlir::failed(
+          verifyShapeAttrMatchesBuffer(getOperation(), getDest().getType(),
+                                       getOutputShapeAttr(), "output_shape")) ||
+      mlir::failed(verifyUInt16Array(getOperation(), getPadsAttr(), "pads")) ||
+      mlir::failed(
+          verifyUInt16Array(getOperation(), getUnpadsAttr(), "unpads")) ||
+      mlir::failed(verifyUInt16Array(getOperation(), getKernelStridesAttr(),
+                                     "kernel_strides")) ||
+      mlir::failed(
+          verifyUInt16Array(getOperation(), getDilationsAttr(), "dilations")) ||
+      mlir::failed(verifyConvShapeRelation(
+          getOperation(), getKindAttr().getValue(), getInputShapeAttr(),
+          getWeightShapeAttr(), getOutputShapeAttr(), getPadsAttr(),
+          getUnpadsAttr(), getKernelStridesAttr(), getDilationsAttr())))
+    return mlir::failure();
   return mlir::success();
 }
 
@@ -1360,12 +1911,25 @@ mlir::LogicalResult InstrPoolOp::verify() {
 
   std::optional<mlir::RankedTensorType> inputTensor =
       getLogicalTensorType(getInput().getType());
+  if (mlir::failed(
+          verifyShapeAttrMatchesBuffer(getOperation(), getInput().getType(),
+                                       getSourceShapeAttr(), "source_shape")) ||
+      mlir::failed(verifyUInt16Array(getOperation(), getPadsAttr(), "pads")) ||
+      mlir::failed(verifyUInt16Array(getOperation(), getKernelStridesAttr(),
+                                     "kernel_strides")) ||
+      mlir::failed(verifyPoolShapeRelation(getOperation(), getSourceShapeAttr(),
+                                           getDestShapeAttr(), getPadsAttr(),
+                                           getKernelStridesAttr())))
+    return mlir::failure();
   for (auto [index, dest] : llvm::enumerate(getDests())) {
     if (mlir::failed(
             verifyAlignedSPMMemRef(getOperation(), dest.getType(), "dest")))
       return mlir::failure();
     std::optional<mlir::RankedTensorType> destTensor =
         getLogicalTensorType(dest.getType());
+    if (mlir::failed(verifyShapeAttrMatchesBuffer(
+            getOperation(), dest.getType(), getDestShapeAttr(), "dest_shape")))
+      return mlir::failure();
     if (index == 0) {
       if (mlir::failed(verifySameElementType(
               getOperation(), *inputTensor, *destTensor,
@@ -1429,6 +1993,18 @@ mlir::LogicalResult InstrUnpoolOp::verify() {
           getOperation(), *inputTensor, *destTensor,
           "unpool input and dest element types must match")))
     return mlir::failure();
+  if (mlir::failed(
+          verifyShapeAttrMatchesBuffer(getOperation(), getInput().getType(),
+                                       getSourceShapeAttr(), "source_shape")) ||
+      mlir::failed(
+          verifyShapeAttrMatchesBuffer(getOperation(), getDest().getType(),
+                                       getDestShapeAttr(), "dest_shape")) ||
+      mlir::failed(verifyUInt16Array(getOperation(), getKernelStridesAttr(),
+                                     "kernel_strides")) ||
+      mlir::failed(verifyUnpoolShapeRelation(
+          getOperation(), getSourceShapeAttr(), getDestShapeAttr(),
+          getKernelStridesAttr())))
+    return mlir::failure();
   mlir::IntegerAttr index =
       getOperation()->getAttrOfType<mlir::IntegerAttr>("index");
   if (getKindAttr().getValue() == InstrUnpoolKind::Avg) {
@@ -1483,6 +2059,13 @@ mlir::LogicalResult InstrTDMADataMoveOp::verify() {
       getLogicalTensorType(getSource().getType());
   std::optional<mlir::RankedTensorType> destTensor =
       getLogicalTensorType(getDest().getType());
+  if (mlir::failed(
+          verifyShapeAttrMatchesBuffer(getOperation(), getSource().getType(),
+                                       getSourceShapeAttr(), "source_shape")) ||
+      mlir::failed(
+          verifyShapeAttrMatchesBuffer(getOperation(), getDest().getType(),
+                                       getDestShapeAttr(), "dest_shape")))
+    return mlir::failure();
   if (getPermutationAttr() &&
       mlir::failed(verifyPermutationI64Array(
           getOperation(), getPermutationAttr(), "permutation")))
@@ -1504,6 +2087,10 @@ mlir::LogicalResult InstrTDMADataMoveOp::verify() {
       mlir::failed(verifyI64Array(getOperation(), getKernelStridesAttr(),
                                   "kernel_strides", 4,
                                   /*positive=*/true)))
+    return mlir::failure();
+  if (mlir::failed(verifyUInt16Array(getOperation(), getPadsAttr(), "pads")) ||
+      mlir::failed(verifyUInt16Array(getOperation(), getKernelStridesAttr(),
+                                     "kernel_strides")))
     return mlir::failure();
 
   switch (getKindAttr().getValue()) {
@@ -1570,6 +2157,10 @@ mlir::LogicalResult InstrTDMADataMoveOp::verify() {
       return emitOpError("pad data_move must not have kernel_strides attr");
     if (getAxesAttr())
       return emitOpError("pad data_move must not have axes attr");
+    if (mlir::failed(verifyPadShapeRelation(getOperation(),
+                                            getSourceShapeAttr(),
+                                            getDestShapeAttr(), getPadsAttr())))
+      return mlir::failure();
     break;
   case InstrDataMoveKind::Img2Col:
     if (!getPadsAttr())
@@ -1580,6 +2171,10 @@ mlir::LogicalResult InstrTDMADataMoveOp::verify() {
       return emitOpError("img2col data_move must not have permutation attr");
     if (getAxesAttr())
       return emitOpError("img2col data_move must not have axes attr");
+    if (mlir::failed(verifyImg2ColShapeRelation(
+            getOperation(), getSourceShapeAttr(), getDestShapeAttr(),
+            getPadsAttr(), getKernelStridesAttr())))
+      return mlir::failure();
     break;
   }
 
@@ -1638,11 +2233,14 @@ static std::pair<size_t, size_t> getPeripheralArity(InstrPeripheralKind kind) {
 }
 
 static mlir::LogicalResult verifyPeripheralShapeAttr(mlir::Operation *op,
+                                                     mlir::Type bufferType,
                                                      llvm::StringRef name) {
   auto attr = op->getAttrOfType<mlir::DenseI64ArrayAttr>(name);
   if (!attr)
     return op->emitOpError() << "peripheral kind requires " << name << " attr";
-  return verifyI64Array(op, attr, name, 4, /*positive=*/true);
+  if (mlir::failed(verifyI64Array(op, attr, name, 4, /*positive=*/true)))
+    return mlir::failure();
+  return verifyShapeAttrMatchesBuffer(op, bufferType, attr, name);
 }
 
 static mlir::LogicalResult verifyRequiredUInt32Attr(mlir::Operation *op,
@@ -1666,7 +2264,9 @@ verifyForbiddenPeripheralAttrs(mlir::Operation *op,
 
 mlir::LogicalResult InstrPeripheralOp::verify() {
   if (mlir::failed(verifyPositiveI64Attr(getOperation(), getElemCountAttr(),
-                                         "elem_count")))
+                                         "elem_count")) ||
+      mlir::failed(verifyUInt32Value(
+          getOperation(), getElemCountAttr().getInt(), "elem_count")))
     return mlir::failure();
 
   auto [expectedInputs, expectedDests] =
@@ -1687,6 +2287,12 @@ mlir::LogicalResult InstrPeripheralOp::verify() {
       return mlir::failure();
   }
 
+  int64_t elemCount = getElemCountAttr().getInt();
+  if (mlir::failed(verifyStaticElementCountMatches(
+          getOperation(), getInputs().front().getType(), elemCount,
+          "peripheral primary input")))
+    return mlir::failure();
+
   if (getKindAttr().getValue() == InstrPeripheralKind::ArgMax ||
       getKindAttr().getValue() == InstrPeripheralKind::ArgMin) {
     std::optional<mlir::RankedTensorType> inputTensor =
@@ -1700,6 +2306,13 @@ mlir::LogicalResult InstrPeripheralOp::verify() {
           "arg peripheral value dest element type must match input");
     if (!indexTensor->getElementType().isInteger(32))
       return emitOpError("arg peripheral index dest element type must be i32");
+    if (mlir::failed(verifyStaticElementCountMatches(
+            getOperation(), getDests().front().getType(), 1,
+            "arg peripheral value dest")) ||
+        mlir::failed(verifyStaticElementCountMatches(
+            getOperation(), getDests()[1].getType(), 1,
+            "arg peripheral index dest")))
+      return mlir::failure();
   }
   switch (getKindAttr().getValue()) {
   case InstrPeripheralKind::Count:
@@ -1707,15 +2320,34 @@ mlir::LogicalResult InstrPeripheralOp::verify() {
         "count peripheral writeback is not represented in instruction IR");
   case InstrPeripheralKind::ArgMax:
   case InstrPeripheralKind::ArgMin:
+    return verifyForbiddenPeripheralAttrs(
+        getOperation(), {"source_shape", "dest_shape", "lut_elem_count",
+                         "scale", "probability", "rounding_mode"});
   case InstrPeripheralKind::Factorize:
+    for (mlir::Value dest : getDests())
+      if (mlir::failed(verifyStaticElementCountMatches(
+              getOperation(), dest.getType(), elemCount, "factorize dest")))
+        return mlir::failure();
+    return verifyForbiddenPeripheralAttrs(
+        getOperation(), {"source_shape", "dest_shape", "lut_elem_count",
+                         "scale", "probability", "rounding_mode"});
   case InstrPeripheralKind::RandGen:
+    if (mlir::failed(verifyStaticElementCountMatches(
+            getOperation(), getInputs()[1].getType(), elemCount,
+            "rand_gen secondary input")))
+      return mlir::failure();
+    for (mlir::Value dest : getDests())
+      if (mlir::failed(verifyStaticElementCountMatches(
+              getOperation(), dest.getType(), elemCount, "rand_gen dest")))
+        return mlir::failure();
     return verifyForbiddenPeripheralAttrs(
         getOperation(), {"source_shape", "dest_shape", "lut_elem_count",
                          "scale", "probability", "rounding_mode"});
   case InstrPeripheralKind::Bilinear:
-    if (mlir::failed(
-            verifyPeripheralShapeAttr(getOperation(), "source_shape")) ||
-        mlir::failed(verifyPeripheralShapeAttr(getOperation(), "dest_shape")))
+    if (mlir::failed(verifyPeripheralShapeAttr(
+            getOperation(), getInputs().front().getType(), "source_shape")) ||
+        mlir::failed(verifyPeripheralShapeAttr(
+            getOperation(), getDests().front().getType(), "dest_shape")))
       return mlir::failure();
     return verifyForbiddenPeripheralAttrs(
         getOperation(),
@@ -1724,6 +2356,16 @@ mlir::LogicalResult InstrPeripheralOp::verify() {
   case InstrPeripheralKind::Lut32:
     if (mlir::failed(
             verifyRequiredUInt32Attr(getOperation(), "lut_elem_count")))
+      return mlir::failure();
+    if (mlir::failed(verifyStaticElementCountMatches(
+            getOperation(), getDests().front().getType(), elemCount,
+            "LUT dest")) ||
+        mlir::failed(verifyStaticElementCountMatches(
+            getOperation(), getInputs()[1].getType(),
+            getOperation()
+                ->getAttrOfType<mlir::IntegerAttr>("lut_elem_count")
+                .getInt(),
+            "LUT table")))
       return mlir::failure();
     return verifyForbiddenPeripheralAttrs(
         getOperation(), {"source_shape", "dest_shape", "scale", "probability",
@@ -1738,6 +2380,10 @@ mlir::LogicalResult InstrPeripheralOp::verify() {
       return mlir::failure();
     if (!getOperation()->hasAttr("rounding_mode"))
       return emitOpError("peripheral kind requires rounding_mode attr");
+    if (mlir::failed(verifyStaticElementCountMatches(
+            getOperation(), getDests().front().getType(), elemCount,
+            "elem_mask dest")))
+      return mlir::failure();
     return verifyForbiddenPeripheralAttrs(
         getOperation(), {"source_shape", "dest_shape", "lut_elem_count"});
   }

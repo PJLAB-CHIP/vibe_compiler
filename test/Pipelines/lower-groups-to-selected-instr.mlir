@@ -1,4 +1,4 @@
-// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-groups-to-selected-instr)' %s | FileCheck --implicit-check-not=selected_group %s
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-groups-to-selected-instr)' %s | FileCheck --implicit-check-not=selected_group --implicit-check-not='tensor<' --implicit-check-not=bufferization.to_ %s
 
 func.func @preserved_helper(%arg0: tensor<8xf32>) -> tensor<8xf32> {
   return %arg0 : tensor<8xf32>
@@ -70,6 +70,7 @@ func.func @pipeline_two_groups(%lhs: tensor<8xf32>, %rhs: tensor<8xf32>,
 }
 
 // CHECK-LABEL: func.func @preserved_helper
+// CHECK-SAME: memref<8xf32, #wafer.memory<ddr, tensor>>
 // CHECK: return
 
 // CHECK-LABEL: func.func @pipeline_elementwise

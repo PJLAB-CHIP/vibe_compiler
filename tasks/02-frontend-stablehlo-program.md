@@ -259,6 +259,52 @@ group、tiling、SPM/DDR memory 和 package metadata 消费真实规模的 shape
 - 小 shape MLIR 仍可用于 graph break、eager fallback、dynamic bound 等快速负例；
   这些测试不能替代 4096 主链路 program 的完成证明。
 
+#### 2.1.3 单卡纵向 Source Corpus Admission
+
+Q5.C只拥有纵向workload的source admission和CPU oracle，不拥有compiler、runtime或board完成：
+
+```text
+Pipeline position:
+- Upstream artifact / IR:
+  仓库内声明式workload spec、tiny Llama config snapshot和固定PyTorch/PyTorch-XLA exporter revision。
+- Current stage responsibility:
+  从固定seed/dtype/shape生成确定性input/parameter payload，以真实PyTorch/XLA exporter生成StableHLO
+  program directory；用独立NumPy实现产生CPU oracle，并在export前与framework CPU结果按case tolerance
+  交叉检查；验证exporter保存的parameter NPY与source payload逐元素一致。
+- Output artifact / IR:
+  测试临时目录中的linear-residual MLP与tiny Llama decoder-block program directory、input/parameter/
+  expected CPU reference和admission record；git只保存小型spec/config和生成器，不保存生成物或大二进制。
+- Downstream consumer:
+  Q20/Q21的同一`wafer-compile`纵向driver gate；它们必须消费这里admit的真实program和CPU oracle。
+- User-level driver / named pipeline:
+  corpus admission入口是`wafer_pytorch_xla_capture.py --emit-workload-corpus`；它是测试fixture入口，
+  不是production compiler driver。
+- Explicit non-goals:
+  不执行candidate/compiler/runtime/target/board，不产生bundle/manifest，不把CPU oracle或frontend verifier
+  通过冒充数值E2E。
+- Completion gate:
+  两个case的source/config/seed/dtype/shape和digest固定；CPU-only reference重复生成byte-identical；真实
+  exporter重复生成canonical-equivalent program；两个program都通过frontend program verifier。
+```
+
+固定spec是`test/Tools/Inputs/workloads/single-card-vertical-v1.json`。framework精确固定为PyTorch
+`2.5.0+cpu` / git revision `32f585d9346e316e554c8d9bf7548af9f62141fc`；exporter固定为
+PyTorch/XLA 2.5.0，来自`https://github.com/pytorch/xla.git`的git revision
+`396608c7105b3763874fe3800dfabdfa2b38a28a`。admission运行时同时验证版本、PyTorch revision和实际加载
+PyTorch/XLA source checkout的HEAD、clean status及origin URL；40位值明确是Git object ID，不是payload
+digest。payload算法只使用
+整数序列和二进制可精确表示的f32缩放，避免`empty()`或未固定framework RNG成为事实源。当前case为：
+
+| case | source config / shape | input digest | parameter digest | CPU expected digest | canonical exporter digest |
+| --- | --- | --- | --- | --- | --- |
+| `linear-residual-mlp-f32` | source revision `sha256:45997c315413279fa5a8ef15be22ebe9c2171f8dd270e74514d81a45810979ce`，seed 20260712，`2x16 -> 2x32 -> 2x16`，tanh+residual，f32 | `sha256:4dacd3cd5f500875e005c053e39131351af89f4475e009f70504dd46ba18e268` | `sha256:9f7b1dafc4b0def2ecc6f2b949a4c76839408a9881c55d4807bf2ffcc3019182` | `sha256:5df7b540e3156218ae841ff471009c56ac60542d517206fe847bf41a8d04cb6b` | `sha256:b6eae1be4607b0e44c4bd66aa95101efc6e3471b743e4b19a67d90a1d3622287` |
+| `tiny-llama-decoder-f32` | effective source revision `sha256:386849e6d4e31954f8e8e9ed5c9b265100e136458af5b9d2f3af413c579df944`，seed 20260712，`1x4x16`，causal self-attention，4 heads，intermediate 64，f32 | `sha256:daa46fe9f0572572d143cd1bf378d554ae79eef7c037a65dd7cd2528df6cead1` | `sha256:e933bda2600971a96a3fc99cc47c0923a76feab3eacbd250dbdbff6336035a4d` | `sha256:592f22d431a60152bf0551a408e86190a33113b80a4e45b04ca405ae371afc77` | `sha256:ac61beec77477e9b5f7184b340254537bcdb4eaa1b2c4480ca5cedbdf645491c` |
+
+CPU expected digest是完整f32 tensor的typed canonical digest；spec还保存6位小数量化digest，用于诊断
+不同CPU数学库的容差内漂移，不能替代完整tensor比较。canonical exporter digest覆盖human-readable
+`forward.mlir`、canonical `forward.meta`和typed data/constants；bytecode与MLIR表达同一graph且不作为
+canonical-equivalence第二事实源。真实admission仍要求`forward.bytecode`存在，并由program layout verifier检查。
+
 ### 2.2 第三方工程依赖组织
 
 第三方工程依赖分层管理，避免把某个外部项目的 API、路径或版本细节泄漏成 Wafer IR 合同：

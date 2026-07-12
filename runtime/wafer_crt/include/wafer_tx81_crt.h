@@ -1,6 +1,7 @@
 #ifndef WAFER_TX81_CRT_H
 #define WAFER_TX81_CRT_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -12,7 +13,8 @@ void wafer_tx81_wdma(uint64_t src, uint64_t dst, uint32_t byte_count, uint32_t i
 void wafer_tx81_gather_scatter(uint64_t src, uint64_t dst, uint32_t byte_count, uint32_t inner_bytes, uint32_t src_stride0, uint32_t src_stride1, uint32_t src_stride2, uint32_t src_iteration0, uint32_t src_iteration1, uint32_t src_iteration2, uint32_t dst_stride0, uint32_t dst_stride1, uint32_t dst_stride2, uint32_t dst_iteration0, uint32_t dst_iteration1, uint32_t dst_iteration2);
 void wafer_tx81_memset(uint64_t dst, uint32_t value, uint32_t elem_count, uint32_t format);
 void wafer_tx81_bit2fp(uint64_t src, uint64_t dst, uint32_t elem_count, uint32_t format);
-void wafer_tx81_mask_move(uint64_t src, uint64_t mask, uint64_t dst, uint32_t elem_count, uint32_t format);
+void wafer_tx81_mask_move(uint64_t src, uint32_t mask, uint64_t dst,
+                          uint32_t elem_count, uint32_t format);
 void wafer_tx81_gemm(uint64_t lhs, uint64_t rhs, uint64_t dst, uint32_t m, uint32_t k, uint32_t n, uint32_t batch_count, uint32_t format);
 void wafer_tx81_tdma_pad(uint64_t src, uint64_t dst, uint32_t src_n, uint32_t src_h, uint32_t src_w, uint32_t src_c, uint32_t dst_n, uint32_t dst_h, uint32_t dst_w, uint32_t dst_c, uint32_t pad_top, uint32_t pad_bottom, uint32_t pad_left, uint32_t pad_right, uint32_t format);
 void wafer_tx81_tdma_img2col(uint64_t src, uint64_t dst, uint32_t src_n, uint32_t src_h, uint32_t src_w, uint32_t src_c, uint32_t dst_n, uint32_t dst_h, uint32_t dst_w, uint32_t dst_c, uint32_t pad_top, uint32_t pad_bottom, uint32_t pad_left, uint32_t pad_right, uint32_t kernel_x, uint32_t kernel_y, uint32_t stride_x, uint32_t stride_y, uint32_t format);
@@ -113,7 +115,6 @@ void wafer_tx81_unpool_mask(uint64_t input, uint64_t dst, uint32_t kind, uint32_
 
 void wafer_tx81_peripheral_argmax(uint64_t src, uint64_t value_dst, uint64_t index_dst, uint32_t kind, uint32_t elem_count, uint32_t format, uint32_t lut_elem_count, uint32_t scale, uint32_t probability, uint32_t rounding_mode);
 void wafer_tx81_peripheral_argmin(uint64_t src, uint64_t value_dst, uint64_t index_dst, uint32_t kind, uint32_t elem_count, uint32_t format, uint32_t lut_elem_count, uint32_t scale, uint32_t probability, uint32_t rounding_mode);
-void wafer_tx81_peripheral_factorize(uint64_t src, uint64_t dst0, uint64_t dst1, uint64_t dst2, uint32_t kind, uint32_t elem_count, uint32_t format, uint32_t lut_elem_count, uint32_t scale, uint32_t probability, uint32_t rounding_mode);
 void wafer_tx81_peripheral_bilinear(uint64_t src, uint64_t dst, uint32_t kind, uint32_t elem_count, uint32_t format, uint32_t src_n, uint32_t src_h, uint32_t src_w, uint32_t src_c, uint32_t dst_n, uint32_t dst_h, uint32_t dst_w, uint32_t dst_c, uint32_t lut_elem_count, uint32_t scale, uint32_t probability, uint32_t rounding_mode);
 void wafer_tx81_peripheral_lut16(uint64_t src, uint64_t lut, uint64_t dst, uint32_t kind, uint32_t elem_count, uint32_t format, uint32_t lut_elem_count, uint32_t scale, uint32_t probability, uint32_t rounding_mode);
 void wafer_tx81_peripheral_lut32(uint64_t src, uint64_t lut, uint64_t dst, uint32_t kind, uint32_t elem_count, uint32_t format, uint32_t lut_elem_count, uint32_t scale, uint32_t probability, uint32_t rounding_mode);

@@ -5,6 +5,7 @@
 #include "OpVerifierUtils.h"
 
 #include "mlir/Dialect/Async/IR/Async.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 
 using namespace wafer;
@@ -18,7 +19,7 @@ bool isRawStableHLOOp(mlir::Operation *op) {
 }
 
 bool isAllowedWaferGroupBodyOp(mlir::Operation *op) {
-  if (mlir::isa<GroupYieldOp>(op))
+  if (mlir::isa<GroupYieldOp, LinalgExtCollectiveYieldOp>(op))
     return true;
   return mlir::isa<WaferLinalgExtCollectiveOpInterface>(op);
 }
@@ -41,6 +42,8 @@ bool isForbiddenGroupBoundaryType(mlir::Type type) {
 } // namespace
 
 mlir::LogicalResult GroupOp::verify() {
+  if (getOuts().empty())
+    return emitOpError("expected at least one out/result boundary");
   if (getNumResults() != getOuts().size())
     return emitOpError("expected result count to match outs count, got ")
            << getNumResults() << " results and " << getOuts().size() << " outs";
@@ -60,6 +63,18 @@ mlir::LogicalResult GroupOp::verify() {
       return emitOpError("does not accept SPM memref inputs");
     if (mlir::isa<mlir::async::TokenType>(input.getType()))
       return emitOpError("does not accept async token inputs");
+  }
+
+  llvm::DenseSet<mlir::Value> boundaryValues;
+  for (auto [index, input] : llvm::enumerate(getInputs())) {
+    if (!boundaryValues.insert(input).second)
+      return emitOpError("requires unique boundary SSA values; input at index ")
+             << index << " is duplicated";
+  }
+  for (auto [index, out] : llvm::enumerate(getOuts())) {
+    if (!boundaryValues.insert(out).second)
+      return emitOpError("requires unique boundary SSA values; out at index ")
+             << index << " aliases an earlier input or out";
   }
 
   return mlir::success();
@@ -121,31 +136,41 @@ mlir::LogicalResult GroupOp::verifyRegions() {
              << " at index " << index;
   }
 
-  for (mlir::Operation &bodyOp : block.without_terminator()) {
-    mlir::Operation *op = &bodyOp;
-    if (isRawStableHLOOp(op))
-      return emitOpError("body cannot contain raw StableHLO op '")
-             << op->getName() << "'";
+  mlir::WalkResult bodyWalk =
+      getBody().walk<mlir::WalkOrder::PreOrder>([&](mlir::Operation *op) {
+        if (isRawStableHLOOp(op))
+          return (emitOpError("body cannot contain raw StableHLO op '")
+                      << op->getName() << "'",
+                  mlir::WalkResult::interrupt());
 
-    if (isLowerLevelWaferOp(op))
-      return emitOpError("body cannot contain lower-level op '")
-             << op->getName() << "'";
+        if (isLowerLevelWaferOp(op))
+          return (emitOpError("body cannot contain lower-level op '")
+                      << op->getName() << "'",
+                  mlir::WalkResult::interrupt());
 
-    if (!isAllowedWaferGroupBodyOp(op) && !isAllowedTensorLevelDialect(op))
-      return emitOpError("body cannot contain unsupported op '")
-             << op->getName() << "'";
+        if (!isAllowedWaferGroupBodyOp(op) && !isAllowedTensorLevelDialect(op))
+          return (emitOpError("body cannot contain unsupported op '")
+                      << op->getName() << "'",
+                  mlir::WalkResult::interrupt());
 
-    for (mlir::Value operand : op->getOperands()) {
-      if (isForbiddenGroupBoundaryType(operand.getType()))
-        return emitOpError("body cannot contain lower-level operand type ")
-               << operand.getType() << " on op '" << op->getName() << "'";
-    }
-    for (mlir::Value result : op->getResults()) {
-      if (isForbiddenGroupBoundaryType(result.getType()))
-        return emitOpError("body cannot contain lower-level result type ")
-               << result.getType() << " on op '" << op->getName() << "'";
-    }
-  }
+        for (mlir::Value operand : op->getOperands()) {
+          if (isForbiddenGroupBoundaryType(operand.getType()))
+            return (emitOpError("body cannot contain lower-level operand type ")
+                        << operand.getType() << " on op '" << op->getName()
+                        << "'",
+                    mlir::WalkResult::interrupt());
+        }
+        for (mlir::Value result : op->getResults()) {
+          if (isForbiddenGroupBoundaryType(result.getType()))
+            return (emitOpError("body cannot contain lower-level result type ")
+                        << result.getType() << " on op '" << op->getName()
+                        << "'",
+                    mlir::WalkResult::interrupt());
+        }
+        return mlir::WalkResult::advance();
+      });
+  if (bodyWalk.wasInterrupted())
+    return mlir::failure();
 
   for (mlir::NamedAttribute attr : getOperation()->getAttrs()) {
     if (attr.getName() != getOperandSegmentSizesAttrName())

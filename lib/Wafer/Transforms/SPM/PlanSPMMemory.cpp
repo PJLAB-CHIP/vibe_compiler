@@ -60,6 +60,16 @@ struct RootRef {
   PathCondition condition;
 };
 
+struct PendingLocalIssue {
+  mlir::Operation *origin = nullptr;
+  PathCondition condition;
+};
+
+struct DTECompletionRef {
+  mlir::Value originToken;
+  PathCondition condition;
+};
+
 struct EventInfo {
   llvm::DenseMap<mlir::Operation *, int64_t> operationEvents;
   llvm::DenseMap<mlir::Operation *, PathCondition> operationConditions;
@@ -68,6 +78,8 @@ struct EventInfo {
   unsigned nextBranch = 0;
   bool branchLimitExceeded = false;
 };
+
+static bool hasAsyncTokenType(mlir::Value value);
 
 static bool checkedAdd(int64_t lhs, int64_t rhs, int64_t &result) {
   if (lhs < 0 || rhs < 0)
@@ -206,6 +218,14 @@ static void assignBlockEvents(mlir::Block &block, PathCondition condition,
         assignRegionEvents(ifOp.getThenRegion(), *thenCondition, events);
         assignRegionEvents(ifOp.getElseRegion(), *elseCondition, events);
       }
+    } else if (auto forOp = mlir::dyn_cast<mlir::scf::ForOp>(op)) {
+      unsigned branch = events.nextBranch++;
+      std::optional<PathCondition> bodyCondition =
+          withBranch(condition, branch, /*thenPath=*/true);
+      if (!bodyCondition)
+        events.branchLimitExceeded = true;
+      else
+        assignRegionEvents(forOp.getRegion(), *bodyCondition, events);
     } else {
       for (mlir::Region &region : op.getRegions())
         assignRegionEvents(region, condition, events);
@@ -227,8 +247,23 @@ static mlir::LogicalResult assignOperationEvents(TileRegionOp tileRegion,
   if (events.branchLimitExceeded)
     return tileRegion.emitError() << "lifetime_overlap_conflict: SPM memory "
                                      "planning supports at most 64 "
-                                     "nested branch decision points";
+                                     "control-flow decision points";
   return mlir::success();
+}
+
+static mlir::LogicalResult
+verifyCompletionControlFlow(TileRegionOp tileRegion) {
+  mlir::WalkResult result = tileRegion.walk([&](mlir::scf::ForOp forOp) {
+    bool carriesToken = llvm::any_of(forOp.getInitArgs(), hasAsyncTokenType) ||
+                        llvm::any_of(forOp.getResults(), hasAsyncTokenType);
+    if (!carriesToken)
+      return mlir::WalkResult::advance();
+    forOp.emitError()
+        << "unsupported_completion_control_flow: SPM memory planning cannot "
+           "prove loop-carried DTE token completion";
+    return mlir::WalkResult::interrupt();
+  });
+  return result.wasInterrupted() ? mlir::failure() : mlir::success();
 }
 
 static void addLiveSegment(SPMDemand &demand, int64_t startEvent,
@@ -366,7 +401,11 @@ struct LifetimeDataflow {
   llvm::MutableArrayRef<SPMDemand> demands;
   llvm::DenseMap<mlir::Value, llvm::SmallVector<RootRef, 2>> valueRefs;
   llvm::DenseMap<mlir::Value, llvm::SmallVector<RootRef, 2>> tokenRefs;
-  llvm::SmallVector<RootRef, 8> pendingLocalWrites;
+  llvm::DenseMap<mlir::Value, llvm::SmallVector<DTECompletionRef, 2>>
+      dteCompletionRefs;
+  llvm::SmallVector<RootRef, 8> pendingLocalAccesses;
+  llvm::SmallVector<PendingLocalIssue, 8> pendingLocalIssues;
+  llvm::SmallVector<DTECompletionRef, 8> pendingDTECompletions;
 
   PathCondition getOperationCondition(mlir::Operation *op) const {
     auto it = events.operationConditions.find(op);
@@ -445,7 +484,7 @@ struct LifetimeDataflow {
     llvm_unreachable("unknown Wafer value role");
   }
 
-  void recordPendingLocalWriteEffects(mlir::Operation *op) {
+  void recordPendingLocalAccessEffects(mlir::Operation *op) {
     auto effectInterface = mlir::dyn_cast<WaferResourceEffectInterface>(op);
     if (!effectInterface)
       return;
@@ -462,28 +501,47 @@ struct LifetimeDataflow {
       return;
 
     PathCondition condition = getOperationCondition(op);
+    pendingLocalIssues.push_back(PendingLocalIssue{op, condition});
     for (const WaferResourceEffect &effect : effects) {
       if (effect.resource != WaferResourceKind::SPM ||
-          effect.access != WaferResourceAccess::Write)
+          (effect.access != WaferResourceAccess::Read &&
+           effect.access != WaferResourceAccess::Write))
         continue;
       mlir::Value value = getEffectValue(op, effect);
       if (!value)
         continue;
       llvm::SmallVector<RootRef, 2> refs =
           getRefsAtUse(value, condition, valueRefs);
-      pendingLocalWrites.append(refs.begin(), refs.end());
+      pendingLocalAccesses.append(refs.begin(), refs.end());
     }
   }
 
   void processLocalFence(mlir::Operation *op) {
     int64_t event = getOperationEvent(op);
     PathCondition drainCondition = getOperationCondition(op);
-    llvm::SmallVector<RootRef, 8> remainingWrites;
-    for (RootRef ref : pendingLocalWrites) {
+    llvm::SmallVector<PendingLocalIssue, 8> remainingIssues;
+    for (PendingLocalIssue issue : pendingLocalIssues) {
+      std::optional<PathCondition> merged =
+          mergeConditions(issue.condition, drainCondition);
+      if (!merged) {
+        remainingIssues.push_back(issue);
+        continue;
+      }
+
+      llvm::SmallVector<PathCondition, 2> remainingConditions;
+      appendConditionDifference(issue.condition, drainCondition,
+                                remainingConditions);
+      for (PathCondition condition : remainingConditions)
+        remainingIssues.push_back(PendingLocalIssue{issue.origin, condition});
+    }
+    pendingLocalIssues = std::move(remainingIssues);
+
+    llvm::SmallVector<RootRef, 8> remainingAccesses;
+    for (RootRef ref : pendingLocalAccesses) {
       std::optional<PathCondition> merged =
           mergeConditions(ref.condition, drainCondition);
       if (!merged) {
-        remainingWrites.push_back(ref);
+        remainingAccesses.push_back(ref);
         continue;
       }
       recordDemandUse(demands[ref.demandIndex], event, *merged);
@@ -492,9 +550,68 @@ struct LifetimeDataflow {
       appendConditionDifference(ref.condition, drainCondition,
                                 remainingConditions);
       for (PathCondition condition : remainingConditions)
-        remainingWrites.push_back(RootRef{ref.demandIndex, condition});
+        remainingAccesses.push_back(RootRef{ref.demandIndex, condition});
     }
-    pendingLocalWrites = std::move(remainingWrites);
+    pendingLocalAccesses = std::move(remainingAccesses);
+  }
+
+  llvm::SmallVector<DTECompletionRef, 2>
+  getDTECompletionsAtUse(mlir::Value token, PathCondition useCondition) {
+    llvm::SmallVector<DTECompletionRef, 2> refs;
+    auto it = dteCompletionRefs.find(token);
+    if (it == dteCompletionRefs.end())
+      return refs;
+    for (DTECompletionRef ref : it->second) {
+      std::optional<PathCondition> merged =
+          mergeConditions(ref.condition, useCondition);
+      if (merged)
+        refs.push_back(DTECompletionRef{ref.originToken, *merged});
+    }
+    return refs;
+  }
+
+  void processDTEWait(InstrDTEWaitOp op) {
+    PathCondition waitCondition = getOperationCondition(op);
+    for (mlir::Value token : op.getTokens()) {
+      llvm::SmallVector<DTECompletionRef, 2> waitedCompletions =
+          getDTECompletionsAtUse(token, waitCondition);
+      for (DTECompletionRef waited : waitedCompletions) {
+        llvm::SmallVector<DTECompletionRef, 8> remainingCompletions;
+        for (DTECompletionRef pending : pendingDTECompletions) {
+          if (pending.originToken != waited.originToken) {
+            remainingCompletions.push_back(pending);
+            continue;
+          }
+          std::optional<PathCondition> merged =
+              mergeConditions(pending.condition, waited.condition);
+          if (!merged) {
+            remainingCompletions.push_back(pending);
+            continue;
+          }
+
+          llvm::SmallVector<PathCondition, 2> remainingConditions;
+          appendConditionDifference(pending.condition, waited.condition,
+                                    remainingConditions);
+          for (PathCondition condition : remainingConditions)
+            remainingCompletions.push_back(
+                DTECompletionRef{pending.originToken, condition});
+        }
+        pendingDTECompletions = std::move(remainingCompletions);
+      }
+    }
+  }
+
+  void recordDTECompletion(mlir::Operation *op) {
+    if (!mlir::isa<InstrDTESendOp, InstrDTERecvOp>(op))
+      return;
+    PathCondition condition = getOperationCondition(op);
+    for (mlir::Value result : op->getResults()) {
+      if (!hasAsyncTokenType(result))
+        continue;
+      DTECompletionRef ref{result, condition};
+      dteCompletionRefs[result] = llvm::SmallVector<DTECompletionRef, 2>{ref};
+      pendingDTECompletions.push_back(ref);
+    }
   }
 
   void mapIfResults(mlir::scf::IfOp ifOp) {
@@ -504,13 +621,28 @@ struct LifetimeDataflow {
       return;
 
     for (auto [index, result] : llvm::enumerate(ifOp.getResults())) {
-      if (!isWaferSPMMemRefType(result.getType()))
+      if (isWaferSPMMemRefType(result.getType())) {
+        llvm::SmallVector<RootRef, 2> refs;
+        appendYieldOperandRefs(thenYield, index, refs);
+        appendYieldOperandRefs(elseYield, index, refs);
+        if (!refs.empty())
+          valueRefs[result] = refs;
         continue;
-      llvm::SmallVector<RootRef, 2> refs;
-      appendYieldOperandRefs(thenYield, index, refs);
-      appendYieldOperandRefs(elseYield, index, refs);
-      if (!refs.empty())
-        valueRefs[result] = refs;
+      }
+      if (!hasAsyncTokenType(result))
+        continue;
+
+      llvm::SmallVector<RootRef, 2> roots;
+      appendYieldTokenRootRefs(thenYield, index, roots);
+      appendYieldTokenRootRefs(elseYield, index, roots);
+      if (!roots.empty())
+        tokenRefs[result] = roots;
+
+      llvm::SmallVector<DTECompletionRef, 2> completions;
+      appendYieldDTECompletionRefs(thenYield, index, completions);
+      appendYieldDTECompletionRefs(elseYield, index, completions);
+      if (!completions.empty())
+        dteCompletionRefs[result] = completions;
     }
   }
 
@@ -520,6 +652,32 @@ struct LifetimeDataflow {
       return;
     llvm::SmallVector<RootRef, 2> yieldedRefs = getRefsAtUse(
         yieldOp.getResults()[index], getOperationCondition(yieldOp), valueRefs);
+    refs.append(yieldedRefs.begin(), yieldedRefs.end());
+  }
+
+  void appendYieldTokenRootRefs(mlir::scf::YieldOp yieldOp, unsigned index,
+                                llvm::SmallVectorImpl<RootRef> &refs) {
+    if (index >= yieldOp.getResults().size())
+      return;
+    auto it = tokenRefs.find(yieldOp.getResults()[index]);
+    if (it == tokenRefs.end())
+      return;
+    PathCondition condition = getOperationCondition(yieldOp);
+    for (RootRef ref : it->second) {
+      std::optional<PathCondition> merged =
+          mergeConditions(ref.condition, condition);
+      if (merged)
+        refs.push_back(RootRef{ref.demandIndex, *merged});
+    }
+  }
+
+  void
+  appendYieldDTECompletionRefs(mlir::scf::YieldOp yieldOp, unsigned index,
+                               llvm::SmallVectorImpl<DTECompletionRef> &refs) {
+    if (index >= yieldOp.getResults().size())
+      return;
+    llvm::SmallVector<DTECompletionRef, 2> yieldedRefs = getDTECompletionsAtUse(
+        yieldOp.getResults()[index], getOperationCondition(yieldOp));
     refs.append(yieldedRefs.begin(), yieldedRefs.end());
   }
 
@@ -574,6 +732,8 @@ struct LifetimeDataflow {
 
       if (mlir::isa<SyncLocalFenceOp>(op)) {
         processLocalFence(&op);
+      } else if (auto waitOp = mlir::dyn_cast<InstrDTEWaitOp>(op)) {
+        processDTEWait(waitOp);
       } else if (auto forOp = mlir::dyn_cast<mlir::scf::ForOp>(op)) {
         mapForRegionIterArgs(forOp);
         processRegion(forOp.getRegion());
@@ -589,8 +749,31 @@ struct LifetimeDataflow {
       }
 
       mapAsyncTokenResults(&op);
-      recordPendingLocalWriteEffects(&op);
+      recordDTECompletion(&op);
+      recordPendingLocalAccessEffects(&op);
     }
+  }
+
+  mlir::LogicalResult verifyTerminalCompletion(TileRegionOp tileRegion) {
+    if (!pendingLocalIssues.empty()) {
+      mlir::Operation *origin = pendingLocalIssues.front().origin;
+      return (origin ? origin : tileRegion.getOperation())->emitError()
+             << "missing_local_completion: local Compute/Movement issue has "
+                "a reachable path to wafer.tile.region exit without "
+                "wafer.instr.local_fence";
+    }
+    if (!pendingDTECompletions.empty()) {
+      mlir::Operation *origin =
+          pendingDTECompletions.front().originToken.getDefiningOp();
+      return (origin ? origin : tileRegion.getOperation())->emitError()
+             << "missing_dte_completion: DTE token has a reachable path to "
+                "wafer.tile.region exit without wafer.instr.dte_wait";
+    }
+    if (!pendingLocalAccesses.empty())
+      return tileRegion.emitError()
+             << "completion_proof_failure: local issue lifetime state remains "
+                "after all local issues were fenced";
+    return mlir::success();
   }
 };
 
@@ -672,9 +855,10 @@ collectSPMDemands(TileRegionOp tileRegion, int64_t defaultAlignment,
 
   llvm::DenseMap<mlir::Value, llvm::SmallVector<RootRef, 2>> tokenRefs;
   LifetimeDataflow dataflow{
-      events, demands, std::move(valueRefs), std::move(tokenRefs), {}};
+      events, demands, std::move(valueRefs), std::move(tokenRefs), {}, {},
+      {},     {}};
   dataflow.processRegion(tileRegion.getBody());
-  return mlir::success();
+  return dataflow.verifyTerminalCompletion(tileRegion);
 }
 
 static mlir::FailureOr<int64_t>
@@ -712,6 +896,8 @@ findFirstFitOffset(const SPMDemand &demand,
 
 static mlir::LogicalResult planRegion(TileRegionOp tileRegion, int64_t spmBase,
                                       int64_t spmLimit, int64_t spmAlignment) {
+  if (mlir::failed(verifyCompletionControlFlow(tileRegion)))
+    return mlir::failure();
   EventInfo events;
   if (mlir::failed(assignOperationEvents(tileRegion, events)))
     return mlir::failure();

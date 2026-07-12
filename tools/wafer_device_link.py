@@ -10,12 +10,29 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 
 
 DEFAULT_TOOLCHAIN_DIR = "Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2"
 DEFAULT_GCC_VERSION = "10.4.0"
 DEFAULT_MARCH = "rv64imafdc"
 DEFAULT_MABI = "lp64d"
+DEFAULT_LOADER_ABI = "tx8-kcore-loader-v1"
+LOADER_ABI_UNDEFINED_SYMBOLS = {
+    "tx8-kcore-loader-v1": frozenset(
+        {
+            "get_log_level",
+            "get_spm_memory_mapping",
+            "monitor_write_log",
+            "rt_free",
+            "rt_malloc",
+            "rt_thread_mdelay",
+            "tsm_ep_log",
+            "tx8_kernel_printf",
+            "tx8_kernel_vprintf",
+        }
+    )
+}
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_TX8_DEPS_DIR = REPO_ROOT / "third_party" / "tx8_deps"
 DEFAULT_WAFER_CRT_SOURCE = REPO_ROOT / "runtime" / "wafer_crt" / "src" / "wafer_tx81_crt.c"
@@ -349,7 +366,7 @@ def run_command(command: list[str]) -> None:
     subprocess.run(command, check=True)
 
 
-def run_required_symbol_scan(command: list[str]) -> None:
+def run_required_symbol_scan(command: list[str], loader_abi: str) -> None:
     completed = subprocess.run(
         command,
         check=True,
@@ -357,18 +374,87 @@ def run_required_symbol_scan(command: list[str]) -> None:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
-    missing = sorted(
-        {
-            line.split()[-1]
-            for line in completed.stdout.splitlines()
-            if line.split() and line.split()[-1].startswith("wafer_tx81_")
-        }
+    undefined = {
+        line.split()[-1]
+        for line in completed.stdout.splitlines()
+        if line.split()
+    }
+    missing_wafer_symbols = sorted(
+        symbol for symbol in undefined if symbol.startswith("wafer_tx81_")
     )
-    if missing:
+    if missing_wafer_symbols:
         fail(
             "undefined Wafer target CRT symbols remain after link: "
-            + ", ".join(missing)
+            + ", ".join(missing_wafer_symbols)
         )
+
+    allowed = LOADER_ABI_UNDEFINED_SYMBOLS[loader_abi]
+    unexpected = sorted(undefined - allowed)
+    if unexpected:
+        fail(
+            "target_symbol_not_allowed: undefined symbols are not allowed by "
+            f"loader ABI {loader_abi}: " + ", ".join(unexpected)
+        )
+
+
+def publish_intermediate(source: pathlib.Path, destination: pathlib.Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    file_descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.staging-", dir=destination.parent
+    )
+    os.close(file_descriptor)
+    temporary_path = pathlib.Path(temporary_name)
+    try:
+        shutil.copy2(source, temporary_path)
+        os.replace(temporary_path, destination)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+def execute_staged_link(args: argparse.Namespace) -> None:
+    output = pathlib.Path(args.output)
+    object_output = object_output_path(output, args.object_output)
+    crt_object_output = crt_object_output_path(output, args.crt_object_output)
+
+    destinations = [output, object_output, crt_object_output]
+    absolute_destinations = [os.path.abspath(path) for path in destinations]
+    if len(set(absolute_destinations)) != len(absolute_destinations):
+        fail("output, object-output and crt-object-output must be distinct")
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    staging_prefix = f".{output.name or 'wafer-output'}.staging-"
+    with tempfile.TemporaryDirectory(
+        prefix=staging_prefix, dir=output.parent
+    ) as staging_name:
+        staging_dir = pathlib.Path(staging_name)
+        staged_args = argparse.Namespace(**vars(args))
+        staged_args.output = str(staging_dir / "linked.so")
+        staged_args.object_output = str(staging_dir / "input.o")
+        staged_args.crt_object_output = str(staging_dir / "wafer_crt.o")
+
+        (
+            compile_cmd,
+            normalize_cmds,
+            compile_crt_cmd,
+            normalize_crt_cmds,
+            link_cmd,
+            required_symbol_scan_cmd,
+        ) = build_commands(staged_args)
+
+        run_command(compile_cmd)
+        for normalize_cmd in normalize_cmds:
+            run_command(normalize_cmd)
+        run_command(compile_crt_cmd)
+        for normalize_cmd in normalize_crt_cmds:
+            run_command(normalize_cmd)
+        run_command(link_cmd)
+        run_required_symbol_scan(required_symbol_scan_cmd, args.loader_abi)
+
+        publish_intermediate(pathlib.Path(staged_args.object_output), object_output)
+        publish_intermediate(
+            pathlib.Path(staged_args.crt_object_output), crt_object_output
+        )
+        os.replace(pathlib.Path(staged_args.output), output)
 
 
 def main() -> int:
@@ -402,6 +488,12 @@ def main() -> int:
     parser.add_argument("--gcc-version", default=DEFAULT_GCC_VERSION)
     parser.add_argument("--march", default=DEFAULT_MARCH)
     parser.add_argument("--mabi", default=DEFAULT_MABI)
+    parser.add_argument(
+        "--loader-abi",
+        choices=sorted(LOADER_ABI_UNDEFINED_SYMBOLS),
+        default=DEFAULT_LOADER_ABI,
+        help="versioned loader ABI used to validate all undefined symbols",
+    )
     parser.add_argument("--crt-object-output")
     parser.add_argument(
         "--keep-riscv-attributes",
@@ -452,21 +544,7 @@ def main() -> int:
         link_cmd,
         required_symbol_scan_cmd,
     )
-    pathlib.Path(args.output).parent.mkdir(parents=True, exist_ok=True)
-    object_output_path(pathlib.Path(args.output), args.object_output).parent.mkdir(
-        parents=True, exist_ok=True
-    )
-    crt_object_output_path(
-        pathlib.Path(args.output), args.crt_object_output
-    ).parent.mkdir(parents=True, exist_ok=True)
-    run_command(compile_cmd)
-    for normalize_cmd in normalize_cmds:
-        run_command(normalize_cmd)
-    run_command(compile_crt_cmd)
-    for normalize_cmd in normalize_crt_cmds:
-        run_command(normalize_cmd)
-    run_command(link_cmd)
-    run_required_symbol_scan(required_symbol_scan_cmd)
+    execute_staged_link(args)
     return 0
 
 

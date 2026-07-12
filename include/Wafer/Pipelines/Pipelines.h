@@ -13,15 +13,21 @@ namespace wafer {
 
 void buildStablehloToLinalgPipeline(mlir::OpPassManager &pm);
 void buildFormLogicalGroupsPipeline(mlir::OpPassManager &pm);
-void buildLowerGroupsToTileRegionPipeline(mlir::OpPassManager &pm);
+void buildLowerGroupsToTileRegionPipeline(mlir::OpPassManager &pm,
+                                          int64_t logicalRank);
 void buildLowerTileRegionToInstrPipeline(mlir::OpPassManager &pm);
-void buildLowerGroupsToInstrPipeline(mlir::OpPassManager &pm);
+void buildLowerGroupsToInstrPipeline(mlir::OpPassManager &pm,
+                                     int64_t logicalRank);
 void buildPlanSPMMemoryPipeline(mlir::OpPassManager &pm);
 void buildPlanDDRMemoryPipeline(mlir::OpPassManager &pm);
-void buildLowerGroupsToMemoryPlannedInstrPipeline(mlir::OpPassManager &pm);
-void buildLowerGroupsToDDRMemoryPlannedInstrPipeline(mlir::OpPassManager &pm);
-void buildLowerGroupsToTargetLLVMPipeline(mlir::OpPassManager &pm);
-void buildLowerGroupsToSelectedInstrPipeline(mlir::OpPassManager &pm);
+void buildLowerGroupsToMemoryPlannedInstrPipeline(mlir::OpPassManager &pm,
+                                                  int64_t logicalRank);
+void buildLowerGroupsToDDRMemoryPlannedInstrPipeline(mlir::OpPassManager &pm,
+                                                     int64_t logicalRank);
+void buildLowerGroupsToTargetLLVMPipeline(mlir::OpPassManager &pm,
+                                          int64_t logicalRank);
+void buildLowerGroupsToSelectedInstrPipeline(mlir::OpPassManager &pm,
+                                             int64_t logicalRank);
 
 #ifdef WAFER_ENABLE_SHARDY
 void buildStablehloShardingPropagationPipeline(mlir::OpPassManager &pm);

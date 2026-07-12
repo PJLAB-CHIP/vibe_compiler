@@ -19,7 +19,10 @@ def read_text(path: pathlib.Path) -> str:
 
 
 def function_body(text: str, name: str) -> str:
-    match = re.search(r"\b(?:static\s+)?void\s+" + re.escape(name) + r"\s*\(", text)
+    match = re.search(
+        r"\b(?:static\s+)?(?:void|bool)\s+" + re.escape(name) + r"\s*\(",
+        text,
+    )
     if not match:
         fail(f"cannot find function {name}")
     start = text.find("{", match.end())
@@ -93,33 +96,66 @@ def check_no_old_abi_or_helpers(source_text: str) -> None:
 
 
 def check_dma(source_text: str) -> None:
+    conversion = function_body(source_text, "wafer_elem_count_from_bytes")
+    for needle in [
+        "Fmt_BOOL",
+        "UINT32_MAX / 8U",
+        "*elem_count = bytes * 8U",
+        "bytes % elem_bytes != 0",
+        "*elem_count = bytes / elem_bytes",
+    ]:
+        require_contains(conversion, needle, "DMA checked byte to element conversion")
+
     rdma = function_body(source_text, "wafer_tx81_rdma")
     require_contains(rdma, "(void)byte_count;", "RDMA")
     require_in_order(rdma, ["rdma->AddSrcDst", "rdma->ConfigStrideIteration"], "RDMA")
     require_contains(
         rdma,
-        "wafer_elem_count_from_bytes(inner_bytes, format)",
-        "RDMA inner byte to element conversion",
+        "!wafer_elem_count_from_bytes(inner_bytes, format, &inner_elements)",
+        "RDMA checked inner byte to element conversion",
     )
+    require_contains(rdma, "&instr, inner_elements", "RDMA checked element count")
 
     wdma = function_body(source_text, "wafer_tx81_wdma")
     require_contains(wdma, "(void)byte_count;", "WDMA")
     require_in_order(wdma, ["wdma->AddSrcDst", "wdma->ConfigStrideIteration"], "WDMA")
     require_contains(
         wdma,
-        "wafer_elem_count_from_bytes(inner_bytes, format)",
-        "WDMA inner byte to element conversion",
+        "!wafer_elem_count_from_bytes(inner_bytes, format, &inner_elements)",
+        "WDMA checked inner byte to element conversion",
     )
+    require_contains(wdma, "&instr, inner_elements", "WDMA checked element count")
 
 
-def check_gather_scatter_and_mask(source_text: str) -> None:
+def check_gather_scatter_and_mask(
+    source_text: str, header_text: str, lowering_text: str
+) -> None:
     gather = function_body(source_text, "wafer_tx81_gather_scatter")
     for needle in ["wafer_stride_iteration", "move->GatherScatter", "inner_bytes", "&src_si", "&dst_si"]:
         require_contains(gather, needle, "GatherScatter")
 
     mask_move = function_body(source_text, "wafer_tx81_mask_move")
     require_contains(mask_move, "move->MaskMove", "MaskMove")
-    require_contains(mask_move, "(uint32_t)mask", "MaskMove public mask width")
+    signature = (
+        r"void\s+wafer_tx81_mask_move\s*\(\s*uint64_t\s+src\s*,\s*"
+        r"uint32_t\s+mask\s*,\s*uint64_t\s+dst\s*,\s*"
+        r"uint32_t\s+elem_count\s*,\s*uint32_t\s+format\s*\)"
+    )
+    require_pattern(header_text, signature + r"\s*;", "MaskMove public header ABI")
+    require_pattern(source_text, signature + r"\s*\{", "MaskMove source ABI")
+    require_absent(mask_move, "(uint32_t)mask", "MaskMove hidden mask narrowing")
+    require_contains(
+        mask_move,
+        "move->MaskMove(&instr, src, mask, dst",
+        "MaskMove checked mask forwarding",
+    )
+    require_pattern(
+        lowering_text,
+        r"lowerMaskMove\(InstrMaskMoveOp\s+op\).*?"
+        r"getStaticUInt32MaskAddress\(op,\s*op\.getMask\(\)\).*?"
+        r"args\.push_back\(constantI32\(op\.getLoc\(\),\s*\*mask\)\);",
+        "MaskMove compiler uint32 proof and call ABI",
+    )
 
 
 def check_arg_writeback(
@@ -269,6 +305,9 @@ def main() -> int:
     args = parser.parse_args()
 
     repo_root = pathlib.Path(args.repo_root).resolve()
+    header_text = read_text(
+        repo_root / "runtime" / "wafer_crt" / "include" / "wafer_tx81_crt.h"
+    )
     source_text = read_text(repo_root / "runtime" / "wafer_crt" / "src" / "wafer_tx81_crt.c")
     instruction_ops_text = read_text(
         repo_root
@@ -289,7 +328,7 @@ def main() -> int:
 
     check_no_old_abi_or_helpers(source_text)
     check_dma(source_text)
-    check_gather_scatter_and_mask(source_text)
+    check_gather_scatter_and_mask(source_text, header_text, lowering_text)
     check_arg_writeback(source_text, instruction_ops_text, lowering_text)
     check_relation_logic_convert(source_text)
     check_gemm_conv(source_text)

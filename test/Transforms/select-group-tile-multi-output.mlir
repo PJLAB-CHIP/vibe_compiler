@@ -1,4 +1,4 @@
-// RUN: wafer-opt --wafer-select-group-tile='print-candidate-summary' %s 2>&1 | FileCheck --implicit-check-not=selected_group --check-prefixes=SUMMARY,IR %s
+// RUN: wafer-opt --wafer-select-group-tile='logical-rank=0 print-candidate-summary' %s 2>&1 | FileCheck --implicit-check-not=selected_group --check-prefixes=SUMMARY,IR %s
 
 func.func @multi_output_same_domain(%lhs: tensor<1x4096xf32>,
                                     %rhs: tensor<1x4096xf32>,

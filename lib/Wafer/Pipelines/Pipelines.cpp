@@ -30,19 +30,8 @@ static void addStablehloToLinalgBody(mlir::OpPassManager &pm) {
   pm.addPass(mlir::createCanonicalizerPass());
 }
 
-} // namespace
-
-void buildStablehloToLinalgPipeline(mlir::OpPassManager &pm) {
-  addStablehloToLinalgBody(pm);
-}
-
-void buildFormLogicalGroupsPipeline(mlir::OpPassManager &pm) {
-  pm.addPass(createFormLogicalGroupsPass());
-}
-
-void buildLowerGroupsToTileRegionPipeline(mlir::OpPassManager &pm) {
-  pm.addPass(createConvertGroupToTileRegionPass());
-
+static mlir::bufferization::OneShotBufferizationOptions
+getFunctionBoundaryBufferizationOptions() {
   mlir::bufferization::OneShotBufferizationOptions options;
   options.bufferizeFunctionBoundaries = true;
   options.allowReturnAllocsFromLoops = true;
@@ -68,16 +57,39 @@ void buildLowerGroupsToTileRegionPipeline(mlir::OpPassManager &pm) {
         MemoryAttr::get(tensorType.getContext(), MemorySpace::DDR,
                         MemLayout::Tensor));
   };
+  return options;
+}
 
-  pm.addPass(mlir::bufferization::createOneShotBufferizePass(options));
+static void addFunctionBoundaryBufferization(mlir::OpPassManager &pm) {
+  pm.addPass(mlir::bufferization::createOneShotBufferizePass(
+      getFunctionBoundaryBufferizationOptions()));
+}
+
+} // namespace
+
+void buildStablehloToLinalgPipeline(mlir::OpPassManager &pm) {
+  addStablehloToLinalgBody(pm);
+}
+
+void buildFormLogicalGroupsPipeline(mlir::OpPassManager &pm) {
+  pm.addPass(createFormLogicalGroupsPass());
+}
+
+void buildLowerGroupsToTileRegionPipeline(mlir::OpPassManager &pm,
+                                          int64_t logicalRank) {
+  ConvertGroupToTileRegionPassOptions options;
+  options.logicalRank = logicalRank;
+  pm.addPass(createConvertGroupToTileRegionPass(options));
+  addFunctionBoundaryBufferization(pm);
 }
 
 void buildLowerTileRegionToInstrPipeline(mlir::OpPassManager &pm) {
   pm.addPass(createConvertTileRegionToInstrPass());
 }
 
-void buildLowerGroupsToInstrPipeline(mlir::OpPassManager &pm) {
-  buildLowerGroupsToTileRegionPipeline(pm);
+void buildLowerGroupsToInstrPipeline(mlir::OpPassManager &pm,
+                                     int64_t logicalRank) {
+  buildLowerGroupsToTileRegionPipeline(pm, logicalRank);
   buildLowerTileRegionToInstrPipeline(pm);
 }
 
@@ -89,23 +101,30 @@ void buildPlanDDRMemoryPipeline(mlir::OpPassManager &pm) {
   pm.addPass(createPlanDDRMemoryPass());
 }
 
-void buildLowerGroupsToMemoryPlannedInstrPipeline(mlir::OpPassManager &pm) {
-  buildLowerGroupsToInstrPipeline(pm);
+void buildLowerGroupsToMemoryPlannedInstrPipeline(mlir::OpPassManager &pm,
+                                                  int64_t logicalRank) {
+  buildLowerGroupsToInstrPipeline(pm, logicalRank);
   buildPlanSPMMemoryPipeline(pm);
 }
 
-void buildLowerGroupsToDDRMemoryPlannedInstrPipeline(mlir::OpPassManager &pm) {
-  buildLowerGroupsToMemoryPlannedInstrPipeline(pm);
+void buildLowerGroupsToDDRMemoryPlannedInstrPipeline(mlir::OpPassManager &pm,
+                                                     int64_t logicalRank) {
+  buildLowerGroupsToMemoryPlannedInstrPipeline(pm, logicalRank);
   buildPlanDDRMemoryPipeline(pm);
 }
 
-void buildLowerGroupsToTargetLLVMPipeline(mlir::OpPassManager &pm) {
-  buildLowerGroupsToDDRMemoryPlannedInstrPipeline(pm);
+void buildLowerGroupsToTargetLLVMPipeline(mlir::OpPassManager &pm,
+                                          int64_t logicalRank) {
+  buildLowerGroupsToSelectedInstrPipeline(pm, logicalRank);
   pm.addPass(createLowerInstrToTargetLLVMPass());
 }
 
-void buildLowerGroupsToSelectedInstrPipeline(mlir::OpPassManager &pm) {
-  pm.addPass(createSelectGroupTilePass());
+void buildLowerGroupsToSelectedInstrPipeline(mlir::OpPassManager &pm,
+                                             int64_t logicalRank) {
+  SelectGroupTilePassOptions options;
+  options.logicalRank = logicalRank;
+  pm.addPass(createSelectGroupTilePass(options));
+  addFunctionBoundaryBufferization(pm);
 }
 
 #ifdef WAFER_ENABLE_SHARDY
@@ -123,47 +142,57 @@ void registerWaferPipelines() {
         [](mlir::OpPassManager &pm) { buildStablehloToLinalgPipeline(pm); });
     mlir::PassPipelineRegistration<>(
         "wafer-lower-groups-to-tile-region",
-        "Lower logical wafer.group ops to memref-backed wafer.tile.region IR",
+        "Debug rank-0 direct lowering of logical wafer.group ops to "
+        "memref-backed wafer.tile.region IR",
         [](mlir::OpPassManager &pm) {
-          buildLowerGroupsToTileRegionPipeline(pm);
+          buildLowerGroupsToTileRegionPipeline(pm, /*logicalRank=*/0);
         });
     mlir::PassPipelineRegistration<>(
         "wafer-lower-tile-region-to-instr",
-        "Lower executable wafer.tile.region ops to wafer.instr IR",
+        "Debug-only lowering of executable wafer.tile.region ops to "
+        "wafer.instr IR",
         [](mlir::OpPassManager &pm) {
           buildLowerTileRegionToInstrPipeline(pm);
         });
     mlir::PassPipelineRegistration<>(
         "wafer-lower-groups-to-instr",
-        "Lower logical wafer.group ops to instruction-level Wafer IR",
-        [](mlir::OpPassManager &pm) { buildLowerGroupsToInstrPipeline(pm); });
+        "Debug rank-0 direct lowering of logical wafer.group ops to "
+        "instruction-level Wafer IR",
+        [](mlir::OpPassManager &pm) {
+          buildLowerGroupsToInstrPipeline(pm, /*logicalRank=*/0);
+        });
     mlir::PassPipelineRegistration<>(
         "wafer-lower-groups-to-memory-planned-instr",
-        "Lower logical wafer.group ops to memory-planned instruction-level "
-        "Wafer IR",
+        "Debug rank-0 direct lowering of logical wafer.group ops to "
+        "memory-planned instruction-level Wafer IR",
         [](mlir::OpPassManager &pm) {
-          buildLowerGroupsToMemoryPlannedInstrPipeline(pm);
+          buildLowerGroupsToMemoryPlannedInstrPipeline(pm,
+                                                       /*logicalRank=*/0);
         });
     mlir::PassPipelineRegistration<>(
         "wafer-lower-groups-to-ddr-memory-planned-instr",
-        "Lower logical wafer.group ops through SPM and DDR memory planning to "
-        "instruction-level Wafer IR",
+        "Debug rank-0 direct lowering of logical wafer.group ops through SPM "
+        "and DDR memory planning to instruction-level Wafer IR",
         [](mlir::OpPassManager &pm) {
-          buildLowerGroupsToDDRMemoryPlannedInstrPipeline(pm);
+          buildLowerGroupsToDDRMemoryPlannedInstrPipeline(pm,
+                                                          /*logicalRank=*/0);
         });
     mlir::PassPipelineRegistration<>(
         "wafer-lower-groups-to-target-llvm",
-        "Lower logical wafer.group ops through memory-planned instruction IR "
-        "to target LLVM CRT calls",
+        "Debug rank-0 replay: select complete logical wafer.group candidates, "
+        "bufferize function boundaries, and lower the accepted instruction "
+        "artifact to target "
+        "LLVM CRT calls",
         [](mlir::OpPassManager &pm) {
-          buildLowerGroupsToTargetLLVMPipeline(pm);
+          buildLowerGroupsToTargetLLVMPipeline(pm, /*logicalRank=*/0);
         });
     mlir::PassPipelineRegistration<>(
         "wafer-lower-groups-to-selected-instr",
-        "Select group tile candidates and commit memory-planned "
+        "Debug rank-0 replay: select complete group tile candidates and "
+        "commit function-boundary bufferized, memory-planned "
         "instruction-level Wafer IR",
         [](mlir::OpPassManager &pm) {
-          buildLowerGroupsToSelectedInstrPipeline(pm);
+          buildLowerGroupsToSelectedInstrPipeline(pm, /*logicalRank=*/0);
         });
 #ifdef WAFER_ENABLE_SHARDY
     mlir::PassPipelineRegistration<>(

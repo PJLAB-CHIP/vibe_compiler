@@ -5,7 +5,7 @@ link和近期staged target module合同。实现状态看`tasks/progress.md`。
 
 底层register/wrapper事实见`docs/wafer-register-level-instruction-spec.md`和
 `docs/tx8-deps-reverse-engineering/`；production symbol事实源是当前instruction lowering、
-`runtime/wafer_crt/include/wafer_tx81_crt.h`及symbol/conformance checker，不在本文复制105项表格。
+`runtime/wafer_crt/include/wafer_tx81_crt.h`及symbol/conformance checker，不在本文复制104项表格。
 
 ## 1. 目标和非目标
 
@@ -32,37 +32,53 @@ link和近期staged target module合同。实现状态看`tasks/progress.md`。
 Pipeline position:
 - Upstream artifact / IR:
   显式rank的完整static entry；memory-planned wafer.instr/SCF/CF/func IR；accepted SPM/DDR offsets、
-  verified physical geometry和completion relation。
+  verified physical geometry和completion relation。DDR函数边界来自typed external binding；仅有
+  arena-relative `wafer.ddr.offset`但没有explicit arena base的compiler-managed allocation不构成target address。
 - Current stage responsibility:
-  preflight全部target legality；在原控制流位置lower instruction leaf到typed LLVM CRT calls；编译/link
-  rank-local module并在staging中验证symbol、entry、format和digest。
+  Q0负责preflight全部target legality、在原控制流位置lower instruction leaf到typed LLVM CRT calls，并以
+  module clone + full conversion保证失败无source mutation。Q17负责把每个已验证rank-local LLVM module编译/
+  link到transaction staging，并验证symbol、entry、format和digest后做all-rank publication。
 - Output artifact / IR:
-  每rank一个verified staged target module：rank、entry symbol、relative delivery path、content digest和必要ABI摘要。
+  Q0输出单个entry/rank的fully legal LLVM module；Q17输出每rank一个verified staged target module：rank、
+  entry symbol、relative delivery path、content digest和必要ABI摘要。
 - Downstream consumer:
   ExecutableBundle原子commit、typed PackageManifest和runtime module loader。
 - User-level driver / named pipeline:
-  production由wafer-compile自动调用；`wafer-lower-groups-to-target-llvm`和单pass只用于局部测试。
+  production由wafer-compile以显式logical rank自动调用selected-instruction builder；
+  `wafer-lower-groups-to-target-llvm`只作显式rank-0的debug replay，固定执行完整candidate selection/commit、
+  function-boundary bufferization，再消费accepted instruction artifact进入target conversion。单pass和direct
+  group-to-instr named pipelines只用于局部测试，不能组成绕过selector的平行target主线。
 - Explicit non-goals:
   不重新做candidate/memory/transport；不发布partial module；不把target text或文件名作为package事实源。
 - Completion gate:
-  control-flow/call语义保持；全部production family geometry/narrowing通过；真实program的所有rank module在同一
-  transaction验证后发布；late failure无final output；device link required/allowed symbol gate通过。
+  Q0：control-flow/direct-call语义保持，全部当前production family geometry/narrowing通过，unsupported
+  transport/address/shape fail closed，full conversion后无illegal op，任一失败source module byte-identical。
+  Q17：真实program的all-and-only rank modules在同一transaction验证后发布；late failure无final output，
+  device link required/allowed symbol gate通过。Q0不以all-rank publication或reference numeric为完成前置。
 ```
 
-## 3. Current Implementation Facts And Containment
+selector提交时已经完成tile-region/instruction materialization以及SPM/DDR planning；target入口只在其后补齐
+函数边界bufferization，消除tensor signature和`bufferization.to_memref/to_tensor` wrapper，然后运行target
+conversion。它不得再次执行direct group-to-tile/instr或memory planning。
 
-当前`LowerInstrToTargetLLVM`会创建单block LLVM function，递归walk所有instruction后线性发call。这会压平
-SCF/CF/call语义，并且可能在后续function失败前留下partial LLVM op。
+## 3. Current Formal Conversion Facts
 
-正式conversion完成前必须先做临时containment：
+当前`LowerInstrToTargetLLVM`使用structure-preserving dialect conversion，正式边界是：
 
-1. 在任何IR mutation前扫描整个module；
-2. 拒绝multi-block function/region、`func.call`和其它callable relation；
-3. 只允许instruction直接位于function body或single-block `wafer.tile.region`；其它nested region拒绝；
-4. preflight全部function signature、return alias、instruction family、address、geometry和narrowing；
-5. 在module clone上运行旧lowering，成功后才替换source body；失败source byte-identical。
+1. 整个module先clone，后续flatten、SCF/CFG conversion、call/alias analysis和instruction lowering只改clone；
+   全部成功才以clone body替换source，因此任何late legality failure都不留下partial LLVM IR。
+2. single-block `wafer.tile.region`按SSA输入/结果原位inline；region内nested SCF/CF结构不被线性展开。
+3. direct non-recursive `func.call`和callee-only instruction保持调用关系；external、indirect/unknown和recursive
+   call graph在conversion前结构化拒绝。DDR function result必须可证明沿view、CFG forwarding或direct-call
+   summary精确alias某个DDR参数。
+4. standard SCF→CF后，typed patterns在原block改写instruction、func/call/return、Wafer memref/view和arith/CF；
+   `applyFullConversion`把Wafer/func/memref/arith/CF/SCF列为illegal，成功结果只允许module/LLVM dialect。
+5. Direct DTE在physical transport/endpoint binding和CRT support完成前以
+   `unsupported_target_transport`拒绝；没有explicit arena base binding的compiler-managed DDR allocation以
+   `unsupported_target_address`拒绝。arena-relative offset不得常量化成absolute device address。
 
-这只是fail-closed安全边界。它不能把原本支持的SCF/CF永久定义为unsupported，也不能标记正式Q0完成。
+这些事实闭合Q0的formal/atomic conversion边界，但不证明Q17的all-rank staging/publication，也不证明Q19
+reference numeric。
 
 ## 4. Structure-Preserving Conversion
 
@@ -73,11 +89,11 @@ SCF/CF/call语义，并且可能在后续function失败前留下partial LLVM op�
 - pattern在原block/insertion point生成call，保持branch/loop/call执行位置；
 - standard SCF→CF、func/CF→LLVM conversion负责容器和CFG；
 - function signature只按Kernel ABI type converter转成rank-local ABI slots；
-- full conversion失败不修改source module；
+- conversion在module clone上运行，full conversion失败不修改source module；
 - 成功后不得残留Wafer instruction、memref、func或未允许dialect。
 
-必须测试：constant false branch、0/2 trip loop、nested branch、diamond CFG、多function call、callee-only
-instruction和return alias。
+Q0 gate必须测试：constant false branch、0/2 trip loop、nested branch、diamond CFG、多function direct call、
+callee-only instruction、return alias、indirect/recursive negative和late failure source-byte identity。
 
 ## 5. Shared Physical Geometry Gate
 
@@ -88,7 +104,7 @@ offset和instruction attrs推导：
 - root allocation/view interval；
 - descriptor payload：`byte_count == inner_bytes * product(iterations)`，以及stride访问end；
 - source/destination all-and-only range；
-- op-specificshape relation和element count；
+- op-specific shape relation和element count；
 - target ABI表示范围。
 
 最低production规则：
@@ -97,13 +113,15 @@ offset和instruction attrs推导：
 - fill/elementwise/bit2fp/mask/convert：所有buffer的logical element关系和physical capacity；
 - reduce：dim、input/output shape和init type；
 - GEMM：M/K/N/batch与operand/result mapping一致；CRT未编码非canonical mapping时必须拒绝；
-- conv/pool/unpool/TDMA/peripheral：shape attrs与memref/算子关系一致；
-- DTE：bytes不超过buffer physical range，peer/slot在explicit execution/transport domain；
+- ordinary conv、pool/unpool、TDMA pad/img2col和supported peripheral：shape attrs与memref及精确算子/
+  capacity关系一致；depthwise/backward conv等未定义shape profile必须target-illegal；
+- DTE：instruction-level bytes/range先验证，但production target仍整体illegal，直到peer/slot在explicit
+  execution/transport domain绑定且CRT support闭合；
 - completion op：只等待其真实issue token/engine，不能丢token或合并不相关completion。
 
-所有传入CRT的字段必须在lowering前证明：地址/offset使用uint64；普通count/stride/iteration/enum使用
-uint32；传入`Data_Shape`的维度还必须适配底层uint16。`-1` sentinel只能出现在明确ABI字段，不能依赖i64到
-i32截断产生。
+所有传入CRT的字段必须在lowering前证明：地址/offset使用uint64；普通count/stride/iteration/enum和
+`mask_move` mask使用uint32；传入`Data_Shape`的维度还必须适配底层uint16。`-1` sentinel只能出现在
+明确ABI字段，不能依赖i64到i32截断产生。
 
 ## 6. Kernel ABI
 
@@ -131,10 +149,14 @@ CRT wrapper只把verified fields传给public Tsm/instruction adapter；不重新
 
 当前已验证的窄边界：
 
-- 105个production symbol在header/source/symbol checker/device link闭合；
+- 104个production symbol在header/source/symbol checker/device link闭合；
 - lowering使用fixed LLVM function type，不使用vararg call；
+- `wafer_tx81_mask_move`在compiler call、CRT header/source和conformance checker中均使用显式
+  `uint32_t mask`，wrapper内部不再隐藏pointer-width到uint32 narrowing；
 - repo-local CRT可由pinned TX8 GCC编译并参与device link；
--缺失`wafer_tx81_*` required symbol能被post-link gate发现。
+- 缺失`wafer_tx81_*` required symbol能被post-link gate发现；
+- post-link扫描对全部undefined symbol应用代码中`tx8-kcore-loader-v1`精确allowlist，非Wafer未知
+  symbol也以`target_symbol_not_allowed`拒绝。allowlist成员的事实源是link工具和定向测试，不在本文复制。
 
 这些不证明：
 
@@ -143,9 +165,10 @@ CRT wrapper只把verified fields传给public Tsm/instruction adapter；不重新
 - Direct DTE endpoint/channel/completion已经可用；
 - 非Wafer undefined symbol属于允许loader ABI。
 
-device link必须对所有undefined symbol应用versioned allowlist；只过滤`wafer_tx81_*`不足以成为production gate。
+allowlist通过只证明symbol属于当前loader ABI，不证明真实loader版本、board transport或completion与当前环境匹配；
+这些仍由package/runtime/board gate证明。
 
-## 8. Staged Target Module And Atomic Publication
+## 8. Q17 Staged Target Module And Atomic Publication
 
 device compiler/linker不接受final output path作为直接写入目标。接口语义为：
 
@@ -162,6 +185,12 @@ TargetLinkRequest
 
 `VerifiedStagedTargetModule`至少携带rank、entry、staging-relative path、content digest和ABI摘要。只有外层
 ExecutableBundle全部rank和manifest验证后才能commit到final root。
+
+当前`wafer_device_link.py`已经把compile、CRT compile、link和undefined-symbol scan全部放进final
+`.so`同parent的temporary staging root，并把final `.so`最后发布；失败会保留已有final bytes且不留下
+staging/debug object。显式请求的object/CRT object在成功路径上各自atomic replace，但它们还不是与
+`.so`、其它rank和manifest一起提交的bundle成员。Q17必须由外层transaction接管这些staged payload，
+不能把单文件“最后发布”误当成多文件bundle原子性。
 
 失败规则：
 
@@ -188,7 +217,8 @@ diagnostic按稳定语义分类：
 3. CRT：header/source/signature/wrapper family；
 4. device link：positive compiler-generated input、required/allowed undefined negative；
 5. atomicity：late failure后无final/partial artifacts；
-6. vertical：真实rank-count=1/16 program bundle直接消费staged modules。
+6. Q17 publication：真实program的all-and-only rank modules由同一transaction发布；
+7. Q20/Q21 vertical：rank-count=1/16 program bundle直接消费Q17 staged modules。
 
 手写LLVM、symbol-only fixture和dry-run只补覆盖，不能替代真实compiler-generated module。
 

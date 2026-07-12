@@ -9,5 +9,5 @@
 # RUN:   -g --defined-only %t.crt.o | %python %wafer_src_root/tools/check_target_crt_symbols.py \
 # RUN:   --repo-root %wafer_src_root --defined-symbols-stdin
 
-# SURFACE: checked 105 production wafer_tx81_* CRT symbols from target lowering and Wafer enum registry
+# SURFACE: checked 104 production wafer_tx81_* CRT symbols from target lowering and Wafer enum registry
 # CONFORMANCE: checked Wafer target CRT conformance rules from compiler and CRT code

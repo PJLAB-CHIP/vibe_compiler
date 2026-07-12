@@ -24,7 +24,7 @@ def Wafer_GroupOp
   let hasVerifier = 1;
   let hasRegionVerifier = 1;
   let assemblyFormat = [{
-    `ins` `(` $inputs `:` type($inputs) `)`
+    `ins` `(` ($inputs^ `:` type($inputs))? `)`
     `outs` `(` $outs `:` type($outs) `)`
     $body attr-dict `:` type($results)
   }];

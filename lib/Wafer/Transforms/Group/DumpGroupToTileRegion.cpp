@@ -39,6 +39,13 @@ struct DumpGroupToTileRegionPass
       DumpGroupToTileRegionPass>::DumpGroupToTileRegionPassBase;
 
   void runOnOperation() final {
+    if (logicalRank < 0) {
+      getOperation()->emitError()
+          << "missing_logical_rank: group-to-tile-region dump requires an "
+             "explicit non-negative logical-rank";
+      signalPassFailure();
+      return;
+    }
     llvm::DenseMap<mlir::Operation *, unsigned> groupOrdinals;
     getOperation().walk([&](GroupOp group) {
       std::string symbolName = getNearestSymbolName(group.getOperation());

@@ -12,6 +12,7 @@ func.func @pressure_weighted_packing_avoids_fragmentation(
     %right = memref.alloc() : memref<128xf16, #wafer.memory<spm, tensor>>
     wafer.instr.fill %early_dead, %zero
         : memref<128xf16, #wafer.memory<spm, tensor>>, f16
+    wafer.instr.local_fence
     %large = memref.alloc() : memref<256xf16, #wafer.memory<spm, tensor>>
     wafer.instr.fill %left, %zero
         : memref<128xf16, #wafer.memory<spm, tensor>>, f16
@@ -19,6 +20,7 @@ func.func @pressure_weighted_packing_avoids_fragmentation(
         : memref<128xf16, #wafer.memory<spm, tensor>>, f16
     wafer.instr.fill %large, %zero
         : memref<256xf16, #wafer.memory<spm, tensor>>, f16
+    wafer.instr.local_fence
     wafer.tile.yield %arg0 : memref<256xf16, #wafer.memory<ddr, tensor>>
   }
   return

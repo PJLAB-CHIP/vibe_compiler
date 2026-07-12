@@ -23,17 +23,22 @@ add_mlir_library(WaferTransforms
   WaferIR
   WaferStableHLOToLinalg
   WaferTileRegionToInstr
+  MLIRArithToLLVM
   MLIRArithDialect
   MLIRAsyncDialect
   MLIRBufferizationDialect
+  MLIRControlFlowDialect
+  MLIRControlFlowToLLVM
   MLIRFuncDialect
   MLIRIR
   MLIRLinalgDialect
+  MLIRLLVMCommonConversion
   MLIRLLVMDialect
   MLIRMathDialect
   MLIRMemRefDialect
   MLIRPass
   MLIRSCFDialect
+  MLIRSCFToControlFlow
   MLIRSupport
   MLIRTensorDialect
   MLIRTransforms

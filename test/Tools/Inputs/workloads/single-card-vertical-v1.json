@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "corpus_id": "wafer-single-card-vertical-v1",
+  "source": {
+    "framework": {
+      "name": "PyTorch",
+      "version": "2.5.0+cpu",
+      "git_revision": "32f585d9346e316e554c8d9bf7548af9f62141fc"
+    },
+    "exporter": {
+      "name": "PyTorch/XLA StableHLO",
+      "version": "2.5.0",
+      "git_repository": "https://github.com/pytorch/xla.git",
+      "git_revision": "396608c7105b3763874fe3800dfabdfa2b38a28a"
+    },
+    "model_source": "repository-owned declarative workload cases",
+    "payload_algorithm": "wafer-exact-f32-lcg-mod257-v1"
+  },
+  "cases": [
+    {
+      "id": "linear-residual-mlp-f32",
+      "kind": "linear_residual_mlp",
+      "source_revision": "sha256:45997c315413279fa5a8ef15be22ebe9c2171f8dd270e74514d81a45810979ce",
+      "seed": 20260712,
+      "dtype": "float32",
+      "config": {
+        "batch_size": 2,
+        "input_features": 16,
+        "hidden_features": 32,
+        "output_features": 16,
+        "activation": "tanh",
+        "residual": true,
+        "model_semantics_revision": "wafer-linear-mlp-v1"
+      },
+      "digests": {
+        "source_config": "sha256:45997c315413279fa5a8ef15be22ebe9c2171f8dd270e74514d81a45810979ce",
+        "input": "sha256:4dacd3cd5f500875e005c053e39131351af89f4475e009f70504dd46ba18e268",
+        "parameters": "sha256:9f7b1dafc4b0def2ecc6f2b949a4c76839408a9881c55d4807bf2ffcc3019182",
+        "reference_output": "sha256:5df7b540e3156218ae841ff471009c56ac60542d517206fe847bf41a8d04cb6b",
+        "reference_output_quantized": "sha256:cc799117f5bb3ad8f4e37c6c0fae2f411fbe8044e9a988cb2807426e6d579b0c",
+        "exported_program": "sha256:b6eae1be4607b0e44c4bd66aa95101efc6e3471b743e4b19a67d90a1d3622287"
+      },
+      "reference": {
+        "implementation": "independent NumPy matmul/bias/tanh/residual",
+        "atol": 1e-06,
+        "rtol": 1e-05,
+        "digest_quantization_decimals": 6
+      }
+    },
+    {
+      "id": "tiny-llama-decoder-f32",
+      "kind": "tiny_llama_decoder_block",
+      "source_revision": "sha256:386849e6d4e31954f8e8e9ed5c9b265100e136458af5b9d2f3af413c579df944",
+      "seed": 20260712,
+      "dtype": "float32",
+      "config": {
+        "hf_config": "../hf/tiny-random-llama-config.json",
+        "batch_size": 1,
+        "sequence_length": 4,
+        "causal_attention": true,
+        "execution_mesh_shape": [
+          16
+        ],
+        "execution_mesh_axis_names": [
+          "tensor"
+        ]
+      },
+      "digests": {
+        "source_config": "sha256:386849e6d4e31954f8e8e9ed5c9b265100e136458af5b9d2f3af413c579df944",
+        "input": "sha256:daa46fe9f0572572d143cd1bf378d554ae79eef7c037a65dd7cd2528df6cead1",
+        "parameters": "sha256:e933bda2600971a96a3fc99cc47c0923a76feab3eacbd250dbdbff6336035a4d",
+        "reference_output": "sha256:592f22d431a60152bf0551a408e86190a33113b80a4e45b04ca405ae371afc77",
+        "reference_output_quantized": "sha256:57efccb598f00c76ddb1230f3596f1e64561602f61683f8355075f8a66cbb1cb",
+        "exported_program": "sha256:ac61beec77477e9b5f7184b340254537bcdb4eaa1b2c4480ca5cedbdf645491c"
+      },
+      "reference": {
+        "implementation": "independent NumPy RMSNorm/RoPE/attention/SiLU/MLP/residual",
+        "atol": 1e-05,
+        "rtol": 0.0001,
+        "digest_quantization_decimals": 6
+      }
+    }
+  ]
+}

@@ -10,6 +10,7 @@ add_mlir_conversion_library(WaferGroupToTileRegion
   LINK_LIBS PUBLIC
   WaferAnalysis
   WaferIR
+  MLIRAnalysis
   MLIRArithDialect
   MLIRBufferizationDialect
   MLIRFuncDialect

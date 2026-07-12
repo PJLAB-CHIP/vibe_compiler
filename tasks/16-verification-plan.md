@@ -21,8 +21,9 @@ Pipeline position:
 - Explicit non-goals:
   不用FileCheck/JSON/symbol/no-card/reference冒充更下游证据；不因board不可用跳过compiler correctness。
 - Completion gate:
-  target P0 negative/atomicity全部通过；rank-count=1/16 linear/MLP和16-rank tiny Llama依次通过同一driver；
-  board未执行时保持明确external gate。
+  各owner独立验收：Q0闭合conversion/legality/formal traversal/completion/atomic negative；Q17闭合all-rank
+  target staging/publication；Q19闭合独立reference numeric；Q20/Q21依次闭合rank-count=1/16
+  linear/MLP和16-rank tiny Llama纵向链。后续gate不能反向成为Q0前置，board未执行时保持明确external gate。
 ```
 
 ## 2. Evidence Levels
@@ -63,7 +64,7 @@ performance完成。
 `check-wafer`只构建unit executable而未执行属于gate bug，必须修复。feature-inverse disabled test在enabled build
 中unsupported可以接受，但unsupported名单必须显式展示。
 
-## 4. Target Correctness Gates
+## 4. Q0 Target Correctness Gates
 
 ### 4.1 Complete Traversal
 
@@ -72,8 +73,13 @@ performance完成。
 - 每个output element all-and-only一次，无gap/overlap；
 - candidate representative只作筛选，accepted IR包含全部traversal；
 - 放大shape不能只提交first tile。
+- 当前完整静态materialization使用checked ceil-div/product，并对output-tile/reduction-chunk展开设置4096个
+  materialization实例的编译资源预算；乘法overflow或预算超限在commit前fail closed。4096只保护当前
+  unrolled实现的编译时间/内存，不是硬件容量、IR语义、
+  workload legality或16-tile topology限制；长期用compact loop表示替代静态展开后移除该预算依赖。
 
-正式completion需要reference numeric，不只检查subview数量。
+Q0正式completion由all-and-only traversal relation、accepted IR replay和atomic failure证明，不以reference
+numeric为前置；独立执行完整输出并与CPU比较属于Q19。subview数量/FileCheck仍只能作局部覆盖。
 
 ### 4.2 Structure-Preserving Conversion
 
@@ -81,19 +87,21 @@ performance完成。
 - 0、1、2 trip `scf.for`；
 - nested branch/loop；
 - multi-block diamond CFG；
-- direct/indirect unsupported call、callee-only instruction；
+- direct call与callee-only instruction、unsupported indirect/recursive call negative；
 - failure前后source module byte-identical；
 - success后full conversion无illegal op。
 
-临时fail-closed tests证明unsupported structure在任何mutation前拒绝，但不算正式conversion完成。
+formal conversion在module clone上运行并以full legality收口；unsupported indirect/recursive call、target-illegal
+transport/address/shape和任何late failure都必须保持source byte-identical。
 
 ### 4.3 Geometry And ABI
 
 - RDMA/WDMA/gather descriptor payload mismatch、stride range、两端OOB；
-- DTE bytes OOB、peer/slot out of domain；
+- DTE instruction bytes OOB，以及在physical peer/slot/CRT未闭合时production target整体拒绝；
 - convert source/dest count mismatch；
 - GEMM M/K/N/batch/mapping mismatch；
 - conv/pool/unpool/TDMA/peripheral shape relation；
+- unsupported depthwise/backward conv等未定义shape profile在production target fail closed；
 - int64 overflow、uint32 max+1、Data_Shape uint16 max+1；
 - bitpacked/Cx/NCx physical bytes和view offset限制。
 
@@ -104,11 +112,12 @@ performance完成。
 - WDMA source在completion前不可复用，fence后可以；
 - RDMA destination、compute operands/results、DTE send/recv staging同理；
 - branch mutually-exclusive reuse与join后lifetime；
-- loop-carried和cross-tile-region lifetime；
+- isolated `wafer.tile.region`内loop-carried lifetime、path-specific terminal completion，以及SPM value跨
+  region边界的verifier negative；whole-entry cross-region reuse不是当前correctness前置；
 - missing/wrong-engine fence不能释放resource；
-- timeout/error使dependent state poison且禁止publication。
+- terminal pending event或无法证明的loop-carried token使candidate clone失败且不产生accepted target IR。
 
-## 5. Compile And Bundle Gates
+## 5. Q15/Q16 Compile And Bundle Gates
 
 - rank-count仅接受明确supported values；rank未提供不默认0；
 - rank 0/1 local slice、collective peer、entry和artifact identity不同；
@@ -120,7 +129,7 @@ performance完成。
 
 direct full-shape和tiled candidate都必须经过同一legality/commit；不允许绕过selector的平行production path。
 
-## 6. Target Module And Publication Gates
+## 6. Q17 Target Module And Publication Gates
 
 - compiler-generated target LLVM→object→CRT object→kcore module positive；
 - typed fixed call signatures，无vararg；
@@ -133,7 +142,7 @@ direct full-shape和tiled candidate都必须经过同一legality/commit；不允
 
 手写LLVM和dry-run只补tool coverage，不能替代真实program产生的module。
 
-## 7. Manifest And Runtime Gates
+## 7. Q18 Manifest And Runtime Gates
 
 ### 7.1 Typed Manifest
 
@@ -174,8 +183,9 @@ set-device/context
 ```
 
 每一步注入失败；未满足依赖的descendant不调用；已经获取的资源逆序cleanup；typed error保留stage/rank/entry。
+wait timeout/error使dependent runtime state poison，禁止后续copyback/publication并进入同一cleanup合同。
 
-## 8. Reference Executor Gates
+## 8. Q19 Reference Executor Gates
 
 executor输入必须是accepted rank instruction/memory facts，不得读取planner trace或重新选择candidate。
 
@@ -197,7 +207,7 @@ executor输入必须是accepted rank instruction/memory facts，不得读取plan
 
 比较完整输出tensor，不只比较shape/digest。tolerance按dtype/op定义并记录；整数/bitwise要求exact。
 
-## 9. Vertical Workload Gates
+## 9. Q20/Q21 Vertical Workload Gates
 
 ### 9.1 Source-Backed Corpus
 
@@ -211,7 +221,18 @@ executor输入必须是accepted rank instruction/memory facts，不得读取plan
 
 手写Wafer/group/instr IR不属于纵向corpus。
 
-### 9.2 Gate A: Single-Tile Linear/MLP
+当前`wafer-single-card-vertical-v1` corpus admission已经固定两个case：`2x16 -> 2x32 -> 2x16`
+f32 linear-residual MLP，以及`1x4x16`、causal self-attention、4 heads、intermediate 64的f32 tiny Llama
+decoder block。两者都由PyTorch `2.5.0+cpu`（git
+`32f585d9346e316e554c8d9bf7548af9f62141fc`）和PyTorch/XLA 2.5.0（repository
+`https://github.com/pytorch/xla.git`，git
+`396608c7105b3763874fe3800dfabdfa2b38a28a`）的真实导出路径生成；input、parameter、完整CPU
+expected和canonical exporter digest由spec固定。CPU oracle是独立NumPy运算实现，先独立重建payload/output，
+再与同payload的framework CPU module按case tolerance交叉检查；不能从framework output直接拷贝expected。
+lit分别证明CPU-only reference逐文件byte-identical、真实exporter两次canonical-equivalent和两个program通过
+frontend verifier。这只完成Q5.C admission，不完成本节Gate A/B/C。
+
+### 9.2 Q20 Gate A: Single-Tile Linear/MLP
 
 真实exported linear-residual/MLP只经`wafer-compile --execution-ranks=1`产生：
 
@@ -221,7 +242,7 @@ executor输入必须是accepted rank instruction/memory facts，不得读取plan
 - no-card/fake-provider plan；
 - reference output与CPU一致。
 
-### 9.3 Gate B: Single-Card 16-Rank Linear/MLP
+### 9.3 Q20 Gate B: Single-Card 16-Rank Linear/MLP
 
 同类模型只经`--execution-ranks=16`，增加：
 
@@ -230,7 +251,7 @@ executor输入必须是accepted rank instruction/memory facts，不得读取plan
 - coherent resource/transport/completion relation；
 - 多rankreference与CPU global output一致。
 
-### 9.4 Gate C: Single-Card Tiny Llama
+### 9.4 Q21 Gate C: Single-Card Tiny Llama
 
 现有tiny-random Llama config的decoder block经同一16-rank path。必须经过mandatory candidate/commit，不能用
 手工group/instr或绕过selector的pass chain。完整attention/MLP/residual输出与独立CPU reference比较。

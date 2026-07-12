@@ -110,8 +110,11 @@ candidate流程必须拆成五个责任：
 5. commit：把覆盖完整traversal的accepted result写入rank clone。
 
 representative tile可以用于便宜的早期拒绝，不能作为accepted artifact。commit必须覆盖完整静态traversal，
-包括非整除tail，并证明每个result element all-and-only一次覆盖。当前完整traversal materialization落地前，
-production selector只能接受tile size等于traversal shape；这只是临时fail-closed，不是正式完成。
+包括非整除tail，并证明每个result element all-and-only一次覆盖。当前selector已对支持的equal-shape、
+independent Linalg roots静态枚举全部output tiles/reduction chunks，accepted artifact和commit都会重放该
+complete-traversal API；因此tiled candidate不再因representative通过而提交，也不再被临时限制为full shape。
+当前静态展开和producer-chain fail-closed仍只是bounded correctness基线，scalable traversal loop、不同
+output domain和producer-chain tile-and-fuse由06的后续边界负责。
 
 V0 correctness-first策略允许未找到可行candidate时直接失败，不要求搜索完备或全局最优。Direct full shape是
 普通candidate policy，不是绕过legality的平行pipeline。

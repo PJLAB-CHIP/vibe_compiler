@@ -5,6 +5,7 @@
 #include "Wafer/Analysis/Group/LayoutPlanningAnalysis.h"
 #include "Wafer/Transforms/Passes.h"
 
+#include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
@@ -35,6 +36,54 @@ namespace wafer {
 #include "Wafer/Transforms/WaferPasses.h.inc"
 } // namespace wafer
 
+wafer::detail::CheckedStaticTileProductStatus
+wafer::detail::checkedStaticTileProduct(llvm::ArrayRef<int64_t> ranges,
+                                        llvm::ArrayRef<int64_t> tileSizes,
+                                        uint64_t &product) {
+  product = 1;
+  if (ranges.size() != tileSizes.size())
+    return CheckedStaticTileProductStatus::InvalidInput;
+
+  for (auto [range, tileSize] : llvm::zip(ranges, tileSizes)) {
+    if (range <= 0 || tileSize <= 0 || tileSize > range)
+      return CheckedStaticTileProductStatus::InvalidInput;
+
+    uint64_t unsignedRange = static_cast<uint64_t>(range);
+    uint64_t unsignedTileSize = static_cast<uint64_t>(tileSize);
+    uint64_t tileCount = unsignedRange / unsignedTileSize;
+    tileCount += unsignedRange % unsignedTileSize != 0;
+    if (product > std::numeric_limits<uint64_t>::max() / tileCount)
+      return CheckedStaticTileProductStatus::Overflow;
+    product *= tileCount;
+  }
+  return CheckedStaticTileProductStatus::Success;
+}
+
+wafer::detail::CompleteCandidateExpansionStatus
+wafer::detail::checkCompleteCandidateExpansionBudget(
+    uint64_t outputTileCount, llvm::ArrayRef<uint64_t> reductionChunkCounts,
+    uint64_t &materializationCount) {
+  materializationCount = 0;
+  if (outputTileCount == 0 || reductionChunkCounts.empty() ||
+      llvm::is_contained(reductionChunkCounts, uint64_t{0}))
+    return CompleteCandidateExpansionStatus::InvalidInput;
+
+  for (uint64_t reductionChunkCount : reductionChunkCounts) {
+    if (outputTileCount >
+        std::numeric_limits<uint64_t>::max() / reductionChunkCount)
+      return CompleteCandidateExpansionStatus::CountOverflow;
+    uint64_t rootMaterializationCount = outputTileCount * reductionChunkCount;
+    if (materializationCount >
+        std::numeric_limits<uint64_t>::max() - rootMaterializationCount)
+      return CompleteCandidateExpansionStatus::CountOverflow;
+    materializationCount += rootMaterializationCount;
+  }
+
+  if (materializationCount > kCompleteCandidateMaterializationBudget)
+    return CompleteCandidateExpansionStatus::BudgetExceeded;
+  return CompleteCandidateExpansionStatus::WithinBudget;
+}
+
 namespace {
 
 struct BufferVersions {
@@ -63,6 +112,77 @@ static void setFailureReason(std::string *failureReason,
     *failureReason = reason.str();
 }
 
+static std::optional<ComputeReduceKind>
+matchExactReductionKind(llvm::ArrayRef<mlir::BlockArgument> iterCarriedArgs,
+                        unsigned redPos, mlir::Value expectedReducedValue,
+                        llvm::StringRef subject, std::string *failureReason) {
+  llvm::SmallVector<mlir::Operation *, 1> combinerOps;
+  mlir::Value reducedValue =
+      mlir::matchReduction(iterCarriedArgs, redPos, combinerOps);
+  if (!reducedValue || reducedValue != expectedReducedValue ||
+      combinerOps.size() != 1) {
+    setFailureReason(failureReason,
+                     (subject +
+                      " requires one exact combiner wired to the reduced value "
+                      "and accumulator")
+                         .str());
+    return std::nullopt;
+  }
+
+  mlir::Operation *combiner = combinerOps.front();
+  mlir::Block *combinerBlock = combiner->getBlock();
+  if (!combinerBlock ||
+      !llvm::all_of(combinerBlock->without_terminator(),
+                    [&](mlir::Operation &op) { return &op == combiner; })) {
+    setFailureReason(
+        failureReason,
+        (subject + " cannot erase additional reduction payload operations")
+            .str());
+    return std::nullopt;
+  }
+  // Linalg reductions and Wafer collectives both permit an
+  // implementation-selected reduction tree. Choosing that tree is distinct
+  // from reassociating an ordinary scalar expression.
+  if (mlir::isa<mlir::arith::AddFOp>(combiner))
+    return ComputeReduceKind::Sum;
+  if (auto addi = mlir::dyn_cast<mlir::arith::AddIOp>(combiner)) {
+    if (addi.getOverflowFlags() != mlir::arith::IntegerOverflowFlags::none) {
+      setFailureReason(
+          failureReason,
+          (subject + " cannot preserve integer overflow flags").str());
+      return std::nullopt;
+    }
+    return ComputeReduceKind::Sum;
+  }
+  if (mlir::isa<mlir::arith::MaximumFOp, mlir::arith::MaxSIOp>(combiner))
+    return ComputeReduceKind::Max;
+  if (mlir::isa<mlir::arith::MinimumFOp, mlir::arith::MinSIOp>(combiner))
+    return ComputeReduceKind::Min;
+
+  if (mlir::isa<mlir::arith::MaxNumFOp, mlir::arith::MinNumFOp>(combiner)) {
+    setFailureReason(failureReason,
+                     (subject +
+                      " cannot preserve maxnum/minnum NaN semantics with the "
+                      "current reduce kind")
+                         .str());
+    return std::nullopt;
+  }
+  if (mlir::isa<mlir::arith::MaxUIOp, mlir::arith::MinUIOp>(combiner)) {
+    setFailureReason(failureReason,
+                     (subject +
+                      " cannot preserve unsigned min/max semantics with the "
+                      "current reduce kind")
+                         .str());
+    return std::nullopt;
+  }
+
+  setFailureReason(failureReason,
+                   (subject + " requires an exact sum, signed min/max, or IEEE "
+                              "minimum/maximum combiner")
+                       .str());
+  return std::nullopt;
+}
+
 class TileRegionBodyEmitter {
 public:
   explicit TileRegionBodyEmitter(std::string *failureReason,
@@ -75,6 +195,18 @@ public:
        mlir::ConversionPatternRewriter &rewriter) {
     if (currentLogicalRank < 0)
       return failAndReturn("logical-rank must be non-negative");
+
+    llvm::DenseSet<mlir::Value> boundaryValues;
+    for (mlir::Value input : group.getInputs()) {
+      if (!boundaryValues.insert(input).second)
+        return failAndReturn("group boundary SSA values must be unique");
+    }
+    for (mlir::Value out : group.getOuts()) {
+      if (!boundaryValues.insert(out).second)
+        return failAndReturn("group boundary SSA values must be unique");
+    }
+    if (mlir::failed(verifyNamedLinalgPayloads(group)))
+      return mlir::failure();
 
     GroupLayoutPlan layoutPlan;
     if (mlir::failed(collectGroupLayoutPlan(group, layoutPlan)))
@@ -133,7 +265,7 @@ public:
 
 private:
   std::string *failureReason;
-  int64_t currentLogicalRank = 0;
+  int64_t currentLogicalRank = -1;
   llvm::DenseMap<mlir::Value, BufferVersions> buffers;
   llvm::DenseMap<mlir::Value, mlir::Value> scalarValues;
   llvm::DenseMap<mlir::Value, mlir::Attribute> scalarAttrs;
@@ -540,32 +672,17 @@ private:
                  "block");
       return std::nullopt;
     }
-    auto yield = mlir::dyn_cast<LinalgExtCollectiveYieldOp>(
-        combiner.front().getTerminator());
-    if (!yield || yield.getValues().size() != 1) {
-      (void)fail("collective reduction materialization requires one yielded "
-                 "combiner value");
+    mlir::Block &block = combiner.front();
+    if (block.getNumArguments() != 2 ||
+        !mlir::isa<LinalgExtCollectiveYieldOp>(block.getTerminator())) {
+      (void)fail("collective reduction materialization requires two combiner "
+                 "arguments and one yielded value");
       return std::nullopt;
     }
-
-    mlir::Operation *def = yield.getValues()[0].getDefiningOp();
-    if (!def) {
-      (void)fail("collective reduction materialization requires structured "
-                 "combiner body");
-      return std::nullopt;
-    }
-    if (mlir::isa<mlir::arith::AddFOp, mlir::arith::AddIOp>(def))
-      return ComputeReduceKind::Sum;
-    if (mlir::isa<mlir::arith::MaximumFOp, mlir::arith::MaxNumFOp,
-                  mlir::arith::MaxSIOp, mlir::arith::MaxUIOp>(def))
-      return ComputeReduceKind::Max;
-    if (mlir::isa<mlir::arith::MinimumFOp, mlir::arith::MinNumFOp,
-                  mlir::arith::MinSIOp, mlir::arith::MinUIOp>(def))
-      return ComputeReduceKind::Min;
-
-    (void)fail("collective reduction materialization requires sum/max/min "
-               "combiner");
-    return std::nullopt;
+    return matchExactReductionKind(
+        llvm::ArrayRef<mlir::BlockArgument>{block.getArgument(1)},
+        /*redPos=*/0, block.getArgument(0),
+        "collective reduction materialization", failureReason);
   }
 
   mlir::LogicalResult requireSingleTensorCollective(mlir::Operation *op) {
@@ -1047,6 +1164,8 @@ private:
         return mlir::success();
 
       mlir::Value originalResult = constant.getResult();
+      if (onlyFeedsUnreadDpsInit(originalResult))
+        return mlir::success();
       auto tensorType =
           mlir::dyn_cast<mlir::RankedTensorType>(originalResult.getType());
       if (!tensorType) {
@@ -1079,6 +1198,8 @@ private:
     }
 
     if (auto empty = mlir::dyn_cast<mlir::tensor::EmptyOp>(op)) {
+      if (onlyFeedsUnreadDpsInit(empty.getResult()))
+        return mlir::success();
       auto tensorType = mlir::dyn_cast<mlir::RankedTensorType>(empty.getType());
       if (!tensorType)
         return fail("tensor.empty result is not a ranked tensor");
@@ -1310,18 +1431,48 @@ private:
 
   std::optional<unsigned>
   getSingleGroupYieldOperandIndex(mlir::Value value) const {
-    mlir::OpOperand *singleUse = nullptr;
-    for (mlir::OpOperand &use : value.getUses()) {
-      if (singleUse)
-        return std::nullopt;
-      singleUse = &use;
-    }
-    if (!singleUse)
+    if (!value.hasOneUse())
       return std::nullopt;
+    mlir::OpOperand &use = *value.getUses().begin();
+    if (!mlir::isa<GroupYieldOp>(use.getOwner()))
+      return std::nullopt;
+    return use.getOperandNumber();
+  }
 
-    if (!mlir::isa<GroupYieldOp>(singleUse->getOwner()))
-      return std::nullopt;
-    return singleUse->getOperandNumber();
+  bool isLinearInsertChainToGroupYield(mlir::tensor::InsertSliceOp insertSlice,
+                                       unsigned expectedOutputIndex) const {
+    mlir::Value current = insertSlice.getResult();
+    while (current.hasOneUse()) {
+      mlir::OpOperand &use = *current.getUses().begin();
+      if (mlir::isa<GroupYieldOp>(use.getOwner()))
+        return use.getOperandNumber() == expectedOutputIndex;
+
+      auto nextInsert =
+          mlir::dyn_cast<mlir::tensor::InsertSliceOp>(use.getOwner());
+      if (!nextInsert || nextInsert.getDest() != current)
+        return false;
+      current = nextInsert.getResult();
+    }
+    return false;
+  }
+
+  bool hasNoObservableDestUseExceptInsert(
+      mlir::tensor::InsertSliceOp insertSlice) const {
+    mlir::Value dest = insertSlice.getDest();
+    mlir::OpOperand *destOperand = &insertSlice->getOpOperand(1);
+    for (mlir::OpOperand &use : dest.getUses()) {
+      if (&use == destOperand)
+        continue;
+      if (isUnreadLinalgDpsInitUse(use))
+        continue;
+      auto extractSlice =
+          mlir::dyn_cast<mlir::tensor::ExtractSliceOp>(use.getOwner());
+      if (extractSlice && extractSlice.getSource() == dest &&
+          onlyFeedsUnreadDpsInit(extractSlice.getResult()))
+        continue;
+      return false;
+    }
+    return true;
   }
 
   mlir::LogicalResult
@@ -1336,6 +1487,22 @@ private:
         mlir::dyn_cast<mlir::RankedTensorType>(extractSlice.getType());
     if (!resultTensorType)
       return fail("tensor.extract_slice result is not a ranked tensor");
+
+    if (onlyFeedsUnreadDpsInit(extractSlice.getResult()))
+      return mlir::success();
+
+    bool hasFillInitMarker = fillInitAttrs.contains(extractSlice.getSource()) ||
+                             fillInitScalars.contains(extractSlice.getSource());
+    if (hasFillInitMarker &&
+        onlyFeedsGemmOverwriteInit(extractSlice.getResult())) {
+      if (auto attrIt = fillInitAttrs.find(extractSlice.getSource());
+          attrIt != fillInitAttrs.end())
+        fillInitAttrs[extractSlice.getResult()] = attrIt->second;
+      if (auto scalarIt = fillInitScalars.find(extractSlice.getSource());
+          scalarIt != fillInitScalars.end())
+        fillInitScalars[extractSlice.getResult()] = scalarIt->second;
+      return mlir::success();
+    }
 
     if (auto externalIt = externalBuffers.find(extractSlice.getSource());
         externalIt != externalBuffers.end()) {
@@ -1400,24 +1567,36 @@ private:
     auto outputIndexIt = externalOutputIndices.find(insertSlice.getDest());
     std::optional<unsigned> yieldIndex =
         getSingleGroupYieldOperandIndex(insertSlice.getResult());
+    bool isDirectYield = outputIndexIt != externalOutputIndices.end() &&
+                         yieldIndex && outputIndexIt->second == *yieldIndex;
+    bool isLinearInsertChain =
+        outputIndexIt != externalOutputIndices.end() &&
+        isLinearInsertChainToGroupYield(insertSlice, outputIndexIt->second);
     if (externalIt != externalBuffers.end() &&
         writableExternalBuffers.contains(insertSlice.getDest()) &&
-        outputIndexIt != externalOutputIndices.end() && yieldIndex &&
-        outputIndexIt->second == *yieldIndex) {
+        outputIndexIt != externalOutputIndices.end() &&
+        hasNoObservableDestUseExceptInsert(insertSlice) &&
+        (isDirectYield || isLinearInsertChain)) {
+      mlir::Value externalBuffer = externalIt->second;
+      unsigned outputIndex = outputIndexIt->second;
       mlir::FailureOr<mlir::Value> source =
           getOrMaterialize(insertSlice.getSource(), MemLayout::Tensor, builder);
       if (mlir::failed(source))
         return mlir::failure();
 
       mlir::FailureOr<mlir::Value> tileView = materializeDdrSubview(
-          insertSlice.getLoc(), externalIt->second, sourceTensorType,
+          insertSlice.getLoc(), externalBuffer, sourceTensorType,
           insertSlice.getStaticOffsets(), insertSlice.getStaticSizes(),
           insertSlice.getStaticStrides(), builder);
       if (mlir::failed(tileView))
         return mlir::failure();
 
       builder.create<StorageStoreOp>(insertSlice.getLoc(), *source, *tileView);
-      directYieldBuffers[insertSlice.getResult()] = externalIt->second;
+      mlir::Value result = insertSlice.getResult();
+      externalBuffers[result] = externalBuffer;
+      writableExternalBuffers.insert(result);
+      externalOutputIndices[result] = outputIndex;
+      directYieldBuffers[result] = externalBuffer;
       return mlir::success();
     }
 
@@ -1477,32 +1656,243 @@ private:
     return it->second;
   }
 
+  bool isUnreadLinalgDpsInitUse(mlir::OpOperand &use) const {
+    auto linalgOp = mlir::dyn_cast<mlir::linalg::LinalgOp>(use.getOwner());
+    if (!linalgOp)
+      return false;
+    llvm::ArrayRef<mlir::BlockArgument> outputArgs =
+        linalgOp.getRegionOutputArgs();
+    for (int64_t index = 0; index < linalgOp.getNumDpsInits(); ++index) {
+      if (linalgOp.getDpsInitOperand(index) != &use)
+        continue;
+      return static_cast<size_t>(index) < outputArgs.size() &&
+             outputArgs[index].use_empty();
+    }
+    return false;
+  }
+
+  bool onlyFeedsUnreadDpsInit(mlir::Value value,
+                              llvm::DenseSet<mlir::Value> &visited) const {
+    if (value.use_empty() || !visited.insert(value).second)
+      return false;
+    for (mlir::OpOperand &use : value.getUses()) {
+      if (isUnreadLinalgDpsInitUse(use))
+        continue;
+      auto extractSlice =
+          mlir::dyn_cast<mlir::tensor::ExtractSliceOp>(use.getOwner());
+      if (!extractSlice || extractSlice.getSource() != value ||
+          !onlyFeedsUnreadDpsInit(extractSlice.getResult(), visited))
+        return false;
+    }
+    return true;
+  }
+
+  bool onlyFeedsUnreadDpsInit(mlir::Value value) const {
+    llvm::DenseSet<mlir::Value> visited;
+    return onlyFeedsUnreadDpsInit(value, visited);
+  }
+
+  bool onlyFeedsGemmOverwriteInit(mlir::Value value,
+                                  llvm::DenseSet<mlir::Value> &visited) const {
+    if (value.use_empty() || !visited.insert(value).second)
+      return false;
+
+    for (mlir::OpOperand &use : value.getUses()) {
+      mlir::Operation *owner = use.getOwner();
+      if (mlir::isa<mlir::linalg::MatmulOp, mlir::linalg::BatchMatmulOp>(
+              owner)) {
+        auto dpsOp = mlir::cast<mlir::linalg::LinalgOp>(owner);
+        if (dpsOp.isDpsInit(&use))
+          continue;
+        return false;
+      }
+
+      auto extractSlice = mlir::dyn_cast<mlir::tensor::ExtractSliceOp>(owner);
+      if (!extractSlice || extractSlice.getSource() != value ||
+          !onlyFeedsGemmOverwriteInit(extractSlice.getResult(), visited))
+        return false;
+    }
+    return true;
+  }
+
+  bool onlyFeedsGemmOverwriteInit(mlir::Value value) const {
+    llvm::DenseSet<mlir::Value> visited;
+    return onlyFeedsGemmOverwriteInit(value, visited);
+  }
+
+  mlir::LogicalResult verifyNamedLinalgPayloads(GroupOp group) {
+    mlir::WalkResult result = group.getBody().walk([&](mlir::Operation *op) {
+      if (auto fill = mlir::dyn_cast<mlir::linalg::FillOp>(op)) {
+        if (mlir::failed(verifyExactFillPayload(fill)))
+          return mlir::WalkResult::interrupt();
+      } else if (mlir::isa<mlir::linalg::MatmulOp>(op)) {
+        if (mlir::failed(verifyExactGemmPayload(
+                mlir::cast<mlir::linalg::LinalgOp>(op), "matmul")))
+          return mlir::WalkResult::interrupt();
+      } else if (mlir::isa<mlir::linalg::BatchMatmulOp>(op)) {
+        if (mlir::failed(verifyExactGemmPayload(
+                mlir::cast<mlir::linalg::LinalgOp>(op), "batch matmul")))
+          return mlir::WalkResult::interrupt();
+      }
+      return mlir::WalkResult::advance();
+    });
+    return result.wasInterrupted() ? mlir::failure() : mlir::success();
+  }
+
+  mlir::LogicalResult verifyExactFillPayload(mlir::linalg::FillOp fill) {
+    mlir::linalg::LinalgOp op = fill;
+    if (op->getNumRegions() != 1 || op->getRegion(0).empty() ||
+        op.getRegionInputArgs().size() != 1 ||
+        op.getRegionOutputArgs().size() != 1)
+      return fail("linalg.fill requires the canonical scalar payload");
+
+    mlir::Block &body = op->getRegion(0).front();
+    auto yield = mlir::dyn_cast<mlir::linalg::YieldOp>(body.getTerminator());
+    if (!yield || yield.getValues().size() != 1 ||
+        yield.getValues().front() != op.getRegionInputArgs().front() ||
+        !body.without_terminator().empty())
+      return fail("linalg.fill requires the canonical scalar payload");
+    return mlir::success();
+  }
+
+  mlir::LogicalResult verifyExactGemmPayload(mlir::linalg::LinalgOp op,
+                                             llvm::StringRef subject) {
+    if (op->getNumRegions() != 1 || op->getRegion(0).empty() ||
+        op.getRegionInputArgs().size() != 2 ||
+        op.getRegionOutputArgs().size() != 1)
+      return fail(
+          (subject + " requires an exact multiply-accumulate payload").str());
+
+    mlir::Block &body = op->getRegion(0).front();
+    auto yield = mlir::dyn_cast<mlir::linalg::YieldOp>(body.getTerminator());
+    llvm::SmallVector<mlir::Operation *, 2> payloadOps;
+    for (mlir::Operation &payloadOp : body.without_terminator())
+      payloadOps.push_back(&payloadOp);
+    if (!yield || yield.getValues().size() != 1 || payloadOps.size() != 2)
+      return fail(
+          (subject + " requires an exact multiply-accumulate payload").str());
+
+    mlir::Value lhs = op.getRegionInputArgs()[0];
+    mlir::Value rhs = op.getRegionInputArgs()[1];
+    mlir::Value accumulator = op.getRegionOutputArgs()[0];
+    auto matchesPair = [](mlir::Value first, mlir::Value second,
+                          mlir::Value expectedFirst,
+                          mlir::Value expectedSecond) {
+      return (first == expectedFirst && second == expectedSecond) ||
+             (first == expectedSecond && second == expectedFirst);
+    };
+
+    mlir::Value sum;
+    if (auto mul = mlir::dyn_cast<mlir::arith::MulFOp>(payloadOps[0])) {
+      auto add = mlir::dyn_cast<mlir::arith::AddFOp>(payloadOps[1]);
+      if (!add || mul.getFastmath() != mlir::arith::FastMathFlags::none ||
+          add.getFastmath() != mlir::arith::FastMathFlags::none ||
+          !matchesPair(mul.getLhs(), mul.getRhs(), lhs, rhs) ||
+          !matchesPair(add.getLhs(), add.getRhs(), mul.getResult(),
+                       accumulator))
+        return fail(
+            (subject + " requires an exact multiply-accumulate payload").str());
+      sum = add.getResult();
+    } else if (auto mul = mlir::dyn_cast<mlir::arith::MulIOp>(payloadOps[0])) {
+      auto add = mlir::dyn_cast<mlir::arith::AddIOp>(payloadOps[1]);
+      if (!add ||
+          mul.getOverflowFlags() != mlir::arith::IntegerOverflowFlags::none ||
+          add.getOverflowFlags() != mlir::arith::IntegerOverflowFlags::none ||
+          !matchesPair(mul.getLhs(), mul.getRhs(), lhs, rhs) ||
+          !matchesPair(add.getLhs(), add.getRhs(), mul.getResult(),
+                       accumulator))
+        return fail(
+            (subject + " requires an exact multiply-accumulate payload").str());
+      sum = add.getResult();
+    } else {
+      return fail(
+          (subject + " requires an exact multiply-accumulate payload").str());
+    }
+    if (yield.getValues().front() != sum)
+      return fail(
+          (subject + " requires an exact multiply-accumulate payload").str());
+    return mlir::success();
+  }
+
   mlir::LogicalResult convertFill(mlir::linalg::FillOp fill,
                                   mlir::OpBuilder &builder) {
     mlir::linalg::LinalgOp op = fill;
     if (op.getNumDpsInputs() != 1 || op.getNumDpsInits() != 1 ||
         fill->getNumResults() != 1)
       return fail("unsupported linalg.fill arity");
-
-    mlir::FailureOr<mlir::Value> dest =
-        getOrMaterialize(op.getDpsInits()[0], MemLayout::Tensor, builder);
-    mlir::FailureOr<mlir::Value> value = getScalarValue(op.getDpsInputs()[0]);
-    if (mlir::failed(dest) || mlir::failed(value))
+    if (mlir::failed(verifyExactFillPayload(fill)))
       return mlir::failure();
 
-    builder.create<ComputeFillOp>(fill.getLoc(), *dest, *value);
-    record(fill.getResult(0), MemLayout::Tensor, *dest);
+    mlir::FailureOr<mlir::Value> value = getScalarValue(op.getDpsInputs()[0]);
+    if (mlir::failed(value))
+      return mlir::failure();
+
     fillInitScalars[fill.getResult(0)] = *value;
     if (auto attrIt = scalarAttrs.find(op.getDpsInputs()[0]);
         attrIt != scalarAttrs.end())
       fillInitAttrs[fill.getResult(0)] = attrIt->second;
+
+    // The target GEMM is overwrite-only. Preserve its source-level identity
+    // proof without issuing a dead fill or loading an output buffer that the
+    // successful GEMM path cannot consume.
+    if (onlyFeedsGemmOverwriteInit(fill.getResult(0)))
+      return mlir::success();
+
+    auto resultTensorType =
+        mlir::dyn_cast<mlir::RankedTensorType>(fill.getResult(0).getType());
+    if (!resultTensorType)
+      return fail("linalg.fill result is not a ranked tensor");
+    auto result = builder.create<mlir::memref::AllocOp>(
+        fill.getLoc(), makeSPMMemRefType(resultTensorType, MemLayout::Tensor));
+    builder.create<ComputeFillOp>(fill.getLoc(), result.getResult(), *value);
+    record(fill.getResult(0), MemLayout::Tensor, result.getResult());
+    return mlir::success();
+  }
+
+  mlir::LogicalResult requireZeroFilledGemmInit(mlir::linalg::LinalgOp op,
+                                                llvm::StringRef subject) {
+    if (op.getNumDpsInits() != 1)
+      return fail((subject + " requires exactly one DPS init").str());
+
+    auto isPositiveZero = [](mlir::Attribute attr) {
+      if (auto floatAttr = mlir::dyn_cast<mlir::FloatAttr>(attr)) {
+        const llvm::APFloat &value = floatAttr.getValue();
+        return value.isZero() && !value.isNegative();
+      }
+      if (auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(attr))
+        return intAttr.getValue().isZero();
+      if (auto elements = mlir::dyn_cast<mlir::DenseElementsAttr>(attr)) {
+        if (!elements.isSplat())
+          return false;
+        if (mlir::isa<mlir::FloatType>(elements.getElementType())) {
+          llvm::APFloat value = elements.getSplatValue<mlir::APFloat>();
+          return value.isZero() && !value.isNegative();
+        }
+        if (mlir::isa<mlir::IntegerType>(elements.getElementType()))
+          return elements.getSplatValue<mlir::APInt>().isZero();
+      }
+      return false;
+    };
+
+    auto attrIt = fillInitAttrs.find(op.getDpsInits().front());
+    if (attrIt == fillInitAttrs.end() || !isPositiveZero(attrIt->second)) {
+      return fail((subject +
+                   " requires a provable zero-filled DPS init because "
+                   "wafer.tile.gemm has overwrite semantics")
+                      .str());
+    }
     return mlir::success();
   }
 
   mlir::LogicalResult convertMatmul(mlir::linalg::LinalgOp op,
                                     mlir::OpBuilder &builder) {
-    if (op.getNumDpsInputs() != 2 || op->getNumResults() != 1)
+    if (op.getNumDpsInputs() != 2 || op.getNumDpsInits() != 1 ||
+        op->getNumResults() != 1)
       return fail("unsupported matmul arity");
+    if (mlir::failed(verifyExactGemmPayload(op, "matmul")))
+      return mlir::failure();
+    if (mlir::failed(requireZeroFilledGemmInit(op, "matmul")))
+      return mlir::failure();
 
     mlir::FailureOr<mlir::Value> lhs =
         getOrMaterialize(op.getDpsInputs()[0], MemLayout::Cx, builder);
@@ -1646,8 +2036,13 @@ private:
 
   mlir::LogicalResult convertBatchMatmul(mlir::linalg::LinalgOp op,
                                          mlir::OpBuilder &builder) {
-    if (op.getNumDpsInputs() != 2 || op->getNumResults() != 1)
+    if (op.getNumDpsInputs() != 2 || op.getNumDpsInits() != 1 ||
+        op->getNumResults() != 1)
       return fail("unsupported batch matmul arity");
+    if (mlir::failed(verifyExactGemmPayload(op, "batch matmul")))
+      return mlir::failure();
+    if (mlir::failed(requireZeroFilledGemmInit(op, "batch matmul")))
+      return mlir::failure();
 
     mlir::FailureOr<mlir::Value> lhs =
         getOrMaterialize(op.getDpsInputs()[0], MemLayout::Cx, builder);
@@ -1688,83 +2083,32 @@ private:
   }
 
   std::optional<ComputeElementwiseKind>
-  inferElementwiseKind(mlir::linalg::GenericOp generic) {
-    auto yield = mlir::dyn_cast<mlir::linalg::YieldOp>(
-        generic.getBody()->getTerminator());
-    if (!yield || yield.getValues().size() != 1) {
-      (void)fail("unsupported linalg.generic yield");
-      return std::nullopt;
-    }
-
-    mlir::Operation *def = yield.getValues()[0].getDefiningOp();
-    if (!def) {
-      (void)fail("unsupported linalg.generic passthrough body");
-      return std::nullopt;
-    }
-
-    if (mlir::isa<mlir::arith::AddFOp, mlir::arith::AddIOp>(def))
-      return ComputeElementwiseKind::Add;
-    if (mlir::isa<mlir::arith::SubFOp, mlir::arith::SubIOp>(def))
-      return ComputeElementwiseKind::Sub;
-    if (mlir::isa<mlir::arith::MulFOp, mlir::arith::MulIOp>(def))
-      return ComputeElementwiseKind::Mul;
-    if (mlir::isa<mlir::arith::DivFOp, mlir::arith::DivSIOp,
-                  mlir::arith::DivUIOp>(def))
-      return ComputeElementwiseKind::Div;
-    if (mlir::isa<mlir::arith::MaximumFOp, mlir::arith::MaxNumFOp,
-                  mlir::arith::MaxSIOp, mlir::arith::MaxUIOp>(def))
-      return ComputeElementwiseKind::Max;
-    if (mlir::isa<mlir::arith::MinimumFOp, mlir::arith::MinNumFOp,
-                  mlir::arith::MinSIOp, mlir::arith::MinUIOp>(def))
-      return ComputeElementwiseKind::Min;
-    if (mlir::isa<mlir::arith::SelectOp>(def))
-      return ComputeElementwiseKind::Select;
-    if (mlir::isa<mlir::arith::NegFOp>(def))
-      return ComputeElementwiseKind::Neg;
-    if (mlir::isa<mlir::math::ExpOp>(def))
-      return ComputeElementwiseKind::Exp;
-    if (mlir::isa<mlir::math::SqrtOp>(def))
-      return ComputeElementwiseKind::Sqrt;
-    if (mlir::isa<mlir::math::RsqrtOp>(def))
-      return ComputeElementwiseKind::Rsqrt;
-    if (mlir::isa<mlir::math::TanhOp>(def))
-      return ComputeElementwiseKind::Tanh;
-    if (auto cmpf = mlir::dyn_cast<mlir::arith::CmpFOp>(def))
-      return inferCompareKind(cmpf.getPredicate());
-    if (auto cmpi = mlir::dyn_cast<mlir::arith::CmpIOp>(def))
-      return inferCompareKind(cmpi.getPredicate());
-
-    (void)fail("unsupported linalg.generic body op " +
-               def->getName().getStringRef().str());
-    return std::nullopt;
-  }
-
-  std::optional<ComputeElementwiseKind>
   inferCompareKind(mlir::arith::CmpFPredicate predicate) {
     switch (predicate) {
     case mlir::arith::CmpFPredicate::OEQ:
-    case mlir::arith::CmpFPredicate::UEQ:
       return ComputeElementwiseKind::Eq;
-    case mlir::arith::CmpFPredicate::ONE:
     case mlir::arith::CmpFPredicate::UNE:
       return ComputeElementwiseKind::Ne;
     case mlir::arith::CmpFPredicate::OLT:
-    case mlir::arith::CmpFPredicate::ULT:
       return ComputeElementwiseKind::Lt;
     case mlir::arith::CmpFPredicate::OLE:
-    case mlir::arith::CmpFPredicate::ULE:
       return ComputeElementwiseKind::Le;
     case mlir::arith::CmpFPredicate::OGT:
-    case mlir::arith::CmpFPredicate::UGT:
       return ComputeElementwiseKind::Gt;
     case mlir::arith::CmpFPredicate::OGE:
-    case mlir::arith::CmpFPredicate::UGE:
       return ComputeElementwiseKind::Ge;
+    case mlir::arith::CmpFPredicate::UEQ:
+    case mlir::arith::CmpFPredicate::ONE:
+    case mlir::arith::CmpFPredicate::ULT:
+    case mlir::arith::CmpFPredicate::ULE:
+    case mlir::arith::CmpFPredicate::UGT:
+    case mlir::arith::CmpFPredicate::UGE:
     case mlir::arith::CmpFPredicate::AlwaysFalse:
     case mlir::arith::CmpFPredicate::ORD:
     case mlir::arith::CmpFPredicate::UNO:
     case mlir::arith::CmpFPredicate::AlwaysTrue:
-      (void)fail("unsupported arith.cmpf predicate");
+      (void)fail("arith.cmpf predicate does not match the current target "
+                 "comparison NaN semantics");
       return std::nullopt;
     }
     llvm_unreachable("unknown cmpf predicate");
@@ -1778,60 +2122,35 @@ private:
     case mlir::arith::CmpIPredicate::ne:
       return ComputeElementwiseKind::Ne;
     case mlir::arith::CmpIPredicate::slt:
-    case mlir::arith::CmpIPredicate::ult:
       return ComputeElementwiseKind::Lt;
     case mlir::arith::CmpIPredicate::sle:
-    case mlir::arith::CmpIPredicate::ule:
       return ComputeElementwiseKind::Le;
     case mlir::arith::CmpIPredicate::sgt:
-    case mlir::arith::CmpIPredicate::ugt:
       return ComputeElementwiseKind::Gt;
     case mlir::arith::CmpIPredicate::sge:
-    case mlir::arith::CmpIPredicate::uge:
       return ComputeElementwiseKind::Ge;
+    case mlir::arith::CmpIPredicate::ult:
+    case mlir::arith::CmpIPredicate::ule:
+    case mlir::arith::CmpIPredicate::ugt:
+    case mlir::arith::CmpIPredicate::uge:
+      (void)fail("unsigned arith.cmpi predicate cannot be represented by the "
+                 "current signed target comparison kind");
+      return std::nullopt;
     }
     llvm_unreachable("unknown cmpi predicate");
   }
 
-  mlir::Value unwrapScalarTensorValue(mlir::Value value) const {
-    auto extract = value.getDefiningOp<mlir::tensor::ExtractOp>();
-    if (!extract || !extract.getIndices().empty())
-      return value;
-    auto fromElements =
-        extract.getTensor().getDefiningOp<mlir::tensor::FromElementsOp>();
-    if (!fromElements || fromElements.getElements().size() != 1)
-      return value;
-    return fromElements.getElements().front();
-  }
-
   std::optional<ComputeReduceKind>
   inferReduceKind(mlir::linalg::GenericOp generic) {
-    auto yield = mlir::dyn_cast<mlir::linalg::YieldOp>(
-        generic.getBody()->getTerminator());
-    if (!yield || yield.getValues().size() != 1) {
-      (void)fail("unsupported linalg.generic reduce yield");
+    if (generic.getRegionInputArgs().size() != 1 ||
+        generic.getRegionOutputArgs().size() != 1) {
+      (void)fail("linalg.generic reduction requires one input and one "
+                 "accumulator");
       return std::nullopt;
     }
-
-    mlir::Operation *def =
-        unwrapScalarTensorValue(yield.getValues()[0]).getDefiningOp();
-    if (!def) {
-      (void)fail("unsupported linalg.generic reduce passthrough body");
-      return std::nullopt;
-    }
-
-    if (mlir::isa<mlir::arith::AddFOp, mlir::arith::AddIOp>(def))
-      return ComputeReduceKind::Sum;
-    if (mlir::isa<mlir::arith::MaximumFOp, mlir::arith::MaxNumFOp,
-                  mlir::arith::MaxSIOp, mlir::arith::MaxUIOp>(def))
-      return ComputeReduceKind::Max;
-    if (mlir::isa<mlir::arith::MinimumFOp, mlir::arith::MinNumFOp,
-                  mlir::arith::MinSIOp, mlir::arith::MinUIOp>(def))
-      return ComputeReduceKind::Min;
-
-    (void)fail("unsupported linalg.generic reduce body op " +
-               def->getName().getStringRef().str());
-    return std::nullopt;
+    return matchExactReductionKind(generic.getRegionOutputArgs(), /*redPos=*/0,
+                                   generic.getRegionInputArgs().front(),
+                                   "linalg.generic reduction", failureReason);
   }
 
   bool hasReductionIterator(mlir::linalg::GenericOp generic) const {
@@ -1959,6 +2278,8 @@ private:
 
   std::optional<unsigned>
   getPassthroughInputIndex(mlir::linalg::GenericOp generic) {
+    if (!generic.getBody()->without_terminator().empty())
+      return std::nullopt;
     auto yield = mlir::dyn_cast<mlir::linalg::YieldOp>(
         generic.getBody()->getTerminator());
     if (!yield || yield.getValues().size() != 1)
@@ -2277,33 +2598,33 @@ private:
     if (auto divsi = mlir::dyn_cast<mlir::arith::DivSIOp>(op))
       return createBinary(divsi.getLhs(), divsi.getRhs(),
                           ComputeElementwiseKind::Div);
-    if (auto divui = mlir::dyn_cast<mlir::arith::DivUIOp>(op))
-      return createBinary(divui.getLhs(), divui.getRhs(),
-                          ComputeElementwiseKind::Div);
+    if (mlir::isa<mlir::arith::DivUIOp>(op))
+      return fail("unsigned integer division cannot be represented by the "
+                  "current target elementwise kind");
     if (auto maxf = mlir::dyn_cast<mlir::arith::MaximumFOp>(op))
       return createBinary(maxf.getLhs(), maxf.getRhs(),
                           ComputeElementwiseKind::Max);
-    if (auto maxnum = mlir::dyn_cast<mlir::arith::MaxNumFOp>(op))
-      return createBinary(maxnum.getLhs(), maxnum.getRhs(),
-                          ComputeElementwiseKind::Max);
+    if (mlir::isa<mlir::arith::MaxNumFOp>(op))
+      return fail("arith.maxnumf NaN semantics cannot be represented by the "
+                  "current target elementwise kind");
     if (auto maxsi = mlir::dyn_cast<mlir::arith::MaxSIOp>(op))
       return createBinary(maxsi.getLhs(), maxsi.getRhs(),
                           ComputeElementwiseKind::Max);
-    if (auto maxui = mlir::dyn_cast<mlir::arith::MaxUIOp>(op))
-      return createBinary(maxui.getLhs(), maxui.getRhs(),
-                          ComputeElementwiseKind::Max);
+    if (mlir::isa<mlir::arith::MaxUIOp>(op))
+      return fail("unsigned integer maximum cannot be represented by the "
+                  "current target elementwise kind");
     if (auto minf = mlir::dyn_cast<mlir::arith::MinimumFOp>(op))
       return createBinary(minf.getLhs(), minf.getRhs(),
                           ComputeElementwiseKind::Min);
-    if (auto minnum = mlir::dyn_cast<mlir::arith::MinNumFOp>(op))
-      return createBinary(minnum.getLhs(), minnum.getRhs(),
-                          ComputeElementwiseKind::Min);
+    if (mlir::isa<mlir::arith::MinNumFOp>(op))
+      return fail("arith.minnumf NaN semantics cannot be represented by the "
+                  "current target elementwise kind");
     if (auto minsi = mlir::dyn_cast<mlir::arith::MinSIOp>(op))
       return createBinary(minsi.getLhs(), minsi.getRhs(),
                           ComputeElementwiseKind::Min);
-    if (auto minui = mlir::dyn_cast<mlir::arith::MinUIOp>(op))
-      return createBinary(minui.getLhs(), minui.getRhs(),
-                          ComputeElementwiseKind::Min);
+    if (mlir::isa<mlir::arith::MinUIOp>(op))
+      return fail("unsigned integer minimum cannot be represented by the "
+                  "current target elementwise kind");
     if (auto negf = mlir::dyn_cast<mlir::arith::NegFOp>(op))
       return createUnary(negf.getOperand(), ComputeElementwiseKind::Neg);
     if (auto exp = mlir::dyn_cast<mlir::math::ExpOp>(op))
@@ -2517,6 +2838,18 @@ private:
         mlir::dyn_cast<mlir::RankedTensorType>(generic->getResult(0).getType());
     if (!resultTensorType || !resultTensorType.hasStaticShape())
       return mlir::failure();
+    int64_t rank = resultTensorType.getRank();
+
+    llvm::SmallVector<mlir::AffineMap, 1> maps = generic.getIndexingMapsArray();
+    if (maps.size() != 1 || !isIdentityMap(maps.front(), rank))
+      return mlir::failure();
+    llvm::SmallVector<mlir::utils::IteratorType, 4> iteratorTypes =
+        generic.getIteratorTypesArray();
+    if (iteratorTypes.size() != static_cast<size_t>(rank) ||
+        !llvm::all_of(iteratorTypes, [](mlir::utils::IteratorType type) {
+          return type == mlir::utils::IteratorType::parallel;
+        }))
+      return mlir::failure();
 
     auto yield = mlir::dyn_cast<mlir::linalg::YieldOp>(
         generic.getBody()->getTerminator());
@@ -2524,7 +2857,7 @@ private:
       return mlir::failure();
     auto ifOp = yield.getValues().front().getDefiningOp<mlir::scf::IfOp>();
     if (!ifOp || ifOp->getNumResults() != 1 || !ifOp.thenBlock() ||
-        !ifOp.elseBlock())
+        !ifOp.elseBlock() || ifOp->getBlock() != generic.getBody())
       return mlir::failure();
 
     auto thenYield =
@@ -2538,7 +2871,9 @@ private:
         thenYield.getResults().front().getDefiningOp<mlir::tensor::ExtractOp>();
     auto secondExtract =
         elseYield.getResults().front().getDefiningOp<mlir::tensor::ExtractOp>();
-    if (!firstExtract || !secondExtract)
+    if (!firstExtract || !secondExtract ||
+        firstExtract->getBlock() != ifOp.thenBlock() ||
+        secondExtract->getBlock() != ifOp.elseBlock())
       return mlir::failure();
 
     auto firstType = mlir::dyn_cast<mlir::RankedTensorType>(
@@ -2546,14 +2881,13 @@ private:
     auto secondType = mlir::dyn_cast<mlir::RankedTensorType>(
         secondExtract.getTensor().getType());
     if (!firstType || !secondType || !firstType.hasStaticShape() ||
-        !secondType.hasStaticShape() ||
-        firstType.getRank() != resultTensorType.getRank() ||
-        secondType.getRank() != resultTensorType.getRank() ||
+        !secondType.hasStaticShape() || firstType.getRank() != rank ||
+        secondType.getRank() != rank ||
         firstType.getElementType() != resultTensorType.getElementType() ||
         secondType.getElementType() != resultTensorType.getElementType())
       return mlir::failure();
 
-    for (int64_t dim = 0; dim < resultTensorType.getRank(); ++dim) {
+    for (int64_t dim = 0; dim < rank; ++dim) {
       int64_t first = firstType.getDimSize(dim);
       int64_t second = secondType.getDimSize(dim);
       int64_t result = resultTensorType.getDimSize(dim);
@@ -2565,8 +2899,72 @@ private:
       }
       return mlir::failure();
     }
-    if (concatAxis < 0)
+    if (concatAxis < 0 || firstType.getDimSize(concatAxis) <= 0 ||
+        secondType.getDimSize(concatAxis) <= 0)
       return mlir::failure();
+
+    auto cmp = ifOp.getCondition().getDefiningOp<mlir::arith::CmpIOp>();
+    if (!cmp || cmp.getPredicate() != mlir::arith::CmpIPredicate::ult ||
+        cmp->getBlock() != generic.getBody())
+      return mlir::failure();
+    auto boundaryConstant =
+        cmp.getRhs().getDefiningOp<mlir::arith::ConstantOp>();
+    auto boundaryAttr =
+        boundaryConstant
+            ? mlir::dyn_cast<mlir::IntegerAttr>(boundaryConstant.getValue())
+            : mlir::IntegerAttr{};
+    if (!boundaryAttr || !mlir::isa<mlir::IndexType>(cmp.getRhs().getType()) ||
+        boundaryAttr.getInt() != firstType.getDimSize(concatAxis))
+      return mlir::failure();
+
+    llvm::DenseSet<mlir::Operation *> bodySkeleton;
+    bodySkeleton.insert(cmp.getOperation());
+    bodySkeleton.insert(ifOp.getOperation());
+    auto matchesLinalgIndex = [&](mlir::Value value, int64_t dim) {
+      auto index = value.getDefiningOp<mlir::linalg::IndexOp>();
+      if (!index || index->getParentOp() != generic.getOperation() ||
+          index.getDim() != static_cast<uint64_t>(dim))
+        return false;
+      bodySkeleton.insert(index.getOperation());
+      return true;
+    };
+    if (!matchesLinalgIndex(cmp.getLhs(), concatAxis) ||
+        firstExtract.getIndices().size() != static_cast<size_t>(rank) ||
+        secondExtract.getIndices().size() != static_cast<size_t>(rank))
+      return mlir::failure();
+
+    mlir::arith::SubIOp axisSubtract;
+    for (int64_t dim = 0; dim < rank; ++dim) {
+      if (!matchesLinalgIndex(firstExtract.getIndices()[dim], dim))
+        return mlir::failure();
+      if (dim != concatAxis) {
+        if (!matchesLinalgIndex(secondExtract.getIndices()[dim], dim))
+          return mlir::failure();
+        continue;
+      }
+
+      auto subtract =
+          secondExtract.getIndices()[dim].getDefiningOp<mlir::arith::SubIOp>();
+      if (!subtract || subtract->getBlock() != ifOp.elseBlock() ||
+          !matchesLinalgIndex(subtract.getLhs(), dim) ||
+          subtract.getRhs() != cmp.getRhs())
+        return mlir::failure();
+      axisSubtract = subtract;
+    }
+
+    for (mlir::Operation &op : generic.getBody()->without_terminator()) {
+      if (!bodySkeleton.contains(&op))
+        return mlir::failure();
+    }
+    for (mlir::Operation &op : ifOp.thenBlock()->without_terminator()) {
+      if (&op != firstExtract.getOperation())
+        return mlir::failure();
+    }
+    for (mlir::Operation &op : ifOp.elseBlock()->without_terminator()) {
+      if (&op != axisSubtract.getOperation() &&
+          &op != secondExtract.getOperation())
+        return mlir::failure();
+    }
 
     return llvm::SmallVector<mlir::Value, 2>{firstExtract.getTensor(),
                                              secondExtract.getTensor()};
@@ -2712,7 +3110,7 @@ struct GroupToTileRegionLoweringPattern
   }
 
   std::string *failureReason;
-  int64_t currentLogicalRank = 0;
+  int64_t currentLogicalRank = -1;
 };
 
 static mlir::OwningOpRef<mlir::ModuleOp>
@@ -2900,6 +3298,59 @@ struct ReductionChunk {
   llvm::SmallVector<int64_t, 2> sizes;
 };
 
+static mlir::FailureOr<uint64_t> getCandidateReductionChunkCount(
+    mlir::linalg::LinalgOp root,
+    llvm::ArrayRef<int64_t> candidateReductionTileSizes,
+    std::string *failureReason) {
+  if (candidateReductionTileSizes.empty())
+    return uint64_t{1};
+
+  llvm::SmallVector<unsigned, 2> reductionLoopDims = getReductionLoopDims(root);
+  if (candidateReductionTileSizes.size() != reductionLoopDims.size()) {
+    setFailureReason(failureReason, "candidate reduction split rank mismatch");
+    return mlir::failure();
+  }
+
+  llvm::SmallVector<int64_t, 4> loopRanges = root.getStaticLoopRanges();
+  llvm::SmallVector<int64_t, 2> reductionRanges;
+  reductionRanges.reserve(reductionLoopDims.size());
+  for (unsigned loopDim : reductionLoopDims) {
+    if (loopDim >= loopRanges.size() ||
+        mlir::ShapedType::isDynamic(loopRanges[loopDim])) {
+      setFailureReason(failureReason,
+                       "candidate reduction split requires static loop ranges");
+      return mlir::failure();
+    }
+    reductionRanges.push_back(loopRanges[loopDim]);
+  }
+
+  for (auto [range, splitSize] :
+       llvm::zip(reductionRanges, candidateReductionTileSizes)) {
+    if (range <= 0 || splitSize <= 0 || splitSize > range) {
+      setFailureReason(failureReason,
+                       "candidate reduction split is outside loop bounds");
+      return mlir::failure();
+    }
+  }
+
+  uint64_t chunkCount = 0;
+  switch (wafer::detail::checkedStaticTileProduct(
+      reductionRanges, candidateReductionTileSizes, chunkCount)) {
+  case wafer::detail::CheckedStaticTileProductStatus::Success:
+    return chunkCount;
+  case wafer::detail::CheckedStaticTileProductStatus::Overflow:
+    setFailureReason(
+        failureReason,
+        "candidate reduction split expansion count is not representable");
+    return mlir::failure();
+  case wafer::detail::CheckedStaticTileProductStatus::InvalidInput:
+    setFailureReason(failureReason,
+                     "candidate reduction split has invalid static ranges");
+    return mlir::failure();
+  }
+  llvm_unreachable("unknown checked tile product status");
+}
+
 static void
 buildReductionChunkProducts(llvm::ArrayRef<int64_t> ranges,
                             llvm::ArrayRef<int64_t> splitSizes, unsigned dim,
@@ -2915,13 +3366,15 @@ buildReductionChunkProducts(llvm::ArrayRef<int64_t> ranges,
     return;
   }
 
-  for (int64_t offset = 0; offset < ranges[dim]; offset += splitSizes[dim]) {
+  for (int64_t offset = 0; offset < ranges[dim];) {
+    int64_t size = std::min(splitSizes[dim], ranges[dim] - offset);
     currentOffsets.push_back(offset);
-    currentSizes.push_back(std::min(splitSizes[dim], ranges[dim] - offset));
+    currentSizes.push_back(size);
     buildReductionChunkProducts(ranges, splitSizes, dim + 1, currentOffsets,
                                 currentSizes, chunks);
     currentOffsets.pop_back();
     currentSizes.pop_back();
+    offset += size;
   }
 }
 
@@ -2929,30 +3382,30 @@ static mlir::FailureOr<llvm::SmallVector<ReductionChunk, 8>>
 buildReductionChunks(mlir::linalg::LinalgOp root,
                      llvm::ArrayRef<int64_t> candidateReductionTileSizes,
                      std::string *failureReason) {
+  mlir::FailureOr<uint64_t> chunkCount = getCandidateReductionChunkCount(
+      root, candidateReductionTileSizes, failureReason);
+  if (mlir::failed(chunkCount))
+    return mlir::failure();
   if (candidateReductionTileSizes.empty())
     return llvm::SmallVector<ReductionChunk, 8>{ReductionChunk{}};
 
-  llvm::SmallVector<unsigned, 2> reductionLoopDims = getReductionLoopDims(root);
-  if (candidateReductionTileSizes.size() != reductionLoopDims.size()) {
-    setFailureReason(failureReason, "candidate reduction split rank mismatch");
+  if (*chunkCount > wafer::detail::kCompleteCandidateMaterializationBudget) {
+    setFailureReason(
+        failureReason,
+        "candidate reduction split exceeds the eager materialization budget "
+        "(4096 chunks); this is an implementation resource limit, not an IR "
+        "or target legality restriction");
     return mlir::failure();
   }
 
+  llvm::SmallVector<unsigned, 2> reductionLoopDims = getReductionLoopDims(root);
   llvm::SmallVector<int64_t, 4> loopRanges = root.getStaticLoopRanges();
   llvm::SmallVector<int64_t, 2> reductionRanges;
   for (unsigned loopDim : reductionLoopDims)
     reductionRanges.push_back(loopRanges[loopDim]);
 
-  for (auto [range, splitSize] :
-       llvm::zip(reductionRanges, candidateReductionTileSizes)) {
-    if (splitSize <= 0 || splitSize > range) {
-      setFailureReason(failureReason,
-                       "candidate reduction split is outside loop bounds");
-      return mlir::failure();
-    }
-  }
-
   llvm::SmallVector<ReductionChunk, 8> chunks;
+  chunks.reserve(static_cast<size_t>(*chunkCount));
   llvm::SmallVector<int64_t, 2> currentOffsets;
   llvm::SmallVector<int64_t, 2> currentSizes;
   buildReductionChunkProducts(reductionRanges, candidateReductionTileSizes,
@@ -2960,49 +3413,19 @@ buildReductionChunks(mlir::linalg::LinalgOp root,
   return chunks;
 }
 
-static mlir::Value unwrapScalarTensorValue(mlir::Value value) {
-  auto extract = value.getDefiningOp<mlir::tensor::ExtractOp>();
-  if (!extract || !extract.getIndices().empty())
-    return value;
-  auto fromElements =
-      extract.getTensor().getDefiningOp<mlir::tensor::FromElementsOp>();
-  if (!fromElements || fromElements.getElements().size() != 1)
-    return value;
-  return fromElements.getElements().front();
-}
-
 static std::optional<ComputeReduceKind>
 inferCandidateReduceKind(mlir::linalg::GenericOp generic,
                          std::string *failureReason) {
-  auto yield =
-      mlir::dyn_cast<mlir::linalg::YieldOp>(generic.getBody()->getTerminator());
-  if (!yield || yield.getValues().size() != 1) {
-    setFailureReason(failureReason,
-                     "candidate reduction split requires one reduce yield");
-    return std::nullopt;
-  }
-
-  mlir::Operation *def =
-      unwrapScalarTensorValue(yield.getValues()[0]).getDefiningOp();
-  if (!def) {
+  if (generic.getRegionInputArgs().size() != 1 ||
+      generic.getRegionOutputArgs().size() != 1) {
     setFailureReason(
         failureReason,
-        "candidate reduction split requires structured reduce body");
+        "candidate reduction split requires one input and one accumulator");
     return std::nullopt;
   }
-
-  if (mlir::isa<mlir::arith::AddFOp, mlir::arith::AddIOp>(def))
-    return ComputeReduceKind::Sum;
-  if (mlir::isa<mlir::arith::MaximumFOp, mlir::arith::MaxNumFOp,
-                mlir::arith::MaxSIOp, mlir::arith::MaxUIOp>(def))
-    return ComputeReduceKind::Max;
-  if (mlir::isa<mlir::arith::MinimumFOp, mlir::arith::MinNumFOp,
-                mlir::arith::MinSIOp, mlir::arith::MinUIOp>(def))
-    return ComputeReduceKind::Min;
-
-  setFailureReason(failureReason,
-                   "candidate reduction split requires sum/max/min body");
-  return std::nullopt;
+  return matchExactReductionKind(generic.getRegionOutputArgs(), /*redPos=*/0,
+                                 generic.getRegionInputArgs().front(),
+                                 "candidate reduction split", failureReason);
 }
 
 static mlir::FailureOr<ComputeReduceKind>
@@ -3165,7 +3588,7 @@ createPartialCombine(mlir::OpBuilder &builder, mlir::Location loc,
   return add->getResult(0);
 }
 
-static mlir::FailureOr<mlir::Value> materializeCandidateRootTile(
+static mlir::FailureOr<mlir::Value> materializeCandidateRootTileValue(
     GroupOp group, mlir::linalg::LinalgOp root, unsigned outputIndex,
     llvm::ArrayRef<int64_t> candidateTileOffsets,
     llvm::ArrayRef<int64_t> candidateTileSizes,
@@ -3236,7 +3659,6 @@ static mlir::FailureOr<mlir::Value> materializeCandidateRootTile(
   llvm::SmallVector<mlir::Value, 4> valuesToTile(root->operand_begin(),
                                                  root->operand_end());
   unsigned initOperandIndex = static_cast<unsigned>(root.getNumDpsInputs());
-  llvm::SmallVector<mlir::Value, 4> insertOperands;
   mlir::Value outputInitTile;
   mlir::Value neutralInitTile;
   mlir::Value accumulator;
@@ -3254,8 +3676,7 @@ static mlir::FailureOr<mlir::Value> materializeCandidateRootTile(
                                       valuesToTile, loopTile.ivs,
                                       loopTile.tileSizes, loopTile.sizeBounds,
                                       /*omitPartialTileCheck=*/true);
-    if (insertOperands.empty()) {
-      insertOperands = tiledOperands;
+    if (!outputInitTile) {
       outputInitTile = tiledOperands[initOperandIndex];
     } else if (initOperandIndex < tiledOperands.size()) {
       mlir::Operation *unusedInitSlice =
@@ -3320,20 +3741,12 @@ static mlir::FailureOr<mlir::Value> materializeCandidateRootTile(
                      "candidate tile materialization produced no tiled result");
     return mlir::failure();
   }
+  return accumulator;
+}
 
-  if (hasDirectOutputInit) {
-    llvm::SmallVector<mlir::Value, 2> inserted = mlir::linalg::insertSlicesBack(
-        builder, root.getLoc(), root, insertOperands,
-        mlir::ValueRange{accumulator});
-    if (inserted.size() != 1) {
-      setFailureReason(
-          failureReason,
-          "candidate tile materialization expected one inserted result");
-      return mlir::failure();
-    }
-    return inserted.front();
-  }
-
+static mlir::FailureOr<mlir::Value>
+getCandidateOutputBoundary(GroupOp group, unsigned outputIndex,
+                           std::string *failureReason) {
   unsigned inputCount = static_cast<unsigned>(group.getInputs().size());
   mlir::Block &body = group.getBody().front();
   if (inputCount + outputIndex >= body.getNumArguments()) {
@@ -3341,8 +3754,15 @@ static mlir::FailureOr<mlir::Value> materializeCandidateRootTile(
                      "candidate tile materialization missing output boundary");
     return mlir::failure();
   }
+  return body.getArgument(inputCount + outputIndex);
+}
 
-  mlir::Value outputBoundary = body.getArgument(inputCount + outputIndex);
+static mlir::Value
+insertCandidateRootTile(mlir::linalg::LinalgOp root, mlir::Value tileValue,
+                        mlir::Value outputDestination,
+                        llvm::ArrayRef<int64_t> candidateTileOffsets,
+                        llvm::ArrayRef<int64_t> candidateTileSizes) {
+  mlir::OpBuilder builder(root);
   llvm::SmallVector<mlir::OpFoldResult, 4> offsets;
   llvm::SmallVector<mlir::OpFoldResult, 4> sizes;
   llvm::SmallVector<mlir::OpFoldResult, 4> strides;
@@ -3357,15 +3777,13 @@ static mlir::FailureOr<mlir::Value> materializeCandidateRootTile(
   }
 
   auto inserted = builder.create<mlir::tensor::InsertSliceOp>(
-      root.getLoc(), accumulator, outputBoundary, offsets, sizes, strides);
+      root.getLoc(), tileValue, outputDestination, offsets, sizes, strides);
   return inserted.getResult();
 }
 
-static mlir::LogicalResult materializeCandidateTileSlices(
-    GroupOp group, llvm::ArrayRef<int64_t> candidateTileOffsets,
-    llvm::ArrayRef<int64_t> candidateTileSizes,
-    llvm::ArrayRef<int64_t> candidateReductionTileSizes,
-    std::string *failureReason) {
+static mlir::FailureOr<llvm::SmallVector<mlir::linalg::LinalgOp, 4>>
+collectCandidateRoots(GroupOp group, bool rejectProducerChains,
+                      std::string *failureReason) {
   auto yield =
       mlir::dyn_cast<GroupYieldOp>(group.getBody().front().getTerminator());
   if (!yield || yield.getValues().empty()) {
@@ -3375,7 +3793,8 @@ static mlir::LogicalResult materializeCandidateTileSlices(
   }
 
   llvm::SmallVector<mlir::linalg::LinalgOp, 4> roots;
-  for (mlir::Value value : yield.getValues()) {
+  llvm::DenseSet<mlir::Operation *> seenRoots;
+  for (auto [index, value] : llvm::enumerate(yield.getValues())) {
     auto root =
         mlir::dyn_cast_or_null<mlir::linalg::LinalgOp>(value.getDefiningOp());
     if (!root) {
@@ -3383,34 +3802,319 @@ static mlir::LogicalResult materializeCandidateTileSlices(
                        "candidate tile materialization requires linalg roots");
       return mlir::failure();
     }
-    roots.push_back(root);
-  }
+    if (root->getBlock() != &group.getBody().front() ||
+        !seenRoots.insert(root.getOperation()).second ||
+        root->getNumResults() != 1 || root.getNumDpsInits() != 1 ||
+        root->getResult(0) != value) {
+      setFailureReason(failureReason,
+                       "candidate multi-output coverage requires distinct "
+                       "single-result yielded roots");
+      return mlir::failure();
+    }
 
-  for (mlir::linalg::LinalgOp root : roots) {
-    for (mlir::Value result : root->getResults()) {
-      for (mlir::OpOperand &use : result.getUses()) {
-        if (use.getOwner() == yield.getOperation())
+    unsigned matchingYieldUses = 0;
+    for (mlir::OpOperand &use : value.getUses()) {
+      if (use.getOwner() == yield.getOperation() &&
+          use.getOperandNumber() == index) {
+        ++matchingYieldUses;
+        continue;
+      }
+      setFailureReason(failureReason, "candidate multi-output coverage "
+                                      "requires independent yielded roots");
+      return mlir::failure();
+    }
+    if (matchingYieldUses != 1) {
+      setFailureReason(failureReason, "candidate multi-output coverage "
+                                      "requires independent yielded roots");
+      return mlir::failure();
+    }
+
+    if (rejectProducerChains) {
+      for (mlir::Value input : root.getDpsInputs()) {
+        if (!mlir::isa<mlir::RankedTensorType>(input.getType()))
           continue;
-        setFailureReason(failureReason, "candidate multi-output coverage "
-                                        "requires independent yielded roots");
+        auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(input);
+        if (blockArg && blockArg.getOwner() == &group.getBody().front())
+          continue;
+        setFailureReason(
+            failureReason,
+            "complete candidate traversal does not support tensor producer "
+            "chains");
+        return mlir::failure();
+      }
+
+      mlir::Value init = root.getDpsInits().front();
+      bool hasDirectOutputInit =
+          isGroupOutputBoundary(group, init, static_cast<unsigned>(index));
+      bool hasReduction = !getReductionLoopDims(root).empty();
+      if (!hasDirectOutputInit &&
+          (!hasReduction || !init.getDefiningOp<mlir::linalg::FillOp>())) {
+        setFailureReason(
+            failureReason,
+            "complete candidate traversal does not support output producer "
+            "chains");
         return mlir::failure();
       }
     }
+    roots.push_back(root);
   }
 
+  return roots;
+}
+
+struct CandidateOutputTile {
+  llvm::SmallVector<int64_t, 4> offsets;
+  llvm::SmallVector<int64_t, 4> sizes;
+};
+
+static mlir::FailureOr<uint64_t>
+getCandidateOutputTileCount(mlir::RankedTensorType resultType,
+                            llvm::ArrayRef<int64_t> candidateTileSizes,
+                            std::string *failureReason) {
+  if (candidateTileSizes.size() != static_cast<size_t>(resultType.getRank())) {
+    setFailureReason(failureReason,
+                     "candidate tile rank does not match group result rank");
+    return mlir::failure();
+  }
+
+  for (auto [bound, tileSize] :
+       llvm::zip(resultType.getShape(), candidateTileSizes)) {
+    if (mlir::ShapedType::isDynamic(bound)) {
+      setFailureReason(failureReason,
+                       "complete candidate traversal requires static result "
+                       "shape");
+      return mlir::failure();
+    }
+    if (bound <= 0 || tileSize <= 0 || tileSize > bound) {
+      setFailureReason(
+          failureReason,
+          "complete candidate traversal tile size is outside result bounds");
+      return mlir::failure();
+    }
+  }
+
+  uint64_t tileCount = 0;
+  switch (wafer::detail::checkedStaticTileProduct(
+      resultType.getShape(), candidateTileSizes, tileCount)) {
+  case wafer::detail::CheckedStaticTileProductStatus::Success:
+    return tileCount;
+  case wafer::detail::CheckedStaticTileProductStatus::Overflow:
+    setFailureReason(
+        failureReason,
+        "complete candidate traversal output tile count is not representable");
+    return mlir::failure();
+  case wafer::detail::CheckedStaticTileProductStatus::InvalidInput:
+    setFailureReason(
+        failureReason,
+        "complete candidate traversal has invalid static output ranges");
+    return mlir::failure();
+  }
+  llvm_unreachable("unknown checked tile product status");
+}
+
+static mlir::LogicalResult checkCompleteCandidateExpansionBudget(
+    llvm::ArrayRef<mlir::linalg::LinalgOp> roots,
+    mlir::RankedTensorType resultType,
+    llvm::ArrayRef<int64_t> candidateTileSizes,
+    llvm::ArrayRef<int64_t> candidateReductionTileSizes,
+    std::string *failureReason) {
+  mlir::FailureOr<uint64_t> outputTileCount = getCandidateOutputTileCount(
+      resultType, candidateTileSizes, failureReason);
+  if (mlir::failed(outputTileCount))
+    return mlir::failure();
+
+  llvm::SmallVector<uint64_t, 4> reductionChunkCounts;
+  reductionChunkCounts.reserve(roots.size());
+  for (mlir::linalg::LinalgOp root : roots) {
+    if (candidateReductionTileSizes.empty() ||
+        getReductionLoopDims(root).empty()) {
+      reductionChunkCounts.push_back(1);
+      continue;
+    }
+    mlir::FailureOr<uint64_t> chunkCount = getCandidateReductionChunkCount(
+        root, candidateReductionTileSizes, failureReason);
+    if (mlir::failed(chunkCount))
+      return mlir::failure();
+    reductionChunkCounts.push_back(*chunkCount);
+  }
+
+  uint64_t materializationCount = 0;
+  switch (wafer::detail::checkCompleteCandidateExpansionBudget(
+      *outputTileCount, reductionChunkCounts, materializationCount)) {
+  case wafer::detail::CompleteCandidateExpansionStatus::WithinBudget:
+    return mlir::success();
+  case wafer::detail::CompleteCandidateExpansionStatus::BudgetExceeded:
+    setFailureReason(
+        failureReason,
+        "complete candidate traversal exceeds the eager materialization "
+        "budget; this is an implementation resource limit, not an IR or "
+        "target legality restriction");
+    return mlir::failure();
+  case wafer::detail::CompleteCandidateExpansionStatus::CountOverflow:
+    setFailureReason(
+        failureReason,
+        "complete candidate traversal expansion count is not representable");
+    return mlir::failure();
+  case wafer::detail::CompleteCandidateExpansionStatus::InvalidInput:
+    setFailureReason(
+        failureReason,
+        "complete candidate traversal has invalid static expansion counts");
+    return mlir::failure();
+  }
+  llvm_unreachable("unknown complete candidate expansion status");
+}
+
+static void buildCandidateOutputTileProducts(
+    llvm::ArrayRef<int64_t> shape, llvm::ArrayRef<int64_t> tileSizes,
+    unsigned dim, llvm::SmallVectorImpl<int64_t> &currentOffsets,
+    llvm::SmallVectorImpl<int64_t> &currentSizes,
+    llvm::SmallVectorImpl<CandidateOutputTile> &tiles) {
+  if (dim == shape.size()) {
+    tiles.push_back(
+        CandidateOutputTile{llvm::SmallVector<int64_t, 4>(
+                                currentOffsets.begin(), currentOffsets.end()),
+                            llvm::SmallVector<int64_t, 4>(currentSizes.begin(),
+                                                          currentSizes.end())});
+    return;
+  }
+
+  for (int64_t offset = 0; offset < shape[dim];) {
+    int64_t size = std::min(tileSizes[dim], shape[dim] - offset);
+    currentOffsets.push_back(offset);
+    currentSizes.push_back(size);
+    buildCandidateOutputTileProducts(shape, tileSizes, dim + 1, currentOffsets,
+                                     currentSizes, tiles);
+    currentOffsets.pop_back();
+    currentSizes.pop_back();
+    offset += size;
+  }
+}
+
+static mlir::FailureOr<llvm::SmallVector<CandidateOutputTile, 8>>
+buildCandidateOutputTiles(mlir::RankedTensorType resultType,
+                          llvm::ArrayRef<int64_t> candidateTileSizes,
+                          std::string *failureReason) {
+  mlir::FailureOr<uint64_t> tileCount = getCandidateOutputTileCount(
+      resultType, candidateTileSizes, failureReason);
+  if (mlir::failed(tileCount))
+    return mlir::failure();
+
+  llvm::SmallVector<CandidateOutputTile, 8> tiles;
+  tiles.reserve(static_cast<size_t>(*tileCount));
+  llvm::SmallVector<int64_t, 4> currentOffsets;
+  llvm::SmallVector<int64_t, 4> currentSizes;
+  buildCandidateOutputTileProducts(resultType.getShape(), candidateTileSizes,
+                                   /*dim=*/0, currentOffsets, currentSizes,
+                                   tiles);
+  return tiles;
+}
+
+static mlir::LogicalResult materializeCandidateTileSlices(
+    GroupOp group, llvm::ArrayRef<int64_t> candidateTileOffsets,
+    llvm::ArrayRef<int64_t> candidateTileSizes,
+    llvm::ArrayRef<int64_t> candidateReductionTileSizes,
+    std::string *failureReason) {
+  mlir::FailureOr<llvm::SmallVector<mlir::linalg::LinalgOp, 4>> roots =
+      collectCandidateRoots(group, /*rejectProducerChains=*/false,
+                            failureReason);
+  if (mlir::failed(roots))
+    return mlir::failure();
+
+  auto yield =
+      mlir::cast<GroupYieldOp>(group.getBody().front().getTerminator());
+
   llvm::SmallVector<mlir::Value, 4> insertedValues;
-  for (auto [index, root] : llvm::enumerate(roots)) {
-    mlir::FailureOr<mlir::Value> inserted = materializeCandidateRootTile(
+  for (auto [index, root] : llvm::enumerate(*roots)) {
+    mlir::FailureOr<mlir::Value> tileValue = materializeCandidateRootTileValue(
         group, root, static_cast<unsigned>(index), candidateTileOffsets,
         candidateTileSizes, candidateReductionTileSizes, failureReason);
-    if (mlir::failed(inserted))
+    mlir::FailureOr<mlir::Value> outputBoundary = getCandidateOutputBoundary(
+        group, static_cast<unsigned>(index), failureReason);
+    if (mlir::failed(tileValue) || mlir::failed(outputBoundary))
       return mlir::failure();
-    insertedValues.push_back(*inserted);
+    insertedValues.push_back(
+        insertCandidateRootTile(root, *tileValue, *outputBoundary,
+                                candidateTileOffsets, candidateTileSizes));
   }
 
   for (auto [index, inserted] : llvm::enumerate(insertedValues))
     yield->setOperand(index, inserted);
-  for (mlir::linalg::LinalgOp root : roots)
+  for (mlir::linalg::LinalgOp root : *roots)
+    root->erase();
+  return mlir::success();
+}
+
+static mlir::LogicalResult materializeCompleteCandidateTraversal(
+    GroupOp group, llvm::ArrayRef<int64_t> candidateTileSizes,
+    llvm::ArrayRef<int64_t> candidateReductionTileSizes,
+    std::string *failureReason) {
+  mlir::FailureOr<llvm::SmallVector<mlir::linalg::LinalgOp, 4>> roots =
+      collectCandidateRoots(group, /*rejectProducerChains=*/true,
+                            failureReason);
+  if (mlir::failed(roots))
+    return mlir::failure();
+
+  auto firstResultType = mlir::dyn_cast<mlir::RankedTensorType>(
+      (*roots).front()->getResult(0).getType());
+  if (!firstResultType) {
+    setFailureReason(failureReason,
+                     "complete candidate traversal result is not ranked");
+    return mlir::failure();
+  }
+
+  bool hasReductionRoot = false;
+  for (mlir::linalg::LinalgOp root : *roots) {
+    auto resultType =
+        mlir::dyn_cast<mlir::RankedTensorType>(root->getResult(0).getType());
+    if (!resultType || resultType.getShape() != firstResultType.getShape()) {
+      setFailureReason(
+          failureReason,
+          "complete candidate traversal requires equal static result shapes");
+      return mlir::failure();
+    }
+    hasReductionRoot |= !getReductionLoopDims(root).empty();
+  }
+  if (!candidateReductionTileSizes.empty() && !hasReductionRoot) {
+    setFailureReason(failureReason,
+                     "candidate reduction split requires a reduction root");
+    return mlir::failure();
+  }
+  if (mlir::failed(checkCompleteCandidateExpansionBudget(
+          *roots, firstResultType, candidateTileSizes,
+          candidateReductionTileSizes, failureReason)))
+    return mlir::failure();
+
+  mlir::FailureOr<llvm::SmallVector<CandidateOutputTile, 8>> tiles =
+      buildCandidateOutputTiles(firstResultType, candidateTileSizes,
+                                failureReason);
+  if (mlir::failed(tiles))
+    return mlir::failure();
+
+  auto yield =
+      mlir::cast<GroupYieldOp>(group.getBody().front().getTerminator());
+  llvm::SmallVector<mlir::Value, 4> completeOutputs;
+  for (auto [index, root] : llvm::enumerate(*roots)) {
+    mlir::FailureOr<mlir::Value> outputBoundary = getCandidateOutputBoundary(
+        group, static_cast<unsigned>(index), failureReason);
+    if (mlir::failed(outputBoundary))
+      return mlir::failure();
+    mlir::Value output = *outputBoundary;
+    for (const CandidateOutputTile &tile : *tiles) {
+      mlir::FailureOr<mlir::Value> tileValue =
+          materializeCandidateRootTileValue(
+              group, root, static_cast<unsigned>(index), tile.offsets,
+              tile.sizes, candidateReductionTileSizes, failureReason);
+      if (mlir::failed(tileValue))
+        return mlir::failure();
+      output = insertCandidateRootTile(root, *tileValue, output, tile.offsets,
+                                       tile.sizes);
+    }
+    completeOutputs.push_back(output);
+  }
+
+  for (auto [index, output] : llvm::enumerate(completeOutputs))
+    yield->setOperand(index, output);
+  for (mlir::linalg::LinalgOp root : *roots)
     root->erase();
   return mlir::success();
 }
@@ -3465,6 +4169,13 @@ struct ConvertGroupToTileRegionPass
       ConvertGroupToTileRegionPass>::ConvertGroupToTileRegionPassBase;
 
   void runOnOperation() final {
+    if (logicalRank < 0) {
+      getOperation()->emitError()
+          << "missing_logical_rank: group-to-tile-region conversion requires "
+             "an explicit non-negative logical-rank";
+      signalPassFailure();
+      return;
+    }
     mlir::MLIRContext *context = &getContext();
     mlir::ConversionTarget target(*context);
     configureGroupToTileRegionTarget(target);
@@ -3522,6 +4233,36 @@ mlir::LogicalResult wafer::lowerCandidateGroupToTileRegionModule(
 
   return convertGroupToTileRegionModuleInPlace(
       *module, group.getContext(), currentLogicalRank, failureReason);
+}
+
+mlir::LogicalResult wafer::lowerCompleteCandidateGroupToTileRegionModule(
+    GroupOp group, llvm::ArrayRef<int64_t> candidateTileSizes,
+    llvm::ArrayRef<int64_t> candidateReductionTileSizes,
+    mlir::OwningOpRef<mlir::ModuleOp> &module, std::string *failureReason,
+    int64_t currentLogicalRank) {
+  if (failureReason)
+    failureReason->clear();
+
+  mlir::OwningOpRef<mlir::ModuleOp> candidateModule =
+      cloneGroupToStandaloneModule(group);
+  GroupOp clonedGroup = findSingleStandaloneGroup(*candidateModule);
+  if (!clonedGroup) {
+    setFailureReason(failureReason, "standalone module has no wafer.group");
+    return mlir::failure();
+  }
+
+  if (mlir::failed(materializeCompleteCandidateTraversal(
+          clonedGroup, candidateTileSizes, candidateReductionTileSizes,
+          failureReason)))
+    return mlir::failure();
+
+  if (mlir::failed(convertGroupToTileRegionModuleInPlace(
+          *candidateModule, group.getContext(), currentLogicalRank,
+          failureReason)))
+    return mlir::failure();
+
+  module = std::move(candidateModule);
+  return mlir::success();
 }
 
 void wafer::dumpGroupToTileRegionModule(mlir::ModuleOp module,

@@ -1,4 +1,4 @@
-// RUN: wafer-opt --wafer-dump-group-to-tile-region %s 2>&1 | FileCheck %s
+// RUN: wafer-opt --wafer-dump-group-to-tile-region='logical-rank=0' %s 2>&1 | FileCheck %s
 
 module {
   func.func @matmul_bias_relu(
@@ -264,18 +264,20 @@ module {
 // CHECK: wafer.tile.region(
 // CHECK-SAME: #wafer.memory<ddr, tensor>
 // CHECK: wafer.tile.load
-// CHECK-SAME: #wafer.memory<ddr, tensor>
-// CHECK: wafer.tile.fill
+// CHECK-SAME: memref<4x8xf32, #wafer.memory<ddr, tensor>>
+// CHECK: wafer.tile.materialize_layout
 // CHECK: wafer.tile.load
-// CHECK: memref<4x8xf32, #wafer.memory<spm, tensor>>
+// CHECK-SAME: memref<8x16xf32, #wafer.memory<ddr, tensor>>
 // CHECK: wafer.tile.materialize_layout
 // CHECK: #wafer.memory<spm, cx>
 // CHECK: wafer.tile.gemm
 // CHECK: wafer.tile.materialize_layout
 // CHECK: #wafer.memory<spm, tensor>
+// CHECK: wafer.tile.load
 // CHECK: wafer.tile.broadcast
 // CHECK-SAME: dimensions = array<i64: 1>
 // CHECK: wafer.tile.elementwise <add>
+// CHECK: wafer.tile.fill
 // CHECK: wafer.tile.elementwise <max>
 // CHECK: wafer.tile.store
 // CHECK-SAME: #wafer.memory<ddr, tensor>

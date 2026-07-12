@@ -1,13 +1,18 @@
 # Wafer SPM Memory Planning Design
 
 状态：2026-07-12重基线；当前合同覆盖instruction IR上的SPM lifetime/range planning；async issue的全部
-read/write resource必须活到可信completion，当前实现仍需修复。实现状态以`tasks/progress.md`为准。accepted fact 为
+read/write resource必须活到可信completion。当前实现已闭合single-`wafer.tile.region`内的path-aware
+local/DTE completion proof；跨多个tile-region的whole-entry planning未实现，也不是当前isolation合同的
+correctness前置，只保留为后续优化。实现状态以
+`tasks/progress.md`为准。accepted fact 为
 offset-only `wafer.spm.offset`，size / bank span / alignment 由 memref type、layout 和 target policy 重算。
 
 本文定义 Wafer SPM bufferization、tile-local allocation 和 storage verification。它服务于
-`wafer.group` candidate/template planning 的合法性搜索，也负责在完整 static rank entry 的
-structured program 上把各 `wafer.tile.region` scope 中的 tile-local value 落到可验证的 memory
-space、跨 group lifetime、range 和 completion effect。
+`wafer.group` candidate/template planning 的合法性搜索，也负责在完整 static rank entry 中逐个验证
+`wafer.tile.region` scope，把其 tile-local value 落到可验证的 memory space、range 和 completion
+effect。`wafer.tile.region` 是 `IsolatedFromAbove`，且 verifier 禁止 SPM buffer 作为 region 输入或结果；
+因此当前 correctness 边界是每个 region 独立规划、每条 region exit 完成，再由 variant gate 汇总全部
+region，而不是跨 region lifetime/reuse。
 SPM memory planning 的 instruction-level 输入合同由
 `tasks/11-instruction-ir.md` 定义；本文只消费该层暴露的
 Wafer-tagged memref / `wafer.instr.*` / effects，不重复定义 instruction op。
@@ -40,7 +45,7 @@ layout materialization
   -> instruction-level IR with unplaced Wafer-tagged memref values
   -> storage requirement collection
   -> liveness/effect analysis
-  -> whole-entry SPM memory planning + shared physical geometry/range verification
+  -> per-isolated-tile-region SPM memory planning + shared physical geometry/range verification
   -> candidate target-ABI address/range/narrowing preflight before commit
   -> target-codegen derivation from the same committed facts; runtime only binds declared KAD slots
 ```
@@ -56,15 +61,14 @@ Pipeline position:
 - Upstream artifact / IR:
   whole-variant evaluation clone 中所有 static rank entries 的完整 instruction-level
   `wafer.instr.*` structured program，已经完成 candidate DDR tile-view materialization 和 instruction
-  legalization，包含 actual DDR tile views and unplaced
-  `memref<..., #wafer.memory<spm, layout>>` values，以及 accepted layout assignment、
-  materialization cut、effect/order 和 target SPM policy。
+  legalization；每个 `wafer.tile.region` 是不允许 SPM value 跨边界的独立 storage scope，包含 actual DDR
+  tile views、unplaced `memref<..., #wafer.memory<spm, layout>>` values，以及 accepted layout
+  assignment、materialization cut、effect/order 和 target SPM policy。
 - Current stage responsibility:
-  对每个完整 static rank entry、跨其所有 group/traversal scopes，为
-  `#wafer.memory<spm, layout>` memref 做 SPM memory planning，
+  对每个 isolated `wafer.tile.region`，为 `#wafer.memory<spm, layout>` memref 做 SPM memory planning，
   计算 offset/end/bank span、alignment、lifetime/reuse、must-alias/must-not-alias、reserved range
-  和 range-end verification；用显式 async token/wait、local fence 和 terminal drain 证明所有 issue
-  completion，并在 variant-set gate 汇总所有 rank 的通过结果。
+  和 range-end verification；用显式 async token/wait、local fence 和 terminal drain 证明该 region
+  所有 issue completion，并在 variant-set gate 汇总所有 region/rank 的通过结果。
 - Output artifact / IR:
   仅存在于 complete passing variant clone 中的 same instruction-level IR with offset-only
   `wafer.spm.offset` planning facts on SPM memref definitions，或结构化 allocation failure reason；
@@ -77,23 +81,24 @@ Pipeline position:
 - Downstream consumer:
   whole-entry DDR memory planning、physical transport acceptance、launch projection 和 closed-loop
   whole-variant candidate driver和pre-commit `ExecutableResourceView`；atomic commit后target LLVM消费
-  committed IR/resource bindings，package只消费committed executable + complete `TargetArtifactSet`，
-  runtime只消费validated manifest。
+  committed IR/resource bindings，package只消费committed executable + Q17 verified staged target module
+  records，runtime只消费validated manifest。
 - User-level driver / named pipeline:
   production 主线由 `wafer-opt --program-pipeline=stablehlo-to-executable` 或等价 driver 的 whole-variant
   candidate loop 调用本 stage；`wafer-lower-groups-to-memory-planned-instr` 和 `wafer-plan-spm-memory` 只作
   instruction-level replay/lit/debug，不能把 `DirectFullShape` 或单 group 结果直接提交。
 - Explicit non-goals:
   不选择 instruction form、不改变 layout assignment、不分配 DDR allocation、不生成 target CRT call 或 packet；
-  不按 group/tile-region 独立提交 offset，不把 hardware `busytable` 当作 completion/lifetime 语义；
-  `DirectFullShape` 与其它 tiled candidates 运行同一 whole-entry planning，不设 bypass；不依据 distributed
-  rank equivalence 复用/跳过 rank plan 或提前创建 executable rank class。
+  不把任一 region 的 offset 独立提交，不跨 isolated region 复用 SPM range，也不把 hardware `busytable`
+  当作 completion/lifetime 语义；`DirectFullShape` 与其它 tiled candidates 运行同一 per-region planning 和
+  whole-variant gate，不设 bypass；不依据 distributed rank equivalence 复用/跳过 rank plan 或提前创建
+  executable rank class。跨 region whole-entry allocation 只是在现有 isolation 合同改变后才有意义的优化。
 - Completion gate:
-  对每个 static rank entry 的完整 traversal 和跨 group lifetime 给出 deterministic memory plan；
-  planned storage 的 size、alignment、range/end、lifetime 和 alias relation 能由 IR/effect/verifier 重算，
-  每个 async issue 都由 token/wait 或 local fence 收口且函数退出前没有 pending event。任一 rank/group
-  失败都使整个 variant clone 不可提交。SPM plan 只是 whole-variant commit 决定最终 executable rank
-  class 的输入；即使 distributed 层认为 ranks 等价，也必须验证每个完整 static rank entry。
+  对每个合法 `wafer.tile.region` 给出 deterministic memory plan；planned storage 的 size、alignment、
+  range/end、lifetime 和 alias relation 能由 region-local IR/effect/verifier 重算，每个 async issue 都由
+  exact token/wait 或 local fence 收口且每条 region exit 没有 pending event。任一 region/rank 失败都使
+  整个 variant clone 不可提交。即使 distributed 层认为 ranks 等价，也必须验证每个 static rank entry
+  中的全部 region。
 ```
 
 ## 2. 借鉴点
@@ -111,7 +116,8 @@ Pipeline position:
 输入：
 
 - transformation-local whole-variant candidate clone 中的完整 static rank programs；其中
-  `wafer.tile.region` 只是 traversal 内局部 scope，rejected clone 必须整体丢弃。SPM memory planning 不直接消费
+  `wafer.tile.region` 是禁止 SPM values 跨边界的独立 allocation scope，rejected clone 必须整体丢弃。
+  SPM memory planning 不直接消费
   target-abstract tile-region IR，而消费 R3.2d 生成的 instruction-level IR with unplaced
   Wafer-tagged memref values。
 - layout planner 产生的 physical layout assignment 和 materialization demand。
@@ -120,8 +126,8 @@ Pipeline position:
 - `WaferCommOpInterface` 或后续 communication instruction selection 提供的 source/destination buffer、byte count、
   token/wait 和 staging storage。
 - target policy：SPM range、reserved range、alignment、coloring preference。
-- 完整 rank entry 的 structured control-flow、跨 group SSA/alias relation、op effect、token、
-  fence/wait/barrier 和 terminal completion boundary。
+- 每个 region 内的 structured control-flow、SSA/alias relation、op effect、token、fence/wait/barrier 和
+  terminal completion boundary，以及 variant 中 all-and-only region/rank coverage。
 
 输出：
 
@@ -240,9 +246,9 @@ V0 规则：
 - loop-carried accumulator/psum 跨 backedge live。
 - per-iteration temporary 可以跨 iteration 复用，除非 pipeline/double-buffer 要求保留。
 - branch buffer 只有在 control-flow 可证明互斥时才能复用；否则保守 may-overlap。
-- group/tile-region boundary 不自动截断 lifetime；producer 到最后 consumer 的跨 group value、pending
-  issue 和 loop-carried state 都在完整 rank entry 上连续分析。
-- function exit 前必须有显式 terminal drain/fence/wait 收口所有 path 上的 pending local/DTE events；
+- region 内的 nested control-flow 不自动截断 lifetime；`wafer.tile.region` 边界由 IR isolation 和禁止 SPM
+  输入/结果的 verifier 形成真实 storage 边界，不能从名字或 group 顺序恢复跨 region SPM alias。
+- region exit 前必须有显式 terminal drain/fence/wait 收口所有 path 上的 pending local/DTE events；
   不能用“后续 package/runtime 会等待”作为 lifetime 证明。
 
 reuse 分类：
@@ -253,8 +259,9 @@ reuse 分类：
 
 ## 6. Allocation Contract
 
-SPM allocation 的职责是在一个 complete static rank plan、指定 final candidate layout assignment 和
-selected instruction lowering 下，跨所有 group/traversal scopes 放置 `#wafer.memory<spm, *>` memref。
+SPM allocation 的职责是在一个 complete static rank variant、指定 final candidate layout assignment 和
+selected instruction lowering 下，逐个 isolated `wafer.tile.region` 放置 `#wafer.memory<spm, *>` memref，
+再汇总全部 region 的通过结果。
 它不负责全局寻找最佳 group，不选择 compute/movement instruction form，也不把失败方案 materialize
 到主 IR。
 
@@ -284,14 +291,15 @@ V0 event model：
 - 每个 movement / materialization / compute / sync op 产生 issue/read/write/fence/wait event。
 - communication p2p op 产生 send/recv issue event，`wafer.instr.dte_wait` 或 lower-level DTE/FSM wait
   产生 completion event。
-- synchronous read 可以用单个 read event conservative 建模；本地 compute/movement write 在 fence
-  前按 pending local write 处理。
+- 本地 compute/movement issue 的全部 SPM read/write 都进入 pending local access；可信
+  `wafer.instr.local_fence` 前不得结束对应 lifetime 或复用buffer。
 - async DTE token 将 issue operand refs 延伸到对应 wait；本地 fence 只收口 compute/movement
-  writes，不替代 DTE wait。
+  issue/read/write，不替代 DTE wait；DTE wait也不收口本地engine issue。
 - loop backedge 让 loop-carried value 跨 iteration live。
 - branch 只有在 control-flow 可证明互斥时共享 lifetime slot。
-- dataflow analysis 在完整 rank entry 上运行；进入/离开 `wafer.tile.region` 或原 group boundary 不清空
-  pending events。每条 function exit path 都必须证明 pending set 为空。
+- dataflow analysis 在单个 `wafer.tile.region` 内运行；nested control-flow不清空pending events，每条
+  region exit path都必须证明pending set为空。region之间不共享SPM value或pending set；variant gate仍要求
+  all-and-only regions均已规划。
 
 这个 event model 只用于 analysis 和 verifier 可复核的 lowering；它不是新的 schedule attr。
 
@@ -415,8 +423,8 @@ complete static rank variant clone + group/tile/layout proposals
      (target-abstract compute/comm/load-store/layout/sync/storage/effect)
   -> materialize candidate DDR tile views as memref.subview operands
   -> legalize/select instruction-level wafer.instr.* over unplaced Wafer-tagged memref values
-  -> collect BufferDemand + cross-group liveness/effect from each complete rank entry
-  -> whole-entry SPM memory planning + event completion verification for all ranks
+  -> collect BufferDemand + region-local liveness/effect from every isolated tile region
+  -> per-region SPM memory planning + terminal completion verification for all ranks
   -> planned offsets for the complete variant or failure feedback
   -> run DDR/instruction/transport/target gates
   -> atomically commit all rank programs and eliminate all wafer.group, or commit nothing
@@ -429,8 +437,9 @@ complete static rank variant clone + group/tile/layout proposals
 group summary 或裸 tensor value，再把真实 allocation 推到更晚的 pass，容易让合法性承诺漂移；
 但把 rejected tile-region IR 直接落入主 IR 再回滚也会污染 IR 边界。因此 instruction legalization /
 selection 和 SPM memory planning 都应在 transformation-local whole-variant clone 上运行；
-`wafer.tile.region` 只是该 clone 中的局部 scope。allocation 使用完整 rank entry instruction-level IR
-的 memref / lifetime / effect / token 事实源，而不是 target-abstract op 的粗粒度 effect。
+`wafer.tile.region` 是该 clone 中的 SPM isolation scope。allocation 使用 region-local instruction-level
+memref / lifetime / effect / token 事实源，而不是 target-abstract op 的粗粒度 effect；clone 只负责
+all-region atomic acceptance，不把这些隔离的 lifetime 合并成影子 whole-entry plan。
 
 失败的 allocation、offset search trace、cost breakdown 都不进入 IR。任一 group/rank 失败时，
 已经计算出的其它 offset facts 与 candidate clone 一起丢弃。
@@ -501,12 +510,13 @@ R3.2f V0 在 instruction-level IR 上使用 `wafer.spm.offset` op attr 表达 SP
   IR 不复制该输入。
 - bank span 按 256B bank-line 粒度由 `[offset / 256, ceil((offset + size) / 256))` 重算。
 
-每个 logical rank 的 SPM window 仍是 rank-local physical arena，但 planning/lifetime 作用域是完整
-static rank entry，而不是单个 `wafer.tile.region`。不同 tile-region 只有在完整 structured
-control-flow、SSA/effect/token analysis 证明 lifetime 不重叠且没有 pending completion 时才能复用同一
-offset；原 group boundary 也不截断 lifetime。planner 递归读取完整 rank entry 内的所有
-tile-region scopes、structured control-flow、SSA alias 和 async token use，建立可重算的 lifetime
-segments；variant-set gate 要求每个 rank plan 都通过，任一失败都阻止 atomic commit。
+每个 logical rank 的 SPM window 仍是 rank-local physical arena。当前 IR 通过 `IsolatedFromAbove` 和
+verifier 禁止 SPM buffer 作为 `wafer.tile.region` 输入/结果，因此每个 region 可以从同一 arena policy
+独立分配 offset；正确性不依赖跨 region lifetime 或 range 复用。Q0 要求完整 traversal 中 all-and-only
+regions 均完成规划，并由 module clone 保证任一 region/group/rank 失败都不部分提交。若未来允许 SPM
+value 跨 region，必须先改变 IR 边界并引入可验证的 SSA/alias/completion relation；whole-entry allocator
+届时才是必要机制。在当前 isolation 合同下，它只能作为降低 peak/fragmentation 的后续优化，且保持相同
+offset-only输出合同。
 
 R3.2f V0 的 dataflow 边界：
 
@@ -517,14 +527,14 @@ R3.2f V0 的 dataflow 边界：
 - `scf.for` 将 `iter_args` 映射到 init refs，并把 yielded loop-carried refs 作为 backedge lifetime
   覆盖整个 loop subtree；loop body 内没有 yield 出 loop 的 per-iteration temp 只按实际 use 建段，
   可以在 loop 后复用。
-- 产生 `!async.token` 且带 SPM operand 的 issue op 会把对应 SPM refs 挂到 token 上；token 被
-  `wafer.instr.dte_wait` 或后续 fence/wait-like op 消费时，source/destination lifetime 延伸到该 token use。
-- 带 `WaferResourceEffectInterface` 的本地 compute/movement SPM write 会进入 pending local write
-  集合；`wafer.instr.local_fence` 在当前 path condition 下把这些 write 的 lifetime 延伸到 fence
-  event，并清除已被该 fence 覆盖的 pending write。DTE recv 的 destination 不由 local fence 收口，
-  它仍通过 DTE token/wait 收口。
-- 每条 function exit path 都执行 terminal pending-event check；存在未消费 token、未 fenced local
-  write 或未完成 DTE recv 时，当前 rank plan 失败。
+- DTE send/recv产生的`!async.token`把对应SPM refs延伸到精确的`wafer.instr.dte_wait`；token经
+  `scf.if` result合并时保留各自origin和path condition。local fence不能消费该completion。
+- 带`WaferResourceEffectInterface`的本地compute/movement issue进入pending local issue集合，其全部
+  SPM read/write进入pending local access集合；`wafer.instr.local_fence`只在自身path condition覆盖的
+  路径上延伸并清除这些状态。DTE wait不能消费本地状态。
+- 当前每条`wafer.tile.region` exit path执行terminal check；存在未等待DTE token、未fence的本地
+  issue/read/write时规划失败。可能zero-trip的loop内单一completion不能覆盖loop外pending状态；
+  loop-carried DTE token当前fail closed。
 - rejected/candidate offset、search trace、cost estimate 和 repair suggestion 仍是 analysis，不写入
   IR。
 
@@ -563,7 +573,8 @@ SPM / tile-region verifier 至少检查：
 - may-reuse buffers 的 lifetime 不重叠，或由明确 wait/barrier 收口。
 - async buffer 在 fence/wait 前不能复用。
 - host-visible writeback 和 communication boundary 有明确 fence/wait/sync。
-- 完整 rank entry 的跨 group aliases/lifetimes 已纳入同一 plan，且所有 exit path 的 pending event set 为空。
+- 每个 `wafer.tile.region` 不接受/产出 SPM buffer，region-local aliases/lifetimes 已纳入自身 plan，且所有
+  region exit path 的 pending event set 为空；variant coverage确保没有漏规划region。
 - `busytable` 只参与 target capability/legality/cost 查询，不被当作 completion 或 alias proof。
 - physical footprint、begin/end、descriptor range、offset addition 和 ABI width narrowing 统一调用 shared
   physical geometry/range/narrowing verifier；禁止 silent truncation 或 consumer-local 重算分叉。
@@ -574,8 +585,8 @@ SPM / tile-region verifier 至少检查：
 ## 14. 与 Layout / Group 的关系
 
 全局文档边界见 `tasks/01-architecture.md` 第 8 节。SPM allocation 回答完整 static rank entry 中
-所有 tile-region scopes 的 `#wafer.memory<spm, *>` allocation 是否可行，并把失败原因返回
-whole-variant group/layout planner。
+每个 isolated tile-region scope 的 `#wafer.memory<spm, *>` allocation 是否可行，并把all-region汇总失败
+返回 whole-variant group/layout planner。
 闭环顺序：
 
 ```text
@@ -585,7 +596,7 @@ whole-variant candidate plan
   -> candidate DDR tile-view materialization
   -> instruction-level wafer.instr.* over unplaced Wafer-tagged memref values
   -> instruction storage / effect demand
-  -> whole-entry SPM memory planning and terminal completion verification
+  -> per-isolated-region SPM memory planning and terminal completion verification
   -> target-codegen address-range derivation from committed bindings and accepted facts
   -> complete variant accepted or failure feedback; no partial commit
 ```
@@ -613,6 +624,9 @@ closed-loop planner，不在 allocator 内部用名字或 case 猜测。
   替换 V0 的 color penalty。
 - worker-local / runtime-visible / communication-only pool：当对应 dialect 和 verifier 已能表达
   ownership、visibility、fence/wait 边界后引入。
+- 跨 region whole-entry allocator：只有当 IR 明确允许 SPM value/alias/completion 跨
+  `wafer.tile.region`，或测量证明在不改变 isolation 的情况下做全局range coloring有必要时再引入；它是
+  peak/fragmentation优化，不是当前per-region correctness gate。
 
 ## 16. 参考材料
 

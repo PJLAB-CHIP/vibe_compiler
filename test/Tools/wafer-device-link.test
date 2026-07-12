@@ -11,12 +11,34 @@
 # RUN:   --llvm-clangxx /opt/llvm/bin/clang++ \
 # RUN:   --print-commands 2>&1 | FileCheck %s --check-prefix=ERR
 
+# RUN: rm -f %t.missing-symbol.so %t.missing-symbol.o %t.missing-symbol.crt.o
+# RUN: %python -c 'from pathlib import Path; Path("%t.missing-symbol.so").write_bytes(b"sentinel-final")'
 # RUN: not %python %wafer_src_root/tools/wafer_device_link.py \
 # RUN:   --llvm-ir %S/Inputs/missing-wafer-symbol.ll \
 # RUN:   --output %t.missing-symbol.so \
 # RUN:   --object-output %t.missing-symbol.o \
 # RUN:   --crt-object-output %t.missing-symbol.crt.o \
 # RUN:   2>&1 | FileCheck %s --check-prefix=UNDEF
+# RUN: %python -c 'from pathlib import Path; output = Path("%t.missing-symbol.so"); assert output.read_bytes() == b"sentinel-final"; assert not Path("%t.missing-symbol.o").exists(); assert not Path("%t.missing-symbol.crt.o").exists(); assert not list(output.parent.glob(f".{output.name}.staging-*"))'
+
+# RUN: rm -f %t.unexpected-symbol.so %t.unexpected-symbol.o %t.unexpected-symbol.crt.o
+# RUN: %python -c 'from pathlib import Path; Path("%t.unexpected-symbol.so").write_bytes(b"sentinel-final")'
+# RUN: not %python %wafer_src_root/tools/wafer_device_link.py \
+# RUN:   --llvm-ir %S/Inputs/unexpected-loader-symbol.ll \
+# RUN:   --output %t.unexpected-symbol.so \
+# RUN:   --object-output %t.unexpected-symbol.o \
+# RUN:   --crt-object-output %t.unexpected-symbol.crt.o \
+# RUN:   2>&1 | FileCheck %s --check-prefix=NOTALLOWED
+# RUN: %python -c 'from pathlib import Path; output = Path("%t.unexpected-symbol.so"); assert output.read_bytes() == b"sentinel-final"; assert not Path("%t.unexpected-symbol.o").exists(); assert not Path("%t.unexpected-symbol.crt.o").exists(); assert not list(output.parent.glob(f".{output.name}.staging-*"))'
+
+# RUN: rm -f %t.success.so %t.success.o %t.success.crt.o
+# RUN: %python -c 'from pathlib import Path; Path("%t.success.so").write_bytes(b"sentinel-final")'
+# RUN: %python %wafer_src_root/tools/wafer_device_link.py \
+# RUN:   --llvm-ir %S/Inputs/minimal-target-kernel.ll \
+# RUN:   --output %t.success.so \
+# RUN:   --object-output %t.success.o \
+# RUN:   --crt-object-output %t.success.crt.o
+# RUN: %python -c 'from pathlib import Path; output = Path("%t.success.so"); assert output.read_bytes().startswith(b"\x7fELF"); assert Path("%t.success.o").stat().st_size > 0; assert Path("%t.success.crt.o").stat().st_size > 0; assert not list(output.parent.glob(f".{output.name}.staging-*"))'
 
 # CHECK-LABEL: compile:
 # CHECK-SAME: /opt/llvm/bin/clang++
@@ -90,3 +112,5 @@
 # ERR: error: LLVM IR input does not exist
 
 # UNDEF: error: undefined Wafer target CRT symbols remain after link: wafer_tx81_missing
+
+# NOTALLOWED: error: target_symbol_not_allowed: undefined symbols are not allowed by loader ABI tx8-kcore-loader-v1: unexpected_loader_hook

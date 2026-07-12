@@ -1,0 +1,26 @@
+# RUN: rm -rf %t.linear %t.llama-a %t.llama-b
+# RUN: %python %wafer_src_root/test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-cpu-reference --corpus-case linear-residual-mlp-f32 --output-reference-dir %t.linear
+# RUN: %python %wafer_src_root/test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-cpu-reference --corpus-case tiny-llama-decoder-f32 --output-reference-dir %t.llama-a
+# RUN: %python %wafer_src_root/test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-cpu-reference --corpus-case tiny-llama-decoder-f32 --output-reference-dir %t.llama-b
+# RUN: diff -r %t.llama-a %t.llama-b
+# RUN: FileCheck %s --input-file=%t.linear/reference.json --check-prefix=LINEAR
+# RUN: FileCheck %s --input-file=%t.llama-a/reference.json --check-prefix=LLAMA
+# RUN: test -s %t.linear/input.npy && test -s %t.linear/expected.npy
+# RUN: test -s %t.llama-a/input.npy && test -s %t.llama-a/expected.npy
+
+# LINEAR: "case_id": "linear-residual-mlp-f32"
+# LINEAR: "input": "sha256:4dacd3cd5f500875e005c053e39131351af89f4475e009f70504dd46ba18e268"
+# LINEAR: "parameters": "sha256:9f7b1dafc4b0def2ecc6f2b949a4c76839408a9881c55d4807bf2ffcc3019182"
+# LINEAR: "reference_output": "sha256:5df7b540e3156218ae841ff471009c56ac60542d517206fe847bf41a8d04cb6b"
+# LINEAR: "input_shape": [
+# LINEAR-NEXT: 2,
+# LINEAR-NEXT: 16
+
+# LLAMA: "case_id": "tiny-llama-decoder-f32"
+# LLAMA: "input": "sha256:daa46fe9f0572572d143cd1bf378d554ae79eef7c037a65dd7cd2528df6cead1"
+# LLAMA: "parameters": "sha256:e933bda2600971a96a3fc99cc47c0923a76feab3eacbd250dbdbff6336035a4d"
+# LLAMA: "reference_output": "sha256:592f22d431a60152bf0551a408e86190a33113b80a4e45b04ca405ae371afc77"
+# LLAMA: "input_shape": [
+# LLAMA-NEXT: 1,
+# LLAMA-NEXT: 4,
+# LLAMA-NEXT: 16

@@ -6,7 +6,7 @@
 # RUN: FileCheck %s --input-file=%t.group.program/functions/forward.mlir --check-prefix=GROUP-MLIR
 # RUN: wafer-opt --wafer-dump-group-tiling-demand %t.group.program/functions/forward.mlir 2>&1 | FileCheck %s --check-prefix=DEMAND
 # RUN: wafer-opt --wafer-dump-group-layout-plan %t.group.program/functions/forward.mlir 2>&1 | FileCheck %s --check-prefix=LAYOUT
-# RUN: wafer-opt --wafer-dump-group-to-tile-region %t.group.program/functions/forward.mlir 2>&1 | FileCheck %s --check-prefix=GROUP-TO-TILE
+# RUN: wafer-opt --wafer-dump-group-to-tile-region='logical-rank=0' %t.group.program/functions/forward.mlir 2>&1 | FileCheck %s --check-prefix=GROUP-TO-TILE
 
 # PIPELINE: wafer-opt: completed Wafer program pipeline stablehlo-spmd-to-group:
 

@@ -6,6 +6,9 @@
 
 #include "llvm/ADT/STLExtras.h"
 
+#include <cstdint>
+#include <limits>
+
 using namespace wafer;
 using namespace wafer::detail;
 
@@ -116,6 +119,9 @@ mlir::LogicalResult InstrDTESendOp::verifyWaferResourceEffectContract() {
 }
 
 mlir::LogicalResult InstrDTEWaitOp::verify() {
+  if (getTokens().size() > std::numeric_limits<uint32_t>::max())
+    return emitOpError(
+        "target_abi_narrowing: DTE wait token count must fit uint32_t");
   return verifyDTEWaitTokens(getOperation(), getTokens());
 }
 

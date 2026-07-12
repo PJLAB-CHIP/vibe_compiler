@@ -33,7 +33,7 @@ if(WAFER_ENABLE_UNIT_TESTS)
 endif()
 
 if(TARGET WaferUnitTests)
-  add_custom_target(check-wafer DEPENDS check-wafer-lit WaferUnitTests)
+  add_custom_target(check-wafer DEPENDS check-wafer-lit check-wafer-unit)
 else()
   add_custom_target(check-wafer DEPENDS check-wafer-lit)
 endif()

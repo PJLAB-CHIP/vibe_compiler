@@ -60,9 +60,19 @@ static uint32_t wafer_format_bytes(uint32_t format) {
   }
 }
 
-static uint32_t wafer_elem_count_from_bytes(uint32_t bytes, uint32_t format) {
+static bool wafer_elem_count_from_bytes(uint32_t bytes, uint32_t format,
+                                        uint32_t *elem_count) {
+  if ((Data_Format)format == Fmt_BOOL) {
+    if (bytes > UINT32_MAX / 8U)
+      return false;
+    *elem_count = bytes * 8U;
+    return true;
+  }
   uint32_t elem_bytes = wafer_format_bytes(format);
-  return elem_bytes == 0 ? bytes : bytes / elem_bytes;
+  if (elem_bytes == 0 || bytes % elem_bytes != 0)
+    return false;
+  *elem_count = bytes / elem_bytes;
+  return true;
 }
 
 static uint64_t wafer_shape_elements(Data_Shape shape) {
@@ -117,13 +127,15 @@ void wafer_tx81_rdma(uint64_t src, uint64_t dst, uint32_t byte_count,
                      uint32_t stride2, uint32_t iteration0,
                      uint32_t iteration1, uint32_t iteration2,
                      uint32_t format) {
+  uint32_t inner_elements = 0;
   (void)byte_count;
+  if (!wafer_elem_count_from_bytes(inner_bytes, format, &inner_elements))
+    return;
   TsmRdmaInstr instr = {0};
   TsmRdma *rdma = TsmNewRdma();
   rdma->AddSrcDst(&instr, src, dst, wafer_format(format));
-  rdma->ConfigStrideIteration(
-      &instr, wafer_elem_count_from_bytes(inner_bytes, format), stride0,
-      iteration0, stride1, iteration1, stride2, iteration2);
+  rdma->ConfigStrideIteration(&instr, inner_elements, stride0, iteration0,
+                              stride1, iteration1, stride2, iteration2);
   wafer_execute_rdma(&instr);
   TsmDeleteRdma(rdma);
 }
@@ -133,13 +145,15 @@ void wafer_tx81_wdma(uint64_t src, uint64_t dst, uint32_t byte_count,
                      uint32_t stride2, uint32_t iteration0,
                      uint32_t iteration1, uint32_t iteration2,
                      uint32_t format) {
+  uint32_t inner_elements = 0;
   (void)byte_count;
+  if (!wafer_elem_count_from_bytes(inner_bytes, format, &inner_elements))
+    return;
   TsmWdmaInstr instr = {0};
   TsmWdma *wdma = TsmNewWdma();
   wdma->AddSrcDst(&instr, src, dst, wafer_format(format));
-  wdma->ConfigStrideIteration(
-      &instr, wafer_elem_count_from_bytes(inner_bytes, format), stride0,
-      iteration0, stride1, iteration1, stride2, iteration2);
+  wdma->ConfigStrideIteration(&instr, inner_elements, stride0, iteration0,
+                              stride1, iteration1, stride2, iteration2);
   wafer_execute_wdma(&instr);
   TsmDeleteWdma(wdma);
 }
@@ -185,12 +199,11 @@ void wafer_tx81_bit2fp(uint64_t src, uint64_t dst, uint32_t elem_count,
   TsmDeletePeripheral(peripheral);
 }
 
-void wafer_tx81_mask_move(uint64_t src, uint64_t mask, uint64_t dst,
+void wafer_tx81_mask_move(uint64_t src, uint32_t mask, uint64_t dst,
                           uint32_t elem_count, uint32_t format) {
   TsmMaskDataMoveInstr instr = {0};
   TsmMaskDataMove *move = TsmNewMaskDataMove();
-  move->MaskMove(&instr, src, (uint32_t)mask, dst, elem_count,
-                 wafer_format(format));
+  move->MaskMove(&instr, src, mask, dst, elem_count, wafer_format(format));
   wafer_execute_ct(&instr);
   TsmDeleteMaskDataMove(move);
 }
@@ -701,23 +714,6 @@ void wafer_tx81_peripheral_argmin(
   peripheral->ArgMin(&instr, src, elem_count, wafer_format(format));
   wafer_execute_ct(&instr);
   wafer_arg_writeback(value_dst, index_dst, format, &instr);
-  TsmDeletePeripheral(peripheral);
-}
-
-void wafer_tx81_peripheral_factorize(
-    uint64_t src, uint64_t dst0, uint64_t dst1, uint64_t dst2, uint32_t kind,
-    uint32_t elem_count, uint32_t format, uint32_t lut_elem_count,
-    uint32_t scale, uint32_t probability, uint32_t rounding_mode) {
-  (void)kind;
-  (void)format;
-  (void)lut_elem_count;
-  (void)scale;
-  (void)probability;
-  (void)rounding_mode;
-  TsmPeripheralInstr instr = {0};
-  TsmPeripheral *peripheral = TsmNewPeripheral();
-  peripheral->Factorize(&instr, src, dst0, dst1, dst2, elem_count);
-  wafer_execute_ct(&instr);
   TsmDeletePeripheral(peripheral);
 }
 

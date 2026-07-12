@@ -77,6 +77,13 @@ struct DumpCandidateDdrTileViewsPass
       DumpCandidateDdrTileViewsPass>::DumpCandidateDdrTileViewsPassBase;
 
   void runOnOperation() final {
+    if (logicalRank < 0) {
+      getOperation()->emitError()
+          << "missing_logical_rank: candidate DDR tile-view dump requires "
+             "an explicit non-negative logical-rank";
+      signalPassFailure();
+      return;
+    }
     mlir::FailureOr<llvm::SmallVector<int64_t, 4>> parsedOffsets = parseI64List(
         candidateTileOffsets, "candidate-tile-offsets", getOperation());
     mlir::FailureOr<llvm::SmallVector<int64_t, 4>> parsedSizes = parseI64List(
@@ -104,8 +111,8 @@ struct DumpCandidateDdrTileViewsPass
       std::string failureReason;
       if (mlir::failed(lowerCandidateGroupToTileRegionModule(
               group, *parsedOffsets, *parsedSizes,
-              /*candidateReductionTileSizes=*/{}, loweredModule,
-              &failureReason))) {
+              /*candidateReductionTileSizes=*/{}, loweredModule, &failureReason,
+              logicalRank))) {
         llvm::errs() << "wafer.candidate_ddr_tile_views group " << labelOs.str()
                      << "\n";
         llvm::errs() << "  failure "

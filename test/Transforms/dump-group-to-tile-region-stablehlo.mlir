@@ -1,5 +1,5 @@
 // REQUIRES: stablehlo
-// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-stablehlo-to-linalg,wafer-form-logical-groups,wafer-dump-group-to-tile-region)' %s 2>&1 | FileCheck %s
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-stablehlo-to-linalg,wafer-form-logical-groups,wafer-dump-group-to-tile-region{logical-rank=0})' %s 2>&1 | FileCheck %s
 
 module {
   func.func @lower_reduce_sum(%arg0: tensor<2x4xf32>,

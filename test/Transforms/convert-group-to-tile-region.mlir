@@ -1,4 +1,4 @@
-// RUN: wafer-opt --wafer-convert-group-to-tile-region %s | FileCheck %s
+// RUN: wafer-opt --wafer-convert-group-to-tile-region='logical-rank=0' %s | FileCheck %s
 
 func.func @fill_group(%arg0: f32) -> tensor<4xf32> {
   %out = tensor.empty() : tensor<4xf32>
@@ -16,10 +16,12 @@ func.func @fill_group(%arg0: f32) -> tensor<4xf32> {
 // CHECK-SAME: memref<4xf32, #wafer.memory<ddr, tensor>>
 // CHECK: wafer.tile.region
 // CHECK-SAME: memref<4xf32, #wafer.memory<ddr, tensor>>
-// CHECK: wafer.tile.load
-// CHECK-SAME: memref<4xf32, #wafer.memory<ddr, tensor>>
-// CHECK: wafer.tile.fill
-// CHECK: wafer.tile.store
+// CHECK-NOT: wafer.tile.load
+// CHECK: %[[FILL_DEST:.*]] = memref.alloc()
+// CHECK-SAME: memref<4xf32, #wafer.memory<spm, tensor>>
+// CHECK: wafer.tile.fill %[[FILL_DEST]]
+// CHECK-NOT: wafer.tile.load
+// CHECK: wafer.tile.store %[[FILL_DEST]]
 // CHECK-SAME: memref<4xf32, #wafer.memory<ddr, tensor>>
 // CHECK: wafer.tile.yield
 // CHECK: bufferization.to_tensor

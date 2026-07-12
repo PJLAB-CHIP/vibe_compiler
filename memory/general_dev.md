@@ -243,12 +243,42 @@
   tile offsets/sizes candidate evaluation lowering 的 DDR `memref.subview` producer；instruction lowering
   仍不能根据 whole-boundary shape 自己恢复 subview，closed-loop traversal / tile-shape search 归
   candidate-selection。
-- SPM/DDR accepted offsets不属于layout本身。完整静态rank entry上的planning analysis从当前IR重算
-  alias、branch、loop-carried和async completion lifetime；只有whole-entry legality通过后，planner才在
-  candidate clone materialize accepted offsets，atomic executable commit只提升已验证facts。当前per-`wafer.tile.region` SPM
-  planner与default-arena DDR实现只能作迁移输入，不能证明跨group复用或长期resource owner。physical
-  size、alignment和bank span统一从shared geometry helper推导；runtime object、physical address和
-  packet字段不得写回planning IR。
+- SPM/DDR accepted offsets不属于layout本身。`wafer.tile.region`是`IsolatedFromAbove`且verifier禁止SPM
+  buffer跨边界，因此当前SPM correctness是逐region从IR重算alias、branch、loop-carried和async completion
+  lifetime，并在每条region exit证明pending set为空；whole-variant clone只汇总all-and-only regions并保证
+  atomic acceptance。跨region whole-entry allocator是peak/fragmentation优化，不是当前correctness缺口；若未来
+  允许SPM跨边界，必须先扩IR/SSA/verifier合同。DDR `wafer.ddr.offset`始终是arena-relative fact，没有typed
+  arena base binding时target不得把它当absolute address。physical size、alignment和bank span统一从shared
+  geometry helper推导；runtime object、physical address和packet字段不得写回planning IR。
+- reduction语义恢复不能只看yielded op class。使用`mlir::matchReduction`或等价结构匹配，证明单一combiner
+  的operands精确连接reduced value与accumulator。显式reduction op本身允许implementation-defined binary
+  tree，因此floating add不额外要求`fastmath<reassoc>`；但当前kind不能保真的`maxnum/minnum` NaN语义、
+  unsigned min/max和integer overflow flags仍必须fail closed。
+- whole-op fast path必须证明整个payload可被删除：passthrough/concat/reduction以及named
+  fill/matmul/batch_matmul都要检查exact SSA wiring、允许op集合和effect；只匹配yield、shape或op class会
+  静默擦除side effect或改写数值语义。Group verifier应递归检查nested body dialect/type。
+- destination-style tensor仍遵守functional SSA：fill写fresh result而不覆盖旧init；insert_slice在旧dest仍有
+  observable use时构造fresh result并延后boundary store。只有旧dest其余use都被证明是unread DPS-init时才可
+  direct tile store。`ins + outs` exact SSA必须唯一；不同SSA的physical no-alias由后续typed driver/ABI闭合。
+- variadic custom assembly要覆盖空列表round-trip。`wafer.group`允许零个`ins`，assembly中的operand/type组必须
+  optional并有parse→print→reparse gate；不能让printer生成`ins( : )`。
+- async completion按path和engine分别建模：local compute/movement的全部SPM read/write只由覆盖同一路径的
+  local fence收口，DTE send/recv只由matching token/wait收口；两者不能互相消费。zero-trip loop、分支join和
+  loop-carried token没有精确proof时拒绝，region/function terminal boundary不得隐式清空pending状态。
+- target undefined-symbol gate使用代码拥有的exact allowlist，并检查全部undefined symbols，而不只检查
+  `wafer_*`前缀；prefix/substring命中不能替代精确成员关系。allowlist通过只证明loader ABI surface，不证明
+  packet、transport、completion或board正确性。
+- ABI narrowing必须在compiler verifier/target preflight中完成：地址使用uint64，count/stride/iteration/enum/
+  mask等普通字段适配uint32，`Data_Shape`维度适配底层uint16；CRT header/source和compiler call保持同一typed
+  signature，不用宽形参加wrapper内部cast隐藏截断。
+- candidate provenance必须穿过唯一accepted-artifact handoff：selector在transformation-local clone完成完整
+  traversal和legality，rejected clone整体丢弃；debug replay消费同一accepted artifact，不重新运行另一套
+  direct lowering。target conversion同样在module clone上运行，full success才替换source；多rank staging由
+  外层transaction一次发布，单module成功不等于bundle原子性。
+- 完整traversal的静态展开必须用checked ceil-div/product并设置显式编译资源预算。当前4096个
+  output-tile/reduction-chunk materialization实例上限只防止
+  unrolled IR导致编译时间/内存失控，不能写成硬件容量、IR/workload legality或16-tile topology限制；长期应
+  用compact loop表示替代静态materialization，而不是把预算扩成架构常量。
 - executable/resource handoff必须来自accepted IR和typed bundle，不从raw instruction文本、文件名或参数名
   重建。近期没有`ExecutableResourceView`或`wafer.executable.resource`实现；若未来引入，只能是当前IR可重算的
   analysis或有明确consumer的typed value，不能成为side table/package旁路。
@@ -257,6 +287,11 @@
   production driver不得使用default rank 0或CLI option承载rank语义。这个边界仍只产生logical buffer
   schedule；endpoint/channel/FSM由post-memory transport acceptance处理，final pinned/relocatable
   binding由launch projection拥有。
+- selected instruction handoff固定先由selector在tensor函数clone中完成完整traversal、instruction和SPM/DDR
+  planning，再复用同一份function-boundary OneShot Bufferization配置消除tensor signature与
+  `bufferization.to_memref/to_tensor` wrapper。target named replay直接消费该bufferized accepted artifact；
+  不得重新串direct group-to-tile/instr或memory planning。所有C++ builder和group-to-tile public API都显式
+  接收logical rank；只有标明debug的named replay可在注册处显式构造rank 0。
 - group formation 在 `outs` 固定后会吸收 group 内部 static support producers：`arith.constant`、
   `tensor.empty`、static `tensor.extract_slice` / `tensor.insert_slice`、`tensor.expand_shape` 和
   `tensor.collapse_shape`。这用于避免 XLA/HF 产生的 static `insert_slice` collective input 被错误
@@ -338,3 +373,10 @@
   clones、target staging和atomic publication；named MLIR pipeline只保留IR-local transform。
 - package parsing/semantic verification、pure RuntimeSession preflight和provider execution是三层边界。no-card
   preflight不分配、不加载、不发命令；fake/board provider实际调用必须分别记录failure suppression和cleanup。
+- 纵向source corpus不要用`torch.empty()`、framework默认初始化或提交生成物固定输入。当前最小corpus spec在
+  `test/Tools/Inputs/workloads/single-card-vertical-v1.json`：整数序列加二进制可精确表示的f32缩放生成
+  input/parameter，独立NumPy实现生成完整CPU expected，再与同payload的framework CPU module按tolerance
+  交叉检查；真实PyTorch/XLA export后反读parameter NPY逐元素核对，并用`forward.mlir`、canonical meta和
+  typed payload构造canonical program digest做重复export证明。CPU-only入口是
+  `wafer_pytorch_xla_capture.py --emit-cpu-reference`，真实admission入口是`--emit-workload-corpus
+  --verify-corpus-reproducibility`；两者都只证明corpus/frontend admission，不证明compiler、runtime或board。
