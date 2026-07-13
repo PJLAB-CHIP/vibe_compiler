@@ -1,20 +1,27 @@
 //===- wafer-compile.cpp - Wafer user compiler driver --------------------===//
 
 #include "Wafer/Compiler/Compilation.h"
+#include "Wafer/Compiler/ReferenceExecutor.h"
 #include "Wafer/Compiler/TargetArtifact.h"
 #ifdef WAFER_ENABLE_TEST_HELPER_OVERRIDE
 #include "Wafer/Compiler/Testing.h"
 #endif
 
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <cerrno>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 #ifndef WAFER_XLA_SPMD_PARTITIONER_HELPER
 #define WAFER_XLA_SPMD_PARTITIONER_HELPER ""
@@ -32,11 +39,18 @@ struct CommandLineOptions {
   std::optional<std::string> inputProgramDirectory;
   std::optional<std::string> outputProgramDirectory;
   std::optional<std::string> executionRanks;
+  std::vector<std::string> referenceInputs;
+  std::vector<std::string> referenceExpected;
+  std::optional<std::string> referenceAtol;
+  std::optional<std::string> referenceRtol;
 };
 
 void printHelp() {
   llvm::outs() << "usage: wafer-compile --input-program-dir <dir> "
-                  "--output-program-dir <dir> --execution-ranks <1|16>\n";
+                  "--output-program-dir <dir> --execution-ranks <1|16> "
+                  "[--reference-input <index>=<npy>] "
+                  "[--reference-expected <index>=<npy>] "
+                  "[--reference-atol <value>] [--reference-rtol <value>]\n";
 }
 
 bool setOption(std::optional<std::string> &slot, llvm::StringRef option,
@@ -63,6 +77,25 @@ bool parseValueOption(int argc, char **argv, int &index, llvm::StringRef arg,
   std::string prefix = (option + "=").str();
   if (arg.starts_with(prefix))
     return setOption(slot, option, arg.drop_front(prefix.size()));
+  return false;
+}
+
+bool parseRepeatedValueOption(int argc, char **argv, int &index,
+                              llvm::StringRef arg, llvm::StringRef option,
+                              std::vector<std::string> &values) {
+  if (arg == option) {
+    if (index + 1 >= argc) {
+      llvm::errs() << "wafer-compile: missing value for " << option << "\n";
+      return true;
+    }
+    values.emplace_back(argv[++index]);
+    return false;
+  }
+  std::string prefix = (option + "=").str();
+  if (arg.starts_with(prefix)) {
+    values.push_back(arg.drop_front(prefix.size()).str());
+    return false;
+  }
   return false;
 }
 
@@ -93,6 +126,32 @@ bool parseCommandLine(int argc, char **argv, CommandLineOptions &options) {
         return false;
       continue;
     }
+    if (arg == "--reference-input" || arg.starts_with("--reference-input=")) {
+      if (parseRepeatedValueOption(argc, argv, index, arg, "--reference-input",
+                                   options.referenceInputs))
+        return false;
+      continue;
+    }
+    if (arg == "--reference-expected" ||
+        arg.starts_with("--reference-expected=")) {
+      if (parseRepeatedValueOption(argc, argv, index, arg,
+                                   "--reference-expected",
+                                   options.referenceExpected))
+        return false;
+      continue;
+    }
+    if (arg == "--reference-atol" || arg.starts_with("--reference-atol=")) {
+      if (parseValueOption(argc, argv, index, arg, "--reference-atol",
+                           options.referenceAtol))
+        return false;
+      continue;
+    }
+    if (arg == "--reference-rtol" || arg.starts_with("--reference-rtol=")) {
+      if (parseValueOption(argc, argv, index, arg, "--reference-rtol",
+                           options.referenceRtol))
+        return false;
+      continue;
+    }
 
     llvm::errs() << "wafer-compile: unknown argument: " << arg << "\n";
     return false;
@@ -117,6 +176,184 @@ std::string resolveSpmdPartitionerHelperPath() {
   return WAFER_XLA_SPMD_PARTITIONER_HELPER;
 }
 
+struct IndexedPath {
+  int64_t index = -1;
+  std::string path;
+};
+
+std::optional<std::vector<IndexedPath>>
+parseIndexedPaths(llvm::ArrayRef<std::string> values, llvm::StringRef option) {
+  std::vector<IndexedPath> parsed;
+  for (const std::string &storage : values) {
+    llvm::StringRef value(storage);
+    auto [indexText, path] = value.split('=');
+    int64_t index = -1;
+    if (path.empty() || indexText.getAsInteger(10, index) || index < 0) {
+      llvm::errs() << "wafer-compile: invalid " << option << " value: " << value
+                   << "\n";
+      return std::nullopt;
+    }
+    if (llvm::any_of(parsed, [&](const IndexedPath &item) {
+          return item.index == index;
+        })) {
+      llvm::errs() << "wafer-compile: duplicate " << option
+                   << " index: " << index << "\n";
+      return std::nullopt;
+    }
+    parsed.push_back({index, path.str()});
+  }
+  return parsed;
+}
+
+std::optional<double> parseTolerance(const std::optional<std::string> &value,
+                                     llvm::StringRef option,
+                                     double defaultValue) {
+  if (!value)
+    return defaultValue;
+  errno = 0;
+  char *end = nullptr;
+  double parsed = std::strtod(value->c_str(), &end);
+  if (errno != 0 || end != value->c_str() + value->size() ||
+      !std::isfinite(parsed) || parsed < 0.0) {
+    llvm::errs() << "wafer-compile: invalid " << option << " value: " << *value
+                 << "\n";
+    return std::nullopt;
+  }
+  return parsed;
+}
+
+template <typename OutputBinding>
+bool compareReferenceOutputs(llvm::ArrayRef<OutputBinding> outputs,
+                             llvm::ArrayRef<IndexedPath> expectedPaths,
+                             double atol, double rtol) {
+  if (outputs.size() != expectedPaths.size()) {
+    llvm::errs() << "wafer-compile: reference expected output domain is "
+                    "incomplete\n";
+    return true;
+  }
+  for (const IndexedPath &expectedPath : expectedPaths) {
+    const OutputBinding *actual = nullptr;
+    for (const OutputBinding &candidate : outputs)
+      if (candidate.index == expectedPath.index) {
+        if (actual) {
+          llvm::errs() << "wafer-compile: duplicate reference output index\n";
+          return true;
+        }
+        actual = &candidate;
+      }
+    if (!actual) {
+      llvm::errs() << "wafer-compile: missing reference output index "
+                   << expectedPath.index << "\n";
+      return true;
+    }
+    auto expected =
+        wafer::compiler::ReferenceTensor::loadNpy(expectedPath.path);
+    if (!expected) {
+      llvm::errs() << "wafer-compile: " << llvm::toString(expected.takeError())
+                   << "\n";
+      return true;
+    }
+    if (actual->tensor.getDType() != expected->getDType() ||
+        actual->tensor.getShape() != expected->getShape()) {
+      llvm::errs() << "wafer-compile: reference output type mismatch at index "
+                   << expectedPath.index << "\n";
+      return true;
+    }
+    llvm::ArrayRef<uint8_t> actualBytes = actual->tensor.getBytes();
+    llvm::ArrayRef<uint8_t> expectedBytes = expected->getBytes();
+    if (actualBytes.size() != expectedBytes.size()) {
+      llvm::errs() << "wafer-compile: reference output byte count mismatch\n";
+      return true;
+    }
+    if (actual->tensor.getDType() != "f32") {
+      if (actualBytes != expectedBytes) {
+        llvm::errs() << "wafer-compile: reference output differs at index "
+                     << expectedPath.index << "\n";
+        return true;
+      }
+      continue;
+    }
+    for (size_t offset = 0; offset < actualBytes.size(); offset += 4) {
+      float actualValue = 0.0f;
+      float expectedValue = 0.0f;
+      std::memcpy(&actualValue, actualBytes.data() + offset, 4);
+      std::memcpy(&expectedValue, expectedBytes.data() + offset, 4);
+      double tolerance = atol + rtol * std::abs(expectedValue);
+      if (!std::isfinite(actualValue) || !std::isfinite(expectedValue) ||
+          std::abs(static_cast<double>(actualValue) - expectedValue) >
+              tolerance) {
+        llvm::errs() << "wafer-compile: reference output mismatch at index "
+                     << expectedPath.index << " element " << offset / 4
+                     << ": actual=" << actualValue
+                     << " expected=" << expectedValue << "\n";
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+bool runReferenceGate(const CommandLineOptions &options, int64_t rankCount,
+                      llvm::ArrayRef<IndexedPath> inputPaths,
+                      llvm::ArrayRef<IndexedPath> expectedPaths, double atol,
+                      double rtol) {
+  auto config =
+      wafer::compiler::ExecutionConfig::createForSingleCard(rankCount);
+  if (!config) {
+    llvm::errs() << "wafer-compile: " << llvm::toString(config.takeError())
+                 << "\n";
+    return true;
+  }
+  auto bundle = wafer::compiler::compileGroupedProgramToExecutableBundle(
+      *options.outputProgramDirectory, *config, llvm::errs());
+  if (!bundle) {
+    llvm::errs() << "wafer-compile: " << llvm::toString(bundle.takeError())
+                 << "\n";
+    return true;
+  }
+  std::vector<wafer::compiler::ReferenceGlobalInputBinding> globalInputs;
+  for (const IndexedPath &inputPath : inputPaths) {
+    auto tensor = wafer::compiler::ReferenceTensor::loadNpy(inputPath.path);
+    if (!tensor) {
+      llvm::errs() << "wafer-compile: " << llvm::toString(tensor.takeError())
+                   << "\n";
+      return true;
+    }
+    globalInputs.push_back({inputPath.index, std::move(*tensor)});
+  }
+  auto invocations = wafer::compiler::prepareReferenceInvocations(
+      *bundle, *options.outputProgramDirectory, globalInputs);
+  if (!invocations) {
+    llvm::errs() << "wafer-compile: " << llvm::toString(invocations.takeError())
+                 << "\n";
+    return true;
+  }
+  if (rankCount == 1) {
+    if (invocations->size() != 1 || invocations->front().logicalRank != 0) {
+      llvm::errs() << "wafer-compile: single-rank reference invocation is "
+                      "not canonical\n";
+      return true;
+    }
+    auto result = wafer::compiler::executeReferenceRank(
+        *bundle, 0, invocations->front().inputs);
+    if (!result) {
+      llvm::errs() << "wafer-compile: " << llvm::toString(result.takeError())
+                   << "\n";
+      return true;
+    }
+    return compareReferenceOutputs<wafer::compiler::ReferenceOutputBinding>(
+        result->getOutputs(), expectedPaths, atol, rtol);
+  }
+  auto result = wafer::compiler::executeReferenceBundle(*bundle, *invocations);
+  if (!result) {
+    llvm::errs() << "wafer-compile: " << llvm::toString(result.takeError())
+                 << "\n";
+    return true;
+  }
+  return compareReferenceOutputs<wafer::compiler::ReferenceGlobalOutputBinding>(
+      result->getGlobalOutputs(), expectedPaths, atol, rtol);
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -131,6 +368,28 @@ int main(int argc, char **argv) {
   if (!requireOption(options.inputProgramDirectory, "--input-program-dir") ||
       !requireOption(options.outputProgramDirectory, "--output-program-dir") ||
       !requireOption(options.executionRanks, "--execution-ranks"))
+    return 1;
+
+  bool referenceRequested = !options.referenceInputs.empty() ||
+                            !options.referenceExpected.empty() ||
+                            options.referenceAtol || options.referenceRtol;
+  if (referenceRequested &&
+      (options.referenceInputs.empty() || options.referenceExpected.empty())) {
+    llvm::errs() << "wafer-compile: reference execution requires both "
+                    "--reference-input and --reference-expected\n";
+    return 1;
+  }
+  std::optional<double> referenceAtol =
+      parseTolerance(options.referenceAtol, "--reference-atol", 0.0);
+  std::optional<double> referenceRtol =
+      parseTolerance(options.referenceRtol, "--reference-rtol", 0.0);
+  if (!referenceAtol || !referenceRtol)
+    return 1;
+  auto referenceInputs =
+      parseIndexedPaths(options.referenceInputs, "--reference-input");
+  auto referenceExpected =
+      parseIndexedPaths(options.referenceExpected, "--reference-expected");
+  if (!referenceInputs || !referenceExpected)
     return 1;
 
   int64_t rankCount = 0;
@@ -232,5 +491,14 @@ int main(int argc, char **argv) {
   llvm::outs() << "wafer-compile: published verified package with "
                   "execution-ranks="
                << rankCount << ": " << *options.outputProgramDirectory << "\n";
+  if (referenceRequested) {
+    // The package boundary is complete before the downstream numeric gate.
+    // Keep mixed stdout/stderr diagnostics in that semantic order as well.
+    llvm::outs().flush();
+    if (runReferenceGate(options, rankCount, *referenceInputs,
+                         *referenceExpected, *referenceAtol, *referenceRtol))
+      return 1;
+    llvm::outs() << "wafer-compile: reference outputs matched\n";
+  }
   return 0;
 }

@@ -1,6 +1,6 @@
 # Wafer Compiler Verification Plan
 
-状态：2026-07-13按Q19/Q16.T/Q19.M拆分更新。本文拥有跨stage完成证据和测试口径；具体IR/ABI规则由
+状态：2026-07-13按Q20 source-backed vertical gate更新。本文拥有跨stage完成证据和测试口径；具体IR/ABI规则由
 对应编号设计文档拥有。实现状态看`tasks/progress.md`。
 
 ## 1. Pipeline Contract
@@ -269,8 +269,9 @@ Pipeline position:
 - Current stage responsibility:
   Q19先把一个accepted rank逐op投影成validated immutable `ReferenceProgram`，再执行其memref SSA/view、
   instruction和structured control-flow semantics；投影不改变op顺序/control edge，不携带candidate、memory或
-  transport planner事实。Q19.M只在Q16.T形成accepted Direct DTE contract后，以deterministic event scheduler推进
-  all-rank send/recv/wait。任何unsupported op/dtype/rounding/transport在分配执行storage前整体失败。
+  transport planner事实。bundle-level执行要求all-rank transport合同同质：`None`逐rank独立执行并重组，
+  `DirectDTE`则只在Q16.T形成accepted contract后由Q19.M deterministic event scheduler推进all-rank
+  send/recv/wait。任何unsupported op/dtype/rounding/transport在分配执行storage前整体失败。
 - Output artifact / IR:
   `ReferenceProgram`只是单次invocation内owner-backed、不可序列化的consumer projection，不进入bundle/package或
   下游compiler pipeline。执行产出owner-backed `ReferenceExecutionResult`，包含按output role/index标识的完整
@@ -281,9 +282,10 @@ Pipeline position:
   package、target module或runtime launch。
 - User-level driver / named pipeline:
   Q19提供只接受ExecutableBundle的typed C++ API和single-rank unit/differential gate；Q19.M扩成all-rank API，但
-  仍只消费Q16.T accepted bundle。Q20再由同一wafer-compile纵向入口把真实exported workload的accepted bundle、
-  source-backed invocation payload和CPU expected接到该API。wafer-opt dump和手写IR只补op-level negative coverage，
-  不是纵向完成入口。
+  Direct DTE调度仍只消费Q16.T accepted bundle；同一all-rank API也接受Q16已验证的同质transport-free bundle，
+  并且不生成通信事件。Q20由同一wafer-compile纵向入口把真实exported workload的accepted bundle、source-backed
+  invocation payload和CPU expected接到该API。wafer-opt dump和手写IR只补op-level negative coverage，不是纵向
+  完成入口。
 - Explicit non-goals:
   不模拟target packet、queue timing、hardware rounding bug、provider lifecycle或board completion；不从文件名、
   symbol、buffer名、module打印文本或planner trace恢复resource/shape/offset；不接受未通过Q16 gate的module冒充
@@ -403,6 +405,10 @@ canonical result。负例覆盖invocation domain重复、bytes mismatch、unmatc
 rank/token/message/control/pending endpoint的no-progress/deadlock诊断。source-backed linear/MLP的rank-count=1/16
 global CPU differential仍只由Q20拥有。
 
+Q20新增的transport-free分支仍先投影all-and-only rank domain，但不会伪造DTE事件；每rank在独立arena上完成，
+随后复用同一typed distribution/slice重组规则。真实16-rank linear/MLP是replicated boundary，所有local output
+必须byte-identical。该分支证明“multi-rank execution domain”和“需要Direct DTE transport”是两个独立事实。
+
 当前单rankcheckpoint已经建立`ExecutableBundle + logicalRank + typed role/index tensors`入口。实现按accepted
 DDR/SPM offset建立独立arena，按descriptor执行alias-safe movement，并复用Wafer physical layout helper完成logical
 element访问；group经过production selection/lowering后形成的residual MLP已覆盖RDMA、WDMA、tensor/Cx movement、
@@ -477,6 +483,14 @@ frontend verifier。这只完成Q5.C admission，不完成本节Gate A/B/C。
 - no-card/fake-provider plan；
 - reference output与CPU一致。
 
+Q20的user-level gate仍是同一`wafer-compile`调用。generic `--reference-input <index>=<npy>`和
+`--reference-expected <index>=<npy>`只表达typed program-boundary invocation，不包含case/shape/op名；compiler在
+package发布后立即重新验证其grouped artifact并构造accepted bundle，从package-relative typed payload path
+加载parameter/constant NPY，对user input按accepted replicated/partitioned slice形成rank invocation。结果按
+output index与expected NPY比较；f32使用显式`atol/rtol`，其它dtype byte-exact。不传reference选项时
+production compile/package行为不变。reference mismatch不能伪造compile failure后的partial package：它是已验证
+package的downstream correctness gate，返回非零但保留可审计package。
+
 ### 10.3 Q20 Gate B: Single-Card 16-Rank Linear/MLP
 
 同类模型只经`--execution-ranks=16`，增加：
@@ -485,6 +499,15 @@ frontend verifier。这只完成Q5.C admission，不完成本节Gate A/B/C。
 - rank-specific shard/peer/entry；
 - coherent resource/transport/completion relation；
 - 多rankreference与CPU global output一致。
+
+Gate A/B已完成：`wafer-compile-linear-reference.test`由真实PyTorch/XLA exporter生成linear-residual MLP，随后只经
+`wafer-compile`分别以rank-count=1/16发布verified package并打印`reference outputs matched`。测试检查1/16个
+all-and-only ELF module、manifest module/entry/completion rank domain，逐一执行1+16个`wafer-run --no-card`
+entry，并以source-backed input/expected NPY比较完整`2x16xf32`输出。错误expected负例在element 0产生数值诊断、
+返回非零，同时manifest和rank-0 ELF保持可审计；CLI缺失配对参数、重复index和负tolerance均在编译副作用前拒绝。
+本批`check-wafer`新鲜执行43个C++ unit和236个lit（235 pass、1个feature-inverse unsupported），新增纵向test实际
+执行而非unsupported；显式`--show-unsupported`确认唯一unsupported为enabled build下的
+`wafer-compile-stablehlo-disabled.test`。CTest 3/3通过。
 
 ### 10.4 Q21 Gate C: Single-Card Tiny Llama
 

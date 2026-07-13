@@ -24,6 +24,7 @@ public:
   static llvm::Expected<ReferenceTensor> create(llvm::StringRef dtype,
                                                 llvm::ArrayRef<int64_t> shape,
                                                 llvm::ArrayRef<uint8_t> bytes);
+  static llvm::Expected<ReferenceTensor> loadNpy(llvm::StringRef path);
 
   llvm::StringRef getDType() const { return dtype; }
   llvm::ArrayRef<int64_t> getShape() const { return shape; }
@@ -57,6 +58,12 @@ struct ReferenceOutputBinding {
 struct ReferenceRankInvocation {
   int64_t logicalRank;
   std::vector<ReferenceInputBinding> inputs;
+};
+
+/// One complete logical user input before accepted rank slicing.
+struct ReferenceGlobalInputBinding {
+  int64_t index;
+  ReferenceTensor tensor;
 };
 
 struct ReferenceGlobalOutputBinding {
@@ -167,14 +174,23 @@ executeReferenceRank(const ExecutableBundle &bundle, int64_t logicalRank,
                      llvm::ArrayRef<ReferenceInputBinding> inputs,
                      ReferenceExecutionOptions options = {});
 
-/// Projects every accepted Direct DTE rank before importing any invocation
-/// tensor, then executes them with a deterministic logical-rank/event order.
-/// The scheduler never uses threads, wall-clock timeout, or operation
-/// visitation order as a message identity.
+/// Projects every accepted rank before importing any invocation tensor, then
+/// executes the complete homogeneous transport domain. Transport-free ranks
+/// execute independently; Direct DTE ranks use deterministic logical-rank /
+/// event order without threads, wall-clock timeout, or operation visitation
+/// order as message identity.
 llvm::Expected<ReferenceMultiRankExecutionResult>
 executeReferenceBundle(const ExecutableBundle &bundle,
                        llvm::ArrayRef<ReferenceRankInvocation> invocations,
                        ReferenceExecutionOptions options = {});
+
+/// Builds all rank-local invocation bindings from typed bundle slices. User
+/// inputs are sliced from complete logical tensors; parameters/constants are
+/// loaded from their already-verified package-relative NPY payload paths.
+llvm::Expected<std::vector<ReferenceRankInvocation>>
+prepareReferenceInvocations(
+    const ExecutableBundle &bundle, llvm::StringRef packageRoot,
+    llvm::ArrayRef<ReferenceGlobalInputBinding> globalInputs);
 
 } // namespace wafer::compiler
 

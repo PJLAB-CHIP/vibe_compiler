@@ -1,3 +1,14 @@
+## 2026-07-13 multi-rank reference不能硬编码为Direct DTE
+
+- 现象：真实PyTorch/XLA linear-residual MLP以16 rank经过production driver后形成完整replicated rank domain，
+  每rank都合法且transport合同为`None`，但bundle-level reference入口直接报“requires accepted Direct DTE”。
+- 根因：Q19.M最初为DTE event replay引入all-rank API时，把“多rank执行域”和“存在跨rank通信”合并成一个条件；
+  测试只有partitioned Direct DTE fixture，没有覆盖多rank replicated/no-collective路径。
+- 修复模式：all-rank入口先证明rank domain完整、transport合同同质，再按合同分派。`None`逐rank独立执行，仍用typed
+  distribution/slice重组并要求replicated输出byte-identical；`DirectDTE`才创建coordinator并匹配send/recv/wait。
+- 防复发：真实source-backed纵向gate必须同时覆盖rank-count=1和16；判断transport只能读accepted
+  `TransportContract`及IR事实，不能从rank count、模型名或shape推断。
+
 ## 2026-07-13 Direct DTE rank-local lowering的remote address与sender阻塞
 
 - 现象：all-rank acceptance只记录FSM/profile时，rank module分拆后的sender只剩本地source op，无法重算peer

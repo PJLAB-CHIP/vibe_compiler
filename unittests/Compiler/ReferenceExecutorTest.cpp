@@ -167,6 +167,25 @@ wafer::frontend::ProgramBoundaryBinding partitionedBoundary(int64_t index) {
   return binding;
 }
 
+wafer::frontend::ProgramBoundaryBinding replicatedBoundary16(int64_t index) {
+  wafer::frontend::ProgramBoundaryBinding binding;
+  binding.index = index;
+  binding.distribution = wafer::frontend::ProgramDistributionKind::Replicated;
+  binding.globalShape = {4};
+  binding.localShape = {4};
+  binding.dtype = "f32";
+  for (int64_t rank = 0; rank < 16; ++rank) {
+    wafer::frontend::ProgramRankSlice slice;
+    slice.logicalRank = rank;
+    slice.replicaId = rank;
+    slice.offsets = {0};
+    slice.sizes = {4};
+    slice.strides = {1};
+    binding.rankSlices.push_back(std::move(slice));
+  }
+  return binding;
+}
+
 wafer::frontend::ProgramParameterBinding
 parameter(int64_t argumentIndex, llvm::ArrayRef<int64_t> shape) {
   wafer::frontend::ProgramParameterBinding binding;
@@ -1328,6 +1347,80 @@ module {
     EXPECT_NE(llvm::toString(duplicateRecv.takeError())
                   .find("duplicate Direct DTE recv instance"),
               std::string::npos);
+}
+
+TEST(ReferenceExecutorTest, ExecutesTransportFreeReplicatedMultiRankDomain) {
+  mlir::DialectRegistry registry;
+  registry.insert<mlir::arith::ArithDialect,
+                  mlir::bufferization::BufferizationDialect,
+                  mlir::cf::ControlFlowDialect, mlir::func::FuncDialect,
+                  mlir::linalg::LinalgDialect, mlir::math::MathDialect,
+                  mlir::memref::MemRefDialect, mlir::scf::SCFDialect,
+                  mlir::tensor::TensorDialect>();
+  wafer::registerAllDialects(registry);
+  mlir::arith::registerBufferizableOpInterfaceExternalModels(registry);
+  mlir::bufferization::func_ext::registerBufferizableOpInterfaceExternalModels(
+      registry);
+  mlir::linalg::registerBufferizableOpInterfaceExternalModels(registry);
+  mlir::scf::registerBufferizableOpInterfaceExternalModels(registry);
+  mlir::tensor::registerBufferizableOpInterfaceExternalModels(registry);
+  auto context = std::make_shared<mlir::MLIRContext>(registry);
+  context->loadAllAvailableDialects();
+
+  auto grouped = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  wafer.target.topology @default {card_grid = array<i64: 1, 1>, card_interconnect = "mesh", tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @default_mesh {axes = ["rank"], endpoints = array<i64>, policy = "all_available", shape = array<i64: 16>, topology = @default}
+  func.func @main(%input: tensor<4xf32>) -> tensor<4xf32> {
+    return %input : tensor<4xf32>
+  }
+}
+)mlir",
+      mlir::ParserConfig(context.get()));
+  ASSERT_TRUE(grouped);
+
+  wafer::frontend::FrontendProgramVerificationResult program;
+  program.logicalRankCount = 16;
+  program.programUserInputCount = 1;
+  program.distributedInputs = {replicatedBoundary16(0)};
+  program.distributedOutputs = {replicatedBoundary16(0)};
+  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(16);
+  if (!config)
+    FAIL() << llvm::toString(config.takeError());
+  std::string diagnosticsText;
+  llvm::raw_string_ostream diagnostics(diagnosticsText);
+  auto bundle = wafer::compiler::detail::buildExecutableBundle(
+      context, *grouped, std::move(program), *config, diagnostics,
+      std::nullopt);
+  if (!bundle)
+    FAIL() << diagnosticsText << llvm::toString(bundle.takeError());
+  grouped = nullptr;
+  for (const wafer::compiler::RankExecutable &rank :
+       bundle->getRankExecutables())
+    EXPECT_EQ(rank.getTransportContract(),
+              wafer::compiler::TransportContract::None);
+
+  std::vector<wafer::compiler::ReferenceRankInvocation> invocations;
+  for (int64_t rank = 0; rank < 16; ++rank) {
+    auto input = wafer::compiler::ReferenceTensor::create(
+        "f32", {4}, bytesOf({1, 2, 3, 4}));
+    ASSERT_TRUE(static_cast<bool>(input));
+    wafer::compiler::ReferenceRankInvocation invocation;
+    invocation.logicalRank = rank;
+    invocation.inputs.push_back(
+        {wafer::compiler::ProgramResourceRole::UserInput, 0,
+         std::move(*input)});
+    invocations.push_back(std::move(invocation));
+  }
+  std::reverse(invocations.begin(), invocations.end());
+  auto result = wafer::compiler::executeReferenceBundle(*bundle, invocations);
+  if (!result)
+    FAIL() << llvm::toString(result.takeError());
+  ASSERT_EQ(result->getRankResults().size(), 16u);
+  ASSERT_EQ(result->getGlobalOutputs().size(), 1u);
+  EXPECT_EQ(floatsOf(result->getGlobalOutputs()[0].tensor.getBytes()),
+            (std::vector<float>{1, 2, 3, 4}));
 }
 
 } // namespace

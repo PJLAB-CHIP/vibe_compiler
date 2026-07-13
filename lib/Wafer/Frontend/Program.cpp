@@ -16,6 +16,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/Errc.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -723,27 +724,37 @@ readNpyPayloadMetadata(llvm::StringRef path, llvm::StringRef displayName,
   return metadata;
 }
 
+std::optional<std::pair<llvm::StringRef, uint64_t>>
+decodeNpyDescr(llvm::StringRef descr) {
+  if (descr == "<f4" || descr == "=f4")
+    return std::pair<llvm::StringRef, uint64_t>{"f32", 4};
+  if (descr == "<f8" || descr == "=f8")
+    return std::pair<llvm::StringRef, uint64_t>{"f64", 8};
+  if (descr == "<f2" || descr == "=f2")
+    return std::pair<llvm::StringRef, uint64_t>{"f16", 2};
+  if (descr == "|V2")
+    return std::pair<llvm::StringRef, uint64_t>{"bf16", 2};
+  if (descr == "|b1")
+    return std::pair<llvm::StringRef, uint64_t>{"i1", 1};
+  if (descr == "|i1")
+    return std::pair<llvm::StringRef, uint64_t>{"i8", 1};
+  if (descr == "<i2" || descr == "=i2")
+    return std::pair<llvm::StringRef, uint64_t>{"i16", 2};
+  if (descr == "<i4" || descr == "=i4")
+    return std::pair<llvm::StringRef, uint64_t>{"i32", 4};
+  if (descr == "<i8" || descr == "=i8")
+    return std::pair<llvm::StringRef, uint64_t>{"i64", 8};
+  return std::nullopt;
+}
+
 bool npyDescrMatchesDtype(llvm::StringRef descr, Type elementType) {
-  std::string dtype = dtypeString(elementType);
-  if (dtype == "f32")
-    return descr == "<f4" || descr == "=f4";
-  if (dtype == "f64")
-    return descr == "<f8" || descr == "=f8";
-  if (dtype == "f16")
-    return descr == "<f2" || descr == "=f2";
-  if (dtype == "bf16")
-    return descr == "|V2";
-  if (dtype == "i1")
-    return descr == "|b1" || descr == "|i1";
-  if (dtype == "i8")
-    return descr == "|i1";
-  if (dtype == "i16")
-    return descr == "<i2" || descr == "=i2";
-  if (dtype == "i32")
-    return descr == "<i4" || descr == "=i4";
-  if (dtype == "i64")
-    return descr == "<i8" || descr == "=i8";
-  return false;
+  // NumPy's one-byte signed-integer descriptor was historically accepted for
+  // i1 program payloads as well as i8. Preserve that verifier compatibility;
+  // the generic payload loader decodes the unambiguous storage dtype as i8.
+  if (elementType.isInteger(1) && descr == "|i1")
+    return true;
+  auto decoded = decodeNpyDescr(descr);
+  return decoded && decoded->first == dtypeString(elementType);
 }
 
 bool verifyNpyTensorPayloadFile(llvm::StringRef path,
@@ -1811,6 +1822,54 @@ bool verifyParameterShards(
 } // namespace
 
 namespace wafer::frontend {
+
+llvm::Expected<NpyTensorPayload> loadNpyTensorPayload(llvm::StringRef path) {
+  std::string diagnosticsText;
+  llvm::raw_string_ostream diagnostics(diagnosticsText);
+  FailureOr<NpyPayloadMetadata> metadata =
+      readNpyPayloadMetadata(path, path, diagnostics);
+  if (failed(metadata))
+    return llvm::createStringError(llvm::errc::invalid_argument, "%s",
+                                   diagnostics.str().c_str());
+  if (metadata->fortranOrder)
+    return llvm::createStringError(llvm::errc::invalid_argument,
+                                   "npy payload must be row-major: %s",
+                                   path.str().c_str());
+  auto decoded = decodeNpyDescr(metadata->descr);
+  if (!decoded)
+    return llvm::createStringError(llvm::errc::invalid_argument,
+                                   "npy payload has unsupported dtype: %s",
+                                   path.str().c_str());
+
+  uint64_t rawBytes = decoded->second;
+  for (int64_t dim : metadata->shape) {
+    uint64_t next = 0;
+    if (dim < 0 ||
+        !checkedMulUint64(rawBytes, static_cast<uint64_t>(dim), next))
+      return llvm::createStringError(
+          llvm::errc::invalid_argument,
+          "npy payload byte count is not representable: %s",
+          path.str().c_str());
+    rawBytes = next;
+  }
+  auto buffer = llvm::MemoryBuffer::getFile(path);
+  if (!buffer)
+    return llvm::createStringError(buffer.getError(),
+                                   "failed to reopen npy payload: %s",
+                                   path.str().c_str());
+  llvm::StringRef fileBytes = (*buffer)->getBuffer();
+  if (metadata->dataOffset > fileBytes.size() ||
+      rawBytes > fileBytes.size() - metadata->dataOffset)
+    return llvm::createStringError(llvm::errc::invalid_argument,
+                                   "npy tensor payload is truncated: %s",
+                                   path.str().c_str());
+  llvm::ArrayRef<uint8_t> payload(
+      reinterpret_cast<const uint8_t *>(fileBytes.data()) +
+          metadata->dataOffset,
+      static_cast<size_t>(rawBytes));
+  return NpyTensorPayload{decoded->first.str(), metadata->shape,
+                          std::vector<uint8_t>(payload.begin(), payload.end())};
+}
 
 LogicalResult verifyFrontendProgram(ModuleOp module,
                                     llvm::raw_ostream &diagnostics,

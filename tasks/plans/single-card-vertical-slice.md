@@ -110,7 +110,7 @@ manifest/package late failure不发布partial package。
 
 ## Checkpoint 7: Reference Core, Transport Activation And Vertical Gates
 
-状态：进行中；Q19 core、Q16.T和Q19.M已完成，当前Q20为唯一doing，Q21按直接前置blocked。
+状态：进行中；Q19 core、Q16.T、Q19.M和Q20已完成，当前Q21为唯一doing。
 
 - Q19 core只接受Q16 `ExecutableBundle`和typed role/index invocation tensors，先把accepted rank all-and-only投影为
   invocation-local immutable `ReferenceProgram`，再执行memref/instruction/control-flow；projection不序列化、不进入
@@ -146,8 +146,18 @@ manifest/package late failure不发布partial package。
 - Q20/Q21真实exporter固定source revision/config/seed/dtype/shape和独立NumPy CPU reference；gate顺序仍为
   rank-count=1 linear/MLP、16-rank linear/MLP、16-rank tiny Llama。
 
-完成：Q19/Q16.T/Q19.M各自的component gate先闭合；随后三条纵向gate均只经`wafer-compile`，reference结果与独立
-CPU oracle比较。board test未运行时不声称board numeric/completion完成。
+Q20已由同一production driver完成前两条gate：package发布后重新读取其grouped artifact构造accepted bundle，
+按typed boundary slice加载完整input及package-relative parameter NPY；rank-count=1直接执行，rank-count=16对
+同质transport domain执行并按typed output slice重组。当前真实corpus为replicated `TransportContract::None`，各rank
+独立执行且输出必须byte-identical；这与Q19.M拥有的Direct DTE event scheduling是同一bundle API的两个合法分支，
+不能把“16 rank”误写成“必然有DTE”。all-and-only ELF/manifest、1+16个no-card entry和完整NumPy reference均由
+`test/Tools/wafer-compile-linear-reference.test`重放；错误expected证明numeric gate失败时已验证package仍可审计。
+本批新鲜验证为43/43 C++ unit、235/236 lit（唯一unsupported是enabled-build feature inverse，Q20纵向test实际
+执行）以及CTest 3/3。
+
+完成条件：Q19/Q16.T/Q19.M各自的component gate先闭合；随后三条纵向gate均只经`wafer-compile`，reference结果与
+独立CPU oracle比较。当前前两条Q20 gate已完成，Q21 tiny Llama gate仍在推进；board test未运行时不声称board
+numeric/completion完成。
 
 ## Checkpoint 8: Structural Cleanup
 

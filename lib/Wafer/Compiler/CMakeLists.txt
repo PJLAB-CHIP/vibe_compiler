@@ -5,6 +5,7 @@ add_mlir_library(WaferCompiler
   ExecutableBundle.cpp
   Package.cpp
   ReferenceExecutor.cpp
+  ReferenceInvocation.cpp
   ReferenceExecutorNumeric.cpp
   ReferenceProgramInterpreter.cpp
   ReferenceProgramProjection.cpp

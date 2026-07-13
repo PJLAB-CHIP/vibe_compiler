@@ -35,7 +35,7 @@ struct ReferenceProgramBuilder {
     if (match->getTransportContract() != requiredTransport)
       return reference_detail::unsupported(
           requiredTransport == TransportContract::None
-              ? "single-rank executor does not accept transport"
+              ? "reference executor requires transport-free rank input"
               : "multi-rank executor requires accepted Direct DTE transport");
 
     auto impl = std::make_unique<ReferenceProgram::Impl>();
@@ -81,6 +81,14 @@ ReferenceTensor::create(llvm::StringRef dtype, llvm::ArrayRef<int64_t> shape,
                          std::vector<uint8_t>(bytes));
 }
 
+llvm::Expected<ReferenceTensor>
+ReferenceTensor::loadNpy(llvm::StringRef path) {
+  auto payload = frontend::loadNpyTensorPayload(path);
+  if (!payload)
+    return payload.takeError();
+  return create(payload->dtype, payload->shape, payload->bytes);
+}
+
 llvm::Expected<ReferenceProgram>
 prepareReferenceRank(const ExecutableBundle &bundle, int64_t logicalRank) {
   return ReferenceProgramBuilder::prepare(bundle, logicalRank,
@@ -115,14 +123,22 @@ executeReferenceBundle(const ExecutableBundle &bundle,
   if (rankCount <= 1)
     return reference_detail::invalid(
         "multi-rank reference execution requires more than one rank");
+  if (bundle.getRankExecutables().size() != static_cast<size_t>(rankCount))
+    return reference_detail::invalid(
+        "multi-rank executable domain is incomplete");
+  const TransportContract transport =
+      bundle.getRankExecutables().front().getTransportContract();
+  for (const RankExecutable &rank : bundle.getRankExecutables())
+    if (rank.getTransportContract() != transport)
+      return reference_detail::invalid(
+          "multi-rank executable transport domain is not homogeneous");
 
   // Project the complete rank domain before importing any invocation tensor.
   // This preserves the existing capability-preflight atomicity contract.
   std::vector<ReferenceProgram> programs;
   programs.reserve(static_cast<size_t>(rankCount));
   for (int64_t rank = 0; rank < rankCount; ++rank) {
-    auto program = ReferenceProgramBuilder::prepare(
-        bundle, rank, TransportContract::DirectDTE);
+    auto program = ReferenceProgramBuilder::prepare(bundle, rank, transport);
     if (!program)
       return program.takeError();
     programs.push_back(std::move(*program));

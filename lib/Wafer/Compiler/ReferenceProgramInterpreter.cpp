@@ -1243,8 +1243,8 @@ llvm::Expected<ReferenceMultiRankExecutionResult> interpretReferencePrograms(
   }
   for (auto [rank, program] : llvm::enumerate(programs)) {
     if (!program || program->logicalRank != static_cast<int64_t>(rank) ||
-        program->transportContract != TransportContract::DirectDTE)
-      return invalid("projected Direct DTE rank domain is not canonical");
+        program->transportContract != programs.front()->transportContract)
+      return invalid("projected multi-rank domain is not canonical");
   }
 
   DeterministicTransportCoordinator coordinator;

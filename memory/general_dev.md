@@ -40,6 +40,13 @@
 - 若reference multi-rank需要的DTE被当前ExecutableBundle fail closed，先补memory-planning后的physical transport
   acceptance和target consumer，再解锁multi-rank executor；不能用手写DTE module绕过bundle gate。
 - internal bundle builder把shared MLIR context转移给返回bundle；测试要在bundle存活期间销毁source module。
+- source-backed纵向reference应作为同一production driver发布package后的下游gate：重新读取package中的grouped
+  artifact构造accepted bundle，用frontend唯一NPY parser加载typed global input和package-relative parameter/constant，
+  再按`RankProgramBinding`的global/local shape与slice构造rank invocation。reference mismatch返回非零但不删除已经
+  验证的package；CLI的index/tolerance语法错误则必须在编译和发布前拒绝。
+- multi-rank是执行域，不等于transport种类。bundle-level executor先证明all-rank transport合同同质；`None`在每rank
+  独立arena执行并用typed output slice重组，`DirectDTE`才使用deterministic event scheduler。replicated output还必须
+  跨rank byte-identical，不能为了复用DTE路径而伪造通信。
 
 ## Wafer compiler local build harness
 

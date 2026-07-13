@@ -7,6 +7,7 @@
 #include "mlir/Support/LLVM.h"
 
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/Error.h"
 
 #include <cstdint>
 #include <string>
@@ -67,6 +68,16 @@ struct FrontendProgramVerificationResult {
   std::vector<ProgramParameterBinding> parameters;
   std::vector<ProgramConstantBinding> constants;
 };
+
+/// Owner-backed row-major tensor payload decoded by the same NPY parser used
+/// by program-directory verification.
+struct NpyTensorPayload {
+  std::string dtype;
+  std::vector<int64_t> shape;
+  std::vector<uint8_t> bytes;
+};
+
+llvm::Expected<NpyTensorPayload> loadNpyTensorPayload(llvm::StringRef path);
 
 mlir::LogicalResult
 verifyFrontendProgram(mlir::ModuleOp module, llvm::raw_ostream &diagnostics,
