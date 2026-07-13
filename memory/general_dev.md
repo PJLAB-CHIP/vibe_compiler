@@ -16,6 +16,9 @@
   不能证明Q16/Q17接收了call closure。direct-call artifact gate必须检查post-helper/accepted rank仍含call，或像reference
   integration test一样从真实group lowering构造保留helper的`ExecutableBundle`；target conversion另用callee-only instruction
   和alias forwarding fixture证明lowering关系。
+- 数值differential的非零payload本身不足以证明覆盖。MLP这类组合case应在独立CPU loop oracle之外增加敏感性检查：逐个
+  屏蔽hidden channel、逐层清零bias都必须改变完整expected output；否则零bias、零权重或只连接部分channel会让executor
+  漏算仍然通过。固定payload使用测试侧明确的整数PRNG和可精确表示的缩放，避免host distribution差异。
 - `ReferenceTensor`是compact row-major program-boundary payload，executor内部用shared DDR/SPM arena和accepted offset
   表达physical storage，再通过`computeWaferPhysicalElementByteOffset`访问logical element。descriptor movement必须先
   完整读取payload再写回，才能在source/dest alias时保持确定语义。

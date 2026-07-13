@@ -377,8 +377,10 @@ structured no-progress/deadlock failure；不能靠timeout、线程调度或map�
 当前单rankcheckpoint已经建立`ExecutableBundle + logicalRank + typed role/index tensors`入口。实现按accepted
 DDR/SPM offset建立独立arena，按descriptor执行alias-safe movement，并复用Wafer physical layout helper完成logical
 element访问；group经过production selection/lowering后形成的residual MLP已覆盖RDMA、WDMA、tensor/Cx movement、
-两次GEMM、bias broadcast、tanh、residual add和完整f32输出比较。descriptor byte count、缺失accepted offset及
-boundary dtype不一致均为hard failure。当前进一步增加owner-backed immutable `ReferenceProgram`：projection复制
+两次GEMM、bias broadcast、tanh、residual add和完整f32输出比较；当前fixed-seed payload进一步保证所有hidden
+channel和两层非零bias均影响结果，expected由测试侧显式CPU loop独立计算，并用逐hidden屏蔽及逐层清零bias的敏感性
+检查防止退化case通过。descriptor byte count、缺失accepted offset及boundary dtype不一致均为hard failure。
+当前进一步增加owner-backed immutable `ReferenceProgram`：projection复制
 当前supported op的typed fields、memref type/static view delta和SSA value-id relation，执行阶段不再访问MLIR
 `Operation`/`Value`；完整projection在input import/arena allocation前完成。测试已证明projection后篡改原RDMA descriptor
 不改变prepared program，而convenience入口重新preflight会拒绝；unsupported op优先于缺失input失败，full static
@@ -394,9 +396,8 @@ lowering形成唯一public entry加private DDR-memref closure；Q17只改写entr
 graph并按callee id执行参数/结果forwarding。测试在prepare后篡改helper return，证明prepared program不变而重新prepare
 观察到新语义；同一accepted multi-function rank的owned clone还重放Q17 entry-only output/workspace ABI、完整target
 lowering及lowered entry ABI验证。recursive、unresolved、unreachable helper和private helper自建DDR root均先于缺失
-input失败。Q19仍未完成：还需layout property、非平凡differential、zero-point/stochastic证据、覆盖全部accepted组合的
-capability矩阵，以及把已增长的executor projection/interpreter/numeric职责拆分。DTE multi-rank已拆给Q19.M，并等待
-Q16.T。
+input失败。Q19仍未完成：还需layout property、zero-point/stochastic证据、覆盖全部accepted组合的capability矩阵，
+以及把已增长的executor projection/interpreter/numeric职责拆分。DTE multi-rank已拆给Q19.M，并等待Q16.T。
 当前transcendental仍使用host实现，也不属于已闭合的host-independent numeric gate。
 本批`check-wafer`新鲜执行33个C++ unit和230个lit（229 pass、1个feature-inverse unsupported），CTest 3/3通过；
 unsupported项仍是禁用importer feature的反向gate，不覆盖Q19 mandatory path。

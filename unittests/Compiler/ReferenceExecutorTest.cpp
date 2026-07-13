@@ -51,6 +51,66 @@ std::vector<float> floatsOf(llvm::ArrayRef<uint8_t> bytes) {
   return values;
 }
 
+std::vector<float> fixedNonZeroPayload(size_t count, uint32_t &state,
+                                       float divisor) {
+  std::vector<float> values;
+  values.reserve(count);
+  for (size_t index = 0; index < count; ++index) {
+    state = state * 1664525u + 1013904223u;
+    int32_t value = static_cast<int32_t>((state >> 24) & 0x7f) - 64;
+    if (value >= -3 && value <= 3)
+      value += value < 0 ? -4 : 4;
+    values.push_back(static_cast<float>(value) / divisor);
+  }
+  return values;
+}
+
+struct ResidualMlpOracle {
+  std::vector<float> hidden;
+  std::vector<float> output;
+};
+
+ResidualMlpOracle computeResidualMlpOracle(llvm::ArrayRef<float> input,
+                                           llvm::ArrayRef<float> weight1,
+                                           llvm::ArrayRef<float> bias1,
+                                           llvm::ArrayRef<float> weight2,
+                                           llvm::ArrayRef<float> bias2) {
+  constexpr int64_t rows = 2;
+  constexpr int64_t inputChannels = 2;
+  constexpr int64_t hiddenChannels = 3;
+  constexpr int64_t outputChannels = 2;
+  ResidualMlpOracle oracle;
+  oracle.hidden.resize(rows * hiddenChannels);
+  oracle.output.resize(rows * outputChannels);
+  for (int64_t row = 0; row < rows; ++row)
+    for (int64_t hidden = 0; hidden < hiddenChannels; ++hidden) {
+      float value = 0.0f;
+      for (int64_t channel = 0; channel < inputChannels; ++channel)
+        value += input[row * inputChannels + channel] *
+                 weight1[channel * hiddenChannels + hidden];
+      oracle.hidden[row * hiddenChannels + hidden] =
+          std::tanh(value + bias1[hidden]);
+    }
+  for (int64_t row = 0; row < rows; ++row)
+    for (int64_t output = 0; output < outputChannels; ++output) {
+      float value = 0.0f;
+      for (int64_t hidden = 0; hidden < hiddenChannels; ++hidden)
+        value += oracle.hidden[row * hiddenChannels + hidden] *
+                 weight2[hidden * outputChannels + output];
+      oracle.output[row * outputChannels + output] =
+          value + bias2[output] + input[row * inputChannels + output];
+    }
+  return oracle;
+}
+
+bool differs(llvm::ArrayRef<float> lhs, llvm::ArrayRef<float> rhs,
+             float threshold = 1.0e-6f) {
+  for (auto [left, right] : llvm::zip_equal(lhs, rhs))
+    if (std::abs(left - right) > threshold)
+      return true;
+  return false;
+}
+
 wafer::frontend::ProgramRankSlice
 singleRankSlice(llvm::ArrayRef<int64_t> shape) {
   wafer::frontend::ProgramRankSlice slice;
@@ -805,21 +865,50 @@ module {
     std::vector<int64_t> shape;
     std::vector<float> values;
   };
+  uint32_t payloadState = 0x00c0ffeeu;
+  std::vector<float> inputValues = fixedNonZeroPayload(4, payloadState, 32.0f);
+  std::vector<float> weight1Values =
+      fixedNonZeroPayload(6, payloadState, 64.0f);
+  std::vector<float> bias1Values = fixedNonZeroPayload(3, payloadState, 128.0f);
+  std::vector<float> weight2Values =
+      fixedNonZeroPayload(6, payloadState, 64.0f);
+  std::vector<float> bias2Values = fixedNonZeroPayload(2, payloadState, 128.0f);
+  ResidualMlpOracle oracle = computeResidualMlpOracle(
+      inputValues, weight1Values, bias1Values, weight2Values, bias2Values);
+
+  for (int64_t hidden = 0; hidden < 3; ++hidden) {
+    std::vector<float> withoutChannel = weight2Values;
+    withoutChannel[hidden * 2] = 0.0f;
+    withoutChannel[hidden * 2 + 1] = 0.0f;
+    EXPECT_TRUE(differs(oracle.output,
+                        computeResidualMlpOracle(inputValues, weight1Values,
+                                                 bias1Values, withoutChannel,
+                                                 bias2Values)
+                            .output));
+  }
+  EXPECT_TRUE(differs(oracle.output,
+                      computeResidualMlpOracle(inputValues, weight1Values,
+                                               std::vector<float>(3, 0.0f),
+                                               weight2Values, bias2Values)
+                          .output));
+  EXPECT_TRUE(differs(oracle.output,
+                      computeResidualMlpOracle(inputValues, weight1Values,
+                                               bias1Values, weight2Values,
+                                               std::vector<float>(2, 0.0f))
+                          .output));
+
   std::vector<InputSpec> specs = {
-      {wafer::compiler::ProgramResourceRole::UserInput,
-       0,
-       {2, 2},
-       {1, 2, 3, 4}},
+      {wafer::compiler::ProgramResourceRole::UserInput, 0, {2, 2}, inputValues},
       {wafer::compiler::ProgramResourceRole::Parameter,
        1,
        {2, 3},
-       {1, 0, 1, 0, 1, -1}},
-      {wafer::compiler::ProgramResourceRole::Parameter, 2, {3}, {0, 0, 0}},
+       weight1Values},
+      {wafer::compiler::ProgramResourceRole::Parameter, 2, {3}, bias1Values},
       {wafer::compiler::ProgramResourceRole::Parameter,
        3,
        {3, 2},
-       {1, 0, 0, 1, 0, 0}},
-      {wafer::compiler::ProgramResourceRole::Parameter, 4, {2}, {0.5, -0.5}}};
+       weight2Values},
+      {wafer::compiler::ProgramResourceRole::Parameter, 4, {2}, bias2Values}};
   std::vector<wafer::compiler::ReferenceInputBinding> inputs;
   for (InputSpec &spec : specs) {
     auto tensor = wafer::compiler::ReferenceTensor::create(
@@ -834,11 +923,8 @@ module {
   ASSERT_EQ(result->getOutputs().size(), 1u);
   std::vector<float> actual =
       floatsOf(result->getOutputs().front().tensor.getBytes());
-  std::vector<float> expected = {1.5f + std::tanh(1.0f), 1.5f + std::tanh(2.0f),
-                                 3.5f + std::tanh(3.0f),
-                                 3.5f + std::tanh(4.0f)};
-  ASSERT_EQ(actual.size(), expected.size());
-  for (auto [value, reference] : llvm::zip_equal(actual, expected))
+  ASSERT_EQ(actual.size(), oracle.output.size());
+  for (auto [value, reference] : llvm::zip_equal(actual, oracle.output))
     EXPECT_NEAR(value, reference, 1.0e-5f);
 }
 
