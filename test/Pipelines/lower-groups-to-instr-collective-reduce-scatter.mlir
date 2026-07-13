@@ -15,7 +15,8 @@ func.func @collective_reduce_scatter_to_instr(%input: tensor<8xf32>,
         ^bb0(%lhs: f32, %rhs: f32):
           %sum = arith.addf %lhs, %rhs : f32
           wafer.linalg_ext.collective.yield %sum : f32
-        } {axis = 0 : i64, rank_group = array<i64: 0, 1>} -> tensor<4xf32>
+        } {axis = 0 : i64, rank_group = array<i64: 0, 1>,
+           channel_id = 25 : i64} -> tensor<4xf32>
     wafer.group.yield %rs : tensor<4xf32>
   } : tensor<4xf32>
   return %group : tensor<4xf32>

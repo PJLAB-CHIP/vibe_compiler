@@ -12,7 +12,8 @@ func.func @reject_all_reduce_aligned_layout(
         : () -> memref<4xf32, #wafer.memory<spm, cx>>
     %result = wafer.tile.all_reduce #wafer.reduce_kind<sum> %input using %recv
         {local_rank = 0 : i64, group_size = 2 : i64,
-         rank_group = array<i64: 0, 1>, bytes = 16 : i64}
+         rank_group = array<i64: 0, 1>, bytes = 16 : i64,
+         communication_id = 17 : i64}
         : (memref<4xf32, #wafer.memory<spm, cx>>,
            memref<4xf32, #wafer.memory<spm, cx>>)
        -> memref<4xf32, #wafer.memory<spm, cx>>

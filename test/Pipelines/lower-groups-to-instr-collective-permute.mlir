@@ -11,7 +11,8 @@ func.func @collective_permute_to_instr(%input: tensor<4xf32>,
     %cp = wafer.linalg_ext.collective.collective_permute
         ins(%arg0 : tensor<4xf32>)
         outs(%arg1 : tensor<4xf32>)
-        {source_target_pairs = array<i64: 0, 1, 2, 0>}
+        {source_target_pairs = array<i64: 0, 1, 2, 0>,
+         channel_id = 24 : i64}
         -> tensor<4xf32>
     wafer.group.yield %cp : tensor<4xf32>
   } : tensor<4xf32>
@@ -26,8 +27,10 @@ func.func @collective_permute_to_instr(%input: tensor<4xf32>,
 // CHECK: %[[RESULT:.+]] = memref.alloc
 // CHECK: wafer.instr.fill %[[RESULT]]
 // CHECK: %[[SEND:.+]] = wafer.instr.dte_send %[[INPUT]]
+// CHECK-SAME: message = #wafer.dte_message<communication = 24, phase = collective_permute, round = 0, slice = 0>
 // CHECK-SAME: peer = 1 : i64
 // CHECK: %[[RECV:.+]] = wafer.instr.dte_recv %[[RESULT]]
+// CHECK-SAME: message = #wafer.dte_message<communication = 24, phase = collective_permute, round = 0, slice = 1>
 // CHECK-SAME: peer = 2 : i64
 // CHECK: wafer.instr.dte_wait %[[SEND]], %[[RECV]]
 // CHECK: wafer.instr.wdma %[[RESULT]]

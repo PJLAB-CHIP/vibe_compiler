@@ -510,6 +510,21 @@ std::optional<int64_t> wafer::computeWaferPhysicalElementByteOffset(
   return byteOffset;
 }
 
+mlir::LogicalResult DTEMessageAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+    int64_t communicationId, DTEProtocolPhase phase, int64_t round,
+    int64_t payloadSlice) {
+  (void)phase;
+  if (communicationId < 0)
+    return emitError() << "dte_message communication id must be non-negative";
+  if (round < 0)
+    return emitError() << "dte_message protocol round must be non-negative";
+  if (payloadSlice < 0)
+    return emitError()
+           << "dte_message payload slice must be non-negative";
+  return mlir::success();
+}
+
 void WaferDialect::initialize() {
   addAttributes<
 #define GET_ATTRDEF_LIST

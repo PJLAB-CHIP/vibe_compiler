@@ -29,7 +29,8 @@ module {
           : memref<4xf32, #wafer.memory<spm, tensor>>
       %result = wafer.tile.all_reduce #wafer.reduce_kind<sum> %input using %recv
           {local_rank = 1 : i64, group_size = 4 : i64,
-           rank_group = array<i64: 0, 1, 2, 3>, bytes = 16 : i64}
+           rank_group = array<i64: 0, 1, 2, 3>, bytes = 16 : i64,
+           communication_id = 16 : i64}
           : (memref<4xf32, #wafer.memory<spm, tensor>>,
              memref<4xf32, #wafer.memory<spm, tensor>>)
          -> memref<4xf32, #wafer.memory<spm, tensor>>

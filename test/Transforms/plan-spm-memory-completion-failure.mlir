@@ -12,7 +12,8 @@ func.func @local_fence_does_not_complete_dte(
         : memref<128xf16, #wafer.memory<spm, tensor>>
     // expected-error @below {{missing_dte_completion: DTE token has a reachable path to wafer.tile.region exit without wafer.instr.dte_wait}}
     %token = wafer.instr.dte_send %source
-        {peer = 1 : i64, bytes = 256 : i64}
+        {peer = 1 : i64, bytes = 256 : i64,
+         message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 0, slice = 0>}
         : memref<128xf16, #wafer.memory<spm, tensor>> -> !async.token
     wafer.instr.local_fence
     wafer.tile.yield %arg0 : memref<128xf16, #wafer.memory<ddr, tensor>>
@@ -31,7 +32,8 @@ func.func @dte_wait_does_not_complete_local_engine(
     %source = memref.alloc()
         : memref<128xf16, #wafer.memory<spm, tensor>>
     %token = wafer.instr.dte_send %source
-        {peer = 1 : i64, bytes = 256 : i64}
+        {peer = 1 : i64, bytes = 256 : i64,
+         message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 0, slice = 0>}
         : memref<128xf16, #wafer.memory<spm, tensor>> -> !async.token
     // expected-error @below {{missing_local_completion: local Compute/Movement issue has a reachable path to wafer.tile.region exit without wafer.instr.local_fence}}
     wafer.instr.wdma %source to %arg0
@@ -80,7 +82,8 @@ func.func @branch_only_one_dte_wait(
         : memref<128xf16, #wafer.memory<spm, tensor>>
     // expected-error @below {{missing_dte_completion: DTE token has a reachable path to wafer.tile.region exit without wafer.instr.dte_wait}}
     %token = wafer.instr.dte_send %source
-        {peer = 1 : i64, bytes = 256 : i64}
+        {peer = 1 : i64, bytes = 256 : i64,
+         message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 0, slice = 0>}
         : memref<128xf16, #wafer.memory<spm, tensor>> -> !async.token
     scf.if %c {
       wafer.instr.dte_wait %token : !async.token
@@ -128,7 +131,8 @@ func.func @loop_carried_dte_token_is_fail_closed(
     %source = memref.alloc()
         : memref<128xf16, #wafer.memory<spm, tensor>>
     %token = wafer.instr.dte_send %source
-        {peer = 1 : i64, bytes = 256 : i64}
+        {peer = 1 : i64, bytes = 256 : i64,
+         message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 0, slice = 0>}
         : memref<128xf16, #wafer.memory<spm, tensor>> -> !async.token
     // expected-error @below {{unsupported_completion_control_flow: SPM memory planning cannot prove loop-carried DTE token completion}}
     %looped = scf.for %i = %l to %u step %s

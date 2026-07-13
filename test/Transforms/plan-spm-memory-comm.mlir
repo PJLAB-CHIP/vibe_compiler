@@ -42,7 +42,8 @@ func.func @dte_recv_token_extends_destination_until_wait(
   ^bb0(%arg0: memref<128xf16, #wafer.memory<ddr, tensor>>):
     %zero = arith.constant 0.000000e+00 : f16
     %dest = memref.alloc() : memref<128xf16, #wafer.memory<spm, tensor>>
-    %token = wafer.instr.dte_recv %dest {peer = 1 : i64, bytes = 256 : i64}
+    %token = wafer.instr.dte_recv %dest {peer = 1 : i64, bytes = 256 : i64,
+        message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 0, slice = 0>}
         : memref<128xf16, #wafer.memory<spm, tensor>> -> !async.token
     wafer.instr.local_fence
     %before_wait = memref.alloc()
@@ -149,7 +150,8 @@ func.func @branch_dte_waits_clear_all_paths(
     %source = memref.alloc()
         : memref<128xf16, #wafer.memory<spm, tensor>>
     %token = wafer.instr.dte_send %source
-        {peer = 1 : i64, bytes = 256 : i64}
+        {peer = 1 : i64, bytes = 256 : i64,
+         message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 0, slice = 0>}
         : memref<128xf16, #wafer.memory<spm, tensor>> -> !async.token
     scf.if %c {
       wafer.instr.dte_wait %token : !async.token

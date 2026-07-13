@@ -21,7 +21,7 @@ module {
 
   wafer.tile.all_gather %local into %gather
       {bytes = 16 : i64, group_size = 2 : i64, local_rank = 0 : i64,
-       rank_group = array<i64: 0, 2>}
+       rank_group = array<i64: 0, 2>, communication_id = 35 : i64}
       : memref<4xf32, #wafer.memory<spm, tensor>>
       -> memref<8xf32, #wafer.memory<spm, tensor>>
 }

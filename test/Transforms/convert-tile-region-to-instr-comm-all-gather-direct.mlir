@@ -28,7 +28,8 @@ module {
           : memref<16xf32, #wafer.memory<spm, tensor>>
       wafer.tile.all_gather %local into %gather
           {local_rank = 1 : i64, group_size = 4 : i64,
-           rank_group = array<i64: 0, 1, 2, 3>, bytes = 16 : i64}
+           rank_group = array<i64: 0, 1, 2, 3>, bytes = 16 : i64,
+           communication_id = 11 : i64}
           : memref<4xf32, #wafer.memory<spm, tensor>>
          -> memref<16xf32, #wafer.memory<spm, tensor>>
       wafer.tile.yield %arg0
@@ -51,8 +52,10 @@ module {
 // CHECK: %[[SLOT0:.+]] = memref.subview %[[GATHER]][0] [4] [1]
 // CHECK: %[[RECV0_BUF:.+]] = memref.alloc
 // CHECK: %[[SEND0:.+]] = wafer.instr.dte_send %[[LOCAL_COMM]]
+// CHECK-SAME: message = #wafer.dte_message<communication = 11, phase = all_gather_direct, round = 1, slice = 1>
 // CHECK-SAME: peer = 2 : i64
 // CHECK: %[[RECV0:.+]] = wafer.instr.dte_recv %[[RECV0_BUF]]
+// CHECK-SAME: message = #wafer.dte_message<communication = 11, phase = all_gather_direct, round = 1, slice = 0>
 // CHECK-SAME: peer = 0 : i64
 // CHECK: wafer.instr.dte_wait %[[SEND0]], %[[RECV0]]
 // CHECK: wafer.instr.gather_scatter %[[RECV0_BUF]] to %[[SLOT0]]

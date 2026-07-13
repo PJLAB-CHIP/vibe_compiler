@@ -11,7 +11,8 @@ func.func @reject_reduce_scatter_comm(%boundary: memref<4xf16, #wafer.memory<ddr
         : () -> memref<4xf16, #wafer.memory<spm, tensor>>
     %result = wafer.tile.reduce_scatter #wafer.reduce_kind<sum> %input using %recv
         {axis = 0 : i64, local_rank = 0 : i64, group_size = 2 : i64,
-         rank_group = array<i64: 0, 1>, bytes = 8 : i64}
+         rank_group = array<i64: 0, 1>, bytes = 8 : i64,
+         communication_id = 31 : i64}
         : (memref<8xf16, #wafer.memory<spm, cx>>,
            memref<4xf16, #wafer.memory<spm, tensor>>)
        -> memref<4xf16, #wafer.memory<spm, tensor>>

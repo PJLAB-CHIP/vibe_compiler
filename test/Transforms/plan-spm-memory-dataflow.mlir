@@ -104,7 +104,8 @@ func.func @async_token_extends_source_until_wait(%boundary: memref<128xf16, #waf
     wafer.instr.fill %source, %zero
         : memref<128xf16, #wafer.memory<spm, tensor>>, f16
     wafer.instr.local_fence
-    %token = wafer.instr.dte_send %source {peer = 1 : i64, bytes = 256 : i64}
+    %token = wafer.instr.dte_send %source {peer = 1 : i64, bytes = 256 : i64,
+        message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 0, slice = 0>}
         : memref<128xf16, #wafer.memory<spm, tensor>> -> !async.token
     %before_wait = memref.alloc() : memref<128xf16, #wafer.memory<spm, tensor>>
     wafer.instr.fill %before_wait, %zero

@@ -8,7 +8,8 @@ module {
       %ag = wafer.linalg_ext.collective.all_gather
           ins(%arg0 : tensor<4xf32>)
           outs(%arg1 : tensor<8xf32>)
-          {axis = 0 : i64, rank_group = array<i64: 0, 1>}
+          {axis = 0 : i64, rank_group = array<i64: 0, 1>,
+           channel_id = 42 : i64}
           -> tensor<8xf32>
       wafer.group.yield %ag : tensor<8xf32>
     } : tensor<8xf32>
@@ -27,7 +28,8 @@ module {
           ^bb0(%lhs: f32, %rhs: f32):
             %sum = arith.addf %lhs, %rhs : f32
             wafer.linalg_ext.collective.yield %sum : f32
-          } {axis = 0 : i64, rank_group = array<i64: 0, 1>} -> tensor<4xf32>
+          } {axis = 0 : i64, rank_group = array<i64: 0, 1>,
+             channel_id = 43 : i64} -> tensor<4xf32>
       wafer.group.yield %rs : tensor<4xf32>
     } : tensor<4xf32>
     return %0 : tensor<4xf32>
@@ -45,7 +47,8 @@ module {
           ^bb0(%lhs: f32, %rhs: f32):
             %sum = arith.addf %lhs, %rhs : f32
             wafer.linalg_ext.collective.yield %sum : f32
-          } {rank_groups = dense<[[0, 1], [2, 3]]> : tensor<2x2xi64>}
+          } {rank_groups = dense<[[0, 1], [2, 3]]> : tensor<2x2xi64>,
+             channel_id = 44 : i64}
           -> tensor<4xf32>
       wafer.group.yield %ar : tensor<4xf32>
     } : tensor<4xf32>
@@ -62,7 +65,8 @@ module {
           ins(%arg0 : tensor<4x4xf32>)
           outs(%arg1 : tensor<2x8xf32>)
           {split_axis = 0 : i64, concat_axis = 1 : i64,
-           split_count = 2 : i64, rank_group = array<i64: 0, 1>}
+           split_count = 2 : i64, rank_group = array<i64: 0, 1>,
+           channel_id = 45 : i64}
           -> tensor<2x8xf32>
       wafer.group.yield %a2a : tensor<2x8xf32>
     } : tensor<2x8xf32>

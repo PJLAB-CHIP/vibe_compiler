@@ -13,7 +13,8 @@ func.func @collective_ignores_accumulator(%input: tensor<4xf32>,
         ^bb0(%value: f32, %acc: f32):
           %bad = arith.addf %value, %value : f32
           wafer.linalg_ext.collective.yield %bad : f32
-        } {rank_group = array<i64: 0, 1>} -> tensor<4xf32>
+        } {rank_group = array<i64: 0, 1>, channel_id = 41 : i64}
+        -> tensor<4xf32>
     wafer.group.yield %result : tensor<4xf32>
   } : tensor<4xf32>
   return %group : tensor<4xf32>

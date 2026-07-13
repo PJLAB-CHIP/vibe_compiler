@@ -16,12 +16,14 @@ class Wafer_InstrDTEP2POp<string mnemonic> : Wafer_InstrOp<mnemonic, [
     execution-rank id in the current `wafer.execution.mesh`, not an encoded
     physical tile id. The physical endpoint is derived from
     `wafer.execution.mesh` and `wafer.target.topology` at the DTE instruction
-    lowering boundary.
+    lowering boundary. `message` is the stable logical match identity emitted
+    by protocol materialization; it is not a physical channel or packet id.
   }];
   let arguments = (ins
     Wafer_AnySPMMemRef:$buffer,
     I64Attr:$peer,
-    I64Attr:$bytes
+    I64Attr:$bytes,
+    Wafer_DTEMessageAttr:$message
   );
   let results = (outs Async_TokenType:$token);
   let hasVerifier = 1;

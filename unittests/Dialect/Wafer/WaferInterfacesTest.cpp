@@ -256,7 +256,8 @@ module {
       : (memref<4x4xf32, #wafer.memory<spm, cx>>,
          memref<4x4xf32, #wafer.memory<spm, cx>>)
      -> memref<4x4xf32, #wafer.memory<spm, cx>>
-  %send = wafer.instr.dte_send %tile {peer = 0 : i64, bytes = 64 : i64}
+  %send = wafer.instr.dte_send %tile {peer = 0 : i64, bytes = 64 : i64,
+      message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 0, slice = 0>}
       : memref<4x4xf32, #wafer.memory<spm, tensor>> -> !async.token
   wafer.instr.dte_wait %send : !async.token
 }

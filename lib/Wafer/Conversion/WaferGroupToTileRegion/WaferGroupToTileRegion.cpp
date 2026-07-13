@@ -623,6 +623,18 @@ private:
     return physicalInfo->compactBytes;
   }
 
+  mlir::FailureOr<int64_t>
+  getCommunicationId(const WaferLinalgExtCollectiveInfo &info,
+                     llvm::StringRef subject) {
+    if (!info.hasChannelId) {
+      std::string reason =
+          subject.str() +
+          " materialization requires channel_id for stable DTE identity";
+      return failI64(reason);
+    }
+    return info.channelId;
+  }
+
   mlir::FailureOr<SelectedCollectiveRankGroup>
   getCollectiveRankGroup(const WaferLinalgExtCollectiveInfo &info) {
     auto findLocalRank = [&](llvm::ArrayRef<int64_t> ranks)
@@ -698,6 +710,10 @@ private:
       return mlir::failure();
     if (op.getInputs().size() != 1 || op.getOuts().size() != 1)
       return fail("all_gather materialization supports one input and one out");
+    mlir::FailureOr<int64_t> communicationId =
+        getCommunicationId(info, "all_gather");
+    if (mlir::failed(communicationId))
+      return mlir::failure();
 
     auto resultTensorType =
         mlir::dyn_cast<mlir::RankedTensorType>(op.getResult(0).getType());
@@ -725,7 +741,8 @@ private:
         builder.getI64IntegerAttr(
             static_cast<int64_t>(rankGroup->ranks.size())),
         mlir::DenseI64ArrayAttr::get(context, rankGroup->ranks),
-        builder.getI64IntegerAttr(*bytes));
+        builder.getI64IntegerAttr(*bytes),
+        builder.getI64IntegerAttr(*communicationId));
     record(op.getResult(0), MemLayout::Tensor, gatherBuffer.getResult());
     return mlir::success();
   }
@@ -739,6 +756,10 @@ private:
     if (op.getInputs().size() != 1 || op.getOuts().size() != 1)
       return fail(
           "reduce_scatter materialization supports one input and one out");
+    mlir::FailureOr<int64_t> communicationId =
+        getCommunicationId(info, "reduce_scatter");
+    if (mlir::failed(communicationId))
+      return mlir::failure();
     std::optional<ComputeReduceKind> kind =
         inferCollectiveReduceKind(op.getCombiner());
     if (!kind)
@@ -773,7 +794,8 @@ private:
         builder.getI64IntegerAttr(
             static_cast<int64_t>(rankGroup->ranks.size())),
         mlir::DenseI64ArrayAttr::get(builder.getContext(), rankGroup->ranks),
-        builder.getI64IntegerAttr(*bytes));
+        builder.getI64IntegerAttr(*bytes),
+        builder.getI64IntegerAttr(*communicationId));
     record(op.getResult(0), MemLayout::Tensor, result.getResult());
     return mlir::success();
   }
@@ -785,6 +807,10 @@ private:
       return mlir::failure();
     if (op.getInputs().size() != 1 || op.getOuts().size() != 1)
       return fail("all_reduce materialization supports one input and one out");
+    mlir::FailureOr<int64_t> communicationId =
+        getCommunicationId(info, "all_reduce");
+    if (mlir::failed(communicationId))
+      return mlir::failure();
     std::optional<ComputeReduceKind> kind =
         inferCollectiveReduceKind(op.getCombiner());
     if (!kind)
@@ -812,7 +838,8 @@ private:
         builder.getI64IntegerAttr(
             static_cast<int64_t>(rankGroup->ranks.size())),
         mlir::DenseI64ArrayAttr::get(builder.getContext(), rankGroup->ranks),
-        builder.getI64IntegerAttr(*bytes));
+        builder.getI64IntegerAttr(*bytes),
+        builder.getI64IntegerAttr(*communicationId));
     record(op.getResult(0), MemLayout::Tensor, result.getResult());
     return mlir::success();
   }
@@ -824,6 +851,10 @@ private:
       return mlir::failure();
     if (op.getInputs().size() != 1 || op.getOuts().size() != 1)
       return fail("all_to_all materialization supports one input and one out");
+    mlir::FailureOr<int64_t> communicationId =
+        getCommunicationId(info, "all_to_all");
+    if (mlir::failed(communicationId))
+      return mlir::failure();
 
     mlir::FailureOr<SelectedCollectiveRankGroup> rankGroup =
         getCollectiveRankGroup(info);
@@ -904,6 +935,7 @@ private:
     struct PendingSend {
       mlir::Value buffer;
       int64_t peer = -1;
+      int64_t payloadSlice = -1;
     };
     struct PendingRecv {
       mlir::Value buffer;
@@ -932,7 +964,8 @@ private:
         continue;
       }
 
-      sends.push_back({extract.getResult(), rankGroup->ranks[targetIndex]});
+      sends.push_back(
+          {extract.getResult(), rankGroup->ranks[targetIndex], targetIndex});
     }
 
     for (int64_t sourceIndex = 0; sourceIndex < groupSize; ++sourceIndex) {
@@ -949,17 +982,25 @@ private:
     if (!sends.empty() || !recvs.empty())
       builder.create<SyncLocalFenceOp>(op.getLoc());
     for (const PendingSend &send : sends) {
+      auto message = DTEMessageAttr::get(
+          builder.getContext(), *communicationId, DTEProtocolPhase::AllToAll,
+          /*round=*/0, send.payloadSlice);
       auto dteSend =
           builder.create<InstrDTESendOp>(op.getLoc(), tokenType, send.buffer,
                                          builder.getI64IntegerAttr(send.peer),
-                                         builder.getI64IntegerAttr(bytes));
+                                         builder.getI64IntegerAttr(bytes),
+                                         message);
       tokens.push_back(dteSend.getToken());
     }
     for (const PendingRecv &recv : recvs) {
+      auto message = DTEMessageAttr::get(
+          builder.getContext(), *communicationId, DTEProtocolPhase::AllToAll,
+          /*round=*/0, localRank);
       auto dteRecv =
           builder.create<InstrDTERecvOp>(op.getLoc(), tokenType, recv.buffer,
                                          builder.getI64IntegerAttr(recv.peer),
-                                         builder.getI64IntegerAttr(bytes));
+                                         builder.getI64IntegerAttr(bytes),
+                                         message);
       tokens.push_back(dteRecv.getToken());
     }
     if (!tokens.empty())
@@ -988,6 +1029,10 @@ private:
     if (op.getInputs().size() != 1 || op.getOuts().size() != 1)
       return fail(
           "collective_permute materialization supports one input and one out");
+    mlir::FailureOr<int64_t> communicationId =
+        getCommunicationId(info, "collective_permute");
+    if (mlir::failed(communicationId))
+      return mlir::failure();
     if (info.sourceTargetPairs.empty() || info.sourceTargetPairs.size() % 2)
       return fail("collective_permute materialization requires source/target "
                   "pairs");
@@ -1005,6 +1050,8 @@ private:
 
     std::optional<int64_t> sendPeer;
     std::optional<int64_t> recvPeer;
+    std::optional<int64_t> sendPayloadSlice;
+    std::optional<int64_t> recvPayloadSlice;
     bool localCopy = false;
     for (size_t index = 0; index < info.sourceTargetPairs.size(); index += 2) {
       int64_t source = info.sourceTargetPairs[index];
@@ -1012,11 +1059,15 @@ private:
       if (source == currentLogicalRank) {
         if (target == currentLogicalRank)
           localCopy = true;
-        else
+        else {
           sendPeer = target;
+          sendPayloadSlice = static_cast<int64_t>(index / 2);
+        }
       }
-      if (target == currentLogicalRank && source != currentLogicalRank)
+      if (target == currentLogicalRank && source != currentLogicalRank) {
         recvPeer = source;
+        recvPayloadSlice = static_cast<int64_t>(index / 2);
+      }
     }
 
     mlir::FailureOr<int64_t> bytes =
@@ -1043,16 +1094,25 @@ private:
     llvm::SmallVector<mlir::Value, 2> tokens;
     mlir::Type tokenType = builder.getType<mlir::async::TokenType>();
     if (sendPeer) {
+      auto message = DTEMessageAttr::get(
+          builder.getContext(), *communicationId,
+          DTEProtocolPhase::CollectivePermute, /*round=*/0,
+          *sendPayloadSlice);
       auto send = builder.create<InstrDTESendOp>(
           op.getLoc(), tokenType, *input, builder.getI64IntegerAttr(*sendPeer),
-          builder.getI64IntegerAttr(*bytes));
+          builder.getI64IntegerAttr(*bytes), message);
       tokens.push_back(send.getToken());
     }
     if (recvPeer) {
+      auto message = DTEMessageAttr::get(
+          builder.getContext(), *communicationId,
+          DTEProtocolPhase::CollectivePermute, /*round=*/0,
+          *recvPayloadSlice);
       auto recv =
           builder.create<InstrDTERecvOp>(op.getLoc(), tokenType, resultBuffer,
                                          builder.getI64IntegerAttr(*recvPeer),
-                                         builder.getI64IntegerAttr(*bytes));
+                                         builder.getI64IntegerAttr(*bytes),
+                                         message);
       tokens.push_back(recv.getToken());
     }
     if (!tokens.empty())

@@ -2271,16 +2271,22 @@ public:
 
         auto recvCommSlot =
             rewriter.create<mlir::memref::AllocOp>(op.getLoc(), commSlotType);
+        auto sendMessage = DTEMessageAttr::get(
+            rewriter.getContext(), op.getCommunicationIdAttr().getInt(),
+            DTEProtocolPhase::AllGatherDirect, distance, localRank);
+        auto recvMessage = DTEMessageAttr::get(
+            rewriter.getContext(), op.getCommunicationIdAttr().getInt(),
+            DTEProtocolPhase::AllGatherDirect, distance, recvPeerIndex);
         auto send = rewriter.create<InstrDTESendOp>(
             op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
             localCommSlot.getResult(),
             rewriter.getI64IntegerAttr(rankGroup[sendPeerIndex]),
-            rewriter.getI64IntegerAttr(bytes));
+            rewriter.getI64IntegerAttr(bytes), sendMessage);
         auto recv = rewriter.create<InstrDTERecvOp>(
             op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
             recvCommSlot.getResult(),
             rewriter.getI64IntegerAttr(rankGroup[recvPeerIndex]),
-            rewriter.getI64IntegerAttr(bytes));
+            rewriter.getI64IntegerAttr(bytes), recvMessage);
         llvm::SmallVector<mlir::Value, 2> tokens{send.getToken(),
                                                  recv.getToken()};
         rewriter.create<InstrDTEWaitOp>(op.getLoc(), tokens);
@@ -2305,14 +2311,22 @@ public:
 
       auto recvCommSlot =
           rewriter.create<mlir::memref::AllocOp>(op.getLoc(), commSlotType);
+      int64_t sendPayloadSlice =
+          (localRank + groupSize - step) % groupSize;
+      auto sendMessage = DTEMessageAttr::get(
+          rewriter.getContext(), op.getCommunicationIdAttr().getInt(),
+          DTEProtocolPhase::AllGatherRing, step, sendPayloadSlice);
+      auto recvMessage = DTEMessageAttr::get(
+          rewriter.getContext(), op.getCommunicationIdAttr().getInt(),
+          DTEProtocolPhase::AllGatherRing, step, recvSlotIndex);
       auto send = rewriter.create<InstrDTESendOp>(
           op.getLoc(), rewriter.getType<mlir::async::TokenType>(), sendSlot,
           rewriter.getI64IntegerAttr(nextPeer),
-          rewriter.getI64IntegerAttr(bytes));
+          rewriter.getI64IntegerAttr(bytes), sendMessage);
       auto recv = rewriter.create<InstrDTERecvOp>(
           op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
           recvCommSlot.getResult(), rewriter.getI64IntegerAttr(prevPeer),
-          rewriter.getI64IntegerAttr(bytes));
+          rewriter.getI64IntegerAttr(bytes), recvMessage);
       llvm::SmallVector<mlir::Value, 2> tokens{send.getToken(),
                                                recv.getToken()};
       rewriter.create<InstrDTEWaitOp>(op.getLoc(), tokens);
@@ -2454,15 +2468,21 @@ public:
       if (mlir::failed(sendSlot))
         return mlir::failure();
 
+      auto sendMessage = DTEMessageAttr::get(
+          rewriter.getContext(), op.getCommunicationIdAttr().getInt(),
+          DTEProtocolPhase::ReduceScatterDirect, distance, sendSlotIndex);
+      auto recvMessage = DTEMessageAttr::get(
+          rewriter.getContext(), op.getCommunicationIdAttr().getInt(),
+          DTEProtocolPhase::ReduceScatterDirect, distance, localRank);
       auto send = rewriter.create<InstrDTESendOp>(
           op.getLoc(), rewriter.getType<mlir::async::TokenType>(), *sendSlot,
           rewriter.getI64IntegerAttr(rankGroup[sendSlotIndex]),
-          rewriter.getI64IntegerAttr(bytes));
+          rewriter.getI64IntegerAttr(bytes), sendMessage);
       auto recv = rewriter.create<InstrDTERecvOp>(
           op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
           op.getRecvBuffer(),
           rewriter.getI64IntegerAttr(rankGroup[recvRankIndex]),
-          rewriter.getI64IntegerAttr(bytes));
+          rewriter.getI64IntegerAttr(bytes), recvMessage);
       llvm::SmallVector<mlir::Value, 2> tokens{send.getToken(),
                                                recv.getToken()};
       rewriter.create<InstrDTEWaitOp>(op.getLoc(), tokens);
@@ -2541,10 +2561,13 @@ public:
       for (int64_t mask = 1; mask < groupSize; mask <<= 1) {
         if ((localRank & mask) != 0) {
           int64_t parentRank = localRank ^ mask;
+          auto message = DTEMessageAttr::get(
+              rewriter.getContext(), op.getCommunicationIdAttr().getInt(),
+              DTEProtocolPhase::AllReduceTreeReduce, mask, localRank);
           auto send = rewriter.create<InstrDTESendOp>(
               op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
               *accumulator, rewriter.getI64IntegerAttr(rankGroup[parentRank]),
-              rewriter.getI64IntegerAttr(bytes));
+              rewriter.getI64IntegerAttr(bytes), message);
           llvm::SmallVector<mlir::Value, 1> tokens{send.getToken()};
           rewriter.create<InstrDTEWaitOp>(op.getLoc(), tokens);
           break;
@@ -2553,11 +2576,14 @@ public:
         int64_t childRank = localRank | mask;
         if (childRank >= groupSize)
           continue;
+        auto message = DTEMessageAttr::get(
+            rewriter.getContext(), op.getCommunicationIdAttr().getInt(),
+            DTEProtocolPhase::AllReduceTreeReduce, mask, childRank);
         auto recv = rewriter.create<InstrDTERecvOp>(
             op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
             op.getRecvBuffer(),
             rewriter.getI64IntegerAttr(rankGroup[childRank]),
-            rewriter.getI64IntegerAttr(bytes));
+            rewriter.getI64IntegerAttr(bytes), message);
         llvm::SmallVector<mlir::Value, 1> tokens{recv.getToken()};
         rewriter.create<InstrDTEWaitOp>(op.getLoc(), tokens);
 
@@ -2574,10 +2600,13 @@ public:
            mask >>= 1) {
         if (!hasFinalResult && receiveMask == mask) {
           int64_t parentRank = localRank ^ mask;
+          auto message = DTEMessageAttr::get(
+              rewriter.getContext(), op.getCommunicationIdAttr().getInt(),
+              DTEProtocolPhase::AllReduceTreeBroadcast, mask, localRank);
           auto recv = rewriter.create<InstrDTERecvOp>(
               op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
               *accumulator, rewriter.getI64IntegerAttr(rankGroup[parentRank]),
-              rewriter.getI64IntegerAttr(bytes));
+              rewriter.getI64IntegerAttr(bytes), message);
           llvm::SmallVector<mlir::Value, 1> tokens{recv.getToken()};
           rewriter.create<InstrDTEWaitOp>(op.getLoc(), tokens);
           hasFinalResult = true;
@@ -2589,10 +2618,13 @@ public:
         int64_t childRank = localRank | mask;
         if (childRank >= groupSize || getLowestSetBit(childRank) != mask)
           continue;
+        auto message = DTEMessageAttr::get(
+            rewriter.getContext(), op.getCommunicationIdAttr().getInt(),
+            DTEProtocolPhase::AllReduceTreeBroadcast, mask, childRank);
         auto send = rewriter.create<InstrDTESendOp>(
             op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
             *accumulator, rewriter.getI64IntegerAttr(rankGroup[childRank]),
-            rewriter.getI64IntegerAttr(bytes));
+            rewriter.getI64IntegerAttr(bytes), message);
         llvm::SmallVector<mlir::Value, 1> tokens{send.getToken()};
         rewriter.create<InstrDTEWaitOp>(op.getLoc(), tokens);
       }
@@ -2616,14 +2648,24 @@ public:
     int64_t nextPeer = rankGroup[(localRank + 1) % groupSize];
     int64_t prevPeer = rankGroup[(localRank + groupSize - 1) % groupSize];
     for (int64_t step = 0; step < groupSize - 1; ++step) {
+      int64_t sendPayloadSlice =
+          (localRank + groupSize - step) % groupSize;
+      int64_t recvPayloadSlice =
+          (localRank + groupSize - step - 1) % groupSize;
+      auto sendMessage = DTEMessageAttr::get(
+          rewriter.getContext(), op.getCommunicationIdAttr().getInt(),
+          DTEProtocolPhase::AllReduceRing, step, sendPayloadSlice);
+      auto recvMessage = DTEMessageAttr::get(
+          rewriter.getContext(), op.getCommunicationIdAttr().getInt(),
+          DTEProtocolPhase::AllReduceRing, step, recvPayloadSlice);
       auto send = rewriter.create<InstrDTESendOp>(
           op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
           forwardBuffer.getResult(), rewriter.getI64IntegerAttr(nextPeer),
-          rewriter.getI64IntegerAttr(bytes));
+          rewriter.getI64IntegerAttr(bytes), sendMessage);
       auto recv = rewriter.create<InstrDTERecvOp>(
           op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
           op.getRecvBuffer(), rewriter.getI64IntegerAttr(prevPeer),
-          rewriter.getI64IntegerAttr(bytes));
+          rewriter.getI64IntegerAttr(bytes), recvMessage);
       llvm::SmallVector<mlir::Value, 2> tokens{send.getToken(),
                                                recv.getToken()};
       rewriter.create<InstrDTEWaitOp>(op.getLoc(), tokens);

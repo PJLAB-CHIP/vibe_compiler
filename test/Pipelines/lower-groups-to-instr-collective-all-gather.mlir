@@ -11,7 +11,8 @@ func.func @collective_all_gather_to_instr(%input: tensor<4xf32>,
     %ag = wafer.linalg_ext.collective.all_gather
         ins(%arg0 : tensor<4xf32>)
         outs(%arg1 : tensor<8xf32>)
-        {axis = 0 : i64, rank_group = array<i64: 0, 1>}
+        {axis = 0 : i64, rank_group = array<i64: 0, 1>,
+         channel_id = 22 : i64}
         -> tensor<8xf32>
     wafer.group.yield %ag : tensor<8xf32>
   } : tensor<8xf32>

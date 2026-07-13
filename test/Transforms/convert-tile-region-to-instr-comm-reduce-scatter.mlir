@@ -31,7 +31,8 @@ module {
           : memref<4xf32, #wafer.memory<spm, tensor>>
       %result = wafer.tile.reduce_scatter #wafer.reduce_kind<sum> %input using %recv
           {axis = 0 : i64, local_rank = 1 : i64, group_size = 4 : i64,
-           rank_group = array<i64: 0, 1, 2, 3>, bytes = 16 : i64}
+           rank_group = array<i64: 0, 1, 2, 3>, bytes = 16 : i64,
+           communication_id = 18 : i64}
           : (memref<16xf32, #wafer.memory<spm, tensor>>,
              memref<4xf32, #wafer.memory<spm, tensor>>)
          -> memref<4xf32, #wafer.memory<spm, tensor>>
@@ -53,8 +54,10 @@ module {
 // CHECK: wafer.instr.local_fence
 // CHECK: %[[SLOT2:.+]] = memref.subview %[[INPUT]][8] [4] [1]
 // CHECK: %[[SEND0:.+]] = wafer.instr.dte_send %[[SLOT2]]
+// CHECK-SAME: message = #wafer.dte_message<communication = 18, phase = reduce_scatter_direct, round = 1, slice = 2>
 // CHECK-SAME: peer = 2 : i64
 // CHECK: %[[RECV0:.+]] = wafer.instr.dte_recv %[[RECV]]
+// CHECK-SAME: message = #wafer.dte_message<communication = 18, phase = reduce_scatter_direct, round = 1, slice = 1>
 // CHECK-SAME: peer = 0 : i64
 // CHECK: wafer.instr.dte_wait %[[SEND0]], %[[RECV0]]
 // CHECK: wafer.instr.elementwise <add> %[[ACC]], %[[RECV]] into %[[ACC]]

@@ -347,7 +347,8 @@ func.func @valid_before_transport_failure() {
 func.func @transport_failure() {
   %spm = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
       : memref<4xf16, #wafer.memory<spm, tensor>>
-  %token = wafer.instr.dte_send %spm {peer = 1 : i64, bytes = 8 : i64}
+  %token = wafer.instr.dte_send %spm {peer = 1 : i64, bytes = 8 : i64,
+      message = #wafer.dte_message<communication = 0, phase = collective_permute, round = 0, slice = 0>}
       : memref<4xf16, #wafer.memory<spm, tensor>> -> !async.token
   return
 }

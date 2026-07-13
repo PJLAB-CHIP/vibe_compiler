@@ -29,7 +29,8 @@ module {
           : memref<4xf32, #wafer.memory<spm, tensor>>
       %result = wafer.tile.all_reduce #wafer.reduce_kind<sum> %input using %recv
           {local_rank = 2 : i64, group_size = 4 : i64,
-           rank_group = array<i64: 0, 1, 2, 3>, bytes = 16 : i64}
+           rank_group = array<i64: 0, 1, 2, 3>, bytes = 16 : i64,
+           communication_id = 15 : i64}
           : (memref<4xf32, #wafer.memory<spm, tensor>>,
              memref<4xf32, #wafer.memory<spm, tensor>>)
          -> memref<4xf32, #wafer.memory<spm, tensor>>
@@ -48,14 +49,17 @@ module {
 // CHECK-SAME: byte_count = 16 : i64
 // CHECK: wafer.instr.local_fence
 // CHECK: %[[RECV_CHILD:.+]] = wafer.instr.dte_recv %[[RECV]]
+// CHECK-SAME: message = #wafer.dte_message<communication = 15, phase = all_reduce_tree_reduce, round = 1, slice = 3>
 // CHECK-SAME: peer = 3 : i64
 // CHECK: wafer.instr.dte_wait %[[RECV_CHILD]]
 // CHECK: wafer.instr.elementwise <add> %[[ACC]], %[[RECV]] into %[[ACC]]
 // CHECK: wafer.instr.local_fence
 // CHECK: %[[SEND_PARENT:.+]] = wafer.instr.dte_send %[[ACC]]
+// CHECK-SAME: message = #wafer.dte_message<communication = 15, phase = all_reduce_tree_reduce, round = 2, slice = 2>
 // CHECK-SAME: peer = 0 : i64
 // CHECK: wafer.instr.dte_wait %[[SEND_PARENT]]
 // CHECK: %[[RECV_FINAL:.+]] = wafer.instr.dte_recv %[[ACC]]
+// CHECK-SAME: message = #wafer.dte_message<communication = 15, phase = all_reduce_tree_broadcast, round = 2, slice = 2>
 // CHECK-SAME: peer = 0 : i64
 // CHECK: wafer.instr.dte_wait %[[RECV_FINAL]]
 // CHECK: %[[SEND_CHILD:.+]] = wafer.instr.dte_send %[[ACC]]

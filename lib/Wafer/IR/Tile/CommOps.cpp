@@ -13,7 +13,17 @@
 using namespace wafer;
 using namespace wafer::detail;
 
+static mlir::LogicalResult verifyCommunicationId(mlir::Operation *op,
+                                                 mlir::IntegerAttr id) {
+  if (id.getInt() < 0)
+    return op->emitOpError("communication_id must be non-negative");
+  return mlir::success();
+}
+
 mlir::LogicalResult CommAllGatherOp::verify() {
+  if (mlir::failed(
+          verifyCommunicationId(getOperation(), getCommunicationIdAttr())))
+    return mlir::failure();
   std::optional<mlir::RankedTensorType> localTensor =
       getLogicalTensorType(getLocalChunk().getType());
   std::optional<mlir::RankedTensorType> gatherTensor =
@@ -173,6 +183,8 @@ static mlir::LogicalResult verifyCommReduceCollective(
 
 mlir::LogicalResult CommReduceScatterOp::verify() {
   mlir::Operation *op = getOperation();
+  if (mlir::failed(verifyCommunicationId(op, getCommunicationIdAttr())))
+    return mlir::failure();
   std::optional<mlir::RankedTensorType> inputTensor =
       getLogicalTensorType(getInput().getType());
   std::optional<mlir::RankedTensorType> recvTensor =
@@ -330,6 +342,9 @@ mlir::LogicalResult CommReduceScatterOp::verifyWaferResourceEffectContract() {
 }
 
 mlir::LogicalResult CommAllReduceOp::verify() {
+  if (mlir::failed(
+          verifyCommunicationId(getOperation(), getCommunicationIdAttr())))
+    return mlir::failure();
   return verifyCommReduceCollective(getOperation(), "all_reduce", getInput(),
                                     getRecvBuffer(), getResult().getType(),
                                     getLocalRankAttr(), getGroupSizeAttr(),

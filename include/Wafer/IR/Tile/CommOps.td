@@ -28,7 +28,8 @@ def Wafer_CommAllGatherOp : Wafer_Op<"tile.all_gather", [
     I64Attr:$local_rank,
     I64Attr:$group_size,
     DenseI64ArrayAttr:$rank_group,
-    I64Attr:$bytes
+    I64Attr:$bytes,
+    I64Attr:$communication_id
   );
   let hasVerifier = 1;
   let assemblyFormat =
@@ -50,7 +51,8 @@ class Wafer_CommReduceCollectiveOp<string mnemonic> : Wafer_Op<mnemonic, [
     I64Attr:$local_rank,
     I64Attr:$group_size,
     DenseI64ArrayAttr:$rank_group,
-    I64Attr:$bytes
+    I64Attr:$bytes,
+    I64Attr:$communication_id
   );
   let results = (outs Wafer_AnySPMMemRef:$result);
   let hasVerifier = 1;
@@ -85,7 +87,8 @@ def Wafer_CommReduceScatterOp : Wafer_Op<"tile.reduce_scatter", [
     I64Attr:$local_rank,
     I64Attr:$group_size,
     DenseI64ArrayAttr:$rank_group,
-    I64Attr:$bytes
+    I64Attr:$bytes,
+    I64Attr:$communication_id
   );
   let results = (outs Wafer_AnySPMMemRef:$result);
   let hasVerifier = 1;
