@@ -403,7 +403,9 @@ convert capability checkpoint将kind到source/destination type pair及None/Round
 typed helper，verifier和reference projector共同消费；测试通过TableGen生成的symbolizer遍历每个declared kind，实际执行
 全部非zero-point组合并证明全部zero-point组合先于input import/arena allocation失败，不复制字符串能力表。非零
 FP32→TF32→FP32 roundtrip同时证明APFloat 19-bit TF32语义位与hardware 4-byte storage的显式pack/unpack边界。
-Q19仍未完成：还需zero-point/stochastic证据，以及把已增长的executor projection/interpreter/numeric职责拆分。
+structural checkpoint把原单文件executor拆为内部immutable program定义、accepted-IR projection、numeric/storage、
+immutable interpreter和薄public orchestration；projection是唯一读取accepted MLIR的模块，interpreter只依赖投影和
+numeric/storage API，内部对象仍不序列化、不进入bundle/package。Q19仍未完成：还需zero-point/stochastic证据。
 DTE multi-rank已拆给Q19.M，并等待Q16.T。
 当前transcendental仍使用host实现，也不属于已闭合的host-independent numeric gate。
 本批`check-wafer`新鲜执行34个C++ unit和230个lit（229 pass、1个feature-inverse unsupported），CTest 3/3通过；

@@ -187,4 +187,5 @@
   memref的TF32却按4 byte存储；executor把semantic bit width和storage bit width混成同一个32-bit值。
 - 修复模式：numeric conversion内部保留APFloat的19-bit TF32语义，在buffer边界显式pack到FP32位置的
   sign/exponent/high-10-fraction并清零low-13 bits，读回时反向unpack；用非零FP32→TF32→FP32 roundtrip覆盖rounding和
-  storage编码，capability matrix则实际执行每个TableGen-declared convert kind，不能只证明switch有case。
+  storage编码，capability matrix则实际执行每个TableGen-declared convert kind，不能只证明switch有case。任何基于
+  MLIR type的分类（包括program-boundary dtype）必须先判具体`FloatTF32Type`，再判会同时命中的通用`isF32()`。

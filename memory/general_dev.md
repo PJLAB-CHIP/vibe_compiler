@@ -29,6 +29,9 @@
 - instruction kind决定的type pair和parameter policy属于IR语义，应由dialect typed helper唯一拥有，verifier、projector
   和其它需要该关系的consumer共同消费；executor只从type派生自己的numeric representation。完整enum capability gate
   可遍历TableGen生成的`symbolize*` domain并实际prepare/execute，不能再抄一份kind字符串或case表作为expected能力。
+- reference executor增长后按`immutable program definition <- projection`和`numeric/storage <- interpreter`拆内部文件，
+  public translation unit只保留rank选择、owner lifetime和prepare/execute orchestration。projection是唯一允许读取accepted
+  MLIR的模块，interpreter只能消费immutable graph；这种源码拆分不能新增serializable plan、第二份schedule或公共artifact。
 - 若reference multi-rank需要的DTE被当前ExecutableBundle fail closed，先补memory-planning后的physical transport
   acceptance和target consumer，再解锁multi-rank executor；不能用手写DTE module绕过bundle gate。
 - internal bundle builder把shared MLIR context转移给返回bundle；测试要在bundle存活期间销毁source module。

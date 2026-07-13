@@ -122,9 +122,10 @@ manifest/package late failure不发布partial package。
   reference projection把同一closure复制为function/block/value-id graph并执行call forwarding。convert kind的
   source/destination type pair和parameter policy由Wafer IR typed helper唯一拥有，executor从它派生numeric format；
   TableGen全枚举gate执行全部非zero-point kind并在input/arena前拒绝全部zero-point kind，且以非零FP32→TF32→FP32
-  roundtrip证明19-bit APFloat语义与4-byte physical storage的显式编码。后续还需zero-point/stochastic证据和executor
-  projection/interpreter/numeric职责拆分。fixed-seed非平凡lowered-group differential已用独立CPU loop oracle证明所有
-  hidden channel和两层非零bias均影响完整输出；
+  roundtrip证明19-bit APFloat语义与4-byte physical storage的显式编码。executor代码已拆为internal immutable graph、
+  accepted-IR projection、numeric/storage、immutable interpreter和薄public orchestration；只有projection读取MLIR，
+  interpreter只消费投影。后续还需zero-point/stochastic证据。fixed-seed非平凡lowered-group differential已用独立
+  CPU loop oracle证明所有hidden channel和两层非零bias均影响完整输出；
   test-only独立slow layout oracle已跨compact/Cx/NCx、rank/dtype、全部tail对齐台阶和channel block边界逐坐标
   对照production footprint/offset，并证明logical坐标映射唯一、位于physical range且越界统一失败；它不进入production
   artifact或协议。

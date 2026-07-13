@@ -4,6 +4,9 @@ add_mlir_library(WaferCompiler
   ExecutableBundle.cpp
   Package.cpp
   ReferenceExecutor.cpp
+  ReferenceExecutorNumeric.cpp
+  ReferenceProgramInterpreter.cpp
+  ReferenceProgramProjection.cpp
   TargetArtifact.cpp
 
   LINK_LIBS PUBLIC
