@@ -396,10 +396,13 @@ lowering形成唯一public entry加private DDR-memref closure；Q17只改写entr
 graph并按callee id执行参数/结果forwarding。测试在prepare后篡改helper return，证明prepared program不变而重新prepare
 观察到新语义；同一accepted multi-function rank的owned clone还重放Q17 entry-only output/workspace ABI、完整target
 lowering及lowered entry ABI验证。recursive、unresolved、unreachable helper和private helper自建DDR root均先于缺失
-input失败。Q19仍未完成：还需layout property、zero-point/stochastic证据、覆盖全部accepted组合的capability矩阵，
-以及把已增长的executor projection/interpreter/numeric职责拆分。DTE multi-rank已拆给Q19.M，并等待Q16.T。
+input失败。physical layout checkpoint以test-only independent slow mapper逐坐标对照compact/Cx/NCx的footprint和
+offset，覆盖f16/f32/i8、rank 0/2/3/4、strided view、4/8/16/32/64 tail对齐台阶、channel block及retained/folded
+tail边界；同时证明合法坐标映射唯一且位于physical range，负数、one-past和rank mismatch在所有layout统一失败。
+Q19仍未完成：还需zero-point/stochastic证据、覆盖全部accepted组合的capability矩阵，以及把已增长的executor
+projection/interpreter/numeric职责拆分。DTE multi-rank已拆给Q19.M，并等待Q16.T。
 当前transcendental仍使用host实现，也不属于已闭合的host-independent numeric gate。
-本批`check-wafer`新鲜执行33个C++ unit和230个lit（229 pass、1个feature-inverse unsupported），CTest 3/3通过；
+本批`check-wafer`新鲜执行34个C++ unit和230个lit（229 pass、1个feature-inverse unsupported），CTest 3/3通过；
 unsupported项仍是禁用importer feature的反向gate，不覆盖Q19 mandatory path。
 
 ## 10. Q20/Q21 Vertical Workload Gates

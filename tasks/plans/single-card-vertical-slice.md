@@ -122,7 +122,9 @@ manifest/package late failure不发布partial package。
   reference projection把同一closure复制为function/block/value-id graph并执行call forwarding。后续还需
   zero-point/stochastic证据、完整capability矩阵和executor projection/interpreter/numeric职责拆分。fixed-seed
   非平凡lowered-group differential已用独立CPU loop oracle证明所有hidden channel和两层非零bias均影响完整输出；
-  独立slow layout oracle仍只应存在于property tests。
+  test-only独立slow layout oracle已跨compact/Cx/NCx、rank/dtype、全部tail对齐台阶和channel block边界逐坐标
+  对照production footprint/offset，并证明logical坐标映射唯一、位于physical range且越界统一失败；它不进入production
+  artifact或协议。
 - Q16.T先让logical collective-to-p2p materialization生成typed message identity，再在memory planning后给DTE issue
   补typed accepted physical binding，闭合all-rank match/peer/bytes/range/resource/completion、
   `TransportContract::DirectDTE`、CRT/target lowering、atomic target publication及manifest/no-card中runtime-observable

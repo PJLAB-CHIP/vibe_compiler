@@ -168,3 +168,13 @@
 - 修复模式：外部格式parser按schema顺序逐字段解析并立即检查，只有前一个成功才构造下一个`Expected`。limit、类型、
   unknown field和多字段同时损坏测试都必须证明返回结构化error且进程不崩溃；不要用一组`Expected`的布尔析取做批量
   validation。
+
+## 2026-07-13 physical offset helper 必须在 layout 分发前统一验证 logical 坐标
+
+- 现象：compact Tensor/NTensor分支会拒绝负数和one-past坐标，但Cx/NCx直接进入channel/block公式；越界C可能落到
+  retained tail或padding，负数C产生负lane，NCx越界N还可能先参与batch offset运算，helper仍返回一个offset。
+- 根因：logical shape/index legality写在compact stride循环里，Cx/NCx分支只验证了中间HW的linearization，默认调用方
+  已保证N/C合法；同一个公共helper因此按layout具有不同的坐标合同。
+- 修复模式：在rank检查后、任何layout分发和offset算术前，统一检查static shape及每一维`0 <= index < dim`；各分支只
+  负责布局映射和checked arithmetic。用不复用production布局信息的test-only slow oracle遍历合法坐标并检查每维
+  negative/one-past，避免同源公式同时掩盖边界缺口。

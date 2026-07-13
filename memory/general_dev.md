@@ -23,7 +23,9 @@
   表达physical storage，再通过`computeWaferPhysicalElementByteOffset`访问logical element。descriptor movement必须先
   完整读取payload再写回，才能在source/dest alias时保持确定语义。
 - production physical-layout helper保持唯一实现事实源；独立slow coordinate mapper只放测试中作property/differential
-  oracle，不被production代码或artifact消费，因此既能发现同源bug，也不形成第二协议。
+  oracle，不得复用production `WaferPhysicalTensorInfo`或offset helper，也不被production代码或artifact消费。矩阵应逐
+  logical坐标比较footprint/offset/唯一性/in-range，并覆盖compact stride、Cx/NCx、dtype/rank、tail对齐台阶、channel
+  block边界和每一维negative/one-past；这样既能发现同源bug，也不形成第二协议。
 - 若reference multi-rank需要的DTE被当前ExecutableBundle fail closed，先补memory-planning后的physical transport
   acceptance和target consumer，再解锁multi-rank executor；不能用手写DTE module绕过bundle gate。
 - internal bundle builder把shared MLIR context转移给返回bundle；测试要在bundle存活期间销毁source module。

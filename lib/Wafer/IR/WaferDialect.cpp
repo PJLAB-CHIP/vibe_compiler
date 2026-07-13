@@ -383,6 +383,11 @@ std::optional<int64_t> wafer::computeWaferPhysicalElementByteOffset(
     return std::nullopt;
   if (type.getRank() != static_cast<int64_t>(logicalIndices.size()))
     return std::nullopt;
+  for (auto [dim, index] : llvm::zip_equal(type.getShape(), logicalIndices)) {
+    if (dim == mlir::ShapedType::kDynamic || dim < 0 || index < 0 ||
+        index >= dim)
+      return std::nullopt;
+  }
 
   if (info->layout != MemLayout::Cx && info->layout != MemLayout::NCx) {
     llvm::SmallVector<int64_t> strides;
@@ -392,10 +397,8 @@ std::optional<int64_t> wafer::computeWaferPhysicalElementByteOffset(
       return std::nullopt;
 
     int64_t linear = 0;
-    for (auto [dim, index, stride] :
-         llvm::zip_equal(type.getShape(), logicalIndices, strides)) {
-      if (dim == mlir::ShapedType::kDynamic || dim < 0 || index < 0 ||
-          index >= dim || stride == mlir::ShapedType::kDynamic || stride < 0)
+    for (auto [index, stride] : llvm::zip_equal(logicalIndices, strides)) {
+      if (stride == mlir::ShapedType::kDynamic || stride < 0)
         return std::nullopt;
       int64_t scaled = 0;
       if (!checkedMul(index, stride, scaled) ||
