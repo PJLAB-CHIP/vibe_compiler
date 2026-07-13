@@ -418,3 +418,7 @@
   typed payload构造canonical program digest做重复export证明。CPU-only入口是
   `wafer_pytorch_xla_capture.py --emit-cpu-reference`，真实admission入口是`--emit-workload-corpus
   --verify-corpus-reproducibility`；两者都只证明corpus/frontend admission，不证明compiler、runtime或board。
+- reference executor的dtype convert不能依赖C++ cast或host rounding environment。projection从typed
+  `InstrConvertKind`复制source/destination format和verified parameter policy，把RND_MODE 0..3显式映射到APFloat
+  rounding；执行先为全部logical element生成APInt bits，全部成功后再写destination。浮点到整数的NaN/Inf/越界是
+  hard failure；stochastic seed/推进规则和zero-point数学公式缺少证据时必须在input import/storage allocation前拒绝。

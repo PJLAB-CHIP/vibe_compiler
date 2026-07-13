@@ -30,6 +30,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -267,6 +268,145 @@ module {
             std::vector<float>(8, 9.0f));
   rdma.getSourceMutable().assign(originalRDMASource);
   fullSubview.erase();
+
+  wafer::InstrElementwiseOp add;
+  bundle->getRankExecutables().front().getModule().walk(
+      [&](wafer::InstrElementwiseOp operation) {
+        if (!add && operation.getKind() == wafer::InstrElementwiseKind::Add &&
+            operation.getInputs().size() == 2)
+          add = operation;
+      });
+  ASSERT_TRUE(add);
+  mlir::Value originalAddInput = add.getInputs().front();
+  auto addInputType = mlir::cast<mlir::MemRefType>(originalAddInput.getType());
+  auto i32Type = mlir::MemRefType::get(
+      addInputType.getShape(), builder.getI32Type(), addInputType.getLayout(),
+      addInputType.getMemorySpace());
+  builder.setInsertionPoint(add);
+  auto roundedInteger = builder.create<mlir::memref::AllocOp>(
+      add.getLoc(), i32Type, mlir::ValueRange{});
+  roundedInteger->setAttr(wafer::kWaferSPMOffsetAttrName,
+                          wafer::SPMOffsetAttr::get(add.getContext(), 1 << 20));
+  auto roundedFloat = builder.create<mlir::memref::AllocOp>(
+      add.getLoc(), addInputType, mlir::ValueRange{});
+  roundedFloat->setAttr(wafer::kWaferSPMOffsetAttrName,
+                        wafer::SPMOffsetAttr::get(add.getContext(), 2 << 20));
+  auto toInteger = builder.create<wafer::InstrConvertOp>(
+      add.getLoc(), wafer::InstrConvertKind::Fp32Int32, originalAddInput,
+      roundedInteger, /*zero_point=*/mlir::IntegerAttr{},
+      builder.getI64IntegerAttr(0));
+  auto backToFloat = builder.create<wafer::InstrConvertOp>(
+      add.getLoc(), wafer::InstrConvertKind::Int32Fp32, roundedInteger,
+      roundedFloat, /*zero_point=*/mlir::IntegerAttr{},
+      builder.getI64IntegerAttr(0));
+  add->setOperand(0, roundedFloat);
+
+  std::vector<wafer::compiler::ReferenceInputBinding> roundingInputs = inputs;
+  auto fractional = wafer::compiler::ReferenceTensor::create(
+      "f32", {8},
+      bytesOf({1.5f, -1.5f, 2.5f, -2.5f, 0.5f, -0.5f, 10.25f, -10.25f}));
+  auto zeros = wafer::compiler::ReferenceTensor::create(
+      "f32", {8}, bytesOf(std::vector<float>(8, 0.0f)));
+  ASSERT_TRUE(static_cast<bool>(fractional));
+  ASSERT_TRUE(static_cast<bool>(zeros));
+  roundingInputs[0].tensor = std::move(*fractional);
+  roundingInputs[1].tensor = std::move(*zeros);
+
+  struct RoundingCase {
+    int64_t mode;
+    std::vector<float> expected;
+  };
+  const std::vector<RoundingCase> roundingCases = {
+      {0, {2, -2, 2, -2, 0, 0, 10, -10}},
+      {1, {1, -1, 2, -2, 0, 0, 10, -10}},
+      {2, {2, -1, 3, -2, 1, 0, 11, -10}},
+      {3, {1, -2, 2, -3, 0, -1, 10, -11}},
+  };
+  for (const RoundingCase &roundingCase : roundingCases) {
+    toInteger.setRoundingMode(roundingCase.mode);
+    backToFloat.setRoundingMode(roundingCase.mode);
+    auto roundingProgram =
+        wafer::compiler::prepareReferenceRank(*bundle, /*logicalRank=*/0);
+    if (!roundingProgram)
+      FAIL() << llvm::toString(roundingProgram.takeError());
+    auto roundingResult = wafer::compiler::executeReferenceProgram(
+        *roundingProgram, roundingInputs);
+    if (!roundingResult)
+      FAIL() << llvm::toString(roundingResult.takeError());
+    EXPECT_EQ(floatsOf(roundingResult->getOutputs().front().tensor.getBytes()),
+              roundingCase.expected);
+  }
+
+  toInteger.setRoundingMode(2);
+  backToFloat.setRoundingMode(2);
+  auto immutableRoundingProgram =
+      wafer::compiler::prepareReferenceRank(*bundle, /*logicalRank=*/0);
+  if (!immutableRoundingProgram)
+    FAIL() << llvm::toString(immutableRoundingProgram.takeError());
+  toInteger.setRoundingMode(1);
+  backToFloat.setRoundingMode(1);
+  auto immutableRoundingResult = wafer::compiler::executeReferenceProgram(
+      *immutableRoundingProgram, roundingInputs);
+  if (!immutableRoundingResult)
+    FAIL() << llvm::toString(immutableRoundingResult.takeError());
+  EXPECT_EQ(
+      floatsOf(immutableRoundingResult->getOutputs().front().tensor.getBytes()),
+      roundingCases[2].expected);
+
+  auto nonFinite = wafer::compiler::ReferenceTensor::create(
+      "f32", {8},
+      bytesOf({std::numeric_limits<float>::infinity(), 0, 0, 0, 0, 0, 0, 0}));
+  ASSERT_TRUE(static_cast<bool>(nonFinite));
+  auto nonFiniteInputs = roundingInputs;
+  nonFiniteInputs[0].tensor = std::move(*nonFinite);
+  auto nonFiniteResult = wafer::compiler::executeReferenceProgram(
+      *immutableRoundingProgram, nonFiniteInputs);
+  ASSERT_FALSE(static_cast<bool>(nonFiniteResult));
+  EXPECT_NE(llvm::toString(nonFiniteResult.takeError()).find("NaN, Inf"),
+            std::string::npos);
+
+  toInteger.setRoundingMode(4);
+  auto stochastic =
+      wafer::compiler::executeReferenceRank(*bundle, /*logicalRank=*/0, {});
+  ASSERT_FALSE(static_cast<bool>(stochastic));
+  std::string stochasticMessage = llvm::toString(stochastic.takeError());
+  EXPECT_NE(stochasticMessage.find("capability preflight"), std::string::npos);
+  EXPECT_NE(stochasticMessage.find("stochastic"), std::string::npos);
+
+  add->setOperand(0, originalAddInput);
+  backToFloat.erase();
+  toInteger.erase();
+  roundedFloat.erase();
+  roundedInteger.erase();
+
+  auto i8Type = mlir::MemRefType::get(
+      addInputType.getShape(), builder.getI8Type(), addInputType.getLayout(),
+      addInputType.getMemorySpace());
+  auto f16Type = mlir::MemRefType::get(
+      addInputType.getShape(), builder.getF16Type(), addInputType.getLayout(),
+      addInputType.getMemorySpace());
+  builder.setInsertionPoint(add);
+  auto quantized = builder.create<mlir::memref::AllocOp>(add.getLoc(), i8Type,
+                                                         mlir::ValueRange{});
+  quantized->setAttr(wafer::kWaferSPMOffsetAttrName,
+                     wafer::SPMOffsetAttr::get(add.getContext(), 1 << 20));
+  auto dequantized = builder.create<mlir::memref::AllocOp>(
+      add.getLoc(), f16Type, mlir::ValueRange{});
+  dequantized->setAttr(wafer::kWaferSPMOffsetAttrName,
+                       wafer::SPMOffsetAttr::get(add.getContext(), 2 << 20));
+  auto zeroPointConvert = builder.create<wafer::InstrConvertOp>(
+      add.getLoc(), wafer::InstrConvertKind::Int8Fp16, quantized, dequantized,
+      builder.getI64IntegerAttr(0), /*rounding_mode=*/mlir::IntegerAttr{});
+  auto zeroPointProgram =
+      wafer::compiler::executeReferenceRank(*bundle, /*logicalRank=*/0, {});
+  ASSERT_FALSE(static_cast<bool>(zeroPointProgram));
+  std::string zeroPointMessage = llvm::toString(zeroPointProgram.takeError());
+  EXPECT_NE(zeroPointMessage.find("capability preflight"), std::string::npos);
+  EXPECT_NE(zeroPointMessage.find("zero-point convert formula"),
+            std::string::npos);
+  zeroPointConvert.erase();
+  dequantized.erase();
+  quantized.erase();
 
   mlir::memref::AllocOp spmAlloc;
   bundle->getRankExecutables().front().getModule().walk(

@@ -321,6 +321,18 @@ numeric backend要求：
 - 基本算术明确中间精度与写回点；transcendental按dtype/op记录tolerance和host-independent special-value gate；
 - capability table从projection builder实际支持的op/type/profile生成测试矩阵，不另维护一份声称支持的字符串列表。
 
+convert子边界按instruction kind直接投影source/destination format和参数形态，执行期不再解释op或依赖host cast：
+
+- `RND_MODE=0/1/2/3`分别映射为nearest-even、toward-zero、toward-positive、toward-negative；每个element先以
+  `APInt`/`APFloat`完成转换，整条convert全部成功后才commit destination，NaN/Inf到integer或越界不允许靠
+  host undefined/implementation-defined cast决定结果；
+- `RND_MODE=4` stochastic在确定性seed、随机数推进单位和hardware对应证据固定前必须在projection preflight拒绝；
+- INT8到floating的`zero_point` wrapper目前只证明了字段和调用形态，尚无足以区分subtract/add/raw reinterpret的
+  数学公式证据，因此保持typed capability failure，不能用常见量化公式猜测；这四个kind仍是Q19 convert gate的明确
+  未完成项，而不是静默采用默认语义；
+- 支持矩阵由typed `InstrConvertKind`到format/parameter policy的同一projection dispatch形成；完整矩阵测试必须遍历
+  该dispatch实际接受的组合，不维护第二份字符串能力表。
+
 验证分三类：
 
 - fixed-seed nontrivial lowered-group differential：非零bias、所有hidden channel参与输出，覆盖alias/reuse和完整tensor；
@@ -353,8 +365,13 @@ boundary dtype不一致均为hard failure。当前进一步增加owner-backed im
 当前supported op的typed fields、memref type/static view delta和SSA value-id relation，执行阶段不再访问MLIR
 `Operation`/`Value`；完整projection在input import/arena allocation前完成。测试已证明projection后篡改原RDMA descriptor
 不改变prepared program，而convenience入口重新preflight会拒绝；unsupported op优先于缺失input失败，full static
-subview也经projection执行。该checkpoint仍不把Q19标成完成：SCF/CFG/direct-call、convert/rounding、独立layout
-property和非平凡differential尚未闭合，当前transcendental仍使用host实现。DTE multi-rank已拆给Q19.M，并等待Q16.T。
+subview也经projection执行。进一步的convert checkpoint从typed
+`InstrConvertKind`投影非zero-point dtype pair，以APInt/APFloat执行integer/floating和floating/floating转换，
+RND_MODE 0..3的tie/方向case均通过；浮点到integer的NaN/Inf/越界显式失败，destination只在整条convert成功后写入。
+prepared program不受源op后续rounding mutation影响；stochastic和缺少数学公式证据的INT8 zero-point在缺失input前
+即返回capability failure。Q19仍未完成：除上述SCF/CFG/direct-call、layout property和非平凡differential外，还需
+zero-point/stochastic证据和覆盖全部accepted组合的capability矩阵。DTE multi-rank已拆给Q19.M，并等待Q16.T。
+当前transcendental仍使用host实现，也不属于已闭合的host-independent numeric gate。
 本批`check-wafer`新鲜执行33个C++ unit和230个lit（229 pass、1个feature-inverse unsupported），CTest 3/3通过；
 unsupported项仍是禁用importer feature的反向gate，不覆盖Q19 mandatory path。
 

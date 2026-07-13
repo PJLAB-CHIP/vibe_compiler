@@ -116,8 +116,10 @@ manifest/package late failure不发布partial package。
   invocation-local immutable `ReferenceProgram`，再执行memref/instruction/control-flow；projection不序列化、不进入
   package，也不保存planner或collective schedule。当前supported flat/tile-region op、static view和执行前capability
   preflight已落地；执行期不再读取mutable MLIR。
-- single-rank engine继续补齐SCF/CFG/direct-call、APFloat/APInt convert/rounding和完整capability矩阵；fixed-seed非平凡
-  lowered-group differential必须让所有channel/bias影响输出，独立slow layout oracle只存在于property tests。
+- single-rank engine已用APInt/APFloat闭合非zero-point convert和RND_MODE 0..3，整条convert先计算后commit；
+  stochastic及缺少数学公式证据的INT8 zero-point kind继续在projection fail closed。后续补SCF/CFG/direct-call、
+  zero-point/stochastic证据和完整capability矩阵；fixed-seed非平凡lowered-group differential必须让所有channel/bias
+  影响输出，独立slow layout oracle只存在于property tests。
 - Q16.T先让logical collective-to-p2p materialization生成typed message identity，再在memory planning后给DTE issue
   补typed accepted physical binding，闭合all-rank match/peer/bytes/range/resource/completion、
   `TransportContract::DirectDTE`、CRT/target lowering、atomic target publication及manifest/no-card中runtime-observable

@@ -12,6 +12,7 @@
 
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APInt.h"
+#include "llvm/ADT/APSInt.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
@@ -50,11 +51,22 @@ struct ReferenceProgram::Impl {
     RDMA,
     WDMA,
     GatherScatter,
+    Convert,
     Gemm,
     Elementwise,
     Fill,
     LocalFence,
     Return,
+  };
+
+  enum class NumericFormat {
+    Int8,
+    Int16,
+    Int32,
+    BFloat16,
+    Float16,
+    Float32,
+    TF32
   };
 
   struct Scalar {
@@ -91,6 +103,10 @@ struct ReferenceProgram::Impl {
     std::optional<int64_t> destOffset;
     uint64_t byteCount = 0;
     uint64_t innerBytes = 0;
+    NumericFormat sourceFormat = NumericFormat::Float32;
+    NumericFormat destFormat = NumericFormat::Float32;
+    llvm::APFloat::roundingMode roundingMode =
+        llvm::APFloat::rmNearestTiesToEven;
     int64_t m = 0;
     int64_t n = 0;
     int64_t k = 0;
@@ -273,6 +289,140 @@ bool isSupportedElementwiseKind(wafer::InstrElementwiseKind kind,
     return true;
   default:
     return false;
+  }
+}
+
+using NumericFormat = ReferenceProgram::Impl::NumericFormat;
+
+enum class ConvertParameterKind { None, Rounding, ZeroPoint };
+
+struct ConvertSpec {
+  NumericFormat source;
+  NumericFormat dest;
+  ConvertParameterKind parameter;
+};
+
+std::optional<ConvertSpec> getConvertSpec(wafer::InstrConvertKind kind) {
+  using Kind = wafer::InstrConvertKind;
+  using Parameter = ConvertParameterKind;
+  using Format = NumericFormat;
+  switch (kind) {
+  case Kind::Int8Fp16:
+    return ConvertSpec{Format::Int8, Format::Float16, Parameter::ZeroPoint};
+  case Kind::Int8Bf16:
+    return ConvertSpec{Format::Int8, Format::BFloat16, Parameter::ZeroPoint};
+  case Kind::Int8Fp32:
+    return ConvertSpec{Format::Int8, Format::Float32, Parameter::ZeroPoint};
+  case Kind::Int8Tf32:
+    return ConvertSpec{Format::Int8, Format::TF32, Parameter::ZeroPoint};
+  case Kind::Int16Fp16:
+    return ConvertSpec{Format::Int16, Format::Float16, Parameter::None};
+  case Kind::Int16Bf16:
+    return ConvertSpec{Format::Int16, Format::BFloat16, Parameter::Rounding};
+  case Kind::Int16Fp32:
+    return ConvertSpec{Format::Int16, Format::Float32, Parameter::Rounding};
+  case Kind::Int16Tf32:
+    return ConvertSpec{Format::Int16, Format::TF32, Parameter::Rounding};
+  case Kind::Int32Fp16:
+    return ConvertSpec{Format::Int32, Format::Float16, Parameter::Rounding};
+  case Kind::Int32Bf16:
+    return ConvertSpec{Format::Int32, Format::BFloat16, Parameter::Rounding};
+  case Kind::Int32Fp32:
+    return ConvertSpec{Format::Int32, Format::Float32, Parameter::Rounding};
+  case Kind::Int32Tf32:
+    return ConvertSpec{Format::Int32, Format::TF32, Parameter::Rounding};
+  case Kind::Bf16Int8:
+    return ConvertSpec{Format::BFloat16, Format::Int8, Parameter::None};
+  case Kind::Bf16Int16:
+    return ConvertSpec{Format::BFloat16, Format::Int16, Parameter::Rounding};
+  case Kind::Bf16Int32:
+    return ConvertSpec{Format::BFloat16, Format::Int32, Parameter::Rounding};
+  case Kind::Bf16Fp16:
+    return ConvertSpec{Format::BFloat16, Format::Float16, Parameter::None};
+  case Kind::Bf16Fp32:
+    return ConvertSpec{Format::BFloat16, Format::Float32, Parameter::None};
+  case Kind::Bf16Tf32:
+    return ConvertSpec{Format::BFloat16, Format::TF32, Parameter::None};
+  case Kind::Fp16Int8:
+    return ConvertSpec{Format::Float16, Format::Int8, Parameter::Rounding};
+  case Kind::Fp16Int16:
+    return ConvertSpec{Format::Float16, Format::Int16, Parameter::Rounding};
+  case Kind::Fp16Int32:
+    return ConvertSpec{Format::Float16, Format::Int32, Parameter::Rounding};
+  case Kind::Fp16Bf16:
+    return ConvertSpec{Format::Float16, Format::BFloat16, Parameter::Rounding};
+  case Kind::Fp16Fp32:
+    return ConvertSpec{Format::Float16, Format::Float32, Parameter::None};
+  case Kind::Fp16Tf32:
+    return ConvertSpec{Format::Float16, Format::TF32, Parameter::None};
+  case Kind::Fp32Int8:
+    return ConvertSpec{Format::Float32, Format::Int8, Parameter::Rounding};
+  case Kind::Fp32Int16:
+    return ConvertSpec{Format::Float32, Format::Int16, Parameter::Rounding};
+  case Kind::Fp32Int32:
+    return ConvertSpec{Format::Float32, Format::Int32, Parameter::Rounding};
+  case Kind::Fp32Fp16:
+    return ConvertSpec{Format::Float32, Format::Float16, Parameter::Rounding};
+  case Kind::Fp32Bf16:
+    return ConvertSpec{Format::Float32, Format::BFloat16, Parameter::Rounding};
+  case Kind::Fp32Tf32:
+    return ConvertSpec{Format::Float32, Format::TF32, Parameter::Rounding};
+  case Kind::Tf32Int8:
+    return ConvertSpec{Format::TF32, Format::Int8, Parameter::Rounding};
+  case Kind::Tf32Int16:
+    return ConvertSpec{Format::TF32, Format::Int16, Parameter::Rounding};
+  case Kind::Tf32Int32:
+    return ConvertSpec{Format::TF32, Format::Int32, Parameter::Rounding};
+  case Kind::Tf32Fp16:
+    return ConvertSpec{Format::TF32, Format::Float16, Parameter::None};
+  case Kind::Tf32Bf16:
+    return ConvertSpec{Format::TF32, Format::BFloat16, Parameter::Rounding};
+  case Kind::Tf32Fp32:
+    return ConvertSpec{Format::TF32, Format::Float32, Parameter::None};
+  }
+  return std::nullopt;
+}
+
+bool matchesNumericFormat(mlir::Type type, NumericFormat format) {
+  switch (format) {
+  case NumericFormat::Int8:
+  case NumericFormat::Int16:
+  case NumericFormat::Int32: {
+    auto integer = mlir::dyn_cast<mlir::IntegerType>(type);
+    unsigned expectedWidth = format == NumericFormat::Int8    ? 8
+                             : format == NumericFormat::Int16 ? 16
+                                                              : 32;
+    return integer && integer.isSignless() &&
+           integer.getWidth() == expectedWidth;
+  }
+  case NumericFormat::BFloat16:
+    return type.isBF16();
+  case NumericFormat::Float16:
+    return type.isF16();
+  case NumericFormat::Float32:
+    return type.isF32();
+  case NumericFormat::TF32:
+    return mlir::isa<mlir::FloatTF32Type>(type);
+  }
+  return false;
+}
+
+llvm::Expected<llvm::APFloat::roundingMode>
+projectRoundingMode(uint64_t value) {
+  switch (value) {
+  case 0:
+    return llvm::APFloat::rmNearestTiesToEven;
+  case 1:
+    return llvm::APFloat::rmTowardZero;
+  case 2:
+    return llvm::APFloat::rmTowardPositive;
+  case 3:
+    return llvm::APFloat::rmTowardNegative;
+  case 4:
+    return unsupported(
+        "stochastic convert rounding has no deterministic reference policy");
+  default:
+    return unsupported("convert rounding mode is outside RND_MODE");
   }
 }
 
@@ -521,6 +671,63 @@ private:
         command.destOffset = movement.getDstOffset();
         command.byteCount = movement.getByteCount();
         command.innerBytes = movement.getInnerBytes();
+      } else if (auto convert =
+                     mlir::dyn_cast<wafer::InstrConvertOp>(operation)) {
+        std::optional<ConvertSpec> spec = getConvertSpec(convert.getKind());
+        if (!spec)
+          return unsupported("unknown instruction convert kind");
+        auto sourceType = convert.getSource().getType();
+        auto destType = convert.getDest().getType();
+        if (!sourceType.hasStaticShape() || !destType.hasStaticShape() ||
+            !wafer::isWaferSPMMemRefType(sourceType) ||
+            !wafer::isWaferSPMMemRefType(destType))
+          return unsupported("convert requires static Wafer SPM memrefs");
+        if (!matchesNumericFormat(sourceType.getElementType(), spec->source) ||
+            !matchesNumericFormat(destType.getElementType(), spec->dest))
+          return unsupported("convert kind disagrees with memref element type");
+        if (sourceType.getNumElements() != destType.getNumElements())
+          return unsupported(
+              "convert source and destination element counts disagree");
+        if (!wafer::computeWaferPhysicalTensorInfo(sourceType) ||
+            !wafer::computeWaferPhysicalTensorInfo(destType))
+          return unsupported("convert has no accepted physical layout");
+
+        std::optional<uint64_t> zeroPoint = convert.getZeroPoint();
+        std::optional<uint64_t> roundingMode = convert.getRoundingMode();
+        switch (spec->parameter) {
+        case ConvertParameterKind::None:
+          if (zeroPoint || roundingMode)
+            return unsupported("plain convert has unexpected parameters");
+          break;
+        case ConvertParameterKind::Rounding: {
+          if (zeroPoint || !roundingMode)
+            return unsupported(
+                "rounding convert has invalid parameter combination");
+          auto projectedRounding = projectRoundingMode(*roundingMode);
+          if (!projectedRounding)
+            return projectedRounding.takeError();
+          command.roundingMode = *projectedRounding;
+          break;
+        }
+        case ConvertParameterKind::ZeroPoint:
+          if (!zeroPoint || roundingMode)
+            return unsupported(
+                "zero-point convert has invalid parameter combination");
+          return unsupported(
+              "INT8 zero-point convert formula is not evidenced");
+        }
+
+        auto source = use(convert.getSource());
+        auto dest = use(convert.getDest());
+        if (!source)
+          return source.takeError();
+        if (!dest)
+          return dest.takeError();
+        command.kind = CommandKind::Convert;
+        command.source = *source;
+        command.dest = *dest;
+        command.sourceFormat = spec->source;
+        command.destFormat = spec->dest;
       } else if (auto gemm = mlir::dyn_cast<wafer::InstrGemmOp>(operation)) {
         if (gemm.getBatchCount().value_or(1) != 1)
           return unsupported("batched GEMM");
@@ -709,6 +916,45 @@ struct BufferView {
   mlir::MemRefType type;
 };
 
+struct NumericValue {
+  std::optional<llvm::APInt> integer;
+  std::optional<llvm::APFloat> floating;
+};
+
+unsigned getNumericBitWidth(NumericFormat format) {
+  switch (format) {
+  case NumericFormat::Int8:
+    return 8;
+  case NumericFormat::Int16:
+  case NumericFormat::BFloat16:
+  case NumericFormat::Float16:
+    return 16;
+  case NumericFormat::Int32:
+  case NumericFormat::Float32:
+  case NumericFormat::TF32:
+    return 32;
+  }
+  llvm_unreachable("unknown reference numeric format");
+}
+
+const llvm::fltSemantics *getFloatSemantics(NumericFormat format) {
+  switch (format) {
+  case NumericFormat::BFloat16:
+    return &llvm::APFloat::BFloat();
+  case NumericFormat::Float16:
+    return &llvm::APFloat::IEEEhalf();
+  case NumericFormat::Float32:
+    return &llvm::APFloat::IEEEsingle();
+  case NumericFormat::TF32:
+    return &llvm::APFloat::FloatTF32();
+  case NumericFormat::Int8:
+  case NumericFormat::Int16:
+  case NumericFormat::Int32:
+    return nullptr;
+  }
+  llvm_unreachable("unknown reference numeric format");
+}
+
 llvm::Expected<int64_t> getAbsoluteOffset(const BufferView &buffer,
                                           llvm::ArrayRef<int64_t> indices,
                                           int64_t byteWidth) {
@@ -724,6 +970,70 @@ llvm::Expected<int64_t> getAbsoluteOffset(const BufferView &buffer,
       absolute > static_cast<int64_t>(buffer.storage->bytes.size()) - byteWidth)
     return invalid("logical access exceeds reference storage arena");
   return absolute;
+}
+
+llvm::Expected<NumericValue> readNumeric(const BufferView &buffer,
+                                         llvm::ArrayRef<int64_t> indices,
+                                         NumericFormat format) {
+  if (!matchesNumericFormat(buffer.type.getElementType(), format))
+    return invalid("projected convert source format disagrees with buffer");
+  unsigned bitWidth = getNumericBitWidth(format);
+  int64_t byteWidth = bitWidth / 8;
+  auto offset = getAbsoluteOffset(buffer, indices, byteWidth);
+  if (!offset)
+    return offset.takeError();
+  llvm::APInt bits(bitWidth, 0);
+  for (int64_t byte = 0; byte < byteWidth; ++byte)
+    bits |= llvm::APInt(bitWidth, buffer.storage->bytes[*offset + byte])
+            << (byte * 8);
+  if (const llvm::fltSemantics *semantics = getFloatSemantics(format))
+    return NumericValue{std::nullopt, llvm::APFloat(*semantics, bits)};
+  return NumericValue{std::move(bits), std::nullopt};
+}
+
+llvm::Expected<llvm::APInt>
+convertNumeric(const NumericValue &source, NumericFormat destFormat,
+               llvm::APFloat::roundingMode roundingMode) {
+  const llvm::fltSemantics *destSemantics = getFloatSemantics(destFormat);
+  if (source.integer && destSemantics) {
+    llvm::APFloat result = llvm::APFloat::getZero(*destSemantics);
+    result.convertFromAPInt(*source.integer, /*IsSigned=*/true, roundingMode);
+    return result.bitcastToAPInt();
+  }
+  if (source.floating && destSemantics) {
+    llvm::APFloat result = *source.floating;
+    bool losesInfo = false;
+    result.convert(*destSemantics, roundingMode, &losesInfo);
+    return result.bitcastToAPInt();
+  }
+  if (source.floating && !destSemantics) {
+    llvm::APSInt result(getNumericBitWidth(destFormat), /*isUnsigned=*/false);
+    bool isExact = false;
+    llvm::APFloat::opStatus status =
+        source.floating->convertToInteger(result, roundingMode, &isExact);
+    if ((status & llvm::APFloat::opInvalidOp) != 0)
+      return invalid(
+          "floating-to-integer convert input is NaN, Inf, or out of range");
+    return llvm::APInt(result);
+  }
+  return invalid("projected convert has unsupported integer-to-integer pair");
+}
+
+llvm::Error writeNumericBits(const BufferView &buffer,
+                             llvm::ArrayRef<int64_t> indices,
+                             NumericFormat format, const llvm::APInt &bits) {
+  if (!matchesNumericFormat(buffer.type.getElementType(), format) ||
+      bits.getBitWidth() != getNumericBitWidth(format))
+    return invalid(
+        "projected convert destination format disagrees with buffer");
+  int64_t byteWidth = bits.getBitWidth() / 8;
+  auto offset = getAbsoluteOffset(buffer, indices, byteWidth);
+  if (!offset)
+    return offset.takeError();
+  for (int64_t byte = 0; byte < byteWidth; ++byte)
+    buffer.storage->bytes[*offset + byte] =
+        static_cast<uint8_t>(bits.extractBitsAsZExtValue(8, byte * 8));
+  return llvm::Error::success();
 }
 
 llvm::Expected<float> readF32(const BufferView &buffer,
@@ -936,6 +1246,10 @@ private:
         if (llvm::Error error = executeGatherScatter(command))
           return std::move(error);
         break;
+      case CommandKind::Convert:
+        if (llvm::Error error = executeConvert(command))
+          return std::move(error);
+        break;
       case CommandKind::Gemm:
         if (llvm::Error error = executeGemm(command))
           return std::move(error);
@@ -1092,6 +1406,47 @@ private:
       return invalid("movement source/destination descriptors disagree");
     return copyChunks(*source, *dest, *sourceOffsets, *destOffsets,
                       command.innerBytes);
+  }
+
+  llvm::Error executeConvert(const Command &command) {
+    auto source = lookup(command.source);
+    auto dest = lookup(command.dest);
+    if (!source)
+      return source.takeError();
+    if (!dest)
+      return dest.takeError();
+
+    std::vector<llvm::APInt> converted;
+    converted.reserve(source->type.getNumElements());
+    if (llvm::Error error = forEachLogicalIndex(
+            source->type.getShape(),
+            [&](llvm::ArrayRef<int64_t> index) -> llvm::Error {
+              auto value = readNumeric(*source, index, command.sourceFormat);
+              if (!value)
+                return value.takeError();
+              auto result = convertNumeric(*value, command.destFormat,
+                                           command.roundingMode);
+              if (!result)
+                return result.takeError();
+              converted.push_back(std::move(*result));
+              return llvm::Error::success();
+            }))
+      return error;
+
+    size_t position = 0;
+    if (llvm::Error error = forEachLogicalIndex(
+            dest->type.getShape(),
+            [&](llvm::ArrayRef<int64_t> index) -> llvm::Error {
+              if (position >= converted.size())
+                return invalid(
+                    "projected convert destination has excess elements");
+              return writeNumericBits(*dest, index, command.destFormat,
+                                      converted[position++]);
+            }))
+      return error;
+    if (position != converted.size())
+      return invalid("projected convert destination has too few elements");
+    return llvm::Error::success();
   }
 
   llvm::Error executeGemm(const Command &command) {
