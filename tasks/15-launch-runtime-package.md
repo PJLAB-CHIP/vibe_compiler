@@ -1,7 +1,7 @@
 # Wafer Typed Manifest、RuntimeSession 和 Launch Boundary
 
-状态：2026-07-13已完成Q18及Q16.T的Direct DTE runtime requirement扩展。近期wire form为schema v2、唯一typed
-C++ model的canonical JSON，不是Protobuf；provider/board execution
+状态：2026-07-13已完成Q18及Q16.T的Direct DTE runtime requirement扩展，并补充target execution model provider
+边界。近期wire form为schema v2、唯一typed C++ model的canonical JSON，不是Protobuf；provider/board execution
 仍是后续独立gate。实现状态看`tasks/progress.md`。
 
 ## 1. 目标和非目标
@@ -37,7 +37,7 @@ Pipeline position:
 - Output artifact / IR:
   VerifiedPackageManifest、canonical package JSON、no-card RuntimeSessionPlan。
 - Downstream consumer:
-  wafer-run/no-card inspection、reference/board integration、target module loader和invocation API。
+  wafer-run/no-card inspection、target execution model/board integration、target module loader和invocation API。
 - User-level driver / named pipeline:
   Q18接入后由wafer-compile自动生成manifest和package；wafer-run只消费已验证package，不接受raw compiler IR。
   当前Q15/Q16/Q17不能以手写manifest或独立package tool冒充Q18完成。
@@ -220,6 +220,44 @@ runtime长期分三层；Q18实现前两层，第三层属于后续provider/boar
    compatibility/capacity facts做pure no-card preflight；不分配、不加载、不启动线程；
 3. `RuntimeProvider`：执行allocation/import/copy/load/resolve/submit/wait/copyback/cleanup。
 
+tasks/17定义的target execution model有两个不同边界：host target-call模式直接消费compiler内部owner-backed target
+LLVM bundle，只是target/ABI component gate，不属于`RuntimeProvider`；只有exact-module模式能加载Q18 verified
+package中的all-and-only RISC-V ELF、执行loader ABI/MMIO/Direct DTE并完成上述生命周期时，才作为target model
+`RuntimeProvider`。provider选择属于typed runtime environment/session policy，不进入manifest，也不能增加model专用
+resource、instruction schedule或transport分支。执行只产出invocation-local typed result/status/diagnostic，不修改或
+回写package。当前`RuntimeSessionPlan`只覆盖一个entry/rank；Direct DTE exact provider落地时必须增加owner-backed
+all-rank invocation/session，将现有verified entries和bindings组成共同submit/progress/status/cleanup域，不能简单顺序
+循环单entry plan，也不能为此把module内message/packet schedule复制到manifest。
+
+### 8.1 Deferred All-Rank Provider Session Contract
+
+该合同只在Q22.E进入实现时materialize；当前Q18完成状态仍止于per-entry pure no-card plan。
+
+```text
+Pipeline position:
+- Upstream artifact / IR:
+  Q18 VerifiedPackageManifest及其all-and-only entries/modules/resources/completions/transport requirements；调用方提供
+  按ResourceId和global/local slice闭合的all-rank invocation bindings，以及已验证的typed provider environment。
+- Current stage responsibility:
+  先对完整rank domain做side-effect-free capability/binding preflight，再建立provider-owned context、allocation/import、
+  H2D、exact module load/resolve、共同submit/progress/wait/status、D2H和逆序cleanup。Direct DTE ranks属于一个执行域，
+  不能从per-entry vector顺序恢复progress。
+- Output artifact / IR:
+  owner-backed invocation-local provider session/result，拥有all-rank runtime handles、terminal/error状态、typed outputs
+  和cleanup state；它不序列化、不进入package或compiler artifact。失败不产生partial successful result。
+- Downstream consumer:
+  target-model或board provider execution、tasks/16 lifecycle/failure gate和同package correlation；不被compiler planning消费。
+- User-level driver / named pipeline:
+  wafer-run只从verified package和typed invocation建立session，并通过显式provider选择执行；per-entry no-card plan仍只作
+  component preflight，不能由调用方拼成production all-rank execution。
+- Explicit non-goals:
+  不复制module内instruction/message/packet schedule，不重新分配logical peer/FSM，不修改manifest，不从entry调用顺序
+  恢复transport identity。
+- Completion gate:
+  rank-count=1/16真实package的all-and-only bindings、entries和modules均经历完整provider lifecycle；每阶段failure
+  injection保证descendant suppression、wait/status失败无copyback、资源逆序cleanup，任一rank失败无partial result。
+```
+
 最小API语义：
 
 ```cpp
@@ -247,8 +285,13 @@ no-card允许证明：
 - deterministic launch/completion plan；
 - side-effect-free rejection。
 
-fake/real provider必须实际记录并执行抽象调用序列，而不是只打印预期文本；该能力不属于Q18完成证明，进入
-configured provider/board任务后再补编号设计和failure/cleanup gate。
+target-call model可以比no-card多证明target LLVM/CRT call的功能结果，但仍不证明package内exact module、provider
+lifecycle或board。exact target model provider可以证明verified package在指定model profile中的执行，但仍不是board
+execution；四类证据的分层和correlation gate由tasks/16、tasks/17拥有。
+
+fake/real provider必须实际记录并执行抽象调用序列，而不是只打印预期文本；该能力不属于Q18完成证明。target model
+provider按Q22/Q22.E和tasks/17 gate推进，真实board按Q6.B推进；二者共同遵守本文件all-rank session及
+tasks/16 failure/cleanup合同。
 
 board gate另行证明：
 
@@ -259,8 +302,8 @@ board gate另行证明：
 - copyback和完整输出比较；
 - timeout/device error/cleanup。
 
-没有configured board时board任务保持later/blocked。no-card、fake provider或reference executor均不能标记board
-完成。
+没有configured board时board任务保持later/blocked。no-card、fake provider、reference executor或target model均不能
+标记board完成。
 
 ## 10. Verification
 
@@ -289,6 +332,8 @@ feature-inverse unsupported），CTest 3/3通过；unsupported仅为启用import
 
 ## 11. Deferred Extensions
 
+- exact target model provider：等待vendor simulator或RV64 ISS、loader ABI、MMIO/Direct DTE和all-rank lifecycle闭合；
+  不以host重新lower/重编译module替代package中的exact ELF；
 - Protobuf或其它stable wire format；
 - multi-process loader和version negotiation；
 - persistent state/migration；

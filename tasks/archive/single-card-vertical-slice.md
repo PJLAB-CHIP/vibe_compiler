@@ -1,7 +1,7 @@
 # Wafer 单卡纵向切片实施计划
 
-状态：active。任务状态和直接依赖以 `tasks/progress.md` 为准；本文件只拆解施工 checkpoint，不声明新的
-IR/ABI 合同。设计边界由 `tasks/01-16` 对应 owner 文档承担，审计证据见
+状态：已完成并归档。本文只保留历史施工 checkpoint，不声明当前任务状态或新的IR/ABI合同。完成事实以
+`tasks/progress.md`及当前编号设计文档为准；设计边界由`tasks/01-16`对应owner文档承担，审计证据见
 `tasks/archive/12-architecture-evidence-reset.md`。
 
 ## Pipeline Contract
@@ -110,7 +110,7 @@ manifest/package late failure不发布partial package。
 
 ## Checkpoint 7: Reference Core, Transport Activation And Vertical Gates
 
-状态：进行中；Q19 core、Q16.T、Q19.M和Q20已完成，当前Q21为唯一doing。
+状态：已完成；Q19 core、Q16.T、Q19.M、Q20和Q21的最终事实见当前任务队列和编号设计文档。
 
 - Q19 core只接受Q16 `ExecutableBundle`和typed role/index invocation tensors，先把accepted rank all-and-only投影为
   invocation-local immutable `ReferenceProgram`，再执行memref/instruction/control-flow；projection不序列化、不进入
@@ -155,9 +155,8 @@ Q20已由同一production driver完成前两条gate：package发布后重新读�
 本批新鲜验证为43/43 C++ unit、235/236 lit（唯一unsupported是enabled-build feature inverse，Q20纵向test实际
 执行）以及CTest 3/3。
 
-完成条件：Q19/Q16.T/Q19.M各自的component gate先闭合；随后三条纵向gate均只经`wafer-compile`，reference结果与
-独立CPU oracle比较。当前前两条Q20 gate已完成，Q21 tiny Llama gate仍在推进；board test未运行时不声称board
-numeric/completion完成。
+完成记录：Q19/Q16.T/Q19.M各自的component gate先闭合；随后三条纵向gate均只经`wafer-compile`，reference结果与
+独立CPU oracle比较。Q20与Q21均已完成；board test未运行时仍不声称board numeric/completion完成。
 
 ## Checkpoint 8: Structural Cleanup
 

@@ -1,6 +1,6 @@
 # Wafer AI Compiler Architecture
 
-状态：2026-07-12按当前实现事实重基线。本文固定近期单tile/单卡16-tile纵向合同和长期扩展边界；
+状态：2026-07-13按当前实现事实和target execution model分支更新。本文固定近期单tile/单卡16-tile纵向合同和长期扩展边界；
 实现状态只看`tasks/progress.md`，专题细节由第9节编号文档拥有。
 
 本文使用 **Wafer** 作为目标硬件和软件栈名称。TX8/TX81只在引用底层依赖、公开ABI或反向工程事实时
@@ -20,10 +20,12 @@ runtime和reference executor直接消费。tiny Llama decoder block是linear/MLP
 - `wafer.group`、`wafer.tile.region`、target-abstract tile compute/movement；
 - instruction IR、Direct DTE/local fence、SPM/DDR planning；
 - target LLVM CRT calls、repo-local CRT和device link；
-- 独立的JSON package/runtime prototype。
+- typed manifest、canonical JSON和no-card RuntimeSession。
 
-当前尚不存在source-to-target的统一driver、显式per-rank bundle、原子target publication、单一typed manifest、
-真实runtime execution或reference executor。现有package工具通过文本恢复语义，不能作为长期边界。
+当前统一`wafer-compile` driver、显式per-rank `ExecutableBundle`、原子`TargetArtifactBundle`、单一typed
+manifest/no-card RuntimeSession和single/multi-rank ReferenceExecutor已经存在，并由Q15-Q21的source-backed gate
+闭合。当前尚不存在真实`RuntimeProvider`/board execution、target-correlated execution model或经板端校准的timing
+model；这些能力不能由reference、symbol closure或no-card plan冒充。
 
 2026-07-10设计中的`wafer.model.*`、`wafer.distributed.*`、`wafer.parallel.*`、
 `wafer.executable.*`、WCRE、global registry、hybrid rank class、Protobuf admission和capability lease均未
@@ -44,7 +46,7 @@ Pipeline position:
   `RankExecutable[]`、atomic `ExecutableBundle`、verified target modules、typed C++ `PackageManifest`及
   canonical JSON delivery form。
 - Downstream consumer:
-  no-card RuntimeSession、reference executor、后续board runtime adapter和长期多卡扩展。
+  no-card RuntimeSession、reference executor、target execution model、后续board runtime adapter和长期多卡扩展。
 - User-level driver / named pipeline:
   `wafer-compile`是稳定用户入口；`wafer-opt`和named MLIR pipelines只用于IR-local开发、调试和测试。
 - Explicit non-goals:
@@ -107,9 +109,11 @@ partition；默认性能切分policy必须等有可验证的StableHLO↔SDY expo
 | Executable bundle | typed C++ `RankExecutable[]`/`ExecutableBundle` | explicit rank、entry、accepted module/resource/completion、atomic all-rank result | rejected candidates、runtime object |
 | Target module | LLVM dialect/IR、CRT call、device object/kcore module、digest | static rank program和target ABI | sharding/search/package planning |
 | Package/runtime | typed C++ manifest + canonical JSON、RuntimeSession | module/rank/entry/resource slot绑定和launch preflight | instruction schedule、重新规划 |
+| Target verification/runtime consumer | owner-backed fully legal target LLVM或未来verified package/exact module；invocation-local model state | target-call、packet/event、exact-module及校准后的timing evidence | compiler planning、package字段、board完成 |
 
 Dialect边界不等于artifact边界。近期继续使用一个Wafer dialect并按op family组织源码；只有独立registration、
 conversion legality或依赖方向需要时才拆dialect。代码可以按语义library拆分，但不得用目录重排代替IR合同。
+上表最后一行是target/module与package分支上的verification/runtime consumer，不是线性compiler stage或新的IR层。
 
 ## 4. Frontend、Topology 和 SPMD
 
@@ -235,9 +239,15 @@ reference executor直接消费accepted instruction/memory facts：
 
 reference executor不是cycle/packet simulator，不证明CRT wrapper、真实transport、completion或性能。
 
-## 9. Milestone 和 Owner 索引
+target execution model是与reference并列的下游consumer：近期从tasks/14 full conversion形成的owner-backed、
+不可序列化target LLVM bundle执行same typed CRT ABI，用Q19/CPU作独立oracle；packet/MMIO和exact package/RISC-V
+ELF分别是更高证据入口。只有exact module通过tasks/15 `RuntimeProvider`消费verified package时，才可称package-facing
+model execution。SystemC/TLM只可作为可选event/timing backend，不进入IR、bundle或manifest，也不自动证明cycle
+accuracy。详细边界和板端校准计划由tasks/17拥有。
 
-近期顺序：
+## 9. Pipeline 分支和 Owner 索引
+
+compiler/reference主干按以下依赖闭合：
 
 1. target correctness：完整traversalcontainment、control-flow fail-closed/正式conversion、geometry、completion；
 2. typed compile request、显式rank clones和atomic executable bundle；
@@ -246,8 +256,11 @@ reference executor不是cycle/packet simulator，不证明CRT wrapper、真实tr
 5. single-rank/multi-rank reference executor；
 6. rank-count=1 linear/MLP；
 7. rank-count=16 linear/MLP；
-8. rank-count=16 tiny Llama；
-9. configured board gate，外部环境可用后再进入。
+8. rank-count=16 tiny Llama。
+
+此后target-call/packet/event model与configured board是两个独立分支，均不成为对方的correctness前置。exact-module
+provider在vendor simulator或ISS/loader能力可用后从target-model分支继续；target timing calibration要求model和board
+证据，same-package correlation还要求exact-module provider。分支关系只看`tasks/progress.md`，不能从本节列表顺序恢复。
 
 | Boundary | Owner |
 | --- | --- |
@@ -262,9 +275,10 @@ reference executor不是cycle/packet simulator，不证明CRT wrapper、真实tr
 | Direct DTE和completion | 13 |
 | target conversion、CRT、device link/publication | 14 |
 | typed manifest、runtime | 15 |
-| all stage gates、reference和board证据 | 16 |
+| all stage gates、reference、target-model和board证据 | 16 |
+| target execution model、SystemC可选边界和板端correlation/calibration | 17 |
 
-当前实施计划：`tasks/plans/single-card-vertical-slice.md`。
+当前没有active实施计划；target execution model先在tasks/17完成初步设计收敛，进入代码施工前再建立计划。
 
 审计证据：`tasks/archive/12-architecture-evidence-reset.md`。
 

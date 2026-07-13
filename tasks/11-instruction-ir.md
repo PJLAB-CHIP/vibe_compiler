@@ -1,13 +1,14 @@
 # Wafer Instruction IR Design
 
-状态：2026-07-12重基线；当前合同覆盖instruction-level hardware invocation IR、memref buffer和shared
-physical geometry/ABI legality。shared verifier 已闭合当前支持子集的静态 DMA descriptor payload/range/
+状态：2026-07-13按Q16.T Direct DTE激活事实更新；当前合同覆盖instruction-level hardware invocation IR、
+memref buffer和shared physical geometry/ABI legality。shared verifier 已闭合当前支持子集的静态 DMA descriptor payload/range/
 element-width relation、fill/elementwise/reduce/convert/GEMM element/shape relation、ordinary conv、pool/
 unpool、TDMA pad/img2col和peripheral kind-specific capacity，并在target字段写入前检查ABI narrowing。
 尚无精确算子关系或physical binding的shape/profile必须fail closed；当前depthwise/backward conv等未证明
-family、peripheral factorize、Direct DTE和没有explicit arena base binding的compiler-managed DDR allocation
-均为production target-illegal。`mask_move`的compiler/CRT ABI已统一为显式`uint32_t mask`，不允许wrapper
-内部隐藏narrowing。
+family、peripheral factorize和没有explicit arena base binding的compiler-managed DDR allocation均为production
+target-illegal。Direct DTE fixed-size unicast只在Q16.T all-rank acceptance已提交physical endpoint、receiver offset、
+FSM/completion和status ABI后进入production target；缺任一binding仍fail closed。`mask_move`的compiler/CRT ABI
+已统一为显式`uint32_t mask`，不允许wrapper内部隐藏narrowing。
 实现状态以`tasks/progress.md`为准。
 
 本文定义 instruction-level Wafer IR。核心结论：
@@ -333,7 +334,7 @@ instr-level target kind。
 | NE GEMM | `wafer.instr.gemm` | V0 production target op | 只表达 GEMM / batched GEMM 主路径参数；bias、scale、quant、fused activation 和复杂 psum policy 不能被隐式打开 |
 | NE affine INT8 GEMM | `wafer.instr.quantized_gemm` | typed production extension；未完成capability/CRT/golden前target-illegal | exact M/K/N/batch/format、q0/q1、left/right zero point、typed scale operands/mode和matched capability；不复用plain GEMM flag |
 | MXFP/FP8 packed decode | `wafer.instr.mxfp_decode` | explicit-composite production extension；未完成scratch/completion/CRT gate前target-illegal | packed source + block scale + destination + scratch；decode到BF16/FP16，不能冒充CT convert或native FP8 GEMM |
-| Direct DTE fixed-size unicast | `wafer.instr.dte_send` / `dte_recv` / `dte_wait` | V0 candidate instruction form；production target-illegal | IR 表达entry-local logical peer、bytes和async token，可供collective schedule、SPM completion和transport planning消费；当前target conversion在任何call emission前以`unsupported_target_transport`拒绝。只有physical endpoint/slot/completion binding与target CRT surface闭合后才能启用production；RuntimeSession不能补做endpoint/channel planning |
+| Direct DTE fixed-size unicast | `wafer.instr.dte_send` / `dte_recv` / `dte_wait` | V0 production target op with committed Q16.T binding | IR表达entry-local logical peer、bytes和async token；post-memory all-rank acceptance提交physical endpoint、remote receiver offset、FSM/completion和status ABI后，target conversion生成opaque event/ready/send/wait/release CRT calls。缺binding或不一致仍以`unsupported_target_transport`拒绝；RuntimeSession不能补做endpoint/channel planning |
 | local NCC drain / visibility fence | `wafer.instr.local_fence` | V0 production target sync；LLVM call emitted | target LLVM call emission 映射到 local wait/drain Wafer CRT call；不是 multi-tile barrier |
 | SPM memcpy helper / copy | 无单独 copy op | V0 composite lowering | copy 是 `gather_scatter` 的 descriptor 特例；不引入 `wafer.instr.copy` |
 | ChannelNorm / DechannelNorm / Tensor-Normalization | 无单条 op | V0 composite lowering | 作为 layout materialization algorithm 展开为 gather/scatter 序列；native TensorNom opcode 133 不作为 V0 主路径 |
@@ -369,9 +370,9 @@ tail `C0`。如果 full-block 段和 tail 段都无法分别表示为 V0 三层 
 R3.2d 必须失败。
 
 `TsmExecute` 普通 dispatch path 只覆盖 CT/NE/RDMA/WDMA/TDMA。DTE 不走这条 dispatch path，
-但仍属于 `wafer.instr.*` 的硬件通信调用层；当前 target LLVM conversion明确拒绝`wafer.instr.dte_*`。
-只有后续physical binding与CRT合同闭合后，target lowering才能把它们映射到Direct DTE/FSM helper或
-runtime-compatible wrapper，不能直接回退到raw-DTE ABI。SCALAR 当前 reserved/stub；
+但仍属于 `wafer.instr.*` 的硬件通信调用层。当前fixed-size unicast只在Q16.T committed physical binding、
+remote receiver offset、FSM/completion、status ABI与CRT合同闭合后lower到Direct DTE/FSM helper；缺binding、
+不一致或超出accepted profile时明确拒绝，不能直接回退到raw-DTE ABI。SCALAR 当前 reserved/stub；
 CSR/sync helper 不在 V0 ordinary compute path 中。
 
 ## 5. Operand And Result Model
@@ -828,7 +829,8 @@ R3.2d verifier checks only instruction legality:
 - no raw DTE resource id, raw DTE register field, CSR helper or SCALAR ordinary instruction op before
   the corresponding instruction/sync family is defined and verified. Direct DTE p2p must use
   `wafer.instr.dte_send` / `dte_recv` / `dte_wait`, not ad hoc tile p2p ops or side tables；在physical
-  endpoint/slot binding和target CRT support闭合前，这三类op在production target conversion中必须整体拒绝。
+  endpoint/slot binding和target CRT support闭合前，这三类op在production target conversion中必须整体拒绝；
+  Q16.T已对当前single-card fixed-size unicast profile闭合该binding，超出profile的模式继续拒绝。
 - 每个 issue 都有可验证 completion relation；每个isolated `wafer.tile.region`的exit在显式terminal
   drain/wait/fence后pending-event set为空，variant gate覆盖rank中的all-and-only regions。`busytable` state
   不能作为completion proof。

@@ -1,7 +1,8 @@
 # Wafer Target Conversion、CRT 和 Module Publication
 
-状态：2026-07-13按Q17完成证据和Q16.T后续激活边界更新。本文拥有instruction-to-target conversion、Wafer CRT
-ABI、device link和近期staged target module合同。实现状态看`tasks/progress.md`。
+状态：2026-07-13按Q17完成证据、Q16.T激活和target execution model的后续consumer边界更新。本文拥有
+instruction-to-target conversion、Wafer CRT ABI、device link和近期staged target module合同。实现状态看
+`tasks/progress.md`。
 
 底层register/wrapper事实见`docs/wafer-register-level-instruction-spec.md`和
 `docs/tx8-deps-reverse-engineering/`；production symbol事实源是当前instruction lowering、
@@ -22,6 +23,7 @@ ABI、device link和近期staged target module合同。实现状态看`tasks/pro
 - 不在target层恢复sharding、candidate、layout、SPM/DDR或transport planning；
 - 不从op/var/file名字推导ABI；
 - 不把CRT symbol存在等同于packet、numeric或board correctness；
+- 不为host model另造一条target lowering、重编写instruction schedule或改变production CRT ABI；
 - 近期不实现WCRE、Protobuf identity schema、global registry、ELF ABI note、双fingerprint或完整
   `TargetArtifactSet`对象；
 - Direct DTE只有accepted remote receiver offset、endpoint/slot/completion合同闭合后才能进入
@@ -126,8 +128,9 @@ offset和instruction attrs推导：
 - GEMM：M/K/N/batch与operand/result mapping一致；CRT未编码非canonical mapping时必须拒绝；
 - ordinary conv、pool/unpool、TDMA pad/img2col和supported peripheral：shape attrs与memref及精确算子/
   capacity关系一致；depthwise/backward conv等未定义shape profile必须target-illegal；
-- DTE：instruction-level bytes/range先验证，但production target仍整体illegal，直到peer/slot在explicit
-  execution/transport domain绑定且CRT support闭合；
+- DTE：instruction-level bytes/range先验证；当前single-card fixed-size unicast只在Q16.T已提交peer/endpoint、
+  remote receiver offset、FSM/completion和status ABI且CRT support闭合时进入production，缺binding或其它profile
+  仍target-illegal；
 - completion op：只等待其真实issue token/engine，不能丢token或合并不相关completion。
 
 所有传入CRT的字段必须在lowering前证明：地址/offset使用uint64；普通count/stride/iteration/enum和
@@ -243,6 +246,13 @@ diagnostic按稳定语义分类：
 
 ## 10. Planned And Deferred Extensions
 
+- target execution model：tasks/17已确定近期模型应消费tasks/14同一ABI preparation和full conversion结果。
+  实现时把当前private per-rank prepared module提升为owner-backed、move-only、不可序列化的all-rank target LLVM
+  bundle，使现有RISC-V device link和host target-call model成为两个直接consumer。该bundle携带fully legal LLVM
+  modules、canonical rank domain、每rank logical rank/entry、`ExecutionConfig`、ordered typed ABI slots、target
+  identity/revision、target/kernel ABI facts及context/owner lifetime；全部rank成功后才原子形成，不是packet artifact
+  或package成员。在该producer落地前，当前Q17 `TargetArtifactBundle`合同和完成状态不变。host target-call通过也
+  不证明RISC-V CRT/archive或actual packet；
 - Direct DTE target activation已由Q16.T闭合：只消费tasks/13定义的typed accepted binding，CRT wrapper、opaque event、
   status ABI、required/allowed symbol、真实16-rank ELF和late-failure atomic gate已通过；board execution仍属Q6.B；
 - low-precision/quant ABI：等待instruction geometry和CPU/reference semantics；

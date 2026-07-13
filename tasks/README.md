@@ -26,7 +26,8 @@
 | 13 | `tasks/13-communication.md` | 当前collective到Direct DTE和completion边界；segmented/multi-card延后 |
 | 14 | `tasks/14-target-llvm-golden-packet.md` | structure-preserving target LLVM、CRT ABI和atomic staged target module |
 | 15 | `tasks/15-launch-runtime-package.md` | typed C++ manifest、canonical JSON、no-card RuntimeSession和board adapter边界 |
-| 16 | `tasks/16-verification-plan.md` | target correctness、1/16-rank bundle、reference、no-card和board分层gate |
+| 16 | `tasks/16-verification-plan.md` | target correctness、1/16-rank bundle、reference、target-model、no-card和board分层gate |
+| 17 | `tasks/17-target-execution-model.md` | target-call、packet/event、exact-module CModel provider和板端校准边界 |
 
 ### Pipeline Owner 索引
 
@@ -46,15 +47,13 @@
 | target LLVM、CRT/device link和staged target module | 14 |
 | typed manifest、launch和RuntimeSession | 15 |
 | 横跨上述边界的completion evidence | 16 |
+| target execution model、CModel capability和板端correlation/calibration | 17；target/runtime/verification consumer由14、15、16约束 |
 
 ## 实施计划导航
 
-当前唯一 active 实施计划是：
-
-- `tasks/plans/single-card-vertical-slice.md`
-
-它覆盖架构重基线、target correctness、typed compile/bundle、manifest/runtime、reference executor和单卡
-纵向gate。旧7份long-horizon plans已归档；动态执行状态仍只看`tasks/progress.md`。
+当前没有active实施计划。Q22先在`tasks/17-target-execution-model.md`收敛初步设计、证据层和板端测量合同；
+真正进入代码实现前再在`tasks/plans/`建立施工checkpoint。已完成的单卡纵向计划和旧7份long-horizon plans
+均已归档；动态执行状态仍只看`tasks/progress.md`。
 
 ## 归档文档
 
@@ -76,4 +75,5 @@ docs、`tasks/progress.md` 和本轮已收敛设计结论为准。
 | `tasks/archive/10-target-crt-closure-plan.md` | 已完成并被当前路线替代的 CRT closure 实施记录 |
 | `tasks/archive/11-target-crt-conformance-plan.md` | 已完成并被当前路线替代的 CRT conformance 实施记录 |
 | `tasks/archive/12-architecture-evidence-reset.md` | 2026-07-12架构事实重基线审计；只作证据和整改依据 |
+| `tasks/archive/single-card-vertical-slice.md` | 已完成的单卡纵向切片实施计划；只保留历史checkpoint和验证记录 |
 | `tasks/archive/2026-07-10-long-horizon-plans/` | 已被重基线取代的7份生成式长周期计划；non-normative |
