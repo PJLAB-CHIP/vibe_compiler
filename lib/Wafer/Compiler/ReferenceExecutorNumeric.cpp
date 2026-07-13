@@ -331,4 +331,69 @@ llvm::Error writeF32(const BufferView &buffer, llvm::ArrayRef<int64_t> indices,
   return llvm::Error::success();
 }
 
+static llvm::Expected<int64_t>
+getAbsoluteBitOffset(const BufferView &buffer,
+                     llvm::ArrayRef<int64_t> indices) {
+  auto info = wafer::computeWaferPhysicalTensorInfo(buffer.type);
+  if (!buffer.type.getElementType().isInteger(1) || !info ||
+      !info->bitPackedElement ||
+      (info->layout != wafer::MemLayout::Tensor &&
+       info->layout != wafer::MemLayout::NTensor))
+    return invalid("reference i1 access requires bitpacked tensor layout");
+  if (indices.size() != static_cast<size_t>(buffer.type.getRank()))
+    return invalid("reference i1 index rank mismatch");
+  llvm::SmallVector<int64_t> strides;
+  int64_t elementOffset = 0;
+  if (mlir::failed(
+          mlir::getStridesAndOffset(buffer.type, strides, elementOffset)) ||
+      elementOffset == mlir::ShapedType::kDynamic || elementOffset < 0 ||
+      strides.size() != indices.size())
+    return invalid("reference i1 buffer has no static logical strides");
+  for (auto [dimension, index, stride] :
+       llvm::zip_equal(buffer.type.getShape(), indices, strides)) {
+    if (dimension < 0 || index < 0 || index >= dimension || stride < 0 ||
+        stride == mlir::ShapedType::kDynamic)
+      return invalid("reference i1 logical index is invalid");
+    if (index != 0 && stride > std::numeric_limits<int64_t>::max() / index)
+      return invalid("reference i1 logical offset overflows");
+    int64_t delta = index * stride;
+    if (elementOffset > std::numeric_limits<int64_t>::max() - delta)
+      return invalid("reference i1 logical offset overflows");
+    elementOffset += delta;
+  }
+  if (buffer.base < 0 || buffer.viewOffset < 0 ||
+      buffer.base > std::numeric_limits<int64_t>::max() - buffer.viewOffset)
+    return invalid("reference i1 buffer address overflows");
+  int64_t byteBase = buffer.base + buffer.viewOffset;
+  if (byteBase > std::numeric_limits<int64_t>::max() / 8 ||
+      byteBase * 8 > std::numeric_limits<int64_t>::max() - elementOffset)
+    return invalid("reference i1 bit address overflows");
+  int64_t bitOffset = byteBase * 8 + elementOffset;
+  if (bitOffset < 0 ||
+      static_cast<uint64_t>(bitOffset / 8) >= buffer.storage->bytes.size())
+    return invalid("reference i1 access exceeds storage");
+  return bitOffset;
+}
+
+llvm::Expected<bool> readI1(const BufferView &buffer,
+                            llvm::ArrayRef<int64_t> indices) {
+  auto bitOffset = getAbsoluteBitOffset(buffer, indices);
+  if (!bitOffset)
+    return bitOffset.takeError();
+  uint8_t byte = buffer.storage->bytes[*bitOffset / 8];
+  return ((byte >> (*bitOffset % 8)) & 1u) != 0;
+}
+
+llvm::Error writeI1(const BufferView &buffer, llvm::ArrayRef<int64_t> indices,
+                    bool value) {
+  auto bitOffset = getAbsoluteBitOffset(buffer, indices);
+  if (!bitOffset)
+    return bitOffset.takeError();
+  uint8_t &byte = buffer.storage->bytes[*bitOffset / 8];
+  uint8_t mask = static_cast<uint8_t>(1u << (*bitOffset % 8));
+  byte = value ? static_cast<uint8_t>(byte | mask)
+               : static_cast<uint8_t>(byte & ~mask);
+  return llvm::Error::success();
+}
+
 } // namespace wafer::compiler::reference_detail

@@ -3,12 +3,11 @@
 # RUN: rm -rf %t.input.program %t.group.program
 # RUN: env CPU_NUM_DEVICES=16 PJRT_DEVICE=CPU %importer_python %wafer_src_root/test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-hf-megatron-transformer-block --hf-config-json %wafer_src_root/test/Tools/Inputs/hf/tiny-random-llama-config.json --sequence-length 4 --output-program-dir %t.input.program
 # RUN: FileCheck %s --input-file=%t.input.program/functions/forward.mlir --check-prefix=INPUT
-# RUN: not wafer-compile --input-program-dir %t.input.program --output-program-dir %t.group.program --execution-ranks=16 2>&1 | FileCheck %s --check-prefix=UNSUPPORTED-COMPUTE
-# RUN: test ! -e %t.group.program
+# RUN: wafer-compile --input-program-dir %t.input.program --output-program-dir %t.group.program --execution-ranks=16 | FileCheck %s --check-prefix=COMPILE
+# RUN: %python -c 'import json; from pathlib import Path; root=Path("%t.group.program"); manifest=json.loads((root/"manifest.json").read_text()); expected=list(range(16)); assert manifest["rank_count"]==16 and [x["rank"] for x in manifest["modules"]]==expected and [x["rank"] for x in manifest["entries"]]==expected and [x["transport"]["kind"] for x in manifest["entries"]]==["direct_dte"]*16'
 
 # INPUT: func.func @main
 # INPUT: mhlo.sharding = "{devices=
 # INPUT: mhlo.sharding = "{replicated}"
 
-# UNSUPPORTED-COMPUTE: no_candidate: tile selection found no passing candidate
-# UNSUPPORTED-COMPUTE-SAME: only powf with exponent 2 is supported
+# COMPILE: wafer-compile: published verified package with execution-ranks=16:

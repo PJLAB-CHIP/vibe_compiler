@@ -138,6 +138,7 @@ void buildLowerGroupsToSelectedInstrPipeline(mlir::OpPassManager &pm,
   SelectGroupTilePassOptions options;
   options.logicalRank = logicalRank;
   pm.addPass(createSelectGroupTilePass(options));
+  pm.addPass(mlir::createCanonicalizerPass());
   addFunctionBoundaryBufferization(pm);
   pm.addPass(mlir::createCanonicalizerPass());
   buildPlanSPMMemoryPipeline(pm);

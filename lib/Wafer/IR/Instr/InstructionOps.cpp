@@ -128,10 +128,11 @@ static mlir::LogicalResult verifyAxesI64Array(mlir::Operation *op,
   return mlir::success();
 }
 
-static mlir::LogicalResult
-verifyAxesWithinRank(mlir::Operation *op, mlir::DenseI64ArrayAttr attr,
-                     llvm::StringRef name, int64_t sourceRank,
-                     int64_t destRank) {
+static mlir::LogicalResult verifyAxesWithinRank(mlir::Operation *op,
+                                                mlir::DenseI64ArrayAttr attr,
+                                                llvm::StringRef name,
+                                                int64_t sourceRank,
+                                                int64_t destRank) {
   for (int64_t value : attr.asArrayRef()) {
     if (value >= sourceRank || value >= destRank)
       return op->emitOpError()
@@ -745,50 +746,8 @@ verifyInstructionReduceContract(mlir::Operation *op, mlir::Value input,
   if (rank <= 0 || rank > 4)
     return op->emitOpError("reduce input rank must be in [1, 4]");
 
-  auto fromTrailingDim = [&](int64_t trailingIndex) -> std::optional<int64_t> {
-    if (trailingIndex >= rank)
-      return std::nullopt;
-    return rank - 1 - trailingIndex;
-  };
-
-  llvm::SmallVector<int64_t, 3> dims;
-  switch (targetDim) {
-  case 0: { // C
-    if (auto dim = fromTrailingDim(0))
-      dims.push_back(*dim);
-    break;
-  }
-  case 1: { // W
-    if (auto dim = fromTrailingDim(1))
-      dims.push_back(*dim);
-    break;
-  }
-  case 2: { // H
-    if (auto dim = fromTrailingDim(2))
-      dims.push_back(*dim);
-    break;
-  }
-  case 3: { // N
-    if (auto dim = fromTrailingDim(3))
-      dims.push_back(*dim);
-    break;
-  }
-  case 4: { // HW
-    auto h = fromTrailingDim(2);
-    auto w = fromTrailingDim(1);
-    if (h && w)
-      dims.append({*h, *w});
-    break;
-  }
-  case 5: { // HWC
-    auto h = fromTrailingDim(2);
-    auto w = fromTrailingDim(1);
-    auto c = fromTrailingDim(0);
-    if (h && w && c)
-      dims.append({*h, *w, *c});
-    break;
-  }
-  }
+  llvm::SmallVector<int64_t, 3> dims =
+      getInstrReduceLogicalDims(targetDim, rank);
 
   if (dims.empty())
     return op->emitOpError("reduce dim is not valid for input rank");
@@ -1144,6 +1103,53 @@ static mlir::LogicalResult verifyNoEmptyVariadicInputs(mlir::Operation *op,
 }
 
 } // namespace
+
+llvm::SmallVector<int64_t, 3>
+wafer::getInstrReduceLogicalDims(int64_t targetDim, int64_t inputRank) {
+  auto fromTrailingDim = [&](int64_t trailingIndex) -> std::optional<int64_t> {
+    if (trailingIndex < 0 || trailingIndex >= inputRank)
+      return std::nullopt;
+    return inputRank - 1 - trailingIndex;
+  };
+
+  llvm::SmallVector<int64_t, 3> dims;
+  switch (targetDim) {
+  case 0:
+    if (auto dim = fromTrailingDim(0))
+      dims.push_back(*dim);
+    break;
+  case 1:
+    if (auto dim = fromTrailingDim(1))
+      dims.push_back(*dim);
+    break;
+  case 2:
+    if (auto dim = fromTrailingDim(2))
+      dims.push_back(*dim);
+    break;
+  case 3:
+    if (auto dim = fromTrailingDim(3))
+      dims.push_back(*dim);
+    break;
+  case 4: {
+    auto h = fromTrailingDim(2);
+    auto w = fromTrailingDim(1);
+    if (h && w)
+      dims.append({*h, *w});
+    break;
+  }
+  case 5: {
+    auto h = fromTrailingDim(2);
+    auto w = fromTrailingDim(1);
+    auto c = fromTrailingDim(0);
+    if (h && w && c)
+      dims.append({*h, *w, *c});
+    break;
+  }
+  default:
+    break;
+  }
+  return dims;
+}
 
 std::pair<mlir::Type, mlir::Type>
 wafer::getInstrConvertTypePair(mlir::MLIRContext *context,
@@ -2089,10 +2095,9 @@ mlir::LogicalResult InstrTDMADataMoveOp::verify() {
       mlir::failed(verifyAxesI64Array(getOperation(), getAxesAttr(), "axes",
                                       /*expectedSize=*/-1)))
     return mlir::failure();
-  if (getAxesAttr() &&
-      mlir::failed(verifyAxesWithinRank(getOperation(), getAxesAttr(), "axes",
-                                        sourceTensor->getRank(),
-                                        destTensor->getRank())))
+  if (getAxesAttr() && mlir::failed(verifyAxesWithinRank(
+                           getOperation(), getAxesAttr(), "axes",
+                           sourceTensor->getRank(), destTensor->getRank())))
     return mlir::failure();
   if (getPadsAttr() &&
       mlir::failed(verifyI64Array(getOperation(), getPadsAttr(), "pads", 4,

@@ -1,0 +1,12 @@
+# REQUIRES: stablehlo, shardy, pytorch-xla-importer, xla-spmd-helper
+
+# RUN: rm -rf %t.corpus %t.rank16
+# RUN: env CPU_NUM_DEVICES=16 PJRT_DEVICE=CPU %importer_python %wafer_src_root/test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-workload-corpus --corpus-case tiny-llama-decoder-f32 --output-corpus-dir %t.corpus
+# RUN: wafer-compile --input-program-dir %t.corpus/tiny-llama-decoder-f32/program --output-program-dir %t.rank16 --execution-ranks=16 --reference-input 0=%t.corpus/tiny-llama-decoder-f32/reference/input.npy --reference-expected 0=%t.corpus/tiny-llama-decoder-f32/reference/expected.npy --reference-atol=5e-4 --reference-rtol=1e-4 | FileCheck %s --check-prefix=RANK16
+# RUN: %python -c 'import json; from pathlib import Path; root=Path("%t.rank16"); manifest=json.loads((root/"manifest.json").read_text()); expected=list(range(16)); assert manifest["rank_count"]==16 and [x["rank"] for x in manifest["modules"]]==expected and [x["rank"] for x in manifest["entries"]]==expected and [x["rank"] for x in manifest["completions"]]==expected; modules=list((root/"modules").glob("rank_*.so")); assert len(modules)==16 and all(path.read_bytes().startswith(b"\x7fELF") for path in modules)'
+# RUN: not wafer-run --package-dir %t.rank16 --entry-id 0 --no-card 2>&1 | FileCheck %s --check-prefix=MISSING-DTE
+# RUN: %python -c 'import subprocess; runs=[subprocess.run(["wafer-run", "--package-dir", "%t.rank16", "--entry-id", str(entry), "--no-card", "--direct-dte-status-abi", "wafer-direct-dte-status-v1", "--supports-host-watchdog"], capture_output=True, text=True) for entry in range(16)]; assert all(run.returncode==0 and f"entry: {entry} rank={entry} symbol=main" in run.stdout and "board_execution: false" in run.stdout for entry, run in enumerate(runs))'
+
+# RANK16: wafer-compile: published verified package with execution-ranks=16:
+# RANK16: wafer-compile: reference outputs matched
+# MISSING-DTE: wafer-run: runtime environment does not satisfy Direct DTE transport requirements

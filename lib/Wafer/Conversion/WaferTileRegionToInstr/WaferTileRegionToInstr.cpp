@@ -138,53 +138,6 @@ getLogicalTensorTypeFromMemRef(mlir::Type type) {
                                      memrefType.getElementType());
 }
 
-static llvm::SmallVector<int64_t, 3>
-getTargetReduceLogicalDims(int64_t targetDim, int64_t rank) {
-  auto fromTrailingDim = [&](int64_t trailingIndex) -> std::optional<int64_t> {
-    if (trailingIndex >= rank)
-      return std::nullopt;
-    return rank - 1 - trailingIndex;
-  };
-
-  llvm::SmallVector<int64_t, 3> dims;
-  switch (targetDim) {
-  case 0:
-    if (auto dim = fromTrailingDim(0))
-      dims.push_back(*dim);
-    break;
-  case 1:
-    if (auto dim = fromTrailingDim(1))
-      dims.push_back(*dim);
-    break;
-  case 2:
-    if (auto dim = fromTrailingDim(2))
-      dims.push_back(*dim);
-    break;
-  case 3:
-    if (auto dim = fromTrailingDim(3))
-      dims.push_back(*dim);
-    break;
-  case 4: {
-    auto h = fromTrailingDim(2);
-    auto w = fromTrailingDim(1);
-    if (h && w)
-      dims.append({*h, *w});
-    break;
-  }
-  case 5: {
-    auto h = fromTrailingDim(2);
-    auto w = fromTrailingDim(1);
-    auto c = fromTrailingDim(0);
-    if (h && w && c)
-      dims.append({*h, *w, *c});
-    break;
-  }
-  default:
-    break;
-  }
-  return dims;
-}
-
 static bool sameDimSet(llvm::ArrayRef<int64_t> lhs,
                        llvm::ArrayRef<int64_t> rhs) {
   llvm::SmallVector<int64_t, 4> sortedLhs(lhs.begin(), lhs.end());
@@ -215,7 +168,7 @@ getTargetReduceDimCode(mlir::PatternRewriter &rewriter, mlir::Operation *op,
         "reduce lowering requires non-empty dimensions");
   for (int64_t targetDim = 0; targetDim <= 5; ++targetDim) {
     llvm::SmallVector<int64_t, 3> targetDims =
-        getTargetReduceLogicalDims(targetDim, rank);
+        getInstrReduceLogicalDims(targetDim, rank);
     if (!targetDims.empty() && sameDimSet(dims, targetDims))
       return targetDim;
   }

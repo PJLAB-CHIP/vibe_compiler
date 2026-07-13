@@ -15,8 +15,8 @@
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Twine.h"
-#include "llvm/Support/Error.h"
 #include "llvm/Support/Errc.h"
+#include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -1703,12 +1703,16 @@ bool verifyDistributedBoundary(
   if (result) {
     result->logicalRankCount = boundary.logicalRankCount;
     auto copyBindings =
-        [](llvm::ArrayRef<DistributedBoundaryBinding> source,
-           std::vector<wafer::frontend::ProgramBoundaryBinding> &destination) {
+        [&](llvm::ArrayRef<DistributedBoundaryBinding> source,
+            std::vector<wafer::frontend::ProgramBoundaryBinding> &destination,
+            bool inputs) {
           destination.reserve(source.size());
           for (const DistributedBoundaryBinding &binding : source) {
             wafer::frontend::ProgramBoundaryBinding typed;
             typed.index = binding.index;
+            typed.programIndex =
+                inputs ? meta.inputLocations[binding.index].position
+                       : binding.index;
             typed.distribution =
                 getVerifiedDistributionKind(binding.distribution);
             typed.globalShape = binding.globalShape;
@@ -1720,8 +1724,8 @@ bool verifyDistributedBoundary(
             destination.push_back(std::move(typed));
           }
         };
-    copyBindings(boundary.inputs, result->distributedInputs);
-    copyBindings(boundary.outputs, result->distributedOutputs);
+    copyBindings(boundary.inputs, result->distributedInputs, true);
+    copyBindings(boundary.outputs, result->distributedOutputs, false);
   }
   return false;
 }

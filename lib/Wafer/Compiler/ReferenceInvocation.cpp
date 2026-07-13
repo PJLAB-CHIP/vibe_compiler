@@ -128,7 +128,7 @@ prepareReferenceInvocations(
         if (binding.role == ProgramResourceRole::UserInput) {
           const ReferenceGlobalInputBinding *match = nullptr;
           for (const ReferenceGlobalInputBinding &input : globalInputs)
-            if (input.index == binding.index) {
+            if (input.index == binding.programIndex) {
               if (match)
                 return invalid("duplicate global reference input index");
               match = &input;

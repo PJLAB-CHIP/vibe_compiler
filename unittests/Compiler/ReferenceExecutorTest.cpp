@@ -127,6 +127,7 @@ wafer::frontend::ProgramBoundaryBinding boundary(int64_t index,
                                                  bool output = false) {
   wafer::frontend::ProgramBoundaryBinding binding;
   binding.index = index;
+  binding.programIndex = index;
   binding.distribution = wafer::frontend::ProgramDistributionKind::Replicated;
   binding.globalShape = {8};
   binding.localShape = {8};
@@ -140,6 +141,7 @@ wafer::frontend::ProgramBoundaryBinding
 shapedBoundary(int64_t index, llvm::ArrayRef<int64_t> shape) {
   wafer::frontend::ProgramBoundaryBinding binding;
   binding.index = index;
+  binding.programIndex = index;
   binding.distribution = wafer::frontend::ProgramDistributionKind::Replicated;
   binding.globalShape.assign(shape.begin(), shape.end());
   binding.localShape.assign(shape.begin(), shape.end());
@@ -151,6 +153,7 @@ shapedBoundary(int64_t index, llvm::ArrayRef<int64_t> shape) {
 wafer::frontend::ProgramBoundaryBinding partitionedBoundary(int64_t index) {
   wafer::frontend::ProgramBoundaryBinding binding;
   binding.index = index;
+  binding.programIndex = index;
   binding.distribution = wafer::frontend::ProgramDistributionKind::Partitioned;
   binding.globalShape = {64};
   binding.localShape = {4};
@@ -170,6 +173,7 @@ wafer::frontend::ProgramBoundaryBinding partitionedBoundary(int64_t index) {
 wafer::frontend::ProgramBoundaryBinding replicatedBoundary16(int64_t index) {
   wafer::frontend::ProgramBoundaryBinding binding;
   binding.index = index;
+  binding.programIndex = index;
   binding.distribution = wafer::frontend::ProgramDistributionKind::Replicated;
   binding.globalShape = {4};
   binding.localShape = {4};

@@ -77,6 +77,10 @@ conversion。它不得再次执行direct group-to-tile/instr或memory planning�
    summary精确alias某个DDR参数。
 4. standard SCF→CF后，typed patterns在原block改写instruction、func/call/return、Wafer memref/view和arith/CF；
    `applyFullConversion`把Wafer/func/memref/arith/CF/SCF列为illegal，成功结果只允许module/LLVM dialect。
+   其中static `memref.collapse_shape`只在source/result满足标准memref的静态reassociation/view
+   合同、相同Wafer memory space与`tensor` layout、相同element type/element count/physical footprint时，
+   按可证明static view offset降低为同根地址alias；Cx/NCx、dynamic offset或footprint不等的
+   reshape不能丢掉descriptor而必须fail closed。
 5. Direct DTE只消费Q16.T committed physical binding：exact单卡mesh把logical rank/peer映射为tile endpoint，
    send/recv返回CRT opaque i64 event并由wait消费，entry以provider-managed status i64 slot注入begin/finish；缺binding、
    status或remote receiver offset不一致以`unsupported_target_transport`拒绝。默认target pass对没有explicit arena base binding的compiler-managed

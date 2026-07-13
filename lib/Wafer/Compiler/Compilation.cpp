@@ -884,7 +884,8 @@ static mlir::LogicalResult compileProgramImpl(
     const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics,
     std::optional<int64_t> failAfterLogicalRank,
     std::optional<int64_t> failAfterTargetLogicalRank,
-    std::optional<int64_t> failAfterPackageLogicalRank) {
+    std::optional<int64_t> failAfterPackageLogicalRank,
+    std::optional<ExecutableBundle> *retainedExecutableBundle) {
 #if !defined(WAFER_ENABLE_STABLEHLO) || !defined(WAFER_ENABLE_SHARDY)
   (void)request;
   (void)outputProgramDirectory;
@@ -893,6 +894,7 @@ static mlir::LogicalResult compileProgramImpl(
   (void)failAfterLogicalRank;
   (void)failAfterTargetLogicalRank;
   (void)failAfterPackageLogicalRank;
+  (void)retainedExecutableBundle;
   reject(diagnostics,
          "StableHLO and SPMD partitioner dependencies are required");
   return mlir::failure();
@@ -1168,18 +1170,28 @@ static mlir::LogicalResult compileProgramImpl(
 
   if (publishDirectoryNoReplace(stagedPackage, canonicalOutput, diagnostics))
     return mlir::failure();
+  if (retainedExecutableBundle)
+    retainedExecutableBundle->emplace(std::move(*executableBundle));
   return mlir::success();
 #endif
 }
 
-mlir::LogicalResult compileProgram(CompilationRequest request,
-                                   llvm::StringRef outputProgramDirectory,
-                                   llvm::StringRef xlaSpmdPartitionerHelper,
-                                   const TargetToolchain &targetToolchain,
-                                   llvm::raw_ostream &diagnostics) {
-  return compileProgramImpl(
-      std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
-      targetToolchain, diagnostics, std::nullopt, std::nullopt, std::nullopt);
+mlir::FailureOr<ExecutableBundle> compileProgram(
+    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics) {
+  std::optional<ExecutableBundle> retainedExecutableBundle;
+  if (mlir::failed(compileProgramImpl(
+          std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
+          targetToolchain, diagnostics, std::nullopt, std::nullopt,
+          std::nullopt, &retainedExecutableBundle)))
+    return mlir::failure();
+  if (!retainedExecutableBundle) {
+    reject(diagnostics,
+           "successful compilation did not retain its executable bundle");
+    return mlir::failure();
+  }
+  return std::move(*retainedExecutableBundle);
 }
 
 mlir::LogicalResult testing::compileProgramWithRankFailure(
@@ -1195,7 +1207,7 @@ mlir::LogicalResult testing::compileProgramWithRankFailure(
   return compileProgramImpl(std::move(request), outputProgramDirectory,
                             xlaSpmdPartitionerHelper, targetToolchain,
                             diagnostics, failAfterLogicalRank, std::nullopt,
-                            std::nullopt);
+                            std::nullopt, nullptr);
 }
 
 mlir::LogicalResult testing::compileProgramWithTargetRankFailure(
@@ -1212,7 +1224,7 @@ mlir::LogicalResult testing::compileProgramWithTargetRankFailure(
   return compileProgramImpl(std::move(request), outputProgramDirectory,
                             xlaSpmdPartitionerHelper, targetToolchain,
                             diagnostics, std::nullopt, failAfterLogicalRank,
-                            std::nullopt);
+                            std::nullopt, nullptr);
 }
 
 mlir::LogicalResult testing::compileProgramWithPackageRankFailure(
@@ -1229,7 +1241,7 @@ mlir::LogicalResult testing::compileProgramWithPackageRankFailure(
   return compileProgramImpl(std::move(request), outputProgramDirectory,
                             xlaSpmdPartitionerHelper, targetToolchain,
                             diagnostics, std::nullopt, std::nullopt,
-                            failAfterLogicalRank);
+                            failAfterLogicalRank, nullptr);
 }
 
 } // namespace wafer::compiler

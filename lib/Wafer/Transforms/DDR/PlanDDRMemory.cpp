@@ -435,6 +435,26 @@ struct LifetimeDataflow {
     }
   }
 
+  void mapTileRegionResults(TileRegionOp tileRegion) {
+    if (tileRegion.getBody().empty())
+      return;
+    auto yield = mlir::dyn_cast<TileYieldOp>(
+        tileRegion.getBody().front().getTerminator());
+    if (!yield)
+      return;
+
+    PathCondition condition = getOperationCondition(tileRegion);
+    for (auto [index, result] : llvm::enumerate(tileRegion.getResults())) {
+      if (!isWaferDDRMemRefType(result.getType()) ||
+          index >= yield.getValues().size())
+        continue;
+      llvm::SmallVector<RootRef, 2> refs =
+          getRefsAtUse(yield.getValues()[index], condition, valueRefs);
+      if (!refs.empty())
+        valueRefs[result] = std::move(refs);
+    }
+  }
+
   void mapAsyncTokenResults(mlir::Operation *op) {
     llvm::SmallVector<RootRef, 2> refs;
     PathCondition condition = getOperationCondition(op);
@@ -534,6 +554,9 @@ struct LifetimeDataflow {
         processRegion(ifOp.getThenRegion());
         processRegion(ifOp.getElseRegion());
         mapIfResults(ifOp);
+      } else if (auto tileRegion = mlir::dyn_cast<TileRegionOp>(op)) {
+        processRegion(tileRegion.getBody());
+        mapTileRegionResults(tileRegion);
       } else {
         for (mlir::Region &region : op.getRegions())
           processRegion(region);

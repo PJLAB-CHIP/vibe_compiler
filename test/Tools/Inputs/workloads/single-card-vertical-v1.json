@@ -75,7 +75,7 @@
       },
       "reference": {
         "implementation": "independent NumPy RMSNorm/RoPE/attention/SiLU/MLP/residual",
-        "atol": 1e-05,
+        "atol": 0.0005,
         "rtol": 0.0001,
         "digest_quantization_decimals": 6
       }

@@ -397,7 +397,10 @@ invocation tensors。scheduler每轮按logical rank顺序从当前inputs确定�
 send对当时payload做snapshot，recv在typed message、peer、bytes、accepted remote offset和structured dynamic
 control instance一致后于下轮注入重建的rank-local SPM。replay还会核对已见send/recv的payload和address，
 因此未引入可序列化schedule、thread timing或影子memory。global output只从`RankProgramBinding` typed distribution/
-slice重组；replicated必须byte-identical，partitioned必须all-and-only覆盖global coordinates。
+slice重组；partitioned必须all-and-only覆盖global coordinates。transport-free replicated执行相同program/input，
+仍必须byte-identical；Direct DTE浮点collective允许accepted rank-specific reduction order产生roundoff，result同时保留
+全部rank output并用rank 0形成canonical global view，vertical driver必须把每个replicated rank分别按同一显式
+`atol/rtol`与CPU oracle比较。整数/bitwise replicated output仍要求byte-exact，不能只抽查rank 0。
 
 主线component gate由真实group-to-bundle pipeline生成16个accepted rank，在同一`scf.for`两次动态执行pairwise
 collective-permute；两轮后完整64-element partitioned global f32 tensor按typed slices恢复，输入invocation顺序不影响
@@ -407,7 +410,8 @@ global CPU differential仍只由Q20拥有。
 
 Q20新增的transport-free分支仍先投影all-and-only rank domain，但不会伪造DTE事件；每rank在独立arena上完成，
 随后复用同一typed distribution/slice重组规则。真实16-rank linear/MLP是replicated boundary，所有local output
-必须byte-identical。该分支证明“multi-rank execution domain”和“需要Direct DTE transport”是两个独立事实。
+必须byte-identical。该分支证明“multi-rank execution domain”和“需要Direct DTE transport”是两个独立事实；
+其exact结果不能反向要求含浮点collective的Q21也逐bit一致。
 
 当前单rankcheckpoint已经建立`ExecutableBundle + logicalRank + typed role/index tensors`入口。实现按accepted
 DDR/SPM offset建立独立arena，按descriptor执行alias-safe movement，并复用Wafer physical layout helper完成logical
@@ -485,11 +489,23 @@ frontend verifier。这只完成Q5.C admission，不完成本节Gate A/B/C。
 
 Q20的user-level gate仍是同一`wafer-compile`调用。generic `--reference-input <index>=<npy>`和
 `--reference-expected <index>=<npy>`只表达typed program-boundary invocation，不包含case/shape/op名；compiler在
-package发布后立即重新验证其grouped artifact并构造accepted bundle，从package-relative typed payload path
-加载parameter/constant NPY，对user input按accepted replicated/partitioned slice形成rank invocation。结果按
+package发布后把本次target artifact与manifest已经消费过的同一owner-backed accepted bundle直接交给reference
+gate，不从已发布package重跑candidate/lowering，也不建立第二条semantic pipeline。reference invocation仍从
+package-relative typed payload path加载parameter/constant NPY，对user input按accepted replicated/partitioned slice
+形成rank invocation。user input的program-boundary position和accepted entry argument index是两个typed field；CLI只
+消费前者，reference import和target ABI消费后者，parameter插入、SPMD重排或lowering不能泄漏为用户index。结果按
 output index与expected NPY比较；f32使用显式`atol/rtol`，其它dtype byte-exact。不传reference选项时
 production compile/package行为不变。reference mismatch不能伪造compile failure后的partial package：它是已验证
 package的downstream correctness gate，返回非零但保留可审计package。
+
+Pipeline position:
+- Upstream artifact / IR: 本轮production transaction形成、并已被target artifact和package assembly消费的atomic `ExecutableBundle`。
+- Current stage responsibility: package原子发布后保留该bundle的owner lifetime，导入typed reference inputs并执行数值gate。
+- Output artifact / IR: 已发布verified package，以及仅作为本次验证结果的global reference outputs/diagnostic。
+- Downstream consumer: Q20/Q21 CPU differential gate；package仍由`wafer-run`消费。
+- User-level driver / named pipeline: `wafer-compile --reference-input ... --reference-expected ...`。
+- Explicit non-goals: 不从package重编译accepted bundle，不序列化reference program，不把reference结果写入manifest，不冒充target或board执行。
+- Completion gate: 同一次driver invocation只构造一次accepted rank domain；package先发布，随后reference成功或明确失败，失败时package保持可审计。
 
 ### 10.3 Q20 Gate B: Single-Card 16-Rank Linear/MLP
 
@@ -515,6 +531,55 @@ entry，并以source-backed input/expected NPY比较完整`2x16xf32`输出。错
 手工group/instr或绕过selector的pass chain。完整attention/MLP/residual输出与独立CPU reference比较。
 
 失败若来自尚未支持op/geometry/transport，必须定位到IR/verifier事实并保持bundle未发布。
+
+真实source gate经过official normalization、group formation和16-rank candidate selection复现。首个
+`powf exponent 2`失败的根因是candidate standalone clone把external `arith.constant`改成无定义的
+function argument，使得合法性检查丢失constant provenance；shared clone helper改为在保持调试ABI的同时
+将该常量clone入standalone body，正常与parallel candidate路径共用。随后暴露的两类
+`memref.global`也在各自语义层消解：post-SPMD静态索引常量view链由05层精确折叠，splat compute常量由07层
+materialize为局部fill/immediate而不形成冗余DDR boundary；14层没有增加generic global fallback。target full
+conversion只为One-Shot Bufferize留下的static compact `memref.collapse_shape`接受经证明的零位移、同element
+count和tensor-layout alias，不把任意reshape视为同地址。
+
+该target alias闭合并发布真实16-rank package后，reference capability preflight的首个缺口是typed
+`wafer.instr.reduce`。executor只从accepted op的`kind`、target `dim` code、静态input/dest type和唯一
+`init_value`/scalar init投影局部reduce command；target dim到logical dimensions的映射必须由Instr IR
+共享helper同时供verifier、tile-to-instr conversion和reference使用，不能在executor复制第三份表。
+当前frontend可恢复的通用combiner只有f32 sum、IEEE maximum和IEEE minimum，因此这三种按logical
+row-major reference顺序执行；没有上游exact combiner证据的avg继续preflight fail closed。测试必须覆盖
+非尾维与尾维、非零init、maximum/minimum和aligned Cx/NCx physical layout，tiny Llama只是随后重放的
+source-backed consumer，不定义reduce协议。
+
+causal select的accepted composite不是generic elementwise select，而是typed i1 tensor fill、`bit2fp`和
+`mask_move`。reference storage按Tensor-layout logical stride计算bit index，并以每8个i1占1 byte的
+little-bit-order访问；`bit2fp`逐logical coordinate产生同shape f32 0/1 mask，`mask_move`仅在mask非零时
+把source写入已有dest。projector必须同时验证静态shape、SPM memory、dtype和physical geometry；不把
+bitpacked i1伪装成普通1-byte integer，也不新增sidecar predicate数组。
+
+reference GEMM不得继续把所有accepted buffer强制成rank-2。rank-2仍直接使用`m/k/n`；batched form
+必须消费Instr verifier已经接受的`batch_count`和lhs/rhs/result batch、M/K/N dimension attrs，并按每个
+logical batch coordinate执行同一矩阵乘。当前target legality要求canonical leading batch dimensions和
+trailing matrix dimensions，reference按该合同投影，不另做flatten、head-name恢复或隐式broadcast。
+
+真实16-rank重放进一步暴露DDR lifetime dataflow只传播tile-region block argument、没有把
+`wafer.tile.yield` root relation映射到对应region result；这会把跨group仍存活的workspace错误截断在region出口，
+使多个live allocation复用offset 0。Q12 planner现已按SSA result relation传播root，回归证明两个随后共同消费的
+tile-region result必须获得不同arena range。修复后完整Tiny Llama输出最大绝对误差约`3.06e-4`；该误差形态与16路
+局部f32 GEMM/collective reduction相对独立NumPy全局matmul的运算重关联、host transcendental差异及其继续经过
+softmax、SiLU和residual传播的形态一致。因此本case按实测全rank上界固定`atol=5e-4, rtol=1e-4`，而不是沿用仅
+覆盖framework/NumPy单进程交叉检查的原`1e-5` absolute tolerance；driver仍逐元素检查canonical output和全部
+16个replicated rank，不接受shape/digest替代。该容差是reference differential合同，不代表板端精度校准。
+
+Gate C的source-backed lit只生成该pinned corpus case，经同一`wafer-compile --execution-ranks=16`入口，以user
+input position 0完成mandatory candidate、bundle、all-and-only ELF/manifest、完整CPU differential，并逐一对16个
+entry执行`wafer-run --no-card`。Direct DTE capability/status ABI/host watchdog均由命令显式声明；缺失声明的负例保持
+fail closed。no-card只形成typed plan，不表示provider或transport已执行。这些证据闭合compiler/reference/no-card
+gate，不改变Q6.B board状态。
+
+本批`check-wafer`新鲜执行43个C++ unit和237个lit（236 pass、1个feature-inverse unsupported）；新增Tiny
+Llama vertical test实际执行而非unsupported。`--show-unsupported`确认唯一unsupported仍为enabled build下的
+`wafer-compile-stablehlo-disabled.test`。CTest 3/3通过。Q21 compiler/reference/no-card边界完成；真实board
+allocation、launch、transport、completion和copyback仍只由Q6.B拥有。
 
 ## 11. Board Gate
 

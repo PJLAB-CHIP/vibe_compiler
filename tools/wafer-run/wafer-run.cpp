@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -21,12 +22,15 @@ struct Options {
   std::string packageDirectory;
   uint64_t entryId = std::numeric_limits<uint64_t>::max();
   uint64_t maxResourceBytes = std::numeric_limits<uint64_t>::max();
+  std::optional<std::string> directDTEStatusABI;
+  bool supportsHostWatchdog = false;
   bool noCard = false;
 };
 
 void printUsage(llvm::raw_ostream &output) {
   output << "usage: wafer-run --package-dir <path> --entry-id <id> "
-            "--no-card [--max-resource-bytes <bytes>]\n";
+            "--no-card [--max-resource-bytes <bytes>] "
+            "[--direct-dte-status-abi <abi> --supports-host-watchdog]\n";
 }
 
 llvm::Expected<Options> parseOptions(int argc, char **argv) {
@@ -63,6 +67,21 @@ llvm::Expected<Options> parseOptions(int argc, char **argv) {
         return llvm::createStringError(
             llvm::errc::invalid_argument,
             "--max-resource-bytes must be an integer");
+      continue;
+    }
+    if (argument == "--direct-dte-status-abi") {
+      llvm::Expected<llvm::StringRef> value = requireValue();
+      if (!value)
+        return value.takeError();
+      if (value->empty())
+        return llvm::createStringError(
+            llvm::errc::invalid_argument,
+            "--direct-dte-status-abi must not be empty");
+      options.directDTEStatusABI = value->str();
+      continue;
+    }
+    if (argument == "--supports-host-watchdog") {
+      options.supportsHostWatchdog = true;
       continue;
     }
     if (argument == "--no-card") {
@@ -126,6 +145,11 @@ int main(int argc, char **argv) {
   wafer::runtime::RuntimeEnvironment environment{
       manifest.targetIdentity, manifest.runtimeABI, manifest.moduleFormat,
       options->maxResourceBytes};
+  if (options->directDTEStatusABI) {
+    environment.supportsDirectDTE = true;
+    environment.directDTEStatusABI = *options->directDTEStatusABI;
+  }
+  environment.supportsHostWatchdog = options->supportsHostWatchdog;
   llvm::Expected<wafer::runtime::RuntimeSessionPlan> plan =
       wafer::runtime::preflightNoCardRuntimeSession(*package, entryId, bindings,
                                                     environment);

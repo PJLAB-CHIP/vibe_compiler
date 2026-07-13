@@ -237,6 +237,8 @@ Rules:
 - RDMA source must be `#wafer.memory<ddr, *>`; destination must be `#wafer.memory<spm, *>`.
 - WDMA source must be `#wafer.memory<spm, *>`; destination must be `#wafer.memory<ddr, *>`.
 - tile-region block arguments are resolved back to the corresponding region operands.
+- tile-region results inherit the root relation of the corresponding `wafer.tile.yield` value；result的后续SSA
+  consumer必须把compiler-managed root lifetime延长到region之外，不能因isolated boundary截断。
 - view-like chains are resolved with `ViewLikeOpInterface` until the root DDR memref.
 - view/root memref shape, offset and strides must be static and non-negative unless a future descriptor form
   explicitly supports dynamic bounds and verifier can prove them.

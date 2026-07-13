@@ -56,6 +56,38 @@ module {
 
     return %mask, %idx : tensor<1x1x4x1xi1>, index
   }
+
+  func.func @nested_rank_table_cleanup() -> index {
+    %rank_table = arith.constant dense<[0, 1, 2, 3, 4, 5, 6, 7,
+                                        8, 9, 10, 11, 12, 13, 14, 15]>
+        : tensor<16xi32>
+    %group_table = arith.constant dense<[0, 1, 2, 3]> : tensor<4xi32>
+    %c0 = arith.constant 0 : index
+    %c3 = arith.constant 3 : index
+
+    %rank_slice = tensor.extract_slice %rank_table[0] [1] [1]
+        : tensor<16xi32> to tensor<1xi32>
+    %rank_tensor = tensor.collapse_shape %rank_slice []
+        : tensor<1xi32> into tensor<i32>
+    %rank_i32 = tensor.extract %rank_tensor[] : tensor<i32>
+    %rank_index = arith.index_castui %rank_i32 : i32 to index
+    %rank_nonnegative = arith.maxsi %rank_index, %c0 : index
+    %rank = arith.minsi %rank_nonnegative, %c3 : index
+
+    %group_slice = tensor.extract_slice %group_table[%rank] [1] [1]
+        : tensor<4xi32> to tensor<1xi32>
+    %group_tensor = tensor.collapse_shape %group_slice []
+        : tensor<1xi32> into tensor<i32>
+    %group_i32 = tensor.extract %group_tensor[] : tensor<i32>
+    %group = arith.index_cast %group_i32 : i32 to index
+    return %group : index
+  }
+
+  func.func @dynamic_rank_table_is_not_folded(%index: index) -> i32 {
+    %table = arith.constant dense<[0, 1, 2, 3]> : tensor<4xi32>
+    %value = tensor.extract %table[%index] : tensor<4xi32>
+    return %value : i32
+  }
 }
 
 // CHECK-LABEL: func.func @rank_mask_constant_cleanup
@@ -63,3 +95,12 @@ module {
 // CHECK-DAG: %[[IDX:.+]] = arith.constant 2 : index
 // CHECK-NOT: linalg.generic
 // CHECK: return %[[MASK]], %[[IDX]] : tensor<1x1x4x1xi1>, index
+
+// CHECK-LABEL: func.func @nested_rank_table_cleanup
+// CHECK-NOT: tensor.extract
+// CHECK-NOT: tensor.extract_slice
+// CHECK: %[[ZERO:.+]] = arith.constant 0 : index
+// CHECK: return %[[ZERO]] : index
+
+// CHECK-LABEL: func.func @dynamic_rank_table_is_not_folded
+// CHECK: tensor.extract {{.+}}[%arg0] : tensor<4xi32>

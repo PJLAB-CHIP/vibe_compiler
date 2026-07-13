@@ -14,6 +14,8 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 
+#include <algorithm>
+
 #ifdef WAFER_ENABLE_STABLEHLO
 #include "stablehlo/dialect/StablehloOps.h"
 #endif
@@ -479,6 +481,138 @@ static mlir::DenseElementsAttr getDenseConstantAttr(mlir::Value value) {
   return mlir::dyn_cast<mlir::DenseElementsAttr>(constant.getValue());
 }
 
+static std::optional<mlir::Attribute>
+getConstantTensorElement(mlir::Value value, llvm::ArrayRef<int64_t> indices);
+
+static std::optional<int64_t> getConstantIntegerValue(mlir::Value value) {
+  if (auto constant = value.getDefiningOp<mlir::arith::ConstantOp>()) {
+    auto attr = mlir::dyn_cast<mlir::IntegerAttr>(constant.getValue());
+    if (!attr || !attr.getValue().isSignedIntN(64))
+      return std::nullopt;
+    return attr.getInt();
+  }
+
+  if (auto cast = value.getDefiningOp<mlir::arith::IndexCastOp>())
+    return getConstantIntegerValue(cast.getIn());
+  if (auto cast = value.getDefiningOp<mlir::arith::IndexCastUIOp>()) {
+    std::optional<int64_t> input = getConstantIntegerValue(cast.getIn());
+    if (!input || *input < 0)
+      return std::nullopt;
+    return input;
+  }
+
+  auto evaluateSignedBinary = [&](mlir::Value lhs, mlir::Value rhs,
+                                  bool takeMaximum) -> std::optional<int64_t> {
+    std::optional<int64_t> lhsValue = getConstantIntegerValue(lhs);
+    std::optional<int64_t> rhsValue = getConstantIntegerValue(rhs);
+    if (!lhsValue || !rhsValue)
+      return std::nullopt;
+    return takeMaximum ? std::max(*lhsValue, *rhsValue)
+                       : std::min(*lhsValue, *rhsValue);
+  };
+  if (auto maximum = value.getDefiningOp<mlir::arith::MaxSIOp>())
+    return evaluateSignedBinary(maximum.getLhs(), maximum.getRhs(), true);
+  if (auto minimum = value.getDefiningOp<mlir::arith::MinSIOp>())
+    return evaluateSignedBinary(minimum.getLhs(), minimum.getRhs(), false);
+
+  if (auto extract = value.getDefiningOp<mlir::tensor::ExtractOp>()) {
+    llvm::SmallVector<int64_t> indices;
+    indices.reserve(extract.getIndices().size());
+    for (mlir::Value index : extract.getIndices()) {
+      std::optional<int64_t> constantIndex = getConstantIntegerValue(index);
+      if (!constantIndex)
+        return std::nullopt;
+      indices.push_back(*constantIndex);
+    }
+    std::optional<mlir::Attribute> element =
+        getConstantTensorElement(extract.getTensor(), indices);
+    if (!element)
+      return std::nullopt;
+    auto integer = mlir::dyn_cast<mlir::IntegerAttr>(*element);
+    if (!integer || !integer.getValue().isSignedIntN(64))
+      return std::nullopt;
+    return integer.getInt();
+  }
+
+  return std::nullopt;
+}
+
+static std::optional<int64_t> getConstantFoldResult(mlir::OpFoldResult value) {
+  if (mlir::Attribute attribute = value.dyn_cast<mlir::Attribute>()) {
+    if (auto integer = mlir::dyn_cast<mlir::IntegerAttr>(attribute))
+      return integer.getInt();
+  }
+  if (mlir::Value dynamic = value.dyn_cast<mlir::Value>())
+    return getConstantIntegerValue(dynamic);
+  return std::nullopt;
+}
+
+static bool areValidIndices(llvm::ArrayRef<int64_t> shape,
+                            llvm::ArrayRef<int64_t> indices) {
+  if (shape.size() != indices.size())
+    return false;
+  return llvm::all_of(llvm::zip(shape, indices), [](auto dimAndIndex) {
+    auto [dim, index] = dimAndIndex;
+    return dim >= 0 && index >= 0 && index < dim;
+  });
+}
+
+static std::optional<mlir::Attribute>
+getConstantTensorElement(mlir::Value value, llvm::ArrayRef<int64_t> indices) {
+  auto type = mlir::dyn_cast<mlir::RankedTensorType>(value.getType());
+  if (!type || !type.hasStaticShape() ||
+      !areValidIndices(type.getShape(), indices))
+    return std::nullopt;
+
+  if (mlir::DenseElementsAttr attr = getDenseConstantAttr(value)) {
+    int64_t linear = getLinearIndex(type.getShape(), indices);
+    if (linear < 0 || linear >= type.getNumElements())
+      return std::nullopt;
+    auto values = attr.getValues<mlir::Attribute>();
+    return *(values.begin() + linear);
+  }
+
+  if (auto slice = value.getDefiningOp<mlir::tensor::ExtractSliceOp>()) {
+    auto sourceType =
+        mlir::dyn_cast<mlir::RankedTensorType>(slice.getSourceType());
+    if (!sourceType || !sourceType.hasStaticShape() ||
+        sourceType.getRank() != type.getRank())
+      return std::nullopt;
+
+    llvm::SmallVector<int64_t> sourceIndices;
+    sourceIndices.reserve(indices.size());
+    for (auto [index, offset, stride] :
+         llvm::zip(indices, slice.getMixedOffsets(), slice.getMixedStrides())) {
+      std::optional<int64_t> constantOffset = getConstantFoldResult(offset);
+      std::optional<int64_t> constantStride = getConstantFoldResult(stride);
+      if (!constantOffset || !constantStride || *constantStride <= 0)
+        return std::nullopt;
+      sourceIndices.push_back(*constantOffset + index * *constantStride);
+    }
+    return getConstantTensorElement(slice.getSource(), sourceIndices);
+  }
+
+  mlir::Value reshapeSource;
+  if (auto collapse = value.getDefiningOp<mlir::tensor::CollapseShapeOp>())
+    reshapeSource = collapse.getSrc();
+  else if (auto expand = value.getDefiningOp<mlir::tensor::ExpandShapeOp>())
+    reshapeSource = expand.getSrc();
+  if (reshapeSource) {
+    auto sourceType =
+        mlir::dyn_cast<mlir::RankedTensorType>(reshapeSource.getType());
+    if (!sourceType || !sourceType.hasStaticShape() ||
+        sourceType.getElementType() != type.getElementType() ||
+        sourceType.getNumElements() != type.getNumElements())
+      return std::nullopt;
+    int64_t linear = getLinearIndex(type.getShape(), indices);
+    llvm::SmallVector<int64_t> sourceIndices;
+    delinearizeIndex(linear, sourceType.getShape(), sourceIndices);
+    return getConstantTensorElement(reshapeSource, sourceIndices);
+  }
+
+  return std::nullopt;
+}
+
 static bool replaceWithDenseConstant(mlir::Operation *op, mlir::Value result,
                                      mlir::DenseElementsAttr attr) {
   mlir::OpBuilder builder(op);
@@ -556,10 +690,6 @@ static bool foldConstantTensorReshape(mlir::Operation *op, mlir::Value source,
 }
 
 static bool foldConstantTensorExtract(mlir::tensor::ExtractOp extract) {
-  mlir::DenseElementsAttr sourceAttr =
-      getDenseConstantAttr(extract.getTensor());
-  if (!sourceAttr)
-    return false;
   auto sourceType =
       mlir::dyn_cast<mlir::RankedTensorType>(extract.getTensor().getType());
   if (!sourceType || !sourceType.hasStaticShape() ||
@@ -569,24 +699,17 @@ static bool foldConstantTensorExtract(mlir::tensor::ExtractOp extract) {
   llvm::SmallVector<int64_t> indices;
   indices.reserve(extract.getIndices().size());
   for (mlir::Value index : extract.getIndices()) {
-    auto constant = index.getDefiningOp<mlir::arith::ConstantOp>();
-    if (!constant)
+    std::optional<int64_t> constantIndex = getConstantIntegerValue(index);
+    if (!constantIndex)
       return false;
-    auto attr = mlir::dyn_cast<mlir::IntegerAttr>(constant.getValue());
-    if (!attr)
-      return false;
-    int64_t constantIndex = attr.getInt();
-    indices.push_back(constantIndex);
+    indices.push_back(*constantIndex);
   }
 
-  llvm::SmallVector<mlir::Attribute> sourceValues;
-  for (mlir::Attribute value : sourceAttr.getValues<mlir::Attribute>())
-    sourceValues.push_back(value);
-  int64_t sourceLinear = getLinearIndex(sourceType.getShape(), indices);
-  if (sourceLinear < 0 ||
-      sourceLinear >= static_cast<int64_t>(sourceValues.size()))
+  std::optional<mlir::Attribute> element =
+      getConstantTensorElement(extract.getTensor(), indices);
+  if (!element)
     return false;
-  auto value = mlir::dyn_cast<mlir::TypedAttr>(sourceValues[sourceLinear]);
+  auto value = mlir::dyn_cast<mlir::TypedAttr>(*element);
   if (!value)
     return false;
 

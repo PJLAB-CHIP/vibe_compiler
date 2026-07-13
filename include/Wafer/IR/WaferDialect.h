@@ -14,6 +14,7 @@
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/TilingInterface.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/SmallVector.h"
 
 #include <cstdint>
 #include <optional>
@@ -48,6 +49,11 @@ enum class InstrConvertParameterKind { None, RoundingMode, ZeroPoint };
 std::pair<mlir::Type, mlir::Type>
 getInstrConvertTypePair(mlir::MLIRContext *context, InstrConvertKind kind);
 InstrConvertParameterKind getInstrConvertParameterKind(InstrConvertKind kind);
+
+/// Maps the target ABI reduce dimension code to logical tensor dimensions.
+/// An empty result means the code is not valid for the given input rank.
+llvm::SmallVector<int64_t, 3> getInstrReduceLogicalDims(int64_t targetDim,
+                                                        int64_t inputRank);
 
 struct WaferPhysicalTensorInfo {
   mlir::RankedTensorType logicalTensorType;

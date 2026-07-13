@@ -222,6 +222,88 @@ std::optional<double> parseTolerance(const std::optional<std::string> &value,
   return parsed;
 }
 
+bool compareReferenceTensor(const wafer::compiler::ReferenceTensor &actual,
+                            const IndexedPath &expectedPath, double atol,
+                            double rtol,
+                            std::optional<int64_t> logicalRank = std::nullopt) {
+  auto expected = wafer::compiler::ReferenceTensor::loadNpy(expectedPath.path);
+  if (!expected) {
+    llvm::errs() << "wafer-compile: " << llvm::toString(expected.takeError())
+                 << "\n";
+    return true;
+  }
+  auto printRank = [&] {
+    if (logicalRank)
+      llvm::errs() << " rank " << *logicalRank;
+  };
+  if (actual.getDType() != expected->getDType() ||
+      actual.getShape() != expected->getShape()) {
+    llvm::errs() << "wafer-compile: reference output type mismatch at index "
+                 << expectedPath.index;
+    printRank();
+    llvm::errs() << "\n";
+    return true;
+  }
+  llvm::ArrayRef<uint8_t> actualBytes = actual.getBytes();
+  llvm::ArrayRef<uint8_t> expectedBytes = expected->getBytes();
+  if (actualBytes.size() != expectedBytes.size()) {
+    llvm::errs() << "wafer-compile: reference output byte count mismatch";
+    printRank();
+    llvm::errs() << "\n";
+    return true;
+  }
+  if (actual.getDType() != "f32") {
+    if (actualBytes != expectedBytes) {
+      llvm::errs() << "wafer-compile: reference output differs at index "
+                   << expectedPath.index;
+      printRank();
+      llvm::errs() << "\n";
+      return true;
+    }
+    return false;
+  }
+  std::optional<size_t> firstMismatch;
+  float firstActual = 0.0f;
+  float firstExpected = 0.0f;
+  size_t worstElement = 0;
+  double worstAbsoluteError = 0.0;
+  double worstToleranceRatio = 0.0;
+  for (size_t offset = 0; offset < actualBytes.size(); offset += 4) {
+    float actualValue = 0.0f;
+    float expectedValue = 0.0f;
+    std::memcpy(&actualValue, actualBytes.data() + offset, 4);
+    std::memcpy(&expectedValue, expectedBytes.data() + offset, 4);
+    double tolerance = atol + rtol * std::abs(expectedValue);
+    double absoluteError =
+        std::abs(static_cast<double>(actualValue) - expectedValue);
+    double toleranceRatio = tolerance == 0.0
+                                ? (absoluteError == 0.0 ? 0.0 : INFINITY)
+                                : absoluteError / tolerance;
+    if (toleranceRatio > worstToleranceRatio) {
+      worstElement = offset / 4;
+      worstAbsoluteError = absoluteError;
+      worstToleranceRatio = toleranceRatio;
+    }
+    if ((!std::isfinite(actualValue) || !std::isfinite(expectedValue) ||
+         absoluteError > tolerance) &&
+        !firstMismatch) {
+      firstMismatch = offset / 4;
+      firstActual = actualValue;
+      firstExpected = expectedValue;
+    }
+  }
+  if (!firstMismatch)
+    return false;
+  llvm::errs() << "wafer-compile: reference output mismatch at index "
+               << expectedPath.index << " element " << *firstMismatch;
+  printRank();
+  llvm::errs() << ": actual=" << firstActual << " expected=" << firstExpected
+               << "; worst_element=" << worstElement
+               << " max_abs_error=" << worstAbsoluteError
+               << " tolerance_ratio=" << worstToleranceRatio << "\n";
+  return true;
+}
+
 template <typename OutputBinding>
 bool compareReferenceOutputs(llvm::ArrayRef<OutputBinding> outputs,
                              llvm::ArrayRef<IndexedPath> expectedPaths,
@@ -246,71 +328,62 @@ bool compareReferenceOutputs(llvm::ArrayRef<OutputBinding> outputs,
                    << expectedPath.index << "\n";
       return true;
     }
-    auto expected =
-        wafer::compiler::ReferenceTensor::loadNpy(expectedPath.path);
-    if (!expected) {
-      llvm::errs() << "wafer-compile: " << llvm::toString(expected.takeError())
-                   << "\n";
+    if (compareReferenceTensor(actual->tensor, expectedPath, atol, rtol))
+      return true;
+  }
+  return false;
+}
+
+bool compareReplicatedRankOutputs(
+    const wafer::compiler::ExecutableBundle &bundle,
+    const wafer::compiler::ReferenceMultiRankExecutionResult &result,
+    llvm::ArrayRef<IndexedPath> expectedPaths, double atol, double rtol) {
+  const auto &ranks = bundle.getRankExecutables();
+  const auto &rankResults = result.getRankResults();
+  if (ranks.size() != rankResults.size()) {
+    llvm::errs() << "wafer-compile: reference rank result domain is "
+                    "incomplete\n";
+    return true;
+  }
+  for (size_t rankIndex = 0; rankIndex < ranks.size(); ++rankIndex) {
+    int64_t logicalRank = ranks[rankIndex].getLogicalRank();
+    if (rankResults[rankIndex].getLogicalRank() != logicalRank) {
+      llvm::errs() << "wafer-compile: reference rank result order is not "
+                      "canonical\n";
       return true;
     }
-    if (actual->tensor.getDType() != expected->getDType() ||
-        actual->tensor.getShape() != expected->getShape()) {
-      llvm::errs() << "wafer-compile: reference output type mismatch at index "
-                   << expectedPath.index << "\n";
-      return true;
-    }
-    llvm::ArrayRef<uint8_t> actualBytes = actual->tensor.getBytes();
-    llvm::ArrayRef<uint8_t> expectedBytes = expected->getBytes();
-    if (actualBytes.size() != expectedBytes.size()) {
-      llvm::errs() << "wafer-compile: reference output byte count mismatch\n";
-      return true;
-    }
-    if (actual->tensor.getDType() != "f32") {
-      if (actualBytes != expectedBytes) {
-        llvm::errs() << "wafer-compile: reference output differs at index "
-                     << expectedPath.index << "\n";
+    for (const wafer::compiler::RankProgramBinding &binding :
+         ranks[rankIndex].getProgramBindings()) {
+      if (binding.role != wafer::compiler::ProgramResourceRole::Output ||
+          binding.distribution !=
+              wafer::frontend::ProgramDistributionKind::Replicated)
+        continue;
+      const IndexedPath *expected = nullptr;
+      for (const IndexedPath &candidate : expectedPaths)
+        if (candidate.index == binding.programIndex)
+          expected = &candidate;
+      const wafer::compiler::ReferenceOutputBinding *actual = nullptr;
+      for (const auto &candidate : rankResults[rankIndex].getOutputs())
+        if (candidate.index == binding.programIndex)
+          actual = &candidate;
+      if (!expected || !actual) {
+        llvm::errs() << "wafer-compile: replicated reference output domain is "
+                        "incomplete\n";
         return true;
       }
-      continue;
-    }
-    for (size_t offset = 0; offset < actualBytes.size(); offset += 4) {
-      float actualValue = 0.0f;
-      float expectedValue = 0.0f;
-      std::memcpy(&actualValue, actualBytes.data() + offset, 4);
-      std::memcpy(&expectedValue, expectedBytes.data() + offset, 4);
-      double tolerance = atol + rtol * std::abs(expectedValue);
-      if (!std::isfinite(actualValue) || !std::isfinite(expectedValue) ||
-          std::abs(static_cast<double>(actualValue) - expectedValue) >
-              tolerance) {
-        llvm::errs() << "wafer-compile: reference output mismatch at index "
-                     << expectedPath.index << " element " << offset / 4
-                     << ": actual=" << actualValue
-                     << " expected=" << expectedValue << "\n";
+      if (compareReferenceTensor(actual->tensor, *expected, atol, rtol,
+                                 logicalRank))
         return true;
-      }
     }
   }
   return false;
 }
 
-bool runReferenceGate(const CommandLineOptions &options, int64_t rankCount,
+bool runReferenceGate(const CommandLineOptions &options,
+                      const wafer::compiler::ExecutableBundle &bundle,
                       llvm::ArrayRef<IndexedPath> inputPaths,
                       llvm::ArrayRef<IndexedPath> expectedPaths, double atol,
                       double rtol) {
-  auto config =
-      wafer::compiler::ExecutionConfig::createForSingleCard(rankCount);
-  if (!config) {
-    llvm::errs() << "wafer-compile: " << llvm::toString(config.takeError())
-                 << "\n";
-    return true;
-  }
-  auto bundle = wafer::compiler::compileGroupedProgramToExecutableBundle(
-      *options.outputProgramDirectory, *config, llvm::errs());
-  if (!bundle) {
-    llvm::errs() << "wafer-compile: " << llvm::toString(bundle.takeError())
-                 << "\n";
-    return true;
-  }
   std::vector<wafer::compiler::ReferenceGlobalInputBinding> globalInputs;
   for (const IndexedPath &inputPath : inputPaths) {
     auto tensor = wafer::compiler::ReferenceTensor::loadNpy(inputPath.path);
@@ -322,20 +395,20 @@ bool runReferenceGate(const CommandLineOptions &options, int64_t rankCount,
     globalInputs.push_back({inputPath.index, std::move(*tensor)});
   }
   auto invocations = wafer::compiler::prepareReferenceInvocations(
-      *bundle, *options.outputProgramDirectory, globalInputs);
+      bundle, *options.outputProgramDirectory, globalInputs);
   if (!invocations) {
     llvm::errs() << "wafer-compile: " << llvm::toString(invocations.takeError())
                  << "\n";
     return true;
   }
-  if (rankCount == 1) {
+  if (bundle.getExecutionConfig().getRankCount() == 1) {
     if (invocations->size() != 1 || invocations->front().logicalRank != 0) {
       llvm::errs() << "wafer-compile: single-rank reference invocation is "
                       "not canonical\n";
       return true;
     }
     auto result = wafer::compiler::executeReferenceRank(
-        *bundle, 0, invocations->front().inputs);
+        bundle, 0, invocations->front().inputs);
     if (!result) {
       llvm::errs() << "wafer-compile: " << llvm::toString(result.takeError())
                    << "\n";
@@ -344,14 +417,17 @@ bool runReferenceGate(const CommandLineOptions &options, int64_t rankCount,
     return compareReferenceOutputs<wafer::compiler::ReferenceOutputBinding>(
         result->getOutputs(), expectedPaths, atol, rtol);
   }
-  auto result = wafer::compiler::executeReferenceBundle(*bundle, *invocations);
+  auto result = wafer::compiler::executeReferenceBundle(bundle, *invocations);
   if (!result) {
     llvm::errs() << "wafer-compile: " << llvm::toString(result.takeError())
                  << "\n";
     return true;
   }
-  return compareReferenceOutputs<wafer::compiler::ReferenceGlobalOutputBinding>(
-      result->getGlobalOutputs(), expectedPaths, atol, rtol);
+  if (compareReferenceOutputs<wafer::compiler::ReferenceGlobalOutputBinding>(
+          result->getGlobalOutputs(), expectedPaths, atol, rtol))
+    return true;
+  return compareReplicatedRankOutputs(bundle, *result, expectedPaths, atol,
+                                      rtol);
 }
 
 } // namespace
@@ -433,6 +509,7 @@ int main(int argc, char **argv) {
   }
 
   mlir::LogicalResult compilationStatus = mlir::failure();
+  std::optional<wafer::compiler::ExecutableBundle> executableBundle;
 #ifdef WAFER_ENABLE_TEST_HELPER_OVERRIDE
   const char *failureRank = std::getenv("WAFER_TEST_FAIL_AFTER_LOGICAL_RANK");
   const char *targetFailureRank =
@@ -481,9 +558,14 @@ int main(int argc, char **argv) {
   } else
 #endif
   {
-    compilationStatus = wafer::compiler::compileProgram(
-        std::move(*request), *options.outputProgramDirectory, helperPath,
-        *targetToolchain, llvm::errs());
+    mlir::FailureOr<wafer::compiler::ExecutableBundle> compiledProgram =
+        wafer::compiler::compileProgram(
+            std::move(*request), *options.outputProgramDirectory, helperPath,
+            *targetToolchain, llvm::errs());
+    if (mlir::succeeded(compiledProgram)) {
+      executableBundle.emplace(std::move(*compiledProgram));
+      compilationStatus = mlir::success();
+    }
   }
   if (mlir::failed(compilationStatus))
     return 1;
@@ -495,7 +577,12 @@ int main(int argc, char **argv) {
     // The package boundary is complete before the downstream numeric gate.
     // Keep mixed stdout/stderr diagnostics in that semantic order as well.
     llvm::outs().flush();
-    if (runReferenceGate(options, rankCount, *referenceInputs,
+    if (!executableBundle) {
+      llvm::errs() << "wafer-compile: reference execution cannot be combined "
+                      "with test-only compilation failure injection\n";
+      return 1;
+    }
+    if (runReferenceGate(options, *executableBundle, *referenceInputs,
                          *referenceExpected, *referenceAtol, *referenceRtol))
       return 1;
     llvm::outs() << "wafer-compile: reference outputs matched\n";

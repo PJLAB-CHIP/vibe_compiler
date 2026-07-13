@@ -80,7 +80,10 @@ enum class DDRAllocationContract { DefaultArenaRelativeOffsets };
 /// never inferred from its payload locator.
 struct RankProgramBinding {
   ProgramResourceRole role;
+  /// Accepted entry argument/result index.
   int64_t index;
+  /// User-visible index within the resource role's program-boundary domain.
+  int64_t programIndex;
   std::string name;
   std::string dtype;
   frontend::ProgramDistributionKind distribution;
@@ -178,11 +181,13 @@ compileGroupedProgramToExecutableBundle(llvm::StringRef groupedProgramDirectory,
 /// Runs the production transaction through executable, target-artifact and
 /// typed package bundles. The final root becomes visible only after canonical
 /// manifest readback verifies every grouped-program and target module member.
-mlir::LogicalResult compileProgram(CompilationRequest request,
-                                   llvm::StringRef outputProgramDirectory,
-                                   llvm::StringRef xlaSpmdPartitionerHelper,
-                                   const TargetToolchain &targetToolchain,
-                                   llvm::raw_ostream &diagnostics);
+/// The returned bundle is the same owner-backed accepted rank domain consumed
+/// by target-artifact and package assembly; downstream gates must not rebuild
+/// it from the published package.
+mlir::FailureOr<ExecutableBundle> compileProgram(
+    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics);
 
 } // namespace wafer::compiler
 

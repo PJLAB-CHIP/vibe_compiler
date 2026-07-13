@@ -132,6 +132,9 @@ Q16.T在同一C++ model中扩展typed `TransportRequirements` discriminated unio
 runtime capability和host-watchdog requirement。allocator选择的channel/FSM、per-op `DTEMessageAttr`、
 `DirectDTEBindingAttr`和p2p issue/wait body留在target module内，不进入manifest。no-card preflight只验证environment
 是否支持该capability和ABI requirement，不重新route、匹配消息或分配transport resource。
+`wafer-run --no-card`默认environment不声明transport capability，因此Direct DTE package fail closed；调用方只有
+显式传入`--direct-dte-status-abi <abi> --supports-host-watchdog`后才形成对应typed environment facts。CLI选项只描述
+provider compatibility，不表示provider存在，也不执行transport。
 
 manifest明确不含：
 

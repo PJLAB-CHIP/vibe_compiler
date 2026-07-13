@@ -376,42 +376,9 @@ getYieldedRootLinalgOps(GroupOp group) {
   return roots;
 }
 
-static mlir::OwningOpRef<mlir::ModuleOp>
-cloneGroupToSelectionStandaloneModule(GroupOp group) {
-  mlir::Location loc = group.getLoc();
-  mlir::OwningOpRef<mlir::ModuleOp> standaloneModule =
-      mlir::ModuleOp::create(loc);
-  mlir::OpBuilder moduleBuilder(standaloneModule->getBodyRegion());
-
-  llvm::SmallVector<mlir::Type, 4> inputTypes;
-  for (mlir::Value input : group.getInputs())
-    inputTypes.push_back(input.getType());
-  for (mlir::Value output : group.getOuts())
-    inputTypes.push_back(output.getType());
-
-  auto funcType =
-      moduleBuilder.getFunctionType(inputTypes, group.getResultTypes());
-  auto func = moduleBuilder.create<mlir::func::FuncOp>(
-      loc, "group_tile_selection", funcType);
-  mlir::Block *entry = func.addEntryBlock();
-
-  mlir::IRMapping mapping;
-  unsigned argumentIndex = 0;
-  for (mlir::Value input : group.getInputs())
-    mapping.map(input, entry->getArgument(argumentIndex++));
-  for (mlir::Value output : group.getOuts())
-    mapping.map(output, entry->getArgument(argumentIndex++));
-
-  mlir::OpBuilder builder(entry, entry->end());
-  auto clonedGroup =
-      mlir::cast<GroupOp>(builder.clone(*group.getOperation(), mapping));
-  builder.create<mlir::func::ReturnOp>(loc, clonedGroup.getResults());
-  return standaloneModule;
-}
-
 static std::string getStandaloneGroupModuleText(GroupOp group) {
   mlir::OwningOpRef<mlir::ModuleOp> standaloneModule =
-      cloneGroupToSelectionStandaloneModule(group);
+      detail::cloneGroupToStandaloneModule(group);
   std::string text;
   llvm::raw_string_ostream os(text);
   standaloneModule->print(os);

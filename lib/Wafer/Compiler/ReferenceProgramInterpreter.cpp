@@ -155,7 +155,7 @@ public:
       auto tensor = exportTensor(*buffer, binding.dtype, binding.localShape);
       if (!tensor)
         return tensor.takeError();
-      outputs.push_back({binding.index, std::move(*tensor)});
+      outputs.push_back({binding.programIndex, std::move(*tensor)});
     }
     ProgramRunAttempt attempt;
     attempt.result = ReferenceExecutionResultBuilder::make(program.logicalRank,
@@ -458,12 +458,24 @@ private:
         if (llvm::Error error = executeGemm(command))
           return std::move(error);
         break;
+      case CommandKind::Reduce:
+        if (llvm::Error error = executeReduce(command))
+          return std::move(error);
+        break;
       case CommandKind::Elementwise:
         if (llvm::Error error = executeElementwise(command))
           return std::move(error);
         break;
       case CommandKind::Fill:
         if (llvm::Error error = executeFill(command))
+          return std::move(error);
+        break;
+      case CommandKind::Bit2Fp:
+        if (llvm::Error error = executeBit2Fp(command))
+          return std::move(error);
+        break;
+      case CommandKind::MaskMove:
+        if (llvm::Error error = executeMaskMove(command))
           return std::move(error);
         break;
       case CommandKind::LocalFence:
@@ -788,22 +800,101 @@ private:
       return rhs.takeError();
     if (!dest)
       return dest.takeError();
-    for (int64_t m = 0; m < command.m; ++m)
-      for (int64_t n = 0; n < command.n; ++n) {
-        float sum = 0.0f;
-        for (int64_t k = 0; k < command.k; ++k) {
-          auto lhsValue = readF32(*lhs, {m, k});
-          auto rhsValue = readF32(*rhs, {k, n});
-          if (!lhsValue)
-            return lhsValue.takeError();
-          if (!rhsValue)
-            return rhsValue.takeError();
-          sum += *lhsValue * *rhsValue;
-        }
-        if (llvm::Error error = writeF32(*dest, {m, n}, sum))
-          return error;
-      }
-    return llvm::Error::success();
+    return forEachLogicalIndex(
+        command.batchShape,
+        [&](llvm::ArrayRef<int64_t> batchIndex) -> llvm::Error {
+          for (int64_t m = 0; m < command.m; ++m)
+            for (int64_t n = 0; n < command.n; ++n) {
+              float sum = 0.0f;
+              for (int64_t k = 0; k < command.k; ++k) {
+                llvm::SmallVector<int64_t> lhsIndex(batchIndex.begin(),
+                                                    batchIndex.end());
+                llvm::SmallVector<int64_t> rhsIndex(batchIndex.begin(),
+                                                    batchIndex.end());
+                lhsIndex.append({m, k});
+                rhsIndex.append({k, n});
+                auto lhsValue = readF32(*lhs, lhsIndex);
+                auto rhsValue = readF32(*rhs, rhsIndex);
+                if (!lhsValue)
+                  return lhsValue.takeError();
+                if (!rhsValue)
+                  return rhsValue.takeError();
+                sum += *lhsValue * *rhsValue;
+              }
+              llvm::SmallVector<int64_t> destIndex(batchIndex.begin(),
+                                                   batchIndex.end());
+              destIndex.append({m, n});
+              if (llvm::Error error = writeF32(*dest, destIndex, sum))
+                return error;
+            }
+          return llvm::Error::success();
+        });
+  }
+
+  llvm::Error executeReduce(const Command &command) {
+    auto input = lookup(command.source);
+    auto dest = lookup(command.dest);
+    if (!input)
+      return input.takeError();
+    if (!dest)
+      return dest.takeError();
+
+    const Scalar *init = &command.scalarValue;
+    if (command.reduceInit) {
+      auto found = scalars.find(*command.reduceInit);
+      if (found == scalars.end())
+        return invalid("reduce scalar initialization is unavailable");
+      init = &found->second;
+    }
+    auto initValue = convertScalarToF32(*init);
+    if (!initValue)
+      return initValue.takeError();
+    if (llvm::Error error = forEachLogicalIndex(
+            dest->type.getShape(), [&](llvm::ArrayRef<int64_t> index) {
+              return writeF32(*dest, index, *initValue);
+            }))
+      return error;
+
+    return forEachLogicalIndex(
+        input->type.getShape(), [&](llvm::ArrayRef<int64_t> inputIndex) {
+          llvm::SmallVector<int64_t> destIndex;
+          for (auto [dimension, value] : llvm::enumerate(inputIndex))
+            if (!llvm::is_contained(command.reduceDimensions,
+                                    static_cast<int64_t>(dimension)))
+              destIndex.push_back(value);
+          auto value = readF32(*input, inputIndex);
+          auto accumulator = readF32(*dest, destIndex);
+          if (!value)
+            return value.takeError();
+          if (!accumulator)
+            return accumulator.takeError();
+
+          float result = 0.0f;
+          switch (command.reduceKind) {
+          case wafer::InstrReduceKind::Sum:
+            result = *accumulator + *value;
+            break;
+          case wafer::InstrReduceKind::Max:
+            if (std::isnan(*accumulator) || std::isnan(*value))
+              result = std::numeric_limits<float>::quiet_NaN();
+            else if (*accumulator == 0.0f && *value == 0.0f)
+              result = 0.0f;
+            else
+              result = std::max(*accumulator, *value);
+            break;
+          case wafer::InstrReduceKind::Min:
+            if (std::isnan(*accumulator) || std::isnan(*value))
+              result = std::numeric_limits<float>::quiet_NaN();
+            else if (*accumulator == 0.0f && *value == 0.0f)
+              result = -0.0f;
+            else
+              result = std::min(*accumulator, *value);
+            break;
+          case wafer::InstrReduceKind::Avg:
+            return invalid("unsupported projected reduce kind");
+          }
+          return writeF32(*dest, destIndex, result);
+        });
   }
 
   llvm::Error executeElementwise(const Command &command) {
@@ -928,6 +1019,15 @@ private:
     auto scalar = scalars.find(command.scalar);
     if (scalar == scalars.end())
       return invalid("fill scalar is unavailable");
+    if (dest->type.getElementType().isInteger(1)) {
+      if (!scalar->second.integer || scalar->second.integer->getBitWidth() != 1)
+        return invalid("i1 fill requires an i1 scalar");
+      bool value = !scalar->second.integer->isZero();
+      return forEachLogicalIndex(dest->type.getShape(),
+                                 [&](llvm::ArrayRef<int64_t> index) {
+                                   return writeI1(*dest, index, value);
+                                 });
+    }
     auto value = convertScalarToF32(scalar->second);
     if (!value)
       return value.takeError();
@@ -935,6 +1035,47 @@ private:
                                [&](llvm::ArrayRef<int64_t> index) {
                                  return writeF32(*dest, index, *value);
                                });
+  }
+
+  llvm::Error executeBit2Fp(const Command &command) {
+    auto source = lookup(command.source);
+    auto dest = lookup(command.dest);
+    if (!source)
+      return source.takeError();
+    if (!dest)
+      return dest.takeError();
+    return forEachLogicalIndex(
+        dest->type.getShape(), [&](llvm::ArrayRef<int64_t> index) {
+          auto value = readI1(*source, index);
+          if (!value)
+            return value.takeError();
+          return writeF32(*dest, index, *value ? 1.0f : 0.0f);
+        });
+  }
+
+  llvm::Error executeMaskMove(const Command &command) {
+    auto source = lookup(command.source);
+    auto mask = lookup(command.mask);
+    auto dest = lookup(command.dest);
+    if (!source)
+      return source.takeError();
+    if (!mask)
+      return mask.takeError();
+    if (!dest)
+      return dest.takeError();
+    return forEachLogicalIndex(
+        dest->type.getShape(),
+        [&](llvm::ArrayRef<int64_t> index) -> llvm::Error {
+          auto maskValue = readF32(*mask, index);
+          if (!maskValue)
+            return maskValue.takeError();
+          if (*maskValue == 0.0f)
+            return llvm::Error::success();
+          auto sourceValue = readF32(*source, index);
+          if (!sourceValue)
+            return sourceValue.takeError();
+          return writeF32(*dest, index, *sourceValue);
+        });
   }
 
   uint64_t nextStochasticBits() {
@@ -1102,7 +1243,7 @@ reassembleOutputs(llvm::ArrayRef<const ReferenceProgram::Impl *> programs,
       firstOutputs.push_back(&binding);
   llvm::sort(firstOutputs, [](const RankProgramBinding *left,
                               const RankProgramBinding *right) {
-    return left->index < right->index;
+    return left->programIndex < right->programIndex;
   });
   for (const ReferenceProgram::Impl *program : programs) {
     size_t outputCount = llvm::count_if(
@@ -1122,7 +1263,7 @@ reassembleOutputs(llvm::ArrayRef<const ReferenceProgram::Impl *> programs,
       for (const RankProgramBinding &candidate :
            programs[rank]->programBindings)
         if (candidate.role == ProgramResourceRole::Output &&
-            candidate.index == first->index) {
+            candidate.programIndex == first->programIndex) {
           if (binding)
             return invalid("rank contains duplicate output binding index");
           binding = &candidate;
@@ -1135,7 +1276,7 @@ reassembleOutputs(llvm::ArrayRef<const ReferenceProgram::Impl *> programs,
       const ReferenceTensor *tensor = nullptr;
       for (const ReferenceOutputBinding &output :
            rankResults[rank].getOutputs())
-        if (output.index == first->index) {
+        if (output.index == first->programIndex) {
           if (tensor)
             return invalid("rank result contains duplicate output index");
           tensor = &output.tensor;
@@ -1150,14 +1291,41 @@ reassembleOutputs(llvm::ArrayRef<const ReferenceProgram::Impl *> programs,
     if (first->distribution == frontend::ProgramDistributionKind::Replicated) {
       if (first->localShape != first->globalShape)
         return invalid("replicated output does not cover global shape");
-      for (const ReferenceTensor *tensor : llvm::drop_begin(tensors))
-        if (tensor->getBytes() != tensors.front()->getBytes())
-          return invalid("replicated rank outputs are not byte-identical");
+      bool requireExactReplicas =
+          programs.front()->transportContract == TransportContract::None ||
+          first->dtype != "f32";
+      for (size_t rankIndex = 1;
+           requireExactReplicas && rankIndex < tensors.size(); ++rankIndex) {
+        llvm::ArrayRef<uint8_t> canonical = tensors.front()->getBytes();
+        llvm::ArrayRef<uint8_t> candidate = tensors[rankIndex]->getBytes();
+        if (candidate == canonical)
+          continue;
+        auto mismatch = std::mismatch(canonical.begin(), canonical.end(),
+                                      candidate.begin(), candidate.end());
+        size_t byteOffset = static_cast<size_t>(
+            std::distance(canonical.begin(), mismatch.first));
+        std::string message;
+        llvm::raw_string_ostream stream(message);
+        stream << "replicated output index " << first->programIndex << " rank "
+               << programs[rankIndex]->logicalRank
+               << " differs from rank 0 at byte " << byteOffset;
+        if (first->dtype == "f32" && byteOffset / 4 < canonical.size() / 4) {
+          size_t element = byteOffset / 4;
+          float rankZero = 0.0f;
+          float rankValue = 0.0f;
+          std::memcpy(&rankZero, canonical.data() + element * 4, 4);
+          std::memcpy(&rankValue, candidate.data() + element * 4, 4);
+          stream << " (element " << element << ": rank0=" << rankZero
+                 << ", rank=" << rankValue << ")";
+        }
+        stream.flush();
+        return invalid(message);
+      }
       auto global = ReferenceTensor::create(first->dtype, first->globalShape,
                                             tensors.front()->getBytes());
       if (!global)
         return global.takeError();
-      globals.push_back({first->index, first->name, std::move(*global)});
+      globals.push_back({first->programIndex, first->name, std::move(*global)});
       continue;
     }
 
@@ -1213,7 +1381,7 @@ reassembleOutputs(llvm::ArrayRef<const ReferenceProgram::Impl *> programs,
         ReferenceTensor::create(first->dtype, first->globalShape, bytes);
     if (!global)
       return global.takeError();
-    globals.push_back({first->index, first->name, std::move(*global)});
+    globals.push_back({first->programIndex, first->name, std::move(*global)});
   }
   return globals;
 }

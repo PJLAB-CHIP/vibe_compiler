@@ -85,12 +85,11 @@ static bool isWaferInstruction(mlir::Operation *op) {
 }
 
 static bool isUnavailableEndpoint(llvm::ArrayRef<int64_t> unavailable,
-                                  int64_t cardY, int64_t cardX,
-                                  int64_t tileY, int64_t tileX) {
+                                  int64_t cardY, int64_t cardX, int64_t tileY,
+                                  int64_t tileX) {
   for (size_t index = 0; index < unavailable.size(); index += 4)
     if (unavailable[index] == cardY && unavailable[index + 1] == cardX &&
-        unavailable[index + 2] == tileY &&
-        unavailable[index + 3] == tileX)
+        unavailable[index + 2] == tileY && unavailable[index + 3] == tileX)
       return true;
   return false;
 }
@@ -109,8 +108,8 @@ resolveDirectDTEEndpointDomain(mlir::ModuleOp moduleOp, int64_t logicalRank) {
     return moduleOp.emitError()
            << "unsupported_target_transport: Direct DTE requires exactly one "
               "execution mesh";
-  TargetTopologyOp topology =
-      moduleOp.lookupSymbol<TargetTopologyOp>(mesh.getTopologyAttr().getValue());
+  TargetTopologyOp topology = moduleOp.lookupSymbol<TargetTopologyOp>(
+      mesh.getTopologyAttr().getValue());
   if (!topology)
     return mesh.emitError()
            << "unsupported_target_transport: Direct DTE mesh references a "
@@ -356,9 +355,9 @@ static mlir::FailureOr<int64_t> getStaticUInt32MaskAddress(mlir::Operation *op,
   return start;
 }
 
-static mlir::FailureOr<int64_t>
-getStaticSPMAddress(mlir::Operation *op, mlir::Value value,
-                    llvm::StringRef role) {
+static mlir::FailureOr<int64_t> getStaticSPMAddress(mlir::Operation *op,
+                                                    mlir::Value value,
+                                                    llvm::StringRef role) {
   auto viewType = mlir::dyn_cast<mlir::MemRefType>(value.getType());
   if (!viewType || !isWaferSPMMemRefType(viewType))
     return op->emitError() << "unsupported_target_address: " << role
@@ -732,8 +731,7 @@ struct FunctionLowering {
     appendI32(op.getLoc(), args, op.getBytesAttr().getInt());
     appendI32(op.getLoc(), args,
               domain.rankToTile[static_cast<size_t>(domain.logicalRank)]);
-    appendI32(op.getLoc(), args,
-              domain.rankToTile[static_cast<size_t>(peer)]);
+    appendI32(op.getLoc(), args, domain.rankToTile[static_cast<size_t>(peer)]);
     appendI32(op.getLoc(), args, binding.getReceiverFsmId());
     appendI32(op.getLoc(), args, /*isHighPerformance=*/0);
     return emitI64Call(op.getLoc(), makeTargetSymbol("direct_dte_send_prepare"),
@@ -780,8 +778,7 @@ struct FunctionLowering {
     appendI32(op.getLoc(), args, op.getBytesAttr().getInt());
     appendI32(op.getLoc(), args,
               domain.rankToTile[static_cast<size_t>(domain.logicalRank)]);
-    appendI32(op.getLoc(), args,
-              domain.rankToTile[static_cast<size_t>(peer)]);
+    appendI32(op.getLoc(), args, domain.rankToTile[static_cast<size_t>(peer)]);
     appendI32(op.getLoc(), args, binding.getReceiverFsmId());
     return emitI64Call(op.getLoc(), makeTargetSymbol("direct_dte_recv_prepare"),
                        args);
@@ -1865,6 +1862,61 @@ struct TargetReinterpretCastOpLowering
   }
 };
 
+struct TargetCollapseShapeOpLowering
+    : public mlir::OpConversionPattern<mlir::memref::CollapseShapeOp> {
+  using mlir::OpConversionPattern<
+      mlir::memref::CollapseShapeOp>::OpConversionPattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(mlir::memref::CollapseShapeOp collapseOp, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    auto sourceType =
+        mlir::dyn_cast<mlir::MemRefType>(collapseOp.getSrc().getType());
+    auto resultType = mlir::dyn_cast<mlir::MemRefType>(collapseOp.getType());
+    if (!sourceType || !resultType || !isWaferMemRefType(sourceType) ||
+        !isWaferMemRefType(resultType))
+      return collapseOp.emitError()
+             << "unsupported_target_address: collapse_shape must preserve "
+                "Wafer memory";
+
+    MemoryAttr sourceMemory = getWaferMemoryAttr(sourceType);
+    MemoryAttr resultMemory = getWaferMemoryAttr(resultType);
+    if (sourceMemory.getSpace() != resultMemory.getSpace() ||
+        sourceMemory.getLayout() != MemLayout::Tensor ||
+        resultMemory.getLayout() != MemLayout::Tensor ||
+        sourceType.getElementType() != resultType.getElementType())
+      return collapseOp.emitError()
+             << "unsupported_target_address: collapse_shape requires "
+                "matching Wafer tensor-layout memory and element types";
+
+    mlir::FailureOr<int64_t> sourceElements =
+        getStaticElementCount(collapseOp, sourceType, "collapse source");
+    mlir::FailureOr<int64_t> resultElements =
+        getStaticElementCount(collapseOp, resultType, "collapse result");
+    std::optional<WaferPhysicalTensorInfo> sourceInfo =
+        computeWaferPhysicalTensorInfo(sourceType);
+    std::optional<WaferPhysicalTensorInfo> resultInfo =
+        computeWaferPhysicalTensorInfo(resultType);
+    if (mlir::failed(sourceElements) || mlir::failed(resultElements))
+      return mlir::failure();
+    if (*sourceElements != *resultElements || !sourceInfo || !resultInfo ||
+        sourceInfo->compactBytes != resultInfo->compactBytes ||
+        sourceInfo->physicalBytes != resultInfo->physicalBytes)
+      return collapseOp.emitError()
+             << "unsupported_target_address: collapse_shape must preserve "
+                "element count and physical footprint";
+
+    mlir::FailureOr<int64_t> delta =
+        getStaticViewDeltaBytes(collapseOp, sourceType, resultType);
+    if (mlir::failed(delta))
+      return mlir::failure();
+    rewriter.replaceOp(collapseOp,
+                       applyStaticAddressDelta(rewriter, collapseOp.getLoc(),
+                                               adaptor.getSrc(), *delta));
+    return mlir::success();
+  }
+};
+
 struct TargetMemRefCastOpLowering
     : public mlir::OpConversionPattern<mlir::memref::CastOp> {
   using mlir::OpConversionPattern<mlir::memref::CastOp>::OpConversionPattern;
@@ -2016,16 +2068,16 @@ static void registerVoidCallee(mlir::MLIRContext *context,
   auto type = mlir::LLVM::LLVMFunctionType::get(
       mlir::LLVM::LLVMVoidType::get(context), arguments,
       /*isVarArg=*/false);
-  auto [it, inserted] =
-      callees.try_emplace(symbol, CalleeSignature{type});
+  auto [it, inserted] = callees.try_emplace(symbol, CalleeSignature{type});
   if (!inserted && it->second.type != type)
     llvm_unreachable("target transport lifecycle symbol type mismatch");
 }
 
-static mlir::LogicalResult injectDirectDTEStatusLifecycle(
-    mlir::ModuleOp moduleOp, llvm::StringRef entrySymbol,
-    int64_t statusArgumentIndex, int64_t rankCount,
-    llvm::StringMap<CalleeSignature> &usedCallees) {
+static mlir::LogicalResult
+injectDirectDTEStatusLifecycle(mlir::ModuleOp moduleOp,
+                               llvm::StringRef entrySymbol,
+                               int64_t statusArgumentIndex, int64_t rankCount,
+                               llvm::StringMap<CalleeSignature> &usedCallees) {
   auto entry = moduleOp.lookupSymbol<mlir::LLVM::LLVMFuncOp>(entrySymbol);
   if (!entry || entry.isDeclaration() || entry.getBody().empty() ||
       statusArgumentIndex < 0 ||
@@ -2058,7 +2110,8 @@ static mlir::LogicalResult injectDirectDTEStatusLifecycle(
       mlir::ValueRange{status, count});
 
   llvm::SmallVector<mlir::LLVM::ReturnOp, 4> returns;
-  entry.walk([&](mlir::LLVM::ReturnOp returnOp) { returns.push_back(returnOp); });
+  entry.walk(
+      [&](mlir::LLVM::ReturnOp returnOp) { returns.push_back(returnOp); });
   if (returns.empty())
     return entry.emitError()
            << "unsupported_target_transport: Direct DTE entry has no return";
@@ -2124,7 +2177,8 @@ lowerModuleInPlace(mlir::ModuleOp moduleOp,
       return mlir::failure();
     if (transportStatusArgumentIndex >=
             static_cast<int64_t>((*entry).getNumArguments()) ||
-        !(*entry).getArgument(transportStatusArgumentIndex)
+        !(*entry)
+             .getArgument(transportStatusArgumentIndex)
              .getType()
              .isInteger(64))
       return (*entry).emitError()
@@ -2154,15 +2208,15 @@ lowerModuleInPlace(mlir::ModuleOp moduleOp,
 
   llvm::StringMap<CalleeSignature> usedCallees;
   mlir::RewritePatternSet patterns(moduleOp.getContext());
-  patterns
-      .add<TargetFuncOpLowering, TargetCallOpLowering, TargetReturnOpLowering,
-           TargetSubViewOpLowering, TargetReinterpretCastOpLowering,
-           TargetMemRefCastOpLowering, TargetDeallocOpLowering>(
-          converter, moduleOp.getContext());
+  patterns.add<TargetFuncOpLowering, TargetCallOpLowering,
+               TargetReturnOpLowering, TargetSubViewOpLowering,
+               TargetReinterpretCastOpLowering, TargetCollapseShapeOpLowering,
+               TargetMemRefCastOpLowering, TargetDeallocOpLowering>(
+      converter, moduleOp.getContext());
   patterns.add<TargetAllocOpLowering>(converter, moduleOp.getContext(),
                                       defaultDDRArenaArgumentIndex);
-  patterns.add<TargetInstructionOpLowering>(
-      converter, usedCallees, dteDomain ? &*dteDomain : nullptr);
+  patterns.add<TargetInstructionOpLowering>(converter, usedCallees,
+                                            dteDomain ? &*dteDomain : nullptr);
   mlir::arith::populateArithToLLVMConversionPatterns(converter, patterns);
   mlir::cf::populateControlFlowToLLVMConversionPatterns(converter, patterns);
 
@@ -2216,9 +2270,8 @@ struct LowerInstrToTargetLLVMPass
     mlir::ModuleOp moduleOp = getOperation();
     mlir::OwningOpRef<mlir::ModuleOp> loweredModule = moduleOp.clone();
     if (mlir::failed(
-            lowerModuleInPlace(*loweredModule,
-                               defaultDDRArenaArgumentIndex, logicalRank,
-                               transportStatusArgumentIndex))) {
+            lowerModuleInPlace(*loweredModule, defaultDDRArenaArgumentIndex,
+                               logicalRank, transportStatusArgumentIndex))) {
       signalPassFailure();
       return;
     }

@@ -217,6 +217,8 @@ public:
     llvm::SmallVector<mlir::Value, 4> tileRegionInputs;
     for (auto [original, converted] :
          llvm::zip(group.getInputs(), convertedInputs)) {
+      if (isElidableConstantBoundary(original))
+        continue;
       mlir::FailureOr<mlir::Value> boundary = materializeDdrBoundary(
           original, converted, /*readOnly=*/true, rewriter);
       if (mlir::failed(boundary))
@@ -526,6 +528,17 @@ private:
       return mlir::IntegerAttr::get(intType,
                                     elements.getSplatValue<mlir::APInt>());
     return {};
+  }
+
+  bool isElidableConstantBoundary(mlir::Value value) const {
+    auto constant = value.getDefiningOp<mlir::arith::ConstantOp>();
+    if (!constant)
+      return false;
+    if (isScalarType(value.getType()))
+      return true;
+    auto tensorType = mlir::dyn_cast<mlir::RankedTensorType>(value.getType());
+    return tensorType && static_cast<bool>(getScalarSplatAttr(
+                             tensorType, constant.getValue()));
   }
 
   mlir::FailureOr<mlir::Value>
@@ -1153,45 +1166,51 @@ private:
                                          mlir::OpBuilder &builder) {
     mlir::Block &groupBlock = group.getBody().front();
     mlir::Block &tileBlock = tileRegion.getBody().front();
-    if (groupBlock.getNumArguments() != tileBlock.getNumArguments())
+    if (groupBlock.getNumArguments() !=
+        group.getInputs().size() + group.getOuts().size())
       return fail("group boundary argument count mismatch");
 
-    for (auto [groupArg, tileArg] :
-         llvm::zip(groupBlock.getArguments(), tileBlock.getArguments())) {
+    unsigned tileArgIndex = 0;
+    unsigned inputCount = static_cast<unsigned>(group.getInputs().size());
+    for (mlir::BlockArgument groupArg : groupBlock.getArguments()) {
+      unsigned argIndex = groupArg.getArgNumber();
+      if (argIndex < inputCount &&
+          isElidableConstantBoundary(group.getInputs()[argIndex])) {
+        auto constant = group.getInputs()[argIndex]
+                            .getDefiningOp<mlir::arith::ConstantOp>();
+        auto tensorType =
+            mlir::dyn_cast<mlir::RankedTensorType>(groupArg.getType());
+        if (tensorType) {
+          tensorAttrs[groupArg] = constant.getValue();
+        } else {
+          mlir::Operation *cloned = builder.clone(*constant.getOperation());
+          scalarValues[groupArg] = cloned->getResult(0);
+          scalarAttrs[groupArg] = constant.getValue();
+        }
+        continue;
+      }
+
+      if (tileArgIndex >= tileBlock.getNumArguments())
+        return fail("tile-region boundary argument count mismatch");
+      mlir::BlockArgument tileArg = tileBlock.getArgument(tileArgIndex++);
       auto tensorType =
           mlir::dyn_cast<mlir::RankedTensorType>(groupArg.getType());
       if (!tensorType) {
         if (mlir::isa<mlir::FloatType, mlir::IntegerType, mlir::IndexType>(
                 groupArg.getType())) {
-          unsigned argIndex = groupArg.getArgNumber();
-          unsigned inputCount = static_cast<unsigned>(group.getInputs().size());
-          if (argIndex < inputCount) {
-            if (auto constant = group.getInputs()[argIndex]
-                                    .getDefiningOp<mlir::arith::ConstantOp>()) {
-              mlir::Operation *cloned = builder.clone(*constant.getOperation());
-              scalarValues[groupArg] = cloned->getResult(0);
-              scalarAttrs[groupArg] = constant.getValue();
-              continue;
-            }
-          }
           scalarValues[groupArg] = tileArg;
           continue;
         }
         return fail("group boundary is not a ranked tensor or scalar");
       }
       externalBuffers[groupArg] = tileArg;
-      unsigned argIndex = groupArg.getArgNumber();
-      unsigned inputCount = static_cast<unsigned>(group.getInputs().size());
-      if (argIndex < inputCount) {
-        if (auto constant = group.getInputs()[argIndex]
-                                .getDefiningOp<mlir::arith::ConstantOp>())
-          tensorAttrs[groupArg] = constant.getValue();
-      }
       if (argIndex >= inputCount) {
         writableExternalBuffers.insert(groupArg);
         externalOutputIndices[groupArg] = argIndex - inputCount;
       }
     }
+    if (tileArgIndex != tileBlock.getNumArguments())
+      return fail("tile-region boundary argument count mismatch");
     return mlir::success();
   }
 
@@ -1563,6 +1582,13 @@ private:
       if (auto scalarIt = fillInitScalars.find(extractSlice.getSource());
           scalarIt != fillInitScalars.end())
         fillInitScalars[extractSlice.getResult()] = scalarIt->second;
+      return mlir::success();
+    }
+
+    if (auto attrIt = tensorAttrs.find(extractSlice.getSource());
+        attrIt != tensorAttrs.end() &&
+        getScalarSplatAttr(resultTensorType, attrIt->second)) {
+      tensorAttrs[extractSlice.getResult()] = attrIt->second;
       return mlir::success();
     }
 
@@ -3114,11 +3140,13 @@ private:
 
     unsigned inputCount = static_cast<unsigned>(group.getInputs().size());
     llvm::SmallVector<mlir::Value, 2> yieldedValues;
-    mlir::Block &tileBlock = tileRegion.getBody().front();
     for (auto [index, value] : llvm::enumerate(yield.getValues())) {
-      if (inputCount + index >= tileBlock.getNumArguments())
+      mlir::BlockArgument groupOutput =
+          group.getBody().front().getArgument(inputCount + index);
+      auto outputIt = externalBuffers.find(groupOutput);
+      if (outputIt == externalBuffers.end())
         return fail("group result has no output boundary");
-      mlir::Value output = tileBlock.getArgument(inputCount + index);
+      mlir::Value output = outputIt->second;
 
       if (auto directIt = directYieldBuffers.find(value);
           directIt != directYieldBuffers.end()) {
@@ -3176,7 +3204,7 @@ struct GroupToTileRegionLoweringPattern
 };
 
 static mlir::OwningOpRef<mlir::ModuleOp>
-cloneGroupToStandaloneModule(GroupOp group) {
+cloneGroupToStandaloneModuleImpl(GroupOp group) {
   mlir::Location loc = group.getLoc();
   mlir::OwningOpRef<mlir::ModuleOp> standaloneModule =
       mlir::ModuleOp::create(loc);
@@ -3194,14 +3222,20 @@ cloneGroupToStandaloneModule(GroupOp group) {
       loc, "group_to_tile_region", funcType);
   mlir::Block *entry = func.addEntryBlock();
 
+  mlir::OpBuilder builder(entry, entry->end());
   mlir::IRMapping mapping;
   unsigned argumentIndex = 0;
-  for (mlir::Value input : group.getInputs())
-    mapping.map(input, entry->getArgument(argumentIndex++));
+  for (mlir::Value input : group.getInputs()) {
+    mlir::Value replacement = entry->getArgument(argumentIndex++);
+    if (auto constant = input.getDefiningOp<mlir::arith::ConstantOp>()) {
+      mlir::Operation *cloned = builder.clone(*constant.getOperation());
+      replacement = cloned->getResult(0);
+    }
+    mapping.map(input, replacement);
+  }
   for (mlir::Value output : group.getOuts())
     mapping.map(output, entry->getArgument(argumentIndex++));
 
-  mlir::OpBuilder builder(entry, entry->end());
   auto clonedGroup =
       mlir::cast<GroupOp>(builder.clone(*group.getOperation(), mapping));
   builder.create<mlir::func::ReturnOp>(loc, clonedGroup.getResults());
@@ -4261,13 +4295,18 @@ struct ConvertGroupToTileRegionPass
 
 } // namespace
 
+mlir::OwningOpRef<mlir::ModuleOp>
+wafer::detail::cloneGroupToStandaloneModule(GroupOp group) {
+  return cloneGroupToStandaloneModuleImpl(group);
+}
+
 mlir::LogicalResult wafer::lowerGroupToTileRegionModule(
     GroupOp group, mlir::OwningOpRef<mlir::ModuleOp> &module,
     std::string *failureReason, int64_t currentLogicalRank) {
   if (failureReason)
     failureReason->clear();
 
-  module = cloneGroupToStandaloneModule(group);
+  module = detail::cloneGroupToStandaloneModule(group);
   return convertGroupToTileRegionModuleInPlace(
       *module, group.getContext(), currentLogicalRank, failureReason);
 }
@@ -4281,7 +4320,7 @@ mlir::LogicalResult wafer::lowerCandidateGroupToTileRegionModule(
   if (failureReason)
     failureReason->clear();
 
-  module = cloneGroupToStandaloneModule(group);
+  module = detail::cloneGroupToStandaloneModule(group);
   GroupOp clonedGroup = findSingleStandaloneGroup(*module);
   if (!clonedGroup) {
     setFailureReason(failureReason, "standalone module has no wafer.group");
@@ -4306,7 +4345,7 @@ mlir::LogicalResult wafer::lowerCompleteCandidateGroupToTileRegionModule(
     failureReason->clear();
 
   mlir::OwningOpRef<mlir::ModuleOp> candidateModule =
-      cloneGroupToStandaloneModule(group);
+      detail::cloneGroupToStandaloneModule(group);
   GroupOp clonedGroup = findSingleStandaloneGroup(*candidateModule);
   if (!clonedGroup) {
     setFailureReason(failureReason, "standalone module has no wafer.group");

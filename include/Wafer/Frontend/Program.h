@@ -31,7 +31,11 @@ struct ProgramRankSlice {
 };
 
 struct ProgramBoundaryBinding {
+  /// Function argument/result index used by the compiler ABI.
   int64_t index = -1;
+  /// User-visible program-boundary position. For outputs this currently equals
+  /// the function result index.
+  int64_t programIndex = -1;
   ProgramDistributionKind distribution = ProgramDistributionKind::Replicated;
   std::vector<int64_t> globalShape;
   std::vector<int64_t> localShape;

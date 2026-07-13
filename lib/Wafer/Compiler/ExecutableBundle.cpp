@@ -158,6 +158,7 @@ mlir::FailureOr<std::vector<RankProgramBinding>> buildRankProgramBindings(
           "typed program boundary does not contain exactly one rank slice");
     bindings.push_back({role,
                         binding.index,
+                        binding.programIndex,
                         {},
                         binding.dtype,
                         binding.distribution,
@@ -180,9 +181,9 @@ mlir::FailureOr<std::vector<RankProgramBinding>> buildRankProgramBindings(
       return mlir::failure();
     }
     bindings.push_back({ProgramResourceRole::Parameter, parameter.argumentIndex,
-                        parameter.name, parameter.dtype, parameter.distribution,
-                        parameter.globalShape, parameter.localShape,
-                        std::move(*slice)});
+                        -1, parameter.name, parameter.dtype,
+                        parameter.distribution, parameter.globalShape,
+                        parameter.localShape, std::move(*slice)});
   }
   for (const frontend::ProgramConstantBinding &constant : program.constants) {
     frontend::ProgramRankSlice slice;
@@ -194,6 +195,7 @@ mlir::FailureOr<std::vector<RankProgramBinding>> buildRankProgramBindings(
     slice.payloadPath = constant.payloadPath;
     bindings.push_back({ProgramResourceRole::Constant,
                         constant.argumentIndex,
+                        constant.position,
                         {},
                         constant.dtype,
                         frontend::ProgramDistributionKind::Replicated,

@@ -56,8 +56,11 @@ struct ReferenceProgram::Impl {
     GatherScatter,
     Convert,
     Gemm,
+    Reduce,
     Elementwise,
     Fill,
+    Bit2Fp,
+    MaskMove,
     LocalFence,
     DTESend,
     DTERecv,
@@ -92,6 +95,7 @@ struct ReferenceProgram::Impl {
     ValueId dest = 0;
     ValueId lhs = 0;
     ValueId rhs = 0;
+    ValueId mask = 0;
     ValueId scalar = 0;
     std::vector<ValueId> inputs;
     std::vector<ValueId> results;
@@ -133,6 +137,10 @@ struct ReferenceProgram::Impl {
     int64_t m = 0;
     int64_t n = 0;
     int64_t k = 0;
+    std::vector<int64_t> batchShape;
+    wafer::InstrReduceKind reduceKind = wafer::InstrReduceKind::Sum;
+    std::vector<int64_t> reduceDimensions;
+    std::optional<ValueId> reduceInit;
     wafer::InstrElementwiseKind elementwiseKind =
         wafer::InstrElementwiseKind::Abs;
     int64_t peer = -1;
@@ -224,6 +232,10 @@ llvm::Expected<float> readF32(const BufferView &buffer,
                               llvm::ArrayRef<int64_t> indices);
 llvm::Error writeF32(const BufferView &buffer, llvm::ArrayRef<int64_t> indices,
                      float value);
+llvm::Expected<bool> readI1(const BufferView &buffer,
+                            llvm::ArrayRef<int64_t> indices);
+llvm::Error writeI1(const BufferView &buffer, llvm::ArrayRef<int64_t> indices,
+                    bool value);
 
 llvm::Error projectReferenceProgram(ReferenceProgram::Impl &program,
                                     mlir::ModuleOp module,

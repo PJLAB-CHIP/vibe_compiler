@@ -116,6 +116,13 @@ cleanup只在DenseElementsAttr、static type/offset/shape和op semantics能完�
 StableHLO lowering，也不能扩成运行时shape evaluator或按rank名字matcher。最终raw StableHLO residual仍存在时
 pipeline fail closed。
 
+具体实现中，post-legalization cleanup从标量`tensor.extract`反向证明常量来源：只跟踪
+`arith.constant` DenseElementsAttr、offset/stride为字面量或可由常量整数SSA链精确证明的
+`tensor.extract_slice`，以及静态元素数保持的
+collapse/expand-shape，并按canonical row-major element order计算唯一标量结果。任一dynamic
+index/shape/offset/stride无法由常量链证明、越界或非常量来源都保留原IR交给后续legality gate；本步不物化
+shaped result，不保存旁路常量表。折叠后由canonicalization清理无用的view/constant链。
+
 SDY op/type/attr不属于post-SPMD local program。Q15在normalization前已有零SDY gate，本stage不能把residual SDY
 静默当unknown dialect保留。
 

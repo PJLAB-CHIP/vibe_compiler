@@ -343,6 +343,33 @@ private:
                 reinterpret.getSource(), reinterpret.getResult(),
                 reinterpret.getType(), command))
           return error;
+      } else if (auto collapse =
+                     mlir::dyn_cast<mlir::memref::CollapseShapeOp>(operation)) {
+        auto sourceType =
+            mlir::dyn_cast<mlir::MemRefType>(collapse.getSrc().getType());
+        auto resultType = mlir::dyn_cast<mlir::MemRefType>(collapse.getType());
+        if (!sourceType || !resultType ||
+            !wafer::isWaferMemRefType(sourceType) ||
+            !wafer::isWaferMemRefType(resultType))
+          return unsupported("collapse_shape must preserve Wafer memory");
+        wafer::MemoryAttr sourceMemory = wafer::getWaferMemoryAttr(sourceType);
+        wafer::MemoryAttr resultMemory = wafer::getWaferMemoryAttr(resultType);
+        auto sourceInfo = wafer::computeWaferPhysicalTensorInfo(sourceType);
+        auto resultInfo = wafer::computeWaferPhysicalTensorInfo(resultType);
+        if (!sourceType.hasStaticShape() || !resultType.hasStaticShape() ||
+            sourceMemory.getSpace() != resultMemory.getSpace() ||
+            sourceMemory.getLayout() != wafer::MemLayout::Tensor ||
+            resultMemory.getLayout() != wafer::MemLayout::Tensor ||
+            sourceType.getElementType() != resultType.getElementType() ||
+            sourceType.getNumElements() != resultType.getNumElements() ||
+            !sourceInfo || !resultInfo ||
+            sourceInfo->compactBytes != resultInfo->compactBytes ||
+            sourceInfo->physicalBytes != resultInfo->physicalBytes)
+          return unsupported(
+              "collapse_shape changes accepted tensor physical geometry");
+        if (llvm::Error error = projectStaticView(
+                collapse.getSrc(), collapse.getResult(), resultType, command))
+          return error;
       } else if (auto constant =
                      mlir::dyn_cast<mlir::arith::ConstantOp>(operation)) {
         auto result = define(constant.getResult());
@@ -621,9 +648,69 @@ private:
         command.dest = *dest;
         command.sourceFormat = spec->source;
         command.destFormat = spec->dest;
+      } else if (auto reduce =
+                     mlir::dyn_cast<wafer::InstrReduceOp>(operation)) {
+        auto inputType = requireF32Buffer(reduce.getInput(), "reduce input");
+        auto destType = requireF32Buffer(reduce.getDest(), "reduce dest");
+        if (!inputType)
+          return inputType.takeError();
+        if (!destType)
+          return destType.takeError();
+        if (!wafer::isWaferSPMMemRefType(*inputType) ||
+            !wafer::isWaferSPMMemRefType(*destType))
+          return unsupported("reduce requires Wafer SPM memrefs");
+        llvm::SmallVector<int64_t, 3> reduceDimensions =
+            wafer::getInstrReduceLogicalDims(reduce.getDim(),
+                                             inputType->getRank());
+        command.reduceDimensions.assign(reduceDimensions.begin(),
+                                        reduceDimensions.end());
+        if (command.reduceDimensions.empty())
+          return unsupported("reduce target dimension is invalid");
+        llvm::SmallVector<int64_t> expectedDestShape;
+        for (auto [dimension, size] : llvm::enumerate(inputType->getShape()))
+          if (!llvm::is_contained(command.reduceDimensions,
+                                  static_cast<int64_t>(dimension)))
+            expectedDestShape.push_back(size);
+        if (destType->getShape() != llvm::ArrayRef<int64_t>(expectedDestShape))
+          return invalid(
+              "reduce destination shape disagrees with target dimension");
+
+        switch (reduce.getKind()) {
+        case wafer::InstrReduceKind::Sum:
+        case wafer::InstrReduceKind::Max:
+        case wafer::InstrReduceKind::Min:
+          command.reduceKind = reduce.getKind();
+          break;
+        case wafer::InstrReduceKind::Avg:
+          return unsupported("reduce avg has no exact frontend combiner");
+        }
+
+        mlir::Attribute initValue = reduce->getAttr("init_value");
+        if (initValue && reduce.getInit())
+          return invalid("reduce has both attribute and SSA init values");
+        if (initValue) {
+          auto value = mlir::dyn_cast<mlir::FloatAttr>(initValue);
+          if (!value || !value.getType().isF32())
+            return unsupported("reduce init_value is not f32");
+          command.scalarValue.floating = value.getValue();
+        } else if (reduce.getInit()) {
+          auto init = use(reduce.getInit());
+          if (!init)
+            return init.takeError();
+          command.reduceInit = *init;
+        } else {
+          return unsupported("reduce has no scalar initialization value");
+        }
+        auto input = use(reduce.getInput());
+        auto dest = use(reduce.getDest());
+        if (!input)
+          return input.takeError();
+        if (!dest)
+          return dest.takeError();
+        command.kind = CommandKind::Reduce;
+        command.source = *input;
+        command.dest = *dest;
       } else if (auto gemm = mlir::dyn_cast<wafer::InstrGemmOp>(operation)) {
-        if (gemm.getBatchCount().value_or(1) != 1)
-          return unsupported("batched GEMM");
         auto lhsType = requireF32Buffer(gemm.getLhs(), "GEMM lhs");
         auto rhsType = requireF32Buffer(gemm.getRhs(), "GEMM rhs");
         auto destType = requireF32Buffer(gemm.getDest(), "GEMM dest");
@@ -636,11 +723,58 @@ private:
         int64_t m = static_cast<int64_t>(gemm.getM());
         int64_t n = static_cast<int64_t>(gemm.getN());
         int64_t k = static_cast<int64_t>(gemm.getK());
-        if (lhsType->getShape() != llvm::ArrayRef<int64_t>({m, k}) ||
-            rhsType->getShape() != llvm::ArrayRef<int64_t>({k, n}) ||
-            destType->getShape() != llvm::ArrayRef<int64_t>({m, n}))
-          return invalid(
-              "GEMM dimensions disagree with accepted buffer shapes");
+        if (lhsType->getRank() != rhsType->getRank() ||
+            lhsType->getRank() != destType->getRank() || lhsType->getRank() < 2)
+          return invalid("GEMM accepted buffer ranks disagree");
+        int64_t rank = lhsType->getRank();
+        if (lhsType->getDimSize(rank - 2) != m ||
+            lhsType->getDimSize(rank - 1) != k ||
+            rhsType->getDimSize(rank - 2) != k ||
+            rhsType->getDimSize(rank - 1) != n ||
+            destType->getDimSize(rank - 2) != m ||
+            destType->getDimSize(rank - 1) != n)
+          return invalid("GEMM dimensions disagree with accepted buffers");
+        command.batchShape.assign(destType->getShape().begin(),
+                                  destType->getShape().end() - 2);
+        if (lhsType->getShape().drop_back(2) !=
+                llvm::ArrayRef<int64_t>(command.batchShape) ||
+            rhsType->getShape().drop_back(2) !=
+                llvm::ArrayRef<int64_t>(command.batchShape))
+          return invalid("GEMM accepted batch shapes disagree");
+        if (rank > 2) {
+          llvm::SmallVector<int64_t> expectedBatchDims;
+          for (int64_t dimension = 0; dimension < rank - 2; ++dimension)
+            expectedBatchDims.push_back(dimension);
+          auto hasBatchDims = [&](llvm::StringRef name) {
+            auto attr = gemm->getAttrOfType<mlir::DenseI64ArrayAttr>(name);
+            return attr && attr.asArrayRef() ==
+                               llvm::ArrayRef<int64_t>(expectedBatchDims);
+          };
+          auto hasDim = [&](llvm::StringRef name, int64_t expected) {
+            auto attr = gemm->getAttrOfType<mlir::IntegerAttr>(name);
+            return attr && attr.getInt() == expected;
+          };
+          int64_t batchCount = 1;
+          for (int64_t size : command.batchShape) {
+            if (size <= 0 ||
+                batchCount > std::numeric_limits<int64_t>::max() / size)
+              return invalid("GEMM accepted batch count overflows");
+            batchCount *= size;
+          }
+          if (!hasBatchDims("lhs_batch_dims") ||
+              !hasBatchDims("rhs_batch_dims") ||
+              !hasBatchDims("result_batch_dims") ||
+              !hasDim("lhs_m_dim", rank - 2) ||
+              !hasDim("lhs_contracting_dim", rank - 1) ||
+              !hasDim("rhs_contracting_dim", rank - 2) ||
+              !hasDim("rhs_n_dim", rank - 1) ||
+              !hasDim("result_m_dim", rank - 2) ||
+              !hasDim("result_n_dim", rank - 1) ||
+              !hasDim("batch_count", batchCount))
+            return invalid("GEMM batched dimension attrs are not canonical");
+        } else if (gemm.getBatchCount()) {
+          return invalid("rank-2 GEMM unexpectedly carries batch attrs");
+        }
         command.kind = CommandKind::Gemm;
         auto lhs = use(gemm.getLhs());
         auto rhs = use(gemm.getRhs());
@@ -685,10 +819,73 @@ private:
             return input.takeError();
           command.inputs.push_back(*input);
         }
-      } else if (auto fill = mlir::dyn_cast<wafer::InstrFillOp>(operation)) {
-        auto destType = requireF32Buffer(fill.getDest(), "fill dest");
+      } else if (auto bit2fp =
+                     mlir::dyn_cast<wafer::InstrBit2FpOp>(operation)) {
+        auto sourceType =
+            mlir::dyn_cast<mlir::MemRefType>(bit2fp.getSource().getType());
+        auto destType = requireF32Buffer(bit2fp.getDest(), "bit2fp dest");
+        auto sourceInfo =
+            sourceType ? wafer::computeWaferPhysicalTensorInfo(sourceType)
+                       : std::nullopt;
+        if (!sourceType || !sourceType.hasStaticShape() ||
+            !sourceType.getElementType().isInteger(1) ||
+            !wafer::isWaferSPMMemRefType(sourceType) || !sourceInfo ||
+            sourceInfo->layout != wafer::MemLayout::Tensor || !destType)
+          return unsupported(
+              "bit2fp requires static tensor-layout i1 and f32 SPM memrefs");
+        if (sourceType.getShape() != destType->getShape())
+          return invalid("bit2fp source and destination shapes disagree");
+        auto source = use(bit2fp.getSource());
+        auto dest = use(bit2fp.getDest());
+        if (!source)
+          return source.takeError();
+        if (!dest)
+          return dest.takeError();
+        command.kind = CommandKind::Bit2Fp;
+        command.source = *source;
+        command.dest = *dest;
+      } else if (auto maskMove =
+                     mlir::dyn_cast<wafer::InstrMaskMoveOp>(operation)) {
+        auto sourceType =
+            requireF32Buffer(maskMove.getSource(), "mask_move source");
+        auto maskType = requireF32Buffer(maskMove.getMask(), "mask_move mask");
+        auto destType = requireF32Buffer(maskMove.getDest(), "mask_move dest");
+        if (!sourceType)
+          return sourceType.takeError();
+        if (!maskType)
+          return maskType.takeError();
         if (!destType)
           return destType.takeError();
+        if (sourceType->getShape() != destType->getShape() ||
+            maskType->getShape() != destType->getShape())
+          return invalid("mask_move buffer shapes disagree");
+        auto source = use(maskMove.getSource());
+        auto mask = use(maskMove.getMask());
+        auto dest = use(maskMove.getDest());
+        if (!source)
+          return source.takeError();
+        if (!mask)
+          return mask.takeError();
+        if (!dest)
+          return dest.takeError();
+        command.kind = CommandKind::MaskMove;
+        command.source = *source;
+        command.mask = *mask;
+        command.dest = *dest;
+      } else if (auto fill = mlir::dyn_cast<wafer::InstrFillOp>(operation)) {
+        auto destType =
+            mlir::dyn_cast<mlir::MemRefType>(fill.getDest().getType());
+        auto destInfo = destType
+                            ? wafer::computeWaferPhysicalTensorInfo(destType)
+                            : std::nullopt;
+        if (!destType || !destType.hasStaticShape() ||
+            !wafer::isWaferSPMMemRefType(destType) || !destInfo ||
+            (!destType.getElementType().isF32() &&
+             !destType.getElementType().isInteger(1)))
+          return unsupported("fill requires a static f32 or i1 SPM memref");
+        if (destType.getElementType().isInteger(1) &&
+            destInfo->layout != wafer::MemLayout::Tensor)
+          return unsupported("i1 fill requires tensor-layout storage");
         auto dest = use(fill.getDest());
         auto scalar = use(fill.getValue());
         if (!dest)
@@ -889,6 +1086,8 @@ private:
   llvm::Error validateProgramBindings(mlir::func::FuncOp entry) {
     llvm::SmallVector<bool> argumentUsed(entry.getNumArguments(), false);
     llvm::SmallVector<bool> resultUsed(entry.getNumResults(), false);
+    llvm::SmallVector<int64_t> userInputIndices;
+    llvm::SmallVector<int64_t> outputIndices;
     for (const RankProgramBinding &binding : program.programBindings) {
       llvm::SmallVectorImpl<bool> &domain =
           binding.role == ProgramResourceRole::Output ? resultUsed
@@ -907,10 +1106,30 @@ private:
           memref.getShape() != llvm::ArrayRef<int64_t>(binding.localShape))
         return unsupported(
             "program binding disagrees with entry memref signature");
+      if (binding.role == ProgramResourceRole::UserInput)
+        userInputIndices.push_back(binding.programIndex);
+      else if (binding.role == ProgramResourceRole::Output)
+        outputIndices.push_back(binding.programIndex);
     }
     if (llvm::is_contained(argumentUsed, false) ||
         llvm::is_contained(resultUsed, false))
       return unsupported("program bindings do not cover entry signature");
+    auto validateProgramDomain = [](llvm::SmallVectorImpl<int64_t> &indices,
+                                    llvm::StringRef message) -> llvm::Error {
+      llvm::sort(indices);
+      for (auto [expected, index] : llvm::enumerate(indices))
+        if (index != static_cast<int64_t>(expected))
+          return unsupported(message);
+      return llvm::Error::success();
+    };
+    if (llvm::Error error = validateProgramDomain(
+            userInputIndices,
+            "program input indices are not unique and contiguous"))
+      return error;
+    if (llvm::Error error = validateProgramDomain(
+            outputIndices,
+            "program output indices are not unique and contiguous"))
+      return error;
     return llvm::Error::success();
   }
 

@@ -213,6 +213,17 @@
   sign/exponent/high-10-fraction并清零low-13 bits，读回时反向unpack；用非零FP32→TF32→FP32 roundtrip覆盖rounding和
   storage编码，capability matrix则实际执行每个TableGen-declared convert kind，不能只证明switch有case。任何基于
   MLIR type的分类（包括program-boundary dtype）必须先判具体`FloatTF32Type`，再判会同时命中的通用`isF32()`。
+
+## 2026-07-13 region result必须继承yield值的memory root relation
+
+- 现象：Tiny Llama的accepted DDR alloc全部获得offset 0；每个tile region内部读写本身合法，但后续region同时消费
+  多个上游result时，早先结果已经被相同arena range覆盖，reference输出丢失residual并接近零。
+- 根因：lifetime dataflow把tile-region block argument解析回outer operand，却只为view-like和`scf.if/for`传播
+  op result root；`wafer.tile.yield`到`wafer.tile.region` result的SSA alias relation缺失，compiler-managed root
+  lifetime因此被错误截断在isolated region出口。
+- 修复模式：处理完region body后，按result ordinal把对应yield value的root refs传播到region result；后续SSA use
+  再自然延长原root lifetime。回归必须构造两个先后产生、随后被同一region共同消费的result，并证明它们得到不同
+  arena range；不能通过executor为每个alloc私建storage掩盖planner错误。
 # DTE wait被canonicalizer删除
 
 - 现象：带`wafer.instr.dte_wait`的collective在selected pipeline进入SPM planning时报告

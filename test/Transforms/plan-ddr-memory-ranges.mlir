@@ -51,6 +51,44 @@ func.func @keep_overlapping_ddr_ranges_distinct() {
 // CHECK: memref.alloc() {{.*}}wafer.ddr.offset = #wafer.ddr_offset<0>
 // CHECK: memref.alloc() {{.*}}wafer.ddr.offset = #wafer.ddr_offset<256>
 
+func.func @keep_tile_region_results_live() {
+  %ddr0 = memref.alloc()
+      : memref<2x3xf16, #wafer.memory<ddr, tensor>>
+  %result0 = wafer.tile.region(%ddr0
+      : memref<2x3xf16, #wafer.memory<ddr, tensor>>)
+      -> (memref<2x3xf16, #wafer.memory<ddr, tensor>>) {
+  ^bb0(%arg0: memref<2x3xf16, #wafer.memory<ddr, tensor>>):
+    wafer.tile.yield %arg0
+        : memref<2x3xf16, #wafer.memory<ddr, tensor>>
+  }
+
+  %ddr1 = memref.alloc()
+      : memref<2x3xf16, #wafer.memory<ddr, tensor>>
+  %result1 = wafer.tile.region(%ddr1
+      : memref<2x3xf16, #wafer.memory<ddr, tensor>>)
+      -> (memref<2x3xf16, #wafer.memory<ddr, tensor>>) {
+  ^bb0(%arg0: memref<2x3xf16, #wafer.memory<ddr, tensor>>):
+    wafer.tile.yield %arg0
+        : memref<2x3xf16, #wafer.memory<ddr, tensor>>
+  }
+
+  %sink = wafer.tile.region(
+      %result0, %result1
+      : memref<2x3xf16, #wafer.memory<ddr, tensor>>,
+        memref<2x3xf16, #wafer.memory<ddr, tensor>>)
+      -> (memref<2x3xf16, #wafer.memory<ddr, tensor>>) {
+  ^bb0(%arg0: memref<2x3xf16, #wafer.memory<ddr, tensor>>,
+       %arg1: memref<2x3xf16, #wafer.memory<ddr, tensor>>):
+    wafer.tile.yield %arg0
+        : memref<2x3xf16, #wafer.memory<ddr, tensor>>
+  }
+  return
+}
+
+// CHECK-LABEL: func.func @keep_tile_region_results_live
+// CHECK: memref.alloc() {{.*}}wafer.ddr.offset = #wafer.ddr_offset<0>
+// CHECK: memref.alloc() {{.*}}wafer.ddr.offset = #wafer.ddr_offset<256>
+
 func.func @reuse_non_overlapping_ddr_ranges() {
   %ddr0 = memref.alloc()
       : memref<2x3xf16, #wafer.memory<ddr, tensor>>

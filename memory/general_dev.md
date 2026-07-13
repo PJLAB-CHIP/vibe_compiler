@@ -447,6 +447,8 @@
 - 当前typed package入口是`Wafer/Runtime/PackageManifest.h`：compiler只从Q16 `ExecutableBundle`和Q17
   `TargetArtifactBundle`构造manifest，在私有staging内复制payload、核对digest、canonical serialize/parse readback、
   fsync后no-replace发布。`wafer-run --package-dir <root> --entry-id <id> --no-card`是唯一runtime inspection入口；
+  Direct DTE package还必须显式声明兼容environment：`--direct-dte-status-abi wafer-direct-dte-status-v1
+  --supports-host-watchdog`，缺失时应fail closed；这些选项只形成preflight facts，不代表provider执行。
   Python adapter只启动该二进制。排查package时先跑`PackageManifestTest.*`和`test/Runtime/wafer-run.test`，不要恢复
   已删除的Python schema/exporter或C++ `HostRuntime` acceptance。
 - 纵向source corpus不要用`torch.empty()`、framework默认初始化或提交生成物固定输入。当前最小corpus spec在

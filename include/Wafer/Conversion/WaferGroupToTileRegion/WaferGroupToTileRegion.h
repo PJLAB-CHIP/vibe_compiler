@@ -46,6 +46,11 @@ CompleteCandidateExpansionStatus checkCompleteCandidateExpansionBudget(
     uint64_t outputTileCount, llvm::ArrayRef<uint64_t> reductionChunkCounts,
     uint64_t &materializationCount);
 
+/// Isolates one group behind a stable function argument/result boundary for
+/// candidate evaluation. Constant group operands retain an in-function SSA
+/// defining op while their ABI argument slots remain present for commit.
+mlir::OwningOpRef<mlir::ModuleOp> cloneGroupToStandaloneModule(GroupOp group);
+
 } // namespace detail
 
 mlir::LogicalResult lowerGroupToTileRegionModule(
