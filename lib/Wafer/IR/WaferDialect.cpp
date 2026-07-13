@@ -510,18 +510,29 @@ std::optional<int64_t> wafer::computeWaferPhysicalElementByteOffset(
   return byteOffset;
 }
 
-mlir::LogicalResult DTEMessageAttr::verify(
-    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
-    int64_t communicationId, DTEProtocolPhase phase, int64_t round,
-    int64_t payloadSlice) {
+mlir::LogicalResult
+DTEMessageAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+                       int64_t communicationId, DTEProtocolPhase phase,
+                       int64_t round, int64_t payloadSlice) {
   (void)phase;
   if (communicationId < 0)
     return emitError() << "dte_message communication id must be non-negative";
   if (round < 0)
     return emitError() << "dte_message protocol round must be non-negative";
   if (payloadSlice < 0)
+    return emitError() << "dte_message payload slice must be non-negative";
+  return mlir::success();
+}
+
+mlir::LogicalResult DirectDTEBindingAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+    DTEAllocationProfile allocationProfile, int64_t receiverFsmId,
+    DTECompletionProfile completionProfile) {
+  (void)allocationProfile;
+  (void)completionProfile;
+  if (receiverFsmId < 0 || receiverFsmId > 3)
     return emitError()
-           << "dte_message payload slice must be non-negative";
+           << "direct_dte_binding receiver FSM id must be within [0, 3]";
   return mlir::success();
 }
 

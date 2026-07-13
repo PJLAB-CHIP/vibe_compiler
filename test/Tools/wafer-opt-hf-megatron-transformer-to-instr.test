@@ -10,7 +10,8 @@
 # RUN: not wafer-compile \
 # RUN:   --input-program-dir %t.input.program \
 # RUN:   --output-program-dir %t.group.program \
-# RUN:   --execution-ranks=16 2>&1 | FileCheck %s --check-prefix=UNSUPPORTED-TRANSPORT
+# RUN:   --execution-ranks=16 2>&1 | FileCheck %s --check-prefix=UNSUPPORTED-COMPUTE
 # RUN: test ! -e %t.group.program
 
-# UNSUPPORTED-TRANSPORT: wafer-compile: unsupported_transport: physical DTE acceptance is not implemented for executable bundles
+# UNSUPPORTED-COMPUTE: no_candidate: tile selection found no passing candidate
+# UNSUPPORTED-COMPUTE-SAME: only powf with exponent 2 is supported

@@ -1,8 +1,9 @@
 # Wafer Communication Dialect Design
 
 状态：2026-07-13更新；当前合同覆盖buffer-level collective到instruction-level Direct DTE p2p和明确
-completion，post-memory physical transport acceptance正由Q16.T实施但尚不是artifact事实。segmented/MoE和
-multi-card route延后；不引入physical transport registry。实现状态以`tasks/progress.md`为准。
+completion；Q16.T已闭合post-memory all-rank matching、typed physical binding和bundle transport summary，
+target CRT/status ABI与runtime requirement仍在实施。segmented/MoE和multi-card route延后；不引入physical
+transport registry。实现状态以`tasks/progress.md`为准。
 
 本文定义Wafer后端从logical collective到instruction-level p2p的device-side communication
 边界。它连接 post-SPMD tensor collective 语义、`wafer.execution.mesh` /
@@ -15,7 +16,7 @@ accepted p2p schedule 进入 `wafer.instr.dte_send` / `dte_recv` / `dte_wait`。
 隐藏的 communication plan attr，也不把 raw DTE register 字段提前写进上层 collective op。
 
 本文负责device-side communication IR：tile-local collective-level op、instruction-level p2p steps、
-token/effect和sync boundary；physical transport acceptance是Q16.T负责的下一lowering边界。它不定义Shardy/SPMD partition、
+token/effect、sync boundary与post-memory physical transport acceptance。它不定义Shardy/SPMD partition、
 `wafer.linalg_ext.collective.*` handoff、compute op legality、layout assignment、SPM allocation、
 DDR memory planning、host runtime D2D/P2P ABI 或 raw non-unicast DTE packet。当前只验证fixed-size unicast
 Direct DTE的instruction IR schedule与lifetime，并未闭合physical target data plane；logical collective IR的支持范围不能由当前某个ring lowering pass
@@ -64,10 +65,10 @@ Pipeline position:
   仍是deferred extension，不能靠手写offset fixture或本节讨论冒充当前完成。
 ```
 
-### Planned Physical Transport Acceptance
+### Physical Transport Acceptance
 
-当前仓库没有production physical transport allocator或registry。下列是Direct DTE进入Q16/Q17前必须补齐的
-pipeline boundary，不是当前artifact事实：
+当前Q16.T已实现不带长期registry的post-memory all-rank acceptance；target CRT/status consumer仍在同一任务中
+实施。pipeline boundary如下：
 
 ```text
 Pipeline position:
@@ -93,9 +94,9 @@ Pipeline position:
   identity、peer/range/wait/status或resource conflict原子拒绝整个bundle。
 ```
 
-该stage由Q16.T拥有。在它实现前，含Direct DTE的candidate保持target-illegal，不能用局部instruction test、
-logical-rank check或手写binding冒充完成。当前Q16的typed contract明确为`TransportContract::None`，因此在创建
-任何`RankExecutable`前对含logical collective的grouped program报`unsupported_transport`并整体失败。
+该stage由Q16.T拥有。当前完整rank domain成功匹配、验证resource/wait并写入typed binding后才形成
+`TransportContract::DirectDTE`；无DTE的bundle仍为`None`。target CRT/status consumer闭合前，accepted bundle中的
+Direct DTE仍保持target-illegal，不能用局部instruction test、logical-rank check或手写binding冒充Q16.T完成。
 
 ## 1. 设计目标
 
@@ -380,10 +381,10 @@ tiled tensor collective + SPM storage values -> `wafer.tile.*` collective
 
 当前`wafer.instr.dte_send` / `dte_recv`已表达logical peer、buffer byte range和typed `DTEMessageAttr`，
 `dte_wait`表达token/wait relation；logical identity checkpoint已覆盖现有ring/direct/tree/permute/all-to-all
-materialization，缺上游`channel_id`时fail closed。仓库尚未实现把它们完整绑定到physical endpoint、
-DTE allocation profile/FSM、receiver-ready、
-status/error和CRT ABI的production transport allocator。因此Direct DTE在这些关系闭合前保持target-illegal，
-局部instruction tests不能冒充Q16/Q17完成。
+materialization，缺上游`channel_id`时fail closed。post-memory acceptance现已按完整rank domain闭合logical peer、
+bytes、planned SPM range、same-block wait、normal sender profile和receiver FSM allocation，并原子补
+`DirectDTEBindingAttr`；target CRT event/status ABI尚未闭合，因此Direct DTE仍保持target-illegal，局部instruction
+tests不能冒充Q16.T完成。
 
 Q16.T恢复该边界时必须：
 
@@ -410,6 +411,12 @@ V0 binding记录allocation profile、receiver FSM id和`sender-wait + receiver-F
 SPM address和byte range仍从topology、logical peer、buffer与accepted offset派生。资源verifier同时要求每rank同一时刻
 最多一个live sender allocation，并证明同一receiver FSM id的live range不重叠。若后续出现可选择精确DTE id的稳定ABI，
 再扩typed profile和consumer，不能先把raw id写入attr。
+
+当前public `direct_sync_wait`、`direct_fsm_monitor_receive`和`direct_dte_wait_done`实现均为无timeout参数的
+blocking wait；其中`direct_dte_wait_done`可返回本地DTE错误。V0不能声称device helper自行检测timeout：target
+status ABI负责本地pending/success/transport-error，launch watchdog负责timeout，RuntimeSession在其它rank失败时
+合成peer-failure。manifest只声明这些launch可观察要求，不把watchdog provider或内部event handle写成transport
+planning事实。
 
 `DTEMessageAttr`与`DirectDTEBindingAttr`职责不同：前者是logical schedule中的稳定匹配事实，后者只保留allocator
 选择出的physical resource/completion profile。两者都不是raw packet bag；字段必须逐项被verifier与对应consumer

@@ -72,7 +72,7 @@ private:
 
 enum class ProgramResourceRole { UserInput, Parameter, Constant, Output };
 enum class TerminalCompletionKind { EntryReturnAfterLocalDrain };
-enum class TransportContract { None };
+enum class TransportContract { None, DirectDTE };
 enum class DDRAllocationContract { DefaultArenaRelativeOffsets };
 
 /// A verified program-boundary resource projected to one logical rank. The
@@ -118,13 +118,14 @@ private:
 
   RankExecutable(int64_t logicalRank, mlir::OwningOpRef<mlir::ModuleOp> module,
                  llvm::StringRef entrySymbol,
-                 std::vector<RankProgramBinding> programBindings)
+                 std::vector<RankProgramBinding> programBindings,
+                 TransportContract transportContract)
       : logicalRank(logicalRank), module(std::move(module)),
         entrySymbol(entrySymbol.str()),
         programBindings(std::move(programBindings)),
         terminalCompletionKind(
             TerminalCompletionKind::EntryReturnAfterLocalDrain),
-        transportContract(TransportContract::None),
+        transportContract(transportContract),
         ddrAllocationContract(
             DDRAllocationContract::DefaultArenaRelativeOffsets) {}
 

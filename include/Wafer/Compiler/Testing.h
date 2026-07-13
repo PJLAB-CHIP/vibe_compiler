@@ -6,7 +6,15 @@
 #include "Wafer/Compiler/Compilation.h"
 #include "Wafer/Compiler/TargetArtifact.h"
 
+#include "llvm/ADT/ArrayRef.h"
+
 namespace wafer::compiler::testing {
+
+/// Test-only entry to the production all-rank Direct DTE acceptance gate.
+/// Successful calls attach typed bindings; failed calls leave every candidate
+/// issue unbound.
+mlir::FailureOr<TransportContract>
+acceptDirectDTETransport(llvm::ArrayRef<mlir::ModuleOp> rankModules);
 
 /// Runs the production transaction while injecting a failure only after the
 /// selected logical rank has completed lowering and verification. This API is

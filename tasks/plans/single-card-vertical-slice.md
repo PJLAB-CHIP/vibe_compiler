@@ -133,10 +133,11 @@ manifest/package late failure不发布partial package。
   test-only独立slow layout oracle已跨compact/Cx/NCx、rank/dtype、全部tail对齐台阶和channel block边界逐坐标
   对照production footprint/offset，并证明logical坐标映射唯一、位于physical range且越界统一失败；它不进入production
   artifact或协议。
-- Q16.T的logical identity checkpoint已完成：`channel_id`贯穿collective/tile，全部现有p2p materialization生成
-  communication/phase/round/payload-slice typed identity，缺identity明确fail closed。下一步在memory planning后给DTE issue
-  补typed accepted physical binding，闭合all-rank match/peer/bytes/range/resource/completion、
-  `TransportContract::DirectDTE`、CRT/target lowering、atomic target publication及manifest/no-card中runtime-observable
+- Q16.T的logical identity与physical acceptance checkpoints已完成：`channel_id`贯穿collective/tile，全部现有p2p
+  materialization生成communication/phase/round/payload-slice typed identity；memory planning后完整rank domain按
+  source/destination/message核对peer/bytes/range/wait，验证normal sender profile、分配receiver FSM，并原子补
+  `DirectDTEBindingAttr`与`TransportContract::DirectDTE`。下一步闭合CRT event/status lowering、atomic target
+  publication及manifest/no-card中runtime-observable
   transport requirements；identity不能从op顺序或名字猜，package不复制p2p body或per-op binding。
 - Q19.M只消费Q16.T accepted bundle，以deterministic event scheduler执行DTE send/recv/wait并检测peer mismatch、
   duplicate recv、unmatched token和no-progress/deadlock；禁止手写DTE module绕过bundle gate。

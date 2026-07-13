@@ -2,6 +2,7 @@ wafer_require_gtest()
 
 add_executable(WaferUnitTests
   Compiler/CompilationTest.cpp
+  Compiler/DirectDTETransportTest.cpp
   Compiler/ReferenceExecutorTest.cpp
   Conversion/WaferGroupToTileRegionTest.cpp
   Dialect/Wafer/WaferDialectTest.cpp
@@ -15,6 +16,7 @@ target_link_libraries(WaferUnitTests
   WaferRuntime
   WaferPipelines
   WaferTransforms
+  MLIRAsyncDialect
   MLIRArithDialect
   MLIRFuncDialect
   MLIRIR

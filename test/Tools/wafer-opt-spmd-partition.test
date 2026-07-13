@@ -45,7 +45,7 @@
 
 # PIPELINE: wafer-compile: published verified package with execution-ranks=16:
 
-# UNSUPPORTED-TRANSPORT: wafer-compile: unsupported_transport: physical DTE acceptance is not implemented for executable bundles
+# UNSUPPORTED-TRANSPORT: unsupported_target_transport: DTE instruction requires a physical transport/endpoint binding and target CRT support
 # LATE-RANK: wafer-compile: test-only injected failure after logical rank 15
 # LATE-TARGET-RANK: wafer-compile: test-only injected target failure after logical rank 15
 # LATE-PACKAGE-RANK: wafer-compile: test-only injected package failure after logical rank 15

@@ -3,6 +3,7 @@
 #include "ExecutableBundleInternal.h"
 
 #include "AcceptedCallClosure.h"
+#include "DirectDTETransport.h"
 
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Pipelines/Pipelines.h"
@@ -28,9 +29,10 @@ struct ExecutableBundleBuilder {
   static RankExecutable
   makeRank(int64_t logicalRank, mlir::OwningOpRef<mlir::ModuleOp> module,
            llvm::StringRef entrySymbol,
-           std::vector<RankProgramBinding> programBindings) {
+           std::vector<RankProgramBinding> programBindings,
+           TransportContract transportContract) {
     return RankExecutable(logicalRank, std::move(module), entrySymbol,
-                          std::move(programBindings));
+                          std::move(programBindings), transportContract);
   }
 
   static ExecutableBundle makeBundle(ExecutionConfig executionConfig,
@@ -45,7 +47,8 @@ namespace {
 
 mlir::LogicalResult verifyAcceptedRankModule(mlir::ModuleOp module,
                                              const ExecutionConfig &config,
-                                             int64_t logicalRank) {
+                                             int64_t logicalRank,
+                                             TransportContract transport) {
   if (logicalRank < 0 || logicalRank >= config.getRankCount())
     return module.emitOpError("logical rank is outside ExecutionConfig");
   if (mlir::failed(detail::verifyExactExecutionConfig(module, config)) ||
@@ -67,8 +70,20 @@ mlir::LogicalResult verifyAcceptedRankModule(mlir::ModuleOp module,
       illegal = operation;
       return mlir::WalkResult::interrupt();
     }
-    if (mlir::isa<wafer::InstrDTESendOp, wafer::InstrDTERecvOp,
-                  wafer::InstrDTEWaitOp>(operation)) {
+    if (auto send = mlir::dyn_cast<wafer::InstrDTESendOp>(operation)) {
+      if (transport != TransportContract::DirectDTE || !send.getBinding()) {
+        illegal = operation;
+        return mlir::WalkResult::interrupt();
+      }
+    }
+    if (auto recv = mlir::dyn_cast<wafer::InstrDTERecvOp>(operation)) {
+      if (transport != TransportContract::DirectDTE || !recv.getBinding()) {
+        illegal = operation;
+        return mlir::WalkResult::interrupt();
+      }
+    }
+    if (mlir::isa<wafer::InstrDTEWaitOp>(operation) &&
+        transport != TransportContract::DirectDTE) {
       illegal = operation;
       return mlir::WalkResult::interrupt();
     }
@@ -109,7 +124,7 @@ mlir::LogicalResult verifyAcceptedRankModule(mlir::ModuleOp module,
   if (mlir::isa<wafer::InstrDTESendOp, wafer::InstrDTERecvOp,
                 wafer::InstrDTEWaitOp>(illegal))
     return illegal->emitOpError(
-        "unsupported_transport: physical DTE acceptance is not implemented");
+        "does not satisfy the accepted executable transport contract");
   return illegal->emitOpError(
       "is not legal in an accepted static-rank executable");
 }
@@ -206,20 +221,12 @@ llvm::Expected<ExecutableBundle> detail::buildExecutableBundle(
                                    message.str().c_str());
   };
 
-  bool requiresPhysicalTransport = false;
-  groupedModule.walk([&](mlir::Operation *operation) {
-    if (mlir::isa<wafer::WaferLinalgExtCollectiveOpInterface>(operation)) {
-      requiresPhysicalTransport = true;
-      return mlir::WalkResult::interrupt();
-    }
-    return mlir::WalkResult::advance();
-  });
-  if (requiresPhysicalTransport)
-    return fail("unsupported_transport: physical DTE acceptance is not "
-                "implemented for executable bundles");
-
-  std::vector<RankExecutable> ranks;
-  ranks.reserve(executionConfig.getRankCount());
+  struct CandidateRank {
+    int64_t logicalRank;
+    mlir::OwningOpRef<mlir::ModuleOp> module;
+  };
+  std::vector<CandidateRank> candidates;
+  candidates.reserve(executionConfig.getRankCount());
   for (int64_t logicalRank = 0; logicalRank < executionConfig.getRankCount();
        ++logicalRank) {
     mlir::OwningOpRef<mlir::ModuleOp> rankModule = groupedModule.clone();
@@ -228,29 +235,51 @@ llvm::Expected<ExecutableBundle> detail::buildExecutableBundle(
     if (mlir::failed(manager.run(*rankModule)))
       return fail("rank lowering failed for logical rank " +
                   std::to_string(logicalRank));
-    if (mlir::failed(verifyAcceptedRankModule(*rankModule, executionConfig,
-                                              logicalRank)))
+    if (failAfterLogicalRank && logicalRank == *failAfterLogicalRank)
+      return fail("test-only injected failure after logical rank " +
+                  std::to_string(logicalRank));
+    candidates.push_back({logicalRank, std::move(rankModule)});
+  }
+
+  llvm::SmallVector<mlir::ModuleOp, 16> candidateModules;
+  candidateModules.reserve(candidates.size());
+  for (CandidateRank &candidate : candidates) {
+    if (mlir::failed(detail::verifyExactExecutionConfig(*candidate.module,
+                                                        executionConfig)) ||
+        mlir::failed(mlir::verify(*candidate.module)))
+      return fail("pre-transport rank verification failed for logical rank " +
+                  std::to_string(candidate.logicalRank));
+    candidateModules.push_back(*candidate.module);
+  }
+  mlir::FailureOr<TransportContract> transport =
+      detail::acceptDirectDTETransport(candidateModules);
+  if (mlir::failed(transport))
+    return fail("physical Direct DTE transport acceptance failed");
+
+  std::vector<RankExecutable> ranks;
+  ranks.reserve(candidates.size());
+  for (CandidateRank &candidate : candidates) {
+    const int64_t logicalRank = candidate.logicalRank;
+    mlir::ModuleOp rankModule = *candidate.module;
+    if (mlir::failed(verifyAcceptedRankModule(rankModule, executionConfig,
+                                              logicalRank, *transport)))
       return fail("accepted-rank verification failed for logical rank " +
                   std::to_string(logicalRank));
-
     llvm::Expected<detail::AcceptedCallClosure> closure =
-        detail::analyzeAcceptedCallClosure(*rankModule);
+        detail::analyzeAcceptedCallClosure(rankModule);
     if (!closure)
       return fail("accepted-rank call closure failed for logical rank " +
                   std::to_string(logicalRank) + ": " +
                   llvm::toString(closure.takeError()));
     mlir::FailureOr<std::vector<RankProgramBinding>> bindings =
-        buildRankProgramBindings(program, logicalRank, *rankModule);
+        buildRankProgramBindings(program, logicalRank, rankModule);
     if (mlir::failed(bindings))
       return fail("typed rank resource projection failed for logical rank " +
                   std::to_string(logicalRank));
-    if (failAfterLogicalRank && logicalRank == *failAfterLogicalRank)
-      return fail("test-only injected failure after logical rank " +
-                  std::to_string(logicalRank));
-
     std::string entrySymbol = closure->entry.getSymName().str();
     ranks.push_back(ExecutableBundleBuilder::makeRank(
-        logicalRank, std::move(rankModule), entrySymbol, std::move(*bindings)));
+        logicalRank, std::move(candidate.module), entrySymbol,
+        std::move(*bindings), *transport));
   }
   if (ranks.size() != static_cast<size_t>(executionConfig.getRankCount()))
     return fail("executable bundle rank domain is incomplete");

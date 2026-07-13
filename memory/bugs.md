@@ -189,3 +189,13 @@
   sign/exponent/high-10-fraction并清零low-13 bits，读回时反向unpack；用非零FP32→TF32→FP32 roundtrip覆盖rounding和
   storage编码，capability matrix则实际执行每个TableGen-declared convert kind，不能只证明switch有case。任何基于
   MLIR type的分类（包括program-boundary dtype）必须先判具体`FloatTF32Type`，再判会同时命中的通用`isF32()`。
+# DTE wait被canonicalizer删除
+
+- 现象：带`wafer.instr.dte_wait`的collective在selected pipeline进入SPM planning时报告
+  `missing_dte_completion`，但instruction lowering本身已生成wait。
+- 根因：`dte_wait`只声明`MemRead<Wafer_CommunicationResource>`；无结果的只读op可被canonicalizer当作
+  trivially dead删除。自定义resource种类不改变MLIR对read-only effect的DCE语义。
+- 修复：completion wait同时声明communication resource的read/write effect；canonicalize回归必须直接证明
+  send/recv/wait三者均保留。
+- 防复发：任何会消费token、推进completion或改变同步状态的op不能只用read effect表达；带canonicalizer的
+  production pipeline必须有对应liveness测试，不能只测无canonicalizer的局部lowering输出。

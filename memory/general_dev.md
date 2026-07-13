@@ -339,6 +339,9 @@
   structured loop/branch中的动态实例再由control-flow instance区分，不能靠op/scheduler顺序或名字恢复。
   endpoint/channel/FSM由post-memory transport acceptance在exact topology/mesh上处理，
   当前不引入pinned/relocatable runtime remapping。
+- Direct DTE public helper的`direct_sync_wait`、`direct_fsm_monitor_receive`与`direct_dte_wait_done`都是无timeout参数的
+  blocking wait；后者可报告本地DTE错误。compiler/CRT不能伪造device timeout能力：本地status由target ABI写回，
+  timeout必须由launch watchdog观察，跨rank peer failure由runtime completion DAG合成。
 - selected instruction handoff固定先由selector在tensor函数clone中完成完整traversal、instruction和SPM/DDR
   planning，再复用同一份function-boundary OneShot Bufferization配置消除tensor signature与
   `bufferization.to_memref/to_tensor` wrapper。target named replay直接消费该bufferized accepted artifact；
@@ -397,12 +400,12 @@
   用于IR-local debug/regression，不拥有program-directory I/O，也不构成用户可选stage。当前bundle boundary对
   rank-count 1/16实际创建all-and-only isolated clones，经selector、function bufferization、whole-rank SPM/DDR和
   terminal legality后形成move-only `RankExecutable[]`/context-owning `ExecutableBundle`；rank-15 late failure仍在
-  同一transaction内，因此不会先发布grouped checkpoint。当前transport contract为None，logical collective在
-  rank构造前明确fail closed。
+  同一transaction内，因此不会先发布grouped checkpoint。无DTE时transport contract为`None`；Q16.T已在完整rank
+  domain的post-memory acceptance后形成`DirectDTE`，target/status consumer仍须独立闭合。
   旧显式 target CRT issue-op、ring collective、SPM/DDR debug path 和 single-tile
   materialization pass 链已删除；不要恢复成用户级 compile flow。当前HF/Llama-style真实program可重放到
-  verified logical group staging，但因physical transport未闭合而不发布bundle；target LLVM/artifact、package、
-  runtime、board execution和数值correctness仍是后续独立gate。
+  verified logical group staging；HF compute coverage、Direct DTE target/status ABI、runtime、board execution和
+  数值correctness仍是后续独立gate。
 - ODS op 如果引入 `RecursiveMemoryEffects`、`ReturnLike` 等 interface trait，公开 dialect 头要
   include 对应 C++ interface header，`WaferIR` 也要显式 link 对应 MLIR interface target。
 - ODS op 如果直接使用 MLIR `TilingInterface` 这类 upstream op interface，避免让 TableGen 在

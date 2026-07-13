@@ -161,6 +161,54 @@ def Wafer_DTEMessageAttr : AttrDef<Wafer_Dialect, "DTEMessage"> {
   let genVerifyDecl = 1;
 }
 
+def Wafer_DTEAllocationProfileNormal
+    : I32EnumAttrCase<"Normal", 0, "normal">;
+def Wafer_DTEAllocationProfile
+    : I32EnumAttr<"DTEAllocationProfile",
+                  "Wafer Direct DTE allocation profile", [
+  Wafer_DTEAllocationProfileNormal
+]> {
+  let cppNamespace = "::wafer";
+  let genSpecializedAttr = 0;
+}
+
+def Wafer_DTECompletionProfileSenderWaitReceiverFSM
+    : I32EnumAttrCase<"SenderWaitReceiverFSM", 0,
+                      "sender_wait_receiver_fsm">;
+def Wafer_DTECompletionProfile
+    : I32EnumAttr<"DTECompletionProfile",
+                  "Wafer Direct DTE completion profile", [
+  Wafer_DTECompletionProfileSenderWaitReceiverFSM
+]> {
+  let cppNamespace = "::wafer";
+  let genSpecializedAttr = 0;
+}
+
+def Wafer_DirectDTEBindingAttr
+    : AttrDef<Wafer_Dialect, "DirectDTEBinding"> {
+  let mnemonic = "direct_dte_binding";
+  let summary = "Accepted physical Direct DTE resource profile";
+  let description = [{
+    Records the physical choices that cannot be recomputed from a logical DTE
+    issue, the exact execution mesh, and accepted memory offsets. The public
+    Direct DTE ABI selects an allocation profile rather than an exact DTE id,
+    so this attribute does not invent a channel id. Endpoint, address, byte
+    range, and message identity remain represented by the operation, topology,
+    and planned buffer.
+  }];
+  let parameters = (ins
+    "wafer::DTEAllocationProfile":$allocationProfile,
+    "int64_t":$receiverFsmId,
+    "wafer::DTECompletionProfile":$completionProfile
+  );
+  let assemblyFormat = [{
+    `<` `allocation` `=` $allocationProfile `,`
+        `receiver_fsm` `=` $receiverFsmId `,`
+        `completion` `=` $completionProfile `>`
+  }];
+  let genVerifyDecl = 1;
+}
+
 def Wafer_ComputeElementwiseKindAdd : I32EnumAttrCase<"Add", 0, "add">;
 def Wafer_ComputeElementwiseKindSub : I32EnumAttrCase<"Sub", 1, "sub">;
 def Wafer_ComputeElementwiseKindMul : I32EnumAttrCase<"Mul", 2, "mul">;

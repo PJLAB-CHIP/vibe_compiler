@@ -1,6 +1,7 @@
 add_mlir_library(WaferCompiler
   AcceptedCallClosure.cpp
   Compilation.cpp
+  DirectDTETransport.cpp
   ExecutableBundle.cpp
   Package.cpp
   ReferenceExecutor.cpp

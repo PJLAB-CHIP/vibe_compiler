@@ -27,10 +27,10 @@ func.func @all_to_all_to_instr(%input: tensor<4x4xf32>,
 // CHECK: wafer.instr.gather_scatter
 // CHECK: wafer.instr.local_fence
 // CHECK: %[[SEND:.+]] = wafer.instr.dte_send
-// CHECK-SAME: message = #wafer.dte_message<communication = 21, phase = all_to_all, round = 0, slice = 1>
+// CHECK-SAME: message = #wafer.dte_message<communication = 21, phase = all_to_all, round = 1, slice = 1>
 // CHECK-SAME: peer = 1 : i64
 // CHECK: %[[RECV:.+]] = wafer.instr.dte_recv
-// CHECK-SAME: message = #wafer.dte_message<communication = 21, phase = all_to_all, round = 0, slice = 0>
+// CHECK-SAME: message = #wafer.dte_message<communication = 21, phase = all_to_all, round = 1, slice = 0>
 // CHECK-SAME: peer = 1 : i64
 // CHECK: wafer.instr.dte_wait %[[SEND]], %[[RECV]]
 // CHECK: wafer.instr.wdma

@@ -1,4 +1,5 @@
 // RUN: wafer-opt %s | FileCheck %s
+// RUN: wafer-opt --canonicalize %s | FileCheck %s --check-prefix=CANONICAL
 
 module {
   %source = "builtin.unrealized_conversion_cast"() : () -> tensor<4xf32>
@@ -22,3 +23,7 @@ module {
 // CHECK: wafer.instr.dte_send %{{.+}} {bytes = 16 : i64, message = #wafer.dte_message<communication = 7, phase = collective_permute, round = 0, slice = 0>, peer = 1 : i64}
 // CHECK: wafer.instr.dte_recv %{{.+}} {bytes = 16 : i64, message = #wafer.dte_message<communication = 7, phase = collective_permute, round = 0, slice = 0>, peer = 0 : i64}
 // CHECK: wafer.instr.dte_wait %{{.+}}, %{{.+}} : !async.token, !async.token
+
+// CANONICAL: wafer.instr.dte_send
+// CANONICAL: wafer.instr.dte_recv
+// CANONICAL: wafer.instr.dte_wait

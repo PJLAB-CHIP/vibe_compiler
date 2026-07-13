@@ -897,36 +897,30 @@ static bool requiresGatherScatterMaterialization(InstrDataMoveKind kind) {
   llvm_unreachable("unknown instr data move kind");
 }
 
-static mlir::LogicalResult
-verifyStaticShapeAttrMatchesMemRef(mlir::PatternRewriter &rewriter,
-                                   mlir::Operation *op,
-                                   mlir::MemRefType type,
-                                   mlir::DenseI64ArrayAttr shapeAttr,
-                                   llvm::StringRef role,
-                                   std::string *failureReason,
-                                   llvm::StringRef opLabel) {
+static mlir::LogicalResult verifyStaticShapeAttrMatchesMemRef(
+    mlir::PatternRewriter &rewriter, mlir::Operation *op, mlir::MemRefType type,
+    mlir::DenseI64ArrayAttr shapeAttr, llvm::StringRef role,
+    std::string *failureReason, llvm::StringRef opLabel) {
   if (type.getRank() != static_cast<int64_t>(shapeAttr.size()))
-    return failPattern(
-        rewriter, op, failureReason,
-        llvm::Twine(opLabel)
-            .concat(" requires ")
-            .concat(role)
-            .concat("_shape rank to match the ")
-            .concat(role)
-            .concat(" memref rank")
-            .str());
+    return failPattern(rewriter, op, failureReason,
+                       llvm::Twine(opLabel)
+                           .concat(" requires ")
+                           .concat(role)
+                           .concat("_shape rank to match the ")
+                           .concat(role)
+                           .concat(" memref rank")
+                           .str());
   for (auto [dim, attrSize] : llvm::enumerate(shapeAttr.asArrayRef())) {
     int64_t memrefSize = type.getDimSize(dim);
     if (memrefSize == mlir::ShapedType::kDynamic || memrefSize != attrSize)
-      return failPattern(
-          rewriter, op, failureReason,
-          llvm::Twine(opLabel)
-              .concat(" requires static ")
-              .concat(role)
-              .concat(" memref shape to match ")
-              .concat(role)
-              .concat("_shape")
-              .str());
+      return failPattern(rewriter, op, failureReason,
+                         llvm::Twine(opLabel)
+                             .concat(" requires static ")
+                             .concat(role)
+                             .concat(" memref shape to match ")
+                             .concat(role)
+                             .concat("_shape")
+                             .str());
   }
   return mlir::success();
 }
@@ -943,7 +937,9 @@ getPermutationDataMoveSegments(mlir::PatternRewriter &rewriter,
       sourceType.getRank() != static_cast<int64_t>(permutation.size()))
     return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
         rewriter, op, failureReason,
-        llvm::Twine(opLabel).concat(" requires rank-compatible operands").str());
+        llvm::Twine(opLabel)
+            .concat(" requires rank-compatible operands")
+            .str());
   for (auto [destDim, sourceDim] : llvm::enumerate(permutation)) {
     int64_t sourceSize = sourceType.getDimSize(sourceDim);
     int64_t destSize = destType.getDimSize(destDim);
@@ -975,16 +971,16 @@ getPermutationDataMoveSegments(mlir::PatternRewriter &rewriter,
 
 static mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>>
 getMirrorDataMoveSegments(mlir::PatternRewriter &rewriter,
-                          InstrTDMADataMoveOp op,
-                          mlir::MemRefType sourceType,
+                          InstrTDMADataMoveOp op, mlir::MemRefType sourceType,
                           mlir::MemRefType destType,
                           llvm::ArrayRef<int64_t> axes,
-                          std::string *failureReason,
-                          llvm::StringRef opLabel) {
+                          std::string *failureReason, llvm::StringRef opLabel) {
   if (sourceType.getRank() != destType.getRank())
     return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
         rewriter, op, failureReason,
-        llvm::Twine(opLabel).concat(" requires rank-compatible operands").str());
+        llvm::Twine(opLabel)
+            .concat(" requires rank-compatible operands")
+            .str());
   for (int64_t dim = 0; dim < sourceType.getRank(); ++dim) {
     int64_t sourceSize = sourceType.getDimSize(dim);
     int64_t destSize = destType.getDimSize(dim);
@@ -1019,17 +1015,16 @@ getMirrorDataMoveSegments(mlir::PatternRewriter &rewriter,
 
 static mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>>
 getRotateDataMoveSegments(mlir::PatternRewriter &rewriter,
-                          InstrTDMADataMoveOp op,
-                          mlir::MemRefType sourceType,
-                          mlir::MemRefType destType,
-                          InstrDataMoveKind kind,
+                          InstrTDMADataMoveOp op, mlir::MemRefType sourceType,
+                          mlir::MemRefType destType, InstrDataMoveKind kind,
                           llvm::ArrayRef<int64_t> axes,
-                          std::string *failureReason,
-                          llvm::StringRef opLabel) {
+                          std::string *failureReason, llvm::StringRef opLabel) {
   if (sourceType.getRank() != destType.getRank() || axes.size() != 2)
     return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
         rewriter, op, failureReason,
-        llvm::Twine(opLabel).concat(" requires rank-compatible operands").str());
+        llvm::Twine(opLabel)
+            .concat(" requires rank-compatible operands")
+            .str());
   int64_t axis0 = axes[0];
   int64_t axis1 = axes[1];
   for (int64_t dim = 0; dim < sourceType.getRank(); ++dim) {
@@ -1063,7 +1058,9 @@ getRotateDataMoveSegments(mlir::PatternRewriter &rewriter,
              sourceAxis1Size != destAxis0Size) {
     return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
         rewriter, op, failureReason,
-        llvm::Twine(opLabel).concat(" requires swapped rotated-axis shapes").str());
+        llvm::Twine(opLabel)
+            .concat(" requires swapped rotated-axis shapes")
+            .str());
   }
 
   auto sourceIndexFn = [&](llvm::ArrayRef<int64_t> destIndices)
@@ -1573,10 +1570,9 @@ private:
         return failFailureOr<llvm::SmallVector<LogicalMovementSegment>>(
             rewriter, op, failureReason,
             "tdma_data_move mirror lowering requires axes attr");
-      return getMirrorDataMoveSegments(rewriter, op, sourceType, destType,
-                                       op.getAxesAttr().asArrayRef(),
-                                       failureReason,
-                                       "tdma_data_move mirror lowering");
+      return getMirrorDataMoveSegments(
+          rewriter, op, sourceType, destType, op.getAxesAttr().asArrayRef(),
+          failureReason, "tdma_data_move mirror lowering");
     case InstrDataMoveKind::Rotate90:
     case InstrDataMoveKind::Rotate180:
     case InstrDataMoveKind::Rotate270:
@@ -2281,12 +2277,14 @@ public:
             op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
             localCommSlot.getResult(),
             rewriter.getI64IntegerAttr(rankGroup[sendPeerIndex]),
-            rewriter.getI64IntegerAttr(bytes), sendMessage);
+            rewriter.getI64IntegerAttr(bytes), sendMessage,
+            DirectDTEBindingAttr());
         auto recv = rewriter.create<InstrDTERecvOp>(
             op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
             recvCommSlot.getResult(),
             rewriter.getI64IntegerAttr(rankGroup[recvPeerIndex]),
-            rewriter.getI64IntegerAttr(bytes), recvMessage);
+            rewriter.getI64IntegerAttr(bytes), recvMessage,
+            DirectDTEBindingAttr());
         llvm::SmallVector<mlir::Value, 2> tokens{send.getToken(),
                                                  recv.getToken()};
         rewriter.create<InstrDTEWaitOp>(op.getLoc(), tokens);
@@ -2311,8 +2309,7 @@ public:
 
       auto recvCommSlot =
           rewriter.create<mlir::memref::AllocOp>(op.getLoc(), commSlotType);
-      int64_t sendPayloadSlice =
-          (localRank + groupSize - step) % groupSize;
+      int64_t sendPayloadSlice = (localRank + groupSize - step) % groupSize;
       auto sendMessage = DTEMessageAttr::get(
           rewriter.getContext(), op.getCommunicationIdAttr().getInt(),
           DTEProtocolPhase::AllGatherRing, step, sendPayloadSlice);
@@ -2322,11 +2319,13 @@ public:
       auto send = rewriter.create<InstrDTESendOp>(
           op.getLoc(), rewriter.getType<mlir::async::TokenType>(), sendSlot,
           rewriter.getI64IntegerAttr(nextPeer),
-          rewriter.getI64IntegerAttr(bytes), sendMessage);
+          rewriter.getI64IntegerAttr(bytes), sendMessage,
+          DirectDTEBindingAttr());
       auto recv = rewriter.create<InstrDTERecvOp>(
           op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
           recvCommSlot.getResult(), rewriter.getI64IntegerAttr(prevPeer),
-          rewriter.getI64IntegerAttr(bytes), recvMessage);
+          rewriter.getI64IntegerAttr(bytes), recvMessage,
+          DirectDTEBindingAttr());
       llvm::SmallVector<mlir::Value, 2> tokens{send.getToken(),
                                                recv.getToken()};
       rewriter.create<InstrDTEWaitOp>(op.getLoc(), tokens);
@@ -2477,12 +2476,14 @@ public:
       auto send = rewriter.create<InstrDTESendOp>(
           op.getLoc(), rewriter.getType<mlir::async::TokenType>(), *sendSlot,
           rewriter.getI64IntegerAttr(rankGroup[sendSlotIndex]),
-          rewriter.getI64IntegerAttr(bytes), sendMessage);
+          rewriter.getI64IntegerAttr(bytes), sendMessage,
+          DirectDTEBindingAttr());
       auto recv = rewriter.create<InstrDTERecvOp>(
           op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
           op.getRecvBuffer(),
           rewriter.getI64IntegerAttr(rankGroup[recvRankIndex]),
-          rewriter.getI64IntegerAttr(bytes), recvMessage);
+          rewriter.getI64IntegerAttr(bytes), recvMessage,
+          DirectDTEBindingAttr());
       llvm::SmallVector<mlir::Value, 2> tokens{send.getToken(),
                                                recv.getToken()};
       rewriter.create<InstrDTEWaitOp>(op.getLoc(), tokens);
@@ -2567,7 +2568,8 @@ public:
           auto send = rewriter.create<InstrDTESendOp>(
               op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
               *accumulator, rewriter.getI64IntegerAttr(rankGroup[parentRank]),
-              rewriter.getI64IntegerAttr(bytes), message);
+              rewriter.getI64IntegerAttr(bytes), message,
+              DirectDTEBindingAttr());
           llvm::SmallVector<mlir::Value, 1> tokens{send.getToken()};
           rewriter.create<InstrDTEWaitOp>(op.getLoc(), tokens);
           break;
@@ -2583,7 +2585,7 @@ public:
             op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
             op.getRecvBuffer(),
             rewriter.getI64IntegerAttr(rankGroup[childRank]),
-            rewriter.getI64IntegerAttr(bytes), message);
+            rewriter.getI64IntegerAttr(bytes), message, DirectDTEBindingAttr());
         llvm::SmallVector<mlir::Value, 1> tokens{recv.getToken()};
         rewriter.create<InstrDTEWaitOp>(op.getLoc(), tokens);
 
@@ -2606,7 +2608,8 @@ public:
           auto recv = rewriter.create<InstrDTERecvOp>(
               op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
               *accumulator, rewriter.getI64IntegerAttr(rankGroup[parentRank]),
-              rewriter.getI64IntegerAttr(bytes), message);
+              rewriter.getI64IntegerAttr(bytes), message,
+              DirectDTEBindingAttr());
           llvm::SmallVector<mlir::Value, 1> tokens{recv.getToken()};
           rewriter.create<InstrDTEWaitOp>(op.getLoc(), tokens);
           hasFinalResult = true;
@@ -2624,7 +2627,7 @@ public:
         auto send = rewriter.create<InstrDTESendOp>(
             op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
             *accumulator, rewriter.getI64IntegerAttr(rankGroup[childRank]),
-            rewriter.getI64IntegerAttr(bytes), message);
+            rewriter.getI64IntegerAttr(bytes), message, DirectDTEBindingAttr());
         llvm::SmallVector<mlir::Value, 1> tokens{send.getToken()};
         rewriter.create<InstrDTEWaitOp>(op.getLoc(), tokens);
       }
@@ -2648,10 +2651,8 @@ public:
     int64_t nextPeer = rankGroup[(localRank + 1) % groupSize];
     int64_t prevPeer = rankGroup[(localRank + groupSize - 1) % groupSize];
     for (int64_t step = 0; step < groupSize - 1; ++step) {
-      int64_t sendPayloadSlice =
-          (localRank + groupSize - step) % groupSize;
-      int64_t recvPayloadSlice =
-          (localRank + groupSize - step - 1) % groupSize;
+      int64_t sendPayloadSlice = (localRank + groupSize - step) % groupSize;
+      int64_t recvPayloadSlice = (localRank + groupSize - step - 1) % groupSize;
       auto sendMessage = DTEMessageAttr::get(
           rewriter.getContext(), op.getCommunicationIdAttr().getInt(),
           DTEProtocolPhase::AllReduceRing, step, sendPayloadSlice);
@@ -2661,11 +2662,13 @@ public:
       auto send = rewriter.create<InstrDTESendOp>(
           op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
           forwardBuffer.getResult(), rewriter.getI64IntegerAttr(nextPeer),
-          rewriter.getI64IntegerAttr(bytes), sendMessage);
+          rewriter.getI64IntegerAttr(bytes), sendMessage,
+          DirectDTEBindingAttr());
       auto recv = rewriter.create<InstrDTERecvOp>(
           op.getLoc(), rewriter.getType<mlir::async::TokenType>(),
           op.getRecvBuffer(), rewriter.getI64IntegerAttr(prevPeer),
-          rewriter.getI64IntegerAttr(bytes), recvMessage);
+          rewriter.getI64IntegerAttr(bytes), recvMessage,
+          DirectDTEBindingAttr());
       llvm::SmallVector<mlir::Value, 2> tokens{send.getToken(),
                                                recv.getToken()};
       rewriter.create<InstrDTEWaitOp>(op.getLoc(), tokens);
@@ -2703,11 +2706,9 @@ static void configureTileRegionToInstrTarget(mlir::ConversionTarget &target) {
                     InstrElementwiseOp, InstrBit2FpOp, InstrMaskMoveOp,
                     InstrReduceOp, InstrConvertOp, InstrGemmOp, InstrDTESendOp,
                     InstrDTERecvOp, InstrDTEWaitOp>();
-  target.addDynamicallyLegalOp<InstrTDMADataMoveOp>(
-      [](InstrTDMADataMoveOp op) {
-        return !requiresGatherScatterMaterialization(
-            op.getKindAttr().getValue());
-      });
+  target.addDynamicallyLegalOp<InstrTDMADataMoveOp>([](InstrTDMADataMoveOp op) {
+    return !requiresGatherScatterMaterialization(op.getKindAttr().getValue());
+  });
   target.addIllegalOp<
       StorageLoadOp, StorageStoreOp, LayoutMaterializeOp, ComputeFillOp,
       ComputeGemmOp, ComputeElementwiseOp, ComputeReduceOp, MoveCopyOp,

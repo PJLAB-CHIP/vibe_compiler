@@ -934,8 +934,8 @@ private:
 
     struct PendingSend {
       mlir::Value buffer;
+      int64_t targetIndex = -1;
       int64_t peer = -1;
-      int64_t payloadSlice = -1;
     };
     struct PendingRecv {
       mlir::Value buffer;
@@ -965,7 +965,7 @@ private:
       }
 
       sends.push_back(
-          {extract.getResult(), rankGroup->ranks[targetIndex], targetIndex});
+          {extract.getResult(), targetIndex, rankGroup->ranks[targetIndex]});
     }
 
     for (int64_t sourceIndex = 0; sourceIndex < groupSize; ++sourceIndex) {
@@ -977,34 +977,39 @@ private:
           {recvBuffer.getResult(), sourceIndex, rankGroup->ranks[sourceIndex]});
     }
 
-    llvm::SmallVector<mlir::Value, 8> tokens;
     mlir::Type tokenType = builder.getType<mlir::async::TokenType>();
     if (!sends.empty() || !recvs.empty())
       builder.create<SyncLocalFenceOp>(op.getLoc());
-    for (const PendingSend &send : sends) {
-      auto message = DTEMessageAttr::get(
-          builder.getContext(), *communicationId, DTEProtocolPhase::AllToAll,
-          /*round=*/0, send.payloadSlice);
-      auto dteSend =
-          builder.create<InstrDTESendOp>(op.getLoc(), tokenType, send.buffer,
-                                         builder.getI64IntegerAttr(send.peer),
-                                         builder.getI64IntegerAttr(bytes),
-                                         message);
-      tokens.push_back(dteSend.getToken());
+    for (int64_t distance = 1; distance < groupSize; ++distance) {
+      int64_t targetIndex = (localRank + distance) % groupSize;
+      int64_t sourceIndex = (localRank + groupSize - distance) % groupSize;
+      auto sendIt = llvm::find_if(sends, [&](const PendingSend &send) {
+        return send.targetIndex == targetIndex;
+      });
+      auto recvIt = llvm::find_if(recvs, [&](const PendingRecv &recv) {
+        return recv.sourceIndex == sourceIndex;
+      });
+      if (sendIt == sends.end() || recvIt == recvs.end())
+        return fail("all_to_all protocol could not recover semantic peer slot");
+      auto message = DTEMessageAttr::get(builder.getContext(), *communicationId,
+                                         DTEProtocolPhase::AllToAll, distance,
+                                         targetIndex);
+      auto dteSend = builder.create<InstrDTESendOp>(
+          op.getLoc(), tokenType, sendIt->buffer,
+          builder.getI64IntegerAttr(sendIt->peer),
+          builder.getI64IntegerAttr(bytes), message, DirectDTEBindingAttr());
+      auto recvMessage =
+          DTEMessageAttr::get(builder.getContext(), *communicationId,
+                              DTEProtocolPhase::AllToAll, distance, localRank);
+      auto dteRecv = builder.create<InstrDTERecvOp>(
+          op.getLoc(), tokenType, recvIt->buffer,
+          builder.getI64IntegerAttr(recvIt->peer),
+          builder.getI64IntegerAttr(bytes), recvMessage,
+          DirectDTEBindingAttr());
+      llvm::SmallVector<mlir::Value, 2> roundTokens{dteSend.getToken(),
+                                                    dteRecv.getToken()};
+      builder.create<InstrDTEWaitOp>(op.getLoc(), roundTokens);
     }
-    for (const PendingRecv &recv : recvs) {
-      auto message = DTEMessageAttr::get(
-          builder.getContext(), *communicationId, DTEProtocolPhase::AllToAll,
-          /*round=*/0, localRank);
-      auto dteRecv =
-          builder.create<InstrDTERecvOp>(op.getLoc(), tokenType, recv.buffer,
-                                         builder.getI64IntegerAttr(recv.peer),
-                                         builder.getI64IntegerAttr(bytes),
-                                         message);
-      tokens.push_back(dteRecv.getToken());
-    }
-    if (!tokens.empty())
-      builder.create<InstrDTEWaitOp>(op.getLoc(), tokens);
 
     for (const PendingRecv &recv : recvs) {
       llvm::SmallVector<int64_t, 4> resultOffsets =
@@ -1094,25 +1099,22 @@ private:
     llvm::SmallVector<mlir::Value, 2> tokens;
     mlir::Type tokenType = builder.getType<mlir::async::TokenType>();
     if (sendPeer) {
-      auto message = DTEMessageAttr::get(
-          builder.getContext(), *communicationId,
-          DTEProtocolPhase::CollectivePermute, /*round=*/0,
-          *sendPayloadSlice);
+      auto message = DTEMessageAttr::get(builder.getContext(), *communicationId,
+                                         DTEProtocolPhase::CollectivePermute,
+                                         /*round=*/0, *sendPayloadSlice);
       auto send = builder.create<InstrDTESendOp>(
           op.getLoc(), tokenType, *input, builder.getI64IntegerAttr(*sendPeer),
-          builder.getI64IntegerAttr(*bytes), message);
+          builder.getI64IntegerAttr(*bytes), message, DirectDTEBindingAttr());
       tokens.push_back(send.getToken());
     }
     if (recvPeer) {
-      auto message = DTEMessageAttr::get(
-          builder.getContext(), *communicationId,
-          DTEProtocolPhase::CollectivePermute, /*round=*/0,
-          *recvPayloadSlice);
-      auto recv =
-          builder.create<InstrDTERecvOp>(op.getLoc(), tokenType, resultBuffer,
-                                         builder.getI64IntegerAttr(*recvPeer),
-                                         builder.getI64IntegerAttr(*bytes),
-                                         message);
+      auto message = DTEMessageAttr::get(builder.getContext(), *communicationId,
+                                         DTEProtocolPhase::CollectivePermute,
+                                         /*round=*/0, *recvPayloadSlice);
+      auto recv = builder.create<InstrDTERecvOp>(
+          op.getLoc(), tokenType, resultBuffer,
+          builder.getI64IntegerAttr(*recvPeer),
+          builder.getI64IntegerAttr(*bytes), message, DirectDTEBindingAttr());
       tokens.push_back(recv.getToken());
     }
     if (!tokens.empty())
