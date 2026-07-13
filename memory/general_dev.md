@@ -29,6 +29,11 @@
 - instruction kind决定的type pair和parameter policy属于IR语义，应由dialect typed helper唯一拥有，verifier、projector
   和其它需要该关系的consumer共同消费；executor只从type派生自己的numeric representation。完整enum capability gate
   可遍历TableGen生成的`symbolize*` domain并实际prepare/execute，不能再抄一份kind字符串或case表作为expected能力。
+- 硬件wrapper的参数名、函数签名和packet字段写入只能证明编码路径，不能自动证明数值公式。reference语义审计要继续检查
+  direct source、object disassembly、public header/register和state入口。zero-point只有`src1`而没有公式时，对全部typed kind
+  执行前fail closed。stochastic只有mode枚举而没有hardware seed/state合同时，若产品明确需要common reference policy，必须
+  把它和硬件等价性分开：显式execution seed、固定PRNG算法、明确逐dynamic element推进规则和相邻值距离概率，并穷举所有
+  rounding kind；未来硬件证据不能静默改写该可重放policy。
 - reference executor增长后按`immutable program definition <- projection`和`numeric/storage <- interpreter`拆内部文件，
   public translation unit只保留rank选择、owner lifetime和prepare/execute orchestration。projection是唯一允许读取accepted
   MLIR的模块，interpreter只能消费immutable graph；这种源码拆分不能新增serializable plan、第二份schedule或公共artifact。
@@ -440,7 +445,9 @@
 - reference executor的dtype convert不能依赖C++ cast或host rounding environment。projection从typed
   `InstrConvertKind`复制source/destination format和verified parameter policy，把RND_MODE 0..3显式映射到APFloat
   rounding；执行先为全部logical element生成APInt bits，全部成功后再写destination。浮点到整数的NaN/Inf/越界是
-  hard failure；stochastic seed/推进规则和zero-point数学公式缺少证据时必须在input import/storage allocation前拒绝。
+  hard failure。mode4 common reference policy要求显式seed，以固定SplitMix64逐dynamic convert element推进并按上下相邻
+  可表示值距离概率选择；它不代表hardware RNG。zero-point数学公式缺少证据时仍必须在input import/storage allocation前
+  拒绝。
 - reference control-flow projection不能依赖MLIR block存储顺序或隐式fallthrough。先为entry CFG全部block argument和
   顶层SSA result分配value-id，再逐block复制terminator successor/operand；执行branch时先snapshot incoming runtime
   values，再绑定successor arguments。结构化loop保留lb/ub/step、IV和iter_args/yield backedge；当前无环CFG在preflight

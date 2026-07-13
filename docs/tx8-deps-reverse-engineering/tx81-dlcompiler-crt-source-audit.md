@@ -37,7 +37,7 @@ ABI、production membership 或任务状态。
 | --- | --- | --- |
 | Arithmetic / activation / transcendental | 存在直接 `TsmArith`、`TsmActivation`、`TsmTranscendental` wrapper 及 per-method 参数 | 旧 `__*` 名字和 prototype 不能证明 Wafer symbol 或 ABI |
 | Relation / logic | bool 和 value variants 使用不同 wrapper method；source 依据 format 选择 method | 不能证明 Wafer operand / result type relation 或 verifier rule |
-| Convert | INT8 source 使用 zero point；FP / INT narrowing 使用 `RND_MODE`；plain convert 无 extra parameter | 不能证明 Wafer signature 分组或 rounding legality |
+| Convert | INT8 source 使用 zero point；FP / INT narrowing 使用 `RND_MODE`；plain convert 无 extra parameter | 只能证明参数转发和packet字段编码，不能证明zero-point数学公式、stochastic随机状态合同、Wafer signature分组或rounding legality |
 | RDMA / WDMA | 4D path 使用 `AddSrcDst` + `ConfigStrideIteration`；generic path 在旧 runtime 做 vectorize fallback | 不能证明 Wafer descriptor rank、byte / element unit 或 fallback ownership |
 | GatherScatter / TDMA | stride-iteration descriptor order 有证据；pad / img2col / mirror / rotate / transpose / NCHW-NHWC wrappers 存在 | 不能证明当前 membership 或通用 layout / movement IR 边界 |
 | GEMM | issue order 是 `AddInput -> ConfigMKN -> AddOutput -> SetPsum -> SetTransflag -> ConfigBatch -> optional features` | 不能证明 feature profile、legality 或 completion contract |
@@ -58,6 +58,12 @@ ABI、production membership 或任务状态。
    Wafer descriptor 使用 element count 还是 byte count。
 4. **Composite ops**：GELU、MXFP、reduce_mul、channelnorm这类旧helper不是单条public wrapper；
    本文只记录其 scratch、ordering 和 software-loop 证据，不能据此推导 Wafer IR / ABI。
+5. **Convert参数的数据流边界**：四个旧`__INT8_*` source只把`zp`原样传给`TsmConvert`；repo-local
+   `libinstr_tx81.a`中对应`__convert_int8_*`只把它编码到`CT_Param.param.src1`。带rounding的convert只把mode写入
+   `CT_Param.ctrl.rnd_mode`。public header、旧Tx81 dialect、register资料和静态库符号均没有给出zero-point的
+   subtract/add、signed interpretation或scale合同，也没有stochastic seed、PRNG state/counter、推进粒度或重置入口。
+   独立`RandGen` peripheral不能证明convert共享其状态。因此这些静态证据不能支持hardware-equivalent stochastic
+   numeric；编号设计采用的deterministic common reference policy是Wafer自有测试政策，不是本审计推出的硬件事实。
 
 ## Function Inventory
 

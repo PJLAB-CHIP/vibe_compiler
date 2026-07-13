@@ -237,7 +237,7 @@ diagnostic按稳定语义分类：
 
 ## 10. Planned And Deferred Extensions
 
-- Direct DTE target activation已进入Q16.T `next`：只消费tasks/13定义的typed accepted binding，补齐CRT wrapper、
+- Direct DTE target activation正由Q16.T实施：只消费tasks/13定义的typed accepted binding，补齐CRT wrapper、
   typed lowering、required/allowed symbol和all-rank late-failure atomic gate；在Q16.T完成前仍保持target-illegal；
 - low-precision/quant ABI：等待instruction geometry和CPU/reference semantics；
 - stable cross-process Kernel ABI descriptor；

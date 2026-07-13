@@ -503,14 +503,97 @@ module {
             std::string::npos);
 
   toInteger.setRoundingMode(4);
-  auto stochastic =
+  auto missingStochasticSeed =
       wafer::compiler::executeReferenceRank(*bundle, /*logicalRank=*/0, {});
-  ASSERT_FALSE(static_cast<bool>(stochastic));
-  std::string stochasticMessage = llvm::toString(stochastic.takeError());
-  EXPECT_NE(stochasticMessage.find("capability preflight"), std::string::npos);
-  EXPECT_NE(stochasticMessage.find("stochastic"), std::string::npos);
+  ASSERT_FALSE(static_cast<bool>(missingStochasticSeed));
+  std::string stochasticMessage =
+      llvm::toString(missingStochasticSeed.takeError());
+  EXPECT_NE(stochasticMessage.find("explicit execution seed"),
+            std::string::npos);
+
+  auto stochasticProgram =
+      wafer::compiler::prepareReferenceRank(*bundle, /*logicalRank=*/0);
+  if (!stochasticProgram)
+    FAIL() << llvm::toString(stochasticProgram.takeError());
+  wafer::compiler::ReferenceExecutionOptions stochasticOptions;
+  stochasticOptions.stochasticSeed = 12345;
+  auto stochastic = wafer::compiler::executeReferenceProgram(
+      *stochasticProgram, roundingInputs, stochasticOptions);
+  if (!stochastic)
+    FAIL() << llvm::toString(stochastic.takeError());
+  EXPECT_EQ(floatsOf(stochastic->getOutputs().front().tensor.getBytes()),
+            std::vector<float>({2, -1, 3, -2, 0, 0, 11, -10}));
+  auto repeatedStochastic = wafer::compiler::executeReferenceProgram(
+      *stochasticProgram, roundingInputs, stochasticOptions);
+  if (!repeatedStochastic)
+    FAIL() << llvm::toString(repeatedStochastic.takeError());
+  EXPECT_EQ(repeatedStochastic->getOutputs().front().tensor.getBytes(),
+            stochastic->getOutputs().front().tensor.getBytes());
+
+  toInteger.setRoundingMode(0);
+  auto f16Type = mlir::MemRefType::get(
+      addInputType.getShape(), builder.getF16Type(), addInputType.getLayout(),
+      addInputType.getMemorySpace());
+  builder.setInsertionPoint(add);
+  auto stochasticHalf = builder.create<mlir::memref::AllocOp>(
+      add.getLoc(), f16Type, mlir::ValueRange{});
+  stochasticHalf->setAttr(wafer::kWaferSPMOffsetAttrName,
+                          wafer::SPMOffsetAttr::get(add.getContext(), 3 << 20));
+  auto floatToHalf = builder.create<wafer::InstrConvertOp>(
+      add.getLoc(), wafer::InstrConvertKind::Fp32Fp16, originalAddInput,
+      stochasticHalf, /*zero_point=*/mlir::IntegerAttr{},
+      builder.getI64IntegerAttr(4));
+  auto halfToFloat = builder.create<wafer::InstrConvertOp>(
+      add.getLoc(), wafer::InstrConvertKind::Fp16Fp32, stochasticHalf,
+      roundedFloat, /*zero_point=*/mlir::IntegerAttr{},
+      /*rounding_mode=*/mlir::IntegerAttr{});
+  add->setOperand(0, roundedFloat);
+  auto floatingStochasticInput = wafer::compiler::ReferenceTensor::create(
+      "f32", {8},
+      bytesOf({1.0004f, 1.0006f, 1.00048828125f, -1.0004f, -1.0006f, 2.0008f,
+               2.0012f, -2.0008f}));
+  ASSERT_TRUE(static_cast<bool>(floatingStochasticInput));
+  auto floatingStochasticInputs = roundingInputs;
+  floatingStochasticInputs[0].tensor = std::move(*floatingStochasticInput);
+  auto floatingStochastic = wafer::compiler::executeReferenceRank(
+      *bundle, /*logicalRank=*/0, floatingStochasticInputs, stochasticOptions);
+  if (!floatingStochastic)
+    FAIL() << llvm::toString(floatingStochastic.takeError());
+  EXPECT_EQ(
+      floatsOf(floatingStochastic->getOutputs().front().tensor.getBytes()),
+      std::vector<float>({1.0009765625f, 1.0009765625f, 1.0009765625f, -1.0f,
+                          -1.0009765625f, 2.001953125f, 2.001953125f, -2.0f}));
+
+  floatToHalf.setRoundingMode(0);
+  auto integerToHalf = builder.create<wafer::InstrConvertOp>(
+      add.getLoc(), wafer::InstrConvertKind::Int32Fp16, roundedInteger,
+      stochasticHalf, /*zero_point=*/mlir::IntegerAttr{},
+      builder.getI64IntegerAttr(4));
+  auto integerHalfToFloat = builder.create<wafer::InstrConvertOp>(
+      add.getLoc(), wafer::InstrConvertKind::Fp16Fp32, stochasticHalf,
+      roundedFloat, /*zero_point=*/mlir::IntegerAttr{},
+      /*rounding_mode=*/mlir::IntegerAttr{});
+  auto integerStochasticInput = wafer::compiler::ReferenceTensor::create(
+      "f32", {8},
+      bytesOf({2049.0f, -2049.0f, 2051.0f, -2051.0f, 4097.0f, -4097.0f, 8195.0f,
+               -8195.0f}));
+  ASSERT_TRUE(static_cast<bool>(integerStochasticInput));
+  auto integerStochasticInputs = roundingInputs;
+  integerStochasticInputs[0].tensor = std::move(*integerStochasticInput);
+  auto integerStochastic = wafer::compiler::executeReferenceRank(
+      *bundle, /*logicalRank=*/0, integerStochasticInputs, stochasticOptions);
+  if (!integerStochastic)
+    FAIL() << llvm::toString(integerStochastic.takeError());
+  EXPECT_EQ(
+      floatsOf(integerStochastic->getOutputs().front().tensor.getBytes()),
+      std::vector<float>({2050, -2048, 2052, -2050, 4096, -4096, 8200, -8192}));
 
   add->setOperand(0, originalAddInput);
+  integerHalfToFloat.erase();
+  integerToHalf.erase();
+  halfToFloat.erase();
+  floatToHalf.erase();
+  stochasticHalf.erase();
   backToFloat.erase();
   toInteger.erase();
   roundedFloat.erase();
@@ -519,6 +602,7 @@ module {
   size_t declaredConvertKinds = 0;
   size_t acceptedConvertKinds = 0;
   size_t rejectedZeroPointKinds = 0;
+  size_t acceptedStochasticKinds = 0;
   for (uint32_t rawKind = 0;
        rawKind <= wafer::getMaxEnumValForInstrConvertKind(); ++rawKind) {
     std::optional<wafer::InstrConvertKind> kind =
@@ -577,6 +661,21 @@ module {
       EXPECT_EQ(floatsOf(matrixResult->getOutputs().front().tensor.getBytes()),
                 std::vector<float>(8, 9.0f));
       ++acceptedConvertKinds;
+
+      if (parameterKind == wafer::InstrConvertParameterKind::RoundingMode) {
+        matrixConvert.setRoundingMode(4);
+        auto stochasticMatrixProgram =
+            wafer::compiler::prepareReferenceRank(*bundle, /*logicalRank=*/0);
+        if (!stochasticMatrixProgram)
+          FAIL() << llvm::toString(stochasticMatrixProgram.takeError());
+        wafer::compiler::ReferenceExecutionOptions options;
+        options.stochasticSeed = 12345;
+        auto stochasticMatrixResult = wafer::compiler::executeReferenceProgram(
+            *stochasticMatrixProgram, inputs, options);
+        if (!stochasticMatrixResult)
+          FAIL() << llvm::toString(stochasticMatrixResult.takeError());
+        ++acceptedStochasticKinds;
+      }
     }
 
     matrixConvert.erase();
@@ -586,6 +685,7 @@ module {
   EXPECT_GT(declaredConvertKinds, 0u);
   EXPECT_GT(acceptedConvertKinds, 0u);
   EXPECT_GT(rejectedZeroPointKinds, 0u);
+  EXPECT_GT(acceptedStochasticKinds, 0u);
   EXPECT_EQ(acceptedConvertKinds + rejectedZeroPointKinds,
             declaredConvertKinds);
 

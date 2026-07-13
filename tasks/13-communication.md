@@ -1,7 +1,7 @@
 # Wafer Communication Dialect Design
 
 状态：2026-07-13更新；当前合同覆盖buffer-level collective到instruction-level Direct DTE p2p和明确
-completion，post-memory physical transport acceptance已进入Q16.T `next`但尚不是artifact事实。segmented/MoE和
+completion，post-memory physical transport acceptance正由Q16.T实施但尚不是artifact事实。segmented/MoE和
 multi-card route延后；不引入physical transport registry。实现状态以`tasks/progress.md`为准。
 
 本文定义Wafer后端从logical collective到instruction-level p2p的device-side communication

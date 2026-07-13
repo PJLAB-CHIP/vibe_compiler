@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -49,6 +50,13 @@ struct ReferenceInputBinding {
 struct ReferenceOutputBinding {
   int64_t index;
   ReferenceTensor tensor;
+};
+
+/// Invocation policy that is not encoded by accepted instruction IR. An
+/// explicit seed is required only when the projected program uses stochastic
+/// rounding; deterministic rounding programs do not consume it.
+struct ReferenceExecutionOptions {
+  std::optional<uint64_t> stochasticSeed;
 };
 
 /// Complete logical outputs produced after the accepted rank returns.
@@ -90,7 +98,8 @@ private:
   friend struct ReferenceProgramBuilder;
   friend llvm::Expected<ReferenceExecutionResult>
   executeReferenceProgram(const ReferenceProgram &program,
-                          llvm::ArrayRef<ReferenceInputBinding> inputs);
+                          llvm::ArrayRef<ReferenceInputBinding> inputs,
+                          ReferenceExecutionOptions options);
 
   explicit ReferenceProgram(std::unique_ptr<Impl> impl);
   std::unique_ptr<Impl> impl;
@@ -105,14 +114,16 @@ prepareReferenceRank(const ExecutableBundle &bundle, int64_t logicalRank);
 /// bundle after preparation cannot change this program's command semantics.
 llvm::Expected<ReferenceExecutionResult>
 executeReferenceProgram(const ReferenceProgram &program,
-                        llvm::ArrayRef<ReferenceInputBinding> inputs);
+                        llvm::ArrayRef<ReferenceInputBinding> inputs,
+                        ReferenceExecutionOptions options = {});
 
 /// Executes the already-selected instruction and accepted memory facts of one
 /// rank. This convenience entry first performs complete projection/capability
 /// preflight, then executes that immutable program.
 llvm::Expected<ReferenceExecutionResult>
 executeReferenceRank(const ExecutableBundle &bundle, int64_t logicalRank,
-                     llvm::ArrayRef<ReferenceInputBinding> inputs);
+                     llvm::ArrayRef<ReferenceInputBinding> inputs,
+                     ReferenceExecutionOptions options = {});
 
 } // namespace wafer::compiler
 

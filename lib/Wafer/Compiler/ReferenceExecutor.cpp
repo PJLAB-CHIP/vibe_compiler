@@ -84,19 +84,22 @@ prepareReferenceRank(const ExecutableBundle &bundle, int64_t logicalRank) {
 
 llvm::Expected<ReferenceExecutionResult>
 executeReferenceProgram(const ReferenceProgram &program,
-                        llvm::ArrayRef<ReferenceInputBinding> inputs) {
+                        llvm::ArrayRef<ReferenceInputBinding> inputs,
+                        ReferenceExecutionOptions options) {
   if (!program.impl)
     return reference_detail::invalid("reference program is moved-from");
-  return reference_detail::interpretReferenceProgram(*program.impl, inputs);
+  return reference_detail::interpretReferenceProgram(*program.impl, inputs,
+                                                     options);
 }
 
 llvm::Expected<ReferenceExecutionResult>
 executeReferenceRank(const ExecutableBundle &bundle, int64_t logicalRank,
-                     llvm::ArrayRef<ReferenceInputBinding> inputs) {
+                     llvm::ArrayRef<ReferenceInputBinding> inputs,
+                     ReferenceExecutionOptions options) {
   auto program = prepareReferenceRank(bundle, logicalRank);
   if (!program)
     return program.takeError();
-  return executeReferenceProgram(*program, inputs);
+  return executeReferenceProgram(*program, inputs, options);
 }
 
 } // namespace wafer::compiler

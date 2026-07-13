@@ -140,8 +140,7 @@ projectRoundingMode(uint64_t value) {
   case 3:
     return llvm::APFloat::rmTowardNegative;
   case 4:
-    return unsupported(
-        "stochastic convert rounding has no deterministic reference policy");
+    return llvm::APFloat::rmNearestTiesToEven;
   default:
     return unsupported("convert rounding mode is outside RND_MODE");
   }
@@ -597,6 +596,10 @@ private:
           if (!projectedRounding)
             return projectedRounding.takeError();
           command.roundingMode = *projectedRounding;
+          if (*roundingMode == 4) {
+            command.stochasticRounding = true;
+            program.usesStochasticRounding = true;
+          }
           break;
         }
         case wafer::InstrConvertParameterKind::ZeroPoint:

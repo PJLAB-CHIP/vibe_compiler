@@ -117,6 +117,7 @@ struct ReferenceProgram::Impl {
     NumericFormat destFormat = NumericFormat::Float32;
     llvm::APFloat::roundingMode roundingMode =
         llvm::APFloat::rmNearestTiesToEven;
+    bool stochasticRounding = false;
     int64_t m = 0;
     int64_t n = 0;
     int64_t k = 0;
@@ -145,6 +146,7 @@ struct ReferenceProgram::Impl {
   std::vector<FunctionProgram> functions;
   uint32_t entryFunction = 0;
   size_t projectedOperationCount = 0;
+  bool usesStochasticRounding = false;
 };
 
 namespace reference_detail {
@@ -192,6 +194,9 @@ llvm::Expected<NumericValue> readNumeric(const BufferView &buffer,
 llvm::Expected<llvm::APInt>
 convertNumeric(const NumericValue &source, NumericFormat destFormat,
                llvm::APFloat::roundingMode roundingMode);
+llvm::Expected<llvm::APInt> convertNumericStochastic(const NumericValue &source,
+                                                     NumericFormat destFormat,
+                                                     uint64_t randomBits);
 llvm::Error writeNumericBits(const BufferView &buffer,
                              llvm::ArrayRef<int64_t> indices,
                              NumericFormat format, const llvm::APInt &bits);
@@ -205,7 +210,8 @@ llvm::Error projectReferenceProgram(ReferenceProgram::Impl &program,
                                     llvm::StringRef entrySymbol);
 llvm::Expected<ReferenceExecutionResult>
 interpretReferenceProgram(const ReferenceProgram::Impl &program,
-                          llvm::ArrayRef<ReferenceInputBinding> inputs);
+                          llvm::ArrayRef<ReferenceInputBinding> inputs,
+                          ReferenceExecutionOptions options);
 
 } // namespace reference_detail
 } // namespace wafer::compiler

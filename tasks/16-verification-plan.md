@@ -343,12 +343,26 @@ convert子边界按instruction kind直接投影source/destination format和参�
 - `RND_MODE=0/1/2/3`分别映射为nearest-even、toward-zero、toward-positive、toward-negative；每个element先以
   `APInt`/`APFloat`完成转换，整条convert全部成功后才commit destination，NaN/Inf到integer或越界不允许靠
   host undefined/implementation-defined cast决定结果；
-- `RND_MODE=4` stochastic在确定性seed、随机数推进单位和hardware对应证据固定前必须在projection preflight拒绝；
+- `RND_MODE=4`采用明确的reference-only通用随机舍入：调用方必须提供execution seed，invocation-local SplitMix64按
+  dynamic execution中的每个convert logical element推进一次（包括exact conversion），并按source到上下相邻可表示值的
+  距离比例选择结果；同program/input/seed必须byte-identical。该政策用于确定性语义测试，不声称复刻硬件随机源；
 - INT8到floating的`zero_point` wrapper目前只证明了字段和调用形态，尚无足以区分subtract/add/raw reinterpret的
-  数学公式证据，因此保持typed capability failure，不能用常见量化公式猜测；这四个kind仍是Q19 convert gate的明确
-  未完成项，而不是静默采用默认语义；
+  数学公式证据，因此保持typed capability failure，不能用常见量化公式猜测；这四个kind是evidence-dependent
+  capability extension，不属于当前Q19 accepted core；
 - 支持矩阵由typed `InstrConvertKind`到format/parameter policy的同一projection dispatch形成；完整矩阵测试必须遍历
-  该dispatch实际接受的组合，不维护第二份字符串能力表。
+  该dispatch实际接受的组合，不维护第二份字符串能力表。当前gate执行全部非zero-point kind的RND_MODE 0..4，对全部
+  zero-point kind在input import/arena allocation前逐项证明fail closed，并证明stochastic缺少显式seed时先于input import
+  失败。
+
+2026-07-13完成的证据审计进一步固定了上述边界：旧TX81 direct wrapper只把`zp`转发给`TsmConvert`，repo-local
+`libinstr_tx81.a`的四个`__convert_int8_*`实现把该值原样写入`CT_Param.param.src1`，没有软件算术；public header、旧
+Tx81 dialect和register资料只命名该参数为zero point，没有给出subtract/add、signed interpretation或结果scale合同。
+同一资料只把`RND_MODE=4`写入`CT_Param.ctrl.rnd_mode`；静态库及public API没有seed、PRNG state、counter、推进粒度或
+重置入口。独立`RandGen` peripheral的若干地址operand不构成convert stochastic state合同。因此common stochastic实现
+必须作为Wafer reference policy显式定义，并由execution option提供seed，不能冒充hardware-equivalent oracle；未来若取得
+版本化硬件随机合同和numeric differential，应新增target-correlated profile，而不是静默改变当前可重放政策。zero-point
+仍不能从字段名或常见量化公式制造数值语义；当前linear/MLP必需子集不消费它，穷举preflight rejection是Q19 core的终态
+能力边界。
 
 验证分三类：
 
@@ -386,9 +400,10 @@ channel和两层非零bias均影响结果，expected由测试侧显式CPU loop�
 不改变prepared program，而convenience入口重新preflight会拒绝；unsupported op优先于缺失input失败，full static
 subview也经projection执行。进一步的convert checkpoint从typed
 `InstrConvertKind`投影非zero-point dtype pair，以APInt/APFloat执行integer/floating和floating/floating转换，
-RND_MODE 0..3的tie/方向case均通过；浮点到integer的NaN/Inf/越界显式失败，destination只在整条convert成功后写入。
-prepared program不受源op后续rounding mutation影响；stochastic和缺少数学公式证据的INT8 zero-point在缺失input前
-即返回capability failure。control-flow checkpoint进一步把entry投影成显式immutable block graph：single-block
+RND_MODE 0..3的tie/方向case和mode4的float-to-int、float-to-float、int-to-float fixed-seed case均通过；浮点到integer
+的NaN/Inf/越界显式失败，destination只在整条convert成功后写入。prepared program不受源op后续rounding mutation影响；
+stochastic缺少显式execution seed时在input import前失败，缺少数学公式证据的INT8 zero-point在projection阶段返回
+capability failure。control-flow checkpoint进一步把entry投影成显式immutable block graph：single-block
 `scf.if`/`scf.for`保留yield/result和iter_args backedge，acyclic `cf.br`/`cf.cond_br`按successor operands绑定block
 arguments；测试覆盖true/false、0/1/2 trip、loop-carried memref、CFG forwarding及projection后condition/bound mutation
 隔离，cyclic CFG在缺失input前失败。direct-call checkpoint进一步让真实group输入携带private tensor helper，经Q16
@@ -401,11 +416,12 @@ offset，覆盖f16/f32/i8、rank 0/2/3/4、strided view、4/8/16/32/64 tail对�
 tail边界；同时证明合法坐标映射唯一且位于physical range，负数、one-past和rank mismatch在所有layout统一失败。
 convert capability checkpoint将kind到source/destination type pair及None/RoundingMode/ZeroPoint policy收敛为Wafer IR
 typed helper，verifier和reference projector共同消费；测试通过TableGen生成的symbolizer遍历每个declared kind，实际执行
-全部非zero-point组合并证明全部zero-point组合先于input import/arena allocation失败，不复制字符串能力表。非零
+全部非zero-point组合及每个rounding kind的mode4 profile，并证明全部zero-point组合先于input import/arena allocation
+失败，不复制字符串能力表。非零
 FP32→TF32→FP32 roundtrip同时证明APFloat 19-bit TF32语义位与hardware 4-byte storage的显式pack/unpack边界。
 structural checkpoint把原单文件executor拆为内部immutable program定义、accepted-IR projection、numeric/storage、
 immutable interpreter和薄public orchestration；projection是唯一读取accepted MLIR的模块，interpreter只依赖投影和
-numeric/storage API，内部对象仍不序列化、不进入bundle/package。Q19仍未完成：还需zero-point/stochastic证据。
+numeric/storage API，内部对象仍不序列化、不进入bundle/package。Q19 core已按上述accepted capability完成；
 DTE multi-rank已拆给Q19.M，并等待Q16.T。
 当前transcendental仍使用host实现，也不属于已闭合的host-independent numeric gate。
 本批`check-wafer`新鲜执行34个C++ unit和230个lit（229 pass、1个feature-inverse unsupported），CTest 3/3通过；

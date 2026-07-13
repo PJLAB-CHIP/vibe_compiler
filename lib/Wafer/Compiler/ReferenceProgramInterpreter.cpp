@@ -46,14 +46,19 @@ llvm::Error forEachLogicalIndex(llvm::ArrayRef<int64_t> shape,
 
 class ProgramInterpreter {
 public:
-  explicit ProgramInterpreter(const ReferenceProgram::Impl &program)
+  ProgramInterpreter(const ReferenceProgram::Impl &program,
+                     ReferenceExecutionOptions options)
       : program(program), spmArena(std::make_shared<Storage>()),
-        ddrArena(std::make_shared<Storage>()) {}
+        ddrArena(std::make_shared<Storage>()), options(options),
+        stochasticState(options.stochasticSeed.value_or(0)) {}
 
   llvm::Expected<ReferenceExecutionResult>
   run(llvm::ArrayRef<ReferenceInputBinding> inputs) {
     if (program.entryFunction >= program.functions.size())
       return invalid("projected entry function is outside the function graph");
+    if (program.usesStochasticRounding && !options.stochasticSeed)
+      return invalid(
+          "stochastic reference rounding requires an explicit execution seed");
     if (llvm::Error error = bindEntryArguments(inputs))
       return std::move(error);
     auto returned =
@@ -611,8 +616,12 @@ private:
               auto value = readNumeric(*source, index, command.sourceFormat);
               if (!value)
                 return value.takeError();
-              auto result = convertNumeric(*value, command.destFormat,
-                                           command.roundingMode);
+              auto result =
+                  command.stochasticRounding
+                      ? convertNumericStochastic(*value, command.destFormat,
+                                                 nextStochasticBits())
+                      : convertNumeric(*value, command.destFormat,
+                                       command.roundingMode);
               if (!result)
                 return result.takeError();
               converted.push_back(std::move(*result));
@@ -795,9 +804,18 @@ private:
                                });
   }
 
+  uint64_t nextStochasticBits() {
+    uint64_t value = (stochasticState += UINT64_C(0x9e3779b97f4a7c15));
+    value = (value ^ (value >> 30)) * UINT64_C(0xbf58476d1ce4e5b9);
+    value = (value ^ (value >> 27)) * UINT64_C(0x94d049bb133111eb);
+    return value ^ (value >> 31);
+  }
+
   const ReferenceProgram::Impl &program;
   std::shared_ptr<Storage> spmArena;
   std::shared_ptr<Storage> ddrArena;
+  ReferenceExecutionOptions options;
+  uint64_t stochasticState;
   llvm::DenseMap<ValueId, BufferView> buffers;
   llvm::DenseMap<ValueId, Scalar> scalars;
 };
@@ -806,8 +824,9 @@ private:
 
 llvm::Expected<ReferenceExecutionResult>
 interpretReferenceProgram(const ReferenceProgram::Impl &program,
-                          llvm::ArrayRef<ReferenceInputBinding> inputs) {
-  return ProgramInterpreter(program).run(inputs);
+                          llvm::ArrayRef<ReferenceInputBinding> inputs,
+                          ReferenceExecutionOptions options) {
+  return ProgramInterpreter(program, options).run(inputs);
 }
 
 } // namespace wafer::compiler::reference_detail

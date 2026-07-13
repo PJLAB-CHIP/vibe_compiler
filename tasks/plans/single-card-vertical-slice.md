@@ -110,21 +110,25 @@ manifest/package late failure不发布partial package。
 
 ## Checkpoint 7: Reference Core, Transport Activation And Vertical Gates
 
-状态：进行中；当前Q19 core为唯一doing，Q16.T为next，Q19.M/Q20/Q21按直接前置blocked。
+状态：进行中；Q19 core已完成，当前Q16.T为唯一doing，Q19.M/Q20/Q21按直接前置blocked。
 
 - Q19 core只接受Q16 `ExecutableBundle`和typed role/index invocation tensors，先把accepted rank all-and-only投影为
   invocation-local immutable `ReferenceProgram`，再执行memref/instruction/control-flow；projection不序列化、不进入
   package，也不保存planner或collective schedule。当前supported flat/tile-region op、static view、single-block
   `scf.if`/`scf.for`和acyclic `cf.br`/`cf.cond_br`已投影为value-id/block graph；执行期不再读取mutable MLIR。
-- single-rank engine已用APInt/APFloat闭合非zero-point convert和RND_MODE 0..3，整条convert先计算后commit；
-  stochastic及缺少数学公式证据的INT8 zero-point kind继续在projection fail closed。Q16/Q17已删除
+- single-rank engine已用APInt/APFloat闭合非zero-point convert和RND_MODE 0..4，整条convert先计算后commit；
+  对旧wrapper、public header、register资料及`libinstr_tx81.a`的审计只证明`zp`写入`param.src1`、mode写入
+  `ctrl.rnd_mode`，没有zero-point公式或hardware stochastic seed/state/推进合同；zero-point继续在projection fail closed。
+  stochastic按用户要求采用reference-only common policy：显式execution seed、invocation-local SplitMix64逐dynamic element
+  推进，并按上下相邻可表示值距离比例选择；同seed可重放但不冒充hardware-equivalent oracle。穷举gate覆盖全部
+  zero-point kind拒绝和每个rounding kind的mode4执行，Q19 core由此按显式accepted capability收口。Q16/Q17已删除
   “module恰好一个func.func”的过度约束，统一消费唯一typed entry加private non-recursive direct-call closure；
   reference projection把同一closure复制为function/block/value-id graph并执行call forwarding。convert kind的
   source/destination type pair和parameter policy由Wafer IR typed helper唯一拥有，executor从它派生numeric format；
   TableGen全枚举gate执行全部非zero-point kind并在input/arena前拒绝全部zero-point kind，且以非零FP32→TF32→FP32
   roundtrip证明19-bit APFloat语义与4-byte physical storage的显式编码。executor代码已拆为internal immutable graph、
   accepted-IR projection、numeric/storage、immutable interpreter和薄public orchestration；只有projection读取MLIR，
-  interpreter只消费投影。后续还需zero-point/stochastic证据。fixed-seed非平凡lowered-group differential已用独立
+  interpreter只消费投影。fixed-seed非平凡lowered-group differential已用独立
   CPU loop oracle证明所有hidden channel和两层非零bias均影响完整输出；
   test-only独立slow layout oracle已跨compact/Cx/NCx、rank/dtype、全部tail对齐台阶和channel block边界逐坐标
   对照production footprint/offset，并证明logical坐标映射唯一、位于physical range且越界统一失败；它不进入production

@@ -4,6 +4,7 @@
 
 #include "llvm/ADT/APSInt.h"
 
+#include <cmath>
 #include <cstring>
 #include <limits>
 
@@ -184,6 +185,97 @@ convertNumeric(const NumericValue &source, NumericFormat destFormat,
     return llvm::APInt(result);
   }
   return invalid("projected convert has unsupported integer-to-integer pair");
+}
+
+static llvm::Expected<double> numericAsDouble(const NumericValue &source) {
+  if (source.integer) {
+    if (source.integer->getBitWidth() > 64)
+      return invalid("stochastic integer source is wider than 64 bits");
+    return static_cast<double>(source.integer->getSExtValue());
+  }
+  if (source.floating) {
+    llvm::APFloat value = *source.floating;
+    bool losesInfo = false;
+    value.convert(llvm::APFloat::IEEEdouble(),
+                  llvm::APFloat::rmNearestTiesToEven, &losesInfo);
+    return value.convertToDouble();
+  }
+  return invalid("stochastic convert source has no numeric value");
+}
+
+static double randomUnitInterval(uint64_t randomBits) {
+  return static_cast<double>(randomBits >> 11) * 0x1.0p-53;
+}
+
+llvm::Expected<llvm::APInt> convertNumericStochastic(const NumericValue &source,
+                                                     NumericFormat destFormat,
+                                                     uint64_t randomBits) {
+  auto sourceValue = numericAsDouble(source);
+  if (!sourceValue)
+    return sourceValue.takeError();
+
+  const llvm::fltSemantics *destSemantics = getFloatSemantics(destFormat);
+  if (!destSemantics) {
+    if (!source.floating)
+      return invalid(
+          "projected stochastic convert has unsupported integer pair");
+    if (!std::isfinite(*sourceValue))
+      return invalid(
+          "floating-to-integer convert input is NaN, Inf, or out of range");
+    unsigned width = getNumericBitWidth(destFormat);
+    double minimum = -std::ldexp(1.0, width - 1);
+    double maximum = std::ldexp(1.0, width - 1) - 1.0;
+    if (*sourceValue < minimum || *sourceValue > maximum)
+      return invalid(
+          "floating-to-integer convert input is NaN, Inf, or out of range");
+    double lower = std::floor(*sourceValue);
+    double upper = std::ceil(*sourceValue);
+    double chosen = lower;
+    if (upper != lower &&
+        randomUnitInterval(randomBits) < (*sourceValue - lower))
+      chosen = upper;
+    int64_t integer = static_cast<int64_t>(chosen);
+    return llvm::APInt(width, static_cast<uint64_t>(integer),
+                       /*isSigned=*/true);
+  }
+
+  if (source.floating && !std::isfinite(*sourceValue))
+    return convertNumeric(source, destFormat,
+                          llvm::APFloat::rmNearestTiesToEven);
+
+  auto makeBound = [&](llvm::APFloat::roundingMode roundingMode) {
+    if (source.integer) {
+      llvm::APFloat result = llvm::APFloat::getZero(*destSemantics);
+      result.convertFromAPInt(*source.integer, /*IsSigned=*/true, roundingMode);
+      return result;
+    }
+    llvm::APFloat result = *source.floating;
+    bool losesInfo = false;
+    result.convert(*destSemantics, roundingMode, &losesInfo);
+    return result;
+  };
+  llvm::APFloat lower = makeBound(llvm::APFloat::rmTowardNegative);
+  llvm::APFloat upper = makeBound(llvm::APFloat::rmTowardPositive);
+  if (lower.bitcastToAPInt() == upper.bitcastToAPInt())
+    return lower.bitcastToAPInt();
+  if (!lower.isFinite() || !upper.isFinite())
+    return invalid("stochastic convert input exceeds finite destination range");
+
+  auto lowerValue = numericAsDouble(
+      NumericValue{std::nullopt, std::optional<llvm::APFloat>(lower)});
+  auto upperValue = numericAsDouble(
+      NumericValue{std::nullopt, std::optional<llvm::APFloat>(upper)});
+  if (!lowerValue)
+    return lowerValue.takeError();
+  if (!upperValue)
+    return upperValue.takeError();
+  double interval = *upperValue - *lowerValue;
+  if (!(interval > 0.0) || *sourceValue < *lowerValue ||
+      *sourceValue > *upperValue)
+    return invalid("stochastic convert could not bracket source value");
+  double upperProbability = (*sourceValue - *lowerValue) / interval;
+  return (randomUnitInterval(randomBits) < upperProbability ? upper : lower)
+      .bitcastToAPInt();
 }
 
 llvm::Error writeNumericBits(const BufferView &buffer,
