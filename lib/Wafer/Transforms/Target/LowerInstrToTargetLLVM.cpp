@@ -1062,8 +1062,9 @@ struct DirectCallGraph {
   llvm::SmallVector<mlir::func::FuncOp, 8> calleeFirstOrder;
 };
 
-static mlir::LogicalResult analyzeDirectCallGraph(mlir::ModuleOp moduleOp,
-                                                  DirectCallGraph &graph) {
+static mlir::LogicalResult
+analyzeDirectCallGraph(mlir::ModuleOp moduleOp, DirectCallGraph &graph,
+                       int64_t defaultDDRArenaArgumentIndex) {
   llvm::SmallVector<mlir::func::FuncOp, 8> functions;
   for (mlir::func::FuncOp funcOp : moduleOp.getOps<mlir::func::FuncOp>()) {
     if (funcOp.isDeclaration())
@@ -1074,7 +1075,9 @@ static mlir::LogicalResult analyzeDirectCallGraph(mlir::ModuleOp moduleOp,
 
     for (auto [index, type] :
          llvm::enumerate(funcOp.getFunctionType().getInputs()))
-      if (!isWaferDDRMemRefType(type))
+      if (!isWaferDDRMemRefType(type) &&
+          !(static_cast<int64_t>(index) == defaultDDRArenaArgumentIndex &&
+            type.isInteger(64)))
         return funcOp.emitError()
                << "unsupported_target_function: argument #" << index
                << " must be a Wafer DDR memref target binding";
@@ -1468,7 +1471,11 @@ struct TargetReturnOpLowering
 
 struct TargetAllocOpLowering
     : public mlir::OpConversionPattern<mlir::memref::AllocOp> {
-  using mlir::OpConversionPattern<mlir::memref::AllocOp>::OpConversionPattern;
+  TargetAllocOpLowering(mlir::LLVMTypeConverter &converter,
+                        mlir::MLIRContext *context,
+                        int64_t defaultDDRArenaArgumentIndex)
+      : mlir::OpConversionPattern<mlir::memref::AllocOp>(converter, context),
+        defaultDDRArenaArgumentIndex(defaultDDRArenaArgumentIndex) {}
 
   mlir::LogicalResult
   matchAndRewrite(mlir::memref::AllocOp allocOp, OpAdaptor adaptor,
@@ -1493,10 +1500,42 @@ struct TargetAllocOpLowering
                   "accepted wafer.spm.offset";
       offset = attr.getOffset();
     } else if (isWaferDDRMemRefType(type)) {
-      return allocOp.emitError()
-             << "unsupported_target_address: compiler-managed DDR allocation "
-                "requires an explicit arena base binding; wafer.ddr.offset is "
-                "arena-relative and cannot be lowered as an absolute address";
+      auto attr =
+          allocOp->getAttrOfType<DDROffsetAttr>(kWaferDDROffsetAttrName);
+      if (!attr)
+        return allocOp.emitError()
+               << "unsupported_target_address: DDR allocation is missing "
+                  "accepted wafer.ddr.offset";
+      offset = attr.getOffset();
+      if (defaultDDRArenaArgumentIndex < 0)
+        return allocOp.emitError()
+               << "unsupported_target_address: compiler-managed DDR "
+                  "allocation requires an explicit arena base binding; "
+                  "wafer.ddr.offset is arena-relative and cannot be lowered "
+                  "as an absolute address";
+      mlir::Operation *function = allocOp->getParentOp();
+      while (function &&
+             !mlir::isa<mlir::func::FuncOp, mlir::LLVM::LLVMFuncOp>(function))
+        function = function->getParentOp();
+      if (!function || function->getNumRegions() != 1 ||
+          function->getRegion(0).empty() ||
+          defaultDDRArenaArgumentIndex >=
+              static_cast<int64_t>(
+                  function->getRegion(0).front().getNumArguments()))
+        return allocOp.emitError()
+               << "unsupported_target_address: default DDR arena argument "
+                  "index is outside the containing entry signature";
+      mlir::Value arenaBase = function->getRegion(0).front().getArgument(
+          defaultDDRArenaArgumentIndex);
+      if (!arenaBase.getType().isInteger(64))
+        return allocOp.emitError()
+               << "unsupported_target_address: default DDR arena base must "
+                  "lower to an i64 address";
+      mlir::Value offsetValue = rewriter.create<mlir::LLVM::ConstantOp>(
+          allocOp.getLoc(), rewriter.getI64Type(), offset);
+      rewriter.replaceOpWithNewOp<mlir::LLVM::AddOp>(allocOp, arenaBase,
+                                                     offsetValue);
+      return mlir::success();
     } else {
       return allocOp.emitError()
              << "unsupported_target_address: unknown Wafer memory space";
@@ -1505,6 +1544,9 @@ struct TargetAllocOpLowering
         allocOp, rewriter.getI64Type(), offset);
     return mlir::success();
   }
+
+private:
+  int64_t defaultDDRArenaArgumentIndex;
 };
 
 struct TargetSubViewOpLowering
@@ -1694,12 +1736,15 @@ static mlir::LogicalResult lowerSCFToControlFlow(mlir::ModuleOp moduleOp) {
   return mlir::success();
 }
 
-static mlir::LogicalResult lowerModuleInPlace(mlir::ModuleOp moduleOp) {
+static mlir::LogicalResult
+lowerModuleInPlace(mlir::ModuleOp moduleOp,
+                   int64_t defaultDDRArenaArgumentIndex) {
   if (mlir::failed(flattenTileRegions(moduleOp)))
     return mlir::failure();
 
   DirectCallGraph callGraph;
-  if (mlir::failed(analyzeDirectCallGraph(moduleOp, callGraph)))
+  if (mlir::failed(analyzeDirectCallGraph(moduleOp, callGraph,
+                                          defaultDDRArenaArgumentIndex)))
     return mlir::failure();
   if (mlir::failed(lowerSCFToControlFlow(moduleOp)))
     return mlir::failure();
@@ -1723,11 +1768,13 @@ static mlir::LogicalResult lowerModuleInPlace(mlir::ModuleOp moduleOp) {
 
   llvm::StringMap<CalleeSignature> usedCallees;
   mlir::RewritePatternSet patterns(moduleOp.getContext());
-  patterns.add<TargetFuncOpLowering, TargetCallOpLowering,
-               TargetReturnOpLowering, TargetAllocOpLowering,
-               TargetSubViewOpLowering, TargetReinterpretCastOpLowering,
-               TargetMemRefCastOpLowering, TargetDeallocOpLowering>(
-      converter, moduleOp.getContext());
+  patterns
+      .add<TargetFuncOpLowering, TargetCallOpLowering, TargetReturnOpLowering,
+           TargetSubViewOpLowering, TargetReinterpretCastOpLowering,
+           TargetMemRefCastOpLowering, TargetDeallocOpLowering>(
+          converter, moduleOp.getContext());
+  patterns.add<TargetAllocOpLowering>(converter, moduleOp.getContext(),
+                                      defaultDDRArenaArgumentIndex);
   patterns.add<TargetInstructionOpLowering>(converter, usedCallees);
   mlir::arith::populateArithToLLVMConversionPatterns(converter, patterns);
   mlir::cf::populateControlFlowToLLVMConversionPatterns(converter, patterns);
@@ -1775,7 +1822,8 @@ struct LowerInstrToTargetLLVMPass
   void runOnOperation() override {
     mlir::ModuleOp moduleOp = getOperation();
     mlir::OwningOpRef<mlir::ModuleOp> loweredModule = moduleOp.clone();
-    if (mlir::failed(lowerModuleInPlace(*loweredModule))) {
+    if (mlir::failed(
+            lowerModuleInPlace(*loweredModule, defaultDDRArenaArgumentIndex))) {
       signalPassFailure();
       return;
     }

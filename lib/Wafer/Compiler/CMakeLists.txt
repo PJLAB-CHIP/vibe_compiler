@@ -1,9 +1,12 @@
 add_mlir_library(WaferCompiler
   Compilation.cpp
   ExecutableBundle.cpp
+  TargetArtifact.cpp
 
   LINK_LIBS PUBLIC
   LLVMSupport
+  LLVMCore
+  LLVMObject
   WaferFrontend
   WaferIR
   WaferPipelines
@@ -12,6 +15,7 @@ add_mlir_library(WaferCompiler
   MLIRArithTransforms
   MLIRBufferizationDialect
   MLIRBufferizationTransforms
+  MLIRBuiltinToLLVMIRTranslation
   MLIRControlFlowDialect
   MLIRFuncDialect
   MLIRFuncInlinerExtension
@@ -29,6 +33,8 @@ add_mlir_library(WaferCompiler
   MLIRSupport
   MLIRTensorDialect
   MLIRTensorTransforms
+  MLIRTargetLLVMIRExport
+  MLIRLLVMToLLVMIRTranslation
   MLIRTransforms
 )
 

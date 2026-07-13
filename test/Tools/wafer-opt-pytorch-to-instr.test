@@ -9,7 +9,7 @@
 # RUN:   --execution-ranks=16 | FileCheck %s --check-prefix=PIPELINE
 # RUN: FileCheck %s --input-file=%t.group.program/functions/forward.mlir --check-prefix=GROUP
 
-# PIPELINE: wafer-compile: validated executable bundle with execution-ranks=16; published grouped-program checkpoint:
+# PIPELINE: wafer-compile: published target-artifact bundle with execution-ranks=16:
 
 # GROUP: mhlo.spmd_parameters_shardings
 # GROUP: func.func @main

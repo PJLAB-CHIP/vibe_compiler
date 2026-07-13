@@ -142,8 +142,11 @@ DDROffset:
 wafer.ddr.offset = #wafer.ddr_offset<offset>
 ```
 
-Q16 typed rank record必须说明offset属于当前rank的default arena，并保留Q17 target address lowering需要的
-range/alignment facts；在没有显式共享arena/base binding前，multi-rank shared-resource plan不能报完成。
+Q16 typed rank record说明offset属于当前rank的default arena，并保留Q17 target address lowering需要的
+range/alignment facts。Q17从剩余compiler-managed DDR allocations重算high-water bytes/alignment，追加唯一
+workspace ABI slot和显式i64 arena-base entry argument；target lowering只在收到该typed argument index时生成
+`base + wafer.ddr.offset`，默认pass调用仍fail closed。slot和workspace最低alignment沿用生成memory plan的同一
+target policy，workspace再与alloc显式更强alignment取最大值；该rank-local base不代表multi-rank shared-resource plan。
 
 以下事实不写入 attr，因为它们可由当前 IR 或 target policy 稳定重算：
 
@@ -357,8 +360,9 @@ instruction IR、accepted DDR/SPM offsets、topology/execution mesh和memref use
 不能从IR重算的boundary role/slice/payload locator进入typed C++ `RankProgramBinding`；accepted offsets、内部alias、
 descriptor和lifetime继续由owning module表达，不复制成第二份resource record。`RankExecutable`另显式声明
 `DefaultArenaRelativeOffsets`，不allocate/import/query runtime object或materialize physical address。all-rank records
-通过后才能形成Q16 `ExecutableBundle`。Q17 target lowering结合committed instruction IR与这些bindings派生
-arena-base/address/range/descriptor；Q18只从Q16 bundle和Q17 verified `TargetArtifactBundle`序列化runtime-observable
+通过后才能形成Q16 `ExecutableBundle`。Q17已把returned compiler-managed DDR root重定向到显式output slot，并结合
+committed instruction IR与这些bindings派生arena-base/address/range/descriptor和fixed `void(i64...)` entry ABI；
+Q18只从Q16 bundle和Q17 verified `TargetArtifactBundle`序列化runtime-observable
 fields。package/runtime不从program shard文件名或薄launch metadata恢复resource。
 
 ## 10. Example Shape

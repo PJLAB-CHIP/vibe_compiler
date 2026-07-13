@@ -1,9 +1,11 @@
 //===- Compilation.cpp - Typed Wafer compiler orchestration --------------===//
 
 #include "Wafer/Compiler/Compilation.h"
+#include "Wafer/Compiler/TargetArtifact.h"
 #include "Wafer/Compiler/Testing.h"
 
 #include "ExecutableBundleInternal.h"
+#include "TargetArtifactInternal.h"
 
 #include "Wafer/Frontend/InitImporterDialects.h"
 #include "Wafer/Frontend/Program.h"
@@ -37,6 +39,8 @@
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
+#include "mlir/Target/LLVMIR/Dialect/Builtin/BuiltinToLLVMIRTranslation.h"
+#include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallString.h"
@@ -679,6 +683,8 @@ void registerCompilationDialects(mlir::DialectRegistry &registry) {
                   mlir::scf::SCFDialect, mlir::tensor::TensorDialect>();
   wafer::registerAllDialects(registry);
   wafer::registerImporterDialects(registry);
+  mlir::registerBuiltinDialectTranslation(registry);
+  mlir::registerLLVMDialectTranslation(registry);
   mlir::arith::registerBufferizableOpInterfaceExternalModels(registry);
   mlir::bufferization::func_ext::registerBufferizableOpInterfaceExternalModels(
       registry);
@@ -872,12 +878,17 @@ compileGroupedProgramToExecutableBundle(llvm::StringRef groupedProgramDirectory,
 
 static mlir::LogicalResult compileProgramImpl(
     CompilationRequest request, llvm::StringRef outputProgramDirectory,
-    llvm::StringRef xlaSpmdPartitionerHelper, llvm::raw_ostream &diagnostics,
-    std::optional<int64_t> failAfterLogicalRank) {
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics,
+    std::optional<int64_t> failAfterLogicalRank,
+    std::optional<int64_t> failAfterTargetLogicalRank) {
 #if !defined(WAFER_ENABLE_STABLEHLO) || !defined(WAFER_ENABLE_SHARDY)
   (void)request;
   (void)outputProgramDirectory;
   (void)xlaSpmdPartitionerHelper;
+  (void)targetToolchain;
+  (void)failAfterLogicalRank;
+  (void)failAfterTargetLogicalRank;
   reject(diagnostics,
          "StableHLO and SPMD partitioner dependencies are required");
   return mlir::failure();
@@ -1128,6 +1139,43 @@ static mlir::LogicalResult compileProgramImpl(
     return mlir::failure();
   }
 
+  llvm::SmallString<256> groupedModules(groupedProgram);
+  llvm::sys::path::append(groupedModules, "modules");
+  if (pathEntryExists(groupedModules)) {
+    reject(diagnostics,
+           "grouped program contains reserved target artifact member "
+           "'modules'");
+    return mlir::failure();
+  }
+
+  llvm::SmallString<256> stagedTargetArtifacts(transactionRoot);
+  llvm::sys::path::append(stagedTargetArtifacts, "target-artifacts");
+  {
+    llvm::Expected<TargetArtifactBundle> targetArtifacts =
+        detail::compileExecutableBundleToTargetArtifactsImpl(
+            *executableBundle, stagedTargetArtifacts, targetToolchain,
+            diagnostics, failAfterTargetLogicalRank);
+    if (!targetArtifacts) {
+      llvm::consumeError(targetArtifacts.takeError());
+      return mlir::failure();
+    }
+  }
+
+  llvm::SmallString<256> stagedModules(stagedTargetArtifacts);
+  llvm::sys::path::append(stagedModules, "modules");
+  if (std::error_code error =
+          llvm::sys::fs::rename(stagedModules, groupedModules)) {
+    reject(diagnostics,
+           "failed to attach verified target modules: " + error.message());
+    return mlir::failure();
+  }
+  if (std::error_code error = llvm::sys::fs::remove(stagedTargetArtifacts)) {
+    reject(diagnostics,
+           "failed to remove empty target artifact staging root: " +
+               error.message());
+    return mlir::failure();
+  }
+
   if (publishDirectoryNoReplace(groupedProgram, canonicalOutput, diagnostics))
     return mlir::failure();
   return mlir::success();
@@ -1137,15 +1185,17 @@ static mlir::LogicalResult compileProgramImpl(
 mlir::LogicalResult compileProgram(CompilationRequest request,
                                    llvm::StringRef outputProgramDirectory,
                                    llvm::StringRef xlaSpmdPartitionerHelper,
+                                   const TargetToolchain &targetToolchain,
                                    llvm::raw_ostream &diagnostics) {
   return compileProgramImpl(std::move(request), outputProgramDirectory,
-                            xlaSpmdPartitionerHelper, diagnostics,
-                            std::nullopt);
+                            xlaSpmdPartitionerHelper, targetToolchain,
+                            diagnostics, std::nullopt, std::nullopt);
 }
 
 mlir::LogicalResult testing::compileProgramWithRankFailure(
     CompilationRequest request, llvm::StringRef outputProgramDirectory,
-    llvm::StringRef xlaSpmdPartitionerHelper, int64_t failAfterLogicalRank,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, int64_t failAfterLogicalRank,
     llvm::raw_ostream &diagnostics) {
   if (failAfterLogicalRank < 0 ||
       failAfterLogicalRank >= request.getExecutionConfig().getRankCount()) {
@@ -1153,8 +1203,24 @@ mlir::LogicalResult testing::compileProgramWithRankFailure(
     return mlir::failure();
   }
   return compileProgramImpl(std::move(request), outputProgramDirectory,
-                            xlaSpmdPartitionerHelper, diagnostics,
-                            failAfterLogicalRank);
+                            xlaSpmdPartitionerHelper, targetToolchain,
+                            diagnostics, failAfterLogicalRank, std::nullopt);
+}
+
+mlir::LogicalResult testing::compileProgramWithTargetRankFailure(
+    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, int64_t failAfterLogicalRank,
+    llvm::raw_ostream &diagnostics) {
+  if (failAfterLogicalRank < 0 ||
+      failAfterLogicalRank >= request.getExecutionConfig().getRankCount()) {
+    reject(diagnostics,
+           "test-only target failure rank is outside ExecutionConfig");
+    return mlir::failure();
+  }
+  return compileProgramImpl(std::move(request), outputProgramDirectory,
+                            xlaSpmdPartitionerHelper, targetToolchain,
+                            diagnostics, std::nullopt, failAfterLogicalRank);
 }
 
 } // namespace wafer::compiler

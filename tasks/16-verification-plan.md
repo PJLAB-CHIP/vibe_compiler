@@ -164,14 +164,18 @@ unsupported，但Q15完成记录必须确认mandatory真实helper cases实际执
 
 ## 7. Q17 Target Module And Publication Gates
 
-- compiler-generated target LLVM→object→CRT object→kcore module positive；
-- typed fixed call signatures，无vararg；
+- compiler-generated target LLVM→object→CRT object→kcore module positive；真实rank-count=1和16均发布all-and-only
+  `modules/rank_00000.so`到`rank_00015.so`；
+- returned DDR roots重定向到显式output args；剩余default-arena allocations形成typed workspace slot和i64 base arg，
+  lowering只在显式argument index下生成`base + offset`；
+- typed fixed `void(i64...)` entry signatures与`KernelABISlot[]`数量一致，无vararg；
 - missing required Wafer symbol negative；
 - 任意非versioned allowlist undefined symbol negative；
 - entry symbol、module format、content digest readback；
 - compile/link/symbol/readback/digest/rename每个late failure注入；
 - failure后无final `.so`、object或partial rank set可见；
 - typed `TargetArtifactBundle`记录all-and-only staged modules、rank/entry/ABI摘要与digest，readback一致；
+- rank-15 target link/readback后注入失败时final root、`.so`和transaction staging均不存在；
 - Q17不以manifest/runtime为完成前置，Q18必须把Q17 bundle作为整体输入。
 
 手写LLVM和dry-run只补tool coverage，不能替代真实program产生的module。

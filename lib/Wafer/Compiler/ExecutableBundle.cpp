@@ -142,6 +142,7 @@ mlir::FailureOr<std::vector<RankProgramBinding>> buildRankProgramBindings(
     bindings.push_back({role,
                         binding.index,
                         {},
+                        binding.dtype,
                         binding.distribution,
                         binding.globalShape,
                         binding.localShape,
@@ -162,7 +163,7 @@ mlir::FailureOr<std::vector<RankProgramBinding>> buildRankProgramBindings(
       return mlir::failure();
     }
     bindings.push_back({ProgramResourceRole::Parameter, parameter.argumentIndex,
-                        parameter.name, parameter.distribution,
+                        parameter.name, parameter.dtype, parameter.distribution,
                         parameter.globalShape, parameter.localShape,
                         std::move(*slice)});
   }
@@ -177,6 +178,7 @@ mlir::FailureOr<std::vector<RankProgramBinding>> buildRankProgramBindings(
     bindings.push_back({ProgramResourceRole::Constant,
                         constant.argumentIndex,
                         {},
+                        constant.dtype,
                         frontend::ProgramDistributionKind::Replicated,
                         constant.shape,
                         constant.shape,

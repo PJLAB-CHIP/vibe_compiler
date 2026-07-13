@@ -1,6 +1,7 @@
 //===- wafer-compile.cpp - Wafer user compiler driver --------------------===//
 
 #include "Wafer/Compiler/Compilation.h"
+#include "Wafer/Compiler/TargetArtifact.h"
 #ifdef WAFER_ENABLE_TEST_HELPER_OVERRIDE
 #include "Wafer/Compiler/Testing.h"
 #endif
@@ -17,6 +18,12 @@
 
 #ifndef WAFER_XLA_SPMD_PARTITIONER_HELPER
 #define WAFER_XLA_SPMD_PARTITIONER_HELPER ""
+#endif
+#ifndef WAFER_PYTHON_EXECUTABLE
+#define WAFER_PYTHON_EXECUTABLE ""
+#endif
+#ifndef WAFER_DEVICE_LINKER_SCRIPT
+#define WAFER_DEVICE_LINKER_SCRIPT ""
 #endif
 
 namespace {
@@ -157,11 +164,26 @@ int main(int argc, char **argv) {
         << "wafer-compile: no XLA SPMD partitioner helper configured\n";
     return 1;
   }
+  llvm::Expected<wafer::compiler::TargetToolchain> targetToolchain =
+      wafer::compiler::TargetToolchain::create(WAFER_PYTHON_EXECUTABLE,
+                                               WAFER_DEVICE_LINKER_SCRIPT);
+  if (!targetToolchain) {
+    llvm::errs() << "wafer-compile: "
+                 << llvm::toString(targetToolchain.takeError()) << "\n";
+    return 1;
+  }
 
   mlir::LogicalResult compilationStatus = mlir::failure();
 #ifdef WAFER_ENABLE_TEST_HELPER_OVERRIDE
-  if (const char *failureRank =
-          std::getenv("WAFER_TEST_FAIL_AFTER_LOGICAL_RANK")) {
+  const char *failureRank = std::getenv("WAFER_TEST_FAIL_AFTER_LOGICAL_RANK");
+  const char *targetFailureRank =
+      std::getenv("WAFER_TEST_FAIL_AFTER_TARGET_LOGICAL_RANK");
+  if (failureRank && targetFailureRank) {
+    llvm::errs() << "wafer-compile: multiple test-only failure injections "
+                    "are not allowed\n";
+    return 1;
+  }
+  if (failureRank) {
     int64_t parsedFailureRank = -1;
     if (llvm::StringRef(failureRank).getAsInteger(10, parsedFailureRank)) {
       llvm::errs() << "wafer-compile: invalid test-only failure rank\n";
@@ -169,20 +191,30 @@ int main(int argc, char **argv) {
     }
     compilationStatus = wafer::compiler::testing::compileProgramWithRankFailure(
         std::move(*request), *options.outputProgramDirectory, helperPath,
-        parsedFailureRank, llvm::errs());
+        *targetToolchain, parsedFailureRank, llvm::errs());
+  } else if (targetFailureRank) {
+    int64_t parsedFailureRank = -1;
+    if (llvm::StringRef(targetFailureRank)
+            .getAsInteger(10, parsedFailureRank)) {
+      llvm::errs() << "wafer-compile: invalid test-only target failure rank\n";
+      return 1;
+    }
+    compilationStatus =
+        wafer::compiler::testing::compileProgramWithTargetRankFailure(
+            std::move(*request), *options.outputProgramDirectory, helperPath,
+            *targetToolchain, parsedFailureRank, llvm::errs());
   } else
 #endif
   {
     compilationStatus = wafer::compiler::compileProgram(
         std::move(*request), *options.outputProgramDirectory, helperPath,
-        llvm::errs());
+        *targetToolchain, llvm::errs());
   }
   if (mlir::failed(compilationStatus))
     return 1;
 
-  llvm::outs() << "wafer-compile: validated executable bundle with "
+  llvm::outs() << "wafer-compile: published target-artifact bundle with "
                   "execution-ranks="
-               << rankCount << "; published grouped-program checkpoint: "
-               << *options.outputProgramDirectory << "\n";
+               << rankCount << ": " << *options.outputProgramDirectory << "\n";
   return 0;
 }

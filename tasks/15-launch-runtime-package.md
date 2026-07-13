@@ -1,6 +1,6 @@
 # Wafer Typed Manifest、RuntimeSession 和 Launch Boundary
 
-状态：2026-07-12按当前package/runtime事实重基线。本文定义Q18待实现合同；近期wire form固定为typed C++
+状态：2026-07-13在Q17完成后进入Q18实施。本文定义Q18合同；近期wire form固定为typed C++
 model的canonical JSON，不是Protobuf。Q18尚未完成，不能把本文value sketch写成已存在API。实现状态看
 `tasks/progress.md`。
 

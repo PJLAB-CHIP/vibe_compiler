@@ -17,7 +17,7 @@
 # RUN: test ! -e %t.outputs/rank8.program
 # RUN: bash -c 'test -z "$(find "%t.outputs" -maxdepth 1 -name ".wafer-compile-staging-*" -print -quit)"'
 
-# CHECK: wafer-compile: validated executable bundle with execution-ranks=16; published grouped-program checkpoint:
+# CHECK: wafer-compile: published target-artifact bundle with execution-ranks=16:
 # RANK8: wafer-compile: execution-ranks must be exactly 1 or 16 for the single-card compiler
 
 # PIPELINE-MLIR: wafer.target.topology @default

@@ -87,7 +87,7 @@ unsupported）；rank-15 late failure、真实column-sharded 16-rank正例和row
 
 ## Checkpoint 5: Target Artifact Bundle
 
-状态：进行中，对应Q17；Q0、Q16已完成。
+状态：已完成，对应Q17；Q0、Q16已完成。
 
 - 只消费Q16 atomic `ExecutableBundle`，对每个rank执行target conversion、object/CRT/device link。
 - device link只写transaction staging；验证all-and-only module set、required/undefined symbols、entry symbol、
@@ -98,7 +98,7 @@ unsupported）；rank-15 late failure、真实column-sharded 16-rank正例和row
 
 ## Checkpoint 6: Manifest And No-Card Runtime
 
-状态：blocked by Q17，对应Q18。
+状态：进行中，对应Q18；Q17已完成。
 
 - 建立唯一C++ typed `PackageManifest`、semantic verifier和canonical JSON parser/serializer。
 - 用typed slot/resource双射表示ABI；all-and-only关联Q16 ranks/resources/completion与Q17 modules/entries/digests。

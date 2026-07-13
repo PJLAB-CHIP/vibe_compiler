@@ -139,6 +139,8 @@
 # RUN: FileCheck %s --input-file=%t.outputs/rank1/functions/forward.parameter_shards.json --check-prefix=RANK1-SHARDS
 # RUN: %python -c 'import json, pathlib; b=json.loads(pathlib.Path("%t.outputs/rank1/functions/forward.meta").read_text())["distributed_boundary"]; assert b["version"]==1 and b["logical_rank_count"]==1; assert b["inputs"][0]["argument_index"]==0 and b["inputs"][0]["distribution"]=="replicated"; assert b["outputs"][0]["result_index"]==0 and b["outputs"][0]["distribution"]=="replicated"'
 # RUN: test -f %t.outputs/rank1/parameter_shards/weight/rank_00000.npy
+# RUN: test -s %t.outputs/rank1/modules/rank_00000.so
+# RUN: %python -c 'from pathlib import Path; modules=list(Path("%t.outputs/rank1/modules").glob("rank_*.so")); assert len(modules)==1 and modules[0].read_bytes().startswith(b"\x7fELF")'
 # RUN: bash -c 'test -z "$(find "%t.outputs" -maxdepth 1 -name ".wafer-compile-staging-*" -print -quit)"'
 
 # A valid but mismatched pre-existing mesh must not be silently reused.
@@ -184,7 +186,7 @@
 # STAGE-INSTR: 'wafer.instr.local_fence' op is not legal in an exporter or post-SPMD StableHLO program
 # SOURCE-SDY-STRING: wafer-compile: source program contains Shardy semantics that the external XLA SPMD helper boundary cannot consume
 # NESTED-FACTS: target topology and execution mesh must be direct module members
-# RANK1: wafer-compile: validated executable bundle with execution-ranks=1; published grouped-program checkpoint:
+# RANK1: wafer-compile: published target-artifact bundle with execution-ranks=1:
 # RANK1-IR: wafer.execution.mesh @default_mesh
 # RANK1-IR-SAME: endpoints = array<i64: 0, 0, 0, 0>
 # RANK1-IR-SAME: policy = "explicit"

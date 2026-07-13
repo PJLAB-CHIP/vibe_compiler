@@ -268,6 +268,13 @@
 - target undefined-symbol gate使用代码拥有的exact allowlist，并检查全部undefined symbols，而不只检查
   `wafer_*`前缀；prefix/substring命中不能替代精确成员关系。allowlist通过只证明loader ABI surface，不证明
   packet、transport、completion或board正确性。
+- all-rank target publication直接消费Q16 `ExecutableBundle`。每rank先把returned compiler-managed DDR root
+  重定向到append-only output ABI slot，再从剩余DDR alloc重算workspace high-water/alignment并追加唯一i64 arena
+  base argument；target pass只有收到显式argument index才把`wafer.ddr.offset`lower成`base + offset`。lowered entry
+  必须是与typed `KernelABISlot[]`一一对应的fixed `void(i64...)`。LLVM IR、object/CRT和`.so`只写Q17 transaction
+  staging；all-rank entry/RISC-V64 ELF/symbol/digest readback后才发布`TargetArtifactBundle`，不能用单文件atomic
+  replace冒充多rank原子性。ABI slot和workspace的最低DDR alignment来自生成memory plan的同一target policy，
+  workspace再与alloc显式alignment取最大值；不得在artifact层另造更小默认值。
 - ABI narrowing必须在compiler verifier/target preflight中完成：地址使用uint64，count/stride/iteration/enum/
   mask等普通字段适配uint32，`Data_Shape`维度适配底层uint16；CRT header/source和compiler call保持同一typed
   signature，不用宽形参加wrapper内部cast隐藏截断。

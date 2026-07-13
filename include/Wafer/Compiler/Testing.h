@@ -4,6 +4,7 @@
 #define WAFER_COMPILER_TESTING_H
 
 #include "Wafer/Compiler/Compilation.h"
+#include "Wafer/Compiler/TargetArtifact.h"
 
 namespace wafer::compiler::testing {
 
@@ -13,7 +14,14 @@ namespace wafer::compiler::testing {
 /// option.
 mlir::LogicalResult compileProgramWithRankFailure(
     CompilationRequest request, llvm::StringRef outputProgramDirectory,
-    llvm::StringRef xlaSpmdPartitionerHelper, int64_t failAfterLogicalRank,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, int64_t failAfterLogicalRank,
+    llvm::raw_ostream &diagnostics);
+
+mlir::LogicalResult compileProgramWithTargetRankFailure(
+    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, int64_t failAfterLogicalRank,
     llvm::raw_ostream &diagnostics);
 
 } // namespace wafer::compiler::testing

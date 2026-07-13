@@ -136,3 +136,15 @@
 - 修复模式：失败可返回的bundle builder只借用输入module和调用方持有的context；每rank clone在builder局部销毁，
   只有all-rank成功形成bundle时才把context所有权转入bundle。调用方声明顺序继续保证输入module先于context销毁，
   late failure测试同时检查nonzero返回、无崩溃、无final output和无staging残留。
+
+## 2026-07-13 functional tensor result 不能直接成为未绑定 target DDR allocation
+
+- 现象：Q16 accepted rank在function bufferization后把tensor result materialize为带`wafer.ddr.offset`的
+  `memref.alloc`；target alias gate无法证明return alias external argument，直接把offset当地址又缺arena base。
+- 根因：functional result、runtime output binding和compiler workspace是三个不同边界；通用bufferization只拥有SSA
+  result，不知道launch output slot，而DDR planner的offset只相对rank-local default arena。
+- 修复模式：Q17从typed result binding定位唯一returned DDR root，把该allocation全部uses重定向到append-only
+  output argument；随后仅对剩余compiler-managed DDR alloc重算workspace high-water/alignment，追加typed workspace
+  slot和i64 arena-base argument。target lowering由显式argument index生成`base + offset`，默认调用继续拒绝；不得插入
+  未lower的DDR `memref.copy`，也不得把arena-relative offset常量化为device address。slot和workspace的最低对齐必须
+  取自生成Q16 memory plan的同一target policy，再与alloc显式更强alignment取最大值，不能另写较小magic number。

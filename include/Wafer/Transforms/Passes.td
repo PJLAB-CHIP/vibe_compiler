@@ -71,6 +71,12 @@ def LowerInstrToTargetLLVMPass
       "Lower memory-planned wafer.instr ops to target LLVM CRT calls";
   let dependentDialects = ["mlir::LLVM::LLVMDialect",
                            "wafer::WaferDialect"];
+  let options = [
+    Option<"defaultDDRArenaArgumentIndex",
+           "default-ddr-arena-argument-index", "int64_t", /*default=*/"-1",
+           "Entry argument carrying the default DDR arena base; -1 rejects "
+           "compiler-managed DDR allocations">
+  ];
 }
 
 def FormLogicalGroupsPass

@@ -1,6 +1,6 @@
 # Wafer Target Conversion、CRT 和 Module Publication
 
-状态：2026-07-12按当前target实现重基线。本文拥有instruction-to-target conversion、Wafer CRT ABI、device
+状态：2026-07-13按Q17完成证据更新。本文拥有instruction-to-target conversion、Wafer CRT ABI、device
 link和近期staged target module合同。实现状态看`tasks/progress.md`。
 
 底层register/wrapper事实见`docs/wafer-register-level-instruction-spec.md`和
@@ -77,11 +77,13 @@ conversion。它不得再次执行direct group-to-tile/instr或memory planning�
 4. standard SCF→CF后，typed patterns在原block改写instruction、func/call/return、Wafer memref/view和arith/CF；
    `applyFullConversion`把Wafer/func/memref/arith/CF/SCF列为illegal，成功结果只允许module/LLVM dialect。
 5. Direct DTE在physical transport/endpoint binding和CRT support完成前以
-   `unsupported_target_transport`拒绝；没有explicit arena base binding的compiler-managed DDR allocation以
-   `unsupported_target_address`拒绝。arena-relative offset不得常量化成absolute device address。
+   `unsupported_target_transport`拒绝；默认target pass对没有explicit arena base binding的compiler-managed
+   DDR allocation仍以`unsupported_target_address`拒绝。Q17先从accepted rank重算workspace high-water，追加typed
+   i64 arena-base slot并显式传argument index，lowering才生成`base + offset`；arena-relative offset不会被常量化成
+   absolute device address。
 
-这些事实闭合Q0的formal/atomic conversion边界，但不证明Q17的all-rank staging/publication，也不证明Q19
-reference numeric。
+这些事实闭合Q0的formal/atomic conversion边界；Q17的all-rank staging/publication已由下文typed bundle闭合，
+仍不证明Q19 reference numeric。
 
 ## 4. Structure-Preserving Conversion
 
@@ -186,16 +188,20 @@ TargetLinkRequest
   -> VerifiedStagedTargetModule
 ```
 
-`VerifiedStagedTargetModule`至少携带rank、entry、staging-relative path、content digest和ABI摘要。Q17从Q16
-`ExecutableBundle`取得required rank domain；只有all-and-only modules、entry、digest和ABI摘要通过后，才构造
-最小typed `TargetArtifactBundle`并commit到Q17 final root。manifest不是该commit的前置。
+`VerifiedTargetModule`携带rank、真实entry、staging-relative path、SHA-256 content digest和typed
+`KernelABISlot[]`。Q17从Q16 `ExecutableBundle`取得required rank domain；frontend argument index与input/parameter/
+constant binding精确双射，result index精确映射append-only output slots，剩余DDR scratch形成唯一workspace slot。
+lowered entry必须是非vararg `void(i64...)`且参数数目与slots相等。只有all-and-only modules、entry、ELF RISC-V64
+format、digest和ABI摘要通过后，才构造最小typed `TargetArtifactBundle`并commit到Q17 final root。manifest不是该
+commit的前置。
 
-当前`wafer_device_link.py`已经把compile、CRT compile、link和undefined-symbol scan全部放进final
+`wafer_device_link.py`把compile、CRT compile、link和undefined-symbol scan全部放进final
 `.so`同parent的temporary staging root，并把final `.so`最后发布；失败会保留已有final bytes且不留下
 staging/debug object。显式请求的object/CRT object在成功路径上各自atomic replace，但它们还不是all-rank
-artifact bundle。Q17必须由外层transaction把link输出重定向到自己的staging root并接管typed members；
-不能把单文件“最后发布”误当成Q17多文件bundle原子性。Q18随后把已验证Q17 bundle作为整体输入，不补救
-缺rank或未验证module。
+artifact bundle。Q17外层transaction现已把每个link输出重定向到自己的`work/`和`modules/`，逐rank进行entry、
+format、fixed ABI和digest readback；rank-count=1/16全域通过后才no-replace发布目录。production transaction再把
+已验证`modules/`与Q15 grouped checkpoint放进同一不可见root后一次发布，不扫描目录恢复typed成员。Q18随后把
+已验证Q17 bundle作为整体输入，不补救缺rank或未验证module。
 
 失败规则：
 

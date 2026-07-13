@@ -22,6 +22,8 @@ class raw_ostream;
 
 namespace wafer::compiler {
 
+class TargetToolchain;
+
 /// Validated execution facts for the current single-card compiler boundary.
 /// There is deliberately no default configuration: callers must choose the
 /// one-rank or complete 16-rank domain explicitly.
@@ -80,6 +82,7 @@ struct RankProgramBinding {
   ProgramResourceRole role;
   int64_t index;
   std::string name;
+  std::string dtype;
   frontend::ProgramDistributionKind distribution;
   std::vector<int64_t> globalShape;
   std::vector<int64_t> localShape;
@@ -170,13 +173,14 @@ compileGroupedProgramToExecutableBundle(llvm::StringRef groupedProgramDirectory,
                                         ExecutionConfig executionConfig,
                                         llvm::raw_ostream &diagnostics);
 
-/// Runs the current production transaction through an atomic executable
-/// bundle. Until target-artifact delivery lands, the published directory is
-/// the verified grouped-program checkpoint; it becomes visible only after all
-/// configured ranks have passed bundle construction.
+/// Runs the production transaction through atomic executable and target-
+/// artifact bundles. The published root retains the verified grouped-program
+/// checkpoint and adds the all-rank `modules/` set only after every target
+/// module has passed link and readback.
 mlir::LogicalResult compileProgram(CompilationRequest request,
                                    llvm::StringRef outputProgramDirectory,
                                    llvm::StringRef xlaSpmdPartitionerHelper,
+                                   const TargetToolchain &targetToolchain,
                                    llvm::raw_ostream &diagnostics);
 
 } // namespace wafer::compiler

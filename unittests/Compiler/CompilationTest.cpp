@@ -1,6 +1,7 @@
 //===- CompilationTest.cpp - Typed compiler request tests ----------------===//
 
 #include "Wafer/Compiler/Compilation.h"
+#include "Wafer/Compiler/TargetArtifact.h"
 
 #include "llvm/Support/Error.h"
 #include "gtest/gtest.h"
@@ -50,6 +51,12 @@ TEST(CompilationTest, CompilationRequestOwnsSourceAndHasNoImplicitDefaults) {
       !std::is_copy_constructible_v<wafer::compiler::ExecutableBundle>);
   static_assert(
       std::is_move_constructible_v<wafer::compiler::ExecutableBundle>);
+  static_assert(
+      !std::is_default_constructible_v<wafer::compiler::TargetArtifactBundle>);
+  static_assert(
+      !std::is_copy_constructible_v<wafer::compiler::TargetArtifactBundle>);
+  static_assert(
+      std::is_move_constructible_v<wafer::compiler::TargetArtifactBundle>);
 
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(1);
   ASSERT_TRUE(static_cast<bool>(config));
