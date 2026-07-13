@@ -10,8 +10,12 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <memory>
 #include <optional>
+#include <set>
+#include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -44,16 +48,79 @@ llvm::Error forEachLogicalIndex(llvm::ArrayRef<int64_t> shape,
   return llvm::Error::success();
 }
 
+struct TransportEventKey {
+  int64_t source = -1;
+  int64_t destination = -1;
+  int64_t communication = -1;
+  uint32_t phase = 0;
+  int64_t round = -1;
+  int64_t payloadSlice = -1;
+  std::vector<int64_t> controlInstance;
+
+  bool operator<(const TransportEventKey &other) const {
+    return std::tie(source, destination, communication, phase, round,
+                    payloadSlice, controlInstance) <
+           std::tie(other.source, other.destination, other.communication,
+                    other.phase, other.round, other.payloadSlice,
+                    other.controlInstance);
+  }
+};
+
+class TransportCoordinator {
+public:
+  virtual ~TransportCoordinator() = default;
+  virtual llvm::Error issue(const TransportEventKey &key, bool isSend,
+                            uint64_t byteCount, int64_t remoteReceiverOffset,
+                            const BufferView &buffer) = 0;
+  virtual bool isComplete(const TransportEventKey &key) const = 0;
+};
+
+struct TransportToken {
+  TransportEventKey key;
+  bool isSend = false;
+};
+
+class TransportBlockedError : public llvm::ErrorInfo<TransportBlockedError> {
+public:
+  static char ID;
+  explicit TransportBlockedError(std::string message)
+      : message(std::move(message)) {}
+  void log(llvm::raw_ostream &stream) const override { stream << message; }
+  std::error_code convertToErrorCode() const override {
+    return llvm::inconvertibleErrorCode();
+  }
+  std::string message;
+};
+
+char TransportBlockedError::ID;
+
+struct ProgramRunAttempt {
+  std::optional<ReferenceExecutionResult> result;
+  std::string blockedReason;
+};
+
 class ProgramInterpreter {
 public:
   ProgramInterpreter(const ReferenceProgram::Impl &program,
-                     ReferenceExecutionOptions options)
+                     ReferenceExecutionOptions options,
+                     TransportCoordinator *transport = nullptr)
       : program(program), spmArena(std::make_shared<Storage>()),
         ddrArena(std::make_shared<Storage>()), options(options),
-        stochasticState(options.stochasticSeed.value_or(0)) {}
+        stochasticState(options.stochasticSeed.value_or(0)),
+        transport(transport) {}
 
   llvm::Expected<ReferenceExecutionResult>
   run(llvm::ArrayRef<ReferenceInputBinding> inputs) {
+    auto attempt = runUntilBlocked(inputs);
+    if (!attempt)
+      return attempt.takeError();
+    if (!attempt->result)
+      return invalid("single-rank reference execution blocked on transport");
+    return std::move(*attempt->result);
+  }
+
+  llvm::Expected<ProgramRunAttempt>
+  runUntilBlocked(llvm::ArrayRef<ReferenceInputBinding> inputs) {
     if (program.entryFunction >= program.functions.size())
       return invalid("projected entry function is outside the function graph");
     if (program.usesStochasticRounding && !options.stochasticSeed)
@@ -63,8 +130,17 @@ public:
       return std::move(error);
     auto returned =
         executeControlFlow(program.functions[program.entryFunction].body);
-    if (!returned)
-      return returned.takeError();
+    if (!returned) {
+      llvm::Error error = returned.takeError();
+      ProgramRunAttempt attempt;
+      error = llvm::handleErrors(std::move(error),
+                                 [&](const TransportBlockedError &blocked) {
+                                   attempt.blockedReason = blocked.message;
+                                 });
+      if (error)
+        return std::move(error);
+      return attempt;
+    }
 
     std::vector<ReferenceOutputBinding> outputs;
     for (const RankProgramBinding &binding : program.programBindings) {
@@ -81,8 +157,10 @@ public:
         return tensor.takeError();
       outputs.push_back({binding.index, std::move(*tensor)});
     }
-    return ReferenceExecutionResultBuilder::make(program.logicalRank,
-                                                 std::move(outputs));
+    ProgramRunAttempt attempt;
+    attempt.result = ReferenceExecutionResultBuilder::make(program.logicalRank,
+                                                           std::move(outputs));
+    return attempt;
   }
 
 private:
@@ -276,6 +354,8 @@ private:
         if (!condition)
           return condition.takeError();
         std::vector<ValueId> yielded;
+        controlInstance.push_back(kIfControlMarker);
+        controlInstance.push_back(*condition ? 1 : 0);
         if (*condition) {
           auto values = executeStructuredBlock(*command.body);
           if (!values)
@@ -287,6 +367,7 @@ private:
             return values.takeError();
           yielded = std::move(*values);
         }
+        controlInstance.resize(controlInstance.size() - 2);
         if (yielded.size() != command.results.size())
           return invalid("projected scf.if result arity mismatch");
         if (llvm::Error error = assignValues(command.results, yielded))
@@ -318,11 +399,14 @@ private:
           inductionValue.integer = llvm::APInt(
               width, static_cast<uint64_t>(induction), /*isSigned=*/true);
           scalars[command.inductionArgument] = std::move(inductionValue);
+          controlInstance.push_back(kForControlMarker);
+          controlInstance.push_back(induction);
           if (llvm::Error error = writeValues(command.iterArguments, carried))
             return std::move(error);
           auto yielded = executeStructuredBlock(*command.body);
           if (!yielded)
             return yielded.takeError();
+          controlInstance.resize(controlInstance.size() - 2);
           auto next = readValues(*yielded);
           if (!next)
             return next.takeError();
@@ -384,6 +468,55 @@ private:
         break;
       case CommandKind::LocalFence:
         break;
+      case CommandKind::DTESend:
+      case CommandKind::DTERecv: {
+        if (!transport)
+          return unsupported("Direct DTE requires multi-rank execution");
+        auto buffer = lookup(command.source);
+        if (!buffer)
+          return buffer.takeError();
+        const bool isSend = command.kind == CommandKind::DTESend;
+        TransportEventKey key{isSend ? program.logicalRank : command.peer,
+                              isSend ? command.peer : program.logicalRank,
+                              command.messageCommunication,
+                              static_cast<uint32_t>(command.messagePhase),
+                              command.messageRound,
+                              command.messagePayloadSlice,
+                              controlInstance};
+        if (llvm::Error error =
+                transport->issue(key, isSend, command.byteCount,
+                                 command.remoteReceiverOffset, *buffer))
+          return std::move(error);
+        tokens[command.result] = TransportToken{std::move(key), isSend};
+        break;
+      }
+      case CommandKind::DTEWait: {
+        std::vector<TransportToken> blocked;
+        for (ValueId tokenId : command.inputs) {
+          auto token = tokens.find(tokenId);
+          if (token == tokens.end())
+            return invalid("Direct DTE wait token is unavailable");
+          if (!transport || !transport->isComplete(token->second.key))
+            blocked.push_back(token->second);
+        }
+        if (!blocked.empty()) {
+          std::string reason;
+          llvm::raw_string_ostream stream(reason);
+          stream << "rank " << program.logicalRank << " waits for";
+          for (const TransportToken &token : blocked) {
+            const TransportEventKey &key = token.key;
+            stream << " [" << key.source << "->" << key.destination
+                   << " token=" << (token.isSend ? "send" : "recv")
+                   << " communication=" << key.communication
+                   << " phase=" << key.phase << " round=" << key.round
+                   << " slice=" << key.payloadSlice << " control=[";
+            llvm::interleaveComma(key.controlInstance, stream);
+            stream << "]]";
+          }
+          return llvm::make_error<TransportBlockedError>(stream.str());
+        }
+        break;
+      }
       case CommandKind::Branch:
         return ControlTransfer{TransferKind::Branch, command.successor,
                                command.inputs};
@@ -816,9 +949,274 @@ private:
   std::shared_ptr<Storage> ddrArena;
   ReferenceExecutionOptions options;
   uint64_t stochasticState;
+  TransportCoordinator *transport = nullptr;
   llvm::DenseMap<ValueId, BufferView> buffers;
   llvm::DenseMap<ValueId, Scalar> scalars;
+  llvm::DenseMap<ValueId, TransportToken> tokens;
+  std::vector<int64_t> controlInstance;
+
+  static constexpr int64_t kIfControlMarker =
+      std::numeric_limits<int64_t>::min();
+  static constexpr int64_t kForControlMarker =
+      std::numeric_limits<int64_t>::min() + 1;
 };
+
+class DeterministicTransportCoordinator final : public TransportCoordinator {
+public:
+  void beginReplay(int64_t logicalRank) {
+    currentRank = logicalRank;
+    replaySends.clear();
+    replayRecvs.clear();
+  }
+
+  llvm::Error issue(const TransportEventKey &key, bool isSend,
+                    uint64_t byteCount, int64_t remoteReceiverOffset,
+                    const BufferView &buffer) override {
+    if ((isSend ? key.source : key.destination) != currentRank)
+      return invalid("Direct DTE issue rank disagrees with event endpoint");
+    std::set<TransportEventKey> &seen = isSend ? replaySends : replayRecvs;
+    if (!seen.insert(key).second)
+      return invalid(isSend ? "duplicate Direct DTE send instance"
+                            : "duplicate Direct DTE recv instance");
+    if (byteCount == 0 ||
+        byteCount > static_cast<uint64_t>(buffer.physicalBytes))
+      return invalid("Direct DTE byte count exceeds projected buffer");
+    if (buffer.base < 0 || buffer.viewOffset < 0 ||
+        buffer.base > std::numeric_limits<int64_t>::max() - buffer.viewOffset)
+      return invalid("Direct DTE buffer address overflows");
+    const int64_t absolute = buffer.base + buffer.viewOffset;
+    if (absolute > static_cast<int64_t>(buffer.storage->bytes.size()) ||
+        byteCount >
+            buffer.storage->bytes.size() - static_cast<size_t>(absolute))
+      return invalid("Direct DTE buffer exceeds rank-local storage");
+
+    EventState &state = events[key];
+    if (isSend) {
+      std::vector<uint8_t> payload(byteCount);
+      std::memcpy(payload.data(), buffer.storage->bytes.data() + absolute,
+                  byteCount);
+      if (!state.sendIssued) {
+        state.sendIssued = true;
+        state.sendBytes = byteCount;
+        state.senderRemoteOffset = remoteReceiverOffset;
+        state.payload = std::move(payload);
+        madeProgress = true;
+      } else if (state.sendBytes != byteCount ||
+                 state.senderRemoteOffset != remoteReceiverOffset ||
+                 state.payload != payload) {
+        return invalid("replayed Direct DTE send is not deterministic");
+      }
+      return llvm::Error::success();
+    }
+
+    if (absolute != remoteReceiverOffset)
+      return invalid(
+          "Direct DTE recv address disagrees with accepted remote offset");
+    if (!state.recvIssued) {
+      state.recvIssued = true;
+      state.recvBytes = byteCount;
+      state.receiverOffset = absolute;
+      madeProgress = true;
+    } else if (state.recvBytes != byteCount ||
+               state.receiverOffset != absolute) {
+      return invalid("replayed Direct DTE recv is not deterministic");
+    }
+    if (state.transferred) {
+      if (state.payload.size() != byteCount)
+        return invalid("completed Direct DTE payload size is inconsistent");
+      std::memcpy(buffer.storage->bytes.data() + absolute, state.payload.data(),
+                  byteCount);
+    }
+    return llvm::Error::success();
+  }
+
+  bool isComplete(const TransportEventKey &key) const override {
+    auto found = events.find(key);
+    return found != events.end() && found->second.transferred;
+  }
+
+  llvm::Error matchReadyEvents() {
+    for (auto &[key, state] : events) {
+      if (state.transferred || !state.sendIssued || !state.recvIssued)
+        continue;
+      if (state.sendBytes != state.recvBytes)
+        return invalid("matched Direct DTE endpoints disagree on byte count");
+      if (state.senderRemoteOffset != state.receiverOffset)
+        return invalid(
+            "matched Direct DTE endpoints disagree on receiver address");
+      state.transferred = true;
+      madeProgress = true;
+    }
+    return llvm::Error::success();
+  }
+
+  bool takeProgress() {
+    bool result = madeProgress;
+    madeProgress = false;
+    return result;
+  }
+
+  void describePending(llvm::raw_ostream &stream) const {
+    for (const auto &[key, state] : events) {
+      if (state.transferred)
+        continue;
+      stream << " [" << key.source << "->" << key.destination
+             << " communication=" << key.communication << " phase=" << key.phase
+             << " round=" << key.round << " slice=" << key.payloadSlice
+             << " control=[";
+      llvm::interleaveComma(key.controlInstance, stream);
+      stream << "]"
+             << " send=" << (state.sendIssued ? "issued" : "missing")
+             << " recv=" << (state.recvIssued ? "issued" : "missing") << "]";
+    }
+  }
+
+private:
+  struct EventState {
+    bool sendIssued = false;
+    bool recvIssued = false;
+    bool transferred = false;
+    uint64_t sendBytes = 0;
+    uint64_t recvBytes = 0;
+    int64_t senderRemoteOffset = -1;
+    int64_t receiverOffset = -1;
+    std::vector<uint8_t> payload;
+  };
+
+  int64_t currentRank = -1;
+  bool madeProgress = false;
+  std::set<TransportEventKey> replaySends;
+  std::set<TransportEventKey> replayRecvs;
+  std::map<TransportEventKey, EventState> events;
+};
+
+llvm::Expected<std::vector<ReferenceGlobalOutputBinding>>
+reassembleOutputs(llvm::ArrayRef<const ReferenceProgram::Impl *> programs,
+                  llvm::ArrayRef<ReferenceExecutionResult> rankResults) {
+  if (programs.empty() || programs.size() != rankResults.size())
+    return invalid("multi-rank output domain is incomplete");
+
+  std::vector<const RankProgramBinding *> firstOutputs;
+  for (const RankProgramBinding &binding : programs.front()->programBindings)
+    if (binding.role == ProgramResourceRole::Output)
+      firstOutputs.push_back(&binding);
+  llvm::sort(firstOutputs, [](const RankProgramBinding *left,
+                              const RankProgramBinding *right) {
+    return left->index < right->index;
+  });
+  for (const ReferenceProgram::Impl *program : programs) {
+    size_t outputCount = llvm::count_if(
+        program->programBindings, [](const RankProgramBinding &binding) {
+          return binding.role == ProgramResourceRole::Output;
+        });
+    if (outputCount != firstOutputs.size())
+      return invalid("rank output binding domain disagrees across bundle");
+  }
+
+  std::vector<ReferenceGlobalOutputBinding> globals;
+  for (const RankProgramBinding *first : firstOutputs) {
+    std::vector<const RankProgramBinding *> bindings;
+    std::vector<const ReferenceTensor *> tensors;
+    for (size_t rank = 0; rank < programs.size(); ++rank) {
+      const RankProgramBinding *binding = nullptr;
+      for (const RankProgramBinding &candidate :
+           programs[rank]->programBindings)
+        if (candidate.role == ProgramResourceRole::Output &&
+            candidate.index == first->index) {
+          if (binding)
+            return invalid("rank contains duplicate output binding index");
+          binding = &candidate;
+        }
+      if (!binding || binding->name != first->name ||
+          binding->dtype != first->dtype ||
+          binding->globalShape != first->globalShape ||
+          binding->distribution != first->distribution)
+        return invalid("rank output metadata disagrees across bundle");
+      const ReferenceTensor *tensor = nullptr;
+      for (const ReferenceOutputBinding &output :
+           rankResults[rank].getOutputs())
+        if (output.index == first->index) {
+          if (tensor)
+            return invalid("rank result contains duplicate output index");
+          tensor = &output.tensor;
+        }
+      if (!tensor || tensor->getDType() != binding->dtype ||
+          tensor->getShape() != llvm::ArrayRef<int64_t>(binding->localShape))
+        return invalid("rank result disagrees with typed output slice");
+      bindings.push_back(binding);
+      tensors.push_back(tensor);
+    }
+
+    if (first->distribution == frontend::ProgramDistributionKind::Replicated) {
+      if (first->localShape != first->globalShape)
+        return invalid("replicated output does not cover global shape");
+      for (const ReferenceTensor *tensor : llvm::drop_begin(tensors))
+        if (tensor->getBytes() != tensors.front()->getBytes())
+          return invalid("replicated rank outputs are not byte-identical");
+      auto global = ReferenceTensor::create(first->dtype, first->globalShape,
+                                            tensors.front()->getBytes());
+      if (!global)
+        return global.takeError();
+      globals.push_back({first->index, first->name, std::move(*global)});
+      continue;
+    }
+
+    auto elementBytes = getCompactByteCount(first->dtype, {1});
+    auto globalBytes = getCompactByteCount(first->dtype, first->globalShape);
+    if (!elementBytes || !globalBytes || *elementBytes <= 0)
+      return invalid("partitioned output has unsupported tensor type");
+    const int64_t globalElements = *globalBytes / *elementBytes;
+    std::vector<uint8_t> bytes(*globalBytes, 0);
+    std::vector<uint8_t> coverage(globalElements, 0);
+    for (size_t rankIndex = 0; rankIndex < bindings.size(); ++rankIndex) {
+      const RankProgramBinding *binding = bindings[rankIndex];
+      const ReferenceTensor *tensor = tensors[rankIndex];
+      const auto &slice = binding->slice;
+      const size_t rank = first->globalShape.size();
+      if (slice.logicalRank != programs[rankIndex]->logicalRank ||
+          binding->localShape != slice.sizes || slice.offsets.size() != rank ||
+          slice.sizes.size() != rank || slice.strides.size() != rank)
+        return invalid("partitioned output slice has inconsistent rank");
+      int64_t localLinear = 0;
+      if (llvm::Error error = forEachLogicalIndex(
+              binding->localShape,
+              [&](llvm::ArrayRef<int64_t> local) -> llvm::Error {
+                int64_t globalLinear = 0;
+                for (size_t dim = 0; dim < rank; ++dim) {
+                  if (slice.offsets[dim] < 0 || slice.strides[dim] <= 0 ||
+                      local[dim] < 0 ||
+                      local[dim] > (std::numeric_limits<int64_t>::max() -
+                                    slice.offsets[dim]) /
+                                       slice.strides[dim])
+                    return invalid("partitioned output slice overflows");
+                  int64_t coordinate =
+                      slice.offsets[dim] + local[dim] * slice.strides[dim];
+                  if (coordinate < 0 || coordinate >= first->globalShape[dim])
+                    return invalid("partitioned output slice is out of bounds");
+                  globalLinear =
+                      globalLinear * first->globalShape[dim] + coordinate;
+                }
+                if (coverage[globalLinear]++)
+                  return invalid("partitioned output slices overlap");
+                std::memcpy(bytes.data() + globalLinear * *elementBytes,
+                            tensor->getBytes().data() +
+                                localLinear * *elementBytes,
+                            *elementBytes);
+                ++localLinear;
+                return llvm::Error::success();
+              }))
+        return std::move(error);
+    }
+    if (llvm::is_contained(coverage, uint8_t{0}))
+      return invalid("partitioned output slices do not cover global tensor");
+    auto global =
+        ReferenceTensor::create(first->dtype, first->globalShape, bytes);
+    if (!global)
+      return global.takeError();
+    globals.push_back({first->index, first->name, std::move(*global)});
+  }
+  return globals;
+}
 
 } // namespace
 
@@ -827,6 +1225,76 @@ interpretReferenceProgram(const ReferenceProgram::Impl &program,
                           llvm::ArrayRef<ReferenceInputBinding> inputs,
                           ReferenceExecutionOptions options) {
   return ProgramInterpreter(program, options).run(inputs);
+}
+
+llvm::Expected<ReferenceMultiRankExecutionResult> interpretReferencePrograms(
+    llvm::ArrayRef<const ReferenceProgram::Impl *> programs,
+    llvm::ArrayRef<ReferenceRankInvocation> invocations,
+    ReferenceExecutionOptions options) {
+  if (programs.size() <= 1 || programs.size() != invocations.size())
+    return invalid("multi-rank invocation domain is incomplete");
+  std::vector<const ReferenceRankInvocation *> byRank(programs.size(), nullptr);
+  for (const ReferenceRankInvocation &invocation : invocations) {
+    if (invocation.logicalRank < 0 ||
+        invocation.logicalRank >= static_cast<int64_t>(programs.size()) ||
+        byRank[invocation.logicalRank])
+      return invalid("multi-rank invocation domain is not all-and-only");
+    byRank[invocation.logicalRank] = &invocation;
+  }
+  for (auto [rank, program] : llvm::enumerate(programs)) {
+    if (!program || program->logicalRank != static_cast<int64_t>(rank) ||
+        program->transportContract != TransportContract::DirectDTE)
+      return invalid("projected Direct DTE rank domain is not canonical");
+  }
+
+  DeterministicTransportCoordinator coordinator;
+  std::vector<std::optional<ReferenceExecutionResult>> completed(
+      programs.size());
+  std::vector<std::string> blocked(programs.size());
+  size_t remaining = programs.size();
+  while (remaining != 0) {
+    coordinator.takeProgress();
+    bool roundProgress = false;
+    for (size_t rank = 0; rank < programs.size(); ++rank) {
+      if (completed[rank])
+        continue;
+      coordinator.beginReplay(static_cast<int64_t>(rank));
+      ProgramInterpreter interpreter(*programs[rank], options, &coordinator);
+      auto attempt = interpreter.runUntilBlocked(byRank[rank]->inputs);
+      if (!attempt)
+        return attempt.takeError();
+      blocked[rank] = attempt->blockedReason;
+      if (attempt->result) {
+        completed[rank] = std::move(*attempt->result);
+        --remaining;
+        roundProgress = true;
+      }
+    }
+    if (llvm::Error error = coordinator.matchReadyEvents())
+      return std::move(error);
+    roundProgress |= coordinator.takeProgress();
+    if (remaining != 0 && !roundProgress) {
+      std::string message;
+      llvm::raw_string_ostream stream(message);
+      stream << "deterministic Direct DTE no-progress/deadlock:";
+      for (size_t rank = 0; rank < blocked.size(); ++rank)
+        if (!completed[rank])
+          stream << " {rank=" << rank << " reason=" << blocked[rank] << "}";
+      stream << " pending=";
+      coordinator.describePending(stream);
+      return invalid(stream.str());
+    }
+  }
+
+  std::vector<ReferenceExecutionResult> rankResults;
+  rankResults.reserve(completed.size());
+  for (std::optional<ReferenceExecutionResult> &result : completed)
+    rankResults.push_back(std::move(*result));
+  auto globals = reassembleOutputs(programs, rankResults);
+  if (!globals)
+    return globals.takeError();
+  return ReferenceMultiRankExecutionResultBuilder::make(std::move(rankResults),
+                                                        std::move(*globals));
 }
 
 } // namespace wafer::compiler::reference_detail

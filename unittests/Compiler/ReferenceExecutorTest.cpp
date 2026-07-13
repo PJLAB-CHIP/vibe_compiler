@@ -29,6 +29,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "gtest/gtest.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -144,6 +145,25 @@ shapedBoundary(int64_t index, llvm::ArrayRef<int64_t> shape) {
   binding.localShape.assign(shape.begin(), shape.end());
   binding.dtype = "f32";
   binding.rankSlices.push_back(singleRankSlice(shape));
+  return binding;
+}
+
+wafer::frontend::ProgramBoundaryBinding partitionedBoundary(int64_t index) {
+  wafer::frontend::ProgramBoundaryBinding binding;
+  binding.index = index;
+  binding.distribution = wafer::frontend::ProgramDistributionKind::Partitioned;
+  binding.globalShape = {64};
+  binding.localShape = {4};
+  binding.dtype = "f32";
+  for (int64_t rank = 0; rank < 16; ++rank) {
+    wafer::frontend::ProgramRankSlice slice;
+    slice.logicalRank = rank;
+    slice.replicaId = 0;
+    slice.offsets = {rank * 4};
+    slice.sizes = {4};
+    slice.strides = {1};
+    binding.rankSlices.push_back(std::move(slice));
+  }
   return binding;
 }
 
@@ -1115,6 +1135,199 @@ module {
   ASSERT_EQ(actual.size(), oracle.output.size());
   for (auto [value, reference] : llvm::zip_equal(actual, oracle.output))
     EXPECT_NEAR(value, reference, 1.0e-5f);
+}
+
+TEST(ReferenceExecutorTest,
+     ExecutesAcceptedDirectDTEDomainAndReassemblesPartitionedOutput) {
+  mlir::DialectRegistry registry;
+  registry.insert<mlir::arith::ArithDialect,
+                  mlir::bufferization::BufferizationDialect,
+                  mlir::cf::ControlFlowDialect, mlir::func::FuncDialect,
+                  mlir::linalg::LinalgDialect, mlir::math::MathDialect,
+                  mlir::memref::MemRefDialect, mlir::scf::SCFDialect,
+                  mlir::tensor::TensorDialect>();
+  wafer::registerAllDialects(registry);
+  mlir::arith::registerBufferizableOpInterfaceExternalModels(registry);
+  mlir::bufferization::func_ext::registerBufferizableOpInterfaceExternalModels(
+      registry);
+  mlir::linalg::registerBufferizableOpInterfaceExternalModels(registry);
+  mlir::scf::registerBufferizableOpInterfaceExternalModels(registry);
+  mlir::tensor::registerBufferizableOpInterfaceExternalModels(registry);
+  auto context = std::make_shared<mlir::MLIRContext>(registry);
+  context->loadAllAvailableDialects();
+
+  auto grouped = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  wafer.target.topology @default {card_grid = array<i64: 1, 1>, card_interconnect = "mesh", tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @default_mesh {axes = ["rank"], endpoints = array<i64>, policy = "all_available", shape = array<i64: 16>, topology = @default}
+  func.func @main(%input: tensor<4xf32>) -> tensor<4xf32> {
+    %c0 = arith.constant 0 : index
+    %c2 = arith.constant 2 : index
+    %c1 = arith.constant 1 : index
+    %result = scf.for %iteration = %c0 to %c2 step %c1
+        iter_args(%current = %input) -> tensor<4xf32> {
+      %out = tensor.empty() : tensor<4xf32>
+      %group = wafer.group ins(%current : tensor<4xf32>)
+          outs(%out : tensor<4xf32>) {
+      ^bb0(%arg0: tensor<4xf32>, %arg1: tensor<4xf32>):
+        %permuted = wafer.linalg_ext.collective.collective_permute
+            ins(%arg0 : tensor<4xf32>) outs(%arg1 : tensor<4xf32>)
+            {source_target_pairs = array<i64: 0, 1, 1, 0, 2, 3, 3, 2,
+                                              4, 5, 5, 4, 6, 7, 7, 6,
+                                              8, 9, 9, 8, 10, 11, 11, 10,
+                                              12, 13, 13, 12, 14, 15, 15, 14>,
+             channel_id = 91 : i64} -> tensor<4xf32>
+        wafer.group.yield %permuted : tensor<4xf32>
+      } : tensor<4xf32>
+      scf.yield %group : tensor<4xf32>
+    }
+    return %result : tensor<4xf32>
+  }
+}
+)mlir",
+      mlir::ParserConfig(context.get()));
+  ASSERT_TRUE(grouped);
+
+  wafer::frontend::FrontendProgramVerificationResult program;
+  program.logicalRankCount = 16;
+  program.programUserInputCount = 1;
+  program.distributedInputs = {partitionedBoundary(0)};
+  program.distributedOutputs = {partitionedBoundary(0)};
+  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(16);
+  if (!config)
+    FAIL() << llvm::toString(config.takeError());
+  std::string diagnosticsText;
+  llvm::raw_string_ostream diagnostics(diagnosticsText);
+  auto bundle = wafer::compiler::detail::buildExecutableBundle(
+      context, *grouped, std::move(program), *config, diagnostics,
+      std::nullopt);
+  if (!bundle)
+    FAIL() << diagnosticsText << llvm::toString(bundle.takeError());
+  grouped = nullptr;
+  ASSERT_EQ(bundle->getRankExecutables().size(), 16u);
+  for (const wafer::compiler::RankExecutable &rank :
+       bundle->getRankExecutables())
+    EXPECT_EQ(rank.getTransportContract(),
+              wafer::compiler::TransportContract::DirectDTE);
+
+  std::vector<wafer::compiler::ReferenceRankInvocation> invocations;
+  for (int64_t rank = 0; rank < 16; ++rank) {
+    std::vector<float> values;
+    for (int64_t element = 0; element < 4; ++element)
+      values.push_back(static_cast<float>(rank * 4 + element));
+    auto input =
+        wafer::compiler::ReferenceTensor::create("f32", {4}, bytesOf(values));
+    ASSERT_TRUE(static_cast<bool>(input));
+    wafer::compiler::ReferenceRankInvocation invocation;
+    invocation.logicalRank = rank;
+    invocation.inputs.push_back(
+        {wafer::compiler::ProgramResourceRole::UserInput, 0,
+         std::move(*input)});
+    invocations.push_back(std::move(invocation));
+  }
+  std::reverse(invocations.begin(), invocations.end());
+  auto result = wafer::compiler::executeReferenceBundle(*bundle, invocations);
+  if (!result)
+    FAIL() << llvm::toString(result.takeError());
+  ASSERT_EQ(result->getRankResults().size(), 16u);
+  EXPECT_EQ(
+      floatsOf(result->getRankResults()[0].getOutputs()[0].tensor.getBytes()),
+      (std::vector<float>{0, 1, 2, 3}));
+  EXPECT_EQ(
+      floatsOf(result->getRankResults()[1].getOutputs()[0].tensor.getBytes()),
+      (std::vector<float>{4, 5, 6, 7}));
+  ASSERT_EQ(result->getGlobalOutputs().size(), 1u);
+  std::vector<float> expectedGlobal;
+  for (int64_t rank = 0; rank < 16; ++rank)
+    for (int64_t element = 0; element < 4; ++element)
+      expectedGlobal.push_back(static_cast<float>(rank * 4 + element));
+  EXPECT_EQ(floatsOf(result->getGlobalOutputs()[0].tensor.getBytes()),
+            expectedGlobal);
+
+  const int64_t savedLogicalRank = invocations[1].logicalRank;
+  invocations[1].logicalRank = invocations[0].logicalRank;
+  auto duplicateDomain =
+      wafer::compiler::executeReferenceBundle(*bundle, invocations);
+  EXPECT_FALSE(static_cast<bool>(duplicateDomain));
+  if (!duplicateDomain)
+    EXPECT_NE(llvm::toString(duplicateDomain.takeError()).find("all-and-only"),
+              std::string::npos);
+
+  invocations[1].logicalRank = savedLogicalRank;
+  wafer::InstrDTERecvOp rankZeroRecv;
+  bundle->getRankExecutables()[0].getModule().walk(
+      [&](wafer::InstrDTERecvOp recv) {
+        if (!rankZeroRecv)
+          rankZeroRecv = recv;
+      });
+  ASSERT_TRUE(rankZeroRecv);
+  mlir::IntegerAttr originalBytes = rankZeroRecv.getBytesAttr();
+  mlir::IntegerAttr originalPeer = rankZeroRecv.getPeerAttr();
+
+  rankZeroRecv->setAttr("bytes",
+                        mlir::IntegerAttr::get(originalBytes.getType(), 8));
+  auto wrongBytes =
+      wafer::compiler::executeReferenceBundle(*bundle, invocations);
+  EXPECT_FALSE(static_cast<bool>(wrongBytes));
+  if (!wrongBytes)
+    EXPECT_NE(llvm::toString(wrongBytes.takeError()).find("byte count"),
+              std::string::npos);
+  rankZeroRecv->setAttr("bytes", originalBytes);
+
+  rankZeroRecv->setAttr("peer",
+                        mlir::IntegerAttr::get(originalPeer.getType(), 2));
+  auto unmatched =
+      wafer::compiler::executeReferenceBundle(*bundle, invocations);
+  EXPECT_FALSE(static_cast<bool>(unmatched));
+  if (!unmatched) {
+    std::string message = llvm::toString(unmatched.takeError());
+    EXPECT_NE(message.find("no-progress/deadlock"), std::string::npos);
+    EXPECT_NE(message.find("rank=0"), std::string::npos);
+    EXPECT_NE(message.find("send=missing"), std::string::npos);
+  }
+  rankZeroRecv->setAttr("peer", originalPeer);
+
+  wafer::InstrDTEWaitOp rankZeroWait;
+  bundle->getRankExecutables()[0].getModule().walk(
+      [&](wafer::InstrDTEWaitOp wait) {
+        if (!rankZeroWait)
+          rankZeroWait = wait;
+      });
+  ASSERT_TRUE(rankZeroWait);
+  mlir::Operation *firstIssue = nullptr;
+  bundle->getRankExecutables()[0].getModule().walk(
+      [&](mlir::Operation *operation) {
+        if (!firstIssue &&
+            mlir::isa<wafer::InstrDTESendOp, wafer::InstrDTERecvOp>(operation))
+          firstIssue = operation;
+      });
+  ASSERT_NE(firstIssue, nullptr);
+  mlir::OpBuilder earlyWaitBuilder(firstIssue);
+  earlyWaitBuilder.setInsertionPoint(firstIssue);
+  mlir::Operation *earlyWait =
+      earlyWaitBuilder.clone(*rankZeroWait.getOperation());
+  auto unmatchedToken =
+      wafer::compiler::executeReferenceBundle(*bundle, invocations);
+  EXPECT_FALSE(static_cast<bool>(unmatchedToken));
+  if (!unmatchedToken) {
+    std::string message = llvm::toString(unmatchedToken.takeError());
+    EXPECT_NE(message.find("operand has no projected SSA definition"),
+              std::string::npos)
+        << message;
+  }
+  earlyWait->erase();
+
+  mlir::OpBuilder builder(rankZeroRecv);
+  builder.setInsertionPointAfter(rankZeroRecv);
+  builder.clone(*rankZeroRecv.getOperation());
+  auto duplicateRecv =
+      wafer::compiler::executeReferenceBundle(*bundle, invocations);
+  EXPECT_FALSE(static_cast<bool>(duplicateRecv));
+  if (!duplicateRecv)
+    EXPECT_NE(llvm::toString(duplicateRecv.takeError())
+                  .find("duplicate Direct DTE recv instance"),
+              std::string::npos);
 }
 
 } // namespace

@@ -110,7 +110,7 @@ manifest/package late failure不发布partial package。
 
 ## Checkpoint 7: Reference Core, Transport Activation And Vertical Gates
 
-状态：进行中；Q19 core和Q16.T已完成，当前Q19.M为唯一doing，Q20/Q21按直接前置blocked。
+状态：进行中；Q19 core、Q16.T和Q19.M已完成，当前Q20为唯一doing，Q21按直接前置blocked。
 
 - Q19 core只接受Q16 `ExecutableBundle`和typed role/index invocation tensors，先把accepted rank all-and-only投影为
   invocation-local immutable `ReferenceProgram`，再执行memref/instruction/control-flow；projection不序列化、不进入
@@ -139,8 +139,10 @@ manifest/package late failure不发布partial package。
   `DirectDTEBindingAttr`与`TransportContract::DirectDTE`。CRT opaque event/status lowering、atomic target publication、
   schema-v2 manifest和no-card runtime requirements已同步闭合；identity不从op顺序或名字猜，package不复制
   p2p body或per-op binding。
-- Q19.M只消费Q16.T accepted bundle，以deterministic event scheduler执行DTE send/recv/wait并检测peer mismatch、
-  duplicate recv、unmatched token和no-progress/deadlock；禁止手写DTE module绕过bundle gate。
+- Q19.M只消费Q16.T accepted bundle，已以logical-rank canonical order确定性重放每rank到DTE wait；
+  send payload snapshot与matched recv注入不共享rank memory，dynamic control instance只来自structured branch/loop语义。
+  16-rank两轮scf.for pairwise permute和global typed-slice重组已通过，peer/bytes/duplicate recv/unmatched token/
+  no-progress均fail closed；没有手写DTE module绕过bundle gate。
 - Q20/Q21真实exporter固定source revision/config/seed/dtype/shape和独立NumPy CPU reference；gate顺序仍为
   rank-count=1 linear/MLP、16-rank linear/MLP、16-rank tiny Llama。
 

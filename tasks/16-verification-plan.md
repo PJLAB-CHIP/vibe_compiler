@@ -390,6 +390,19 @@ structured no-progress/deadlock failure；不能靠timeout、线程调度或map�
 
 比较完整输出tensor，不只比较shape/digest。tolerance按dtype/op定义并记录；整数/bitwise要求exact。
 
+Q19.M已按该合同闭合：public bundle-level API先将全部rank投影为immutable program，然后才校验/导入
+invocation tensors。scheduler每轮按logical rank顺序从当前inputs确定性重放到第一个未完成wait；
+send对当时payload做snapshot，recv在typed message、peer、bytes、accepted remote offset和structured dynamic
+control instance一致后于下轮注入重建的rank-local SPM。replay还会核对已见send/recv的payload和address，
+因此未引入可序列化schedule、thread timing或影子memory。global output只从`RankProgramBinding` typed distribution/
+slice重组；replicated必须byte-identical，partitioned必须all-and-only覆盖global coordinates。
+
+主线component gate由真实group-to-bundle pipeline生成16个accepted rank，在同一`scf.for`两次动态执行pairwise
+collective-permute；两轮后完整64-element partitioned global f32 tensor按typed slices恢复，输入invocation顺序不影响
+canonical result。负例覆盖invocation domain重复、bytes mismatch、unmatched endpoint/token、duplicate recv和包含
+rank/token/message/control/pending endpoint的no-progress/deadlock诊断。source-backed linear/MLP的rank-count=1/16
+global CPU differential仍只由Q20拥有。
+
 当前单rankcheckpoint已经建立`ExecutableBundle + logicalRank + typed role/index tensors`入口。实现按accepted
 DDR/SPM offset建立独立arena，按descriptor执行alias-safe movement，并复用Wafer physical layout helper完成logical
 element访问；group经过production selection/lowering后形成的residual MLP已覆盖RDMA、WDMA、tensor/Cx movement、
@@ -426,7 +439,7 @@ immutable interpreter和薄public orchestration；projection是唯一读取accep
 numeric/storage API，内部对象仍不序列化、不进入bundle/package。Q19 core已按上述accepted capability完成；
 DTE multi-rank已拆给Q19.M；Q16.T accepted transport、target CRT/status和runtime requirement前置已闭合。
 当前transcendental仍使用host实现，也不属于已闭合的host-independent numeric gate。
-本批`check-wafer`新鲜执行41个C++ unit和235个lit（234 pass、1个feature-inverse unsupported），CTest 3/3通过；
+本批`check-wafer`新鲜执行42个C++ unit和235个lit（234 pass、1个feature-inverse unsupported），CTest 3/3通过；
 unsupported项仍是禁用importer feature的反向gate，不覆盖Q19 mandatory path。
 
 ## 10. Q20/Q21 Vertical Workload Gates

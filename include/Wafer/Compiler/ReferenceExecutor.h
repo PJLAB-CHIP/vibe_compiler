@@ -52,6 +52,19 @@ struct ReferenceOutputBinding {
   ReferenceTensor tensor;
 };
 
+/// Complete invocation inputs for one logical rank. Multi-rank execution
+/// requires an all-and-only canonical logical-rank domain.
+struct ReferenceRankInvocation {
+  int64_t logicalRank;
+  std::vector<ReferenceInputBinding> inputs;
+};
+
+struct ReferenceGlobalOutputBinding {
+  int64_t index;
+  std::string name;
+  ReferenceTensor tensor;
+};
+
 /// Invocation policy that is not encoded by accepted instruction IR. An
 /// explicit seed is required only when the projected program uses stochastic
 /// rounding; deterministic rounding programs do not consume it.
@@ -78,6 +91,31 @@ private:
   std::vector<ReferenceOutputBinding> outputs;
 };
 
+/// Per-rank results plus typed global tensors reconstructed from the accepted
+/// output slices. Transport scheduling remains an execution detail and is not
+/// serialized into this result.
+class ReferenceMultiRankExecutionResult {
+public:
+  const std::vector<ReferenceExecutionResult> &getRankResults() const {
+    return rankResults;
+  }
+  const std::vector<ReferenceGlobalOutputBinding> &getGlobalOutputs() const {
+    return globalOutputs;
+  }
+
+private:
+  friend struct ReferenceMultiRankExecutionResultBuilder;
+
+  ReferenceMultiRankExecutionResult(
+      std::vector<ReferenceExecutionResult> rankResults,
+      std::vector<ReferenceGlobalOutputBinding> globalOutputs)
+      : rankResults(std::move(rankResults)),
+        globalOutputs(std::move(globalOutputs)) {}
+
+  std::vector<ReferenceExecutionResult> rankResults;
+  std::vector<ReferenceGlobalOutputBinding> globalOutputs;
+};
+
 /// Invocation-local immutable projection of one accepted rank. The program
 /// owns the MLIR context needed by copied immutable types, but does not retain
 /// operations, values, planner state, or a serializable instruction stream.
@@ -100,6 +138,10 @@ private:
   executeReferenceProgram(const ReferenceProgram &program,
                           llvm::ArrayRef<ReferenceInputBinding> inputs,
                           ReferenceExecutionOptions options);
+  friend llvm::Expected<ReferenceMultiRankExecutionResult>
+  executeReferenceBundle(const ExecutableBundle &bundle,
+                         llvm::ArrayRef<ReferenceRankInvocation> invocations,
+                         ReferenceExecutionOptions options);
 
   explicit ReferenceProgram(std::unique_ptr<Impl> impl);
   std::unique_ptr<Impl> impl;
@@ -124,6 +166,15 @@ llvm::Expected<ReferenceExecutionResult>
 executeReferenceRank(const ExecutableBundle &bundle, int64_t logicalRank,
                      llvm::ArrayRef<ReferenceInputBinding> inputs,
                      ReferenceExecutionOptions options = {});
+
+/// Projects every accepted Direct DTE rank before importing any invocation
+/// tensor, then executes them with a deterministic logical-rank/event order.
+/// The scheduler never uses threads, wall-clock timeout, or operation
+/// visitation order as a message identity.
+llvm::Expected<ReferenceMultiRankExecutionResult>
+executeReferenceBundle(const ExecutableBundle &bundle,
+                       llvm::ArrayRef<ReferenceRankInvocation> invocations,
+                       ReferenceExecutionOptions options = {});
 
 } // namespace wafer::compiler
 

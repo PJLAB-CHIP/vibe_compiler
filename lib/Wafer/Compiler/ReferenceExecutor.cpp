@@ -14,7 +14,8 @@ namespace wafer::compiler {
 
 struct ReferenceProgramBuilder {
   static llvm::Expected<ReferenceProgram>
-  prepare(const ExecutableBundle &bundle, int64_t logicalRank) {
+  prepare(const ExecutableBundle &bundle, int64_t logicalRank,
+          TransportContract requiredTransport) {
     if (logicalRank < 0 ||
         logicalRank >= bundle.getExecutionConfig().getRankCount())
       return reference_detail::invalid(
@@ -31,14 +32,17 @@ struct ReferenceProgramBuilder {
     if (!match)
       return reference_detail::invalid(
           "executable bundle is missing requested logical rank");
-    if (match->getTransportContract() != TransportContract::None)
+    if (match->getTransportContract() != requiredTransport)
       return reference_detail::unsupported(
-          "single-rank executor does not accept transport");
+          requiredTransport == TransportContract::None
+              ? "single-rank executor does not accept transport"
+              : "multi-rank executor requires accepted Direct DTE transport");
 
     auto impl = std::make_unique<ReferenceProgram::Impl>();
     impl->contextOwner = bundle.context;
     impl->logicalRank = logicalRank;
     impl->programBindings = match->getProgramBindings();
+    impl->transportContract = match->getTransportContract();
     if (llvm::Error error = reference_detail::projectReferenceProgram(
             *impl, match->getModule(), match->getEntrySymbol()))
       return std::move(error);
@@ -79,7 +83,8 @@ ReferenceTensor::create(llvm::StringRef dtype, llvm::ArrayRef<int64_t> shape,
 
 llvm::Expected<ReferenceProgram>
 prepareReferenceRank(const ExecutableBundle &bundle, int64_t logicalRank) {
-  return ReferenceProgramBuilder::prepare(bundle, logicalRank);
+  return ReferenceProgramBuilder::prepare(bundle, logicalRank,
+                                          TransportContract::None);
 }
 
 llvm::Expected<ReferenceExecutionResult>
@@ -100,6 +105,34 @@ executeReferenceRank(const ExecutableBundle &bundle, int64_t logicalRank,
   if (!program)
     return program.takeError();
   return executeReferenceProgram(*program, inputs, options);
+}
+
+llvm::Expected<ReferenceMultiRankExecutionResult>
+executeReferenceBundle(const ExecutableBundle &bundle,
+                       llvm::ArrayRef<ReferenceRankInvocation> invocations,
+                       ReferenceExecutionOptions options) {
+  const int64_t rankCount = bundle.getExecutionConfig().getRankCount();
+  if (rankCount <= 1)
+    return reference_detail::invalid(
+        "multi-rank reference execution requires more than one rank");
+
+  // Project the complete rank domain before importing any invocation tensor.
+  // This preserves the existing capability-preflight atomicity contract.
+  std::vector<ReferenceProgram> programs;
+  programs.reserve(static_cast<size_t>(rankCount));
+  for (int64_t rank = 0; rank < rankCount; ++rank) {
+    auto program = ReferenceProgramBuilder::prepare(
+        bundle, rank, TransportContract::DirectDTE);
+    if (!program)
+      return program.takeError();
+    programs.push_back(std::move(*program));
+  }
+  std::vector<const ReferenceProgram::Impl *> projected;
+  projected.reserve(programs.size());
+  for (const ReferenceProgram &program : programs)
+    projected.push_back(program.impl.get());
+  return reference_detail::interpretReferencePrograms(projected, invocations,
+                                                      options);
 }
 
 } // namespace wafer::compiler

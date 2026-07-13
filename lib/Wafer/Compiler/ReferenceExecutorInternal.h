@@ -30,6 +30,15 @@ struct ReferenceExecutionResultBuilder {
   }
 };
 
+struct ReferenceMultiRankExecutionResultBuilder {
+  static ReferenceMultiRankExecutionResult
+  make(std::vector<ReferenceExecutionResult> rankResults,
+       std::vector<ReferenceGlobalOutputBinding> globalOutputs) {
+    return ReferenceMultiRankExecutionResult(std::move(rankResults),
+                                             std::move(globalOutputs));
+  }
+};
+
 struct ReferenceProgram::Impl {
   using ValueId = uint32_t;
 
@@ -50,6 +59,9 @@ struct ReferenceProgram::Impl {
     Elementwise,
     Fill,
     LocalFence,
+    DTESend,
+    DTERecv,
+    DTEWait,
     Branch,
     CondBranch,
     Return,
@@ -123,6 +135,13 @@ struct ReferenceProgram::Impl {
     int64_t k = 0;
     wafer::InstrElementwiseKind elementwiseKind =
         wafer::InstrElementwiseKind::Abs;
+    int64_t peer = -1;
+    int64_t messageCommunication = -1;
+    wafer::DTEProtocolPhase messagePhase =
+        wafer::DTEProtocolPhase::CollectivePermute;
+    int64_t messageRound = -1;
+    int64_t messagePayloadSlice = -1;
+    int64_t remoteReceiverOffset = -1;
   };
 
   struct BlockProgram {
@@ -147,6 +166,7 @@ struct ReferenceProgram::Impl {
   uint32_t entryFunction = 0;
   size_t projectedOperationCount = 0;
   bool usesStochasticRounding = false;
+  TransportContract transportContract = TransportContract::None;
 };
 
 namespace reference_detail {
@@ -212,6 +232,10 @@ llvm::Expected<ReferenceExecutionResult>
 interpretReferenceProgram(const ReferenceProgram::Impl &program,
                           llvm::ArrayRef<ReferenceInputBinding> inputs,
                           ReferenceExecutionOptions options);
+llvm::Expected<ReferenceMultiRankExecutionResult> interpretReferencePrograms(
+    llvm::ArrayRef<const ReferenceProgram::Impl *> programs,
+    llvm::ArrayRef<ReferenceRankInvocation> invocations,
+    ReferenceExecutionOptions options);
 
 } // namespace reference_detail
 } // namespace wafer::compiler

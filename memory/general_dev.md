@@ -459,3 +459,7 @@
   顶层SSA result分配value-id，再逐block复制terminator successor/operand；执行branch时先snapshot incoming runtime
   values，再绑定successor arguments。结构化loop保留lb/ub/step、IV和iter_args/yield backedge；当前无环CFG在preflight
   做cycle check，循环继续由`scf.for`表达，避免执行后才发现无法证明终止的CFG cycle。
+- reference multi-rank Direct DTE不需要host thread或wall-clock timeout。先投影all-rank immutable programs，再按
+  logical rank顺序从inputs重放到未完成wait；send snapshot和matched recv payload由typed message + structured
+  control instance索引，下轮重放时注入新建rank-local arena。这保留现有recursive SCF/CFG/call interpreter，
+  同时让每轮no-progress直接变成可重放的deadlock诊断；禁止用op访问次序充当dynamic message identity。
