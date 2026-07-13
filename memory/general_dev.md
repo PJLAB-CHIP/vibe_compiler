@@ -5,6 +5,9 @@
 - executor可以在单次invocation内把accepted IR构造成immutable execution projection，但必须all-and-only逐op/
   control-edge投影、执行前完成capability preflight、不序列化、不进入bundle/package，也不复制candidate、memory或
   collective schedule；否则会退化成长期shadow plan。
+- prepared reference program用独立value id和复制后的typed command field执行；只保留shared MLIRContext为不可变
+  `MemRefType`/layout保活，不保留`Operation`或`Value`。测试应在prepare后修改source op并确认prepared结果不变，
+  同时确认重新prepare能看到mutation；unsupported capability必须先于input import和arena allocation失败。
 - `ReferenceTensor`是compact row-major program-boundary payload，executor内部用shared DDR/SPM arena和accepted offset
   表达physical storage，再通过`computeWaferPhysicalElementByteOffset`访问logical element。descriptor movement必须先
   完整读取payload再写回，才能在source/dest alias时保持确定语义。

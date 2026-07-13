@@ -10,7 +10,10 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Value.h"
 
+#include "llvm/ADT/APFloat.h"
+#include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Errc.h"
 #include "llvm/Support/Error.h"
@@ -35,11 +38,88 @@ struct ReferenceExecutionResultBuilder {
   }
 };
 
+struct ReferenceProgram::Impl {
+  using ValueId = uint32_t;
+
+  enum class CommandKind {
+    Alloc,
+    Dealloc,
+    Cast,
+    Constant,
+    TileRegion,
+    RDMA,
+    WDMA,
+    GatherScatter,
+    Gemm,
+    Elementwise,
+    Fill,
+    LocalFence,
+    Return,
+  };
+
+  struct Scalar {
+    std::optional<llvm::APInt> integer;
+    std::optional<llvm::APFloat> floating;
+    bool integerIsUnsigned = false;
+  };
+
+  struct BlockProgram;
+
+  struct Command {
+    CommandKind kind = CommandKind::LocalFence;
+    ValueId result = 0;
+    ValueId source = 0;
+    ValueId dest = 0;
+    ValueId lhs = 0;
+    ValueId rhs = 0;
+    ValueId scalar = 0;
+    std::vector<ValueId> inputs;
+    std::vector<ValueId> results;
+    std::vector<ValueId> blockArguments;
+    std::shared_ptr<BlockProgram> body;
+    mlir::MemRefType type;
+    int64_t physicalBytes = 0;
+    int64_t viewDelta = 0;
+    int64_t acceptedOffset = 0;
+    bool spmAllocation = false;
+    Scalar scalarValue;
+    std::vector<int64_t> sourceStrides;
+    std::vector<int64_t> sourceIterations;
+    std::vector<int64_t> destStrides;
+    std::vector<int64_t> destIterations;
+    std::optional<int64_t> sourceOffset;
+    std::optional<int64_t> destOffset;
+    uint64_t byteCount = 0;
+    uint64_t innerBytes = 0;
+    int64_t m = 0;
+    int64_t n = 0;
+    int64_t k = 0;
+    wafer::InstrElementwiseKind elementwiseKind =
+        wafer::InstrElementwiseKind::Abs;
+  };
+
+  struct BlockProgram {
+    std::vector<Command> commands;
+  };
+
+  std::shared_ptr<mlir::MLIRContext> contextOwner;
+  int64_t logicalRank = 0;
+  std::vector<RankProgramBinding> programBindings;
+  std::vector<ValueId> entryArguments;
+  std::vector<mlir::MemRefType> entryArgumentTypes;
+  BlockProgram entry;
+  size_t projectedOperationCount = 0;
+};
+
 namespace {
 
 llvm::Error invalid(llvm::StringRef message) {
   return llvm::createStringError(llvm::errc::invalid_argument, "%s",
                                  message.str().c_str());
+}
+
+llvm::Error unsupported(llvm::StringRef message) {
+  return invalid(("reference capability preflight failed: " + message).str());
 }
 
 std::optional<int64_t> getDTypeByteWidth(llvm::StringRef dtype) {
@@ -71,6 +151,39 @@ std::optional<int64_t> getCompactByteCount(llvm::StringRef dtype,
   return bytes;
 }
 
+llvm::Expected<int64_t> getStaticViewOffsetBytes(mlir::MemRefType type) {
+  llvm::SmallVector<int64_t> strides;
+  int64_t offsetElements = 0;
+  if (mlir::failed(mlir::getStridesAndOffset(type, strides, offsetElements)) ||
+      offsetElements == mlir::ShapedType::kDynamic || offsetElements < 0)
+    return unsupported("view requires a non-negative static layout offset");
+  auto info = wafer::computeWaferPhysicalTensorInfo(type);
+  if (!info || info->elementBytes <= 0 || info->bitPackedElement)
+    return unsupported("view requires byte-addressable physical geometry");
+  if (info->layout == wafer::MemLayout::Cx ||
+      info->layout == wafer::MemLayout::NCx) {
+    if (offsetElements != 0)
+      return unsupported("Cx/NCx view requires zero layout offset");
+    return 0;
+  }
+  if (offsetElements > std::numeric_limits<int64_t>::max() / info->elementBytes)
+    return unsupported("view byte offset overflows int64");
+  return offsetElements * info->elementBytes;
+}
+
+llvm::Expected<int64_t> getStaticViewDeltaBytes(mlir::MemRefType sourceType,
+                                                mlir::MemRefType resultType) {
+  auto source = getStaticViewOffsetBytes(sourceType);
+  auto result = getStaticViewOffsetBytes(resultType);
+  if (!source)
+    return source.takeError();
+  if (!result)
+    return result.takeError();
+  if (*result >= *source)
+    return *result - *source;
+  return -(*source - *result);
+}
+
 std::string elementDType(mlir::Type type) {
   if (type.isF32())
     return "f32";
@@ -83,18 +196,6 @@ std::string elementDType(mlir::Type type) {
            std::to_string(integer.getWidth());
   return {};
 }
-
-struct Storage {
-  std::vector<uint8_t> bytes;
-};
-
-struct BufferView {
-  std::shared_ptr<Storage> storage;
-  int64_t base = 0;
-  int64_t viewOffset = 0;
-  int64_t physicalBytes = 0;
-  mlir::MemRefType type;
-};
 
 template <typename Callback>
 llvm::Error forEachLogicalIndex(llvm::ArrayRef<int64_t> shape,
@@ -121,6 +222,492 @@ llvm::Error forEachLogicalIndex(llvm::ArrayRef<int64_t> shape,
   }
   return llvm::Error::success();
 }
+
+llvm::Error validateMovementByteCount(uint64_t byteCount, uint64_t innerBytes,
+                                      llvm::ArrayRef<int64_t> iterations) {
+  if (iterations.size() != 3 || innerBytes == 0)
+    return invalid("movement descriptor has invalid iteration rank");
+  uint64_t chunks = 1;
+  for (int64_t iteration : iterations) {
+    if (iteration < 0 || static_cast<uint64_t>(iteration) >
+                             std::numeric_limits<uint64_t>::max() / chunks)
+      return invalid("movement descriptor iteration count overflows");
+    chunks *= static_cast<uint64_t>(iteration);
+  }
+  if (chunks > std::numeric_limits<uint64_t>::max() / innerBytes ||
+      byteCount != chunks * innerBytes)
+    return invalid("movement byte_count disagrees with its descriptor");
+  return llvm::Error::success();
+}
+
+bool isSupportedElementwiseKind(wafer::InstrElementwiseKind kind,
+                                size_t &arity) {
+  switch (kind) {
+  case wafer::InstrElementwiseKind::Abs:
+  case wafer::InstrElementwiseKind::Recip:
+  case wafer::InstrElementwiseKind::Square:
+  case wafer::InstrElementwiseKind::Sqrt:
+  case wafer::InstrElementwiseKind::Rsqrt:
+  case wafer::InstrElementwiseKind::Neg:
+  case wafer::InstrElementwiseKind::Log2:
+  case wafer::InstrElementwiseKind::Ln:
+  case wafer::InstrElementwiseKind::Pow2:
+  case wafer::InstrElementwiseKind::Exp:
+  case wafer::InstrElementwiseKind::ExpLp:
+  case wafer::InstrElementwiseKind::Sin:
+  case wafer::InstrElementwiseKind::Cos:
+  case wafer::InstrElementwiseKind::Tanh:
+  case wafer::InstrElementwiseKind::Sigmoid:
+  case wafer::InstrElementwiseKind::Relu:
+  case wafer::InstrElementwiseKind::SatRelu:
+  case wafer::InstrElementwiseKind::Softplus:
+    arity = 1;
+    return true;
+  case wafer::InstrElementwiseKind::Max:
+  case wafer::InstrElementwiseKind::Min:
+  case wafer::InstrElementwiseKind::Add:
+  case wafer::InstrElementwiseKind::Sub:
+  case wafer::InstrElementwiseKind::Mul:
+  case wafer::InstrElementwiseKind::Div:
+    arity = 2;
+    return true;
+  default:
+    return false;
+  }
+}
+
+class ProgramProjector {
+public:
+  explicit ProgramProjector(ReferenceProgram::Impl &program)
+      : program(program) {}
+
+  llvm::Error project(mlir::func::FuncOp entry) {
+    if (!entry.getBody().hasOneBlock())
+      return unsupported("entry requires unsupported multi-block control flow");
+    mlir::Block &block = entry.getBody().front();
+    for (mlir::BlockArgument argument : block.getArguments()) {
+      auto type = mlir::dyn_cast<mlir::MemRefType>(argument.getType());
+      if (!type)
+        return unsupported("entry argument is not a memref");
+      auto value = define(argument);
+      if (!value)
+        return value.takeError();
+      program.entryArguments.push_back(*value);
+      program.entryArgumentTypes.push_back(type);
+    }
+    if (llvm::Error error = projectBlock(block, program.entry))
+      return error;
+    if (program.entry.commands.empty() ||
+        program.entry.commands.back().kind !=
+            ReferenceProgram::Impl::CommandKind::Return)
+      return unsupported("entry has no projected return terminator");
+    if (program.entry.commands.back().inputs.size() != entry.getNumResults())
+      return unsupported("entry return arity disagrees with function type");
+    return validateProgramBindings(entry);
+  }
+
+private:
+  using Command = ReferenceProgram::Impl::Command;
+  using CommandKind = ReferenceProgram::Impl::CommandKind;
+  using ValueId = ReferenceProgram::Impl::ValueId;
+
+  llvm::Expected<ValueId> define(mlir::Value value) {
+    if (values.count(value))
+      return unsupported("SSA value is projected more than once");
+    if (nextValue == std::numeric_limits<ValueId>::max())
+      return unsupported("reference value id space is exhausted");
+    ValueId id = nextValue++;
+    values[value] = id;
+    return id;
+  }
+
+  llvm::Expected<ValueId> use(mlir::Value value) const {
+    auto found = values.find(value);
+    if (found == values.end())
+      return unsupported("operand has no projected SSA definition");
+    return found->second;
+  }
+
+  llvm::Expected<mlir::MemRefType> requireF32Buffer(mlir::Value value,
+                                                    llvm::StringRef purpose) {
+    auto type = mlir::dyn_cast<mlir::MemRefType>(value.getType());
+    if (!type || !type.getElementType().isF32() || !type.hasStaticShape())
+      return unsupported((purpose + " requires a static f32 memref").str());
+    if (!wafer::computeWaferPhysicalTensorInfo(type))
+      return unsupported((purpose + " has no accepted physical layout").str());
+    return type;
+  }
+
+  llvm::Error projectBlock(mlir::Block &block,
+                           ReferenceProgram::Impl::BlockProgram &output) {
+    bool sawTerminator = false;
+    for (mlir::Operation &operation : block) {
+      if (sawTerminator)
+        return unsupported("operation follows a projected terminator");
+      Command command;
+      if (auto alloc = mlir::dyn_cast<mlir::memref::AllocOp>(operation)) {
+        if (!alloc.getDynamicSizes().empty() ||
+            !alloc.getSymbolOperands().empty())
+          return unsupported("dynamic memref allocation");
+        auto info = wafer::computeWaferPhysicalTensorInfo(alloc.getType());
+        if (!info || info->physicalBytes < 0)
+          return unsupported("allocation has no static physical extent");
+        command.kind = CommandKind::Alloc;
+        command.type = alloc.getType();
+        command.physicalBytes = info->physicalBytes;
+        if (wafer::isWaferSPMMemRefType(alloc.getType())) {
+          auto offset = alloc->getAttrOfType<wafer::SPMOffsetAttr>(
+              wafer::kWaferSPMOffsetAttrName);
+          if (!offset)
+            return invalid("SPM allocation is missing accepted offset");
+          command.acceptedOffset = offset.getOffset();
+          command.spmAllocation = true;
+        } else if (wafer::isWaferDDRMemRefType(alloc.getType())) {
+          auto offset = alloc->getAttrOfType<wafer::DDROffsetAttr>(
+              wafer::kWaferDDROffsetAttrName);
+          if (!offset)
+            return invalid("DDR allocation is missing accepted offset");
+          command.acceptedOffset = offset.getOffset();
+        } else {
+          return unsupported("allocation is outside Wafer DDR/SPM memory");
+        }
+        auto result = define(alloc.getResult());
+        if (!result)
+          return result.takeError();
+        command.result = *result;
+      } else if (auto dealloc =
+                     mlir::dyn_cast<mlir::memref::DeallocOp>(operation)) {
+        auto source = use(dealloc.getMemref());
+        if (!source)
+          return source.takeError();
+        command.kind = CommandKind::Dealloc;
+        command.source = *source;
+      } else if (auto cast = mlir::dyn_cast<mlir::memref::CastOp>(operation)) {
+        auto source = use(cast.getSource());
+        if (!source)
+          return source.takeError();
+        auto sourceType =
+            mlir::dyn_cast<mlir::MemRefType>(cast.getSource().getType());
+        auto resultType = mlir::dyn_cast<mlir::MemRefType>(cast.getType());
+        auto sourceInfo =
+            sourceType ? wafer::computeWaferPhysicalTensorInfo(sourceType)
+                       : std::nullopt;
+        auto resultInfo =
+            resultType ? wafer::computeWaferPhysicalTensorInfo(resultType)
+                       : std::nullopt;
+        if (!sourceInfo || !resultInfo || resultInfo->physicalBytes < 0 ||
+            resultInfo->physicalBytes > sourceInfo->physicalBytes)
+          return unsupported("memref.cast changes accepted physical extent");
+        auto result = define(cast.getResult());
+        if (!result)
+          return result.takeError();
+        command.kind = CommandKind::Cast;
+        command.source = *source;
+        command.result = *result;
+        command.type = resultType;
+        command.physicalBytes = resultInfo->physicalBytes;
+      } else if (auto subview =
+                     mlir::dyn_cast<mlir::memref::SubViewOp>(operation)) {
+        if (llvm::Error error =
+                projectStaticView(subview.getSource(), subview.getResult(),
+                                  subview.getType(), command))
+          return error;
+      } else if (auto reinterpret =
+                     mlir::dyn_cast<mlir::memref::ReinterpretCastOp>(
+                         operation)) {
+        if (llvm::Error error = projectStaticView(
+                reinterpret.getSource(), reinterpret.getResult(),
+                reinterpret.getType(), command))
+          return error;
+      } else if (auto constant =
+                     mlir::dyn_cast<mlir::arith::ConstantOp>(operation)) {
+        auto result = define(constant.getResult());
+        if (!result)
+          return result.takeError();
+        command.kind = CommandKind::Constant;
+        command.result = *result;
+        if (auto value = mlir::dyn_cast<mlir::FloatAttr>(constant.getValue()))
+          command.scalarValue.floating = value.getValue();
+        else if (auto value =
+                     mlir::dyn_cast<mlir::IntegerAttr>(constant.getValue())) {
+          command.scalarValue.integer = value.getValue();
+          auto type = mlir::dyn_cast<mlir::IntegerType>(constant.getType());
+          command.scalarValue.integerIsUnsigned = type && type.isUnsigned();
+        } else {
+          return unsupported("non-scalar arith.constant");
+        }
+      } else if (auto tile = mlir::dyn_cast<wafer::TileRegionOp>(operation)) {
+        if (!tile.getBody().hasOneBlock())
+          return unsupported(
+              "tile region requires unsupported multi-block body");
+        mlir::Block &body = tile.getBody().front();
+        if (body.getNumArguments() != tile.getInputs().size())
+          return invalid("tile region argument arity mismatch");
+        command.kind = CommandKind::TileRegion;
+        for (mlir::Value input : tile.getInputs()) {
+          auto id = use(input);
+          if (!id)
+            return id.takeError();
+          command.inputs.push_back(*id);
+        }
+        for (mlir::BlockArgument argument : body.getArguments()) {
+          auto id = define(argument);
+          if (!id)
+            return id.takeError();
+          command.blockArguments.push_back(*id);
+        }
+        command.body = std::make_shared<ReferenceProgram::Impl::BlockProgram>();
+        if (llvm::Error error = projectBlock(body, *command.body))
+          return error;
+        if (command.body->commands.empty() ||
+            command.body->commands.back().kind != CommandKind::Return ||
+            command.body->commands.back().inputs.size() != tile.getNumResults())
+          return unsupported("tile region yield arity is not projectable");
+        for (mlir::Value resultValue : tile.getResults()) {
+          auto id = define(resultValue);
+          if (!id)
+            return id.takeError();
+          command.results.push_back(*id);
+        }
+      } else if (auto rdma = mlir::dyn_cast<wafer::InstrRDMAOp>(operation)) {
+        if (llvm::Error error = validateMovementByteCount(
+                rdma.getByteCount(), rdma.getInnerBytes(),
+                rdma.getSrcIterations()))
+          return error;
+        command.kind = CommandKind::RDMA;
+        if (llvm::Error error = projectMovementOperands(
+                rdma.getSource(), rdma.getDest(), command))
+          return error;
+        command.sourceStrides.assign(rdma.getSrcStrides().begin(),
+                                     rdma.getSrcStrides().end());
+        command.sourceIterations.assign(rdma.getSrcIterations().begin(),
+                                        rdma.getSrcIterations().end());
+        command.byteCount = rdma.getByteCount();
+        command.innerBytes = rdma.getInnerBytes();
+      } else if (auto wdma = mlir::dyn_cast<wafer::InstrWDMAOp>(operation)) {
+        if (llvm::Error error = validateMovementByteCount(
+                wdma.getByteCount(), wdma.getInnerBytes(),
+                wdma.getDstIterations()))
+          return error;
+        command.kind = CommandKind::WDMA;
+        if (llvm::Error error = projectMovementOperands(
+                wdma.getSource(), wdma.getDest(), command))
+          return error;
+        command.destStrides.assign(wdma.getDstStrides().begin(),
+                                   wdma.getDstStrides().end());
+        command.destIterations.assign(wdma.getDstIterations().begin(),
+                                      wdma.getDstIterations().end());
+        command.byteCount = wdma.getByteCount();
+        command.innerBytes = wdma.getInnerBytes();
+      } else if (auto movement =
+                     mlir::dyn_cast<wafer::InstrGatherScatterOp>(operation)) {
+        if (llvm::Error error = validateMovementByteCount(
+                movement.getByteCount(), movement.getInnerBytes(),
+                movement.getSrcIterations()))
+          return error;
+        command.kind = CommandKind::GatherScatter;
+        if (llvm::Error error = projectMovementOperands(
+                movement.getSource(), movement.getDest(), command))
+          return error;
+        command.sourceStrides.assign(movement.getSrcStrides().begin(),
+                                     movement.getSrcStrides().end());
+        command.sourceIterations.assign(movement.getSrcIterations().begin(),
+                                        movement.getSrcIterations().end());
+        command.destStrides.assign(movement.getDstStrides().begin(),
+                                   movement.getDstStrides().end());
+        command.destIterations.assign(movement.getDstIterations().begin(),
+                                      movement.getDstIterations().end());
+        command.sourceOffset = movement.getSrcOffset();
+        command.destOffset = movement.getDstOffset();
+        command.byteCount = movement.getByteCount();
+        command.innerBytes = movement.getInnerBytes();
+      } else if (auto gemm = mlir::dyn_cast<wafer::InstrGemmOp>(operation)) {
+        if (gemm.getBatchCount().value_or(1) != 1)
+          return unsupported("batched GEMM");
+        auto lhsType = requireF32Buffer(gemm.getLhs(), "GEMM lhs");
+        auto rhsType = requireF32Buffer(gemm.getRhs(), "GEMM rhs");
+        auto destType = requireF32Buffer(gemm.getDest(), "GEMM dest");
+        if (!lhsType)
+          return lhsType.takeError();
+        if (!rhsType)
+          return rhsType.takeError();
+        if (!destType)
+          return destType.takeError();
+        int64_t m = static_cast<int64_t>(gemm.getM());
+        int64_t n = static_cast<int64_t>(gemm.getN());
+        int64_t k = static_cast<int64_t>(gemm.getK());
+        if (lhsType->getShape() != llvm::ArrayRef<int64_t>({m, k}) ||
+            rhsType->getShape() != llvm::ArrayRef<int64_t>({k, n}) ||
+            destType->getShape() != llvm::ArrayRef<int64_t>({m, n}))
+          return invalid(
+              "GEMM dimensions disagree with accepted buffer shapes");
+        command.kind = CommandKind::Gemm;
+        auto lhs = use(gemm.getLhs());
+        auto rhs = use(gemm.getRhs());
+        auto dest = use(gemm.getDest());
+        if (!lhs)
+          return lhs.takeError();
+        if (!rhs)
+          return rhs.takeError();
+        if (!dest)
+          return dest.takeError();
+        command.lhs = *lhs;
+        command.rhs = *rhs;
+        command.dest = *dest;
+        command.m = m;
+        command.n = n;
+        command.k = k;
+      } else if (auto elementwise =
+                     mlir::dyn_cast<wafer::InstrElementwiseOp>(operation)) {
+        size_t arity = 0;
+        if (!isSupportedElementwiseKind(elementwise.getKind(), arity) ||
+            elementwise.getInputs().size() != arity)
+          return unsupported("elementwise kind or arity");
+        auto destType =
+            requireF32Buffer(elementwise.getDest(), "elementwise dest");
+        if (!destType)
+          return destType.takeError();
+        command.kind = CommandKind::Elementwise;
+        command.elementwiseKind = elementwise.getKind();
+        auto dest = use(elementwise.getDest());
+        if (!dest)
+          return dest.takeError();
+        command.dest = *dest;
+        for (mlir::Value value : elementwise.getInputs()) {
+          auto inputType = requireF32Buffer(value, "elementwise input");
+          if (!inputType)
+            return inputType.takeError();
+          if (inputType->getShape() != destType->getShape())
+            return invalid(
+                "elementwise input shape disagrees with destination");
+          auto input = use(value);
+          if (!input)
+            return input.takeError();
+          command.inputs.push_back(*input);
+        }
+      } else if (auto fill = mlir::dyn_cast<wafer::InstrFillOp>(operation)) {
+        auto destType = requireF32Buffer(fill.getDest(), "fill dest");
+        if (!destType)
+          return destType.takeError();
+        auto dest = use(fill.getDest());
+        auto scalar = use(fill.getValue());
+        if (!dest)
+          return dest.takeError();
+        if (!scalar)
+          return scalar.takeError();
+        command.kind = CommandKind::Fill;
+        command.dest = *dest;
+        command.scalar = *scalar;
+      } else if (mlir::isa<wafer::SyncLocalFenceOp>(operation)) {
+        command.kind = CommandKind::LocalFence;
+      } else if (mlir::isa<wafer::TileYieldOp, mlir::func::ReturnOp>(
+                     operation)) {
+        command.kind = CommandKind::Return;
+        for (mlir::Value operand : operation.getOperands()) {
+          auto id = use(operand);
+          if (!id)
+            return id.takeError();
+          command.inputs.push_back(*id);
+        }
+        sawTerminator = true;
+      } else {
+        return unsupported(
+            ("unsupported operation " + operation.getName().getStringRef())
+                .str());
+      }
+      ++program.projectedOperationCount;
+      output.commands.push_back(std::move(command));
+    }
+    if (!sawTerminator)
+      return unsupported("block has no return-like terminator");
+    return llvm::Error::success();
+  }
+
+  llvm::Error projectMovementOperands(mlir::Value sourceValue,
+                                      mlir::Value destValue, Command &command) {
+    auto source = use(sourceValue);
+    auto dest = use(destValue);
+    if (!source)
+      return source.takeError();
+    if (!dest)
+      return dest.takeError();
+    command.source = *source;
+    command.dest = *dest;
+    return llvm::Error::success();
+  }
+
+  llvm::Error projectStaticView(mlir::Value sourceValue,
+                                mlir::Value resultValue,
+                                mlir::MemRefType resultType, Command &command) {
+    auto sourceType = mlir::dyn_cast<mlir::MemRefType>(sourceValue.getType());
+    auto sourceInfo = sourceType
+                          ? wafer::computeWaferPhysicalTensorInfo(sourceType)
+                          : std::nullopt;
+    auto resultInfo = wafer::computeWaferPhysicalTensorInfo(resultType);
+    if (!sourceInfo || !resultInfo || resultInfo->physicalBytes < 0)
+      return unsupported("static view has no accepted physical geometry");
+    auto delta = getStaticViewDeltaBytes(sourceType, resultType);
+    if (!delta)
+      return delta.takeError();
+    auto source = use(sourceValue);
+    auto result = define(resultValue);
+    if (!source)
+      return source.takeError();
+    if (!result)
+      return result.takeError();
+    command.kind = CommandKind::Cast;
+    command.source = *source;
+    command.result = *result;
+    command.type = resultType;
+    command.physicalBytes = resultInfo->physicalBytes;
+    command.viewDelta = *delta;
+    return llvm::Error::success();
+  }
+
+  llvm::Error validateProgramBindings(mlir::func::FuncOp entry) {
+    llvm::SmallVector<bool> argumentUsed(entry.getNumArguments(), false);
+    llvm::SmallVector<bool> resultUsed(entry.getNumResults(), false);
+    for (const RankProgramBinding &binding : program.programBindings) {
+      llvm::SmallVectorImpl<bool> &domain =
+          binding.role == ProgramResourceRole::Output ? resultUsed
+                                                      : argumentUsed;
+      if (binding.index < 0 ||
+          binding.index >= static_cast<int64_t>(domain.size()))
+        return unsupported("program binding index is outside entry signature");
+      if (domain[binding.index])
+        return unsupported("duplicate program binding index");
+      domain[binding.index] = true;
+      mlir::Type type = binding.role == ProgramResourceRole::Output
+                            ? entry.getResultTypes()[binding.index]
+                            : entry.getArgument(binding.index).getType();
+      auto memref = mlir::dyn_cast<mlir::MemRefType>(type);
+      if (!memref || elementDType(memref.getElementType()) != binding.dtype ||
+          memref.getShape() != llvm::ArrayRef<int64_t>(binding.localShape))
+        return unsupported(
+            "program binding disagrees with entry memref signature");
+    }
+    if (llvm::is_contained(argumentUsed, false) ||
+        llvm::is_contained(resultUsed, false))
+      return unsupported("program bindings do not cover entry signature");
+    return llvm::Error::success();
+  }
+
+  ReferenceProgram::Impl &program;
+  llvm::DenseMap<mlir::Value, ValueId> values;
+  ValueId nextValue = 0;
+};
+
+struct Storage {
+  std::vector<uint8_t> bytes;
+};
+
+struct BufferView {
+  std::shared_ptr<Storage> storage;
+  int64_t base = 0;
+  int64_t viewOffset = 0;
+  int64_t physicalBytes = 0;
+  mlir::MemRefType type;
+};
 
 llvm::Expected<int64_t> getAbsoluteOffset(const BufferView &buffer,
                                           llvm::ArrayRef<int64_t> indices,
@@ -162,31 +749,22 @@ llvm::Error writeF32(const BufferView &buffer, llvm::ArrayRef<int64_t> indices,
   return llvm::Error::success();
 }
 
-class RankInterpreter {
+class ProgramInterpreter {
 public:
-  explicit RankInterpreter(const RankExecutable &rank) : rank(rank) {
-    spmArena = std::make_shared<Storage>();
-    ddrArena = std::make_shared<Storage>();
-  }
+  explicit ProgramInterpreter(const ReferenceProgram::Impl &program)
+      : program(program), spmArena(std::make_shared<Storage>()),
+        ddrArena(std::make_shared<Storage>()) {}
 
   llvm::Expected<ReferenceExecutionResult>
   run(llvm::ArrayRef<ReferenceInputBinding> inputs) {
-    mlir::func::FuncOp entry =
-        rank.getModule().lookupSymbol<mlir::func::FuncOp>(
-            rank.getEntrySymbol());
-    if (!entry)
-      return invalid("accepted rank entry function is missing");
-    if (!entry.getBody().hasOneBlock())
-      return invalid("reference executor requires a single-block entry");
-
-    if (llvm::Error error = bindEntryArguments(entry, inputs))
+    if (llvm::Error error = bindEntryArguments(inputs))
       return std::move(error);
-    auto returned = executeBlock(entry.getBody().front());
+    auto returned = executeBlock(program.entry);
     if (!returned)
       return returned.takeError();
 
     std::vector<ReferenceOutputBinding> outputs;
-    for (const RankProgramBinding &binding : rank.getProgramBindings()) {
+    for (const RankProgramBinding &binding : program.programBindings) {
       if (binding.role != ProgramResourceRole::Output)
         continue;
       if (binding.index < 0 ||
@@ -198,15 +776,19 @@ public:
         return tensor.takeError();
       outputs.push_back({binding.index, std::move(*tensor)});
     }
-    return ReferenceExecutionResultBuilder::make(rank.getLogicalRank(),
+    return ReferenceExecutionResultBuilder::make(program.logicalRank,
                                                  std::move(outputs));
   }
 
 private:
-  llvm::Error bindEntryArguments(mlir::func::FuncOp entry,
-                                 llvm::ArrayRef<ReferenceInputBinding> inputs) {
+  using Command = ReferenceProgram::Impl::Command;
+  using CommandKind = ReferenceProgram::Impl::CommandKind;
+  using Scalar = ReferenceProgram::Impl::Scalar;
+  using ValueId = ReferenceProgram::Impl::ValueId;
+
+  llvm::Error bindEntryArguments(llvm::ArrayRef<ReferenceInputBinding> inputs) {
     llvm::SmallVector<bool> used(inputs.size(), false);
-    for (const RankProgramBinding &binding : rank.getProgramBindings()) {
+    for (const RankProgramBinding &binding : program.programBindings) {
       if (binding.role == ProgramResourceRole::Output)
         continue;
       int64_t match = -1;
@@ -225,16 +807,11 @@ private:
               llvm::ArrayRef<int64_t>(binding.localShape))
         return invalid(
             "reference input tensor disagrees with typed rank binding");
-      if (binding.index < 0 || binding.index >= entry.getNumArguments())
-        return invalid("program input index is outside entry arguments");
-      auto type = mlir::dyn_cast<mlir::MemRefType>(
-          entry.getArgument(binding.index).getType());
-      if (!type)
-        return invalid("program input entry argument is not a memref");
-      auto imported = importTensor(inputs[match].tensor, type);
+      auto imported = importTensor(inputs[match].tensor,
+                                   program.entryArgumentTypes[binding.index]);
       if (!imported)
         return imported.takeError();
-      buffers[entry.getArgument(binding.index)] = std::move(*imported);
+      buffers[program.entryArguments[binding.index]] = std::move(*imported);
     }
     if (llvm::is_contained(used, false))
       return invalid("unexpected reference input binding");
@@ -297,147 +874,112 @@ private:
     return ReferenceTensor::create(dtype, shape, compact);
   }
 
-  llvm::Expected<std::vector<BufferView>> executeBlock(mlir::Block &block) {
-    for (mlir::Operation &operation : block) {
-      if (auto alloc = mlir::dyn_cast<mlir::memref::AllocOp>(operation)) {
-        auto allocated = allocate(alloc);
+  llvm::Expected<std::vector<BufferView>>
+  executeBlock(const ReferenceProgram::Impl::BlockProgram &block) {
+    for (const Command &command : block.commands) {
+      switch (command.kind) {
+      case CommandKind::Alloc: {
+        auto allocated = allocate(command);
         if (!allocated)
           return allocated.takeError();
-        buffers[alloc.getResult()] = std::move(*allocated);
-        continue;
+        buffers[command.result] = std::move(*allocated);
+        break;
       }
-      if (auto cast = mlir::dyn_cast<mlir::memref::CastOp>(operation)) {
-        auto source = lookup(cast.getSource());
+      case CommandKind::Dealloc:
+        break;
+      case CommandKind::Cast: {
+        auto source = lookup(command.source);
         if (!source)
           return source.takeError();
-        auto resultType = mlir::dyn_cast<mlir::MemRefType>(cast.getType());
-        auto info = resultType
-                        ? wafer::computeWaferPhysicalTensorInfo(resultType)
-                        : std::nullopt;
-        if (!info || info->physicalBytes < 0 ||
-            info->physicalBytes > source->physicalBytes)
-          return invalid("memref.cast changes accepted physical extent");
-        source->type = resultType;
-        source->physicalBytes = info->physicalBytes;
-        buffers[cast.getResult()] = *source;
-        continue;
+        if ((command.viewDelta > 0 &&
+             source->viewOffset >
+                 std::numeric_limits<int64_t>::max() - command.viewDelta) ||
+            (command.viewDelta < 0 && source->viewOffset < -command.viewDelta))
+          return invalid("projected view offset exceeds its root storage");
+        source->viewOffset += command.viewDelta;
+        source->type = command.type;
+        source->physicalBytes = command.physicalBytes;
+        buffers[command.result] = *source;
+        break;
       }
-      if (auto constant = mlir::dyn_cast<mlir::arith::ConstantOp>(operation)) {
-        if (auto value = mlir::dyn_cast<mlir::FloatAttr>(constant.getValue()))
-          scalars[constant.getResult()] = value.getValueAsDouble();
-        else if (auto value =
-                     mlir::dyn_cast<mlir::IntegerAttr>(constant.getValue()))
-          scalars[constant.getResult()] = value.getValue().getSExtValue();
-        else
-          return invalid("unsupported scalar constant in accepted rank");
-        continue;
-      }
-      if (auto tile = mlir::dyn_cast<wafer::TileRegionOp>(operation)) {
-        mlir::Block &body = tile.getBody().front();
-        if (body.getNumArguments() != tile.getInputs().size())
-          return invalid("tile region argument arity mismatch");
+      case CommandKind::Constant:
+        scalars[command.result] = command.scalarValue;
+        break;
+      case CommandKind::TileRegion: {
+        if (command.inputs.size() != command.blockArguments.size())
+          return invalid("projected tile region argument arity mismatch");
         for (auto [argument, input] :
-             llvm::zip_equal(body.getArguments(), tile.getInputs())) {
-          auto found = buffers.find(input);
-          if (found == buffers.end())
-            return invalid("tile region input buffer is unavailable");
-          buffers[argument] = found->second;
+             llvm::zip_equal(command.blockArguments, command.inputs)) {
+          auto found = lookup(input);
+          if (!found)
+            return found.takeError();
+          buffers[argument] = *found;
         }
-        auto yielded = executeBlock(body);
+        auto yielded = executeBlock(*command.body);
         if (!yielded)
           return yielded.takeError();
-        if (yielded->size() != tile.getNumResults())
-          return invalid("tile region result arity mismatch");
-        for (auto [result, value] :
-             llvm::zip_equal(tile.getResults(), *yielded))
+        if (yielded->size() != command.results.size())
+          return invalid("projected tile region result arity mismatch");
+        for (auto [result, value] : llvm::zip_equal(command.results, *yielded))
           buffers[result] = value;
-        continue;
+        break;
       }
-      if (auto rdma = mlir::dyn_cast<wafer::InstrRDMAOp>(operation)) {
-        if (llvm::Error error = executeRDMA(rdma))
+      case CommandKind::RDMA:
+        if (llvm::Error error = executeRDMA(command))
           return std::move(error);
-        continue;
-      }
-      if (auto wdma = mlir::dyn_cast<wafer::InstrWDMAOp>(operation)) {
-        if (llvm::Error error = executeWDMA(wdma))
+        break;
+      case CommandKind::WDMA:
+        if (llvm::Error error = executeWDMA(command))
           return std::move(error);
-        continue;
-      }
-      if (auto movement =
-              mlir::dyn_cast<wafer::InstrGatherScatterOp>(operation)) {
-        if (llvm::Error error = executeGatherScatter(movement))
+        break;
+      case CommandKind::GatherScatter:
+        if (llvm::Error error = executeGatherScatter(command))
           return std::move(error);
-        continue;
-      }
-      if (auto gemm = mlir::dyn_cast<wafer::InstrGemmOp>(operation)) {
-        if (llvm::Error error = executeGemm(gemm))
+        break;
+      case CommandKind::Gemm:
+        if (llvm::Error error = executeGemm(command))
           return std::move(error);
-        continue;
-      }
-      if (auto elementwise =
-              mlir::dyn_cast<wafer::InstrElementwiseOp>(operation)) {
-        if (llvm::Error error = executeElementwise(elementwise))
+        break;
+      case CommandKind::Elementwise:
+        if (llvm::Error error = executeElementwise(command))
           return std::move(error);
-        continue;
-      }
-      if (auto fill = mlir::dyn_cast<wafer::InstrFillOp>(operation)) {
-        if (llvm::Error error = executeFill(fill))
+        break;
+      case CommandKind::Fill:
+        if (llvm::Error error = executeFill(command))
           return std::move(error);
-        continue;
-      }
-      if (mlir::isa<wafer::SyncLocalFenceOp>(operation))
-        continue;
-      if (mlir::isa<wafer::TileYieldOp, mlir::func::ReturnOp>(operation)) {
+        break;
+      case CommandKind::LocalFence:
+        break;
+      case CommandKind::Return: {
         std::vector<BufferView> result;
-        for (mlir::Value value : operation.getOperands()) {
-          auto found = buffers.find(value);
-          if (found == buffers.end())
-            return invalid("returned buffer is unavailable");
-          result.push_back(found->second);
+        for (ValueId value : command.inputs) {
+          auto found = lookup(value);
+          if (!found)
+            return found.takeError();
+          result.push_back(*found);
         }
         return result;
       }
-      return invalid(("unsupported operation in accepted rank: " +
-                      operation.getName().getStringRef())
-                         .str());
+      }
     }
-    return invalid("accepted block has no return-like terminator");
+    return invalid("projected block has no return command");
   }
 
-  llvm::Expected<BufferView> allocate(mlir::memref::AllocOp alloc) {
-    mlir::MemRefType type = alloc.getType();
-    auto info = wafer::computeWaferPhysicalTensorInfo(type);
-    if (!info || info->physicalBytes < 0)
-      return invalid("allocation has no static accepted physical extent");
-    int64_t offset = -1;
-    std::shared_ptr<Storage> arena;
-    if (wafer::isWaferSPMMemRefType(type)) {
-      auto attr = alloc->getAttrOfType<wafer::SPMOffsetAttr>(
-          wafer::kWaferSPMOffsetAttrName);
-      if (!attr)
-        return invalid("SPM allocation is missing accepted offset");
-      offset = attr.getOffset();
-      arena = spmArena;
-    } else if (wafer::isWaferDDRMemRefType(type)) {
-      auto attr = alloc->getAttrOfType<wafer::DDROffsetAttr>(
-          wafer::kWaferDDROffsetAttrName);
-      if (!attr)
-        return invalid("DDR allocation is missing accepted offset");
-      offset = attr.getOffset();
-      arena = ddrArena;
-    } else {
-      return invalid("allocation is outside Wafer DDR/SPM memory");
-    }
-    if (offset < 0 ||
-        info->physicalBytes > std::numeric_limits<int64_t>::max() - offset)
+  llvm::Expected<BufferView> allocate(const Command &command) {
+    if (command.acceptedOffset < 0 || command.physicalBytes < 0 ||
+        command.physicalBytes >
+            std::numeric_limits<int64_t>::max() - command.acceptedOffset)
       return invalid("accepted allocation range overflows");
-    int64_t end = offset + info->physicalBytes;
+    std::shared_ptr<Storage> arena =
+        command.spmAllocation ? spmArena : ddrArena;
+    int64_t end = command.acceptedOffset + command.physicalBytes;
     if (end > static_cast<int64_t>(arena->bytes.size()))
       arena->bytes.resize(end, 0);
-    return BufferView{std::move(arena), offset, 0, info->physicalBytes, type};
+    return BufferView{std::move(arena), command.acceptedOffset, 0,
+                      command.physicalBytes, command.type};
   }
 
-  llvm::Expected<BufferView> lookup(mlir::Value value) {
+  llvm::Expected<BufferView> lookup(ValueId value) const {
     auto found = buffers.find(value);
     if (found == buffers.end())
       return invalid("instruction operand buffer is unavailable");
@@ -476,15 +1018,6 @@ private:
     return llvm::Error::success();
   }
 
-  llvm::Error validateMovementByteCount(uint64_t byteCount, uint64_t innerBytes,
-                                        size_t chunkCount) {
-    if (innerBytes == 0 ||
-        chunkCount > std::numeric_limits<uint64_t>::max() / innerBytes ||
-        byteCount != chunkCount * innerBytes)
-      return invalid("movement byte_count disagrees with its descriptor");
-    return llvm::Error::success();
-  }
-
   llvm::Expected<std::vector<int64_t>>
   descriptorOffsets(llvm::ArrayRef<int64_t> strides,
                     llvm::ArrayRef<int64_t> iterations, int64_t base = 0) {
@@ -494,8 +1027,7 @@ private:
     for (int64_t i0 = 0; i0 < iterations[0]; ++i0)
       for (int64_t i1 = 0; i1 < iterations[1]; ++i1)
         for (int64_t i2 = 0; i2 < iterations[2]; ++i2) {
-          if (i0 < 0 || i1 < 0 || i2 < 0 || strides[0] < 0 || strides[1] < 0 ||
-              strides[2] < 0)
+          if (strides[0] < 0 || strides[1] < 0 || strides[2] < 0)
             return invalid("movement descriptor contains a negative field");
           offsets.push_back(base + i0 * strides[0] + i1 * strides[1] +
                             i2 * strides[2]);
@@ -503,102 +1035,79 @@ private:
     return offsets;
   }
 
-  llvm::Error executeRDMA(wafer::InstrRDMAOp op) {
-    auto source = lookup(op.getSource());
-    auto dest = lookup(op.getDest());
+  llvm::Error executeRDMA(const Command &command) {
+    auto source = lookup(command.source);
+    auto dest = lookup(command.dest);
     if (!source)
       return source.takeError();
     if (!dest)
       return dest.takeError();
     auto sourceOffsets =
-        descriptorOffsets(op.getSrcStrides(), op.getSrcIterations());
+        descriptorOffsets(command.sourceStrides, command.sourceIterations);
     if (!sourceOffsets)
       return sourceOffsets.takeError();
-    if (llvm::Error error = validateMovementByteCount(
-            op.getByteCount(), op.getInnerBytes(), sourceOffsets->size()))
-      return error;
     std::vector<int64_t> destOffsets(sourceOffsets->size());
     for (auto [index, offset] : llvm::enumerate(destOffsets))
-      offset = index * op.getInnerBytes();
+      offset = index * command.innerBytes;
     return copyChunks(*source, *dest, *sourceOffsets, destOffsets,
-                      op.getInnerBytes());
+                      command.innerBytes);
   }
 
-  llvm::Error executeWDMA(wafer::InstrWDMAOp op) {
-    auto source = lookup(op.getSource());
-    auto dest = lookup(op.getDest());
+  llvm::Error executeWDMA(const Command &command) {
+    auto source = lookup(command.source);
+    auto dest = lookup(command.dest);
     if (!source)
       return source.takeError();
     if (!dest)
       return dest.takeError();
     auto destOffsets =
-        descriptorOffsets(op.getDstStrides(), op.getDstIterations());
+        descriptorOffsets(command.destStrides, command.destIterations);
     if (!destOffsets)
       return destOffsets.takeError();
-    if (llvm::Error error = validateMovementByteCount(
-            op.getByteCount(), op.getInnerBytes(), destOffsets->size()))
-      return error;
     std::vector<int64_t> sourceOffsets(destOffsets->size());
     for (auto [index, offset] : llvm::enumerate(sourceOffsets))
-      offset = index * op.getInnerBytes();
+      offset = index * command.innerBytes;
     return copyChunks(*source, *dest, sourceOffsets, *destOffsets,
-                      op.getInnerBytes());
+                      command.innerBytes);
   }
 
-  llvm::Error executeGatherScatter(wafer::InstrGatherScatterOp op) {
-    auto source = lookup(op.getSource());
-    auto dest = lookup(op.getDest());
+  llvm::Error executeGatherScatter(const Command &command) {
+    auto source = lookup(command.source);
+    auto dest = lookup(command.dest);
     if (!source)
       return source.takeError();
     if (!dest)
       return dest.takeError();
     auto sourceOffsets =
-        descriptorOffsets(op.getSrcStrides(), op.getSrcIterations(),
-                          op.getSrcOffset().value_or(0));
+        descriptorOffsets(command.sourceStrides, command.sourceIterations,
+                          command.sourceOffset.value_or(0));
     auto destOffsets =
-        descriptorOffsets(op.getDstStrides(), op.getDstIterations(),
-                          op.getDstOffset().value_or(0));
+        descriptorOffsets(command.destStrides, command.destIterations,
+                          command.destOffset.value_or(0));
     if (!sourceOffsets)
       return sourceOffsets.takeError();
     if (!destOffsets)
       return destOffsets.takeError();
     if (sourceOffsets->size() != destOffsets->size())
       return invalid("movement source/destination descriptors disagree");
-    if (llvm::Error error = validateMovementByteCount(
-            op.getByteCount(), op.getInnerBytes(), sourceOffsets->size()))
-      return error;
     return copyChunks(*source, *dest, *sourceOffsets, *destOffsets,
-                      op.getInnerBytes());
+                      command.innerBytes);
   }
 
-  llvm::Error executeGemm(wafer::InstrGemmOp op) {
-    if (op.getBatchCount().value_or(1) != 1)
-      return invalid("batched GEMM is not yet supported by reference executor");
-    auto lhs = lookup(op.getLhs());
-    auto rhs = lookup(op.getRhs());
-    auto dest = lookup(op.getDest());
+  llvm::Error executeGemm(const Command &command) {
+    auto lhs = lookup(command.lhs);
+    auto rhs = lookup(command.rhs);
+    auto dest = lookup(command.dest);
     if (!lhs)
       return lhs.takeError();
     if (!rhs)
       return rhs.takeError();
     if (!dest)
       return dest.takeError();
-    if (lhs->type.getRank() != 2 || rhs->type.getRank() != 2 ||
-        dest->type.getRank() != 2 ||
-        lhs->type.getShape() !=
-            llvm::ArrayRef<int64_t>({static_cast<int64_t>(op.getM()),
-                                     static_cast<int64_t>(op.getK())}) ||
-        rhs->type.getShape() !=
-            llvm::ArrayRef<int64_t>({static_cast<int64_t>(op.getK()),
-                                     static_cast<int64_t>(op.getN())}) ||
-        dest->type.getShape() !=
-            llvm::ArrayRef<int64_t>({static_cast<int64_t>(op.getM()),
-                                     static_cast<int64_t>(op.getN())}))
-      return invalid("GEMM dimensions disagree with accepted buffer shapes");
-    for (int64_t m = 0; m < static_cast<int64_t>(op.getM()); ++m)
-      for (int64_t n = 0; n < static_cast<int64_t>(op.getN()); ++n) {
+    for (int64_t m = 0; m < command.m; ++m)
+      for (int64_t n = 0; n < command.n; ++n) {
         float sum = 0.0f;
-        for (int64_t k = 0; k < static_cast<int64_t>(op.getK()); ++k) {
+        for (int64_t k = 0; k < command.k; ++k) {
           auto lhsValue = readF32(*lhs, {m, k});
           auto rhsValue = readF32(*rhs, {k, n});
           if (!lhsValue)
@@ -613,17 +1122,15 @@ private:
     return llvm::Error::success();
   }
 
-  llvm::Error executeElementwise(wafer::InstrElementwiseOp op) {
-    auto dest = lookup(op.getDest());
+  llvm::Error executeElementwise(const Command &command) {
+    auto dest = lookup(command.dest);
     if (!dest)
       return dest.takeError();
     std::vector<BufferView> inputs;
-    for (mlir::Value value : op.getInputs()) {
+    for (ValueId value : command.inputs) {
       auto input = lookup(value);
       if (!input)
         return input.takeError();
-      if (input->type.getShape() != dest->type.getShape())
-        return invalid("elementwise input shape disagrees with destination");
       inputs.push_back(std::move(*input));
     }
     return forEachLogicalIndex(
@@ -636,7 +1143,7 @@ private:
             values.push_back(*value);
           }
           float result = 0.0f;
-          switch (op.getKind()) {
+          switch (command.elementwiseKind) {
           case wafer::InstrElementwiseKind::Abs:
             result = std::fabs(values[0]);
             break;
@@ -706,33 +1213,105 @@ private:
             result = std::log1p(std::exp(values[0]));
             break;
           default:
-            return invalid("unsupported reference elementwise kind");
+            return invalid("unsupported projected elementwise kind");
           }
           return writeF32(*dest, index, result);
         });
   }
 
-  llvm::Error executeFill(wafer::InstrFillOp op) {
-    auto dest = lookup(op.getDest());
-    if (!dest)
-      return dest.takeError();
-    auto scalar = scalars.find(op.getValue());
-    if (scalar == scalars.end())
-      return invalid("fill scalar is unavailable");
-    return forEachLogicalIndex(
-        dest->type.getShape(), [&](llvm::ArrayRef<int64_t> index) {
-          return writeF32(*dest, index, static_cast<float>(scalar->second));
-        });
+  llvm::Expected<float> convertScalarToF32(const Scalar &scalar) {
+    if (scalar.floating) {
+      llvm::APFloat value = *scalar.floating;
+      bool losesInfo = false;
+      value.convert(llvm::APFloat::IEEEsingle(),
+                    llvm::APFloat::rmNearestTiesToEven, &losesInfo);
+      return value.convertToFloat();
+    }
+    if (scalar.integer) {
+      if (scalar.integer->getBitWidth() > 64)
+        return unsupported("fill integer wider than 64 bits");
+      if (scalar.integerIsUnsigned)
+        return static_cast<float>(scalar.integer->getZExtValue());
+      return static_cast<float>(scalar.integer->getSExtValue());
+    }
+    return invalid("projected scalar has no value");
   }
 
-  const RankExecutable &rank;
+  llvm::Error executeFill(const Command &command) {
+    auto dest = lookup(command.dest);
+    if (!dest)
+      return dest.takeError();
+    auto scalar = scalars.find(command.scalar);
+    if (scalar == scalars.end())
+      return invalid("fill scalar is unavailable");
+    auto value = convertScalarToF32(scalar->second);
+    if (!value)
+      return value.takeError();
+    return forEachLogicalIndex(dest->type.getShape(),
+                               [&](llvm::ArrayRef<int64_t> index) {
+                                 return writeF32(*dest, index, *value);
+                               });
+  }
+
+  const ReferenceProgram::Impl &program;
   std::shared_ptr<Storage> spmArena;
   std::shared_ptr<Storage> ddrArena;
-  llvm::DenseMap<mlir::Value, BufferView> buffers;
-  llvm::DenseMap<mlir::Value, double> scalars;
+  llvm::DenseMap<ValueId, BufferView> buffers;
+  llvm::DenseMap<ValueId, Scalar> scalars;
 };
 
 } // namespace
+
+struct ReferenceProgramBuilder {
+  static llvm::Expected<ReferenceProgram>
+  prepare(const ExecutableBundle &bundle, int64_t logicalRank) {
+    if (logicalRank < 0 ||
+        logicalRank >= bundle.getExecutionConfig().getRankCount())
+      return invalid("reference logical rank is outside executable bundle");
+    const RankExecutable *match = nullptr;
+    for (const RankExecutable &rank : bundle.getRankExecutables()) {
+      if (rank.getLogicalRank() != logicalRank)
+        continue;
+      if (match)
+        return invalid("executable bundle contains a duplicate logical rank");
+      match = &rank;
+    }
+    if (!match)
+      return invalid("executable bundle is missing requested logical rank");
+    if (match->getTransportContract() != TransportContract::None)
+      return unsupported("single-rank executor does not accept transport");
+
+    mlir::func::FuncOp entry =
+        match->getModule().lookupSymbol<mlir::func::FuncOp>(
+            match->getEntrySymbol());
+    if (!entry)
+      return invalid("accepted rank entry function is missing");
+
+    auto impl = std::make_unique<ReferenceProgram::Impl>();
+    impl->contextOwner = bundle.context;
+    impl->logicalRank = logicalRank;
+    impl->programBindings = match->getProgramBindings();
+    if (llvm::Error error = ProgramProjector(*impl).project(entry))
+      return std::move(error);
+    return ReferenceProgram(std::move(impl));
+  }
+};
+
+ReferenceProgram::ReferenceProgram(std::unique_ptr<Impl> impl)
+    : impl(std::move(impl)) {}
+
+ReferenceProgram::ReferenceProgram(ReferenceProgram &&) noexcept = default;
+ReferenceProgram &
+ReferenceProgram::operator=(ReferenceProgram &&) noexcept = default;
+ReferenceProgram::~ReferenceProgram() = default;
+
+int64_t ReferenceProgram::getLogicalRank() const {
+  return impl ? impl->logicalRank : -1;
+}
+
+size_t ReferenceProgram::getProjectedOperationCount() const {
+  return impl ? impl->projectedOperationCount : 0;
+}
 
 llvm::Expected<ReferenceTensor>
 ReferenceTensor::create(llvm::StringRef dtype, llvm::ArrayRef<int64_t> shape,
@@ -747,23 +1326,26 @@ ReferenceTensor::create(llvm::StringRef dtype, llvm::ArrayRef<int64_t> shape,
                          std::vector<uint8_t>(bytes));
 }
 
+llvm::Expected<ReferenceProgram>
+prepareReferenceRank(const ExecutableBundle &bundle, int64_t logicalRank) {
+  return ReferenceProgramBuilder::prepare(bundle, logicalRank);
+}
+
+llvm::Expected<ReferenceExecutionResult>
+executeReferenceProgram(const ReferenceProgram &program,
+                        llvm::ArrayRef<ReferenceInputBinding> inputs) {
+  if (!program.impl)
+    return invalid("reference program is moved-from");
+  return ProgramInterpreter(*program.impl).run(inputs);
+}
+
 llvm::Expected<ReferenceExecutionResult>
 executeReferenceRank(const ExecutableBundle &bundle, int64_t logicalRank,
                      llvm::ArrayRef<ReferenceInputBinding> inputs) {
-  if (logicalRank < 0 ||
-      logicalRank >= bundle.getExecutionConfig().getRankCount())
-    return invalid("reference logical rank is outside executable bundle");
-  const RankExecutable *match = nullptr;
-  for (const RankExecutable &rank : bundle.getRankExecutables()) {
-    if (rank.getLogicalRank() != logicalRank)
-      continue;
-    if (match)
-      return invalid("executable bundle contains a duplicate logical rank");
-    match = &rank;
-  }
-  if (!match)
-    return invalid("executable bundle is missing requested logical rank");
-  return RankInterpreter(*match).run(inputs);
+  auto program = prepareReferenceRank(bundle, logicalRank);
+  if (!program)
+    return program.takeError();
+  return executeReferenceProgram(*program, inputs);
 }
 
 } // namespace wafer::compiler

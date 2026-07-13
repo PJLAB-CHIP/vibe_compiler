@@ -153,6 +153,7 @@ public:
 
 private:
   friend struct ExecutableBundleBuilder;
+  friend struct ReferenceProgramBuilder;
 
   ExecutableBundle(ExecutionConfig executionConfig,
                    std::shared_ptr<mlir::MLIRContext> context,

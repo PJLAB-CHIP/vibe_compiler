@@ -19,6 +19,7 @@
 #include "mlir/Dialect/SCF/Transforms/BufferizableOpInterfaceImpl.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Tensor/Transforms/BufferizableOpInterfaceImpl.h"
+#include "mlir/IR/Builders.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Parser/Parser.h"
 
@@ -188,6 +189,13 @@ module {
   EXPECT_EQ(floatsOf(result->getOutputs().front().tensor.getBytes()),
             std::vector<float>(8, 9.0f));
 
+  auto prepared =
+      wafer::compiler::prepareReferenceRank(*bundle, /*logicalRank=*/0);
+  if (!prepared)
+    FAIL() << llvm::toString(prepared.takeError());
+  EXPECT_EQ(prepared->getLogicalRank(), 0);
+  EXPECT_GT(prepared->getProjectedOperationCount(), 0u);
+
   wafer::InstrRDMAOp rdma;
   bundle->getRankExecutables().front().getModule().walk(
       [&](wafer::InstrRDMAOp operation) {
@@ -198,12 +206,67 @@ module {
   mlir::IntegerAttr originalByteCount = rdma.getByteCountAttr();
   rdma->setAttr("byte_count",
                 mlir::IntegerAttr::get(originalByteCount.getType(), 999));
+  auto immutableResult =
+      wafer::compiler::executeReferenceProgram(*prepared, inputs);
+  if (!immutableResult)
+    FAIL() << llvm::toString(immutableResult.takeError());
+  ASSERT_EQ(immutableResult->getOutputs().size(), 1u);
+  EXPECT_EQ(floatsOf(immutableResult->getOutputs().front().tensor.getBytes()),
+            std::vector<float>(8, 9.0f));
+
   auto badDescriptor =
       wafer::compiler::executeReferenceRank(*bundle, /*logicalRank=*/0, inputs);
   ASSERT_FALSE(static_cast<bool>(badDescriptor));
   EXPECT_NE(llvm::toString(badDescriptor.takeError()).find("descriptor"),
             std::string::npos);
   rdma->setAttr("byte_count", originalByteCount);
+
+  mlir::func::FuncOp entry = bundle->getRankExecutables()
+                                 .front()
+                                 .getModule()
+                                 .lookupSymbol<mlir::func::FuncOp>("main");
+  ASSERT_TRUE(entry);
+  mlir::OpBuilder builder(entry.getContext());
+  builder.setInsertionPoint(entry.getBody().front().getTerminator());
+  auto unsupportedConstant =
+      builder.create<mlir::arith::ConstantIndexOp>(entry.getLoc(), 1);
+  auto unsupportedAdd = builder.create<mlir::arith::AddIOp>(
+      entry.getLoc(), unsupportedConstant, unsupportedConstant);
+  auto unsupportedProgram =
+      wafer::compiler::executeReferenceRank(*bundle, /*logicalRank=*/0, {});
+  ASSERT_FALSE(static_cast<bool>(unsupportedProgram));
+  std::string unsupportedMessage =
+      llvm::toString(unsupportedProgram.takeError());
+  EXPECT_NE(unsupportedMessage.find("capability preflight"), std::string::npos);
+  EXPECT_NE(unsupportedMessage.find("arith.addi"), std::string::npos);
+  unsupportedAdd.erase();
+  unsupportedConstant.erase();
+
+  mlir::Value originalRDMASource = rdma.getSource();
+  auto sourceType = mlir::cast<mlir::MemRefType>(originalRDMASource.getType());
+  builder.setInsertionPoint(rdma);
+  llvm::SmallVector<mlir::OpFoldResult> offsets(sourceType.getRank(),
+                                                builder.getIndexAttr(0));
+  llvm::SmallVector<mlir::OpFoldResult> sizes;
+  llvm::SmallVector<mlir::OpFoldResult> strides(sourceType.getRank(),
+                                                builder.getIndexAttr(1));
+  for (int64_t dim : sourceType.getShape())
+    sizes.push_back(builder.getIndexAttr(dim));
+  auto fullSubview = builder.create<mlir::memref::SubViewOp>(
+      rdma.getLoc(), originalRDMASource, offsets, sizes, strides);
+  rdma.getSourceMutable().assign(fullSubview.getResult());
+  auto viewProgram =
+      wafer::compiler::prepareReferenceRank(*bundle, /*logicalRank=*/0);
+  if (!viewProgram)
+    FAIL() << llvm::toString(viewProgram.takeError());
+  auto viewResult =
+      wafer::compiler::executeReferenceProgram(*viewProgram, inputs);
+  if (!viewResult)
+    FAIL() << llvm::toString(viewResult.takeError());
+  EXPECT_EQ(floatsOf(viewResult->getOutputs().front().tensor.getBytes()),
+            std::vector<float>(8, 9.0f));
+  rdma.getSourceMutable().assign(originalRDMASource);
+  fullSubview.erase();
 
   mlir::memref::AllocOp spmAlloc;
   bundle->getRankExecutables().front().getModule().walk(

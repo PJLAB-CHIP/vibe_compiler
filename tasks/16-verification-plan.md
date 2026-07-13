@@ -349,9 +349,14 @@ structured no-progress/deadlock failure；不能靠timeout、线程调度或map�
 DDR/SPM offset建立独立arena，按descriptor执行alias-safe movement，并复用Wafer physical layout helper完成logical
 element访问；group经过production selection/lowering后形成的residual MLP已覆盖RDMA、WDMA、tensor/Cx movement、
 两次GEMM、bias broadcast、tanh、residual add和完整f32输出比较。descriptor byte count、缺失accepted offset及
-boundary dtype不一致均为hard failure。该checkpoint不把Q19标成完成：当前仍边读mutable MLIR边执行，测试oracle
-使用简化权重和同源host transcendental；immutable projection、capability closure、convert/control-flow、独立layout
-property和非平凡differential均未闭合。DTE multi-rank已拆给Q19.M，并明确等待Q16.T。
+boundary dtype不一致均为hard failure。当前进一步增加owner-backed immutable `ReferenceProgram`：projection复制
+当前supported op的typed fields、memref type/static view delta和SSA value-id relation，执行阶段不再访问MLIR
+`Operation`/`Value`；完整projection在input import/arena allocation前完成。测试已证明projection后篡改原RDMA descriptor
+不改变prepared program，而convenience入口重新preflight会拒绝；unsupported op优先于缺失input失败，full static
+subview也经projection执行。该checkpoint仍不把Q19标成完成：SCF/CFG/direct-call、convert/rounding、独立layout
+property和非平凡differential尚未闭合，当前transcendental仍使用host实现。DTE multi-rank已拆给Q19.M，并等待Q16.T。
+本批`check-wafer`新鲜执行33个C++ unit和230个lit（229 pass、1个feature-inverse unsupported），CTest 3/3通过；
+unsupported项仍是禁用importer feature的反向gate，不覆盖Q19 mandatory path。
 
 ## 10. Q20/Q21 Vertical Workload Gates
 

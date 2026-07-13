@@ -8,7 +8,9 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
+#include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -68,9 +70,46 @@ private:
   std::vector<ReferenceOutputBinding> outputs;
 };
 
+/// Invocation-local immutable projection of one accepted rank. The program
+/// owns the MLIR context needed by copied immutable types, but does not retain
+/// operations, values, planner state, or a serializable instruction stream.
+class ReferenceProgram {
+public:
+  struct Impl;
+
+  ReferenceProgram(ReferenceProgram &&) noexcept;
+  ReferenceProgram &operator=(ReferenceProgram &&) noexcept;
+  ReferenceProgram(const ReferenceProgram &) = delete;
+  ReferenceProgram &operator=(const ReferenceProgram &) = delete;
+  ~ReferenceProgram();
+
+  int64_t getLogicalRank() const;
+  size_t getProjectedOperationCount() const;
+
+private:
+  friend struct ReferenceProgramBuilder;
+  friend llvm::Expected<ReferenceExecutionResult>
+  executeReferenceProgram(const ReferenceProgram &program,
+                          llvm::ArrayRef<ReferenceInputBinding> inputs);
+
+  explicit ReferenceProgram(std::unique_ptr<Impl> impl);
+  std::unique_ptr<Impl> impl;
+};
+
+/// Projects and validates every executable operation/control edge before any
+/// invocation tensor is imported or execution storage is allocated.
+llvm::Expected<ReferenceProgram>
+prepareReferenceRank(const ExecutableBundle &bundle, int64_t logicalRank);
+
+/// Executes only the immutable projection. Mutating or destroying the source
+/// bundle after preparation cannot change this program's command semantics.
+llvm::Expected<ReferenceExecutionResult>
+executeReferenceProgram(const ReferenceProgram &program,
+                        llvm::ArrayRef<ReferenceInputBinding> inputs);
+
 /// Executes the already-selected instruction and accepted memory facts of one
-/// rank. It never reruns candidate selection or reconstructs semantic roles
-/// from names.
+/// rank. This convenience entry first performs complete projection/capability
+/// preflight, then executes that immutable program.
 llvm::Expected<ReferenceExecutionResult>
 executeReferenceRank(const ExecutableBundle &bundle, int64_t logicalRank,
                      llvm::ArrayRef<ReferenceInputBinding> inputs);
