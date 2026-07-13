@@ -26,6 +26,9 @@
   oracle，不得复用production `WaferPhysicalTensorInfo`或offset helper，也不被production代码或artifact消费。矩阵应逐
   logical坐标比较footprint/offset/唯一性/in-range，并覆盖compact stride、Cx/NCx、dtype/rank、tail对齐台阶、channel
   block边界和每一维negative/one-past；这样既能发现同源bug，也不形成第二协议。
+- instruction kind决定的type pair和parameter policy属于IR语义，应由dialect typed helper唯一拥有，verifier、projector
+  和其它需要该关系的consumer共同消费；executor只从type派生自己的numeric representation。完整enum capability gate
+  可遍历TableGen生成的`symbolize*` domain并实际prepare/execute，不能再抄一份kind字符串或case表作为expected能力。
 - 若reference multi-rank需要的DTE被当前ExecutableBundle fail closed，先补memory-planning后的physical transport
   acceptance和target consumer，再解锁multi-rank executor；不能用手写DTE module绕过bundle gate。
 - internal bundle builder把shared MLIR context转移给返回bundle；测试要在bundle存活期间销毁source module。

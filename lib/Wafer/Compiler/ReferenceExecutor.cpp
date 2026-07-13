@@ -329,117 +329,47 @@ bool isSupportedElementwiseKind(wafer::InstrElementwiseKind kind,
 
 using NumericFormat = ReferenceProgram::Impl::NumericFormat;
 
-enum class ConvertParameterKind { None, Rounding, ZeroPoint };
-
 struct ConvertSpec {
   NumericFormat source;
   NumericFormat dest;
-  ConvertParameterKind parameter;
+  wafer::InstrConvertParameterKind parameter;
 };
 
-std::optional<ConvertSpec> getConvertSpec(wafer::InstrConvertKind kind) {
-  using Kind = wafer::InstrConvertKind;
-  using Parameter = ConvertParameterKind;
-  using Format = NumericFormat;
-  switch (kind) {
-  case Kind::Int8Fp16:
-    return ConvertSpec{Format::Int8, Format::Float16, Parameter::ZeroPoint};
-  case Kind::Int8Bf16:
-    return ConvertSpec{Format::Int8, Format::BFloat16, Parameter::ZeroPoint};
-  case Kind::Int8Fp32:
-    return ConvertSpec{Format::Int8, Format::Float32, Parameter::ZeroPoint};
-  case Kind::Int8Tf32:
-    return ConvertSpec{Format::Int8, Format::TF32, Parameter::ZeroPoint};
-  case Kind::Int16Fp16:
-    return ConvertSpec{Format::Int16, Format::Float16, Parameter::None};
-  case Kind::Int16Bf16:
-    return ConvertSpec{Format::Int16, Format::BFloat16, Parameter::Rounding};
-  case Kind::Int16Fp32:
-    return ConvertSpec{Format::Int16, Format::Float32, Parameter::Rounding};
-  case Kind::Int16Tf32:
-    return ConvertSpec{Format::Int16, Format::TF32, Parameter::Rounding};
-  case Kind::Int32Fp16:
-    return ConvertSpec{Format::Int32, Format::Float16, Parameter::Rounding};
-  case Kind::Int32Bf16:
-    return ConvertSpec{Format::Int32, Format::BFloat16, Parameter::Rounding};
-  case Kind::Int32Fp32:
-    return ConvertSpec{Format::Int32, Format::Float32, Parameter::Rounding};
-  case Kind::Int32Tf32:
-    return ConvertSpec{Format::Int32, Format::TF32, Parameter::Rounding};
-  case Kind::Bf16Int8:
-    return ConvertSpec{Format::BFloat16, Format::Int8, Parameter::None};
-  case Kind::Bf16Int16:
-    return ConvertSpec{Format::BFloat16, Format::Int16, Parameter::Rounding};
-  case Kind::Bf16Int32:
-    return ConvertSpec{Format::BFloat16, Format::Int32, Parameter::Rounding};
-  case Kind::Bf16Fp16:
-    return ConvertSpec{Format::BFloat16, Format::Float16, Parameter::None};
-  case Kind::Bf16Fp32:
-    return ConvertSpec{Format::BFloat16, Format::Float32, Parameter::None};
-  case Kind::Bf16Tf32:
-    return ConvertSpec{Format::BFloat16, Format::TF32, Parameter::None};
-  case Kind::Fp16Int8:
-    return ConvertSpec{Format::Float16, Format::Int8, Parameter::Rounding};
-  case Kind::Fp16Int16:
-    return ConvertSpec{Format::Float16, Format::Int16, Parameter::Rounding};
-  case Kind::Fp16Int32:
-    return ConvertSpec{Format::Float16, Format::Int32, Parameter::Rounding};
-  case Kind::Fp16Bf16:
-    return ConvertSpec{Format::Float16, Format::BFloat16, Parameter::Rounding};
-  case Kind::Fp16Fp32:
-    return ConvertSpec{Format::Float16, Format::Float32, Parameter::None};
-  case Kind::Fp16Tf32:
-    return ConvertSpec{Format::Float16, Format::TF32, Parameter::None};
-  case Kind::Fp32Int8:
-    return ConvertSpec{Format::Float32, Format::Int8, Parameter::Rounding};
-  case Kind::Fp32Int16:
-    return ConvertSpec{Format::Float32, Format::Int16, Parameter::Rounding};
-  case Kind::Fp32Int32:
-    return ConvertSpec{Format::Float32, Format::Int32, Parameter::Rounding};
-  case Kind::Fp32Fp16:
-    return ConvertSpec{Format::Float32, Format::Float16, Parameter::Rounding};
-  case Kind::Fp32Bf16:
-    return ConvertSpec{Format::Float32, Format::BFloat16, Parameter::Rounding};
-  case Kind::Fp32Tf32:
-    return ConvertSpec{Format::Float32, Format::TF32, Parameter::Rounding};
-  case Kind::Tf32Int8:
-    return ConvertSpec{Format::TF32, Format::Int8, Parameter::Rounding};
-  case Kind::Tf32Int16:
-    return ConvertSpec{Format::TF32, Format::Int16, Parameter::Rounding};
-  case Kind::Tf32Int32:
-    return ConvertSpec{Format::TF32, Format::Int32, Parameter::Rounding};
-  case Kind::Tf32Fp16:
-    return ConvertSpec{Format::TF32, Format::Float16, Parameter::None};
-  case Kind::Tf32Bf16:
-    return ConvertSpec{Format::TF32, Format::BFloat16, Parameter::Rounding};
-  case Kind::Tf32Fp32:
-    return ConvertSpec{Format::TF32, Format::Float32, Parameter::None};
+std::optional<NumericFormat> getNumericFormat(mlir::Type type) {
+  if (auto integer = mlir::dyn_cast<mlir::IntegerType>(type)) {
+    if (!integer.isSignless())
+      return std::nullopt;
+    if (integer.getWidth() == 8)
+      return NumericFormat::Int8;
+    if (integer.getWidth() == 16)
+      return NumericFormat::Int16;
+    if (integer.getWidth() == 32)
+      return NumericFormat::Int32;
+    return std::nullopt;
   }
+  if (type.isBF16())
+    return NumericFormat::BFloat16;
+  if (type.isF16())
+    return NumericFormat::Float16;
+  if (mlir::isa<mlir::FloatTF32Type>(type))
+    return NumericFormat::TF32;
+  if (type.isF32())
+    return NumericFormat::Float32;
   return std::nullopt;
 }
 
+std::optional<ConvertSpec> getConvertSpec(mlir::MLIRContext *context,
+                                          wafer::InstrConvertKind kind) {
+  auto [sourceType, destType] = wafer::getInstrConvertTypePair(context, kind);
+  std::optional<NumericFormat> source = getNumericFormat(sourceType);
+  std::optional<NumericFormat> dest = getNumericFormat(destType);
+  if (!source || !dest)
+    return std::nullopt;
+  return ConvertSpec{*source, *dest, wafer::getInstrConvertParameterKind(kind)};
+}
+
 bool matchesNumericFormat(mlir::Type type, NumericFormat format) {
-  switch (format) {
-  case NumericFormat::Int8:
-  case NumericFormat::Int16:
-  case NumericFormat::Int32: {
-    auto integer = mlir::dyn_cast<mlir::IntegerType>(type);
-    unsigned expectedWidth = format == NumericFormat::Int8    ? 8
-                             : format == NumericFormat::Int16 ? 16
-                                                              : 32;
-    return integer && integer.isSignless() &&
-           integer.getWidth() == expectedWidth;
-  }
-  case NumericFormat::BFloat16:
-    return type.isBF16();
-  case NumericFormat::Float16:
-    return type.isF16();
-  case NumericFormat::Float32:
-    return type.isF32();
-  case NumericFormat::TF32:
-    return mlir::isa<mlir::FloatTF32Type>(type);
-  }
-  return false;
+  return getNumericFormat(type) == format;
 }
 
 llvm::Expected<llvm::APFloat::roundingMode>
@@ -876,7 +806,8 @@ private:
         command.innerBytes = movement.getInnerBytes();
       } else if (auto convert =
                      mlir::dyn_cast<wafer::InstrConvertOp>(operation)) {
-        std::optional<ConvertSpec> spec = getConvertSpec(convert.getKind());
+        std::optional<ConvertSpec> spec =
+            getConvertSpec(convert.getContext(), convert.getKind());
         if (!spec)
           return unsupported("unknown instruction convert kind");
         auto sourceType = convert.getSource().getType();
@@ -898,11 +829,11 @@ private:
         std::optional<uint64_t> zeroPoint = convert.getZeroPoint();
         std::optional<uint64_t> roundingMode = convert.getRoundingMode();
         switch (spec->parameter) {
-        case ConvertParameterKind::None:
+        case wafer::InstrConvertParameterKind::None:
           if (zeroPoint || roundingMode)
             return unsupported("plain convert has unexpected parameters");
           break;
-        case ConvertParameterKind::Rounding: {
+        case wafer::InstrConvertParameterKind::RoundingMode: {
           if (zeroPoint || !roundingMode)
             return unsupported(
                 "rounding convert has invalid parameter combination");
@@ -912,7 +843,7 @@ private:
           command.roundingMode = *projectedRounding;
           break;
         }
-        case ConvertParameterKind::ZeroPoint:
+        case wafer::InstrConvertParameterKind::ZeroPoint:
           if (!zeroPoint || roundingMode)
             return unsupported(
                 "zero-point convert has invalid parameter combination");
@@ -1298,8 +1229,16 @@ llvm::Expected<NumericValue> readNumeric(const BufferView &buffer,
   for (int64_t byte = 0; byte < byteWidth; ++byte)
     bits |= llvm::APInt(bitWidth, buffer.storage->bytes[*offset + byte])
             << (byte * 8);
-  if (const llvm::fltSemantics *semantics = getFloatSemantics(format))
+  if (const llvm::fltSemantics *semantics = getFloatSemantics(format)) {
+    if (format == NumericFormat::TF32) {
+      uint64_t storage = bits.getZExtValue();
+      uint64_t compact = ((storage >> 31) << 18) |
+                         (((storage >> 23) & 0xff) << 10) |
+                         ((storage >> 13) & 0x3ff);
+      bits = llvm::APInt(/*numBits=*/19, compact);
+    }
     return NumericValue{std::nullopt, llvm::APFloat(*semantics, bits)};
+  }
   return NumericValue{std::move(bits), std::nullopt};
 }
 
@@ -1334,17 +1273,30 @@ convertNumeric(const NumericValue &source, NumericFormat destFormat,
 llvm::Error writeNumericBits(const BufferView &buffer,
                              llvm::ArrayRef<int64_t> indices,
                              NumericFormat format, const llvm::APInt &bits) {
-  if (!matchesNumericFormat(buffer.type.getElementType(), format) ||
-      bits.getBitWidth() != getNumericBitWidth(format))
+  if (!matchesNumericFormat(buffer.type.getElementType(), format))
     return invalid(
         "projected convert destination format disagrees with buffer");
-  int64_t byteWidth = bits.getBitWidth() / 8;
+  llvm::APInt storageBits = bits;
+  if (format == NumericFormat::TF32) {
+    if (bits.getBitWidth() != 19)
+      return invalid(
+          "projected TF32 convert produced a non-TF32 semantic width");
+    uint64_t compact = bits.getZExtValue();
+    uint64_t storage = ((compact >> 18) << 31) |
+                       (((compact >> 10) & 0xff) << 23) |
+                       ((compact & 0x3ff) << 13);
+    storageBits = llvm::APInt(/*numBits=*/32, storage);
+  } else if (bits.getBitWidth() != getNumericBitWidth(format)) {
+    return invalid(
+        "projected convert destination format disagrees with buffer");
+  }
+  int64_t byteWidth = storageBits.getBitWidth() / 8;
   auto offset = getAbsoluteOffset(buffer, indices, byteWidth);
   if (!offset)
     return offset.takeError();
   for (int64_t byte = 0; byte < byteWidth; ++byte)
     buffer.storage->bytes[*offset + byte] =
-        static_cast<uint8_t>(bits.extractBitsAsZExtValue(8, byte * 8));
+        static_cast<uint8_t>(storageBits.extractBitsAsZExtValue(8, byte * 8));
   return llvm::Error::success();
 }
 

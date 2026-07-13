@@ -1019,7 +1019,7 @@ static mlir::Type getConvertType(mlir::MLIRContext *context,
 }
 
 static std::pair<mlir::Type, mlir::Type>
-getInstrConvertTypePair(mlir::MLIRContext *context, InstrConvertKind kind) {
+getInstrConvertTypePairImpl(mlir::MLIRContext *context, InstrConvertKind kind) {
   auto i8 = getConvertType(context, ConvertTypeTag::Int8);
   auto i16 = getConvertType(context, ConvertTypeTag::Int16);
   auto i32 = getConvertType(context, ConvertTypeTag::Int32);
@@ -1105,49 +1105,6 @@ getInstrConvertTypePair(mlir::MLIRContext *context, InstrConvertKind kind) {
   llvm_unreachable("unknown instruction convert kind");
 }
 
-static bool requiresZeroPoint(InstrConvertKind kind) {
-  switch (kind) {
-  case InstrConvertKind::Int8Fp16:
-  case InstrConvertKind::Int8Bf16:
-  case InstrConvertKind::Int8Fp32:
-  case InstrConvertKind::Int8Tf32:
-    return true;
-  default:
-    return false;
-  }
-}
-
-static bool requiresRoundingMode(InstrConvertKind kind) {
-  switch (kind) {
-  case InstrConvertKind::Int16Bf16:
-  case InstrConvertKind::Int16Fp32:
-  case InstrConvertKind::Int16Tf32:
-  case InstrConvertKind::Int32Fp16:
-  case InstrConvertKind::Int32Bf16:
-  case InstrConvertKind::Int32Fp32:
-  case InstrConvertKind::Int32Tf32:
-  case InstrConvertKind::Bf16Int16:
-  case InstrConvertKind::Bf16Int32:
-  case InstrConvertKind::Fp16Int8:
-  case InstrConvertKind::Fp16Int16:
-  case InstrConvertKind::Fp16Int32:
-  case InstrConvertKind::Fp16Bf16:
-  case InstrConvertKind::Fp32Int8:
-  case InstrConvertKind::Fp32Int16:
-  case InstrConvertKind::Fp32Int32:
-  case InstrConvertKind::Fp32Fp16:
-  case InstrConvertKind::Fp32Bf16:
-  case InstrConvertKind::Fp32Tf32:
-  case InstrConvertKind::Tf32Int8:
-  case InstrConvertKind::Tf32Int16:
-  case InstrConvertKind::Tf32Int32:
-  case InstrConvertKind::Tf32Bf16:
-    return true;
-  default:
-    return false;
-  }
-}
-
 static mlir::LogicalResult verifyOptionalUInt32Attr(mlir::Operation *op,
                                                     mlir::IntegerAttr attr,
                                                     llvm::StringRef name) {
@@ -1187,6 +1144,58 @@ static mlir::LogicalResult verifyNoEmptyVariadicInputs(mlir::Operation *op,
 }
 
 } // namespace
+
+std::pair<mlir::Type, mlir::Type>
+wafer::getInstrConvertTypePair(mlir::MLIRContext *context,
+                               InstrConvertKind kind) {
+  return getInstrConvertTypePairImpl(context, kind);
+}
+
+InstrConvertParameterKind
+wafer::getInstrConvertParameterKind(InstrConvertKind kind) {
+  switch (kind) {
+  case InstrConvertKind::Int8Fp16:
+  case InstrConvertKind::Int8Bf16:
+  case InstrConvertKind::Int8Fp32:
+  case InstrConvertKind::Int8Tf32:
+    return InstrConvertParameterKind::ZeroPoint;
+  case InstrConvertKind::Int16Bf16:
+  case InstrConvertKind::Int16Fp32:
+  case InstrConvertKind::Int16Tf32:
+  case InstrConvertKind::Int32Fp16:
+  case InstrConvertKind::Int32Bf16:
+  case InstrConvertKind::Int32Fp32:
+  case InstrConvertKind::Int32Tf32:
+  case InstrConvertKind::Bf16Int16:
+  case InstrConvertKind::Bf16Int32:
+  case InstrConvertKind::Fp16Int8:
+  case InstrConvertKind::Fp16Int16:
+  case InstrConvertKind::Fp16Int32:
+  case InstrConvertKind::Fp16Bf16:
+  case InstrConvertKind::Fp32Int8:
+  case InstrConvertKind::Fp32Int16:
+  case InstrConvertKind::Fp32Int32:
+  case InstrConvertKind::Fp32Fp16:
+  case InstrConvertKind::Fp32Bf16:
+  case InstrConvertKind::Fp32Tf32:
+  case InstrConvertKind::Tf32Int8:
+  case InstrConvertKind::Tf32Int16:
+  case InstrConvertKind::Tf32Int32:
+  case InstrConvertKind::Tf32Bf16:
+    return InstrConvertParameterKind::RoundingMode;
+  case InstrConvertKind::Int16Fp16:
+  case InstrConvertKind::Bf16Int8:
+  case InstrConvertKind::Bf16Fp16:
+  case InstrConvertKind::Bf16Fp32:
+  case InstrConvertKind::Bf16Tf32:
+  case InstrConvertKind::Fp16Fp32:
+  case InstrConvertKind::Fp16Tf32:
+  case InstrConvertKind::Tf32Fp16:
+  case InstrConvertKind::Tf32Fp32:
+    return InstrConvertParameterKind::None;
+  }
+  llvm_unreachable("unknown instruction convert kind");
+}
 
 mlir::LogicalResult InstrRDMAOp::verify() {
   if (mlir::failed(
@@ -1627,19 +1636,25 @@ mlir::LogicalResult InstrConvertOp::verify() {
       getOperation()->getAttrOfType<mlir::IntegerAttr>("zero_point");
   mlir::IntegerAttr roundingMode =
       getOperation()->getAttrOfType<mlir::IntegerAttr>("rounding_mode");
-  if (requiresZeroPoint(kind)) {
+  switch (getInstrConvertParameterKind(kind)) {
+  case InstrConvertParameterKind::ZeroPoint:
     if (!zeroPoint)
       return emitOpError("convert kind requires zero_point attr");
     if (roundingMode)
       return emitOpError("zero-point convert must not have rounding_mode attr");
-  } else if (zeroPoint) {
-    return emitOpError("convert kind must not have zero_point attr");
-  }
-  if (requiresRoundingMode(kind)) {
+    break;
+  case InstrConvertParameterKind::RoundingMode:
+    if (zeroPoint)
+      return emitOpError("convert kind must not have zero_point attr");
     if (!roundingMode)
       return emitOpError("convert kind requires rounding_mode attr");
-  } else if (roundingMode) {
-    return emitOpError("convert kind must not have rounding_mode attr");
+    break;
+  case InstrConvertParameterKind::None:
+    if (zeroPoint)
+      return emitOpError("convert kind must not have zero_point attr");
+    if (roundingMode)
+      return emitOpError("convert kind must not have rounding_mode attr");
+    break;
   }
   if (mlir::failed(verifyStaticElementCountEqual(
           getOperation(), getSource().getType(), getDest().getType(),

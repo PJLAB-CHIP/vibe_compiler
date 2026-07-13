@@ -516,34 +516,123 @@ module {
   roundedFloat.erase();
   roundedInteger.erase();
 
-  auto i8Type = mlir::MemRefType::get(
-      addInputType.getShape(), builder.getI8Type(), addInputType.getLayout(),
-      addInputType.getMemorySpace());
-  auto f16Type = mlir::MemRefType::get(
-      addInputType.getShape(), builder.getF16Type(), addInputType.getLayout(),
-      addInputType.getMemorySpace());
+  size_t declaredConvertKinds = 0;
+  size_t acceptedConvertKinds = 0;
+  size_t rejectedZeroPointKinds = 0;
+  for (uint32_t rawKind = 0;
+       rawKind <= wafer::getMaxEnumValForInstrConvertKind(); ++rawKind) {
+    std::optional<wafer::InstrConvertKind> kind =
+        wafer::symbolizeInstrConvertKind(rawKind);
+    if (!kind)
+      continue;
+    SCOPED_TRACE(wafer::stringifyInstrConvertKind(*kind).str());
+    ++declaredConvertKinds;
+
+    auto [sourceElement, destElement] =
+        wafer::getInstrConvertTypePair(add.getContext(), *kind);
+    auto matrixSourceType = mlir::MemRefType::get(
+        addInputType.getShape(), sourceElement, addInputType.getLayout(),
+        addInputType.getMemorySpace());
+    auto matrixDestType = mlir::MemRefType::get(
+        addInputType.getShape(), destElement, addInputType.getLayout(),
+        addInputType.getMemorySpace());
+    builder.setInsertionPoint(add);
+    auto matrixSource = builder.create<mlir::memref::AllocOp>(
+        add.getLoc(), matrixSourceType, mlir::ValueRange{});
+    matrixSource->setAttr(wafer::kWaferSPMOffsetAttrName,
+                          wafer::SPMOffsetAttr::get(add.getContext(), 1 << 20));
+    auto matrixDest = builder.create<mlir::memref::AllocOp>(
+        add.getLoc(), matrixDestType, mlir::ValueRange{});
+    matrixDest->setAttr(wafer::kWaferSPMOffsetAttrName,
+                        wafer::SPMOffsetAttr::get(add.getContext(), 2 << 20));
+
+    mlir::IntegerAttr zeroPoint;
+    mlir::IntegerAttr roundingMode;
+    wafer::InstrConvertParameterKind parameterKind =
+        wafer::getInstrConvertParameterKind(*kind);
+    if (parameterKind == wafer::InstrConvertParameterKind::ZeroPoint)
+      zeroPoint = builder.getI64IntegerAttr(0);
+    else if (parameterKind == wafer::InstrConvertParameterKind::RoundingMode)
+      roundingMode = builder.getI64IntegerAttr(0);
+    auto matrixConvert = builder.create<wafer::InstrConvertOp>(
+        add.getLoc(), *kind, matrixSource, matrixDest, zeroPoint, roundingMode);
+
+    if (parameterKind == wafer::InstrConvertParameterKind::ZeroPoint) {
+      auto rejected =
+          wafer::compiler::executeReferenceRank(*bundle, /*logicalRank=*/0, {});
+      ASSERT_FALSE(static_cast<bool>(rejected));
+      std::string message = llvm::toString(rejected.takeError());
+      EXPECT_NE(message.find("capability preflight"), std::string::npos);
+      EXPECT_NE(message.find("zero-point convert formula"), std::string::npos);
+      ++rejectedZeroPointKinds;
+    } else {
+      auto matrixProgram =
+          wafer::compiler::prepareReferenceRank(*bundle, /*logicalRank=*/0);
+      if (!matrixProgram)
+        FAIL() << llvm::toString(matrixProgram.takeError());
+      auto matrixResult =
+          wafer::compiler::executeReferenceProgram(*matrixProgram, inputs);
+      if (!matrixResult)
+        FAIL() << llvm::toString(matrixResult.takeError());
+      EXPECT_EQ(floatsOf(matrixResult->getOutputs().front().tensor.getBytes()),
+                std::vector<float>(8, 9.0f));
+      ++acceptedConvertKinds;
+    }
+
+    matrixConvert.erase();
+    matrixDest.erase();
+    matrixSource.erase();
+  }
+  EXPECT_GT(declaredConvertKinds, 0u);
+  EXPECT_GT(acceptedConvertKinds, 0u);
+  EXPECT_GT(rejectedZeroPointKinds, 0u);
+  EXPECT_EQ(acceptedConvertKinds + rejectedZeroPointKinds,
+            declaredConvertKinds);
+
+  auto tf32Type = mlir::MemRefType::get(
+      addInputType.getShape(), mlir::FloatTF32Type::get(add.getContext()),
+      addInputType.getLayout(), addInputType.getMemorySpace());
   builder.setInsertionPoint(add);
-  auto quantized = builder.create<mlir::memref::AllocOp>(add.getLoc(), i8Type,
-                                                         mlir::ValueRange{});
-  quantized->setAttr(wafer::kWaferSPMOffsetAttrName,
-                     wafer::SPMOffsetAttr::get(add.getContext(), 1 << 20));
-  auto dequantized = builder.create<mlir::memref::AllocOp>(
-      add.getLoc(), f16Type, mlir::ValueRange{});
-  dequantized->setAttr(wafer::kWaferSPMOffsetAttrName,
-                       wafer::SPMOffsetAttr::get(add.getContext(), 2 << 20));
-  auto zeroPointConvert = builder.create<wafer::InstrConvertOp>(
-      add.getLoc(), wafer::InstrConvertKind::Int8Fp16, quantized, dequantized,
-      builder.getI64IntegerAttr(0), /*rounding_mode=*/mlir::IntegerAttr{});
-  auto zeroPointProgram =
-      wafer::compiler::executeReferenceRank(*bundle, /*logicalRank=*/0, {});
-  ASSERT_FALSE(static_cast<bool>(zeroPointProgram));
-  std::string zeroPointMessage = llvm::toString(zeroPointProgram.takeError());
-  EXPECT_NE(zeroPointMessage.find("capability preflight"), std::string::npos);
-  EXPECT_NE(zeroPointMessage.find("zero-point convert formula"),
-            std::string::npos);
-  zeroPointConvert.erase();
-  dequantized.erase();
-  quantized.erase();
+  auto tf32Buffer = builder.create<mlir::memref::AllocOp>(
+      add.getLoc(), tf32Type, mlir::ValueRange{});
+  tf32Buffer->setAttr(wafer::kWaferSPMOffsetAttrName,
+                      wafer::SPMOffsetAttr::get(add.getContext(), 1 << 20));
+  auto tf32RoundTrip = builder.create<mlir::memref::AllocOp>(
+      add.getLoc(), addInputType, mlir::ValueRange{});
+  tf32RoundTrip->setAttr(wafer::kWaferSPMOffsetAttrName,
+                         wafer::SPMOffsetAttr::get(add.getContext(), 2 << 20));
+  auto toTF32 = builder.create<wafer::InstrConvertOp>(
+      add.getLoc(), wafer::InstrConvertKind::Fp32Tf32, originalAddInput,
+      tf32Buffer, /*zero_point=*/mlir::IntegerAttr{},
+      builder.getI64IntegerAttr(0));
+  auto fromTF32 = builder.create<wafer::InstrConvertOp>(
+      add.getLoc(), wafer::InstrConvertKind::Tf32Fp32, tf32Buffer,
+      tf32RoundTrip, /*zero_point=*/mlir::IntegerAttr{},
+      /*rounding_mode=*/mlir::IntegerAttr{});
+  add->setOperand(0, tf32RoundTrip);
+  auto tf32Input = wafer::compiler::ReferenceTensor::create(
+      "f32", {8},
+      bytesOf({1.0f, 1.0004f, 1.0006f, 1.00048828125f, -1.0004f, -1.0006f,
+               2.0008f, 2.0012f}));
+  auto tf32Zero = wafer::compiler::ReferenceTensor::create(
+      "f32", {8}, bytesOf(std::vector<float>(8, 0.0f)));
+  ASSERT_TRUE(static_cast<bool>(tf32Input));
+  ASSERT_TRUE(static_cast<bool>(tf32Zero));
+  std::vector<wafer::compiler::ReferenceInputBinding> tf32Inputs = inputs;
+  tf32Inputs[0].tensor = std::move(*tf32Input);
+  tf32Inputs[1].tensor = std::move(*tf32Zero);
+  auto tf32Result = wafer::compiler::executeReferenceRank(
+      *bundle, /*logicalRank=*/0, tf32Inputs);
+  if (!tf32Result)
+    FAIL() << llvm::toString(tf32Result.takeError());
+  EXPECT_EQ(floatsOf(tf32Result->getOutputs().front().tensor.getBytes()),
+            std::vector<float>({1.0f, 1.0f, 1.0009765625f, 1.0f, -1.0f,
+                                -1.0009765625f, 2.0f, 2.001953125f}));
+  add->setOperand(0, originalAddInput);
+  fromTF32.erase();
+  toTF32.erase();
+  tf32RoundTrip.erase();
+  tf32Buffer.erase();
 
   mlir::Value originalAddRhs = add.getInputs()[1];
   builder.setInsertionPoint(add);

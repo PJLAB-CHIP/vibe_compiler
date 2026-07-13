@@ -17,6 +17,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <utility>
 
 #include "Wafer/IR/WaferEnums.h.inc"
 
@@ -39,6 +40,14 @@ inline constexpr char kWaferCommSlotAttrName[] = "slot";
 inline constexpr char kWaferSPMOffsetAttrName[] = "wafer.spm.offset";
 inline constexpr char kWaferDDROffsetAttrName[] = "wafer.ddr.offset";
 inline constexpr int64_t kWaferSPMBankLineBytes = 256;
+
+/// Typed parameter contract shared by instruction verification and consumers
+/// of an accepted convert instruction.
+enum class InstrConvertParameterKind { None, RoundingMode, ZeroPoint };
+
+std::pair<mlir::Type, mlir::Type>
+getInstrConvertTypePair(mlir::MLIRContext *context, InstrConvertKind kind);
+InstrConvertParameterKind getInstrConvertParameterKind(InstrConvertKind kind);
 
 struct WaferPhysicalTensorInfo {
   mlir::RankedTensorType logicalTensorType;

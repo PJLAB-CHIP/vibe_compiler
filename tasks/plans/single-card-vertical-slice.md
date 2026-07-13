@@ -119,9 +119,12 @@ manifest/package late failure不发布partial package。
 - single-rank engine已用APInt/APFloat闭合非zero-point convert和RND_MODE 0..3，整条convert先计算后commit；
   stochastic及缺少数学公式证据的INT8 zero-point kind继续在projection fail closed。Q16/Q17已删除
   “module恰好一个func.func”的过度约束，统一消费唯一typed entry加private non-recursive direct-call closure；
-  reference projection把同一closure复制为function/block/value-id graph并执行call forwarding。后续还需
-  zero-point/stochastic证据、完整capability矩阵和executor projection/interpreter/numeric职责拆分。fixed-seed
-  非平凡lowered-group differential已用独立CPU loop oracle证明所有hidden channel和两层非零bias均影响完整输出；
+  reference projection把同一closure复制为function/block/value-id graph并执行call forwarding。convert kind的
+  source/destination type pair和parameter policy由Wafer IR typed helper唯一拥有，executor从它派生numeric format；
+  TableGen全枚举gate执行全部非zero-point kind并在input/arena前拒绝全部zero-point kind，且以非零FP32→TF32→FP32
+  roundtrip证明19-bit APFloat语义与4-byte physical storage的显式编码。后续还需zero-point/stochastic证据和executor
+  projection/interpreter/numeric职责拆分。fixed-seed非平凡lowered-group differential已用独立CPU loop oracle证明所有
+  hidden channel和两层非零bias均影响完整输出；
   test-only独立slow layout oracle已跨compact/Cx/NCx、rank/dtype、全部tail对齐台阶和channel block边界逐坐标
   对照production footprint/offset，并证明logical坐标映射唯一、位于physical range且越界统一失败；它不进入production
   artifact或协议。

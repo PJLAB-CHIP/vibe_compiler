@@ -399,8 +399,12 @@ lowering及lowered entry ABI验证。recursive、unresolved、unreachable helper
 input失败。physical layout checkpoint以test-only independent slow mapper逐坐标对照compact/Cx/NCx的footprint和
 offset，覆盖f16/f32/i8、rank 0/2/3/4、strided view、4/8/16/32/64 tail对齐台阶、channel block及retained/folded
 tail边界；同时证明合法坐标映射唯一且位于physical range，负数、one-past和rank mismatch在所有layout统一失败。
-Q19仍未完成：还需zero-point/stochastic证据、覆盖全部accepted组合的capability矩阵，以及把已增长的executor
-projection/interpreter/numeric职责拆分。DTE multi-rank已拆给Q19.M，并等待Q16.T。
+convert capability checkpoint将kind到source/destination type pair及None/RoundingMode/ZeroPoint policy收敛为Wafer IR
+typed helper，verifier和reference projector共同消费；测试通过TableGen生成的symbolizer遍历每个declared kind，实际执行
+全部非zero-point组合并证明全部zero-point组合先于input import/arena allocation失败，不复制字符串能力表。非零
+FP32→TF32→FP32 roundtrip同时证明APFloat 19-bit TF32语义位与hardware 4-byte storage的显式pack/unpack边界。
+Q19仍未完成：还需zero-point/stochastic证据，以及把已增长的executor projection/interpreter/numeric职责拆分。
+DTE multi-rank已拆给Q19.M，并等待Q16.T。
 当前transcendental仍使用host实现，也不属于已闭合的host-independent numeric gate。
 本批`check-wafer`新鲜执行34个C++ unit和230个lit（229 pass、1个feature-inverse unsupported），CTest 3/3通过；
 unsupported项仍是禁用importer feature的反向gate，不覆盖Q19 mandatory path。

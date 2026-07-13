@@ -178,3 +178,13 @@
 - 修复模式：在rank检查后、任何layout分发和offset算术前，统一检查static shape及每一维`0 <= index < dim`；各分支只
   负责布局映射和checked arithmetic。用不复用production布局信息的test-only slow oracle遍历合法坐标并检查每维
   negative/one-past，避免同源公式同时掩盖边界缺口。
+
+## 2026-07-13 TF32 semantic bits 不能直接当作 physical storage bits
+
+- 现象：convert projection声称接受全部TF32组合，但首次全枚举执行到`int16_tf32`时，APFloat结果无法写入4-byte TF32
+  buffer；旧测试只覆盖FP32/INT32，没有实际执行TF32路径。
+- 根因：LLVM `APFloat::FloatTF32`的bitcast是19-bit紧凑语义表示（1 sign + 8 exponent + 10 fraction），硬件和Wafer
+  memref的TF32却按4 byte存储；executor把semantic bit width和storage bit width混成同一个32-bit值。
+- 修复模式：numeric conversion内部保留APFloat的19-bit TF32语义，在buffer边界显式pack到FP32位置的
+  sign/exponent/high-10-fraction并清零low-13 bits，读回时反向unpack；用非零FP32→TF32→FP32 roundtrip覆盖rounding和
+  storage编码，capability matrix则实际执行每个TableGen-declared convert kind，不能只证明switch有case。
