@@ -78,7 +78,7 @@ Pipeline position:
   runtime只消费committed executable/manifest，不直接读raw offset facts。本层不新增placed
   memref或影子descriptor中间层。
 - Downstream consumer:
-  whole-entry DDR memory planning、physical transport acceptance、launch projection 和 closed-loop
+  whole-entry DDR memory planning、physical transport acceptance、all-rank transport verification和closed-loop
   whole-variant candidate driver及Q16 typed rank-record validation；atomic commit后target LLVM消费
   committed IR/resource bindings，package只消费committed executable + Q17 verified staged target module
   records，runtime只消费validated manifest。

@@ -1,7 +1,8 @@
 # Wafer Typed Manifest、RuntimeSession 和 Launch Boundary
 
-状态：2026-07-13已完成Q18。近期wire form固定为唯一typed C++ model的canonical JSON，不是Protobuf；
-provider/board execution仍是后续独立gate。实现状态看`tasks/progress.md`。
+状态：2026-07-13已完成Q18；Q16.T将在同一typed model上增加Direct DTE runtime requirement，但尚不是当前
+package事实。近期wire form固定为唯一typed C++ model的canonical JSON，不是Protobuf；provider/board execution
+仍是后续独立gate。实现状态看`tasks/progress.md`。
 
 ## 1. 目标和非目标
 
@@ -123,6 +124,12 @@ owner分配；文件路径、symbol文本和vector index不承担semantic identi
 当前Kernel ABI摘要就是Q17导出的完整ordered typed slots；Q18逐slot与Q16 resource核对并原样序列化，不再增加一份
 可与slot列表分叉的ABI digest。当前transport contract为`None`，每rank在entry return前已由Q16证明无pending effect，
 因此completion domain只有一个typed `entry_return` terminal；后续真实异步runtime graph出现时再扩completion表示。
+
+Q16.T启用Direct DTE时扩展同一C++ model，而不是增加transport sidecar或第二validator。每个entry携带typed
+`TransportRequirements` discriminated union：当前值为`None`；`DirectDTE`分支只投影runtime compatibility与
+launch可观察的status/error/completion requirement。allocator选择的channel/FSM、per-op `DTEMessageAttr`、
+`DirectDTEBindingAttr`和p2p issue/wait body留在target module内，不进入manifest。no-card preflight只验证environment
+是否支持该capability和ABI requirement，不重新route、匹配消息或分配transport resource。
 
 manifest明确不含：
 
@@ -262,6 +269,10 @@ board gate另行证明：
 - canonical byte-identical roundtrip和parse limits；
 - transaction中compile/link/manifest/write/fsync/rename每个late failure；
 - single-tile和16-rank真实compiler bundle直接进入manifest/runtime。
+
+Q16.T启用`DirectDTE`分支时还必须覆盖：typed union canonical roundtrip、unsupported environment在任何provider
+副作用前拒绝、status/error/completion ABI requirement核对，以及manifest中不存在p2p body、message/binding attr或
+channel/FSM allocation副本；rank-15 transport requirement assembly/readback失败不得发布partial package。
 
 旧schema-v2 fixture只证明legacy输入被拒绝，不能作为production package完成证明。
 

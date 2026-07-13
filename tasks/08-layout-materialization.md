@@ -170,7 +170,7 @@ Pipeline position:
   只存在于 passing clone 中的 final Wafer-tagged memref IR；whole-variant atomic commit 后它成为
   committed layout 的单一 owner。失败时只返回结构化原因，不更新主 IR。
 - Downstream consumer:
-  whole-entry SPM/DDR planning、complete instruction/event/transport verification、launch projection、
+  whole-entry SPM/DDR planning、complete instruction/event/transport verification、all-rank transport closure、
   whole-variant atomic commit；commit 后才由 target lowering 和 package derivation 消费。
 - User-level driver / named pipeline:
   Q16以后由同一`wafer-compile`内部的whole-variant candidate-selection/commit fixed coordinator调用；
@@ -1300,9 +1300,9 @@ V0 不做全局最优，但不能只做一次贪心选择。主路径是 determi
 10. Resource / endpoint / launch / ABI handoff
 
    cleanup和memory/event gates通过后，从candidate IR直接重算resource/entry/completion facts，并与physical
-   transport、launch projection和target-entry ABI preflight在同一candidate clone中闭合，再由Q16 atomic
+   transport binding、all-rank verification和target-entry ABI preflight在同一candidate clone中闭合，再由Q16 atomic
    commit typed C++ rank records。
-   post-commit target从committed memref、typed entry/resources、accepted offsets、view relation、projection和
+   post-commit target从committed memref、typed entry/resources、accepted offsets、view relation、accepted transport binding和
    layout helper派生address/range/stride；package只序列化typed owners。layout planner不直接生成LLVM ABI，
    但必须保证accepted layout都能被这个派生过程合法实现。
 

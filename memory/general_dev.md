@@ -2,9 +2,16 @@
 
 - reference数值测试应从group/tensor IR调用Q16 `buildExecutableBundle`，让candidate selection、bufferization、
   instruction lowering和memory planning真实执行；手写selected instruction IR只适合负例补充。
+- executor可以在单次invocation内把accepted IR构造成immutable execution projection，但必须all-and-only逐op/
+  control-edge投影、执行前完成capability preflight、不序列化、不进入bundle/package，也不复制candidate、memory或
+  collective schedule；否则会退化成长期shadow plan。
 - `ReferenceTensor`是compact row-major program-boundary payload，executor内部用shared DDR/SPM arena和accepted offset
   表达physical storage，再通过`computeWaferPhysicalElementByteOffset`访问logical element。descriptor movement必须先
   完整读取payload再写回，才能在source/dest alias时保持确定语义。
+- production physical-layout helper保持唯一实现事实源；独立slow coordinate mapper只放测试中作property/differential
+  oracle，不被production代码或artifact消费，因此既能发现同源bug，也不形成第二协议。
+- 若reference multi-rank需要的DTE被当前ExecutableBundle fail closed，先补memory-planning后的physical transport
+  acceptance和target consumer，再解锁multi-rank executor；不能用手写DTE module绕过bundle gate。
 - internal bundle builder把shared MLIR context转移给返回bundle；测试要在bundle存活期间销毁source module。
 
 ## Wafer compiler local build harness
@@ -301,8 +308,10 @@
 - group-to-tile-region 的buffer-level collective materialization必须从enclosing typed distributed
   instance/candidate entry取得partition和replica coordinates。局部pass选项只可用于明确的replay测试，
   production driver不得使用default rank 0或CLI option承载rank语义。这个边界仍只产生logical buffer
-  schedule；endpoint/channel/FSM由post-memory transport acceptance处理，final pinned/relocatable
-  binding由launch projection拥有。
+  schedule；每个send/recv的跨rank静态匹配身份必须由protocol phase和logical payload slice显式进入typed IR，
+  structured loop/branch中的动态实例再由control-flow instance区分，不能靠op/scheduler顺序或名字恢复。
+  endpoint/channel/FSM由post-memory transport acceptance在exact topology/mesh上处理，
+  当前不引入pinned/relocatable runtime remapping。
 - selected instruction handoff固定先由selector在tensor函数clone中完成完整traversal、instruction和SPM/DDR
   planning，再复用同一份function-boundary OneShot Bufferization配置消除tensor signature与
   `bufferization.to_memref/to_tensor` wrapper。target named replay直接消费该bufferized accepted artifact；

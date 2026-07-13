@@ -41,7 +41,7 @@
 | candidate group、tile traversal和layout assignment | 06、07、08 |
 | target-abstract compute/movement和instruction legality | 10、11 |
 | accepted SPM/DDR allocation、lifetime和offset | 09、12 |
-| Direct DTE和completion relation | 13 |
+| Direct DTE logical schedule/completion与post-memory transport activation | 13；target/package/verification consumer由14、15、16约束 |
 | per-rank candidate commit和typed executable bundle | 06；资源/lifetime边界由09、12、13共同约束 |
 | target LLVM、CRT/device link和staged target module | 14 |
 | typed manifest、launch和RuntimeSession | 15 |

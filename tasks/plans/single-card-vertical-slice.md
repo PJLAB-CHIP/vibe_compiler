@@ -108,18 +108,26 @@ unsupported）；rank-15 late failure、真实column-sharded 16-rank正例和row
 完成：Python/C++不再有不同acceptance；schema version、unknown field、bogus format和重复slot均fail closed；
 manifest/package late failure不发布partial package。
 
-## Checkpoint 7: Reference Execution And Vertical Gates
+## Checkpoint 7: Reference Core, Transport Activation And Vertical Gates
 
-状态：进行中；当前对应Q19，Q20/Q21仍等待reference gate。
+状态：进行中；当前Q19 core为唯一doing，Q16.T为next，Q19.M/Q20/Q21按直接前置blocked。
 
-- Q19 executor只接受Q16 `ExecutableBundle`和typed role/index invocation tensors，直接解释accepted
-  memref/instruction/control-flow facts；不读取planner trace或IR文本。
-- 单rankexecutor先覆盖linear/MLP所需RDMA/WDMA、GEMM、elementwise和accepted offsets。
-- 多rankexecutor加入DTE send/recv/wait和tiny Llama所需instruction子集，并检测peer mismatch/deadlock。
-- 真实exporter固定source revision/config/seed/dtype/shape和CPU reference。
-- gate顺序：单tile linear/MLP，16-rank linear/MLP，16-rank tiny Llama。
+- Q19 core只接受Q16 `ExecutableBundle`和typed role/index invocation tensors，先把accepted rank all-and-only投影为
+  invocation-local immutable `ReferenceProgram`，再执行memref/instruction/control-flow；projection不序列化、不进入
+  package，也不保存planner或collective schedule。
+- single-rank engine补齐capability preflight、view/control-flow、APFloat/APInt convert/rounding；fixed-seed非平凡
+  lowered-group differential必须让所有channel/bias影响输出，独立slow layout oracle只存在于property tests。
+- Q16.T先让logical collective-to-p2p materialization生成typed message identity，再在memory planning后给DTE issue
+  补typed accepted physical binding，闭合all-rank match/peer/bytes/range/resource/completion、
+  `TransportContract::DirectDTE`、CRT/target lowering、atomic target publication及manifest/no-card中runtime-observable
+  transport requirements；identity不能从op顺序或名字猜，package不复制p2p body或per-op binding。
+- Q19.M只消费Q16.T accepted bundle，以deterministic event scheduler执行DTE send/recv/wait并检测peer mismatch、
+  duplicate recv、unmatched token和no-progress/deadlock；禁止手写DTE module绕过bundle gate。
+- Q20/Q21真实exporter固定source revision/config/seed/dtype/shape和独立NumPy CPU reference；gate顺序仍为
+  rank-count=1 linear/MLP、16-rank linear/MLP、16-rank tiny Llama。
 
-完成：三条gate均只经`wafer-compile`，reference结果与CPU比较；board test未运行时不声称board/numeric完成。
+完成：Q19/Q16.T/Q19.M各自的component gate先闭合；随后三条纵向gate均只经`wafer-compile`，reference结果与独立
+CPU oracle比较。board test未运行时不声称board numeric/completion完成。
 
 ## Checkpoint 8: Structural Cleanup
 

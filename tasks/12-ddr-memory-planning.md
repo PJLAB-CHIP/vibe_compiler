@@ -1,7 +1,7 @@
 # Wafer DDR Memory Planning Design
 
-状态：2026-07-13按Q16 handoff更新；当前合同覆盖default-arena DDR demand/range validation和accepted offsets。
-multi-arena、state/streaming weight和launch-facing resource model延后。实现状态以`tasks/progress.md`为准。
+状态：2026-07-13按Q16.T handoff同步；当前合同覆盖default-arena DDR demand/range validation和accepted offsets。
+multi-arena、state/streaming weight和provider allocation model延后。实现状态以`tasks/progress.md`为准。
 它不能只是 DDR access validation；凡是会影响 candidate 是否成立的 DDR
 byte footprint、lifetime、capacity、largest-contiguous 和 bandwidth 约束，都必须在 DDR offset
 assignment / candidate-selection gate 内决定或拒绝。
@@ -71,7 +71,7 @@ Pipeline position:
   analysis 里。
 - Downstream consumer:
   candidate-selection 用完整 variant 的 DDR offset assignment 成功/失败选择 candidate；
-  physical transport acceptance、launch projection和Q16 rank-record validation继续消费exact range；
+  physical transport acceptance、all-rank transport verification和Q16 rank-record validation继续消费exact range；
   committed materialization只把已通过全部gates的complete variant及typed C++ resources/entry bindings原子写回。
   post-commit target/package/runtime不得从raw instruction IR重新恢复resource语义。
 - User-level driver / named pipeline:
@@ -161,7 +161,7 @@ map、名字或测试输入。
 External input/output、runtime-imported immutable parameter和persistent-state root不由DDR memory planning
 分配offset，也不写external access summary attr。DDR memory planning只在当前candidate中验证
 descriptor/view/root byte range、capacity、access/alias/update和bandwidth；ABI/package/runtime若需要
-launch-facing binding，Q16必须把上述验证结果与frontend parameter boundary、accepted transport/projection及
+launch-facing binding，Q16必须把上述验证结果与frontend parameter boundary、accepted transport binding及
 当前IR use-def交叉验证，再写入typed C++ rank record。atomic commit后的typed record是唯一owner；ABI/package/runtime
 不得扫描instruction IR、offset attr、parameter-shard sidecar或薄launch binding在使用点重算role/range/scope。
 

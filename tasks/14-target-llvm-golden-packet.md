@@ -1,7 +1,7 @@
 # Wafer Target Conversion、CRT 和 Module Publication
 
-状态：2026-07-13按Q17完成证据更新。本文拥有instruction-to-target conversion、Wafer CRT ABI、device
-link和近期staged target module合同。实现状态看`tasks/progress.md`。
+状态：2026-07-13按Q17完成证据和Q16.T后续激活边界更新。本文拥有instruction-to-target conversion、Wafer CRT
+ABI、device link和近期staged target module合同。实现状态看`tasks/progress.md`。
 
 底层register/wrapper事实见`docs/wafer-register-level-instruction-spec.md`和
 `docs/tx8-deps-reverse-engineering/`；production symbol事实源是当前instruction lowering、
@@ -76,7 +76,7 @@ conversion。它不得再次执行direct group-to-tile/instr或memory planning�
    summary精确alias某个DDR参数。
 4. standard SCF→CF后，typed patterns在原block改写instruction、func/call/return、Wafer memref/view和arith/CF；
    `applyFullConversion`把Wafer/func/memref/arith/CF/SCF列为illegal，成功结果只允许module/LLVM dialect。
-5. Direct DTE在physical transport/endpoint binding和CRT support完成前以
+5. Direct DTE在Q16.T的physical transport/endpoint binding和CRT support完成前以
    `unsupported_target_transport`拒绝；默认target pass对没有explicit arena base binding的compiler-managed
    DDR allocation仍以`unsupported_target_address`拒绝。Q17先从accepted rank重算workspace high-water，追加typed
    i64 arena-base slot并显式传argument index，lowering才生成`base + offset`；arena-relative offset不会被常量化成
@@ -233,9 +233,10 @@ diagnostic按稳定语义分类：
 
 手写LLVM、symbol-only fixture和dry-run只补覆盖，不能替代真实compiler-generated module。
 
-## 10. Deferred Extensions
+## 10. Planned And Deferred Extensions
 
-- Direct DTE target activation：等待accepted peer/slot/completion合同；
+- Direct DTE target activation已进入Q16.T `next`：只消费tasks/13定义的typed accepted binding，补齐CRT wrapper、
+  typed lowering、required/allowed symbol和all-rank late-failure atomic gate；在Q16.T完成前仍保持target-illegal；
 - low-precision/quant ABI：等待instruction geometry和CPU/reference semantics；
 - stable cross-process Kernel ABI descriptor；
 - ELF ABI note、toolchain fingerprint和content-addressed cache；

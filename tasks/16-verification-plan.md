@@ -1,6 +1,6 @@
 # Wafer Compiler Verification Plan
 
-状态：2026-07-13按Q16完成证据更新。本文拥有跨stage完成证据和测试口径；具体IR/ABI规则由
+状态：2026-07-13按Q19/Q16.T/Q19.M拆分更新。本文拥有跨stage完成证据和测试口径；具体IR/ABI规则由
 对应编号设计文档拥有。实现状态看`tasks/progress.md`。
 
 ## 1. Pipeline Contract
@@ -23,8 +23,10 @@ Pipeline position:
 - Completion gate:
   各owner独立验收：Q0闭合conversion/legality/formal traversal/completion/atomic negative；Q15闭合typed
   request到verified grouped program；Q16闭合all-rank static executable bundle；Q17闭合all-rank target
-  staging/publication；Q18闭合typed manifest/package/no-card runtime；Q19闭合独立reference numeric；Q20/Q21依次闭合rank-count=1/16
-  linear/MLP和16-rank tiny Llama纵向链。后续gate不能反向成为Q0前置，board未执行时保持明确external gate。
+  staging/publication；Q18闭合typed manifest/package/no-card runtime；Q19闭合immutable single-rank reference core；
+  Q16.T闭合Direct DTE transport activation；Q19.M闭合deterministic multi-rank reference；Q20/Q21依次闭合
+  rank-count=1/16 linear/MLP和16-rank tiny Llama纵向链。后续gate不能反向成为Q0前置，board未执行时保持明确
+  external gate。
 ```
 
 ## 2. Evidence Levels
@@ -80,7 +82,8 @@ performance完成。
   workload legality或16-tile topology限制；长期用compact loop表示替代静态展开后移除该预算依赖。
 
 Q0正式completion由all-and-only traversal relation、accepted IR replay和atomic failure证明，不以reference
-numeric为前置；独立执行完整输出并与CPU比较属于Q19。subview数量/FileCheck仍只能作局部覆盖。
+numeric为前置；Q19拥有single-rank component differential，真实source-backed完整输出与独立CPU oracle比较属于
+Q20/Q21。subview数量/FileCheck仍只能作局部覆盖。
 
 ### 4.2 Structure-Preserving Conversion
 
@@ -157,12 +160,14 @@ unsupported，但Q15完成记录必须确认mandatory真实helper cases实际执
 - 任一rank/candidate/SPM/DDR/geometry/completion failure不形成`RankExecutable[]`或partial bundle；
 - all-and-only rank/resource/completion验证后才构造atomic `ExecutableBundle`，failed rebuild保持旧final不变；
 - 当前bundle合同为`TransportContract::None`；含logical collective/DTE需求的program明确
-  `unsupported_transport`且无partial bundle，peer-positive gate属于physical transport后续任务；
+  `unsupported_transport`且无partial bundle，peer-positive gate属于Q16.T；
 - function-boundary bufferization后的完整rank重新执行SPM/DDR planning，终态无Tensor/Bufferization/Linalg/Group、
   untagged memref或缺失的compiler-managed offset；
 - debug FileCheck、手写group、single rank pass或某rank成功不构成Q16 completion。
 
-## 7. Q17 Target Module And Publication Gates
+## 7. Q17 Baseline And Q16.T Direct DTE Activation Gates
+
+### 7.1 Q17 Target Module And Publication
 
 - compiler-generated target LLVM→object→CRT object→kcore module positive；真实rank-count=1和16均发布all-and-only
   `modules/rank_00000.so`到`rank_00015.so`；
@@ -179,6 +184,30 @@ unsupported，但Q15完成记录必须确认mandatory真实helper cases实际执
 - Q17不以manifest/runtime为完成前置，Q18必须把Q17 bundle作为整体输入。
 
 手写LLVM和dry-run只补tool coverage，不能替代真实program产生的module。
+
+### 7.2 Q16.T Direct DTE Transport Activation
+
+- 只消费complete all-rank memory-planned modules、exact topology/mesh和accepted offsets；logical p2p body保持唯一
+  schedule source；
+- collective-to-p2p materialization为每个send/recv产生typed `DTEMessageAttr`；它由protocol phase和logical
+  payload slice派生，在`(source rank, destination rank, entry)`内对静态message唯一，不能从op顺序、名字或
+  physical binding猜测；loop/branch动态执行还携带由structured control flow派生的control instance；
+- 每个send/recv all-and-only一个typed `DirectDTEBindingAttr`，字段逐项被cross-rank verifier和target lowering消费；
+  缺失、额外、unknown field或只写不读均失败；
+- send/recv按logical source/destination、`DTEMessageAttr`、bytes和receiver range一一匹配；duplicate、missing、
+  direction mismatch、OOB和wait未覆盖均原子失败；
+- channel/FSM/completion profile满足硬件静态范围、reserved id和同生命周期resource conflict约束；可从
+  peer/topology/buffer/offset重算的事实不得复制进binding；
+- `RankExecutable::TransportContract`只有all-rank通过后才从`None`变为`DirectDTE`，且不另存per-op action list；
+- target lowering与repo-local CRT header/source/checker共享fixed signature，required/allowed symbol、status/error和
+  attach/send/wait/release lifecycle闭合；
+- Q18 manifest只投影launch/runtime可观察的transport capability、control/status resource和completion requirement，
+  不复制DTE p2p body或per-op binding；no-card preflight验证requirements但不重新分配channel/FSM；
+- rank-15 binding、target lowering、link、manifest assembly或readback late failure均无partial executable/target/
+  package publication；
+- no-card gate只证明typed/static contract，真实receiver readiness、timeout和board completion仍属于Q6.B。
+
+手写DTE op、单rank peer check、symbol-only wrapper或reference scheduler不能替代真实all-rank Q16/Q17 consumer gate。
 
 ## 8. Q18 Manifest And Runtime Gates
 
@@ -225,7 +254,7 @@ set-device/context
 每一步注入失败；未满足依赖的descendant不调用；已经获取的资源逆序cleanup；typed error保留stage/rank/entry。
 wait timeout/error使dependent runtime state poison，禁止后续copyback/publication并进入同一cleanup合同。
 
-## 9. Q19 Reference Executor Gates
+## 9. Q19 / Q19.M Reference Executor Gates
 
 executor输入必须是accepted rank instruction/memory facts，不得读取planner trace或重新选择candidate。
 
@@ -236,44 +265,83 @@ Pipeline position:
   带typed program bindings、Wafer DDR/SPM memref、accepted offsets、descriptor attrs、structured control flow、
   instruction ops和terminal completion facts。调用方另提供按ProgramResourceRole/index精确绑定的local tensors。
 - Current stage responsibility:
-  直接解释accepted memref SSA/view和instruction semantics，维护每rank独立DDR/SPM storage；按descriptor执行
-  movement，按logical-to-physical layout helper执行compute，按structured control flow和显式DTE token推进；
-  对unsupported op/dtype/rounding/transport返回typed failure，不重新做candidate、memory或transport planning。
+  Q19先把一个accepted rank逐op投影成validated immutable `ReferenceProgram`，再执行其memref SSA/view、
+  instruction和structured control-flow semantics；投影不改变op顺序/control edge，不携带candidate、memory或
+  transport planner事实。Q19.M只在Q16.T形成accepted Direct DTE contract后，以deterministic event scheduler推进
+  all-rank send/recv/wait。任何unsupported op/dtype/rounding/transport在分配执行storage前整体失败。
 - Output artifact / IR:
-  owner-backed ReferenceExecutionResult，包含按output role/index标识的完整local tensor bytes；多rank执行另产生
-  all-and-only rank results和可重组global output。整数/bitwise结果exact，浮点比较使用调用方显式tolerance。
+  `ReferenceProgram`只是单次invocation内owner-backed、不可序列化的consumer projection，不进入bundle/package或
+  下游compiler pipeline。执行产出owner-backed `ReferenceExecutionResult`，包含按output role/index标识的完整
+  local tensor bytes；多rank执行另产生all-and-only rank results和可重组global output。整数/bitwise结果exact，
+  浮点比较使用调用方显式tolerance。
 - Downstream consumer:
   Q20 rank-count=1/16 linear-residual MLP完整输出比较，随后Q21 tiny Llama和board结果诊断；reference结果不进入
   package、target module或runtime launch。
 - User-level driver / named pipeline:
-  Q19先提供只接受ExecutableBundle的typed C++ API和unit gate；Q20再由同一wafer-compile纵向入口把真实exported
-  workload的accepted bundle、source-backed invocation payload和CPU expected接到该API。wafer-opt dump和手写IR只补
-  op-level negative coverage，不是纵向完成入口。
+  Q19提供只接受ExecutableBundle的typed C++ API和single-rank unit/differential gate；Q19.M扩成all-rank API，但
+  仍只消费Q16.T accepted bundle。Q20再由同一wafer-compile纵向入口把真实exported workload的accepted bundle、
+  source-backed invocation payload和CPU expected接到该API。wafer-opt dump和手写IR只补op-level negative coverage，
+  不是纵向完成入口。
 - Explicit non-goals:
   不模拟target packet、queue timing、hardware rounding bug、provider lifecycle或board completion；不从文件名、
   symbol、buffer名、module打印文本或planner trace恢复resource/shape/offset；不接受未通过Q16 gate的module冒充
   committed rank artifact。
 - Completion gate:
-  rank-count=1真实linear-residual MLP从accepted bundle执行并比较完整输出；RDMA/WDMA、layout movement、GEMM、
-  elementwise/fill/convert和offset/descriptor/dtype negatives闭合。随后16-rank独立memory及DTE send/recv/wait的
-  peer/bytes/token/progress/deadlock gate闭合，真实16-rank linear结果可重组并与CPU global output比较。
+  Q19：projection对accepted op/control edge all-and-only，RDMA/WDMA、layout movement、GEMM、elementwise/fill/
+  convert、view/control flow和offset/descriptor/dtype/capability negatives闭合；固定seed非平凡lowered-group与独立
+  CPU loop oracle比较完整输出，layout helper通过独立slow coordinate property oracle。Q19.M：16-rank独立memory及
+  DTE send/recv/wait的peer/bytes/token/progress/deadlock gate闭合。真实source-backed rank-count=1/16 linear与CPU
+  global output比较只由Q20拥有。
 ```
 
-单rank最低子集：
+### 9.1 Q19 Immutable Single-Rank Core
+
+`ReferenceProgram`是executor内部执行对象，不是新的compiler IR层或跨stage artifact。它必须满足：
+
+- 从一个`RankExecutable`一次构造；每个可执行op、block argument、result、terminator和control edge恰好投影一次，
+  任何未支持项在执行前返回typed capability failure；
+- command只复制执行该op所需的typed immutable fields并保持原block/control relation；不保存candidate、tile proposal、
+  memory plan、transport plan或第二份collective schedule，不序列化、不进入manifest；
+- buffer/view引用来自SSA和accepted memref type/offset，不能从名字、文本或遍历序号恢复角色；
+- projection构造成功后执行阶段不再读取mutable MLIR，也不允许中途发现unsupported op后留下partial result。
+
+single-rank semantic engine最低子集：
 
 - DDR/SPM typed buffers和accepted offsets；
+- memref alias/view、structured branch/loop/call forwarding；
 - RDMA/WDMA descriptor semantics；
 - GEMM；
 - linear/MLP所需elementwise/fill/convert；
 - deterministic dtype/rounding policy。
 
-多rank最低子集：
+numeric backend要求：
+
+- integer/bitwise和convert使用`APInt`/`APFloat`或等价显式bit semantics，rounding/saturation/zero-point必须来自
+  instruction kind和verified attrs，禁止依赖host cast默认行为；
+- 基本算术明确中间精度与写回点；transcendental按dtype/op记录tolerance和host-independent special-value gate；
+- capability table从projection builder实际支持的op/type/profile生成测试矩阵，不另维护一份声称支持的字符串列表。
+
+验证分三类：
+
+- fixed-seed nontrivial lowered-group differential：非零bias、所有hidden channel参与输出，覆盖alias/reuse和完整tensor；
+- test-only independent slow coordinate mapper跨`C0-1/C0/C0+1`、tail、rank和layout组合检查production physical layout
+  helper；该oracle不进入production协议，因此不形成第二事实源；
+- descriptor、view、extent、dtype、rounding、unsupported capability和执行前atomic failure负例。
+
+### 9.2 Q19.M Deterministic Multi-Rank Execution
+
+Q19.M的直接前置是Q19和Q16.T；不能从当前`TransportContract::None` bundle或手写DTE module启动。最低子集：
 
 - 每rank独立memory和explicit rank；
-- DTE send/recv/wait匹配、payload size和peer；
-- deterministic progress；
+- 只消费Q16.T accepted DTE binding，按`(source rank, destination rank, DTEMessageAttr, dynamic control instance)`
+  匹配，再核对payload bytes、receiver range和token/wait；control instance来自structured loop/branch语义，
+  不能使用scheduler visitation ordinal；
+- deterministic event scheduler每轮按canonical logical-rank/block order推进ready command，payload先完整读取再commit；
 - unmatched peer/token、duplicate recv和deadlock negative；
 - tiny Llama当前实际需要的collective schedule。
+
+当一整轮没有command推进且仍有未完成rank时，必须输出包含blocked rank、command kind、peer/token和等待原因的
+structured no-progress/deadlock failure；不能靠timeout、线程调度或map迭代顺序决定结果。
 
 比较完整输出tensor，不只比较shape/digest。tolerance按dtype/op定义并记录；整数/bitwise要求exact。
 
@@ -281,8 +349,9 @@ Pipeline position:
 DDR/SPM offset建立独立arena，按descriptor执行alias-safe movement，并复用Wafer physical layout helper完成logical
 element访问；group经过production selection/lowering后形成的residual MLP已覆盖RDMA、WDMA、tensor/Cx movement、
 两次GEMM、bias broadcast、tanh、residual add和完整f32输出比较。descriptor byte count、缺失accepted offset及
-boundary dtype不一致均为hard failure。该checkpoint不把Q19标成完成：convert rounding、structured control flow和
-DTE多rank progress/deadlock仍是本任务剩余gate。
+boundary dtype不一致均为hard failure。该checkpoint不把Q19标成完成：当前仍边读mutable MLIR边执行，测试oracle
+使用简化权重和同源host transcendental；immutable projection、capability closure、convert/control-flow、独立layout
+property和非平凡differential均未闭合。DTE multi-rank已拆给Q19.M，并明确等待Q16.T。
 
 ## 10. Q20/Q21 Vertical Workload Gates
 

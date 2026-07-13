@@ -75,10 +75,10 @@ complete static rank variant clone with candidate/template wafer.group
   -> whole-entry SPM memory planning on complete rank programs
   -> whole-entry/variant-set DDR memory planning on memory-planned instruction IR
   -> event completion and physical geometry/range/narrowing gates
-  -> physical transport acceptance + launch projection + target-entry ABI preflight
+  -> physical transport acceptance + all-rank transport verification + target-entry ABI preflight
   -> closed-loop candidate driver for whole-variant retry/split/commit decision
   -> atomic commit of complete static rank instruction programs; no wafer.group remains
-  -> target instruction LLVM call emission from committed IR + accepted offsets + committed projection
+  -> target instruction LLVM call emission from committed IR + accepted offsets + committed transport binding
   -> device-code symbol closure / package / runtime adapter
 ```
 
@@ -93,7 +93,7 @@ complete static rank variant clone with candidate/template wafer.group
 - committed static rank program：`wafer.tile.region` 只作为完整 traversal 内的局部 scope 存在。
   committed materialization 只把 candidate-selection 已选中、且整个 static rank variant set 已通过 gates
   的 complete candidate clone 原子写入主 IR，同时消解所有 `wafer.group`。clone 在提交前已经包含
-  stage-accepted transport 和 launch projection；它们与 static rank entries 一起原子提交。后续 target
+  stage-accepted transport binding和all-rank verification；它们与 static rank entries 一起原子提交。后续 target
   LLVM call emission只从committed IR、accepted offsets和经当前IR验证的entry/resource/completion facts派生
   address/range/descriptor；后续typed C++ bundle承接这些事实，package不重新决定group是否可行，也不复制
   placed/access descriptor中间协议。当前HF/Llama-style program gate只到verified logical groups，尚未证明
@@ -226,7 +226,7 @@ wafer.tile.region (...) -> (...) {
 - region argument / result 与 group outputs 或 enclosing static-rank function boundary 的 SSA 关系。
 - 当前 traversal iteration 的逻辑 indices；static execution identity 由 enclosing executable rank/entry
   mapping 提供，不在 region 内复制。block id、physical coordinate 和 endpoint descriptor 只属于
-  launch projection / accepted transport。
+  accepted transport binding。
 - external input/output、constant source、inter-group value 的 load/store boundary。
 - tile-local storage ownership、memory space、layout 和 effect。
 - async issue 与对应 fence/wait/barrier。
@@ -324,23 +324,23 @@ V0 需要以下 op family：
    tile-view boundary、DDR `memref.alloc` 和 descriptor demand，规划 compiler-managed/resident/inter-group
    DDR accepted offset facts，并验证 descriptor、view/root range、declared arena capacity/largest-contiguous、
    bandwidth、alignment、跨 group overlap 和 completion demand。成功facts必须能被candidate-selection、
-   endpoint projection以及Q16 typed rank-record validation直接消费；
+   physical transport acceptance以及Q16 typed rank-record validation直接消费；
    失败时给结构化原因。
 8. candidate driver枚举：把 `DirectFullShape` 作为普通第一个候选，再搜索
    shape-driven traversal/reduction refinement frontier、同 traversal domain 的 output coverage 和当前支持的
    reduction/internal split候选。每个候选先运行前述layout/instruction/SPM/DDR gates，再运行下一步的
-   transport/projection/ABI gates；在下一步完成前不得标记passing。first/tail representative tile只做cheap
+   transport/all-rank/ABI gates；在下一步完成前不得标记passing。first/tail representative tile只做cheap
    prefilter，不能替代完整traversal gates；rejected candidate clone整体丢弃。
-9. physical transport / launch projection：在 accepted SPM/DDR range 上完成 cross-rank transport
-   acceptance，为每个 canonical execution instance 形成 pinned 或有限 relocatable projection，并执行
-   target-entry ABI preflight；这些仍是 candidate facts。
+9. physical transport / all-rank verification：在 accepted SPM/DDR range 和exact topology/mesh上完成
+   cross-rank message matching、physical transport binding与resource/status closure，并执行target-entry ABI
+   preflight；当前不引入pinned/relocatable projection，这些仍是candidate facts。
 10. candidate selection / whole-variant atomic commit：默认`first-legal`选择第一个通过步骤1-9全部gates的
    candidate；`min-estimated-time`只在complete passing candidates之间排序。committed materialization把
    选中的static rank variant set一次性替换进主IR。所有 rank entry 都包含完整 traversal 和其中的
    tile-local `wafer.tile.region` scopes，所有 logical/scheduled `wafer.group` 同时消解；任何 gate 失败时
-   主 IR 不发生部分修改；accepted transport/projection 与 rank entries 同时提交。
+   主 IR 不发生部分修改；accepted transport binding与rank entries同时提交。
 11. target instruction LLVM call emission：从committed instruction IR、Q16 typed rank record中由IR验证的
-    resource/entry facts、accepted offset facts和committed projection生成
+    resource/entry facts、accepted offset facts和committed transport binding生成
     wrapper-friendly LLVM call / target CRT call / packet builder 输入；不新增 placed memref / access descriptor
     中间协议。
 
@@ -411,7 +411,7 @@ launch args / identity lowering 的 IR contract。当前没有 multi-tile no-com
   compiler-managed `#wafer.memory<ddr, *>` alloc 必须有 DDR memory planning 接受的
   `wafer.ddr.offset` fact；external DDR boundary value 的 descriptor/view/root validation 由当前
   instruction-level IR 重算。
-- Q16 commit前必须从当前candidate IR、program shard declarations、accepted offsets和projection重算并验证
+- Q16 commit前必须从当前candidate IR、program shard declarations、accepted offsets和accepted transport binding重算并验证
   resource/entry/completion facts，再materialize为typed C++ `RankExecutable` record；post-commit target只派生
   lower-level address/range，package只序列化typed owners。不能要求
   tile-region 主线额外携带 placed memref 或 access descriptor 旁路事实。

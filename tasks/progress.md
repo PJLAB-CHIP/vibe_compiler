@@ -21,19 +21,11 @@ Proto/WCRE/registry/lease/rank-class 等未实现对象不再作为 correctness 
 ## 当前执行图
 
 ```text
-Q14 architecture-baseline
-  ├─> Q0 target-correctness ─> Q15 compiler-driver ─> Q16 executable-bundle
-  │                              │                       ├─> Q17 target-artifact-bundle ─> Q18 manifest-runtime
-  │                              │                       └─> Q19 reference-executor
-  └─> Q5.C workload-corpus ───────────────────────────────────────────────┐
-                                                                          v
-                                                     Q20 single-card-linear-mlp
-                                                                          |
-                                                                          v
-                                                     Q21 single-card-tiny-llama
-                                                                          |
-                                                        external board gate v
-                                                                  Q6.B runtime-board
+Q14 -> Q0 -> Q15 -> Q16 -> Q19
+                    Q16 -> Q17 -> Q18
+                                  Q18 -> Q16.T
+                    Q19 + Q16.T -> Q19.M
+Q5.C + Q19.M -> Q20 -> Q21 -> external board gate Q6.B
 ```
 
 ## Active Queue
@@ -47,8 +39,10 @@ Q14 architecture-baseline
 | Q16 | `executable-bundle` | `done` | Q15 | typed frontend facts、rank-count=1/16显式isolated clones、whole-rank终态memory/legality、move-only `RankExecutable[]`和context-owning atomic `ExecutableBundle`已闭合；rank-15 late failure无partial publication，当前`TransportContract::None`使collective明确fail closed。 | 03、04、06、09、12、13、16 |
 | Q17 | `target-artifact-bundle` | `done` | Q0、Q16 | output root重定向到typed output slot，default DDR arena以显式i64 base ABI slot绑定；真实rank-count=1/16的all-and-only LLVM→object→CRT→ELF modules完成entry/fixed ABI/format/symbol/digest readback后原子发布，rank-15 target late failure无partial `.so`。 | 14、16 |
 | Q18 | `manifest-runtime` | `done` | Q17 | 唯一C++ typed manifest/canonical JSON、Q16/Q17 all-and-only assembly、package readback/no-replace publication和pure no-card preflight已闭合；旧双validator与HostRuntime prototype已删除；`check-wafer`新鲜执行30个C++ unit和230个lit（229 pass、1个feature-inverse unsupported），CTest 3/3通过。 | 15、16 |
-| Q19 | `reference-executor` | `doing` | Q16 | 已落只消费ExecutableBundle的typed单rankAPI、独立DDR/SPM arena、accepted offset/descriptor movement、f32 GEMM/fill/linear-MLP elementwise和完整tensor输出，并由真实group selection后的residual MLP数值gate覆盖；仍需补convert/control-flow与DTE多rank子集，且不模拟target packet timing或board completion。 | 10、11、13、16 |
-| Q20 | `single-card-linear-mlp` | `blocked` | Q5.C、Q18、Q19 | 同一driver分别以rank-count=1和16生成完整bundle、manifest和runtime trace，并由reference executor与CPU reference比较。 | 01、16 |
+| Q19 | `reference-executor-core` | `doing` | Q16 | 在现有typed单rankAPI上先构造一次性validated immutable execution projection，再补capability closure、memref view/control-flow、APFloat/APInt convert/rounding和完整single-rank instruction semantics；用固定seed非平凡lowered-group differential、alias/reuse负例及独立slow layout property oracle闭合。projection不序列化、不进入bundle/package、不携带planner事实。 | 10、11、16 |
+| Q16.T | `direct-dte-transport-activation` | `next` | Q18 | 把tasks/13原deferred physical transport acceptance落地：logical materialization先给每条消息形成不可由名字/顺序猜测的typed match identity，memory planning后再补accepted physical binding；闭合all-rank send/recv/bytes/range/channel/FSM/completion、`TransportContract`、target CRT/lowering、Q17 atomic publication及Q18 runtime-observable transport requirements，不把raw packet或shadow schedule塞入bundle/manifest。 | 13、14、15、16 |
+| Q19.M | `reference-multirank` | `blocked` | Q19、Q16.T | 只消费含accepted Direct DTE contract的ExecutableBundle，以每rank独立memory和deterministic event scheduler执行send/recv/wait；按typed message identity闭合peer/bytes/token、duplicate recv、unmatched endpoint、no-progress/deadlock negative和global tensor重组。 | 13、16 |
+| Q20 | `single-card-linear-mlp` | `blocked` | Q5.C、Q19.M | 同一driver分别以rank-count=1和16生成完整bundle、manifest和runtime trace，并由reference executor与独立NumPy CPU reference比较；rank-count=1不能用手写group gate代替。 | 01、16 |
 | Q21 | `single-card-tiny-llama` | `blocked` | Q20 | tiny Llama decoder block经同一16-rank candidate/bundle/package/reference路径；不接受手工group/instr或绕过selector的平行主线。 | 01、05、06、10、11、13、16 |
 
 Q0 与 Q5.C 在 Q14 完成后可并行；其它任务严格按直接前置解锁。Q0只拥有单entry/rank的formal
@@ -133,7 +127,13 @@ cache、segmented MoE、70B/100GB stress和完整ELF ABI-note体系。需要恢�
 
 ### Q19-Q21 reference / vertical
 
-- reference executor使用accepted instruction/memory facts，和CPU reference比较完整输出。
+- Q19只闭合single-rank executor core：accepted IR先投影为不可变、逐op一一对应且无planner事实的临时
+  execution program；unsupported capability在执行前整体拒绝，不能边执行边发现半程缺口。
+- Q16.T先闭合Direct DTE physical binding、cross-rank matching和target activation；Q19.M随后才消费该accepted
+  transport contract做deterministic multi-rank reference，禁止手写DTE module绕过Q16。
+- production layout helper仍是唯一实现事实源；独立slow coordinate mapper只存在于测试并作property/differential
+  oracle，不进入compiler artifact或下游协议。
+- reference executor使用accepted instruction/memory facts，Q20/Q21再和独立CPU reference比较完整输出。
 - rank-count=1 linear/MLP、rank-count=16 linear/MLP、rank-count=16 tiny Llama依次通过同一driver。
 - reference通过不代表target packet、真实transport/completion或board numeric完成。
 

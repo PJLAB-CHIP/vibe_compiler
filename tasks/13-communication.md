@@ -1,8 +1,8 @@
 # Wafer Communication Dialect Design
 
 状态：2026-07-13更新；当前合同覆盖buffer-level collective到instruction-level Direct DTE p2p和明确
-completion。segmented/MoE、post-memory physical transport registry和multi-card route延后。实现状态以
-`tasks/progress.md`为准。
+completion，post-memory physical transport acceptance已进入Q16.T `next`但尚不是artifact事实。segmented/MoE和
+multi-card route延后；不引入physical transport registry。实现状态以`tasks/progress.md`为准。
 
 本文定义Wafer后端从logical collective到instruction-level p2p的device-side communication
 边界。它连接 post-SPMD tensor collective 语义、`wafer.execution.mesh` /
@@ -14,8 +14,8 @@ rank group、local rank、buffer、byte size 和 effect 边界都必须能从 IR
 accepted p2p schedule 进入 `wafer.instr.dte_send` / `dte_recv` / `dte_wait`。任何层都不保存一份
 隐藏的 communication plan attr，也不把 raw DTE register 字段提前写进上层 collective op。
 
-本文当前只负责device-side communication IR：tile-local collective-level op、instruction-level p2p
-steps、token/effect和sync boundary；physical transport acceptance是明确延后边界。它不定义Shardy/SPMD partition、
+本文负责device-side communication IR：tile-local collective-level op、instruction-level p2p steps、
+token/effect和sync boundary；physical transport acceptance是Q16.T负责的下一lowering边界。它不定义Shardy/SPMD partition、
 `wafer.linalg_ext.collective.*` handoff、compute op legality、layout assignment、SPM allocation、
 DDR memory planning、host runtime D2D/P2P ABI 或 raw non-unicast DTE packet。当前只验证fixed-size unicast
 Direct DTE的instruction IR schedule与lifetime，并未闭合physical target data plane；logical collective IR的支持范围不能由当前某个ring lowering pass
@@ -40,10 +40,11 @@ Pipeline position:
 - Current stage responsibility:
   把 buffer-level collective materialize 为 verifier-legal `wafer.tile.*` collective，并在可支持子集上
   展开成 explicit `wafer.instr.dte_send` / `dte_recv` / `dte_wait` p2p body、token/effect、sync boundary 和
-  communication-staging `BufferDemand`；不选择 physical endpoint/channel/FSM，也不要求已有 SPM offset。
+  communication-staging `BufferDemand`；每个send/recv同时获得从collective/p2p语义派生的typed logical
+  message identity；不选择 physical endpoint/channel/FSM，也不要求已有 SPM offset。
 - Output artifact / IR:
-  instruction-level communication IR over unplaced Wafer-tagged SPM memrefs；peer/order/byte range、buffer
-  slice、outstanding lifetime 和 wait 由 IR/effect 表达，不保存重复 communication plan attr。
+  instruction-level communication IR over unplaced Wafer-tagged SPM memrefs；peer/message identity/order/byte
+  range、buffer slice、outstanding lifetime 和 wait 由 IR/effect 表达，不保存重复 communication plan attr。
 - Downstream consumer:
   instruction legality、layout materialization、whole-entry SPM/DDR planning 和 event-liveness verifier。
 - User-level driver / named pipeline:
@@ -59,11 +60,11 @@ Pipeline position:
 - Completion gate:
   top-level `all_gather`、`reduce_scatter`、`all_reduce` 和可表达的 p2p/all-to-all case 能从真实
   group/tile-region path 形成 verifier-legal p2p IR；其 staging demand、async lifetime 和 byte range 被
-  whole-entry memory/event planning直接消费。segmented/MoE仍是deferred extension，不能靠手写offset fixture
-  或本节讨论冒充当前完成。
+  whole-entry memory/event planning直接消费，send/recv可用显式message identity跨rank唯一配对。segmented/MoE
+  仍是deferred extension，不能靠手写offset fixture或本节讨论冒充当前完成。
 ```
 
-### Deferred Physical Transport Acceptance
+### Planned Physical Transport Acceptance
 
 当前仓库没有production physical transport allocator或registry。下列是Direct DTE进入Q16/Q17前必须补齐的
 pipeline boundary，不是当前artifact事实：
@@ -71,41 +72,44 @@ pipeline boundary，不是当前artifact事实：
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  complete per-rank memory-planned instruction clone、logical DTE peer/body、accepted SPM/DDR offsets，以及exact
-  target topology/execution mesh。
+  complete per-rank memory-planned instruction clone、带typed message identity的logical DTE peer/body、accepted
+  SPM/DDR offsets，以及exact target topology/execution mesh。
 - Current stage responsibility:
   从当前IR与topology重算endpoint、channel/FSM、receiver range、completion/status/error和release legality，
-  并做cross-rank send/recv matching。
+  并按source rank、destination rank和logical message identity做cross-rank send/recv matching，再核对bytes/range。
 - Output artifact / IR:
-  passing candidate的typed C++ rank-record fields，或结构化failure；不新增transport registry/side table。
+  原logical p2p body保持唯一schedule source；acceptance只在每个`wafer.instr.dte_send/recv`上补一个typed
+  `DirectDTEBindingAttr`，记录不能从op/topology/accepted offset重算的有限channel/FSM/completion profile。
+  `RankExecutable::TransportContract::DirectDTE`只汇总capability，不复制per-op schedule或binding records；任一
+  rank/cross-rank relation失败则不形成bundle。
 - Downstream consumer:
-  Q16 all-rank bundle validation和Q17 target ABI/module lowering。
+  Q16 all-rank bundle validation、Q17 target ABI/module lowering和Q18 runtime-observable transport requirements。
 - User-level driver / named pipeline:
   落地后只由wafer-compile内部调用，不暴露transport allocator或stage selector。
 - Explicit non-goals:
   不改变logical collective algorithm，不让runtime搜索route/resource，不预设relocation/projection schema。
 - Completion gate:
-  真实send/recv bytes、peer、receiver range、completion/error与target CRT ABI闭合；missing peer/range/wait/status
-  或resource conflict原子拒绝整个bundle。
+  真实send/recv identity、bytes、peer、receiver range、completion/error与target CRT ABI闭合；duplicate/missing
+  identity、peer/range/wait/status或resource conflict原子拒绝整个bundle。
 ```
 
-在该stage实现前，含Direct DTE的candidate保持target-illegal，不能用局部instruction test、logical-rank check或
-手写binding冒充完成。当前Q16的typed contract明确为`TransportContract::None`，因此在创建任何
-`RankExecutable`前对含logical collective的grouped program报`unsupported_transport`并整体失败。
+该stage由Q16.T拥有。在它实现前，含Direct DTE的candidate保持target-illegal，不能用局部instruction test、
+logical-rank check或手写binding冒充完成。当前Q16的typed contract明确为`TransportContract::None`，因此在创建
+任何`RankExecutable`前对含logical collective的grouped program报`unsupported_transport`并整体失败。
 
 ## 1. 设计目标
 
 目标：
 
 - 保留tiled tensor collective的通信语义，并用`wafer.execution.mesh`验证logical rank domain；physical
-  endpoint mapping留给deferred transport acceptance。
+  endpoint mapping留给Q16.T transport acceptance。
 - 使用fixed-size unicast Direct DTE instruction schedule组合ring/tree/transpose等collective；在physical
   binding/CRT/board证据闭合前不称为已验证target data plane。若后续启用raw non-unicast DTE，必须先有独立
   ABI、resource model和板端验证。
 - 用 SSA token / effect 表达 outstanding communication 和 wait，服务 SPM liveness、buffer reuse 和
   compute/communication overlap。
 - 把 local NCC fence、DTE/FSM wait、group barrier 分成不同 sync 边界，避免用一个 wait 语义覆盖所有事。
-- logical schedule写入IR body后，future physical transport acceptance必须从当前IR/topology重算binding；
+- logical schedule写入IR body后，Q16.T physical transport acceptance必须从当前IR/topology重算binding；
   当前不固定pinned/relocation、projection或digest协议，也不能在target CRT中猜endpoint。
 - 让 async completion 同时携带 success/error 可观察性；issue token 被 wait 消费不等于 transport 成功，
   status source 和 error propagation 必须进入 lower-level transport / ABI contract。
@@ -129,7 +133,7 @@ partitioned StableHLO + collectives
   -> explicit `wafer.instr.dte_*` point-to-point steps
   -> whole-entry SPM/DDR/event planning
   -> Direct DTE/FSM/sync physical transport acceptance
-  -> launch projection + whole-variant atomic commit
+  -> all-rank transport verification + whole-variant atomic commit
   -> target CRT / PackageManifest transport requirements
 ```
 
@@ -142,11 +146,11 @@ partitioned StableHLO + collectives
 | Scheduled group / tile_region | tiled tensor collective + storage values | tile slice、SPM buffer、layout/materialization、communication staging demand |
 | Topology / execution mesh | logical rank 到 encoded physical endpoint 的 derived / explicit view | availability、connectivity、rank order、physical peer |
 | buffer-level comm | `wafer.tile.*` collective op, when the collective semantic needs a separate buffer-level stage | 保留 tile-local communication semantic、logical group / byte/effect 边界；physical endpoint 从 topology/execution mesh 派生，不选择 raw DTE register |
-| p2p schedule | `wafer.instr.dte_send`、`dte_recv`、`dte_wait`、local compute step | 显式 ring/tree step、buffer slice、byte count、token/effect |
+| p2p schedule | `wafer.instr.dte_send`、`dte_recv`、`dte_wait`、local compute step | 显式 ring/tree step、logical message identity、buffer slice、byte count、token/effect |
 | memory/event planning | complete static-rank candidate entries | communication staging exact range、async lifetime、reuse legality、accepted SPM/DDR offsets |
 | physical transport acceptance | p2p body + accepted offsets + topology/mesh | receiver ready、endpoint/channel/FSM、DTE attach/send/wait/release、status/error 的唯一 binding |
-| launch projection / commit | all rank transport facts + distributed coverage | pinned/relocatable projection、cross-rank protocol closure、whole-variant atomicity |
-| target/package | committed transport descriptor | endpoint/control resource requirements、completion/error DAG exports；不复制 p2p body |
+| all-rank transport verification / commit | all rank transport facts + distributed coverage | message matching、cross-rank protocol/resource closure、whole-variant atomicity |
+| target/package | committed transport descriptor | target CRT calls与runtime capability/status/completion requirements；不复制 p2p body |
 
 Collective algorithm 的选择过程是 analysis / rewrite。若已经展开成 p2p body，就不再保存一个
 重复描述 body 的 global plan attr；若仍保持 collective op，则它只表达尚未展开的 collective
@@ -210,6 +214,11 @@ wafer.instr.dte_wait(token...)
 - `peer` 是 execution mesh 中的 logical rank，不是 physical tile id 或 runtime endpoint encoding。
   physical endpoint 由 execution mesh / target topology 派生的 endpoint view 在 lowering 使用点查询。
 - byte count 来自 buffer type、slice 或 explicit size SSA value；V0 Direct DTE 要求 fixed-size。
+- `DTEMessageAttr`是logical message identity，至少区分collective/p2p协议中的phase和logical payload slice。
+  它在collective-to-p2p materialization时由语义生成，send/recv两端必须一致，并在同一entry的
+  `(source rank, destination rank)`作用域内对静态message唯一。若op位于structured loop/branch，动态匹配还必须
+  带由loop induction/branch path派生的control instance；不得在Q16.T或executor中用op遍历/调度序号、
+  symbol/buffer名字、physical channel/FSM或target packet id补猜。
 - source/destination buffer 的 lifetime 延伸到对应 wait。
 - op 的 effects 明确 read source、write destination，并占用 communication resource class。
 - p2p op 不改变 physical layout；它是 byte-preserving movement。layout conversion 仍由
@@ -219,9 +228,10 @@ wafer.instr.dte_wait(token...)
   communication buffer 之间拷贝，再让 `wafer.instr.dte_send` / `dte_recv` 操作连续 SPM buffer。
   这样 SPM memory planning 能看到真实 staging demand，也不会把 DTE 协议误当作 layout
   conversion。
-- op 不携带 physical endpoint encoding、DTE id、FSM id、packet id、stream id 或 raw register mode。
-  这些resources只在accepted offsets后由physical transport acceptance形成candidate binding members，
-  再由launch projection验证。当前Q16不会为Direct DTE伪造typed rank-record fields。
+- op在acceptance前不携带 physical endpoint encoding、DTE id、FSM id、packet id、stream id 或 raw register mode。
+  Q16.T只在accepted offsets后把被选中的有限channel/FSM/completion profile写入typed `DirectDTEBindingAttr`，
+  再由all-rank verifier和target consumer验证。logical `DTEMessageAttr`不是physical binding字段；当前Q16不会为
+  Direct DTE伪造typed rank-record fields。
 
 ### 3.3 Sync Ops
 
@@ -340,7 +350,7 @@ route / Direct DTE protocol legality 仍由后续 `wafer.execution.mesh` /
 旧 tile-region-to-C-ABI debug pass 已删除；fixed-size unicast p2p 必须先形成 candidate Direct DTE
 issue/wait form，再经 whole-entry memory planning 和 physical transport acceptance，最后随整个 variant
 commit；target LLVM emission 只消费 committed instruction-level IR、topology/execution-mesh contract 和
-future typed C++ rank record中由accepted IR验证的resource/entry/transport facts。当前Q16遇到collective在
+Q16.T committed binding中由accepted IR验证的resource/entry/transport facts。当前Q16遇到collective在
 rank构造前整体拒绝；这一层仍不应 materialize raw
 non-unicast register 字段，也不把 DTE id、runtime physical address 或 wrapper packet bitfield
 暴露成上层 communication IR 语义。
@@ -362,23 +372,33 @@ tiled tensor collective + SPM storage values -> `wafer.tile.*` collective
 ### 5.1 Physical Transport Acceptance Boundary
 
 当前`wafer.instr.dte_send` / `dte_recv` / `dte_wait`只表达logical peer、buffer byte range和
-token/wait relation；仓库尚未实现把它们完整绑定到physical endpoint、DTE channel/FSM、receiver-ready、
+token/wait relation；现有ODS还缺少上述跨rank `DTEMessageAttr`。仓库尚未实现把它们完整绑定到physical endpoint、
+DTE channel/FSM、receiver-ready、
 status/error和CRT ABI的production transport allocator。因此Direct DTE在这些关系闭合前保持target-illegal，
 局部instruction tests不能冒充Q16/Q17完成。
 
-恢复该边界时必须：
+Q16.T恢复该边界时必须：
 
+- 先在logical collective-to-p2p materialization中补typed `DTEMessageAttr`及parser/printer/verifier，使消息身份来自
+  protocol phase和logical payload slice，而不是physical allocator、op顺序或名字；
 - 只从当前instruction IR、exact topology/execution mesh、accepted SPM/DDR offsets、SSA effects和completion
   重算每个logical issue/wait的physical legality；
-- physical acceptance落地后，把target lowering真正需要的有限binding写入扩展后的typed C++
-  `RankExecutable`，所有rank通过后随bundle原子commit；不得新增平行collective schedule、opaque side table、
-  全局action registry或代表rank；
-- Q17从committed instruction IR与typed binding派生target ABI；Q18只序列化runtime-observable slots，
+- physical acceptance只给现有logical DTE issue op补typed `DirectDTEBindingAttr`。attr只保留allocator选择后不能从
+  logical peer、topology、buffer type和accepted offset重算的channel/FSM/completion profile；receiver range、
+  bytes、peer和issue/wait顺序仍由operand/attr/SSA body表达，不在binding中复制；
+- `RankExecutable`只把transport capability从`None`提升为`DirectDTE`，不另存per-op action list。所有rank的
+  send/recv按`(source rank, destination rank, DTEMessageAttr)`唯一配对，peer反向关系、bytes、range、resource
+  conflict和wait/status通过后，带binding的module才随
+  bundle原子commit；不得新增平行collective schedule、opaque side table、全局action registry或代表rank；
+- Q17 target lowering直接消费committed DTE op及其typed binding，并闭合repo-local CRT wrapper、required symbol和
+  late-failure atomic publication；Q18只序列化runtime-observable slots，
   runtime不得重新搜索endpoint/channel/FSM；
 - timeout、transport error、peer failure和success completion必须由真实IR/ABI/status consumer区分。
 
-在上述producer和consumer共同落地前，不固定action/member/projection ID、relocation schema或runtime selection
-policy名称，也不把这些讨论对象写成当前artifact事实。
+`DTEMessageAttr`与`DirectDTEBindingAttr`职责不同：前者是logical schedule中的稳定匹配事实，后者只保留allocator
+选择出的physical resource/completion profile。两者都不是raw packet bag；字段必须逐项被verifier与对应consumer
+消费，parser/printer、cross-rank verifier和negative gate同批落地。action/member/projection ID、relocation schema
+或runtime selection policy仍不进入当前合同。
 
 ## 6. Collective Lowering
 
@@ -580,15 +600,18 @@ resource release
 这个序列必须由 lower-level Wafer ops 或 compiler-generated typed transport descriptor 表达，再由
 committed instruction / accepted transport / ABI-LLVM lowering 生成具体 target CRT call 和 runtime
 control binding。`wafer.instr.dte_send` / `dte_recv` 不直接携带每个 helper 调用名；helper 选择属于
-transport lowering，但target emission只能在`tasks/04`已提交pinned/relocatable projection后消费对应binding。
+transport lowering，但target emission只能在Q16.T all-rank verification提交accepted binding后消费。
 
 Target/package 边界只导出 runtime 可观察的 transport requirements 和 completion/error surface：
 
-- committed pinned projection导出projection fingerprint和rank/stage entrypoint对应的固定endpoint resources。
-- committed relocatable projection导出endpoint table、channel/FSM、receiver buffer和status/control slots。
-- async issue 对应的 device/DTE completion、local drain 和 host command completion保持不同节点；runtime
-  completion DAG引用这些节点，不把它们压成一个 scalar completion source。
-- status/error slot、timeout policy 和 peer/rank failure domain由 package声明、RuntimeSession实例化；
+- target module从committed DTE op和`DirectDTEBindingAttr`生成固定CRT call；logical message identity、per-op
+  binding和p2p body均留在module内。
+- manifest的typed `TransportRequirements::DirectDTE`只声明target/runtime capability和launch可观察的
+  status/error/completion ABI requirement，不复制endpoint table、channel/FSM allocation或内部completion DAG。
+- no-card RuntimeSession只验证environment支持该capability/ABI；不重新route、匹配消息或分配transport resource。
+- async issue的device/DTE completion、local drain和host command completion在IR/target ABI中保持语义区分；
+  package只投影launch consumer必须观察的terminal/status requirement。
+- timeout、transport error和peer/rank failure由target status ABI及后续provider/board gate证明；
   provider-private handle 和 physical address不进入 package。target CRT只写local
   pending/success/timeout/transport-error；`peer_failure`由RuntimeSession在其它rank/stage failure被completion
   DAG观察后合成到同一typed outcome surface，不能要求没有peer-status evidence的device helper猜测。
@@ -621,13 +644,13 @@ P2P-level verifier：
 - byte count 与 buffer slice/storage representation 一致。
 - token wait 支配后续消费或 reuse；async lifetime 被 SPM allocation 看到。
 - no raw non-unicast field；no hidden DTE id/FSM id attr before resource allocation layer。
-- transport acceptance前仍使用logical peer；acceptance后每个issue/wait在每个binding member中必须唯一，
-  并明确`requires_pinned`或relocation slot eligibility；final二选一由launch projection验证。
+- transport acceptance前仍使用logical peer和typed message identity；acceptance后每个send/recv恰有一个
+  `DirectDTEBindingAttr`，并由all-rank verifier证明match/resource/status closure。
 
 Lower-level verifier：
 
-- endpoint projection覆盖全部 launched rank，pinned mapping 与 topology/availability/fingerprint一致；
-  relocatable mapping 的 control slots完整且 ABI type/size/alignment一致。
+- exact topology/mesh为全部launched rank提供唯一可用endpoint mapping；当前不引入pinned/relocatable
+  projection或runtime relocation分支。
 - channel、local/remote FSM、packet/stream resource 不冲突；receiver buffer 存在、容量足够、offset合法，
   且其 lifetime 覆盖 receiver ready 到 completion/error observe。
 - receiver ready 发生在 send 前，wait/status 检查覆盖 success、timeout、transport error 和 peer failure path。
@@ -702,8 +725,8 @@ wafer.instr.dte_wait %send1, %recv1
 - Direct DTE send/recv/wait golden path 和 error diagnostic 属于历史 bring-up 证据；Direct DTE
   issue/wait form、resource allocation 和 target LLVM emission 需要从 committed instruction IR
   和 accepted endpoint/resource facts 重新建立。
-- accepted physical transport、pinned/relocatable projection、receiver buffer/control slot以及
-  completion/error descriptor尚未在主线 materialize；在这些 facts 被 target LLVM和 package ABI直接消费前，
+- accepted physical transport、typed message/binding attrs、receiver-ready/status ABI以及
+  runtime-observable transport requirement尚未在主线 materialize；在这些 facts 被 target LLVM和 package直接消费前，
   logical DTE body不能作为 production transport完成证明。
 
 后续进入条件：

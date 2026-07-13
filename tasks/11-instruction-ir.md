@@ -112,7 +112,7 @@ Pipeline position:
   `#wafer.memory<space, layout>` + `wafer.instr.*` + explicit token/wait/fence；或结构化
   legalization failure reason。单个 scope/group/tile 不是可提交 artifact。
 - Downstream consumer:
-  per-isolated-region SPM planning、whole-entry DDR planning、event/physical-transport/launch-projection/
+  per-isolated-region SPM planning、whole-entry DDR planning、event/physical-transport/all-rank transport/
   target-entry verification 和
   closed-loop whole-variant candidate driver；atomic commit 后才由 target LLVM、package 和 runtime 消费。
 - User-level driver / named pipeline:
@@ -860,7 +860,7 @@ identity/ABI/target-legality library或conversion-request对象，不能把讨�
 拆库，依赖仍须保持IR geometry → target legality → lowering单向。
 
 shared target verifier不以post-commit conversion request作为唯一allocation输入。candidate preflight必须由
-whole-variant transaction内部从当前clone、accepted offsets/transport/projection和exact target context重算
+whole-variant transaction内部从当前clone、accepted offsets/transport binding和exact target context重算
 root/view/slot/capacity relation；caller不能传raw range map、resolver callback或旁路resource view。
 candidate preflight只形成transformation-local validation result，不能产出LLVM/ABI/artifact；commit函数内部重新
 构造并验证，不接受caller proof。post-commit target conversion必须再次从committed

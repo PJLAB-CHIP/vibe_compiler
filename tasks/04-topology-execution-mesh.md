@@ -1,8 +1,8 @@
 # Wafer Target Topology 与 Execution Mesh 设计
 
-状态：2026-07-12按当前实现重基线。本文只拥有`wafer.target.topology`和
-`wafer.execution.mesh`合同。target capability environment、calibration、launch/transport projection和多卡
-deployment均为后续扩展，不是当前pipeline事实。实现状态看`tasks/progress.md`。
+状态：2026-07-13按Q16.T边界同步。本文只拥有`wafer.target.topology`和
+`wafer.execution.mesh`合同。target capability environment、calibration、accepted physical transport binding和多卡
+deployment均不属于本层；实现状态看`tasks/progress.md`。
 
 ## 1. Pipeline Contract
 
@@ -26,7 +26,7 @@ Pipeline position:
   `wafer-opt`只处理显式IR，用于debug/test，不能成为用户可选stage或production rank配置旁路。
 - Explicit non-goals:
   不表达target revision/ABI/capability fingerprint、SPM/DDR容量、calibration profile、rank class、DTE route、
-  launch projection、target module或runtime handle；不从axis名恢复dp/tp/pp语义。
+  physical transport binding、target module或runtime handle；不从axis名恢复dp/tp/pp语义。
 - Completion gate:
   rank-count=1/16均得到exact topology/mesh，已有不匹配、重复或nested事实fail closed；post-SPMD metadata中的
   logical_rank_count与mesh一致；Q15最终grouped program重新parse后仍通过同一exact-config gate。
@@ -136,7 +136,7 @@ Q15到此只形成verified grouped program。Q16直接从`ExecutionConfig.rankCo
 Q16产出move-only `RankExecutable[]`和共同拥有MLIRContext的atomic `ExecutableBundle`；vector顺序和每个record的
 logical rank必须严格为`0..N-1`，即使replicated modules字节相同也不去重。Q17才把每rankaccepted instruction
 module转成verified target artifacts；Q18才定义manifest和runtime binding。topology/mesh可以作为这些阶段的已验证
-输入，但当前没有target capability op、launch projection、rank class或relocation protocol。
+输入，但当前没有target capability op、accepted physical transport binding、rank class或relocation protocol。
 
 如果未来target revision/capability、bad-tile deployment或multi-card transport成为真实consumer，需要新增或扩展
 对应owner文档与typed representation。不得把历史environment fingerprint、projection set、calibration profile或
