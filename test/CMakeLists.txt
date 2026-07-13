@@ -71,4 +71,5 @@ add_test(NAME wafer-runtime-adapter-python
   COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/Runtime/wafer_runtime_adapter_test.py
     --repo-root ${CMAKE_SOURCE_DIR}
+    --wafer-run $<TARGET_FILE:wafer-run>
 )

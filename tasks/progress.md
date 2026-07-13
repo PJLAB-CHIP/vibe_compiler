@@ -46,8 +46,8 @@ Q14 architecture-baseline
 | Q15 | `compiler-driver` | `done` | Q0 | 最小typed request/config、source snapshot、pinned helper、typed distributed boundary、parameter shards、local normalization、complete logical groups、readback和no-replace publication已闭合；`check-wafer`新鲜执行28个C++ unit和229个lit（228 pass、1个feature-inverse unsupported），CTest 3/3通过。 | 01、02、03、04、05、06、16 |
 | Q16 | `executable-bundle` | `done` | Q15 | typed frontend facts、rank-count=1/16显式isolated clones、whole-rank终态memory/legality、move-only `RankExecutable[]`和context-owning atomic `ExecutableBundle`已闭合；rank-15 late failure无partial publication，当前`TransportContract::None`使collective明确fail closed。 | 03、04、06、09、12、13、16 |
 | Q17 | `target-artifact-bundle` | `done` | Q0、Q16 | output root重定向到typed output slot，default DDR arena以显式i64 base ABI slot绑定；真实rank-count=1/16的all-and-only LLVM→object→CRT→ELF modules完成entry/fixed ABI/format/symbol/digest readback后原子发布，rank-15 target late failure无partial `.so`。 | 14、16 |
-| Q18 | `manifest-runtime` | `doing` | Q17 | 用唯一C++ typed manifest/canonical JSON和slot-resource双射替代文本恢复及双validator；no-card runtime只消费verified manifest。 | 15、16 |
-| Q19 | `reference-executor` | `blocked` | Q16 | 实现linear/MLP所需单rank instruction semantics，再扩DTE多rank子集；明确不模拟target packet timing或board completion。 | 10、11、13、16 |
+| Q18 | `manifest-runtime` | `done` | Q17 | 唯一C++ typed manifest/canonical JSON、Q16/Q17 all-and-only assembly、package readback/no-replace publication和pure no-card preflight已闭合；旧双validator与HostRuntime prototype已删除；`check-wafer`新鲜执行30个C++ unit和230个lit（229 pass、1个feature-inverse unsupported），CTest 3/3通过。 | 15、16 |
+| Q19 | `reference-executor` | `doing` | Q16 | 实现linear/MLP所需单rank instruction semantics，再扩DTE多rank子集；明确不模拟target packet timing或board completion。 | 10、11、13、16 |
 | Q20 | `single-card-linear-mlp` | `blocked` | Q5.C、Q18、Q19 | 同一driver分别以rank-count=1和16生成完整bundle、manifest和runtime trace，并由reference executor与CPU reference比较。 | 01、16 |
 | Q21 | `single-card-tiny-llama` | `blocked` | Q20 | tiny Llama decoder block经同一16-rank candidate/bundle/package/reference路径；不接受手工group/instr或绕过selector的平行主线。 | 01、05、06、10、11、13、16 |
 

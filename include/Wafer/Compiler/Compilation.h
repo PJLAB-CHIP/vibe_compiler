@@ -173,10 +173,9 @@ compileGroupedProgramToExecutableBundle(llvm::StringRef groupedProgramDirectory,
                                         ExecutionConfig executionConfig,
                                         llvm::raw_ostream &diagnostics);
 
-/// Runs the production transaction through atomic executable and target-
-/// artifact bundles. The published root retains the verified grouped-program
-/// checkpoint and adds the all-rank `modules/` set only after every target
-/// module has passed link and readback.
+/// Runs the production transaction through executable, target-artifact and
+/// typed package bundles. The final root becomes visible only after canonical
+/// manifest readback verifies every grouped-program and target module member.
 mlir::LogicalResult compileProgram(CompilationRequest request,
                                    llvm::StringRef outputProgramDirectory,
                                    llvm::StringRef xlaSpmdPartitionerHelper,

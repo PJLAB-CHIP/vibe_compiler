@@ -191,7 +191,7 @@ unsupported，但Q15完成记录必须确认mandatory真实helper cases实际执
 - 当前parameter/workspace遗漏；
 - rank/module/entry domain mismatch；
 - missing/extra payload和digest mismatch；
-- completion missing/cycle/uncovered effect；
+- completion missing、rank mismatch或unsupported terminal；
 - production JSON含`instructions`直接拒绝。
 
 Python wrapper和C++必须走同一verifier；不能再有不同acceptance。
@@ -205,7 +205,9 @@ Python wrapper和C++必须走同一verifier；不能再有不同acceptance。
 - metadata buffer释放后verified typed value仍可安全使用；
 - no-card输出明确标记未执行board。
 
-### 8.3 Fake Provider
+### 8.3 Deferred Provider Gate
+
+以下验证不属于Q18 no-card完成条件；恢复provider/board任务时必须实际执行，而不能用打印trace替代：
 
 实际记录并执行：
 

@@ -1,53 +1,31 @@
-# RUN: clang -shared -fPIC %S/Inputs/fake-tx-runtime.c -o %t.libhpgr.so
-# RUN: wafer-run --package-metadata %S/../Tools/valid-model-package.json \
-# RUN:   --entrypoint debug_kernel --runtime-library %t.libhpgr.so | FileCheck %s
-# RUN: %python -c 'import json, pathlib, sys; data=json.loads(pathlib.Path(sys.argv[1]).read_text()); data["entrypoints"][1]["binding_order"][0] = "missing_binding"; pathlib.Path(sys.argv[2]).write_text(json.dumps(data), encoding="utf-8")' \
-# RUN:   %S/../Tools/valid-model-package.json %t.bad-binding.json
-# RUN: not wafer-run --package-metadata %t.bad-binding.json \
-# RUN:   --entrypoint debug_kernel --runtime-library %t.libhpgr.so 2>&1 \
-# RUN:   | FileCheck %s --check-prefix=BAD-BINDING
-# RUN: not wafer-run --package-metadata %S/../Tools/valid-model-package.json \
-# RUN:   --entrypoint model_bpm --runtime-library %t.libhpgr.so 2>&1 \
-# RUN:   | FileCheck %s --check-prefix=DESCRIPTOR-ONLY
-# RUN: not wafer-run --package-metadata %S/../Tools/invalid-completion-package.json \
-# RUN:   --entrypoint debug_kernel --runtime-library %t.libhpgr.so 2>&1 \
-# RUN:   | FileCheck %s --check-prefix=STUB-COMPLETION
-# RUN: sed 's/"mode": "tx"/"mode": "legacy_tsm"/' %S/../Tools/valid-model-package.json > %t.legacy-mode.json
-# RUN: not wafer-run --package-metadata %t.legacy-mode.json \
-# RUN:   --entrypoint debug_kernel --runtime-library %t.libhpgr.so 2>&1 \
-# RUN:   | FileCheck %s --check-prefix=LEGACY-MODE
-# RUN: sed '/txLaunchKernel/,$d' %S/Inputs/fake-tx-runtime.c > %t.missing-launch.c
-# RUN: clang -shared -fPIC %t.missing-launch.c -o %t.missing-launch.so
-# RUN: not wafer-run --package-metadata %S/../Tools/valid-model-package.json \
-# RUN:   --entrypoint debug_kernel --runtime-library %t.missing-launch.so 2>&1 \
-# RUN:   | FileCheck %s --check-prefix=MISSING
+# RUN: rm -rf %t.package %t.bad-package
+# RUN: mkdir -p %t.package/modules
+# RUN: touch %t.package/modules/rank_00000.so
+# RUN: cp %S/Inputs/typed-package-manifest.json %t.package/manifest.json
+# RUN: wafer-run --package-dir %t.package --entry-id 0 --no-card | FileCheck %s --check-prefix=PLAN
+# RUN: not wafer-run --package-dir %t.package --entry-id 0 2>&1 | FileCheck %s --check-prefix=NO-MODE
+# RUN: not wafer-run --package-dir %t.package --entry-id 0 --no-card --max-resource-bytes 32 2>&1 | FileCheck %s --check-prefix=CAPACITY
+# RUN: cp -R %t.package %t.bad-package
+# RUN: printf extra > %t.bad-package/modules/extra.so
+# RUN: not wafer-run --package-dir %t.bad-package --entry-id 0 --no-card 2>&1 | FileCheck %s --check-prefix=EXTRA
+# RUN: rm -rf %t.bad-package
+# RUN: cp -R %t.package %t.bad-package
+# RUN: printf corrupt > %t.bad-package/modules/rank_00000.so
+# RUN: not wafer-run --package-dir %t.bad-package --entry-id 0 --no-card 2>&1 | FileCheck %s --check-prefix=DIGEST
+# RUN: not wafer-run --package-dir %S/../Tools --entry-id 0 --no-card 2>&1 | FileCheck %s --check-prefix=LEGACY
 
-# CHECK: backend: tx-host
-# CHECK: package: model_package_sample
-# CHECK: runtime_mode: tx
-# CHECK: completion_source: runtime_stream_wait
-# CHECK: selected_entrypoint: debug_kernel tx.module
-# CHECK: model: model_package_sample abi=tx-kernel-v0
-# CHECK: session_binding: lhs role=input bytes=16 lifecycle=import_or_allocate,query,bind,copy_h2d read_only=true host_visible=true
-# CHECK: session_binding: out role=output bytes=16 lifecycle=allocate,query,bind,copy_d2h read_only=false host_visible=true
-# CHECK: session_binding: tmp role=workspace bytes=16 lifecycle=allocate,query,bind read_only=false host_visible=false
-# CHECK: session_binding: rhs_resident role=resident_constant bytes=16 lifecycle=allocate,query,bind,copy_h2d source=launch_input:rhs read_only=true host_visible=false
-# CHECK: module_resolve: kernel format=tx.kcore path=model_package.so
-# CHECK: launch_arg: 0 lhs role=input bytes=16
-# CHECK: launch_arg: 2 out role=output bytes=16
-# CHECK: launch_arg: 4 rhs_resident role=resident_constant bytes=16
-# CHECK: entrypoint_plan: debug_kernel executor=tx.module launch_api=txLaunchKernel module=kernel function=model_package_sample_abi arg_bytes=80
-# CHECK: completion_plan: wait runtime_stream_wait
-# CHECK: tx_runtime_library: {{.*}}libhpgr.so
-# CHECK: tx_runtime_symbols: ok
-# CHECK: board_launch_gate: not executed
+# PLAN: package: id=0 schema=1 ranks=1
+# PLAN: target: wafer-tx81-single-card runtime_abi=wafer-tx81-kernel-v1 module_format=elf-riscv64
+# PLAN: entry: 0 rank=0 symbol=main
+# PLAN: module: 0 path=modules/rank_00000.so
+# PLAN: launch_slot: 0 resource=0 role=user_input bytes=64 alignment=256 access=read_only externally_bound=true
+# PLAN: launch_slot: 1 resource=1 role=output bytes=64 alignment=256 access=write_only externally_bound=true
+# PLAN: launch_slot: 2 resource=2 role=workspace bytes=512 alignment=256 access=read_write externally_bound=false
+# PLAN: terminal_completion: 0 kind=entry_return
+# PLAN: board_execution: false
 
-# BAD-BINDING: error: entrypoint debug_kernel binding_order[0] does not name a runtime binding: missing_binding
-
-# DESCRIPTOR-ONLY: error: tx.model entrypoint model_bpm requires a materialized BPM descriptor
-
-# STUB-COMPLETION: error: completion source is not supported by tx-host backend: TsmDeviceSynchronize
-
-# LEGACY-MODE: error: tx-host backend requires runtime.mode tx
-
-# MISSING: error: tx runtime library is missing required symbol(s) for tx.module: txLaunchKernel
+# NO-MODE: wafer-run requires explicit --no-card
+# CAPACITY: runtime environment resource capacity is insufficient
+# EXTRA: package modules contain an unreferenced payload
+# DIGEST: package module digest mismatch
+# LEGACY: failed to read package manifest

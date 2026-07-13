@@ -178,7 +178,12 @@ int main(int argc, char **argv) {
   const char *failureRank = std::getenv("WAFER_TEST_FAIL_AFTER_LOGICAL_RANK");
   const char *targetFailureRank =
       std::getenv("WAFER_TEST_FAIL_AFTER_TARGET_LOGICAL_RANK");
-  if (failureRank && targetFailureRank) {
+  const char *packageFailureRank =
+      std::getenv("WAFER_TEST_FAIL_AFTER_PACKAGE_LOGICAL_RANK");
+  unsigned failureInjectionCount = (failureRank ? 1u : 0u) +
+                                   (targetFailureRank ? 1u : 0u) +
+                                   (packageFailureRank ? 1u : 0u);
+  if (failureInjectionCount > 1) {
     llvm::errs() << "wafer-compile: multiple test-only failure injections "
                     "are not allowed\n";
     return 1;
@@ -203,6 +208,17 @@ int main(int argc, char **argv) {
         wafer::compiler::testing::compileProgramWithTargetRankFailure(
             std::move(*request), *options.outputProgramDirectory, helperPath,
             *targetToolchain, parsedFailureRank, llvm::errs());
+  } else if (packageFailureRank) {
+    int64_t parsedFailureRank = -1;
+    if (llvm::StringRef(packageFailureRank)
+            .getAsInteger(10, parsedFailureRank)) {
+      llvm::errs() << "wafer-compile: invalid test-only package failure rank\n";
+      return 1;
+    }
+    compilationStatus =
+        wafer::compiler::testing::compileProgramWithPackageRankFailure(
+            std::move(*request), *options.outputProgramDirectory, helperPath,
+            *targetToolchain, parsedFailureRank, llvm::errs());
   } else
 #endif
   {
@@ -213,7 +229,7 @@ int main(int argc, char **argv) {
   if (mlir::failed(compilationStatus))
     return 1;
 
-  llvm::outs() << "wafer-compile: published target-artifact bundle with "
+  llvm::outs() << "wafer-compile: published verified package with "
                   "execution-ranks="
                << rankCount << ": " << *options.outputProgramDirectory << "\n";
   return 0;

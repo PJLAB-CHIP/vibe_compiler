@@ -5,10 +5,8 @@ add_executable(WaferUnitTests
   Conversion/WaferGroupToTileRegionTest.cpp
   Dialect/Wafer/WaferDialectTest.cpp
   Dialect/Wafer/WaferInterfacesTest.cpp
-  Runtime/HostRuntimeTest.cpp
+  Runtime/PackageManifestTest.cpp
 )
-add_library(WaferFakeTxRuntime SHARED Runtime/FakeTxRuntime.cpp)
-add_dependencies(WaferUnitTests WaferFakeTxRuntime)
 target_link_libraries(WaferUnitTests
   PRIVATE
   WaferCompiler
@@ -27,11 +25,6 @@ target_link_libraries(WaferUnitTests
   MLIRTensorDialect
   GTest::gtest_main
 )
-target_compile_definitions(WaferUnitTests
-  PRIVATE
-  WAFER_FAKE_TX_RUNTIME_PATH="$<TARGET_FILE:WaferFakeTxRuntime>"
-)
-
 if(WAFER_ENABLE_IMPORTER_DEPS)
   target_compile_definitions(WaferUnitTests PRIVATE WAFER_ENABLE_STABLEHLO=1)
   target_link_libraries(WaferUnitTests PRIVATE StablehloRegister)

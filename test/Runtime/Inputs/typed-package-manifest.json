@@ -1,0 +1,107 @@
+{
+  "schema_version": 1,
+  "program": {
+    "id": 0
+  },
+  "target": {
+    "identity": "wafer-tx81-single-card",
+    "runtime_abi": "wafer-tx81-kernel-v1",
+    "module_format": "elf-riscv64"
+  },
+  "rank_count": 1,
+  "resources": [
+    {
+      "id": 0,
+      "rank": 0,
+      "role": "user_input",
+      "role_index": 0,
+      "name": "input",
+      "type": {
+        "dtype": "f32",
+        "shape": [
+          16
+        ]
+      },
+      "bytes": 64,
+      "alignment": 256,
+      "access": "read_only",
+      "host_visible": true
+    },
+    {
+      "id": 1,
+      "rank": 0,
+      "role": "output",
+      "role_index": 0,
+      "name": "output",
+      "type": {
+        "dtype": "f32",
+        "shape": [
+          16
+        ]
+      },
+      "bytes": 64,
+      "alignment": 256,
+      "access": "write_only",
+      "host_visible": true
+    },
+    {
+      "id": 2,
+      "rank": 0,
+      "role": "workspace",
+      "role_index": 0,
+      "name": "default_ddr_arena",
+      "type": {
+        "dtype": "u8",
+        "shape": [
+          512
+        ]
+      },
+      "bytes": 512,
+      "alignment": 256,
+      "access": "read_write",
+      "host_visible": false
+    }
+  ],
+  "modules": [
+    {
+      "id": 0,
+      "rank": 0,
+      "path": "modules/rank_00000.so",
+      "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "format": "elf-riscv64"
+    }
+  ],
+  "entries": [
+    {
+      "id": 0,
+      "rank": 0,
+      "module": 0,
+      "symbol": "main",
+      "slots": [
+        {
+          "ordinal": 0,
+          "resource": 0,
+          "access": "read_only"
+        },
+        {
+          "ordinal": 1,
+          "resource": 1,
+          "access": "write_only"
+        },
+        {
+          "ordinal": 2,
+          "resource": 2,
+          "access": "read_write"
+        }
+      ],
+      "terminal_completion": 0
+    }
+  ],
+  "completions": [
+    {
+      "id": 0,
+      "rank": 0,
+      "kind": "entry_return"
+    }
+  ]
+}

@@ -8,7 +8,7 @@
 # RUN: wafer-opt --wafer-dump-group-layout-plan %t.group.program/functions/forward.mlir 2>&1 | FileCheck %s --check-prefix=LAYOUT
 # RUN: wafer-opt --wafer-dump-group-to-tile-region='logical-rank=0' %t.group.program/functions/forward.mlir 2>&1 | FileCheck %s --check-prefix=GROUP-TO-TILE
 
-# PIPELINE: wafer-compile: published target-artifact bundle with execution-ranks=16:
+# PIPELINE: wafer-compile: published verified package with execution-ranks=16:
 
 # GROUP-MLIR: mhlo.spmd_parameters_shardings
 # GROUP-MLIR: wafer.target.topology @default

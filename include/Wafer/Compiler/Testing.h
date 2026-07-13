@@ -24,6 +24,12 @@ mlir::LogicalResult compileProgramWithTargetRankFailure(
     const TargetToolchain &targetToolchain, int64_t failAfterLogicalRank,
     llvm::raw_ostream &diagnostics);
 
+mlir::LogicalResult compileProgramWithPackageRankFailure(
+    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, int64_t failAfterLogicalRank,
+    llvm::raw_ostream &diagnostics);
+
 } // namespace wafer::compiler::testing
 
 #endif // WAFER_COMPILER_TESTING_H

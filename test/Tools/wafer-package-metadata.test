@@ -1,73 +1,7 @@
-# RUN: %python %wafer_src_root/tools/wafer_package_metadata.py --roundtrip %S/valid-model-package.json | FileCheck %s
-# RUN: %python %wafer_src_root/tools/wafer_package_metadata.py --validate %S/valid-model-package.json
-# RUN: not %python %wafer_src_root/tools/wafer_package_metadata.py --validate %S/invalid-completion-package.json 2>&1 | FileCheck %s --check-prefix=ERR
-# RUN: not %python %wafer_src_root/tools/wafer_package_metadata.py --validate %S/invalid-workspace-package.json 2>&1 | FileCheck %s --check-prefix=WORKSPACE-ERR
-# RUN: not %python %wafer_src_root/tools/wafer_package_metadata.py --validate %S/invalid-resident-constant-package.json 2>&1 | FileCheck %s --check-prefix=CONST-ERR
-# RUN: not %python %wafer_src_root/tools/wafer_package_metadata.py --validate %S/invalid-module-format-package.json 2>&1 | FileCheck %s --check-prefix=MODULE-ERR
-# RUN: not %python %wafer_src_root/tools/wafer_package_metadata.py --validate %S/invalid-empty-modules-package.json 2>&1 | FileCheck %s --check-prefix=EMPTY-MODULE-ERR
-# RUN: not %python %wafer_src_root/tools/wafer_package_metadata.py --validate %S/invalid-model-package.json 2>&1 | FileCheck %s --check-prefix=MODEL-ERR
-# RUN: sed 's/"completion_source": "runtime_stream_wait"/"completion_source": "legacy_model_sync"/' %S/valid-model-package.json > %t.bad-legacy-source.json
-# RUN: not %python %wafer_src_root/tools/wafer_package_metadata.py --validate %t.bad-legacy-source.json 2>&1 | FileCheck %s --check-prefix=LEGACY-SOURCE-ERR
-# RUN: sed 's/"mode": "tx"/"mode": "legacy_tsm"/' %S/valid-model-package.json > %t.bad-legacy-mode.json
-# RUN: not %python %wafer_src_root/tools/wafer_package_metadata.py --validate %t.bad-legacy-mode.json 2>&1 | FileCheck %s --check-prefix=LEGACY-MODE-ERR
-# RUN: %python -c 'import json, sys; data = json.load(open(sys.argv[1])); data["package_name"] = "old_model_package"; json.dump(data, open(sys.argv[2], "w"))' %S/valid-model-package.json %t.deprecated-top-level.json
-# RUN: not %python %wafer_src_root/tools/wafer_package_metadata.py --validate %t.deprecated-top-level.json 2>&1 | FileCheck %s --check-prefix=DEPRECATED-ERR
-# RUN: %python -c 'import json, sys; data = json.load(open(sys.argv[1])); next(i for i in data["instructions"] if i["op"] == "wafer.instr.convert")["src_dtype"] = "f16"; json.dump(data, open(sys.argv[2], "w"))' %S/valid-model-package.json %t.deprecated-convert-dtype.json
-# RUN: not %python %wafer_src_root/tools/wafer_package_metadata.py --validate %t.deprecated-convert-dtype.json 2>&1 | FileCheck %s --check-prefix=CONVERT-DTYPE-ERR
-# RUN: %python -c 'import json, sys; data = json.load(open(sys.argv[1])); item = next(i for i in data["instructions"] if i["op"] == "wafer.instr.reduce"); item["dimensions"] = [0]; del item["dim"]; json.dump(data, open(sys.argv[2], "w"))' %S/valid-model-package.json %t.deprecated-reduce-dimensions.json
-# RUN: not %python %wafer_src_root/tools/wafer_package_metadata.py --validate %t.deprecated-reduce-dimensions.json 2>&1 | FileCheck %s --check-prefix=REDUCE-DIM-ERR
-# RUN: %python -c 'import json, sys; data = json.load(open(sys.argv[1])); next(i for i in data["instructions"] if i["op"] == "wafer.instr.convert")["kind"] = "fp32_fp16"; json.dump(data, open(sys.argv[2], "w"))' %S/valid-model-package.json %t.missing-convert-rounding.json
-# RUN: not %python %wafer_src_root/tools/wafer_package_metadata.py --validate %t.missing-convert-rounding.json 2>&1 | FileCheck %s --check-prefix=CONVERT-ROUNDING-ERR
-# RUN: %python -c 'import json, sys; data = json.load(open(sys.argv[1])); data["instructions"].insert(0, {"op": "wafer.instr.tdma_data_move", "kind": "transpose", "wait_policy": "issue_only", "source_shape": [1, 8, 8, 64], "dest_shape": [1, 8, 64, 8], "permutation": [0, 1, 3, 2]}); json.dump(data, open(sys.argv[2], "w"))' %S/valid-model-package.json %t.unsupported-tdma-transpose.json
-# RUN: not %python %wafer_src_root/tools/wafer_package_metadata.py --validate %t.unsupported-tdma-transpose.json 2>&1 | FileCheck %s --check-prefix=TDMA-TRANSPOSE-ERR
+# RUN: test ! -e %wafer_src_root/tools/wafer_package_metadata.py
+# RUN: rm -rf %t.legacy
+# RUN: mkdir -p %t.legacy/modules
+# RUN: cp %S/valid-model-package.json %t.legacy/manifest.json
+# RUN: not wafer-run --package-dir %t.legacy --entry-id 0 --no-card 2>&1 | FileCheck %s
 
-# CHECK: "schema_version": 2
-# CHECK: "name": "model_package_sample"
-# CHECK: "mode": "tx"
-# CHECK: "completion_source": "runtime_stream_wait"
-# CHECK: "model": {
-# CHECK: "id": "model_package_sample"
-# CHECK: "interface": {
-# CHECK: "binding": {
-# CHECK: "kind": "external_input"
-# CHECK: "source_binding": "rhs"
-# CHECK: "ddr_external_input_bytes": 32
-# CHECK: "ddr_external_output_bytes": 16
-# CHECK: "workspace_bytes": 16
-# CHECK: "resident_constant_bytes": 16
-# CHECK: "wafer.instr.rdma"
-# CHECK: "wafer.instr.gather_scatter"
-# CHECK: "wafer.instr.fill"
-# CHECK: "wafer.instr.elementwise"
-# CHECK: "wafer.instr.reduce"
-# CHECK: "wafer.instr.convert"
-# CHECK: "wafer.instr.dte_send"
-# CHECK: "wafer.instr.dte_recv"
-# CHECK: "wafer.instr.dte_wait"
-# CHECK: "wafer.instr.local_fence"
-# CHECK: "wafer.instr.wdma"
-# CHECK: "modules": [
-# CHECK: "format": "tx.kcore"
-# CHECK: "path": "model_package.so"
-# CHECK: "entrypoints": [
-# CHECK: "executor": "tx.model"
-# CHECK: "state": "descriptor_only"
-# CHECK: "executor": "tx.module"
-# CHECK: "function": "model_package_sample_abi"
-# CHECK: "debug": true
-# CHECK-NOT: {{"place}}{{ment"}}
-# CHECK-NOT: TsmDeviceSynchronize
-
-# ERR: completion source is a known stub fence
-# WORKSPACE-ERR: resources.workspace_bytes does not match workspace buffers
-# CONST-ERR: resources.resident_constant_bytes does not match resident constants
-# MODULE-ERR: modules[0].format is not supported
-# EMPTY-MODULE-ERR: modules must be non-empty
-# MODEL-ERR: model must be an object
-# LEGACY-SOURCE-ERR: legacy_model_sync completion source requires legacy_tsm runtime mode
-# LEGACY-MODE-ERR: legacy_tsm runtime mode requires legacy_model_sync completion source
-# DEPRECATED-ERR: metadata.package_name is deprecated
-# CONVERT-DTYPE-ERR: instructions[{{[0-9]+}}].src_dtype is deprecated
-# REDUCE-DIM-ERR: instructions[{{[0-9]+}}].dimensions is deprecated
-# CONVERT-ROUNDING-ERR: instructions[{{[0-9]+}}].rounding_mode must be a non-negative integer
-# TDMA-TRANSPOSE-ERR: instructions[{{[0-9]+}}].kind reached package metadata; compiler output must materialize transform-like movement before export
+# CHECK: wafer-run: manifest contains unknown field

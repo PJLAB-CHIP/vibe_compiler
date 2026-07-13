@@ -111,9 +111,9 @@ private:
   std::vector<VerifiedTargetModule> modules;
 };
 
-/// Compiles and links every Q16 rank into a private transaction directory,
-/// verifies the complete rank/module/entry/ABI/digest domain, and publishes
-/// the target-artifact root only after all ranks pass.
+/// Compiles and links every executable rank into a private transaction
+/// directory, verifies the complete rank/module/entry/ABI/digest domain, and
+/// publishes the target-artifact root only after all ranks pass.
 llvm::Expected<TargetArtifactBundle> compileExecutableBundleToTargetArtifacts(
     const ExecutableBundle &executableBundle, llvm::StringRef outputDirectory,
     const TargetToolchain &toolchain, llvm::raw_ostream &diagnostics);

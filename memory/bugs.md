@@ -148,3 +148,13 @@
   slot和i64 arena-base argument。target lowering由显式argument index生成`base + offset`，默认调用继续拒绝；不得插入
   未lower的DDR `memref.copy`，也不得把arena-relative offset常量化为device address。slot和workspace的最低对齐必须
   取自生成Q16 memory plan的同一target policy，再与alloc显式更强alignment取最大值，不能另写较小magic number。
+
+## 2026-07-13 多字段 JSON parser 必须逐字段消费 `Expected`
+
+- 现象：typed manifest在较小`maxStringBytes`下会让多个target字符串同时解析失败；parser返回第一项error前，
+  其它仍含error的`llvm::Expected`析构，进程以“Expected must be checked”直接abort，而不是fail closed。
+- 根因：为写法紧凑，先并行构造多个`Expected<T>`再统一检查。LLVM要求每一份error都被显式消费；提前return无法替
+  调用方处理同scope中的其它error owners。
+- 修复模式：外部格式parser按schema顺序逐字段解析并立即检查，只有前一个成功才构造下一个`Expected`。limit、类型、
+  unknown field和多字段同时损坏测试都必须证明返回结构化error且进程不崩溃；不要用一组`Expected`的布尔析取做批量
+  validation。

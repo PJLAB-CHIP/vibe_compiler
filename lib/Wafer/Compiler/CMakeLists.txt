@@ -1,6 +1,7 @@
 add_mlir_library(WaferCompiler
   Compilation.cpp
   ExecutableBundle.cpp
+  Package.cpp
   TargetArtifact.cpp
 
   LINK_LIBS PUBLIC
@@ -10,6 +11,7 @@ add_mlir_library(WaferCompiler
   WaferFrontend
   WaferIR
   WaferPipelines
+  WaferRuntime
   WaferTransforms
   MLIRArithDialect
   MLIRArithTransforms

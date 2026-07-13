@@ -1,8 +1,7 @@
 # Wafer Typed Manifest、RuntimeSession 和 Launch Boundary
 
-状态：2026-07-13在Q17完成后进入Q18实施。本文定义Q18合同；近期wire form固定为typed C++
-model的canonical JSON，不是Protobuf。Q18尚未完成，不能把本文value sketch写成已存在API。实现状态看
-`tasks/progress.md`。
+状态：2026-07-13已完成Q18。近期wire form固定为唯一typed C++ model的canonical JSON，不是Protobuf；
+provider/board execution仍是后续独立gate。实现状态看`tasks/progress.md`。
 
 ## 1. 目标和非目标
 
@@ -12,7 +11,6 @@ model的canonical JSON，不是Protobuf。Q18尚未完成，不能把本文value
 - 用typed slot/resource双射表达Kernel ABI；
 - canonical JSON只承担delivery，不复制另一套语义；
 - no-card RuntimeSession做pure preflight和确定性launch plan；
-- 为后续真实provider保留allocation/load/submit/completion/cleanup接口；
 - Q18 package从完整Q17 TargetArtifactBundle组装，并在自己的transaction内原子发布manifest及package成员。
 
 非目标：
@@ -34,9 +32,9 @@ Pipeline position:
 - Current stage responsibility:
   关联Q16/Q17 typed bundles并构造PackageManifest，执行唯一C++semantic verification，序列化canonical JSON；
   在Q18 staging内复制/附着并复核package members后原子发布；runtime解析并验证同一model，结合invocation
-  bindings/provider environment形成RuntimeSession plan。
+  bindings/runtime environment形成side-effect-free RuntimeSession plan。
 - Output artifact / IR:
-  VerifiedPackageManifest、canonical package JSON、no-card RuntimeSessionPlan；board环境下才形成live session/result。
+  VerifiedPackageManifest、canonical package JSON、no-card RuntimeSessionPlan。
 - Downstream consumer:
   wafer-run/no-card inspection、reference/board integration、target module loader和invocation API。
 - User-level driver / named pipeline:
@@ -50,9 +48,9 @@ Pipeline position:
   Q17 target artifact bundle。
 ```
 
-## 3. Current Prototype And Required Replacement
+## 3. 已删除的 Prototype
 
-当前prototype存在四份相互分叉的事实：
+Q18实施前存在四份相互分叉的事实：
 
 - Python exporter通过正则解析instruction/LLVM文本；
 - Python schema validator解释完整schema-v2和instruction list；
@@ -63,8 +61,9 @@ Pipeline position:
 加入binding order；validator只检查名字存在，不验证duplicate和signature双射。C++ parser又不检查schema
 version、model ABI和module format等Python规则。
 
-这些prototype只保留为迁移输入和negative fixture。production compiler/runtime必须整体切换到下面的单一typed
-model，不能继续修补regex或同步两份validator。
+Q18已删除Python exporter/validator和独立C++ `HostRuntime`；`wafer_runtime_adapter.py`只转发C++
+`wafer-run`进程，不解释schema、enum或cross-field legality。旧schema只作为“缺少typed manifest必须拒绝”的
+negative边界，不再作为迁移输入或production fixture。
 
 ## 4. Typed C++ Manifest Model
 
@@ -73,7 +72,10 @@ model，不能继续修补regex或同步两份validator。
 ```cpp
 struct ResourceRecord {
   ResourceId id;
+  RankId rank;
   ResourceRole role;
+  uint32_t roleIndex;
+  std::string name;      // optional diagnostic name, not identity
   TensorType type;       // dtype + static/bounded shape
   uint64_t bytes;
   uint64_t alignment;
@@ -92,7 +94,7 @@ struct ModuleRecord {
   RankId rank;
   std::string relativePath;  // delivery locator only
   ContentDigest digest;
-  KernelAbiDigest abiDigest;
+  ModuleFormat format;
 };
 
 struct RankEntrypoint {
@@ -111,12 +113,16 @@ struct PackageManifest {
   std::vector<ResourceRecord> resources;
   std::vector<ModuleRecord> modules;
   std::vector<RankEntrypoint> entries;
-  CompletionGraph completion;
+  std::vector<TerminalCompletion> completions;
 };
 ```
 
 strong IDs可以先用不可隐式互转的小型C++ wrapper，不要求新增MLIR type或全局registry。ID由当前bundle内唯一
 owner分配；文件路径、symbol文本和vector index不承担semantic identity。
+
+当前Kernel ABI摘要就是Q17导出的完整ordered typed slots；Q18逐slot与Q16 resource核对并原样序列化，不再增加一份
+可与slot列表分叉的ABI digest。当前transport contract为`None`，每rank在entry return前已由Q16证明无pending effect，
+因此completion domain只有一个typed `entry_return` terminal；后续真实异步runtime graph出现时再扩completion表示。
 
 manifest明确不含：
 
@@ -140,8 +146,8 @@ manifest明确不含：
 - module relative path不能逃逸package root，digest与实际file一致；
 - slots从0开始连续、无重复，每个resource按正确role/access/type/bytes/alignment绑定；
 - 当前input/output/parameter/workspace没有遗漏或多绑；
-- entry ABI摘要与slot列表一致；
-- terminal completion存在，并覆盖entry所有异步side effect；
+- Q17 ordered ABI slots与Q16 resource role/index/name/type/access all-and-only一致；
+- 每rank唯一terminal completion存在且为当前supported `entry_return`；
 - unknown/deprecated field和无法解释的extension被拒绝。
 
 verifier不读取instruction IR来重新证明target legality；target module/ABI摘要已经由compiler stage拥有。
@@ -187,40 +193,35 @@ delivery transaction拥有：
 4. serialization后重新parse/verify；
 5. 验证manifest all-and-only引用staged files和digest；
 6. fsync/必要durability步骤；
-7. 单次rename或平台等价原子替换final root。
+7. 单次no-replace rename或平台等价操作发布final root。
 
 任一失败abort并清理Q18 staging；已有Q18 final root和Q17 artifact bundle均不变。不得在Q18 package root中
 先暴露module再补manifest，也不得late failure后留下partial package。
 
 ## 8. Runtime Layering
 
-runtime分三层：
+runtime长期分三层；Q18实现前两层，第三层属于后续provider/board gate：
 
 1. `PackageFormat`：parse/serialize/semantic verify，不依赖provider；
-2. `RuntimePlan`：结合verified manifest、entry selection、invocation bindings和verified environment做pure
-   preflight；不分配、不加载、不启动线程；
+2. `RuntimePlan`：结合verified manifest、entry selection、invocation bindings和待核对的environment
+   compatibility/capacity facts做pure no-card preflight；不分配、不加载、不启动线程；
 3. `RuntimeProvider`：执行allocation/import/copy/load/resolve/submit/wait/copyback/cleanup。
 
 最小API语义：
 
 ```cpp
 Expected<VerifiedPackageManifest>
-parseCanonicalPackageJson(StringRef json, const PackageParseLimits &limits);
+parseCanonicalPackageJson(StringRef json, StringRef packageRoot,
+                          const PackageParseLimits &limits);
 
 Expected<RuntimeSessionPlan>
-preflightRuntimeSession(const VerifiedPackageManifest &package,
-                        EntryId entry,
-                        InvocationBindings bindings,
-                        const VerifiedRuntimeEnvironment &environment);
-
-Expected<RuntimeSession>
-RuntimeSession::create(RuntimeSessionPlan &&plan, RuntimeProvider &provider);
-
-Expected<InvocationResult>
-executeInvocation(RuntimeSession &session);
+preflightNoCardRuntimeSession(const VerifiedPackageManifest &package,
+                              EntryId entry,
+                              ArrayRef<RuntimeInvocationBinding> bindings,
+                              const RuntimeEnvironment &environment);
 ```
 
-`InvocationBindings`按ResourceId绑定user buffer/parameter，不按名字猜role。preflight检查all-and-only、bytes、
+`RuntimeInvocationBinding`按ResourceId绑定user buffer/parameter，不按名字猜role。preflight检查all-and-only、bytes、
 alignment、mutability、host visibility和alias限制。
 
 ## 9. No-Card And Board Evidence
@@ -233,8 +234,8 @@ no-card允许证明：
 - deterministic launch/completion plan；
 - side-effect-free rejection。
 
-fake provider必须实际记录并执行抽象调用序列，而不是只打印预期文本。每一步可注入失败，并验证未满足依赖的
-descendant不执行、已获取resource按逆序cleanup、typed error保留stage/context。
+fake/real provider必须实际记录并执行抽象调用序列，而不是只打印预期文本；该能力不属于Q18完成证明，进入
+configured provider/board任务后再补编号设计和failure/cleanup gate。
 
 board gate另行证明：
 
@@ -257,13 +258,17 @@ board gate另行证明：
 - parameter/workspace遗漏，重复resource alias错误；
 - path traversal、digest mismatch、missing/extra file；
 - rank/module/entry domain不完整；
-- completion missing/cycle/uncovered side effect；
+- completion missing、rank mismatch或非`entry_return` terminal；
 - canonical byte-identical roundtrip和parse limits；
 - transaction中compile/link/manifest/write/fsync/rename每个late failure；
-- fake provider每步failure suppression/cleanup；
 - single-tile和16-rank真实compiler bundle直接进入manifest/runtime。
 
-旧schema-v2 fixture只作migration/negative覆盖，不能作为production package完成证明。
+旧schema-v2 fixture只证明legacy输入被拒绝，不能作为production package完成证明。
+
+本轮新鲜验证：真实rank-count=1/16 program均由同一`wafer-compile`产出typed package并进入no-card consumer；
+rank-15 package assembly注入失败无final/staging。`check-wafer`执行30个C++ unit和230个lit（229 pass，1个
+feature-inverse unsupported），CTest 3/3通过；unsupported仅为启用importer构建中的
+`wafer-compile-stablehlo-disabled.test`，不覆盖Q18 mandatory gate。
 
 ## 11. Deferred Extensions
 

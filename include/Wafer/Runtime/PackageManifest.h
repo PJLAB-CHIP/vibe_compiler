@@ -1,0 +1,215 @@
+//===- PackageManifest.h - Typed Wafer package format ----------*- C++ -*-===//
+
+#ifndef WAFER_RUNTIME_PACKAGEMANIFEST_H
+#define WAFER_RUNTIME_PACKAGEMANIFEST_H
+
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/StringRef.h"
+#include "llvm/Support/Error.h"
+
+#include <cstdint>
+#include <limits>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace wafer::runtime {
+
+inline constexpr uint32_t kPackageManifestSchemaVersion = 1;
+inline constexpr llvm::StringLiteral kPackageManifestFileName = "manifest.json";
+inline constexpr llvm::StringLiteral kSingleCardTargetIdentity =
+    "wafer-tx81-single-card";
+inline constexpr llvm::StringLiteral kKernelRuntimeABI = "wafer-tx81-kernel-v1";
+inline constexpr llvm::StringLiteral kRiscv64ELFModuleFormat = "elf-riscv64";
+
+template <typename Tag> class StrongId {
+public:
+  StrongId() = default;
+  explicit StrongId(uint64_t value) : value(value) {}
+
+  uint64_t getValue() const { return value; }
+  bool isValid() const { return value != std::numeric_limits<uint64_t>::max(); }
+
+  friend bool operator==(StrongId lhs, StrongId rhs) {
+    return lhs.value == rhs.value;
+  }
+  friend bool operator!=(StrongId lhs, StrongId rhs) { return !(lhs == rhs); }
+  friend bool operator<(StrongId lhs, StrongId rhs) {
+    return lhs.value < rhs.value;
+  }
+
+private:
+  uint64_t value = std::numeric_limits<uint64_t>::max();
+};
+
+struct ProgramIdTag;
+struct ResourceIdTag;
+struct ModuleIdTag;
+struct EntryIdTag;
+struct CompletionIdTag;
+using ProgramId = StrongId<ProgramIdTag>;
+using ResourceId = StrongId<ResourceIdTag>;
+using ModuleId = StrongId<ModuleIdTag>;
+using EntryId = StrongId<EntryIdTag>;
+using CompletionId = StrongId<CompletionIdTag>;
+
+enum class PackageResourceRole {
+  UserInput,
+  Parameter,
+  Constant,
+  Output,
+  Workspace,
+};
+
+enum class PackageAccessMode { ReadOnly, WriteOnly, ReadWrite };
+
+struct PackageTensorType {
+  std::string dtype;
+  std::vector<int64_t> shape;
+};
+
+struct PackageResourceRecord {
+  ResourceId id;
+  int64_t logicalRank = -1;
+  PackageResourceRole role = PackageResourceRole::UserInput;
+  int64_t roleIndex = -1;
+  std::string name;
+  PackageTensorType type;
+  uint64_t bytes = 0;
+  uint64_t alignment = 0;
+  PackageAccessMode access = PackageAccessMode::ReadOnly;
+  bool hostVisible = false;
+};
+
+struct PackageABISlotBinding {
+  uint64_t ordinal = std::numeric_limits<uint64_t>::max();
+  ResourceId resource;
+  PackageAccessMode access = PackageAccessMode::ReadOnly;
+};
+
+struct PackageModuleRecord {
+  ModuleId id;
+  int64_t logicalRank = -1;
+  std::string relativePath;
+  std::string digest;
+  std::string format;
+};
+
+struct PackageEntrypointRecord {
+  EntryId id;
+  int64_t logicalRank = -1;
+  ModuleId module;
+  std::string symbol;
+  std::vector<PackageABISlotBinding> slots;
+  CompletionId terminalCompletion;
+};
+
+struct PackageCompletionRecord {
+  CompletionId id;
+  int64_t logicalRank = -1;
+  std::string kind;
+};
+
+struct PackageManifest {
+  uint32_t schemaVersion = kPackageManifestSchemaVersion;
+  ProgramId program;
+  std::string targetIdentity;
+  std::string runtimeABI;
+  std::string moduleFormat;
+  int64_t rankCount = 0;
+  std::vector<PackageResourceRecord> resources;
+  std::vector<PackageModuleRecord> modules;
+  std::vector<PackageEntrypointRecord> entries;
+  std::vector<PackageCompletionRecord> completions;
+};
+
+struct PackageParseLimits {
+  uint64_t maxJSONBytes = 4 * 1024 * 1024;
+  uint64_t maxRecords = 65536;
+  uint64_t maxStringBytes = 4096;
+  uint64_t maxShapeRank = 16;
+  uint64_t maxJSONNesting = 32;
+};
+
+class VerifiedPackageManifest {
+public:
+  VerifiedPackageManifest(VerifiedPackageManifest &&) = default;
+  VerifiedPackageManifest &operator=(VerifiedPackageManifest &&) = default;
+  VerifiedPackageManifest(const VerifiedPackageManifest &) = delete;
+  VerifiedPackageManifest &operator=(const VerifiedPackageManifest &) = delete;
+
+  const PackageManifest &getManifest() const { return manifest; }
+
+private:
+  friend llvm::Expected<VerifiedPackageManifest>
+  verifyPackageManifest(PackageManifest, llvm::StringRef,
+                        const PackageParseLimits &);
+
+  explicit VerifiedPackageManifest(PackageManifest manifest)
+      : manifest(std::move(manifest)) {}
+
+  PackageManifest manifest;
+};
+
+llvm::StringRef stringifyPackageResourceRole(PackageResourceRole role);
+llvm::StringRef stringifyPackageAccessMode(PackageAccessMode access);
+
+llvm::Expected<VerifiedPackageManifest>
+verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
+                      const PackageParseLimits &limits = {});
+
+std::string
+serializeCanonicalPackageJson(const VerifiedPackageManifest &manifest);
+
+llvm::Expected<VerifiedPackageManifest>
+parseCanonicalPackageJson(llvm::StringRef json, llvm::StringRef packageRoot,
+                          const PackageParseLimits &limits = {});
+
+llvm::Expected<VerifiedPackageManifest>
+loadVerifiedPackageManifest(llvm::StringRef packageRoot,
+                            const PackageParseLimits &limits = {});
+
+struct RuntimeInvocationBinding {
+  ResourceId resource;
+  uint64_t bytes = 0;
+  uint64_t alignment = 0;
+  PackageAccessMode access = PackageAccessMode::ReadOnly;
+  bool hostVisible = false;
+};
+
+struct RuntimeEnvironment {
+  std::string targetIdentity;
+  std::string runtimeABI;
+  std::string moduleFormat;
+  uint64_t maxResourceBytes = std::numeric_limits<uint64_t>::max();
+};
+
+struct PlannedRuntimeResource {
+  ResourceId resource;
+  PackageResourceRole role = PackageResourceRole::UserInput;
+  uint64_t bytes = 0;
+  uint64_t alignment = 0;
+  PackageAccessMode access = PackageAccessMode::ReadOnly;
+  bool externallyBound = false;
+};
+
+struct RuntimeSessionPlan {
+  EntryId entry;
+  int64_t logicalRank = -1;
+  ModuleId module;
+  std::string modulePath;
+  std::string entrySymbol;
+  CompletionId terminalCompletion;
+  std::vector<PlannedRuntimeResource> resources;
+  std::vector<ResourceId> launchOrder;
+  bool executesBoard = false;
+};
+
+llvm::Expected<RuntimeSessionPlan> preflightNoCardRuntimeSession(
+    const VerifiedPackageManifest &package, EntryId entry,
+    llvm::ArrayRef<RuntimeInvocationBinding> invocationBindings,
+    const RuntimeEnvironment &environment);
+
+} // namespace wafer::runtime
+
+#endif // WAFER_RUNTIME_PACKAGEMANIFEST_H

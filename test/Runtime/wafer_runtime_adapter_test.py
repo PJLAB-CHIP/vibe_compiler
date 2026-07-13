@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Unit tests for no-card Wafer runtime adapter behavior."""
+"""Tests that the Python runtime adapter delegates all acceptance to C++."""
 
 from __future__ import annotations
 
 import argparse
 import pathlib
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -14,6 +15,7 @@ import unittest
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo-root", required=True)
+    parser.add_argument("--wafer-run", required=True)
     return parser.parse_args()
 
 
@@ -22,17 +24,38 @@ class WaferRuntimeAdapterTest(unittest.TestCase):
     def setUpClass(cls) -> None:
         args = parse_args()
         cls.repo_root = pathlib.Path(args.repo_root)
+        cls.wafer_run = pathlib.Path(args.wafer_run)
         cls.tool = cls.repo_root / "tools" / "wafer_runtime_adapter.py"
-        cls.valid_package = (
-            cls.repo_root / "test" / "Tools" / "valid-model-package.json"
-        )
-        cls.invalid_completion_package = (
-            cls.repo_root / "test" / "Tools" / "invalid-completion-package.json"
+        cls.manifest = (
+            cls.repo_root
+            / "test"
+            / "Runtime"
+            / "Inputs"
+            / "typed-package-manifest.json"
         )
 
-    def run_adapter(self, *extra_args: str) -> subprocess.CompletedProcess[str]:
+    def make_package(self, root: pathlib.Path) -> pathlib.Path:
+        package = root / "package"
+        (package / "modules").mkdir(parents=True)
+        (package / "modules" / "rank_00000.so").touch()
+        shutil.copyfile(self.manifest, package / "manifest.json")
+        return package
+
+    def run_adapter(
+        self, package: pathlib.Path, *extra_args: str
+    ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            [sys.executable, str(self.tool), *extra_args],
+            [
+                sys.executable,
+                str(self.tool),
+                "--wafer-run",
+                str(self.wafer_run),
+                "--package-dir",
+                str(package),
+                "--entry-id",
+                "0",
+                *extra_args,
+            ],
             cwd=self.repo_root,
             text=True,
             stdout=subprocess.PIPE,
@@ -40,142 +63,32 @@ class WaferRuntimeAdapterTest(unittest.TestCase):
             check=False,
         )
 
-    def test_dry_run_describes_launch_plan(self) -> None:
-        result = self.run_adapter(
-            "--package-metadata", str(self.valid_package), "--backend", "dry-run"
-        )
-
+    def test_delegates_verified_no_card_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            package = self.make_package(pathlib.Path(temporary))
+            result = self.run_adapter(package, "--no-card")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("backend: dry-run", result.stdout)
-        self.assertIn("package: model_package_sample", result.stdout)
-        self.assertIn("runtime_mode: tx", result.stdout)
-        self.assertIn("completion_source: runtime_stream_wait", result.stdout)
-        self.assertIn("model: model_package_sample abi=tx-kernel-v0", result.stdout)
-        self.assertIn("binding: input lhs 16 bytes host_visible", result.stdout)
-        self.assertIn("binding: input rhs 16 bytes host_visible", result.stdout)
-        self.assertIn("binding: output out 16 bytes host_visible", result.stdout)
-        self.assertIn("binding: workspace tmp 16 bytes", result.stdout)
-        self.assertIn(
-            "binding: resident_constant rhs_resident 16 bytes source=launch_input:rhs",
-            result.stdout,
-        )
-        self.assertIn(
-            "module: kernel tx.kcore model_package.so",
-            result.stdout,
-        )
-        self.assertIn(
-            "entrypoint: model_bpm tx.model bpm=descriptor_only",
-            result.stdout,
-        )
-        self.assertIn(
-            "entrypoint: debug_kernel tx.module module=kernel "
-            "function=model_package_sample_abi debug",
-            result.stdout,
-        )
-        self.assertIn("completion: wait runtime_stream_wait", result.stdout)
-        self.assertNotIn("launch: module_kernel", result.stdout)
+        self.assertIn("package: id=0 schema=1 ranks=1", result.stdout)
+        self.assertIn("board_execution: false", result.stdout)
 
-    def test_dry_run_describes_selected_runtime_session(self) -> None:
-        result = self.run_adapter(
-            "--package-metadata",
-            str(self.valid_package),
-            "--backend",
-            "dry-run",
-            "--entrypoint",
-            "debug_kernel",
-        )
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        expected_lines = [
-            "session: package=model_package_sample runtime=tx completion=runtime_stream_wait",
-            "session_binding: lhs role=input bytes=16 lifecycle=import_or_allocate,query,bind,copy_h2d read_only=true host_visible=true",
-            "session_binding: out role=output bytes=16 lifecycle=allocate,query,bind,copy_d2h read_only=false host_visible=true",
-            "session_binding: tmp role=workspace bytes=16 lifecycle=allocate,query,bind read_only=false host_visible=false",
-            "session_binding: rhs_resident role=resident_constant bytes=16 lifecycle=allocate,query,bind,copy_h2d source=launch_input:rhs read_only=true host_visible=false",
-            "module_resolve: kernel format=tx.kcore path=model_package.so",
-            "launch_arg: 0 lhs role=input bytes=16",
-            "launch_arg: 2 out role=output bytes=16",
-            "launch_arg: 4 rhs_resident role=resident_constant bytes=16",
-            "entrypoint_plan: debug_kernel executor=tx.module launch_api=txLaunchKernel module=kernel function=model_package_sample_abi arg_bytes=80",
-            "completion_plan: wait runtime_stream_wait",
-        ]
-        for line in expected_lines:
-            self.assertIn(line, result.stdout)
-
-    def test_fake_tx_backend_constructs_tx_call_sequence(self) -> None:
-        result = self.run_adapter(
-            "--package-metadata",
-            str(self.valid_package),
-            "--backend",
-            "fake-tx",
-            "--entrypoint",
-            "debug_kernel",
-        )
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        expected_lines = [
-            "backend: fake-tx",
-            "entrypoint: debug_kernel tx.module",
-            "txSetDevice device=0",
-            "txMalloc name=lhs bytes=16",
-            "txMemcpyH2D name=lhs bytes=16",
-            "txMalloc name=rhs bytes=16",
-            "txMemcpyH2D name=rhs bytes=16",
-            "txMalloc name=out bytes=16",
-            "txMalloc name=tmp bytes=16",
-            "txMalloc name=rhs_resident bytes=16",
-            "txMemcpyH2D name=rhs_resident bytes=16 source=rhs",
-            "txModuleLoad module=model_package.so",
-            "txModuleGetFunction function=model_package_sample_abi",
-            "txLaunchKernel entrypoint=debug_kernel function=model_package_sample_abi arg_bytes=80",
-            "txStreamSynchronize completion_source=runtime_stream_wait",
-            "txMemcpyD2H name=out bytes=16",
-        ]
-        for line in expected_lines:
-            self.assertIn(line, result.stdout)
-
-    def test_fake_tx_backend_rejects_descriptor_only_bpm_entrypoint(self) -> None:
-        result = self.run_adapter(
-            "--package-metadata",
-            str(self.valid_package),
-            "--backend",
-            "fake-tx",
-            "--entrypoint",
-            "model_bpm",
-        )
-
+    def test_cpp_rejection_is_forwarded(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            package = self.make_package(pathlib.Path(temporary))
+            result = self.run_adapter(
+                package, "--no-card", "--max-resource-bytes", "32"
+            )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(
-            "error: tx.model entrypoint model_bpm requires a materialized BPM descriptor",
+            "runtime environment resource capacity is insufficient",
             result.stderr,
         )
 
-    def test_tx_backend_reports_missing_runtime_library(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            result = self.run_adapter(
-                "--package-metadata",
-                str(self.valid_package),
-                "--backend",
-                "tx",
-                "--entrypoint",
-                "debug_kernel",
-                "--runtime-root",
-                str(pathlib.Path(tmp) / "missing-runtime-root"),
-            )
-
+    def test_adapter_does_not_offer_legacy_backends(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            package = self.make_package(pathlib.Path(temporary))
+            result = self.run_adapter(package, "--backend", "fake-tx")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("error: tx runtime library was not found", result.stderr)
-
-    def test_stub_completion_is_rejected_before_backend_selection(self) -> None:
-        result = self.run_adapter(
-            "--package-metadata",
-            str(self.invalid_completion_package),
-            "--backend",
-            "dry-run",
-        )
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("error: completion source is a known stub fence", result.stderr)
+        self.assertIn("unrecognized arguments", result.stderr)
 
 
 if __name__ == "__main__":

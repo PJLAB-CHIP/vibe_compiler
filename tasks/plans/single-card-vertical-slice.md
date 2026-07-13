@@ -98,7 +98,7 @@ unsupported）；rank-15 late failure、真实column-sharded 16-rank正例和row
 
 ## Checkpoint 6: Manifest And No-Card Runtime
 
-状态：进行中，对应Q18；Q17已完成。
+状态：已完成，对应Q18。
 
 - 建立唯一C++ typed `PackageManifest`、semantic verifier和canonical JSON parser/serializer。
 - 用typed slot/resource双射表示ABI；all-and-only关联Q16 ranks/resources/completion与Q17 modules/entries/digests。
@@ -109,6 +109,8 @@ unsupported）；rank-15 late failure、真实column-sharded 16-rank正例和row
 manifest/package late failure不发布partial package。
 
 ## Checkpoint 7: Reference Execution And Vertical Gates
+
+状态：进行中；当前对应Q19，Q20/Q21仍等待reference gate。
 
 - 单rankexecutor先覆盖linear/MLP所需RDMA/WDMA、GEMM、elementwise和accepted offsets。
 - 多rankexecutor加入DTE send/recv/wait和tiny Llama所需instruction子集，并检测peer mismatch/deadlock。

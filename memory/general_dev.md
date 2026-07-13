@@ -385,6 +385,11 @@
   clones、target staging和atomic publication；named MLIR pipeline只保留IR-local transform。
 - package parsing/semantic verification、pure RuntimeSession preflight和provider execution是三层边界。no-card
   preflight不分配、不加载、不发命令；fake/board provider实际调用必须分别记录failure suppression和cleanup。
+- 当前typed package入口是`Wafer/Runtime/PackageManifest.h`：compiler只从Q16 `ExecutableBundle`和Q17
+  `TargetArtifactBundle`构造manifest，在私有staging内复制payload、核对digest、canonical serialize/parse readback、
+  fsync后no-replace发布。`wafer-run --package-dir <root> --entry-id <id> --no-card`是唯一runtime inspection入口；
+  Python adapter只启动该二进制。排查package时先跑`PackageManifestTest.*`和`test/Runtime/wafer-run.test`，不要恢复
+  已删除的Python schema/exporter或C++ `HostRuntime` acceptance。
 - 纵向source corpus不要用`torch.empty()`、framework默认初始化或提交生成物固定输入。当前最小corpus spec在
   `test/Tools/Inputs/workloads/single-card-vertical-v1.json`：整数序列加二进制可精确表示的f32缩放生成
   input/parameter，独立NumPy实现生成完整CPU expected，再与同payload的framework CPU module按tolerance
