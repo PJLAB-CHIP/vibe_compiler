@@ -9,6 +9,13 @@
 
 namespace wafer::compiler::detail {
 
+/// Runs production entry-only ABI preparation, target lowering, and lowered
+/// entry verification on an owned clone. This narrow hook lets unit tests
+/// prove accepted multi-function closure handling without invoking the
+/// external object/link toolchain.
+mlir::LogicalResult
+lowerTargetABIForTesting(const RankExecutable &rankExecutable);
+
 llvm::Expected<TargetArtifactBundle>
 compileExecutableBundleToTargetArtifactsImpl(
     const ExecutableBundle &executableBundle, llvm::StringRef outputDirectory,

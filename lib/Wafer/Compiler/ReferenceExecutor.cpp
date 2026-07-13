@@ -2,6 +2,7 @@
 
 #include "Wafer/Compiler/ReferenceExecutor.h"
 
+#include "AcceptedCallClosure.h"
 #include "Wafer/IR/WaferDialect.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -53,6 +54,7 @@ struct ReferenceProgram::Impl {
     TileRegion,
     If,
     For,
+    Call,
     RDMA,
     WDMA,
     GatherScatter,
@@ -111,6 +113,7 @@ struct ReferenceProgram::Impl {
     uint32_t successor = 0;
     uint32_t trueSuccessor = 0;
     uint32_t falseSuccessor = 0;
+    uint32_t callee = 0;
     mlir::MemRefType type;
     int64_t physicalBytes = 0;
     int64_t viewDelta = 0;
@@ -145,12 +148,17 @@ struct ReferenceProgram::Impl {
     std::vector<BlockProgram> blocks;
   };
 
+  struct FunctionProgram {
+    std::vector<ValueId> arguments;
+    std::vector<mlir::MemRefType> argumentTypes;
+    ControlFlowProgram body;
+  };
+
   std::shared_ptr<mlir::MLIRContext> contextOwner;
   int64_t logicalRank = 0;
   std::vector<RankProgramBinding> programBindings;
-  std::vector<ValueId> entryArguments;
-  std::vector<mlir::MemRefType> entryArgumentTypes;
-  ControlFlowProgram entry;
+  std::vector<FunctionProgram> functions;
+  uint32_t entryFunction = 0;
   size_t projectedOperationCount = 0;
 };
 
@@ -458,45 +466,69 @@ public:
   explicit ProgramProjector(ReferenceProgram::Impl &program)
       : program(program) {}
 
-  llvm::Error project(mlir::func::FuncOp entry) {
-    if (entry.getBody().empty())
-      return unsupported("entry function has no body");
-    if (entry.getBody().getBlocks().size() >
-        std::numeric_limits<uint32_t>::max())
-      return unsupported("entry CFG block id space is exhausted");
-    program.entry.blocks.resize(entry.getBody().getBlocks().size());
-    for (auto [index, block] : llvm::enumerate(entry.getBody())) {
-      blocks[&block] = static_cast<uint32_t>(index);
-      auto &projected = program.entry.blocks[index];
-      for (mlir::BlockArgument argument : block.getArguments()) {
-        auto value = define(argument);
-        if (!value)
-          return value.takeError();
-        projected.arguments.push_back(*value);
+  llvm::Error project(detail::AcceptedCallClosure &closure) {
+    if (closure.functions.size() > std::numeric_limits<uint32_t>::max())
+      return unsupported("function id space is exhausted");
+    program.functions.resize(closure.functions.size());
+
+    for (auto [functionIndex, function] : llvm::enumerate(closure.functions)) {
+      if (function.getBody().empty())
+        return unsupported(
+            ("function @" + function.getSymName() + " has no body").str());
+      if (function.getBody().getBlocks().size() >
+          std::numeric_limits<uint32_t>::max())
+        return unsupported(
+            ("function @" + function.getSymName() + " exhausts CFG block ids")
+                .str());
+      functionIds[function.getOperation()] =
+          static_cast<uint32_t>(functionIndex);
+      auto &projected = program.functions[functionIndex];
+      projected.body.blocks.resize(function.getBody().getBlocks().size());
+      for (auto [blockIndex, block] : llvm::enumerate(function.getBody())) {
+        blocks[&block] = static_cast<uint32_t>(blockIndex);
+        auto &projectedBlock = projected.body.blocks[blockIndex];
+        for (mlir::BlockArgument argument : block.getArguments()) {
+          auto value = define(argument);
+          if (!value)
+            return value.takeError();
+          projectedBlock.arguments.push_back(*value);
+        }
+      }
+      for (mlir::Block &block : function.getBody())
+        for (mlir::Operation &operation : block)
+          for (mlir::Value result : operation.getResults())
+            if (llvm::Error error = predeclare(result))
+              return error;
+
+      for (mlir::BlockArgument argument :
+           function.getBody().front().getArguments()) {
+        auto type = mlir::dyn_cast<mlir::MemRefType>(argument.getType());
+        if (!type)
+          return unsupported(("function @" + function.getSymName() +
+                              " argument is not a memref")
+                                 .str());
+        projected.arguments.push_back(values.lookup(argument));
+        projected.argumentTypes.push_back(type);
       }
     }
-    for (mlir::Block &block : entry.getBody())
-      for (mlir::Operation &operation : block)
-        for (mlir::Value result : operation.getResults())
-          if (llvm::Error error = predeclare(result))
-            return error;
 
-    mlir::Block &entryBlock = entry.getBody().front();
-    for (mlir::BlockArgument argument : entryBlock.getArguments()) {
-      auto type = mlir::dyn_cast<mlir::MemRefType>(argument.getType());
-      if (!type)
-        return unsupported("entry argument is not a memref");
-      program.entryArguments.push_back(values.lookup(argument));
-      program.entryArgumentTypes.push_back(type);
-    }
-    for (auto [index, block] : llvm::enumerate(entry.getBody()))
-      if (llvm::Error error = projectBlock(block, program.entry.blocks[index]))
+    auto entry = functionIds.find(closure.entry.getOperation());
+    if (entry == functionIds.end())
+      return unsupported("entry is outside the projected call closure");
+    program.entryFunction = entry->second;
+
+    for (auto [functionIndex, function] : llvm::enumerate(closure.functions)) {
+      auto &projected = program.functions[functionIndex];
+      for (auto [blockIndex, block] : llvm::enumerate(function.getBody()))
+        if (llvm::Error error =
+                projectBlock(block, projected.body.blocks[blockIndex]))
+          return error;
+      if (llvm::Error error = validateCFG(projected.body))
         return error;
+    }
     if (!pendingDefinitions.empty())
-      return unsupported("entry CFG contains an unprojected SSA definition");
-    if (llvm::Error error = validateEntryCFG())
-      return error;
-    return validateProgramBindings(entry);
+      return unsupported("call closure contains an unprojected SSA definition");
+    return validateProgramBindings(closure.entry);
   }
 
 private:
@@ -727,6 +759,31 @@ private:
                 forOp.getNumResults())
           return unsupported("scf.for yield arity is not projectable");
         for (mlir::Value resultValue : forOp.getResults()) {
+          auto result = define(resultValue);
+          if (!result)
+            return result.takeError();
+          command.results.push_back(*result);
+        }
+      } else if (auto call = mlir::dyn_cast<mlir::func::CallOp>(operation)) {
+        mlir::ModuleOp module = operation.getParentOfType<mlir::ModuleOp>();
+        mlir::func::FuncOp callee =
+            module.lookupSymbol<mlir::func::FuncOp>(call.getCallee());
+        auto function = callee ? functionIds.find(callee.getOperation())
+                               : functionIds.end();
+        if (function == functionIds.end())
+          return unsupported("func.call callee is outside projected closure");
+        if (call.getOperandTypes() != callee.getFunctionType().getInputs() ||
+            call.getResultTypes() != callee.getFunctionType().getResults())
+          return unsupported("func.call signature disagrees with its callee");
+        command.kind = CommandKind::Call;
+        command.callee = function->second;
+        for (mlir::Value operand : call.getOperands()) {
+          auto input = use(operand);
+          if (!input)
+            return input.takeError();
+          command.inputs.push_back(*input);
+        }
+        for (mlir::Value resultValue : call.getResults()) {
           auto result = define(resultValue);
           if (!result)
             return result.takeError();
@@ -1021,7 +1078,7 @@ private:
         if (mlir::isa<mlir::func::ReturnOp>(operation) &&
             command.inputs.size() !=
                 operation.getParentOfType<mlir::func::FuncOp>().getNumResults())
-          return unsupported("entry return arity disagrees with function type");
+          return unsupported("function return arity disagrees with its type");
         sawTerminator = true;
       } else {
         return unsupported(
@@ -1105,25 +1162,26 @@ private:
     return llvm::Error::success();
   }
 
-  llvm::Error validateEntryCFG() {
-    llvm::SmallVector<uint8_t> state(program.entry.blocks.size(), 0);
+  llvm::Error
+  validateCFG(const ReferenceProgram::Impl::ControlFlowProgram &controlFlow) {
+    llvm::SmallVector<uint8_t> state(controlFlow.blocks.size(), 0);
     auto visit = [&](auto &&self, uint32_t index) -> llvm::Error {
-      if (index >= program.entry.blocks.size())
+      if (index >= controlFlow.blocks.size())
         return unsupported("CFG successor is outside projected block graph");
       if (state[index] == 1)
         return unsupported("cyclic CFG is unsupported; use structured scf.for");
       if (state[index] == 2)
         return llvm::Error::success();
       state[index] = 1;
-      const auto &block = program.entry.blocks[index];
+      const auto &block = controlFlow.blocks[index];
       if (block.commands.empty())
         return unsupported("CFG block has no projected terminator");
       const Command &terminator = block.commands.back();
       auto visitSuccessor = [&](uint32_t successor,
                                 llvm::ArrayRef<ValueId> inputs) -> llvm::Error {
-        if (successor >= program.entry.blocks.size())
+        if (successor >= controlFlow.blocks.size())
           return unsupported("CFG successor is outside projected block graph");
-        if (inputs.size() != program.entry.blocks[successor].arguments.size())
+        if (inputs.size() != controlFlow.blocks[successor].arguments.size())
           return unsupported("CFG successor operand arity mismatch");
         return self(self, successor);
       };
@@ -1144,7 +1202,7 @@ private:
       state[index] = 2;
       return llvm::Error::success();
     };
-    for (uint32_t index = 0; index < program.entry.blocks.size(); ++index)
+    for (uint32_t index = 0; index < controlFlow.blocks.size(); ++index)
       if (llvm::Error error = visit(visit, index))
         return error;
     return llvm::Error::success();
@@ -1154,6 +1212,7 @@ private:
   llvm::DenseMap<mlir::Value, ValueId> values;
   llvm::DenseSet<mlir::Value> pendingDefinitions;
   llvm::DenseMap<mlir::Block *, uint32_t> blocks;
+  llvm::DenseMap<mlir::Operation *, uint32_t> functionIds;
   ValueId nextValue = 0;
 };
 
@@ -1320,9 +1379,12 @@ public:
 
   llvm::Expected<ReferenceExecutionResult>
   run(llvm::ArrayRef<ReferenceInputBinding> inputs) {
+    if (program.entryFunction >= program.functions.size())
+      return invalid("projected entry function is outside the function graph");
     if (llvm::Error error = bindEntryArguments(inputs))
       return std::move(error);
-    auto returned = executeControlFlow(program.entry);
+    auto returned =
+        executeControlFlow(program.functions[program.entryFunction].body);
     if (!returned)
       return returned.takeError();
 
@@ -1365,6 +1427,7 @@ private:
   };
 
   llvm::Error bindEntryArguments(llvm::ArrayRef<ReferenceInputBinding> inputs) {
+    const auto &entry = program.functions[program.entryFunction];
     llvm::SmallVector<bool> used(inputs.size(), false);
     for (const RankProgramBinding &binding : program.programBindings) {
       if (binding.role == ProgramResourceRole::Output)
@@ -1386,10 +1449,10 @@ private:
         return invalid(
             "reference input tensor disagrees with typed rank binding");
       auto imported = importTensor(inputs[match].tensor,
-                                   program.entryArgumentTypes[binding.index]);
+                                   entry.argumentTypes[binding.index]);
       if (!imported)
         return imported.takeError();
-      buffers[program.entryArguments[binding.index]] = std::move(*imported);
+      buffers[entry.arguments[binding.index]] = std::move(*imported);
     }
     if (llvm::is_contained(used, false))
       return invalid("unexpected reference input binding");
@@ -1591,6 +1654,25 @@ private:
           induction += *step;
         }
         if (llvm::Error error = writeValues(command.results, carried))
+          return std::move(error);
+        break;
+      }
+      case CommandKind::Call: {
+        if (command.callee >= program.functions.size())
+          return invalid("projected callee is outside the function graph");
+        const auto &callee = program.functions[command.callee];
+        auto arguments = readValues(command.inputs);
+        if (!arguments)
+          return arguments.takeError();
+        if (llvm::Error error = writeValues(callee.arguments, *arguments))
+          return std::move(error);
+        auto returned = executeControlFlow(callee.body);
+        if (!returned)
+          return returned.takeError();
+        auto returnValues = readValues(*returned);
+        if (!returnValues)
+          return returnValues.takeError();
+        if (llvm::Error error = writeValues(command.results, *returnValues))
           return std::move(error);
         break;
       }
@@ -2068,17 +2150,20 @@ struct ReferenceProgramBuilder {
     if (match->getTransportContract() != TransportContract::None)
       return unsupported("single-rank executor does not accept transport");
 
-    mlir::func::FuncOp entry =
-        match->getModule().lookupSymbol<mlir::func::FuncOp>(
-            match->getEntrySymbol());
-    if (!entry)
-      return invalid("accepted rank entry function is missing");
+    llvm::Expected<detail::AcceptedCallClosure> closure =
+        detail::analyzeAcceptedCallClosure(match->getModule(),
+                                           match->getEntrySymbol());
+    if (!closure) {
+      std::string message = "accepted call closure is invalid: " +
+                            llvm::toString(closure.takeError());
+      return unsupported(message);
+    }
 
     auto impl = std::make_unique<ReferenceProgram::Impl>();
     impl->contextOwner = bundle.context;
     impl->logicalRank = logicalRank;
     impl->programBindings = match->getProgramBindings();
-    if (llvm::Error error = ProgramProjector(*impl).project(entry))
+    if (llvm::Error error = ProgramProjector(*impl).project(*closure))
       return std::move(error);
     return ReferenceProgram(std::move(impl));
   }

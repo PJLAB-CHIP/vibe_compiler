@@ -2,6 +2,8 @@
 
 #include "TargetArtifactInternal.h"
 
+#include "AcceptedCallClosure.h"
+
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/TargetPolicy.h"
 #include "Wafer/Transforms/Passes.h"
@@ -198,21 +200,15 @@ prepareTargetABI(const RankExecutable &rankExecutable) {
   const int64_t defaultDDRAlignment =
       getDefaultWaferTargetPolicy().memory.ddrAlignmentBytes;
 
-  llvm::SmallVector<mlir::func::FuncOp, 2> functions;
-  for (mlir::func::FuncOp function :
-       prepared.module->getOps<mlir::func::FuncOp>())
-    functions.push_back(function);
-  if (functions.size() != 1) {
+  llvm::Expected<detail::AcceptedCallClosure> closure =
+      detail::analyzeAcceptedCallClosure(*prepared.module,
+                                         rankExecutable.getEntrySymbol());
+  if (!closure) {
     prepared.module->emitError()
-        << "target_abi_mismatch: rank must contain exactly one entry function";
+        << "target_abi_mismatch: " << llvm::toString(closure.takeError());
     return mlir::failure();
   }
-  mlir::func::FuncOp function = functions.front();
-  if (function.getSymName() != rankExecutable.getEntrySymbol()) {
-    function.emitError()
-        << "target_abi_mismatch: entry symbol changed after bundle acceptance";
-    return mlir::failure();
-  }
+  mlir::func::FuncOp function = closure->entry;
 
   unsigned originalArgumentCount = function.getNumArguments();
   unsigned resultCount = function.getFunctionType().getNumResults();
@@ -494,6 +490,15 @@ bool publishDirectoryNoReplace(llvm::StringRef source,
 }
 
 } // namespace
+
+mlir::LogicalResult
+detail::lowerTargetABIForTesting(const RankExecutable &rankExecutable) {
+  mlir::FailureOr<PreparedTargetRank> prepared =
+      prepareTargetABI(rankExecutable);
+  if (mlir::failed(prepared) || mlir::failed(lowerToTargetLLVM(*prepared)))
+    return mlir::failure();
+  return verifyLoweredKernelABI(*prepared, rankExecutable.getEntrySymbol());
+}
 
 llvm::Expected<TargetArtifactBundle>
 detail::compileExecutableBundleToTargetArtifactsImpl(

@@ -117,9 +117,10 @@ manifest/package late failure不发布partial package。
   package，也不保存planner或collective schedule。当前supported flat/tile-region op、static view、single-block
   `scf.if`/`scf.for`和acyclic `cf.br`/`cf.cond_br`已投影为value-id/block graph；执行期不再读取mutable MLIR。
 - single-rank engine已用APInt/APFloat闭合非zero-point convert和RND_MODE 0..3，整条convert先计算后commit；
-  stochastic及缺少数学公式证据的INT8 zero-point kind继续在projection fail closed。direct-call需先删除Q16/Q17
-  “module恰好一个func.func”的过度约束，改成唯一typed entry加private non-recursive closure，再接同一function graph；
-  后续还需zero-point/stochastic证据、完整capability矩阵和executor projection/interpreter/numeric职责拆分。fixed-seed
+  stochastic及缺少数学公式证据的INT8 zero-point kind继续在projection fail closed。Q16/Q17已删除
+  “module恰好一个func.func”的过度约束，统一消费唯一typed entry加private non-recursive direct-call closure；
+  reference projection把同一closure复制为function/block/value-id graph并执行call forwarding。后续还需
+  zero-point/stochastic证据、完整capability矩阵和executor projection/interpreter/numeric职责拆分。fixed-seed
   非平凡lowered-group differential必须让所有channel/bias影响输出，独立slow layout oracle只存在于property tests。
 - Q16.T先让logical collective-to-p2p materialization生成typed message identity，再在memory planning后给DTE issue
   补typed accepted physical binding，闭合all-rank match/peer/bytes/range/resource/completion、

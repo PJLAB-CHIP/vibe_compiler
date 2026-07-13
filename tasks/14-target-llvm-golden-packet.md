@@ -130,8 +130,10 @@ offset和instruction attrs推导：
 
 ## 6. Kernel ABI
 
-近期Kernel ABI按rank-local static entry定义。每个entry的参数来自typed resource slot，不从LLVM参数数量、
-function名字或package fixture恢复。
+近期Kernel ABI按rank-local static entry定义。Q16 artifact以唯一externally-visible entry加all-and-only private、
+defined、direct non-recursive call closure承载多function程序；Q17只对该entry追加program output和workspace slots，
+private helper保持内部DDR-memref call boundary且不得拥有compiler-managed DDR root。每个entry的参数来自typed
+resource slot，不从LLVM参数数量、function名字或package fixture恢复。
 
 最低记录：
 

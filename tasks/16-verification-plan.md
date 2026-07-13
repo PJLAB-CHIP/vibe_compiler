@@ -315,9 +315,12 @@ control-flow projection使用immutable function/block graph，不把region或CFG
   iter_args/yield/result backedge；0/1/2 trip和false/true branch必须产生各自可观察结果；
 - condition、bound和induction variable走同一个typed scalar value-id通道，不能把常量文本或host loop counter作为
   旁路协议；unsupported scalar producer在projection阶段整体拒绝；
-- 当前Q16 bundle builder仍以“module恰好一个func.func”选entry，虽然后端Q0支持direct non-recursive call，Q19因此
-  实际拿不到callee closure。direct-call不得用符号名特判或执行期回读module补洞；必须先把Q16/Q17收敛为“唯一typed
-  public entry + private non-recursive closure”的artifact合同，再接入同一function graph。该冲突是Q19明确未完成项。
+- Q16从module结构选择唯一externally-visible typed entry（仅单函数module允许private singleton兼容），并要求其余
+  function都是已定义、从entry可达、private、direct且non-recursive的all-and-only closure；external、indirect/
+  unknown、recursive及unreachable helper在bundle形成前失败。accepted function边界只传Wafer DDR memref，private
+  helper不得拥有compiler-managed DDR root，必须由entry沿call传入；因此Q17只给entry追加program output/workspace ABI，
+  不把helper误当用户入口或为其复制arena slot。Q19把同一closure投影为function/block/value-id graph，`func.call`只保存
+  callee id和SSA operand/result关系，执行期不回读module或按符号名特判。
 
 single-rank semantic engine最低子集：
 
@@ -386,10 +389,14 @@ prepared program不受源op后续rounding mutation影响；stochastic和缺少�
 即返回capability failure。control-flow checkpoint进一步把entry投影成显式immutable block graph：single-block
 `scf.if`/`scf.for`保留yield/result和iter_args backedge，acyclic `cf.br`/`cf.cond_br`按successor operands绑定block
 arguments；测试覆盖true/false、0/1/2 trip、loop-carried memref、CFG forwarding及projection后condition/bound mutation
-隔离，cyclic CFG在缺失input前失败。Q19仍未完成：direct-call需要先把Q16/Q17单函数限制收敛为唯一typed entry加
-private non-recursive closure；此外还需layout property、非平凡differential、zero-point/stochastic证据、覆盖全部
-accepted组合的capability矩阵，以及把已增长的executor projection/interpreter/numeric职责拆分。DTE multi-rank已拆给
-Q19.M，并等待Q16.T。
+隔离，cyclic CFG在缺失input前失败。direct-call checkpoint进一步让真实group输入携带private tensor helper，经Q16
+lowering形成唯一public entry加private DDR-memref closure；Q17只改写entry ABI，reference program则投影完整function
+graph并按callee id执行参数/结果forwarding。测试在prepare后篡改helper return，证明prepared program不变而重新prepare
+观察到新语义；同一accepted multi-function rank的owned clone还重放Q17 entry-only output/workspace ABI、完整target
+lowering及lowered entry ABI验证。recursive、unresolved、unreachable helper和private helper自建DDR root均先于缺失
+input失败。Q19仍未完成：还需layout property、非平凡differential、zero-point/stochastic证据、覆盖全部accepted组合的
+capability矩阵，以及把已增长的executor projection/interpreter/numeric职责拆分。DTE multi-rank已拆给Q19.M，并等待
+Q16.T。
 当前transcendental仍使用host实现，也不属于已闭合的host-independent numeric gate。
 本批`check-wafer`新鲜执行33个C++ unit和230个lit（229 pass、1个feature-inverse unsupported），CTest 3/3通过；
 unsupported项仍是禁用importer feature的反向gate，不覆盖Q19 mandatory path。

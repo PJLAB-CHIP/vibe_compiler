@@ -2,6 +2,8 @@
 
 #include "ExecutableBundleInternal.h"
 
+#include "AcceptedCallClosure.h"
+
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Pipelines/Pipelines.h"
 
@@ -231,6 +233,12 @@ llvm::Expected<ExecutableBundle> detail::buildExecutableBundle(
       return fail("accepted-rank verification failed for logical rank " +
                   std::to_string(logicalRank));
 
+    llvm::Expected<detail::AcceptedCallClosure> closure =
+        detail::analyzeAcceptedCallClosure(*rankModule);
+    if (!closure)
+      return fail("accepted-rank call closure failed for logical rank " +
+                  std::to_string(logicalRank) + ": " +
+                  llvm::toString(closure.takeError()));
     mlir::FailureOr<std::vector<RankProgramBinding>> bindings =
         buildRankProgramBindings(program, logicalRank, *rankModule);
     if (mlir::failed(bindings))
@@ -240,13 +248,7 @@ llvm::Expected<ExecutableBundle> detail::buildExecutableBundle(
       return fail("test-only injected failure after logical rank " +
                   std::to_string(logicalRank));
 
-    llvm::SmallVector<mlir::func::FuncOp, 2> functions;
-    for (mlir::func::FuncOp function : rankModule->getOps<mlir::func::FuncOp>())
-      functions.push_back(function);
-    if (functions.size() != 1)
-      return fail("accepted rank must contain exactly one entry function");
-
-    std::string entrySymbol = functions.front().getSymName().str();
+    std::string entrySymbol = closure->entry.getSymName().str();
     ranks.push_back(ExecutableBundleBuilder::makeRank(
         logicalRank, std::move(rankModule), entrySymbol, std::move(*bindings)));
   }

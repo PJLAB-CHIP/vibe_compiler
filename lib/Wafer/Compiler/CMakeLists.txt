@@ -1,4 +1,5 @@
 add_mlir_library(WaferCompiler
+  AcceptedCallClosure.cpp
   Compilation.cpp
   ExecutableBundle.cpp
   Package.cpp

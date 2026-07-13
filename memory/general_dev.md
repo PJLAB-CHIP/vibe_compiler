@@ -8,6 +8,14 @@
 - prepared reference program用独立value id和复制后的typed command field执行；只保留shared MLIRContext为不可变
   `MemRefType`/layout保活，不保留`Operation`或`Value`。测试应在prepare后修改source op并确认prepared结果不变，
   同时确认重新prepare能看到mutation；unsupported capability必须先于input import和arena allocation失败。
+- accepted executable不能用“module里只有一个func.func”代替entry合同。共享closure检查应从结构选择唯一public entry
+  （仅sole private function作兼容），要求其余helper已定义、private、从entry可达、direct且non-recursive；Q17的program
+  output/workspace ABI只改entry。当前target arena base不跨helper隐式传播，所以private helper不能拥有compiler-managed
+  DDR root，只能通过DDR memref参数消费entry-owned storage。
+- exporter source里的private helper可能被pinned XLA/SPMD helper内联，因此“source里写了`func.call`且完整driver成功”
+  不能证明Q16/Q17接收了call closure。direct-call artifact gate必须检查post-helper/accepted rank仍含call，或像reference
+  integration test一样从真实group lowering构造保留helper的`ExecutableBundle`；target conversion另用callee-only instruction
+  和alias forwarding fixture证明lowering关系。
 - `ReferenceTensor`是compact row-major program-boundary payload，executor内部用shared DDR/SPM arena和accepted offset
   表达physical storage，再通过`computeWaferPhysicalElementByteOffset`访问logical element。descriptor movement必须先
   完整读取payload再写回，才能在source/dest alias时保持确定语义。

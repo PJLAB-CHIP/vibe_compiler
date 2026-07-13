@@ -5,6 +5,7 @@
 #include "Wafer/InitAll.h"
 
 #include "../../lib/Wafer/Compiler/ExecutableBundleInternal.h"
+#include "../../lib/Wafer/Compiler/TargetArtifactInternal.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
@@ -123,9 +124,16 @@ TEST(ReferenceExecutorTest,
 module {
   wafer.target.topology @default {card_grid = array<i64: 1, 1>, card_interconnect = "mesh", tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
   wafer.execution.mesh @default_mesh {axes = ["rank"], endpoints = array<i64: 0, 0, 0, 0>, policy = "explicit", shape = array<i64: 1>, topology = @default}
-  func.func @main(%lhs: tensor<8xf32>, %rhs: tensor<8xf32>,
-                  %out: tensor<8xf32>) -> tensor<8xf32> {
-    %group = wafer.group ins(%lhs, %rhs : tensor<8xf32>, tensor<8xf32>)
+  func.func private @choose_first(%lhs: tensor<8xf32>,
+                                  %rhs: tensor<8xf32>) -> tensor<8xf32> {
+    return %lhs : tensor<8xf32>
+  }
+  func.func @main(%lhs: tensor<8xf32>,
+                  %rhs: tensor<8xf32>) -> tensor<8xf32> {
+    %selected = func.call @choose_first(%lhs, %rhs)
+        : (tensor<8xf32>, tensor<8xf32>) -> tensor<8xf32>
+    %out = tensor.empty() : tensor<8xf32>
+    %group = wafer.group ins(%selected, %rhs : tensor<8xf32>, tensor<8xf32>)
         outs(%out : tensor<8xf32>) {
     ^bb0(%lhs_arg: tensor<8xf32>, %rhs_arg: tensor<8xf32>,
          %out_arg: tensor<8xf32>):
@@ -151,8 +159,8 @@ module {
 
   wafer::frontend::FrontendProgramVerificationResult program;
   program.logicalRankCount = 1;
-  program.programUserInputCount = 3;
-  program.distributedInputs = {boundary(0), boundary(1), boundary(2)};
+  program.programUserInputCount = 2;
+  program.distributedInputs = {boundary(0), boundary(1)};
   program.distributedOutputs = {boundary(0, true)};
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(1);
   ASSERT_TRUE(static_cast<bool>(config));
@@ -167,23 +175,20 @@ module {
   // while that context is still alive.
   grouped = nullptr;
   ASSERT_EQ(bundle->getRankExecutables().size(), 1u);
+  EXPECT_TRUE(mlir::succeeded(wafer::compiler::detail::lowerTargetABIForTesting(
+      bundle->getRankExecutables().front())));
 
   auto lhs = wafer::compiler::ReferenceTensor::create(
       "f32", {8}, bytesOf({1, 2, 3, 4, 5, 6, 7, 8}));
   auto rhs = wafer::compiler::ReferenceTensor::create(
       "f32", {8}, bytesOf({8, 7, 6, 5, 4, 3, 2, 1}));
-  auto out = wafer::compiler::ReferenceTensor::create(
-      "f32", {8}, bytesOf(std::vector<float>(8, -100.0f)));
   ASSERT_TRUE(static_cast<bool>(lhs));
   ASSERT_TRUE(static_cast<bool>(rhs));
-  ASSERT_TRUE(static_cast<bool>(out));
   std::vector<wafer::compiler::ReferenceInputBinding> inputs;
   inputs.push_back(
       {wafer::compiler::ProgramResourceRole::UserInput, 0, std::move(*lhs)});
   inputs.push_back(
       {wafer::compiler::ProgramResourceRole::UserInput, 1, std::move(*rhs)});
-  inputs.push_back(
-      {wafer::compiler::ProgramResourceRole::UserInput, 2, std::move(*out)});
   auto result =
       wafer::compiler::executeReferenceRank(*bundle, /*logicalRank=*/0, inputs);
   if (!result)
@@ -198,6 +203,76 @@ module {
     FAIL() << llvm::toString(prepared.takeError());
   EXPECT_EQ(prepared->getLogicalRank(), 0);
   EXPECT_GT(prepared->getProjectedOperationCount(), 0u);
+
+  mlir::func::FuncOp helper =
+      bundle->getRankExecutables()
+          .front()
+          .getModule()
+          .lookupSymbol<mlir::func::FuncOp>("choose_first");
+  ASSERT_TRUE(helper);
+  mlir::func::ReturnOp helperReturn = mlir::cast<mlir::func::ReturnOp>(
+      helper.getBody().front().getTerminator());
+  helperReturn->setOperand(0, helper.getArgument(1));
+  auto immutableCallResult =
+      wafer::compiler::executeReferenceProgram(*prepared, inputs);
+  if (!immutableCallResult)
+    FAIL() << llvm::toString(immutableCallResult.takeError());
+  EXPECT_EQ(
+      floatsOf(immutableCallResult->getOutputs().front().tensor.getBytes()),
+      std::vector<float>(8, 9.0f));
+  auto mutatedCallResult =
+      wafer::compiler::executeReferenceRank(*bundle, /*logicalRank=*/0, inputs);
+  if (!mutatedCallResult)
+    FAIL() << llvm::toString(mutatedCallResult.takeError());
+  EXPECT_EQ(floatsOf(mutatedCallResult->getOutputs().front().tensor.getBytes()),
+            std::vector<float>({16, 14, 12, 10, 8, 6, 4, 2}));
+  helperReturn->setOperand(0, helper.getArgument(0));
+
+  mlir::OpBuilder helperBuilder(helper.getContext());
+  helperBuilder.setInsertionPoint(helperReturn);
+  auto recursiveCall = helperBuilder.create<mlir::func::CallOp>(
+      helper.getLoc(), helper, helper.getArguments());
+  auto recursiveProgram =
+      wafer::compiler::executeReferenceRank(*bundle, /*logicalRank=*/0, {});
+  ASSERT_FALSE(static_cast<bool>(recursiveProgram));
+  std::string recursiveMessage = llvm::toString(recursiveProgram.takeError());
+  EXPECT_NE(recursiveMessage.find("capability preflight"), std::string::npos);
+  EXPECT_NE(recursiveMessage.find("recursive"), std::string::npos);
+  recursiveCall.erase();
+
+  mlir::func::CallOp directCall;
+  bundle->getRankExecutables().front().getModule().walk(
+      [&](mlir::func::CallOp call) {
+        if (!directCall && call.getCallee() == "choose_first")
+          directCall = call;
+      });
+  ASSERT_TRUE(directCall);
+  mlir::Attribute originalCallee = directCall.getCalleeAttr();
+  directCall->setAttr("callee", mlir::FlatSymbolRefAttr::get(
+                                    directCall.getContext(), "missing"));
+  auto unresolvedProgram =
+      wafer::compiler::executeReferenceRank(*bundle, /*logicalRank=*/0, {});
+  ASSERT_FALSE(static_cast<bool>(unresolvedProgram));
+  std::string unresolvedMessage = llvm::toString(unresolvedProgram.takeError());
+  EXPECT_NE(unresolvedMessage.find("capability preflight"), std::string::npos);
+  EXPECT_NE(unresolvedMessage.find("unresolved"), std::string::npos);
+  directCall->setAttr("callee", originalCallee);
+
+  helperBuilder.setInsertionPoint(helperReturn);
+  auto privateDDR = helperBuilder.create<mlir::memref::AllocOp>(
+      helper.getLoc(),
+      mlir::cast<mlir::MemRefType>(helper.getArgument(0).getType()),
+      mlir::ValueRange{});
+  privateDDR->setAttr(wafer::kWaferDDROffsetAttrName,
+                      wafer::DDROffsetAttr::get(helper.getContext(), 4 << 20));
+  auto privateDDRProgram =
+      wafer::compiler::executeReferenceRank(*bundle, /*logicalRank=*/0, {});
+  ASSERT_FALSE(static_cast<bool>(privateDDRProgram));
+  std::string privateDDRMessage = llvm::toString(privateDDRProgram.takeError());
+  EXPECT_NE(privateDDRMessage.find("capability preflight"), std::string::npos);
+  EXPECT_NE(privateDDRMessage.find("cannot own compiler-managed DDR storage"),
+            std::string::npos);
+  privateDDR.erase();
 
   wafer::InstrRDMAOp rdma;
   bundle->getRankExecutables().front().getModule().walk(
@@ -587,6 +662,17 @@ module {
   std::string cyclicMessage = llvm::toString(cyclicCFG.takeError());
   EXPECT_NE(cyclicMessage.find("capability preflight"), std::string::npos);
   EXPECT_NE(cyclicMessage.find("cyclic CFG"), std::string::npos);
+
+  directCall.getResult(0).replaceAllUsesWith(directCall.getOperand(0));
+  directCall.erase();
+  auto unreachableHelper =
+      wafer::compiler::executeReferenceRank(*bundle, /*logicalRank=*/0, {});
+  ASSERT_FALSE(static_cast<bool>(unreachableHelper));
+  std::string unreachableMessage =
+      llvm::toString(unreachableHelper.takeError());
+  EXPECT_NE(unreachableMessage.find("capability preflight"), std::string::npos);
+  EXPECT_NE(unreachableMessage.find("outside the entry call closure"),
+            std::string::npos);
 }
 
 TEST(ReferenceExecutorTest, RejectsMalformedCompactTensor) {
