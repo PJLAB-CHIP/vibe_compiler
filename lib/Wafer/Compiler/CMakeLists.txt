@@ -1,5 +1,6 @@
 add_mlir_library(WaferCompiler
   Compilation.cpp
+  ExecutableBundle.cpp
 
   LINK_LIBS PUBLIC
   LLVMSupport

@@ -16,7 +16,10 @@
 # RUN: cmp %t.input.program/data/aux.payload %t.outputs/group.program/data/aux.payload
 # RUN: %python -c 'import numpy as np; from pathlib import Path; p = Path("%t.outputs/group.program/parameter_shards/weight/rank_00000.npy"); assert p.read_bytes().startswith(b"\x93NUMPY"); a = np.load(p, allow_pickle=True); assert a.shape == (32, 2) and a.dtype == np.float32'
 # RUN: bash -c 'test -z "$(find "%t.outputs" -maxdepth 1 -name ".wafer-compile-staging-*" -print -quit)"'
-# RUN: bash -c 'for strategy in data column row; do \
+# RUN: not env WAFER_TEST_FAIL_AFTER_LOGICAL_RANK=15 %wafer_compile_test --input-program-dir %t.input.program --output-program-dir %t.outputs/late-rank.program --execution-ranks=16 2>&1 | FileCheck %s --check-prefix=LATE-RANK
+# RUN: test ! -e %t.outputs/late-rank.program
+# RUN: bash -c 'test -z "$(find "%t.outputs" -maxdepth 1 -name ".wafer-compile-staging-*" -print -quit)"'
+# RUN: bash -c 'for strategy in data column; do \
 # RUN:   env CPU_NUM_DEVICES=16 PJRT_DEVICE=CPU %importer_python %wafer_src_root/test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-sharded-program --sharding-strategy ${strategy} --size 32 --output-program-dir %t.matrix/${strategy}.input || exit 1; \
 # RUN:   wafer-compile --input-program-dir %t.matrix/${strategy}.input --output-program-dir %t.matrix/${strategy}.group --execution-ranks=16 > /dev/null || exit 1; \
 # RUN:   wafer-compile-stablehlo --verify-stablehlo-program %t.matrix/${strategy}.group | FileCheck %s --check-prefix=VERIFY || exit 1; \
@@ -25,11 +28,17 @@
 # RUN:   FileCheck %s --input-file=%t.matrix/${strategy}.group/functions/forward.mlir --check-prefix=NO-UNLOWERED-IR || exit 1; \
 # RUN:   test -s %t.matrix/${strategy}.group/functions/forward.parameter_shards.json || exit 1; \
 # RUN: done'
+# RUN: env CPU_NUM_DEVICES=16 PJRT_DEVICE=CPU %importer_python %wafer_src_root/test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-sharded-program --sharding-strategy row --size 32 --output-program-dir %t.matrix/row.input
+# RUN: not wafer-compile --input-program-dir %t.matrix/row.input --output-program-dir %t.matrix/row.group --execution-ranks=16 2>&1 | FileCheck %s --check-prefix=UNSUPPORTED-TRANSPORT
+# RUN: test ! -e %t.matrix/row.group
 # RUN: %python -c 'import json, pathlib; b=json.loads((pathlib.Path("%t.matrix/data.group/functions/forward.meta")).read_text())["distributed_boundary"]; i=b["inputs"][0]; o=b["outputs"][0]; assert b["version"]==1 and b["logical_rank_count"]==16; assert i["argument_index"]==2 and i["distribution"]=="partitioned" and i["global_shape"]==[32,32] and i["local_shape"]==[2,32]; assert o["result_index"]==0 and o["distribution"]=="partitioned" and o["global_shape"]==[32,32] and o["local_shape"]==[2,32]; assert [r["rank"] for r in i["ranks"]]==list(range(16))'
 # RUN: %python -c 'import json, pathlib; b=json.loads((pathlib.Path("%t.matrix/column.group/functions/forward.meta")).read_text())["distributed_boundary"]; i=b["inputs"][0]; o=b["outputs"][0]; assert i["argument_index"]==2 and i["distribution"]=="replicated" and i["global_shape"]==[32,32] and i["local_shape"]==[32,32]; assert o["result_index"]==0 and o["distribution"]=="partitioned" and o["global_shape"]==[32,32] and o["local_shape"]==[32,2]; assert {r["replica_id"] for r in i["ranks"]}==set(range(16))'
 # RUN: bash -c 'test -z "$(find "%t.matrix" -maxdepth 1 -name ".wafer-compile-staging-*" -print -quit)"'
 
-# PIPELINE: wafer-compile: compiled grouped program with execution-ranks=16:
+# PIPELINE: wafer-compile: validated executable bundle with execution-ranks=16; published grouped-program checkpoint:
+
+# UNSUPPORTED-TRANSPORT: wafer-compile: unsupported_transport: physical DTE acceptance is not implemented for executable bundles
+# LATE-RANK: wafer-compile: test-only injected failure after logical rank 15
 
 # VERIFY: wafer-compile-stablehlo: verified StableHLO program directory parameters: 2
 # VERIFY: wafer-compile-stablehlo: verified StableHLO program directory parameter shards: 2

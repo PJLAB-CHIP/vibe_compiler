@@ -1,7 +1,8 @@
 # Wafer Shardy / SPMD 设计
 
-状态：2026-07-12按当前单卡实现重基线。本文拥有frontend sharding到post-SPMD local program的合同；
-Q15只形成verified grouped program，Q16才形成显式per-rank executable。实现状态看`tasks/progress.md`。
+状态：2026-07-13按当前单卡实现更新。本文拥有frontend sharding到post-SPMD local program的合同；
+Q15形成verified grouped program，Q16直接消费frontend verifier返回的typed boundary/shard result形成显式
+per-rank executable。实现状态看`tasks/progress.md`。
 
 ## 1. Pipeline Contract
 
@@ -28,9 +29,9 @@ Pipeline position:
   不实现MPMD、代表rank去重、dp/tp/pp/ep私有协议、distributed/parallel dialect、physical endpoint/DTE、
   SPM/DDR、target ABI或runtime launch；不从strategy名、parameter名、文件名或side JSON恢复语义。
 - Completion gate:
-  data、column、row三种真实PyTorch/XLA mark_sharding program经同一driver和真实helper到verified group；
-  rank-count与mesh、post-SPMD distributed boundary/parameter shard logical_rank_count及coverage一致；helper失败
-  不发布partial output。
+  data、column、row三种真实PyTorch/XLA mark_sharding program经同一driver和真实helper到verified group staging；
+  rank-count与mesh、post-SPMD distributed boundary/parameter shard logical_rank_count及coverage一致；Q16当前只对
+  无collective的data/column形成bundle，row在`TransportContract::None`边界明确拒绝且不发布partial output。
 ```
 
 ## 2. 稳定边界
@@ -109,6 +110,10 @@ helper输出必须满足：
 helper从propagation后的typed XLA `HloSharding`生成boundary geometry；compiler不解析opaque sharding string，也不
 把boundary复制到IR attr或额外sidecar。partial replication、single-device和manual/unknown shardings当前fail
 closed。
+
+frontend program-directory verifier成功时同时返回C++ typed result：distributed input/output binding、每rank
+slice、parameter binding/payload locator和constant binding。Q16只消费这份已验证结果，不重新解析JSON，也不从
+`rank_*.npy`文件名恢复logical rank。verifier先在局部result中完成全部metadata/payload检查，失败不暴露部分记录。
 
 driver必须先parse/verify helper输出的MLIR、补回并核对exact topology/mesh，再校验distributed boundary和parameter
 shard metadata；

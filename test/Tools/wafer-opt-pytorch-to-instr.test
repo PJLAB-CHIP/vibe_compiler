@@ -8,18 +8,11 @@
 # RUN:   --output-program-dir %t.group.program \
 # RUN:   --execution-ranks=16 | FileCheck %s --check-prefix=PIPELINE
 # RUN: FileCheck %s --input-file=%t.group.program/functions/forward.mlir --check-prefix=GROUP
-# RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-groups-to-ddr-memory-planned-instr)' \
-# RUN:   %t.group.program/functions/forward.mlir > %t.instr.mlir
-# RUN: FileCheck %s --input-file=%t.instr.mlir --check-prefix=INSTR
 
-# PIPELINE: wafer-compile: compiled grouped program with execution-ranks=16:
+# PIPELINE: wafer-compile: validated executable bundle with execution-ranks=16; published grouped-program checkpoint:
 
 # GROUP: mhlo.spmd_parameters_shardings
 # GROUP: func.func @main
 # GROUP: wafer.group
 # GROUP: linalg.generic
 # GROUP: arith.addf
-
-# INSTR-NOT: wafer.group
-# INSTR: wafer.instr.elementwise <add>
-# INSTR: wafer.instr.wdma

@@ -72,20 +72,22 @@ unsupported），CTest 3/3通过；dependency、IR organization、CRT conformanc
 
 ## Checkpoint 4: Per-Rank Executable Bundle
 
-状态：进行中，对应Q16。
+状态：已完成，对应Q16。`check-wafer`新鲜执行28个C++ unit和229个lit（228 pass、1个feature-inverse
+unsupported）；rank-15 late failure、真实column-sharded 16-rank正例和row/HF transport负例通过。
 
 - 直接消费Q15 verified grouped program；rank-count=1/16分别建立all-and-only isolated rank clones。
 - rank通过typed API显式传入；所有rank执行相同group candidate、full traversal、layout、instruction、
-  SPM/DDR、completion、transport/resource validation。
+  SPM/DDR、completion和resource validation；当前transport合同明确为`None`，collective fail closed。
 - 每个passing clone形成typed C++ `RankExecutable`；全部rank及resource/completion coverage验证后才构造
   atomic `ExecutableBundle`。
 - 禁止默认rank 0、代表rank、filename identity或未实现的executable dialect。
 
-完成：rank 0/1的local slice与peer可区分；任一rank或late legality failure不形成partial bundle，旧final不变。
+完成：rank 0/1的local slice与payload binding可区分；任一rank或late legality failure不形成partial bundle，
+旧final不变。physical peer-positive bundle留给communication owner扩展，不作为当前Q16伪完成项。
 
 ## Checkpoint 5: Target Artifact Bundle
 
-状态：blocked by Q0、Q16，对应Q17。
+状态：进行中，对应Q17；Q0、Q16已完成。
 
 - 只消费Q16 atomic `ExecutableBundle`，对每个rank执行target conversion、object/CRT/device link。
 - device link只写transaction staging；验证all-and-only module set、required/undefined symbols、entry symbol、

@@ -1,6 +1,6 @@
 # Wafer Compiler Verification Plan
 
-状态：2026-07-12按单tile/单卡纵向目标重基线。本文拥有跨stage完成证据和测试口径；具体IR/ABI规则由
+状态：2026-07-13按Q16完成证据更新。本文拥有跨stage完成证据和测试口径；具体IR/ABI规则由
 对应编号设计文档拥有。实现状态看`tasks/progress.md`。
 
 ## 1. Pipeline Contract
@@ -148,13 +148,18 @@ unsupported，但Q15完成记录必须确认mandatory真实helper cases实际执
 ## 6. Q16 Per-Rank Executable Bundle Gates
 
 - 直接消费Q15重新读取验证过的grouped program，不另造手写group主线；
+- frontend verifier一次返回typed input/output/parameter/constant和每rank slice，Compiler不二次解析JSON或文件名；
 - rank-count=1创建exact一个rank clone；rank-count=16创建logicalRank 0..15 all-and-only clones；
 - 每rankcompile在isolated module clone，显式传rank，不使用默认0、filename或rank-0 named pipeline；
-- rank 0/1 local slice、collective peer、entry/resource/completion事实可区分；
+- rank 0/1 local slice、payload、entry/resource/completion事实可区分；replicated module byte-identical仍保留独立rank；
 - direct full-shape和tiled candidate经过相同generation/materialization/legality/ranking/complete-commit；
 - accepted rank artifact覆盖完整traversal，且无`wafer.group`残留；
 - 任一rank/candidate/SPM/DDR/geometry/completion failure不形成`RankExecutable[]`或partial bundle；
 - all-and-only rank/resource/completion验证后才构造atomic `ExecutableBundle`，failed rebuild保持旧final不变；
+- 当前bundle合同为`TransportContract::None`；含logical collective/DTE需求的program明确
+  `unsupported_transport`且无partial bundle，peer-positive gate属于physical transport后续任务；
+- function-boundary bufferization后的完整rank重新执行SPM/DDR planning，终态无Tensor/Bufferization/Linalg/Group、
+  untagged memref或缺失的compiler-managed offset；
 - debug FileCheck、手写group、single rank pass或某rank成功不构成Q16 completion。
 
 ## 7. Q17 Target Module And Publication Gates

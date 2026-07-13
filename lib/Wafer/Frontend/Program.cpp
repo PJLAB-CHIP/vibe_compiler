@@ -940,9 +940,21 @@ bool verifyProgramMetadata(
       }
     } else if (location.type == "constant") {
       ++constantCount;
-      if (auto tensorType = dyn_cast<RankedTensorType>(inputType))
+      if (auto tensorType = dyn_cast<RankedTensorType>(inputType)) {
         rejected |= verifyConstantDataFile(programDir, location, tensorType,
                                            diagnostics);
+        if (result) {
+          wafer::frontend::ProgramConstantBinding constant;
+          constant.argumentIndex = index;
+          constant.position = location.position;
+          constant.shape.assign(tensorType.getShape().begin(),
+                                tensorType.getShape().end());
+          constant.dtype = dtypeString(tensorType.getElementType());
+          constant.payloadPath =
+              (Twine("constants/") + Twine(location.position)).str();
+          result->constants.push_back(std::move(constant));
+        }
+      }
     } else if (location.type == "input_arg") {
       ++userInputCount;
       if (location.position < 0)
@@ -1034,8 +1046,29 @@ struct ParameterShardSlice {
   int64_t replicaId = -1;
   std::vector<int64_t> offsets;
   std::vector<int64_t> sizes;
+  std::vector<int64_t> strides;
   std::string path;
+  std::string relativePath;
 };
+
+wafer::frontend::ProgramDistributionKind
+getVerifiedDistributionKind(llvm::StringRef distribution) {
+  return distribution == "partitioned"
+             ? wafer::frontend::ProgramDistributionKind::Partitioned
+             : wafer::frontend::ProgramDistributionKind::Replicated;
+}
+
+wafer::frontend::ProgramRankSlice
+getVerifiedRankSlice(const DistributedBoundaryRank &rank) {
+  return {rank.rank,  rank.replicaId, rank.offsets,
+          rank.sizes, rank.strides,   {}};
+}
+
+wafer::frontend::ProgramRankSlice
+getVerifiedRankSlice(const ParameterShardSlice &slice) {
+  return {slice.rank,  slice.replicaId, slice.offsets,
+          slice.sizes, slice.strides,   slice.relativePath};
+}
 
 bool verifyShardEntry(const llvm::json::Object &object,
                       int64_t logicalRankCount,
@@ -1127,7 +1160,8 @@ bool verifyShardEntry(const llvm::json::Object &object,
   if (verifyNpyTensorPayloadFile(path, file, sizes, elementType, diagnostics))
     return true;
   verifiedSlices.push_back(ParameterShardSlice{
-      rank, replicaId, std::move(offsets), std::move(sizes), std::move(path)});
+      rank, replicaId, std::move(offsets), std::move(sizes), std::move(strides),
+      std::move(path), std::move(file)});
   return false;
 }
 
@@ -1210,13 +1244,12 @@ bool verifyParameterShardCoverage(llvm::ArrayRef<ParameterShardSlice> slices,
   return false;
 }
 
-bool verifyParameterShardMetadata(const llvm::json::Object &object,
-                                  const ProgramMetadata &meta,
-                                  FunctionType functionType,
-                                  int64_t logicalRankCount,
-                                  std::vector<bool> &seenParameterArgs,
-                                  llvm::StringRef programDir,
-                                  llvm::raw_ostream &diagnostics) {
+bool verifyParameterShardMetadata(
+    const llvm::json::Object &object, const ProgramMetadata &meta,
+    FunctionType functionType, int64_t logicalRankCount,
+    std::vector<bool> &seenParameterArgs, llvm::StringRef programDir,
+    llvm::raw_ostream &diagnostics,
+    wafer::frontend::ProgramParameterBinding *verifiedBinding) {
   int64_t argumentIndex = -1;
   std::string name;
   std::string dtype;
@@ -1313,6 +1346,17 @@ bool verifyParameterShardMetadata(const llvm::json::Object &object,
     return true;
 
   seenParameterArgs[argumentIndex] = true;
+  if (verifiedBinding) {
+    verifiedBinding->argumentIndex = argumentIndex;
+    verifiedBinding->name = std::move(name);
+    verifiedBinding->distribution = getVerifiedDistributionKind(distribution);
+    verifiedBinding->globalShape = std::move(globalShape);
+    verifiedBinding->localShape = std::move(localShape);
+    verifiedBinding->dtype = normalizeProgramDtype(dtype);
+    verifiedBinding->rankSlices.reserve(verifiedSlices.size());
+    for (const ParameterShardSlice &slice : verifiedSlices)
+      verifiedBinding->rankSlices.push_back(getVerifiedRankSlice(slice));
+  }
   return false;
 }
 
@@ -1543,9 +1587,10 @@ bool verifyDistributedBoundaryBinding(const DistributedBoundaryBinding &binding,
                                            binding.distribution, diagnostics);
 }
 
-bool verifyDistributedBoundary(ModuleOp module, const ProgramMetadata &meta,
-                               func::FuncOp func, bool postSpmdMarker,
-                               llvm::raw_ostream &diagnostics) {
+bool verifyDistributedBoundary(
+    ModuleOp module, const ProgramMetadata &meta, func::FuncOp func,
+    bool postSpmdMarker, llvm::raw_ostream &diagnostics,
+    wafer::frontend::FrontendProgramVerificationResult *result) {
   if (!postSpmdMarker) {
     if (meta.distributedBoundary)
       return rejectProgramDirectory(
@@ -1644,6 +1689,29 @@ bool verifyDistributedBoundary(ModuleOp module, const ProgramMetadata &meta,
     return rejectProgramDirectory(
         "function result is missing distributed boundary metadata",
         diagnostics);
+  if (result) {
+    result->logicalRankCount = boundary.logicalRankCount;
+    auto copyBindings =
+        [](llvm::ArrayRef<DistributedBoundaryBinding> source,
+           std::vector<wafer::frontend::ProgramBoundaryBinding> &destination) {
+          destination.reserve(source.size());
+          for (const DistributedBoundaryBinding &binding : source) {
+            wafer::frontend::ProgramBoundaryBinding typed;
+            typed.index = binding.index;
+            typed.distribution =
+                getVerifiedDistributionKind(binding.distribution);
+            typed.globalShape = binding.globalShape;
+            typed.localShape = binding.localShape;
+            typed.dtype = normalizeProgramDtype(binding.dtype);
+            typed.rankSlices.reserve(binding.ranks.size());
+            for (const DistributedBoundaryRank &rank : binding.ranks)
+              typed.rankSlices.push_back(getVerifiedRankSlice(rank));
+            destination.push_back(std::move(typed));
+          }
+        };
+    copyBindings(boundary.inputs, result->distributedInputs);
+    copyBindings(boundary.outputs, result->distributedOutputs);
+  }
   return false;
 }
 
@@ -1718,10 +1786,13 @@ bool verifyParameterShards(
     if (!object)
       return rejectProgramDirectory(
           "parameter shard metadata entries must be objects", diagnostics);
-    if (verifyParameterShardMetadata(*object, meta, functionType,
-                                     logicalRankCount, seenParameterArgs,
-                                     programDir, diagnostics))
+    wafer::frontend::ProgramParameterBinding verifiedBinding;
+    if (verifyParameterShardMetadata(
+            *object, meta, functionType, logicalRankCount, seenParameterArgs,
+            programDir, diagnostics, result ? &verifiedBinding : nullptr))
       return true;
+    if (result)
+      result->parameters.push_back(std::move(verifiedBinding));
     ++parameterShardCount;
   }
 
@@ -1761,10 +1832,9 @@ static LogicalResult
 verifyProgramDirectoryImpl(ModuleOp module, llvm::StringRef programPath,
                            llvm::raw_ostream &diagnostics,
                            FrontendProgramVerificationResult *result) {
-  if (result)
-    *result = FrontendProgramVerificationResult{};
+  FrontendProgramVerificationResult verified;
 
-  if (failed(verifyFrontendProgram(module, diagnostics, result)))
+  if (failed(verifyFrontendProgram(module, diagnostics, &verified)))
     return failure();
 
   std::string metaPath =
@@ -1774,7 +1844,7 @@ verifyProgramDirectoryImpl(ModuleOp module, llvm::StringRef programPath,
     return failure();
 
   bool rejected =
-      verifyProgramMetadata(module, programPath, *meta, diagnostics, result);
+      verifyProgramMetadata(module, programPath, *meta, diagnostics, &verified);
   if (!rejected) {
     FailureOr<func::FuncOp> func = findSingleFunction(module, diagnostics);
     if (failed(func))
@@ -1784,12 +1854,16 @@ verifyProgramDirectoryImpl(ModuleOp module, llvm::StringRef programPath,
         fileExists(::programPath(
             programPath, {"functions", "forward.parameter_shards.json"}));
     rejected |= verifyDistributedBoundary(module, *meta, *func, postSpmdMarker,
-                                          diagnostics);
+                                          diagnostics, &verified);
     if (!rejected)
       rejected |= verifyParameterShards(module, programPath, *meta, *func,
-                                        diagnostics, result);
+                                        diagnostics, &verified);
   }
-  return rejected ? failure() : success();
+  if (rejected)
+    return failure();
+  if (result)
+    *result = std::move(verified);
+  return success();
 }
 
 LogicalResult

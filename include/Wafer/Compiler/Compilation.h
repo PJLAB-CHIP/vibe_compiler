@@ -3,13 +3,18 @@
 #ifndef WAFER_COMPILER_COMPILATION_H
 #define WAFER_COMPILER_COMPILATION_H
 
+#include "Wafer/Frontend/Program.h"
+
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LogicalResult.h"
 
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <memory>
 #include <string>
+#include <vector>
 
 namespace llvm {
 class raw_ostream;
@@ -63,14 +68,116 @@ private:
   ExecutionConfig executionConfig;
 };
 
-/// Runs the current production prefix through verified logical groups. The
-/// input is snapshotted before parsing and the output directory becomes
-/// visible only after every frontend, SPMD and lowering gate succeeds. The
-/// executable-bundle stage extends this driver past the grouped-program
-/// boundary.
-mlir::LogicalResult compileToGroupedProgram(
-    CompilationRequest request, llvm::StringRef outputProgramDirectory,
-    llvm::StringRef xlaSpmdPartitionerHelper, llvm::raw_ostream &diagnostics);
+enum class ProgramResourceRole { UserInput, Parameter, Constant, Output };
+enum class TerminalCompletionKind { EntryReturnAfterLocalDrain };
+enum class TransportContract { None };
+enum class DDRAllocationContract { DefaultArenaRelativeOffsets };
+
+/// A verified program-boundary resource projected to one logical rank. The
+/// slice is copied from the frontend verifier's typed result; rank identity is
+/// never inferred from its payload locator.
+struct RankProgramBinding {
+  ProgramResourceRole role;
+  int64_t index;
+  std::string name;
+  frontend::ProgramDistributionKind distribution;
+  std::vector<int64_t> globalShape;
+  std::vector<int64_t> localShape;
+  frontend::ProgramRankSlice slice;
+};
+
+/// One independently lowered and accepted static-rank program. This type is
+/// move-only so an accepted module cannot be accidentally duplicated without
+/// rerunning its rank-specific compiler gates.
+class RankExecutable {
+public:
+  RankExecutable(RankExecutable &&) = default;
+  RankExecutable &operator=(RankExecutable &&) = default;
+  RankExecutable(const RankExecutable &) = delete;
+  RankExecutable &operator=(const RankExecutable &) = delete;
+
+  int64_t getLogicalRank() const { return logicalRank; }
+  llvm::StringRef getEntrySymbol() const { return entrySymbol; }
+  mlir::ModuleOp getModule() const { return *module; }
+  const std::vector<RankProgramBinding> &getProgramBindings() const {
+    return programBindings;
+  }
+  TerminalCompletionKind getTerminalCompletionKind() const {
+    return terminalCompletionKind;
+  }
+  TransportContract getTransportContract() const { return transportContract; }
+  DDRAllocationContract getDDRAllocationContract() const {
+    return ddrAllocationContract;
+  }
+
+private:
+  friend struct ExecutableBundleBuilder;
+
+  RankExecutable(int64_t logicalRank, mlir::OwningOpRef<mlir::ModuleOp> module,
+                 llvm::StringRef entrySymbol,
+                 std::vector<RankProgramBinding> programBindings)
+      : logicalRank(logicalRank), module(std::move(module)),
+        entrySymbol(entrySymbol.str()),
+        programBindings(std::move(programBindings)),
+        terminalCompletionKind(
+            TerminalCompletionKind::EntryReturnAfterLocalDrain),
+        transportContract(TransportContract::None),
+        ddrAllocationContract(
+            DDRAllocationContract::DefaultArenaRelativeOffsets) {}
+
+  int64_t logicalRank;
+  mlir::OwningOpRef<mlir::ModuleOp> module;
+  std::string entrySymbol;
+  std::vector<RankProgramBinding> programBindings;
+  TerminalCompletionKind terminalCompletionKind;
+  TransportContract transportContract;
+  DDRAllocationContract ddrAllocationContract;
+};
+
+/// Atomic owner of the complete static logical-rank domain. The context is
+/// owned alongside all modules and is destroyed only after the rank programs.
+class ExecutableBundle {
+public:
+  ExecutableBundle(ExecutableBundle &&) = default;
+  ExecutableBundle &operator=(ExecutableBundle &&) = default;
+  ExecutableBundle(const ExecutableBundle &) = delete;
+  ExecutableBundle &operator=(const ExecutableBundle &) = delete;
+
+  const ExecutionConfig &getExecutionConfig() const { return executionConfig; }
+  const std::vector<RankExecutable> &getRankExecutables() const {
+    return rankExecutables;
+  }
+
+private:
+  friend struct ExecutableBundleBuilder;
+
+  ExecutableBundle(ExecutionConfig executionConfig,
+                   std::shared_ptr<mlir::MLIRContext> context,
+                   std::vector<RankExecutable> rankExecutables)
+      : executionConfig(executionConfig), context(std::move(context)),
+        rankExecutables(std::move(rankExecutables)) {}
+
+  ExecutionConfig executionConfig;
+  std::shared_ptr<mlir::MLIRContext> context;
+  std::vector<RankExecutable> rankExecutables;
+};
+
+/// Reopens and verifies a grouped-program artifact, compiles every configured
+/// logical rank in an isolated clone, and returns the bundle only after the
+/// all-and-only rank domain has passed terminal legality.
+llvm::Expected<ExecutableBundle>
+compileGroupedProgramToExecutableBundle(llvm::StringRef groupedProgramDirectory,
+                                        ExecutionConfig executionConfig,
+                                        llvm::raw_ostream &diagnostics);
+
+/// Runs the current production transaction through an atomic executable
+/// bundle. Until target-artifact delivery lands, the published directory is
+/// the verified grouped-program checkpoint; it becomes visible only after all
+/// configured ranks have passed bundle construction.
+mlir::LogicalResult compileProgram(CompilationRequest request,
+                                   llvm::StringRef outputProgramDirectory,
+                                   llvm::StringRef xlaSpmdPartitionerHelper,
+                                   llvm::raw_ostream &diagnostics);
 
 } // namespace wafer::compiler
 

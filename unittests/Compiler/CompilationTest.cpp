@@ -40,6 +40,16 @@ TEST(CompilationTest, CompilationRequestOwnsSourceAndHasNoImplicitDefaults) {
       !std::is_copy_constructible_v<wafer::compiler::CompilationRequest>);
   static_assert(
       std::is_move_constructible_v<wafer::compiler::CompilationRequest>);
+  static_assert(
+      !std::is_default_constructible_v<wafer::compiler::RankExecutable>);
+  static_assert(!std::is_copy_constructible_v<wafer::compiler::RankExecutable>);
+  static_assert(std::is_move_constructible_v<wafer::compiler::RankExecutable>);
+  static_assert(
+      !std::is_default_constructible_v<wafer::compiler::ExecutableBundle>);
+  static_assert(
+      !std::is_copy_constructible_v<wafer::compiler::ExecutableBundle>);
+  static_assert(
+      std::is_move_constructible_v<wafer::compiler::ExecutableBundle>);
 
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(1);
   ASSERT_TRUE(static_cast<bool>(config));

@@ -1,6 +1,6 @@
 # Wafer DDR Memory Planning Design
 
-状态：2026-07-12重基线；当前合同覆盖default-arena DDR demand/range validation和accepted offsets。
+状态：2026-07-13按Q16 handoff更新；当前合同覆盖default-arena DDR demand/range validation和accepted offsets。
 multi-arena、state/streaming weight和launch-facing resource model延后。实现状态以`tasks/progress.md`为准。
 它不能只是 DDR access validation；凡是会影响 candidate 是否成立的 DDR
 byte footprint、lifetime、capacity、largest-contiguous 和 bandwidth 约束，都必须在 DDR offset
@@ -346,19 +346,20 @@ their planning gates, not candidate fields.
 
 ### 9.4 Q16 Typed Rank-Record Handoff
 
-当前没有executable dialect或独立resource-view analysis对象。Q16在candidate commit前直接从current
-instruction IR、accepted DDR/SPM offsets、topology/execution mesh、transport/projection和memref
-use-def/view relation重算并验证：
+当前没有executable dialect或独立resource-view analysis对象。Q16在candidate commit后直接从current
+instruction IR、accepted DDR/SPM offsets、topology/execution mesh和memref use-def/view relation重算并验证：
 
-- external IO、immutable parameter和workspace的role、access、scope、alias、default-arena range；
-- compiler-managed DDR range与完整entry slot requirements；
-- launch-visible facts与accepted offsets、descriptor ranges、parameter shards和completion的一致性。
+- 所有memref都有Wafer memory space，compiler-managed SPM/DDR alloc有accepted offset；
+- 完整rank中不再残留Group/Linalg/Tensor/Bufferization或target-abstract tile op；
+- frontend verifier给出的external IO、parameter、constant role和rank slice与ExecutionConfig一致；
+- completion合同闭合，且当前不接受需要physical transport的DTE program。
 
-验证只产生typed C++ `RankExecutable`字段，不把第二份resource record写回IR，也不allocate/import/query
-runtime object或materialize physical address。all-rank records通过后才能形成Q16 `ExecutableBundle`。
-Q17 target lowering结合committed instruction IR与这些bindings派生address/range/descriptor；Q18 manifest
-只从Q16 bundle和Q17 verified `TargetArtifactBundle`序列化runtime-observable fields。package/runtime不扫描
-raw instruction IR、offset attrs、program shard sidecar或薄launch metadata恢复resource。
+不能从IR重算的boundary role/slice/payload locator进入typed C++ `RankProgramBinding`；accepted offsets、内部alias、
+descriptor和lifetime继续由owning module表达，不复制成第二份resource record。`RankExecutable`另显式声明
+`DefaultArenaRelativeOffsets`，不allocate/import/query runtime object或materialize physical address。all-rank records
+通过后才能形成Q16 `ExecutableBundle`。Q17 target lowering结合committed instruction IR与这些bindings派生
+arena-base/address/range/descriptor；Q18只从Q16 bundle和Q17 verified `TargetArtifactBundle`序列化runtime-observable
+fields。package/runtime不从program shard文件名或薄launch metadata恢复resource。
 
 ## 10. Example Shape
 

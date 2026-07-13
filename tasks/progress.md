@@ -1,6 +1,6 @@
 # Wafer Compiler Task Queue
 
-更新时间：2026-07-12
+更新时间：2026-07-13
 
 本文件只做任务队列管控，不声明架构合同。架构、IR/artifact 边界和 completion gate 以对应编号设计文档
 为准；当前唯一 active 实施计划是 `tasks/plans/single-card-vertical-slice.md`。
@@ -44,8 +44,8 @@ Q14 architecture-baseline
 | Q0 | `target-correctness` | `done` | — | module-clone full conversion、complete traversal、exact named/generic payload与tensor SSA preservation、physical geometry/ABI narrowing、per-store/per-region completion及target fail-closed边界已闭合；`check-wafer`新鲜执行25个C++ unit和225个lit（224 pass、1个feature-inverse unsupported），CTest 3/3通过。4096个output-tile/reduction-chunk静态materialization实例预算只是unrolled实现的编译资源保护。 | 06、07、09、11、14、16 |
 | Q5.C | `workload-corpus` | `done` | — | 已固定真实PyTorch/XLA exporter生成的linear-residual MLP与tiny Llama source/config/seed/dtype/shape/payload/reference/program digest；独立NumPy CPU oracle、framework交叉检查和重复export canonical-equivalence已通过；未推进compiler/runtime/board gate。 | 02、16 |
 | Q15 | `compiler-driver` | `done` | Q0 | 最小typed request/config、source snapshot、pinned helper、typed distributed boundary、parameter shards、local normalization、complete logical groups、readback和no-replace publication已闭合；`check-wafer`新鲜执行28个C++ unit和229个lit（228 pass、1个feature-inverse unsupported），CTest 3/3通过。 | 01、02、03、04、05、06、16 |
-| Q16 | `executable-bundle` | `doing` | Q15 | 对rank-count=1/16创建显式per-rank static clones，完整验证后形成`RankExecutable[]`和atomic `ExecutableBundle`；禁止默认rank 0。 | 03、04、06、09、12、13、16 |
-| Q17 | `target-artifact-bundle` | `blocked` | Q0、Q16 | device link只写transaction staging；所有rank module、必要digest和ABI检查通过后一次发布，无partial `.so`。 | 14、16 |
+| Q16 | `executable-bundle` | `done` | Q15 | typed frontend facts、rank-count=1/16显式isolated clones、whole-rank终态memory/legality、move-only `RankExecutable[]`和context-owning atomic `ExecutableBundle`已闭合；rank-15 late failure无partial publication，当前`TransportContract::None`使collective明确fail closed。 | 03、04、06、09、12、13、16 |
+| Q17 | `target-artifact-bundle` | `doing` | Q0、Q16 | 直接消费typed bundle；闭合output alias/out-param和default-arena base ABI后，device link只写transaction staging，所有rank module、必要digest和ABI检查通过后一次发布，无partial `.so`。 | 14、16 |
 | Q18 | `manifest-runtime` | `blocked` | Q17 | 用唯一C++ typed manifest/canonical JSON和slot-resource双射替代文本恢复及双validator；no-card runtime只消费verified manifest。 | 15、16 |
 | Q19 | `reference-executor` | `blocked` | Q16 | 实现linear/MLP所需单rank instruction semantics，再扩DTE多rank子集；明确不模拟target packet timing或board completion。 | 10、11、13、16 |
 | Q20 | `single-card-linear-mlp` | `blocked` | Q5.C、Q18、Q19 | 同一driver分别以rank-count=1和16生成完整bundle、manifest和runtime trace，并由reference executor与CPU reference比较。 | 01、16 |

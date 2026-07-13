@@ -1,6 +1,9 @@
 //===- wafer-compile.cpp - Wafer user compiler driver --------------------===//
 
 #include "Wafer/Compiler/Compilation.h"
+#ifdef WAFER_ENABLE_TEST_HELPER_OVERRIDE
+#include "Wafer/Compiler/Testing.h"
+#endif
 
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
@@ -155,13 +158,31 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  if (mlir::failed(wafer::compiler::compileToGroupedProgram(
-          std::move(*request), *options.outputProgramDirectory, helperPath,
-          llvm::errs())))
+  mlir::LogicalResult compilationStatus = mlir::failure();
+#ifdef WAFER_ENABLE_TEST_HELPER_OVERRIDE
+  if (const char *failureRank =
+          std::getenv("WAFER_TEST_FAIL_AFTER_LOGICAL_RANK")) {
+    int64_t parsedFailureRank = -1;
+    if (llvm::StringRef(failureRank).getAsInteger(10, parsedFailureRank)) {
+      llvm::errs() << "wafer-compile: invalid test-only failure rank\n";
+      return 1;
+    }
+    compilationStatus = wafer::compiler::testing::compileProgramWithRankFailure(
+        std::move(*request), *options.outputProgramDirectory, helperPath,
+        parsedFailureRank, llvm::errs());
+  } else
+#endif
+  {
+    compilationStatus = wafer::compiler::compileProgram(
+        std::move(*request), *options.outputProgramDirectory, helperPath,
+        llvm::errs());
+  }
+  if (mlir::failed(compilationStatus))
     return 1;
 
-  llvm::outs() << "wafer-compile: compiled grouped program with "
+  llvm::outs() << "wafer-compile: validated executable bundle with "
                   "execution-ranks="
-               << rankCount << ": " << *options.outputProgramDirectory << "\n";
+               << rankCount << "; published grouped-program checkpoint: "
+               << *options.outputProgramDirectory << "\n";
   return 0;
 }

@@ -115,3 +115,24 @@
   `partitioned`；partitioned 证明 slices 无重叠且精确覆盖 global tensor，replicated 证明每 rank 都是完整
   tensor、replica-id domain 完整且 payload 一致。当前 schema 无法表达 partial replication 时在 producer
   端失败，不把 subgroup 缺口降级成默认复制。
+
+## 2026-07-13 candidate-local memory gate 不能覆盖最终 function bufferization
+
+- 现象：真实grouped program通过selector内的SPM/DDR planning，但selected pipeline最后的whole-function
+  One-Shot Bufferize又产生untagged DDR `memref.alloc`及`bufferization.to_tensor/to_memref` bridge；candidate
+  成功并不代表完整rank artifact已经memory-planned。
+- 根因：candidate legality发生在standalone group materialization内，function-boundary bufferization位于其后；
+  后续transformation新建的buffer不可能被更早的planner覆盖。
+- 修复模式：所有unknown/default tensor buffer显式转换为Wafer DDR memref；bufferization后canonicalize并在完整
+  rank module上重跑SPM/DDR planning，最终用accepted-rank legality拒绝高层dialect、untagged memref和缺失offset。
+  candidate-local gate仍保留用于搜索拒绝，不能用debug direct pipeline替代selector。
+
+## 2026-07-13 MLIR module 的失败路径必须由显式 context lifetime 覆盖
+
+- 现象：all-rank bundle构造的rank-15注入失败已返回structured error，但随后在`mlir::Operation`析构中
+  segmentation fault，事务scope-exit未执行，staging目录残留。
+- 根因：内部helper同时按值接收`shared_ptr<MLIRContext>`和`OwningOpRef<ModuleOp>`；失败返回时依赖函数参数的
+  析构顺序维持module/context生命周期，类型边界没有保证context晚于所有owning module销毁。
+- 修复模式：失败可返回的bundle builder只借用输入module和调用方持有的context；每rank clone在builder局部销毁，
+  只有all-rank成功形成bundle时才把context所有权转入bundle。调用方声明顺序继续保证输入module先于context销毁，
+  late failure测试同时检查nonzero返回、无崩溃、无final output和无staging残留。

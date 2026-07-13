@@ -1,7 +1,7 @@
 # Wafer Logical Group 与 Candidate 设计
 
-状态：2026-07-12按当前实现重基线。本文拥有tensor-level`wafer.group`、tiling-demand analysis、candidate
-generation/materialization/legality/ranking/commit和complete-traversal合同；Q16才把这些能力重放到全部static
+状态：2026-07-13按Q16实现更新。本文拥有tensor-level`wafer.group`、tiling-demand analysis、candidate
+generation/materialization/legality/ranking/commit和complete-traversal合同；Q16把这些能力重放到全部static
 rank clones并形成ExecutableBundle。实现状态看`tasks/progress.md`。
 
 ## 1. Pipeline Contract
@@ -50,9 +50,10 @@ candidate IR中出现。
 candidate可以被cheap prefilter提前拒绝，但任何accepted artifact都必须重放完整output traversal和reduction
 chunks。单个representative tile、first/last tile、shape-only dump或某个group通过都不是commit proof。
 
-Q15的transaction到verified grouped program即结束。Q16为每个logical rank重新clone该program并运行candidate
-链；rank clones彼此隔离，全部通过后才构造ExecutableBundle。当前不存在`wafer.executable.*` dialect、代表rank
-或rank-class dedup协议，也不需要它们才能实现correctness-first static bundle。
+Q15的artifact责任到verified grouped program即结束，但production driver保持同一transaction继续进入Q16，不能先
+发布checkpoint再做rank lowering。Q16为每个logical rank重新clone该program并运行candidate链；rank clones彼此
+隔离，全部通过后才构造ExecutableBundle。当前不存在`wafer.executable.*` dialect、代表rank或rank-class dedup
+协议，也不需要它们才能实现correctness-first static bundle。
 
 ## 3. `wafer.group` IR 合同
 
@@ -192,9 +193,20 @@ create ExecutableBundle atomically
 每个rank clone必须显式传入logical rank；pipeline builder中固定rank 0的registered named pipelines只是debug
 replay。禁止默认rank 0、从parameter shard filename推rank、只编代表rank或复用可变module跨rank。
 
-`RankExecutable`至少需要携带rank identity、accepted module和Q17/Q19直接消费的resource/completion facts；具体typed
-字段由Q16实现与consumer共同收敛。bundle不复制instruction schedule到另一份JSON，也不引入rank class。跨卡、MPMD
-和hybrid specialization等真实consumer出现后再扩展。
+`RankExecutable`是move-only C++ owner，携带显式logical rank、accepted owning module、真实entry symbol、
+frontend verifier投影的user-input/parameter/constant/output rank binding、
+`EntryReturnAfterLocalDrain` completion、`TransportContract::None`和default-arena-relative DDR contract。
+`ExecutableBundle`共同拥有MLIRContext和严格`0..N-1`的rank vector；module先于context析构。bundle不复制instruction
+schedule到另一份JSON，也不引入rank class。跨卡、MPMD和hybrid specialization等真实consumer出现后再扩展。
+
+selector完成candidate-local SPM/DDR gate后，whole-function bufferization仍可能创建新的DDR buffer。selected-rank
+pipeline因此给unknown/default tensor buffer显式设置`#wafer.memory<ddr, tensor>`，canonicalize后在完整rank module上
+重跑SPM/DDR planning，再由terminal legality检查禁止Tensor/Bufferization/Linalg/Group残留、untagged memref和缺失
+offset。这个whole-rank gate补充candidate gate，不改用绕过selector的direct pipeline。
+
+当前physical DTE endpoint/channel/FSM/status合同未实现，含logical collective的grouped program在创建任何rank
+record前以`unsupported_transport`整体失败。Q16不声称peer-positive bundle；row-sharded和tiny Llama是原子负例，
+physical transport acceptance落地后再扩`TransportContract`。
 
 ## 9. 验证
 

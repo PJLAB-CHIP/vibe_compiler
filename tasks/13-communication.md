@@ -1,6 +1,6 @@
 # Wafer Communication Dialect Design
 
-状态：2026-07-12重基线；当前合同覆盖buffer-level collective到instruction-level Direct DTE p2p和明确
+状态：2026-07-13更新；当前合同覆盖buffer-level collective到instruction-level Direct DTE p2p和明确
 completion。segmented/MoE、post-memory physical transport registry和multi-card route延后。实现状态以
 `tasks/progress.md`为准。
 
@@ -90,7 +90,8 @@ Pipeline position:
 ```
 
 在该stage实现前，含Direct DTE的candidate保持target-illegal，不能用局部instruction test、logical-rank check或
-手写binding冒充完成。
+手写binding冒充完成。当前Q16的typed contract明确为`TransportContract::None`，因此在创建任何
+`RankExecutable`前对含logical collective的grouped program报`unsupported_transport`并整体失败。
 
 ## 1. 设计目标
 
@@ -220,7 +221,7 @@ wafer.instr.dte_wait(token...)
   conversion。
 - op 不携带 physical endpoint encoding、DTE id、FSM id、packet id、stream id 或 raw register mode。
   这些resources只在accepted offsets后由physical transport acceptance形成candidate binding members，
-  再由launch projection验证，并在Q16 atomic commit时materialize为typed C++ rank-record fields。
+  再由launch projection验证。当前Q16不会为Direct DTE伪造typed rank-record fields。
 
 ### 3.3 Sync Ops
 
@@ -339,7 +340,8 @@ route / Direct DTE protocol legality 仍由后续 `wafer.execution.mesh` /
 旧 tile-region-to-C-ABI debug pass 已删除；fixed-size unicast p2p 必须先形成 candidate Direct DTE
 issue/wait form，再经 whole-entry memory planning 和 physical transport acceptance，最后随整个 variant
 commit；target LLVM emission 只消费 committed instruction-level IR、topology/execution-mesh contract 和
-Q16 typed C++ rank record中由accepted IR验证的resource/entry/transport facts。这一层仍不应 materialize raw
+future typed C++ rank record中由accepted IR验证的resource/entry/transport facts。当前Q16遇到collective在
+rank构造前整体拒绝；这一层仍不应 materialize raw
 non-unicast register 字段，也不把 DTE id、runtime physical address 或 wrapper packet bitfield
 暴露成上层 communication IR 语义。
 
@@ -368,8 +370,9 @@ status/error和CRT ABI的production transport allocator。因此Direct DTE在这
 
 - 只从当前instruction IR、exact topology/execution mesh、accepted SPM/DDR offsets、SSA effects和completion
   重算每个logical issue/wait的physical legality；
-- 把target lowering真正需要的有限binding写入Q16 typed C++ `RankExecutable`，所有rank通过后随bundle原子
-  commit；不得新增平行collective schedule、opaque side table、全局action registry或代表rank；
+- physical acceptance落地后，把target lowering真正需要的有限binding写入扩展后的typed C++
+  `RankExecutable`，所有rank通过后随bundle原子commit；不得新增平行collective schedule、opaque side table、
+  全局action registry或代表rank；
 - Q17从committed instruction IR与typed binding派生target ABI；Q18只序列化runtime-observable slots，
   runtime不得重新搜索endpoint/channel/FSM；
 - timeout、transport error、peer failure和success completion必须由真实IR/ABI/status consumer区分。

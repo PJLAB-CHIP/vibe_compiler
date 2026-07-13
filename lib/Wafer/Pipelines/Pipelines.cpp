@@ -5,6 +5,7 @@
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Transforms/Passes.h"
 
+#include "mlir/Dialect/Bufferization/IR/BufferizableOpInterface.h"
 #include "mlir/Dialect/Bufferization/Transforms/OneShotAnalysis.h"
 #include "mlir/Dialect/Bufferization/Transforms/Passes.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -37,6 +38,19 @@ getFunctionBoundaryBufferizationOptions() {
   options.allowReturnAllocsFromLoops = true;
   options.inferFunctionResultLayout = true;
   options.bufferAlignment = 64;
+  options.defaultMemorySpaceFn =
+      [](mlir::TensorType tensorType) -> std::optional<mlir::Attribute> {
+    return MemoryAttr::get(tensorType.getContext(), MemorySpace::DDR,
+                           MemLayout::Tensor);
+  };
+  options.unknownTypeConverterFn =
+      [](mlir::Value value, mlir::Attribute memorySpace,
+         const mlir::bufferization::BufferizationOptions &options)
+      -> mlir::BaseMemRefType {
+    (void)options;
+    return mlir::bufferization::getMemRefTypeWithStaticIdentityLayout(
+        mlir::cast<mlir::TensorType>(value.getType()), memorySpace);
+  };
   options.functionArgTypeConverterFn =
       [](mlir::TensorType tensorType, mlir::Attribute memorySpace,
          mlir::func::FuncOp funcOp,
@@ -125,6 +139,10 @@ void buildLowerGroupsToSelectedInstrPipeline(mlir::OpPassManager &pm,
   options.logicalRank = logicalRank;
   pm.addPass(createSelectGroupTilePass(options));
   addFunctionBoundaryBufferization(pm);
+  pm.addPass(mlir::createCanonicalizerPass());
+  buildPlanSPMMemoryPipeline(pm);
+  buildPlanDDRMemoryPipeline(pm);
+  pm.addPass(mlir::createCanonicalizerPass());
 }
 
 #ifdef WAFER_ENABLE_SHARDY

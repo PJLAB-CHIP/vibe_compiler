@@ -133,9 +133,10 @@ Q15到此只形成verified grouped program。Q16直接从`ExecutionConfig.rankCo
 - 一个clone失败后保留其它rank的partial bundle；
 - 把mesh op当成per-rank executable或physical transport assignment。
 
-Q16产出`RankExecutable[]`和atomic `ExecutableBundle`。Q17才把每rankaccepted instruction module转成verified
-target artifacts；Q18才定义manifest和runtime binding。topology/mesh可以作为这些阶段的已验证输入，但当前没有
-target capability op、launch projection、rank class或relocation protocol。
+Q16产出move-only `RankExecutable[]`和共同拥有MLIRContext的atomic `ExecutableBundle`；vector顺序和每个record的
+logical rank必须严格为`0..N-1`，即使replicated modules字节相同也不去重。Q17才把每rankaccepted instruction
+module转成verified target artifacts；Q18才定义manifest和runtime binding。topology/mesh可以作为这些阶段的已验证
+输入，但当前没有target capability op、launch projection、rank class或relocation protocol。
 
 如果未来target revision/capability、bad-tile deployment或multi-card transport成为真实consumer，需要新增或扩展
 对应owner文档与typed representation。不得把历史environment fingerprint、projection set、calibration profile或

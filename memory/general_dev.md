@@ -336,19 +336,21 @@
   里手动拼 pass 串。当前 frontend verifier 入口是
   `wafer-compile-stablehlo --verify-stablehlo-program`；production compile入口统一为
   `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16}`。
-  当前typed grouped-program boundary只负责从frontend admission推进到重新读取并验证过的grouped program
-  directory，不生成
-  per-rank executable、bundle、manifest或runtime artifact，也不暴露stop-stage。
+  typed grouped-program boundary从frontend admission推进到重新读取并验证过的grouped program directory；
+  同一production transaction随后把frontend verifier返回的typed boundary/shard facts和grouped module直接交给
+  per-rank bundle boundary，不暴露stop-stage。
   `wafer-compile-stablehlo --propagate-stablehlo-sharding`、
   `wafer-compile-stablehlo --partition-stablehlo-program` 已删除，因为 Shardy/SPMD 不属于 frontend
   verifier tool；旧 C ABI compile 入口也已删除。`wafer-opt`和现有named MLIR pipelines只处理显式IR，
-  用于IR-local debug/regression，不拥有program-directory I/O，也不构成用户可选stage。显式per-rank clones、
-  完整entry legality和atomic executable bundle由后续per-rank bundle boundary扩展同一`wafer-compile`
-  transaction，不能反写成grouped-program boundary已经实现的能力。
+  用于IR-local debug/regression，不拥有program-directory I/O，也不构成用户可选stage。当前bundle boundary对
+  rank-count 1/16实际创建all-and-only isolated clones，经selector、function bufferization、whole-rank SPM/DDR和
+  terminal legality后形成move-only `RankExecutable[]`/context-owning `ExecutableBundle`；rank-15 late failure仍在
+  同一transaction内，因此不会先发布grouped checkpoint。当前transport contract为None，logical collective在
+  rank构造前明确fail closed。
   旧显式 target CRT issue-op、ring collective、SPM/DDR debug path 和 single-tile
-  materialization pass 链已删除；不要恢复成用户级 compile flow。当前HF/Llama-style真实program gate只证明
-  frontend/SPMD到重新验证的logical group handoff；per-rank candidate、memory-planned instruction、target LLVM、
-  package、runtime、board execution和数值correctness都仍是后续独立gate。
+  materialization pass 链已删除；不要恢复成用户级 compile flow。当前HF/Llama-style真实program可重放到
+  verified logical group staging，但因physical transport未闭合而不发布bundle；target LLVM/artifact、package、
+  runtime、board execution和数值correctness仍是后续独立gate。
 - ODS op 如果引入 `RecursiveMemoryEffects`、`ReturnLike` 等 interface trait，公开 dialect 头要
   include 对应 C++ interface header，`WaferIR` 也要显式 link 对应 MLIR interface target。
 - ODS op 如果直接使用 MLIR `TilingInterface` 这类 upstream op interface，避免让 TableGen 在

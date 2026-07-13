@@ -1,6 +1,9 @@
 //===- Compilation.cpp - Typed Wafer compiler orchestration --------------===//
 
 #include "Wafer/Compiler/Compilation.h"
+#include "Wafer/Compiler/Testing.h"
+
+#include "ExecutableBundleInternal.h"
 
 #include "Wafer/Frontend/InitImporterDialects.h"
 #include "Wafer/Frontend/Program.h"
@@ -592,8 +595,9 @@ mlir::LogicalResult collectExecutionFacts(
   return mlir::success();
 }
 
-mlir::LogicalResult verifyExactExecutionConfig(mlir::ModuleOp module,
-                                               const ExecutionConfig &config) {
+mlir::LogicalResult
+verifyExactExecutionConfigInternal(mlir::ModuleOp module,
+                                   const ExecutionConfig &config) {
   llvm::SmallVector<wafer::TargetTopologyOp, 2> topologies;
   llvm::SmallVector<wafer::ExecutionMeshOp, 2> meshes;
   if (mlir::failed(collectExecutionFacts(module, topologies, meshes)))
@@ -653,7 +657,7 @@ materializeOrVerifyExactExecutionConfig(mlir::ModuleOp module,
     if (mlir::failed(manager.run(module)))
       return mlir::failure();
   }
-  return verifyExactExecutionConfig(module, config);
+  return verifyExactExecutionConfigInternal(module, config);
 }
 
 void eraseTargetTopologyAndExecutionMesh(mlir::ModuleOp module) {
@@ -793,9 +797,83 @@ bool publishDirectoryNoReplace(llvm::StringRef source,
 
 } // namespace
 
-mlir::LogicalResult compileToGroupedProgram(
+mlir::LogicalResult
+detail::verifyExactExecutionConfig(mlir::ModuleOp module,
+                                   const ExecutionConfig &executionConfig) {
+  return verifyExactExecutionConfigInternal(module, executionConfig);
+}
+
+static llvm::Expected<ExecutableBundle>
+compileGroupedProgramToExecutableBundleImpl(
+    llvm::StringRef groupedProgramDirectory, ExecutionConfig executionConfig,
+    llvm::raw_ostream &diagnostics,
+    std::optional<int64_t> failAfterLogicalRank) {
+  auto fail = [&](llvm::StringRef message) -> llvm::Error {
+    reject(diagnostics, message);
+    return llvm::createStringError(llvm::errc::invalid_argument, "%s",
+                                   message.str().c_str());
+  };
+  if (groupedProgramDirectory.empty())
+    return fail("grouped program directory must not be empty");
+  if (!isDirectory(groupedProgramDirectory))
+    return fail("grouped program path is not a directory");
+  if (validateRegularDirectoryTree(groupedProgramDirectory, diagnostics))
+    return llvm::createStringError(llvm::errc::invalid_argument,
+                                   "grouped program tree is not regular");
+
+  mlir::DialectRegistry registry;
+  registerCompilationDialects(registry);
+  auto context = std::make_shared<mlir::MLIRContext>(registry);
+  context->loadAllAvailableDialects();
+  mlir::ScopedDiagnosticHandler diagnosticHandler(
+      context.get(), [&](mlir::Diagnostic &diagnostic) {
+        diagnostic.print(diagnostics);
+        diagnostics << "\n";
+        return mlir::success();
+      });
+
+  mlir::OwningOpRef<mlir::ModuleOp> groupedModule =
+      parseProgramDirectoryModule(groupedProgramDirectory, *context);
+  if (!groupedModule)
+    return fail("failed to parse verified grouped program module");
+  if (mlir::failed(
+          verifyExactExecutionConfigInternal(*groupedModule, executionConfig)))
+    return fail("grouped program does not match ExecutionConfig");
+  if (!hasPostSpmdMarker(*groupedModule, groupedProgramDirectory))
+    return fail("grouped program is missing its post-SPMD marker");
+  if (containsDialectSemantics(*groupedModule, "stablehlo") ||
+      containsDialectSemantics(*groupedModule, "sdy") ||
+      mlir::failed(verifyGroupedStageOperations(*groupedModule)))
+    return fail("input is not a verified grouped-program artifact");
+
+  frontend::FrontendProgramVerificationResult program;
+  if (mlir::failed(verifyProgramDirectoryMetadata(
+          *groupedModule, groupedProgramDirectory, diagnostics, &program)))
+    return fail("grouped program metadata verification failed");
+  if (program.logicalRankCount != executionConfig.getRankCount())
+    return fail("typed program rank domain does not match ExecutionConfig");
+  if (program.parameters.size() != program.programParameterCount ||
+      program.constants.size() != program.programConstantCount)
+    return fail("typed program resources do not cover all parameters and "
+                "constants");
+
+  return detail::buildExecutableBundle(context, *groupedModule,
+                                       std::move(program), executionConfig,
+                                       diagnostics, failAfterLogicalRank);
+}
+
+llvm::Expected<ExecutableBundle>
+compileGroupedProgramToExecutableBundle(llvm::StringRef groupedProgramDirectory,
+                                        ExecutionConfig executionConfig,
+                                        llvm::raw_ostream &diagnostics) {
+  return compileGroupedProgramToExecutableBundleImpl(
+      groupedProgramDirectory, executionConfig, diagnostics, std::nullopt);
+}
+
+static mlir::LogicalResult compileProgramImpl(
     CompilationRequest request, llvm::StringRef outputProgramDirectory,
-    llvm::StringRef xlaSpmdPartitionerHelper, llvm::raw_ostream &diagnostics) {
+    llvm::StringRef xlaSpmdPartitionerHelper, llvm::raw_ostream &diagnostics,
+    std::optional<int64_t> failAfterLogicalRank) {
 #if !defined(WAFER_ENABLE_STABLEHLO) || !defined(WAFER_ENABLE_SHARDY)
   (void)request;
   (void)outputProgramDirectory;
@@ -1022,8 +1100,8 @@ mlir::LogicalResult compileToGroupedProgram(
       parseProgramDirectoryModule(groupedProgram, context);
   if (!verifiedGroupedModule)
     return mlir::failure();
-  if (mlir::failed(verifyExactExecutionConfig(*verifiedGroupedModule,
-                                              request.getExecutionConfig())))
+  if (mlir::failed(verifyExactExecutionConfigInternal(
+          *verifiedGroupedModule, request.getExecutionConfig())))
     return mlir::failure();
   if (!hasPostSpmdMarker(*verifiedGroupedModule, groupedProgram)) {
     reject(diagnostics,
@@ -1041,10 +1119,42 @@ mlir::LogicalResult compileToGroupedProgram(
                                                   groupedProgram, diagnostics)))
     return mlir::failure();
 
+  llvm::Expected<ExecutableBundle> executableBundle =
+      compileGroupedProgramToExecutableBundleImpl(
+          groupedProgram, request.getExecutionConfig(), diagnostics,
+          failAfterLogicalRank);
+  if (!executableBundle) {
+    llvm::consumeError(executableBundle.takeError());
+    return mlir::failure();
+  }
+
   if (publishDirectoryNoReplace(groupedProgram, canonicalOutput, diagnostics))
     return mlir::failure();
   return mlir::success();
 #endif
+}
+
+mlir::LogicalResult compileProgram(CompilationRequest request,
+                                   llvm::StringRef outputProgramDirectory,
+                                   llvm::StringRef xlaSpmdPartitionerHelper,
+                                   llvm::raw_ostream &diagnostics) {
+  return compileProgramImpl(std::move(request), outputProgramDirectory,
+                            xlaSpmdPartitionerHelper, diagnostics,
+                            std::nullopt);
+}
+
+mlir::LogicalResult testing::compileProgramWithRankFailure(
+    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper, int64_t failAfterLogicalRank,
+    llvm::raw_ostream &diagnostics) {
+  if (failAfterLogicalRank < 0 ||
+      failAfterLogicalRank >= request.getExecutionConfig().getRankCount()) {
+    reject(diagnostics, "test-only failure rank is outside ExecutionConfig");
+    return mlir::failure();
+  }
+  return compileProgramImpl(std::move(request), outputProgramDirectory,
+                            xlaSpmdPartitionerHelper, diagnostics,
+                            failAfterLogicalRank);
 }
 
 } // namespace wafer::compiler
