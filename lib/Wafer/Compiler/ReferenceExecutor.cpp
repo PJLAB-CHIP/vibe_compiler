@@ -5,8 +5,10 @@
 #include "Wafer/IR/WaferDialect.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Value.h"
 
@@ -14,6 +16,7 @@
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/APSInt.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Errc.h"
@@ -48,6 +51,8 @@ struct ReferenceProgram::Impl {
     Cast,
     Constant,
     TileRegion,
+    If,
+    For,
     RDMA,
     WDMA,
     GatherScatter,
@@ -56,6 +61,8 @@ struct ReferenceProgram::Impl {
     Elementwise,
     Fill,
     LocalFence,
+    Branch,
+    CondBranch,
     Return,
   };
 
@@ -77,6 +84,8 @@ struct ReferenceProgram::Impl {
 
   struct BlockProgram;
 
+  struct ControlFlowProgram;
+
   struct Command {
     CommandKind kind = CommandKind::LocalFence;
     ValueId result = 0;
@@ -89,6 +98,19 @@ struct ReferenceProgram::Impl {
     std::vector<ValueId> results;
     std::vector<ValueId> blockArguments;
     std::shared_ptr<BlockProgram> body;
+    std::shared_ptr<BlockProgram> elseBody;
+    ValueId condition = 0;
+    ValueId lowerBound = 0;
+    ValueId upperBound = 0;
+    ValueId step = 0;
+    ValueId inductionArgument = 0;
+    std::vector<ValueId> iterInputs;
+    std::vector<ValueId> iterArguments;
+    std::vector<ValueId> trueInputs;
+    std::vector<ValueId> falseInputs;
+    uint32_t successor = 0;
+    uint32_t trueSuccessor = 0;
+    uint32_t falseSuccessor = 0;
     mlir::MemRefType type;
     int64_t physicalBytes = 0;
     int64_t viewDelta = 0;
@@ -115,7 +137,12 @@ struct ReferenceProgram::Impl {
   };
 
   struct BlockProgram {
+    std::vector<ValueId> arguments;
     std::vector<Command> commands;
+  };
+
+  struct ControlFlowProgram {
+    std::vector<BlockProgram> blocks;
   };
 
   std::shared_ptr<mlir::MLIRContext> contextOwner;
@@ -123,7 +150,7 @@ struct ReferenceProgram::Impl {
   std::vector<RankProgramBinding> programBindings;
   std::vector<ValueId> entryArguments;
   std::vector<mlir::MemRefType> entryArgumentTypes;
-  BlockProgram entry;
+  ControlFlowProgram entry;
   size_t projectedOperationCount = 0;
 };
 
@@ -432,27 +459,43 @@ public:
       : program(program) {}
 
   llvm::Error project(mlir::func::FuncOp entry) {
-    if (!entry.getBody().hasOneBlock())
-      return unsupported("entry requires unsupported multi-block control flow");
-    mlir::Block &block = entry.getBody().front();
-    for (mlir::BlockArgument argument : block.getArguments()) {
+    if (entry.getBody().empty())
+      return unsupported("entry function has no body");
+    if (entry.getBody().getBlocks().size() >
+        std::numeric_limits<uint32_t>::max())
+      return unsupported("entry CFG block id space is exhausted");
+    program.entry.blocks.resize(entry.getBody().getBlocks().size());
+    for (auto [index, block] : llvm::enumerate(entry.getBody())) {
+      blocks[&block] = static_cast<uint32_t>(index);
+      auto &projected = program.entry.blocks[index];
+      for (mlir::BlockArgument argument : block.getArguments()) {
+        auto value = define(argument);
+        if (!value)
+          return value.takeError();
+        projected.arguments.push_back(*value);
+      }
+    }
+    for (mlir::Block &block : entry.getBody())
+      for (mlir::Operation &operation : block)
+        for (mlir::Value result : operation.getResults())
+          if (llvm::Error error = predeclare(result))
+            return error;
+
+    mlir::Block &entryBlock = entry.getBody().front();
+    for (mlir::BlockArgument argument : entryBlock.getArguments()) {
       auto type = mlir::dyn_cast<mlir::MemRefType>(argument.getType());
       if (!type)
         return unsupported("entry argument is not a memref");
-      auto value = define(argument);
-      if (!value)
-        return value.takeError();
-      program.entryArguments.push_back(*value);
+      program.entryArguments.push_back(values.lookup(argument));
       program.entryArgumentTypes.push_back(type);
     }
-    if (llvm::Error error = projectBlock(block, program.entry))
+    for (auto [index, block] : llvm::enumerate(entry.getBody()))
+      if (llvm::Error error = projectBlock(block, program.entry.blocks[index]))
+        return error;
+    if (!pendingDefinitions.empty())
+      return unsupported("entry CFG contains an unprojected SSA definition");
+    if (llvm::Error error = validateEntryCFG())
       return error;
-    if (program.entry.commands.empty() ||
-        program.entry.commands.back().kind !=
-            ReferenceProgram::Impl::CommandKind::Return)
-      return unsupported("entry has no projected return terminator");
-    if (program.entry.commands.back().inputs.size() != entry.getNumResults())
-      return unsupported("entry return arity disagrees with function type");
     return validateProgramBindings(entry);
   }
 
@@ -462,13 +505,27 @@ private:
   using ValueId = ReferenceProgram::Impl::ValueId;
 
   llvm::Expected<ValueId> define(mlir::Value value) {
-    if (values.count(value))
-      return unsupported("SSA value is projected more than once");
+    auto existing = values.find(value);
+    if (existing != values.end()) {
+      if (!pendingDefinitions.erase(value))
+        return unsupported("SSA value is projected more than once");
+      return existing->second;
+    }
     if (nextValue == std::numeric_limits<ValueId>::max())
       return unsupported("reference value id space is exhausted");
     ValueId id = nextValue++;
     values[value] = id;
     return id;
+  }
+
+  llvm::Error predeclare(mlir::Value value) {
+    if (values.count(value))
+      return unsupported("SSA value is declared more than once");
+    if (nextValue == std::numeric_limits<ValueId>::max())
+      return unsupported("reference value id space is exhausted");
+    values[value] = nextValue++;
+    pendingDefinitions.insert(value);
+    return llvm::Error::success();
   }
 
   llvm::Expected<ValueId> use(mlir::Value value) const {
@@ -585,6 +642,95 @@ private:
           command.scalarValue.integerIsUnsigned = type && type.isUnsigned();
         } else {
           return unsupported("non-scalar arith.constant");
+        }
+      } else if (auto ifOp = mlir::dyn_cast<mlir::scf::IfOp>(operation)) {
+        if (!ifOp.getThenRegion().hasOneBlock() ||
+            (!ifOp.getElseRegion().empty() &&
+             !ifOp.getElseRegion().hasOneBlock()))
+          return unsupported("scf.if requires single-block regions");
+        if (!ifOp.getCondition().getType().isInteger(1))
+          return unsupported("scf.if condition is not i1");
+        auto condition = use(ifOp.getCondition());
+        if (!condition)
+          return condition.takeError();
+        command.kind = CommandKind::If;
+        command.condition = *condition;
+        command.body = std::make_shared<ReferenceProgram::Impl::BlockProgram>();
+        if (llvm::Error error =
+                projectBlock(ifOp.getThenRegion().front(), *command.body))
+          return error;
+        if (command.body->commands.empty() ||
+            command.body->commands.back().kind != CommandKind::Return ||
+            command.body->commands.back().inputs.size() != ifOp.getNumResults())
+          return unsupported("scf.if then yield arity is not projectable");
+        if (!ifOp.getElseRegion().empty()) {
+          command.elseBody =
+              std::make_shared<ReferenceProgram::Impl::BlockProgram>();
+          if (llvm::Error error =
+                  projectBlock(ifOp.getElseRegion().front(), *command.elseBody))
+            return error;
+          if (command.elseBody->commands.empty() ||
+              command.elseBody->commands.back().kind != CommandKind::Return ||
+              command.elseBody->commands.back().inputs.size() !=
+                  ifOp.getNumResults())
+            return unsupported("scf.if else yield arity is not projectable");
+        } else if (ifOp.getNumResults() != 0) {
+          return unsupported("result-producing scf.if has no else region");
+        }
+        for (mlir::Value resultValue : ifOp.getResults()) {
+          auto result = define(resultValue);
+          if (!result)
+            return result.takeError();
+          command.results.push_back(*result);
+        }
+      } else if (auto forOp = mlir::dyn_cast<mlir::scf::ForOp>(operation)) {
+        if (!forOp.getRegion().hasOneBlock())
+          return unsupported("scf.for requires a single-block body");
+        auto lower = use(forOp.getLowerBound());
+        auto upper = use(forOp.getUpperBound());
+        auto step = use(forOp.getStep());
+        if (!lower)
+          return lower.takeError();
+        if (!upper)
+          return upper.takeError();
+        if (!step)
+          return step.takeError();
+        command.kind = CommandKind::For;
+        command.lowerBound = *lower;
+        command.upperBound = *upper;
+        command.step = *step;
+        for (mlir::Value init : forOp.getInitArgs()) {
+          auto value = use(init);
+          if (!value)
+            return value.takeError();
+          command.iterInputs.push_back(*value);
+        }
+        mlir::Block &body = forOp.getRegion().front();
+        if (body.getNumArguments() != 1 + forOp.getInitArgs().size())
+          return unsupported("scf.for body argument arity is not projectable");
+        auto induction = define(body.getArgument(0));
+        if (!induction)
+          return induction.takeError();
+        command.inductionArgument = *induction;
+        for (mlir::BlockArgument argument : body.getArguments().drop_front()) {
+          auto value = define(argument);
+          if (!value)
+            return value.takeError();
+          command.iterArguments.push_back(*value);
+        }
+        command.body = std::make_shared<ReferenceProgram::Impl::BlockProgram>();
+        if (llvm::Error error = projectBlock(body, *command.body))
+          return error;
+        if (command.body->commands.empty() ||
+            command.body->commands.back().kind != CommandKind::Return ||
+            command.body->commands.back().inputs.size() !=
+                forOp.getNumResults())
+          return unsupported("scf.for yield arity is not projectable");
+        for (mlir::Value resultValue : forOp.getResults()) {
+          auto result = define(resultValue);
+          if (!result)
+            return result.takeError();
+          command.results.push_back(*result);
         }
       } else if (auto tile = mlir::dyn_cast<wafer::TileRegionOp>(operation)) {
         if (!tile.getBody().hasOneBlock())
@@ -807,8 +953,64 @@ private:
         command.scalar = *scalar;
       } else if (mlir::isa<wafer::SyncLocalFenceOp>(operation)) {
         command.kind = CommandKind::LocalFence;
-      } else if (mlir::isa<wafer::TileYieldOp, mlir::func::ReturnOp>(
-                     operation)) {
+      } else if (auto branch = mlir::dyn_cast<mlir::cf::BranchOp>(operation)) {
+        auto target = blocks.find(branch.getDest());
+        if (target == blocks.end())
+          return unsupported("cf.br targets a block outside entry CFG");
+        if (branch.getDestOperands().size() !=
+                branch.getDest()->getNumArguments() ||
+            !llvm::equal(branch.getDestOperands().getTypes(),
+                         branch.getDest()->getArgumentTypes()))
+          return unsupported("cf.br successor operands disagree with block");
+        command.kind = CommandKind::Branch;
+        command.successor = target->second;
+        for (mlir::Value operand : branch.getDestOperands()) {
+          auto id = use(operand);
+          if (!id)
+            return id.takeError();
+          command.inputs.push_back(*id);
+        }
+        sawTerminator = true;
+      } else if (auto branch =
+                     mlir::dyn_cast<mlir::cf::CondBranchOp>(operation)) {
+        auto trueTarget = blocks.find(branch.getTrueDest());
+        auto falseTarget = blocks.find(branch.getFalseDest());
+        if (trueTarget == blocks.end() || falseTarget == blocks.end())
+          return unsupported("cf.cond_br targets a block outside entry CFG");
+        if (!branch.getCondition().getType().isInteger(1))
+          return unsupported("cf.cond_br condition is not i1");
+        if (branch.getTrueDestOperands().size() !=
+                branch.getTrueDest()->getNumArguments() ||
+            branch.getFalseDestOperands().size() !=
+                branch.getFalseDest()->getNumArguments() ||
+            !llvm::equal(branch.getTrueDestOperands().getTypes(),
+                         branch.getTrueDest()->getArgumentTypes()) ||
+            !llvm::equal(branch.getFalseDestOperands().getTypes(),
+                         branch.getFalseDest()->getArgumentTypes()))
+          return unsupported(
+              "cf.cond_br successor operands disagree with block");
+        auto condition = use(branch.getCondition());
+        if (!condition)
+          return condition.takeError();
+        command.kind = CommandKind::CondBranch;
+        command.condition = *condition;
+        command.trueSuccessor = trueTarget->second;
+        command.falseSuccessor = falseTarget->second;
+        for (mlir::Value operand : branch.getTrueDestOperands()) {
+          auto id = use(operand);
+          if (!id)
+            return id.takeError();
+          command.trueInputs.push_back(*id);
+        }
+        for (mlir::Value operand : branch.getFalseDestOperands()) {
+          auto id = use(operand);
+          if (!id)
+            return id.takeError();
+          command.falseInputs.push_back(*id);
+        }
+        sawTerminator = true;
+      } else if (mlir::isa<wafer::TileYieldOp, mlir::scf::YieldOp,
+                           mlir::func::ReturnOp>(operation)) {
         command.kind = CommandKind::Return;
         for (mlir::Value operand : operation.getOperands()) {
           auto id = use(operand);
@@ -816,6 +1018,10 @@ private:
             return id.takeError();
           command.inputs.push_back(*id);
         }
+        if (mlir::isa<mlir::func::ReturnOp>(operation) &&
+            command.inputs.size() !=
+                operation.getParentOfType<mlir::func::FuncOp>().getNumResults())
+          return unsupported("entry return arity disagrees with function type");
         sawTerminator = true;
       } else {
         return unsupported(
@@ -899,8 +1105,55 @@ private:
     return llvm::Error::success();
   }
 
+  llvm::Error validateEntryCFG() {
+    llvm::SmallVector<uint8_t> state(program.entry.blocks.size(), 0);
+    auto visit = [&](auto &&self, uint32_t index) -> llvm::Error {
+      if (index >= program.entry.blocks.size())
+        return unsupported("CFG successor is outside projected block graph");
+      if (state[index] == 1)
+        return unsupported("cyclic CFG is unsupported; use structured scf.for");
+      if (state[index] == 2)
+        return llvm::Error::success();
+      state[index] = 1;
+      const auto &block = program.entry.blocks[index];
+      if (block.commands.empty())
+        return unsupported("CFG block has no projected terminator");
+      const Command &terminator = block.commands.back();
+      auto visitSuccessor = [&](uint32_t successor,
+                                llvm::ArrayRef<ValueId> inputs) -> llvm::Error {
+        if (successor >= program.entry.blocks.size())
+          return unsupported("CFG successor is outside projected block graph");
+        if (inputs.size() != program.entry.blocks[successor].arguments.size())
+          return unsupported("CFG successor operand arity mismatch");
+        return self(self, successor);
+      };
+      if (terminator.kind == CommandKind::Branch) {
+        if (llvm::Error error =
+                visitSuccessor(terminator.successor, terminator.inputs))
+          return error;
+      } else if (terminator.kind == CommandKind::CondBranch) {
+        if (llvm::Error error =
+                visitSuccessor(terminator.trueSuccessor, terminator.trueInputs))
+          return error;
+        if (llvm::Error error = visitSuccessor(terminator.falseSuccessor,
+                                               terminator.falseInputs))
+          return error;
+      } else if (terminator.kind != CommandKind::Return) {
+        return unsupported("CFG block has no branch or return terminator");
+      }
+      state[index] = 2;
+      return llvm::Error::success();
+    };
+    for (uint32_t index = 0; index < program.entry.blocks.size(); ++index)
+      if (llvm::Error error = visit(visit, index))
+        return error;
+    return llvm::Error::success();
+  }
+
   ReferenceProgram::Impl &program;
   llvm::DenseMap<mlir::Value, ValueId> values;
+  llvm::DenseSet<mlir::Value> pendingDefinitions;
+  llvm::DenseMap<mlir::Block *, uint32_t> blocks;
   ValueId nextValue = 0;
 };
 
@@ -1069,7 +1322,7 @@ public:
   run(llvm::ArrayRef<ReferenceInputBinding> inputs) {
     if (llvm::Error error = bindEntryArguments(inputs))
       return std::move(error);
-    auto returned = executeBlock(program.entry);
+    auto returned = executeControlFlow(program.entry);
     if (!returned)
       return returned.takeError();
 
@@ -1080,8 +1333,10 @@ public:
       if (binding.index < 0 ||
           binding.index >= static_cast<int64_t>(returned->size()))
         return invalid("output binding index is outside entry results");
-      auto tensor = exportTensor((*returned)[binding.index], binding.dtype,
-                                 binding.localShape);
+      auto buffer = lookup((*returned)[binding.index]);
+      if (!buffer)
+        return buffer.takeError();
+      auto tensor = exportTensor(*buffer, binding.dtype, binding.localShape);
       if (!tensor)
         return tensor.takeError();
       outputs.push_back({binding.index, std::move(*tensor)});
@@ -1095,6 +1350,19 @@ private:
   using CommandKind = ReferenceProgram::Impl::CommandKind;
   using Scalar = ReferenceProgram::Impl::Scalar;
   using ValueId = ReferenceProgram::Impl::ValueId;
+
+  struct RuntimeValue {
+    std::optional<BufferView> buffer;
+    std::optional<Scalar> scalar;
+  };
+
+  enum class TransferKind { Return, Branch };
+
+  struct ControlTransfer {
+    TransferKind kind = TransferKind::Return;
+    uint32_t successor = 0;
+    std::vector<ValueId> inputs;
+  };
 
   llvm::Error bindEntryArguments(llvm::ArrayRef<ReferenceInputBinding> inputs) {
     llvm::SmallVector<bool> used(inputs.size(), false);
@@ -1184,7 +1452,39 @@ private:
     return ReferenceTensor::create(dtype, shape, compact);
   }
 
-  llvm::Expected<std::vector<BufferView>>
+  llvm::Expected<std::vector<ValueId>> executeControlFlow(
+      const ReferenceProgram::Impl::ControlFlowProgram &controlFlow) {
+    if (controlFlow.blocks.empty())
+      return invalid("projected entry CFG has no blocks");
+    uint32_t current = 0;
+    while (true) {
+      if (current >= controlFlow.blocks.size())
+        return invalid("projected CFG successor is outside block graph");
+      auto transfer = executeBlock(controlFlow.blocks[current]);
+      if (!transfer)
+        return transfer.takeError();
+      if (transfer->kind == TransferKind::Return)
+        return std::move(transfer->inputs);
+      if (transfer->successor >= controlFlow.blocks.size())
+        return invalid("projected branch successor is outside block graph");
+      const auto &arguments = controlFlow.blocks[transfer->successor].arguments;
+      if (llvm::Error error = assignValues(arguments, transfer->inputs))
+        return std::move(error);
+      current = transfer->successor;
+    }
+  }
+
+  llvm::Expected<std::vector<ValueId>>
+  executeStructuredBlock(const ReferenceProgram::Impl::BlockProgram &block) {
+    auto transfer = executeBlock(block);
+    if (!transfer)
+      return transfer.takeError();
+    if (transfer->kind != TransferKind::Return)
+      return invalid("structured region produced a CFG branch");
+    return std::move(transfer->inputs);
+  }
+
+  llvm::Expected<ControlTransfer>
   executeBlock(const ReferenceProgram::Impl::BlockProgram &block) {
     for (const Command &command : block.commands) {
       switch (command.kind) {
@@ -1218,20 +1518,80 @@ private:
       case CommandKind::TileRegion: {
         if (command.inputs.size() != command.blockArguments.size())
           return invalid("projected tile region argument arity mismatch");
-        for (auto [argument, input] :
-             llvm::zip_equal(command.blockArguments, command.inputs)) {
-          auto found = lookup(input);
-          if (!found)
-            return found.takeError();
-          buffers[argument] = *found;
-        }
-        auto yielded = executeBlock(*command.body);
+        if (llvm::Error error =
+                assignValues(command.blockArguments, command.inputs))
+          return std::move(error);
+        auto yielded = executeStructuredBlock(*command.body);
         if (!yielded)
           return yielded.takeError();
         if (yielded->size() != command.results.size())
           return invalid("projected tile region result arity mismatch");
-        for (auto [result, value] : llvm::zip_equal(command.results, *yielded))
-          buffers[result] = value;
+        if (llvm::Error error = assignValues(command.results, *yielded))
+          return std::move(error);
+        break;
+      }
+      case CommandKind::If: {
+        auto condition = lookupBoolean(command.condition);
+        if (!condition)
+          return condition.takeError();
+        std::vector<ValueId> yielded;
+        if (*condition) {
+          auto values = executeStructuredBlock(*command.body);
+          if (!values)
+            return values.takeError();
+          yielded = std::move(*values);
+        } else if (command.elseBody) {
+          auto values = executeStructuredBlock(*command.elseBody);
+          if (!values)
+            return values.takeError();
+          yielded = std::move(*values);
+        }
+        if (yielded.size() != command.results.size())
+          return invalid("projected scf.if result arity mismatch");
+        if (llvm::Error error = assignValues(command.results, yielded))
+          return std::move(error);
+        break;
+      }
+      case CommandKind::For: {
+        auto lower = lookupSignedInteger(command.lowerBound);
+        auto upper = lookupSignedInteger(command.upperBound);
+        auto step = lookupSignedInteger(command.step);
+        if (!lower)
+          return lower.takeError();
+        if (!upper)
+          return upper.takeError();
+        if (!step)
+          return step.takeError();
+        if (*step <= 0)
+          return invalid("projected scf.for requires a positive step");
+        auto initial = readValues(command.iterInputs);
+        if (!initial)
+          return initial.takeError();
+        std::vector<RuntimeValue> carried = std::move(*initial);
+        for (int64_t induction = *lower; induction < *upper;) {
+          auto boundScalar = scalars.find(command.lowerBound);
+          if (boundScalar == scalars.end() || !boundScalar->second.integer)
+            return invalid("projected scf.for bound scalar is unavailable");
+          unsigned width = boundScalar->second.integer->getBitWidth();
+          Scalar inductionValue;
+          inductionValue.integer = llvm::APInt(
+              width, static_cast<uint64_t>(induction), /*isSigned=*/true);
+          scalars[command.inductionArgument] = std::move(inductionValue);
+          if (llvm::Error error = writeValues(command.iterArguments, carried))
+            return std::move(error);
+          auto yielded = executeStructuredBlock(*command.body);
+          if (!yielded)
+            return yielded.takeError();
+          auto next = readValues(*yielded);
+          if (!next)
+            return next.takeError();
+          carried = std::move(*next);
+          if (induction > std::numeric_limits<int64_t>::max() - *step)
+            return invalid("projected scf.for induction overflows int64");
+          induction += *step;
+        }
+        if (llvm::Error error = writeValues(command.results, carried))
+          return std::move(error);
         break;
       }
       case CommandKind::RDMA:
@@ -1264,19 +1624,91 @@ private:
         break;
       case CommandKind::LocalFence:
         break;
-      case CommandKind::Return: {
-        std::vector<BufferView> result;
-        for (ValueId value : command.inputs) {
-          auto found = lookup(value);
-          if (!found)
-            return found.takeError();
-          result.push_back(*found);
-        }
-        return result;
+      case CommandKind::Branch:
+        return ControlTransfer{TransferKind::Branch, command.successor,
+                               command.inputs};
+      case CommandKind::CondBranch: {
+        auto condition = lookupBoolean(command.condition);
+        if (!condition)
+          return condition.takeError();
+        return *condition
+                   ? ControlTransfer{TransferKind::Branch,
+                                     command.trueSuccessor, command.trueInputs}
+                   : ControlTransfer{TransferKind::Branch,
+                                     command.falseSuccessor,
+                                     command.falseInputs};
       }
+      case CommandKind::Return:
+        return ControlTransfer{TransferKind::Return, 0, command.inputs};
       }
     }
-    return invalid("projected block has no return command");
+    return invalid("projected block has no terminator command");
+  }
+
+  llvm::Expected<RuntimeValue> readValue(ValueId value) const {
+    auto buffer = buffers.find(value);
+    auto scalar = scalars.find(value);
+    if (buffer != buffers.end() && scalar != scalars.end())
+      return invalid("projected value is both buffer and scalar");
+    if (buffer != buffers.end())
+      return RuntimeValue{buffer->second, std::nullopt};
+    if (scalar != scalars.end())
+      return RuntimeValue{std::nullopt, scalar->second};
+    return invalid("projected runtime value is unavailable");
+  }
+
+  llvm::Expected<std::vector<RuntimeValue>>
+  readValues(llvm::ArrayRef<ValueId> values) const {
+    std::vector<RuntimeValue> result;
+    result.reserve(values.size());
+    for (ValueId value : values) {
+      auto runtimeValue = readValue(value);
+      if (!runtimeValue)
+        return runtimeValue.takeError();
+      result.push_back(std::move(*runtimeValue));
+    }
+    return result;
+  }
+
+  llvm::Error writeValues(llvm::ArrayRef<ValueId> destinations,
+                          llvm::ArrayRef<RuntimeValue> values) {
+    if (destinations.size() != values.size())
+      return invalid("projected runtime value arity mismatch");
+    for (auto [destination, value] : llvm::zip_equal(destinations, values)) {
+      buffers.erase(destination);
+      scalars.erase(destination);
+      if (value.buffer)
+        buffers[destination] = *value.buffer;
+      else if (value.scalar)
+        scalars[destination] = *value.scalar;
+      else
+        return invalid("projected runtime value has no representation");
+    }
+    return llvm::Error::success();
+  }
+
+  llvm::Error assignValues(llvm::ArrayRef<ValueId> destinations,
+                           llvm::ArrayRef<ValueId> sources) {
+    auto values = readValues(sources);
+    if (!values)
+      return values.takeError();
+    return writeValues(destinations, *values);
+  }
+
+  llvm::Expected<bool> lookupBoolean(ValueId value) const {
+    auto found = scalars.find(value);
+    if (found == scalars.end() || !found->second.integer ||
+        found->second.integer->getBitWidth() != 1)
+      return invalid("projected branch condition is not an available i1");
+    return !found->second.integer->isZero();
+  }
+
+  llvm::Expected<int64_t> lookupSignedInteger(ValueId value) const {
+    auto found = scalars.find(value);
+    if (found == scalars.end() || !found->second.integer ||
+        found->second.integer->getBitWidth() > 64)
+      return invalid("projected loop bound is not an available integer");
+    return found->second.integer->getSExtValue();
   }
 
   llvm::Expected<BufferView> allocate(const Command &command) {

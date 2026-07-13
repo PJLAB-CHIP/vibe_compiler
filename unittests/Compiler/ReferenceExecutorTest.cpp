@@ -10,6 +10,7 @@
 #include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Bufferization/Transforms/FuncBufferizableOpInterfaceImpl.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Transforms/BufferizableOpInterfaceImpl.h"
@@ -103,9 +104,10 @@ TEST(ReferenceExecutorTest,
   mlir::DialectRegistry registry;
   registry.insert<mlir::arith::ArithDialect,
                   mlir::bufferization::BufferizationDialect,
-                  mlir::func::FuncDialect, mlir::linalg::LinalgDialect,
-                  mlir::math::MathDialect, mlir::memref::MemRefDialect,
-                  mlir::scf::SCFDialect, mlir::tensor::TensorDialect>();
+                  mlir::cf::ControlFlowDialect, mlir::func::FuncDialect,
+                  mlir::linalg::LinalgDialect, mlir::math::MathDialect,
+                  mlir::memref::MemRefDialect, mlir::scf::SCFDialect,
+                  mlir::tensor::TensorDialect>();
   wafer::registerAllDialects(registry);
   mlir::arith::registerBufferizableOpInterfaceExternalModels(registry);
   mlir::bufferization::func_ext::registerBufferizableOpInterfaceExternalModels(
@@ -408,6 +410,101 @@ module {
   dequantized.erase();
   quantized.erase();
 
+  mlir::Value originalAddRhs = add.getInputs()[1];
+  builder.setInsertionPoint(add);
+  auto branchCondition = builder.create<mlir::arith::ConstantIntOp>(
+      add.getLoc(), /*value=*/1, /*width=*/1);
+  auto selected = builder.create<mlir::scf::IfOp>(
+      add.getLoc(), mlir::TypeRange{addInputType}, branchCondition,
+      /*withElseRegion=*/true);
+  builder.setInsertionPointToEnd(selected.thenBlock());
+  builder.create<mlir::scf::YieldOp>(add.getLoc(), originalAddInput);
+  builder.setInsertionPointToEnd(selected.elseBlock());
+  builder.create<mlir::scf::YieldOp>(add.getLoc(), originalAddRhs);
+  add->setOperand(0, selected.getResult(0));
+
+  auto trueBranchProgram =
+      wafer::compiler::prepareReferenceRank(*bundle, /*logicalRank=*/0);
+  if (!trueBranchProgram)
+    FAIL() << llvm::toString(trueBranchProgram.takeError());
+  branchCondition->setAttr("value", builder.getBoolAttr(false));
+  auto immutableTrueBranch =
+      wafer::compiler::executeReferenceProgram(*trueBranchProgram, inputs);
+  if (!immutableTrueBranch)
+    FAIL() << llvm::toString(immutableTrueBranch.takeError());
+  EXPECT_EQ(
+      floatsOf(immutableTrueBranch->getOutputs().front().tensor.getBytes()),
+      std::vector<float>(8, 9.0f));
+  auto falseBranch =
+      wafer::compiler::executeReferenceRank(*bundle, /*logicalRank=*/0, inputs);
+  if (!falseBranch)
+    FAIL() << llvm::toString(falseBranch.takeError());
+  EXPECT_EQ(floatsOf(falseBranch->getOutputs().front().tensor.getBytes()),
+            std::vector<float>({16, 14, 12, 10, 8, 6, 4, 2}));
+  add->setOperand(0, originalAddInput);
+  selected.erase();
+  branchCondition.erase();
+
+  builder.setInsertionPoint(add);
+  auto loopTemp = builder.create<mlir::memref::AllocOp>(
+      add.getLoc(), addInputType, mlir::ValueRange{});
+  loopTemp->setAttr(wafer::kWaferSPMOffsetAttrName,
+                    wafer::SPMOffsetAttr::get(add.getContext(), 3 << 20));
+  auto lowerBound =
+      builder.create<mlir::arith::ConstantIndexOp>(add.getLoc(), 0);
+  auto upperBound =
+      builder.create<mlir::arith::ConstantIndexOp>(add.getLoc(), 0);
+  auto loopStep = builder.create<mlir::arith::ConstantIndexOp>(add.getLoc(), 1);
+  auto loop = builder.create<mlir::scf::ForOp>(
+      add.getLoc(), lowerBound, upperBound, loopStep,
+      mlir::ValueRange{originalAddInput});
+  if (!loop.getBody()->empty())
+    loop.getBody()->back().erase();
+  builder.setInsertionPointToEnd(loop.getBody());
+  builder.create<wafer::InstrElementwiseOp>(
+      add.getLoc(), wafer::InstrElementwiseKind::Add,
+      mlir::ValueRange{loop.getRegionIterArg(0), originalAddRhs}, loopTemp);
+  builder.create<mlir::scf::YieldOp>(add.getLoc(), loopTemp.getResult());
+  add->setOperand(0, loop.getResult(0));
+
+  const std::vector<std::vector<float>> loopExpected = {
+      std::vector<float>(8, 9.0f),
+      {17, 16, 15, 14, 13, 12, 11, 10},
+      {25, 23, 21, 19, 17, 15, 13, 11},
+  };
+  for (int64_t tripCount = 0; tripCount <= 2; ++tripCount) {
+    upperBound->setAttr("value", builder.getIndexAttr(tripCount));
+    auto loopProgram =
+        wafer::compiler::prepareReferenceRank(*bundle, /*logicalRank=*/0);
+    if (!loopProgram)
+      FAIL() << llvm::toString(loopProgram.takeError());
+    auto loopResult =
+        wafer::compiler::executeReferenceProgram(*loopProgram, inputs);
+    if (!loopResult)
+      FAIL() << llvm::toString(loopResult.takeError());
+    EXPECT_EQ(floatsOf(loopResult->getOutputs().front().tensor.getBytes()),
+              loopExpected[tripCount]);
+  }
+  upperBound->setAttr("value", builder.getIndexAttr(2));
+  auto immutableLoopProgram =
+      wafer::compiler::prepareReferenceRank(*bundle, /*logicalRank=*/0);
+  if (!immutableLoopProgram)
+    FAIL() << llvm::toString(immutableLoopProgram.takeError());
+  upperBound->setAttr("value", builder.getIndexAttr(0));
+  auto immutableLoopResult =
+      wafer::compiler::executeReferenceProgram(*immutableLoopProgram, inputs);
+  if (!immutableLoopResult)
+    FAIL() << llvm::toString(immutableLoopResult.takeError());
+  EXPECT_EQ(
+      floatsOf(immutableLoopResult->getOutputs().front().tensor.getBytes()),
+      loopExpected[2]);
+  add->setOperand(0, originalAddInput);
+  loop.erase();
+  loopStep.erase();
+  upperBound.erase();
+  lowerBound.erase();
+  loopTemp.erase();
+
   mlir::memref::AllocOp spmAlloc;
   bundle->getRankExecutables().front().getModule().walk(
       [&](mlir::memref::AllocOp operation) {
@@ -433,6 +530,63 @@ module {
   ASSERT_FALSE(static_cast<bool>(badDType));
   EXPECT_NE(llvm::toString(badDType.takeError()).find("typed rank binding"),
             std::string::npos);
+
+  wafer::TileRegionOp tile = add->getParentOfType<wafer::TileRegionOp>();
+  ASSERT_TRUE(tile);
+  mlir::Value originalTileInput = tile.getInputs().front();
+  mlir::Value alternateTileInput = tile.getInputs()[1];
+  mlir::Block *entryBlock = &entry.getBody().front();
+  mlir::Block *mergeBlock = entryBlock->splitBlock(tile);
+  mlir::Block *leftBlock =
+      builder.createBlock(&entry.getBody(), mlir::Region::iterator(mergeBlock));
+  mlir::Block *rightBlock =
+      builder.createBlock(&entry.getBody(), mlir::Region::iterator(mergeBlock));
+  mlir::BlockArgument forwarded =
+      mergeBlock->addArgument(originalTileInput.getType(), tile.getLoc());
+  tile->setOperand(0, forwarded);
+
+  builder.setInsertionPointToEnd(entryBlock);
+  auto cfgCondition = builder.create<mlir::arith::ConstantIntOp>(
+      entry.getLoc(), /*value=*/1, /*width=*/1);
+  builder.create<mlir::cf::CondBranchOp>(entry.getLoc(), cfgCondition,
+                                         leftBlock, mlir::ValueRange{},
+                                         rightBlock, mlir::ValueRange{});
+  builder.setInsertionPointToEnd(leftBlock);
+  auto leftBranch = builder.create<mlir::cf::BranchOp>(
+      entry.getLoc(), mergeBlock, mlir::ValueRange{originalTileInput});
+  builder.setInsertionPointToEnd(rightBlock);
+  builder.create<mlir::cf::BranchOp>(entry.getLoc(), mergeBlock,
+                                     mlir::ValueRange{alternateTileInput});
+
+  auto cfgInputs = roundingInputs;
+  auto trueCFGProgram =
+      wafer::compiler::prepareReferenceRank(*bundle, /*logicalRank=*/0);
+  if (!trueCFGProgram)
+    FAIL() << llvm::toString(trueCFGProgram.takeError());
+  cfgCondition->setAttr("value", builder.getBoolAttr(false));
+  auto immutableTrueCFG =
+      wafer::compiler::executeReferenceProgram(*trueCFGProgram, cfgInputs);
+  if (!immutableTrueCFG)
+    FAIL() << llvm::toString(immutableTrueCFG.takeError());
+  EXPECT_EQ(floatsOf(immutableTrueCFG->getOutputs().front().tensor.getBytes()),
+            floatsOf(cfgInputs[0].tensor.getBytes()));
+  auto falseCFG = wafer::compiler::executeReferenceRank(
+      *bundle, /*logicalRank=*/0, cfgInputs);
+  if (!falseCFG)
+    FAIL() << llvm::toString(falseCFG.takeError());
+  EXPECT_EQ(floatsOf(falseCFG->getOutputs().front().tensor.getBytes()),
+            std::vector<float>(8, 0.0f));
+
+  leftBranch.erase();
+  builder.setInsertionPointToEnd(leftBlock);
+  builder.create<mlir::cf::BranchOp>(entry.getLoc(), leftBlock,
+                                     mlir::ValueRange{});
+  auto cyclicCFG =
+      wafer::compiler::executeReferenceRank(*bundle, /*logicalRank=*/0, {});
+  ASSERT_FALSE(static_cast<bool>(cyclicCFG));
+  std::string cyclicMessage = llvm::toString(cyclicCFG.takeError());
+  EXPECT_NE(cyclicMessage.find("capability preflight"), std::string::npos);
+  EXPECT_NE(cyclicMessage.find("cyclic CFG"), std::string::npos);
 }
 
 TEST(ReferenceExecutorTest, RejectsMalformedCompactTensor) {
@@ -446,9 +600,10 @@ TEST(ReferenceExecutorTest, ExecutesSelectedResidualMlpSemantics) {
   mlir::DialectRegistry registry;
   registry.insert<mlir::arith::ArithDialect,
                   mlir::bufferization::BufferizationDialect,
-                  mlir::func::FuncDialect, mlir::linalg::LinalgDialect,
-                  mlir::math::MathDialect, mlir::memref::MemRefDialect,
-                  mlir::scf::SCFDialect, mlir::tensor::TensorDialect>();
+                  mlir::cf::ControlFlowDialect, mlir::func::FuncDialect,
+                  mlir::linalg::LinalgDialect, mlir::math::MathDialect,
+                  mlir::memref::MemRefDialect, mlir::scf::SCFDialect,
+                  mlir::tensor::TensorDialect>();
   wafer::registerAllDialects(registry);
   mlir::arith::registerBufferizableOpInterfaceExternalModels(registry);
   mlir::bufferization::func_ext::registerBufferizableOpInterfaceExternalModels(

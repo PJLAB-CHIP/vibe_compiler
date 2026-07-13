@@ -305,6 +305,20 @@ Pipeline position:
 - buffer/view引用来自SSA和accepted memref type/offset，不能从名字、文本或遍历序号恢复角色；
 - projection构造成功后执行阶段不再读取mutable MLIR，也不允许中途发现unsupported op后留下partial result。
 
+control-flow projection使用immutable function/block graph，不把region或CFG线性展开：
+
+- 每个function block、block argument、branch successor和successor operand各投影一次；`cf.br` / `cf.cond_br`执行时
+  按显式edge把runtime value绑定到successor block argument，不能按block存储顺序猜fallthrough；
+- 当前accepted stage保留SCF，因此CFG子集先闭合无环branch/merge；projection对所有block做cycle check，CFG cycle
+  在input import前拒绝，循环必须继续用可验证lb/ub/step和backedge的`scf.for`表达；
+- single-block `scf.if`保留then/else及yield/result关系，single-block `scf.for`保留lb/ub/step、induction variable、
+  iter_args/yield/result backedge；0/1/2 trip和false/true branch必须产生各自可观察结果；
+- condition、bound和induction variable走同一个typed scalar value-id通道，不能把常量文本或host loop counter作为
+  旁路协议；unsupported scalar producer在projection阶段整体拒绝；
+- 当前Q16 bundle builder仍以“module恰好一个func.func”选entry，虽然后端Q0支持direct non-recursive call，Q19因此
+  实际拿不到callee closure。direct-call不得用符号名特判或执行期回读module补洞；必须先把Q16/Q17收敛为“唯一typed
+  public entry + private non-recursive closure”的artifact合同，再接入同一function graph。该冲突是Q19明确未完成项。
+
 single-rank semantic engine最低子集：
 
 - DDR/SPM typed buffers和accepted offsets；
@@ -369,8 +383,13 @@ subview也经projection执行。进一步的convert checkpoint从typed
 `InstrConvertKind`投影非zero-point dtype pair，以APInt/APFloat执行integer/floating和floating/floating转换，
 RND_MODE 0..3的tie/方向case均通过；浮点到integer的NaN/Inf/越界显式失败，destination只在整条convert成功后写入。
 prepared program不受源op后续rounding mutation影响；stochastic和缺少数学公式证据的INT8 zero-point在缺失input前
-即返回capability failure。Q19仍未完成：除上述SCF/CFG/direct-call、layout property和非平凡differential外，还需
-zero-point/stochastic证据和覆盖全部accepted组合的capability矩阵。DTE multi-rank已拆给Q19.M，并等待Q16.T。
+即返回capability failure。control-flow checkpoint进一步把entry投影成显式immutable block graph：single-block
+`scf.if`/`scf.for`保留yield/result和iter_args backedge，acyclic `cf.br`/`cf.cond_br`按successor operands绑定block
+arguments；测试覆盖true/false、0/1/2 trip、loop-carried memref、CFG forwarding及projection后condition/bound mutation
+隔离，cyclic CFG在缺失input前失败。Q19仍未完成：direct-call需要先把Q16/Q17单函数限制收敛为唯一typed entry加
+private non-recursive closure；此外还需layout property、非平凡differential、zero-point/stochastic证据、覆盖全部
+accepted组合的capability矩阵，以及把已增长的executor projection/interpreter/numeric职责拆分。DTE multi-rank已拆给
+Q19.M，并等待Q16.T。
 当前transcendental仍使用host实现，也不属于已闭合的host-independent numeric gate。
 本批`check-wafer`新鲜执行33个C++ unit和230个lit（229 pass、1个feature-inverse unsupported），CTest 3/3通过；
 unsupported项仍是禁用importer feature的反向gate，不覆盖Q19 mandatory path。
