@@ -11,6 +11,182 @@
 
 extern int8_t *get_spm_memory_mapping(uint64_t offset);
 
+typedef struct {
+  uint32_t stride;
+  uint32_t iteration;
+} WaferDirectDTEStrideIteration;
+
+typedef struct {
+  uintptr_t src_addr;
+  uintptr_t dst_addr;
+  uint32_t length;
+  uint8_t remote_fsm_id;
+  uint8_t mode;
+  uint16_t dst_tile;
+  uint16_t tile_this;
+  uint16_t rsv;
+  WaferDirectDTEStrideIteration stride_iterations[3];
+  void *dte_node;
+} WaferDirectDTESendInfo;
+
+extern void direct_sync_init(int once_sync_num);
+extern void direct_sync_post(uint32_t tile_this, uint32_t tile_other);
+extern void direct_sync_wait(uint32_t tile_this, uint32_t tile_other);
+extern void *direct_fsm_monitor_init(int fsm_id, uintptr_t addr,
+                                     int packet_size, int packet_cnt);
+extern int direct_fsm_monitor_deinit(void *fsm_hd);
+extern void direct_fsm_monitor_receive(uint16_t tile_this,
+                                       uint16_t tile_other, void *fsm_hd);
+extern void *direct_dte_attach(uint32_t is_high_performance);
+extern int direct_dte_release(void *dte_node);
+extern int direct_dte_send_async(WaferDirectDTESendInfo *dte_info);
+extern int direct_dte_wait_done(WaferDirectDTESendInfo *dte_info);
+
+enum {
+  WAFER_DIRECT_DTE_SEND_EVENT = 0x100,
+  WAFER_DIRECT_DTE_RECV_EVENT_BASE = 0x200,
+  WAFER_DIRECT_DTE_MAX_RECEIVERS = 4,
+};
+
+typedef struct {
+  WaferDirectDTESendInfo info;
+  uint32_t is_high_performance;
+  bool active;
+} WaferDirectDTESenderState;
+
+typedef struct {
+  void *handle;
+  uint16_t local_tile;
+  uint16_t remote_tile;
+  bool active;
+} WaferDirectDTEReceiverState;
+
+static volatile uint32_t *wafer_direct_dte_status;
+static WaferDirectDTESenderState wafer_direct_dte_sender;
+static WaferDirectDTEReceiverState
+    wafer_direct_dte_receivers[WAFER_DIRECT_DTE_MAX_RECEIVERS];
+
+static void wafer_direct_dte_set_error(void) {
+  if (wafer_direct_dte_status)
+    *wafer_direct_dte_status = WAFER_TX81_DIRECT_DTE_STATUS_TRANSPORT_ERROR;
+}
+
+void wafer_tx81_direct_dte_begin(uint64_t status_addr, uint32_t rank_count) {
+  wafer_direct_dte_status = (volatile uint32_t *)(uintptr_t)status_addr;
+  wafer_direct_dte_sender.active = false;
+  for (uint32_t index = 0; index < WAFER_DIRECT_DTE_MAX_RECEIVERS; ++index)
+    wafer_direct_dte_receivers[index].active = false;
+  if (wafer_direct_dte_status)
+    *wafer_direct_dte_status = WAFER_TX81_DIRECT_DTE_STATUS_PENDING;
+  direct_sync_init((int)rank_count);
+}
+
+uint64_t wafer_tx81_direct_dte_send_prepare(
+    uint64_t src, uint64_t remote_dst, uint32_t byte_count,
+    uint32_t local_tile, uint32_t remote_tile, uint32_t remote_fsm_id,
+    uint32_t is_high_performance) {
+  if (wafer_direct_dte_sender.active || remote_fsm_id >= 4 ||
+      local_tile > UINT16_MAX || remote_tile > UINT16_MAX) {
+    wafer_direct_dte_set_error();
+    return 0;
+  }
+  WaferDirectDTESendInfo info = {0};
+  info.src_addr = (uintptr_t)src;
+  info.dst_addr = (uintptr_t)remote_dst;
+  info.length = byte_count;
+  info.remote_fsm_id = (uint8_t)remote_fsm_id;
+  info.mode = 0;
+  info.dst_tile = (uint16_t)remote_tile;
+  info.tile_this = (uint16_t)local_tile;
+  wafer_direct_dte_sender.info = info;
+  wafer_direct_dte_sender.is_high_performance = is_high_performance;
+  wafer_direct_dte_sender.active = true;
+  return WAFER_DIRECT_DTE_SEND_EVENT;
+}
+
+uint64_t wafer_tx81_direct_dte_recv_prepare(
+    uint64_t dst, uint32_t byte_count, uint32_t local_tile,
+    uint32_t remote_tile, uint32_t local_fsm_id) {
+  if (local_fsm_id >= WAFER_DIRECT_DTE_MAX_RECEIVERS ||
+      local_tile > UINT16_MAX || remote_tile > UINT16_MAX ||
+      byte_count > INT32_MAX) {
+    wafer_direct_dte_set_error();
+    return 0;
+  }
+  WaferDirectDTEReceiverState *receiver =
+      &wafer_direct_dte_receivers[local_fsm_id];
+  if (receiver->active) {
+    wafer_direct_dte_set_error();
+    return 0;
+  }
+  receiver->handle = direct_fsm_monitor_init(
+      (int)local_fsm_id, (uintptr_t)dst, (int)byte_count, 1);
+  if (!receiver->handle) {
+    wafer_direct_dte_set_error();
+    return 0;
+  }
+  receiver->local_tile = (uint16_t)local_tile;
+  receiver->remote_tile = (uint16_t)remote_tile;
+  receiver->active = true;
+  direct_sync_post(local_tile, remote_tile);
+  return WAFER_DIRECT_DTE_RECV_EVENT_BASE + local_fsm_id;
+}
+
+void wafer_tx81_direct_dte_wait(uint64_t event) {
+  if (event == WAFER_DIRECT_DTE_SEND_EVENT) {
+    if (!wafer_direct_dte_sender.active) {
+      wafer_direct_dte_set_error();
+      return;
+    }
+    WaferDirectDTESendInfo *info = &wafer_direct_dte_sender.info;
+    direct_sync_wait(info->tile_this, info->dst_tile);
+    info->dte_node =
+        direct_dte_attach(wafer_direct_dte_sender.is_high_performance);
+    if (!info->dte_node || direct_dte_send_async(info) != 0 ||
+        direct_dte_wait_done(info) != 0) {
+      wafer_direct_dte_set_error();
+    }
+    if (info->dte_node && direct_dte_release(info->dte_node) != 0)
+      wafer_direct_dte_set_error();
+    wafer_direct_dte_sender.active = false;
+    return;
+  }
+
+  if (event >= WAFER_DIRECT_DTE_RECV_EVENT_BASE &&
+      event < WAFER_DIRECT_DTE_RECV_EVENT_BASE +
+                  WAFER_DIRECT_DTE_MAX_RECEIVERS) {
+    uint32_t fsm_id = (uint32_t)(event - WAFER_DIRECT_DTE_RECV_EVENT_BASE);
+    WaferDirectDTEReceiverState *receiver =
+        &wafer_direct_dte_receivers[fsm_id];
+    if (!receiver->active) {
+      wafer_direct_dte_set_error();
+      return;
+    }
+    direct_fsm_monitor_receive(receiver->local_tile, receiver->remote_tile,
+                               receiver->handle);
+    if (direct_fsm_monitor_deinit(receiver->handle) != 0)
+      wafer_direct_dte_set_error();
+    receiver->active = false;
+    return;
+  }
+  wafer_direct_dte_set_error();
+}
+
+void wafer_tx81_direct_dte_finish(void) {
+  if (wafer_direct_dte_sender.active) {
+    wafer_direct_dte_set_error();
+    return;
+  }
+  for (uint32_t index = 0; index < WAFER_DIRECT_DTE_MAX_RECEIVERS; ++index)
+    if (wafer_direct_dte_receivers[index].active) {
+      wafer_direct_dte_set_error();
+      return;
+    }
+  if (wafer_direct_dte_status &&
+      *wafer_direct_dte_status == WAFER_TX81_DIRECT_DTE_STATUS_PENDING)
+    *wafer_direct_dte_status = WAFER_TX81_DIRECT_DTE_STATUS_SUCCESS;
+}
+
 static Data_Format wafer_format(uint32_t format) {
   return (Data_Format)format;
 }

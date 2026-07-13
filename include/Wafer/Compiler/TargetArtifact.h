@@ -25,6 +25,7 @@ enum class KernelABISlotRole {
   Constant,
   Output,
   Workspace,
+  TransportStatus,
 };
 
 struct KernelABISlot {

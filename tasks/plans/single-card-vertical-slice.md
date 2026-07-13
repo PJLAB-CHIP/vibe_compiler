@@ -46,7 +46,7 @@ Pipeline position:
 ## Checkpoint 2: Target Correctness
 
 状态：已完成。`check-wafer`新鲜执行25个C++ unit和225个lit（224 pass、1个feature-inverse
-unsupported），CTest 3/3通过；CRT conformance与104-symbol closure checker通过。
+unsupported），CTest 3/3通过；CRT conformance与109-symbol closure checker通过。
 
 - target lowering在mutation前preflight，并在clone上执行；临时拒绝尚不能结构保持的nested/multiblock/call。
 - 建立共享physical geometry与ABI narrowing检查，先覆盖RDMA/WDMA、DTE、convert、GEMM和shape-bearing family。
@@ -59,7 +59,7 @@ unsupported），CTest 3/3通过；CRT conformance与104-symbol closure checker�
 ## Checkpoint 3: Typed Grouped-Program Driver
 
 状态：已完成，对应Q15。`check-wafer`新鲜执行28个C++ unit和229个lit（228 pass、1个feature-inverse
-unsupported），CTest 3/3通过；dependency、IR organization、CRT conformance和104-symbol closure checks通过。
+unsupported），CTest 3/3通过；dependency、IR organization、CRT conformance和109-symbol closure checks通过。
 
 - 定义最小move-only `CompilationRequest`和factory-only `ExecutionConfig`；rank-count无默认值且只接受1或16。
 - 新增`wafer-compile`，让`wafer-opt`退出program-directory I/O、stage selector和final publication。
@@ -110,7 +110,7 @@ manifest/package late failure不发布partial package。
 
 ## Checkpoint 7: Reference Core, Transport Activation And Vertical Gates
 
-状态：进行中；Q19 core已完成，当前Q16.T为唯一doing，Q19.M/Q20/Q21按直接前置blocked。
+状态：进行中；Q19 core和Q16.T已完成，当前Q19.M为唯一doing，Q20/Q21按直接前置blocked。
 
 - Q19 core只接受Q16 `ExecutableBundle`和typed role/index invocation tensors，先把accepted rank all-and-only投影为
   invocation-local immutable `ReferenceProgram`，再执行memref/instruction/control-flow；projection不序列化、不进入
@@ -136,9 +136,9 @@ manifest/package late failure不发布partial package。
 - Q16.T的logical identity与physical acceptance checkpoints已完成：`channel_id`贯穿collective/tile，全部现有p2p
   materialization生成communication/phase/round/payload-slice typed identity；memory planning后完整rank domain按
   source/destination/message核对peer/bytes/range/wait，验证normal sender profile、分配receiver FSM，并原子补
-  `DirectDTEBindingAttr`与`TransportContract::DirectDTE`。下一步闭合CRT event/status lowering、atomic target
-  publication及manifest/no-card中runtime-observable
-  transport requirements；identity不能从op顺序或名字猜，package不复制p2p body或per-op binding。
+  `DirectDTEBindingAttr`与`TransportContract::DirectDTE`。CRT opaque event/status lowering、atomic target publication、
+  schema-v2 manifest和no-card runtime requirements已同步闭合；identity不从op顺序或名字猜，package不复制
+  p2p body或per-op binding。
 - Q19.M只消费Q16.T accepted bundle，以deterministic event scheduler执行DTE send/recv/wait并检测peer mismatch、
   duplicate recv、unmatched token和no-progress/deadlock；禁止手写DTE module绕过bundle gate。
 - Q20/Q21真实exporter固定source revision/config/seed/dtype/shape和独立NumPy CPU reference；gate顺序仍为

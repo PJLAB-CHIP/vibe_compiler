@@ -401,7 +401,11 @@
   rank-count 1/16实际创建all-and-only isolated clones，经selector、function bufferization、whole-rank SPM/DDR和
   terminal legality后形成move-only `RankExecutable[]`/context-owning `ExecutableBundle`；rank-15 late failure仍在
   同一transaction内，因此不会先发布grouped checkpoint。无DTE时transport contract为`None`；Q16.T已在完整rank
-  domain的post-memory acceptance后形成`DirectDTE`，target/status consumer仍须独立闭合。
+  domain的post-memory acceptance后形成`DirectDTE`；rank module分拆使sender无法本地重算remote receiver offset，
+  因而该cross-rank accepted start必须进入typed binding，不能假设各rank allocation同址。target把async token降成
+  CRT返回的opaque i64 event；recv issue先初始化FSM并post ready，send实际attach/send延迟到wait，避免所有rank
+  在本地recv ready之前同时阻塞于sender wait。entry status只表达pending/success/local transport error，timeout由
+  manifest声明的host watchdog负责，peer failure由runtime合成。
   旧显式 target CRT issue-op、ring collective、SPM/DDR debug path 和 single-tile
   materialization pass 链已删除；不要恢复成用户级 compile flow。当前HF/Llama-style真实program可重放到
   verified logical group staging；HF compute coverage、Direct DTE target/status ABI、runtime、board execution和

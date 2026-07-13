@@ -1,7 +1,7 @@
 # Wafer Typed Manifest、RuntimeSession 和 Launch Boundary
 
-状态：2026-07-13已完成Q18；Q16.T将在同一typed model上增加Direct DTE runtime requirement，但尚不是当前
-package事实。近期wire form固定为唯一typed C++ model的canonical JSON，不是Protobuf；provider/board execution
+状态：2026-07-13已完成Q18及Q16.T的Direct DTE runtime requirement扩展。近期wire form为schema v2、唯一typed
+C++ model的canonical JSON，不是Protobuf；provider/board execution
 仍是后续独立gate。实现状态看`tasks/progress.md`。
 
 ## 1. 目标和非目标
@@ -62,7 +62,8 @@ Q18实施前存在四份相互分叉的事实：
 加入binding order；validator只检查名字存在，不验证duplicate和signature双射。C++ parser又不检查schema
 version、model ABI和module format等Python规则。
 
-Q18已删除Python exporter/validator和独立C++ `HostRuntime`；`wafer_runtime_adapter.py`只转发C++
+Q18已删除Python exporter/validator和独立C++ `HostRuntime`；旧prototype也曾使用数字2，但与当前加入typed
+transport union后升级的canonical schema v2没有兼容或继承关系。`wafer_runtime_adapter.py`只转发C++
 `wafer-run`进程，不解释schema、enum或cross-field legality。旧schema只作为“缺少typed manifest必须拒绝”的
 negative边界，不再作为迁移输入或production fixture。
 
@@ -122,12 +123,13 @@ strong IDs可以先用不可隐式互转的小型C++ wrapper，不要求新增ML
 owner分配；文件路径、symbol文本和vector index不承担semantic identity。
 
 当前Kernel ABI摘要就是Q17导出的完整ordered typed slots；Q18逐slot与Q16 resource核对并原样序列化，不再增加一份
-可与slot列表分叉的ABI digest。当前transport contract为`None`，每rank在entry return前已由Q16证明无pending effect，
-因此completion domain只有一个typed `entry_return` terminal；后续真实异步runtime graph出现时再扩completion表示。
+可与slot列表分叉的ABI digest。无通信entry的transport contract为`None`；Direct DTE entry额外携带唯一
+provider-managed `transport_status` read/write slot。每rank仍以typed `entry_return`为terminal，transport status是该
+terminal前必须由provider观察的outcome surface，不复制内部event DAG。
 
-Q16.T启用Direct DTE时扩展同一C++ model，而不是增加transport sidecar或第二validator。每个entry携带typed
-`TransportRequirements` discriminated union：当前值为`None`；`DirectDTE`分支只投影runtime compatibility与
-launch可观察的status/error/completion requirement。allocator选择的channel/FSM、per-op `DTEMessageAttr`、
+Q16.T在同一C++ model中扩展typed `TransportRequirements` discriminated union，而没有增加transport sidecar或
+第二validator。每个entry为`None`或`DirectDTE`；后者只投影`wafer-direct-dte-status-v1` status resource、
+runtime capability和host-watchdog requirement。allocator选择的channel/FSM、per-op `DTEMessageAttr`、
 `DirectDTEBindingAttr`和p2p issue/wait body留在target module内，不进入manifest。no-card preflight只验证environment
 是否支持该capability和ABI requirement，不重新route、匹配消息或分配transport resource。
 
@@ -152,7 +154,8 @@ manifest明确不含：
 - 每个entry引用存在且rank匹配的module；
 - module relative path不能逃逸package root，digest与实际file一致；
 - slots从0开始连续、无重复，每个resource按正确role/access/type/bytes/alignment绑定；
-- 当前input/output/parameter/workspace没有遗漏或多绑；
+- 当前input/output/parameter/workspace/transport-status没有遗漏或多绑；Direct DTE entry恰有一个内部read/write
+  `u32[1]` status resource，`None` entry不得携带该slot；
 - Q17 ordered ABI slots与Q16 resource role/index/name/type/access all-and-only一致；
 - 每rank唯一terminal completion存在且为当前supported `entry_return`；
 - unknown/deprecated field和无法解释的extension被拒绝。

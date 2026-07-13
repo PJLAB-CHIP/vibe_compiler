@@ -3,6 +3,7 @@
 #include "Wafer/Transforms/Passes.h"
 
 #include "Wafer/IR/WaferDialect.h"
+#include "Wafer/Support/TargetPolicy.h"
 
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
 #include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"
@@ -35,6 +36,7 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <vector>
 
 namespace wafer {
 #define GEN_PASS_DEF_LOWERINSTRTOTARGETLLVMPASS
@@ -49,6 +51,11 @@ struct AddressValue {
 
 struct CalleeSignature {
   mlir::LLVM::LLVMFunctionType type;
+};
+
+struct DirectDTEEndpointDomain {
+  int64_t logicalRank = -1;
+  llvm::SmallVector<int64_t, 16> rankToTile;
 };
 
 static bool checkedAdd(int64_t lhs, int64_t rhs, int64_t &result) {
@@ -75,6 +82,82 @@ static bool isWaferTargetMetadata(mlir::Operation *op) {
 
 static bool isWaferInstruction(mlir::Operation *op) {
   return mlir::isa<WaferInstructionOpInterface, SyncLocalFenceOp>(op);
+}
+
+static bool isUnavailableEndpoint(llvm::ArrayRef<int64_t> unavailable,
+                                  int64_t cardY, int64_t cardX,
+                                  int64_t tileY, int64_t tileX) {
+  for (size_t index = 0; index < unavailable.size(); index += 4)
+    if (unavailable[index] == cardY && unavailable[index + 1] == cardX &&
+        unavailable[index + 2] == tileY &&
+        unavailable[index + 3] == tileX)
+      return true;
+  return false;
+}
+
+static mlir::FailureOr<DirectDTEEndpointDomain>
+resolveDirectDTEEndpointDomain(mlir::ModuleOp moduleOp, int64_t logicalRank) {
+  ExecutionMeshOp mesh;
+  bool duplicateMesh = false;
+  moduleOp.walk([&](ExecutionMeshOp candidate) {
+    if (!mesh)
+      mesh = candidate;
+    else
+      duplicateMesh = true;
+  });
+  if (!mesh || duplicateMesh)
+    return moduleOp.emitError()
+           << "unsupported_target_transport: Direct DTE requires exactly one "
+              "execution mesh";
+  TargetTopologyOp topology =
+      moduleOp.lookupSymbol<TargetTopologyOp>(mesh.getTopologyAttr().getValue());
+  if (!topology)
+    return mesh.emitError()
+           << "unsupported_target_transport: Direct DTE mesh references a "
+              "missing target topology";
+
+  llvm::ArrayRef<int64_t> cardGrid = topology.getCardGridAttr().asArrayRef();
+  llvm::ArrayRef<int64_t> tileGrid = topology.getTileGridAttr().asArrayRef();
+  llvm::ArrayRef<int64_t> unavailable =
+      topology.getUnavailableTilesAttr().asArrayRef();
+  if (cardGrid.size() != 2 || tileGrid.size() != 2 || cardGrid[0] != 1 ||
+      cardGrid[1] != 1)
+    return mesh.emitError()
+           << "unsupported_target_transport: Direct DTE V0 requires one "
+              "single-card execution domain";
+
+  DirectDTEEndpointDomain domain;
+  domain.logicalRank = logicalRank;
+  if (mesh.getPolicyAttr().getValue() == "all_available") {
+    for (int64_t tileY = 0; tileY < tileGrid[0]; ++tileY)
+      for (int64_t tileX = 0; tileX < tileGrid[1]; ++tileX)
+        if (!isUnavailableEndpoint(unavailable, 0, 0, tileY, tileX))
+          domain.rankToTile.push_back(tileY * tileGrid[1] + tileX);
+  } else if (mesh.getPolicyAttr().getValue() == "explicit") {
+    llvm::ArrayRef<int64_t> endpoints = mesh.getEndpointsAttr().asArrayRef();
+    for (size_t index = 0; index < endpoints.size(); index += 4) {
+      if (endpoints[index] != 0 || endpoints[index + 1] != 0)
+        return mesh.emitError()
+               << "unsupported_target_transport: Direct DTE V0 explicit "
+                  "endpoints must remain on one card";
+      domain.rankToTile.push_back(endpoints[index + 2] * tileGrid[1] +
+                                  endpoints[index + 3]);
+    }
+  } else {
+    return mesh.emitError()
+           << "unsupported_target_transport: unknown execution mesh policy";
+  }
+  if (logicalRank < 0 ||
+      logicalRank >= static_cast<int64_t>(domain.rankToTile.size()))
+    return mesh.emitError()
+           << "unsupported_target_transport: logical rank is outside the "
+              "Direct DTE endpoint domain";
+  for (int64_t tile : domain.rankToTile)
+    if (tile < 0 || tile > std::numeric_limits<uint16_t>::max())
+      return mesh.emitError()
+             << "target_abi_narrowing: Direct DTE tile endpoint must fit "
+                "uint16_t";
+  return domain;
 }
 
 static mlir::Value resolveTileRegionBoundaryValue(mlir::Value value) {
@@ -271,6 +354,31 @@ static mlir::FailureOr<int64_t> getStaticUInt32MaskAddress(mlir::Operation *op,
            << "target_abi_narrowing: mask physical address range [" << start
            << ", " << end << "] must fit uint32_t";
   return start;
+}
+
+static mlir::FailureOr<int64_t>
+getStaticSPMAddress(mlir::Operation *op, mlir::Value value,
+                    llvm::StringRef role) {
+  auto viewType = mlir::dyn_cast<mlir::MemRefType>(value.getType());
+  if (!viewType || !isWaferSPMMemRefType(viewType))
+    return op->emitError() << "unsupported_target_address: " << role
+                           << " must be a Wafer SPM memref";
+  mlir::FailureOr<int64_t> viewOffset =
+      getStaticViewOffsetBytes(op, viewType, role);
+  if (mlir::failed(viewOffset))
+    return mlir::failure();
+  mlir::Value root = getRootViewSource(value);
+  auto allocation = root.getDefiningOp<mlir::memref::AllocOp>();
+  if (!allocation)
+    return op->emitError() << "unsupported_target_address: " << role
+                           << " must have a planned SPM allocation root";
+  auto offset =
+      allocation->getAttrOfType<SPMOffsetAttr>(kWaferSPMOffsetAttrName);
+  int64_t address = 0;
+  if (!offset || !checkedAdd(offset.getOffset(), *viewOffset, address))
+    return op->emitError() << "unsupported_target_address: " << role
+                           << " has no representable accepted SPM offset";
+  return address;
 }
 
 static mlir::FailureOr<int64_t> getDataFormatCode(mlir::Operation *op,
@@ -559,6 +667,136 @@ struct FunctionLowering {
     builder.create<mlir::LLVM::CallOp>(
         loc, mlir::TypeRange(), mlir::FlatSymbolRefAttr::get(context, symbol),
         args);
+  }
+
+  mlir::Value emitI64Call(mlir::Location loc, llvm::StringRef symbol,
+                          mlir::ValueRange args) {
+    llvm::SmallVector<mlir::Type, 16> argTypes;
+    for (mlir::Value arg : args)
+      argTypes.push_back(arg.getType());
+    mlir::LLVM::LLVMFunctionType functionType =
+        mlir::LLVM::LLVMFunctionType::get(i64Type, argTypes,
+                                          /*isVarArg=*/false);
+    auto [it, inserted] =
+        usedCallees.try_emplace(symbol, CalleeSignature{functionType});
+    if (!inserted && it->second.type != functionType)
+      llvm_unreachable(
+          "same target CRT symbol emitted with incompatible signature");
+    auto call = builder.create<mlir::LLVM::CallOp>(
+        loc, mlir::TypeRange{i64Type},
+        mlir::FlatSymbolRefAttr::get(context, symbol), args);
+    return call.getResult();
+  }
+
+  mlir::FailureOr<mlir::Value>
+  lowerDTESend(InstrDTESendOp op, const DirectDTEEndpointDomain &domain) {
+    DirectDTEBindingAttr binding =
+        op.getBinding().value_or(DirectDTEBindingAttr());
+    if (!binding)
+      return op.emitError()
+             << "unsupported_target_transport: Direct DTE send is missing "
+                "an accepted physical binding";
+    if (binding.getAllocationProfile() != DTEAllocationProfile::Normal ||
+        binding.getCompletionProfile() !=
+            DTECompletionProfile::SenderWaitReceiverFSM)
+      return op.emitError()
+             << "unsupported_target_transport: Direct DTE binding profile "
+                "is not supported by the V0 target CRT";
+    if (op.getBytesAttr().getInt() <= 0 ||
+        op.getBytesAttr().getInt() > std::numeric_limits<int32_t>::max())
+      return op.emitError()
+             << "target_abi_narrowing: Direct DTE byte count must fit a "
+                "positive int32_t packet size";
+    int64_t remoteEnd = 0;
+    WaferTargetPolicy targetPolicy = getDefaultWaferTargetPolicy();
+    if (!checkedAdd(binding.getRemoteReceiverOffset(),
+                    op.getBytesAttr().getInt(), remoteEnd) ||
+        binding.getRemoteReceiverOffset() < targetPolicy.memory.spmBase ||
+        remoteEnd > targetPolicy.memory.spmLimit)
+      return op.emitError()
+             << "unsupported_target_transport: Direct DTE remote receiver "
+                "range is outside target SPM";
+    int64_t peer = op.getPeerAttr().getInt();
+    if (peer < 0 || peer >= static_cast<int64_t>(domain.rankToTile.size()))
+      return op.emitError()
+             << "unsupported_target_transport: Direct DTE peer is outside "
+                "the accepted endpoint domain";
+    mlir::FailureOr<mlir::Value> source =
+        materializeAddress(op, op.getBuffer(), "direct DTE send source");
+    if (mlir::failed(source))
+      return mlir::failure();
+
+    llvm::SmallVector<mlir::Value, 8> args;
+    args.push_back(*source);
+    args.push_back(constantI64(op.getLoc(), binding.getRemoteReceiverOffset()));
+    appendI32(op.getLoc(), args, op.getBytesAttr().getInt());
+    appendI32(op.getLoc(), args,
+              domain.rankToTile[static_cast<size_t>(domain.logicalRank)]);
+    appendI32(op.getLoc(), args,
+              domain.rankToTile[static_cast<size_t>(peer)]);
+    appendI32(op.getLoc(), args, binding.getReceiverFsmId());
+    appendI32(op.getLoc(), args, /*isHighPerformance=*/0);
+    return emitI64Call(op.getLoc(), makeTargetSymbol("direct_dte_send_prepare"),
+                       args);
+  }
+
+  mlir::FailureOr<mlir::Value>
+  lowerDTERecv(InstrDTERecvOp op, const DirectDTEEndpointDomain &domain) {
+    DirectDTEBindingAttr binding =
+        op.getBinding().value_or(DirectDTEBindingAttr());
+    if (!binding)
+      return op.emitError()
+             << "unsupported_target_transport: Direct DTE receive is missing "
+                "an accepted physical binding";
+    if (binding.getAllocationProfile() != DTEAllocationProfile::Normal ||
+        binding.getCompletionProfile() !=
+            DTECompletionProfile::SenderWaitReceiverFSM)
+      return op.emitError()
+             << "unsupported_target_transport: Direct DTE binding profile "
+                "is not supported by the V0 target CRT";
+    if (op.getBytesAttr().getInt() <= 0 ||
+        op.getBytesAttr().getInt() > std::numeric_limits<int32_t>::max())
+      return op.emitError()
+             << "target_abi_narrowing: Direct DTE byte count must fit a "
+                "positive int32_t packet size";
+    int64_t peer = op.getPeerAttr().getInt();
+    if (peer < 0 || peer >= static_cast<int64_t>(domain.rankToTile.size()))
+      return op.emitError()
+             << "unsupported_target_transport: Direct DTE peer is outside "
+                "the accepted endpoint domain";
+    mlir::FailureOr<int64_t> acceptedDestination = getStaticSPMAddress(
+        op, op.getBuffer(), "direct DTE receive destination");
+    mlir::FailureOr<mlir::Value> destination = materializeAddress(
+        op, op.getBuffer(), "direct DTE receive destination");
+    if (mlir::failed(acceptedDestination) || mlir::failed(destination))
+      return mlir::failure();
+    if (binding.getRemoteReceiverOffset() != *acceptedDestination)
+      return op.emitError()
+             << "unsupported_target_transport: receive binding offset does "
+                "not match the accepted local SPM address";
+
+    llvm::SmallVector<mlir::Value, 8> args;
+    args.push_back(*destination);
+    appendI32(op.getLoc(), args, op.getBytesAttr().getInt());
+    appendI32(op.getLoc(), args,
+              domain.rankToTile[static_cast<size_t>(domain.logicalRank)]);
+    appendI32(op.getLoc(), args,
+              domain.rankToTile[static_cast<size_t>(peer)]);
+    appendI32(op.getLoc(), args, binding.getReceiverFsmId());
+    return emitI64Call(op.getLoc(), makeTargetSymbol("direct_dte_recv_prepare"),
+                       args);
+  }
+
+  mlir::LogicalResult lowerDTEWait(InstrDTEWaitOp op,
+                                   llvm::ArrayRef<mlir::Value> events) {
+    if (events.size() != op.getTokens().size())
+      return op.emitError()
+             << "target_llvm_lowering_failure: Direct DTE wait event count "
+                "does not match its token count";
+    for (mlir::Value event : events)
+      emitCall(op.getLoc(), makeTargetSymbol("direct_dte_wait"),
+               mlir::ValueRange(event));
+    return mlir::success();
   }
 
   mlir::LogicalResult lowerRDMA(InstrRDMAOp op) {
@@ -1064,7 +1302,8 @@ struct DirectCallGraph {
 
 static mlir::LogicalResult
 analyzeDirectCallGraph(mlir::ModuleOp moduleOp, DirectCallGraph &graph,
-                       int64_t defaultDDRArenaArgumentIndex) {
+                       int64_t defaultDDRArenaArgumentIndex,
+                       int64_t transportStatusArgumentIndex) {
   llvm::SmallVector<mlir::func::FuncOp, 8> functions;
   for (mlir::func::FuncOp funcOp : moduleOp.getOps<mlir::func::FuncOp>()) {
     if (funcOp.isDeclaration())
@@ -1077,6 +1316,8 @@ analyzeDirectCallGraph(mlir::ModuleOp moduleOp, DirectCallGraph &graph,
          llvm::enumerate(funcOp.getFunctionType().getInputs()))
       if (!isWaferDDRMemRefType(type) &&
           !(static_cast<int64_t>(index) == defaultDDRArenaArgumentIndex &&
+            type.isInteger(64)) &&
+          !(static_cast<int64_t>(index) == transportStatusArgumentIndex &&
             type.isInteger(64)))
         return funcOp.emitError()
                << "unsupported_target_function: argument #" << index
@@ -1140,6 +1381,25 @@ analyzeDirectCallGraph(mlir::ModuleOp moduleOp, DirectCallGraph &graph,
     if (mlir::failed(visit(visit, funcOp)))
       return mlir::failure();
   return mlir::success();
+}
+
+static mlir::FailureOr<mlir::func::FuncOp>
+findUniqueRootFunction(mlir::ModuleOp moduleOp, const DirectCallGraph &graph) {
+  mlir::func::FuncOp root;
+  for (mlir::func::FuncOp function : moduleOp.getOps<mlir::func::FuncOp>()) {
+    if (graph.calledFunctions.contains(function.getOperation()))
+      continue;
+    if (root)
+      return function.emitError()
+             << "unsupported_target_transport: Direct DTE status ABI "
+                "requires one unique entry function";
+    root = function;
+  }
+  if (!root)
+    return moduleOp.emitError()
+           << "unsupported_target_transport: Direct DTE status ABI has no "
+              "entry function";
+  return root;
 }
 
 static mlir::FailureOr<unsigned> resolveDDRAliasToFunctionArgument(
@@ -1638,20 +1898,22 @@ struct TargetDeallocOpLowering
 
 struct TargetInstructionOpLowering : public mlir::ConversionPattern {
   TargetInstructionOpLowering(mlir::LLVMTypeConverter &converter,
-                              llvm::StringMap<CalleeSignature> &usedCallees)
+                              llvm::StringMap<CalleeSignature> &usedCallees,
+                              const DirectDTEEndpointDomain *dteDomain)
       : mlir::ConversionPattern(converter, mlir::Pattern::MatchAnyOpTypeTag(),
                                 /*benefit=*/10, &converter.getContext()),
-        usedCallees(usedCallees) {}
+        usedCallees(usedCallees), dteDomain(dteDomain) {}
 
   mlir::LogicalResult
   matchAndRewrite(mlir::Operation *op, llvm::ArrayRef<mlir::Value> operands,
                   mlir::ConversionPatternRewriter &rewriter) const override {
     if (!isWaferInstruction(op))
       return mlir::failure();
-    if (mlir::isa<InstrDTESendOp, InstrDTERecvOp, InstrDTEWaitOp>(op))
+    bool isDTE = mlir::isa<InstrDTESendOp, InstrDTERecvOp, InstrDTEWaitOp>(op);
+    if (isDTE && !dteDomain)
       return op->emitError()
-             << "unsupported_target_transport: DTE instruction requires a "
-                "physical transport/endpoint binding and target CRT support";
+             << "unsupported_target_transport: DTE instruction requires an "
+                "accepted endpoint domain and launch status ABI";
     if (auto peripheral = mlir::dyn_cast<InstrPeripheralOp>(op);
         peripheral && peripheral.getKind() == InstrPeripheralKind::Factorize)
       return op->emitError()
@@ -1675,6 +1937,30 @@ struct TargetInstructionOpLowering : public mlir::ConversionPattern {
          llvm::zip_equal(op->getOperands(), operands))
       lowering.convertedValues[source] = converted;
     rewriter.setInsertionPoint(op);
+
+    if (auto send = mlir::dyn_cast<InstrDTESendOp>(op)) {
+      mlir::FailureOr<mlir::Value> event =
+          lowering.lowerDTESend(send, *dteDomain);
+      if (mlir::failed(event))
+        return mlir::failure();
+      rewriter.replaceOp(op, *event);
+      return mlir::success();
+    }
+    if (auto recv = mlir::dyn_cast<InstrDTERecvOp>(op)) {
+      mlir::FailureOr<mlir::Value> event =
+          lowering.lowerDTERecv(recv, *dteDomain);
+      if (mlir::failed(event))
+        return mlir::failure();
+      rewriter.replaceOp(op, *event);
+      return mlir::success();
+    }
+    if (auto wait = mlir::dyn_cast<InstrDTEWaitOp>(op)) {
+      if (mlir::failed(lowering.lowerDTEWait(wait, operands)))
+        return mlir::failure();
+      rewriter.eraseOp(op);
+      return mlir::success();
+    }
+
     if (mlir::failed(lowering.lowerInstruction(op)))
       return mlir::failure();
 
@@ -1689,6 +1975,7 @@ struct TargetInstructionOpLowering : public mlir::ConversionPattern {
   }
 
   llvm::StringMap<CalleeSignature> &usedCallees;
+  const DirectDTEEndpointDomain *dteDomain;
 };
 
 static mlir::LogicalResult
@@ -1722,6 +2009,69 @@ declareCallees(mlir::ModuleOp moduleOp,
   return mlir::success();
 }
 
+static void registerVoidCallee(mlir::MLIRContext *context,
+                               llvm::StringMap<CalleeSignature> &callees,
+                               llvm::StringRef symbol,
+                               llvm::ArrayRef<mlir::Type> arguments) {
+  auto type = mlir::LLVM::LLVMFunctionType::get(
+      mlir::LLVM::LLVMVoidType::get(context), arguments,
+      /*isVarArg=*/false);
+  auto [it, inserted] =
+      callees.try_emplace(symbol, CalleeSignature{type});
+  if (!inserted && it->second.type != type)
+    llvm_unreachable("target transport lifecycle symbol type mismatch");
+}
+
+static mlir::LogicalResult injectDirectDTEStatusLifecycle(
+    mlir::ModuleOp moduleOp, llvm::StringRef entrySymbol,
+    int64_t statusArgumentIndex, int64_t rankCount,
+    llvm::StringMap<CalleeSignature> &usedCallees) {
+  auto entry = moduleOp.lookupSymbol<mlir::LLVM::LLVMFuncOp>(entrySymbol);
+  if (!entry || entry.isDeclaration() || entry.getBody().empty() ||
+      statusArgumentIndex < 0 ||
+      statusArgumentIndex >=
+          static_cast<int64_t>(entry.getBody().front().getNumArguments()))
+    return moduleOp.emitError()
+           << "unsupported_target_transport: Direct DTE status entry "
+              "argument is missing after LLVM conversion";
+  mlir::Value status = entry.getBody().front().getArgument(
+      static_cast<unsigned>(statusArgumentIndex));
+  if (!status.getType().isInteger(64))
+    return entry.emitError()
+           << "target_abi_mismatch: Direct DTE status argument must be i64";
+
+  mlir::OpBuilder builder(moduleOp.getContext());
+  mlir::Type i32Type = mlir::IntegerType::get(moduleOp.getContext(), 32);
+  llvm::SmallString<64> beginSymbol = makeTargetSymbol("direct_dte_begin");
+  llvm::SmallString<64> finishSymbol = makeTargetSymbol("direct_dte_finish");
+  llvm::SmallVector<mlir::Type, 2> beginArguments{status.getType(), i32Type};
+  registerVoidCallee(moduleOp.getContext(), usedCallees, beginSymbol,
+                     beginArguments);
+  registerVoidCallee(moduleOp.getContext(), usedCallees, finishSymbol, {});
+
+  builder.setInsertionPointToStart(&entry.getBody().front());
+  mlir::Value count = builder.create<mlir::LLVM::ConstantOp>(
+      entry.getLoc(), i32Type, rankCount);
+  builder.create<mlir::LLVM::CallOp>(
+      entry.getLoc(), mlir::TypeRange(),
+      mlir::FlatSymbolRefAttr::get(moduleOp.getContext(), beginSymbol),
+      mlir::ValueRange{status, count});
+
+  llvm::SmallVector<mlir::LLVM::ReturnOp, 4> returns;
+  entry.walk([&](mlir::LLVM::ReturnOp returnOp) { returns.push_back(returnOp); });
+  if (returns.empty())
+    return entry.emitError()
+           << "unsupported_target_transport: Direct DTE entry has no return";
+  for (mlir::LLVM::ReturnOp returnOp : returns) {
+    builder.setInsertionPoint(returnOp);
+    builder.create<mlir::LLVM::CallOp>(
+        returnOp.getLoc(), mlir::TypeRange(),
+        mlir::FlatSymbolRefAttr::get(moduleOp.getContext(), finishSymbol),
+        mlir::ValueRange());
+  }
+  return mlir::success();
+}
+
 static mlir::LogicalResult lowerSCFToControlFlow(mlir::ModuleOp moduleOp) {
   mlir::RewritePatternSet patterns(moduleOp.getContext());
   mlir::populateSCFToControlFlowConversionPatterns(patterns);
@@ -1738,14 +2088,50 @@ static mlir::LogicalResult lowerSCFToControlFlow(mlir::ModuleOp moduleOp) {
 
 static mlir::LogicalResult
 lowerModuleInPlace(mlir::ModuleOp moduleOp,
-                   int64_t defaultDDRArenaArgumentIndex) {
+                   int64_t defaultDDRArenaArgumentIndex, int64_t logicalRank,
+                   int64_t transportStatusArgumentIndex) {
   if (mlir::failed(flattenTileRegions(moduleOp)))
     return mlir::failure();
 
+  bool hasDirectDTE = false;
+  moduleOp.walk([&](mlir::Operation *op) {
+    if (mlir::isa<InstrDTESendOp, InstrDTERecvOp, InstrDTEWaitOp>(op))
+      hasDirectDTE = true;
+  });
+  std::optional<DirectDTEEndpointDomain> dteDomain;
+  if (hasDirectDTE) {
+    if (transportStatusArgumentIndex < 0)
+      return moduleOp.emitError()
+             << "unsupported_target_transport: Direct DTE requires a "
+                "launch-observable status argument";
+    mlir::FailureOr<DirectDTEEndpointDomain> resolved =
+        resolveDirectDTEEndpointDomain(moduleOp, logicalRank);
+    if (mlir::failed(resolved))
+      return mlir::failure();
+    dteDomain = std::move(*resolved);
+  }
+
   DirectCallGraph callGraph;
   if (mlir::failed(analyzeDirectCallGraph(moduleOp, callGraph,
-                                          defaultDDRArenaArgumentIndex)))
+                                          defaultDDRArenaArgumentIndex,
+                                          transportStatusArgumentIndex)))
     return mlir::failure();
+  std::string dteEntrySymbol;
+  if (hasDirectDTE) {
+    mlir::FailureOr<mlir::func::FuncOp> entry =
+        findUniqueRootFunction(moduleOp, callGraph);
+    if (mlir::failed(entry))
+      return mlir::failure();
+    if (transportStatusArgumentIndex >=
+            static_cast<int64_t>((*entry).getNumArguments()) ||
+        !(*entry).getArgument(transportStatusArgumentIndex)
+             .getType()
+             .isInteger(64))
+      return (*entry).emitError()
+             << "target_abi_mismatch: Direct DTE status argument index does "
+                "not identify an entry i64 argument";
+    dteEntrySymbol = (*entry).getSymName().str();
+  }
   if (mlir::failed(lowerSCFToControlFlow(moduleOp)))
     return mlir::failure();
   llvm::DenseMap<mlir::Operation *, AliasSummary> aliasSummaries;
@@ -1763,7 +2149,7 @@ lowerModuleInPlace(mlir::ModuleOp moduleOp,
         return mlir::IntegerType::get(moduleOp.getContext(), 64);
       });
   converter.addConversion([&](mlir::async::TokenType) -> mlir::Type {
-    return mlir::IntegerType::get(moduleOp.getContext(), 1);
+    return mlir::IntegerType::get(moduleOp.getContext(), 64);
   });
 
   llvm::StringMap<CalleeSignature> usedCallees;
@@ -1775,7 +2161,8 @@ lowerModuleInPlace(mlir::ModuleOp moduleOp,
           converter, moduleOp.getContext());
   patterns.add<TargetAllocOpLowering>(converter, moduleOp.getContext(),
                                       defaultDDRArenaArgumentIndex);
-  patterns.add<TargetInstructionOpLowering>(converter, usedCallees);
+  patterns.add<TargetInstructionOpLowering>(
+      converter, usedCallees, dteDomain ? &*dteDomain : nullptr);
   mlir::arith::populateArithToLLVMConversionPatterns(converter, patterns);
   mlir::cf::populateControlFlowToLLVMConversionPatterns(converter, patterns);
 
@@ -1791,6 +2178,12 @@ lowerModuleInPlace(mlir::ModuleOp moduleOp,
     return moduleOp.emitError()
            << "target_llvm_lowering_failure: full target LLVM conversion "
               "failed";
+
+  if (hasDirectDTE &&
+      mlir::failed(injectDirectDTEStatusLifecycle(
+          moduleOp, dteEntrySymbol, transportStatusArgumentIndex,
+          static_cast<int64_t>(dteDomain->rankToTile.size()), usedCallees)))
+    return mlir::failure();
 
   if (mlir::failed(declareCallees(moduleOp, usedCallees)))
     return mlir::failure();
@@ -1823,7 +2216,9 @@ struct LowerInstrToTargetLLVMPass
     mlir::ModuleOp moduleOp = getOperation();
     mlir::OwningOpRef<mlir::ModuleOp> loweredModule = moduleOp.clone();
     if (mlir::failed(
-            lowerModuleInPlace(*loweredModule, defaultDDRArenaArgumentIndex))) {
+            lowerModuleInPlace(*loweredModule,
+                               defaultDDRArenaArgumentIndex, logicalRank,
+                               transportStatusArgumentIndex))) {
       signalPassFailure();
       return;
     }

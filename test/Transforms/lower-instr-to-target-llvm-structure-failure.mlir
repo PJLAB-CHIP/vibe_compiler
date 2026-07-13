@@ -353,7 +353,7 @@ func.func @transport_failure() {
   return
 }
 
-// DTE-ATOMIC: unsupported_target_transport: DTE instruction requires a physical transport/endpoint binding and target CRT support
+// DTE-ATOMIC: unsupported_target_transport: Direct DTE requires a launch-observable status argument
 // DTE-ATOMIC: module {
 // DTE-ATOMIC: func.func @valid_before_transport_failure
 // DTE-ATOMIC: wafer.instr.local_fence

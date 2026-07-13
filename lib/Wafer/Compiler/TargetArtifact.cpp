@@ -89,7 +89,9 @@ namespace {
 struct PreparedTargetRank {
   mlir::OwningOpRef<mlir::ModuleOp> module;
   std::vector<KernelABISlot> slots;
+  int64_t logicalRank = -1;
   int64_t defaultDDRArenaArgumentIndex = -1;
+  int64_t transportStatusArgumentIndex = -1;
 };
 
 llvm::Error fail(llvm::raw_ostream &diagnostics, llvm::StringRef message) {
@@ -197,6 +199,7 @@ mlir::FailureOr<PreparedTargetRank>
 prepareTargetABI(const RankExecutable &rankExecutable) {
   PreparedTargetRank prepared;
   prepared.module = rankExecutable.getModule().clone();
+  prepared.logicalRank = rankExecutable.getLogicalRank();
   const int64_t defaultDDRAlignment =
       getDefaultWaferTargetPolicy().memory.ddrAlignmentBytes;
 
@@ -338,6 +341,21 @@ prepareTargetABI(const RankExecutable &rankExecutable) {
                               arenaAlignment});
   }
 
+  if (rankExecutable.getTransportContract() == TransportContract::DirectDTE) {
+    prepared.transportStatusArgumentIndex = function.getNumArguments();
+    function.insertArgument(prepared.transportStatusArgumentIndex,
+                            mlir::IntegerType::get(function.getContext(), 64),
+                            mlir::DictionaryAttr{}, function.getLoc());
+    prepared.slots.push_back({static_cast<int64_t>(prepared.slots.size()),
+                              KernelABISlotRole::TransportStatus,
+                              0,
+                              "direct_dte_status",
+                              "u32",
+                              {1},
+                              4,
+                              4});
+  }
+
   if (mlir::failed(mlir::verify(*prepared.module)))
     return mlir::failure();
   return prepared;
@@ -346,6 +364,9 @@ prepareTargetABI(const RankExecutable &rankExecutable) {
 mlir::LogicalResult lowerToTargetLLVM(PreparedTargetRank &prepared) {
   LowerInstrToTargetLLVMPassOptions options;
   options.defaultDDRArenaArgumentIndex = prepared.defaultDDRArenaArgumentIndex;
+  options.logicalRank = prepared.logicalRank;
+  options.transportStatusArgumentIndex =
+      prepared.transportStatusArgumentIndex;
   mlir::PassManager manager(prepared.module->getContext());
   manager.addPass(createLowerInstrToTargetLLVMPass(options));
   return manager.run(*prepared.module);

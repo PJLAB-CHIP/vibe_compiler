@@ -196,8 +196,10 @@ unsupported，但Q15完成记录必须确认mandatory真实helper cases实际执
   缺失、额外、unknown field或只写不读均失败；
 - send/recv按logical source/destination、`DTEMessageAttr`、bytes和receiver range一一匹配；duplicate、missing、
   direction mismatch、OOB和wait未覆盖均原子失败；
-- channel/FSM/completion profile满足硬件静态范围、reserved id和同生命周期resource conflict约束；可从
-  peer/topology/buffer/offset重算的事实不得复制进binding；
+- channel/FSM/completion profile满足硬件静态范围、reserved id和同生命周期resource conflict约束；
+  binding只额外保留rank module分拆后发送端无法本地重算的accepted remote receiver offset，
+  并验证其等于receiver planned SPM start；其它可从peer/topology/local buffer/offset重算的事实
+  不得复制进binding；
 - `RankExecutable::TransportContract`只有all-rank通过后才从`None`变为`DirectDTE`，且不另存per-op action list；
 - target lowering与repo-local CRT header/source/checker共享fixed signature，required/allowed symbol、status/error和
   attach/send/wait/release lifecycle闭合；
@@ -422,9 +424,9 @@ FP32→TF32→FP32 roundtrip同时证明APFloat 19-bit TF32语义位与hardware 
 structural checkpoint把原单文件executor拆为内部immutable program定义、accepted-IR projection、numeric/storage、
 immutable interpreter和薄public orchestration；projection是唯一读取accepted MLIR的模块，interpreter只依赖投影和
 numeric/storage API，内部对象仍不序列化、不进入bundle/package。Q19 core已按上述accepted capability完成；
-DTE multi-rank已拆给Q19.M，并等待Q16.T。
+DTE multi-rank已拆给Q19.M；Q16.T accepted transport、target CRT/status和runtime requirement前置已闭合。
 当前transcendental仍使用host实现，也不属于已闭合的host-independent numeric gate。
-本批`check-wafer`新鲜执行34个C++ unit和230个lit（229 pass、1个feature-inverse unsupported），CTest 3/3通过；
+本批`check-wafer`新鲜执行41个C++ unit和235个lit（234 pass、1个feature-inverse unsupported），CTest 3/3通过；
 unsupported项仍是禁用importer feature的反向gate，不覆盖Q19 mandatory path。
 
 ## 10. Q20/Q21 Vertical Workload Gates

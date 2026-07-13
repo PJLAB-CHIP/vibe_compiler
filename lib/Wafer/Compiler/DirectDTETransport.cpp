@@ -395,7 +395,7 @@ acceptDirectDTETransport(llvm::ArrayRef<mlir::ModuleOp> rankModules) {
     MatchedMessage &matched = entry.second;
     auto binding = DirectDTEBindingAttr::get(
         matched.recv->operation->getContext(), DTEAllocationProfile::Normal,
-        matched.recv->receiverFsmId,
+        matched.recv->receiverFsmId, matched.recv->range.start,
         DTECompletionProfile::SenderWaitReceiverFSM);
     acceptedBindings.push_back({matched.send->operation, binding});
     acceptedBindings.push_back({matched.recv->operation, binding});

@@ -73,6 +73,7 @@ bool isValidRole(PackageResourceRole role) {
   case PackageResourceRole::Constant:
   case PackageResourceRole::Output:
   case PackageResourceRole::Workspace:
+  case PackageResourceRole::TransportStatus:
     return true;
   }
   return false;
@@ -142,13 +143,15 @@ PackageAccessMode expectedAccess(PackageResourceRole role) {
   case PackageResourceRole::Output:
     return PackageAccessMode::WriteOnly;
   case PackageResourceRole::Workspace:
+  case PackageResourceRole::TransportStatus:
     return PackageAccessMode::ReadWrite;
   }
   llvm_unreachable("unknown package resource role");
 }
 
 bool expectedHostVisible(PackageResourceRole role) {
-  return role != PackageResourceRole::Workspace;
+  return role != PackageResourceRole::Workspace &&
+         role != PackageResourceRole::TransportStatus;
 }
 
 const PackageResourceRecord *
@@ -299,6 +302,8 @@ llvm::Expected<PackageResourceRole> parseRole(llvm::StringRef role) {
     return PackageResourceRole::Output;
   if (role == "workspace")
     return PackageResourceRole::Workspace;
+  if (role == "transport_status")
+    return PackageResourceRole::TransportStatus;
   return invalid("unsupported package resource role '" + role + "'");
 }
 
@@ -460,6 +465,44 @@ parseCompletionRecord(const llvm::json::Value &value, uint64_t index,
   return PackageCompletionRecord{CompletionId(*id), *rank, std::move(*kind)};
 }
 
+llvm::Expected<TransportRequirements>
+parseTransportRequirements(const llvm::json::Object &object,
+                           llvm::StringRef context,
+                           const PackageParseLimits &limits) {
+  llvm::Expected<std::string> kind =
+      requireString(object, "kind", context, limits);
+  if (!kind)
+    return kind.takeError();
+  if (*kind == "none") {
+    if (llvm::Error error = requireExactFields(object, {"kind"}, context))
+      return std::move(error);
+    return TransportRequirements{NoTransportRequirements{}};
+  }
+  if (*kind != "direct_dte")
+    return invalid(context + " has unsupported transport kind '" + *kind +
+                   "'");
+  if (llvm::Error error = requireExactFields(
+          object,
+          {"kind", "status_resource", "status_abi",
+           "host_watchdog_required"},
+          context))
+    return std::move(error);
+  llvm::Expected<uint64_t> statusResource =
+      requireUnsigned(object, "status_resource", context);
+  if (!statusResource)
+    return statusResource.takeError();
+  llvm::Expected<std::string> statusABI =
+      requireString(object, "status_abi", context, limits);
+  if (!statusABI)
+    return statusABI.takeError();
+  llvm::Expected<bool> watchdog =
+      requireBoolean(object, "host_watchdog_required", context);
+  if (!watchdog)
+    return watchdog.takeError();
+  return TransportRequirements{DirectDTETransportRequirements{
+      ResourceId(*statusResource), std::move(*statusABI), *watchdog}};
+}
+
 llvm::Expected<PackageEntrypointRecord>
 parseEntrypointRecord(const llvm::json::Value &value, uint64_t index,
                       const PackageParseLimits &limits) {
@@ -469,7 +512,8 @@ parseEntrypointRecord(const llvm::json::Value &value, uint64_t index,
     return invalid(context + " must be an object");
   if (llvm::Error error = requireExactFields(
           *object,
-          {"id", "rank", "module", "symbol", "slots", "terminal_completion"},
+          {"id", "rank", "module", "symbol", "slots",
+           "terminal_completion", "transport"},
           context))
     return std::move(error);
   llvm::Expected<uint64_t> id = requireUnsigned(*object, "id", context);
@@ -493,6 +537,15 @@ parseEntrypointRecord(const llvm::json::Value &value, uint64_t index,
       requireUnsigned(*object, "terminal_completion", context);
   if (!completion)
     return completion.takeError();
+  llvm::Expected<const llvm::json::Object *> transportObject =
+      requireObject(*object, "transport", context);
+  if (!transportObject)
+    return transportObject.takeError();
+  llvm::Expected<TransportRequirements> transport =
+      parseTransportRequirements(**transportObject, context + ".transport",
+                                 limits);
+  if (!transport)
+    return transport.takeError();
   if ((*slots)->size() > limits.maxRecords)
     return invalid(context + ".slots exceeds record limit");
 
@@ -502,6 +555,7 @@ parseEntrypointRecord(const llvm::json::Value &value, uint64_t index,
   record.module = ModuleId(*module);
   record.symbol = std::move(*symbol);
   record.terminalCompletion = CompletionId(*completion);
+  record.transport = std::move(*transport);
   for (auto [slotIndex, slotValue] : llvm::enumerate(**slots)) {
     const llvm::json::Object *slot = slotValue.getAsObject();
     std::string slotContext =
@@ -665,6 +719,8 @@ llvm::StringRef stringifyPackageResourceRole(PackageResourceRole role) {
     return "output";
   case PackageResourceRole::Workspace:
     return "workspace";
+  case PackageResourceRole::TransportStatus:
+    return "transport_status";
   }
   llvm_unreachable("unknown package resource role");
 }
@@ -807,6 +863,32 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
         });
     if (entry.slots.size() != rankResourceCount)
       return invalid("package entry omits or adds rank resources");
+
+    llvm::SmallVector<const PackageResourceRecord *, 1> statusResources;
+    for (const PackageResourceRecord &resource : manifest.resources)
+      if (resource.logicalRank == entry.logicalRank &&
+          resource.role == PackageResourceRole::TransportStatus)
+        statusResources.push_back(&resource);
+    if (std::holds_alternative<NoTransportRequirements>(entry.transport)) {
+      if (!statusResources.empty())
+        return invalid(
+            "package transport status exists without Direct DTE requirement");
+    } else {
+      const auto &requirements =
+          std::get<DirectDTETransportRequirements>(entry.transport);
+      const PackageResourceRecord *status =
+          findResource(manifest.resources, requirements.statusResource);
+      if (statusResources.size() != 1 || !status ||
+          status != statusResources.front() ||
+          status->logicalRank != entry.logicalRank || status->roleIndex != 0 ||
+          status->name != "direct_dte_status" || status->type.dtype != "u32" ||
+          status->type.shape != std::vector<int64_t>{1} ||
+          status->bytes != 4 || status->alignment != 4 ||
+          status->access != PackageAccessMode::ReadWrite ||
+          status->hostVisible || requirements.statusABI != kDirectDTEStatusABI ||
+          !requirements.hostWatchdogRequired)
+        return invalid("package Direct DTE transport requirement is invalid");
+    }
   }
   if (!llvm::all_of(referencedResources, [](bool value) { return value; }))
     return invalid(
@@ -895,6 +977,21 @@ serializeCanonicalPackageJson(const VerifiedPackageManifest &verified) {
           });
           json.attribute("terminal_completion",
                          int64_t(entry.terminalCompletion.getValue()));
+          json.attributeObject("transport", [&] {
+            if (std::holds_alternative<NoTransportRequirements>(
+                    entry.transport)) {
+              json.attribute("kind", "none");
+              return;
+            }
+            const auto &requirements =
+                std::get<DirectDTETransportRequirements>(entry.transport);
+            json.attribute("kind", "direct_dte");
+            json.attribute("status_resource",
+                           int64_t(requirements.statusResource.getValue()));
+            json.attribute("status_abi", requirements.statusABI);
+            json.attribute("host_watchdog_required",
+                           requirements.hostWatchdogRequired);
+          });
         });
     });
     json.attributeArray("completions", [&] {
@@ -976,6 +1073,17 @@ llvm::Expected<RuntimeSessionPlan> preflightNoCardRuntimeSession(
   plan.modulePath = module->relativePath;
   plan.entrySymbol = entry.symbol;
   plan.terminalCompletion = entry.terminalCompletion;
+  plan.transport = entry.transport;
+  if (auto *requirements =
+          std::get_if<DirectDTETransportRequirements>(&entry.transport)) {
+    if (!environment.supportsDirectDTE ||
+        environment.directDTEStatusABI != requirements->statusABI ||
+        (requirements->hostWatchdogRequired &&
+         !environment.supportsHostWatchdog))
+      return invalid(
+          "runtime environment does not satisfy Direct DTE transport "
+          "requirements");
+  }
   for (const PackageABISlotBinding &slot : entry.slots) {
     const PackageResourceRecord *resource =
         findResource(manifest.resources, slot.resource);
@@ -992,7 +1100,7 @@ llvm::Expected<RuntimeSessionPlan> preflightNoCardRuntimeSession(
           binding->access != resource->access || !binding->hostVisible)
         return invalid("runtime invocation binding does not satisfy resource");
     } else if (binding) {
-      return invalid("runtime invocation must not bind internal workspace");
+      return invalid("runtime invocation must not bind internal resource");
     }
     plan.resources.push_back({resource->id, resource->role, resource->bytes,
                               resource->alignment, resource->access,

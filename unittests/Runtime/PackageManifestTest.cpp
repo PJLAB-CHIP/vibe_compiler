@@ -267,4 +267,47 @@ TEST_F(PackageManifestTest, NoCardPreflightIsExactAndSideEffectFree) {
             std::string::npos);
 }
 
+TEST_F(PackageManifestTest,
+       DirectDTERequirementBindsInternalStatusAndChecksEnvironment) {
+  using namespace wafer::runtime;
+  PackageManifest manifest = makeManifest();
+  manifest.resources.push_back(
+      {ResourceId(3), 0, PackageResourceRole::TransportStatus, 0,
+       "direct_dte_status", {"u32", {1}}, 4, 4,
+       PackageAccessMode::ReadWrite, false});
+  manifest.entries.front().slots.push_back(
+      {3, ResourceId(3), PackageAccessMode::ReadWrite});
+  manifest.entries.front().transport = DirectDTETransportRequirements{
+      ResourceId(3), kDirectDTEStatusABI.str(), true};
+  llvm::Expected<VerifiedPackageManifest> verified =
+      verifyPackageManifest(std::move(manifest), root);
+  ASSERT_TRUE(static_cast<bool>(verified))
+      << llvm::toString(verified.takeError());
+
+  std::vector<RuntimeInvocationBinding> bindings = {
+      {ResourceId(0), 64, 256, PackageAccessMode::ReadOnly, true},
+      {ResourceId(1), 64, 256, PackageAccessMode::WriteOnly, true}};
+  RuntimeEnvironment environment{kSingleCardTargetIdentity.str(),
+                                 kKernelRuntimeABI.str(),
+                                 kRiscv64ELFModuleFormat.str(), 1024};
+  llvm::Expected<RuntimeSessionPlan> rejected = preflightNoCardRuntimeSession(
+      *verified, EntryId(0), bindings, environment);
+  ASSERT_FALSE(static_cast<bool>(rejected));
+  EXPECT_NE(llvm::toString(rejected.takeError()).find("Direct DTE"),
+            std::string::npos);
+
+  environment.supportsDirectDTE = true;
+  environment.directDTEStatusABI = kDirectDTEStatusABI.str();
+  environment.supportsHostWatchdog = true;
+  llvm::Expected<RuntimeSessionPlan> plan = preflightNoCardRuntimeSession(
+      *verified, EntryId(0), bindings, environment);
+  ASSERT_TRUE(static_cast<bool>(plan)) << llvm::toString(plan.takeError());
+  ASSERT_EQ(plan->resources.size(), 4u);
+  EXPECT_EQ(plan->resources.back().role,
+            PackageResourceRole::TransportStatus);
+  EXPECT_FALSE(plan->resources.back().externallyBound);
+  EXPECT_TRUE(std::holds_alternative<DirectDTETransportRequirements>(
+      plan->transport));
+}
+
 } // namespace

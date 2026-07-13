@@ -14,7 +14,7 @@
 # RUN: not wafer-run --package-dir %t.bad-package --entry-id 0 --no-card 2>&1 | FileCheck %s --check-prefix=DIGEST
 # RUN: not wafer-run --package-dir %S/../Tools --entry-id 0 --no-card 2>&1 | FileCheck %s --check-prefix=LEGACY
 
-# PLAN: package: id=0 schema=1 ranks=1
+# PLAN: package: id=0 schema=2 ranks=1
 # PLAN: target: wafer-tx81-single-card runtime_abi=wafer-tx81-kernel-v1 module_format=elf-riscv64
 # PLAN: entry: 0 rank=0 symbol=main
 # PLAN: module: 0 path=modules/rank_00000.so

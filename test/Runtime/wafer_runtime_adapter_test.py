@@ -68,7 +68,7 @@ class WaferRuntimeAdapterTest(unittest.TestCase):
             package = self.make_package(pathlib.Path(temporary))
             result = self.run_adapter(package, "--no-card")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("package: id=0 schema=1 ranks=1", result.stdout)
+        self.assertIn("package: id=0 schema=2 ranks=1", result.stdout)
         self.assertIn("board_execution: false", result.stdout)
 
     def test_cpp_rejection_is_forwarded(self) -> None:

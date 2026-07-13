@@ -122,6 +122,7 @@ TEST_F(DirectDTETransportTest, MatchesCompleteDomainAndAttachesTypedBinding) {
   EXPECT_EQ(send.getBinding()->getAllocationProfile(),
             wafer::DTEAllocationProfile::Normal);
   EXPECT_EQ(send.getBinding()->getReceiverFsmId(), 0);
+  EXPECT_EQ(send.getBinding()->getRemoteReceiverOffset(), 65792);
   EXPECT_EQ(send.getBinding()->getCompletionProfile(),
             wafer::DTECompletionProfile::SenderWaitReceiverFSM);
 }

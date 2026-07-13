@@ -1,3 +1,16 @@
+## 2026-07-13 Direct DTE rank-local lowering的remote address与sender阻塞
+
+- 现象：all-rank acceptance只记录FSM/profile时，rank module分拆后的sender只剩本地source op，无法重算peer
+  receiver planned SPM offset；若CRT在`dte_send` issue处立即执行blocking `direct_sync_wait`，所有rank采用
+  send-then-recv schedule时会在任何receiver post ready前形成全局环形等待。
+- 根因：把“all-rank matcher可派生”误当成“独立rank target module仍可派生”，并把IR async issue机械映射成
+  public helper的blocking readiness handshake。
+- 修复模式：cross-rank acceptance把receiver planned start作为typed `remote_receiver_offset`提交到matched pair
+  binding；target验证recv binding等于本地accepted address。CRT send prepare只生成opaque event并保存descriptor，
+  recv prepare先初始化FSM和post ready；同block wait再执行sender sync/attach/send/wait/release。
+- 防复发：跨artifact分拆前逐字段检查下游是否仍有重算上下文；blocking helper不能仅凭函数名对应到async issue，
+  必须按完整rank schedule检查progress/deadlock。真实16-rank正向包和rank-15 late-failure gate不能由单rank手写IR替代。
+
 ## 2026-07-13 ExecutableBundle测试中的MLIR context析构顺序
 
 - 现象：测试直接调用internal bundle builder成功后，在测试退出销毁原始grouped `OwningOpRef`时于

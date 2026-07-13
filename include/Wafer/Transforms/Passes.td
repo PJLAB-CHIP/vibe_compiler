@@ -75,7 +75,14 @@ def LowerInstrToTargetLLVMPass
     Option<"defaultDDRArenaArgumentIndex",
            "default-ddr-arena-argument-index", "int64_t", /*default=*/"-1",
            "Entry argument carrying the default DDR arena base; -1 rejects "
-           "compiler-managed DDR allocations">
+           "compiler-managed DDR allocations">,
+    Option<"logicalRank", "logical-rank", "int64_t", /*default=*/"-1",
+           "Logical rank whose accepted Direct DTE endpoints are lowered; "
+           "required when Direct DTE instructions are present">,
+    Option<"transportStatusArgumentIndex",
+           "transport-status-argument-index", "int64_t", /*default=*/"-1",
+           "Entry i64 argument carrying the launch-observable Direct DTE "
+           "status address; required when Direct DTE instructions are present">
   ];
 }
 

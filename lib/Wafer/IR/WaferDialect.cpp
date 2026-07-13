@@ -527,12 +527,15 @@ DTEMessageAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
 mlir::LogicalResult DirectDTEBindingAttr::verify(
     llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
     DTEAllocationProfile allocationProfile, int64_t receiverFsmId,
-    DTECompletionProfile completionProfile) {
+    int64_t remoteReceiverOffset, DTECompletionProfile completionProfile) {
   (void)allocationProfile;
   (void)completionProfile;
   if (receiverFsmId < 0 || receiverFsmId > 3)
     return emitError()
            << "direct_dte_binding receiver FSM id must be within [0, 3]";
+  if (remoteReceiverOffset < 0)
+    return emitError()
+           << "direct_dte_binding remote receiver offset must be non-negative";
   return mlir::success();
 }
 

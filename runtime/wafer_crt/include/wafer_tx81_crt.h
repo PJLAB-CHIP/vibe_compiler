@@ -20,6 +20,23 @@ void wafer_tx81_tdma_pad(uint64_t src, uint64_t dst, uint32_t src_n, uint32_t sr
 void wafer_tx81_tdma_img2col(uint64_t src, uint64_t dst, uint32_t src_n, uint32_t src_h, uint32_t src_w, uint32_t src_c, uint32_t dst_n, uint32_t dst_h, uint32_t dst_w, uint32_t dst_c, uint32_t pad_top, uint32_t pad_bottom, uint32_t pad_left, uint32_t pad_right, uint32_t kernel_x, uint32_t kernel_y, uint32_t stride_x, uint32_t stride_y, uint32_t format);
 void wafer_tx81_local_fence(void);
 
+enum {
+  WAFER_TX81_DIRECT_DTE_STATUS_PENDING = 0,
+  WAFER_TX81_DIRECT_DTE_STATUS_SUCCESS = 1,
+  WAFER_TX81_DIRECT_DTE_STATUS_TRANSPORT_ERROR = 2,
+};
+
+void wafer_tx81_direct_dte_begin(uint64_t status_addr, uint32_t rank_count);
+uint64_t wafer_tx81_direct_dte_send_prepare(
+    uint64_t src, uint64_t remote_dst, uint32_t byte_count,
+    uint32_t local_tile, uint32_t remote_tile, uint32_t remote_fsm_id,
+    uint32_t is_high_performance);
+uint64_t wafer_tx81_direct_dte_recv_prepare(
+    uint64_t dst, uint32_t byte_count, uint32_t local_tile,
+    uint32_t remote_tile, uint32_t local_fsm_id);
+void wafer_tx81_direct_dte_wait(uint64_t event);
+void wafer_tx81_direct_dte_finish(void);
+
 void wafer_tx81_elementwise_abs(uint64_t src, uint64_t dst, uint32_t elem_count, uint32_t format);
 void wafer_tx81_elementwise_recip(uint64_t src, uint64_t dst, uint32_t elem_count, uint32_t format);
 void wafer_tx81_elementwise_square(uint64_t src, uint64_t dst, uint32_t elem_count, uint32_t format);

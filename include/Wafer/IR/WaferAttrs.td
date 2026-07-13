@@ -192,18 +192,22 @@ def Wafer_DirectDTEBindingAttr
     Records the physical choices that cannot be recomputed from a logical DTE
     issue, the exact execution mesh, and accepted memory offsets. The public
     Direct DTE ABI selects an allocation profile rather than an exact DTE id,
-    so this attribute does not invent a channel id. Endpoint, address, byte
-    range, and message identity remain represented by the operation, topology,
-    and planned buffer.
+    so this attribute does not invent a channel id. The remote receiver offset
+    is the cross-rank accepted memory fact that a rank-local sender cannot
+    recompute after executable modules are separated. Local address, endpoint,
+    byte range, and message identity remain represented by the operation,
+    topology, and planned buffer.
   }];
   let parameters = (ins
     "wafer::DTEAllocationProfile":$allocationProfile,
     "int64_t":$receiverFsmId,
+    "int64_t":$remoteReceiverOffset,
     "wafer::DTECompletionProfile":$completionProfile
   );
   let assemblyFormat = [{
     `<` `allocation` `=` $allocationProfile `,`
         `receiver_fsm` `=` $receiverFsmId `,`
+        `remote_receiver_offset` `=` $remoteReceiverOffset `,`
         `completion` `=` $completionProfile `>`
   }];
   let genVerifyDecl = 1;

@@ -127,6 +127,8 @@ runtime::PackageResourceRole getPackageRole(KernelABISlotRole role) {
     return runtime::PackageResourceRole::Output;
   case KernelABISlotRole::Workspace:
     return runtime::PackageResourceRole::Workspace;
+  case KernelABISlotRole::TransportStatus:
+    return runtime::PackageResourceRole::TransportStatus;
   }
   llvm_unreachable("unknown kernel ABI slot role");
 }
@@ -142,6 +144,7 @@ ProgramResourceRole getProgramRole(KernelABISlotRole role) {
   case KernelABISlotRole::Output:
     return ProgramResourceRole::Output;
   case KernelABISlotRole::Workspace:
+  case KernelABISlotRole::TransportStatus:
     llvm_unreachable("workspace has no program resource binding");
   }
   llvm_unreachable("unknown kernel ABI slot role");
@@ -156,6 +159,7 @@ runtime::PackageAccessMode getAccess(KernelABISlotRole role) {
   case KernelABISlotRole::Output:
     return runtime::PackageAccessMode::WriteOnly;
   case KernelABISlotRole::Workspace:
+  case KernelABISlotRole::TransportStatus:
     return runtime::PackageAccessMode::ReadWrite;
   }
   llvm_unreachable("unknown kernel ABI slot role");
@@ -204,13 +208,15 @@ buildManifest(const ExecutableBundle &executableBundle,
     entry.module = runtime::ModuleId(logicalRank);
     entry.symbol = target.getEntrySymbol().str();
     entry.terminalCompletion = runtime::CompletionId(logicalRank);
+    std::optional<runtime::ResourceId> transportStatusResource;
 
     for (const KernelABISlot &slot : target.getKernelABISlots()) {
       if (slot.ordinal != static_cast<int64_t>(entry.slots.size()) ||
           slot.byteSize <= 0 || slot.alignment <= 0)
         return fail(diagnostics,
                     "package input Kernel ABI slots are not canonical");
-      if (slot.role != KernelABISlotRole::Workspace) {
+      if (slot.role != KernelABISlotRole::Workspace &&
+          slot.role != KernelABISlotRole::TransportStatus) {
         const RankProgramBinding *binding = nullptr;
         size_t bindingPosition = 0;
         for (auto [position, candidate] :
@@ -231,9 +237,19 @@ buildManifest(const ExecutableBundle &executableBundle,
                       "package ABI slot does not match executable resource "
                       "binding");
         usedProgramBindings[bindingPosition] = true;
-      } else if (slot.resourceIndex != 0 || slot.name != "default_ddr_arena") {
+      } else if (slot.role == KernelABISlotRole::Workspace &&
+                 (slot.resourceIndex != 0 ||
+                  slot.name != "default_ddr_arena")) {
         return fail(diagnostics,
                     "package workspace ABI slot identity is invalid");
+      } else if (slot.role == KernelABISlotRole::TransportStatus &&
+                 (slot.resourceIndex != 0 ||
+                  slot.name != "direct_dte_status" || slot.dtype != "u32" ||
+                  slot.shape != std::vector<int64_t>{1} ||
+                  slot.byteSize != 4 || slot.alignment != 4 ||
+                  transportStatusResource)) {
+        return fail(diagnostics,
+                    "package Direct DTE status ABI slot identity is invalid");
       }
 
       runtime::PackageResourceRecord resource;
@@ -246,7 +262,11 @@ buildManifest(const ExecutableBundle &executableBundle,
       resource.bytes = static_cast<uint64_t>(slot.byteSize);
       resource.alignment = static_cast<uint64_t>(slot.alignment);
       resource.access = getAccess(slot.role);
-      resource.hostVisible = slot.role != KernelABISlotRole::Workspace;
+      resource.hostVisible =
+          slot.role != KernelABISlotRole::Workspace &&
+          slot.role != KernelABISlotRole::TransportStatus;
+      if (slot.role == KernelABISlotRole::TransportStatus)
+        transportStatusResource = resource.id;
       entry.slots.push_back(
           {static_cast<uint64_t>(slot.ordinal), resource.id, resource.access});
       manifest.resources.push_back(std::move(resource));
@@ -255,6 +275,17 @@ buildManifest(const ExecutableBundle &executableBundle,
       return fail(diagnostics,
                   "package ABI slots omit executable program resource "
                   "bindings");
+
+    if (rank.getTransportContract() == TransportContract::DirectDTE) {
+      if (!transportStatusResource)
+        return fail(diagnostics,
+                    "Direct DTE entry is missing its transport status slot");
+      entry.transport = runtime::DirectDTETransportRequirements{
+          *transportStatusResource, runtime::kDirectDTEStatusABI.str(), true};
+    } else if (transportStatusResource) {
+      return fail(diagnostics,
+                  "transport status slot exists without Direct DTE contract");
+    }
 
     manifest.modules.push_back({runtime::ModuleId(logicalRank), logicalRank,
                                 target.getRelativePath().str(),

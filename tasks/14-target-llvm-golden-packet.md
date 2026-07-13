@@ -5,7 +5,7 @@ ABI、device link和近期staged target module合同。实现状态看`tasks/pro
 
 底层register/wrapper事实见`docs/wafer-register-level-instruction-spec.md`和
 `docs/tx8-deps-reverse-engineering/`；production symbol事实源是当前instruction lowering、
-`runtime/wafer_crt/include/wafer_tx81_crt.h`及symbol/conformance checker，不在本文复制104项表格。
+`runtime/wafer_crt/include/wafer_tx81_crt.h`及symbol/conformance checker，不在本文复制109项表格。
 
 ## 1. 目标和非目标
 
@@ -24,7 +24,8 @@ ABI、device link和近期staged target module合同。实现状态看`tasks/pro
 - 不把CRT symbol存在等同于packet、numeric或board correctness；
 - 近期不实现WCRE、Protobuf identity schema、global registry、ELF ABI note、双fingerprint或完整
   `TargetArtifactSet`对象；
-- Direct DTE只有endpoint/slot/completion合同闭合后才能进入production target module。
+- Direct DTE只有accepted remote receiver offset、endpoint/slot/completion合同闭合后才能进入
+  production target module；发送端不能假定各rank的SPM allocation恰好同址。
 
 ## 2. Pipeline Contract
 
@@ -76,8 +77,9 @@ conversion。它不得再次执行direct group-to-tile/instr或memory planning�
    summary精确alias某个DDR参数。
 4. standard SCF→CF后，typed patterns在原block改写instruction、func/call/return、Wafer memref/view和arith/CF；
    `applyFullConversion`把Wafer/func/memref/arith/CF/SCF列为illegal，成功结果只允许module/LLVM dialect。
-5. Direct DTE在Q16.T的physical transport/endpoint binding和CRT support完成前以
-   `unsupported_target_transport`拒绝；默认target pass对没有explicit arena base binding的compiler-managed
+5. Direct DTE只消费Q16.T committed physical binding：exact单卡mesh把logical rank/peer映射为tile endpoint，
+   send/recv返回CRT opaque i64 event并由wait消费，entry以provider-managed status i64 slot注入begin/finish；缺binding、
+   status或remote receiver offset不一致以`unsupported_target_transport`拒绝。默认target pass对没有explicit arena base binding的compiler-managed
    DDR allocation仍以`unsupported_target_address`拒绝。Q17先从accepted rank重算workspace high-water，追加typed
    i64 arena-base slot并显式传argument index，lowering才生成`base + offset`；arena-relative offset不会被常量化成
    absolute device address。
@@ -156,7 +158,7 @@ CRT wrapper只把verified fields传给public Tsm/instruction adapter；不重新
 
 当前已验证的窄边界：
 
-- 104个production symbol在header/source/symbol checker/device link闭合；
+- 109个production symbol在header/source/symbol checker/device link闭合；
 - lowering使用fixed LLVM function type，不使用vararg call；
 - `wafer_tx81_mask_move`在compiler call、CRT header/source和conformance checker中均使用显式
   `uint32_t mask`，wrapper内部不再隐藏pointer-width到uint32 narrowing；
@@ -237,8 +239,8 @@ diagnostic按稳定语义分类：
 
 ## 10. Planned And Deferred Extensions
 
-- Direct DTE target activation正由Q16.T实施：只消费tasks/13定义的typed accepted binding，补齐CRT wrapper、
-  typed lowering、required/allowed symbol和all-rank late-failure atomic gate；在Q16.T完成前仍保持target-illegal；
+- Direct DTE target activation已由Q16.T闭合：只消费tasks/13定义的typed accepted binding，CRT wrapper、opaque event、
+  status ABI、required/allowed symbol、真实16-rank ELF和late-failure atomic gate已通过；board execution仍属Q6.B；
 - low-precision/quant ABI：等待instruction geometry和CPU/reference semantics；
 - stable cross-process Kernel ABI descriptor；
 - ELF ABI note、toolchain fingerprint和content-addressed cache；

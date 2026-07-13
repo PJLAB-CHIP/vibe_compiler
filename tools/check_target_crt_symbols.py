@@ -20,7 +20,7 @@ SOURCE_SYMBOL_RE = re.compile(
     r"\b(wafer_tx81_[A-Za-z0-9_]+)\b(?=\s*[\(,])"
 )
 PROTOTYPE_RE = re.compile(
-    r"\bvoid\s+(wafer_tx81_[A-Za-z0-9_]+)\s*\(([^;{}]*)\)\s*;",
+    r"\b(?:void|uint64_t)\s+(wafer_tx81_[A-Za-z0-9_]+)\s*\(([^;{}]*)\)\s*;",
     re.MULTILINE | re.DOTALL,
 )
 STATIC_TARGET_SYMBOL_RE = re.compile(

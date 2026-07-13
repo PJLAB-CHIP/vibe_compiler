@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "program": {
     "id": 0
   },
@@ -94,7 +94,10 @@
           "access": "read_write"
         }
       ],
-      "terminal_completion": 0
+      "terminal_completion": 0,
+      "transport": {
+        "kind": "none"
+      }
     }
   ],
   "completions": [

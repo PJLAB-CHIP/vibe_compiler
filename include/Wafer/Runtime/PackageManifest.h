@@ -11,16 +11,19 @@
 #include <limits>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace wafer::runtime {
 
-inline constexpr uint32_t kPackageManifestSchemaVersion = 1;
+inline constexpr uint32_t kPackageManifestSchemaVersion = 2;
 inline constexpr llvm::StringLiteral kPackageManifestFileName = "manifest.json";
 inline constexpr llvm::StringLiteral kSingleCardTargetIdentity =
     "wafer-tx81-single-card";
 inline constexpr llvm::StringLiteral kKernelRuntimeABI = "wafer-tx81-kernel-v1";
 inline constexpr llvm::StringLiteral kRiscv64ELFModuleFormat = "elf-riscv64";
+inline constexpr llvm::StringLiteral kDirectDTEStatusABI =
+    "wafer-direct-dte-status-v1";
 
 template <typename Tag> class StrongId {
 public:
@@ -59,6 +62,7 @@ enum class PackageResourceRole {
   Constant,
   Output,
   Workspace,
+  TransportStatus,
 };
 
 enum class PackageAccessMode { ReadOnly, WriteOnly, ReadWrite };
@@ -95,6 +99,17 @@ struct PackageModuleRecord {
   std::string format;
 };
 
+struct NoTransportRequirements {};
+
+struct DirectDTETransportRequirements {
+  ResourceId statusResource;
+  std::string statusABI = kDirectDTEStatusABI.str();
+  bool hostWatchdogRequired = true;
+};
+
+using TransportRequirements =
+    std::variant<NoTransportRequirements, DirectDTETransportRequirements>;
+
 struct PackageEntrypointRecord {
   EntryId id;
   int64_t logicalRank = -1;
@@ -102,6 +117,7 @@ struct PackageEntrypointRecord {
   std::string symbol;
   std::vector<PackageABISlotBinding> slots;
   CompletionId terminalCompletion;
+  TransportRequirements transport;
 };
 
 struct PackageCompletionRecord {
@@ -182,6 +198,9 @@ struct RuntimeEnvironment {
   std::string runtimeABI;
   std::string moduleFormat;
   uint64_t maxResourceBytes = std::numeric_limits<uint64_t>::max();
+  bool supportsDirectDTE = false;
+  std::string directDTEStatusABI;
+  bool supportsHostWatchdog = false;
 };
 
 struct PlannedRuntimeResource {
@@ -203,6 +222,7 @@ struct RuntimeSessionPlan {
   std::vector<PlannedRuntimeResource> resources;
   std::vector<ResourceId> launchOrder;
   bool executesBoard = false;
+  TransportRequirements transport;
 };
 
 llvm::Expected<RuntimeSessionPlan> preflightNoCardRuntimeSession(
