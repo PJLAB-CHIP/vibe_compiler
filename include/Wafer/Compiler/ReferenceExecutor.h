@@ -1,0 +1,80 @@
+//===- ReferenceExecutor.h - Accepted-rank semantic execution -*- C++ -*-===//
+
+#ifndef WAFER_COMPILER_REFERENCEEXECUTOR_H
+#define WAFER_COMPILER_REFERENCEEXECUTOR_H
+
+#include "Wafer/Compiler/Compilation.h"
+
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/Support/Error.h"
+
+#include <cstdint>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace wafer::compiler {
+
+/// Owner-backed compact row-major tensor at a typed program boundary.
+class ReferenceTensor {
+public:
+  static llvm::Expected<ReferenceTensor> create(llvm::StringRef dtype,
+                                                llvm::ArrayRef<int64_t> shape,
+                                                llvm::ArrayRef<uint8_t> bytes);
+
+  llvm::StringRef getDType() const { return dtype; }
+  llvm::ArrayRef<int64_t> getShape() const { return shape; }
+  llvm::ArrayRef<uint8_t> getBytes() const { return bytes; }
+
+private:
+  ReferenceTensor(std::string dtype, std::vector<int64_t> shape,
+                  std::vector<uint8_t> bytes)
+      : dtype(std::move(dtype)), shape(std::move(shape)),
+        bytes(std::move(bytes)) {}
+
+  std::string dtype;
+  std::vector<int64_t> shape;
+  std::vector<uint8_t> bytes;
+};
+
+/// Exact non-output program resource supplied to one accepted rank.
+struct ReferenceInputBinding {
+  ProgramResourceRole role;
+  int64_t index;
+  ReferenceTensor tensor;
+};
+
+struct ReferenceOutputBinding {
+  int64_t index;
+  ReferenceTensor tensor;
+};
+
+/// Complete logical outputs produced after the accepted rank returns.
+class ReferenceExecutionResult {
+public:
+  int64_t getLogicalRank() const { return logicalRank; }
+  const std::vector<ReferenceOutputBinding> &getOutputs() const {
+    return outputs;
+  }
+
+private:
+  friend struct ReferenceExecutionResultBuilder;
+
+  ReferenceExecutionResult(int64_t logicalRank,
+                           std::vector<ReferenceOutputBinding> outputs)
+      : logicalRank(logicalRank), outputs(std::move(outputs)) {}
+
+  int64_t logicalRank;
+  std::vector<ReferenceOutputBinding> outputs;
+};
+
+/// Executes the already-selected instruction and accepted memory facts of one
+/// rank. It never reruns candidate selection or reconstructs semantic roles
+/// from names.
+llvm::Expected<ReferenceExecutionResult>
+executeReferenceRank(const ExecutableBundle &bundle, int64_t logicalRank,
+                     llvm::ArrayRef<ReferenceInputBinding> inputs);
+
+} // namespace wafer::compiler
+
+#endif // WAFER_COMPILER_REFERENCEEXECUTOR_H

@@ -1,3 +1,13 @@
+## 2026-07-13 ExecutableBundle测试中的MLIR context析构顺序
+
+- 现象：测试直接调用internal bundle builder成功后，在测试退出销毁原始grouped `OwningOpRef`时于
+  `mlir::Operation::~Operation`段错误。
+- 根因：builder把传入的shared context移动给返回的`ExecutableBundle`；若原始module比bundle活得更久，bundle先
+  析构context，随后原始module在失效context上析构。
+- 修复模式：builder成功后、bundle仍存活时立即销毁原始module；生产目录入口本身不暴露这组并存owner。
+- 防复发：internal builder测试必须显式检查`Expected`并在返回bundle后重置source `OwningOpRef`，不能依赖局部变量的
+  默认逆序析构恰好安全。
+
 ## 2026-06-01 pinned-XLA SPMD helper MLIRContext lifetime crash
 
 - 现象：`wafer_xla_spmd_partitioner` 构建成功，但写 partitioned program directory 时空 stderr 段错误。

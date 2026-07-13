@@ -1,3 +1,12 @@
+## Accepted executable的reference测试
+
+- reference数值测试应从group/tensor IR调用Q16 `buildExecutableBundle`，让candidate selection、bufferization、
+  instruction lowering和memory planning真实执行；手写selected instruction IR只适合负例补充。
+- `ReferenceTensor`是compact row-major program-boundary payload，executor内部用shared DDR/SPM arena和accepted offset
+  表达physical storage，再通过`computeWaferPhysicalElementByteOffset`访问logical element。descriptor movement必须先
+  完整读取payload再写回，才能在source/dest alias时保持确定语义。
+- internal bundle builder把shared MLIR context转移给返回bundle；测试要在bundle存活期间销毁source module。
+
 ## Wafer compiler local build harness
 
 - `tasks/progress.md` 是任务队列，不是设计合同。确定下一步时先定位队列项，再读该项指向的编号

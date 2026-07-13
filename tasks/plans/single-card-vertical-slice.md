@@ -112,6 +112,8 @@ manifest/package late failure不发布partial package。
 
 状态：进行中；当前对应Q19，Q20/Q21仍等待reference gate。
 
+- Q19 executor只接受Q16 `ExecutableBundle`和typed role/index invocation tensors，直接解释accepted
+  memref/instruction/control-flow facts；不读取planner trace或IR文本。
 - 单rankexecutor先覆盖linear/MLP所需RDMA/WDMA、GEMM、elementwise和accepted offsets。
 - 多rankexecutor加入DTE send/recv/wait和tiny Llama所需instruction子集，并检测peer mismatch/deadlock。
 - 真实exporter固定source revision/config/seed/dtype/shape和CPU reference。

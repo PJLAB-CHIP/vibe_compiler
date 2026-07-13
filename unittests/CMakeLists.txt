@@ -2,6 +2,7 @@ wafer_require_gtest()
 
 add_executable(WaferUnitTests
   Compiler/CompilationTest.cpp
+  Compiler/ReferenceExecutorTest.cpp
   Conversion/WaferGroupToTileRegionTest.cpp
   Dialect/Wafer/WaferDialectTest.cpp
   Dialect/Wafer/WaferInterfacesTest.cpp

@@ -229,6 +229,36 @@ wait timeout/error使dependent runtime state poison，禁止后续copyback/publi
 
 executor输入必须是accepted rank instruction/memory facts，不得读取planner trace或重新选择candidate。
 
+```text
+Pipeline position:
+- Upstream artifact / IR:
+  Q16 move-only ExecutableBundle中的all-and-only RankExecutable；每rank module已经覆盖完整static traversal，
+  带typed program bindings、Wafer DDR/SPM memref、accepted offsets、descriptor attrs、structured control flow、
+  instruction ops和terminal completion facts。调用方另提供按ProgramResourceRole/index精确绑定的local tensors。
+- Current stage responsibility:
+  直接解释accepted memref SSA/view和instruction semantics，维护每rank独立DDR/SPM storage；按descriptor执行
+  movement，按logical-to-physical layout helper执行compute，按structured control flow和显式DTE token推进；
+  对unsupported op/dtype/rounding/transport返回typed failure，不重新做candidate、memory或transport planning。
+- Output artifact / IR:
+  owner-backed ReferenceExecutionResult，包含按output role/index标识的完整local tensor bytes；多rank执行另产生
+  all-and-only rank results和可重组global output。整数/bitwise结果exact，浮点比较使用调用方显式tolerance。
+- Downstream consumer:
+  Q20 rank-count=1/16 linear-residual MLP完整输出比较，随后Q21 tiny Llama和board结果诊断；reference结果不进入
+  package、target module或runtime launch。
+- User-level driver / named pipeline:
+  Q19先提供只接受ExecutableBundle的typed C++ API和unit gate；Q20再由同一wafer-compile纵向入口把真实exported
+  workload的accepted bundle、source-backed invocation payload和CPU expected接到该API。wafer-opt dump和手写IR只补
+  op-level negative coverage，不是纵向完成入口。
+- Explicit non-goals:
+  不模拟target packet、queue timing、hardware rounding bug、provider lifecycle或board completion；不从文件名、
+  symbol、buffer名、module打印文本或planner trace恢复resource/shape/offset；不接受未通过Q16 gate的module冒充
+  committed rank artifact。
+- Completion gate:
+  rank-count=1真实linear-residual MLP从accepted bundle执行并比较完整输出；RDMA/WDMA、layout movement、GEMM、
+  elementwise/fill/convert和offset/descriptor/dtype negatives闭合。随后16-rank独立memory及DTE send/recv/wait的
+  peer/bytes/token/progress/deadlock gate闭合，真实16-rank linear结果可重组并与CPU global output比较。
+```
+
 单rank最低子集：
 
 - DDR/SPM typed buffers和accepted offsets；
@@ -246,6 +276,13 @@ executor输入必须是accepted rank instruction/memory facts，不得读取plan
 - tiny Llama当前实际需要的collective schedule。
 
 比较完整输出tensor，不只比较shape/digest。tolerance按dtype/op定义并记录；整数/bitwise要求exact。
+
+当前单rankcheckpoint已经建立`ExecutableBundle + logicalRank + typed role/index tensors`入口。实现按accepted
+DDR/SPM offset建立独立arena，按descriptor执行alias-safe movement，并复用Wafer physical layout helper完成logical
+element访问；group经过production selection/lowering后形成的residual MLP已覆盖RDMA、WDMA、tensor/Cx movement、
+两次GEMM、bias broadcast、tanh、residual add和完整f32输出比较。descriptor byte count、缺失accepted offset及
+boundary dtype不一致均为hard failure。该checkpoint不把Q19标成完成：convert rounding、structured control flow和
+DTE多rank progress/deadlock仍是本任务剩余gate。
 
 ## 10. Q20/Q21 Vertical Workload Gates
 
