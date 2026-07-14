@@ -183,15 +183,15 @@
   未lower的DDR `memref.copy`，也不得把arena-relative offset常量化为device address。slot和workspace的最低对齐必须
   取自生成Q16 memory plan的同一target policy，再与alloc显式更强alignment取最大值，不能另写较小magic number。
 
-## 2026-07-13 多字段 JSON parser 必须逐字段消费 `Expected`
+## 2026-07-13 多字段 JSON parser 必须消费每个 `Expected`
 
 - 现象：typed manifest在较小`maxStringBytes`下会让多个target字符串同时解析失败；parser返回第一项error前，
   其它仍含error的`llvm::Expected`析构，进程以“Expected must be checked”直接abort，而不是fail closed。
 - 根因：为写法紧凑，先并行构造多个`Expected<T>`再统一检查。LLVM要求每一份error都被显式消费；提前return无法替
   调用方处理同scope中的其它error owners。
-- 修复模式：外部格式parser按schema顺序逐字段解析并立即检查，只有前一个成功才构造下一个`Expected`。limit、类型、
-  unknown field和多字段同时损坏测试都必须证明返回结构化error且进程不崩溃；不要用一组`Expected`的布尔析取做批量
-  validation。
+- 修复模式：外部格式parser可以按schema顺序逐字段解析并立即检查；若为同时报告多个字段错误而并行构造，则必须用统一
+  helper对每个失败值调用`takeError()`并以`joinErrors`聚合后再return。limit、类型、unknown field和多字段同时损坏测试
+  都必须证明返回结构化error且进程不崩溃；禁止只用一组`Expected`的布尔析取后提前返回第一项。
 
 ## 2026-07-13 physical offset helper 必须在 layout 分发前统一验证 logical 坐标
 
@@ -311,3 +311,33 @@
 - 根因：`StringRef`只借用`SmallString`当前storage，赋值会先修改或重分配该storage，使右值在拷贝完成前失效。
 - 修复模式：任何会修改owner的操作前，先把派生view复制到独立`std::string`，再赋回`SmallString`；同类规则也适用于
   `drop_front`、`parent_path`和split得到的view。路径负例应在assert-enabled LLVM构建中运行。
+
+## 2026-07-14 oneDNN runtime hash不能代替受管source commit
+
+- 现象：从release archive构建的oneDNN在`dnnl::version()`中可能返回`hash = "N/A"`；若把该字段强行与受管Git commit
+  比较，正确的固定构建也会在runtime environment创建时被拒绝。
+- 根因：runtime header/hash只描述上游构建系统写入的version metadata，不保证release archive携带Git worktree信息；
+  source provenance和loaded/runtime ABI identity是不同证据层。
+- 修复模式：受管record独立绑定archive SHA-256、期望commit、configure options和最终library SHA-256；runtime只核对
+  header/runtime version、`DNNL_VERSION_HASH`一致性、thread runtime和实际library identity。不得从`N/A`猜commit，也不得
+  因version相同而省略受管artifact digest。
+
+## 2026-07-14 受管依赖record中的摘要必须回读对应artifact
+
+- 现象：bulk dependency record记录了source-tree和conformance-log SHA-256，但初版validator只检查摘要字符串格式；重新写一份
+  canonical JSON即可伪造gate完成，配置期仍会接受。
+- 根因：把“record含有digest字段”误当成content closure，没有给每个摘要保留canonical artifact path并重新读取实际bytes；
+  最终library校验不能反向证明source和gate真的来自受管producer。
+- 修复模式：record同时绑定原始archive、解包source tree、每个gate的唯一相对log路径及最终install artifacts；validator对
+  archive pin、archive-derived tree digest、当前解包tree、gate log和install artifact逐项重算，拒绝missing/symlink/escape/
+  duplicate log。任何只存digest而无法定位并回读artifact的字段都只能算声明，不能进入完成证据。
+
+## 2026-07-14 低精度GEMM不能依赖host native primitive availability
+
+- 现象：直接把F16/BF16 dense memory交给oneDNN MatMul时，F16 row在没有相应FP16 ISA/implementation的host返回
+  `unimplemented`；即使能执行，其内部低精度策略也不自动等于target的F32 fused-accumulator与最终舍入合同。
+- 根因：把“library支持某dtype”误当成当前`NumericSemanticsProfile`可由该host implementation执行的证明，并让host ISA
+  availability进入了本应稳定的adapter语义。
+- 修复模式：对已固定为F32 accumulator的F16/BF16/F32同dtype row，target codec先精确提升为F32 dense input，oneDNN只做
+  一次F32 MatMul，再由formal GEMM finalize按原destination格式舍入并target-pack。其它低精度、TF32或integer profile必须
+  建立独立typed adapter和资格记录，不能沿用这个结论或偷偷fallback到逐MAC scalar loop。

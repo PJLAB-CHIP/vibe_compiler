@@ -33,3 +33,31 @@ if(WAFER_ENABLE_NUMERIC_MODEL_DEPS)
   target_compile_definitions(obj.WaferNumericModel PRIVATE
     THREAD_LOCAL=thread_local)
 endif()
+
+if(WAFER_ENABLE_BULK_MODEL_DEPS)
+  add_mlir_library(WaferBulkModel
+    PARTIAL_SOURCES_INTENDED
+    BulkQualification.cpp
+    BulkTensorNumeric.cpp
+
+    LINK_LIBS PUBLIC
+    WaferIR
+    WaferNumericModel
+    WaferBulk::oneDNN
+    LLVMTargetParser
+  )
+  target_compile_definitions(obj.WaferBulkModel PRIVATE
+    WAFER_BULK_DEPENDENCY_RECORD_SHA256="${WAFER_BULK_MODEL_DEPS_RECORD_SHA256}"
+    WAFER_BULK_ONEDNN_LIBRARY_SHA256="${WAFER_BULK_MODEL_ONEDNN_LIBRARY_SHA256}"
+    WAFER_BULK_ONEDNN_VERSION="${WAFER_BULK_MODEL_ONEDNN_VERSION}"
+    WAFER_BULK_ONEDNN_COMMIT="${WAFER_BULK_MODEL_ONEDNN_COMMIT}"
+  )
+  # oneDNN's C++ wrapper reports primitive creation/execution failures with
+  # exceptions.  Keep exception support local to the managed backend adapter;
+  # the rest of the compiler retains LLVM's no-exceptions policy.
+  if(MSVC)
+    target_compile_options(obj.WaferBulkModel PRIVATE /EHsc)
+  else()
+    target_compile_options(obj.WaferBulkModel PRIVATE -fexceptions)
+  endif()
+endif()

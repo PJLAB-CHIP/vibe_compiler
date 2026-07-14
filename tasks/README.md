@@ -51,12 +51,13 @@
 
 ## 实施计划导航
 
-当前active计划是Q22.B `tasks/plans/target-bulk-qualification.md`；已完成的Q22.L/Q22.N/Q0.L计划分别归档为
-`tasks/archive/target-llvm-module-bundle.md`、`tasks/archive/target-numeric-foundation.md`和
-`tasks/archive/target-command-legality-closure.md`，Q22.R readiness归档为`tasks/archive/target-model-readiness.md`。Q22.L完成且
+当前没有active实施计划；Q22.B/Q22.L/Q22.N/Q0.L计划分别归档为
+`tasks/archive/target-bulk-qualification.md`、`tasks/archive/target-llvm-module-bundle.md`、
+`tasks/archive/target-numeric-foundation.md`和`tasks/archive/target-command-legality-closure.md`，Q22.R readiness归档为
+`tasks/archive/target-model-readiness.md`。Q22.L完成且
 external authorization/spec gate满足后，Q22.H host seam才解锁。Q22.N+Q22.H在Q22.S
-SystemC event model汇合，Q22.B+Q22.S再由Q22.V source vertical闭合并汇总到Q22；各代码任务
-开工前都需独立计划。动态执行状态只看`tasks/progress.md`。
+SystemC event model汇合，已完成的Q22.B与Q22.S再由Q22.V source vertical闭合并汇总到Q22；各代码任务开工前都需
+独立计划。动态执行状态只看`tasks/progress.md`。
 
 ## 归档文档
 
@@ -66,6 +67,7 @@ docs、`tasks/progress.md` 和本轮已收敛设计结论为准。
 
 | 文档 | 原性质 |
 | --- | --- |
+| `tasks/archive/target-bulk-qualification.md` | 已完成Q22.B的受管oneDNN、target-owned adapter、三阶段资格producer和runtime exact-match admission实施记录 |
 | `tasks/archive/target-llvm-module-bundle.md` | 已完成Q22.L的owner-backed all-rank LLVM module、typed readback和single-lowering device-link接入记录 |
 | `tasks/archive/target-numeric-foundation.md` | 已完成Q22.N的typed numeric schema、受管formal依赖、13-format codec和formal kernel实施记录 |
 | `tasks/archive/target-model-readiness.md` | Q21 reduce、numeric/SystemC依赖与host-CRT seam implementation-readiness实证 |

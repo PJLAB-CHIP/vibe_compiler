@@ -1,6 +1,9 @@
 # Target Bulk Qualification 实施计划
 
-本计划对应当前Q22.B，只拆解受管oneDNN、bulk adapter、离线资格记录和runtime admission的施工顺序。formal numeric语义与
+状态：historical/completed。Q22.B已于2026-07-14按本计划闭合；当前合同以tasks/16、tasks/17和
+`tasks/progress.md`为准，本文件只保留施工与审计记录，不再作为active入口。
+
+本计划原对应Q22.B，只拆解受管oneDNN、bulk adapter、离线资格记录和runtime admission的施工顺序。formal numeric语义与
 codec由Q22.N及`tasks/17`拥有，物理layout由`tasks/08`拥有，证据口径由`tasks/16`拥有；状态只看`tasks/progress.md`。
 
 ## Pipeline Contract
@@ -87,3 +90,15 @@ Pipeline position:
 
 Q22.B完成只签发特定semantic/profile/domain/environment下可审计、可重复且fail-closed的bulk admission。它不表示source
 workload已自动dispatch（由Q22.V证明），也不表示Host CRT、SystemC、packet、board numeric或timing完成。
+
+## 完成记录
+
+- 受管oneDNN 3.12固定commit、archive/library digest、license、SEQ/INFERENCE/MATMUL/REORDER build与API smoke；feature-on
+  缺numeric/root/record/identity时configuration fail，feature-off binary无oneDNN/OpenMP/TBB closure。
+- 首批F16/BF16/F32同dtype GEMM由target-owned Cx/NCx codec/layout提升为F32 dense，一次oneDNN MatMul、最多一次weights
+  reorder，再经formal GEMM finalize和target pack提交；64³ row超过runtime formal budget仍无scalar fallback。
+- canonical absolute no-alias/no-replace `calibrate -> freeze -> validate`、finite-payload `profile-bounded` policy、完整
+  environment/descriptor/evidence readback及runtime exact-match admission已闭合；malformed/tampered/environment/budget/
+  reference implementation均fail closed。
+- feature-on base unit 137 pass/1个明确importer skip、numeric 37/37、bulk 12/12、lit 208 pass/41个均为未启用importer的
+  unsupported、CTest 14/14；feature-off base 138/138、lit 248 pass/1个feature-inverse unsupported、CTest 9/9。

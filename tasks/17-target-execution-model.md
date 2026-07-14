@@ -1,7 +1,7 @@
 # Wafer Target Execution Model（CModel）
 
-状态：2026-07-14已完成真实Q21 readiness、Q22.N formal numeric foundation和Q22.L owner-backed target LLVM bundle，
-当前推进Q22.B oneDNN bulk qualification；Host-CRT/SystemC整体执行链仍未实现并受授权gate约束。本文固定以数值正确性为
+状态：2026-07-14已完成真实Q21 readiness、Q22.N formal numeric foundation、Q22.L owner-backed target LLVM bundle和
+Q22.B oneDNN bulk qualification；Host-CRT/SystemC整体执行链仍未实现并受授权gate约束。本文固定以数值正确性为
 近期目标的untimed target execution model、SystemC/TLM边界、实现分层和板端numeric correlation计划；timing calibration
 仅作为deferred extension。任务状态看
 `tasks/progress.md`。本文不复制总体架构、instruction schedule或完整register/
@@ -86,9 +86,9 @@ Pipeline position:
   不复制instruction schedule，不改变manifest语义，不用Q19执行结果驱动target model，不把untimed结果升级为
   board/timing/cycle证据，不用代表rank、手写LLVM、手写packet或单个kernel替代真实纵向链。
 - Completion gate:
-  Q0.L、Q22.N与Q22.L已经完成。Q22.N闭合13种logical codec、有证据的target-profile×engine×format encoding、当前7种
+  Q0.L、Q22.N、Q22.L与Q22.B已经完成。Q22.N闭合13种logical codec、有证据的target-profile×engine×format encoding、当前7种
   compute/convert format、36条convert route、4种确定性舍入和逐family formal conformance；Q22.L原子形成all-rank
-  owner-backed target LLVM bundle；该边界现已完成。Q22.N单独解锁Q22.B oneDNN qualification；Q22.L与external authorization/spec gate
+  owner-backed target LLVM bundle；Q22.B闭合首批F16/BF16/F32 exact-payload `profile-bounded` oneDNN admission。Q22.L与external authorization/spec gate
   共同解锁Q22.H host CRT。Q22.N+Q22.H+既有Q16.T再解锁Q22.S SystemC functional-event model，Q22.B不是Q22.S前置。
   Q22.B+Q22.S+既有Q20/Q21最后由Q22.V重放Q20 f32、source-produced f16/bf16 GEMM、Q21 16-rank tiny Llama和
   deterministic source-backed large GEMM，覆盖all-and-only ranks、authorized host packet、typed ABI、SPM/DDR、
@@ -341,9 +341,9 @@ hook直接合成高层command绕过packet证据。
 | `NumericCommandKey` | static preflight从typed CRT call registry投影、runtime从decoded packet transaction投影的target profile、engine/op kind/variant、operand role/storage dtype、shape/layout、M/K/N/batch、convert kind及fixed optional fields | erased Instr sidecar、任意symbol/string推断、numeric comparator、oneDNN选择、板端阈值 |
 | `NumericSemanticsProfile` | 稳定typed identity/digest；完整operand storage/compute、product、accumulator、intermediate、destination、rounding points、FMA/reduction order、overflow、FTZ/DAZ、NaN/special/status及optional-field顺序 | 单个dtype、host library默认值、按workload临时覆盖的side table |
 | `TargetModelCapability` | `(ModelProfileId, NumericCommandKey)`到唯一`NumericSemanticsProfile` identity的映射，以及shape/layout/descriptor、event/transport、compiler-emittable和hardware evidence状态 | 重复保存压缩的src/accum/dst key、由symbol存在推导支持、扩大compiler legality的规则 |
-| `BulkBackendAdmission` | 完整semantic profile digest、shape/layout adapter、value domain、backend environment和`bit-exact/profile-bounded/rejected`结论 | target numeric semantics、target comparator或“library支持该dtype” |
+| `BulkBackendAdmission` | 完整semantic profile digest、shape/layout adapter、value domain、backend environment和已签发的`bit-exact/profile-bounded`类别；`rejected`表示不产生该对象 | target numeric semantics、target comparator或“library支持该dtype” |
 | `FormalNumericExecutionContext` | non-yielding formal kernel作用域内的profile、model status与MPFR state save/set/clear/capture/restore和显式target status映射；APFloat/APInt每次调用显式传rounding | rank identity、跨SystemC wait的全局/TLS状态、SoftFloat oracle状态或oneDNN worker状态 |
-| `BulkExecutionEnvironment` | oneDNN runtime/threads/ISA/implementation、worker initialization能力、caller fenv恢复和admission provenance | worker native flags到target status的映射、architectural memory或SystemC API |
+| `BulkExecutionEnvironment` | oneDNN runtime/threads/ISA/implementation、当前SEQ caller-worker control readback、caller fenv恢复和admission provenance；未来非SEQ profile再要求逐worker initialization evidence | worker native flags到target status的映射、architectural memory或SystemC API |
 | `TargetModelInvocation` | bundle引用、all-rank typed input/parameter/output binding、checked external resource registration、选定model profile | host pointer伪装的device address、从文件名恢复的rank/resource |
 | `TargetTransaction` | `TsmExecute`返回前复制的packet字段、worker/engine、地址/descriptor、dtype/shape/optional fields和invocation-local sequence identity | caller栈指针、整程序command vector、Q19 schedule或DTE payload的无证据snapshot |
 | `TargetModelResult` | all-and-only rank terminal status、完整output、stable failure stage/rank/transaction、frontend/CRT/packet/numeric/event provenance | partial successful rank集合、回写compiler/package的状态 |
@@ -486,6 +486,12 @@ DTE scheduler。
 
 ### 4.6 oneDNN bulk准入、layout和执行生命周期
 
+本节先区分当前已实现合同和以后新增profile时的约束。Q22.B当前只签发F16/BF16/F32同dtype GEMM的有限payload
+`profile-bounded` row：三个格式经target-owned codec/layout精确提升为F32，oneDNN只执行一次F32 MatMul及最多一次
+weights reorder，随后由formal GEMM finalize舍入回原格式并target-pack。当前不签发`bit-exact`、TF32、integer、跨payload
+domain或timing/performance资格。下面关于解析/穷举证明、非SEQ worker pool、packed-weight/project cache、TF32/int8和
+performance-qualified host profile的规则都是新增对应能力时必须另行实现和验证的扩展门槛，不能反推为Q22.B当前事实。
+
 `NumericBackendPolicy`只决定如何执行已确定的`NumericSemanticsProfile`，不属于compiler IR或硬件语义。每条
 `BulkBackendAdmission`由semantic profile、K/shape/value domain、oneDNN build/runtime、ISA、actual implementation、thread和
 worker environment共同定址；同一semantic profile在不同shape或environment可以有不同结论。每条admission row只能是：
@@ -582,26 +588,22 @@ static shape在preflight创建primitive descriptor；`unimplemented`、unsupport
 input effect前失败。formal scalar path只允许在checked work/MAC budget内执行；超过budget且无admitted bulk时返回
 `bulk_backend_unavailable`，不能悄悄跑慢。显式debug override可允许慢路径，但不计任何正式gate。
 
-bulk qualification与runtime执行是两个独立stage。Q22实现受管host tool `wafer-cmodel-qualify-bulk`，并强制
-`calibrate -> freeze -> validate`三阶段no-replace workflow：calibration invocation只能读取calibration manifest并产生
-immutable calibration record；freeze invocation在任何held-out执行前产生content-addressed
-`BulkBackendQualificationPolicy`，固定`B_backend` comparator/envelope、proof类别、semantic/domain/environment digest、
-calibration manifest/record digest、预注册held-out manifest digest及两集合不重叠证明；validate invocation只读该policy，
-按冻结阈值运行held-out，不能回写或放宽envelope。final record保存三个phase artifact/log digest和顺序校验；同一次看完
-held-out再取最大误差的流程不得签发资格。
+bulk qualification与runtime执行是两个独立stage。受管host tool `wafer-cmodel-qualify-bulk`强制
+`calibrate -> freeze -> validate`三阶段no-replace workflow：calibration只读spec并记录formal/backend比较；freeze在任何
+held-out执行前固定comparator、semantic、adapter、environment、calibration digest和预注册held-out spec/payload/
+destination digest；validate只读policy执行held-out，不能回写或放宽envelope。同一次看完held-out再取最大误差的流程不得
+签发资格。
 
-该tool消费冻结的`NumericSemanticsProfile` registry、shape/layout/value-domain或解析证明、分区corpus和完整backend
-environment，在独立checked offline CPU/time/memory budget下运行formal和oneDNN；该budget可高于runtime MAC budget，但
-仍有timeout/resource limit，debug override结果不得签发资格。成功只产生immutable `BulkBackendQualificationRecord`，包含
-policy/calibration/held-out manifest与phase-log digest、formal/profile/tool/source digest、domain或payload digests、formal
-expected digest、backend output digest、冻结及实际abs/rel/ULP与special-value结果、证明类别、resolved
-descriptors/attrs/implementation、`HostPlatformFingerprint`，以及逐worker fenv/MXCSR readback在内的完整environment。它不进入compiler IR/package、
-不定义target semantics。release/CI把readback验证过的records编入backend registry；runtime只有在profile/domain/environment
-及qualification-policy digest exact match时构造`BulkBackendAdmission`，否则rejected。经验row只能匹配record枚举的payload digest；解析/穷举row按其
-已验证domain matcher。mandatory large GEMM资格必须来自这个offline producer，不能通过runtime debug slow path补做。
+当前tool使用显式formal和bulk byte/scratch/reorder budget运行。final canonical record绑定policy/calibration/spec、semantic、
+adapter、value domain、target/backend comparator、formal/backend output、frozen/observed abs/rel、formal flags、resolved
+descriptor、implementation、MatMul/reorder/formal-FMA计数及完整SEQ environment/backend identity；它不进入compiler IR、
+package或target semantics。runtime readback该record后，只有command、payload、destination、semantic、adapter、environment
+和预期backend output全部exact-match时才构造`BulkBackendAdmission`。当前经验row只能匹配record枚举的payload digest；
+mandatory large GEMM资格必须来自这个offline producer，不能通过runtime debug slow path补做。phase log、wall-clock timeout、
+ULP comparator、解析/穷举domain matcher或release registry若以后需要，必须扩schema并补closed parser/readback gate。
 
 “一次MatMul call”配合formal MAC为零只证明bulk dispatch，不证明SystemC event缩放或性能；event缩放由Q22.V验证。
-optional reorder primitive另行计数。另建pinned-host bulk qualification，记录cold primitive/JIT、
+optional reorder primitive另行计数。未来可另建pinned-host bulk qualification，记录cold primitive/JIT、
 pack/reorder和warm execute，覆盖M=1 decode、正常/批量GEMM和实际source workload；mandatory large profile若落入reference
 implementation则performance不合格。correctness CI不绑定易抖动的绝对wall time，只有标记`performance-qualified`的固定
 host profile使用冻结阈值。cold/JIT数据必须来自fresh subprocess或已证明清空/禁用global primitive cache的环境，不能把
@@ -830,15 +832,16 @@ accepted instruction支持范围；如果硬件可表达但model未覆盖，应�
 
 #### Q22.B bulk qualification
 
-- semantic profile、shape/value domain和完整oneDNN environment共同定址`bit-exact/profile-bounded/rejected` row；exact由
-  中间值/overflow/reduction证明，bounded由解析证明、离散穷举或冻结的有限tested domain支持，finite corpus不得外推；
-- adapter重放`raw snapshot -> target decode/Cx/NCx unpack -> dense -> optional reorder -> oneDNN temp -> target codec/pack
-  -> atomic commit`，覆盖alias、padding/tail/canary、scratch/pack budget、resolved descriptor、cache identity和异常路径；
-  `BulkExecutionEnvironment`另验证caller/实际worker state边界；
-- formal scalar执行使用checked MAC budget；超过budget且无admission时在compute前失败。generated large-GEMM component corpus
-  只证明dispatch和adapter；正式row必须由独立`calibrate -> freeze -> validate`记录签发并在runtime exact-match；
-- pinned-host qualification记录`impl_info_str()`、effective ISA、threads、cold create/JIT、pack/reorder和warm execute；mandatory
-  profile落入reference implementation时不授予`performance-qualified`，correctness不依赖易抖动的绝对wall time。
+- semantic profile、shape/layout、冻结payload和完整oneDNN environment共同定址当前`profile-bounded/rejected` row；有限
+  corpus即使观测raw-exact也不能外推为bit-exact；
+- adapter重放`raw snapshot -> target decode/Cx/NCx unpack -> f32 dense -> optional weights reorder -> oneDNN f32 MatMul
+  -> formal finalize -> target pack -> atomic commit`，覆盖padding/tail、scratch/reorder/total budget、resolved descriptor、
+  destination template和异常路径；
+- 正式row只能由独立`calibrate -> freeze -> validate`canonical no-replace记录签发，readback后runtime精确匹配command、
+  semantic、adapter、payload、destination、environment和预期output。malformed/tampered record、reference implementation或
+  environment control drift在effect前拒绝；
+- generated F16/BF16/F32、batched NCx及64³ component corpus证明一次MatMul、最多一次reorder和零backend formal FMA；
+  64³ row超过runtime formal budget后仍无scalar fallback。source-backed dispatch属于Q22.V，不由本component gate冒充。
 
 #### Q22.L target LLVM module bundle
 
@@ -1082,8 +1085,8 @@ MPFR/GMP分别涉及LGPL及GMP双许可，具体静态/动态分发、source off
 资料确认MPFR 4.2.2要求GMP 5.0以上，故GMP 6.3.0满足版本关系；license文本存在不等于本项目已经完成合规审查。
 readiness candidate source identity为SoftFloat 3e zip SHA-256 `21130ce8...c746`、TestFloat 3e
 `6d4bdf00...ad6`、GMP 6.3.0 `a3c2b802...8898`、MPFR 4.2.2 `b67ba038...ce01`，以及表内两个Git commit；
-Q22.N现已在统一版本文件记录并由bootstrap校验完整digest，表中截断值仍只作可读审计摘要；oneDNN/SystemC的正式引入
-分别留给Q22.B/Q22.S。
+Q22.N现已在统一版本文件记录并由bootstrap校验完整digest，表中截断值仍只作可读审计摘要；oneDNN已经由Q22.B正式
+受管引入，SystemC仍留给Q22.S。
 
 #### 10.0.3 Host CRT、vendor seam和replay阻塞
 
@@ -1101,7 +1104,7 @@ readiness replay还发现`wafer-convert-group-to-tile-region`会创建`async.tok
 
 - Q21 resource census通过并已由Q0.L按tasks/10/11 ordered reduce设计完成fresh source replay；readiness不再是前向blocker。
 - Q22.N已经建立默认关闭的受管source/bootstrap、唯一CMake target、23项build/self-test/identity gate与license artifact
-  closure；Q22.B仍需独立受管oneDNN、qualification record和发布政策，不能把readiness probe当bulk admission。
+  closure；Q22.B随后独立闭合受管oneDNN、qualification record和发布政策，readiness probe本身没有被当作bulk admission。
 - Q22.L已经独立形成owner-backed target LLVM bundle；Q22.H仍受external vendor授权/host-seam事实源阻塞；
   Q22.S/Q22.V继续依赖Q22.H。
 - vendor CModel套件、真实board和hardware numeric/packet/timing仍是external evidence；它们不否定model-only方案，也不能由
@@ -1113,10 +1116,9 @@ readiness replay还发现`wafer-convert-group-to-tile-region`会创建`async.tok
   显式解析required option。tasks/14单一拥有engine×format ABI/register legality，source reduce按init-first canonical-order
   composite展开，elementwise map不再静默丢义；Q22.N/L只消费这些已验证事实，CModel不得补救compiler已丢失或未证明
   合法的command语义；
-- 并行向vendor索取完整host CModel development package：匹配`host_runtime.h`/`runtime_api.h`/`tx_runtime.h`/TsmML headers、
-  `libcmodel_runtime_api.so`、`libhpgr.so`、`libtsmml.so`、model resources和transitive dependency/license/version；同时确认
-  是否存在低层x86 instruction/operator library，并让项目owner/法务确认采购条款是否允许host集成、修改和派生实现；
-  未确认时Q22.H保持blocked，但不阻塞不消费vendor派生事实的Q22.N/Q22.L/Q22.B；
+- 当前不追索或逆向实现封闭vendor CModel package。只有项目owner以后主动提供可用host development package或独立公开规范，
+  并由项目owner/法务确认允许host集成、修改或clean-room实现时，才重新审计对应headers、libraries、resources、transitive
+  dependency、license和version；此前Q22.H保持blocked，但不影响已完成且不消费vendor派生事实的Q22.N/Q22.L/Q22.B；
 - 固定首批target call、dtype/layout、engine、packet、Direct DTE和completion capability matrix；
 - Q22.L已把tasks/14 private prepared target LLVM提升为owner-backed all-rank内部artifact，并让现有device link直接消费；
   该本地artifact不以vendor授权为前置，也不提前执行host CRT/packet；
@@ -1125,11 +1127,12 @@ readiness replay还发现`wafer-convert-group-to-tile-region`会创建`async.tok
   compiler与plain C++ kernels仍可独立构建；feature启用时缺SystemC必须configuration fail，未启用时正式profile明确
   unavailable且Q22 gate未完成，不能由direct shim代替；
 - Q22.N已经把SoftFloat/TestFloat 3e、GNU m4 1.4.21、GMP 6.3.0和MPFR 4.2.2的完整source digest、license、
-  thread/rounding环境、唯一CMake target和上游self-test纳入受管依赖；oneDNN 3.12仍只是Q22.B的readiness-qualified candidate。
+  thread/rounding环境、唯一CMake target和上游self-test纳入受管依赖；Q22.B又把oneDNN 3.12的commit、archive/library
+  digest、SEQ build和MatMul/reorder smoke纳入独立受管record。
   formal numeric tests缺任一该family必需的independent oracle或trusted-TCB conformance dependency时明确unavailable，
   不能以host `float`替代。Q22.N已经固定SoftFloat specialization/`THREAD_LOCAL`、MPFR TLS/runtime版本、self-tested
-  MPFR/GMP artifact到实际loaded shared binary的digest/version/transitive exact-match；仍待Q22.B固定的是oneDNN
-  dispatcher/thread runtime、完整`HostPlatformFingerprint`和binary发布方式，MPFR/GMP的LGPL交付义务仍由发布配置承担。
+  MPFR/GMP artifact到实际loaded shared binary的digest/version/transitive exact-match；Q22.B已经固定oneDNN SEQ
+  dispatcher、caller-worker环境、host platform digest和静态binary identity，MPFR/GMP的LGPL交付义务仍由发布配置承担。
   基础compiler
   不依赖oneDNN，但完整Q22 profile缺oneDNN时必须标记bulk execution unavailable、正式大GEMM gate未完成；
 - 消费Q0.L在tasks/11/14 owner中闭合的shared typed logical-format/physical-encoding registry和typed target
@@ -1250,19 +1253,27 @@ published row只接受F16/BF16/F32同格式RNE；TF32和directed direct-op路径
 
 ### 10.3 Q22.B oneDNN bulk qualification
 
-- 由受管oneDNN source形成唯一CMake target、GEMM adapter和backend registry；使用独立`BulkExecutionEnvironment`，不把
-  worker flags映射为target status；
-- 建立独立`BulkBackendAdmission`。每个semantic profile×shape/value-domain×environment候选通过
-  `calibrate -> freeze -> validate`后进入`bit-exact/profile-bounded/rejected`，分别处理f32、f16/bf16宽累加、
-  TF32-to-f32和i8-to-s32；runtime只接受qualification record与当前host/profile exact-match；
-- formal work budget和fail-fast固定；generated large-shape component gate以dispatch/instrumentation证明mandatory大矩阵命中
-  admitted row且没有逐MAC scalar fallback；另做pinned-host implementation/performance qualification；
-- adapter输入输出只使用Q22.N codec形成的logical dense temporary；oneDNN结果和envelope不能反向修改
-  `NumericSemanticsProfile`或板端comparator。
+- 受管oneDNN 3.12由唯一`WaferBulk::oneDNN`静态target提供，canonical dependency record绑定commit、source/archive、
+  headers/library digest、license、SEQ/INFERENCE/MATMUL/REORDER options和smoke结果。该feature默认关闭；启用时numeric依赖、
+  root或record不完整立即configuration fail，关闭时基础binary无oneDNN/OpenMP/TBB closure。
+- 独立`BulkExecutionEnvironment`固定首版x86-64 SEQ caller-worker、default max ISA、no hints、cache 0、RNE、FTZ=0、DAZ=0
+  和全部异常masked，并绑定且在复用时重验host CPU/features、effective ISA、kernel/libc/loader、affinity及CPU/NUMA
+  topology。执行RAII恢复caller
+  fenv/MXCSR；sticky flags不进入identity，也不映射为target status。
+- 首版`BulkBackendAdmission`只覆盖Q22.N已经发布的F16/BF16/F32同dtype GEMM。target-owned codec/layout先把Cx/NCx physical
+  snapshot精确提升为F32 dense input；oneDNN执行一次F32 MatMul及最多一次weights reorder；Q22.N formal finalize再舍入为原
+  dtype并target-pack。native host FP16/BF16 availability不改变该contract，TF32和integer仍保持未准入。
+- `calibrate -> freeze -> validate`以canonical、absolute、no-alias、no-replace artifacts冻结held-out spec/payload、destination、
+  semantic、adapter、resolution、environment和comparator。有限F32-exact corpus只签发payload精确收缩的
+  `profile-bounded` row，不把raw-exact observation冒充bit-exact证明；final record readback后runtime才可构造exact-match
+  admission。
+- formal和bulk分别使用显式work/byte/scratch/reorder budget。64³ component row超过runtime formal FMA budget后仍只通过
+  admission调用一次MatMul，formal FMA为零；缺record、identity/payload漂移、reference implementation、budget或descriptor
+  失败均无scalar fallback和partial result。
 
-完成：首批GEMM row具有可readback的bulk admission、budget failure和environment mismatch negative；mandatory qualification
-large shape命中admitted backend，reference implementation不冒充performance-qualified。source-backed自动dispatch和完整输出
-仍由Q22.V闭合。
+完成：F16/BF16/F32、Cx/NCx tail、batched row、environment drift、artifact tamper、多字段malformed JSON、budget和
+feature-on/off link closure均已通过；真实CLI三阶段及readback admission已执行。source-backed自动dispatch、SystemC事件和
+完整输出仍由Q22.V闭合，板端numeric及timing分别属于Q22.C/Q22.P。
 
 ### 10.4 Q22.L Owner-backed target LLVM module bundle
 

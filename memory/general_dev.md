@@ -74,6 +74,14 @@
   commit或digest、license入口、导出的唯一CMake target、thread/TLS状态和最小运行结果；probe通过只形成candidate，不能
   替代统一版本文件、受管bootstrap、上游self-test和项目gate。configure始终显式指定source/build目录和工作目录，避免
   把上游临时文件写入repo root。
+- 受管bulk model依赖入口是`python3 tools/bootstrap_deps.py --bulk-model-deps --bulk-jobs <n>`；它从统一版本文件下载、
+  校验并clean-build固定oneDNN，完成API smoke后原子发布`third_party/bulk-model/bulk-model-deps.json`。启用bulk build时
+  必须同时设置`WAFER_ENABLE_NUMERIC_MODEL_DEPS=ON`和`WAFER_ENABLE_BULK_MODEL_DEPS=ON`；CMake只消费canonical record
+  生成的`WaferBulk::oneDNN`，不在配置期联网或fallback到system oneDNN。
+- bulk gate要对称检查feature-on/off：on侧执行`check-wafer`、显式lit unsupported审计、完整CTest、真实
+  `wafer-cmodel-qualify-bulk`三阶段和静态oneDNN符号/动态thread-runtime closure；off侧用基础`WaferUnitTests`证明binary
+  不含oneDNN/OpenMP/TBB符号或依赖。qualification artifact路径必须是absolute canonical path，producer采用no-replace，
+  因此重复测试应使用新的临时目录而不是覆盖旧record。
 - 用 `python3 tools/bootstrap_deps.py --python` 把固定版本 Python 测试工具安装到
   `third_party/python`。
 - 用 `python3 tools/bootstrap_deps.py --importer-sources` shallow fetch 固定版本 PyTorch/XLA、StableHLO、

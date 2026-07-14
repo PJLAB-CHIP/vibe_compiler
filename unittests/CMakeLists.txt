@@ -79,6 +79,27 @@ if(NOT WAFER_ENABLE_NUMERIC_MODEL_DEPS)
   )
 endif()
 
+if(NOT WAFER_ENABLE_BULK_MODEL_DEPS)
+  if(NOT CMAKE_READELF OR NOT EXISTS "${CMAKE_READELF}")
+    message(FATAL_ERROR
+      "feature-off bulk link closure requires the configured readelf tool")
+  endif()
+  if(NOT CMAKE_NM OR NOT EXISTS "${CMAKE_NM}")
+    message(FATAL_ERROR
+      "feature-off bulk link closure requires the configured nm tool")
+  endif()
+  add_test(NAME wafer-bulk-feature-off-link-closure
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_SOURCE_DIR}/tools/check_bulk_link_closure.py
+      --binary $<TARGET_FILE:WaferUnitTests>
+      --readelf ${CMAKE_READELF}
+      --nm ${CMAKE_NM}
+  )
+  set_tests_properties(wafer-bulk-feature-off-link-closure PROPERTIES
+    LABELS "bulk-model;link-closure"
+  )
+endif()
+
 if(WAFER_ENABLE_NUMERIC_MODEL_DEPS)
   add_executable(WaferNumericModelUnitTests
     Target/FormalTensorNumericTest.cpp
@@ -116,6 +137,27 @@ if(WAFER_ENABLE_NUMERIC_MODEL_DEPS)
       "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
       $<TARGET_FILE:WaferNumericModelUnitTests>
     DEPENDS WaferNumericModelUnitTests
+    USES_TERMINAL
+  )
+endif()
+
+if(WAFER_ENABLE_BULK_MODEL_DEPS)
+  add_executable(WaferBulkModelUnitTests
+    Target/BulkQualificationTest.cpp
+  )
+  llvm_update_compile_flags(WaferBulkModelUnitTests)
+  target_link_libraries(WaferBulkModelUnitTests
+    PRIVATE
+    WaferBulkModel
+    GTest::gtest_main
+  )
+  add_test(NAME WaferBulkModelUnitTests COMMAND WaferBulkModelUnitTests)
+  set_tests_properties(WaferBulkModelUnitTests PROPERTIES
+    LABELS "bulk-model;managed-dependencies"
+  )
+  add_custom_target(check-wafer-bulk-model-unit
+    COMMAND $<TARGET_FILE:WaferBulkModelUnitTests>
+    DEPENDS WaferBulkModelUnitTests
     USES_TERMINAL
   )
 endif()

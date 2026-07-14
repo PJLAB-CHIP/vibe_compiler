@@ -54,6 +54,9 @@ add_subdirectory(tools/wafer-opt)
 add_subdirectory(tools/wafer-compile)
 add_subdirectory(tools/wafer-compile-stablehlo)
 add_subdirectory(tools/wafer-run)
+if(WAFER_ENABLE_BULK_MODEL_DEPS)
+  add_subdirectory(tools/wafer-cmodel-qualify-bulk)
+endif()
 
 enable_testing()
 add_subdirectory(test)
@@ -63,7 +66,13 @@ if(WAFER_ENABLE_UNIT_TESTS)
 endif()
 
 if(TARGET WaferUnitTests)
-  if(TARGET check-wafer-numeric-model-unit)
+  if(TARGET check-wafer-bulk-model-unit)
+    add_custom_target(check-wafer DEPENDS
+      check-wafer-lit
+      check-wafer-unit
+      check-wafer-numeric-model-unit
+      check-wafer-bulk-model-unit)
+  elseif(TARGET check-wafer-numeric-model-unit)
     add_custom_target(check-wafer DEPENDS
       check-wafer-lit
       check-wafer-unit

@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
+import fcntl
 import os
 import pathlib
 import platform
@@ -14,6 +16,17 @@ import sys
 import tarfile
 import urllib.request
 import uuid
+
+from bulk_deps import (
+    BUILD_OPTIONS as BULK_BUILD_OPTIONS,
+    RECORD_KIND as BULK_RECORD_KIND,
+    RECORD_SCHEMA_VERSION as BULK_RECORD_SCHEMA_VERSION,
+    RECORD_STATUS as BULK_RECORD_STATUS,
+    REQUIRED_GATES as BULK_REQUIRED_GATES,
+    SOURCE_DIRECTORY_PREFIX as BULK_SOURCE_DIRECTORY_PREFIX,
+    sha256_file as sha256_bulk_file,
+    validate_record as validate_bulk_record,
+)
 
 from numeric_deps import (
     CONFIGURE_OPTIONS,
@@ -853,6 +866,316 @@ int main(void) {{
         return record_path
 
 
+@contextmanager
+def bulk_build_lock(root: pathlib.Path):
+    root = prepare_managed_directory(root)
+    lock_path = root / ".bulk-model-deps.lock"
+    reject_symlink_ancestors(lock_path, allow_missing=True)
+    flags = os.O_CREAT | os.O_RDWR
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(lock_path, flags, 0o600)
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise RuntimeError(
+                f"managed bulk-model root is already being modified: {root}"
+            ) from error
+        yield
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
+def capture_bulk_tool(executable: str) -> dict[str, str]:
+    discovered = shutil.which(executable, path=os.defpath)
+    if not discovered:
+        raise RuntimeError(f"managed bulk build requires host tool {executable!r}")
+    path = pathlib.Path(discovered).resolve(strict=True)
+    result = subprocess.run(
+        [str(path), "--version"],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        env={"LANG": "C", "LC_ALL": "C", "PATH": str(path.parent)},
+    )
+    first_line = result.stdout.splitlines()[0] if result.stdout.splitlines() else ""
+    return {
+        "path": path.as_posix(),
+        "version": first_line,
+        "sha256": sha256_bulk_file(path),
+    }
+
+
+def bulk_artifact_identity(root: pathlib.Path, path: pathlib.Path) -> dict[str, object]:
+    path = reject_symlink_ancestors(path)
+    if not path.is_file() or path.is_symlink():
+        raise RuntimeError(f"bulk artifact is not a regular file: {path}")
+    return {
+        "path": path.relative_to(root).as_posix(),
+        "sha256": sha256_bulk_file(path),
+        "size": path.stat().st_size,
+    }
+
+
+def run_bulk_gate(
+    name: str,
+    command: list[str],
+    *,
+    root: pathlib.Path,
+    cwd: pathlib.Path,
+    environment: dict[str, str],
+) -> dict[str, object]:
+    log = root / "conformance" / f"{name}.log"
+    run_logged(command, log, cwd=cwd, env=environment)
+    return {
+        "name": name,
+        "command": command,
+        "log": log.relative_to(root).as_posix(),
+        "log_sha256": sha256_bulk_file(log),
+        "exit_code": 0,
+    }
+
+
+def write_bulk_api_smoke(path: pathlib.Path) -> None:
+    path.write_text(
+        r'''#include <oneapi/dnnl/dnnl.hpp>
+#include <cmath>
+#include <cstddef>
+#include <vector>
+
+int main() {
+  if (dnnl::set_max_cpu_isa(dnnl::cpu_isa::isa_default) != dnnl::status::success)
+    return 1;
+  if (dnnl::set_cpu_isa_hints(dnnl::cpu_isa_hints::no_hints) != dnnl::status::success)
+    return 2;
+  dnnl::set_primitive_cache_capacity(0);
+  const dnnl::version_t *version = dnnl::version();
+  if (!version || version->major != 3 || version->minor != 12)
+    return 3;
+  dnnl::engine engine(dnnl::engine::kind::cpu, 0);
+  dnnl::stream stream(engine);
+  const dnnl::memory::dims lhsDims{2, 3};
+  const dnnl::memory::dims rhsDims{3, 2};
+  const dnnl::memory::dims dstDims{2, 2};
+  auto lhsDesc = dnnl::memory::desc(lhsDims, dnnl::memory::data_type::f32,
+                                    dnnl::memory::format_tag::ab);
+  auto rhsDesc = dnnl::memory::desc(rhsDims, dnnl::memory::data_type::f32,
+                                    dnnl::memory::format_tag::ab);
+  auto dstDesc = dnnl::memory::desc(dstDims, dnnl::memory::data_type::f32,
+                                    dnnl::memory::format_tag::ab);
+  dnnl::primitive_attr attributes;
+  attributes.set_deterministic(true);
+  attributes.set_fpmath_mode(dnnl::fpmath_mode::strict, true);
+  attributes.set_scratchpad_mode(dnnl::scratchpad_mode::user);
+  dnnl::matmul::primitive_desc descriptor(engine, lhsDesc, rhsDesc, dstDesc,
+                                          attributes);
+  std::vector<float> lhs{1, 2, 3, 4, 5, 6};
+  std::vector<float> rhs{7, 8, 9, 10, 11, 12};
+  std::vector<float> dst(4, 0);
+  std::vector<std::byte> scratch(descriptor.scratchpad_desc().get_size());
+  dnnl::memory lhsMemory(lhsDesc, engine, lhs.data());
+  dnnl::memory rhsMemory(rhsDesc, engine, rhs.data());
+  dnnl::memory dstMemory(dstDesc, engine, dst.data());
+  dnnl::memory scratchMemory(descriptor.scratchpad_desc(), engine,
+                             scratch.data());
+  dnnl::matmul primitive(descriptor);
+  primitive.execute(stream, {{DNNL_ARG_SRC, lhsMemory},
+                             {DNNL_ARG_WEIGHTS, rhsMemory},
+                             {DNNL_ARG_DST, dstMemory},
+                             {DNNL_ARG_SCRATCHPAD, scratchMemory}});
+  stream.wait();
+  const float expected[] = {58, 64, 139, 154};
+  for (size_t index = 0; index < dst.size(); ++index)
+    if (dst[index] != expected[index])
+      return 4;
+  return descriptor.impl_info_str() && descriptor.impl_info_str()[0] ? 0 : 5;
+}
+''',
+        encoding="utf-8",
+    )
+
+
+def build_bulk_model_dependencies(
+    versions: dict[str, str], bulk_root: pathlib.Path, jobs: int
+) -> pathlib.Path:
+    if jobs < 1:
+        raise RuntimeError("bulk dependency job count must be positive")
+    bulk_root = prepare_managed_directory(bulk_root)
+    record_path = bulk_root / "bulk-model-deps.json"
+    with bulk_build_lock(bulk_root):
+        if record_path.exists():
+            validate_bulk_record(record_path, bulk_root, versions)
+            print(f"Bulk model dependency record already valid: {record_path}")
+            return record_path
+
+        downloads = prepare_managed_directory(bulk_root / "downloads")
+        sources = prepare_managed_directory(bulk_root / "sources")
+        archive = downloads / f"oneDNN-{versions['WAFER_ONEDNN_COMMIT']}.tar.gz"
+        reject_symlink_ancestors(archive, allow_missing=True)
+        if not archive.exists() or sha256_bulk_file(archive) != versions["WAFER_ONEDNN_SHA256"]:
+            archive.unlink(missing_ok=True)
+            download_with_resume(versions["WAFER_ONEDNN_URL"], archive)
+        if sha256_bulk_file(archive) != versions["WAFER_ONEDNN_SHA256"]:
+            archive.unlink(missing_ok=True)
+            raise RuntimeError("oneDNN archive SHA256 mismatch")
+
+        source_top = BULK_SOURCE_DIRECTORY_PREFIX + versions["WAFER_ONEDNN_COMMIT"]
+        source = sources / source_top
+        safe_extract_archive(archive, source, source_top)
+        source_digest = sha256_tree(source)
+
+        build_root = bulk_root / "build"
+        install_root = bulk_root / "install"
+        conformance_root = bulk_root / "conformance"
+        clean_directory(build_root, bulk_root)
+        clean_directory(install_root, bulk_root)
+        clean_directory(conformance_root, bulk_root)
+        onednn_build = build_root / "onednn"
+        onednn_build.mkdir()
+        install_prefix = install_root / "onednn"
+
+        toolchain = {
+            "cmake": capture_bulk_tool("cmake"),
+            "c": capture_bulk_tool("cc"),
+            "cxx": capture_bulk_tool("c++"),
+        }
+        environment = {
+            "HOME": str(build_root / "home"),
+            "LANG": "C",
+            "LC_ALL": "C",
+            "PATH": os.pathsep.join(
+                sorted({str(pathlib.Path(item["path"]).parent) for item in toolchain.values()})
+            ),
+            "SOURCE_DATE_EPOCH": "0",
+        }
+        pathlib.Path(environment["HOME"]).mkdir()
+        cmake = toolchain["cmake"]["path"]
+        configure = [
+            cmake,
+            "-S",
+            str(source),
+            "-B",
+            str(onednn_build),
+            f"-DCMAKE_C_COMPILER={toolchain['c']['path']}",
+            f"-DCMAKE_CXX_COMPILER={toolchain['cxx']['path']}",
+            f"-DCMAKE_INSTALL_PREFIX={install_prefix}",
+        ]
+        configure.extend(
+            f"-D{name}={value}" for name, value in sorted(BULK_BUILD_OPTIONS.items())
+        )
+        gates = [
+            run_bulk_gate(
+                "configure", configure, root=bulk_root, cwd=bulk_root, environment=environment
+            )
+        ]
+        build = [cmake, "--build", str(onednn_build), "--target", "install", "--parallel", str(jobs)]
+        gates.append(
+            run_bulk_gate(
+                "build-install", build, root=bulk_root, cwd=bulk_root, environment=environment
+            )
+        )
+
+        library = install_prefix / "lib" / "libdnnl.a"
+        c_header = install_prefix / "include" / "oneapi" / "dnnl" / "dnnl.h"
+        cxx_header = install_prefix / "include" / "oneapi" / "dnnl" / "dnnl.hpp"
+        config_header = install_prefix / "include" / "oneapi" / "dnnl" / "dnnl_config.h"
+        for path in (library, c_header, cxx_header, config_header):
+            if not path.is_file():
+                raise RuntimeError(f"oneDNN install artifact is missing: {path}")
+
+        smoke_source = build_root / "bulk-api-smoke.cpp"
+        smoke = install_prefix / "bin" / "bulk-api-smoke"
+        smoke.parent.mkdir(parents=True)
+        write_bulk_api_smoke(smoke_source)
+        compile_smoke = [
+            toolchain["cxx"]["path"],
+            "-std=c++17",
+            "-O2",
+            f"-I{install_prefix / 'include'}",
+            str(smoke_source),
+            str(library),
+            "-pthread",
+            "-ldl",
+            "-o",
+            str(smoke),
+        ]
+        gates.append(
+            run_bulk_gate(
+                "api-smoke-compile", compile_smoke, root=bulk_root, cwd=bulk_root, environment=environment
+            )
+        )
+        gates.append(
+            run_bulk_gate(
+                "api-smoke-run", [str(smoke)], root=bulk_root, cwd=bulk_root, environment=environment
+            )
+        )
+        if {gate["name"] for gate in gates} != BULK_REQUIRED_GATES:
+            raise RuntimeError("internal bulk dependency gate closure is incomplete")
+
+        licenses = install_prefix / "licenses"
+        licenses.mkdir()
+        license_path = licenses / "LICENSE"
+        third_party_path = licenses / "THIRD-PARTY-PROGRAMS"
+        shutil.copy2(source / "LICENSE", license_path)
+        shutil.copy2(source / "THIRD-PARTY-PROGRAMS", third_party_path)
+
+        artifacts = {
+            "onednn-archive": archive,
+            "onednn-library": library,
+            "onednn-c-header": c_header,
+            "onednn-cxx-header": cxx_header,
+            "onednn-config-header": config_header,
+            "license": license_path,
+            "third-party-programs": third_party_path,
+            "api-smoke": smoke,
+        }
+        record = {
+            "schema_version": BULK_RECORD_SCHEMA_VERSION,
+            "kind": BULK_RECORD_KIND,
+            "status": BULK_RECORD_STATUS,
+            "dependency": {
+                "name": "oneDNN",
+                "version": versions["WAFER_ONEDNN_VERSION"],
+                "commit": versions["WAFER_ONEDNN_COMMIT"],
+                "url": versions["WAFER_ONEDNN_URL"],
+                "archive_sha256": versions["WAFER_ONEDNN_SHA256"],
+                "source_tree_sha256": source_digest,
+            },
+            "build": {
+                "options": BULK_BUILD_OPTIONS,
+                "generator": "default-cmake-generator",
+                "install_prefix": "install/onednn",
+            },
+            "toolchain": toolchain,
+            "artifacts": {
+                name: bulk_artifact_identity(bulk_root, path)
+                for name, path in sorted(artifacts.items())
+            },
+            "licenses": {
+                "oneDNN": {"artifact": "license", "spdx": "Apache-2.0"},
+                "third-party-programs": {
+                    "artifact": "third-party-programs",
+                    "spdx": "LicenseRef-oneDNN-Third-Party",
+                },
+            },
+            "conformance": {"gates": sorted(gates, key=lambda gate: str(gate["name"]))},
+        }
+        candidate = bulk_root / f".bulk-model-deps.candidate-{uuid.uuid4().hex}.json"
+        try:
+            atomic_write_json(candidate, record)
+            validate_bulk_record(candidate, bulk_root, versions)
+            publish_file_noreplace(candidate, record_path)
+        finally:
+            candidate.unlink(missing_ok=True)
+        print(f"Bulk model dependency record published: {record_path}", flush=True)
+        return record_path
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--prefix", default=str(REPO_ROOT / "third_party"))
@@ -896,6 +1219,24 @@ def main() -> int:
         default=max(1, os.cpu_count() or 1),
         help="parallel make job count for --numeric-model-deps",
     )
+    parser.add_argument(
+        "--bulk-model-deps",
+        action="store_true",
+        help=(
+            "clean-build and smoke-test the pinned oneDNN bulk-model dependency, "
+            "then atomically publish its conformance record"
+        ),
+    )
+    parser.add_argument(
+        "--bulk-model-root",
+        help="managed bulk-model root (defaults to <prefix>/bulk-model)",
+    )
+    parser.add_argument(
+        "--bulk-jobs",
+        type=int,
+        default=max(1, os.cpu_count() or 1),
+        help="parallel build job count for --bulk-model-deps",
+    )
     parser.add_argument("--all", action="store_true", help="fetch every pinned dependency")
     args = parser.parse_args()
 
@@ -906,8 +1247,15 @@ def main() -> int:
         if args.numeric_model_root
         else prefix / "numeric-model"
     )
+    bulk_root = (
+        pathlib.Path(args.bulk_model_root).absolute()
+        if args.bulk_model_root
+        else prefix / "bulk-model"
+    )
     if args.numeric_model_deps or args.numeric_model_sources or args.all:
         prepare_managed_directory(numeric_root)
+    if args.bulk_model_deps or args.all:
+        prepare_managed_directory(bulk_root)
     versions = load_versions()
 
     if args.all or args.python:
@@ -944,6 +1292,9 @@ def main() -> int:
         fetch_numeric_sources(versions, numeric_root)
         print(f"Numeric model sources installed under: {numeric_root / 'sources'}")
 
+    if args.all or args.bulk_model_deps:
+        build_bulk_model_dependencies(versions, bulk_root, args.bulk_jobs)
+
     if not (
         args.all
         or args.python
@@ -954,6 +1305,7 @@ def main() -> int:
         or args.test_sources
         or args.numeric_model_sources
         or args.numeric_model_deps
+        or args.bulk_model_deps
     ):
         parser.print_help()
     return 0
