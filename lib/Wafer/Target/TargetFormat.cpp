@@ -11,6 +11,7 @@ namespace wafer {
 namespace {
 
 using Format = LogicalFormat;
+using Category = LogicalFormatCategory;
 using Engine = TargetFormatEngine;
 using Support = TargetFormatEncodingSupport;
 using Constraint = TargetFormatConstraint;
@@ -21,19 +22,32 @@ constexpr TargetProfileId kProfile =
     TargetProfileId::waferTx81SingleCardKernelV1();
 
 constexpr LogicalFormatDescriptor kLogicalFormats[] = {
-    {Format::I8, "i8", 8, 8, false},
-    {Format::I16, "i16", 16, 16, false},
-    {Format::F16, "f16", 16, 16, false},
-    {Format::BF16, "bf16", 16, 16, false},
-    {Format::I32, "i32", 32, 32, false},
-    {Format::F32, "f32", 32, 32, false},
-    {Format::TF32, "tf32", 32, 19, false},
-    {Format::Bool, "bool", 1, 1, true},
-    {Format::U8, "u8", 8, 8, false},
-    {Format::U16, "u16", 16, 16, false},
-    {Format::U32, "u32", 32, 32, false},
-    {Format::I64, "i64", 64, 64, false},
-    {Format::U64, "u64", 64, 64, false},
+    {Format::I8, "i8", 8, 8, Category::SignedInteger, 0, 0, UINT64_C(0xff),
+     false, false, false, false},
+    {Format::I16, "i16", 16, 16, Category::SignedInteger, 0, 0,
+     UINT64_C(0xffff), false, false, false, false},
+    {Format::F16, "f16", 16, 16, Category::BinaryFloatingPoint, 5, 11,
+     UINT64_C(0xffff), false, true, true, true},
+    {Format::BF16, "bf16", 16, 16, Category::BinaryFloatingPoint, 8, 8,
+     UINT64_C(0xffff), false, true, true, true},
+    {Format::I32, "i32", 32, 32, Category::SignedInteger, 0, 0,
+     UINT64_C(0xffffffff), false, false, false, false},
+    {Format::F32, "f32", 32, 32, Category::BinaryFloatingPoint, 8, 24,
+     UINT64_C(0xffffffff), false, true, true, true},
+    {Format::TF32, "tf32", 32, 19, Category::BinaryFloatingPoint, 8, 11,
+     UINT64_C(0xffffe000), false, true, true, true},
+    {Format::Bool, "bool", 1, 1, Category::Boolean, 0, 0, UINT64_C(0x1), true,
+     false, false, false},
+    {Format::U8, "u8", 8, 8, Category::UnsignedInteger, 0, 0, UINT64_C(0xff),
+     false, false, false, false},
+    {Format::U16, "u16", 16, 16, Category::UnsignedInteger, 0, 0,
+     UINT64_C(0xffff), false, false, false, false},
+    {Format::U32, "u32", 32, 32, Category::UnsignedInteger, 0, 0,
+     UINT64_C(0xffffffff), false, false, false, false},
+    {Format::I64, "i64", 64, 64, Category::SignedInteger, 0, 0, UINT64_MAX,
+     false, false, false, false},
+    {Format::U64, "u64", 64, 64, Category::UnsignedInteger, 0, 0, UINT64_MAX,
+     false, false, false, false},
 };
 
 // The only hand-written public Data_Format code facts. These rows describe
@@ -48,8 +62,8 @@ constexpr TargetDataFormatCodeRecord kTargetDataFormatCodes[] = {
     {kProfile, Format::U64, 12},
 };
 
-constexpr std::optional<uint8_t>
-findDataFormatCode(TargetProfileId profile, Format format) {
+constexpr std::optional<uint8_t> findDataFormatCode(TargetProfileId profile,
+                                                    Format format) {
   for (const TargetDataFormatCodeRecord &record : kTargetDataFormatCodes)
     if (record.profile == profile && record.format == format)
       return record.dataFormatCode;
@@ -63,14 +77,19 @@ constexpr TargetFormatEngine kTargetFormatEngines[] = {
 constexpr TargetFormatEncodingRecord
 supported(Engine engine, Format format,
           Constraint constraint = Constraint::None) {
-  return {kProfile, engine, format, Support::Supported, constraint,
-          Reason::None, findDataFormatCode(kProfile, format)};
+  return {kProfile,
+          engine,
+          format,
+          Support::Supported,
+          constraint,
+          Reason::None,
+          findDataFormatCode(kProfile, format)};
 }
 
 constexpr TargetFormatEncodingRecord unsupported(Engine engine, Format format,
-                                                  Reason reason) {
-  return {kProfile, engine, format, Support::Unsupported, Constraint::None,
-          reason, std::nullopt};
+                                                 Reason reason) {
+  return {kProfile,         engine, format,      Support::Unsupported,
+          Constraint::None, reason, std::nullopt};
 }
 
 // This is intentionally an explicit 65-row closed matrix. Adding a logical
@@ -138,17 +157,14 @@ constexpr TargetFormatEncodingRecord kTargetFormatEncodings[] = {
     unsupported(Engine::CT, Format::I32,
                 Reason::GenericComputeIntegerEncodingUnproven),
     supported(Engine::CT, Format::F32),
-    unsupported(Engine::CT, Format::TF32,
-                Reason::GenericTF32EncodingUnproven),
+    unsupported(Engine::CT, Format::TF32, Reason::GenericTF32EncodingUnproven),
     supported(Engine::CT, Format::Bool,
               Constraint::BoolSpecificCTOpKindAndBitpackedLayout),
     unsupported(Engine::CT, Format::U8, Reason::UnsignedEncodingUnproven),
     unsupported(Engine::CT, Format::U16, Reason::UnsignedEncodingUnproven),
     unsupported(Engine::CT, Format::U32, Reason::UnsignedEncodingUnproven),
-    unsupported(Engine::CT, Format::I64,
-                Reason::SixtyFourBitEncodingUnproven),
-    unsupported(Engine::CT, Format::U64,
-                Reason::SixtyFourBitEncodingUnproven),
+    unsupported(Engine::CT, Format::I64, Reason::SixtyFourBitEncodingUnproven),
+    unsupported(Engine::CT, Format::U64, Reason::SixtyFourBitEncodingUnproven),
 
     supported(Engine::NE, Format::I8),
     unsupported(Engine::NE, Format::I16,
@@ -158,16 +174,13 @@ constexpr TargetFormatEncodingRecord kTargetFormatEncodings[] = {
     unsupported(Engine::NE, Format::I32,
                 Reason::GenericComputeIntegerEncodingUnproven),
     supported(Engine::NE, Format::F32),
-    unsupported(Engine::NE, Format::TF32,
-                Reason::GenericTF32EncodingUnproven),
+    unsupported(Engine::NE, Format::TF32, Reason::GenericTF32EncodingUnproven),
     unsupported(Engine::NE, Format::Bool, Reason::BoolEncodingUnproven),
     unsupported(Engine::NE, Format::U8, Reason::UnsignedEncodingUnproven),
     unsupported(Engine::NE, Format::U16, Reason::UnsignedEncodingUnproven),
     unsupported(Engine::NE, Format::U32, Reason::UnsignedEncodingUnproven),
-    unsupported(Engine::NE, Format::I64,
-                Reason::SixtyFourBitEncodingUnproven),
-    unsupported(Engine::NE, Format::U64,
-                Reason::SixtyFourBitEncodingUnproven),
+    unsupported(Engine::NE, Format::I64, Reason::SixtyFourBitEncodingUnproven),
+    unsupported(Engine::NE, Format::U64, Reason::SixtyFourBitEncodingUnproven),
 };
 
 constexpr TargetConvertRoute kTargetConvertRoutes[] = {
@@ -238,6 +251,58 @@ template <typename T, size_t N> constexpr size_t arrayLength(const T (&)[N]) {
   return N;
 }
 
+constexpr uint64_t lowBitMask(uint8_t width) {
+  return width == 64 ? UINT64_MAX : (UINT64_C(1) << width) - 1;
+}
+
+constexpr bool hasCompleteAndValidLogicalFormatRegistry() {
+  if (arrayLength(kLogicalFormats) != 13)
+    return false;
+  for (size_t index = 0; index < arrayLength(kLogicalFormats); ++index) {
+    const LogicalFormatDescriptor &descriptor = kLogicalFormats[index];
+    if (descriptor.storageBits == 0 || descriptor.storageBits > 64 ||
+        descriptor.semanticBits == 0 ||
+        descriptor.semanticBits > descriptor.storageBits)
+      return false;
+    const uint8_t semanticShift =
+        descriptor.storageBits - descriptor.semanticBits;
+    if (descriptor.canonicalMask !=
+        (lowBitMask(descriptor.semanticBits) << semanticShift))
+      return false;
+
+    for (size_t other = index + 1; other < arrayLength(kLogicalFormats);
+         ++other)
+      if (kLogicalFormats[other].format == descriptor.format)
+        return false;
+
+    switch (descriptor.category) {
+    case Category::SignedInteger:
+    case Category::UnsignedInteger:
+      if (descriptor.exponentBits != 0 || descriptor.precisionBits != 0 ||
+          descriptor.bitpacked || descriptor.hasInfinity || descriptor.hasNaN ||
+          descriptor.hasSubnormal)
+        return false;
+      break;
+    case Category::BinaryFloatingPoint:
+      if (descriptor.exponentBits == 0 || descriptor.precisionBits <= 1 ||
+          descriptor.semanticBits !=
+              descriptor.exponentBits + descriptor.precisionBits ||
+          descriptor.bitpacked || !descriptor.hasInfinity ||
+          !descriptor.hasNaN || !descriptor.hasSubnormal)
+        return false;
+      break;
+    case Category::Boolean:
+      if (descriptor.storageBits != 1 || descriptor.semanticBits != 1 ||
+          descriptor.exponentBits != 0 || descriptor.precisionBits != 0 ||
+          !descriptor.bitpacked || descriptor.hasInfinity ||
+          descriptor.hasNaN || descriptor.hasSubnormal)
+        return false;
+      break;
+    }
+  }
+  return true;
+}
+
 constexpr bool hasCompleteAndUniqueDataFormatCodeRegistry() {
   if (arrayLength(kTargetDataFormatCodes) != arrayLength(kLogicalFormats))
     return false;
@@ -251,8 +316,8 @@ constexpr bool hasCompleteAndUniqueDataFormatCodeRegistry() {
         ++formatCount;
     if (formatCount != 1)
       return false;
-    for (size_t other = index + 1;
-         other < arrayLength(kTargetDataFormatCodes); ++other) {
+    for (size_t other = index + 1; other < arrayLength(kTargetDataFormatCodes);
+         ++other) {
       const TargetDataFormatCodeRecord &candidate =
           kTargetDataFormatCodes[other];
       if (candidate.profile == record.profile &&
@@ -286,13 +351,12 @@ constexpr bool hasCompleteAndConsistentEncodingRegistry() {
     }
   }
 
-  for (size_t index = 0; index < arrayLength(kTargetFormatEncodings);
-       ++index) {
+  for (size_t index = 0; index < arrayLength(kTargetFormatEncodings); ++index) {
     const TargetFormatEncodingRecord &record = kTargetFormatEncodings[index];
     if (!record.isSupported())
       continue;
-    for (size_t other = index + 1;
-         other < arrayLength(kTargetFormatEncodings); ++other) {
+    for (size_t other = index + 1; other < arrayLength(kTargetFormatEncodings);
+         ++other) {
       const TargetFormatEncodingRecord &candidate =
           kTargetFormatEncodings[other];
       if (candidate.isSupported() && candidate.profile == record.profile &&
@@ -338,6 +402,9 @@ constexpr bool hasCompleteAndUniqueConvertRegistry() {
 
 static_assert(arrayLength(kLogicalFormats) == 13,
               "logical storage registry must enumerate 13 formats");
+static_assert(hasCompleteAndValidLogicalFormatRegistry(),
+              "logical format metadata must be complete, unique, and "
+              "internally consistent");
 static_assert(hasCompleteAndUniqueDataFormatCodeRegistry(),
               "target Data_Format registry must contain one unique code for "
               "each logical format in the profile");

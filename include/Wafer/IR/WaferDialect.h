@@ -85,6 +85,16 @@ std::optional<int64_t>
 computeWaferPhysicalElementByteOffset(mlir::MemRefType type,
                                       llvm::ArrayRef<int64_t> logicalIndices);
 
+/// Returns the physical bit ordinal of one logical element relative to the
+/// memref view base. Byte-addressable elements reuse the byte-offset helper;
+/// bitpacked i1 Tensor/NTensor layouts return an element bit ordinal whose
+/// within-byte order is selected separately by the consuming codec/profile.
+/// Bitpacked Cx/NCx remains unsupported until its physical geometry is owned
+/// by this helper rather than inferred by a consumer.
+std::optional<int64_t>
+computeWaferPhysicalElementBitOffset(mlir::MemRefType type,
+                                     llvm::ArrayRef<int64_t> logicalIndices);
+
 } // namespace wafer
 
 #endif // WAFER_IR_WAFERDIALECT_H

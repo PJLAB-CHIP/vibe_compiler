@@ -25,6 +25,7 @@
 namespace {
 
 using wafer::LogicalFormat;
+using wafer::LogicalFormatCategory;
 using wafer::TargetConvertParameterKind;
 using wafer::TargetFormatConstraint;
 using wafer::TargetFormatEncodingSupport;
@@ -61,13 +62,22 @@ TEST(TargetFormatTest, LogicalDescriptorsExactlyCoverStorageFormats) {
   ASSERT_NE(tf32, nullptr);
   EXPECT_EQ(tf32->storageBits, 32);
   EXPECT_EQ(tf32->semanticBits, 19);
+  EXPECT_EQ(tf32->category, LogicalFormatCategory::BinaryFloatingPoint);
+  EXPECT_EQ(tf32->exponentBits, 8);
+  EXPECT_EQ(tf32->precisionBits, 11);
+  EXPECT_EQ(tf32->canonicalMask, UINT64_C(0xffffe000));
   EXPECT_FALSE(tf32->bitpacked);
+  EXPECT_TRUE(tf32->hasInfinity);
+  EXPECT_TRUE(tf32->hasNaN);
+  EXPECT_TRUE(tf32->hasSubnormal);
 
   const wafer::LogicalFormatDescriptor *boolean =
       wafer::findLogicalFormatDescriptor(LogicalFormat::Bool);
   ASSERT_NE(boolean, nullptr);
   EXPECT_EQ(boolean->storageBits, 1);
   EXPECT_EQ(boolean->semanticBits, 1);
+  EXPECT_EQ(boolean->category, LogicalFormatCategory::Boolean);
+  EXPECT_EQ(boolean->canonicalMask, UINT64_C(1));
   EXPECT_TRUE(boolean->bitpacked);
 
   for (const wafer::LogicalFormatDescriptor &descriptor : descriptors) {
@@ -75,6 +85,19 @@ TEST(TargetFormatTest, LogicalDescriptorsExactlyCoverStorageFormats) {
       EXPECT_FALSE(descriptor.bitpacked);
     if (descriptor.format != LogicalFormat::TF32)
       EXPECT_EQ(descriptor.storageBits, descriptor.semanticBits);
+    if (descriptor.category == LogicalFormatCategory::BinaryFloatingPoint) {
+      EXPECT_GT(descriptor.exponentBits, 0);
+      EXPECT_GT(descriptor.precisionBits, 1);
+      EXPECT_TRUE(descriptor.hasInfinity);
+      EXPECT_TRUE(descriptor.hasNaN);
+      EXPECT_TRUE(descriptor.hasSubnormal);
+    } else {
+      EXPECT_EQ(descriptor.exponentBits, 0);
+      EXPECT_EQ(descriptor.precisionBits, 0);
+      EXPECT_FALSE(descriptor.hasInfinity);
+      EXPECT_FALSE(descriptor.hasNaN);
+      EXPECT_FALSE(descriptor.hasSubnormal);
+    }
   }
 }
 
@@ -456,8 +479,8 @@ TEST(TargetFormatTest, EveryTypedConvertRoutePassesTargetPreflight) {
     os.flush();
 
     mlir::OwningOpRef<mlir::ModuleOp> module =
-        mlir::parseSourceString<mlir::ModuleOp>(
-            source, mlir::ParserConfig(&context));
+        mlir::parseSourceString<mlir::ModuleOp>(source,
+                                                mlir::ParserConfig(&context));
     ASSERT_TRUE(module) << source;
     mlir::PassManager manager(&context);
     wafer::TargetConversionRequest request{kProfile};
@@ -482,8 +505,8 @@ parseLocalFenceModule(mlir::MLIRContext &context, uint64_t operationCount) {
     os << "    wafer.instr.local_fence\n";
   os << "    return\n  }\n}\n";
   os.flush();
-  return mlir::parseSourceString<mlir::ModuleOp>(
-      source, mlir::ParserConfig(&context));
+  return mlir::parseSourceString<mlir::ModuleOp>(source,
+                                                 mlir::ParserConfig(&context));
 }
 
 TEST(TargetFormatTest, DirectTargetAcceptsExactly4096TerminalOperations) {
@@ -559,13 +582,14 @@ module {
     return
   }
 }
-)mlir", mlir::ParserConfig(&context));
+)mlir",
+                                              mlir::ParserConfig(&context));
   ASSERT_TRUE(module);
   wafer::InstrReduceOp reduce;
   module->walk([&](wafer::InstrReduceOp op) { reduce = op; });
   ASSERT_TRUE(reduce);
-  reduce->setAttr("init_value", mlir::FloatAttr::get(
-                                    mlir::Float16Type::get(&context), 0.0));
+  reduce->setAttr("init_value",
+                  mlir::FloatAttr::get(mlir::Float16Type::get(&context), 0.0));
 
   std::string diagnostics;
   mlir::ScopedDiagnosticHandler handler(

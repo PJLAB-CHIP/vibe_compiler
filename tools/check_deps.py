@@ -4,11 +4,20 @@
 from __future__ import annotations
 
 import argparse
+import json
 import pathlib
 import re
 import subprocess
 import sys
 from collections.abc import Iterable
+
+from numeric_deps import (
+    ValidatedNumericRecord,
+    numeric_pins,
+    reject_symlink_ancestors,
+    sha256_file,
+    validate_numeric_record_snapshot,
+)
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -32,9 +41,24 @@ REQUIRED_KEYS = [
     "WAFER_TORCH_XLA_PYTHON_VERSION",
     "WAFER_PYTORCH_XLA_COMMIT",
     "WAFER_PYTHON_LIT_VERSION",
+    "WAFER_SOFTFLOAT_VERSION",
+    "WAFER_SOFTFLOAT_URL",
+    "WAFER_SOFTFLOAT_SHA256",
+    "WAFER_TESTFLOAT_VERSION",
+    "WAFER_TESTFLOAT_URL",
+    "WAFER_TESTFLOAT_SHA256",
+    "WAFER_M4_VERSION",
+    "WAFER_M4_URL",
+    "WAFER_M4_SHA256",
+    "WAFER_GMP_VERSION",
+    "WAFER_GMP_URL",
+    "WAFER_GMP_SHA256",
+    "WAFER_MPFR_VERSION",
+    "WAFER_MPFR_URL",
+    "WAFER_MPFR_SHA256",
 ]
 
-SOURCE_SUFFIXES = {".cpp", ".h", ".td"}
+SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".h", ".hpp", ".td"}
 
 STABLEHLO_API_NEEDLES = [
     "stablehlo/",
@@ -74,6 +98,12 @@ TEST_TOOLING_NEEDLES = [
     "GTest",
     "gtest",
     "FileCheck",
+]
+
+NUMERIC_MODEL_API_NEEDLES = [
+    "softfloat.h",
+    "mpfr.h",
+    "gmp.h",
 ]
 
 
@@ -197,6 +227,9 @@ def check_cmake_target_visibility() -> None:
         "WAFER_TX_RUNTIME_ROOT",
         "WAFER_KMD_UAPI_ROOT",
         "WAFER_LEGACY_TSM_RUNTIME_ROOT",
+        "WAFER_ENABLE_NUMERIC_MODEL_DEPS",
+        "WAFER_NUMERIC_MODEL_DEPS_ROOT",
+        "WAFER_NUMERIC_MODEL_DEPS_RECORD",
     ]:
         check_text_contains(
             REPO_ROOT / "cmake" / "third_party" / "WaferThirdParty.cmake",
@@ -229,6 +262,31 @@ def check_cmake_target_visibility() -> None:
         REPO_ROOT / "cmake" / "third_party" / "WaferThirdParty.cmake",
         "function(wafer_require_gtest)",
     )
+    numeric_cmake_path = (
+        REPO_ROOT / "cmake" / "third_party" / "WaferNumericModelDeps.cmake"
+    )
+    for needle in [
+        "tools/check_deps.py",
+        "--numeric-only",
+        "--emit-numeric-cmake-snapshot",
+        "WaferNumeric::SoftFloat",
+        "WaferNumeric::GMP",
+        "WaferNumeric::MPFR",
+        "WaferNumeric::TestFloat",
+    ]:
+        check_text_contains(numeric_cmake_path, needle)
+    numeric_cmake = numeric_cmake_path.read_text(encoding="utf-8")
+    for forbidden in ["find_library", "find_path", "FetchContent", "ExternalProject"]:
+        if forbidden in numeric_cmake:
+            raise RuntimeError(
+                "managed numeric-model CMake must not discover host packages or "
+                f"fetch sources via {forbidden}"
+            )
+    if 'file(READ "${WAFER_NUMERIC_MODEL_DEPS_RECORD}"' in numeric_cmake:
+        raise RuntimeError(
+            "managed numeric-model CMake must consume the validator canonical "
+            "snapshot instead of reparsing the mutable record"
+        )
     for submodule_path in [
         "third_party/llvm-project",
         "third_party/stablehlo",
@@ -489,6 +547,28 @@ def check_dependency_layering() -> None:
         roots=compiler_library_roots,
         needles=TEST_TOOLING_NEEDLES,
     )
+    check_forbidden_needles(
+        label="numeric-model",
+        roots=compiler_library_roots,
+        needles=NUMERIC_MODEL_API_NEEDLES,
+        allowed_prefixes=["include/Wafer/Target", "lib/Wafer/Target"],
+    )
+    for cmake_path in [
+        REPO_ROOT / "lib" / "Wafer" / "Analysis" / "CMakeLists.txt",
+        REPO_ROOT / "lib" / "Wafer" / "Compiler" / "CMakeLists.txt",
+        REPO_ROOT / "lib" / "Wafer" / "IR" / "CMakeLists.txt",
+        REPO_ROOT / "lib" / "Wafer" / "Pipelines" / "CMakeLists.txt",
+        REPO_ROOT / "lib" / "Wafer" / "Transforms" / "CMakeLists.txt",
+        REPO_ROOT / "tools" / "wafer-compile" / "CMakeLists.txt",
+        REPO_ROOT / "tools" / "wafer-opt" / "CMakeLists.txt",
+    ]:
+        text = cmake_path.read_text(encoding="utf-8")
+        for needle in ["WaferNumeric::", "SoftFloat", "TestFloat", "MPFR", "GMP"]:
+            if needle in text:
+                raise RuntimeError(
+                    f"base compiler target {rel(cmake_path)} leaks managed "
+                    f"numeric-model dependency {needle!r}"
+                )
     check_cmake_target_visibility()
 
 
@@ -581,6 +661,41 @@ def check_framework_source_alignment(versions: dict[str, str]) -> None:
         )
 
 
+def check_numeric_sources_if_present(
+    versions: dict[str, str], numeric_root: pathlib.Path
+) -> None:
+    numeric_root = reject_symlink_ancestors(numeric_root, allow_missing=True)
+    if not numeric_root.exists():
+        return
+    if not numeric_root.is_dir():
+        raise RuntimeError(f"numeric dependency root is not a directory: {numeric_root}")
+    pins = numeric_pins(versions)
+    downloads = numeric_root / "downloads"
+    reject_symlink_ancestors(downloads, allow_missing=True)
+    if not downloads.exists():
+        return
+    if not downloads.is_dir():
+        raise RuntimeError(f"numeric download root is not a directory: {downloads}")
+    for name, pin in pins.items():
+        archive = downloads / pin.archive_name
+        if not archive.exists():
+            continue
+        if not archive.is_file() or archive.is_symlink():
+            raise RuntimeError(f"managed numeric archive is not a regular file: {archive}")
+        actual = sha256_file(archive)
+        if actual != pin.sha256:
+            raise RuntimeError(
+                f"managed numeric archive mismatch for {name}: "
+                f"expected {pin.sha256}, got {actual}"
+            )
+
+
+def check_numeric_record(
+    versions: dict[str, str], numeric_root: pathlib.Path, record_path: pathlib.Path
+) -> ValidatedNumericRecord:
+    return validate_numeric_record_snapshot(record_path, numeric_root, versions)
+
+
 def print_versions(versions: dict[str, str]) -> None:
     print(f"LLVM/MLIR {versions['WAFER_LLVM_PACKAGE_VERSION']} {versions['WAFER_LLVM_COMMIT']}")
     print(f"StableHLO {versions['WAFER_STABLEHLO_TAG']} {versions['WAFER_STABLEHLO_COMMIT']}")
@@ -601,6 +716,14 @@ def print_versions(versions: dict[str, str]) -> None:
     )
     print(f"googletest {versions['WAFER_GOOGLETEST_TAG']} {versions['WAFER_GOOGLETEST_COMMIT']}")
     print(f"lit {versions['WAFER_PYTHON_LIT_VERSION']}")
+    print(
+        "numeric-model sources "
+        f"SoftFloat {versions['WAFER_SOFTFLOAT_VERSION']} "
+        f"TestFloat {versions['WAFER_TESTFLOAT_VERSION']} "
+        f"m4 {versions['WAFER_M4_VERSION']} "
+        f"GMP {versions['WAFER_GMP_VERSION']} "
+        f"MPFR {versions['WAFER_MPFR_VERSION']}"
+    )
 
 
 def check_checkout_pin(
@@ -617,6 +740,28 @@ def check_checkout_pin(
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--versions-only", action="store_true")
+    parser.add_argument(
+        "--numeric-only",
+        action="store_true",
+        help="validate only the required managed numeric-model record",
+    )
+    parser.add_argument(
+        "--numeric-root",
+        default=str(DEPS_ROOT / "numeric-model"),
+        help="managed numeric-model dependency root",
+    )
+    parser.add_argument(
+        "--numeric-record",
+        help="numeric-model dependency record (defaults to <numeric-root>/numeric-model-deps.json)",
+    )
+    parser.add_argument(
+        "--emit-numeric-cmake-snapshot",
+        action="store_true",
+        help=(
+            "with --numeric-only, emit only the validated canonical JSON snapshot "
+            "for CMake on stdout"
+        ),
+    )
     args = parser.parse_args()
 
     versions = load_versions()
@@ -624,8 +769,38 @@ def main() -> int:
     if missing:
         raise RuntimeError(f"missing dependency pin(s): {', '.join(missing)}")
 
-    print_versions(versions)
+    if args.emit_numeric_cmake_snapshot and not args.numeric_only:
+        raise RuntimeError("--emit-numeric-cmake-snapshot requires --numeric-only")
+    if not args.emit_numeric_cmake_snapshot:
+        print_versions(versions)
     if args.versions_only:
+        return 0
+
+    numeric_root = pathlib.Path(args.numeric_root).absolute()
+    numeric_record = (
+        pathlib.Path(args.numeric_record).absolute()
+        if args.numeric_record
+        else numeric_root / "numeric-model-deps.json"
+    )
+    if args.numeric_only:
+        if not numeric_record.is_file():
+            raise RuntimeError(
+                f"managed numeric-model dependency record is missing: {numeric_record}"
+            )
+        check_numeric_sources_if_present(versions, numeric_root)
+        validated = check_numeric_record(versions, numeric_root, numeric_record)
+        if args.emit_numeric_cmake_snapshot:
+            print(
+                json.dumps(
+                    validated.cmake_snapshot(),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
+        else:
+            print(
+                f"numeric-model dependency conformance record passed: {numeric_record}"
+            )
         return 0
 
     check_text_contains(
@@ -635,6 +810,10 @@ def main() -> int:
     check_dependency_layering()
     check_openxla_stack_pins(versions)
     check_framework_source_alignment(versions)
+    check_numeric_sources_if_present(versions, numeric_root)
+    if args.numeric_record or numeric_record.exists():
+        check_numeric_record(versions, numeric_root, numeric_record)
+        print(f"numeric-model dependency conformance record passed: {numeric_record}")
 
     check_checkout_pin(
         label="LLVM/MLIR",

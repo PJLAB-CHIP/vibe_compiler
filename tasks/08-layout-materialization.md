@@ -493,8 +493,12 @@ computeWaferPhysicalTensorInfo(memrefType)
 
 `computeWaferPhysicalTensorInfo` 返回 address space、layout marker、bool bitpack、block size、
 `Cx/C0`、`aligned_C`、footprint、range-end、descriptor stride 和 legality；
-`computeWaferPhysicalElementByteOffset` 返回 logical index 到 physical byte offset 的映射。禁止每个
-pass 自己根据字符串或局部约定解释 `cx/ncx`。
+`computeWaferPhysicalElementByteOffset` 返回 byte-addressable element 的 logical index 到 physical byte offset
+映射；`computeWaferPhysicalElementBitOffset` 是 bitpacked `i1` Tensor/NTensor 相对 view base 的唯一
+physical bit ordinal owner。bit ordinal 不猜测 byte 内 LSB0/MSB0，该选择由显式target encoding或
+model profile拥有；在Cx/NCx bitpacked block/tail事实尚未固定时，bit helper必须拒绝而不是
+线性化猜测。禁止每个pass或numeric consumer自己根据字符串、局部约定或复制几何解释
+`cx/ncx`、tail或BOOL bit offset。
 
 Wafer-tagged memref 在target-codegen派生之前仍是logical-shape memref：shape是logical
 shape，element type 是 logical dtype；它不能被 generic memref-to-LLVM lowering 当成

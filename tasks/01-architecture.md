@@ -300,8 +300,9 @@ package execution；Q22.P timing calibration保持deferred，
 | all stage gates、reference、target-model和board证据 | 16 |
 | target execution model、multi-dtype numeric/bulk、target LLVM bundle、SystemC主架构边界、板端numeric correlation和deferred timing | 17 |
 
-Q0.L已经完成，实施计划归档为`tasks/archive/target-command-legality-closure.md`。当前没有active计划；并行Next为Q22.N
-numeric与Q22.L target LLVM bundle。target execution model方案已在tasks/17收敛，`tasks/progress.md`已把Q22拆成Q22.N
+Q0.L和Q22.N已经完成，实施计划分别归档为`tasks/archive/target-command-legality-closure.md`与
+`tasks/archive/target-numeric-foundation.md`。当前active计划为Q22.L `tasks/plans/target-llvm-module-bundle.md`；
+Q22.B已由Q22.N解锁但按当前执行顺序保持Next。target execution model方案已在tasks/17收敛，`tasks/progress.md`已把Q22拆成Q22.N
 numeric、Q22.B bulk、Q22.L target LLVM bundle、Q22.H authorized host CRT、Q22.S SystemC event和Q22.V source vertical等
 独立可调度边界；各实现边界开工前仍需建立独立计划。
 

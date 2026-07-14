@@ -588,4 +588,56 @@ TEST(WaferDialectTest, PhysicalLayoutMatchesIndependentSlowCoordinateOracle) {
   }
 }
 
+TEST(WaferDialectTest, ComputesBitpackedOffsetsWithoutGuessingBitOrder) {
+  mlir::DialectRegistry registry;
+  wafer::registerAllDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadDialect<wafer::WaferDialect>();
+
+  auto tensorMemory = wafer::MemoryAttr::get(&context, wafer::MemorySpace::SPM,
+                                             wafer::MemLayout::Tensor);
+  mlir::Type i1 = mlir::IntegerType::get(&context, 1);
+  auto contiguous = mlir::MemRefType::get(
+      {2, 9}, i1, mlir::MemRefLayoutAttrInterface{}, tensorMemory);
+  std::optional<wafer::WaferPhysicalTensorInfo> contiguousInfo =
+      wafer::computeWaferPhysicalTensorInfo(contiguous);
+  ASSERT_TRUE(contiguousInfo);
+  EXPECT_TRUE(contiguousInfo->bitPackedElement);
+  EXPECT_EQ(contiguousInfo->physicalElements, 18);
+  EXPECT_EQ(contiguousInfo->physicalBytes, 3);
+  EXPECT_FALSE(
+      wafer::computeWaferPhysicalElementByteOffset(contiguous, {0, 0}));
+
+  std::set<int64_t> occupiedBits;
+  for (int64_t row = 0; row < 2; ++row) {
+    for (int64_t column = 0; column < 9; ++column) {
+      std::optional<int64_t> bit = wafer::computeWaferPhysicalElementBitOffset(
+          contiguous, {row, column});
+      ASSERT_TRUE(bit);
+      EXPECT_EQ(*bit, row * 9 + column);
+      EXPECT_TRUE(occupiedBits.insert(*bit).second);
+    }
+  }
+
+  auto stridedLayout = mlir::StridedLayoutAttr::get(&context, 7, {5, 1});
+  auto strided = mlir::MemRefType::get({2, 3}, i1, stridedLayout, tensorMemory);
+  EXPECT_EQ(wafer::computeWaferPhysicalElementBitOffset(strided, {0, 0}), 0);
+  EXPECT_EQ(wafer::computeWaferPhysicalElementBitOffset(strided, {0, 2}), 2);
+  EXPECT_EQ(wafer::computeWaferPhysicalElementBitOffset(strided, {1, 0}), 5);
+  EXPECT_EQ(wafer::computeWaferPhysicalElementBitOffset(strided, {1, 2}), 7);
+  EXPECT_FALSE(wafer::computeWaferPhysicalElementBitOffset(strided, {2, 0}));
+
+  auto cxMemory = wafer::MemoryAttr::get(&context, wafer::MemorySpace::SPM,
+                                         wafer::MemLayout::Cx);
+  auto cx = mlir::MemRefType::get({2, 9}, i1, mlir::MemRefLayoutAttrInterface{},
+                                  cxMemory);
+  EXPECT_FALSE(wafer::computeWaferPhysicalElementBitOffset(cx, {0, 0}));
+
+  auto f16 =
+      mlir::MemRefType::get({2, 3}, mlir::Float16Type::get(&context),
+                            mlir::MemRefLayoutAttrInterface{}, tensorMemory);
+  EXPECT_EQ(wafer::computeWaferPhysicalElementByteOffset(f16, {1, 2}), 10);
+  EXPECT_EQ(wafer::computeWaferPhysicalElementBitOffset(f16, {1, 2}), 80);
+}
+
 } // namespace

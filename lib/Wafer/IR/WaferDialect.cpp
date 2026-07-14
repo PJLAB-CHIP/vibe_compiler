@@ -510,6 +510,60 @@ std::optional<int64_t> wafer::computeWaferPhysicalElementByteOffset(
   return byteOffset;
 }
 
+std::optional<int64_t> wafer::computeWaferPhysicalElementBitOffset(
+    mlir::MemRefType type, llvm::ArrayRef<int64_t> logicalIndices) {
+  std::optional<WaferPhysicalTensorInfo> info =
+      computeWaferPhysicalTensorInfo(type);
+  if (!info)
+    return std::nullopt;
+
+  if (!info->bitPackedElement) {
+    std::optional<int64_t> byteOffset =
+        computeWaferPhysicalElementByteOffset(type, logicalIndices);
+    int64_t bitOffset = 0;
+    if (!byteOffset || !checkedMul(*byteOffset, 8, bitOffset))
+      return std::nullopt;
+    return bitOffset;
+  }
+
+  // There is no source-backed Cx/NCx bitpacked bank/tail geometry. Keep the
+  // abstract bit offset unavailable instead of treating byte-oriented Cx
+  // alignment fields as a BOOL contract.
+  if (info->layout == MemLayout::Cx || info->layout == MemLayout::NCx)
+    return std::nullopt;
+  if (type.getRank() != static_cast<int64_t>(logicalIndices.size()))
+    return std::nullopt;
+  for (auto [dim, index] : llvm::zip_equal(type.getShape(), logicalIndices)) {
+    if (dim == mlir::ShapedType::kDynamic || dim < 0 || index < 0 ||
+        index >= dim)
+      return std::nullopt;
+  }
+
+  llvm::SmallVector<int64_t> strides;
+  int64_t ignoredViewOffset = 0;
+  if (mlir::failed(
+          mlir::getStridesAndOffset(type, strides, ignoredViewOffset)) ||
+      strides.size() != logicalIndices.size())
+    return std::nullopt;
+
+  int64_t bitOffset = 0;
+  for (auto [index, stride] : llvm::zip_equal(logicalIndices, strides)) {
+    if (stride == mlir::ShapedType::kDynamic || stride < 0)
+      return std::nullopt;
+    int64_t scaled = 0;
+    if (!checkedMul(index, stride, scaled) ||
+        !checkedAdd(bitOffset, scaled, bitOffset))
+      return std::nullopt;
+  }
+
+  int64_t capacityBits = 0;
+  if (info->physicalBytes < 0 ||
+      !checkedMul(info->physicalBytes, 8, capacityBits) ||
+      bitOffset >= capacityBits)
+    return std::nullopt;
+  return bitOffset;
+}
+
 mlir::LogicalResult
 DTEMessageAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
                        int64_t communicationId, DTEProtocolPhase phase,

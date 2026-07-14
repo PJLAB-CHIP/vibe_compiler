@@ -32,6 +32,15 @@ enum class LogicalFormat : uint8_t {
   U64,
 };
 
+/// Numeric category of a logical storage format. Floating-point sign bits are
+/// described by the floating category rather than by integer signedness.
+enum class LogicalFormatCategory : uint8_t {
+  SignedInteger,
+  UnsignedInteger,
+  BinaryFloatingPoint,
+  Boolean,
+};
+
 /// Target-independent storage facts shared by target legality and future
 /// numeric consumers. Public Data_Format codes belong to the profile-owned
 /// TargetDataFormatCodeRecord table; permission to emit a format-bearing
@@ -42,7 +51,18 @@ struct LogicalFormatDescriptor {
   llvm::StringLiteral canonicalSpelling;
   uint8_t storageBits;
   uint8_t semanticBits;
+  LogicalFormatCategory category;
+  /// IEEE exponent width for floating-point formats, otherwise zero.
+  uint8_t exponentBits;
+  /// IEEE precision including the implicit leading bit for normal values,
+  /// otherwise zero.
+  uint8_t precisionBits;
+  /// Bits that may be nonzero in a canonical scalar storage encoding.
+  uint64_t canonicalMask;
   bool bitpacked;
+  bool hasInfinity;
+  bool hasNaN;
+  bool hasSubnormal;
 };
 
 llvm::ArrayRef<LogicalFormatDescriptor> getLogicalFormatDescriptors();

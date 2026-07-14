@@ -26,3 +26,26 @@ set(WAFER_PYTORCH_XLA_COMMIT "396608c7105b3763874fe3800dfabdfa2b38a28a")
 set(WAFER_PYTORCH_XLA_REPOSITORY "https://github.com/pytorch/xla.git")
 
 set(WAFER_PYTHON_LIT_VERSION "18.1.8")
+
+# Functional-numeric model dependencies.  These are source archive pins rather
+# than host package/SONAME requirements.  CMake never downloads these archives;
+# tools/bootstrap_deps.py is the only supported fetch/build entry point.
+set(WAFER_SOFTFLOAT_VERSION "3e")
+set(WAFER_SOFTFLOAT_URL "https://www.jhauser.us/arithmetic/SoftFloat-3e.zip")
+set(WAFER_SOFTFLOAT_SHA256 "21130ce885d35c1fe73fc1e1bf2244178167e05c6747cad5f450cc991714c746")
+
+set(WAFER_TESTFLOAT_VERSION "3e")
+set(WAFER_TESTFLOAT_URL "https://www.jhauser.us/arithmetic/TestFloat-3e.zip")
+set(WAFER_TESTFLOAT_SHA256 "6d4bdf0096b48a653aa59fc203a9e5fe18b5a58d7a1b715107c7146776a0aad6")
+
+set(WAFER_M4_VERSION "1.4.21")
+set(WAFER_M4_URL "https://ftp.gnu.org/gnu/m4/m4-1.4.21.tar.xz")
+set(WAFER_M4_SHA256 "f25c6ab51548a73a75558742fb031e0625d6485fe5f9155949d6486a2408ab66")
+
+set(WAFER_GMP_VERSION "6.3.0")
+set(WAFER_GMP_URL "https://gmplib.org/download/gmp/gmp-6.3.0.tar.xz")
+set(WAFER_GMP_SHA256 "a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898")
+
+set(WAFER_MPFR_VERSION "4.2.2")
+set(WAFER_MPFR_URL "https://www.mpfr.org/mpfr-current/mpfr-4.2.2.tar.xz")
+set(WAFER_MPFR_SHA256 "b67ba0383ef7e8a8563734e2e889ef5ec3c3b898a01d00fa0a6869ad81c6ce01")

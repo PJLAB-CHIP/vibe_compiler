@@ -440,6 +440,9 @@
   `addTypes` 已注册，文本 IR 仍会报 “provides no type parsing hook”。
 - `add_mlir_library` 会生成静态库 target 和 `obj.<target>` object target；源文件需要的 compile
   definition 要加到 `obj.<target>`，只加到静态库 target 不会影响实际编译命令。
+- 直接用`add_executable`建立但链接LLVM/MLIR库的测试程序也要调用`llvm_update_compile_flags`；否则项目与LLVM的
+  RTTI/异常编译选项可能不一致，直到链接或使用`ErrorInfo`等跨库类型时才暴露。这个要求与是否使用
+  `add_mlir_library`无关。
 - MLIR pass 如果会创建其它 dialect 的 op，必须在 `getDependentDialects` 中显式声明对应 dialect；
   只在 driver registry 里注册还不保证 pass 运行时 context 已加载该 dialect。
 - 不要恢复 `wafer-check-softmax-schedule`、`wafer-check-norm-schedule`、

@@ -291,3 +291,23 @@
 - 修复模式：在full conversion前运行typed prepass；仅当private alloc恰有一个前置同block fill-dest use和当前select predicate
   use、fill scalar直接来自i1 constant、chosen/result类型及map均为identity时，把select替换为所选arm的fresh copy并删除dead
   fill/alloc。shared/额外use或非identity map保持动态路径并按现有legality处理；不得用该source优化扩大engine format矩阵。
+
+## 2026-07-14 APFloat/MPFR原始status不能替代profile的最终tininess语义
+
+- 现象：APFloat的directed overflow和RNE mul/FMA在部分边界只返回`inexact`，遗漏profile要求的overflow/underflow；MPFR又会
+  因目标exponent range transition把数学上exact的minimum subnormal标成underflow。仅按最终normal/subnormal class修补仍会
+  漏掉“tiny intermediate精度舍入后进入minimum normal”的tininess-after边界。
+- 根因：library status描述各自实现步骤，不自动等于当前`NumericSemanticsProfile`的unbounded-exponent precision rounding、
+  finite-range encoding和tininess-after组合合同；final value class也丢失了舍入前阈值信息。
+- 修复模式：结果位继续由受管APFloat/MPFR产生，但profile flags从exact raw input/ExactDyadic或directed enclosure证明补齐。
+  overflow比较exact magnitude与目标max-finite；mul/FMA只在RNE且inexact时用exact dyadic判断precision-only tininess；MPFR
+  subnormalize后把underflow约束为`tiny-after && inexact`。回归必须同时覆盖final normal但underflow、exact subnormal无
+  underflow和directed max-finite overflow，不能按final class猜测。
+
+## 2026-07-14 SmallString不能从自身派生的StringRef原地赋值
+
+- 现象：向上遍历路径时把`path::parent_path(buffer)`返回的`StringRef`直接赋回同一个`SmallString`，debug LLVM触发
+  overlapping/self-referential assignment断言；release配置可能表现为偶发路径损坏。
+- 根因：`StringRef`只借用`SmallString`当前storage，赋值会先修改或重分配该storage，使右值在拷贝完成前失效。
+- 修复模式：任何会修改owner的操作前，先把派生view复制到独立`std::string`，再赋回`SmallString`；同类规则也适用于
+  `drop_front`、`parent_path`和split得到的view。路径负例应在assert-enabled LLVM构建中运行。

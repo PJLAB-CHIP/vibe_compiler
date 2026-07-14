@@ -94,7 +94,10 @@ registry必须由该typed profile唯一解析到typed target identity和Kernel R
 不存在`unknown`revision占位、默认profile或字符串fallback；未来取得SKU/revision证据时新增closed profile record并同步
 manifest schema，而不是改变当前key含义。
 
-`LogicalFormatDescriptor`只拥有target-independent的canonical spelling、storage/semantic bit width和bitpacked事实；
+`LogicalFormatDescriptor`只拥有target-independent的canonical spelling、storage/semantic bit width、encoding category、
+floating exponent/precision、canonical storage mask、special-value能力和bitpacked事实；byte order、TF32 noncanonical输入政策及
+BOOL byte内physical bit order由显式model/target encoding policy选择，不能反向成为logical format或
+tasks/08 layout几何事实。
 `LogicalFormat`枚举ordinal没有ABI意义。公开`Data_Format` enum code由profile-owned
 `TargetDataFormatCodeRecord`完整记录，即使某个format没有任何可发射engine row也仍保留其公开code证据：
 
@@ -326,7 +329,8 @@ diagnostic按稳定语义分类：
   target model共同消费；它拥有shared `LogicalFormatDescriptor`（含TF32 raw32 container/semantic width）与
   target-profile×engine×format
   ABI/register encoding及legality。Cx/NCx block/tail/footprint、BOOL bitpack和alignment仍由tasks/08及唯一
-  `computeWaferPhysicalTensorInfo`拥有，registry只引用layout profile，不能复制几何。当前通用
+  `computeWaferPhysicalTensorInfo`拥有，registry只携带format-specific constraint；目标指令的typed layout与该
+  constraint必须在preflight中交叉，不能让registry复制几何。当前通用
   format switch、reference numeric code和CRT中的重复mapping必须由该registry生成或逐项conformance，不能以`Data_Format`
   enum存在证明每个engine合法；typed TF32 convert route也不能反向证明RDMA/WDMA/GEMM等format-bearing path可发射TF32。
   tasks/14 registry拥有typed `TargetProfileId`及registered CLI spelling；首个opaque canonical key为

@@ -4,9 +4,10 @@
 
 本文件只做任务队列管控，不声明架构合同。架构、IR/artifact 边界和 completion gate 以对应编号设计文档
 为准。Q22.R readiness已用真实Q21 artifact、官方candidate source和本机host-CRT/SystemC probe完成；Q0.L随后以fresh
-Q20/Q21 replay、closed target registry和schema-v3 artifact链闭合。当前没有`doing`或active实施计划，Q22.N numeric
-foundation与Q22.L owner-backed target LLVM bundle成为并行`next`；umbrella Q22只汇总各独立边界，不能用一份长计划
-并行冒充。
+Q20/Q21 replay、closed target registry和schema-v3 artifact链闭合，Q22.N再以受管formal依赖、13-format codec和完整
+numeric selector closure闭合。当前唯一`doing`是Q22.L owner-backed target LLVM bundle，active计划为
+`tasks/plans/target-llvm-module-bundle.md`；Q22.B已由Q22.N解锁，但按当前执行顺序保持`next`。umbrella Q22只汇总各独立
+边界，不能用一份长计划并行冒充。
 
 2026-07-10 的长周期计划已移入 `tasks/archive/2026-07-10-long-horizon-plans/`，只作历史背景。其
 Proto/WCRE/registry/lease/rank-class 等未实现对象不再作为 correctness 前置。重基线证据和旧任务映射见
@@ -26,7 +27,8 @@ Proto/WCRE/registry/lease/rank-class 等未实现对象不再作为 correctness 
 
 ## 当前状态与实施顺序
 
-- 当前没有`doing`或active实施计划；并行`next`是Q22.N与Q22.L，二者进入代码施工前分别建立独立计划。
+- 当前唯一`doing`是Q22.L，active实施计划是`tasks/plans/target-llvm-module-bundle.md`；Q22.B已解锁但按用户指定的
+  Q22.L→Q22.B顺序保持`next`，不与Q22.L并发修改shared implementation。
 - Q22.R=`done`只表示readiness census/probe已完成，不表示numeric、oneDNN、target LLVM bundle、SystemC或host provider
   已经集成；这些分别由Q22.N/L/B/H/S闭合。
 - Q0.L已经完成；本地numeric lane按Q22.N→Q22.B推进，target LLVM lane按Q22.L推进；Q22.L完成且
@@ -46,8 +48,8 @@ Q17 + Q18 + Q21 -> Q22.R
 
 当前前向路径：
 Q22.R -> Q0.L (done)
-  -> Q22.N (next) -> Q22.B
-  -> Q22.L (next) -> Q22.H [external authorization/spec]
+  -> Q22.N (done) -> Q22.B (next)
+  -> Q22.L (doing) -> Q22.H [external authorization/spec]
 Q22.N + Q22.H + Q16.T(done) -> Q22.S
 Q22.B + Q22.S + Q20(done) + Q21(done) -> Q22.V -> Q22
 
@@ -65,9 +67,8 @@ Q22.C + validated PMU/timing environment -> Q22.P (deferred)
 
 | 执行位置 | Tracking ID | Semantic key | 状态 | 必须满足的前置 | 当前动作 / 完成要求 | 设计 owner |
 | --- | --- | --- | --- | --- | --- | --- |
-| 并行next / numeric | Q22.N | `target-numeric-foundation` | `next` | Q0.L | 消费tasks/14唯一format registry并实现13种model codec、36条convert route、四种确定性rounding、`NumericSemanticsProfile`唯一映射、formal backend及逐family independent/trusted-TCB gate；不接SystemC，不以oneDNN或板端结果定义语义。 | 10、11、14、16、17 |
-| 并行next / target LLVM | Q22.L | `target-llvm-module-bundle` | `next` | Q0.L、Q17、Q22.R | 把transaction-local prepared target LLVM/ABI artifact提升为owner-backed、move-only、不可序列化的all-rank bundle；逐rank readback logical rank、entry、profile、typed ABI和module identity，late failure不形成bundle。它不执行Host CRT、packet或SystemC。 | 14、16、17 |
-| Q22.N后 / bulk | Q22.B | `target-bulk-qualification` | `blocked` | Q22.N | 实现oneDNN adapter、checked runtime budget、`calibrate -> freeze -> validate`离线资格producer和runtime exact-match admission；mandatory large GEMM必须命中受资格约束的bulk row，无隐式scalar fallback。 | 16、17 |
+| 当前doing / target LLVM | Q22.L | `target-llvm-module-bundle` | `doing` | Q0.L、Q17、Q22.R | 按`tasks/plans/target-llvm-module-bundle.md`把transaction-local prepared target LLVM/ABI artifact提升为owner-backed、move-only、不可序列化的all-rank bundle；逐rank readback logical rank、entry、profile、typed ABI和module identity，late failure不形成bundle。现有ELF发布必须直接消费该bundle，不重复lowering；本row不执行Host CRT、packet或SystemC。 | 14、16、17 |
+| next / bulk | Q22.B | `target-bulk-qualification` | `next` | Q22.N | Q22.N已满足；按执行顺序在Q22.L后建立独立计划。实现oneDNN adapter、checked runtime budget、`calibrate -> freeze -> validate`离线资格producer和runtime exact-match admission；mandatory large GEMM必须命中受资格约束的bulk row，无隐式scalar fallback。 | 16、17 |
 | Q22.L后 / host | Q22.H | `target-host-crt` | `blocked` | Q22.L + external host-seam authorization/spec | 项目owner/法务确认vendor采购条款或取得书面许可/独立公开规范后，消费Q22.L bundle，建立同一repo CRT wrapper的device/host build contract及许可兼容operator/packet seam，并闭合36个Tsm和11个platform入口；direct shim只作ABI smoke。 | 14、16、17 |
 | numeric+host汇合 | Q22.S | `target-systemc-event-model` | `blocked` | Q22.N、Q22.H、Q16.T | 建立默认关闭的SystemC feature、rank/tile memory、worker/engine event、checked packet effect、local completion及Direct DTE/FSM；只发布untimed/delta-cycle functional-event profile。 | 13、16、17 |
 | bulk+SystemC汇合 | Q22.V | `target-model-source-verticals` | `blocked` | Q22.B、Q22.S、Q20、Q21 | 由同一wafer-compile执行Q20 f32、source-produced f16/bf16 GEMM、Q21 16-rank tiny Llama及超过formal budget的deterministic source-backed large GEMM，比较all-and-only完整输出并闭合atomic failure。 | 16、17 |
@@ -253,7 +254,8 @@ done项仍只证明各自窄边界。
   并取代它作为前向artifact证据。
 - extent 16/4各两项；保守按每条engine command后显式completion统计，每rank176个static terminal op，低于tasks/10/11
   独立4096 cap。A/B/scratch最保守768 B，existing high-water加和约2832 B，占当前SPM窗口0.094%。
-- SoftFloat/TestFloat 3e、oneDNN 3.12、SystemC 3.0.2 candidate可构建；MPFR/GMP source因缺GNU m4未闭合，临时build不进入仓库。
+- readiness当时只证明SoftFloat/TestFloat 3e、oneDNN 3.12、SystemC 3.0.2 candidate可构建且MPFR/GMP受GNU m4阻断；
+  该历史阻断已经由Q22.N受管m4/GMP/MPFR bootstrap、self-test与identity readback消除，不再是前向缺口。
 - host CRT可编成x86 object但不能完整link；现有archive为RISC-V，vendor host runtime closure和实际授权仍属external。
 - readiness replay暴露并修复group→tile conversion漏声明Async dependent dialect。Q22.R不签发numeric profile、bulk admission、
   vendor packet或board能力。
@@ -264,6 +266,7 @@ done项仍只证明各自窄边界。
 
 | Tracking ID | Semantic key | 已验证结果 | 明确不代表 |
 | --- | --- | --- | --- |
+| Q22.N | `target-numeric-foundation` | 13种logical codec、276个selector、101条确定性convert、88条floating elementwise、4条BOOL logic、3条GEMM及16条native-reduce静态拒绝闭合；SoftFloat/TestFloat 3e与受管m4 1.4.21/GMP 6.3.0/MPFR 4.2.2的23项build/self-test/identity gate通过。feature-off 138项base unit发现137 pass、1个预期StableHLO skip；feature-on numeric 37/37，`check-wafer` 208 pass、41个均为未启用importer依赖的预期unsupported，CTest feature-on 8/8、feature-off 6/6。 | oneDNN bulk、SystemC、Host CRT、板端numeric或timing |
 | Q1 | `crt-surface-audit` | 当前compiler-emitted production CRT symbol/prototype surface已审计。 | instruction geometry、numeric correctness |
 | Q2-Q3 | `crt-device-symbol-closure` | repo-local CRT 109个production symbol和required-Wafer-symbol device link gate已闭合。 | board execution |
 | Q3.5 | `crt-extended-evidence` | 历史TX81 CRT扩展surface已分级。 | extended surface已支持 |
@@ -272,10 +275,12 @@ done项仍只证明各自窄边界。
 
 ## 实施计划索引
 
-- Active：无；并行Next：Q22.N、Q22.L，进入代码施工前分别建立独立计划。
-- Blocked implementation rows：Q22.B/H/S/V；Q22.H另受external authorization/spec gate阻塞。Q22也是`blocked`，但它只
+- Active：`tasks/plans/target-llvm-module-bundle.md`（Q22.L）；Next：Q22.B，代码施工前建立独立计划并切换为唯一`doing`。
+- Blocked implementation rows：Q22.H/S/V；Q22.B是已解锁的`next`。Q22.H另受external authorization/spec gate阻塞。
+  Q22也是`blocked`，但它只
   汇总Q22.V完成状态，不建立独立施工计划。
-- Historical：`tasks/archive/target-command-legality-closure.md`、`tasks/archive/target-model-readiness.md`、
+- Historical：`tasks/archive/target-numeric-foundation.md`、`tasks/archive/target-command-legality-closure.md`、
+  `tasks/archive/target-model-readiness.md`、
   `tasks/archive/single-card-vertical-slice.md`、
   `tasks/archive/2026-07-10-long-horizon-plans/`
 - Evidence：`tasks/archive/12-architecture-evidence-reset.md`

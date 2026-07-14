@@ -134,8 +134,7 @@ def vendor_format_suffix(spelling: str) -> str:
 def parse_logical_formats(target_format_text: str) -> list[LogicalFormatFact]:
     body = initializer_body(target_format_text, "kLogicalFormats[]")
     matches = re.findall(
-        r'\{\s*Format::(\w+)\s*,\s*"([^"]+)"\s*,\s*\d+\s*,\s*'
-        r"\d+\s*,\s*(?:true|false)\s*\}",
+        r'\{\s*Format::(\w+)\s*,\s*"([^"]+)"\s*,[^{}]*\}',
         body,
     )
     facts = [LogicalFormatFact(enum_name, spelling) for enum_name, spelling in matches]

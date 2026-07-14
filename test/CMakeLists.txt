@@ -73,3 +73,59 @@ add_test(NAME wafer-runtime-adapter-python
     --repo-root ${CMAKE_SOURCE_DIR}
     --wafer-run $<TARGET_FILE:wafer-run>
 )
+
+add_test(NAME wafer-numeric-dependency-record-python
+  COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_SOURCE_DIR}/tools/test_numeric_deps.py
+)
+
+set(_wafer_numeric_cmake_gate_args
+  --cmake ${CMAKE_COMMAND}
+  --source-dir ${CMAKE_SOURCE_DIR}
+  --work-root ${CMAKE_CURRENT_BINARY_DIR}/numeric-cmake-gates
+  --generator ${CMAKE_GENERATOR}
+  --c-compiler ${CMAKE_C_COMPILER}
+  --cxx-compiler ${CMAKE_CXX_COMPILER}
+  --llvm-dir ${LLVM_DIR}
+  --mlir-dir ${MLIR_DIR}
+  --python ${Python3_EXECUTABLE}
+)
+if(CMAKE_GENERATOR_PLATFORM)
+  list(APPEND _wafer_numeric_cmake_gate_args
+    --generator-platform ${CMAKE_GENERATOR_PLATFORM})
+endif()
+if(CMAKE_GENERATOR_TOOLSET)
+  list(APPEND _wafer_numeric_cmake_gate_args
+    --generator-toolset ${CMAKE_GENERATOR_TOOLSET})
+endif()
+if(CMAKE_MAKE_PROGRAM)
+  list(APPEND _wafer_numeric_cmake_gate_args
+    --make-program ${CMAKE_MAKE_PROGRAM})
+endif()
+if(CMAKE_BUILD_TYPE)
+  list(APPEND _wafer_numeric_cmake_gate_args
+    --build-type ${CMAKE_BUILD_TYPE})
+endif()
+add_test(NAME wafer-numeric-cmake-configuration-gates
+  COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_SOURCE_DIR}/tools/test_numeric_cmake_gates.py
+    ${_wafer_numeric_cmake_gate_args}
+)
+set_tests_properties(wafer-numeric-cmake-configuration-gates PROPERTIES
+  LABELS "numeric-model;configuration"
+  TIMEOUT 180
+)
+
+if(WAFER_ENABLE_NUMERIC_MODEL_DEPS)
+  add_test(NAME wafer-numeric-dependency-configured-record-python
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_SOURCE_DIR}/tools/check_deps.py
+      --numeric-only
+      --numeric-root ${WAFER_NUMERIC_MODEL_DEPS_CANONICAL_ROOT}
+      --numeric-record ${WAFER_NUMERIC_MODEL_DEPS_CANONICAL_RECORD}
+      --emit-numeric-cmake-snapshot
+  )
+  set_tests_properties(wafer-numeric-dependency-configured-record-python
+    PROPERTIES PASS_REGULAR_EXPRESSION
+      "wafer-numeric-model-canonical-snapshot")
+endif()

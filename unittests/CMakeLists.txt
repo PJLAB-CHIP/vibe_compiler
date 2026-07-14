@@ -10,10 +10,17 @@ add_executable(WaferUnitTests
   Dialect/Wafer/WaferDialectTest.cpp
   Dialect/Wafer/WaferInterfacesTest.cpp
   Runtime/PackageManifestTest.cpp
+  Target/FormalNumericTest.cpp
+  Target/NumericCodecTest.cpp
+  Target/NumericDependencyConformanceTest.cpp
+  Target/NumericRawRounderTest.cpp
+  Target/NumericSemanticsTest.cpp
   Target/TargetFormatTest.cpp
 )
+llvm_update_compile_flags(WaferUnitTests)
 find_program(WAFER_TEST_LLVM_CLANGXX NAMES clang++ REQUIRED)
 target_compile_definitions(WaferUnitTests PRIVATE
+  WAFER_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
   WAFER_TEST_PYTHON_EXECUTABLE="${Python3_EXECUTABLE}"
   WAFER_TEST_DEVICE_LINKER_SCRIPT="${CMAKE_SOURCE_DIR}/tools/wafer_device_link.py"
   WAFER_TEST_LLVM_CLANGXX="${WAFER_TEST_LLVM_CLANGXX}"
@@ -50,3 +57,65 @@ add_custom_target(check-wafer-unit
   DEPENDS WaferUnitTests
   USES_TERMINAL
 )
+
+if(NOT WAFER_ENABLE_NUMERIC_MODEL_DEPS)
+  if(NOT CMAKE_READELF OR NOT EXISTS "${CMAKE_READELF}")
+    message(FATAL_ERROR
+      "feature-off numeric link closure requires the configured readelf tool")
+  endif()
+  if(NOT CMAKE_NM OR NOT EXISTS "${CMAKE_NM}")
+    message(FATAL_ERROR
+      "feature-off numeric link closure requires the configured nm tool")
+  endif()
+  add_test(NAME wafer-numeric-feature-off-link-closure
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_SOURCE_DIR}/tools/check_numeric_link_closure.py
+      --binary $<TARGET_FILE:WaferUnitTests>
+      --readelf ${CMAKE_READELF}
+      --nm ${CMAKE_NM}
+  )
+  set_tests_properties(wafer-numeric-feature-off-link-closure PROPERTIES
+    LABELS "numeric-model;link-closure"
+  )
+endif()
+
+if(WAFER_ENABLE_NUMERIC_MODEL_DEPS)
+  add_executable(WaferNumericModelUnitTests
+    Target/FormalTensorNumericTest.cpp
+    Target/MPFRNumericTest.cpp
+    Target/NumericManagedDependencyIntegrationTest.cpp
+    Target/NumericOracleDifferentialTest.cpp
+    Target/SoftFloatOracleTest.cpp
+  )
+  llvm_update_compile_flags(WaferNumericModelUnitTests)
+  target_compile_definitions(WaferNumericModelUnitTests PRIVATE
+    WAFER_NUMERIC_MODEL_DEPS_ROOT="${WAFER_NUMERIC_MODEL_DEPS_CANONICAL_ROOT}"
+    WAFER_NUMERIC_MODEL_DEPS_RECORD="${WAFER_NUMERIC_MODEL_DEPS_CANONICAL_RECORD}"
+    WAFER_NUMERIC_MODEL_DEPS_RECORD_SHA256="${WAFER_NUMERIC_MODEL_DEPS_RECORD_SHA256}"
+  )
+  target_link_libraries(WaferNumericModelUnitTests
+    PRIVATE
+    WaferNumericModel
+    GTest::gtest_main
+  )
+  add_test(NAME WaferNumericModelUnitTests COMMAND WaferNumericModelUnitTests)
+  add_test(NAME wafer-numeric-managed-load-integration
+    COMMAND WaferNumericModelUnitTests
+      --gtest_filter=NumericManagedDependencyIntegrationTest.*
+  )
+  set_tests_properties(
+    WaferNumericModelUnitTests
+    wafer-numeric-managed-load-integration
+    PROPERTIES
+    ENVIRONMENT
+      "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
+    LABELS "numeric-model;managed-dependencies"
+  )
+  add_custom_target(check-wafer-numeric-model-unit
+    COMMAND ${CMAKE_COMMAND} -E env
+      "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
+      $<TARGET_FILE:WaferNumericModelUnitTests>
+    DEPENDS WaferNumericModelUnitTests
+    USES_TERMINAL
+  )
+endif()

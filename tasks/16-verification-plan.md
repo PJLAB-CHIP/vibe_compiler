@@ -669,7 +669,7 @@ allocation、launch、transport、completion和copyback仍只由Q6.B拥有。
 ## 11. Q22 Target Execution Model Gates
 
 具体模型边界、SystemC主架构、exact ELF缺口和板端numeric corpus由tasks/17拥有。本节只定义证据口径。Q0.L已经闭合
-target profile、engine×format legality以及reduce/indexing-map语义，Q22.N/L成为并行Next；以下各gate仍必须以自己的实现和
+target profile、engine×format legality以及reduce/indexing-map语义，Q22.N随后闭合formal numeric foundation，当前推进Q22.L；以下各gate仍必须以自己的实现和
 新鲜测试完成，不能因文档或Q0.L通过而标记完成。
 
 ### 11.1 Q22.N Multi-Dtype Numeric Foundation Gate
@@ -679,30 +679,48 @@ target profile、engine×format legality以及reduce/indexing-map语义，Q22.N/
 - codec conformance穷举INT8/UINT8/BOOL、FP16/BF16全部raw pattern和TF32 canonical semantic encoding；FP32、宽整数、
   TF32 noncanonical按classification/boundary/stratified random覆盖。logical codec检查endianness、NaN/Inf/±0/subnormal与
   round-trip；encoding profile另检查ABI/register code和engine legality，tasks/08唯一layout helper独立检查Cx/NCx
-  block/compact tail、BOOL bit order、footprint和alignment，二者以typed layout profile ref交叉；
+  block/compact tail、BOOL physical bit ordinal、footprint和alignment，byte内LSB0/MSB0由显式encoding/model
+  policy独立检查，消费侧不复制layout几何；
 - 公开36条convert route逐条核对src/dst和zero-point/plain/rounding参数类别；rounding 0..3覆盖tie及边界，mode 4和四条
   INT8-source zero-point route必须有命名model candidate及区分向量，但没有target RNG/公式证据时不能标hardware row；
   float/int route还覆盖NaN/Inf/overflow result、sNaN/payload/sign、tininess和status候选；
-- integer/bitwise/compare raw exact。SoftFloat FP16/FP32与Q19/APFloat交叉，TestFloat只算SoftFloat conformance harness；
-  MPFR-backed BF16/TF32与Q19/APFloat及独立test-only raw-bit rounder交叉；production MPFR transcendental以version/digest/
+- integer codec/convert、BOOL logic和floating compare按raw exact。正式基础算术/convert使用当前受管LLVM中的APFloat/APInt，
+  但不得调用Q19 helper；
+  FP16/FP32与独立SoftFloat adapter交叉，并由`testsoftfloat`的slowfloat路径验证SoftFloat自身。Q19同样使用APFloat，故只能作
+  integration cross-check，不能计第二oracle。BF16/TF32与MPFR高精度结果及独立test-only raw-bit rounder交叉；production
+  MPFR transcendental以version/digest/
   self-test、known-point/metamorphic和wrapper验证闭合trusted-TCB gate。self-test绑定exact MPFR/GMP source/build digest与
   configure options，在clean dependency build分别运行上游`make check`，归档command/exit/version/config summary/test-suite
   logs，再运行project wrapper tests；它只声明trusted MPFR semantics，不算第二oracle。第二实现或board为
   升级证据，同一MPFR wrapper不算独立oracle；production target model不得调用Q19 helper；
-- GEMM/reduce测试完整operand/product/accumulator/intermediate/destination tuple、逐步rounding/overflow、FMA、reduction
-  order和store conversion；至少覆盖f32、f16/bf16窄/宽累加、TF32-to-f32和i8-to-s32 candidate的区分向量；
-  i8-to-s32在quantized GEMM/result ABI与zero-point/scale policy闭合前只算component candidate，不宣称int8 full vertical；
+- GEMM测试完整operand/product/accumulator/intermediate/destination tuple、逐步rounding/overflow、FMA、reduction
+  order和store conversion；首个published row只有f16/bf16/f32同dtype输入输出、F32 fused accumulator、+0初值、K递增和
+  destination RNE。narrow/unfused、TF32-to-f32和i8-to-s32只保留typed区分candidate；16条native reduce selector因
+  init/identity/order未闭合全部静态拒绝，source reduce只重放Q0.L普通composite，不另建旁路reduce loop；
 - 从current accepted surface生成closure：每个published `(ModelProfileId, NumericCommandKey)`恰好映射一个
   `NumericSemanticsProfile`/kernel/comparator或静态unsupported reason；多个model candidate使用不同显式ModelProfileId，
   不能成为compiler legality或隐式default；
-- `FormalNumericExecutionContext`覆盖SoftFloat/MPFR state的save/set/clear/capture/restore；DAZ/FTZ分别由target-owned input/
-  output codec处理。nested/early return/exception和normal/subnormal测试证明invocation恢复，另以双OS-thread验证required TLS
-  build。MPFR/GMP self-test record绑定实际library artifacts；static link readback或dynamic loaded-object digest/build-id、
+- `FormalNumericExecutionContext`只聚合invocation-owned model flags，effect-free scalar/tensor evaluator仅在完整成功后commit；
+  APFloat/APInt每次调用显式传入rounding且不依赖ambient fenv。MPFR wrapper每次调用保存、设置、清理和恢复emin/emax、
+  default precision、rounding及flags；SoftFloat只存在于独立conformance adapter，但其THREAD_LOCAL state仍需RAII恢复和
+  双OS-thread隔离验证。首个profile固定gradual、no-DAZ、no-FTZ，codec不代替该算术政策。nested/early return/exception和
+  normal/subnormal测试证明invocation恢复。MPFR/GMP self-test record绑定实际library artifacts；static link readback或dynamic loaded-object digest/build-id、
   MPFR version/patch/options、`gmp_version`和transitive linkage exact-match，替换同ABI library的negative必须configuration fail。
+
+component closure还必须逐项执行101条确定性convert、88条floating elementwise加4条BOOL logic、3条GEMM和16条
+native-reduce reject row；tensor dispatcher在完整command、input encoding、element count和scalar/FMA budget preflight后
+才分配output，并证明任一late scalar failure不commit partial output/status。MPFR的sigmoid/softplus必须用directed enclosure
+与自适应precision证明最终RNE bit和final-result flags，固定guard bits或先把中间值round到目标格式均不算完成。
 
 只有exhaustive/property以及该family要求的independent differential或trusted-TCB conformance真实执行，且受管dependency
 版本、license和digest可审计，该gate才通过；缺失required differential/TCB self-test、单个f32 workload、global tolerance、
 oneDNN/Eigen输出或SystemC process test不能替代。该gate只证明model semantics，不证明bulk、SystemC或板端edge behavior。
+
+Q22.N新鲜完成证据：受管record闭合SoftFloat/TestFloat 3e、GNU m4 1.4.21、GMP 6.3.0、MPFR 4.2.2的20个artifact、
+9份license文本和23项build/self-test/TLS/version/transitive identity gate。feature-on numeric suite 37/37、CTest 8/8；
+feature-off base unit发现138项，137 pass、1个预期StableHLO importer skip，CTest 6/6。`check-wafer`执行208项lit全部通过，
+显式unsupported审计的41项全部属于未启用StableHLO/Shardy importer依赖，无required numeric test被skip/unsupported。
+这些结果不升级为Q22.B/H/S/V或board证据。
 
 ### 11.2 Q22.B oneDNN Bulk Qualification Gate
 
