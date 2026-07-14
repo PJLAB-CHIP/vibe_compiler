@@ -1,6 +1,6 @@
 # Wafer Target Execution Model（CModel）
 
-状态：2026-07-14按完整数值基础层收敛。本文固定以数值正确性为近期目标的untimed target execution model、
+状态：2026-07-14按数值语义唯一归属、oneDNN逐profile准入和真实IR/CRT边界完成第二轮收敛。本文固定以数值正确性为近期目标的untimed target execution model、
 SystemC/TLM边界、实现分层和板端numeric correlation计划；timing calibration仅作为deferred extension。当前尚无
 production实现，任务状态看
 `tasks/progress.md`。本文不复制总体架构、instruction schedule或完整register/
@@ -21,9 +21,9 @@ Q19 ReferenceExecutor的别名，也不因采用SystemC就自动获得vendor pac
   untimed/delta-cycle profile，不建立任意时间参数；
 - 把算子数值、packet decode和checked memory effect保留为不依赖SystemC的plain C++ kernel，使其可做独立unit/
   differential test，并由SystemC modules调用；
-- 在任何f32 workload vertical之前先建立覆盖当前全部13种storage format、7种公开compute/convert format、显式
-  accumulator/intermediate/destination类型和舍入/overflow/special-value政策的数值基础层；kernel只消费完整numeric
-  signature，不保留先写f32、以后再补dtype的旁路；
+- 在任何f32 workload vertical之前先建立覆盖当前全部13种logical storage format、有证据的target-profile×engine×format encoding、7种公开
+  compute/convert format及完整product/accumulator/intermediate/destination、舍入/overflow/special-value政策的数值基础层；
+  kernel只消费唯一`NumericSemanticsProfile`，不保留先写f32、以后再补dtype的旁路；
 - 让同一份repo-local CRT源码的host build经过CModel-compatible `TsmNew*`/operator/execute/MMIO seam、实际
   `Tsm*Instr`构造和`TsmExecute`进入模型，
   不以绕过CRT/packet的host shim代替正式CModel路径；
@@ -53,7 +53,8 @@ Pipeline position:
 - Upstream artifact / IR:
   近期入口消费Q16 ExecutableBundle经过tasks/14 target ABI preparation和full conversion形成的all-and-only、
   owner-backed fully legal target LLVM modules，以及与每rank entry精确双射的typed ABI slots。该target-LLVM
-  bundle不可序列化，不进入package。exact-module扩展另行消费Q18 VerifiedPackageManifest和其all-and-only
+  bundle还必须消费`CompilationRequest -> ExecutionConfig`端到端携带的typed target profile/revision/ABI identity；当前该
+  identity尚未实现，属于Q0.L前置，禁止在full conversion后补default。bundle不可序列化，不进入package。exact-module扩展另行消费Q18 VerifiedPackageManifest和其all-and-only
   Q17 RISC-V ELF modules。Q19结果和CPU expected只作独立比较，不作为target model执行输入。
 - Current stage responsibility:
   在任何执行副作用前完成model capability preflight；以同一repo CRT的host build和CModel-compatible Tsm factory/
@@ -69,7 +70,8 @@ Pipeline position:
   tasks/16 differential/CI和Q22.C board numeric correlation；Q22.E exact-module与deferred Q22.P timing calibration是
   独立consumer。target model结果不是compiler transformation输入。
 - User-level driver / named pipeline:
-  首个正式CModel gate由wafer-compile在Q17/Q18原子发布后、同一invocation仍持有target LLVM bundle时进入显式
+  Q0.L后用户通过`wafer-compile --target-profile=<registered-id>`显式选择tasks/14 typed profile；首个正式CModel gate由
+  wafer-compile在Q17/Q18原子发布后、同一invocation仍持有target LLVM bundle时进入显式
   target-model execution mode：host执行target LLVM并调用同源host CRT，CRT再向SystemC model发packet/event。
   wafer-opt/pass chain和direct shim只补局部测试。只有exact package/ELF执行闭合后，wafer-run才通过typed
   RuntimeProvider选择target model并消费verified package，不能用host-only模式冒充该入口。
@@ -77,11 +79,15 @@ Pipeline position:
   不复制instruction schedule，不改变manifest语义，不用Q19执行结果驱动target model，不把untimed结果升级为
   board/timing/cycle证据，不用代表rank、手写LLVM、手写packet或单个kernel替代真实纵向链。
 - Completion gate:
-  在首个SystemC workload前，numeric foundation必须闭合13种storage format的bit/byte codec与layout footprint、当前
-  7种compute/convert format的完整descriptor、公开36条convert route和4种确定性舍入模式，并对stochastic、zero-point
-  及其它未知政策显式分profile拒绝或标记model-only；formal scalar backend需通过独立library oracle和raw-bit corpus，
-  source-backed大GEMM另须命中逐signature验证过的oneDNN bulk backend而不是逐MAC scalar。
-  随后SystemC host-CRT/transaction基线必须执行同一wafer-compile产生的rank-count=1/16 source-backed program，覆盖
+  在首个SystemC workload前，numeric foundation必须闭合13种logical codec、有证据的target-profile×engine×format encoding、
+  当前7种compute/convert format、公开36条convert route和4种确定性舍入模式；每个published
+  `(ModelProfileId, NumericCommandKey)`唯一
+  映射semantic profile，unknown政策显式拒绝或标记model-only。formal backend逐family通过独立differential或本文明确列出的
+  trusted-TCB conformance gate和raw corpus，
+  SoftFloat/TestFloat或production MPFR不能自计双oracle；source-backed大GEMM按exact/bounded admission命中oneDNN，超过
+  formal work budget而无admitted bulk时fail fast。
+  随后SystemC host-CRT/transaction基线必须执行同一wafer-compile产生的Q20 f32、source-produced f16/bf16 GEMM、Q21
+  16-rank tiny Llama和deterministic source-backed large GEMM，覆盖
   all-and-only fully legal target LLVM ranks、同源CRT、实际project packet构造、完整typed ABI、SPM/DDR、当前
   supported engine和Direct DTE状态，
   与独立Q19/CPU oracle按显式op/dtype model profile policy比较完整输出；unsupported symbol/profile、地址/descriptor错误、
@@ -97,8 +103,8 @@ Pipeline position:
 
 - Q16 `ExecutableBundle`已经拥有all-and-only static rank modules、typed program bindings、accepted memory/
   transport和terminal completion；target model不得重新选择candidate或重算跨rankbinding。
-- tasks/14已经在private `PreparedTargetRank`中完成entry output/workspace/status ABI preparation，随后把instruction
-  结构保持地lower为fixed `void(i64...)` target LLVM CRT calls；RISC-V device link在该lowering之后发生。
+- tasks/14现有per-rank transaction-local target preparation已完成entry output/workspace/status ABI preparation，随后把
+  instruction结构保持地lower为fixed `void(i64...)` target LLVM CRT calls；RISC-V device link在该lowering之后发生。
 - 当前Wafer CRT header、lowering、source和checker形成109个production symbol的闭合surface。CRT源码通过
   `TsmNew*`/operator function table填写`Tsm*Instr`并调用`TsmExecute`，而不是直接写模型结果；symbol存在仍只证明
   ABI closure，不证明packet、numeric或hardware completion。
@@ -107,10 +113,13 @@ Pipeline position:
 - Q18当前只实现pure no-card `RuntimeSessionPlan`。真实`RuntimeProvider`生命周期和board执行尚未实现。
 - Q19直接消费accepted instruction/memory facts；其reference-only numeric和deterministic DTE policies不得成为
   target model的实现事实源。
-- 当前target format encoder和movement verifier能表达i1、signed/signless及explicit unsigned i8/i16/i32/i64、f16、bf16、
-  f32，但尚未打通TF32；frontend可接收的f64在target profile中也没有format。Q22 numeric foundation应实现TF32 codec并
-  把这两个compiler/model可达性缺口显式化，不能用model有codec扩大当前compiler legality，也不能让f64晚到packet阶段
-  才失败。
+- 当前通用target format encoder和movement verifier能表达i1、signed/signless及explicit unsigned i8/i16/i32/i64、f16、
+  bf16、f32，但没有TF32编码；因此RDMA/WDMA、fill、elementwise、reduce和plain GEMM等format-bearing路径当前不能发射
+  TF32。`wafer.instr.convert`是例外：代码检查显示lowering可由typed `InstrConvertKind`直接选择含TF32的wrapper，但当前没有
+  target-lowering integration正例，因此只能标记为code-reachable、尚未验证，不能把两类路径合并成“TF32完全未打通”。
+  frontend可接收的f64在target profile中也没有format。Q22 numeric foundation应
+  实现TF32 raw32 codec并分别记录logical codec、convert可达性和engine-specific format legality；不能用model有codec扩大
+  compiler legality，也不能让f64晚到packet阶段才失败。
 
 近期实现应把tasks/14中已完成ABI preparation和full target conversion的结果提升为owner-backed、不可序列化的
 **target LLVM bundle**。它是实际fully legal LLVM IR及typed slots的all-rank集合，同时被现有RISC-V link、direct
@@ -131,6 +140,13 @@ ABI slots、target identity/revision、target/kernel ABI facts和覆盖全部mod
 preparation、full conversion和readback后才能原子构造bundle并交给任一consumer；不能让device link和host model分别
 从默认值恢复target facts，也不能让passing ranks先行执行。
 
+当前`ExecutionConfig`没有足以区分target revision/ABI profile的typed identity。Q0.L由tasks/14 registry拥有
+`TargetProfileId`，通过`wafer-compile --target-profile=<registered-id>`显式选择并写入`CompilationRequest`/
+`ExecutionConfig`，再贯穿profile-bearing ExecutableBundle、target conversion、transaction-local prepared target LLVM/ABI
+artifact、`TargetArtifactBundle`和PackageManifest readback；它不能由target model、自由字符串manifest或host环境在末端恢复。
+Q22后续创建的`TargetLLVMModuleBundle`只消费并再次readback该已验证identity，
+不是Q0.L提前创建的artifact。该缺口闭合前正式Q22 frontend unavailable。
+
 ### 3.2 已确认的硬件功能和事务事实
 
 当前静态证据足以支撑以下受支持子集：
@@ -138,9 +154,9 @@ preparation、full conversion和readback后才能原子构造bundle并交给任�
 | 范围 | 已确认事实 | 初版可声明 | 仍不可声明 |
 | --- | --- | --- | --- |
 | topology/memory | 当前目标单卡4×4、16 tile；每tile 3 MiB SPM，末64 KiB有Kcore/runtime占用证据；另有SPM alias和多个consumer-specific DDR mapping/address-view线索 | 当前profile的rank/tile隔离、SPM reservation和byte-level model window；DDR只按typed resource注册 | 所有SKU容量、bad-tile/PG行为或单一静态DDR范围可硬编码 |
-| physical layout | compiler当前accepted compact、Cx/NCx规则可由typed layout重算；hardware helper另有256B alignment/footprint证据 | source-backed accepted layout的logical coordinate到physical byte offset及越界检查 | Cx/NCx名称或256B规则是所有dtype/op的通用硬件layout |
-| dtype/storage | `Data_Format`公开13种有效格式：INT8/16/32、UINT8/16/32、INT64/UINT64、FP16/BF16/FP32/TF32和bitpacked BOOL；storage width为1/2/4/8 byte，BOOL为1 bit/element；INT8/UINT8与其它格式的Cx/NCx full block分别为128/64 lane | 13种格式的raw codec、bit/byte footprint、canonical/noncanonical encoding检查、movement与layout effect | enum存在即证明每个engine都能计算该dtype；把BOOL scalar helper的byte store当作bitpacked硬件合同 |
-| compute/convert | 当前CRT公开INT8/INT16/INT32/FP16/BF16/FP32/TF32七种格式间36条convert route；`RND_MODE`有nearest-even、zero、positive-infinity、negative-infinity、stochastic五种值 | 七种格式的numeric descriptor、36条route结构和四种确定性rounding的model semantics；每条op另按完整src/accum/intermediate/dst tuple准入 | UINT/INT64 compute、任意op×dtype笛卡尔积、INT8-source zero-point公式或stochastic随机状态已由ABI证明 |
+| physical layout | compiler当前accepted compact、Cx/NCx规则可由typed layout重算；Cx/NCx是block-major而不是普通dense stride，INT8/UINT8 full block为128 lane、其它格式为64 lane，并存在compact C0 tail；hardware helper另有256B alignment/footprint证据 | source-backed accepted layout的logical coordinate到physical byte offset及越界检查 | Cx/NCx可直接表示成oneDNN stride；名称或256B规则是所有dtype/op的通用硬件layout |
+| dtype/storage | `Data_Format`公开13种有效格式：INT8/16/32、UINT8/16/32、INT64/UINT64、FP16/BF16/FP32/TF32和bitpacked BOOL；storage width为1/2/4/8 byte，BOOL为1 bit/element | 13种logical raw codec；tasks/08拥有bit/byte footprint和layout geometry，tasks/14只对有证据的target-profile×engine×format发布ABI/register encoding legality | enum存在即证明每个engine都能搬运或计算该dtype；当前DMA helper只有0..7编码却把8..12当作已支持；把BOOL scalar helper的byte store当作bitpacked硬件合同 |
+| compute/convert | 当前CRT公开INT8/INT16/INT32/FP16/BF16/FP32/TF32七种格式间36条convert route；代码检查显示typed convert lowering可选择含TF32的wrapper，但还没有target-lowering integration正例；`RND_MODE`有nearest-even、zero、positive-infinity、negative-infinity、stochastic五种值 | 七种格式的logical numeric descriptor、36条route结构和四种确定性rounding的model candidate；每条op另按完整语义profile和engine-specific format legality准入 | 通用format-bearing op已能发射TF32；code-reachable convert即已被集成验证；UINT/INT64 compute、任意op×dtype笛卡尔积、INT8-source zero-point公式或stochastic随机状态已由ABI证明 |
 | packet/ABI | CT、NE、RDMA、WDMA、TDMA packet字段、worker window、trigger和range/end字段已恢复 | typed decode、字段宽度、descriptor/range conformance | vendor CRT实际packet与host重实现天然一致 |
 | movement | contiguous/strided RDMA/WDMA、基础TDMA/gather-scatter/memset的混合单位和descriptor字段已恢复；element count、byte stride、iteration-minus-one及byte-count字段按family区分 | 受支持descriptor的功能执行和逐字段单位检查 | 把所有count当byte、所有alignment/stride组合的性能公式 |
 | local issue | 每tile三个worker window；`serial_mode=0`语义把accepted CT/NE/RDMA/WDMA/TDMA分成五个逻辑NCC issue class并存在range/busytable依赖 | model-only per-worker config确认parallel mode时显式五个逻辑class；否则采用更保守serial profile；local drain与event ordering分离 | `3×5`物理queue实例、provider已逐worker设置/读回parallel mode、queue容量、多发射、精确仲裁和worker物理独立性 |
@@ -246,7 +262,7 @@ Direct DTE/FSM和多completion domain，而不是“CModel必须用SystemC”的
 provenance、capability、numeric profile和event profile。
 
 当前fixed CRT ABI没有额外model-context参数。host frontend必须把每次entry call显式绑定到对应invocation/rank context。
-SystemC通常在单个OS thread上cooperative调度多个process，`thread_local current_rank`不能单独代表rank；可行机制包括
+SystemC只规定cooperative process语义，不固定OS-thread映射；`thread_local current_rank`不能代表rank。可行机制包括
 per-JIT symbol trampoline加host-only context accessor、按`sc_process_handle`绑定context，或每rank独立CRT/JIT symbol
 namespace。不得使用跨invocation共享的process-global mutable singleton，也不能从thread id、调用顺序或symbol名字推断
 rank。机制必须覆盖并发rank、阻塞yield、异常退出和nested call后的恢复测试。
@@ -288,8 +304,9 @@ event确定的完成点一次提交可观察memory effect，不能在`TsmExecute
 write或相同visibility时刻。它们与Q19仍不共享compute kernel、rounding policy或DTE scheduler。
 
 SystemC调度粒度是一次target transaction/command，不是tensor element或单个MAC。GEMM transaction在plain kernel内一次
-调用validated oneDNN primitive并返回待提交buffer effect；绝不能为M×N×K循环创建`sc_event`、process或TLM transaction。
-formal scalar loop只在小规模conformance、edge profile或unsupported bulk row使用，因此不会成为大网络主路径。
+调用admitted oneDNN primitive并返回待提交buffer effect；绝不能为M×N×K循环创建`sc_event`、process或TLM transaction。
+formal scalar loop只在checked work budget内服务小规模conformance、edge profile和失败诊断；大command超过budget且无admitted
+bulk row时必须在compute前返回`bulk_backend_unavailable`，不能以隐式scalar fallback拖垮大网络。
 
 typed target command只是一次packet/register decode产生的瞬时transaction；CRT packet多数位于栈上，host
 `TsmExecute`必须在返回前完成decode或复制异步处理所需的`Tsm*Instr`字段，绝不能保留caller栈指针。该复制要求只
@@ -305,19 +322,35 @@ hook直接合成高层command绕过packet证据。
 
 | 对象 | 必须拥有 | 禁止拥有 |
 | --- | --- | --- |
-| `TargetLLVMModuleBundle` | 共享MLIR/LLVM context owner、canonical all-rank domain、每rank logical rank/entry/fully legal module、ordered ABI slots、`ExecutionConfig`、target/ABI identity | packet list、schedule、model state或任何可序列化sidecar |
-| `TargetModelCapability` | op family/kind、src/accum/dst dtype tuple、shape/layout/tail和descriptor范围、rounding/optional-field tuple、numeric comparator、event/transport支持 | 由symbol存在推导的隐式支持、扩大compiler legality的规则 |
+| `TargetLLVMModuleBundle` | 共享MLIR/LLVM context owner、canonical all-rank domain、每rank logical rank/entry/fully legal module、ordered ABI slots、`ExecutionConfig`、typed target profile/revision/ABI identity | packet list、schedule、model state、默认补出的revision或任何可序列化sidecar |
+| `ModelProfileId` | 显式选择的一组确定性model-only semantics identity；Q22.C可另发布绑定target/environment的hardware-correlated profile | compiler legality、隐式default、hardware等价声明 |
+| `NumericCommandKey` | static preflight从typed CRT call registry投影、runtime从decoded packet transaction投影的target profile、engine/op kind/variant、operand role/storage dtype、shape/layout、M/K/N/batch、convert kind及fixed optional fields | erased Instr sidecar、任意symbol/string推断、numeric comparator、oneDNN选择、板端阈值 |
+| `NumericSemanticsProfile` | 稳定typed identity/digest；完整operand storage/compute、product、accumulator、intermediate、destination、rounding points、FMA/reduction order、overflow、FTZ/DAZ、NaN/special/status及optional-field顺序 | 单个dtype、host library默认值、按workload临时覆盖的side table |
+| `TargetModelCapability` | `(ModelProfileId, NumericCommandKey)`到唯一`NumericSemanticsProfile` identity的映射，以及shape/layout/descriptor、event/transport、compiler-emittable和hardware evidence状态 | 重复保存压缩的src/accum/dst key、由symbol存在推导支持、扩大compiler legality的规则 |
+| `BulkBackendAdmission` | 完整semantic profile digest、shape/layout adapter、value domain、backend environment和`bit-exact/profile-bounded/rejected`结论 | target numeric semantics、target comparator或“library支持该dtype” |
+| `FormalNumericExecutionContext` | non-yielding formal kernel作用域内的profile、SoftFloat/MPFR state save/set/clear/capture/restore和显式target status映射 | rank identity、跨SystemC wait的全局/TLS状态、oneDNN worker状态 |
+| `BulkExecutionEnvironment` | oneDNN runtime/threads/ISA/implementation、worker initialization能力、caller fenv恢复和admission provenance | worker native flags到target status的映射、architectural memory或SystemC API |
 | `TargetModelInvocation` | bundle引用、all-rank typed input/parameter/output binding、checked external resource registration、选定model profile | host pointer伪装的device address、从文件名恢复的rank/resource |
 | `TargetTransaction` | `TsmExecute`返回前复制的packet字段、worker/engine、地址/descriptor、dtype/shape/optional fields和invocation-local sequence identity | caller栈指针、整程序command vector、Q19 schedule或DTE payload的无证据snapshot |
 | `TargetModelResult` | all-and-only rank terminal status、完整output、stable failure stage/rank/transaction、frontend/CRT/packet/numeric/event provenance | partial successful rank集合、回写compiler/package的状态 |
 
-capability row的有效key至少包含target revision、op family/kind、src/accum/dst dtype、rounding和optional/fusion/
-zero-point tuple、shape/layout/tail class、descriptor/alignment class、worker和completion profile。实现支持谓词是
+`NumericCommandKey`只包含typed CRT registry或decoded transaction已经表达、并由typed target profile唯一解释的事实；它
+不保留被erase的Instr program或shadow command list。`NumericSemanticsProfile`是所选`ModelProfileId`下这些事实对应的唯一
+完整数值解释；`BulkBackendAdmission`只决定该解释能否由host bulk library
+加速。三者分离后，target comparator、板端校准政策和oneDNN环境都不会反向污染硬件语义。实现支持谓词是
 `compiler accepted tuple ∩ model kernel tuple`；板端profile仅在Q22.C进一步收窄，不能扩instruction legality。enum、CRT
 symbol或packet decoder存在都不等于row已支持。capability不能压成单个布尔值，至少保留三个正交维度：
 `model-implemented/absent`、`compiler-emittable/not-emittable`和`model-only/device-unit-observed/revision-correlated/
 hardware-calibrated/rejected`；每个未闭合维度都携带reason。这样13种storage codec可以一次实现，同时TF32当前compiler
 缺口、UINT/INT64 compute缺口和未校准硬件行为仍然如实可见。
+
+映射必须满足以下唯一性规则：如果accumulator、FMA、逐步rounding、quant或optional-field行为可由程序选择，先扩typed
+tile/instruction IR和Wafer CRT ABI；如果它是target固定隐含行为，则每个显式`ModelProfileId`与完整command tuple必须恰好
+映射一个semantic profile。板端校准前可并存多个命名model/candidate profile，但每次execution必须显式选择并记录一个，
+不能进入compiler legality、隐式default或CModel side table。Q22只发布确定性model-only profile；Q22.C再把board evidence
+绑定到target revision/environment，选择或拒绝对应row并发布hardware-correlated profile。当前plain GEMM只有单一format且
+要求lhs/rhs/dst同element type；f16/bf16 narrow/wide、TF32 product和i8 accumulator等分别属于不同显式model profile，
+不能在同一次execution内按数据猜测切换。
 
 `TargetLLVMModuleBundle`在所有rank完成ABI preparation、full conversion和verification后原子形成。host执行把每rank module
 翻译到独立LLVM context和独立ORC `JITDylib`，避免同名entry/private helper碰撞；JIT clone设置native triple/data layout，
@@ -349,94 +382,283 @@ terminal success后才extract/copy output。
 
 ### 4.4 完整数值类型系统
 
-首版先建立数值类型系统，再让GEMM、reduce、elementwise和convert等kernel消费它；不允许每个kernel自行解释`format`，也不
-允许首个f32 vertical形成默认语义。数值基础层包含三个正交对象：
+首版先消费Q0.L由tasks/14单一拥有的typed format registry，再建立codec/数值类型系统并让GEMM、reduce、elementwise和
+convert等kernel消费；Q22不另建registry，也不允许每个kernel自行解释`format`或让首个f32 vertical形成默认语义。
+logical format、layout geometry与target format encoding必须分层；同一logical format在不同engine、layout或target revision
+上可能有不同编码或根本不合法。数值基础层消费以下对象：
 
 | 对象 | 必须显式表达 | 不能表达为 |
 | --- | --- | --- |
-| format descriptor | format identity、storage/semantic bit width、signedness、exponent/significand、canonical encoding、NaN/Inf/subnormal能力、BOOL bit order和physical block class | C++ `sizeof(T)`、CRT enum值范围或host native type |
-| numeric signature | 每个operand的storage/compute type、accumulator和intermediate type、destination type、每个rounding point、FMA/reduction order、overflow/saturate/wrap、FTZ/DAZ、NaN、zero-point和stochastic profile | 单个`dtype`、symbol后缀或全局rounding flag |
-| capability row | target revision、op/kind、完整numeric signature、shape/layout/descriptor/optional-field范围、semantic status和comparator | “library支持该dtype”或13种格式的笛卡尔积 |
+| `LogicalFormatDescriptor` | format identity、raw container与semantic bit width、signedness、exponent/significand、canonical encoding、NaN/Inf/subnormal能力 | C++ `sizeof(T)`、CRT enum值范围、physical block或host native type |
+| `TargetFormatEncodingProfile` | typed target profile/revision、engine、logical format、public ABI enum/register code、允许的tasks/08 layout profile引用和evidence状态 | 一个对所有engine通用的`Data_Format -> code` switch、Cx/NCx几何副本或logical format名称 |
+| `NumericSemanticsProfile` | 每个operand的storage/compute type、product、accumulator和intermediate、destination、每个rounding point、FMA/reduction order、overflow/saturate/wrap、FTZ/DAZ、NaN/special/status、zero-point和stochastic policy | 单个`dtype`、symbol后缀或全局rounding flag |
+| capability row | `ModelProfileId`、`NumericCommandKey`、唯一semantic profile identity、target format encoding及shape/layout/descriptor/optional-field范围、evidence status | “library支持该dtype”、压缩src/accum/dst tuple或13种格式的笛卡尔积 |
 
-storage层从第一天覆盖13种格式。INT8/16/32、UINT8/16/32、INT64/UINT64和FP16/BF16/FP32/TF32按公开storage width读写
-little-endian raw bits；BOOL按logical coordinate访问bitpacked storage。TF32的32-bit container与semantic precision分开，
-所有codec必须定义非canonical低位如何拒绝或规范化。movement只复制raw bits，不经过host浮点值；layout mapper按typed
-format选择INT8/UINT8 128-lane或其它格式64-lane block和C0规则。
+storage层从第一天覆盖13种logical format。INT8/16/32、UINT8/16/32、INT64/UINT64和FP16/BF16/FP32/TF32按公开storage
+width读写little-endian raw bits；BOOL的physical bit order只在有证据的encoding profile中确定。TF32的32-bit container与
+semantic precision分开，所有codec必须定义noncanonical低位如何拒绝或规范化。movement只复制raw bits，不经过host浮点值。
+Cx/NCx block/tail/footprint、BOOL bitpack和alignment继续由tasks/08及唯一`computeWaferPhysicalTensorInfo`拥有；
+`TargetFormatEncodingProfile`只引用该layout profile并定义engine/register legality，不能复制几何。当前DMA helper的0..7编码
+证据不足以证明UINT8/16/32和INT64/UINT64对应8..12可直接搬运；这些
+engine×format row在共享registry闭合前必须target-illegal，即使logical codec已经存在。
 
 compute层从第一天为当前公开七种format建立完整descriptor，并把36条convert route作为一个受类型检查的surface，而不是
-36份手写kernel。四种确定性rounding mode必须端到端生效；stochastic虽然进入signature和capability，但在取得target
+36份手写kernel。四种确定性rounding mode必须端到端生效；stochastic虽然进入profile和capability，但在取得target
 seed/state/reset/advance合同前只能选择显式`model-only`政策或拒绝hardware-correlated执行。INT8-source四条zero-point
-route同样保留显式字段和候选profile；没有公式证据时不能静默采用常见的`scale * (x - zp)`。UINT/INT64目前只承诺
-storage/movement，因为`get_dma_reg_dtype`不能直接表达format值8以上，且当前公开compute surface没有给出相应合法性。
+route同样保留显式字段和候选profile；没有公式证据时不能静默采用常见的`scale * (x - zp)`。convert的TF32 typed route与
+其它engine的TF32 format encoding分别准入，不能互相证明。UINT/INT64当前只承诺logical storage codec；movement和compute
+均按engine-specific capability决定，不由enum存在推导。
 
 36条route必须从现有typed `InstrConvertKind`定义生成，并保持参数类别闭合：4条INT8→FP16/BF16/FP32/TF32携带
 zero-point；9条widening/已声明plain route不消费额外参数；其余23条消费rounding mode。固定ABI中存在但该route不消费的
-参数必须验证为ignored-by-contract，不能意外影响结果；新增route必须先更新唯一typed定义和closure test。
+参数必须验证为ignored-by-contract，不能意外影响结果；新增route必须先更新唯一typed定义和closure test。float-to-int
+还必须在profile中显式定义NaN、±Inf和overflow结果；float-to-float显式定义sNaN quiet、payload/sign传播、tininess
+before/after-rounding和exception status。SoftFloat/MPFR的默认policy不得补齐这些字段；target ABI不能观察的status先保持
+model-only evidence，不伪造成硬件可见状态。
 
-算术kernel必须使用同一个numeric signature执行：
+算术kernel必须使用同一个`NumericSemanticsProfile`执行：
 
 - integer逐步定义signedness、widening、overflow、saturate/wrap/status；禁止依赖C++ signed overflow；
 - floating逐步定义输入规范化、乘法/加法/FMA精度、accumulator、reduction order和每个rounding point；
 - GEMM/reduce不能因为host库默认使用f32或s32 accumulator就省略target accumulator；
-- tanh、exp、rsqrt等超越函数先从高精度结果按signature舍入，host `libm`结果只能作非规范性fast-path候选；
+- tanh、exp、rsqrt等超越函数先从高精度结果按profile舍入，host `libm`结果只能作非规范性fast-path候选；
 - NaN分类/payload/sign、Inf sign、signed zero、subnormal/FTZ/DAZ和异常status均是独立字段，不能交给普通`isclose`。
 
 首批formal backend不能只注册f32。至少实现并区分以下model candidate：f32乘加/累加/写回f32；f16和bf16分别以窄类型
-或f32累加后写回原类型；TF32 operand以显式TF32 product policy、f32 accumulator写回TF32或f32；i8乘法、i32累加后按
-显式quantization policy写回i8。它们是用于compiler验证和板端区分实验的候选，不是硬件已确认矩阵。当前`InstrGemm`只
-验证lhs/rhs/dst同element type，target ABI也只传一个format且没有accumulator字段；若target profile不能唯一固定隐含
-accumulator，就必须扩typed IR/ABI表达，不能把候选选择放进CModel side table或从dtype猜。
+或f32累加后写回原类型；TF32 operand以显式TF32 product policy、f32 accumulator写回TF32或f32；i8乘法、i32累加并以
+i32 component result验证，量化写回另需显式quantization profile。它们是用于compiler验证和板端区分实验的候选，不是
+硬件已确认矩阵。当前`InstrGemm`只验证lhs/rhs/dst同element type，target ABI也只传一个format且没有accumulator字段；
+若target profile不能唯一固定隐含accumulator，就必须扩typed IR/ABI表达，不能把候选选择放进CModel side table或从dtype猜。
 
 ### 4.5 数值库分工和独立性
 
 不存在一个现成库同时覆盖Wafer全部格式、量化、累加、超越函数和未知硬件edge behavior。采用“正式标量语义后端 +
-Q22必需的validated bulk backend + 独立oracle”的组合：
+受准入约束的bulk backend + 逐family独立differential或显式trusted-TCB gate”的组合：
 
 | 组件 | 本项目角色 | 边界 |
 | --- | --- | --- |
 | Berkeley SoftFloat | target model正式标量后端的IEEE binary16/binary32基础运算、FMA、comparison和整数转换；BSD-3-Clause便于受管引入 | 不支持BF16、TF32或超越函数；不能定义Wafer zero-point、FTZ/DAZ、accumulator或stochastic政策 |
-| MPFR/GMP | BF16/TF32舍入验证、tanh/exp/rsqrt等高精度formal backend和测试oracle；以显式精度、exponent范围和rounding调用 | MPFR只有一种NaN且不原生模拟目标subnormal/payload，必须由raw-bit codec/profile包裹；依赖和LGPL合规在引入前固定 |
-| oneDNN | Q22中已准入大规模GEMM/MatMul的主执行后端，并可逐row扩展reduce/elementwise；source-backed大矩阵不能长期用scalar逐MAC执行 | primitive、ISA、accumulation及math mode会影响结果；即使strict/deterministic也只证明固定环境可重放，不自动证明target等价；不能表达的TF32/raw codec/rounding仍回退formal backend |
+| MPFR/GMP | BF16/TF32精确舍入及tanh/exp/rsqrt等高精度formal backend；destination/temporary使用显式precision，operation显式传rounding并设置exponent range | production使用MPFR时同一wrapper不能再算独立oracle；MPFR只有一种NaN且不原生模拟目标subnormal/payload，必须由raw codec/profile包裹；依赖和LGPL合规在引入前固定 |
+| oneDNN | Q22中已准入大规模GEMM/MatMul的主执行后端；source-backed大矩阵不能长期用scalar逐MAC执行 | primitive、ISA、accumulation及math mode会影响结果；strict/deterministic不证明target等价；它不拥有Wafer codec、Cx/NCx、rounding、quant或reduction-order语义 |
 | LLVM APFloat/APInt | 留在Q19和测试侧作已有独立cross-oracle及integer/raw-bit检查 | target model production kernel不复用Q19 helper、rounding policy或APFloat compute path，避免同源bug |
-| TestFloat | SoftFloat IEEE基础算术/转换conformance corpus的辅助工具 | 不覆盖BF16/TF32、Wafer op组合或板端语义，不能替代项目的signature级测试 |
+| TestFloat | SoftFloat build、adapter、状态设置和IEEE corpus的conformance harness | expected同样由SoftFloat生成；若production使用SoftFloat，它不算第二个独立算术oracle，也不覆盖BF16/TF32或Wafer op组合 |
 
 Eigen、gemmlowp或host `libm`可以加入非规范性performance/differential实验，但不进入首版语义owner：Eigen fast-math和
 vectorization会改变边界行为，gemmlowp只覆盖低精度GEMM且带自己的quantization合同。oneDNN则不是“以后再做”的优化：
-Q22首版必须为实际source-backed大GEMM提供validated bulk path。它仍只在一个完整numeric signature上通过formal scalar
-backend的raw-bit/special/random corpus后注册；未证明row自动回退formal backend或fail closed，不能使用宽松global
-tolerance掩盖差异。依赖必须版本固定、license可审计，基础compiler和no-card runtime不因此链接这些库。
+Q22首版必须为实际source-backed大GEMM提供admitted bulk path；依赖必须版本固定、license可审计，基础compiler和no-card
+runtime不因此链接这些库。
 
-`NumericBackendPolicy`只决定模型如何高效执行已经确定的numeric signature，不属于compiler IR或硬件语义：
+oracle独立性按算术实现和target adapter/codec的来源判断；同一library换precision、driver、executable或随机seed都不形成
+第二个oracle。逐family最小矩阵是：SoftFloat FP16/FP32与Q19/APFloat并用MPFR补高精度边界，TestFloat只算harness；
+MPFR-backed BF16/TF32与Q19/APFloat及test-only独立整数/raw-bit rounder比较；MPFR production transcendental以已知点、
+metamorphic relation、version/digest/self-test和wrapper验证闭合trusted-TCB gate。这里的self-test至少绑定exact MPFR/GMP
+source/build digest和configure options，在干净依赖build上分别执行上游`make check`，保存command、exit status、version、
+config summary及test-suite logs；随后执行项目wrapper known-point/metamorphic/raw-codec tests。上游check只证明受管依赖
+build conformance，不算第二算术oracle。另一实现或后续board作为升级证据；
+MPFR本身标记trusted semantic TCB而不是“双软件oracle”，结果只声明trusted MPFR semantics；oneDNN bulk与
+formal loop比较，Q19/APFloat作第三路；target codec由test-only逐bit mapper产生expected，不能让production codec自证。
+Q19和target model只共享稳定dtype enum、physical geometry、packet字段和ABI常量，不能共享compute/rounding/codec helper或
+DTE scheduler。
 
-- `formal`逐标量执行，服务codec/边界向量、小矩阵、失败诊断和不具备bulk映射的row；
-- `validated-bulk`对已准入的大GEMM调用oneDNN；adapter显式映射batch/M/N/K、transpose、stride/layout、src/weights/dst
-  format、accumulation mode、floating-point math mode、deterministic和thread配置；
-- `cross-check`只在开发/CI的小矩阵或抽样tile双跑，不对每个大网络完整执行两遍；日常大workload依赖预先完成的逐row
-  conformance corpus和backend provenance；
-- backend选择可以由model execution config和可审计的work量阈值决定，但同一numeric signature、capability和comparator
-  不随阈值改变。结果记录oneDNN版本、CPU ISA、thread runtime、primitive descriptor和actual backend。
+### 4.6 oneDNN bulk准入、layout和执行生命周期
 
-oneDNN默认strict accumulation对浮点使用f32、整数使用s32，并允许显式f32/f16/s32等accumulation mode；这正好可承接部分
-候选signature，但不允许默认为所有Wafer GEMM。没有完全匹配的accumulator/rounding时，可以让oneDNN只产生已验证的宽
-accumulator，再由target-owned codec完成destination conversion；若连乘积精度或累加点都不匹配，则整row走formal backend。
-oneDNN post-op/fusion默认关闭，只有numeric signature明确相同融合顺序且conformance通过时才启用。
+`NumericBackendPolicy`只决定如何执行已确定的`NumericSemanticsProfile`，不属于compiler IR或硬件语义。每条
+`BulkBackendAdmission`由semantic profile、K/shape/value domain、oneDNN build/runtime、ISA、actual implementation、thread和
+worker environment共同定址；同一semantic profile在不同shape或environment可以有不同结论。每条admission row只能是：
 
-库能力和限制以受管版本的官方资料为准：
+- `bit-exact`：需要数学与实现证明所有中间值、reduction和写回与formal semantics一致；有限random corpus不能证明bit exact。
+  integer GEMM还要排除所有partial/compensation/merge中间s32 overflow；int8在部分AVX2/AVX-512实现上可能经
+  `VPMADDUBSW`发生pairwise s16 saturation，s8×s8还可能通过u8 shift与compensation实现，必须由
+  与实现无关的输入bound，或actual implementation加受管源码/build证据证明不会发生；effective ISA本身只表示可dispatch
+  上限，不足以完成该证明；
+- `profile-bounded`：只有解析证明或对离散有限domain穷举后，才可声明覆盖该完整value domain的数学上界；仅由独立held-out
+  corpus得到的结果必须标记`empirically-qualified`，适用范围只到冻结的tested corpus/domain，不能外推为连续domain上界。
+  `empirically-qualified`不是可泛化的第四种结论，而是value domain精确收缩到枚举corpus/payload digest的
+  `profile-bounded` row；运行时输入不匹配该有限domain时必须rejected。通常浮点GEMM至多先进入这一类的经验资格；
+- `rejected`：要求固定reduction tree、逐MAC窄舍入、专有中间截断或其它oneDNN不能表达的profile。
 
-- <https://www.jhauser.us/arithmetic/SoftFloat-3/doc/SoftFloat.html>
-- <https://www.jhauser.us/arithmetic/TestFloat-3/doc/TestFloat-general.html>
-- <https://www.mpfr.org/mpfr-current/mpfr.html>
+oneDNN `accumulation_mode`约束允许的累加精度与partial rounding，不证明reduction tree、FMA拓扑或逐MAC rounding。correctness profile
+禁止`relaxed`和`any`，只能用`strict`或显式accumulator；每个primitive显式设`fpmath_mode::strict`。首版只构造无bias、
+empty post-ops、无scale/zero-point/dropout/precomputed-reduction且target optional fields全关的primitive，不假设存在通用
+“关闭fusion”API；未来bias/psum/scale/activation要么由target-owned epilogue按profile执行，要么该row rejected。
+correctness MatMul必须显式设置`deterministic=true`；支持该attribute的reorder同样显式设置，不支持或返回
+`unimplemented`则该admission row拒绝。它只表示同一固定platform/environment可重放，不证明跨ISA/version/thread或与
+target bit-exact。oneDNN的
+TF32 fpmath mode是允许f32隐式降精度，不是Wafer TF32 raw32 storage；TF32候选fast path必须先由target codec解码成f32，
+以strict f32执行，再由target codec写回，只有product/accumulator profile相符才准入。low-precision destination优先让
+MatMul输出f32/s32 temporary，再由target-owned codec舍入、饱和和pack。oneDNN reorder/narrowing即使通过准入也只是一种
+implementation，target写回语义始终由semantic profile拥有。
+
+bounded finite envelope覆盖normal、near-zero以及gradual-underflow profile中的subnormal；这些值先核对format/class，随后仍
+必须通过该row的raw-exact或abs/rel/ULP数值判定，不能只因同属subnormal就接受。FTZ/DAZ row则按profile分别验证input
+normalization、zero/sign、underflow/inexact/status，不把已flush值送入gradual公式。NaN/sNaN payload、Inf、signed zero和
+overflow result另按显式classification/raw policy。若oneDNN要求caller sanitize或不能保持target special-value policy，
+adapter必须用target-owned pre/post处理并单独证明，做不到则该domain rejected，不能用普通tolerance吞掉。
+
+layout和commit固定为：
+
+```text
+target raw snapshot
+  -> target-owned Cx/NCx decode/unpack
+  -> logical dense tensor
+  -> optional oneDNN-only reorder
+  -> oneDNN MatMul into f32/s32 temporary
+  -> target-owned rounding/codec/layout pack
+  -> SystemC completion atomic commit
+```
+
+Cx/NCx是block-major并带compact tail，不能冒充oneDNN dense stride。`format_tag::any`只用于shape已知、内容稳定且reorder
+结果可复用的immutable weights；per-invocation mutable、内容不可复用的input使用显式descriptor。primitive descriptor创建后
+必须查询resolved `pd.weights_desc()`，按该descriptor的`get_size()`分配、作为reorder destination并纳入packed-cache identity；
+禁止用`any` descriptor直接创建memory。oneDNN reorder的数值变换attributes必须完全缺省：不设置scales、zero-points或
+sum，不能用显式scale=1、zero-point=0或sum=0冒充缺省；通用执行attributes仍按上文显式设置deterministic、strict fpmath
+和user scratchpad，不支持即拒绝该row。reorder不定义Wafer quant、saturation、Cx/NCx或BOOL bit order，也只能对同一dtype、同一logical tensor/coordinate set和shape改变
+physical memory format，不能承担broadcast、transpose、reshape或数值转换。MatMul preflight显式验证2..12D/same-rank relation、batch broadcast、M/K/N
+axis relation、transpose view、source M/K与weights N/K至少一个相应轴stride=1，以及plain destination的N轴连续；不满足时在
+primitive创建前拒绝。kernel先snapshot全部input并写private temporary；alias、padding、tail和canary均按physical profile保留，
+codec和所有range通过后才提交。pack/reorder/scratch总内存先做checked budget，失败无architectural effect。
+
+SystemC process同步调用`primitive.execute()`和`stream.wait()`；这段调用不推进simulation time，oneDNN worker不得调用
+SystemC API或访问architectural memory。初版不把primitive任意offload到外部OS thread。使用
+`scratchpad_mode::user`，每个in-flight execution在与primitive相同engine上创建并独占由primitive descriptor查询的
+scratchpad。首版固定一个CPU engine kind/index，resolved primitive/memory descriptors、engine和stream的lifetime覆盖相关
+primitive、memory与in-flight execute；依赖构建只允许一个兼容的thread/OpenMP runtime。固定thread runtime/count、
+dynamic/nested/affinity、requested/effective ISA与hints、caller fenv，以及每个实际worker可验证的rounding mode、MXCSR
+rounding-control bits、FTZ/DAZ和exception-mask initialization/readback。worker环境必须通过所选thread runtime的受管hook在
+primitive执行所用pool内建立，不能假定caller的`fesetround`或MXCSR会被继承；无法覆盖并核对全部worker时，对应floating
+row拒绝。`HostPlatformFingerprint`还固定CPU architecture/vendor/family/model/stepping/microcode、用于dispatch的CPUID/
+feature leaves、OS/kernel、libc/loader、process affinity/NUMA policy，以及oneDNN、thread runtime和其它实际loaded DSO的
+version/build-id或content digest。项目cache key包含完整
+profile digest、M/N/K/batch、transpose/broadcast、logical/oneDNN strides/layout、all attrs、adapter version、effective ISA、
+thread profile、worker-fenv profile/pool generation、`HostPlatformFingerprint` digest、CPU engine kind/index、resolved
+descriptors和oneDNN version/build；不缓存invocation data handle。immutable
+packed weights另以content/resource identity和resolved `weights_desc`为key。oneDNN primitive cache capacity按entry显式固定；project primitive/packed-weight cache另有checked byte
+budget与eviction。每个MatMul/reorder分别记录`impl_info_str()`；它只作identity的一部分及审计/performance gate，不能推导
+target语义。
+
+process-global bootstrap顺序固定为：设置max ISA和CPU ISA hints并逐项检查status，随后设置primitive-cache capacity，再查询
+effective configuration/version并创建engine/primitive descriptor。max ISA/hints setter必须发生在任何其它oneDNN API前。
+同一process不切换冲突profile，需要验证另一全局配置时使用独立subprocess并记录全部启动配置。
+
+admission provenance至少包含semantic profile digest、shape/layout adapter version、value domain、oneDNN version/build、
+requested/effective ISA与hints、每个MatMul/reorder的`impl_info_str()`、thread runtime/count、caller fenv、worker-environment
+evidence（逐worker rounding/RC、FTZ/DAZ、exception mask及pool identity）、`HostPlatformFingerprint`和全部primitive attrs。
+解析证明只有在proof显式覆盖多个platform fingerprint时才能跨host复用；经验或implementation-bound row必须runtime exact
+match全部platform字段。在admission/correlation qualification中formal backend是共同numeric oracle：backend result
+和board result分别对formal result比较；正式large-command执行不要求每次同步重跑formal loop，但必须命中已冻结资格row，
+不得让oneDNN成为唯一oracle。`T_target`记录target/board comparator，`B_backend`记录bulk-vs-formal envelope，二者在查看
+held-out前分别冻结；exact target要求`T_target=0`且只能使用`B_backend=0`的bit-exact bulk。bounded target必须为backend预留
+独立预算并验证`B_backend`未超额；model-vs-board的三角上界至多用于诊断，不能代替两条对共同formal oracle的acceptance。
+切换backend不得静默放宽`T_target`，经验得到的`B_backend`只适用于其冻结tested corpus/domain。
+若exact/bounded证据只对特定implementation成立，admission必须把`impl_info_str()`与oneDNN source/build digest、build
+options、primitive descriptor和完整environment共同固定，并在descriptor创建后核对；implementation name本身不是证明，
+这组字段仍只是backend admission identity，不得反向定义target semantics。
+
+static shape在preflight创建primitive descriptor；`unimplemented`、unsupported descriptor、memory budget或admission缺失都在
+input effect前失败。formal scalar path只允许在checked work/MAC budget内执行；超过budget且无admitted bulk时返回
+`bulk_backend_unavailable`，不能悄悄跑慢。显式debug override可允许慢路径，但不计任何正式gate。
+
+bulk qualification与runtime执行是两个独立stage。Q22实现受管host tool `wafer-cmodel-qualify-bulk`，并强制
+`calibrate -> freeze -> validate`三阶段no-replace workflow：calibration invocation只能读取calibration manifest并产生
+immutable calibration record；freeze invocation在任何held-out执行前产生content-addressed
+`BulkBackendQualificationPolicy`，固定`B_backend` comparator/envelope、proof类别、semantic/domain/environment digest、
+calibration manifest/record digest、预注册held-out manifest digest及两集合不重叠证明；validate invocation只读该policy，
+按冻结阈值运行held-out，不能回写或放宽envelope。final record保存三个phase artifact/log digest和顺序校验；同一次看完
+held-out再取最大误差的流程不得签发资格。
+
+该tool消费冻结的`NumericSemanticsProfile` registry、shape/layout/value-domain或解析证明、分区corpus和完整backend
+environment，在独立checked offline CPU/time/memory budget下运行formal和oneDNN；该budget可高于runtime MAC budget，但
+仍有timeout/resource limit，debug override结果不得签发资格。成功只产生immutable `BulkBackendQualificationRecord`，包含
+policy/calibration/held-out manifest与phase-log digest、formal/profile/tool/source digest、domain或payload digests、formal
+expected digest、backend output digest、冻结及实际abs/rel/ULP与special-value结果、证明类别、resolved
+descriptors/attrs/implementation、`HostPlatformFingerprint`，以及逐worker fenv/MXCSR readback在内的完整environment。它不进入compiler IR/package、
+不定义target semantics。release/CI把readback验证过的records编入backend registry；runtime只有在profile/domain/environment
+及qualification-policy digest exact match时构造`BulkBackendAdmission`，否则rejected。经验row只能匹配record枚举的payload digest；解析/穷举row按其
+已验证domain matcher。mandatory large GEMM资格必须来自这个offline producer，不能通过runtime debug slow path补做。
+
+“一次MatMul call”只证明没有per-MAC SystemC event，不证明性能；optional reorder primitive另行计数。另建pinned-host bulk qualification，记录cold primitive/JIT、
+pack/reorder和warm execute，覆盖M=1 decode、正常/批量GEMM和实际source workload；mandatory large profile若落入reference
+implementation则performance不合格。correctness CI不绑定易抖动的绝对wall time，只有标记`performance-qualified`的固定
+host profile使用冻结阈值。cold/JIT数据必须来自fresh subprocess或已证明清空/禁用global primitive cache的环境，不能把
+cache hit标成cold；任一mandatory dynamic-source reorder落入reference implementation且主导端到端时间时同样不授予
+performance-qualified。
+
+oneDNN约束以受管版本官方资料为准；dependency manifest还必须记录与受管tag/commit匹配的文档版本，以下在线链接只作
+当前导航：
+
 - <https://uxlfoundation.github.io/oneDNN/dev_guide_data_types.html>
 - <https://uxlfoundation.github.io/oneDNN/dev_guide_matmul.html>
 - <https://uxlfoundation.github.io/oneDNN/dev_guide_attributes_accumulation_mode.html>
+- <https://uxlfoundation.github.io/oneDNN/dev_guide_attributes_rounding_mode.html>
 - <https://uxlfoundation.github.io/oneDNN/dev_guide_attributes_deterministic.html>
 - <https://uxlfoundation.github.io/oneDNN/dev_guide_attributes_fpmath_mode.html>
-- <https://llvm.org/docs/doxygen/classllvm_1_1APFloat.html>
-- <https://github.com/google/gemmlowp>
+- <https://uxlfoundation.github.io/oneDNN/dev_guide_reorder.html>
+- <https://uxlfoundation.github.io/oneDNN/page_memory_format_propagation_cpp.html>
+- <https://uxlfoundation.github.io/oneDNN/dev_guide_int8_computations.html>
+- <https://uxlfoundation.github.io/oneDNN/dev_guide_attributes_scratchpad.html>
+- <https://uxlfoundation.github.io/oneDNN/dev_guide_primitive_cache.html>
+- <https://uxlfoundation.github.io/oneDNN/dev_guide_build_options.html>
+- <https://uxlfoundation.github.io/oneDNN/group_dnnl_api_service.html>
+- <https://uxlfoundation.github.io/oneDNN/struct_dnnl_primitive_desc_base.html>
 
-Q19和target model可以共享稳定dtype enum、physical geometry、packet field definition和ABI常量，但不能共享完整
-compute kernel、rounding policy或DTE scheduler。否则differential会让同源bug同时通过。三方检查应保持：Q19/APFloat、
-target model/SoftFloat+MPFR和独立CPU/高精度expected各自从typed IR或numeric signature投影，不互相读取中间结果。
+### 4.7 FormalNumericExecutionContext、bulk environment和library state隔离
+
+SoftFloat的rounding、tininess、extF80 precision和sticky exception flags是global或OS-thread-local state；MPFR的flags、
+emin/emax、default precision和rounding也是global或OS-thread-local。SystemC只保证process activation在显式suspension或
+return前不被其它SystemC process抢占；OS-thread映射和affinity不是模型合同。因此formal scope可以依赖non-yielding
+activation，却不能把TLS或thread id当作rank/process identity或隔离。每个formal numeric kernel使用以下作用域：
+
+```text
+save backend environment
+  -> set complete NumericSemanticsProfile
+  -> clear native flags
+  -> execute without wait/yield/reentrant dispatch
+  -> capture native flags and map target status
+  -> restore caller environment on every exit path
+```
+
+SoftFloat scope保存/恢复`softfloat_roundingMode`、`softfloat_detectTininess`、`extF80_roundingPrecision`和全部flags，并固定
+specialization、`THREAD_LOCAL`配置、source digest及non-trapping `softfloat_raiseFlags`实现。SoftFloat没有FTZ/DAZ mode：
+DAZ由target-owned input normalization在调用前执行，FTZ由target-owned result codec在调用后执行，对应underflow/inexact/
+status完全由semantic profile定义；`softfloat_detectTininess`只选择underflow检测时点，不能冒充FTZ/DAZ。
+
+MPFR scope保存/恢复emin/emax、default precision/rounding及全部flags，并检查每个environment setter返回值。每个destination/
+temporary以`mpfr_init2`等显式precision初始化，每个operation显式传rounding mode，不依赖default precision/rounding。自定义
+exponent range下必须保留operation返回的ternary值：IEEE-like subnormal路径直接把它传给`mpfr_subnormalize`；其它需要
+range check的路径才传给`mpfr_check_range`，不能无条件先check再subnormalize或丢弃ternary。
+
+configured Q22 formal backend要求SoftFloat以`THREAD_LOCAL`构建、`mpfr_buildopt_tls_p()!=0`且MPFR header/runtime版本一致；
+依赖build的上游self-test还必须产生content-addressed `FormalDependencyConformanceRecord`，绑定source/config/build digest、
+实际`libmpfr`和transitive `libgmp` artifact digest/build-id、MPFR version/patch/build options及`gmp_version`。production要么
+静态链接这些exact tested artifacts并readback executable link manifest，要么启动时解析实际loaded MPFR/GMP objects并对
+binary digest/build-id、version、patch/options、transitive linkage逐字段exact match；library search path或ABI-compatible替换
+不能绕过。任一identity/TLS/header-runtime不匹配则configuration fail。仅component/debug build可在一个覆盖整个
+non-yielding formal scope的global mutex下使用non-TLS依赖，且不计正式gate。即使TLS有效，每次scope仍save/restore，因为
+logical process可能复用同一OS thread。
+
+oneDNN不进入上述native flag capture。`BulkExecutionEnvironment`固定runtime、worker count、ISA、implementation及
+per-worker initialization；caller thread的fenv/MXCSR仍用RAII恢复，但不能代表、初始化或捕获worker thread状态。对每个
+floating row，qualification与runtime都必须在primitive实际使用的worker pool中设置并readback所需rounding mode（至少
+`FE_TONEAREST`及MXCSR RC bits）、FTZ/DAZ和exception-mask policy，并把worker/pool identity纳入exact match；若某个受管
+implementation明确忽略其中字段，只能用implementation-bound source/build证据记录其effective固定行为。无法控制并验证
+全部worker、pool复用后环境漂移或runtime无法提供受管初始化hook时，该row rejected。oneDNN API status、output
+classification和admission result可进入diagnostic；worker FP flags不得映射为target exception status。
+
+formal context必须RAII恢复，支持stack-safe nesting或显式拒绝nested dispatch；SystemC `wait`、async callback和reentrant
+numeric dispatch在scope中非法。强制测试让两个`SC_THREAD`跨delta cycle交替不同rounding/tininess/exponent profile，前一
+process制造overflow/inexact而后一process执行exact op，并覆盖nested、early return、exception、normal/subnormal及caller
+预置state恢复；这只证明logical-process隔离。另用两个真实OS thread并行验证SoftFloat/MPFR TLS build和状态独立性。
+
+依赖与调度事实以官方资料为准：
+
+- <https://www.jhauser.us/arithmetic/SoftFloat-3/doc/SoftFloat-source.html>
+- <https://www.jhauser.us/arithmetic/SoftFloat-3/doc/SoftFloat.html>
+- <https://www.jhauser.us/arithmetic/TestFloat-3/doc/TestFloat-source.html>
+- <https://www.jhauser.us/arithmetic/TestFloat-3/doc/TestFloat-general.html>
+- <https://www.mpfr.org/mpfr-current/mpfr.html>
+- <https://gmplib.org/manual/Installing-GMP>
+- <https://standards.ieee.org/ieee/1666/7293/>
+- <https://systemc.org/resources/standards/>
 
 target model对numeric profile继续遵守：
 
@@ -444,11 +666,20 @@ target model对numeric profile继续遵守：
 - 只有数学名称而无edge behavior证据时，模型结果标记为model semantics，不能称hardware-bit-exact；
 - zero-point等没有唯一公式的组合在执行副作用前拒绝hardware profile；候选model profile必须命名并进入provenance；
 - stochastic行为在取得seed/state合同前只可做独立统计correlation，不得用Q19的SplitMix64 policy冒充硬件；
-- floating comparator按op/dtype/profile定义，不使用全局tolerance：只有重复执行、跨reset和held-out都bit-stable时才发布
-  bit-exact；否则同时记录ULP和`abs <= atol + rtol * |board|`，near-zero、GEMM/reduction length另分policy；
+- floating comparator按op/dtype/profile定义，不使用全局tolerance。`reference`始终是formal result，`observed`分别是bulk或
+  board result；两者各自对formal比较，model↔board只作诊断。bit-exact row按profile规定的raw-bit/classification equality；
+  bounded finite row的abs/rel clause固定为
+  `abs(observed - reference) <= atol + rtol * abs(reference)`。每个comparator显式声明`max_ulp`启用或禁用；启用时ULP clause
+  与abs/rel clause取AND，禁用时ULP只记录不参与acceptance。ULP只比较同一declared destination format经target-owned codec
+  处理后的canonical finite encoding：FP16/BF16/FP32分别使用16/16/32-bit storage bits；TF32先验证或按profile规范化raw32
+  低13位，再提取`sign|exp8|frac10`为19-bit semantic encoding。对宽度`w`的encoding `b`定义单调key为
+  `sign(b) ? ((~b) & (2^w-1)) : (b | 2^(w-1))`，ULP distance是两key的无符号绝对差；禁止跨dtype直接计算ULP。
+  NaN/sNaN payload、Inf、signed zero和overflow先按独立classification/raw policy判断。gradual-underflow的subnormal和其它
+  near-zero finite值在classification通过后仍进入abs/rel及启用的ULP clause；FTZ/DAZ row改按其zero/sign/status政策判断；
+  GEMM/reduction length另分profile；
 - profile阈值在查看held-out结果前冻结；Q19/CPU已有tolerance不自动成为board numeric tolerance。
 
-### 4.6 SystemC/TLM和simulation-time边界
+### 4.8 SystemC/TLM和simulation-time边界
 
 SystemC是Q22正式functional-event CModel的强制执行容器，这是项目工程选择，不是从vendor binary恢复出的事实，也不
 自动提升精度。target-model feature在configured build中必须找到受管、版本固定的SystemC dependency并真实执行相应
@@ -535,7 +766,7 @@ packet/op tuple、computed address、dynamic descriptor和runtime event错误，
 | Profile | 最低事实和gate | 允许声明 | 禁止声明 |
 | --- | --- | --- | --- |
 | direct ABI smoke | same fully legal target LLVM、typed ABI、direct symbol shim和基本地址检查 | target lowering/ABI smoke | CRT、packet、event、package ELF、board |
-| repo-CRT/SystemC model-only functional-numeric | same fully legal target LLVM、同源repo CRT host build、project packet、untimed SystemC event/completion、formal scalar语义层、validated oneDNN大GEMM backend和完整输出differential | project CRT/packet路径在supported model profile中的functional-numeric correctness | vendor-exact packet、hardware numeric、package ELF、board、timing |
+| repo-CRT/SystemC model-only functional-numeric | same fully legal target LLVM、同源repo CRT host build、project packet、untimed SystemC event/completion、formal scalar语义层、逐profile admitted oneDNN大GEMM backend和完整输出differential | project CRT/packet路径在supported model profile中的functional-numeric correctness | vendor-exact packet、hardware numeric、package ELF、board、timing |
 | optional packet/MMIO conformance | exact-ELF register trace、board capture或versioned vendor builder与project packet的逐字段decode/range/engine/register-effect conformance | 对应capture范围的packet/register provenance | 仅凭trace声明numeric、完整loader/provider lifecycle、timing或board等价 |
 | Q22.C board numeric correlation | Q22 model-only通过、Q6.B有效board execution、区分向量、重复稳定性、冻结的comparator、独立held-out和source-backed完整输出 | 绑定环境和tested domain的board-output-correlated profile；对应独立packet/MMIO evidence闭合后才升级为hardware-correlated-numeric | vendor-exact packet、不可观测内部实现、未测domain、exact package、timing |
 | exact-module functional | verified package、all-and-only RISC-V ELF、ISS/loader/MMIO/provider lifecycle | package target-model execution | real board、hardware timing |
@@ -548,37 +779,66 @@ accepted instruction支持范围；如果硬件可表达但model未覆盖，应�
 
 ### 8.1 Numeric foundation、Capability、ABI smoke和Host-CRT/SystemC gate
 
-- 在任何source-backed workload执行前，从共享typed定义生成13种storage format registry；INT8/UINT8/BOOL逐值/bit-pattern，
-  FP16/BF16全部`2^16` raw pattern，TF32全部canonical semantic encoding及分层noncanonical pattern，FP32和宽整数按
-  classification/boundary/random corpus验证decode、classify、round-trip、next-up/down、endianness、bitpacking、tail和
-  invalid encoding；f64在target preflight明确拒绝；
+- 在任何source-backed workload执行前，从tasks/14唯一shared typed registry读取13种`LogicalFormatDescriptor`和有证据的
+  revision×engine×format `TargetFormatEncodingProfile`；INT8/UINT8/BOOL逐值/bit-pattern，FP16/BF16全部`2^16` raw pattern，
+  TF32全部canonical semantic encoding及分层noncanonical pattern，FP32和宽整数按classification/boundary/random corpus
+  验证decode、classify、round-trip、next-up/down、endianness和invalid encoding。tasks/08独立验证BOOL bit order、Cx/NCx
+  block/tail/footprint；tasks/14 registry验证DMA/compute format code并引用同一layout profile。无证据的UINT/64-bit DMA row和
+  f64在target preflight拒绝；
 - 36条convert route全部实例化且按zero-point/plain/rounding三种typed参数类别核对；四种确定性rounding覆盖正负tie、
-  tie两侧、normal/subnormal、overflow和float/integer边界，stochastic和四条INT8-source zero-point route仅在显式
-  model candidate profile下执行，不能进入hardware-correlated row；
-- integer/bitwise/compare做raw exact；浮点基础算术、FMA和convert由SoftFloat/MPFR formal backend执行，并与Q19/APFloat、
-  TestFloat/MPFR boundary corpus至少两条独立实现交叉；tanh/exp/rsqrt按高精度oracle和显式approximation profile验证；
-- type-generic GEMM/reduce覆盖operand/product/accumulator/intermediate/destination不同format、每步rounding、FMA与非FMA、
-  reduction order和overflow；用区分向量证明改变任一字段会影响预期结果；
-- 自动从current production accepted tuple检查capability closure：每个compiler-emittable tuple恰有一个model row、kernel和
-  comparator；model-only候选不能扩大compiler legality，unknown/duplicate tuple在effect前拒绝；oneDNN bulk backend逐row
-  与formal backend通过raw-bit/special/random conformance后才能启用；大GEMM row另要求bulk mapping和fallback均可强制测试；
-- generated batched/non-batched large-GEMM component case跨M/N/K、tail和支持dtype运行，断言每个command恰调用一次
-  oneDNN GEMM primitive、formal MAC计数为零且SystemC不产生per-element event；必要pack/reorder另记provenance但不拆成
-  SystemC numeric event；wall-clock benchmark只作回归观测，不成为易抖动的correctness gate；
+  normal/subnormal、overflow和float/integer边界，并区分NaN/Inf/overflow result、sNaN/payload/sign、tininess和status候选。
+  stochastic及四条INT8-source zero-point route仅在命名model candidate下执行，不能进入hardware-correlated row；
+- formal candidate至少覆盖f32、f16/bf16 narrow与wide accumulator、TF32-to-f32和i8-to-s32 component；integer/bitwise/compare
+  raw exact。SoftFloat FP16/FP32与Q19/APFloat交叉，TestFloat只作harness；MPFR-backed BF16/TF32与Q19/APFloat及独立
+  test-only raw-bit rounder交叉；production MPFR transcendental只以trusted TCB、已知点/metamorphic/第二实现或board验证，
+  不把同一MPFR wrapper算作独立oracle；
+- type-generic GEMM/reduce覆盖operand/product/accumulator/intermediate/destination、每步rounding、FMA与非FMA、reduction
+  order和overflow；用区分向量证明改变任一字段会改变结果。int8固定加入能触发`VPMADDUBSW` pairwise saturation的
+  adversarial vector，以及K/tail/compensation/partial-merge边界。每个published
+  `(ModelProfileId, NumericCommandKey)`恰好映射一个`NumericSemanticsProfile`；多个候选使用不同显式ModelProfileId，
+  unknown/duplicate tuple在effect前拒绝；
+- 每个由semantic profile+shape/value domain+oneDNN environment定址的row明确为`bit-exact`、`profile-bounded`或
+  `rejected`。bit-exact必须有中间值/overflow/reduction证明，int8另覆盖pairwise s16 saturation和s32 bound；
+  完整domain的profile-bounded必须有解析证明或离散穷举；held-out只授予冻结tested corpus/domain的
+  `empirically-qualified` envelope。target comparator与backend envelope分离，backend和board分别对共同formal oracle
+  比较，finite corpus不能把经验资格升级成连续domain bound或exact；
+- backend adapter重放`raw snapshot -> target decode/Cx/NCx unpack -> dense -> optional reorder -> oneDNN temp -> target
+  codec/pack -> atomic commit`，覆盖alias、padding/tail/canary、scratch/pack budget、primitive descriptor preflight、user
+  scratchpad、cache invalidation、immutable-weight identity和异常无partial write；`FormalNumericExecutionContext`覆盖
+  SoftFloat/MPFR save/restore、target-owned FTZ/DAZ、sticky flag泄漏、两个SC_THREAD交替profile、双OS-thread TLS及
+  nested/early-return/exception；`BulkExecutionEnvironment`另验证caller/worker state边界；
+- formal scalar执行有checked MAC budget；超过budget且无admitted bulk必须在compute前以`bulk_backend_unavailable`失败。
+  generated batched/non-batched large-GEMM component corpus跨M/N/K、tail和admitted dtype运行，断言每个command恰调用一次
+  oneDNN MatMul、formal MAC为零且SystemC无per-element event；optional reorder逐项计数并记录provenance；exact row
+  bitwise比较，bounded row按自己的冻结envelope；
 - 自动从当前lowering/CRT typed surface得到all-and-only direct-shim与host-CRT platform coverage，不复制109项字符串表；
 - direct shim只检查symbol、signature、control flow、typed slot和基本address formation，结果明确标记ABI smoke；
 - 同一`ExecutableBundle`进入Q19；由它经tasks/14同一full conversion派生的owner-backed target LLVM bundle进入
   Host-CRT/SystemC model。两者整数exact，浮点按显式dtype/op tolerance比较完整output；
-- 完成上述numeric foundation后，真实rank-count=1 f32 linear/residual MLP才作为首个完整系统纵向gate，手写LLVM/MLIR
-  只补negative；该slice只覆盖它实际调用的
+- 完成上述numeric foundation后，真实Q20 rank-count=1 f32 linear/residual MLP作为首个完整系统纵向gate；另增加source-produced
+  f16和bf16 simple GEMM vertical，重放frontend、layout、CRT、packet、codec完整链；若target mapping尚未唯一，这两条必须
+  显式选择命名model candidate并在result中标注，证明实现链而不升级production/hardware row。手写LLVM/MLIR只补negative；Q20 slice
+  只覆盖它实际调用的
   RDMA、WDMA、gather/scatter、GEMM、elementwise add、tanh和local fence，以及对应
   `TsmNew{Rdma,Wdma,DataMove,Gemm,Arith,Activation}` factory；不以109-symbol surface一次宣称全部支持；
+- i8-to-s32先作为formal/bulk component candidate；在typed quantized GEMM、accumulator/result ABI和zero-point/scale policy
+  闭合前不要求或宣称int8 full vertical；
+- Q21 16-rank tiny Llama是第二个mandatory completion vertical，必须比较all-and-only output并覆盖它实际产生的batched GEMM、
+  reduce、exp/rsqrt、i1/select、Direct DTE和rank completion；Q20通过不能替代Q21；
+- 另有source-backed deterministic large GEMM必须超过formal work budget并自动命中oneDNN，拥有固定source/config/seed或
+  payload、独立cheap expected和digest。现有4096 exporter使用未初始化`torch.empty`且没有expected/digest，在升级前只算
+  export/shape/frontend结构测试，不证明target dispatch、numeric或performance；4096可作nightly/stress参数，mandatory CI
+  可用更小但仍超过formal budget的shape；
 - 正式positive必须经过同源repo CRT的Tsm factory/operator/packet、`TsmExecute`、local wait及适用Direct DTE/FSM hooks；
   SystemC-enabled tests若unavailable/skipped则该gate未完成；
 - unknown symbol、factory、wrong ABI slot、static profile和address plan在input/model allocation前拒绝；dynamic packet、
   地址/descriptor/narrowing和numeric tuple在对应transaction effect前拒绝，且不产生外部output；
 - target LLVM bundle构造的任一rank late failure不形成bundle或partial model result；Q17/Q18各自仍按原合同失败。
   bundle构造和package均成功后，model mismatch只让verification返回非零并保留已验证package供审计。
+
+unsupported-reason closure只是必要条件，不能替代上述positive matrix。性能另由pinned-host qualification证明：记录
+`impl_info_str()`、effective ISA、threads以及cold create/JIT、pack/reorder、warm execute；mandatory large profile落入reference
+implementation时不授予`performance-qualified`。correctness gate不依赖易抖动的绝对wall time。
 
 ### 8.2 Q22 project packet和memory gate
 
@@ -644,6 +904,8 @@ packet/opcode provenance，绝不由numeric output反推vendor-exact packet。
 
 - 复用Q20 rank-count=1/16 linear/MLP和Q21 16-rank tiny Llama的同一source/config及accepted upstream chain，不建立
   model专用fixture或计划；Host-CRT/SystemC消费同一invocation的target LLVM，只有exact-module frontend才消费原样package；
+- source-produced f16/bf16 simple GEMM及deterministic large GEMM同样从正式frontend进入；large case必须有固定payload、
+  独立expected/digest并超过formal budget。generated shape corpus只补dispatch，不替代source-backed numeric expected；
 - 检查全部rank/module/output、typed status和可观察event/packet数量，不用rank 0、shape或digest代替执行；
 - target model与Q19/CPU差异先按target call、CRT/packet、memory、numeric、event分类；
 - configured board可用后，Q22.C以同source/accepted program比较model/board完整output和status；exact-module frontend
@@ -715,6 +977,10 @@ cost profile。
 
 ### 10.1 Capability和依赖收敛
 
+- 先完成Q0.L：production `CompilationRequest`贯穿typed `TargetProfileId`；debug named target pipeline只用同一registry
+  显式解析required option并补局部conversion证据。建立tasks/14单一拥有的engine×format ABI/register legality，把source
+  reduce init-first lower为canonical-order composite并修复elementwise indexing-map静默丢义；在此之前
+  Q22 frontend保持unavailable，CModel不得补救compiler已丢失或未证明合法的command语义；
 - 并行向vendor索取完整host CModel development package：匹配`host_runtime.h`/`runtime_api.h`/`tx_runtime.h`/TsmML headers、
   `libcmodel_runtime_api.so`、`libhpgr.so`、`libtsmml.so`、model resources和transitive dependency/license/version；同时确认
   是否存在低层x86 instruction/operator library；取得后作为可替换frontend或独立oracle，不阻塞project-owned实现；
@@ -724,9 +990,14 @@ cost profile。
   单一CMake target。基础compiler与plain C++ kernels仍可独立构建；feature启用时缺SystemC必须configuration fail，未启用
   时正式profile明确unavailable且Q22 gate未完成，不能由direct shim代替；
 - 固定SoftFloat、TestFloat、MPFR/GMP和oneDNN的版本、source digest、license、thread/rounding环境与唯一CMake target；
-  formal numeric tests缺任一必需oracle时明确unavailable，不能以host `float`替代。基础compiler不依赖oneDNN，但完整Q22
-  profile缺oneDNN时必须标记bulk execution unavailable、正式大GEMM gate未完成；固定ISA/thread/math/accumulation/
-  deterministic配置并逐numeric signature准入；
+  formal numeric tests缺任一该family必需的independent oracle或trusted-TCB conformance dependency时明确unavailable，
+  不能以host `float`替代。dependency spike还必须固定SoftFloat
+  specialization/`THREAD_LOCAL`、MPFR TLS/runtime版本、self-tested MPFR/GMP artifact到实际loaded/static binary的
+  digest/build-id/version exact-match与LGPL交付方式，以及oneDNN dispatcher/thread runtime、完整`HostPlatformFingerprint`。
+  基础compiler
+  不依赖oneDNN，但完整Q22 profile缺oneDNN时必须标记bulk execution unavailable、正式大GEMM gate未完成；
+- 消费Q0.L在tasks/11/14 owner中闭合的shared typed logical-format/physical-encoding registry和typed target
+  revision/profile identity，供verifier、target lowering、CRT conformance与model共同使用；
 - plain C++ kernel/property tests不链接SystemC；SystemC test executable使用唯一`sc_main`入口并实际运行，不能只编译、
   skip或用`gtest_main`替代；
 - 形成同一repo CRT源码的device/host platform contract，移除源码内强制`USING_RISCV`选择，明确rank-local Direct DTE
@@ -736,22 +1007,31 @@ cost profile。
 
 ### 10.2 Multi-dtype numeric foundation
 
-- 建立唯一format registry和raw codec，覆盖13种storage format、bitpacked BOOL、TF32 container/semantic width、Cx/NCx
-  dtype block和invalid f64/unused rejection；
-- 建立完整numeric signature和capability三维状态，不从op/symbol/string恢复compute、accumulator、rounding或overflow；
+- 消费Q0.L在tasks/14建立的唯一`LogicalFormatDescriptor`和按target profile×engine×format分派的
+  `TargetFormatEncodingProfile`，实现由descriptor索引的13种raw codec与TF32 container/semantic-width处理；Q22不复制
+  registry。tasks/14 encoding只拥有ABI/register code与engine legality并引用tasks/08 layout profile；Cx/NCx/BOOL几何仍由
+  唯一helper拥有。对invalid f64/unused及无证据engine×dtype row显式拒绝；
+- 建立`(ModelProfileId, NumericCommandKey) -> NumericSemanticsProfile`唯一映射、capability三维状态和独立
+  `BulkBackendAdmission`；不从
+  op/symbol/string恢复compute、product、accumulator、rounding、overflow或optional-field顺序；
 - 用SoftFloat加target-owned codec完成IEEE FP16/FP32基础算术，用MPFR-backed formal path完成BF16/TF32精确舍入和
   tanh/exp/rsqrt高精度结果；integer使用无C++ UB的显式固定位宽算术；
 - 一次实现36条convert route、四种确定性rounding、type-generic elementwise/GEMM/reduce formal loop；zero-point和
-  stochastic保留命名候选policy及区分向量，但硬件profile保持evidence-blocked；
-- 同期实现oneDNN GEMM adapter和backend registry；f32、f16/bf16宽累加及i8-to-i32等能够精确映射的候选逐row准入，
-  小矩阵强制formal/bulk双路径比较，大矩阵只执行validated-bulk并记录primitive/backend provenance；generated large-shape
-  gate通过dispatch/instrumentation证明无逐MAC scalar或per-element SystemC event；
+  stochastic保留命名候选policy及区分向量，float/int special-result、NaN、tininess和status同样显式，硬件profile保持
+  evidence-blocked；
+- 实现`FormalNumericExecutionContext`，以non-yielding RAII作用域隔离SoftFloat/MPFR state；FTZ/DAZ由target codec处理；
+  测试跨SC process恢复和双OS-thread TLS。oneDNN使用独立`BulkExecutionEnvironment`，不把worker flags映射为target status；
+- 同期实现oneDNN GEMM adapter和backend registry；每个候选按证明进入`bit-exact/profile-bounded/rejected`，f32、
+  f16/bf16宽累加、TF32-to-f32和i8-to-s32分别准入。大矩阵无admitted row时超过formal budget立即失败；generated
+  large-shape gate通过dispatch/instrumentation证明无逐MAC scalar或per-element SystemC event，并另做pinned-host performance
+  qualification；
 - 执行第8.1节的exhaustive、boundary、property、metamorphic、independent-oracle和capability closure tests；生成的matrix
   必须区分model-implemented、compiler-emittable和hardware evidence，不能以f32 workload代替。
 
-完成：13种storage codec和当前七种compute/convert format的基础语义闭合，36条convert route无missing/duplicate，当前
-compiler-emittable tuple均有唯一kernel/comparator或静态unsupported reason；formal backend与独立oracle通过，首批
-GEMM signature同时具备validated oneDNN mapping和强制fallback测试。该阶段仍不声明任一未知edge policy为hardware事实。
+完成：13种logical storage codec和有证据的physical engine/layout row闭合，当前七种compute/convert format及36条convert
+route无missing/duplicate；每个published `(ModelProfileId, NumericCommandKey)`有唯一semantic profile/kernel/comparator或静态unsupported
+reason；formal backend逐family independent/trusted-TCB gate、execution-context isolation通过，首批GEMM row有明确bulk admission及budget
+failure test。该阶段仍不声明任一未知edge policy为hardware事实。
 
 ### 10.3 Host-CRT/SystemC functional slice
 
@@ -762,8 +1042,8 @@ GEMM signature同时具备validated oneDNN mapping和强制fallback测试。该�
 - 建立rank-local virtual SPM/DDR、typed slots、checked address、invocation error latch和可yield local wait；
 - 先覆盖该artifact实际调用的`rdma`、`gather_scatter`、`gemm`、`elementwise_add`、`elementwise_tanh`、`wdma`和
   `local_fence`，以及`Rdma/DataMove/Gemm/Arith/Activation/Wdma`六类Tsm factory；
-- 该artifact中的GEMM必须实际命中validated oneDNN bulk backend；另以强制formal backend的小shape重放相同numeric
-  signature，证明backend选择不改变model capability或comparison policy；
+- 该artifact中的GEMM必须实际命中admitted oneDNN bulk backend；另以强制formal backend的小shape重放相同semantic
+  profile，并按该row的exact/bounded admission验证，证明backend选择不改变target semantic profile或comparison policy；
 - 与独立Q19/CPU比较完整rank-count=1输出。
 
 该slice的completion gate是：
@@ -778,6 +1058,10 @@ GEMM signature同时具备validated oneDNN mapping和强制fallback测试。该�
 - 最后一个WDMA/packet/kernel注入失败时不形成model result，已发布Q17/Q18 artifact仍保留；SystemC-enabled CI test
   实际执行，unavailable/skipped不算通过。
 
+Q20之后必须增加source-produced f16、bf16 simple GEMM vertical，以及Q21 16-rank tiny Llama第二个mandatory vertical；
+后者覆盖batched GEMM、reduce、exp/rsqrt、i1/select和Direct DTE。另将large GEMM exporter改成固定source/config/payload、
+独立expected和digest，mandatory shape超过formal budget并自动命中bulk；4096 shape保留作stress参数而不是协议常量。
+
 完成后结果标记`repo-CRT/SystemC model-only functional-numeric`，不标记hardware numeric、vendor-exact packet或exact
 ELF。direct ABI smoke只作局部诊断。该slice明确不含rank-count=16、Direct DTE、tiny Llama、PMU或timing；它们按后续
 阶段扩展。它只是numeric foundation的首个完整系统consumer，不反向固化首case的f32、shape或call order，也不作为其它
@@ -790,11 +1074,13 @@ dtype已覆盖的唯一证明。
 - 在SystemC中建立三个worker window；model-only per-worker parallel config成立时区分五个逻辑issue class，否则走保守serial
   profile；不声明`3×5`物理queue或engine复制；同时建立
   resource event、local drain和Direct DTE/FSM；
-- 扩展当前production compute/movement surface和16-rank source-backed case；
+- 执行source-produced f16/bf16 simple GEMM vertical；升级deterministic source-backed large GEMM并证明超过formal budget、
+  自动命中bulk；再执行Q21 16-rank tiny Llama，覆盖batched GEMM、reduce、exp/rsqrt、i1/select、Direct DTE及all-rank output；
 - DDR/SPM aperture、MMIO和未来ISS/interconnect采用受限TLM边界；plain C++ kernel component gate保持可独立运行。
 
-完成：numeric foundation、current accepted capability closure、rank-count=1/16完整输出、packet/memory/event negative、
-DTE no-progress和all-rank atomic result全部通过；Q22完成，仍不称hardware numeric、exact package/ELF或timing model。
+完成：numeric foundation、current accepted capability closure、Q20、f16/bf16 vertical、deterministic large GEMM和Q21
+完整输出、packet/memory/event negative、DTE no-progress及all-rank atomic result全部通过；Q22完成，仍不称hardware numeric、
+exact package/ELF或timing model。
 
 ### 10.5 Q22.C Board numeric correlation
 
@@ -844,9 +1130,11 @@ cycle证据时cycle-accurate保持非目标。
    reset/watchdog能力、single-op可观测性、calibration/held-out corpus和逐op/dtype comparator；未固定前不发布
    hardware-correlated numeric profile。LT/AT阈值只在deferred Q22.P恢复时讨论。
 5. **数值依赖集成**：SoftFloat/MPFR/TestFloat的职责已经固定，但代码施工前仍需通过dependency spike确定受管版本、
-   source或dynamic-link方式、LGPL交付合规、SoftFloat/MPFR thread-local mode/flag隔离和CI运行成本；这些只改变实现与发布
-   方式，不允许改变numeric signature或用host native语义降级。oneDNN是完整Q22 profile的大GEMM执行依赖；其受管版本、
-   CPU dispatcher/thread runtime和binary发布方式也必须在该spike固定，但不要求基础compiler链接它。
+   source或dynamic-link方式、LGPL交付合规、SoftFloat specialization/`THREAD_LOCAL`、MPFR TLS/runtime及实际MPFR/GMP
+   binary identity readback、CI成本；这些
+   只改变实现与发布方式，不允许改变`NumericSemanticsProfile`或用host native语义降级。oneDNN是完整Q22 profile的
+   大GEMM执行依赖；其受管版本、CPU dispatcher/thread runtime和binary发布方式也必须在该spike固定，但不要求基础
+   compiler链接它。
 
 ## 12. 文档和实现归属
 

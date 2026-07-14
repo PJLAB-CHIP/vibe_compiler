@@ -14,7 +14,7 @@
 | 01 | `tasks/01-architecture.md` | 当前真实pipeline、近期per-rank static executable bundle和长期扩展边界 |
 | 02 | `tasks/02-frontend-stablehlo-program.md` | 当前StableHLO program directory与frontend验证；typed state是后续扩展 |
 | 03 | `tasks/03-shardy-spmd.md` | 当前Shardy/XLA SPMD artifact、显式rank identity；MPMD/rank class延后 |
-| 04 | `tasks/04-topology-execution-mesh.md` | 当前topology/execution mesh；target environment/projection/calibration延后 |
+| 04 | `tasks/04-topology-execution-mesh.md` | 当前topology/execution mesh；Q0.L typed target-profile仅随ExecutionConfig透传，不进入mesh IR |
 | 05 | `tasks/05-local-compute-normalization.md` | rank-local structured compute和tensor collective handoff |
 | 06 | `tasks/06-group.md` | logical group、candidate proposal、完整traversal和bundle commit边界 |
 | 07 | `tasks/07-tile-region.md` | complete traversal 内 candidate tile-local execution scope |
@@ -24,7 +24,7 @@
 | 11 | `tasks/11-instruction-ir.md` | complete static rank instruction program、geometry/range/narrowing legality |
 | 12 | `tasks/12-ddr-memory-planning.md` | 当前DDR demand/accepted offsets；multi-arena/state/streaming延后 |
 | 13 | `tasks/13-communication.md` | 当前collective到Direct DTE和completion边界；segmented/multi-card延后 |
-| 14 | `tasks/14-target-llvm-golden-packet.md` | structure-preserving target LLVM、CRT ABI和atomic staged target module |
+| 14 | `tasks/14-target-llvm-golden-packet.md` | shared logical/target-format registry、structure-preserving target LLVM、CRT ABI和atomic staged target module |
 | 15 | `tasks/15-launch-runtime-package.md` | typed C++ manifest、canonical JSON、no-card RuntimeSession和board adapter边界 |
 | 16 | `tasks/16-verification-plan.md` | target correctness、1/16-rank bundle、reference、target-model、no-card和board分层gate |
 | 17 | `tasks/17-target-execution-model.md` | multi-dtype numeric foundation、direct ABI smoke、Host-CRT/SystemC untimed CModel、Q22.C板端numeric correlation、Q22.E exact-module和deferred Q22.P timing边界 |
@@ -51,9 +51,9 @@
 
 ## 实施计划导航
 
-当前没有active实施计划。Q22已在`tasks/17-target-execution-model.md`收敛multi-dtype numeric foundation、untimed SystemC
-方案、证据层和板端numeric合同；
-真正进入代码实现前再在`tasks/plans/`建立施工checkpoint。已完成的单卡纵向计划和旧7份long-horizon plans
+当前没有active实施计划；Next是Q0.L `target-command-legality-closure`，它进入代码实现前必须在`tasks/plans/`建立独立
+计划。Q22方案已在`tasks/17-target-execution-model.md`收敛multi-dtype numeric foundation、untimed SystemC、证据层和
+板端numeric合同，但在Q0.L完成前保持blocked；解除blocked前还要按独立可调度边界拆分队列项和实施计划。已完成的单卡纵向计划和旧7份long-horizon plans
 均已归档；动态执行状态仍只看`tasks/progress.md`。
 
 ## 归档文档

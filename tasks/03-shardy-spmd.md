@@ -1,6 +1,6 @@
 # Wafer Shardy / SPMD 设计
 
-状态：2026-07-13按当前单卡实现更新。本文拥有frontend sharding到post-SPMD local program的合同；
+状态：2026-07-14按Q0.L target-profile carry-through边界同步。本文拥有frontend sharding到post-SPMD local program的合同；
 Q15形成verified grouped program，Q16直接消费frontend verifier返回的typed boundary/shard result形成显式
 per-rank executable。实现状态看`tasks/progress.md`。
 
@@ -10,7 +10,7 @@ per-rank executable。实现状态看`tasks/progress.md`。
 Pipeline position:
 - Upstream artifact / IR:
   verified、尚未SPMD partition的StableHLO program directory；可选frontend mhlo.sharding；以及validated
-  single-card ExecutionConfig（execution-ranks显式为1或16）。
+  single-card ExecutionConfig（execution-ranks显式为1或16；Q0.L后还携带tasks/14拥有的typed target profile，本stage不解释）。
 - Current stage responsibility:
   在transaction-owned source snapshot上建立exact wafer.target.topology/wafer.execution.mesh，把pre-SPMD
   StableHLO和frontend sharding交给pinned XLA helper，由helper内部完成Shardy propagation与XLA SPMD；
@@ -23,7 +23,8 @@ Pipeline position:
   StableHLO-to-Linalg、tensor collective normalization、logical group；Q16在该grouped program上按
   logical rank创建isolated static clones。
 - User-level driver / named pipeline:
-  wafer-compile --input-program-dir=... --output-program-dir=... --execution-ranks={1|16}。
+  Q0.L后的入口为wafer-compile --input-program-dir=... --output-program-dir=... --execution-ranks={1|16}
+  --target-profile=<registered-id>；本stage只消费rank/mesh并原样传递typed profile。
   wafer-opt和wafer-propagate-stablehlo-sharding只处理显式IR，不能作为program-directory入口。
 - Explicit non-goals:
   不实现MPMD、代表rank去重、dp/tp/pp/ep私有协议、distributed/parallel dialect、physical endpoint/DTE、
@@ -47,7 +48,7 @@ replicated partition；这对execution-ranks=1和16都语义正确，只是不�
 import/export会留下`sdy.constant`、`sdy.reshard`等helper不能消费的中间op。在完整、可验证的
 SDY→StableHLO bridge出现前，该路径不得进入production driver。
 
-`ExecutionConfig`只接受显式rank-count 1或16：
+`ExecutionConfig`的rank-count维度只接受显式1或16；Q0.L新增的typed target profile是正交字段，不改变以下mesh规则：
 
 - 两者使用同一个1×1 card、4×4 tile topology；
 - 16-rank mesh使用全部available endpoints；

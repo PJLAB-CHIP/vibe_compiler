@@ -64,7 +64,8 @@ Pipeline position:
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  exporter产生且尚未SPMD partition的StableHLO program directory，以及用户显式选择的单卡rank-count。
+  exporter产生且尚未SPMD partition的StableHLO program directory，以及用户显式选择的单卡rank-count；Q0.L后还要求
+  tasks/14 registry中的typed target profile。
 - Current stage responsibility:
   用typed CompilationRequest接管program orchestration；先在transaction-owned输入快照上完成frontend admission，
   再建立与ExecutionConfig完全一致的topology/mesh，把pre-SPMD StableHLO和显式frontend sharding交给
@@ -76,18 +77,22 @@ Pipeline position:
 - Downstream consumer:
   Q16在同一用户driver内对全部logical rank建立isolated clone并形成RankExecutable[]。
 - User-level driver / named pipeline:
-  wafer-compile --input-program-dir=... --output-program-dir=... --execution-ranks={1|16}；不暴露pass名称或stop-stage。
+  Q0.L后的正式入口为wafer-compile --input-program-dir=... --output-program-dir=... --execution-ranks={1|16}
+  --target-profile=<registered-id>；不暴露pass名称或stop-stage，target profile无默认值。
 - Explicit non-goals:
   Q15不定义per-rank executable、manifest、runtime binding或board执行，也不把helper路径、输出路径、
   pipeline名称、logical rank和pass option写入CompilationRequest。
 - Completion gate:
   ExecutionConfig无默认rank且只接受1或16；已有topology/mesh必须唯一并与请求逐字段一致；任一admission、
-  helper或pass失败都不修改source和既有final output；旧wafer-opt program-directory参数被拒绝。
+  helper或pass失败都不修改source和既有final output；旧wafer-opt program-directory参数被拒绝。该句记录Q15既有窄完成；
+  Q0.L另要求registered typed target profile从request/config贯穿到target preparation并重放atomic gates。
 ```
 
-`ExecutionConfig`是factory-only C++ value，当前唯一可配置语义是单卡execution rank-count；固定1×1 card、
-4×4 tile topology和rank到endpoint的row-major关系由它派生，不能再从CLI默认值或已有IR“取第一个”恢复。
-`CompilationRequest`是move-only C++ value，只持有source program locator和validated `ExecutionConfig`。
+`ExecutionConfig`是factory-only C++ value；当前已验证Q15实现的唯一可配置语义是单卡execution rank-count。Q0.L将加入
+由tasks/14 registry拥有、无默认值的typed `TargetProfileId`；固定1×1 card、4×4 tile topology和rank到endpoint的
+row-major关系仍只由rank配置派生，target profile不复制进topology/mesh IR，也不能从已有IR“取第一个”恢复。
+`CompilationRequest`是move-only C++ value，只持有source program locator和validated `ExecutionConfig`；Q0.L后的config
+同时拥有rank-count与target profile，后端不得从CLI自由字符串、host环境或CModel补建identity。
 compiler在读取前把source复制到transaction-owned snapshot，后续parser、verifier和XLA helper都只消费该snapshot。
 output root和build-time helper属于orchestration，不属于program语义；Q16接入后，Q15的grouped directory将留在同一
 bundle transaction内，不形成第二条production pipeline。
@@ -242,10 +247,14 @@ reference executor不是cycle/packet simulator，不证明CRT wrapper、真实tr
 target execution model是与reference并列的下游consumer：近期从tasks/14 full conversion形成的owner-backed、
 不可序列化target LLVM bundle执行same typed CRT ABI。direct host shim只作ABI smoke；正式untimed functional-numeric路径调用与
 device build同源的repo CRT wrapper，经project-owned Tsm operator/packet builder进入SystemC。Q22在首个f32 workload
-vertical前先闭合13种storage format、当前七种compute/convert format、完整accumulator/intermediate/rounding policy和
-formal numeric backend；已准入的source-backed大GEMM由oneDNN bulk backend执行，小矩阵/edge row由formal backend验证或
-回退。SystemC只消费该基础层，并用Q19/CPU作独立oracle。format codec存在不扩大compiler legality，
+vertical前先闭合13种logical storage codec、有证据的target-profile×engine×format encoding、当前七种compute/convert format、
+`(ModelProfileId, NumericCommandKey) -> NumericSemanticsProfile`唯一映射和formal numeric backend；oneDNN只处理target codec解包后的dense
+tensor，并按完整profile进入bit-exact、profile-bounded或rejected admission。formal backend只在checked work budget内执行，
+大command无admitted bulk时fail fast，不隐式逐MAC回退。SystemC只消费该基础层；formal backend逐family通过独立Q19/CPU
+differential或显式trusted-TCB conformance，SoftFloat/TestFloat或production MPFR不自计双oracle。format codec存在不扩大compiler legality，
 外部CPU库默认行为也不构成hardware policy。
+positive closure依次使用Q20 f32、source-produced f16/bf16 GEMM、Q21 16-rank tiny Llama和超过formal budget的deterministic
+source-backed large GEMM；unsupported reason或generated shape-only case不能替代这些完整consumer。
 Q22.C再消费Q22 model result和Q6.B board result，按逐op/dtype profile发布tested domain内的board-output-correlated
 numeric evidence；独立packet/MMIO trace闭合后才增加hardware-correlated-numeric和packet provenance，不是Q22.C前置。
 exact package/RISC-V ELF是更高、互不冒充的证据入口。只有exact module通过tasks/15
@@ -289,7 +298,9 @@ package execution；Q22.P timing calibration保持deferred，
 | all stage gates、reference、target-model和board证据 | 16 |
 | target execution model、multi-dtype numeric foundation、SystemC主架构边界、板端numeric correlation和deferred timing | 17 |
 
-当前没有active实施计划；target execution model方案已在tasks/17收敛，进入代码施工前再建立计划。
+当前没有active实施计划；Next是Q0.L target-command legality closure，进入代码施工前需先建立独立计划。target execution
+model方案已在tasks/17收敛，但Q22在Q0.L完成前保持blocked，解除blocked前还需按numeric foundation、target LLVM/host CRT、
+SystemC event/transport和source-backed vertical等独立可调度边界拆分队列项与计划。
 
 审计证据：`tasks/archive/12-architecture-evidence-reset.md`。
 

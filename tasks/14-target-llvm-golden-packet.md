@@ -34,30 +34,45 @@ instruction-to-target conversion、Wafer CRT ABI、device link和近期staged ta
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  Q16 atomic `ExecutableBundle`中的显式rank static entries；memory-planned wafer.instr/SCF/CF/func IR；accepted SPM/DDR offsets、
+  Q16 atomic、profile-bearing `ExecutableBundle`中的显式rank static entries和完整`ExecutionConfig`；memory-planned、
+  已在tile→instruction边界消除unconsumed init/indexing-map语义的wafer.instr/SCF/CF/func IR；accepted SPM/DDR offsets、
   verified physical geometry和completion relation。DDR函数边界来自typed external binding；仅有
   arena-relative `wafer.ddr.offset`但没有explicit arena base的compiler-managed allocation不构成target address。
 - Current stage responsibility:
-  Q0负责preflight全部target legality、在原控制流位置lower instruction leaf到typed LLVM CRT calls，并以
-  module clone + full conversion保证失败无source mutation。Q17负责把每个已验证rank-local LLVM module编译/
+  Q0负责既有geometry/control-flow legality；Q0.L从`ExecutionConfig`取得tasks/14 registry拥有的`TargetProfileId`，按共享
+  `LogicalFormatDescriptor`和target-profile×engine×format `TargetFormatEncodingProfile` preflight每个command，并拒绝任何
+  残留init/indexing-map或无证据encoding row。在原控制流位置lower instruction leaf到typed LLVM CRT calls，并以module
+  clone + full conversion保证失败无source mutation。Q17负责把每个已验证rank-local LLVM module编译/
   link到Q17 transaction staging，并验证symbol、entry、format、digest及all-and-only rank coverage后发布
   target artifact bundle。
 - Output artifact / IR:
-  Q0输出单个entry/rank的fully legal LLVM module；Q17输出每rank一个verified staged target module：rank、
-  entry symbol、relative delivery path、content digest和必要ABI摘要；all-rank typed records组成atomic
-  `TargetArtifactBundle`。
+  Q0.L为每个entry/rank形成transaction-local prepared target LLVM/ABI artifact：fully legal LLVM module、ordered typed
+  ABI slots、exact `ExecutionConfig`/`TargetProfileId`及由registry解析的target/runtime-ABI identity；它是Q17 link和Q22未来
+  all-rank owner bundle的共同上游，不是私有类名、packet或package成员。Q17输出每rank一个verified staged target module：
+  rank、entry symbol、relative delivery path、content digest和必要ABI摘要；all-rank typed records与逐字段相同的
+  `ExecutionConfig`组成atomic `TargetArtifactBundle`。
 - Downstream consumer:
-  Q18 typed PackageManifest/package transaction；runtime module loader只通过Q18 verified package消费这些modules。
+  Q18 typed PackageManifest/package transaction按同一registry映射并readback exact target/runtime-ABI identity；Q22从同一
+  prepared target LLVM/ABI artifacts形成owner-backed all-rank target LLVM bundle。runtime module loader只通过Q18 verified
+  package消费modules。
 - User-level driver / named pipeline:
-  production由同一wafer-compile在Q16完成all-rank bundle后自动进入Q17；
-  `wafer-lower-groups-to-target-llvm`只作显式rank-0的debug replay，固定执行完整candidate selection/commit、
-  function-boundary bufferization，再消费accepted instruction artifact进入target conversion。单pass和direct
+  Q0.L后production由显式`--target-profile=<registered-id>`的同一wafer-compile在Q16完成all-rank bundle后自动进入Q17；
+  `wafer-lower-groups-to-target-llvm`只作显式rank-0的debug replay，要求pipeline option
+  `target-profile=<registered-id>`；pipeline construction立即用tasks/14同一closed registry解析成`TargetProfileId`并构造
+  conversion-local typed `TargetConversionRequest`，缺失/unknown拒绝，不把spelling写入module attr或使用default。它固定执行
+  完整candidate selection/commit、function-boundary bufferization，再消费accepted instruction artifact进入target conversion。
+  standalone target-conversion pass同样必须由显式typed request构造；单pass和direct
   group-to-instr named pipelines只用于局部测试，不能组成绕过selector的平行target主线。
 - Explicit non-goals:
-  不重新做candidate/memory/transport；不发布partial module；不把target text或文件名作为package事实源。
+  不重新做candidate/memory/transport；不在target conversion补做movement/reduce decomposition；不发布partial module；
+  不把target text、文件名、私有C++类名或自由字符串作为profile/package事实源。
 - Completion gate:
   Q0：control-flow/direct-call语义保持，全部当前production family geometry/narrowing通过，unsupported
   transport/address/shape fail closed，full conversion后无illegal op，任一失败source module byte-identical。
+  Q0.L：typed target profile从profile-bearing `ExecutableBundle`进入transaction-local prepared target LLVM/ABI artifact和
+  `TargetArtifactBundle`并逐字段readback；tasks/14 registry对logical format及target-profile×engine×format编码fail closed；
+  instruction输入已无elementwise map/reduce init，任何残留在call emission前拒绝；production driver是完成证明，debug named
+  pipeline只验证同一registry/request/conversion局部正反例，二者均无profile default；CRT conformance通过。
   Q17：真实program的all-and-only rank modules在同一transaction验证后形成并发布target artifact bundle；
   late failure无final output，device link required/allowed symbol gate通过。Q17不要求manifest或runtime，Q0也不以
   all-rank publication或reference numeric为完成前置。
@@ -124,7 +139,7 @@ offset和instruction attrs推导：
 
 - RDMA/WDMA/gather-scatter：descriptor数组长度/正值、payload等式、DDR/SPM两端range；
 - fill/elementwise/bit2fp/mask/convert：所有buffer的logical element关系和physical capacity；
-- reduce：dim、input/output shape和init type；
+- reduce：dim和input/output shape；terminal op不携带init，source init必须已lower为有序composite；
 - GEMM：M/K/N/batch与operand/result mapping一致；CRT未编码非canonical mapping时必须拒绝；
 - ordinary conv、pool/unpool、TDMA pad/img2col和supported peripheral：shape attrs与memref及精确算子/
   capacity关系一致；depthwise/backward conv等未定义shape profile必须target-illegal；
@@ -247,7 +262,7 @@ diagnostic按稳定语义分类：
 ## 10. Planned And Deferred Extensions
 
 - target execution model：tasks/17已确定近期模型应消费tasks/14同一ABI preparation和full conversion结果。
-  实现时把当前private per-rank prepared module提升为owner-backed、move-only、不可序列化的all-rank target LLVM
+  实现时把上述transaction-local per-rank prepared target LLVM/ABI artifacts提升为owner-backed、move-only、不可序列化的all-rank target LLVM
   bundle，使现有RISC-V device link、direct ABI smoke和Host-CRT/SystemC model成为三个直接consumer。正式model consumer
   host执行同一target LLVM，调用与device build同源的repo CRT wrapper，再经project-owned Tsm operator/packet builder
   进入SystemC；direct shim只补ABI诊断。该bundle携带fully legal LLVM modules、canonical rank domain、每rank logical
@@ -256,6 +271,17 @@ diagnostic按稳定语义分类：
   `TargetArtifactBundle`合同和完成状态不变。Host-CRT/SystemC通过能证明project CRT/packet的untimed
   functional-numeric链，仍不执行RISC-V archive；在独立packet/MMIO事实源相关前不证明vendor-exact packet，Q22.C板端
   numeric correlation也不替代该packet provenance；
+- Q0.L/Q22实施前置的typed format/encoding registry由tasks/14单一拥有，tasks/11 verifier、target lowering、CRT conformance和
+  target model共同消费；它拥有shared `LogicalFormatDescriptor`（含TF32 raw32 container/semantic width）与
+  target-profile×engine×format
+  ABI/register encoding及legality。Cx/NCx block/tail/footprint、BOOL bitpack和alignment仍由tasks/08及唯一
+  `computeWaferPhysicalTensorInfo`拥有，registry只引用layout profile，不能复制几何。当前通用
+  format switch、reference numeric code和CRT中的重复mapping必须由该registry生成或逐项conformance，不能以`Data_Format`
+  enum存在证明每个engine合法；typed TF32 convert route也不能反向证明RDMA/WDMA/GEMM等format-bearing path可发射TF32。
+  tasks/14 registry拥有typed `TargetProfileId`及registered CLI spelling；`wafer-compile`必须显式选择并写入
+  `CompilationRequest`/`ExecutionConfig`，Q0.L把它贯穿accepted bundle、target conversion和transaction-local prepared
+  target LLVM/ABI artifact readback。Q22后续target LLVM bundle只消费并再次readback，不得从自由字符串或默认值恢复。该扩展是Q22 numeric/model
+  consumer的前置，不改变已完成Q17的既有窄publication事实，但Q0.L必须重放其正式pipeline和atomic gate；
 - Direct DTE target activation已由Q16.T闭合：只消费tasks/13定义的typed accepted binding，CRT wrapper、opaque event、
   status ABI、required/allowed symbol、真实16-rank ELF和late-failure atomic gate已通过；board execution仍属Q6.B；
 - low-precision/quant ABI：等待instruction geometry和CPU/reference semantics；

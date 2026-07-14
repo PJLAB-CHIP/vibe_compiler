@@ -1,8 +1,8 @@
 # Wafer Typed Manifest、RuntimeSession 和 Launch Boundary
 
-状态：2026-07-14已完成Q18及Q16.T的Direct DTE runtime requirement扩展，并按untimed SystemC数值模型补充provider
-边界。近期wire form为schema v2、唯一typed C++ model的canonical JSON，不是Protobuf；provider/board execution
-仍是后续独立gate。实现状态看`tasks/progress.md`。
+状态：2026-07-14已完成Q18及Q16.T的Direct DTE runtime requirement扩展，并按Q0.L typed target-profile和untimed
+SystemC数值模型补充后续consumer边界。近期wire form为schema v2、唯一typed C++ model的canonical JSON，不是
+Protobuf；provider/board execution仍是后续独立gate。实现状态看`tasks/progress.md`。
 
 ## 1. 目标和非目标
 
@@ -28,10 +28,12 @@
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  Q16 atomic ExecutableBundle中的typed resources、ABI slots和terminal completion facts；Q17 atomic
-  TargetArtifactBundle中的all-and-only rank modules、entry symbol/content digest和ABI摘要。
+  Q16 atomic、profile-bearing ExecutableBundle中的typed resources、ABI slots、terminal completion和完整
+  `ExecutionConfig`；Q17 atomic TargetArtifactBundle中的逐字段相同config、all-and-only rank modules、entry
+  symbol/content digest和ABI摘要。
 - Current stage responsibility:
-  关联Q16/Q17 typed bundles并构造PackageManifest，执行唯一C++semantic verification，序列化canonical JSON；
+  先逐字段核对Q16/Q17 config，再由tasks/14 registry把`TargetProfileId`唯一映射为typed `TargetIdentity`和
+  `KernelRuntimeAbiId`并构造PackageManifest；执行唯一C++semantic verification，序列化canonical JSON；
   在Q18 staging内复制/附着并复核package members后原子发布；runtime解析并验证同一model，结合invocation
   bindings/runtime environment形成side-effect-free RuntimeSession plan。
 - Output artifact / IR:
@@ -46,7 +48,8 @@ Pipeline position:
 - Completion gate:
   manifest all-and-only覆盖bundle ranks/modules/entries/resources/slots；canonical roundtrip稳定；invalid package在
   load/allocate前失败；任一manifest/package publication late failure不发布partial Q18 package，且不改变已验证
-  Q17 target artifact bundle。
+  Q17 target artifact bundle。Q0.L另要求profile/config逐字段join、registered target/runtime-ABI映射和readback正反例；
+  当前宽泛常量不能绕过该映射。
 ```
 
 ## 3. 已删除的 Prototype
@@ -119,8 +122,10 @@ struct PackageManifest {
 };
 ```
 
-strong IDs可以先用不可隐式互转的小型C++ wrapper，不要求新增MLIR type或全局registry。ID由当前bundle内唯一
-owner分配；文件路径、symbol文本和vector index不承担semantic identity。
+strong IDs可以先用不可隐式互转的小型C++ wrapper，不要求新增MLIR type。program/resource/module/entry等ID由当前bundle
+内唯一owner分配；`TargetProfileId`及其到`TargetIdentity`/`KernelRuntimeAbiId`的closed mapping只由tasks/14 registry拥有。
+JSON中的canonical spelling是typed value的delivery form，不是自由字符串或第二registry；文件路径、symbol文本和vector
+index不承担semantic identity。
 
 当前Kernel ABI摘要就是Q17导出的完整ordered typed slots；Q18逐slot与Q16 resource核对并原样序列化，不再增加一份
 可与slot列表分叉的ABI digest。无通信entry的transport contract为`None`；Direct DTE entry额外携带唯一
@@ -186,9 +191,10 @@ Python不得继续拥有enum、cross-field legality或production runtime plan。
 
 ## 7. Compiler Assembly And Atomic Delivery
 
-manifest只从相互一致的accepted Q16 `ExecutableBundle`和Q17 `TargetArtifactBundle`构造，不能接受独立
+manifest只从完整`ExecutionConfig`逐字段一致的accepted Q16 `ExecutableBundle`和Q17 `TargetArtifactBundle`构造，不能接受独立
 instruction/LLVM text/model-interface JSON作为并列输入。assembly按typed rank/module/resource/slot/completion
-遍历，不扫描staging目录猜成员，也不从Q17 module filename恢复rank或entry。
+遍历，并从tasks/14 registry解析profile对应的target/runtime ABI；不扫描staging目录猜成员，也不从Q17 module filename
+恢复rank、entry或profile。
 
 delivery transaction拥有：
 

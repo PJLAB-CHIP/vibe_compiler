@@ -1,7 +1,8 @@
 # Wafer Compute and Movement Dialect Design
 
-状态：2026-07-12重基线；当前合同覆盖target-abstract compute/movement IR、layout/resource interface和
-instruction legality；实现状态以`tasks/progress.md`为准。
+状态：2026-07-14按Q22数值语义owner review更新；当前合同覆盖target-abstract compute/movement IR、layout/resource
+interface、instruction legality，以及GEMM numeric policy、elementwise indexing map和reduce init不得在target边界丢失的
+约束；实现状态以`tasks/progress.md`为准。
 
 本文定义 Wafer 后端中 target-abstract compute / movement IR 的边界。它连接
 `wafer.group` candidate/template 产生的完整 traversal 内 tile-local tensor scopes、layout
@@ -119,7 +120,9 @@ Pipeline position:
   每条函数退出 path 的 pending event set 为空；
   unsupported hardware instruction form 必须结构化失败，不能让 SPM memory planning 从 target-abstract op
   猜memref demand。当前没有typed low-precision capability/ops，相关candidate必须fail closed；未来放开时才要求
-  显式materialize native quant或decode/scratch/completion路径。任一rank/group失败都丢弃整个clone，不能形成部分committed program；Q16
+  显式materialize native quant或decode/scratch/completion路径。elementwise map必须在本stage materialize movement并从
+  instruction op删除；reduce init必须显式分解或拒绝，不能生成当前target ABI无法消费的instruction。任一rank/group失败都
+  丢弃整个clone，不能形成部分committed program；Q16
   只有在所有rank programs/gates通过后才能构造all-and-only typed C++ bundle。
 ```
 
@@ -135,7 +138,7 @@ V0先覆盖能形成单tile compute闭环和后续collective原型所需的最�
 | block-scaled decode | `wafer.tile.block_scaled_decode` | packed FP8/FP4 + scale blocks解码为typed BF16/FP16/other expressed buffer | explicit composite decode；不是native FP8 GEMM |
 | elementwise / relation / logic / activation | `wafer.tile.elementwise` | 同 shape 或 verifier 可证明的 broadcast / scalar form；具体 kind 是语义 enum，不用名字匹配 | CT family |
 | dtype conversion | `wafer.tile.convert` 或 `elementwise` convert kind | 明确 src/dst dtype pair、rounding mode 或 zero-point 语义 | CT convert |
-| local reduction | `wafer.tile.reduce` | tile-local reduce；reduce dimensions 是语义字段，因为仅靠 input/output shape 可能无法唯一恢复 | native reduce 或 fallback compute sequence |
+| local reduction | `wafer.tile.reduce` | tile-local reduce；reduce dimensions和init是语义字段，因为仅靠 input/output shape 可能无法唯一恢复 | Q0.L init-first ordered composite；native reduce仅作有全域等价证明的优化 |
 | local fill/copy/move | target-abstract movement op | SPM 内 copy/fill、DDR<->SPM tile load/store、strided movement、layout materialization support | RDMA / WDMA / TDMA / CT peripheral |
 | conv / pool / unpool | 后续可引入 `wafer.tile.conv`、`pool`、`unpool` | 只有当前端 lowering 和 verifier 能稳定表达 semantic layout、pad/stride/dilation 等字段时启用 | NE / CT reduce-like family |
 
@@ -163,6 +166,13 @@ split 决策；内部 reduction 是否需要进一步切分是 op tiling / SPM a
 
 plain `wafer.tile.gemm`不把bias、scale、sparse、quant或fused activation作为隐式合同。low-precision路径使用
 下面的专门typed ops；不能给plain GEMM翻一个flag或复用convert zero-point attr。
+
+plain GEMM的数值政策也不能由CModel或host library补齐。operand compute type、product、accumulator、FMA/逐步rounding、
+reduction order、overflow和destination conversion若是program-selectable，必须成为typed operand/type/attr及下游CRT ABI；
+若是target revision固定的implicit behavior，则完整typed command tuple在target capability中必须唯一映射到一个
+`NumericSemanticsProfile`。当前instruction/CRT plain GEMM只传一个format且要求lhs/rhs/dst同element type，没有
+accumulator/product/FMA字段；在板端证据使固定映射唯一前，f16/bf16 narrow/wide、TF32 product及integer accumulator只能
+是显式verification candidate，不能成为production side table或按dtype猜测。
 
 #### 3.1.1 Low-Precision Compute
 
@@ -226,6 +236,12 @@ input map 的每个维度必须映射到 result 的一个维度，静态维度�
 same-shape、row/head/vector broadcast 和 basic select 子集；更复杂 broadcast、scalar immediate、
 dynamic shape、logic、fused mask policy 和 convert 仍按后续 gate 推进。
 
+instruction target ABI当前不携带`indexing_maps`，target lowering和repo CRT也只选择unary/binary vector variant。因此
+permutation/broadcast map必须在进入production instruction IR前显式materialize成movement或同形状operand；如果仍有任一
+non-identity input map，lowering必须结构化失败，直到typed instruction/CRT variant能表达它。terminal
+`wafer.instr.elementwise`不携带`indexing_maps`，包括identity map也应strip而不是保留重复事实。CModel只能消费最终target
+command，不能读取tile-level map替已经丢失的语义做broadcast或permutation。
+
 ### 3.3 Reduce
 
 `wafer.tile.reduce` 表达本 tile 内的 local reduce，不表达跨 tile collective reduce。跨 tile
@@ -246,9 +262,26 @@ recv chunk 与 accumulator 的本地累计步骤；`wafer.tile.reduce` 仍只表
 - output dtype、init value 和 NaN/overflow 等细节如果会影响语义，应保留在 op contract 中，而不是
   留给 wrapper 默认值。当前 tile-region IR lowering 从 scalar-constant `linalg.fill` out
   恢复 `init_value` attr；若 init 是 group boundary scalar，则作为 `wafer.tile.reduce` 的
-  scalar init operand 保留 SSA 关系。target LLVM call emission 如果目标 wrapper 仍只接受 issue-time
-  `init_value` 参数，必须把动态 init 明确拆成 native reduce + supported scalar combine，或扩展
-  wrapper contract，不能在 R3.2c 丢失语义。
+  scalar init operand 保留 SSA 关系。当前target LLVM/CRT reduce ABI不传该值，不能在R3.2d/target conversion中丢失语义。
+
+`wafer.tile.reduce`继续显式拥有SSA `init`或`init_value`，两者互斥且类型与input element type一致；但当前target LLVM/CRT
+reduce ABI不传init，所以Q0.L correctness baseline不使用“native reduce后再combine”这种可能改变浮点rounding/order、
+NaN和signed-zero结果的变换，而是在SPM planning前形成以下显式有序composite：
+
+1. 用已被typed fill合同接受的scalar init填充result-shaped accumulator A；不能表示的dynamic SSA init在任何allocation/
+   issue前拒绝，不能退化成常量或默认identity；
+2. 按structured reduce dimensions的canonical lexicographic顺序枚举reduction index tuple，把每个对应的non-reduced slice
+   通过movement materialize成与result同shape的scratch；
+3. 用与source combiner精确对应的same-shape `wafer.instr.elementwise`把`A`和slice写入另一块accumulator，显式completion后
+   ping-pong；没有精确elementwise kind的combiner（当前包括avg）拒绝；
+4. 将最后一个accumulator显式movement到destination。静态展开受checked command/product budget约束，超限结构化失败；
+   该预算不是workload、shape或硬件语义，未来只有能验证动态地址/range的structured loop才可替代。
+
+这个序列把init置于第一次combine之前，并固定每个output coordinate的source-order evaluation；不依赖in-place alias。
+terminal指令都不携带reduce init；Q0.L的source-produced reduce基线也不生成native `wafer.instr.reduce`。只有未来
+compiler-owned、硬件证据支持的target policy能对完整value domain证明native identity、combiner、order和special-value
+行为与该有序语义等价时，才允许把composite优化成native reduce；Q22 model candidate、host library默认值或有限板端样本
+不能充当该证明。CModel不得重新读取上游init并“修复”已经丢失的target command。
 
 ### 3.4 Movement Ops
 

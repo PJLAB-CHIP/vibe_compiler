@@ -1,6 +1,6 @@
 # Wafer Instruction IR Design
 
-状态：2026-07-13按Q16.T Direct DTE激活事实更新；当前合同覆盖instruction-level hardware invocation IR、
+状态：2026-07-14按Q16.T事实和Q22 target numeric consumer review更新；当前合同覆盖instruction-level hardware invocation IR、
 memref buffer和shared physical geometry/ABI legality。shared verifier 已闭合当前支持子集的静态 DMA descriptor payload/range/
 element-width relation、fill/elementwise/reduce/convert/GEMM element/shape relation、ordinary conv、pool/
 unpool、TDMA pad/img2col和peripheral kind-specific capacity，并在target字段写入前检查ABI narrowing。
@@ -9,6 +9,9 @@ family、peripheral factorize和没有explicit arena base binding的compiler-man
 target-illegal。Direct DTE fixed-size unicast只在Q16.T all-rank acceptance已提交physical endpoint、receiver offset、
 FSM/completion和status ABI后进入production target；缺任一binding仍fail closed。`mask_move`的compiler/CRT ABI
 已统一为显式`uint32_t mask`，不允许wrapper内部隐藏narrowing。
+Q22 review确认现有target lowering不消费reduce init，也不消费elementwise `indexing_maps`。Q0.L终态要求二者只存在于
+tile-level IR，并在tile→instruction阶段完成movement/materialization、显式reduce分解或拒绝；terminal instruction op不再
+携带这些字段。该缺口不回滚Q17 artifact publication状态，但CModel不得补偿。
 实现状态以`tasks/progress.md`为准。
 
 本文定义 instruction-level Wafer IR。核心结论：
@@ -144,7 +147,9 @@ Pipeline position:
   instruction form，包括当前无法证明的 slice/broadcast/transpose descriptor，必须结构化失败，
   不能让 SPM memory planning 从 target-abstract op 猜 demand。每个 issue 必须由 explicit async
   token/wait 或 local fence 完成，每条 exit path terminal drain 后 pending set 为空；variant-set gate
-  还要证明所有 transport 匹配和 shared physical geometry/range/narrowing contract。任一 rank/group
+  还要证明所有 transport 匹配和 shared physical geometry/range/narrowing contract。production elementwise必须
+  不携带map且same-shape；reduce init必须在tile→instruction阶段显式分解或拒绝，terminal instruction op不携带init。
+  target-profile×engine×format row必须由tasks/14 typed registry准入。任一 rank/group
   失败都丢弃整个 clone。
 ```
 
@@ -302,7 +307,7 @@ instr-level target kind。
 | CT | `wafer.instr.elementwise` | `wafer.tile.elementwise` | `#wafer.instr_elementwise_kind` target kind；不含 select |
 | CT | `wafer.instr.bit2fp` | tile semantic select lowering | i1 mask -> floating mask target peripheral op |
 | TDMA | `wafer.instr.mask_move` | tile semantic select lowering | masked SPM data movement target op |
-| CT | `wafer.instr.reduce` | `wafer.tile.reduce` | `#wafer.instr_reduce_kind` target kind + native reduce `dim` code |
+| CT/TDMA composite | `wafer.instr.fill` + `gather_scatter` + `wafer.instr.elementwise` | `wafer.tile.reduce` | Q0.L init-first canonical-order correctness baseline；native `wafer.instr.reduce`只有compiler-owned full-domain等价证明后才可替换 |
 | CT | `wafer.instr.convert` | future convert lowering | `#wafer.instr_convert_kind` opcode-aligned dtype pair + kind-specific wrapper attrs |
 | NE | `wafer.instr.gemm` | `wafer.tile.gemm` | tile-local GEMM / batched GEMM |
 | NE | `wafer.instr.conv` | future conv lowering / imported target op | basic Conv / Depthwise / BackwardConv packet fields |
@@ -327,11 +332,11 @@ instr-level target kind。
 | RDMA / WDMA contiguous 和三层 stride descriptor | `wafer.instr.rdma` / `wafer.instr.wdma` | V0 production target op | target LLVM call emission 必须生成 target CRT call；descriptor 保持 byte-level `inner_bytes`、stride 和 iteration |
 | TDMA `TsmDataMove::GatherScatter` | `wafer.instr.gather_scatter` | V0 production target op | layout materialization、SPM copy 和可静态证明的 slice/transpose/broadcast movement 都展开为一条或多条 gather/scatter；无法压成 V0 descriptor 时结构化失败 |
 | `TsmPeripheral::Memset` / scalar fill | `wafer.instr.fill` | V0 production target op | 仅表达填充 destination SPM memref；不把 peripheral writeback/count 语义塞进 fill |
-| CT arithmetic / relation / logic / activation / selected transcendental | `wafer.instr.elementwise` + `#wafer.instr_elementwise_kind` | V0 production target op | 覆盖当前 enum 中的 target kind；broadcast、scalar immediate、bitpacked bool loop/VuV 和 rounding mode 是 target lowering 内部选择或后续扩展，不改变该 IR 合同 |
+| CT arithmetic / relation / logic / activation / selected transcendental | `wafer.instr.elementwise` + `#wafer.instr_elementwise_kind` | V0 production target op | 覆盖当前 enum 中的 target kind；tile-level map必须先materialize为movement/同形状operand并strip，terminal op不携带`indexing_maps`；scalar immediate、bitpacked bool loop/VuV和rounding mode需显式target variant后才能开放 |
 | semantic select | 无单条 select op | V0 composite lowering | 必须展开为 false-copy `gather_scatter` + `bit2fp` + `mask_move`；`wafer.instr.elementwise <select>` 非法 |
-| CT reduce `sum/avg/max/min` | `wafer.instr.reduce` + `#wafer.instr_reduce_kind` + target `dim` code | V0 production target op | tile 层 reduce `dimensions` 在 instruction lowering 中 materialize 为 native `TsmReduce` dim code：`0:C`、`1:W`、`2:H`、`3:N`、`4:HW`、`5:HWC`；aligned physical layout、rank 和 dtype 合法性由 verifier / target lowering 检查 |
+| CT reduce `sum/avg/max/min` | `wafer.instr.reduce` + `#wafer.instr_reduce_kind` + target `dim` code | target-native leaf；Q0.L source-reduce correctness baseline不直接生成 | terminal op不携带init operand/attr；只有compiler-owned target policy对完整value domain证明native identity/order/special-value等价时才可替换有序composite，不得依赖Q22 candidate profile |
 | CT convert opcode 139..174 | `wafer.instr.convert` + `#wafer.instr_convert_kind<src_dst>` + kind-specific attrs | V0 production target op | dtype pair 由 kind 唯一决定；INT8->FP 要求 `zero_point`，rounding wrapper 要求 `rounding_mode`，plain wrapper 不允许额外转换参数；same-format copy 必须走 movement，不允许伪造成 convert |
-| NE GEMM | `wafer.instr.gemm` | V0 production target op | 只表达 GEMM / batched GEMM 主路径参数；bias、scale、quant、fused activation 和复杂 psum policy 不能被隐式打开 |
+| NE GEMM | `wafer.instr.gemm` | V0 production target op | 只表达 GEMM / batched GEMM 主路径参数；当前单一format及同element-type合同不表达product/accumulator/FMA/rounding，program-selectable行为必须先扩IR/CRT ABI，target-fixed行为必须按revision/tuple唯一映射；bias、scale、quant、fused activation和复杂psum policy不能隐式打开 |
 | NE affine INT8 GEMM | `wafer.instr.quantized_gemm` | typed production extension；未完成capability/CRT/golden前target-illegal | exact M/K/N/batch/format、q0/q1、left/right zero point、typed scale operands/mode和matched capability；不复用plain GEMM flag |
 | MXFP/FP8 packed decode | `wafer.instr.mxfp_decode` | explicit-composite production extension；未完成scratch/completion/CRT gate前target-illegal | packed source + block scale + destination + scratch；decode到BF16/FP16，不能冒充CT convert或native FP8 GEMM |
 | Direct DTE fixed-size unicast | `wafer.instr.dte_send` / `dte_recv` / `dte_wait` | V0 production target op with committed Q16.T binding | IR表达entry-local logical peer、bytes和async token；post-memory all-rank acceptance提交physical endpoint、remote receiver offset、FSM/completion和status ABI后，target conversion生成opaque event/ready/send/wait/release CRT calls。缺binding或不一致仍以`unsupported_target_transport`拒绝；RuntimeSession不能补做endpoint/channel planning |
@@ -397,8 +402,8 @@ memref 替换原 op result 的 uses。
   ranges 和 constant residency。
 
 R3.2d 只 materialize **unplaced logical descriptor facts**：byte count、stride/iteration、op kind、
-tile reduce dimensions 到 native reduce `dim` code、GEMM M/K/N、batched GEMM `batch_count` 和 batch/m/n/k dimension attrs、
-elementwise kind 等。这些字段能从当前 IR type、attrs 和
+tile reduce的canonical reduction tuple/slice relation（以及只有native proof存在时才使用的target `dim` code）、GEMM M/K/N、
+batched GEMM `batch_count` 和 batch/m/n/k dimension attrs、elementwise kind 等。这些字段能从当前 IR type、attrs 和
 source op verifier 重算。
 
 ## 6. Common Instruction Interface
@@ -525,7 +530,7 @@ V0 只定义这一条 TDMA-backed movement op。copy、layout materialization、
 wafer.instr.fill dest, value attr-dict : type(dest), type(value)
 wafer.instr.elementwise #wafer.instr_elementwise_kind<kind> inputs into dest attr-dict
     : type(inputs) into type(dest)
-wafer.instr.reduce #wafer.instr_reduce_kind<kind> input into dest (, init)? attr-dict
+wafer.instr.reduce #wafer.instr_reduce_kind<kind> input into dest attr-dict
     : type(input) into type(dest)
 wafer.instr.convert #wafer.instr_convert_kind<src_dst> source into dest attr-dict
     : type(source) to type(dest)
@@ -534,8 +539,8 @@ wafer.instr.convert #wafer.instr_convert_kind<src_dst> source into dest attr-dic
 | op | operands | result | required attrs |
 | --- | --- | --- | --- |
 | `wafer.instr.fill` | `dest: SPM memref`, `value: scalar` | none | none |
-| `wafer.instr.elementwise` | `inputs: Variadic<SPM memref>`, `dest: SPM memref` | none | `kind: #wafer.instr_elementwise_kind`; optional `indexing_maps` copied from target-abstract op |
-| `wafer.instr.reduce` | `input: SPM memref`, `dest: SPM memref`, optional scalar `init` | none | `kind: #wafer.instr_reduce_kind`, `dim` target reduce code |
+| `wafer.instr.elementwise` | `inputs: Variadic<SPM memref>`, `dest: SPM memref` | none | `kind: #wafer.instr_elementwise_kind`; operands/dest same-shape；`indexing_maps`不属于terminal op合同 |
+| `wafer.instr.reduce` | `input: SPM memref`, `dest: SPM memref` | none | `kind: #wafer.instr_reduce_kind`, `dim` target reduce code；init operand/`init_value`不属于terminal op合同 |
 | `wafer.instr.convert` | `source: SPM memref`, `dest: SPM memref` | none | `kind: #wafer.instr_convert_kind`; required `zero_point` for INT8->FP kinds, required `rounding_mode` for rounding wrapper kinds, no extra attrs for plain kinds |
 
 `wafer.instr.convert` 作为 instruction op 定义，因为 hardware convert 当前属于 CT instruction family；
@@ -557,6 +562,24 @@ semantic select              -> gather_scatter + bit2fp + mask_move
 这样 `select` 和未来其它无法直接对应目标 wrapper 的 semantic op 不会靠 verifier 黑名单混入
 instruction IR。
 
+当前target LLVM elementwise emission只按kind、operand/dest地址、element count和单一format选择unary/binary vector
+wrapper，不消费`indexing_maps`。因此tile→instruction必须先把所有map展开为`gather_scatter`/其它movement和same-shape
+operands，再生成无map的terminal `wafer.instr.elementwise`；identity map也strip，避免重复事实。ODS/verifier拒绝任何残留
+`indexing_maps` attr，target conversion只做defensive check，CModel不得读取该attr补做broadcast。
+
+当前target LLVM reduce emission不传init，所以tile→instruction先验证tile-level SSA `init`与`init_value`互斥且类型一致。
+Q0.L source-reduce correctness baseline把可表示的init写入result-shaped accumulator，按canonical lexicographic reduction
+tuple依次materialize同shape slice，并以与source combiner精确对应的map-free elementwise op在两块accumulator间ping-pong；
+每一步有显式completion，最后movement到destination。不能被typed fill表示的dynamic init、没有exact elementwise mapping的
+combiner（当前包括avg）或超过checked expansion budget的case在effect前拒绝。该序列不使用native reduce，因此不会把
+`native_reduce(xs) op init`误当成source-order `(((init op x0) op x1)...)`。
+
+terminal `wafer.instr.reduce`的ODS移除optional init operand，verifier拒绝`init_value`等残留attr。它只表示无init字段的
+target-native leaf；production source path只有在未来compiler-owned target policy对完整value domain证明identity、combiner、
+order、rounding和special-value等价后才可用它优化上述composite。Q0.L不能引用尚未板端校准的Q22
+`NumericSemanticsProfile`、host默认或有限corpus证明等价。保留在Instr IR但不进入CRT call的init不是合法production语义，
+CModel不得补偿。
+
 ### 7.5 GEMM
 
 ```text
@@ -571,6 +594,11 @@ wafer.instr.gemm lhs, rhs into dest attr-dict
 V0 要求三个 SPM memref operand 都使用 aligned layout marker：rank <= 2 使用
 `#wafer.memory<spm, cx>`，rank > 2 使用 `#wafer.memory<spm, ncx>`。Fused bias、activation、
 quant、psum accumulation policy 和 sparse / INT8 variants 不属于 R3.2d V0。
+
+V0 plain GEMM还只要求lhs/rhs/dest element type相同，target CRT call只传一个format；IR没有product、accumulator、
+逐MAC rounding、FMA或reduction-order字段。若这些行为是program-selectable，必须先扩typed tile/instruction op及CRT ABI；
+若它们是target revision固定行为，则target revision和完整command tuple必须在execution capability中唯一映射到一个
+`NumericSemanticsProfile`。未校准的f16/bf16 narrow/wide、TF32和integer候选不能由lowering/CModel按dtype猜测。
 
 #### 7.5.1 Low-Precision Instructions
 
@@ -690,8 +718,8 @@ V0 mapping：
 | `wafer.tile.materialize_layout` | ensure / create destination memref with requested marker; compare source/result logical element to physical byte mapping through the unified physical layout calculator; coalesce adjacent byte segments, pack regular segments into up to three stride/iteration levels, and emit one or more `wafer.instr.gather_scatter`; do not require source/result physical byte counts to match; structured failure only when static logical movement cannot be represented by V0 descriptors |
 | `wafer.tile.fill` | emit `wafer.instr.fill` writing the existing dest memref |
 | `wafer.tile.gemm` | ensure / create destination aligned SPM memref; emit `wafer.instr.gemm`; replace result with dest memref |
-| `wafer.tile.elementwise` | ensure / create destination SPM memref; map non-select `#wafer.elementwise_kind` to `#wafer.instr_elementwise_kind` and emit `wafer.instr.elementwise`; semantic select lowers to false-copy `gather_scatter` + `bit2fp` + `mask_move`; replace result with dest memref |
-| `wafer.tile.reduce` | ensure / create destination SPM memref; map `#wafer.reduce_kind` to `#wafer.instr_reduce_kind`, map tile semantic `dimensions` to native reduce `dim` code, emit `wafer.instr.reduce`, and replace result with dest memref |
+| `wafer.tile.elementwise` | materialize every input indexing map into explicit movement/same-shape operands; strip even identity maps; ensure/create destination; map non-select kind and emit map-free `wafer.instr.elementwise`; semantic select lowers to false-copy `gather_scatter` + `bit2fp` + `mask_move`; reject if a map is unrepresentable |
+| `wafer.tile.reduce` | verify init operand/attr mutual exclusion/type; fill result-shaped accumulator; enumerate reduction tuples in canonical lexicographic order; materialize each non-reduced slice to result shape and map an exact combiner to map-free elementwise ping-pong accumulators with explicit completion; move final accumulator to destination; reject dynamic-init/combiner/budget cases not representable by the typed baseline; do not emit native reduce without a compiler-owned full-domain equivalence proof |
 | `wafer.tile.copy` | ensure / create destination SPM memref; emit one gather_scatter; replace result with dest memref |
 | `wafer.tile.extract_slice` | create destination SPM memref; enumerate the static slice result logical domain, map each result index through offsets/sizes/strides back to the source logical index, compute physical byte offsets with the unified Wafer layout calculator, coalesce adjacent byte segments, pack regular segments into up to three stride/iteration levels, emit one or more `wafer.instr.gather_scatter`, and replace result with dest memref |
 | `wafer.tile.insert_slice` | create destination SPM memref; first copy the original destination payload into the result via logical-to-physical segments, then enumerate source logical indices and overlay them into the statically described destination slice via packed `wafer.instr.gather_scatter` descriptors; replace result with the new memref |
@@ -758,7 +786,8 @@ legalize 的其它 instruction fragments。
 - unsupported control-flow op, multi-block region, or nested region whose executable body cannot be fully
   legalized under the same instruction conversion rules.
 - NE GEMM dimension attrs cannot be derived from operand/result types and optional batch attrs.
-- tile reduce `dimensions` cannot map to supported native reduce `dim` code.
+- tile reduce dimensions无法形成static canonical tuple/slice movement、combiner没有exact elementwise mapping、init不被typed
+  fill表示或checked expansion budget超限；native optimization另在`dimensions`不能映射target `dim`时拒绝。
 - any source op that would require raw DTE resource ids, CSR/SCALAR, raw packet fields, SPM offset,
   DDR planning result or
   runtime ABI call to be legal.
@@ -789,13 +818,22 @@ R3.2d verifier checks only instruction legality:
   narrowing 都通过同一个 shared physical geometry/range/narrowing verifier；instruction、SPM/DDR
   planning、target/package lowering 复用该 verifier。每次 narrowing 都必须证明源值在目标字段范围内；
   silent i64-to-i32 或 size-to-packet-field truncation 非法。
-- NE GEMM and CT reduce require supported aligned layout marker, dtype and rank.
+- logical element type或`Data_Format` enum存在不证明任一engine可编码该dtype。production target verifier必须查询
+  target-profile×instruction-family×format `TargetFormatEncodingProfile`并引用tasks/08 layout profile；当前typed convert kind可选择TF32 wrapper与
+  RDMA/WDMA/fill/elementwise/reduce/GEMM通用format encoder缺TF32是两个独立legality row。UINT/64-bit direct DMA等
+  未有engine encoding证据的row在shared registry闭合前target-illegal。
+- NE GEMM and CT reduce require supported aligned layout marker, dtype and rank. Plain GEMM's current single-format ABI only
+  accepts a target-revision/command tuple with one unique numeric semantics profile；terminal CT reduce has no init operand/
+  attr，任何残留字段target-illegal；Q0.L source reduce必须更早lower为有序fill/movement/elementwise composite或拒绝，native
+  reduce只有compiler-owned full-domain equivalence proof后才可进入production。
 - `quantized_gemm`要求exact matched low-precision capability/profile、signed INT8 storage、legal q/zp/scale mode、
   scale operand range和accumulator/saturation proof；plain GEMM不能携带这些fields。
 - `mxfp_decode`要求packed/scale/destination/scratch types与block/element/tail policy一致，packed capacity和scale
   count exact，decode/local-completion支配consumer与scratch reuse；不能使用native FP8 format假设。
 - relation/elementwise bool storage uses logical `i1`; physical byte size remains derived, not stored.
-- `wafer.instr.elementwise` / `wafer.instr.reduce` use instr-level target kind attrs only；generic
+- `wafer.instr.elementwise` entering target conversion carries no indexing-map attr and requires same-shape operands；all
+  permutation/broadcast/identity maps must already have been materialized/stripped. `wafer.instr.elementwise` /
+  `wafer.instr.reduce` use instr-level target kind attrs only；generic
   `#wafer.elementwise_kind` / `#wafer.reduce_kind` on instruction ops is verifier-illegal.
 - `wafer.instr.convert` uses `#wafer.instr_convert_kind` only；source/dest dtype is derived from the
   convert kind and checked against memref element types. It does not accept free-form `src_dtype` /
@@ -972,8 +1010,8 @@ R3.2d.1 已完成：
    instr-specific target kind attrs；旧 tile-level `Compute*Kind` attr 不能再作为 instruction op
    attr。`wafer.instr.convert` 的 kind 与硬件 convert opcode pair 对齐，verifier 从 kind 检查
    source/dest dtype，并按 public wrapper signature group 检查 `zero_point` / `rounding_mode`。
-   `wafer.instr.reduce` 使用 native reduce `dim` code；tile reduce semantic `dimensions` 只在
-   tile 层保留，并在 lowering 中 materialize 成 `dim`。
+   当前代码的`wafer.instr.reduce`使用native reduce `dim` code并仍接受init；Q0.L将把这项实现事实收窄为无init的
+   target-native leaf，同时让source tile reduce改走有序composite。完成Q0.L前，本条只作历史实现记录，不是终态合同。
 5. `wafer.instr.unpool` 已改成 wrapper-aligned scalar `index` attr；`mask` / `unpool` 需要
    uint32 `index`，`avg` 禁止携带。`wafer.instr.tdma_data_move` verifier 按 kind 检查字段组合：
    `pad` / `img2col` 是 V0 production target input，transform-like kind 只允许作为 pre-lowering/imported
