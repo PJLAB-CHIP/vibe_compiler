@@ -25,8 +25,11 @@
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/IR/Constants.h"
 #include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/Verifier.h"
 #include "llvm/Object/ObjectFile.h"
 #include "llvm/Support/Errc.h"
 #include "llvm/Support/Error.h"
@@ -56,13 +59,33 @@
 
 namespace wafer::compiler {
 
+struct TargetLLVMModuleBundleBuilder {
+  static TargetLLVMModule
+  makeModule(int64_t logicalRank, llvm::StringRef entrySymbol,
+             TargetProfileId targetProfile, TargetIdentityId targetIdentity,
+             KernelRuntimeABIId kernelRuntimeABI, llvm::StringRef moduleFormat,
+             std::vector<KernelABISlot> kernelABISlots,
+             std::unique_ptr<llvm::LLVMContext> context,
+             std::unique_ptr<llvm::Module> module) {
+    return TargetLLVMModule(logicalRank, entrySymbol, targetProfile,
+                            targetIdentity, kernelRuntimeABI, moduleFormat,
+                            std::move(kernelABISlots), std::move(context),
+                            std::move(module));
+  }
+
+  static TargetLLVMModuleBundle
+  makeBundle(ExecutionConfig executionConfig,
+             std::vector<TargetLLVMModule> modules) {
+    return TargetLLVMModuleBundle(executionConfig, std::move(modules));
+  }
+};
+
 struct TargetArtifactBundleBuilder {
   static VerifiedTargetModule
   makeModule(int64_t logicalRank, llvm::StringRef entrySymbol,
              llvm::StringRef relativePath, llvm::StringRef contentDigest,
              TargetProfileId targetProfile, TargetIdentityId targetIdentity,
-             KernelRuntimeABIId kernelRuntimeABI,
-             llvm::StringRef moduleFormat,
+             KernelRuntimeABIId kernelRuntimeABI, llvm::StringRef moduleFormat,
              std::vector<KernelABISlot> kernelABISlots) {
     return VerifiedTargetModule(logicalRank, entrySymbol, relativePath,
                                 contentDigest, targetProfile, targetIdentity,
@@ -77,6 +100,41 @@ struct TargetArtifactBundleBuilder {
                                 std::move(modules));
   }
 };
+
+TargetLLVMModule::TargetLLVMModule(int64_t logicalRank,
+                                   llvm::StringRef entrySymbol,
+                                   TargetProfileId targetProfile,
+                                   TargetIdentityId targetIdentity,
+                                   KernelRuntimeABIId kernelRuntimeABI,
+                                   llvm::StringRef moduleFormat,
+                                   std::vector<KernelABISlot> kernelABISlots,
+                                   std::unique_ptr<llvm::LLVMContext> context,
+                                   std::unique_ptr<llvm::Module> module)
+    : logicalRank(logicalRank), entrySymbol(entrySymbol.str()),
+      targetProfile(targetProfile), targetIdentity(targetIdentity),
+      kernelRuntimeABI(kernelRuntimeABI), moduleFormat(moduleFormat.str()),
+      kernelABISlots(std::move(kernelABISlots)), context(std::move(context)),
+      module(std::move(module)) {}
+
+TargetLLVMModule::~TargetLLVMModule() = default;
+TargetLLVMModule::TargetLLVMModule(TargetLLVMModule &&) = default;
+TargetLLVMModule &TargetLLVMModule::operator=(TargetLLVMModule &&) = default;
+
+llvm::StringRef TargetLLVMModule::getModuleIdentifier() const {
+  return module->getModuleIdentifier();
+}
+
+llvm::StringRef TargetLLVMModule::getTargetTriple() const {
+  return module->getTargetTriple();
+}
+
+const llvm::Module &TargetLLVMModule::getModule() const { return *module; }
+
+TargetLLVMModuleBundle::~TargetLLVMModuleBundle() = default;
+TargetLLVMModuleBundle::TargetLLVMModuleBundle(TargetLLVMModuleBundle &&) =
+    default;
+TargetLLVMModuleBundle &
+TargetLLVMModuleBundle::operator=(TargetLLVMModuleBundle &&) = default;
 
 llvm::Expected<TargetToolchain>
 TargetToolchain::create(llvm::StringRef pythonExecutable,
@@ -95,11 +153,11 @@ namespace {
 struct PreparedTargetRank {
   explicit PreparedTargetRank(const ExecutionConfig &executionConfig)
       : targetProfile(executionConfig.getTargetProfileId()),
-        targetIdentity(
-            getTargetProfileRecord(targetProfile).targetIdentity),
+        targetIdentity(getTargetProfileRecord(targetProfile).targetIdentity),
         kernelRuntimeABI(
             getTargetProfileRecord(targetProfile).kernelRuntimeABI),
-        moduleFormat(getTargetProfileRecord(targetProfile).moduleFormat.str()) {}
+        moduleFormat(getTargetProfileRecord(targetProfile).moduleFormat.str()) {
+  }
 
   mlir::OwningOpRef<mlir::ModuleOp> module;
   std::vector<KernelABISlot> slots;
@@ -111,6 +169,325 @@ struct PreparedTargetRank {
   int64_t defaultDDRArenaArgumentIndex = -1;
   int64_t transportStatusArgumentIndex = -1;
 };
+
+constexpr llvm::StringLiteral kTargetLLVMTriple = "riscv64-unknown-unknown-elf";
+constexpr llvm::StringLiteral kTargetLLVMSchemaMetadata = "wafer.target.schema";
+constexpr llvm::StringLiteral kTargetLLVMRankMetadata = "wafer.target.rank";
+constexpr llvm::StringLiteral kTargetLLVMEntryMetadata = "wafer.target.entry";
+constexpr llvm::StringLiteral kTargetLLVMProfileMetadata =
+    "wafer.target.profile";
+constexpr llvm::StringLiteral kTargetLLVMIdentityMetadata =
+    "wafer.target.identity";
+constexpr llvm::StringLiteral kTargetLLVMABIMetadata = "wafer.target.abi";
+constexpr llvm::StringLiteral kTargetLLVMFormatMetadata =
+    "wafer.target.module_format";
+constexpr llvm::StringLiteral kTargetLLVMSlotsMetadata =
+    "wafer.target.abi_slots";
+constexpr llvm::StringLiteral kTargetLLVMSchema = "wafer-target-llvm-module-v1";
+
+llvm::StringRef stringifyKernelABISlotRole(KernelABISlotRole role) {
+  switch (role) {
+  case KernelABISlotRole::UserInput:
+    return "user-input";
+  case KernelABISlotRole::Parameter:
+    return "parameter";
+  case KernelABISlotRole::Constant:
+    return "constant";
+  case KernelABISlotRole::Output:
+    return "output";
+  case KernelABISlotRole::Workspace:
+    return "workspace";
+  case KernelABISlotRole::TransportStatus:
+    return "transport-status";
+  }
+  llvm_unreachable("unknown Kernel ABI slot role");
+}
+
+llvm::Metadata *signedMetadata(llvm::LLVMContext &context, int64_t value) {
+  return llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+      llvm::Type::getInt64Ty(context), static_cast<uint64_t>(value),
+      /*IsSigned=*/true));
+}
+
+void addStringMetadata(llvm::Module &module, llvm::StringRef name,
+                       llvm::StringRef value) {
+  llvm::LLVMContext &context = module.getContext();
+  module.getOrInsertNamedMetadata(name)->addOperand(
+      llvm::MDNode::get(context, llvm::MDString::get(context, value)));
+}
+
+void addSignedMetadata(llvm::Module &module, llvm::StringRef name,
+                       int64_t value) {
+  llvm::LLVMContext &context = module.getContext();
+  module.getOrInsertNamedMetadata(name)->addOperand(
+      llvm::MDNode::get(context, signedMetadata(context, value)));
+}
+
+void attachTargetLLVMMetadata(llvm::Module &module,
+                              const PreparedTargetRank &prepared,
+                              llvm::StringRef entrySymbol) {
+  addStringMetadata(module, kTargetLLVMSchemaMetadata, kTargetLLVMSchema);
+  addSignedMetadata(module, kTargetLLVMRankMetadata, prepared.logicalRank);
+  addStringMetadata(module, kTargetLLVMEntryMetadata, entrySymbol);
+  addStringMetadata(module, kTargetLLVMProfileMetadata,
+                    stringifyTargetProfileId(prepared.targetProfile));
+  addStringMetadata(module, kTargetLLVMIdentityMetadata,
+                    stringifyTargetIdentityId(prepared.targetIdentity));
+  addStringMetadata(module, kTargetLLVMABIMetadata,
+                    stringifyKernelRuntimeABIId(prepared.kernelRuntimeABI));
+  addStringMetadata(module, kTargetLLVMFormatMetadata, prepared.moduleFormat);
+
+  llvm::LLVMContext &context = module.getContext();
+  llvm::NamedMDNode *slots =
+      module.getOrInsertNamedMetadata(kTargetLLVMSlotsMetadata);
+  for (const KernelABISlot &slot : prepared.slots) {
+    llvm::SmallVector<llvm::Metadata *, 12> fields = {
+        signedMetadata(context, slot.ordinal),
+        llvm::MDString::get(context, stringifyKernelABISlotRole(slot.role)),
+        signedMetadata(context, slot.resourceIndex),
+        llvm::MDString::get(context, slot.name),
+        llvm::MDString::get(context, slot.dtype),
+        signedMetadata(context, slot.byteSize),
+        signedMetadata(context, slot.alignment),
+    };
+    for (int64_t dimension : slot.shape)
+      fields.push_back(signedMetadata(context, dimension));
+    slots->addOperand(llvm::MDNode::get(context, fields));
+  }
+}
+
+llvm::Expected<llvm::StringRef>
+readSingleStringMetadata(const llvm::Module &module, llvm::StringRef name) {
+  const llvm::NamedMDNode *named = module.getNamedMetadata(name);
+  if (!named || named->getNumOperands() != 1)
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "target LLVM metadata '%s' must contain exactly one row",
+        name.str().c_str());
+  const llvm::MDNode *row = named->getOperand(0);
+  if (row->getNumOperands() != 1)
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "target LLVM metadata '%s' row must contain one string",
+        name.str().c_str());
+  auto value = llvm::dyn_cast<llvm::MDString>(row->getOperand(0));
+  if (!value)
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "target LLVM metadata '%s' row is not a string", name.str().c_str());
+  return value->getString();
+}
+
+llvm::Expected<int64_t> readSignedMetadataOperand(const llvm::MDNode &row,
+                                                  unsigned index,
+                                                  llvm::StringRef label) {
+  if (index >= row.getNumOperands())
+    return llvm::createStringError(llvm::errc::invalid_argument,
+                                   "target LLVM %s is missing",
+                                   label.str().c_str());
+  auto constant =
+      llvm::dyn_cast<llvm::ConstantAsMetadata>(row.getOperand(index));
+  auto integer = constant
+                     ? llvm::dyn_cast<llvm::ConstantInt>(constant->getValue())
+                     : nullptr;
+  if (!integer || integer->getBitWidth() != 64)
+    return llvm::createStringError(llvm::errc::invalid_argument,
+                                   "target LLVM %s is not an i64",
+                                   label.str().c_str());
+  return integer->getSExtValue();
+}
+
+llvm::Expected<int64_t> readSingleSignedMetadata(const llvm::Module &module,
+                                                 llvm::StringRef name) {
+  const llvm::NamedMDNode *named = module.getNamedMetadata(name);
+  if (!named || named->getNumOperands() != 1)
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "target LLVM metadata '%s' must contain exactly one row",
+        name.str().c_str());
+  const llvm::MDNode *row = named->getOperand(0);
+  if (row->getNumOperands() != 1)
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "target LLVM metadata '%s' row must contain one integer",
+        name.str().c_str());
+  return readSignedMetadataOperand(*row, 0, name);
+}
+
+llvm::Expected<llvm::StringRef>
+readStringMetadataOperand(const llvm::MDNode &row, unsigned index,
+                          llvm::StringRef label) {
+  if (index >= row.getNumOperands())
+    return llvm::createStringError(llvm::errc::invalid_argument,
+                                   "target LLVM %s is missing",
+                                   label.str().c_str());
+  auto value = llvm::dyn_cast<llvm::MDString>(row.getOperand(index));
+  if (!value)
+    return llvm::createStringError(llvm::errc::invalid_argument,
+                                   "target LLVM %s is not a string",
+                                   label.str().c_str());
+  return value->getString();
+}
+
+llvm::Error
+verifyTargetLLVMSlotMetadata(const llvm::Module &module,
+                             llvm::ArrayRef<KernelABISlot> expectedSlots) {
+  const llvm::NamedMDNode *slots =
+      module.getNamedMetadata(kTargetLLVMSlotsMetadata);
+  if (!slots || slots->getNumOperands() != expectedSlots.size())
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "target LLVM Kernel ABI slot metadata does not cover the typed ABI");
+  for (auto [index, expected] : llvm::enumerate(expectedSlots)) {
+    const llvm::MDNode &row = *slots->getOperand(index);
+    if (row.getNumOperands() != 7 + expected.shape.size())
+      return llvm::createStringError(
+          llvm::errc::invalid_argument,
+          "target LLVM Kernel ABI slot %zu has an invalid field count", index);
+    llvm::Expected<int64_t> ordinal =
+        readSignedMetadataOperand(row, 0, "Kernel ABI slot ordinal");
+    if (!ordinal)
+      return ordinal.takeError();
+    llvm::Expected<llvm::StringRef> role =
+        readStringMetadataOperand(row, 1, "Kernel ABI slot role");
+    if (!role)
+      return role.takeError();
+    llvm::Expected<int64_t> resource =
+        readSignedMetadataOperand(row, 2, "Kernel ABI resource index");
+    if (!resource)
+      return resource.takeError();
+    llvm::Expected<llvm::StringRef> name =
+        readStringMetadataOperand(row, 3, "Kernel ABI slot name");
+    if (!name)
+      return name.takeError();
+    llvm::Expected<llvm::StringRef> dtype =
+        readStringMetadataOperand(row, 4, "Kernel ABI slot dtype");
+    if (!dtype)
+      return dtype.takeError();
+    llvm::Expected<int64_t> byteSize =
+        readSignedMetadataOperand(row, 5, "Kernel ABI slot byte size");
+    if (!byteSize)
+      return byteSize.takeError();
+    llvm::Expected<int64_t> alignment =
+        readSignedMetadataOperand(row, 6, "Kernel ABI slot alignment");
+    if (!alignment)
+      return alignment.takeError();
+    if (*ordinal != expected.ordinal ||
+        *role != stringifyKernelABISlotRole(expected.role) ||
+        *resource != expected.resourceIndex || *name != expected.name ||
+        *dtype != expected.dtype || *byteSize != expected.byteSize ||
+        *alignment != expected.alignment)
+      return llvm::createStringError(
+          llvm::errc::invalid_argument,
+          "target LLVM Kernel ABI slot %zu does not match the typed ABI",
+          index);
+    for (auto [dimensionIndex, expectedDimension] :
+         llvm::enumerate(expected.shape)) {
+      llvm::Expected<int64_t> dimension = readSignedMetadataOperand(
+          row, 7 + dimensionIndex, "Kernel ABI slot shape dimension");
+      if (!dimension)
+        return dimension.takeError();
+      if (*dimension != expectedDimension)
+        return llvm::createStringError(
+            llvm::errc::invalid_argument,
+            "target LLVM Kernel ABI slot %zu shape does not match the typed "
+            "ABI",
+            index);
+    }
+  }
+  return llvm::Error::success();
+}
+
+llvm::Error
+verifyTargetLLVMModule(const llvm::Module &module, int64_t expectedLogicalRank,
+                       llvm::StringRef expectedEntrySymbol,
+                       TargetProfileId expectedProfile,
+                       TargetIdentityId expectedTargetIdentity,
+                       KernelRuntimeABIId expectedKernelRuntimeABI,
+                       llvm::StringRef expectedModuleFormat,
+                       llvm::ArrayRef<KernelABISlot> expectedSlots) {
+  std::string verifierOutput;
+  llvm::raw_string_ostream verifierDiagnostics(verifierOutput);
+  if (llvm::verifyModule(module, &verifierDiagnostics))
+    return llvm::createStringError(llvm::errc::invalid_argument,
+                                   "target LLVM module verification failed: %s",
+                                   verifierOutput.c_str());
+  std::string expectedIdentifier =
+      llvm::formatv("wafer.target.rank.{0:D5}", expectedLogicalRank).str();
+  if (module.getModuleIdentifier() != expectedIdentifier)
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "target LLVM module identifier does not match logical rank");
+  if (module.getTargetTriple() != kTargetLLVMTriple)
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "target LLVM triple is not the closed target triple");
+
+  llvm::Expected<llvm::StringRef> schema =
+      readSingleStringMetadata(module, kTargetLLVMSchemaMetadata);
+  if (!schema)
+    return schema.takeError();
+  llvm::Expected<int64_t> logicalRank =
+      readSingleSignedMetadata(module, kTargetLLVMRankMetadata);
+  if (!logicalRank)
+    return logicalRank.takeError();
+  llvm::Expected<llvm::StringRef> entrySymbol =
+      readSingleStringMetadata(module, kTargetLLVMEntryMetadata);
+  if (!entrySymbol)
+    return entrySymbol.takeError();
+  llvm::Expected<llvm::StringRef> profileSpelling =
+      readSingleStringMetadata(module, kTargetLLVMProfileMetadata);
+  if (!profileSpelling)
+    return profileSpelling.takeError();
+  llvm::Expected<llvm::StringRef> identitySpelling =
+      readSingleStringMetadata(module, kTargetLLVMIdentityMetadata);
+  if (!identitySpelling)
+    return identitySpelling.takeError();
+  llvm::Expected<llvm::StringRef> abiSpelling =
+      readSingleStringMetadata(module, kTargetLLVMABIMetadata);
+  if (!abiSpelling)
+    return abiSpelling.takeError();
+  llvm::Expected<llvm::StringRef> moduleFormat =
+      readSingleStringMetadata(module, kTargetLLVMFormatMetadata);
+  if (!moduleFormat)
+    return moduleFormat.takeError();
+  llvm::Expected<TargetProfileId> profile =
+      parseTargetProfileId(*profileSpelling);
+  if (!profile)
+    return profile.takeError();
+  llvm::Expected<TargetIdentityId> identity =
+      parseTargetIdentityId(*identitySpelling);
+  if (!identity)
+    return identity.takeError();
+  llvm::Expected<KernelRuntimeABIId> abi =
+      parseKernelRuntimeABIId(*abiSpelling);
+  if (!abi)
+    return abi.takeError();
+  if (*schema != kTargetLLVMSchema || *logicalRank != expectedLogicalRank ||
+      *entrySymbol != expectedEntrySymbol || *profile != expectedProfile ||
+      *identity != expectedTargetIdentity || *abi != expectedKernelRuntimeABI ||
+      *moduleFormat != expectedModuleFormat)
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "target LLVM module metadata does not match the typed rank identity");
+
+  const llvm::Function *entry = module.getFunction(expectedEntrySymbol);
+  if (!entry || entry->isDeclaration() || !entry->hasExternalLinkage())
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "target LLVM entry is missing, external, or not externally visible");
+  llvm::FunctionType *type = entry->getFunctionType();
+  if (type->isVarArg() || !type->getReturnType()->isVoidTy() ||
+      type->getNumParams() != expectedSlots.size() ||
+      !llvm::all_of(type->params(), [](llvm::Type *parameter) {
+        return parameter->isIntegerTy(64);
+      }))
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "target LLVM entry must be fixed void(i64...) with one parameter per "
+        "typed Kernel ABI slot");
+  return verifyTargetLLVMSlotMetadata(module, expectedSlots);
+}
 
 llvm::Error fail(llvm::raw_ostream &diagnostics, llvm::StringRef message) {
   diagnostics << "wafer-compile: " << message << "\n";
@@ -412,19 +789,36 @@ mlir::LogicalResult verifyLoweredKernelABI(PreparedTargetRank &prepared,
   return mlir::success();
 }
 
-llvm::Error writeLLVMIR(mlir::ModuleOp module, llvm::StringRef path) {
-  llvm::LLVMContext llvmContext;
-  std::unique_ptr<llvm::Module> llvmModule =
-      mlir::translateModuleToLLVMIR(module, llvmContext, "wafer_rank");
+llvm::Expected<TargetLLVMModule>
+translatePreparedTargetRank(PreparedTargetRank prepared,
+                            llvm::StringRef entrySymbol) {
+  auto llvmContext = std::make_unique<llvm::LLVMContext>();
+  std::unique_ptr<llvm::Module> llvmModule = mlir::translateModuleToLLVMIR(
+      *prepared.module, *llvmContext, "wafer_target_rank");
   if (!llvmModule)
     return llvm::createStringError(llvm::errc::invalid_argument,
                                    "target LLVM IR translation failed");
-  llvmModule->setTargetTriple("riscv64-unknown-unknown-elf");
+  llvmModule->setModuleIdentifier(
+      llvm::formatv("wafer.target.rank.{0:D5}", prepared.logicalRank).str());
+  llvmModule->setTargetTriple(kTargetLLVMTriple);
+  attachTargetLLVMMetadata(*llvmModule, prepared, entrySymbol);
+  if (llvm::Error error = verifyTargetLLVMModule(
+          *llvmModule, prepared.logicalRank, entrySymbol,
+          prepared.targetProfile, prepared.targetIdentity,
+          prepared.kernelRuntimeABI, prepared.moduleFormat, prepared.slots))
+    return std::move(error);
+  return TargetLLVMModuleBundleBuilder::makeModule(
+      prepared.logicalRank, entrySymbol, prepared.targetProfile,
+      prepared.targetIdentity, prepared.kernelRuntimeABI, prepared.moduleFormat,
+      std::move(prepared.slots), std::move(llvmContext), std::move(llvmModule));
+}
+
+llvm::Error writeLLVMIR(const llvm::Module &module, llvm::StringRef path) {
   std::error_code error;
   llvm::raw_fd_ostream output(path, error, llvm::sys::fs::OF_Text);
   if (error)
     return llvm::createStringError(error, "failed to open target LLVM IR");
-  llvmModule->print(output, nullptr);
+  module.print(output, nullptr);
   output.close();
   if (output.has_error())
     return llvm::createStringError(llvm::errc::io_error,
@@ -466,8 +860,7 @@ struct TargetModuleReadback {
 llvm::Expected<TargetModuleReadback>
 verifyTargetModule(llvm::StringRef path, llvm::StringRef entrySymbol,
                    TargetProfileId expectedProfile) {
-  const TargetProfileRecord &profile =
-      getTargetProfileRecord(expectedProfile);
+  const TargetProfileRecord &profile = getTargetProfileRecord(expectedProfile);
   constexpr llvm::StringLiteral kDetectedRiscv64ELF = "elf-riscv64";
   if (profile.moduleFormat != kDetectedRiscv64ELF)
     return llvm::createStringError(
@@ -575,6 +968,70 @@ bool publishDirectoryNoReplace(llvm::StringRef source,
 
 } // namespace
 
+llvm::Expected<TargetLLVMModuleBundle>
+detail::compileExecutableBundleToTargetLLVMModulesImpl(
+    const ExecutableBundle &executableBundle, llvm::raw_ostream &diagnostics,
+    std::optional<int64_t> failAfterLogicalRank) {
+  const std::vector<RankExecutable> &ranks =
+      executableBundle.getRankExecutables();
+  const ExecutionConfig &executionConfig =
+      executableBundle.getExecutionConfig();
+  if (ranks.size() != static_cast<size_t>(executionConfig.getRankCount()))
+    return fail(diagnostics, "target LLVM rank domain is incomplete");
+
+  const TargetProfileRecord &targetProfile =
+      getTargetProfileRecord(executionConfig.getTargetProfileId());
+  std::vector<PreparedTargetRank> preparedRanks;
+  preparedRanks.reserve(ranks.size());
+  for (auto [expectedRank, rank] : llvm::enumerate(ranks)) {
+    if (rank.getLogicalRank() != static_cast<int64_t>(expectedRank))
+      return fail(diagnostics, "target LLVM rank domain is not canonical");
+    mlir::FailureOr<PreparedTargetRank> prepared =
+        prepareTargetABI(rank, executionConfig);
+    if (mlir::failed(prepared))
+      return fail(diagnostics,
+                  "target ABI preparation failed for logical rank " +
+                      std::to_string(expectedRank));
+    if (mlir::failed(lowerToTargetLLVM(*prepared)))
+      return fail(diagnostics, "target lowering failed for logical rank " +
+                                   std::to_string(expectedRank));
+    if (mlir::failed(verifyLoweredKernelABI(*prepared, rank.getEntrySymbol())))
+      return fail(diagnostics,
+                  "target ABI verification failed for logical rank " +
+                      std::to_string(expectedRank));
+    if (prepared->logicalRank != static_cast<int64_t>(expectedRank) ||
+        prepared->targetProfile != targetProfile.id ||
+        prepared->targetIdentity != targetProfile.targetIdentity ||
+        prepared->kernelRuntimeABI != targetProfile.kernelRuntimeABI ||
+        prepared->moduleFormat != targetProfile.moduleFormat)
+      return fail(diagnostics,
+                  "prepared target profile readback failed for logical rank " +
+                      std::to_string(expectedRank));
+    preparedRanks.push_back(std::move(*prepared));
+  }
+
+  std::vector<TargetLLVMModule> modules;
+  modules.reserve(ranks.size());
+  for (auto [expectedRank, prepared] : llvm::enumerate(preparedRanks)) {
+    llvm::Expected<TargetLLVMModule> translated = translatePreparedTargetRank(
+        std::move(prepared), ranks[expectedRank].getEntrySymbol());
+    if (!translated)
+      return fail(diagnostics,
+                  "target LLVM translation/readback failed for logical rank " +
+                      std::to_string(expectedRank) + ": " +
+                      llvm::toString(translated.takeError()));
+    modules.push_back(std::move(*translated));
+    if (failAfterLogicalRank &&
+        static_cast<int64_t>(expectedRank) == *failAfterLogicalRank)
+      return fail(diagnostics,
+                  "test-only injected target failure after logical rank " +
+                      std::to_string(expectedRank));
+  }
+
+  return TargetLLVMModuleBundleBuilder::makeBundle(executionConfig,
+                                                   std::move(modules));
+}
+
 mlir::LogicalResult
 detail::lowerTargetABIForTesting(const RankExecutable &rankExecutable,
                                  const ExecutionConfig &executionConfig) {
@@ -583,6 +1040,15 @@ detail::lowerTargetABIForTesting(const RankExecutable &rankExecutable,
   if (mlir::failed(prepared) || mlir::failed(lowerToTargetLLVM(*prepared)))
     return mlir::failure();
   return verifyLoweredKernelABI(*prepared, rankExecutable.getEntrySymbol());
+}
+
+llvm::Error
+detail::verifyTargetLLVMModuleForTesting(const TargetLLVMModule &targetModule) {
+  return verifyTargetLLVMModule(
+      targetModule.getModule(), targetModule.getLogicalRank(),
+      targetModule.getEntrySymbol(), targetModule.getTargetProfileId(),
+      targetModule.getTargetIdentityId(), targetModule.getKernelRuntimeABIId(),
+      targetModule.getModuleFormat(), targetModule.getKernelABISlots());
 }
 
 llvm::Expected<VerifiedTargetModule>
@@ -602,10 +1068,14 @@ detail::verifyLinkedTargetModuleForTesting(llvm::StringRef path,
 }
 
 llvm::Expected<TargetArtifactBundle>
-detail::compileExecutableBundleToTargetArtifactsImpl(
-    const ExecutableBundle &executableBundle, llvm::StringRef outputDirectory,
-    const TargetToolchain &toolchain, llvm::raw_ostream &diagnostics,
-    std::optional<int64_t> failAfterLogicalRank) {
+compileTargetLLVMModuleBundleToTargetArtifacts(
+    const TargetLLVMModuleBundle &targetLLVMModules,
+    llvm::StringRef outputDirectory, const TargetToolchain &toolchain,
+    llvm::raw_ostream &diagnostics) {
+  if (targetLLVMModules.getModules().size() !=
+      static_cast<size_t>(
+          targetLLVMModules.getExecutionConfig().getRankCount()))
+    return fail(diagnostics, "target LLVM bundle rank domain is incomplete");
   if (outputDirectory.empty())
     return fail(diagnostics, "target artifact directory must not be empty");
   if (pathEntryExists(outputDirectory))
@@ -646,40 +1116,13 @@ detail::compileExecutableBundleToTargetArtifactsImpl(
     return fail(diagnostics,
                 "failed to create target work directory: " + error.message());
 
-  const std::vector<RankExecutable> &ranks =
-      executableBundle.getRankExecutables();
-  if (ranks.size() !=
-      static_cast<size_t>(executableBundle.getExecutionConfig().getRankCount()))
-    return fail(diagnostics, "target rank domain is incomplete");
-
   std::vector<VerifiedTargetModule> modules;
-  modules.reserve(ranks.size());
-  for (auto [expectedRank, rank] : llvm::enumerate(ranks)) {
-    if (rank.getLogicalRank() != static_cast<int64_t>(expectedRank))
-      return fail(diagnostics, "target rank domain is not canonical");
-    mlir::FailureOr<PreparedTargetRank> prepared = prepareTargetABI(
-        rank, executableBundle.getExecutionConfig());
-    if (mlir::failed(prepared))
+  modules.reserve(targetLLVMModules.getModules().size());
+  for (auto [expectedRank, targetLLVMModule] :
+       llvm::enumerate(targetLLVMModules.getModules())) {
+    if (targetLLVMModule.getLogicalRank() != static_cast<int64_t>(expectedRank))
       return fail(diagnostics,
-                  "target ABI preparation failed for logical rank " +
-                      std::to_string(expectedRank));
-    if (mlir::failed(lowerToTargetLLVM(*prepared)))
-      return fail(diagnostics, "target lowering failed for logical rank " +
-                                   std::to_string(expectedRank));
-    if (mlir::failed(verifyLoweredKernelABI(*prepared, rank.getEntrySymbol())))
-      return fail(diagnostics,
-                  "target ABI verification failed for logical rank " +
-                      std::to_string(expectedRank));
-    const TargetProfileRecord &targetProfile = getTargetProfileRecord(
-        executableBundle.getExecutionConfig().getTargetProfileId());
-    if (prepared->targetProfile != targetProfile.id ||
-        prepared->targetIdentity != targetProfile.targetIdentity ||
-        prepared->kernelRuntimeABI != targetProfile.kernelRuntimeABI ||
-        prepared->moduleFormat != targetProfile.moduleFormat)
-      return fail(diagnostics,
-                  "prepared target profile readback failed for logical rank " +
-                      std::to_string(expectedRank));
-
+                  "target LLVM bundle rank domain is not canonical");
     std::string stem = (llvm::formatv("rank_{0:D5}", expectedRank)).str();
     llvm::SmallString<256> llvmIRPath(workDirectory);
     llvm::sys::path::append(llvmIRPath, stem + ".ll");
@@ -689,36 +1132,32 @@ detail::compileExecutableBundleToTargetArtifactsImpl(
     llvm::sys::path::append(crtObjectPath, stem + ".wafer_crt.o");
     llvm::SmallString<256> modulePath(modulesDirectory);
     llvm::sys::path::append(modulePath, stem + ".so");
-    if (llvm::Error error = writeLLVMIR(*prepared->module, llvmIRPath))
+    if (llvm::Error error =
+            writeLLVMIR(targetLLVMModule.getModule(), llvmIRPath))
       return fail(diagnostics, "target_module_verification_failed: " +
                                    llvm::toString(std::move(error)));
     if (llvm::Error error = runDeviceLink(toolchain, llvmIRPath, modulePath,
                                           objectPath, crtObjectPath))
       return fail(diagnostics, "target_module_verification_failed: " +
                                    llvm::toString(std::move(error)));
-    llvm::Expected<TargetModuleReadback> moduleReadback = verifyTargetModule(
-        modulePath, rank.getEntrySymbol(), prepared->targetProfile);
+    llvm::Expected<TargetModuleReadback> moduleReadback =
+        verifyTargetModule(modulePath, targetLLVMModule.getEntrySymbol(),
+                           targetLLVMModule.getTargetProfileId());
     if (!moduleReadback)
       return fail(diagnostics, "target_module_verification_failed: " +
                                    llvm::toString(moduleReadback.takeError()));
-    if (moduleReadback->moduleFormat != prepared->moduleFormat)
+    if (moduleReadback->moduleFormat != targetLLVMModule.getModuleFormat())
       return fail(diagnostics,
                   "target module format readback does not match prepared "
                   "target profile for logical rank " +
                       std::to_string(expectedRank));
-    if (failAfterLogicalRank &&
-        static_cast<int64_t>(expectedRank) == *failAfterLogicalRank)
-      return fail(diagnostics,
-                  "test-only injected target failure after logical rank " +
-                      std::to_string(expectedRank));
-
     std::string relativePath = (llvm::Twine("modules/") + stem + ".so").str();
     modules.push_back(TargetArtifactBundleBuilder::makeModule(
-        expectedRank, rank.getEntrySymbol(), relativePath,
-        moduleReadback->contentDigest, prepared->targetProfile,
-        prepared->targetIdentity, prepared->kernelRuntimeABI,
-        moduleReadback->moduleFormat,
-        std::move(prepared->slots)));
+        expectedRank, targetLLVMModule.getEntrySymbol(), relativePath,
+        moduleReadback->contentDigest, targetLLVMModule.getTargetProfileId(),
+        targetLLVMModule.getTargetIdentityId(),
+        targetLLVMModule.getKernelRuntimeABIId(), moduleReadback->moduleFormat,
+        targetLLVMModule.getKernelABISlots()));
   }
 
   if (std::error_code error = llvm::sys::fs::remove_directories(workDirectory))
@@ -729,8 +1168,22 @@ detail::compileExecutableBundleToTargetArtifactsImpl(
                                    "target artifact publication failed");
   cleanup.release();
   return TargetArtifactBundleBuilder::makeBundle(
-      outputDirectory, executableBundle.getExecutionConfig(),
+      outputDirectory, targetLLVMModules.getExecutionConfig(),
       std::move(modules));
+}
+
+llvm::Expected<TargetArtifactBundle>
+detail::compileExecutableBundleToTargetArtifactsImpl(
+    const ExecutableBundle &executableBundle, llvm::StringRef outputDirectory,
+    const TargetToolchain &toolchain, llvm::raw_ostream &diagnostics,
+    std::optional<int64_t> failAfterLogicalRank) {
+  llvm::Expected<TargetLLVMModuleBundle> targetLLVMModules =
+      detail::compileExecutableBundleToTargetLLVMModulesImpl(
+          executableBundle, diagnostics, failAfterLogicalRank);
+  if (!targetLLVMModules)
+    return targetLLVMModules.takeError();
+  return compileTargetLLVMModuleBundleToTargetArtifacts(
+      *targetLLVMModules, outputDirectory, toolchain, diagnostics);
 }
 
 llvm::Expected<TargetArtifactBundle> compileExecutableBundleToTargetArtifacts(
@@ -738,6 +1191,13 @@ llvm::Expected<TargetArtifactBundle> compileExecutableBundleToTargetArtifacts(
     const TargetToolchain &toolchain, llvm::raw_ostream &diagnostics) {
   return detail::compileExecutableBundleToTargetArtifactsImpl(
       executableBundle, outputDirectory, toolchain, diagnostics, std::nullopt);
+}
+
+llvm::Expected<TargetLLVMModuleBundle>
+compileExecutableBundleToTargetLLVMModules(
+    const ExecutableBundle &executableBundle, llvm::raw_ostream &diagnostics) {
+  return detail::compileExecutableBundleToTargetLLVMModulesImpl(
+      executableBundle, diagnostics, std::nullopt);
 }
 
 } // namespace wafer::compiler

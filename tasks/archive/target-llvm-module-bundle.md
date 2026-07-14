@@ -1,6 +1,6 @@
 # Target LLVM Module Bundle 实施计划
 
-本计划对应当前Q22.L，只拆解owner-backed target LLVM module bundle的施工顺序和验证checkpoint。target lowering、
+本历史计划对应已完成的Q22.L，只记录owner-backed target LLVM module bundle的施工顺序和验证checkpoint。target lowering、
 Kernel Runtime ABI与device publication的长期合同由`tasks/14`拥有，证据口径和model consumer分别由`tasks/16`、
 `tasks/17`拥有；动态状态只看`tasks/progress.md`。
 
@@ -46,7 +46,7 @@ Pipeline position:
 
 - 从当前private prepared-rank流程提取bundle producer：先完成所有MLIR ABI preparation/lowering，再将每rank翻译到自己拥有的
   LLVMContext/Module；任一rank失败时只销毁transaction-local candidate。
-- LLVM module readback核对entry symbol、fixed function signature、target triple/data layout、profile/ABI metadata及typed slot顺序；
+- LLVM module readback核对entry symbol、fixed function signature、closed target triple、module identifier、profile/ABI metadata及typed slot顺序；
   metadata不足以稳定readback时先在tasks/14 owner内补唯一typed表示，不用旁路side table掩盖缺口。
 - bundle形成后现有device linker只从bundle输出LLVM IR/object并链接，不重新读取RankExecutable或重跑lowering。
 
@@ -69,3 +69,14 @@ Pipeline position:
 Q22.L完成只表示同一compile transaction内存在可复用、owner-backed的all-rank target LLVM boundary，且现有ELF发布和后续
 authorized host seam共享这一次lowering结果。它不表示Host CRT授权已取得，不表示SystemC/CModel、exact package execution、
 board numeric或timing已经完成。
+
+## 完成证据（2026-07-14）
+
+- `TargetLLVMModule`与`TargetLLVMModuleBundle`无default/copy且可move；每rank独立LLVM context拥有module，producer局部scope
+  退出后module仍有效。module-owned metadata及本体readback schema/rank/entry/profile/target/Kernel Runtime ABI、ordered
+  typed slots、module identifier、closed RISC-V triple和fixed `void(i64...)` entry；缺profile/entry/slot均拒绝。
+- production driver显式执行`ExecutableBundle -> TargetLLVMModuleBundle -> TargetArtifactBundle`；device linker打印bundle内
+  同一module，不重新执行ABI preparation、target lowering或LLVM translation。serialized ELF/manifest/package schema未变化。
+- rank1/rank16 linear、rank16 tiny Llama、rank-15 target atomic failure通过；`check-wafer`执行138/138 unit，249项lit中
+  248 pass、唯一unsupported为启用StableHLO时预期的feature-inverse test，CTest 6/6通过。
+- 本边界没有执行Host CRT、packet、SystemC或numeric kernel；Q22.H仍受external authorization/spec gate阻塞。

@@ -489,3 +489,9 @@
   logical rank顺序从inputs重放到未完成wait；send snapshot和matched recv payload由typed message + structured
   control instance索引，下轮重放时注入新建rank-local arena。这保留现有recursive SCF/CFG/call interpreter，
   同时让每轮no-progress直接变成可重放的deadlock诊断；禁止用op访问次序充当dynamic message identity。
+- target LLVM module必须与拥有它的`LLVMContext`一起作为move-only artifact跨stage传递；device linker和后续host
+  model都直接消费同一份verified module，不能把module隐藏在print/link helper中，也不能为不同消费者重复lowering。
+  owner成员声明顺序应确保module先于context析构；模块级schema metadata应在producer返回前typed readback验证。
+- 自建MLIR context调用`translateModuleToLLVMIR`时，仅把Builtin/LLVM dialect加入registry仍不够；还必须为该registry
+  注册Builtin和LLVM dialect translation interface。production driver与unit-test context都要遵守，否则测试会在
+  LLVM IR translation边界失败，而不是在dialect parse/load阶段暴露。

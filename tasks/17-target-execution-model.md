@@ -1,9 +1,9 @@
 # Wafer Target Execution Model（CModel）
 
-状态：2026-07-14已完成真实Q21 reduce、numeric/SystemC依赖和host-CRT seam的implementation-readiness实证，并按结果
-收紧资源预算与授权前置。本文固定以数值正确性为近期目标的untimed target execution model、SystemC/TLM边界、实现分层和
-板端numeric correlation计划；timing calibration仅作为deferred extension。当前尚无
-production实现，任务状态看
+状态：2026-07-14已完成真实Q21 readiness、Q22.N formal numeric foundation和Q22.L owner-backed target LLVM bundle，
+当前推进Q22.B oneDNN bulk qualification；Host-CRT/SystemC整体执行链仍未实现并受授权gate约束。本文固定以数值正确性为
+近期目标的untimed target execution model、SystemC/TLM边界、实现分层和板端numeric correlation计划；timing calibration
+仅作为deferred extension。任务状态看
 `tasks/progress.md`。本文不复制总体架构、instruction schedule或完整register/
 packet硬件事实表；第3节只给出用于界定模型claim的non-normative摘要。compiler、target、runtime和verification的
 既有合同分别仍由`tasks/01`、`tasks/14`、`tasks/15`和`tasks/16`拥有。
@@ -86,9 +86,9 @@ Pipeline position:
   不复制instruction schedule，不改变manifest语义，不用Q19执行结果驱动target model，不把untimed结果升级为
   board/timing/cycle证据，不用代表rank、手写LLVM、手写packet或单个kernel替代真实纵向链。
 - Completion gate:
-  Q0.L与Q22.N已经完成，当前Q22.L形成owner-backed target LLVM bundle。Q22.N闭合13种logical codec、有证据的target-profile×engine×format encoding、当前7种
+  Q0.L、Q22.N与Q22.L已经完成。Q22.N闭合13种logical codec、有证据的target-profile×engine×format encoding、当前7种
   compute/convert format、36条convert route、4种确定性舍入和逐family formal conformance；Q22.L原子形成all-rank
-  owner-backed target LLVM bundle。Q22.N单独解锁Q22.B oneDNN qualification；Q22.L与external authorization/spec gate
+  owner-backed target LLVM bundle；该边界现已完成。Q22.N单独解锁Q22.B oneDNN qualification；Q22.L与external authorization/spec gate
   共同解锁Q22.H host CRT。Q22.N+Q22.H+既有Q16.T再解锁Q22.S SystemC functional-event model，Q22.B不是Q22.S前置。
   Q22.B+Q22.S+既有Q20/Q21最后由Q22.V重放Q20 f32、source-produced f16/bf16 GEMM、Q21 16-rank tiny Llama和
   deterministic source-backed large GEMM，覆盖all-and-only ranks、authorized host packet、typed ABI、SPM/DDR、
@@ -157,7 +157,7 @@ preparation、full conversion和readback后才能原子构造bundle并交给任�
 `ExecutionConfig`，再贯穿profile-bearing ExecutableBundle、target conversion、transaction-local prepared target LLVM/ABI
 artifact、`TargetArtifactBundle`和PackageManifest readback；它不能由target model、自由字符串manifest或host环境在末端恢复。
 Q22后续创建的`TargetLLVMModuleBundle`只消费并再次readback该已验证identity，
-不是Q0.L提前创建的artifact。该profile/identity缺口和Q22.N numeric gate现已闭合；Q22.L仍须完成bundle gate。
+不是Q0.L提前创建的artifact。该profile/identity、Q22.N numeric和Q22.L bundle gate现已闭合。
 
 ### 3.2 已确认的硬件功能和事务事实
 
@@ -336,7 +336,7 @@ hook直接合成高层command绕过packet证据。
 
 | 对象 | 必须拥有 | 禁止拥有 |
 | --- | --- | --- |
-| `TargetLLVMModuleBundle` | 共享MLIR/LLVM context owner、canonical all-rank domain、每rank logical rank/entry/fully legal module、ordered ABI slots、`ExecutionConfig`（内含唯一`TargetProfileId`）和由该ID经registry解析并readback的target identity/kernel ABI facts | packet list、schedule、model state、默认补出的revision或任何可序列化sidecar |
+| `TargetLLVMModuleBundle` | canonical all-rank domain、每rank独立LLVM context owner、logical rank/entry/fully legal module、ordered ABI slots、`ExecutionConfig`（内含唯一`TargetProfileId`）和由module metadata经closed registry解析并readback的target identity/kernel ABI facts | packet list、schedule、model state、默认补出的revision或任何可序列化sidecar |
 | `ModelProfileId` | 显式选择的一组确定性model-only semantics identity；Q22.C可另发布绑定target/environment的hardware-correlated profile | compiler legality、隐式default、hardware等价声明 |
 | `NumericCommandKey` | static preflight从typed CRT call registry投影、runtime从decoded packet transaction投影的target profile、engine/op kind/variant、operand role/storage dtype、shape/layout、M/K/N/batch、convert kind及fixed optional fields | erased Instr sidecar、任意symbol/string推断、numeric comparator、oneDNN选择、板端阈值 |
 | `NumericSemanticsProfile` | 稳定typed identity/digest；完整operand storage/compute、product、accumulator、intermediate、destination、rounding points、FMA/reduction order、overflow、FTZ/DAZ、NaN/special/status及optional-field顺序 | 单个dtype、host library默认值、按workload临时覆盖的side table |
@@ -374,8 +374,8 @@ tile/instruction IR和Wafer CRT ABI；如果它是target固定隐含行为，则
 要求lhs/rhs/dst同element type；f16/bf16 narrow/wide、TF32 product和i8 accumulator等分别属于不同显式model profile，
 不能在同一次execution内按数据猜测切换。
 
-`TargetLLVMModuleBundle`在所有rank完成ABI preparation、full conversion和verification后原子形成。host执行把每rank module
-翻译到独立LLVM context和独立ORC `JITDylib`，避免同名entry/private helper碰撞；JIT clone设置native triple/data layout，
+`TargetLLVMModuleBundle`在所有rank完成ABI preparation、full conversion、LLVM translation和module readback后原子形成；每rank
+module已经由独立LLVM context拥有。host执行后续把每rankmodule克隆/retarget到独立ORC `JITDylib`，避免同名entry/private helper碰撞；JIT clone设置native triple/data layout，
 并用显式symbol map注册repo CRT host symbols，不能依赖当前process偶然导出的符号。host retarget前拒绝target-specific
 intrinsic、inline asm、未知address space或其它不能安全host materialize的LLVM结构；用于RISC-V link的module保持不变。
 由于entry是动态slot数量的`void(i64...)` fixed ABI，JIT层生成统一签名的host-only thunk，例如
@@ -1102,7 +1102,7 @@ readiness replay还发现`wafer-convert-group-to-tile-region`会创建`async.tok
 - Q21 resource census通过并已由Q0.L按tasks/10/11 ordered reduce设计完成fresh source replay；readiness不再是前向blocker。
 - Q22.N已经建立默认关闭的受管source/bootstrap、唯一CMake target、23项build/self-test/identity gate与license artifact
   closure；Q22.B仍需独立受管oneDNN、qualification record和发布政策，不能把readiness probe当bulk admission。
-- Q22.L下一步独立形成owner-backed target LLVM bundle；Q22.H再受Q22.L及external vendor授权/host-seam事实源阻塞；
+- Q22.L已经独立形成owner-backed target LLVM bundle；Q22.H仍受external vendor授权/host-seam事实源阻塞；
   Q22.S/Q22.V继续依赖Q22.H。
 - vendor CModel套件、真实board和hardware numeric/packet/timing仍是external evidence；它们不否定model-only方案，也不能由
   文档、有限corpus或SystemC选择推断。
@@ -1118,8 +1118,8 @@ readiness replay还发现`wafer-convert-group-to-tile-region`会创建`async.tok
   是否存在低层x86 instruction/operator library，并让项目owner/法务确认采购条款是否允许host集成、修改和派生实现；
   未确认时Q22.H保持blocked，但不阻塞不消费vendor派生事实的Q22.N/Q22.L/Q22.B；
 - 固定首批target call、dtype/layout、engine、packet、Direct DTE和completion capability matrix；
-- Q22.L单独把tasks/14 private prepared target LLVM提升为owner-backed all-rank内部artifact；该本地artifact不以vendor
-  授权为前置，也不提前执行host CRT/packet；
+- Q22.L已把tasks/14 private prepared target LLVM提升为owner-backed all-rank内部artifact，并让现有device link直接消费；
+  该本地artifact不以vendor授权为前置，也不提前执行host CRT/packet；
 - 增加默认关闭的稳定target-model build feature；以readiness通过的Accellera SystemC 3.0.2作为candidate，在统一版本文件
   固定完整commit/digest、获取方式、Apache-2.0 notice、`SystemCLanguage` package和唯一`SystemC::systemc` target。基础
   compiler与plain C++ kernels仍可独立构建；feature启用时缺SystemC必须configuration fail，未启用时正式profile明确
@@ -1268,12 +1268,20 @@ large shape命中admitted backend，reference implementation不冒充performance
 
 - 把tasks/14 transaction-local prepared target LLVM/ABI artifact提升为owner-backed、move-only、不可序列化的all-rank
   `TargetLLVMModuleBundle`；不重新运行另一套lowering，也不从Q17 ELF或manifest反推module语义；
-- 逐rank readback logical rank、entry、fully legal module、profile/target identity/Kernel Runtime ABI和ordered typed slots；全部rank通过后
-  才原子形成bundle，late failure不保留partial owner；
-- bundle只作为Q22.H和direct ABI smoke的内部输入，不调用host CRT、不构造packet、不链接SystemC，也不进入Q17/Q18 artifact。
+- 每rank独立`LLVMContext`拥有module；module-owned typed metadata记录schema、logical rank、entry、profile/target identity、
+  Kernel Runtime ABI和ordered typed slots，并连同module identifier、closed RISC-V triple和fixed `void(i64...)` entry从
+  LLVM module本体readback。全部rank通过后才原子形成bundle，late failure不保留partial owner；
+- 现有Q17 device link直接消费bundle中的同一module形成`TargetArtifactBundle`，不重复ABI preparation/lowering/translation。
+  bundle同时保留给Q22.H和direct ABI smoke，不调用host CRT、不构造packet、不链接SystemC，也不进入serialized package。
 
 完成：真实rank-count=1/16 producer形成all-and-only owner-backed target LLVM modules，identity/ABI/module readback和late-rank
 atomic negative通过。该row不需要vendor授权，也不证明Host CRT或model execution。
+
+新鲜完成证据：1-rank direct producer验证context lifetime、move-only ownership及module/slot readback，missing profile/entry/slot
+metadata均被拒绝；rank-15 target failure无bundle/ELF/package。正式driver已拆成
+`ExecutableBundle -> TargetLLVMModuleBundle -> TargetArtifactBundle`，rank1/rank16 linear和16-rank tiny Llama的ELF、manifest、
+reference及no-card纵向重放通过；全量138/138 unit、249项lit中248 pass/1个预期feature-inverse unsupported、CTest 6/6。
+Q22.H仍因external authorization/spec gate未满足而保持blocked。
 
 ### 10.5 Q22.H Authorized Host CRT
 

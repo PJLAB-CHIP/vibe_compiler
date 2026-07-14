@@ -37,7 +37,7 @@ Pipeline position:
   staging/publication；Q18闭合typed manifest/package/no-card runtime；Q19闭合immutable single-rank reference core；
   Q16.T闭合Direct DTE transport activation；Q19.M闭合deterministic multi-rank reference；Q20/Q21依次闭合
   rank-count=1/16 linear/MLP和16-rank tiny Llama纵向链。后续gate不能反向成为Q0前置，board未执行时保持明确
-  external gate。Q0.L已完成，Q22.N与Q22.L可并行；Q22.N单独解锁Q22.B，Q22.L与external authorization/spec gate共同
+  external gate。Q0.L、Q22.N和Q22.L已完成；Q22.N单独解锁Q22.B，Q22.L与external authorization/spec gate共同
   解锁Q22.H，Q22.N+Q22.H+既有Q16.T再解锁Q22.S，Q22.B+Q22.S+既有Q20/Q21最终由Q22.V闭合完整输出。
   direct shim只作ABI smoke，Q22只汇总Q22.V完成状态。
   Q22.C消费Q22和Q6.B结果闭合板端numeric correlation；
@@ -799,6 +799,13 @@ Pipeline position:
 
 direct `wafer_tx81_*` shim可在Q22.L后检查symbol、signature、control flow、typed slots和基本address formation，但只标
 `direct ABI smoke`，不计入Q22.H或Q22.S完成。
+
+Q22.L新鲜完成证据：public owner类型无default/copy且可move，每个rank的LLVM module在独立context内存活；module-owned
+schema/rank/entry/profile/target/ABI/slot metadata、closed RISC-V triple、module identifier及fixed `void(i64...)` signature
+均从LLVM module本体readback。missing profile/entry/slot metadata negative被拒绝。1-rank direct producer和rank-15
+target failure通过；正式`wafer-compile`已拆成`ExecutableBundle -> TargetLLVMModuleBundle -> TargetArtifactBundle`，
+rank1/rank16 linear、16-rank tiny Llama及package/no-card重放通过。全量`check-wafer`执行138/138 unit，249项lit中
+248 pass、唯一unsupported为启用StableHLO时预期的feature-inverse test；CTest 6/6。该证据不执行Host CRT、packet或SystemC。
 
 ### 11.4 Q22.H Authorized Host-CRT Gate
 

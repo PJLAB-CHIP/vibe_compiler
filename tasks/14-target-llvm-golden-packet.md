@@ -1,6 +1,6 @@
 # Wafer Target Conversion、CRT 和 Module Publication
 
-状态：2026-07-14按Q17完成证据、Q16.T激活和untimed SystemC数值模型的后续consumer边界更新。本文拥有
+状态：2026-07-14按Q17完成证据、Q16.T激活、Q22.L owner-backed target LLVM bundle和untimed SystemC数值模型的后续consumer边界更新。本文拥有
 instruction-to-target conversion、Wafer CRT ABI、device link和近期staged target module合同。实现状态看
 `tasks/progress.md`。
 
@@ -42,19 +42,21 @@ Pipeline position:
   Q0负责既有geometry/control-flow legality；Q0.L从`ExecutionConfig`取得tasks/14 registry拥有的`TargetProfileId`，按共享
   `LogicalFormatDescriptor`和target-profile×engine×format `TargetFormatEncodingRecord` preflight每个command，并拒绝任何
   残留init/indexing-map或无证据encoding row。在原控制流位置lower instruction leaf到typed LLVM CRT calls，并以module
-  clone + full conversion保证失败无source mutation。Q17负责把每个已验证rank-local LLVM module编译/
-  link到Q17 transaction staging，并验证symbol、entry、format、digest及all-and-only rank coverage后发布
-  target artifact bundle。
+  clone + full conversion保证失败无source mutation。Q22.L在所有rank完成ABI preparation/full conversion后各翻译一次，
+  由每rank独立`LLVMContext`拥有fully legal `llvm::Module`，通过module-owned typed metadata readback logical rank、entry、
+  target profile/identity、Kernel Runtime ABI和ordered slots后原子形成`TargetLLVMModuleBundle`。Q17 device linker直接消费
+  该bundle，不再读取`ExecutableBundle`或重复lowering；随后验证symbol、entry、format、digest及all-and-only rank coverage
+  并发布target artifact bundle。
 - Output artifact / IR:
-  Q0.L为每个entry/rank形成transaction-local prepared target LLVM/ABI artifact：fully legal LLVM module、ordered typed
-  ABI slots、exact `ExecutionConfig`/`TargetProfileId`及由registry解析的target/runtime-ABI identity；它是Q17 link和Q22未来
-  all-rank owner bundle的共同上游，不是私有类名、packet或package成员。Q17输出每rank一个verified staged target module：
+  Q22.L输出move-only、不可序列化的`TargetLLVMModuleBundle`：exact `ExecutionConfig`及all-and-only rank entry，每个entry
+  拥有独立LLVM context/module、ordered typed ABI slots、module identifier/closed RISC-V triple、`TargetProfileId`及由registry
+  解析并从module metadata readback的target/runtime-ABI identity。它不是packet、磁盘sidecar或package成员。Q17输出每rank一个verified staged target module：
   rank、entry symbol、relative delivery path、content digest和必要ABI摘要；all-rank typed records与逐字段相同的
   `ExecutionConfig`组成atomic `TargetArtifactBundle`。
 - Downstream consumer:
-  Q18 typed PackageManifest/package transaction按同一registry映射并readback exact target/runtime-ABI identity；Q22从同一
-  prepared target LLVM/ABI artifacts形成owner-backed all-rank target LLVM bundle。runtime module loader只通过Q18 verified
-  package消费modules。
+  现有Q17 RISC-V device link和未来获授权的Q22.H host seam直接消费同一`TargetLLVMModuleBundle`；Q18 typed
+  PackageManifest/package transaction按同一registry映射并readback exact target/runtime-ABI identity。runtime module loader
+  仍只通过Q18 verified package消费modules。
 - User-level driver / named pipeline:
   production由显式`--target-profile=<registered-id>`的同一wafer-compile在Q16完成all-rank bundle后自动进入Q17；
   `wafer-lower-groups-to-target-llvm`只作显式rank-0的debug replay，要求pipeline option
@@ -76,6 +78,9 @@ Pipeline position:
   Q17：真实program的all-and-only rank modules在同一transaction验证后形成并发布target artifact bundle；
   late failure无final output，device link required/allowed symbol gate通过。Q17不要求manifest或runtime，Q0也不以
   all-rank publication或reference numeric为完成前置。
+  Q22.L：真实rank-count=1/16均先原子形成owner-backed bundle，typed identity、entry fixed ABI、module metadata和ordered
+  slots readback通过；module在producer局部scope退出后仍有效，copy/default construction被类型系统禁止。rank-15 injected
+  failure无bundle、ELF或package；现有Q17/Q18 producer直接消费该bundle并保持source vertical通过。
 ```
 
 selector提交时已经完成tile-region/instruction materialization以及SPM/DDR planning；target入口只在其后补齐
@@ -313,16 +318,16 @@ diagnostic按稳定语义分类：
 
 手写LLVM、symbol-only fixture和dry-run只补覆盖，不能替代真实compiler-generated module。
 
-## 10. Planned And Deferred Extensions
+## 10. Current And Deferred Extensions
 
-- target execution model：tasks/17已确定近期模型应消费tasks/14同一ABI preparation和full conversion结果。
-  实现时把上述transaction-local per-rank prepared target LLVM/ABI artifacts提升为owner-backed、move-only、不可序列化的all-rank target LLVM
-  bundle，使现有RISC-V device link、direct ABI smoke和Host-CRT/SystemC model成为三个直接consumer。正式model consumer
+- target execution model：Q22.L已经把tasks/14同一ABI preparation和full conversion结果提升为owner-backed、move-only、
+  不可序列化的all-rank `TargetLLVMModuleBundle`。现有RISC-V device link直接打印该bundle中的同一LLVM module；direct ABI
+  smoke与未来Host-CRT/SystemC model是后续直接consumer，不允许重跑lowering。正式model consumer
   只有在tasks/17 external authorization/spec gate通过后才host执行同一target LLVM，调用与device build同源且获准host使用的
   repo CRT wrapper，再经许可兼容Tsm operator/packet seam进入SystemC；direct shim只补ABI诊断。该bundle携带fully legal LLVM modules、canonical rank domain、每rank logical
   rank/entry、`ExecutionConfig`、ordered typed ABI slots、target profile/identity、target/kernel ABI facts及context/owner
-  lifetime；全部rank成功后才原子形成，不是packet artifact或package成员。在该producer落地前，当前Q17
-  `TargetArtifactBundle`合同和完成状态不变。Host-CRT/SystemC通过只能证明其明确provenance下repo CRT/host-packet的untimed
+  lifetime；全部rank成功后才原子形成，不是packet artifact或package成员。Q17
+  `TargetArtifactBundle`的serialized合同不变，只把内部上游改为直接消费该bundle。Host-CRT/SystemC通过只能证明其明确provenance下repo CRT/host-packet的untimed
   functional-numeric链，仍不执行RISC-V archive；在独立packet/MMIO事实源相关前不证明vendor-exact packet，Q22.C板端
   numeric correlation也不替代该packet provenance；
 - Q0.L已建立且Q22继续消费的typed format/encoding registry由tasks/14单一拥有，tasks/11 verifier、target lowering、CRT conformance和
@@ -336,7 +341,7 @@ diagnostic按稳定语义分类：
   tasks/14 registry拥有typed `TargetProfileId`及registered CLI spelling；首个opaque canonical key为
   `wafer-tx81-single-card-kernel-v1`，它不表示尚无证据的silicon revision或Q22 numeric profile。`wafer-compile`必须显式选择并写入
   `CompilationRequest`/`ExecutionConfig`，Q0.L把它贯穿accepted bundle、target conversion和transaction-local prepared
-  target LLVM/ABI artifact readback。Q22后续target LLVM bundle只消费并再次readback，不得从自由字符串或默认值恢复。该扩展是Q22 numeric/model
+  target LLVM/ABI artifact readback。Q22.L target LLVM bundle现已消费并再次readback，不得从自由字符串或默认值恢复。该扩展是Q22 numeric/model
   consumer的已闭合前置；Q0.L已重放正式pipeline和atomic gate，不改变Q17既有窄publication边界；
 - Direct DTE target activation已由Q16.T闭合：只消费tasks/13定义的typed accepted binding，CRT wrapper、opaque event、
   status ABI、required/allowed symbol、真实16-rank ELF和late-failure atomic gate已通过；board execution仍属Q6.B；

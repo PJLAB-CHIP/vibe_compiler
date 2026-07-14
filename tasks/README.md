@@ -51,9 +51,9 @@
 
 ## 实施计划导航
 
-当前active计划是Q22.L `tasks/plans/target-llvm-module-bundle.md`；已完成的Q22.N/Q0.L计划分别归档为
-`tasks/archive/target-numeric-foundation.md`和`tasks/archive/target-command-legality-closure.md`，Q22.R readiness归档为
-`tasks/archive/target-model-readiness.md`。Next是已经由Q22.N解锁、按当前执行顺序在Q22.L后施工的Q22.B bulk；Q22.L完成且
+当前active计划是Q22.B `tasks/plans/target-bulk-qualification.md`；已完成的Q22.L/Q22.N/Q0.L计划分别归档为
+`tasks/archive/target-llvm-module-bundle.md`、`tasks/archive/target-numeric-foundation.md`和
+`tasks/archive/target-command-legality-closure.md`，Q22.R readiness归档为`tasks/archive/target-model-readiness.md`。Q22.L完成且
 external authorization/spec gate满足后，Q22.H host seam才解锁。Q22.N+Q22.H在Q22.S
 SystemC event model汇合，Q22.B+Q22.S再由Q22.V source vertical闭合并汇总到Q22；各代码任务
 开工前都需独立计划。动态执行状态只看`tasks/progress.md`。
@@ -66,6 +66,7 @@ docs、`tasks/progress.md` 和本轮已收敛设计结论为准。
 
 | 文档 | 原性质 |
 | --- | --- |
+| `tasks/archive/target-llvm-module-bundle.md` | 已完成Q22.L的owner-backed all-rank LLVM module、typed readback和single-lowering device-link接入记录 |
 | `tasks/archive/target-numeric-foundation.md` | 已完成Q22.N的typed numeric schema、受管formal依赖、13-format codec和formal kernel实施记录 |
 | `tasks/archive/target-model-readiness.md` | Q21 reduce、numeric/SystemC依赖与host-CRT seam implementation-readiness实证 |
 | `tasks/archive/01-design-docs-gap-review.md` | 历史设计缺口审计 |

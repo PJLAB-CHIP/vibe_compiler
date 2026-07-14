@@ -13,6 +13,7 @@
 #include "mlir/Dialect/Bufferization/Transforms/FuncBufferizableOpInterfaceImpl.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Transforms/BufferizableOpInterfaceImpl.h"
 #include "mlir/Dialect/Math/IR/Math.h"
@@ -24,7 +25,11 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Parser/Parser.h"
+#include "mlir/Target/LLVMIR/Dialect/Builtin/BuiltinToLLVMIRTranslation.h"
+#include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 
+#include "llvm/IR/Metadata.h"
+#include "llvm/IR/Module.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 #include "gtest/gtest.h"
@@ -209,10 +214,12 @@ TEST(ReferenceExecutorTest,
   registry.insert<mlir::arith::ArithDialect,
                   mlir::bufferization::BufferizationDialect,
                   mlir::cf::ControlFlowDialect, mlir::func::FuncDialect,
-                  mlir::linalg::LinalgDialect, mlir::math::MathDialect,
-                  mlir::memref::MemRefDialect, mlir::scf::SCFDialect,
-                  mlir::tensor::TensorDialect>();
+                  mlir::LLVM::LLVMDialect, mlir::linalg::LinalgDialect,
+                  mlir::math::MathDialect, mlir::memref::MemRefDialect,
+                  mlir::scf::SCFDialect, mlir::tensor::TensorDialect>();
   wafer::registerAllDialects(registry);
+  mlir::registerBuiltinDialectTranslation(registry);
+  mlir::registerLLVMDialectTranslation(registry);
   mlir::arith::registerBufferizableOpInterfaceExternalModels(registry);
   mlir::bufferization::func_ext::registerBufferizableOpInterfaceExternalModels(
       registry);
@@ -281,6 +288,77 @@ module {
   ASSERT_EQ(bundle->getRankExecutables().size(), 1u);
   EXPECT_TRUE(mlir::succeeded(wafer::compiler::detail::lowerTargetABIForTesting(
       bundle->getRankExecutables().front(), bundle->getExecutionConfig())));
+
+  auto targetLLVM = wafer::compiler::compileExecutableBundleToTargetLLVMModules(
+      *bundle, diagnostics);
+  if (!targetLLVM)
+    FAIL() << diagnosticsText << llvm::toString(targetLLVM.takeError());
+  ASSERT_EQ(targetLLVM->getExecutionConfig(), bundle->getExecutionConfig());
+  ASSERT_EQ(targetLLVM->getModules().size(), 1u);
+  const wafer::compiler::TargetLLVMModule &targetModule =
+      targetLLVM->getModules().front();
+  const wafer::TargetProfileRecord &targetProfile =
+      wafer::getTargetProfileRecord(
+          bundle->getExecutionConfig().getTargetProfileId());
+  EXPECT_EQ(targetModule.getLogicalRank(), 0);
+  EXPECT_EQ(targetModule.getEntrySymbol(), "main");
+  EXPECT_EQ(targetModule.getTargetProfileId(), targetProfile.id);
+  EXPECT_EQ(targetModule.getTargetIdentityId(), targetProfile.targetIdentity);
+  EXPECT_EQ(targetModule.getKernelRuntimeABIId(),
+            targetProfile.kernelRuntimeABI);
+  EXPECT_EQ(targetModule.getModuleFormat(), targetProfile.moduleFormat);
+  EXPECT_EQ(targetModule.getModuleIdentifier(), "wafer.target.rank.00000");
+  EXPECT_EQ(targetModule.getTargetTriple(), "riscv64-unknown-unknown-elf");
+  ASSERT_NE(targetModule.getModule().getFunction("main"), nullptr);
+  EXPECT_EQ(targetModule.getModule().getFunction("main")->arg_size(),
+            targetModule.getKernelABISlots().size());
+  if (llvm::Error error =
+          wafer::compiler::detail::verifyTargetLLVMModuleForTesting(
+              targetModule))
+    FAIL() << llvm::toString(std::move(error));
+
+  // The public artifact is immutable. These deliberate internal mutations
+  // prove that downstream readback rejects missing identity and ABI rows
+  // rather than trusting the parallel typed fields alone.
+  llvm::Module &mutableModule =
+      const_cast<llvm::Module &>(targetModule.getModule());
+  auto eraseMetadata = [&](llvm::StringRef name) {
+    llvm::NamedMDNode *metadata = mutableModule.getNamedMetadata(name);
+    ASSERT_NE(metadata, nullptr);
+    mutableModule.eraseNamedMetadata(metadata);
+  };
+  auto restoreStringMetadata = [&](llvm::StringRef name,
+                                   llvm::StringRef value) {
+    llvm::LLVMContext &llvmContext = mutableModule.getContext();
+    mutableModule.getOrInsertNamedMetadata(name)->addOperand(llvm::MDNode::get(
+        llvmContext, llvm::MDString::get(llvmContext, value)));
+  };
+
+  eraseMetadata("wafer.target.profile");
+  llvm::Error missingProfile =
+      wafer::compiler::detail::verifyTargetLLVMModuleForTesting(targetModule);
+  ASSERT_TRUE(static_cast<bool>(missingProfile));
+  EXPECT_NE(
+      llvm::toString(std::move(missingProfile)).find("wafer.target.profile"),
+      std::string::npos);
+  restoreStringMetadata("wafer.target.profile",
+                        wafer::stringifyTargetProfileId(targetProfile.id));
+
+  eraseMetadata("wafer.target.entry");
+  llvm::Error missingEntry =
+      wafer::compiler::detail::verifyTargetLLVMModuleForTesting(targetModule);
+  ASSERT_TRUE(static_cast<bool>(missingEntry));
+  EXPECT_NE(llvm::toString(std::move(missingEntry)).find("wafer.target.entry"),
+            std::string::npos);
+  restoreStringMetadata("wafer.target.entry", "main");
+
+  eraseMetadata("wafer.target.abi_slots");
+  llvm::Error missingSlots =
+      wafer::compiler::detail::verifyTargetLLVMModuleForTesting(targetModule);
+  ASSERT_TRUE(static_cast<bool>(missingSlots));
+  EXPECT_NE(
+      llvm::toString(std::move(missingSlots)).find("Kernel ABI slot metadata"),
+      std::string::npos);
 
   auto lhs = wafer::compiler::ReferenceTensor::create(
       "f32", {8}, bytesOf({1, 2, 3, 4, 5, 6, 7, 8}));
@@ -1082,8 +1160,7 @@ module {
   program.logicalRankCount = 1;
   program.programUserInputCount = 1;
   program.distributedInputs = {shapedBoundary(0, {7, 4})};
-  program.distributedOutputs = {shapedBoundary(0, {7}),
-                                shapedBoundary(1, {7}),
+  program.distributedOutputs = {shapedBoundary(0, {7}), shapedBoundary(1, {7}),
                                 shapedBoundary(2, {7})};
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
       1, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
@@ -1131,13 +1208,10 @@ module {
   const float nan = std::numeric_limits<float>::quiet_NaN();
   auto input = wafer::compiler::ReferenceTensor::create(
       "f32", {7, 4},
-      bytesOf({1.0e20f, 3.0f, -1.0e20f, 4.0f,
-               1.0f, 2.0f, 3.0f, 4.0f,
-               1.0f, nan, 2.0f, 3.0f,
-               -0.0f, 0.0f, -0.0f, 0.0f,
-               -1.0f, -2.0f, -3.0f, -4.0f,
-               -0.0f, -0.0f, -0.0f, -0.0f,
-               0.0f, 0.0f, 0.0f, 0.0f}));
+      bytesOf({1.0e20f, 3.0f,  -1.0e20f, 4.0f,  1.0f,  2.0f,  3.0f,
+               4.0f,    1.0f,  nan,      2.0f,  3.0f,  -0.0f, 0.0f,
+               -0.0f,   0.0f,  -1.0f,    -2.0f, -3.0f, -4.0f, -0.0f,
+               -0.0f,   -0.0f, -0.0f,    0.0f,  0.0f,  0.0f,  0.0f}));
   ASSERT_TRUE(static_cast<bool>(input));
   std::vector<wafer::compiler::ReferenceInputBinding> inputs;
   inputs.push_back(
@@ -1147,8 +1221,7 @@ module {
   if (!result)
     FAIL() << llvm::toString(result.takeError());
   ASSERT_EQ(result->getOutputs().size(), 3u);
-  std::vector<float> sum =
-      floatsOf(result->getOutputs()[0].tensor.getBytes());
+  std::vector<float> sum = floatsOf(result->getOutputs()[0].tensor.getBytes());
   ASSERT_EQ(sum.size(), 7u);
   EXPECT_EQ(sum[0], 4.0f);
   EXPECT_EQ(sum[1], 10.5f);

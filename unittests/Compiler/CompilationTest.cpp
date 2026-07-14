@@ -17,10 +17,8 @@ namespace {
 
 TEST(CompilationTest, ExecutionConfigAcceptsOnlyCurrentSingleCardDomains) {
   for (int64_t accepted : {int64_t{1}, int64_t{16}}) {
-    auto config =
-        wafer::compiler::ExecutionConfig::createForSingleCard(
-            accepted,
-            wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+    auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
+        accepted, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
     ASSERT_TRUE(static_cast<bool>(config));
     EXPECT_EQ(config->getRankCount(), accepted);
   }
@@ -28,10 +26,8 @@ TEST(CompilationTest, ExecutionConfigAcceptsOnlyCurrentSingleCardDomains) {
   for (int64_t rejected : {std::numeric_limits<int64_t>::min(), int64_t{-1},
                            int64_t{0}, int64_t{2}, int64_t{8}, int64_t{15},
                            int64_t{17}, std::numeric_limits<int64_t>::max()}) {
-    auto config =
-        wafer::compiler::ExecutionConfig::createForSingleCard(
-            rejected,
-            wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+    auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
+        rejected, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
     ASSERT_FALSE(static_cast<bool>(config));
     EXPECT_FALSE(llvm::toString(config.takeError()).empty());
   }
@@ -42,8 +38,7 @@ TEST(CompilationTest, ExecutionConfigEqualityCoversRankAndTargetProfile) {
       wafer::TargetProfileId::waferTx81SingleCardKernelV1();
   auto first =
       wafer::compiler::ExecutionConfig::createForSingleCard(1, profile);
-  auto same =
-      wafer::compiler::ExecutionConfig::createForSingleCard(1, profile);
+  auto same = wafer::compiler::ExecutionConfig::createForSingleCard(1, profile);
   auto differentRank =
       wafer::compiler::ExecutionConfig::createForSingleCard(16, profile);
   ASSERT_TRUE(static_cast<bool>(first));
@@ -72,6 +67,18 @@ TEST(CompilationTest, CompilationRequestOwnsSourceAndHasNoImplicitDefaults) {
       !std::is_copy_constructible_v<wafer::compiler::ExecutableBundle>);
   static_assert(
       std::is_move_constructible_v<wafer::compiler::ExecutableBundle>);
+  static_assert(
+      !std::is_default_constructible_v<wafer::compiler::TargetLLVMModule>);
+  static_assert(
+      !std::is_copy_constructible_v<wafer::compiler::TargetLLVMModule>);
+  static_assert(
+      std::is_move_constructible_v<wafer::compiler::TargetLLVMModule>);
+  static_assert(!std::is_default_constructible_v<
+                wafer::compiler::TargetLLVMModuleBundle>);
+  static_assert(
+      !std::is_copy_constructible_v<wafer::compiler::TargetLLVMModuleBundle>);
+  static_assert(
+      std::is_move_constructible_v<wafer::compiler::TargetLLVMModuleBundle>);
   static_assert(
       !std::is_default_constructible_v<wafer::compiler::TargetArtifactBundle>);
   static_assert(

@@ -19,9 +19,20 @@ lowerTargetABIForTesting(const RankExecutable &rankExecutable,
 
 /// Verifies a genuinely linked module with the production ELF readback path
 /// and exposes the immutable typed facts that production stores per rank.
-llvm::Expected<VerifiedTargetModule> verifyLinkedTargetModuleForTesting(
-    llvm::StringRef path, llvm::StringRef entrySymbol,
-    TargetProfileId targetProfile);
+llvm::Expected<VerifiedTargetModule>
+verifyLinkedTargetModuleForTesting(llvm::StringRef path,
+                                   llvm::StringRef entrySymbol,
+                                   TargetProfileId targetProfile);
+
+/// Re-runs the production target LLVM module readback against the immutable
+/// typed facts stored by the owner-backed entry.
+llvm::Error
+verifyTargetLLVMModuleForTesting(const TargetLLVMModule &targetModule);
+
+llvm::Expected<TargetLLVMModuleBundle>
+compileExecutableBundleToTargetLLVMModulesImpl(
+    const ExecutableBundle &executableBundle, llvm::raw_ostream &diagnostics,
+    std::optional<int64_t> failAfterLogicalRank);
 
 llvm::Expected<TargetArtifactBundle>
 compileExecutableBundleToTargetArtifactsImpl(

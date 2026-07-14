@@ -1148,10 +1148,17 @@ static mlir::LogicalResult compileProgramImpl(
 
   llvm::SmallString<256> stagedTargetArtifacts(transactionRoot);
   llvm::sys::path::append(stagedTargetArtifacts, "target-artifacts");
+  llvm::Expected<TargetLLVMModuleBundle> targetLLVMModules =
+      detail::compileExecutableBundleToTargetLLVMModulesImpl(
+          *executableBundle, diagnostics, failAfterTargetLogicalRank);
+  if (!targetLLVMModules) {
+    llvm::consumeError(targetLLVMModules.takeError());
+    return mlir::failure();
+  }
   llvm::Expected<TargetArtifactBundle> targetArtifacts =
-      detail::compileExecutableBundleToTargetArtifactsImpl(
-          *executableBundle, stagedTargetArtifacts, targetToolchain,
-          diagnostics, failAfterTargetLogicalRank);
+      compileTargetLLVMModuleBundleToTargetArtifacts(
+          *targetLLVMModules, stagedTargetArtifacts, targetToolchain,
+          diagnostics);
   if (!targetArtifacts) {
     llvm::consumeError(targetArtifacts.takeError());
     return mlir::failure();
