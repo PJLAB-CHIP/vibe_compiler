@@ -86,10 +86,10 @@ Pipeline position:
   不复制instruction schedule，不改变manifest语义，不用Q19执行结果驱动target model，不把untimed结果升级为
   board/timing/cycle证据，不用代表rank、手写LLVM、手写packet或单个kernel替代真实纵向链。
 - Completion gate:
-  Q0.L、Q22.N、Q22.L与Q22.B已经完成。Q22.N闭合13种logical codec、有证据的target-profile×engine×format encoding、当前7种
+  Q0.L、Q22.N、Q22.L、Q22.B、Q22.H与Q22.S已经完成。Q22.N闭合13种logical codec、有证据的target-profile×engine×format encoding、当前7种
   compute/convert format、36条convert route、4种确定性舍入和逐family formal conformance；Q22.L原子形成all-rank
   owner-backed target LLVM bundle；Q22.B闭合首批F16/BF16/F32 exact-payload `profile-bounded` oneDNN admission。Q22.L
-  直接解锁Q22.H repo-owned target-call frontend。Q22.N+Q22.H+既有Q16.T再解锁Q22.S SystemC functional-event model，Q22.B不是Q22.S前置。
+  直接解锁Q22.H repo-owned target-call frontend；Q22.N+Q22.H+既有Q16.T已由Q22.S闭合SystemC functional-event model，Q22.B不是Q22.S前置。
   Q22.B+Q22.S+既有Q20/Q21最后由Q22.V重放Q20 f32、source-produced f16/bf16 GEMM、Q21 16-rank tiny Llama和
   deterministic source-backed large GEMM，覆盖all-and-only ranks、typed target call/ABI、SPM/DDR、
   supported engine和Direct DTE，并与独立Q19/CPU oracle比较完整输出；任一late failure无partial result，model mismatch
@@ -1078,14 +1078,15 @@ MPFR/GMP分别涉及LGPL及GMP双许可，具体静态/动态分发、source off
 readiness candidate source identity为SoftFloat 3e zip SHA-256 `21130ce8...c746`、TestFloat 3e
 `6d4bdf00...ad6`、GMP 6.3.0 `a3c2b802...8898`、MPFR 4.2.2 `b67ba038...ce01`，以及表内两个Git commit；
 Q22.N现已在统一版本文件记录并由bootstrap校验完整digest，表中截断值仍只作可读审计摘要；oneDNN已经由Q22.B正式
-受管引入，SystemC依赖边界由Q22.S checkpoint 1正式闭合。该依赖完成不等于Q22.S event/memory model完成。
+受管引入，SystemC依赖及functional-event component已由Q22.S完整闭合。bootstrap smoke只证明依赖可用，不能替代后续
+16-rank numeric/Direct-DTE component evidence。
 
 #### 10.0.3 Host CRT、vendor seam和replay边界
 
 host CRT的可编译/不可链接边界及external授权gate见3.1/3.4。结论是wrapper层可复用候选已经被编译事实支持，但当前没有
 host operator、Direct-DTE/SPM provider或可加载vendor CModel closure；不能靠RISC-V archive、include-only target或
-repo-owned transaction冒充CRT/packet evidence。vendor交付和授权属于external，但不阻塞重新收敛后的Q22.H typed
-target-call frontend；Q22.S仍等待Q22.H实际transaction，Q22.K才等待合法vendor seam。
+repo-owned transaction冒充CRT/packet evidence。vendor交付和授权属于external，但不阻塞已经闭合的Q22.H typed
+target-call frontend和Q22.S functional-event model；Q22.K才等待合法vendor seam。
 
 readiness replay还发现`wafer-convert-group-to-tile-region`会创建`async.token`却没有声明Async dependent dialect，导致只跑
 `wafer-lower-groups-to-tile-region`的Q21 artifact abort。本轮已补dependent dialect和all-to-all named-pipeline回归；修复后
@@ -1117,8 +1118,9 @@ readiness replay还发现`wafer-convert-group-to-tile-region`会创建`async.tok
 - 默认关闭的`WAFER_ENABLE_SYSTEMC_MODEL`已经固定Accellera SystemC 3.0.2完整commit/archive digest、获取方式、
   Apache-2.0 license/notice、source/install tree、静态library/header、`SystemCLanguage` package、唯一
   `SystemC::systemc` target和五项build/consumer/delta-event gate。CMake只消费validator产生的canonical snapshot，不联网、
-  不搜索宿主package；基础compiler与plain C++ kernels仍可独立构建。该边界只完成Q22.S受管依赖checkpoint，event/memory
-  model和正式component gate仍未完成，不能由bootstrap smoke或direct shim代替；
+  不搜索宿主package；基础compiler与plain C++ kernels仍可独立构建。Q22.S在该依赖上继续闭合RTTI隔离bridge、private
+  rank/tile memory、typed effects、SystemC process/event、Direct DTE和atomic result；bootstrap smoke或direct shim仍不能
+  替代正式component gate；
 - Q22.N已经把SoftFloat/TestFloat 3e、GNU m4 1.4.21、GMP 6.3.0和MPFR 4.2.2的完整source digest、license、
   thread/rounding环境、唯一CMake target和上游self-test纳入受管依赖；Q22.B又把oneDNN 3.12的commit、archive/library
   digest、SEQ build和MatMul/reorder smoke纳入独立受管record。
@@ -1311,15 +1313,21 @@ failure无partial result。该gate不编译repo CRT、不构造Tsm packet，不�
 - 消费Q22.H实际typed transaction，建立rank-local virtual SPM/DDR、typed slots、checked address、invocation error latch、
   单一保守logical issue domain、resource event、local drain、可yield wait及Direct DTE/FSM；不声明worker window、
   `3×5`物理queue或engine复制；
-- 覆盖current CT/NE/RDMA/WDMA/TDMA target-call transaction和独立field/memory checks；DDR/SPM aperture和future
-  ISS/interconnect只通过受限TLM边界，packet/MMIO correlation仍是Q22.K可选provenance gate；
+- 109项typed payload完成field closure；RDMA/WDMA、gather/scatter、memset、elementwise、convert、GEMM和Direct DTE control
+  具有checked functional effect，其它field-valid family保持结构化unsupported。首个profile的DDR/SPM都在invocation-private
+  registry内完成，不建立没有consumer的TLM socket；future ISS/interconnect只能通过另行设计的受限TLM边界接入，packet/MMIO
+  correlation仍是Q22.K可选provenance gate；
 - numeric effect只调用Q22.N formal profile；Q22.B bulk在本stage不是完成前置。plain C++ kernel component tests不链接SystemC；
-  SystemC integration test使用唯一`sc_main`，至少两个`SC_THREAD`跨delta交替numeric profile，证明thread-local state恢复；
+  四个SystemC integration executable各有唯一`sc_main`，16个rank `SC_THREAD`加control process跨delta执行numeric和DTE；
 - delta-cycle component gate证明issue后结果尚不可见、local fence按watermark等待、completion一次commit、failure唤醒且不
   copyback；unknown transaction、address exact-end/overflow/cross-resource/reserved-SPM、event error和DTE no-progress均结构化失败。
 
-完成：实际SystemC executable闭合typed transaction、memory effect、visibility、completion和Direct DTE/FSM component matrix；
-feature unavailable/skipped或plain C++ unit不能冒充通过。该阶段不要求完整source workload，也不发布numeric/board/timing claim。
+完成：同一Q22.H正式producer的16-rank elementwise和collective-permute实际进入SystemC；numeric测试观察sticky inexact，DTE在
+sender/receiver匹配完成点读取source并发布destination，metadata mismatch和missing endpoint/no-progress均唤醒waiter且无partial
+result。feature-on base 160 pass/1个明确importer skip、numeric 44/44、SystemC component 4/4、lit 208 pass/41个均为
+importer-disabled unsupported、CTest 18/18；feature-off/importer-on unit 161/161、lit 248 pass/1个feature-inverse unsupported、
+CTest 12/12且numeric/bulk/SystemC link closure通过；shared physical codec的bulk 12/12回归通过。该证据不要求完整source workload，
+也不发布repo CRT/packet、RISC-V ELF执行、board numeric、性能或timing claim。
 
 ### 10.7 Q22.V Source-backed functional-numeric verticals
 

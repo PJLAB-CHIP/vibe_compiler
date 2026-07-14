@@ -500,6 +500,11 @@ model profile拥有；在Cx/NCx bitpacked block/tail事实尚未固定时，bit 
 线性化猜测。禁止每个pass或numeric consumer自己根据字符串、局部约定或复制几何解释
 `cx/ncx`、tail或BOOL bit offset。
 
+target-owned `PhysicalTensorCodec`现作为numeric/bulk/SystemC plain kernel的共享consumer，只调用上述info/bit-offset helper把
+exact physical bytes与logical row-major `RawLogicalValue`互转；pack保留不属于logical element的template padding，BOOL Cx/NCx
+仍按helper结论拒绝。bulk adapter已删除原有重复geometry。该codec不是新layout owner，不缓存或回写layout plan，也不允许
+consumer绕过committed shape/layout/type自行推断physical storage。
+
 Wafer-tagged memref 在target-codegen派生之前仍是logical-shape memref：shape是logical
 shape，element type 是 logical dtype；它不能被 generic memref-to-LLVM lowering 当成
 `product(shape) * elemBytes` 的真实footprint。target-codegen从committed executable bindings、accepted

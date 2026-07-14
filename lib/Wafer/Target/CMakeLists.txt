@@ -4,6 +4,7 @@ add_mlir_library(WaferTarget
   NumericCodec.cpp
   NumericDependencyConformance.cpp
   NumericSemantics.cpp
+  PhysicalTensorCodec.cpp
   TargetCall.cpp
   TargetCallDecoder.cpp
   TargetFormat.cpp

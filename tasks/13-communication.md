@@ -6,6 +6,11 @@ target CRT opaque event/status ABI、真实RISC-V module lowering与runtime requ
 multi-card route和真实board execution延后；不引入physical
 transport registry。实现状态以`tasks/progress.md`为准。
 
+Q22.S现已通过同一target LLVM的typed target-call payload消费该Direct DTE binding：SystemC model按payload中的physical
+tile/FSM建立invocation-local rank映射，sender/receiver identity匹配后在完成点读取source、原子写destination并完成双方opaque
+event；missing/mismatch形成全局failure/no-progress且无partial result。该model profile不向IR反写schedule或binding，也不改变
+本文对source lifetime、wait和physical acceptance的唯一事实源。
+
 本文定义Wafer后端从logical collective到instruction-level p2p的device-side communication
 边界。它连接 post-SPMD tensor collective 语义、`wafer.execution.mesh` /
 `wafer.target.topology` 派生的 endpoint view、`wafer.tile.region` 中的 SPM buffer demand，以及后续

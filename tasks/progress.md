@@ -8,7 +8,8 @@ Q20/Q21 replay、closed target registry和schema-v3 artifact链闭合，Q22.N再
 numeric selector closure闭合，Q22.L把同一次target lowering提升为owner-backed all-rank LLVM bundle并接回既有ELF链。
 Q22.B现已把受管oneDNN、target-owned adapter、三阶段离线资格和runtime exact-match admission闭合。封闭vendor
 Host-CRT/packet seam经fresh复核仍不可本地合法闭合，因此不再作为近期数值CModel前置；Q22.H现按仓库自有
-typed target-call functional frontend推进，vendor packet只保留为可选external provenance升级。
+typed target-call functional frontend闭合，Q22.S随后以受管SystemC 3.0.2、checked private memory、formal numeric effect和
+16-rank Direct DTE event完成untimed functional-event component。vendor packet只保留为可选external provenance升级。
 
 2026-07-10 的长周期计划已移入 `tasks/archive/2026-07-10-long-horizon-plans/`，只作历史背景。其
 Proto/WCRE/registry/lease/rank-class 等未实现对象不再作为 correctness 前置。重基线证据和旧任务映射见
@@ -34,8 +35,8 @@ Proto/WCRE/registry/lease/rank-class 等未实现对象不再作为 correctness 
   已经集成；这些分别由Q22.N/L/B/H/S闭合。
 - Q0.L已经完成；本地numeric lane已按Q22.N→Q22.B闭合，target LLVM lane也已在Q22.L闭合；Q22.H直接消费
   Q22.L建立repo-owned typed target-call frontend，不等待封闭vendor Host-CRT/packet。
-- Q22.S只在numeric foundation、target-call frontend和既有Direct DTE transport同时可用后建立SystemC functional-event模型；
-  Q22.V随后用source-backed workloads闭合完整输出，Q22只汇总发布状态。
+- Q22.S已经在numeric foundation、target-call frontend和既有Direct DTE transport之上闭合SystemC functional-event模型；
+  下一项Q22.V用source-backed workloads组合bulk、SystemC和完整输出，Q22只汇总发布状态。
 
 ```text
 已完成的producer/reference基线：
@@ -51,8 +52,8 @@ Q17 + Q18 + Q21 -> Q22.R
 Q22.R -> Q0.L (done)
   -> Q22.N (done) -> Q22.B (done)
   -> Q22.L (done) -> Q22.H (done)
-Q22.N + Q22.H + Q16.T(done) -> Q22.S (doing)
-Q22.B + Q22.S + Q20(done) + Q21(done) -> Q22.V -> Q22
+Q22.N + Q22.H + Q16.T(done) -> Q22.S (done)
+Q22.B + Q22.S + Q20(done) + Q21(done) -> Q22.V (next) -> Q22
 
 后续target-model/board证据（其它maintenance backlog见Later表）：
 Q0.L + Q21 + configured board -> Q6.B
@@ -68,8 +69,7 @@ Q22.C + validated PMU/timing environment -> Q22.P (deferred)
 
 | 执行位置 | Tracking ID | Semantic key | 状态 | 必须满足的前置 | 当前动作 / 完成要求 | 设计 owner |
 | --- | --- | --- | --- | --- | --- | --- |
-| numeric+host汇合 | Q22.S | `target-systemc-event-model` | `doing` | Q22.N、Q22.H、Q16.T | 受管SystemC 3.0.2 archive/source/install/package/license及五项build/consumer/delta-event gate、默认关闭feature、缺依赖configuration failure和feature-off link closure已闭合；当前进入不含SystemC header的rank/tile memory、checked target-call effect与numeric context，随后实现单一保守logical issue domain、local completion及Direct DTE/FSM。只发布untimed/delta-cycle functional-event profile。实施计划：`tasks/plans/systemc-functional-event-model.md`。 | 13、16、17 |
-| bulk+SystemC汇合 | Q22.V | `target-model-source-verticals` | `blocked` | Q22.B、Q22.S、Q20、Q21 | 由同一wafer-compile执行Q20 f32、source-produced f16/bf16 GEMM、Q21 16-rank tiny Llama及超过formal budget的deterministic source-backed large GEMM，比较all-and-only完整输出并闭合atomic failure。 | 16、17 |
+| bulk+SystemC汇合 | Q22.V | `target-model-source-verticals` | `next` | Q22.B、Q22.S、Q20、Q21 | 前置已满足；下一步先建立实施计划，再由同一wafer-compile执行Q20 f32、source-produced f16/bf16 GEMM、Q21 16-rank tiny Llama及超过formal budget的deterministic source-backed large GEMM，比较all-and-only完整输出并闭合atomic failure。 | 16、17 |
 | 近期模型发布 | Q22 | `target-execution-model` | `blocked` | Q22.V | Q22.V已传递闭合Q22.N/L/B/H/S；本row只汇总model-only untimed functional-numeric发布状态，不另实现平行pipeline，也不声明board、vendor-exact packet、exact ELF或timing。 | 10、11、14、15、16、17 |
 
 ## Later / External Gates
@@ -123,16 +123,6 @@ done项仍只证明各自窄边界。
 ## 当前前向 Completion Gates
 
 这里只保留尚未完成row的progress-level完成判据；详细IR、artifact和numeric合同仍由对应编号设计文档拥有。
-
-### Q22.S `target-systemc-event-model`
-
-- 默认关闭的SystemC feature在启用时必须取得受管依赖，否则configuration fail；SystemC对象不进入compiler IR、bundle或package。
-- 同一target LLVM经已闭合的typed target-call frontend进入rank/tile memory、单一保守logical issue domain、checked transaction effect、local completion和
-  Direct DTE/FSM delta-cycle event；numeric只消费Q22.N profile，不重定义codec、rounding或bulk admission。
-- structural capability preflight先于input/model mutation；typed transaction/address/descriptor/numeric tuple在对应effect前验证，
-  late rank failure无partial result。只发布untimed functional-event profile，不声明queue深度、性能或cycle accuracy。
-- SystemC component gate必须实际运行唯一`sc_main`，由至少两个`SC_THREAD`跨delta验证issue/visibility/completion、failure
-  wakeup和numeric execution-context恢复；unavailable/skipped不算通过。
 
 ### Q22.V `target-model-source-verticals`
 
@@ -232,6 +222,7 @@ done项仍只证明各自窄边界。
 
 | Tracking ID | Semantic key | 已验证结果 | 明确不代表 |
 | --- | --- | --- | --- |
+| Q22.S | `target-systemc-event-model` | 默认关闭的受管SystemC 3.0.2 feature、RTTI隔离bridge和feature-off link closure闭合；plain core从Q22.H ordered slot metadata/value建立all-rank private SPM/DDR和checked atomic effect，109项typed payload field closure完成，RDMA/WDMA、gather/scatter、memset、elementwise、convert、GEMM及Direct DTE control已有functional kernel。16-rank source-produced numeric和collective-permute分别在17个SystemC thread process中跨delta执行；DTE source在typed endpoint匹配完成点读取，mismatch、missing/no-progress唤醒全部waiter且无partial result。feature-on base 160 pass/1个明确importer skip、numeric 44/44、SystemC component 4/4、lit 208 pass/41个均为importer-disabled unsupported、CTest 18/18；feature-off/importer-on unit 161/161、lit 248 pass/1个feature-inverse unsupported、CTest 12/12且三项link closure通过；shared physical codec的bulk 12/12回归通过。 | 完整source workload组合、oneDNN自动dispatch、repo CRT/Tsm packet、RISC-V ELF执行、board numeric、性能或cycle accuracy |
 | Q22.L | `target-llvm-module-bundle` | move-only、不可序列化的all-rank `TargetLLVMModuleBundle`拥有每rank独立LLVM context/module，并从module-owned metadata readback schema/rank/entry/profile/target/ABI/ordered slots、module identifier、closed RISC-V triple和fixed entry ABI；正式driver按`ExecutableBundle -> TargetLLVMModuleBundle -> TargetArtifactBundle`单次lowering，rank1/16 linear、rank16 tiny Llama、rank-15 atomic failure通过。138/138 unit、249项lit中248 pass/1个预期feature-inverse unsupported，CTest 6/6。 | Host CRT、packet、SystemC、numeric execution、exact package或board |
 | Q22.N | `target-numeric-foundation` | 13种logical codec、276个selector、101条确定性convert、88条floating elementwise、4条BOOL logic、3条GEMM及16条native-reduce静态拒绝闭合；SoftFloat/TestFloat 3e与受管m4 1.4.21/GMP 6.3.0/MPFR 4.2.2的23项build/self-test/identity gate通过。feature-off 138项base unit发现137 pass、1个预期StableHLO skip；feature-on numeric 37/37，`check-wafer` 208 pass、41个均为未启用importer依赖的预期unsupported，CTest feature-on 8/8、feature-off 6/6。 | oneDNN bulk、SystemC、Host CRT、板端numeric或timing |
 | Q22.B | `target-bulk-qualification` | oneDNN 3.12固定到commit、source/archive、静态library和SEQ/INFERENCE/MATMUL/REORDER build identity；F16/BF16/F32同dtype GEMM经target-owned Cx/NCx codec、f32 dense MatMul、formal finalize和target pack形成只对精确payload/domain/environment有效的`profile-bounded` admission。三阶段canonical no-replace producer、环境/descriptor/evidence readback、budget和fail-closed negative闭合；64³ GEMM超过runtime formal budget后仍只调用一次admitted MatMul，formal MAC为零。feature-on base 137 pass/1个明确importer skip、numeric 37/37、bulk 12/12，lit 208 pass/41个均为未启用importer的unsupported，CTest 14/14；feature-off base 138/138、lit 248 pass/1个feature-inverse unsupported、CTest 9/9，且两侧link closure通过。 | source自动dispatch、Host CRT、SystemC、板端numeric、bit-exact连续域证明或timing |
@@ -244,11 +235,10 @@ done项仍只证明各自窄边界。
 
 ## 实施计划索引
 
-- Active：`tasks/plans/systemc-functional-event-model.md`，对应Q22.S SystemC functional-event model。
-- Blocked implementation rows：Q22.V等待Q22.S；
-  Q22也是`blocked`，但它只
-  汇总Q22.V完成状态，不建立独立施工计划。
-- Historical：`tasks/archive/target-bulk-qualification.md`、`tasks/archive/target-llvm-module-bundle.md`、`tasks/archive/target-numeric-foundation.md`、
+- Next：Q22.V前置均已满足；进入`doing`前先在`tasks/plans/`建立source-backed vertical实施计划。
+- Blocked：Q22等待Q22.V，但只汇总其完成状态，不建立平行pipeline。
+- Historical：`tasks/archive/systemc-functional-event-model.md`、
+  `tasks/archive/target-bulk-qualification.md`、`tasks/archive/target-llvm-module-bundle.md`、`tasks/archive/target-numeric-foundation.md`、
   `tasks/archive/target-command-legality-closure.md`、
   `tasks/archive/target-call-functional-frontend.md`、
   `tasks/archive/target-model-readiness.md`、

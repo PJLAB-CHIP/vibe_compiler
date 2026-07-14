@@ -87,6 +87,14 @@
   `third_party/systemc-model/systemc-model-deps.json`。启用时同时设置`WAFER_ENABLE_NUMERIC_MODEL_DEPS=ON`和
   `WAFER_ENABLE_SYSTEMC_MODEL=ON`；CMake只从canonical record指定的`SystemCLanguage`目录导入官方
   `SystemC::systemc`，不联网或fallback到宿主package。plain model core不得包含SystemC header或链接该target。
+- SystemC 3.0.2 public process/event headers使用RTTI和异常，而仓库LLVM/MLIR ABI是`-fno-rtti -fno-exceptions`。正式adapter要拆成
+  只含plain C++ callback/opaque pointer的bridge TU：bridge可包含SystemC header并独立启用RTTI/异常，但不能包含LLVM/Wafer
+  header；LLVM error/model TU保持仓库ABI且不包含SystemC header。不要给同时使用`llvm::ErrorInfo`的model target整体打开RTTI，
+  否则会要求LLVM no-RTTI build没有提供的typeinfo。每个实际SystemC test executable只定义一个C-linkage `sc_main`，需要多次
+  独立simulation的正负例拆成不同process。
+- SystemC `wait()`会保留当前JIT/C++ stack；任何跨wait持有的endpoint/event引用都必须放在追加时引用稳定的owner中，不能指向
+  可能被其它rank `push_back`扩容的`std::vector`元素。Direct DTE source具体读取点必须由model profile明确；当前untimed
+  profile在typed sender/receiver匹配完成点读取source、原子写destination并完成双方event，不在send call到达时提前snapshot。
 - 用 `python3 tools/bootstrap_deps.py --python` 把固定版本 Python 测试工具安装到
   `third_party/python`。
 - 用 `python3 tools/bootstrap_deps.py --importer-sources` shallow fetch 固定版本 PyTorch/XLA、StableHLO、

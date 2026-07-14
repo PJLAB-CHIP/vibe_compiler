@@ -10,12 +10,14 @@ add_executable(WaferUnitTests
   Conversion/WaferGroupToTileRegionTest.cpp
   Dialect/Wafer/WaferDialectTest.cpp
   Dialect/Wafer/WaferInterfacesTest.cpp
+  Model/TargetModelMemoryTest.cpp
   Runtime/PackageManifestTest.cpp
   Target/FormalNumericTest.cpp
   Target/NumericCodecTest.cpp
   Target/NumericDependencyConformanceTest.cpp
   Target/NumericRawRounderTest.cpp
   Target/NumericSemanticsTest.cpp
+  Target/PhysicalTensorCodecTest.cpp
   Target/TargetFormatTest.cpp
 )
 llvm_update_compile_flags(WaferUnitTests)
@@ -31,6 +33,7 @@ target_link_libraries(WaferUnitTests
   PRIVATE
   WaferCompiler
   WaferIR
+  WaferTargetModelCore
   WaferRuntime
   WaferPipelines
   WaferTransforms
@@ -124,6 +127,7 @@ endif()
 
 if(WAFER_ENABLE_NUMERIC_MODEL_DEPS)
   add_executable(WaferNumericModelUnitTests
+    Model/TargetModelKernelTest.cpp
     Target/FormalTensorNumericTest.cpp
     Target/MPFRNumericTest.cpp
     Target/NumericManagedDependencyIntegrationTest.cpp
@@ -139,6 +143,7 @@ if(WAFER_ENABLE_NUMERIC_MODEL_DEPS)
   target_link_libraries(WaferNumericModelUnitTests
     PRIVATE
     WaferNumericModel
+    WaferTargetFunctionalModel
     GTest::gtest_main
   )
   add_test(NAME WaferNumericModelUnitTests COMMAND WaferNumericModelUnitTests)
@@ -180,6 +185,126 @@ if(WAFER_ENABLE_BULK_MODEL_DEPS)
   add_custom_target(check-wafer-bulk-model-unit
     COMMAND $<TARGET_FILE:WaferBulkModelUnitTests>
     DEPENDS WaferBulkModelUnitTests
+    USES_TERMINAL
+  )
+endif()
+
+if(WAFER_ENABLE_SYSTEMC_MODEL)
+  add_library(WaferSystemCModelTestSupport STATIC
+    Model/SystemCTargetModelTestSupport.cpp
+  )
+  llvm_update_compile_flags(WaferSystemCModelTestSupport)
+  target_link_libraries(WaferSystemCModelTestSupport
+    PUBLIC
+    WaferCompiler
+    WaferIR
+    MLIRArithDialect
+    MLIRBufferizationDialect
+    MLIRControlFlowDialect
+    MLIRFuncDialect
+    MLIRLinalgDialect
+    MLIRLLVMDialect
+    MLIRMathDialect
+    MLIRMemRefDialect
+    MLIRSCFDialect
+    MLIRTensorDialect
+  )
+
+  add_executable(WaferSystemCModelIntegrationTest
+    Model/SystemCTargetModelIntegrationTest.cpp
+  )
+  llvm_update_compile_flags(WaferSystemCModelIntegrationTest)
+  target_link_libraries(WaferSystemCModelIntegrationTest
+    PRIVATE
+    WaferSystemCModel
+    WaferCompiler
+    WaferIR
+    MLIRArithDialect
+    MLIRBufferizationDialect
+    MLIRControlFlowDialect
+    MLIRFuncDialect
+    MLIRLinalgDialect
+    MLIRLLVMDialect
+    MLIRMathDialect
+    MLIRMemRefDialect
+    MLIRSCFDialect
+    MLIRTensorDialect
+    SystemC::systemc
+    GTest::gtest
+  )
+  add_test(NAME WaferSystemCModelIntegrationTest
+    COMMAND WaferSystemCModelIntegrationTest)
+
+  add_executable(WaferSystemCModelDTEIntegrationTest
+    Model/SystemCTargetModelDTEIntegrationTest.cpp
+  )
+  llvm_update_compile_flags(WaferSystemCModelDTEIntegrationTest)
+  target_link_libraries(WaferSystemCModelDTEIntegrationTest
+    PRIVATE
+    WaferSystemCModel
+    WaferSystemCModelTestSupport
+    SystemC::systemc
+    GTest::gtest
+  )
+  add_test(NAME WaferSystemCModelDTEIntegrationTest
+    COMMAND WaferSystemCModelDTEIntegrationTest)
+
+  add_executable(WaferSystemCModelDTEMismatchTest
+    Model/SystemCTargetModelDTEMismatchTest.cpp
+  )
+  llvm_update_compile_flags(WaferSystemCModelDTEMismatchTest)
+  target_link_libraries(WaferSystemCModelDTEMismatchTest
+    PRIVATE
+    WaferSystemCModel
+    WaferSystemCModelTestSupport
+    SystemC::systemc
+    GTest::gtest
+  )
+  add_test(NAME WaferSystemCModelDTEMismatchTest
+    COMMAND WaferSystemCModelDTEMismatchTest)
+
+  add_executable(WaferSystemCModelNoProgressTest
+    Model/SystemCTargetModelNoProgressTest.cpp
+  )
+  llvm_update_compile_flags(WaferSystemCModelNoProgressTest)
+  target_link_libraries(WaferSystemCModelNoProgressTest
+    PRIVATE
+    WaferSystemCModel
+    WaferSystemCModelTestSupport
+    SystemC::systemc
+    GTest::gtest
+  )
+  add_test(NAME WaferSystemCModelNoProgressTest
+    COMMAND WaferSystemCModelNoProgressTest)
+
+  set_tests_properties(
+    WaferSystemCModelIntegrationTest
+    WaferSystemCModelDTEIntegrationTest
+    WaferSystemCModelDTEMismatchTest
+    WaferSystemCModelNoProgressTest
+    PROPERTIES
+    LABELS "systemc-model;managed-dependencies;component"
+    ENVIRONMENT
+      "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
+  )
+  add_custom_target(check-wafer-systemc-model
+    COMMAND ${CMAKE_COMMAND} -E env
+      "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
+      $<TARGET_FILE:WaferSystemCModelIntegrationTest>
+    COMMAND ${CMAKE_COMMAND} -E env
+      "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
+      $<TARGET_FILE:WaferSystemCModelDTEIntegrationTest>
+    COMMAND ${CMAKE_COMMAND} -E env
+      "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
+      $<TARGET_FILE:WaferSystemCModelDTEMismatchTest>
+    COMMAND ${CMAKE_COMMAND} -E env
+      "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
+      $<TARGET_FILE:WaferSystemCModelNoProgressTest>
+    DEPENDS
+      WaferSystemCModelIntegrationTest
+      WaferSystemCModelDTEIntegrationTest
+      WaferSystemCModelDTEMismatchTest
+      WaferSystemCModelNoProgressTest
     USES_TERMINAL
   )
 endif()

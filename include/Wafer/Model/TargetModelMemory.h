@@ -1,0 +1,205 @@
+//===- TargetModelMemory.h - Private target model memory ------*- C++ -*-===//
+
+#ifndef WAFER_MODEL_TARGETMODELMEMORY_H
+#define WAFER_MODEL_TARGETMODELMEMORY_H
+
+#include "Wafer/Compiler/TargetCallFrontend.h"
+
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/Support/Error.h"
+
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <system_error>
+#include <utility>
+#include <vector>
+
+namespace wafer::model {
+
+enum class TargetModelAddressSpace : uint8_t { RankSPM, CardDDR };
+enum class TargetModelAccess : uint8_t { Read, Write, ReadWrite };
+
+enum class TargetModelMemoryErrorCode : uint8_t {
+  InvalidInvocation,
+  InvalidSlot,
+  InvalidInputBinding,
+  AddressOverflow,
+  AddressMisaligned,
+  ReservedSPM,
+  UnknownResource,
+  CrossResource,
+  AccessDenied,
+  InvalidEffect,
+};
+
+llvm::StringRef
+stringifyTargetModelMemoryErrorCode(TargetModelMemoryErrorCode code);
+
+class TargetModelMemoryError final
+    : public llvm::ErrorInfo<TargetModelMemoryError> {
+public:
+  static char ID;
+
+  TargetModelMemoryError(TargetModelMemoryErrorCode code, std::string detail)
+      : code(code), detail(std::move(detail)) {}
+
+  TargetModelMemoryErrorCode getCode() const { return code; }
+  llvm::StringRef getDetail() const { return detail; }
+  void log(llvm::raw_ostream &stream) const override;
+  std::error_code convertToErrorCode() const override;
+
+private:
+  TargetModelMemoryErrorCode code;
+  std::string detail;
+};
+
+/// Initial contents for one read-only model input resource. Bindings are
+/// keyed by ABI identity, never by a resource name or host pointer.
+struct TargetModelInputBinding {
+  int64_t logicalRank = -1;
+  int64_t slotOrdinal = -1;
+  std::vector<uint8_t> bytes;
+};
+
+struct TargetModelPlannedSlot {
+  int64_t logicalRank = -1;
+  int64_t slotOrdinal = -1;
+  compiler::KernelABISlotRole role = compiler::KernelABISlotRole::UserInput;
+  int64_t resourceIndex = -1;
+  uint64_t base = 0;
+  uint64_t byteSize = 0;
+  uint64_t alignment = 0;
+};
+
+/// A checked range identity. regionOffset is relative either to the private
+/// per-rank SPM planned window or to one exact DDR ABI slot.
+struct TargetModelResolvedRange {
+  int64_t logicalRank = -1;
+  TargetModelAddressSpace addressSpace = TargetModelAddressSpace::RankSPM;
+  std::optional<int64_t> slotOrdinal;
+  uint64_t regionOffset = 0;
+  uint64_t byteCount = 0;
+};
+
+/// Complete immutable address/resource plan for one target-call invocation.
+/// The plan owns initial bytes but never aliases caller storage.
+class InvocationAddressPlan {
+public:
+  InvocationAddressPlan(InvocationAddressPlan &&) = default;
+  InvocationAddressPlan &operator=(InvocationAddressPlan &&) = default;
+  InvocationAddressPlan(const InvocationAddressPlan &) = delete;
+  InvocationAddressPlan &operator=(const InvocationAddressPlan &) = delete;
+
+  static llvm::Expected<InvocationAddressPlan>
+  create(const compiler::TargetCallInvocationDescriptor &invocation,
+         llvm::ArrayRef<TargetModelInputBinding> inputBindings);
+
+  TargetProfileId getTargetProfile() const { return targetProfile; }
+  llvm::ArrayRef<int64_t> getLogicalRanks() const { return logicalRanks; }
+  llvm::ArrayRef<TargetModelPlannedSlot> getSlots() const { return slots; }
+  uint64_t getSPMBase() const { return spmBase; }
+  uint64_t getSPMLimit() const { return spmLimit; }
+
+  llvm::Expected<TargetModelResolvedRange>
+  resolve(int64_t logicalRank, TargetModelAddressSpace addressSpace,
+          TargetModelAccess access, uint64_t address, uint64_t byteCount,
+          uint64_t requiredAlignment) const;
+
+private:
+  struct InitialSlotStorage {
+    int64_t logicalRank = -1;
+    int64_t slotOrdinal = -1;
+    std::vector<uint8_t> bytes;
+  };
+
+  InvocationAddressPlan(TargetProfileId targetProfile,
+                        std::vector<int64_t> logicalRanks,
+                        std::vector<TargetModelPlannedSlot> slots,
+                        std::vector<InitialSlotStorage> initialStorage,
+                        uint64_t spmBase, uint64_t spmLimit)
+      : targetProfile(targetProfile), logicalRanks(std::move(logicalRanks)),
+        slots(std::move(slots)), initialStorage(std::move(initialStorage)),
+        spmBase(spmBase), spmLimit(spmLimit) {}
+
+  const TargetModelPlannedSlot *findSlot(int64_t logicalRank,
+                                         int64_t slotOrdinal) const;
+  const InitialSlotStorage *findInitialStorage(int64_t logicalRank,
+                                               int64_t slotOrdinal) const;
+
+  TargetProfileId targetProfile;
+  std::vector<int64_t> logicalRanks;
+  std::vector<TargetModelPlannedSlot> slots;
+  std::vector<InitialSlotStorage> initialStorage;
+  uint64_t spmBase;
+  uint64_t spmLimit;
+
+  friend class InvocationMemoryRegistry;
+};
+
+/// One byte write proposed by a plain transaction kernel. The address space
+/// and alignment obligation are explicit and remain part of effect legality.
+struct TargetModelByteWrite {
+  int64_t logicalRank = -1;
+  TargetModelAddressSpace addressSpace = TargetModelAddressSpace::RankSPM;
+  uint64_t address = 0;
+  uint64_t requiredAlignment = 1;
+  std::vector<uint8_t> bytes;
+};
+
+/// Invocation-private bytes. No mutation API exposes a backing pointer;
+/// applyAtomically validates the complete pending effect before any write.
+class InvocationMemoryRegistry {
+public:
+  InvocationMemoryRegistry(InvocationMemoryRegistry &&) = default;
+  InvocationMemoryRegistry &operator=(InvocationMemoryRegistry &&) = default;
+  InvocationMemoryRegistry(const InvocationMemoryRegistry &) = delete;
+  InvocationMemoryRegistry &
+  operator=(const InvocationMemoryRegistry &) = delete;
+
+  static llvm::Expected<InvocationMemoryRegistry>
+  create(InvocationAddressPlan plan);
+
+  const InvocationAddressPlan &getAddressPlan() const { return plan; }
+
+  llvm::Expected<std::vector<uint8_t>>
+  readSnapshot(int64_t logicalRank, TargetModelAddressSpace addressSpace,
+               uint64_t address, uint64_t byteCount,
+               uint64_t requiredAlignment) const;
+
+  llvm::Error
+  applyAtomically(llvm::ArrayRef<TargetModelByteWrite> pendingWrites);
+
+  llvm::Expected<std::vector<uint8_t>>
+  readSlotSnapshot(int64_t logicalRank, int64_t slotOrdinal) const;
+
+private:
+  struct RankSPMStorage {
+    int64_t logicalRank = -1;
+    std::vector<uint8_t> bytes;
+  };
+  struct SlotStorage {
+    int64_t logicalRank = -1;
+    int64_t slotOrdinal = -1;
+    std::vector<uint8_t> bytes;
+  };
+
+  InvocationMemoryRegistry(InvocationAddressPlan plan,
+                           std::vector<RankSPMStorage> spmStorage,
+                           std::vector<SlotStorage> slotStorage)
+      : plan(std::move(plan)), spmStorage(std::move(spmStorage)),
+        slotStorage(std::move(slotStorage)) {}
+
+  RankSPMStorage *findSPM(int64_t logicalRank);
+  const RankSPMStorage *findSPM(int64_t logicalRank) const;
+  SlotStorage *findSlot(int64_t logicalRank, int64_t slotOrdinal);
+  const SlotStorage *findSlot(int64_t logicalRank, int64_t slotOrdinal) const;
+
+  InvocationAddressPlan plan;
+  std::vector<RankSPMStorage> spmStorage;
+  std::vector<SlotStorage> slotStorage;
+};
+
+} // namespace wafer::model
+
+#endif // WAFER_MODEL_TARGETMODELMEMORY_H

@@ -3,11 +3,8 @@
 #include "Wafer/Target/BulkTensorNumeric.h"
 
 #include "BulkTensorNumericInternal.h"
-#include "Wafer/IR/WaferDialect.h"
-#include "Wafer/InitAll.h"
+#include "Wafer/Target/PhysicalTensorCodec.h"
 
-#include "mlir/IR/BuiltinTypes.h"
-#include "mlir/IR/MLIRContext.h"
 #include "oneapi/dnnl/dnnl.hpp"
 #include "oneapi/dnnl/dnnl_debug.h"
 #include "oneapi/dnnl/dnnl_version_hash.h"
@@ -108,162 +105,16 @@ void appendField(llvm::raw_ostream &stream, llvm::StringRef name,
   stream << name << '=' << value << '\n';
 }
 
-std::optional<mlir::Type> getElementType(mlir::MLIRContext &context,
-                                         LogicalFormat format) {
-  switch (format) {
-  case LogicalFormat::I8:
-  case LogicalFormat::U8:
-    return mlir::IntegerType::get(&context, 8);
-  case LogicalFormat::I16:
-  case LogicalFormat::U16:
-    return mlir::IntegerType::get(&context, 16);
-  case LogicalFormat::I32:
-  case LogicalFormat::U32:
-    return mlir::IntegerType::get(&context, 32);
-  case LogicalFormat::I64:
-  case LogicalFormat::U64:
-    return mlir::IntegerType::get(&context, 64);
-  case LogicalFormat::F16:
-    return mlir::Float16Type::get(&context);
-  case LogicalFormat::BF16:
-    return mlir::BFloat16Type::get(&context);
-  case LogicalFormat::F32:
-  case LogicalFormat::TF32:
-    return mlir::Float32Type::get(&context);
-  case LogicalFormat::Bool:
-    return mlir::IntegerType::get(&context, 1);
-  }
-  return std::nullopt;
-}
-
-std::optional<MemLayout> getMemLayout(NumericTensorLayout layout) {
-  switch (layout) {
-  case NumericTensorLayout::Tensor:
-    return MemLayout::Tensor;
-  case NumericTensorLayout::NTensor:
-    return MemLayout::NTensor;
-  case NumericTensorLayout::Cx:
-    return MemLayout::Cx;
-  case NumericTensorLayout::NCx:
-    return MemLayout::NCx;
-  }
-  return std::nullopt;
-}
-
-// MLIRContext is neither copyable nor movable, so keep the context behind an
-// owner while retaining a typed memref bound to it.
-struct OwnedPhysicalLayout {
-  mlir::DialectRegistry registry;
-  std::unique_ptr<mlir::MLIRContext> context;
-  mlir::MemRefType type;
-  WaferPhysicalTensorInfo info;
-};
-
-llvm::Expected<OwnedPhysicalLayout>
-makePhysicalLayout(const NumericTensorKey &key) {
-  mlir::DialectRegistry registry;
-  registerAllDialects(registry);
-  auto context = std::make_unique<mlir::MLIRContext>(registry);
-  context->loadDialect<WaferDialect>();
-  std::optional<mlir::Type> elementType =
-      getElementType(*context, key.getFormat());
-  std::optional<MemLayout> layout = getMemLayout(key.getLayout());
-  if (!elementType || !layout)
-    return bulkError(BulkTensorNumericErrorCode::InvalidPhysicalLayout,
-                     "tensor has an unknown format or layout");
-  std::vector<int64_t> shape;
-  shape.reserve(key.getShape().size());
-  for (uint64_t dimension : key.getShape()) {
-    if (dimension > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
-      return bulkError(BulkTensorNumericErrorCode::InvalidPhysicalLayout,
-                       "tensor dimension exceeds the layout helper domain");
-    shape.push_back(static_cast<int64_t>(dimension));
-  }
-  MemoryAttr memory = MemoryAttr::get(context.get(), MemorySpace::SPM, *layout);
-  mlir::MemRefType type = mlir::MemRefType::get(
-      shape, *elementType, mlir::MemRefLayoutAttrInterface{}, memory);
-  std::optional<WaferPhysicalTensorInfo> info =
-      computeWaferPhysicalTensorInfo(type);
-  if (!info || info->physicalBytes < 0)
-    return bulkError(BulkTensorNumericErrorCode::InvalidPhysicalLayout,
-                     "shared layout helper rejected the static tensor");
-  return OwnedPhysicalLayout{std::move(registry), std::move(context), type,
-                             std::move(*info)};
-}
-
-template <typename Callback>
-llvm::Error forEachCoordinate(llvm::ArrayRef<uint64_t> shape,
-                              Callback callback) {
-  if (llvm::is_contained(shape, UINT64_C(0)))
-    return llvm::Error::success();
-  std::vector<int64_t> coordinate(shape.size(), 0);
-  if (shape.empty())
-    return callback(llvm::ArrayRef<int64_t>(coordinate));
-  while (true) {
-    if (llvm::Error error = callback(llvm::ArrayRef<int64_t>(coordinate)))
-      return error;
-    int64_t dimension = static_cast<int64_t>(shape.size()) - 1;
-    for (; dimension >= 0; --dimension) {
-      ++coordinate[static_cast<size_t>(dimension)];
-      if (coordinate[static_cast<size_t>(dimension)] <
-          static_cast<int64_t>(shape[static_cast<size_t>(dimension)]))
-        break;
-      coordinate[static_cast<size_t>(dimension)] = 0;
-    }
-    if (dimension < 0)
-      return llvm::Error::success();
-  }
-}
-
-llvm::Expected<std::vector<uint64_t>>
-physicalBitOffsets(const NumericTensorKey &key) {
-  llvm::Expected<OwnedPhysicalLayout> layout = makePhysicalLayout(key);
-  if (!layout)
-    return layout.takeError();
-  std::vector<uint64_t> offsets;
-  if (key.getElementCount() > std::numeric_limits<size_t>::max())
-    return bulkError(BulkTensorNumericErrorCode::InvalidPhysicalLayout,
-                     "tensor element count exceeds host size_t");
-  offsets.reserve(static_cast<size_t>(key.getElementCount()));
-  if (llvm::Error error = forEachCoordinate(
-          key.getShape(),
-          [&](llvm::ArrayRef<int64_t> coordinate) -> llvm::Error {
-            std::optional<int64_t> bitOffset =
-                computeWaferPhysicalElementBitOffset(layout->type, coordinate);
-            if (!bitOffset || *bitOffset < 0)
-              return bulkError(
-                  BulkTensorNumericErrorCode::InvalidPhysicalLayout,
-                  "shared layout helper could not map a logical coordinate");
-            offsets.push_back(static_cast<uint64_t>(*bitOffset));
-            return llvm::Error::success();
-          }))
-    return std::move(error);
-  return offsets;
-}
-
 llvm::Expected<BulkTensorStorage>
 packIntoTemplate(const NumericTensorKey &key,
                  llvm::ArrayRef<RawLogicalValue> values,
                  std::vector<uint8_t> storage) {
-  if (values.size() != key.getElementCount())
-    return bulkError(BulkTensorNumericErrorCode::InvalidPhysicalStorage,
-                     "logical value count does not match the tensor key");
-  llvm::Expected<std::vector<uint64_t>> offsets = physicalBitOffsets(key);
-  if (!offsets)
-    return offsets.takeError();
-  LogicalScalarCodecPolicy policy =
-      getModelProfileRecord(ModelProfileId::formalDeterministicV1())
-          .numericEncodePolicy;
-  for (auto [value, offset] : llvm::zip_equal(values, *offsets)) {
-    if (value.format != key.getFormat())
-      return bulkError(BulkTensorNumericErrorCode::InvalidInputEncoding,
-                       "logical value format does not match the tensor key");
-    if (llvm::Error error =
-            writeRawLogicalValue(value, storage, offset, policy))
-      return bulkError(BulkTensorNumericErrorCode::InvalidInputEncoding,
-                       llvm::toString(std::move(error)));
-  }
-  return BulkTensorStorage::create(key, std::move(storage));
+  llvm::Expected<std::vector<uint8_t>> packed =
+      packPhysicalTensorLogicalValues(key, values, storage);
+  if (!packed)
+    return bulkError(BulkTensorNumericErrorCode::InvalidInputEncoding,
+                     llvm::toString(packed.takeError()));
+  return BulkTensorStorage::create(key, std::move(*packed));
 }
 
 std::optional<dnnl::memory::data_type>
@@ -991,31 +842,20 @@ createManagedBulkExecutionEnvironment() {
 
 llvm::Expected<uint64_t>
 getBulkTensorPhysicalBytes(const NumericTensorKey &key) {
-  llvm::Expected<OwnedPhysicalLayout> layout = makePhysicalLayout(key);
-  if (!layout)
-    return layout.takeError();
-  return static_cast<uint64_t>(layout->info.physicalBytes);
+  llvm::Expected<uint64_t> bytes = getPhysicalTensorStorageBytes(key);
+  if (!bytes)
+    return bulkError(BulkTensorNumericErrorCode::InvalidPhysicalLayout,
+                     llvm::toString(bytes.takeError()));
+  return *bytes;
 }
 
 llvm::Expected<std::vector<RawLogicalValue>>
 unpackBulkTensorLogicalValues(const BulkTensorStorage &tensor) {
-  llvm::Expected<std::vector<uint64_t>> offsets =
-      physicalBitOffsets(tensor.getKey());
-  if (!offsets)
-    return offsets.takeError();
-  LogicalScalarCodecPolicy policy =
-      getModelProfileRecord(ModelProfileId::formalDeterministicV1())
-          .numericDecodePolicy;
-  std::vector<RawLogicalValue> values;
-  values.reserve(offsets->size());
-  for (uint64_t offset : *offsets) {
-    llvm::Expected<RawLogicalValue> value = readRawLogicalValue(
-        tensor.getKey().getFormat(), tensor.getStorage(), offset, policy);
-    if (!value)
-      return bulkError(BulkTensorNumericErrorCode::InvalidInputEncoding,
-                       llvm::toString(value.takeError()));
-    values.push_back(*value);
-  }
+  llvm::Expected<std::vector<RawLogicalValue>> values =
+      unpackPhysicalTensorLogicalValues(tensor.getKey(), tensor.getStorage());
+  if (!values)
+    return bulkError(BulkTensorNumericErrorCode::InvalidInputEncoding,
+                     llvm::toString(values.takeError()));
   return values;
 }
 

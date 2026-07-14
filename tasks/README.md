@@ -51,12 +51,11 @@
 
 ## 实施计划导航
 
-当前active实施计划是`tasks/plans/systemc-functional-event-model.md`，对应Q22.S。Q22.B/Q22.L/Q22.N/Q0.L/Q22.H
-计划分别归档为
-`tasks/archive/target-bulk-qualification.md`、`tasks/archive/target-llvm-module-bundle.md`、
+Q22.S计划已归档为`tasks/archive/systemc-functional-event-model.md`；下一项Q22.V在进入`doing`前建立独立active计划。
+Q22.B/Q22.L/Q22.N/Q0.L/Q22.H计划分别归档为`tasks/archive/target-bulk-qualification.md`、`tasks/archive/target-llvm-module-bundle.md`、
 `tasks/archive/target-numeric-foundation.md`、`tasks/archive/target-command-legality-closure.md`和
 `tasks/archive/target-call-functional-frontend.md`，Q22.R readiness归档为`tasks/archive/target-model-readiness.md`。
-Q22.N+Q22.H现已在Q22.S SystemC event model汇合，已完成的Q22.B与Q22.S再由Q22.V source vertical闭合并汇总到Q22；
+Q22.N+Q22.H已经在Q22.S SystemC event model汇合，已完成的Q22.B与Q22.S再由Q22.V source vertical闭合并汇总到Q22；
 各代码任务开工前都需独立计划。动态执行状态只看`tasks/progress.md`。
 
 ## 归档文档

@@ -102,7 +102,8 @@ performance；board单case不是scale或全输入域完成。
 - board tests：单独feature和environment，不与no-card混计。
 - target-model tests：plain C++ numeric/bulk component tests分别属于Q22.N/Q22.B mandatory；SystemC对整个项目是可选target-model
   feature，但feature启用时缺依赖必须configuration fail，target-call/SystemC tests必须真实执行且分别属于Q22.H/Q22.S
-  mandatory；未启用时正式profile为unavailable且Q22.S/Q22.V未完成，direct shim或plain C++ unit不能替代。ISS/vendor simulator
+  mandatory；未启用的单个build中正式profile为unavailable，不能用该build冒充已经由feature-on gate签发的Q22.S能力，direct
+  shim或plain C++ unit也不能替代。Q22.V仍必须在SystemC-enabled配置真实执行。ISS/vendor simulator
   和board-calibrated profile各用独立feature/environment并显式列unsupported/skipped，不能互相替代。
 - Q22 bulk release qualification由受管`wafer-cmodel-qualify-bulk`执行，使用独立offline resource budget并输出可readback的
   immutable qualification records；runtime debug override或日常model执行不能签发record。
@@ -814,7 +815,8 @@ failure无partial host result；component-only fixture、RISC-V archive、includ
 Q22.S消费Q22.N numeric profile、Q22.H实际transaction和既有Q16.T Direct DTE合同；Q22.B不是本gate前置：
 
 - SystemC是正式untimed functional-event容器；rank/tile SPM/DDR、typed slots、checked address、conservative issue、local completion和
-  Direct DTE/FSM均为invocation-local对象，TLM只承载选定的DDR/interconnect事务，不改变transaction、kernel或acceptance；
+  Direct DTE/FSM均为invocation-local对象。首个private-memory profile不建立无consumer的TLM socket；未来ISS/MMIO consumer只可
+  通过另行验证的受限TLM边界接入，且不改变transaction、kernel或acceptance；
 - target-call ABI没有worker identity；近期只用单一保守logical issue domain区分CT/NE/RDMA/WDMA/TDMA五个engine family，
   不声明worker window、`3×5`物理queue实例、容量或engine复制关系；
 - target-call issue、local drain、Direct DTE completion、destination visible和multi-rank arrival保持不同event domain；
@@ -828,6 +830,14 @@ Q22.S消费Q22.N numeric profile、Q22.H实际transaction和既有Q16.T Direct D
 component gate必须实际运行唯一`sc_main`，至少两个`SC_THREAD`跨delta交替profile和sticky flag，并覆盖issue/visibility/
 completion、failure wakeup、nested/early return/exception及numeric execution-context恢复；双OS-thread TLS证据仍属于Q22.N。
 unavailable/skipped或plain C++ kernel test不算通过。本gate不测PMU、latency或throughput，也不要求source workload完整输出。
+
+完成证据：四个独立executable各自只有一个`sc_main`；16-rank source-produced elementwise在17个thread process中跨delta执行并
+观察aggregate sticky inexact，16-rank collective-permute验证send/recv/wait、匹配时source read和destination visibility，另有
+metadata mismatch及missing endpoint/no-progress全局唤醒负例。feature-on base unit 160 pass/1个明确importer-disabled skip、numeric
+44/44、SystemC component 4/4、lit 208 pass/41个均为importer-disabled unsupported、CTest 18/18；feature-off/importer-on unit
+161/161、lit 248 pass/1个feature-inverse unsupported、CTest 12/12且三项link closure通过。plain core和shared physical codec unit
+覆盖exact-end/overflow/cross-resource/reserved-SPM、atomic write、all 109 typed payload field closure及formal effect；bulk codec回归
+12/12。该证据签发Q22.S untimed component，不签发Q22.V完整source vertical或任何board/timing结论。
 
 ### 11.6 Q22.V Source-Backed Functional-Numeric Vertical Gate
 

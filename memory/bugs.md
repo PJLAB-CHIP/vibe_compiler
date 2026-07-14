@@ -354,3 +354,13 @@
 - 修复模式：prepare阶段原子完成全部rank clone/JIT/slot复制且不触发sink；SystemC先创建全部rank `SC_THREAD`，每个process
   只调用一次rank entry，让同步sink的`wait()`保留该JIT stack。rank使用not-started/running/terminal三态，重复或非法rank
   立即abort并唤醒其它process；顺序convenience入口只能服务明确不会跨ranksuspend的component sink。
+
+## 2026-07-14 SystemC RTTI不能直接打开在LLVM no-RTTI model target上
+
+- 现象：SystemC 3.0.2 header中的`typeid`/`dynamic_cast`要求adapter启用RTTI；若直接给同时包含LLVM error类型的model TU加
+  `-frtti`，最终链接缺少`llvm::ErrorInfoBase`等LLVM类的typeinfo。
+- 根因：仓库LLVM/MLIR及其consumer按no-RTTI ABI构建；在一个TU里混合SystemC RTTI surface和LLVM多态error hierarchy，会让
+  编译器产生对LLVM typeinfo的引用，而底层library没有对应定义。单纯调整静态库链接顺序不能补齐ABI。
+- 修复模式：建立不包含任何LLVM/Wafer header的plain bridge TU，只向no-RTTI model暴露opaque runner/event和C++ callback；仅
+  bridge链接SystemC并启用RTTI/异常，model继续使用仓库默认flags。验证时检查实际compile command，并分别运行feature-on
+  `sc_main`和feature-off link-closure，不能只证明bridge静态库可编译。
