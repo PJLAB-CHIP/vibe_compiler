@@ -999,9 +999,11 @@ library, so the implementation technology remains unknown. A vendor delivery
 must include the complete matching development package, transitive libraries,
 model resources, target revision, artifact input contract, numeric profile,
 thread/time behavior, license, and a reproducible positive path. Until then the
-high-level seam cannot be a verified package provider, and a project-owned
-low-level packet builder cannot be labeled vendor-exact before independent
-register or board correlation.
+high-level seam cannot be a verified package provider, and a locally implemented
+low-level packet builder cannot be assumed permissible or labeled vendor-exact.
+Any low-level host seam requires project-owner/legal confirmation of the actual
+license terms or an independently auditable specification; independent register
+or board correlation is then still required for a vendor-exact claim.
 
 The binary exposes a boolean backend gate in `Runtime::IsTriton()`. In this
 document that branch is called the active `tx*` driver backend. The symbol name

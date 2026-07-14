@@ -1,6 +1,7 @@
 // RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-groups-to-instr)' %s | FileCheck %s
 // RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-groups-to-memory-planned-instr)' %s | FileCheck --check-prefix=PLANNED %s
 // RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-groups-to-ddr-memory-planned-instr)' %s | FileCheck --check-prefix=DDR-PLANNED %s
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-groups-to-tile-region)' %s | FileCheck --check-prefix=TILE %s
 
 func.func @all_to_all_to_instr(%input: tensor<4x4xf32>,
                                %out: tensor<2x8xf32>)
@@ -54,3 +55,12 @@ func.func @all_to_all_to_instr(%input: tensor<4x4xf32>,
 // DDR-PLANNED: wafer.instr.dte_recv
 // DDR-PLANNED: wafer.instr.dte_wait
 // DDR-PLANNED: wafer.instr.wdma
+
+// TILE-LABEL: func.func @all_to_all_to_instr
+// TILE-NOT: wafer.group
+// TILE-NOT: wafer.linalg_ext.collective.all_to_all
+// TILE: %[[SEND:.+]] = wafer.instr.dte_send
+// TILE-SAME: -> !async.token
+// TILE: %[[RECV:.+]] = wafer.instr.dte_recv
+// TILE-SAME: -> !async.token
+// TILE: wafer.instr.dte_wait %[[SEND]], %[[RECV]]

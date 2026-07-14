@@ -1,7 +1,8 @@
 # Wafer Target Execution Model（CModel）
 
-状态：2026-07-14按数值语义唯一归属、oneDNN逐profile准入和真实IR/CRT边界完成第二轮收敛。本文固定以数值正确性为近期目标的untimed target execution model、
-SystemC/TLM边界、实现分层和板端numeric correlation计划；timing calibration仅作为deferred extension。当前尚无
+状态：2026-07-14已完成真实Q21 reduce、numeric/SystemC依赖和host-CRT seam的implementation-readiness实证，并按结果
+收紧资源预算与授权前置。本文固定以数值正确性为近期目标的untimed target execution model、SystemC/TLM边界、实现分层和
+板端numeric correlation计划；timing calibration仅作为deferred extension。当前尚无
 production实现，任务状态看
 `tasks/progress.md`。本文不复制总体架构、instruction schedule或完整register/
 packet硬件事实表；第3节只给出用于界定模型claim的non-normative摘要。compiler、target、runtime和verification的
@@ -24,7 +25,8 @@ Q19 ReferenceExecutor的别名，也不因采用SystemC就自动获得vendor pac
 - 在任何f32 workload vertical之前先建立覆盖当前全部13种logical storage format、有证据的target-profile×engine×format encoding、7种公开
   compute/convert format及完整product/accumulator/intermediate/destination、舍入/overflow/special-value政策的数值基础层；
   kernel只消费唯一`NumericSemanticsProfile`，不保留先写f32、以后再补dtype的旁路；
-- 让同一份repo-local CRT源码的host build经过CModel-compatible `TsmNew*`/operator/execute/MMIO seam、实际
+- 在vendor许可/采购条款经项目owner确认允许后，让同一份repo-local CRT wrapper源码的host build经过已授权的
+  `TsmNew*`/operator/execute/MMIO seam、实际
   `Tsm*Instr`构造和`TsmExecute`进入模型，
   不以绕过CRT/packet的host shim代替正式CModel路径；
 - 保持Q19 ReferenceExecutor和CPU oracle独立，以differential定位compiler lowering、模型实现和硬件行为差异；
@@ -39,7 +41,9 @@ Q19 ReferenceExecutor的别名，也不因采用SystemC就自动获得vendor pac
 - 不从op、buffer、symbol、文件名或trace文本恢复rank、resource、binding或transport语义；
 - 不复用Q19的interpreter、numeric kernel或Direct DTE scheduler作为target model实现；
 - 不把host原生`float`、oneDNN/Eigen等CPU kernel的默认累加/舍入/量化行为或单一外部库当作target numeric合同；
-- 不把direct host shim称为CRT/packet执行，也不把Host-CRT/SystemC的project packet称为vendor-exact packet或RISC-V ELF执行；
+- 不把direct host shim称为CRT/packet执行，也不把经授权独立实现的host packet称为vendor-exact packet或RISC-V ELF执行；
+- 不在vendor许可范围和可用事实源经项目owner/法务确认前修改vendor材料、实现其派生operator/packet builder或把当前
+  reverse-engineering资料当作实现授权；
 - 不把model completion称为board completion，也不在板端证据前声明hardware-bit-exact、performance-accurate或
   cycle-accurate；
 - 不把PMU、latency、throughput、LT/AT或cycle calibration作为Q22或Q22.C的近期完成前置；
@@ -57,7 +61,8 @@ Pipeline position:
   identity尚未实现，属于Q0.L前置，禁止在full conversion后补default。bundle不可序列化，不进入package。exact-module扩展另行消费Q18 VerifiedPackageManifest和其all-and-only
   Q17 RISC-V ELF modules。Q19结果和CPU expected只作独立比较，不作为target model执行输入。
 - Current stage responsibility:
-  在任何执行副作用前完成model capability preflight；以同一repo CRT的host build和CModel-compatible Tsm factory/
+  在任何执行副作用前完成model capability preflight；在许可/事实源gate通过后，以同一repo CRT wrapper的host build和
+  已授权的CModel-compatible Tsm factory/
   operator/execute/MMIO seam形成
   packet/register transaction，交给SystemC tile/worker/engine/memory/fabric modules执行rank/tile address spaces、
   CT/NE/RDMA/WDMA/TDMA、local completion和Direct DTE/FSM event。direct target-call shim只作ABI smoke；未来ISS
@@ -88,13 +93,14 @@ Pipeline position:
   formal work budget而无admitted bulk时fail fast。
   随后SystemC host-CRT/transaction基线必须执行同一wafer-compile产生的Q20 f32、source-produced f16/bf16 GEMM、Q21
   16-rank tiny Llama和deterministic source-backed large GEMM，覆盖
-  all-and-only fully legal target LLVM ranks、同源CRT、实际project packet构造、完整typed ABI、SPM/DDR、当前
+  all-and-only fully legal target LLVM ranks、同源CRT wrapper、实际authorized host packet构造、完整typed ABI、SPM/DDR、当前
   supported engine和Direct DTE状态，
   与独立Q19/CPU oracle按显式op/dtype model profile policy比较完整输出；unsupported symbol/profile、地址/descriptor错误、
   deadlock和任一rank late failure均在model result publication前fail closed且无partial result。model mismatch不回滚
   已验证Q17/Q18 artifacts。Q22只发布model-only untimed functional-numeric profile；board numeric、exact package/ELF和
   timing accuracy分别由Q22.C、Q22.E和deferred Q22.P保持为更高独立gate。独立packet/MMIO事实源缺失只限制
-  vendor-exact packet claim，不阻塞Q22或Q22.C。
+  vendor-exact packet claim，不阻塞Q22.C的board-output numeric；但许可兼容的host-seam provider或允许clean-room实现的
+  独立规范缺失会直接阻塞Q22.H及其下游。
 ```
 
 ## 3. 当前事实基线
@@ -126,14 +132,23 @@ Pipeline position:
 ABI-smoke和host-CRT/SystemC CModel消费；它不是新IR层、packet artifact或package成员。具体C++类名和文件布局只作
 实现索引，不属于artifact合同。
 
-repo CRT当前在源码内强制定义`USING_RISCV=1`，附带instruction/common-util archive又是RISC-V object，因此它不能原样
-形成host CModel。实现时应把platform选择移到build contract，并让RISC-V和host构建共享同一份repo CRT wrapper与
-command-invocation C源码；Tsm operator/packet builder只有RISC-V archive、没有可共享源码，host侧仍需独立的
-project-owned实现；只有取得独立packet/MMIO事实源后才能增加vendor packet provenance。其它host差异只落在operator/
-MMIO/memory/context adapter。当前Direct DTE
-sender/receiver使用process-global static状态，host多rank执行不能共享该状态；必须改成明确绑定invocation/rank的state，
-或证明每rank独立装载实例及其lifetime，
-不能从OS thread、symbol名或调用顺序恢复rank。
+repo CRT当前在源码内强制定义`USING_RISCV=1`。fresh host probe证明同一C源码和public header可由GCC完整编成x86-64
+object，但只调用`wafer_tx81_local_fence`的最小链接首先缺`TsmWaitfinish`；完整object还要求36个Tsm factory/delete/
+execute/wait入口和11个Direct-DTE/SPM platform入口。把现有`libinstr_tx81.a`加入会因其成员为RISC-V ELF
+（EM=243、RVC、double-float ABI）而`file in wrong format`；`libcommon_util.a`、`liblibc_stub.a`和runtime archive同样不能
+成为host provider。`op_fw_sim_if`的host CMake只是include-only INTERFACE target，checkout没有这些host定义。因此“同源”
+当前只证明wrapper/command-invocation源码可host-compile，不证明host link或packet执行闭合。
+
+后续若获授权实施，应把platform选择移到互斥build contract：device定义RISC-V platform，host真正不定义
+`USING_RISCV`，不能传`USING_RISCV=0`冒充false，因为vendor header使用`#ifdef`。RISC-V和host只共享经确认可使用的repo CRT
+wrapper源码；host operator/MMIO/memory/context必须来自vendor交付的许可兼容库，或来自项目owner/法务确认允许且具有
+独立可审计规范的clean-room实现。当前Direct DTE sender/receiver还是process-global static，host多rank执行不能共享该
+状态；必须绑定invocation/rank或证明每rank独立装载实例及lifetime，不能从OS thread、symbol名或调用顺序恢复rank。
+
+仓库随附vendor最终用户许可协议第2.1节把许可描述为有限、自用、不可转让/分许可且可撤销，第2.2节在购买凭证没有另行
+约定时禁止修改、逆向、反汇编/反编译、提取源码和创建衍生作品。本文不判断具体采购条款；Q22.H施工前必须由项目owner/
+法务确认当前材料的实际授权范围，或取得vendor书面许可/公开独立规范。该external gate未通过时，可以继续实现不消费
+vendor派生事实的numeric foundation、bulk adapter和SystemC基础组件，但不得施工host Tsm operator/packet seam。
 
 该bundle必须显式拥有canonical all-rank domain、每rank logical rank/entry/module、`ExecutionConfig`、ordered typed
 ABI slots、target identity/revision、target/kernel ABI facts和覆盖全部module的context/owner lifetime。所有rank完成ABI
@@ -191,7 +206,8 @@ geometry/ABI定义或生成的typed定义，不能把本文表格复制成第二
    `init/freeTsmOpPointer_cmodel`或`instr_tick_cc`定义；RISC-V `libkcorert.a`里的cycle-mode set/get只是兼容stub。
    当前repo CRT也不调用`initTsmOpPointer_cmodel`，而是直接`TsmNew* -> 填packet -> TsmExecute -> TsmDelete*`，所以
    仅取得该operator-table initializer仍不足以host化CRT。
-2. **host runtime级**：x86 `libtx8_runtime.so`的`Runtime::SetCModelHandle`会尝试`dlopen`
+2. **host runtime级**：fresh `RTLD_NOW` probe在x86 `libtx8_runtime.so`上首先因`libhpgr.so`缺失而失败；其dynamic
+   dependency还要求缺失的`libtsmml.so`。该runtime的`Runtime::SetCModelHandle`会尝试`dlopen`
    `libcmodel_runtime_api.so`并解析device、compile、launch、run、copy和tile-info等高层入口。被加载的library、其匹配
    header/resource以及该binary还依赖的host libraries均不在checkout；现有binary只证明`dlsym`结果被存入字段且library
    handle会被`dlclose`，没有证明普通launch路径读取/调用这些字段。因此这是vendor CModel存在的强线索，不是当前
@@ -205,8 +221,8 @@ x86 runtime的公开依赖/symbol中也没有SystemC/TLM痕迹。SystemC仍可�
 进入实现前应优先向vendor索取完整`libcmodel_runtime_api`套件或低层host instruction model、匹配headers/resources、
 支持的target revision、artifact输入、SystemC及其它transitive dependency版本/license、numeric profile、threading/time
 contract和可重放要求。高层套件只有证明能消费当前verified package/session后才作为typed `RuntimeProvider`；否则只作
-外部differential oracle。低层套件在Tsm/packet/MMIO边界接入本文架构。两者都不得绕过capability、differential和board
-correlation gate。
+外部differential oracle。低层套件只有在其许可允许当前集成方式后才在Tsm/packet/MMIO边界接入本文架构。两者都不得
+绕过capability、differential和board correlation gate，也不能用当前EULA覆盖的材料自行派生缺失实现来替代交付。
 
 ### 3.5 行业调研结论（非规范性）
 
@@ -245,10 +261,11 @@ Direct DTE/FSM和多completion domain，而不是“CModel必须用SystemC”的
 1. **Direct target-call ABI smoke**：host LLVM JIT执行同一fully legal target LLVM module，并给`wafer_tx81_*` fixed ABI
    注册最小direct shim。它验证target ABI preparation、control flow、call graph、typed arguments和address formation；
    因为绕过repo CRT、Tsm method table和packet，只是快速诊断，不满足正式Q22 CModel gate。
-2. **Host-CRT/SystemC frontend**：host执行同一target LLVM，调用与device build同源的repo CRT；host platform实现
-   `TsmNew/Delete`、method table、`TsmExecute/TsmWaitfinish`和Direct DTE/FSM/memory hooks，将CRT实际构造的packet/
-   event投递给SystemC model。这是近期正式functional-event CModel路径。自行实现的host operator仍是project-owned
-   packet builder；逐字段独立packet/MMIO correlation前不能称vendor-exact packet。
+2. **Authorized Host-CRT/SystemC frontend**：external授权/事实源gate通过后，host执行同一target LLVM，调用与device build
+   同源且获准用于该用途的repo CRT wrapper；host platform由vendor许可兼容host库，或经确认允许的独立规范clean-room实现
+   提供`TsmNew/Delete`、method table、`TsmExecute/TsmWaitfinish`和Direct DTE/FSM/memory hooks，将CRT实际构造的packet/event
+   投递给SystemC model。这是近期正式functional-event CModel路径。独立实现仍只标记其实际provenance；逐字段独立
+   packet/MMIO correlation前不能称vendor-exact packet。
 3. **Exact-module frontend/provider**：从Q18 verified package加载并执行Q17 RISC-V ELF。project ISS adapter通过loader
    ABI、MMIO/custom instruction、Direct DTE和completion adapter复用SystemC architecture；独立vendor simulator不要求
    内部使用SystemC，但必须满足相同artifact、provider lifecycle、capability和evidence合同。只有此入口完成后，才可称
@@ -702,14 +719,15 @@ TLM-2.0不要求用于每条内部边界。推荐范围是：
 ### 5.1 近期Host-CRT/SystemC执行
 
 近期正式入口是同一次`wafer-compile` invocation中的下游verification consumer：Q17/Q18先按各自合同原子发布verified
-target/package artifacts，driver再用仍由invocation持有的owner-backed target LLVM bundle，host执行target LLVM并
-调用与device build同源的repo CRT wrapper/command-invocation C源码。host-only platform层负责rank context、Tsm factory/
-operator、packet复制、checked address/MMIO和可yield wait；packet/event随后进入SystemC model。model mismatch或执行
+target/package artifacts；external授权/事实源gate通过后，driver再用仍由invocation持有的owner-backed target LLVM
+bundle，host执行target LLVM并调用获准host使用、与device build同源的repo CRT wrapper/command-invocation C源码。
+host-only platform层由许可兼容provider负责rank context、Tsm factory/operator、packet复制、checked address/MMIO和
+可yield wait；packet/event随后进入SystemC model。model mismatch或执行
 失败可让driver返回非零并保留diagnostic，但已验证package保持可审计，不回滚、不改写，也不让Q22成为Q17/Q18
 correctness前置。是否启用该gate属于用户显式请求或configured CI policy；不能变成wafer-opt stop-stage或手拼pass。
 
 direct `wafer_tx81_*` shim可以保留为快速ABI smoke，但它绕过repo CRT、Tsm object和packet，不计入正式CModel完成。
-Host-CRT/SystemC入口能证明compiler-produced target call经过project CRT/packet/event语义并产生正确完整输出；在与
+Host-CRT/SystemC入口能证明compiler-produced target call经过其明确provenance的CRT/packet/event语义并产生正确完整输出；在与
 RISC-V archive register trace、board capture或vendor builder逐字段相关前，它仍不证明vendor-exact packet。该入口也
 不读取已发布package、不执行RISC-V ELF/vendor archive，不能使用`wafer-run`的provider语义。
 
@@ -766,8 +784,8 @@ packet/op tuple、computed address、dynamic descriptor和runtime event错误，
 | Profile | 最低事实和gate | 允许声明 | 禁止声明 |
 | --- | --- | --- | --- |
 | direct ABI smoke | same fully legal target LLVM、typed ABI、direct symbol shim和基本地址检查 | target lowering/ABI smoke | CRT、packet、event、package ELF、board |
-| repo-CRT/SystemC model-only functional-numeric | same fully legal target LLVM、同源repo CRT host build、project packet、untimed SystemC event/completion、formal scalar语义层、逐profile admitted oneDNN大GEMM backend和完整输出differential | project CRT/packet路径在supported model profile中的functional-numeric correctness | vendor-exact packet、hardware numeric、package ELF、board、timing |
-| optional packet/MMIO conformance | exact-ELF register trace、board capture或versioned vendor builder与project packet的逐字段decode/range/engine/register-effect conformance | 对应capture范围的packet/register provenance | 仅凭trace声明numeric、完整loader/provider lifecycle、timing或board等价 |
+| authorized repo-CRT/SystemC model-only functional-numeric | external授权/事实源gate、same fully legal target LLVM、获准host使用的同源repo CRT wrapper、authorized host packet seam、untimed SystemC event/completion、formal scalar语义层、逐profile admitted oneDNN大GEMM backend和完整输出differential | 对应授权和supported model profile内的host CRT/packet functional-numeric correctness | vendor-exact packet、hardware numeric、package ELF、board、timing |
+| optional packet/MMIO conformance | exact-ELF register trace、board capture或versioned vendor builder与authorized host packet的逐字段decode/range/engine/register-effect conformance | 对应capture范围的packet/register provenance | 仅凭trace声明numeric、完整loader/provider lifecycle、timing或board等价 |
 | Q22.C board numeric correlation | Q22 model-only通过、Q6.B有效board execution、区分向量、重复稳定性、冻结的comparator、独立held-out和source-backed完整输出 | 绑定环境和tested domain的board-output-correlated profile；对应独立packet/MMIO evidence闭合后才升级为hardware-correlated-numeric | vendor-exact packet、不可观测内部实现、未测domain、exact package、timing |
 | exact-module functional | verified package、all-and-only RISC-V ELF、ISS/loader/MMIO/provider lifecycle | package target-model execution | real board、hardware timing |
 | deferred Q22.P timing | 另行恢复后的PMU measurement basis和独立timing held-out | 实际通过的LT/AT profile | 改变numeric、IR legality或candidate acceptance；无RTL证据时称cycle-accurate |
@@ -829,7 +847,8 @@ accepted instruction支持范围；如果硬件可表达但model未覆盖，应�
   payload、独立cheap expected和digest。现有4096 exporter使用未初始化`torch.empty`且没有expected/digest，在升级前只算
   export/shape/frontend结构测试，不证明target dispatch、numeric或performance；4096可作nightly/stress参数，mandatory CI
   可用更小但仍超过formal budget的shape；
-- 正式positive必须经过同源repo CRT的Tsm factory/operator/packet、`TsmExecute`、local wait及适用Direct DTE/FSM hooks；
+- 正式positive必须先通过external授权/事实源gate，再经过获准host使用的同源repo CRT wrapper、Tsm factory/operator/packet、
+  `TsmExecute`、local wait及适用Direct DTE/FSM hooks；
   SystemC-enabled tests若unavailable/skipped则该gate未完成；
 - unknown symbol、factory、wrong ABI slot、static profile和address plan在input/model allocation前拒绝；dynamic packet、
   地址/descriptor/narrowing和numeric tuple在对应transaction effect前拒绝，且不产生外部output；
@@ -840,13 +859,13 @@ unsupported-reason closure只是必要条件，不能替代上述positive matrix
 `impl_info_str()`、effective ISA、threads以及cold create/JIT、pack/reorder、warm execute；mandatory large profile落入reference
 implementation时不授予`performance-qualified`。correctness gate不依赖易抖动的绝对wall time。
 
-### 8.2 Q22 project packet和memory gate
+### 8.2 Q22 authorized host packet和memory gate
 
 - CT/NE/RDMA/WDMA/TDMA的typed args、packet fields、worker、trigger、range/end、raw `TsmExecute` status、model error
   latch和target ABI可观察status逐family区分覆盖；
 - SPM/DDR bounds、reserved region、Cx/NCx、bitpacked i1、subview/strided descriptor用独立slow oracle或board bytes验证；
-- Host-CRT/SystemC positive来自compiler-generated target LLVM，并把repo CRT实际构造的project packet作为正式
-  functional-event输入；Q22内用独立field/memory oracle覆盖raw bytes、decode和observable effect，但project host
+- Host-CRT/SystemC positive来自compiler-generated target LLVM，并把authorized host seam实际构造的packet作为正式
+  functional-event输入；Q22内用独立field/memory oracle覆盖raw bytes、decode和observable effect，但独立实现的packet
   builder不得标记vendor-exact；
 - 若取得exact-ELF register trace、board capture或versioned vendor builder，可另做逐字段packet/MMIO correlation并提升
   packet provenance；它是可选诊断证据，不是Q22或Q22.C前置，也不能替代numeric vectors。
@@ -975,6 +994,103 @@ cost profile。
 
 ## 10. 分阶段交付
 
+### 10.0 Implementation readiness spike
+
+```text
+Pipeline position:
+- Upstream artifact / IR:
+  Q21固定source/config/payload及同一wafer-compile形成的accepted rank artifacts；当前tasks/14 target preparation、repo CRT/
+  vendor dependency源码和本机toolchain/package environment。Q19 expected只作结果核对，不替代artifact census。
+- Current stage responsibility:
+  对source-produced reduce做kind/init/dimension/shape/layout census并checked估算Q0.L ordered composite的command、SPM和compile
+  budget；对SoftFloat/TestFloat、MPFR/GMP、oneDNN、SystemC、repo host CRT/operator seam执行read-only或transaction-local
+  configure/compile/link probe，记录exact command、版本、architecture、license入口和失败根因；把Q22拆成独立queue边界。
+- Output artifact / IR:
+  编号设计中的readiness evidence、更新后的任务队列和可复现probe workflow。它不是compiler IR、ExecutableBundle、package、
+  numeric profile或长期binary artifact；临时probe build只在transaction-local目录存在。
+- Downstream consumer:
+  Q0.L实施计划及Q22.N/B/H/S/V各自的dependency和completion gate。
+- User-level driver / named pipeline:
+  真实Q21入口仍是wafer-compile；IR-local dump只从该正式producer派生。依赖probe使用当前CMake/toolchain、pkg-config和最小
+  compile/link命令，不引入production CLI。
+- Explicit non-goals:
+  不实现Q0.L语义或CModel，不签发oneDNN admission，不选择hardware numeric policy，不把header presence/compile-only或手写IR
+  当作纵向通过，不要求board/vendor simulator；允许修复阻塞source-backed readiness重放的窄小既有compiler缺陷并增加回归。
+- Completion gate:
+  Q21 reduction census能证明当前ordered composite在明确budget内可实现，或以可复现反例否决并修订设计；每项本地依赖/
+  host seam都有source/version/architecture/link/license结论和新鲜命令；无法本地判定的vendor/board项明确归为external；
+  Q22独立queue rows与后续plan前置已建立。
+```
+
+#### 10.0.1 Q21 source-backed reduce census
+
+fresh 16-rank formal replay由固定tiny-Llama source/config/payload通过同一`wafer-compile`完成，reference完整输出匹配；verified
+package含16个rank module、entry、completion和ELF。随后只从该正式producer的grouped artifact为每个logical rank派生
+accepted debug replay；不是手写fixture，也没有把debug dump当作published package成员。16个rank的`@main`均有相同四项：
+
+| group ordinal | kind / init | source dims | input -> result | tile layout | extent |
+| --- | --- | --- | --- | --- | --- |
+| `#0` | sum；group-boundary scalar最终为f32 `+0` | `[2]` | `1x4x16xf32 -> 1x4xf32` | `NCx -> Cx` | 16 |
+| `#20` | IEEE maximum；local f32 `-Inf` | `[3]` | `1x1x4x4xf32 -> 1x1x4xf32` | `NCx -> NCx` | 4 |
+| `#21` | sum；group-boundary scalar最终为f32 `+0` | `[3]` | `1x1x4x4xf32 -> 1x1x4xf32` | `NCx -> NCx` | 4 |
+| `#28` | sum；group-boundary scalar最终为f32 `+0` | `[2]` | `1x4x16xf32 -> 1x4xf32` | `NCx -> Cx` | 16 |
+
+这些tail-dimension physical mappings中，每个fixed reduction tuple都可由一条`gather_scatter`把slice materialize为4个连续
+f32；sum/max均有exact map-free elementwise combiner。令extent为`R`，correctness-first基线有`1 fill + R slice
+movement + R elementwise + 1 final movement = 2R+2`条engine command，并在每条后保守形成completion，共`4R+4`
+个terminal op。因而extent 16/4分别为68/20项，每个rank合计176，低于tasks/10/11新固定、独立于candidate guard的
+4096个static reduce terminal-op预算；16 ranks合计2816只作规模说明，budget仍按每个accepted rank独立检查。
+
+每项result-shaped A/B/scratch的compact payload为`3 x 16 = 48 B`；按当前256 B SPM alignment保守占三个slot即768 B。
+当前四个reduce region的最高existing span为2064 B，加上不复用任何旧buffer的768 B后为2832 B，只占
+`[65536, 3080192)`共3,014,656 B可规划窗口的约0.094%。因此Q21不否决ordered composite，也没有逼近SPM边界。
+
+该结论只证明Q0.L可实施。当前正式lowering仍产生带`init_value`的旧native `wafer.instr.reduce`，必须在Q0.L实现后重新
+执行source-backed gate；Q21也没有覆盖dynamic/nonzero init、非tail或multi-dim reduction、min/avg及完整special-value
+政策。tasks/06现有4096只统计complete-candidate materialization，不是已经存在的terminal command保护，两个counter不能
+共用。
+
+#### 10.0.2 Numeric和SystemC依赖实证
+
+checkout/system探针与官方candidate源码探针得到以下边界。`candidate source probe通过`只说明该上游版本能在当前
+x86-64/GCC 13环境构建运行，不等于已进入`WaferDependencyVersions.cmake`、通过完整上游self-test或成为Q22
+production依赖：
+
+| dependency | checkout/system事实 | transaction-local candidate结果 | 实施结论 |
+| --- | --- | --- | --- |
+| SoftFloat | 无source/header/library/package | 官方Release 3e可构建；显式`THREAD_LOCAL=_Thread_local`后state symbols为ELF TLS，双pthread rounding-state隔离probe通过 | Q22.N应受管引入3e、固定source digest/specialization/TLS/raiseFlags并跑TestFloat；默认build的global state不可用 |
+| TestFloat | 无source或可执行文件 | 官方Release 3e的`testfloat_gen`和`testfloat_ver`构建并可运行help入口 | 只作SoftFloat conformance harness，不算第二个numeric oracle |
+| MPFR/GMP | 仅有x86-64 runtime MPFR 4.2.1/GMP 6.3.0；无header、开发link name、pkg-config或CMake target，不能作为开发依赖；直接SONAME probe只证明MPFR TLS enabled | 官方MPFR 4.2.2/GMP 6.3.0 source已取得，但GMP configure因host缺可用GNU `m4`而停止，故未产生candidate library或MPFR link结果 | Q22.N bootstrap必须显式提供/检查build tool，再受管构建并readback实际loaded/static identity；不能偷偷链接当前SONAME runtime |
+| oneDNN | 无独立header/library/package；PyTorch 2.5内嵌3.5.3符号为local，空壳CMake target不可复用 | 官方v3.12 commit `80afa710...`以CPU SEQ、INFERENCE、MATMUL/REORDER、static配置构建；`DNNL::dnnl` 2x2 f32 MatMul返回3.12.0和正确结果 | Q22.B从受管source形成唯一target；该probe不签发任何bulk admission，也不证明dtype/profile等价 |
+| SystemC/TLM | 无header/library/pkg-config/CMake package；feature-on在当前环境必须configuration fail | 官方3.0.2 commit `70b0fc8e...`构建并安装`SystemCLanguage`/`SystemC::systemc`；C++17 `sc_main`的两个`SC_THREAD`经delta-cycle event同步并正常退出 | Q22.S以3.0.2作为qualified candidate，正式pin仍需进入统一版本文件并跑上游/项目测试；不混用Ubuntu 2.3.4 ABI |
+
+SoftFloat/TestFloat 3e采用U.C. Berkeley三条款式许可，SystemC 3.0.2参考实现为Apache-2.0，oneDNN为Apache-2.0；
+MPFR/GMP分别涉及LGPL及GMP双许可，具体静态/动态分发、source offer和notice由引入任务在项目发布政策下确认。官方当前
+资料确认MPFR 4.2.2要求GMP 5.0以上，故GMP 6.3.0满足版本关系；license文本存在不等于本项目已经完成合规审查。
+本轮candidate source identity为SoftFloat 3e zip SHA-256 `21130ce8...c746`、TestFloat 3e
+`6d4bdf00...ad6`、GMP 6.3.0 `a3c2b802...8898`、MPFR 4.2.2 `b67ba038...ce01`，以及表内两个Git commit；
+正式引入仍须在统一版本文件记录完整digest并由bootstrap校验，截断值只作可读审计摘要。
+
+#### 10.0.3 Host CRT、vendor seam和replay阻塞
+
+host CRT的可编译/不可链接边界及external授权gate见3.1/3.4。结论是wrapper层可复用候选已经被编译事实支持，但当前没有
+host operator、Direct-DTE/SPM provider或可加载vendor CModel closure；Q22.H不能靠RISC-V archive、include-only target或
+direct shim冒充完成。vendor交付和授权属于external，numeric foundation、oneDNN adapter、plain SystemC组件仍可独立推进。
+
+readiness replay还发现`wafer-convert-group-to-tile-region`会创建`async.token`却没有声明Async dependent dialect，导致只跑
+`wafer-lower-groups-to-tile-region`的Q21 artifact abort。本轮已补dependent dialect和all-to-all named-pipeline回归；修复后
+同一Q21 grouped artifact可产生36个tile region及2个DTE endpoint。这个修复只恢复debug replay，不改变production artifact
+语义或替代Q0.L。
+
+#### 10.0.4 Readiness决议
+
+- Q21 resource census通过，Q0.L可按tasks/10/11当前ordered reduce设计进入独立实施计划；readiness不再是它的blocker。
+- Q22.N/Q22.B的上游candidate可在当前host构建，但仓库尚未建立受管source、CMake target、self-test和license closure，
+  因而仍保持blocked而不是把`/tmp` probe当依赖。
+- Q22.H还受Q0.L、owner-backed target LLVM bundle及external vendor授权/host-seam事实源阻塞；Q22.S/Q22.V继续依赖它。
+- vendor CModel套件、真实board和hardware numeric/packet/timing仍是external evidence；它们不否定model-only方案，也不能由
+  文档、有限corpus或SystemC选择推断。
+
 ### 10.1 Capability和依赖收敛
 
 - 先完成Q0.L：production `CompilationRequest`贯穿typed `TargetProfileId`；debug named target pipeline只用同一registry
@@ -983,13 +1099,17 @@ cost profile。
   Q22 frontend保持unavailable，CModel不得补救compiler已丢失或未证明合法的command语义；
 - 并行向vendor索取完整host CModel development package：匹配`host_runtime.h`/`runtime_api.h`/`tx_runtime.h`/TsmML headers、
   `libcmodel_runtime_api.so`、`libhpgr.so`、`libtsmml.so`、model resources和transitive dependency/license/version；同时确认
-  是否存在低层x86 instruction/operator library；取得后作为可替换frontend或独立oracle，不阻塞project-owned实现；
+  是否存在低层x86 instruction/operator library，并让项目owner/法务确认采购条款是否允许host集成、修改和派生实现；
+  未确认时Q22.H保持blocked，但不阻塞不消费vendor派生事实的Q22.N/Q22.B；
 - 固定首批target call、dtype/layout、engine、packet、Direct DTE和completion capability matrix；
 - 把tasks/14 private prepared target LLVM提升为owner-backed all-rank内部artifact；
-- 增加默认关闭的稳定target-model build feature；固定Accellera SystemC reference implementation版本、获取方式、license和
-  单一CMake target。基础compiler与plain C++ kernels仍可独立构建；feature启用时缺SystemC必须configuration fail，未启用
-  时正式profile明确unavailable且Q22 gate未完成，不能由direct shim代替；
-- 固定SoftFloat、TestFloat、MPFR/GMP和oneDNN的版本、source digest、license、thread/rounding环境与唯一CMake target；
+- 增加默认关闭的稳定target-model build feature；以readiness通过的Accellera SystemC 3.0.2作为candidate，在统一版本文件
+  固定完整commit/digest、获取方式、Apache-2.0 notice、`SystemCLanguage` package和唯一`SystemC::systemc` target。基础
+  compiler与plain C++ kernels仍可独立构建；feature启用时缺SystemC必须configuration fail，未启用时正式profile明确
+  unavailable且Q22 gate未完成，不能由direct shim代替；
+- 以SoftFloat/TestFloat 3e、MPFR 4.2.2/GMP 6.3.0和oneDNN 3.12为readiness-qualified candidate；实施任务再把完整source
+  digest、license、thread/rounding环境与唯一CMake target写入统一版本/依赖入口，并执行上游self-test。MPFR/GMP bootstrap
+  必须显式检查GNU m4；
   formal numeric tests缺任一该family必需的independent oracle或trusted-TCB conformance dependency时明确unavailable，
   不能以host `float`替代。dependency spike还必须固定SoftFloat
   specialization/`THREAD_LOCAL`、MPFR TLS/runtime版本、self-tested MPFR/GMP artifact到实际loaded/static binary的
@@ -1000,8 +1120,9 @@ cost profile。
   revision/profile identity，供verifier、target lowering、CRT conformance与model共同使用；
 - plain C++ kernel/property tests不链接SystemC；SystemC test executable使用唯一`sc_main`入口并实际运行，不能只编译、
   skip或用`gtest_main`替代；
-- 形成同一repo CRT源码的device/host platform contract，移除源码内强制`USING_RISCV`选择，明确rank-local Direct DTE
-  state、checked address和blocking-yield边界。
+- external授权/事实源gate通过后才形成同一repo CRT wrapper的device/host platform contract，移除源码内强制
+  `USING_RISCV`选择，明确rank-local Direct DTE state、checked address和blocking-yield边界；未通过时不修改vendor材料或
+  实现其派生operator/packet seam。
 
 完成：文档、typed capability、依赖决策和failure分类收敛；未实现symbol/profile在任何mutation前可被完整枚举拒绝。
 
@@ -1038,7 +1159,8 @@ failure test。该阶段仍不声明任一未知edge policy为hardware事实。
 - 固定真实`linear-residual-mlp-f32` rank-count=1作为首个vertical：当前case参数是batch 2、input 16、hidden 32、
   output 16、f32、tanh和residual；这些值只是测试参数，不进入capability协议；
 - host JIT执行same fully legal target LLVM；
-- host执行同源repo CRT，经Tsm factory/operator形成packet并复制到SystemC tile/worker/queue入口；
+- external授权/事实源gate通过后，host执行获准使用的同源repo CRT wrapper，经许可兼容Tsm factory/operator形成packet并
+  复制到SystemC tile/worker/queue入口；
 - 建立rank-local virtual SPM/DDR、typed slots、checked address、invocation error latch和可yield local wait；
 - 先覆盖该artifact实际调用的`rdma`、`gather_scatter`、`gemm`、`elementwise_add`、`elementwise_tanh`、`wdma`和
   `local_fence`，以及`Rdma/DataMove/Gemm/Arith/Activation/Wdma`六类Tsm factory；
@@ -1069,7 +1191,7 @@ dtype已覆盖的唯一证明。
 
 ### 10.4 Project packet、event和16-rank transport
 
-- 增加current CT/NE/RDMA/WDMA/TDMA project packet decode和独立field/memory component checks；vendor-exact逐字段
+- 增加current CT/NE/RDMA/WDMA/TDMA authorized host packet decode和独立field/memory component checks；vendor-exact逐字段
   correlation只在配置独立packet/MMIO source后作为可选provenance gate；
 - 在SystemC中建立三个worker window；model-only per-worker parallel config成立时区分五个逻辑issue class，否则走保守serial
   profile；不声明`3×5`物理queue或engine复制；同时建立
@@ -1121,9 +1243,10 @@ cycle证据时cycle-accurate保持非目标。
    `libcmodel_runtime_api.so`。需要确认能否取得完整host-runtime开发包、instruction model、依赖、资源、版本和license，
    以及其输入究竟是Tsm model/session、packet/MMIO还是exact package；若可得，packet或exact-module路径可能显著缩短，
    但仍需独立correlation。
-2. **Packet事实源**：需要确认可否复用vendor可审计builder或获得register trace。repo CRT host build产生的是
-   project-derived packet；它验证当前compiler/CRT/model链，但在独立correlation前不证明vendor packet完全一致。该缺口
-   不阻塞Q22.C的board-output numeric profile，只限制packet/opcode provenance。
+2. **Packet事实源与授权**：需要确认可否复用vendor可审计builder或获得register trace，并确认当前采购条款是否允许host
+   集成或独立实现。只有vendor交付的许可兼容provider，或经项目owner/法务确认、基于独立可审计规范的clean-room seam才能
+   产生Q22正式host packet；它验证当前compiler/CRT/model链，但在独立correlation前不证明vendor packet完全一致。授权缺口
+   阻塞Q22.H/Q22.S/Q22.V，不阻塞numeric/bulk component实现；packet capture缺失只限制packet/opcode provenance。
 3. **SystemC工程基线**：需要固定CI平台、受支持版本、获取方式、license、deterministic scheduling要求和未来ISS
    co-simulation边界。SystemC只拥有event/transaction实现，不改变artifact、packet、功能核或compiler合同。
 4. **板端numeric环境和验收政策**：需要固定可用SKU/revision/unit、firmware/runtime/instruction-library/CRT组合、
@@ -1141,7 +1264,7 @@ cycle证据时cycle-accurate保持非目标。
 - tasks/14拥有target ABI preparation、fully legal target LLVM、CRT和RISC-V module publication；target LLVM bundle
   落地时应在同批同步其producer合同。
 - tasks/15拥有exact target model `RuntimeProvider`生命周期和package消费；host-CRT/SystemC模式不是该provider。
-- tasks/16拥有direct ABI smoke、host-CRT/SystemC、Q22 project packet/event、Q22.C board numeric、可选packet/MMIO、
+- tasks/16拥有direct ABI smoke、authorized host-CRT/SystemC、Q22 host packet/event、Q22.C board numeric、可选packet/MMIO、
   exact-module、board和deferred timing的证据分层及CI gate。
 - 本文拥有target execution model内部边界、capability、SystemC选择、板端numeric correlation计划和各层不得冒充的声明。
 - tasks/09/11/13仍分别拥有memory legality、instruction/packet legality和Direct DTE/completion；model不能改写这些

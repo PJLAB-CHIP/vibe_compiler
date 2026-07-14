@@ -223,6 +223,7 @@ def ConvertGroupToTileRegionPass
     : Pass<"wafer-convert-group-to-tile-region", "mlir::ModuleOp"> {
   let summary = "Convert logical wafer.group ops to wafer.tile.region IR";
   let dependentDialects = ["mlir::arith::ArithDialect",
+                           "mlir::async::AsyncDialect",
                            "mlir::bufferization::BufferizationDialect",
                            "mlir::func::FuncDialect",
                            "mlir::linalg::LinalgDialect",

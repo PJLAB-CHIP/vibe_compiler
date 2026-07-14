@@ -234,3 +234,14 @@
   send/recv/wait三者均保留。
 - 防复发：任何会消费token、推进completion或改变同步状态的op不能只用read effect表达；带canonicalizer的
   production pipeline必须有对应liveness测试，不能只测无canonicalizer的局部lowering输出。
+
+## 2026-07-14 standalone group-to-tile replay缺少Async dialect
+
+- 现象：Q21正式producer派生的grouped artifact只运行`wafer-lower-groups-to-tile-region`时，在all-to-all
+  materialization创建`async.token`处abort，提示type storage uniquer未初始化；更长的组合pipeline却可能正常运行。
+- 根因：`ConvertGroupToTileRegionPass`会创建Async dialect type，但`Passes.td`没有把
+  `mlir::async::AsyncDialect`声明为dependent dialect；后置pass的声明偶然掩盖了缺口。
+- 修复模式：在创建该type的pass自身声明Async dependent dialect，并让all-to-all named-pipeline回归直接检查token和
+  wait边界；再用同一source-backed Q21 artifact重放确认不是fixture特例。
+- 防复发：dependent dialect归创建者拥有，不能依赖driver全量注册或其它pass的加载副作用；每个公开named pipeline至少有
+  一项standalone执行测试。

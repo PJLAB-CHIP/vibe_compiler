@@ -227,7 +227,8 @@ runtime长期分三层；Q18实现前两层，第三层属于后续provider/boar
 3. `RuntimeProvider`：执行allocation/import/copy/load/resolve/submit/wait/copyback/cleanup。
 
 tasks/17定义的target execution model有三个runtime/artifact执行边界：direct shim消费compiler内部owner-backed target
-LLVM bundle，只作ABI smoke；Host-CRT/SystemC模式消费同一bundle并执行repo CRT/project packet的untimed
+LLVM bundle，只作ABI smoke；Host-CRT/SystemC模式在external authorization/spec gate通过后消费同一bundle，并执行获准
+host使用的repo CRT wrapper及许可兼容host packet seam的untimed
 functional-numeric链；
 两者都不属于
 `RuntimeProvider`。只有exact-module模式能加载Q18 verified package中的all-and-only RISC-V ELF、执行loader
@@ -296,8 +297,8 @@ no-card允许证明：
 - deterministic launch/completion plan；
 - side-effect-free rejection。
 
-direct target-call shim只比no-card多提供target LLVM/ABI smoke；正式Host-CRT/SystemC model还可证明同源repo CRT、
-project packet和untimed functional-numeric路径的支持子集结果，但两者都不证明package内exact module、provider
+direct target-call shim只比no-card多提供target LLVM/ABI smoke；正式Host-CRT/SystemC model还可证明获准host使用的同源
+repo CRT wrapper、明确provenance的host packet和untimed functional-numeric路径的支持子集结果，但两者都不证明package内exact module、provider
 lifecycle或board，且独立packet/MMIO correlation前不证明vendor-exact packet。exact target model provider可以证明verified package在指定model
 profile中的执行，但仍不是board execution；各类证据的分层和correlation gate由tasks/16、tasks/17拥有。
 

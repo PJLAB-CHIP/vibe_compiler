@@ -570,8 +570,12 @@ operands，再生成无map的terminal `wafer.instr.elementwise`；identity map�
 当前target LLVM reduce emission不传init，所以tile→instruction先验证tile-level SSA `init`与`init_value`互斥且类型一致。
 Q0.L source-reduce correctness baseline把可表示的init写入result-shaped accumulator，按canonical lexicographic reduction
 tuple依次materialize同shape slice，并以与source combiner精确对应的map-free elementwise op在两块accumulator间ping-pong；
-每一步有显式completion，最后movement到destination。不能被typed fill表示的dynamic init、没有exact elementwise mapping的
-combiner（当前包括avg）或超过checked expansion budget的case在effect前拒绝。该序列不使用native reduce，因此不会把
+correctness-first基线在fill、每个slice movement、每次elementwise更新和final movement后均形成显式completion；只有当前
+IR可验证的同engine顺序或dependency relation才允许合并。不能被typed fill表示的dynamic init、没有exact elementwise
+mapping的combiner（当前包括avg）或超过checked expansion budget的case在effect前拒绝。tile→instruction先形成只在本次
+lowering存活的完整expansion，checked统计实际拆分后的engine command和completion op；每个accepted rank的独立上限为4096。
+这个static reduce terminal-op预算不复用tasks/06同为4096的candidate materialization counter，也不是target/workload语义。
+该序列不使用native reduce，因此不会把
 `native_reduce(xs) op init`误当成source-order `(((init op x0) op x1)...)`。
 
 terminal `wafer.instr.reduce`的ODS移除optional init operand，verifier拒绝`init_value`等残留attr。它只表示无init字段的

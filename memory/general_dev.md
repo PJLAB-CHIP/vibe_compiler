@@ -44,6 +44,10 @@
   artifact构造accepted bundle，用frontend唯一NPY parser加载typed global input和package-relative parameter/constant，
   再按`RankProgramBinding`的global/local shape与slice构造rank invocation。reference mismatch返回非零但不删除已经
   验证的package；CLI的index/tolerance语法错误则必须在编译和发布前拒绝。
+- source-backed implementation-readiness census必须先新鲜执行formal `wafer-compile` gate，再从该次正式producer的
+  grouped/accepted artifact派生all-rank IR-local replay；手写fixture只能补负例，debug dump也不能冒充package成员。
+  规模估算要逐rank记录真实op kind/init/dim/shape/layout/extent，并把compile expansion budget和SPM high-water分别用
+  checked arithmetic核算，避免用一个代表rank或理论shape替代实际corpus。
 - multi-rank是执行域，不等于transport种类。bundle-level executor先证明all-rank transport合同同质；`None`在每rank
   独立arena执行并用typed output slice重组，`DirectDTE`才使用deterministic event scheduler。replicated output还必须
   跨rank byte-identical，不能为了复用DTE路径而伪造通信。
@@ -65,6 +69,11 @@
   旧owner或旁路协议。实施计划不能依赖某个agent skill或工具目录才能解释和执行。
 - 第三方依赖的固定版本集中在 `cmake/third_party/WaferDependencyVersions.cmake`；不要把 LLVM、StableHLO、
   Shardy、OpenXLA/XLA、PyTorch/XLA、torch-mlir、lit 或 gtest 版本散落到源码里。
+- 新numeric/SystemC依赖进入production前分层取证：先枚举checkout/system package，再检查binary architecture和link
+  closure，最后只在transaction-local目录用官方candidate源码做configure/build/run probe。每项至少记录exact version/
+  commit或digest、license入口、导出的唯一CMake target、thread/TLS状态和最小运行结果；probe通过只形成candidate，不能
+  替代统一版本文件、受管bootstrap、上游self-test和项目gate。configure始终显式指定source/build目录和工作目录，避免
+  把上游临时文件写入repo root。
 - 用 `python3 tools/bootstrap_deps.py --python` 把固定版本 Python 测试工具安装到
   `third_party/python`。
 - 用 `python3 tools/bootstrap_deps.py --importer-sources` shallow fetch 固定版本 PyTorch/XLA、StableHLO、
@@ -239,7 +248,9 @@
   和 `Common` IR 层组织，并检查 `Conversion` 不再被 `WaferTransforms` 直接 owning。
 - Wafer transform pass API 的主入口是 `include/Wafer/Transforms/Passes.td` 生成的
   `WaferPasses.h.inc`；新增非可选 pass 应先在 `Passes.td` 声明 argument、summary 和
-  dependent dialects，再让实现继承 generated base。只读 dump pass 结束前要
+  dependent dialects，再让实现继承 generated base。pass即使只间接创建某个dialect的type（例如collective
+  materialization创建`async.token`）也必须声明该dialect；组合pipeline中的后置pass可能偶然预加载dialect，因此还要有
+  只运行该named pipeline的回归。只读 dump pass 结束前要
   `markAllAnalysesPreserved()`。
 - Region op 的 verifier 要按 MLIR 阶段拆：boundary / operand / result invariant 放普通
   `verify()`，body argument、terminator 和 region body legality 放 `verifyRegions()`。父 region op

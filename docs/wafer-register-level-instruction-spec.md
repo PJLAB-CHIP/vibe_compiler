@@ -80,8 +80,9 @@ void __AddVV(void *src0, void *src1, void *dst,
 common-util和Kcore archive都是RISC-V object，不能直接形成x86 wrapper/packet model。
 
 当前repo CRT实际使用per-op `TsmNew*`取得method table，填写栈上`Tsm*Instr`，调用`TsmExecute`后再`TsmDelete*`；它不调用
-operator-table入口`initTsmOpPointer_cmodel`。因此仅取得该initializer不足以host化当前CRT。项目自行实现host Tsm
-operator时，`TsmExecute`必须在返回前完成decode或复制异步所需字段，绝不能保存caller栈指针；这种packet只证明project CRT/builder路径，直到与RISC-V archive
+operator-table入口`initTsmOpPointer_cmodel`。因此仅取得该initializer不足以host化当前CRT。只有tasks/17定义的external
+authorization/spec gate通过后，才可由许可兼容provider或经确认允许的独立规范实现host Tsm operator；此时`TsmExecute`
+必须在返回前完成decode或复制异步所需字段，绝不能保存caller栈指针。这种packet只证明其明确provenance下的CRT/builder路径，直到与RISC-V archive
 register trace、board capture或versioned vendor builder逐字段相关后，才可增加vendor-exact claim。target model的接入和
 gate由`tasks/17`/`tasks/16`拥有，不由本证据附件决定SystemC或其它实现技术。上述复制只针对`Tsm*Instr` bytes，不代表
 Direct DTE payload snapshot；DTE source具体读取时刻仍需vendor/board证据。

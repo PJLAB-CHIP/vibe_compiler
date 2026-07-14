@@ -274,8 +274,13 @@ NaN和signed-zero结果的变换，而是在SPM planning前形成以下显式有
    通过movement materialize成与result同shape的scratch；
 3. 用与source combiner精确对应的same-shape `wafer.instr.elementwise`把`A`和slice写入另一块accumulator，显式completion后
    ping-pong；没有精确elementwise kind的combiner（当前包括avg）拒绝；
-4. 将最后一个accumulator显式movement到destination。静态展开受checked command/product budget约束，超限结构化失败；
-   该预算不是workload、shape或硬件语义，未来只有能验证动态地址/range的structured loop才可替代。
+4. 将最后一个accumulator显式movement到destination，并在结果可被后续consumer观察前完成该movement。correctness-first
+   基线在fill、每个slice movement、每次elementwise更新和final movement后都形成显式completion；只有当前IR中存在可验证
+   的同engine顺序或dependency relation时才可合并，不从issue顺序猜测完成；
+5. tile→instruction在产生任何effect前构造transaction-local expansion并用checked arithmetic统计实际拆分后的engine
+   command与completion op。每个accepted rank使用独立的4096个static reduce terminal-op资源预算；它与tasks/06的4096个
+   candidate materialization预算数值相同但计数对象、owner和diagnostic完全独立，不能共用counter或把任一预算解释成
+   workload、shape或硬件语义。未来只有能验证动态地址/range和completion的structured loop才可替代静态展开。
 
 这个序列把init置于第一次combine之前，并固定每个output coordinate的source-order evaluation；不依赖in-place alias。
 terminal指令都不携带reduce init；Q0.L的source-produced reduce基线也不生成native `wafer.instr.reduce`。只有未来

@@ -51,10 +51,9 @@
 
 ## 实施计划导航
 
-当前没有active实施计划；Next是Q0.L `target-command-legality-closure`，它进入代码实现前必须在`tasks/plans/`建立独立
-计划。Q22方案已在`tasks/17-target-execution-model.md`收敛multi-dtype numeric foundation、untimed SystemC、证据层和
-板端numeric合同，但在Q0.L完成前保持blocked；解除blocked前还要按独立可调度边界拆分队列项和实施计划。已完成的单卡纵向计划和旧7份long-horizon plans
-均已归档；动态执行状态仍只看`tasks/progress.md`。
+当前没有active计划；Q22.R readiness已经归档到`tasks/archive/target-model-readiness.md`。Next是Q0.L，它进入代码施工前
+必须建立独立计划。Q22已经在队列中拆为numeric foundation、bulk qualification、target LLVM+host CRT、SystemC
+event/transport及source-backed vertical closure；各代码任务开工前仍需独立计划。动态执行状态只看`tasks/progress.md`。
 
 ## 归档文档
 
@@ -64,6 +63,7 @@ docs、`tasks/progress.md` 和本轮已收敛设计结论为准。
 
 | 文档 | 原性质 |
 | --- | --- |
+| `tasks/archive/target-model-readiness.md` | Q21 reduce、numeric/SystemC依赖与host-CRT seam implementation-readiness实证 |
 | `tasks/archive/01-design-docs-gap-review.md` | 历史设计缺口审计 |
 | `tasks/archive/02-source-organization-recovery.md` | 历史源码组织恢复记录 |
 | `tasks/archive/03-dependency-layering-recovery.md` | 历史依赖分层恢复记录 |

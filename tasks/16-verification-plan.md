@@ -1,7 +1,7 @@
 # Wafer Compiler Verification Plan
 
 状态：2026-07-14按Q22 multi-dtype foundation、逐profile oneDNN admission、state-isolated numeric backend、untimed
-SystemC模型和Q22.C板端numeric correlation方案更新。
+SystemC模型、host-seam external authorization/spec gate和Q22.C板端numeric correlation方案更新。
 本文拥有跨stage完成证据和测试口径；具体IR/ABI规则由
 对应编号设计文档拥有。实现状态看`tasks/progress.md`。
 
@@ -36,8 +36,9 @@ Pipeline position:
   staging/publication；Q18闭合typed manifest/package/no-card runtime；Q19闭合immutable single-rank reference core；
   Q16.T闭合Direct DTE transport activation；Q19.M闭合deterministic multi-rank reference；Q20/Q21依次闭合
   rank-count=1/16 linear/MLP和16-rank tiny Llama纵向链。后续gate不能反向成为Q0前置，board未执行时保持明确
-  external gate。Q22先闭合完整multi-dtype numeric foundation，再闭合host-CRT/SystemC model-only functional-numeric和
-  project-derived packet component；direct shim只作ABI smoke。Q22.C消费Q22和Q6.B结果闭合板端numeric correlation；
+  external gate。Q22先闭合完整multi-dtype numeric foundation；external authorization/spec gate通过后，再闭合
+  host-CRT/SystemC model-only functional-numeric和明确provenance的host packet component；direct shim只作ABI smoke。
+  Q22.C消费Q22和Q6.B结果闭合板端numeric correlation；
   vendor-exact packet只在有独立packet/MMIO
   evidence时增加provenance claim。exact package provider和deferred timing calibration保持独立更高gate。
 ```
@@ -58,12 +59,12 @@ runtime可以从不同上游并行取得，只有明确列出的consumer才能�
    independent differential或显式trusted-TCB conformance；SoftFloat/TestFloat或production MPFR不得自计双oracle。
    oneDNN大GEMM另按完整profile进入
    `bit-exact/profile-bounded/rejected` admission，formal work budget与fail-fast生效；model capability不扩大compiler legality。
-7. **Host-CRT/SystemC model-only functional-numeric**：同一fully legal target LLVM调用与device build同源的repo CRT
-   wrapper，经project-owned Tsm operator/packet builder进入untimed SystemC，并由独立plain C++ numeric kernel执行，
-   证明该project CRT/packet/event路径在supported model profile中的完整数值结果；
+7. **Authorized Host-CRT/SystemC model-only functional-numeric**：external authorization/spec gate通过后，同一fully legal
+   target LLVM调用与device build同源且获准host使用的repo CRT wrapper，经许可兼容Tsm operator/packet seam进入untimed
+   SystemC，并由独立plain C++ numeric kernel执行，证明该明确provenance的CRT/packet/event路径在supported model profile中的完整数值结果；
    不执行RISC-V archive，也不证明vendor-exact packet或package module。
 8. **Optional packet/MMIO conformance**：exact module产生的register trace、board capture或versioned vendor builder与
-   project packet逐字段比较decode、address、engine和register effect；缺失只限制packet provenance。
+   authorized host packet逐字段比较decode、address、engine和register effect；缺失只限制packet provenance。
 9. **No-card runtime**：verified package、binding和launch/completion plan通过，无真实device side effect。
 10. **Fake provider execution**：抽象provider调用实际执行、记录、注入失败和cleanup，不执行exact target module。
 11. **Exact-module target model provider**：verified package中的all-and-only RISC-V ELF经ISS/vendor simulator、loader
@@ -77,7 +78,7 @@ runtime可以从不同上游并行取得，只有明确列出的consumer才能�
 独立packet/MMIO conformance是可选诊断证据：只有exact-module register trace、board capture或versioned vendor builder
 存在时才能增加vendor packet/register provenance；它不是Q22或Q22.C的完成前置，也不能单独证明numeric。
 
-任何类别只能声明自己的输入路径和已验证事实。reference不是target model；direct ABI smoke不是CRT；project packet不是
+任何类别只能声明自己的输入路径和已验证事实。reference不是target model；direct ABI smoke不是CRT；host packet不是
 vendor-exact packet；packet trace不单独证明numeric；packet不是exact package；target model不是board；untimed不是
 performance；board单case不是scale或全输入域完成。
 
@@ -743,9 +744,10 @@ Pipeline position:
   Q16 accepted ExecutableBundle经tasks/14同一target ABI preparation和full conversion形成的owner-backed、
   all-and-only fully legal target LLVM modules及ordered typed ABI slots。
 - Current stage responsibility:
-  消费已通过11.1的numeric foundation；在执行前核对all reachable wafer_tx81_*及host platform capability；host执行same
+  消费已通过11.1的numeric foundation；先确认tasks/17 external authorization/spec gate已经通过，再在执行前核对all
+  reachable wafer_tx81_*及host platform capability；host执行same
   target LLVM control-flow/call graph，
-  调用与device build同源的repo CRT wrapper C源码，经project-owned Tsm factory/operator构造packet，并通过untimed
+  调用与device build同源且获准host使用的repo CRT wrapper C源码，经许可兼容Tsm factory/operator构造packet，并通过untimed
   SystemC tile/worker/queue/memory/DTE event model和独立plain C++ numeric kernels完成supported功能语义。地址按typed
   SPM offset、compiler DDR arena和
   invocation-time external resource registry分别解析。
@@ -755,12 +757,12 @@ Pipeline position:
   diagnostic provenance；direct shim结果另标`direct ABI smoke`。两者都不进入bundle/package或planning。
 - Downstream consumer:
   与独立Q19/CPU oracle做完整输出differential；Q22.C后续消费model result和Q6.B board result形成numeric profile。
-  project packet不能作为vendor-exact自证事实源。
+  host packet不能作为vendor-exact自证事实源。
 - User-level driver / named pipeline:
   wafer-compile在Q17/Q18原子发布后、同一invocation仍持有target LLVM bundle时进入显式target-model mode；
   wafer-opt/manual pass chain只补局部negative。
 - Explicit non-goals:
-  不执行RISC-V archive或package ELF；project-owned host operator在独立packet/MMIO correlation前不宣称vendor-exact packet，
+  不执行RISC-V archive或package ELF；许可兼容host operator在独立packet/MMIO correlation前不宣称vendor-exact packet，
   也不宣称provider、board或timing。
 - Completion gate:
   numeric foundation先通过；Q20 source-backed rank-count=1 f32 linear/MLP作为首个完整系统vertical，source-produced
@@ -769,7 +771,8 @@ Pipeline position:
   vertical，覆盖all-and-only ranks、batched GEMM、reduce、exp/rsqrt、i1/select和Direct DTE；另有deterministic
   source-backed large GEMM超过formal work budget并自动命中admitted oneDNN；
   symbol/factory/ABI/static profile、address plan和endpoint在input import/model mutation前preflight；运行时packet、
-  computed address、dynamic descriptor/numeric tuple在对应transaction effect前验证；正式positive经过repo CRT、Tsm
+  computed address、dynamic descriptor/numeric tuple在对应transaction effect前验证；正式positive在external gate通过后
+  经过获准host使用的repo CRT、Tsm
   packet和SystemC event，完整输出与Q19/CPU按
   逐op/dtype profile policy一致，late failure无partial result。SystemC-enabled tests必须真实执行。Q17/Q18先按各自合同发布；
   model mismatch让verification返回非零但保留已验证package供审计。
@@ -789,10 +792,11 @@ expected和digest前只算export/shape/frontend结构覆盖，不证明target di
 formal budget。generated large corpus不能替代source-backed expected，Q20可以强制bulk验证integration，另由large gate证明
 自动dispatch和performance path。
 
-### 11.3 Q22 Project Packet And Untimed Event Gate
+### 11.3 Q22 Authorized Host Packet And Untimed Event Gate
 
-- repo CRT host build经project-owned Tsm operator产生的packet可作为Host-CRT/SystemC functional-numeric positive，但必须
-  明确标记project-derived；Q22本地component gate以独立field oracle检查raw bytes、decode、address/range和observable
+- external authorization/spec gate通过后，获准host使用的repo CRT wrapper经许可兼容Tsm operator产生的packet可作为
+  Host-CRT/SystemC functional-numeric positive，但必须明确标记实际provenance；Q22本地component gate以独立field oracle
+  检查raw bytes、decode、address/range和observable
   memory effect，手写packet只补unknown opcode、malformed field、OOB、overflow和failure negative；
 - CT/NE/RDMA/WDMA/TDMA逐family检查worker、trigger、geometry、address/range/end和observable memory effect；
 - 三个worker window显式建模；model-only profile可由显式per-worker typed model config在`serial_mode=0`语义下区分CT/NE/RDMA/

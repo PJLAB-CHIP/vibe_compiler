@@ -246,7 +246,8 @@ reference executor不是cycle/packet simulator，不证明CRT wrapper、真实tr
 
 target execution model是与reference并列的下游consumer：近期从tasks/14 full conversion形成的owner-backed、
 不可序列化target LLVM bundle执行same typed CRT ABI。direct host shim只作ABI smoke；正式untimed functional-numeric路径调用与
-device build同源的repo CRT wrapper，经project-owned Tsm operator/packet builder进入SystemC。Q22在首个f32 workload
+device build同源且获准host使用的repo CRT wrapper，并在tasks/17定义的external authorization/spec gate通过后，经许可兼容
+Tsm operator/packet seam进入SystemC。Q22在首个f32 workload
 vertical前先闭合13种logical storage codec、有证据的target-profile×engine×format encoding、当前七种compute/convert format、
 `(ModelProfileId, NumericCommandKey) -> NumericSemanticsProfile`唯一映射和formal numeric backend；oneDNN只处理target codec解包后的dense
 tensor，并按完整profile进入bit-exact、profile-bounded或rejected admission。formal backend只在checked work budget内执行，

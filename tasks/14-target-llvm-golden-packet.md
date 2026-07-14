@@ -264,11 +264,11 @@ diagnostic按稳定语义分类：
 - target execution model：tasks/17已确定近期模型应消费tasks/14同一ABI preparation和full conversion结果。
   实现时把上述transaction-local per-rank prepared target LLVM/ABI artifacts提升为owner-backed、move-only、不可序列化的all-rank target LLVM
   bundle，使现有RISC-V device link、direct ABI smoke和Host-CRT/SystemC model成为三个直接consumer。正式model consumer
-  host执行同一target LLVM，调用与device build同源的repo CRT wrapper，再经project-owned Tsm operator/packet builder
-  进入SystemC；direct shim只补ABI诊断。该bundle携带fully legal LLVM modules、canonical rank domain、每rank logical
+  只有在tasks/17 external authorization/spec gate通过后才host执行同一target LLVM，调用与device build同源且获准host使用的
+  repo CRT wrapper，再经许可兼容Tsm operator/packet seam进入SystemC；direct shim只补ABI诊断。该bundle携带fully legal LLVM modules、canonical rank domain、每rank logical
   rank/entry、`ExecutionConfig`、ordered typed ABI slots、target identity/revision、target/kernel ABI facts及context/owner
   lifetime；全部rank成功后才原子形成，不是packet artifact或package成员。在该producer落地前，当前Q17
-  `TargetArtifactBundle`合同和完成状态不变。Host-CRT/SystemC通过能证明project CRT/packet的untimed
+  `TargetArtifactBundle`合同和完成状态不变。Host-CRT/SystemC通过只能证明其明确provenance下repo CRT/host-packet的untimed
   functional-numeric链，仍不执行RISC-V archive；在独立packet/MMIO事实源相关前不证明vendor-exact packet，Q22.C板端
   numeric correlation也不替代该packet provenance；
 - Q0.L/Q22实施前置的typed format/encoding registry由tasks/14单一拥有，tasks/11 verifier、target lowering、CRT conformance和
