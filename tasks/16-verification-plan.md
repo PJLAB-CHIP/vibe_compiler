@@ -52,7 +52,8 @@ runtime可以从不同上游并行取得，只有明确列出的consumer才能�
    signature、control flow、typed slots和基本地址形成；不证明repo CRT、packet或event。
 6. **Numeric foundation conformance**：13种storage format的raw/bitpacked codec、当前七种compute/convert format、
    36条convert route、完整operand/product/accumulator/intermediate/destination signature、四种确定性rounding及
-   type-generic formal kernels通过exhaustive/boundary/property和独立library oracle；model capability不扩大compiler legality。
+   type-generic formal kernels通过exhaustive/boundary/property和独立library oracle；大GEMM另由逐signature验证的oneDNN
+   bulk backend执行；model capability不扩大compiler legality。
 7. **Host-CRT/SystemC model-only functional-numeric**：同一fully legal target LLVM调用与device build同源的repo CRT
    wrapper，经project-owned Tsm operator/packet builder进入untimed SystemC，并由独立plain C++ numeric kernel执行，
    证明该project CRT/packet/event路径在supported model profile中的完整数值结果；
@@ -635,12 +636,22 @@ allocation、launch、transport、completion和copyback仍只由Q6.B拥有。
 - GEMM/reduce测试完整operand/product/accumulator/intermediate/destination tuple、逐步rounding/overflow、FMA、reduction
   order和store conversion；至少覆盖f16/bf16窄/宽累加、TF32-to-f32和i8-to-i32 candidate的区分向量；
 - 从current production accepted surface生成closure：每个compiler-emittable tuple恰有一个model kernel/comparator或
-  静态unsupported reason；model-only候选不能扩大legality，optional bulk backend逐row与formal backend conformance后
-  才启用。
+  静态unsupported reason；model-only候选不能扩大legality；oneDNN bulk backend逐row与formal backend conformance后
+  才启用，并对每个admitted GEMM signature强制测试formal/bulk选择和unsupported fallback。
 
 只有exhaustive/property/oracle tests真实执行且受管dependency版本、license和digest可审计，该gate才通过；skipped
 oracle、单个f32 workload、global tolerance或oneDNN/Eigen输出不能替代。该gate只证明model semantics，不证明板端edge
 behavior。
+
+oneDNN是Q22大GEMM的首版执行依赖，不是远期性能优化：小矩阵conformance可双跑formal/bulk，source-backed大GEMM只运行
+validated-bulk以避免逐MAC标量成本，并记录library version、CPU ISA、thread runtime、primitive descriptor、math/
+accumulation/deterministic attributes。每个source-backed GEMM positive断言实际命中bulk backend；缺oneDNN、fallback到
+scalar或未准入signature都使正式大GEMM gate unavailable/fail，而不影响基础compiler构建。
+
+另用generated batched/non-batched large-GEMM component corpus跨M/N/K、tail和支持dtype验证dispatch：每个target command
+恰调用一次oneDNN GEMM primitive、formal MAC计数为零、SystemC event/transaction数量不随M×N×K增长；必要pack/reorder
+另记provenance但不拆成numeric event。wall-clock和throughput可记录为非阻塞regression telemetry，但不作为抖动的
+correctness pass/fail标准。
 
 ### 11.2 Direct ABI Smoke And Host-CRT/SystemC Gate
 

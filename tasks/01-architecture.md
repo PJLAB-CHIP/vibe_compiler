@@ -243,7 +243,8 @@ target execution model是与reference并列的下游consumer：近期从tasks/14
 不可序列化target LLVM bundle执行same typed CRT ABI。direct host shim只作ABI smoke；正式untimed functional-numeric路径调用与
 device build同源的repo CRT wrapper，经project-owned Tsm operator/packet builder进入SystemC。Q22在首个f32 workload
 vertical前先闭合13种storage format、当前七种compute/convert format、完整accumulator/intermediate/rounding policy和
-formal numeric backend；SystemC只消费该基础层，并用Q19/CPU作独立oracle。format codec存在不扩大compiler legality，
+formal numeric backend；已准入的source-backed大GEMM由oneDNN bulk backend执行，小矩阵/edge row由formal backend验证或
+回退。SystemC只消费该基础层，并用Q19/CPU作独立oracle。format codec存在不扩大compiler legality，
 外部CPU库默认行为也不构成hardware policy。
 Q22.C再消费Q22 model result和Q6.B board result，按逐op/dtype profile发布tested domain内的board-output-correlated
 numeric evidence；独立packet/MMIO trace闭合后才增加hardware-correlated-numeric和packet provenance，不是Q22.C前置。
