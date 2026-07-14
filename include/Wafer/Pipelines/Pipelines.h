@@ -3,6 +3,8 @@
 #ifndef WAFER_PIPELINES_PIPELINES_H
 #define WAFER_PIPELINES_PIPELINES_H
 
+#include "Wafer/Target/TargetProfile.h"
+
 #include <cstdint>
 
 namespace mlir {
@@ -25,7 +27,8 @@ void buildLowerGroupsToMemoryPlannedInstrPipeline(mlir::OpPassManager &pm,
 void buildLowerGroupsToDDRMemoryPlannedInstrPipeline(mlir::OpPassManager &pm,
                                                      int64_t logicalRank);
 void buildLowerGroupsToTargetLLVMPipeline(mlir::OpPassManager &pm,
-                                          int64_t logicalRank);
+                                          int64_t logicalRank,
+                                          TargetProfileId targetProfile);
 void buildLowerGroupsToSelectedInstrPipeline(mlir::OpPassManager &pm,
                                              int64_t logicalRank);
 

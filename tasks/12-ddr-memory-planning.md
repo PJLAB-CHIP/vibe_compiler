@@ -76,7 +76,8 @@ Pipeline position:
   post-commit target/package/runtime不得从raw instruction IR重新恢复resource语义。
 - User-level driver / named pipeline:
   Q16以后由同一
-  `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16}`的whole-variant
+  `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16} --target-profile=wafer-tx81-single-card-kernel-v1`
+  的whole-variant
   candidate loop调用本stage。当前Q15只产出verified grouped program directory，不执行DDR planning；
   `wafer-opt`、局部`wafer-plan-ddr-memory`和从tile-region/instruction/SPM跑到DDR offset assignment的
   named pipeline只处理显式IR，用于IR-local replay/test，不是用户stop-stage。completion proof必须覆盖

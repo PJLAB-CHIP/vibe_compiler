@@ -143,7 +143,10 @@ compiler-private orchestration/default，不得把pass pipeline暴露给用户�
 accepted candidate必须覆盖每个static result element all-and-only一次，并包含所有reduction contribution：
 
 - output tile domain按checked ceil-div/product枚举，包含非整除tail；
-- reduction split显式物化全部chunks，并由exact combiner把reduced value与accumulator连接；
+- reduction split若改变source combiner顺序或先以neutral init独立归约chunk再合并partial，就不是合法candidate。
+  Q0.L correctness-first基线不产生reduction-split candidate：完整source reduction先保持为单一tile semantic reduce，再由
+  tile→instruction按init-first canonical order展开；完整输入无法通过SPM/terminal-op预算时该candidate fail closed。
+  未来只有在同一accumulator跨chunk顺序传递并由compiler证明与source iterator order等价时，才可重新开放split；
 - multi-output当前只接受equal static result shape、彼此独立、直接yielded的single-result Linalg roots；
 - producer chain、不同output domain或无法由SSA证明的output relation对tiled path fail closed；
 - conservative full-group candidate仍走同一legality和commit proof。

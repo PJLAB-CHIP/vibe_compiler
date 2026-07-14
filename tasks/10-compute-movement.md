@@ -105,7 +105,8 @@ Pipeline position:
   tiled DDR load/store view 必须已经由 candidate materialization 或 accepted materialization 显式提供。
 - User-level driver / named pipeline:
   Q16以后由同一
-  `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16}`的whole-variant
+  `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16} --target-profile=wafer-tx81-single-card-kernel-v1`
+  的whole-variant
   candidate-selection/commit flow物化完整rank programs。当前Q15只产出verified grouped program directory，
   不执行instruction legalization；`wafer-opt`和instruction lowering的局部dump/lit/named pipeline只处理
   显式IR，用于验证本stage，不能成为用户stop-stage或completion flow。

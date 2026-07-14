@@ -7,6 +7,7 @@
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/TargetPolicy.h"
 #include "Wafer/Transforms/Passes.h"
+#include "Wafer/Transforms/TargetConversion.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -59,9 +60,14 @@ struct TargetArtifactBundleBuilder {
   static VerifiedTargetModule
   makeModule(int64_t logicalRank, llvm::StringRef entrySymbol,
              llvm::StringRef relativePath, llvm::StringRef contentDigest,
+             TargetProfileId targetProfile, TargetIdentityId targetIdentity,
+             KernelRuntimeABIId kernelRuntimeABI,
+             llvm::StringRef moduleFormat,
              std::vector<KernelABISlot> kernelABISlots) {
     return VerifiedTargetModule(logicalRank, entrySymbol, relativePath,
-                                contentDigest, std::move(kernelABISlots));
+                                contentDigest, targetProfile, targetIdentity,
+                                kernelRuntimeABI, moduleFormat,
+                                std::move(kernelABISlots));
   }
 
   static TargetArtifactBundle
@@ -87,8 +93,20 @@ TargetToolchain::create(llvm::StringRef pythonExecutable,
 namespace {
 
 struct PreparedTargetRank {
+  explicit PreparedTargetRank(const ExecutionConfig &executionConfig)
+      : targetProfile(executionConfig.getTargetProfileId()),
+        targetIdentity(
+            getTargetProfileRecord(targetProfile).targetIdentity),
+        kernelRuntimeABI(
+            getTargetProfileRecord(targetProfile).kernelRuntimeABI),
+        moduleFormat(getTargetProfileRecord(targetProfile).moduleFormat.str()) {}
+
   mlir::OwningOpRef<mlir::ModuleOp> module;
   std::vector<KernelABISlot> slots;
+  TargetProfileId targetProfile;
+  TargetIdentityId targetIdentity;
+  KernelRuntimeABIId kernelRuntimeABI;
+  std::string moduleFormat;
   int64_t logicalRank = -1;
   int64_t defaultDDRArenaArgumentIndex = -1;
   int64_t transportStatusArgumentIndex = -1;
@@ -196,8 +214,9 @@ mlir::Value resolveOutputAllocation(mlir::Value value) {
 }
 
 mlir::FailureOr<PreparedTargetRank>
-prepareTargetABI(const RankExecutable &rankExecutable) {
-  PreparedTargetRank prepared;
+prepareTargetABI(const RankExecutable &rankExecutable,
+                 const ExecutionConfig &executionConfig) {
+  PreparedTargetRank prepared(executionConfig);
   prepared.module = rankExecutable.getModule().clone();
   prepared.logicalRank = rankExecutable.getLogicalRank();
   const int64_t defaultDDRAlignment =
@@ -362,13 +381,14 @@ prepareTargetABI(const RankExecutable &rankExecutable) {
 }
 
 mlir::LogicalResult lowerToTargetLLVM(PreparedTargetRank &prepared) {
-  LowerInstrToTargetLLVMPassOptions options;
-  options.defaultDDRArenaArgumentIndex = prepared.defaultDDRArenaArgumentIndex;
-  options.logicalRank = prepared.logicalRank;
-  options.transportStatusArgumentIndex =
-      prepared.transportStatusArgumentIndex;
+  TargetConversionRequest request{
+      prepared.targetProfile,
+      prepared.defaultDDRArenaArgumentIndex,
+      prepared.logicalRank,
+      prepared.transportStatusArgumentIndex,
+  };
   mlir::PassManager manager(prepared.module->getContext());
-  manager.addPass(createLowerInstrToTargetLLVMPass(options));
+  manager.addPass(createLowerInstrToTargetLLVMPass(request));
   return manager.run(*prepared.module);
 }
 
@@ -438,8 +458,22 @@ llvm::Error runDeviceLink(const TargetToolchain &toolchain,
       llvm::errc::io_error, "device link failed with exit code %d", exitCode);
 }
 
-llvm::Expected<std::string> verifyTargetModule(llvm::StringRef path,
-                                               llvm::StringRef entrySymbol) {
+struct TargetModuleReadback {
+  std::string contentDigest;
+  std::string moduleFormat;
+};
+
+llvm::Expected<TargetModuleReadback>
+verifyTargetModule(llvm::StringRef path, llvm::StringRef entrySymbol,
+                   TargetProfileId expectedProfile) {
+  const TargetProfileRecord &profile =
+      getTargetProfileRecord(expectedProfile);
+  constexpr llvm::StringLiteral kDetectedRiscv64ELF = "elf-riscv64";
+  if (profile.moduleFormat != kDetectedRiscv64ELF)
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "target profile module format '%s' has no ELF readback verifier",
+        profile.moduleFormat.str().c_str());
   if (!isRegularFile(path))
     return llvm::createStringError(llvm::errc::invalid_argument,
                                    "target module is not a regular file");
@@ -457,10 +491,14 @@ llvm::Expected<std::string> verifyTargetModule(llvm::StringRef path,
   auto object = llvm::object::ObjectFile::createObjectFile(path);
   if (!object)
     return object.takeError();
-  if ((*object).getBinary()->makeTriple().getArch() != llvm::Triple::riscv64)
+  if (!(*object).getBinary()->isELF() ||
+      (*object).getBinary()->getBytesInAddress() != 8 ||
+      (*object).getBinary()->makeTriple().getArch() != llvm::Triple::riscv64)
     return llvm::createStringError(llvm::errc::invalid_argument,
                                    "target module is not RISC-V 64-bit ELF");
   bool foundEntry = false;
+  bool foundNonFunctionEntry = false;
+  bool foundNonExportedFunctionEntry = false;
   for (llvm::object::SymbolRef symbol : (*object).getBinary()->symbols()) {
     llvm::Expected<llvm::StringRef> name = symbol.getName();
     llvm::Expected<uint32_t> flags = symbol.getFlags();
@@ -472,19 +510,44 @@ llvm::Expected<std::string> verifyTargetModule(llvm::StringRef path,
       return llvm::createStringError(llvm::errc::invalid_argument,
                                      "target module symbol readback failed");
     }
-    if (*name == entrySymbol &&
-        !(*flags & llvm::object::BasicSymbolRef::SF_Undefined)) {
+    if (*name != entrySymbol ||
+        (*flags & llvm::object::BasicSymbolRef::SF_Undefined))
+      continue;
+    llvm::Expected<llvm::object::SymbolRef::Type> type = symbol.getType();
+    if (!type) {
+      llvm::consumeError(type.takeError());
+      return llvm::createStringError(
+          llvm::errc::invalid_argument,
+          "target module entry symbol type readback failed");
+    }
+    if (*type != llvm::object::SymbolRef::ST_Function) {
+      foundNonFunctionEntry = true;
+      continue;
+    }
+    if ((*flags & llvm::object::BasicSymbolRef::SF_Global) &&
+        (*flags & llvm::object::BasicSymbolRef::SF_Exported)) {
       foundEntry = true;
       break;
     }
+    foundNonExportedFunctionEntry = true;
   }
+  if (!foundEntry && foundNonExportedFunctionEntry)
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "target entry symbol is a function but is not externally visible");
+  if (!foundEntry && foundNonFunctionEntry)
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "target entry symbol is defined but is not a function");
   if (!foundEntry)
     return llvm::createStringError(llvm::errc::invalid_argument,
                                    "target entry symbol is not defined");
 
   llvm::SHA256 hasher;
   hasher.update(bytes);
-  return "sha256:" + llvm::toHex(hasher.final(), /*LowerCase=*/true);
+  return TargetModuleReadback{
+      "sha256:" + llvm::toHex(hasher.final(), /*LowerCase=*/true),
+      kDetectedRiscv64ELF.str()};
 }
 
 bool publishDirectoryNoReplace(llvm::StringRef source,
@@ -513,12 +576,29 @@ bool publishDirectoryNoReplace(llvm::StringRef source,
 } // namespace
 
 mlir::LogicalResult
-detail::lowerTargetABIForTesting(const RankExecutable &rankExecutable) {
+detail::lowerTargetABIForTesting(const RankExecutable &rankExecutable,
+                                 const ExecutionConfig &executionConfig) {
   mlir::FailureOr<PreparedTargetRank> prepared =
-      prepareTargetABI(rankExecutable);
+      prepareTargetABI(rankExecutable, executionConfig);
   if (mlir::failed(prepared) || mlir::failed(lowerToTargetLLVM(*prepared)))
     return mlir::failure();
   return verifyLoweredKernelABI(*prepared, rankExecutable.getEntrySymbol());
+}
+
+llvm::Expected<VerifiedTargetModule>
+detail::verifyLinkedTargetModuleForTesting(llvm::StringRef path,
+                                           llvm::StringRef entrySymbol,
+                                           TargetProfileId targetProfile) {
+  llvm::Expected<TargetModuleReadback> readback =
+      verifyTargetModule(path, entrySymbol, targetProfile);
+  if (!readback)
+    return readback.takeError();
+  const TargetProfileRecord &profile = getTargetProfileRecord(targetProfile);
+  return TargetArtifactBundleBuilder::makeModule(
+      /*logicalRank=*/0, entrySymbol, llvm::sys::path::filename(path),
+      readback->contentDigest, targetProfile, profile.targetIdentity,
+      profile.kernelRuntimeABI, readback->moduleFormat,
+      /*kernelABISlots=*/{});
 }
 
 llvm::Expected<TargetArtifactBundle>
@@ -577,7 +657,8 @@ detail::compileExecutableBundleToTargetArtifactsImpl(
   for (auto [expectedRank, rank] : llvm::enumerate(ranks)) {
     if (rank.getLogicalRank() != static_cast<int64_t>(expectedRank))
       return fail(diagnostics, "target rank domain is not canonical");
-    mlir::FailureOr<PreparedTargetRank> prepared = prepareTargetABI(rank);
+    mlir::FailureOr<PreparedTargetRank> prepared = prepareTargetABI(
+        rank, executableBundle.getExecutionConfig());
     if (mlir::failed(prepared))
       return fail(diagnostics,
                   "target ABI preparation failed for logical rank " +
@@ -588,6 +669,15 @@ detail::compileExecutableBundleToTargetArtifactsImpl(
     if (mlir::failed(verifyLoweredKernelABI(*prepared, rank.getEntrySymbol())))
       return fail(diagnostics,
                   "target ABI verification failed for logical rank " +
+                      std::to_string(expectedRank));
+    const TargetProfileRecord &targetProfile = getTargetProfileRecord(
+        executableBundle.getExecutionConfig().getTargetProfileId());
+    if (prepared->targetProfile != targetProfile.id ||
+        prepared->targetIdentity != targetProfile.targetIdentity ||
+        prepared->kernelRuntimeABI != targetProfile.kernelRuntimeABI ||
+        prepared->moduleFormat != targetProfile.moduleFormat)
+      return fail(diagnostics,
+                  "prepared target profile readback failed for logical rank " +
                       std::to_string(expectedRank));
 
     std::string stem = (llvm::formatv("rank_{0:D5}", expectedRank)).str();
@@ -606,11 +696,16 @@ detail::compileExecutableBundleToTargetArtifactsImpl(
                                           objectPath, crtObjectPath))
       return fail(diagnostics, "target_module_verification_failed: " +
                                    llvm::toString(std::move(error)));
-    llvm::Expected<std::string> digest =
-        verifyTargetModule(modulePath, rank.getEntrySymbol());
-    if (!digest)
+    llvm::Expected<TargetModuleReadback> moduleReadback = verifyTargetModule(
+        modulePath, rank.getEntrySymbol(), prepared->targetProfile);
+    if (!moduleReadback)
       return fail(diagnostics, "target_module_verification_failed: " +
-                                   llvm::toString(digest.takeError()));
+                                   llvm::toString(moduleReadback.takeError()));
+    if (moduleReadback->moduleFormat != prepared->moduleFormat)
+      return fail(diagnostics,
+                  "target module format readback does not match prepared "
+                  "target profile for logical rank " +
+                      std::to_string(expectedRank));
     if (failAfterLogicalRank &&
         static_cast<int64_t>(expectedRank) == *failAfterLogicalRank)
       return fail(diagnostics,
@@ -619,7 +714,10 @@ detail::compileExecutableBundleToTargetArtifactsImpl(
 
     std::string relativePath = (llvm::Twine("modules/") + stem + ".so").str();
     modules.push_back(TargetArtifactBundleBuilder::makeModule(
-        expectedRank, rank.getEntrySymbol(), relativePath, *digest,
+        expectedRank, rank.getEntrySymbol(), relativePath,
+        moduleReadback->contentDigest, prepared->targetProfile,
+        prepared->targetIdentity, prepared->kernelRuntimeABI,
+        moduleReadback->moduleFormat,
         std::move(prepared->slots)));
   }
 

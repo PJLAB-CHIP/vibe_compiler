@@ -2336,6 +2336,15 @@ private:
       initScalar = {};
     if (!initAttr && !initScalar)
       return fail("missing reduction init scalar");
+    if (!initAttr) {
+      auto constant = initScalar.getDefiningOp<mlir::arith::ConstantOp>();
+      auto typedValue =
+          constant ? mlir::dyn_cast<mlir::TypedAttr>(constant.getValue())
+                   : mlir::TypedAttr{};
+      if (!constant || !typedValue)
+        return fail(
+            "reduction init must be an arith.constant or typed init_value");
+    }
 
     auto inputTensorType = mlir::dyn_cast<mlir::RankedTensorType>(
         generic.getDpsInputs()[0].getType());
@@ -2837,8 +2846,7 @@ private:
     auto resultTensorType =
         mlir::dyn_cast<mlir::RankedTensorType>(generic->getResult(0).getType());
     if (!inputTensorType || !resultTensorType)
-      return fail(
-          "passthrough generic operands/results must be ranked tensors");
+      return fail("passthrough generic operands/results must be ranked tensors");
 
     mlir::FailureOr<mlir::Value> source =
         getOrMaterialize(inputValue, MemLayout::Tensor, builder);
@@ -4320,6 +4328,14 @@ mlir::LogicalResult wafer::lowerCandidateGroupToTileRegionModule(
   if (failureReason)
     failureReason->clear();
 
+  if (!candidateReductionTileSizes.empty()) {
+    setFailureReason(
+        failureReason,
+        "candidate reduction split is disabled because it cannot preserve "
+        "source reduction order");
+    return mlir::failure();
+  }
+
   module = detail::cloneGroupToStandaloneModule(group);
   GroupOp clonedGroup = findSingleStandaloneGroup(*module);
   if (!clonedGroup) {
@@ -4343,6 +4359,14 @@ mlir::LogicalResult wafer::lowerCompleteCandidateGroupToTileRegionModule(
     int64_t currentLogicalRank) {
   if (failureReason)
     failureReason->clear();
+
+  if (!candidateReductionTileSizes.empty()) {
+    setFailureReason(
+        failureReason,
+        "candidate reduction split is disabled because it cannot preserve "
+        "source reduction order");
+    return mlir::failure();
+  }
 
   mlir::OwningOpRef<mlir::ModuleOp> candidateModule =
       detail::cloneGroupToStandaloneModule(group);

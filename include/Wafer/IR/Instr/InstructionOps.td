@@ -151,12 +151,11 @@ def Wafer_InstrReduceOp : Wafer_InstrOp<"instr.reduce", [
     Wafer_InstrReduceKindAttr:$kind,
     AnyMemRef:$input,
     AnyMemRef:$dest,
-    Optional<AnyType>:$init,
     I64Attr:$dim
   );
   let hasVerifier = 1;
   let assemblyFormat =
-      "$kind $input `into` $dest (`,` $init^ `:` type($init))? attr-dict `:` type($input) `into` type($dest)";
+      "$kind $input `into` $dest attr-dict `:` type($input) `into` type($dest)";
 }
 
 def Wafer_InstrConvertOp : Wafer_InstrOp<"instr.convert", [

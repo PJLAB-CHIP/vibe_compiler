@@ -63,6 +63,10 @@ public:
   llvm::StringRef getEntrySymbol() const { return entrySymbol; }
   llvm::StringRef getRelativePath() const { return relativePath; }
   llvm::StringRef getContentDigest() const { return contentDigest; }
+  TargetProfileId getTargetProfileId() const { return targetProfile; }
+  TargetIdentityId getTargetIdentityId() const { return targetIdentity; }
+  KernelRuntimeABIId getKernelRuntimeABIId() const { return kernelRuntimeABI; }
+  llvm::StringRef getModuleFormat() const { return moduleFormat; }
   const std::vector<KernelABISlot> &getKernelABISlots() const {
     return kernelABISlots;
   }
@@ -73,15 +77,25 @@ private:
   VerifiedTargetModule(int64_t logicalRank, llvm::StringRef entrySymbol,
                        llvm::StringRef relativePath,
                        llvm::StringRef contentDigest,
+                       TargetProfileId targetProfile,
+                       TargetIdentityId targetIdentity,
+                       KernelRuntimeABIId kernelRuntimeABI,
+                       llvm::StringRef moduleFormat,
                        std::vector<KernelABISlot> kernelABISlots)
       : logicalRank(logicalRank), entrySymbol(entrySymbol.str()),
         relativePath(relativePath.str()), contentDigest(contentDigest.str()),
+        targetProfile(targetProfile), targetIdentity(targetIdentity),
+        kernelRuntimeABI(kernelRuntimeABI), moduleFormat(moduleFormat.str()),
         kernelABISlots(std::move(kernelABISlots)) {}
 
   int64_t logicalRank;
   std::string entrySymbol;
   std::string relativePath;
   std::string contentDigest;
+  TargetProfileId targetProfile;
+  TargetIdentityId targetIdentity;
+  KernelRuntimeABIId kernelRuntimeABI;
+  std::string moduleFormat;
   std::vector<KernelABISlot> kernelABISlots;
 };
 

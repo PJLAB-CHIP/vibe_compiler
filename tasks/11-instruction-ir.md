@@ -121,7 +121,8 @@ Pipeline position:
   closed-loop whole-variant candidate driver；atomic commit 后才由 target LLVM、package 和 runtime 消费。
 - User-level driver / named pipeline:
   Q16以后由同一
-  `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16}`内的closed-loop
+  `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16} --target-profile=wafer-tx81-single-card-kernel-v1`
+  内的closed-loop
   planner调用。当前Q15只产出verified grouped program directory，不执行instruction lowering；
   `wafer-opt`只处理显式IR，局部bring-up / candidate evaluation入口是
   `wafer-lower-tile-region-to-instr` 和 `wafer-lower-groups-to-instr` named pipeline。
@@ -303,11 +304,11 @@ instr-level target kind。
 | RDMA | `wafer.instr.rdma` | `wafer.tile.load` | DDR memref -> SPM memref |
 | WDMA | `wafer.instr.wdma` | `wafer.tile.store` | SPM memref -> DDR memref |
 | TDMA | `wafer.instr.gather_scatter` | `wafer.tile.materialize_layout`、tile movement ops | byte-counted SPM movement；contiguous copy 是 descriptor 特例 |
-| CT | `wafer.instr.fill` | `wafer.tile.fill` | scalar/immediate fill |
+| TDMA | `wafer.instr.fill` | `wafer.tile.fill` | `TsmPeripheral::Memset`使用`TsmDataMoveInstr`并最终发往TDMA queue的scalar/immediate fill |
 | CT | `wafer.instr.elementwise` | `wafer.tile.elementwise` | `#wafer.instr_elementwise_kind` target kind；不含 select |
 | CT | `wafer.instr.bit2fp` | tile semantic select lowering | i1 mask -> floating mask target peripheral op |
-| TDMA | `wafer.instr.mask_move` | tile semantic select lowering | masked SPM data movement target op |
-| CT/TDMA composite | `wafer.instr.fill` + `gather_scatter` + `wafer.instr.elementwise` | `wafer.tile.reduce` | Q0.L init-first canonical-order correctness baseline；native `wafer.instr.reduce`只有compiler-owned full-domain等价证明后才可替换 |
+| CT | `wafer.instr.mask_move` | tile semantic select lowering | `TsmMaskDataMove::MaskMove`使用CT packet并最终发往CT/CGRA queue的masked SPM data movement target op |
+| TDMA/CT composite | `wafer.instr.fill` + `gather_scatter` + `wafer.instr.elementwise` | `wafer.tile.reduce` | Q0.L init-first canonical-order correctness baseline；native `wafer.instr.reduce`只有compiler-owned full-domain等价证明后才可替换 |
 | CT | `wafer.instr.convert` | future convert lowering | `#wafer.instr_convert_kind` opcode-aligned dtype pair + kind-specific wrapper attrs |
 | NE | `wafer.instr.gemm` | `wafer.tile.gemm` | tile-local GEMM / batched GEMM |
 | NE | `wafer.instr.conv` | future conv lowering / imported target op | basic Conv / Depthwise / BackwardConv packet fields |
@@ -823,7 +824,7 @@ R3.2d verifier checks only instruction legality:
   planning、target/package lowering 复用该 verifier。每次 narrowing 都必须证明源值在目标字段范围内；
   silent i64-to-i32 或 size-to-packet-field truncation 非法。
 - logical element type或`Data_Format` enum存在不证明任一engine可编码该dtype。production target verifier必须查询
-  target-profile×instruction-family×format `TargetFormatEncodingProfile`并引用tasks/08 layout profile；当前typed convert kind可选择TF32 wrapper与
+  target-profile×instruction-family×format `TargetFormatEncodingRecord`并引用tasks/08 layout profile；当前typed convert kind可选择TF32 wrapper与
   RDMA/WDMA/fill/elementwise/reduce/GEMM通用format encoder缺TF32是两个独立legality row。UINT/64-bit direct DMA等
   未有engine encoding证据的row在shared registry闭合前target-illegal。
 - NE GEMM and CT reduce require supported aligned layout marker, dtype and rank. Plain GEMM's current single-format ABI only
@@ -1014,8 +1015,9 @@ R3.2d.1 已完成：
    instr-specific target kind attrs；旧 tile-level `Compute*Kind` attr 不能再作为 instruction op
    attr。`wafer.instr.convert` 的 kind 与硬件 convert opcode pair 对齐，verifier 从 kind 检查
    source/dest dtype，并按 public wrapper signature group 检查 `zero_point` / `rounding_mode`。
-   当前代码的`wafer.instr.reduce`使用native reduce `dim` code并仍接受init；Q0.L将把这项实现事实收窄为无init的
-   target-native leaf，同时让source tile reduce改走有序composite。完成Q0.L前，本条只作历史实现记录，不是终态合同。
+   `wafer.instr.reduce`现为不接受init operand/attr的target-native leaf；source tile reduce按init-first canonical-order
+   fill/movement/map-free elementwise composite展开，不直接生成该leaf。未来只有compiler-owned full-domain等价证明才能
+   选择native reduce，不能由Q22 candidate或CModel policy反向授权。
 5. `wafer.instr.unpool` 已改成 wrapper-aligned scalar `index` attr；`mask` / `unpool` 需要
    uint32 `index`，`avg` 禁止携带。`wafer.instr.tdma_data_move` verifier 按 kind 检查字段组合：
    `pad` / `img2col` 是 V0 production target input，transform-like kind 只允许作为 pre-lowering/imported

@@ -170,8 +170,7 @@ buildManifest(const ExecutableBundle &executableBundle,
               const TargetArtifactBundle &targetArtifacts,
               llvm::raw_ostream &diagnostics) {
   const ExecutionConfig &config = executableBundle.getExecutionConfig();
-  if (targetArtifacts.getExecutionConfig().getRankCount() !=
-          config.getRankCount() ||
+  if (targetArtifacts.getExecutionConfig() != config ||
       executableBundle.getRankExecutables().size() !=
           targetArtifacts.getModules().size() ||
       executableBundle.getRankExecutables().size() !=
@@ -180,11 +179,27 @@ buildManifest(const ExecutableBundle &executableBundle,
                 "package rank domain does not match executable and target "
                 "artifact bundles");
 
-  runtime::PackageManifest manifest;
+  const TargetProfileRecord &targetProfile =
+      getTargetProfileRecord(config.getTargetProfileId());
+  if (targetArtifacts.getModules().empty())
+    return fail(diagnostics, "package target module domain is empty");
+  const VerifiedTargetModule &firstTargetModule =
+      targetArtifacts.getModules().front();
+  if (firstTargetModule.getTargetProfileId() != config.getTargetProfileId() ||
+      firstTargetModule.getTargetIdentityId() !=
+          targetProfile.targetIdentity ||
+      firstTargetModule.getKernelRuntimeABIId() !=
+          targetProfile.kernelRuntimeABI ||
+      firstTargetModule.getModuleFormat() != targetProfile.moduleFormat)
+    return fail(diagnostics,
+                "package target module facts do not match ExecutionConfig "
+                "and target registry");
+  runtime::PackageManifest manifest(
+      firstTargetModule.getTargetProfileId(),
+      firstTargetModule.getTargetIdentityId(),
+      firstTargetModule.getKernelRuntimeABIId(),
+      firstTargetModule.getModuleFormat());
   manifest.program = runtime::ProgramId(0);
-  manifest.targetIdentity = runtime::kSingleCardTargetIdentity.str();
-  manifest.runtimeABI = runtime::kKernelRuntimeABI.str();
-  manifest.moduleFormat = runtime::kRiscv64ELFModuleFormat.str();
   manifest.rankCount = config.getRankCount();
 
   uint64_t nextResourceId = 0;
@@ -196,9 +211,15 @@ buildManifest(const ExecutableBundle &executableBundle,
         targetArtifacts.getModules()[logicalRank];
     if (rank.getLogicalRank() != logicalRank ||
         target.getLogicalRank() != logicalRank ||
-        rank.getEntrySymbol() != target.getEntrySymbol())
+        rank.getEntrySymbol() != target.getEntrySymbol() ||
+        target.getTargetProfileId() != firstTargetModule.getTargetProfileId() ||
+        target.getTargetIdentityId() !=
+            firstTargetModule.getTargetIdentityId() ||
+        target.getKernelRuntimeABIId() !=
+            firstTargetModule.getKernelRuntimeABIId() ||
+        target.getModuleFormat() != firstTargetModule.getModuleFormat())
       return fail(diagnostics,
-                  "package rank/module/entry domain is not canonical");
+                  "package rank/module/entry/profile domain is not canonical");
 
     std::vector<bool> usedProgramBindings(rank.getProgramBindings().size(),
                                           false);
@@ -290,7 +311,7 @@ buildManifest(const ExecutableBundle &executableBundle,
     manifest.modules.push_back({runtime::ModuleId(logicalRank), logicalRank,
                                 target.getRelativePath().str(),
                                 target.getContentDigest().str(),
-                                runtime::kRiscv64ELFModuleFormat.str()});
+                                target.getModuleFormat().str()});
     manifest.entries.push_back(std::move(entry));
     manifest.completions.push_back(
         {runtime::CompletionId(logicalRank), logicalRank, "entry_return"});
@@ -488,6 +509,23 @@ detail::assemblePackageBundleImpl(llvm::StringRef groupedProgramDirectory,
   if (!readback)
     return fail(diagnostics, "package manifest readback failed: " +
                                  llvm::toString(readback.takeError()));
+  const runtime::PackageManifest &readbackManifest = readback->getManifest();
+  const ExecutionConfig &executionConfig =
+      executableBundle.getExecutionConfig();
+  const VerifiedTargetModule &targetReadback =
+      targetArtifacts.getModules().front();
+  if (readbackManifest.rankCount != executionConfig.getRankCount() ||
+      readbackManifest.targetProfile != targetReadback.getTargetProfileId() ||
+      readbackManifest.targetIdentity !=
+          targetReadback.getTargetIdentityId() ||
+      readbackManifest.runtimeABI !=
+          targetReadback.getKernelRuntimeABIId() ||
+      readbackManifest.moduleFormat != targetReadback.getModuleFormat() ||
+      readbackManifest.targetProfile !=
+          executionConfig.getTargetProfileId())
+    return fail(diagnostics,
+                "package manifest readback does not match target module facts "
+                "and ExecutionConfig");
   if (llvm::Error error = fsyncPackageTree(stagingRoot))
     return fail(diagnostics, llvm::toString(std::move(error)));
   if (publishDirectoryNoReplace(stagingRoot, outputDirectory, diagnostics))

@@ -1,7 +1,7 @@
 # Wafer Typed Manifest、RuntimeSession 和 Launch Boundary
 
 状态：2026-07-14已完成Q18及Q16.T的Direct DTE runtime requirement扩展，并按Q0.L typed target-profile和untimed
-SystemC数值模型补充后续consumer边界。近期wire form为schema v2、唯一typed C++ model的canonical JSON，不是
+SystemC数值模型补充后续consumer边界。近期wire form为schema v3、唯一typed C++ model的canonical JSON，不是
 Protobuf；provider/board execution仍是后续独立gate。实现状态看`tasks/progress.md`。
 
 ## 1. 目标和非目标
@@ -32,8 +32,9 @@ Pipeline position:
   `ExecutionConfig`；Q17 atomic TargetArtifactBundle中的逐字段相同config、all-and-only rank modules、entry
   symbol/content digest和ABI摘要。
 - Current stage responsibility:
-  先逐字段核对Q16/Q17 config，再由tasks/14 registry把`TargetProfileId`唯一映射为typed `TargetIdentity`和
-  `KernelRuntimeAbiId`并构造PackageManifest；执行唯一C++semantic verification，序列化canonical JSON；
+  先逐字段核对Q16/Q17 config，再由tasks/14 registry把`TargetProfileId`唯一映射为typed `TargetIdentityId`和
+  `KernelRuntimeABIId`并构造schema-v3 PackageManifest；manifest target object显式序列化canonical
+  `profile`，然后逐字段验证该profile唯一映射出的identity/runtime ABI/module format；执行唯一C++semantic verification，序列化canonical JSON；
   在Q18 staging内复制/附着并复核package members后原子发布；runtime解析并验证同一model，结合invocation
   bindings/runtime environment形成side-effect-free RuntimeSession plan。
 - Output artifact / IR:
@@ -65,8 +66,9 @@ Q18实施前存在四份相互分叉的事实：
 加入binding order；validator只检查名字存在，不验证duplicate和signature双射。C++ parser又不检查schema
 version、model ABI和module format等Python规则。
 
-Q18已删除Python exporter/validator和独立C++ `HostRuntime`；旧prototype也曾使用数字2，但与当前加入typed
-transport union后升级的canonical schema v2没有兼容或继承关系。`wafer_runtime_adapter.py`只转发C++
+Q18已删除Python exporter/validator和独立C++ `HostRuntime`；旧prototype也曾使用数字2，但与后来的
+typed schema-v2没有兼容或继承关系。Q0.L加入必填profile后当前canonical wire form为schema-v3，
+prototype和typed schema-v2输入都必须明确拒绝。`wafer_runtime_adapter.py`只转发C++
 `wafer-run`进程，不解释schema、enum或cross-field legality。旧schema只作为“缺少typed manifest必须拒绝”的
 negative边界，不再作为迁移输入或production fixture。
 
@@ -114,7 +116,11 @@ struct RankEntrypoint {
 struct PackageManifest {
   uint32_t schemaVersion;
   ProgramId program;
-  TargetIdentity target;
+  TargetProfileId targetProfile;
+  TargetIdentityId targetIdentity;
+  KernelRuntimeABIId runtimeABI;
+  std::string moduleFormat;  // exact value selected by targetProfile
+  int64_t rankCount;
   std::vector<ResourceRecord> resources;
   std::vector<ModuleRecord> modules;
   std::vector<RankEntrypoint> entries;
@@ -123,9 +129,15 @@ struct PackageManifest {
 ```
 
 strong IDs可以先用不可隐式互转的小型C++ wrapper，不要求新增MLIR type。program/resource/module/entry等ID由当前bundle
-内唯一owner分配；`TargetProfileId`及其到`TargetIdentity`/`KernelRuntimeAbiId`的closed mapping只由tasks/14 registry拥有。
+内唯一owner分配；`TargetProfileId`及其到`TargetIdentityId`/`KernelRuntimeABIId`的closed mapping只由tasks/14 registry拥有。
 JSON中的canonical spelling是typed value的delivery form，不是自由字符串或第二registry；文件路径、symbol文本和vector
 index不承担semantic identity。
+
+Q0.L把manifest wire schema提升为v3：现有`target`object新增必填`profile`字段，值必须是tasks/14 registry的canonical
+spelling。parse/verify先解析typed profile，再要求`identity`、`runtime_abi`和`module_format`逐项等于该record的映射，不能只
+验证每个字符串分别属于某个supported set。`RuntimeEnvironment`携带同一typed profile并在任何provider effect前完成四项
+exact-match。schema-v2继续被明确拒绝而非静默补profile；未来silicon revision只有取得事实后才通过新profile/schema表达，
+当前不得写`unknown`占位字段。
 
 当前Kernel ABI摘要就是Q17导出的完整ordered typed slots；Q18逐slot与Q16 resource核对并原样序列化，不再增加一份
 可与slot列表分叉的ABI digest。无通信entry的transport contract为`None`；Direct DTE entry额外携带唯一

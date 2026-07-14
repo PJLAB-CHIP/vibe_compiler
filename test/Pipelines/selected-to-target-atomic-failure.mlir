@@ -1,4 +1,4 @@
-// RUN: not wafer-opt --mlir-disable-threading --pass-pipeline='builtin.module(wafer-lower-groups-to-target-llvm)' --mlir-print-ir-after-failure --mlir-print-ir-module-scope -o /dev/null %s 2>&1 | FileCheck %s --implicit-check-not=llvm.func --implicit-check-not=llvm.call --implicit-check-not=wafer.group --implicit-check-not='tensor<' --implicit-check-not=bufferization.to_
+// RUN: not wafer-opt --mlir-disable-threading --pass-pipeline='builtin.module(wafer-lower-groups-to-target-llvm{target-profile=wafer-tx81-single-card-kernel-v1})' --mlir-print-ir-after-failure --mlir-print-ir-module-scope -o /dev/null %s 2>&1 | FileCheck %s --implicit-check-not=llvm.func --implicit-check-not=llvm.call --implicit-check-not=wafer.group --implicit-check-not='tensor<' --implicit-check-not=bufferization.to_
 
 module {
   func.func @selected_before_late_failure(

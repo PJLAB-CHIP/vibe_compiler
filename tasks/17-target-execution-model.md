@@ -57,8 +57,9 @@ Pipeline position:
 - Upstream artifact / IR:
   近期入口消费Q16 ExecutableBundle经过tasks/14 target ABI preparation和full conversion形成的all-and-only、
   owner-backed fully legal target LLVM modules，以及与每rank entry精确双射的typed ABI slots。该target-LLVM
-  bundle还必须消费`CompilationRequest -> ExecutionConfig`端到端携带的typed target profile/revision/ABI identity；当前该
-  identity尚未实现，属于Q0.L前置，禁止在full conversion后补default。bundle不可序列化，不进入package。exact-module扩展另行消费Q18 VerifiedPackageManifest和其all-and-only
+  bundle还必须消费`CompilationRequest -> ExecutionConfig`端到端携带的typed target profile，以及该
+  profile由tasks/14 registry唯一映射的target identity/Kernel Runtime ABI；当前profile不表示silicon revision，
+  也禁止在full conversion后补default。bundle不可序列化，不进入package。exact-module扩展另行消费Q18 VerifiedPackageManifest和其all-and-only
   Q17 RISC-V ELF modules。Q19结果和CPU expected只作独立比较，不作为target model执行输入。
 - Current stage responsibility:
   在任何执行副作用前完成model capability preflight；在许可/事实源gate通过后，以同一repo CRT wrapper的host build和
@@ -75,7 +76,8 @@ Pipeline position:
   tasks/16 differential/CI和Q22.C board numeric correlation；Q22.E exact-module与deferred Q22.P timing calibration是
   独立consumer。target model结果不是compiler transformation输入。
 - User-level driver / named pipeline:
-  Q0.L后用户通过`wafer-compile --target-profile=<registered-id>`显式选择tasks/14 typed profile；首个正式CModel gate由
+  用户通过`wafer-compile --target-profile=wafer-tx81-single-card-kernel-v1`显式选择tasks/14 typed
+  profile，且不存在target profile默认值；首个正式CModel gate由
   wafer-compile在Q17/Q18原子发布后、同一invocation仍持有target LLVM bundle时进入显式
   target-model execution mode：host执行target LLVM并调用同源host CRT，CRT再向SystemC model发packet/event。
   wafer-opt/pass chain和direct shim只补局部测试。只有exact package/ELF执行闭合后，wafer-run才通过typed
@@ -84,7 +86,7 @@ Pipeline position:
   不复制instruction schedule，不改变manifest语义，不用Q19执行结果驱动target model，不把untimed结果升级为
   board/timing/cycle证据，不用代表rank、手写LLVM、手写packet或单个kernel替代真实纵向链。
 - Completion gate:
-  Q0.L后Q22.N与Q22.L可并行。Q22.N闭合13种logical codec、有证据的target-profile×engine×format encoding、当前7种
+  Q0.L已经完成，Q22.N与Q22.L可并行。Q22.N闭合13种logical codec、有证据的target-profile×engine×format encoding、当前7种
   compute/convert format、36条convert route、4种确定性舍入和逐family formal conformance；Q22.L原子形成all-rank
   owner-backed target LLVM bundle。Q22.N单独解锁Q22.B oneDNN qualification；Q22.L与external authorization/spec gate
   共同解锁Q22.H host CRT。Q22.N+Q22.H+既有Q16.T再解锁Q22.S SystemC functional-event model，Q22.B不是Q22.S前置。
@@ -112,11 +114,10 @@ Pipeline position:
 - Q18当前只实现pure no-card `RuntimeSessionPlan`。真实`RuntimeProvider`生命周期和board执行尚未实现。
 - Q19直接消费accepted instruction/memory facts；其reference-only numeric和deterministic DTE policies不得成为
   target model的实现事实源。
-- 当前通用target format encoder和movement verifier能表达i1、signed/signless及explicit unsigned i8/i16/i32/i64、f16、
-  bf16、f32，但没有TF32编码；因此RDMA/WDMA、fill、elementwise、reduce和plain GEMM等format-bearing路径当前不能发射
-  TF32。`wafer.instr.convert`是例外：代码检查显示lowering可由typed `InstrConvertKind`直接选择含TF32的wrapper，但当前没有
-  target-lowering integration正例，因此只能标记为code-reachable、尚未验证，不能把两类路径合并成“TF32完全未打通”。
-  frontend可接收的f64在target profile中也没有format。Q22 numeric foundation应
+- Q0.L shared registry显式枚举13种logical format，但engine×format准入只开放tasks/14有静态编码证据的row；
+  UINT、64-bit和通用TF32 format-bearing command均在target effect前fail closed。`wafer.instr.convert`是独立例外：
+  typed `InstrConvertKind`通过opcode 139..174的36条closed route选择含TF32的wrapper，但这不会打开通用
+  CT/RDMA/WDMA/GEMM的TF32 row。frontend可接收的f64在target profile中也没有descriptor。Q22 numeric foundation应
   实现TF32 raw32 codec并分别记录logical codec、convert可达性和engine-specific format legality；不能用model有codec扩大
   compiler legality，也不能让f64晚到packet阶段才失败。
 
@@ -145,17 +146,18 @@ vendor派生事实的Q22.N numeric、Q22.B bulk和Q22.L bundle；SystemC只可�
 不能把Q22.S基础组件另行标成doing或完成，也不得施工host Tsm operator/packet seam。
 
 该bundle必须显式拥有canonical all-rank domain、每rank logical rank/entry/module、`ExecutionConfig`（内含唯一
-`TargetProfileId`）、ordered typed ABI slots、由该ID经registry解析并readback的target revision/kernel ABI facts，以及
+`TargetProfileId`）、ordered typed ABI slots、由该ID经registry解析并readback的target identity/kernel ABI facts，以及
 覆盖全部module的context/owner lifetime。所有rank完成ABI
 preparation、full conversion和readback后才能原子构造bundle并交给任一consumer；不能让device link和host model分别
 从默认值恢复target facts，也不能让passing ranks先行执行。
 
-当前`ExecutionConfig`没有足以区分target revision/ABI profile的typed identity。Q0.L由tasks/14 registry拥有
-`TargetProfileId`，通过`wafer-compile --target-profile=<registered-id>`显式选择并写入`CompilationRequest`/
+当前`ExecutionConfig`需要能唯一选择target/ABI profile的typed identity。Q0.L由tasks/14 registry拥有
+`TargetProfileId`，通过`wafer-compile --target-profile=wafer-tx81-single-card-kernel-v1`显式选择并写入
+`CompilationRequest`/
 `ExecutionConfig`，再贯穿profile-bearing ExecutableBundle、target conversion、transaction-local prepared target LLVM/ABI
 artifact、`TargetArtifactBundle`和PackageManifest readback；它不能由target model、自由字符串manifest或host环境在末端恢复。
 Q22后续创建的`TargetLLVMModuleBundle`只消费并再次readback该已验证identity，
-不是Q0.L提前创建的artifact。该缺口闭合前正式Q22 frontend unavailable。
+不是Q0.L提前创建的artifact。该profile/identity缺口现已闭合；Q22.N/L仍须分别完成自己的numeric与bundle gate。
 
 ### 3.2 已确认的硬件功能和事务事实
 
@@ -293,7 +295,7 @@ overflow、跨resource访问或把SPM alias当host虚拟地址都必须在memory
 
 正式模型按稳定硬件责任拆分为SystemC modules/channels：
 
-- model top/context：target revision、当前profile的16个physical tile slots、capability/good-tile map、logical/physical
+- model top/context：target profile/identity、当前profile的16个physical tile slots、capability/good-tile map、logical/physical
   rank/tile mapping和invocation-local状态；
 - tile memory：每tile SPM、reserved region、card DDR/resource slots和checked address translation；
 - 每tile三个worker-facing issue domain；model-only per-worker parallel config声明`serial_mode=0`语义时，每个domain区分CT、NE、
@@ -334,7 +336,7 @@ hook直接合成高层command绕过packet证据。
 
 | 对象 | 必须拥有 | 禁止拥有 |
 | --- | --- | --- |
-| `TargetLLVMModuleBundle` | 共享MLIR/LLVM context owner、canonical all-rank domain、每rank logical rank/entry/fully legal module、ordered ABI slots、`ExecutionConfig`（内含唯一`TargetProfileId`）和由该ID经registry解析并readback的target revision/kernel ABI facts | packet list、schedule、model state、默认补出的revision或任何可序列化sidecar |
+| `TargetLLVMModuleBundle` | 共享MLIR/LLVM context owner、canonical all-rank domain、每rank logical rank/entry/fully legal module、ordered ABI slots、`ExecutionConfig`（内含唯一`TargetProfileId`）和由该ID经registry解析并readback的target identity/kernel ABI facts | packet list、schedule、model state、默认补出的revision或任何可序列化sidecar |
 | `ModelProfileId` | 显式选择的一组确定性model-only semantics identity；Q22.C可另发布绑定target/environment的hardware-correlated profile | compiler legality、隐式default、hardware等价声明 |
 | `NumericCommandKey` | static preflight从typed CRT call registry投影、runtime从decoded packet transaction投影的target profile、engine/op kind/variant、operand role/storage dtype、shape/layout、M/K/N/batch、convert kind及fixed optional fields | erased Instr sidecar、任意symbol/string推断、numeric comparator、oneDNN选择、板端阈值 |
 | `NumericSemanticsProfile` | 稳定typed identity/digest；完整operand storage/compute、product、accumulator、intermediate、destination、rounding points、FMA/reduction order、overflow、FTZ/DAZ、NaN/special/status及optional-field顺序 | 单个dtype、host library默认值、按workload临时覆盖的side table |
@@ -402,7 +404,7 @@ logical format、layout geometry与target format encoding必须分层；同一lo
 | 对象 | 必须显式表达 | 不能表达为 |
 | --- | --- | --- |
 | `LogicalFormatDescriptor` | format identity、raw container与semantic bit width、signedness、exponent/significand、canonical encoding、NaN/Inf/subnormal能力 | C++ `sizeof(T)`、CRT enum值范围、physical block或host native type |
-| `TargetFormatEncodingProfile` | typed target profile/revision、engine、logical format、public ABI enum/register code、允许的tasks/08 layout profile引用和evidence状态 | 一个对所有engine通用的`Data_Format -> code` switch、Cx/NCx几何副本或logical format名称 |
+| `TargetFormatEncodingRecord` | typed target profile、engine、logical format、public ABI enum/register code、允许的tasks/08 layout profile引用和evidence状态 | 一个对所有engine通用的`Data_Format -> code` switch、Cx/NCx几何副本或logical format名称 |
 | `NumericSemanticsProfile` | 每个operand的storage/compute type、product、accumulator和intermediate、destination、每个rounding point、FMA/reduction order、overflow/saturate/wrap、FTZ/DAZ、NaN/special/status、zero-point和stochastic policy | 单个`dtype`、symbol后缀或全局rounding flag |
 | capability row | `ModelProfileId`、`NumericCommandKey`、唯一semantic profile identity、target format encoding及shape/layout/descriptor/optional-field范围、evidence status | “library支持该dtype”、压缩src/accum/dst tuple或13种格式的笛卡尔积 |
 
@@ -410,7 +412,7 @@ storage层从第一天覆盖13种logical format。INT8/16/32、UINT8/16/32、INT
 width读写little-endian raw bits；BOOL的physical bit order只在有证据的encoding profile中确定。TF32的32-bit container与
 semantic precision分开，所有codec必须定义noncanonical低位如何拒绝或规范化。movement只复制raw bits，不经过host浮点值。
 Cx/NCx block/tail/footprint、BOOL bitpack和alignment继续由tasks/08及唯一`computeWaferPhysicalTensorInfo`拥有；
-`TargetFormatEncodingProfile`只引用该layout profile并定义engine/register legality，不能复制几何。当前DMA helper的0..7编码
+`TargetFormatEncodingRecord`只引用该layout profile并定义engine/register legality，不能复制几何。当前DMA helper的0..7编码
 证据不足以证明UINT8/16/32和INT64/UINT64对应8..12可直接搬运；这些
 engine×format row在共享registry闭合前必须target-illegal，即使logical codec已经存在。
 
@@ -799,8 +801,8 @@ accepted instruction支持范围；如果硬件可表达但model未覆盖，应�
 
 #### Q22.N numeric foundation
 
-- 从tasks/14唯一shared typed registry读取13种`LogicalFormatDescriptor`和有证据的revision×engine×format
-  `TargetFormatEncodingProfile`；穷举INT8/UINT8/BOOL、FP16/BF16 raw pattern和TF32 canonical encoding，并以
+- 从tasks/14唯一shared typed registry读取13种`LogicalFormatDescriptor`和有证据的target-profile×engine×format
+  `TargetFormatEncodingRecord`；穷举INT8/UINT8/BOOL、FP16/BF16 raw pattern和TF32 canonical encoding，并以
   classification/boundary/random覆盖FP32、宽整数及noncanonical TF32。tasks/08独立验证BOOL bit order、Cx/NCx
   block/tail/footprint；无证据UINT/64-bit DMA row和f64在target preflight拒绝；
 - 36条convert route、四种确定性rounding、zero-point/stochastic命名候选及float special-result逐项区分；formal kernel覆盖
@@ -826,7 +828,7 @@ accepted instruction支持范围；如果硬件可表达但model未覆盖，应�
 #### Q22.L target LLVM module bundle
 
 - Q0.L prepared target LLVM/ABI artifact形成owner-backed、move-only、不可序列化的all-rank bundle；逐rank readback logical rank、
-  entry、profile/revision/ABI、ordered typed slots和module identity，任一late failure均不形成bundle；
+  entry、profile/target identity/Kernel Runtime ABI、ordered typed slots和module identity，任一late failure均不形成bundle；
 - direct shim只消费该bundle检查symbol、signature、control flow、typed slot和基本address formation，结果仅标ABI smoke；
   bundle不调用Host CRT、构造packet、链接SystemC或替代Q17/Q18 artifact。
 
@@ -1041,10 +1043,10 @@ movement + R elementwise + 1 final movement = 2R+2`条engine command，并在每
 当前四个reduce region的最高existing span为2064 B，加上不复用任何旧buffer的768 B后为2832 B，只占
 `[65536, 3080192)`共3,014,656 B可规划窗口的约0.094%。因此Q21不否决ordered composite，也没有逼近SPM边界。
 
-该结论只证明Q0.L可实施。当前正式lowering仍产生带`init_value`的旧native `wafer.instr.reduce`，必须在Q0.L实现后重新
-执行source-backed gate；Q21也没有覆盖dynamic/nonzero init、非tail或multi-dim reduction、min/avg及完整special-value
-政策。tasks/06现有4096只统计complete-candidate materialization，不是已经存在的terminal command保护，两个counter不能
-共用。
+该结论最初只证明Q0.L可实施；当前正式lowering已经改为init-first canonical-order composite，并按每rank独立4096
+terminal-op cap在selector和最终target边界重算。它仍需本轮fresh source-backed gate作为完成证据；Q21本身没有覆盖
+dynamic init、所有非tail/multi-dim reduction、avg及完整target special-value政策。tasks/06 candidate materialization
+counter与terminal command counter语义不同，不能共用。
 
 #### 10.0.2 Numeric和SystemC依赖实证
 
@@ -1081,20 +1083,20 @@ readiness replay还发现`wafer-convert-group-to-tile-region`会创建`async.tok
 
 #### 10.0.4 Readiness决议
 
-- Q21 resource census通过，Q0.L可按tasks/10/11当前ordered reduce设计进入独立实施计划；readiness不再是它的blocker。
+- Q21 resource census通过并已由Q0.L按tasks/10/11 ordered reduce设计完成fresh source replay；readiness不再是前向blocker。
 - Q22.N/Q22.B的上游candidate可在当前host构建，但仓库尚未建立受管source、CMake target、self-test和license closure，
   因而仍保持blocked而不是把`/tmp` probe当依赖。
-- Q22.L在Q0.L后独立形成owner-backed target LLVM bundle；Q22.H再受Q22.L及external vendor授权/host-seam事实源阻塞；
+- Q22.L下一步独立形成owner-backed target LLVM bundle；Q22.H再受Q22.L及external vendor授权/host-seam事实源阻塞；
   Q22.S/Q22.V继续依赖Q22.H。
 - vendor CModel套件、真实board和hardware numeric/packet/timing仍是external evidence；它们不否定model-only方案，也不能由
   文档、有限corpus或SystemC选择推断。
 
 ### 10.1 Capability和依赖收敛
 
-- 先完成Q0.L：production `CompilationRequest`贯穿typed `TargetProfileId`；debug named target pipeline只用同一registry
-  显式解析required option并补局部conversion证据。建立tasks/14单一拥有的engine×format ABI/register legality，把source
-  reduce init-first lower为canonical-order composite并修复elementwise indexing-map静默丢义；在此之前
-  Q22 frontend保持unavailable，CModel不得补救compiler已丢失或未证明合法的command语义；
+- Q0.L已完成：production `CompilationRequest`贯穿typed `TargetProfileId`；debug named target pipeline只用同一registry
+  显式解析required option。tasks/14单一拥有engine×format ABI/register legality，source reduce按init-first canonical-order
+  composite展开，elementwise map不再静默丢义；Q22.N/L只消费这些已验证事实，CModel不得补救compiler已丢失或未证明
+  合法的command语义；
 - 并行向vendor索取完整host CModel development package：匹配`host_runtime.h`/`runtime_api.h`/`tx_runtime.h`/TsmML headers、
   `libcmodel_runtime_api.so`、`libhpgr.so`、`libtsmml.so`、model resources和transitive dependency/license/version；同时确认
   是否存在低层x86 instruction/operator library，并让项目owner/法务确认采购条款是否允许host集成、修改和派生实现；
@@ -1116,7 +1118,7 @@ readiness replay还发现`wafer-convert-group-to-tile-region`会创建`async.tok
   基础compiler
   不依赖oneDNN，但完整Q22 profile缺oneDNN时必须标记bulk execution unavailable、正式大GEMM gate未完成；
 - 消费Q0.L在tasks/11/14 owner中闭合的shared typed logical-format/physical-encoding registry和typed target
-  revision/profile identity，供verifier、target lowering、CRT conformance与model共同使用；
+  profile/target identity/Kernel Runtime ABI，供verifier、target lowering、CRT conformance与model共同使用；
 - plain C++ kernel/property tests不链接SystemC；SystemC test executable使用唯一`sc_main`入口并实际运行，不能只编译、
   skip或用`gtest_main`替代；
 - external授权/事实源gate通过后才形成同一repo CRT wrapper的device/host platform contract，移除源码内强制
@@ -1128,7 +1130,7 @@ readiness replay还发现`wafer-convert-group-to-tile-region`会创建`async.tok
 ### 10.2 Q22.N Multi-dtype numeric foundation
 
 - 消费Q0.L在tasks/14建立的唯一`LogicalFormatDescriptor`和按target profile×engine×format分派的
-  `TargetFormatEncodingProfile`，实现由descriptor索引的13种raw codec与TF32 container/semantic-width处理；Q22.N不复制
+  `TargetFormatEncodingRecord`，实现由descriptor索引的13种raw codec与TF32 container/semantic-width处理；Q22.N不复制
   registry。tasks/14 encoding只拥有ABI/register code与engine legality并引用tasks/08 layout profile；Cx/NCx/BOOL几何仍由
   唯一helper拥有。对invalid f64/unused及无证据engine×dtype row显式拒绝；
 - 建立`(ModelProfileId, NumericCommandKey) -> NumericSemanticsProfile`唯一映射和capability三维状态；不从
@@ -1169,7 +1171,7 @@ large shape命中admitted backend，reference implementation不冒充performance
 
 - 把tasks/14 transaction-local prepared target LLVM/ABI artifact提升为owner-backed、move-only、不可序列化的all-rank
   `TargetLLVMModuleBundle`；不重新运行另一套lowering，也不从Q17 ELF或manifest反推module语义；
-- 逐rank readback logical rank、entry、fully legal module、profile/revision/ABI identity和ordered typed slots；全部rank通过后
+- 逐rank readback logical rank、entry、fully legal module、profile/target identity/Kernel Runtime ABI和ordered typed slots；全部rank通过后
   才原子形成bundle，late failure不保留partial owner；
 - bundle只作为Q22.H和direct ABI smoke的内部输入，不调用host CRT、不构造packet、不链接SystemC，也不进入Q17/Q18 artifact。
 

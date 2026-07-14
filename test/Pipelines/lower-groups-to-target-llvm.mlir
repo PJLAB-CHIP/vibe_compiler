@@ -1,5 +1,5 @@
-// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-groups-to-target-llvm)' %s | FileCheck %s
-// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-groups-to-target-llvm)' %s | mlir-translate --mlir-to-llvmir | FileCheck --check-prefix=LLVMIR %s
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-groups-to-target-llvm{target-profile=wafer-tx81-single-card-kernel-v1})' %s | FileCheck %s
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-groups-to-target-llvm{target-profile=wafer-tx81-single-card-kernel-v1})' %s | mlir-translate --mlir-to-llvmir | FileCheck --check-prefix=LLVMIR %s
 
 func.func @boundary_tiled_matmul_group(%lhs: tensor<4x8xf16>,
                                        %rhs: tensor<8x8xf16>,

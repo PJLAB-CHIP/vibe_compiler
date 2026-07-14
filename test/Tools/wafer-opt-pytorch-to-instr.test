@@ -6,7 +6,7 @@
 # RUN: wafer-compile \
 # RUN:   --input-program-dir %t.input.program \
 # RUN:   --output-program-dir %t.group.program \
-# RUN:   --execution-ranks=16 | FileCheck %s --check-prefix=PIPELINE
+# RUN:   --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 | FileCheck %s --check-prefix=PIPELINE
 # RUN: FileCheck %s --input-file=%t.group.program/functions/forward.mlir --check-prefix=GROUP
 
 # PIPELINE: wafer-compile: published verified package with execution-ranks=16:

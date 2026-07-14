@@ -2,6 +2,7 @@
 
 #include "OpVerifierUtils.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/AffineMap.h"
@@ -702,6 +703,15 @@ mlir::LogicalResult verifyReduceTileContract(mlir::Operation *op,
     return op->emitOpError(
         "reduce input element type must match result element type");
 
+  for (int64_t dim : inputTensor->getShape())
+    if (dim == mlir::ShapedType::kDynamic || dim <= 0)
+      return op->emitOpError(
+          "reduce input/result shapes must be static and positive");
+  for (int64_t dim : resultTensor->getShape())
+    if (dim == mlir::ShapedType::kDynamic || dim <= 0)
+      return op->emitOpError(
+          "reduce input/result shapes must be static and positive");
+
   auto dimensions = op->getAttrOfType<mlir::DenseI64ArrayAttr>("dimensions");
   if (!dimensions)
     return op->emitOpError("requires reduce dimensions attr");
@@ -737,6 +747,11 @@ mlir::LogicalResult verifyReduceTileContract(mlir::Operation *op,
   }
 
   mlir::Attribute initValue = op->getAttr("init_value");
+  bool hasInitOperand = op->getNumOperands() == 2;
+  if (hasInitOperand == static_cast<bool>(initValue))
+    return op->emitOpError(
+        "requires exactly one of scalar init operand or init_value attr");
+
   if (initValue) {
     auto typedInit = mlir::dyn_cast<mlir::TypedAttr>(initValue);
     if (!typedInit || typedInit.getType() != inputTensor->getElementType())
@@ -745,16 +760,20 @@ mlir::LogicalResult verifyReduceTileContract(mlir::Operation *op,
     return mlir::success();
   }
 
-  if (op->getNumOperands() >= 2) {
-    mlir::Type initType = op->getOperand(1).getType();
-    if (initType != inputTensor->getElementType())
-      return op->emitOpError(
-          "reduce init operand type must match input element type");
-    return mlir::success();
-  }
+  mlir::Value init = op->getOperand(1);
+  if (init.getType() != inputTensor->getElementType())
+    return op->emitOpError(
+        "reduce init operand type must match input element type");
+  auto constant = init.getDefiningOp<mlir::arith::ConstantOp>();
+  if (!constant)
+    return op->emitOpError(
+        "reduce init operand must be defined by arith.constant");
+  auto typedInit = mlir::dyn_cast<mlir::TypedAttr>(constant.getValue());
+  if (!typedInit || typedInit.getType() != inputTensor->getElementType())
+    return op->emitOpError(
+        "reduce init constant type must match input element type");
 
-  return op->emitOpError(
-      "requires reduce init_value attr or scalar init operand");
+  return mlir::success();
 }
 
 } // namespace wafer::detail

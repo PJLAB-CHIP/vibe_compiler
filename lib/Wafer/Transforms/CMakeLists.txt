@@ -22,6 +22,7 @@ add_mlir_library(WaferTransforms
   WaferGroupToTileRegion
   WaferIR
   WaferStableHLOToLinalg
+  WaferTarget
   WaferTileRegionToInstr
   MLIRArithToLLVM
   MLIRArithDialect

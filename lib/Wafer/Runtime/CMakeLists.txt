@@ -3,4 +3,5 @@ add_mlir_library(WaferRuntime
 
   LINK_LIBS PUBLIC
   LLVMSupport
+  WaferTarget
 )

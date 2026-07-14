@@ -1,6 +1,6 @@
 // RUN: split-file %s %t
-// RUN: not wafer-opt --pass-pipeline='builtin.module(wafer-lower-instr-to-target-llvm{logical-rank=0 transport-status-argument-index=0})' %t/missing-binding.mlir 2>&1 | FileCheck %s --check-prefix=MISSING
-// RUN: not wafer-opt --pass-pipeline='builtin.module(wafer-lower-instr-to-target-llvm{logical-rank=0 transport-status-argument-index=0})' %t/offset-mismatch.mlir 2>&1 | FileCheck %s --check-prefix=OFFSET
+// RUN: not wafer-opt --pass-pipeline='builtin.module(wafer-lower-instr-to-target-llvm{target-profile=wafer-tx81-single-card-kernel-v1 logical-rank=0 transport-status-argument-index=0})' %t/missing-binding.mlir 2>&1 | FileCheck %s --check-prefix=MISSING
+// RUN: not wafer-opt --pass-pipeline='builtin.module(wafer-lower-instr-to-target-llvm{target-profile=wafer-tx81-single-card-kernel-v1 logical-rank=0 transport-status-argument-index=0})' %t/offset-mismatch.mlir 2>&1 | FileCheck %s --check-prefix=OFFSET
 
 //--- missing-binding.mlir
 module {

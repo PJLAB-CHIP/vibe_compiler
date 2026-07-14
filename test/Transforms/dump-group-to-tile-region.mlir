@@ -111,7 +111,7 @@ module {
     %0 = wafer.group ins(%input, %init : tensor<2x4xf32>, tensor<f32>)
         outs(%out : tensor<2xf32>) {
     ^bb0(%arg0: tensor<2x4xf32>, %arg1: tensor<f32>, %arg2: tensor<2xf32>):
-      %init_scalar = tensor.extract %arg1[] : tensor<f32>
+      %init_scalar = arith.constant 0.000000e+00 : f32
       %empty = tensor.empty() : tensor<2xf32>
       %filled = linalg.fill
           ins(%init_scalar : f32)
@@ -295,13 +295,13 @@ module {
 // CHECK: wafer.tile.fill
 // CHECK: wafer.tile.store
 // CHECK-LABEL: wafer.group_to_tile_region group @reduce_sum_group#0
-// CHECK: memref.load
-// CHECK-SAME: #wafer.memory<ddr, tensor>
+// CHECK: arith.constant 0.000000e+00 : f32
 // CHECK: wafer.tile.fill
 // CHECK: wafer.tile.materialize_layout
 // CHECK: #wafer.memory<spm, cx>
 // CHECK: wafer.tile.reduce <sum>
 // CHECK-SAME: dimensions = array<i64: 1>
+// CHECK-SAME: init_value = 0.000000e+00 : f32
 // CHECK: wafer.tile.materialize_layout
 // CHECK: #wafer.memory<spm, tensor>
 // CHECK: wafer.tile.store

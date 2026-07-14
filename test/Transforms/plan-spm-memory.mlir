@@ -1,8 +1,6 @@
 // RUN: wafer-opt --wafer-plan-spm-memory %s | FileCheck %s
 // RUN: not wafer-opt --wafer-plan-spm-memory='spm-base=65536 spm-limit=65792' %s 2>&1 | FileCheck --check-prefix=OVERFLOW %s
 
-#map = affine_map<(d0, d1) -> (d0, d1)>
-
 func.func @place_instruction_spm(%input: memref<2x3xf16, #wafer.memory<ddr, tensor>>,
                                  %output: memref<2x3xf16, #wafer.memory<ddr, tensor>>) {
   %region = wafer.tile.region(%input, %output
@@ -21,7 +19,6 @@ func.func @place_instruction_spm(%input: memref<2x3xf16, #wafer.memory<ddr, tens
 
     %elementwise = memref.alloc() : memref<2x3xf16, #wafer.memory<spm, tensor>>
     wafer.instr.elementwise #wafer.instr_elementwise_kind<add> %loaded, %loaded into %elementwise
-        {indexing_maps = [#map, #map, #map]}
         : memref<2x3xf16, #wafer.memory<spm, tensor>>,
           memref<2x3xf16, #wafer.memory<spm, tensor>>
       into memref<2x3xf16, #wafer.memory<spm, tensor>>

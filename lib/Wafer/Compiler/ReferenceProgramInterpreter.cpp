@@ -48,6 +48,22 @@ llvm::Error forEachLogicalIndex(llvm::ArrayRef<int64_t> shape,
   return llvm::Error::success();
 }
 
+static float maximumF32(float lhs, float rhs) {
+  if (std::isnan(lhs) || std::isnan(rhs))
+    return std::numeric_limits<float>::quiet_NaN();
+  if (lhs == 0.0f && rhs == 0.0f)
+    return std::signbit(lhs) && std::signbit(rhs) ? -0.0f : 0.0f;
+  return std::max(lhs, rhs);
+}
+
+static float minimumF32(float lhs, float rhs) {
+  if (std::isnan(lhs) || std::isnan(rhs))
+    return std::numeric_limits<float>::quiet_NaN();
+  if (lhs == 0.0f && rhs == 0.0f)
+    return std::signbit(lhs) || std::signbit(rhs) ? -0.0f : 0.0f;
+  return std::min(lhs, rhs);
+}
+
 struct TransportEventKey {
   int64_t source = -1;
   int64_t destination = -1;
@@ -875,20 +891,10 @@ private:
             result = *accumulator + *value;
             break;
           case wafer::InstrReduceKind::Max:
-            if (std::isnan(*accumulator) || std::isnan(*value))
-              result = std::numeric_limits<float>::quiet_NaN();
-            else if (*accumulator == 0.0f && *value == 0.0f)
-              result = 0.0f;
-            else
-              result = std::max(*accumulator, *value);
+            result = maximumF32(*accumulator, *value);
             break;
           case wafer::InstrReduceKind::Min:
-            if (std::isnan(*accumulator) || std::isnan(*value))
-              result = std::numeric_limits<float>::quiet_NaN();
-            else if (*accumulator == 0.0f && *value == 0.0f)
-              result = -0.0f;
-            else
-              result = std::min(*accumulator, *value);
+            result = minimumF32(*accumulator, *value);
             break;
           case wafer::InstrReduceKind::Avg:
             return invalid("unsupported projected reduce kind");
@@ -938,10 +944,10 @@ private:
             result = -values[0];
             break;
           case wafer::InstrElementwiseKind::Max:
-            result = std::max(values[0], values[1]);
+            result = maximumF32(values[0], values[1]);
             break;
           case wafer::InstrElementwiseKind::Min:
-            result = std::min(values[0], values[1]);
+            result = minimumF32(values[0], values[1]);
             break;
           case wafer::InstrElementwiseKind::Add:
             result = values[0] + values[1];

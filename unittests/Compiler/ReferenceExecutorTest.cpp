@@ -265,7 +265,8 @@ module {
   program.programUserInputCount = 2;
   program.distributedInputs = {boundary(0), boundary(1)};
   program.distributedOutputs = {boundary(0, true)};
-  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(1);
+  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
+      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
   ASSERT_TRUE(static_cast<bool>(config));
   std::string diagnosticsText;
   llvm::raw_string_ostream diagnostics(diagnosticsText);
@@ -279,7 +280,7 @@ module {
   grouped = nullptr;
   ASSERT_EQ(bundle->getRankExecutables().size(), 1u);
   EXPECT_TRUE(mlir::succeeded(wafer::compiler::detail::lowerTargetABIForTesting(
-      bundle->getRankExecutables().front())));
+      bundle->getRankExecutables().front(), bundle->getExecutionConfig())));
 
   auto lhs = wafer::compiler::ReferenceTensor::create(
       "f32", {8}, bytesOf({1, 2, 3, 4, 5, 6, 7, 8}));
@@ -974,6 +975,220 @@ TEST(ReferenceExecutorTest, RejectsMalformedCompactTensor) {
             std::string::npos);
 }
 
+TEST(ReferenceExecutorTest,
+     ExecutesOrderedReductionCompositesWithoutNativeReduce) {
+  mlir::DialectRegistry registry;
+  registry.insert<mlir::arith::ArithDialect,
+                  mlir::bufferization::BufferizationDialect,
+                  mlir::cf::ControlFlowDialect, mlir::func::FuncDialect,
+                  mlir::linalg::LinalgDialect, mlir::math::MathDialect,
+                  mlir::memref::MemRefDialect, mlir::scf::SCFDialect,
+                  mlir::tensor::TensorDialect>();
+  wafer::registerAllDialects(registry);
+  mlir::arith::registerBufferizableOpInterfaceExternalModels(registry);
+  mlir::bufferization::func_ext::registerBufferizableOpInterfaceExternalModels(
+      registry);
+  mlir::linalg::registerBufferizableOpInterfaceExternalModels(registry);
+  mlir::scf::registerBufferizableOpInterfaceExternalModels(registry);
+  mlir::tensor::registerBufferizableOpInterfaceExternalModels(registry);
+  auto context = std::make_shared<mlir::MLIRContext>(registry);
+  context->loadAllAvailableDialects();
+
+  auto grouped = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  wafer.target.topology @default {card_grid = array<i64: 1, 1>, card_interconnect = "mesh", tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @default_mesh {axes = ["rank"], endpoints = array<i64: 0, 0, 0, 0>, policy = "explicit", shape = array<i64: 1>, topology = @default}
+  func.func @main(%input: tensor<7x4xf32>)
+      -> (tensor<7xf32>, tensor<7xf32>, tensor<7xf32>) {
+    %sum_out = tensor.empty() : tensor<7xf32>
+    %sum_result = wafer.group ins(%input : tensor<7x4xf32>)
+        outs(%sum_out : tensor<7xf32>) {
+    ^bb0(%input_arg: tensor<7x4xf32>, %out_arg: tensor<7xf32>):
+      %init_scalar = arith.constant 5.000000e-01 : f32
+      %empty = tensor.empty() : tensor<7xf32>
+      %init = linalg.fill ins(%init_scalar : f32)
+          outs(%empty : tensor<7xf32>) -> tensor<7xf32>
+      %sum = linalg.generic {
+          indexing_maps = [
+            affine_map<(d0, d1) -> (d0, d1)>,
+            affine_map<(d0, d1) -> (d0)>
+          ],
+          iterator_types = ["parallel", "reduction"]
+        } ins(%input_arg : tensor<7x4xf32>)
+          outs(%init : tensor<7xf32>) {
+        ^bb0(%value: f32, %acc: f32):
+          %next = arith.addf %value, %acc : f32
+          linalg.yield %next : f32
+        } -> tensor<7xf32>
+      wafer.group.yield %sum : tensor<7xf32>
+    } : tensor<7xf32>
+
+    %max_out = tensor.empty() : tensor<7xf32>
+    %max_result = wafer.group ins(%input : tensor<7x4xf32>)
+        outs(%max_out : tensor<7xf32>) {
+    ^bb0(%input_arg: tensor<7x4xf32>, %out_arg: tensor<7xf32>):
+      %init_scalar = arith.constant -0.000000e+00 : f32
+      %empty = tensor.empty() : tensor<7xf32>
+      %init = linalg.fill ins(%init_scalar : f32)
+          outs(%empty : tensor<7xf32>) -> tensor<7xf32>
+      %max = linalg.generic {
+          indexing_maps = [
+            affine_map<(d0, d1) -> (d0, d1)>,
+            affine_map<(d0, d1) -> (d0)>
+          ],
+          iterator_types = ["parallel", "reduction"]
+        } ins(%input_arg : tensor<7x4xf32>)
+          outs(%init : tensor<7xf32>) {
+        ^bb0(%value: f32, %acc: f32):
+          %next = arith.maximumf %value, %acc : f32
+          linalg.yield %next : f32
+        } -> tensor<7xf32>
+      wafer.group.yield %max : tensor<7xf32>
+    } : tensor<7xf32>
+
+    %min_out = tensor.empty() : tensor<7xf32>
+    %min_result = wafer.group ins(%input : tensor<7x4xf32>)
+        outs(%min_out : tensor<7xf32>) {
+    ^bb0(%input_arg: tensor<7x4xf32>, %out_arg: tensor<7xf32>):
+      %init_scalar = arith.constant 0.000000e+00 : f32
+      %empty = tensor.empty() : tensor<7xf32>
+      %init = linalg.fill ins(%init_scalar : f32)
+          outs(%empty : tensor<7xf32>) -> tensor<7xf32>
+      %min = linalg.generic {
+          indexing_maps = [
+            affine_map<(d0, d1) -> (d0, d1)>,
+            affine_map<(d0, d1) -> (d0)>
+          ],
+          iterator_types = ["parallel", "reduction"]
+        } ins(%input_arg : tensor<7x4xf32>)
+          outs(%init : tensor<7xf32>) {
+        ^bb0(%value: f32, %acc: f32):
+          %next = arith.minimumf %value, %acc : f32
+          linalg.yield %next : f32
+        } -> tensor<7xf32>
+      wafer.group.yield %min : tensor<7xf32>
+    } : tensor<7xf32>
+
+    return %sum_result, %max_result, %min_result
+        : tensor<7xf32>, tensor<7xf32>, tensor<7xf32>
+  }
+}
+)mlir",
+      mlir::ParserConfig(context.get()));
+  ASSERT_TRUE(grouped);
+
+  wafer::frontend::FrontendProgramVerificationResult program;
+  program.logicalRankCount = 1;
+  program.programUserInputCount = 1;
+  program.distributedInputs = {shapedBoundary(0, {7, 4})};
+  program.distributedOutputs = {shapedBoundary(0, {7}),
+                                shapedBoundary(1, {7}),
+                                shapedBoundary(2, {7})};
+  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
+      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+  ASSERT_TRUE(static_cast<bool>(config));
+  std::string diagnosticsText;
+  llvm::raw_string_ostream diagnostics(diagnosticsText);
+  auto bundle = wafer::compiler::detail::buildExecutableBundle(
+      context, *grouped, std::move(program), *config, diagnostics,
+      std::nullopt);
+  if (!bundle)
+    FAIL() << diagnosticsText << llvm::toString(bundle.takeError());
+  grouped = nullptr;
+  ASSERT_EQ(bundle->getRankExecutables().size(), 1u);
+
+  unsigned nativeReduceCount = 0;
+  unsigned addCount = 0;
+  unsigned maxCount = 0;
+  unsigned minCount = 0;
+  bundle->getRankExecutables().front().getModule().walk(
+      [&](mlir::Operation *operation) {
+        if (mlir::isa<wafer::InstrReduceOp>(operation))
+          ++nativeReduceCount;
+        if (auto elementwise =
+                mlir::dyn_cast<wafer::InstrElementwiseOp>(operation)) {
+          switch (elementwise.getKind()) {
+          case wafer::InstrElementwiseKind::Add:
+            ++addCount;
+            break;
+          case wafer::InstrElementwiseKind::Max:
+            ++maxCount;
+            break;
+          case wafer::InstrElementwiseKind::Min:
+            ++minCount;
+            break;
+          default:
+            break;
+          }
+        }
+      });
+  EXPECT_EQ(nativeReduceCount, 0u);
+  EXPECT_EQ(addCount, 4u);
+  EXPECT_EQ(maxCount, 4u);
+  EXPECT_EQ(minCount, 4u);
+
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  auto input = wafer::compiler::ReferenceTensor::create(
+      "f32", {7, 4},
+      bytesOf({1.0e20f, 3.0f, -1.0e20f, 4.0f,
+               1.0f, 2.0f, 3.0f, 4.0f,
+               1.0f, nan, 2.0f, 3.0f,
+               -0.0f, 0.0f, -0.0f, 0.0f,
+               -1.0f, -2.0f, -3.0f, -4.0f,
+               -0.0f, -0.0f, -0.0f, -0.0f,
+               0.0f, 0.0f, 0.0f, 0.0f}));
+  ASSERT_TRUE(static_cast<bool>(input));
+  std::vector<wafer::compiler::ReferenceInputBinding> inputs;
+  inputs.push_back(
+      {wafer::compiler::ProgramResourceRole::UserInput, 0, std::move(*input)});
+  auto result =
+      wafer::compiler::executeReferenceRank(*bundle, /*logicalRank=*/0, inputs);
+  if (!result)
+    FAIL() << llvm::toString(result.takeError());
+  ASSERT_EQ(result->getOutputs().size(), 3u);
+  std::vector<float> sum =
+      floatsOf(result->getOutputs()[0].tensor.getBytes());
+  ASSERT_EQ(sum.size(), 7u);
+  EXPECT_EQ(sum[0], 4.0f);
+  EXPECT_EQ(sum[1], 10.5f);
+  EXPECT_TRUE(std::isnan(sum[2]));
+  EXPECT_EQ(sum[3], 0.5f);
+  EXPECT_EQ(sum[4], -9.5f);
+  EXPECT_EQ(sum[5], 0.5f);
+  EXPECT_EQ(sum[6], 0.5f);
+
+  std::vector<float> maximum =
+      floatsOf(result->getOutputs()[1].tensor.getBytes());
+  ASSERT_EQ(maximum.size(), 7u);
+  EXPECT_EQ(maximum[0], 1.0e20f);
+  EXPECT_EQ(maximum[1], 4.0f);
+  EXPECT_TRUE(std::isnan(maximum[2]));
+  EXPECT_EQ(maximum[3], 0.0f);
+  EXPECT_FALSE(std::signbit(maximum[3]));
+  EXPECT_EQ(maximum[4], 0.0f);
+  EXPECT_TRUE(std::signbit(maximum[4]));
+  EXPECT_EQ(maximum[5], 0.0f);
+  EXPECT_TRUE(std::signbit(maximum[5]));
+  EXPECT_EQ(maximum[6], 0.0f);
+  EXPECT_FALSE(std::signbit(maximum[6]));
+
+  std::vector<float> minimum =
+      floatsOf(result->getOutputs()[2].tensor.getBytes());
+  ASSERT_EQ(minimum.size(), 7u);
+  EXPECT_EQ(minimum[0], -1.0e20f);
+  EXPECT_EQ(minimum[1], 0.0f);
+  EXPECT_FALSE(std::signbit(minimum[1]));
+  EXPECT_TRUE(std::isnan(minimum[2]));
+  EXPECT_EQ(minimum[3], 0.0f);
+  EXPECT_TRUE(std::signbit(minimum[3]));
+  EXPECT_EQ(minimum[4], -4.0f);
+  EXPECT_EQ(minimum[5], 0.0f);
+  EXPECT_TRUE(std::signbit(minimum[5]));
+  EXPECT_EQ(minimum[6], 0.0f);
+  EXPECT_FALSE(std::signbit(minimum[6]));
+}
+
 TEST(ReferenceExecutorTest, ExecutesSelectedResidualMlpSemantics) {
   mlir::DialectRegistry registry;
   registry.insert<mlir::arith::ArithDialect,
@@ -1080,7 +1295,8 @@ module {
   program.parameters = {parameter(1, {2, 3}), parameter(2, {3}),
                         parameter(3, {3, 2}), parameter(4, {2})};
   program.distributedOutputs = {shapedBoundary(0, {2, 2})};
-  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(1);
+  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
+      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
   ASSERT_TRUE(static_cast<bool>(config));
   std::string diagnosticsText;
   llvm::raw_string_ostream diagnostics(diagnosticsText);
@@ -1217,7 +1433,8 @@ module {
   program.programUserInputCount = 1;
   program.distributedInputs = {partitionedBoundary(0)};
   program.distributedOutputs = {partitionedBoundary(0)};
-  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(16);
+  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
+      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
   if (!config)
     FAIL() << llvm::toString(config.takeError());
   std::string diagnosticsText;
@@ -1389,7 +1606,8 @@ module {
   program.programUserInputCount = 1;
   program.distributedInputs = {replicatedBoundary16(0)};
   program.distributedOutputs = {replicatedBoundary16(0)};
-  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(16);
+  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
+      16, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
   if (!config)
     FAIL() << llvm::toString(config.takeError());
   std::string diagnosticsText;

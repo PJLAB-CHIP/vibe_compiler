@@ -73,12 +73,13 @@
 namespace wafer::compiler {
 
 llvm::Expected<ExecutionConfig>
-ExecutionConfig::createForSingleCard(int64_t executionRankCount) {
+ExecutionConfig::createForSingleCard(int64_t executionRankCount,
+                                     TargetProfileId targetProfile) {
   if (executionRankCount != 1 && executionRankCount != 16)
     return llvm::createStringError(
         llvm::errc::invalid_argument,
         "execution-ranks must be exactly 1 or 16 for the single-card compiler");
-  return ExecutionConfig(executionRankCount);
+  return ExecutionConfig(executionRankCount, targetProfile);
 }
 
 llvm::Expected<CompilationRequest>

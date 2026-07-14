@@ -137,7 +137,8 @@ Pipeline position:
   DDR offset assignment、event/transport verification 和 whole-variant candidate-selection。
 - User-level driver / named pipeline:
   Q16以后由同一
-  `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16}`在全部显式
+  `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16} --target-profile=wafer-tx81-single-card-kernel-v1`
+  在全部显式
   per-rank clone的whole-variant candidate flow内调用本stage。当前Q15只产出verified grouped program
   directory，不执行tile-region lowering；`wafer-opt`、`wafer-lower-groups-to-tile-region`、
   `--wafer-convert-group-to-tile-region`和`--wafer-dump-group-to-tile-region`只处理显式IR，用于
@@ -151,7 +152,7 @@ Pipeline position:
 - Completion gate:
   FileCheck、conversion pass和dump pass覆盖R2.4/R3.1已能产出的Wafer V0硬件可承载local
   compute/movement/view family：DDR memref load/store boundary、layout materialization、DDR/SPM
-  `memref.alloc`、tile-local allocation、fill、GEMM、elementwise/relation、native reduce、passthrough
+  `memref.alloc`、tile-local allocation、fill、GEMM、elementwise/relation、带显式constant init的source reduce、passthrough
   broadcast/transpose/copy、tensor slice movement、static reshape view、top-level
   `wafer.linalg_ext.collective.*` 到 `wafer.tile.*` collective materialization、tile-region 内
   `scf.if` / `scf.for` 递归 lowering 和 function-boundary One-Shot bufferization。硬件 V0 无承载或当前
@@ -180,7 +181,7 @@ table 补协议。
 | `linalg.fill` | canonical scalar payload生成fresh SPM result和显式`wafer.tile.fill`，不原地改写DPS init；仅当结果只作为overwrite-only GEMM的已证明identity init时可只传播metadata | supported for exact scalar fill | tensor SSA旧init必须保持不变；named payload必须精确yield fill value。具体CT fill/memset/immediate选择归instruction lowering。 |
 | `linalg.matmul` | exact multiply-accumulate payload、一个DPS init且init可证明为`+0`时，lhs/rhs materialize到`cx`并生成overwrite-only `wafer.tile.gemm` | supported for exact simple `linalg.matmul` | 非零、`-0.0`、未知init、额外payload、错误wiring、fastmath/overflow flag均不能被当前GEMM合同静默丢弃；batch matmul执行同一identity/payload gate。 |
 | `linalg.generic` simple elementwise / relation / select | 单result、单`linalg.yield`，typed scalar DAG mapper按SSA wiring逐op生成`wafer.tile.elementwise` | supported for exact simple CT family and basic select | 当前kind不能区分的unsigned div/min/max、unsigned integer relation、`maxnum/minnum`和不匹配target NaN语义的float predicate必须fail closed；不能只看yielded op class。 |
-| `linalg.reduce` / reduction-like generic | reduction iterator + scalar combiner lower 到 `wafer.tile.reduce`；input/result materialize 到 aligned `cx`/`ncx`；constant init 用 `init_value`，dynamic init 用 scalar operand | supported for native sum/max/min | `avg` 是 Wafer reduce kind，但当前 R2.4 测试输入尚未产出可直接识别的 avg combiner；`mul` 不伪装 native。 |
+| `linalg.reduce` / reduction-like generic | reduction iterator + scalar combiner lower到`wafer.tile.reduce`；input/result materialize到aligned `cx`/`ncx`；constant init用typed `init_value`或直接constant SSA operand保存 | supported for sum/max/min source semantics with constant init | tile verifier与tile→instruction baseline均拒绝dynamic init；accepted op按canonical lexicographic order展开为init-first fill/movement/map-free elementwise composite，不直接生成native reduce。`avg`尚无可直接识别的source combiner，`mul`不伪装已支持kind。 |
 | passthrough `linalg.generic` for broadcast / transpose / copy | exact body-only passthrough yield根据permutation-only indexing map lower到broadcast/transpose/copy | supported for static permutation maps | result map必须identity；payload存在任何额外op/effect时不能整op替换。 |
 | `tensor.extract_slice` / `tensor.insert_slice` | static slice lower到tile movement；external extract形成DDR subview/load；direct-yield insert仅在旧dest除该insert及可证明unread DPS-init链外无其它use时early store | supported for static slices，包括合法rank reduction | 否则必须先load旧dest并生成fresh functional insert result，统一在finish store，避免early store污染旧tensor SSA value。dynamic metadata结构化失败。 |
 | `tensor.expand_shape` / `tensor.collapse_shape` | static element-count-preserving reshape lower 到 `wafer.tile.reshape` | supported for static shape-only reshape | `wafer.tile.reshape` 表达 canonical linear element order 保持不变、result multi-index 按新 shape 重新解释的 logical reindex；tile-region 层 op 本身无 write effect，但下游若当前 physical layout 不能 alias 该 logical reindex，必须 materialize 成 explicit movement，不能用 reshape 逃避 physical layout。 |

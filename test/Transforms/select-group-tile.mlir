@@ -75,7 +75,7 @@ func.func @reduce_sum_group(%input: tensor<2x4xf32>, %init: tensor<f32>,
   %group = wafer.group ins(%input, %init : tensor<2x4xf32>, tensor<f32>)
       outs(%out : tensor<2xf32>) {
   ^bb0(%arg0: tensor<2x4xf32>, %arg1: tensor<f32>, %arg2: tensor<2xf32>):
-    %init_scalar = tensor.extract %arg1[] : tensor<f32>
+    %init_scalar = arith.constant 0.000000e+00 : f32
     %empty = tensor.empty() : tensor<2xf32>
     %filled = linalg.fill
         ins(%init_scalar : f32)
@@ -199,7 +199,15 @@ func.func @loop_group(%input: tensor<4xf32>, %out: tensor<4xf32>,
 // IR-LABEL: func.func @reduce_sum_group
 // IR-NOT: wafer.group
 // IR-NOT: linalg.generic
-// IR: wafer.instr.reduce <sum>
+// IR-NOT: wafer.instr.reduce
+// IR: wafer.instr.fill
+// IR: wafer.instr.local_fence
+// IR: wafer.instr.gather_scatter
+// IR: wafer.instr.local_fence
+// IR: wafer.instr.elementwise <add>
+// IR: wafer.instr.local_fence
+// IR: wafer.instr.gather_scatter
+// IR: wafer.instr.local_fence
 // IR: wafer.instr.wdma
 
 // IR-LABEL: func.func @if_group

@@ -39,6 +39,7 @@ struct CommandLineOptions {
   std::optional<std::string> inputProgramDirectory;
   std::optional<std::string> outputProgramDirectory;
   std::optional<std::string> executionRanks;
+  std::optional<std::string> targetProfile;
   std::vector<std::string> referenceInputs;
   std::vector<std::string> referenceExpected;
   std::optional<std::string> referenceAtol;
@@ -48,6 +49,7 @@ struct CommandLineOptions {
 void printHelp() {
   llvm::outs() << "usage: wafer-compile --input-program-dir <dir> "
                   "--output-program-dir <dir> --execution-ranks <1|16> "
+                  "--target-profile <registered-id> "
                   "[--reference-input <index>=<npy>] "
                   "[--reference-expected <index>=<npy>] "
                   "[--reference-atol <value>] [--reference-rtol <value>]\n";
@@ -123,6 +125,12 @@ bool parseCommandLine(int argc, char **argv, CommandLineOptions &options) {
     if (arg == "--execution-ranks" || arg.starts_with("--execution-ranks=")) {
       if (parseValueOption(argc, argv, index, arg, "--execution-ranks",
                            options.executionRanks))
+        return false;
+      continue;
+    }
+    if (arg == "--target-profile" || arg.starts_with("--target-profile=")) {
+      if (parseValueOption(argc, argv, index, arg, "--target-profile",
+                           options.targetProfile))
         return false;
       continue;
     }
@@ -443,7 +451,8 @@ int main(int argc, char **argv) {
     return 1;
   if (!requireOption(options.inputProgramDirectory, "--input-program-dir") ||
       !requireOption(options.outputProgramDirectory, "--output-program-dir") ||
-      !requireOption(options.executionRanks, "--execution-ranks"))
+      !requireOption(options.executionRanks, "--execution-ranks") ||
+      !requireOption(options.targetProfile, "--target-profile"))
     return 1;
 
   bool referenceRequested = !options.referenceInputs.empty() ||
@@ -476,8 +485,17 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  llvm::Expected<wafer::TargetProfileId> targetProfile =
+      wafer::parseTargetProfileId(*options.targetProfile);
+  if (!targetProfile) {
+    llvm::errs() << "wafer-compile: "
+                 << llvm::toString(targetProfile.takeError()) << "\n";
+    return 1;
+  }
+
   llvm::Expected<wafer::compiler::ExecutionConfig> executionConfig =
-      wafer::compiler::ExecutionConfig::createForSingleCard(rankCount);
+      wafer::compiler::ExecutionConfig::createForSingleCard(
+          rankCount, *targetProfile);
   if (!executionConfig) {
     llvm::errs() << "wafer-compile: "
                  << llvm::toString(executionConfig.takeError()) << "\n";

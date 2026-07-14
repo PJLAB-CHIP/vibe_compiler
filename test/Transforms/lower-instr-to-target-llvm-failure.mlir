@@ -1,4 +1,4 @@
-// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm %s 2>&1 | FileCheck %s
+// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %s 2>&1 | FileCheck %s
 
 func.func @reject_transform_like_tdma() {
   %src = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}

@@ -48,11 +48,11 @@ protected:
 
   wafer::runtime::PackageManifest makeManifest() const {
     using namespace wafer::runtime;
-    PackageManifest manifest;
+    const wafer::TargetProfileRecord &target = wafer::getTargetProfileRecord(
+        wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+    PackageManifest manifest(target.id, target.targetIdentity,
+                             target.kernelRuntimeABI, target.moduleFormat);
     manifest.program = ProgramId(0);
-    manifest.targetIdentity = kSingleCardTargetIdentity.str();
-    manifest.runtimeABI = kKernelRuntimeABI.str();
-    manifest.moduleFormat = kRiscv64ELFModuleFormat.str();
     manifest.rankCount = 1;
     manifest.resources = {{ResourceId(0),
                            0,
@@ -85,7 +85,7 @@ protected:
                            PackageAccessMode::ReadWrite,
                            false}};
     manifest.modules = {{ModuleId(0), 0, "modules/rank_00000.so",
-                         moduleDigest(), kRiscv64ELFModuleFormat.str()}};
+                         moduleDigest(), target.moduleFormat.str()}};
     manifest.entries = {{EntryId(0),
                          0,
                          ModuleId(0),
@@ -117,6 +117,10 @@ TEST_F(PackageManifestTest, CanonicalRoundtripOwnsTypedManifest) {
       << llvm::toString(verified.takeError());
   std::string canonical =
       wafer::runtime::serializeCanonicalPackageJson(*verified);
+  EXPECT_NE(canonical.find("\"schema_version\": 3"), std::string::npos);
+  EXPECT_NE(canonical.find(
+                "\"profile\": \"wafer-tx81-single-card-kernel-v1\""),
+            std::string::npos);
   llvm::Expected<wafer::runtime::VerifiedPackageManifest> parsed =
       wafer::runtime::parseCanonicalPackageJson(canonical, root);
   ASSERT_TRUE(static_cast<bool>(parsed)) << llvm::toString(parsed.takeError());
@@ -124,6 +128,40 @@ TEST_F(PackageManifestTest, CanonicalRoundtripOwnsTypedManifest) {
   EXPECT_EQ(parsed->getManifest().entries.front().symbol, "main");
   EXPECT_EQ(wafer::runtime::serializeCanonicalPackageJson(*parsed),
             wafer::runtime::serializeCanonicalPackageJson(*verified));
+}
+
+TEST_F(PackageManifestTest, RejectsLegacySchemaAndMissingTargetProfile) {
+  llvm::Expected<wafer::runtime::VerifiedPackageManifest> verified = verify();
+  ASSERT_TRUE(static_cast<bool>(verified))
+      << llvm::toString(verified.takeError());
+  std::string canonical =
+      wafer::runtime::serializeCanonicalPackageJson(*verified);
+
+  std::string legacy = canonical;
+  size_t schema = legacy.find("\"schema_version\": 3");
+  ASSERT_NE(schema, std::string::npos);
+  legacy.replace(schema, std::string("\"schema_version\": 3").size(),
+                 "\"schema_version\": 2");
+  llvm::Expected<wafer::runtime::VerifiedPackageManifest> rejected =
+      wafer::runtime::parseCanonicalPackageJson(legacy, root);
+  ASSERT_FALSE(static_cast<bool>(rejected));
+  EXPECT_NE(llvm::toString(rejected.takeError()).find("schema_version"),
+            std::string::npos);
+
+  std::string missingProfile = canonical;
+  size_t profile = missingProfile.find(
+      "    \"profile\": \"wafer-tx81-single-card-kernel-v1\",\n");
+  ASSERT_NE(profile, std::string::npos);
+  missingProfile.erase(
+      profile,
+      std::string("    \"profile\": "
+                  "\"wafer-tx81-single-card-kernel-v1\",\n")
+          .size());
+  rejected =
+      wafer::runtime::parseCanonicalPackageJson(missingProfile, root);
+  ASSERT_FALSE(static_cast<bool>(rejected));
+  EXPECT_NE(llvm::toString(rejected.takeError()).find("missing field 'profile'"),
+            std::string::npos);
 }
 
 TEST_F(PackageManifestTest, RejectsUnknownFieldsAndNonCanonicalJSON) {
@@ -198,9 +236,16 @@ TEST_F(PackageManifestTest, EnforcesParseLimitsBeforeAcceptance) {
 
 TEST_F(PackageManifestTest, RejectsSlotResourceAndPayloadMismatches) {
   wafer::runtime::PackageManifest manifest = makeManifest();
-  manifest.entries.front().slots[1].ordinal = 2;
+  manifest.moduleFormat = "elf-other";
   llvm::Expected<wafer::runtime::VerifiedPackageManifest> rejected =
       wafer::runtime::verifyPackageManifest(std::move(manifest), root);
+  ASSERT_FALSE(static_cast<bool>(rejected));
+  EXPECT_NE(llvm::toString(rejected.takeError()).find("profile mapping"),
+            std::string::npos);
+
+  manifest = makeManifest();
+  manifest.entries.front().slots[1].ordinal = 2;
+  rejected = wafer::runtime::verifyPackageManifest(std::move(manifest), root);
   ASSERT_FALSE(static_cast<bool>(rejected));
   EXPECT_NE(llvm::toString(rejected.takeError()).find("ABI slots"),
             std::string::npos);
@@ -236,9 +281,11 @@ TEST_F(PackageManifestTest, NoCardPreflightIsExactAndSideEffectFree) {
   std::vector<RuntimeInvocationBinding> bindings = {
       {ResourceId(0), 64, 256, PackageAccessMode::ReadOnly, true},
       {ResourceId(1), 64, 256, PackageAccessMode::WriteOnly, true}};
-  RuntimeEnvironment environment{kSingleCardTargetIdentity.str(),
-                                 kKernelRuntimeABI.str(),
-                                 kRiscv64ELFModuleFormat.str(), 1024};
+  const wafer::TargetProfileRecord &target = wafer::getTargetProfileRecord(
+      wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+  RuntimeEnvironment environment{target.id, target.targetIdentity,
+                                 target.kernelRuntimeABI, target.moduleFormat,
+                                 1024};
   llvm::Expected<RuntimeSessionPlan> first = preflightNoCardRuntimeSession(
       *verified, EntryId(0), bindings, environment);
   ASSERT_TRUE(static_cast<bool>(first)) << llvm::toString(first.takeError());
@@ -249,6 +296,15 @@ TEST_F(PackageManifestTest, NoCardPreflightIsExactAndSideEffectFree) {
   EXPECT_FALSE(first->executesBoard);
   ASSERT_EQ(first->resources.size(), 3u);
   EXPECT_FALSE(first->resources.back().externallyBound);
+
+  environment.moduleFormat = "elf-other";
+  llvm::Expected<RuntimeSessionPlan> incompatible =
+      preflightNoCardRuntimeSession(*verified, EntryId(0), bindings,
+                                    environment);
+  ASSERT_FALSE(static_cast<bool>(incompatible));
+  EXPECT_NE(llvm::toString(incompatible.takeError()).find("incompatible"),
+            std::string::npos);
+  environment.moduleFormat = target.moduleFormat.str();
 
   bindings.pop_back();
   llvm::Expected<RuntimeSessionPlan> rejected = preflightNoCardRuntimeSession(
@@ -287,9 +343,11 @@ TEST_F(PackageManifestTest,
   std::vector<RuntimeInvocationBinding> bindings = {
       {ResourceId(0), 64, 256, PackageAccessMode::ReadOnly, true},
       {ResourceId(1), 64, 256, PackageAccessMode::WriteOnly, true}};
-  RuntimeEnvironment environment{kSingleCardTargetIdentity.str(),
-                                 kKernelRuntimeABI.str(),
-                                 kRiscv64ELFModuleFormat.str(), 1024};
+  const wafer::TargetProfileRecord &target = wafer::getTargetProfileRecord(
+      wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+  RuntimeEnvironment environment{target.id, target.targetIdentity,
+                                 target.kernelRuntimeABI, target.moduleFormat,
+                                 1024};
   llvm::Expected<RuntimeSessionPlan> rejected = preflightNoCardRuntimeSession(
       *verified, EntryId(0), bindings, environment);
   ASSERT_FALSE(static_cast<bool>(rejected));

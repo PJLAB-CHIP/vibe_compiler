@@ -493,11 +493,15 @@ module {
      to memref<4x8xf16, #wafer.memory<spm, cx>>
   wafer.instr.fill %tensor, %f16
       : memref<4x8xf16, #wafer.memory<spm, tensor>>, f16
+  wafer.instr.mask_move %tensor, %tensor into %tensor
+      : memref<4x8xf16, #wafer.memory<spm, tensor>>,
+        memref<4x8xf16, #wafer.memory<spm, tensor>>
+    into memref<4x8xf16, #wafer.memory<spm, tensor>>
   wafer.instr.elementwise #wafer.instr_elementwise_kind<add> %tensor, %tensor into %tensor
       : memref<4x8xf16, #wafer.memory<spm, tensor>>,
         memref<4x8xf16, #wafer.memory<spm, tensor>>
     into memref<4x8xf16, #wafer.memory<spm, tensor>>
-  wafer.instr.reduce #wafer.instr_reduce_kind<sum> %cx into %reduce_out, %f16 : f16
+  wafer.instr.reduce #wafer.instr_reduce_kind<sum> %cx into %reduce_out
       {dim = 0 : i64}
       : memref<4x8xf16, #wafer.memory<spm, cx>>
     into memref<4xf16, #wafer.memory<spm, cx>>
@@ -551,6 +555,21 @@ module {
   ASSERT_TRUE(gatherInstruction);
   EXPECT_EQ(gatherInstruction.getInstructionFamily(),
             wafer::InstrFamily::TDMA);
+
+  auto fill = findSingleOp<wafer::InstrFillOp>(*module);
+  ASSERT_TRUE(fill);
+  auto fillInstruction =
+      mlir::dyn_cast<wafer::WaferInstructionOpInterface>(fill.getOperation());
+  ASSERT_TRUE(fillInstruction);
+  EXPECT_EQ(fillInstruction.getInstructionFamily(), wafer::InstrFamily::TDMA);
+
+  auto maskMove = findSingleOp<wafer::InstrMaskMoveOp>(*module);
+  ASSERT_TRUE(maskMove);
+  auto maskMoveInstruction = mlir::dyn_cast<wafer::WaferInstructionOpInterface>(
+      maskMove.getOperation());
+  ASSERT_TRUE(maskMoveInstruction);
+  EXPECT_EQ(maskMoveInstruction.getInstructionFamily(),
+            wafer::InstrFamily::CT);
 
   auto elementwise = findSingleOp<wafer::InstrElementwiseOp>(*module);
   ASSERT_TRUE(elementwise);

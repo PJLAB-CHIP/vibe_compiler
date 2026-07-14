@@ -132,11 +132,12 @@
   `sdy.constant`、`sdy.reshard`或其它SDY中间op写给只接StableHLO的helper。graph已有用户`mhlo.sharding`
   时由helper消费；无用户seed时当前采用replicated correctness基线。基于execution mesh自动补split seed的
   named pipeline只作IR-local调试，等有完整SDY→StableHLO bridge后才能进入production。单卡execution rank
-  没有默认值，用户必须显式选择1或16。
+  没有默认值，用户必须显式选择1或16；target profile同样没有默认值。
 - default-sharding/SPMD chain不能用手写`sdy.sharding`、`wafer.spmd.*` attr、私有JSON或名字约定冒充partitioned
   program。正确主链是：frontend Python 只通过 `torch_xla.distributed.spmd.mark_sharding`
   标记 4096 matmul 图并导出带 `mhlo.sharding` 的 PyTorch/XLA StableHLO program directory；随后由
-  `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16}` 在 Wafer compiler
+  `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16} --target-profile=wafer-tx81-single-card-kernel-v1`
+  在 Wafer compiler
   层接管 target/mesh，并由pinned helper内部完成Shardy/XLA SPMD partition，再执行local normalization
   和 logical group formation。当前typed grouped-program driver的输出只到重新读取并验证过的
   grouped program directory；不公开
@@ -398,9 +399,11 @@
   instruction lowering 从 full input 派生 per-target slot `memref.subview`，按 phase-ordered
   all-to-owner unicast 生成 `wafer.instr.dte_send` / `dte_recv` / `dte_wait`，wait 后用
   `wafer.instr.elementwise` 把 recv contribution 累计到 local accumulator。
-- 用户级 compiler target 名称统一为 `wafer`，Wafer IR target attr 的唯一主线 spelling 是
-  `#wafer.target<wafer>`。`tx8` / `tx81` 只保留在硬件、依赖逆向和外部历史命名事实里，不能作为
-  compiler target、pipeline 名称或测试 fixture 的主线命名。
+- 通用 compiler target 名称统一为 `wafer`，Wafer IR target attr 的唯一主线 spelling 是
+  `#wafer.target<wafer>`。裸的 `tx8` / `tx81` 不能作为 dialect、pipeline、pass、fixture 或可推断字段的
+  主线命名；硬件/依赖逆向事实和tasks/14 closed registry中的opaque canonical profile key例外。例如
+  `wafer-tx81-single-card-kernel-v1` 只能整体解析为typed `TargetProfileId`，不得拆字符串恢复target、
+  revision、ABI或numeric policy。
 - 非小修主线任务动实现前必须先写清楚 pipeline contract：upstream artifact / IR、current stage
   responsibility、output artifact / IR、downstream consumer、user-level driver / named pipeline、
   explicit non-goals 和 completion gate。只说明某个 pass / tool / test 的局部功能不够；完成证明
@@ -408,7 +411,7 @@
 - 主链路gate应由独立`wafer-compile` owner-aware program driver重放已完成上游链路，不在Integration
   里手动拼 pass 串。当前 frontend verifier 入口是
   `wafer-compile-stablehlo --verify-stablehlo-program`；production compile入口统一为
-  `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16}`。
+  `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16} --target-profile=wafer-tx81-single-card-kernel-v1`。
   typed grouped-program boundary从frontend admission推进到重新读取并验证过的grouped program directory；
   同一production transaction随后把frontend verifier返回的typed boundary/shard facts和grouped module直接交给
   per-rank bundle boundary，不暴露stop-stage。

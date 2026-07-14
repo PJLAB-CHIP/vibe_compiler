@@ -604,7 +604,6 @@ parseManifest(llvm::StringRef json, const PackageParseLimits &limits) {
           "manifest"))
     return std::move(error);
 
-  PackageManifest manifest;
   llvm::Expected<uint64_t> schemaVersion =
       requireUnsigned(*root, "schema_version", "manifest");
   if (!schemaVersion)
@@ -646,13 +645,17 @@ parseManifest(llvm::StringRef json, const PackageParseLimits &limits) {
           requireExactFields(**program, {"id"}, "manifest.program"))
     return std::move(error);
   if (llvm::Error error = requireExactFields(
-          **target, {"identity", "runtime_abi", "module_format"},
+          **target, {"profile", "identity", "runtime_abi", "module_format"},
           "manifest.target"))
     return std::move(error);
   llvm::Expected<uint64_t> programId =
       requireUnsigned(**program, "id", "manifest.program");
   if (!programId)
     return programId.takeError();
+  llvm::Expected<std::string> targetProfile =
+      requireString(**target, "profile", "manifest.target", limits);
+  if (!targetProfile)
+    return targetProfile.takeError();
   llvm::Expected<std::string> targetIdentity =
       requireString(**target, "identity", "manifest.target", limits);
   if (!targetIdentity)
@@ -666,13 +669,25 @@ parseManifest(llvm::StringRef json, const PackageParseLimits &limits) {
   if (!moduleFormat)
     return moduleFormat.takeError();
 
+  llvm::Expected<TargetProfileId> parsedTargetProfile =
+      parseTargetProfileId(*targetProfile);
+  if (!parsedTargetProfile)
+    return parsedTargetProfile.takeError();
+  llvm::Expected<TargetIdentityId> parsedTargetIdentity =
+      parseTargetIdentityId(*targetIdentity);
+  if (!parsedTargetIdentity)
+    return parsedTargetIdentity.takeError();
+  llvm::Expected<KernelRuntimeABIId> parsedRuntimeABI =
+      parseKernelRuntimeABIId(*runtimeABI);
+  if (!parsedRuntimeABI)
+    return parsedRuntimeABI.takeError();
+  PackageManifest manifest(*parsedTargetProfile, *parsedTargetIdentity,
+                           *parsedRuntimeABI, *moduleFormat);
+
   if (*schemaVersion > std::numeric_limits<uint32_t>::max())
     return invalid("manifest.schema_version exceeds uint32");
   manifest.schemaVersion = static_cast<uint32_t>(*schemaVersion);
   manifest.program = ProgramId(*programId);
-  manifest.targetIdentity = std::move(*targetIdentity);
-  manifest.runtimeABI = std::move(*runtimeABI);
-  manifest.moduleFormat = std::move(*moduleFormat);
   manifest.rankCount = *rankCount;
   for (auto [index, value] : llvm::enumerate(**resources)) {
     llvm::Expected<PackageResourceRecord> record =
@@ -744,10 +759,12 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
     return invalid("unsupported package manifest schema_version");
   if (!manifest.program.isValid() || manifest.program.getValue() != 0)
     return invalid("package program identity is invalid");
-  if (manifest.targetIdentity != kSingleCardTargetIdentity ||
-      manifest.runtimeABI != kKernelRuntimeABI ||
-      manifest.moduleFormat != kRiscv64ELFModuleFormat)
-    return invalid("package target/runtime ABI/module format is unsupported");
+  const TargetProfileRecord &targetProfile =
+      getTargetProfileRecord(manifest.targetProfile);
+  if (manifest.targetIdentity != targetProfile.targetIdentity ||
+      manifest.runtimeABI != targetProfile.kernelRuntimeABI ||
+      manifest.moduleFormat != targetProfile.moduleFormat)
+    return invalid("package target profile mapping is inconsistent");
   if (manifest.rankCount != 1 && manifest.rankCount != 16)
     return invalid("package rank_count must be exactly 1 or 16");
   uint64_t totalRecords = manifest.resources.size() + manifest.modules.size() +
@@ -923,8 +940,12 @@ serializeCanonicalPackageJson(const VerifiedPackageManifest &verified) {
       json.attribute("id", int64_t(manifest.program.getValue()));
     });
     json.attributeObject("target", [&] {
-      json.attribute("identity", manifest.targetIdentity);
-      json.attribute("runtime_abi", manifest.runtimeABI);
+      json.attribute("profile",
+                     stringifyTargetProfileId(manifest.targetProfile));
+      json.attribute("identity",
+                     stringifyTargetIdentityId(manifest.targetIdentity));
+      json.attribute("runtime_abi",
+                     stringifyKernelRuntimeABIId(manifest.runtimeABI));
       json.attribute("module_format", manifest.moduleFormat);
     });
     json.attribute("rank_count", manifest.rankCount);
@@ -1041,7 +1062,8 @@ llvm::Expected<RuntimeSessionPlan> preflightNoCardRuntimeSession(
     llvm::ArrayRef<RuntimeInvocationBinding> invocationBindings,
     const RuntimeEnvironment &environment) {
   const PackageManifest &manifest = package.getManifest();
-  if (environment.targetIdentity != manifest.targetIdentity ||
+  if (environment.targetProfile != manifest.targetProfile ||
+      environment.targetIdentity != manifest.targetIdentity ||
       environment.runtimeABI != manifest.runtimeABI ||
       environment.moduleFormat != manifest.moduleFormat)
     return invalid("runtime environment is incompatible with package target");

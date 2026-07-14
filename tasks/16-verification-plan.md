@@ -24,7 +24,7 @@ Pipeline position:
 - Downstream consumer:
   tasks/progress completion判断、regression CI、target-model correlation、board bring-up和后续性能校准。
 - User-level driver / named pipeline:
-  Q0.L后compiler/source-backed producer、ABI smoke和host-CRT/SystemC gate只经显式registered target profile的
+  compiler/source-backed producer、ABI smoke和host-CRT/SystemC gate只经显式registered target profile的
   wafer-compile；exact-module target model和board
   provider由wafer-run重放同一verified package。wafer-opt/pass tests只补局部覆盖。
 - Explicit non-goals:
@@ -37,7 +37,7 @@ Pipeline position:
   staging/publication；Q18闭合typed manifest/package/no-card runtime；Q19闭合immutable single-rank reference core；
   Q16.T闭合Direct DTE transport activation；Q19.M闭合deterministic multi-rank reference；Q20/Q21依次闭合
   rank-count=1/16 linear/MLP和16-rank tiny Llama纵向链。后续gate不能反向成为Q0前置，board未执行时保持明确
-  external gate。Q0.L后Q22.N与Q22.L可并行；Q22.N单独解锁Q22.B，Q22.L与external authorization/spec gate共同
+  external gate。Q0.L已完成，Q22.N与Q22.L可并行；Q22.N单独解锁Q22.B，Q22.L与external authorization/spec gate共同
   解锁Q22.H，Q22.N+Q22.H+既有Q16.T再解锁Q22.S，Q22.B+Q22.S+既有Q20/Q21最终由Q22.V闭合完整输出。
   direct shim只作ABI smoke，Q22只汇总Q22.V完成状态。
   Q22.C消费Q22和Q6.B结果闭合板端numeric correlation；
@@ -180,7 +180,7 @@ Q0历史完成结果不覆盖本轮review发现的target profile、engine×forma
 - tasks/14 registry拥有typed `TargetProfileId`；显式CLI selection经request/config进入profile-bearing ExecutableBundle、
   target conversion、transaction-local prepared target LLVM/ABI artifact、`TargetArtifactBundle`和PackageManifest，逐层
   positive/readback。缺失、冲突、自由字符串保存、default以及late-rank不一致均在publication前失败且无partial output；
-  tasks/14 profile到typed `TargetIdentity`/`KernelRuntimeAbiId`的唯一映射和Q18 full-config join同样全枚举；Q22后续
+  tasks/14 profile到typed `TargetIdentityId`/`KernelRuntimeABIId`的唯一映射和Q18 full-config join同样全枚举；Q22后续
   target LLVM bundle消费该proof，不是本gate提前创建的artifact。debug `wafer-lower-groups-to-target-llvm`的required
   `target-profile=<registered-id>` option必须在pipeline construction经同一registry立即解析为typed
   `TargetConversionRequest`；missing/unknown negative失败，不写module attr、不保留自由字符串、不提供default；
@@ -188,7 +188,7 @@ Q0历史完成结果不覆盖本轮review发现的target profile、engine×forma
   encoder及CRT参数逐项conformance；无证据UINT/64-bit/TF32 format-bearing row为negative，现有i64 positive相应修正；
 - elementwise identity/permutation/broadcast都在tile→instruction物化或strip；terminal instruction positive无map且same-shape，
   任一残留`indexing_maps` attr在instruction verifier/full conversion中illegal；target LLVM/CRT与CModel都不能忽略后继续；
-- tile reduce覆盖constant `init_value`的有序positive、SSA/dynamic init可表示性、二者同时出现、类型不匹配、combiner mapping
+- tile reduce覆盖constant `init_value`和direct `arith.constant` SSA init的有序positive、dynamic init拒绝、二者同时出现、类型不匹配、combiner mapping
   和checked expansion budget。positive必须证明init-first fill、canonical-order result-shaped slice movement、双accumulator
   map-free elementwise及final movement逐步与独立row-major oracle一致，含rounding-sensitive、NaN和signed-zero vectors；
   不能表示的dynamic init/combiner/budget case在effect前拒绝。terminal `wafer.instr.reduce`的ODS/verifier不接受init
@@ -197,6 +197,11 @@ Q0历史完成结果不覆盖本轮review发现的target profile、engine×forma
 - 每个negative验证source/已发布artifact不变；positive必须由正式driver重放到all-and-only target LLVM/CRT conformance，
   并用新config/Instr合同重放Q20 linear/MLP和Q21 tiny Llama的source-backed compile、all-rank target module、package、reference
   differential及no-card preflight。仅ODS unit、FileCheck、手写instruction fixture或Q0.L前旧结果不能作为完成证明。
+
+上述gate已由Q0.L fresh结果闭合：`check-wafer`执行63个C++ unit和249个lit（248 pass、1个feature-inverse
+unsupported），configured `--show-unsupported`确认唯一unsupported为`wafer-compile-stablehlo-disabled.test`，CTest 3/3
+通过。Q20 rank1/rank16、Q21 rank16/HF、CRT conformance、真实RISC-V64 ELF readback、schema-v3 package/no-card以及rank-15
+target/package late failure均在同一完整suite中实际执行；板端、vendor-exact packet和timing仍不属于本gate。
 
 ## 5. Q15 Typed Driver And Grouped Program Gates
 
@@ -556,7 +561,8 @@ frontend verifier。这只完成Q5.C admission，不完成本节Gate A/B/C。
 
 ### 10.2 Q20 Gate A: Single-Tile Linear/MLP
 
-真实exported linear-residual/MLP只经`wafer-compile --execution-ranks=1`产生：
+真实exported linear-residual/MLP只经
+`wafer-compile --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1`产生：
 
 - accepted complete traversal；
 - rank executable和target module；
@@ -586,7 +592,8 @@ Pipeline position:
 
 ### 10.3 Q20 Gate B: Single-Card 16-Rank Linear/MLP
 
-同类模型只经`--execution-ranks=16`，增加：
+同类模型只经
+`wafer-compile --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1`，增加：
 
 - all-and-only 16 rank artifacts；
 - rank-specific shard/peer/entry；
@@ -620,14 +627,15 @@ count和tensor-layout alias，不把任意reshape视为同地址。
 
 该target alias闭合并发布真实16-rank package后，历史Q21 reference实现曾直接从accepted
 `wafer.instr.reduce`的`init_value`/scalar init投影局部reduce command；本轮已确认target CRT不消费该字段，因此这只保留为
-Q0.L前历史证据，不能证明新合同。Q0.L重放时ReferenceExecutor消费init-first fill、canonical-order slice movement和
+Q0.L前历史证据，不能证明新合同。Q0.L fresh重放中ReferenceExecutor消费init-first fill、canonical-order slice movement和
 map-free elementwise ping-pong形成的普通terminal instruction序列，并与独立logical row-major reduce oracle比较；任何残留
 Instr init在projection前即illegal。当前可精确映射的combiner只有f32 sum、IEEE maximum和IEEE minimum；avg及无法表示的
 dynamic init继续在effect前fail closed。测试覆盖非尾维/尾维、非零init、rounding-sensitive顺序、NaN/signed-zero、
 maximum/minimum和aligned Cx/NCx physical layout；tiny Llama只是随后重放的source-backed consumer，不定义reduce协议。
 
-causal select的accepted composite不是generic elementwise select，而是typed i1 tensor fill、`bit2fp`和
-`mask_move`。reference storage按Tensor-layout logical stride计算bit index，并以每8个i1占1 byte的
+dynamic causal select的accepted composite不是generic elementwise select，而是typed i1 tensor fill、`bit2fp`和
+`mask_move`；严格private use-def证明的constant predicate则在tile→instruction前改写为selected arm的fresh copy，不发
+BOOL fill/mask command。reference storage按Tensor-layout logical stride计算bit index，并以每8个i1占1 byte的
 little-bit-order访问；`bit2fp`逐logical coordinate产生同shape f32 0/1 mask，`mask_move`仅在mask非零时
 把source写入已有dest。projector必须同时验证静态shape、SPM memory、dtype和physical geometry；不把
 bitpacked i1伪装成普通1-byte integer，也不新增sidecar predicate数组。
@@ -646,7 +654,8 @@ softmax、SiLU和residual传播的形态一致。因此本case按实测全rank�
 覆盖framework/NumPy单进程交叉检查的原`1e-5` absolute tolerance；driver仍逐元素检查canonical output和全部
 16个replicated rank，不接受shape/digest替代。该容差是reference differential合同，不代表板端精度校准。
 
-Gate C的source-backed lit只生成该pinned corpus case，经同一`wafer-compile --execution-ranks=16`入口，以user
+Gate C的source-backed lit只生成该pinned corpus case，经同一
+`wafer-compile --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1`入口，以user
 input position 0完成mandatory candidate、bundle、all-and-only ELF/manifest、完整CPU differential，并逐一对16个
 entry执行`wafer-run --no-card`。Direct DTE capability/status ABI/host watchdog均由命令显式声明；缺失声明的负例保持
 fail closed。no-card只形成typed plan，不表示provider或transport已执行。这些证据闭合compiler/reference/no-card
@@ -659,9 +668,9 @@ allocation、launch、transport、completion和copyback仍只由Q6.B拥有。
 
 ## 11. Q22 Target Execution Model Gates
 
-具体模型边界、SystemC主架构、exact ELF缺口和板端numeric corpus由tasks/17拥有。本节只定义证据口径；Q22方案已收敛，
-但在Q0.L闭合target profile、engine×format legality以及reduce/indexing-map丢义前保持blocked，以下gate当前均不能因
-文档完成而标记实现完成。
+具体模型边界、SystemC主架构、exact ELF缺口和板端numeric corpus由tasks/17拥有。本节只定义证据口径。Q0.L已经闭合
+target profile、engine×format legality以及reduce/indexing-map语义，Q22.N/L成为并行Next；以下各gate仍必须以自己的实现和
+新鲜测试完成，不能因文档或Q0.L通过而标记完成。
 
 ### 11.1 Q22.N Multi-Dtype Numeric Foundation Gate
 
@@ -758,7 +767,8 @@ Pipeline position:
 - Current stage responsibility:
   将all-rank fully legal target LLVM、ordered typed ABI slots和identity原子提升为owner-backed内部artifact，不重新lower。
 - Output artifact / IR:
-  move-only、不可序列化的TargetLLVMModuleBundle；逐rank包含logical rank、entry、profile/revision/ABI和module identity。
+  move-only、不可序列化的TargetLLVMModuleBundle；逐rank包含logical rank、entry、profile/target identity/
+  Kernel Runtime ABI和module identity。
 - Downstream consumer:
   Q22.H authorized Host CRT和direct target-call ABI smoke。
 - User-level driver / named pipeline:

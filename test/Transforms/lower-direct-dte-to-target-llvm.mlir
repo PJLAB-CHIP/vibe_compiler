@@ -1,5 +1,5 @@
-// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-instr-to-target-llvm{logical-rank=0 transport-status-argument-index=0})' %s | FileCheck %s
-// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-instr-to-target-llvm{logical-rank=0 transport-status-argument-index=0})' %s | mlir-translate --mlir-to-llvmir | FileCheck --check-prefix=LLVMIR %s
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-instr-to-target-llvm{target-profile=wafer-tx81-single-card-kernel-v1 logical-rank=0 transport-status-argument-index=0})' %s | FileCheck %s
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-instr-to-target-llvm{target-profile=wafer-tx81-single-card-kernel-v1 logical-rank=0 transport-status-argument-index=0})' %s | mlir-translate --mlir-to-llvmir | FileCheck --check-prefix=LLVMIR %s
 
 module {
   wafer.target.topology @default

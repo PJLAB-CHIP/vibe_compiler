@@ -1,5 +1,5 @@
-// RUN: wafer-opt --wafer-lower-instr-to-target-llvm %s | FileCheck %s
-// RUN: wafer-opt --wafer-lower-instr-to-target-llvm %s | mlir-translate --mlir-to-llvmir | FileCheck --check-prefix=LLVMIR %s
+// RUN: wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %s | FileCheck %s
+// RUN: wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %s | mlir-translate --mlir-to-llvmir | FileCheck --check-prefix=LLVMIR %s
 
 module {
   wafer.target.topology @default

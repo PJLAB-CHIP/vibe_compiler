@@ -40,7 +40,7 @@ Pipeline position:
   arena-relative `wafer.ddr.offset`但没有explicit arena base的compiler-managed allocation不构成target address。
 - Current stage responsibility:
   Q0负责既有geometry/control-flow legality；Q0.L从`ExecutionConfig`取得tasks/14 registry拥有的`TargetProfileId`，按共享
-  `LogicalFormatDescriptor`和target-profile×engine×format `TargetFormatEncodingProfile` preflight每个command，并拒绝任何
+  `LogicalFormatDescriptor`和target-profile×engine×format `TargetFormatEncodingRecord` preflight每个command，并拒绝任何
   残留init/indexing-map或无证据encoding row。在原控制流位置lower instruction leaf到typed LLVM CRT calls，并以module
   clone + full conversion保证失败无source mutation。Q17负责把每个已验证rank-local LLVM module编译/
   link到Q17 transaction staging，并验证symbol、entry、format、digest及all-and-only rank coverage后发布
@@ -56,7 +56,7 @@ Pipeline position:
   prepared target LLVM/ABI artifacts形成owner-backed all-rank target LLVM bundle。runtime module loader只通过Q18 verified
   package消费modules。
 - User-level driver / named pipeline:
-  Q0.L后production由显式`--target-profile=<registered-id>`的同一wafer-compile在Q16完成all-rank bundle后自动进入Q17；
+  production由显式`--target-profile=<registered-id>`的同一wafer-compile在Q16完成all-rank bundle后自动进入Q17；
   `wafer-lower-groups-to-target-llvm`只作显式rank-0的debug replay，要求pipeline option
   `target-profile=<registered-id>`；pipeline construction立即用tasks/14同一closed registry解析成`TargetProfileId`并构造
   conversion-local typed `TargetConversionRequest`，缺失/unknown拒绝，不把spelling写入module attr或使用default。它固定执行
@@ -81,6 +81,57 @@ Pipeline position:
 selector提交时已经完成tile-region/instruction materialization以及SPM/DDR planning；target入口只在其后补齐
 函数边界bufferization，消除tensor signature和`bufferization.to_memref/to_tensor` wrapper，然后运行target
 conversion。它不得再次执行direct group-to-tile/instr或memory planning。
+
+### 2.1 Q0.L 首个 closed profile
+
+首个且当前唯一registered spelling固定为`wafer-tx81-single-card-kernel-v1`，对应closed typed
+`TargetProfileId`。这个spelling是opaque canonical key，只组合仓库已经证明的
+`wafer-tx81-single-card` target identity、`wafer-tx81-kernel-v1` Kernel Runtime ABI和
+`elf-riscv64`module format；不得按连字符拆字段，也不声称当前资料没有给出的silicon revision。
+它只选择compiler target/ABI/format-legality record，不是Q22的`NumericSemanticsProfile`。
+
+registry必须由该typed profile唯一解析到typed target identity和Kernel Runtime ABI，再映射到delivery spelling。
+不存在`unknown`revision占位、默认profile或字符串fallback；未来取得SKU/revision证据时新增closed profile record并同步
+manifest schema，而不是改变当前key含义。
+
+`LogicalFormatDescriptor`只拥有target-independent的canonical spelling、storage/semantic bit width和bitpacked事实；
+`LogicalFormat`枚举ordinal没有ABI意义。公开`Data_Format` enum code由profile-owned
+`TargetDataFormatCodeRecord`完整记录，即使某个format没有任何可发射engine row也仍保留其公开code证据：
+
+| Logical format | I8 | I16 | F16 | BF16 | I32 | F32 | TF32 | BOOL | U8 | U16 | U32 | I64 | U64 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `Data_Format` code | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 |
+
+该13-row code表只证明profile下的公开ABI枚举值，不能直接交给command emitter。后者必须再查询下面完整的
+profile×engine×logical-format `TargetFormatEncodingRecord`，且只有`Supported` row才携带可用code；显式
+`Unsupported` row的code为空。这样UINT、64-bit和generic TF32即使存在公开枚举，也不会被误解为可发射命令。
+
+该profile的`TargetFormatEngine`静态command-encoding准入矩阵如下。`S`（supported）只表示当前ABI/register证据足以让
+compiler对该engine的format-bearing command编码；它仍要求op-kind verifier、tasks/08 layout/footprint和既有
+geometry/narrowing gate全部通过，不证明numeric semantics、rounding/saturation、packet provenance或板端行为。
+`—`表示当前无足够证据，必须在任何target effect前fail closed。
+
+| `TargetFormatEngine` | I8 | I16 | F16 | BF16 | I32 | F32 | TF32 | BOOL | U8 | U16 | U32 | I64 | U64 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| RDMA | S | S | S | S | S | S | — | S | — | — | — | — | — |
+| WDMA | S | S | S | S | S | S | — | S | — | — | — | — | — |
+| TDMA | S | S | S | S | S | S | — | — | — | — | — | — | — |
+| CT | S | — | S | S | — | S | — | S\* | — | — | — | — | — |
+| NE | S | — | S | S | — | S | — | — | — | — | — | — | — |
+
+`CT×BOOL` 的`S*`不是通用CT BOOL准入：只有registry明列且wrapper format合同明确的
+bool-specific relation/logic op-kind可通过，其它CT op-kind即使落在同一engine也必须拒绝。RDMA/WDMA的BOOL row还要求
+tasks/08 bitpacked layout和checked element-count规则。TDMA byte-counted `gather_scatter`不携带format，不属于该矩阵的
+format-bearing row，也不能用它反向证明`TDMA×BOOL`；DTE同理按bytes和typed transport binding验证，不是
+`TargetFormatEngine`成员。矩阵未列的format（包括F64）、`Fmt_UNUSED`和unknown code一律拒绝。
+
+CT convert是与上述通用`CT×format`矩阵独立的typed whitelist：只准入opcode 139..174静态定义的
+36条source→destination route，即`I8→{F16,BF16,F32,TF32}`、`I16→{F16,BF16,F32,TF32}`、
+`I32→{F16,BF16,F32,TF32}`、`BF16→{I8,I16,I32,F16,F32,TF32}`、
+`F16→{I8,I16,I32,BF16,F32,TF32}`、`F32→{I8,I16,I32,F16,BF16,TF32}`和
+`TF32→{I8,I16,I32,F16,BF16,F32}`。该whitelist要求kind、source/destination type和kind-specific
+zero-point/rounding attr精确匹配；它只开放这36个typed convert command，不会打开通用`CT×I16/I32/TF32`
+row，也不包含UINT、BOOL、64-bit或same-format copy。
 
 ## 3. Current Formal Conversion Facts
 
@@ -164,7 +215,7 @@ resource slot，不从LLVM参数数量、function名字或package fixture恢复�
 - stable slot ordinal；
 - ResourceId、role、access、dtype/shape/bytes/alignment；
 - rank和entry symbol；
-- target revision/ABI version；
+- target profile/identity和Kernel Runtime ABI version；
 - module content digest。
 
 function result不得隐式成为未绑定buffer。当前输出、parameter和workspace都必须在slot-resource双射中出现；
@@ -266,22 +317,23 @@ diagnostic按稳定语义分类：
   bundle，使现有RISC-V device link、direct ABI smoke和Host-CRT/SystemC model成为三个直接consumer。正式model consumer
   只有在tasks/17 external authorization/spec gate通过后才host执行同一target LLVM，调用与device build同源且获准host使用的
   repo CRT wrapper，再经许可兼容Tsm operator/packet seam进入SystemC；direct shim只补ABI诊断。该bundle携带fully legal LLVM modules、canonical rank domain、每rank logical
-  rank/entry、`ExecutionConfig`、ordered typed ABI slots、target identity/revision、target/kernel ABI facts及context/owner
+  rank/entry、`ExecutionConfig`、ordered typed ABI slots、target profile/identity、target/kernel ABI facts及context/owner
   lifetime；全部rank成功后才原子形成，不是packet artifact或package成员。在该producer落地前，当前Q17
   `TargetArtifactBundle`合同和完成状态不变。Host-CRT/SystemC通过只能证明其明确provenance下repo CRT/host-packet的untimed
   functional-numeric链，仍不执行RISC-V archive；在独立packet/MMIO事实源相关前不证明vendor-exact packet，Q22.C板端
   numeric correlation也不替代该packet provenance；
-- Q0.L/Q22实施前置的typed format/encoding registry由tasks/14单一拥有，tasks/11 verifier、target lowering、CRT conformance和
+- Q0.L已建立且Q22继续消费的typed format/encoding registry由tasks/14单一拥有，tasks/11 verifier、target lowering、CRT conformance和
   target model共同消费；它拥有shared `LogicalFormatDescriptor`（含TF32 raw32 container/semantic width）与
   target-profile×engine×format
   ABI/register encoding及legality。Cx/NCx block/tail/footprint、BOOL bitpack和alignment仍由tasks/08及唯一
   `computeWaferPhysicalTensorInfo`拥有，registry只引用layout profile，不能复制几何。当前通用
   format switch、reference numeric code和CRT中的重复mapping必须由该registry生成或逐项conformance，不能以`Data_Format`
   enum存在证明每个engine合法；typed TF32 convert route也不能反向证明RDMA/WDMA/GEMM等format-bearing path可发射TF32。
-  tasks/14 registry拥有typed `TargetProfileId`及registered CLI spelling；`wafer-compile`必须显式选择并写入
+  tasks/14 registry拥有typed `TargetProfileId`及registered CLI spelling；首个opaque canonical key为
+  `wafer-tx81-single-card-kernel-v1`，它不表示尚无证据的silicon revision或Q22 numeric profile。`wafer-compile`必须显式选择并写入
   `CompilationRequest`/`ExecutionConfig`，Q0.L把它贯穿accepted bundle、target conversion和transaction-local prepared
   target LLVM/ABI artifact readback。Q22后续target LLVM bundle只消费并再次readback，不得从自由字符串或默认值恢复。该扩展是Q22 numeric/model
-  consumer的前置，不改变已完成Q17的既有窄publication事实，但Q0.L必须重放其正式pipeline和atomic gate；
+  consumer的已闭合前置；Q0.L已重放正式pipeline和atomic gate，不改变Q17既有窄publication边界；
 - Direct DTE target activation已由Q16.T闭合：只消费tasks/13定义的typed accepted binding，CRT wrapper、opaque event、
   status ABI、required/allowed symbol、真实16-rank ELF和late-failure atomic gate已通过；board execution仍属Q6.B；
 - low-precision/quant ABI：等待instruction geometry和CPU/reference semantics；

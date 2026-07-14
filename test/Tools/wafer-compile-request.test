@@ -1,14 +1,21 @@
-# RUN: not wafer-compile --output-program-dir %t.output --execution-ranks=16 2>&1 | FileCheck %s --check-prefix=MISSING-INPUT
-# RUN: not wafer-compile --input-program-dir %t.input --execution-ranks=16 2>&1 | FileCheck %s --check-prefix=MISSING-OUTPUT
-# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output 2>&1 | FileCheck %s --check-prefix=MISSING-RANKS
-# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --execution-ranks=not-an-integer 2>&1 | FileCheck %s --check-prefix=INVALID-RANKS
-# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --execution-ranks=18446744073709551616 2>&1 | FileCheck %s --check-prefix=OVERFLOW-RANKS
-# RUN: not wafer-compile --input-program-dir %t.input --input-program-dir %t.input --output-program-dir %t.output --execution-ranks=16 2>&1 | FileCheck %s --check-prefix=DUPLICATE-INPUT
-# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --output-program-dir %t.output --execution-ranks=16 2>&1 | FileCheck %s --check-prefix=DUPLICATE-OUTPUT
-# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --execution-ranks=16 --execution-ranks=16 2>&1 | FileCheck %s --check-prefix=DUPLICATE-RANKS
+# RUN: not wafer-compile --output-program-dir %t.output --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 2>&1 | FileCheck %s --check-prefix=MISSING-INPUT
+# RUN: not wafer-compile --input-program-dir %t.input --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 2>&1 | FileCheck %s --check-prefix=MISSING-OUTPUT
+# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --target-profile=wafer-tx81-single-card-kernel-v1 2>&1 | FileCheck %s --check-prefix=MISSING-RANKS
+# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --execution-ranks=not-an-integer --target-profile=wafer-tx81-single-card-kernel-v1 2>&1 | FileCheck %s --check-prefix=INVALID-RANKS
+# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --execution-ranks=18446744073709551616 --target-profile=wafer-tx81-single-card-kernel-v1 2>&1 | FileCheck %s --check-prefix=OVERFLOW-RANKS
+# RUN: not wafer-compile --input-program-dir %t.input --input-program-dir %t.input --output-program-dir %t.output --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 2>&1 | FileCheck %s --check-prefix=DUPLICATE-INPUT
+# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --output-program-dir %t.output --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 2>&1 | FileCheck %s --check-prefix=DUPLICATE-OUTPUT
+# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --execution-ranks=16 --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 2>&1 | FileCheck %s --check-prefix=DUPLICATE-RANKS
+# RUN: rm -rf %t.missing-profile-output %t.unknown-profile-output %t.duplicate-profile-output
+# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.missing-profile-output --execution-ranks=16 2>&1 | FileCheck %s --check-prefix=MISSING-PROFILE
+# RUN: test ! -e %t.missing-profile-output
+# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.unknown-profile-output --execution-ranks=16 --target-profile=not-a-registered-profile 2>&1 | FileCheck %s --check-prefix=UNKNOWN-PROFILE
+# RUN: test ! -e %t.unknown-profile-output
+# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.duplicate-profile-output --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 --target-profile=wafer-tx81-single-card-kernel-v1 2>&1 | FileCheck %s --check-prefix=DUPLICATE-PROFILE
+# RUN: test ! -e %t.duplicate-profile-output
 # RUN: rm -rf %t.input %t.no-helper-output
 # RUN: mkdir -p %t.input
-# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER= %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.no-helper-output --execution-ranks=16 2>&1 | FileCheck %s --check-prefix=NO-HELPER
+# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER= %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.no-helper-output --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 2>&1 | FileCheck %s --check-prefix=NO-HELPER
 # RUN: test ! -e %t.no-helper-output
 # RUN: not wafer-compile --program-pipeline=stablehlo-spmd-to-group 2>&1 | FileCheck %s --check-prefix=OLD-PROGRAM-PIPELINE
 # RUN: not wafer-compile --stop-stage=group 2>&1 | FileCheck %s --check-prefix=OLD-STOP-STAGE
@@ -17,11 +24,11 @@
 # RUN: not wafer-compile --default-tile-count=16 2>&1 | FileCheck %s --check-prefix=OLD-TILE-COUNT
 # RUN: not wafer-compile --partition-stablehlo-program 2>&1 | FileCheck %s --check-prefix=OLD-PARTITION
 # RUN: rm -rf %t.reference-missing %t.reference-duplicate %t.reference-tolerance
-# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.reference-missing --execution-ranks=1 --reference-input 0=%t.input.npy 2>&1 | FileCheck %s --check-prefix=REFERENCE-MISSING
+# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.reference-missing --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --reference-input 0=%t.input.npy 2>&1 | FileCheck %s --check-prefix=REFERENCE-MISSING
 # RUN: test ! -e %t.reference-missing
-# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.reference-duplicate --execution-ranks=1 --reference-input 0=%t.input.npy --reference-input 0=%t.other.npy --reference-expected 0=%t.expected.npy 2>&1 | FileCheck %s --check-prefix=REFERENCE-DUPLICATE
+# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.reference-duplicate --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --reference-input 0=%t.input.npy --reference-input 0=%t.other.npy --reference-expected 0=%t.expected.npy 2>&1 | FileCheck %s --check-prefix=REFERENCE-DUPLICATE
 # RUN: test ! -e %t.reference-duplicate
-# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.reference-tolerance --execution-ranks=1 --reference-input 0=%t.input.npy --reference-expected 0=%t.expected.npy --reference-atol=-1 2>&1 | FileCheck %s --check-prefix=REFERENCE-TOLERANCE
+# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.reference-tolerance --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --reference-input 0=%t.input.npy --reference-expected 0=%t.expected.npy --reference-atol=-1 2>&1 | FileCheck %s --check-prefix=REFERENCE-TOLERANCE
 # RUN: test ! -e %t.reference-tolerance
 
 # MISSING-INPUT: wafer-compile: missing required --input-program-dir
@@ -32,6 +39,9 @@
 # DUPLICATE-INPUT: wafer-compile: duplicate option: --input-program-dir
 # DUPLICATE-OUTPUT: wafer-compile: duplicate option: --output-program-dir
 # DUPLICATE-RANKS: wafer-compile: duplicate option: --execution-ranks
+# MISSING-PROFILE: wafer-compile: missing required --target-profile
+# UNKNOWN-PROFILE: wafer-compile: unknown target profile 'not-a-registered-profile'
+# DUPLICATE-PROFILE: wafer-compile: duplicate option: --target-profile
 # NO-HELPER: wafer-compile: no XLA SPMD partitioner helper configured
 # OLD-PROGRAM-PIPELINE: wafer-compile: unknown argument: --program-pipeline=stablehlo-spmd-to-group
 # OLD-STOP-STAGE: wafer-compile: unknown argument: --stop-stage=group

@@ -2,8 +2,11 @@
 
 #include "Wafer/Transforms/Passes.h"
 
+#include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/TargetPolicy.h"
+#include "Wafer/Target/TargetFormat.h"
+#include "Wafer/Transforms/TargetConversion.h"
 
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
 #include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"
@@ -380,44 +383,73 @@ static mlir::FailureOr<int64_t> getStaticSPMAddress(mlir::Operation *op,
   return address;
 }
 
-static mlir::FailureOr<int64_t> getDataFormatCode(mlir::Operation *op,
-                                                  mlir::Type elementType,
-                                                  llvm::StringRef role) {
+static mlir::FailureOr<LogicalFormat>
+getLogicalFormat(mlir::Operation *op, mlir::Type elementType,
+                 llvm::StringRef role) {
   if (auto intType = mlir::dyn_cast<mlir::IntegerType>(elementType)) {
     switch (intType.getWidth()) {
     case 1:
-      return 7; // BOOL
+      return LogicalFormat::Bool;
     case 8:
-      return intType.isUnsigned() ? 8 : 0; // UINT8 / INT8
+      return intType.isUnsigned() ? LogicalFormat::U8 : LogicalFormat::I8;
     case 16:
-      return intType.isUnsigned() ? 9 : 1; // UINT16 / INT16
+      return intType.isUnsigned() ? LogicalFormat::U16 : LogicalFormat::I16;
     case 32:
-      return intType.isUnsigned() ? 10 : 4; // UINT32 / INT32
+      return intType.isUnsigned() ? LogicalFormat::U32 : LogicalFormat::I32;
     case 64:
-      return intType.isUnsigned() ? 12 : 11; // UINT64 / INT64
+      return intType.isUnsigned() ? LogicalFormat::U64 : LogicalFormat::I64;
     default:
       break;
     }
   }
   if (mlir::isa<mlir::Float16Type>(elementType))
-    return 2; // FP16
+    return LogicalFormat::F16;
   if (mlir::isa<mlir::BFloat16Type>(elementType))
-    return 3; // BF16
+    return LogicalFormat::BF16;
   if (mlir::isa<mlir::Float32Type>(elementType))
-    return 5; // FP32
+    return LogicalFormat::F32;
+  if (mlir::isa<mlir::FloatTF32Type>(elementType))
+    return LogicalFormat::TF32;
 
-  return op->emitError() << "unsupported_target_dtype: cannot encode " << role
-                         << " element type " << elementType;
+  return op->emitError() << "unsupported_target_dtype: " << role
+                         << " element type " << elementType
+                         << " has no logical target-format descriptor";
 }
 
-static mlir::FailureOr<int64_t> getDataFormatCode(mlir::Operation *op,
-                                                  mlir::Value value,
-                                                  llvm::StringRef role) {
+static mlir::FailureOr<TargetFormatEngine>
+getTargetFormatEngine(mlir::Operation *op) {
+  auto instruction = mlir::dyn_cast<WaferInstructionOpInterface>(op);
+  if (!instruction)
+    return op->emitError()
+           << "unsupported_target_format: format-bearing operation does not "
+              "implement WaferInstructionOpInterface";
+  switch (instruction.getInstructionFamily()) {
+  case InstrFamily::RDMA:
+    return TargetFormatEngine::RDMA;
+  case InstrFamily::WDMA:
+    return TargetFormatEngine::WDMA;
+  case InstrFamily::TDMA:
+    return TargetFormatEngine::TDMA;
+  case InstrFamily::CT:
+    return TargetFormatEngine::CT;
+  case InstrFamily::NE:
+    return TargetFormatEngine::NE;
+  case InstrFamily::DTE:
+    return op->emitError()
+           << "unsupported_target_format: byte-counted DTE does not carry a "
+              "target data-format field";
+  }
+  llvm_unreachable("unknown instruction family");
+}
+
+static mlir::FailureOr<LogicalFormat>
+getLogicalFormat(mlir::Operation *op, mlir::Value value,
+                 llvm::StringRef role) {
   auto memrefType = mlir::dyn_cast<mlir::MemRefType>(value.getType());
   if (!memrefType)
     return op->emitError() << "unsupported_target_dtype: " << role
                            << " operand must be a memref";
-  return getDataFormatCode(op, memrefType.getElementType(), role);
+  return getLogicalFormat(op, memrefType.getElementType(), role);
 }
 
 static int64_t getIntegerAttrValue(mlir::IntegerAttr attr) {
@@ -497,9 +529,298 @@ static bool isTargetRelationElementwiseKind(InstrElementwiseKind kind) {
   }
 }
 
+static bool isTargetBoolElementwiseKind(InstrElementwiseKind kind) {
+  if (isTargetRelationElementwiseKind(kind))
+    return true;
+  switch (kind) {
+  case InstrElementwiseKind::LogicNot:
+  case InstrElementwiseKind::LogicAnd:
+  case InstrElementwiseKind::LogicOr:
+  case InstrElementwiseKind::LogicXor:
+    return true;
+  default:
+    return false;
+  }
+}
+
+static mlir::LogicalResult
+verifyBitpackedFormatValue(mlir::Operation *op, mlir::Value value,
+                           llvm::StringRef role) {
+  auto type = mlir::dyn_cast<mlir::MemRefType>(value.getType());
+  std::optional<WaferPhysicalTensorInfo> info =
+      type ? computeWaferPhysicalTensorInfo(type) : std::nullopt;
+  if (!type || !type.getElementType().isInteger(1) || !info ||
+      !info->bitPackedElement)
+    return op->emitError()
+           << "unsupported_target_format: " << role
+           << " must use the accepted bitpacked BOOL layout";
+  mlir::FailureOr<int64_t> elements =
+      getStaticElementCount(op, type, role);
+  if (mlir::failed(elements))
+    return mlir::failure();
+  if (*elements < 0 ||
+      static_cast<uint64_t>(*elements) >
+          std::numeric_limits<uint32_t>::max())
+    return op->emitError()
+           << "target_abi_narrowing: " << role
+           << " bitpacked BOOL logical element count must fit uint32_t";
+  return mlir::success();
+}
+
+static mlir::LogicalResult verifyTargetFormatConstraint(
+    mlir::Operation *op, mlir::Value value, llvm::StringRef role,
+    const TargetFormatEncodingRecord &record) {
+  switch (record.constraint) {
+  case TargetFormatConstraint::None:
+    return mlir::success();
+  case TargetFormatConstraint::BitpackedLayoutAndCheckedElementCount: {
+    if (mlir::failed(verifyBitpackedFormatValue(op, value, role)))
+      return mlir::failure();
+    mlir::IntegerAttr innerBytes;
+    if (auto rdma = mlir::dyn_cast<InstrRDMAOp>(op))
+      innerBytes = rdma.getInnerBytesAttr();
+    else if (auto wdma = mlir::dyn_cast<InstrWDMAOp>(op))
+      innerBytes = wdma.getInnerBytesAttr();
+    else
+      return op->emitError()
+             << "unsupported_target_format: bitpacked DMA format constraint "
+                "is attached to a non-RDMA/WDMA instruction";
+    int64_t logicalElements = 0;
+    if (!checkedMul(innerBytes.getInt(), 8, logicalElements) ||
+        static_cast<uint64_t>(logicalElements) >
+            std::numeric_limits<uint32_t>::max())
+      return op->emitError()
+             << "target_abi_narrowing: bitpacked BOOL inner_bytes * 8 must "
+                "fit uint32_t logical element count";
+    return mlir::success();
+  }
+  case TargetFormatConstraint::BoolSpecificCTOpKindAndBitpackedLayout: {
+    auto elementwise = mlir::dyn_cast<InstrElementwiseOp>(op);
+    if (!elementwise ||
+        !isTargetBoolElementwiseKind(elementwise.getKind()))
+      return op->emitError()
+             << "unsupported_target_format: CT BOOL is restricted to the "
+                "registered relation/logic elementwise kinds";
+    return verifyBitpackedFormatValue(op, value, role);
+  }
+  }
+  llvm_unreachable("unknown target format constraint");
+}
+
+static mlir::FailureOr<int64_t>
+getDataFormatCode(mlir::Operation *op, mlir::Value value,
+                  llvm::StringRef role, TargetProfileId targetProfile) {
+  mlir::FailureOr<LogicalFormat> format = getLogicalFormat(op, value, role);
+  mlir::FailureOr<TargetFormatEngine> engine = getTargetFormatEngine(op);
+  if (mlir::failed(format) || mlir::failed(engine))
+    return mlir::failure();
+
+  const LogicalFormatDescriptor *descriptor =
+      findLogicalFormatDescriptor(*format);
+  const TargetFormatEncodingRecord *record =
+      findTargetFormatEncoding(targetProfile, *engine, *format);
+  if (!descriptor || !record)
+    return op->emitError()
+           << "unsupported_target_format: profile '"
+           << stringifyTargetProfileId(targetProfile) << "', engine '"
+           << stringifyTargetFormatEngine(*engine) << "', format '"
+           << stringifyLogicalFormat(*format)
+           << "' has no closed target-format registry row";
+  if (!record->isSupported())
+    return op->emitError()
+           << "unsupported_target_format: profile '"
+           << stringifyTargetProfileId(targetProfile) << "', engine '"
+           << stringifyTargetFormatEngine(*engine) << "', format '"
+           << stringifyLogicalFormat(*format) << "' is unsupported: "
+           << stringifyTargetFormatUnsupportedReason(
+                  record->unsupportedReason);
+  if (mlir::failed(verifyTargetFormatConstraint(op, value, role, *record)))
+    return mlir::failure();
+  if (!record->dataFormatCode)
+    return op->emitError()
+           << "target_format_registry_error: supported profile/engine/format "
+              "row has no ABI/register code";
+  return *record->dataFormatCode;
+}
+
+static TargetConvertParameterKind
+toTargetConvertParameterKind(InstrConvertParameterKind kind) {
+  switch (kind) {
+  case InstrConvertParameterKind::None:
+    return TargetConvertParameterKind::None;
+  case InstrConvertParameterKind::RoundingMode:
+    return TargetConvertParameterKind::RoundingMode;
+  case InstrConvertParameterKind::ZeroPoint:
+    return TargetConvertParameterKind::ZeroPoint;
+  }
+  llvm_unreachable("unknown instruction convert parameter kind");
+}
+
+static mlir::LogicalResult verifyTargetConvertRoute(
+    InstrConvertOp op, TargetProfileId targetProfile) {
+  auto instruction = mlir::cast<WaferInstructionOpInterface>(op.getOperation());
+  if (instruction.getInstructionFamily() != InstrFamily::CT)
+    return op.emitError()
+           << "unsupported_target_convert: convert must report CT family";
+
+  uint16_t opcode = static_cast<uint16_t>(op.getKind());
+  const TargetConvertRoute *route =
+      findTargetConvertRoute(targetProfile, opcode);
+  if (!route)
+    return op.emitError()
+           << "unsupported_target_convert: opcode " << opcode
+           << " is not registered for profile '"
+           << stringifyTargetProfileId(targetProfile) << "'";
+
+  mlir::FailureOr<LogicalFormat> source =
+      getLogicalFormat(op, op.getSource(), "convert source");
+  mlir::FailureOr<LogicalFormat> destination =
+      getLogicalFormat(op, op.getDest(), "convert destination");
+  if (mlir::failed(source) || mlir::failed(destination))
+    return mlir::failure();
+  auto [canonicalSourceType, canonicalDestinationType] =
+      getInstrConvertTypePair(op.getContext(), op.getKind());
+  auto sourceType =
+      mlir::cast<mlir::MemRefType>(op.getSource().getType()).getElementType();
+  auto destinationType =
+      mlir::cast<mlir::MemRefType>(op.getDest().getType()).getElementType();
+  TargetConvertParameterKind parameterKind = toTargetConvertParameterKind(
+      getInstrConvertParameterKind(op.getKind()));
+  if (route->canonicalSpelling != stringifyEnum(op.getKind()) ||
+      route->source != *source || route->destination != *destination ||
+      route->parameterKind != parameterKind ||
+      sourceType != canonicalSourceType ||
+      destinationType != canonicalDestinationType)
+    return op.emitError()
+           << "unsupported_target_convert: kind, opcode, source/destination "
+              "type and registry route do not conform";
+  const TargetConvertRoute *typedRoute =
+      findTargetConvertRoute(targetProfile, *source, *destination);
+  if (typedRoute != route)
+    return op.emitError()
+           << "unsupported_target_convert: opcode and typed route registry "
+              "lookups disagree";
+
+  bool hasZeroPoint = static_cast<bool>(op.getZeroPointAttr());
+  bool hasRoundingMode = static_cast<bool>(op.getRoundingModeAttr());
+  switch (route->parameterKind) {
+  case TargetConvertParameterKind::None:
+    if (hasZeroPoint || hasRoundingMode)
+      return op.emitError()
+             << "unsupported_target_convert: parameterless route carries a "
+                "zero-point or rounding-mode parameter";
+    break;
+  case TargetConvertParameterKind::RoundingMode:
+    if (hasZeroPoint || !hasRoundingMode)
+      return op.emitError()
+             << "unsupported_target_convert: route requires exactly one "
+                "rounding-mode parameter";
+    break;
+  case TargetConvertParameterKind::ZeroPoint:
+    if (!hasZeroPoint || hasRoundingMode)
+      return op.emitError()
+             << "unsupported_target_convert: route requires exactly one "
+                "zero-point parameter";
+    break;
+  }
+  return mlir::success();
+}
+
+static mlir::LogicalResult verifyTargetInstructionFormat(
+    mlir::Operation *op, TargetProfileId targetProfile) {
+  auto verify = [&](mlir::Value value,
+                    llvm::StringRef role) -> mlir::LogicalResult {
+    return mlir::succeeded(
+               getDataFormatCode(op, value, role, targetProfile))
+               ? mlir::success()
+               : mlir::failure();
+  };
+
+  return llvm::TypeSwitch<mlir::Operation *, mlir::LogicalResult>(op)
+      .Case<InstrRDMAOp>(
+          [&](auto typedOp) { return verify(typedOp.getDest(), "rdma dest"); })
+      .Case<InstrWDMAOp>([&](auto typedOp) {
+        return verify(typedOp.getSource(), "wdma source");
+      })
+      .Case<InstrGatherScatterOp, InstrDTESendOp, InstrDTERecvOp,
+            InstrDTEWaitOp, SyncLocalFenceOp>(
+          [&](auto) { return mlir::success(); })
+      .Case<InstrFillOp>(
+          [&](auto typedOp) { return verify(typedOp.getDest(), "fill dest"); })
+      .Case<InstrElementwiseOp>([&](auto typedOp) {
+        mlir::Value encoded = isTargetRelationElementwiseKind(typedOp.getKind())
+                                  ? typedOp.getInputs().front()
+                                  : typedOp.getDest();
+        if (mlir::failed(verify(encoded, "elementwise format")))
+          return mlir::failure();
+        if (typedOp.getDest() != encoded &&
+            mlir::cast<mlir::MemRefType>(typedOp.getDest().getType())
+                .getElementType()
+                .isInteger(1))
+          return verify(typedOp.getDest(), "elementwise BOOL destination");
+        return mlir::success();
+      })
+      .Case<InstrBit2FpOp>([&](auto typedOp) {
+        return verify(typedOp.getDest(), "bit2fp dest");
+      })
+      .Case<InstrMaskMoveOp>([&](auto typedOp) {
+        return verify(typedOp.getDest(), "mask_move dest");
+      })
+      .Case<InstrReduceOp>([&](auto typedOp) -> mlir::LogicalResult {
+        if (typedOp->hasAttr("init_value") || typedOp->hasAttr("init")) {
+          typedOp.emitError()
+              << "unsupported_target_instr: terminal reduce retains source "
+                 "initialization after instruction legalization";
+          return mlir::failure();
+        }
+        return verify(typedOp.getInput(), "reduce input");
+      })
+      .Case<InstrConvertOp>([&](auto typedOp) {
+        return verifyTargetConvertRoute(typedOp, targetProfile);
+      })
+      .Case<InstrGemmOp>(
+          [&](auto typedOp) { return verify(typedOp.getDest(), "gemm dest"); })
+      .Case<InstrConvOp>(
+          [&](auto typedOp) { return verify(typedOp.getDest(), "conv dest"); })
+      .Case<InstrPoolOp>([&](auto typedOp) {
+        return verify(typedOp.getInput(), "pool input");
+      })
+      .Case<InstrUnpoolOp>([&](auto typedOp) {
+        return verify(typedOp.getInput(), "unpool input");
+      })
+      .Case<InstrTDMADataMoveOp>([&](auto typedOp) {
+        return verify(typedOp.getDest(), "tdma_data_move dest");
+      })
+      .Case<InstrPeripheralOp>([&](auto typedOp) {
+        return verify(typedOp.getInputs().front(), "peripheral input");
+      })
+      .Default([&](mlir::Operation *unknown) {
+        return unknown->emitError()
+               << "unsupported_target_instr: instruction family has no "
+                  "target format preflight contract";
+      });
+}
+
+static mlir::LogicalResult
+preflightTargetFormats(mlir::ModuleOp moduleOp,
+                       TargetProfileId targetProfile) {
+  bool failed = false;
+  moduleOp.walk([&](mlir::Operation *op) {
+    if (!isWaferInstruction(op))
+      return mlir::WalkResult::advance();
+    if (mlir::failed(verifyTargetInstructionFormat(op, targetProfile))) {
+      failed = true;
+      return mlir::WalkResult::interrupt();
+    }
+    return mlir::WalkResult::advance();
+  });
+  return failed ? mlir::failure() : mlir::success();
+}
+
 struct FunctionLowering {
   mlir::OpBuilder &builder;
   mlir::MLIRContext *context;
+  TargetProfileId targetProfile;
   mlir::Type i64Type;
   mlir::Type i32Type;
   mlir::Type voidType;
@@ -507,8 +828,9 @@ struct FunctionLowering {
   llvm::StringMap<CalleeSignature> &usedCallees;
 
   FunctionLowering(mlir::MLIRContext *context, mlir::OpBuilder &builder,
+                   TargetProfileId targetProfile,
                    llvm::StringMap<CalleeSignature> &used)
-      : builder(builder), context(context),
+      : builder(builder), context(context), targetProfile(targetProfile),
         i64Type(mlir::IntegerType::get(context, 64)),
         i32Type(mlir::IntegerType::get(context, 32)),
         voidType(mlir::LLVM::LLVMVoidType::get(context)), usedCallees(used) {}
@@ -803,7 +1125,7 @@ struct FunctionLowering {
     mlir::FailureOr<mlir::Value> dest =
         materializeAddress(op, op.getDest(), "rdma dest");
     mlir::FailureOr<int64_t> fmt =
-        getDataFormatCode(op, op.getDest(), "rdma dest");
+        getDataFormatCode(op, op.getDest(), "rdma dest", targetProfile);
     if (mlir::failed(source) || mlir::failed(dest) || mlir::failed(fmt))
       return mlir::failure();
     args.push_back(*source);
@@ -824,7 +1146,7 @@ struct FunctionLowering {
     mlir::FailureOr<mlir::Value> dest =
         materializeAddress(op, op.getDest(), "wdma dest");
     mlir::FailureOr<int64_t> fmt =
-        getDataFormatCode(op, op.getSource(), "wdma source");
+        getDataFormatCode(op, op.getSource(), "wdma source", targetProfile);
     if (mlir::failed(source) || mlir::failed(dest) || mlir::failed(fmt))
       return mlir::failure();
     args.push_back(*source);
@@ -874,7 +1196,7 @@ struct FunctionLowering {
         getStaticElementCount(op, destType, "fill dest");
     mlir::FailureOr<int64_t> scalar = getConstantScalarValue(op, op.getValue());
     mlir::FailureOr<int64_t> fmt =
-        getDataFormatCode(op, destType.getElementType(), "fill dest");
+        getDataFormatCode(op, op.getDest(), "fill dest", targetProfile);
     if (mlir::failed(dest) || mlir::failed(elements) || mlir::failed(scalar) ||
         mlir::failed(fmt))
       return mlir::failure();
@@ -887,6 +1209,10 @@ struct FunctionLowering {
   }
 
   mlir::LogicalResult lowerElementwise(InstrElementwiseOp op) {
+    if (op->hasAttr("indexing_maps"))
+      return op.emitError()
+             << "unsupported_target_instr: terminal elementwise retains "
+                "indexing_maps after instruction legalization";
     llvm::SmallVector<mlir::Value, 8> args;
     for (mlir::Value input : op.getInputs()) {
       mlir::FailureOr<mlir::Value> address =
@@ -904,7 +1230,8 @@ struct FunctionLowering {
                                   ? op.getInputs().front()
                                   : op.getDest();
     mlir::FailureOr<int64_t> fmt =
-        getDataFormatCode(op, formatValue, "elementwise format");
+        getDataFormatCode(op, formatValue, "elementwise format",
+                          targetProfile);
     if (mlir::failed(dest) || mlir::failed(elements) || mlir::failed(fmt))
       return mlir::failure();
     args.push_back(*dest);
@@ -924,7 +1251,7 @@ struct FunctionLowering {
     mlir::FailureOr<int64_t> elements =
         getStaticElementCount(op, destType, "bit2fp dest");
     mlir::FailureOr<int64_t> fmt =
-        getDataFormatCode(op, destType.getElementType(), "bit2fp dest");
+        getDataFormatCode(op, op.getDest(), "bit2fp dest", targetProfile);
     if (mlir::failed(source) || mlir::failed(dest) || mlir::failed(elements) ||
         mlir::failed(fmt))
       return mlir::failure();
@@ -948,7 +1275,7 @@ struct FunctionLowering {
     mlir::FailureOr<int64_t> elements =
         getStaticElementCount(op, destType, "mask_move dest");
     mlir::FailureOr<int64_t> fmt =
-        getDataFormatCode(op, destType.getElementType(), "mask_move dest");
+        getDataFormatCode(op, op.getDest(), "mask_move dest", targetProfile);
     if (mlir::failed(source) || mlir::failed(mask) || mlir::failed(dest) ||
         mlir::failed(elements) || mlir::failed(fmt))
       return mlir::failure();
@@ -962,6 +1289,10 @@ struct FunctionLowering {
   }
 
   mlir::LogicalResult lowerReduce(InstrReduceOp op) {
+    if (op->hasAttr("init_value") || op->hasAttr("init"))
+      return op.emitError()
+             << "unsupported_target_instr: terminal reduce retains source "
+                "initialization after instruction legalization";
     llvm::SmallVector<mlir::Value, 10> args;
     mlir::FailureOr<mlir::Value> input =
         materializeAddress(op, op.getInput(), "reduce input");
@@ -969,7 +1300,7 @@ struct FunctionLowering {
         materializeAddress(op, op.getDest(), "reduce dest");
     auto inputType = mlir::cast<mlir::MemRefType>(op.getInput().getType());
     mlir::FailureOr<int64_t> fmt =
-        getDataFormatCode(op, inputType.getElementType(), "reduce input");
+        getDataFormatCode(op, op.getInput(), "reduce input", targetProfile);
     mlir::FailureOr<llvm::SmallVector<int64_t, 4>> shape =
         getNHWCShape(op, inputType, "reduce input");
     if (mlir::failed(input) || mlir::failed(dest) || mlir::failed(fmt) ||
@@ -1015,7 +1346,7 @@ struct FunctionLowering {
     mlir::FailureOr<mlir::Value> dest =
         materializeAddress(op, op.getDest(), "gemm dest");
     mlir::FailureOr<int64_t> fmt =
-        getDataFormatCode(op, op.getDest(), "gemm dest");
+        getDataFormatCode(op, op.getDest(), "gemm dest", targetProfile);
     if (mlir::failed(lhs) || mlir::failed(rhs) || mlir::failed(dest) ||
         mlir::failed(fmt))
       return mlir::failure();
@@ -1041,7 +1372,7 @@ struct FunctionLowering {
     mlir::FailureOr<mlir::Value> dest =
         materializeAddress(op, op.getDest(), "conv dest");
     mlir::FailureOr<int64_t> fmt =
-        getDataFormatCode(op, op.getDest(), "conv dest");
+        getDataFormatCode(op, op.getDest(), "conv dest", targetProfile);
     if (mlir::failed(input) || mlir::failed(weight) || mlir::failed(dest) ||
         mlir::failed(fmt))
       return mlir::failure();
@@ -1066,7 +1397,7 @@ struct FunctionLowering {
     mlir::FailureOr<mlir::Value> input =
         materializeAddress(op, op.getInput(), "pool input");
     mlir::FailureOr<int64_t> fmt =
-        getDataFormatCode(op, op.getInput(), "pool input");
+        getDataFormatCode(op, op.getInput(), "pool input", targetProfile);
     if (mlir::failed(input) || mlir::failed(fmt))
       return mlir::failure();
     args.push_back(*input);
@@ -1094,7 +1425,7 @@ struct FunctionLowering {
     mlir::FailureOr<mlir::Value> dest =
         materializeAddress(op, op.getDest(), "unpool dest");
     mlir::FailureOr<int64_t> fmt =
-        getDataFormatCode(op, op.getInput(), "unpool input");
+        getDataFormatCode(op, op.getInput(), "unpool input", targetProfile);
     if (mlir::failed(input) || mlir::failed(dest) || mlir::failed(fmt))
       return mlir::failure();
     args.push_back(*input);
@@ -1140,7 +1471,8 @@ struct FunctionLowering {
     mlir::FailureOr<mlir::Value> dest =
         materializeAddress(op, op.getDest(), "tdma_data_move dest");
     mlir::FailureOr<int64_t> fmt =
-        getDataFormatCode(op, op.getDest(), "tdma_data_move dest");
+        getDataFormatCode(op, op.getDest(), "tdma_data_move dest",
+                          targetProfile);
     if (mlir::failed(source) || mlir::failed(dest) || mlir::failed(fmt))
       return mlir::failure();
     args.push_back(*source);
@@ -1181,7 +1513,8 @@ struct FunctionLowering {
       args.push_back(*address);
     }
     mlir::FailureOr<int64_t> fmt =
-        getDataFormatCode(op, op.getInputs().front(), "peripheral input");
+        getDataFormatCode(op, op.getInputs().front(), "peripheral input",
+                          targetProfile);
     if (mlir::failed(fmt))
       return mlir::failure();
     appendI32(op.getLoc(), args, static_cast<int64_t>(op.getKind()));
@@ -1951,10 +2284,12 @@ struct TargetDeallocOpLowering
 struct TargetInstructionOpLowering : public mlir::ConversionPattern {
   TargetInstructionOpLowering(mlir::LLVMTypeConverter &converter,
                               llvm::StringMap<CalleeSignature> &usedCallees,
+                              TargetProfileId targetProfile,
                               const DirectDTEEndpointDomain *dteDomain)
       : mlir::ConversionPattern(converter, mlir::Pattern::MatchAnyOpTypeTag(),
                                 /*benefit=*/10, &converter.getContext()),
-        usedCallees(usedCallees), dteDomain(dteDomain) {}
+        usedCallees(usedCallees), targetProfile(targetProfile),
+        dteDomain(dteDomain) {}
 
   mlir::LogicalResult
   matchAndRewrite(mlir::Operation *op, llvm::ArrayRef<mlir::Value> operands,
@@ -1984,7 +2319,8 @@ struct TargetInstructionOpLowering : public mlir::ConversionPattern {
                << "unsupported_target_instr: instruction result type is not "
                   "a target async token";
 
-    FunctionLowering lowering(op->getContext(), rewriter, usedCallees);
+    FunctionLowering lowering(op->getContext(), rewriter, targetProfile,
+                              usedCallees);
     for (auto [source, converted] :
          llvm::zip_equal(op->getOperands(), operands))
       lowering.convertedValues[source] = converted;
@@ -2027,6 +2363,7 @@ struct TargetInstructionOpLowering : public mlir::ConversionPattern {
   }
 
   llvm::StringMap<CalleeSignature> &usedCallees;
+  TargetProfileId targetProfile;
   const DirectDTEEndpointDomain *dteDomain;
 };
 
@@ -2140,7 +2477,7 @@ static mlir::LogicalResult lowerSCFToControlFlow(mlir::ModuleOp moduleOp) {
 }
 
 static mlir::LogicalResult
-lowerModuleInPlace(mlir::ModuleOp moduleOp,
+lowerModuleInPlace(mlir::ModuleOp moduleOp, TargetProfileId targetProfile,
                    int64_t defaultDDRArenaArgumentIndex, int64_t logicalRank,
                    int64_t transportStatusArgumentIndex) {
   if (mlir::failed(flattenTileRegions(moduleOp)))
@@ -2216,6 +2553,7 @@ lowerModuleInPlace(mlir::ModuleOp moduleOp,
   patterns.add<TargetAllocOpLowering>(converter, moduleOp.getContext(),
                                       defaultDDRArenaArgumentIndex);
   patterns.add<TargetInstructionOpLowering>(converter, usedCallees,
+                                            targetProfile,
                                             dteDomain ? &*dteDomain : nullptr);
   mlir::arith::populateArithToLLVMConversionPatterns(converter, patterns);
   mlir::cf::populateControlFlowToLLVMConversionPatterns(converter, patterns);
@@ -2266,12 +2604,64 @@ struct LowerInstrToTargetLLVMPass
   using impl::LowerInstrToTargetLLVMPassBase<
       LowerInstrToTargetLLVMPass>::LowerInstrToTargetLLVMPassBase;
 
+  explicit LowerInstrToTargetLLVMPass(
+      const TargetConversionRequest &request)
+      : typedTargetProfile(request.targetProfile) {
+    defaultDDRArenaArgumentIndex = request.defaultDDRArenaArgumentIndex;
+    logicalRank = request.logicalRank;
+    transportStatusArgumentIndex = request.transportStatusArgumentIndex;
+  }
+
   void runOnOperation() override {
     mlir::ModuleOp moduleOp = getOperation();
+    std::optional<TargetProfileId> resolvedProfile = typedTargetProfile;
+    if (!resolvedProfile) {
+      if (targetProfile.getValue().empty()) {
+        moduleOp.emitError()
+            << "missing required target-profile for target LLVM conversion";
+        signalPassFailure();
+        return;
+      }
+      llvm::Expected<TargetProfileId> parsed =
+          parseTargetProfileId(targetProfile.getValue());
+      if (!parsed) {
+        moduleOp.emitError()
+            << "invalid target-profile for target LLVM conversion: "
+            << llvm::toString(parsed.takeError());
+        signalPassFailure();
+        return;
+      }
+      resolvedProfile = *parsed;
+    }
+    if (mlir::failed(preflightTargetFormats(moduleOp, *resolvedProfile))) {
+      signalPassFailure();
+      return;
+    }
+
     mlir::OwningOpRef<mlir::ModuleOp> loweredModule = moduleOp.clone();
-    if (mlir::failed(
-            lowerModuleInPlace(*loweredModule, defaultDDRArenaArgumentIndex,
-                               logicalRank, transportStatusArgumentIndex))) {
+    uint64_t terminalOperationCount = 0;
+    switch (detail::checkStaticTerminalOperationBudget(
+        loweredModule->getOperation(), terminalOperationCount)) {
+    case detail::StaticTerminalOperationBudgetStatus::WithinBudget:
+      break;
+    case detail::StaticTerminalOperationBudgetStatus::CountOverflow:
+      moduleOp.emitError()
+          << "static_terminal_budget_exceeded: final target module terminal "
+             "operation count overflowed uint64_t";
+      signalPassFailure();
+      return;
+    case detail::StaticTerminalOperationBudgetStatus::BudgetExceeded:
+      moduleOp.emitError()
+          << "static_terminal_budget_exceeded: final target module contains "
+          << terminalOperationCount
+          << " terminal instruction issues/completions; maximum is "
+          << detail::kStaticTerminalOperationBudget;
+      signalPassFailure();
+      return;
+    }
+    if (mlir::failed(lowerModuleInPlace(
+            *loweredModule, *resolvedProfile, defaultDDRArenaArgumentIndex,
+            logicalRank, transportStatusArgumentIndex))) {
       signalPassFailure();
       return;
     }
@@ -2279,7 +2669,15 @@ struct LowerInstrToTargetLLVMPass
     moduleOp->setAttrs((*loweredModule)->getAttrs());
     moduleOp.getBodyRegion().takeBody(loweredModule->getBodyRegion());
   }
+
+  std::optional<TargetProfileId> typedTargetProfile;
 };
 
 } // namespace
+
+std::unique_ptr<mlir::Pass> createLowerInstrToTargetLLVMPass(
+    const TargetConversionRequest &request) {
+  return std::make_unique<LowerInstrToTargetLLVMPass>(request);
+}
+
 } // namespace wafer

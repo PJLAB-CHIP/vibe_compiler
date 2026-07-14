@@ -1,3 +1,4 @@
+add_subdirectory(Target)
 add_subdirectory(Frontend)
 add_subdirectory(Compiler)
 add_subdirectory(IR)

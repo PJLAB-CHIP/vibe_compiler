@@ -705,8 +705,7 @@ static mlir::LogicalResult verifySameShape(mlir::Operation *op,
 
 static mlir::LogicalResult
 verifyInstructionReduceContract(mlir::Operation *op, mlir::Value input,
-                                mlir::Value dest, mlir::Value init,
-                                mlir::IntegerAttr dimAttr) {
+                                mlir::Value dest, mlir::IntegerAttr dimAttr) {
   std::optional<mlir::RankedTensorType> inputTensor =
       getLogicalTensorType(input.getType());
   std::optional<mlir::RankedTensorType> destTensor =
@@ -772,18 +771,6 @@ verifyInstructionReduceContract(mlir::Operation *op, mlir::Value input,
       return op->emitOpError(
           "reduce dest shape must match non-reduced input dimensions");
     ++destDim;
-  }
-
-  if (init && init.getType() != inputTensor->getElementType())
-    return op->emitOpError(
-        "reduce init operand type must match input element type");
-
-  mlir::Attribute initValue = op->getAttr("init_value");
-  if (initValue) {
-    auto typedInit = mlir::dyn_cast<mlir::TypedAttr>(initValue);
-    if (!typedInit || typedInit.getType() != inputTensor->getElementType())
-      return op->emitOpError(
-          "reduce init_value type must match input element type");
   }
 
   return mlir::success();
@@ -1389,7 +1376,7 @@ mlir::LogicalResult InstrFillOp::verify() {
                                             "fill dest");
 }
 
-InstrFamily InstrFillOp::getInstructionFamily() { return InstrFamily::CT; }
+InstrFamily InstrFillOp::getInstructionFamily() { return InstrFamily::TDMA; }
 
 mlir::LogicalResult InstrFillOp::verifyInstructionContract() {
   return verify();
@@ -1412,6 +1399,10 @@ mlir::LogicalResult InstrFillOp::verifyWaferResourceEffectContract() {
 }
 
 mlir::LogicalResult InstrElementwiseOp::verify() {
+  if ((*this)->hasAttr("indexing_maps"))
+    return emitOpError(
+        "terminal elementwise does not accept indexing_maps; tile-level maps "
+        "must be materialized as movement before instruction lowering");
   if (mlir::failed(verifyNoEmptyVariadicInputs(getOperation(), getInputs(),
                                                "elementwise")))
     return mlir::failure();
@@ -1554,7 +1545,7 @@ mlir::LogicalResult InstrMaskMoveOp::verify() {
 }
 
 InstrFamily InstrMaskMoveOp::getInstructionFamily() {
-  return InstrFamily::TDMA;
+  return InstrFamily::CT;
 }
 
 mlir::LogicalResult InstrMaskMoveOp::verifyInstructionContract() {
@@ -1584,13 +1575,16 @@ mlir::LogicalResult InstrMaskMoveOp::verifyWaferResourceEffectContract() {
 }
 
 mlir::LogicalResult InstrReduceOp::verify() {
+  if ((*this)->hasAttr("init_value") || (*this)->hasAttr("init"))
+    return emitOpError(
+        "terminal reduce must not retain source initialization state");
   if (mlir::failed(
           verifySPMMemRef(getOperation(), getInput().getType(), "input")) ||
       mlir::failed(
           verifySPMMemRef(getOperation(), getDest().getType(), "dest")))
     return mlir::failure();
   if (mlir::failed(verifyInstructionReduceContract(
-          getOperation(), getInput(), getDest(), getInit(), getDimAttr())))
+          getOperation(), getInput(), getDest(), getDimAttr())))
     return mlir::failure();
   return verifyStaticShapeFitsUInt16(getOperation(), getInput().getType(),
                                      "reduce input shape dimension");

@@ -1,6 +1,6 @@
 // RUN: split-file %s %t
-// RUN: wafer-opt --wafer-lower-instr-to-target-llvm %t/compact.mlir | FileCheck %s --check-prefix=COMPACT
-// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm %t/aligned.mlir 2>&1 | FileCheck %s --check-prefix=ALIGNED
+// RUN: wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/compact.mlir | FileCheck %s --check-prefix=COMPACT
+// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/aligned.mlir 2>&1 | FileCheck %s --check-prefix=ALIGNED
 
 //--- compact.mlir
 

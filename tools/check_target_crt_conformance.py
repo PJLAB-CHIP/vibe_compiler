@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import pathlib
 import re
 
@@ -73,6 +74,352 @@ def require_macro_body(text: str, name: str) -> str:
     if next_macro == -1:
         next_macro = len(text)
     return text[start:next_macro]
+
+
+def initializer_body(text: str, marker: str) -> str:
+    marker_start = text.find(marker)
+    if marker_start == -1:
+        fail(f"cannot find initializer {marker}")
+    start = text.find("{", marker_start + len(marker))
+    if start == -1:
+        fail(f"cannot find body for initializer {marker}")
+    depth = 0
+    for index in range(start, len(text)):
+        char = text[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start + 1 : index]
+    fail(f"unterminated initializer {marker}")
+
+
+def require_exact_set(actual: set[str], expected: set[str], label: str) -> None:
+    if actual == expected:
+        return
+    missing = sorted(expected - actual)
+    extra = sorted(actual - expected)
+    fail(f"{label}: missing={missing}, extra={extra}")
+
+
+@dataclass(frozen=True)
+class LogicalFormatFact:
+    enum_name: str
+    spelling: str
+
+
+@dataclass(frozen=True)
+class ConvertRouteFact:
+    opcode: int
+    spelling: str
+    source: str
+    destination: str
+    parameter: str
+
+
+def vendor_format_suffix(spelling: str) -> str:
+    integer = re.fullmatch(r"i(\d+)", spelling)
+    if integer:
+        return f"INT{integer.group(1)}"
+    unsigned = re.fullmatch(r"u(\d+)", spelling)
+    if unsigned:
+        return f"UINT{unsigned.group(1)}"
+    floating = re.fullmatch(r"f(\d+)", spelling)
+    if floating:
+        return f"FP{floating.group(1)}"
+    return spelling.upper()
+
+
+def parse_logical_formats(target_format_text: str) -> list[LogicalFormatFact]:
+    body = initializer_body(target_format_text, "kLogicalFormats[]")
+    matches = re.findall(
+        r'\{\s*Format::(\w+)\s*,\s*"([^"]+)"\s*,\s*\d+\s*,\s*'
+        r"\d+\s*,\s*(?:true|false)\s*\}",
+        body,
+    )
+    facts = [LogicalFormatFact(enum_name, spelling) for enum_name, spelling in matches]
+    if len(facts) != 13:
+        fail(f"logical format registry: expected 13 rows, found {len(facts)}")
+    if len({fact.enum_name for fact in facts}) != len(facts):
+        fail("logical format registry: duplicate enum identity")
+    if len({fact.spelling for fact in facts}) != len(facts):
+        fail("logical format registry: duplicate canonical spelling")
+    return facts
+
+
+def parse_target_data_format_codes(target_format_text: str) -> dict[str, int]:
+    body = initializer_body(target_format_text, "kTargetDataFormatCodes[]")
+    matches = re.findall(
+        r"\{\s*kProfile\s*,\s*Format::(\w+)\s*,\s*(\d+)\s*\}", body
+    )
+    if len(matches) != 13:
+        fail(f"target Data_Format registry: expected 13 rows, found {len(matches)}")
+    result: dict[str, int] = {}
+    seen_codes: set[int] = set()
+    for format_name, code_text in matches:
+        code = int(code_text)
+        if format_name in result:
+            fail(f"target Data_Format registry: duplicate format {format_name}")
+        if code in seen_codes:
+            fail(f"target Data_Format registry: duplicate code {code}")
+        result[format_name] = code
+        seen_codes.add(code)
+    return result
+
+
+def parse_vendor_data_format_codes(vendor_header_text: str) -> dict[str, int]:
+    match = re.search(
+        r"typedef\s+enum\s+Data_Format\s*\{(.*?)\}\s*Data_Format\s*;",
+        vendor_header_text,
+        re.DOTALL,
+    )
+    if not match:
+        fail("vendor header: cannot find Data_Format enum")
+    result: dict[str, int] = {}
+    for suffix, code_text in re.findall(
+        r"\bFmt_([A-Z0-9]+)\s*=\s*(\d+)", match.group(1)
+    ):
+        if suffix == "UNUSED":
+            continue
+        if suffix in result:
+            fail(f"vendor Data_Format enum: duplicate Fmt_{suffix}")
+        result[suffix] = int(code_text)
+    if len(result) != 13:
+        fail(f"vendor Data_Format enum: expected 13 explicit codes, found {len(result)}")
+    return result
+
+
+def check_data_format_code_contract(
+    target_format_text: str, vendor_header_text: str
+) -> tuple[list[LogicalFormatFact], dict[str, int]]:
+    logical_formats = parse_logical_formats(target_format_text)
+    project_codes = parse_target_data_format_codes(target_format_text)
+    vendor_codes = parse_vendor_data_format_codes(vendor_header_text)
+
+    logical_names = {fact.enum_name for fact in logical_formats}
+    require_exact_set(
+        set(project_codes), logical_names, "target Data_Format logical domain"
+    )
+    expected_vendor_names = {
+        vendor_format_suffix(fact.spelling) for fact in logical_formats
+    }
+    require_exact_set(
+        set(vendor_codes), expected_vendor_names, "vendor Data_Format logical domain"
+    )
+    for fact in logical_formats:
+        vendor_name = vendor_format_suffix(fact.spelling)
+        if project_codes[fact.enum_name] != vendor_codes[vendor_name]:
+            fail(
+                "Data_Format code mismatch for "
+                f"{fact.enum_name}: project={project_codes[fact.enum_name]}, "
+                f"vendor Fmt_{vendor_name}={vendor_codes[vendor_name]}"
+            )
+    return logical_formats, project_codes
+
+
+def check_encoding_matrix_contract(
+    target_format_text: str,
+    logical_formats: list[LogicalFormatFact],
+    project_codes: dict[str, int],
+) -> int:
+    engine_body = initializer_body(target_format_text, "kTargetFormatEngines[]")
+    engines = re.findall(r"Engine::(\w+)", engine_body)
+    if len(engines) != 5 or len(set(engines)) != len(engines):
+        fail(f"target format engine registry: expected 5 unique engines, found {engines}")
+
+    body = initializer_body(target_format_text, "kTargetFormatEncodings[]")
+    row_pattern = re.compile(
+        r"\b(supported|unsupported)\(\s*Engine::(\w+)\s*,\s*"
+        r"Format::(\w+)(?:\s*,\s*(?:Constraint|Reason)::(\w+))?\s*\)"
+    )
+    rows = row_pattern.findall(body)
+    expected_count = len(engines) * len(logical_formats)
+    if len(rows) != expected_count or len(rows) != 65:
+        fail(f"target format matrix: expected 65 rows, found {len(rows)}")
+
+    actual_pairs: set[tuple[str, str]] = set()
+    supported_count = 0
+    for support, engine, format_name, detail in rows:
+        pair = (engine, format_name)
+        if pair in actual_pairs:
+            fail(f"target format matrix: duplicate row {engine} x {format_name}")
+        actual_pairs.add(pair)
+        if support == "supported":
+            supported_count += 1
+            if format_name not in project_codes:
+                fail(
+                    "target format matrix: supported row has no profile code "
+                    f"{engine} x {format_name}"
+                )
+            if detail and detail not in {
+                "BitpackedLayoutAndCheckedElementCount",
+                "BoolSpecificCTOpKindAndBitpackedLayout",
+            }:
+                fail(
+                    "target format matrix: supported row has unexpected constraint "
+                    f"{detail}"
+                )
+        elif not detail:
+            fail(
+                "target format matrix: unsupported row lacks an explicit reason "
+                f"{engine} x {format_name}"
+            )
+
+    expected_pairs = {
+        (engine, fact.enum_name) for engine in engines for fact in logical_formats
+    }
+    if actual_pairs != expected_pairs:
+        fail("target format matrix: rows are not the exact engine x logical domain")
+    if supported_count != 29:
+        fail(f"target format matrix: expected 29 supported rows, found {supported_count}")
+
+    require_pattern(
+        target_format_text,
+        r"supported\(Engine\s+engine,\s*Format\s+format.*?"
+        r"Reason::None,\s*findDataFormatCode\(kProfile,\s*format\)\}",
+        "supported target format row code join",
+    )
+    require_pattern(
+        target_format_text,
+        r"unsupported\(Engine\s+engine,\s*Format\s+format.*?"
+        r"reason,\s*std::nullopt\}",
+        "unsupported target format row has no usable code",
+    )
+    return len(rows)
+
+
+def parse_convert_routes(target_format_text: str) -> list[ConvertRouteFact]:
+    body = initializer_body(target_format_text, "kTargetConvertRoutes[]")
+    matches = re.findall(
+        r'\{\s*kProfile\s*,\s*(\d+)\s*,\s*"([^"]+)"\s*,\s*'
+        r"Format::(\w+)\s*,\s*Format::(\w+)\s*,\s*"
+        r"Parameter::(\w+)\s*\}",
+        body,
+        re.DOTALL,
+    )
+    routes = [
+        ConvertRouteFact(int(opcode), spelling, source, destination, parameter)
+        for opcode, spelling, source, destination, parameter in matches
+    ]
+    if len(routes) != 36:
+        fail(f"target convert registry: expected 36 routes, found {len(routes)}")
+    return routes
+
+
+def check_convert_route_contract(
+    target_format_text: str,
+    header_text: str,
+    source_text: str,
+    lowering_text: str,
+    logical_formats: list[LogicalFormatFact],
+) -> tuple[int, int, int]:
+    routes = parse_convert_routes(target_format_text)
+    logical_by_name = {fact.enum_name: fact for fact in logical_formats}
+    parameter_to_group = {
+        "ZeroPoint": "ZP",
+        "RoundingMode": "ROUND",
+        "None": "PLAIN",
+    }
+    expected_symbols: dict[str, tuple[str, str]] = {}
+    seen_pairs: set[tuple[str, str]] = set()
+    group_counts = {"ZP": 0, "ROUND": 0, "PLAIN": 0}
+    for index, route in enumerate(routes):
+        expected_opcode = 139 + index
+        if route.opcode != expected_opcode:
+            fail(
+                f"target convert registry: expected opcode {expected_opcode}, "
+                f"found {route.opcode}"
+            )
+        if route.source not in logical_by_name or route.destination not in logical_by_name:
+            fail(f"target convert registry: unknown logical format in {route.spelling}")
+        source_token = vendor_format_suffix(
+            logical_by_name[route.source].spelling
+        ).lower()
+        destination_token = vendor_format_suffix(
+            logical_by_name[route.destination].spelling
+        ).lower()
+        expected_spelling = f"{source_token}_{destination_token}"
+        if route.spelling != expected_spelling:
+            fail(
+                f"target convert registry: route {route.opcode} spelling "
+                f"{route.spelling} does not match {expected_spelling}"
+            )
+        pair = (route.source, route.destination)
+        if pair in seen_pairs:
+            fail(f"target convert registry: duplicate typed route {pair}")
+        seen_pairs.add(pair)
+        if route.parameter not in parameter_to_group:
+            fail(
+                f"target convert registry: unknown parameter group {route.parameter}"
+            )
+        group = parameter_to_group[route.parameter]
+        symbol = f"wafer_tx81_convert_{route.spelling}"
+        if symbol in expected_symbols:
+            fail(f"target convert registry: duplicate symbol {symbol}")
+        expected_symbols[symbol] = (group, route.spelling.upper())
+        group_counts[group] += 1
+
+    if group_counts != {"ZP": 4, "ROUND": 23, "PLAIN": 9}:
+        fail(f"target convert registry: wrong parameter partition {group_counts}")
+
+    invocations = re.findall(
+        r"^\s*WAFER_DEFINE_CONVERT_(ZP|ROUND|PLAIN)\(\s*"
+        r"(wafer_tx81_convert_[a-z0-9_]+)\s*,\s*([A-Z0-9_]+)\s*\)\s*$",
+        source_text,
+        re.MULTILINE,
+    )
+    if len(invocations) != 36:
+        fail(f"runtime CRT convert definitions: expected 36, found {len(invocations)}")
+    actual_symbols: dict[str, tuple[str, str]] = {}
+    for group, symbol, method in invocations:
+        if symbol in actual_symbols:
+            fail(f"runtime CRT convert definitions: duplicate symbol {symbol}")
+        actual_symbols[symbol] = (group, method)
+    require_exact_set(
+        set(actual_symbols), set(expected_symbols), "runtime CRT convert symbols"
+    )
+    for symbol, expected in expected_symbols.items():
+        if actual_symbols[symbol] != expected:
+            fail(
+                f"runtime CRT convert definition mismatch for {symbol}: "
+                f"expected={expected}, actual={actual_symbols[symbol]}"
+            )
+
+    declarations = re.findall(
+        r"\bvoid\s+(wafer_tx81_convert_[a-z0-9_]+)\s*\(([^;{}]*)\)\s*;",
+        header_text,
+        re.DOTALL,
+    )
+    if len(declarations) != 36:
+        fail(f"runtime CRT convert declarations: expected 36, found {len(declarations)}")
+    declaration_symbols = [symbol for symbol, _ in declarations]
+    if len(set(declaration_symbols)) != len(declaration_symbols):
+        fail("runtime CRT convert declarations: duplicate symbol")
+    require_exact_set(
+        set(declaration_symbols), set(expected_symbols), "runtime CRT convert declarations"
+    )
+    expected_signature = (
+        "uint64_t src, uint64_t dst, uint32_t elem_count, "
+        "uint32_t zero_point, uint32_t rounding_mode"
+    )
+    for symbol, signature in declarations:
+        normalized = re.sub(r"\s+", " ", signature).strip()
+        if normalized != expected_signature:
+            fail(f"runtime CRT convert declaration has wrong ABI for {symbol}")
+
+    require_pattern(
+        lowering_text,
+        r"Case<InstrConvertOp>\(.*?verifyTargetConvertRoute\(typedOp,\s*"
+        r"targetProfile\)",
+        "target convert preflight route verification",
+    )
+    require_contains(
+        lowering_text,
+        'makeTargetSymbol("convert", op.getKind())',
+        "target convert CRT symbol lowering",
+    )
+    return group_counts["ZP"], group_counts["ROUND"], group_counts["PLAIN"]
 
 
 def check_no_old_abi_or_helpers(source_text: str) -> None:
@@ -242,14 +589,6 @@ def check_relation_logic_convert(source_text: str) -> None:
         "convert->METHOD(&instr, src, zero_point, dst, elem_count)",
         "zero-point convert group",
     )
-    for symbol in [
-        "wafer_tx81_convert_int8_fp16",
-        "wafer_tx81_convert_int8_bf16",
-        "wafer_tx81_convert_int8_fp32",
-        "wafer_tx81_convert_int8_tf32",
-    ]:
-        require_contains(source_text, f"WAFER_DEFINE_CONVERT_ZP({symbol}", "zero-point convert symbols")
-
     rounding = require_macro_body(source_text, "WAFER_DEFINE_CONVERT_ROUND")
     require_contains(rounding, "(void)zero_point;", "rounding convert group")
     require_contains(rounding, "wafer_rounding(rounding_mode)", "rounding convert group")
@@ -325,6 +664,26 @@ def main() -> int:
         / "Target"
         / "LowerInstrToTargetLLVM.cpp"
     )
+    target_format_text = read_text(
+        repo_root / "lib" / "Wafer" / "Target" / "TargetFormat.cpp"
+    )
+    vendor_header_text = read_text(
+        repo_root / "third_party" / "tx8_deps" / "include" / "instr_def.h"
+    )
+
+    logical_formats, project_codes = check_data_format_code_contract(
+        target_format_text, vendor_header_text
+    )
+    encoding_row_count = check_encoding_matrix_contract(
+        target_format_text, logical_formats, project_codes
+    )
+    zp_count, round_count, plain_count = check_convert_route_contract(
+        target_format_text,
+        header_text,
+        source_text,
+        lowering_text,
+        logical_formats,
+    )
 
     check_no_old_abi_or_helpers(source_text)
     check_dma(source_text)
@@ -332,7 +691,12 @@ def main() -> int:
     check_arg_writeback(source_text, instruction_ops_text, lowering_text)
     check_relation_logic_convert(source_text)
     check_gemm_conv(source_text)
-    print("checked Wafer target CRT conformance rules from compiler and CRT code")
+    print(
+        "checked Wafer target CRT conformance rules from compiler and CRT code: "
+        f"formats={len(logical_formats)}, encoding_rows={encoding_row_count}, "
+        f"convert_routes={zp_count + round_count + plain_count}, "
+        f"groups={zp_count}/{round_count}/{plain_count}"
+    )
     return 0
 
 

@@ -14,7 +14,14 @@ namespace wafer::compiler::detail {
 /// prove accepted multi-function closure handling without invoking the
 /// external object/link toolchain.
 mlir::LogicalResult
-lowerTargetABIForTesting(const RankExecutable &rankExecutable);
+lowerTargetABIForTesting(const RankExecutable &rankExecutable,
+                         const ExecutionConfig &executionConfig);
+
+/// Verifies a genuinely linked module with the production ELF readback path
+/// and exposes the immutable typed facts that production stores per rank.
+llvm::Expected<VerifiedTargetModule> verifyLinkedTargetModuleForTesting(
+    llvm::StringRef path, llvm::StringRef entrySymbol,
+    TargetProfileId targetProfile);
 
 llvm::Expected<TargetArtifactBundle>
 compileExecutableBundleToTargetArtifactsImpl(

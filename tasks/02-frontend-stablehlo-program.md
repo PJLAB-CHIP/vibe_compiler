@@ -25,7 +25,8 @@ Pipeline position:
   XLA SPMD helper，然后做local compute normalization和logical group formation。
 - User-level driver / named pipeline:
   `wafer-compile-stablehlo --verify-stablehlo-program`只做frontend admission；继续编译只经
-  `wafer-compile --input-program-dir=... --output-program-dir=... --execution-ranks={1|16}`。
+  `wafer-compile --input-program-dir=... --output-program-dir=... --execution-ranks={1|16} --target-profile=wafer-tx81-single-card-kernel-v1`；
+  target profile必须显式选择且没有默认值。
   `wafer-opt`及named MLIR pipelines只处理显式IR，不拥有program-directory I/O。
 - Explicit non-goals:
   不定义typed model/state ABI、MPMD member graph、physical endpoint、layout、SPM/DDR allocation、DTE、

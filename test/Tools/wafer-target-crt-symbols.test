@@ -10,4 +10,4 @@
 # RUN:   --repo-root %wafer_src_root --defined-symbols-stdin
 
 # SURFACE: checked 109 production wafer_tx81_* CRT symbols from target lowering and Wafer enum registry
-# CONFORMANCE: checked Wafer target CRT conformance rules from compiler and CRT code
+# CONFORMANCE: checked Wafer target CRT conformance rules from compiler and CRT code: formats=13, encoding_rows=65, convert_routes=36, groups=4/23/9

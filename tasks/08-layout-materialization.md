@@ -133,7 +133,8 @@ Pipeline position:
   以及 closed-loop candidate driver。
 - User-level driver / named pipeline:
   Q16以后由同一
-  `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16}`在whole-variant
+  `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16} --target-profile=wafer-tx81-single-card-kernel-v1`
+  在whole-variant
   candidate flow内部调用early layout analysis。当前Q15只产出verified grouped program directory；
   `wafer-opt`和`--wafer-dump-group-layout-plan`只处理显式group IR，用于IR-local debug/test，
   不提供用户stop-stage。

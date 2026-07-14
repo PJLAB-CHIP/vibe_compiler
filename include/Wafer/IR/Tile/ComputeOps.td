@@ -77,8 +77,10 @@ def Wafer_ComputeReduceOp : Wafer_Op<"tile.reduce", [
   let description = [{
     `wafer.tile.reduce` represents a tile-local reduction over an SPM tensor
     tile. The result shape is the input shape with `dimensions` removed, and
-    `init_value` records the scalar initialization value recovered from the
-    structured `linalg.reduce` output.
+    exactly one constant scalar initialization source is required. It is
+    represented either by a typed `init_value` attribute or by an SSA `init`
+    directly defined by `arith.constant`; both forms must match the input
+    element type.
   }];
 
   let arguments = (ins

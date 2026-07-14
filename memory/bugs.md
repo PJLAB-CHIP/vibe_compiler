@@ -245,3 +245,49 @@
   wait边界；再用同一source-backed Q21 artifact重放确认不是fixture特例。
 - 防复发：dependent dialect归创建者拥有，不能依赖driver全量注册或其它pass的加载副作用；每个公开named pipeline至少有
   一项standalone执行测试。
+
+## 2026-07-14 terminal lowering不能静默丢弃上层仍可观察语义
+
+- 现象：tile elementwise允许`indexing_maps`、tile/instruction reduce允许init，但旧target lowering既不读取也不拒绝这些
+  字段；局部conversion可通过，最终命令却执行了不同的数值程序。
+- 根因：上层可表达语义和terminal target surface同时保留了同名op，缺少“先materialize或拒绝，再删除terminal字段”的
+  边界；target emitter把未消费字段当成无关metadata。
+- 修复模式：在tile→instruction边界把map显式展开成movement和same-shape operand，把source reduce展开成init-first有序
+  composite；terminal op删除无法消费的字段，target conversion仍做residual-illegal防御检查。新增字段时必须同时回答
+  verifier、lowering和unsupported路径，不能仅让parser接受。
+
+## 2026-07-14 公开format枚举存在不等于任一engine可发射
+
+- 现象：vendor `Data_Format`公开了0..12共13个code，通用switch据此可能把UINT、64-bit或TF32传给缺少静态命令编码证据的
+  DMA/compute路径。
+- 根因：把“ABI enum code事实”和“profile×engine×format command legality”合成一张表；查到枚举值被误当成准入证明。
+- 修复模式：target-independent logical descriptor、profile-owned完整`TargetDataFormatCodeRecord`和显式完整
+  profile×engine×format `TargetFormatEncodingRecord`三层分离。unsupported row是一等记录且不携带可用code；emitter只能消费
+  supported row，并继续执行op-kind/layout/geometry约束。convert opcode route保持独立typed whitelist，不能反向开放通用CT row。
+
+## 2026-07-14 terminal operation预算必须在最终target边界重新核对
+
+- 现象：candidate selector能够估算静态展开预算，但后续lowering会新增movement/completion，或某些直接instruction输入根本不
+  经过group selector；只依赖上游计数会让超预算IR进入target effect。
+- 根因：把可失效的candidate analysis当成跨阶段事实，并假定所有入口都经过同一group materialization路径。
+- 修复模式：共享计数合同，但从每个阶段的当前IR重算。selector在candidate effect前检查其实际materialization，最终target
+  conversion对每个rank完整terminal instruction和completion重新检查，包括没有任何group的直接输入；边界值和上溢负例同时覆盖。
+
+## 2026-07-14 host `std::max/min`不能代替MLIR maximum/minimum语义
+
+- 现象：reference executor的elementwise/reduce max/min对NaN和正负零结果依赖C++参数顺序；`std::max/min`既不实现所需NaN
+  传播，也不能完整表达`(+0,-0)`、`(-0,-0)`和`(+0,+0)`的符号规则。
+- 根因：直接使用host convenience function，未把IR op的special-value合同实现为显式numeric primitive。
+- 修复模式：为对应IR语义建立单一helper，先处理NaN，再按两个operand的`signbit`决定zero结果，最后才比较普通值；测试覆盖
+  NaN、异号零和同号零，避免只有一种operand顺序的样例掩盖错误。Q22 numeric profile仍需独立定义target policy，不能从host
+  helper反推硬件。
+
+## 2026-07-14 常量bool select应以use-def证明折叠，不能放宽TDMA BOOL
+
+- 现象：source-backed常量predicate select被物化为private i1 buffer的fill，再降成目标无证据的TDMA BOOL fill，导致完整纵向
+  target gate失败。
+- 根因：常量事实停留在`arith.constant -> tile.fill -> private alloc -> select`数据流中，普通conversion按root独立lower fill，
+  在select被处理前丢失了可证明的整张量常量关系。
+- 修复模式：在full conversion前运行typed prepass；仅当private alloc恰有一个前置同block fill-dest use和当前select predicate
+  use、fill scalar直接来自i1 constant、chosen/result类型及map均为identity时，把select替换为所选arm的fresh copy并删除dead
+  fill/alloc。shared/额外use或非identity map保持动态路径并按现有legality处理；不得用该source优化扩大engine format矩阵。

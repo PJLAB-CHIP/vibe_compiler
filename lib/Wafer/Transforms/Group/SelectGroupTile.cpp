@@ -625,7 +625,6 @@ buildDimTileSizes(int64_t dim, llvm::ArrayRef<int64_t> preferred,
 
 struct TileSizeOptions {
   llvm::SmallVector<llvm::SmallVector<int64_t, 8>, 4> traversal;
-  llvm::SmallVector<llvm::SmallVector<int64_t, 8>, 2> reduction;
 };
 
 static TileSizeOptions
@@ -637,10 +636,7 @@ buildTileSizeOptions(llvm::ArrayRef<int64_t> traversalShape,
   for (int64_t dim : traversalShape)
     options.traversal.push_back(
         buildDimTileSizes(dim, preferred, maxCandidatesPerDim));
-
-  for (int64_t range : reductionRanges)
-    options.reduction.push_back(
-        buildDimTileSizes(range, preferred, maxCandidatesPerDim));
+  (void)reductionRanges;
   return options;
 }
 
@@ -1074,14 +1070,6 @@ struct RefinementDim {
   int64_t pressure = 0;
 };
 
-static int64_t getCandidateReductionSize(const CandidateSpec &candidate,
-                                         llvm::ArrayRef<int64_t> ranges,
-                                         unsigned index) {
-  if (candidate.reductionSplitSizes.empty())
-    return ranges[index];
-  return candidate.reductionSplitSizes[index];
-}
-
 static void addPressure(llvm::SmallVectorImpl<int64_t> &pressure,
                         unsigned index, int64_t bytes) {
   if (index >= pressure.size())
@@ -1170,9 +1158,6 @@ rankRefinementDims(GroupOp group, const CandidateSpec &candidate,
   for (auto [index, pressure] : llvm::enumerate(traversalPressure))
     dims.push_back(RefinementDim{/*isReduction=*/false,
                                  static_cast<unsigned>(index), pressure});
-  for (auto [index, pressure] : llvm::enumerate(reductionPressure))
-    dims.push_back(RefinementDim{/*isReduction=*/true,
-                                 static_cast<unsigned>(index), pressure});
 
   llvm::stable_sort(dims,
                     [](const RefinementDim &lhs, const RefinementDim &rhs) {
@@ -1202,21 +1187,8 @@ static std::optional<CandidateSpec> refineCandidateDim(
     return refined;
   }
 
-  if (dim.index >= reductionRanges.size() ||
-      dim.index >= tileSizeOptions.reduction.size())
-    return std::nullopt;
-  if (refined.reductionSplitSizes.empty())
-    refined.reductionSplitSizes.assign(reductionRanges.begin(),
-                                       reductionRanges.end());
-
-  std::optional<size_t> index =
-      findSizeIndex(tileSizeOptions.reduction[dim.index],
-                    refined.reductionSplitSizes[dim.index]);
-  if (!index || *index + 1 >= tileSizeOptions.reduction[dim.index].size())
-    return std::nullopt;
-  refined.reductionSplitSizes[dim.index] =
-      tileSizeOptions.reduction[dim.index][*index + 1];
-  return refined;
+  (void)reductionRanges;
+  return std::nullopt;
 }
 
 static bool enqueueCandidate(const CandidateSpec &candidate,
@@ -1258,17 +1230,6 @@ static void enqueueRefinements(GroupOp group, const CandidateSpec &candidate,
       for (auto [dimIndex, value] : llvm::enumerate(oneStep[j].tileSizes))
         if (value != candidate.tileSizes[dimIndex])
           combined.tileSizes[dimIndex] = value;
-      if (!oneStep[j].reductionSplitSizes.empty()) {
-        if (combined.reductionSplitSizes.empty())
-          combined.reductionSplitSizes.assign(reductionRanges.begin(),
-                                              reductionRanges.end());
-        for (auto [dimIndex, value] :
-             llvm::enumerate(oneStep[j].reductionSplitSizes))
-          if (value !=
-              getCandidateReductionSize(candidate, reductionRanges,
-                                        static_cast<unsigned>(dimIndex)))
-            combined.reductionSplitSizes[dimIndex] = value;
-      }
       neighbors.push_back(combined);
     }
   }
@@ -1638,6 +1599,24 @@ commitSelectedCandidate(SelectedCandidate &selected,
   return mlir::success();
 }
 
+static mlir::LogicalResult accumulateStaticTerminalOperations(
+    mlir::Operation *root, bool skipGroupBodies, uint64_t &count) {
+  bool overflow = false;
+  root->walk([&](mlir::Operation *operation) {
+    if (overflow ||
+        (skipGroupBodies && operation->getParentOfType<GroupOp>()))
+      return;
+    if (!mlir::isa<WaferInstructionOpInterface, SyncLocalFenceOp>(operation))
+      return;
+    if (count == std::numeric_limits<uint64_t>::max()) {
+      overflow = true;
+      return;
+    }
+    ++count;
+  });
+  return mlir::failure(overflow);
+}
+
 struct SelectGroupTilePass
     : public impl::SelectGroupTilePassBase<SelectGroupTilePass> {
   using impl::SelectGroupTilePassBase<
@@ -1736,11 +1715,85 @@ struct SelectGroupTilePass
       selectedCandidates.push_back(std::move(*selected));
     }
 
+    // The staged module is not mutated until the complete per-rank terminal
+    // program is known to fit. Existing terminal operations outside groups
+    // remain live; each selected standalone artifact replaces one group body.
+    uint64_t terminalOperationCount = 0;
+    if (mlir::failed(accumulateStaticTerminalOperations(
+            (*stagedModule).getOperation(), /*skipGroupBodies=*/true,
+            terminalOperationCount))) {
+      getOperation()->emitError()
+          << "static_terminal_budget_exceeded: selected rank terminal "
+             "operation count overflows";
+      signalPassFailure();
+      return;
+    }
+    for (const SelectedCandidate &selected : selectedCandidates) {
+      if (!selected.module) {
+        getOperation()->emitError()
+            << "static_terminal_budget_exceeded: selected rank terminal "
+               "operation count is unavailable";
+        signalPassFailure();
+        return;
+      }
+      uint64_t selectedOperationCount = 0;
+      detail::StaticTerminalOperationBudgetStatus status =
+          detail::checkStaticTerminalOperationBudget(
+              (*selected.module).getOperation(), selectedOperationCount);
+      if (status ==
+              detail::StaticTerminalOperationBudgetStatus::CountOverflow ||
+          selectedOperationCount >
+              std::numeric_limits<uint64_t>::max() - terminalOperationCount) {
+        getOperation()->emitError()
+            << "static_terminal_budget_exceeded: selected rank terminal "
+               "operation count overflows";
+        signalPassFailure();
+        return;
+      }
+      terminalOperationCount += selectedOperationCount;
+    }
+    if (terminalOperationCount >
+        wafer::detail::kStaticTerminalOperationBudget) {
+      getOperation()->emitError()
+          << "static_terminal_budget_exceeded: selected rank requires "
+          << terminalOperationCount
+          << " terminal instruction issue/completion operations; limit is "
+          << wafer::detail::kStaticTerminalOperationBudget;
+      signalPassFailure();
+      return;
+    }
+
     for (SelectedCandidate &selected : selectedCandidates) {
       if (mlir::failed(commitSelectedCandidate(selected, config))) {
         signalPassFailure();
         return;
       }
+    }
+
+    // Commit only changes the private staged clone. Recount the actual staged
+    // rank so the gate does not rely on determinism between candidate proof
+    // materialization and commit-time materialization.
+    uint64_t stagedTerminalOperationCount = 0;
+    detail::StaticTerminalOperationBudgetStatus stagedBudgetStatus =
+        detail::checkStaticTerminalOperationBudget(
+            (*stagedModule).getOperation(), stagedTerminalOperationCount);
+    if (stagedBudgetStatus ==
+        detail::StaticTerminalOperationBudgetStatus::CountOverflow) {
+      getOperation()->emitError()
+          << "static_terminal_budget_exceeded: committed staged rank terminal "
+             "operation count overflows";
+      signalPassFailure();
+      return;
+    }
+    if (stagedBudgetStatus ==
+        detail::StaticTerminalOperationBudgetStatus::BudgetExceeded) {
+      getOperation()->emitError()
+          << "static_terminal_budget_exceeded: committed staged rank requires "
+          << stagedTerminalOperationCount
+          << " terminal instruction issue/completion operations; limit is "
+          << wafer::detail::kStaticTerminalOperationBudget;
+      signalPassFailure();
+      return;
     }
 
     if (mlir::failed(mlir::verify(*stagedModule))) {

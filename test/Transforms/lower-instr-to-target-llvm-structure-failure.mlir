@@ -1,16 +1,16 @@
 // RUN: split-file %s %t
-// RUN: wafer-opt --wafer-lower-instr-to-target-llvm %t/positive.mlir | FileCheck %s --check-prefix=POS
-// RUN: wafer-opt --wafer-lower-instr-to-target-llvm %t/positive.mlir | mlir-translate --mlir-to-llvmir | FileCheck %s --check-prefix=LLVMIR
-// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm %t/indirect.mlir 2>&1 | FileCheck %s --check-prefix=INDIRECT
-// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm %t/recursive.mlir 2>&1 | FileCheck %s --check-prefix=RECURSIVE
-// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm %t/external.mlir 2>&1 | FileCheck %s --check-prefix=EXTERNAL
-// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm %t/alias-mismatch.mlir 2>&1 | FileCheck %s --check-prefix=ALIAS
-// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm %t/scalar-arg.mlir 2>&1 | FileCheck %s --check-prefix=SCALAR
-// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm %t/ddr-alloc.mlir 2>&1 | FileCheck %s --check-prefix=DDR-ALLOC
-// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm %t/mask-address-overflow.mlir 2>&1 | FileCheck %s --check-prefix=MASK-ADDRESS
-// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm %t/factorize.mlir 2>&1 | FileCheck %s --check-prefix=FACTORIZE
-// RUN: not wafer-opt --mlir-disable-threading --wafer-lower-instr-to-target-llvm --mlir-print-ir-after-failure --mlir-print-ir-module-scope -o /dev/null %t/dte-atomic.mlir 2>&1 | FileCheck %s --check-prefix=DTE-ATOMIC --implicit-check-not=llvm.func --implicit-check-not=llvm.call
-// RUN: not wafer-opt --mlir-disable-threading --wafer-lower-instr-to-target-llvm --mlir-print-ir-after-failure --mlir-print-ir-module-scope -o /dev/null %t/late-atomic.mlir 2>&1 | FileCheck %s --check-prefix=LATE-ATOMIC --implicit-check-not=llvm.func --implicit-check-not=llvm.call
+// RUN: wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/positive.mlir | FileCheck %s --check-prefix=POS
+// RUN: wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/positive.mlir | mlir-translate --mlir-to-llvmir | FileCheck %s --check-prefix=LLVMIR
+// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/indirect.mlir 2>&1 | FileCheck %s --check-prefix=INDIRECT
+// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/recursive.mlir 2>&1 | FileCheck %s --check-prefix=RECURSIVE
+// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/external.mlir 2>&1 | FileCheck %s --check-prefix=EXTERNAL
+// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/alias-mismatch.mlir 2>&1 | FileCheck %s --check-prefix=ALIAS
+// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/scalar-arg.mlir 2>&1 | FileCheck %s --check-prefix=SCALAR
+// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/ddr-alloc.mlir 2>&1 | FileCheck %s --check-prefix=DDR-ALLOC
+// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/mask-address-overflow.mlir 2>&1 | FileCheck %s --check-prefix=MASK-ADDRESS
+// RUN: not wafer-opt --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' %t/factorize.mlir 2>&1 | FileCheck %s --check-prefix=FACTORIZE
+// RUN: not wafer-opt --mlir-disable-threading --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' --mlir-print-ir-after-failure --mlir-print-ir-module-scope -o /dev/null %t/dte-atomic.mlir 2>&1 | FileCheck %s --check-prefix=DTE-ATOMIC --implicit-check-not=llvm.func --implicit-check-not=llvm.call
+// RUN: not wafer-opt --mlir-disable-threading --wafer-lower-instr-to-target-llvm='target-profile=wafer-tx81-single-card-kernel-v1' --mlir-print-ir-after-failure --mlir-print-ir-module-scope -o /dev/null %t/late-atomic.mlir 2>&1 | FileCheck %s --check-prefix=LATE-ATOMIC --implicit-check-not=llvm.func --implicit-check-not=llvm.call
 
 //--- positive.mlir
 

@@ -1,4 +1,4 @@
-// RUN: wafer-opt --wafer-select-group-tile='logical-rank=0 print-candidate-summary tile-search-effort=quick' %s 2>&1 | FileCheck --implicit-check-not=selected_group --check-prefixes=SUMMARY,IR %s
+// RUN: not wafer-opt --mlir-print-ir-after-failure --wafer-select-group-tile='logical-rank=0 print-candidate-summary tile-search-effort=quick' %s 2>&1 | FileCheck --check-prefix=FAIL %s
 
 func.func @reduce_requires_internal_split(%input: tensor<1x65536xf32>,
                                           %out: tensor<1xf32>)
@@ -28,16 +28,11 @@ func.func @reduce_requires_internal_split(%input: tensor<1x65536xf32>,
   return %group : tensor<1xf32>
 }
 
-// SUMMARY: wafer.select_group_tile selected group @reduce_requires_internal_split#0
-// SUMMARY-SAME: mode=first-legal
-// SUMMARY-SAME: tile=[1]
-// SUMMARY-SAME: split=[32768]
-// SUMMARY-SAME: rejected=1
-
-// IR-LABEL: func.func @reduce_requires_internal_split
-// IR-NOT: wafer.group
-// IR-NOT: linalg.generic
-// IR: wafer.instr.reduce <sum>
-// IR: wafer.instr.reduce <sum>
-// IR: wafer.instr.elementwise <add>
-// IR: wafer.instr.wdma
+// FAIL: no_candidate: tile selection found no passing candidate
+// FAIL-SAME: candidate reduction dimension must fit uint16_t
+// FAIL-NOT: wafer.select_group_tile selected group
+// FAIL: IR Dump After SelectGroupTilePass Failed
+// FAIL: func.func @reduce_requires_internal_split
+// FAIL: wafer.group
+// FAIL: linalg.generic
+// FAIL-NOT: wafer.instr.reduce

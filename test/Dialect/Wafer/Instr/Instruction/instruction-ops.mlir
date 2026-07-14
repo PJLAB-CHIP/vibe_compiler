@@ -1,7 +1,5 @@
 // RUN: wafer-opt %s | FileCheck %s
 
-#map = affine_map<(d0, d1) -> (d0, d1)>
-
 module {
   %ddr_in = "builtin.unrealized_conversion_cast"()
       : () -> memref<4x8xf16, #wafer.memory<ddr, tensor>>
@@ -55,12 +53,11 @@ module {
       : memref<4x8xf16, #wafer.memory<spm, tensor>>, f16
 
   wafer.instr.elementwise #wafer.instr_elementwise_kind<add> %tensor, %tensor into %tensor
-      {indexing_maps = [#map, #map, #map]}
       : memref<4x8xf16, #wafer.memory<spm, tensor>>,
         memref<4x8xf16, #wafer.memory<spm, tensor>>
     into memref<4x8xf16, #wafer.memory<spm, tensor>>
 
-  wafer.instr.reduce #wafer.instr_reduce_kind<sum> %cx into %reduce_out, %f16 : f16
+  wafer.instr.reduce #wafer.instr_reduce_kind<sum> %cx into %reduce_out
       {dim = 0 : i64}
       : memref<4x8xf16, #wafer.memory<spm, cx>>
     into memref<4xf16, #wafer.memory<spm, cx>>
@@ -102,7 +99,7 @@ module {
 // CHECK-SAME: src_offset = 16 : i64
 // CHECK: wafer.instr.fill
 // CHECK: wafer.instr.elementwise <add>
-// CHECK-SAME: indexing_maps
+// CHECK-NOT: indexing_maps
 // CHECK: wafer.instr.reduce <sum>
 // CHECK-SAME: dim = 0 : i64
 // CHECK: wafer.instr.convert <fp16_fp32>

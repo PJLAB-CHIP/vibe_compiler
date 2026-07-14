@@ -2,8 +2,10 @@
 // RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-stablehlo-to-linalg,wafer-form-logical-groups,wafer-dump-group-to-tile-region{logical-rank=0})' %s 2>&1 | FileCheck %s
 
 module {
-  func.func @lower_reduce_sum(%arg0: tensor<2x4xf32>,
-                              %init: tensor<f32>) -> tensor<2xf32> {
+  func.func @lower_reduce_sum(%arg0: tensor<2x4xf32>) -> tensor<2xf32> {
+    %init = "stablehlo.constant"() {
+      value = dense<0.000000e+00> : tensor<f32>
+    } : () -> tensor<f32>
     %0 = "stablehlo.reduce"(%arg0, %init) ({
     ^bb0(%lhs: tensor<f32>, %rhs: tensor<f32>):
       %1 = stablehlo.add %lhs, %rhs : tensor<f32>
@@ -40,7 +42,8 @@ module {
 // CHECK: #wafer.memory<spm, cx>
 // CHECK: wafer.tile.reduce <sum>
 // CHECK-SAME: dimensions = array<i64: 1>
-// CHECK: f32) -> memref<2xf32, #wafer.memory<spm, cx>>
+// CHECK-SAME: init_value = 0.000000e+00 : f32
+// CHECK-SAME: -> memref<2xf32, #wafer.memory<spm, cx>>
 // CHECK: wafer.tile.store
 // CHECK-LABEL: wafer.group_to_tile_region group @lower_broadcast#0
 // CHECK: wafer.tile.broadcast

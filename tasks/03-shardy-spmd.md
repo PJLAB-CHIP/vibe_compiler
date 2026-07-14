@@ -10,7 +10,7 @@ per-rank executable。实现状态看`tasks/progress.md`。
 Pipeline position:
 - Upstream artifact / IR:
   verified、尚未SPMD partition的StableHLO program directory；可选frontend mhlo.sharding；以及validated
-  single-card ExecutionConfig（execution-ranks显式为1或16；Q0.L后还携带tasks/14拥有的typed target profile，本stage不解释）。
+  single-card ExecutionConfig（execution-ranks显式为1或16，并携带tasks/14拥有的typed target profile；本stage不解释）。
 - Current stage responsibility:
   在transaction-owned source snapshot上建立exact wafer.target.topology/wafer.execution.mesh，把pre-SPMD
   StableHLO和frontend sharding交给pinned XLA helper，由helper内部完成Shardy propagation与XLA SPMD；
@@ -23,8 +23,9 @@ Pipeline position:
   StableHLO-to-Linalg、tensor collective normalization、logical group；Q16在该grouped program上按
   logical rank创建isolated static clones。
 - User-level driver / named pipeline:
-  Q0.L后的入口为wafer-compile --input-program-dir=... --output-program-dir=... --execution-ranks={1|16}
-  --target-profile=<registered-id>；本stage只消费rank/mesh并原样传递typed profile。
+  正式入口为
+  `wafer-compile --input-program-dir=... --output-program-dir=... --execution-ranks={1|16} --target-profile=wafer-tx81-single-card-kernel-v1`；
+  本stage只消费rank/mesh并原样传递typed profile，且target profile没有默认值。
   wafer-opt和wafer-propagate-stablehlo-sharding只处理显式IR，不能作为program-directory入口。
 - Explicit non-goals:
   不实现MPMD、代表rank去重、dp/tp/pp/ep私有协议、distributed/parallel dialect、physical endpoint/DTE、

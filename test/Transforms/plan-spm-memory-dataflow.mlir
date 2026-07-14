@@ -72,11 +72,6 @@ func.func @loop_carried_result_conflicts_with_body_use(
         -> (memref<128xf16, #wafer.memory<spm, tensor>>) {
       %next = memref.alloc() : memref<128xf16, #wafer.memory<spm, tensor>>
       wafer.instr.elementwise #wafer.instr_elementwise_kind<add> %iter, %iter into %next
-          {indexing_maps = [
-            affine_map<(d0) -> (d0)>,
-            affine_map<(d0) -> (d0)>,
-            affine_map<(d0) -> (d0)>
-          ]}
           : memref<128xf16, #wafer.memory<spm, tensor>>,
           memref<128xf16, #wafer.memory<spm, tensor>>
         into memref<128xf16, #wafer.memory<spm, tensor>>

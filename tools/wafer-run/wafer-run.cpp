@@ -143,8 +143,8 @@ int main(int argc, char **argv) {
                         resource.access, true});
   }
   wafer::runtime::RuntimeEnvironment environment{
-      manifest.targetIdentity, manifest.runtimeABI, manifest.moduleFormat,
-      options->maxResourceBytes};
+      manifest.targetProfile, manifest.targetIdentity, manifest.runtimeABI,
+      manifest.moduleFormat, options->maxResourceBytes};
   if (options->directDTEStatusABI) {
     environment.supportsDirectDTE = true;
     environment.directDTEStatusABI = *options->directDTEStatusABI;
@@ -159,8 +159,13 @@ int main(int argc, char **argv) {
   llvm::outs() << "package: id=" << manifest.program.getValue()
                << " schema=" << manifest.schemaVersion
                << " ranks=" << manifest.rankCount << "\n";
-  llvm::outs() << "target: " << manifest.targetIdentity
-               << " runtime_abi=" << manifest.runtimeABI
+  llvm::outs() << "target_profile: "
+               << wafer::stringifyTargetProfileId(manifest.targetProfile)
+               << "\n";
+  llvm::outs() << "target: "
+               << wafer::stringifyTargetIdentityId(manifest.targetIdentity)
+               << " runtime_abi="
+               << wafer::stringifyKernelRuntimeABIId(manifest.runtimeABI)
                << " module_format=" << manifest.moduleFormat << "\n";
   llvm::outs() << "entry: " << plan->entry.getValue()
                << " rank=" << plan->logicalRank

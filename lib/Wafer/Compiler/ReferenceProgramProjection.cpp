@@ -650,66 +650,10 @@ private:
         command.destFormat = spec->dest;
       } else if (auto reduce =
                      mlir::dyn_cast<wafer::InstrReduceOp>(operation)) {
-        auto inputType = requireF32Buffer(reduce.getInput(), "reduce input");
-        auto destType = requireF32Buffer(reduce.getDest(), "reduce dest");
-        if (!inputType)
-          return inputType.takeError();
-        if (!destType)
-          return destType.takeError();
-        if (!wafer::isWaferSPMMemRefType(*inputType) ||
-            !wafer::isWaferSPMMemRefType(*destType))
-          return unsupported("reduce requires Wafer SPM memrefs");
-        llvm::SmallVector<int64_t, 3> reduceDimensions =
-            wafer::getInstrReduceLogicalDims(reduce.getDim(),
-                                             inputType->getRank());
-        command.reduceDimensions.assign(reduceDimensions.begin(),
-                                        reduceDimensions.end());
-        if (command.reduceDimensions.empty())
-          return unsupported("reduce target dimension is invalid");
-        llvm::SmallVector<int64_t> expectedDestShape;
-        for (auto [dimension, size] : llvm::enumerate(inputType->getShape()))
-          if (!llvm::is_contained(command.reduceDimensions,
-                                  static_cast<int64_t>(dimension)))
-            expectedDestShape.push_back(size);
-        if (destType->getShape() != llvm::ArrayRef<int64_t>(expectedDestShape))
-          return invalid(
-              "reduce destination shape disagrees with target dimension");
-
-        switch (reduce.getKind()) {
-        case wafer::InstrReduceKind::Sum:
-        case wafer::InstrReduceKind::Max:
-        case wafer::InstrReduceKind::Min:
-          command.reduceKind = reduce.getKind();
-          break;
-        case wafer::InstrReduceKind::Avg:
-          return unsupported("reduce avg has no exact frontend combiner");
-        }
-
-        mlir::Attribute initValue = reduce->getAttr("init_value");
-        if (initValue && reduce.getInit())
-          return invalid("reduce has both attribute and SSA init values");
-        if (initValue) {
-          auto value = mlir::dyn_cast<mlir::FloatAttr>(initValue);
-          if (!value || !value.getType().isF32())
-            return unsupported("reduce init_value is not f32");
-          command.scalarValue.floating = value.getValue();
-        } else if (reduce.getInit()) {
-          auto init = use(reduce.getInit());
-          if (!init)
-            return init.takeError();
-          command.reduceInit = *init;
-        } else {
-          return unsupported("reduce has no scalar initialization value");
-        }
-        auto input = use(reduce.getInput());
-        auto dest = use(reduce.getDest());
-        if (!input)
-          return input.takeError();
-        if (!dest)
-          return dest.takeError();
-        command.kind = CommandKind::Reduce;
-        command.source = *input;
-        command.dest = *dest;
+        (void)reduce;
+        return unsupported(
+            "target-native reduce has no compiler-owned source equivalence "
+            "proof");
       } else if (auto gemm = mlir::dyn_cast<wafer::InstrGemmOp>(operation)) {
         auto lhsType = requireF32Buffer(gemm.getLhs(), "GEMM lhs");
         auto rhsType = requireF32Buffer(gemm.getRhs(), "GEMM rhs");

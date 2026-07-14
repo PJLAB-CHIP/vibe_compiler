@@ -52,7 +52,8 @@ Pipeline position:
   instruction legality、layout materialization、whole-entry SPM/DDR planning 和 event-liveness verifier。
 - User-level driver / named pipeline:
   Q16以后由同一
-  `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16}`在完整variant
+  `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16} --target-profile=wafer-tx81-single-card-kernel-v1`
+  在完整variant
   clone中执行。当前Q15只产出verified grouped program directory，不执行communication materialization；
   `wafer-opt`和communication-specific named pipelines只处理显式IR，用于IR-local debug/verifier覆盖，
   不提供用户stop-stage。

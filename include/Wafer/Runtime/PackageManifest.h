@@ -3,6 +3,8 @@
 #ifndef WAFER_RUNTIME_PACKAGEMANIFEST_H
 #define WAFER_RUNTIME_PACKAGEMANIFEST_H
 
+#include "Wafer/Target/TargetProfile.h"
+
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
@@ -16,12 +18,8 @@
 
 namespace wafer::runtime {
 
-inline constexpr uint32_t kPackageManifestSchemaVersion = 2;
+inline constexpr uint32_t kPackageManifestSchemaVersion = 3;
 inline constexpr llvm::StringLiteral kPackageManifestFileName = "manifest.json";
-inline constexpr llvm::StringLiteral kSingleCardTargetIdentity =
-    "wafer-tx81-single-card";
-inline constexpr llvm::StringLiteral kKernelRuntimeABI = "wafer-tx81-kernel-v1";
-inline constexpr llvm::StringLiteral kRiscv64ELFModuleFormat = "elf-riscv64";
 inline constexpr llvm::StringLiteral kDirectDTEStatusABI =
     "wafer-direct-dte-status-v1";
 
@@ -127,10 +125,17 @@ struct PackageCompletionRecord {
 };
 
 struct PackageManifest {
+  PackageManifest(TargetProfileId targetProfile,
+                  TargetIdentityId targetIdentity,
+                  KernelRuntimeABIId runtimeABI, llvm::StringRef moduleFormat)
+      : targetProfile(targetProfile), targetIdentity(targetIdentity),
+        runtimeABI(runtimeABI), moduleFormat(moduleFormat.str()) {}
+
   uint32_t schemaVersion = kPackageManifestSchemaVersion;
   ProgramId program;
-  std::string targetIdentity;
-  std::string runtimeABI;
+  TargetProfileId targetProfile;
+  TargetIdentityId targetIdentity;
+  KernelRuntimeABIId runtimeABI;
   std::string moduleFormat;
   int64_t rankCount = 0;
   std::vector<PackageResourceRecord> resources;
@@ -194,8 +199,19 @@ struct RuntimeInvocationBinding {
 };
 
 struct RuntimeEnvironment {
-  std::string targetIdentity;
-  std::string runtimeABI;
+  RuntimeEnvironment(TargetProfileId targetProfile,
+                     TargetIdentityId targetIdentity,
+                     KernelRuntimeABIId runtimeABI,
+                     llvm::StringRef moduleFormat,
+                     uint64_t maxResourceBytes =
+                         std::numeric_limits<uint64_t>::max())
+      : targetProfile(targetProfile), targetIdentity(targetIdentity),
+        runtimeABI(runtimeABI), moduleFormat(moduleFormat.str()),
+        maxResourceBytes(maxResourceBytes) {}
+
+  TargetProfileId targetProfile;
+  TargetIdentityId targetIdentity;
+  KernelRuntimeABIId runtimeABI;
   std::string moduleFormat;
   uint64_t maxResourceBytes = std::numeric_limits<uint64_t>::max();
   bool supportsDirectDTE = false;

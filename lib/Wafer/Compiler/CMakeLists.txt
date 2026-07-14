@@ -19,6 +19,7 @@ add_mlir_library(WaferCompiler
   WaferIR
   WaferPipelines
   WaferRuntime
+  WaferTarget
   WaferTransforms
   MLIRArithDialect
   MLIRArithTransforms

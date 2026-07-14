@@ -64,8 +64,8 @@ Pipeline position:
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  exporter产生且尚未SPMD partition的StableHLO program directory，以及用户显式选择的单卡rank-count；Q0.L后还要求
-  tasks/14 registry中的typed target profile。
+  exporter产生且尚未SPMD partition的StableHLO program directory，以及用户显式选择的单卡rank-count和tasks/14
+  registry中的typed target profile。
 - Current stage responsibility:
   用typed CompilationRequest接管program orchestration；先在transaction-owned输入快照上完成frontend admission，
   再建立与ExecutionConfig完全一致的topology/mesh，把pre-SPMD StableHLO和显式frontend sharding交给
@@ -77,22 +77,23 @@ Pipeline position:
 - Downstream consumer:
   Q16在同一用户driver内对全部logical rank建立isolated clone并形成RankExecutable[]。
 - User-level driver / named pipeline:
-  Q0.L后的正式入口为wafer-compile --input-program-dir=... --output-program-dir=... --execution-ranks={1|16}
-  --target-profile=<registered-id>；不暴露pass名称或stop-stage，target profile无默认值。
+  正式入口为
+  `wafer-compile --input-program-dir=... --output-program-dir=... --execution-ranks={1|16} --target-profile=wafer-tx81-single-card-kernel-v1`；
+  不暴露pass名称或stop-stage，target profile无默认值。
 - Explicit non-goals:
   Q15不定义per-rank executable、manifest、runtime binding或board执行，也不把helper路径、输出路径、
   pipeline名称、logical rank和pass option写入CompilationRequest。
 - Completion gate:
   ExecutionConfig无默认rank且只接受1或16；已有topology/mesh必须唯一并与请求逐字段一致；任一admission、
   helper或pass失败都不修改source和既有final output；旧wafer-opt program-directory参数被拒绝。该句记录Q15既有窄完成；
-  Q0.L另要求registered typed target profile从request/config贯穿到target preparation并重放atomic gates。
+  Q0.L已另行闭合registered typed target profile从request/config到target preparation的贯穿和fresh atomic replay。
 ```
 
-`ExecutionConfig`是factory-only C++ value；当前已验证Q15实现的唯一可配置语义是单卡execution rank-count。Q0.L将加入
-由tasks/14 registry拥有、无默认值的typed `TargetProfileId`；固定1×1 card、4×4 tile topology和rank到endpoint的
-row-major关系仍只由rank配置派生，target profile不复制进topology/mesh IR，也不能从已有IR“取第一个”恢复。
-`CompilationRequest`是move-only C++ value，只持有source program locator和validated `ExecutionConfig`；Q0.L后的config
-同时拥有rank-count与target profile，后端不得从CLI自由字符串、host环境或CModel补建identity。
+`ExecutionConfig`是factory-only C++ value；production factory同时要求单卡execution rank-count和由tasks/14 registry拥有、
+无默认值的typed `TargetProfileId`。Q15历史完成只覆盖rank-count；Q0.L把profile贯穿到后续artifact而不改变固定1×1 card、
+4×4 tile topology和rank到endpoint的row-major关系。后者仍只由rank配置派生，target profile不复制进topology/mesh IR，
+也不能从已有IR“取第一个”恢复。`CompilationRequest`是move-only C++ value，只持有source program locator和validated
+`ExecutionConfig`；config同时拥有rank-count与target profile，后端不得从CLI自由字符串、host环境或CModel补建identity。
 compiler在读取前把source复制到transaction-owned snapshot，后续parser、verifier和XLA helper都只消费该snapshot。
 output root和build-time helper属于orchestration，不属于program语义；Q16接入后，Q15的grouped directory将留在同一
 bundle transaction内，不形成第二条production pipeline。
@@ -299,10 +300,10 @@ package execution；Q22.P timing calibration保持deferred，
 | all stage gates、reference、target-model和board证据 | 16 |
 | target execution model、multi-dtype numeric/bulk、target LLVM bundle、SystemC主架构边界、板端numeric correlation和deferred timing | 17 |
 
-当前没有active实施计划；Next是Q0.L target-command legality closure，进入代码施工前需先建立独立计划。target execution
-model方案已在tasks/17收敛，`tasks/progress.md`已把Q22拆成Q22.N numeric、Q22.B bulk、Q22.L target LLVM bundle、
-Q22.H authorized host CRT、Q22.S SystemC event和Q22.V source vertical等独立可调度边界。Q22在Q0.L完成前保持blocked；
-各实现边界开工前仍需建立独立计划。
+Q0.L已经完成，实施计划归档为`tasks/archive/target-command-legality-closure.md`。当前没有active计划；并行Next为Q22.N
+numeric与Q22.L target LLVM bundle。target execution model方案已在tasks/17收敛，`tasks/progress.md`已把Q22拆成Q22.N
+numeric、Q22.B bulk、Q22.L target LLVM bundle、Q22.H authorized host CRT、Q22.S SystemC event和Q22.V source vertical等
+独立可调度边界；各实现边界开工前仍需建立独立计划。
 
 审计证据：`tasks/archive/12-architecture-evidence-reset.md`。
 

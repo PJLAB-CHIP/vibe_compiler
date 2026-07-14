@@ -4,6 +4,7 @@
 
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Transforms/Passes.h"
+#include "Wafer/Transforms/TargetConversion.h"
 
 #include "mlir/Dialect/Bufferization/IR/BufferizableOpInterface.h"
 #include "mlir/Dialect/Bufferization/Transforms/OneShotAnalysis.h"
@@ -21,6 +22,13 @@
 
 namespace wafer {
 namespace {
+
+struct LowerGroupsToTargetLLVMOptions
+    : public mlir::PassPipelineOptions<LowerGroupsToTargetLLVMOptions> {
+  Option<std::string> targetProfile{
+      *this, "target-profile",
+      llvm::cl::desc("Required registered target profile")};
+};
 
 static void addStablehloToLinalgBody(mlir::OpPassManager &pm) {
   pm.addPass(createNormalizeStablehloCollectivesPass());
@@ -128,9 +136,14 @@ void buildLowerGroupsToDDRMemoryPlannedInstrPipeline(mlir::OpPassManager &pm,
 }
 
 void buildLowerGroupsToTargetLLVMPipeline(mlir::OpPassManager &pm,
-                                          int64_t logicalRank) {
+                                          int64_t logicalRank,
+                                          TargetProfileId targetProfile) {
   buildLowerGroupsToSelectedInstrPipeline(pm, logicalRank);
-  pm.addPass(createLowerInstrToTargetLLVMPass());
+  TargetConversionRequest request{targetProfile, /*defaultDDRArenaArgumentIndex=*/
+                                                     -1,
+                                  logicalRank,
+                                  /*transportStatusArgumentIndex=*/-1};
+  pm.addPass(createLowerInstrToTargetLLVMPass(request));
 }
 
 void buildLowerGroupsToSelectedInstrPipeline(mlir::OpPassManager &pm,
@@ -196,14 +209,27 @@ void registerWaferPipelines() {
           buildLowerGroupsToDDRMemoryPlannedInstrPipeline(pm,
                                                           /*logicalRank=*/0);
         });
-    mlir::PassPipelineRegistration<>(
+    mlir::PassPipelineRegistration<LowerGroupsToTargetLLVMOptions>(
         "wafer-lower-groups-to-target-llvm",
         "Debug rank-0 replay: select complete logical wafer.group candidates, "
         "bufferize function boundaries, and lower the accepted instruction "
         "artifact to target "
         "LLVM CRT calls",
-        [](mlir::OpPassManager &pm) {
-          buildLowerGroupsToTargetLLVMPipeline(pm, /*logicalRank=*/0);
+        [](mlir::OpPassManager &pm,
+           const LowerGroupsToTargetLLVMOptions &options) {
+          llvm::Expected<TargetProfileId> targetProfile =
+              parseTargetProfileId(options.targetProfile.getValue());
+          if (!targetProfile) {
+            llvm::consumeError(targetProfile.takeError());
+            LowerInstrToTargetLLVMPassOptions invalidOptions;
+            invalidOptions.targetProfile = options.targetProfile.getValue();
+            // This pass validates the required selection before cloning or
+            // mutating the source module. No earlier pipeline stage is added.
+            pm.addPass(createLowerInstrToTargetLLVMPass(invalidOptions));
+            return;
+          }
+          buildLowerGroupsToTargetLLVMPipeline(pm, /*logicalRank=*/0,
+                                               *targetProfile);
         });
     mlir::PassPipelineRegistration<>(
         "wafer-lower-groups-to-selected-instr",

@@ -3,6 +3,7 @@ add_mlir_library(WaferPipelines
 
   LINK_LIBS PUBLIC
   WaferIR
+  WaferTarget
   WaferTransforms
   MLIRArithToLLVM
   MLIRBufferizationDialect

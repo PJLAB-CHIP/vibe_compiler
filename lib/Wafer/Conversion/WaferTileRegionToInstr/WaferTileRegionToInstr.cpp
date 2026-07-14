@@ -12,6 +12,7 @@
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -136,45 +137,6 @@ getLogicalTensorTypeFromMemRef(mlir::Type type) {
     return std::nullopt;
   return mlir::RankedTensorType::get(memrefType.getShape(),
                                      memrefType.getElementType());
-}
-
-static bool sameDimSet(llvm::ArrayRef<int64_t> lhs,
-                       llvm::ArrayRef<int64_t> rhs) {
-  llvm::SmallVector<int64_t, 4> sortedLhs(lhs.begin(), lhs.end());
-  llvm::SmallVector<int64_t, 4> sortedRhs(rhs.begin(), rhs.end());
-  llvm::sort(sortedLhs);
-  llvm::sort(sortedRhs);
-  return sortedLhs == sortedRhs;
-}
-
-static mlir::FailureOr<int64_t>
-getTargetReduceDimCode(mlir::PatternRewriter &rewriter, mlir::Operation *op,
-                       mlir::Type inputType, llvm::ArrayRef<int64_t> dims,
-                       std::string *failureReason) {
-  std::optional<mlir::RankedTensorType> inputTensor =
-      getLogicalTensorTypeFromMemRef(inputType);
-  if (!inputTensor)
-    return failFailureOr<int64_t>(
-        rewriter, op, failureReason,
-        "reduce lowering requires ranked memref input");
-  int64_t rank = inputTensor->getRank();
-  if (rank <= 0 || rank > 4)
-    return failFailureOr<int64_t>(
-        rewriter, op, failureReason,
-        "reduce lowering supports input ranks in [1, 4]");
-  if (dims.empty())
-    return failFailureOr<int64_t>(
-        rewriter, op, failureReason,
-        "reduce lowering requires non-empty dimensions");
-  for (int64_t targetDim = 0; targetDim <= 5; ++targetDim) {
-    llvm::SmallVector<int64_t, 3> targetDims =
-        getInstrReduceLogicalDims(targetDim, rank);
-    if (!targetDims.empty() && sameDimSet(dims, targetDims))
-      return targetDim;
-  }
-  return failFailureOr<int64_t>(
-      rewriter, op, failureReason,
-      "reduce dimensions do not map to a TX8 target reduce dim code");
 }
 
 static mlir::FailureOr<mlir::Value>
@@ -533,6 +495,57 @@ createGatherScatterSegments(mlir::PatternRewriter &rewriter, mlir::Location loc,
       descriptorSegments = 1;
     index += static_cast<size_t>(*descriptorSegments);
   }
+}
+
+static mlir::FailureOr<uint64_t> preflightPackedMovementCommands(
+    mlir::PatternRewriter &rewriter, mlir::Operation *op,
+    llvm::ArrayRef<LogicalMovementSegment> segments,
+    std::string *failureReason, llvm::StringRef opLabel) {
+  if (segments.empty())
+    return failFailureOr<uint64_t>(
+        rewriter, op, failureReason,
+        llvm::Twine(opLabel).concat(" produced no movement segments").str());
+
+  auto fitsTargetField = [](int64_t value) {
+    return value >= 0 &&
+           static_cast<uint64_t>(value) <=
+               std::numeric_limits<uint32_t>::max();
+  };
+  auto descriptorFitsTarget = [&](const MovementDescriptor &descriptor) {
+    if (descriptor.byteCount <= 0 || descriptor.innerBytes <= 0 ||
+        !fitsTargetField(descriptor.byteCount) ||
+        !fitsTargetField(descriptor.innerBytes) ||
+        !fitsTargetField(descriptor.byteOffset))
+      return false;
+    return llvm::all_of(descriptor.strides, fitsTargetField) &&
+           llvm::all_of(descriptor.iterations, [&](int64_t iteration) {
+             return iteration > 0 && fitsTargetField(iteration);
+           });
+  };
+
+  uint64_t commandCount = 0;
+  for (size_t index = 0; index < segments.size();) {
+    PackedMovementDescriptor packed = packMovementDescriptor(segments, index);
+    if (!descriptorFitsTarget(packed.source) ||
+        !descriptorFitsTarget(packed.dest))
+      return failFailureOr<uint64_t>(
+          rewriter, op, failureReason,
+          llvm::Twine(opLabel)
+              .concat(" descriptor exceeds uint32 target fields")
+              .str());
+
+    std::optional<int64_t> descriptorSegments = computeDescriptorPayloadBytes(
+        /*innerBytes=*/1, packed.source.iterations);
+    if (!descriptorSegments || *descriptorSegments <= 0)
+      descriptorSegments = 1;
+    index += static_cast<size_t>(*descriptorSegments);
+    if (commandCount == std::numeric_limits<uint64_t>::max())
+      return failFailureOr<uint64_t>(
+          rewriter, op, failureReason,
+          llvm::Twine(opLabel).concat(" command count overflows").str());
+    ++commandCount;
+  }
+  return commandCount;
 }
 
 static void copyOptionalAttr(mlir::Operation *from, mlir::Operation *to,
@@ -1608,9 +1621,10 @@ static mlir::FailureOr<InstrElementwiseKindAttr> getInstrElementwiseKindAttr(
     mlir::PatternRewriter &rewriter, mlir::Operation *op,
     ComputeElementwiseKindAttr computeKind, std::string *failureReason);
 
-static InstrReduceKindAttr
-getInstrReduceKindAttr(mlir::PatternRewriter &rewriter,
-                       ComputeReduceKindAttr computeKind);
+static mlir::FailureOr<InstrElementwiseKindAttr> getAccumulationElementwiseKind(
+    mlir::PatternRewriter &rewriter, mlir::Operation *op,
+    ComputeReduceKindAttr reduceKind, std::string *failureReason,
+    llvm::StringRef opLabel);
 
 class FillLowering : public mlir::OpRewritePattern<ComputeFillOp> {
 public:
@@ -1620,6 +1634,95 @@ public:
   matchAndRewrite(ComputeFillOp op,
                   mlir::PatternRewriter &rewriter) const final {
     rewriter.replaceOpWithNewOp<InstrFillOp>(op, op.getDest(), op.getValue());
+    return mlir::success();
+  }
+};
+
+// A select fed by a private, constant-filled predicate does not require a
+// target boolean fill or mask operation.  Canonicalize that exact tile-level
+// dataflow to an explicit fresh copy before conversion patterns can lower the
+// fill independently.  Keeping this as a separate typed prepass makes the
+// rewrite independent of cross-root dialect-conversion pattern ordering.
+class ConstantPredicateSelectToCopy
+    : public mlir::OpRewritePattern<ComputeElementwiseOp> {
+public:
+  using mlir::OpRewritePattern<ComputeElementwiseOp>::OpRewritePattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ComputeElementwiseOp op,
+                  mlir::PatternRewriter &rewriter) const final {
+    if (op.getKind() != ComputeElementwiseKind::Select ||
+        op.getInputs().size() != 3)
+      return mlir::failure();
+
+    mlir::Value predicate = op.getInputs().front();
+    auto predicateAlloc = predicate.getDefiningOp<mlir::memref::AllocOp>();
+    if (!predicateAlloc)
+      return mlir::failure();
+
+    mlir::OpOperand *selectPredicateUse = &op->getOpOperand(0);
+    ComputeFillOp predicateFill;
+    unsigned selectUseCount = 0;
+    unsigned fillUseCount = 0;
+    for (mlir::OpOperand &use : predicate.getUses()) {
+      if (&use == selectPredicateUse) {
+        ++selectUseCount;
+        continue;
+      }
+      auto fill = mlir::dyn_cast<ComputeFillOp>(use.getOwner());
+      if (!fill || &use != &fill.getDestMutable())
+        return mlir::failure();
+      predicateFill = fill;
+      ++fillUseCount;
+    }
+    if (selectUseCount != 1 || fillUseCount != 1 || !predicateFill)
+      return mlir::failure();
+
+    if (predicateFill->getBlock() != op->getBlock() ||
+        !predicateFill->isBeforeInBlock(op))
+      return mlir::failure();
+
+    auto constant =
+        predicateFill.getValue().getDefiningOp<mlir::arith::ConstantOp>();
+    auto valueAttr =
+        constant ? mlir::dyn_cast<mlir::IntegerAttr>(constant.getValue())
+                 : mlir::IntegerAttr{};
+    if (!constant || !constant.getType().isInteger(1) || !valueAttr ||
+        !valueAttr.getType().isInteger(1))
+      return mlir::failure();
+
+    unsigned selectedInputIndex = valueAttr.getValue().isZero() ? 2 : 1;
+    mlir::Value selected = op.getInputs()[selectedInputIndex];
+    auto resultType =
+        mlir::dyn_cast<mlir::MemRefType>(op.getResult().getType());
+    auto selectedType = mlir::dyn_cast<mlir::MemRefType>(selected.getType());
+    if (!resultType || !selectedType || selectedType != resultType)
+      return mlir::failure();
+
+    if (mlir::Attribute rawMaps = op->getAttr("indexing_maps")) {
+      auto maps = mlir::dyn_cast<mlir::ArrayAttr>(rawMaps);
+      if (!maps || maps.size() != op.getInputs().size() + 1)
+        return mlir::failure();
+      auto hasIdentityMap = [&](unsigned mapIndex) {
+        auto mapAttr = mlir::dyn_cast<mlir::AffineMapAttr>(maps[mapIndex]);
+        if (!mapAttr)
+          return false;
+        mlir::AffineMap map = mapAttr.getValue();
+        return map.getNumDims() == resultType.getRank() &&
+               map.getNumSymbols() == 0 &&
+               map.getNumResults() == resultType.getRank() && map.isIdentity();
+      };
+      if (!hasIdentityMap(selectedInputIndex) ||
+          !hasIdentityMap(maps.size() - 1))
+        return mlir::failure();
+    }
+
+    auto copy = rewriter.create<MoveCopyOp>(op.getLoc(), resultType, selected);
+    rewriter.replaceOp(op, copy.getResult());
+    rewriter.eraseOp(predicateFill);
+    rewriter.eraseOp(predicateAlloc);
+    if (constant->use_empty())
+      rewriter.eraseOp(constant);
     return mlir::success();
   }
 };
@@ -1634,54 +1737,199 @@ public:
   mlir::LogicalResult
   matchAndRewrite(ComputeElementwiseOp op,
                   mlir::PatternRewriter &rewriter) const final {
-    mlir::FailureOr<mlir::Value> dest = createDestAlloc(
-        op.getLoc(), op.getResult().getType(), rewriter, op, failureReason);
-    if (mlir::failed(dest))
-      return mlir::failure();
-
     if (op.getKind() == ComputeElementwiseKind::Select) {
       if (op.getInputs().size() != 3)
         return failPattern(
             rewriter, op, failureReason,
             "target select lowering requires predicate, true and false "
             "operands");
-      auto destType = mlir::dyn_cast<mlir::MemRefType>((*dest).getType());
+      auto destType =
+          mlir::dyn_cast<mlir::MemRefType>(op.getResult().getType());
       if (!destType || !mlir::isa<mlir::FloatType>(destType.getElementType()))
         return failPattern(
             rewriter, op, failureReason,
             "target select lowering currently requires floating-point values");
+    }
 
-      mlir::FailureOr<MovementDescriptor> falseDescriptor =
-          getContiguousDescriptor(rewriter, op, op.getInputs()[2].getType(),
-                                  failureReason);
-      mlir::FailureOr<MovementDescriptor> destDescriptor =
-          getContiguousDescriptor(rewriter, op, (*dest).getType(),
-                                  failureReason);
-      if (mlir::failed(falseDescriptor) || mlir::failed(destDescriptor))
+    struct InputMovementPlan {
+      mlir::Value source;
+      mlir::MemRefType materializedType;
+      llvm::SmallVector<LogicalMovementSegment> segments;
+    };
+
+    auto resultType =
+        mlir::dyn_cast<mlir::MemRefType>(op.getResult().getType());
+    if (!resultType)
+      return failPattern(rewriter, op, failureReason,
+                         "tile.elementwise lowering requires a memref result");
+
+    // Preflight every map before creating an allocation or an instruction.
+    // A failed conversion therefore cannot leave a partially materialized
+    // operand sequence in the pattern rewriter.
+    llvm::SmallVector<InputMovementPlan, 3> movementPlans;
+    movementPlans.reserve(op.getInputs().size());
+    mlir::Attribute rawIndexingMaps = op->getAttr("indexing_maps");
+    mlir::ArrayAttr indexingMaps;
+    if (rawIndexingMaps) {
+      indexingMaps = mlir::dyn_cast<mlir::ArrayAttr>(rawIndexingMaps);
+      if (!indexingMaps)
+        return failPattern(
+            rewriter, op, failureReason,
+            "tile.elementwise indexing_maps must be an array attribute");
+      if (indexingMaps.size() != op.getInputs().size() + 1)
+        return failPattern(
+            rewriter, op, failureReason,
+            "tile.elementwise indexing map count must match inputs plus "
+            "result");
+
+      auto resultMapAttr = mlir::dyn_cast<mlir::AffineMapAttr>(
+          indexingMaps[indexingMaps.size() - 1]);
+      if (!resultMapAttr ||
+          resultMapAttr.getValue().getNumDims() != resultType.getRank() ||
+          resultMapAttr.getValue().getNumSymbols() != 0 ||
+          !resultMapAttr.getValue().isIdentity())
+        return failPattern(
+            rewriter, op, failureReason,
+            "tile.elementwise result indexing map must be identity");
+    }
+
+    for (auto [index, input] : llvm::enumerate(op.getInputs())) {
+      InputMovementPlan plan;
+      plan.source = input;
+      if (!indexingMaps) {
+        movementPlans.push_back(std::move(plan));
+        continue;
+      }
+
+      auto sourceType = mlir::dyn_cast<mlir::MemRefType>(input.getType());
+      auto inputMapAttr =
+          mlir::dyn_cast<mlir::AffineMapAttr>(indexingMaps[index]);
+      if (!sourceType || !inputMapAttr)
+        return failPattern(
+            rewriter, op, failureReason,
+            "tile.elementwise indexing map materialization requires memref "
+            "inputs and affine maps");
+
+      mlir::AffineMap inputMap = inputMapAttr.getValue();
+      if (inputMap.getNumDims() != resultType.getRank() ||
+          inputMap.getNumSymbols() != 0 ||
+          inputMap.getNumResults() != sourceType.getRank() ||
+          !inputMap.isProjectedPermutation())
+        return failPattern(
+            rewriter, op, failureReason,
+            "tile.elementwise input indexing map must be a projected "
+            "permutation of result dimensions");
+
+      if (inputMap.isIdentity() &&
+          sourceType.getShape() == resultType.getShape()) {
+        movementPlans.push_back(std::move(plan));
+        continue;
+      }
+
+      plan.materializedType = mlir::MemRefType::get(
+          resultType.getShape(), sourceType.getElementType(),
+          resultType.getLayout(), resultType.getMemorySpace());
+      auto sourceIndexFn = [&](llvm::ArrayRef<int64_t> resultIndices)
+          -> mlir::FailureOr<llvm::SmallVector<int64_t>> {
+        llvm::SmallVector<int64_t> sourceIndices;
+        sourceIndices.reserve(inputMap.getNumResults());
+        for (mlir::AffineExpr expr : inputMap.getResults()) {
+          auto dimExpr = mlir::dyn_cast<mlir::AffineDimExpr>(expr);
+          if (!dimExpr || dimExpr.getPosition() >= resultIndices.size())
+            return mlir::failure();
+          sourceIndices.push_back(resultIndices[dimExpr.getPosition()]);
+        }
+        return sourceIndices;
+      };
+      auto destIndexFn = [](llvm::ArrayRef<int64_t> resultIndices)
+          -> mlir::FailureOr<llvm::SmallVector<int64_t>> {
+        return llvm::SmallVector<int64_t>(resultIndices.begin(),
+                                          resultIndices.end());
+      };
+      mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>> segments =
+          getStaticMappedMovementSegments(
+              rewriter, op, sourceType, plan.materializedType,
+              resultType.getShape(), sourceIndexFn, destIndexFn, failureReason,
+              "tile.elementwise indexing map materialization");
+      if (mlir::failed(segments))
         return mlir::failure();
+      plan.segments = std::move(*segments);
+      movementPlans.push_back(std::move(plan));
+    }
 
-      createGatherScatter(rewriter, op.getLoc(), op.getInputs()[2], *dest,
-                          *falseDescriptor, *destDescriptor);
-      mlir::Value mask =
-          rewriter.create<mlir::memref::AllocOp>(op.getLoc(), destType)
+    InstrElementwiseKindAttr instrKind;
+    if (op.getKind() != ComputeElementwiseKind::Select) {
+      mlir::FailureOr<InstrElementwiseKindAttr> resolvedInstrKind =
+          getInstrElementwiseKindAttr(rewriter, op, op.getKindAttr(),
+                                      failureReason);
+      if (mlir::failed(resolvedInstrKind))
+        return mlir::failure();
+      instrKind = *resolvedInstrKind;
+    }
+
+    // Select has a movement-based target sequence. Preflight its copy
+    // descriptors as well, still before emitting any effect.
+    mlir::FailureOr<MovementDescriptor> falseDescriptor;
+    mlir::FailureOr<MovementDescriptor> selectDestDescriptor;
+    if (op.getKind() == ComputeElementwiseKind::Select) {
+      mlir::Type falseType = movementPlans[2].source.getType();
+      if (movementPlans[2].materializedType)
+        falseType = movementPlans[2].materializedType;
+      falseDescriptor =
+          getContiguousDescriptor(rewriter, op, falseType, failureReason);
+      selectDestDescriptor =
+          getContiguousDescriptor(rewriter, op, resultType, failureReason);
+      if (mlir::failed(falseDescriptor) || mlir::failed(selectDestDescriptor) ||
+          falseDescriptor->byteCount != selectDestDescriptor->byteCount)
+        return failPattern(
+            rewriter, op, failureReason,
+            "target select lowering requires equal contiguous false and "
+            "destination payloads");
+    }
+
+    llvm::SmallVector<mlir::Value, 3> inputs;
+    inputs.reserve(movementPlans.size());
+    bool materializedMappedInput = false;
+    for (const InputMovementPlan &plan : movementPlans) {
+      if (!plan.materializedType) {
+        inputs.push_back(plan.source);
+        continue;
+      }
+      mlir::Value materialized =
+          rewriter
+              .create<mlir::memref::AllocOp>(op.getLoc(), plan.materializedType)
               .getResult();
-      rewriter.create<InstrBit2FpOp>(op.getLoc(), op.getInputs()[0], mask);
-      rewriter.create<InstrMaskMoveOp>(op.getLoc(), op.getInputs()[1], mask,
-                                       *dest);
-      rewriter.replaceOp(op, *dest);
+      createGatherScatterSegments(rewriter, op.getLoc(), plan.source,
+                                  materialized, plan.segments);
+      inputs.push_back(materialized);
+      materializedMappedInput = true;
+    }
+    if (materializedMappedInput)
+      rewriter.create<SyncLocalFenceOp>(op.getLoc());
+
+    mlir::Value dest =
+        rewriter.create<mlir::memref::AllocOp>(op.getLoc(), resultType)
+            .getResult();
+
+    if (op.getKind() == ComputeElementwiseKind::Select) {
+      createGatherScatter(rewriter, op.getLoc(), inputs[2], dest,
+                          *falseDescriptor, *selectDestDescriptor);
+      rewriter.create<SyncLocalFenceOp>(op.getLoc());
+      mlir::Value mask =
+          rewriter.create<mlir::memref::AllocOp>(op.getLoc(), resultType)
+              .getResult();
+      rewriter.create<InstrBit2FpOp>(op.getLoc(), inputs[0], mask);
+      rewriter.create<SyncLocalFenceOp>(op.getLoc());
+      rewriter.create<InstrMaskMoveOp>(op.getLoc(), inputs[1], mask, dest);
+      rewriter.create<SyncLocalFenceOp>(op.getLoc());
+      rewriter.replaceOp(op, dest);
       return mlir::success();
     }
 
-    mlir::FailureOr<InstrElementwiseKindAttr> instrKind =
-        getInstrElementwiseKindAttr(rewriter, op, op.getKindAttr(),
-                                    failureReason);
-    if (mlir::failed(instrKind))
-      return mlir::failure();
-
-    auto instr = rewriter.create<InstrElementwiseOp>(op.getLoc(), *instrKind,
-                                                     op.getInputs(), *dest);
-    copyOptionalAttr(op, instr, "indexing_maps");
-    rewriter.replaceOp(op, *dest);
+    rewriter.create<InstrElementwiseOp>(op.getLoc(), instrKind, inputs, dest);
+    if (materializedMappedInput)
+      rewriter.create<SyncLocalFenceOp>(op.getLoc());
+    rewriter.replaceOp(op, dest);
     return mlir::success();
   }
 
@@ -1698,10 +1946,98 @@ public:
   mlir::LogicalResult
   matchAndRewrite(ComputeReduceOp op,
                   mlir::PatternRewriter &rewriter) const final {
-    mlir::FailureOr<mlir::Value> dest = createDestAlloc(
-        op.getLoc(), op.getResult().getType(), rewriter, op, failureReason);
-    if (mlir::failed(dest))
+    auto inputType =
+        mlir::dyn_cast<mlir::MemRefType>(op.getInput().getType());
+    auto resultType =
+        mlir::dyn_cast<mlir::MemRefType>(op.getResult().getType());
+    if (!inputType || !resultType)
+      return failPattern(rewriter, op, failureReason,
+                         "tile.reduce lowering requires memref operands");
+    if (inputType.getElementType() != resultType.getElementType())
+      return failPattern(
+          rewriter, op, failureReason,
+          "tile.reduce lowering requires matching element types");
+
+    std::optional<int64_t> inputElementCount =
+        getStaticPositiveElementCount(inputType.getShape());
+    std::optional<int64_t> resultElementCount =
+        getStaticPositiveElementCount(resultType.getShape());
+    if (!inputElementCount || !resultElementCount)
+      return failPattern(
+          rewriter, op, failureReason,
+          "tile.reduce lowering requires static positive input/result shapes");
+    if (static_cast<uint64_t>(*resultElementCount) >
+        std::numeric_limits<uint32_t>::max())
+      return failPattern(
+          rewriter, op, failureReason,
+          "tile.reduce lowering result element count exceeds uint32 target "
+          "field");
+
+    mlir::Type elementType = inputType.getElementType();
+    unsigned scalarWidth = 0;
+    if (auto integerType = mlir::dyn_cast<mlir::IntegerType>(elementType))
+      scalarWidth = integerType.getWidth();
+    else if (auto floatType = mlir::dyn_cast<mlir::FloatType>(elementType))
+      scalarWidth = floatType.getWidth();
+    else
+      return failPattern(
+          rewriter, op, failureReason,
+          "tile.reduce lowering requires target-encodable integer or float "
+          "elements");
+    if (scalarWidth > 32)
+      return failPattern(
+          rewriter, op, failureReason,
+          "tile.reduce lowering element width exceeds uint32 scalar ABI");
+    std::optional<WaferPhysicalTensorInfo> inputPhysical =
+        wafer::computeWaferPhysicalTensorInfo(inputType);
+    std::optional<WaferPhysicalTensorInfo> resultPhysical =
+        wafer::computeWaferPhysicalTensorInfo(resultType);
+    if (!inputPhysical || !resultPhysical ||
+        inputPhysical->bitPackedElement || resultPhysical->bitPackedElement ||
+        inputPhysical->elementBytes <= 0 || resultPhysical->elementBytes <= 0)
+      return failPattern(
+          rewriter, op, failureReason,
+          "tile.reduce lowering requires byte-addressable elements");
+
+    bool targetEncodableElement =
+        (mlir::isa<mlir::IntegerType>(elementType) &&
+         (scalarWidth == 8 || scalarWidth == 16 || scalarWidth == 32)) ||
+        mlir::isa<mlir::Float16Type, mlir::BFloat16Type,
+                  mlir::Float32Type>(elementType);
+    if (!targetEncodableElement)
+      return failPattern(
+          rewriter, op, failureReason,
+          "tile.reduce element type is not encodable by the target "
+          "data-format ABI");
+
+    mlir::FailureOr<InstrElementwiseKindAttr> accumulationKind =
+        getAccumulationElementwiseKind(rewriter, op, op.getKindAttr(),
+                                       failureReason, "tile.reduce");
+    if (mlir::failed(accumulationKind))
       return mlir::failure();
+
+    mlir::Attribute initValue = op->getAttr("init_value");
+    bool hasInitOperand = static_cast<bool>(op.getInit());
+    if (hasInitOperand == static_cast<bool>(initValue))
+      return failPattern(
+          rewriter, op, failureReason,
+          "tile.reduce lowering requires exactly one constant init source");
+    if (initValue) {
+      auto typedInit = mlir::dyn_cast<mlir::TypedAttr>(initValue);
+      if (!typedInit || typedInit.getType() != elementType)
+        return failPattern(
+            rewriter, op, failureReason,
+            "tile.reduce init_value type must match input element type");
+    } else {
+      auto constant = op.getInit().getDefiningOp<mlir::arith::ConstantOp>();
+      auto typedInit = constant
+                           ? mlir::dyn_cast<mlir::TypedAttr>(constant.getValue())
+                           : mlir::TypedAttr{};
+      if (!constant || !typedInit || typedInit.getType() != elementType)
+        return failPattern(
+            rewriter, op, failureReason,
+            "tile.reduce init operand must be a matching arith.constant");
+    }
 
     auto dimensionsAttr =
         op->getAttrOfType<mlir::DenseI64ArrayAttr>("dimensions");
@@ -1709,16 +2045,174 @@ public:
       return failPattern(rewriter, op, failureReason,
                          "tile.reduce lowering requires dimensions attr");
 
-    mlir::FailureOr<int64_t> dim =
-        getTargetReduceDimCode(rewriter, op, op.getInput().getType(),
-                               dimensionsAttr.asArrayRef(), failureReason);
-    if (mlir::failed(dim))
+    llvm::SmallVector<int64_t, 4> reducedDims(
+        dimensionsAttr.asArrayRef().begin(),
+        dimensionsAttr.asArrayRef().end());
+    if (reducedDims.empty())
+      return failPattern(rewriter, op, failureReason,
+                         "tile.reduce lowering requires non-empty dimensions");
+    llvm::sort(reducedDims);
+    if (std::adjacent_find(reducedDims.begin(), reducedDims.end()) !=
+        reducedDims.end())
+      return failPattern(rewriter, op, failureReason,
+                         "tile.reduce lowering dimensions must be unique");
+    for (int64_t dim : reducedDims)
+      if (dim < 0 || dim >= inputType.getRank())
+        return failPattern(
+            rewriter, op, failureReason,
+            "tile.reduce lowering dimension is outside input rank");
+
+    llvm::SmallVector<int64_t, 4> nonReducedDims;
+    llvm::SmallVector<int64_t, 4> reductionShape;
+    for (int64_t inputDim = 0; inputDim < inputType.getRank(); ++inputDim) {
+      if (llvm::is_contained(reducedDims, inputDim))
+        reductionShape.push_back(inputType.getDimSize(inputDim));
+      else
+        nonReducedDims.push_back(inputDim);
+    }
+    if (static_cast<int64_t>(nonReducedDims.size()) != resultType.getRank())
+      return failPattern(
+          rewriter, op, failureReason,
+          "tile.reduce result rank does not match non-reduced dimensions");
+    for (auto [resultDim, inputDim] : llvm::enumerate(nonReducedDims))
+      if (resultType.getDimSize(resultDim) != inputType.getDimSize(inputDim))
+        return failPattern(
+            rewriter, op, failureReason,
+            "tile.reduce result shape does not match non-reduced dimensions");
+
+    std::optional<int64_t> reductionTupleCount =
+        getStaticPositiveElementCount(reductionShape);
+    if (!reductionTupleCount)
+      return failPattern(
+          rewriter, op, failureReason,
+          "tile.reduce reduction tuple count overflows or is not positive");
+    constexpr uint64_t budget =
+        wafer::detail::kStaticTerminalOperationBudget;
+    if (static_cast<uint64_t>(*reductionTupleCount) > (budget - 4) / 4)
+      return failPattern(
+          rewriter, op, failureReason,
+          "static_terminal_budget_exceeded: ordered tile.reduce minimum "
+          "terminal operation count exceeds 4096");
+
+    auto tensorType = mlir::MemRefType::get(
+        resultType.getShape(), elementType, mlir::MemRefLayoutAttrInterface{},
+        MemoryAttr::get(rewriter.getContext(), MemorySpace::SPM,
+                        MemLayout::Tensor));
+
+    struct SlicePlan {
+      llvm::SmallVector<LogicalMovementSegment> segments;
+    };
+    llvm::SmallVector<SlicePlan, 8> slicePlans;
+    slicePlans.reserve(static_cast<size_t>(*reductionTupleCount));
+    uint64_t terminalOperationCount = 2; // Initial fill and completion.
+
+    for (int64_t linearTuple = 0; linearTuple < *reductionTupleCount;
+         ++linearTuple) {
+      mlir::FailureOr<llvm::SmallVector<int64_t>> tuple = delinearizeIndex(
+          rewriter, op, reductionShape, linearTuple, failureReason,
+          "tile.reduce ordered tuple");
+      if (mlir::failed(tuple))
+        return mlir::failure();
+
+      auto sourceIndexFn =
+          [&](llvm::ArrayRef<int64_t> resultIndices)
+          -> mlir::FailureOr<llvm::SmallVector<int64_t>> {
+        llvm::SmallVector<int64_t> sourceIndices(inputType.getRank(), 0);
+        size_t reducedIndex = 0;
+        size_t resultIndex = 0;
+        for (int64_t inputDim = 0; inputDim < inputType.getRank(); ++inputDim) {
+          if (llvm::is_contained(reducedDims, inputDim))
+            sourceIndices[inputDim] = (*tuple)[reducedIndex++];
+          else
+            sourceIndices[inputDim] = resultIndices[resultIndex++];
+        }
+        return sourceIndices;
+      };
+      auto destIndexFn =
+          [](llvm::ArrayRef<int64_t> resultIndices)
+          -> mlir::FailureOr<llvm::SmallVector<int64_t>> {
+        return llvm::SmallVector<int64_t>(resultIndices.begin(),
+                                          resultIndices.end());
+      };
+
+      mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>> segments =
+          getStaticMappedMovementSegments(
+              rewriter, op, inputType, tensorType, resultType.getShape(),
+              sourceIndexFn, destIndexFn, failureReason,
+              "tile.reduce ordered slice movement");
+      if (mlir::failed(segments))
+        return mlir::failure();
+      mlir::FailureOr<uint64_t> commandCount =
+          preflightPackedMovementCommands(
+              rewriter, op, *segments, failureReason,
+              "tile.reduce ordered slice movement");
+      if (mlir::failed(commandCount))
+        return mlir::failure();
+      if (*commandCount > budget - terminalOperationCount ||
+          3 > budget - terminalOperationCount - *commandCount)
+        return failPattern(
+            rewriter, op, failureReason,
+            "static_terminal_budget_exceeded: ordered tile.reduce terminal "
+            "operation count exceeds 4096");
+      terminalOperationCount += *commandCount + 3;
+      slicePlans.push_back({std::move(*segments)});
+    }
+
+    mlir::FailureOr<llvm::SmallVector<LogicalMovementSegment>> finalSegments =
+        getStaticLogicalMovementSegments(
+            rewriter, op, tensorType, resultType, failureReason,
+            "tile.reduce final logical movement");
+    if (mlir::failed(finalSegments))
+      return mlir::failure();
+    mlir::FailureOr<uint64_t> finalCommandCount =
+        preflightPackedMovementCommands(
+            rewriter, op, *finalSegments, failureReason,
+            "tile.reduce final logical movement");
+    if (mlir::failed(finalCommandCount))
+      return mlir::failure();
+    if (*finalCommandCount > budget - terminalOperationCount ||
+        1 > budget - terminalOperationCount - *finalCommandCount)
+      return failPattern(
+          rewriter, op, failureReason,
+          "static_terminal_budget_exceeded: ordered tile.reduce terminal "
+          "operation count exceeds 4096");
+
+    // All legality, geometry, packing and budget checks above are deliberately
+    // completed before creating any effectful instruction.
+    mlir::Value init = op.getInit();
+    if (!init)
+      init = rewriter
+                 .create<mlir::arith::ConstantOp>(
+                     op.getLoc(), mlir::cast<mlir::TypedAttr>(initValue))
+                 .getResult();
+    mlir::Value accumulatorA =
+        rewriter.create<mlir::memref::AllocOp>(op.getLoc(), tensorType);
+    mlir::Value accumulatorB =
+        rewriter.create<mlir::memref::AllocOp>(op.getLoc(), tensorType);
+    mlir::Value slice =
+        rewriter.create<mlir::memref::AllocOp>(op.getLoc(), tensorType);
+    mlir::FailureOr<mlir::Value> dest = createDestAlloc(
+        op.getLoc(), resultType, rewriter, op, failureReason);
+    if (mlir::failed(dest))
       return mlir::failure();
 
-    auto instr = rewriter.create<InstrReduceOp>(
-        op.getLoc(), getInstrReduceKindAttr(rewriter, op.getKindAttr()),
-        op.getInput(), *dest, op.getInit(), rewriter.getI64IntegerAttr(*dim));
-    copyOptionalAttr(op, instr, "init_value");
+    rewriter.create<InstrFillOp>(op.getLoc(), accumulatorA, init);
+    rewriter.create<SyncLocalFenceOp>(op.getLoc());
+    mlir::Value currentAccumulator = accumulatorA;
+    mlir::Value nextAccumulator = accumulatorB;
+    for (const SlicePlan &plan : slicePlans) {
+      createGatherScatterSegments(rewriter, op.getLoc(), op.getInput(), slice,
+                                  plan.segments);
+      rewriter.create<SyncLocalFenceOp>(op.getLoc());
+      llvm::SmallVector<mlir::Value, 2> inputs{currentAccumulator, slice};
+      rewriter.create<InstrElementwiseOp>(op.getLoc(), *accumulationKind,
+                                          inputs, nextAccumulator);
+      rewriter.create<SyncLocalFenceOp>(op.getLoc());
+      std::swap(currentAccumulator, nextAccumulator);
+    }
+    createGatherScatterSegments(rewriter, op.getLoc(), currentAccumulator,
+                                *dest, *finalSegments);
+    rewriter.create<SyncLocalFenceOp>(op.getLoc());
     rewriter.replaceOp(op, *dest);
     return mlir::success();
   }
@@ -2089,27 +2583,6 @@ static mlir::FailureOr<InstrElementwiseKindAttr> getInstrElementwiseKindAttr(
         "instruction elementwise");
   }
   return InstrElementwiseKindAttr::get(rewriter.getContext(), instrKind);
-}
-
-static InstrReduceKindAttr
-getInstrReduceKindAttr(mlir::PatternRewriter &rewriter,
-                       ComputeReduceKindAttr computeKind) {
-  InstrReduceKind instrKind;
-  switch (computeKind.getValue()) {
-  case ComputeReduceKind::Sum:
-    instrKind = InstrReduceKind::Sum;
-    break;
-  case ComputeReduceKind::Max:
-    instrKind = InstrReduceKind::Max;
-    break;
-  case ComputeReduceKind::Min:
-    instrKind = InstrReduceKind::Min;
-    break;
-  case ComputeReduceKind::Avg:
-    instrKind = InstrReduceKind::Avg;
-    break;
-  }
-  return InstrReduceKindAttr::get(rewriter.getContext(), instrKind);
 }
 
 static mlir::FailureOr<InstrElementwiseKindAttr> getAccumulationElementwiseKind(
@@ -2790,6 +3263,28 @@ struct ConvertTileRegionToInstrPass
 
 } // namespace
 
+wafer::detail::StaticTerminalOperationBudgetStatus
+wafer::detail::checkStaticTerminalOperationBudget(
+    mlir::Operation *root, uint64_t &operationCount) {
+  operationCount = 0;
+  bool overflow = false;
+  root->walk([&](mlir::Operation *operation) {
+    if (overflow ||
+        !mlir::isa<WaferInstructionOpInterface, SyncLocalFenceOp>(operation))
+      return;
+    if (operationCount == std::numeric_limits<uint64_t>::max()) {
+      overflow = true;
+      return;
+    }
+    ++operationCount;
+  });
+  if (overflow)
+    return StaticTerminalOperationBudgetStatus::CountOverflow;
+  if (operationCount > kStaticTerminalOperationBudget)
+    return StaticTerminalOperationBudgetStatus::BudgetExceeded;
+  return StaticTerminalOperationBudgetStatus::WithinBudget;
+}
+
 mlir::LogicalResult
 wafer::convertTileRegionToInstrModule(mlir::ModuleOp module,
                                       std::string *failureReason) {
@@ -2805,6 +3300,27 @@ wafer::convertTileRegionToInstrModule(mlir::ModuleOp module,
     failureReason->clear();
 
   mlir::MLIRContext *context = module.getContext();
+  llvm::SmallVector<mlir::Operation *, 4> selectCandidates;
+  module.walk([&](ComputeElementwiseOp op) {
+    if (op.getKind() == ComputeElementwiseKind::Select)
+      selectCandidates.push_back(op);
+  });
+  if (!selectCandidates.empty()) {
+    mlir::RewritePatternSet canonicalizationPatterns(context);
+    canonicalizationPatterns.add<ConstantPredicateSelectToCopy>(context);
+    mlir::FrozenRewritePatternSet frozenPatterns(
+        std::move(canonicalizationPatterns));
+    mlir::GreedyRewriteConfig config;
+    config.strictMode = mlir::GreedyRewriteStrictness::ExistingOps;
+    if (mlir::failed(mlir::applyOpPatternsAndFold(selectCandidates,
+                                                  frozenPatterns, config))) {
+      setFailureReason(
+          failureReason,
+          "tile constant-predicate select canonicalization failed");
+      return mlir::failure();
+    }
+  }
+
   mlir::ConversionTarget target(*context);
   configureTileRegionToInstrTarget(target);
 

@@ -11,7 +11,7 @@
 Pipeline position:
 - Upstream artifact / IR:
   verified pre-SPMD StableHLO program directory，以及显式validated single-card ExecutionConfig；rank-count只能是1或16；
-  Q0.L后config还必须携带由tasks/14 registry解析出的typed `TargetProfileId`。
+  config还必须携带由tasks/14 registry解析出的typed `TargetProfileId`。
 - Current stage responsibility:
   在transaction-owned program snapshot中建立或核对唯一、module-top-level的single-card target topology和
   execution mesh；证明mesh rank domain与ExecutionConfig精确一致；在helper调用前临时从helper input副本移除
@@ -24,7 +24,9 @@ Pipeline position:
   Q15的XLA SPMD helper调用与post-SPMD parameter-shard verifier；Q16从同一mesh domain派生
   logicalRank=0..N-1的isolated static clones。
 - User-level driver / named pipeline:
-  Q0.L后的入口为`wafer-compile --execution-ranks={1|16} --target-profile=<registered-id>`；两个选项都必须显式给出。
+  正式入口为
+  `wafer-compile --execution-ranks={1|16} --target-profile=wafer-tx81-single-card-kernel-v1`；两个选项都必须显式给出，
+  均无默认值。
   topology/mesh materialization passes及
   `wafer-opt`只处理显式IR，用于debug/test，不能成为用户可选stage或production rank配置旁路。
 - Explicit non-goals:
@@ -49,9 +51,9 @@ Pipeline position:
 两个配置走同一个typed driver和相同验证路径；1-rank不是debug fallback，16-rank也不是默认。其它rank-count可以
 出现在IR-local topology/mesh verifier测试，但不属于当前用户driver支持面。
 
-Q0.L把factory输入扩成`(rankCount, TargetProfileId)`，其中ID必须由tasks/14注册表把CLI spelling解析成closed typed value，
-不能把任意字符串留到后端。topology/mesh仍只投影rank/topology字段；typed profile保留在request/config及后续bundle中，
-helper前后不得丢失或重建。这个扩展由Q0.L重放Q15/Q16/Q17链，不反写成既有Q15已完成事实。
+factory输入为`(rankCount, TargetProfileId)`，其中ID必须由tasks/14注册表把CLI spelling解析成closed typed value，不能把
+任意字符串留到后端。topology/mesh仍只投影rank/topology字段；typed profile保留在request/config及后续bundle中，
+helper前后不得丢失或重建。Q15历史完成仍只覆盖rank/topology；profile carry-through和Q15/Q16/Q17重放证据归Q0.L。
 
 Q15要求production module中的facts精确为：
 
@@ -147,7 +149,7 @@ logical rank必须严格为`0..N-1`，即使replicated modules字节相同也不
 module转成verified target artifacts；Q18才定义manifest和runtime binding。topology/mesh可以作为这些阶段的已验证
 输入，但当前没有target capability op、accepted physical transport binding、rank class或relocation protocol。
 
-Q0.L的target revision/ABI profile已经是tasks/14 target conversion和Q22 model的真实consumer，但它只作为
+Q0.L的target profile/identity/Kernel Runtime ABI已经是tasks/14 target conversion和Q22 model的真实consumer，但profile只作为
 `ExecutionConfig`中的typed ID传递，不进入topology/mesh op。bad-tile deployment或multi-card transport未来成为真实
 consumer时仍需扩展对应owner。不得把历史environment fingerprint、projection set、calibration profile或WCRE identity
 重新写进当前topology/mesh合同。

@@ -4,6 +4,7 @@
 #include "Wafer/InitAll.h"
 #include "Wafer/Pipelines/Pipelines.h"
 #include "Wafer/Transforms/Passes.h"
+#include "Wafer/Transforms/TargetConversion.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
@@ -19,9 +20,11 @@
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Tensor/Transforms/BufferizableOpInterfaceImpl.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
+#include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/raw_ostream.h"
@@ -226,7 +229,7 @@ module {
   EXPECT_EQ(countOps<wafer::InstrWDMAOp>(*lowered), 4u);
 }
 
-TEST(WaferGroupToTileRegionTest, AppliesReductionSplitToEveryOutputTile) {
+TEST(WaferGroupToTileRegionTest, RejectsReductionSplitBeforeMaterialization) {
   mlir::DialectRegistry registry;
   registerConversionDialects(registry);
   mlir::MLIRContext context(registry);
@@ -269,24 +272,68 @@ module {
 
   mlir::OwningOpRef<mlir::ModuleOp> lowered;
   std::string failureReason;
-  ASSERT_TRUE(
-      mlir::succeeded(wafer::lowerCompleteCandidateGroupToTileRegionModule(
+  EXPECT_TRUE(
+      mlir::failed(wafer::lowerCompleteCandidateGroupToTileRegionModule(
           group, /*candidateTileSizes=*/{1},
           /*candidateReductionTileSizes=*/{3}, lowered, &failureReason,
-          /*currentLogicalRank=*/0)))
-      << failureReason;
-  ASSERT_TRUE(lowered);
-  EXPECT_TRUE(mlir::succeeded(mlir::verify(*lowered)));
-  EXPECT_EQ(countOps<wafer::ComputeReduceOp>(*lowered), 4u);
-  EXPECT_EQ(collectStoreSlices(*lowered),
-            (std::vector<std::string>{"0:1", "1:1"}));
+          /*currentLogicalRank=*/0)));
+  EXPECT_EQ(failureReason,
+            "candidate reduction split is disabled because it cannot preserve "
+            "source reduction order");
+  EXPECT_FALSE(lowered);
 
-  mlir::PassManager pm(&context);
-  wafer::buildLowerGroupsToInstrPipeline(pm, /*logicalRank=*/0);
-  ASSERT_TRUE(mlir::succeeded(pm.run(*lowered)));
-  EXPECT_TRUE(mlir::succeeded(mlir::verify(*lowered)));
-  EXPECT_EQ(countOps<wafer::InstrReduceOp>(*lowered), 4u);
-  EXPECT_EQ(countOps<wafer::InstrWDMAOp>(*lowered), 2u);
+  failureReason.clear();
+  EXPECT_TRUE(mlir::failed(wafer::lowerCandidateGroupToTileRegionModule(
+      group, /*candidateTileOffsets=*/{0}, /*candidateTileSizes=*/{1},
+      /*candidateReductionTileSizes=*/{3}, lowered, &failureReason,
+      /*currentLogicalRank=*/0)));
+  EXPECT_EQ(failureReason,
+            "candidate reduction split is disabled because it cannot preserve "
+            "source reduction order");
+  EXPECT_FALSE(lowered);
+}
+
+TEST(WaferGroupToTileRegionTest,
+     AcceptsExactOrderedReduceTerminalOperationBudget) {
+  mlir::DialectRegistry registry;
+  registerConversionDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  func.func @reduce(
+      %input: memref<1023x1xf32, #wafer.memory<spm, cx>>)
+      -> memref<1xf32, #wafer.memory<spm, cx>> {
+    %result = wafer.tile.reduce #wafer.reduce_kind<sum> %input
+        {dimensions = array<i64: 0>, init_value = 0.000000e+00 : f32}
+        : (memref<1023x1xf32, #wafer.memory<spm, cx>>)
+       -> memref<1xf32, #wafer.memory<spm, cx>>
+    return %result : memref<1xf32, #wafer.memory<spm, cx>>
+  }
+}
+)mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(module);
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(
+      wafer::convertTileRegionToInstrModule(*module, &failureReason)))
+      << failureReason;
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+
+  uint64_t terminalOperationCount = 0;
+  module->walk([&](mlir::Operation *operation) {
+    if (mlir::isa<wafer::WaferInstructionOpInterface,
+                  wafer::SyncLocalFenceOp>(operation))
+      ++terminalOperationCount;
+  });
+  EXPECT_EQ(terminalOperationCount,
+            wafer::detail::kStaticTerminalOperationBudget);
+  EXPECT_EQ(countOps<wafer::ComputeReduceOp>(*module), 0u);
+  EXPECT_EQ(countOps<wafer::InstrReduceOp>(*module), 0u);
 }
 
 TEST(WaferGroupToTileRegionTest,
@@ -455,8 +502,8 @@ module {
       /*candidateReductionTileSizes=*/{3}, lowered, &failureReason,
       /*currentLogicalRank=*/0)));
   EXPECT_EQ(failureReason,
-            "candidate reduction split cannot preserve unsigned min/max "
-            "semantics with the current reduce kind");
+            "candidate reduction split is disabled because it cannot preserve "
+            "source reduction order");
 }
 
 TEST(WaferGroupToTileRegionTest, RejectsReductionThatIgnoresAccumulator) {
@@ -471,8 +518,8 @@ TEST(WaferGroupToTileRegionTest, RejectsMaxNumReductionSplitSemantics) {
   EXPECT_EQ(lowerF32ReductionAndGetFailure(
                 "        %combined = arith.maxnumf %value, %acc : f32\n",
                 /*splitReduction=*/true),
-            "candidate reduction split cannot preserve maxnum/minnum NaN "
-            "semantics with the current reduce kind");
+            "candidate reduction split is disabled because it cannot preserve "
+            "source reduction order");
 }
 
 TEST(WaferGroupToTileRegionTest,
@@ -636,6 +683,67 @@ module {
   source->print(sourceAfterStream);
   EXPECT_EQ(sourceAfter, sourceBefore);
   EXPECT_TRUE(mlir::succeeded(mlir::verify(*source)));
+}
+
+TEST(LowerInstrToTargetLLVMTest,
+     RejectsResidualElementwiseMapsWithoutMutatingSource) {
+  mlir::DialectRegistry registry;
+  registerConversionDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  func.func @main() {
+    %lhs = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    %rhs = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65792>}
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    %dst = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66048>}
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>
+    wafer.instr.elementwise #wafer.instr_elementwise_kind<add>
+        %lhs, %rhs into %dst
+        : memref<2x3xf16, #wafer.memory<spm, tensor>>,
+          memref<2x3xf16, #wafer.memory<spm, tensor>>
+      into memref<2x3xf16, #wafer.memory<spm, tensor>>
+    return
+  }
+}
+)mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(source);
+
+  wafer::InstrElementwiseOp elementwise;
+  source->walk([&](wafer::InstrElementwiseOp op) { elementwise = op; });
+  ASSERT_TRUE(elementwise);
+  mlir::AffineMapAttr identity = mlir::AffineMapAttr::get(
+      mlir::AffineMap::getMultiDimIdentityMap(2, &context));
+  elementwise->setAttr(
+      "indexing_maps",
+      mlir::ArrayAttr::get(&context, {identity, identity, identity}));
+
+  std::string diagnostics;
+  mlir::ScopedDiagnosticHandler handler(
+      &context, [&](mlir::Diagnostic &diagnostic) {
+        llvm::raw_string_ostream stream(diagnostics);
+        diagnostic.print(stream);
+        return mlir::success();
+      });
+  mlir::PassManager manager(&context);
+  manager.enableVerifier(false);
+  wafer::TargetConversionRequest request{
+      wafer::TargetProfileId::waferTx81SingleCardKernelV1()};
+  manager.addPass(wafer::createLowerInstrToTargetLLVMPass(request));
+
+  EXPECT_TRUE(mlir::failed(manager.run(*source)));
+  EXPECT_NE(
+      diagnostics.find("unsupported_target_instr: terminal elementwise retains "
+                       "indexing_maps after instruction legalization"),
+      std::string::npos)
+      << diagnostics;
+  EXPECT_EQ(countOps<wafer::InstrElementwiseOp>(*source), 1u);
+  EXPECT_TRUE(elementwise->hasAttr("indexing_maps"));
 }
 
 } // namespace

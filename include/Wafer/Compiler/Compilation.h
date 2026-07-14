@@ -4,6 +4,7 @@
 #define WAFER_COMPILER_COMPILATION_H
 
 #include "Wafer/Frontend/Program.h"
+#include "Wafer/Target/TargetProfile.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LogicalResult.h"
@@ -30,15 +31,28 @@ class TargetToolchain;
 class ExecutionConfig {
 public:
   static llvm::Expected<ExecutionConfig>
-  createForSingleCard(int64_t executionRankCount);
+  createForSingleCard(int64_t executionRankCount,
+                      TargetProfileId targetProfile);
 
   int64_t getRankCount() const { return executionRankCount; }
+  TargetProfileId getTargetProfileId() const { return targetProfile; }
+
+  friend bool operator==(const ExecutionConfig &lhs,
+                         const ExecutionConfig &rhs) {
+    return lhs.executionRankCount == rhs.executionRankCount &&
+           lhs.targetProfile == rhs.targetProfile;
+  }
+  friend bool operator!=(const ExecutionConfig &lhs,
+                         const ExecutionConfig &rhs) {
+    return !(lhs == rhs);
+  }
 
 private:
-  explicit ExecutionConfig(int64_t executionRankCount)
-      : executionRankCount(executionRankCount) {}
+  ExecutionConfig(int64_t executionRankCount, TargetProfileId targetProfile)
+      : executionRankCount(executionRankCount), targetProfile(targetProfile) {}
 
   int64_t executionRankCount;
+  TargetProfileId targetProfile;
 };
 
 /// Move-only semantic input to the compiler driver. Output locations,

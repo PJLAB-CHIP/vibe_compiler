@@ -51,8 +51,8 @@
 
 ## 实施计划导航
 
-当前没有active计划；Q22.R readiness已经归档到`tasks/archive/target-model-readiness.md`。Next是Q0.L，它进入代码施工前
-必须建立独立计划。Q0.L后，Q22.N numeric与Q22.L target LLVM bundle可并行，Q22.N另解锁Q22.B bulk；Q22.L完成且
+当前没有active计划；已完成的Q0.L计划归档为`tasks/archive/target-command-legality-closure.md`，Q22.R readiness归档为
+`tasks/archive/target-model-readiness.md`。并行Next是Q22.N numeric与Q22.L target LLVM bundle，二者开工前分别建立独立计划；Q22.N另解锁Q22.B bulk，Q22.L完成且
 external authorization/spec gate满足后，Q22.H host seam才解锁。Q22.N+Q22.H在Q22.S
 SystemC event model汇合，Q22.B+Q22.S再由Q22.V source vertical闭合并汇总到Q22；各代码任务
 开工前都需独立计划。动态执行状态只看`tasks/progress.md`。
@@ -77,6 +77,7 @@ docs、`tasks/progress.md` 和本轮已收敛设计结论为准。
 | `tasks/archive/09-system-design-implementation-review.md` | 2026-07-10 系统设计与实现审计；只作风险和整改依据，不是架构合同 |
 | `tasks/archive/10-target-crt-closure-plan.md` | 已完成并被当前路线替代的 CRT closure 实施记录 |
 | `tasks/archive/11-target-crt-conformance-plan.md` | 已完成并被当前路线替代的 CRT conformance 实施记录 |
+| `tasks/archive/target-command-legality-closure.md` | 已完成Q0.L的typed target profile、format legality、map/reduce lowering和fresh source replay实施记录 |
 | `tasks/archive/12-architecture-evidence-reset.md` | 2026-07-12架构事实重基线审计；只作证据和整改依据 |
 | `tasks/archive/single-card-vertical-slice.md` | 已完成的单卡纵向切片实施计划；只保留历史checkpoint和验证记录 |
 | `tasks/archive/2026-07-10-long-horizon-plans/` | 已被重基线取代的7份生成式长周期计划；non-normative |

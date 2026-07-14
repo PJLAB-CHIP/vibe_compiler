@@ -84,7 +84,8 @@ Pipeline position:
   records，runtime只消费validated manifest。
 - User-level driver / named pipeline:
   Q16以后由同一
-  `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16}`的whole-variant
+  `wafer-compile --input-program-dir ... --output-program-dir ... --execution-ranks={1|16} --target-profile=wafer-tx81-single-card-kernel-v1`
+  的whole-variant
   candidate loop调用本stage。当前Q15只产出verified grouped program directory，不执行SPM planning；
   `wafer-opt`、`wafer-lower-groups-to-memory-planned-instr`和`wafer-plan-spm-memory`只处理显式IR，
   用于instruction-level replay/lit/debug，不能成为用户stop-stage，也不能把`DirectFullShape`或单group结果直接提交。

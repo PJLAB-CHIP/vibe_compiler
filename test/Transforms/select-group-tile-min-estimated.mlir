@@ -1,6 +1,7 @@
 // RUN: wafer-opt --wafer-select-group-tile='logical-rank=0 tile-search=min-estimated-time print-candidate-summary' %s 2>&1 | FileCheck --implicit-check-not=selected_group --implicit-check-not=memref.global --implicit-check-not=memref.get_global --check-prefixes=SUMMARY,IR %s
 // RUN: wafer-opt --wafer-select-group-tile='logical-rank=0 tile-search=min-estimated-time tile-search-effort=quick print-candidate-summary candidate-parallelism=2' %s 2>&1 | FileCheck --implicit-check-not=selected_group --implicit-check-not=memref.global --implicit-check-not=memref.get_global --check-prefixes=PARALLEL,IR %s
 // RUN: wafer-opt --wafer-lower-groups-to-selected-instr %s | FileCheck --implicit-check-not=wafer.group --implicit-check-not=memref.global --implicit-check-not=memref.get_global --check-prefix=PIPE %s
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-groups-to-target-llvm{target-profile=wafer-tx81-single-card-kernel-v1})' %s | FileCheck --check-prefix=TARGET %s
 
 func.func @elementwise_last_dim_65(%lhs: tensor<2x65xf16>,
                                    %rhs: tensor<2x65xf16>,
@@ -129,12 +130,22 @@ func.func @constant_predicate_select(%lhs: tensor<2x4xf32>,
 // IR-LABEL: func.func @constant_predicate_select
 // IR-NOT: wafer.group
 // IR-NOT: arith.select
-// IR: wafer.instr.fill
-// IR: wafer.instr.bit2fp
-// IR: wafer.instr.mask_move
+// IR-NOT: wafer.instr.fill
+// IR-NOT: wafer.instr.bit2fp
+// IR-NOT: wafer.instr.mask_move
+// IR: wafer.instr.gather_scatter
 // IR: wafer.instr.wdma
 
 // PIPE-LABEL: func.func @constant_predicate_select
-// PIPE: wafer.instr.fill
-// PIPE: wafer.instr.bit2fp
-// PIPE: wafer.instr.mask_move
+// PIPE-NOT: wafer.instr.fill
+// PIPE-NOT: wafer.instr.bit2fp
+// PIPE-NOT: wafer.instr.mask_move
+// PIPE: wafer.instr.gather_scatter
+
+// TARGET-LABEL: llvm.func @constant_predicate_select
+// TARGET: llvm.call @wafer_tx81_rdma
+// TARGET-NOT: wafer_tx81_fill
+// TARGET-NOT: wafer_tx81_bit2fp
+// TARGET-NOT: wafer_tx81_mask_move
+// TARGET: llvm.call @wafer_tx81_gather_scatter
+// TARGET: llvm.call @wafer_tx81_wdma

@@ -1,9 +1,10 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "program": {
     "id": 0
   },
   "target": {
+    "profile": "wafer-tx81-single-card-kernel-v1",
     "identity": "wafer-tx81-single-card",
     "runtime_abi": "wafer-tx81-kernel-v1",
     "module_format": "elf-riscv64"

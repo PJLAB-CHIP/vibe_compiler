@@ -120,7 +120,8 @@ func.func @gemm_reduce_and_reshape(
         : (memref<4x64xf16, #wafer.memory<spm, cx>>,
            memref<64x64xf16, #wafer.memory<spm, cx>>)
        -> memref<4x64xf16, #wafer.memory<spm, cx>>
-    %reduced = wafer.tile.reduce #wafer.reduce_kind<sum> %gemm, %zero_arg
+    %zero_const = arith.constant 0.0 : f16
+    %reduced = wafer.tile.reduce #wafer.reduce_kind<sum> %gemm, %zero_const
         {dimensions = array<i64: 0>}
         : (memref<4x64xf16, #wafer.memory<spm, cx>>, f16)
        -> memref<64xf16, #wafer.memory<spm, cx>>
@@ -148,8 +149,16 @@ func.func @gemm_reduce_and_reshape(
 // CHECK-SAME: k = 64 : i64
 // CHECK-SAME: m = 4 : i64
 // CHECK-SAME: n = 64 : i64
-// CHECK: wafer.instr.reduce <sum>
-// CHECK-SAME: dim = 1 : i64
+// CHECK-NOT: wafer.instr.reduce
+// CHECK: wafer.instr.fill
+// CHECK: wafer.instr.local_fence
+// CHECK: wafer.instr.gather_scatter
+// CHECK: wafer.instr.local_fence
+// CHECK: wafer.instr.elementwise <add>
+// CHECK: wafer.instr.local_fence
+// CHECK: wafer.instr.gather_scatter
+// CHECK: wafer.instr.local_fence
+// CHECK-NOT: wafer.instr.reduce
 // CHECK-NOT: wafer.tile.reshape
 // CHECK: wafer.instr.wdma
 
