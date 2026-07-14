@@ -101,6 +101,27 @@ if(NOT WAFER_ENABLE_BULK_MODEL_DEPS)
   )
 endif()
 
+if(NOT WAFER_ENABLE_SYSTEMC_MODEL)
+  if(NOT CMAKE_READELF OR NOT EXISTS "${CMAKE_READELF}")
+    message(FATAL_ERROR
+      "feature-off SystemC link closure requires the configured readelf tool")
+  endif()
+  if(NOT CMAKE_NM OR NOT EXISTS "${CMAKE_NM}")
+    message(FATAL_ERROR
+      "feature-off SystemC link closure requires the configured nm tool")
+  endif()
+  add_test(NAME wafer-systemc-feature-off-link-closure
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_SOURCE_DIR}/tools/check_systemc_link_closure.py
+      --binary $<TARGET_FILE:WaferUnitTests>
+      --readelf ${CMAKE_READELF}
+      --nm ${CMAKE_NM}
+  )
+  set_tests_properties(wafer-systemc-feature-off-link-closure PROPERTIES
+    LABELS "systemc-model;link-closure"
+  )
+endif()
+
 if(WAFER_ENABLE_NUMERIC_MODEL_DEPS)
   add_executable(WaferNumericModelUnitTests
     Target/FormalTensorNumericTest.cpp

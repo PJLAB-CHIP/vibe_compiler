@@ -52,6 +52,10 @@ Pipeline position:
      `SystemC::systemc` imported target，缺失或版本/ABI不匹配在configuration阶段失败。feature-off compiler、runtime和plain
      numeric libraries不得链接SystemC。
 
+   当前状态：已完成。官方3.0.2 archive pin、source/install tree与artifact摘要、Apache-2.0 license/notice、canonical
+   no-replace record、安装后官方package consumer、两个`SC_THREAD`的delta-event smoke、feature-on配置和feature-off link
+   closure均已验证；这不替代checkpoint 3的正式model component gate。
+
 2. **Plain functional state与地址合同**
    - 在不含SystemC header的model core中建立`InvocationAddressPlan`、private per-rank SPM、card DDR/resource registry、checked
      range resolver、typed transaction validator、pending byte effects和numeric execution context。

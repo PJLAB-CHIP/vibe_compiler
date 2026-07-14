@@ -23,6 +23,8 @@ option(WAFER_ENABLE_NUMERIC_MODEL_DEPS
   "Enable exact managed SoftFloat/TestFloat/GMP/MPFR numeric-model artifacts" OFF)
 option(WAFER_ENABLE_BULK_MODEL_DEPS
   "Enable the exact managed oneDNN bulk functional-model artifact" OFF)
+option(WAFER_ENABLE_SYSTEMC_MODEL
+  "Enable the exact managed SystemC functional-event model dependency" OFF)
 option(WAFER_FETCH_GTEST
   "Fetch googletest when a system package is not available" ON)
 
@@ -38,6 +40,12 @@ set(WAFER_BULK_MODEL_DEPS_ROOT
 set(WAFER_BULK_MODEL_DEPS_RECORD
   "${WAFER_BULK_MODEL_DEPS_ROOT}/bulk-model-deps.json" CACHE FILEPATH
   "Completed managed bulk-model dependency conformance record")
+set(WAFER_SYSTEMC_MODEL_DEPS_ROOT
+  "${WAFER_DEPS_ROOT}/systemc-model" CACHE PATH
+  "Root produced by tools/bootstrap_deps.py --systemc-model-deps")
+set(WAFER_SYSTEMC_MODEL_DEPS_RECORD
+  "${WAFER_SYSTEMC_MODEL_DEPS_ROOT}/systemc-model-deps.json" CACHE FILEPATH
+  "Completed managed SystemC-model dependency conformance record")
 
 set(WAFER_IMPORTER_PYTHON_VENV "${WAFER_DEPS_ROOT}/python-importer" CACHE PATH
   "Python env containing torch and source-built torch_xla runtime for importer tools")
@@ -135,6 +143,11 @@ endif()
 if(WAFER_ENABLE_BULK_MODEL_DEPS)
   include("${CMAKE_CURRENT_LIST_DIR}/WaferBulkModelDeps.cmake")
   wafer_enable_bulk_model_deps()
+endif()
+
+if(WAFER_ENABLE_SYSTEMC_MODEL)
+  include("${CMAKE_CURRENT_LIST_DIR}/WaferSystemCModelDeps.cmake")
+  wafer_enable_systemc_model_deps()
 endif()
 
 string(REGEX MATCH "^[0-9]+" WAFER_LLVM_PACKAGE_VERSION_MAJOR "${WAFER_LLVM_PACKAGE_VERSION}")

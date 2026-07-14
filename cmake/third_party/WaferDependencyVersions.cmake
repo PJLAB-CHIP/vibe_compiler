@@ -57,3 +57,10 @@ set(WAFER_ONEDNN_VERSION "3.12")
 set(WAFER_ONEDNN_COMMIT "80afa71049cd69a3df32adcccb623b12cd7baa22")
 set(WAFER_ONEDNN_URL "https://codeload.github.com/uxlfoundation/oneDNN/tar.gz/80afa71049cd69a3df32adcccb623b12cd7baa22")
 set(WAFER_ONEDNN_SHA256 "f13ce92168cae7bd25f5efc43f00b37ff14bcc62ffdea3d85220b1c50c104f17")
+
+# Functional-event model dependency. This is the official Accellera release
+# archive. CMake remains offline; tools/bootstrap_deps.py is its sole producer.
+set(WAFER_SYSTEMC_VERSION "3.0.2")
+set(WAFER_SYSTEMC_COMMIT "70b0fc8e4a74acc677b0fc73cea08f940c2115d5")
+set(WAFER_SYSTEMC_URL "https://github.com/accellera-official/systemc/archive/refs/tags/3.0.2.tar.gz")
+set(WAFER_SYSTEMC_SHA256 "9b3693ed286aab958b9e5d79bb0ad3bc523bbc46931100553275352038f4a0c4")

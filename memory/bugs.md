@@ -332,6 +332,10 @@
   archive pin、archive-derived tree digest、当前解包tree、gate log和install artifact逐项重算，拒绝missing/symlink/escape/
   duplicate log。任何只存digest而无法定位并回读artifact的字段都只能算声明，不能进入完成证据。
 
+安装型C++ package还要绑定完整install tree，而不能只摘要入口header、library和主targets文件；间接header或
+`Targets-<config>.cmake`同样会改变下游编译/链接。validator应重算install tree，consumer配置后再核对imported target的
+实际library位置与record一致，并用独立consumer完成configure/build/run。
+
 ## 2026-07-14 低精度GEMM不能依赖host native primitive availability
 
 - 现象：直接把F16/BF16 dense memory交给oneDNN MatMul时，F16 row在没有相应FP16 ISA/implementation的host返回

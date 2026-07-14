@@ -87,6 +87,14 @@ set_tests_properties(wafer-bulk-dependency-record-python PROPERTIES
   LABELS "bulk-model;managed-dependencies"
 )
 
+add_test(NAME wafer-systemc-dependency-record-python
+  COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_SOURCE_DIR}/tools/test_systemc_deps.py
+)
+set_tests_properties(wafer-systemc-dependency-record-python PROPERTIES
+  LABELS "systemc-model;managed-dependencies"
+)
+
 set(_wafer_numeric_cmake_gate_args
   --cmake ${CMAKE_COMMAND}
   --source-dir ${CMAKE_SOURCE_DIR}
@@ -166,6 +174,48 @@ set_tests_properties(wafer-bulk-cmake-configuration-gates PROPERTIES
   TIMEOUT 240
 )
 
+set(_wafer_systemc_cmake_gate_args
+  --cmake ${CMAKE_COMMAND}
+  --source-dir ${CMAKE_SOURCE_DIR}
+  --work-root ${CMAKE_CURRENT_BINARY_DIR}/systemc-cmake-gates
+  --generator ${CMAKE_GENERATOR}
+  --c-compiler ${CMAKE_C_COMPILER}
+  --cxx-compiler ${CMAKE_CXX_COMPILER}
+  --llvm-dir ${LLVM_DIR}
+  --mlir-dir ${MLIR_DIR}
+  --python ${Python3_EXECUTABLE}
+)
+if(CMAKE_GENERATOR_PLATFORM)
+  list(APPEND _wafer_systemc_cmake_gate_args
+    --generator-platform ${CMAKE_GENERATOR_PLATFORM})
+endif()
+if(CMAKE_GENERATOR_TOOLSET)
+  list(APPEND _wafer_systemc_cmake_gate_args
+    --generator-toolset ${CMAKE_GENERATOR_TOOLSET})
+endif()
+if(CMAKE_MAKE_PROGRAM)
+  list(APPEND _wafer_systemc_cmake_gate_args
+    --make-program ${CMAKE_MAKE_PROGRAM})
+endif()
+if(CMAKE_BUILD_TYPE)
+  list(APPEND _wafer_systemc_cmake_gate_args
+    --build-type ${CMAKE_BUILD_TYPE})
+endif()
+if(WAFER_ENABLE_NUMERIC_MODEL_DEPS)
+  list(APPEND _wafer_systemc_cmake_gate_args
+    --numeric-root ${WAFER_NUMERIC_MODEL_DEPS_CANONICAL_ROOT}
+    --numeric-record ${WAFER_NUMERIC_MODEL_DEPS_CANONICAL_RECORD})
+endif()
+add_test(NAME wafer-systemc-cmake-configuration-gates
+  COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_SOURCE_DIR}/tools/test_systemc_cmake_gates.py
+    ${_wafer_systemc_cmake_gate_args}
+)
+set_tests_properties(wafer-systemc-cmake-configuration-gates PROPERTIES
+  LABELS "systemc-model;configuration"
+  TIMEOUT 240
+)
+
 if(WAFER_ENABLE_NUMERIC_MODEL_DEPS)
   add_test(NAME wafer-numeric-dependency-configured-record-python
     COMMAND ${Python3_EXECUTABLE}
@@ -220,4 +270,18 @@ if(WAFER_ENABLE_BULK_MODEL_DEPS)
     LABELS "bulk-model;qualification"
     TIMEOUT 180
   )
+endif()
+
+if(WAFER_ENABLE_SYSTEMC_MODEL)
+  add_test(NAME wafer-systemc-dependency-configured-record-python
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_SOURCE_DIR}/tools/systemc_deps.py
+      --root ${WAFER_SYSTEMC_MODEL_DEPS_CANONICAL_ROOT}
+      --record ${WAFER_SYSTEMC_MODEL_DEPS_CANONICAL_RECORD}
+      --emit-cmake-snapshot
+  )
+  set_tests_properties(wafer-systemc-dependency-configured-record-python
+    PROPERTIES
+      PASS_REGULAR_EXPRESSION "wafer-systemc-model-canonical-snapshot"
+      LABELS "systemc-model;managed-dependencies")
 endif()

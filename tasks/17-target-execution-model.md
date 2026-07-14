@@ -1070,7 +1070,7 @@ production依赖：
 | TestFloat | 系统无source或可执行文件 | 受管Release 3e构建`testsoftfloat`，F16/F32 mulAdd及level-1/level-2 slowfloat conformance进入record | 只验证SoftFloat本身，不算第二个production numeric oracle |
 | MPFR/GMP | 系统仅有不可作为开发依赖的x86-64 runtime；Q22.N不链接其SONAME | Q22.N现由受管GNU m4 1.4.21构建GMP 6.3.0与MPFR 4.2.2，共享库、header、TLS/version/transitive identity和上游self-test均进入完整conformance record | feature-on只导入record精确指向的artifact并readback实际loaded identity；缺root/record、任一digest/options/gate或路径别名均configuration fail，feature-off基础compiler不链接它们 |
 | oneDNN | 无独立header/library/package；PyTorch 2.5内嵌3.5.3符号为local，空壳CMake target不可复用 | 官方v3.12 commit `80afa710...`以CPU SEQ、INFERENCE、MATMUL/REORDER、static配置构建；`DNNL::dnnl` 2x2 f32 MatMul返回3.12.0和正确结果 | Q22.B从受管source形成唯一target；该probe不签发任何bulk admission，也不证明dtype/profile等价 |
-| SystemC/TLM | 无header/library/pkg-config/CMake package；feature-on在当前环境必须configuration fail | 官方3.0.2 commit `70b0fc8e...`构建并安装`SystemCLanguage`/`SystemC::systemc`；C++17 `sc_main`的两个`SC_THREAD`经delta-cycle event同步并正常退出 | Q22.S以3.0.2作为qualified candidate，正式pin仍需进入统一版本文件并跑上游/项目测试；不混用Ubuntu 2.3.4 ABI |
+| SystemC/TLM | 无header/library/pkg-config/CMake package；不能隐式消费宿主包 | Q22.S已把官方3.0.2 commit `70b0fc8e...`及archive SHA-256固定到统一版本文件；受管bootstrap构建静态`SystemCLanguage` package，独立consumer经官方`SystemC::systemc`运行C++17 `sc_main`、两个`SC_THREAD`和delta-cycle event | 默认关闭；feature-on要求Q22.N和完整canonical record，缺root/record、source/install tree、library/header/package export/license或任一gate即configuration fail；不混用Ubuntu 2.3.4 ABI |
 
 SoftFloat/TestFloat 3e采用U.C. Berkeley三条款式许可，SystemC 3.0.2参考实现为Apache-2.0，oneDNN为Apache-2.0；
 MPFR/GMP分别涉及LGPL及GMP双许可，具体静态/动态分发、source offer和notice由引入任务在项目发布政策下确认。官方当前
@@ -1078,7 +1078,7 @@ MPFR/GMP分别涉及LGPL及GMP双许可，具体静态/动态分发、source off
 readiness candidate source identity为SoftFloat 3e zip SHA-256 `21130ce8...c746`、TestFloat 3e
 `6d4bdf00...ad6`、GMP 6.3.0 `a3c2b802...8898`、MPFR 4.2.2 `b67ba038...ce01`，以及表内两个Git commit；
 Q22.N现已在统一版本文件记录并由bootstrap校验完整digest，表中截断值仍只作可读审计摘要；oneDNN已经由Q22.B正式
-受管引入，SystemC仍留给Q22.S。
+受管引入，SystemC依赖边界由Q22.S checkpoint 1正式闭合。该依赖完成不等于Q22.S event/memory model完成。
 
 #### 10.0.3 Host CRT、vendor seam和replay边界
 
@@ -1114,10 +1114,11 @@ readiness replay还发现`wafer-convert-group-to-tile-region`会创建`async.tok
 - 固定首批target call、dtype/layout、engine、Direct DTE和completion capability matrix；packet字段只属于Q22.K；
 - Q22.L已把tasks/14 private prepared target LLVM提升为owner-backed all-rank内部artifact，并让现有device link直接消费；
   该本地artifact不以vendor授权为前置，也不提前执行host CRT/packet；
-- 增加默认关闭的稳定target-model build feature；以readiness通过的Accellera SystemC 3.0.2作为candidate，在统一版本文件
-  固定完整commit/digest、获取方式、Apache-2.0 notice、`SystemCLanguage` package和唯一`SystemC::systemc` target。基础
-  compiler与plain C++ kernels仍可独立构建；feature启用时缺SystemC必须configuration fail，未启用时正式profile明确
-  unavailable且Q22 gate未完成，不能由direct shim代替；
+- 默认关闭的`WAFER_ENABLE_SYSTEMC_MODEL`已经固定Accellera SystemC 3.0.2完整commit/archive digest、获取方式、
+  Apache-2.0 license/notice、source/install tree、静态library/header、`SystemCLanguage` package、唯一
+  `SystemC::systemc` target和五项build/consumer/delta-event gate。CMake只消费validator产生的canonical snapshot，不联网、
+  不搜索宿主package；基础compiler与plain C++ kernels仍可独立构建。该边界只完成Q22.S受管依赖checkpoint，event/memory
+  model和正式component gate仍未完成，不能由bootstrap smoke或direct shim代替；
 - Q22.N已经把SoftFloat/TestFloat 3e、GNU m4 1.4.21、GMP 6.3.0和MPFR 4.2.2的完整source digest、license、
   thread/rounding环境、唯一CMake target和上游self-test纳入受管依赖；Q22.B又把oneDNN 3.12的commit、archive/library
   digest、SEQ build和MatMul/reorder smoke纳入独立受管record。

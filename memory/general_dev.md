@@ -82,6 +82,11 @@
   `wafer-cmodel-qualify-bulk`三阶段和静态oneDNN符号/动态thread-runtime closure；off侧用基础`WaferUnitTests`证明binary
   不含oneDNN/OpenMP/TBB符号或依赖。qualification artifact路径必须是absolute canonical path，producer采用no-replace，
   因此重复测试应使用新的临时目录而不是覆盖旧record。
+- 受管SystemC入口是`python3 tools/bootstrap_deps.py --systemc-model-deps --systemc-jobs <n>`；它固定官方3.0.2 archive，
+  clean-build静态安装并用独立CMake consumer实际运行两个`SC_THREAD`的delta-event smoke，随后原子发布
+  `third_party/systemc-model/systemc-model-deps.json`。启用时同时设置`WAFER_ENABLE_NUMERIC_MODEL_DEPS=ON`和
+  `WAFER_ENABLE_SYSTEMC_MODEL=ON`；CMake只从canonical record指定的`SystemCLanguage`目录导入官方
+  `SystemC::systemc`，不联网或fallback到宿主package。plain model core不得包含SystemC header或链接该target。
 - 用 `python3 tools/bootstrap_deps.py --python` 把固定版本 Python 测试工具安装到
   `third_party/python`。
 - 用 `python3 tools/bootstrap_deps.py --importer-sources` shallow fetch 固定版本 PyTorch/XLA、StableHLO、

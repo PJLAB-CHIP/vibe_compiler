@@ -28,6 +28,17 @@ from bulk_deps import (
     validate_record as validate_bulk_record,
 )
 
+from systemc_deps import (
+    BUILD_OPTIONS as SYSTEMC_BUILD_OPTIONS,
+    RECORD_KIND as SYSTEMC_RECORD_KIND,
+    RECORD_SCHEMA_VERSION as SYSTEMC_RECORD_SCHEMA_VERSION,
+    RECORD_STATUS as SYSTEMC_RECORD_STATUS,
+    REQUIRED_GATES as SYSTEMC_REQUIRED_GATES,
+    SOURCE_DIRECTORY_PREFIX as SYSTEMC_SOURCE_DIRECTORY_PREFIX,
+    sha256_file as sha256_systemc_file,
+    validate_record as validate_systemc_record,
+)
+
 from numeric_deps import (
     CONFIGURE_OPTIONS,
     CONFORMANCE_POLICY,
@@ -1176,6 +1187,359 @@ def build_bulk_model_dependencies(
         return record_path
 
 
+@contextmanager
+def systemc_build_lock(root: pathlib.Path):
+    root = prepare_managed_directory(root)
+    lock_path = root / ".systemc-model-deps.lock"
+    reject_symlink_ancestors(lock_path, allow_missing=True)
+    flags = os.O_CREAT | os.O_RDWR
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(lock_path, flags, 0o600)
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise RuntimeError(
+                f"managed SystemC-model root is already being modified: {root}"
+            ) from error
+        yield
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
+def capture_systemc_tool(executable: str) -> dict[str, str]:
+    discovered = shutil.which(executable, path=os.defpath)
+    if not discovered:
+        raise RuntimeError(f"managed SystemC build requires host tool {executable!r}")
+    path = pathlib.Path(discovered).resolve(strict=True)
+    result = subprocess.run(
+        [str(path), "--version"],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        env={"LANG": "C", "LC_ALL": "C", "PATH": str(path.parent)},
+    )
+    first_line = result.stdout.splitlines()[0] if result.stdout.splitlines() else ""
+    return {
+        "path": path.as_posix(),
+        "version": first_line,
+        "sha256": sha256_systemc_file(path),
+    }
+
+
+def systemc_artifact_identity(root: pathlib.Path, path: pathlib.Path) -> dict[str, object]:
+    path = reject_symlink_ancestors(path)
+    if not path.is_file() or path.is_symlink():
+        raise RuntimeError(f"SystemC artifact is not a regular file: {path}")
+    return {
+        "path": path.relative_to(root).as_posix(),
+        "sha256": sha256_systemc_file(path),
+        "size": path.stat().st_size,
+    }
+
+
+def run_systemc_gate(
+    name: str,
+    command: list[str],
+    *,
+    root: pathlib.Path,
+    cwd: pathlib.Path,
+    environment: dict[str, str],
+) -> dict[str, object]:
+    log = root / "conformance" / f"{name}.log"
+    run_logged(command, log, cwd=cwd, env=environment)
+    return {
+        "name": name,
+        "command": command,
+        "log": log.relative_to(root).as_posix(),
+        "log_sha256": sha256_systemc_file(log),
+        "exit_code": 0,
+    }
+
+
+def write_systemc_consumer(source_root: pathlib.Path) -> None:
+    source_root.mkdir()
+    (source_root / "CMakeLists.txt").write_text(
+        r'''cmake_minimum_required(VERSION 3.24)
+project(SystemCDeltaEventSmoke LANGUAGES CXX)
+find_package(SystemCLanguage 3.0.2 CONFIG REQUIRED NO_DEFAULT_PATH)
+if(NOT TARGET SystemC::systemc)
+  message(FATAL_ERROR "managed SystemC package did not export SystemC::systemc")
+endif()
+add_executable(delta-event-smoke main.cpp)
+target_compile_features(delta-event-smoke PRIVATE cxx_std_17)
+target_link_libraries(delta-event-smoke PRIVATE SystemC::systemc)
+''',
+        encoding="utf-8",
+    )
+    (source_root / "main.cpp").write_text(
+        r'''#include <systemc>
+#include <iostream>
+
+struct DeltaProbe final : sc_core::sc_module {
+  sc_core::sc_event ready;
+  sc_core::sc_event acknowledged;
+  int state = 0;
+  int failure = 0;
+
+  SC_HAS_PROCESS(DeltaProbe);
+  explicit DeltaProbe(sc_core::sc_module_name name) : sc_module(name) {
+    SC_THREAD(producer);
+    SC_THREAD(consumer);
+  }
+
+  void producer() {
+    wait(sc_core::SC_ZERO_TIME);
+    state = 1;
+    ready.notify(sc_core::SC_ZERO_TIME);
+    wait(acknowledged);
+    if (state != 2)
+      failure = 3;
+    sc_core::sc_stop();
+  }
+
+  void consumer() {
+    wait(ready);
+    if (state != 1 || sc_core::sc_delta_count() < 1)
+      failure = 1;
+    state = 2;
+    acknowledged.notify(sc_core::SC_ZERO_TIME);
+  }
+};
+
+int sc_main(int, char **) {
+  DeltaProbe probe("probe");
+  sc_core::sc_start();
+  if (probe.failure || probe.state != 2 || sc_core::sc_delta_count() < 2)
+    return probe.failure ? probe.failure : 4;
+  std::cout << "systemc=3.0.2 threads=2 delta=" << sc_core::sc_delta_count()
+            << " state=" << probe.state << "\n";
+  return 0;
+}
+''',
+        encoding="utf-8",
+    )
+
+
+def read_cmake_generator(cache: pathlib.Path) -> str:
+    match = re.search(
+        r"^CMAKE_GENERATOR:INTERNAL=(.+)$",
+        cache.read_text(encoding="utf-8"),
+        flags=re.MULTILINE,
+    )
+    if not match:
+        raise RuntimeError(f"configured SystemC cache has no generator: {cache}")
+    return match.group(1)
+
+
+def build_systemc_model_dependency(
+    versions: dict[str, str], systemc_root: pathlib.Path, jobs: int
+) -> pathlib.Path:
+    if jobs < 1:
+        raise RuntimeError("SystemC dependency job count must be positive")
+    systemc_root = prepare_managed_directory(systemc_root)
+    record_path = systemc_root / "systemc-model-deps.json"
+    with systemc_build_lock(systemc_root):
+        if record_path.exists():
+            validate_systemc_record(record_path, systemc_root, versions)
+            print(f"SystemC model dependency record already valid: {record_path}")
+            return record_path
+
+        downloads = prepare_managed_directory(systemc_root / "downloads")
+        sources = prepare_managed_directory(systemc_root / "sources")
+        archive = downloads / f"systemc-{versions['WAFER_SYSTEMC_VERSION']}.tar.gz"
+        reject_symlink_ancestors(archive, allow_missing=True)
+        if not archive.exists() or sha256_systemc_file(archive) != versions["WAFER_SYSTEMC_SHA256"]:
+            archive.unlink(missing_ok=True)
+            download_with_resume(versions["WAFER_SYSTEMC_URL"], archive)
+        if sha256_systemc_file(archive) != versions["WAFER_SYSTEMC_SHA256"]:
+            archive.unlink(missing_ok=True)
+            raise RuntimeError("SystemC archive SHA256 mismatch")
+
+        source_top = SYSTEMC_SOURCE_DIRECTORY_PREFIX + versions["WAFER_SYSTEMC_VERSION"]
+        source = sources / source_top
+        safe_extract_archive(archive, source, source_top)
+        source_digest = sha256_tree(source)
+
+        build_root = systemc_root / "build"
+        install_root = systemc_root / "install"
+        conformance_root = systemc_root / "conformance"
+        clean_directory(build_root, systemc_root)
+        clean_directory(install_root, systemc_root)
+        clean_directory(conformance_root, systemc_root)
+        systemc_build = build_root / "systemc"
+        systemc_build.mkdir()
+        install_prefix = install_root / "systemc"
+
+        toolchain = {
+            "cmake": capture_systemc_tool("cmake"),
+            "cxx": capture_systemc_tool("c++"),
+        }
+        environment = {
+            "HOME": str(build_root / "home"),
+            "LANG": "C",
+            "LC_ALL": "C",
+            "PATH": os.pathsep.join(
+                sorted({str(pathlib.Path(item["path"]).parent) for item in toolchain.values()})
+            ),
+            "SOURCE_DATE_EPOCH": "0",
+        }
+        pathlib.Path(environment["HOME"]).mkdir()
+        cmake = toolchain["cmake"]["path"]
+        configure = [
+            cmake,
+            "-S",
+            str(source),
+            "-B",
+            str(systemc_build),
+            f"-DCMAKE_CXX_COMPILER={toolchain['cxx']['path']}",
+            f"-DCMAKE_INSTALL_PREFIX={install_prefix}",
+            "-DCMAKE_FIND_USE_PACKAGE_REGISTRY=FALSE",
+            "-DCMAKE_FIND_USE_SYSTEM_PACKAGE_REGISTRY=FALSE",
+        ]
+        configure.extend(
+            f"-D{name}={value}" for name, value in sorted(SYSTEMC_BUILD_OPTIONS.items())
+        )
+        gates = [
+            run_systemc_gate(
+                "configure", configure, root=systemc_root, cwd=systemc_root, environment=environment
+            )
+        ]
+        build = [
+            cmake,
+            "--build",
+            str(systemc_build),
+            "--target",
+            "install",
+            "--parallel",
+            str(jobs),
+        ]
+        gates.append(
+            run_systemc_gate(
+                "build-install", build, root=systemc_root, cwd=systemc_root, environment=environment
+            )
+        )
+
+        library = install_prefix / "lib" / "libsystemc.a"
+        header = install_prefix / "include" / "systemc"
+        tlm_header = install_prefix / "include" / "tlm"
+        cmake_dir = install_prefix / "lib" / "cmake" / "SystemCLanguage"
+        config = cmake_dir / "SystemCLanguageConfig.cmake"
+        config_version = cmake_dir / "SystemCLanguageConfigVersion.cmake"
+        targets = cmake_dir / "SystemCLanguageTargets.cmake"
+        for path in (library, header, tlm_header, config, config_version, targets):
+            if not path.is_file() or path.is_symlink():
+                raise RuntimeError(f"SystemC install artifact is missing: {path}")
+
+        consumer_source = build_root / "consumer-source"
+        consumer_build = build_root / "consumer-build"
+        write_systemc_consumer(consumer_source)
+        consumer_build.mkdir()
+        smoke = install_prefix / "bin" / "delta-event-smoke"
+        smoke.parent.mkdir(parents=True)
+        consumer_configure = [
+            cmake,
+            "-S",
+            str(consumer_source),
+            "-B",
+            str(consumer_build),
+            f"-DCMAKE_CXX_COMPILER={toolchain['cxx']['path']}",
+            f"-DSystemCLanguage_DIR={cmake_dir}",
+            f"-DCMAKE_RUNTIME_OUTPUT_DIRECTORY={smoke.parent}",
+            "-DCMAKE_BUILD_TYPE=Release",
+            "-DCMAKE_FIND_USE_PACKAGE_REGISTRY=FALSE",
+            "-DCMAKE_FIND_USE_SYSTEM_PACKAGE_REGISTRY=FALSE",
+        ]
+        gates.append(
+            run_systemc_gate(
+                "consumer-configure",
+                consumer_configure,
+                root=systemc_root,
+                cwd=systemc_root,
+                environment=environment,
+            )
+        )
+        gates.append(
+            run_systemc_gate(
+                "consumer-build",
+                [cmake, "--build", str(consumer_build), "--parallel", str(jobs)],
+                root=systemc_root,
+                cwd=systemc_root,
+                environment=environment,
+            )
+        )
+        gates.append(
+            run_systemc_gate(
+                "delta-event-run", [str(smoke)], root=systemc_root, cwd=systemc_root, environment=environment
+            )
+        )
+        if {gate["name"] for gate in gates} != SYSTEMC_REQUIRED_GATES:
+            raise RuntimeError("internal SystemC dependency gate closure is incomplete")
+
+        licenses = install_prefix / "licenses"
+        licenses.mkdir()
+        license_path = licenses / "LICENSE"
+        notice_path = licenses / "NOTICE"
+        shutil.copy2(source / "LICENSE", license_path)
+        shutil.copy2(source / "NOTICE", notice_path)
+
+        artifacts = {
+            "systemc-archive": archive,
+            "systemc-library": library,
+            "systemc-header": header,
+            "tlm-header": tlm_header,
+            "cmake-config": config,
+            "cmake-config-version": config_version,
+            "cmake-targets": targets,
+            "license": license_path,
+            "notice": notice_path,
+            "delta-event-smoke": smoke,
+        }
+        record = {
+            "schema_version": SYSTEMC_RECORD_SCHEMA_VERSION,
+            "kind": SYSTEMC_RECORD_KIND,
+            "status": SYSTEMC_RECORD_STATUS,
+            "dependency": {
+                "name": "Accellera SystemC",
+                "version": versions["WAFER_SYSTEMC_VERSION"],
+                "commit": versions["WAFER_SYSTEMC_COMMIT"],
+                "url": versions["WAFER_SYSTEMC_URL"],
+                "archive_sha256": versions["WAFER_SYSTEMC_SHA256"],
+                "source_tree_sha256": source_digest,
+            },
+            "build": {
+                "options": SYSTEMC_BUILD_OPTIONS,
+                "generator": read_cmake_generator(systemc_build / "CMakeCache.txt"),
+                "install_prefix": "install/systemc",
+                "install_tree_sha256": sha256_tree(install_prefix),
+            },
+            "toolchain": toolchain,
+            "artifacts": {
+                name: systemc_artifact_identity(systemc_root, path)
+                for name, path in sorted(artifacts.items())
+            },
+            "licenses": {
+                "license": {"artifact": "license", "spdx": "Apache-2.0"},
+                "notice": {"artifact": "notice", "spdx": "Apache-2.0"},
+            },
+            "conformance": {"gates": sorted(gates, key=lambda gate: str(gate["name"]))},
+        }
+        candidate = systemc_root / f".systemc-model-deps.candidate-{uuid.uuid4().hex}.json"
+        try:
+            atomic_write_json(candidate, record)
+            validate_systemc_record(candidate, systemc_root, versions)
+            publish_file_noreplace(candidate, record_path)
+        finally:
+            candidate.unlink(missing_ok=True)
+        print(f"SystemC model dependency record published: {record_path}", flush=True)
+        return record_path
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--prefix", default=str(REPO_ROOT / "third_party"))
@@ -1237,6 +1601,24 @@ def main() -> int:
         default=max(1, os.cpu_count() or 1),
         help="parallel build job count for --bulk-model-deps",
     )
+    parser.add_argument(
+        "--systemc-model-deps",
+        action="store_true",
+        help=(
+            "clean-build and delta-event-test the pinned SystemC model dependency, "
+            "then atomically publish its conformance record"
+        ),
+    )
+    parser.add_argument(
+        "--systemc-model-root",
+        help="managed SystemC-model root (defaults to <prefix>/systemc-model)",
+    )
+    parser.add_argument(
+        "--systemc-jobs",
+        type=int,
+        default=max(1, os.cpu_count() or 1),
+        help="parallel build job count for --systemc-model-deps",
+    )
     parser.add_argument("--all", action="store_true", help="fetch every pinned dependency")
     args = parser.parse_args()
 
@@ -1252,10 +1634,17 @@ def main() -> int:
         if args.bulk_model_root
         else prefix / "bulk-model"
     )
+    systemc_root = (
+        pathlib.Path(args.systemc_model_root).absolute()
+        if args.systemc_model_root
+        else prefix / "systemc-model"
+    )
     if args.numeric_model_deps or args.numeric_model_sources or args.all:
         prepare_managed_directory(numeric_root)
     if args.bulk_model_deps or args.all:
         prepare_managed_directory(bulk_root)
+    if args.systemc_model_deps or args.all:
+        prepare_managed_directory(systemc_root)
     versions = load_versions()
 
     if args.all or args.python:
@@ -1295,6 +1684,9 @@ def main() -> int:
     if args.all or args.bulk_model_deps:
         build_bulk_model_dependencies(versions, bulk_root, args.bulk_jobs)
 
+    if args.all or args.systemc_model_deps:
+        build_systemc_model_dependency(versions, systemc_root, args.systemc_jobs)
+
     if not (
         args.all
         or args.python
@@ -1306,6 +1698,7 @@ def main() -> int:
         or args.numeric_model_sources
         or args.numeric_model_deps
         or args.bulk_model_deps
+        or args.systemc_model_deps
     ):
         parser.print_help()
     return 0

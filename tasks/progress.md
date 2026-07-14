@@ -68,7 +68,7 @@ Q22.C + validated PMU/timing environment -> Q22.P (deferred)
 
 | 执行位置 | Tracking ID | Semantic key | 状态 | 必须满足的前置 | 当前动作 / 完成要求 | 设计 owner |
 | --- | --- | --- | --- | --- | --- | --- |
-| numeric+host汇合 | Q22.S | `target-systemc-event-model` | `doing` | Q22.N、Q22.H、Q16.T | 建立默认关闭的SystemC feature、rank/tile memory、单一保守logical issue domain、checked target-call effect、local completion及Direct DTE/FSM；只发布untimed/delta-cycle functional-event profile。实施计划：`tasks/plans/systemc-functional-event-model.md`。 | 13、16、17 |
+| numeric+host汇合 | Q22.S | `target-systemc-event-model` | `doing` | Q22.N、Q22.H、Q16.T | 受管SystemC 3.0.2 archive/source/install/package/license及五项build/consumer/delta-event gate、默认关闭feature、缺依赖configuration failure和feature-off link closure已闭合；当前进入不含SystemC header的rank/tile memory、checked target-call effect与numeric context，随后实现单一保守logical issue domain、local completion及Direct DTE/FSM。只发布untimed/delta-cycle functional-event profile。实施计划：`tasks/plans/systemc-functional-event-model.md`。 | 13、16、17 |
 | bulk+SystemC汇合 | Q22.V | `target-model-source-verticals` | `blocked` | Q22.B、Q22.S、Q20、Q21 | 由同一wafer-compile执行Q20 f32、source-produced f16/bf16 GEMM、Q21 16-rank tiny Llama及超过formal budget的deterministic source-backed large GEMM，比较all-and-only完整输出并闭合atomic failure。 | 16、17 |
 | 近期模型发布 | Q22 | `target-execution-model` | `blocked` | Q22.V | Q22.V已传递闭合Q22.N/L/B/H/S；本row只汇总model-only untimed functional-numeric发布状态，不另实现平行pipeline，也不声明board、vendor-exact packet、exact ELF或timing。 | 10、11、14、15、16、17 |
 
