@@ -3,8 +3,9 @@
 更新时间：2026-07-14
 
 本文件只做任务队列管控，不声明架构合同。架构、IR/artifact 边界和 completion gate 以对应编号设计文档
-为准。当前没有 active 实施计划；已完成的单卡纵向计划移入archive。Q22已收敛为untimed SystemC数值功能模型及后续
-板端numeric correlation方案，实现开工前再在`tasks/plans/`建立独立实施计划。
+为准。当前没有 active 实施计划；已完成的单卡纵向计划移入archive。Q22已收敛为先闭合完整multi-dtype numeric
+foundation、再接untimed SystemC数值功能模型及后续板端numeric correlation的方案，实现开工前再在`tasks/plans/`
+建立独立实施计划。
 
 2026-07-10 的长周期计划已移入 `tasks/archive/2026-07-10-long-horizon-plans/`，只作历史背景。其
 Proto/WCRE/registry/lease/rank-class 等未实现对象不再作为 correctness 前置。重基线证据和旧任务映射见
@@ -49,7 +50,7 @@ Q22.C + validated PMU/timing environment -> Q22.P (deferred)
 | Q19.M | `reference-multirank` | `done` | Q19、Q16.T | bundle-level API在导入input前投影all-and-only accepted Direct DTE ranks，以logical-rank和typed message/control-instance canonical order确定性重放到wait；send先snapshot、matched recv下轮注入各rank独立SPM/DDR，不使用thread/timeout/visitation ordinal。16-rank两轮structured-loop pairwise permute从真实group pipeline通过，typed partitioned slices重组完整global tensor；bytes mismatch、duplicate recv、unmatched endpoint/token和structured no-progress/deadlock均fail closed。本批`check-wafer`新鲜执行42个C++ unit和235个lit（234 pass、1 unsupported），CTest 3/3通过。 | 13、16 |
 | Q20 | `single-card-linear-mlp` | `done` | Q5.C、Q19.M | 真实exported linear-residual MLP已由同一`wafer-compile`分别以rank-count=1/16完成grouped program、accepted bundle、all-and-only ELF/manifest、逐entry no-card preflight及完整NumPy CPU reference比较。generic typed NPY invocation按accepted slice加载input/parameter；16-rank replicated `TransportContract::None`不再误绑Direct DTE。错误expected返回非零但保留已验证package供审计。 | 01、16 |
 | Q21 | `single-card-tiny-llama` | `done` | Q20 | pinned tiny Llama decoder block已由同一`wafer-compile`完成16-rank mandatory candidate、accepted bundle、all-and-only ELF/manifest、完整NumPy CPU differential和显式Direct DTE environment下的逐entry no-card preflight；constant provenance/global清理、static collapse alias、reduce/i1 predicate/batched GEMM reference、tile-region result DDR lifetime及user input position/ABI index边界均沿正式pipeline闭合。本批43个C++ unit、237个lit（236 pass、1 unsupported）及CTest 3/3通过；board仍属于Q6.B。 | 01、05、06、10、11、12、13、15、16 |
-| Q22 | `target-execution-model` | `doing` | Q17、Q18、Q19.M、Q21 | 实现owner-backed fully legal target LLVM bundle、同源repo CRT host build、project-owned packet、untimed/delta-cycle SystemC event模型和独立plain C++ numeric kernels；先闭合rank-count=1 f32 linear/MLP，再扩rank-count=16和Direct DTE，完整输出与独立Q19/CPU比较。SystemC只对target-model feature必需；direct shim不能替代正式gate。Q22只发布model-only functional-numeric profile，不要求board、vendor-exact packet、exact ELF、PMU或timing。 | 14、15、16、17 |
+| Q22 | `target-execution-model` | `doing` | Q17、Q18、Q19.M、Q21 | 先闭合multi-dtype numeric foundation：13种storage format codec/bitpacking、当前七种compute/convert format、36条convert route、四种确定性rounding、完整operand/product/accumulator/intermediate/destination signature、formal scalar backend与独立oracle及current accepted capability closure；zero-point/stochastic保留显式model candidate但不冒充硬件。随后实现owner-backed fully legal target LLVM bundle、同源repo CRT host build、project-owned packet和untimed/delta-cycle SystemC event模型，以rank-count=1 f32 MLP作为首个完整系统consumer，再扩rank-count=16和Direct DTE。SystemC只对target-model feature必需；direct shim不能替代正式gate。Q22只发布model-only functional-numeric profile，不要求board、vendor-exact packet、exact ELF、PMU或timing。 | 14、15、16、17 |
 
 Q0 与 Q5.C 在 Q14 完成后可并行；其它任务严格按直接前置解锁。Q0只拥有单entry/rank的formal
 conversion、legality、complete traversal、completion和atomic source gate；不依赖Q17 all-rank target
@@ -61,7 +62,7 @@ publication、Q19 reference numeric或Q20/Q21 workload vertical，后者也不�
 | --- | --- | --- | --- | --- | --- |
 | Q6.B | `runtime-board` | `later` | Q21 + configured board | 实际allocation/load/copy/launch/transport/completion/error和完整输出数值比较；未实际执行时保持later/blocked。 | 15、16 |
 | Q9 | `cost-calibration` | `later` | Q6.B + profile environment | 只用owner-backed board/profile evidence校准合法候选排序；不影响语义合法性。 | 06、16 |
-| Q22.C | `target-model-numeric-correlation` | `later` | Q22、Q6.B + configured numeric corpus | 以同op/dtype/optional-field的板端区分向量、重复随机held-out及Q20/Q21完整输出，将Q22 untimed model与板端raw output/status相关；确定性行为逐bit，浮点按op/dtype发布明确bit-exact或atol/rtol/ULP政策。结果绑定device/firmware/runtime/CRT身份和tested domain；独立packet/MMIO evidence只提升packet provenance，不是前置。该gate不证明exact-module或timing。 | 16、17 |
+| Q22.C | `target-model-numeric-correlation` | `later` | Q22、Q6.B + configured numeric corpus | 逐capability row校准Q22已实现的13种storage effect、七种compute/convert format、rounding、accumulator和optional-field候选；以板端区分向量、重复随机held-out及Q20/Q21完整输出相关raw output/status，选择或拒绝target numeric policy。确定性行为逐bit，浮点按op/dtype发布明确bit-exact或atol/rtol/ULP政策。结果绑定device/firmware/runtime/CRT身份和tested domain；独立packet/MMIO evidence只提升packet provenance，不是前置。该gate不证明exact-module或timing。 | 16、17 |
 | Q22.E | `target-model-package-execution` | `later` | Q18、Q22 + configured vendor simulator/ISS | 通过typed RuntimeProvider消费原样verified package并执行all-and-only RISC-V ELF、loader ABI、MMIO/Direct DTE和完整provider lifecycle；direct ABI smoke、Host-CRT/SystemC或重编译host module不能冒充该gate。 | 15、16、17 |
 | Q22.P | `target-model-timing-calibration` | `later` | Q22.C + validated PMU/timing environment | deferred：只在另行恢复后验证measurement basis并校准LT/AT参数；不改变numeric语义，不成为Q22、Q22.C或Q22.E前置。没有RTL/vendor cycle证据不声明cycle accuracy。 | 16、17 |
 | Q3.6 | `crt-writeback-scalar` | `later` | Q0、Q17 | count writeback需要明确result/ABI后再恢复，不能只加CRT stub。 | 11、14 |
@@ -137,13 +138,17 @@ cache、segmented MoE、70B/100GB stress和完整ELF ABI-note体系。需要恢�
 ### Q22 `target-execution-model`
 
 - Q19仍是独立accepted-IR oracle；target model不能复用其compute kernel、rounding policy或Direct DTE scheduler。
+- 首个SystemC workload前必须闭合13种storage codec/bitpacking、七种compute/convert descriptor、36条convert route、四种
+  确定性rounding、完整numeric signature、formal scalar backend与独立oracle；current compiler-emittable tuple有唯一
+  kernel/comparator或静态unsupported reason。zero-point/stochastic候选不在板端事实前升级hardware policy。
 - 正式model-only functional-numeric基线消费tasks/14 full conversion形成的all-and-only owner-backed target LLVM modules及typed ABI
   slots，经同源repo CRT wrapper、project-owned Tsm operator/packet builder和SystemC执行；不读取planner trace、不复制
   schedule，也不改变Q17/Q18 publication。direct target-call shim只作ABI smoke。
 - structural capability preflight先于input import/model mutation；unknown symbol/factory/static profile、slot/address plan和
   transport endpoint fail closed。运行时packet、computed address、dynamic descriptor/numeric tuple在对应transaction effect
   前拒绝；任一rank late failure无partial successful result。
-- 真实rank-count=1/16 source-backed产物的完整输出与Q19/CPU按显式tolerance一致；SystemC-enabled formal tests必须
+- numeric foundation通过后，以f32 MLP作为首个完整系统consumer；真实rank-count=1/16 source-backed产物的完整输出与
+  Q19/CPU按显式per-op/dtype policy一致；SystemC-enabled formal tests必须
   实际执行，不能由unavailable/skipped或plain C++ kernel unit替代。
 - repo CRT host build形成的是project-derived packet；它在Q22内验证compiler/CRT/model functional-numeric链和project
   packet的decode/memory component合同。独立exact-ELF register trace、board capture或versioned vendor builder只作为

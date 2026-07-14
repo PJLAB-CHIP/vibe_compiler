@@ -241,7 +241,10 @@ reference executor不是cycle/packet simulator，不证明CRT wrapper、真实tr
 
 target execution model是与reference并列的下游consumer：近期从tasks/14 full conversion形成的owner-backed、
 不可序列化target LLVM bundle执行same typed CRT ABI。direct host shim只作ABI smoke；正式untimed functional-numeric路径调用与
-device build同源的repo CRT wrapper，经project-owned Tsm operator/packet builder进入SystemC，并用Q19/CPU作独立oracle。
+device build同源的repo CRT wrapper，经project-owned Tsm operator/packet builder进入SystemC。Q22在首个f32 workload
+vertical前先闭合13种storage format、当前七种compute/convert format、完整accumulator/intermediate/rounding policy和
+formal numeric backend；SystemC只消费该基础层，并用Q19/CPU作独立oracle。format codec存在不扩大compiler legality，
+外部CPU库默认行为也不构成hardware policy。
 Q22.C再消费Q22 model result和Q6.B board result，按逐op/dtype profile发布tested domain内的board-output-correlated
 numeric evidence；独立packet/MMIO trace闭合后才增加hardware-correlated-numeric和packet provenance，不是Q22.C前置。
 exact package/RISC-V ELF是更高、互不冒充的证据入口。只有exact module通过tasks/15
@@ -283,7 +286,7 @@ package execution；Q22.P timing calibration保持deferred，
 | target conversion、CRT、device link/publication | 14 |
 | typed manifest、runtime | 15 |
 | all stage gates、reference、target-model和board证据 | 16 |
-| target execution model、SystemC主架构边界、板端numeric correlation和deferred timing | 17 |
+| target execution model、multi-dtype numeric foundation、SystemC主架构边界、板端numeric correlation和deferred timing | 17 |
 
 当前没有active实施计划；target execution model方案已在tasks/17收敛，进入代码施工前再建立计划。
 
