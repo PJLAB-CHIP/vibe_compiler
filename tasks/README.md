@@ -27,7 +27,7 @@
 | 14 | `tasks/14-target-llvm-golden-packet.md` | shared logical/target-format registry、structure-preserving target LLVM、CRT ABI和atomic staged target module |
 | 15 | `tasks/15-launch-runtime-package.md` | typed C++ manifest、canonical JSON、no-card RuntimeSession和board adapter边界 |
 | 16 | `tasks/16-verification-plan.md` | target correctness、1/16-rank bundle、reference、target-model、no-card和board分层gate |
-| 17 | `tasks/17-target-execution-model.md` | multi-dtype numeric、oneDNN bulk、owner-backed target LLVM bundle、direct ABI smoke、Host-CRT/SystemC untimed CModel、Q22.C板端numeric correlation、Q22.E exact-module和deferred Q22.P timing边界 |
+| 17 | `tasks/17-target-execution-model.md` | multi-dtype numeric、oneDNN bulk、owner-backed target LLVM bundle、repo-owned target-call/SystemC untimed CModel、optional CRT/packet provenance、Q22.C板端numeric correlation、Q22.E exact-module和deferred Q22.P timing边界 |
 
 ### Pipeline Owner 索引
 
@@ -51,13 +51,13 @@
 
 ## 实施计划导航
 
-当前没有active实施计划；Q22.B/Q22.L/Q22.N/Q0.L计划分别归档为
+当前active实施计划是`tasks/plans/systemc-functional-event-model.md`，对应Q22.S。Q22.B/Q22.L/Q22.N/Q0.L/Q22.H
+计划分别归档为
 `tasks/archive/target-bulk-qualification.md`、`tasks/archive/target-llvm-module-bundle.md`、
-`tasks/archive/target-numeric-foundation.md`和`tasks/archive/target-command-legality-closure.md`，Q22.R readiness归档为
-`tasks/archive/target-model-readiness.md`。Q22.L完成且
-external authorization/spec gate满足后，Q22.H host seam才解锁。Q22.N+Q22.H在Q22.S
-SystemC event model汇合，已完成的Q22.B与Q22.S再由Q22.V source vertical闭合并汇总到Q22；各代码任务开工前都需
-独立计划。动态执行状态只看`tasks/progress.md`。
+`tasks/archive/target-numeric-foundation.md`、`tasks/archive/target-command-legality-closure.md`和
+`tasks/archive/target-call-functional-frontend.md`，Q22.R readiness归档为`tasks/archive/target-model-readiness.md`。
+Q22.N+Q22.H现已在Q22.S SystemC event model汇合，已完成的Q22.B与Q22.S再由Q22.V source vertical闭合并汇总到Q22；
+各代码任务开工前都需独立计划。动态执行状态只看`tasks/progress.md`。
 
 ## 归档文档
 
@@ -70,6 +70,7 @@ docs、`tasks/progress.md` 和本轮已收敛设计结论为准。
 | `tasks/archive/target-bulk-qualification.md` | 已完成Q22.B的受管oneDNN、target-owned adapter、三阶段资格producer和runtime exact-match admission实施记录 |
 | `tasks/archive/target-llvm-module-bundle.md` | 已完成Q22.L的owner-backed all-rank LLVM module、typed readback和single-lowering device-link接入记录 |
 | `tasks/archive/target-numeric-foundation.md` | 已完成Q22.N的typed numeric schema、受管formal依赖、13-format codec和formal kernel实施记录 |
+| `tasks/archive/target-call-functional-frontend.md` | 已完成Q22.H的owner-safe host JIT、typed target-call registry/decoder和atomic sink实施记录 |
 | `tasks/archive/target-model-readiness.md` | Q21 reduce、numeric/SystemC依赖与host-CRT seam implementation-readiness实证 |
 | `tasks/archive/01-design-docs-gap-review.md` | 历史设计缺口审计 |
 | `tasks/archive/02-source-organization-recovery.md` | 历史源码组织恢复记录 |

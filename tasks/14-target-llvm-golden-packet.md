@@ -54,7 +54,7 @@ Pipeline position:
   rank、entry symbol、relative delivery path、content digest和必要ABI摘要；all-rank typed records与逐字段相同的
   `ExecutionConfig`组成atomic `TargetArtifactBundle`。
 - Downstream consumer:
-  现有Q17 RISC-V device link和未来获授权的Q22.H host seam直接消费同一`TargetLLVMModuleBundle`；Q18 typed
+  现有Q17 RISC-V device link和Q22.H repo-owned target-call frontend直接消费同一`TargetLLVMModuleBundle`；Q18 typed
   PackageManifest/package transaction按同一registry映射并readback exact target/runtime-ABI identity。runtime module loader
   仍只通过Q18 verified package消费modules。
 - User-level driver / named pipeline:
@@ -321,15 +321,15 @@ diagnostic按稳定语义分类：
 ## 10. Current And Deferred Extensions
 
 - target execution model：Q22.L已经把tasks/14同一ABI preparation和full conversion结果提升为owner-backed、move-only、
-  不可序列化的all-rank `TargetLLVMModuleBundle`。现有RISC-V device link直接打印该bundle中的同一LLVM module；direct ABI
-  smoke与未来Host-CRT/SystemC model是后续直接consumer，不允许重跑lowering。正式model consumer
-  只有在tasks/17 external authorization/spec gate通过后才host执行同一target LLVM，调用与device build同源且获准host使用的
-  repo CRT wrapper，再经许可兼容Tsm operator/packet seam进入SystemC；direct shim只补ABI诊断。该bundle携带fully legal LLVM modules、canonical rank domain、每rank logical
+  不可序列化的all-rank `TargetLLVMModuleBundle`。现有RISC-V device link直接打印该bundle中的同一LLVM module；Q22.H
+  repo-owned target-call/SystemC model是后续直接consumer，不允许重跑instruction lowering。host clone只做native legality、
+  triple/data-layout retarget、dynamic-slot thunk和由shared typed call registry驱动的exact-signature context bridge；它不调用
+  repo CRT、不构造Tsm packet。该bundle携带fully legal LLVM modules、canonical rank domain、每rank logical
   rank/entry、`ExecutionConfig`、ordered typed ABI slots、target profile/identity、target/kernel ABI facts及context/owner
   lifetime；全部rank成功后才原子形成，不是packet artifact或package成员。Q17
-  `TargetArtifactBundle`的serialized合同不变，只把内部上游改为直接消费该bundle。Host-CRT/SystemC通过只能证明其明确provenance下repo CRT/host-packet的untimed
-  functional-numeric链，仍不执行RISC-V archive；在独立packet/MMIO事实源相关前不证明vendor-exact packet，Q22.C板端
-  numeric correlation也不替代该packet provenance；
+  `TargetArtifactBundle`的serialized合同不变，只把内部上游改为直接消费该bundle。target-call/SystemC通过只证明typed
+  call/ABI/event的untimed functional-numeric链，仍不执行repo CRT或RISC-V archive；Q22.K以后取得合法独立packet/MMIO
+  事实源才增加CRT/packet provenance，Q22.C板端numeric correlation也不替代该证据；
 - Q0.L已建立且Q22继续消费的typed format/encoding registry由tasks/14单一拥有，tasks/11 verifier、target lowering、CRT conformance和
   target model共同消费；它拥有shared `LogicalFormatDescriptor`（含TF32 raw32 container/semantic width）与
   target-profile×engine×format

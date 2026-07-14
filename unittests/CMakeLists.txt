@@ -5,6 +5,7 @@ add_executable(WaferUnitTests
   Compiler/DirectDTETransportTest.cpp
   Compiler/ReferenceExecutorTest.cpp
   Compiler/TargetArtifactTest.cpp
+  Compiler/TargetCallFrontendTest.cpp
   Compiler/TargetProfileTest.cpp
   Conversion/WaferGroupToTileRegionTest.cpp
   Dialect/Wafer/WaferDialectTest.cpp

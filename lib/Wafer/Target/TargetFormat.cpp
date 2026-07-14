@@ -504,6 +504,29 @@ findTargetFormatEncoding(TargetProfileId profile, TargetFormatEngine engine,
   return nullptr;
 }
 
+llvm::Expected<LogicalFormat> decodeTargetFormat(TargetProfileId profile,
+                                                 TargetFormatEngine engine,
+                                                 uint32_t dataFormatCode) {
+  const TargetFormatEncodingRecord *match = nullptr;
+  for (const TargetFormatEncodingRecord &record :
+       getTargetFormatEncodingRecords()) {
+    if (record.profile != profile || record.engine != engine ||
+        !record.isSupported() || !record.dataFormatCode ||
+        *record.dataFormatCode != dataFormatCode)
+      continue;
+    if (match)
+      return llvm::createStringError(
+          "target format code is not unique for the selected profile and "
+          "engine");
+    match = &record;
+  }
+  if (!match)
+    return llvm::createStringError(
+        "target format code is unsupported for the selected profile and "
+        "engine");
+  return match->format;
+}
+
 llvm::StringRef
 stringifyTargetFormatConstraint(TargetFormatConstraint constraint) {
   switch (constraint) {

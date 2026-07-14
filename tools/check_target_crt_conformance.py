@@ -311,6 +311,7 @@ def check_convert_route_contract(
     header_text: str,
     source_text: str,
     lowering_text: str,
+    registry_text: str,
     logical_formats: list[LogicalFormatFact],
 ) -> tuple[int, int, int]:
     routes = parse_convert_routes(target_format_text)
@@ -413,10 +414,18 @@ def check_convert_route_contract(
         r"targetProfile\)",
         "target convert preflight route verification",
     )
-    require_contains(
+    require_pattern(
         lowering_text,
-        'makeTargetSymbol("convert", op.getKind())',
-        "target convert CRT symbol lowering",
+        r"lowerConvert\(InstrConvertOp\s+op\).*?"
+        r"emitCall\(op\.getLoc\(\),\s*"
+        r"getTargetCallDescriptor\(op\.getKind\(\)\),\s*args\)",
+        "target convert typed descriptor lowering",
+    )
+    require_pattern(
+        registry_text,
+        r'\("convert_"\s*\+\s*stringifyEnum\(\*kind\)\)\.str\(\),\s*'
+        r"signature\(2,\s*3\),\s*\*kind",
+        "target convert shared registry ABI",
     )
     return group_counts["ZP"], group_counts["ROUND"], group_counts["PLAIN"]
 
@@ -663,6 +672,13 @@ def main() -> int:
         / "Target"
         / "LowerInstrToTargetLLVM.cpp"
     )
+    registry_text = read_text(
+        repo_root
+        / "lib"
+        / "Wafer"
+        / "Target"
+        / "TargetCall.cpp"
+    )
     target_format_text = read_text(
         repo_root / "lib" / "Wafer" / "Target" / "TargetFormat.cpp"
     )
@@ -681,6 +697,7 @@ def main() -> int:
         header_text,
         source_text,
         lowering_text,
+        registry_text,
         logical_formats,
     )
 

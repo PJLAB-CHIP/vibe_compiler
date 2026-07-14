@@ -244,10 +244,15 @@
   或明确合法的 runtime/loader 外部依赖。`tools/wafer_device_link.py` 能执行
   `.ll -> .o -> kcore .so` 不等于主线 gate 完成；required-symbol 检查必须拒绝未解释的
   `wafer_tx81_*` undefined symbol。
-- `tools/check_target_crt_symbols.py`从target lowering的literal symbol family和`WaferAttrs.td` enum
-  spelling推导production surface，再与CRT header/source和编译对象`nm`做exact closure；
+- `tools/check_target_crt_symbols.py`从稳定Target层的typed target-call registry和`WaferAttrs.td` enum
+  spelling推导109项production surface，并确认target lowering只消费该registry，再与CRT header/source和编译对象
+  `nm`做exact closure；
   `check_target_crt_conformance.py`从instruction verifier、target address lowering和CRT实现交叉证明关系。
   两者都不能解析`tasks/`或supporting Markdown marker作为expected ABI事实源。
+- owner-backed target LLVM在host JIT前使用闭集legality：只允许当前producer需要的integer metadata/control-flow和
+  direct registered calls，禁止generic intrinsic、global、pointer memory access、inline asm和间接/未知call；不能只拒绝
+  target intrinsic后就native retarget。跨rank可yield frontend必须先materialize全部rank，再由每rank process各调用一次
+  entry；rank显式记录not-started/running/terminal，sink以fallible prepare-commit和infallible commit分离验证与发布。
 - target LLVM call emission 输出给 `mlir-translate --mlir-to-llvmir` 前不能残留任何 Wafer op。target
   topology / execution mesh 在 target LLVM call emission 前是 fact source；lowering 完成后这些 metadata
   应被消费或剥离，并在发现其它 `wafer.*` op 残留时报错。pipeline 测试应把 target/mesh 放进输入，

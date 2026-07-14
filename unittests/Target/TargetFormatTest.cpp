@@ -255,6 +255,27 @@ TEST(TargetFormatTest, EncodingMatrixIsExplicitCompleteAndConservative) {
       nullptr);
 }
 
+TEST(TargetFormatTest, SupportedEngineCodesRoundTripThroughTypedDecoder) {
+  for (const wafer::TargetFormatEncodingRecord &record :
+       wafer::getTargetFormatEncodingRecords()) {
+    if (!record.isSupported())
+      continue;
+    ASSERT_TRUE(record.dataFormatCode.has_value());
+    llvm::Expected<wafer::LogicalFormat> decoded = wafer::decodeTargetFormat(
+        record.profile, record.engine, *record.dataFormatCode);
+    ASSERT_TRUE(static_cast<bool>(decoded))
+        << llvm::toString(decoded.takeError());
+    EXPECT_EQ(*decoded, record.format);
+  }
+
+  auto unsupported = wafer::decodeTargetFormat(
+      wafer::TargetProfileId::waferTx81SingleCardKernelV1(),
+      wafer::TargetFormatEngine::CT, 255);
+  ASSERT_FALSE(static_cast<bool>(unsupported));
+  EXPECT_NE(llvm::toString(unsupported.takeError()).find("unsupported"),
+            std::string::npos);
+}
+
 struct ExpectedConvertRoute {
   uint16_t opcode;
   llvm::StringLiteral spelling;

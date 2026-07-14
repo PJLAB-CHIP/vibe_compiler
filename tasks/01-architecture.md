@@ -115,7 +115,7 @@ partition；默认性能切分policy必须等有可验证的StableHLO↔SDY expo
 | Executable bundle | typed C++ `RankExecutable[]`/`ExecutableBundle` | explicit rank、entry、accepted module/resource/completion、atomic all-rank result | rejected candidates、runtime object |
 | Target module | LLVM dialect/IR、CRT call、device object/kcore module、digest | static rank program和target ABI | sharding/search/package planning |
 | Package/runtime | typed C++ manifest + canonical JSON、RuntimeSession | module/rank/entry/resource slot绑定和launch preflight | instruction schedule、重新规划 |
-| Target verification/runtime consumer | owner-backed fully legal target LLVM或未来verified package/exact module；invocation-local model state | direct ABI smoke、host-CRT/SystemC untimed functional-numeric、Q22.C board-correlated numeric profile、exact-module和deferred timing evidence | compiler planning、package字段、board完成 |
+| Target verification/runtime consumer | owner-backed fully legal target LLVM或未来verified package/exact module；invocation-local model state | repo-owned target-call/SystemC untimed functional-numeric、Q22.C board-correlated numeric profile、optional CRT/packet provenance、exact-module和deferred timing evidence | compiler planning、package字段、board完成 |
 
 Dialect边界不等于artifact边界。近期继续使用一个Wafer dialect并按op family组织源码；只有独立registration、
 conversion legality或依赖方向需要时才拆dialect。代码可以按语义library拆分，但不得用目录重排代替IR合同。
@@ -246,9 +246,8 @@ reference executor直接消费accepted instruction/memory facts：
 reference executor不是cycle/packet simulator，不证明CRT wrapper、真实transport、completion或性能。
 
 target execution model是与reference并列的下游consumer：近期从tasks/14 full conversion形成的owner-backed、
-不可序列化target LLVM bundle执行same typed CRT ABI。direct host shim只作ABI smoke；正式untimed functional-numeric路径调用与
-device build同源且获准host使用的repo CRT wrapper，并在tasks/17定义的external authorization/spec gate通过后，经许可兼容
-Tsm operator/packet seam进入SystemC。Q22在首个f32 workload
+不可序列化target LLVM bundle执行same typed target-call ABI。shared typed call registry和per-rank exact-signature bridge把
+实际动态call形成invocation-local transaction并进入SystemC；不编译repo CRT、不构造Tsm packet。Q22在首个f32 workload
 vertical前先闭合13种logical storage codec、有证据的target-profile×engine×format encoding、当前七种compute/convert format、
 `(ModelProfileId, NumericCommandKey) -> NumericSemanticsProfile`唯一映射和formal numeric backend；oneDNN只处理target codec解包后的dense
 tensor，并按完整profile进入bit-exact、profile-bounded或rejected admission。formal backend只在checked work budget内执行，
@@ -277,7 +276,7 @@ compiler/reference主干按以下依赖闭合：
 7. rank-count=16 linear/MLP；
 8. rank-count=16 tiny Llama。
 
-此后direct ABI smoke、Host-CRT/SystemC untimed functional-numeric model、configured board和exact-module provider按分层
+此后repo-owned target-call/SystemC untimed functional-numeric model、configured board和exact-module provider按分层
 证据管理。Q22不以board或packet capture为完成前置；Q6.B先闭合真实board execution，Q22.C再消费Q22 model result与
 Q6.B board result形成board-output-correlated numeric profile；独立packet/MMIO trace闭合后才升级packet/opcode
 provenance和hardware-correlated-numeric标签，不是Q22.C前置。Q22.E在configured simulator/ISS可用后闭合exact
@@ -300,11 +299,12 @@ package execution；Q22.P timing calibration保持deferred，
 | all stage gates、reference、target-model和board证据 | 16 |
 | target execution model、multi-dtype numeric/bulk、target LLVM bundle、SystemC主架构边界、板端numeric correlation和deferred timing | 17 |
 
-Q0.L、Q22.N、Q22.L和Q22.B已经完成，实施计划分别归档为`tasks/archive/target-command-legality-closure.md`、
+Q0.L、Q22.N、Q22.L、Q22.B和Q22.H已经完成，实施计划分别归档为`tasks/archive/target-command-legality-closure.md`、
 `tasks/archive/target-numeric-foundation.md`、`tasks/archive/target-llvm-module-bundle.md`与
-`tasks/archive/target-bulk-qualification.md`。当前没有满足全部前置的active实施计划。target execution model方案已在
+`tasks/archive/target-bulk-qualification.md`、`tasks/archive/target-call-functional-frontend.md`。当前active计划为
+`tasks/plans/systemc-functional-event-model.md`。target execution model方案已在
 tasks/17收敛，`tasks/progress.md`已把Q22拆成Q22.N
-numeric、Q22.B bulk、Q22.L target LLVM bundle、Q22.H authorized host CRT、Q22.S SystemC event和Q22.V source vertical等
+numeric、Q22.B bulk、Q22.L target LLVM bundle、Q22.H repo-owned target-call frontend、Q22.S SystemC event和Q22.V source vertical等
 独立可调度边界；各实现边界开工前仍需建立独立计划。
 
 审计证据：`tasks/archive/12-architecture-evidence-reset.md`。

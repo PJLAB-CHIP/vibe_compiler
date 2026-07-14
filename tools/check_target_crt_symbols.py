@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Check Wafer target CRT symbol closure from production code facts.
 
-The compiler lowering owns the set of target symbol families, Wafer TableGen
-enums own dynamic symbol suffixes, and the repo-local CRT header/source must
-exactly implement the resulting production surface. Target-illegal operations
-must not appear in the lowering-derived symbol registry.
+The shared typed target-call registry owns the exact production surface,
+Wafer TableGen enums own dynamic semantic spellings, and the repo-local CRT
+header/source must exactly implement it. Target lowering must consume the
+registry and must not retain a second symbol-construction path.
 """
 
 from __future__ import annotations
@@ -23,11 +23,8 @@ PROTOTYPE_RE = re.compile(
     r"\b(?:void|uint64_t)\s+(wafer_tx81_[A-Za-z0-9_]+)\s*\(([^;{}]*)\)\s*;",
     re.MULTILINE | re.DOTALL,
 )
-STATIC_TARGET_SYMBOL_RE = re.compile(
-    r'\bmakeTargetSymbol\(\s*"([a-z0-9_]+)"\s*\)'
-)
-DYNAMIC_TARGET_SYMBOL_RE = re.compile(
-    r'\bmakeTargetSymbol\(\s*"([a-z0-9_]+)"\s*,'
+STATIC_REGISTRY_STEM_RE = re.compile(
+    r'\badd(?:Void)?\(\s*"([a-z0-9_]+)"\s*,'
 )
 ENUM_CASE_RE = re.compile(
     r'\bdef\s+(Wafer_[A-Za-z0-9_]+)\s*:\s*I32EnumAttrCase<'
@@ -41,7 +38,6 @@ DYNAMIC_SYMBOL_ENUMS = {
     "convert": "InstrConvertKind",
     "pool": "InstrPoolKind",
     "unpool": "InstrUnpoolKind",
-    "peripheral": "InstrPeripheralKind",
 }
 
 TARGET_ILLEGAL_SYMBOLS = {
@@ -90,48 +86,103 @@ def parse_enum_spellings(attrs_text: str, enum_name: str) -> set[str]:
     return spellings
 
 
-def potential_symbols_from_lowering(
-    lowering_text: str, attrs_text: str
+def enum_value_spellings(attrs_text: str) -> dict[str, str]:
+    values = dict(
+        re.findall(
+            r'\bI32EnumAttrCase<\s*"([A-Za-z0-9_]+)"\s*,\s*'
+            r'-?[0-9]+\s*,\s*"([a-z0-9_]+)"\s*>',
+            attrs_text,
+            re.DOTALL,
+        )
+    )
+    if not values:
+        fail("cannot parse Wafer TableGen enum value spellings")
+    return values
+
+
+def production_symbols_from_registry(
+    registry_text: str, lowering_text: str, attrs_text: str
 ) -> set[str]:
-    static_bases = set(STATIC_TARGET_SYMBOL_RE.findall(lowering_text))
-    dynamic_bases = set(DYNAMIC_TARGET_SYMBOL_RE.findall(lowering_text))
-    if not static_bases:
-        fail("no literal makeTargetSymbol calls found in target lowering")
+    if '"Wafer/Target/TargetCall.h"' not in lowering_text:
+        fail("target lowering does not include the shared target-call registry")
+    if "makeTargetSymbol" in lowering_text:
+        fail("target lowering retains the old symbol-construction path")
 
-    unknown_dynamic = sorted(dynamic_bases - set(DYNAMIC_SYMBOL_ENUMS))
-    stale_registry = sorted(set(DYNAMIC_SYMBOL_ENUMS) - dynamic_bases)
-    if unknown_dynamic:
+    static_bases = set(STATIC_REGISTRY_STEM_RE.findall(registry_text))
+    if len(static_bases) != 15:
         fail(
-            "dynamic target symbol families have no enum registry: "
-            + ", ".join(unknown_dynamic)
+            "target-call registry must contain 15 fixed call stems, found "
+            f"{len(static_bases)}"
         )
-    if stale_registry:
-        fail(
-            "dynamic target symbol enum registry has no lowering call: "
-            + ", ".join(stale_registry)
-        )
-
     symbols = {f"wafer_tx81_{base}" for base in static_bases}
     for base, enum_name in DYNAMIC_SYMBOL_ENUMS.items():
+        require = re.search(
+            rf'"{re.escape(base)}_"\s*\+\s*stringifyEnum\(\*kind\)',
+            registry_text,
+        )
+        if not require:
+            fail(f"target-call registry has no typed {base} family construction")
         symbols.update(
             f"wafer_tx81_{base}_{spelling}"
             for spelling in parse_enum_spellings(attrs_text, enum_name)
         )
+
+    conv_match = re.search(
+        r"static\s+llvm::StringRef\s+convStem\s*\(.*?\n\}",
+        registry_text,
+        re.DOTALL,
+    )
+    if not conv_match:
+        fail("cannot find typed convolution stem registry")
+    conv_stems = set(re.findall(r'return\s+"([a-z0-9_]+)"', conv_match.group(0)))
+    if len(conv_stems) != 3:
+        fail(f"expected 3 convolution stems, found {sorted(conv_stems)}")
+    symbols.update(f"wafer_tx81_{stem}" for stem in conv_stems)
+
+    enum_spellings = enum_value_spellings(attrs_text)
+    peripheral_kinds = set(
+        re.findall(
+            r"addPeripheral\(InstrPeripheralKind::([A-Za-z0-9_]+)",
+            registry_text,
+        )
+    )
+    if len(peripheral_kinds) != 7:
+        fail(
+            "target-call registry must contain 7 admitted peripheral kinds, "
+            f"found {sorted(peripheral_kinds)}"
+        )
+    missing_peripheral_spellings = sorted(peripheral_kinds - set(enum_spellings))
+    if missing_peripheral_spellings:
+        fail(
+            "peripheral registry kinds have no TableGen spelling: "
+            + ", ".join(missing_peripheral_spellings)
+        )
+    symbols.update(
+        f"wafer_tx81_peripheral_{enum_spellings[kind]}"
+        for kind in peripheral_kinds
+    )
+    if len(symbols) != 109:
+        fail(f"target-call registry must close 109 symbols, found {len(symbols)}")
     return symbols
 
 
 def production_symbols_from_code(
-    lowering_text: str, attrs_text: str, instruction_ops_text: str
+    registry_text: str,
+    lowering_text: str,
+    attrs_text: str,
+    instruction_ops_text: str,
 ) -> set[str]:
-    potential_symbols = potential_symbols_from_lowering(lowering_text, attrs_text)
+    production_symbols = production_symbols_from_registry(
+        registry_text, lowering_text, attrs_text
+    )
     non_production_symbols = set(TARGET_ILLEGAL_SYMBOLS) | set(
         VERIFIER_REJECTED_SYMBOLS
     )
-    stale_exclusions = sorted(non_production_symbols - potential_symbols)
-    if stale_exclusions:
+    accidentally_registered = sorted(non_production_symbols & production_symbols)
+    if accidentally_registered:
         fail(
-            "non-production target symbol registry is stale: "
-            + ", ".join(stale_exclusions)
+            "target-call registry contains non-production symbols: "
+            + ", ".join(accidentally_registered)
         )
     for symbol, verifier_marker in VERIFIER_REJECTED_SYMBOLS.items():
         if verifier_marker not in instruction_ops_text:
@@ -139,7 +190,7 @@ def production_symbols_from_code(
     for symbol, target_marker in TARGET_ILLEGAL_SYMBOLS.items():
         if target_marker not in lowering_text:
             fail(f"{symbol} is not proven unreachable by target lowering")
-    return potential_symbols - non_production_symbols
+    return production_symbols
 
 
 def parse_prototypes(header_text: str) -> dict[str, str]:
@@ -191,15 +242,19 @@ def main() -> int:
     lowering_path = (
         repo_root / "lib" / "Wafer" / "Transforms" / "Target" / "LowerInstrToTargetLLVM.cpp"
     )
+    registry_path = (
+        repo_root / "lib" / "Wafer" / "Target" / "TargetCall.cpp"
+    )
 
     header_text = read_text(header_path)
     source_text = read_text(source_path)
     attrs_text = read_text(attrs_path)
     instruction_ops_text = read_text(instruction_ops_path)
     lowering_text = read_text(lowering_path)
+    registry_text = read_text(registry_path)
 
     production_symbols = production_symbols_from_code(
-        lowering_text, attrs_text, instruction_ops_text
+        registry_text, lowering_text, attrs_text, instruction_ops_text
     )
     prototypes = parse_prototypes(header_text)
     # Macro-generated CRT definitions keep their concrete public symbol as a
@@ -232,7 +287,7 @@ def main() -> int:
         check_defined_symbols(production_symbols, sys.stdin.read())
     print(
         f"checked {len(production_symbols)} production wafer_tx81_* CRT symbols "
-        "from target lowering and Wafer enum registry"
+        "from the shared typed target-call registry"
     )
     return 0
 

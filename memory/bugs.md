@@ -341,3 +341,12 @@
 - 修复模式：对已固定为F32 accumulator的F16/BF16/F32同dtype row，target codec先精确提升为F32 dense input，oneDNN只做
   一次F32 MatMul，再由formal GEMM finalize按原destination格式舍入并target-pack。其它低精度、TF32或integer profile必须
   建立独立typed adapter和资格记录，不能沿用这个结论或偷偷fallback到逐MAC scalar loop。
+
+## 2026-07-14 跨rank同步wait不能藏在顺序host执行器内部
+
+- 现象：host frontend按rank顺序完整调用entry时，首个rank可在Direct DTE wait中等待尚未开始的peer，后续rank永远没有
+  执行机会；若只用terminal bool，调度器还可在首个entry yield期间再次进入同一rank。
+- 根因：把“全部rank先materialize”误当成“顺序执行也能表达多rank同步”，并把rank运行中和未开始合并为同一状态。
+- 修复模式：prepare阶段原子完成全部rank clone/JIT/slot复制且不触发sink；SystemC先创建全部rank `SC_THREAD`，每个process
+  只调用一次rank entry，让同步sink的`wait()`保留该JIT stack。rank使用not-started/running/terminal三态，重复或非法rank
+  立即abort并唤醒其它process；顺序convenience入口只能服务明确不会跨ranksuspend的component sink。

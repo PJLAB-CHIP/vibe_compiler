@@ -142,6 +142,11 @@ llvm::ArrayRef<TargetFormatEncodingRecord> getTargetFormatEncodingRecords();
 const TargetFormatEncodingRecord *
 findTargetFormatEncoding(TargetProfileId profile, TargetFormatEngine engine,
                          LogicalFormat format);
+/// Decodes one engine-specific ABI format field. Unsupported rows and enum
+/// codes that are not uniquely admitted by the registry fail closed.
+llvm::Expected<LogicalFormat> decodeTargetFormat(TargetProfileId profile,
+                                                 TargetFormatEngine engine,
+                                                 uint32_t dataFormatCode);
 llvm::StringRef
 stringifyTargetFormatConstraint(TargetFormatConstraint constraint);
 llvm::StringRef
