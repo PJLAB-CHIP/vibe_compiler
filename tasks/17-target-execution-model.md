@@ -1,13 +1,14 @@
 # Wafer Target Execution Model（CModel）
 
-状态：2026-07-14调研修订。本文固定target execution model的证据边界、SystemC/TLM主架构、实现分层和板端
-校准计划；当前尚无production实现，任务状态看`tasks/progress.md`。本文不复制总体架构、instruction schedule或完整register/
+状态：2026-07-14方案收敛。本文固定以数值正确性为近期目标的untimed target execution model、SystemC/TLM边界、
+实现分层和板端numeric correlation计划；timing calibration仅作为deferred extension。当前尚无production实现，任务状态看
+`tasks/progress.md`。本文不复制总体架构、instruction schedule或完整register/
 packet硬件事实表；第3节只给出用于界定模型claim的non-normative摘要。compiler、target、runtime和verification的
 既有合同分别仍由`tasks/01`、`tasks/14`、`tasks/15`和`tasks/16`拥有。
 
-本文把日常所称的CModel限定为**目标相关执行模型**：它位于accepted executable之后，以当前target ABI、
-packet、address space、engine和completion事实执行程序，并与独立reference/CPU结果比较。它不是Q19
-ReferenceExecutor的别名，也不因采用SystemC就自动获得packet、timing或cycle accuracy。
+本文把日常所称的CModel限定为**目标相关、非cycle-accurate的数值功能模型**：它位于accepted executable之后，以当前
+target ABI、packet、address space、engine和completion事实执行程序，并与独立reference/CPU及后续board结果比较。它不是
+Q19 ReferenceExecutor的别名，也不因采用SystemC就自动获得vendor packet、hardware numeric、timing或cycle accuracy。
 
 ## 1. 目标和非目标
 
@@ -15,16 +16,18 @@ ReferenceExecutor的别名，也不因采用SystemC就自动获得packet、timin
 
 - 让同一份accepted rank program在RISC-V device link之外多一个目标相关consumer，尽早暴露instruction-to-target
   lowering、typed CRT call、地址、descriptor、engine和Direct DTE错误；
-- 以SystemC作为正式target model的模块、并发、event和simulation-time容器，以TLM承载MMIO、DDR和fabric事务；
+- 以SystemC作为正式target model的模块、并发和event容器，以TLM承载必要的MMIO、DDR和fabric事务；近期只发布
+  untimed/delta-cycle profile，不建立任意时间参数；
 - 把算子数值、packet decode和checked memory effect保留为不依赖SystemC的plain C++ kernel，使其可做独立unit/
   differential test，并由SystemC modules调用；
 - 让同一份repo-local CRT源码的host build经过CModel-compatible `TsmNew*`/operator/execute/MMIO seam、实际
   `Tsm*Instr`构造和`TsmExecute`进入模型，
   不以绕过CRT/packet的host shim代替正式CModel路径；
 - 保持Q19 ReferenceExecutor和CPU oracle独立，以differential定位compiler lowering、模型实现和硬件行为差异；
-- 对已由静态证据支持的功能/事务行为显式建模，对未知numeric、queue、bank和timing行为在执行前fail closed或
-  保持参数化；
-- 用真实board microbench、PMU和source-backed package逐级校准模型，并保留原始证据、环境身份和held-out验证结果。
+- 对已由静态证据支持的功能/事务行为显式建模；未知numeric在执行前fail closed，未知queue/bank/timing不进入近期
+  correctness claim；
+- 用真实board single-op区分向量、重复随机held-out和source-backed workload校准numeric profile，并保留原始bytes/status、
+  环境身份和evidence digest。
 
 非目标：
 
@@ -34,6 +37,7 @@ ReferenceExecutor的别名，也不因采用SystemC就自动获得packet、timin
 - 不把direct host shim称为CRT/packet执行，也不把Host-CRT/SystemC的project packet称为vendor-exact packet或RISC-V ELF执行；
 - 不把model completion称为board completion，也不在板端证据前声明hardware-bit-exact、performance-accurate或
   cycle-accurate；
+- 不把PMU、latency、throughput、LT/AT或cycle calibration作为Q22或Q22.C的近期完成前置；
 - 不让SystemC成为基础compiler、reference executor、package parser或no-card runtime的强制依赖；target-model feature
   一旦启用则SystemC是正式模型依赖，且SystemC对象不写入compiler IR、ExecutableBundle或package。
 
@@ -57,24 +61,25 @@ Pipeline position:
   output tensors、model/profile provenance和可选typed diagnostic trace。结果不进入compiler IR、
   ExecutableBundle、TargetArtifactBundle或PackageManifest，也不作为后续planning输入。
 - Downstream consumer:
-  tasks/16 differential/CI、board bring-up、exact-module闭合后的同package model/board correlation，以及板端证据
-  闭合后的独立timing calibration；target model结果不是compiler transformation输入。
+  tasks/16 differential/CI和Q22.C board numeric correlation；Q22.E exact-module与deferred Q22.P timing calibration是
+  独立consumer。target model结果不是compiler transformation输入。
 - User-level driver / named pipeline:
   首个正式CModel gate由wafer-compile在Q17/Q18原子发布后、同一invocation仍持有target LLVM bundle时进入显式
   target-model execution mode：host执行target LLVM并调用同源host CRT，CRT再向SystemC model发packet/event。
   wafer-opt/pass chain和direct shim只补局部测试。只有exact package/ELF执行闭合后，wafer-run才通过typed
   RuntimeProvider选择target model并消费verified package，不能用host-only模式冒充该入口。
 - Explicit non-goals:
-  不复制instruction schedule，不改变manifest语义，不用Q19执行结果驱动target model，不把untimed或
-  loosely-timed结果升级为board/cycle证据，不用代表rank、手写LLVM、手写packet或单个kernel替代真实纵向链。
+  不复制instruction schedule，不改变manifest语义，不用Q19执行结果驱动target model，不把untimed结果升级为
+  board/timing/cycle证据，不用代表rank、手写LLVM、手写packet或单个kernel替代真实纵向链。
 - Completion gate:
   SystemC host-CRT/transaction基线必须执行同一wafer-compile产生的rank-count=1/16 source-backed program，覆盖
   all-and-only fully legal target LLVM ranks、同源CRT、实际project packet构造、完整typed ABI、SPM/DDR、当前
   supported engine和Direct DTE状态，
-  与独立Q19/CPU oracle按显式dtype tolerance比较完整输出；unsupported symbol/profile、地址/descriptor错误、
+  与独立Q19/CPU oracle按显式op/dtype model profile policy比较完整输出；unsupported symbol/profile、地址/descriptor错误、
   deadlock和任一rank late failure均在model result publication前fail closed且无partial result。model mismatch不回滚
-  已验证Q17/Q18 artifacts。vendor/golden packet correlation、exact package/ELF、board correlation和timing accuracy
-  分别由Q22.C、Q22.E、Q6.B和Q22.P保持为更高独立gate。
+  已验证Q17/Q18 artifacts。Q22只发布model-only untimed functional-numeric profile；board numeric、exact package/ELF和
+  timing accuracy分别由Q22.C、Q22.E和deferred Q22.P保持为更高独立gate。独立packet/MMIO事实源缺失只限制
+  vendor-exact packet claim，不阻塞Q22或Q22.C。
 ```
 
 ## 3. 当前事实基线
@@ -102,7 +107,8 @@ ABI-smoke和host-CRT/SystemC CModel消费；它不是新IR层、packet artifact�
 repo CRT当前在源码内强制定义`USING_RISCV=1`，附带instruction/common-util archive又是RISC-V object，因此它不能原样
 形成host CModel。实现时应把platform选择移到build contract，并让RISC-V和host构建共享同一份repo CRT wrapper与
 command-invocation C源码；Tsm operator/packet builder只有RISC-V archive、没有可共享源码，host侧仍需独立的
-project-owned实现并通过golden correlation。其它host差异只落在operator/MMIO/memory/context adapter。当前Direct DTE
+project-owned实现；只有取得独立packet/MMIO事实源后才能增加vendor packet provenance。其它host差异只落在operator/
+MMIO/memory/context adapter。当前Direct DTE
 sender/receiver使用process-global static状态，host多rank执行不能共享该状态；必须改成明确绑定invocation/rank的state，
 或证明每rank独立装载实例及其lifetime，
 不能从OS thread、symbol名或调用顺序恢复rank。
@@ -203,7 +209,7 @@ Direct DTE/FSM和多completion domain，而不是“CModel必须用SystemC”的
 
 ### 4.1 Target frontend分层
 
-模型至少保留四个互不冒充的入口/证据路径：
+模型保留三个互不冒充的执行入口，以及一条可选的独立packet/MMIO证据路径：
 
 1. **Direct target-call ABI smoke**：host LLVM JIT执行同一fully legal target LLVM module，并给`wafer_tx81_*` fixed ABI
    注册最小direct shim。它验证target ABI preparation、control flow、call graph、typed arguments和address formation；
@@ -211,17 +217,18 @@ Direct DTE/FSM和多completion domain，而不是“CModel必须用SystemC”的
 2. **Host-CRT/SystemC frontend**：host执行同一target LLVM，调用与device build同源的repo CRT；host platform实现
    `TsmNew/Delete`、method table、`TsmExecute/TsmWaitfinish`和Direct DTE/FSM/memory hooks，将CRT实际构造的packet/
    event投递给SystemC model。这是近期正式functional-event CModel路径。自行实现的host operator仍是project-owned
-   packet builder；逐字段golden correlation前不能称vendor-exact packet。
-3. **Golden packet/MMIO conformance**：消费exact packet words或register transaction，与host-CRT路径的packet decode、
-   worker/engine、address/range/trigger和observable memory effect比较。positive必须来自exact Q17 ELF经ISS执行真实
-   CRT/archive产生的register trace、board capture，或vendor提供且版本可审计的builder/CModel；手写packet只补negative。
-4. **Exact-module frontend/provider**：从Q18 verified package加载并执行Q17 RISC-V ELF。project ISS adapter通过loader
+   packet builder；逐字段独立packet/MMIO correlation前不能称vendor-exact packet。
+3. **Exact-module frontend/provider**：从Q18 verified package加载并执行Q17 RISC-V ELF。project ISS adapter通过loader
    ABI、MMIO/custom instruction、Direct DTE和completion adapter复用SystemC architecture；独立vendor simulator不要求
    内部使用SystemC，但必须满足相同artifact、provider lifecycle、capability和evidence合同。只有此入口完成后，才可称
    package-facing target model provider。
+4. **Optional independent packet/MMIO evidence**：消费exact packet words或register transaction，与host-CRT路径的packet
+   decode、worker/engine、address/range/trigger和observable memory effect比较。positive必须来自exact Q17 ELF经ISS执行
+   真实CRT/archive产生的register trace、board capture，或vendor提供且版本可审计的builder/CModel；手写packet只补
+   negative。缺少这条证据不阻塞数值模型或板端数值相关，但禁止`vendor-exact packet`声明。
 
-四条路径可以发现不同错误；任何一条通过都不能冒充更高证据。测试和diagnostic必须记录实际frontend、CRT/packet
-provenance、capability和timing profile。
+这些路径可以发现不同错误；任何一条通过都不能冒充其它证据。测试和diagnostic必须记录实际frontend、CRT/packet
+provenance、capability、numeric profile和event profile。
 
 当前fixed CRT ABI没有额外model-context参数。host frontend必须把每次entry call显式绑定到对应invocation/rank context。
 SystemC通常在单个OS thread上cooperative调度多个process，`thread_local current_rank`不能单独代表rank；可行机制包括
@@ -273,7 +280,53 @@ compiler artifact或package，不能成为长期shadow program。SystemC modules
 completion DAG或planner trace。exact ELF路径必须经过ISS产生raw packet/register transaction再进入decoder，不能由ISS
 hook直接合成高层command绕过packet证据。
 
-### 4.3 数值实现独立性
+### 4.3 实现对象和调用边界
+
+以下名称是实现索引，不是新的IR、package协议或稳定public ABI：
+
+| 对象 | 必须拥有 | 禁止拥有 |
+| --- | --- | --- |
+| `TargetLLVMModuleBundle` | 共享MLIR/LLVM context owner、canonical all-rank domain、每rank logical rank/entry/fully legal module、ordered ABI slots、`ExecutionConfig`、target/ABI identity | packet list、schedule、model state或任何可序列化sidecar |
+| `TargetModelCapability` | op family/kind、src/accum/dst dtype tuple、shape/layout/tail和descriptor范围、rounding/optional-field tuple、numeric comparator、event/transport支持 | 由symbol存在推导的隐式支持、扩大compiler legality的规则 |
+| `TargetModelInvocation` | bundle引用、all-rank typed input/parameter/output binding、checked external resource registration、选定model profile | host pointer伪装的device address、从文件名恢复的rank/resource |
+| `TargetTransaction` | `TsmExecute`返回前复制的packet字段、worker/engine、地址/descriptor、dtype/shape/optional fields和invocation-local sequence identity | caller栈指针、整程序command vector、Q19 schedule或DTE payload的无证据snapshot |
+| `TargetModelResult` | all-and-only rank terminal status、完整output、stable failure stage/rank/transaction、frontend/CRT/packet/numeric/event provenance | partial successful rank集合、回写compiler/package的状态 |
+
+capability row的有效key至少包含target revision、op family/kind、src/accum/dst dtype、rounding和optional/fusion/
+zero-point tuple、shape/layout/tail class、descriptor/alignment class、worker和completion profile。实现支持谓词是
+`compiler accepted tuple ∩ model kernel tuple`；板端profile仅在Q22.C进一步收窄，不能扩instruction legality。enum、CRT
+symbol或packet decoder存在都不等于row已支持。首版状态至少区分`unknown`、`model-only`、`board-observed`、
+`calibrated`、`supported`和`rejected`，并携带unsupported reason。
+
+`TargetLLVMModuleBundle`在所有rank完成ABI preparation、full conversion和verification后原子形成。host执行把每rank module
+翻译到独立LLVM context和独立ORC `JITDylib`，避免同名entry/private helper碰撞；JIT clone设置native triple/data layout，
+并用显式symbol map注册repo CRT host symbols，不能依赖当前process偶然导出的符号。host retarget前拒绝target-specific
+intrinsic、inline asm、未知address space或其它不能安全host materialize的LLVM结构；用于RISC-V link的module保持不变。
+由于entry是动态slot数量的`void(i64...)` fixed ABI，JIT层生成统一签名的host-only thunk，例如
+`void __wafer_model_invoke(const uint64_t *slots)`，按已验证slot数加载并调用原entry；禁止把可变参数函数指针强转调用。
+direct shim和正式Host-CRT frontend复用同一bundle和slot materialization。所有rank JIT/thunk materialize成功后才发布
+model executable。
+
+正式entry必须在SystemC可yield process中调用，使`TsmWaitfinish`、DTE wait和FSM receive可等待`sc_event`；所有rank process
+先创建再启动。invocation/rank context由显式trampoline或`sc_process_handle`绑定，不能只靠TLS。第一版使用单个长寿命
+`ModelSystem`，不在每次invocation调用`sc_stop`；只在所有process/queue/event quiescent后清理invocation-local memory和
+error latch，并先串行化invocation。后续并发只有在context隔离和reset测试闭合后才能开放。
+
+执行前structural/capability preflight必须一次枚举并拒绝：任何reachable CRT symbol/factory family缺host实现；任何静态
+可知的op/dtype/shape/optional tuple无kernel或comparator；address plan、ABI binding或rank/transport endpoint不闭合。
+preflight通过后才在私有invocation backing中导入input并创建SystemC运行态。运行时builder产生的packet fields、dynamic
+descriptor和computed address必须在每条transaction的read/effect前验证；失败整体丢弃私有invocation且不发布output，
+但不虚构一次不具备通用性的dry-run来声称它们在input import前已知。plain C++ `NumericKernelRegistry`按完整typed key精确
+查找，禁止按symbol/op名字fallback。
+
+memory分为只含metadata的`InvocationAddressPlan`和通过plan后才建立的私有`InvocationMemoryRegistry`。registry为每个
+typed ABI resource、workspace/status和rank-local SPM分配不重叠的synthetic device range；entry只得到这些device address。
+resolve必须显式携带rank/tile、address space、resource、read/write role，并证明checked range完整落入唯一region，不能按
+地址数值阈值猜SPM/DDR或直接解引用host pointer。每条transaction先读完整snapshot，plain kernel返回待提交byte effects；
+所有range/payload通过后，SystemC completion event才一次提交。单command错误无partial write，整次invocation只有all-rank
+terminal success后才extract/copy output。
+
+### 4.4 数值实现独立性
 
 Q19和target model可以共享稳定dtype enum、physical geometry、packet field definition和ABI常量，但不能共享完整
 compute kernel、rounding policy或DTE scheduler。否则differential会让同源bug同时通过。
@@ -284,9 +337,16 @@ target model对numeric profile使用以下规则：
 - 只有数学名称而无edge behavior证据时，模型结果标记为model semantics，不能称hardware-bit-exact；
 - zero-point等没有唯一公式的组合在执行副作用前拒绝；
 - stochastic行为在取得seed/state合同前只可做独立统计correlation，不得用Q19的SplitMix64 policy冒充硬件；
-- 每个profile都必须列出dtype、shape/descriptor、optional fields、completion和比较口径，不能从enum存在推导支持。
+- 每个profile都必须列出dtype、accumulator、shape/descriptor、optional fields、completion和比较口径，不能从enum存在
+  推导支持；
+- movement、integer、boolean、guard/canary和其它确定性raw storage effect必须byte/bit exact；
+- floating comparator按op/dtype/profile定义，不使用全局tolerance：只有重复执行、跨reset和held-out都bit-stable时才发布
+  bit-exact；否则同时记录ULP和`abs <= atol + rtol * |board|`，near-zero、GEMM/reduction length另分policy；
+- NaN classification、payload/sign，Inf sign，signed zero，subnormal/FTZ/DAZ和overflow/saturation/wrap/status分别比较，
+  不交给普通`isclose`；
+- profile阈值在查看held-out结果前冻结；Q19/CPU已有tolerance不自动成为board numeric tolerance。
 
-### 4.4 SystemC/TLM和simulation-time边界
+### 4.5 SystemC/TLM和simulation-time边界
 
 SystemC是Q22正式functional-event CModel的强制执行容器，这是项目工程选择，不是从vendor binary恢复出的事实，也不
 自动提升精度。target-model feature在configured build中必须找到受管、版本固定的SystemC dependency并真实执行相应
@@ -300,11 +360,9 @@ TLM-2.0不要求用于每条内部边界。推荐范围是：
 - 初版只发布untimed/delta-cycle functional-event profile；没有测量依据时不写任意`wait(N, SC_NS)`；
 - `TsmWaitfinish`、`direct_sync_wait`、DTE wait和FSM receive必须从可yield的SystemC process等待event，不能busy-poll；
   所有rank process先注册再启动，不能顺序运行到第一个peer wait才创建其它rank；
-- 后续ISS virtual platform可使用LT、temporal decoupling和DMI；AT只在资源phase确有证据且held-out校准需要时引入；
-- untimed、LT和AT profile在result provenance中可区分，SystemC scheduling order不能充当message identity、resource
-  binding或compiler completion语义；
-- approximately-timed只有板端held-out correlation通过后才能发布；cycle-accurate必须另有RTL/per-cycle trace、
-  vendor cycle model或完整微架构合同。
+- SystemC scheduling order不能充当message identity、resource binding或compiler completion语义；
+- LT、AT、temporal decoupling、DMI及任何`wait(N, SC_NS)`只属于deferred Q22.P；恢复时必须另行更新设计和实施计划。
+  cycle-accurate仍需RTL/per-cycle trace、vendor cycle model或完整微架构合同，并不是本文路线的默认终点。
 
 ## 5. Runtime和exact ELF边界
 
@@ -354,11 +412,15 @@ typed invocation bindings、transport capability、共同submit/progress/status�
 - provider terminal status和copyback eligibility。
 
 `TsmExecute` success不表示完成，`TsmWaitfinish[_bywork]`只证明对应local NCC domain，不能替代DTE wait或multi-tile
-arrival。保守模型可以延后event完成，但不能合并没有证据的completion domain。
+arrival。每个issue domain使用显式、单调的invocation-local issue ordinal/watermark；wait捕获调用前watermark并等待相关
+command完成，不能用delta scheduling order充当identity。保守模型可以延后event完成，但不能合并没有证据的completion
+domain。所有rank/process均等待且SystemC event queue为空但仍非terminal时，形成确定性no-progress state snapshot并整体
+失败，不用wall-clock决定语义。
 
-所有入口执行前完成all-rank capability和resource preflight。unknown symbol/packet/profile、地址越界、descriptor错误、
-missing endpoint、unsupported numeric或exact-module环境不匹配，必须在input import或model state mutation前整体失败。
-运行中错误必须：
+所有入口在input import前完成all-rank structural capability、static profile、slot/resource/address-plan和endpoint preflight。
+unknown symbol/factory/static profile或exact-module环境不匹配必须在此时整体失败。只有执行packet builder后才可知的
+packet/op tuple、computed address、dynamic descriptor和runtime event错误，在私有invocation内、相应read/effect前拒绝。
+这种失败仍必须：
 
 - 停止dependent event和copyback；
 - 标记受影响invocation/rank，不产生可误认为成功的partial result；
@@ -371,13 +433,11 @@ missing endpoint、unsupported numeric或exact-module环境不匹配，必须在
 | Profile | 最低事实和gate | 允许声明 | 禁止声明 |
 | --- | --- | --- | --- |
 | direct ABI smoke | same fully legal target LLVM、typed ABI、direct symbol shim和基本地址检查 | target lowering/ABI smoke | CRT、packet、event、package ELF、board |
-| repo-CRT/SystemC functional-event | same fully legal target LLVM、同源repo CRT host build、project packet、SystemC event/completion、完整输出differential | project CRT/packet路径的functional-event correctness | vendor-exact packet、package ELF、board、timing |
-| Q22.C packet conformance | exact-ELF register trace、board capture或versioned vendor builder与project packet的逐字段decode/range/engine/register-effect conformance；numeric和completion另需独立vector/event证据 | supported packet/register conformance | 仅凭trace声明numeric、完整loader/provider lifecycle、timing或board等价 |
-| hardware-correlated untimed event | Q22.C、静态completion证据、SystemC component gate及board/vendor event correlation | supported profile的hardware event relation | latency、throughput、cycle |
+| repo-CRT/SystemC model-only functional-numeric | same fully legal target LLVM、同源repo CRT host build、project packet、untimed SystemC event/completion、独立plain C++ kernel和完整输出differential | project CRT/packet路径在supported model profile中的functional-numeric correctness | vendor-exact packet、hardware numeric、package ELF、board、timing |
+| optional packet/MMIO conformance | exact-ELF register trace、board capture或versioned vendor builder与project packet的逐字段decode/range/engine/register-effect conformance | 对应capture范围的packet/register provenance | 仅凭trace声明numeric、完整loader/provider lifecycle、timing或board等价 |
+| Q22.C board numeric correlation | Q22 model-only通过、Q6.B有效board execution、区分向量、重复稳定性、冻结的comparator、独立held-out和source-backed完整输出 | 绑定环境和tested domain的board-output-correlated profile；对应独立packet/MMIO evidence闭合后才升级为hardware-correlated-numeric | vendor-exact packet、不可观测内部实现、未测domain、exact package、timing |
 | exact-module functional | verified package、all-and-only RISC-V ELF、ISS/loader/MMIO/provider lifecycle | package target-model execution | real board、hardware timing |
-| loosely-timed | PMU measurement basis、single-engine和single-flow held-out校准 | 指定profile的粗粒度timing | contention/cycle accuracy |
-| approximately-timed | bank/worker/queue/DDR/NoC/DTE contention经held-out验证 | 指定环境/profile的事务时序估计 | RTL/cycle等价、跨revision泛化 |
-| cycle-accurate | RTL/per-cycle trace、vendor cycle model或完整微架构合同及correlation | 明确revision的cycle行为 | 无证据的其它SKU/revision |
+| deferred Q22.P timing | 另行恢复后的PMU measurement basis和独立timing held-out | 实际通过的LT/AT profile | 改变numeric、IR legality或candidate acceptance；无RTL证据时称cycle-accurate |
 
 profile是execution result provenance，不是compiler legality或package semantic branch。高层profile失败不能反向改变
 accepted instruction支持范围；如果硬件可表达但model未覆盖，应扩target model capability或保持该profile拒绝。
@@ -390,10 +450,13 @@ accepted instruction支持范围；如果硬件可表达但model未覆盖，应�
 - direct shim只检查symbol、signature、control flow、typed slot和基本address formation，结果明确标记ABI smoke；
 - 同一`ExecutableBundle`进入Q19；由它经tasks/14同一full conversion派生的owner-backed target LLVM bundle进入
   Host-CRT/SystemC model。两者整数exact，浮点按显式dtype/op tolerance比较完整output；
-- 真实rank-count=1 linear/MLP是首个纵向gate，手写LLVM/MLIR只补negative；
+- 真实rank-count=1 f32 linear/residual MLP是首个纵向gate，手写LLVM/MLIR只补negative。该slice只覆盖它实际调用的
+  RDMA、WDMA、gather/scatter、GEMM、elementwise add、tanh和local fence，以及对应
+  `TsmNew{Rdma,Wdma,DataMove,Gemm,Arith,Activation}` factory；不以109-symbol surface一次宣称全部支持；
 - 正式positive必须经过同源repo CRT的Tsm factory/operator/packet、`TsmExecute`、local wait及适用Direct DTE/FSM hooks；
   SystemC-enabled tests若unavailable/skipped则该gate未完成；
-- unknown symbol、wrong ABI slot、packet、地址/descriptor/narrowing和unsupported numeric在input/model allocation前拒绝；
+- unknown symbol、factory、wrong ABI slot、static profile和address plan在input/model allocation前拒绝；dynamic packet、
+  地址/descriptor/narrowing和numeric tuple在对应transaction effect前拒绝，且不产生外部output；
 - target LLVM bundle构造的任一rank late failure不形成bundle或partial model result；Q17/Q18各自仍按原合同失败。
   bundle构造和package均成功后，model mismatch只让verification返回非零并保留已验证package供审计。
 
@@ -404,17 +467,46 @@ accepted instruction支持范围；如果硬件可表达但model未覆盖，应�
 - SPM/DDR bounds、reserved region、Cx/NCx、bitpacked i1、subview/strided descriptor用独立slow oracle或board bytes验证；
 - Host-CRT/SystemC positive来自compiler-generated target LLVM，并把repo CRT实际构造的project packet作为正式
   functional-event输入；Q22内用独立field/memory oracle覆盖raw bytes、decode和observable effect，但project host
-  builder不得标记vendor-exact。
+  builder不得标记vendor-exact；
+- 若取得exact-ELF register trace、board capture或versioned vendor builder，可另做逐字段packet/MMIO correlation并提升
+  packet provenance；它是可选诊断证据，不是Q22或Q22.C前置，也不能替代numeric vectors。
 
-### 8.3 Q22.C golden packet/MMIO correlation gate
+### 8.3 Q22.C Board numeric correlation gate
 
-- 配置exact Q17 ELF经ISS执行真实CRT/archive的register trace、board capture或versioned vendor builder之一作为独立
-  golden source；
-- 将project packet逐字段对照raw packet/register effect，并核对decode、address、worker/engine和observable memory
-  effect；共享builder、共享decoder、相同numeric output或Q22模型自洽不能替代golden；
-- packet/register trace不单独证明numeric edge或completion，仍需独立output vector和event证据；
-- Q22不以该外部source为本地completion前置；未通过时只声明`repo-CRT/SystemC functional-event`。Q22.P发布
-  hardware-correlated timing profile前必须先通过Q22.C。
+Q22.C在Q22、Q6.B和configured numeric corpus均可用后执行，不要求PMU、packet capture或exact-module provider。Q6.B先
+证明allocation/H2D/load/launch/wait/status/D2H/cleanup、watchdog/reset和重复invocation有效；任何provider、completion、
+copyback或guard失败的sample均为invalid，不能用于调numeric。
+
+板端corpus按capability row生成，而不是按一个op名字笼统通过。首批顺序是：
+
+1. movement/fill/boolean/guard和未写区域byte/bit exact；
+2. rank-count=1 f32 GEMM、add和tanh；
+3. Tiny Llama实际需要的reduce、exp、rsqrt、mask/i1和其它已accepted tuple；
+4. 16-rank Direct DTE与完整output；
+5. f16/bf16/TF32、convert、zero-point和stochastic只在各自事实闭合后逐row扩展。
+
+每个numeric family至少覆盖以下能区分预先列出的候选语义的向量；有限样本不证明全输入域等价：
+
+- rounding：正负halfway、halfway±1 source ULP、最大有限值边界、min normal/subnormal和float-to-int的
+  `N + 0.5`，测试值从raw bits构造；
+- special values：±qNaN/sNaN及payload、±Inf、±0，max/min同时交换operand顺序；DAZ与FTZ分别测；
+- overflow：float max附近及integer边界±1，区分Inf/max-finite、wrap/saturate/trap/status；
+- GEMM/reduction：cancellation及排列、K/reduction length跨tile/tail边界、可区分accumulator width/order和
+  fused/non-fused的向量；bias、psum和activation optional field一次只启用一项；
+- zero-point：正负和边界输入与多个zero-point交叉，区分加、减、reinterpret、clamp和wrap；不能唯一排除候选公式前
+  保持unsupported；
+- layout/memory：非零base、stride/iteration、alias、Cx/NCx和bitpacked/tail边界，同时检查pre/post raw bytes和canary。
+
+comparison policy逐op/dtype/shape/profile冻结：movement/integer/boolean/raw storage exact；deterministic float只有重复、
+跨reset和held-out逐bit稳定后才标`bit-exact`，否则使用明确的ULP及abs/rel envelope；NaN/Inf/signed-zero/subnormal/
+overflow/status单独处理；stochastic无seed/reset/state/advance合同只能发布统计profile，不能成为逐元素CI oracle。
+calibration corpus、随机held-out和Q20/Q21完整output相互隔离，rank-count=1/16均比较all-and-only outputs。
+
+profile identity分为semantic validity key和run provenance。前者至少绑定SKU/revision、firmware、driver/runtime、instruction
+library、CRT/ABI和optional mode；后者记录compiler/model commit、package/module digest和SystemC版本。单块板只能标
+`device-unit-observed`，同revision多块板复现后才可标`revision-correlated`。通过后仍只声明tested domain内的
+`board-output-correlated` numeric；只有相应独立packet/MMIO证据存在时，才升级为`hardware-correlated-numeric`并增加
+packet/opcode provenance，绝不由numeric output反推vendor-exact packet。
 
 ### 8.4 Multi-rank和provider gate
 
@@ -432,81 +524,85 @@ accepted instruction支持范围；如果硬件可表达但model未覆盖，应�
   model专用fixture或计划；Host-CRT/SystemC消费同一invocation的target LLVM，只有exact-module frontend才消费原样package；
 - 检查全部rank/module/output、typed status和可观察event/packet数量，不用rank 0、shape或digest代替执行；
 - target model与Q19/CPU差异先按target call、CRT/packet、memory、numeric、event分类；
-- configured board可用后，exact-module frontend闭合时用同一package比较model/board完整output、status、trace和PMU；
-  在此之前Host-CRT/SystemC model只能和board做同source/accepted program的cross-frontend correlation，不能称
-  same-package执行；
+- configured board可用后，Q22.C以同source/accepted program比较model/board完整output和status；exact-module frontend
+  未闭合时明确标cross-frontend，闭合后才可增加same-package标签。packet capture和PMU都不是numeric gate前置；
 - tests为unsupported/skipped时对应profile gate保持未完成。
 
 Q20/Q21的具体模型、shape、dtype和tolerance只是source-backed gate参数，不定义target model协议。通用合同来自fully
 legal target modules、typed ABI/capability、packet和address/completion关系；其它workload按同一关系执行，超出profile
 时结构化拒绝，不能把这些case的调用序列固化进模型。
 
-## 9. 板端证据与校准计划
+## 9. 板端数值相关设计
 
-### 9.1 测量纪律
+### 9.1 样本有效性和记录纪律
 
-每次板端运行必须记录：
+每次板端运行必须记录device SKU/revision和unit identity、good-tile map、firmware/driver/runtime/instruction-library/CRT/
+ABI digest、compiler/model revision、package/module digest、input seed、typed invocation、完整input/parameter/output raw bytes、
+pre/post DDR/SPM及guard bytes、provider phase、terminal status/exception、reset/repeat identity和comparison report。packet/
+register capture若存在则记录来源、完整性和digest；不可用时明确写`unavailable`，不能补造。
 
-- device SKU/revision、DDR容量、good-tile bitmap、logical/physical tile map；
-- firmware、driver、runtime、compiler revision、package和module digest；
-- 板卡独占状态和后台负载，以及可查询的clock/power/temperature；无法查询的变量标记为uncontrolled，不假定固定频率；
-- input seed、worker/tile、SPM/DDR地址、compiler/CRT-derived command provenance和issue order；只有经过验证的capture
-  才记录为actual packet bytes，无法捕获时显式标记而不补造；
-- warmup、正式重复、trial随机顺序和全部raw samples；
-- host wall time、provider phase、device user timer和raw PMU delta分别记录，在单位确认前不互换；
-- 每个sample的完整功能输出；数据错误样本保留并标记invalid，但排除性能拟合；
-- calibration和held-out validation shape/descriptor/workload严格分离。
+Q6.B的allocation/import/H2D/load/launch/wait/status/D2H/cleanup、watchdog/reset和重复invocation先闭合。input未正确写入、
+completion不可信、copyback失败、guard被破坏或reset后health check失败的sample必须保留但标`invalid`，不得进入numeric
+calibration。calibration vectors、随机held-out、shape/layout held-out和真实workload corpus必须预先分区；comparison policy
+和阈值在查看held-out结果前冻结。Q22.C数值校准不需要PMU、wall-time或固定频率。
 
-常规calibration不发raw非法MMIO/address，也不运行receiver-not-ready或未知non-unicast。queue overflow等可能hang的
-实验只进入独立destructive qualification，并要求设备独占、watchdog、timeout、reset和cleanup先验证。任一timeout/
-reset后必须先做health check；未恢复设备的后续样本无效。所有失败样本保留并标记invalid，不能删除。若SKU/revision、
-tile map或good-tile bitmap无法取得，只能发布受限local functional evidence，不能发布跨tile或可泛化timing profile。
-验收阈值例如重复CV、held-out median/p95误差必须在看结果前固定，并明确属于项目阈值而非硬件事实。
+### 9.2 Capability profile和graduation
 
-### 9.2 实验矩阵
+每个profile row的semantic validity key至少包括：target SKU/revision、firmware、driver/runtime、instruction library、CRT/
+ABI、op family/kind、src/accum/dst dtype、rounding、optional/fusion/zero-point tuple、shape/layout/tail、descriptor/alignment、
+worker和completion profile。row value保存state、comparison/special-value/status policy、tested domain、packet evidence level、
+calibration/held-out/evidence digest、repeat stability和unsupported reason。run provenance另存compiler/model commit、SystemC
+版本及package/module digest，不能用一次run identity代替semantic validity key。
 
-| 实验 | 待回答问题 | 主要控制变量和观测量 | 证据输出 | 升级gate |
-| --- | --- | --- | --- | --- |
-| provider correctness | 真实allocation/copy/load/launch/transport/completion/copyback/cleanup是否闭合 | 同一Q21 package；phase/status/timeout/output/cleanup | package/module digest、phase log、actual output | Q6.B完整输出和重复invocation先通过，性能sample才有效 |
-| measurement basis | PMU enable/clear隔离、delta、width/unit、wrap和读取是否可信 | empty/read overhead、多个window长度、目标worker/status与可用counter分别记录、requested issue与completed count、独立timer；raw start/end | raw PMU和sample序列 | prospective high-low-high reread或vendor-documented latch protocol、clear隔离、单调性及count/timer ratio稳定；当前helper的单次split-read顺序不作保证，ambiguous wrap样本不拟合，单位未闭合只保留raw tick |
-| completion domains | issue、IB counter、task_done、NCC wait、DTE wait各自证明什么 | 单长命令、分worker、NCC/DTE单独和组合；CSR/status/data-visible | typed event trace、CSR/PMU snapshot | 只把重复happens-before关系写入event model |
-| single-engine curves | 各engine启动成本、吞吐和shape/dtype关系 | 单tile/worker/engine，size/shape/dtype sweep；可用raw register identity、declared scope、worker provenance、width、start/end和output分别记录 | scope-preserving raw samples、fitted curve | 功能正确、counter scope已闭合且held-out误差达预设目标才进入loosely-timed |
-| DMA descriptors | contiguous/strided byte/iteration和segment成本 | 固定总bytes，扫inner/stride/iteration/alignment；输出和LSU PMU | descriptor、访问区间、output、PMU | held-out descriptor可预测后才加入timing公式 |
-| queue overlap | parallel capability下五个逻辑issue class的并发、dependency和共享resource关系 | engine pair的disjoint/RAW/WAR/WAW、AB/BA；仅在provider支持安全配置/恢复时逐worker设置并读回serial mode，否则只记录现状；保存raw register identity、declared scope、worker provenance、width、start/end和output | scope-preserving relation matrix和raw samples | 只记录重复稳定的overlap/dependency class，不由此猜物理queue/engine复制、仲裁算法或写入不可恢复CSR |
-| queue capacity | backpressure和该profile下的安全outstanding范围 | 同/跨queue递增N、IB counter/completed count、watchdog和recovery | bounded sweep、timeout/exception/health log | 只发布稳定safe outstanding；不得称真实queue depth，destructive失败后health check必过 |
-| SPM bank | address-bit/offset period与conflict的真实关系 | 128B/256B及更大base delta扫描，64KiB仅作heuristic候选；无range overlap、多tile/worker | address-pair heatmap和SPM/engine raw counters | 稳定周期才形成versioned heuristic；否则只建模显式overlap，64KiB不升级为bank事实 |
-| multi-worker | worker 0/1/2共享哪些engine/LSU/SPM资源 | 单worker baseline与两/三worker组合；可用的worker-specific wait/CSR与PMU block分别记录，不假定所有counter per-worker | worker resource matrix | 重复证明后才加入resource topology |
-| Direct DTE | accepted unicast binding的receiver/FSM/status/data-visible、setup和byte语义 | compiler accepted binding和CRT attach参数形成known-good两tileendpoint，provider只实例化匹配资源；receiver-ready-first，扫size/alignment并记录两端状态、可用DTE PMU和source/dest bytes | binding/register/PMU/source/dest bytes | completion与数据可见稳定后才加入event/byte model；raw non-unicast不进入常规矩阵 |
-| fabric contention | 多tile DDR/NoC/DTE aggregate和endpoint/topology placement差异 | 1/2/4/16 tile、地址和endpoint placement组合；per-tile blocking和bytes/time | topology-aware bandwidth surface | held-out组合达预设误差才归纳contention class；不反推出不可观测routing算法 |
-| numeric correlation | rounding、zero-point、accumulation/fusion的真实语义 | tie/NaN/Inf/overflow、能排除候选公式的区分向量、独立held-out和重复随机payload；raw bits/status | 按op/dtype/optional-field/revision版本化的vector corpus和comparison | deterministic需bit-stable且唯一排除候选公式并通过held-out；stochastic无seed合同只建统计profile |
-| vertical correlation | component参数能否解释真实program | Q20/Q21完整output/event/PMU/provider phases；exact frontend闭合前只作same-source cross-frontend | model/board differential summary | exact frontend后才称same-package；held-out真实workload达profile目标才发布对应timing标签 |
+状态只按以下证据单向升级；失败时拆细row或回退，禁止放宽全局容差：
 
-### 9.3 Evidence artifact
+1. `unknown -> model-only`：独立plain C++ kernel unit/property、packet/memory component和Q22 source-backed链均通过；
+2. `model-only -> board-observed`：Q6.B有效single-op microbench、完整raw bytes/status及多次重复通过；
+3. `board-observed -> calibrated`：区分向量在预先列出的候选语义集合中唯一排除其它候选，或明确形成统计/approximate
+   comparator，且calibration set冻结；
+4. `calibrated -> supported`：预留的value、shape、layout、optional-field和真实MLP/Llama held-out全部输出通过，无silent
+   exception，跨reset稳定。
 
-每次run形成独立、不可变的verification evidence directory，至少包含环境身份、package/module digest、invocation、sample、
-expected/actual和只引用raw evidence digest的summary；packet/event trace、raw PMU分别带capture availability、来源、单位和
-完整性标记，能采集时保存原始值，不能采集时显式记为unavailable而不补造。它不是package sidecar，不被compiler
-legality、lowering或runtime launch消费。
+profile永远只能收窄`compiler accepted tuple ∩ model kernel tuple`，不能反向扩大IR/instruction legality。单块板证据标
+`device-unit-observed`；至少多块同revision板复现后才可标`revision-correlated`。如果packet provenance不可用，仍可发布
+tested domain内的`board-output-correlated` profile，但不得把row归因为vendor-exact opcode/register effect。
 
-板端校准参数不能作为散落magic number写入功能核。若后续timing model需要消费参数，应先定义按device/firmware/
-runtime profile版本化、引用raw evidence digest且可验证的typed calibration profile；它只影响model timing，不能改变
-IR legality、candidate acceptance或package语义。若板端结果与静态资料冲突，先回到对应hardware/ABI owner记录并
-收敛冲突，不能静默调整模型常量。numeric/functional发现只有经hardware/ABI owner和conformance tests闭合后才能
-扩model capability，不能自动扩大instruction legality。Q9若消费测量结果，应另行生成经评审的derived cost profile，
-并且只排序已经合法的candidate。
+### 9.3 黑盒板端的可证与不可证边界
+
+只有launch、status和最终output的黑盒板端，仍可证明versioned环境、tested input/shape domain内的端到端I/O稳定性以及
+CModel是否满足预注册comparator；若compiler能产生isolated single-op microbench，多数rounding、accumulation、fusion和
+zero-point候选也可通过区分向量经验排除。
+
+黑盒结果不能证明vendor-exact packet/register、观测等价候选中的内部accumulator精度/顺序/融合、未测试输入域、不可见
+exception、DTE精确source-read/visibility点、stochastic seed/state或跨revision泛化。若只能运行整网且不能构造single-op
+或读取中间buffer，只能发布workload-level correlation，不能升级per-op capability。有限held-out通过也只证明声明的
+tested domain，不是数学上的全域等价证明。
+
+### 9.4 Evidence artifact和事实回写
+
+每次run形成独立、不可变的verification evidence directory，至少包含环境identity、package/module/model/profile digest、
+typed invocation、input/expected/actual raw bytes、guard、provider status、可选packet/register capture、comparison report和
+evidence digest；profile只引用这些digest。它不是package sidecar，不被compiler legality、lowering或runtime launch消费。
+
+板端结果与静态hardware/ABI资料冲突时，先回到对应owner记录并收敛，不能静默调模型常量。numeric发现只有经owner和
+conformance tests闭合后才能扩model capability，仍不能自动扩大instruction legality。PMU、latency、throughput、queue/
+bank/contention及LT/AT参数全部属于deferred Q22.P；Q9若未来消费测量结果，应另行生成只排序已合法candidate的derived
+cost profile。
 
 ## 10. 分阶段交付
 
 ### 10.1 Capability和依赖收敛
 
-- 向vendor索取完整host CModel development package：匹配`host_runtime.h`/`runtime_api.h`/`tx_runtime.h`/TsmML headers、
+- 并行向vendor索取完整host CModel development package：匹配`host_runtime.h`/`runtime_api.h`/`tx_runtime.h`/TsmML headers、
   `libcmodel_runtime_api.so`、`libhpgr.so`、`libtsmml.so`、model resources和transitive dependency/license/version；同时确认
-  是否存在低层x86 instruction/operator library；
+  是否存在低层x86 instruction/operator library；取得后作为可替换frontend或独立oracle，不阻塞project-owned实现；
 - 固定首批target call、dtype/layout、engine、packet、Direct DTE和completion capability matrix；
 - 把tasks/14 private prepared target LLVM提升为owner-backed all-rank内部artifact；
-- 固定target-model feature所需SystemC版本、获取方式和license；基础compiler与plain C++ kernels仍可独立构建；feature
-  启用时缺SystemC必须configuration fail，未启用feature时正式profile明确unavailable且Q22 gate未完成，不能由direct
-  shim代替；
+- 增加默认关闭的稳定target-model build feature；固定Accellera SystemC reference implementation版本、获取方式、license和
+  单一CMake target。基础compiler与plain C++ kernels仍可独立构建；feature启用时缺SystemC必须configuration fail，未启用
+  时正式profile明确unavailable且Q22 gate未完成，不能由direct shim代替；
+- plain C++ kernel/property tests不链接SystemC；SystemC test executable使用唯一`sc_main`入口并实际运行，不能只编译、
+  skip或用`gtest_main`替代；
 - 形成同一repo CRT源码的device/host platform contract，移除源码内强制`USING_RISCV`选择，明确rank-local Direct DTE
   state、checked address和blocking-yield边界。
 
@@ -514,30 +610,56 @@ IR legality、candidate acceptance或package语义。若板端结果与静态资
 
 ### 10.2 Host-CRT/SystemC functional slice
 
+- 固定真实`linear-residual-mlp-f32` rank-count=1作为首个vertical：当前case参数是batch 2、input 16、hidden 32、
+  output 16、f32、tanh和residual；这些值只是测试参数，不进入capability协议；
 - host JIT执行same fully legal target LLVM；
 - host执行同源repo CRT，经Tsm factory/operator形成packet并复制到SystemC tile/worker/queue入口；
 - 建立rank-local virtual SPM/DDR、typed slots、checked address、invocation error latch和可yield local wait；
-- 先覆盖source-backed linear/MLP需要的RDMA、WDMA、gather/scatter、fill、GEMM、f32 elementwise和local fence；
+- 先覆盖该artifact实际调用的`rdma`、`gather_scatter`、`gemm`、`elementwise_add`、`elementwise_tanh`、`wdma`和
+  `local_fence`，以及`Rdma/DataMove/Gemm/Arith/Activation/Wdma`六类Tsm factory；
 - 与独立Q19/CPU比较完整rank-count=1输出。
 
-完成：真实compiler chain通过repo-CRT/SystemC gate，unknown symbol/ABI/packet/address/numeric preflight和atomic failure
-通过；结果明确标记`repo-CRT/SystemC functional-event`，不标记vendor-exact packet或exact ELF。direct ABI smoke只作
-局部诊断，不替代该完成证明。
+该slice的completion gate是：
+
+- `wafer-compile -> ExecutableBundle -> TargetLLVMModuleBundle -> Q17/Q18 publication -> model`真实链执行，手写LLVM/
+  packet只补negative；
+- bundle late-rank、host retarget、ORC missing symbol、factory/packet field、address exact-end/overflow/cross-resource/
+  reserved-SPM、kernel和event failure均有atomic negative；
+- SystemC证明issue后结果尚不可见，local fence按watermark等待，completion一次commit，failure唤醒且不copyback；
+- 完整output同时与Q19及现有NumPy expected按case已有`atol=1e-6, rtol=1e-5`比较，并检查全部status和packet family
+  count，不只抽查元素；这是model-only comparator，不是板端profile阈值；
+- 最后一个WDMA/packet/kernel注入失败时不形成model result，已发布Q17/Q18 artifact仍保留；SystemC-enabled CI test
+  实际执行，unavailable/skipped不算通过。
+
+完成后结果标记`repo-CRT/SystemC model-only functional-numeric`，不标记hardware numeric、vendor-exact packet或exact
+ELF。direct ABI smoke只作局部诊断。该slice明确不含rank-count=16、Direct DTE、tiny Llama、PMU或timing；它们按后续
+阶段扩展，不反向固化首case的shape或call order。
 
 ### 10.3 Project packet、event和16-rank transport
 
 - 增加current CT/NE/RDMA/WDMA/TDMA project packet decode和独立field/memory component checks；vendor-exact逐字段
-  correlation另由Q22.C在配置独立golden source后闭合；
+  correlation只在配置独立packet/MMIO source后作为可选provenance gate；
 - 在SystemC中建立三个worker window；model-only per-worker parallel config成立时区分五个逻辑issue class，否则走保守serial
   profile；不声明`3×5`物理queue或engine复制；同时建立
   resource event、local drain和Direct DTE/FSM；
 - 扩展当前production compute/movement surface和16-rank source-backed case；
 - DDR/SPM aperture、MMIO和未来ISS/interconnect采用受限TLM边界；plain C++ kernel component gate保持可独立运行。
 
-完成：rank-count=1/16完整输出、packet/memory/event negative、DTE no-progress和all-rank atomic result通过；仍不称
-exact package/ELF或timing model。
+完成：rank-count=1/16完整输出、packet/memory/event negative、DTE no-progress和all-rank atomic result通过；Q22完成，
+仍不称hardware numeric、exact package/ELF或timing model。
 
-### 10.4 Q22.E Exact package execution
+### 10.4 Q22.C Board numeric correlation
+
+- Q6.B先闭合board provider correctness、watchdog/reset和重复invocation；
+- 按第8.3节的capability row、区分向量和comparison policy采集calibration corpus；
+- 冻结policy后运行独立random/shape/layout/optional-field held-out及Q20/Q21完整output；
+- 发布绑定environment identity、tested domain和raw evidence digest的profile；packet capture不可用时降级packet
+  provenance，不阻塞board-output correlation。
+
+完成：只有实际通过的row从`model-only`逐级升级，失败/未测tuple保持unsupported。Q22.C不声明exact ELF、timing或未测
+输入域等价。
+
+### 10.5 Q22.E Exact package execution
 
 - 在取得vendor simulator或完成RV64 ISS、loader ABI、MMIO/custom instruction和provider lifecycle后接入
   Q18 verified package；
@@ -546,11 +668,11 @@ exact package/ELF或timing model。
 
 完成：同一package在model provider中完整allocate到cleanup并产生可信status/output；否则该能力保持更高待解锁gate。
 
-### 10.5 Q22.P Board correlation和timing refinement
+### 10.6 Q22.P Deferred timing calibration
 
-- 先完成board provider correctness和PMU measurement basis；
-- 按single-engine、queue/SPM/DTE/fabric/numeric矩阵采样；
-- 用独立held-out shapes/descriptors/workloads验证loosely/approximately-timed profile；
+- 本阶段不在近期numeric correctness范围内，只有另行恢复并配置可信PMU/timing environment后才执行；
+- 先验证PMU measurement basis，再按single-engine、queue/SPM/DTE/fabric矩阵采样；
+- 用独立timing held-out shapes/descriptors/workloads验证loosely/approximately-timed profile；numeric policy保持只读；
 - cost calibration如需消费结果，另由tasks/06/16和Q9建立typed consumer，不反向污染correctness。
 
 完成：只发布实际通过的profile标签、适用device/firmware/runtime identity、误差分布和未覆盖范围。没有RTL或vendor
@@ -558,33 +680,31 @@ cycle证据时cycle-accurate保持非目标。
 
 ## 11. 待讨论问题
 
-以下问题不改变SystemC作为Q22正式functional-event容器的当前选择，但会改变provider、packet provenance和更高精度
+以下问题不改变SystemC作为Q22正式functional-numeric容器的当前选择，但会改变dependency、packet provenance和板端
 实现成本，因此保留为显式待讨论问题：
 
 1. **Vendor simulator交付**：现有低层header只有接口痕迹，高层x86 runtime会动态寻找缺失的
    `libcmodel_runtime_api.so`。需要确认能否取得完整host-runtime开发包、instruction model、依赖、资源、版本和license，
    以及其输入究竟是Tsm model/session、packet/MMIO还是exact package；若可得，packet或exact-module路径可能显著缩短，
    但仍需独立correlation。
-2. **Exact package execution是否为近期产品要求**：如果主要目标是compiler lowering回归，Q22 Host-CRT/SystemC
-   functional-event和project packet component gate已提供高价值；如果用户需要独立`wafer-run`虚拟平台，RV64/loader/
-   provider必须提升为主线。Q22.C vendor/golden packet correlation保持独立外部门槛；这里的高价值证据特指
-   Host-CRT/SystemC路径，direct shim仍只是ABI smoke。
-3. **Packet事实源**：需要确认可否复用vendor可审计builder或获得register trace。repo CRT host build产生的是
-   project-derived packet；它验证当前compiler/CRT/model自洽，但在golden correlation前不证明vendor packet完全一致。
-4. **SystemC工程基线**：需要固定CI平台、受支持版本、获取方式、license、deterministic scheduling要求和未来ISS
+2. **Packet事实源**：需要确认可否复用vendor可审计builder或获得register trace。repo CRT host build产生的是
+   project-derived packet；它验证当前compiler/CRT/model链，但在独立correlation前不证明vendor packet完全一致。该缺口
+   不阻塞Q22.C的board-output numeric profile，只限制packet/opcode provenance。
+3. **SystemC工程基线**：需要固定CI平台、受支持版本、获取方式、license、deterministic scheduling要求和未来ISS
    co-simulation边界。SystemC只拥有event/transaction实现，不改变artifact、packet、功能核或compiler合同。
-5. **板端环境和验收阈值**：需要固定可用SKU/revision、firmware/runtime组合、reset/watchdog能力和预先声明的LT/AT
-   held-out误差目标；未固定前不发布timing accuracy。
+4. **板端numeric环境和验收政策**：需要固定可用SKU/revision/unit、firmware/runtime/instruction-library/CRT组合、
+   reset/watchdog能力、single-op可观测性、calibration/held-out corpus和逐op/dtype comparator；未固定前不发布
+   hardware-correlated numeric profile。LT/AT阈值只在deferred Q22.P恢复时讨论。
 
 ## 12. 文档和实现归属
 
 - tasks/14拥有target ABI preparation、fully legal target LLVM、CRT和RISC-V module publication；target LLVM bundle
   落地时应在同批同步其producer合同。
 - tasks/15拥有exact target model `RuntimeProvider`生命周期和package消费；host-CRT/SystemC模式不是该provider。
-- tasks/16拥有direct ABI smoke、host-CRT/SystemC、Q22 project packet/event、Q22.C golden packet/MMIO、exact-module、
-  board和timing的证据分层及CI gate。
-- 本文拥有target execution model内部边界、capability、SystemC选择、板端校准计划和各层不得冒充的声明。
+- tasks/16拥有direct ABI smoke、host-CRT/SystemC、Q22 project packet/event、Q22.C board numeric、可选packet/MMIO、
+  exact-module、board和deferred timing的证据分层及CI gate。
+- 本文拥有target execution model内部边界、capability、SystemC选择、板端numeric correlation计划和各层不得冒充的声明。
 - tasks/09/11/13仍分别拥有memory legality、instruction/packet legality和Direct DTE/completion；model不能改写这些
   compiler合同。
 
-进入代码实现前应建立独立实施计划；本初步设计本身不表示target model、exact provider、board或calibration已完成。
+进入代码实现前应建立独立实施计划；本方案设计本身不表示target model、exact provider、board或calibration已完成。

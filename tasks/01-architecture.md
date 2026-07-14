@@ -1,6 +1,6 @@
 # Wafer AI Compiler Architecture
 
-状态：2026-07-14按当前实现事实和SystemC target execution model分支更新。本文固定近期单tile/单卡16-tile纵向合同和长期扩展边界；
+状态：2026-07-14按当前实现事实和untimed SystemC数值模型分支更新。本文固定近期单tile/单卡16-tile纵向合同和长期扩展边界；
 实现状态只看`tasks/progress.md`，专题细节由第9节编号文档拥有。
 
 本文使用 **Wafer** 作为目标硬件和软件栈名称。TX8/TX81只在引用底层依赖、公开ABI或反向工程事实时
@@ -109,7 +109,7 @@ partition；默认性能切分policy必须等有可验证的StableHLO↔SDY expo
 | Executable bundle | typed C++ `RankExecutable[]`/`ExecutableBundle` | explicit rank、entry、accepted module/resource/completion、atomic all-rank result | rejected candidates、runtime object |
 | Target module | LLVM dialect/IR、CRT call、device object/kcore module、digest | static rank program和target ABI | sharding/search/package planning |
 | Package/runtime | typed C++ manifest + canonical JSON、RuntimeSession | module/rank/entry/resource slot绑定和launch preflight | instruction schedule、重新规划 |
-| Target verification/runtime consumer | owner-backed fully legal target LLVM或未来verified package/exact module；invocation-local model state | direct ABI smoke、host-CRT/SystemC functional-event、Q22.C golden packet/MMIO conformance、exact-module及校准后的timing evidence | compiler planning、package字段、board完成 |
+| Target verification/runtime consumer | owner-backed fully legal target LLVM或未来verified package/exact module；invocation-local model state | direct ABI smoke、host-CRT/SystemC untimed functional-numeric、Q22.C board-correlated numeric profile、exact-module和deferred timing evidence | compiler planning、package字段、board完成 |
 
 Dialect边界不等于artifact边界。近期继续使用一个Wafer dialect并按op family组织源码；只有独立registration、
 conversion legality或依赖方向需要时才拆dialect。代码可以按语义library拆分，但不得用目录重排代替IR合同。
@@ -240,12 +240,14 @@ reference executor直接消费accepted instruction/memory facts：
 reference executor不是cycle/packet simulator，不证明CRT wrapper、真实transport、completion或性能。
 
 target execution model是与reference并列的下游consumer：近期从tasks/14 full conversion形成的owner-backed、
-不可序列化target LLVM bundle执行same typed CRT ABI。direct host shim只作ABI smoke；正式functional-event路径调用与
+不可序列化target LLVM bundle执行same typed CRT ABI。direct host shim只作ABI smoke；正式untimed functional-numeric路径调用与
 device build同源的repo CRT wrapper，经project-owned Tsm operator/packet builder进入SystemC，并用Q19/CPU作独立oracle。
-golden packet/MMIO conformance和exact package/RISC-V ELF是更高、互不冒充的证据入口。只有exact module通过tasks/15
+Q22.C再消费Q22 model result和Q6.B board result，按逐op/dtype profile发布tested domain内的board-output-correlated
+numeric evidence；独立packet/MMIO trace闭合后才增加hardware-correlated-numeric和packet provenance，不是Q22.C前置。
+exact package/RISC-V ELF是更高、互不冒充的证据入口。只有exact module通过tasks/15
 `RuntimeProvider`消费verified package时，才可称package-facing model execution。SystemC是target-model feature内部的
 强制event/transaction容器，但不进入IR、bundle或manifest，也不自动证明numeric、bit或cycle accuracy；plain C++ kernel
-仍独立于SystemC。详细边界和板端校准计划由tasks/17拥有。
+仍独立于SystemC。详细边界和板端numeric correlation计划由tasks/17拥有。
 
 ## 9. Pipeline 分支和 Owner 索引
 
@@ -260,12 +262,12 @@ compiler/reference主干按以下依赖闭合：
 7. rank-count=16 linear/MLP；
 8. rank-count=16 tiny Llama。
 
-此后direct ABI smoke、Host-CRT/SystemC functional-event、Q22.C golden packet/MMIO conformance与configured board按
-分层证据管理。Q22 functional-event不以Q22.C或board为完成前置；Q22.C显式消费Q22 project packet和configured golden
-source，Q6.B board仍是独立外部门槛。exact-module provider在vendor simulator或ISS/loader能力可用后从target-model
-分支继续；
-target timing calibration要求model和board
-证据，same-package correlation还要求exact-module provider。分支关系只看`tasks/progress.md`，不能从本节列表顺序恢复。
+此后direct ABI smoke、Host-CRT/SystemC untimed functional-numeric model、configured board和exact-module provider按分层
+证据管理。Q22不以board或packet capture为完成前置；Q6.B先闭合真实board execution，Q22.C再消费Q22 model result与
+Q6.B board result形成board-output-correlated numeric profile；独立packet/MMIO trace闭合后才升级packet/opcode
+provenance和hardware-correlated-numeric标签，不是Q22.C前置。Q22.E在configured simulator/ISS可用后闭合exact
+package execution；Q22.P timing calibration保持deferred，
+不能阻塞任何correctness gate。分支关系只看`tasks/progress.md`，不能从本节列表顺序恢复。
 
 | Boundary | Owner |
 | --- | --- |
@@ -281,9 +283,9 @@ target timing calibration要求model和board
 | target conversion、CRT、device link/publication | 14 |
 | typed manifest、runtime | 15 |
 | all stage gates、reference、target-model和board证据 | 16 |
-| target execution model、SystemC主架构边界和板端correlation/calibration | 17 |
+| target execution model、SystemC主架构边界、板端numeric correlation和deferred timing | 17 |
 
-当前没有active实施计划；target execution model先在tasks/17完成初步设计收敛，进入代码施工前再建立计划。
+当前没有active实施计划；target execution model方案已在tasks/17收敛，进入代码施工前再建立计划。
 
 审计证据：`tasks/archive/12-architecture-evidence-reset.md`。
 

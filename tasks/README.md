@@ -27,7 +27,7 @@
 | 14 | `tasks/14-target-llvm-golden-packet.md` | structure-preserving target LLVM、CRT ABI和atomic staged target module |
 | 15 | `tasks/15-launch-runtime-package.md` | typed C++ manifest、canonical JSON、no-card RuntimeSession和board adapter边界 |
 | 16 | `tasks/16-verification-plan.md` | target correctness、1/16-rank bundle、reference、target-model、no-card和board分层gate |
-| 17 | `tasks/17-target-execution-model.md` | direct ABI smoke、Host-CRT/SystemC、Q22.C golden packet、exact-module CModel和板端校准边界 |
+| 17 | `tasks/17-target-execution-model.md` | direct ABI smoke、Host-CRT/SystemC untimed numeric CModel、Q22.C板端numeric correlation、Q22.E exact-module和deferred Q22.P timing边界 |
 
 ### Pipeline Owner 索引
 
@@ -47,11 +47,11 @@
 | target LLVM、CRT/device link和staged target module | 14 |
 | typed manifest、launch和RuntimeSession | 15 |
 | 横跨上述边界的completion evidence | 16 |
-| target execution model、SystemC/CModel capability和板端correlation/calibration | 17；target/runtime/verification consumer由14、15、16约束 |
+| target execution model、SystemC/CModel capability、板端numeric correlation和deferred timing | 17；target/runtime/verification consumer由14、15、16约束 |
 
 ## 实施计划导航
 
-当前没有active实施计划。Q22先在`tasks/17-target-execution-model.md`收敛初步设计、证据层和板端测量合同；
+当前没有active实施计划。Q22已在`tasks/17-target-execution-model.md`收敛untimed numeric方案、证据层和板端numeric合同；
 真正进入代码实现前再在`tasks/plans/`建立施工checkpoint。已完成的单卡纵向计划和旧7份long-horizon plans
 均已归档；动态执行状态仍只看`tasks/progress.md`。
 
