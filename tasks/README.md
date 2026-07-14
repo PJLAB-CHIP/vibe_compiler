@@ -27,7 +27,7 @@
 | 14 | `tasks/14-target-llvm-golden-packet.md` | structure-preserving target LLVM、CRT ABI和atomic staged target module |
 | 15 | `tasks/15-launch-runtime-package.md` | typed C++ manifest、canonical JSON、no-card RuntimeSession和board adapter边界 |
 | 16 | `tasks/16-verification-plan.md` | target correctness、1/16-rank bundle、reference、target-model、no-card和board分层gate |
-| 17 | `tasks/17-target-execution-model.md` | target-call、packet/event、exact-module CModel provider和板端校准边界 |
+| 17 | `tasks/17-target-execution-model.md` | direct ABI smoke、Host-CRT/SystemC、Q22.C golden packet、exact-module CModel和板端校准边界 |
 
 ### Pipeline Owner 索引
 
@@ -47,7 +47,7 @@
 | target LLVM、CRT/device link和staged target module | 14 |
 | typed manifest、launch和RuntimeSession | 15 |
 | 横跨上述边界的completion evidence | 16 |
-| target execution model、CModel capability和板端correlation/calibration | 17；target/runtime/verification consumer由14、15、16约束 |
+| target execution model、SystemC/CModel capability和板端correlation/calibration | 17；target/runtime/verification consumer由14、15、16约束 |
 
 ## 实施计划导航
 

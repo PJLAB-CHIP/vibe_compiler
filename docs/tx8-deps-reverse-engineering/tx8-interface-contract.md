@@ -4,7 +4,8 @@ This is the canonical recovered-interface evidence ledger for the audited TX8
 dependency package. It records what each public wrapper/API family writes into
 instruction packets, which field relations appear in each instruction class, what the
 TX8 hardware-facing register interfaces mean, and how the host runtime drives
-device memory, bootparams, dyn data, topology, launch, and profiling.
+device memory, bootparams, dyn data, topology, launch, profiling, and the
+incomplete host CModel loading seams.
 
 It is not a Wafer IR, ABI, transport, provider, or runtime-policy owner. The
 numbered design documents linked from this directory's README decide which
@@ -50,6 +51,7 @@ evidence without deciding Wafer compiler or runtime acceptance.
 | Kcore DTE/stream/mailbox | Register protocol and payload format covered. | Multi-destination DTE policies, mailbox failure recovery, and timing need board tests. |
 | PMU/profiling | Register and TLV shape covered. | Counter units, wrap edge cases, and event accuracy need board tests. |
 | Host runtime / driver layer | Exported `Tsm*` signatures, implemented/stub behavior, bootparam/dyn-data paths, launch/copy/topology/profiling calls covered; HPGR/KMD pass adds the largest observed `tx_runtime` surface, BO/BAR/ATU, KMD UAPI, PG, and completion mechanisms. | Provider selection and runtime semantics belong to `tasks/15`; target validation belongs to `tasks/16`. |
+| Host CModel seams | Low-level instruction CModel declarations and high-level `libtx8_runtime.so` dynamic CModel loader are identified. | Required host implementations, libraries, headers, model resources, reachable launch path, numeric/timing contract, and internal framework are absent or unproven; target-model ownership belongs to `tasks/17`. |
 
 Symbol coverage remains measured by `tx8-symbol-coverage-matrix.csv`. The
 important practical result is that the observed instruction families have
@@ -67,12 +69,13 @@ names alone do not establish relationships between those layers.
 |---|---|---|
 | Instruction wrapper API | `TsmElemWise`, CT relation/logic/reduce/convert/peripheral helpers | Function family, opcode range, address-versus-scalar operand role, dtype storage size, bool packing, end-field behavior, writeback behavior, and observed field bounds. |
 | Instruction wrapper API | `TsmConv`, `TsmDepthWiseConv`, `TsmGemm` | Argument-to-field mapping for input/weight/output/psum/bias/scale/sparse/quant/pad/stride/dilation/GEMM MKN/batch/trans flags, plus shape and quant bounds. |
-| Instruction wrapper API | `TsmRdma`, `TsmWdma`, `TsmDataMove`, `TsmPeripheral` | DDR/SPM direction, stride and iteration units, `iteration-1` encoding, TDMA opcodes, byte-oriented memset/gatherscatter semantics, and register window offsets. |
+| Instruction wrapper API | `TsmRdma`, `TsmWdma`, `TsmDataMove`, `TsmPeripheral` | DDR/SPM direction, family-specific element/byte count, byte-stride and iteration units, `iteration-1` encoding, TDMA opcodes, and register window offsets. |
 | CSR/reserved API | CSR helpers and `I_SCALAR` | CSR status bit meanings and worker addressing are recovered; scalar packet execution is a stub with no observed register emission. Production acceptance belongs to `tasks/11` and `tasks/14`. |
 | Kcore hardware API | DTE | Register fields, mode/user_id bits, high-level modes, source/destination setup, shuffle stride encoding, trigger, done/error return codes, and packet-counter update format. |
 | Kcore hardware API | Stream FSM and mailbox | Stream config layout, packet counters, online/offline/request/push/pop payloads, mailbox TX/RX window protocol, payload register count, and observed status handling. |
-| Profiling API | PMU helpers and host profiling dyn data | DTE/SPM/NCC PMU bases and record types, observed high-low-high 64-bit read pattern, host `D_PROF_CFG` control path, and remaining hardware validation items. |
+| Profiling API | PMU helpers and host profiling dyn data | DTE/SPM/NCC PMU bases and record types, observed split 32-bit read orders, host `D_PROF_CFG` control path, and remaining hardware validation items. |
 | Host runtime API | `Tsm*` runtime exports | Device selection, memory allocation/free, H2D/D2H/D2D/P2P copies, bootparam launch, kernel load/unload, tile topology, power hooks, profiling, return code semantics, and stub boundaries. |
+| Host CModel API | instruction CModel declarations and `Runtime::SetCModelHandle` | Distinct low-level packet/operator and high-level `TsmDevice`/`TsmModel` dynamic ABI traces, plus the exact missing-package boundary. |
 | HPGR/KMD API | `tx_runtime.h`, KMD UAPI | CUDA-like device/memory/stream/event/model/module API, command completion, BO pools, job/DTE/C2C ioctl surfaces, PG tile map, and BAR/ATU address-space handling. |
 
 Interface units are explicit in the relevant sections: tensor element counts for
@@ -200,15 +203,18 @@ and `tasks/14`.
 Instruction memory operands are NCC-visible addresses. The wrapper headers
 define:
 
-| domain | range |
+| consumer-visible domain | accepted range / view |
 |---|---|
-| SPM | `0x00000000..0x002effff` |
+| NCC-visible SPM | `0x00000000..0x002effff` |
 | Kcore reserved SPM | `0x002f0000..0x002fffff` |
-| DDR | `>= 0x280000000` |
+| instruction-adapter accepted DDR operand | `>= 0x280000000` |
 
 CT, NE, and TDMA wrapper operands are SPM addresses. RDMA source is DDR and destination
 is SPM. WDMA source is SPM and destination is DDR. Kcore code marks the final
 SPM window as reserved; allocator legality is owned by the numbered memory designs.
+The DDR predicate has no static upper bound and is not a complete hardware or host
+address-space map. Other aliases, BAR mappings, invocation resources, and consumer-specific
+address views remain distinct until their owning contract binds them.
 
 ### Instruction Packet Struct Offsets
 
@@ -614,8 +620,8 @@ Observed TDMA field relations:
 - Opcode-specific wrapper paths populate subsets of `src0_tfr`, `dst_tfr`,
   `pdr`, `swr`, `dims`, and end fields.
 - Stride/iteration fields use byte strides and logical iteration counts.
-- `Memset` and `GatherScatter` packet comments and helpers use byte-oriented
-  counts.
+- `GatherScatter` uses a byte count. `Memset` takes an element count while its
+  stride fields are bytes; packet comments alone do not collapse those units.
 
 Production opcode legality and byte-count interpretation are owned by
 `tasks/11` and `tasks/14`.
@@ -885,9 +891,12 @@ DTE PMU base is `0x400800`.
 | channel 0 exec time low/high | `0x858` / `0x85c` |
 | channel 1 exec time low/high | `0x860` / `0x864` |
 
-64-bit PMU reads use a high-low-high stability pattern where implemented.
-Host profiling uses dyn TLV `D_PROF_CFG` and `ProcessProfData`; Kcore records
-use `PmuTLVHead { uint32_t pmu_type; uint32_t length; }`.
+Recovered helpers combine split 32-bit counters using inconsistent low/high or
+high/low read orders; no universal high-low-high retry or latch protocol is
+implemented in the vendored header. Stable 64-bit sampling therefore remains a
+measurement gate rather than a recovered guarantee. Host profiling uses dyn TLV
+`D_PROF_CFG` and `ProcessProfData`; Kcore records use
+`PmuTLVHead { uint32_t pmu_type; uint32_t length; }`.
 
 PMU record types:
 
@@ -913,11 +922,15 @@ NCC PMU records:
 
 - `pmu_ncc_en`, `pmu_ncc_disable`, and `pmu_ncc_clr` drive NCC PMU enable/clear
   at the NCC PMU base.
-- `PMU_NCC_WORKER_OFFSET = 0x30`; per-worker CT/NE/RDMA/WDMA/TDMA counters are
-  addressed by adding worker offset where helpers annotate it.
+- `PMU_NCC_WORKER_OFFSET = 0x30` and worker register macros exist, but the
+  aggregate CT/NE/RDMA/WDMA/TDMA record helpers currently hard-code worker-0
+  instruction/blocking addresses; their commented `workeridx` offset is not
+  applied. Execution-time fields also must not be assumed per-worker merely
+  from the record containing a worker index.
 - Unit records capture instruction count, blocking time, statistics window
   low/high, execution time low/high, and last-command info.
-- User timers exist for worker 0 and worker 1 in the recovered helpers and are
+- User-timer register macros include additional worker addresses, but recovered
+  callable helpers only implement worker 0 and worker 1; observed values are
   32-bit timer values.
 
 SPM PMU records:
@@ -945,6 +958,50 @@ After the `firmware_kuiper` pass, the host/runtime split is:
 | HPGR `tx_runtime` | Broad CUDA-like API surface observed in this SDK snapshot: device, memory, stream/event, module/kernel/model/graph, rank/tile, and P2P. Model-manager sync/async paths wait on command-slot completion; module launch polls a device-written `completeSignal`; stream finish waits on the queued command completion object. |
 | KMD UAPI | Exposes `/dev/accel/dev-N` BO/job/NPU/DTE/C2C/log/info/topology ioctl families, BAR/ATU windows, BO pools, PG tile maps, and firmware loading. The observed compute-job fence is directly signaled after MHU doorbell kick and does not prove device-side compute completion. |
 | VS/old `Tsm*` | Compatibility-layer and DTE-TLV evidence. Several launch/sync/discovery paths are stub/no-op in the recovered build. |
+
+### 13.1 Incomplete Host CModel Seams
+
+Two different CModel interface levels are visible and must not be merged merely
+because they share the word "cmodel":
+
+1. At the instruction/packet level, `instr_operator.h` declares
+   `initTsmOpPointer_cmodel` and `freeTsmOpPointer_cmodel`, while the host branch
+   of `instr_adapter.h` declares `instr_tick_cc` and cycle-mode functions. No
+   matching host definitions are present. The host branch of
+   `op_fw_sim_if/CMakeLists.txt` creates only an include-only INTERFACE target,
+   and the supplied instruction/common/Kcore archives contain RISC-V objects.
+   The repo CRT calls per-operation `TsmNew*`, fills a stack `Tsm*Instr`, calls
+   `TsmExecute`, and then calls `TsmDelete*`; it does not use the CModel
+   operator-table initializer. Obtaining only that entry would therefore not make
+   the current CRT executable on the host.
+2. At the host-runtime level, x86-64 `libtx8_runtime.so` implements
+   `Runtime::SetCModelHandle` by calling
+   `dlopen("libcmodel_runtime_api.so", RTLD_LAZY)` and resolving these 15
+   entry-point families: `SetDevice`, `SetDeviceOld`, `DeviceMalloc`,
+   `DeviceFree`, `InitDevice`, `Compile`, `Launch`, `Run`, `Terminate`,
+   `MemcpyH2D`, `MemcpyD2H`, `ResetDevice`, `ReleaseDevice`, `GetTileInfo`, and
+   `SetTileInfo`. Recovered debug signatures use a higher-level
+   `TsmDevice`/`TsmModel`/`CompileOption` C++ ABI rather than the instruction
+   packet ABI.
+
+The relevant `libcmodel_runtime_api.so`, matching host-runtime/TsmML development
+headers, `libhpgr.so`, `libtsmml.so`, and model resources are not available as a
+usable package in this checkout. Within the recovered binary, `dlsym` results
+are stored in CModel function-pointer fields and the library handle is later
+passed to `dlclose`; the ordinary launch path is not proven to read or call
+those fields. A missing external component could
+still access public fields, so the evidence supports "unproven and currently
+unusable", not an absolute claim that the interface is dead.
+
+No visible dependency, symbol, header, or build reference proves that either
+seam uses SystemC or TLM. Those frameworks could be internal to the missing
+library, so the implementation technology remains unknown. A vendor delivery
+must include the complete matching development package, transitive libraries,
+model resources, target revision, artifact input contract, numeric profile,
+thread/time behavior, license, and a reproducible positive path. Until then the
+high-level seam cannot be a verified package provider, and a project-owned
+low-level packet builder cannot be labeled vendor-exact before independent
+register or board correlation.
 
 The binary exposes a boolean backend gate in `Runtime::IsTriton()`. In this
 document that branch is called the active `tx*` driver backend. The symbol name
@@ -1122,6 +1179,8 @@ golden-test suite. The recovered facts above feed these numbered owners:
 - `tasks/15`: package, provider, resource, launch, and runtime completion
   semantics.
 - `tasks/16`: negative, integration, board, and hardware-validation gates.
+- `tasks/17`: target execution model, host CModel seam selection, packet/model
+  provenance, and model/board correlation.
 
 ## 16. Remaining Hardware Validation
 
@@ -1133,6 +1192,9 @@ These are intentionally not claimed as statically complete:
 - Actual floating point exception bits and arithmetic edge cases.
 - Host runtime behavior when the closed device driver returns target-specific
   errors.
+- Complete vendor host CModel package, matching headers/resources, reachable
+  execution path, internal framework, packet provenance, and numeric/time
+  contract.
 - Raw DTE multi-destination broadcast/scatter/shuffle policies outside the
   documented unicast/RDMA/WDMA helper path.
 - Exact SPM bank mapping and 64 KiB parallel allocator coloring; the snapshot

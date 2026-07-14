@@ -1,6 +1,6 @@
 # Wafer 硬件与编程模型总览
 
-本文档只整理 Wafer 硬件公开资料中的拓扑、运行时编程模型、SPM/DDR/DTE 资源、layout 背景和可验证硬件事实。文档中的 `TX8`、`TX81`、`TsingMicro` 仅指源代码和原始文档中的既有名称；compiler IR、ABI、transport和runtime policy由`tasks/01-16`对应编号设计文档拥有，本文不能覆盖它们。
+本文档只整理 Wafer 硬件公开资料中的拓扑、运行时编程模型、SPM/DDR/DTE 资源、layout 背景和可验证硬件事实。文档中的 `TX8`、`TX81`、`TsingMicro` 仅指源代码和原始文档中的既有名称；compiler IR、ABI、transport、runtime和target-model policy由`tasks/01-17`对应编号设计文档拥有，本文不能覆盖它们。
 
 具体register/wrapper事实不在本文档维护。`inter_type`、opcode、register packet字段、Tsm wrapper参数和历史Tx81 CRT调用证据见[wafer-register-level-instruction-spec.md](wafer-register-level-instruction-spec.md)；production instruction/transport/target ABI分别以`tasks/11`、`tasks/13`和`tasks/14`为准。
 
@@ -30,6 +30,7 @@
 | TXDA PyTorch wheel 逆向 | `docs/tx8-deps-reverse-engineering/txda-pytorch-runtime-wheel-analysis.md` | PyTorch `PrivateUse1` eager backend、`tx_runtime`/`txdnn` 依赖、stream/event host 语义 | 中；只作为 eager/runtime integration 线索，不作为硬件 ISA 或 SPM layout 依据 |
 | 指令定义 | `third_party/tx8_deps/include/instr_def.h` | register packet、opcode enum、`Data_Format`，以及 `Tensor_Fmt` 等 public enum 的存在性 | 高；具体表格放 register-level spec，`Tensor_Fmt` 不作为 Wafer layout 模型 |
 | C intrinsic adapter | `third_party/tx8_deps/include/instr_adapter_plat.h`, `instr_adapter.h`, `instr_operator.h` | public intrinsic API、地址边界、`TsmExecute` 入口 | 高；具体 wrapper 表放 register-level spec |
+| CModel seam审计 | 上述instruction headers、`third_party/tx8_deps/tx8-yoc-rt-thread-smp/interface/op_fw_sim_if/CMakeLists.txt`和x86 `third_party/tx8_deps/profiling_tool/examples/engtest_example/libtx8_runtime.so` | 低层host CModel声明、host runtime动态加载入口和缺失依赖边界 | 高；只证明接口痕迹与checkout缺口，不证明vendor内部使用SystemC或模型可运行 |
 | Kcore/DTE/SPM 头文件 | `third_party/tx8_deps/tx8-yoc-rt-thread-smp/include/components/oplib_tx81/riscv/riscv/include/**`以及`third_party/tx8_deps/tx8-yoc-rt-thread-smp/interface/op_fw_sim_if/peripheral/include/*.h` | DTE、stream FSM、mailbox、PMU、Kcore SPM 预留区、tile SPM base API | 高 |
 | 历史 Triton TX81 backend snapshot（未vendored） | dialect/lowering/CRT source snapshot | 既有backend对layout、SPM allocation、LLVM call和wrapper调用方式的线索与反例 | 中低。只能作为来源说明，不能作为仓库导航、硬件spec、golden path或Wafer ABI |
 
@@ -113,13 +114,14 @@
 
 ### Host runtime / driver 边界
 
-当前snapshot可观察到三层host/provider surface：
+当前snapshot可观察到四类host/provider surface：
 
 | 层 | 当前证据 | 证据限制 / 设计 owner |
 | --- | --- | --- |
 | HPGR `tx_runtime` | `firmware_kuiper/kuiper/include/tx_runtime.h` 与 `libhpgr.so` 暴露 CUDA-like device/memory/stream/event/module/kernel/model/graph/rank/tile/P2P surface。HPGR model/module completion涉及command slot、async receive thread、`completeSignal`和stream wait | 这是当前最完整的provider evidence，不证明Wafer必须采用其对象模型；`tasks/15`拥有package/runtime合同 |
 | KMD/UAPI | `/dev/accel/dev-N`、`/dev/accel_drv_mgr` 提供runtime allocation、jobs、NPU tile mem、C2C、log、device info、driver topology和driver-level DTE ioctl。当前KMD compute fence在MHU doorbell后直接signal | 该fence本身不证明model/kernel completion；production mapping由`tasks/15`定义和验证 |
 | VS/旧 `Tsm*` runtime | `libvs_runtime.so`桥接部分HPGR API，但`TsmLaunch/TsmLaunchPg/TsmAsyncRun/TsmDeviceSynchronize`等路径在当前构建中是stub/no-op success；D2D/P2P TLV仍有DTE证据价值 | 只证明兼容层和DTE TLV形状，不证明correctness fence或最终ABI；owner为`tasks/15` |
+| x86 CModel动态seam | `libtx8_runtime.so`的`Runtime::SetCModelHandle`会尝试`dlopen`缺失的`libcmodel_runtime_api.so`并解析device/compile/launch/run/copy/tile-info入口 | 当前缺完整host-runtime headers、CModel/HPGR/TsmML libraries和model resources；未证明该seam实际被launch路径消费、使用SystemC或接受Q17/Q18 artifact；owner为`tasks/17` |
 
 逆向 `libtx8_runtime.so` 后，HostRuntime 不能只按公开 runtime PDF 理解。
 当前二进制里的 `Tsm*` 导出函数通过 `Runtime::GetInstance()->_Api()` 转发，
@@ -137,6 +139,20 @@ kernel/module launch、tile topology、profiling和power hook的兼容host证据
 | D2D/P2P | `TsmMemcpyD2D`/`TsmSend`/`TsmRecv`通过dyn TLV + Kcore DTE配置发bootparam | 这是host通信证据，不规定compiler transport表示；owner为`tasks/13`/`tasks/15` |
 | launch/fence | `TsmRun`把bootparam device pointer转physical后调用`txLaunchModelSync`；`TsmLaunch/TsmLaunchPg/TsmAsyncRun/TsmDeviceSynchronize`当前是stub/success path。KMD compute fence也不是model/kernel done证明 | 只提供completion候选和反例；terminal completion合同由`tasks/15`拥有 |
 | tile topology/profiling | `TsmGetTileInfo/SetTileInfo`走`txGetDeviceAllTileInfo/txSetDeviceSelectedTileInfo`；`TsmProcessProfData`生成profiling dyn TLV并运行bootparam | topology返回和counter准确性仍需目标环境验证；owner为`tasks/04`/`tasks/16` |
+
+### CModel library seam证据
+
+当前checkout中的“cmodel”不是一个已闭合、可链接的单一库，而是两个不同层次的接口痕迹：
+
+| 层次 | 已观察事实 | 当前缺口与证据边界 |
+| --- | --- | --- |
+| instruction/packet级 | `instr_operator.h`声明`init/freeTsmOpPointer_cmodel`；`instr_adapter.h`的host分支声明`instr_tick_cc`和cycle-mode接口 | checkout中没有这些host定义；`op_fw_sim_if` host CMake仅创建include-only INTERFACE target；附带`libinstr_tx81.a`、`libcommon_util.a`和`libkcorert.a`均为RISC-V object。当前repo CRT直接调用per-op `TsmNew*`/`TsmExecute`，只取得operator-table initializer仍不足以host执行 |
+| host runtime级 | x86 `libtx8_runtime.so`会尝试`dlopen("libcmodel_runtime_api.so")`并解析`CModel_SetDevice`、`Compile`、`Launch`、`Run`、`Memcpy*`、`Get/SetTileInfo`等15个入口 | `libcmodel_runtime_api.so`、`libhpgr.so`、`libtsmml.so`、匹配的vendor `host_runtime.h`/`runtime_api.h`/TsmML headers和model resources均不在checkout；当前binary只证明`dlsym`结果会被存储且library handle会被`dlclose`，不证明普通launch路径读取/调用这些function pointers |
+
+高层seam使用`TsmDevice`/`TsmModel`/`CompileOption`风格C++ ABI，低层seam围绕Tsm instruction/packet；二者不能因都叫
+CModel而合并。当前vendor tree、可见x86依赖和symbol没有SystemC/TLM证据，SystemC仍可能藏在缺失library中，因此实现
+技术只能标记为unknown。是否把取得的高层套件接成package-facing provider，或把低层套件接到packet/MMIO模型，由
+`tasks/17`结合`tasks/14`/`tasks/15`合同决定。
 
 ### Cluster tile 选择规则
 
@@ -580,9 +596,10 @@ Stream、mailbox和CSR的具体wrapper/API表放在register-level evidence annex
 | DMA descriptor | wrapper暴露contiguous或三层stride/iteration；stride按byte，wrapper写`iteration - 1` | `tasks/11`/`tasks/14`决定可表达范围和structured failure |
 | overlap | RDMA/WDMA/TDMA、CT、NE是不同部件；`serial_mode=0`下busytable依据packet range/bank facts控制ready | `tasks/10`/`tasks/11`拥有issue/effect legality，`tasks/09`拥有lifetime/reuse，`tasks/13`拥有跨transport completion，`tasks/15`只消费committed DAG；性能需`tasks/16`的board calibration |
 | GatherScatter | wrapper只暴露三层stride/iteration，inner size/stride按byte | `tasks/11`/`tasks/14`拥有command legality |
-| DTE | public helper完整证明single-destination lifecycle；raw multi-destination register evidence不等于production capability | `tasks/13`/`tasks/14`拥有binding与command ABI |
+| DTE | public helper静态证明single-destination call shape和lifecycle调用序列；source read时机、destination visibility及raw multi-destination acceptance仍需vendor/board证据 | `tasks/13`/`tasks/14`拥有binding与command ABI，`tasks/16`拥有hardware gate |
 | bool | 观察到bitpacked表示和8-element byte granularity | `tasks/10`/`tasks/11`决定tail/padding legality |
 | host runtime stubs | 当前snapshot中的`TsmLaunch/TsmLaunchPg/TsmAsyncRun/TsmDeviceSynchronize`与部分discovery是stub/success path | 这些路径没有positive execution/completion证据；provider acceptance由`tasks/15`决定 |
+| vendor CModel seam | 低层header和高层x86 runtime均有CModel接口痕迹，但对应host实现、依赖、headers和resources不完整 | 不能宣称当前可链接、内部使用SystemC、packet-exact或可消费Wafer package；target-model接入和验证由`tasks/17`决定 |
 | ChannelNorm | 历史CRT通过GatherScatter做真实movement | `tasks/08`/`tasks/11`决定是否及如何materialize |
 | MXFP | 当前样例是Kcore loop + CGRA MulVS，不是单条hardware convert | `tasks/10`/`tasks/11`/`tasks/14`拥有composite profile |
 
@@ -598,7 +615,8 @@ target CRT command ABI/prototype已由`tasks/14`拥有。本文观察到的full-
 | Raw DTE non-unicast collective path | register层暴露broadcast/shuffle/scatter相关字段；KMD enum中`gather=4`在KMD 2-bit register path未实做；public `DirectDTESendInfo`仍是单目的地 | 仅作为future capability evidence；acceptance由`tasks/13`/`tasks/14`和board gate决定 |
 | GEMM/NE精确约束 | `TsmGemm` wrapper暴露input/output/psum/batch/trans/quant/bias/scale/activation配置；部分组合缺板端证据 | production profile与verifier只由`tasks/11`/`tasks/14`维护 |
 | Runtime/driver行为 | `libtx8_runtime.so` host API静态语义已恢复，但active driver、launch success、power/MHU和topology返回需目标环境验证 | `tasks/15`决定provider rejection与error propagation |
-| PMU counter准确性 | DTE/SPM/NCC PMU register和TLV shape已知，counter unit、wrap edge、event correlation需实测 | 仅作为`tasks/16` calibration evidence |
+| Vendor CModel交付 | 高层dynamic ABI和低层instruction CModel声明已定位，但实现、匹配开发包、资源、版本、license和可达launch路径均未闭合 | `tasks/17`决定索取清单、adapter层级和独立correlation；当前不能作为configured provider |
+| PMU counter准确性 | DTE/SPM/NCC PMU register和TLV shape已知；split-counter读取顺序不统一，聚合NCC helper的instruction/blocking地址实际硬编码worker 0，user-timer helper只覆盖worker 0/1；counter unit、wrap edge、worker scope和event correlation需实测 | 仅作为`tasks/16` calibration evidence |
 | latency/resource conflict | 独立部件与busytable ready条件有静态证据，LSU/NoC/SPM/DDR具体竞争成本无完整表 | 不足以单独证明legality或cost model，需编号合同和board/profile evidence |
 
 Conv optional/fused字段、TDMA variants、Peripheral bitcount、raw DTE non-unicast、SCALAR/CSR ordinary execution等只作为能力类别和证据缺口保留；是否进入production IR/ABI以及当前完成状态只看编号设计与`tasks/progress.md`。现有证据表明SPM bank conflict和非

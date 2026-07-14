@@ -1,6 +1,6 @@
 # Wafer Target Conversion、CRT 和 Module Publication
 
-状态：2026-07-13按Q17完成证据、Q16.T激活和target execution model的后续consumer边界更新。本文拥有
+状态：2026-07-14按Q17完成证据、Q16.T激活和SystemC target execution model的后续consumer边界更新。本文拥有
 instruction-to-target conversion、Wafer CRT ABI、device link和近期staged target module合同。实现状态看
 `tasks/progress.md`。
 
@@ -248,11 +248,13 @@ diagnostic按稳定语义分类：
 
 - target execution model：tasks/17已确定近期模型应消费tasks/14同一ABI preparation和full conversion结果。
   实现时把当前private per-rank prepared module提升为owner-backed、move-only、不可序列化的all-rank target LLVM
-  bundle，使现有RISC-V device link和host target-call model成为两个直接consumer。该bundle携带fully legal LLVM
-  modules、canonical rank domain、每rank logical rank/entry、`ExecutionConfig`、ordered typed ABI slots、target
-  identity/revision、target/kernel ABI facts及context/owner lifetime；全部rank成功后才原子形成，不是packet artifact
-  或package成员。在该producer落地前，当前Q17 `TargetArtifactBundle`合同和完成状态不变。host target-call通过也
-  不证明RISC-V CRT/archive或actual packet；
+  bundle，使现有RISC-V device link、direct ABI smoke和Host-CRT/SystemC model成为三个直接consumer。正式model consumer
+  host执行同一target LLVM，调用与device build同源的repo CRT wrapper，再经project-owned Tsm operator/packet builder
+  进入SystemC；direct shim只补ABI诊断。该bundle携带fully legal LLVM modules、canonical rank domain、每rank logical
+  rank/entry、`ExecutionConfig`、ordered typed ABI slots、target identity/revision、target/kernel ABI facts及context/owner
+  lifetime；全部rank成功后才原子形成，不是packet artifact或package成员。在该producer落地前，当前Q17
+  `TargetArtifactBundle`合同和完成状态不变。Host-CRT/SystemC通过能证明project CRT/packet functional-event链，仍不
+  执行RISC-V archive，并在Q22.C golden correlation前不证明vendor-exact packet；
 - Direct DTE target activation已由Q16.T闭合：只消费tasks/13定义的typed accepted binding，CRT wrapper、opaque event、
   status ABI、required/allowed symbol、真实16-rank ELF和late-failure atomic gate已通过；board execution仍属Q6.B；
 - low-precision/quant ABI：等待instruction geometry和CPU/reference semantics；

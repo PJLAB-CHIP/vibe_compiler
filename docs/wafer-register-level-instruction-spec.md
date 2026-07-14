@@ -5,7 +5,7 @@
 1. public Tsm wrapper和register packet暴露了什么调用、字段、单位与完成语义。
 2. 历史Tx81 CRT如何调用这些wrapper，以及哪些观察可以作为实现证据或反例。
 
-它不是硬件总览，也不是Wafer backend ABI owner。production instruction IR、physical transport acceptance、target command/CRT ABI和RuntimeSession分别由`tasks/11`、`tasks/13`、`tasks/14`和`tasks/15`拥有；本文中的能力分层、样例和历史名字不能覆盖编号合同或动态任务状态。
+它不是硬件总览，也不是Wafer backend ABI owner。production instruction IR、physical transport acceptance、target command/CRT ABI、RuntimeSession和target model分别由`tasks/11`、`tasks/13`、`tasks/14`、`tasks/15`和`tasks/17`拥有；本文中的能力分层、样例和历史名字不能覆盖编号合同或动态任务状态。
 
 核心证据：public wrapper支持“target CRT创建packet并调用Tsm wrapper/`TsmExecute`”的分层；历史Triton/CRT `__*`只提供调用样例、参数单位线索和反例。当前Wafer-owned command ABI与symbol closure只看`tasks/14`及其header/source实现。
 
@@ -72,6 +72,19 @@ void __AddVV(void *src0, void *src1, void *dst,
 ```
 
 历史CRT暴露了per-op hard wait与issue/drain分离两种做法；硬件dependency detection允许RDMA/WDMA/TDMA/CT/NE overlap。这些观察不能证明存在编号合同之外的scheduler语义通道；completion owner和合法插入点只看`tasks/11`、`tasks/13`、`tasks/15`。
+
+### Host CModel seam与packet provenance
+
+`instr_operator.h`声明了`init/freeTsmOpPointer_cmodel`，`instr_adapter.h`的host分支声明`instr_tick_cc`和cycle-mode接口，
+但当前checkout没有这些定义，`op_fw_sim_if`的host CMake也只建立include-only INTERFACE target。附带instruction、
+common-util和Kcore archive都是RISC-V object，不能直接形成x86 wrapper/packet model。
+
+当前repo CRT实际使用per-op `TsmNew*`取得method table，填写栈上`Tsm*Instr`，调用`TsmExecute`后再`TsmDelete*`；它不调用
+operator-table入口`initTsmOpPointer_cmodel`。因此仅取得该initializer不足以host化当前CRT。项目自行实现host Tsm
+operator时，`TsmExecute`必须在返回前完成decode或复制异步所需字段，绝不能保存caller栈指针；这种packet只证明project CRT/builder路径，直到与RISC-V archive
+register trace、board capture或versioned vendor builder逐字段相关后，才可增加vendor-exact claim。target model的接入和
+gate由`tasks/17`/`tasks/16`拥有，不由本证据附件决定SystemC或其它实现技术。上述复制只针对`Tsm*Instr` bytes，不代表
+Direct DTE payload snapshot；DTE source具体读取时刻仍需vendor/board证据。
 
 ## Triton CRT 对照路径
 
@@ -1197,6 +1210,11 @@ event correlation 仍缺板端证据；profile/calibration 与 correctness gate 
 | NCC PMU | `0x590000` | NCC CT/NE/RDMA/WDMA/TDMA instruction/blocking/exec counters 和 user timers |
 | TMNOC PMU | `0x30700000`, `0x30b00000` | base 已知；未作为 compiler-facing ABI 解码 |
 
+vendored helper对split 64-bit counter既有low/high也有high/low读取，没有统一high-low-high重试或latch合同。NCC聚合record
+虽然带`workeridx`，但CT/NE/RDMA/WDMA/TDMA instruction/blocking helper实际硬编码worker 0地址，注释中的worker offset
+没有应用；user-timer callable helper只覆盖worker 0/1。后续工具必须记录实际register/worker provenance并验证稳定读取，
+不能从record shape宣称所有counter per-worker。
+
 PMU record type:
 
 | value | type |
@@ -1240,6 +1258,14 @@ typed DAG 接受并通过 `tasks/16` gate 后才具有 Wafer runtime 语义。
 | `TsmLaunch/TsmLaunchPg/TsmAsyncRun/TsmDeviceSynchronize` | 当前实现是 stub/success path | 不能作为 execution 或 completion 证据 |
 | `TsmGetTileInfo/SetTileInfo` | 调 `txGetDeviceAllTileInfo/txSetDeviceSelectedTileInfo`，复制 16/8 个 tile records | 静态调用链不能证明返回内容；board gate 归 `tasks/16` |
 | `TsmProcessProfData` | 构造 profiling dyn TLV，运行 bootparam，结束路径 dump profiling data | record shape 静态可见，counter accuracy 归 `tasks/16` 验证 |
+
+x86 `libtx8_runtime.so`还暴露另一条、与上述packet seam不同的高层CModel线索：
+`Runtime::SetCModelHandle`尝试`dlopen("libcmodel_runtime_api.so")`，并解析device、compile、launch、run、copy和tile-info
+等15个`CModel_*`入口。这些入口使用`TsmDevice`/`TsmModel`/`CompileOption`风格C++ ABI，不等于`TsmExecute` packet ABI。
+当前checkout缺该library、匹配host-runtime/TsmML headers、`libhpgr.so`、`libtsmml.so`和model resources；现有binary只
+证明`dlsym`结果被存入字段且library handle会被`dlclose`，没有证明普通launch路径读取/调用这些字段。故它是vendor
+CModel存在的强线索，不是当前可运行
+provider，也不能证明内部使用SystemC或可消费Q17/Q18 artifact。完整模型设计和vendor索取边界见`tasks/17`。
 
 Device bootparam head:
 

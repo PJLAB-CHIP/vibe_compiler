@@ -1,6 +1,6 @@
 # Wafer AI Compiler Architecture
 
-状态：2026-07-13按当前实现事实和target execution model分支更新。本文固定近期单tile/单卡16-tile纵向合同和长期扩展边界；
+状态：2026-07-14按当前实现事实和SystemC target execution model分支更新。本文固定近期单tile/单卡16-tile纵向合同和长期扩展边界；
 实现状态只看`tasks/progress.md`，专题细节由第9节编号文档拥有。
 
 本文使用 **Wafer** 作为目标硬件和软件栈名称。TX8/TX81只在引用底层依赖、公开ABI或反向工程事实时
@@ -109,7 +109,7 @@ partition；默认性能切分policy必须等有可验证的StableHLO↔SDY expo
 | Executable bundle | typed C++ `RankExecutable[]`/`ExecutableBundle` | explicit rank、entry、accepted module/resource/completion、atomic all-rank result | rejected candidates、runtime object |
 | Target module | LLVM dialect/IR、CRT call、device object/kcore module、digest | static rank program和target ABI | sharding/search/package planning |
 | Package/runtime | typed C++ manifest + canonical JSON、RuntimeSession | module/rank/entry/resource slot绑定和launch preflight | instruction schedule、重新规划 |
-| Target verification/runtime consumer | owner-backed fully legal target LLVM或未来verified package/exact module；invocation-local model state | target-call、packet/event、exact-module及校准后的timing evidence | compiler planning、package字段、board完成 |
+| Target verification/runtime consumer | owner-backed fully legal target LLVM或未来verified package/exact module；invocation-local model state | direct ABI smoke、host-CRT/SystemC functional-event、Q22.C golden packet/MMIO conformance、exact-module及校准后的timing evidence | compiler planning、package字段、board完成 |
 
 Dialect边界不等于artifact边界。近期继续使用一个Wafer dialect并按op family组织源码；只有独立registration、
 conversion legality或依赖方向需要时才拆dialect。代码可以按语义library拆分，但不得用目录重排代替IR合同。
@@ -240,10 +240,12 @@ reference executor直接消费accepted instruction/memory facts：
 reference executor不是cycle/packet simulator，不证明CRT wrapper、真实transport、completion或性能。
 
 target execution model是与reference并列的下游consumer：近期从tasks/14 full conversion形成的owner-backed、
-不可序列化target LLVM bundle执行same typed CRT ABI，用Q19/CPU作独立oracle；packet/MMIO和exact package/RISC-V
-ELF分别是更高证据入口。只有exact module通过tasks/15 `RuntimeProvider`消费verified package时，才可称package-facing
-model execution。SystemC/TLM只可作为可选event/timing backend，不进入IR、bundle或manifest，也不自动证明cycle
-accuracy。详细边界和板端校准计划由tasks/17拥有。
+不可序列化target LLVM bundle执行same typed CRT ABI。direct host shim只作ABI smoke；正式functional-event路径调用与
+device build同源的repo CRT wrapper，经project-owned Tsm operator/packet builder进入SystemC，并用Q19/CPU作独立oracle。
+golden packet/MMIO conformance和exact package/RISC-V ELF是更高、互不冒充的证据入口。只有exact module通过tasks/15
+`RuntimeProvider`消费verified package时，才可称package-facing model execution。SystemC是target-model feature内部的
+强制event/transaction容器，但不进入IR、bundle或manifest，也不自动证明numeric、bit或cycle accuracy；plain C++ kernel
+仍独立于SystemC。详细边界和板端校准计划由tasks/17拥有。
 
 ## 9. Pipeline 分支和 Owner 索引
 
@@ -258,8 +260,11 @@ compiler/reference主干按以下依赖闭合：
 7. rank-count=16 linear/MLP；
 8. rank-count=16 tiny Llama。
 
-此后target-call/packet/event model与configured board是两个独立分支，均不成为对方的correctness前置。exact-module
-provider在vendor simulator或ISS/loader能力可用后从target-model分支继续；target timing calibration要求model和board
+此后direct ABI smoke、Host-CRT/SystemC functional-event、Q22.C golden packet/MMIO conformance与configured board按
+分层证据管理。Q22 functional-event不以Q22.C或board为完成前置；Q22.C显式消费Q22 project packet和configured golden
+source，Q6.B board仍是独立外部门槛。exact-module provider在vendor simulator或ISS/loader能力可用后从target-model
+分支继续；
+target timing calibration要求model和board
 证据，same-package correlation还要求exact-module provider。分支关系只看`tasks/progress.md`，不能从本节列表顺序恢复。
 
 | Boundary | Owner |
@@ -276,7 +281,7 @@ provider在vendor simulator或ISS/loader能力可用后从target-model分支继�
 | target conversion、CRT、device link/publication | 14 |
 | typed manifest、runtime | 15 |
 | all stage gates、reference、target-model和board证据 | 16 |
-| target execution model、SystemC可选边界和板端correlation/calibration | 17 |
+| target execution model、SystemC主架构边界和板端correlation/calibration | 17 |
 
 当前没有active实施计划；target execution model先在tasks/17完成初步设计收敛，进入代码施工前再建立计划。
 

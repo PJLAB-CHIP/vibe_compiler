@@ -1,6 +1,6 @@
 # Wafer Typed Manifest、RuntimeSession 和 Launch Boundary
 
-状态：2026-07-13已完成Q18及Q16.T的Direct DTE runtime requirement扩展，并补充target execution model provider
+状态：2026-07-14已完成Q18及Q16.T的Direct DTE runtime requirement扩展，并按SystemC target execution model补充provider
 边界。近期wire form为schema v2、唯一typed C++ model的canonical JSON，不是Protobuf；provider/board execution
 仍是后续独立gate。实现状态看`tasks/progress.md`。
 
@@ -220,14 +220,18 @@ runtime长期分三层；Q18实现前两层，第三层属于后续provider/boar
    compatibility/capacity facts做pure no-card preflight；不分配、不加载、不启动线程；
 3. `RuntimeProvider`：执行allocation/import/copy/load/resolve/submit/wait/copyback/cleanup。
 
-tasks/17定义的target execution model有两个不同边界：host target-call模式直接消费compiler内部owner-backed target
-LLVM bundle，只是target/ABI component gate，不属于`RuntimeProvider`；只有exact-module模式能加载Q18 verified
-package中的all-and-only RISC-V ELF、执行loader ABI/MMIO/Direct DTE并完成上述生命周期时，才作为target model
-`RuntimeProvider`。provider选择属于typed runtime environment/session policy，不进入manifest，也不能增加model专用
+tasks/17定义的target execution model有三个runtime/artifact执行边界：direct shim消费compiler内部owner-backed target
+LLVM bundle，只作ABI smoke；Host-CRT/SystemC模式消费同一bundle并执行repo CRT/project packet functional-event链；
+两者都不属于
+`RuntimeProvider`。只有exact-module模式能加载Q18 verified package中的all-and-only RISC-V ELF、执行loader
+ABI/MMIO/Direct DTE并完成上述生命周期时，才作为target model `RuntimeProvider`。provider选择属于typed runtime
+environment/session policy，不进入manifest，也不能增加model专用
 resource、instruction schedule或transport分支。执行只产出invocation-local typed result/status/diagnostic，不修改或
 回写package。当前`RuntimeSessionPlan`只覆盖一个entry/rank；Direct DTE exact provider落地时必须增加owner-backed
 all-rank invocation/session，将现有verified entries和bindings组成共同submit/progress/status/cleanup域，不能简单顺序
 循环单entry plan，也不能为此把module内message/packet schedule复制到manifest。
+Q22.C golden packet/MMIO conformance是独立verification evidence，不是第四个runtime/artifact执行边界，也不消费或改写
+package。
 
 ### 8.1 Deferred All-Rank Provider Session Contract
 
@@ -285,9 +289,10 @@ no-card允许证明：
 - deterministic launch/completion plan；
 - side-effect-free rejection。
 
-target-call model可以比no-card多证明target LLVM/CRT call的功能结果，但仍不证明package内exact module、provider
-lifecycle或board。exact target model provider可以证明verified package在指定model profile中的执行，但仍不是board
-execution；四类证据的分层和correlation gate由tasks/16、tasks/17拥有。
+direct target-call shim只比no-card多提供target LLVM/ABI smoke；正式Host-CRT/SystemC model还可证明同源repo CRT、
+project packet和functional-event路径的支持子集结果，但两者都不证明package内exact module、provider lifecycle或board，
+且golden correlation前不证明vendor-exact packet。exact target model provider可以证明verified package在指定model
+profile中的执行，但仍不是board execution；各类证据的分层和correlation gate由tasks/16、tasks/17拥有。
 
 fake/real provider必须实际记录并执行抽象调用序列，而不是只打印预期文本；该能力不属于Q18完成证明。target model
 provider按Q22/Q22.E和tasks/17 gate推进，真实board按Q6.B推进；二者共同遵守本文件all-rank session及
