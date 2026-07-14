@@ -1,7 +1,8 @@
 # Wafer Compiler Verification Plan
 
-状态：2026-07-14按Q22 multi-dtype foundation、逐profile oneDNN admission、state-isolated numeric backend、untimed
-SystemC模型、host-seam external authorization/spec gate和Q22.C板端numeric correlation方案更新。
+状态：2026-07-14按Q22.N multi-dtype foundation、Q22.B逐profile oneDNN admission、Q22.L owner-backed target LLVM
+bundle、Q22.H authorized host CRT、Q22.S untimed SystemC event model、Q22.V source vertical和Q22.C板端numeric
+correlation等独立gate更新。
 本文拥有跨stage完成证据和测试口径；具体IR/ABI规则由
 对应编号设计文档拥有。实现状态看`tasks/progress.md`。
 
@@ -36,8 +37,9 @@ Pipeline position:
   staging/publication；Q18闭合typed manifest/package/no-card runtime；Q19闭合immutable single-rank reference core；
   Q16.T闭合Direct DTE transport activation；Q19.M闭合deterministic multi-rank reference；Q20/Q21依次闭合
   rank-count=1/16 linear/MLP和16-rank tiny Llama纵向链。后续gate不能反向成为Q0前置，board未执行时保持明确
-  external gate。Q22先闭合完整multi-dtype numeric foundation；external authorization/spec gate通过后，再闭合
-  host-CRT/SystemC model-only functional-numeric和明确provenance的host packet component；direct shim只作ABI smoke。
+  external gate。Q0.L后Q22.N与Q22.L可并行；Q22.N单独解锁Q22.B，Q22.L与external authorization/spec gate共同
+  解锁Q22.H，Q22.N+Q22.H+既有Q16.T再解锁Q22.S，Q22.B+Q22.S+既有Q20/Q21最终由Q22.V闭合完整输出。
+  direct shim只作ABI smoke，Q22只汇总Q22.V完成状态。
   Q22.C消费Q22和Q6.B结果闭合板端numeric correlation；
   vendor-exact packet只在有独立packet/MMIO
   evidence时增加provenance claim。exact package provider和deferred timing calibration保持独立更高gate。
@@ -54,25 +56,31 @@ runtime可以从不同上游并行取得，只有明确列出的consumer才能�
 4. **Target artifact**：compiler-generated LLVM/object/module通过CRT/device-link/ABI/digest gate。
 5. **Direct target-call ABI smoke**：同一fully legal target LLVM通过direct host symbol shim执行，只证明lowering、fixed
    signature、control flow、typed slots和基本地址形成；不证明repo CRT、packet或event。
-6. **Numeric foundation conformance**：13种logical storage codec、有证据的target-profile×engine×format encoding、当前七种
+6. **Numeric foundation conformance（Q22.N）**：13种logical storage codec、有证据的target-profile×engine×format encoding、当前七种
    compute/convert format、36条convert route和完整`NumericSemanticsProfile`通过exhaustive/boundary/property及逐family
-   independent differential或显式trusted-TCB conformance；SoftFloat/TestFloat或production MPFR不得自计双oracle。
-   oneDNN大GEMM另按完整profile进入
-   `bit-exact/profile-bounded/rejected` admission，formal work budget与fail-fast生效；model capability不扩大compiler legality。
-7. **Authorized Host-CRT/SystemC model-only functional-numeric**：external authorization/spec gate通过后，同一fully legal
-   target LLVM调用与device build同源且获准host使用的repo CRT wrapper，经许可兼容Tsm operator/packet seam进入untimed
-   SystemC，并由独立plain C++ numeric kernel执行，证明该明确provenance的CRT/packet/event路径在supported model profile中的完整数值结果；
-   不执行RISC-V archive，也不证明vendor-exact packet或package module。
-8. **Optional packet/MMIO conformance**：exact module产生的register trace、board capture或versioned vendor builder与
+   independent differential或显式trusted-TCB conformance；SoftFloat/TestFloat或production MPFR不得自计双oracle；
+   model capability不扩大compiler legality。
+7. **Bulk backend qualification（Q22.B）**：oneDNN大GEMM按完整semantic/domain/environment profile进入
+   `bit-exact/profile-bounded/rejected` admission，formal work budget与fail-fast生效；只有冻结record exact-match的调用可进入bulk。
+8. **Owner-backed target LLVM bundle（Q22.L）**：Q0.L prepared target LLVM/ABI artifact经all-rank readback后形成move-only、
+   不可序列化的内部bundle；不执行Host CRT、packet、SystemC或package ELF。
+9. **Authorized Host CRT（Q22.H）**：external authorization/spec gate通过后，同一fully legal target LLVM调用与device build
+   同源且获准host使用的repo CRT wrapper，并经许可兼容Tsm operator/packet seam形成明确provenance的host transaction；
+   direct shim不计入此gate。
+10. **SystemC model-only functional event（Q22.S）**：Q22.H transaction进入untimed SystemC rank/tile memory、worker/event、
+   completion和Direct DTE/FSM，numeric effect只消费Q22.N，不执行RISC-V archive，也不证明vendor-exact packet或package module。
+11. **Source-backed functional-numeric vertical（Q22.V）**：同一source producer重放Q20、f16/bf16、Q21和超过formal budget的
+   large GEMM，后者必须命中Q22.B，完整输出与独立oracle比较并闭合all-rank atomicity。
+12. **Optional packet/MMIO conformance**：exact module产生的register trace、board capture或versioned vendor builder与
    authorized host packet逐字段比较decode、address、engine和register effect；缺失只限制packet provenance。
-9. **No-card runtime**：verified package、binding和launch/completion plan通过，无真实device side effect。
-10. **Fake provider execution**：抽象provider调用实际执行、记录、注入失败和cleanup，不执行exact target module。
-11. **Exact-module target model provider**：verified package中的all-and-only RISC-V ELF经ISS/vendor simulator、loader
+13. **No-card runtime**：verified package、binding和launch/completion plan通过，无真实device side effect。
+14. **Fake provider execution**：抽象provider调用实际执行、记录、注入失败和cleanup，不执行exact target module。
+15. **Exact-module target model provider**：verified package中的all-and-only RISC-V ELF经ISS/vendor simulator、loader
    ABI、MMIO/Direct DTE和完整provider lifecycle执行。
-12. **Board execution**：真实allocation/load/copy/launch/transport/completion/status和完整数值输出。
-13. **Board numeric correlation**：Q6.B有效board execution与Q22 model result按op/dtype/profile的区分向量、重复稳定性、
+16. **Board execution**：真实allocation/load/copy/launch/transport/completion/status和完整数值输出。
+17. **Board numeric correlation**：Q6.B有效board execution与Q22 model result按op/dtype/profile的区分向量、重复稳定性、
     冻结comparator、独立held-out及source-backed完整输出相关；只发布绑定环境和tested domain的numeric profile。
-14. **Deferred performance/timing calibration**：稳定board/profile evidence；target-model timing和candidate cost consumer各自显式
+18. **Deferred performance/timing calibration**：稳定board/profile evidence；target-model timing和candidate cost consumer各自显式
     version/profile，不影响语义合法性。
 
 独立packet/MMIO conformance是可选诊断证据：只有exact-module register trace、board capture或versioned vendor builder
@@ -92,9 +100,9 @@ performance；board单case不是scale或全输入域完成。
 - CTest：注册lit、Python runtime adapter和C++ unit tests；
 - configured vertical tests：需要importer/XLA helper/target toolchain时用feature控制；
 - board tests：单独feature和environment，不与no-card混计。
-- target-model tests：plain C++ kernel/component tests属于Q22基础mandatory；SystemC对整个项目是可选target-model
-  feature，但feature启用时缺依赖必须configuration fail，host-CRT/SystemC formal tests必须真实执行且属于Q22
-  mandatory；未启用时正式profile为unavailable且Q22未完成，direct shim或plain C++ unit不能替代。ISS/vendor simulator
+- target-model tests：plain C++ numeric/bulk component tests分别属于Q22.N/Q22.B mandatory；SystemC对整个项目是可选target-model
+  feature，但feature启用时缺依赖必须configuration fail，host-CRT/SystemC tests必须真实执行且分别属于Q22.H/Q22.S
+  mandatory；未启用时正式profile为unavailable且Q22.S/Q22.V未完成，direct shim或plain C++ unit不能替代。ISS/vendor simulator
   和board-calibrated profile各用独立feature/environment并显式列unsupported/skipped，不能互相替代。
 - Q22 bulk release qualification由受管`wafer-cmodel-qualify-bulk`执行，使用独立offline resource budget并输出可readback的
   immutable qualification records；runtime debug override或日常model执行不能签发record。
@@ -655,7 +663,7 @@ allocation、launch、transport、completion和copyback仍只由Q6.B拥有。
 但在Q0.L闭合target profile、engine×format legality以及reduce/indexing-map丢义前保持blocked，以下gate当前均不能因
 文档完成而标记实现完成。
 
-### 11.1 Q22 Multi-Dtype Numeric Foundation Gate
+### 11.1 Q22.N Multi-Dtype Numeric Foundation Gate
 
 - 从tasks/14单一拥有的shared registry读取13种logical format和target-profile×engine×format encoding；
   `Fmt_UNUSED`与target f64拒绝，UINT/64-bit DMA及TF32 format-bearing op等无证据row不能由enum或host type兜底；
@@ -678,6 +686,19 @@ allocation、launch、transport、completion和copyback仍只由Q6.B拥有。
 - 从current accepted surface生成closure：每个published `(ModelProfileId, NumericCommandKey)`恰好映射一个
   `NumericSemanticsProfile`/kernel/comparator或静态unsupported reason；多个model candidate使用不同显式ModelProfileId，
   不能成为compiler legality或隐式default；
+- `FormalNumericExecutionContext`覆盖SoftFloat/MPFR state的save/set/clear/capture/restore；DAZ/FTZ分别由target-owned input/
+  output codec处理。nested/early return/exception和normal/subnormal测试证明invocation恢复，另以双OS-thread验证required TLS
+  build。MPFR/GMP self-test record绑定实际library artifacts；static link readback或dynamic loaded-object digest/build-id、
+  MPFR version/patch/options、`gmp_version`和transitive linkage exact-match，替换同ABI library的negative必须configuration fail。
+
+只有exhaustive/property以及该family要求的independent differential或trusted-TCB conformance真实执行，且受管dependency
+版本、license和digest可审计，该gate才通过；缺失required differential/TCB self-test、单个f32 workload、global tolerance、
+oneDNN/Eigen输出或SystemC process test不能替代。该gate只证明model semantics，不证明bulk、SystemC或板端edge behavior。
+
+### 11.2 Q22.B oneDNN Bulk Qualification Gate
+
+Q22.B只消费已经闭合的Q22.N codec和formal profile；它不改变compiler legality、numeric policy或Q22.S事件结构：
+
 - oneDNN admission由semantic profile、shape/value domain和完整backend environment共同定址，并明确为
   `bit-exact/profile-bounded/rejected`。exact由中间值、reduction和overflow证明而不是有限corpus；int8另以输入bound或
   actual implementation+受管源码/build证据排除pairwise s16 saturation及所有partial/compensation/merge中间s32 overflow，
@@ -698,17 +719,9 @@ allocation、launch、transport、completion和copyback仍只由Q6.B拥有。
   禁止从`any`直接创建memory。MatMul另检查2..12D、same-rank/batch broadcast、
   axis/stride和plain N-contiguous destination。alias、padding/tail/canary、same-engine scratch、pack budget、primitive descriptor、
   entry-count library cache、byte-budget project cache、immutable weights及异常路径都有negative；
-- `FormalNumericExecutionContext`覆盖SoftFloat/MPFR state的save/set/clear/capture/restore；DAZ/FTZ分别由target-owned input/
-  output codec处理。两个SC_THREAD交替profile、sticky flag、nested/early return/exception和normal/subnormal测试证明logical
-  process恢复，另以双OS-thread验证required TLS build；`BulkExecutionEnvironment`在primitive实际worker pool逐worker设置并
+- `BulkExecutionEnvironment`在primitive实际worker pool逐worker设置并
   readback rounding mode/MXCSR RC、FTZ/DAZ和exception mask，覆盖pool复用、worker数变化及预置错误环境negative。caller
   RAII不能冒充worker初始化；无法验证全部worker的floating row rejected，worker flags不得映射为target status。
-  MPFR/GMP self-test record绑定实际library artifacts；static link readback或dynamic loaded-object digest/build-id、MPFR
-  version/patch/options、`gmp_version`和transitive linkage exact-match，替换同ABI library的negative必须configuration fail；
-
-只有exhaustive/property以及该family要求的independent differential或trusted-TCB conformance真实执行，且受管dependency
-版本、license和digest可审计，该gate才通过；缺失required differential/TCB self-test、单个f32 workload、global tolerance或
-oneDNN/Eigen输出不能替代。该gate只证明model semantics，不证明板端edge behavior。
 
 oneDNN是Q22大GEMM的首版执行依赖，不是远期性能优化。formal loop受checked MAC budget限制；超过budget且无admitted
 bulk时必须在compute前返回`bulk_backend_unavailable`。每个source-backed large GEMM断言实际命中bulk，并记录完整semantic
@@ -730,90 +743,95 @@ budget但仍受timeout/resource limit；runtime debug override结果不可签发
 缺失或environment/domain不匹配即rejected；mandatory large case不能临时运行慢formal loop取得资格。
 
 generated batched/non-batched large-GEMM component corpus跨M/N/K、tail和admitted dtype验证dispatch：每个target command
-恰调用一次oneDNN MatMul，optional reorder单独计数；formal MAC为零、SystemC event/transaction数量不随M×N×K增长；exact row bitwise，bounded
+恰调用一次oneDNN MatMul，optional reorder单独计数且formal MAC为零；exact row bitwise，bounded
 row使用冻结envelope。另在pinned host区分cold create/JIT、pack/reorder与warm execute并覆盖M=1、normal/batched和实际
 workload；mandatory profile若落入reference implementation则不授予`performance-qualified`。correctness gate不使用易抖动
 绝对wall time；cold/JIT必须在fresh subprocess或cache=0环境测量，主导端到端时间的mandatory reorder落入reference
 implementation同样不合格。
 
-### 11.2 Direct ABI Smoke And Host-CRT/SystemC Gate
+### 11.3 Q22.L Owner-Backed Target LLVM Module Bundle Gate
 
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  Q16 accepted ExecutableBundle经tasks/14同一target ABI preparation和full conversion形成的owner-backed、
-  all-and-only fully legal target LLVM modules及ordered typed ABI slots。
+  Q0.L验证后的profile-bearing ExecutableBundle和transaction-local prepared target LLVM/ABI artifact。
 - Current stage responsibility:
-  消费已通过11.1的numeric foundation；先确认tasks/17 external authorization/spec gate已经通过，再在执行前核对all
-  reachable wafer_tx81_*及host platform capability；host执行same
-  target LLVM control-flow/call graph，
-  调用与device build同源且获准host使用的repo CRT wrapper C源码，经许可兼容Tsm factory/operator构造packet，并通过untimed
-  SystemC tile/worker/queue/memory/DTE event model和独立plain C++ numeric kernels完成supported功能语义。地址按typed
-  SPM offset、compiler DDR arena和
-  invocation-time external resource registry分别解析。
+  将all-rank fully legal target LLVM、ordered typed ABI slots和identity原子提升为owner-backed内部artifact，不重新lower。
 - Output artifact / IR:
-  invocation-local typed model result、all-rank terminal status和明确标记为`repo-CRT/SystemC model-only
-  functional-numeric`的
-  diagnostic provenance；direct shim结果另标`direct ABI smoke`。两者都不进入bundle/package或planning。
+  move-only、不可序列化的TargetLLVMModuleBundle；逐rank包含logical rank、entry、profile/revision/ABI和module identity。
 - Downstream consumer:
-  与独立Q19/CPU oracle做完整输出differential；Q22.C后续消费model result和Q6.B board result形成numeric profile。
-  host packet不能作为vendor-exact自证事实源。
+  Q22.H authorized Host CRT和direct target-call ABI smoke。
 - User-level driver / named pipeline:
-  wafer-compile在Q17/Q18原子发布后、同一invocation仍持有target LLVM bundle时进入显式target-model mode；
-  wafer-opt/manual pass chain只补局部negative。
+  wafer-compile同一transaction内的target-model artifact producer；wafer-opt只补局部negative。
 - Explicit non-goals:
-  不执行RISC-V archive或package ELF；许可兼容host operator在独立packet/MMIO correlation前不宣称vendor-exact packet，
-  也不宣称provider、board或timing。
+  不调用Host CRT、不构造packet、不链接SystemC、不执行或替代Q17/Q18 package artifact。
 - Completion gate:
-  numeric foundation先通过；Q20 source-backed rank-count=1 f32 linear/MLP作为首个完整系统vertical，source-produced
-  f16和bf16 simple GEMM各重放一次frontend/layout/CRT/packet/codec链；无唯一target mapping时显式选择命名model
-  candidate并标注结果，不升级production/hardware row；Q21 16-rank tiny Llama作为第二个mandatory
-  vertical，覆盖all-and-only ranks、batched GEMM、reduce、exp/rsqrt、i1/select和Direct DTE；另有deterministic
-  source-backed large GEMM超过formal work budget并自动命中admitted oneDNN；
-  symbol/factory/ABI/static profile、address plan和endpoint在input import/model mutation前preflight；运行时packet、
-  computed address、dynamic descriptor/numeric tuple在对应transaction effect前验证；正式positive在external gate通过后
-  经过获准host使用的repo CRT、Tsm
-  packet和SystemC event，完整输出与Q19/CPU按
-  逐op/dtype profile policy一致，late failure无partial result。SystemC-enabled tests必须真实执行。Q17/Q18先按各自合同发布；
-  model mismatch让verification返回非零但保留已验证package供审计。
+  all-and-only rank顺序、typed slots和identity逐项readback；任一rank late failure都不形成bundle或partial publication。
 ```
 
-Host-CRT/SystemC positive必须来自同一Q17 producer将使用的fully legal target LLVM，不接受重新lower的host专用module。
-direct `wafer_tx81_*` shim只检查symbol、signature、control flow、typed slots和基本address formation，不计入正式gate。
-任何host path都不得调用Q19 numeric/interpreter或DTE scheduler。当前109-symbol surface应从lowering/header/typed registry
-自动得到all-and-only coverage，不在test或文档复制字符串表。
+direct `wafer_tx81_*` shim可在Q22.L后检查symbol、signature、control flow、typed slots和基本address formation，但只标
+`direct ABI smoke`，不计入Q22.H或Q22.S完成。
 
-当前repo CRT多数helper返回`void`并丢弃`TsmExecute`返回值；model adapter必须用invocation-local error latch传播
-factory、packet、address、engine和event错误，但不能把该内部status说成target ABI原有return。SystemC process阻塞wait必须
-yield，rank identity不得仅由TLS或OS thread恢复。
+### 11.4 Q22.H Authorized Host-CRT Gate
+
+Q22.H只有在tasks/17 external authorization/spec gate满足后才能开工；它只消费Q22.L，不以Q22.N、Q22.B或SystemC为前置：
+
+- host执行Q22.L同一fully legal target LLVM control-flow/call graph，不接受重新lower或改写的host专用module；
+- device/host build使用同源且获准host使用的repo CRT wrapper C源码和互斥platform contract；all reachable
+  `wafer_tx81_*`、36个Tsm入口和11个platform入口按lowering/header/typed registry自动得到all-and-only coverage，
+  不在测试或文档复制symbol字符串表；
+- 许可兼容Tsm factory/operator产生的packet transaction必须标记实际provenance，并以独立field oracle检查raw bytes、
+  decode、worker、trigger、geometry、address/range/end；手写packet只补unknown opcode、malformed field、OOB、overflow和
+  failure negative；
+- 当前repo CRT多数helper返回`void`并丢弃`TsmExecute`返回值，host adapter必须用invocation-local error latch传播
+  factory、packet、address和engine错误，但不能把该内部status说成target ABI原有return；
+- host path不得调用Q19 numeric/interpreter或DTE scheduler。共享typed command/decoder只能证明Q22内部component合同，
+  不能自证vendor-exact packet；独立packet/MMIO source若存在只增加可选provenance claim。
+
+完成证据是同一Q22.L all-rank bundle经获准wrapper形成许可兼容transaction，symbol/provider closure完整且late failure无
+partial host result；direct shim、RISC-V archive、include-only target或SystemC component不能替代。
+
+### 11.5 Q22.S SystemC Functional-Event Gate
+
+Q22.S消费Q22.N numeric profile、Q22.H实际transaction和既有Q16.T Direct DTE合同；Q22.B不是本gate前置：
+
+- SystemC是正式untimed functional-event容器；rank/tile SPM/DDR、typed slots、checked address、worker issue、local completion和
+  Direct DTE/FSM均为invocation-local对象，TLM只承载选定的MMIO/DDR/interconnect事务，不改变packet、kernel或acceptance；
+- 三个worker window由显式per-worker typed model config区分CT/NE/RDMA/WDMA/TDMA五个逻辑issue class；在board/vendor
+  证据前不声明`3×5`物理queue实例、容量或engine复制关系，queue depth、仲裁和SPM bank未知时采用保守serial profile；
+- `TsmExecute`、local NCC drain、Direct DTE completion、destination visible和multi-rank arrival保持不同event domain；
+  SystemC process阻塞wait必须yield，rank identity不得仅由TLS或OS thread恢复；
+- 16-rank Direct DTE component覆盖receiver-ready、source lifetime至send completion、send/recv/wait/release、receiver
+  completion后的destination visibility、duplicate/missing/mismatch和deterministic no-progress诊断；source读取时刻只属于
+  model profile，不能复制Q19 snapshot policy或读取Q19 logical message schedule；
+- static capability在input/model mutation前preflight，computed address、dynamic descriptor和numeric tuple在对应effect前
+  验证；model/core error在copyback前失败，component result/status原子形成。
+
+component gate必须实际运行唯一`sc_main`，至少两个`SC_THREAD`跨delta交替profile和sticky flag，并覆盖issue/visibility/
+completion、failure wakeup、nested/early return/exception及numeric execution-context恢复；双OS-thread TLS证据仍属于Q22.N。
+unavailable/skipped或plain C++ kernel test不算通过。本gate不测PMU、latency或throughput，也不要求source workload完整输出。
+
+### 11.6 Q22.V Source-Backed Functional-Numeric Vertical Gate
+
+Q22.V只在Q22.B和Q22.S完成后消费既有Q20/Q21 source producer，负责把已经分开的能力组成完整系统证据：
+
+- 同一`wafer-compile`重放产生Q22.L artifact的正式producer chain；Q17/Q18仍先按自身合同发布，model mismatch返回非零但保留已验证package；
+- Q20 rank-count=1 f32 linear/residual MLP、source-produced f16/bf16 simple GEMM和Q21 16-rank tiny Llama依次经过
+  ExecutableBundle、TargetLLVMModuleBundle、authorized Host CRT、SystemC event和Q22.N codec；覆盖all-and-only ranks、
+  batched GEMM、reduce、exp/rsqrt、i1/select和Direct DTE；
+- Q20 GEMM必须实际命中Q22.B冻结的admitted row；另以强制formal backend的小shape重放同一semantic profile，并按该row
+  exact/bounded policy比较，证明backend选择不改变target semantics；
+- 另有deterministic source-backed large GEMM超过formal work budget并自动命中Q22.B冻结的admitted oneDNN row，缺失
+  admission或隐式scalar fallback立即失败，SystemC event/transaction数量不得随M×N×K按per-MAC增长；完整输出与独立
+  Q19/CPU oracle按逐op/dtype profile policy比较；
+- symbol/factory/ABI/static profile、address plan和endpoint在input import/model mutation前preflight；运行时packet、computed
+  address和dynamic descriptor在对应effect前验证；任一rank late failure无partial model result；
+- SystemC-enabled tests必须真实执行，generated large component corpus不能替代source-backed expected。
 
 现有4096 exporter使用未初始化`torch.empty`且没有固定expected/digest，在改为固定source/config/seed或payload、独立cheap
-expected和digest前只算export/shape/frontend结构覆盖，不证明target dispatch或数值。4096可作为nightly/stress参数；mandatory CI shape可以更小，但必须超过
-formal budget。generated large corpus不能替代source-backed expected，Q20可以强制bulk验证integration，另由large gate证明
-自动dispatch和performance path。
+expected和digest前只算结构覆盖。4096可作为nightly/stress参数；mandatory CI shape可以更小，但必须超过formal budget。
 
-### 11.3 Q22 Authorized Host Packet And Untimed Event Gate
-
-- external authorization/spec gate通过后，获准host使用的repo CRT wrapper经许可兼容Tsm operator产生的packet可作为
-  Host-CRT/SystemC functional-numeric positive，但必须明确标记实际provenance；Q22本地component gate以独立field oracle
-  检查raw bytes、decode、address/range和observable
-  memory effect，手写packet只补unknown opcode、malformed field、OOB、overflow和failure negative；
-- CT/NE/RDMA/WDMA/TDMA逐family检查worker、trigger、geometry、address/range/end和observable memory effect；
-- 三个worker window显式建模；model-only profile可由显式per-worker typed model config在`serial_mode=0`语义下区分CT/NE/RDMA/
-  WDMA/TDMA五个逻辑issue class；hardware-correlated profile还需vendor合同或逐被测worker可信readback确认parallel
-  mode。两者都不声明`3×5`物理queue实例、容量或engine复制关系；否则采用更保守serial profile；
-  queue depth、仲裁和SPM bank未知时保持保守，不写magic；
-- `TsmExecute`、local NCC drain、Direct DTE completion、destination visible和multi-rank arrival保持不同event domain；
-- 16-rank Direct DTE覆盖receiver-ready、source lifetime至send completion、send/recv/wait/release、receiver completion后的
-  destination visibility、duplicate/missing/mismatch和deterministic no-progress诊断；source具体读取时刻在board/vendor
-  证据前只属于model profile，不能复制Q19 snapshot policy；不能读取Q19 logical message schedule；
-- model/core error在copyback/publication前失败，all-rank output/status原子形成。
-
-共享typed command/decoder只能证明Q22内部component合同，不能自证vendor packet correctness。SystemC是正式untimed
-functional-event容器；TLM只承载选定的MMIO/DDR/interconnect事务，不改变packet、kernel或acceptance。该gate不测PMU、
-latency或throughput；独立packet/MMIO source若存在只增加可选provenance claim。
-
-### 11.4 Q22.C Board Numeric Correlation Gate
+### 11.7 Q22.C Board Numeric Correlation Gate
 
 Q22.C在Q22和Q6.B完成且配置board numeric corpus后执行，不要求PMU、packet capture或exact-module provider。Q6.B先证明
 provider lifecycle、watchdog/reset、trusted completion、完整copyback和重复invocation；无效sample不能进入numeric profile。
@@ -838,9 +856,10 @@ exact Q17 ELF register trace、board capture或versioned
 vendor builder若可得，只作为额外packet/MMIO provenance；缺失不阻塞Q22.C。只有整网output而不能运行single-op或读取
 中间buffer时，只能发布workload-level correlation，不能升级per-op capability。
 
-### 11.5 Q22.E Exact-Module Provider Gate
+### 11.8 Q22.E Exact-Module Provider Gate
 
-只有Q18 verified package中的exact all-and-only RISC-V ELF经vendor simulator或RV64 ISS实际执行，才满足此gate：
+只有Q22.V source vertical记录的fresh、Q0.L profile-bearing Q18 verified package identity中的exact all-and-only RISC-V ELF，
+经vendor simulator或RV64 ISS原样执行，才满足此gate；Q0.L前历史package不能冒充：
 
 - package semantic verification、typed invocation和environment compatibility先于任何provider side effect；
 - allocation/import、H2D、module load/entry resolve、all-rank submit、wait/status、D2H、cleanup均实际执行；
@@ -852,7 +871,7 @@ vendor builder若可得，只作为额外packet/MMIO provenance；缺失不阻�
 通用RISC-V ISS但缺TX81 MMIO/accelerator/loader/completion仍不满足该gate。direct ABI smoke或Host-CRT/SystemC模式
 也不能以结果相同冒充exact module执行。
 
-### 11.6 Q22.P Deferred Timing Calibration
+### 11.9 Q22.P Deferred Timing Calibration
 
 Q22.P不在近期numeric correctness范围内；只有另行恢复并配置可信PMU/timing environment后才执行：
 
@@ -868,7 +887,8 @@ Q22.P不在近期numeric correctness范围内；只有另行恢复并配置可�
 
 ## 12. Board Gate
 
-configured board suite消费Gate C同一verified package，不允许另造fixture或provider-specific plan。必须实际执行：
+configured board suite只消费Q0.L完成后fresh replay形成的Gate C同一verified package，不允许用Q0.L前旧package、另造fixture
+或provider-specific plan。必须实际执行：
 
 - allocation/import/copy/module load/entry resolve；
 - launch和卡内transport；

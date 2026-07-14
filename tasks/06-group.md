@@ -1,6 +1,6 @@
 # Wafer Logical Group 与 Candidate 设计
 
-状态：2026-07-13按Q16实现更新。本文拥有tensor-level`wafer.group`、tiling-demand analysis、candidate
+状态：2026-07-14按Q0.L profile-bearing bundle合同更新。本文拥有tensor-level`wafer.group`、tiling-demand analysis、candidate
 generation/materialization/legality/ranking/commit和complete-traversal合同；Q16把这些能力重放到全部static
 rank clones并形成ExecutableBundle。实现状态看`tasks/progress.md`。
 
@@ -10,16 +10,20 @@ rank clones并形成ExecutableBundle。实现状态看`tasks/progress.md`。
 Pipeline position:
 - Upstream artifact / IR:
   Q15中post-SPMD StableHLO经过local normalization得到的`linalg`/`tensor`/`scf`/`arith`/`math` tensor IR，
-  以及`wafer.linalg_ext.collective.*`logical collective。
+  以及`wafer.linalg_ext.collective.*`logical collective；production request还提供validated、无隐式default的完整
+  `ExecutionConfig`（内含tasks/14 registry解析的typed `TargetProfileId`）。
 - Current stage responsibility:
   先形成dependency-preserving logical `wafer.group`；在Q16每rank isolated clone内，从当前IR重算tiling
   demand，生成bounded candidates，完整materialize traversal，运行layout/SPM/DDR/instruction/geometry/
-  completion legality，只提交一个完整passing candidate。
+  completion legality，只提交一个完整passing candidate。Q16原样拥有完整`ExecutionConfig`（内含typed `TargetProfileId`），不在group/
+  candidate层解释或重编码target profile。
 - Output artifact / IR:
   Q15输出verified logical-group program；Q16输出每rank不再含`wafer.group`的accepted instruction/memory/
-  completion program，并由typed `RankExecutable[]`组成atomic `ExecutableBundle`。
+  completion program，并由typed `RankExecutable[]`和完整`ExecutionConfig`组成atomic、profile-bearing
+  `ExecutableBundle`。
 - Downstream consumer:
-  Q17 target conversion/device link；Q19 reference executor。二者只消费accepted rank executable，不读取
+  Q0.L/tasks14 target preflight与Q17 target conversion/device link；Q19 reference executor。它们只消费accepted rank
+  executable及bundle-owned typed config，不读取
   rejected candidate、group search trace或debug dump。
 - User-level driver / named pipeline:
   production只经`wafer-compile`。`wafer-opt`、registered group/instruction pipelines和dump passes只处理显式IR；
@@ -29,7 +33,8 @@ Pipeline position:
   planner trace或cost breakdown；不要求用户选择tile-search pass、stage或stop point。
 - Completion gate:
   logical group由真实Q15输出形成并通过verifier；Q16对rank-count=1/16建立all-and-only isolated clones，
-  每rankaccepted result覆盖完整traversal并通过全部legality gates；任一group/rank失败不形成partial bundle。
+  每rankaccepted result覆盖完整traversal并通过全部legality gates；bundle readback证明rank domain与完整
+  `ExecutionConfig`及其中唯一`TargetProfileId`一致，任一group/rank/profile失败不形成partial bundle。
 ```
 
 ## 2. 核心边界
@@ -52,7 +57,8 @@ chunks。单个representative tile、first/last tile、shape-only dump或某个g
 
 Q15的artifact责任到verified grouped program即结束，但production driver保持同一transaction继续进入Q16，不能先
 发布checkpoint再做rank lowering。Q16为每个logical rank重新clone该program并运行candidate链；rank clones彼此
-隔离，全部通过后才构造ExecutableBundle。当前不存在`wafer.executable.*` dialect、代表rank或rank-class dedup
+隔离，全部通过后才构造profile-bearing ExecutableBundle。typed target profile只在bundle owner中保留一次，不复制为
+rank module attr、名字约定或candidate side channel。当前不存在`wafer.executable.*` dialect、代表rank或rank-class dedup
 协议，也不需要它们才能实现correctness-first static bundle。
 
 ## 3. `wafer.group` IR 合同
@@ -125,7 +131,8 @@ candidate pipeline按五个稳定职责组织：
 
 generation的search frontier与ranking score属于analysis。当前`WaferTargetPolicy`/`TileSearchPolicy`是compiler内部
 policy；`maxSearchCandidates`、beam width、preferred tile sizes及debug pass options不进入public
-`CompilationRequest`、program metadata或ExecutableBundle identity。若Q16需要在typed driver内选择effort，只能作为
+`CompilationRequest`、program metadata或ExecutableBundle identity。这里的search effort不是Q0.L用户显式选择且必须进入
+bundle identity的`TargetProfileId`；两者不得共用default或字符串字段。若Q16需要在typed driver内选择effort，只能作为
 compiler-private orchestration/default，不得把pass pipeline暴露给用户。
 
 `DirectFullShape`是普通candidate，不是fallback或绕过legality的平行pipeline。若它或tiled candidates均不合法，
@@ -177,7 +184,8 @@ artifact，直到全部rank通过。
 
 ## 8. Rank 与 Bundle 边界
 
-Q16的rank domain只来自validated `ExecutionConfig`/execution mesh：
+Q16的rank domain只来自validated `ExecutionConfig`/execution mesh；该config中无default的typed `TargetProfileId`必须
+原样进入最终bundle：
 
 ```text
 for logicalRank in [0, rankCount):
@@ -196,8 +204,9 @@ replay。禁止默认rank 0、从parameter shard filename推rank、只编代表r
 `RankExecutable`是move-only C++ owner，携带显式logical rank、accepted owning module、真实entry symbol、
 frontend verifier投影的user-input/parameter/constant/output rank binding、
 `EntryReturnAfterLocalDrain` completion、`TransportContract::None`和default-arena-relative DDR contract。
-`ExecutableBundle`共同拥有MLIRContext和严格`0..N-1`的rank vector；module先于context析构。bundle不复制instruction
-schedule到另一份JSON，也不引入rank class。跨卡、MPMD和hybrid specialization等真实consumer出现后再扩展。
+`ExecutableBundle`共同拥有MLIRContext、完整`ExecutionConfig`（内含唯一`TargetProfileId`）和严格`0..N-1`的rank vector；module先于
+context析构。构造/readback拒绝缺失、unknown或与request不一致的profile。bundle不复制instruction schedule到另一份JSON，
+也不引入rank class。跨卡、MPMD和hybrid specialization等真实consumer出现后再扩展。
 
 selector完成candidate-local SPM/DDR gate后，whole-function bufferization仍可能创建新的DDR buffer。selected-rank
 pipeline因此给unknown/default tensor buffer显式设置`#wafer.memory<ddr, tensor>`，canonicalize后在完整rank module上

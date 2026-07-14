@@ -7,7 +7,7 @@
 
 编号是稳定的文档导航和contract-owner标识，按compiler pipeline语义大致分组，不按创建日期排列。
 它不表示严格的transform拓扑、实施优先级或任务依赖；一个owner文档可以覆盖pipeline中的多个位置。
-实际执行顺序只读取`tasks/progress.md`中的状态和直接前置。
+实际执行顺序只读取`tasks/progress.md`中的状态和“必须满足的前置”；该列可为审计重复列出关键传递gate，不等同最小DAG边集。
 
 | 编号 | 文档 | 范围 |
 | --- | --- | --- |
@@ -27,7 +27,7 @@
 | 14 | `tasks/14-target-llvm-golden-packet.md` | shared logical/target-format registry、structure-preserving target LLVM、CRT ABI和atomic staged target module |
 | 15 | `tasks/15-launch-runtime-package.md` | typed C++ manifest、canonical JSON、no-card RuntimeSession和board adapter边界 |
 | 16 | `tasks/16-verification-plan.md` | target correctness、1/16-rank bundle、reference、target-model、no-card和board分层gate |
-| 17 | `tasks/17-target-execution-model.md` | multi-dtype numeric foundation、direct ABI smoke、Host-CRT/SystemC untimed CModel、Q22.C板端numeric correlation、Q22.E exact-module和deferred Q22.P timing边界 |
+| 17 | `tasks/17-target-execution-model.md` | multi-dtype numeric、oneDNN bulk、owner-backed target LLVM bundle、direct ABI smoke、Host-CRT/SystemC untimed CModel、Q22.C板端numeric correlation、Q22.E exact-module和deferred Q22.P timing边界 |
 
 ### Pipeline Owner 索引
 
@@ -47,13 +47,15 @@
 | target LLVM、CRT/device link和staged target module | 14 |
 | typed manifest、launch和RuntimeSession | 15 |
 | 横跨上述边界的completion evidence | 16 |
-| target execution model、multi-dtype numeric foundation、SystemC/CModel capability、板端numeric correlation和deferred timing | 17；target/runtime/verification consumer由14、15、16约束 |
+| target execution model、multi-dtype numeric/bulk、target LLVM bundle、SystemC/CModel capability、板端numeric correlation和deferred timing | 17；target/runtime/verification consumer由14、15、16约束 |
 
 ## 实施计划导航
 
 当前没有active计划；Q22.R readiness已经归档到`tasks/archive/target-model-readiness.md`。Next是Q0.L，它进入代码施工前
-必须建立独立计划。Q22已经在队列中拆为numeric foundation、bulk qualification、target LLVM+host CRT、SystemC
-event/transport及source-backed vertical closure；各代码任务开工前仍需独立计划。动态执行状态只看`tasks/progress.md`。
+必须建立独立计划。Q0.L后，Q22.N numeric与Q22.L target LLVM bundle可并行，Q22.N另解锁Q22.B bulk；Q22.L完成且
+external authorization/spec gate满足后，Q22.H host seam才解锁。Q22.N+Q22.H在Q22.S
+SystemC event model汇合，Q22.B+Q22.S再由Q22.V source vertical闭合并汇总到Q22；各代码任务
+开工前都需独立计划。动态执行状态只看`tasks/progress.md`。
 
 ## 归档文档
 

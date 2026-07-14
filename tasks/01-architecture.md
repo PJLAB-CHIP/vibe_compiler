@@ -297,11 +297,12 @@ package execution；Q22.P timing calibration保持deferred，
 | target conversion、CRT、device link/publication | 14 |
 | typed manifest、runtime | 15 |
 | all stage gates、reference、target-model和board证据 | 16 |
-| target execution model、multi-dtype numeric foundation、SystemC主架构边界、板端numeric correlation和deferred timing | 17 |
+| target execution model、multi-dtype numeric/bulk、target LLVM bundle、SystemC主架构边界、板端numeric correlation和deferred timing | 17 |
 
 当前没有active实施计划；Next是Q0.L target-command legality closure，进入代码施工前需先建立独立计划。target execution
-model方案已在tasks/17收敛，但Q22在Q0.L完成前保持blocked，解除blocked前还需按numeric foundation、target LLVM/host CRT、
-SystemC event/transport和source-backed vertical等独立可调度边界拆分队列项与计划。
+model方案已在tasks/17收敛，`tasks/progress.md`已把Q22拆成Q22.N numeric、Q22.B bulk、Q22.L target LLVM bundle、
+Q22.H authorized host CRT、Q22.S SystemC event和Q22.V source vertical等独立可调度边界。Q22在Q0.L完成前保持blocked；
+各实现边界开工前仍需建立独立计划。
 
 审计证据：`tasks/archive/12-architecture-evidence-reset.md`。
 
