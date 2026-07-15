@@ -26,17 +26,26 @@ module {
     return %group : tensor<4xf32>
   }
 
-  func.func @late_unsupported_target_kind() {
-    %src = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
-        : memref<1x1x2x3xf16, #wafer.memory<spm, tensor>>
-    %dst = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65792>}
-        : memref<1x1x3x2xf16, #wafer.memory<spm, tensor>>
-    wafer.instr.tdma_data_move #wafer.instr_data_move_kind<transpose> %src into %dst
-        {source_shape = array<i64: 1, 1, 2, 3>,
-         dest_shape = array<i64: 1, 1, 3, 2>,
-         permutation = array<i64: 0, 1, 3, 2>}
-        : memref<1x1x2x3xf16, #wafer.memory<spm, tensor>>
-       to memref<1x1x3x2xf16, #wafer.memory<spm, tensor>>
+  func.func @late_unsupported_target_kind(
+      %boundary: memref<1xf16, #wafer.memory<ddr, tensor>>) {
+    %result = wafer.tile.region(%boundary
+        : memref<1xf16, #wafer.memory<ddr, tensor>>)
+        -> (memref<1xf16, #wafer.memory<ddr, tensor>>) {
+    ^bb0(%arg0: memref<1xf16, #wafer.memory<ddr, tensor>>):
+      %src = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+          : memref<1x1x2x3xf16, #wafer.memory<spm, tensor>>
+      %dst = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65792>}
+          : memref<1x1x3x2xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.tdma_data_move #wafer.instr_data_move_kind<transpose> %src into %dst
+          {source_shape = array<i64: 1, 1, 2, 3>,
+           dest_shape = array<i64: 1, 1, 3, 2>,
+           permutation = array<i64: 0, 1, 3, 2>}
+          : memref<1x1x2x3xf16, #wafer.memory<spm, tensor>>
+         to memref<1x1x3x2xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.local_fence
+      wafer.tile.yield %arg0
+          : memref<1xf16, #wafer.memory<ddr, tensor>>
+    }
     return
   }
 }

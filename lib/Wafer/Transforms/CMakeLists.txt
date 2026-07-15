@@ -10,6 +10,7 @@ add_mlir_library(WaferTransforms
   Group/FormLogicalGroups.cpp
   Group/SelectGroupTile.cpp
   DDR/PlanDDRMemory.cpp
+  MemoryPlanning/LifetimeAnalysis.cpp
   SPM/PlanSPMMemory.cpp
   SPMD/ApplyDefaultSpmdSharding.cpp
   Target/MaterializeExecutionMesh.cpp

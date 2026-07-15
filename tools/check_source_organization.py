@@ -50,6 +50,12 @@ CANDIDATE_SELECTION_SOURCES = (
     "CandidateSelection.cpp",
     "SelectGroupTile.cpp",
 )
+MEMORY_PLANNING_SOURCES = (
+    "LifetimeAnalysis.cpp",
+)
+MEMORY_PLANNING_TEST_SOURCES = (
+    "LifetimeAnalysisTest.cpp",
+)
 TARGET_LLVM_SOURCES = (
     "ComputeTargetCallLowering.cpp",
     "DirectDTETargetCallLowering.cpp",
@@ -328,6 +334,41 @@ def check_cmake_source_ownership(
                 f"{cmake_path}: {entry} must be owned exactly once by {target}; "
                 f"found {occurrences} CMake entries",
             )
+
+
+def check_project_cmake_source_ownership(
+    *,
+    root: Path,
+    source: str,
+    expected_cmake_path: Path,
+    label: str,
+    errors: list[str],
+) -> None:
+    """Require a source basename to occur in exactly one project CMake manifest."""
+
+    manifests = [root / "CMakeLists.txt"]
+    for directory_name in ("cmake", "lib", "test", "tools", "unittests"):
+        directory = root / directory_name
+        if not directory.is_dir():
+            continue
+        manifests.extend(directory.rglob("CMakeLists.txt"))
+        manifests.extend(directory.rglob("*.cmake"))
+
+    occurrences: list[Path] = []
+    for manifest in sorted(set(manifests)):
+        text = read_required(manifest, errors)
+        for token in cmake_tokens(text):
+            if Path(token).name == source:
+                occurrences.append(manifest)
+
+    resolved_expected = expected_cmake_path.resolve()
+    if len(occurrences) != 1 or occurrences[0].resolve() != resolved_expected:
+        owners = ", ".join(str(path) for path in occurrences) or "none"
+        fail(
+            errors,
+            f"{label} {source} must have exactly one project CMake owner "
+            f"({expected_cmake_path}); found {owners}",
+        )
 
 
 def check_cmake_sources_absent(
@@ -670,6 +711,181 @@ def check_candidate_selection_owners(root: Path, errors: list[str]) -> None:
     ):
         if implementation in facade:
             fail(errors, f"candidate-selection facade still owns {implementation}")
+
+
+def check_memory_planning_owners(root: Path, errors: list[str]) -> None:
+    transforms_root = root / "lib/Wafer/Transforms"
+    source_root = transforms_root / "MemoryPlanning"
+    cmake_path = transforms_root / "CMakeLists.txt"
+    cmake_text = read_required(cmake_path, errors)
+    unit_root = root / "unittests/Transforms/MemoryPlanning"
+    unit_cmake_path = root / "unittests/CMakeLists.txt"
+    unit_cmake_text = read_required(unit_cmake_path, errors)
+
+    check_exact_sources(
+        source_root, MEMORY_PLANNING_SOURCES, "memory-planning analysis", errors
+    )
+    private_header = source_root / "LifetimeAnalysis.h"
+    analysis_source = source_root / "LifetimeAnalysis.cpp"
+    actual_headers = {
+        path.name for path in source_root.glob("*.h") if path.is_file()
+    }
+    if actual_headers != {private_header.name}:
+        fail(
+            errors,
+            "memory-planning analysis headers must be exactly "
+            f"{private_header.name}; found {', '.join(sorted(actual_headers)) or 'none'}",
+        )
+    check_private_header(
+        private_header,
+        root / "include/Wafer/Transforms/MemoryPlanning/LifetimeAnalysis.h",
+        "memory-planning lifetime analysis",
+        errors,
+    )
+    target_body = cmake_target_body(
+        cmake_text, "add_mlir_library", "WaferTransforms", cmake_path, errors
+    )
+    check_cmake_sources(
+        body=target_body,
+        required=MEMORY_PLANNING_SOURCES,
+        prefix="MemoryPlanning/",
+        cmake_path=cmake_path,
+        target="WaferTransforms",
+        errors=errors,
+    )
+    check_cmake_source_ownership(
+        text=cmake_text,
+        required=MEMORY_PLANNING_SOURCES,
+        prefix="MemoryPlanning/",
+        cmake_path=cmake_path,
+        target="WaferTransforms",
+        errors=errors,
+    )
+    check_project_cmake_source_ownership(
+        root=root,
+        source="LifetimeAnalysis.cpp",
+        expected_cmake_path=cmake_path,
+        label="memory-planning analysis",
+        errors=errors,
+    )
+
+    detail_namespace = re.compile(
+        r"\bnamespace\s+wafer::memory_planning::detail\s*\{"
+    )
+    legacy_namespace = re.compile(
+        r"\bnamespace\s+wafer::memory_planning\s*\{"
+    )
+    for detail_path in (private_header, analysis_source):
+        detail_code = cpp_code(read_required(detail_path, errors))
+        if not detail_namespace.search(detail_code):
+            fail(
+                errors,
+                f"{detail_path} must keep shared symbols in "
+                "wafer::memory_planning::detail",
+            )
+        if legacy_namespace.search(detail_code):
+            fail(
+                errors,
+                f"{detail_path} must not declare the non-detail "
+                "wafer::memory_planning namespace",
+            )
+
+    check_exact_sources(
+        unit_root,
+        MEMORY_PLANNING_TEST_SOURCES,
+        "memory-planning unit mirror",
+        errors,
+    )
+    unit_target_body = cmake_target_body(
+        unit_cmake_text,
+        "add_executable",
+        "WaferUnitTests",
+        unit_cmake_path,
+        errors,
+    )
+    check_cmake_sources(
+        body=unit_target_body,
+        required=MEMORY_PLANNING_TEST_SOURCES,
+        prefix="Transforms/MemoryPlanning/",
+        cmake_path=unit_cmake_path,
+        target="WaferUnitTests",
+        errors=errors,
+    )
+    check_project_cmake_source_ownership(
+        root=root,
+        source="LifetimeAnalysisTest.cpp",
+        expected_cmake_path=unit_cmake_path,
+        label="memory-planning unit mirror",
+        errors=errors,
+    )
+    unit_test_path = unit_root / "LifetimeAnalysisTest.cpp"
+    unit_test_text = read_required(unit_test_path, errors)
+    shared_include = "MemoryPlanning/LifetimeAnalysis.h"
+    if source_includes(unit_test_text).count(shared_include) != 1:
+        fail(
+            errors,
+            f"{unit_test_path} must include {shared_include} exactly once",
+        )
+
+    owner_paths = (
+        transforms_root / "DDR/PlanDDRMemory.cpp",
+        transforms_root / "SPM/PlanSPMMemory.cpp",
+    )
+    forbidden_markers = (
+        "struct PathCondition",
+        "struct LiveSegment",
+        "struct EventInfo",
+        "struct RootRef",
+        "struct SPMDemand {",
+        "struct DDRDemand {",
+        "struct AssignedSPMInterval {",
+        "struct AssignedDDROffset {",
+        "struct PendingLocalIssue {",
+        "struct LifetimeDataflow {",
+        "class StructuredTimeline",
+        "class LifetimeDataflow",
+        "class LocalCompletionTracker",
+        "areCompatible(",
+        "mergeConditions(",
+        "conditionImplies(",
+        "withBranch(",
+        "appendConditionDifference(",
+        "segmentsOverlap(",
+        "lifetimesOverlap(",
+        "assignRegionEvents(",
+        "assignBlockEvents(",
+        "assignOperationEvents(",
+        "addLiveSegment(",
+        "recordDemandUse(",
+        "computeLifetimeBounds(",
+        "getLifetimeSpan(",
+        "hasHigherPlanningPriority(",
+        "findFirstFitOffset",
+        "computePlanningPriorities",
+        "conflictBytes",
+        "alignUp(",
+    )
+    for owner_path in owner_paths:
+        owner_text = read_required(owner_path, errors)
+        if source_includes(owner_text).count(shared_include) != 1:
+            fail(
+                errors,
+                f"{owner_path} must include {shared_include} exactly once",
+            )
+        owner_code = cpp_code(owner_text)
+        for marker in forbidden_markers:
+            if marker in owner_code:
+                fail(
+                    errors,
+                    f"{owner_path} still owns shared lifetime marker {marker}",
+                )
+
+    check_no_textual_source_includes(
+        [source_root / source for source in MEMORY_PLANNING_SOURCES]
+        + [private_header, unit_test_path, *owner_paths],
+        "memory-planning analysis",
+        errors,
+    )
 
 
 def check_target_llvm_owners(root: Path, errors: list[str]) -> None:
@@ -1454,6 +1670,7 @@ def main() -> int:
     check_numeric_semantics_owners(root, errors)
     check_group_to_tile_region_owners(root, errors)
     check_candidate_selection_owners(root, errors)
+    check_memory_planning_owners(root, errors)
     check_target_llvm_owners(root, errors)
     check_numeric_dependency_owners(root, errors)
     check_frontend_program_owners(root, errors)

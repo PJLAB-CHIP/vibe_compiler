@@ -23,6 +23,7 @@
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Tensor/Transforms/BufferizableOpInterfaceImpl.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Target/LLVMIR/Dialect/Builtin/BuiltinToLLVMIRTranslation.h"
@@ -1053,6 +1054,143 @@ TEST(ReferenceExecutorTest, RejectsMalformedCompactTensor) {
             std::string::npos);
 }
 
+TEST(TargetABIPreparationTest,
+     WorkspaceAlignmentCombinesPolicyAndAllocationRequirements) {
+  mlir::DialectRegistry registry;
+  registry.insert<mlir::arith::ArithDialect,
+                  mlir::bufferization::BufferizationDialect,
+                  mlir::cf::ControlFlowDialect, mlir::func::FuncDialect,
+                  mlir::LLVM::LLVMDialect, mlir::linalg::LinalgDialect,
+                  mlir::math::MathDialect, mlir::memref::MemRefDialect,
+                  mlir::scf::SCFDialect, mlir::tensor::TensorDialect>();
+  wafer::registerAllDialects(registry);
+  mlir::arith::registerBufferizableOpInterfaceExternalModels(registry);
+  mlir::bufferization::func_ext::registerBufferizableOpInterfaceExternalModels(
+      registry);
+  mlir::linalg::registerBufferizableOpInterfaceExternalModels(registry);
+  mlir::scf::registerBufferizableOpInterfaceExternalModels(registry);
+  mlir::tensor::registerBufferizableOpInterfaceExternalModels(registry);
+  auto context = std::make_shared<mlir::MLIRContext>(registry);
+  context->loadAllAvailableDialects();
+
+  auto grouped = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  wafer.target.topology @default {card_grid = array<i64: 1, 1>, card_interconnect = "mesh", tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @default_mesh {axes = ["rank"], endpoints = array<i64: 0, 0, 0, 0>, policy = "explicit", shape = array<i64: 1>, topology = @default}
+  func.func @main(%lhs: tensor<4xf32>, %rhs: tensor<4xf32>,
+                  %bias: tensor<4xf32>) -> tensor<4xf32> {
+    %tmp = tensor.empty() : tensor<4xf32>
+    %first = wafer.group ins(%lhs, %rhs : tensor<4xf32>, tensor<4xf32>)
+        outs(%tmp : tensor<4xf32>) {
+    ^bb0(%left: tensor<4xf32>, %right: tensor<4xf32>,
+         %output: tensor<4xf32>):
+      %sum = linalg.generic {
+          indexing_maps = [affine_map<(d0) -> (d0)>,
+                           affine_map<(d0) -> (d0)>,
+                           affine_map<(d0) -> (d0)>],
+          iterator_types = ["parallel"]
+        } ins(%left, %right : tensor<4xf32>, tensor<4xf32>)
+          outs(%output : tensor<4xf32>) {
+        ^bb0(%a: f32, %b: f32, %old: f32):
+          %value = arith.addf %a, %b : f32
+          linalg.yield %value : f32
+        } -> tensor<4xf32>
+      wafer.group.yield %sum : tensor<4xf32>
+    } : tensor<4xf32>
+
+    %out = tensor.empty() : tensor<4xf32>
+    %second = wafer.group ins(%first, %bias : tensor<4xf32>, tensor<4xf32>)
+        outs(%out : tensor<4xf32>) {
+    ^bb0(%left: tensor<4xf32>, %right: tensor<4xf32>,
+         %output: tensor<4xf32>):
+      %sum = linalg.generic {
+          indexing_maps = [affine_map<(d0) -> (d0)>,
+                           affine_map<(d0) -> (d0)>,
+                           affine_map<(d0) -> (d0)>],
+          iterator_types = ["parallel"]
+        } ins(%left, %right : tensor<4xf32>, tensor<4xf32>)
+          outs(%output : tensor<4xf32>) {
+        ^bb0(%a: f32, %b: f32, %old: f32):
+          %value = arith.addf %a, %b : f32
+          linalg.yield %value : f32
+        } -> tensor<4xf32>
+      wafer.group.yield %sum : tensor<4xf32>
+    } : tensor<4xf32>
+    return %second : tensor<4xf32>
+  }
+}
+)mlir",
+      mlir::ParserConfig(context.get()));
+  ASSERT_TRUE(grouped);
+
+  wafer::frontend::FrontendProgramVerificationResult program;
+  program.logicalRankCount = 1;
+  program.programUserInputCount = 3;
+  program.distributedInputs = {shapedBoundary(0, {4}), shapedBoundary(1, {4}),
+                               shapedBoundary(2, {4})};
+  program.distributedOutputs = {shapedBoundary(0, {4})};
+  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
+      1, wafer::TargetProfileId::waferTx81SingleCardKernelV1());
+  ASSERT_TRUE(static_cast<bool>(config));
+  std::string diagnosticsText;
+  llvm::raw_string_ostream diagnostics(diagnosticsText);
+  auto bundle = wafer::compiler::detail::buildExecutableBundle(
+      context, *grouped, std::move(program), *config, diagnostics,
+      std::nullopt);
+  if (!bundle)
+    FAIL() << diagnosticsText << llvm::toString(bundle.takeError());
+  grouped = nullptr;
+  ASSERT_EQ(bundle->getRankExecutables().size(), 1u);
+
+  const wafer::compiler::RankExecutable &rank =
+      bundle->getRankExecutables().front();
+  mlir::func::FuncOp entry =
+      rank.getModule().lookupSymbol<mlir::func::FuncOp>(rank.getEntrySymbol());
+  ASSERT_TRUE(entry);
+  mlir::Builder builder(entry.getContext());
+  llvm::SmallVector<mlir::memref::AllocOp, 2> plannedDDRAllocations;
+  entry.walk([&](mlir::memref::AllocOp allocation) {
+    if (wafer::isWaferDDRMemRefType(allocation.getType()) &&
+        allocation->hasAttr(wafer::kWaferDDROffsetAttrName)) {
+      allocation->setAttr("alignment", builder.getI64IntegerAttr(384));
+      plannedDDRAllocations.push_back(allocation);
+    }
+  });
+  ASSERT_GE(plannedDDRAllocations.size(), 2u);
+
+  mlir::FailureOr<wafer::compiler::detail::PreparedTargetRank> prepared =
+      wafer::compiler::detail::prepareTargetABI(rank, *config);
+  ASSERT_TRUE(mlir::succeeded(prepared));
+  unsigned workspaceSlots = 0;
+  for (const wafer::compiler::KernelABISlot &slot : prepared->slots) {
+    if (slot.role != wafer::compiler::KernelABISlotRole::Workspace)
+      continue;
+    ++workspaceSlots;
+    EXPECT_EQ(slot.alignment, 768);
+  }
+  EXPECT_EQ(workspaceSlots, 1u);
+
+  for (mlir::memref::AllocOp allocation : plannedDDRAllocations)
+    allocation->setAttr("alignment", builder.getI64IntegerAttr(
+                                         std::numeric_limits<int64_t>::max()));
+  std::string overflowDiagnostics;
+  mlir::ScopedDiagnosticHandler handler(
+      entry.getContext(), [&](mlir::Diagnostic &diagnostic) {
+        llvm::raw_string_ostream stream(overflowDiagnostics);
+        diagnostic.print(stream);
+        return mlir::success();
+      });
+  mlir::FailureOr<wafer::compiler::detail::PreparedTargetRank> overflow =
+      wafer::compiler::detail::prepareTargetABI(rank, *config);
+  EXPECT_TRUE(mlir::failed(overflow));
+  EXPECT_NE(overflowDiagnostics.find(
+                "combined default DDR arena alignment is invalid or exceeds "
+                "int64"),
+            std::string::npos)
+      << overflowDiagnostics;
+}
+
 TEST(ReferenceExecutorTest,
      ExecutesOrderedReductionCompositesWithoutNativeReduce) {
   mlir::DialectRegistry registry;
@@ -1477,22 +1615,24 @@ module {
     %c0 = arith.constant 0 : index
     %c2 = arith.constant 2 : index
     %c1 = arith.constant 1 : index
+    %out = tensor.empty() : tensor<4xf32>
+    %permuted = wafer.group ins(%input : tensor<4xf32>)
+        outs(%out : tensor<4xf32>) {
+    ^bb0(%arg0: tensor<4xf32>, %arg1: tensor<4xf32>):
+      %value = wafer.linalg_ext.collective.collective_permute
+          ins(%arg0 : tensor<4xf32>) outs(%arg1 : tensor<4xf32>)
+          {source_target_pairs = array<i64: 0, 1, 1, 0, 2, 3, 3, 2,
+                                            4, 5, 5, 4, 6, 7, 7, 6,
+                                            8, 9, 9, 8, 10, 11, 11, 10,
+                                            12, 13, 13, 12, 14, 15, 15, 14>,
+           channel_id = 91 : i64} -> tensor<4xf32>
+      wafer.group.yield %value : tensor<4xf32>
+    } : tensor<4xf32>
+    // Keep the loop recurrence identity-preserving: producing a fresh group
+    // result in the body requires multi-instance DDR placement.
     %result = scf.for %iteration = %c0 to %c2 step %c1
-        iter_args(%current = %input) -> tensor<4xf32> {
-      %out = tensor.empty() : tensor<4xf32>
-      %group = wafer.group ins(%current : tensor<4xf32>)
-          outs(%out : tensor<4xf32>) {
-      ^bb0(%arg0: tensor<4xf32>, %arg1: tensor<4xf32>):
-        %permuted = wafer.linalg_ext.collective.collective_permute
-            ins(%arg0 : tensor<4xf32>) outs(%arg1 : tensor<4xf32>)
-            {source_target_pairs = array<i64: 0, 1, 1, 0, 2, 3, 3, 2,
-                                              4, 5, 5, 4, 6, 7, 7, 6,
-                                              8, 9, 9, 8, 10, 11, 11, 10,
-                                              12, 13, 13, 12, 14, 15, 15, 14>,
-             channel_id = 91 : i64} -> tensor<4xf32>
-        wafer.group.yield %permuted : tensor<4xf32>
-      } : tensor<4xf32>
-      scf.yield %group : tensor<4xf32>
+        iter_args(%current = %permuted) -> tensor<4xf32> {
+      scf.yield %current : tensor<4xf32>
     }
     return %result : tensor<4xf32>
   }
@@ -1546,15 +1686,17 @@ module {
   ASSERT_EQ(result->getRankResults().size(), 16u);
   EXPECT_EQ(
       floatsOf(result->getRankResults()[0].getOutputs()[0].tensor.getBytes()),
-      (std::vector<float>{0, 1, 2, 3}));
+      (std::vector<float>{4, 5, 6, 7}));
   EXPECT_EQ(
       floatsOf(result->getRankResults()[1].getOutputs()[0].tensor.getBytes()),
-      (std::vector<float>{4, 5, 6, 7}));
+      (std::vector<float>{0, 1, 2, 3}));
   ASSERT_EQ(result->getGlobalOutputs().size(), 1u);
   std::vector<float> expectedGlobal;
-  for (int64_t rank = 0; rank < 16; ++rank)
+  for (int64_t rank = 0; rank < 16; ++rank) {
+    int64_t peer = rank ^ 1;
     for (int64_t element = 0; element < 4; ++element)
-      expectedGlobal.push_back(static_cast<float>(rank * 4 + element));
+      expectedGlobal.push_back(static_cast<float>(peer * 4 + element));
+  }
   EXPECT_EQ(floatsOf(result->getGlobalOutputs()[0].tensor.getBytes()),
             expectedGlobal);
 

@@ -106,8 +106,11 @@ Pipeline position:
   只做 Wafer instruction legalization / selection：递归覆盖所有 rank entries 的完整 traversal，
   把每个可执行 target-abstract op 改写成
   `wafer.instr.*`，把 tile-level `Compute*Kind` 选择成 instr-level target kind，并保留 memref SSA
-  graph。对 `scf.if` / `scf.for` 只递归转换其 region body，
-  不改变 control-flow 结构。对 accepted `wafer.tile.*` collective，生成 explicit
+  graph。对 `scf.if` / `scf.for` 递归转换其 region body并保留control-flow结构；每个`scf.for`
+  body在backedge前materialize显式local fence，使每次动态迭代的local issue独立完成。该producer fence不把
+  loop body创建并跨backedge携带的allocation/task变成单实例；后续memory planning仍须要求multi-instance表示或
+  fail closed。对 accepted
+  `wafer.tile.*` collective，生成 explicit
   `wafer.instr.dte_send` / `dte_recv` / `dte_wait` p2p schedule。instruction op 通过
   interface 显式暴露 instruction family、memref read/write、descriptor attrs、issue effect 和 completion relation。
 - Output artifact / IR:
@@ -133,6 +136,8 @@ Pipeline position:
   stop-stage，也不能把
   `DirectFullShape`、单 group 或单 tile-region 结果直接送入 committed target/package flow；用户级
   completion 必须经过 whole-variant candidate-selection/commit pipeline。
+  `wafer-lower-groups-to-memory-planned-instr`继续作为同一producer加SPM gate的IR-local replay：pre-existing
+  identity-preserving recurrence是安全正例，loop body fresh allocation作为recurrence result是必须失败的反例。
 - Explicit non-goals:
   不新增第二套 storage/buffer IR，不决定 group boundary、tile shape、layout assignment、SPM offset、
   DDR planning result、raw register packet field、DTE/FSM resource id、Tsm wrapper call、target CRT
@@ -147,7 +152,8 @@ Pipeline position:
   或标准 memref view，并覆盖 nested `scf.if` / `scf.for` body 递归转换。unsupported hardware
   instruction form，包括当前无法证明的 slice/broadcast/transpose descriptor，必须结构化失败，
   不能让 SPM memory planning 从 target-abstract op 猜 demand。每个 issue 必须由 explicit async
-  token/wait 或 local fence 完成，每条 exit path terminal drain 后 pending set 为空；variant-set gate
+  token/wait 或 local fence 完成；generic async task identity、Direct DTE completion和local engine pending set
+  分别验证，每条 exit path terminal drain 后均为空；variant-set gate
   还要证明所有 transport 匹配和 shared physical geometry/range/narrowing contract。production elementwise必须
   不携带map且same-shape；reduce init必须在tile→instruction阶段显式分解或拒绝，terminal instruction op不携带init。
   target-profile×engine×format row必须由tasks/14 typed registry准入。任一 rank/group
@@ -447,13 +453,26 @@ resource effects 至少要表达：
 | NE | SPM memref read + SPM memref write | Compute/NE issue |
 | DTE | send reads SPM source, recv writes SPM destination, wait consumes async token | Communication/DTE issue or wait |
 
-completion 是 instruction program 的显式数据流合同：DTE issue 返回 `!async.token` 并由匹配 wait
-消费；可能异步的 local compute/movement issue 要么返回 token，要么进入
-`wafer.instr.local_fence` 明确收口的 pending effect set。`busytable` 只能作为 target capability /
+completion 是 instruction program 的显式数据流合同。generic `async.call`返回的`!async.token`/
+`!async.value`携带所访问buffer root，但task identity是另一项事实；只有path-covering `async.await`，或direct
+`async.create_group`经`async.add_to_group`后由`async.await_all`，才能完成对应task。group alias、loop body动态task
+加入captured group、SelectLike合并不同task identity和非identity-preserving `scf.for`必须fail closed；
+`scf.if` result wait只完成origin确实局限在该branch path的task，不能取消分支前已发起而未被选择的task。
+
+instruction-level IR中的`func.call`不是隐式资源边界。memory planning只把defined private、无副作用/嵌套call、
+且storage-shaped result完整解析到formal的helper当作alias SSA；type-erased tensor/memref result仍保留caller root。
+其它可能触及SPM/DDR的direct/indirect/external/async call必须有未来显式arena/resource summary，否则下游按动态
+execution scope fail closed。静态memory-space type、callee名字或“未解析到alias”不能替代该summary。
+
+DTE issue返回`!async.token`并由匹配`wafer.instr.dte_wait`消费；可能异步的local compute/movement issue要么
+返回具有已定义terminal的token，要么进入`wafer.instr.local_fence`明确收口的pending effect set。generic async
+completion proof不替代SPM owner的DTE origin/exact-wait proof；SPM当前保守拒绝所有loop-carried async token。
+`busytable` 只能作为 target capability /
 legality / cost input，不能替代 token、wait/fence、effects 或 terminal drain。每条当前
 `wafer.tile.region` exit path 都必须证明没有未消费 DTE token、pending local compute/movement
-issue及其 SPM read/write，也没有未完成 recv。由于IR禁止SPM buffer跨region边界，这就是当前correctness
-scope；whole-entry allocator只作为后续peak/fragmentation优化。
+issue及其 SPM read/write、generic async task，也没有未完成 recv。IR禁止SPM buffer跨region边界，SPM planner
+同时拒绝nested tile-region scope，二者共同形成当前correctness scope；whole-entry allocator只作为后续
+peak/fragmentation优化。
 
 R3.2d 不建模 worker id。`TsmExecute` 的 worker bits、register window 和 packet field 属于
 committed instruction 后的 target LLVM call emission。
@@ -877,6 +896,8 @@ R3.2d verifier checks only instruction legality:
 - 每个 issue 都有可验证 completion relation；每个isolated `wafer.tile.region`的exit在显式terminal
   drain/wait/fence后pending-event set为空，variant gate覆盖rank中的all-and-only regions。`busytable` state
   不能作为completion proof。
+- async handle的root provenance与task identity分别验证；handle alias或path union不能冒充完成了未被terminal
+  wait覆盖的task，unsupported flow和missing terminal分别稳定失败。
 
 variant-set verifier 还检查 committed instruction programs 覆盖所有 static rank entries 和完整 traversal，
 不含 logical/scheduled `wafer.group`，只使用一套 final layout/SPM/DDR facts，并匹配所有跨 rank
@@ -1037,10 +1058,12 @@ R3.2d.2 已完成：
    tail-only metadata reshape、nested `scf.if`、tile communication structured failure，以及
    padding layout materialization structured failure。
 9. 每个 lowered WDMA 后立即生成 `wafer.instr.local_fence`，使当前 tile 的 SPM read lifetime
-   在 store completion 后结束；每个 single-block `wafer.tile.region` terminator 前还补一个 terminal
-   local fence，覆盖无 store 的路径。SPM planner 不把 region exit 当隐式完成：它按控制流分别跟踪
+   在 store completion 后结束；每个`scf.for` body terminator前补一个backedge local fence，使loop body
+   的RDMA/compute/movement不能跨动态迭代悬空；每个 single-block `wafer.tile.region` terminator 前还补一个
+   terminal local fence，覆盖无 store 的路径。SPM planner 不把 region exit 当隐式完成：它按控制流分别跟踪
    local compute/movement 的全部 SPM read/write 和 Direct DTE token，只有 path-matching local fence
-   或 exact DTE wait 才能 drain；可能零次执行的 loop 和 loop-carried token 均 fail closed。
+   或 exact DTE wait 才能 drain。可能零次执行的loop并非整体非法：pre-loop pending state不能只由body fence
+   完成，body issue必须在backedge前完成；SPM则保守拒绝所有loop-carried async token。
 
 R3.2d.3 已完成：
 
@@ -1050,7 +1073,9 @@ R3.2d.3 已完成：
    candidate output tile offsets/sizes 的 evaluation materialization。R3.2d 仍只消费 DDR view，不负责
    搜索 traversal / tile shape。
 11. pipeline tests 覆盖多 group、structured `scf.if` / `scf.for`、tile communication
-   structured failure，以及转换后不能残留 executable target-abstract op 的 pipeline-level gate。
+   structured failure，以及转换后不能残留 executable target-abstract op 的 pipeline-level gate；
+   memory-planned named pipeline另证明携带pre-existing root的安全loop在backedge fence后通过，而loop body创建
+   fresh allocation并作为recurrence result携带时以`unsupported_lifetime_alias`拒绝。
 
 R3.2d.4 已完成：
 

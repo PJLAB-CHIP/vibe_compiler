@@ -120,7 +120,15 @@ dependency conformance 和 driver CLI 也是已识别热点。它们的稳定内
   与 test executable 使用同一 source set，但保留各自 feature/test compile definitions。
 - `tools/check_source_organization.py` 检查 owner、私有头、CMake source list、旧聚合文件移除和 library 配置顺序；
   根 `check-wafer` 按实际存在的 feature target 聚合 lit、unit、numeric、bulk 和 SystemC gate。
-- C++ unit test 的目录镜像已把 target LLVM conversion 测试从 group conversion 文件移入
+- SPM/DDR planner共用的structured timeline、path condition、query-time ViewLike/SelectLike/scf.if/scf.for
+  provenance closure、generic async task completion、local issue/fence completion和weighted first-fit由
+  `lib/Wafer/Transforms/MemoryPlanning/`唯一拥有。该typed core把compiler-managed `RootRef`、external
+  `ValueOriginRef`和async task identity分开；该header与
+  `wafer::memory_planning::detail`符号保持`WaferTransforms`私有，
+  两个planner只保留各自memory-space legality、resource limit、SPM non-nested scope/DTE或DDR
+  descriptor/planning-scope语义和offset commit。
+- C++ unit test按production boundary镜像：memory-planning shared core由
+  `unittests/Transforms/MemoryPlanning/LifetimeAnalysisTest.cpp`直接测试，target LLVM conversion测试位于
   `unittests/Transforms/Target/`；source checkout 不再保留已确认无 owner/consumer 的空目录。
 
 ## 已审计职责实现映射
@@ -153,8 +161,10 @@ dependency conformance 和 driver CLI 也是已识别热点。它们的稳定内
 `.cpp` include、side table或新公共artifact重新聚合。
 
 本次审计同时确认instruction compute、LinalgExt collective、numeric capability/command、DDR planner与SPM planner仍是合理的
-单一family或单一planner，不因文件规模继续拆分。DDR/SPM存在相似lifetime算法，但completion、external-root和bandwidth
-语义不同；只有形成同时保持两侧合同的typed analysis设计时才可共享，不能机械合并。
+单一family或单一planner，不因文件规模继续拆分。DDR/SPM的可重算lifetime mechanics已经收敛为同一typed analysis；
+SPM的non-nested isolated region/DTE/base-limit合同与DDR的whole-entry/external-root/descriptor/resource-limit合同仍由各自planner拥有，
+没有把arena、diagnostic policy或accepted offset schema机械合并。组织检查器同时禁止两个planner重新引入timeline、root、
+priority或first-fit的第二事实源。
 
 ## 完成判定
 
@@ -162,4 +172,8 @@ dependency conformance 和 driver CLI 也是已识别热点。它们的稳定内
 - 新 internal API 只在 owner library 内可见；没有新增 public artifact、CLI、pass 或 attr。
 - CMake 与组织检查器从多源文件事实推导，不再强制“一个 conversion library 只有一个实现文件”。
 - 受影响的 verifier、conversion、numeric registry 单测和完整 source-backed pipeline 均通过。
+- memory-planning shared core在production CMake中只有一个owner，私有header/detail符号不泄漏公共API，
+  SPM/DDR planner不再拥有重复timeline/root/priority/first-fit实现；镜像unit、两侧planner lit和
+  memory-planned/selected named pipeline均实际执行。named pipeline既覆盖pre-existing root的safe loop正例，
+  也覆盖loop body fresh allocation recurrence的结构化失败；generic async正负合同由两侧planner直接消费同一core。
 - feature-off link closure 与 feature-on numeric/bulk/SystemC 测试证明 optional dependency 没有泄漏。

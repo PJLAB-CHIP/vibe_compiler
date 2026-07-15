@@ -332,10 +332,11 @@
   仍不能根据 whole-boundary shape 自己恢复 subview，closed-loop traversal / tile-shape search 归
   candidate-selection。
 - SPM/DDR accepted offsets不属于layout本身。`wafer.tile.region`是`IsolatedFromAbove`且verifier禁止SPM
-  buffer跨边界，因此当前SPM correctness是逐region从IR重算alias、branch、loop-carried和async completion
+  buffer跨边界；SPM planner还须在提交offset前拒绝nested tile-region，防止inner/outer从同一physical arena base
+  独立规划。因此当前SPM correctness是逐non-nested region从IR重算alias、branch、loop-carried和async completion
   lifetime，并在每条region exit证明pending set为空；whole-variant clone只汇总all-and-only regions并保证
-  atomic acceptance。跨region whole-entry allocator是peak/fragmentation优化，不是当前correctness缺口；若未来
-  允许SPM跨边界，必须先扩IR/SSA/verifier合同。DDR `wafer.ddr.offset`始终是arena-relative fact，没有typed
+  atomic acceptance。跨sibling region whole-entry allocator是peak/fragmentation优化，不是当前correctness缺口；若未来
+  允许SPM跨边界或nested scope，必须先扩IR/SSA/verifier及arena partition合同。DDR `wafer.ddr.offset`始终是arena-relative fact，没有typed
   arena base binding时target不得把它当absolute address。physical size、alignment和bank span统一从shared
   geometry helper推导；runtime object、physical address和packet字段不得写回planning IR。
 - reduction语义恢复不能只看yielded op class。使用`mlir::matchReduction`或等价结构匹配，证明单一combiner
@@ -350,9 +351,10 @@
   direct tile store。`ins + outs` exact SSA必须唯一；不同SSA的physical no-alias由后续typed driver/ABI闭合。
 - variadic custom assembly要覆盖空列表round-trip。`wafer.group`允许零个`ins`，assembly中的operand/type组必须
   optional并有parse→print→reparse gate；不能让printer生成`ins( : )`。
-- async completion按path和engine分别建模：local compute/movement的全部SPM read/write只由覆盖同一路径的
-  local fence收口，DTE send/recv只由matching token/wait收口；两者不能互相消费。zero-trip loop、分支join和
-  loop-carried token没有精确proof时拒绝，region/function terminal boundary不得隐式清空pending状态。
+- async completion按path、task identity和engine分别建模：generic async handle的root provenance与task identity分开，
+  只有覆盖同一路径的terminal await完成task；local compute/movement的全部SPM read/write只由local fence收口，
+  DTE send/recv只由matching token/wait收口，三者不能互相消费。zero-trip loop、分支join和loop-carried handle没有
+  精确proof时拒绝，region/function terminal boundary不得隐式清空pending状态。
 - target undefined-symbol gate使用代码拥有的exact allowlist，并检查全部undefined symbols，而不只检查
   `wafer_*`前缀；prefix/substring命中不能替代精确成员关系。allowlist通过只证明loader ABI surface，不证明
   packet、transport、completion或board正确性。
@@ -361,8 +363,9 @@
   base argument；target pass只有收到显式argument index才把`wafer.ddr.offset`lower成`base + offset`。lowered entry
   必须是与typed `KernelABISlot[]`一一对应的fixed `void(i64...)`。LLVM IR、object/CRT和`.so`只写Q17 transaction
   staging；all-rank entry/RISC-V64 ELF/symbol/digest readback后才发布`TargetArtifactBundle`，不能用单文件atomic
-  replace冒充多rank原子性。ABI slot和workspace的最低DDR alignment来自生成memory plan的同一target policy，
-  workspace再与alloc显式alignment取最大值；不得在artifact层另造更小默认值。
+  replace冒充多rank原子性。ABI slot和workspace的最低DDR alignment来自生成memory plan的同一target policy；
+  workspace对该policy与全部alloc显式alignment计算checked least common multiple，非正数或int64溢出失败，
+  不得用`max`冒充共同整除要求，也不得在artifact层另造更小默认值。
 - ABI narrowing必须在compiler verifier/target preflight中完成：地址使用uint64，count/stride/iteration/enum/
   mask等普通字段适配uint32，`Data_Shape`维度适配底层uint16；CRT header/source和compiler call保持同一typed
   signature，不用宽形参加wrapper内部cast隐藏截断。
@@ -568,3 +571,37 @@
 - 根 `check-wafer` 应从当前配置实际存在的子 gate 动态组成，避免 feature 组合的 `if/elseif` 漏掉并存 gate；lit 中
   引用的可执行工具必须同时进入 target `DEPENDS`。验证 optional dependency 边界时同时 query feature-on/off 的 Ninja
   graph，并实际运行两个配置的统一入口。
+
+## 内存生命周期analysis的共享边界
+
+- SPM/DDR可共享的是从当前structured IR重算的path condition、operation timeline、query-time
+  ViewLike/SelectLike/scf.if/scf.for provenance closure、generic async task completion、live-segment overlap、local
+  issue/fence completion和deterministic first-fit；arena、resource limit、descriptor、DTE和accepted offset schema仍由
+  各自planner拥有。共享header保持owner library私有，不形成跨pass side table或新IR attr。
+- compiler-managed allocation `RootRef`、caller-owned/external `ValueOriginRef`和async task identity是三类不同事实。
+  async handle的root union只能延长lifetime；不能证明某个task已完成。external origin在最终semantic root上去重，未知
+  tracked producer不得退化成external root。
+- provenance必须在查询点递归追踪ViewLike、SelectLike、if yield和for init/iter-arg/backedge/result；只在前向遍历时复制
+  一次map会漏掉loop fixed-point后来加入的origin。loop发布union时去掉repeatable branch decision，避免把某一iteration
+  的分支选择当成整个执行的互斥事实。
+- `scf.for` body在timeline中必须有独立的may-zero-trip path。pre-loop issue只在body内fence后仍保留zero-trip pending path；
+  body中新issue若在离开body时仍pending则直接拒绝backedge，不能等loop后fence。loop-local if是repeatable decision，
+  相反分支不能证明packing互斥；普通lifetime overlap仍按兼容path保守判断。
+- generic `async.call` token/value必须由`async.await`完成；只接受direct create/add/await-all group。mutable group alias、
+  loop动态task加入captured group、SelectLike distinct task和non-identity-preserving loop recurrence拒绝；if result只完成
+  origin存在于对应branch path的task。未await task与unsupported identity flow必须用不同failure class。
+- loop body allocation或task一旦通过memref/async handle跨backedge携带，就不是单个静态instance；没有显式
+  multi-instance/ping-pong placement时fail closed。nested tile-region即使禁止SPM value跨boundary，仍可能独立分配同一
+  physical arena并覆盖outer live buffer，因此SPM当前只规划non-nested sibling scopes且保守拒绝全部loop-carried async token。
+- DDR module同时含function planning scopes和function外compiler-managed allocation时没有单一timeline；必须拒绝mixed scope，
+  不能因发现func.func就静默跳过top-level allocation。
+- static memory-space type不是storage provenance。`to_memref`、memory-space cast、ViewLike/control-flow result及
+  private helper call只有解析到已有RootRef/ValueOriginRef时才能产生tracked storage；仅DDR func/async入口tensor
+  adapter是owner显式external-root例外。private alias helper中所有接触storage-shaped value的op都必须是已知
+  alias/control语义，且每个tensor/memref result都须完整解析到静态tracked caller actual；只有无关pure scalar计算可
+  独立存在，不能把mixed alias/independent storage result当成no-alias。
+- 缺少arena/resource summary的调用按动态执行scope fail closed：DDR module有demand时拒绝external/unresolved
+  sync/async及indirect call（defined private pure alias helper除外）；SPM active/async/parallel scope拒绝可能重入
+  tile-region的direct/indirect/external call，module有tile-region时external async call全局拒绝。
+- packing helper返回以原demand index标识的纯placement结果，不写IR。owner应先完成completion、descriptor/range和resource
+  validation，再统一提交offset；这样失败candidate不会留下半份accepted plan，也能直接单测NoFit时IR完全未变。

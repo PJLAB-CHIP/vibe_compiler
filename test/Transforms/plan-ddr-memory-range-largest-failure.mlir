@@ -11,6 +11,7 @@ func.func @single_ddr_range_exceeds_largest_contiguous() {
        dst_strides = array<i64: 0, 0, 0>, inner_bytes = 256 : i64}
       : memref<128xf16, #wafer.memory<spm, tensor>>
      to memref<128xf16, #wafer.memory<ddr, tensor>>
+  wafer.instr.local_fence
   return
 }
 

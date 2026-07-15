@@ -53,9 +53,9 @@ func.func @if_matmul_bias_chain(%lhs: tensor<4x8xf16>,
   return %group : tensor<4x3xf16>
 }
 
-func.func @loop_elementwise_accumulate(%input: tensor<4x4xf16>,
-                                       %out: tensor<4x4xf16>,
-                                       %lb: index, %ub: index, %step: index)
+func.func @loop_identity_recurrence(%input: tensor<4x4xf16>,
+                                    %out: tensor<4x4xf16>,
+                                    %lb: index, %ub: index, %step: index)
     -> tensor<4x4xf16> {
   %group = wafer.group ins(%input, %lb, %ub, %step
       : tensor<4x4xf16>, index, index, index)
@@ -64,20 +64,7 @@ func.func @loop_elementwise_accumulate(%input: tensor<4x4xf16>,
        %arg3: index, %arg4: tensor<4x4xf16>):
     %loop_result = scf.for %i = %arg1 to %arg2 step %arg3
         iter_args(%acc = %arg4) -> (tensor<4x4xf16>) {
-      %sum = linalg.generic {
-          indexing_maps = [
-            affine_map<(d0, d1) -> (d0, d1)>,
-            affine_map<(d0, d1) -> (d0, d1)>,
-            affine_map<(d0, d1) -> (d0, d1)>
-          ],
-          iterator_types = ["parallel", "parallel"]
-        } ins(%acc, %arg0 : tensor<4x4xf16>, tensor<4x4xf16>)
-          outs(%acc : tensor<4x4xf16>) {
-        ^bb0(%acc_el: f16, %input_el: f16, %out_el: f16):
-          %sum_el = arith.addf %acc_el, %input_el : f16
-          linalg.yield %sum_el : f16
-        } -> tensor<4x4xf16>
-      scf.yield %sum : tensor<4x4xf16>
+      scf.yield %acc : tensor<4x4xf16>
     }
     wafer.group.yield %loop_result : tensor<4x4xf16>
   } : tensor<4x4xf16>
@@ -88,7 +75,7 @@ func.func @loop_elementwise_accumulate(%input: tensor<4x4xf16>,
 // SUMMARY-SAME: mode=first-legal
 // SUMMARY-SAME: tile=[4,3]
 // SUMMARY-SAME: representatives=1
-// SUMMARY: wafer.select_group_tile selected group @loop_elementwise_accumulate#0
+// SUMMARY: wafer.select_group_tile selected group @loop_identity_recurrence#0
 // SUMMARY-SAME: mode=first-legal
 // SUMMARY-SAME: tile=[4,4]
 
@@ -102,11 +89,11 @@ func.func @loop_elementwise_accumulate(%input: tensor<4x4xf16>,
 // IR: wafer.instr.elementwise <add>
 // IR: wafer.instr.wdma
 
-// IR-LABEL: func.func @loop_elementwise_accumulate
+// IR-LABEL: func.func @loop_identity_recurrence
 // IR-NOT: wafer.group
 // IR-NOT: linalg.
 // IR: wafer.tile.region
-// IR: scf.for
 // IR: wafer.spm.offset
-// IR: wafer.instr.elementwise <add>
+// IR: scf.for
+// IR: wafer.instr.local_fence
 // IR: wafer.instr.wdma

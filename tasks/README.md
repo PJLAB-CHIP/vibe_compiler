@@ -42,7 +42,7 @@
 | component/rank-local compute normalization | 05 |
 | candidate group、tile traversal和layout assignment | 06、07、08 |
 | target-abstract compute/movement和instruction legality | 10、11 |
-| accepted SPM/DDR allocation、lifetime和offset | 09、12 |
+| accepted SPM/DDR allocation、lifetime和offset | 09、12；shared lifetime analysis的源码ownership和测试镜像由18约束 |
 | Direct DTE logical schedule/completion与post-memory transport activation | 13；target/package/verification consumer由14、15、16约束 |
 | per-rank candidate commit和typed executable bundle | 06；资源/lifetime边界由09、12、13共同约束 |
 | target LLVM、CRT/device link和staged target module | 14 |
@@ -53,8 +53,9 @@
 
 ## 实施计划导航
 
-当前没有active实施计划。Q25剩余聚合边界模块化已归档为`tasks/archive/residual-source-modularity.md`，
-Q24剩余热点模块化已归档为`tasks/archive/remaining-source-modularity.md`，Q23首轮源码组织重构已归档为
+当前没有active实施计划。Q26 memory lifetime analysis已归档为`tasks/archive/memory-lifetime-analysis.md`，
+Q25剩余聚合边界模块化已归档为`tasks/archive/residual-source-modularity.md`，Q24剩余热点模块化已归档为
+`tasks/archive/remaining-source-modularity.md`，Q23首轮源码组织重构已归档为
 `tasks/archive/source-organization-refactor.md`；
 Q13.W依赖root一致性计划已归档为`tasks/archive/third-party-dependency-root-consistency.md`。Q22.S、Q22.V与最终
 完成性审计计划已分别归档为`tasks/archive/systemc-functional-event-model.md`、
@@ -73,6 +74,7 @@ docs、`tasks/progress.md` 和本轮已收敛设计结论为准。
 
 | 文档 | 原性质 |
 | --- | --- |
+| `tasks/archive/memory-lifetime-analysis.md` | 已完成Q26的共享structured lifetime/packing core、DDR issue-to-fence completion、两侧scope/provenance/原子commit和双配置gate记录 |
 | `tasks/archive/residual-source-modularity.md` | 已完成Q25的reference/model、numeric/bulk、compiler/artifact/package与frontend bridge共11个聚合实现模块化和双配置gate记录 |
 | `tasks/archive/remaining-source-modularity.md` | 已完成Q24的group/candidate、target LLVM、numeric conformance、frontend program与compiler driver模块化和双配置gate记录 |
 | `tasks/archive/source-organization-refactor.md` | 已完成Q23的instruction、tile-region到instruction、target numeric源码模块化和build/test组织gate记录 |

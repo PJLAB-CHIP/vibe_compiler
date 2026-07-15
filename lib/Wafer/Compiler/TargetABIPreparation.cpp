@@ -19,6 +19,8 @@
 
 #include <algorithm>
 #include <limits>
+#include <numeric>
+#include <optional>
 
 namespace wafer::compiler::detail {
 
@@ -35,6 +37,15 @@ bool checkedAdd(int64_t lhs, int64_t rhs, int64_t &result) {
     return false;
   result = lhs + rhs;
   return true;
+}
+
+std::optional<int64_t> combineAlignmentRequirements(int64_t lhs, int64_t rhs) {
+  if (lhs <= 0 || rhs <= 0)
+    return std::nullopt;
+  int64_t scaled = lhs / std::gcd(lhs, rhs);
+  if (scaled > std::numeric_limits<int64_t>::max() / rhs)
+    return std::nullopt;
+  return scaled * rhs;
 }
 
 KernelABISlotRole getKernelRole(ProgramResourceRole role) {
@@ -236,8 +247,17 @@ prepareTargetABI(const RankExecutable &rankExecutable,
       return;
     }
     arenaBytes = std::max(arenaBytes, end);
-    if (auto alignment = allocation.getAlignmentAttr())
-      arenaAlignment = std::max(arenaAlignment, alignment.getInt());
+    if (auto alignment = allocation.getAlignmentAttr()) {
+      std::optional<int64_t> combined =
+          combineAlignmentRequirements(arenaAlignment, alignment.getInt());
+      if (!combined) {
+        arenaValid = allocation.emitError()
+                     << "target_abi_mismatch: combined default DDR arena "
+                        "alignment is invalid or exceeds int64";
+        return;
+      }
+      arenaAlignment = *combined;
+    }
   });
   if (mlir::failed(arenaValid))
     return mlir::failure();

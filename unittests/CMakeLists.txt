@@ -19,9 +19,13 @@ add_executable(WaferUnitTests
   Target/NumericSemanticsTest.cpp
   Target/PhysicalTensorCodecTest.cpp
   Target/TargetFormatTest.cpp
+  Transforms/MemoryPlanning/LifetimeAnalysisTest.cpp
   Transforms/Target/LowerInstrToTargetLLVMTest.cpp
 )
 llvm_update_compile_flags(WaferUnitTests)
+target_include_directories(WaferUnitTests PRIVATE
+  ${CMAKE_SOURCE_DIR}/lib/Wafer/Transforms
+)
 find_program(WAFER_TEST_LLVM_CLANGXX NAMES clang++ REQUIRED)
 target_compile_definitions(WaferUnitTests PRIVATE
   WAFER_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"

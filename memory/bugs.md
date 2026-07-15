@@ -181,7 +181,8 @@
   output argument；随后仅对剩余compiler-managed DDR alloc重算workspace high-water/alignment，追加typed workspace
   slot和i64 arena-base argument。target lowering由显式argument index生成`base + offset`，默认调用继续拒绝；不得插入
   未lower的DDR `memref.copy`，也不得把arena-relative offset常量化为device address。slot和workspace的最低对齐必须
-  取自生成Q16 memory plan的同一target policy，再与alloc显式更强alignment取最大值，不能另写较小magic number。
+  取自生成memory plan的同一target policy，再与alloc显式alignment做checked LCM；LCM溢出或不能表示时必须拒绝，
+  不能用`max`假设两个非整除对齐约束彼此蕴含，也不能另写较小magic number。
 
 ## 2026-07-13 多字段 JSON parser 必须消费每个 `Expected`
 
@@ -411,3 +412,61 @@
   按未解析引用选择归档成员，职责拆分会正确移除这种无语义依据的共拉入行为。
 - 修复模式：link-closure门禁应检查真正消费被验证入口的用户级binary，并继续核对依赖形式与完整适配符号集合；不要用
   whole-archive、虚假link anchor或重新聚合源码恢复偶然符号。聚合TU拆分后需重跑最终binary级门禁，不能只验证library和unit。
+
+## 2026-07-15 异步DDR访问的SSA use不等于传输完成
+
+- 现象：两个compiler-managed DDR root在同一个`wafer.instr.local_fence`之前分别被RDMA/WDMA发起时，旧DDR planner只把
+  operand在issue op处记为最后use，可能给仍被movement engine访问的root分配同一offset；external DDR issue没有fence也会
+  被接受。
+- 根因：planner只做普通SSA/value lifetime，没有消费`WaferResourceEffectInterface`中的DDR read/write、Movement issue和
+  Sync fence关系；同步完成语义又只存在于SPM planner的局部实现，DDR无法复用。
+- 修复模式：从当前structured IR重算统一path/root timeline，用memory-space参数化的local completion tracker把tracked root
+  lifetime延长到覆盖该path的local fence；即使external root没有allocation ref，也保留pending issue并在entry exit拒绝。
+  loop body视为may-zero-trip，body中新issue必须在backedge前完成，loop后的fence不能证明迭代间安全。
+- 防复发：异步resource的lifetime测试必须同时覆盖managed/external、read/write、分支partial fence、zero-trip loop、loop
+  backedge和view alias；不能把operand use、op顺序或runtime隐式同步当作completion proof。
+
+## 2026-07-15 storage provenance与async task identity不能共用一个事实
+
+- 现象：把async handle映射成它访问的allocation root后，`SelectLike`合并两个不同task、在`scf.if`后只await被选中的
+  result，或对root集合做union，都可能被误判为两个task已经完成；只在producer处复制一次alias映射，还会遗漏
+  ViewLike、SelectLike和loop recurrence在实际查询点可达的origin。
+- 根因：storage ownership、external value origin和一次异步执行实例是三类不同身份。root回答“哪段storage必须保持
+  live”，path-qualified origin回答“当前值来自哪条控制流路径”，task identity回答“哪次issue是否已被wait”；任意两类
+  合并都会让alias闭包或completion证明失真。
+- 修复模式：共享lifetime analysis分别维护compiler-managed `RootRef`、external `ValueOriginRef`和async task identity，
+  在查询点沿ViewLike、SelectLike、`scf.if` yield及`scf.for` recurrence递归闭包。generic `async.call` token/value只由
+  path-covering `async.await`完成；direct create/add group只由对应`async.await_all`完成。分支result wait只能完成origin
+  确实局限于该branch path的task；分支前已发起的task不能因另一分支未返回其handle而被丢弃。
+- 防复发：mutable group alias、captured group接收loop动态task、SelectLike合并distinct task identity和
+  non-identity-preserving loop recurrence都必须fail closed；terminal仍有pending task必须单独诊断。测试必须同时改变
+  root alias与task identity，不能用“root集合相同”替代“task相同且已完成”。
+
+## 2026-07-15 静态IR occurrence不能冒充唯一动态memory/task instance
+
+- 现象：loop-local `scf.if`的两个allocation在单次iteration互斥，却可能在不同iteration同时保持live；loop body中新建
+  allocation或task经backedge携带时，同一个静态op代表多个动态instance。若仍按静态occurrence分配offset或记录一次
+  pending状态，会错误复用storage或漏掉未完成task。嵌套tile region分别规划同一physical SPM、或DDR function/module
+  两级scope只规划其中一级，也会产生相同的重复占用或漏规划问题。
+- 根因：控制流分析把单次branch decision永久带入loop fixed point，并默认region isolation或静态定义唯一性等于物理资源
+  实例唯一性；IR尚未提供可验证的动态instance/arena partition协议。
+- 修复模式：loop fixed point发布时去掉repeatable branch decision，禁止用loop-local相反分支证明全执行期packing互斥；
+  fresh loop-body allocation跨backedge时以unsupported lifetime alias拒绝，SPM保守拒绝全部loop-carried async token。
+  nested tile-region SPM scope和同时含function/module compiler-managed allocation的DDR planning scope在缺少显式partition
+  语义时都fail closed。named memory-planned pipeline需同时保留pre-existing identity recurrence正例和fresh loop-body
+  recurrence反例，证明安全recurrence仍可通过而动态多实例不会被静态化。
+
+## 2026-07-15 静态memory-space和call签名不能自证storage provenance
+
+- 现象：tracked memref擦成tensor/generic memref后可穿过helper、`to_memref`或memory-space cast重新标成DDR/SPM；若
+  planner只检查结果静态type，可能把unknown result自封为external root，或丢失原managed root lifetime并错误复用offset。
+  同样，external/indirect/async callee即使签名不带tracked type，也可能重入同一physical arena。
+- 根因：类型回答目标memory space，不回答storage来自哪个allocation/boundary；“没有解析出formal alias”也可能是
+  alias/independent混合，而不等于no-alias。opaque callee签名没有arena/resource effect的封闭证明。
+- 修复模式：每个tracked alias/control-flow result必须解析到RootRef或ValueOriginRef；仅owner明确的function-entry
+  adapter可建立external root。private pure alias helper要求无副作用/嵌套call，所有接触storage-shaped value的op都属于
+  已知alias/control语义，且每个tensor/memref result完整解析到静态tracked caller actual；type-erased result仍传播caller
+  provenance。缺summary的external/unresolved/indirect及可能重入SPM/DDR的async call按scope fail closed。
+- 防复发：正例同时覆盖tracked→generic与memref→tensor→memref provenance；反例覆盖generic→tracked、unknown
+  `to_memref`、type-erased store/dealloc、mixed select result、external sync/async和parallel/indirect scope。不能只测
+  最终offset存在，必须用容量冲突证明late use仍保持原root live。

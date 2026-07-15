@@ -101,7 +101,7 @@ static mlir::LogicalResult parseTileRegionToInstrOptions(
 }
 
 static mlir::LogicalResult
-materializeTerminalLocalFences(mlir::ModuleOp module) {
+materializeStructuredLocalFences(mlir::ModuleOp module) {
   mlir::WalkResult result = module.walk([&](TileRegionOp tileRegion) {
     if (!tileRegion.getBody().hasOneBlock()) {
       tileRegion.emitError()
@@ -109,6 +109,23 @@ materializeTerminalLocalFences(mlir::ModuleOp module) {
              "requires a single-block wafer.tile.region";
       return mlir::WalkResult::interrupt();
     }
+
+    mlir::WalkResult loopResult = tileRegion.walk([&](mlir::scf::ForOp forOp) {
+      mlir::Operation *terminator = forOp.getBody()->getTerminator();
+      if (!terminator) {
+        forOp.emitError() << "instruction_completion_failure: scf.for has no "
+                             "terminator for loop-backedge local completion";
+        return mlir::WalkResult::interrupt();
+      }
+      if (mlir::isa_and_nonnull<SyncLocalFenceOp>(terminator->getPrevNode()))
+        return mlir::WalkResult::advance();
+
+      mlir::OpBuilder builder(terminator);
+      builder.create<SyncLocalFenceOp>(terminator->getLoc());
+      return mlir::WalkResult::advance();
+    });
+    if (loopResult.wasInterrupted())
+      return mlir::WalkResult::interrupt();
 
     mlir::Block &body = tileRegion.getBody().front();
     mlir::Operation *terminator = body.getTerminator();
@@ -238,5 +255,5 @@ wafer::convertTileRegionToInstrModule(mlir::ModuleOp module,
                        "tile-region to instruction conversion failed");
     return mlir::failure();
   }
-  return materializeTerminalLocalFences(module);
+  return materializeStructuredLocalFences(module);
 }

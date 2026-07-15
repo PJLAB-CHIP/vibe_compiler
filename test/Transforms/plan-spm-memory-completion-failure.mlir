@@ -120,6 +120,30 @@ func.func @loop_may_skip_only_local_fence(
 
 // -----
 
+func.func @loop_body_issue_requires_body_local_fence(
+    %boundary: memref<128xf16, #wafer.memory<ddr, tensor>>,
+    %lb: index, %ub: index, %step: index) {
+  %region = wafer.tile.region(%boundary, %lb, %ub, %step
+      : memref<128xf16, #wafer.memory<ddr, tensor>>, index, index, index)
+      -> (memref<128xf16, #wafer.memory<ddr, tensor>>) {
+  ^bb0(%arg0: memref<128xf16, #wafer.memory<ddr, tensor>>,
+       %l: index, %u: index, %s: index):
+    %zero = arith.constant 0.000000e+00 : f16
+    scf.for %i = %l to %u step %s {
+      %buffer = memref.alloc()
+          : memref<128xf16, #wafer.memory<spm, tensor>>
+      // expected-error @below {{missing_local_completion: local Compute/Movement issue has a reachable loop backedge without wafer.instr.local_fence}}
+      wafer.instr.fill %buffer, %zero
+          : memref<128xf16, #wafer.memory<spm, tensor>>, f16
+    }
+    wafer.instr.local_fence
+    wafer.tile.yield %arg0 : memref<128xf16, #wafer.memory<ddr, tensor>>
+  }
+  return
+}
+
+// -----
+
 func.func @loop_carried_dte_token_is_fail_closed(
     %boundary: memref<128xf16, #wafer.memory<ddr, tensor>>,
     %lb: index, %ub: index, %step: index) {

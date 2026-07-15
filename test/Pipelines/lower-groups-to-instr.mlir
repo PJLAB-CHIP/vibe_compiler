@@ -106,20 +106,7 @@ func.func @loop_group(%input: tensor<4xf32>, %out: tensor<4xf32>,
        %arg4: tensor<4xf32>):
     %loop_result = scf.for %i = %arg1 to %arg2 step %arg3
         iter_args(%acc = %arg4) -> (tensor<4xf32>) {
-      %sum = linalg.generic {
-          indexing_maps = [
-            affine_map<(d0) -> (d0)>,
-            affine_map<(d0) -> (d0)>,
-            affine_map<(d0) -> (d0)>
-          ],
-          iterator_types = ["parallel"]
-        } ins(%acc, %arg0 : tensor<4xf32>, tensor<4xf32>)
-          outs(%acc : tensor<4xf32>) {
-        ^bb0(%acc_el: f32, %input_el: f32, %out_el: f32):
-          %add = arith.addf %acc_el, %input_el : f32
-          linalg.yield %add : f32
-        } -> tensor<4xf32>
-      scf.yield %sum : tensor<4xf32>
+      scf.yield %acc : tensor<4xf32>
     }
     wafer.group.yield %loop_result : tensor<4xf32>
   } : tensor<4xf32>
@@ -307,7 +294,7 @@ func.func @captured_scalar_elementwise_group(%input: tensor<4xf32>,
 // CHECK-NOT: wafer.tile.elementwise
 // CHECK: wafer.tile.region
 // CHECK: scf.for
-// CHECK: wafer.instr.elementwise <add>
+// CHECK: wafer.instr.local_fence
 // CHECK: scf.yield {{%.*}} : memref<4xf32, #wafer.memory<spm, tensor>>
 // CHECK: wafer.instr.wdma
 
