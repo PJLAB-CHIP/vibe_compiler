@@ -29,6 +29,66 @@ NUMERIC_SEMANTICS_SOURCES = (
     "NumericProfiles.cpp",
     "NumericSemanticsInternal.cpp",
 )
+GROUP_TO_TILE_REGION_SOURCES = (
+    "BodyEmitter.cpp",
+    "CandidateMaterialization.cpp",
+    "CandidateSupport.cpp",
+    "CollectiveLowering.cpp",
+    "CompleteTraversal.cpp",
+    "GenericLowering.cpp",
+    "GroupLowering.cpp",
+    "NamedComputeLowering.cpp",
+    "TensorControlFlowLowering.cpp",
+    "TileMaterialization.cpp",
+    "WaferGroupToTileRegion.cpp",
+)
+CANDIDATE_SELECTION_SOURCES = (
+    "CandidateAnalysis.cpp",
+    "CandidateCommit.cpp",
+    "CandidateEvaluation.cpp",
+    "CandidateSelection.cpp",
+    "SelectGroupTile.cpp",
+)
+TARGET_LLVM_SOURCES = (
+    "ComputeTargetCallLowering.cpp",
+    "DirectDTETargetCallLowering.cpp",
+    "InstructionTargetCallLowering.cpp",
+    "LowerInstrToTargetLLVM.cpp",
+    "MovementTargetCallLowering.cpp",
+    "PeripheralTargetCallLowering.cpp",
+    "SyncTargetCallLowering.cpp",
+    "TargetCallLoweringSupport.cpp",
+    "TargetCallPreflight.cpp",
+    "TargetLLVMConversion.cpp",
+    "TargetLLVMConversionPatterns.cpp",
+    "TargetLLVMStructure.cpp",
+)
+NUMERIC_DEPENDENCY_SOURCES = (
+    "NumericDependencyBuildIdentity.cpp",
+    "NumericDependencyConformance.cpp",
+    "NumericDependencyELF.cpp",
+    "NumericDependencyFilesystem.cpp",
+    "NumericDependencyGate.cpp",
+    "NumericDependencyManifest.cpp",
+    "NumericDependencyProcess.cpp",
+    "NumericDependencyRuntime.cpp",
+)
+FRONTEND_PROGRAM_SOURCES = (
+    "DistributedBoundary.cpp",
+    "DistributedSupport.cpp",
+    "FunctionBoundary.cpp",
+    "NpyPayload.cpp",
+    "ParameterShards.cpp",
+    "Program.cpp",
+    "ProgramMetadata.cpp",
+    "ProgramSupport.cpp",
+)
+WAFER_COMPILE_SOURCES = (
+    "DriverOptions.cpp",
+    "ReferenceGate.cpp",
+    "TargetModelGate.cpp",
+    "wafer-compile.cpp",
+)
 INSTRUCTION_VERIFIER_FILES = (
     "InstructionVerifierUtils.cpp",
     "InstructionVerifierUtils.h",
@@ -115,6 +175,33 @@ def check_cmake_sources(
         entry = prefix + source
         if entry in tokens:
             fail(errors, f"{cmake_path}: {target} still lists legacy source {entry}")
+
+
+def check_exact_sources(
+    source_root: Path,
+    expected: tuple[str, ...],
+    label: str,
+    errors: list[str],
+) -> None:
+    actual = {path.name for path in source_root.glob("*.cpp") if path.is_file()}
+    wanted = set(expected)
+    missing = sorted(wanted - actual)
+    unexpected = sorted(actual - wanted)
+    if missing:
+        fail(errors, f"{label} sources missing: {', '.join(missing)}")
+    if unexpected:
+        fail(errors, f"unexpected {label} sources: {', '.join(unexpected)}")
+
+
+def check_private_header(
+    private_path: Path,
+    public_path: Path,
+    label: str,
+    errors: list[str],
+) -> None:
+    read_required(private_path, errors)
+    if public_path.exists():
+        fail(errors, f"{label} header must remain library-private: {public_path}")
 
 
 def check_instruction_owners(root: Path, errors: list[str]) -> None:
@@ -255,6 +342,192 @@ def check_numeric_semantics_owners(root: Path, errors: list[str]) -> None:
     )
 
 
+def check_group_to_tile_region_owners(root: Path, errors: list[str]) -> None:
+    source_root = root / "lib/Wafer/Conversion/WaferGroupToTileRegion"
+    cmake_path = root / "lib/Wafer/Conversion/CMakeLists.txt"
+    cmake_text = read_required(cmake_path, errors)
+
+    check_exact_sources(
+        source_root, GROUP_TO_TILE_REGION_SOURCES, "group-to-tile-region", errors
+    )
+    check_private_header(
+        source_root / "Internal.h",
+        root / "include/Wafer/Conversion/WaferGroupToTileRegion/Internal.h",
+        "group-to-tile-region internal",
+        errors,
+    )
+    target_body = cmake_target_body(
+        cmake_text,
+        "add_mlir_conversion_library",
+        "WaferGroupToTileRegion",
+        cmake_path,
+        errors,
+    )
+    check_cmake_sources(
+        body=target_body,
+        required=GROUP_TO_TILE_REGION_SOURCES,
+        prefix="WaferGroupToTileRegion/",
+        cmake_path=cmake_path,
+        target="WaferGroupToTileRegion",
+        errors=errors,
+    )
+    facade = read_required(source_root / "WaferGroupToTileRegion.cpp", errors)
+    if "OpRewritePattern" in facade or "OpConversionPattern" in facade:
+        fail(
+            errors,
+            "group-to-tile-region facade must not own concrete rewrite patterns",
+        )
+
+
+def check_candidate_selection_owners(root: Path, errors: list[str]) -> None:
+    source_root = root / "lib/Wafer/Transforms/Group"
+    cmake_path = root / "lib/Wafer/Transforms/CMakeLists.txt"
+    cmake_text = read_required(cmake_path, errors)
+
+    for filename in CANDIDATE_SELECTION_SOURCES:
+        read_required(source_root / filename, errors)
+    check_private_header(
+        source_root / "SelectGroupTileInternal.h",
+        root / "include/Wafer/Transforms/Group/SelectGroupTileInternal.h",
+        "candidate-selection internal",
+        errors,
+    )
+    target_body = cmake_target_body(
+        cmake_text, "add_mlir_library", "WaferTransforms", cmake_path, errors
+    )
+    check_cmake_sources(
+        body=target_body,
+        required=CANDIDATE_SELECTION_SOURCES,
+        prefix="Group/",
+        cmake_path=cmake_path,
+        target="WaferTransforms",
+        errors=errors,
+    )
+    facade = read_required(source_root / "SelectGroupTile.cpp", errors)
+    for implementation in (
+        "struct CandidateRecord",
+        "struct CandidateCost",
+        "class CandidateAnalysis",
+    ):
+        if implementation in facade:
+            fail(errors, f"candidate-selection facade still owns {implementation}")
+
+
+def check_target_llvm_owners(root: Path, errors: list[str]) -> None:
+    source_root = root / "lib/Wafer/Transforms/Target"
+    cmake_path = root / "lib/Wafer/Transforms/CMakeLists.txt"
+    cmake_text = read_required(cmake_path, errors)
+
+    for filename in TARGET_LLVM_SOURCES:
+        read_required(source_root / filename, errors)
+    check_private_header(
+        source_root / "LowerInstrToTargetLLVMInternal.h",
+        root / "include/Wafer/Transforms/Target/LowerInstrToTargetLLVMInternal.h",
+        "target-LLVM internal",
+        errors,
+    )
+    target_body = cmake_target_body(
+        cmake_text, "add_mlir_library", "WaferTransforms", cmake_path, errors
+    )
+    check_cmake_sources(
+        body=target_body,
+        required=TARGET_LLVM_SOURCES,
+        prefix="Target/",
+        cmake_path=cmake_path,
+        target="WaferTransforms",
+        errors=errors,
+    )
+    facade = read_required(source_root / "LowerInstrToTargetLLVM.cpp", errors)
+    if "OpConversionPattern" in facade or "ConversionPattern" in facade:
+        fail(errors, "target-LLVM facade must not own concrete conversion patterns")
+
+
+def check_numeric_dependency_owners(root: Path, errors: list[str]) -> None:
+    source_root = root / "lib/Wafer/Target"
+    cmake_path = source_root / "CMakeLists.txt"
+    cmake_text = read_required(cmake_path, errors)
+
+    for filename in NUMERIC_DEPENDENCY_SOURCES:
+        read_required(source_root / filename, errors)
+    check_private_header(
+        source_root / "NumericDependencyConformanceInternal.h",
+        root / "include/Wafer/Target/NumericDependencyConformanceInternal.h",
+        "numeric-dependency internal",
+        errors,
+    )
+    target_body = cmake_target_body(
+        cmake_text, "add_mlir_library", "WaferTarget", cmake_path, errors
+    )
+    check_cmake_sources(
+        body=target_body,
+        required=NUMERIC_DEPENDENCY_SOURCES,
+        cmake_path=cmake_path,
+        target="WaferTarget",
+        errors=errors,
+    )
+
+
+def check_frontend_program_owners(root: Path, errors: list[str]) -> None:
+    source_root = root / "lib/Wafer/Frontend"
+    cmake_path = source_root / "CMakeLists.txt"
+    cmake_text = read_required(cmake_path, errors)
+
+    check_exact_sources(source_root, FRONTEND_PROGRAM_SOURCES, "frontend program", errors)
+    check_private_header(
+        source_root / "ProgramInternal.h",
+        root / "include/Wafer/Frontend/ProgramInternal.h",
+        "frontend program internal",
+        errors,
+    )
+    target_body = cmake_target_body(
+        cmake_text, "add_mlir_library", "WaferFrontend", cmake_path, errors
+    )
+    check_cmake_sources(
+        body=target_body,
+        required=FRONTEND_PROGRAM_SOURCES,
+        cmake_path=cmake_path,
+        target="WaferFrontend",
+        errors=errors,
+    )
+    facade = read_required(source_root / "Program.cpp", errors)
+    for implementation in ("llvm/Support/JSON.h", "NUMPY", "NpyPayloadMetadata"):
+        if implementation in facade:
+            fail(errors, f"frontend program facade still owns {implementation}")
+
+
+def check_wafer_compile_owners(root: Path, errors: list[str]) -> None:
+    source_root = root / "tools/wafer-compile"
+    cmake_path = source_root / "CMakeLists.txt"
+    cmake_text = read_required(cmake_path, errors)
+
+    check_exact_sources(source_root, WAFER_COMPILE_SOURCES, "wafer-compile", errors)
+    read_required(source_root / "DriverInternal.h", errors)
+    source_body = cmake_target_body(
+        cmake_text, "set", "_wafer_compile_sources", cmake_path, errors
+    )
+    check_cmake_sources(
+        body=source_body,
+        required=WAFER_COMPILE_SOURCES,
+        cmake_path=cmake_path,
+        target="_wafer_compile_sources",
+        errors=errors,
+    )
+    for target in ("wafer-compile", "wafer-compile-test"):
+        target_body = cmake_target_body(
+            cmake_text, "add_executable", target, cmake_path, errors
+        )
+        if "${_wafer_compile_sources}" not in target_body:
+            fail(errors, f"{cmake_path}: {target} must use shared driver source set")
+    facade = read_required(source_root / "wafer-compile.cpp", errors)
+    for implementation in (
+        "bool parseCommandLine(",
+        "bool runReferenceGate(",
+        "bool runTargetModelGate(",
+    ):
+        if implementation in facade:
+            fail(errors, f"wafer-compile main still defines {implementation}")
+
+
 def check_lib_wafer_dependency_order(root: Path, errors: list[str]) -> None:
     cmake_path = root / "lib/Wafer/CMakeLists.txt"
     cmake_text = read_required(cmake_path, errors)
@@ -302,6 +575,12 @@ def main() -> int:
     check_instruction_owners(root, errors)
     check_tile_region_to_instr_owners(root, errors)
     check_numeric_semantics_owners(root, errors)
+    check_group_to_tile_region_owners(root, errors)
+    check_candidate_selection_owners(root, errors)
+    check_target_llvm_owners(root, errors)
+    check_numeric_dependency_owners(root, errors)
+    check_frontend_program_owners(root, errors)
+    check_wafer_compile_owners(root, errors)
     check_lib_wafer_dependency_order(root, errors)
 
     if errors:

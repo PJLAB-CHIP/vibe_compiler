@@ -9,6 +9,22 @@ import pathlib
 import re
 
 
+TARGET_LOWERING_SOURCES = (
+    "LowerInstrToTargetLLVM.cpp",
+    "TargetCallPreflight.cpp",
+    "TargetCallLoweringSupport.cpp",
+    "MovementTargetCallLowering.cpp",
+    "ComputeTargetCallLowering.cpp",
+    "DirectDTETargetCallLowering.cpp",
+    "PeripheralTargetCallLowering.cpp",
+    "SyncTargetCallLowering.cpp",
+    "InstructionTargetCallLowering.cpp",
+    "TargetLLVMStructure.cpp",
+    "TargetLLVMConversionPatterns.cpp",
+    "TargetLLVMConversion.cpp",
+)
+
+
 def fail(message: str) -> None:
     raise ValueError(message)
 
@@ -531,7 +547,8 @@ def check_arg_writeback(
     )
     require_pattern(
         lowering_text,
-        r"mlir::LogicalResult\s+lowerPeripheral\(InstrPeripheralOp\s+op\)\s*"
+        r"mlir::LogicalResult\s+(?:FunctionLowering::)?lowerPeripheral"
+        r"\(InstrPeripheralOp\s+op\)\s*"
         r"\{.*?for\s*\(mlir::Value\s+destValue\s*:\s*op\.getDests\(\)\)"
         r"\s*\{.*?materializeAddress\(op,\s*destValue,\s*"
         r'"peripheral dest"\).*?args\.push_back\(\*address\);',
@@ -661,13 +678,9 @@ def main() -> int:
     if not instruction_sources:
         fail(f"no instruction implementation sources found in {instruction_ops_dir}")
     instruction_ops_text = "\n".join(read_text(path) for path in instruction_sources)
-    lowering_text = read_text(
-        repo_root
-        / "lib"
-        / "Wafer"
-        / "Transforms"
-        / "Target"
-        / "LowerInstrToTargetLLVM.cpp"
+    target_lowering_dir = repo_root / "lib" / "Wafer" / "Transforms" / "Target"
+    lowering_text = "\n".join(
+        read_text(target_lowering_dir / source) for source in TARGET_LOWERING_SOURCES
     )
     registry_text = read_text(
         repo_root

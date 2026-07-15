@@ -1,0 +1,187 @@
+//===- LowerInstrToTargetLLVMInternal.h - Private target LLVM lowering ----===//
+
+#ifndef WAFER_TRANSFORMS_TARGET_LOWERINSTRTOTARGETLLVMINTERNAL_H
+#define WAFER_TRANSFORMS_TARGET_LOWERINSTRTOTARGETLLVMINTERNAL_H
+
+#include "Wafer/IR/WaferDialect.h"
+#include "Wafer/Target/TargetCall.h"
+#include "Wafer/Transforms/TargetConversion.h"
+
+#include "mlir/Conversion/LLVMCommon/TypeConverter.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/PatternMatch.h"
+#include "mlir/Transforms/DialectConversion.h"
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/StringRef.h"
+
+#include <cstdint>
+
+namespace wafer::target_llvm_detail {
+
+struct AddressValue {
+  mlir::Value dynamicBase;
+  int64_t staticOffset = 0;
+};
+
+struct CalleeSignature {
+  mlir::LLVM::LLVMFunctionType type;
+};
+
+struct DirectDTEEndpointDomain {
+  int64_t logicalRank = -1;
+  llvm::SmallVector<int64_t, 16> rankToTile;
+};
+
+bool checkedAdd(int64_t lhs, int64_t rhs, int64_t &result);
+bool checkedMul(int64_t lhs, int64_t rhs, int64_t &result);
+bool isWaferInstruction(mlir::Operation *op);
+
+mlir::Value resolveTileRegionBoundaryValue(mlir::Value value);
+mlir::Value getRootViewSource(mlir::Value value);
+mlir::Value resolveReturnedMemRefRoot(mlir::Value value);
+mlir::FailureOr<int64_t> getStaticElementCount(mlir::Operation *op,
+                                               mlir::MemRefType type,
+                                               llvm::StringRef role);
+mlir::FailureOr<int64_t> getStaticViewOffsetBytes(mlir::Operation *op,
+                                                  mlir::MemRefType viewType,
+                                                  llvm::StringRef role);
+mlir::FailureOr<int64_t> getStaticUInt32MaskAddress(mlir::Operation *op,
+                                                    mlir::Value value);
+mlir::FailureOr<int64_t> getStaticSPMAddress(mlir::Operation *op,
+                                             mlir::Value value,
+                                             llvm::StringRef role);
+int64_t getIntegerAttrValue(mlir::IntegerAttr attr);
+int64_t getOptionalIntegerAttrValue(mlir::IntegerAttr attr, int64_t fallback);
+mlir::FailureOr<int64_t> getConstantScalarValue(mlir::Operation *op,
+                                                mlir::Value value);
+bool isTargetRelationElementwiseKind(InstrElementwiseKind kind);
+mlir::FailureOr<int64_t> getDataFormatCode(mlir::Operation *op,
+                                           mlir::Value value,
+                                           llvm::StringRef role,
+                                           TargetProfileId targetProfile);
+mlir::LogicalResult preflightTargetFormats(mlir::ModuleOp moduleOp,
+                                           TargetProfileId targetProfile);
+
+mlir::FailureOr<DirectDTEEndpointDomain>
+resolveDirectDTEEndpointDomain(mlir::ModuleOp moduleOp, int64_t logicalRank);
+
+struct FunctionLowering {
+  mlir::OpBuilder &builder;
+  mlir::MLIRContext *context;
+  TargetProfileId targetProfile;
+  mlir::Type i64Type;
+  mlir::Type i32Type;
+  mlir::Type voidType;
+  llvm::DenseMap<mlir::Value, mlir::Value> convertedValues;
+  llvm::StringMap<CalleeSignature> &usedCallees;
+
+  FunctionLowering(mlir::MLIRContext *context, mlir::OpBuilder &builder,
+                   TargetProfileId targetProfile,
+                   llvm::StringMap<CalleeSignature> &used);
+
+  mlir::Value constantI64(mlir::Location loc, int64_t value);
+  mlir::Value constantI32(mlir::Location loc, int64_t value);
+  void appendI32(mlir::Location loc, llvm::SmallVectorImpl<mlir::Value> &out,
+                 int64_t value);
+  void appendArrayI32(mlir::Location loc,
+                      llvm::SmallVectorImpl<mlir::Value> &out,
+                      llvm::ArrayRef<int64_t> values);
+  mlir::FailureOr<llvm::SmallVector<int64_t, 4>>
+  getNHWCShape(mlir::Operation *op, mlir::MemRefType type,
+               llvm::StringRef role);
+  mlir::FailureOr<AddressValue>
+  addStaticOffset(mlir::Operation *op, AddressValue address, int64_t offset);
+  mlir::Value materializeAddress(mlir::Location loc, AddressValue address);
+  mlir::FailureOr<AddressValue>
+  resolveAddress(mlir::Operation *op, mlir::Value value, llvm::StringRef role);
+  mlir::FailureOr<mlir::Value> materializeAddress(mlir::Operation *op,
+                                                  mlir::Value value,
+                                                  llvm::StringRef role);
+  void verifyCallSignature(const TargetCallDescriptor &descriptor,
+                           mlir::ValueRange args,
+                           TargetCallResultType result) const;
+  void emitCall(mlir::Location loc, const TargetCallDescriptor &descriptor,
+                mlir::ValueRange args);
+  mlir::Value emitI64Call(mlir::Location loc,
+                          const TargetCallDescriptor &descriptor,
+                          mlir::ValueRange args);
+
+  mlir::FailureOr<mlir::Value>
+  lowerDTESend(InstrDTESendOp op, const DirectDTEEndpointDomain &domain);
+  mlir::FailureOr<mlir::Value>
+  lowerDTERecv(InstrDTERecvOp op, const DirectDTEEndpointDomain &domain);
+  mlir::LogicalResult lowerDTEWait(InstrDTEWaitOp op,
+                                   llvm::ArrayRef<mlir::Value> events);
+  mlir::LogicalResult lowerRDMA(InstrRDMAOp op);
+  mlir::LogicalResult lowerWDMA(InstrWDMAOp op);
+  mlir::LogicalResult lowerGatherScatter(InstrGatherScatterOp op);
+  mlir::LogicalResult lowerFill(InstrFillOp op);
+  mlir::LogicalResult lowerElementwise(InstrElementwiseOp op);
+  mlir::LogicalResult lowerBit2Fp(InstrBit2FpOp op);
+  mlir::LogicalResult lowerMaskMove(InstrMaskMoveOp op);
+  mlir::LogicalResult lowerReduce(InstrReduceOp op);
+  mlir::LogicalResult lowerConvert(InstrConvertOp op);
+  mlir::LogicalResult lowerGemm(InstrGemmOp op);
+  mlir::LogicalResult lowerConv(InstrConvOp op);
+  mlir::LogicalResult lowerPool(InstrPoolOp op);
+  mlir::LogicalResult lowerUnpool(InstrUnpoolOp op);
+  bool isTransformLikeTDMA(InstrDataMoveKind kind);
+  mlir::LogicalResult lowerTDMADataMove(InstrTDMADataMoveOp op);
+  mlir::LogicalResult lowerPeripheral(InstrPeripheralOp op);
+  mlir::LogicalResult lowerLocalFence(SyncLocalFenceOp op);
+  mlir::LogicalResult lowerInstruction(mlir::Operation *op);
+};
+
+using AliasSummary = llvm::SmallVector<unsigned, 4>;
+
+struct DirectCallGraph {
+  llvm::DenseMap<mlir::Operation *, llvm::SmallVector<mlir::func::CallOp, 4>>
+      calls;
+  llvm::DenseSet<mlir::Operation *> calledFunctions;
+  llvm::SmallVector<mlir::func::FuncOp, 8> calleeFirstOrder;
+};
+
+mlir::LogicalResult flattenTileRegions(mlir::ModuleOp moduleOp);
+mlir::LogicalResult
+analyzeDirectCallGraph(mlir::ModuleOp moduleOp, DirectCallGraph &graph,
+                       int64_t defaultDDRArenaArgumentIndex,
+                       int64_t transportStatusArgumentIndex);
+mlir::FailureOr<mlir::func::FuncOp>
+findUniqueRootFunction(mlir::ModuleOp moduleOp, const DirectCallGraph &graph);
+mlir::LogicalResult analyzeDDRAliasContracts(
+    mlir::ModuleOp moduleOp, const DirectCallGraph &graph,
+    llvm::DenseMap<mlir::Operation *, AliasSummary> &summaries);
+void dropRootAliasResults(mlir::ModuleOp moduleOp,
+                          const DirectCallGraph &graph);
+void eraseTargetMetadata(mlir::ModuleOp moduleOp);
+mlir::LogicalResult lowerSCFToControlFlow(mlir::ModuleOp moduleOp);
+
+void populateTargetLLVMStructureConversionPatterns(
+    mlir::LLVMTypeConverter &converter, mlir::RewritePatternSet &patterns,
+    int64_t defaultDDRArenaArgumentIndex);
+void populateTargetInstructionConversionPatterns(
+    mlir::LLVMTypeConverter &converter, mlir::RewritePatternSet &patterns,
+    llvm::StringMap<CalleeSignature> &usedCallees,
+    TargetProfileId targetProfile, const DirectDTEEndpointDomain *dteDomain);
+
+mlir::LogicalResult
+injectDirectDTEStatusLifecycle(mlir::ModuleOp moduleOp,
+                               llvm::StringRef entrySymbol,
+                               int64_t statusArgumentIndex, int64_t rankCount,
+                               llvm::StringMap<CalleeSignature> &usedCallees);
+
+mlir::LogicalResult lowerModuleInPlace(mlir::ModuleOp moduleOp,
+                                       TargetProfileId targetProfile,
+                                       int64_t defaultDDRArenaArgumentIndex,
+                                       int64_t logicalRank,
+                                       int64_t transportStatusArgumentIndex);
+
+} // namespace wafer::target_llvm_detail
+
+#endif // WAFER_TRANSFORMS_TARGET_LOWERINSTRTOTARGETLLVMINTERNAL_H

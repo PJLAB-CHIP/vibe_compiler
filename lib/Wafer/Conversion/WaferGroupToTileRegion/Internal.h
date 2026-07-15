@@ -1,0 +1,485 @@
+//===- Internal.h - Group to tile-region private implementation -*- C++ -*-===//
+#pragma once
+
+#include "Wafer/Analysis/Group/LayoutPlanningAnalysis.h"
+#include "Wafer/Conversion/WaferGroupToTileRegion/WaferGroupToTileRegion.h"
+
+#include "mlir/Analysis/SliceAnalysis.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Async/IR/Async.h"
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Linalg/Utils/Utils.h"
+#include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Utils/StructuredOpsUtils.h"
+#include "mlir/IR/IRMapping.h"
+#include "mlir/Transforms/DialectConversion.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
+
+#include <optional>
+#include <string>
+
+namespace wafer::group_to_tile_region {
+
+struct BufferVersions {
+  mlir::Value tensor;
+  mlir::Value nTensor;
+  mlir::Value cx;
+  mlir::Value nCx;
+};
+
+struct BatchedGemmAttrs {
+  int64_t batchCount = 0;
+  llvm::SmallVector<int64_t, 4> lhsBatchDims;
+  llvm::SmallVector<int64_t, 4> rhsBatchDims;
+  llvm::SmallVector<int64_t, 4> resultBatchDims;
+  int64_t lhsMDim = -1;
+  int64_t lhsContractingDim = -1;
+  int64_t rhsContractingDim = -1;
+  int64_t rhsNDim = -1;
+  int64_t resultMDim = -1;
+  int64_t resultNDim = -1;
+};
+
+struct ElementwiseExprValue {
+  mlir::Value buffer;
+  mlir::AffineMap indexingMap;
+};
+
+struct StateSnapshot {
+  llvm::DenseMap<mlir::Value, BufferVersions> buffers;
+  llvm::DenseMap<mlir::Value, mlir::Value> scalarValues;
+  llvm::DenseMap<mlir::Value, mlir::Attribute> scalarAttrs;
+  llvm::DenseMap<mlir::Value, mlir::Attribute> tensorAttrs;
+  llvm::DenseMap<mlir::Value, mlir::Value> externalBuffers;
+  llvm::DenseSet<mlir::Value> writableExternalBuffers;
+  llvm::DenseMap<mlir::Value, unsigned> externalOutputIndices;
+  llvm::DenseMap<mlir::Value, mlir::Value> directYieldBuffers;
+  llvm::DenseMap<mlir::Value, mlir::Value> fillInitScalars;
+  llvm::DenseMap<mlir::Value, mlir::Attribute> fillInitAttrs;
+};
+
+struct SelectedCollectiveRankGroup {
+  llvm::SmallVector<int64_t, 8> ranks;
+  int64_t localRank = -1;
+};
+
+struct CandidateLoopTile {
+  llvm::SmallVector<mlir::OpFoldResult, 4> loopOffsets;
+  llvm::SmallVector<mlir::OpFoldResult, 4> ivs;
+  llvm::SmallVector<mlir::OpFoldResult, 4> tileSizes;
+  llvm::SmallVector<mlir::OpFoldResult, 4> sizeBounds;
+};
+
+struct ReductionChunk {
+  llvm::SmallVector<int64_t, 2> offsets;
+  llvm::SmallVector<int64_t, 2> sizes;
+};
+
+GroupOp findSingleStandaloneGroup(mlir::ModuleOp module);
+
+bool isGroupOutputBoundary(GroupOp group, mlir::Value value,
+                           unsigned outputIndex);
+
+mlir::LogicalResult validateCandidateTile(mlir::RankedTensorType resultType,
+                                          llvm::ArrayRef<int64_t> offsets,
+                                          llvm::ArrayRef<int64_t> sizes,
+                                          std::string *failureReason);
+
+llvm::SmallVector<unsigned, 2> getReductionLoopDims(mlir::linalg::LinalgOp op);
+
+mlir::LogicalResult
+buildCandidateLoopTile(mlir::OpBuilder &builder, mlir::Location loc,
+                       mlir::linalg::LinalgOp op, mlir::AffineMap outputMap,
+                       llvm::ArrayRef<int64_t> candidateOffsets,
+                       llvm::ArrayRef<int64_t> candidateSizes,
+                       llvm::ArrayRef<int64_t> candidateReductionOffsets,
+                       llvm::ArrayRef<int64_t> candidateReductionSizes,
+                       CandidateLoopTile &tile, std::string *failureReason);
+
+mlir::FailureOr<uint64_t> getCandidateReductionChunkCount(
+    mlir::linalg::LinalgOp root,
+    llvm::ArrayRef<int64_t> candidateReductionTileSizes,
+    std::string *failureReason);
+
+mlir::FailureOr<llvm::SmallVector<ReductionChunk, 8>>
+buildReductionChunks(mlir::linalg::LinalgOp root,
+                     llvm::ArrayRef<int64_t> candidateReductionTileSizes,
+                     std::string *failureReason);
+
+mlir::FailureOr<mlir::Value> materializeCandidateRootTileValue(
+    GroupOp group, mlir::linalg::LinalgOp root, unsigned outputIndex,
+    llvm::ArrayRef<int64_t> candidateTileOffsets,
+    llvm::ArrayRef<int64_t> candidateTileSizes,
+    llvm::ArrayRef<int64_t> candidateReductionTileSizes,
+    std::string *failureReason);
+
+mlir::FailureOr<mlir::Value>
+getCandidateOutputBoundary(GroupOp group, unsigned outputIndex,
+                           std::string *failureReason);
+
+mlir::Value
+insertCandidateRootTile(mlir::linalg::LinalgOp root, mlir::Value tileValue,
+                        mlir::Value outputDestination,
+                        llvm::ArrayRef<int64_t> candidateTileOffsets,
+                        llvm::ArrayRef<int64_t> candidateTileSizes);
+
+mlir::FailureOr<llvm::SmallVector<mlir::linalg::LinalgOp, 4>>
+collectCandidateRoots(GroupOp group, bool rejectProducerChains,
+                      std::string *failureReason);
+
+mlir::LogicalResult materializeCandidateTileSlices(
+    GroupOp group, llvm::ArrayRef<int64_t> candidateTileOffsets,
+    llvm::ArrayRef<int64_t> candidateTileSizes,
+    llvm::ArrayRef<int64_t> candidateReductionTileSizes,
+    std::string *failureReason);
+
+mlir::LogicalResult materializeCompleteCandidateTraversal(
+    GroupOp group, llvm::ArrayRef<int64_t> candidateTileSizes,
+    llvm::ArrayRef<int64_t> candidateReductionTileSizes,
+    std::string *failureReason);
+
+void setFailureReason(std::string *failureReason, llvm::StringRef reason);
+
+std::optional<ComputeReduceKind>
+matchExactReductionKind(llvm::ArrayRef<mlir::BlockArgument> iterCarriedArgs,
+                        unsigned redPos, mlir::Value expectedReducedValue,
+                        llvm::StringRef subject, std::string *failureReason);
+
+class TileRegionBodyEmitter {
+public:
+  explicit TileRegionBodyEmitter(std::string *failureReason,
+                                 int64_t currentLogicalRank);
+
+  mlir::FailureOr<TileRegionOp> emit(GroupOp group,
+                                     mlir::ValueRange convertedInputs,
+                                     mlir::ValueRange convertedOuts,
+                                     mlir::ConversionPatternRewriter &rewriter);
+
+private:
+  std::string *failureReason;
+  int64_t currentLogicalRank = -1;
+  llvm::DenseMap<mlir::Value, BufferVersions> buffers;
+  llvm::DenseMap<mlir::Value, mlir::Value> scalarValues;
+  llvm::DenseMap<mlir::Value, mlir::Attribute> scalarAttrs;
+  llvm::DenseMap<mlir::Value, mlir::Attribute> tensorAttrs;
+  llvm::DenseMap<mlir::Value, mlir::Value> externalBuffers;
+  llvm::DenseSet<mlir::Value> writableExternalBuffers;
+  llvm::DenseMap<mlir::Value, unsigned> externalOutputIndices;
+  llvm::DenseMap<mlir::Value, mlir::Value> directYieldBuffers;
+  llvm::DenseMap<mlir::Value, mlir::Value> fillInitScalars;
+  llvm::DenseMap<mlir::Value, mlir::Attribute> fillInitAttrs;
+
+  mlir::LogicalResult fail(llvm::StringRef reason);
+
+  mlir::FailureOr<TileRegionOp> failAndReturn(llvm::StringRef reason);
+
+  mlir::FailureOr<mlir::Value> failValue(llvm::StringRef reason);
+
+  mlir::FailureOr<ElementwiseExprValue>
+  failElementwiseExprValue(llvm::StringRef reason);
+
+  mlir::FailureOr<int64_t> failI64(llvm::StringRef reason);
+
+  mlir::FailureOr<SelectedCollectiveRankGroup>
+  failSelectedCollectiveRankGroup(llvm::StringRef reason);
+
+  mlir::FailureOr<unsigned> failUnsigned(llvm::StringRef reason);
+
+  mlir::FailureOr<mlir::Type> failType(llvm::StringRef reason);
+
+  mlir::MemRefType makeWaferMemRefType(mlir::RankedTensorType tensorType,
+                                       MemorySpace space, MemLayout layout);
+
+  mlir::MemRefType makeSPMMemRefType(mlir::RankedTensorType tensorType,
+                                     MemLayout layout);
+
+  mlir::MemRefType makeDDRMemRefType(mlir::RankedTensorType tensorType);
+
+  bool isScalarType(mlir::Type type) const;
+
+  StateSnapshot snapshotState() const;
+
+  void restoreState(const StateSnapshot &snapshot);
+
+  mlir::FailureOr<mlir::Type> convertControlFlowType(mlir::Type type);
+
+  mlir::LogicalResult recordControlFlowValue(mlir::Value original,
+                                             mlir::Value converted);
+
+  mlir::FailureOr<mlir::Value>
+  materializeControlFlowValue(mlir::Value original, mlir::OpBuilder &builder);
+
+  mlir::FailureOr<mlir::Value>
+  materializeDdrBoundary(mlir::Value original, mlir::Value converted,
+                         bool readOnly,
+                         mlir::ConversionPatternRewriter &rewriter);
+
+  MemLayout alignedLayoutForTensor(mlir::RankedTensorType tensorType) const;
+
+  void record(mlir::Value original, MemLayout layout, mlir::Value buffer);
+
+  mlir::Value lookup(mlir::Value original, MemLayout layout) const;
+
+  mlir::Value lookupAny(mlir::Value original, MemLayout &layout) const;
+
+  mlir::TypedAttr getScalarSplatAttr(mlir::RankedTensorType tensorType,
+                                     mlir::Attribute attr) const;
+
+  bool isElidableConstantBoundary(mlir::Value value) const;
+
+  mlir::FailureOr<mlir::Value>
+  materializeTensorConstant(mlir::Value original, mlir::Attribute attr,
+                            MemLayout targetLayout, mlir::OpBuilder &builder);
+
+  mlir::FailureOr<mlir::Value> getOrMaterialize(mlir::Value original,
+                                                MemLayout targetLayout,
+                                                mlir::OpBuilder &builder);
+
+  mlir::FailureOr<int64_t> getCompactByteSize(mlir::Value buffer,
+                                              llvm::StringRef subject);
+
+  mlir::FailureOr<int64_t>
+  getCommunicationId(const WaferLinalgExtCollectiveInfo &info,
+                     llvm::StringRef subject);
+
+  mlir::FailureOr<SelectedCollectiveRankGroup>
+  getCollectiveRankGroup(const WaferLinalgExtCollectiveInfo &info);
+
+  std::optional<ComputeReduceKind>
+  inferCollectiveReduceKind(mlir::Region &combiner);
+
+  mlir::LogicalResult requireSingleTensorCollective(mlir::Operation *op);
+
+  mlir::LogicalResult convertAllGather(LinalgExtCollectiveAllGatherOp op,
+                                       const WaferLinalgExtCollectiveInfo &info,
+                                       mlir::OpBuilder &builder);
+
+  mlir::LogicalResult
+  convertReduceScatter(LinalgExtCollectiveReduceScatterOp op,
+                       const WaferLinalgExtCollectiveInfo &info,
+                       mlir::OpBuilder &builder);
+
+  mlir::LogicalResult convertAllReduce(LinalgExtCollectiveAllReduceOp op,
+                                       const WaferLinalgExtCollectiveInfo &info,
+                                       mlir::OpBuilder &builder);
+
+  mlir::LogicalResult convertAllToAll(LinalgExtCollectiveAllToAllOp op,
+                                      const WaferLinalgExtCollectiveInfo &info,
+                                      mlir::OpBuilder &builder);
+
+  mlir::LogicalResult
+  convertCollectivePermute(LinalgExtCollectiveCollectivePermuteOp op,
+                           const WaferLinalgExtCollectiveInfo &info,
+                           mlir::OpBuilder &builder);
+
+  mlir::LogicalResult
+  convertLinalgExtCollective(mlir::Operation *op,
+                             const WaferLinalgExtCollectiveInfo &info,
+                             mlir::OpBuilder &builder);
+
+  mlir::LogicalResult initializeBoundary(GroupOp group, TileRegionOp tileRegion,
+                                         mlir::OpBuilder &builder);
+
+  mlir::LogicalResult convertOp(const OpLayoutPlan &opPlan,
+                                mlir::OpBuilder &builder);
+
+  mlir::LogicalResult convertSupportOp(mlir::Operation *op,
+                                       mlir::OpBuilder &builder);
+
+  mlir::LogicalResult convertNestedOp(mlir::Operation *op,
+                                      mlir::OpBuilder &builder);
+
+  mlir::LogicalResult convertScfYield(mlir::scf::YieldOp yield,
+                                      mlir::OpBuilder &builder);
+
+  mlir::LogicalResult convertScfBlock(mlir::Block &source,
+                                      mlir::OpBuilder &builder);
+
+  void eraseImplicitYield(mlir::Block *block);
+
+  mlir::LogicalResult convertScfIf(mlir::scf::IfOp ifOp,
+                                   mlir::OpBuilder &builder);
+
+  mlir::LogicalResult convertScfFor(mlir::scf::ForOp forOp,
+                                    mlir::OpBuilder &builder);
+
+  mlir::LogicalResult convertTensorExtract(mlir::tensor::ExtractOp extract,
+                                           mlir::OpBuilder &builder);
+
+  bool allStatic(llvm::ArrayRef<int64_t> values) const;
+
+  mlir::FailureOr<mlir::Value> materializeDdrSubview(
+      mlir::Location loc, mlir::Value sourceDdr,
+      mlir::RankedTensorType tileTensorType, llvm::ArrayRef<int64_t> offsets,
+      llvm::ArrayRef<int64_t> sizes, llvm::ArrayRef<int64_t> strides,
+      mlir::OpBuilder &builder);
+
+  std::optional<unsigned>
+  getSingleGroupYieldOperandIndex(mlir::Value value) const;
+
+  bool isLinearInsertChainToGroupYield(mlir::tensor::InsertSliceOp insertSlice,
+                                       unsigned expectedOutputIndex) const;
+
+  bool hasNoObservableDestUseExceptInsert(
+      mlir::tensor::InsertSliceOp insertSlice) const;
+
+  mlir::LogicalResult
+  convertTensorExtractSlice(mlir::tensor::ExtractSliceOp extractSlice,
+                            mlir::OpBuilder &builder);
+
+  mlir::LogicalResult
+  convertTensorInsertSlice(mlir::tensor::InsertSliceOp insertSlice,
+                           mlir::OpBuilder &builder);
+
+  mlir::LogicalResult convertTensorReshape(mlir::Operation *op,
+                                           mlir::Value sourceValue,
+                                           mlir::Value resultValue,
+                                           mlir::OpBuilder &builder);
+
+  mlir::FailureOr<mlir::Value> getScalarValue(mlir::Value original);
+
+  bool isUnreadLinalgDpsInitUse(mlir::OpOperand &use) const;
+
+  bool onlyFeedsUnreadDpsInit(mlir::Value value,
+                              llvm::DenseSet<mlir::Value> &visited) const;
+
+  bool onlyFeedsUnreadDpsInit(mlir::Value value) const;
+
+  bool onlyFeedsGemmOverwriteInit(mlir::Value value,
+                                  llvm::DenseSet<mlir::Value> &visited) const;
+
+  bool onlyFeedsGemmOverwriteInit(mlir::Value value) const;
+
+  mlir::LogicalResult verifyNamedLinalgPayloads(GroupOp group);
+
+  mlir::LogicalResult verifyExactFillPayload(mlir::linalg::FillOp fill);
+
+  mlir::LogicalResult verifyExactGemmPayload(mlir::linalg::LinalgOp op,
+                                             llvm::StringRef subject);
+
+  mlir::LogicalResult convertFill(mlir::linalg::FillOp fill,
+                                  mlir::OpBuilder &builder);
+
+  mlir::LogicalResult requireZeroFilledGemmInit(mlir::linalg::LinalgOp op,
+                                                llvm::StringRef subject);
+
+  mlir::LogicalResult convertMatmul(mlir::linalg::LinalgOp op,
+                                    mlir::OpBuilder &builder);
+
+  mlir::FailureOr<unsigned> findOperandDimForLoop(mlir::AffineMap map,
+                                                  unsigned loopDim,
+                                                  llvm::StringRef role);
+
+  bool mapContainsLoopDim(mlir::AffineMap map, unsigned loopDim) const;
+
+  mlir::FailureOr<BatchedGemmAttrs>
+  inferBatchMatmulAttrs(mlir::linalg::LinalgOp op);
+
+  mlir::LogicalResult convertBatchMatmul(mlir::linalg::LinalgOp op,
+                                         mlir::OpBuilder &builder);
+
+  std::optional<ComputeElementwiseKind>
+  inferCompareKind(mlir::arith::CmpFPredicate predicate);
+
+  std::optional<ComputeElementwiseKind>
+  inferCompareKind(mlir::arith::CmpIPredicate predicate);
+
+  std::optional<ComputeReduceKind>
+  inferReduceKind(mlir::linalg::GenericOp generic);
+
+  bool hasReductionIterator(mlir::linalg::GenericOp generic) const;
+
+  mlir::LogicalResult
+  getReductionInputDims(mlir::linalg::GenericOp generic,
+                        llvm::SmallVectorImpl<int64_t> &inputDims);
+
+  mlir::LogicalResult createReduceOp(
+      mlir::Location loc, mlir::Type resultType, ComputeReduceKindAttr kindAttr,
+      mlir::Value input, llvm::ArrayRef<int64_t> dims, mlir::Value init,
+      mlir::Attribute initAttr, mlir::OpBuilder &builder, mlir::Value &result);
+
+  mlir::LogicalResult convertReduceGeneric(mlir::linalg::GenericOp generic,
+                                           mlir::OpBuilder &builder);
+
+  std::optional<unsigned>
+  getPassthroughInputIndex(mlir::linalg::GenericOp generic);
+
+  bool isIdentityMap(mlir::AffineMap map, int64_t rank) const;
+
+  mlir::AffineMap getIdentityMap(mlir::RankedTensorType tensorType) const;
+
+  bool isScalarSplatValue(mlir::Attribute attr, double expected) const;
+
+  mlir::Attribute getBlockArgumentConstantAttr(mlir::linalg::GenericOp generic,
+                                               mlir::BlockArgument arg) const;
+
+  bool isScalarLikeConstant(mlir::linalg::GenericOp generic, mlir::Value value,
+                            double expected) const;
+
+  mlir::FailureOr<ElementwiseExprValue> getElementwiseExprValue(
+      llvm::DenseMap<mlir::Value, ElementwiseExprValue> &values,
+      mlir::Value value);
+
+  mlir::FailureOr<mlir::Value> materializeElementwiseExprOperand(
+      ElementwiseExprValue exprValue, mlir::RankedTensorType resultTensorType,
+      mlir::Location loc, mlir::OpBuilder &builder);
+
+  mlir::FailureOr<ElementwiseExprValue>
+  createElementwiseFillExprValue(mlir::Location loc, mlir::Value scalar,
+                                 mlir::RankedTensorType resultTensorType,
+                                 mlir::OpBuilder &builder);
+
+  mlir::FailureOr<ElementwiseExprValue>
+  createElementwiseOpExprValue(mlir::Location loc, ComputeElementwiseKind kind,
+                               llvm::ArrayRef<ElementwiseExprValue> operands,
+                               mlir::RankedTensorType resultTensorType,
+                               mlir::OpBuilder &builder);
+
+  mlir::LogicalResult convertElementwiseScalarOp(
+      mlir::linalg::GenericOp generic, mlir::Operation *op,
+      llvm::DenseMap<mlir::Value, ElementwiseExprValue> &values,
+      mlir::RankedTensorType resultTensorType, mlir::OpBuilder &builder);
+
+  mlir::LogicalResult
+  convertElementwiseGenericExpression(mlir::linalg::GenericOp generic,
+                                      mlir::OpBuilder &builder);
+
+  mlir::LogicalResult convertPassthroughGeneric(mlir::linalg::GenericOp generic,
+                                                mlir::OpBuilder &builder);
+
+  mlir::Value createZeroScalar(mlir::Location loc, mlir::Type type,
+                               mlir::OpBuilder &builder);
+
+  mlir::FailureOr<llvm::SmallVector<mlir::Value, 2>>
+  matchTwoWayConcatGeneric(mlir::linalg::GenericOp generic,
+                           int64_t &concatAxis);
+
+  mlir::LogicalResult
+  convertTwoWayConcatGeneric(mlir::linalg::GenericOp generic,
+                             llvm::ArrayRef<mlir::Value> concatInputs,
+                             int64_t concatAxis, mlir::OpBuilder &builder);
+
+  mlir::LogicalResult convertGeneric(mlir::linalg::GenericOp generic,
+                                     mlir::OpBuilder &builder);
+
+  mlir::LogicalResult finishRegion(GroupOp group, TileRegionOp tileRegion,
+                                   mlir::OpBuilder &builder);
+};
+
+void populateGroupToTileRegionPatterns(mlir::RewritePatternSet &patterns,
+                                       std::string *failureReason,
+                                       int64_t currentLogicalRank);
+
+mlir::LogicalResult convertGroupToTileRegionModuleInPlace(
+    mlir::ModuleOp module, mlir::MLIRContext *context,
+    int64_t currentLogicalRank, std::string *failureReason,
+    bool suppressDiagnostics = true, bool verifyResult = true,
+    bool populateFallbackFailureReason = true);
+
+} // namespace wafer::group_to_tile_region

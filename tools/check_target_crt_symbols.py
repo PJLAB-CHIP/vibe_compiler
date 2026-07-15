@@ -15,6 +15,22 @@ import re
 import sys
 
 
+TARGET_LOWERING_SOURCES = (
+    "LowerInstrToTargetLLVM.cpp",
+    "TargetCallPreflight.cpp",
+    "TargetCallLoweringSupport.cpp",
+    "MovementTargetCallLowering.cpp",
+    "ComputeTargetCallLowering.cpp",
+    "DirectDTETargetCallLowering.cpp",
+    "PeripheralTargetCallLowering.cpp",
+    "SyncTargetCallLowering.cpp",
+    "InstructionTargetCallLowering.cpp",
+    "TargetLLVMStructure.cpp",
+    "TargetLLVMConversionPatterns.cpp",
+    "TargetLLVMConversion.cpp",
+)
+
+
 SYMBOL_RE = re.compile(r"\bwafer_tx81_[A-Za-z0-9_]+\b")
 SOURCE_SYMBOL_RE = re.compile(
     r"\b(wafer_tx81_[A-Za-z0-9_]+)\b(?=\s*[\(,])"
@@ -237,9 +253,7 @@ def main() -> int:
     source_path = repo_root / "runtime" / "wafer_crt" / "src" / "wafer_tx81_crt.c"
     attrs_path = repo_root / "include" / "Wafer" / "IR" / "WaferAttrs.td"
     instruction_ops_dir = repo_root / "lib" / "Wafer" / "IR" / "Instr"
-    lowering_path = (
-        repo_root / "lib" / "Wafer" / "Transforms" / "Target" / "LowerInstrToTargetLLVM.cpp"
-    )
+    target_lowering_dir = repo_root / "lib" / "Wafer" / "Transforms" / "Target"
     registry_path = (
         repo_root / "lib" / "Wafer" / "Target" / "TargetCall.cpp"
     )
@@ -251,7 +265,9 @@ def main() -> int:
     if not instruction_sources:
         fail(f"no instruction implementation sources found in {instruction_ops_dir}")
     instruction_ops_text = "\n".join(read_text(path) for path in instruction_sources)
-    lowering_text = read_text(lowering_path)
+    lowering_text = "\n".join(
+        read_text(target_lowering_dir / source) for source in TARGET_LOWERING_SOURCES
+    )
     registry_text = read_text(registry_path)
 
     production_symbols = production_symbols_from_code(

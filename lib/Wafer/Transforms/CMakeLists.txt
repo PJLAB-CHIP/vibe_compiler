@@ -1,4 +1,8 @@
 add_mlir_library(WaferTransforms
+  Group/CandidateAnalysis.cpp
+  Group/CandidateCommit.cpp
+  Group/CandidateEvaluation.cpp
+  Group/CandidateSelection.cpp
   Group/DumpCandidateDdrTileViews.cpp
   Group/DumpLayoutPlan.cpp
   Group/DumpTilingDemand.cpp
@@ -11,6 +15,17 @@ add_mlir_library(WaferTransforms
   Target/MaterializeExecutionMesh.cpp
   Target/MaterializeTargetTopology.cpp
   Target/LowerInstrToTargetLLVM.cpp
+  Target/TargetCallPreflight.cpp
+  Target/TargetCallLoweringSupport.cpp
+  Target/MovementTargetCallLowering.cpp
+  Target/ComputeTargetCallLowering.cpp
+  Target/DirectDTETargetCallLowering.cpp
+  Target/PeripheralTargetCallLowering.cpp
+  Target/SyncTargetCallLowering.cpp
+  Target/InstructionTargetCallLowering.cpp
+  Target/TargetLLVMStructure.cpp
+  Target/TargetLLVMConversionPatterns.cpp
+  Target/TargetLLVMConversion.cpp
   Target/StripTargetMetadata.cpp
   Passes.cpp
 

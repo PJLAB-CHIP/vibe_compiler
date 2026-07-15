@@ -4,7 +4,14 @@ add_mlir_library(WaferTarget
   NumericCapability.cpp
   NumericCodec.cpp
   NumericCommand.cpp
+  NumericDependencyBuildIdentity.cpp
   NumericDependencyConformance.cpp
+  NumericDependencyELF.cpp
+  NumericDependencyFilesystem.cpp
+  NumericDependencyGate.cpp
+  NumericDependencyManifest.cpp
+  NumericDependencyProcess.cpp
+  NumericDependencyRuntime.cpp
   NumericProfiles.cpp
   NumericSemanticsInternal.cpp
   PhysicalTensorCodec.cpp

@@ -1,4 +1,14 @@
 add_mlir_conversion_library(WaferGroupToTileRegion
+  WaferGroupToTileRegion/BodyEmitter.cpp
+  WaferGroupToTileRegion/CandidateMaterialization.cpp
+  WaferGroupToTileRegion/CandidateSupport.cpp
+  WaferGroupToTileRegion/CollectiveLowering.cpp
+  WaferGroupToTileRegion/CompleteTraversal.cpp
+  WaferGroupToTileRegion/GenericLowering.cpp
+  WaferGroupToTileRegion/GroupLowering.cpp
+  WaferGroupToTileRegion/NamedComputeLowering.cpp
+  WaferGroupToTileRegion/TensorControlFlowLowering.cpp
+  WaferGroupToTileRegion/TileMaterialization.cpp
   WaferGroupToTileRegion/WaferGroupToTileRegion.cpp
 
   ADDITIONAL_HEADER_DIRS

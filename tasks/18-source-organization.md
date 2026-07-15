@@ -82,8 +82,21 @@ Compiler / target-model core <- functional model <- bulk/SystemC adapters
 4. 对应 CMake source list、组织检查和测试镜像。
 
 group 到 tile-region 的 body emitter、candidate traversal，instruction 到 target LLVM，frontend program、
-dependency conformance 和 driver CLI 也是已识别热点，但它们的内部耦合跨越更多 legality/atomicity 合同。
-不能为了本轮文件数量目标把这些边界机械切开；后续拆分必须先定义各自 internal API 和针对性回归 gate。
+dependency conformance 和 driver CLI 也是已识别热点。它们的稳定内部边界如下；拆分只能沿这些合同进行，
+不能按行数或语法位置机械切开：
+
+- group 到 tile-region：候选遍历/合法性、tile-local body materialization、op-family lowering 和公共原子
+  orchestration 分离；body builder 只消费当前 candidate/group IR 与显式选项，不持有跨 pass shadow plan。
+- candidate selection：候选枚举/analysis、cost comparison、selected-candidate commit 和 pass orchestration 分离；
+  analysis 可从当前 IR 重算，只有 accepted selection 进入 IR，不能保留旁路候选表。
+- instruction 到 target LLVM：typed target-call schema/preflight、movement/compute/communication lowering、结构化
+  control lowering和 conversion legality/orchestration 分离；所有 lowering 继续消费同一 target registry，不复制 ABI 表。
+- numeric dependency conformance：canonical record parsing、受管 filesystem/provenance closure、loaded-object/runtime
+  identity和 public validation orchestration 分离；digest、path、ELF/runtime事实仍由一个 typed record 串联。
+- frontend program：function-boundary verification、program metadata parsing、NPY payload codec、distributed
+  shard/boundary validation和 directory orchestration 分离；public result 和 program-directory schema 不变。
+- compiler driver：CLI parsing、reference comparison、target-model comparison和 top-level compile/publication
+  orchestration 分离；driver helper 不成为新的用户 API，production/test executable 保持相同参数与 feature 组合。
 
 ## 当前实现映射
 
@@ -93,10 +106,37 @@ dependency conformance 和 driver CLI 也是已识别热点，但它们的内部
   support/lowering、compute lowering、collective lowering 通过同一 conversion library 的私有接口协作。
 - target numeric 已按 command/schema、profile registry、capability/resolution 和 internal canonical helper 独立编译；
   `include/Wafer/Target/NumericSemantics.h` 的公共合同保持不变。
+- group 到 tile-region 已分为 candidate support、单 tile materialization、complete traversal、body emitter、group
+  conversion pattern 和 op-family lowering；public module/pass facade 共用同一原子 conversion orchestration。
+- candidate selection 已分为 analysis、evaluation、selection、commit 与 pass facade；只有完整 accepted candidate
+  才通过 staged clone 提交，candidate queue 和 cost tie-break 仍由同一私有 typed contract 串联。
+- instruction 到 target LLVM 已分为 target-call preflight/support、movement/compute/Direct DTE/peripheral/sync family、
+  structured conversion 和 facade；CRT conformance 工具扫描完整受控 source set，不再把 facade 当全部实现。
+- numeric dependency conformance 已分为 manifest、filesystem、process、ELF、build identity、gate、runtime identity 和
+  public facade；secure readback、canonical digest、首错误顺序及 execution identity 合同不变。
+- frontend program 已分为 function boundary、metadata、NPY、distributed support、boundary、parameter shards 和
+  directory facade；`ProgramInternal.h` 只暴露同 library 跨 TU 所需的 typed helper。
+- `wafer-compile` 已分为 CLI、reference gate、target-model gate 和 main compile/publication orchestration；production
+  与 test executable 使用同一 source set，但保留各自 feature/test compile definitions。
 - `tools/check_source_organization.py` 检查 owner、私有头、CMake source list、旧聚合文件移除和 library 配置顺序；
   根 `check-wafer` 按实际存在的 feature target 聚合 lit、unit、numeric、bulk 和 SystemC gate。
 - C++ unit test 的目录镜像已把 target LLVM conversion 测试从 group conversion 文件移入
   `unittests/Transforms/Target/`；source checkout 不再保留已确认无 owner/consumer 的空目录。
+
+## 后续源码边界审计
+
+本轮之外的大文件已经按职责而非行数复核。instruction compute、LinalgExt collective、numeric capability/command、
+DDR planner 与 SPM planner 属于合理的单一 family 或单一 planner；其中 DDR/SPM 的公共 lifetime 逻辑只能在保持各自
+completion 与 external-root 语义的前提下另行评估 typed analysis，不能机械合并。
+
+以下聚合实现具有可命名的稳定拆分边界，后续进入执行前必须建立独立实施计划并重放对应 artifact vertical：
+
+- reference/model execution：reference interpreter、reference projection、target-model kernel；
+- numeric/bulk qualification：formal numeric、bulk tensor numeric、bulk qualification；
+- compiler/artifact/package：compilation orchestration、target artifact、package manifest/runtime preflight；
+- frontend bridge：XLA SPMD helper，以及 StableHLO collective normalization 中独立的 constant folding。
+
+这些边界不属于本轮六个既定热点的完成范围，也不能因本轮 facade 收口而视为已解决。
 
 ## 完成判定
 

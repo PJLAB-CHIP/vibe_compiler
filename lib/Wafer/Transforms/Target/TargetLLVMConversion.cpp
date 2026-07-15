@@ -1,0 +1,198 @@
+//===- Target LLVM lowering implementation -------------------------------===//
+
+#include "Target/LowerInstrToTargetLLVMInternal.h"
+#include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
+#include "Wafer/IR/WaferDialect.h"
+#include "Wafer/Support/TargetPolicy.h"
+#include "Wafer/Target/TargetCall.h"
+#include "Wafer/Target/TargetFormat.h"
+#include "Wafer/Transforms/TargetConversion.h"
+
+#include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
+#include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"
+#include "mlir/Conversion/LLVMCommon/TypeConverter.h"
+#include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Async/IR/Async.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/Interfaces/CallInterfaces.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
+#include "mlir/Interfaces/ViewLikeInterface.h"
+#include "mlir/Pass/Pass.h"
+#include "mlir/Transforms/DialectConversion.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/ScopeExit.h"
+#include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/TypeSwitch.h"
+
+#include <cstdint>
+#include <limits>
+#include <optional>
+#include <vector>
+
+namespace wafer::target_llvm_detail {
+
+namespace {
+static mlir::LogicalResult
+declareCallees(mlir::ModuleOp moduleOp,
+               const llvm::StringMap<CalleeSignature> &callees) {
+  mlir::OpBuilder builder(moduleOp.getContext());
+  builder.setInsertionPointToStart(moduleOp.getBody());
+
+  llvm::SmallVector<llvm::StringRef, 32> sortedNames;
+  for (const auto &entry : callees)
+    sortedNames.push_back(entry.getKey());
+  llvm::sort(sortedNames);
+
+  for (llvm::StringRef name : sortedNames) {
+    if (mlir::Operation *existing = moduleOp.lookupSymbol(name)) {
+      auto llvmFunc = mlir::dyn_cast<mlir::LLVM::LLVMFuncOp>(existing);
+      auto found = callees.find(name);
+      if (!llvmFunc || found == callees.end() ||
+          llvmFunc.getFunctionType() != found->second.type)
+        return existing->emitError()
+               << "target_llvm_symbol_collision: existing @" << name
+               << " does not match the target CRT declaration";
+      continue;
+    }
+    auto found = callees.find(name);
+    assert(found != callees.end() && "callee name must have a signature");
+    const CalleeSignature &signature = found->second;
+    builder.create<mlir::LLVM::LLVMFuncOp>(moduleOp.getLoc(), name,
+                                           signature.type);
+  }
+  return mlir::success();
+}
+} // namespace
+
+mlir::LogicalResult lowerModuleInPlace(mlir::ModuleOp moduleOp,
+                                       TargetProfileId targetProfile,
+                                       int64_t defaultDDRArenaArgumentIndex,
+                                       int64_t logicalRank,
+                                       int64_t transportStatusArgumentIndex) {
+  if (mlir::failed(flattenTileRegions(moduleOp)))
+    return mlir::failure();
+
+  bool hasDirectDTE = false;
+  moduleOp.walk([&](mlir::Operation *op) {
+    if (mlir::isa<InstrDTESendOp, InstrDTERecvOp, InstrDTEWaitOp>(op))
+      hasDirectDTE = true;
+  });
+  std::optional<DirectDTEEndpointDomain> dteDomain;
+  if (hasDirectDTE) {
+    if (transportStatusArgumentIndex < 0)
+      return moduleOp.emitError()
+             << "unsupported_target_transport: Direct DTE requires a "
+                "launch-observable status argument";
+    mlir::FailureOr<DirectDTEEndpointDomain> resolved =
+        resolveDirectDTEEndpointDomain(moduleOp, logicalRank);
+    if (mlir::failed(resolved))
+      return mlir::failure();
+    dteDomain = std::move(*resolved);
+  }
+
+  DirectCallGraph callGraph;
+  if (mlir::failed(analyzeDirectCallGraph(moduleOp, callGraph,
+                                          defaultDDRArenaArgumentIndex,
+                                          transportStatusArgumentIndex)))
+    return mlir::failure();
+  std::string dteEntrySymbol;
+  if (hasDirectDTE) {
+    mlir::FailureOr<mlir::func::FuncOp> entry =
+        findUniqueRootFunction(moduleOp, callGraph);
+    if (mlir::failed(entry))
+      return mlir::failure();
+    if (transportStatusArgumentIndex >=
+            static_cast<int64_t>((*entry).getNumArguments()) ||
+        !(*entry)
+             .getArgument(transportStatusArgumentIndex)
+             .getType()
+             .isInteger(64))
+      return (*entry).emitError()
+             << "target_abi_mismatch: Direct DTE status argument index does "
+                "not identify an entry i64 argument";
+    dteEntrySymbol = (*entry).getSymName().str();
+  }
+  if (mlir::failed(lowerSCFToControlFlow(moduleOp)))
+    return mlir::failure();
+  llvm::DenseMap<mlir::Operation *, AliasSummary> aliasSummaries;
+  if (mlir::failed(
+          analyzeDDRAliasContracts(moduleOp, callGraph, aliasSummaries)))
+    return mlir::failure();
+  dropRootAliasResults(moduleOp, callGraph);
+  eraseTargetMetadata(moduleOp);
+
+  mlir::LLVMTypeConverter converter(moduleOp.getContext());
+  converter.addConversion(
+      [&](mlir::MemRefType type) -> std::optional<mlir::Type> {
+        if (!isWaferMemRefType(type))
+          return mlir::Type();
+        return mlir::IntegerType::get(moduleOp.getContext(), 64);
+      });
+  converter.addConversion([&](mlir::async::TokenType) -> mlir::Type {
+    return mlir::IntegerType::get(moduleOp.getContext(), 64);
+  });
+
+  llvm::StringMap<CalleeSignature> usedCallees;
+  mlir::RewritePatternSet patterns(moduleOp.getContext());
+  populateTargetLLVMStructureConversionPatterns(converter, patterns,
+                                                defaultDDRArenaArgumentIndex);
+  populateTargetInstructionConversionPatterns(
+      converter, patterns, usedCallees, targetProfile,
+      dteDomain ? &*dteDomain : nullptr);
+  mlir::arith::populateArithToLLVMConversionPatterns(converter, patterns);
+  mlir::cf::populateControlFlowToLLVMConversionPatterns(converter, patterns);
+
+  mlir::ConversionTarget target(*moduleOp.getContext());
+  target.addLegalOp<mlir::ModuleOp>();
+  target.addLegalDialect<mlir::LLVM::LLVMDialect>();
+  target.addIllegalDialect<mlir::func::FuncDialect, mlir::arith::ArithDialect,
+                           mlir::cf::ControlFlowDialect,
+                           mlir::memref::MemRefDialect, mlir::scf::SCFDialect,
+                           WaferDialect>();
+  if (mlir::failed(
+          mlir::applyFullConversion(moduleOp, target, std::move(patterns))))
+    return moduleOp.emitError()
+           << "target_llvm_lowering_failure: full target LLVM conversion "
+              "failed";
+
+  if (hasDirectDTE &&
+      mlir::failed(injectDirectDTEStatusLifecycle(
+          moduleOp, dteEntrySymbol, transportStatusArgumentIndex,
+          static_cast<int64_t>(dteDomain->rankToTile.size()), usedCallees)))
+    return mlir::failure();
+
+  if (mlir::failed(declareCallees(moduleOp, usedCallees)))
+    return mlir::failure();
+
+  mlir::Operation *remainingNonLLVMOp = nullptr;
+  moduleOp.walk([&](mlir::Operation *op) {
+    if (op == moduleOp || mlir::isa<mlir::LLVM::LLVMFuncOp>(op) ||
+        (op->getDialect() &&
+         op->getDialect()->getNamespace() ==
+             mlir::LLVM::LLVMDialect::getDialectNamespace()))
+      return mlir::WalkResult::advance();
+    remainingNonLLVMOp = op;
+    return mlir::WalkResult::interrupt();
+  });
+  if (!remainingNonLLVMOp)
+    return mlir::success();
+
+  remainingNonLLVMOp->emitError()
+      << "target_llvm_lowering_failure: non-LLVM operation remains after "
+         "lowering";
+  return mlir::failure();
+}
+
+} // namespace wafer::target_llvm_detail

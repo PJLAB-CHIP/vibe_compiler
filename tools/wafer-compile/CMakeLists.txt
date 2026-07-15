@@ -1,4 +1,11 @@
-add_executable(wafer-compile wafer-compile.cpp)
+set(_wafer_compile_sources
+  DriverOptions.cpp
+  ReferenceGate.cpp
+  TargetModelGate.cpp
+  wafer-compile.cpp
+)
+
+add_executable(wafer-compile ${_wafer_compile_sources})
 llvm_update_compile_flags(wafer-compile)
 target_link_libraries(wafer-compile PRIVATE LLVMSupport WaferCompiler)
 target_compile_definitions(wafer-compile PRIVATE
@@ -17,7 +24,7 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
   endif()
 endif()
 
-add_executable(wafer-compile-test wafer-compile.cpp)
+add_executable(wafer-compile-test ${_wafer_compile_sources})
 llvm_update_compile_flags(wafer-compile-test)
 target_link_libraries(wafer-compile-test PRIVATE LLVMSupport WaferCompiler)
 target_compile_definitions(wafer-compile-test PRIVATE

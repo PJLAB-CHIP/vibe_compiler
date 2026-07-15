@@ -53,7 +53,9 @@
 
 ## 实施计划导航
 
-当前没有active实施计划。Q23源码组织重构已归档为`tasks/archive/source-organization-refactor.md`；
+当前没有active实施计划；Q25开工前需按18为四组剩余聚合边界建立独立计划。
+Q24剩余热点模块化已归档为`tasks/archive/remaining-source-modularity.md`，Q23首轮源码组织重构已归档为
+`tasks/archive/source-organization-refactor.md`；
 Q13.W依赖root一致性计划已归档为`tasks/archive/third-party-dependency-root-consistency.md`。Q22.S、Q22.V与最终
 完成性审计计划已分别归档为`tasks/archive/systemc-functional-event-model.md`、
 `tasks/archive/target-model-source-verticals.md`和`tasks/archive/target-model-completion-audit.md`。
@@ -71,6 +73,7 @@ docs、`tasks/progress.md` 和本轮已收敛设计结论为准。
 
 | 文档 | 原性质 |
 | --- | --- |
+| `tasks/archive/remaining-source-modularity.md` | 已完成Q24的group/candidate、target LLVM、numeric conformance、frontend program与compiler driver模块化和双配置gate记录 |
 | `tasks/archive/source-organization-refactor.md` | 已完成Q23的instruction、tile-region到instruction、target numeric源码模块化和build/test组织gate记录 |
 | `tasks/archive/third-party-dependency-root-consistency.md` | 已完成SystemC canonical third-party root、existing cache切换和双配置重放记录 |
 | `tasks/archive/target-model-completion-audit.md` | 已完成Q22各分项字段、legality、runtime evidence、late-rank原子性和双配置全量证据复核记录 |
