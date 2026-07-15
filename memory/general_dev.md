@@ -547,3 +547,5 @@
   package root时，CMake的`find_package(... PATHS ... NO_DEFAULT_PATH)`仍可能优先复用已有`<Package>_DIR` cache，因此validator
   读出的config目录必须在`find_package`前以`CACHE ... FORCE`刷新。配置gate应预置一份valid-looking stale package cache，
   证明existing build会选择新record对应package，而不只测试clean configure。
+- `tasks/progress.md`只保留当前调度、前置关系、later/external gate和紧凑done索引；逐轮测试数字、实现复盘与历史worklog
+  留在编号设计文档、`tasks/archive/`或Git历史中，避免队列再次变成重复事实源。
