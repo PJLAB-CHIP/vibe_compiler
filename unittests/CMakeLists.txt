@@ -277,11 +277,26 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
   add_test(NAME WaferSystemCModelNoProgressTest
     COMMAND WaferSystemCModelNoProgressTest)
 
+  add_executable(WaferSystemCModelEventFailureTest
+    Model/SystemCTargetModelEventFailureTest.cpp
+  )
+  llvm_update_compile_flags(WaferSystemCModelEventFailureTest)
+  target_link_libraries(WaferSystemCModelEventFailureTest
+    PRIVATE
+    WaferSystemCModel
+    WaferSystemCModelTestSupport
+    SystemC::systemc
+    GTest::gtest
+  )
+  add_test(NAME WaferSystemCModelEventFailureTest
+    COMMAND WaferSystemCModelEventFailureTest)
+
   set_tests_properties(
     WaferSystemCModelIntegrationTest
     WaferSystemCModelDTEIntegrationTest
     WaferSystemCModelDTEMismatchTest
     WaferSystemCModelNoProgressTest
+    WaferSystemCModelEventFailureTest
     PROPERTIES
     LABELS "systemc-model;managed-dependencies;component"
     ENVIRONMENT
@@ -300,11 +315,15 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
     COMMAND ${CMAKE_COMMAND} -E env
       "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
       $<TARGET_FILE:WaferSystemCModelNoProgressTest>
+    COMMAND ${CMAKE_COMMAND} -E env
+      "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
+      $<TARGET_FILE:WaferSystemCModelEventFailureTest>
     DEPENDS
       WaferSystemCModelIntegrationTest
       WaferSystemCModelDTEIntegrationTest
       WaferSystemCModelDTEMismatchTest
       WaferSystemCModelNoProgressTest
+      WaferSystemCModelEventFailureTest
     USES_TERMINAL
   )
 endif()

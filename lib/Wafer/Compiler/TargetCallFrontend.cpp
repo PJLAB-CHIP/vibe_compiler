@@ -113,9 +113,25 @@ static bool hasNonZeroAddressSpace(llvm::Type *type) {
 
 static llvm::Error
 verifyNativeInstruction(const llvm::Instruction &instruction) {
-  if (llvm::isa<llvm::ReturnInst, llvm::BranchInst, llvm::SwitchInst,
-                llvm::PHINode, llvm::SelectInst, llvm::ICmpInst>(instruction))
+  if (const auto *result = llvm::dyn_cast<llvm::ReturnInst>(&instruction)) {
+    if (!result->getReturnValue() ||
+        result->getReturnValue()->getType()->isIntegerTy())
+      return llvm::Error::success();
+  }
+  if (llvm::isa<llvm::BranchInst, llvm::SwitchInst>(instruction))
     return llvm::Error::success();
+  if (const auto *phi = llvm::dyn_cast<llvm::PHINode>(&instruction)) {
+    if (phi->getType()->isIntegerTy())
+      return llvm::Error::success();
+  }
+  if (const auto *select = llvm::dyn_cast<llvm::SelectInst>(&instruction)) {
+    if (select->getType()->isIntegerTy())
+      return llvm::Error::success();
+  }
+  if (const auto *compare = llvm::dyn_cast<llvm::ICmpInst>(&instruction)) {
+    if (compare->getOperand(0)->getType()->isIntegerTy())
+      return llvm::Error::success();
+  }
 
   if (const auto *binary = llvm::dyn_cast<llvm::BinaryOperator>(&instruction)) {
     if (binary->getType()->isIntegerTy())

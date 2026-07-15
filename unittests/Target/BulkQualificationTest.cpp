@@ -267,6 +267,10 @@ TEST_P(BulkFormatQualificationTest,
                    .contains_insensitive("ref"));
   EXPECT_TRUE(llvm::StringRef(result->evidence.resolvedDescriptorDigest)
                   .starts_with("sha256:"));
+  EXPECT_EQ(result->evidence.implementation,
+            qualified.admission.getExpectedImplementation());
+  EXPECT_EQ(result->evidence.resolvedDescriptorDigest,
+            qualified.admission.getExpectedResolvedDescriptorDigest());
   EXPECT_EQ(computeBulkTensorStorageDigest(result->destination),
             qualified.admission.getExpectedBackendOutputDigest());
 }
@@ -498,6 +502,57 @@ TEST(BulkQualificationTest, FinalRecordReadbackRejectsEvidenceTampering) {
   EXPECT_NE(expectError(loadVerifiedBulkQualificationRecord(tamperedPath))
                 .find("does not prove one MatMul"),
             std::string::npos);
+}
+
+TEST(BulkQualificationTest,
+     RuntimeRejectsFrozenImplementationAndDescriptorDrift) {
+  TemporaryDirectory files;
+  BulkExecutionEnvironment environment =
+      llvm::cantFail(createManagedBulkExecutionEnvironment());
+  QualifiedRow qualified =
+      llvm::cantFail(qualify(environment, files, LogicalFormat::F32, 4, 8, 5));
+  llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> buffer =
+      llvm::MemoryBuffer::getFile(qualified.recordPath);
+  ASSERT_TRUE(static_cast<bool>(buffer));
+  struct DriftCase {
+    llvm::StringRef key;
+    llvm::StringRef replacement;
+    llvm::StringRef fileName;
+  };
+  const DriftCase cases[] = {
+      {"implementation", "tampered-implementation", "implementation.json"},
+      {"resolved_descriptor_digest",
+       "sha256:"
+       "0000000000000000000000000000000000000000000000000000000000000000",
+       "descriptor.json"},
+  };
+  for (const DriftCase &testCase : cases) {
+    SCOPED_TRACE(testCase.key.str());
+    std::string changed = (*buffer)->getBuffer().str();
+    const std::string prefix =
+        (llvm::Twine("\"") + testCase.key + "\":\"").str();
+    const size_t valueStart = changed.find(prefix);
+    ASSERT_NE(valueStart, std::string::npos);
+    const size_t first = valueStart + prefix.size();
+    const size_t last = changed.find('"', first);
+    ASSERT_NE(last, std::string::npos);
+    changed.replace(first, last - first, testCase.replacement.str());
+    const std::string tamperedPath = files.getPath(testCase.fileName);
+    ASSERT_FALSE(static_cast<bool>(writeText(tamperedPath, changed)));
+
+    VerifiedBulkQualificationRecord tampered =
+        llvm::cantFail(loadVerifiedBulkQualificationRecord(tamperedPath));
+    BulkBackendAdmission admission = llvm::cantFail(tampered.createAdmission(
+        environment, qualified.row.getCommand(), qualified.row.getInputs(),
+        qualified.row.getDestinationTemplate()));
+    std::string error = expectError(executeAdmittedBulkTensorNumeric(
+        environment, admission, qualified.row.getCommand(),
+        qualified.row.getInputs(), qualified.row.getDestinationTemplate(),
+        kBulkBudget));
+    EXPECT_NE(error.find("implementation or resolved descriptor changed"),
+              std::string::npos)
+        << error;
+  }
 }
 
 TEST(BulkQualificationTest, FreezeRequiresARegisteredDisjointHeldOutSeed) {

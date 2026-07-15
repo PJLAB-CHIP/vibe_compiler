@@ -4,6 +4,7 @@
 
 #include "gtest/gtest.h"
 
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/Support/Error.h"
 
 #include <atomic>
@@ -226,6 +227,55 @@ TEST(SoftFloatOracleTest, RestoresCompleteCallerEnvironment) {
   softfloat_detectTininess = savedTininess;
   extF80_roundingPrecision = savedPrecision;
   softfloat_exceptionFlags = savedFlags;
+}
+
+TEST(SoftFloatOracleTest, NestedCallerEnvironmentsRestoreInLIFOOrder) {
+  const uint_fast8_t savedRounding = softfloat_roundingMode;
+  const uint_fast8_t savedTininess = softfloat_detectTininess;
+  const uint_fast8_t savedPrecision = extF80_roundingPrecision;
+  const uint_fast8_t savedFlags = softfloat_exceptionFlags;
+  auto restoreAtExit = llvm::make_scope_exit([&] {
+    softfloat_roundingMode = savedRounding;
+    softfloat_detectTininess = savedTininess;
+    extF80_roundingPrecision = savedPrecision;
+    softfloat_exceptionFlags = savedFlags;
+  });
+
+  softfloat_roundingMode = softfloat_round_min;
+  softfloat_detectTininess = softfloat_tininess_beforeRounding;
+  extF80_roundingPrecision = 32;
+  softfloat_exceptionFlags = softfloat_flag_underflow;
+  {
+    const uint_fast8_t outerRounding = softfloat_roundingMode;
+    const uint_fast8_t outerTininess = softfloat_detectTininess;
+    const uint_fast8_t outerPrecision = extF80_roundingPrecision;
+    const uint_fast8_t outerFlags = softfloat_exceptionFlags;
+    auto restoreOuter = llvm::make_scope_exit([&] {
+      softfloat_roundingMode = outerRounding;
+      softfloat_detectTininess = outerTininess;
+      extF80_roundingPrecision = outerPrecision;
+      softfloat_exceptionFlags = outerFlags;
+    });
+
+    softfloat_roundingMode = softfloat_round_max;
+    softfloat_detectTininess = softfloat_tininess_afterRounding;
+    extF80_roundingPrecision = 64;
+    softfloat_exceptionFlags = softfloat_flag_overflow;
+    llvm::Expected<FormalNumericResult> result = executeSoftFloatOracle(
+        unaryRequest(SoftFloatOracleOperation::SquareRoot, LogicalFormat::F32,
+                     {LogicalFormat::F32, UINT64_C(0x40000000)}));
+    ASSERT_TRUE(static_cast<bool>(result))
+        << llvm::toString(result.takeError());
+    EXPECT_EQ(softfloat_roundingMode, softfloat_round_max);
+    EXPECT_EQ(softfloat_detectTininess, softfloat_tininess_afterRounding);
+    EXPECT_EQ(extF80_roundingPrecision, 64);
+    EXPECT_EQ(softfloat_exceptionFlags, softfloat_flag_overflow);
+  }
+
+  EXPECT_EQ(softfloat_roundingMode, softfloat_round_min);
+  EXPECT_EQ(softfloat_detectTininess, softfloat_tininess_beforeRounding);
+  EXPECT_EQ(extF80_roundingPrecision, 32);
+  EXPECT_EQ(softfloat_exceptionFlags, softfloat_flag_underflow);
 }
 
 TEST(SoftFloatOracleTest, InvalidPreflightDoesNotModifyCallerEnvironment) {

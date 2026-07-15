@@ -39,10 +39,12 @@ Pipeline position:
   SystemC integration executable。wafer-opt/pass chain、手写transaction和plain C++ unit不能替代component completion gate。
 - Explicit non-goals:
   不实现worker window、3x5物理queue、cycle timing、performance、power、packet/MMIO builder、repo CRT、RISC-V ISS、board
-  provider或Q22.B bulk dispatch；不复制Q19 interpreter，不从symbol、地址阈值、OS thread或process顺序恢复语义。
+  provider或Q22.B bulk dispatch；不复制Q19 interpreter，不从symbol、地址阈值、OS thread或process顺序恢复语义；当前入口
+  不提供同进程重复或并发invocation。
 - Completion gate:
   feature-on受管SystemC executable实际运行唯一sc_main和至少两个SC_THREAD，覆盖issue后不可见、跨delta visibility、local
-  fence watermark、Direct DTE send/recv/wait、failure wakeup、numeric context恢复和一次性commit；current transaction family的
+  fence watermark检查、Direct DTE send/recv/wait、failure wakeup、invocation-owned numeric status聚合和一次性commit；
+  current transaction family的
   field/address/memory matrix闭合，unknown/overflow/cross-resource/reserved-SPM/event/no-progress/late-rank均无partial result。
   feature unavailable、test skipped或plain C++ kernel unit不算通过。
 ```
@@ -70,8 +72,9 @@ Pipeline position:
      返回待提交effect，不直接发布output。numeric只调用Q22.N，unknown/admission缺口结构化失败。
 
    完成状态：已建立all-rank `InvocationAddressPlan`、rank-private SPM、global card-DDR slot registry、exact input binding和
-   atomic pending write；exact-end、overflow、alignment、reserved-SPM、cross-resource、overlap和access均fail closed。109项
-   typed payload全部经过field closure；RDMA/WDMA、gather/scatter、memset、elementwise、convert和GEMM已有plain effect，尚无
+   atomic pending write；exact-end、overflow、alignment、reserved-SPM、cross-resource、overlap和access均fail closed。shared
+   decoder对109项descriptor逐ABI字段形成typed payload，所有payload family进入统一field-valid validator；RDMA/WDMA、
+   gather/scatter、memset、elementwise、convert和GEMM已有plain effect，尚无
    evidence-backed kernel的family返回结构化`unsupported-transaction`。target-owned physical codec复用tasks/08唯一layout helper，
    并取代bulk adapter中的重复geometry。
 
@@ -97,11 +100,12 @@ Pipeline position:
      memory，归档本计划并提交。Q22.S完成后再开始Q22.V，不用手写transaction替代正式Q22.H producer chain。
 
    完成状态：`TargetModelResult`只在all-rank terminal、无pending DTE endpoint和完整output snapshot后由frontend
-   `prepareCommit/commit`一次发布，failure无partial result。四个独立SystemC executable各自只有一个`sc_main`，实际覆盖
-   16-rank source-produced elementwise及sticky inexact、16-rank collective-permute、DTE metadata mismatch和missing endpoint
-   no-progress。feature-on为base unit 160 pass/1个明确importer-disabled skip、numeric 44/44、SystemC component 4/4、lit
-   208 pass/41个均为importer-disabled unsupported、CTest 18/18；feature-off/importer-on为unit 161/161、lit 248 pass/1个
-   feature-inverse unsupported、CTest 12/12且numeric/bulk/SystemC link closure通过。shared physical codec的bulk 12/12回归通过。
+   `prepareCommit/commit`一次发布，failure无partial result。五个独立SystemC executable各自只有一个`sc_main`，实际覆盖
+   16-rank source-produced elementwise及sticky inexact、16-rank collective-permute、unknown event failure、DTE metadata
+   mismatch和missing endpoint no-progress。2026-07-15综合重放中feature-on base/numeric/SystemC component分别
+   164/164、47/47、5/5，lit为250 pass/2个预期feature-inverse unsupported，CTest 22/22；feature-off base 164/164，
+   lit为249 pass/3个明确feature unsupported，CTest 12/12且numeric/bulk/SystemC link closure通过。shared physical codec的
+   bulk 14/14回归通过。
 
 ## 实施顺序
 

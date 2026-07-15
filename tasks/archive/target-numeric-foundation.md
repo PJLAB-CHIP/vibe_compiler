@@ -82,7 +82,8 @@ independent test-only raw mapper证明round-trip、endianness、special-value和
   compiler-emittable、hardware-evidence三维状态；Q22.B只读取backend requirement，不在此处创建bulk admission。
 - `FormalNumericExecutionContext`只保存invocation-owned aggregate model status；effect-free scalar/tensor evaluator在整条操作成功后
   原子commit。MPFR wrapper每次调用另行保存、设置、清理并恢复完整MPFR环境，SoftFloat oracle adapter使用独立RAII；
-  nested、early-return、exception和双OS-thread均隔离。
+  immediate caller ambient scope嵌套LIFO、normal/early/error return和双OS-thread均隔离。工程`-fno-exceptions`，不声明
+  C++ exception测试或scope未析构时的nested dispatch。
 - effect前一次性preflight完整command/profile/parameter/layout tuple，执行中不回读MLIR或修改registry。
 
 完成判据：全部published key有唯一kernel/comparator或静态unsupported reason；context无process-global串扰，unsupported路径
@@ -130,14 +131,14 @@ Q22.L只修改owner-backed target LLVM bundle边界，不得依赖numeric profil
 
 ## 完成证据（2026-07-14）
 
-- 首个model profile闭合13种logical codec和276个不重叠selector：101条确定性convert、88条floating elementwise、
-  4条BOOL logic、3条F16/BF16/F32 GEMM；23条stochastic、4条zero-point、31条integer elementwise、9条缺参数
+- 首个model profile闭合13种logical codec和276个不重叠selector：101条确定性convert、88条elementwise
+  （84条floating加4条BOOL logic）、3条F16/BF16/F32 GEMM；23条stochastic、4条zero-point、31条integer elementwise、9条缺参数
   elementwise、1条I8 GEMM和16条native reduce均以稳定原因在effect前拒绝。
 - 受管dependency record闭合20个artifact、9份license文本和23项conformance gate，覆盖SoftFloat/TestFloat 3e、
   GNU m4 1.4.21、GMP 6.3.0、MPFR 4.2.2的source/build digest、上游self-test、TLS/default-NaN、version、loaded
   artifact及transitive linkage readback。feature-off基础compiler不链接这些依赖。
-- feature-on `WaferNumericModelUnitTests` 37/37、CTest 8/8；feature-off base unit发现138项，137 pass、1个预期
-  StableHLO importer skip，CTest 6/6。完整`check-wafer`执行208项lit并全部通过；显式列出的41项unsupported全部属于
-  未启用StableHLO/Shardy importer依赖，没有required numeric test被skip/unsupported。
+- 2026-07-15综合重放中feature-on base/numeric分别164/164、47/47，lit为250 pass/2个预期feature-inverse
+  unsupported，CTest 22/22；feature-off base 164/164，lit为249 pass/3个明确feature unsupported，CTest 12/12。
+  没有required numeric test被skip/unsupported。
 - 这些结果只完成model-only formal numeric foundation。oneDNN bulk、Host CRT、SystemC、板端numeric correlation和timing
   仍由后续独立gate拥有。

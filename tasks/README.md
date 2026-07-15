@@ -51,8 +51,8 @@
 
 ## 实施计划导航
 
-Q22.S与Q22.V计划已分别归档为`tasks/archive/systemc-functional-event-model.md`和
-`tasks/archive/target-model-source-verticals.md`；当前没有active实施计划。
+Q22.S、Q22.V与最终完成性审计计划已分别归档为`tasks/archive/systemc-functional-event-model.md`、
+`tasks/archive/target-model-source-verticals.md`和`tasks/archive/target-model-completion-audit.md`；当前没有active实施计划。
 Q22.B/Q22.L/Q22.N/Q0.L/Q22.H计划分别归档为`tasks/archive/target-bulk-qualification.md`、`tasks/archive/target-llvm-module-bundle.md`、
 `tasks/archive/target-numeric-foundation.md`、`tasks/archive/target-command-legality-closure.md`和
 `tasks/archive/target-call-functional-frontend.md`，Q22.R readiness归档为`tasks/archive/target-model-readiness.md`。
@@ -67,6 +67,7 @@ docs、`tasks/progress.md` 和本轮已收敛设计结论为准。
 
 | 文档 | 原性质 |
 | --- | --- |
+| `tasks/archive/target-model-completion-audit.md` | 已完成Q22各分项字段、legality、runtime evidence、late-rank原子性和双配置全量证据复核记录 |
 | `tasks/archive/target-model-source-verticals.md` | 已完成Q22.V的same-lowering product、typed source/model invocation、formal/exact-admitted bulk dispatch和五个固定source vertical实施记录 |
 | `tasks/archive/target-bulk-qualification.md` | 已完成Q22.B的受管oneDNN、target-owned adapter、三阶段资格producer和runtime exact-match admission实施记录 |
 | `tasks/archive/target-llvm-module-bundle.md` | 已完成Q22.L的owner-backed all-rank LLVM module、typed readback和single-lowering device-link接入记录 |

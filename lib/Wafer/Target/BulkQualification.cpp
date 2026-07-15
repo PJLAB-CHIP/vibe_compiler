@@ -1528,7 +1528,8 @@ VerifiedBulkQualificationRecord::createAdmission(
   return BulkBackendAdmission(
       recordDigest, adapterDigest, semanticProfileDigest, resolutionDigest,
       inputPayloadDigest, destinationTemplateDigest, environmentDigest,
-      expectedBackendOutputDigest, kind, formalFlags);
+      expectedBackendOutputDigest, implementation, resolvedDescriptorDigest,
+      kind, formalFlags);
 }
 
 } // namespace wafer

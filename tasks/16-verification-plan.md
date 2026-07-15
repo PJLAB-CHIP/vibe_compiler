@@ -706,11 +706,12 @@ owner-backed target LLVM bundle和oneDNN bulk qualification；以下各gate仍�
 - `FormalNumericExecutionContext`只聚合invocation-owned model flags，effect-free scalar/tensor evaluator仅在完整成功后commit；
   APFloat/APInt每次调用显式传入rounding且不依赖ambient fenv。MPFR wrapper每次调用保存、设置、清理和恢复emin/emax、
   default precision、rounding及flags；SoftFloat只存在于独立conformance adapter，但其THREAD_LOCAL state仍需RAII恢复和
-  双OS-thread隔离验证。首个profile固定gradual、no-DAZ、no-FTZ，codec不代替该算术政策。nested/early return/exception和
-  normal/subnormal测试证明invocation恢复。MPFR/GMP self-test record绑定实际library artifacts；static link readback或dynamic loaded-object digest/build-id、
+  双OS-thread隔离验证。首个profile固定gradual、no-DAZ、no-FTZ，codec不代替该算术政策。嵌套caller ambient scope的LIFO、
+  normal/early special/error return及normal/subnormal测试证明immediate caller环境恢复；工程以`-fno-exceptions`构建，
+  C++ exception不进入该gate。MPFR/GMP self-test record绑定实际library artifacts；static link readback或dynamic loaded-object digest/build-id、
   MPFR version/patch/options、`gmp_version`和transitive linkage exact-match，替换同ABI library的negative必须configuration fail。
 
-component closure还必须逐项执行101条确定性convert、88条floating elementwise加4条BOOL logic、3条GEMM和16条
+component closure还必须逐项执行101条确定性convert、88条elementwise（84条floating加4条BOOL logic）、3条GEMM和16条
 native-reduce reject row；tensor dispatcher在完整command、input encoding、element count和scalar/FMA budget preflight后
 才分配output，并证明任一late scalar failure不commit partial output/status。MPFR的sigmoid/softplus必须用directed enclosure
 与自适应precision证明最终RNE bit和final-result flags，固定guard bits或先把中间值round到目标格式均不算完成。
@@ -719,10 +720,10 @@ native-reduce reject row；tensor dispatcher在完整command、input encoding、
 版本、license和digest可审计，该gate才通过；缺失required differential/TCB self-test、单个f32 workload、global tolerance、
 oneDNN/Eigen输出或SystemC process test不能替代。该gate只证明model semantics，不证明bulk、SystemC或板端edge behavior。
 
-Q22.N新鲜完成证据：受管record闭合SoftFloat/TestFloat 3e、GNU m4 1.4.21、GMP 6.3.0、MPFR 4.2.2的20个artifact、
-9份license文本和23项build/self-test/TLS/version/transitive identity gate。feature-on numeric suite 37/37、CTest 8/8；
-feature-off base unit发现138项，137 pass、1个预期StableHLO importer skip，CTest 6/6。`check-wafer`执行208项lit全部通过，
-显式unsupported审计的41项全部属于未启用StableHLO/Shardy importer依赖，无required numeric test被skip/unsupported。
+Q22.N完成证据：受管record闭合SoftFloat/TestFloat 3e、GNU m4 1.4.21、GMP 6.3.0、MPFR 4.2.2的20个artifact、
+9份license文本和23项build/self-test/TLS/version/transitive identity gate。2026-07-15综合重放中feature-on base/numeric
+分别164/164、47/47，lit为250 pass/2个预期feature-inverse unsupported，CTest 22/22；feature-off base 164/164，
+lit为249 pass/3个明确feature unsupported，CTest 12/12。无required numeric test被skip/unsupported。
 这些结果不升级为Q22.B/H/S/V或board证据。
 
 ### 11.2 Q22.B oneDNN Bulk Qualification Gate
@@ -754,11 +755,12 @@ tasks/08唯一physical layout helper；不改变compiler legality、numeric poli
   reorder、backend formal FMA为零。64³ row的runtime formal budget故意不足，仍只能通过冻结admission执行；source-backed
   workload的自动选择和完整output vertical仍由Q22.V闭合。
 
-Q22.B新鲜完成证据：feature-on `check-wafer`执行base unit 138项（137 pass、1个未启用StableHLO importer的明确skip）、
-numeric 37/37、bulk 12/12和lit 208 pass；显式unsupported清单41项全部属于该构建未启用的importer链，CTest 14/14。
-feature-off base unit 138/138、lit 248 pass且唯一unsupported是feature-inverse测试，CTest 9/9；feature-on/off link closure、
-真实CLI三阶段和CMake配置拒绝均实际执行。这些证据不表示source自动dispatch、SystemC、Host CRT、板端numeric、连续域
-bit-exact证明或timing完成。
+Q22.B完成证据：admission拥有冻结的implementation和resolved descriptor evidence，runtime必须与当前primitive evidence
+逐项匹配，分别篡改implementation或descriptor的canonical record均fail closed。2026-07-15综合重放中feature-on
+base/numeric/bulk分别164/164、47/47、14/14，lit为250 pass/2个预期feature-inverse unsupported，CTest 22/22；
+feature-off base 164/164，lit为249 pass/3个明确feature unsupported，CTest 12/12。feature-on/off link closure、真实CLI
+三阶段和CMake配置拒绝均实际执行。这些证据不表示source自动dispatch、SystemC、Host CRT、板端numeric、连续域bit-exact
+证明或timing完成。
 
 ### 11.3 Q22.L Owner-Backed Target LLVM Module Bundle Gate
 
@@ -784,12 +786,12 @@ Pipeline position:
 Q22.H必须直接消费Q22.L bundle；仅检查symbol、signature或基本address formation的fixture仍只算component coverage，
 不计入Q22.H或Q22.S完成。
 
-Q22.L新鲜完成证据：public owner类型无default/copy且可move，每个rank的LLVM module在独立context内存活；module-owned
+Q22.L完成证据：public owner类型无default/copy且可move，每个rank的LLVM module在独立context内存活；module-owned
 schema/rank/entry/profile/target/ABI/slot metadata、closed RISC-V triple、module identifier及fixed `void(i64...)` signature
 均从LLVM module本体readback。missing profile/entry/slot metadata negative被拒绝。1-rank direct producer和rank-15
 target failure通过；正式`wafer-compile`已拆成`ExecutableBundle -> TargetLLVMModuleBundle -> TargetArtifactBundle`，
-rank1/rank16 linear、16-rank tiny Llama及package/no-card重放通过。全量`check-wafer`执行138/138 unit，249项lit中
-248 pass、唯一unsupported为启用StableHLO时预期的feature-inverse test；CTest 6/6。该证据不执行Host CRT、packet或SystemC。
+rank1/rank16 linear、16-rank tiny Llama及package/no-card重放通过。2026-07-15综合重放中base 164/164，lit为
+250 pass/2个预期feature-inverse unsupported，CTest 22/22。该证据不执行Host CRT、packet或SystemC。
 
 ### 11.4 Q22.H Repo-Owned Target-Call Frontend Gate
 
@@ -828,17 +830,19 @@ Q22.S消费Q22.N numeric profile、Q22.H实际transaction和既有Q16.T Direct D
 - static capability在input/model mutation前preflight，computed address、dynamic descriptor和numeric tuple在对应effect前
   验证；model/core error在copyback前失败，component result/status原子形成。
 
-component gate必须实际运行唯一`sc_main`，至少两个`SC_THREAD`跨delta交替profile和sticky flag，并覆盖issue/visibility/
-completion、failure wakeup、nested/early return/exception及numeric execution-context恢复；双OS-thread TLS证据仍属于Q22.N。
+component gate必须实际运行唯一`sc_main`，至少两个`SC_THREAD`跨delta执行issue/visibility/completion、failure/no-progress
+wakeup及invocation-owned numeric status聚合；immediate caller ambient环境的嵌套LIFO、normal/early/error return与双OS-thread
+TLS恢复证据属于Q22.N，不由SystemC component重复声明。
 unavailable/skipped或plain C++ kernel test不算通过。本gate不测PMU、latency或throughput，也不要求source workload完整输出。
 
-完成证据：四个独立executable各自只有一个`sc_main`；16-rank source-produced elementwise在17个thread process中跨delta执行并
+完成证据：五个独立executable各自只有一个`sc_main`；16-rank source-produced elementwise在17个thread process中跨delta执行并
 观察aggregate sticky inexact，16-rank collective-permute验证send/recv/wait、匹配时source read和destination visibility，另有
-metadata mismatch及missing endpoint/no-progress全局唤醒负例。feature-on base unit 160 pass/1个明确importer-disabled skip、numeric
-44/44、SystemC component 4/4、lit 208 pass/41个均为importer-disabled unsupported、CTest 18/18；feature-off/importer-on unit
-161/161、lit 248 pass/1个feature-inverse unsupported、CTest 12/12且三项link closure通过。plain core和shared physical codec unit
-覆盖exact-end/overflow/cross-resource/reserved-SPM、atomic write、all 109 typed payload field closure及formal effect；bulk codec回归
-12/12。该证据签发Q22.S untimed component，不签发Q22.V完整source vertical或任何board/timing结论。
+unknown event、metadata mismatch及missing endpoint/no-progress全局唤醒负例。2026-07-15综合重放中feature-on
+base/numeric/SystemC component分别164/164、47/47、5/5，lit为250 pass/2个预期feature-inverse unsupported，CTest 22/22；
+feature-off base 164/164，lit为249 pass/3个明确feature unsupported，CTest 12/12且三项link closure通过。plain core和
+shared physical codec unit覆盖exact-end/overflow/cross-resource/reserved-SPM、atomic write、109 descriptor逐ABI字段decode、
+所有typed payload family的field-valid入口及formal effect；bulk codec回归14/14。该证据签发Q22.S untimed component，
+不签发Q22.V完整source vertical或任何board/timing结论。
 
 ### 11.6 Q22.V Source-Backed Functional-Numeric Vertical Gate
 

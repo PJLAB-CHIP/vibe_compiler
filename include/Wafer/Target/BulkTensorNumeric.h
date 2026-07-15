@@ -174,6 +174,12 @@ public:
   llvm::StringRef getExpectedBackendOutputDigest() const {
     return expectedBackendOutputDigest;
   }
+  llvm::StringRef getExpectedImplementation() const {
+    return expectedImplementation;
+  }
+  llvm::StringRef getExpectedResolvedDescriptorDigest() const {
+    return expectedResolvedDescriptorDigest;
+  }
   BulkQualificationKind getKind() const { return kind; }
   FormalNumericExceptionFlags getFormalFlags() const { return formalFlags; }
 
@@ -185,7 +191,9 @@ private:
       std::string semanticProfileDigest, std::string resolutionDigest,
       std::string inputPayloadDigest, std::string destinationTemplateDigest,
       std::string environmentDigest, std::string expectedBackendOutputDigest,
-      BulkQualificationKind kind, FormalNumericExceptionFlags formalFlags)
+      std::string expectedImplementation,
+      std::string expectedResolvedDescriptorDigest, BulkQualificationKind kind,
+      FormalNumericExceptionFlags formalFlags)
       : recordDigest(std::move(recordDigest)),
         adapterDigest(std::move(adapterDigest)),
         semanticProfileDigest(std::move(semanticProfileDigest)),
@@ -194,6 +202,9 @@ private:
         destinationTemplateDigest(std::move(destinationTemplateDigest)),
         environmentDigest(std::move(environmentDigest)),
         expectedBackendOutputDigest(std::move(expectedBackendOutputDigest)),
+        expectedImplementation(std::move(expectedImplementation)),
+        expectedResolvedDescriptorDigest(
+            std::move(expectedResolvedDescriptorDigest)),
         kind(kind), formalFlags(formalFlags) {}
 
   std::string recordDigest;
@@ -204,6 +215,8 @@ private:
   std::string destinationTemplateDigest;
   std::string environmentDigest;
   std::string expectedBackendOutputDigest;
+  std::string expectedImplementation;
+  std::string expectedResolvedDescriptorDigest;
   BulkQualificationKind kind;
   FormalNumericExceptionFlags formalFlags;
 };

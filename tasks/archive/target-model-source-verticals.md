@@ -97,7 +97,9 @@ backend选择做成可审计的model execution policy；checkpoint 3只补真实
 
 四个checkpoint均已按顺序完成。五个固定source case实际经过正式driver：Q20 formal/admitted、f16、bf16、64³ large
 admitted GEMM和Q21 16-rank tiny Llama；错误expected、Q19 f16 capability negative和错误bulk record均保留已发布package。
-feature-on base/numeric/bulk/SystemC分别161/161、45/45、13/13、4/4，lit为250 pass/2个预期feature-inverse
-unsupported，CTest 21/21；feature-off/importer-on base 161/161，lit为249 pass/3个明确feature unsupported，
+同一Q21 source/driver链还在package发布与reference comparison后于logical rank 15 terminal注入失败，返回带stage/rank的
+稳定SystemC诊断，不打印matched model result，且rank-15 module与manifest继续保留。该seam只编入`wafer-compile-test`。
+feature-on base/numeric/bulk/SystemC分别164/164、47/47、14/14、5/5，lit为250 pass/2个预期feature-inverse
+unsupported，CTest 22/22；feature-off/importer-on base 164/164，lit为249 pass/3个明确feature unsupported，
 model-disabled正例实际执行，CTest 12/12且三项link closure通过。
 长期发布边界和unsupported matrix已回写tasks/01/16/17，动态状态已回写`tasks/progress.md`。

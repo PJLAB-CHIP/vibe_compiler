@@ -13,6 +13,9 @@
 #endif
 #ifdef WAFER_ENABLE_TEST_HELPER_OVERRIDE
 #include "Wafer/Compiler/Testing.h"
+#ifdef WAFER_ENABLE_SYSTEMC_MODEL
+#include "Wafer/Model/Testing.h"
+#endif
 #endif
 
 #include "llvm/ADT/ArrayRef.h"
@@ -661,9 +664,26 @@ bool runTargetModelGate(
                  << "\n";
     return true;
   }
-  auto result = wafer::model::executeSystemCTargetModel(
-      std::move(invocation->getExecutable()), invocation->getInputBindings(),
-      budget, executionPolicy);
+  llvm::Expected<wafer::model::TargetModelResult> result = [&]() {
+#ifdef WAFER_ENABLE_TEST_HELPER_OVERRIDE
+    if (const char *failureRank =
+            std::getenv("WAFER_TEST_FAIL_TARGET_MODEL_TERMINAL_RANK")) {
+      int64_t parsedFailureRank = -1;
+      if (llvm::StringRef(failureRank).getAsInteger(10, parsedFailureRank))
+        return llvm::Expected<wafer::model::TargetModelResult>(
+            llvm::createStringError(
+                "invalid test-only target model terminal failure rank"));
+      return wafer::model::testing::
+          executeSystemCTargetModelWithTerminalFailure(
+              std::move(invocation->getExecutable()),
+              invocation->getInputBindings(), budget, executionPolicy,
+              parsedFailureRank);
+    }
+#endif
+    return wafer::model::executeSystemCTargetModel(
+        std::move(invocation->getExecutable()), invocation->getInputBindings(),
+        budget, executionPolicy);
+  }();
   if (!result) {
     llvm::errs() << "wafer-compile: " << llvm::toString(result.takeError())
                  << "\n";

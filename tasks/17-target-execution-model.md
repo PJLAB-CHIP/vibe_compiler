@@ -275,8 +275,8 @@ provenance、capability、numeric profile和event profile。
 
 当前fixed target-call ABI没有额外model-context参数。host clone为每个reachable call生成exact-signature bridge，在bridge
 body中显式嵌入其invocation/rank context并调用唯一typed dispatcher。完整symbol只作exact ABI-key lookup；SystemC
-yield后不从前后缀、参数数量、TLS、OS thread或调用顺序恢复语义/rank。bridge、JIT和context共享invocation-local lifetime；机制必须覆盖并发rank、阻塞yield、异常退出和
-nested call后的恢复测试。
+yield后不从前后缀、参数数量、TLS、OS thread或调用顺序恢复语义/rank。bridge、JIT和context共享invocation-local lifetime；
+机制必须覆盖并发rank、阻塞yield和失败锁存，reentry/nested call在rank运行态显式拒绝并整体abort。
 
 target LLVM中的i64地址参数按typed ABI角色分别表示NCC-visible tile-local SPM offset/address、compiler-planned DDR
 arena base加offset，或
@@ -380,9 +380,10 @@ intrinsic、inline asm、未知address space或其它不能安全host materializ
 model executable。
 
 正式entry必须在SystemC可yield process中调用，使local fence、DTE wait和FSM receive可等待`sc_event`；所有rank process
-先创建再启动。invocation/rank context由per-rank exact-signature bridge显式绑定，不能只靠TLS或`sc_process_handle`推断。第一版使用单个长寿命
-`ModelSystem`，不在每次invocation调用`sc_stop`；只在所有process/queue/event quiescent后清理invocation-local memory和
-error latch，并先串行化invocation。后续并发只有在context隔离和reset测试闭合后才能开放。
+先创建再启动。invocation/rank context由per-rank exact-signature bridge显式绑定，不能只靠TLS或`sc_process_handle`推断。
+首个正式入口在每个driver进程的initial elaboration中建立一次invocation-local model，不调用`sc_stop`，由`sc_start`运行到
+process/queue/event quiescent后销毁私有memory和error latch；需要重复运行时重新启动driver进程。同进程长寿命
+`ModelSystem`、重复或并发invocation只有在persistent process、context隔离和reset测试另行闭合后才能开放，不属于Q22完成能力。
 
 执行前structural/capability preflight必须一次枚举并拒绝：任何reachable target-call symbol/signature缺typed bridge；任何静态
 可知的op/dtype/shape/optional tuple无kernel或comparator；address plan、ABI binding或rank/transport endpoint不闭合。
@@ -393,8 +394,9 @@ descriptor和computed address必须在每条transaction的read/effect前验证�
 
 memory分为只含metadata的`InvocationAddressPlan`和通过plan后才建立的私有`InvocationMemoryRegistry`。registry为每个
 typed ABI resource、workspace/status和rank-local SPM分配不重叠的synthetic device range；entry只得到这些device address。
-resolve必须显式携带rank/tile、address space、resource、read/write role，并证明checked range完整落入唯一region，不能按
-地址数值阈值猜SPM/DDR或直接解引用host pointer。每条transaction先读完整snapshot，plain kernel返回待提交byte effects；
+resolve必须显式携带logical rank、address space和read/write role；返回值给出唯一slot/resource identity并证明checked range
+完整落入唯一region，Direct DTE的tile identity另由typed endpoint绑定，不能按地址数值阈值猜SPM/DDR或直接解引用host pointer。
+每条transaction先读完整snapshot，plain kernel返回待提交byte effects；
 所有range/payload通过后，SystemC completion event才一次提交。单command错误无partial write，整次invocation只有all-rank
 terminal success后才extract/copy output。
 
@@ -683,10 +685,10 @@ implementation明确忽略其中字段，只能用implementation-bound source/bu
 全部worker、pool复用后环境漂移或runtime无法提供受管初始化hook时，该row rejected。oneDNN API status、output
 classification和admission result可进入diagnostic；worker FP flags不得映射为target exception status。
 
-formal context必须RAII恢复，支持stack-safe nesting或显式拒绝nested dispatch；SystemC `wait`、async callback和reentrant
-numeric dispatch在scope中非法。强制测试让两个`SC_THREAD`跨delta cycle交替不同rounding/tininess/exponent profile，前一
-process制造overflow/inexact而后一process执行exact op，并覆盖nested、early return、exception、normal/subnormal及caller
-预置state恢复；这只证明logical-process隔离。另用两个真实OS thread分别验证SoftFloat adapter与MPFR TLS build和状态独立性。
+formal context是invocation-owned聚合状态，scalar/tensor evaluator只在完整成功后commit；当前同步API没有scope未析构时的
+nested dispatch seam。MPFR/SoftFloat adapter分别保存并恢复immediate caller ambient state，component test覆盖嵌套caller
+scope的LIFO、normal/early special/error return、normal/subnormal和caller预置state恢复；工程以`-fno-exceptions`构建，不声明
+C++ exception路径。另用两个真实OS thread分别验证SoftFloat adapter与MPFR TLS build和状态独立性。
 
 依赖与调度事实以官方资料为准：
 
@@ -828,7 +830,7 @@ accepted instruction支持范围；如果硬件可表达但model未覆盖，应�
 | --- | --- | --- |
 | storage / physical codec | 13种logical raw codec；compact、Cx、NCx及bitpacked BOOL的shared physical geometry/roundtrip；typed ABI slot显式携带layout | program-boundary compact BOOL NPY尚无bitpacked source合同；codec存在不开放无target encoding的engine row |
 | formal convert | 101条确定性typed convert policy，四种确定性rounding及完整raw/special/status政策 | 4条INT8-source zero-point公式和stochastic state未证，保持命名candidate/rejected；f64不在target profile |
-| formal elementwise | 88条floating selector和4条BOOL logic selector；f16/bf16/f32的已注册算术、关系、基础/MPFR transcendental按唯一profile执行 | integer elementwise、`exp_lp`/`sat_relu`/`leaky_relu`未闭合参数政策；未知selector无fallback |
+| formal elementwise | 88条selector（84条floating和4条BOOL logic）；f16/bf16/f32的已注册算术、关系、基础/MPFR transcendental按唯一profile执行 | integer elementwise、`exp_lp`/`sat_relu`/`leaky_relu`未闭合参数政策；未知selector无fallback |
 | formal GEMM / reduce | f16、bf16、f32同dtypeGEMM，F32 fused accumulator、+0 init、K递增、destination RNE；source reduce按Q0.L展开后的movement/elementwise composite执行 | I8 accumulator政策、TF32 generic GEMM、16条native reduce selector均拒绝；不从dtype猜窄/宽accumulator |
 | admitted bulk GEMM | component资格覆盖f16/bf16/f32同dtype、rank 2/3、Cx/NCx；Q22 source发布的admitted完整case为Q20首个f32 GEMM和64³ f32 GEMM | 无exact command/payload/destination/environment/expected-output record即no admission；超过formal budget时绝不scalar fallback；不外推连续输入域bit-exact |
 | functional transaction / event | checked RDMA/WDMA、gather/scatter、memset、elementwise、convert、GEMM、local fence及当前single-destination Direct DTE control；all-rank private SPM/DDR和atomic output | field-valid但无kernel的conv/pool/unpool等family、未知地址/layout/endpoint；无worker/queue容量、packet或timing claim |
@@ -856,8 +858,9 @@ accepted instruction支持范围；如果硬件可表达但model未覆盖，应�
 - type-generic elementwise/GEMM/reduce覆盖operand/product/accumulator/intermediate/destination、FMA、reduction order和
   overflow；每个published `(ModelProfileId, NumericCommandKey)`唯一映射`NumericSemanticsProfile`，unknown/duplicate在
   effect前拒绝；
-- `FormalNumericExecutionContext`覆盖SoftFloat/MPFR save/restore、target-owned FTZ/DAZ、sticky flag、双OS-thread TLS及
-  nested/early-return/exception；本row不依赖SystemC process或oneDNN output。
+- `FormalNumericExecutionContext`覆盖target-owned sticky flag原子commit；SoftFloat/MPFR save/restore覆盖immediate caller
+  ambient scope嵌套LIFO、normal/early/error return和双OS-thread TLS。工程`-fno-exceptions`，本row不声明C++ exception测试，
+  也不依赖SystemC process或oneDNN output。
 
 #### Q22.B bulk qualification
 
@@ -893,7 +896,8 @@ accepted instruction支持范围；如果硬件可表达但model未覆盖，应�
 
 - Q22.H实际transaction进入rank/tile memory、conservative issue event、local completion和Direct DTE/FSM；numeric effect只调用Q22.N，
   不能读取Q19 numeric kernel或DTE scheduler；
-- 唯一`sc_main`至少运行两个`SC_THREAD`跨delta覆盖issue/visibility/completion、failure wakeup和numeric context恢复；
+- 唯一`sc_main`至少运行两个`SC_THREAD`跨delta覆盖issue/visibility/completion、failure wakeup和invocation-owned numeric
+  status聚合；immediate caller ambient环境恢复由Q22.N单独证明；
   unavailable/skipped或plain C++ kernel test不算完成。本row不以Q22.B或完整source workload为前置。
 
 #### Q22.V source-backed functional-numeric verticals
@@ -1222,12 +1226,13 @@ Pipeline position:
 - 用受管LLVM pin内的APFloat/APInt完成FP16/BF16/FP32/TF32基础算术、convert、FMA、逐op status及无C++ UB固定位宽整数；
   production不得调用Q19 helper。独立SoftFloat adapter交叉FP16/FP32，TestFloat的slowfloat路径验证SoftFloat自身；
   MPFR-backed formal path完成sqrt/tanh/exp/rsqrt等高精度结果并为BF16/TF32提供高精度differential；
-- 一次闭合36条convert route、101条四种确定性rounding/plain执行row、88条floating elementwise、4条BOOL logic和
+- 一次闭合36条convert route、101条四种确定性rounding/plain执行row、88条elementwise（84条floating加4条BOOL logic）和
   F16/BF16/F32三条GEMM formal row；zero-point和stochastic保留命名candidate policy及区分向量。source reduce只消费
   Q0.L已materialize的普通composite，16条native reduce selector因init/identity/order未闭合全部静态拒绝；
 - `FormalNumericExecutionContext`只聚合invocation-owned model status，effect-free scalar/tensor evaluator在完整成功后原子commit；
   APFloat每次调用显式传入rounding，首个profile固定gradual、no-DAZ、no-FTZ。MPFR wrapper与SoftFloat oracle adapter各自
-  保存/恢复完整环境；component tests覆盖nested/exception restore和双OS-thread TLS，不在本阶段依赖SystemC process；
+  保存/恢复完整环境；component tests覆盖immediate caller ambient scope嵌套LIFO、normal/early/error return和双OS-thread
+  TLS，工程`-fno-exceptions`且不声明C++ exception测试，不在本阶段依赖SystemC process；
 - 执行第8.1节Q22.N子项的exhaustive、boundary、property、metamorphic、independent-oracle和capability closure tests；生成的matrix
   必须区分model-implemented、compiler-emittable和hardware evidence，不能以f32 workload代替。
 
@@ -1236,10 +1241,10 @@ route无missing/duplicate；每个published `(ModelProfileId, NumericCommandKey)
 或静态unsupported reason；formal backend逐family independent/trusted-TCB gate和execution-context isolation通过。该阶段
 不产生oneDNN admission，也不声明任一未知edge policy为hardware事实。
 
-新鲜完成证据：feature-on受管依赖记录包含20个artifact、9份license文本和23项conformance gate；numeric suite 37/37、
-CTest 8/8通过。feature-off基础suite发现138项，137 pass、1个预期StableHLO importer skip，CTest 6/6通过。
-完整`check-wafer`执行208项lit并全部通过，`--show-unsupported`列出的41项全部来自未启用的StableHLO/Shardy importer依赖，
-没有required numeric test被skip/unsupported。该证据只签发model-only numeric foundation，不签发bulk、SystemC或hardware profile。
+完成证据：feature-on受管依赖记录包含20个artifact、9份license文本和23项conformance gate。2026-07-15综合重放中
+base/numeric分别164/164、47/47，lit为250 pass/2个预期feature-inverse unsupported，CTest 22/22；feature-off base
+164/164，lit为249 pass/3个明确feature unsupported，CTest 12/12。没有required numeric test被skip/unsupported。
+该证据只签发model-only numeric foundation，不签发bulk、SystemC或hardware profile。
 
 #### 10.2.1 首个model-only policy closure
 
@@ -1329,7 +1334,8 @@ atomic negative通过。该row不需要vendor授权，也不证明Host CRT或mod
 新鲜完成证据：1-rank direct producer验证context lifetime、move-only ownership及module/slot readback，missing profile/entry/slot
 metadata均被拒绝；rank-15 target failure无bundle/ELF/package。正式driver已拆成
 `ExecutableBundle -> TargetLLVMModuleBundle -> TargetArtifactBundle`，rank1/rank16 linear和16-rank tiny Llama的ELF、manifest、
-reference及no-card纵向重放通过；全量138/138 unit、249项lit中248 pass/1个预期feature-inverse unsupported、CTest 6/6。
+reference及no-card纵向重放通过；2026-07-15综合重放中base 164/164、lit 250 pass/2个预期feature-inverse unsupported、
+CTest 22/22。
 Q22.H现已从该bundle解锁并按repo-owned target-call frontend推进。
 
 ### 10.5 Q22.H Repo-owned target-call frontend
@@ -1356,20 +1362,22 @@ failure无partial result。该gate不编译repo CRT、不构造Tsm packet，不�
 - 消费Q22.H实际typed transaction，建立rank-local virtual SPM/DDR、typed slots、checked address、invocation error latch、
   单一保守logical issue domain、resource event、local drain、可yield wait及Direct DTE/FSM；不声明worker window、
   `3×5`物理queue或engine复制；
-- 109项typed payload完成field closure；RDMA/WDMA、gather/scatter、memset、elementwise、convert、GEMM和Direct DTE control
+- shared decoder对109项descriptor逐ABI字段形成typed payload，所有payload family进入统一field-valid validator；
+  RDMA/WDMA、gather/scatter、memset、elementwise、convert、GEMM和Direct DTE control
   具有checked functional effect，其它field-valid family保持结构化unsupported。首个profile的DDR/SPM都在invocation-private
   registry内完成，不建立没有consumer的TLM socket；future ISS/interconnect只能通过另行设计的受限TLM边界接入，packet/MMIO
   correlation仍是Q22.K可选provenance gate；
 - numeric effect只调用Q22.N formal profile；Q22.B bulk在本stage不是完成前置。plain C++ kernel component tests不链接SystemC；
-  四个SystemC integration executable各有唯一`sc_main`，16个rank `SC_THREAD`加control process跨delta执行numeric和DTE；
-- delta-cycle component gate证明issue后结果尚不可见、local fence按watermark等待、completion一次commit、failure唤醒且不
-  copyback；unknown transaction、address exact-end/overflow/cross-resource/reserved-SPM、event error和DTE no-progress均结构化失败。
+  五个SystemC integration executable各有唯一`sc_main`，16个rank `SC_THREAD`加control process跨delta执行numeric和DTE；
+- delta-cycle component gate证明issue后结果尚不可见、local fence检查已完成ordinal watermark、completion一次commit、failure
+  唤醒且不copyback；unknown transaction、address exact-end/overflow/cross-resource/reserved-SPM和DTE no-progress均结构化失败。
 
 完成：同一Q22.H正式producer的16-rank elementwise和collective-permute实际进入SystemC；numeric测试观察sticky inexact，DTE在
 sender/receiver匹配完成点读取source并发布destination，metadata mismatch和missing endpoint/no-progress均唤醒waiter且无partial
-result。feature-on base 160 pass/1个明确importer skip、numeric 44/44、SystemC component 4/4、lit 208 pass/41个均为
-importer-disabled unsupported、CTest 18/18；feature-off/importer-on unit 161/161、lit 248 pass/1个feature-inverse unsupported、
-CTest 12/12且numeric/bulk/SystemC link closure通过；shared physical codec的bulk 12/12回归通过。该证据不要求完整source workload，
+result。unknown event同样必须latch failure并唤醒waiter。2026-07-15综合重放中feature-on base/numeric/SystemC component
+分别164/164、47/47、5/5，lit为250 pass/2个预期feature-inverse unsupported，CTest 22/22；feature-off base 164/164，
+lit为249 pass/3个明确feature unsupported，CTest 12/12且numeric/bulk/SystemC link closure通过；shared physical codec的
+bulk 14/14回归通过。该证据不要求完整source workload，
 也不发布repo CRT/packet、RISC-V ELF执行、board numeric、性能或timing claim。
 
 ### 10.7 Q22.V Source-backed functional-numeric verticals
@@ -1391,6 +1399,8 @@ CTest 12/12且numeric/bulk/SystemC link closure通过；shared physical codec的
 完成：Q20 formal/admitted双路径、f16/bf16 formal、deterministic 64³ admitted large GEMM和Q21完整输出已经通过；bulk
 自动dispatch、错误record/no-scalar-fallback、output mismatch、DTE no-progress及all-rank atomic result已有覆盖。large case
 只形成8个target transaction、一次MatMul和零bulk formal FMA；Q21形成11984个transaction、17个SystemC thread process。
+Q21同一source/driver链还在已发布package与reference comparison之后于logical rank 15 terminal注入失败；该test-only seam
+只存在于`wafer-compile-test`，验证稳定stage/rank诊断、无matched model result及manifest/rank module保留。
 Q22据此只发布`target-call/SystemC model-only functional-numeric`，仍不称repo CRT、packet、hardware numeric、exact
 package/ELF、性能或timing model。最终fresh suite数量记录在`tasks/progress.md`。
 

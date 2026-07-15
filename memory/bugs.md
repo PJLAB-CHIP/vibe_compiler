@@ -373,3 +373,13 @@
   后续对象的unchecked error；它与业务错误是否预期无关。
 - 修复模式：有顺序依赖的validation按“构造一个 -> 立即检查/`takeError` -> 再构造下一个”编写。若必须并行构造，则所有
   error都要在任何return前合并或消费。negative test必须验证稳定非零诊断而不是只在release/no-assert构建观察退出码。
+
+## 2026-07-15 completion声明必须追到最后一个execution consumer
+
+- 现象：target-call的109项测试只验证variant family仍被写成“逐字段闭合”；bulk final record保存implementation/descriptor，
+  runtime admission却未携带或比较；SystemC设计正文写长寿命可复用，公开入口实际只允许initial elaboration一次调用。
+- 根因：把registry/readback对象存在、组件层negative或设计目标当成了下游实际消费证明，没有逐项重放completion gate中的
+  field mapping、runtime evidence drift、source late-rank和lifecycle事实。
+- 修复模式：descriptor用位置互异sentinel做逐字段oracle；qualification evidence进入admission并在execution后比较；
+  source late-rank从正式test driver在package发布后注入；无法由当前入口执行的lifecycle能力明确列为non-goal/后续扩展。
+  完成审计必须同时检查设计文字、production consumer和能因错误而失败的测试，不能只看总测试数。

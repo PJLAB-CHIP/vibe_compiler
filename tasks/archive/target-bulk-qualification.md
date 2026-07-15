@@ -98,7 +98,9 @@ workload已自动dispatch（由Q22.V证明），也不表示Host CRT、SystemC�
 - 首批F16/BF16/F32同dtype GEMM由target-owned Cx/NCx codec/layout提升为F32 dense，一次oneDNN MatMul、最多一次weights
   reorder，再经formal GEMM finalize和target pack提交；64³ row超过runtime formal budget仍无scalar fallback。
 - canonical absolute no-alias/no-replace `calibrate -> freeze -> validate`、finite-payload `profile-bounded` policy、完整
-  environment/descriptor/evidence readback及runtime exact-match admission已闭合；malformed/tampered/environment/budget/
-  reference implementation均fail closed。
-- feature-on base unit 137 pass/1个明确importer skip、numeric 37/37、bulk 12/12、lit 208 pass/41个均为未启用importer的
-  unsupported、CTest 14/14；feature-off base 138/138、lit 248 pass/1个feature-inverse unsupported、CTest 9/9。
+  environment/descriptor/evidence readback及runtime exact-match admission已闭合；admission携带冻结的actual implementation和
+  resolved descriptor digest，执行后与当前primitive evidence逐项复核。malformed/tampered、implementation/descriptor、
+  environment、budget或reference implementation drift均fail closed。
+- 2026-07-15综合重放中feature-on base/numeric/bulk分别164/164、47/47、14/14，lit为250 pass/2个预期
+  feature-inverse unsupported，CTest 22/22；feature-off base 164/164，lit为249 pass/3个明确feature unsupported，
+  CTest 12/12。

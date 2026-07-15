@@ -608,6 +608,44 @@ TEST(MPFRNumericTest, RestoresCompleteCallerEnvironment) {
   EXPECT_EQ(mpfr_flags_save(), MPFR_FLAGS_NAN | MPFR_FLAGS_OVERFLOW);
 }
 
+TEST(MPFRNumericTest, NestedCallerEnvironmentsRestoreInLIFOOrder) {
+  CallerMPFREnvironment restoreAtExit;
+  ASSERT_EQ(mpfr_set_emin(-700), 0);
+  ASSERT_EQ(mpfr_set_emax(800), 0);
+  mpfr_set_default_prec(61);
+  mpfr_set_default_rounding_mode(MPFR_RNDD);
+  mpfr_clear_flags();
+  mpfr_flags_set(MPFR_FLAGS_UNDERFLOW);
+
+  {
+    CallerMPFREnvironment restoreOuter;
+    ASSERT_EQ(mpfr_set_emin(mpfr_get_emin_min()), 0);
+    ASSERT_EQ(mpfr_set_emax(mpfr_get_emax_max()), 0);
+    ASSERT_EQ(mpfr_set_emin(-500), 0);
+    ASSERT_EQ(mpfr_set_emax(600), 0);
+    mpfr_set_default_prec(79);
+    mpfr_set_default_rounding_mode(MPFR_RNDU);
+    mpfr_clear_flags();
+    mpfr_flags_set(MPFR_FLAGS_DIVBY0);
+
+    llvm::Expected<FormalNumericResult> result = executeMPFRFormal(request(
+        MPFRFormalOperation::Exp, kFormatCases[2], kFormatCases[2].one));
+    ASSERT_TRUE(static_cast<bool>(result))
+        << llvm::toString(result.takeError());
+    EXPECT_EQ(mpfr_get_emin(), -500);
+    EXPECT_EQ(mpfr_get_emax(), 600);
+    EXPECT_EQ(mpfr_get_default_prec(), 79);
+    EXPECT_EQ(mpfr_get_default_rounding_mode(), MPFR_RNDU);
+    EXPECT_EQ(mpfr_flags_save(), MPFR_FLAGS_DIVBY0);
+  }
+
+  EXPECT_EQ(mpfr_get_emin(), -700);
+  EXPECT_EQ(mpfr_get_emax(), 800);
+  EXPECT_EQ(mpfr_get_default_prec(), 61);
+  EXPECT_EQ(mpfr_get_default_rounding_mode(), MPFR_RNDD);
+  EXPECT_EQ(mpfr_flags_save(), MPFR_FLAGS_UNDERFLOW);
+}
+
 TEST(MPFRNumericTest, HandlesAndRestoresDisjointCallerExponentRanges) {
   CallerMPFREnvironment restoreAtExit;
 

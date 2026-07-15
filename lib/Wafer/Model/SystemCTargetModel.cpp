@@ -1,6 +1,7 @@
 //===- SystemCTargetModel.cpp - SystemC functional-event model ----------===//
 
 #include "Wafer/Model/SystemCTargetModel.h"
+#include "Wafer/Model/Testing.h"
 
 #include "SystemCBridge.h"
 
@@ -50,9 +51,11 @@ public:
   SystemCTargetModel(compiler::TargetCallExecutable executable,
                      InvocationMemoryRegistry memory,
                      TargetModelKernelBudget budget,
-                     TargetModelExecutionPolicy policy)
+                     TargetModelExecutionPolicy policy,
+                     std::optional<int64_t> terminalFailureRank)
       : executable(std::move(executable)), memory(std::move(memory)),
         budget(budget), policy(policy),
+        terminalFailureRank(terminalFailureRank),
         rankStates(this->memory.getAddressPlan().getLogicalRanks().size()),
         dteStates(rankStates.size(), DTEState::NotBegun),
         rankPhysicalTiles(rankStates.size()),
@@ -228,6 +231,12 @@ public:
     if (dteStates[static_cast<size_t>(logicalRank)] == DTEState::Active)
       return systemCError(SystemCTargetModelErrorCode::InvocationFailure,
                           "rank reached terminal with active Direct DTE");
+    if (terminalFailureRank && logicalRank == *terminalFailureRank) {
+      latchFailure(SystemCTargetModelErrorCode::InvocationFailure,
+                   "injected-terminal-failure", logicalRank, std::nullopt,
+                   "test-only terminal failure injection");
+      return systemCError(failure->code, failure->str());
+    }
     rank.terminal = true;
     terminalRanks.insert(logicalRank);
     return llvm::Error::success();
@@ -701,6 +710,7 @@ private:
   InvocationMemoryRegistry memory;
   TargetModelKernelBudget budget;
   TargetModelExecutionPolicy policy;
+  std::optional<int64_t> terminalFailureRank;
   FormalNumericExecutionContext numericContext;
   std::vector<RankState> rankStates;
   std::vector<DTEState> dteStates;
@@ -755,11 +765,11 @@ std::error_code SystemCTargetModelError::convertToErrorCode() const {
   return llvm::inconvertibleErrorCode();
 }
 
-llvm::Expected<TargetModelResult>
-executeSystemCTargetModel(compiler::TargetCallExecutable executable,
-                          llvm::ArrayRef<TargetModelInputBinding> inputBindings,
-                          TargetModelKernelBudget budget,
-                          TargetModelExecutionPolicy policy) {
+static llvm::Expected<TargetModelResult> executeSystemCTargetModelImpl(
+    compiler::TargetCallExecutable executable,
+    llvm::ArrayRef<TargetModelInputBinding> inputBindings,
+    TargetModelKernelBudget budget, TargetModelExecutionPolicy policy,
+    std::optional<int64_t> terminalFailureRank) {
   if (!detail::isSystemCInitialElaboration())
     return systemCError(
         SystemCTargetModelErrorCode::InvalidLifecycle,
@@ -768,17 +778,43 @@ executeSystemCTargetModel(compiler::TargetCallExecutable executable,
       executable.getInvocationDescriptor(), inputBindings);
   if (!plan)
     return plan.takeError();
+  if (terminalFailureRank &&
+      !llvm::is_contained(plan->getLogicalRanks(), *terminalFailureRank))
+    return systemCError(SystemCTargetModelErrorCode::InvalidLifecycle,
+                        "terminal failure rank is outside the invocation");
   llvm::Expected<InvocationMemoryRegistry> memory =
       InvocationMemoryRegistry::create(std::move(*plan));
   if (!memory)
     return memory.takeError();
 
   SystemCTargetModel model(std::move(executable), std::move(*memory), budget,
-                           policy);
+                           policy, terminalFailureRank);
   if (llvm::Error error = model.start())
     return std::move(error);
   detail::startSystemCSimulation();
   return model.finish();
 }
+
+llvm::Expected<TargetModelResult>
+executeSystemCTargetModel(compiler::TargetCallExecutable executable,
+                          llvm::ArrayRef<TargetModelInputBinding> inputBindings,
+                          TargetModelKernelBudget budget,
+                          TargetModelExecutionPolicy policy) {
+  return executeSystemCTargetModelImpl(std::move(executable), inputBindings,
+                                       budget, policy, std::nullopt);
+}
+
+namespace testing {
+
+llvm::Expected<TargetModelResult> executeSystemCTargetModelWithTerminalFailure(
+    compiler::TargetCallExecutable executable,
+    llvm::ArrayRef<TargetModelInputBinding> inputBindings,
+    TargetModelKernelBudget budget, TargetModelExecutionPolicy policy,
+    int64_t failureLogicalRank) {
+  return executeSystemCTargetModelImpl(std::move(executable), inputBindings,
+                                       budget, policy, failureLogicalRank);
+}
+
+} // namespace testing
 
 } // namespace wafer::model

@@ -533,3 +533,13 @@
 - `wafer-compile --target-model`的独立oracle边界是显式的：`reference`真实执行Q19，`external`只消费固定source CPU expected。
   不允许在Q19 dtype unsupported后自动切换。当前f32按case显式atol/rtol，非f32 destination按raw bytes exact；两种失败都
   保留已经原子发布的verified package供审计。
+- target-call decoder closure不能只断言109项都能形成正确variant family。为每个descriptor生成ABI位置互异的sentinel，
+  再逐字段比较typed payload中的地址、count、shape/stride、optional parameter、format和static kind；这样字段交换或漏消费
+  才会失败。host native frontend的control value也要显式限制为integer/void，LLVM的pointer PHI/select/icmp本身合法，不能
+  靠IR verifier替代frontend legality。
+- bulk qualification中的`impl_info_str()`和resolved primitive descriptor digest只有进入不可伪造admission、并在每次实际
+  primitive创建后与execution evidence比较，才算runtime exact enforcement。只把它们写入final JSON/readback object会留下
+  “record看似闭合、执行未消费”的重复事实源；negative应分别篡改implementation和descriptor且保持canonical record可解析。
+- 当前SystemC model入口是一driver进程一次initial-elaboration invocation；`sc_start()`运行到quiescent后返回，不声明同进程
+  reset/repeat。需要证明source late-rank原子性时，只在test driver中注入terminal rank failure，仍重放同一package publication、
+  reference comparison、target-call和SystemC链，并断言稳定stage/rank、无matched model result及已发布package保留。

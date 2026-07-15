@@ -948,6 +948,13 @@ executeAdmittedBulkTensorNumeric(const BulkExecutionEnvironment &environment,
                                                 destinationTemplate, budget);
   if (!result)
     return result.takeError();
+  if (result->evidence.implementation !=
+          admission.getExpectedImplementation() ||
+      result->evidence.resolvedDescriptorDigest !=
+          admission.getExpectedResolvedDescriptorDigest())
+    return bulkError(BulkTensorNumericErrorCode::AdmissionMismatch,
+                     "oneDNN implementation or resolved descriptor changed "
+                     "from the frozen qualified row");
   if (computeBulkTensorStorageDigest(result->destination) !=
       admission.getExpectedBackendOutputDigest())
     return bulkError(BulkTensorNumericErrorCode::BackendOutputMismatch,

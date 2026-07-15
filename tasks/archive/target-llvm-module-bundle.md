@@ -77,6 +77,6 @@ board numeric或timing已经完成。
   typed slots、module identifier、closed RISC-V triple和fixed `void(i64...)` entry；缺profile/entry/slot均拒绝。
 - production driver显式执行`ExecutableBundle -> TargetLLVMModuleBundle -> TargetArtifactBundle`；device linker打印bundle内
   同一module，不重新执行ABI preparation、target lowering或LLVM translation。serialized ELF/manifest/package schema未变化。
-- rank1/rank16 linear、rank16 tiny Llama、rank-15 target atomic failure通过；`check-wafer`执行138/138 unit，249项lit中
-  248 pass、唯一unsupported为启用StableHLO时预期的feature-inverse test，CTest 6/6通过。
+- rank1/rank16 linear、rank16 tiny Llama、rank-15 target atomic failure通过；2026-07-15综合重放中base 164/164，
+  lit为250 pass/2个预期feature-inverse unsupported，CTest 22/22通过。
 - 本边界没有执行Host CRT、packet、SystemC或numeric kernel；Q22.H仍受external authorization/spec gate阻塞。

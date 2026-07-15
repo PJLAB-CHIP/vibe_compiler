@@ -400,97 +400,411 @@ makeDecodableArguments(const wafer::TargetCallDescriptor &descriptor) {
   return arguments;
 }
 
-bool payloadMatchesSemantic(
-    const wafer::TargetCallSemantic &semantic,
+template <size_t N>
+std::array<uint32_t, N> expectedArray(llvm::ArrayRef<uint64_t> arguments,
+                                      size_t start) {
+  std::array<uint32_t, N> result{};
+  for (size_t index = 0; index < N; ++index)
+    result[index] = static_cast<uint32_t>(arguments[start + index]);
+  return result;
+}
+
+void expectPayloadFields(
+    const wafer::TargetCallDescriptor &descriptor,
+    llvm::ArrayRef<uint64_t> arguments,
     const wafer::compiler::TargetTransactionPayload &payload) {
+  const wafer::TargetCallSemantic &semantic = descriptor.semantic;
+  SCOPED_TRACE(descriptor.symbol);
+  auto u32 = [&](size_t index) {
+    return static_cast<uint32_t>(arguments[index]);
+  };
+  auto expectFormat = [](wafer::LogicalFormat format) {
+    EXPECT_EQ(format, wafer::LogicalFormat::F32);
+  };
+
   if (const auto *builtin = std::get_if<wafer::TargetCallBuiltin>(&semantic)) {
     switch (*builtin) {
     case wafer::TargetCallBuiltin::RDMA:
-    case wafer::TargetCallBuiltin::WDMA:
-      return std::holds_alternative<
-          wafer::compiler::TargetStridedDMATransaction>(payload);
-    case wafer::TargetCallBuiltin::GatherScatter:
-      return std::holds_alternative<
-          wafer::compiler::TargetGatherScatterTransaction>(payload);
-    case wafer::TargetCallBuiltin::Memset:
-      return std::holds_alternative<wafer::compiler::TargetMemsetTransaction>(
-          payload);
-    case wafer::TargetCallBuiltin::Bit2FP:
-      return std::holds_alternative<wafer::compiler::TargetBit2FPTransaction>(
-          payload);
-    case wafer::TargetCallBuiltin::MaskMove:
-      return std::holds_alternative<wafer::compiler::TargetMaskMoveTransaction>(
-          payload);
-    case wafer::TargetCallBuiltin::Gemm:
-      return std::holds_alternative<wafer::compiler::TargetGemmTransaction>(
-          payload);
+    case wafer::TargetCallBuiltin::WDMA: {
+      ASSERT_TRUE(
+          std::holds_alternative<wafer::compiler::TargetStridedDMATransaction>(
+              payload));
+      const auto &value =
+          std::get<wafer::compiler::TargetStridedDMATransaction>(payload);
+      EXPECT_EQ(value.direction,
+                *builtin == wafer::TargetCallBuiltin::RDMA
+                    ? wafer::compiler::TargetDMADirection::Read
+                    : wafer::compiler::TargetDMADirection::Write);
+      EXPECT_EQ(value.source, arguments[0]);
+      EXPECT_EQ(value.destination, arguments[1]);
+      EXPECT_EQ(value.byteCount, u32(2));
+      EXPECT_EQ(value.innerBytes, u32(3));
+      EXPECT_EQ(value.strides, expectedArray<3>(arguments, 4));
+      EXPECT_EQ(value.iterations, expectedArray<3>(arguments, 7));
+      expectFormat(value.format);
+      return;
+    }
+    case wafer::TargetCallBuiltin::GatherScatter: {
+      ASSERT_TRUE(std::holds_alternative<
+                  wafer::compiler::TargetGatherScatterTransaction>(payload));
+      const auto &value =
+          std::get<wafer::compiler::TargetGatherScatterTransaction>(payload);
+      EXPECT_EQ(value.source, arguments[0]);
+      EXPECT_EQ(value.destination, arguments[1]);
+      EXPECT_EQ(value.byteCount, u32(2));
+      EXPECT_EQ(value.innerBytes, u32(3));
+      EXPECT_EQ(value.sourceStrides, expectedArray<3>(arguments, 4));
+      EXPECT_EQ(value.sourceIterations, expectedArray<3>(arguments, 7));
+      EXPECT_EQ(value.destinationStrides, expectedArray<3>(arguments, 10));
+      EXPECT_EQ(value.destinationIterations, expectedArray<3>(arguments, 13));
+      return;
+    }
+    case wafer::TargetCallBuiltin::Memset: {
+      ASSERT_TRUE(
+          std::holds_alternative<wafer::compiler::TargetMemsetTransaction>(
+              payload));
+      const auto &value =
+          std::get<wafer::compiler::TargetMemsetTransaction>(payload);
+      EXPECT_EQ(value.destination, arguments[0]);
+      EXPECT_EQ(value.value, u32(1));
+      EXPECT_EQ(value.elementCount, u32(2));
+      expectFormat(value.format);
+      return;
+    }
+    case wafer::TargetCallBuiltin::Bit2FP: {
+      ASSERT_TRUE(
+          std::holds_alternative<wafer::compiler::TargetBit2FPTransaction>(
+              payload));
+      const auto &value =
+          std::get<wafer::compiler::TargetBit2FPTransaction>(payload);
+      EXPECT_EQ(value.source, arguments[0]);
+      EXPECT_EQ(value.destination, arguments[1]);
+      EXPECT_EQ(value.elementCount, u32(2));
+      expectFormat(value.format);
+      return;
+    }
+    case wafer::TargetCallBuiltin::MaskMove: {
+      ASSERT_TRUE(
+          std::holds_alternative<wafer::compiler::TargetMaskMoveTransaction>(
+              payload));
+      const auto &value =
+          std::get<wafer::compiler::TargetMaskMoveTransaction>(payload);
+      EXPECT_EQ(value.source, arguments[0]);
+      EXPECT_EQ(value.mask, u32(1));
+      EXPECT_EQ(value.destination, arguments[2]);
+      EXPECT_EQ(value.elementCount, u32(3));
+      expectFormat(value.format);
+      return;
+    }
+    case wafer::TargetCallBuiltin::Gemm: {
+      ASSERT_TRUE(
+          std::holds_alternative<wafer::compiler::TargetGemmTransaction>(
+              payload));
+      const auto &value =
+          std::get<wafer::compiler::TargetGemmTransaction>(payload);
+      EXPECT_EQ(value.lhs, arguments[0]);
+      EXPECT_EQ(value.rhs, arguments[1]);
+      EXPECT_EQ(value.destination, arguments[2]);
+      EXPECT_EQ(value.m, u32(3));
+      EXPECT_EQ(value.k, u32(4));
+      EXPECT_EQ(value.n, u32(5));
+      EXPECT_EQ(value.batchCount, u32(6));
+      expectFormat(value.format);
+      return;
+    }
     case wafer::TargetCallBuiltin::TDMAPad:
-    case wafer::TargetCallBuiltin::TDMAImg2Col:
-      return std::holds_alternative<
-          wafer::compiler::TargetTDMATransformTransaction>(payload);
+    case wafer::TargetCallBuiltin::TDMAImg2Col: {
+      ASSERT_TRUE(std::holds_alternative<
+                  wafer::compiler::TargetTDMATransformTransaction>(payload));
+      const auto &value =
+          std::get<wafer::compiler::TargetTDMATransformTransaction>(payload);
+      const bool imageToColumn =
+          *builtin == wafer::TargetCallBuiltin::TDMAImg2Col;
+      EXPECT_EQ(value.kind,
+                imageToColumn
+                    ? wafer::compiler::TargetTDMATransformKind::ImageToColumn
+                    : wafer::compiler::TargetTDMATransformKind::Pad);
+      EXPECT_EQ(value.source, arguments[0]);
+      EXPECT_EQ(value.destination, arguments[1]);
+      EXPECT_EQ(value.sourceShape, expectedArray<4>(arguments, 2));
+      EXPECT_EQ(value.destinationShape, expectedArray<4>(arguments, 6));
+      EXPECT_EQ(value.pads, expectedArray<4>(arguments, 10));
+      if (imageToColumn) {
+        ASSERT_TRUE(value.kernelStrides.has_value());
+        EXPECT_EQ(*value.kernelStrides, expectedArray<4>(arguments, 14));
+      } else {
+        EXPECT_FALSE(value.kernelStrides.has_value());
+      }
+      expectFormat(value.format);
+      return;
+    }
     case wafer::TargetCallBuiltin::LocalFence:
-      return std::holds_alternative<
-          wafer::compiler::TargetLocalFenceTransaction>(payload);
-    case wafer::TargetCallBuiltin::DirectDTEBegin:
-      return std::holds_alternative<
-          wafer::compiler::TargetDirectDTEBeginTransaction>(payload);
-    case wafer::TargetCallBuiltin::DirectDTESendPrepare:
-      return std::holds_alternative<
-          wafer::compiler::TargetDirectDTESendTransaction>(payload);
-    case wafer::TargetCallBuiltin::DirectDTERecvPrepare:
-      return std::holds_alternative<
-          wafer::compiler::TargetDirectDTEReceiveTransaction>(payload);
-    case wafer::TargetCallBuiltin::DirectDTEWait:
-      return std::holds_alternative<
-          wafer::compiler::TargetDirectDTEWaitTransaction>(payload);
+      EXPECT_TRUE(
+          std::holds_alternative<wafer::compiler::TargetLocalFenceTransaction>(
+              payload));
+      return;
+    case wafer::TargetCallBuiltin::DirectDTEBegin: {
+      ASSERT_TRUE(std::holds_alternative<
+                  wafer::compiler::TargetDirectDTEBeginTransaction>(payload));
+      const auto &value =
+          std::get<wafer::compiler::TargetDirectDTEBeginTransaction>(payload);
+      EXPECT_EQ(value.statusAddress, arguments[0]);
+      EXPECT_EQ(value.rankCount, u32(1));
+      return;
+    }
+    case wafer::TargetCallBuiltin::DirectDTESendPrepare: {
+      ASSERT_TRUE(std::holds_alternative<
+                  wafer::compiler::TargetDirectDTESendTransaction>(payload));
+      const auto &value =
+          std::get<wafer::compiler::TargetDirectDTESendTransaction>(payload);
+      EXPECT_EQ(value.source, arguments[0]);
+      EXPECT_EQ(value.remoteDestination, arguments[1]);
+      EXPECT_EQ(value.byteCount, u32(2));
+      EXPECT_EQ(value.localTile, u32(3));
+      EXPECT_EQ(value.remoteTile, u32(4));
+      EXPECT_EQ(value.remoteFSM, u32(5));
+      EXPECT_EQ(value.highPerformance, u32(6) != 0);
+      return;
+    }
+    case wafer::TargetCallBuiltin::DirectDTERecvPrepare: {
+      ASSERT_TRUE(std::holds_alternative<
+                  wafer::compiler::TargetDirectDTEReceiveTransaction>(payload));
+      const auto &value =
+          std::get<wafer::compiler::TargetDirectDTEReceiveTransaction>(payload);
+      EXPECT_EQ(value.destination, arguments[0]);
+      EXPECT_EQ(value.byteCount, u32(1));
+      EXPECT_EQ(value.localTile, u32(2));
+      EXPECT_EQ(value.remoteTile, u32(3));
+      EXPECT_EQ(value.localFSM, u32(4));
+      return;
+    }
+    case wafer::TargetCallBuiltin::DirectDTEWait: {
+      ASSERT_TRUE(std::holds_alternative<
+                  wafer::compiler::TargetDirectDTEWaitTransaction>(payload));
+      EXPECT_EQ(
+          std::get<wafer::compiler::TargetDirectDTEWaitTransaction>(payload)
+              .event,
+          arguments[0]);
+      return;
+    }
     case wafer::TargetCallBuiltin::DirectDTEFinish:
-      return std::holds_alternative<
-          wafer::compiler::TargetDirectDTEFinishTransaction>(payload);
+      EXPECT_TRUE(std::holds_alternative<
+                  wafer::compiler::TargetDirectDTEFinishTransaction>(payload));
+      return;
     }
   }
-  if (std::holds_alternative<wafer::InstrElementwiseKind>(semantic))
-    return std::holds_alternative<
-        wafer::compiler::TargetElementwiseTransaction>(payload);
-  if (std::holds_alternative<wafer::InstrReduceKind>(semantic))
-    return std::holds_alternative<wafer::compiler::TargetReduceTransaction>(
-        payload);
-  if (std::holds_alternative<wafer::InstrConvertKind>(semantic))
-    return std::holds_alternative<wafer::compiler::TargetConvertTransaction>(
-        payload);
-  if (std::holds_alternative<wafer::InstrConvKind>(semantic))
-    return std::holds_alternative<wafer::compiler::TargetConvTransaction>(
-        payload);
-  if (std::holds_alternative<wafer::InstrPoolKind>(semantic))
-    return std::holds_alternative<wafer::compiler::TargetPoolTransaction>(
-        payload);
-  if (std::holds_alternative<wafer::InstrUnpoolKind>(semantic))
-    return std::holds_alternative<wafer::compiler::TargetUnpoolTransaction>(
-        payload);
+
+  if (const auto *kind = std::get_if<wafer::InstrElementwiseKind>(&semantic)) {
+    ASSERT_TRUE(
+        std::holds_alternative<wafer::compiler::TargetElementwiseTransaction>(
+            payload));
+    const auto &value =
+        std::get<wafer::compiler::TargetElementwiseTransaction>(payload);
+    const bool unary = arguments.size() == 4;
+    EXPECT_EQ(value.kind, *kind);
+    EXPECT_EQ(value.lhs, arguments[0]);
+    if (unary)
+      EXPECT_FALSE(value.rhs.has_value());
+    else {
+      ASSERT_TRUE(value.rhs.has_value());
+      EXPECT_EQ(*value.rhs, arguments[1]);
+    }
+    EXPECT_EQ(value.destination, arguments[unary ? 1 : 2]);
+    EXPECT_EQ(value.elementCount, u32(unary ? 2 : 3));
+    expectFormat(value.format);
+    return;
+  }
+  if (const auto *kind = std::get_if<wafer::InstrReduceKind>(&semantic)) {
+    ASSERT_TRUE(
+        std::holds_alternative<wafer::compiler::TargetReduceTransaction>(
+            payload));
+    const auto &value =
+        std::get<wafer::compiler::TargetReduceTransaction>(payload);
+    EXPECT_EQ(value.kind, *kind);
+    EXPECT_EQ(value.source, arguments[0]);
+    EXPECT_EQ(value.destination, arguments[1]);
+    EXPECT_EQ(value.dimension, u32(2));
+    EXPECT_EQ(value.nhwc, expectedArray<4>(arguments, 3));
+    expectFormat(value.format);
+    return;
+  }
+  if (const auto *kind = std::get_if<wafer::InstrConvertKind>(&semantic)) {
+    ASSERT_TRUE(
+        std::holds_alternative<wafer::compiler::TargetConvertTransaction>(
+            payload));
+    const auto &value =
+        std::get<wafer::compiler::TargetConvertTransaction>(payload);
+    EXPECT_EQ(value.kind, *kind);
+    EXPECT_EQ(value.source, arguments[0]);
+    EXPECT_EQ(value.destination, arguments[1]);
+    EXPECT_EQ(value.elementCount, u32(2));
+    switch (wafer::getInstrConvertParameterKind(*kind)) {
+    case wafer::InstrConvertParameterKind::ZeroPoint:
+      ASSERT_TRUE(value.zeroPoint.has_value());
+      EXPECT_EQ(*value.zeroPoint, u32(3));
+      EXPECT_FALSE(value.roundingMode.has_value());
+      break;
+    case wafer::InstrConvertParameterKind::RoundingMode:
+      EXPECT_FALSE(value.zeroPoint.has_value());
+      ASSERT_TRUE(value.roundingMode.has_value());
+      EXPECT_EQ(*value.roundingMode, u32(4));
+      break;
+    case wafer::InstrConvertParameterKind::None:
+      EXPECT_FALSE(value.zeroPoint.has_value());
+      EXPECT_FALSE(value.roundingMode.has_value());
+      break;
+    }
+    return;
+  }
+  if (const auto *kind = std::get_if<wafer::InstrConvKind>(&semantic)) {
+    ASSERT_TRUE(std::holds_alternative<wafer::compiler::TargetConvTransaction>(
+        payload));
+    const auto &value =
+        std::get<wafer::compiler::TargetConvTransaction>(payload);
+    EXPECT_EQ(value.kind, *kind);
+    EXPECT_EQ(value.input, arguments[0]);
+    EXPECT_EQ(value.weight, arguments[1]);
+    EXPECT_EQ(value.destination, arguments[2]);
+    EXPECT_EQ(value.inputShape, expectedArray<4>(arguments, 4));
+    EXPECT_EQ(value.weightShape, expectedArray<4>(arguments, 8));
+    EXPECT_EQ(value.outputShape, expectedArray<4>(arguments, 12));
+    EXPECT_EQ(value.pads, expectedArray<4>(arguments, 16));
+    EXPECT_EQ(value.unpads, expectedArray<4>(arguments, 20));
+    EXPECT_EQ(value.kernelStrides, expectedArray<4>(arguments, 24));
+    EXPECT_EQ(value.dilations, expectedArray<2>(arguments, 28));
+    expectFormat(value.format);
+    return;
+  }
+  if (const auto *kind = std::get_if<wafer::InstrPoolKind>(&semantic)) {
+    ASSERT_TRUE(std::holds_alternative<wafer::compiler::TargetPoolTransaction>(
+        payload));
+    const auto &value =
+        std::get<wafer::compiler::TargetPoolTransaction>(payload);
+    const bool indexed = *kind == wafer::InstrPoolKind::IndexedMax ||
+                         *kind == wafer::InstrPoolKind::IndexedMin;
+    const size_t first = indexed ? 3 : 2;
+    EXPECT_EQ(value.kind, *kind);
+    EXPECT_EQ(value.input, arguments[0]);
+    EXPECT_EQ(value.valueDestination, arguments[1]);
+    if (indexed) {
+      ASSERT_TRUE(value.indexDestination.has_value());
+      EXPECT_EQ(*value.indexDestination, arguments[2]);
+    } else {
+      EXPECT_FALSE(value.indexDestination.has_value());
+    }
+    EXPECT_EQ(value.sourceShape, expectedArray<4>(arguments, first + 1));
+    EXPECT_EQ(value.destinationShape, expectedArray<4>(arguments, first + 5));
+    EXPECT_EQ(value.pads, expectedArray<4>(arguments, first + 9));
+    EXPECT_EQ(value.kernelStrides, expectedArray<4>(arguments, first + 13));
+    expectFormat(value.format);
+    return;
+  }
+  if (const auto *kind = std::get_if<wafer::InstrUnpoolKind>(&semantic)) {
+    ASSERT_TRUE(
+        std::holds_alternative<wafer::compiler::TargetUnpoolTransaction>(
+            payload));
+    const auto &value =
+        std::get<wafer::compiler::TargetUnpoolTransaction>(payload);
+    EXPECT_EQ(value.kind, *kind);
+    EXPECT_EQ(value.input, arguments[0]);
+    EXPECT_EQ(value.destination, arguments[1]);
+    if (*kind == wafer::InstrUnpoolKind::Avg)
+      EXPECT_FALSE(value.index.has_value());
+    else {
+      ASSERT_TRUE(value.index.has_value());
+      EXPECT_EQ(*value.index, u32(3));
+    }
+    EXPECT_EQ(value.sourceShape, expectedArray<4>(arguments, 4));
+    EXPECT_EQ(value.destinationShape, expectedArray<4>(arguments, 8));
+    EXPECT_EQ(value.kernelStrides, expectedArray<4>(arguments, 12));
+    expectFormat(value.format);
+    return;
+  }
   if (const auto *kind = std::get_if<wafer::InstrPeripheralKind>(&semantic)) {
     switch (*kind) {
     case wafer::InstrPeripheralKind::ArgMax:
-    case wafer::InstrPeripheralKind::ArgMin:
-      return std::holds_alternative<
-          wafer::compiler::TargetPeripheralArgExtremaTransaction>(payload);
-    case wafer::InstrPeripheralKind::Bilinear:
-      return std::holds_alternative<
-          wafer::compiler::TargetPeripheralBilinearTransaction>(payload);
+    case wafer::InstrPeripheralKind::ArgMin: {
+      ASSERT_TRUE(
+          std::holds_alternative<
+              wafer::compiler::TargetPeripheralArgExtremaTransaction>(payload));
+      const auto &value =
+          std::get<wafer::compiler::TargetPeripheralArgExtremaTransaction>(
+              payload);
+      EXPECT_EQ(value.kind, *kind);
+      EXPECT_EQ(value.source, arguments[0]);
+      EXPECT_EQ(value.valueDestination, arguments[1]);
+      EXPECT_EQ(value.indexDestination, arguments[2]);
+      EXPECT_EQ(value.elementCount, u32(4));
+      expectFormat(value.format);
+      return;
+    }
+    case wafer::InstrPeripheralKind::Bilinear: {
+      ASSERT_TRUE(
+          std::holds_alternative<
+              wafer::compiler::TargetPeripheralBilinearTransaction>(payload));
+      const auto &value =
+          std::get<wafer::compiler::TargetPeripheralBilinearTransaction>(
+              payload);
+      EXPECT_EQ(value.source, arguments[0]);
+      EXPECT_EQ(value.destination, arguments[1]);
+      EXPECT_EQ(value.elementCount, u32(3));
+      expectFormat(value.format);
+      EXPECT_EQ(value.sourceShape, expectedArray<4>(arguments, 5));
+      EXPECT_EQ(value.destinationShape, expectedArray<4>(arguments, 9));
+      return;
+    }
     case wafer::InstrPeripheralKind::Lut16:
-    case wafer::InstrPeripheralKind::Lut32:
-      return std::holds_alternative<
-          wafer::compiler::TargetPeripheralLUTTransaction>(payload);
-    case wafer::InstrPeripheralKind::RandGen:
-      return std::holds_alternative<
-          wafer::compiler::TargetPeripheralRandomTransaction>(payload);
-    case wafer::InstrPeripheralKind::ElemMask:
-      return std::holds_alternative<
-          wafer::compiler::TargetPeripheralElementMaskTransaction>(payload);
+    case wafer::InstrPeripheralKind::Lut32: {
+      ASSERT_TRUE(std::holds_alternative<
+                  wafer::compiler::TargetPeripheralLUTTransaction>(payload));
+      const auto &value =
+          std::get<wafer::compiler::TargetPeripheralLUTTransaction>(payload);
+      EXPECT_EQ(value.kind, *kind);
+      EXPECT_EQ(value.source, arguments[0]);
+      EXPECT_EQ(value.table, arguments[1]);
+      EXPECT_EQ(value.destination, arguments[2]);
+      EXPECT_EQ(value.elementCount, u32(4));
+      expectFormat(value.format);
+      EXPECT_EQ(value.tableElementCount, u32(6));
+      return;
+    }
+    case wafer::InstrPeripheralKind::RandGen: {
+      ASSERT_TRUE(std::holds_alternative<
+                  wafer::compiler::TargetPeripheralRandomTransaction>(payload));
+      const auto &value =
+          std::get<wafer::compiler::TargetPeripheralRandomTransaction>(payload);
+      EXPECT_EQ(value.sources,
+                (std::array<uint64_t, 2>{arguments[0], arguments[1]}));
+      EXPECT_EQ(
+          value.destinations,
+          (std::array<uint64_t, 3>{arguments[2], arguments[3], arguments[4]}));
+      EXPECT_EQ(value.elementCount, u32(6));
+      expectFormat(value.format);
+      return;
+    }
+    case wafer::InstrPeripheralKind::ElemMask: {
+      ASSERT_TRUE(std::holds_alternative<
+                  wafer::compiler::TargetPeripheralElementMaskTransaction>(
+          payload));
+      const auto &value =
+          std::get<wafer::compiler::TargetPeripheralElementMaskTransaction>(
+              payload);
+      EXPECT_EQ(value.source, arguments[0]);
+      EXPECT_EQ(value.destination, arguments[1]);
+      EXPECT_EQ(value.elementCount, u32(3));
+      expectFormat(value.format);
+      EXPECT_EQ(value.scale, u32(6));
+      EXPECT_EQ(value.probability, u32(7));
+      EXPECT_EQ(value.roundingMode, u32(8));
+      return;
+    }
     case wafer::InstrPeripheralKind::Count:
     case wafer::InstrPeripheralKind::Factorize:
-      return false;
+      FAIL() << "unregistered peripheral semantic";
+      return;
     }
   }
-  return false;
+  FAIL() << "unknown target-call semantic";
 }
 
 TEST(TargetCallRegistryTest, ExactlyCoversTypedTargetCallSurface) {
@@ -527,7 +841,7 @@ TEST(TargetCallRegistryTest, ExactlyCoversTypedTargetCallSurface) {
             17u);
 }
 
-TEST(TargetCallRegistryTest, EveryDescriptorDecodesOneTypedPayload) {
+TEST(TargetCallRegistryTest, EveryDescriptorDecodesEveryABIField) {
   wafer::TargetCallDecodeContext context{
       wafer::TargetProfileId::waferTx81SingleCardKernelV1(), 16};
   size_t decoded = 0;
@@ -538,8 +852,7 @@ TEST(TargetCallRegistryTest, EveryDescriptorDecodesOneTypedPayload) {
         wafer::decodeTargetCallPayload(descriptor, context, arguments);
     ASSERT_TRUE(static_cast<bool>(payload))
         << descriptor.symbol << ": " << llvm::toString(payload.takeError());
-    EXPECT_TRUE(payloadMatchesSemantic(descriptor.semantic, *payload))
-        << descriptor.symbol;
+    expectPayloadFields(descriptor, arguments, *payload);
     ++decoded;
   }
   EXPECT_EQ(decoded, 109u);
@@ -806,6 +1119,91 @@ TEST(TargetCallFrontendTest, NativeAddressDereferenceFailsBeforeSinkBegin) {
   EXPECT_TRUE(error.find("inttoptr") != std::string::npos ||
               error.find("load") != std::string::npos)
       << error;
+  EXPECT_FALSE(sink.began);
+}
+
+TEST(TargetCallFrontendTest, NativePointerSelectFailsBeforeSinkBegin) {
+  std::string diagnostics;
+  auto bundle = buildElementwiseTargetBundle(diagnostics);
+  ASSERT_TRUE(static_cast<bool>(bundle))
+      << diagnostics << llvm::toString(bundle.takeError());
+  llvm::Module &module =
+      const_cast<llvm::Module &>(bundle->getModules().front().getModule());
+  llvm::Function *entry = module.getFunction("main");
+  ASSERT_NE(entry, nullptr);
+  llvm::Type *pointer = llvm::PointerType::get(module.getContext(), 0);
+  auto *nullPointer =
+      llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(pointer));
+  (void)llvm::SelectInst::Create(
+      llvm::ConstantInt::getTrue(module.getContext()), nullPointer, nullPointer,
+      "pointer-control", &entry->getEntryBlock().front());
+
+  std::vector<wafer::compiler::TargetCallRankArguments> arguments = {
+      {0,
+       std::vector<uint64_t>(
+           bundle->getModules().front().getKernelABISlots().size(), 0x100000)}};
+  RecordingSink sink;
+  auto result =
+      wafer::compiler::executeTargetCallFrontend(*bundle, arguments, sink);
+  ASSERT_FALSE(static_cast<bool>(result));
+  EXPECT_NE(llvm::toString(result.takeError()).find("select"),
+            std::string::npos);
+  EXPECT_FALSE(sink.began);
+}
+
+TEST(TargetCallFrontendTest, NativePointerCompareFailsBeforeSinkBegin) {
+  std::string diagnostics;
+  auto bundle = buildElementwiseTargetBundle(diagnostics);
+  ASSERT_TRUE(static_cast<bool>(bundle))
+      << diagnostics << llvm::toString(bundle.takeError());
+  llvm::Module &module =
+      const_cast<llvm::Module &>(bundle->getModules().front().getModule());
+  llvm::Function *entry = module.getFunction("main");
+  ASSERT_NE(entry, nullptr);
+  auto *pointer = llvm::PointerType::get(module.getContext(), 0);
+  auto *nullPointer = llvm::ConstantPointerNull::get(pointer);
+  (void)new llvm::ICmpInst(&entry->getEntryBlock().front(),
+                           llvm::ICmpInst::ICMP_EQ, nullPointer, nullPointer,
+                           "pointer-control");
+
+  std::vector<wafer::compiler::TargetCallRankArguments> arguments = {
+      {0,
+       std::vector<uint64_t>(
+           bundle->getModules().front().getKernelABISlots().size(), 0x100000)}};
+  RecordingSink sink;
+  auto result =
+      wafer::compiler::executeTargetCallFrontend(*bundle, arguments, sink);
+  ASSERT_FALSE(static_cast<bool>(result));
+  EXPECT_NE(llvm::toString(result.takeError()).find("icmp"), std::string::npos);
+  EXPECT_FALSE(sink.began);
+}
+
+TEST(TargetCallFrontendTest, NativePointerPhiFailsBeforeSinkBegin) {
+  std::string diagnostics;
+  auto bundle = buildElementwiseTargetBundle(diagnostics);
+  ASSERT_TRUE(static_cast<bool>(bundle))
+      << diagnostics << llvm::toString(bundle.takeError());
+  llvm::Module &module =
+      const_cast<llvm::Module &>(bundle->getModules().front().getModule());
+  llvm::Function *entry = module.getFunction("main");
+  ASSERT_NE(entry, nullptr);
+  llvm::BasicBlock *loop =
+      llvm::BasicBlock::Create(module.getContext(), "pointer-control", entry);
+  llvm::IRBuilder<> builder(loop);
+  auto *pointer = llvm::PointerType::get(module.getContext(), 0);
+  llvm::PHINode *phi = builder.CreatePHI(pointer, 1);
+  builder.CreateBr(loop);
+  phi->addIncoming(llvm::ConstantPointerNull::get(pointer), loop);
+
+  std::vector<wafer::compiler::TargetCallRankArguments> arguments = {
+      {0,
+       std::vector<uint64_t>(
+           bundle->getModules().front().getKernelABISlots().size(), 0x100000)}};
+  RecordingSink sink;
+  auto result =
+      wafer::compiler::executeTargetCallFrontend(*bundle, arguments, sink);
+  ASSERT_FALSE(static_cast<bool>(result));
+  EXPECT_NE(llvm::toString(result.takeError()).find("phi"), std::string::npos);
   EXPECT_FALSE(sink.began);
 }
 
