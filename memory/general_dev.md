@@ -549,3 +549,14 @@
   证明existing build会选择新record对应package，而不只测试clean configure。
 - `tasks/progress.md`只保留当前调度、前置关系、later/external gate和紧凑done索引；逐轮测试数字、实现复盘与历史worklog
   留在编号设计文档、`tasks/archive/`或Git历史中，避免队列再次变成重复事实源。
+
+## 源码模块化与构建门禁
+
+- 同一 production library 内的聚合实现应按稳定语义 family 拆成独立 translation unit；公共 facade 只保留
+  legality、选项和 orchestration，共享 helper 放在 owner library 的 private header，不为物理拆文件新增公共 API、
+  textual include 聚合或空壳 library target。
+- 源码组织 gate 检查 owner、必需 source list、private/public header 边界、legacy aggregate 移除和依赖顺序；不要用
+  任意 LOC 阈值、文件数量或任务文档文本代替结构 review。空目录不是 Git 对象，不提交 `.gitkeep` 维持虚假层级。
+- 根 `check-wafer` 应从当前配置实际存在的子 gate 动态组成，避免 feature 组合的 `if/elseif` 漏掉并存 gate；lit 中
+  引用的可执行工具必须同时进入 target `DEPENDS`。验证 optional dependency 边界时同时 query feature-on/off 的 Ninja
+  graph，并实际运行两个配置的统一入口。

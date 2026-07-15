@@ -27,6 +27,10 @@ add_mlir_conversion_library(WaferGroupToTileRegion
 )
 
 add_mlir_conversion_library(WaferTileRegionToInstr
+  WaferTileRegionToInstr/CollectiveLowering.cpp
+  WaferTileRegionToInstr/ComputeLowering.cpp
+  WaferTileRegionToInstr/MovementLowering.cpp
+  WaferTileRegionToInstr/MovementSupport.cpp
   WaferTileRegionToInstr/WaferTileRegionToInstr.cpp
 
   ADDITIONAL_HEADER_DIRS

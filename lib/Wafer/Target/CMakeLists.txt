@@ -1,9 +1,12 @@
 add_mlir_library(WaferTarget
   PARTIAL_SOURCES_INTENDED
   FormalNumeric.cpp
+  NumericCapability.cpp
   NumericCodec.cpp
+  NumericCommand.cpp
   NumericDependencyConformance.cpp
-  NumericSemantics.cpp
+  NumericProfiles.cpp
+  NumericSemanticsInternal.cpp
   PhysicalTensorCodec.cpp
   TargetCall.cpp
   TargetCallDecoder.cpp

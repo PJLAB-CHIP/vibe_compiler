@@ -65,24 +65,19 @@ if(WAFER_ENABLE_UNIT_TESTS)
   add_subdirectory(unittests)
 endif()
 
-if(TARGET WaferUnitTests)
-  if(TARGET check-wafer-bulk-model-unit)
-    add_custom_target(check-wafer DEPENDS
-      check-wafer-lit
-      check-wafer-unit
-      check-wafer-numeric-model-unit
-      check-wafer-bulk-model-unit)
-  elseif(TARGET check-wafer-numeric-model-unit)
-    add_custom_target(check-wafer DEPENDS
-      check-wafer-lit
-      check-wafer-unit
-      check-wafer-numeric-model-unit)
-  else()
-    add_custom_target(check-wafer DEPENDS check-wafer-lit check-wafer-unit)
+set(_wafer_check_targets check-wafer-lit)
+foreach(_wafer_optional_check_target IN ITEMS
+    check-wafer-unit
+    check-wafer-numeric-model-unit
+    check-wafer-bulk-model-unit
+    check-wafer-systemc-model)
+  if(TARGET ${_wafer_optional_check_target})
+    list(APPEND _wafer_check_targets ${_wafer_optional_check_target})
   endif()
-else()
-  add_custom_target(check-wafer DEPENDS check-wafer-lit)
-endif()
+endforeach()
+add_custom_target(check-wafer DEPENDS ${_wafer_check_targets})
+unset(_wafer_check_targets)
+unset(_wafer_optional_check_target)
 
 if(TARGET wafer-shardy-cmake-gate)
   add_dependencies(check-wafer wafer-shardy-cmake-gate)

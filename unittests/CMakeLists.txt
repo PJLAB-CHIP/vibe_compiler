@@ -19,6 +19,7 @@ add_executable(WaferUnitTests
   Target/NumericSemanticsTest.cpp
   Target/PhysicalTensorCodecTest.cpp
   Target/TargetFormatTest.cpp
+  Transforms/Target/LowerInstrToTargetLLVMTest.cpp
 )
 llvm_update_compile_flags(WaferUnitTests)
 find_program(WAFER_TEST_LLVM_CLANGXX NAMES clang++ REQUIRED)

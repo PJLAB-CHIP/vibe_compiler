@@ -4,7 +4,6 @@
 #include "Wafer/InitAll.h"
 #include "Wafer/Pipelines/Pipelines.h"
 #include "Wafer/Transforms/Passes.h"
-#include "Wafer/Transforms/TargetConversion.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
@@ -20,7 +19,6 @@
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Tensor/Transforms/BufferizableOpInterfaceImpl.h"
 #include "mlir/IR/BuiltinOps.h"
-#include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
@@ -165,8 +163,8 @@ module {
                 group, /*candidateTileSizes=*/{1},
                 /*candidateReductionTileSizes=*/{3}, lowered, &failureReason,
                 /*currentLogicalRank=*/0)
-          : wafer::lowerGroupToTileRegionModule(
-                group, lowered, &failureReason, /*currentLogicalRank=*/0);
+          : wafer::lowerGroupToTileRegionModule(group, lowered, &failureReason,
+                                                /*currentLogicalRank=*/0);
   if (mlir::succeeded(result))
     return "unexpected lowering success";
   return failureReason;
@@ -272,11 +270,10 @@ module {
 
   mlir::OwningOpRef<mlir::ModuleOp> lowered;
   std::string failureReason;
-  EXPECT_TRUE(
-      mlir::failed(wafer::lowerCompleteCandidateGroupToTileRegionModule(
-          group, /*candidateTileSizes=*/{1},
-          /*candidateReductionTileSizes=*/{3}, lowered, &failureReason,
-          /*currentLogicalRank=*/0)));
+  EXPECT_TRUE(mlir::failed(wafer::lowerCompleteCandidateGroupToTileRegionModule(
+      group, /*candidateTileSizes=*/{1},
+      /*candidateReductionTileSizes=*/{3}, lowered, &failureReason,
+      /*currentLogicalRank=*/0)));
   EXPECT_EQ(failureReason,
             "candidate reduction split is disabled because it cannot preserve "
             "source reduction order");
@@ -326,8 +323,8 @@ module {
 
   uint64_t terminalOperationCount = 0;
   module->walk([&](mlir::Operation *operation) {
-    if (mlir::isa<wafer::WaferInstructionOpInterface,
-                  wafer::SyncLocalFenceOp>(operation))
+    if (mlir::isa<wafer::WaferInstructionOpInterface, wafer::SyncLocalFenceOp>(
+            operation))
       ++terminalOperationCount;
   });
   EXPECT_EQ(terminalOperationCount,
@@ -683,67 +680,6 @@ module {
   source->print(sourceAfterStream);
   EXPECT_EQ(sourceAfter, sourceBefore);
   EXPECT_TRUE(mlir::succeeded(mlir::verify(*source)));
-}
-
-TEST(LowerInstrToTargetLLVMTest,
-     RejectsResidualElementwiseMapsWithoutMutatingSource) {
-  mlir::DialectRegistry registry;
-  registerConversionDialects(registry);
-  mlir::MLIRContext context(registry);
-  context.loadAllAvailableDialects();
-
-  auto source = mlir::parseSourceString<mlir::ModuleOp>(
-      R"mlir(
-module {
-  func.func @main() {
-    %lhs = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
-        : memref<2x3xf16, #wafer.memory<spm, tensor>>
-    %rhs = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65792>}
-        : memref<2x3xf16, #wafer.memory<spm, tensor>>
-    %dst = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<66048>}
-        : memref<2x3xf16, #wafer.memory<spm, tensor>>
-    wafer.instr.elementwise #wafer.instr_elementwise_kind<add>
-        %lhs, %rhs into %dst
-        : memref<2x3xf16, #wafer.memory<spm, tensor>>,
-          memref<2x3xf16, #wafer.memory<spm, tensor>>
-      into memref<2x3xf16, #wafer.memory<spm, tensor>>
-    return
-  }
-}
-)mlir",
-      mlir::ParserConfig(&context));
-  ASSERT_TRUE(source);
-
-  wafer::InstrElementwiseOp elementwise;
-  source->walk([&](wafer::InstrElementwiseOp op) { elementwise = op; });
-  ASSERT_TRUE(elementwise);
-  mlir::AffineMapAttr identity = mlir::AffineMapAttr::get(
-      mlir::AffineMap::getMultiDimIdentityMap(2, &context));
-  elementwise->setAttr(
-      "indexing_maps",
-      mlir::ArrayAttr::get(&context, {identity, identity, identity}));
-
-  std::string diagnostics;
-  mlir::ScopedDiagnosticHandler handler(
-      &context, [&](mlir::Diagnostic &diagnostic) {
-        llvm::raw_string_ostream stream(diagnostics);
-        diagnostic.print(stream);
-        return mlir::success();
-      });
-  mlir::PassManager manager(&context);
-  manager.enableVerifier(false);
-  wafer::TargetConversionRequest request{
-      wafer::TargetProfileId::waferTx81SingleCardKernelV1()};
-  manager.addPass(wafer::createLowerInstrToTargetLLVMPass(request));
-
-  EXPECT_TRUE(mlir::failed(manager.run(*source)));
-  EXPECT_NE(
-      diagnostics.find("unsupported_target_instr: terminal elementwise retains "
-                       "indexing_maps after instruction legalization"),
-      std::string::npos)
-      << diagnostics;
-  EXPECT_EQ(countOps<wafer::InstrElementwiseOp>(*source), 1u);
-  EXPECT_TRUE(elementwise->hasAttr("indexing_maps"));
 }
 
 } // namespace

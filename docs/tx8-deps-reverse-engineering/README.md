@@ -27,15 +27,17 @@ The root-level Wafer documents are hardware-facing evidence summaries:
 - [../wafer-hardware-instruction-set-and-programming-model.md](../wafer-hardware-instruction-set-and-programming-model.md) summarizes hardware topology, memory/SPM/layout, runtime/provider evidence, DTE, stream/CSR, parallel execution, and remaining hardware-facing gaps.
 - [../wafer-register-level-instruction-spec.md](../wafer-register-level-instruction-spec.md) is the wrapper/register evidence annex for packet fields, opcodes, units, wait/CSR behavior, and PMU/profiling observations.
 
-Current compiler/runtime contracts are owned by the numbered `tasks/01-16`
+Current compiler/runtime contracts and cross-cutting engineering boundaries are
+owned by the numbered `tasks/01-18`
 design documents; use `tasks/README.md` for the complete pipeline-boundary to
 owner map. Common consumers of this directory include `tasks/11` for instruction
 legality, `tasks/13` for physical transport, `tasks/14` for target artifacts and
 `tasks/15` for package/runtime behavior, but that list is not exhaustive. Files
 in this directory and the two root evidence summaries retain source-backed
 facts; when a fact becomes policy, update its numbered owner and leave the proof
-here. The one legacy presence-only Markdown checker coupling is explicitly
-documented in the CRT evidence matrix and queued for removal in `tasks/progress.md`.
+here. Legacy presence-only Markdown checker coupling has been removed; current
+conformance tools derive their protocol facts from production registries and
+source definitions rather than treating supporting documentation as an input.
 
 Regenerate generated outputs from repo root:
 

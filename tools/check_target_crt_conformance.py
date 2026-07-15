@@ -656,14 +656,11 @@ def main() -> int:
         repo_root / "runtime" / "wafer_crt" / "include" / "wafer_tx81_crt.h"
     )
     source_text = read_text(repo_root / "runtime" / "wafer_crt" / "src" / "wafer_tx81_crt.c")
-    instruction_ops_text = read_text(
-        repo_root
-        / "lib"
-        / "Wafer"
-        / "IR"
-        / "Instr"
-        / "InstructionOps.cpp"
-    )
+    instruction_ops_dir = repo_root / "lib" / "Wafer" / "IR" / "Instr"
+    instruction_sources = sorted(instruction_ops_dir.glob("*.cpp"))
+    if not instruction_sources:
+        fail(f"no instruction implementation sources found in {instruction_ops_dir}")
+    instruction_ops_text = "\n".join(read_text(path) for path in instruction_sources)
     lowering_text = read_text(
         repo_root
         / "lib"

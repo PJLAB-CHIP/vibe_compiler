@@ -28,6 +28,7 @@
 | 15 | `tasks/15-launch-runtime-package.md` | typed C++ manifest、canonical JSON、no-card RuntimeSession和board adapter边界 |
 | 16 | `tasks/16-verification-plan.md` | target correctness、1/16-rank bundle、reference、target-model、no-card和board分层gate |
 | 17 | `tasks/17-target-execution-model.md` | multi-dtype numeric、oneDNN bulk、owner-backed target LLVM bundle、repo-owned target-call/SystemC untimed CModel、optional CRT/packet provenance、Q22.C板端numeric correlation、Q22.E exact-module和deferred Q22.P timing边界 |
+| 18 | `tasks/18-source-organization.md` | 跨pipeline的源码ownership、translation unit、内部接口、构建依赖和测试镜像组织合同；不改变IR/artifact语义 |
 
 ### Pipeline Owner 索引
 
@@ -48,12 +49,14 @@
 | typed manifest、launch和RuntimeSession | 15 |
 | 横跨上述边界的completion evidence | 16 |
 | target execution model、multi-dtype numeric/bulk、target LLVM bundle、SystemC/CModel capability、板端numeric correlation和deferred timing | 17；target/runtime/verification consumer由14、15、16约束 |
+| 跨上述边界的源码与构建模块化 | 18；各IR/artifact语义仍由01-17拥有 |
 
 ## 实施计划导航
 
+当前没有active实施计划。Q23源码组织重构已归档为`tasks/archive/source-organization-refactor.md`；
 Q13.W依赖root一致性计划已归档为`tasks/archive/third-party-dependency-root-consistency.md`。Q22.S、Q22.V与最终
 完成性审计计划已分别归档为`tasks/archive/systemc-functional-event-model.md`、
-`tasks/archive/target-model-source-verticals.md`和`tasks/archive/target-model-completion-audit.md`；当前没有active实施计划。
+`tasks/archive/target-model-source-verticals.md`和`tasks/archive/target-model-completion-audit.md`。
 Q22.B/Q22.L/Q22.N/Q0.L/Q22.H计划分别归档为`tasks/archive/target-bulk-qualification.md`、`tasks/archive/target-llvm-module-bundle.md`、
 `tasks/archive/target-numeric-foundation.md`、`tasks/archive/target-command-legality-closure.md`和
 `tasks/archive/target-call-functional-frontend.md`，Q22.R readiness归档为`tasks/archive/target-model-readiness.md`。
@@ -68,6 +71,7 @@ docs、`tasks/progress.md` 和本轮已收敛设计结论为准。
 
 | 文档 | 原性质 |
 | --- | --- |
+| `tasks/archive/source-organization-refactor.md` | 已完成Q23的instruction、tile-region到instruction、target numeric源码模块化和build/test组织gate记录 |
 | `tasks/archive/third-party-dependency-root-consistency.md` | 已完成SystemC canonical third-party root、existing cache切换和双配置重放记录 |
 | `tasks/archive/target-model-completion-audit.md` | 已完成Q22各分项字段、legality、runtime evidence、late-rank原子性和双配置全量证据复核记录 |
 | `tasks/archive/target-model-source-verticals.md` | 已完成Q22.V的same-lowering product、typed source/model invocation、formal/exact-admitted bulk dispatch和五个固定source vertical实施记录 |

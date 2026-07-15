@@ -57,11 +57,23 @@ configure_file(
 set(WAFER_LIT_ARGS "-sv" CACHE STRING "Arguments passed to lit")
 separate_arguments(WAFER_LIT_ARGS)
 
+set(_wafer_lit_dependencies
+  wafer-compile
+  wafer-compile-test
+  wafer-compile-stablehlo
+  wafer-opt
+  wafer-run
+)
+if(TARGET wafer-cmodel-qualify-bulk)
+  list(APPEND _wafer_lit_dependencies wafer-cmodel-qualify-bulk)
+endif()
+
 add_custom_target(check-wafer-lit
   COMMAND ${WAFER_LIT_EXECUTABLE} ${WAFER_LIT_ARGS} ${CMAKE_CURRENT_BINARY_DIR}
-  DEPENDS wafer-compile wafer-compile-test wafer-compile-stablehlo wafer-opt wafer-run
+  DEPENDS ${_wafer_lit_dependencies}
   USES_TERMINAL
 )
+unset(_wafer_lit_dependencies)
 
 add_test(NAME wafer-lit
   COMMAND ${WAFER_LIT_EXECUTABLE} ${WAFER_LIT_ARGS} ${CMAKE_CURRENT_BINARY_DIR}

@@ -1,0 +1,3 @@
+# RUN: %python %wafer_src_root/tools/check_source_organization.py --root %wafer_src_root | FileCheck %s
+
+# CHECK: Wafer source organization checks passed

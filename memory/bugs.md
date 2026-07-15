@@ -393,3 +393,12 @@
 - 修复模式：validator成功后、创建imported target前，把`SystemCLanguage_DIR`强制设置为validated config目录；用同一build
   directory预置valid-looking stale package cache的positive configuration test证明切换。依赖正式root放`third_party/`，
   consumer build/snapshot留在`build/`，清理旧root前搜索所有cache、snapshot和ninja引用。
+
+## 2026-07-15 聚合检查目标不能用互斥分支枚举可选gate
+
+- 现象：numeric和bulk同时启用时根`check-wafer`只覆盖它们，已经存在的SystemC gate没有进入统一入口；lit测试又直接调用
+  bulk qualification工具，但`check-wafer-lit`没有依赖该producer，增量build可通过、clean build可能缺少可执行文件。
+- 根因：用`if/elseif`枚举被错误假设为互斥的feature组合，并把测试命令引用误当成构建依赖；新增feature后没有检查最终
+  build graph的all-and-only closure。
+- 修复模式：先建立必选gate列表，再把当前配置中实际存在的可选target逐项追加；lit使用的生成器/driver也进入其
+  `DEPENDS`。feature-on/off都运行统一检查入口并用Ninja query核对依赖，不能只单独执行新增子target。

@@ -42,7 +42,7 @@ Q22 + owner-approved packet evidence -> Q22.K
 
 ## 当前实施队列
 
-当前无`doing`或`next`项。后续任务只在下表前置满足、用户明确推进或独立maintenance任务进入时建立计划。
+当前无 `doing` / `next` 项；后续代码任务进入执行前需先建立编号设计 owner 和实施计划。
 
 ## Later / External Gates
 
@@ -87,6 +87,7 @@ Q22 + owner-approved packet evidence -> Q22.K
 | Q22.S | `target-systemc-event-model` | `done` | SystemC functional-event、private memory、Direct DTE和atomic result闭合。 | 16、17；`tasks/archive/systemc-functional-event-model.md` |
 | Q22.V | `target-model-source-verticals` | `done` | source-backed formal/bulk/multi-rank完整输出组合闭合。 | 01、16、17；`tasks/archive/target-model-source-verticals.md` |
 | Q22 | `target-execution-model` | `done` | model-only untimed functional-numeric capability profile发布完成。 | 01、16、17；`tasks/archive/target-model-completion-audit.md` |
+| Q23 | `source-modularity` | `done` | instruction、tile-region到instruction和target numeric按稳定职责拆分，build/test/组织gate闭合且公共语义不变。 | 18；`tasks/archive/source-organization-refactor.md` |
 | Q1 | `crt-surface-audit` | `done` | compiler-emitted production CRT symbol/prototype surface审计完成。 | 11、14、16及对应archive |
 | Q2-Q3 | `crt-device-symbol-closure` | `done` | production CRT symbol和device-link closure闭合。 | 11、14、16及对应archive |
 | Q3.5 | `crt-extended-evidence` | `done` | 扩展CRT surface evidence已分级。 | 11、14、16及对应archive |

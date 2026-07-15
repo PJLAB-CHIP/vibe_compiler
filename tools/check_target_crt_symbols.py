@@ -236,9 +236,7 @@ def main() -> int:
     header_path = repo_root / "runtime" / "wafer_crt" / "include" / "wafer_tx81_crt.h"
     source_path = repo_root / "runtime" / "wafer_crt" / "src" / "wafer_tx81_crt.c"
     attrs_path = repo_root / "include" / "Wafer" / "IR" / "WaferAttrs.td"
-    instruction_ops_path = (
-        repo_root / "lib" / "Wafer" / "IR" / "Instr" / "InstructionOps.cpp"
-    )
+    instruction_ops_dir = repo_root / "lib" / "Wafer" / "IR" / "Instr"
     lowering_path = (
         repo_root / "lib" / "Wafer" / "Transforms" / "Target" / "LowerInstrToTargetLLVM.cpp"
     )
@@ -249,7 +247,10 @@ def main() -> int:
     header_text = read_text(header_path)
     source_text = read_text(source_path)
     attrs_text = read_text(attrs_path)
-    instruction_ops_text = read_text(instruction_ops_path)
+    instruction_sources = sorted(instruction_ops_dir.glob("*.cpp"))
+    if not instruction_sources:
+        fail(f"no instruction implementation sources found in {instruction_ops_dir}")
+    instruction_ops_text = "\n".join(read_text(path) for path in instruction_sources)
     lowering_text = read_text(lowering_path)
     registry_text = read_text(registry_path)
 
