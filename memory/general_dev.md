@@ -543,3 +543,7 @@
 - 当前SystemC model入口是一driver进程一次initial-elaboration invocation；`sc_start()`运行到quiescent后返回，不声明同进程
   reset/repeat。需要证明source late-rank原子性时，只在test driver中注入terminal rank failure，仍重放同一package publication、
   reference comparison、target-call和SystemC链，并断言稳定stage/rank、无matched model result及已发布package保留。
+- 正式受管依赖统一位于`third_party/<lane>`；`build/<configuration>`只保存consumer生成物和canonical snapshot。切换managed
+  package root时，CMake的`find_package(... PATHS ... NO_DEFAULT_PATH)`仍可能优先复用已有`<Package>_DIR` cache，因此validator
+  读出的config目录必须在`find_package`前以`CACHE ... FORCE`刷新。配置gate应预置一份valid-looking stale package cache，
+  证明existing build会选择新record对应package，而不只测试clean configure。

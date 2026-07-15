@@ -67,9 +67,9 @@ Q22.C + validated PMU/timing environment -> Q22.P (deferred)
 
 ## 当前实施队列
 
-当前无`doing`项。Q22完成性审计已闭合selector数量表述、numeric环境恢复、109项字段级decoder、
-integer-only native control legality、bulk runtime evidence匹配、SystemC event failure及source/SystemC晚rank原子失败证据，
-计划已归档为`tasks/archive/target-model-completion-audit.md`。后续工作只按Later / External Gates进入队列。
+当前无`doing`项。Q13.W已把正式SystemC受管依赖收敛到统一`third_party/systemc-model`，修复existing build切换
+managed root时可能复用旧`SystemCLanguage_DIR` cache的问题，并归档为
+`tasks/archive/third-party-dependency-root-consistency.md`。
 
 ## Later / External Gates
 
@@ -90,7 +90,6 @@ Q22.C与Q22.E在Q22后属于互不依赖的证据升级，Q22.P只在Q22.C之后
 | Tracking ID | Semantic key | 状态 | 必须满足的前置 | 说明 | 设计 owner |
 | --- | --- | --- | --- | --- | --- |
 | Q3.6 | `crt-writeback-scalar` | `later` | Q0、Q17 | count writeback需要明确result/ABI后再恢复，不能只加CRT stub。 | 11、14 |
-| Q13.W | `tool-workflow-consistency` | `later` | — | 对齐bootstrap/importer build诊断和tool help，不改变IR/ABI。 | 01、16 |
 
 以下能力不在近期 active DAG：新model/distributed/parallel/executable dialect、MPMD/hybrid rank-class、跨卡
 coherent variant、Protobuf/WCRE/global registry、capability lease、cross-model state migration、共享weight
@@ -208,12 +207,13 @@ done项仍只证明各自窄边界。
 | Q2-Q3 | `crt-device-symbol-closure` | repo-local CRT 109个production symbol和required-Wafer-symbol device link gate已闭合。 | board execution |
 | Q3.5 | `crt-extended-evidence` | 历史TX81 CRT扩展surface已分级。 | extended surface已支持 |
 | Q13.T | `supporting-doc-tool-decoupling` | symbol surface从target lowering和Wafer enum registry推导，arg writeback conformance从instruction verifier、target address lowering和CRT代码交叉证明；checker不再解析tasks/docs marker。 | checker证明packet/numeric/board correctness |
+| Q13.W | `tool-workflow-consistency` | 默认bootstrap已在`third_party/systemc-model`发布完整SystemC 3.0.2 canonical record；正式feature-on及既有SystemC build cache均切换到该root，build-local snapshot无旧路径。CMake discovery强制以validated config刷新`SystemCLanguage_DIR`，新增stale valid package cache positive gate。feature-on/off build通过；SystemC配置与component定向6/6，完整CTest分别22/22和12/12，lit分别250/2 unsupported和249/3 unsupported；旧`build/wafer-systemc-deps`已清理。 | 不改变Q22 IR、ABI、numeric/event语义，不把Wafer model源码或下载/构建产物提交进Git |
 | Q10-Q13 | `historical-design-governance` | 历史系统审计、设计收敛、计划拆解和文档一致性工作已完成。 | 对应production对象已实现；其长计划已被本轮重基线取代 |
 
 ## 实施计划索引
 
-- Active：无。Q22完成性审计及发布汇总已经完成；后续只按Later/External表在外部gate满足时另建计划。
-- Historical：`tasks/archive/target-model-completion-audit.md`、`tasks/archive/target-model-source-verticals.md`、`tasks/archive/systemc-functional-event-model.md`、
+- Active：无。Q13.W依赖root一致性修复已完成；后续只按Later/External表在外部gate满足时另建计划。
+- Historical：`tasks/archive/third-party-dependency-root-consistency.md`、`tasks/archive/target-model-completion-audit.md`、`tasks/archive/target-model-source-verticals.md`、`tasks/archive/systemc-functional-event-model.md`、
   `tasks/archive/target-bulk-qualification.md`、`tasks/archive/target-llvm-module-bundle.md`、`tasks/archive/target-numeric-foundation.md`、
   `tasks/archive/target-command-legality-closure.md`、
   `tasks/archive/target-call-functional-frontend.md`、

@@ -72,6 +72,11 @@ function(wafer_enable_systemc_model_deps)
     message(FATAL_ERROR
       "SystemC::systemc already exists before managed SystemC discovery")
   endif()
+  # find_package caches <Package>_DIR.  A managed-root switch in an existing
+  # build directory must not silently keep the package exported by the old
+  # validated root.
+  set(SystemCLanguage_DIR "${_wafer_systemc_config_dir}" CACHE PATH
+    "Validated managed SystemC package directory" FORCE)
   find_package(SystemCLanguage 3.0.2 CONFIG REQUIRED
     PATHS "${_wafer_systemc_config_dir}"
     NO_DEFAULT_PATH)

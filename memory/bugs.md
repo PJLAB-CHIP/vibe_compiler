@@ -383,3 +383,13 @@
 - 修复模式：descriptor用位置互异sentinel做逐字段oracle；qualification evidence进入admission并在execution后比较；
   source late-rank从正式test driver在package发布后注入；无法由当前入口执行的lifecycle能力明确列为non-goal/后续扩展。
   完成审计必须同时检查设计文字、production consumer和能因错误而失败的测试，不能只看总测试数。
+
+## 2026-07-15 managed package切换不能保留旧Package_DIR cache
+
+- 现象：SystemC record/root已从一次性`build/`目录切到默认`third_party/systemc-model`，validator也返回新config，existing
+  CMake build重新配置却仍导入旧root的`SystemC::systemc`，随后被recorded-library exact-match gate拒绝。
+- 根因：config-mode `find_package`即使带`PATHS <validated-dir> NO_DEFAULT_PATH`，仍会优先消费cache中的
+  `SystemCLanguage_DIR`；只更新项目自己的root/record cache不足以切换实际package。
+- 修复模式：validator成功后、创建imported target前，把`SystemCLanguage_DIR`强制设置为validated config目录；用同一build
+  directory预置valid-looking stale package cache的positive configuration test证明切换。依赖正式root放`third_party/`，
+  consumer build/snapshot留在`build/`，清理旧root前搜索所有cache、snapshot和ninja引用。

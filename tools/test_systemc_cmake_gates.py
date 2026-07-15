@@ -52,9 +52,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--build-type")
     parser.add_argument("--numeric-root", type=existing_directory)
     parser.add_argument("--numeric-record", type=existing_file)
+    parser.add_argument("--systemc-root", type=existing_directory)
+    parser.add_argument("--systemc-record", type=existing_file)
     args = parser.parse_args()
     if (args.numeric_root is None) != (args.numeric_record is None):
         parser.error("--numeric-root and --numeric-record must be supplied together")
+    if (args.systemc_root is None) != (args.systemc_record is None):
+        parser.error("--systemc-root and --systemc-record must be supplied together")
+    if args.systemc_root is not None and args.numeric_root is None:
+        parser.error("--systemc-root requires --numeric-root")
     return args
 
 
@@ -184,6 +190,66 @@ def run_case(args: argparse.Namespace, temporary: pathlib.Path, case: Configurat
     print(f"{case.name}: rejected with expected SystemC dependency diagnostic")
 
 
+def run_stale_package_cache_case(
+    args: argparse.Namespace, temporary: pathlib.Path
+) -> None:
+    if args.systemc_root is None:
+        return
+    case_root = temporary / "stale-package-cache"
+    stale_package = case_root / "stale-package"
+    stale_package.mkdir(parents=True)
+    stale_library = stale_package / "libsystemc-stale.a"
+    stale_library.write_bytes(b"stale")
+    (stale_package / "SystemCLanguageConfig.cmake").write_text(
+        "set(SystemCLanguage_VERSION 3.0.2)\n"
+        "add_library(SystemC::systemc STATIC IMPORTED)\n"
+        f'set_target_properties(SystemC::systemc PROPERTIES '
+        f'IMPORTED_LOCATION "{stale_library}")\n',
+        encoding="utf-8",
+    )
+    build = case_root / "build"
+    command = common_command(args)
+    command.extend(
+        [
+            "-B",
+            str(build),
+            definition("WAFER_ENABLE_NUMERIC_MODEL_DEPS", "ON"),
+            definition("WAFER_NUMERIC_MODEL_DEPS_ROOT", args.numeric_root),
+            definition("WAFER_NUMERIC_MODEL_DEPS_RECORD", args.numeric_record),
+            definition("WAFER_SYSTEMC_MODEL_DEPS_ROOT", args.systemc_root),
+            definition("WAFER_SYSTEMC_MODEL_DEPS_RECORD", args.systemc_record),
+            definition("SystemCLanguage_DIR", stale_package),
+        ]
+    )
+    completed = subprocess.run(
+        command,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        timeout=120,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            "stale-package-cache: managed root did not replace stale package cache\n"
+            f"command: {' '.join(command)}\n{completed.stdout}"
+        )
+    expected = (
+        args.systemc_root
+        / "install"
+        / "systemc"
+        / "lib"
+        / "cmake"
+        / "SystemCLanguage"
+    ).resolve()
+    cache = (build / "CMakeCache.txt").read_text(encoding="utf-8")
+    if f"SystemCLanguage_DIR:PATH={expected}" not in cache:
+        raise RuntimeError(
+            "stale-package-cache: CMake cache did not select the validated package"
+        )
+    print("stale-package-cache: selected the validated managed SystemC package")
+
+
 def main() -> int:
     args = parse_args()
     args.work_root.resolve().mkdir(parents=True, exist_ok=True)
@@ -193,12 +259,17 @@ def main() -> int:
     try:
         for case in cases(args):
             run_case(args, temporary, case)
+        run_stale_package_cache_case(args, temporary)
     except (OSError, subprocess.SubprocessError, RuntimeError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
     finally:
         shutil.rmtree(temporary, ignore_errors=True)
-    print(f"checked {len(cases(args))} fail-closed SystemC CMake configurations")
+    positive = 1 if args.systemc_root is not None else 0
+    print(
+        f"checked {len(cases(args))} fail-closed and {positive} "
+        "managed-root SystemC CMake configurations"
+    )
     return 0
 
 

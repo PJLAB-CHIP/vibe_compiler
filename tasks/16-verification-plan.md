@@ -817,6 +817,29 @@ failure无partial host result；component-only fixture、RISC-V archive、includ
 
 Q22.S消费Q22.N numeric profile、Q22.H实际transaction和既有Q16.T Direct DTE合同；Q22.B不是本gate前置：
 
+```text
+Pipeline position:
+- Upstream artifact / IR:
+  cmake/third_party中的固定SystemC版本、archive digest和默认WAFER_DEPS_ROOT，以及bootstrap产生的canonical
+  dependency record；不消费或改变compiler IR。
+- Current stage responsibility:
+  将正式checkout的SystemC managed root固定在third_party/systemc-model，验证source/install/license/package/library
+  identity后只导入官方SystemC::systemc；显式root override只用于隔离的dependency/CMake test。
+- Output artifact / IR:
+  可审计的third_party/systemc-model source/build/install/conformance tree、canonical record和build-local snapshot；
+  不形成可序列化compiler artifact。
+- Downstream consumer:
+  WaferSystemCBridge、WaferSystemCModel、SystemC component executables及wafer-compile target-model mode。
+- User-level driver / named pipeline:
+  tools/bootstrap_deps.py --systemc-model-deps和WAFER_ENABLE_SYSTEMC_MODEL=ON的正式CMake build。
+- Explicit non-goals:
+  不提交下载/构建产物到Git，不把Wafer-owned Model源码移入third_party，不禁止测试使用临时managed root，
+  不改变numeric、transaction、event或hardware claim。
+- Completion gate:
+  默认bootstrap在third_party/systemc-model发布完整record；正式feature-on cache消费该root且canonical snapshot
+  readback一致；依赖validator、configure/build、五个SystemC component与完整CTest通过，旧一次性root不再被引用。
+```
+
 - SystemC是正式untimed functional-event容器；rank/tile SPM/DDR、typed slots、checked address、conservative issue、local completion和
   Direct DTE/FSM均为invocation-local对象。首个private-memory profile不建立无consumer的TLM socket；未来ISS/MMIO consumer只可
   通过另行验证的受限TLM边界接入，且不改变transaction、kernel或acceptance；
@@ -843,6 +866,11 @@ feature-off base 164/164，lit为249 pass/3个明确feature unsupported，CTest 
 shared physical codec unit覆盖exact-end/overflow/cross-resource/reserved-SPM、atomic write、109 descriptor逐ABI字段decode、
 所有typed payload family的field-valid入口及formal effect；bulk codec回归14/14。该证据签发Q22.S untimed component，
 不签发Q22.V完整source vertical或任何board/timing结论。
+
+2026-07-15依赖布局重放进一步证明默认bootstrap在`third_party/systemc-model`发布完整canonical record；正式feature-on
+build和既有SystemC build cache的`SystemCLanguage_DIR`、managed root及build-local snapshot均只引用该validated root。
+新增配置正例预置另一份valid-looking stale package cache，仍必须切换到record导出的官方package；四项fail-closed配置负例、
+五个SystemC component、完整feature-on/off CTest及252项lit均通过。旧一次性`build/wafer-systemc-deps`无引用后已清理。
 
 ### 11.6 Q22.V Source-Backed Functional-Numeric Vertical Gate
 

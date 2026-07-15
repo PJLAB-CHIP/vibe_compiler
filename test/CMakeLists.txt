@@ -206,6 +206,11 @@ if(WAFER_ENABLE_NUMERIC_MODEL_DEPS)
     --numeric-root ${WAFER_NUMERIC_MODEL_DEPS_CANONICAL_ROOT}
     --numeric-record ${WAFER_NUMERIC_MODEL_DEPS_CANONICAL_RECORD})
 endif()
+if(WAFER_ENABLE_SYSTEMC_MODEL)
+  list(APPEND _wafer_systemc_cmake_gate_args
+    --systemc-root ${WAFER_SYSTEMC_MODEL_DEPS_CANONICAL_ROOT}
+    --systemc-record ${WAFER_SYSTEMC_MODEL_DEPS_CANONICAL_RECORD})
+endif()
 add_test(NAME wafer-systemc-cmake-configuration-gates
   COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_SOURCE_DIR}/tools/test_systemc_cmake_gates.py
