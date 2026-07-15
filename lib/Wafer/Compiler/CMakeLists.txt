@@ -13,15 +13,36 @@ endforeach()
 add_mlir_library(WaferCompiler
   AcceptedCallClosure.cpp
   Compilation.cpp
+  CompilationOrchestration.cpp
+  CompilationStages.cpp
   DirectDTETransport.cpp
   ExecutableBundle.cpp
+  GroupedProgramCompilation.cpp
   Package.cpp
+  ProgramDirectoryTransaction.cpp
   ProgramInvocation.cpp
   ReferenceExecutor.cpp
   ReferenceExecutorNumeric.cpp
+  ReferenceProgramControlMemory.cpp
+  ReferenceProgramDTETransport.cpp
+  ReferenceProgramExecution.cpp
   ReferenceProgramInterpreter.cpp
+  ReferenceProgramMovement.cpp
+  ReferenceProgramNumeric.cpp
   ReferenceProgramProjection.cpp
+  ReferenceProgramProjectionDTE.cpp
+  ReferenceProgramProjectionMemrefControl.cpp
+  ReferenceProgramProjectionMovement.cpp
+  ReferenceProgramProjectionNumeric.cpp
+  SpmdCompilationBridge.cpp
+  TargetABIPreparation.cpp
   TargetArtifact.cpp
+  TargetArtifactPublication.cpp
+  TargetDeviceLink.cpp
+  TargetLLVMTranslation.cpp
+  TargetModuleReadback.cpp
+  TargetPackagePublication.cpp
+  TargetRankPreflight.cpp
   TargetCallFrontend.cpp
 
   LINK_LIBS PUBLIC

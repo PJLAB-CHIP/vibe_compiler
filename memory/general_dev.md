@@ -559,6 +559,12 @@
   任意 LOC 阈值、文件数量或任务文档文本代替结构 review。空目录不是 Git 对象，不提交 `.gitkeep` 维持虚假层级。
 - 聚合实现拆成多 TU 后，源码型 ABI/conformance checker 必须显式消费完整受控 source set，不能继续只扫描旧 facade；
   同批用强符号集合、registry/count/digest 和正负 vertical 证明没有因 internal linkage 或漏列 CMake source 改变合同。
+- 拆分时不能只检查“新函数能链接”。用owner-private header声明集合反向审计每个新TU：真正跨TU的typed helper才保留
+  external linkage，未进private header且只在单TU使用的helper收回anonymous namespace；否则会把实现细节扩成静态库符号面，
+  private header也容易积累并不存在的协作合同。
+- 仓库外部构建的helper若通过生成overlay接入多个source，overlay symlink与外部build `srcs`必须由同一repo-owned source
+  清单生成，并对真实外部build做fresh重放。只更新复制入口或只让主文件include其它`.cpp`会绕过本仓库CMake组织gate，
+  也不能证明每个translation unit真的独立编译。
 - 根 `check-wafer` 应从当前配置实际存在的子 gate 动态组成，避免 feature 组合的 `if/elseif` 漏掉并存 gate；lit 中
   引用的可执行工具必须同时进入 target `DEPENDS`。验证 optional dependency 边界时同时 query feature-on/off 的 Ninja
   graph，并实际运行两个配置的统一入口。

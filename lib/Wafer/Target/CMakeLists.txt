@@ -1,6 +1,10 @@
 add_mlir_library(WaferTarget
   PARTIAL_SOURCES_INTENDED
-  FormalNumeric.cpp
+  FormalNumericConvert.cpp
+  FormalNumericElementwise.cpp
+  FormalNumericGemm.cpp
+  FormalNumericSupport.cpp
+  FormalNumericValidation.cpp
   NumericCapability.cpp
   NumericCodec.cpp
   NumericCommand.cpp
@@ -51,8 +55,18 @@ endif()
 if(WAFER_ENABLE_BULK_MODEL_DEPS)
   add_mlir_library(WaferBulkModel
     PARTIAL_SOURCES_INTENDED
+    BulkAdmission.cpp
+    BulkExecutionEnvironment.cpp
     BulkQualification.cpp
-    BulkTensorNumeric.cpp
+    BulkQualificationCalibration.cpp
+    BulkQualificationCase.cpp
+    BulkQualificationComparison.cpp
+    BulkQualificationExecution.cpp
+    BulkQualificationPolicy.cpp
+    BulkQualificationValidation.cpp
+    BulkTensorCodec.cpp
+    BulkTensorNumericSupport.cpp
+    OneDNNGemmAdapter.cpp
 
     LINK_LIBS PUBLIC
     WaferIR

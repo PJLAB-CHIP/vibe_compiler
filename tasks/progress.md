@@ -45,9 +45,7 @@ Q22 + owner-approved packet evidence -> Q22.K
 
 ## 当前实施队列
 
-| Tracking ID | Semantic key | 状态 | 前置 | 当前边界 | 设计 / 计划 |
-| --- | --- | --- | --- | --- | --- |
-| Q25 | `residual-source-modularity` | `next` | Q24稳定职责基线 | 按reference/model、numeric/bulk、compiler/artifact/package、frontend bridge四组为剩余聚合实现分别补计划；不得按行数机械拆分。 | 18；计划待建立 |
+当前无`doing`或`next`的仓库内实施任务；外部环境相关工作只在下表gate满足后恢复。
 
 ## Later / External Gates
 
@@ -94,6 +92,7 @@ Q22 + owner-approved packet evidence -> Q22.K
 | Q22 | `target-execution-model` | `done` | model-only untimed functional-numeric capability profile发布完成。 | 01、16、17；`tasks/archive/target-model-completion-audit.md` |
 | Q23 | `source-modularity` | `done` | instruction、tile-region到instruction和target numeric按稳定职责拆分，build/test/组织gate闭合且公共语义不变。 | 18；`tasks/archive/source-organization-refactor.md` |
 | Q24 | `remaining-source-modularity` | `done` | group/candidate、target LLVM、numeric conformance、frontend program与compiler driver按稳定职责拆分，双配置gate闭合且公共合同不变。 | 18；`tasks/archive/remaining-source-modularity.md` |
+| Q25 | `residual-source-modularity` | `done` | reference/model、numeric/bulk、compiler/artifact/package和frontend bridge共11个聚合实现按稳定职责拆分，双配置及真实外部helper gate闭合且公共合同不变。 | 18；`tasks/archive/residual-source-modularity.md` |
 | Q1 | `crt-surface-audit` | `done` | compiler-emitted production CRT symbol/prototype surface审计完成。 | 11、14、16及对应archive |
 | Q2-Q3 | `crt-device-symbol-closure` | `done` | production CRT symbol和device-link closure闭合。 | 11、14、16及对应archive |
 | Q3.5 | `crt-extended-evidence` | `done` | 扩展CRT surface evidence已分级。 | 11、14、16及对应archive |
@@ -103,6 +102,6 @@ Q22 + owner-approved packet evidence -> Q22.K
 
 ## 实施计划入口
 
-- Active：无；Q25开工前需先按18建立独立实施计划。
+- Active：无。
 - 新实施计划：`tasks/plans/`。
 - 已完成计划和历史证据：`tasks/README.md`的“实施计划导航”和“归档文档”。

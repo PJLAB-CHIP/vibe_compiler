@@ -270,7 +270,7 @@ if(WAFER_ENABLE_BULK_MODEL_DEPS)
   add_test(NAME wafer-bulk-feature-on-link-closure
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_SOURCE_DIR}/tools/check_bulk_enabled_link_closure.py
-      --binary $<TARGET_FILE:wafer-cmodel-qualify-bulk>
+      --binary $<TARGET_FILE:wafer-compile>
       --readelf ${CMAKE_READELF}
       --nm ${CMAKE_NM}
   )

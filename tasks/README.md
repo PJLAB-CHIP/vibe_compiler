@@ -53,7 +53,7 @@
 
 ## 实施计划导航
 
-当前没有active实施计划；Q25开工前需按18为四组剩余聚合边界建立独立计划。
+当前没有active实施计划。Q25剩余聚合边界模块化已归档为`tasks/archive/residual-source-modularity.md`，
 Q24剩余热点模块化已归档为`tasks/archive/remaining-source-modularity.md`，Q23首轮源码组织重构已归档为
 `tasks/archive/source-organization-refactor.md`；
 Q13.W依赖root一致性计划已归档为`tasks/archive/third-party-dependency-root-consistency.md`。Q22.S、Q22.V与最终
@@ -73,6 +73,7 @@ docs、`tasks/progress.md` 和本轮已收敛设计结论为准。
 
 | 文档 | 原性质 |
 | --- | --- |
+| `tasks/archive/residual-source-modularity.md` | 已完成Q25的reference/model、numeric/bulk、compiler/artifact/package与frontend bridge共11个聚合实现模块化和双配置gate记录 |
 | `tasks/archive/remaining-source-modularity.md` | 已完成Q24的group/candidate、target LLVM、numeric conformance、frontend program与compiler driver模块化和双配置gate记录 |
 | `tasks/archive/source-organization-refactor.md` | 已完成Q23的instruction、tile-region到instruction、target numeric源码模块化和build/test组织gate记录 |
 | `tasks/archive/third-party-dependency-root-consistency.md` | 已完成SystemC canonical third-party root、existing cache切换和双配置重放记录 |

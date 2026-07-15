@@ -402,3 +402,12 @@
   build graph的all-and-only closure。
 - 修复模式：先建立必选gate列表，再把当前配置中实际存在的可选target逐项追加；lit使用的生成器/driver也进入其
   `DEPENDS`。feature-on/off都运行统一检查入口并用Ninja query核对依赖，不能只单独执行新增子target。
+
+## 2026-07-15 静态归档拆分会暴露测试对同一object成员的偶然依赖
+
+- 现象：bulk实现拆成独立translation unit后，qualification CLI仍能完整执行，但feature-on链接闭包检查不再看到
+  `executeAdmittedBulkTensorNumeric`；拆分前该符号与qualification seam同处一个归档成员，因另一个被引用符号而被顺带链接。
+- 根因：门禁把“符号恰好与真实consumer所需对象位于同一archive member”误当成用户级调用路径的link closure；静态链接器
+  按未解析引用选择归档成员，职责拆分会正确移除这种无语义依据的共拉入行为。
+- 修复模式：link-closure门禁应检查真正消费被验证入口的用户级binary，并继续核对依赖形式与完整适配符号集合；不要用
+  whole-archive、虚假link anchor或重新聚合源码恢复偶然符号。聚合TU拆分后需重跑最终binary级门禁，不能只验证library和unit。

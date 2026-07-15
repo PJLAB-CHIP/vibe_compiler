@@ -62,6 +62,7 @@ add_mlir_conversion_library(WaferTileRegionToInstr
 )
 
 add_mlir_conversion_library(WaferStableHLOToLinalg
+  StableHLOToLinalg/ConstantTensorFolding.cpp
   StableHLOToLinalg/LegalizeStablehloToLinalg.cpp
   StableHLOToLinalg/NormalizeStablehloCollectives.cpp
 

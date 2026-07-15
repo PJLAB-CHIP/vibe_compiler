@@ -11,14 +11,32 @@ import subprocess
 import sys
 
 
-BUILD_FILE = """\
+HELPER_SOURCES = (
+    ("XlaSpmdPartitionerMain.cpp", "wafer_xla_spmd_partitioner_main.cc"),
+    ("XlaSpmdBoundary.cpp", "xla_spmd_boundary.cc"),
+    ("XlaSpmdDriver.cpp", "xla_spmd_driver.cc"),
+    ("XlaSpmdFilesystem.cpp", "xla_spmd_filesystem.cc"),
+    ("XlaSpmdMetadata.cpp", "xla_spmd_metadata.cc"),
+    ("XlaSpmdPartitioning.cpp", "xla_spmd_partitioning.cc"),
+    ("XlaSpmdPayload.cpp", "xla_spmd_payload.cc"),
+    ("XlaSpmdProgram.cpp", "xla_spmd_program.cc"),
+)
+HELPER_BUILD_SOURCES = "\n".join(
+    f'        "{overlay_name}",' for _, overlay_name in HELPER_SOURCES
+)
+
+
+BUILD_FILE = f"""\
 load("@tsl//tsl/platform:rules_cc.bzl", "cc_binary")
 
 package(default_visibility = ["//visibility:public"])
 
 cc_binary(
     name = "wafer_xla_spmd_partitioner",
-    srcs = ["wafer_xla_spmd_partitioner.cc"],
+    srcs = [
+        "XlaSpmdPartitionerInternal.h",
+{HELPER_BUILD_SOURCES}
+    ],
     deps = [
         "//xla:shape_util",
         "//xla:autotuning_proto_cc",
@@ -121,9 +139,12 @@ def _populate_workspace(
 
     helper_pkg = xla_dst / "wafer_tools"
     helper_pkg.mkdir()
+    source_root = repo / "lib" / "Wafer" / "Transforms" / "SPMD"
+    for source_name, overlay_name in HELPER_SOURCES:
+        _symlink(source_root / source_name, helper_pkg / overlay_name)
     _symlink(
-        repo / "lib" / "Wafer" / "Transforms" / "SPMD" / "XlaSpmdPartitionerMain.cpp",
-        helper_pkg / "wafer_xla_spmd_partitioner.cc",
+        source_root / "XlaSpmdPartitionerInternal.h",
+        helper_pkg / "XlaSpmdPartitionerInternal.h",
     )
     (helper_pkg / "BUILD.bazel").write_text(BUILD_FILE)
 

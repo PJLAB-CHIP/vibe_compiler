@@ -12,7 +12,11 @@ add_mlir_library(WaferTargetModelCore
 if(WAFER_ENABLE_NUMERIC_MODEL_DEPS)
   add_mlir_library(WaferTargetFunctionalModel
     PARTIAL_SOURCES_INTENDED
+    TargetModelControl.cpp
     TargetModelKernel.cpp
+    TargetModelMovement.cpp
+    TargetModelTensorNumeric.cpp
+    TargetModelTransactionSchema.cpp
 
     LINK_LIBS PUBLIC
     WaferNumericModel

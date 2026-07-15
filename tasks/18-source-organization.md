@@ -123,20 +123,38 @@ dependency conformance 和 driver CLI 也是已识别热点。它们的稳定内
 - C++ unit test 的目录镜像已把 target LLVM conversion 测试从 group conversion 文件移入
   `unittests/Transforms/Target/`；source checkout 不再保留已确认无 owner/consumer 的空目录。
 
-## 后续源码边界审计
+## 已审计职责实现映射
 
-本轮之外的大文件已经按职责而非行数复核。instruction compute、LinalgExt collective、numeric capability/command、
-DDR planner 与 SPM planner 属于合理的单一 family 或单一 planner；其中 DDR/SPM 的公共 lifetime 逻辑只能在保持各自
-completion 与 external-root 语义的前提下另行评估 typed analysis，不能机械合并。
+剩余聚合实现已沿四条artifact vertical收口，拆分没有改变01-17拥有的语义合同：
 
-以下聚合实现具有可命名的稳定拆分边界，后续进入执行前必须建立独立实施计划并重放对应 artifact vertical：
+- reference interpreter由唯一`ProgramInterpreter` context拥有arena、SSA value和执行状态；control/memory、movement、
+  numeric、Direct DTE transport及multi-rank execution分别独立编译，公共入口只构造context并提交完整结果。
+- reference projection由唯一`ProgramProjector`拥有value/block/function map；memref/control-flow、movement、numeric、
+  DTE/sync分别投影，facade只负责call closure、block dispatch、CFG和binding完整性。
+- target-model kernel按transaction schema、movement、tensor numeric、control/DTE与公共dispatch拆分；完整effect仍先构造，
+  memory bytes与numeric flags只在统一commit入口原子发布。
+- formal numeric按support、resolved-command validation、convert、elementwise和GEMM family拆分；public numeric合同、
+  exact flags与execution-context提交顺序不变。
+- bulk tensor numeric按physical codec、execution environment、oneDNN adapter、qualification execution和admission拆分；
+  environment identity cache保持单一owner。bulk qualification另按canonical spec、case、comparison、calibration、policy和
+  validation/record admission拆分，三阶段producer和canonical digest不变。
+- compilation facade只保留公共request/config/API；program-directory transaction、stage verification、SPMD bridge、
+  grouped bundle、target/package staging及顶层orchestration通过`CompilationInternal.h`的typed状态协作。
+- target artifact facade只保留公共move-only对象与入口；ABI preparation、all-rank preflight、target LLVM translation、
+  device link、ELF readback和atomic publication分别独立编译，共用owner-private prepared-rank合同。
+- package manifest按schema/stringification、JSON parsing、semantic verification、canonical serialization、filesystem readback和
+  `RuntimeSession` preflight拆分；canonical bytes、首错误和no-card side-effect-free合同不变。
+- XLA SPMD helper按CLI、filesystem、metadata、NPY payload、distributed boundary、StableHLO/XLA bridge和program
+  orchestration拆分；`tools/build_xla_spmd_partitioner_helper.py`由同一source清单生成overlay symlink与Bazel `srcs`。
+- StableHLO collective normalization继续拥有collective/residual handoff；通用static tensor slice/reshape/extract和
+  `linalg.generic` constant folding由独立translation unit拥有，feature-off不引入StableHLO或Linalg链接依赖。
 
-- reference/model execution：reference interpreter、reference projection、target-model kernel；
-- numeric/bulk qualification：formal numeric、bulk tensor numeric、bulk qualification；
-- compiler/artifact/package：compilation orchestration、target artifact、package manifest/runtime preflight；
-- frontend bridge：XLA SPMD helper，以及 StableHLO collective normalization 中独立的 constant folding。
+上述private header都留在owner library/source package内；新源由CMake或受管Bazel overlay独立编译，没有通过`.inc`、
+`.cpp` include、side table或新公共artifact重新聚合。
 
-这些边界不属于本轮六个既定热点的完成范围，也不能因本轮 facade 收口而视为已解决。
+本次审计同时确认instruction compute、LinalgExt collective、numeric capability/command、DDR planner与SPM planner仍是合理的
+单一family或单一planner，不因文件规模继续拆分。DDR/SPM存在相似lifetime算法，但completion、external-root和bandwidth
+语义不同；只有形成同时保持两侧合同的typed analysis设计时才可共享，不能机械合并。
 
 ## 完成判定
 
