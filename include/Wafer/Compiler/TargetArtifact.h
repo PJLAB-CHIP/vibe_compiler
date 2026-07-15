@@ -4,6 +4,7 @@
 #define WAFER_COMPILER_TARGETARTIFACT_H
 
 #include "Wafer/Compiler/Compilation.h"
+#include "Wafer/IR/WaferDialect.h"
 
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
@@ -37,6 +38,7 @@ struct KernelABISlot {
   int64_t resourceIndex = -1;
   std::string name;
   std::string dtype;
+  MemLayout layout;
   std::vector<int64_t> shape;
   int64_t byteSize = -1;
   int64_t alignment = -1;
@@ -133,6 +135,51 @@ private:
   std::string pythonExecutable;
   std::string deviceLinkerScript;
 };
+
+/// Owner-backed result retained by downstream consumers that need the same
+/// accepted rank domain and the exact target LLVM modules already consumed by
+/// target artifact publication. Neither member is reconstructed from the
+/// published package or serialized as a side channel.
+class TargetCompilationProduct {
+public:
+  TargetCompilationProduct(TargetCompilationProduct &&) = default;
+  TargetCompilationProduct &operator=(TargetCompilationProduct &&) = default;
+  TargetCompilationProduct(const TargetCompilationProduct &) = delete;
+  TargetCompilationProduct &
+  operator=(const TargetCompilationProduct &) = delete;
+
+  const ExecutableBundle &getExecutableBundle() const {
+    return executableBundle;
+  }
+  const TargetLLVMModuleBundle &getTargetLLVMModuleBundle() const {
+    return targetLLVMModuleBundle;
+  }
+
+private:
+  friend mlir::FailureOr<TargetCompilationProduct>
+  compileProgramWithTargetLLVMBundle(CompilationRequest request,
+                                     llvm::StringRef outputProgramDirectory,
+                                     llvm::StringRef xlaSpmdPartitionerHelper,
+                                     const TargetToolchain &targetToolchain,
+                                     llvm::raw_ostream &diagnostics);
+
+  TargetCompilationProduct(ExecutableBundle executableBundle,
+                           TargetLLVMModuleBundle targetLLVMModuleBundle)
+      : executableBundle(std::move(executableBundle)),
+        targetLLVMModuleBundle(std::move(targetLLVMModuleBundle)) {}
+
+  ExecutableBundle executableBundle;
+  TargetLLVMModuleBundle targetLLVMModuleBundle;
+};
+
+/// Runs the same production publication transaction as compileProgram while
+/// retaining both owner-backed inputs required by downstream target-call
+/// consumers. The TargetLLVMModuleBundle is the exact bundle used to create
+/// the verified target artifacts; no second lowering is performed.
+mlir::FailureOr<TargetCompilationProduct> compileProgramWithTargetLLVMBundle(
+    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics);
 
 /// Prepares the fixed Kernel Runtime ABI, lowers, translates, and verifies
 /// every accepted rank before atomically returning an owner-backed LLVM

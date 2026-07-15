@@ -66,27 +66,11 @@ size_t ReferenceProgram::getProjectedOperationCount() const {
   return impl ? impl->projectedOperationCount : 0;
 }
 
-llvm::Expected<ReferenceTensor>
-ReferenceTensor::create(llvm::StringRef dtype, llvm::ArrayRef<int64_t> shape,
-                        llvm::ArrayRef<uint8_t> bytes) {
-  std::optional<int64_t> expected =
-      reference_detail::getCompactByteCount(dtype, shape);
-  if (!expected)
-    return reference_detail::invalid(
-        "reference tensor has unsupported dtype or shape");
-  if (*expected != static_cast<int64_t>(bytes.size()))
-    return reference_detail::invalid(
-        "reference tensor byte count disagrees with dtype and shape");
-  return ReferenceTensor(dtype.str(), std::vector<int64_t>(shape),
-                         std::vector<uint8_t>(bytes));
-}
-
-llvm::Expected<ReferenceTensor>
-ReferenceTensor::loadNpy(llvm::StringRef path) {
-  auto payload = frontend::loadNpyTensorPayload(path);
-  if (!payload)
-    return payload.takeError();
-  return create(payload->dtype, payload->shape, payload->bytes);
+llvm::Expected<std::vector<ReferenceRankInvocation>>
+prepareReferenceInvocations(
+    const ExecutableBundle &bundle, llvm::StringRef packageRoot,
+    llvm::ArrayRef<ReferenceGlobalInputBinding> globalInputs) {
+  return prepareProgramInvocations(bundle, packageRoot, globalInputs);
 }
 
 llvm::Expected<ReferenceProgram>

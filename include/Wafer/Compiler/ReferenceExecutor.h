@@ -3,7 +3,7 @@
 #ifndef WAFER_COMPILER_REFERENCEEXECUTOR_H
 #define WAFER_COMPILER_REFERENCEEXECUTOR_H
 
-#include "Wafer/Compiler/Compilation.h"
+#include "Wafer/Compiler/ProgramInvocation.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -18,50 +18,12 @@
 
 namespace wafer::compiler {
 
-/// Owner-backed compact row-major tensor at a typed program boundary.
-class ReferenceTensor {
-public:
-  static llvm::Expected<ReferenceTensor> create(llvm::StringRef dtype,
-                                                llvm::ArrayRef<int64_t> shape,
-                                                llvm::ArrayRef<uint8_t> bytes);
-  static llvm::Expected<ReferenceTensor> loadNpy(llvm::StringRef path);
-
-  llvm::StringRef getDType() const { return dtype; }
-  llvm::ArrayRef<int64_t> getShape() const { return shape; }
-  llvm::ArrayRef<uint8_t> getBytes() const { return bytes; }
-
-private:
-  ReferenceTensor(std::string dtype, std::vector<int64_t> shape,
-                  std::vector<uint8_t> bytes)
-      : dtype(std::move(dtype)), shape(std::move(shape)),
-        bytes(std::move(bytes)) {}
-
-  std::string dtype;
-  std::vector<int64_t> shape;
-  std::vector<uint8_t> bytes;
-};
-
-/// Exact non-output program resource supplied to one accepted rank.
-struct ReferenceInputBinding {
-  ProgramResourceRole role;
-  int64_t index;
-  ReferenceTensor tensor;
-};
+using ReferenceTensor = ProgramTensor;
+using ReferenceInputBinding = ProgramInputBinding;
+using ReferenceRankInvocation = ProgramRankInvocation;
+using ReferenceGlobalInputBinding = ProgramGlobalInputBinding;
 
 struct ReferenceOutputBinding {
-  int64_t index;
-  ReferenceTensor tensor;
-};
-
-/// Complete invocation inputs for one logical rank. Multi-rank execution
-/// requires an all-and-only canonical logical-rank domain.
-struct ReferenceRankInvocation {
-  int64_t logicalRank;
-  std::vector<ReferenceInputBinding> inputs;
-};
-
-/// One complete logical user input before accepted rank slicing.
-struct ReferenceGlobalInputBinding {
   int64_t index;
   ReferenceTensor tensor;
 };

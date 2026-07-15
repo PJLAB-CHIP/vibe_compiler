@@ -49,9 +49,10 @@ class SystemCTargetModel final : public compiler::TargetTransactionSink {
 public:
   SystemCTargetModel(compiler::TargetCallExecutable executable,
                      InvocationMemoryRegistry memory,
-                     TargetModelKernelBudget budget)
+                     TargetModelKernelBudget budget,
+                     TargetModelExecutionPolicy policy)
       : executable(std::move(executable)), memory(std::move(memory)),
-        budget(budget),
+        budget(budget), policy(policy),
         rankStates(this->memory.getAddressPlan().getLogicalRanks().size()),
         dteStates(rankStates.size(), DTEState::NotBegun),
         rankPhysicalTiles(rankStates.size()),
@@ -163,7 +164,7 @@ public:
       return currentFailureOrLifecycle("issue delta failed");
 
     llvm::Expected<TargetModelCommandEffect> effect =
-        executeTargetModelCommand(transaction, memory, budget);
+        executeTargetModelCommand(transaction, memory, budget, policy);
     if (!effect) {
       latchFailure(SystemCTargetModelErrorCode::InvocationFailure,
                    "command-kernel", transaction.logicalRank,
@@ -172,7 +173,9 @@ public:
       return currentFailureOrLifecycle("command kernel failed");
     }
     switch (effect->controlAction) {
-    case TargetModelControlAction::None:
+    case TargetModelControlAction::None: {
+      const TargetModelNumericBackend numericBackend = effect->numericBackend;
+      TargetModelBulkDispatchEvidence bulkEvidence = effect->bulkEvidence;
       if (llvm::Error error = commitTargetModelCommandEffect(
               memory, numericContext, std::move(*effect))) {
         latchFailure(SystemCTargetModelErrorCode::InvocationFailure,
@@ -181,8 +184,19 @@ public:
                      llvm::toString(std::move(error)));
         return currentFailureOrLifecycle("command commit failed");
       }
+      if (numericBackend == TargetModelNumericBackend::Formal)
+        ++formalNumericCommandCount;
+      if (numericBackend == TargetModelNumericBackend::Bulk) {
+        ++bulkNumericCommandCount;
+        bulkMatmulInvocationCount += bulkEvidence.matmulInvocations;
+        bulkReorderInvocationCount += bulkEvidence.reorderInvocations;
+        bulkFormalFusedMultiplyAddCount += bulkEvidence.formalFusedMultiplyAdds;
+        bulkAdmissionRecordDigests.push_back(
+            std::move(bulkEvidence.admissionRecordDigest));
+      }
       markOrdinalComplete(transaction.logicalRank, transaction.issueOrdinal);
       return UINT64_C(0);
+    }
     case TargetModelControlAction::LocalFence:
       return processFence(transaction);
     case TargetModelControlAction::DirectDTEBegin:
@@ -249,6 +263,9 @@ public:
         static_cast<int64_t>(terminalRanks.size()), issuedTransactionCount,
         detail::getSystemCThreadProcessCount(runner),
         detail::getSystemCDeltaCount(), numericContext.getAggregateFlags(),
+        formalNumericCommandCount, bulkNumericCommandCount,
+        bulkMatmulInvocationCount, bulkReorderInvocationCount,
+        bulkFormalFusedMultiplyAddCount, std::move(bulkAdmissionRecordDigests),
         detail::getSystemCVersion(), "untimed-delta-single-issue-domain-v1",
         std::move(outputs)});
     return llvm::Error::success();
@@ -683,6 +700,7 @@ private:
   compiler::TargetCallExecutable executable;
   InvocationMemoryRegistry memory;
   TargetModelKernelBudget budget;
+  TargetModelExecutionPolicy policy;
   FormalNumericExecutionContext numericContext;
   std::vector<RankState> rankStates;
   std::vector<DTEState> dteStates;
@@ -700,6 +718,12 @@ private:
   std::string initializationDiagnostic;
   uint64_t nextEvent = 1;
   uint64_t issuedTransactionCount = 0;
+  uint64_t formalNumericCommandCount = 0;
+  uint64_t bulkNumericCommandCount = 0;
+  uint64_t bulkMatmulInvocationCount = 0;
+  uint64_t bulkReorderInvocationCount = 0;
+  uint64_t bulkFormalFusedMultiplyAddCount = 0;
+  std::vector<std::string> bulkAdmissionRecordDigests;
   bool begun = false;
 };
 
@@ -734,7 +758,8 @@ std::error_code SystemCTargetModelError::convertToErrorCode() const {
 llvm::Expected<TargetModelResult>
 executeSystemCTargetModel(compiler::TargetCallExecutable executable,
                           llvm::ArrayRef<TargetModelInputBinding> inputBindings,
-                          TargetModelKernelBudget budget) {
+                          TargetModelKernelBudget budget,
+                          TargetModelExecutionPolicy policy) {
   if (!detail::isSystemCInitialElaboration())
     return systemCError(
         SystemCTargetModelErrorCode::InvalidLifecycle,
@@ -748,7 +773,8 @@ executeSystemCTargetModel(compiler::TargetCallExecutable executable,
   if (!memory)
     return memory.takeError();
 
-  SystemCTargetModel model(std::move(executable), std::move(*memory), budget);
+  SystemCTargetModel model(std::move(executable), std::move(*memory), budget,
+                           policy);
   if (llvm::Error error = model.start())
     return std::move(error);
   detail::startSystemCSimulation();

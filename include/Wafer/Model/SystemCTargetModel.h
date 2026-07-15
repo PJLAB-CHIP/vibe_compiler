@@ -61,6 +61,12 @@ struct TargetModelResult {
   uint64_t systemCThreadProcessCount = 0;
   uint64_t finalDeltaCount = 0;
   FormalNumericExceptionFlags numericFlags;
+  uint64_t formalNumericCommandCount = 0;
+  uint64_t bulkNumericCommandCount = 0;
+  uint64_t bulkMatmulInvocationCount = 0;
+  uint64_t bulkReorderInvocationCount = 0;
+  uint64_t bulkFormalFusedMultiplyAddCount = 0;
+  std::vector<std::string> bulkAdmissionRecordDigests;
   std::string systemCVersion;
   std::string schedulerIdentity;
   std::vector<TargetModelOutput> outputs;
@@ -72,7 +78,9 @@ struct TargetModelResult {
 llvm::Expected<TargetModelResult>
 executeSystemCTargetModel(compiler::TargetCallExecutable executable,
                           llvm::ArrayRef<TargetModelInputBinding> inputBindings,
-                          TargetModelKernelBudget budget);
+                          TargetModelKernelBudget budget,
+                          TargetModelExecutionPolicy policy =
+                              TargetModelExecutionPolicy::formalOnly());
 
 } // namespace wafer::model
 

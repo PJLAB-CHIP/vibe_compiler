@@ -16,8 +16,8 @@ add_mlir_library(WaferCompiler
   DirectDTETransport.cpp
   ExecutableBundle.cpp
   Package.cpp
+  ProgramInvocation.cpp
   ReferenceExecutor.cpp
-  ReferenceInvocation.cpp
   ReferenceExecutorNumeric.cpp
   ReferenceProgramInterpreter.cpp
   ReferenceProgramProjection.cpp

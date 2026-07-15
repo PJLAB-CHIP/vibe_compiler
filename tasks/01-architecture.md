@@ -21,11 +21,14 @@ runtime和reference executor直接消费。tiny Llama decoder block是linear/MLP
 - instruction IR、Direct DTE/local fence、SPM/DDR planning；
 - target LLVM CRT calls、repo-local CRT和device link；
 - typed manifest、canonical JSON和no-card RuntimeSession。
+- owner-backed同次lowering target LLVM、typed target-call frontend、受管SystemC 3.0.2 untimed
+  functional-event模型、13-format formal numeric和受资格约束的oneDNN大GEMM backend。
 
 当前统一`wafer-compile` driver、显式per-rank `ExecutableBundle`、原子`TargetArtifactBundle`、单一typed
 manifest/no-card RuntimeSession和single/multi-rank ReferenceExecutor已经存在，并由Q15-Q21的source-backed gate
-闭合。当前尚不存在真实`RuntimeProvider`/board execution、target-correlated execution model或经板端校准的timing
-model；这些能力不能由reference、symbol closure或no-card plan冒充。
+闭合。Q22 model-only纵向链已经由同一`wafer-compile`生产事务、完整source output differential和SystemC真实执行闭合。
+当前尚不存在真实`RuntimeProvider`/board execution、board-correlated numeric profile或经板端校准的timing model；
+这些能力不能由reference、model-only结果、symbol closure或no-card plan冒充。
 
 2026-07-10设计中的`wafer.model.*`、`wafer.distributed.*`、`wafer.parallel.*`、
 `wafer.executable.*`、WCRE、global registry、hybrid rank class、Protobuf admission和capability lease均未
@@ -247,15 +250,16 @@ reference executor不是cycle/packet simulator，不证明CRT wrapper、真实tr
 
 target execution model是与reference并列的下游consumer：近期从tasks/14 full conversion形成的owner-backed、
 不可序列化target LLVM bundle执行same typed target-call ABI。shared typed call registry和per-rank exact-signature bridge把
-实际动态call形成invocation-local transaction并进入SystemC；不编译repo CRT、不构造Tsm packet。Q22在首个f32 workload
-vertical前先闭合13种logical storage codec、有证据的target-profile×engine×format encoding、当前七种compute/convert format、
+实际动态call形成invocation-local transaction并进入SystemC；不编译repo CRT、不构造Tsm packet。Q22已经先闭合13种logical
+storage codec、有证据的target-profile×engine×format encoding、当前七种compute/convert format、
 `(ModelProfileId, NumericCommandKey) -> NumericSemanticsProfile`唯一映射和formal numeric backend；oneDNN只处理target codec解包后的dense
 tensor，并按完整profile进入bit-exact、profile-bounded或rejected admission。formal backend只在checked work budget内执行，
 大command无admitted bulk时fail fast，不隐式逐MAC回退。SystemC只消费该基础层；formal backend逐family通过独立Q19/CPU
 differential或显式trusted-TCB conformance，SoftFloat/TestFloat或production MPFR不自计双oracle。format codec存在不扩大compiler legality，
 外部CPU库默认行为也不构成hardware policy。
-positive closure依次使用Q20 f32、source-produced f16/bf16 GEMM、Q21 16-rank tiny Llama和超过formal budget的deterministic
-source-backed large GEMM；unsupported reason或generated shape-only case不能替代这些完整consumer。
+positive closure已经使用Q20 f32的formal/admitted双路径、source-produced f16/bf16 GEMM、Q21 16-rank tiny Llama和超过
+formal budget的deterministic source-backed 64³ GEMM；后者只在exact source payload/environment qualification命中时执行
+一次oneDNN MatMul，否则稳定fail closed且不逐MAC回退。unsupported reason或generated shape-only case不能替代这些完整consumer。
 Q22.C再消费Q22 model result和Q6.B board result，按逐op/dtype profile发布tested domain内的board-output-correlated
 numeric evidence；独立packet/MMIO trace闭合后才增加hardware-correlated-numeric和packet provenance，不是Q22.C前置。
 exact package/RISC-V ELF是更高、互不冒充的证据入口。只有exact module通过tasks/15
@@ -299,13 +303,13 @@ package execution；Q22.P timing calibration保持deferred，
 | all stage gates、reference、target-model和board证据 | 16 |
 | target execution model、multi-dtype numeric/bulk、target LLVM bundle、SystemC主架构边界、板端numeric correlation和deferred timing | 17 |
 
-Q0.L、Q22.N、Q22.L、Q22.B、Q22.H和Q22.S已经完成，实施计划分别归档为`tasks/archive/target-command-legality-closure.md`、
+Q0.L、Q22.N、Q22.L、Q22.B、Q22.H、Q22.S和Q22.V已经完成，实施计划分别归档为`tasks/archive/target-command-legality-closure.md`、
 `tasks/archive/target-numeric-foundation.md`、`tasks/archive/target-llvm-module-bundle.md`与
 `tasks/archive/target-bulk-qualification.md`、`tasks/archive/target-call-functional-frontend.md`和
-`tasks/archive/systemc-functional-event-model.md`。下一项Q22.V在进入`doing`前建立独立active计划。target execution model方案已在
-tasks/17收敛，`tasks/progress.md`已把Q22拆成Q22.N
+`tasks/archive/systemc-functional-event-model.md`、`tasks/archive/target-model-source-verticals.md`。target execution model方案已在
+tasks/17收敛，`tasks/progress.md`把Q22拆成Q22.N
 numeric、Q22.B bulk、Q22.L target LLVM bundle、Q22.H repo-owned target-call frontend、Q22.S SystemC event和Q22.V source vertical等
-独立可调度边界；各实现边界开工前仍需建立独立计划。
+独立可调度边界并完成汇总；后续board numeric、exact-module和timing仍由独立external gate拥有。
 
 审计证据：`tasks/archive/12-architecture-evidence-reset.md`。
 

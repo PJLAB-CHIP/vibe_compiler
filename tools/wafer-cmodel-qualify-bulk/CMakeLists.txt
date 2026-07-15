@@ -4,4 +4,6 @@ target_link_libraries(wafer-cmodel-qualify-bulk
   PRIVATE
   LLVMSupport
   WaferBulkModel
+  WaferCompiler
+  WaferTargetModelCore
 )

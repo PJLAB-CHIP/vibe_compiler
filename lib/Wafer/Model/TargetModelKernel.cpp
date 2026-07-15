@@ -724,6 +724,17 @@ readTensor(const InvocationMemoryRegistry &memory, int64_t rank,
 }
 
 llvm::Expected<std::vector<uint8_t>>
+readTensorStorage(const InvocationMemoryRegistry &memory, int64_t rank,
+                  uint64_t address, const NumericTensorKey &key) {
+  llvm::Expected<uint64_t> bytes = getPhysicalTensorStorageBytes(key);
+  if (!bytes)
+    return kernelError(TargetModelKernelErrorCode::PhysicalCodecFailure,
+                       llvm::toString(bytes.takeError()));
+  return readSnapshot(memory, rank, TargetModelAddressSpace::RankSPM, address,
+                      *bytes);
+}
+
+llvm::Expected<std::vector<uint8_t>>
 packTensor(const InvocationMemoryRegistry &memory, int64_t rank,
            uint64_t address, const NumericTensorKey &key,
            llvm::ArrayRef<RawLogicalValue> values) {
@@ -821,7 +832,8 @@ executeElementwise(const compiler::TargetTransaction &transaction,
                             TargetModelAddressSpace::RankSPM, value.destination,
                             1, std::move(*packed)}},
       result->flags,
-      TargetModelControlAction::None};
+      TargetModelControlAction::None,
+      TargetModelNumericBackend::Formal};
 }
 
 llvm::Expected<TargetModelCommandEffect>
@@ -886,14 +898,15 @@ executeConvert(const compiler::TargetTransaction &transaction,
                             TargetModelAddressSpace::RankSPM, value.destination,
                             1, std::move(*packed)}},
       result->flags,
-      TargetModelControlAction::None};
+      TargetModelControlAction::None,
+      TargetModelNumericBackend::Formal};
 }
 
 llvm::Expected<TargetModelCommandEffect>
 executeGemm(const compiler::TargetTransaction &transaction,
             const compiler::TargetGemmTransaction &value,
             const InvocationMemoryRegistry &memory,
-            TargetModelKernelBudget budget) {
+            TargetModelKernelBudget budget, TargetModelExecutionPolicy policy) {
   const bool batched = value.batchCount > 1;
   const NumericTensorLayout layout =
       batched ? NumericTensorLayout::NCx : NumericTensorLayout::Cx;
@@ -938,6 +951,76 @@ executeGemm(const compiler::TargetTransaction &transaction,
       resolveNumeric(std::move(*command));
   if (!resolved)
     return resolved.takeError();
+
+  if (policy.getGemmDispatchPolicy() ==
+      TargetModelGemmDispatchPolicy::PreferAdmitted) {
+    const TargetModelBulkBackend *backend = policy.getBulkBackend();
+    if (!backend)
+      return kernelError(TargetModelKernelErrorCode::BulkBackendUnavailable,
+                         "prefer-admitted policy has no bulk backend");
+    llvm::Expected<std::vector<uint8_t>> lhsStorage =
+        readTensorStorage(memory, transaction.logicalRank, value.lhs, *lhsKey);
+    llvm::Expected<std::vector<uint8_t>> rhsStorage =
+        readTensorStorage(memory, transaction.logicalRank, value.rhs, *rhsKey);
+    llvm::Expected<std::vector<uint8_t>> destinationStorage = readTensorStorage(
+        memory, transaction.logicalRank, value.destination, *destinationKey);
+    if (!lhsStorage)
+      return lhsStorage.takeError();
+    if (!rhsStorage)
+      return rhsStorage.takeError();
+    if (!destinationStorage)
+      return destinationStorage.takeError();
+    TargetModelBulkRequest request{
+        *resolved,
+        {{*lhsKey, std::move(*lhsStorage)}, {*rhsKey, std::move(*rhsStorage)}},
+        {*destinationKey, std::move(*destinationStorage)}};
+    llvm::Expected<std::optional<TargetModelBulkResult>> bulk =
+        backend->tryExecute(request);
+    if (!bulk)
+      return kernelError(TargetModelKernelErrorCode::BulkBackendFailure,
+                         llvm::toString(bulk.takeError()));
+    if (*bulk) {
+      TargetModelBulkResult result = std::move(**bulk);
+      if (result.destination.key != *destinationKey ||
+          result.destination.storage.size() !=
+              request.destinationTemplate.storage.size())
+        return kernelError(TargetModelKernelErrorCode::BulkBackendFailure,
+                           "bulk backend returned a mismatched destination");
+      if (result.evidence.matmulInvocations != 1 ||
+          result.evidence.reorderInvocations > 1 ||
+          result.evidence.formalFusedMultiplyAdds != 0 ||
+          result.evidence.admissionRecordDigest.empty() ||
+          result.evidence.implementation.empty())
+        return kernelError(
+            TargetModelKernelErrorCode::BulkBackendFailure,
+            "bulk backend returned incomplete dispatch evidence");
+      return TargetModelCommandEffect{
+          {TargetModelByteWrite{
+              transaction.logicalRank, TargetModelAddressSpace::RankSPM,
+              value.destination, 1, std::move(result.destination.storage)}},
+          result.flags,
+          TargetModelControlAction::None,
+          TargetModelNumericBackend::Bulk,
+          std::move(result.evidence)};
+    }
+
+    uint64_t outputCount = 0;
+    uint64_t fusedMultiplyAdds = 0;
+    uint64_t scalarEvaluations = 0;
+    if (!checkedMultiply(value.batchCount, value.m, outputCount) ||
+        !checkedMultiply(outputCount, value.n, outputCount) ||
+        !checkedMultiply(outputCount, value.k, fusedMultiplyAdds) ||
+        !checkedAdd(fusedMultiplyAdds, outputCount, scalarEvaluations))
+      return kernelError(TargetModelKernelErrorCode::InvalidTransactionField,
+                         "GEMM formal work count overflows");
+    const FormalNumericWorkBudget formalBudget = budget.getNumericBudget();
+    if (scalarEvaluations > formalBudget.getMaximumScalarEvaluations() ||
+        fusedMultiplyAdds > formalBudget.getMaximumFusedMultiplyAdds())
+      return kernelError(
+          TargetModelKernelErrorCode::BulkBackendUnavailable,
+          "GEMM exceeds the formal budget and has no exact bulk admission");
+  }
+
   llvm::Expected<std::vector<RawLogicalValue>> lhs =
       readTensor(memory, transaction.logicalRank, value.lhs, *lhsKey);
   llvm::Expected<std::vector<RawLogicalValue>> rhs =
@@ -963,7 +1046,8 @@ executeGemm(const compiler::TargetTransaction &transaction,
                             TargetModelAddressSpace::RankSPM, value.destination,
                             1, std::move(*packed)}},
       result->flags,
-      TargetModelControlAction::None};
+      TargetModelControlAction::None,
+      TargetModelNumericBackend::Formal};
 }
 
 llvm::Expected<TargetModelCommandEffect>
@@ -1096,6 +1180,10 @@ stringifyTargetModelKernelErrorCode(TargetModelKernelErrorCode code) {
     return "numeric-resolution-failure";
   case TargetModelKernelErrorCode::PhysicalCodecFailure:
     return "physical-codec-failure";
+  case TargetModelKernelErrorCode::BulkBackendUnavailable:
+    return "bulk-backend-unavailable";
+  case TargetModelKernelErrorCode::BulkBackendFailure:
+    return "bulk-backend-failure";
   }
   llvm_unreachable("unknown target model kernel error code");
 }
@@ -1122,7 +1210,8 @@ llvm::Error validateTargetModelTransactionFields(
 llvm::Expected<TargetModelCommandEffect>
 executeTargetModelCommand(const compiler::TargetTransaction &transaction,
                           const InvocationMemoryRegistry &memory,
-                          TargetModelKernelBudget budget) {
+                          TargetModelKernelBudget budget,
+                          TargetModelExecutionPolicy policy) {
   if (llvm::Error error = validateTargetModelTransactionFields(transaction))
     return std::move(error);
   if (!llvm::is_contained(memory.getAddressPlan().getLogicalRanks(),
@@ -1147,7 +1236,7 @@ executeTargetModelCommand(const compiler::TargetTransaction &transaction,
     return executeConvert(transaction, *value, memory, budget);
   if (const auto *value =
           std::get_if<compiler::TargetGemmTransaction>(&transaction.payload))
-    return executeGemm(transaction, *value, memory, budget);
+    return executeGemm(transaction, *value, memory, budget, policy);
 
   TargetModelControlAction control = getControlAction(transaction.payload);
   if (control != TargetModelControlAction::None) {

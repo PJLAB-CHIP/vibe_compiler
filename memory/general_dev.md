@@ -521,3 +521,15 @@
 - 自建MLIR context调用`translateModuleToLLVMIR`时，仅把Builtin/LLVM dialect加入registry仍不够；还必须为该registry
   注册Builtin和LLVM dialect translation interface。production driver与unit-test context都要遵守，否则测试会在
   LLVM IR translation边界失败，而不是在dialect parse/load阶段暴露。
+- 多个独立执行consumer需要同一source invocation时，只共享typed compact tensor、accepted rank slice和已验证payload
+  loading；不要共享reference/model compute、numeric或transport scheduler。target model在共享装配之后，必须再按exact
+  Kernel ABI slot的shape/dtype/layout编码target physical bytes，并从slot反向解码output。这样source输入只有一个事实源，
+  reference和target model仍是独立实现。
+- 需要证明“同一次lowering”时，用factory-only move-owned compilation product同时交付accepted executable和实际生成target
+  artifacts的owner-backed LLVM bundle；不要让下游公开构造这个关系，也不要从已发布package或accepted IR重新lower。
+- source-backed bulk qualification不能只绑定shape、seed或NPY路径。offline source-spec应嵌入并canonicalize exact target
+  physical operand/destination-template bytes，runtime再对command、payload、environment和预期backend output exact-match。
+  超过formal budget且无admission时稳定失败；formal fallback只能在checked budget内发生。
+- `wafer-compile --target-model`的独立oracle边界是显式的：`reference`真实执行Q19，`external`只消费固定source CPU expected。
+  不允许在Q19 dtype unsupported后自动切换。当前f32按case显式atol/rtol，非f32 destination按raw bytes exact；两种失败都
+  保留已经原子发布的verified package供审计。

@@ -13,6 +13,7 @@
 
 #include <cassert>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -60,6 +61,7 @@ TargetCallInvocationDescriptor makeInvocation(size_t rankCount = 1) {
           0,
           "input-name-is-not-semantic",
           "u8",
+          MemLayout::Tensor,
           {256},
           256,
           256},
@@ -68,6 +70,7 @@ TargetCallInvocationDescriptor makeInvocation(size_t rankCount = 1) {
           0,
           "output-name-is-not-semantic",
           "u8",
+          MemLayout::Tensor,
           {256},
           256,
           256},
@@ -76,6 +79,7 @@ TargetCallInvocationDescriptor makeInvocation(size_t rankCount = 1) {
           0,
           "status-name-is-not-semantic",
           "u32",
+          MemLayout::Tensor,
           {1},
           4,
           4}},
@@ -132,6 +136,28 @@ uint64_t supportedFormatCode(TargetFormatEngine engine, LogicalFormat format) {
 uint64_t supportedF32Code(TargetFormatEngine engine) {
   return supportedFormatCode(engine, LogicalFormat::F32);
 }
+
+class FakeBulkBackend final : public TargetModelBulkBackend {
+public:
+  explicit FakeBulkBackend(bool admit) : admit(admit) {}
+
+  llvm::Expected<std::optional<TargetModelBulkResult>>
+  tryExecute(const TargetModelBulkRequest &request) const override {
+    ++invocations;
+    if (!admit)
+      return std::optional<TargetModelBulkResult>();
+    TargetModelBulkResult result{
+        request.destinationTemplate,
+        {},
+        {1, 1, 0, "sha256:fake-admission", "fake-bulk"}};
+    return std::optional<TargetModelBulkResult>(std::move(result));
+  }
+
+  mutable uint64_t invocations = 0;
+
+private:
+  bool admit;
+};
 
 std::vector<uint64_t>
 makeFieldValidArguments(const TargetCallDescriptor &descriptor) {
@@ -408,6 +434,44 @@ TEST(TargetModelKernelTest, ConvertAndGemmUseResolvedFormalCommands) {
   EXPECT_EQ(product[1].bits, UINT64_C(0x4200));
   EXPECT_EQ(product[2].bits, UINT64_C(0x4400));
   EXPECT_EQ(product[3].bits, UINT64_C(0x4500));
+}
+
+TEST(TargetModelKernelTest,
+     PreferAdmittedGemmUsesExactBackendOrFailsBeyondFormalBudget) {
+  InvocationMemoryRegistry memory = makeRegistry();
+  const uint64_t spm = memory.getAddressPlan().getSPMBase();
+  NumericTensorKey matrix =
+      makeTensor(LogicalFormat::F32, NumericTensorLayout::Cx, {4, 4});
+  std::vector<RawLogicalValue> values(
+      16, {LogicalFormat::F32, UINT64_C(0x3f800000)});
+  writeTensor(memory, 0, spm, matrix, values);
+  writeTensor(memory, 0, spm + UINT64_C(0x1000), matrix, values);
+  TargetTransaction gemm{0, 0,
+                         TargetGemmTransaction{spm, spm + UINT64_C(0x1000),
+                                               spm + UINT64_C(0x2000), 4, 4, 4,
+                                               1, LogicalFormat::F32}};
+  TargetModelKernelBudget smallBudget = TargetModelKernelBudget::create(
+      FormalNumericWorkBudget::create(/*maximumScalarEvaluations=*/1,
+                                      /*maximumFusedMultiplyAdds=*/1),
+      /*maximumMovementBytes=*/4096,
+      /*maximumMovementSegments=*/256);
+
+  FakeBulkBackend missing(/*admit=*/false);
+  std::string error = expectError(executeTargetModelCommand(
+      gemm, memory, smallBudget,
+      TargetModelExecutionPolicy::preferAdmitted(missing)));
+  EXPECT_NE(error.find("bulk-backend-unavailable"), std::string::npos);
+  EXPECT_EQ(missing.invocations, 1u);
+
+  FakeBulkBackend admitted(/*admit=*/true);
+  TargetModelCommandEffect effect = llvm::cantFail(executeTargetModelCommand(
+      gemm, memory, smallBudget,
+      TargetModelExecutionPolicy::preferAdmitted(admitted)));
+  EXPECT_EQ(effect.numericBackend, TargetModelNumericBackend::Bulk);
+  EXPECT_EQ(effect.bulkEvidence.matmulInvocations, 1u);
+  EXPECT_EQ(effect.bulkEvidence.formalFusedMultiplyAdds, 0u);
+  EXPECT_EQ(effect.bulkEvidence.admissionRecordDigest, "sha256:fake-admission");
+  EXPECT_EQ(admitted.invocations, 1u);
 }
 
 TEST(TargetModelKernelTest, FailedEffectDoesNotPublishBytesOrNumericFlags) {

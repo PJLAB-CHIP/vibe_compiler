@@ -1,6 +1,6 @@
-//===- ReferenceInvocation.cpp - Typed rank invocation materialization ---===//
+//===- ProgramInvocation.cpp - Typed source invocation materialization --===//
 
-#include "Wafer/Compiler/ReferenceExecutor.h"
+#include "Wafer/Compiler/ProgramInvocation.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
@@ -44,17 +44,17 @@ bool isSafeRelativePath(llvm::StringRef path) {
   return true;
 }
 
-llvm::Expected<ReferenceTensor>
-sliceGlobalTensor(const ReferenceTensor &global,
-                  const RankProgramBinding &binding) {
+llvm::Expected<ProgramTensor>
+sliceProgramTensor(const ProgramTensor &global,
+                   const RankProgramBinding &binding) {
   if (global.getDType() != binding.dtype ||
       global.getShape() != llvm::ArrayRef<int64_t>(binding.globalShape))
-    return invalid("global reference input disagrees with typed binding");
+    return invalid("global program input disagrees with typed binding");
   const frontend::ProgramRankSlice &slice = binding.slice;
   const size_t rank = binding.globalShape.size();
   if (slice.offsets.size() != rank || slice.sizes.size() != rank ||
       slice.strides.size() != rank || slice.sizes != binding.localShape)
-    return invalid("reference input slice has inconsistent rank or shape");
+    return invalid("program input slice has inconsistent rank or shape");
 
   auto globalElements = elementCount(binding.globalShape);
   auto localElements = elementCount(binding.localShape);
@@ -62,7 +62,7 @@ sliceGlobalTensor(const ReferenceTensor &global,
       (*globalElements == 0 && !global.getBytes().empty()) ||
       (*globalElements != 0 &&
        global.getBytes().size() % static_cast<size_t>(*globalElements) != 0))
-    return invalid("global reference input byte geometry is invalid");
+    return invalid("global program input byte geometry is invalid");
   const size_t elementBytes =
       *globalElements == 0
           ? 0
@@ -70,11 +70,11 @@ sliceGlobalTensor(const ReferenceTensor &global,
   if (elementBytes != 0 &&
       static_cast<uint64_t>(*localElements) >
           std::numeric_limits<size_t>::max() / elementBytes)
-    return invalid("local reference input byte geometry is not representable");
+    return invalid("local program input byte geometry is not representable");
   std::vector<uint8_t> local(static_cast<size_t>(*localElements) *
                              elementBytes);
   if (*localElements == 0)
-    return ReferenceTensor::create(binding.dtype, binding.localShape, local);
+    return ProgramTensor::create(binding.dtype, binding.localShape, local);
 
   std::vector<int64_t> coordinate(rank, 0);
   for (int64_t localLinear = 0; localLinear < *localElements; ++localLinear) {
@@ -90,11 +90,11 @@ sliceGlobalTensor(const ReferenceTensor &global,
           coordinate[dim] >
               (std::numeric_limits<int64_t>::max() - slice.offsets[dim]) /
                   slice.strides[dim])
-        return invalid("reference input slice coordinate overflows");
+        return invalid("program input slice coordinate overflows");
       int64_t globalCoordinate =
           slice.offsets[dim] + coordinate[dim] * slice.strides[dim];
       if (globalCoordinate < 0 || globalCoordinate >= binding.globalShape[dim])
-        return invalid("reference input slice is outside global tensor");
+        return invalid("program input slice is outside global tensor");
       globalLinear = globalLinear * binding.globalShape[dim] + globalCoordinate;
     }
     std::memcpy(local.data() + static_cast<size_t>(localLinear) * elementBytes,
@@ -102,51 +102,95 @@ sliceGlobalTensor(const ReferenceTensor &global,
                     static_cast<size_t>(globalLinear) * elementBytes,
                 elementBytes);
   }
-  return ReferenceTensor::create(binding.dtype, binding.localShape, local);
+  return ProgramTensor::create(binding.dtype, binding.localShape, local);
 }
 
 } // namespace
 
-llvm::Expected<std::vector<ReferenceRankInvocation>>
-prepareReferenceInvocations(
+std::optional<int64_t>
+computeProgramTensorByteCount(llvm::StringRef dtype,
+                              llvm::ArrayRef<int64_t> shape) {
+  int64_t elementBytes = 0;
+  if (dtype == "i8" || dtype == "ui8")
+    elementBytes = 1;
+  else if (dtype == "i16" || dtype == "ui16" || dtype == "f16" ||
+           dtype == "bf16")
+    elementBytes = 2;
+  else if (dtype == "i32" || dtype == "ui32" || dtype == "f32" ||
+           dtype == "tf32")
+    elementBytes = 4;
+  else if (dtype == "i64" || dtype == "ui64" || dtype == "f64")
+    elementBytes = 8;
+  else
+    return std::nullopt;
+  int64_t bytes = elementBytes;
+  for (int64_t dim : shape) {
+    if (dim < 0 ||
+        (dim != 0 && bytes > std::numeric_limits<int64_t>::max() / dim))
+      return std::nullopt;
+    bytes *= dim;
+  }
+  return bytes;
+}
+
+llvm::Expected<ProgramTensor>
+ProgramTensor::create(llvm::StringRef dtype, llvm::ArrayRef<int64_t> shape,
+                      llvm::ArrayRef<uint8_t> bytes) {
+  std::optional<int64_t> expected = computeProgramTensorByteCount(dtype, shape);
+  if (!expected)
+    return invalid("program tensor has unsupported dtype or shape");
+  if (*expected != static_cast<int64_t>(bytes.size()))
+    return invalid("program tensor byte count disagrees with dtype and shape");
+  return ProgramTensor(dtype.str(), std::vector<int64_t>(shape),
+                       std::vector<uint8_t>(bytes));
+}
+
+llvm::Expected<ProgramTensor> ProgramTensor::loadNpy(llvm::StringRef path) {
+  auto payload = frontend::loadNpyTensorPayload(path);
+  if (!payload)
+    return payload.takeError();
+  return create(payload->dtype, payload->shape, payload->bytes);
+}
+
+llvm::Expected<std::vector<ProgramRankInvocation>> prepareProgramInvocations(
     const ExecutableBundle &bundle, llvm::StringRef packageRoot,
-    llvm::ArrayRef<ReferenceGlobalInputBinding> globalInputs) {
+    llvm::ArrayRef<ProgramGlobalInputBinding> globalInputs) {
   if (packageRoot.empty())
-    return invalid("reference package root must not be empty");
+    return invalid("program invocation package root must not be empty");
   if (bundle.getRankExecutables().empty())
-    return invalid("reference executable domain must not be empty");
-  std::vector<ReferenceRankInvocation> invocations;
+    return invalid("program invocation executable domain must not be empty");
+  std::vector<ProgramRankInvocation> invocations;
   invocations.reserve(bundle.getRankExecutables().size());
   for (const RankExecutable &rank : bundle.getRankExecutables()) {
-    ReferenceRankInvocation invocation;
+    ProgramRankInvocation invocation;
     invocation.logicalRank = rank.getLogicalRank();
     for (const RankProgramBinding &binding : rank.getProgramBindings()) {
       if (binding.role == ProgramResourceRole::Output)
         continue;
-      llvm::Expected<ReferenceTensor> tensor =
-          [&]() -> llvm::Expected<ReferenceTensor> {
+      llvm::Expected<ProgramTensor> tensor =
+          [&]() -> llvm::Expected<ProgramTensor> {
         if (binding.role == ProgramResourceRole::UserInput) {
-          const ReferenceGlobalInputBinding *match = nullptr;
-          for (const ReferenceGlobalInputBinding &input : globalInputs)
+          const ProgramGlobalInputBinding *match = nullptr;
+          for (const ProgramGlobalInputBinding &input : globalInputs)
             if (input.index == binding.programIndex) {
               if (match)
-                return invalid("duplicate global reference input index");
+                return invalid("duplicate global program input index");
               match = &input;
             }
           if (!match)
-            return invalid("missing global reference input index");
-          return sliceGlobalTensor(match->tensor, binding);
+            return invalid("missing global program input index");
+          return sliceProgramTensor(match->tensor, binding);
         }
         if (!isSafeRelativePath(binding.slice.payloadPath))
-          return invalid("reference payload path is not safe and relative");
+          return invalid("program payload path is not safe and relative");
         llvm::SmallString<256> payload(packageRoot);
         llvm::sys::path::append(payload, binding.slice.payloadPath);
-        auto loaded = ReferenceTensor::loadNpy(payload);
+        auto loaded = ProgramTensor::loadNpy(payload);
         if (!loaded)
           return loaded.takeError();
         if (loaded->getDType() != binding.dtype ||
             loaded->getShape() != llvm::ArrayRef<int64_t>(binding.localShape))
-          return invalid("reference payload disagrees with typed rank binding");
+          return invalid("program payload disagrees with typed rank binding");
         return loaded;
       }();
       if (!tensor)
@@ -162,8 +206,14 @@ prepareReferenceInvocations(
       llvm::count_if(firstBindings, [](const RankProgramBinding &binding) {
         return binding.role == ProgramResourceRole::UserInput;
       }))
-    return invalid("unexpected global reference input index");
+    return invalid("unexpected global program input index");
   return invocations;
+}
+
+llvm::Expected<ProgramTensor>
+sliceProgramTensorForBinding(const ProgramTensor &global,
+                             const RankProgramBinding &binding) {
+  return sliceProgramTensor(global, binding);
 }
 
 } // namespace wafer::compiler

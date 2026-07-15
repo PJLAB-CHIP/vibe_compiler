@@ -364,3 +364,12 @@
 - 修复模式：建立不包含任何LLVM/Wafer header的plain bridge TU，只向no-RTTI model暴露opaque runner/event和C++ callback；仅
   bridge链接SystemC并启用RTTI/异常，model继续使用仓库默认flags。验证时检查实际compile command，并分别运行feature-on
   `sc_main`和feature-off link-closure，不能只证明bridge静态库可编译。
+
+## 2026-07-14 多个llvm::Expected必须按构造顺序逐个检查
+
+- 现象：reference projection为一个unsupported f16 GEMM同时构造lhs、rhs和destination三个`llvm::Expected`，检查lhs失败后
+  立即返回；尚未检查的rhs/destination在析构时触发“Expected must be checked”断言，正常capability negative变成进程abort。
+- 根因：`llvm::Expected`的error必须显式消费或转移。预先构造多个可能失败的sibling，再在第一个失败时early return，会留下
+  后续对象的unchecked error；它与业务错误是否预期无关。
+- 修复模式：有顺序依赖的validation按“构造一个 -> 立即检查/`takeError` -> 再构造下一个”编写。若必须并行构造，则所有
+  error都要在任何return前合并或消费。negative test必须验证稳定非零诊断而不是只在release/no-assert构建观察退出码。

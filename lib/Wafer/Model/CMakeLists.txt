@@ -1,5 +1,6 @@
 add_mlir_library(WaferTargetModelCore
   PARTIAL_SOURCES_INTENDED
+  TargetModelInvocation.cpp
   TargetModelMemory.cpp
 
   LINK_LIBS PUBLIC
@@ -17,6 +18,18 @@ if(WAFER_ENABLE_NUMERIC_MODEL_DEPS)
     WaferNumericModel
     WaferTargetModelCore
     WaferTarget
+    LLVMSupport
+  )
+endif()
+
+if(WAFER_ENABLE_BULK_MODEL_DEPS)
+  add_mlir_library(WaferTargetBulkModel
+    PARTIAL_SOURCES_INTENDED
+    TargetBulkModel.cpp
+
+    LINK_LIBS PUBLIC
+    WaferBulkModel
+    WaferTargetFunctionalModel
     LLVMSupport
   )
 endif()

@@ -656,12 +656,12 @@ private:
             "proof");
       } else if (auto gemm = mlir::dyn_cast<wafer::InstrGemmOp>(operation)) {
         auto lhsType = requireF32Buffer(gemm.getLhs(), "GEMM lhs");
-        auto rhsType = requireF32Buffer(gemm.getRhs(), "GEMM rhs");
-        auto destType = requireF32Buffer(gemm.getDest(), "GEMM dest");
         if (!lhsType)
           return lhsType.takeError();
+        auto rhsType = requireF32Buffer(gemm.getRhs(), "GEMM rhs");
         if (!rhsType)
           return rhsType.takeError();
+        auto destType = requireF32Buffer(gemm.getDest(), "GEMM dest");
         if (!destType)
           return destType.takeError();
         int64_t m = static_cast<int64_t>(gemm.getM());

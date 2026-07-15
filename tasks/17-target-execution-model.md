@@ -1,8 +1,7 @@
 # Wafer Target Execution Model（CModel）
 
-状态：2026-07-14已完成真实Q21 readiness、Q22.N formal numeric foundation、Q22.L owner-backed target LLVM bundle和
-Q22.B oneDNN bulk qualification；封闭vendor Host-CRT/packet不再作为近期数值CModel前置，Q22.H正按repo-owned
-typed target-call frontend推进。本文固定以数值正确性为
+状态：2026-07-14已完成Q22.N/L/B/H/S/V并汇总发布Q22 model-only functional-numeric profile；封闭vendor
+Host-CRT/packet/DWFC seam不作为数值CModel依赖。本文固定以数值正确性为
 近期目标的untimed target execution model、SystemC/TLM边界、实现分层和板端numeric correlation计划；timing calibration
 仅作为deferred extension。任务状态看
 `tasks/progress.md`。本文不复制总体架构、instruction schedule或完整register/
@@ -19,11 +18,11 @@ Q19 ReferenceExecutor的别名，也不因采用SystemC就自动获得vendor pac
 
 - 让同一份accepted rank program在RISC-V device link之外多一个目标相关consumer，尽早暴露instruction-to-target
   lowering、typed CRT call、地址、descriptor、engine和Direct DTE错误；
-- 以SystemC作为正式target model的模块、并发和event容器，以TLM承载必要的MMIO、DDR和fabric事务；近期只发布
-  untimed/delta-cycle profile，不建立任意时间参数；
+- 以SystemC作为正式target model的模块、并发和event容器；当前private memory/event实现不建立无consumer的TLM socket，
+  TLM只保留给未来ISS/MMIO/interconnect consumer；近期只发布untimed/delta-cycle profile，不建立任意时间参数；
 - 把算子数值、packet decode和checked memory effect保留为不依赖SystemC的plain C++ kernel，使其可做独立unit/
   differential test，并由SystemC modules调用；
-- 在任何f32 workload vertical之前先建立覆盖当前全部13种logical storage format、有证据的target-profile×engine×format encoding、7种公开
+- 已在任何f32 workload vertical之前建立覆盖当前全部13种logical storage format、有证据的target-profile×engine×format encoding、7种公开
   compute/convert format及完整product/accumulator/intermediate/destination、舍入/overflow/special-value政策的数值基础层；
   kernel只消费唯一`NumericSemanticsProfile`，不保留先写f32、以后再补dtype的旁路；
 - 让Q22.L同一份fully legal target LLVM在host执行；由共享typed target-call registry和exact-signature bridge把
@@ -55,8 +54,8 @@ Q19 ReferenceExecutor的别名，也不因采用SystemC就自动获得vendor pac
 ```text
 Pipeline position:
 - Upstream artifact / IR:
-  近期入口消费Q16 ExecutableBundle经过tasks/14 target ABI preparation和full conversion形成的all-and-only、
-  owner-backed fully legal target LLVM modules，以及与每rank entry精确双射的typed ABI slots。该target-LLVM
+  近期入口消费同一production compilation product中的Q16 ExecutableBundle及其经过tasks/14 target ABI preparation和
+  full conversion形成的all-and-only、owner-backed fully legal target LLVM modules，以及与每rank entry精确双射的typed ABI slots。该target-LLVM
   bundle还必须消费`CompilationRequest -> ExecutionConfig`端到端携带的typed target profile，以及该
   profile由tasks/14 registry唯一映射的target identity/Kernel Runtime ABI；当前profile不表示silicon revision，
   也禁止在full conversion后补default。bundle不可序列化，不进入package。exact-module扩展另行消费Q18 VerifiedPackageManifest和其all-and-only
@@ -76,21 +75,22 @@ Pipeline position:
   tasks/16 differential/CI和Q22.C board numeric correlation；Q22.E exact-module与deferred Q22.P timing calibration是
   独立consumer。target model结果不是compiler transformation输入。
 - User-level driver / named pipeline:
-  用户通过`wafer-compile --target-profile=wafer-tx81-single-card-kernel-v1`显式选择tasks/14 typed
-  profile，且不存在target profile默认值；首个正式CModel gate由
-  wafer-compile在Q17/Q18原子发布后、同一invocation仍持有target LLVM bundle时进入显式
-  target-model execution mode：host执行target LLVM，exact-signature bridge再向SystemC model发typed transaction/event。
+  用户通过`wafer-compile --target-profile=wafer-tx81-single-card-kernel-v1 --target-model`显式选择tasks/14 typed
+  profile和model consumer，且不存在target profile默认值；`--target-model-oracle=reference`先运行独立Q19，
+  `external`只使用调用者提供的固定expected。wafer-compile在Q17/Q18原子发布后、同一invocation仍持有target LLVM bundle时
+  执行host target LLVM，exact-signature bridge再向SystemC model发typed transaction/event。GEMM policy显式选择
+  `formal`或`prefer-admitted`，后者只能消费verified bulk qualification record。
   wafer-opt/pass chain和component fixture只补局部测试。只有exact package/ELF执行闭合后，wafer-run才通过typed
   RuntimeProvider选择target model并消费verified package，不能用host-only模式冒充该入口。
 - Explicit non-goals:
   不复制instruction schedule，不改变manifest语义，不用Q19执行结果驱动target model，不把untimed结果升级为
   board/timing/cycle证据，不用代表rank、手写LLVM、手写packet或单个kernel替代真实纵向链。
 - Completion gate:
-  Q0.L、Q22.N、Q22.L、Q22.B、Q22.H与Q22.S已经完成。Q22.N闭合13种logical codec、有证据的target-profile×engine×format encoding、当前7种
+  Q0.L、Q22.N、Q22.L、Q22.B、Q22.H、Q22.S与Q22.V已经完成。Q22.N闭合13种logical codec、有证据的target-profile×engine×format encoding、当前7种
   compute/convert format、36条convert route、4种确定性舍入和逐family formal conformance；Q22.L原子形成all-rank
   owner-backed target LLVM bundle；Q22.B闭合首批F16/BF16/F32 exact-payload `profile-bounded` oneDNN admission。Q22.L
   直接解锁Q22.H repo-owned target-call frontend；Q22.N+Q22.H+既有Q16.T已由Q22.S闭合SystemC functional-event model，Q22.B不是Q22.S前置。
-  Q22.B+Q22.S+既有Q20/Q21最后由Q22.V重放Q20 f32、source-produced f16/bf16 GEMM、Q21 16-rank tiny Llama和
+  Q22.B+Q22.S+既有Q20/Q21已由Q22.V重放Q20 f32、source-produced f16/bf16 GEMM、Q21 16-rank tiny Llama和
   deterministic source-backed large GEMM，覆盖all-and-only ranks、typed target call/ABI、SPM/DDR、
   supported engine和Direct DTE，并与独立Q19/CPU oracle比较完整输出；任一late failure无partial result，model mismatch
   不回滚已验证Q17/Q18 artifacts。Q22只汇总model-only untimed functional-numeric profile；board numeric、exact
@@ -121,10 +121,11 @@ Pipeline position:
   实现TF32 raw32 codec并分别记录logical codec、convert可达性和engine-specific format legality；不能用model有codec扩大
   compiler legality，也不能让f64晚到packet阶段才失败。
 
-近期实现应把tasks/14中已完成ABI preparation和full target conversion的结果提升为owner-backed、不可序列化的
-**target LLVM bundle**。它是实际fully legal LLVM IR及typed slots的all-rank集合，同时被现有RISC-V link、direct
-repo-owned target-call/SystemC CModel消费；它不是新IR层、packet artifact或package成员。具体C++类名和文件布局只作
-实现索引，不属于artifact合同。
+当前实现已经把tasks/14中完成ABI preparation和full target conversion的结果提升为owner-backed、不可序列化的
+**target LLVM bundle**。factory-only `TargetCompilationProduct`同时持有accepted executable和生成Q17 artifact时实际消费的
+同一target LLVM bundle；下游不能公开构造该关系，model也不能从package或accepted IR再次lower。它是fully legal LLVM IR及
+typed slots的all-rank集合，同时被现有RISC-V link和repo-owned target-call/SystemC CModel消费；它不是新IR层、packet
+artifact或package成员。具体C++类名和文件布局只作实现索引，不属于artifact合同。
 
 repo CRT当前在源码内强制定义`USING_RISCV=1`。fresh host probe证明同一C源码和public header可由GCC完整编成x86-64
 object，但只调用`wafer_tx81_local_fence`的最小链接首先缺`TsmWaitfinish`；完整object还要求36个Tsm factory/delete/
@@ -329,7 +330,9 @@ hook直接合成高层command绕过packet证据。
 
 | 对象 | 必须拥有 | 禁止拥有 |
 | --- | --- | --- |
+| same-lowering compilation product | factory-only ownership relation，原子持有accepted executable及直接生成Q17 artifacts的同一target LLVM bundle | 从package/readback重建bundle、公开构造伪造同源关系或第二次lowering |
 | `TargetLLVMModuleBundle` | canonical all-rank domain、每rank独立LLVM context owner、logical rank/entry/fully legal module、ordered ABI slots、`ExecutionConfig`（内含唯一`TargetProfileId`）和由module metadata经closed registry解析并readback的target identity/kernel ABI facts | packet list、schedule、model state、默认补出的revision或任何可序列化sidecar |
+| compact program invocation | typed `ProgramTensor`、完整logical user input、accepted per-rank slice和已验证package-relative parameter/constant payload | reference compute、model compute、target physical address、从文件名恢复resource role |
 | `ModelProfileId` | 显式选择的一组确定性model-only semantics identity；Q22.C可另发布绑定target/environment的hardware-correlated profile | compiler legality、隐式default、hardware等价声明 |
 | `NumericCommandKey` | static preflight和runtime从shared typed target-call registry/transaction投影的target profile、engine/op kind/variant、operand role/storage dtype、shape/layout、M/K/N/batch、convert kind及fixed optional fields | erased Instr sidecar、任意symbol/string推断、numeric comparator、oneDNN选择、板端阈值 |
 | `NumericSemanticsProfile` | 稳定typed identity/digest；完整operand storage/compute、product、accumulator、intermediate、destination、rounding points、FMA/reduction order、overflow、FTZ/DAZ、NaN/special/status及optional-field顺序 | 单个dtype、host library默认值、按workload临时覆盖的side table |
@@ -337,9 +340,9 @@ hook直接合成高层command绕过packet证据。
 | `BulkBackendAdmission` | 完整semantic profile digest、shape/layout adapter、value domain、backend environment和已签发的`bit-exact/profile-bounded`类别；`rejected`表示不产生该对象 | target numeric semantics、target comparator或“library支持该dtype” |
 | `FormalNumericExecutionContext` | non-yielding formal kernel作用域内的profile、model status与MPFR state save/set/clear/capture/restore和显式target status映射；APFloat/APInt每次调用显式传rounding | rank identity、跨SystemC wait的全局/TLS状态、SoftFloat oracle状态或oneDNN worker状态 |
 | `BulkExecutionEnvironment` | oneDNN runtime/threads/ISA/implementation、当前SEQ caller-worker control readback、caller fenv恢复和admission provenance；未来非SEQ profile再要求逐worker initialization evidence | worker native flags到target status的映射、architectural memory或SystemC API |
-| `TargetModelInvocation` | bundle引用、all-rank typed input/parameter/output binding、checked external resource registration、选定model profile | host pointer伪装的device address、从文件名恢复的rank/resource |
+| prepared target-model invocation | 两个same-lowering bundle引用、all-rank ordered slot value、按slot layout编码的read-only physical bytes、checked non-overlap address plan和prepared target-call executable | host pointer伪装的device address、从文件名恢复rank/resource、别名source NPY storage |
 | `TargetTransaction` | exact-signature bridge返回前复制的typed call kind、engine、地址/descriptor、dtype/shape/optional fields、explicit rank context和invocation-local sequence identity | packet/worker字段、caller栈指针、整程序command vector、Q19 schedule或DTE payload的无证据snapshot |
-| `TargetModelResult` | all-and-only rank terminal status、完整output、stable failure stage/rank/transaction、frontend/CRT/packet/numeric/event provenance | partial successful rank集合、回写compiler/package的状态 |
+| `TargetModelResult` | all-and-only rank terminal status、完整output、numeric flags、transaction/thread/delta计数、formal/bulk command计数、MatMul/reorder/formal-FMA evidence和record digest | partial successful rank集合、回写compiler/package的状态 |
 
 `NumericCommandKey`只包含typed target-call registry/transaction已经表达、并由typed target profile唯一解释的事实；它
 不保留被erase的Instr program或shadow command list。`NumericSemanticsProfile`是所选`ModelProfileId`下这些事实对应的唯一
@@ -394,6 +397,12 @@ resolve必须显式携带rank/tile、address space、resource、read/write role�
 地址数值阈值猜SPM/DDR或直接解引用host pointer。每条transaction先读完整snapshot，plain kernel返回待提交byte effects；
 所有range/payload通过后，SystemC completion event才一次提交。单command错误无partial write，整次invocation只有all-rank
 terminal success后才extract/copy output。
+
+source invocation先保留compact row-major program tensor；prepared model invocation再按每个exact Kernel ABI slot携带的
+shape/dtype/layout调用shared physical tensor codec，编码compact/Cx/NCx target bytes并核对physical footprint。output按同一slot
+反向解码，driver按program output binding的global/local slice比较all-and-only rank。program-boundary BOOL的NPY byte表示与
+target bitpacked表示尚未建立无歧义source合同，因此compact BOOL input当前在装配边界fail closed；这不影响target-call内部
+i1临时值、select和bitpacked physical effect已经支持的事实，也不能用内部支持反向宣称BOOL program input已开放。
 
 ### 4.4 完整数值类型系统
 
@@ -595,6 +604,12 @@ package或target semantics。runtime readback该record后，只有command、payl
 mandatory large GEMM资格必须来自这个offline producer，不能通过runtime debug slow path补做。phase log、wall-clock timeout、
 ULP comparator、解析/穷举domain matcher或release registry若以后需要，必须扩schema并补closed parser/readback gate。
 
+source vertical使用canonical schema v2 spec直接嵌入lower-case hex的lhs/rhs/destination-template target physical bytes，并逐项
+验证format、layout、M/K/N/batch和exact footprint；tool不会在资格阶段重新打开source NPY或按seed再生成payload。`seed`只作为
+source/config identity，嵌入bytes才是admission事实。calibration和held-out除spec digest外还必须具有不同payload digest，避免
+同一输入重复签发伪held-out。driver只通过feature-independent abstract bulk seam提交完整resolved command和private physical
+snapshots；record不匹配返回no-admission，超过formal budget时再稳定提升为`bulk-backend-unavailable`。
+
 “一次MatMul call”配合formal MAC为零只证明bulk dispatch，不证明SystemC event缩放或性能；event缩放由Q22.V验证。
 optional reorder primitive另行计数。未来可另建pinned-host bulk qualification，记录cold primitive/JIT、
 pack/reorder和warm execute，覆盖M=1 decode、正常/批量GEMM和实际source workload；mandatory large profile若落入reference
@@ -737,6 +752,12 @@ repo-owned target-call/SystemC入口能证明compiler-produced target call经过
 board capture或versioned vendor builder逐字段相关后才增加packet provenance。该入口也
 不读取已发布package、不执行RISC-V ELF/vendor archive，不能使用`wafer-run`的provider语义。
 
+当前driver的`reference` oracle在model前独立执行Q19并使用其完整rank output；`external` oracle不运行Q19，只比较调用者
+提供的固定source CPU expected。后者是当前f16/bf16和large GEMM所需边界，因为Q19只发布f32 GEMM；这个选择显式进入CLI，
+不能在Q19失败时自动切换。f32比较使用case显式atol/rtol，其它当前destination raw exact。model成功诊断同时发布
+ranks、target transaction、SystemC thread/delta、formal/bulk command、MatMul/reorder/formal-FMA计数及每个bulk admission
+record digest，便于CI证明large GEMM没有按MAC形成event或scalar fallback。这些provenance不进入package。
+
 ### 5.2 Exact package provider
 
 Q17 module固定为RISC-V64 ELF，并链接repo CRT、RISC-V `libinstr_tx81.a`/`libcommon_util.a`，同时保留SPM mapping、
@@ -798,6 +819,23 @@ descriptor和runtime event错误，在私有invocation内、相应read/effect前
 
 profile是execution result provenance，不是compiler legality或package semantic branch。高层profile失败不能反向改变
 accepted instruction支持范围；如果硬件可表达但model未覆盖，应扩target model capability或保持该profile拒绝。
+
+### 7.1 当前Q22发布能力矩阵
+
+下表只描述已发布model-only profile；exact selector仍以shared typed registry为唯一事实源。数量是closure证据，不是新协议：
+
+| 边界 | 当前发布支持 | 明确拒绝或未升级 |
+| --- | --- | --- |
+| storage / physical codec | 13种logical raw codec；compact、Cx、NCx及bitpacked BOOL的shared physical geometry/roundtrip；typed ABI slot显式携带layout | program-boundary compact BOOL NPY尚无bitpacked source合同；codec存在不开放无target encoding的engine row |
+| formal convert | 101条确定性typed convert policy，四种确定性rounding及完整raw/special/status政策 | 4条INT8-source zero-point公式和stochastic state未证，保持命名candidate/rejected；f64不在target profile |
+| formal elementwise | 88条floating selector和4条BOOL logic selector；f16/bf16/f32的已注册算术、关系、基础/MPFR transcendental按唯一profile执行 | integer elementwise、`exp_lp`/`sat_relu`/`leaky_relu`未闭合参数政策；未知selector无fallback |
+| formal GEMM / reduce | f16、bf16、f32同dtypeGEMM，F32 fused accumulator、+0 init、K递增、destination RNE；source reduce按Q0.L展开后的movement/elementwise composite执行 | I8 accumulator政策、TF32 generic GEMM、16条native reduce selector均拒绝；不从dtype猜窄/宽accumulator |
+| admitted bulk GEMM | component资格覆盖f16/bf16/f32同dtype、rank 2/3、Cx/NCx；Q22 source发布的admitted完整case为Q20首个f32 GEMM和64³ f32 GEMM | 无exact command/payload/destination/environment/expected-output record即no admission；超过formal budget时绝不scalar fallback；不外推连续输入域bit-exact |
+| functional transaction / event | checked RDMA/WDMA、gather/scatter、memset、elementwise、convert、GEMM、local fence及当前single-destination Direct DTE control；all-rank private SPM/DDR和atomic output | field-valid但无kernel的conv/pool/unpool等family、未知地址/layout/endpoint；无worker/queue容量、packet或timing claim |
+| source vertical | Q20 formal/admitted、f16/bf16 formal、64³ f32 admitted、Q21 16-rank Direct DTE；`reference`和`external`oracle显式分离 | Q19当前非f32 GEMM unsupported不会自动转external；未固定expected的shape stress不算numeric evidence |
+
+这张矩阵说明“支持多数据类型”由storage、engine legality、numeric selector、functional kernel和source evidence分层；不能把
+13种codec、oneDNN公开dtype列表或单个source case分别冒充整个笛卡尔积。
 
 ## 8. Verification Gates
 
@@ -866,6 +904,11 @@ accepted instruction支持范围；如果硬件可表达但model未覆盖，应�
   并自动命中Q22.B冻结admission；现有未初始化4096 exporter升级前只算结构测试，不能证明dispatch或numeric；
 - SystemC-enabled vertical必须真实执行；任一rank late failure无partial model result。Q17/Q18仍先按各自合同发布，model mismatch
   只让verification返回非零并保留已验证package供审计。
+
+该gate现已完成：五个固定corpus case由正式source exporter进入同一driver；Q20 formal/admitted输出均通过，admitted路径
+只替换其中一个GEMM；f16/bf16 formal raw output通过；64³ large GEMM在10000 FMA预算下命中一次exact source-payload
+admission且bulk formal FMA为零；Q21执行全部16 ranks和17个SystemC thread process。错误expected、Q19不支持的f16
+reference-oracle及错误bulk record均返回非零并保留已验证package。
 
 unsupported-reason closure只是各row必要条件，不能替代相应positive matrix。
 
@@ -1345,9 +1388,11 @@ CTest 12/12且numeric/bulk/SystemC link closure通过；shared physical codec的
 - 最后一个WDMA/transaction/kernel及任一rank late failure不形成model result，已发布Q17/Q18 artifact仍保留；SystemC-enabled CI
   必须实际执行，unavailable/skipped或unsupported-reason closure不算通过。
 
-完成：Q20、f16/bf16、deterministic large GEMM和Q21完整输出，bulk自动dispatch、transaction/memory/event negative、DTE
-no-progress及all-rank atomic result全部通过；Q22只发布`target-call/SystemC model-only functional-numeric`，仍不称repo CRT、
-packet、hardware numeric、exact package/ELF或timing model。
+完成：Q20 formal/admitted双路径、f16/bf16 formal、deterministic 64³ admitted large GEMM和Q21完整输出已经通过；bulk
+自动dispatch、错误record/no-scalar-fallback、output mismatch、DTE no-progress及all-rank atomic result已有覆盖。large case
+只形成8个target transaction、一次MatMul和零bulk formal FMA；Q21形成11984个transaction、17个SystemC thread process。
+Q22据此只发布`target-call/SystemC model-only functional-numeric`，仍不称repo CRT、packet、hardware numeric、exact
+package/ELF、性能或timing model。最终fresh suite数量记录在`tasks/progress.md`。
 
 ### 10.8 Q22.C Board numeric correlation
 
@@ -1379,21 +1424,22 @@ packet、hardware numeric、exact package/ELF或timing model。
 完成：只发布实际通过的profile标签、适用device/firmware/runtime identity、误差分布和未覆盖范围。没有RTL或vendor
 cycle证据时cycle-accurate保持非目标。
 
-## 11. 待讨论问题
+## 11. 后续外部门槛和待讨论问题
 
 以下问题不改变SystemC作为Q22正式functional-numeric容器的当前选择，但会改变dependency、packet provenance和板端
 实现成本，因此保留为显式待讨论问题：
 
 1. **Vendor simulator交付**：现有低层header只有接口痕迹，高层x86 runtime会动态寻找缺失的
-   `libcmodel_runtime_api.so`。需要确认能否取得完整host-runtime开发包、instruction model、依赖、资源、版本和license，
-   以及其输入究竟是Tsm model/session、packet/MMIO还是exact package；若可得，packet或exact-module路径可能显著缩短，
-   但仍需独立correlation。
+   `libcmodel_runtime_api.so`，DWFC/vendor CModel属于封闭交付且当前项目没有可用、可链接、可授权审计的完整开发包。
+   本路线不再主动依赖或逆向该seam，Q22据repo-owned target-call/SystemC完成。只有项目owner以后明确提供完整host runtime、
+   instruction model、依赖、资源、版本和license时，才重新把它作为Q22.K或Q22.E的候选，并仍需独立correlation。
 2. **Packet事实源与授权**：需要确认可否复用vendor可审计builder或获得register trace，并确认当前采购条款是否允许host
    集成或独立实现。只有vendor交付的许可兼容provider，或经项目owner/法务确认、基于独立可审计规范的clean-room seam才能
    产生可用于Q22.K的host packet；它验证对应compiler/CRT/model链，但在独立correlation前不证明vendor packet完全一致。
    授权缺口不阻塞Q22.H/Q22.S/Q22.V，只限制CRT/packet/opcode provenance。
-3. **SystemC工程基线**：需要固定CI平台、受支持版本、获取方式、license、deterministic scheduling要求和未来ISS
-   co-simulation边界。SystemC只拥有event/transaction实现，不改变artifact、packet、功能核或compiler合同。
+3. **SystemC工程基线**：当前Q22已固定受管SystemC 3.0.2、source/build digest、license、唯一CMake target和真实
+   `sc_main` gate；未来若增加其它CI平台或ISS co-simulation，仍需单独固定其deterministic scheduling和TLM边界。
+   SystemC只拥有event/transaction实现，不改变artifact、packet、功能核或compiler合同。
 4. **板端numeric环境和验收政策**：需要固定可用SKU/revision/unit、firmware/runtime/instruction-library/CRT组合、
    reset/watchdog能力、single-op可观测性、calibration/held-out corpus和逐op/dtype comparator；未固定前不发布
    hardware-correlated numeric profile。LT/AT阈值只在deferred Q22.P恢复时讨论。
@@ -1415,4 +1461,5 @@ cycle证据时cycle-accurate保持非目标。
 - tasks/09/11/13仍分别拥有memory legality、instruction/packet legality和Direct DTE/completion；model不能改写这些
   compiler合同。
 
-进入代码实现前应建立独立实施计划；本方案设计本身不表示target model、exact provider、board或calibration已完成。
+Q22 target-call/SystemC model-only实现已经完成。后续exact provider、board numeric、packet provenance或timing施工前仍应
+建立独立实施计划；本文不表示这些更高gate已经完成。

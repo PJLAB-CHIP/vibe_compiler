@@ -1,5 +1,8 @@
 //===- wafer-cmodel-qualify-bulk.cpp - Offline bulk qualification -------===//
 
+#include "Wafer/Compiler/ProgramInvocation.h"
+#include "Wafer/Compiler/TargetArtifact.h"
+#include "Wafer/Model/TargetModelInvocation.h"
 #include "Wafer/Target/BulkQualification.h"
 
 #include "llvm/ADT/StringRef.h"
@@ -14,10 +17,11 @@
 #include <limits>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace {
 
-enum class Mode { Calibrate, Freeze, Validate };
+enum class Mode { SourceSpec, Calibrate, Freeze, Validate };
 
 struct Options {
   std::optional<Mode> mode;
@@ -26,6 +30,14 @@ struct Options {
   std::string heldOutSpec;
   std::string policy;
   std::string output;
+  std::string format;
+  std::string lhsNpy;
+  std::string rhsNpy;
+  std::optional<uint64_t> m;
+  std::optional<uint64_t> k;
+  std::optional<uint64_t> n;
+  std::optional<uint64_t> batchCount;
+  std::optional<uint64_t> seed;
   std::optional<uint64_t> formalScalarBudget;
   std::optional<uint64_t> formalFMABudget;
   std::optional<uint64_t> maximumTotalBytes;
@@ -38,6 +50,10 @@ struct Options {
 void printUsage() {
   llvm::outs()
       << "usage:\n"
+         "  wafer-cmodel-qualify-bulk --mode source-spec --format "
+         "<f16|bf16|f32> --m <count> --k <count> --n <count> "
+         "--batch-count <count> --seed <identity> --lhs-npy <path> "
+         "--rhs-npy <path> --output <canonical-json>\n"
          "  wafer-cmodel-qualify-bulk --mode calibrate --spec <canonical-json> "
          "--output <path> <budgets>\n"
          "  wafer-cmodel-qualify-bulk --mode freeze --calibration <path> "
@@ -91,7 +107,9 @@ llvm::Expected<Options> parseOptions(int argc, char **argv) {
       llvm::Expected<llvm::StringRef> text = value();
       if (!text)
         return text.takeError();
-      if (*text == "calibrate")
+      if (*text == "source-spec")
+        options.mode = Mode::SourceSpec;
+      else if (*text == "calibrate")
         options.mode = Mode::Calibrate;
       else if (*text == "freeze")
         options.mode = Mode::Freeze;
@@ -140,6 +158,21 @@ llvm::Expected<Options> parseOptions(int argc, char **argv) {
         return std::move(error);
       continue;
     }
+    if (argument == "--format") {
+      if (llvm::Error error = setString(options.format))
+        return std::move(error);
+      continue;
+    }
+    if (argument == "--lhs-npy") {
+      if (llvm::Error error = setString(options.lhsNpy))
+        return std::move(error);
+      continue;
+    }
+    if (argument == "--rhs-npy") {
+      if (llvm::Error error = setString(options.rhsNpy))
+        return std::move(error);
+      continue;
+    }
     auto setUnsigned = [&](std::optional<uint64_t> &slot) -> llvm::Error {
       if (slot)
         return llvm::createStringError(llvm::errc::invalid_argument,
@@ -155,6 +188,31 @@ llvm::Expected<Options> parseOptions(int argc, char **argv) {
     };
     if (argument == "--formal-scalar-budget") {
       if (llvm::Error error = setUnsigned(options.formalScalarBudget))
+        return std::move(error);
+      continue;
+    }
+    if (argument == "--m") {
+      if (llvm::Error error = setUnsigned(options.m))
+        return std::move(error);
+      continue;
+    }
+    if (argument == "--k") {
+      if (llvm::Error error = setUnsigned(options.k))
+        return std::move(error);
+      continue;
+    }
+    if (argument == "--n") {
+      if (llvm::Error error = setUnsigned(options.n))
+        return std::move(error);
+      continue;
+    }
+    if (argument == "--batch-count") {
+      if (llvm::Error error = setUnsigned(options.batchCount))
+        return std::move(error);
+      continue;
+    }
+    if (argument == "--seed") {
+      if (llvm::Error error = setUnsigned(options.seed))
         return std::move(error);
       continue;
     }
@@ -229,12 +287,163 @@ int fail(llvm::Error error) {
   return 1;
 }
 
+llvm::Error writeSourceSpec(const Options &options) {
+  if (options.format.empty() || options.lhsNpy.empty() ||
+      options.rhsNpy.empty() || options.output.empty() || !options.m ||
+      !options.k || !options.n || !options.batchCount || !options.seed)
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "source-spec requires format, dimensions, batch count, seed and both "
+        "NPY inputs plus an output path");
+  if (*options.m == 0 || *options.k == 0 || *options.n == 0 ||
+      *options.batchCount == 0 ||
+      *options.m > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) ||
+      *options.k > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) ||
+      *options.n > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) ||
+      *options.batchCount >
+          static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "source-spec dimensions must be positive signed 64-bit values");
+  llvm::Expected<wafer::LogicalFormat> format =
+      wafer::parseLogicalFormat(options.format);
+  if (!format)
+    return format.takeError();
+  const wafer::NumericTensorLayout layout =
+      *options.batchCount == 1 ? wafer::NumericTensorLayout::Cx
+                               : wafer::NumericTensorLayout::NCx;
+  const wafer::MemLayout memLayout =
+      *options.batchCount == 1 ? wafer::MemLayout::Cx : wafer::MemLayout::NCx;
+  std::vector<int64_t> lhsShape;
+  std::vector<int64_t> rhsShape;
+  std::vector<int64_t> destinationShape;
+  if (*options.batchCount > 1) {
+    lhsShape.push_back(static_cast<int64_t>(*options.batchCount));
+    rhsShape.push_back(static_cast<int64_t>(*options.batchCount));
+    destinationShape.push_back(static_cast<int64_t>(*options.batchCount));
+  }
+  lhsShape.insert(lhsShape.end(), {static_cast<int64_t>(*options.m),
+                                   static_cast<int64_t>(*options.k)});
+  rhsShape.insert(rhsShape.end(), {static_cast<int64_t>(*options.k),
+                                   static_cast<int64_t>(*options.n)});
+  destinationShape.insert(
+      destinationShape.end(),
+      {static_cast<int64_t>(*options.m), static_cast<int64_t>(*options.n)});
+  auto makeKey = [&](llvm::ArrayRef<int64_t> shape) {
+    std::vector<uint64_t> dimensions;
+    dimensions.reserve(shape.size());
+    for (int64_t dimension : shape)
+      dimensions.push_back(static_cast<uint64_t>(dimension));
+    return wafer::NumericTensorKey::create(*format, layout,
+                                           std::move(dimensions));
+  };
+  llvm::Expected<wafer::NumericTensorKey> lhsKey = makeKey(lhsShape);
+  llvm::Expected<wafer::NumericTensorKey> rhsKey = makeKey(rhsShape);
+  llvm::Expected<wafer::NumericTensorKey> destinationKey =
+      makeKey(destinationShape);
+  if (!lhsKey)
+    return lhsKey.takeError();
+  if (!rhsKey)
+    return rhsKey.takeError();
+  if (!destinationKey)
+    return destinationKey.takeError();
+  llvm::Expected<uint64_t> lhsBytes =
+      wafer::getBulkTensorPhysicalBytes(*lhsKey);
+  llvm::Expected<uint64_t> rhsBytes =
+      wafer::getBulkTensorPhysicalBytes(*rhsKey);
+  llvm::Expected<uint64_t> destinationBytes =
+      wafer::getBulkTensorPhysicalBytes(*destinationKey);
+  if (!lhsBytes)
+    return lhsBytes.takeError();
+  if (!rhsBytes)
+    return rhsBytes.takeError();
+  if (!destinationBytes)
+    return destinationBytes.takeError();
+  if (*lhsBytes > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) ||
+      *rhsBytes > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) ||
+      *destinationBytes >
+          static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
+    return llvm::createStringError(
+        llvm::errc::file_too_large,
+        "source-spec physical tensor size exceeds the Kernel ABI domain");
+  llvm::Expected<wafer::compiler::ProgramTensor> lhs =
+      wafer::compiler::ProgramTensor::loadNpy(options.lhsNpy);
+  llvm::Expected<wafer::compiler::ProgramTensor> rhs =
+      wafer::compiler::ProgramTensor::loadNpy(options.rhsNpy);
+  if (!lhs)
+    return lhs.takeError();
+  if (!rhs)
+    return rhs.takeError();
+  const wafer::LogicalFormatDescriptor *descriptor =
+      wafer::findLogicalFormatDescriptor(*format);
+  if (!descriptor || descriptor->bitpacked || descriptor->storageBits % 8 != 0)
+    return llvm::createStringError(llvm::errc::invalid_argument,
+                                   "source-spec format is not byte-oriented");
+  if (destinationKey->getElementCount() >
+      std::numeric_limits<size_t>::max() / (descriptor->storageBits / 8))
+    return llvm::createStringError(llvm::errc::file_too_large,
+                                   "source-spec destination is too large");
+  std::vector<uint8_t> destinationCompact(
+      static_cast<size_t>(destinationKey->getElementCount() *
+                          (descriptor->storageBits / 8)),
+      0);
+  llvm::Expected<wafer::compiler::ProgramTensor> destination =
+      wafer::compiler::ProgramTensor::create(
+          wafer::stringifyLogicalFormat(*format), destinationShape,
+          destinationCompact);
+  if (!destination)
+    return destination.takeError();
+  auto makeSlot = [&](llvm::ArrayRef<int64_t> shape, uint64_t physicalBytes) {
+    return wafer::compiler::KernelABISlot{
+        0,
+        wafer::compiler::KernelABISlotRole::UserInput,
+        0,
+        "tensor",
+        wafer::stringifyLogicalFormat(*format).str(),
+        memLayout,
+        std::vector<int64_t>(shape.begin(), shape.end()),
+        static_cast<int64_t>(physicalBytes),
+        64};
+  };
+  auto lhsSlot = makeSlot(lhsShape, *lhsBytes);
+  auto rhsSlot = makeSlot(rhsShape, *rhsBytes);
+  auto destinationSlot = makeSlot(destinationShape, *destinationBytes);
+  llvm::Expected<std::vector<uint8_t>> lhsPhysical =
+      wafer::model::encodeTargetModelProgramTensor(*lhs, lhsSlot);
+  llvm::Expected<std::vector<uint8_t>> rhsPhysical =
+      wafer::model::encodeTargetModelProgramTensor(*rhs, rhsSlot);
+  llvm::Expected<std::vector<uint8_t>> destinationPhysical =
+      wafer::model::encodeTargetModelProgramTensor(*destination,
+                                                   destinationSlot);
+  if (!lhsPhysical)
+    return lhsPhysical.takeError();
+  if (!rhsPhysical)
+    return rhsPhysical.takeError();
+  if (!destinationPhysical)
+    return destinationPhysical.takeError();
+  llvm::Expected<wafer::BulkQualificationSpec> spec =
+      wafer::BulkQualificationSpec::createWithPhysicalPayload(
+          *format, *options.m, *options.k, *options.n, *options.batchCount,
+          layout, layout, layout, *options.seed, std::move(*lhsPhysical),
+          std::move(*rhsPhysical), std::move(*destinationPhysical));
+  if (!spec)
+    return spec.takeError();
+  return wafer::writeBulkQualificationSpec(*spec, options.output);
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
   llvm::Expected<Options> options = parseOptions(argc, argv);
   if (!options)
     return fail(options.takeError());
+  if (*options->mode == Mode::SourceSpec) {
+    if (llvm::Error error = writeSourceSpec(*options))
+      return fail(std::move(error));
+    llvm::outs() << "bulk source qualification spec written: "
+                 << options->output << '\n';
+    return 0;
+  }
   if (*options->mode == Mode::Freeze) {
     if (options->calibration.empty() || options->heldOutSpec.empty() ||
         !options->maximumAbsoluteError || !options->maximumRelativeError)

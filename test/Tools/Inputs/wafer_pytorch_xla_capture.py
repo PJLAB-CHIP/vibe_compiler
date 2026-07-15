@@ -105,17 +105,30 @@ def _canonical_array_bytes(
     return len(header).to_bytes(8, "little") + header + little_endian.tobytes()
 
 
-def _array_digest(numpy_module: Any, value: Any) -> str:
-    return _sha256_bytes(_canonical_array_bytes(numpy_module, value))
+def _array_digest(
+    numpy_module: Any, value: Any, *, require_float32: bool = True
+) -> str:
+    return _sha256_bytes(
+        _canonical_array_bytes(
+            numpy_module, value, require_float32=require_float32
+        )
+    )
 
 
-def _named_array_digest(numpy_module: Any, values: dict[str, Any]) -> str:
+def _named_array_digest(
+    numpy_module: Any,
+    values: dict[str, Any],
+    *,
+    require_float32: bool = True,
+) -> str:
     digest = hashlib.sha256()
     for name in sorted(values):
         encoded_name = name.encode("utf-8")
         digest.update(len(encoded_name).to_bytes(8, "little"))
         digest.update(encoded_name)
-        canonical_array = _canonical_array_bytes(numpy_module, values[name])
+        canonical_array = _canonical_array_bytes(
+            numpy_module, values[name], require_float32=require_float32
+        )
         digest.update(len(canonical_array).to_bytes(8, "little"))
         digest.update(canonical_array)
     return "sha256:" + digest.hexdigest()
@@ -164,6 +177,77 @@ def _deterministic_float32_array(
     return (
         signed.astype(numpy_module.float32) / numpy_module.float32(denominator)
     ).reshape(shape)
+
+
+def _float32_to_bfloat16_storage(numpy_module: Any, value: Any) -> Any:
+    bits = numpy_module.asarray(value, dtype=numpy_module.float32).view(
+        numpy_module.uint32
+    )
+    rounding = numpy_module.uint32(0x7FFF) + ((bits >> 16) & 1)
+    rounded = ((bits + rounding) >> 16).astype(numpy_module.uint16)
+    return numpy_module.ascontiguousarray(rounded).view(numpy_module.dtype("|V2"))
+
+
+def _bfloat16_storage_to_float32(numpy_module: Any, value: Any) -> Any:
+    bits = numpy_module.ascontiguousarray(value).view(numpy_module.uint16)
+    return (bits.astype(numpy_module.uint32) << 16).view(numpy_module.float32)
+
+
+def _cast_gemm_storage(numpy_module: Any, value: Any, dtype: str) -> Any:
+    if dtype == "float32":
+        return numpy_module.asarray(value, dtype=numpy_module.float32)
+    if dtype == "float16":
+        return numpy_module.asarray(value, dtype=numpy_module.float16)
+    if dtype == "bfloat16":
+        return _float32_to_bfloat16_storage(numpy_module, value)
+    raise RuntimeError(f"unsupported simple GEMM dtype {dtype!r}")
+
+
+def _gemm_storage_to_float32(numpy_module: Any, value: Any, dtype: str) -> Any:
+    if dtype == "bfloat16":
+        return _bfloat16_storage_to_float32(numpy_module, value)
+    return numpy_module.asarray(value, dtype=numpy_module.float32)
+
+
+def _deterministic_gemm_array(
+    numpy_module: Any,
+    shape: tuple[int, ...],
+    *,
+    seed: int,
+    stream: int,
+) -> Any:
+    count = math.prod(shape)
+    indices = numpy_module.arange(count, dtype=numpy_module.uint64)
+    raw = (
+        indices * numpy_module.uint64(17)
+        + numpy_module.uint64(seed) * numpy_module.uint64(13)
+        + numpy_module.uint64(stream) * numpy_module.uint64(7)
+    ) % numpy_module.uint64(9)
+    signed = raw.astype(numpy_module.int32) - numpy_module.int32(4)
+    return (
+        signed.astype(numpy_module.float32) / numpy_module.float32(4.0)
+    ).reshape(shape)
+
+
+def _increasing_k_gemm_reference(
+    numpy_module: Any, lhs: Any, rhs: Any, dtype: str
+) -> Any:
+    lhs_f32 = _gemm_storage_to_float32(numpy_module, lhs, dtype)
+    rhs_f32 = _gemm_storage_to_float32(numpy_module, rhs, dtype)
+    if lhs_f32.ndim != 2 or rhs_f32.ndim != 2:
+        raise RuntimeError("simple GEMM reference currently requires rank-2 inputs")
+    m, k = lhs_f32.shape
+    rhs_k, n = rhs_f32.shape
+    if k != rhs_k:
+        raise RuntimeError("simple GEMM reference contracting dimensions differ")
+    output = numpy_module.zeros((m, n), dtype=numpy_module.float32)
+    for reduction in range(k):
+        output = (
+            output
+            + lhs_f32[:, reduction : reduction + 1]
+            * rhs_f32[reduction : reduction + 1, :]
+        ).astype(numpy_module.float32)
+    return _cast_gemm_storage(numpy_module, output, dtype)
 
 
 def load_workload_corpus_spec(spec_path: pathlib.Path) -> dict[str, Any]:
@@ -480,6 +564,34 @@ def _make_linear_residual_mlp_module(
             return projection + x
 
     return WaferLinearResidualMlp()
+
+
+def _make_simple_gemm_module(torch_module: Any) -> Any:
+    class WaferSimpleGemm(torch_module.nn.Module):
+        def forward(self, lhs, rhs):
+            return lhs @ rhs
+
+    return WaferSimpleGemm()
+
+
+def _torch_from_workload_storage(
+    torch_module: Any, numpy_module: Any, value: Any, dtype: str
+) -> Any:
+    if dtype == "bfloat16":
+        raw = numpy_module.ascontiguousarray(value).view(numpy_module.uint16)
+        return torch_module.from_numpy(raw.copy()).view(torch_module.bfloat16)
+    return torch_module.from_numpy(numpy_module.ascontiguousarray(value).copy())
+
+
+def _torch_to_workload_storage(
+    torch_module: Any, numpy_module: Any, value: Any, dtype: str
+) -> Any:
+    cpu = value.detach().cpu()
+    if dtype == "bfloat16":
+        return numpy_module.ascontiguousarray(
+            cpu.view(torch_module.uint16).numpy()
+        ).view(numpy_module.dtype("|V2"))
+    return cpu.numpy()
 
 
 def _assign_named_parameter_arrays(
@@ -829,7 +941,7 @@ def _build_workload_case_payload(
     case: dict[str, Any],
     numpy_module: Any,
 ) -> dict[str, Any]:
-    if case.get("dtype") != "float32":
+    if case.get("dtype") not in {"float16", "bfloat16", "float32"}:
         raise RuntimeError(
             f"workload case {case['id']} has unsupported dtype {case.get('dtype')!r}"
         )
@@ -839,7 +951,31 @@ def _build_workload_case_payload(
     if not isinstance(config, dict):
         raise RuntimeError(f"workload case {case['id']} is missing config")
 
-    if kind == "linear_residual_mlp":
+    extra_inputs: dict[int, Any] = {}
+    if kind == "simple_gemm":
+        dtype = str(case["dtype"])
+        m = int(config["m"])
+        k = int(config["k"])
+        n = int(config["n"])
+        if min(m, k, n) <= 0:
+            raise RuntimeError("simple GEMM dimensions must be positive")
+        if config.get("model_semantics_revision") != "wafer-simple-gemm-v1":
+            raise RuntimeError("unsupported simple GEMM semantics revision")
+        source_config = config
+        lhs_f32 = _deterministic_gemm_array(
+            numpy_module, (m, k), seed=seed, stream=0
+        )
+        rhs_f32 = _deterministic_gemm_array(
+            numpy_module, (k, n), seed=seed, stream=1
+        )
+        input_array = _cast_gemm_storage(numpy_module, lhs_f32, dtype)
+        rhs_array = _cast_gemm_storage(numpy_module, rhs_f32, dtype)
+        extra_inputs[1] = rhs_array
+        parameters = {}
+        expected = _increasing_k_gemm_reference(
+            numpy_module, input_array, rhs_array, dtype
+        )
+    elif kind == "linear_residual_mlp":
         batch_size = int(config["batch_size"])
         input_features = int(config["input_features"])
         hidden_features = int(config["hidden_features"])
@@ -952,16 +1088,34 @@ def _build_workload_case_payload(
             f"workload case {case['id']} has unsupported kind {kind!r}"
         )
 
-    digests = {
-        "source_config": _sha256_bytes(_canonical_json_bytes(source_config)),
-        "input": _array_digest(numpy_module, input_array),
-        "parameters": _named_array_digest(numpy_module, parameters),
-        "reference_output": _array_digest(numpy_module, expected),
-        "reference_output_quantized": _quantized_array_digest(
+    if kind == "simple_gemm":
+        input_digest = _named_array_digest(
+            numpy_module,
+            {"0": input_array, "1": extra_inputs[1]},
+            require_float32=False,
+        )
+        parameters_digest = _named_array_digest(
+            numpy_module, parameters, require_float32=False
+        )
+        output_digest = _array_digest(
+            numpy_module, expected, require_float32=False
+        )
+        quantized_output_digest = output_digest
+    else:
+        input_digest = _array_digest(numpy_module, input_array)
+        parameters_digest = _named_array_digest(numpy_module, parameters)
+        output_digest = _array_digest(numpy_module, expected)
+        quantized_output_digest = _quantized_array_digest(
             numpy_module,
             expected,
             int(case["reference"]["digest_quantization_decimals"]),
-        ),
+        )
+    digests = {
+        "source_config": _sha256_bytes(_canonical_json_bytes(source_config)),
+        "input": input_digest,
+        "parameters": parameters_digest,
+        "reference_output": output_digest,
+        "reference_output_quantized": quantized_output_digest,
     }
     expected_digests = case.get("digests")
     if not isinstance(expected_digests, dict):
@@ -982,6 +1136,7 @@ def _build_workload_case_payload(
         "case": case,
         "source_config": source_config,
         "input": input_array,
+        "extra_inputs": extra_inputs,
         "parameters": parameters,
         "expected": expected,
         "digests": digests,
@@ -1003,6 +1158,10 @@ def emit_workload_cpu_reference(
     parameter_dir = output_dir / "parameters"
     parameter_dir.mkdir(parents=True)
     numpy_module.save(output_dir / "input.npy", payload["input"], allow_pickle=False)
+    for index, value in sorted(payload["extra_inputs"].items()):
+        numpy_module.save(
+            output_dir / f"input-{index}.npy", value, allow_pickle=False
+        )
     numpy_module.save(
         output_dir / "expected.npy", payload["expected"], allow_pickle=False
     )
@@ -1010,6 +1169,45 @@ def emit_workload_cpu_reference(
         if pathlib.PurePath(name).name != name:
             raise RuntimeError(f"invalid workload parameter name {name!r}")
         numpy_module.save(parameter_dir / f"{name}.npy", value, allow_pickle=False)
+
+    bulk_qualification = case.get("bulk_qualification")
+    if bulk_qualification is not None:
+        if not isinstance(bulk_qualification, dict):
+            raise RuntimeError("bulk_qualification must be an object")
+        m = int(bulk_qualification["m"])
+        k = int(bulk_qualification["k"])
+        n = int(bulk_qualification["n"])
+        calibration_seed = int(bulk_qualification["calibration_seed"])
+        qualification_dir = output_dir / "qualification"
+        qualification_dir.mkdir()
+        calibration_lhs = _cast_gemm_storage(
+            numpy_module,
+            _deterministic_gemm_array(
+                numpy_module, (m, k), seed=calibration_seed, stream=0
+            ),
+            case["dtype"],
+        )
+        calibration_rhs = _cast_gemm_storage(
+            numpy_module,
+            _deterministic_gemm_array(
+                numpy_module, (k, n), seed=calibration_seed, stream=1
+            ),
+            case["dtype"],
+        )
+        numpy_module.save(
+            qualification_dir / "calibration-lhs.npy",
+            calibration_lhs,
+            allow_pickle=False,
+        )
+        numpy_module.save(
+            qualification_dir / "calibration-rhs.npy",
+            calibration_rhs,
+            allow_pickle=False,
+        )
+        (qualification_dir / "qualification.json").write_text(
+            json.dumps(bulk_qualification, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
 
     reference_record = {
         "schema_version": WORKLOAD_CORPUS_SCHEMA_VERSION,
@@ -1026,6 +1224,14 @@ def emit_workload_cpu_reference(
         "parameter_files": {
             name: f"parameters/{name}.npy" for name in payload["parameters"]
         },
+        "input_files": {
+            "0": "input.npy",
+            **{
+                str(index): f"input-{index}.npy"
+                for index in sorted(payload["extra_inputs"])
+            },
+        },
+        "bulk_qualification": bulk_qualification,
     }
     (output_dir / "reference.json").write_text(
         json.dumps(reference_record, indent=2, sort_keys=True) + "\n",
@@ -1199,6 +1405,56 @@ def emit_reference_stablehlo_program(
     _verify_program_dir_layout(program_dir)
 
 
+def emit_simple_gemm_program(
+    program_dir: pathlib.Path,
+    lhs_array: Any,
+    rhs_array: Any,
+    expected_cpu_output: Any,
+    dtype: str,
+    torch_module: Any | None = None,
+    stablehlo_module: Any | None = None,
+) -> None:
+    if torch_module is None or stablehlo_module is None:
+        torch_module, stablehlo_module = _import_runtime_modules()
+    numpy_module = _import_numpy()
+    reference_module = _make_simple_gemm_module(torch_module)
+    reference_module.eval()
+    lhs_tensor = _torch_from_workload_storage(
+        torch_module, numpy_module, lhs_array, dtype
+    )
+    rhs_tensor = _torch_from_workload_storage(
+        torch_module, numpy_module, rhs_array, dtype
+    )
+    with torch_module.no_grad():
+        torch_cpu_output = reference_module(lhs_tensor, rhs_tensor)
+    actual = _torch_to_workload_storage(
+        torch_module, numpy_module, torch_cpu_output, dtype
+    )
+    if not numpy_module.array_equal(actual, expected_cpu_output):
+        raise RuntimeError(
+            "framework CPU simple GEMM output does not match the independent "
+            "increasing-K reference"
+        )
+
+    options = stablehlo_module.StableHLOExportOptions()
+    options.export_weights = True
+    options.save_weights = True
+    options.inline_all_constant = True
+    options.include_human_readable_text = True
+    with torch_module.no_grad():
+        exported = torch_module.export.export(
+            reference_module, (lhs_tensor, rhs_tensor)
+        )
+        stablehlo_program = stablehlo_module.exported_program_to_stablehlo(
+            exported, options=options
+        )
+    if program_dir.exists():
+        shutil.rmtree(program_dir)
+    program_dir.parent.mkdir(parents=True, exist_ok=True)
+    stablehlo_program.save(str(program_dir))
+    _verify_program_dir_layout(program_dir)
+
+
 def emit_linear_residual_mlp_program(
     program_dir: pathlib.Path,
     input_array: Any,
@@ -1315,6 +1571,23 @@ def _emit_workload_program(
     runtime_modules: dict[str, Any],
 ) -> None:
     case = payload["case"]
+    if case["kind"] == "simple_gemm":
+        torch_module = runtime_modules.get("torch")
+        stablehlo_module = runtime_modules.get("stablehlo")
+        if torch_module is None or stablehlo_module is None:
+            torch_module, stablehlo_module = _import_runtime_modules()
+            runtime_modules["torch"] = torch_module
+            runtime_modules["stablehlo"] = stablehlo_module
+        emit_simple_gemm_program(
+            program_dir,
+            payload["input"],
+            payload["extra_inputs"][1],
+            payload["expected"],
+            str(case["dtype"]),
+            torch_module=torch_module,
+            stablehlo_module=stablehlo_module,
+        )
+        return
     if case["kind"] == "linear_residual_mlp":
         torch_module = runtime_modules.get("torch")
         stablehlo_module = runtime_modules.get("stablehlo")
@@ -1460,6 +1733,7 @@ def emit_workload_corpus(
             "seed": case["seed"],
             "dtype": case["dtype"],
             "config": case["config"],
+            "bulk_qualification": case.get("bulk_qualification"),
             "digests": {
                 **payload["digests"],
                 "exported_program": program_digest,

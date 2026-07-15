@@ -39,6 +39,8 @@ namespace wafer {
 namespace {
 
 constexpr llvm::StringLiteral kSpecSchema = "wafer-bulk-qualification-spec-v1";
+constexpr llvm::StringLiteral kExplicitPayloadSpecSchema =
+    "wafer-bulk-qualification-spec-v2";
 constexpr llvm::StringLiteral kCalibrationSchema = "wafer-bulk-calibration-v1";
 constexpr llvm::StringLiteral kPolicySchema = "wafer-bulk-frozen-policy-v1";
 constexpr llvm::StringLiteral kFinalSchema =
@@ -238,9 +240,35 @@ llvm::Expected<NumericTensorLayout> parseLayout(llvm::StringRef spelling) {
   return invalid("unknown numeric tensor layout " + spelling);
 }
 
+std::string physicalHex(llvm::ArrayRef<uint8_t> bytes) {
+  return llvm::toHex(bytes, /*LowerCase=*/true);
+}
+
+llvm::Expected<std::vector<uint8_t>> parsePhysicalHex(llvm::StringRef value,
+                                                      llvm::StringRef field) {
+  if (value.empty() || value.size() % 2 != 0 ||
+      !llvm::all_of(value, [](char character) {
+        return llvm::isHexDigit(character) &&
+               !(character >= 'A' && character <= 'F');
+      }))
+    return invalid(field + " must be nonempty lowercase even-length hex");
+  std::vector<uint8_t> bytes;
+  bytes.reserve(value.size() / 2);
+  auto nibble = [](char character) -> uint8_t {
+    if (character >= '0' && character <= '9')
+      return static_cast<uint8_t>(character - '0');
+    return static_cast<uint8_t>(character - 'a' + 10);
+  };
+  for (size_t index = 0; index < value.size(); index += 2)
+    bytes.push_back(static_cast<uint8_t>((nibble(value[index]) << 4) |
+                                         nibble(value[index + 1])));
+  return bytes;
+}
+
 llvm::json::Object specJSON(const BulkQualificationSpec &spec) {
-  return llvm::json::Object{
-      {"schema", kSpecSchema},
+  llvm::json::Object object{
+      {"schema", spec.hasExplicitPhysicalPayload() ? kExplicitPayloadSpecSchema
+                                                   : kSpecSchema},
       {"format", stringifyLogicalFormat(spec.getFormat())},
       {"m", static_cast<int64_t>(spec.getM())},
       {"k", static_cast<int64_t>(spec.getK())},
@@ -252,6 +280,13 @@ llvm::json::Object specJSON(const BulkQualificationSpec &spec) {
        stringifyNumericTensorLayout(spec.getDestinationLayout())},
       {"seed", static_cast<int64_t>(spec.getSeed())},
   };
+  if (spec.hasExplicitPhysicalPayload()) {
+    object["lhs_physical"] = physicalHex(spec.getLHSPhysicalPayload());
+    object["rhs_physical"] = physicalHex(spec.getRHSPhysicalPayload());
+    object["destination_template_physical"] =
+        physicalHex(spec.getDestinationTemplatePhysicalPayload());
+  }
+  return object;
 }
 
 llvm::json::Object
@@ -354,14 +389,28 @@ llvm::Error validateEnvironmentJSON(const llvm::json::Object &object,
 
 llvm::Expected<BulkQualificationSpec>
 parseSpecObject(const llvm::json::Object &object) {
-  if (llvm::Error error = requireFields(
-          object,
-          {"schema", "format", "m", "k", "n", "batch_count", "lhs_layout",
-           "rhs_layout", "destination_layout", "seed"},
-          "bulk qualification spec"))
-    return std::move(error);
   llvm::Expected<llvm::StringRef> schema =
       requireString(object, "schema", "bulk qualification spec");
+  if (!schema)
+    return schema.takeError();
+  const bool explicitPayload = *schema == kExplicitPayloadSpecSchema;
+  if (*schema != kSpecSchema && !explicitPayload)
+    return invalid("bulk qualification spec schema mismatch");
+  if (explicitPayload) {
+    if (llvm::Error error = requireFields(
+            object,
+            {"schema", "format", "m", "k", "n", "batch_count", "lhs_layout",
+             "rhs_layout", "destination_layout", "seed", "lhs_physical",
+             "rhs_physical", "destination_template_physical"},
+            "bulk qualification spec"))
+      return std::move(error);
+  } else if (llvm::Error error = requireFields(
+                 object,
+                 {"schema", "format", "m", "k", "n", "batch_count",
+                  "lhs_layout", "rhs_layout", "destination_layout", "seed"},
+                 "bulk qualification spec")) {
+    return std::move(error);
+  }
   llvm::Expected<llvm::StringRef> formatText =
       requireString(object, "format", "bulk qualification spec");
   llvm::Expected<uint64_t> m =
@@ -381,11 +430,9 @@ parseSpecObject(const llvm::json::Object &object) {
   llvm::Expected<uint64_t> seed =
       requireUnsigned(object, "seed", "bulk qualification spec");
   if (llvm::Error error =
-          takeExpectedErrors(schema, formatText, m, k, n, batch, lhsLayoutText,
+          takeExpectedErrors(formatText, m, k, n, batch, lhsLayoutText,
                              rhsLayoutText, destinationLayoutText, seed))
     return error;
-  if (*schema != kSpecSchema)
-    return invalid("bulk qualification spec schema mismatch");
   llvm::Expected<LogicalFormat> format = parseLogicalFormat(*formatText);
   llvm::Expected<NumericTensorLayout> lhsLayout = parseLayout(*lhsLayoutText);
   llvm::Expected<NumericTensorLayout> rhsLayout = parseLayout(*rhsLayoutText);
@@ -394,8 +441,31 @@ parseSpecObject(const llvm::json::Object &object) {
   if (llvm::Error error =
           takeExpectedErrors(format, lhsLayout, rhsLayout, destinationLayout))
     return error;
-  return BulkQualificationSpec::create(*format, *m, *k, *n, *batch, *lhsLayout,
-                                       *rhsLayout, *destinationLayout, *seed);
+  if (!explicitPayload)
+    return BulkQualificationSpec::create(*format, *m, *k, *n, *batch,
+                                         *lhsLayout, *rhsLayout,
+                                         *destinationLayout, *seed);
+  llvm::Expected<llvm::StringRef> lhsHex =
+      requireString(object, "lhs_physical", "bulk qualification spec");
+  llvm::Expected<llvm::StringRef> rhsHex =
+      requireString(object, "rhs_physical", "bulk qualification spec");
+  llvm::Expected<llvm::StringRef> destinationHex = requireString(
+      object, "destination_template_physical", "bulk qualification spec");
+  if (llvm::Error error = takeExpectedErrors(lhsHex, rhsHex, destinationHex))
+    return error;
+  llvm::Expected<std::vector<uint8_t>> lhsPhysical =
+      parsePhysicalHex(*lhsHex, "lhs_physical");
+  llvm::Expected<std::vector<uint8_t>> rhsPhysical =
+      parsePhysicalHex(*rhsHex, "rhs_physical");
+  llvm::Expected<std::vector<uint8_t>> destinationPhysical =
+      parsePhysicalHex(*destinationHex, "destination_template_physical");
+  if (llvm::Error error =
+          takeExpectedErrors(lhsPhysical, rhsPhysical, destinationPhysical))
+    return error;
+  return BulkQualificationSpec::createWithPhysicalPayload(
+      *format, *m, *k, *n, *batch, *lhsLayout, *rhsLayout, *destinationLayout,
+      *seed, std::move(*lhsPhysical), std::move(*rhsPhysical),
+      std::move(*destinationPhysical));
 }
 
 uint64_t splitMix64(uint64_t &state) {
@@ -498,21 +568,40 @@ materializeBulkQualificationCase(BulkQualificationSpec spec,
     return invalid(
         "qualification physical tensors exceed the bulk byte budget");
 
-  uint64_t state = spec.getSeed();
-  std::vector<RawLogicalValue> lhsValues =
-      generateValues(spec.getFormat(), lhs->getElementCount(), state);
-  std::vector<RawLogicalValue> rhsValues =
-      generateValues(spec.getFormat(), rhs->getElementCount(), state);
-  llvm::Expected<BulkTensorStorage> lhsStorage =
-      packBulkTensorLogicalValues(*lhs, lhsValues, UINT8_C(0xa5));
-  llvm::Expected<BulkTensorStorage> rhsStorage =
-      packBulkTensorLogicalValues(*rhs, rhsValues, UINT8_C(0xa5));
-  std::vector<RawLogicalValue> destinationZeros(
-      static_cast<size_t>(destination->getElementCount()),
-      RawLogicalValue{spec.getFormat(), 0});
-  llvm::Expected<BulkTensorStorage> destinationTemplate =
-      packBulkTensorLogicalValues(*destination, destinationZeros,
-                                  UINT8_C(0x5a));
+  llvm::Expected<BulkTensorStorage> lhsStorage = [&]() {
+    if (spec.hasExplicitPhysicalPayload())
+      return BulkTensorStorage::create(
+          *lhs, std::vector<uint8_t>(spec.getLHSPhysicalPayload().begin(),
+                                     spec.getLHSPhysicalPayload().end()));
+    uint64_t state = spec.getSeed();
+    std::vector<RawLogicalValue> values =
+        generateValues(spec.getFormat(), lhs->getElementCount(), state);
+    return packBulkTensorLogicalValues(*lhs, values, UINT8_C(0xa5));
+  }();
+  llvm::Expected<BulkTensorStorage> rhsStorage = [&]() {
+    if (spec.hasExplicitPhysicalPayload())
+      return BulkTensorStorage::create(
+          *rhs, std::vector<uint8_t>(spec.getRHSPhysicalPayload().begin(),
+                                     spec.getRHSPhysicalPayload().end()));
+    uint64_t state = spec.getSeed();
+    (void)generateValues(spec.getFormat(), lhs->getElementCount(), state);
+    std::vector<RawLogicalValue> values =
+        generateValues(spec.getFormat(), rhs->getElementCount(), state);
+    return packBulkTensorLogicalValues(*rhs, values, UINT8_C(0xa5));
+  }();
+  llvm::Expected<BulkTensorStorage> destinationTemplate = [&]() {
+    if (spec.hasExplicitPhysicalPayload())
+      return BulkTensorStorage::create(
+          *destination,
+          std::vector<uint8_t>(
+              spec.getDestinationTemplatePhysicalPayload().begin(),
+              spec.getDestinationTemplatePhysicalPayload().end()));
+    std::vector<RawLogicalValue> destinationZeros(
+        static_cast<size_t>(destination->getElementCount()),
+        RawLogicalValue{spec.getFormat(), 0});
+    return packBulkTensorLogicalValues(*destination, destinationZeros,
+                                       UINT8_C(0x5a));
+  }();
   if (llvm::Error error =
           takeExpectedErrors(lhsStorage, rhsStorage, destinationTemplate))
     return error;
@@ -750,11 +839,67 @@ llvm::Expected<BulkQualificationSpec> BulkQualificationSpec::create(
       destinationLayout != required)
     return invalid("unbatched qualification requires cx; batched requires ncx");
   BulkQualificationSpec provisional(format, m, k, n, batchCount, lhsLayout,
-                                    rhsLayout, destinationLayout, seed, "");
+                                    rhsLayout, destinationLayout, seed,
+                                    /*explicitPhysicalPayload=*/false, {}, {},
+                                    {}, "");
   std::string canonical = canonicalJSON(specJSON(provisional));
   return BulkQualificationSpec(format, m, k, n, batchCount, lhsLayout,
                                rhsLayout, destinationLayout, seed,
+                               /*explicitPhysicalPayload=*/false, {}, {}, {},
                                sha256(canonical));
+}
+
+llvm::Expected<BulkQualificationSpec>
+BulkQualificationSpec::createWithPhysicalPayload(
+    LogicalFormat format, uint64_t m, uint64_t k, uint64_t n,
+    uint64_t batchCount, NumericTensorLayout lhsLayout,
+    NumericTensorLayout rhsLayout, NumericTensorLayout destinationLayout,
+    uint64_t seed, std::vector<uint8_t> lhsPhysical,
+    std::vector<uint8_t> rhsPhysical,
+    std::vector<uint8_t> destinationTemplatePhysical) {
+  llvm::Expected<BulkQualificationSpec> generated =
+      create(format, m, k, n, batchCount, lhsLayout, rhsLayout,
+             destinationLayout, seed);
+  if (!generated)
+    return generated.takeError();
+  std::vector<uint64_t> lhsShape;
+  std::vector<uint64_t> rhsShape;
+  std::vector<uint64_t> destinationShape;
+  if (batchCount > 1) {
+    lhsShape.push_back(batchCount);
+    rhsShape.push_back(batchCount);
+    destinationShape.push_back(batchCount);
+  }
+  lhsShape.insert(lhsShape.end(), {m, k});
+  rhsShape.insert(rhsShape.end(), {k, n});
+  destinationShape.insert(destinationShape.end(), {m, n});
+  llvm::Expected<NumericTensorKey> lhs =
+      NumericTensorKey::create(format, lhsLayout, lhsShape);
+  llvm::Expected<NumericTensorKey> rhs =
+      NumericTensorKey::create(format, rhsLayout, rhsShape);
+  llvm::Expected<NumericTensorKey> destination =
+      NumericTensorKey::create(format, destinationLayout, destinationShape);
+  if (llvm::Error error = takeExpectedErrors(lhs, rhs, destination))
+    return error;
+  llvm::Expected<uint64_t> lhsBytes = getBulkTensorPhysicalBytes(*lhs);
+  llvm::Expected<uint64_t> rhsBytes = getBulkTensorPhysicalBytes(*rhs);
+  llvm::Expected<uint64_t> destinationBytes =
+      getBulkTensorPhysicalBytes(*destination);
+  if (llvm::Error error =
+          takeExpectedErrors(lhsBytes, rhsBytes, destinationBytes))
+    return error;
+  if (lhsPhysical.size() != *lhsBytes || rhsPhysical.size() != *rhsBytes ||
+      destinationTemplatePhysical.size() != *destinationBytes)
+    return invalid("explicit qualification payload byte geometry differs "
+                   "from its tensor domain");
+  BulkQualificationSpec provisional(
+      format, m, k, n, batchCount, lhsLayout, rhsLayout, destinationLayout,
+      seed, /*explicitPhysicalPayload=*/true, std::move(lhsPhysical),
+      std::move(rhsPhysical), std::move(destinationTemplatePhysical), "");
+  std::string canonical = canonicalJSON(specJSON(provisional));
+  std::string digest = sha256(canonical);
+  provisional.digest = std::move(digest);
+  return provisional;
 }
 
 llvm::Expected<BulkQualificationSpec>
@@ -970,6 +1115,10 @@ llvm::Error freezeBulkBackendPolicy(llvm::StringRef calibrationPath,
                                         std::numeric_limits<uint64_t>::max()));
   if (!heldOutCase)
     return heldOutCase.takeError();
+  const std::string heldOutInputPayloadDigest =
+      computeBulkTensorPayloadDigest(heldOutCase->getInputs());
+  if (*inputPayloadDigest == heldOutInputPayloadDigest)
+    return invalid("calibration and held-out input payloads must be disjoint");
   llvm::Expected<std::string> backendDigest =
       requireDigest(*object, "backend_digest", "bulk calibration");
   llvm::Expected<std::string> environmentDigest =
@@ -1008,8 +1157,7 @@ llvm::Error freezeBulkBackendPolicy(llvm::StringRef calibrationPath,
       {"calibration_spec_digest", calibrationSpec->getDigest()},
       {"held_out_spec", specJSON(*heldOut)},
       {"held_out_spec_digest", heldOut->getDigest()},
-      {"held_out_input_payload_digest",
-       computeBulkTensorPayloadDigest(heldOutCase->getInputs())},
+      {"held_out_input_payload_digest", heldOutInputPayloadDigest},
       {"held_out_destination_template_digest",
        computeBulkTensorStorageDigest(heldOutCase->getDestinationTemplate())},
       {"backend_digest", *backendDigest},
@@ -1020,7 +1168,7 @@ llvm::Error freezeBulkBackendPolicy(llvm::StringRef calibrationPath,
        stringifyBulkQualificationKind(BulkQualificationKind::ProfileBounded)},
       {"maximum_absolute_error", tolerance.maximumAbsoluteError},
       {"maximum_relative_error", tolerance.maximumRelativeError},
-      {"disjoint_proof", "same-domain-distinct-seed-and-digest-v1"},
+      {"disjoint_proof", "same-domain-distinct-seed-spec-and-payload-v2"},
   };
   return publishNoReplace(outputPath, canonicalJSON(std::move(policy)));
 }
@@ -1110,7 +1258,7 @@ llvm::Error validateBulkBackend(const BulkExecutionEnvironment &environment,
       requireString(*object, "disjoint_proof", "bulk frozen policy");
   if (!proof)
     return proof.takeError();
-  if (*proof != "same-domain-distinct-seed-and-digest-v1")
+  if (*proof != "same-domain-distinct-seed-spec-and-payload-v2")
     return invalid("bulk frozen policy disjoint proof mismatch");
   const llvm::json::Object *specObject = object->getObject("held_out_spec");
   if (!specObject)

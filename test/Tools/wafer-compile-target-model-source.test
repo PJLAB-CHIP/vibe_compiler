@@ -1,0 +1,28 @@
+# REQUIRES: stablehlo, shardy, pytorch-xla-importer, xla-spmd-helper, numeric-model, systemc-model
+
+# RUN: rm -rf %t.corpus %t.f16 %t.bf16 %t.llama %t.bad %t.bad.npy %t.reference-unsupported
+# RUN: env CPU_NUM_DEVICES=16 PJRT_DEVICE=CPU %importer_python %wafer_src_root/test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-workload-corpus --corpus-case simple-gemm-f16 --corpus-case simple-gemm-bf16 --corpus-case tiny-llama-decoder-f32 --output-corpus-dir %t.corpus --verify-corpus-reproducibility
+# RUN: wafer-compile --input-program-dir %t.corpus/simple-gemm-f16/program --output-program-dir %t.f16 --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --reference-input 0=%t.corpus/simple-gemm-f16/reference/input.npy --reference-input 1=%t.corpus/simple-gemm-f16/reference/input-1.npy --reference-expected 0=%t.corpus/simple-gemm-f16/reference/expected.npy --reference-atol=0 --reference-rtol=0 --target-model --target-model-oracle=external --target-model-max-scalar-evaluations=10000 --target-model-max-fused-multiply-adds=10000 --target-model-max-movement-bytes=10000000 --target-model-max-movement-segments=100000 | FileCheck %s --check-prefix=F16
+# RUN: wafer-compile --input-program-dir %t.corpus/simple-gemm-bf16/program --output-program-dir %t.bf16 --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --reference-input 0=%t.corpus/simple-gemm-bf16/reference/input.npy --reference-input 1=%t.corpus/simple-gemm-bf16/reference/input-1.npy --reference-expected 0=%t.corpus/simple-gemm-bf16/reference/expected.npy --reference-atol=0 --reference-rtol=0 --target-model --target-model-oracle=external --target-model-max-scalar-evaluations=10000 --target-model-max-fused-multiply-adds=10000 --target-model-max-movement-bytes=10000000 --target-model-max-movement-segments=100000 | FileCheck %s --check-prefix=BF16
+# RUN: not wafer-compile --input-program-dir %t.corpus/simple-gemm-f16/program --output-program-dir %t.reference-unsupported --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --reference-input 0=%t.corpus/simple-gemm-f16/reference/input.npy --reference-input 1=%t.corpus/simple-gemm-f16/reference/input-1.npy --reference-expected 0=%t.corpus/simple-gemm-f16/reference/expected.npy --reference-atol=0 --reference-rtol=0 --target-model --target-model-oracle=reference --target-model-max-scalar-evaluations=10000 --target-model-max-fused-multiply-adds=10000 --target-model-max-movement-bytes=10000000 --target-model-max-movement-segments=100000 2>&1 | FileCheck %s --check-prefix=REFERENCE-FAIL
+# RUN: test -s %t.reference-unsupported/manifest.json
+# RUN: wafer-compile --input-program-dir %t.corpus/tiny-llama-decoder-f32/program --output-program-dir %t.llama --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 --reference-input 0=%t.corpus/tiny-llama-decoder-f32/reference/input.npy --reference-expected 0=%t.corpus/tiny-llama-decoder-f32/reference/expected.npy --reference-atol=5e-4 --reference-rtol=1e-4 --target-model --target-model-oracle=reference --target-model-max-scalar-evaluations=1000000 --target-model-max-fused-multiply-adds=1000000 --target-model-max-movement-bytes=100000000 --target-model-max-movement-segments=1000000 | FileCheck %s --check-prefix=LLAMA
+# RUN: %importer_python -c 'import numpy as np; p="%t.corpus/simple-gemm-f16/reference/expected.npy"; a=np.load(p); a.flat[0]=np.float16(a.flat[0]+1); np.save("%t.bad.npy",a)'
+# RUN: not wafer-compile --input-program-dir %t.corpus/simple-gemm-f16/program --output-program-dir %t.bad --execution-ranks=1 --target-profile=wafer-tx81-single-card-kernel-v1 --reference-input 0=%t.corpus/simple-gemm-f16/reference/input.npy --reference-input 1=%t.corpus/simple-gemm-f16/reference/input-1.npy --reference-expected 0=%t.bad.npy --reference-atol=0 --reference-rtol=0 --target-model --target-model-oracle=external --target-model-max-scalar-evaluations=10000 --target-model-max-fused-multiply-adds=10000 --target-model-max-movement-bytes=10000000 --target-model-max-movement-segments=100000 2>&1 | FileCheck %s --check-prefix=MISMATCH
+# RUN: test -s %t.bad/manifest.json
+# RUN: test -s %t.bad/modules/rank_00000.so
+
+# F16: wafer-compile: published verified package with execution-ranks=1:
+# F16: target model outputs matched; ranks=1 transactions=8
+# F16-SAME: formal_commands=1 bulk_commands=0
+# BF16: wafer-compile: published verified package with execution-ranks=1:
+# BF16: target model outputs matched; ranks=1 transactions=8
+# BF16-SAME: formal_commands=1 bulk_commands=0
+# REFERENCE-FAIL: wafer-compile: published verified package with execution-ranks=1:
+# REFERENCE-FAIL: reference capability preflight failed: GEMM lhs requires a static f32 memref
+# LLAMA: wafer-compile: published verified package with execution-ranks=16:
+# LLAMA: wafer-compile: reference outputs matched
+# LLAMA: target model outputs matched; ranks=16 transactions=11984 systemc_threads=17
+# MISMATCH: wafer-compile: published verified package with execution-ranks=1:
+# MISMATCH: wafer-compile: target model output differs at index 0 rank 0
+# MISMATCH-NOT: target model outputs matched

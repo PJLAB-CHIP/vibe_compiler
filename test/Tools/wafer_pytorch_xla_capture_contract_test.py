@@ -334,11 +334,24 @@ class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
         )
         self.assertEqual(
             [case["id"] for case in spec["cases"]],
-            ["linear-residual-mlp-f32", "tiny-llama-decoder-f32"],
+            [
+                "linear-residual-mlp-f32",
+                "simple-gemm-f16",
+                "simple-gemm-bf16",
+                "large-gemm-f32",
+                "tiny-llama-decoder-f32",
+            ],
         )
+        expected_dtypes = {
+            "linear-residual-mlp-f32": "float32",
+            "simple-gemm-f16": "float16",
+            "simple-gemm-bf16": "bfloat16",
+            "large-gemm-f32": "float32",
+            "tiny-llama-decoder-f32": "float32",
+        }
         for case in spec["cases"]:
-            self.assertEqual(case["dtype"], "float32")
-            self.assertEqual(case["seed"], 20260712)
+            self.assertEqual(case["dtype"], expected_dtypes[case["id"]])
+            self.assertGreater(case["seed"], 0)
             self.assertEqual(
                 case["source_revision"], case["digests"]["source_config"]
             )

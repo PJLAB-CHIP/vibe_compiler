@@ -1,8 +1,6 @@
 # Wafer Compiler Verification Plan
 
-状态：2026-07-14按Q22.N multi-dtype foundation、Q22.B逐profile oneDNN admission、Q22.L owner-backed target LLVM
-bundle、Q22.H repo-owned target-call frontend、Q22.S untimed SystemC event model、Q22.V source vertical和Q22.C板端numeric
-correlation等独立gate更新。
+状态：2026-07-14按已完成Q22.N/B/L/H/S/V及Q22 model-only汇总、后续Q22.C板端numeric correlation等独立gate更新。
 本文拥有跨stage完成证据和测试口径；具体IR/ABI规则由
 对应编号设计文档拥有。实现状态看`tasks/progress.md`。
 
@@ -37,9 +35,9 @@ Pipeline position:
   staging/publication；Q18闭合typed manifest/package/no-card runtime；Q19闭合immutable single-rank reference core；
   Q16.T闭合Direct DTE transport activation；Q19.M闭合deterministic multi-rank reference；Q20/Q21依次闭合
   rank-count=1/16 linear/MLP和16-rank tiny Llama纵向链。后续gate不能反向成为Q0前置，board未执行时保持明确
-  external gate。Q0.L、Q22.N和Q22.L已完成；Q22.N单独解锁Q22.B，Q22.L直接解锁Q22.H repo-owned target-call
-  frontend，Q22.N+Q22.H+既有Q16.T再解锁Q22.S，Q22.B+Q22.S+既有Q20/Q21最终由Q22.V闭合完整输出。
-  Q22只汇总Q22.V完成状态。
+  external gate。Q0.L、Q22.N/L/B/H/S/V及Q22汇总已经完成；Q22.N单独解锁Q22.B，Q22.L直接解锁Q22.H
+  repo-owned target-call frontend，Q22.N+Q22.H+既有Q16.T再解锁Q22.S，Q22.B+Q22.S+既有Q20/Q21最终由Q22.V
+  闭合完整输出。Q22只汇总该传递证据，不另建pipeline。
   Q22.C消费Q22和Q6.B结果闭合板端numeric correlation；
   vendor-exact packet只在有独立packet/MMIO
   evidence时增加provenance claim。exact package provider和deferred timing calibration保持独立更高gate。
@@ -549,16 +547,19 @@ unsupported项仍是禁用importer feature的反向gate，不覆盖Q19 mandatory
 
 手写Wafer/group/instr IR不属于纵向corpus。
 
-当前`wafer-single-card-vertical-v1` corpus admission已经固定两个case：`2x16 -> 2x32 -> 2x16`
-f32 linear-residual MLP，以及`1x4x16`、causal self-attention、4 heads、intermediate 64的f32 tiny Llama
-decoder block。两者都由PyTorch `2.5.0+cpu`（git
+当前`wafer-single-card-vertical-v1` corpus admission已经固定五个case：`2x16 -> 2x32 -> 2x16`
+f32 linear-residual MLP，`4x16 · 16x16`的f16/bf16 simple GEMM，`64x64 · 64x64`的f32 large GEMM，以及
+`1x4x16`、causal self-attention、4 heads、intermediate 64的f32 tiny Llama decoder block。它们都由
+PyTorch `2.5.0+cpu`（git
 `32f585d9346e316e554c8d9bf7548af9f62141fc`）和PyTorch/XLA 2.5.0（repository
 `https://github.com/pytorch/xla.git`，git
-`396608c7105b3763874fe3800dfabdfa2b38a28a`）的真实导出路径生成；input、parameter、完整CPU
-expected和canonical exporter digest由spec固定。CPU oracle是独立NumPy运算实现，先独立重建payload/output，
+`396608c7105b3763874fe3800dfabdfa2b38a28a`）的真实导出路径生成；全部user input、parameter、完整CPU
+expected、canonical exporter digest及source/config digest由spec固定。低精度case使用精确可表示的quarter-valued input，
+按K递增独立累加后只在destination cast；BF16 NPY用raw `|V2`保留bits，不依赖framework state-dict的NumPy导出。
+CPU oracle是独立NumPy运算实现，先独立重建payload/output，
 再与同payload的framework CPU module按case tolerance交叉检查；不能从framework output直接拷贝expected。
-lit分别证明CPU-only reference逐文件byte-identical、真实exporter两次canonical-equivalent和两个program通过
-frontend verifier。这只完成Q5.C admission，不完成本节Gate A/B/C。
+lit分别证明CPU-only reference逐文件byte-identical、真实exporter两次canonical-equivalent和五个program通过
+frontend verifier。前两个历史case闭合Q5.C；新增三项是Q22.V source vertical的固定输入，不把case shape提升为协议。
 
 ### 10.2 Q20 Gate A: Single-Tile Linear/MLP
 
@@ -858,6 +859,26 @@ Q22.V只在Q22.B和Q22.S完成后消费既有Q20/Q21 source producer，负责把
 
 现有4096 exporter使用未初始化`torch.empty`且没有固定expected/digest，在改为固定source/config/seed或payload、独立cheap
 expected和digest前只算结构覆盖。4096可作为nightly/stress参数；mandatory CI shape可以更小，但必须超过formal budget。
+
+Q22.V实现按上述边界闭合：production编译返回factory-only、move-only的`TargetCompilationProduct`，同时拥有
+`ExecutableBundle`和已经直接用于Q17 artifact publication的同一`TargetLLVMModuleBundle`，model不重复lower。
+共享`ProgramTensor`装配只负责typed input slice及package-relative parameter/constant payload；Q19和model继续各自拥有
+compute、numeric和multi-rank scheduler。model invocation把compact program tensor按每个ordered ABI slot的shape/dtype/layout
+编码为exact target physical bytes，在显式非重叠DDR地址域内建立all-rank private invocation并逐rank取回完整output。
+
+driver提供两种明确oracle：`reference`先运行Q19再运行model，适用于当前Q19 f32 surface；`external`只消费固定source corpus的
+独立CPU expected，适用于f16、bf16和large GEMM，不能把shape/digest冒充expected。f32按case显式atol/rtol比较；其它当前
+destination按raw bytes exact比较。Q19不支持f16时稳定preflight失败且保留package，未被隐式转成external oracle。
+
+Q20的同一source payload分别在formal-only和prefer-admitted策略下通过，admitted路径为5个formal command加1个bulk GEMM；
+64³ source case含262144个FMA，正式formal FMA budget固定10000，仍只产生8个target transaction、1个bulk MatMul和0个bulk
+formal FMA。qualification schema v2直接嵌入canonical target physical lhs/rhs/destination-template bytes；runtime按command、
+payload、destination、semantic、environment和预期backend output exact-match。用Q20 record运行large case返回稳定
+`bulk-backend-unavailable`，不存在scalar fallback。f16/bf16各以formal GEMM通过；Q21以16 ranks、17个SystemC thread process
+及完整Direct DTE路径通过。output mismatch、Q19 dtype unsupported和bulk record mismatch都返回非零并保留已验证manifest/module。
+
+这组结果签发的仍只是`target-call/SystemC model-only functional-numeric`：不执行repo CRT、Tsm packet或RISC-V ELF，不证明
+board numeric、vendor等价、性能或cycle accuracy。最终fresh suite数量记录在`tasks/progress.md`对应done row。
 
 ### 11.7 Q22.C Board Numeric Correlation Gate
 

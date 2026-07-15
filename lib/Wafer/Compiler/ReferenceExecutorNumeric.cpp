@@ -26,17 +26,7 @@ std::optional<int64_t> getDTypeByteWidth(llvm::StringRef dtype) {
 
 std::optional<int64_t> getCompactByteCount(llvm::StringRef dtype,
                                            llvm::ArrayRef<int64_t> shape) {
-  std::optional<int64_t> elementBytes = getDTypeByteWidth(dtype);
-  if (!elementBytes)
-    return std::nullopt;
-  int64_t bytes = *elementBytes;
-  for (int64_t dim : shape) {
-    if (dim < 0 ||
-        (dim != 0 && bytes > std::numeric_limits<int64_t>::max() / dim))
-      return std::nullopt;
-    bytes *= dim;
-  }
-  return bytes;
+  return computeProgramTensorByteCount(dtype, shape);
 }
 
 std::string elementDType(mlir::Type type) {

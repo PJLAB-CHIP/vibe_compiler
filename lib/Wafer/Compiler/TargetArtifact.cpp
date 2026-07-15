@@ -183,7 +183,7 @@ constexpr llvm::StringLiteral kTargetLLVMFormatMetadata =
     "wafer.target.module_format";
 constexpr llvm::StringLiteral kTargetLLVMSlotsMetadata =
     "wafer.target.abi_slots";
-constexpr llvm::StringLiteral kTargetLLVMSchema = "wafer-target-llvm-module-v1";
+constexpr llvm::StringLiteral kTargetLLVMSchema = "wafer-target-llvm-module-v2";
 
 llvm::StringRef stringifyKernelABISlotRole(KernelABISlotRole role) {
   switch (role) {
@@ -247,6 +247,7 @@ void attachTargetLLVMMetadata(llvm::Module &module,
         signedMetadata(context, slot.resourceIndex),
         llvm::MDString::get(context, slot.name),
         llvm::MDString::get(context, slot.dtype),
+        llvm::MDString::get(context, stringifyMemLayout(slot.layout)),
         signedMetadata(context, slot.byteSize),
         signedMetadata(context, slot.alignment),
     };
@@ -340,7 +341,7 @@ verifyTargetLLVMSlotMetadata(const llvm::Module &module,
         "target LLVM Kernel ABI slot metadata does not cover the typed ABI");
   for (auto [index, expected] : llvm::enumerate(expectedSlots)) {
     const llvm::MDNode &row = *slots->getOperand(index);
-    if (row.getNumOperands() != 7 + expected.shape.size())
+    if (row.getNumOperands() != 8 + expected.shape.size())
       return llvm::createStringError(
           llvm::errc::invalid_argument,
           "target LLVM Kernel ABI slot %zu has an invalid field count", index);
@@ -364,19 +365,24 @@ verifyTargetLLVMSlotMetadata(const llvm::Module &module,
         readStringMetadataOperand(row, 4, "Kernel ABI slot dtype");
     if (!dtype)
       return dtype.takeError();
+    llvm::Expected<llvm::StringRef> layout =
+        readStringMetadataOperand(row, 5, "Kernel ABI slot layout");
+    if (!layout)
+      return layout.takeError();
     llvm::Expected<int64_t> byteSize =
-        readSignedMetadataOperand(row, 5, "Kernel ABI slot byte size");
+        readSignedMetadataOperand(row, 6, "Kernel ABI slot byte size");
     if (!byteSize)
       return byteSize.takeError();
     llvm::Expected<int64_t> alignment =
-        readSignedMetadataOperand(row, 6, "Kernel ABI slot alignment");
+        readSignedMetadataOperand(row, 7, "Kernel ABI slot alignment");
     if (!alignment)
       return alignment.takeError();
     if (*ordinal != expected.ordinal ||
         *role != stringifyKernelABISlotRole(expected.role) ||
         *resource != expected.resourceIndex || *name != expected.name ||
-        *dtype != expected.dtype || *byteSize != expected.byteSize ||
-        *alignment != expected.alignment)
+        *dtype != expected.dtype ||
+        *layout != stringifyMemLayout(expected.layout) ||
+        *byteSize != expected.byteSize || *alignment != expected.alignment)
       return llvm::createStringError(
           llvm::errc::invalid_argument,
           "target LLVM Kernel ABI slot %zu does not match the typed ABI",
@@ -384,7 +390,7 @@ verifyTargetLLVMSlotMetadata(const llvm::Module &module,
     for (auto [dimensionIndex, expectedDimension] :
          llvm::enumerate(expected.shape)) {
       llvm::Expected<int64_t> dimension = readSignedMetadataOperand(
-          row, 7 + dimensionIndex, "Kernel ABI slot shape dimension");
+          row, 8 + dimensionIndex, "Kernel ABI slot shape dimension");
       if (!dimension)
         return dimension.takeError();
       if (*dimension != expectedDimension)
@@ -533,8 +539,8 @@ KernelABISlotRole getKernelRole(ProgramResourceRole role) {
   llvm_unreachable("unknown program resource role");
 }
 
-mlir::FailureOr<int64_t> getPhysicalBytes(mlir::Type type,
-                                          mlir::Operation *anchor) {
+mlir::FailureOr<WaferPhysicalTensorInfo>
+getPhysicalInfo(mlir::Type type, mlir::Operation *anchor) {
   auto memrefType = mlir::dyn_cast<mlir::MemRefType>(type);
   if (!memrefType || !isWaferDDRMemRefType(memrefType)) {
     anchor->emitError()
@@ -548,7 +554,7 @@ mlir::FailureOr<int64_t> getPhysicalBytes(mlir::Type type,
         << "target_abi_mismatch: cannot derive static resource byte size";
     return mlir::failure();
   }
-  return info->physicalBytes;
+  return *info;
 }
 
 mlir::Value resolveOutputAllocation(mlir::Value value) {
@@ -640,13 +646,14 @@ prepareTargetABI(const RankExecutable &rankExecutable,
   prepared.slots.reserve(originalArgumentCount + resultCount + 1);
   auto appendSlot = [&](const RankProgramBinding &binding, mlir::Type type,
                         KernelABISlotRole role) -> mlir::LogicalResult {
-    mlir::FailureOr<int64_t> byteSize = getPhysicalBytes(type, function);
-    if (mlir::failed(byteSize))
+    mlir::FailureOr<WaferPhysicalTensorInfo> physical =
+        getPhysicalInfo(type, function);
+    if (mlir::failed(physical))
       return mlir::failure();
     prepared.slots.push_back({static_cast<int64_t>(prepared.slots.size()), role,
                               binding.index, binding.name, binding.dtype,
-                              binding.localShape, *byteSize,
-                              defaultDDRAlignment});
+                              physical->layout, binding.localShape,
+                              physical->physicalBytes, defaultDDRAlignment});
     return mlir::success();
   };
 
@@ -732,6 +739,7 @@ prepareTargetABI(const RankExecutable &rankExecutable,
                               0,
                               "default_ddr_arena",
                               "u8",
+                              MemLayout::Tensor,
                               {arenaBytes},
                               arenaBytes,
                               arenaAlignment});
@@ -747,6 +755,7 @@ prepareTargetABI(const RankExecutable &rankExecutable,
                               0,
                               "direct_dte_status",
                               "u32",
+                              MemLayout::Tensor,
                               {1},
                               4,
                               4});

@@ -432,6 +432,53 @@ TEST(BulkQualificationTest,
   EXPECT_NE(malformedError.find("seed"), std::string::npos);
 }
 
+TEST(BulkQualificationTest,
+     ExplicitPhysicalPayloadSpecRoundTripsWithoutRegeneration) {
+  TemporaryDirectory files;
+  BulkQualificationSpec generated =
+      llvm::cantFail(BulkQualificationSpec::create(
+          LogicalFormat::F32, 2, 3, 4, 1, NumericTensorLayout::Cx,
+          NumericTensorLayout::Cx, NumericTensorLayout::Cx, 29));
+  BulkQualificationCase generatedCase = llvm::cantFail(
+      materializeBulkQualificationCase(std::move(generated), kBulkBudget));
+  std::vector<uint8_t> lhs(generatedCase.getInputs()[0].getStorage().begin(),
+                           generatedCase.getInputs()[0].getStorage().end());
+  std::vector<uint8_t> rhs(generatedCase.getInputs()[1].getStorage().begin(),
+                           generatedCase.getInputs()[1].getStorage().end());
+  std::vector<uint8_t> destination(
+      generatedCase.getDestinationTemplate().getStorage().begin(),
+      generatedCase.getDestinationTemplate().getStorage().end());
+  BulkQualificationSpec explicitSpec =
+      llvm::cantFail(BulkQualificationSpec::createWithPhysicalPayload(
+          LogicalFormat::F32, 2, 3, 4, 1, NumericTensorLayout::Cx,
+          NumericTensorLayout::Cx, NumericTensorLayout::Cx, 31, lhs, rhs,
+          destination));
+  EXPECT_TRUE(explicitSpec.hasExplicitPhysicalPayload());
+  const std::string path = files.getPath("explicit-spec.json");
+  ASSERT_FALSE(
+      static_cast<bool>(writeBulkQualificationSpec(explicitSpec, path)));
+  BulkQualificationSpec loaded =
+      llvm::cantFail(loadBulkQualificationSpec(path));
+  EXPECT_EQ(loaded.getDigest(), explicitSpec.getDigest());
+  EXPECT_TRUE(loaded.hasExplicitPhysicalPayload());
+  BulkQualificationCase loadedCase = llvm::cantFail(
+      materializeBulkQualificationCase(std::move(loaded), kBulkBudget));
+  EXPECT_EQ(computeBulkTensorPayloadDigest(loadedCase.getInputs()),
+            computeBulkTensorPayloadDigest(generatedCase.getInputs()));
+  EXPECT_EQ(
+      computeBulkTensorStorageDigest(loadedCase.getDestinationTemplate()),
+      computeBulkTensorStorageDigest(generatedCase.getDestinationTemplate()));
+
+  lhs.pop_back();
+  EXPECT_NE(
+      expectError(BulkQualificationSpec::createWithPhysicalPayload(
+                      LogicalFormat::F32, 2, 3, 4, 1, NumericTensorLayout::Cx,
+                      NumericTensorLayout::Cx, NumericTensorLayout::Cx, 31,
+                      std::move(lhs), std::move(rhs), std::move(destination)))
+          .find("byte geometry differs"),
+      std::string::npos);
+}
+
 TEST(BulkQualificationTest, FinalRecordReadbackRejectsEvidenceTampering) {
   TemporaryDirectory files;
   BulkExecutionEnvironment environment =
